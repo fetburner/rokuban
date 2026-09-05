@@ -152,7 +152,8 @@ SELECT id, kind, queue, state FROM river_job ORDER BY id;
 **それでも掃除は推奨する**。旧キューの残骸（上の `id=1`）はどの worker も
 購読しないキューに永久に残り、`state='available'` のまま滞留メトリクス
 （River のキュー長ダッシュボード等）を汚し続ける。デプロイ後に 1 回だけ
-次を実行する（`pendingJobStates` と同じ 5 状態すべてを対象にする。
+次を実行する（`internal/jobs/queue.go` の `pendingJobStates` と同じ 5 状態すべてを
+対象にする。
 `available`/`scheduled`/`retryable` だけでは `pending`/`running` の残骸を
 取りこぼす）:
 

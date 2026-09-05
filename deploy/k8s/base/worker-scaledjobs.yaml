@@ -210,7 +210,7 @@ spec:
           - name: worker
             # **encode / thumbnail キューを購読する worker だけ ffmpeg 入りの
             # イメージを使う**（公式イメージは ffmpeg を同梱しないので起動時に
-            # fail-fast する。`worker.RequiresEncodeTools`）。image 名を分けて
+            # fail-fast する。`jobs.RequiresEncodeTools`）。image 名を分けて
             # あるのは、kustomize の `images:` が名前ごとの置換だからである ---
             # 分けないと「ffmpeg 入りに差し替えたら api も一緒に変わる」になる。
             image: ghcr.io/fetburner/rokuban-full:latest
@@ -428,7 +428,7 @@ spec:
         containers:
           - name: worker
             # cleanup（delete_reconcile / catalog_export）はファイルシステムを
-            # 要求するが ffmpeg は要求しない（`worker.RequiresEncodeTools` は
+            # 要求するが ffmpeg は要求しない（`jobs.RequiresEncodeTools` は
             # encode / thumbnail だけ）。
             image: ghcr.io/fetburner/rokuban:latest
             args:

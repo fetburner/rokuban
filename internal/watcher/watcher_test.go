@@ -15,58 +15,22 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// testIngestJobArgs は本パッケージのテスト専用 ingest ジョブ引数のスタブ。
-//
-// internal/watcher は internal/worker に依存できない（record_sweep ジョブが
-// internal/worker から Watcher.Sweep を呼ぶため、逆方向に依存すると循環インポートに
-// なる。watcher.go の IngestArgsFunc のコメント参照）。内部テストファイル
-// （本ファイル、package watcher）も同じ制約を受けるため、internal/worker.IngestJobArgs
-// を直接使う代わりに、同じ Kind（"ingest"）と UniqueOpts（ByArgs + 非最終状態限定）を
-// 再現するスタブをここに置く。これにより、同一 record の repeated processRecord で
-// ingest ジョブが重複しないという既存テストの前提が維持される。
-type testIngestJobArgs struct {
-	Site     string `json:"site"`
-	RecordID string `json:"record_id"`
-}
-
-func (testIngestJobArgs) Kind() string { return "ingest" }
-
-func (testIngestJobArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		UniqueOpts: river.UniqueOpts{
-			ByArgs: true,
-			ByState: []rivertype.JobState{
-				rivertype.JobStateAvailable,
-				rivertype.JobStatePending,
-				rivertype.JobStateRetryable,
-				rivertype.JobStateRunning,
-				rivertype.JobStateScheduled,
-			},
-		},
-	}
-}
-
-// testNewIngestArgs は Watcher.New に渡す IngestArgsFunc のテスト実装。
-func testNewIngestArgs(site, recordID string) river.JobArgs {
-	return testIngestJobArgs{Site: site, RecordID: recordID}
-}
-
-// testIngestWorker は testIngestJobArgs 用の no-op ワーカー。このパッケージの
+// testIngestWorker は jobs.IngestJobArgs 用の no-op ワーカー。このパッケージの
 // テストはジョブを実際に実行しない（river_job テーブルの行を SQL で確認するだけ）が、
 // InsertTx は挿入時点で Kind が Workers バンドルに登録済みであることを要求するため、
 // 何もしないワーカーだけ登録しておく。
 type testIngestWorker struct {
-	river.WorkerDefaults[testIngestJobArgs]
+	river.WorkerDefaults[jobs.IngestJobArgs]
 }
 
-func (testIngestWorker) Work(context.Context, *river.Job[testIngestJobArgs]) error { return nil }
+func (testIngestWorker) Work(context.Context, *river.Job[jobs.IngestJobArgs]) error { return nil }
 
 // newTestRiverClient はテスト用の River クライアントを作る。
 //
@@ -98,7 +62,7 @@ func setupTest(t *testing.T) (*Watcher, *pgxpool.Pool) {
 	rc := newTestRiverClient(t, pool)
 
 	mc := mirakc.NewClient("http://unused:40772", nil)
-	w := New(DefaultSite, mc, pool, rc, testNewIngestArgs, nil)
+	w := New(DefaultSite, mc, pool, rc, nil)
 	return w, pool
 }
 
@@ -997,7 +961,7 @@ func TestHandleRecordingFailed_Idempotent(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, rc, testNewIngestArgs, nil)
+	w := New(DefaultSite, mc, pool, rc, nil)
 
 	failedData := mirakc.RecordingFailedData{
 		ProgramID: programID,
@@ -1092,7 +1056,7 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, rc, testNewIngestArgs, nil)
+	w := New(DefaultSite, mc, pool, rc, nil)
 
 	if err := w.Sweep(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -1194,7 +1158,7 @@ func TestSweepAndHandleEvent_ConcurrentIdempotent(t *testing.T) {
 		})
 		mockServer := httptest.NewServer(mux)
 
-		w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, rc, testNewIngestArgs, nil)
+		w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, rc, nil)
 
 		savedData, err := json.Marshal(mirakc.RecordSavedData{
 			RecordID:        recordID,
@@ -1281,7 +1245,7 @@ func TestRun_NoAutomaticSweep(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, rc, testNewIngestArgs, nil)
+	w := New(DefaultSite, mc, pool, rc, nil)
 
 	runCtx, runCancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
@@ -1449,7 +1413,7 @@ func TestHandleRecordingFailed_SourceDerivedFromIntent(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, rc, testNewIngestArgs, nil)
+	w := New(DefaultSite, mc, pool, rc, nil)
 
 	failedData := mirakc.RecordingFailedData{
 		ProgramID: programID,
@@ -1522,7 +1486,7 @@ func TestProcessRecord_MissingReservation_SourceManual(t *testing.T) {
 // TestIngestWorker_LogsInfoWhenManualSourceReservationUnresolvable が持つ。
 // docs/storage.md §6 が書く回線断の経路はこの 2 本の合成であり、1 本で通す
 // テストは無い（パッケージ境界。internal/watcher は internal/worker に依存
-// できない。本ファイル冒頭 testIngestJobArgs のコメント参照）。
+// できない。Watcher が依存するジョブ契約は internal/jobs に置かれている）。
 func TestProcessRecord_ReservationGCedBeyondGrace_SourceManual(t *testing.T) {
 	w, pool := setupTest(t)
 	ctx := context.Background()

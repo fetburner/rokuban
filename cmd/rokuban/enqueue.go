@@ -13,13 +13,14 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/worker"
 )
 
 // enqueueJob は `rokuban enqueue <name>` 1 件の定義。
 //
 // RequiresSite が CLI 上の site 束縛 / site 非依存の**唯一の分類**である
-// （issue #200）。worker.siteBoundQueueNames からは導出しない --- キュー修飾の
+// （issue #200）。jobs.SiteBoundQueueNames() からは導出しない --- キュー修飾の
 // 集合と「Args に Site が要るか」は一致しない。ruler-pass は mirakc 非依存で
 // キューも修飾しないが RulerPassArgs.Site でサイト単位に回すので RequiresSite
 // は true。catalog-export はアーカイブが単一なので Site を持たず false。
@@ -44,51 +45,51 @@ type enqueueJob struct {
 var enqueueJobs = map[string]enqueueJob{
 	"epg-sync": {
 		RequiresSite: true,
-		NewArgs:      func(site string) river.JobArgs { return worker.EpgSyncArgs{Site: site} },
+		NewArgs:      func(site string) river.JobArgs { return jobs.EpgSyncArgs{Site: site} },
 	},
 	"tuner-sync": {
 		RequiresSite: true,
-		NewArgs:      func(site string) river.JobArgs { return worker.TunerSyncArgs{Site: site} },
+		NewArgs:      func(site string) river.JobArgs { return jobs.TunerSyncArgs{Site: site} },
 	},
 	"ruler-pass": {
-		// キューは site 非修飾（siteBoundQueueNames 外）だが Args.Site 必須。
+		// キューは site 非修飾（jobs.SiteBoundQueueNames() 外）だが Args.Site 必須。
 		RequiresSite: true,
-		NewArgs:      func(site string) river.JobArgs { return worker.RulerPassArgs{Site: site} },
+		NewArgs:      func(site string) river.JobArgs { return jobs.RulerPassArgs{Site: site} },
 	},
 	"reconcile-pass": {
 		RequiresSite: true,
-		NewArgs:      func(site string) river.JobArgs { return worker.ReconcilePassArgs{Site: site} },
+		NewArgs:      func(site string) river.JobArgs { return jobs.ReconcilePassArgs{Site: site} },
 	},
 	"record-sweep": {
 		RequiresSite: true,
-		NewArgs:      func(site string) river.JobArgs { return worker.RecordSweepArgs{Site: site} },
+		NewArgs:      func(site string) river.JobArgs { return jobs.RecordSweepArgs{Site: site} },
 	},
 	"catalog-export": {
 		RequiresSite: false,
-		NewArgs:      func(string) river.JobArgs { return worker.CatalogExportArgs{} },
+		NewArgs:      func(string) river.JobArgs { return jobs.CatalogExportArgs{} },
 	},
 	"delete-reconcile": {
 		// 物理ストレージは単一の media_dir で site に従属しない
-		// （worker.DeleteReconcileArgs のコメント。catalog-export と同じ位置づけ）。
+		// （jobs.DeleteReconcileArgs のコメント。catalog-export と同じ位置づけ）。
 		RequiresSite: false,
-		NewArgs:      func(string) river.JobArgs { return worker.DeleteReconcileArgs{} },
+		NewArgs:      func(string) river.JobArgs { return jobs.DeleteReconcileArgs{} },
 	},
 	"encode-reconcile": {
 		// エンコードは site の属性を持たない（アーカイブもプロファイルも単一。
-		// worker.EncodeReconcileArgs のコメント）。delete_reconcile と違って
+		// jobs.EncodeReconcileArgs のコメント）。delete_reconcile と違って
 		// 何も削除せず、DB を読んで encode ジョブを投入するだけなので、
 		// `worker.periodic_jobs: false` の構成（k8s）で CronJob から叩けるよう
 		// ここに載せる --- 載せないと、その構成ではこの定期パスが一度も走らず
 		// issue #163 の穴（ヒントを落とすと黙って再投入されない）が塞がらない。
 		RequiresSite: false,
-		NewArgs:      func(string) river.JobArgs { return worker.EncodeReconcileArgs{} },
+		NewArgs:      func(string) river.JobArgs { return jobs.EncodeReconcileArgs{} },
 	},
 	"storage-sync": {
 		// catalog-export と同じ理由（アーカイブ/スクラッチが単一で Site を
 		// 持たない。issue #238 M7-5）。delete_reconcile とは異なり読み取り専用
 		// （statfs のみ）の観測なので、手動 enqueue の対象から外す理由がない。
 		RequiresSite: false,
-		NewArgs:      func(string) river.JobArgs { return worker.StorageSyncArgs{} },
+		NewArgs:      func(string) river.JobArgs { return jobs.StorageSyncArgs{} },
 	},
 }
 

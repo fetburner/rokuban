@@ -23,33 +23,11 @@ import (
 	"github.com/fetburner/rokuban/internal/contentpath"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
-
-// EncodeJobArgs は encode ジョブの引数。録画 1 件 × プロファイル 1 つ。
-//
-// UniqueOpts は recording_id + profile の pending 状態で一意化する
-// （ingest と同じ pendingJobStates。完了済みは再投入可 — 真実は media_assets）。
-type EncodeJobArgs struct {
-	RecordingID int64  `json:"recording_id"`
-	Profile     string `json:"profile"`
-}
-
-// Kind は River ジョブの種別名を返す。
-func (EncodeJobArgs) Kind() string { return "encode" }
-
-// InsertOpts は encode キューと UniqueOpts を返す。
-func (EncodeJobArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: encodeQueue,
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByState: pendingJobStates,
-		},
-	}
-}
 
 // EncodeWorker は原本 media_asset から構造化プロファイルで派生物を作る。
 //
@@ -70,7 +48,7 @@ func (EncodeJobArgs) InsertOpts() river.InsertOpts {
 // 他サイトの worker が拾っても mediapath.Resolve が解決する先は変わらず、
 // 「別インスタンスの id を投げる」形の壊れ方が起きない。
 type EncodeWorker struct {
-	river.WorkerDefaults[EncodeJobArgs]
+	river.WorkerDefaults[jobs.EncodeJobArgs]
 	Pool       *pgxpool.Pool
 	MediaDir   string
 	ScratchDir string
@@ -101,7 +79,7 @@ func probeEncodeDuration(
 // エンコード所要は録画長とコーデックで決まり、既定 1 分では足りない。
 // 進捗は -progress pipe:1 で観測する（ストール検知は将来拡張。M3-3 では
 // プロセス終了を待つ）。
-func (w *EncodeWorker) Timeout(*river.Job[EncodeJobArgs]) time.Duration {
+func (w *EncodeWorker) Timeout(*river.Job[jobs.EncodeJobArgs]) time.Duration {
 	return -1
 }
 
@@ -115,7 +93,7 @@ func (w *EncodeWorker) Timeout(*river.Job[EncodeJobArgs]) time.Duration {
 // このジョブは River が再試行するので、恒久的に失敗するエンコードでは
 // encode.failed が試行ごとに配送される。受け側が最終試行を見分けられるよう
 // attempt / maxAttempts をペイロードに載せる（M3-11）。
-func (w *EncodeWorker) Work(ctx context.Context, job *river.Job[EncodeJobArgs]) error {
+func (w *EncodeWorker) Work(ctx context.Context, job *river.Job[jobs.EncodeJobArgs]) error {
 	err := w.runEncode(ctx, job)
 	if shouldNotifyEncodeFailure(err, ctx.Err()) {
 		ev := webhook.Event{
@@ -135,7 +113,7 @@ func (w *EncodeWorker) Work(ctx context.Context, job *river.Job[EncodeJobArgs]) 
 //
 // err は名前付き戻り値 --- 直後の defer（試行状態の観測、issue #316）が
 // 全ての return 文の結果を横取りして recording_encode_attempts に反映するため。
-func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobArgs]) (err error) {
+func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.EncodeJobArgs]) (err error) {
 	args := job.Args
 	log := slog.With("recording_id", args.RecordingID, "profile", args.Profile)
 
@@ -264,7 +242,7 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[EncodeJobAr
 // duration を受け取った後で呼ぶ。ここで呼ばないのは、この関数が複数の
 // return 文を持つため、start より後に error を返す段が増えた瞬間に呼び出し元が
 // defer し損ねて goroutine が漏れる経路を構造的に作らないため。
-func (w *EncodeWorker) prepareEncodeInput(ctx context.Context, args EncodeJobArgs, log *slog.Logger) (config.EncodeProfile, string, string, time.Duration, error) {
+func (w *EncodeWorker) prepareEncodeInput(ctx context.Context, args jobs.EncodeJobArgs, log *slog.Logger) (config.EncodeProfile, string, string, time.Duration, error) {
 	profile, ok := w.Profiles.Profile(args.Profile)
 	if !ok {
 		// 設定から消えたプロファイルは再試行しても直らない。
@@ -938,7 +916,7 @@ func enqueueMissingEncodes(ctx context.Context, inserter JobInserter, pool *pgxp
 			return fmt.Errorf("checking encoded asset %q: %w", name, err)
 		}
 
-		if _, err := inserter.Insert(ctx, EncodeJobArgs{
+		if _, err := inserter.Insert(ctx, jobs.EncodeJobArgs{
 			RecordingID: recordingID,
 			Profile:     name,
 		}, nil); err != nil {
@@ -962,47 +940,11 @@ func enqueueMissingEncodesFromContext(ctx context.Context, pool *pgxpool.Pool, r
 	}
 }
 
-// EncodeEnqueueHintArgs は事後追加されたエンコードプロファイルを反映するヒント
-// ジョブの引数（issue #133、凍結の例外としての事後追加。docs/storage.md §6
-// 「原本 TS の保持ポリシー」）。api の POST /api/recordings/{id}/encode-profiles
-// が recording_encode_policy.encode_profiles の UPDATE と同一トランザクションで InsertTx する
-// （internal/api/recordings.go の insertEncodeEnqueueHint。rules.go の
-// insertRulerPassHint と同じヒント経路のパターン）。
-//
-// # ヒント経由にした理由（api → worker の結合パターンの一貫性）
-//
-// EnqueueMissingEncodes 自体は ffmpeg を exec しない（DB 読み取りと River Insert
-// のみ）ため、api ハンドラから直接呼んでも不変条件 4（ffmpeg/ffprobe の exec は
-// worker/streamer のみ）には反しない。それでも api → worker の既存の結合パターン
-// （RulerPassArgs、rules.go の insertRulerPassHint）に揃えてヒントジョブ経由にした
-// --- 「recording_encode_policy.encode_profiles の更新」と「不足分の encode ジョブ投入」を
-// api ハンドラの 1 関数に同居させず、後者の実行を常に worker ロールの中で完結
-// させるため（一貫性。api が worker の実行ロジックを直接呼ぶ経路を増やさない）。
-type EncodeEnqueueHintArgs struct {
-	RecordingID int64 `json:"recording_id"`
-}
-
-// Kind は River ジョブの種別名を返す。
-func (EncodeEnqueueHintArgs) Kind() string { return "encode_enqueue_hint" }
-
-// InsertOpts は encode キューと UniqueOpts を返す。recording_id 単位で pending 中の
-// ヒントに合流させる（同じ録画への連続した追加依頼が重複ジョブを積まないように。
-// RulerPassArgs / EncodeJobArgs と同じ ByArgs + ByState の形）。
-func (EncodeEnqueueHintArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: encodeQueue,
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByState: pendingJobStates,
-		},
-	}
-}
-
 // EncodeEnqueueHintWorker は EncodeEnqueueHintArgs を受けて EnqueueMissingEncodes
 // を呼ぶだけの薄いワーカー。ロジックは持たない（EnqueueMissingEncodes にそのまま
 // 委譲する。レベルトリガーなので呼び出しが遅れても・重複しても収束する）。
 type EncodeEnqueueHintWorker struct {
-	river.WorkerDefaults[EncodeEnqueueHintArgs]
+	river.WorkerDefaults[jobs.EncodeEnqueueHintArgs]
 	Pool *pgxpool.Pool
 }
 
@@ -1014,7 +956,7 @@ type EncodeEnqueueHintWorker struct {
 // ruler_pass 完了時の reconcile_pass ヒント（ruler_pass.go）とは異なり、この
 // ジョブ自体の主目的が「encode ジョブを実際に投入すること」であるため、client が
 // 無いからと黙って何もしないとユーザーの事後追加依頼がサイレントに消える。
-func (w *EncodeEnqueueHintWorker) Work(ctx context.Context, job *river.Job[EncodeEnqueueHintArgs]) error {
+func (w *EncodeEnqueueHintWorker) Work(ctx context.Context, job *river.Job[jobs.EncodeEnqueueHintArgs]) error {
 	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
 	if err != nil {
 		return fmt.Errorf("encode enqueue hint: getting river client: %w", err)

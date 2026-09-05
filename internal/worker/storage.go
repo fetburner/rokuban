@@ -11,6 +11,7 @@ import (
 	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 )
 
@@ -28,34 +29,6 @@ const defaultStorageSyncInterval = 5 * time.Minute
 // storageSyncTimeout は 1 パス（root ごとの statfs + DB upsert 高々 2 回）の上限。
 // tuner_sync と同じ理由で、River の既定（1 分）を明示する。
 const storageSyncTimeout = time.Minute
-
-// StorageSyncArgs はストレージ観測ジョブの引数。
-//
-// フィールドを持たない --- 観測対象（media_dir / scratch_dir）は worker
-// プロセスの config から決まり、tuner_sync や epg_sync のように mirakc サイトへ
-// 分岐する理由がない（アーカイブもスクラッチも単一。docs/storage/contract.md
-// §5「rel_path の名前空間」の通りアーカイブは site 列を持たない）。
-type StorageSyncArgs struct{}
-
-// Kind は River ジョブの種別名を返す。
-func (StorageSyncArgs) Kind() string { return "storage_sync" }
-
-// InsertOpts は River ジョブの挿入オプションを返す。
-//
-// CatalogExportArgs / DeleteReconcileArgs と同じ理由（site 非依存、UniqueOpts で
-// 重複実行を防ぐ）だが、キューは専用の storageQueue にする --- cleanupQueue は
-// 「物理削除系ジョブ専用」と明記されている（allQueues のコメント参照）ため、
-// 削除を一切行わない観測ジョブをそこに混ぜると、その名付けの前提を壊す。
-func (StorageSyncArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: storageQueue,
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByQueue: uniqueByQueue,
-			ByState: pendingJobStates,
-		},
-	}
-}
 
 // storageRoot は 1 つの観測対象（config キーと statfs するパスの対応）。
 type storageRoot struct {
@@ -80,7 +53,7 @@ type storageRoot struct {
 // 観測ループを止めて再起動しても、次のパスが全量を書き直すので収束する
 // （crash-only。TestStorageSyncWorker_RestartConverges で固定）。
 type StorageSyncWorker struct {
-	river.WorkerDefaults[StorageSyncArgs]
+	river.WorkerDefaults[jobs.StorageSyncArgs]
 	Pool *pgxpool.Pool
 
 	// MediaDir は storage.media_dir（必須。空なら Work がエラーを返す --- config
@@ -99,7 +72,7 @@ type StorageSyncWorker struct {
 }
 
 // Timeout は River の既定（1 分）と同じ上限を明示する。
-func (w *StorageSyncWorker) Timeout(*river.Job[StorageSyncArgs]) time.Duration {
+func (w *StorageSyncWorker) Timeout(*river.Job[jobs.StorageSyncArgs]) time.Duration {
 	return storageSyncTimeout
 }
 
@@ -111,7 +84,7 @@ func (w *StorageSyncWorker) statFunc() func(string) (diskUsage, error) {
 }
 
 // Work はストレージ観測の全量同期を 1 パス実行する。
-func (w *StorageSyncWorker) Work(ctx context.Context, _ *river.Job[StorageSyncArgs]) error {
+func (w *StorageSyncWorker) Work(ctx context.Context, _ *river.Job[jobs.StorageSyncArgs]) error {
 	if w.MediaDir == "" {
 		return fmt.Errorf("storage sync: media dir is empty")
 	}

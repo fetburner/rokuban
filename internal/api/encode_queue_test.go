@@ -17,32 +17,33 @@ import (
 	"github.com/riverqueue/river/rivertest"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
 )
 
 type encodeQueueTestWorker struct {
-	river.WorkerDefaults[worker.EncodeJobArgs]
+	river.WorkerDefaults[jobs.EncodeJobArgs]
 	err       error
 	nextRetry time.Time
 }
 
-func (w *encodeQueueTestWorker) Work(_ context.Context, _ *river.Job[worker.EncodeJobArgs]) error {
+func (w *encodeQueueTestWorker) Work(_ context.Context, _ *river.Job[jobs.EncodeJobArgs]) error {
 	return w.err
 }
 
-func (w *encodeQueueTestWorker) NextRetry(_ *river.Job[worker.EncodeJobArgs]) time.Time {
+func (w *encodeQueueTestWorker) NextRetry(_ *river.Job[jobs.EncodeJobArgs]) time.Time {
 	return w.nextRetry
 }
 
 type blockingEncodeQueueTestWorker struct {
-	river.WorkerDefaults[worker.EncodeJobArgs]
+	river.WorkerDefaults[jobs.EncodeJobArgs]
 	started     chan struct{}
 	startedOnce sync.Once
 	release     chan struct{}
 }
 
-func (w *blockingEncodeQueueTestWorker) Work(ctx context.Context, _ *river.Job[worker.EncodeJobArgs]) error {
+func (w *blockingEncodeQueueTestWorker) Work(ctx context.Context, _ *river.Job[jobs.EncodeJobArgs]) error {
 	w.startedOnce.Do(func() { close(w.started) })
 	select {
 	case <-w.release:
@@ -58,7 +59,7 @@ func (w *blockingEncodeQueueTestWorker) Work(ctx context.Context, _ *river.Job[w
 // ctx.Err() を返し、ジョブが retryable に落ちて枠が空く。その状態で producer が
 // 残りの available ジョブを即座に fetch すると、started の 2 回目の close で
 // panic する。
-func (w *blockingEncodeQueueTestWorker) Timeout(*river.Job[worker.EncodeJobArgs]) time.Duration {
+func (w *blockingEncodeQueueTestWorker) Timeout(*river.Job[jobs.EncodeJobArgs]) time.Duration {
 	return -1
 }
 
@@ -78,7 +79,7 @@ func workEncodeJob(t *testing.T, pool *pgxpool.Pool, job *rivertype.JobRow, work
 		// the test exercises the API's retryable-state mapping.
 		testJobWorker.nextRetry = time.Now().Add(time.Minute)
 	}
-	testWorker := rivertest.NewWorker[worker.EncodeJobArgs, pgx.Tx](
+	testWorker := rivertest.NewWorker[jobs.EncodeJobArgs, pgx.Tx](
 		t, riverpgxv5.New(pool), &river.Config{}, testJobWorker,
 	)
 	result, gotErr := testWorker.WorkJob(ctx, t, tx, job)
@@ -147,7 +148,7 @@ func TestGetEncodeQueueSummaryCountsJobsNotRecordings(t *testing.T) {
 
 	insert := func(recordingID int64, profile, state string) {
 		t.Helper()
-		result, err := client.Insert(ctx, worker.EncodeJobArgs{RecordingID: recordingID, Profile: profile}, nil)
+		result, err := client.Insert(ctx, jobs.EncodeJobArgs{RecordingID: recordingID, Profile: profile}, nil)
 		if err != nil {
 			t.Fatalf("inserting %s encode job: %v", state, err)
 		}
@@ -172,7 +173,7 @@ func TestGetEncodeQueueSummaryCountsJobsNotRecordings(t *testing.T) {
 		}
 	}
 	insert(queuedRecordingID, "h265", "retryable")
-	if _, err := client.Insert(ctx, worker.EncodeJobArgs{RecordingID: runningRecordingID, Profile: "h264"}, nil); err != nil {
+	if _, err := client.Insert(ctx, jobs.EncodeJobArgs{RecordingID: runningRecordingID, Profile: "h264"}, nil); err != nil {
 		t.Fatalf("inserting running encode job: %v", err)
 	}
 	runningClient, runningCancel, runningWorker := startBlockingEncodeClient(t, pool)
@@ -218,11 +219,11 @@ func TestListRecordingsEncodeStateFilterUsesRiverJobs(t *testing.T) {
 		close(runningWorker.release)
 		<-runningClient.Stopped()
 	}()
-	if _, err := runningClient.Insert(ctx, worker.EncodeJobArgs{RecordingID: runningID, Profile: "h264"}, nil); err != nil {
+	if _, err := runningClient.Insert(ctx, jobs.EncodeJobArgs{RecordingID: runningID, Profile: "h264"}, nil); err != nil {
 		t.Fatalf("inserting running encode job: %v", err)
 	}
 	waitForBlockingEncodeWorker(t, runningWorker)
-	if _, err := client.Insert(ctx, worker.EncodeJobArgs{RecordingID: queuedID, Profile: "h264"}, nil); err != nil {
+	if _, err := client.Insert(ctx, jobs.EncodeJobArgs{RecordingID: queuedID, Profile: "h264"}, nil); err != nil {
 		t.Fatalf("inserting queued encode job: %v", err)
 	}
 	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, RiverClient: client}))

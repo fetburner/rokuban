@@ -13,14 +13,13 @@ import (
 	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/ptr"
 )
 
 const (
-	epgQueue = "epg"
-
 	// epgBatchSize は 1 回の pgx.Batch に詰める行数。全量で数万〜十万行になるため
 	// 分割してメモリと 1 バッチあたりの所要を抑える。
 	epgBatchSize = 1000
@@ -36,45 +35,12 @@ const (
 // mirakc が未知の型を返した場合、そのサービスだけ捨てて同期は続行する。
 var validChannelTypes = map[string]bool{"GR": true, "BS": true, "CS": true, "SKY": true}
 
-// EpgSyncArgs は EPG 全量同期ジョブの引数。
-type EpgSyncArgs struct {
-	Site string `json:"site"`
-}
-
-// Kind は River ジョブの種別名を返す。
-func (EpgSyncArgs) Kind() string { return "epg_sync" }
-
-// InsertOpts は River ジョブの挿入オプションを返す。
-//
-// 同一サイトの全量同期が重ならないよう ByArgs で一意化するが、ByState は
-// 「まだ終わっていない状態」だけに絞る。River の既定（UniqueOptsByStateDefault）は
-// completed を含むため、既定のままだと一度成功した時点で以降の定期投入がすべて
-// 重複として捨てられ、10 分間隔の定期ジョブが実質ワンショットになる。
-//
-// Queue は a.Site で修飾する（physicalQueueName、issue #185 M4-13。必ず
-// physicalQueueName を経由する --- qualifyQueueName のコメント参照）。
-// tuner_sync も同じ epg キューを共有しているので、TunerSyncArgs.InsertOpts も
-// 同じ規則で修飾する（片方だけ修飾すると MaxWorkers: 1 による同時実行の抑制が
-// site 単位に分かれて崩れる）。
-//
-// ByQueue: uniqueByQueue の理由は pendingJobStates 直後の doc コメント参照。
-func (a EpgSyncArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: physicalQueueName(epgQueue, a.Site),
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByQueue: uniqueByQueue,
-			ByState: pendingJobStates,
-		},
-	}
-}
-
 // EpgSyncWorker は mirakc の services / programs を Postgres に全量投影する River ワーカー。
 //
 // プロジェクションは使い捨てキャッシュで、真実は常に mirakc 側にある。
 // そのため差分同期はせず、毎回の全量ポーリング + スイープでレベルトリガーに収束させる。
 type EpgSyncWorker struct {
-	river.WorkerDefaults[EpgSyncArgs]
+	river.WorkerDefaults[jobs.EpgSyncArgs]
 
 	// MirakcClients は site → mirakc クライアントの map（issue #532）。この
 	// 1 インスタンスが複数 site の epg_<site> キューを同時に購読しうる。Work は
@@ -94,13 +60,13 @@ type EpgSyncWorker struct {
 // 全量同期の所要は番組数に比例する。GR のみ 7139 件で 1.7 秒なので既定でも足りるが、
 // BS/CS を含めて十万件規模になると既定を超えうる。一方 ingest と違って無制限に
 // したくはない（mirakc が応答しないまま掴み続けるのを避ける）ので、上限は置く。
-func (w *EpgSyncWorker) Timeout(*river.Job[EpgSyncArgs]) time.Duration {
+func (w *EpgSyncWorker) Timeout(*river.Job[jobs.EpgSyncArgs]) time.Duration {
 	return epgSyncTimeout
 }
 
 // Work は EPG の全量同期を 1 パス実行する。
 // services / programs を upsert し、今回観測しなかった行と放送済み番組を削除する。
-func (w *EpgSyncWorker) Work(ctx context.Context, job *river.Job[EpgSyncArgs]) error {
+func (w *EpgSyncWorker) Work(ctx context.Context, job *river.Job[jobs.EpgSyncArgs]) error {
 	site := job.Args.Site
 	log := slog.With("site", site)
 
@@ -110,7 +76,7 @@ func (w *EpgSyncWorker) Work(ctx context.Context, job *river.Job[EpgSyncArgs]) e
 	// mirakc インスタンスはサイトスコープ。他サイトのジョブをこのプロセスの
 	// mirakc に投げると、別インスタンスの EPG をこのサイトの投影として書きうる
 	// （issue #139）。ListServices/ListPrograms より前に照合する。
-	client, err := verifySite(w.MirakcClients, site, epgQueue)
+	client, err := verifySite(w.MirakcClients, site, jobs.EpgQueue)
 	if err != nil {
 		return err
 	}
@@ -199,7 +165,7 @@ func (w *EpgSyncWorker) Work(ctx context.Context, job *river.Job[EpgSyncArgs]) e
 	// 取り出す（EpgSyncWorker 自身に river.Client を持たせずに済む）。Client が
 	// 取れない場合（単体テストで Work を直接呼ぶ等）は投入せず、次の定期パスに委ねる。
 	if riverClient, clientErr := river.ClientFromContextSafely[pgx5.Tx](ctx); clientErr == nil {
-		if _, insertErr := riverClient.Insert(ctx, RulerPassArgs{Site: site}, nil); insertErr != nil {
+		if _, insertErr := riverClient.Insert(ctx, jobs.RulerPassArgs{Site: site}, nil); insertErr != nil {
 			log.Warn("epg sync: inserting ruler_pass hint failed", "err", insertErr)
 		}
 	}

@@ -10,8 +10,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
-	"github.com/fetburner/rokuban/internal/worker"
 )
 
 // siteFlagName は `server` サブコマンドのプロセス束縛フラグ名。config キーには
@@ -110,7 +110,7 @@ func registryNames(registry []config.MirakcSite) []string {
 // 残るのは次の 1 つだけ:
 //
 // **worker が 0 サイト（中央プロセス）で site 束縛キューを要求する構成は
-// 起動エラーのまま**。`worker.RequiresSiteBinding` が true（`worker.queues` が
+// 起動エラーのまま**。`jobs.RequiresSiteBinding` が true（`worker.queues` が
 // 空、または ingest/epg/reconciler/watcher のいずれかを含む）なら、届く
 // site 単位のジョブは Deps.MirakcClients が空 map のため verifySite が必ず
 // 拒み、全滅して再試行し続けるだけの構成になる。0 サイトの worker を許すのは
@@ -119,7 +119,7 @@ func registryNames(registry []config.MirakcSite) []string {
 // ジョブは site 単位の照合を必要としない。worker.ClientConfig の
 // フィールドコメント参照）。
 func validateSiteBinding(roles []string, bound []config.MirakcSite, queues []string) error {
-	if slices.Contains(roles, "worker") && len(bound) == 0 && worker.RequiresSiteBinding(queues) {
+	if slices.Contains(roles, "worker") && len(bound) == 0 && jobs.RequiresSiteBinding(queues) {
 		return fmt.Errorf("--sites: worker role is unbound (central process) but worker.queues %v "+
 			"still includes site-bound queues (or is empty, meaning all queues); "+
 			"restrict worker.queues to site-independent queues (ruler/encode/thumbnail/cleanup/storage/default --- "+

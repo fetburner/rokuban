@@ -22,7 +22,7 @@ worker ロールを持つかどうかに関わらず、ジョブを実行しな�
    一切引かない（[configuration.md](../configuration.md) の `worker.queues`）
 
 ffmpeg/ffprobe の起動時検査（不変条件 4）も、実際に encode/thumbnail キューを
-購読するときだけ行う（`worker.RequiresEncodeTools`）。`worker.queues` で
+購読するときだけ行う（`jobs.RequiresEncodeTools`）。`worker.queues` で
 encode/thumbnail を明示的に除外した worker Pod（例: ingest 専用 Pod）は ffmpeg
 の存在を要求されない。逆に既定（全キュー購読）や encode/thumbnail を含む設定では
 起動時に LookPath で検査し、無ければ即座に落ちる。ffmpeg が無い環境で
@@ -51,7 +51,7 @@ encode/thumbnail ジョブが River の再試行を焼き続けてから気付�
 | `ruler` | DB のみ | どちらでも | 非依存（`args.Site` はクエリの絞り込み） |
 
 0 サイト束縛（中央プロセス、`server --sites=`）の worker は
-site 単位のキューを一切購読できない（`worker.RequiresSiteBinding` が起動時に
+site 単位のキューを一切購読できない（`jobs.RequiresSiteBinding` が起動時に
 強制する）。中央プロセスで動かせるのは `ruler` / `encode` / `thumbnail` /
 `cleanup` / `storage` / `default` に `worker.queues` / `--queues` を絞った構成だけである。
 ただし `cleanup` / `storage` は表の通りファイルシステムを要求するので、

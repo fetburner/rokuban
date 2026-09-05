@@ -7,14 +7,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reconciler"
 )
 
 const (
-	// reconcilerQueue は reconcile_pass ジョブ専用のキュー名。
-	reconcilerQueue = "reconciler"
-
 	// defaultReconcilePassInterval は定期パスの既定間隔。従来の reconciler の
 	// 自前タイマー（reconciler.defaultConfig の ReconcileInterval）が使っていた
 	// 30 秒をそのまま引き継ぐ（docs/recording.md §3.2「定期（既定 30 秒）」）。
@@ -35,51 +33,13 @@ const (
 	reconcilePassTimeout = 10 * time.Minute
 )
 
-// ReconcilePassArgs は reconciler の 1 パス突き合わせジョブの引数。
-//
-// サイト単位でジョブを分けるのは、reconciler の排他がジョブロック + UniqueOpts
-// （サイト単位）で行われるため（docs/data.md §2「ruler と reconciler はシングルトン
-// ではなくジョブ」）。別サイトの並行実行は正常。
-type ReconcilePassArgs struct {
-	Site string `json:"site"`
-}
-
-// Kind は River ジョブの種別名を返す。
-func (ReconcilePassArgs) Kind() string { return "reconcile_pass" }
-
-// InsertOpts は River ジョブの挿入オプションを返す。
-//
-// UniqueOpts{ByArgs, ByState} でサイト単位に排他する。同時実行の防止だけでなく、
-// 起動契機のヒント（予約の作成/取消・ruler パスの完了）を定期実行に合流させる機構
-// でもある（docs/recording.md §3.2「ヒントは UniqueOpts{ByArgs, ByState} で合流する」）。
-// ByState は pendingJobStates に絞る。既定（completed を含む）のままだと、一度
-// 成功したサイトの引数は二度と投入できず、定期ジョブが実質ワンショットになる
-// （ruler_pass / epg_sync と同じ理由）。
-//
-// Queue は a.Site で修飾する（physicalQueueName、issue #185 M4-13。必ず
-// physicalQueueName を経由する --- qualifyQueueName のコメント参照）。
-// reconciler は mirakc への到達性を要する site 単位の仕事なので、多サイト構成で
-// 他サイトの worker が掴まないよう、キュー選択の時点で分離する。
-//
-// ByQueue: uniqueByQueue の理由は pendingJobStates 直後の doc コメント参照。
-func (a ReconcilePassArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: physicalQueueName(reconcilerQueue, a.Site),
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByQueue: uniqueByQueue,
-			ByState: pendingJobStates,
-		},
-	}
-}
-
 // ReconcilePassWorker は reconciler の 1 パス突き合わせを実行する River ワーカー。
 //
 // ロジックは internal/reconciler にそのまま置いてあり、ここでは呼び出すだけ
 // （ロジックの移植はしない）。reconciler は mirakc への HTTP を伴うため、ruler と
 // 違って MirakcClients を依存として持つ。
 type ReconcilePassWorker struct {
-	river.WorkerDefaults[ReconcilePassArgs]
+	river.WorkerDefaults[jobs.ReconcilePassArgs]
 
 	// MirakcClients は site → mirakc クライアントの map（issue #532）。この
 	// 1 インスタンスが複数 site の reconciler_<site> キューを同時に購読しうる。
@@ -96,7 +56,7 @@ type ReconcilePassWorker struct {
 
 // Timeout は River の既定（1 分）より長い上限を与える。理由は reconcilePassTimeout の
 // コメントを参照。
-func (w *ReconcilePassWorker) Timeout(*river.Job[ReconcilePassArgs]) time.Duration {
+func (w *ReconcilePassWorker) Timeout(*river.Job[jobs.ReconcilePassArgs]) time.Duration {
 	return reconcilePassTimeout
 }
 
@@ -109,11 +69,11 @@ func (w *ReconcilePassWorker) Timeout(*river.Job[ReconcilePassArgs]) time.Durati
 // circuit_breakers テーブルに永続化される（issue #24 M2-5）。RunPass はパスの
 // 先頭でその状態を DB から読み直すので、ここで毎回新規生成しても発動状態は
 // 失われない。
-func (w *ReconcilePassWorker) Work(ctx context.Context, job *river.Job[ReconcilePassArgs]) error {
+func (w *ReconcilePassWorker) Work(ctx context.Context, job *river.Job[jobs.ReconcilePassArgs]) error {
 	// mirakc インスタンスはサイトスコープ。他サイトのジョブをこのプロセスの
 	// mirakc に投げると、別インスタンスの schedules をこのサイトの予約として
 	// 作成/削除しうる（issue #139）。reconciler.New/RunPass より前に照合する。
-	client, err := verifySite(w.MirakcClients, job.Args.Site, reconcilerQueue)
+	client, err := verifySite(w.MirakcClients, job.Args.Site, jobs.ReconcilerQueue)
 	if err != nil {
 		return err
 	}

@@ -180,7 +180,7 @@ Go テスト側は CRD でも Pod テンプレートを見つけて検査する�
 - overlay の JSON6902 patch が実際に site 名の位置を指していること
 
 **キューやジョブを足した日に、マニフェスト側の書き忘れがここで落ちる。**
-一覧は `internal/worker.AllQueueNames()` と `cmd/rokuban/enqueue.go` を
+一覧は `internal/jobs.AllQueueNames()` と `cmd/rokuban/enqueue.go` を
 権威にしてあり、テストに書き写していない。
 
 ## ここを使うハーネス

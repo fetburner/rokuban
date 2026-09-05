@@ -32,6 +32,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
 )
@@ -121,7 +122,7 @@ func physicalQueue(t *testing.T, w workload) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	if worker.RequiresSiteBinding([]string{q}) {
+	if jobs.RequiresSiteBinding([]string{q}) {
 		return q + "_" + baseSiteName, true
 	}
 	return q, true
@@ -146,7 +147,7 @@ func scaledJobs(t *testing.T) []workload {
 // 全キューにちょうど 1 本の ScaledJob があり、その置き場所（base / site）と
 // イメージが、そのキューの要求と一致すること。
 //
-// **`internal/worker` の側を権威にする。** キュー名の一覧をこのテストに書き写すと、
+// **`internal/jobs` の側を権威にする。** キュー名の一覧をこのテストに書き写すと、
 // キューを 1 つ足した日にマニフェストとテストの**両方**が黙ったままになる
 // （そのキューのジョブは永久に誰にも消化されない）。
 func TestScaledJobsCoverEveryQueue(t *testing.T) {
@@ -163,7 +164,7 @@ func TestScaledJobsCoverEveryQueue(t *testing.T) {
 	}
 
 	insertsIntoDefault := someJobUsesTheDefaultQueue(t)
-	for _, q := range worker.AllQueueNames() {
+	for _, q := range jobs.AllQueueNames() {
 		if q == defaultQueue && !insertsIntoDefault {
 			if got := byQueue[q]; len(got) > 0 {
 				t.Errorf("queue %q has a ScaledJob (%s), but no job is inserted into it; "+
@@ -194,7 +195,7 @@ func TestScaledJobsCoverEveryQueue(t *testing.T) {
 		// site 束縛キューはサイト 1 組ぶん（site/）に居て `--sites <site>` を持つ。
 		// site 非依存キューは中央（base/）に居て `--sites=`（明示的な空）を持つ。
 		site, hasSites := flagValue(args, "sites")
-		if worker.RequiresSiteBinding([]string{q}) {
+		if jobs.RequiresSiteBinding([]string{q}) {
 			if w.dir != siteDir {
 				t.Errorf("%s subscribes the site-bound queue %q but lives in %s/; "+
 					"site-bound queues must be replicated per site (%s/)", w.id(), q, w.dir, siteDir)
@@ -217,27 +218,27 @@ func TestScaledJobsCoverEveryQueue(t *testing.T) {
 
 		// ffmpeg を要るキューだけが `Dockerfile.full` のイメージを指すこと。
 		wantImage := officialImage
-		if worker.RequiresEncodeTools([]string{q}) {
+		if jobs.RequiresEncodeTools([]string{q}) {
 			wantImage = fullImage
 		}
 		image := strAt(soleContainer(t, w), "image")
 		if name, _, _ := strings.Cut(image, ":"); name != wantImage {
 			t.Errorf("%s (queue %q) uses image %q, want %q "+
-				"(worker.RequiresEncodeTools decides; the official image has no ffmpeg and fail-fasts)",
+				"(jobs.RequiresEncodeTools decides; the official image has no ffmpeg and fail-fasts)",
 				w.id(), q, image, wantImage)
 		}
 	}
 
 	// 逆向き: 知らないキュー名の ScaledJob が無いこと（起動時エラーになる）。
 	for q, ws := range byQueue {
-		if !slices.Contains(worker.AllQueueNames(), q) {
+		if !slices.Contains(jobs.AllQueueNames(), q) {
 			t.Errorf("%s passes --queues %q, which is not a known queue (valid: %s)",
-				ws[0].id(), q, strings.Join(worker.AllQueueNames(), ", "))
+				ws[0].id(), q, strings.Join(jobs.AllQueueNames(), ", "))
 		}
 	}
 }
 
-// someJobUsesTheDefaultQueue は `internal/worker` のどれかの `InsertOpts` が
+// someJobUsesTheDefaultQueue は `internal/jobs` のどれかの `InsertOpts` が
 // `river.QueueDefault` を使っているかを見る。
 //
 // **「誰も入れないから ScaledJob を置かない」という判断を、判断のまま腐らせない
@@ -255,7 +256,7 @@ func TestScaledJobsCoverEveryQueue(t *testing.T) {
 func someJobUsesTheDefaultQueue(t *testing.T) bool {
 	t.Helper()
 	assignments, defaults := 0, 0
-	for _, f := range parseGoFiles(t, "../../internal/worker/*.go") {
+	for _, f := range parseGoFiles(t, "../../internal/jobs/*.go") {
 		ast.Inspect(f, func(n ast.Node) bool {
 			kv, ok := n.(*ast.KeyValueExpr)
 			if !ok {
@@ -272,7 +273,7 @@ func someJobUsesTheDefaultQueue(t *testing.T) bool {
 		})
 	}
 	if assignments == 0 {
-		t.Fatal("no `Queue:` field is set anywhere in internal/worker (the scan no longer sees the InsertOpts; this check is blind)")
+		t.Fatal("no `Queue:` field is set anywhere in internal/jobs (the scan no longer sees the InsertOpts; this check is blind)")
 	}
 	return defaults > 0
 }
@@ -319,7 +320,7 @@ func triggerQuery(t *testing.T, w workload) string {
 // トリガのクエリが、その ScaledJob が実際に購読する**物理**キュー名を数えていること。
 //
 // **論理名と物理名は違う。** site 束縛キューは `<論理名>_<site>` に修飾される
-// （internal/worker の qualifyQueueName）ので、クエリに論理名を書くと
+// （internal/jobs の QualifyQueueName）ので、クエリに論理名を書くと
 // **誰も入れないキューを数え続けて永久にスケールしない**。逆にサイトを跨いだ
 // 名前を書くと、サイト A のスケーラがサイト B の滞留で Job を起こし、起きた Job は
 // verifySite で死んでまた起きる（受け入れ判定ハーネスの判定 5）。

@@ -8,7 +8,7 @@
 # なる。
 #
 # **1 サイトでは原理的に測れない**ので、ハーネスは常に 2 サイトで立てる。
-# 単体テスト（internal/worker/site_queue_scoping_test.go）が見ているのは
+# 単体テスト（internal/jobs/site_queue_scoping_test.go）が見ているのは
 # キュー名の組み立てまでで、**KEDA のトリガのクエリが site で修飾されているか**
 # はここでしか出ない。
 set -uo pipefail

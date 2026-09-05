@@ -82,7 +82,7 @@ E2E_ORACLES_ONLY=3 ./deploy/k8s/e2e/run.sh --oracles   # オラクルも一部�
 - `rokuban enqueue` の全ジョブに CronJob があるか
 - トリガのクエリが物理キュー名か
 
-一覧の権威は `internal/worker` と `cmd/rokuban/enqueue.go` にある。
+一覧の権威は `internal/jobs` と `cmd/rokuban/enqueue.go` にある。
 
 **このハーネスが見るのは、そこから先の「実際に動くか」だけである。**
 
@@ -315,7 +315,8 @@ ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切�
       あるのは DB を読んで投入する `encode-reconcile`）
 - **前の周回が残した `retryable` 1 件で判定 2 が二重に落ちうる。** `retryable` は
   滞留（`riverBacklogStates`）に数えられるので、2.2 の「待ち行列が空」が
-  180 秒粘って FAIL する。同時に `pendingJobStates` にも入るので、
+  180 秒粘って FAIL する。同時に `pendingJobStates`（`internal/jobs/queue.go`）にも
+  入るので、
   `enqueue` が投入をスキップして 2.3 も落ちる。`--once` の Job がリーダーになれば River の
   `JobScheduler` が昇格させるので自己回復するが、**その所要時間は測っていない**。
 - **トリガが数える River の状態は `available` / `retryable`。** ハーネスの

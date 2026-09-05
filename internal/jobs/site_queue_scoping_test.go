@@ -1,4 +1,4 @@
-package worker
+package jobs_test
 
 import (
 	"context"
@@ -11,8 +11,10 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/testutil"
+	"github.com/fetburner/rokuban/internal/worker"
 )
 
 // TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues は issue #185（M4-13）の受け入れ
@@ -67,8 +69,13 @@ func TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues(t *testing.T) {
 	defer srv.Close()
 
 	// このプロセスは tokyo に束縛されている。
-	workers := NewWorkers(&Deps{Pool: pool, MirakcClients: singleSiteClients("tokyo", mirakc.NewClient(srv.URL, nil))})
-	client, err := NewClient(pool, workers, ClientConfig{BoundSites: []string{"tokyo"}})
+	workers := worker.NewWorkers(&worker.Deps{
+		Pool: pool,
+		MirakcClients: map[string]*mirakc.Client{
+			"tokyo": mirakc.NewClient(srv.URL, nil),
+		},
+	})
+	client, err := worker.NewClient(pool, workers, worker.ClientConfig{BoundSites: []string{"tokyo"}})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}
@@ -97,29 +104,29 @@ func TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues(t *testing.T) {
 	cases := []siteBoundCase{
 		{
 			name:           "ingest",
-			tokyoArgs:      IngestJobArgs{Site: "tokyo", RecordID: "rec-tokyo"},
-			takamatsuArgs:  IngestJobArgs{Site: "takamatsu", RecordID: "rec-takamatsu"},
+			tokyoArgs:      jobs.IngestJobArgs{Site: "tokyo", RecordID: "rec-tokyo"},
+			takamatsuArgs:  jobs.IngestJobArgs{Site: "takamatsu", RecordID: "rec-takamatsu"},
 			wantTokyoQueue: "ingest_tokyo",
 			wantOtherQueue: "ingest_takamatsu",
 		},
 		{
 			name:           "epg_sync",
-			tokyoArgs:      EpgSyncArgs{Site: "tokyo"},
-			takamatsuArgs:  EpgSyncArgs{Site: "takamatsu"},
+			tokyoArgs:      jobs.EpgSyncArgs{Site: "tokyo"},
+			takamatsuArgs:  jobs.EpgSyncArgs{Site: "takamatsu"},
 			wantTokyoQueue: "epg_tokyo",
 			wantOtherQueue: "epg_takamatsu",
 		},
 		{
 			name:           "reconcile_pass",
-			tokyoArgs:      ReconcilePassArgs{Site: "tokyo"},
-			takamatsuArgs:  ReconcilePassArgs{Site: "takamatsu"},
+			tokyoArgs:      jobs.ReconcilePassArgs{Site: "tokyo"},
+			takamatsuArgs:  jobs.ReconcilePassArgs{Site: "takamatsu"},
 			wantTokyoQueue: "reconciler_tokyo",
 			wantOtherQueue: "reconciler_takamatsu",
 		},
 		{
 			name:           "record_sweep",
-			tokyoArgs:      RecordSweepArgs{Site: "tokyo"},
-			takamatsuArgs:  RecordSweepArgs{Site: "takamatsu"},
+			tokyoArgs:      jobs.RecordSweepArgs{Site: "tokyo"},
+			takamatsuArgs:  jobs.RecordSweepArgs{Site: "takamatsu"},
 			wantTokyoQueue: "watcher_tokyo",
 			wantOtherQueue: "watcher_takamatsu",
 		},
@@ -208,7 +215,7 @@ func waitForNotAvailable(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 }
 
 // TestIngestQueueRename_ByQueuePreventsStaleQueueFromBlockingNewInsert は
-// issue #185 のレビューで見つかった問題を再現し、修正（ByQueue: uniqueByQueue）が
+// issue #185 のレビューで見つかった問題を再現し、修正（ByQueue: UniqueByQueue）が
 // 効いていることを固定する。
 //
 // # 何が起きていたか
@@ -224,7 +231,7 @@ func waitForNotAvailable(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 //
 // # このテストが検出すべき変異
 //
-// `uniqueByQueue`（internal/worker/worker.go）を `false` に戻す変異。
+// `UniqueByQueue`（internal/jobs/queue.go）を `false` に戻す変異。
 // この変異を注入すると、このテストの最後のアサーション
 // （`UniqueSkippedAsDuplicate == false` を期待する）が
 // `true` に反転して落ちる。実際に注入して確認済み（PR 本文の失敗出力を参照）。
@@ -236,12 +243,12 @@ func TestIngestQueueRename_ByQueuePreventsStaleQueueFromBlockingNewInsert(t *tes
 		t.Fatalf("cleaning river_job: %v", err)
 	}
 
-	client, err := NewInsertOnlyClient(pool)
+	client, err := worker.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}
 
-	args := IngestJobArgs{Site: "tokyo", RecordID: "rec-1"}
+	args := jobs.IngestJobArgs{Site: "tokyo", RecordID: "rec-1"}
 
 	// 1. 「デプロイ前」の旧キュー・旧一意性設定（ByQueue なし）を明示的に再現する
 	//    ---  client.Insert の第 3 引数（明示 InsertOpts）は
@@ -251,7 +258,7 @@ func TestIngestQueueRename_ByQueuePreventsStaleQueueFromBlockingNewInsert(t *tes
 		Queue: "ingest",
 		UniqueOpts: river.UniqueOpts{
 			ByArgs:  true,
-			ByState: pendingJobStates,
+			ByState: jobs.PendingJobStates(),
 		},
 	}
 	oldRes, err := client.Insert(ctx, args, oldStyleOpts)
@@ -266,25 +273,25 @@ func TestIngestQueueRename_ByQueuePreventsStaleQueueFromBlockingNewInsert(t *tes
 	}
 
 	// 2. 「デプロイ後」に同じ record を record_sweep が再投入する状況を再現する
-	//    --- 今の IngestJobArgs.InsertOpts()（Queue: physicalQueueName で
-	//    "ingest_tokyo"、ByQueue: uniqueByQueue）で同じ args を Insert する。
+	//    --- 今の IngestJobArgs.InsertOpts()（Queue: PhysicalQueueName で
+	//    "ingest_tokyo"、ByQueue: UniqueByQueue）で同じ args を Insert する。
 	newRes, err := client.Insert(ctx, args, nil)
 	if err != nil {
 		t.Fatalf("inserting new-style job: %v", err)
 	}
 
-	// ByQueue: uniqueByQueue が効いていれば、旧キューの行があっても
+	// ByQueue: UniqueByQueue が効いていれば、旧キューの行があっても
 	// UniqueSkippedAsDuplicate にはならず、新しい行が作られる（新旧の
 	// unique_key がキュー名を含むかどうかで異なるハッシュになるため）。
-	// **この分岐が最初に来ることが重要**: バグがあるとき River は
+	// **この分岐が最初に来ることが重要**: バグがあると River は
 	// UniqueSkippedAsDuplicate=true を返すだけでなく、res.Job に旧行
 	// （Queue="ingest" のまま）を返す。Queue の比較を先に書くと「新しい行が
 	// 作られたのに Queue が違う」という誤った理解を招く失敗メッセージになる
 	// （実際に踏んだ。旧行に合流したので Queue も旧行のものが返っていた）。
 	if newRes.UniqueSkippedAsDuplicate {
 		t.Fatal("new-style insert was skipped as a duplicate of the stale old-queue row --- " +
-			"ByQueue: uniqueByQueue is not effective; the record would never be re-ingested " +
-			"(uniqueByQueue の定義を確認する。internal/worker/worker.go の pendingJobStates 直後の doc コメント参照)")
+			"ByQueue: UniqueByQueue is not effective; the record would never be re-ingested " +
+			"（UniqueByQueue の定義を確認する。internal/jobs/queue.go の pendingJobStates 直後の doc コメント参照）")
 	}
 	if newRes.Job.ID == oldRes.Job.ID {
 		t.Fatal("new-style insert reused the old job's row instead of creating a new one")

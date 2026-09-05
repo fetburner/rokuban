@@ -19,6 +19,10 @@
 
 エンコード・取り込み・サムネイル・掃除はすべてジョブ。[River](https://github.com/riverqueue/river) を採用する。
 
+ジョブ引数の型・`Kind`・`InsertOpts` と論理キューの規約は `internal/jobs` に置く。
+投入側（api・watcher・CLI）は worker の実装へ依存せずこの契約だけを使い、
+実行側の handler は `internal/worker` に置く。
+
 - ワーカーは `FOR UPDATE SKIP LOCKED` で 1 件確保。複数ワーカーが同時に来ても行ロックで排他され、同一ジョブの二重実行はトランザクション分離の性質として起きない
 - 実行中はリース（ハートビート）を延長。ワーカー死亡（OOM、プリエンプト）はリース切れで検出し、queued に戻す
 - at-least-once なのでジョブは冪等に書く（出力は一時パスに書いて完了時に公開、DB 登録は `ON CONFLICT` で吸収）

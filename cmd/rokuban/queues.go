@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/worker"
 )
 
@@ -115,7 +116,7 @@ func resolveWorkerQueues(cmd *cobra.Command, configured []string, roles []string
 	if len(names) == 0 {
 		return nil, fmt.Errorf("--%s: pass at least one queue name (valid: %s); "+
 			"an empty value is rejected because it would silently mean \"all queues\"",
-			queuesFlagName, strings.Join(worker.AllQueueNames(), ", "))
+			queuesFlagName, strings.Join(jobs.AllQueueNames(), ", "))
 	}
 	if len(configured) > 0 {
 		return nil, fmt.Errorf("--%s and worker.queues are mutually exclusive "+
@@ -128,7 +129,7 @@ func resolveWorkerQueues(cmd *cobra.Command, configured []string, roles []string
 	// なる）。同じ名前の重複は 1 つに畳む --- `--queues ingest,ingest` が
 	// 1 件消化モードの「ちょうど 1 キュー」検査に 2 キューとして映らないように
 	// するため（resolveSiteBinding が `--sites tokyo,tokyo` を畳むのと同じ理由）。
-	valid := worker.AllQueueNames()
+	valid := jobs.AllQueueNames()
 	resolved := make([]string, 0, len(names))
 	seen := make(map[string]bool, len(names))
 	var unknown []string
