@@ -1,0 +1,63 @@
+name: Weekly mirakc conformance
+
+on:
+  # 可動タグの drift を週 1 回検知する。PR の検証とは別系統で、失敗しても PR をブロックしない。
+  schedule:
+    - cron: '17 0 * * 1'
+  workflow_dispatch:
+    inputs:
+      mirakc_image:
+        description: mirakc image to test
+        required: false
+        default: docker.io/mirakc/mirakc:main-debian
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  mirakc-conformance:
+    runs-on: ubuntu-latest
+    env:
+      ROKUBAN_CONFORMANCE_MIRAKC_IMAGE: ${{ github.event.inputs.mirakc_image || 'docker.io/mirakc/mirakc:main-debian' }}
+    # -timeout の根拠（コード中の named timeout の積算。TestConformance +
+    # TestBroadcastPathologies の 4 病態ケースが同じテストバイナリで直列に走り、
+    # 合計 5 コンテナを起動する）。PR をブロックする ci.yml のジョブと同じ値を保つ。
+    #
+    # コード上の named timeout で積める分（helpers_test.go / conformance_test.go /
+    # pathology_test.go の定数から）:
+    #   コンテナ起動 ×5（waitForHTTP 30s + waitForPublishedPort 10s） ≈ 200s
+    #   TestConformance ≈ 288s（epgBootstrapTimeout 60s×2 + recordingStartTimeout 20s×2 +
+    #     RecordingInProgress の各種ポーリング ≈28s + recordingFinishTimeout 90s +
+    #     SSE 系サブテスト ≈10s）
+    #   TestBroadcastPathologies ≈ 955s（waitForService 60s×4 = 240s +
+    #     scheduleFreshPathologyProgram の retryDeadline 120s×4 = 480s [内部の
+    #     waitForProgramAt にこの deadline をそのまま渡しているので実際に包む。
+    #     waitForProgramAt が自前の予算を持つと上限がこの 2 倍近くまで伸びる] +
+    #     waitForPathologyRecord
+    #     45s×3 = 135s + EventIDReset の judgeEventIDResetWithEvents 45s +
+    #     waitForFinishedWithoutReplacement(45s 待ち + 10s settle) = 100s）
+    #   小計 ≈ 1443s
+    #
+    # コード上に named timeout が無く積めない分（実測/見積もりであることを明示する。
+    # digest を先に記録するため image pull は専用 step で行うが、可動タグは pin より
+    # cache が効きにくいので、この job の所要時間にも余裕を持たせる）:
+    #   docker image pull（同一ジョブ内では 5 コンテナが同じ digest を使うので実質 1 回。
+    #     イメージサイズ ≈49MB、ローカル実測はキャッシュ済みで数秒未満。CI の初回 pull
+    #     を見積もりで 30s とする） + buildFixtureTuner ×2（ローカル実測 arm64 cross
+    #     build ≈0.6s/回、CI 変動を見て 5s/回） ≈ 40s
+    #
+    # 合計 ≈ 1483s（25 分弱）。-timeout はこれに対して余裕を残す。timeout-minutes は
+    # go test の -timeout に加えて checkout/setup-go、digest 用の image pull、GH Actions
+    # 側のジョブ終了処理のぶんの余裕を取る。
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Pull mirakc image and print digest
+        run: |
+          docker pull "$ROKUBAN_CONFORMANCE_MIRAKC_IMAGE"
+          docker inspect --format '{{index .RepoDigests 0}}' "$ROKUBAN_CONFORMANCE_MIRAKC_IMAGE"
+      - run: go test -tags conformance ./internal/mirakc/conformance/... -timeout 30m -v

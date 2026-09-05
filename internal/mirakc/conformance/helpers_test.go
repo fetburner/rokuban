@@ -35,6 +35,33 @@ import (
 // 「mirakc の版を上げる手順」の手順で最新の digest に取り直す。
 const mirakcImage = "docker.io/mirakc/mirakc@sha256:3fd884b3bb7c5c33f6d9241abf36db81b6fe25e42a869b8f14ecddd482a41c93"
 
+const mirakcImageEnv = "ROKUBAN_CONFORMANCE_MIRAKC_IMAGE"
+
+// configuredMirakcImage returns the pinned image unless the caller supplies an image override.
+func configuredMirakcImage() string {
+	if image := os.Getenv(mirakcImageEnv); image != "" {
+		return image
+	}
+	return mirakcImage
+}
+
+func TestConfiguredMirakcImage(t *testing.T) {
+	t.Run("uses the pinned image by default", func(t *testing.T) {
+		t.Setenv(mirakcImageEnv, "")
+		if got := configuredMirakcImage(); got != mirakcImage {
+			t.Fatalf("configuredMirakcImage() = %q, want pinned image %q", got, mirakcImage)
+		}
+	})
+
+	t.Run("uses the environment override", func(t *testing.T) {
+		const want = "docker.io/mirakc/mirakc:main-debian"
+		t.Setenv(mirakcImageEnv, want)
+		if got := configuredMirakcImage(); got != want {
+			t.Fatalf("configuredMirakcImage() = %q, want %q", got, want)
+		}
+	})
+}
+
 // mirakcVersion は mirakcImage が実際に埋め込んでいる版（GetVersion で照合する。
 // 受け入れ項目 5）。
 //
@@ -207,7 +234,7 @@ func startMirakc(t *testing.T, hostDir string, tunerBin string, fixtureCase stri
 		// "VAR=value command" 形式を置けない。ケース切り替えはコンテナ環境へ渡す。
 		args = append(args, "-e", "ROKUBAN_FIXTURE_CASE="+fixtureCase)
 	}
-	args = append(args, mirakcImage)
+	args = append(args, configuredMirakcImage())
 	cmd := exec.Command("docker", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
