@@ -871,7 +871,10 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath str
 		return
 	}
 
-	if err := q.DeleteOrphanFile(context.Background(), relPath); err != nil {
+	// ctx 取消後も削除の事実を記録するため Background 由来にするが、DB 詰まりで worker の終了を無期限に待たない。
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), defaultRelPathLockTimeout)
+	defer cancel()
+	if err := q.DeleteOrphanFile(cleanupCtx, relPath); err != nil {
 		log.Error("delete_reconcile: clearing orphan record after delete", "err", err)
 		return
 	}
