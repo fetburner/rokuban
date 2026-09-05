@@ -73,6 +73,12 @@ const (
 	// deleteReconcileTimeout を食い潰してパスごと失敗させうる。webhook より
 	// 本処理を優先する（M3-11）ため、超過分は捨てて件数をログに残す。
 	deleteReconcileNotifyBudget = 2 * time.Minute
+
+	// deleteOrphanCleanupTimeout は ctx 取消後も削除の事実を DB に記録するための
+	// 書き込み（DeleteOrphanFile）に与える上限。ingest の advisory lock
+	// （defaultRelPathLockTimeout）と値は同じだが用途が無関係なので共用しない ---
+	// あちらを調整したときにこちらの締切が一緒に動くのを避ける。
+	deleteOrphanCleanupTimeout = 10 * time.Second
 )
 
 // deleteTarget は物理削除 1 件分の対象。pending / trash / until_encoded の
@@ -417,6 +423,13 @@ func (w *DeleteReconcileWorker) deleteCandidates(ctx context.Context, q *sqlcgen
 		w.deleteMediaAsset(ctx, q, deleteTarget{ID: a.ID, RecordingID: a.RecordingID, RelPath: a.RelPath, SizeBytes: a.SizeBytes, Kind: a.Kind}, "until_encoded")
 	}
 	for _, relPath := range agedOrphans {
+		// ctx 死亡後は残りを打ち切る（DeleteOrphanFile 1 件ごとに
+		// deleteOrphanCleanupTimeout を待ち切って進むと、DB が詰まった状態では
+		// パス全体が deleteReconcileTimeout を超えうる）。残った孤児は次パスの
+		// verifiedAgedOrphans が拾い直す（レベルトリガー、不変条件 5）。
+		if ctx.Err() != nil {
+			return
+		}
 		w.deleteOrphanFile(q, relPath)
 	}
 }
@@ -872,7 +885,7 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath str
 	}
 
 	// ctx 取消後も削除の事実を記録するため Background 由来にするが、DB 詰まりで worker の終了を無期限に待たない。
-	cleanupCtx, cancel := context.WithTimeout(context.Background(), defaultRelPathLockTimeout)
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), deleteOrphanCleanupTimeout)
 	defer cancel()
 	if err := q.DeleteOrphanFile(cleanupCtx, relPath); err != nil {
 		log.Error("delete_reconcile: clearing orphan record after delete", "err", err)
