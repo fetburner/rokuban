@@ -23,7 +23,7 @@ import { firstIndexForDayOffset, programKeyAt, visibleDayOffset } from '@/lib/pr
 /**
  * ReservationActions は番組からの予約 / 取消と、番組ごとの実行中状態。
  *
- * 実行そのもの（`useReservationActions`）は `pages/programs.tsx` 側に残っている
+ * 実行そのもの（`useReservationActions`）は `lib/reservation-actions.ts` に置く
  * ---
  * リストとグリッドの両方がこの同じ経路を通る必要があるためで、`ProgramList`
  * 固有の関心ではない。型だけをこちらに置いて `programs.tsx` から import する形に
