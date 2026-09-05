@@ -12,8 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivertest"
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/config"
@@ -418,11 +421,25 @@ func TestEpgSync_ReinsertableAfterCompletion(t *testing.T) {
 		t.Error("未完了のジョブがあるのに重複として弾かれなかった")
 	}
 
-	// 完了させると再度投入できる
-	if _, err := pool.Exec(ctx,
-		"UPDATE river_job SET state = 'completed', finalized_at = now() WHERE id = $1", first.Job.ID,
-	); err != nil {
-		t.Fatalf("marking completed: %v", err)
+	// 完了させると再度投入できる。公開テスト API は実物の completer 経路を
+	// 通るため、River が完了時に更新する列の集合もこのテストに反映される。
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("beginning transaction for completion: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // harmless after a successful commit
+	testWorker := rivertest.NewWorker[EpgSyncArgs, pgx.Tx](
+		t, riverpgxv5.New(pool), &river.Config{}, &epgSyncNoOpWorker{},
+	)
+	result, err := testWorker.WorkJob(ctx, t, tx, first.Job)
+	if err != nil {
+		t.Fatalf("working epg_sync job: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("committing completed epg_sync job: %v", err)
+	}
+	if result.Job.State != rivertype.JobStateCompleted {
+		t.Fatalf("completed epg_sync state = %q, want %q", result.Job.State, rivertype.JobStateCompleted)
 	}
 
 	again, err := client.Insert(ctx, args, nil)
@@ -1074,3 +1091,9 @@ type noOpWorker struct {
 }
 
 func (w *noOpWorker) Work(_ context.Context, _ *river.Job[noOpArgs]) error { return nil }
+
+type epgSyncNoOpWorker struct {
+	river.WorkerDefaults[EpgSyncArgs]
+}
+
+func (w *epgSyncNoOpWorker) Work(_ context.Context, _ *river.Job[EpgSyncArgs]) error { return nil }
