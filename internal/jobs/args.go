@@ -274,9 +274,12 @@ func (StorageSyncArgs) InsertOpts() river.InsertOpts {
 	}
 }
 
-// Compile-time assertion that every contract type implements River's job argument
-// interface. Keeping these assertions next to the contract catches accidental
-// removal of Kind or InsertOpts during future migrations.
+// 全契約型が River のジョブ引数インタフェースを満たすことのコンパイル時検査。
+//
+// 満たすべきは JobArgs（Kind だけ）ではなく JobArgsWithInsertOpts である。
+// JobArgs で書くと InsertOpts を消してもコンパイルが通り、そのジョブは黙って
+// default キューへ行く。deploy/k8s の ScaledJob は default を数えるトリガを
+// 持たないので、ロール分割デプロイでは誰にも実行されないまま滞留する。
 var (
 	_ river.JobArgsWithInsertOpts = IngestJobArgs{}
 	_ river.JobArgsWithInsertOpts = EpgSyncArgs{}
