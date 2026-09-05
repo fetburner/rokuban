@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import {
   useDeleteProgramIntent,
@@ -55,26 +55,32 @@ export function useReservationActions(
   // site:programId → 楽観的に見せたい予約状態（true=予約済み / false=未予約）。
   const [optimistic, setOptimistic] = useState<ReadonlyMap<string, boolean>>(new Map())
 
-  // サーバー値が楽観的な予想に追いついたものは、描画時に導出から外す。
-  // effect で state を掃除すると、サーバー値が届いた直後に一度だけ古い予約状態を
-  // 描いてから再描画する。state 自体を同期的に書き換えず、現在のサーバー値に
-  // 一致する上書きだけを表示計算から除外するので、見た目も即時に収束する。
-  const effectiveOptimistic = useMemo(() => {
-    const next = new Map<string, boolean>()
-    for (const [programId, want] of optimistic) {
-      if (serverReservedIds.has(programId) !== want) next.set(programId, want)
-    }
-    return next
-  }, [optimistic, serverReservedIds])
+  // サーバー値が楽観的な予想に追いついたら、その上書きは要らなくなる。
+  // 消し忘れると、後でユーザーが手動で戻した変更まで隠れてしまう。
+  useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- サーバー値が追いついた楽観上書きを破棄する
+    setOptimistic((current) => {
+      if (current.size === 0) return current
+      let changed = false
+      const next = new Map(current)
+      for (const [programId, want] of current) {
+        if (serverReservedIds.has(programId) === want) {
+          next.delete(programId)
+          changed = true
+        }
+      }
+      return changed ? next : current
+    })
+  }, [serverReservedIds])
 
   const reservedProgramIds = useMemo(() => {
     const set = new Set(serverReservedIds)
-    for (const [programId, want] of effectiveOptimistic) {
+    for (const [programId, want] of optimistic) {
       if (want) set.add(programId)
       else set.delete(programId)
     }
     return set
-  }, [serverReservedIds, effectiveOptimistic])
+  }, [serverReservedIds, optimistic])
 
   const setBusy = (programId: string, busy: boolean) => {
     setBusyProgramIds((current) => {

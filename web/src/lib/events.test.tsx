@@ -1,6 +1,5 @@
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
 import { act, render } from '@testing-library/react'
-import { useRef } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getGetStorageQueryKey } from '@/api/generated'
@@ -108,62 +107,60 @@ type FetchCounts = {
  * stale 化するだけで fetch を起こさないので、「再取得が実際に走ったか」を見る
  * テストではこちらを使う。
  */
+// oxlint-disable react/immutability -- テストハーネスが所有する観測用カウンタ
 function ActiveQueries({ counts }: { counts: FetchCounts }) {
-  // queryFn は render の外で呼ばれるが、counts はテストハーネスが所有する
-  // 観測用の可変カウンタである。ref 経由にして、コンポーネント props 自体を
-  // 書き換えているという誤解を避ける（製品コードの状態は変更しない）。
-  const countsRef = useRef(counts)
   useQuery({
     queryKey: reservationsKey,
     queryFn: () => {
-      countsRef.current.reservations += 1
+      counts.reservations += 1
       return Promise.resolve([])
     },
   })
   useQuery({
     queryKey: recordingsKey,
     queryFn: () => {
-      countsRef.current.recordings += 1
+      counts.recordings += 1
       return Promise.resolve([])
     },
   })
   useQuery({
     queryKey: epgKey,
     queryFn: () => {
-      countsRef.current.epg += 1
+      counts.epg += 1
       return Promise.resolve([])
     },
   })
   useQuery({
     queryKey: reservationDetailKey,
     queryFn: () => {
-      countsRef.current.reservationDetail += 1
+      counts.reservationDetail += 1
       return Promise.resolve({})
     },
   })
   useQuery({
     queryKey: programListKey,
     queryFn: () => {
-      countsRef.current.programList += 1
+      counts.programList += 1
       return Promise.resolve([])
     },
   })
   useQuery({
     queryKey: storageKey,
     queryFn: () => {
-      countsRef.current.storage += 1
+      counts.storage += 1
       return Promise.resolve([])
     },
   })
   useQuery({
     queryKey: tunersKey,
     queryFn: () => {
-      countsRef.current.tuners += 1
+      counts.tuners += 1
       return Promise.resolve([])
     },
   })
   return null
 }
+// oxlint-enable react/immutability
 
 /**
  * advance は偽タイマーを進め、それによって走り出した fetch と再描画を流し切る。

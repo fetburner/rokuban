@@ -254,7 +254,6 @@ export const ProgramList = forwardRef<
   // oxlint-disable react/refs -- スクロール用 spacer の描画値を計算する
   const paddingTopPx =
     virtualItems.length > 0 ? Math.max(0, virtualItems[0].start - scrollMarginRef.current) : 0
-  // oxlint-disable-next-line react/refs -- スクロール用 spacer の描画値を計算する
   const paddingBottomPx =
     virtualItems.length > 0
       ? Math.max(

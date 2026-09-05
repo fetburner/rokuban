@@ -200,7 +200,6 @@ export function ProgramsPage() {
     // state を書くと hooks の render 更新になるため effect が必要。
     // oxlint-disable-next-line react/set-state-in-effect -- URL のジャンプ先を画面状態へ同期する
     setDayOffset(atDayOffset)
-    // oxlint-disable-next-line react/set-state-in-effect -- URL のジャンプ先を画面状態へ同期する
     setVisibleDay(atDayOffset)
   }, [atDayOffset])
 
@@ -233,8 +232,6 @@ export function ProgramsPage() {
   const selectedServiceIds = useMemo(() => new Set(search.service ?? []), [search.service])
   const reservations = useListReservations()
 
-  // nowMs はこのレンダーの間で一貫させる。起点・上限・下限をそれぞれ別々に
-  // Date.now() を呼んで求めると、ミリ秒単位でずれた「今」が混ざりうる。
   // 起点はジャンプ先（state）から決める。queryKey に入るので、日付を変えると
   // ページが積み直され、キャッシュ済みのページが古い窓のまま再利用されることもない。
   const originMs = dayOrigin(dayOffset, nowMs).getTime()
@@ -484,8 +481,11 @@ export function ProgramsPage() {
   // autoLoadFailed: 直近の自動読み込み（進行方向）が失敗したか。失敗したら
   // ボタン + エラー表示に落とし、番兵が可視のままでも自動では再試行しない
   // （さもないと失敗したまま無限にリクエストを投げ続ける）。
-  // クエリの窓（起点・上限・絞り込み）が変わったら新しいセッションとして扱い、
-  // 前の窓での失敗を引きずらない。
+  // 起点・上限・絞り込みは queryKey に入っているので、窓が変われば別クエリに
+  // なり前の窓の失敗を引き継がない（effect での明示リセットは不要）。
+  // `isFetchNextPageError` は `isError && fetchMeta.fetchMore.direction === 'forward'`
+  // （@tanstack/query-core 5.102.8 の infiniteQueryObserver.js。未検証: 版が
+  // 上がると変わりうる）。
   const autoLoadFailed = query.isFetchNextPageError
 
   // 日付ジャンプ（DayStrip・容量バッジ）で originMs が変わったら、リスト表示では

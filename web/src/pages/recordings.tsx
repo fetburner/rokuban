@@ -276,8 +276,15 @@ export function RecordingsPage() {
   // autoLoadFailed: 直近の自動読み込みが失敗したか。失敗したらボタン + エラー
   // 表示に落とし、番兵が可視のままでも自動では再試行しない（さもないと失敗した
   // まま無限にリクエストを投げ続ける。pages/programs.tsx と同じ規律）。
-  const fetchNextPageError = query.error
   const autoLoadFailed = query.isFetchNextPageError
+  // query.error は次ページ限定のエラーではない（初回取得の失敗にも同じ値が入る）。
+  // ここで一度取り出しておくのは名前の都合ではなく型都合: 後方の JSX で
+  // `query.isError ? ... : query.isPending ? ... : (...)` と絞り込んだ分岐の
+  // 中で `query.error` を直接読むと、tsc が `query` を `never` に絞り込んで
+  // `TS2339: Property 'error' does not exist on type 'never'` で落ちる
+  // （実測: `npx tsc --noEmit` で確認済み）。絞り込みが効く前のこの時点で
+  // 取り出しておけば同じ問題を避けられる。
+  const queryError = query.error
   const paramsKey = JSON.stringify(listParams)
   useEffect(() => {
     // URL の検索条件変更に合わせて選択状態を無効化する外部入力同期。
@@ -495,7 +502,7 @@ export function RecordingsPage() {
             <div className="px-4 py-4">
               {autoLoadFailed && (
                 <p role="alert" className="mb-2 text-center text-xs text-destructive">
-                  {apiErrorMessage(fetchNextPageError) ?? '続きの読み込みに失敗しました'}
+                  {apiErrorMessage(queryError) ?? '続きの読み込みに失敗しました'}
                 </p>
               )}
               <Button

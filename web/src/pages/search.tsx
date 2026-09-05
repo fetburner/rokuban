@@ -158,7 +158,6 @@ export function SearchPage() {
     // URL の共有条件をフォームと検索へ反映する外部入力同期。
     // oxlint-disable-next-line react/set-state-in-effect -- URL 条件をローカルフォームへ同期する
     setDraft(nextDraft)
-    // oxlint-disable-next-line react/set-state-in-effect -- URL 条件に対応する表示件数を同期する
     setVisibleCount(pageSize)
     searchRef.current.mutate({ data: buildSearchRequest(nextDraft) })
   }, [ruleId, sourceRule])
@@ -207,7 +206,6 @@ export function SearchPage() {
     // URL の共有条件をフォームと検索へ反映する外部入力同期。
     // oxlint-disable-next-line react/set-state-in-effect -- URL 条件をローカルフォームへ同期する
     setDraft(nextDraft)
-    // oxlint-disable-next-line react/set-state-in-effect -- URL 条件に対応する表示件数を同期する
     setVisibleCount(pageSize)
     searchRef.current.mutate({ data: buildSearchRequest(nextDraft) })
   }, [ruleId, routeSearch.cond])
