@@ -226,7 +226,7 @@ export function ProgramRow({
             onClick={reserved ? onCancel : handleReserve}
             className="min-h-11 w-full rounded-none"
           >
-            {/* 送信中でもスピナーを重ねない。楽観更新（programs.tsx
+            {/* 送信中でもスピナーを重ねない。楽観更新（lib/reservation-actions.ts の
                 useReservationActions）がタップ即座にこのラベル・色へ確定させ、
                 送信中は `disabled:opacity-50` の淡い dim だけが手掛かりになる ---
                 スピナーは楽観更新の確定表示を 1 フレーム覆い隠し、高速応答時に

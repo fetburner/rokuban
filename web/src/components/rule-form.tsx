@@ -126,7 +126,13 @@ export function RuleCostSummary({
   return <p className="px-4 py-2 text-xs text-muted-foreground">{text}</p>
 }
 
-/** ShortfallOverlapNote は既存のチューナー不足区間と交差する番組の件数を表示する。 */
+/**
+ * ShortfallOverlapNote は検索結果のうち放送時間帯が既存のチューナー不足区間と
+ * 交差する番組の件数を値札の隣に出す（判定 (b)。docs/frontend/search.md
+ * 「保存前の値札」）。**0 件のときは何も描画しない**（`CapacityShortfallBadge`
+ * と同じ「沈黙は保証ではない」規律。緑にも「収まります」にもしない）。上限で
+ * 切れているときは値札の他の注記と同じ形で「先頭 N 件のうち」と明記する。
+ */
 export function ShortfallOverlapNote({
   count,
   sampleSize,
@@ -146,7 +152,12 @@ export function ShortfallOverlapNote({
   )
 }
 
-/** RuleSourceBanner は `?ruleId=N` で開いたときの由来表示を行う。 */
+/**
+ * RuleSourceBanner は `?ruleId=N` で開いたときの由来表示。
+ *
+ * 読み込み中・404・その他の失敗・成功を区別する。存在しない ruleId で
+ * 無言の空白（フォームが何事もなく空のまま出る）にしないため、失敗も明示する。
+ */
 export function RuleSourceBanner({
   ruleId,
   rule,
@@ -172,6 +183,8 @@ export function RuleSourceBanner({
   }
 
   if (isError) {
+    // ApiError.status を見て 404 と他の失敗（ネットワーク断など）を区別する。
+    // どちらも「無言の空白」にはしない
     const notFound = error instanceof ApiError && error.status === 404
     return (
       <div
@@ -238,7 +251,13 @@ export function CreateRuleSection({
   )
 }
 
-/** CreateRuleForm は条件以外のメタ情報を入力して `POST /api/rules` に送る。 */
+/**
+ * CreateRuleForm は条件以外のメタ情報（名前・有効・優先度・エンコード設定）を
+ * 入力して `POST /api/rules` に送る。`?ruleId` を伴わない通常の検索からのみ
+ * 使われる（既存ルールのフォークは `RuleEditSection` の「別の新しいルールとして
+ * 保存」に一本化した）ので、`preserve` は渡さない — UI を持たない項目
+ * （`description` 等）を推測して埋めることはしない。
+ */
 export function CreateRuleForm({
   draft,
   draftHasError,
@@ -381,7 +400,17 @@ export function CreateRuleForm({
   )
 }
 
-/** RuleEditSection は `?ruleId=N` で開いたときの保存 UI を表示する。 */
+/**
+ * RuleEditSection は `?ruleId=N` で開いたときの保存 UI。
+ *
+ * `CreateRuleSection` と違って折りたたまない —— ユーザーは「試している」の
+ * ではなく、既にあるルールを編集する目的でこの画面を開いている（マッチする
+ * 番組を見ながら条件を詰められるこの画面が実質のルール編集画面になる、という
+ * 判断）。`key={sourceRule.id}` を親（`pages/search.tsx`）で付けているので、
+ * `ruleId` を切り替えて別のルールを開き直したときはこのコンポーネントごと
+ * 作り直され、下の `RuleEditForm` の `meta` / `confirmedEmpty` が古いルールの
+ * 値のまま残らない。
+ */
 export function RuleEditSection({
   draft,
   draftError: draftHasError,
@@ -429,6 +458,9 @@ export function RuleEditForm({
 
   const overwrite = () => {
     if (blocked) return
+    // preserve に sourceRule を渡す。渡し忘れると UI を持たない項目
+    // （description / dedupe* / filenameTemplate / metadata）が
+    // `UpdateRule` の子テーブル全置換で黙って消える。
     const input = buildRuleInput(draft, meta, sourceRule)
     updateRule.mutate(
       { id: sourceRule.id, data: input },
@@ -449,8 +481,21 @@ export function RuleEditForm({
 
   const saveAsNew = () => {
     if (blocked) return
+    // `rules.name` に一意制約は無い（rules テーブル定義）ので、名前を
+    // そのまま引き継ぐと一覧に同名の 2 本が並び、条件の要約でしか見分けられ
+    // なくなる。押した時点で名前が元のルールと同じままなら `〜 のコピー` を
+    // 付ける。名前欄そのものは書き換えない（上書き保存に戻ったときに元の名前
+    // のままであってほしいため）。ユーザーが既に名前を変えているなら、
+    // その意図（別の名前を選んだ）を尊重してそのまま使う。
     const trimmed = meta.name.trim()
     const name = trimmed === sourceRule.name.trim() ? `${trimmed} のコピー` : trimmed
+    // `draft.sites` は `POST /api/rules` に載る。API の「保存済み site 名は
+    // レジストリ照合を免除する」はルール単位で PATCH にしか効かないので、
+    // レジストリから消えた site を含んだまま POST するとこの経路だけ 400
+    // `unknown site` になりうる --- ただし `sites` は issue #531 で条件 UI の
+    // 次元になったため、`<ConditionFields>` のサイトチップ（レジストリと下書きの
+    // 和集合を選択肢にする）でユーザーが画面内で外せる。落として送るのは禁止
+    // —— 絞り込みが無音で全サイトに反転する。
     const input = buildRuleInput(draft, { ...meta, name }, sourceRule)
     createRule.mutate(
       { data: input },
