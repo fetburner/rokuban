@@ -124,6 +124,7 @@ type reservationRow struct {
 	DedupMatchRecordingID *int64
 	DedupSimilarity       *float32
 	UpdatedAt             time.Time
+	CreatedAt             time.Time
 }
 
 // deriveTestState は internal/api.reservationState の active/detached 分岐
@@ -146,13 +147,13 @@ func getReservation(t *testing.T, pool *pgxpool.Pool, ctx context.Context, progr
 	err := pool.QueryRow(ctx, `
 SELECT r.rule_id, r.base, s.title, s.start_at, s.duration_ms,
        s.network_id, s.service_id, s.channel_type, s.channel,
-       r.dedup_match_recording_id, r.dedup_similarity, r.updated_at
+       r.dedup_match_recording_id, r.dedup_similarity, r.updated_at, r.created_at
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 WHERE r.site = $1 AND r.program_id = $2`, testSite, programID).Scan(
 		&r.RuleID, &r.Base, &r.Title, &r.ProgramStartAt, &r.ProgramDurationMs,
 		&r.NetworkID, &r.ServiceID, &r.ChannelType, &r.Channel,
-		&r.DedupMatchRecordingID, &r.DedupSimilarity, &r.UpdatedAt,
+		&r.DedupMatchRecordingID, &r.DedupSimilarity, &r.UpdatedAt, &r.CreatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -925,7 +926,7 @@ func TestRunPass_DisablingRuleDetachesReservationWithInvestment(t *testing.T) {
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
-	_, ok := getReservation(t, pool, ctx, 31001)
+	res, ok := getReservation(t, pool, ctx, 31001)
 	if !ok {
 		t.Fatal("reservation should be created initially (rule matches)")
 	}
@@ -944,6 +945,10 @@ func TestRunPass_DisablingRuleDetachesReservationWithInvestment(t *testing.T) {
 	}
 	if res2.RuleID != nil {
 		t.Fatalf("rule_id = %v, want nil after detaching", res2.RuleID)
+	}
+	if !res2.CreatedAt.Equal(res.CreatedAt) {
+		t.Fatalf("created_at changed from %v to %v: reservation row was recreated instead of detached in place",
+			res.CreatedAt, res2.CreatedAt)
 	}
 }
 
@@ -2134,6 +2139,10 @@ func TestRunPass_RetractGrace_KeepsImminentUnmatch(t *testing.T) {
 	if after.RuleID == nil || *after.RuleID != *before.RuleID {
 		t.Errorf("rule_id = %v, want unchanged %v (grace leaves the row untouched)", after.RuleID, before.RuleID)
 	}
+	if !after.CreatedAt.Equal(before.CreatedAt) {
+		t.Errorf("created_at changed from %v to %v: grace should freeze the row, not recreate it",
+			before.CreatedAt, after.CreatedAt)
+	}
 }
 
 // (b) 開始 2 時間前（猶予 1h の外）なら通常どおり削除される。
@@ -2437,6 +2446,10 @@ func TestRunPass_RetractGrace_UsesLiveStartAtNotFrozenSnapshot(t *testing.T) {
 	}
 	if after.Title != "非マッチ番組8" {
 		t.Errorf("program_snapshots.title = %q, want %q (snapshot must follow the live epg_programs value even on the unmatch/grace path)", after.Title, "非マッチ番組8")
+	}
+	if !after.CreatedAt.Equal(before.CreatedAt) {
+		t.Errorf("created_at changed from %v to %v: grace should freeze the reservation row, not recreate it",
+			before.CreatedAt, after.CreatedAt)
 	}
 }
 

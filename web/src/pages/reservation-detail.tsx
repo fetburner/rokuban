@@ -37,8 +37,8 @@ import { stateLabels } from '@/lib/reservation-labels'
  *   - 定期 invalidate では `'/api/sites/'` の方に掛かって EPG グループ
  *     （10 分）に落ちる
  *
- * という状態だった。宛先が `(site, programId)` であること（`reservations.id` を
- * URL・キーに使わない）は変えずに、**先頭要素だけを一覧と揃える**
+ * という状態だった。宛先が `(site, programId)` であること（旧 `reservations.id` を
+ * URL・キーに使わなかった判断を引き継ぐ）は変えずに、**先頭要素だけを一覧と揃える**
  * （`pages/recording-detail.tsx` の `recordingDetailQueryKey` と同じ手。先頭要素は
  * `reservationsQueryKeyPrefix` を通す）。site と programId をキーの要素として
  * 持つので、資源の同定は生成キーと等価。
@@ -59,10 +59,11 @@ function reservationDetailQueryKey(site: string, programId: number) {
  * 表示のみに留めている。UI を足すこと自体は別タスク。
  *
  * ルートとクエリは `(site, programId)` を宛先にする（issue #99）。
- * `reservations.id` は ruler の導出削除・再実体化で変わりうる不安定な値なので、
- * それを URL・クエリキーに使うとブックマーク・共有した URL やキャッシュが
- * 予約の再実体化で無効になる。`GET /api/sites/{site}/programs/{programId}/reservation`
- * は `UNIQUE (site, program_id)` をキーにするので、id が変わっても同じ URL で引ける。
+ * 旧 `reservations.id` は ruler の導出削除・再実体化で変わりうる不安定な値
+ * だったので、それを URL・クエリキーに使うとブックマーク・共有した URL や
+ * キャッシュが予約の再実体化で無効になっていた。
+ * `GET /api/sites/{site}/programs/{programId}/reservation` は今の主キー
+ * `(site, program_id)` をキーにするので、予約行が作り直されても同じ URL で引ける。
  *
  * 予約 intent の成功直後は ruler が reservations 行を作るまで GET が 404 に
  * なりうる。だが 404 は「まだ無い」と「もう無い / そもそも無い」を区別

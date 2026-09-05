@@ -47,12 +47,14 @@ LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
 WHERE r.site = $1
   AND NOT EXISTS (
       SELECT 1 FROM never_scheduled_events nse
-      -- 宛先のキーは**放送イベント**であって予約行の導出キーではない。
-      -- 予約行の再実体化に依存すると、EPG フリッカーやルール編集で予約行が作り直された瞬間に
-      -- recordings.reservation_id（issue #158 で列自体を削除済み）は当時 ON DELETE SET NULL だった。予約行のキーで
-      -- 引いた観測が切れ、「never-scheduled 行が無い」ことになり、終了済み予約が毎パス desired に
-      -- 戻り続ける（CLAUDE.md 不変条件 9 の identity: 導出器が作るキーを
-      -- 宛先にしない）。
+      -- 宛先のキーは**放送イベント**であって reservations 行ではない。reservations は
+      -- program_snapshots への FK が ON DELETE CASCADE なので、スナップショットが
+      -- GC された瞬間に一緒に消える。never_scheduled_events は program_snapshots への
+      -- FK を持たないので GC 後も観測が残り続ける（docs/schema/reservations.md の
+      -- 「行の物理削除」）。reservations 行に依存すると、GC された瞬間に
+      -- 「never-scheduled 行が無い」ことになり、終了済み予約が毎パス desired に
+      -- 戻り続ける（CLAUDE.md 不変条件 9 の identity: 導出器が作るキーを宛先にしない、
+      -- と同じ族）。
       WHERE nse.site = r.site
         AND nse.network_id = s.network_id
         AND nse.service_id = s.service_id

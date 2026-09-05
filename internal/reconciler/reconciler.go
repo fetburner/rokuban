@@ -706,12 +706,10 @@ func (r *Reconciler) recreateChanged(
 	// 別物の単なるレート制限なので、超えた分は諦めずに次パスへ持ち越すだけ。
 	// この再作成の DELETE はサーキットブレーカーの削除数（toDelete）には
 	// 一切数えない — 混ぜるとルールの priority 一括変更でブレーカーが誤作動する。
+	// listDesired は r.site = $1 で絞るので、1 パス内の候補は単一サイトに限られる
+	// （サイトをまたいだ比較は起こらない）。
 	sort.Slice(eligible, func(i, j int) bool {
-		left, right := eligible[i].d.res, eligible[j].d.res
-		if left.Site != right.Site {
-			return left.Site < right.Site
-		}
-		return left.ProgramID < right.ProgramID
+		return eligible[i].d.res.ProgramID < eligible[j].d.res.ProgramID
 	})
 
 	for i, c := range eligible {

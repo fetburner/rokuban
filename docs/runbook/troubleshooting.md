@@ -235,7 +235,7 @@ curl -s http://localhost:9090/api/v1/query --data-urlencode \
   'query=rokuban_reconcile_pending_diff{action="update"}' | jq
 ```
 
-- `action="update"` がゼロに戻らず、`reconciler: recreated schedule` の Info ログで同じ `reservation_id` に対して `reason=content_path` が反復していないか見る。反復しているなら mirakc が contentPath をそのまま返していない。これは比較が収束せず毎パス DELETE→POST になっていることを意味する。実 mirakc に対して `GET /api/recording/schedules` の応答を直接見て、POST した `contentPath` と一致するか確認する
+- `action="update"` がゼロに戻らず、`reconciler: recreated schedule` の Info ログで同じ `program_id` に対して `reason=content_path` が反復していないか見る。反復しているなら mirakc が contentPath をそのまま返していない。これは比較が収束せず毎パス DELETE→POST になっていることを意味する。実 mirakc に対して `GET /api/recording/schedules` の応答を直接見て、POST した `contentPath` と一致するか確認する
 - `action="update_deferred"` 側に出ているだけなら、`scheduled` 以外の状態（録画中等）で allowlist に見送られているだけで異常ではない
 
 ### `/api/capacity/overages` が常に空

@@ -1628,8 +1628,8 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 	recordingID := insertTestRecordingForReservation(t, pool, programID)
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-rematerialized", programID)
 
-	// ruler の導出削除 → 再実体化を模す（同じ番組・新しい id。理由はこの関数の
-	// doc コメント）。
+	// ruler の導出削除 → 再実体化を模す（同じキーで DELETE → 再 INSERT する。
+	// 理由はこの関数の doc コメント）。
 	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE site = $1 AND program_id = $2`, res.Site, res.ProgramID); err != nil {
 		t.Fatalf("deleting reservation: %v", err)
 	}
