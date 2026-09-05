@@ -119,8 +119,8 @@ func TestNewPool(t *testing.T) {
 	})
 
 	// 接続先はハードコードせず、実際に migrate した DB の URL から組む。
-	// ハードコードしていたときは (a) ローカルでロール名が違うと必ず落ち、
-	// (b) パッケージ専用 DB を使うようになった後は schema_info が無い別 DB を
+	// ハードコードしていたときは、ローカルでロール名が違うと必ず落ち、
+	// パッケージ専用 DB を使うようになった後はマイグレーションしていない別 DB を
 	// 指してしまって CI でも落ちた。
 	cfg := dbConfigFromURL(t, dbURL)
 
@@ -130,13 +130,50 @@ func TestNewPool(t *testing.T) {
 	}
 	defer pool.Close()
 
-	var value string
-	err = pool.QueryRow(ctx, "SELECT value FROM schema_info WHERE key = 'version'").Scan(&value)
+	var latestVersion int64
+	err = pool.QueryRow(ctx, "SELECT max(version_id) FROM goose_db_version").Scan(&latestVersion)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	if value != "1" {
-		t.Errorf("schema_info version = %q, want %q", value, "1")
+	if latestVersion <= 0 {
+		t.Errorf("latest goose migration version = %d, want a positive version", latestVersion)
+	}
+
+	var schemaInfoExists bool
+	err = pool.QueryRow(ctx, "SELECT to_regclass('public.schema_info') IS NOT NULL").Scan(&schemaInfoExists)
+	if err != nil {
+		t.Fatalf("checking schema_info: %v", err)
+	}
+	if schemaInfoExists {
+		t.Error("schema_info still exists")
+	}
+
+	var constraintDefinition string
+	err = pool.QueryRow(ctx, `
+		SELECT pg_get_constraintdef(oid)
+		FROM pg_constraint
+		WHERE conname = 'recording_encode_policy_recording_id_fkey'
+	`).Scan(&constraintDefinition)
+	if err != nil {
+		t.Fatalf("checking recording_encode_policy FK: %v", err)
+	}
+	if !strings.Contains(constraintDefinition, "ON DELETE CASCADE") {
+		t.Errorf("recording_encode_policy FK = %q, want ON DELETE CASCADE", constraintDefinition)
+	}
+
+	var ruleIndexExists bool
+	err = pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_indexes
+			WHERE schemaname = 'public' AND indexname = 'recordings_rule_id_idx'
+		)
+	`).Scan(&ruleIndexExists)
+	if err != nil {
+		t.Fatalf("checking recordings rule_id index: %v", err)
+	}
+	if !ruleIndexExists {
+		t.Error("recordings_rule_id_idx does not exist")
 	}
 }
 
