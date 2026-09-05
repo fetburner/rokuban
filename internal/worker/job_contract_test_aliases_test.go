@@ -34,7 +34,6 @@ const (
 )
 
 var siteBoundQueueNames = jobs.SiteBoundQueueNames()
-var pendingJobStates = jobs.PendingJobStates()
 
 func qualifyQueueName(base, site string) string {
 	return jobs.QualifyQueueName(base, site)
