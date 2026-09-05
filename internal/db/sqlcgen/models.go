@@ -285,11 +285,6 @@ type ScheduleSync struct {
 	ObservedAt   time.Time
 }
 
-type SchemaInfo struct {
-	Key   string
-	Value string
-}
-
 type StorageSync struct {
 	Root           string
 	Path           string
