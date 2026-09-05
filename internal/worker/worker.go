@@ -29,17 +29,17 @@ const (
 	//
 	// IngestConcurrency=0 を渡すと allQueues の
 	// `river.QueueConfig{MaxWorkers: 0}` になり、river.NewClient がこれを
-	// 明示的な起動時エラーで拒否する（river@v0.47.0/client.go:689 の
+	// 明示的な起動時エラーで拒否する（river@v0.47.0 client.go の
 	// `c.MaxWorkers < 1` チェック。読んで確認済み）。
 	// EpgSyncInterval=0 は `river.PeriodicInterval(0)` になり、こちらは panic
 	// しない（PeriodicInterval.Next は単に `t.Add(0) = t` を返すだけ）が、
 	// 定期ジョブの nextRunAt が前に進まなくなるため、river 内部の
 	// PeriodicJobEnqueuer がタイマーを毎回ほぼ 0 でリセットするビジーループに
 	// 陥り、ループ 1 周ごとに insertParamsFromConstructor + insertBatch で
-	// Postgres への insert を試み続ける。river@v0.47.0/internal/maintenance/
+	// Postgres への insert を試み続ける。river@v0.47.0 internal/maintenance/
 	// periodic_job_enqueuer.go を読んで確認した --- タイマー側は
 	// timeUntilNextRun / timerUntilNextRun.Reset、insert ループ側は
-	// 471,479,491 行目。実際に client を起動してこのループを観測してはいない。
+	// insertParamsFromConstructor / insertBatch。実際に client を起動してこのループを観測してはいない。
 	//
 	// 責務を config に移すのは config.Config の話であって、config を経由しない
 	// 呼び出し元（このパッケージのテスト）まで持つ ClientConfig の 0-fallback を
@@ -62,7 +62,7 @@ const (
 // **停止の合図（SIGTERM = Start に渡した ctx の cancel、または Stop の呼び出し）を
 // 受けてから、実行中のジョブを打ち切るまでの猶予**である。この時間内に終われば
 // ジョブは完走し、超えたら River が work ctx を cancel してハードストップに
-// エスカレートする（river@v0.47.0/client.go:1223-1227 の softStopTimer）。
+// エスカレートする（river@v0.47.0 client.go の `softStopTimer`）。
 //
 // **5 秒という値は「何も設定しなかった人が SIGKILL されない」ことだけを根拠に
 // している。** プラットフォーム側の既定の猶予は Docker が 10 秒、k8s が 30 秒で、
@@ -108,8 +108,8 @@ var pendingJobStates = []rivertype.JobState{
 
 // site 単位のキュー（ingest/epg/reconciler/watcher）と cleanup（delete_reconcile /
 // catalog_export）の各 InsertOpts は UniqueOpts.ByQueue: true を立てる
-// （issue #185 M4-13 のレビューで判明。river@v0.47.0/insert_opts.go:171-175 の
-// ByQueue の doc コメント参照）。
+// （issue #185 M4-13 のレビューで判明。river@v0.47.0 insert_opts.go の
+// `ByQueue` の doc コメント参照）。
 //
 // # なぜ必要か
 //
@@ -398,7 +398,7 @@ const (
 	defaultCleanupConcurrency = 2
 
 	// riverQueueNameMaxLen は River のキュー名の最大長
-	// （river@v0.47.0/client.go:2343,2347-2352、validateQueueName）。
+	// （river@v0.47.0 client.go の `validateQueueName`）。
 	// 修飾後のキュー名（qualifyQueueName）はこの上限を超えられない。
 	riverQueueNameMaxLen = 64
 )
@@ -619,7 +619,7 @@ type ClientConfig struct {
 	// **これを設定しないと SIGTERM が drain にならない。** River は
 	// SoftStopTimeout が未設定（0）のとき work ctx を start ctx から継ぐので、
 	// `signal.NotifyContext` の ctx を `Start` に渡している構成では **SIGTERM が
-	// そのまま StopAndCancel 相当のハードストップになる**（river@v0.47.0/client.go:1150-1154
+	// そのまま StopAndCancel 相当のハードストップになる**（river@v0.47.0 client.go の
 	// の workParentCtx）。実行中のジョブは即座に ctx を切られ、試行回数を 1 つ
 	// 潰して `available` に戻る。0 を既定値に読み替えるのはこのためで、
 	// 「設定し忘れ」が最も危険な側に倒れないようにする。
@@ -990,7 +990,7 @@ func NewClient(pool *pgxpool.Pool, workers *river.Workers, cfg ClientConfig) (*r
 // NewInsertOnlyClient はワーカーを持たない River クライアントを返す。
 //
 // Queues を省略し Workers も登録しないため、Start は呼べない（呼ばないことが
-// 前提。river@v0.47.0 の client.go:91-93 が説明する insert-only mode）。名前の
+// 前提。river@v0.47.0 client.go が説明する insert-only mode）。名前の
 // insert-only は「ジョブを実行しない」という構成名で、公開された読み取り API の
 // JobList は利用できる。api ロールはヒント投入に加えてエンコード待機列の参照にも使う。
 //

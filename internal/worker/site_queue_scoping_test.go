@@ -215,7 +215,7 @@ func waitForNotAvailable(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 //
 // River の UniqueOpts は既定 ByQueue: false で、そのとき一意キーは
 // kind + args だけで組み立てられ Queue を含まない
-// （river@v0.47.0/internal/dbunique/db_unique.go:121-123 の buildUniqueKeyString）。
+// （river@v0.47.0 internal/dbunique/db_unique.go の `buildUniqueKeyString`）。
 // このリポジトリの site 単位ジョブはすべて UniqueOpts{ByArgs: true,
 // ByState: pendingJobStates} だったため、キュー名を `ingest` → `ingest_tokyo`
 // に変えても一意キーは変わらず、デプロイ後に旧キュー（`ingest`）へ残っていた

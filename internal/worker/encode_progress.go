@@ -44,7 +44,7 @@ type encodeProgressReporter struct {
 // cancel と同時にキャンセルされる経路（worker 停止。encode ジョブに
 // ジョブタイムアウトの経路は無い --- EncodeWorker.Timeout は -1 を返し、river
 // は jobTimeout > 0 のときしか派生 ctx を作らない。
-// river@v0.47.0/internal/jobexecutor/job_executor.go:240 の
+// river@v0.47.0 internal/jobexecutor/job_executor.go の
 // `cmp.Or(e.WorkUnit.Timeout(), e.ClientJobTimeout)` 参照）では notify 自体が
 // 失敗し、flush は実質何もしない（notifyCtx.Err() != nil のときは警告ログも
 // 出さない --- 「notify を打ち切らない」が成り立つのは、呼び出し元が親 ctx を

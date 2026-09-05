@@ -790,8 +790,8 @@ func startWorkerWithRunningJob(t *testing.T, pool *pgxpool.Pool, mock *blockingM
 // エンコード（数時間）を打ち切る。症状は「デプロイしたらエンコードがやり直しに
 // なる」。River は `SoftStopTimeout` が未設定だと work ctx を start ctx から
 // 継ぐので、`signal.NotifyContext` の ctx を `Start` に渡しているこの構成では
-// **SIGTERM がそのまま StopAndCancel 相当になる**（river@v0.47.0/client.go:1150-1154
-// の workParentCtx）。
+// **SIGTERM がそのまま StopAndCancel 相当になる**（river@v0.47.0 client.go の
+// workParentCtx）。
 //
 // RunE を丸ごと走らせるのが要点 --- `--soft-stop-timeout` → `worker.ClientConfig`
 // → `river.Config` の配線は、`buildRiverConfig` を直接見るテストでは検証できない
@@ -808,7 +808,7 @@ func startWorkerWithRunningJob(t *testing.T, pool *pgxpool.Pool, mock *blockingM
 // **猶予切れの打ち切りを River は「ジョブのエラー」として記録しない。** 停止に
 // よる cancel（cause が `rivercommon.ErrStop`）を検出すると、`AttemptError` を
 // 組み立てず `JobSetStateInterrupted`（state=available、attempt は
-// `max(attempt-1, 0)`）で戻す（river@v0.47.0/internal/jobexecutor/job_executor.go
+// `max(attempt-1, 0)`）で戻す（river@v0.47.0 internal/jobexecutor/job_executor.go
 // の isSoftStopCancelError と `if softStopped` の早期 return）。**v0.44 で
 // 変わった**（それ以前は attempt を潰して `errors` に
 // `listing services: … : stop initiated` が残ったので、このテストの
@@ -896,9 +896,9 @@ func TestServerCmd_SigtermDrainsRunningJob(t *testing.T) {
 		// 「この行を読んだ」ことの保証にはならない（`epg_sync` の行が 2 本に
 		// なった瞬間に別の行を読んで緑になる）。`attempted_at` は claim の
 		// ときだけ書かれ、`JobSetStateInterrupted` は触らないので
-		// （riverdriver@v0.47.0/river_driver_interface.go:654-663 が
+		// （riverdriver@v0.47.0 river_driver_interface.go の JobSetStateInterrupted が
 		// AttemptedAt を設定せず、completer が撃つクエリ
-		// riverpgxv5@v0.47.0/internal/dbsqlc/river_job.sql:620-699 の
+		// riverpgxv5@v0.47.0 internal/dbsqlc/river_job.sql の
 		// `JobSetStateIfRunningMany` は job_input にも SET 句にも
 		// `attempted_at` 列を持たない --- 同区間の `cancel_attempted_at` は
 		// metadata のキー名で別物）、**実際に worked された行である**ことの

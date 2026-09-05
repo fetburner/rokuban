@@ -103,7 +103,8 @@ func (EncodeReconcileArgs) Kind() string { return "encode_reconcile" }
 // known_profiles による絞り込みが実態と食い違わない。
 //
 // 代償: River のキュー単位の MaxWorkers はジョブ種を区別しない
-// （river@v0.47.0/client.go:662「MaxWorkers is the maximum number of workers to
+// （river@v0.47.0 client.go の `MaxWorkers` に付いた doc コメント
+// 「MaxWorkers is the maximum number of workers to
 // run for the queue」）ため、`encode.concurrency: 1`（既定）の構成では実行中の
 // encode ジョブが終わるまでこのパスは走らない。許容する: エンコードが詰まって
 // いる系では今すぐ投入しても実行されないので、検出が遅れても失うものが無い。
