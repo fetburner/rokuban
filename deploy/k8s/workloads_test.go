@@ -15,6 +15,7 @@
 package k8s
 
 import (
+	"context"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -28,7 +29,9 @@ import (
 	"time"
 
 	"github.com/goccy/go-yaml"
+	"github.com/riverqueue/river"
 
+	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
 )
 
@@ -324,6 +327,64 @@ func TestScaledJobTriggersMatchTheirQueue(t *testing.T) {
 			physical)
 		if got := triggerQuery(t, w); got != want {
 			t.Errorf("%s trigger query\n got: %s\nwant: %s", w.id(), got, want)
+		}
+	}
+}
+
+// scaledJobTriggerProbeArgs は ScaledJob のトリガ検査だけで使う River ジョブ。
+// 実際のジョブ引数を再利用すると、クエリの検査が特定のワーカー実装や引数の
+// バリデーションに引きずられるため、キューへ投入できる最小の JobArgs にする。
+type scaledJobTriggerProbeArgs struct{}
+
+// Kind は River のジョブ種別名を返す。
+func (scaledJobTriggerProbeArgs) Kind() string { return "scaledjob_trigger_probe" }
+
+// TestScaledJobTriggerQueriesRunAgainstRiverSchema は KEDA の各 PostgreSQL
+// トリガクエリを migrate 済み DB で実行し、River が実際に投入した行を数えられる
+// ことを確認する。
+//
+// TestScaledJobTriggersMatchTheirQueue はクエリの文字列と期待値を比較するだけ
+// なので、River のテーブル・列・状態名が変わっても CI が緑のままになる。この
+// テストは実際の river_job に各物理キューのジョブを 1 件投入し、クエリが単一の
+// 数値として Scan でき、かつ 1 を返すところまで検査する。
+func TestScaledJobTriggerQueriesRunAgainstRiverSchema(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	client, err := worker.NewInsertOnlyClient(pool)
+	if err != nil {
+		t.Fatalf("creating insert-only River client: %v", err)
+	}
+
+	ctx := context.Background()
+	for _, w := range scaledJobs(t) {
+		args := argsOf(soleContainer(t, w))
+		q, ok := flagValue(args, "queues")
+		if !ok {
+			continue // TestScaledJobsCoverEveryQueue が報告済み
+		}
+		physical := q
+		if worker.RequiresSiteBinding([]string{q}) {
+			physical = q + "_" + baseSiteName
+		}
+		query := triggerQuery(t, w)
+
+		var before int64
+		if err := pool.QueryRow(ctx, query).Scan(&before); err != nil {
+			t.Fatalf("%s trigger query cannot Scan one numeric column: %v\nquery: %s", w.id(), err, query)
+		}
+		if before != 0 {
+			t.Fatalf("%s trigger query returned %d before its probe job, want 0", w.id(), before)
+		}
+
+		if _, err := client.Insert(ctx, scaledJobTriggerProbeArgs{}, &river.InsertOpts{Queue: physical}); err != nil {
+			t.Fatalf("inserting probe job into queue %q for %s: %v", physical, w.id(), err)
+		}
+
+		var got int64
+		if err := pool.QueryRow(ctx, query).Scan(&got); err != nil {
+			t.Fatalf("%s trigger query after insert cannot Scan one numeric column: %v\nquery: %s", w.id(), err, query)
+		}
+		if got != 1 {
+			t.Errorf("%s trigger query returned %d after one %q job, want 1", w.id(), got, physical)
 		}
 	}
 }
