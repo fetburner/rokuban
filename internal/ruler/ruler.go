@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/breaker"
@@ -613,14 +614,16 @@ func (r *Ruler) observeTrip(ctx context.Context, tq *sqlcgen.Queries, site strin
 	return deleted, newlyTripped, nil
 }
 
-// runGC は番組終了 + RetentionGrace 経過の reservations / program_intents を
-// 削除する（issue #24 M2-3、docs/schema.md §3「行の物理削除（GC）は『番組の
-// 終了時刻を過ぎた後』のみ」）。state（active/detached。orphaned は issue #98
-// で recordings 側の観測になったため、この GC はそもそも関知しない）を問わず、
-// site にも従属しない全体操作なので RunPass のサイトループの外から 1 回だけ
-// 呼ばれる。recordings.reservation_id は当時 ON DELETE SET NULL だった
-// （issue #158 で列自体を削除済み）ので、削除しても録画履歴
-// （recordings/media_assets）は失われない。
+// runGC は番組終了 + RetentionGrace 経過の reservations / program_intents と、
+// EPG の放送地平を超えた never_scheduled_events を削除する（issue #24 M2-3、
+// docs/schema.md §3「行の物理削除（GC）は『番組の終了時刻を過ぎた後』のみ」）。
+// state（active/detached。orphaned は issue #98 で recordings 側の観測になったため、
+// この GC はそもそも関知しない）を問わず、site にも従属しない全体操作なので
+// RunPass のサイトループの外から 1 回だけ呼ばれる。never_scheduled_events は
+// EPG 再露出時の同期除外ガードとしてだけ読まれるため、EPG の放送地平を超えて
+// 残す必要はなく、RetentionGrace + 30 日を寿命にする。recordings.reservation_id
+// は当時 ON DELETE SET NULL だった（issue #158 で列自体を削除済み）ので、削除しても
+// 録画履歴（recordings/media_assets）は失われない。
 //
 // **サーキットブレーカー（MaxDeletesPerPass）の対象にしない。** ブレーカーが
 // 守るのは「ルール x EPG」の評価結果から導出される削除だけで、EPG の一時的な
@@ -652,15 +655,34 @@ func (r *Ruler) runGC(ctx context.Context) error {
 		return fmt.Errorf("deleting ended program snapshots: %w", err)
 	}
 
+	// never_scheduled_events は program_snapshots への FK を持たないため、
+	// スナップショットの CASCADE では消えない。EPG の放送地平（mirakc の
+	// ローリング窓 + retention_grace）を確実に超える固定余裕として 30 日を足す。
+	// これは時刻比較だけで決まる GC なので、DeleteEndedProgramSnapshots と同様に
+	// 大量削除サーキットブレーカーの対象にせず、derivedDeletes の勘定にも混ぜない。
+	horizon := r.cfg.RetentionGrace + 30*24*time.Hour
+	deletedNeverScheduledEvents, err := q.DeleteStaleNeverScheduledEvents(ctx, postgresInterval(horizon))
+	if err != nil {
+		return fmt.Errorf("deleting stale never-scheduled events: %w", err)
+	}
+
 	metrics.RulerReservations.WithLabelValues("gc").Add(float64(deletedSnapshots))
 
-	if deletedSnapshots > 0 {
+	if deletedSnapshots > 0 || deletedNeverScheduledEvents > 0 {
 		slog.Info("ruler: GC complete",
 			"cutoff", cutoff,
 			"deleted_program_snapshots", deletedSnapshots,
+			"deleted_never_scheduled_events", deletedNeverScheduledEvents,
 		)
 	}
 	return nil
+}
+
+// postgresInterval formats a duration as an interval accepted by PostgreSQL. The
+// query intentionally receives an interval rather than an application-side cutoff
+// timestamp so the database's now() remains the clock for the age comparison.
+func postgresInterval(d time.Duration) pgtype.Interval {
+	return pgtype.Interval{Microseconds: d.Microseconds(), Valid: true}
 }
 
 // buildDeleteSample は発動時に breaker.Trip へ渡す breaker.Sample を組む。
