@@ -31,7 +31,7 @@ type SyncCandidate struct {
 	Snapshot sqlcgen.ProgramSnapshot
 	// Options は base / overrides / program_intents.action を合成した実効
 	// オプション。Err != nil のときは意味を持たない（ゼロ値）。
-	Options ReservationOptions
+	Options Options
 	// Skipped は Options.IsSkipped() の結果。Err != nil のときは意味を持たない。
 	Skipped bool
 	// Err は base / overrides の jsonb が壊れていて EffectiveOptions が失敗した

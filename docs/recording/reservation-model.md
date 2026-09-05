@@ -32,7 +32,7 @@ UI: 上書き中のフィールドにマーカー表示 + フィールド単位/
 
 #### 予約オプション一覧
 
-`reservation.ReservationOptions`（base / overrides / effective の共通の形）のフィールドと、それぞれの書き手・効く瞬間・正典の節。
+`reservation.Options`（base / overrides / effective の共通の形）のフィールドと、それぞれの書き手・効く瞬間・正典の節。
 
 | フィールド | 書き手 | いつ効くか | 正典 |
 |---|---|---|---|
@@ -52,7 +52,7 @@ UI: 上書き中のフィールドにマーカー表示 + フィールド単位/
 
 `skip` は PATCH では扱わない（`action` 列が担う）。取消は `PUT /api/sites/{site}/programs/{programId}/intent {action: skip}`（§4.4「取消」参照）。
 
-マージは **Go 側で `reservation.ReservationOptions` の型付きフィールドとして行う**。SQL で `overrides || $1::jsonb` / `overrides - $1::text[]` とやらないのは下記「jsonb を許す条件」のため。同時 PATCH の心配は要らない（Rokuban は構造的に単一世帯用アプリで認証機構を持たない。[overview.md](../overview.md) §認証）ので、`program_snapshots` 行（PATCH の前段で必ず upsert する。FK の前提）を UPSERT の行ロックで直列化する。宛先が `reservations` ではなく `(site, programId)` なので、`reservations` 行の存在に依存しない。
+マージは **Go 側で `reservation.Options` の型付きフィールドとして行う**。SQL で `overrides || $1::jsonb` / `overrides - $1::text[]` とやらないのは下記「jsonb を許す条件」のため。同時 PATCH の心配は要らない（Rokuban は構造的に単一世帯用アプリで認証機構を持たない。[overview.md](../overview.md) §認証）ので、`program_snapshots` 行（PATCH の前段で必ず upsert する。FK の前提）を UPSERT の行ロックで直列化する。宛先が `reservations` ではなく `(site, programId)` なので、`reservations` 行の存在に依存しない。
 
 #### overrides は `program_intents` とは別の表に置く
 
@@ -100,7 +100,7 @@ program_intents                  program_overrides
 | `recording_encode_policy.keep_original` / `encode_profiles`（`recordings` を指す衛星表） | 型付き列 | **する**（プロファイル別の録画一覧） |
 | `schedule_sync.options` | jsonb | しない（mirakc 固有。不変条件 7） |
 
-「オプションの組」を独立したテーブルに正規化はしない。`base` と `overrides` を判別子付きの 1 表に寄せることは上記の STI をやり直すことに等しい（base は完全 / overrides は疎、書き手が ruler / api、寿命も違う）。繰り返し現れる実体はテーブルではなく `reservation.ReservationOptions` という **Go の型**で、マージ点も `Effective()` の 1 箇所に既に正規化されている。
+「オプションの組」を独立したテーブルに正規化はしない。`base` と `overrides` を判別子付きの 1 表に寄せることは上記の STI をやり直すことに等しい（base は完全 / overrides は疎、書き手が ruler / api、寿命も違う）。繰り返し現れる実体はテーブルではなく `reservation.Options` という **Go の型**で、マージ点も `Effective()` の 1 箇所に既に正規化されている。
 
 #### ruler から見た load-bearing な行
 

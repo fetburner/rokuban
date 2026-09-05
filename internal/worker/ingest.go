@@ -38,15 +38,6 @@ const (
 	connectRetryMaxDelay  = 5 * time.Second
 )
 
-// qualityEvent は recordings.quality_events に追加する 1 件の JSON 形状。
-// DB 行型ではなく ingest の書き込み経路だけが使うペイロードなので、
-// sqlcgen のモデルや DB パッケージには置かない。
-type qualityEvent struct {
-	At     time.Time       `json:"at"`
-	Event  string          `json:"event"`
-	Reason json.RawMessage `json:"reason"`
-}
-
 // IngestWorker は mirakc からの TS ファイル転送を行う River ワーカー。
 type IngestWorker struct {
 	river.WorkerDefaults[jobs.IngestJobArgs]
@@ -580,11 +571,11 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath st
 	}
 
 	if counter.TotalScrambled() > 0 {
-		event := qualityEvent{
+		event := db.QualityEvent{
 			At:    time.Now(),
 			Event: "bcas_anomaly",
 		}
-		evJSON, err := json.Marshal([]qualityEvent{event})
+		evJSON, err := json.Marshal([]db.QualityEvent{event})
 		if err != nil {
 			return fmt.Errorf("marshalling quality event: %w", err)
 		}

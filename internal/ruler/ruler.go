@@ -780,7 +780,7 @@ func computeBase(rule sqlcgen.Rule, dedupeSkip bool) (json.RawMessage, error) {
 	keepOriginal := rule.KeepOriginal
 	profiles := slices.Clone(rule.EncodeProfiles)
 
-	opts := reservation.ReservationOptions{
+	opts := reservation.Options{
 		Priority:       &priority,
 		KeepOriginal:   &keepOriginal,
 		EncodeProfiles: &profiles,

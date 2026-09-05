@@ -36,15 +36,6 @@ type Watcher struct {
 	services []mirakc.Service
 }
 
-// qualityEvent は recordings.quality_events に追加する 1 件の JSON 形状。
-// DB 行型ではなくこのパッケージの書き込み経路だけが使うペイロードなので、
-// sqlcgen のモデルや DB パッケージには置かない。
-type qualityEvent struct {
-	At     time.Time       `json:"at"`
-	Event  string          `json:"event"`
-	Reason json.RawMessage `json:"reason"`
-}
-
 // New は Watcher を生成する。webhook は任意（nil 可）。録画 finished / failed の通知に
 // 使う（M3-11）。
 func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, rc *river.Client[pgx5.Tx], wh *webhook.Client) *Watcher {
@@ -423,12 +414,12 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 	if err != nil {
 		return fmt.Errorf("marshalling failed reason: %w", err)
 	}
-	qe := qualityEvent{
+	qe := db.QualityEvent{
 		At:     time.Now(),
 		Event:  "recording.failed",
 		Reason: reasonJSON,
 	}
-	qeJSON, err := json.Marshal([]qualityEvent{qe})
+	qeJSON, err := json.Marshal([]db.QualityEvent{qe})
 	if err != nil {
 		return fmt.Errorf("marshalling quality events: %w", err)
 	}
@@ -532,12 +523,12 @@ func (w *Watcher) handleRecordBroken(ctx context.Context, data mirakc.RecordBrok
 	if err != nil {
 		return fmt.Errorf("marshalling broken reason: %w", err)
 	}
-	qe := qualityEvent{
+	qe := db.QualityEvent{
 		At:     time.Now(),
 		Event:  "recording.record-broken",
 		Reason: reasonJSON,
 	}
-	qeJSON, err := json.Marshal([]qualityEvent{qe})
+	qeJSON, err := json.Marshal([]db.QualityEvent{qe})
 	if err != nil {
 		return fmt.Errorf("marshalling quality events: %w", err)
 	}

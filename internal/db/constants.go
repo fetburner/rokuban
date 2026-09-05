@@ -11,12 +11,11 @@ package db
 const DefaultSite = "default"
 
 // 予約状態のラベル。Phase 1 以降、`reservations.state` という列は存在しない。
-// active/detached は (rule_id, base) から、orphaned は recordings の存在から
-// 導出する。この定数はテスト・ログでの表記を揃えるためだけに残す。
+// active/detached は (rule_id, base) から導出する。この定数はテスト・ログでの
+// 表記を揃えるためだけに残す。
 const (
 	ReservationStateActive   = "active"
 	ReservationStateDetached = "detached"
-	ReservationStateOrphaned = "orphaned"
 )
 
 // 録画ステータス。mirakc の RecordInfo.Status と recordings の CHECK 制約で使う。
@@ -32,11 +31,4 @@ const (
 	AssetKindOriginal  = "original"
 	AssetKindEncoded   = "encoded"
 	AssetKindThumbnail = "thumbnail"
-)
-
-// メディアアセット状態。
-const (
-	AssetStateActive   = "active"
-	AssetStateDeleting = "deleting"
-	AssetStateDeleted  = "deleted"
 )

@@ -1,8 +1,8 @@
-// Package reservation contains the domain rules for program reservations.
+// Package reservation は番組予約のドメインルールを持つ。
 //
-// The package also owns recording provenance derived from a program's intent.
-// That rule stays here because it answers the reservation-domain question of
-// whether a recording was explicitly requested or only produced by a rule;
-// splitting it into a recording package would separate the rule from the
-// intent it reads without adding another implementation or abstraction.
+// このパッケージは番組の意図（intent）から導出する録画の由来（provenance）も
+// 持つ。このルールは「録画が明示的に要求されたのか、ルールが産んだだけなのか」
+// という予約ドメインの問いに答えるものなのでここに置く。recording パッケージに
+// 切り出すと、ルールと、それが読む intent が分かれてしまい、実装や抽象化が
+// 増えるわけでもない。
 package reservation

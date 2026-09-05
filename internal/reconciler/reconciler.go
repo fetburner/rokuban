@@ -403,7 +403,7 @@ func (r *Reconciler) observeSchedules(ctx context.Context, schedules []mirakc.Sc
 type desiredReservation struct {
 	res  sqlcgen.Reservation
 	snap sqlcgen.ProgramSnapshot
-	opts reservation.ReservationOptions
+	opts reservation.Options
 }
 
 // listDesired は mirakc への同期対象を返す。
@@ -476,7 +476,7 @@ func programEnded(snap sqlcgen.ProgramSnapshot, now time.Time) bool {
 // オプション差分反映の再作成（recreateSchedule）の両方から呼ばれる必要が
 // あるため、この 1 箇所に抽出してある。同じ式を 2 箇所に書き下すと、片方だけ
 // 直してもう片方を直し忘れる事故が起きる。
-func effectivePriority(defaultPriority int, opts reservation.ReservationOptions) int {
+func effectivePriority(defaultPriority int, opts reservation.Options) int {
 	if opts.Priority != nil {
 		return *opts.Priority
 	}
@@ -491,7 +491,7 @@ func effectivePriority(defaultPriority int, opts reservation.ReservationOptions)
 // （ruler の computeBase が意図的に除外している）。ruler が base に contentPath を
 // 載せるようになったらこの同値が崩れ、テンプレート生成値が差分対象に混ざって
 // #19 が潰した churn が戻る。
-func explicitContentPath(opts reservation.ReservationOptions) (string, bool) {
+func explicitContentPath(opts reservation.Options) (string, bool) {
 	if opts.ContentPath == nil || *opts.ContentPath == "" {
 		return "", false
 	}
@@ -542,12 +542,12 @@ func buildContentPath(snap sqlcgen.ProgramSnapshot, template string) (string, er
 // issue #101 で program_snapshots のチャンネル・イベント識別 6 列が
 // NOT NULL 化され、service_id が NULL になる状態自体が表現不可能になった
 // （起きない状態のための分岐を残さない）。
-func resolveContentPath(res sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, opts reservation.ReservationOptions) (string, error) {
+func resolveContentPath(res sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, opts reservation.Options) (string, error) {
 	// contentPath は filenameTemplate（ruler が base に載せたテンプレート、または
 	// ユーザーの明示的な上書き）があればそれを展開し、なければ従来の固定形式
 	// （buildContentPath 参照）。ContentPath（フルパスの直接指定）が別途あれば
 	// そちらが最終的に勝つ — 展開結果よりユーザーの明示指定を優先する
-	// （reservation.ReservationOptions のドキュメントコメント参照）。
+	// （reservation.Options のドキュメントコメント参照）。
 	template := ""
 	if opts.FilenameTemplate != nil {
 		template = *opts.FilenameTemplate

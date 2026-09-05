@@ -16,6 +16,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
+	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reservation"
@@ -896,7 +897,7 @@ func TestHandleRecordBroken(t *testing.T) {
 		t.Fatalf("querying quality_events: %v", err)
 	}
 
-	var events []qualityEvent
+	var events []db.QualityEvent
 	if err := json.Unmarshal(qeJSON, &events); err != nil {
 		t.Fatalf("unmarshalling quality_events: %v", err)
 	}
@@ -1000,7 +1001,7 @@ func TestHandleRecordingFailed_Idempotent(t *testing.T) {
 		t.Fatalf("querying quality_events: %v", err)
 	}
 
-	var events []qualityEvent
+	var events []db.QualityEvent
 	if err := json.Unmarshal(qeJSON, &events); err != nil {
 		t.Fatalf("unmarshalling quality_events: %v", err)
 	}

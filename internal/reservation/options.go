@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// ReservationOptions は reservations.base / overrides の jsonb 構造。
+// Options は reservations.base / overrides の jsonb 構造。
 // jsonb 内は camelCase（Go/JSON 規約）。
 // EncodeProfiles は *[]string: nil=未指定、&[]string{}=エンコードなし override。
 //
@@ -17,7 +17,7 @@ import (
 // （internal/api/rules.go の validateRuleInput）。ContentPath（フルパスの直接
 // 指定）とは別物で、両方指定された場合は ContentPath が勝つ
 // （reconciler.createSchedule 参照）。
-type ReservationOptions struct {
+type Options struct {
 	Skip             *bool     `json:"skip,omitempty"`
 	Priority         *int      `json:"priority,omitempty"`
 	ContentPath      *string   `json:"contentPath,omitempty"`
@@ -34,15 +34,15 @@ type ReservationOptions struct {
 // 「skip か」という判断が名前を持たないまま散らばっていたことが issue #54 の
 // 見逃し（クエリ名が絞り込み済みだと嘘をつき、shadow-diff がこの判定を書き忘れた）
 // の土壌になった。
-func (o ReservationOptions) IsSkipped() bool {
+func (o Options) IsSkipped() bool {
 	return o.Skip != nil && *o.Skip
 }
 
 // Effective は base に overrides をマージした結果を返す。
-func (o *ReservationOptions) Effective(base *ReservationOptions) ReservationOptions {
+func (o *Options) Effective(base *Options) Options {
 	if base == nil {
 		if o == nil {
-			return ReservationOptions{}
+			return Options{}
 		}
 		return *o
 	}
@@ -89,21 +89,21 @@ func (o *ReservationOptions) Effective(base *ReservationOptions) ReservationOpti
 //
 // action は overrides とは別表（program_intents）にあるので base 側の skip を
 // 上書きする形になり、jsonb マージに細工を仕込む必要がない。
-func EffectiveOptions(base, overrides []byte, intentAction *string) (ReservationOptions, error) {
-	var b *ReservationOptions
+func EffectiveOptions(base, overrides []byte, intentAction *string) (Options, error) {
+	var b *Options
 	if len(base) > 0 {
-		var v ReservationOptions
+		var v Options
 		if err := json.Unmarshal(base, &v); err != nil {
-			return ReservationOptions{}, fmt.Errorf("unmarshalling base: %w", err)
+			return Options{}, fmt.Errorf("unmarshalling base: %w", err)
 		}
 		b = &v
 	}
 
-	var o *ReservationOptions
+	var o *Options
 	if len(overrides) > 0 {
-		var v ReservationOptions
+		var v Options
 		if err := json.Unmarshal(overrides, &v); err != nil {
-			return ReservationOptions{}, fmt.Errorf("unmarshalling overrides: %w", err)
+			return Options{}, fmt.Errorf("unmarshalling overrides: %w", err)
 		}
 		o = &v
 	}

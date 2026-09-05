@@ -40,7 +40,7 @@ type GetProgramOverridesParams struct {
 // 番組単位のパラメータ上書き（M2-4 で program_intents から分離。issue #18
 // の案 A の続き）。api だけが書き、ruler は読むだけ（program_intents と同じ規律）。
 //
-// overrides の中身は internal/api がマージする（reservation.ReservationOptions の型付き
+// overrides の中身は internal/api がマージする（reservation.Options の型付き
 // フィールドとして。docs/recording.md §4.2「jsonb を許す条件」）。SQL 側は
 // 常に上書き後の完成形を受け取って書くだけで、jsonb の内容を検査・加工しない。
 func (q *Queries) GetProgramOverrides(ctx context.Context, arg GetProgramOverridesParams) (ProgramOverride, error) {

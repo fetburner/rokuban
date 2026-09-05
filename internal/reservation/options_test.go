@@ -2,7 +2,7 @@ package reservation
 
 import "testing"
 
-func TestReservationOptions_Effective(t *testing.T) {
+func TestOptions_Effective(t *testing.T) {
 	priority1 := 1
 	priority2 := 2
 	skip := true
@@ -10,13 +10,13 @@ func TestReservationOptions_Effective(t *testing.T) {
 	keepOrig := "untilEncoded"
 
 	profiles := []string{"h265-1080p"}
-	base := &ReservationOptions{
+	base := &Options{
 		Priority:       &priority1,
 		ContentPath:    &path,
 		EncodeProfiles: &profiles,
 		KeepOriginal:   &keepOrig,
 	}
-	overrides := &ReservationOptions{
+	overrides := &Options{
 		Skip:     &skip,
 		Priority: &priority2,
 	}
@@ -40,9 +40,9 @@ func TestReservationOptions_Effective(t *testing.T) {
 	}
 }
 
-func TestReservationOptions_EffectiveNilBase(t *testing.T) {
+func TestOptions_EffectiveNilBase(t *testing.T) {
 	skip := true
-	overrides := &ReservationOptions{Skip: &skip}
+	overrides := &Options{Skip: &skip}
 	eff := overrides.Effective(nil)
 	if eff.Skip == nil || !*eff.Skip {
 		t.Error("manual reservation: skip should be true from overrides alone")

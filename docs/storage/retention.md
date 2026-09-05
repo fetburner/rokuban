@@ -61,7 +61,7 @@ GC 済みのスナップショットの上で ingest が走った場合に何が
 ### 書き込みの冪等性・型変換・安全側クランプ
 
 - **冪等性**: `FreezeRecordingEncodePolicy` は `ON CONFLICT` を持たない素の INSERT で、既存の派生物の有無を見て分岐しない。これは「この tx は録画ごとに 1 回しか実行されない」という別の不変（`internal/worker/ingest.go` の `Work` が転送開始前に原本 media_asset の有無で冪等性チェックする）に依っている。一部のエンコードが既に完了しているからといって desired を空に戻す分岐を作らない
-- **`EncodeProfiles` の nil**: `reservation.ReservationOptions.EncodeProfiles`（`*[]string`）は nil=未指定 / `&[]string{}`=明示的な「エンコードなし」を区別する。しかし `recording_encode_policy.encode_profiles` は NOT NULL text[] で「未指定」という第三の状態を表現できないため、凍結時は両者を等しく `'{}'` に潰す。区別が必要な場面（override の差分表示等）は `program_overrides.overrides` 自身に当たればよく、このスナップショットの役目ではない
+- **`EncodeProfiles` の nil**: `reservation.Options.EncodeProfiles`（`*[]string`）は nil=未指定 / `&[]string{}`=明示的な「エンコードなし」を区別する。しかし `recording_encode_policy.encode_profiles` は NOT NULL text[] で「未指定」という第三の状態を表現できないため、凍結時は両者を等しく `'{}'` に潰す。区別が必要な場面（override の差分表示等）は `program_overrides.overrides` 自身に当たればよく、このスナップショットの役目ではない
 - **クランプ**: ルールと override はそれぞれ自分の表の中では `keepOriginal='until_encoded'` に `encodeProfiles` が空という組み合わせを禁止する CHECK を満たしている。それでも `EffectiveOptions` のマージ結果としてこのドリフトが生成されうる。`recording_encode_policy` にも同じ組み合わせを禁止する CHECK（下記「条件 2 の『全プロファイル完備』」参照）がある。実効値をそのまま書くとこの INSERT は CHECK 違反でロールバックする。原本 media_asset の INSERT と同一 tx なので、そのロールバックは**録画そのものの消失**に直結する（不変条件 3「コミット = DB 行」）。原本を失うリスクを負ってまで守る価値のある不変ではないので、書く直前に安全側へ倒す。実効的な `encodeProfiles` が空で `keepOriginal` が `until_encoded` なら `always` に倒してから書く。ユーザーの意図（override の値そのもの）は `program_overrides` 側に残るので失われない。失われるのはこの録画のスナップショットにおける効力だけで、次にルールがプロファイルを持てば別の録画では正しく `until_encoded` になる
 
 ### 安全性

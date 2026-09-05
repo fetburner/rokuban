@@ -259,7 +259,7 @@ func TestGetReservation_BrokenBaseJSONFails(t *testing.T) {
 	const programID int64 = 1150000115081234
 	ruleID := insertRuleFixture(t, pool, ctx)
 	insertReservationDirect(t, pool, ctx, programID, &ruleID, 11500, 1150)
-	// jsonb として妥当だが ReservationOptions にデコードできない値を入れる。
+	// jsonb として妥当だが Options にデコードできない値を入れる。
 	if _, err := pool.Exec(ctx,
 		`UPDATE reservations SET base = '{"skip":"yes"}'::jsonb WHERE site = 'default' AND program_id = $1`, programID); err != nil {
 		t.Fatalf("corrupting base: %v", err)

@@ -16,12 +16,6 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-type qualityEvent struct {
-	At     time.Time       `json:"at"`
-	Event  string          `json:"event"`
-	Reason json.RawMessage `json:"reason"`
-}
-
 func seedRecording(t *testing.T, pool *pgxpool.Pool, title string, start time.Time, status string, eventID int32) int64 {
 	t.Helper()
 	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
@@ -312,7 +306,7 @@ func TestListRecordings_QualityEvents(t *testing.T) {
 
 	id := seedRecording(t, pool, "問題あり", time.Now().Truncate(time.Second), "failed", 1)
 
-	events, err := json.Marshal([]qualityEvent{{At: time.Now(), Event: "bcas_anomaly"}})
+	events, err := json.Marshal([]db.QualityEvent{{At: time.Now(), Event: "bcas_anomaly"}})
 	if err != nil {
 		t.Fatalf("marshalling events: %v", err)
 	}
@@ -1193,7 +1187,7 @@ func TestGetRecording_MatchesListElement(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed encoded: %v", err)
 	}
-	events, err := json.Marshal([]qualityEvent{{At: base, Event: "bcas_anomaly"}})
+	events, err := json.Marshal([]db.QualityEvent{{At: base, Event: "bcas_anomaly"}})
 	if err != nil {
 		t.Fatalf("marshalling events: %v", err)
 	}

@@ -171,7 +171,7 @@ func basePriority(t *testing.T, raw []byte) *int {
 	if len(raw) == 0 {
 		return nil
 	}
-	var opts reservation.ReservationOptions
+	var opts reservation.Options
 	if err := json.Unmarshal(raw, &opts); err != nil {
 		t.Fatalf("unmarshalling base %s: %v", raw, err)
 	}
