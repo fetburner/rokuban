@@ -30,6 +30,7 @@ import (
 
 	"github.com/goccy/go-yaml"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
@@ -108,6 +109,22 @@ func soleContainer(t *testing.T, w workload) map[string]any {
 		t.Fatalf("%s (%s) has %d containers, want exactly 1", w.id(), w.dir, len(cs))
 	}
 	return cs[0]
+}
+
+// physicalQueue は ScaledJob が `--queues` で購読する論理キュー名を、実際に
+// River へ積まれる物理キュー名に直す（site 束縛キューは `_<site>` が付く）。
+// `--queues` が無い場合は ok=false を返す（呼び出し元は
+// TestScaledJobsCoverEveryQueue が報告済みとして continue する）。
+func physicalQueue(t *testing.T, w workload) (string, bool) {
+	t.Helper()
+	q, ok := flagValue(argsOf(soleContainer(t, w)), "queues")
+	if !ok {
+		return "", false
+	}
+	if worker.RequiresSiteBinding([]string{q}) {
+		return q + "_" + baseSiteName, true
+	}
+	return q, true
 }
 
 // --- ScaledJob --------------------------------------------------------------
@@ -311,20 +328,20 @@ func triggerQuery(t *testing.T, w workload) string {
 // `retryable` を落とすと、失敗したジョブを `available` へ戻す `JobScheduler` を
 // 動かす常駐クライアントがロール分割構成には居ないので、**失敗したジョブが
 // 永久に止まる**。
+//
+// **状態名は rivertype の定数から組む。** 「実装の定数と比較するテストは
+// 何も主張していない」の例外にあたる --- 照合される YAML 側はチェックイン済みの
+// リテラルであり、定数は River という外部依存が持つものなので、River が状態名を
+// 改名すれば YAML 側は追随せず `want` だけが動いて赤くなる。
 func TestScaledJobTriggersMatchTheirQueue(t *testing.T) {
 	for _, w := range scaledJobs(t) {
-		args := argsOf(soleContainer(t, w))
-		q, ok := flagValue(args, "queues")
+		physical, ok := physicalQueue(t, w)
 		if !ok {
 			continue // TestScaledJobsCoverEveryQueue が報告済み
 		}
-		physical := q
-		if worker.RequiresSiteBinding([]string{q}) {
-			physical = q + "_" + baseSiteName
-		}
 		want := fmt.Sprintf(
-			"SELECT count(*) FROM river_job WHERE queue = '%s' AND state IN ('available','retryable')",
-			physical)
+			"SELECT count(*) FROM river_job WHERE queue = '%s' AND state IN ('%s','%s')",
+			physical, rivertype.JobStateAvailable, rivertype.JobStateRetryable)
 		if got := triggerQuery(t, w); got != want {
 			t.Errorf("%s trigger query\n got: %s\nwant: %s", w.id(), got, want)
 		}
@@ -344,9 +361,11 @@ func (scaledJobTriggerProbeArgs) Kind() string { return "scaledjob_trigger_probe
 // ことを確認する。
 //
 // TestScaledJobTriggersMatchTheirQueue はクエリの文字列と期待値を比較するだけ
-// なので、River のテーブル・列・状態名が変わっても CI が緑のままになる。この
-// テストは実際の river_job に各物理キューのジョブを 1 件投入し、クエリが単一の
-// 数値として Scan でき、かつ 1 を返すところまで検査する。
+// なので、River の**テーブル名・列名**が変わっても CI が緑のままになる。この
+// テストは実際の river_job に `available` 状態のジョブを 1 件投入し、クエリが
+// 単一の数値として Scan でき、かつ 1 を返すところまで検査する
+// （`retryable` は対象外 --- カバーは TestScaledJobTriggersMatchTheirQueue が
+// rivertype の定数照合で担う）。
 func TestScaledJobTriggerQueriesRunAgainstRiverSchema(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	client, err := worker.NewInsertOnlyClient(pool)
@@ -356,14 +375,9 @@ func TestScaledJobTriggerQueriesRunAgainstRiverSchema(t *testing.T) {
 
 	ctx := context.Background()
 	for _, w := range scaledJobs(t) {
-		args := argsOf(soleContainer(t, w))
-		q, ok := flagValue(args, "queues")
+		physical, ok := physicalQueue(t, w)
 		if !ok {
 			continue // TestScaledJobsCoverEveryQueue が報告済み
-		}
-		physical := q
-		if worker.RequiresSiteBinding([]string{q}) {
-			physical = q + "_" + baseSiteName
 		}
 		query := triggerQuery(t, w)
 
@@ -372,7 +386,11 @@ func TestScaledJobTriggerQueriesRunAgainstRiverSchema(t *testing.T) {
 			t.Fatalf("%s trigger query cannot Scan one numeric column: %v\nquery: %s", w.id(), err, query)
 		}
 		if before != 0 {
-			t.Fatalf("%s trigger query returned %d before its probe job, want 0", w.id(), before)
+			// 2 本の ScaledJob が同じ物理キューを持つと起きる。それは
+			// TestScaledJobsCoverEveryQueue がもっと良いメッセージで報告済み
+			// なので、ここで残り 8 本の検査を止めない。
+			t.Errorf("%s trigger query returned %d before its probe job, want 0", w.id(), before)
+			continue
 		}
 
 		if _, err := client.Insert(ctx, scaledJobTriggerProbeArgs{}, &river.InsertOpts{Queue: physical}); err != nil {
