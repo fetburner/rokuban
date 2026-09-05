@@ -273,9 +273,12 @@ export function RecordingsPage() {
     setPurgeConfirmOpen(false)
   }
 
-  // autoLoadFailed: 直近の自動読み込みが失敗したか。失敗したらボタン + エラー
-  // 表示に落とし、番兵が可視のままでも自動では再試行しない（さもないと失敗した
-  // まま無限にリクエストを投げ続ける。pages/programs.tsx と同じ規律）。
+  // autoLoadFailed: 直近の自動読み込みが失敗したか。番兵が可視のままでも自動
+  // では再試行しない（さもないと失敗したまま無限にリクエストを投げ続ける）。
+  // このページではエラー文言は持たない --- 失敗すると `query.isError` が立ち、
+  // 一覧ごと外側の `<ErrorState>` に差し替わるため、番兵の傍にインラインで
+  // 出す余地が無い（pages/programs.tsx は同じブロックが三項の外側にあるので
+  // そちらには文言がある）。
   const autoLoadFailed = query.isFetchNextPageError
   const paramsKey = JSON.stringify(listParams)
   useEffect(() => {
