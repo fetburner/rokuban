@@ -13,7 +13,7 @@ import (
 const createManualReservation = `-- name: CreateManualReservation :one
 INSERT INTO reservations (site, program_id)
 VALUES ($1, $2)
-RETURNING id, site, program_id, rule_id, base, created_at, updated_at, dedup_match_recording_id, dedup_similarity
+RETURNING site, program_id, rule_id, base, created_at, updated_at, dedup_match_recording_id, dedup_similarity
 `
 
 type CreateManualReservationParams struct {
@@ -42,7 +42,6 @@ func (q *Queries) CreateManualReservation(ctx context.Context, arg CreateManualR
 	row := q.db.QueryRow(ctx, createManualReservation, arg.Site, arg.ProgramID)
 	var i Reservation
 	err := row.Scan(
-		&i.ID,
 		&i.Site,
 		&i.ProgramID,
 		&i.RuleID,
@@ -102,25 +101,8 @@ func (q *Queries) CreateNeverScheduledEvent(ctx context.Context, arg CreateNever
 	return result.RowsAffected(), nil
 }
 
-const getReservation = `-- name: GetReservation :one
-SELECT id, rule_id FROM reservations
-WHERE id = $1
-`
-
-type GetReservationRow struct {
-	ID     int64
-	RuleID *int64
-}
-
-func (q *Queries) GetReservation(ctx context.Context, id int64) (GetReservationRow, error) {
-	row := q.db.QueryRow(ctx, getReservation, id)
-	var i GetReservationRow
-	err := row.Scan(&i.ID, &i.RuleID)
-	return i, err
-}
-
 const getReservationBySiteAndProgramID = `-- name: GetReservationBySiteAndProgramID :one
-SELECT id, rule_id, base FROM reservations
+SELECT rule_id, base FROM reservations
 WHERE site = $1 AND program_id = $2
 `
 
@@ -130,24 +112,23 @@ type GetReservationBySiteAndProgramIDParams struct {
 }
 
 type GetReservationBySiteAndProgramIDRow struct {
-	ID     int64
 	RuleID *int64
 	Base   json.RawMessage
 }
 
 // base も返す（issue #104: PatchProgramOverrides が「既存 override + このパッチ +
 // ルールの base」をマージした実効値を検証するために必要）。既存の呼び出し元
-// （internal/watcher, internal/reconciler）は ID / RuleID しか見ていないので
+// （internal/watcher, internal/reconciler）は RuleID しか見ていないので
 // 列追加の影響を受けない。
 func (q *Queries) GetReservationBySiteAndProgramID(ctx context.Context, arg GetReservationBySiteAndProgramIDParams) (GetReservationBySiteAndProgramIDRow, error) {
 	row := q.db.QueryRow(ctx, getReservationBySiteAndProgramID, arg.Site, arg.ProgramID)
 	var i GetReservationBySiteAndProgramIDRow
-	err := row.Scan(&i.ID, &i.RuleID, &i.Base)
+	err := row.Scan(&i.RuleID, &i.Base)
 	return i, err
 }
 
 const getReservationFullBySiteAndProgramID = `-- name: GetReservationFullBySiteAndProgramID :one
-SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, s.event_id, s.service_name, i.action AS intent_action, o.overrides AS overrides,
+SELECT r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, s.event_id, s.service_name, i.action AS intent_action, o.overrides AS overrides,
        (EXISTS (
            SELECT 1 FROM never_scheduled_events nse
            WHERE nse.site = r.site
@@ -198,17 +179,15 @@ type GetReservationFullBySiteAndProgramIDRow struct {
 // 見ず、一度欠測と書いたイベントを対象に戻さないので、表示とは意図的に別の述語
 // である。
 //
-// 宛先は r.id ではなく (site, program_id)（issue #99）。書き込み側
-// （program_intents / program_overrides、issue #29）は既にこのキーに寄っていたが、
-// 読み取り（UI のディープリンク・クエリキャッシュ）は reservations.id という
-// ruler の導出削除・再実体化で変わりうる不安定な値のままだった。
-// UNIQUE (site, program_id) が既にあるのでキーとして成立する（#53 が mirakc の
-// tag を program:{programId} に変えたのと同じ論法）。
+// 宛先は (site, program_id)（issue #99）。書き込み側
+// （program_intents / program_overrides、issue #29）は既にこのキーに寄っており、
+// reservations 自体もこの複合キーを主キーとして持つ。予約行が ruler の導出削除・
+// 再実体化を跨いでも、このキーは変わらない（#53 が mirakc の tag を
+// program:{programId} に変えたのと同じ論法）。
 func (q *Queries) GetReservationFullBySiteAndProgramID(ctx context.Context, arg GetReservationFullBySiteAndProgramIDParams) (GetReservationFullBySiteAndProgramIDRow, error) {
 	row := q.db.QueryRow(ctx, getReservationFullBySiteAndProgramID, arg.Site, arg.ProgramID)
 	var i GetReservationFullBySiteAndProgramIDRow
 	err := row.Scan(
-		&i.Reservation.ID,
 		&i.Reservation.Site,
 		&i.Reservation.ProgramID,
 		&i.Reservation.RuleID,
@@ -237,7 +216,7 @@ func (q *Queries) GetReservationFullBySiteAndProgramID(ctx context.Context, arg 
 }
 
 const listReservationsForSyncEvaluation = `-- name: ListReservationsForSyncEvaluation :many
-SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, s.event_id, s.service_name, i.action AS intent_action, o.overrides AS overrides
+SELECT r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, s.event_id, s.service_name, i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
@@ -245,12 +224,10 @@ LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
 WHERE r.site = $1
   AND NOT EXISTS (
       SELECT 1 FROM never_scheduled_events nse
-      -- 宛先のキーは**放送イベント**であって予約 id ではない。
-      -- reservations.id は ruler の導出削除・再実体化で変わる不安定な値で
-      -- （#53 が mirakc の tag を program:{programId} に移した理由。#99 も同じ）、
-      -- recordings.reservation_id（issue #158 で列自体を削除済み）は当時 ON DELETE SET NULL だった。予約 id で
-      -- 引くと、EPG フリッカーやルール編集で予約行が作り直された瞬間に
-      -- 「欠測行が無い」ことになり、終了済み予約が毎パス desired に
+      -- 宛先のキーは**放送イベント**であって予約行の導出キーではない。
+      -- 予約行の再実体化に依存すると、EPG フリッカーやルール編集で予約行が作り直された瞬間に
+      -- recordings.reservation_id（issue #158 で列自体を削除済み）は当時 ON DELETE SET NULL だった。予約行のキーで
+      -- 引いた観測が切れ、「欠測行が無い」ことになり、終了済み予約が毎パス desired に
       -- 戻り続ける（CLAUDE.md 不変条件 9 の identity: 導出器が作るキーを
       -- 宛先にしない）。
       WHERE nse.site = r.site
@@ -324,7 +301,6 @@ func (q *Queries) ListReservationsForSyncEvaluation(ctx context.Context, site st
 	for rows.Next() {
 		var i ListReservationsForSyncEvaluationRow
 		if err := rows.Scan(
-			&i.Reservation.ID,
 			&i.Reservation.Site,
 			&i.Reservation.ProgramID,
 			&i.Reservation.RuleID,
@@ -359,7 +335,7 @@ func (q *Queries) ListReservationsForSyncEvaluation(ctx context.Context, site st
 }
 
 const listReservationsFull = `-- name: ListReservationsFull :many
-SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, s.event_id, s.service_name, i.action AS intent_action, o.overrides AS overrides,
+SELECT r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, s.event_id, s.service_name, i.action AS intent_action, o.overrides AS overrides,
        (EXISTS (
            SELECT 1 FROM never_scheduled_events nse
            WHERE nse.site = r.site
@@ -404,7 +380,6 @@ func (q *Queries) ListReservationsFull(ctx context.Context) ([]ListReservationsF
 	for rows.Next() {
 		var i ListReservationsFullRow
 		if err := rows.Scan(
-			&i.Reservation.ID,
 			&i.Reservation.Site,
 			&i.Reservation.ProgramID,
 			&i.Reservation.RuleID,

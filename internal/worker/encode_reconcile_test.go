@@ -72,7 +72,7 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 
 	programID := int64(900000000163001)
 	res := insertProgramSnapshotAndReservation(t, pool, programID, "ヒントを落とす番組")
-	setReservationBase(t, pool, res.ID, `{"keepOriginal":"always","encodeProfiles":["h265"]}`)
+	setReservationBase(t, pool, res.ProgramID, `{"keepOriginal":"always","encodeProfiles":["h265"]}`)
 
 	recordingID := insertTestRecordingForReservation(t, pool, programID)
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-163-lost-hint", programID)

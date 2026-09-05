@@ -25,7 +25,6 @@ import (
 // reservationDedupeResp は本ファイルで確認したいフィールドだけを持つ。
 // dedup 2 列と skip は他のテストのデコード用型に含まれていないので別に定義する。
 type reservationDedupeResp struct {
-	Id                    int64    `json:"id"`
 	Skip                  bool     `json:"skip"`
 	DedupMatchRecordingId *int64   `json:"dedupMatchRecordingId"`
 	DedupSimilarity       *float32 `json:"dedupSimilarity"`
@@ -259,10 +258,10 @@ func TestGetReservation_BrokenBaseJSONFails(t *testing.T) {
 
 	const programID int64 = 1150000115081234
 	ruleID := insertRuleFixture(t, pool, ctx)
-	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 11500, 1150)
+	insertReservationDirect(t, pool, ctx, programID, &ruleID, 11500, 1150)
 	// jsonb として妥当だが ReservationOptions にデコードできない値を入れる。
 	if _, err := pool.Exec(ctx,
-		`UPDATE reservations SET base = '{"skip":"yes"}'::jsonb WHERE id = $1`, resID); err != nil {
+		`UPDATE reservations SET base = '{"skip":"yes"}'::jsonb WHERE site = 'default' AND program_id = $1`, programID); err != nil {
 		t.Fatalf("corrupting base: %v", err)
 	}
 

@@ -67,7 +67,6 @@ function stubDetailFetch() {
     createdAt: '2026-01-01T00:30:00Z',
   }
   const reservation: Reservation = {
-    id: 1,
     site: 'default',
     programId: 1,
     source: 'manual',

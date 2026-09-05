@@ -32,7 +32,6 @@ function sampleReservation(
   state: Reservation['state'] = 'active',
 ): Reservation {
   return {
-    id,
     site: 'default',
     programId: 1000 + id,
     source: 'rule',

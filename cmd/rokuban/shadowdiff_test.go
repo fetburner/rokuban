@@ -71,8 +71,8 @@ func TestRunShadowDiff_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating reservation 5: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE reservations SET base = $1 WHERE id = $2`,
-		[]byte(`{"skip": true}`), res5.ID); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE reservations SET base = $1 WHERE site = $2 AND program_id = $3`,
+		[]byte(`{"skip": true}`), res5.Site, res5.ProgramID); err != nil {
 		t.Fatalf("setting base.skip for reservation 5: %v", err)
 	}
 

@@ -111,7 +111,6 @@ VALUES ($1, 0, 'name', 'keyword', $2, true, false)`, ruleID, keyword)
 // source 列は issue #26 で削除済み（手動/ルール由来の区別は program_intents /
 // rule_id から導出する。本ファイルにはこの列を前提にしたテストを置かない）。
 type reservationRow struct {
-	ID                    int64
 	RuleID                *int64
 	State                 string
 	Base                  []byte
@@ -145,13 +144,13 @@ func getReservation(t *testing.T, pool *pgxpool.Pool, ctx context.Context, progr
 	t.Helper()
 	var r reservationRow
 	err := pool.QueryRow(ctx, `
-SELECT r.id, r.rule_id, r.base, s.title, s.start_at, s.duration_ms,
+SELECT r.rule_id, r.base, s.title, s.start_at, s.duration_ms,
        s.network_id, s.service_id, s.channel_type, s.channel,
        r.dedup_match_recording_id, r.dedup_similarity, r.updated_at
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 WHERE r.site = $1 AND r.program_id = $2`, testSite, programID).Scan(
-		&r.ID, &r.RuleID, &r.Base, &r.Title, &r.ProgramStartAt, &r.ProgramDurationMs,
+		&r.RuleID, &r.Base, &r.Title, &r.ProgramStartAt, &r.ProgramDurationMs,
 		&r.NetworkID, &r.ServiceID, &r.ChannelType, &r.Channel,
 		&r.DedupMatchRecordingID, &r.DedupSimilarity, &r.UpdatedAt,
 	)
@@ -893,10 +892,10 @@ func TestRunPass_CircuitBreakerBlocksBulkDelete(t *testing.T) {
 }
 
 // ルールを削除ではなく無効化しても（ListEnabledRules から外れる）、
-// program_overrides を持つ予約行は同一 id のまま detached（rule_id = NULL）として
+// program_overrides を持つ予約行は同じ複合キーのまま detached（rule_id = NULL）として
 // 生き残ることの回帰テスト。
 //
-// program_overrides を先に足しておくことで、ルール無効化後も予約行自体（reservation_id）は
+// program_overrides を先に足しておくことで、ルール無効化後も予約行自体は
 // detached として生存させる。この経路は TestRunPass_EpgUnmatchNullsRuleIDButInvestmentBlocksRelease
 // （EPG 欠損による rule_id NULL 化）とは別で、ルール無効化によって winner から
 // 一切マッチしなくなる経路をカバーするのはこのテストだけ。
@@ -926,7 +925,7 @@ func TestRunPass_DisablingRuleDetachesReservationWithInvestment(t *testing.T) {
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
-	res, ok := getReservation(t, pool, ctx, 31001)
+	_, ok := getReservation(t, pool, ctx, 31001)
 	if !ok {
 		t.Fatal("reservation should be created initially (rule matches)")
 	}
@@ -945,9 +944,6 @@ func TestRunPass_DisablingRuleDetachesReservationWithInvestment(t *testing.T) {
 	}
 	if res2.RuleID != nil {
 		t.Fatalf("rule_id = %v, want nil after detaching", res2.RuleID)
-	}
-	if res2.ID != res.ID {
-		t.Fatalf("reservation id changed: %d -> %d (test assumption broken: the row must survive, not be recreated)", res.ID, res2.ID)
 	}
 }
 
@@ -2135,9 +2131,6 @@ func TestRunPass_RetractGrace_KeepsImminentUnmatch(t *testing.T) {
 	if !ok {
 		t.Fatal("reservation should survive the grace period, not be deleted")
 	}
-	if after.ID != before.ID {
-		t.Errorf("reservation id changed: %d -> %d (grace must freeze the row, not recreate it)", before.ID, after.ID)
-	}
 	if after.RuleID == nil || *after.RuleID != *before.RuleID {
 		t.Errorf("rule_id = %v, want unchanged %v (grace leaves the row untouched)", after.RuleID, before.RuleID)
 	}
@@ -2434,9 +2427,6 @@ func TestRunPass_RetractGrace_UsesLiveStartAtNotFrozenSnapshot(t *testing.T) {
 	after, ok := getReservation(t, pool, ctx, programID)
 	if !ok {
 		t.Fatal("reservation should survive: the live (epg_programs) start time is imminent, even though program_snapshots still showed 5 hours out before this pass")
-	}
-	if after.ID != before.ID {
-		t.Errorf("reservation id changed: %d -> %d (grace must freeze the row, not recreate it)", before.ID, after.ID)
 	}
 	// program_snapshots は「射影にまだ居る予約すべて」の対象になるので、猶予で
 	// 残った unmatch の行でも追従する（issue #556）。凍結が起きるのは射影から

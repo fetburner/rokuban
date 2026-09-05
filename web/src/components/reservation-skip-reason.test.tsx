@@ -16,7 +16,6 @@ import { renderInRouter } from '@/test/router'
  */
 function reservation(overrides: Partial<Reservation> = {}): Reservation {
   return {
-    id: 1,
     site: 'default',
     programId: 1150000115041234,
     source: 'rule',

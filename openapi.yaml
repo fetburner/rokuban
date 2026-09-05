@@ -275,13 +275,9 @@ paths:
       operationId: getProgramReservation
       summary: Get the reservation for a program, keyed by (site, programId)
       description: |
-        `(site, programId)` を宛先に予約を読む（issue #99）。`reservations.id` は
-        ruler の導出削除・再実体化で変わりうる不安定な値なので、UI の
-        ディープリンク・クエリキャッシュのような恒久的な資源同定には使わない。
-
-        `UNIQUE (site, program_id)` が既に張られているため、このキーで一意に
-        予約が定まる。予約行が再実体化されて `id` が変わっても、この URL・
-        クエリキーは変わらない —— ブックマーク・共有した URL、TanStack Query の
+        `(site, programId)` を主キーに予約を読む（issue #99）。このキーで一意に
+        予約が定まる。予約行が再実体化されても、この URL・クエリキーは変わらない
+        —— ブックマーク・共有した URL、TanStack Query の
         クエリキャッシュが再実体化を生き延びる（#98 で recordings.reservation_id /
         放送イベントの識別について踏んだのと同じ形の identity の問題。CLAUDE.md
         不変条件 9「導出器が作るキーを宛先にしない」）。
@@ -2312,7 +2308,6 @@ components:
     Reservation:
       type: object
       required:
-        - id
         - site
         - programId
         - source
@@ -2326,9 +2321,6 @@ components:
         - updatedAt
         - skip
       properties:
-        id:
-          type: integer
-          format: int64
         site:
           description: |
             この予約がどのサイト（mirakc インスタンス）のものか。`reservations.site`
@@ -2424,15 +2416,11 @@ components:
     OverlappingReservation:
       type: object
       required:
-        - id
         - programId
         - title
         - startAt
         - durationMs
       properties:
-        id:
-          type: integer
-          format: int64
         programId:
           type: integer
           format: int64

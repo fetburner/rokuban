@@ -18,7 +18,6 @@ import (
 // テストの可読性のためだけに残っている（CLAUDE.md 不変条件 12「表は行の寿命で
 // 割る」: この行に残るのは ruler の 1 パスの出力だけになった）。
 type Reservation struct {
-	ID                    int64           `db:"id"`
 	Site                  string          `db:"site"`
 	ProgramID             int64           `db:"program_id"`
 	RuleID                *int64          `db:"rule_id"`
@@ -177,7 +176,7 @@ type ScheduleSync struct {
 
 // Recording は録画履歴（永続資産）。
 //
-// reservation_id 列は issue #158 で落ちた --- reservations.id は ruler の
+// reservation_id 列は issue #158 で落ちた --- 予約行の導出キーは ruler の
 // 導出削除・再実体化で変わる不安定な値で、この列を宛先にした結合は #29 / #53 /
 // #98 / #99 / #149 / #152 と 6 回同じ形のバグを生んだ（CLAUDE.md 不変条件 9
 // 「identity」）。残っていた読者（表示用コピー）も放送イベントキー経由に

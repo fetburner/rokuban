@@ -235,7 +235,7 @@ func (w *Watcher) processRecord(ctx context.Context, record mirakc.Record) error
 }
 
 func (w *Watcher) createRecording(ctx context.Context, q *sqlcgen.Queries, record mirakc.Record) (int64, error) {
-	var resID *int64
+	hasReservation := false
 	var ruleID *int64
 
 	res, err := q.GetReservationBySiteAndProgramID(ctx, sqlcgen.GetReservationBySiteAndProgramIDParams{
@@ -246,11 +246,11 @@ func (w *Watcher) createRecording(ctx context.Context, q *sqlcgen.Queries, recor
 		return 0, fmt.Errorf("looking up reservation for program %d: %w", record.Program.ID, err)
 	}
 	if err == nil {
-		resID = &res.ID
+		hasReservation = true
 		ruleID = res.RuleID
 	}
 
-	source, err := db.DeriveRecordingSource(ctx, q, w.site, record.Program.ID, resID != nil)
+	source, err := db.DeriveRecordingSource(ctx, q, w.site, record.Program.ID, hasReservation)
 	if err != nil {
 		return 0, err
 	}

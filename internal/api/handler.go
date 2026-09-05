@@ -229,10 +229,9 @@ func reservationFromRow(r sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, ove
 	}
 	opts, err := db.EffectiveOptions(r.Base, overrides, intentAction)
 	if err != nil {
-		return Reservation{}, fmt.Errorf("resolving effective options for reservation %d: %w", r.ID, err)
+		return Reservation{}, fmt.Errorf("resolving effective options for program %d: %w", r.ProgramID, err)
 	}
 	res := Reservation{
-		Id:        r.ID,
 		Site:      r.Site,
 		ProgramId: r.ProgramID,
 		Source:    source,

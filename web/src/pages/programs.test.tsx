@@ -149,14 +149,13 @@ function programAtAbsolute(
 }
 
 function reservation(
-  id: number,
+  _id: number,
   programId: number,
   title: string,
   site = 'default',
   overrides: Partial<Reservation> = {},
 ): Reservation {
   return {
-    id,
     site,
     programId,
     source: 'manual',

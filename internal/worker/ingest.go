@@ -652,7 +652,7 @@ func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sq
 	} else {
 		eff, err := db.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)
 		if err != nil {
-			return fmt.Errorf("computing effective options for reservation %d: %w", row.Reservation.ID, err)
+			return fmt.Errorf("computing effective options for program %d: %w", row.Reservation.ProgramID, err)
 		}
 		if eff.KeepOriginal != nil {
 			keepOriginal = *eff.KeepOriginal

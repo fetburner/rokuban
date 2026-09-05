@@ -18,7 +18,7 @@ import (
 // Reservation と Snapshot を分けて持つのは #27 で番組の事実のスナップショット
 // （title / 開始時刻 / 尺 / チャンネル識別）が reservations から program_snapshots
 // に抽出されたため。sqlcgen.Reservation はもう ruler の 1 パスの導出出力
-// （id / site / program_id / rule_id / base / dedup 根拠 / timestamps）だけを
+// （site / program_id / rule_id / base / dedup 根拠 / timestamps）だけを
 // 持つ（CLAUDE.md 不変条件 12）。「番組終了後に schedule が観測されなかった」
 // という観測は一時 orphaned_at 列を経たが、issue #98 で recordings の
 // 試行行に移設され orphaned_at 自体も廃止された。この型はもともと
@@ -62,8 +62,8 @@ func EvaluateSyncCandidates(rows []sqlcgen.ListReservationsForSyncEvaluationRow)
 			candidates = append(candidates, SyncCandidate{
 				Reservation: row.Reservation,
 				Snapshot:    row.ProgramSnapshot,
-				Err: fmt.Errorf("resolving effective options for reservation %d (program %d): %w",
-					row.Reservation.ID, row.Reservation.ProgramID, err),
+				Err: fmt.Errorf("resolving effective options for program %d: %w",
+					row.Reservation.ProgramID, err),
 			})
 			continue
 		}

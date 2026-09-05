@@ -203,7 +203,6 @@ type RecordingPurgeRequest struct {
 }
 
 type Reservation struct {
-	ID                    int64
 	Site                  string
 	ProgramID             int64
 	RuleID                *int64

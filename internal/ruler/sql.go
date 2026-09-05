@@ -36,7 +36,6 @@ type rulerInputRow struct {
 
 // upsertResult は upsertReservationsFromPass が RETURNING する 1 行。
 type upsertResult struct {
-	ID        int64
 	ProgramID int64
 	Created   bool
 }
@@ -113,7 +112,7 @@ WHERE reservations.rule_id             IS DISTINCT FROM EXCLUDED.rule_id
    OR reservations.base                IS DISTINCT FROM EXCLUDED.base
    OR reservations.dedup_match_recording_id IS DISTINCT FROM EXCLUDED.dedup_match_recording_id
    OR reservations.dedup_similarity    IS DISTINCT FROM EXCLUDED.dedup_similarity
-RETURNING id, program_id, (xmax = 0) AS created
+RETURNING program_id, (xmax = 0) AS created
 `
 
 // upsertReservationsFromPass は 1 サイト分の desired 行を 1 文で反映する。
@@ -138,7 +137,7 @@ func upsertReservationsFromPass(ctx context.Context, tx pgx.Tx, site string, row
 	var results []upsertResult
 	for pgRows.Next() {
 		var res upsertResult
-		if err := pgRows.Scan(&res.ID, &res.ProgramID, &res.Created); err != nil {
+		if err := pgRows.Scan(&res.ProgramID, &res.Created); err != nil {
 			return nil, fmt.Errorf("scanning upsert result: %w", err)
 		}
 		results = append(results, res)

@@ -201,7 +201,7 @@ func (r *Reconciler) createMissingSchedules(ctx context.Context, reservations []
 		}
 		missing++
 		if err := r.createSchedule(ctx, d); err != nil {
-			slog.Error("reconciler: creating schedule", "reservation_id", d.res.ID, "program_id", d.res.ProgramID, "err", err)
+			slog.Error("reconciler: creating schedule", "program_id", d.res.ProgramID, "err", err)
 			continue
 		}
 		created++
@@ -291,7 +291,7 @@ func (r *Reconciler) observeStartDelays(ctx context.Context, reservations []desi
 		slog.Error("reconciler: detecting start delays", "err", err)
 	}
 	for _, d := range startDelayed {
-		slog.Error("reconciler: recording not started past start time + grace", "reservation_id", d.id, "program_id", d.programID, "title", d.title, "elapsed", d.elapsed)
+		slog.Error("reconciler: recording not started past start time + grace", "program_id", d.programID, "title", d.title, "elapsed", d.elapsed)
 	}
 	metrics.ReconcileStartDelayed.WithLabelValues(r.site).Set(float64(len(startDelayed)))
 	return startDelayed
@@ -558,8 +558,8 @@ func resolveContentPath(res sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, o
 		// （通常は api の validateRuleInput が作成時点で弾くので、ここに来るのは
 		// ルール作成後にテンプレート仕様が変わった等の想定外の経路）。推測で
 		// schedule を作らず、同期対象から外してアラートする。
-		return "", fmt.Errorf("building content path for reservation %d (program %d): %w",
-			res.ID, res.ProgramID, err)
+		return "", fmt.Errorf("building content path for program %d: %w",
+			res.ProgramID, err)
 	}
 	if opts.ContentPath != nil && *opts.ContentPath != "" {
 		contentPath = contentpath.SanitizeContentPath(*opts.ContentPath)
@@ -592,7 +592,6 @@ func (r *Reconciler) createSchedule(ctx context.Context, d desiredReservation) e
 	}
 
 	slog.Info("reconciler: created schedule",
-		"reservation_id", res.ID,
 		"program_id", res.ProgramID,
 		"state", schedule.State,
 		"content_path", contentPath,
@@ -707,7 +706,13 @@ func (r *Reconciler) recreateChanged(
 	// 別物の単なるレート制限なので、超えた分は諦めずに次パスへ持ち越すだけ。
 	// この再作成の DELETE はサーキットブレーカーの削除数（toDelete）には
 	// 一切数えない — 混ぜるとルールの priority 一括変更でブレーカーが誤作動する。
-	sort.Slice(eligible, func(i, j int) bool { return eligible[i].d.res.ID < eligible[j].d.res.ID })
+	sort.Slice(eligible, func(i, j int) bool {
+		left, right := eligible[i].d.res, eligible[j].d.res
+		if left.Site != right.Site {
+			return left.Site < right.Site
+		}
+		return left.ProgramID < right.ProgramID
+	})
 
 	for i, c := range eligible {
 		if i >= r.cfg.MaxRecreatesPerPass {
@@ -716,7 +721,7 @@ func (r *Reconciler) recreateChanged(
 		}
 		if err := r.recreateSchedule(ctx, c.d, c.observed, c.reason); err != nil {
 			slog.Error("reconciler: recreating schedule",
-				"reservation_id", c.d.res.ID, "program_id", c.d.res.ProgramID, "err", err)
+				"program_id", c.d.res.ProgramID, "err", err)
 			continue
 		}
 		recreated++
@@ -784,12 +789,11 @@ func (r *Reconciler) recreateSchedule(ctx context.Context, d desiredReservation,
 		metrics.ReconcileScheduleLost.Inc()
 		slog.Error("reconciler: schedule lost — DELETE succeeded but recreate POST failed; "+
 			"next pass will recreate it (level-triggered), but the program may start before that",
-			"reservation_id", res.ID, "program_id", res.ProgramID, "err", err)
+			"program_id", res.ProgramID, "err", err)
 		return fmt.Errorf("POST schedule after delete: %w", err)
 	}
 
 	slog.Info("reconciler: recreated schedule",
-		"reservation_id", res.ID,
 		"program_id", res.ProgramID,
 		"priority", priority,
 		"content_path", contentPath,
@@ -845,7 +849,7 @@ func (r *Reconciler) recordNeverScheduled(ctx context.Context, reservations []de
 			EventID:   snap.EventID,
 		})
 		if err != nil {
-			return fmt.Errorf("recording never-scheduled outcome for reservation %d: %w", res.ID, err)
+			return fmt.Errorf("recording never-scheduled outcome for program %d: %w", res.ProgramID, err)
 		}
 		// :execrows なので実際に INSERT できたか（1）か、ON CONFLICT で
 		// 何もしなかったか（0）が分かる。0 行なら（他パスとの競合で既に
@@ -854,7 +858,6 @@ func (r *Reconciler) recordNeverScheduled(ctx context.Context, reservations []de
 			continue
 		}
 		slog.Info("reconciler: recorded never-scheduled outcome (program ended without an observed schedule)",
-			"reservation_id", res.ID,
 			"program_id", res.ProgramID,
 		)
 	}
@@ -863,7 +866,6 @@ func (r *Reconciler) recordNeverScheduled(ctx context.Context, reservations []de
 
 // startDelayed は開始遅延検出器が検出した 1 件（ログ出力用の要約）。
 type startDelayed struct {
-	id        int64
 	programID int64
 	title     string
 	elapsed   time.Duration
@@ -891,7 +893,7 @@ type startDelayed struct {
 // 終わった番組についてアラートが鳴り止まなくなる（recordNeverScheduled が拾うのを待つ）。
 //
 // 観測の有無は recordings.started_at で判定する。判定の宛先キーは予約 id ではなく
-// 放送イベント (network_id, service_id, event_id) —— reservations.id は ruler の
+// 放送イベント (network_id, service_id, event_id) —— 予約行の導出キーは ruler の
 // 導出削除・再実体化で変わる不安定な値で、recordings.reservation_id（issue #158 で
 // 列自体を削除済み）は当時 ON DELETE SET NULL だった。予約 id で引くと、録画中に EPG フリッカーやルール
 // 編集で予約行が作り直された瞬間に started 済み recordings 行が見つからなくなり、
@@ -962,7 +964,6 @@ func (r *Reconciler) detectStartDelays(ctx context.Context, reservations []desir
 			continue
 		}
 		delayed = append(delayed, startDelayed{
-			id:        d.res.ID,
 			programID: d.res.ProgramID,
 			title:     d.snap.Title,
 			elapsed:   now.Sub(d.snap.StartAt),

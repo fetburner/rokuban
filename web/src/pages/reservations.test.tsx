@@ -24,7 +24,6 @@ function reservation(
   serviceName = 'テスト局',
 ): Reservation {
   return {
-    id,
     site,
     programId: id * 10,
     source: 'manual',

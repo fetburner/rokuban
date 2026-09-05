@@ -13,7 +13,6 @@ import (
 
 // reservationStateResp は state フィールドだけを見るデコード用型。
 type reservationStateResp struct {
-	Id    int64  `json:"id"`
 	State string `json:"state"`
 }
 
@@ -68,11 +67,11 @@ func TestGetReservation_DetachedViaRuleEditOrRuleDelete(t *testing.T) {
 
 		const programID int64 = 1990000199011234
 		ruleID := insertRuleFixture(t, pool, ctx)
-		resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 19900, 1990)
+		insertReservationDirect(t, pool, ctx, programID, &ruleID, 19900, 1990)
 		// ルールが実際にマッチして base を供給していた状態を模す（computeBase が
 		// 書くような非自明な値。空オブジェクトでは「base の実体があるか」の
 		// 検証として弱い）。
-		if _, err := pool.Exec(ctx, `UPDATE reservations SET base = '{"priority":10}'::jsonb WHERE id = $1`, resID); err != nil {
+		if _, err := pool.Exec(ctx, `UPDATE reservations SET base = '{"priority":10}'::jsonb WHERE site = 'default' AND program_id = $1`, programID); err != nil {
 			t.Fatalf("seeding base: %v", err)
 		}
 
@@ -86,7 +85,7 @@ func TestGetReservation_DetachedViaRuleEditOrRuleDelete(t *testing.T) {
 		// TestRunPass_RuleUnmatch_DeleteVsDetach 等が固定しているので、ここでは
 		// その結果（rule_id が NULL、base は直前の値のまま凍結）だけを直接作り、
 		// api 層の導出だけを見る。
-		if _, err := pool.Exec(ctx, `UPDATE reservations SET rule_id = NULL WHERE id = $1`, resID); err != nil {
+		if _, err := pool.Exec(ctx, `UPDATE reservations SET rule_id = NULL WHERE site = 'default' AND program_id = $1`, programID); err != nil {
 			t.Fatalf("simulating rule unmatch: %v", err)
 		}
 
@@ -106,8 +105,8 @@ func TestGetReservation_DetachedViaRuleEditOrRuleDelete(t *testing.T) {
 
 		const programID int64 = 1990000199021234
 		ruleID := insertRuleFixture(t, pool, ctx)
-		resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 19900, 1990)
-		if _, err := pool.Exec(ctx, `UPDATE reservations SET base = '{"priority":10}'::jsonb WHERE id = $1`, resID); err != nil {
+		insertReservationDirect(t, pool, ctx, programID, &ruleID, 19900, 1990)
+		if _, err := pool.Exec(ctx, `UPDATE reservations SET base = '{"priority":10}'::jsonb WHERE site = 'default' AND program_id = $1`, programID); err != nil {
 			t.Fatalf("seeding base: %v", err)
 		}
 		// DeleteRule は投資（program_intents / program_overrides のどちらか）が

@@ -47,12 +47,12 @@ func encodeProfilesURL(base string, id int64) string {
 // を作るためだけに使う --- recordings.reservation_id は issue #158 で列自体を
 // 落としたので、この呼び出しはもう FK を満たすためではない（recordings と
 // reservations の間に直接の結合キーは無い）。Phase 1（#27/#28/#30）以降
-// reservations は ruler の 1 パスの出力（id, site, program_id, rule_id, base,
+// reservations は ruler の 1 パスの出力（site, program_id, rule_id, base,
 // dedup 根拠 2 列, timestamps）だけを持つ導出テーブルで、番組の事実は
 // program_snapshots 側の責務。reservations.program_id は program_snapshots
 // (site, program_id) への FK（reservations_program_fkey）を持つため、先に
 // program_snapshots 行を用意する。
-func seedReservationForTest(t *testing.T, pool *pgxpool.Pool, programID int64) int64 {
+func seedReservationForTest(t *testing.T, pool *pgxpool.Pool, programID int64) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := pool.Exec(ctx, `
@@ -66,17 +66,13 @@ func seedReservationForTest(t *testing.T, pool *pgxpool.Pool, programID int64) i
 	); err != nil {
 		t.Fatalf("seeding program_snapshot: %v", err)
 	}
-	var id int64
-	err := pool.QueryRow(ctx, `
+	if _, err := pool.Exec(ctx, `
 		INSERT INTO reservations (site, program_id)
-		VALUES ($1, $2)
-		RETURNING id`,
+		VALUES ($1, $2)`,
 		db.DefaultSite, programID,
-	).Scan(&id)
-	if err != nil {
+	); err != nil {
 		t.Fatalf("seeding reservation: %v", err)
 	}
-	return id
 }
 
 // getRecordingEncodeProfiles は recording_encode_policy 衛星表（issue #159）を

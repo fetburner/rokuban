@@ -536,7 +536,6 @@ export const DeleteRuleResponse = zod.object({
  * @summary List reservations
  */
 export const ListReservationsResponseItem = zod.object({
-  "id": zod.int(),
   "site": zod.string().describe('この予約がどのサイト（mirakc インスタンス）のものか。`reservations.site`\nそのままで、設定ファイルで定義されたサイト名（docs\/schema.md §1-5）。\n\nチューナー容量超過の判定はサイトごとに独立しているため\n（docs\/data.md §6.5）、予約一覧のバッジはこの値と超過区間の site を\n突き合わせる。M1\/M2 は単一サイト構成なので実質 `default` 固定だが、\n\*\*クライアントに定数を持たせない\*\*（他サイトの不足を自分の不足として\n出す形で静かに壊れるのを避ける）。\n'),
   "programId": zod.int(),
   "source": zod.enum(['rule', 'manual']).describe('導出値であり、reservations テーブルの列ではない（issue #26）。\nユーザーが録れと指定した番組（program_intents に action=record の行が\nある）なら manual、無ければ rule。ルールが今まさにこの予約に\nbase を供給しているか（ruleId の有無）とは無関係で、手動予約に\nルールがマッチしていても manual のまま変わらない。\n'),
@@ -560,13 +559,9 @@ export const ListReservationsResponse = zod.array(ListReservationsResponseItem)
 
 
 /**
- * `(site, programId)` を宛先に予約を読む（issue #99）。`reservations.id` は
- * ruler の導出削除・再実体化で変わりうる不安定な値なので、UI の
- * ディープリンク・クエリキャッシュのような恒久的な資源同定には使わない。
- *
- * `UNIQUE (site, program_id)` が既に張られているため、このキーで一意に
- * 予約が定まる。予約行が再実体化されて `id` が変わっても、この URL・
- * クエリキーは変わらない —— ブックマーク・共有した URL、TanStack Query の
+ * `(site, programId)` を主キーに予約を読む（issue #99）。このキーで一意に
+ * 予約が定まる。予約行が再実体化されても、この URL・クエリキーは変わらない
+ * —— ブックマーク・共有した URL、TanStack Query の
  * クエリキャッシュが再実体化を生き延びる（#98 で recordings.reservation_id /
  * 放送イベントの識別について踏んだのと同じ形の identity の問題。CLAUDE.md
  * 不変条件 9「導出器が作るキーを宛先にしない」）。
@@ -581,7 +576,6 @@ export const GetProgramReservationParams = zod.object({
 })
 
 export const GetProgramReservationResponse = zod.object({
-  "id": zod.int(),
   "site": zod.string().describe('この予約がどのサイト（mirakc インスタンス）のものか。`reservations.site`\nそのままで、設定ファイルで定義されたサイト名（docs\/schema.md §1-5）。\n\nチューナー容量超過の判定はサイトごとに独立しているため\n（docs\/data.md §6.5）、予約一覧のバッジはこの値と超過区間の site を\n突き合わせる。M1\/M2 は単一サイト構成なので実質 `default` 固定だが、\n\*\*クライアントに定数を持たせない\*\*（他サイトの不足を自分の不足として\n出す形で静かに壊れるのを避ける）。\n'),
   "programId": zod.int(),
   "source": zod.enum(['rule', 'manual']).describe('導出値であり、reservations テーブルの列ではない（issue #26）。\nユーザーが録れと指定した番組（program_intents に action=record の行が\nある）なら manual、無ければ rule。ルールが今まさにこの予約に\nbase を供給しているか（ruleId の有無）とは無関係で、手動予約に\nルールがマッチしていても manual のまま変わらない。\n'),
@@ -837,7 +831,6 @@ export const GetProgramOverlapsParams = zod.object({
 export const GetProgramOverlapsResponse = zod.object({
   "count": zod.int().describe('重なっている既存予約の件数（自分自身を除く）'),
   "reservations": zod.array(zod.object({
-  "id": zod.int(),
   "programId": zod.int(),
   "title": zod.string(),
   "startAt": zod.iso.datetime({"offset":true}),

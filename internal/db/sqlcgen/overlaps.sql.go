@@ -13,7 +13,7 @@ import (
 
 const listOverlappingReservations = `-- name: ListOverlappingReservations :many
 
-SELECT r.id, r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, s.event_id, s.service_name, i.action AS intent_action, o.overrides AS overrides
+SELECT r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity, s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, s.event_id, s.service_name, i.action AS intent_action, o.overrides AS overrides
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
@@ -22,12 +22,10 @@ WHERE r.site = $1
   AND r.program_id <> $2::bigint
   AND NOT EXISTS (
       SELECT 1 FROM never_scheduled_events nse
-      -- 宛先のキーは**放送イベント**であって予約 id ではない。
-      -- reservations.id は ruler の導出削除・再実体化で変わる不安定な値で
-      -- （#53 が mirakc の tag を program:{programId} に移した理由。#99 も同じ）、
-      -- recordings.reservation_id（issue #158 で列自体を削除済み）は当時 ON DELETE SET NULL だった。予約 id で
-      -- 引くと、EPG フリッカーやルール編集で予約行が作り直された瞬間に
-      -- 「never-scheduled 行が無い」ことになり、終了済み予約が毎パス desired に
+      -- 宛先のキーは**放送イベント**であって予約行の導出キーではない。
+      -- 予約行の再実体化に依存すると、EPG フリッカーやルール編集で予約行が作り直された瞬間に
+      -- recordings.reservation_id（issue #158 で列自体を削除済み）は当時 ON DELETE SET NULL だった。予約行のキーで
+      -- 引いた観測が切れ、「never-scheduled 行が無い」ことになり、終了済み予約が毎パス desired に
       -- 戻り続ける（CLAUDE.md 不変条件 9 の identity: 導出器が作るキーを
       -- 宛先にしない）。
       WHERE nse.site = r.site
@@ -86,7 +84,6 @@ func (q *Queries) ListOverlappingReservations(ctx context.Context, arg ListOverl
 	for rows.Next() {
 		var i ListOverlappingReservationsRow
 		if err := rows.Scan(
-			&i.Reservation.ID,
 			&i.Reservation.Site,
 			&i.Reservation.ProgramID,
 			&i.Reservation.RuleID,

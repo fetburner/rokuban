@@ -7,7 +7,7 @@ import (
 )
 
 // programTagPrefix は mirakc の schedule に焼く tag の形式。programId は EPG に
-// ある間ずっと安定しており、reservations.id のような再実体化での変化がない（#53）。
+// ある間ずっと安定しており、予約行の導出キーのように再実体化で変化しない（#53）。
 // site は含めない — site は mirakc インスタンス自身を指すので、その mirakc に
 // 焼く tag では冗長（#53 の決定）。
 const programTagPrefix = "program:"

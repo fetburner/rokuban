@@ -9,12 +9,12 @@
 -- 観測済み）ものだけを引く。渡したキーからここで返ったキーを除いた差集合が
 -- 「開始時刻を過ぎたのに録画開始が観測されていない」候補になる。
 --
--- **宛先のキーは放送イベントであって予約 id ではない**（issue #152。
+-- **宛先のキーは放送イベントであって予約行の導出キーではない**（issue #152。
 -- CLAUDE.md 不変条件 9 の identity、#29 / #53 / #98 / #99 / #149 と同じ族の
--- 6 例目）。reservations.id は ruler の導出削除・再実体化で変わる不安定な値で、
--- recordings.reservation_id（issue #158 で列自体を削除済み）は当時 ON DELETE SET NULL だった。予約 id で引くと、
--- 録画中に EPG フリッカーやルール編集で予約行が作り直された瞬間に「started 済み
--- recordings 行が見つからない」ことになり、検出窓（開始 + 猶予 〜 終了）の間
+-- 6 例目）。予約行のキーで引くと、録画中に EPG フリッカーやルール編集で予約行が
+-- 作り直された瞬間に「started 済み recordings 行が見つからない」ことになり、
+-- recordings.reservation_id（issue #158 で列自体を削除済み）は当時 ON DELETE SET NULL だった。
+-- 検出窓（開始 + 猶予 〜 終了）の間
 -- 毎パス開始遅延を誤検知する。detectStartDelays の入力（listDesired の出力）は
 -- program_snapshots を JOIN 済みで放送イベントキーを手元に持っているので、
 -- そのキーで引く（never_recorded / ListReservationsForSyncEvaluation

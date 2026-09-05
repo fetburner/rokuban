@@ -330,7 +330,7 @@ export function HomePage() {
                 <>
                   <ul>
                     {shownReservations.map((r) => (
-                      <ReservationRow key={r.id} reservation={r} />
+                      <ReservationRow key={`${r.site}:${r.programId}`} reservation={r} />
                     ))}
                   </ul>
                   {reservationsOverflow && (

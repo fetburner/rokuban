@@ -905,7 +905,6 @@ export const ReservationChannelType = {
 } as const;
 
 export interface Reservation {
-  id: number;
   /**
      * この予約がどのサイト（mirakc インスタンス）のものか。`reservations.site`
      * そのままで、設定ファイルで定義されたサイト名（docs/schema.md §1-5）。
@@ -956,7 +955,6 @@ export interface Reservation {
 }
 
 export interface OverlappingReservation {
-  id: number;
   programId: number;
   title: string;
   startAt: string;
@@ -2713,13 +2711,9 @@ export const getGetProgramReservationUrl = (site: string,
 }
 
 /**
- * `(site, programId)` を宛先に予約を読む（issue #99）。`reservations.id` は
- * ruler の導出削除・再実体化で変わりうる不安定な値なので、UI の
- * ディープリンク・クエリキャッシュのような恒久的な資源同定には使わない。
- *
- * `UNIQUE (site, program_id)` が既に張られているため、このキーで一意に
- * 予約が定まる。予約行が再実体化されて `id` が変わっても、この URL・
- * クエリキーは変わらない —— ブックマーク・共有した URL、TanStack Query の
+ * `(site, programId)` を主キーに予約を読む（issue #99）。このキーで一意に
+ * 予約が定まる。予約行が再実体化されても、この URL・クエリキーは変わらない
+ * —— ブックマーク・共有した URL、TanStack Query の
  * クエリキャッシュが再実体化を生き延びる（#98 で recordings.reservation_id /
  * 放送イベントの識別について踏んだのと同じ形の identity の問題。CLAUDE.md
  * 不変条件 9「導出器が作るキーを宛先にしない」）。

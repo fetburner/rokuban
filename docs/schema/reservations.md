@@ -10,7 +10,6 @@
 
 ```sql
 CREATE TABLE reservations (
-    id                bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     site              text   NOT NULL,          -- 設定ファイル定義のサイト名
     program_id        bigint NOT NULL,          -- mirakc/Mirakurun の programId（site 単位のスコープ）
     rule_id           bigint,                   -- 勝者ルール。REFERENCES rules(id) ON DELETE SET NULL
@@ -28,7 +27,7 @@ CREATE TABLE reservations (
     created_at        timestamptz NOT NULL DEFAULT now(),
     updated_at        timestamptz NOT NULL DEFAULT now(),
 
-    UNIQUE (site, program_id),  -- desired 予約は site x programId につき最大 1 つ
+    PRIMARY KEY (site, program_id),  -- desired 予約は site x programId につき最大 1 つ
     FOREIGN KEY (site, program_id) REFERENCES program_snapshots (site, program_id)
         ON DELETE CASCADE
 );
@@ -59,13 +58,13 @@ CREATE INDEX ON reservations (rule_id);
 
 ### active / detached / orphaned は API が都度導出する
 
-`state` という列は存在しない。**この状態を列に焼いてはならない** --- 導出値と不可逆な観測を 1 列に潰す形そのもので、実装は式ではなく前パスからの遷移を書くことになり、片側の分岐しか持たなくなる（[invariants.md](../invariants.md) §9「式」）。予約の状態は API 層（`internal/api/handler.go` の `reservationState`）が読むたびに計算して返す。`active` / `detached` は `(rule_id, base)` から、`orphaned` は **「この予約の放送イベントに `never_scheduled_events` の欠測行があり、かつ同じイベントの `recordings` 行が 1 つも無いか」**（`GetReservationFull` / `ListReservationsFull` の `never_recorded` 列）から導出する。**「schedule が観測されなかった」は `epg_last_seen_at` のようなタイムスタンプからは導出できない** --- 観測側が事実として欠測行を書く必要がある。予約 id ではなく放送イベント `(site, network_id, service_id, event_id)` で結合するのは、`reservations.id` が ruler の導出削除・再実体化で変わる不安定な値だから（不変条件 9 の identity。`internal/db/queries/reservations.sql` のコメントが権威）。
+`state` という列は存在しない。**この状態を列に焼いてはならない** --- 導出値と不可逆な観測を 1 列に潰す形そのもので、実装は式ではなく前パスからの遷移を書くことになり、片側の分岐しか持たなくなる（[invariants.md](../invariants.md) §9「式」）。予約の状態は API 層（`internal/api/handler.go` の `reservationState`）が読むたびに計算して返す。`active` / `detached` は `(rule_id, base)` から、`orphaned` は **「この予約の放送イベントに `never_scheduled_events` の欠測行があり、かつ同じイベントの `recordings` 行が 1 つも無いか」**（`GetReservationFull` / `ListReservationsFull` の `never_recorded` 列）から導出する。**「schedule が観測されなかった」は `epg_last_seen_at` のようなタイムスタンプからは導出できない** --- 観測側が事実として欠測行を書く必要がある。予約行の結合は不安定な導出 id ではなく、放送イベント `(site, network_id, service_id, event_id)` を使う（不変条件 9 の identity。`internal/db/queries/reservations.sql` のコメントが権威）。
 
 | 値 | 意味 | 導出元 |
 |---|---|---|
 | `active` | 通常の desired 予約 | `rule_id IS NOT NULL`（または base が無い manual 予約） |
 | `detached` | ルールがマッチしなくなったが `record` 意図または上書きがある行（= `program_investments` view に行がある）。base は凍結され、実質 manual として動く（`intent{skip}` なら録画しない detached） | `rule_id IS NULL AND base IS NOT NULL` |
-| `orphaned` | **この予約に対応する放送イベントについて、一度も schedule が観測されなかった欠測行があり、本物の録画試行は 1 行も無い**。mirakc 由来の途中失敗は欠測表に入らない（再試行経路を壊さない）。即削除せず残して「録れなかった」を説明可能にする | `never_scheduled_events` 表の EXISTS と、同じ放送イベントの `recordings` 全履歴に対する NOT EXISTS の積（`GetReservationFull` の `never_recorded`）。recordings は live 限定にしないため、本物の録画をごみ箱に入れても orphaned に戻らない。放送イベントキーは `program_snapshots` を経由して引く --- `reservations.id` を宛先にしてはならない（[invariants.md](../invariants.md) §9「identity」） |
+| `orphaned` | **この予約に対応する放送イベントについて、一度も schedule が観測されなかった欠測行があり、本物の録画試行は 1 行も無い**。mirakc 由来の途中失敗は欠測表に入らない（再試行経路を壊さない）。即削除せず残して「録れなかった」を説明可能にする | `never_scheduled_events` 表の EXISTS と、同じ放送イベントの `recordings` 全履歴に対する NOT EXISTS の積（`GetReservationFull` の `never_recorded`）。recordings は live 限定にしないため、本物の録画をごみ箱に入れても orphaned に戻らない。放送イベントキーは `program_snapshots` を経由して引く --- 予約行の導出 id を結合先にしてはならない（[invariants.md](../invariants.md) §9「identity」） |
 
 - **行の物理削除（GC）は「番組の終了時刻を過ぎた後」のみ**。番組の終了時刻は `program_snapshots.start_at + duration_ms` で判定し（§3.7）、`reservations` は `program_snapshots` への FK が `ON DELETE CASCADE` なのでスナップショットが GC された瞬間に一緒に落ちる（active/detached/orphaned のいずれでも問わない）。`never_scheduled_events` は `program_snapshots` への FK を持たないので、GC 後も欠測の観測は残り続ける（[recordings.md](recordings.md) §5）
 - 意図も上書きもない active 予約がルール・EPG から消えた場合は通常の宣言的動作として削除（ただし大量削除サーキットブレーカーの対象）。ただし放送開始直前（`ruler.retract_grace` 以内）は猶予で削除しない --- 猶予中の行は `rule_id` が前パスのまま据え置かれるので、この表の `active` の導出（`rule_id IS NOT NULL`）はそのまま成立し続ける。専用の状態は増やさない（[ruler.md](../recording/ruler.md)「直前 unmatch の猶予」）
