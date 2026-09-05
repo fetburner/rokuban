@@ -39,7 +39,7 @@ CREATE TABLE epg_programs (
     is_free     boolean NOT NULL DEFAULT true,
     name        text    NOT NULL DEFAULT '',
     description text    NOT NULL DEFAULT '',
-    genre_lv1   smallint[] NOT NULL DEFAULT '{}',
+    genre_lv1   smallint[] GENERATED ALWAYS AS (genre_lv1_of(genres)) STORED,
     extended    jsonb,   -- 拡張形式イベント（出演者等）
     genres      jsonb,   -- lv1 / lv2 / un1 / un2 の全量
     video       jsonb,   -- 映像属性
@@ -51,7 +51,7 @@ CREATE TABLE epg_programs (
 
 - **site を含むキーで切る**: 地上波のチャンネル構成はサイトの地域ごとに異なる
 - **クエリ軸は型付きカラム、詳細は jsonb**: サービス / 時間範囲 / ジャンル / 無料が型付き。
-  `genre_lv1` は絞り込み用に lv1 だけを重複なく取り出した配列（GIN）で、詳細は `genres` jsonb 側
+  `genre_lv1` は絞り込み用に lv1 だけを重複なく取り出した配列（GIN）で、`recordings` と同じ関数で導出する。詳細は `genres` jsonb 側
 - **`end_at` は生成列にしない**: `timestamptz + interval` が STABLE（TimeZone 設定に依存）で
   IMMUTABLE を要求する生成列に使えないため、同期時にアプリが計算して書く
 - **pg_trgm GIN** を `name` / `description` に張る。LIKE だけでなく正規表現マッチ（`~`）も
@@ -173,4 +173,3 @@ CREATE TABLE tuner_sync (
   存在理由の元 issue は #3、サブサービスの扱いは issue #17、大量削除で立ち止まる規律は issue #11
 - **`tuner_sync` の PK**: issue #21 は投影列に `index` を挙げているのに DDL 案が持たず
   PK が `name` になっていた。この不整合を `index` を採る側で解消した（本文 §9.5 の理由）
-

@@ -212,6 +212,30 @@ func TestEpgSyncWorker_FullSync(t *testing.T) {
 	}
 }
 
+// genre_lv1 は genres から DB の生成列で導出され、重複を除いて昇順になる。
+func TestEpgSyncWorker_DerivesGenreLv1FromGenres(t *testing.T) {
+	pool := setupTestPool(t)
+	now := time.Now().Truncate(time.Second)
+	program := testProgram(32736, 1024, 1, "ジャンル重複", now.Add(time.Hour), time.Hour)
+	program.Genres = []mirakc.Genre{{LV1: 7}, {LV1: 7}, {LV1: 3}}
+
+	fx := &epgFixture{
+		services: []mirakc.Service{testService(32736, 1024, 1, "ＮＨＫ総合", "27")},
+		programs: []mirakc.Program{program},
+	}
+	srv := newEpgServer(t, fx)
+	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)), Pool: pool, RetentionGrace: 24 * time.Hour}
+	runEpgSync(t, w)
+
+	programs := allPrograms(t, w)
+	if len(programs) != 1 {
+		t.Fatalf("programs = %d, want 1", len(programs))
+	}
+	if !reflect.DeepEqual(programs[0].GenreLv1, []int16{3, 7}) {
+		t.Errorf("genre_lv1 = %v, want [3 7]", programs[0].GenreLv1)
+	}
+}
+
 // 全量同期は冪等。2 回走っても行が増えず、内容が更新される。
 func TestEpgSyncWorker_IdempotentAndUpdates(t *testing.T) {
 	pool := setupTestPool(t)
@@ -799,30 +823,6 @@ func TestEpgSyncWorker_SiteMatch(t *testing.T) {
 	}
 	if len(services) != 1 {
 		t.Errorf("services projected for site-a = %d, want 1", len(services))
-	}
-}
-
-func TestGenreLv1(t *testing.T) {
-	tests := []struct {
-		name   string
-		genres []mirakc.Genre
-		want   []int16
-	}{
-		{"nil", nil, []int16{}},
-		{"empty", []mirakc.Genre{}, []int16{}},
-		{"single", []mirakc.Genre{{LV1: 7}}, []int16{7}},
-		{
-			"lv1 が重複するジャンルは 1 つに畳む",
-			[]mirakc.Genre{{LV1: 7, LV2: 1}, {LV1: 7, LV2: 3}, {LV1: 2}},
-			[]int16{7, 2},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := genreLv1(tt.genres); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("genreLv1() = %v, want %v", got, tt.want)
-			}
-		})
 	}
 }
 

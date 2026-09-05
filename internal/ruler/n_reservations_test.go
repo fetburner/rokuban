@@ -64,8 +64,8 @@ func insertProgramAtSite(t *testing.T, pool *pgxpool.Pool, ctx context.Context, 
 	_, err := pool.Exec(ctx, `
 INSERT INTO epg_programs (
   site, program_id, network_id, service_id, event_id,
-  start_at, duration_ms, end_at, is_free, name, description, genre_lv1
-) VALUES ($1, $2, $3, $4, 0, $5, $6, $7, true, 'N予約対象番組', '', '{}'::smallint[])
+  start_at, duration_ms, end_at, is_free, name, description
+) VALUES ($1, $2, $3, $4, 0, $5, $6, $7, true, 'N予約対象番組', '')
 ON CONFLICT (site, program_id) DO NOTHING`,
 		site, nresProgramID, nresNetworkID, nresServiceID, startAt, nresDurationMs, endAt)
 	if err != nil {

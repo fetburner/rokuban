@@ -216,8 +216,8 @@ ON CONFLICT (site, network_id, service_id) DO NOTHING`,
 	if _, err := pool.Exec(ctx, `
 INSERT INTO epg_programs (
   site, program_id, network_id, service_id, event_id,
-  start_at, duration_ms, end_at, is_free, name, description, genre_lv1
-) VALUES ('default', $1::bigint, $2, $3, 0, $4::timestamptz, 1800000, $5::timestamptz, true, 'テスト番組', '', '{}'::smallint[])
+  start_at, duration_ms, end_at, is_free, name, description
+) VALUES ('default', $1::bigint, $2, $3, 0, $4::timestamptz, 1800000, $5::timestamptz, true, 'テスト番組', '')
 ON CONFLICT (site, program_id) DO NOTHING`,
 		programID, networkID, serviceID, start, end); err != nil {
 		t.Fatalf("inserting epg_programs fixture: %v", err)

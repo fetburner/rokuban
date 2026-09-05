@@ -38,16 +38,16 @@ ON CONFLICT (site, network_id, service_id) DO NOTHING`, site)
 		name string
 		g    string
 	}{
-		{2001, "ニュースワイド", "{0}"},
-		{2002, "アニメ特番", "{7}"},
-		{2003, "NHKスペシャル", "{8}"},
+		{2001, "ニュースワイド", `[{"lv1":0}]`},
+		{2002, "アニメ特番", `[{"lv1":7}]`},
+		{2003, "NHKスペシャル", `[{"lv1":8}]`},
 	} {
 		st := start.Add(time.Duration(row.id) * time.Minute)
 		_, err = pool.Exec(ctx, `
 INSERT INTO epg_programs (
   site, program_id, network_id, service_id, event_id,
-  start_at, duration_ms, end_at, is_free, name, description, genre_lv1
-) VALUES ($1, $2::bigint, 32736, 1024, $3::integer, $4::timestamptz, 1800000, $5::timestamptz, true, $6::text, '', $7::smallint[])
+  start_at, duration_ms, end_at, is_free, name, description, genres
+) VALUES ($1, $2::bigint, 32736, 1024, $3::integer, $4::timestamptz, 1800000, $5::timestamptz, true, $6::text, '', $7::jsonb)
 ON CONFLICT (site, program_id) DO NOTHING`,
 			site, row.id, int32(row.id), st, st.Add(30*time.Minute), row.name, row.g)
 		if err != nil {
@@ -149,10 +149,10 @@ ON CONFLICT (site, network_id, service_id) DO NOTHING`, site); err != nil {
 	if _, err := pool.Exec(ctx, `
 INSERT INTO epg_programs (
   site, program_id, network_id, service_id, event_id,
-  start_at, duration_ms, end_at, is_free, name, description, genre_lv1
-) VALUES ($1, $2::bigint, 32736, 1024, $3::integer, $4::timestamptz, 1800000, $5::timestamptz, true, 'テスト番組', '', $6::smallint[])
+  start_at, duration_ms, end_at, is_free, name, description, genres
+) VALUES ($1, $2::bigint, 32736, 1024, $3::integer, $4::timestamptz, 1800000, $5::timestamptz, true, 'テスト番組', '', $6::jsonb)
 ON CONFLICT (site, program_id) DO NOTHING`,
-		site, programID, int32(programID), start, start.Add(30*time.Minute), fmt.Sprintf("{%d}", searchFixtureGenre)); err != nil {
+		site, programID, int32(programID), start, start.Add(30*time.Minute), fmt.Sprintf(`[{"lv1":%d}]`, searchFixtureGenre)); err != nil {
 		t.Fatalf("inserting epg_programs fixture: %v", err)
 	}
 }

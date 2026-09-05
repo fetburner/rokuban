@@ -42,14 +42,15 @@ WHERE es.site = $1
 ORDER BY es.channel_type, es.remote_control_key_id, es.service_id;
 
 -- name: UpsertEpgProgram :batchexec
+-- genre_lv1 は genres から生成列で導出されるため、INSERT/UPDATE の対象にしない。
 INSERT INTO epg_programs (
     site, program_id, network_id, service_id, event_id,
     start_at, duration_ms, end_at, is_free,
-    name, description, genre_lv1, extended, genres, video, audios, observed_at
+    name, description, extended, genres, video, audios, observed_at
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9,
-    $10, $11, $12, $13, $14, $15, $16, now()
+    $10, $11, $12, $13, $14, $15, now()
 )
 ON CONFLICT (site, program_id) DO UPDATE SET
     network_id  = EXCLUDED.network_id,
@@ -61,7 +62,6 @@ ON CONFLICT (site, program_id) DO UPDATE SET
     is_free     = EXCLUDED.is_free,
     name        = EXCLUDED.name,
     description = EXCLUDED.description,
-    genre_lv1   = EXCLUDED.genre_lv1,
     extended    = EXCLUDED.extended,
     genres      = EXCLUDED.genres,
     video       = EXCLUDED.video,
