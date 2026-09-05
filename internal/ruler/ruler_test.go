@@ -50,8 +50,8 @@ func insertProgram(t *testing.T, pool *pgxpool.Pool, ctx context.Context, progra
 	_, err := pool.Exec(ctx, `
 INSERT INTO epg_programs (
   site, program_id, network_id, service_id, event_id,
-  start_at, duration_ms, end_at, is_free, name, description, genre_lv1
-) VALUES ($1, $2, $3, $4, 0, $5, $6, $7, true, $8, '', '{}'::smallint[])
+  start_at, duration_ms, end_at, is_free, name, description
+) VALUES ($1, $2, $3, $4, 0, $5, $6, $7, true, $8, '')
 ON CONFLICT (site, program_id) DO UPDATE SET
   start_at = EXCLUDED.start_at, duration_ms = EXCLUDED.duration_ms,
   end_at = EXCLUDED.end_at, name = EXCLUDED.name`,

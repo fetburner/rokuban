@@ -66,7 +66,6 @@ func seedEpgProgram(t *testing.T, pool *pgxpool.Pool, programID int64, networkID
 		IsFree:      true,
 		Name:        name,
 		Description: name + "の説明",
-		GenreLv1:    []int16{7},
 	}
 	if detail {
 		p.Extended = json.RawMessage(`{"出演者":"テスト太郎"}`)
@@ -178,7 +177,7 @@ func TestListPrograms_Window(t *testing.T) {
 	srv := newAPIServer(t, pool)
 
 	base := time.Now().Truncate(time.Hour)
-	seedEpgProgram(t, pool, 1, 32678, 5168, 1, "A-1", base, false)
+	seedEpgProgram(t, pool, 1, 32678, 5168, 1, "A-1", base, true)
 	seedEpgProgram(t, pool, 2, 32678, 5168, 2, "A-2", base.Add(time.Hour), false)
 	seedEpgProgram(t, pool, 3, 32676, 5152, 1, "B-1", base.Add(30*time.Minute), false)
 

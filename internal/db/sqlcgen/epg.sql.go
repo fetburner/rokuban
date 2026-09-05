@@ -86,7 +86,7 @@ func (q *Queries) EpgSweepMark(ctx context.Context) (time.Time, error) {
 }
 
 const getEpgProgram = `-- name: GetEpgProgram :one
-SELECT site, program_id, network_id, service_id, event_id, start_at, duration_ms, end_at, is_free, name, description, genre_lv1, extended, genres, video, audios, observed_at FROM epg_programs
+SELECT site, program_id, network_id, service_id, event_id, start_at, duration_ms, end_at, is_free, name, description, extended, genres, video, audios, observed_at, genre_lv1 FROM epg_programs
 WHERE site = $1 AND program_id = $2
 `
 
@@ -110,12 +110,12 @@ func (q *Queries) GetEpgProgram(ctx context.Context, arg GetEpgProgramParams) (E
 		&i.IsFree,
 		&i.Name,
 		&i.Description,
-		&i.GenreLv1,
 		&i.Extended,
 		&i.Genres,
 		&i.Video,
 		&i.Audios,
 		&i.ObservedAt,
+		&i.GenreLv1,
 	)
 	return i, err
 }
@@ -176,7 +176,7 @@ func (q *Queries) GetProgramSnapshotSource(ctx context.Context, arg GetProgramSn
 }
 
 const listEpgPrograms = `-- name: ListEpgPrograms :many
-SELECT site, program_id, network_id, service_id, event_id, start_at, duration_ms, end_at, is_free, name, description, genre_lv1, extended, genres, video, audios, observed_at FROM epg_programs
+SELECT site, program_id, network_id, service_id, event_id, start_at, duration_ms, end_at, is_free, name, description, extended, genres, video, audios, observed_at, genre_lv1 FROM epg_programs
 WHERE site = $1
   AND start_at < $2::timestamptz
   AND end_at   > $3::timestamptz
@@ -220,12 +220,12 @@ func (q *Queries) ListEpgPrograms(ctx context.Context, arg ListEpgProgramsParams
 			&i.IsFree,
 			&i.Name,
 			&i.Description,
-			&i.GenreLv1,
 			&i.Extended,
 			&i.Genres,
 			&i.Video,
 			&i.Audios,
 			&i.ObservedAt,
+			&i.GenreLv1,
 		); err != nil {
 			return nil, err
 		}

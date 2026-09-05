@@ -42,12 +42,12 @@ type EpgProgram struct {
 	IsFree      bool
 	Name        string
 	Description string
-	GenreLv1    []int16
 	Extended    json.RawMessage
 	Genres      json.RawMessage
 	Video       json.RawMessage
 	Audios      json.RawMessage
 	ObservedAt  time.Time
+	GenreLv1    []int16
 }
 
 type EpgService struct {

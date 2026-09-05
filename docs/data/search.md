@@ -35,7 +35,7 @@ pg_trgm（標準 contrib、運用コストゼロ）で始め、形態素解析�
 `GET /api/recordings` の絞り込み（[api.md](../api.md) 「録画一覧: 絞り込み + キーセットページング」）は `/search`（EPG 検索）や ruler 評価と同じ `internal/rulequery` に相乗りしない。`recordings` を `internal/rulequery.Compile` の第 2 のターゲットにはしない。理由は 3 つ:
 
 1. **EPG は消えるが録画は残る。** `recordings` は放送の事実を自前の列（`title` / `description` / `genres` / `channel_type` / `service_name`）に凍結した永続資産（§6「録画した番組の情報は予約〜ingest 時点で録画行に非正規化スナップショット」、[projections.md](projections.md)）。`epg_programs` に JOIN して検索すると、EPG のローリングウィンドウから外れた古い録画では条件が**沈黙して 0 件**になる（絞り込みとして最悪の壊れ方）
-2. **列の形が違う。** `title` vs `name`、`genres jsonb`（`recordings`）vs `genre_lv1 smallint[]`（`recordings` 側は生成列。`epg_programs.genre_lv1` は worker の River 定期ジョブ `epg_sync` が書く普通の列で、書き手が違う）、`channel_type` は `recordings` が直持ちで JOIN が要らない。1 つのコンパイラに 2 つのテーブルを食わせると、列名マップの分だけ「片方でしか通らない条件」が生まれる
+2. **列の形が違う。** `title` vs `name`、`genres jsonb`（`recordings`）vs `genre_lv1 smallint[]`（両方とも生成列）、`channel_type` は `recordings` が直持ちで JOIN が要らない。1 つのコンパイラに 2 つのテーブルを食わせると、列名マップの分だけ「片方でしか通らない条件」が生まれる
 3. **問いが違う。** 録画検索の主役は EPG に存在しない軸（`status` / `source` / `rule_id` / ごみ箱）で、逆にルール条件が持つ曜日ビットマスクや negate 付き正規表現の複数 AND は録画検索には過剰
 
 共有するのは**キーワードの正規化方言だけ**（`internal/rulequery.KeywordClause`。`compileTextMatch` と録画検索の両方が呼ぶ）。同じ語で `/search` と録画一覧の当たり方が変わるとユーザーに説明できないため、`normalize_search_text` を通す・通さないの判定はここだけ揃える。テーブルや列名のマッピングは持たない --- 呼び出し側が列名（`p.name` / `r.title` 等）を渡す。

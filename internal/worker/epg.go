@@ -380,7 +380,6 @@ func (w *EpgSyncWorker) syncPrograms(
 				IsFree:      p.IsFree,
 				Name:        ptr.Deref(p.Name),
 				Description: ptr.Deref(p.Description),
-				GenreLv1:    genreLv1(p.Genres),
 				Extended:    marshalOrNil(p.Extended),
 				Genres:      marshalOrNil(p.Genres),
 				Video:       marshalOrNil(p.Video),
@@ -401,24 +400,6 @@ func (w *EpgSyncWorker) syncPrograms(
 		}
 	}
 	return projected, observed, nil
-}
-
-// genreLv1 はジャンル絞り込みのクエリ軸となる lv1 を重複なしで取り出す。
-func genreLv1(genres []mirakc.Genre) []int16 {
-	if len(genres) == 0 {
-		return []int16{}
-	}
-	seen := make(map[int16]struct{}, len(genres))
-	out := make([]int16, 0, len(genres))
-	for _, g := range genres {
-		lv1 := int16(g.LV1)
-		if _, dup := seen[lv1]; dup {
-			continue
-		}
-		seen[lv1] = struct{}{}
-		out = append(out, lv1)
-	}
-	return out
 }
 
 // batchResults は sqlc が :batchexec 用に生成する型が満たすインターフェース。

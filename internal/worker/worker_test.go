@@ -553,8 +553,8 @@ VALUES ($1, $2, $3, 1, 0, 1, 'テスト局', 'GR', '27', false)`, site, networkI
 	startAt := time.Now().Add(time.Hour)
 	const durationMs int64 = 1800000
 	if _, err := pool.Exec(ctx, `
-INSERT INTO epg_programs (site, program_id, network_id, service_id, event_id, start_at, duration_ms, end_at, is_free, name, description, genre_lv1)
-VALUES ($1, $2, $3, $4, 0, $5, $6, $7, true, 'テスト番組', '', '{}'::smallint[])`,
+INSERT INTO epg_programs (site, program_id, network_id, service_id, event_id, start_at, duration_ms, end_at, is_free, name, description)
+VALUES ($1, $2, $3, $4, 0, $5, $6, $7, true, 'テスト番組', '')`,
 		site, programID, networkID, serviceID, startAt, durationMs, startAt.Add(time.Duration(durationMs)*time.Millisecond)); err != nil {
 		t.Fatalf("inserting epg_programs fixture: %v", err)
 	}
