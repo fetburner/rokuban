@@ -61,7 +61,7 @@ nginx は「アーキテクチャ図に現れる箱」ではなく「推奨デ�
 - **Basic 認証**（または Authelia 等の外部認証連携）
 - **X-Accel-Redirect** --- 録画ファイル配信のバイト転送を nginx に委譲
 - **SSE 設定** --- `proxy_buffering off` + タイムアウト調整
-- **SPA フォールバック** --- `try_files` で `index.html` へ
+- **SPA は proxy するだけ** --- SPA はバイナリに go:embed 済みなので、nginx は配らずアプリへ委ねる
 
 これは推奨構成であり、Caddy / k8s Ingress / Cloudflare Access 等でも同等の構成が可能。
 実機での確認は [nginx runbook](../runbook/nginx.md) にまとめる。

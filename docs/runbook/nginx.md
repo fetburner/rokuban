@@ -9,6 +9,21 @@ API と SSE は Rokuban へプロキシする。
 
 ## 構成の前提
 
+以降の手順で共通して使う変数をまとめて定義し、確認用ディレクトリを作る。
+同じシェルセッションで以下の手順を順に実行する前提とする。
+
+```sh
+DOMAIN=rokuban.example.com
+TLS_ROOT=/tmp/rokuban-nginx-tls
+TMP=/tmp/rokuban-nginx-check
+MEDIA_DIR=/tmp/rokuban-nginx-media
+mkdir -p "$TLS_ROOT/live/$DOMAIN" "$TLS_ROOT/archive/$DOMAIN" \
+  "$TMP/certbot/.well-known/acme-challenge" "$MEDIA_DIR"
+```
+
+`MEDIA_DIR` は Rokuban が使う media ディレクトリと同じ場所にする。
+日本語・空白・括弧に加えて `%` を含む fixture をここに置き、以下の確認で使う。
+
 nginx と Rokuban が同じホストにいる場合、設定の upstream は
 `127.0.0.1:40773` のままにする。
 nginx をコンテナで動かす場合は、同じネットワークのサービス名か
@@ -27,11 +42,12 @@ storage:
   accel_location: /_media/
 ```
 
-nginx から次の 3 つが読めるようにする。
+nginx から次の 2 つが読めるようにする。
 
-- `/srv/rokuban/web/dist`: `cd web && pnpm build` の出力
 - `/mnt/media`: Rokuban の `storage.media_dir` と同じ録画ディレクトリ
 - `/etc/letsencrypt` と `/etc/nginx/htpasswd/rokuban`: 証明書と認証ファイル
+
+SPA は Go バイナリのビルド時に go:embed で埋め込まれるため、nginx へは渡さない。
 
 `/_media/` は外部から直接読めない。
 アプリの認可を通った X-Accel-Redirect だけが内部リダイレクトで到達する。
@@ -45,9 +61,6 @@ HTTP-01 の webroot は `/var/www/certbot` を使う。
 自己署名証明書は通信経路の確認用で、Let's Encrypt の代わりにはならない。
 
 ```sh
-DOMAIN=rokuban.example.com
-TLS_ROOT=/tmp/rokuban-nginx-tls
-mkdir -p "$TLS_ROOT/live/$DOMAIN" "$TLS_ROOT/archive/$DOMAIN"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
   -keyout "$TLS_ROOT/live/$DOMAIN/privkey.pem" \
   -out "$TLS_ROOT/live/$DOMAIN/fullchain.pem" \
@@ -71,38 +84,43 @@ nginx -s reload
 
 ## 実機の起動
 
-まず SPA をビルドし、Rokuban を `127.0.0.1:40773` で起動する。
+Rokuban を `127.0.0.1:40773` で起動する。
 DB と Rokuban の起動は [setup.md](setup.md) に従う。
 検証用録画の `recording_id` は、既存の録画から 1 件選ぶか、
-日本語・空白・括弧を含む相対パスの fixture を DB と media に用意する。
+日本語・空白・括弧に加えて `%` を含む相対パスの fixture を DB と `MEDIA_DIR` に用意する。
+`%` は `internal/contentpath` のサニタイザを通り抜ける数少ない文字で、
+エスケープの有無を分ける鍵になる。
 以下の確認では、実際に使う録画 ID と相対パスをそれぞれ `$ID` と `$REL_PATH` に入れる。
 
-nginx をホストで起動する場合:
+nginx をホストで起動する場合、証明書・認証ファイル・media・certbot webroot を
+`nginx.conf` が読む実パスへ配置してから `nginx -t` を通す。
+**この経路は未検証。実測は次項の Docker 経路のみ。**
 
 ```sh
 cd /path/to/rokuban
-(cd web && pnpm build)
-sudo install -d /srv/rokuban/web/dist
-sudo cp -R web/dist/. /srv/rokuban/web/dist/
+sudo install -d "/etc/letsencrypt/live/$DOMAIN" /etc/nginx/htpasswd /var/www/certbot /mnt/media
+sudo cp "$TLS_ROOT/live/$DOMAIN/fullchain.pem" "$TLS_ROOT/live/$DOMAIN/privkey.pem" \
+  "/etc/letsencrypt/live/$DOMAIN/"
+sudo cp /tmp/rokuban-nginx.htpasswd /etc/nginx/htpasswd/rokuban
+sudo cp -R "$MEDIA_DIR/." /mnt/media/
 sudo nginx -t -c "$PWD/deploy/nginx/nginx.conf"
 sudo nginx -c "$PWD/deploy/nginx/nginx.conf"
 ```
+
+録画配信まで確認するには、Rokuban 自体の `storage.media_dir` も同じ
+`/mnt/media` に向ける。
 
 Docker で nginx だけを起動する場合は、設定を一時コピーして upstream を
 `host.docker.internal` に置き換える。
 アプリと nginx を同じ Compose に置く場合は、サービス名に置き換える。
 
 ```sh
-TMP=/tmp/rokuban-nginx-check
-MEDIA_DIR=/tmp/rokuban-nginx-media
-mkdir -p "$TMP/certbot/.well-known/acme-challenge" "$MEDIA_DIR"
 sed 's/server 127.0.0.1:40773;/server host.docker.internal:40773;/' \
   deploy/nginx/nginx.conf > "$TMP/nginx.conf"
 docker run --rm --name rokuban-nginx-check \
   --add-host=host.docker.internal:host-gateway \
   -p 8080:80 -p 8443:443 \
   -v "$TMP/nginx.conf:/etc/nginx/nginx.conf:ro" \
-  -v "$PWD/web/dist:/srv/rokuban/web/dist:ro" \
   -v "$MEDIA_DIR:/mnt/media:ro" \
   -v "$TLS_ROOT:/etc/letsencrypt:ro" \
   -v /tmp/rokuban-nginx.htpasswd:/etc/nginx/htpasswd/rokuban:ro \
@@ -110,8 +128,6 @@ docker run --rm --name rokuban-nginx-check \
   nginx:1.29-alpine
 ```
 
-起動前に、Rokuban が使う media ディレクトリを `MEDIA_DIR` に設定する。
-`TMP/certbot` は存在するディレクトリにする。
 コンテナの `nginx -t` は起動時に実行される。
 
 ローカルの名前解決は `/etc/hosts` に追加する。
@@ -139,7 +155,7 @@ curl -sk -o /dev/null -w '%{http_code}\n' "$URL/recordings/123"
 
 認証付きの API と SPA は `200` になる。
 `/recordings/123` の本文に `<div id="root">` があれば、
-nginx の `try_files` によるディープリンクのフォールバックも通っている。
+アプリの SPA フォールバックが nginx 経由で通っている。
 
 ```sh
 curl -sk -u "$AUTH" "$URL/api/version"
@@ -206,18 +222,21 @@ Rokuban の `storage.accel_location` を空にして再起動する。
 
 ### SSE の長時間接続
 
-認証付きの SSE はすぐに `retry: 3000` を返し、25 秒以内に `: ping` を返す。
+認証付きの SSE はすぐに `retry: 3000` を返し、25 秒間隔で `: ping` を繰り返す。
 Rokuban 自身も `X-Accel-Buffering: no` を返すが、nginx 側の
 `proxy_buffering off` も明示して、upstream の実装や経路を変えても SSE を溜めない
 ことを構成として固定する。
-`--max-time` による終了コード 28 は、この確認では成功扱いにする。
+`nginx.conf` の `proxy_read_timeout` は 90 秒なので、これを跨がない確認では
+ping の有無で結果が変わらない。
+`--max-time 120` を使い、終了コードが `28` になることと、25 秒間隔の ping が
+複数回届いていることを両方確認する。
 認証なしの SSE は `401` で、ストリームを作らない。
 
 ```sh
-curl -skN --max-time 28 -u "$AUTH" \
+curl -skN --max-time 120 -u "$AUTH" \
   "$URL/api/events" > "$TMP/events.txt"; test $? -eq 28
 grep -F 'retry: 3000' "$TMP/events.txt"
-grep -F ': ping' "$TMP/events.txt"
+test "$(grep -c ': ping' "$TMP/events.txt")" -ge 4
 ```
 
 ### 壊して確認する項目
@@ -236,5 +255,16 @@ grep -F ': ping' "$TMP/events.txt"
   その後に戻して日本語ファイル名が `206` になることを確認する。
 - `internal` を一時的に削除し、直接 `/_media/` が読める状態になることを確認する。
   その後に戻して直接アクセスが `404` になることを確認する。
+- `proxy_read_timeout` を ping 間隔より短い `10s` に一時変更する。ping と read
+  timeout の関係が壊れる唯一の経路で、`--max-time 120` の前に接続が切れることを
+  確認する。その後に戻して `--max-time 120` まで接続が保たれることを確認する。
+- `internal/streamer/streamer.go` の `accelURI` から `url.PathEscape` を一時的に
+  外す（`segments[i] = seg` に変える）。`%` を含む `$REL_PATH` の配信が失敗する
+  （`404` か `500` のいずれか）ことを確認する。日本語・空白・括弧はエスケープを
+  外しても通ってしまう可能性があり、そちらは実測で確定させる項目とする。
+  Go 側の unit test はヘッダーがエスケープ済みであることまでしか主張できない。
+  nginx がそれを必要とするかは、実機の alias 解決でしか分からない。
+  その後に `url.PathEscape` を戻し、同じ fixture が `206` で返ることを確認する。
 
 設定を戻すたびに `nginx -t` を通し、reload 後に正常系を 1 回繰り返す。
+Go 側を戻したときは `go build` し直してから確認する。
