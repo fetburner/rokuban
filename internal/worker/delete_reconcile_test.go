@@ -1483,6 +1483,39 @@ func TestDeleteReconcileWorker_Orphan_AgedOut_Deletes(t *testing.T) {
 	}
 }
 
+// 取消済みの ctx を渡すと、期限切れの孤児ファイルが物理削除されずに残る
+// （issue #644。DB が詰まった状態で ctx が死んでいると、孤児ループが ctx を
+// 見ずに 1 件ごとに deleteOrphanCleanupTimeout を待ち切って次へ進み、
+// 最悪 deleteReconcileTimeout を超えてしまう）。残った孤児は次パスの
+// verifiedAgedOrphans が拾い直すので、ここで打ち切っても取りこぼしにはならない
+// （レベルトリガー、不変条件 5）。
+//
+// 壊し方: deleteCandidates の孤児ループ先頭の ctx.Err() チェックを消すと、
+// キャンセル済み ctx でも deleteOrphanFile が呼ばれてファイルが物理削除され、
+// このテストはアサーション失敗で落ちる。
+func TestDeleteReconcileWorker_DeleteCandidates_CanceledCtx_SkipsOrphans(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+
+	relPath := "canceled-ctx-orphan.dat"
+	orphanPath := filepath.Join(mediaDir, relPath)
+	if err := os.WriteFile(orphanPath, []byte("orphan"), 0o644); err != nil {
+		t.Fatalf("writing orphan file: %v", err)
+	}
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	q := sqlcgen.New(pool)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	w.deleteCandidates(ctx, q, nil, nil, []string{relPath})
+
+	if !fileExists(orphanPath) {
+		t.Error("orphan file was removed despite a canceled ctx, want kept (next pass retries)")
+	}
+}
+
 // 候補数がしきい値を超えるとサーキットブレーカーが発動し、その回では何も消さない。
 func TestDeleteReconcileWorker_CircuitBreaker_TripsOnExcess(t *testing.T) {
 	pool := setupTestPool(t)
