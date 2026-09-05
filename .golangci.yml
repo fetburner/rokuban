@@ -23,7 +23,7 @@ linters:
           # 本番コードの import 境界だけを判定する。
           list-mode: lax
           files:
-            - "**/internal/api/**/*.go"
+            - "${config-path}/internal/api/**"
             - "!$test"
           deny:
             - pkg: github.com/fetburner/rokuban/internal/worker
