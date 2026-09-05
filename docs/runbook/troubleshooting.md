@@ -149,14 +149,13 @@ SELECT id, kind, queue, state FROM river_job ORDER BY id;
 --   3 | reconcile_pass | reconciler_tokyo | available   ← 新キュー。worker が正しく引く
 ```
 
-**それでも掃除は推奨する**。旧キューの残骸（上の `id=1`）はどの worker も
-購読しないキューに永久に残る。
-`state='available'` のままになり、滞留メトリクス（River のキュー長ダッシュボード等）を
-汚し続ける。デプロイ後に 1 回だけ
-次を実行する（`internal/jobs/queue.go` の `pendingJobStates` と同じ 5 状態すべてを
-対象にする。
-`available`/`scheduled`/`retryable` だけでは `pending`/`running` の残骸を
-取りこぼす）:
+**それでも掃除は推奨する**。旧キューの残骸（上の `id=1`）は残さない。
+どの worker も購読しないキューに永久に残るためだ。
+`state='available'` のままになり、滞留メトリクスを汚し続ける。
+デプロイ後に 1 回だけ次を実行する。
+`internal/jobs/queue.go` の `pendingJobStates` と同じ 5 状態を対象にする。
+`available`/`scheduled`/`retryable` だけでは不十分である。
+`pending`/`running` の残骸も取りこぼさない。
 
 ```sh
 docker compose exec postgres psql -U rokuban -d rokuban -c \
