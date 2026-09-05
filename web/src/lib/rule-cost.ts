@@ -84,7 +84,7 @@ export const ruleCostWeekDays = 7
  * `ORDER BY p.program_id, p.site`。programId が第 1 ソートキーなので昇順の性質は変わらない）で、
  * `programId` はネットワーク・サービス順に固まる
  * （Mirakurun 互換の合成規則 `(networkId*100000 + serviceId)*100000 + eventId`。
- * `internal/mirakc/ids.go` の `ComposeProgramID` / `SplitProgramID` と同じ式で、
+ * `internal/programid/ids.go` の `ComposeProgramID` / `SplitProgramID` と同じ式で、
  * mirakc 固有の合成規則への依存は Go 側のこの 1 箇所に閉じている --- ここでは
  * 分解はせず、「昇順に並べるとチャンネル順に固まる」ことの根拠として引くだけ）。
  * 複数チャンネルに

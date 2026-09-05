@@ -12,7 +12,7 @@
 //
 // **DB を引かない**（issue #91 の決定 3）。パスの (networkId, serviceId) は
 // SI の値そのもの（`GET /api/sites/{site}/services` が返すのと同じ id 空間）で、
-// mirakc が要求する合成 id への変換は mirakc.ServiceID による純関数（issue #217）。
+// mirakc が要求する合成 id への変換は programid.ServiceID による純関数（issue #217）。
 // セッションはインメモリの使い捨て --- crash-only の唯一の例外
 // （docs/overview.md §crash-only）。
 package streamer
@@ -39,6 +39,7 @@ import (
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/programid"
 )
 
 // LiveConfig はライブ視聴の設定。streamer.Config が config.StorageConfig を
@@ -619,7 +620,7 @@ func (ls *LiveStreamer) Leave(w http.ResponseWriter, r *http.Request) {
 // resolveRequest はパスから (site, networkId, serviceId) を取り出し、site が
 // このプロセスの担当（`--sites` で束縛された site）と一致することを確かめたうえで、
 // mirakc に渡す合成 service id を返す。DB は引かない（issue #91 の決定 3）---
-// 合成は mirakc.ServiceID の純関数。
+// 合成は programid.ServiceID の純関数。
 //
 // **mirakc へ渡るのは常にここで組み立てた整数であり、URL の文字列ではない。**
 // パスセグメントを 16 bit 符号なし整数として解析できなければ 400 を返して
@@ -644,13 +645,13 @@ func (ls *LiveStreamer) resolveRequest(w http.ResponseWriter, r *http.Request) (
 		http.Error(w, "invalid service id", http.StatusBadRequest)
 		return 0, false
 	}
-	return mirakc.ServiceID(networkID, serviceID), true
+	return programid.ServiceID(networkID, serviceID), true
 }
 
 // parseSIID は SI の network_id / service_id を表すパスセグメントを解析する。
 //
 // いずれも SI 上は 16 bit 符号なし整数なので上限をそこに取る。合成
-// （mirakc.ServiceID = networkID*100_000 + serviceID）が可逆であるためには
+// （programid.ServiceID = networkID*100_000 + serviceID）が可逆であるためには
 // serviceID < 100_000 が必要で、16 bit 上限（65535）はそれを満たす。
 // strconv.ParseUint(s, 10, 16) は空文字・符号付き・基数接頭辞・アンダースコア
 // 区切り・全角数字・65535 超をすべて弾く。

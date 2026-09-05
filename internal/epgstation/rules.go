@@ -44,7 +44,7 @@ type RuleSearchOption struct {
 	CS                bool   `json:"CS,omitempty"`
 	SKY               bool   `json:"SKY,omitempty"`
 	// ChannelIDs は Mirakurun 互換の service id（= networkId*100000+serviceId。
-	// internal/mirakc.SplitServiceID で分解できる）。
+	// internal/programid.SplitServiceID で分解できる）。
 	ChannelIDs []int64          `json:"channelIds,omitempty"`
 	Genres     []RuleGenre      `json:"genres,omitempty"`
 	Times      []RuleSearchTime `json:"times,omitempty"`

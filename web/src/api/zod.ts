@@ -616,7 +616,7 @@ export const ListServicesParams = zod.object({
 })
 
 export const ListServicesResponseItem = zod.object({
-  "id": zod.int().describe('サービスの一意な識別子。`networkId \* 100000 + serviceId`（Mirakurun \/\nmirakc の `ServiceId` と同じ合成規則。権威は `internal\/mirakc.ServiceID`）。\n\n\*\*SI の `serviceId` は network をまたぐと一意でない\*\*（BS 101 と\n110度CS 101 は実在する衝突）ため、絞り込み・選択・キャッシュキーの\nidentity にはこの値を使う。`?service=` に載るのもこの値。\n\n\*\*int32 には収まらない\*\*（networkId \/ serviceId とも 16bit なので\n最大 65535 \* 100000 + 65535 = 6,553,565,535）。JavaScript の\nsafe integer には収まる。\n'),
+  "id": zod.int().describe('サービスの一意な識別子。`networkId \* 100000 + serviceId`（Mirakurun \/\nmirakc の `ServiceId` と同じ合成規則。権威は `internal\/programid.ServiceID`）。\n\n\*\*SI の `serviceId` は network をまたぐと一意でない\*\*（BS 101 と\n110度CS 101 は実在する衝突）ため、絞り込み・選択・キャッシュキーの\nidentity にはこの値を使う。`?service=` に載るのもこの値。\n\n\*\*int32 には収まらない\*\*（networkId \/ serviceId とも 16bit なので\n最大 65535 \* 100000 + 65535 = 6,553,565,535）。JavaScript の\nsafe integer には収まる。\n'),
   "networkId": zod.int(),
   "serviceId": zod.int(),
   "name": zod.string(),

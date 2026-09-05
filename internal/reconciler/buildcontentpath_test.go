@@ -7,7 +7,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/contentpath"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/programid"
 )
 
 func TestServiceIDExtraction(t *testing.T) {
@@ -21,7 +21,7 @@ func TestServiceIDExtraction(t *testing.T) {
 		{327360102412345, 1024}, // networkId=32736, serviceId=1024, eventId=12345
 	}
 	for _, tt := range tests {
-		_, sid, _ := mirakc.SplitProgramID(tt.programID)
+		_, sid, _ := programid.SplitProgramID(tt.programID)
 		if sid != tt.wantSID {
 			t.Errorf("programID=%d: serviceID=%d, want %d", tt.programID, sid, tt.wantSID)
 		}

@@ -10,7 +10,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/inplace"
-	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/programid"
 )
 
 // LibraryItem は 1 件の EPGStation Recorded を表す import 入力。
@@ -173,17 +173,17 @@ func ImportLibrary(ctx context.Context, pool *pgxpool.Pool, mediaDir, site strin
 }
 
 // resolveEventIdentity は recordings の (network_id, service_id, event_id) を
-// 決める。programId があれば mirakc の合成規則（internal/mirakc.
+// 決める。programId があれば mirakc の合成規則（internal/programid.
 // SplitProgramID）でそのまま分解する。無ければ channelId を分解し、
 // event_id は name+endAt から決定的に合成する合成識別子にする（放送由来の
 // 本物の event_id ではない —— 設計判断・要確認: internal/epgimport の
 // パッケージコメントおよび import 結果レポート参照）。
 func resolveEventIdentity(programID *int64, channelID int64, name string, endAt int64) (networkID, serviceID, eventID int32) {
 	if programID != nil {
-		n, s, e := mirakc.SplitProgramID(*programID)
+		n, s, e := programid.SplitProgramID(*programID)
 		return int32(n), int32(s), int32(e)
 	}
-	n, s := mirakc.SplitServiceID(channelID)
+	n, s := programid.SplitServiceID(channelID)
 	return int32(n), int32(s), syntheticEventID(name, endAt)
 }
 

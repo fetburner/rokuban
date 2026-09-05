@@ -17,6 +17,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/programid"
 )
 
 const testSite = "default"
@@ -53,7 +54,7 @@ func int64Ptr(v int64) *int64 { return &v }
 
 func testService(networkID, serviceID, remoteKey int, name, channel string) mirakc.Service {
 	return mirakc.Service{
-		ID:                 mirakc.ServiceID(networkID, serviceID),
+		ID:                 programid.ServiceID(networkID, serviceID),
 		ServiceID:          serviceID,
 		NetworkID:          networkID,
 		Type:               1,
@@ -68,7 +69,7 @@ func testService(networkID, serviceID, remoteKey int, name, channel string) mira
 func testProgram(networkID, serviceID, eventID int, name string, start time.Time, dur time.Duration) mirakc.Program {
 	desc := name + "の説明"
 	return mirakc.Program{
-		ID:          mirakc.ComposeProgramID(networkID, serviceID, eventID),
+		ID:          programid.ComposeProgramID(networkID, serviceID, eventID),
 		EventID:     eventID,
 		ServiceID:   serviceID,
 		NetworkID:   networkID,

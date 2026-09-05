@@ -20,6 +20,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/conformance/fixture"
+	"github.com/fetburner/rokuban/internal/programid"
 )
 
 const (
@@ -41,8 +42,8 @@ func TestConformance(t *testing.T) {
 	client := mirakc.NewClient(container.baseURL, nil)
 	ctx := context.Background()
 
-	serviceID := mirakc.ServiceID(fixture.NetworkID, fixture.ServiceID)
-	programID := mirakc.ComposeProgramID(fixture.NetworkID, fixture.ServiceID, fixture.EventID)
+	serviceID := programid.ServiceID(fixture.NetworkID, fixture.ServiceID)
+	programID := programid.ComposeProgramID(fixture.NetworkID, fixture.ServiceID, fixture.EventID)
 
 	// 受け入れ項目 5: pin の上げ忘れで別物を判定していないことの検査。
 	t.Run("MirakcVersionPin", func(t *testing.T) {

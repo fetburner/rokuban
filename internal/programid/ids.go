@@ -1,4 +1,10 @@
-package mirakc
+// Package programid owns the Mirakurun-compatible arithmetic used to identify
+// broadcast services and programs.
+//
+// The arithmetic describes the broadcast domain, not the mirakc transport
+// client. Keeping it here lets API and other domain packages use the identity
+// rules without depending on the mirakc client package.
+package programid
 
 // idMagicNumber は Mirakurun/mirakc が service id・program id を合成・分解する際の基数。
 // mirakc-core (src/models.rs) の MAGIC_NUMBER = 100_000 に対応する。

@@ -13,8 +13,43 @@ linters:
     - nilerr
     - errorlint
     - funlen
+    - depguard
 
   settings:
+    depguard:
+      rules:
+        api-role:
+          # API のテストは worker の実ジョブを使う統合テストなので、ここでは
+          # 本番コードの import 境界だけを判定する。
+          list-mode: lax
+          files:
+            - "${config-path}/internal/api/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/fetburner/rokuban/internal/worker
+              desc: api role must not depend on worker execution
+            - pkg: github.com/fetburner/rokuban/internal/mirakc
+              desc: api role must not depend on the mirakc client
+            - pkg: github.com/fetburner/rokuban/internal/mediapath
+              desc: api role must not depend on filesystem paths
+            - pkg: github.com/fetburner/rokuban/internal/ffargs
+              desc: api role must not depend on ffmpeg arguments
+            - pkg: github.com/fetburner/rokuban/internal/tsstat
+              desc: api role must not depend on transport-stream inspection
+            - pkg: os/exec
+              desc: api role must not execute external processes
+        exec-role:
+          # os/exec は worker/streamer が実行に使い、config は LookPath で
+          # ツールの存在だけを検証する。テストの子プロセス起動は対象外。
+          list-mode: lax
+          files:
+            - "!$test"
+            - "!${config-path}/internal/worker/**"
+            - "!${config-path}/internal/streamer/**"
+            - "!${config-path}/internal/config/**"
+          deny:
+            - pkg: os/exec
+              desc: os/exec is limited to worker, streamer, and config
     errorlint:
       errorf: true
       asserts: true
