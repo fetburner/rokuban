@@ -474,9 +474,14 @@ func TestServerCmd_OnceModeTerminates(t *testing.T) {
 	})
 }
 
-// **未登録 kind のジョブを掴んでも Job が終わること。** River の executor は
-// 登録されていない kind を WorkUnit == nil で早期 return し、その時点では
-// WorkerMiddleware のチェーンをまだ組み立てていない（worker.SubscribeOnceEvents）。
+type e2eProbeArgs struct{}
+
+func (e2eProbeArgs) Kind() string { return "e2e_probe" }
+
+// TestServerCmd_OnceModeExitsOnUnhandledJobKind は**未登録 kind のジョブを
+// 掴んでも Job が終わること**を確認する。River の executor は登録されていない
+// kind を WorkUnit == nil で早期 return し、その時点では WorkerMiddleware の
+// チェーンをまだ組み立てていない（worker.SubscribeOnceEvents）。
 // middleware だけを見ていると、Job は「1 件も claim していない」と誤認したまま
 // idleTimeout の間そのキューを掴み続け、試行回数を潰す。
 //
