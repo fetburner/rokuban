@@ -1,0 +1,4 @@
+# Basic 認証・TLS の実値はリポジトリへ入れない。
+*.htpasswd
+*.key
+*.pem
