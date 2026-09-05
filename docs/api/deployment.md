@@ -50,17 +50,21 @@
 
 nginx は「アーキテクチャ図に現れる箱」ではなく「推奨デプロイパターンの一部」。構成図は変更なし、HTTP 層の設計要件として現れる。
 
-## nginx リファレンス構成の方針
+## nginx リファレンス構成
 
-nginx リファレンス構成例をドキュメントに同梱する。カバーする構成:
+実ファイルの構成例を [`deploy/nginx/nginx.conf`](../../deploy/nginx/nginx.conf)
+に同梱する。ホスト名・upstream・証明書・認証ファイルのパスだけを環境に合わせて
+変更し、Rokuban の埋め込み SPA と録画ディレクトリを nginx へ read-only で渡す。
+カバーする構成:
 
 - **TLS 終端** + Let's Encrypt
 - **Basic 認証**（または Authelia 等の外部認証連携）
 - **X-Accel-Redirect** --- 録画ファイル配信のバイト転送を nginx に委譲
 - **SSE 設定** --- `proxy_buffering off` + タイムアウト調整
-- **SPA フォールバック** --- `try_files` で `index.html` へ
+- **SPA は proxy するだけ** --- SPA はバイナリに go:embed 済みなので、nginx は配らずアプリへ委ねる
 
 これは推奨構成であり、Caddy / k8s Ingress / Cloudflare Access 等でも同等の構成が可能。
+実機での確認は [nginx runbook](../runbook/nginx.md) にまとめる。
 
 ## プロトコル選定の根拠
 
