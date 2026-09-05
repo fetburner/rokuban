@@ -261,15 +261,17 @@ func (w *Watcher) createRecording(ctx context.Context, q *sqlcgen.Queries, recor
 	eventID := int32(record.Program.EventID)
 
 	// 「本物の record が推論に必ず勝つ」（issue #98 の決定、issue #129 症状 2）:
-	// 同一 active-event に status='failed' の行が生きたまま残っていれば、続く
+	// 同一 active-event（program_start_at を含む）に status='failed' の行が
+	// 生きたまま残っていれば、続く
 	// CreateRecording の INSERT より前に superseded にして枠を明け渡させる。
 	// SupersedeFailedRecording / CreateRecording の doc コメント参照（1 つの
 	// クエリに詰め込まず 2 つの文に分けている理由も同所）。
 	if _, err := q.SupersedeFailedRecording(ctx, sqlcgen.SupersedeFailedRecordingParams{
-		Site:      w.site,
-		NetworkID: networkID,
-		ServiceID: serviceID,
-		EventID:   eventID,
+		Site:           w.site,
+		NetworkID:      networkID,
+		ServiceID:      serviceID,
+		EventID:        eventID,
+		ProgramStartAt: millisToTime(record.Program.StartAt),
 	}); err != nil {
 		return 0, fmt.Errorf("superseding failed recording for program %d: %w", record.Program.ID, err)
 	}
@@ -435,6 +437,7 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 	networkID := int32(schedule.Program.NetworkID)
 	serviceID := int32(schedule.Program.ServiceID)
 	eventID := int32(schedule.Program.EventID)
+	programStartAt := millisToTime(schedule.Program.StartAt)
 
 	if err := q.CreateFailedRecording(ctx, sqlcgen.CreateFailedRecordingParams{
 		RuleID:            res.RuleID,
@@ -451,7 +454,7 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 		Extended:          marshalJSONOrNull(schedule.Program.Extended),
 		Genres:            marshalJSONOrNull(schedule.Program.Genres),
 		IsFree:            schedule.Program.IsFree,
-		ProgramStartAt:    millisToTime(schedule.Program.StartAt),
+		ProgramStartAt:    programStartAt,
 		ProgramDurationMs: ptr.Deref(schedule.Program.Duration),
 		QualityEvents:     qeJSON,
 	}); err != nil {
@@ -466,13 +469,17 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 	// NULL のまま履歴として残るため、deleted_at だけで絞ると superseded 済みの
 	// 過去の failed 行と、いま CreateFailedRecording が更新した「生きている」行の
 	// 2 行がヒットしうる（ORDER BY が無いと QueryRow はどちらを返すか不定）。
+	// program_start_at も条件に入れる。event_id は同一サービス内で永続的な一意性を
+	// 持たない（ARIB TR-B14 第四編 8.2.1 が保証するのはイベント終了から 24 時間）ため、
+	// これが無いと event_id が再利用された過去の行までヒットしうる。
 	// ON CONFLICT の対象（生きている行）と同じ述語に揃えることで一意に定まる。
 	var recordingID int64
 	if err := w.pool.QueryRow(ctx, `
 		SELECT id FROM recordings
 		WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4
+		  AND program_start_at = $5
 		  AND deleted_at IS NULL AND superseded_at IS NULL
-	`, w.site, networkID, serviceID, eventID).Scan(&recordingID); err != nil {
+	`, w.site, networkID, serviceID, eventID, programStartAt).Scan(&recordingID); err != nil {
 		slog.Warn("webhook: looking up failed recording id",
 			"program_id", data.ProgramID, "err", err)
 		return nil

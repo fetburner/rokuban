@@ -484,7 +484,7 @@ func TestListRecordingIDsMissingThumbnail_ExcludesTrash(t *testing.T) {
 
 	// insertTestRecording は固定の network/service/event ID を使うため、
 	// deleted_at IS NULL の行が 2 つ同時に存在すると unique partial index
-	// (site, network_id, service_id, event_id) WHERE deleted_at IS NULL に
+	// (site, network_id, service_id, event_id, program_start_at) WHERE deleted_at IS NULL に
 	// ぶつかる。先にごみ箱行を作って soft delete してから、生きている行を作る。
 	trashedID := insertTestRecording(t, pool)
 	if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{

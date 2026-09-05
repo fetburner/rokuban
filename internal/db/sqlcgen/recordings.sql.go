@@ -88,7 +88,8 @@ INSERT INTO recordings (
     $15, $16,
     'failed', $17
 )
-ON CONFLICT (site, network_id, service_id, event_id) WHERE deleted_at IS NULL AND superseded_at IS NULL
+ON CONFLICT (site, network_id, service_id, event_id, program_start_at)
+    WHERE deleted_at IS NULL AND superseded_at IS NULL
 DO UPDATE SET
     quality_events = recordings.quality_events || EXCLUDED.quality_events,
     updated_at     = now()
@@ -114,7 +115,7 @@ type CreateFailedRecordingParams struct {
 	QualityEvents     json.RawMessage
 }
 
-// ON CONFLICT の述語は recordings_unique_active_event（issue #129 症状 2 で
+// ON CONFLICT の対象列と述語は recordings_unique_active_event（issue #129 症状 2 で
 // `AND superseded_at IS NULL` を追加済み）と一字一句一致させる必要がある
 // （Postgres は ON CONFLICT の対象インデックスを述語込みで照合するため、
 // ずれると「there is no unique or exclusion constraint matching」で落ちる）。
@@ -469,18 +470,21 @@ WHERE site = $1
   AND network_id = $2
   AND service_id = $3
   AND event_id = $4
+  AND program_start_at = $5
   AND deleted_at IS NULL AND superseded_at IS NULL AND status = 'failed'
 `
 
 type SupersedeFailedRecordingParams struct {
-	Site      string
-	NetworkID int32
-	ServiceID int32
-	EventID   int32
+	Site           string
+	NetworkID      int32
+	ServiceID      int32
+	EventID        int32
+	ProgramStartAt time.Time
 }
 
 // 「本物の record が推論に必ず勝つ」（issue #98 の決定、issue #129 症状 2 が最初の
-// 適用）の前段: 同一 active-event (site, network_id, service_id, event_id) に
+// 適用）の前段: 同一 active-event
+// (site, network_id, service_id, event_id, program_start_at) に
 // status='failed' の行が「生きて」（deleted_at IS NULL AND superseded_at IS NULL、
 // recordings_unique_active_event の述語）残っていれば、
 // superseded_at を立てて枠を明け渡させる。呼び出し側（internal/watcher の
@@ -503,6 +507,15 @@ type SupersedeFailedRecordingParams struct {
 // だけを持つ列で、ユーザーのごみ箱操作を表す deleted_at とは別物にした
 // （不変条件 9: 2 つの事実を同じ列に同居させない。deleted_at を流用すると
 // ごみ箱ビュー・GC がユーザー操作でない行をユーザー操作と誤読する）。
+//
+// event_id は同一サービス内で永続的な一意性を保証しない。ARIB TR-B14 第四編
+// 8.2.1 が保証するのはイベント終了から 24 時間なので、program_start_at も
+// 条件に含める。この発火条件は索引 recordings_unique_active_event と揃えてある:
+// failed 行が新しい record をブロックする条件はもともと program_start_at の
+// 一致そのものなので、この一致自体は機能的な穴を開けない。4 列だけで絞ると
+// event_id 再来時に無関係な過去の failed 行へ superseded_at を立ててしまう
+// （不変条件 9: 「この行が枠を明け渡した」という不可逆な事実を無関係な行に
+// 誤って書き込む）。
 //
 // WHERE status = 'failed' に絞っているので、'recording'/'finished'/'canceled' の
 // 生きている行は巻き込まない —— それらと衝突する INSERT は素の一意制約違反として
@@ -527,6 +540,7 @@ func (q *Queries) SupersedeFailedRecording(ctx context.Context, arg SupersedeFai
 		arg.NetworkID,
 		arg.ServiceID,
 		arg.EventID,
+		arg.ProgramStartAt,
 	)
 	if err != nil {
 		return 0, err

@@ -14,6 +14,8 @@
 4. **tombstone**: 物理削除後もメタデータ行は残す。ドロップ統計・録画履歴・重複排除は削除後も機能する
 5. **識別子 / 存在のスコープ**: mirakc が指すものは 2 種類ある。**record id はインスタンス単位で採番される識別子**で、取り違えると別の録画を指してしまう。**programId（`Service.id` も同型）は放送そのものから合成される値**で、識別子ではなく存在のスコープしか持たない。取り違えても別の番組にはならず、その site の EPG に無ければ 404 になるだけである（[ruler](../recording/ruler.md)「サイトの扱い」）
    - 「同一放送なら全 site で同一 programId になる」は、NID/SID/eventId から合成する Mirakurun の ID 合成規則からの**演繹**であり、複数サイトの実機で測定した結果ではない（**未検証**）。式は [reservations.md](reservations.md)「チャンネル識別はスナップショットする」。ruler の N 予約・重複排除（`internal/ruler/dedupe.go`）はこの前提の上に成り立つ
+   - 同一サービス内の `event_id` は永続的な一意性を持たない。ARIB TR-B14 第四編 8.2.1 が保証する範囲はイベント終了から 24 時間である。
+   - そのため `recordings` の永続的な放送イベント identity は、開始時刻を加えた `(site, network_id, service_id, event_id, program_start_at)` とする。
    - [設定](../configuration.md)は「多拠点が現実化したら `mirakcs:` リストで互換拡張」と定めており、その際のスキーマ波及を避けるため **mirakc を指すすべてのテーブルに `site` 列を最初から持つ**。理由は識別子が曖昧だからではなく、**行の存在と状態が site ごとの観測だから**である（同じ放送でも A では録画中、B では未予約になりうる）
    - `site` は設定ファイルで定義するサイト名（`config.mirakcs[].site`。各要素必須で既定値は無い）。サイトのレジストリは設定であり、DB に sites テーブルは作らない
    - site を持つのは reservations / schedule_sync / record_sync / recordings（+ EPG プロジェクション）。media_assets / drop_stats は中央ストレージの台帳なので持たない
@@ -41,4 +43,3 @@
 10. **形を固定する前に、その形を決める判定基準を書く**（[CLAUDE.md](../../CLAUDE.md) 不変条件 11）
     - 導出テーブルの列は**書き手のコードと同じ PR で決める**。新しい列を足すときは「これを書くコードは今あるか」を問う。判定基準が後から来て `reservations` の列が 5 回変更された経緯は [invariants.md](../invariants.md) §11
     - 将来への先払いは**高い方から**。`site` 列（安い方、DB）は v1 から先払いしていたが、API の資源同定（高い方）は後から判定基準を書いた（[api/rest.md](../api/rest.md) §エンドポイント設計の規約）。現行のパスが全エンドポイントでこの基準に適合しているとは限らない（同節の未解決を参照）
-
