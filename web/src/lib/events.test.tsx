@@ -107,6 +107,7 @@ type FetchCounts = {
  * stale 化するだけで fetch を起こさないので、「再取得が実際に走ったか」を見る
  * テストではこちらを使う。
  */
+// oxlint-disable react/immutability -- テストハーネスが所有する観測用カウンタ
 function ActiveQueries({ counts }: { counts: FetchCounts }) {
   useQuery({
     queryKey: reservationsKey,
@@ -159,6 +160,7 @@ function ActiveQueries({ counts }: { counts: FetchCounts }) {
   })
   return null
 }
+// oxlint-enable react/immutability
 
 /**
  * advance は偽タイマーを進め、それによって走り出した fetch と再描画を流し切る。

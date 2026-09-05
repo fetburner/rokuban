@@ -64,6 +64,9 @@ function ingestDetailText(display: IngestDisplay): string {
 export function RecordingDetail({ recording, trash }: { recording: Recording; trash: boolean }) {
   const encodedAssets = recording.encodedAssets ?? []
   const hasOriginal = recording.sizeBytes !== undefined
+  // 詳細データの再取得ごとに取り込み状態を現在時刻で再評価する。mount 時に固定
+  // すると、停滞表示が更新されなくなるため state 初期値には移せない。
+  // oxlint-disable-next-line react/purity -- 再取得ごとの現在時刻スナップショットが必要
   const ingestState = ingestDisplay(recording, Date.now())
   const registeredSites = unwrap(useListSites().data) ?? []
   const showSite = shouldShowRecordingSite(registeredSites, [recording.site])

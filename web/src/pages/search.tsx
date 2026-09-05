@@ -69,6 +69,9 @@ const pageSize = 30
 export function SearchPage() {
   // nowMs はこのレンダーの間で一貫させる（`pages/home.tsx`・`pages/programs.tsx`
   // と同じ規律）。容量ノートの問い合わせ窓（下の `shortfallWindowStartMs`）だけが使う。
+  // 検索結果の容量窓はクエリ再取得ごとの「いま」を使う。時刻を mount 時に固定
+  // すると、日境界をまたいだ後も古い窓を問い合わせ続ける。
+  // oxlint-disable-next-line react/purity -- クエリ再取得ごとの現在時刻スナップショットが必要
   const nowMs = Date.now()
   const routeSearch = useRouteSearch({ from: '/search' })
   const ruleId = routeSearch.ruleId
@@ -136,7 +139,9 @@ export function SearchPage() {
   // ガードの実装を 1 行間違えるだけで「打つたびに下書きが巻き戻る」
   // 無限ループに退化する。ref 経由の最新値参照にして、そもそも依存に入れない。
   const searchRef = useRef(search)
-  searchRef.current = search
+  useEffect(() => {
+    searchRef.current = search
+  }, [search])
 
   // ハイドレーションは 1 回だけ。ref に「最後にハイドレートした ruleId」を持ち、
   // 同じ ruleId のまま（refetch でオブジェクトの参照が変わっただけ）なら
@@ -150,6 +155,8 @@ export function SearchPage() {
     hydratedRuleIdRef.current = ruleId
 
     const nextDraft = conditionsToDraft(sourceRule)
+    // URL の共有条件をフォームと検索へ反映する外部入力同期。
+    // oxlint-disable-next-line react/set-state-in-effect -- URL 条件をローカルフォームへ同期する
     setDraft(nextDraft)
     setVisibleCount(pageSize)
     searchRef.current.mutate({ data: buildSearchRequest(nextDraft) })
@@ -196,6 +203,8 @@ export function SearchPage() {
     appliedCondRef.current = encoded
     if (nextDraft === undefined) return
 
+    // URL の共有条件をフォームと検索へ反映する外部入力同期。
+    // oxlint-disable-next-line react/set-state-in-effect -- URL 条件をローカルフォームへ同期する
     setDraft(nextDraft)
     setVisibleCount(pageSize)
     searchRef.current.mutate({ data: buildSearchRequest(nextDraft) })

@@ -344,3 +344,37 @@ describe('RecordingPlayer の再生操作', () => {
     expect(requestPictureInPicture).toHaveBeenCalledOnce()
   })
 })
+
+describe('RecordingPlayer の selectedProfile 導出', () => {
+  it('選択中プロファイルが encodedAssets から消えたら先頭へフォールバックする', () => {
+    const { container, rerender } = render(
+      <RecordingPlayer
+        recordingId={40}
+        encodedAssets={[
+          { profile: 'h264', sizeBytes: 100 },
+          { profile: 'h265', sizeBytes: 200 },
+        ]}
+      />,
+    )
+    const select = container.querySelector('select')! as HTMLSelectElement
+    fireEvent.change(select, { target: { value: 'h265' } })
+    expect(select.value).toBe('h265')
+    expect(container.querySelector('video')?.src).toContain('profile=h265')
+
+    // 選択中だった h265 が資産一覧から消える（新しいエンコードが完了して古い
+    // 派生物が消えた等）。h264_low を足して選択肢が 2 つのまま残る形にし、
+    // <select> 自体が引き続き出ることを確かめつつフォールバック先を見る。
+    rerender(
+      <RecordingPlayer
+        recordingId={40}
+        encodedAssets={[
+          { profile: 'h264', sizeBytes: 100 },
+          { profile: 'h264_low', sizeBytes: 50 },
+        ]}
+      />,
+    )
+
+    expect(select.value).toBe('h264')
+    expect(container.querySelector('video')?.src).toContain('profile=h264')
+  })
+})

@@ -95,6 +95,9 @@ type ProgramView = 'list' | 'grid'
  * うえ、個々の番組から飛べる導線と役割が重複する。issue #231 の決定。
  */
 export function ProgramsPage() {
+  // `at` の日判定・取得窓・子リストの判定を同じレンダーの時刻で揃える。
+  // oxlint-disable-next-line react/purity -- EPG の現在時刻スナップショットが必要
+  const nowMs = Date.now()
   const {
     sites,
     services: serviceList,
@@ -131,7 +134,7 @@ export function ProgramsPage() {
   // selectableDays 未満。0 は今日で、リストは常にここから連続フィードとして
   // 始まる（`今` という別枠の選択肢は無い）。URL の `day` から初期化し、
   // `at` があれば下の effect がその日で上書きする。
-  const [dayOffset, setDayOffset] = useState(() => programsDayOffset(search.day, Date.now()))
+  const [dayOffset, setDayOffset] = useState(() => programsDayOffset(search.day, nowMs))
   // visibleDay は「いま見ている日」（ProgramList がスクロール位置から導出して
   // 通知する）。DayStrip のハイライトはこちらを見る。ジャンプ直後は dayOffset と
   // 一致するが、その後リストをスクロールすればこちらだけが動く。
@@ -182,7 +185,7 @@ export function ProgramsPage() {
   // atDayOffset は at が属する日（`lib/day-offset.ts` の `dayOffsetForMs`）。
   // `dayOffset`（いま実際に見ている日）と比較することで「at はまだ有効か」を
   // 判定する（下記 `scrollToMs` 参照）。
-  const atDayOffset = at === undefined ? undefined : dayOffsetForMs(at, Date.now(), selectableDays)
+  const atDayOffset = at === undefined ? undefined : dayOffsetForMs(at, nowMs, selectableDays)
 
   // at が指す日へ「いま見ている日」を合わせる。グリッドの有無・表示形式に
   // 関わらず効かせる --- リスト表示中・`lg` 未満（グリッドが出ない）画面では
@@ -193,6 +196,9 @@ export function ProgramsPage() {
   // `day` と矛盾しても at の日を勝たせる。`day` は URL からは消さない）。
   useEffect(() => {
     if (atDayOffset === undefined) return
+    // URL の at を画面状態へ反映する同期。URL を正本としており、render 中に
+    // state を書くと hooks の render 更新になるため effect が必要。
+    // oxlint-disable-next-line react/set-state-in-effect -- URL のジャンプ先を画面状態へ同期する
     setDayOffset(atDayOffset)
     setVisibleDay(atDayOffset)
   }, [atDayOffset])
@@ -226,9 +232,6 @@ export function ProgramsPage() {
   const selectedServiceIds = useMemo(() => new Set(search.service ?? []), [search.service])
   const reservations = useListReservations()
 
-  // nowMs はこのレンダーの間で一貫させる。起点・上限・下限をそれぞれ別々に
-  // Date.now() を呼んで求めると、ミリ秒単位でずれた「今」が混ざりうる。
-  const nowMs = Date.now()
   // 起点はジャンプ先（state）から決める。queryKey に入るので、日付を変えると
   // ページが積み直され、キャッシュ済みのページが古い窓のまま再利用されることもない。
   const originMs = dayOrigin(dayOffset, nowMs).getTime()
@@ -478,13 +481,12 @@ export function ProgramsPage() {
   // autoLoadFailed: 直近の自動読み込み（進行方向）が失敗したか。失敗したら
   // ボタン + エラー表示に落とし、番兵が可視のままでも自動では再試行しない
   // （さもないと失敗したまま無限にリクエストを投げ続ける）。
-  const [autoLoadFailed, setAutoLoadFailed] = useState(false)
-
-  // クエリの窓（起点・上限・絞り込み）が変わったら新しいセッションとして扱い、
-  // 前の窓での失敗を引きずらない。
-  useEffect(() => {
-    setAutoLoadFailed(false)
-  }, [originMs, limitMs, selectedServiceParam])
+  // 起点・上限・絞り込みは queryKey に入っているので、窓が変われば別クエリに
+  // なり前の窓の失敗を引き継がない（effect での明示リセットは不要）。
+  // `isFetchNextPageError` は `isError && fetchMeta.fetchMore.direction === 'forward'`
+  // （@tanstack/query-core 5.102.8 の infiniteQueryObserver.js。未検証: 版が
+  // 上がると変わりうる）。
+  const autoLoadFailed = query.isFetchNextPageError
 
   // 日付ジャンプ（DayStrip・容量バッジ）で originMs が変わったら、リスト表示では
   // スクロールを先頭へ戻して選んだ日の先頭行に着地させる。上の
@@ -510,10 +512,6 @@ export function ProgramsPage() {
     window.scrollTo(0, 0)
     window.dispatchEvent(new Event('scroll'))
   }, [originMs, showGrid])
-
-  useEffect(() => {
-    if (query.isFetchNextPageError) setAutoLoadFailed(true)
-  }, [query.isFetchNextPageError])
 
   // IntersectionObserver のコールバックは、番兵を張り直さなくても常に最新の
   // 状態を読めるよう ref 経由で渡す（effect の再生成は showGrid が変わる

@@ -273,20 +273,21 @@ export function RecordingsPage() {
     setPurgeConfirmOpen(false)
   }
 
-  // autoLoadFailed: 直近の自動読み込みが失敗したか。失敗したらボタン + エラー
-  // 表示に落とし、番兵が可視のままでも自動では再試行しない（さもないと失敗した
-  // まま無限にリクエストを投げ続ける。pages/programs.tsx と同じ規律）。
-  const [autoLoadFailed, setAutoLoadFailed] = useState(false)
+  // autoLoadFailed: 直近の自動読み込みが失敗したか。番兵が可視のままでも自動
+  // では再試行しない（さもないと失敗したまま無限にリクエストを投げ続ける）。
+  // このページではエラー文言は持たない --- 失敗すると `query.isError` が立ち、
+  // 一覧ごと外側の `<ErrorState>` に差し替わるため、番兵の傍にインラインで
+  // 出す余地が無い（pages/programs.tsx は同じブロックが三項の外側にあるので
+  // そちらには文言がある）。
+  const autoLoadFailed = query.isFetchNextPageError
   const paramsKey = JSON.stringify(listParams)
   useEffect(() => {
-    setAutoLoadFailed(false)
+    // URL の検索条件変更に合わせて選択状態を無効化する外部入力同期。
+    // oxlint-disable-next-line react/set-state-in-effect -- URL 条件変更で一覧選択をリセットする
     setSelecting(false)
     setSelected(new Set())
     setPurgeConfirmOpen(false)
   }, [paramsKey])
-  useEffect(() => {
-    if (query.isFetchNextPageError) setAutoLoadFailed(true)
-  }, [query.isFetchNextPageError])
   const autoLoadStateRef = useRef({
     hasNextPage: query.hasNextPage,
     isFetchingNextPage: query.isFetchingNextPage,
@@ -494,11 +495,6 @@ export function RecordingsPage() {
 
           {showLoadMoreButton && (
             <div className="px-4 py-4">
-              {autoLoadFailed && (
-                <p role="alert" className="mb-2 text-center text-xs text-destructive">
-                  {apiErrorMessage(query.error) ?? '続きの読み込みに失敗しました'}
-                </p>
-              )}
               <Button
                 type="button"
                 variant="outline"

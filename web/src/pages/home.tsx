@@ -133,6 +133,9 @@ export function HomePage() {
   // nowMs はこのレンダーの間で一貫させる（`pages/programs.tsx` と同じ規律。
   // 起点・上限を別々に Date.now() を呼んで求めると、ミリ秒単位でずれた「今」が
   // 混ざりうる）。
+  // 予約・容量の窓を同じ瞬間の観測で組み立てる。時刻を state 初期値にすると、
+  // クエリ再取得後の「いま」と予測窓が古いままになる。
+  // oxlint-disable-next-line react/purity -- 各レンダーで一貫した現在時刻スナップショットが必要
   const nowMs = Date.now()
 
   // **容量超過クエリの `start` は生の `nowMs` を渡さない。** レンダーごとの

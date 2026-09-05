@@ -58,6 +58,7 @@ export function useReservationActions(
   // サーバー値が楽観的な予想に追いついたら、その上書きは要らなくなる。
   // 消し忘れると、後でユーザーが手動で戻した変更まで隠れてしまう。
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- サーバー値が追いついた楽観上書きを破棄する
     setOptimistic((current) => {
       if (current.size === 0) return current
       let changed = false

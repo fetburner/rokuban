@@ -89,6 +89,9 @@ export function StorageBalance() {
   // 無いときは古さの判定すら成立しない）。
   if (media === undefined) return null
 
+  // ストレージ残高の stale 判定と予測窓は、クエリ再取得に伴う各レンダーの時刻を
+  // 基準にする。state 初期値にすると観測の古さと窓が更新されなくなる。
+  // oxlint-disable-next-line react/purity -- クエリ再取得ごとの現在時刻スナップショットが必要
   const nowMs = Date.now()
   const stale = isObservationStale(media.observedAt, nowMs)
 
