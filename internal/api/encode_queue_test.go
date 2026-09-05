@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,18 +37,29 @@ func (w *encodeQueueTestWorker) NextRetry(_ *river.Job[worker.EncodeJobArgs]) ti
 
 type blockingEncodeQueueTestWorker struct {
 	river.WorkerDefaults[worker.EncodeJobArgs]
-	started chan struct{}
-	release chan struct{}
+	started     chan struct{}
+	startedOnce sync.Once
+	release     chan struct{}
 }
 
 func (w *blockingEncodeQueueTestWorker) Work(ctx context.Context, _ *river.Job[worker.EncodeJobArgs]) error {
-	close(w.started)
+	w.startedOnce.Do(func() { close(w.started) })
 	select {
 	case <-w.release:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// Timeout はジョブ既定の JobTimeoutDefault（1 分）を無効化する。テストは
+// MaxWorkers: 1 の枠をこの worker がブロックしたまま別ジョブを available に
+// 残す構成なので、既定タイムアウトが効くと job ctx がキャンセルされて Work が
+// ctx.Err() を返し、ジョブが retryable に落ちて枠が空く。その状態で producer が
+// 残りの available ジョブを即座に fetch すると、started の 2 回目の close で
+// panic する。
+func (w *blockingEncodeQueueTestWorker) Timeout(*river.Job[worker.EncodeJobArgs]) time.Duration {
+	return -1
 }
 
 func workEncodeJob(t *testing.T, pool *pgxpool.Pool, job *rivertype.JobRow, workErr error) *rivertest.WorkResult {
@@ -78,6 +90,12 @@ func workEncodeJob(t *testing.T, pool *pgxpool.Pool, job *rivertype.JobRow, work
 	}
 	if workErr != nil && gotErr == nil {
 		t.Fatalf("working encode job returned nil error, want %v", workErr)
+	}
+	if workErr != nil && !errors.Is(gotErr, workErr) {
+		t.Fatalf("working encode job returned error %v, want %v", gotErr, workErr)
+	}
+	if result == nil {
+		t.Fatalf("working encode job returned nil result (gotErr=%v)", gotErr)
 	}
 	return result
 }
@@ -159,8 +177,8 @@ func TestGetEncodeQueueSummaryCountsJobsNotRecordings(t *testing.T) {
 	}
 	runningClient, runningCancel, runningWorker := startBlockingEncodeClient(t, pool)
 	defer func() {
-		close(runningWorker.release)
 		runningCancel()
+		close(runningWorker.release)
 		<-runningClient.Stopped()
 	}()
 	waitForBlockingEncodeWorker(t, runningWorker)
@@ -196,8 +214,8 @@ func TestListRecordingsEncodeStateFilterUsesRiverJobs(t *testing.T) {
 
 	runningClient, runningCancel, runningWorker := startBlockingEncodeClient(t, pool)
 	defer func() {
-		close(runningWorker.release)
 		runningCancel()
+		close(runningWorker.release)
 		<-runningClient.Stopped()
 	}()
 	if _, err := runningClient.Insert(ctx, worker.EncodeJobArgs{RecordingID: runningID, Profile: "h264"}, nil); err != nil {
