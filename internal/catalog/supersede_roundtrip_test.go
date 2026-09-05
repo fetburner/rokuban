@@ -40,6 +40,7 @@ func TestExportRescue_PreservesSupersededAt(t *testing.T) {
 	failedID := newRec(200, "failed")
 	n, err := q.SupersedeFailedRecording(ctx, sqlcgen.SupersedeFailedRecordingParams{
 		Site: "default", NetworkID: 32736, ServiceID: 1024, EventID: 200,
+		ProgramStartAt: time.Date(2026, 8, 1, 16, 0, 0, 0, time.UTC),
 	})
 	if err != nil || n != 1 {
 		t.Fatalf("SupersedeFailedRecording: rows=%d err=%v", n, err)

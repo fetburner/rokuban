@@ -92,14 +92,14 @@ INSERT INTO recordings (
     $9, $10, $11,
     $12, $13, $14
 )
-ON CONFLICT (site, network_id, service_id, event_id) WHERE deleted_at IS NULL AND superseded_at IS NULL
+ON CONFLICT (site, network_id, service_id, event_id, program_start_at)
+    WHERE deleted_at IS NULL AND superseded_at IS NULL
 DO UPDATE SET
     source              = EXCLUDED.source,
     service_name        = EXCLUDED.service_name,
     channel_type        = EXCLUDED.channel_type,
     channel             = EXCLUDED.channel,
     title               = EXCLUDED.title,
-    program_start_at    = EXCLUDED.program_start_at,
     program_duration_ms = EXCLUDED.program_duration_ms,
     status              = EXCLUDED.status,
     started_at          = COALESCE(recordings.started_at, EXCLUDED.started_at),
@@ -125,11 +125,12 @@ type UpsertInPlaceRecordingParams struct {
 	EndedAt           *time.Time
 }
 
-// ON CONFLICT の述語は recordings_unique_active_event（issue #129 症状 2 で
+// ON CONFLICT の対象列と述語は recordings_unique_active_event（issue #129 症状 2 で
 // `AND superseded_at IS NULL` を追加済み）と一字一句一致させる
 // 必要がある。in-place 登録が superseded_at を立てることはない（それは watcher の
 // 録画 supersede 専用の概念）が、索引の述語が変わった以上、対象インデックスの
-// 照合のためにここも揃える。
+// 照合のためにここも揃える。program_start_at は放送イベントの永続 identity
+// の一部なので、DO UPDATE で書き換えず、開始時刻が変われば別行を作る。
 func (q *Queries) UpsertInPlaceRecording(ctx context.Context, arg UpsertInPlaceRecordingParams) (int64, error) {
 	row := q.db.QueryRow(ctx, upsertInPlaceRecording,
 		arg.Source,

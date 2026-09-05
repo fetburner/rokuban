@@ -169,12 +169,10 @@ func insertProgramOverride(t *testing.T, pool *pgxpool.Pool, programID int64, pr
 	}
 }
 
-// insertTestFailedRecording は指定した active-event スロット（site, network_id,
-// service_id, event_id）に直接 status='failed' の recordings 行を作る
-// （issue #129 症状 2: この行が recordings_unique_active_event の枠を占有した
-// まま残っている状態を再現するのが目的で、handleRecordingFailed 経由の作られ方
-// 自体は TestHandleRecordingFailed_Idempotent 等で別に検証済み）。
-func insertTestFailedRecording(t *testing.T, pool *pgxpool.Pool, site string, networkID, serviceID, eventID int32) int64 {
+// insertTestRecordingAt は指定した active-event スロットと開始時刻に
+// recordings 行を作る。event_id の再利用で同じ 4 列キーに複数の放送イベントが
+// 存在する状態を作るテストにも使う。
+func insertTestRecordingAt(t *testing.T, pool *pgxpool.Pool, site string, networkID, serviceID, eventID int32, startAt time.Time, status string) int64 {
 	t.Helper()
 	var id int64
 	err := pool.QueryRow(context.Background(), `
@@ -188,15 +186,25 @@ func insertTestFailedRecording(t *testing.T, pool *pgxpool.Pool, site string, ne
 			'manual', $1,
 			$2, $3, $4, 'NHK総合',
 			'GR', '27', 'Failed Attempt',
-			true, now() - interval '1 hour', 180000,
-			'failed'
+			true, $5, 180000,
+			$6
 		) RETURNING id`,
-		site, networkID, serviceID, eventID,
+		site, networkID, serviceID, eventID, startAt, status,
 	).Scan(&id)
 	if err != nil {
-		t.Fatalf("creating failed recording fixture: %v", err)
+		t.Fatalf("creating %s recording fixture: %v", status, err)
 	}
 	return id
+}
+
+// insertTestFailedRecording は指定した active-event スロット（site, network_id,
+// service_id, event_id）に直接 status='failed' の recordings 行を作る
+// （issue #129 症状 2: この行が recordings_unique_active_event の枠を占有した
+// まま残っている状態を再現するのが目的で、handleRecordingFailed 経由の作られ方
+// 自体は TestHandleRecordingFailed_Idempotent 等で別に検証済み）。
+func insertTestFailedRecording(t *testing.T, pool *pgxpool.Pool, site string, networkID, serviceID, eventID int32, startAt time.Time) int64 {
+	return insertTestRecordingAt(t, pool, site, networkID, serviceID, eventID,
+		startAt, "failed")
 }
 
 // insertTestMediaAsset は recordingID に紐づく original media_asset 行を 1 つ作る
@@ -424,7 +432,7 @@ func TestProcessRecord_StatusNoDowngrade(t *testing.T) {
 }
 
 // TestProcessRecord_SupersedesFailedRecording は issue #129 症状 2 の本体を固定する:
-// 同一 active-event (site, network_id, service_id, event_id) に status='failed' の
+// 同一 active-event (site, network_id, service_id, event_id, program_start_at) に status='failed' の
 // 行が既に recordings_unique_active_event の枠を占有していても、後から来た成功
 // record が一意制約違反で弾かれず recordings 行として作られ、ingest ジョブが
 // 起動すること。
@@ -442,7 +450,8 @@ func TestProcessRecord_SupersedesFailedRecording(t *testing.T) {
 
 	record := testRecord("record-supersede-001", programID, "finished")
 	failedID := insertTestFailedRecording(t, pool, DefaultSite,
-		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID))
+		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID),
+		record.Program.StartAt.Time())
 
 	if err := w.processRecord(ctx, record); err != nil {
 		t.Fatalf("processRecord: %v (成功 record が failed 行の一意制約に阻まれてはいけない。issue #129 症状 2)", err)
@@ -519,6 +528,54 @@ func TestProcessRecord_SupersedesFailedRecording(t *testing.T) {
 	}
 }
 
+// TestProcessRecord_AllowsEventIDReuse は event_id が再利用された別イベントを
+// 開始時刻で区別することを固定する。古い finished / failed 行が live のままでも、
+// 新しい record は一意制約に阻まれず作られ、古い failed 行も誤って supersede
+// されない。
+func TestProcessRecord_AllowsEventIDReuse(t *testing.T) {
+	w, pool := setupTest(t)
+	ctx := context.Background()
+
+	programID := int64(750005)
+	createTestReservation(t, pool, programID)
+	record := testRecord("record-event-id-reuse-001", programID, "finished")
+	newStart := record.Program.StartAt.Time()
+	finishedID := insertTestRecordingAt(t, pool, DefaultSite,
+		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID),
+		newStart.Add(-365*24*time.Hour), "finished")
+	failedID := insertTestRecordingAt(t, pool, DefaultSite,
+		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID),
+		newStart.Add(-2*365*24*time.Hour), "failed")
+
+	if err := w.processRecord(ctx, record); err != nil {
+		t.Fatalf("processRecord: %v (event_id の再利用で新しい放送イベントが弾かれてはいけない)", err)
+	}
+
+	var totalCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM recordings
+		WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4
+	`, DefaultSite, record.Program.NetworkID, record.Program.ServiceID, record.Program.EventID).Scan(&totalCount); err != nil {
+		t.Fatalf("querying recordings by event: %v", err)
+	}
+	if totalCount != 3 {
+		t.Errorf("recordings count for reused event_id = %d, want 3 (旧 finished + 旧 failed + 新しい record)", totalCount)
+	}
+
+	for _, id := range []int64{finishedID, failedID} {
+		var status string
+		var supersededAt *time.Time
+		if err := pool.QueryRow(ctx,
+			"SELECT status, superseded_at FROM recordings WHERE id = $1", id,
+		).Scan(&status, &supersededAt); err != nil {
+			t.Fatalf("querying old recording %d: %v", id, err)
+		}
+		if supersededAt != nil {
+			t.Errorf("old %s recording %d superseded_at = %v, want nil", status, id, supersededAt)
+		}
+	}
+}
+
 // TestProcessRecord_SupersedesFailedRecordingWithMediaAsset は判断基準 2
 // （media_assets を持つ failed 行を巻き込まないこと）を固定する。途中まで録れて
 // failed になった行（media_assets 行を持つ）が supersede されても、そのアセットの
@@ -535,7 +592,8 @@ func TestProcessRecord_SupersedesFailedRecordingWithMediaAsset(t *testing.T) {
 
 	record := testRecord("record-supersede-media-001", programID, "finished")
 	failedID := insertTestFailedRecording(t, pool, DefaultSite,
-		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID))
+		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID),
+		record.Program.StartAt.Time())
 	assetID := insertTestMediaAsset(t, pool, failedID)
 
 	if err := w.processRecord(ctx, record); err != nil {
@@ -600,7 +658,8 @@ func TestProcessRecord_SupersedeIsIdempotentAcrossReprocessing(t *testing.T) {
 
 	record := testRecord("record-supersede-idem-001", programID, "finished")
 	failedID := insertTestFailedRecording(t, pool, DefaultSite,
-		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID))
+		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID),
+		record.Program.StartAt.Time())
 
 	for i := 0; i < 3; i++ {
 		if err := w.processRecord(ctx, record); err != nil {
@@ -667,10 +726,11 @@ func TestProcessRecord_DoesNotSupersedeLivingNonFailedRecording(t *testing.T) {
 			'manual', $1,
 			$2, $3, $4, 'NHK総合',
 			'GR', '27', 'Already Finished',
-			true, now() - interval '1 hour', 180000,
+			true, $5, 180000,
 			'finished'
 		) RETURNING id`,
 		DefaultSite, record.Program.NetworkID, record.Program.ServiceID, record.Program.EventID,
+		record.Program.StartAt.Time(),
 	).Scan(&livingID)
 	if err != nil {
 		t.Fatalf("creating living finished recording fixture: %v", err)
@@ -800,7 +860,7 @@ func TestProcessRecord_ConcurrentIdempotent(t *testing.T) {
 
 		createTestReservation(t, pool, programID)
 		record := testRecord(recordID, programID, "finished")
-		// recordings には (site, network_id, service_id, event_id) の一意制約
+		// recordings には (site, network_id, service_id, event_id, program_start_at) の一意制約
 		// （部分一意索引 recordings_unique_active_event、述語
 		// deleted_at IS NULL AND superseded_at IS NULL）があるため、
 		// ラウンドごとに event_id を変えて他ラウンドの録画と衝突しないようにする。
@@ -1010,6 +1070,113 @@ func TestHandleRecordingFailed_Idempotent(t *testing.T) {
 	}
 }
 
+func TestHandleRecordingFailed_StartTimeChangeCreatesNewRow(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
+		t.Fatalf("cleaning river_job: %v", err)
+	}
+
+	rc := newTestRiverClient(t, pool)
+	programID := int64(327361024101)
+	createTestReservation(t, pool, programID)
+
+	firstStart := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
+	duration := int64(3600000)
+	name := "Moved Failed Program"
+	schedule := mirakc.Schedule{
+		State: "scheduled",
+		Program: mirakc.Program{
+			ID:        programID,
+			EventID:   100,
+			ServiceID: 1024,
+			NetworkID: 32736,
+			StartAt:   &firstStart,
+			Duration:  &duration,
+			IsFree:    true,
+			Name:      &name,
+		},
+	}
+
+	services := []mirakc.Service{
+		{
+			ServiceID: 1024,
+			NetworkID: 32736,
+			Name:      "NHK総合",
+			Channel:   mirakc.ServiceChannel{Type: "GR", Channel: "27"},
+		},
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/recording/schedules/", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(schedule)
+	})
+	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(services)
+	})
+	mockServer := httptest.NewServer(mux)
+	defer mockServer.Close()
+
+	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, rc, nil)
+	failedData := mirakc.RecordingFailedData{
+		ProgramID: programID,
+		Reason:    mirakc.FailedReason{Type: "tuner-unavailable"},
+	}
+
+	if err := w.handleRecordingFailed(ctx, failedData); err != nil {
+		t.Fatalf("handleRecordingFailed (1st): %v", err)
+	}
+
+	secondStart := mirakc.Milliseconds(time.Now().Add(-30 * time.Minute))
+	schedule.Program.StartAt = &secondStart
+	if err := w.handleRecordingFailed(ctx, failedData); err != nil {
+		t.Fatalf("handleRecordingFailed (2nd): %v", err)
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT program_start_at, quality_events
+		FROM recordings
+		ORDER BY program_start_at
+	`)
+	if err != nil {
+		t.Fatalf("querying failed recordings: %v", err)
+	}
+	defer rows.Close()
+
+	var starts []time.Time
+	var eventCounts []int
+	for rows.Next() {
+		var start time.Time
+		var qeJSON json.RawMessage
+		if err := rows.Scan(&start, &qeJSON); err != nil {
+			t.Fatalf("scanning failed recording: %v", err)
+		}
+		var events []db.QualityEvent
+		if err := json.Unmarshal(qeJSON, &events); err != nil {
+			t.Fatalf("unmarshalling quality_events: %v", err)
+		}
+		starts = append(starts, start)
+		eventCounts = append(eventCounts, len(events))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterating failed recordings: %v", err)
+	}
+	if len(starts) != 2 {
+		t.Fatalf("failed recording count = %d, want 2 after startAt changed", len(starts))
+	}
+	if starts[0].Equal(starts[1]) {
+		t.Errorf("program_start_at values are equal: %v and %v", starts[0], starts[1])
+	}
+	for i, count := range eventCounts {
+		if count != 1 {
+			t.Errorf("recording %d quality_events count = %d, want 1 (events must not merge across startAt)", i, count)
+		}
+	}
+}
+
 func TestSweep_CatchesMissedRecords(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -1134,7 +1301,7 @@ func TestSweepAndHandleEvent_ConcurrentIdempotent(t *testing.T) {
 
 		createTestReservation(t, pool, programID)
 		record := testRecord(recordID, programID, "finished")
-		// recordings の (site, network_id, service_id, event_id) 一意制約
+		// recordings の (site, network_id, service_id, event_id, program_start_at) 一意制約
 		// （deleted_at IS NULL）に他ラウンドと衝突しないよう event_id をずらす。
 		// 同じキーをこのアサーションの絞り込みにも使う（recordings.reservation_id
 		// は #158 で列自体を落とした）。

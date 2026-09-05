@@ -157,10 +157,11 @@ func TestListRecordings_FailedFilterExcludesSuperseded(t *testing.T) {
 	const eventID = 700
 	seedRecording(t, pool, "擬似失敗（置換済み）", base.Add(-time.Hour), "failed", eventID)
 	n, err := sqlcgen.New(pool).SupersedeFailedRecording(context.Background(), sqlcgen.SupersedeFailedRecordingParams{
-		Site:      db.DefaultSite,
-		NetworkID: 32678,
-		ServiceID: 5168,
-		EventID:   eventID,
+		Site:           db.DefaultSite,
+		NetworkID:      32678,
+		ServiceID:      5168,
+		EventID:        eventID,
+		ProgramStartAt: base.Add(-time.Hour),
 	})
 	if err != nil || n != 1 {
 		t.Fatalf("SupersedeFailedRecording: rows=%d err=%v", n, err)
@@ -955,15 +956,15 @@ func TestRestoreRecording_ConflictWhenActiveExists(t *testing.T) {
 	srv := newAPIServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
-	// 同じ (site, network, service, event) で 1 本 soft-delete、もう 1 本 active。
+	// 同じ (site, network, service, event, program_start_at) で 1 本 soft-delete、もう 1 本 active。
 	// seedRecording は eventID を変えるので、ここでは直接 INSERT する。
 	trashed := seedRecording(t, pool, "旧", base.Add(-time.Hour), "finished", 20)
 	resp := doRecordingMethod(t, http.MethodDelete, fmt.Sprintf("%s/api/recordings/%d", srv.URL, trashed))
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete status = %d", resp.StatusCode)
 	}
-	// 同じ event_id で生きている録画を作る（partial unique は deleted_at IS NULL のみ）
-	_ = seedRecording(t, pool, "新", base, "finished", 20)
+	// 同じ放送イベントで生きている録画を作る。
+	_ = seedRecording(t, pool, "新", base.Add(-time.Hour), "finished", 20)
 
 	resp = doRecordingMethod(t, http.MethodPost, fmt.Sprintf("%s/api/recordings/%d/restore", srv.URL, trashed))
 	if resp.StatusCode != http.StatusConflict {

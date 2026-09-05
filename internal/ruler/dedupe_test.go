@@ -19,9 +19,9 @@ import (
 // 判定条件はすべて「マッチする側」と「マッチしない側」の両方向で押さえる。片側だけ
 // 見ると条件を反転させても気付かない（CLAUDE.md「分岐は両方向で確認する」）。
 
-// dedupeEventCounter は recordings の event_id をテスト間で一意にする。
-// recordings_unique_active_event（site, network_id, service_id, event_id の部分
-// ユニークインデックス）があるため、同じ event_id を複数回入れると失敗する。
+// dedupeEventCounter は recordings の event_id をテスト間で分ける。
+// recordings_unique_active_event（program_start_at を含む部分ユニークインデックス）
+// の衝突をテストデータ間で避けるため、event_id も一緒にずらしておく。
 var dedupeEventCounter int32 = 5000
 
 // insertRecording は重複排除の比較対象になる録画履歴を 1 行作る。

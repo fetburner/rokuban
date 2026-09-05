@@ -1040,7 +1040,7 @@ func TestDeleteReconcileWorker_UntilEncoded_PartialCandidates_OnlyDeletesComplet
 	// recordingB / recordingC: どちらも h264 + サムネイルがコミット済みで
 	// 条件 2 を満たす（削除されるべき）候補が 2 件同時に存在する状態を作る。
 	// event_id を insertTestRecording の既定（1）とずらす --- recordings_unique_active_event
-	// は (site, network_id, service_id, event_id) のアクティブ行に対する一意
+	// は (site, network_id, service_id, event_id, program_start_at) のアクティブ行に対する一意
 	// 制約なので、同じ event_id で 2 つ目以降のアクティブな録画を
 	// insertTestRecording で作ろうとするとそのまま衝突する。
 	recordingB := insertTestRecordingWithEventID(t, pool, 2)
@@ -1235,7 +1235,7 @@ func TestDeleteReconcileQueries_ReferenceNamedPredicatesNotDuplicatedText(t *tes
 
 // insertTestRecordingWithEventID は insertTestRecording と同じ内容の録画を、
 // event_id だけ差し替えて作る。recordings_unique_active_event は
-// (site, network_id, service_id, event_id) のアクティブ行（deleted_at IS NULL）に
+// (site, network_id, service_id, event_id, program_start_at) のアクティブ行（deleted_at IS NULL）に
 // 対する一意制約なので、同一テスト内で複数のアクティブな録画を用意するには
 // event_id を分ける必要がある。
 func insertTestRecordingWithEventID(t *testing.T, pool *pgxpool.Pool, eventID int32) int64 {

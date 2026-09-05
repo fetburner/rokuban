@@ -77,8 +77,8 @@ type LibraryImportResult struct {
 //
 // 冪等性は inplace.Register が持つ 2 つの一意制約に乗る:
 //   - media_assets.rel_path（state <> 'deleted' の部分一意）
-//   - recordings (site, network_id, service_id, event_id)（deleted_at/
-//     superseded_at が NULL の部分一意）
+//   - recordings (site, network_id, service_id, event_id, program_start_at)
+//     （deleted_at/superseded_at が NULL の部分一意）
 //
 // EPGStation の VideoFile.type = "encoded" は rokuban の encoded profile
 // 名前空間（rules.encode_profiles / config のプロファイル定義）と対応が
