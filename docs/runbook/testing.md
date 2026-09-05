@@ -180,6 +180,10 @@ mirakc は運用者が用意するものである。
 5. `internal/mirakc/conformance/` 配下のテストが引用している mirakc の版の文言
    （`mirakc 4.0.0-dev.0 相当` 等）も同じ PR で書き換える
 
+週次の `main-debian` conformance job が赤くなったら、ログに出た digest を使って
+上記の手順を実行する。
+緑でも、古い digest の prune を避けるため、ログの digest を pin に上げる契機として扱う。
+
 **この digest はいずれ取れなくなる。**
 出どころの `main-debian` タグはビルドのたびに上書きされる可動タグだからである。
 古い digest は Docker Hub 側でタグ無し（untagged）manifest として prune されうる。

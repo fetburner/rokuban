@@ -35,6 +35,41 @@ import (
 // 「mirakc の版を上げる手順」の手順で最新の digest に取り直す。
 const mirakcImage = "docker.io/mirakc/mirakc@sha256:3fd884b3bb7c5c33f6d9241abf36db81b6fe25e42a869b8f14ecddd482a41c93"
 
+const mirakcImageEnv = "ROKUBAN_CONFORMANCE_MIRAKC_IMAGE"
+
+// configuredMirakcImage returns the pinned image unless the caller supplies an image override.
+func configuredMirakcImage() string {
+	if image := os.Getenv(mirakcImageEnv); image != "" {
+		return image
+	}
+	return mirakcImage
+}
+
+// TestMirakcRunArgsImage は startMirakc が実際に docker へ渡す引数列の末尾（イメージ名）を
+// 見る。configuredMirakcImage() 単体のテストでは、startMirakc 内の配線
+// （args = append(args, configuredMirakcImage())）を pin 定数へ直接差し替える変異を
+// 検出できない。mirakcRunArgs を経由することで、その配線そのものを検査対象にする。
+func TestMirakcRunArgsImage(t *testing.T) {
+	lastArg := func(args []string) string { return args[len(args)-1] }
+
+	t.Run("uses the pinned image by default", func(t *testing.T) {
+		t.Setenv(mirakcImageEnv, "")
+		args := mirakcRunArgs("c", "/tuner", "/config.yml", "/recordings", "")
+		if got := lastArg(args); got != mirakcImage {
+			t.Fatalf("mirakcRunArgs last arg = %q, want pinned image %q", got, mirakcImage)
+		}
+	})
+
+	t.Run("uses the environment override", func(t *testing.T) {
+		const want = "docker.io/mirakc/mirakc:main-debian"
+		t.Setenv(mirakcImageEnv, want)
+		args := mirakcRunArgs("c", "/tuner", "/config.yml", "/recordings", "")
+		if got := lastArg(args); got != want {
+			t.Fatalf("mirakcRunArgs last arg = %q, want %q", got, want)
+		}
+	})
+}
+
 // mirakcVersion は mirakcImage が実際に埋め込んでいる版（GetVersion で照合する。
 // 受け入れ項目 5）。
 //
@@ -163,6 +198,26 @@ type mirakcContainer struct {
 	baseURL string
 }
 
+// mirakcRunArgs は startMirakc が docker に渡す `run` 引数列を組み立てる。
+func mirakcRunArgs(name, tunerBin, configPath, recBase, fixtureCase string) []string {
+	args := []string{
+		// --rm は起動直後に mirakc が終了した場合の診断ログまで消してしまう。
+		// 成功時も失敗時も t.Cleanup の rm -f で回収する。
+		"run", "-d",
+		"--name", name,
+		"-p", "127.0.0.1:0:40772",
+		"-v", tunerBin + ":/fixtures/fixturetuner:ro",
+		"-v", configPath + ":/etc/mirakc/config.yml:ro",
+		"-v", recBase + ":/recordings",
+	}
+	if fixtureCase != "" {
+		// tuners[].command は mirakc 自身が有効なコマンドか検証するため、
+		// "VAR=value command" 形式を置けない。ケース切り替えはコンテナ環境へ渡す。
+		args = append(args, "-e", "ROKUBAN_FIXTURE_CASE="+fixtureCase)
+	}
+	return append(args, configuredMirakcImage())
+}
+
 // startMirakc は mirakc 実物のコンテナを起こし、/api/version が応答するまで待つ。
 // t.Cleanup でコンテナの停止・削除を登録する。
 func startMirakc(t *testing.T, hostDir string, tunerBin string, fixtureCase string) *mirakcContainer {
@@ -192,23 +247,7 @@ func startMirakc(t *testing.T, hostDir string, tunerBin string, fixtureCase stri
 	// 既存の同名コンテナが残っていたら先に消す（前回異常終了時の掃除）。
 	_ = exec.Command("docker", "rm", "-f", name).Run()
 
-	args := []string{
-		// --rm は起動直後に mirakc が終了した場合の診断ログまで消してしまう。
-		// 成功時も失敗時も t.Cleanup の rm -f で回収する。
-		"run", "-d",
-		"--name", name,
-		"-p", "127.0.0.1:0:40772",
-		"-v", tunerBin + ":/fixtures/fixturetuner:ro",
-		"-v", configPath + ":/etc/mirakc/config.yml:ro",
-		"-v", recBase + ":/recordings",
-	}
-	if fixtureCase != "" {
-		// tuners[].command は mirakc 自身が有効なコマンドか検証するため、
-		// "VAR=value command" 形式を置けない。ケース切り替えはコンテナ環境へ渡す。
-		args = append(args, "-e", "ROKUBAN_FIXTURE_CASE="+fixtureCase)
-	}
-	args = append(args, mirakcImage)
-	cmd := exec.Command("docker", args...)
+	cmd := exec.Command("docker", mirakcRunArgs(name, tunerBin, configPath, recBase, fixtureCase)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
