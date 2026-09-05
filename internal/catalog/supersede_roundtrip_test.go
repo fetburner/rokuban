@@ -20,6 +20,7 @@ func TestExportRescue_PreservesSupersededAt(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
+	start := time.Date(2026, 8, 1, 16, 0, 0, 0, time.UTC)
 
 	newRec := func(eventID int32, status string) int64 {
 		id, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
@@ -27,7 +28,7 @@ func TestExportRescue_PreservesSupersededAt(t *testing.T) {
 			NetworkID: 32736, ServiceID: 1024, EventID: eventID,
 			ServiceName: "NHK総合", ChannelType: "GR", Channel: "27",
 			Title: "再録画された番組", IsFree: true,
-			ProgramStartAt:    time.Date(2026, 8, 1, 16, 0, 0, 0, time.UTC),
+			ProgramStartAt:    start,
 			ProgramDurationMs: 180000,
 			Status:            status,
 		})
@@ -40,7 +41,7 @@ func TestExportRescue_PreservesSupersededAt(t *testing.T) {
 	failedID := newRec(200, "failed")
 	n, err := q.SupersedeFailedRecording(ctx, sqlcgen.SupersedeFailedRecordingParams{
 		Site: "default", NetworkID: 32736, ServiceID: 1024, EventID: 200,
-		ProgramStartAt: time.Date(2026, 8, 1, 16, 0, 0, 0, time.UTC),
+		ProgramStartAt: start,
 	})
 	if err != nil || n != 1 {
 		t.Fatalf("SupersedeFailedRecording: rows=%d err=%v", n, err)

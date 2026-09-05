@@ -510,8 +510,12 @@ type SupersedeFailedRecordingParams struct {
 //
 // event_id は同一サービス内で永続的な一意性を保証しない。ARIB TR-B14 第四編
 // 8.2.1 が保証するのはイベント終了から 24 時間なので、program_start_at も
-// 条件に含める。開始時刻が異なる行は event_id が再利用された別イベントであり、
-// 無関係な過去の failed 行に superseded_at を立ててはならない。
+// 条件に含める。この発火条件は索引 recordings_unique_active_event と揃えてある:
+// failed 行が新しい record をブロックする条件はもともと program_start_at の
+// 一致そのものなので、この一致自体は機能的な穴を開けない。4 列だけで絞ると
+// event_id 再来時に無関係な過去の failed 行へ superseded_at を立ててしまう
+// （不変条件 9: 「この行が枠を明け渡した」という不可逆な事実を無関係な行に
+// 誤って書き込む）。
 //
 // WHERE status = 'failed' に絞っているので、'recording'/'finished'/'canceled' の
 // 生きている行は巻き込まない —— それらと衝突する INSERT は素の一意制約違反として

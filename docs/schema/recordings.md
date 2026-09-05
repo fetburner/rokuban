@@ -135,13 +135,7 @@ CREATE UNIQUE INDEX recordings_unique_active_event
     WHERE deleted_at IS NULL AND superseded_at IS NULL;
 ```
 
-**録画試行の履歴は複数行を許すが、「生きている録画」は 1 放送イベントにつき 1 つ**。
-放送局が付ける `event_id` は同一サービス内で永続的には一意でない。
-ARIB TR-B14 第四編 8.2.1 が保証するのはイベント終了から 24 時間である。
-そのため永続表では開始時刻を組にして放送イベントを識別する。
-`deleted_at IS NULL AND superseded_at IS NULL` の部分インデックスである。
-ごみ箱に入れた後で録り直すこともできる（`deleted_at`）。
-後述の supersede で枠を明け渡した後も本物の record を録り直せる（`superseded_at`）。
+**録画試行の履歴は複数行を許すが、「生きている録画」は 1 放送イベントにつき 1 つ**。放送局が付ける `event_id` は同一サービス内で永続的には一意でなく、ARIB TR-B14 第四編 8.2.1 が保証するのはイベント終了から 24 時間なので、永続表では開始時刻を組にして放送イベントを識別する。`deleted_at IS NULL AND superseded_at IS NULL` の部分インデックスなので、ごみ箱に入れた後で録り直すこともできるし（`deleted_at`）、後述の supersede で枠を明け渡した後で本物の record が録り直すこともできる（`superseded_at`）。
 
 この制約があるため、watcher が同一 record を並行処理すると片方が制約違反で失敗する。`processRecord` は `record_sync` の行を先に確保して直列化することでこれを避けている（[録画エンジン](../recording.md) §3.3「record 処理は並行実行しても壊れない」）。
 
@@ -151,14 +145,7 @@ INSERT で `ON CONFLICT` を使うクエリ（`CreateFailedRecording` / `UpsertI
 
 `need-rescheduling` 等で `status='failed'` の行がこの枠を占有したまま残っているところに、mirakc が同一 active-event を後で録り直して成功 record を報告することがある（delayed broadcast、mirakc 側の手動再録画等）。この成功 record は無条件で枠を得られなければならない。欠測（`never_scheduled_events`）は別表なので supersede の対象ではない —— 本物の record が来ても欠測行は残り、`recordings` には試行行だけが増える。
 
-watcher の `createRecording` は `CreateRecording` の直前に
-`SupersedeFailedRecording` を呼ぶ。
-同一 active-event（開始時刻を含む）に生きている `status='failed'` の行があれば、
-`superseded_at = now()` を立てて枠を明け渡させる。
-開始時刻が異なる行は `event_id` が再利用された別イベントなので、古い failed 行を supersede しない。
-この 2 つは意図的に別々の SQL 文にしてある。
-1 つの `WITH` 句にまとめると UPDATE と INSERT の実行順が保証されない。
-実機のテストでも一意制約違反を確認している。
+watcher の `createRecording`（`internal/watcher/watcher.go`）は `CreateRecording` の直前に `SupersedeFailedRecording`（`internal/db/queries/recordings.sql`）を呼び、同一 active-event（開始時刻を含む）に生きている（`deleted_at IS NULL AND superseded_at IS NULL`）`status='failed'` の行があれば `superseded_at = now()` を立てて枠を明け渡させる。発火条件を索引と同じ 5 列に揃えたのは、failed 行が新しい record をブロックする条件がもともと `program_start_at` の一致そのものだからで、この一致自体は機能的な穴を開けない一方、4 列のままだと event_id 再来時に無関係な過去の failed 行へ `superseded_at` を立ててしまう。ただし繰り下げ・延長で mirakc が failed 行と成功 record に渡す開始時刻がずれる場合（`need-rescheduling` 等、failed 行は schedule 由来、成功 record は record 由来の開始時刻を持つ）は、この一致により supersede が起きず、failed 行と finished 行の両方が生きたまま残る —— どちらも履歴として真なので害はない。この 2 つは意図的に別々の SQL 文にしてある —— 1 つの `WITH` 句にまとめると、Postgres は「`WITH` 内のデータ変更文は主クエリと同時並行に実行され順序不定」であるため、UPDATE が INSERT より先に確定する保証がなく、実機のテストで実際に一意制約違反を起こすことを確認した。
 
 - `status='failed'` の行だけを対象にする。`'recording'`/`'finished'`/`'canceled'` の生きている行と衝突する INSERT は、本当の重複 record（要調査対象の異常）として素の一意制約違反のまま従来どおりエラーにする
 - `media_assets` を持つ failed 行（途中まで録れて failed になった行）でも扱いは同じ: superseded にするだけで `media_assets.recording_id` は書き換えない。ファイルの所有者は superseded になった旧 `recordings` 行のままで、物理削除は削除 reconcile が `recordings.deleted_at` を見て判断するため、superseded だけでは何も物理的に消えない

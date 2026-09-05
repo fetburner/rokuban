@@ -466,9 +466,12 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 	//
 	// superseded_at IS NULL も条件に入れる（issue #129 症状 2）。CreateRecording が
 	// 同一 active-event の failed 行を superseded にした後も、その行は deleted_at が
-	// NULL のまま履歴として残るため、4 列だけで絞ると event_id が再利用された
+	// NULL のまま履歴として残るため、deleted_at だけで絞ると superseded 済みの
 	// 過去の failed 行と、いま CreateFailedRecording が更新した「生きている」行の
 	// 2 行がヒットしうる（ORDER BY が無いと QueryRow はどちらを返すか不定）。
+	// program_start_at も条件に入れる。event_id は同一サービス内で永続的な一意性を
+	// 持たない（ARIB TR-B14 第四編 8.2.1 が保証するのはイベント終了から 24 時間）ため、
+	// これが無いと event_id が再利用された過去の行までヒットしうる。
 	// ON CONFLICT の対象（生きている行）と同じ述語に揃えることで一意に定まる。
 	var recordingID int64
 	if err := w.pool.QueryRow(ctx, `
