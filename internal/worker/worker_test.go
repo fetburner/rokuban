@@ -774,7 +774,7 @@ func TestBuildRiverConfig_LogsSubscribedQueues(t *testing.T) {
 //
 // これは「設定し忘れ」が最も危険な側に倒れないための既定である。River は
 // SoftStopTimeout が 0 のとき work ctx を start ctx から継ぐので
-// （river@v0.47.0/client.go:1150-1154 の workParentCtx）、0 のまま渡すと
+// （river@v0.47.0 client.go の workParentCtx）、0 のまま渡すと
 // `signal.NotifyContext` の ctx を Start に渡している構成で **SIGTERM が
 // 実行中のジョブを即座に打ち切る**。0 は「無制限」ではなく「待たない」である。
 //
@@ -1063,9 +1063,10 @@ func TestPhysicalQueueName(t *testing.T) {
 // （worker 側の重複検査は無くした）、この関係が壊れると config のロード時検査を
 // 通った site 名が qualifyQueueName で 64 文字を超える。それを渡した先は
 // worker ロールを持つプロセスなら起動時（river.NewClient → Config.validate →
-// QueueConfig.validate、river@v0.47.0/client.go:605-606,692-693 が
-// validateQueueName を呼ぶ）に落ち、insert-only クライアント（`rokuban
-// enqueue` 等）では Insert 時（client.go:1723）に初めて落ちる。
+// `queueConfig.validate` が river@v0.47.0 client.go の `validateQueueName` を
+// 呼ぶ）に落ち、insert-only クライアント（`rokuban
+// enqueue` 等）では Insert 時（river@v0.47.0 client.go の `validateQueueName`）に
+// 初めて落ちる。
 //
 // siteBoundQueueNames のどの論理名についても、site 名を
 // config.MirakcSiteNameMaxLen まで許してキュー修飾しても riverQueueNameMaxLen を

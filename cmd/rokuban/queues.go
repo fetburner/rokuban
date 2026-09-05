@@ -203,7 +203,7 @@ func resolveOnce(cmd *cobra.Command, roles []string) (*worker.OnceGate, time.Dur
 // かつては work ctx が start ctx を継いでいたため、cancelProcess が
 // StopAndCancel 相当のハードストップになり、逆順にすると実行中のジョブが
 // **即座に**打ち切られた。いまは work ctx が start ctx から切り離されるので
-// （river@v0.47.0/client.go:1150-1154 の workParentCtx。SoftStopTimeout > 0 の
+// （river@v0.47.0 client.go の workParentCtx。SoftStopTimeout > 0 の
 // とき）、
 // 逆順でも打ち切りは soft stop の猶予まで遅れる。それでも順序はこのままにする
 // --- graceful stop を先に撃つほうが、猶予を消費せずに完走できる。
@@ -220,8 +220,7 @@ func resolveOnce(cmd *cobra.Command, roles []string) (*worker.OnceGate, time.Dur
 // （docs/operations.md §5「Deployment 併用時」の対で引き上げる指針）。
 // **River が保証するのは work ctx の cancel までで、`Stop` が戻ることまでは
 // 保証しない**（ctx を見ないワーカーは止まらず、completer の停止待ちにも上限が
-// 無い。river@v0.47.0/client.go:1242-1245、completer を止める `StopAllParallel`
-// に付いた TODO）。最終的な
+// 無い。river@v0.47.0 client.go の `StopAllParallel` に付いた TODO）。最終的な
 // 上限は k8s の `terminationGracePeriodSeconds` 経過後の SIGKILL になる。
 //
 // エラーを握り潰さないのは作法として。現在の呼び出しでは ctx が cancel
