@@ -619,9 +619,14 @@ func (r *Ruler) observeTrip(ctx context.Context, tq *sqlcgen.Queries, site strin
 // docs/schema.md §3「行の物理削除（GC）は『番組の終了時刻を過ぎた後』のみ」）。
 // state（active/detached。orphaned は issue #98 で recordings 側の観測になったため、
 // この GC はそもそも関知しない）を問わず、site にも従属しない全体操作なので
-// RunPass のサイトループの外から 1 回だけ呼ばれる。never_scheduled_events は
-// EPG 再露出時の同期除外ガードとしてだけ読まれるため、EPG の放送地平を超えて
-// 残す必要はなく、RetentionGrace + 30 日を寿命にする。recordings.reservation_id
+// RunPass のサイトループの外から 1 回だけ呼ばれる。never_scheduled_events の
+// 読者（never_recorded の導出・容量需要・重複判定。internal/db/queries の
+// reservations.sql / capacity.sql / overlaps.sql）はどれも reservations 行を
+// 経由してこの表にたどり着くが、reservations は program_snapshots への FK が
+// ON DELETE CASCADE なので番組終了 + RetentionGrace で先に消える。つまりどの
+// 読者も、nse 行がこの GC で刈られる 30 日以上前に既に到達不能になっており、
+// この寿命の差を観測できない。だから EPG の放送地平を超えて残しても実害は
+// なく、RetentionGrace + 30 日を寿命にする。recordings.reservation_id
 // は当時 ON DELETE SET NULL だった（issue #158 で列自体を削除済み）ので、削除しても
 // 録画履歴（recordings/media_assets）は失われない。
 //
@@ -672,15 +677,22 @@ func (r *Ruler) runGC(ctx context.Context) error {
 		slog.Info("ruler: GC complete",
 			"cutoff", cutoff,
 			"deleted_program_snapshots", deletedSnapshots,
+			"never_scheduled_horizon", horizon,
 			"deleted_never_scheduled_events", deletedNeverScheduledEvents,
 		)
 	}
 	return nil
 }
 
-// postgresInterval formats a duration as an interval accepted by PostgreSQL. The
-// query intentionally receives an interval rather than an application-side cutoff
-// timestamp so the database's now() remains the clock for the age comparison.
+// postgresInterval は time.Duration を PostgreSQL の interval 型に変換する。
+//
+// runGC の 2 本の DELETE は時計が違う: DeleteEndedProgramSnapshots へは
+// time.Now() から計算したアプリ側の cutoff（タイムスタンプ）を渡すのに対し、
+// DeleteStaleNeverScheduledEvents へはこの interval をそのまま渡し、しきい値の
+// 時刻はクエリ側の now() - interval で計算する（起点は DB の時計）。同じ関数の
+// 中で時計が 2 つ混在すること自体はここで解消しない --- 後者を前者と揃えて
+// cutoff 渡しに統一しないのは、issue #636 が SQL の形を
+// `observed_at < now() - horizon` と指定しているため。
 func postgresInterval(d time.Duration) pgtype.Interval {
 	return pgtype.Interval{Microseconds: d.Microseconds(), Valid: true}
 }

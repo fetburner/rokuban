@@ -73,7 +73,7 @@ CREATE INDEX ON reservations (rule_id);
 **同期対象かのフィルタに使ってよいのは「この予約に対応する放送イベントに `never_scheduled_events` の欠測行が無いこと」だけ**（`ListReservationsForSyncEvaluation` が絞る）。
 
 1. **`active` / `detached` をフィルタにしてはならない。** どちらも UI 表示用の派生値であり、同期の可否を決めるのは `effective.skip` である。導出値を同期フィルタに使うと、ルールが外れた**手動予約が黙って録画されなくなる**（[invariants.md](../invariants.md) §9）
-2. **同期除外は欠測表の行の存在だけを見る。** 一度欠測と判定された放送イベントは、本物の record が後から来ても、行が寿命内にある限り同期対象に戻らない。終了済み予約を再び schedule しないため。EPG 再露出ガード以外の読者はないので、行は `retention_grace + 30日` で刈る
+2. **同期除外は欠測表の行の存在だけを見る。** 一度欠測と判定された放送イベントは、本物の record が後から来ても、行が寿命内にある限り同期対象に戻らない。終了済み予約を再び schedule しないため。この表の読者はいずれも `reservations` 行を経由して届き、その `reservations` は番組終了 + `retention_grace` で先に GC されるので、行を `retention_grace + 30日` まで残しても読者からは観測されない
 3. **表示（`never_recorded`）は欠測行に加えて、本物の `recordings` 行が無いことも見る。** record が来たら orphaned は消えるが、欠測行はその寿命内では残る。recordings の照合は live 限定にしないため、ごみ箱操作で orphaned に戻らない
 4. **どちらも mirakc 由来の途中失敗だけでは成立しない。** failed 試行は `recordings` にだけ入り欠測表には入らないため、再試行経路を壊さない
 
