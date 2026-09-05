@@ -19,6 +19,9 @@ export function ConnectionBanner() {
 
   useEffect(() => {
     if (status !== 'disconnected') {
+      // SSE の接続状態と遅延タイマーを同期する副作用。接続が戻った瞬間に
+      // 表示を消し、切断が続いたときだけタイマー後に表示するため state が要る。
+      // oxlint-disable-next-line react/set-state-in-effect -- 外部 SSE 状態の遅延表示をリセットする
       setShowBanner(false)
       return
     }

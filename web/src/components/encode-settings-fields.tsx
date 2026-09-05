@@ -132,6 +132,8 @@ export function EncodeOverridesEditor({
   const [value, setValue] = useState<EncodeSettingsValue>(fromOverrides)
   // サーバー側の overrides が変わったらフォームを同期する（保存後の invalidate など）。
   useEffect(() => {
+    // 外部クエリの更新を編集中のローカルフォームへ反映するための同期。
+    // oxlint-disable-next-line react/set-state-in-effect -- 保存後のサーバー値でフォームをリセットする
     setValue(encodeSettingsValueFromOverrides(overrides))
   }, [overrides])
 

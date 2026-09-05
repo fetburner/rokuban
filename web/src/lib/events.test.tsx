@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
 import { act, render } from '@testing-library/react'
+import { useRef } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getGetStorageQueryKey } from '@/api/generated'
@@ -108,52 +109,56 @@ type FetchCounts = {
  * テストではこちらを使う。
  */
 function ActiveQueries({ counts }: { counts: FetchCounts }) {
+  // queryFn は render の外で呼ばれるが、counts はテストハーネスが所有する
+  // 観測用の可変カウンタである。ref 経由にして、コンポーネント props 自体を
+  // 書き換えているという誤解を避ける（製品コードの状態は変更しない）。
+  const countsRef = useRef(counts)
   useQuery({
     queryKey: reservationsKey,
     queryFn: () => {
-      counts.reservations += 1
+      countsRef.current.reservations += 1
       return Promise.resolve([])
     },
   })
   useQuery({
     queryKey: recordingsKey,
     queryFn: () => {
-      counts.recordings += 1
+      countsRef.current.recordings += 1
       return Promise.resolve([])
     },
   })
   useQuery({
     queryKey: epgKey,
     queryFn: () => {
-      counts.epg += 1
+      countsRef.current.epg += 1
       return Promise.resolve([])
     },
   })
   useQuery({
     queryKey: reservationDetailKey,
     queryFn: () => {
-      counts.reservationDetail += 1
+      countsRef.current.reservationDetail += 1
       return Promise.resolve({})
     },
   })
   useQuery({
     queryKey: programListKey,
     queryFn: () => {
-      counts.programList += 1
+      countsRef.current.programList += 1
       return Promise.resolve([])
     },
   })
   useQuery({
     queryKey: storageKey,
     queryFn: () => {
-      counts.storage += 1
+      countsRef.current.storage += 1
       return Promise.resolve([])
     },
   })
   useQuery({
     queryKey: tunersKey,
     queryFn: () => {
-      counts.tuners += 1
+      countsRef.current.tuners += 1
       return Promise.resolve([])
     },
   })

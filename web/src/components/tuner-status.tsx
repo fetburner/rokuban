@@ -95,6 +95,9 @@ function TunerStatusLine({
     (oldest, t) => (Date.parse(t.observedAt) < Date.parse(oldest) ? t.observedAt : oldest),
     tuners[0]!.observedAt,
   )
+  // tuner_sync は定期再取得で再描画される。時刻を mount 時に固定すると、古い観測が
+  // stale になっても表示が変わらないため、描画時の観測時刻を使う。
+  // oxlint-disable-next-line react/purity -- 定期再取得ごとの現在時刻スナップショットが必要
   const stale = isObservationStale(oldestObservedAt, Date.now())
 
   return (

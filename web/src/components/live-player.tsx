@@ -175,6 +175,9 @@ export function LivePlayer({
     // 保証できない（react-hooks/exhaustive-deps が指摘する形）ため、同じ
     // effect の中で捕まえた変数を setup・cleanup の両方から使う。
     const video = videoRef.current
+    // video / hls の外部再生状態と UI の loading/error 表示を同期する effect。
+    // render 中に導出すると、再生開始・失敗イベントの境界を表現できない。
+    // oxlint-disable-next-line react/set-state-in-effect -- 外部メディア状態との同期
     setLoading(true)
     setError(null)
     onDiagnosticsRef.current?.(null)

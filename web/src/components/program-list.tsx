@@ -216,6 +216,9 @@ export const ProgramList = forwardRef<
   // メモ化していないので「programs が変わったのに古い配列を閉じ込めた
   // 関数が残る」という古さの問題がそもそも起きない（常に最新の
   // `programs` を閉じている）。
+  // 実ブラウザのスクロール判定は web/e2e/checks.mjs で行う。virtualizer は render
+  // 中に初期オプションを受け取る API なので、測定値 ref の読み取りは意図的。
+  // oxlint-disable react/refs -- virtualizer の初期設定に測定済み ref を渡す
   const virtualizer = useWindowVirtualizer({
     count: programs.length,
     estimateSize: () => estimatedRowHeightPx,
@@ -223,6 +226,7 @@ export const ProgramList = forwardRef<
     overscan: overscanRows,
     scrollMargin: scrollMarginRef.current,
   })
+  // oxlint-enable react/refs
 
   // `scrollMarginRef` の実測・反映。`virtualizer`（`useWindowVirtualizer`
   // 内部の `useState` が保持する安定参照。マウント後は変わらない）だけを
@@ -246,8 +250,11 @@ export const ProgramList = forwardRef<
   const virtualItems = renderAll ? [] : virtualizer.getVirtualItems()
   const totalSizePx = renderAll ? 0 : virtualizer.getTotalSize()
 
+  // padding は virtualizer の現在のスクロール座標と同じ render の値で計算する。
+  // oxlint-disable react/refs -- スクロール用 spacer の描画値を計算する
   const paddingTopPx =
     virtualItems.length > 0 ? Math.max(0, virtualItems[0].start - scrollMarginRef.current) : 0
+  // oxlint-disable-next-line react/refs -- スクロール用 spacer の描画値を計算する
   const paddingBottomPx =
     virtualItems.length > 0
       ? Math.max(
@@ -255,6 +262,7 @@ export const ProgramList = forwardRef<
           totalSizePx - (virtualItems[virtualItems.length - 1].end - scrollMarginRef.current),
         )
       : 0
+  // oxlint-enable react/refs
 
   // 「いま見ている日」は可視範囲の先頭インデックスから導く（日付ヘッダへの
   // IntersectionObserver ではない ---

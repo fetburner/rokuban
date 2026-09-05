@@ -47,6 +47,9 @@ export function RecordingPlayer({
   // 限りループにはならないが、無駄な再実行を避ける）。
   const profiles = useMemo(() => encodedAssets.map((a) => a.profile), [encodedAssets])
   const [profile, setProfile] = useState(profiles[0] ?? '')
+  // props の資産一覧が更新されて選択中プロファイルが消えた場合は、effect で一度
+  // 無効な値を描いてから直すのではなく、表示値をその場で先頭へ導出する。
+  const selectedProfile = profiles.includes(profile) ? profile : (profiles[0] ?? '')
   const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
   const videoRef = useRef<HTMLVideoElement>(null)
   // プロファイル切替時に load したあとだけ currentTime を復元する
@@ -55,16 +58,9 @@ export function RecordingPlayer({
   const lastSavedSecond = useRef<number | null>(null)
 
   useEffect(() => {
-    if (profiles.length === 0) return
-    if (!profiles.includes(profile)) {
-      setProfile(profiles[0]!)
-    }
-  }, [profiles, profile])
-
-  useEffect(() => {
     restorePending.current = true
     lastSavedSecond.current = null
-  }, [recordingId, profile])
+  }, [recordingId, selectedProfile])
 
   // 録画を変えても速度は保つ（以前はここで 1 倍に戻していた）。速度は端末ごとの
   // 好みであって録画ごとの状態ではない（`lib/playback-position.ts`）。
@@ -83,7 +79,7 @@ export function RecordingPlayer({
     if (!video) return
     video.defaultPlaybackRate = playbackRate
     video.playbackRate = playbackRate
-  }, [recordingId, profile, playbackRate])
+  }, [recordingId, selectedProfile, playbackRate])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -162,8 +158,8 @@ export function RecordingPlayer({
     )
   }
 
-  const src = recordingFileURL(recordingId, profile)
-  const selectedAsset = encodedAssets.find((a) => a.profile === profile)
+  const src = recordingFileURL(recordingId, selectedProfile)
+  const selectedAsset = encodedAssets.find((a) => a.profile === selectedProfile)
 
   return (
     <section className={cn('flex flex-col gap-2', className)} aria-label="再生">
@@ -174,7 +170,7 @@ export function RecordingPlayer({
           </label>
           <select
             id={`profile-${recordingId}`}
-            value={profile}
+            value={selectedProfile}
             onChange={(e) => setProfile(e.target.value)}
             className="rounded border border-border bg-background px-2 py-1 text-xs"
           >
@@ -232,7 +228,7 @@ export function RecordingPlayer({
 
       <video
         ref={videoRef}
-        key={`${recordingId}:${profile}`}
+        key={`${recordingId}:${selectedProfile}`}
         controls
         playsInline
         preload="metadata"
@@ -251,7 +247,7 @@ export function RecordingPlayer({
         onLoadedMetadata={(e) => {
           if (!restorePending.current) return
           restorePending.current = false
-          const pos = loadPlaybackPosition(recordingId, profile)
+          const pos = loadPlaybackPosition(recordingId, selectedProfile)
           if (pos !== null && pos > 0) {
             e.currentTarget.currentTime = pos
           }
@@ -261,18 +257,18 @@ export function RecordingPlayer({
           // timeupdate は約 4Hz で発火するが保存値は秒単位なので、秒が変わったときだけ書く
           if (!shouldSavePlaybackPosition(lastSavedSecond.current, v.currentTime)) return
           lastSavedSecond.current = Math.floor(v.currentTime)
-          savePlaybackPosition(recordingId, profile, v.currentTime, v.duration)
+          savePlaybackPosition(recordingId, selectedProfile, v.currentTime, v.duration)
         }}
         onPause={(e) => {
           const v = e.currentTarget
-          savePlaybackPosition(recordingId, profile, v.currentTime, v.duration)
+          savePlaybackPosition(recordingId, selectedProfile, v.currentTime, v.duration)
         }}
       >
         <track
           kind="subtitles"
           srcLang="ja"
           label="日本語"
-          src={recordingSubtitleURL(recordingId, profile)}
+          src={recordingSubtitleURL(recordingId, selectedProfile)}
         />
       </video>
 

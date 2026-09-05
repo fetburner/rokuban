@@ -276,17 +276,16 @@ export function RecordingsPage() {
   // autoLoadFailed: 直近の自動読み込みが失敗したか。失敗したらボタン + エラー
   // 表示に落とし、番兵が可視のままでも自動では再試行しない（さもないと失敗した
   // まま無限にリクエストを投げ続ける。pages/programs.tsx と同じ規律）。
-  const [autoLoadFailed, setAutoLoadFailed] = useState(false)
+  const fetchNextPageError = query.error
+  const autoLoadFailed = query.isFetchNextPageError
   const paramsKey = JSON.stringify(listParams)
   useEffect(() => {
-    setAutoLoadFailed(false)
+    // URL の検索条件変更に合わせて選択状態を無効化する外部入力同期。
+    // oxlint-disable-next-line react/set-state-in-effect -- URL 条件変更で一覧選択をリセットする
     setSelecting(false)
     setSelected(new Set())
     setPurgeConfirmOpen(false)
   }, [paramsKey])
-  useEffect(() => {
-    if (query.isFetchNextPageError) setAutoLoadFailed(true)
-  }, [query.isFetchNextPageError])
   const autoLoadStateRef = useRef({
     hasNextPage: query.hasNextPage,
     isFetchingNextPage: query.isFetchingNextPage,
@@ -496,7 +495,7 @@ export function RecordingsPage() {
             <div className="px-4 py-4">
               {autoLoadFailed && (
                 <p role="alert" className="mb-2 text-center text-xs text-destructive">
-                  {apiErrorMessage(query.error) ?? '続きの読み込みに失敗しました'}
+                  {apiErrorMessage(fetchNextPageError) ?? '続きの読み込みに失敗しました'}
                 </p>
               )}
               <Button

@@ -65,6 +65,9 @@ export function StatusBadge({ status }: { status: Recording['status'] }) {
  * 「停滞」へ変わる。
  */
 export function IngestBadge({ recording }: { recording: Recording }) {
+  // 取り込み中の一覧は refetchInterval で再描画される。時刻を state に固定すると
+  // 停滞判定が更新されなくなるため、各レンダーの観測時刻を使う意図的な例外。
+  // oxlint-disable-next-line react/purity -- refetch ごとの現在時刻スナップショットが必要
   const display = ingestDisplay(recording, Date.now())
   if (display === undefined || display.kind === 'originalDeleted') return null
 
