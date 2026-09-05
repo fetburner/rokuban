@@ -20,8 +20,9 @@ import (
 // enqueueJob は `rokuban enqueue <name>` 1 件の定義。
 //
 // RequiresSite が CLI 上の site 束縛 / site 非依存の**唯一の分類**である
-// （issue #200）。jobs.SiteBoundQueueNames() からは導出しない --- キュー修飾の
-// 集合と「Args に Site が要るか」は一致しない。ruler-pass は mirakc 非依存で
+// （issue #200）。site 修飾されるキュー（internal/jobs の siteBoundQueueNames）
+// からは導出しない --- キュー修飾の集合と「Args に Site が要るか」は
+// 一致しない。ruler-pass は mirakc 非依存で
 // キューも修飾しないが RulerPassArgs.Site でサイト単位に回すので RequiresSite
 // は true。catalog-export はアーカイブが単一なので Site を持たず false。
 // 次にジョブを足すときはここに RequiresSite を書いてから factory を足す。
@@ -52,7 +53,7 @@ var enqueueJobs = map[string]enqueueJob{
 		NewArgs:      func(site string) river.JobArgs { return jobs.TunerSyncArgs{Site: site} },
 	},
 	"ruler-pass": {
-		// キューは site 非修飾（jobs.SiteBoundQueueNames() 外）だが Args.Site 必須。
+		// キューは site 非修飾（site 修飾されるキューの集合の外）だが Args.Site 必須。
 		RequiresSite: true,
 		NewArgs:      func(site string) river.JobArgs { return jobs.RulerPassArgs{Site: site} },
 	},

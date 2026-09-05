@@ -95,7 +95,7 @@ const DefaultSoftStopTimeout = 5 * time.Second
 // mirakc の record id / programId はインスタンススコープであり、DB の site 列は
 // そのスコープの境界を表現するために存在する（issue #31、docs/schema.md
 // §1-5）。**一次防御はキュー選択そのもの**: site 単位のキュー（ingest/epg/
-// reconciler/watcher）は物理名を site で修飾する（jobs.QualifyQueueName、issue #185
+// reconciler/watcher）は物理名を site で修飾する（jobs.PhysicalQueueName、issue #185
 // M4-13）ため、site A 宛のキューを購読していない worker は site B 向けのジョブを
 // 購読すらしない（cmd/rokuban.validateSiteBinding が worker.queues とサイト束縛の
 // 組み合わせも検査する）。verifySite はその後ろに立つ**二次防御**で、キュー選択が
@@ -308,8 +308,8 @@ const (
 // 集合に対して判定する --- worker.queues の設定値・エラーメッセージのいずれも
 // 論理名のままにするため（issue #185 の「罠」「エラーメッセージも論理名で出す」）。
 //
-// site 単位のキュー（jobs.SiteBoundQueueNames()）を実際に Insert/購読するときの
-// 物理名（`<base>_<site>`）への展開は jobs.PhysicalQueueName が担う。buildRiverConfig が
+// site 単位のキュー（internal/jobs の siteBoundQueueNames）を実際に Insert/購読
+// するときの物理名（`<base>_<site>`）への展開は jobs.PhysicalQueueName が担う。buildRiverConfig が
 // river.Config.Queues を組み立てる直前にこの展開を行う。
 func allQueues(ingestConcurrency, encodeConcurrency, thumbnailConcurrency int) map[string]river.QueueConfig {
 	return map[string]river.QueueConfig{
@@ -328,7 +328,8 @@ func allQueues(ingestConcurrency, encodeConcurrency, thumbnailConcurrency int) m
 		// issue #64）。thumbnail ワーカーは M3-4、encode ワーカーは M3-3。
 		jobs.EncodeQueue:    {MaxWorkers: encodeConcurrency},
 		jobs.ThumbnailQueue: {MaxWorkers: thumbnailConcurrency},
-		// delete_reconcile / catalog_export 用（issue #185 M4-13。cleanupQueue のコメント参照）。
+		// delete_reconcile / catalog_export 用（issue #185 M4-13。internal/jobs/queue.go の
+		// CleanupQueue のコメント参照）。
 		jobs.CleanupQueue: {MaxWorkers: defaultCleanupConcurrency},
 		// storage_sync 用（issue #238 M7-5）。UniqueOpts{ByArgs} が重複実行を防ぐので
 		// tuner_sync/ruler/reconciler/record_sweep と同じく 1 本で足りる。
@@ -347,7 +348,7 @@ type ClientConfig struct {
 	// 「この site 集合をどこまで面倒みるか」が両方とも束縛そのものだから ---
 	// server.go は常にここへ同じ値を渡していた）:
 	//
-	//  1. jobs.SiteBoundQueueNames() に含まれる論理キュー（ingest/epg/reconciler/
+	//  1. internal/jobs の siteBoundQueueNames に含まれる論理キュー（ingest/epg/reconciler/
 	//     watcher）を実際に Insert/購読する際の物理名（`<base>_<site>`）を、
 	//     この集合の**要素ごとに**組み立てる（jobs.PhysicalQueueName、
 	//     buildRiverConfig。insert 側は 1 ジョブの args.Site から 1 つに決まる
@@ -356,7 +357,7 @@ type ClientConfig struct {
 	//     reconcile_pass/record_sweep。旧 EpgSyncSite 等の 5 フィールド）を、
 	//     この集合の要素ごとに 1 本ずつ登録する
 	//
-	// 空スライスは jobs.QualifyQueueName が db.DefaultSite に解決する 1 要素
+	// 空スライスは jobs.PhysicalQueueName が db.DefaultSite に解決する 1 要素
 	// （[]string{""}）として扱う --- 0 サイト束縛の worker が site-bound キューを
 	// 要求しないことは cmd/rokuban.validateSiteBinding が起動時に強制するので、
 	// ここで実際にこの解決が使われるのはテストの部分構成（BoundSites 未設定）
@@ -385,7 +386,7 @@ type ClientConfig struct {
 	// RulerPassInterval は ruler 定期パスの間隔。0 なら既定値。BoundSites の要素
 	// ごとに 1 本ずつ登録する（PeriodicJobs が true のときのみ。ruler は mirakc に
 	// 触れないが、args.Site が DB 行の絞り込みなので site ごとに 1 本で正しい
-	// --- jobs.SiteBoundQueueNames() のコメント参照）。
+	// --- internal/jobs/queue.go の siteBoundQueueNames のコメント参照）。
 	RulerPassInterval time.Duration
 
 	// ReconcilePassInterval は reconciler 定期パスの間隔。0 なら既定値（30 秒）。
@@ -593,7 +594,7 @@ func configureOnceQueues(cfg ClientConfig, queues map[string]river.QueueConfig) 
 // qualifyRiverQueues は論理キューを BoundSites ごとの物理キューへ展開する。
 //
 // river.Config.Queues は実際に SKIP LOCKED で引く物理キュー名でなければならない。
-// ここで初めて論理名から物理名（`<base>_<site>`）に展開する（physicalQueueName）。
+// ここで初めて論理名から物理名（`<base>_<site>`）に展開する（jobs.PhysicalQueueName）。
 // site 単位のキューは BoundSites の要素ごとに 1 つずつ展開する ---
 // **subscribe 側だけを N 回呼ぶ**（issue #532 の「罠」。insert 側
 // （各 JobArgs.InsertOpts）は 1 ジョブの args.Site から物理名が 1 つに決まるので
@@ -601,12 +602,12 @@ func configureOnceQueues(cfg ClientConfig, queues map[string]river.QueueConfig) 
 func qualifyRiverQueues(queues map[string]river.QueueConfig, boundSites []string) map[string]river.QueueConfig {
 	if len(boundSites) == 0 {
 		// 0 サイト束縛（中央プロセス）の後方互換フォールバック（BoundSites の
-		// コメント、jobs.QualifyQueueName と同じ規約）。本番は validateSiteBinding が
+		// コメント、jobs.PhysicalQueueName と同じ規約）。本番は validateSiteBinding が
 		// この状態で site-bound キューを要求すること自体を防ぐので、ここに来るのは
 		// テストの部分構成（BoundSites 未設定）だけである。
 		boundSites = []string{""}
 	}
-	// physicalQueueName(name, site) は site-bound でない name を site 引数に
+	// jobs.PhysicalQueueName(name, site) は site-bound でない name を site 引数に
 	// 関わらずそのまま返すので、site-bound かどうかの判定をここで重複させる
 	// 必要はない（jobs.PhysicalQueueName のコメントが警告する「判定が 2 か所に
 	// 分かれてズレる」経路を作らないため。site-bound でないキューは

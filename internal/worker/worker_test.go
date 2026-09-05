@@ -19,8 +19,8 @@ import (
 	"github.com/riverqueue/river/rivertest"
 	"github.com/riverqueue/river/rivertype"
 
-	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -223,7 +223,7 @@ func TestEpgSyncPeriodicJob(t *testing.T) {
 	if event.Job.Kind != "epg_sync" {
 		t.Errorf("job kind = %q, want %q", event.Job.Kind, "epg_sync")
 	}
-	wantQueue := qualifyQueueName(epgQueue, "default")
+	wantQueue := jobs.PhysicalQueueName(epgQueue, "default")
 	if event.Job.Queue != wantQueue {
 		t.Errorf("job queue = %q, want %q", event.Job.Queue, wantQueue)
 	}
@@ -309,85 +309,6 @@ func TestEpgSyncWorker_HasGenerousTimeout(t *testing.T) {
 	got := w.Timeout(nil)
 	if got <= river.JobTimeoutDefault {
 		t.Errorf("Timeout() = %v, want > JobTimeoutDefault (%v)", got, river.JobTimeoutDefault)
-	}
-}
-
-// 完了済みのジョブが一意性の判定に入っていないこと。
-//
-// River の既定（UniqueOptsByStateDefault）は completed を含むため、既定のままだと
-// 一度成功した引数のジョブが二度と投入できなくなる。epg_sync は 10 分間隔の
-// 定期ジョブなので、これに当たると実質ワンショットになる（実際にそうなっていた）。
-func TestInsertOpts_UniqueStatesExcludeFinalized(t *testing.T) {
-	tests := []struct {
-		name string
-		opts river.InsertOpts
-	}{
-		{"epg_sync", EpgSyncArgs{}.InsertOpts()},
-		{"ingest", IngestJobArgs{}.InsertOpts()},
-		{"encode", EncodeJobArgs{}.InsertOpts()},
-		{"ruler_pass", RulerPassArgs{}.InsertOpts()},
-		{"reconcile_pass", ReconcilePassArgs{}.InsertOpts()},
-		{"catalog_export", CatalogExportArgs{}.InsertOpts()},
-		{"storage_sync", StorageSyncArgs{}.InsertOpts()},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			states := tt.opts.UniqueOpts.ByState
-			if len(states) == 0 {
-				t.Fatal("ByState が空だと River の既定（completed を含む）が使われる")
-			}
-			for _, s := range states {
-				switch s {
-				case rivertype.JobStateCompleted, rivertype.JobStateDiscarded, rivertype.JobStateCancelled:
-					t.Errorf("終了状態 %q が一意性の判定に含まれている", s)
-				}
-			}
-			// 同時実行を防ぐ目的は満たしていること
-			if !slices.Contains(states, rivertype.JobStateRunning) {
-				t.Error("running が含まれていないと同時実行を防げない")
-			}
-		})
-	}
-}
-
-// site 単位のキュー（ingest/epg/reconciler/watcher。tuner_sync は epg キューを
-// 共有）と cleanup（delete_reconcile/catalog_export）は UniqueOpts.ByQueue: true
-// を立てていること。ruler は対象外（キュー名を変えていないので不要。
-// physicalQueueName のコメント参照）。
-//
-// 立てないと、キュー名を変える（今回の site 修飾・cleanup への移設）だけで
-// 旧キューの残骸が新キューへの Insert を UniqueSkippedAsDuplicate として
-// 黙って塞ぐ（pendingJobStates 直後の doc コメント、issue #185 のレビュー
-// 指摘）。この 1 つのテーブルにまとめておくことで、7 種のうち 1 つでも
-// ByQueue を書き忘れたときに検出漏れが起きないようにする。
-//
-// storage_sync だけは事情が違う（キュー名を変えたことがないので、この表が
-// 押さえている「リネームで塞がる」失敗はまだ起きえない）。専用の storage
-// キューを新設した時点で先に立てておくという選択の記録としてここに置く ---
-// 後から `storage` を改名したくなったときに、上記の失敗を踏み直さないため。
-func TestInsertOpts_ByQueueForRenamedQueues(t *testing.T) {
-	tests := []struct {
-		name string
-		opts river.InsertOpts
-		want bool
-	}{
-		{"ingest", IngestJobArgs{}.InsertOpts(), true},
-		{"epg_sync", EpgSyncArgs{}.InsertOpts(), true},
-		{"tuner_sync", TunerSyncArgs{}.InsertOpts(), true},
-		{"reconcile_pass", ReconcilePassArgs{}.InsertOpts(), true},
-		{"record_sweep", RecordSweepArgs{}.InsertOpts(), true},
-		{"delete_reconcile", DeleteReconcileArgs{}.InsertOpts(), true},
-		{"catalog_export", CatalogExportArgs{}.InsertOpts(), true},
-		{"storage_sync (new queue, set up-front against a future rename)", StorageSyncArgs{}.InsertOpts(), true},
-		{"ruler_pass (queue name unchanged, not required)", RulerPassArgs{}.InsertOpts(), false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.opts.UniqueOpts.ByQueue; got != tt.want {
-				t.Errorf("UniqueOpts.ByQueue = %v, want %v", got, tt.want)
-			}
-		})
 	}
 }
 
@@ -729,6 +650,26 @@ func TestRulerPass_DuplicateInsertMerges(t *testing.T) {
 	}
 }
 
+// jobs.AllQueueNames() が allQueues() と同じキュー集合を主張していること。
+//
+// **キュー集合の権威は本来 1 つであるべきだが、jobs.AllQueueNames() は
+// internal/jobs 側の手書きリテラルで、allQueues() は internal/worker 側の
+// river.QueueConfig map。jobs から worker を import すると循環するため、
+// 権威を 1 つに統合できない。** この二重管理を許す唯一の代償として、
+// 両者が一致することをここで固定する。
+//
+// このテストが検出すべき変異: allQueues() だけにキューを足す（jobs 側は
+// unknown のまま worker.queues が弾く）、または jobs.AllQueueNames() だけに
+// 足す（allQueues() に無いので worker が購読できず、k8s の
+// TestScaledJobsCoverEveryQueue の網にも入らない）。
+func TestAllQueueNames_MatchesAllQueues(t *testing.T) {
+	got := sortedQueueNames(allQueues(0, 0, 0))
+	want := jobs.AllQueueNames()
+	if !slices.Equal(got, want) {
+		t.Errorf("sortedQueueNames(allQueues(0,0,0)) = %v, want jobs.AllQueueNames() = %v", got, want)
+	}
+}
+
 // worker.queues に未知のキュー名を渡すと起動時エラーになること（typo で静かに
 // 何も引かなくなる事故を防ぐ knob。docs/configuration.md の worker.queues）。
 func TestBuildRiverConfig_UnknownQueueErrors(t *testing.T) {
@@ -900,7 +841,7 @@ func TestBuildRiverConfig_PeriodicJobsPerSite(t *testing.T) {
 // **両方**購読される --- insert 側（各 JobArgs.InsertOpts）は 1 ジョブの
 // args.Site から物理名が 1 つに決まるので変わらないが、subscribe 側
 // （buildRiverConfig の river.Config.Queues）だけが N 回展開される
-// （qualifyQueueName のコメント「subscribe 側だけ N 回呼ぶ」）。
+// （qualifyRiverQueues のコメント「subscribe 側だけ N 回呼ぶ」）。
 //
 // このテストが検出すべき変異: 物理キュー展開のループが BoundSites の最初の
 // 1 要素だけを使う（例: `boundSites[:1]`）。その場合 takamatsu 側の物理キュー
@@ -920,165 +861,6 @@ func TestBuildRiverConfig_SubscribesSiteBoundQueuesPerSite(t *testing.T) {
 				t.Errorf("river.Config.Queues is missing %q (site-bound queues must be subscribed per bound site); got %v",
 					want, sortedQueueNames(riverCfg.Queues))
 			}
-		}
-	}
-}
-
-// RequiresEncodeTools が worker.queues の絞り込みと連動していること
-// （issue #113 決定 C）。既定（空）や encode/thumbnail を明示的に含む場合は
-// ffmpeg/ffprobe 検査が必要、それ以外に絞った場合は不要になる。
-func TestRequiresEncodeTools(t *testing.T) {
-	tests := []struct {
-		name   string
-		queues []string
-		want   bool
-	}{
-		{"empty means all queues, including encode/thumbnail", nil, true},
-		{"explicit encode", []string{encodeQueue}, true},
-		{"explicit thumbnail", []string{thumbnailQueue}, true},
-		{"explicit both", []string{encodeQueue, thumbnailQueue}, true},
-		{"ingest only excludes encode/thumbnail", []string{ingestQueue}, false},
-		{"ruler/reconciler only excludes encode/thumbnail", []string{rulerQueue, reconcilerQueue}, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := RequiresEncodeTools(tt.queues); got != tt.want {
-				t.Errorf("RequiresEncodeTools(%v) = %v, want %v", tt.queues, got, tt.want)
-			}
-		})
-	}
-}
-
-// RequiresSiteBinding は cmd/rokuban が「worker ロールを 0 サイト束縛
-// （issue #183 M4-11 の --sites=）で起動してよいか」を判定する唯一の材料。
-// ここが誤ると、site 単位のジョブ（ingest/epg/reconciler/watcher）を
-// 引く worker が空文字列 site のまま起動し、届いたジョブの site と一致せず
-// 全滅して再試行し続ける（ログにも出ない）。
-//
-// ruler は site 非依存（issue #185 M4-13。#138 の決定表 --- DB のみで mirakc に
-// 触れない）なので、ruler だけの購読は 0 サイト束縛を要求しない。
-func TestRequiresSiteBinding(t *testing.T) {
-	tests := []struct {
-		name   string
-		queues []string
-		want   bool
-	}{
-		{"empty means all queues, including site-bound ones", nil, true},
-		{"explicit ingest", []string{ingestQueue}, true},
-		{"explicit epg", []string{epgQueue}, true},
-		{"explicit ruler does not require binding (site-independent, issue #185)", []string{rulerQueue}, false},
-		{"explicit reconciler", []string{reconcilerQueue}, true},
-		{"explicit watcher (record_sweep)", []string{recordSweepQueue}, true},
-		{"encode/thumbnail/cleanup/ruler only excludes site-bound queues", []string{encodeQueue, thumbnailQueue, cleanupQueue, rulerQueue}, false},
-		{"explicit storage does not require binding (site-independent, issue #238)", []string{storageQueue}, false},
-		{"encode/thumbnail plus one site-bound queue still requires binding", []string{encodeQueue, ingestQueue}, true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := RequiresSiteBinding(tt.queues); got != tt.want {
-				t.Errorf("RequiresSiteBinding(%v) = %v, want %v", tt.queues, got, tt.want)
-			}
-		})
-	}
-}
-
-// この 1 つのテストが、M4-11 が M4-13 に申し送った罠を直接固定する（issue #185
-// のコメント）: worker.queues（config）は論理名のままで、RequiresSiteBinding /
-// RequiresEncodeTools はその論理名に対して判定する。キュー名を site で修飾する
-// 実装が、誤ってこの論理名そのもの（キュー定数や siteBoundQueueNames の要素）を
-// 修飾済みの文字列に変えてしまうと、cmd/rokuban.validateSiteBinding が
-// worker.queues の値と一致判定できなくなり、0 サイト束縛の worker が site 単位の
-// キューを購読できる状態のまま起動時ガードを素通りする。
-func TestRequiresSiteBinding_LogicalQueueNamesStayUnqualified(t *testing.T) {
-	for _, base := range []string{ingestQueue, epgQueue, reconcilerQueue, recordSweepQueue} {
-		if strings.Contains(base, "_") {
-			t.Errorf("queue base %q looks site-qualified; worker.queues (config) と "+
-				"RequiresSiteBinding/RequiresEncodeTools は論理名（unqualified）を前提にしている", base)
-		}
-		if !RequiresSiteBinding([]string{base}) {
-			t.Errorf("RequiresSiteBinding([%q]) = false, want true (site-bound queue のはず)", base)
-		}
-	}
-}
-
-// qualifyQueueName は base_site の形にする。空文字列 site は db.DefaultSite に
-// 解決する（verifySite / DeleteReconcileWorker.Work と同じ規約。issue #185）。
-func TestQualifyQueueName(t *testing.T) {
-	tests := []struct {
-		name string
-		base string
-		site string
-		want string
-	}{
-		{"basic", ingestQueue, "tokyo", "ingest_tokyo"},
-		{"empty site resolves to db.DefaultSite", epgQueue, "", "epg_default"},
-		{"reconciler", reconcilerQueue, "takamatsu", "reconciler_takamatsu"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := qualifyQueueName(tt.base, tt.site); got != tt.want {
-				t.Errorf("qualifyQueueName(%q, %q) = %q, want %q", tt.base, tt.site, got, tt.want)
-			}
-		})
-	}
-}
-
-// physicalQueueName は siteBoundQueueNames に含まれる論理名だけ修飾し、
-// それ以外（ruler/encode/thumbnail/cleanup/default）はそのまま通す。
-// want はすべてリテラルで書く（logical と同じ定数を want にも使うと、
-// 「qualify しない」ケースは定数の値が何であっても常に一致してしまい、
-// 意図した論理名そのものが正しいかを確認しない。issue #185 のレビュー指摘）。
-func TestPhysicalQueueName(t *testing.T) {
-	tests := []struct {
-		name      string
-		logical   string
-		boundSite string
-		want      string
-	}{
-		{"ingest gets qualified", ingestQueue, "tokyo", "ingest_tokyo"},
-		{"epg gets qualified", epgQueue, "tokyo", "epg_tokyo"},
-		{"reconciler gets qualified", reconcilerQueue, "tokyo", "reconciler_tokyo"},
-		{"watcher (record_sweep) gets qualified", recordSweepQueue, "tokyo", "watcher_tokyo"},
-		{"ruler is NOT qualified (site-independent, issue #185)", rulerQueue, "tokyo", "ruler"},
-		{"encode is NOT qualified", encodeQueue, "tokyo", "encode"},
-		{"thumbnail is NOT qualified", thumbnailQueue, "tokyo", "thumbnail"},
-		{"cleanup is NOT qualified", cleanupQueue, "tokyo", "cleanup"},
-		{"storage is NOT qualified (site-independent, issue #238)", storageQueue, "tokyo", "storage"},
-		{"default is NOT qualified", river.QueueDefault, "tokyo", "default"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := physicalQueueName(tt.logical, tt.boundSite); got != tt.want {
-				t.Errorf("physicalQueueName(%q, %q) = %q, want %q", tt.logical, tt.boundSite, got, tt.want)
-			}
-		})
-	}
-}
-
-// TestSiteBoundQueueNames_FitWithinMirakcSiteNameMaxLen は、
-// config.MirakcSiteNameMaxLen まで許した site 名を qualifyQueueName で修飾しても
-// riverQueueNameMaxLen を超えないことを機械的に固定する。config は worker を
-// import できない（逆方向のみ許される）ので、両方が見える worker 側にこの関係の
-// テストを置く。site 名の長さ検査は config.validateSiteName の 1 本だけなので
-// （worker 側の重複検査は無くした）、この関係が壊れると config のロード時検査を
-// 通った site 名が qualifyQueueName で 64 文字を超える。それを渡した先は
-// worker ロールを持つプロセスなら起動時（river.NewClient → Config.validate →
-// `queueConfig.validate` が river@v0.47.0 client.go の `validateQueueName` を
-// 呼ぶ）に落ち、insert-only クライアント（`rokuban
-// enqueue` 等）では Insert 時（river@v0.47.0 client.go の `validateQueueName`）に
-// 初めて落ちる。
-//
-// siteBoundQueueNames のどの論理名についても、site 名を
-// config.MirakcSiteNameMaxLen まで許してキュー修飾しても riverQueueNameMaxLen を
-// 超えないことを検査する。破る典型は siteBoundQueueNames に `reconciler` より
-// 長い論理名を足す、または config.MirakcSiteNameMaxLen を大きくすること。
-func TestSiteBoundQueueNames_FitWithinMirakcSiteNameMaxLen(t *testing.T) {
-	maxLenSite := strings.Repeat("a", config.MirakcSiteNameMaxLen)
-	for _, base := range siteBoundQueueNames {
-		name := qualifyQueueName(base, maxLenSite)
-		if len(name) > riverQueueNameMaxLen {
-			t.Errorf("qualifyQueueName(%q, <%d-char site>) = %q (%d chars) exceeds riverQueueNameMaxLen(%d)",
-				base, len(maxLenSite), name, len(name), riverQueueNameMaxLen)
 		}
 	}
 }

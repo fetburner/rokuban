@@ -46,7 +46,7 @@ const (
 	fullImage     = "ghcr.io/fetburner/rokuban-full"
 
 	// defaultQueue は「ScaledJob を置かないキュー」。現在どのジョブも
-	// river.QueueDefault に入らない（internal/worker の各 InsertOpts が
+	// river.QueueDefault に入らない（internal/jobs の各 InsertOpts が
 	// Queue を明示している）。**ジョブを 1 つでも default に入れたら、
 	// TestScaledJobsCoverEveryQueue がここで落ちる。**
 	defaultQueue = "default"
@@ -320,7 +320,7 @@ func triggerQuery(t *testing.T, w workload) string {
 // トリガのクエリが、その ScaledJob が実際に購読する**物理**キュー名を数えていること。
 //
 // **論理名と物理名は違う。** site 束縛キューは `<論理名>_<site>` に修飾される
-// （internal/jobs の QualifyQueueName）ので、クエリに論理名を書くと
+// （internal/jobs の PhysicalQueueName）ので、クエリに論理名を書くと
 // **誰も入れないキューを数え続けて永久にスケールしない**。逆にサイトを跨いだ
 // 名前を書くと、サイト A のスケーラがサイト B の滞留で Job を起こし、起きた Job は
 // verifySite で死んでまた起きる（受け入れ判定ハーネスの判定 5）。

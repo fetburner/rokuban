@@ -291,7 +291,7 @@ func TestIngestQueueRename_ByQueuePreventsStaleQueueFromBlockingNewInsert(t *tes
 	if newRes.UniqueSkippedAsDuplicate {
 		t.Fatal("new-style insert was skipped as a duplicate of the stale old-queue row --- " +
 			"ByQueue: UniqueByQueue is not effective; the record would never be re-ingested " +
-			"（UniqueByQueue の定義を確認する。internal/jobs/queue.go の pendingJobStates 直後の doc コメント参照）")
+			"（UniqueByQueue の定義を確認する。internal/jobs/queue.go の UniqueByQueue の doc コメント参照）")
 	}
 	if newRes.Job.ID == oldRes.Job.ID {
 		t.Fatal("new-style insert reused the old job's row instead of creating a new one")

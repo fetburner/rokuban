@@ -2,9 +2,16 @@ package worker
 
 import "github.com/fetburner/rokuban/internal/jobs"
 
-// The worker package tests exercise handlers using the job names that were
-// historically declared in this package. Keep test-local aliases so the
-// contract can move to internal/jobs without rewriting every handler fixture.
+// worker パッケージのテストは、契約が internal/jobs へ移る前からこのパッケージに
+// 生えていたジョブ名・キュー名でハンドラのフィクスチャを組み立てている。
+// 契約の実体を書き直させずに済むよう、型とキュー名定数だけのテスト専用 alias を
+// ここに残す（約 250 箇所から参照されており、書き直すより残す方が安い）。
+//
+// 判定ロジック（qualifyQueueName / physicalQueueName / AllQueueNames /
+// RequiresEncodeTools / RequiresSiteBinding / uniqueByQueue / riverQueueNameMaxLen /
+// siteBoundQueueNames）の alias は置かない。契約そのものを測るテストは
+// internal/jobs 側に移設済みで、worker 側の呼び出し元は jobs.PhysicalQueueName 等を
+// 直接呼ぶ。
 type IngestJobArgs = jobs.IngestJobArgs
 type EpgSyncArgs = jobs.EpgSyncArgs
 type TunerSyncArgs = jobs.TunerSyncArgs
@@ -20,37 +27,12 @@ type CatalogExportArgs = jobs.CatalogExportArgs
 type StorageSyncArgs = jobs.StorageSyncArgs
 
 const (
-	ingestQueue          = jobs.IngestQueue
-	epgQueue             = jobs.EpgQueue
-	rulerQueue           = jobs.RulerQueue
-	reconcilerQueue      = jobs.ReconcilerQueue
-	recordSweepQueue     = jobs.RecordSweepQueue
-	encodeQueue          = jobs.EncodeQueue
-	thumbnailQueue       = jobs.ThumbnailQueue
-	cleanupQueue         = jobs.CleanupQueue
-	storageQueue         = jobs.StorageQueue
-	uniqueByQueue        = jobs.UniqueByQueue
-	riverQueueNameMaxLen = jobs.RiverQueueNameMaxLen
+	ingestQueue      = jobs.IngestQueue
+	epgQueue         = jobs.EpgQueue
+	rulerQueue       = jobs.RulerQueue
+	reconcilerQueue  = jobs.ReconcilerQueue
+	recordSweepQueue = jobs.RecordSweepQueue
+	encodeQueue      = jobs.EncodeQueue
+	thumbnailQueue   = jobs.ThumbnailQueue
+	cleanupQueue     = jobs.CleanupQueue
 )
-
-var siteBoundQueueNames = jobs.SiteBoundQueueNames()
-
-func qualifyQueueName(base, site string) string {
-	return jobs.QualifyQueueName(base, site)
-}
-
-func physicalQueueName(logical, boundSite string) string {
-	return jobs.PhysicalQueueName(logical, boundSite)
-}
-
-func AllQueueNames() []string {
-	return jobs.AllQueueNames()
-}
-
-func RequiresEncodeTools(queues []string) bool {
-	return jobs.RequiresEncodeTools(queues)
-}
-
-func RequiresSiteBinding(queues []string) bool {
-	return jobs.RequiresSiteBinding(queues)
-}

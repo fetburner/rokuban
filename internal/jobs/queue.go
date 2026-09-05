@@ -8,7 +8,6 @@ package jobs
 
 import (
 	"slices"
-	"sort"
 
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
@@ -84,18 +83,15 @@ func PendingJobStates() []rivertype.JobState {
 	return append([]rivertype.JobState(nil), pendingJobStates...)
 }
 
-// SiteBoundQueueNames は site 単位に修飾する論理キュー名を返す。
+// qualifyQueueName は site 単位のキューの物理名を組み立てる。
 //
-// 呼び出し側が返り値を変更しても契約の共有状態を壊さないよう、コピーを返す。
-func SiteBoundQueueNames() []string {
-	return append([]string(nil), siteBoundQueueNames...)
-}
-
-// QualifyQueueName は site 単位のキューの物理名を組み立てる。
+// **直接呼ばない。site 修飾するかどうかの判定は PhysicalQueueName の 1 系統
+// だけに通す**（判定が insert 側と subscribe 側に分かれると挿入先と購読先が
+// 食い違う。issue #185）。
 //
 // 区切り文字は `_`。site が空文字列なら db.DefaultSite に解決する。これは
 // キュー名の規約上の解決であり、ジョブ引数の site を正規化するものではない。
-func QualifyQueueName(base, site string) string {
+func qualifyQueueName(base, site string) string {
 	if site == "" {
 		site = db.DefaultSite
 	}
@@ -112,7 +108,7 @@ func PhysicalQueueName(logical, boundSite string) string {
 	if !slices.Contains(siteBoundQueueNames, logical) {
 		return logical
 	}
-	return QualifyQueueName(logical, boundSite)
+	return qualifyQueueName(logical, boundSite)
 }
 
 // AllQueueNames はこのプロセスが知っている全キューの論理名をソートして返す。
@@ -131,7 +127,7 @@ func AllQueueNames() []string {
 		CleanupQueue,
 		StorageQueue,
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }
 

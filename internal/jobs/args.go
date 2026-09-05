@@ -262,17 +262,17 @@ func (StorageSyncArgs) InsertOpts() river.InsertOpts {
 // interface. Keeping these assertions next to the contract catches accidental
 // removal of Kind or InsertOpts during future migrations.
 var (
-	_ river.JobArgs = IngestJobArgs{}
-	_ river.JobArgs = EpgSyncArgs{}
-	_ river.JobArgs = TunerSyncArgs{}
-	_ river.JobArgs = RulerPassArgs{}
-	_ river.JobArgs = ReconcilePassArgs{}
-	_ river.JobArgs = RecordSweepArgs{}
-	_ river.JobArgs = EncodeJobArgs{}
-	_ river.JobArgs = EncodeEnqueueHintArgs{}
-	_ river.JobArgs = ThumbnailJobArgs{}
-	_ river.JobArgs = EncodeReconcileArgs{}
-	_ river.JobArgs = DeleteReconcileArgs{}
-	_ river.JobArgs = CatalogExportArgs{}
-	_ river.JobArgs = StorageSyncArgs{}
+	_ river.JobArgsWithInsertOpts = IngestJobArgs{}
+	_ river.JobArgsWithInsertOpts = EpgSyncArgs{}
+	_ river.JobArgsWithInsertOpts = TunerSyncArgs{}
+	_ river.JobArgsWithInsertOpts = RulerPassArgs{}
+	_ river.JobArgsWithInsertOpts = ReconcilePassArgs{}
+	_ river.JobArgsWithInsertOpts = RecordSweepArgs{}
+	_ river.JobArgsWithInsertOpts = EncodeJobArgs{}
+	_ river.JobArgsWithInsertOpts = EncodeEnqueueHintArgs{}
+	_ river.JobArgsWithInsertOpts = ThumbnailJobArgs{}
+	_ river.JobArgsWithInsertOpts = EncodeReconcileArgs{}
+	_ river.JobArgsWithInsertOpts = DeleteReconcileArgs{}
+	_ river.JobArgsWithInsertOpts = CatalogExportArgs{}
+	_ river.JobArgsWithInsertOpts = StorageSyncArgs{}
 )

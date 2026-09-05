@@ -14,6 +14,7 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -105,7 +106,7 @@ func TestReconcilePassPeriodicJob(t *testing.T) {
 	if event.Job.Kind != "reconcile_pass" {
 		t.Errorf("job kind = %q, want %q", event.Job.Kind, "reconcile_pass")
 	}
-	wantQueue := qualifyQueueName(reconcilerQueue, testSite)
+	wantQueue := jobs.PhysicalQueueName(reconcilerQueue, testSite)
 	if event.Job.Queue != wantQueue {
 		t.Errorf("job queue = %q, want %q", event.Job.Queue, wantQueue)
 	}

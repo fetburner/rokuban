@@ -22,10 +22,10 @@
 #
 # **`default` キューの ScaledJob は無い。** 現在どのジョブも
 # `river.QueueDefault` に入らない（すべて `Queue:` を明示している。
-# internal/worker）。誰も入れないキューに ScaledJob を置くと、トリガが常に 0 を
+# internal/jobs）。誰も入れないキューに ScaledJob を置くと、トリガが常に 0 を
 # 返すだけのオブジェクトが残る。**ジョブを 1 つでも default に入れたら
 # ここに 1 本足すこと** --- `deploy/k8s/workloads_test.go` の
-# TestScaledJobsCoverEveryQueue は `internal/worker` を走査していて、
+# TestScaledJobsCoverEveryQueue は `internal/jobs` を走査していて、
 # `Queue: river.QueueDefault` が現れた日に落ちる。
 #
 # **トリガが数えるのは `available` と `retryable` の 2 つ。**
@@ -158,7 +158,7 @@ spec:
   # **`encode` キューには 3 種類のジョブが載る。** 実エンコード（`encode`）に
   # 加えて、`encode_reconcile`（ヒントを落とした録画を拾う 15 分ごとの
   # バックストップ）と `encode_enqueue_hint`（録画が終わった直後の投入）である
-  # （internal/worker の各 InsertOpts）。
+  # （internal/jobs の各 InsertOpts）。
   #
   # **`1` にすると後ろの 2 つが実エンコードの裏で待たされる。** 1 件消化モード
   # では 1 Job = 1 アイテムなので、数時間のエンコードが走っている間、KEDA は

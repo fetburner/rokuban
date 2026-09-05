@@ -537,7 +537,7 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, queues 
 	clientCfg := worker.ClientConfig{
 		// BoundSites は site 単位のキュー（ingest/epg/reconciler/watcher）を
 		// 物理名（`<base>_<site>`）に展開するのに使う。空スライス（0 サイト
-		// 束縛）では jobs.QualifyQueueName が db.DefaultSite に解決する ---
+		// 束縛）では jobs.PhysicalQueueName が db.DefaultSite に解決する ---
 		// 0 サイト束縛の worker がこれらのキューを要求しないことは
 		// validateSiteBinding が起動時に強制している。
 		BoundSites:           registryNames(bound),
