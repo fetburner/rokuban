@@ -21,7 +21,7 @@ const (
 	pidAudio = 0x0102
 )
 
-// このフィクスチャが表現する放送・サービス・番組の識別子。internal/mirakc.ComposeProgramID /
+// このフィクスチャが表現する放送・サービス・番組の識別子。internal/programid.ComposeProgramID /
 // ServiceID と同じ合成規則を使う側（conformance_test.go）が programId / service id を
 // 逆算できるよう、値そのものをここで公開する。
 const (

@@ -28,6 +28,7 @@ import (
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/programid"
 )
 
 const testLiveSite = "default"
@@ -626,7 +627,7 @@ func TestLiveStreamer_Segment_WaitsForVariantPlaylistContent(t *testing.T) {
 	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
 
 	dir := t.TempDir()
-	serviceID := mirakc.ServiceID(0, 1)
+	serviceID := programid.ServiceID(0, 1)
 	s := &liveSession{
 		serviceID:  serviceID,
 		dir:        dir,
@@ -988,7 +989,7 @@ func TestLiveStreamer_RejectsHostileIDSegments(t *testing.T) {
 // 整数 1 つだけで組み立てられている（issue #217 / #208）。
 //
 // パスに載るのは SI の (networkId, serviceId) で、Mirakurun 合成 id
-// （networkId*100_000 + serviceId）への変換は streamer が mirakc.ServiceID で行う。
+// （networkId*100_000 + serviceId）への変換は streamer が programid.ServiceID で行う。
 // フロントが合成していた形（issue #208）だと、この変換規則が Go と TypeScript に
 // 二重化し、URL の id 空間が一覧 API と食い違ったままになる。
 func TestLiveStreamer_MirakcPathIsComposedFromPathSegments(t *testing.T) {

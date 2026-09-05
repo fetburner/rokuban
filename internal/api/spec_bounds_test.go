@@ -7,7 +7,7 @@ import (
 
 	"github.com/goccy/go-yaml"
 
-	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/programid"
 )
 
 // specPath は openapi.yaml（形の権威。CLAUDE.md「形の権威は openapi.yaml」）。
@@ -17,7 +17,7 @@ const specPath = "../../openapi.yaml"
 // 実装で一致していることを検査する。
 //
 // **同じ数字が 3 箇所にある。** `openapi.yaml` の `maximum`（宣言）、
-// `internal/mirakc.MaxServiceID`（サーバの検査）、そして openapi.yaml から
+// `internal/programid.MaxServiceID`（サーバの検査）、そして openapi.yaml から
 // 生成される `web/src/api/zod.ts`（フロントの検査）。生成物は spec に自動で
 // 追随するが、**Go の定数は追随しない** --- spec の `maximum` を書き換えると
 // フロントだけが新しい値になり、サーバは古い値のまま黙って食い違う。
@@ -49,11 +49,11 @@ func TestSpecServiceBoundsMatchGo(t *testing.T) {
 		if b.min != 1 {
 			t.Errorf("%s: minimum = %d, want 1", b.where, b.min)
 		}
-		if b.max != int64(mirakc.MaxServiceID) {
-			t.Errorf("%s: maximum = %d, but internal/mirakc.MaxServiceID = %d "+
+		if b.max != int64(programid.MaxServiceID) {
+			t.Errorf("%s: maximum = %d, but internal/programid.MaxServiceID = %d "+
 				"（spec とサーバの検査がずれている。フロントは spec から生成されるので、"+
 				"この状態ではフロントとサーバで受理する値が食い違う）",
-				b.where, b.max, mirakc.MaxServiceID)
+				b.where, b.max, programid.MaxServiceID)
 		}
 	}
 }

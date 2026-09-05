@@ -147,7 +147,7 @@ SPA フォールバックには落とさない（[rest.md](rest.md)「機能の�
 **パスの id 空間は一覧 API に揃える。**`{networkId}` / `{serviceId}` は
 `GET /api/sites/{site}/services` が返すのと同じ **SI の値そのもの**であり、
 mirakc が要求する Mirakurun 合成 service id（`networkId * 100_000 + serviceId`）
-への変換は streamer が `internal/mirakc.ServiceID` で行う。
+への変換は streamer が `internal/programid.ServiceID` で行う。
 
 - **同じ URL 階層に 2 つの id 空間を同居させない。**`services/{serviceId}` が
   一覧では SI の値、ライブでは合成 id を指す状態は、将来
@@ -155,7 +155,7 @@ mirakc が要求する Mirakurun 合成 service id（`networkId * 100_000 + serv
   決められなくする。API の資源同定は差し替えコストが最も高い先払い（不変条件 11）
   なので、読者が 1 つ（同梱 SPA）しかいない今のうちに払う
 - **mirakc の id 規則を Rokuban の一番外側に置かない。**合成 id は mirakc /
-  Mirakurun の内部規則（`internal/mirakc.ServiceID`）であり、変換を web に置くと
+  Mirakurun の内部規則（`internal/programid.ServiceID`）であり、変換を web に置くと
   同じ規則の実装が Go と TypeScript に二重化する。URL は永続テーブルより
   差し替えが高いので、mirakc 固有の概念を置く場所として最悪である（不変条件 7 の
   精神）
@@ -239,7 +239,7 @@ POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
 
 - **DB を引かない。**パスの `(networkId, serviceId)` から mirakc の
   `GET /api/services/{id}/stream?decode=1` の `{id}` を合成するだけ
-  （`internal/mirakc.ServiceID` の純関数）。ライブセッションはインメモリの
+  （`internal/programid.ServiceID` の純関数）。ライブセッションはインメモリの
   使い捨てで、認可はリバースプロキシ委譲、同時上限もプロセスローカルなので、
   DB を引く理由が無い
 - **id セグメントは 16 bit 符号なし整数の十進正準形としてだけ受け付ける**

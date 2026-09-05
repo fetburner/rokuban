@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/programid"
 )
 
 // maxProgramWindow は GET /api/programs で受け付ける時間窓の最大幅。
@@ -31,7 +31,7 @@ func (h *Server) ListServices(ctx context.Context, req ListServicesRequestObject
 	result := make([]Service, 0, len(rows))
 	for _, s := range rows {
 		result = append(result, Service{
-			Id:                 mirakc.ServiceID(int(s.NetworkID), int(s.ServiceID)),
+			Id:                 programid.ServiceID(int(s.NetworkID), int(s.ServiceID)),
 			NetworkId:          int(s.NetworkID),
 			ServiceId:          int(s.ServiceID),
 			Name:               s.Name,

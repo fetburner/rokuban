@@ -127,7 +127,7 @@ func TestListServices(t *testing.T) {
 		t.Errorf("service[0] = %+v", got[0])
 	}
 	// **id は合成規則そのもの**（networkId * 100000 + serviceId）。期待値は
-	// リテラルで書く --- mirakc.ServiceID を呼んで比べると、式を変えても
+	// リテラルで書く --- programid.ServiceID を呼んで比べると、式を変えても
 	// 両辺が一緒に動いて何も主張しなくなる。`?service=` に載る値であり、
 	// フロントの選択・キャッシュキーの identity でもあるので、ここがずれると
 	// 全画面のチャンネル同定が静かに壊れる。
@@ -259,7 +259,7 @@ func TestListPrograms_ServiceFilter(t *testing.T) {
 	// 組の形・範囲外は 400（無視・切り詰めにしない）。
 	for _, value := range []string{
 		"bad", "0", "-1", "4:101",
-		// 上限（internal/mirakc.MaxServiceID）超。"6553565536" は分解しても
+		// 上限（internal/programid.MaxServiceID）超。"6553565536" は分解しても
 		// int32 に収まるので 0 件になるだけだが、"429500003201024" は
 		// networkID が int32 で巻き戻って実在の (32736, 1024) に化ける。
 		// どちらも 0 件・誤った行ではなく 400 で止める。

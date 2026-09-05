@@ -10,6 +10,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/conformance/fixture"
+	"github.com/fetburner/rokuban/internal/programid"
 )
 
 // TestBroadcastPathologies は録画を 1 件ずつ別コンテナで実行する。
@@ -47,8 +48,8 @@ func TestBroadcastPathologies(t *testing.T) {
 			container := startMirakc(t, caseDir, tunerBin, mode)
 			client := mirakc.NewClient(container.baseURL, nil)
 			ctx := context.Background()
-			serviceID := mirakc.ServiceID(fixture.NetworkID, fixture.ServiceID)
-			programID := mirakc.ComposeProgramID(fixture.NetworkID, fixture.ServiceID, fixture.EventID)
+			serviceID := programid.ServiceID(fixture.NetworkID, fixture.ServiceID)
+			programID := programid.ComposeProgramID(fixture.NetworkID, fixture.ServiceID, fixture.EventID)
 
 			waitForService(t, ctx, client, serviceID)
 

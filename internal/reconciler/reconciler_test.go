@@ -21,6 +21,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/programid"
 	"github.com/fetburner/rokuban/internal/reconciler"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -71,7 +72,7 @@ func (m *mockMirakc) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "injected failure", http.StatusInternalServerError)
 			return
 		}
-		_, _, eventID := mirakc.SplitProgramID(input.ProgramID)
+		_, _, eventID := programid.SplitProgramID(input.ProgramID)
 		s := mirakc.Schedule{
 			State: "scheduled",
 			Program: mirakc.Program{

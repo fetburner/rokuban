@@ -21,7 +21,7 @@ const serviceIdMagicNumber = 100_000
 
 /**
  * composeServiceId は networkId と serviceId から `Service.id` を組み立てる。
- * サーバー側の権威は `internal/mirakc.ServiceID`。
+ * サーバー側の権威は `internal/programid.ServiceID`。
  */
 export function composeServiceId(networkId: number, serviceId: number): number {
   return networkId * serviceIdMagicNumber + serviceId

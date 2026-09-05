@@ -11,7 +11,7 @@ import (
 	"github.com/fetburner/rokuban/internal/contentpath"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/epgstation"
-	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/programid"
 )
 
 // RuleWarning は 1 ルールの変換で生じた警告 1 件。
@@ -382,7 +382,7 @@ func buildRuleFields(r epgstation.Rule) (ruleFields, []string) {
 	}
 
 	for _, id := range r.SearchOption.ChannelIDs {
-		networkID, serviceID := mirakc.SplitServiceID(id)
+		networkID, serviceID := programid.SplitServiceID(id)
 		f.services = append(f.services, sqlcgen.InsertRuleServiceParams{
 			NetworkID: int32(networkID),
 			ServiceID: int32(serviceID),

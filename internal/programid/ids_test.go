@@ -1,4 +1,4 @@
-package mirakc
+package programid
 
 import "testing"
 

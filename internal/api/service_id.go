@@ -3,7 +3,7 @@ package api
 import (
 	"fmt"
 
-	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/programid"
 )
 
 // splitServiceIDs は `?service=` の合成 id（`Service.id`）を DB の 2 列
@@ -17,21 +17,21 @@ import (
 // この関数の責務になる。
 //
 // **上限は下限より重い。** 範囲外の大きな id は int32 への変換で巻き戻り、
-// 実在するチャンネルに化ける（mirakc.MaxServiceID のコメント参照）。0 件を
+// 実在するチャンネルに化ける（programid.MaxServiceID のコメント参照）。0 件を
 // 返すのではなく誤った行を返すので、必ず 400 で止める。
 //
 // 分解した組で述語を組むことで (network_id, service_id, ...) の複合インデックスが
 // そのまま効く。合成 id を式で計算して比較するとインデックスが効かない。
 //
-// **`internal/mirakc` を import しても不変条件 1 には触れない** --- 使うのは
+// **`internal/programid` は mirakc クライアントではない** --- 使うのは
 // 合成規則の純関数だけで、mirakc への問い合わせは一切しない。規則を api 側に
 // 書き写すと片方だけ直して忘れる形になるので、権威を 1 つに保つ。
 func splitServiceIDs(ids []int64) (networkIDs, serviceIDs []int32, message string) {
 	for _, id := range ids {
-		if id <= 0 || id > mirakc.MaxServiceID {
-			return nil, nil, fmt.Sprintf("invalid service %d (want 1..%d)", id, mirakc.MaxServiceID)
+		if id <= 0 || id > programid.MaxServiceID {
+			return nil, nil, fmt.Sprintf("invalid service %d (want 1..%d)", id, programid.MaxServiceID)
 		}
-		networkID, serviceID := mirakc.SplitServiceID(id)
+		networkID, serviceID := programid.SplitServiceID(id)
 		networkIDs = append(networkIDs, int32(networkID))
 		serviceIDs = append(serviceIDs, int32(serviceID))
 	}

@@ -1493,7 +1493,7 @@ type Service struct {
 	HasPrograms bool `json:"hasPrograms"`
 
 	// Id サービスの一意な識別子。`networkId * 100000 + serviceId`（Mirakurun /
-	// mirakc の `ServiceId` と同じ合成規則。権威は `internal/mirakc.ServiceID`）。
+	// mirakc の `ServiceId` と同じ合成規則。権威は `internal/programid.ServiceID`）。
 	//
 	// **SI の `serviceId` は network をまたぐと一意でない**（BS 101 と
 	// 110度CS 101 は実在する衝突）ため、絞り込み・選択・キャッシュキーの

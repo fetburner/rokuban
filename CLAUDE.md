@@ -111,10 +111,10 @@ M0（歩く骨格）・M1（録れる）・M2（任せられる）・M5（名乗
 
 すべての実装タスクで遵守する。
 
-1. **api ロールは mirakc に問い合わせない**。ファイルシステムにも依存しない（go:embed は可）
+1. **api ロールは mirakc に問い合わせない**。ファイルシステムにも依存しない（go:embed は可）。import 境界は `.golangci.yml` の `depguard` が判定する
 2. **mirakc とのやりとりは常に API**、自身のストレージとは常にファイル I/O（S3 SDK 禁止）
 3. **コミット = DB 行**。ファイルの存在はコミットではない
-4. **ffmpeg/ffprobe の exec は worker / streamer パッケージのみ**
+4. **ffmpeg/ffprobe の exec は worker / streamer パッケージのみ**。import 境界は `.golangci.yml` の `depguard` が判定する
 5. **レベルトリガー**: イベント（SSE/NOTIFY）はヒント。真実は定期 reconcile が再取得する
 6. **TS のストリーム処理をしない**（ingest 中の読み取り専用統計のみ例外）。統計のための PSI 読み取りは PAT / PMT の `stream_type` までで、**記述子は読まない**（[docs/recording.md](docs/recording.md) §1「例外の境界」）
 7. **mirakc 固有の概念を永続テーブル（rules / media_assets / 履歴）に入れない**
