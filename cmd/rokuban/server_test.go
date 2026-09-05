@@ -17,10 +17,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/role"
 	"github.com/fetburner/rokuban/internal/testutil"
+	"github.com/fetburner/rokuban/internal/worker"
 )
 
 func writeServerTestConfig(t *testing.T, content string) string {
@@ -480,25 +482,31 @@ func TestServerCmd_OnceModeTerminates(t *testing.T) {
 //
 // 版ずれ（新しいイメージの CronJob / api が、古い worker の知らない kind を
 // 投入する）で起きうるほか、**受け入れ判定ハーネスの `insert_probe_job` が
-// 入れる `e2e_probe` がまさにこの形**である（deploy/k8s/e2e/lib/kube.sh）。
+// 使う `e2e_probe` も未登録 kind** である（deploy/k8s/e2e/lib/kube.sh）。
 //
 // 判定は 2 つ。**どちらも「戻った」だけでは足りない** --- 壊れていても
 // idleTimeout 後には戻る。(a) idleTimeout（60s）より十分短い時間で戻ること
 // （runServerCmdBounded の limit 20s がこれを担う）、(b) 試行を 1 回しか
 // 潰していないこと（壊れていると窓の中で何度も掴み直す）。
+type e2eProbeArgs struct{}
+
+func (e2eProbeArgs) Kind() string { return "e2e_probe" }
+
 func TestServerCmd_OnceModeExitsOnUnhandledJobKind(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	path := writeOnceModeConfig(t)
 
-	// 製品の投入経路には無い kind なので DB へ直接入れる（ハーネスの
-	// insert_probe_job と同じ形）。**max_attempts はハーネスの 1 ではなく 25 にする** ---
+	// 製品の投入経路には無い kind だが、insert-only client の公開 API を使って
+	// 入れる。Workers == nil の client は未登録 kind の検査をスキップする。
+	// **max_attempts はハーネスの 1 ではなく 25 にする** ---
 	// 1 だと最初の失敗で discarded になり、壊れた実装でも掴み直せないので
 	// 下の attempt の主張が何も検出しなくなる。
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO river_job (state, queue, kind, args, max_attempts, priority, scheduled_at)
-		 VALUES ('available', 'cleanup', 'e2e_probe', '{}'::jsonb, 25, 1, now())`,
-	); err != nil {
+	insertClient, err := worker.NewInsertOnlyClient(pool)
+	if err != nil {
+		t.Fatalf("creating insert-only river client: %v", err)
+	}
+	if _, err := insertClient.Insert(ctx, e2eProbeArgs{}, &river.InsertOpts{Queue: "cleanup", MaxAttempts: 25}); err != nil {
 		t.Fatalf("inserting unhandled-kind job: %v", err)
 	}
 
@@ -506,7 +514,7 @@ func TestServerCmd_OnceModeExitsOnUnhandledJobKind(t *testing.T) {
 	// これを超えると runServerCmdBounded が Fatalf で落ちるので、ここに
 	// elapsed の比較を足しても到達しない（何も主張しない 3 行になる）。
 	logs := captureServerLogs(t)
-	_, err := runServerCmdBounded(t, 20*time.Second, path,
+	_, err = runServerCmdBounded(t, 20*time.Second, path,
 		"--roles", "worker", "--sites=", "--queues=cleanup", "--once", "--once-idle-timeout=60s")
 	if err != nil {
 		t.Fatalf("server --once: %v", err)
