@@ -9,7 +9,6 @@ on:
       mirakc_image:
         description: mirakc image to test
         required: false
-        default: docker.io/mirakc/mirakc:main-debian
         type: string
 
 permissions:
