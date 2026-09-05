@@ -107,16 +107,25 @@ export function RuleCostSummary({
     estimate.durationMsPerWeek === undefined
       ? '算出中…'
       : `約 ${formatDuration(estimate.durationMsPerWeek)}`
+
+  // 期間条件で絞っている検索は観測スパンが 8 日ではないため、8 日を根拠にする
+  // 文言は出さず、実際より小さく出ることを明記する（上のコメント参照）。
   const basisText = hasPeriod
     ? ''
     : `（現在の EPG 実測 ${estimate.totalCount} 件・${epgWindowDays} 日分を ${ruleCostWeekDays} 日換算）`
   const periodNote = hasPeriod
     ? '（期間条件で絞っているため、週あたりの見込みは実際より小さく出ます）'
     : ''
+
+  // 読み込みが 1 件も済んでいない間（durationMsPerWeek === undefined）は
+  // 「0 件の平均から算出」という自己矛盾した文言を出さない。
   const sampledNote =
     estimate.durationMsPerWeek !== undefined && estimate.isSampled
       ? `（時間は先頭 ${estimate.sampleSize} 件の平均から算出）`
       : ''
+
+  // 件数は 1 つの文字列にする（JSX で連結するとテキストノードが分かれ、
+  // 読み上げも切れて聞こえる。上の検索結果件数の表示と同じ流儀）。
   const text =
     `この条件で保存すると、週あたり見込みで${countText}・${durationText}` +
     basisText +
@@ -212,7 +221,14 @@ export function RuleSourceBanner({
   )
 }
 
-/** CreateRuleSection は「この条件でルールを作成」の入口を表示する。 */
+/**
+ * CreateRuleSection は「この条件でルールを作成」の入口。
+ *
+ * 折りたたみ式にしているのは、条件を試しているだけのユーザー（この画面の主用途）
+ * にメタ情報の入力欄を常時見せないため。`?ruleId=N` から開いたときの保存
+ * （上書き / 別ルールとして保存）は `RuleEditSection` が担うので、ここは
+ * `ruleId` を伴わない通常の検索専用（新規作成のみ）。
+ */
 export function CreateRuleSection({
   draft,
   draftError: draftHasError,
@@ -275,6 +291,9 @@ export function CreateRuleForm({
   const createRule = useCreateRule()
 
   const [meta, setMeta] = useState<RuleMetaDraft>(emptyRuleMeta)
+  // 「全番組が対象になる」ことを理解した上での作成かどうか。条件を追加すれば
+  // このチェックは意味を失うが、外れたままでも実害はない(次の保存試行時に
+  // 改めて noConditions を評価するだけ)。
   const [confirmedEmpty, setConfirmedEmpty] = useState(false)
 
   const metaError = ruleMetaError(meta)
@@ -431,7 +450,25 @@ export function RuleEditSection({
   )
 }
 
-/** RuleEditForm は `?ruleId=N` で開いたルールを上書き、または複製保存する。 */
+/**
+ * RuleEditForm は `?ruleId=N` で開いたルールの保存本体。
+ *
+ * 主動作は **上書き保存**（`PATCH /api/rules/{id}`）。`UpdateRule` は子テーブル
+ * 全置換なので、UI を持たない項目（`description` / `dedupe*` /
+ * `filenameTemplate` / `metadata`）を `buildRuleInput` の `preserve` で必ず
+ * 引き継ぐ —— 落とすとユーザーの設定が黙って消える（`sites` は issue #531 で
+ * `<ConditionFields>` の次元になったため、いまは下書きから普通に送る）。
+ *
+ * 副動作は「別の新しいルールとして保存」（`POST /api/rules`）。元のルールを
+ * 下敷きに別のルールを作れる経路を残す。押し間違いを防ぐため、主動作
+ * （`type="submit"`、既定の見た目）と副動作（`type="button"`、`outline`）で
+ * 見た目を変え、副動作の脇に「元のルールは変更されません」と明示する。
+ *
+ * 保存後は `/rules` へ遷移しない —— 条件を詰め直す作業の途中で画面が飛ぶと
+ * 作業が切れる。`getListRulesQueryKey()` とこのルール自身のクエリ
+ * （`getGetRuleQueryKey`）の両方を invalidate し、一覧とバナー双方の表示を
+ * 最新化する。
+ */
 export function RuleEditForm({
   draft,
   draftHasError,
@@ -446,7 +483,12 @@ export function RuleEditForm({
   const updateRule = useUpdateRule()
   const createRule = useCreateRule()
 
+  // 上書き保存が既定の動作なので、名前欄の初期値は元のルール名そのまま
+  // （`〜 のコピー` を付けない）。フォークではなく編集だからである。
   const [meta, setMeta] = useState<RuleMetaDraft>(() => ruleToMeta(sourceRule))
+  // 「全番組が対象になる」ことを理解した上での保存かどうか。上書き・別ルール
+  // 保存のどちらにも効く（両方とも「保存すると全番組が対象になる」という
+  // 同じ危険を持つため）。
   const [confirmedEmpty, setConfirmedEmpty] = useState(false)
 
   const metaError = ruleMetaError(meta)
@@ -469,6 +511,8 @@ export function RuleEditForm({
           toast({ message: `ルール「${meta.name.trim()}」を上書き保存しました` })
           void queryClient.invalidateQueries({ queryKey: getListRulesQueryKey() })
           void queryClient.invalidateQueries({ queryKey: getGetRuleQueryKey(sourceRule.id) })
+          // /rules へは遷移しない。条件を詰め直す作業の途中なので、画面が
+          // 飛ぶと作業が切れる。
         },
         onError: (err) =>
           toast({
