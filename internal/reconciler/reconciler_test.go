@@ -1098,8 +1098,8 @@ func TestReconciler_MaxRecreatesPerPassCarriesOver(t *testing.T) {
 		t.Fatalf("RunPass (recreate pass 1): %v", err)
 	}
 
-	// res1.ID < res2.ID（挿入順）のため、決定的な順序付け（reservation id 昇順）
-	// で res1 が先に処理される。
+	// (site, program_id) の決定的な順序付けで、program_id の小さい res1 が
+	// 先に処理される。
 	schedules := mock.getSchedules()
 	if got := schedules[res1.ProgramID].Options.Priority; got != 31 {
 		t.Errorf("res1 priority after pass1 = %d, want 31 (processed first)", got)
@@ -1235,9 +1235,9 @@ func TestReconciler_ScheduleLostOnRecreatePostFailure(t *testing.T) {
 // detached 別に固定するため、detached の導出条件（rule_id IS NULL AND base IS
 // NOT NULL。#28/#30 で state 列が撤去され、この式からの導出になった）を
 // 直接満たす行を生 SQL で作る。
-func setReservationDetached(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int64) {
+func setReservationDetached(t *testing.T, ctx context.Context, pool *pgxpool.Pool, programID int64) {
 	t.Helper()
-	if _, err := pool.Exec(ctx, `UPDATE reservations SET rule_id = NULL, base = '{}'::jsonb WHERE id = $1`, id); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE reservations SET rule_id = NULL, base = '{}'::jsonb WHERE site = 'default' AND program_id = $1`, programID); err != nil {
 		t.Fatalf("setting reservation to detached: %v", err)
 	}
 }
@@ -1308,7 +1308,7 @@ func TestReconciler_DetachedReservationGetsScheduled(t *testing.T) {
 
 	startAt := time.Now().Add(1 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019200, "detached予約", startAt)
-	setReservationDetached(t, ctx, pool, res.ID)
+	setReservationDetached(t, ctx, pool, res.ProgramID)
 
 	rec := reconciler.New("default", mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -1364,7 +1364,7 @@ func TestReconciler_DetachedSkipReservationNotScheduled(t *testing.T) {
 
 	startAt := time.Now().Add(1 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019202, "detachedスキップ", startAt)
-	setReservationDetached(t, ctx, pool, res.ID)
+	setReservationDetached(t, ctx, pool, res.ProgramID)
 	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{
 		Site:      "default",
 		ProgramID: res.ProgramID,
@@ -1410,7 +1410,7 @@ func TestReconciler_RecordsNeverScheduledForBothActiveAndDetachedReservations(t 
 	// なのでそのまま使う。
 
 	detachedRes := createReservation(t, ctx, q, 100000500019211, "終了済みdetached予約", endedStartAt)
-	setReservationDetached(t, ctx, pool, detachedRes.ID)
+	setReservationDetached(t, ctx, pool, detachedRes.ProgramID)
 
 	rec := reconciler.New("default", mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -1710,7 +1710,7 @@ func TestReconciler_NeverScheduledEventSurvivesReservationDeletion(t *testing.T)
 	// ルール削除に伴う導出予約の物理削除を直接模す（internal/api/rules.go の
 	// DeleteReservationsByRuleWithoutIntent と同じ「reservations 行の DELETE」
 	// という結果だけを再現する）。
-	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE id = $1`, res.ID); err != nil {
+	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE site = $1 AND program_id = $2`, res.Site, res.ProgramID); err != nil {
 		t.Fatalf("deleting reservation: %v", err)
 	}
 
@@ -1757,7 +1757,7 @@ func TestReconciler_NeverScheduledEventSurvivesProgramSnapshotGC(t *testing.T) {
 	}
 
 	var reservationExists bool
-	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM reservations WHERE id = $1)`, res.ID).Scan(&reservationExists); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM reservations WHERE site = $1 AND program_id = $2)`, res.Site, res.ProgramID).Scan(&reservationExists); err != nil {
 		t.Fatalf("checking reservation existence: %v", err)
 	}
 	if reservationExists {
@@ -2106,7 +2106,7 @@ func startDelayGauge(t *testing.T) float64 {
 
 // 受け入れ条件 1: 開始時刻 + 猶予を過ぎて recordings.started_at が無い予約が
 // 検出されること（観測欠落を注入して検出されること）。ゲージとエラーログの
-// 両方に、予約 ID・programId・題名・経過が出ることを確認する。
+// 両方に、programId・題名・経過が出ることを確認する。
 func TestReconciler_DetectsStartDelay(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -2139,9 +2139,6 @@ func TestReconciler_DetectsStartDelay(t *testing.T) {
 	logText := logBuf.Bytes()
 	if !bytes.Contains(logText, []byte("level=ERROR")) || !bytes.Contains(logText, []byte("not started")) {
 		t.Errorf("expected an ERROR log about the start delay, got:\n%s", logText)
-	}
-	if !bytes.Contains(logText, []byte(fmt.Sprintf("reservation_id=%d", res.ID))) {
-		t.Errorf("expected the log to include reservation_id=%d, got:\n%s", res.ID, logText)
 	}
 	if !bytes.Contains(logText, []byte(fmt.Sprintf("program_id=%d", res.ProgramID))) {
 		t.Errorf("expected the log to include program_id=%d, got:\n%s", res.ProgramID, logText)
@@ -2334,7 +2331,7 @@ func TestReconciler_StartDelayGaugeConverges(t *testing.T) {
 }
 
 // 受け入れ条件 8（issue #152）: 録画中に予約が導出削除・再実体化されて
-// reservations.id が変わっても、既に観測済みの開始が引き続き「開始済み」と
+// 予約行が再実体化されても、既に観測済みの開始が引き続き「開始済み」と
 // 判定されること（放送イベントキーで引くべき。予約 id で引くと、当時
 // ON DELETE SET NULL だった recordings.reservation_id（issue #158 で列自体を
 // 削除済み）が切れ、検出窓の間毎パス開始遅延を誤検知する。CLAUDE.md 不変条件
@@ -2362,18 +2359,14 @@ func TestReconciler_NoStartDelayFalsePositiveAfterReservationRematerialization(t
 	// recordings.reservation_id という結合キー自体を issue #158 で削除済み）。
 	createStartedRecording(t, ctx, q, eventID, startAt, startAt.Add(1*time.Minute))
 
-	// ruler の導出削除 → 再実体化を模す（同じ番組・新しい id）。
-	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE id = $1`, res.ID); err != nil {
+	// ruler の導出削除 → 再実体化を模す（同じ番組・同じ複合キー）。
+	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE site = $1 AND program_id = $2`, res.Site, res.ProgramID); err != nil {
 		t.Fatalf("deleting reservation: %v", err)
 	}
-	res2, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
+	if _, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
 		Site: "default", ProgramID: programID,
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("re-materializing reservation: %v", err)
-	}
-	if res2.ID == res.ID {
-		t.Fatalf("再実体化で id が変わっていない（テストの前提が崩れている）")
 	}
 
 	rec := reconciler.New("default", mc, pool, nil)
@@ -2405,17 +2398,13 @@ func TestReconciler_StartDelayStillDetectedAfterReservationRematerializationWith
 	res := createReservation(t, ctx, q, programID, "再実体化後も未開始番組", startAt)
 
 	// 録画開始は一度も観測されていない状態で再実体化する。
-	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE id = $1`, res.ID); err != nil {
+	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE site = $1 AND program_id = $2`, res.Site, res.ProgramID); err != nil {
 		t.Fatalf("deleting reservation: %v", err)
 	}
-	res2, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
+	if _, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
 		Site: "default", ProgramID: programID,
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("re-materializing reservation: %v", err)
-	}
-	if res2.ID == res.ID {
-		t.Fatalf("再実体化で id が変わっていない（テストの前提が崩れている）")
 	}
 
 	rec := reconciler.New("default", mc, pool, nil)
@@ -2467,6 +2456,6 @@ func TestReconciler_StartDelaySuppressionMatchesBroadcastEventKeyPerReservation(
 	}
 
 	if got := startDelayGauge(t); got != 1 {
-		t.Errorf("rokuban_reconcile_start_delayed = %v, want 1 —— %d（開始観測済み）は抑止され、%d（未観測）だけが検出されるべき", got, resStarted.ID, resUnstarted.ID)
+		t.Errorf("rokuban_reconcile_start_delayed = %v, want 1 —— %d（開始観測済み）は抑止され、%d（未観測）だけが検出されるべき", got, resStarted.ProgramID, resUnstarted.ProgramID)
 	}
 }

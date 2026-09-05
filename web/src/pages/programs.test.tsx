@@ -149,14 +149,12 @@ function programAtAbsolute(
 }
 
 function reservation(
-  id: number,
   programId: number,
   title: string,
   site = 'default',
   overrides: Partial<Reservation> = {},
 ): Reservation {
   return {
-    id,
     site,
     programId,
     source: 'manual',
@@ -604,7 +602,7 @@ describe('ProgramsPage の表示形式', () => {
   })
 
   it('予約状態がリストとグリッドで一致する', async () => {
-    stubApi([reservation(77, soon.programId, 'ニュース7')])
+    stubApi([reservation(soon.programId, 'ニュース7')])
     stubMatchMedia(true)
     renderPage()
 
@@ -624,7 +622,7 @@ describe('ProgramsPage の表示形式', () => {
     // 現在サイト（default）には予約が無く、同じ programId の予約は別サイト
     // （other）にだけある。programId は放送イベントから決まるので 2 サイトで
     // 一致するが、別サイトの予約を現在サイトの番組表に重ねてはいけない。
-    stubApi([reservation(77, soon.programId, 'ニュース7', 'other')])
+    stubApi([reservation(soon.programId, 'ニュース7', 'other')])
     stubMatchMedia(false)
     const { queryClient } = renderPage()
     await reservationsSettled(queryClient)
@@ -1638,7 +1636,7 @@ describe('ProgramsPage の予約 / 取消失敗時のエラー本文（issue #45
   })
 
   it('予約取消が失敗すると、汎用文言にサーバー本文を付けたトーストが出る', async () => {
-    stubApi([reservation(77, soon.programId, 'ニュース7')], [], allPrograms, undefined, undefined, [], () =>
+    stubApi([reservation(soon.programId, 'ニュース7')], [], allPrograms, undefined, undefined, [], () =>
       errorResponse(409, 'reservation already cleared'),
     )
     renderPage()
@@ -1651,7 +1649,7 @@ describe('ProgramsPage の予約 / 取消失敗時のエラー本文（issue #45
   })
 
   it('本文の無い失敗（ネットワーク断相当）では末尾に「: 」を残さない', async () => {
-    stubApi([reservation(77, soon.programId, 'ニュース7')], [], allPrograms, undefined, undefined, [], () =>
+    stubApi([reservation(soon.programId, 'ニュース7')], [], allPrograms, undefined, undefined, [], () =>
       new Response(null, { status: 500 }),
     )
     renderPage()
@@ -1678,7 +1676,7 @@ describe('ProgramsPage の取消 Undo（issue #453）', () => {
     // 静的スタブ（常に予約済みを返す）のままだと、Undo 後の「取消」ボタンが
     // 楽観状態由来なのかサーバー値由来なのか区別できず、「Undo 成功時にも
     // 楽観状態を消す」退行（catch ではなく finally で消す等）を検出できない。
-    const reservations = [reservation(77, soon.programId, 'ニュース7')]
+    const reservations = [reservation(soon.programId, 'ニュース7')]
     const fetchMock = stubApi(reservations, [], [soon], undefined, undefined, [], () => {
       reservations.length = 0
       return noContentResponse()
@@ -1734,7 +1732,7 @@ describe('ProgramsPage の取消 Undo（issue #453）', () => {
     // こうしないと（常に予約済みを返す静的スタブのままだと）Undo 失敗時に
     // `setOptimisticReserved(programId, undefined)` を消しても消しても
     // 同じ「取消」ボタンが出てしまい、巻き戻しの有無をテストが区別できない。
-    const reservations = [reservation(77, soon.programId, 'ニュース7')]
+    const reservations = [reservation(soon.programId, 'ニュース7')]
     let putCalls = 0
     stubApi(
       reservations,
@@ -1775,7 +1773,7 @@ describe('ProgramsPage の取消 Undo（issue #453）', () => {
   // `.mutate` のままでも緑のまま通っていた。ここでは実際にページを
   // アンマウントしてから Undo を押す。
   it('取消後に別ページへ遷移しても、トーストの「元に戻す」で予約が復帰する（ページをまたいだ Undo）', async () => {
-    const fetchMock = stubApi([reservation(77, soon.programId, 'ニュース7')], [], [soon])
+    const fetchMock = stubApi([reservation(soon.programId, 'ニュース7')], [], [soon])
     const { router } = renderPage()
 
     await userEvent.click(await screen.findByRole('button', { name: '取消' }))
@@ -1858,7 +1856,7 @@ describe('ProgramsPage の取消 Undo（issue #453）', () => {
   // `DELETE .../intent`（意見を取り下げてルール評価に戻す）。
   it('ルール由来の予約の Undo は DELETE .../intent を送る（PUT ではない）', async () => {
     const fetchMock = stubApi(
-      [reservation(77, soon.programId, 'ニュース7', 'default', { source: 'rule', ruleId: 7 })],
+      [reservation(soon.programId, 'ニュース7', 'default', { source: 'rule', ruleId: 7 })],
       [],
       [soon],
     )

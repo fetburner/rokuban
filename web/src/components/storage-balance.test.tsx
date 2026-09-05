@@ -88,7 +88,6 @@ function recording(overrides: Partial<Recording> = {}): Recording {
 
 function reservation(overrides: Partial<Reservation> = {}): Reservation {
   return {
-    id: 1,
     site: 'default',
     programId: 1,
     source: 'manual',
@@ -284,7 +283,6 @@ describe('StorageBalance', () => {
       // 7 日間、1 日 1 本（30分）の予約 --- 7 * 900MB ≈ 6.3GB の見込み消費
       reservations: Array.from({ length: 7 }, (_, i) =>
         reservation({
-          id: i + 1,
           programId: i + 1,
           startAt: iso(i * 24 * 60 * 60 * 1000 + 1000),
         }),
@@ -326,7 +324,6 @@ describe('StorageBalance', () => {
       recordings: [recording()],
       reservations: Array.from({ length: 7 }, (_, i) =>
         reservation({
-          id: i + 1,
           programId: i + 1,
           startAt: iso(i * 24 * 60 * 60 * 1000 + 1000),
           skip: true,
@@ -349,7 +346,7 @@ describe('StorageBalance', () => {
     mockApis({
       storage: [mediaRoot({ availableBytes: 1_000_000_000_000 })], // 1TB（収まる）
       recordings: [recording()],
-      reservations: [reservation({ skip: false }), reservation({ id: 2, programId: 2, skip: true })],
+      reservations: [reservation({ skip: false }), reservation({ programId: 2, skip: true })],
     })
 
     await renderSettled('success success success')

@@ -22,11 +22,11 @@ func overlapsURL(base string, programID int64) string {
 }
 
 // reserveViaAPI は PUT .../intent {action:"record"} で意図を立ててから、ruler が
-// 本来行う reservations 行の実体化を模して直接 1 行 INSERT し、その id を返す
+// 本来行う reservations 行の実体化を模して直接 1 行 INSERT する
 // （テストでは ruler パスを回さないため）。番組の事実（title / 開始時刻 / 尺）は
 // intent の書き込みが EPG プロジェクションから program_snapshots に写すので、
 // 呼び出し側は事前に seedEpgProgram で対象番組を登録しておくこと。
-func reserveViaAPI(t *testing.T, srv string, pool *pgxpool.Pool, ctx context.Context, programID int64) int64 {
+func reserveViaAPI(t *testing.T, srv string, pool *pgxpool.Pool, ctx context.Context, programID int64) {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPut,
 		fmt.Sprintf("%s/api/sites/default/programs/%d/intent", srv, programID),
@@ -44,13 +44,11 @@ func reserveViaAPI(t *testing.T, srv string, pool *pgxpool.Pool, ctx context.Con
 		t.Fatalf("put intent for program %d: status = %d, want 204", programID, resp.StatusCode)
 	}
 
-	var id int64
-	if err := pool.QueryRow(ctx, `
-INSERT INTO reservations (site, program_id) VALUES ('default', $1) RETURNING id`,
-		programID).Scan(&id); err != nil {
+	if _, err := pool.Exec(ctx, `
+INSERT INTO reservations (site, program_id) VALUES ('default', $1)`,
+		programID); err != nil {
 		t.Fatalf("inserting reservation fixture for program %d: %v", programID, err)
 	}
-	return id
 }
 
 // seedNeverScheduledEvent は reconciler.recordNeverScheduled が実際に書く
@@ -289,7 +287,7 @@ func TestGetProgramOverlaps_ReturnsBreakdown(t *testing.T) {
 	seedEpgProgram(t, pool, 250, 32678, 5168, 1, "対象番組", base, false)
 	seedEpgProgram(t, pool, 251, 32678, 5168, 2, "重なる番組", base.Add(30*time.Minute), false)
 
-	overlapping := reserveViaAPI(t, srv.URL, pool, ctx, 251)
+	reserveViaAPI(t, srv.URL, pool, ctx, 251)
 
 	var got ProgramOverlaps
 	resp := getJSON(t, overlapsURL(srv.URL, 250), &got)
@@ -300,9 +298,6 @@ func TestGetProgramOverlaps_ReturnsBreakdown(t *testing.T) {
 		t.Fatalf("reservations = %+v, want 1 entry", got.Reservations)
 	}
 	entry := got.Reservations[0]
-	if entry.Id != overlapping {
-		t.Errorf("id = %d, want %d", entry.Id, overlapping)
-	}
 	if entry.ProgramId != 251 {
 		t.Errorf("programId = %d, want 251", entry.ProgramId)
 	}

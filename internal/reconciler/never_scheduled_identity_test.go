@@ -14,7 +14,7 @@ import (
 
 // never-scheduled の除外条件が予約の再実体化を跨いで効くこと（issue #98）。
 //
-// reservations.id は ruler の導出削除・再実体化で変わりうる不安定な値
+// 旧 reservations.id は ruler の導出削除・再実体化で変わりうる不安定な値
 // （#53 が mirakc の tag を program:{programId} に移した理由。#99 も同じ話）で、
 // recordings.reservation_id は当時 ON DELETE SET NULL だった（issue #158 で
 // 列自体を削除済み）。除外条件を予約 id で引くと、EPG フリッカーやルール編集で
@@ -49,8 +49,8 @@ func TestReconciler_NeverScheduledExclusionSurvivesRematerialization(t *testing.
 		t.Fatalf("precondition: desired = %d, want 0（欠測行で除外されるはず）", len(rows))
 	}
 
-	// ruler の導出削除 → 再実体化を模す（同じ番組・新しい id）。
-	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE id = $1`, res.ID); err != nil {
+	// ruler の導出削除 → 再実体化を模す（同じ番組・同じ複合キー）。
+	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE site = $1 AND program_id = $2`, res.Site, res.ProgramID); err != nil {
 		t.Fatalf("deleting reservation: %v", err)
 	}
 	res2, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
@@ -59,16 +59,12 @@ func TestReconciler_NeverScheduledExclusionSurvivesRematerialization(t *testing.
 	if err != nil {
 		t.Fatalf("re-materializing reservation: %v", err)
 	}
-	if res2.ID == res.ID {
-		t.Fatalf("再実体化で id が変わっていない（テストの前提が崩れている）")
-	}
-
 	rows, err = q.ListReservationsForSyncEvaluation(ctx, "default")
 	if err != nil {
 		t.Fatalf("ListReservationsForSyncEvaluation (after rematerialization): %v", err)
 	}
 	if len(rows) != 0 {
-		t.Errorf("再実体化後の desired = %d, want 0 —— 欠測の除外が予約 id に依存している（放送イベントで引くべき）", len(rows))
+		t.Errorf("再実体化後の desired = %d, want 0 —— 欠測の除外が予約行のキーに依存している（放送イベントで引くべき）", len(rows))
 	}
 
 	full, err := q.GetReservationFullBySiteAndProgramID(ctx, sqlcgen.GetReservationFullBySiteAndProgramIDParams{
@@ -78,7 +74,7 @@ func TestReconciler_NeverScheduledExclusionSurvivesRematerialization(t *testing.
 		t.Fatalf("GetReservationFullBySiteAndProgramID: %v", err)
 	}
 	if !full.NeverRecorded {
-		t.Errorf("再実体化後の never_recorded = false, want true —— 表示も予約 id に依存している")
+		t.Errorf("再実体化後の never_recorded = false, want true —— 表示も予約行のキーに依存している")
 	}
 }
 
@@ -125,7 +121,7 @@ func TestReservation_MidRecordingFailureIsNotOrphanedDisplay(t *testing.T) {
 	}
 	found := false
 	for _, r := range rows {
-		if r.Reservation.ID == res.ID {
+		if r.Reservation.ProgramID == res.ProgramID {
 			found = true
 		}
 	}

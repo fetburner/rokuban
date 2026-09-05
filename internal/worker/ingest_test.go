@@ -1103,10 +1103,10 @@ func insertProgramSnapshotAndReservation(t *testing.T, pool *pgxpool.Pool, progr
 // internal/worker/encode_test.go が recordings.encode_profiles を raw SQL で
 // 直接作るのと同じ規律（reservations.sql は #52 並走中につき、この目的のためだけの
 // 書き込みクエリを新設しない）。
-func setReservationBase(t *testing.T, pool *pgxpool.Pool, reservationID int64, base string) {
+func setReservationBase(t *testing.T, pool *pgxpool.Pool, programID int64, base string) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(),
-		"UPDATE reservations SET base = $2 WHERE id = $1", reservationID, base); err != nil {
+		"UPDATE reservations SET base = $2 WHERE site = 'default' AND program_id = $1", programID, base); err != nil {
 		t.Fatalf("setting reservation base: %v", err)
 	}
 }
@@ -1230,7 +1230,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 
 	programID := int64(900000000000001)
 	res := insertProgramSnapshotAndReservation(t, pool, programID, "ルール予約番組")
-	setReservationBase(t, pool, res.ID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
+	setReservationBase(t, pool, res.ProgramID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
 
 	recordingID := insertTestRecordingForReservation(t, pool, programID)
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-base", programID)
@@ -1284,7 +1284,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 
 	programID := int64(900000000000002)
 	res := insertProgramSnapshotAndReservation(t, pool, programID, "上書き予約番組")
-	setReservationBase(t, pool, res.ID, `{"keepOriginal":"always","encodeProfiles":["h264"]}`)
+	setReservationBase(t, pool, res.ProgramID, `{"keepOriginal":"always","encodeProfiles":["h264"]}`)
 
 	overrides, err := json.Marshal(map[string]any{
 		"keepOriginal":   "until_encoded",
@@ -1364,7 +1364,7 @@ func TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles(t *testing.T) {
 
 	programID := int64(900000000000003)
 	res := insertProgramSnapshotAndReservation(t, pool, programID, "ドリフト予約番組")
-	setReservationBase(t, pool, res.ID, `{"keepOriginal":"always","encodeProfiles":["h264"]}`)
+	setReservationBase(t, pool, res.ProgramID, `{"keepOriginal":"always","encodeProfiles":["h264"]}`)
 
 	overrides, err := json.Marshal(map[string]any{
 		"keepOriginal":   "until_encoded",
@@ -1521,7 +1521,7 @@ func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 
 	programID := int64(900000000000010)
 	res := insertProgramSnapshotAndReservation(t, pool, programID, "滞留番組")
-	setReservationBase(t, pool, res.ID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
+	setReservationBase(t, pool, res.ProgramID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
 
 	recordingID := insertTestRecordingForReservation(t, pool, programID)
 	// program_id を programID に一致させる（doc コメント参照）。status='finished' /
@@ -1602,7 +1602,7 @@ func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 // を確認する。
 //
 // ruler は EPG フリッカー・ルール編集・dedup で予約を導出削除・再実体化し、
-// reservations.id が変わる（#53 / #98 / #99 と同じ族。CLAUDE.md 不変条件 9
+// 予約行が再実体化される（#53 / #98 / #99 と同じ族。CLAUDE.md 不変条件 9
 // 「identity」の 5 例目）。旧実装は録画開始時に watcher が焼いた
 // recordings.reservation_id（当時 FK の ON DELETE SET NULL。issue #158 で
 // 列自体を削除済み）を宛先に GetReservationEncodePolicy を引いていたため、
@@ -1611,8 +1611,7 @@ func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 //
 // internal/reconciler/never_scheduled_identity_test.go の
 // TestReconciler_NeverScheduledExclusionSurvivesRematerialization と同じ模し方
-// （DELETE してから CreateManualReservation で作り直す。id が変わることも
-// 明示的に確認する）。
+// （DELETE してから CreateManualReservation で作り直す）。
 func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -1623,15 +1622,15 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 
 	programID := int64(900000000000004)
 	res := insertProgramSnapshotAndReservation(t, pool, programID, "再実体化予約番組")
-	setReservationBase(t, pool, res.ID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
+	setReservationBase(t, pool, res.ProgramID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
 
 	// watcher.createRecording が録画開始時に放送イベントキーを焼いた状態を模す。
 	recordingID := insertTestRecordingForReservation(t, pool, programID)
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-rematerialized", programID)
 
-	// ruler の導出削除 → 再実体化を模す（同じ番組・新しい id。理由はこの関数の
-	// doc コメント）。
-	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE id = $1`, res.ID); err != nil {
+	// ruler の導出削除 → 再実体化を模す（同じキーで DELETE → 再 INSERT する。
+	// 理由はこの関数の doc コメント）。
+	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE site = $1 AND program_id = $2`, res.Site, res.ProgramID); err != nil {
 		t.Fatalf("deleting reservation: %v", err)
 	}
 	res2, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
@@ -1640,13 +1639,9 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 	if err != nil {
 		t.Fatalf("re-materializing reservation: %v", err)
 	}
-	// id が変わることを明示的に確認する（テストの前提。doc コメント参照）。
-	if res2.ID == res.ID {
-		t.Fatalf("再実体化で id が変わっていない（テストの前提が崩れている）")
-	}
 	// ruler は再実体化のたびに射影から base を書き直す。テストではその 1 パスを
 	// 模して同じ base を新しい行に立て直す（setReservationBase 参照）。
-	setReservationBase(t, pool, res2.ID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
+	setReservationBase(t, pool, res2.ProgramID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
 
 	tsData := makeTSData(20)
 	srv := newFullTransferServer(t, tsData, "test/policy-rematerialized.m2ts")
@@ -1706,7 +1701,7 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 	// JOIN 失敗の 3 つ目の原因（GC は設計どおり走ったが ingest が猶予を跨いで
 	// 遅れた。issue #214）は TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults
 	// が別に持つ —— そちらは異常系ではなく設計が許容するシナリオ。
-	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE id = $1`, res.ID); err != nil {
+	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE site = $1 AND program_id = $2`, res.Site, res.ProgramID); err != nil {
 		t.Fatalf("deleting reservation: %v", err)
 	}
 

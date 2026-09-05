@@ -41,7 +41,7 @@ func insertRuleFixture(t *testing.T, pool *pgxpool.Pool, ctx context.Context) in
 // #27 で番組の事実のスナップショット（title / 開始時刻 / 尺 / チャンネル識別）が
 // program_snapshots に抽出され、reservations への FK が張られたため、
 // 予約行より先に program_snapshots を作る。
-func insertReservationDirect(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, ruleID *int64, networkID, serviceID int32) int64 {
+func insertReservationDirect(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, ruleID *int64, networkID, serviceID int32) {
 	t.Helper()
 	start := time.Now().Add(24 * time.Hour)
 	if _, err := pool.Exec(ctx, `
@@ -53,15 +53,13 @@ VALUES ('default', $1, 'テスト番組', $2, 1800000, $3, $4, 'GR', '27', $5, '
 		programID, start, networkID, serviceID, int32(programID%100000)); err != nil {
 		t.Fatalf("inserting program_snapshot fixture: %v", err)
 	}
-	var id int64
-	err := pool.QueryRow(ctx, `
+	_, err := pool.Exec(ctx, `
 INSERT INTO reservations (site, program_id, rule_id, base)
 VALUES ('default', $1, $2, '{}'::jsonb)
-RETURNING id`, programID, ruleID).Scan(&id)
+	`, programID, ruleID)
 	if err != nil {
 		t.Fatalf("inserting reservation fixture: %v", err)
 	}
-	return id
 }
 
 func overridesPath(programID int64) string {
@@ -170,7 +168,7 @@ func TestDeleteProgramOverrides_DoesNotTouchProgramIntents_ManualReservationSurv
 	// 手動予約に後からルールがマッチした状態を直接作る: rule_id が付いた
 	// reservation 行 + intent{record}。
 	ruleID := insertRuleFixture(t, pool, ctx)
-	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 11500, 1150)
+	insertReservationDirect(t, pool, ctx, programID, &ruleID, 11500, 1150)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
 		Site: "default", ProgramID: programID, Action: db.IntentRecord,
 	}); err != nil {
@@ -205,7 +203,7 @@ func TestDeleteProgramOverrides_DoesNotTouchProgramIntents_ManualReservationSurv
 
 	// 核心: 予約行も残る（意図が生きている限り、次の ruler パスでも消えない）。
 	var n int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM reservations WHERE id = $1`, resID).Scan(&n); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM reservations WHERE site = 'default' AND program_id = $1`, programID).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
@@ -361,7 +359,7 @@ func TestPatchProgramOverrides_ResetLastField_DeletesOverridesRow(t *testing.T) 
 
 	const programID int64 = 1400000140041234
 	ruleID := insertRuleFixture(t, pool, ctx)
-	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 14000, 1400)
+	insertReservationDirect(t, pool, ctx, programID, &ruleID, 14000, 1400)
 	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
 		Site: "default", ProgramID: programID,
 		Overrides: []byte(`{"priority":5}`),
@@ -381,7 +379,7 @@ func TestPatchProgramOverrides_ResetLastField_DeletesOverridesRow(t *testing.T) 
 
 	// 予約行自体はこの操作では触らない（削除は次の ruler パスの仕事）。
 	var n int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM reservations WHERE id = $1`, resID).Scan(&n); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM reservations WHERE site = 'default' AND program_id = $1`, programID).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
@@ -673,10 +671,10 @@ func TestPatchProgramOverrides_EffectiveOptionsRoundTrip(t *testing.T) {
 
 	const programID int64 = 2100000210111234
 	ruleID := insertRuleFixture(t, pool, ctx)
-	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 21000, 2100)
+	insertReservationDirect(t, pool, ctx, programID, &ruleID, 21000, 2100)
 
 	base := []byte(`{"priority":3,"encodeProfiles":["h264"],"keepOriginal":"always"}`)
-	if _, err := pool.Exec(ctx, `UPDATE reservations SET base = $1 WHERE id = $2`, base, resID); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE reservations SET base = $1 WHERE site = 'default' AND program_id = $2`, base, programID); err != nil {
 		t.Fatalf("seeding base: %v", err)
 	}
 
@@ -801,9 +799,9 @@ func TestPatchProgramOverrides_UntilEncodedWithProfilesFromBase_Succeeds(t *test
 
 	const programID int64 = 2400000240141234
 	ruleID := insertRuleFixture(t, pool, ctx)
-	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 24000, 2400)
-	if _, err := pool.Exec(ctx, `UPDATE reservations SET base = $1 WHERE id = $2`,
-		[]byte(`{"encodeProfiles":["h264"]}`), resID); err != nil {
+	insertReservationDirect(t, pool, ctx, programID, &ruleID, 24000, 2400)
+	if _, err := pool.Exec(ctx, `UPDATE reservations SET base = $1 WHERE site = 'default' AND program_id = $2`,
+		[]byte(`{"encodeProfiles":["h264"]}`), programID); err != nil {
 		t.Fatalf("seeding base with profiles: %v", err)
 	}
 
@@ -849,7 +847,7 @@ func TestDeleteRule_ReservationWithOnlyOverridesSurvivesDetached(t *testing.T) {
 
 	const programID int64 = 1950000195091234
 	ruleID := insertRuleFixture(t, pool, ctx)
-	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 19500, 1950)
+	insertReservationDirect(t, pool, ctx, programID, &ruleID, 19500, 1950)
 
 	// program_overrides のみを作る（program_intents には触れない）。
 	resp := doPatch(t, srv, overridesPath(programID), `{"priority":9}`)
@@ -868,7 +866,7 @@ func TestDeleteRule_ReservationWithOnlyOverridesSurvivesDetached(t *testing.T) {
 	_ = delResp.Body.Close()
 
 	var n int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM reservations WHERE id = $1`, resID).Scan(&n); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM reservations WHERE site = 'default' AND program_id = $1`, programID).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
@@ -894,7 +892,7 @@ func TestDeleteRule_ReservationWithOnlySkipIntentIsDeleted(t *testing.T) {
 
 	const programID int64 = 1960000196091234
 	ruleID := insertRuleFixture(t, pool, ctx)
-	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 19600, 1960)
+	insertReservationDirect(t, pool, ctx, programID, &ruleID, 19600, 1960)
 
 	// program_intents に action='skip' だけを作る（program_overrides には触れない）。
 	if _, err := pool.Exec(ctx, `
@@ -920,7 +918,7 @@ INSERT INTO program_intents (site, program_id, action) VALUES ('default', $1, 's
 	}
 
 	var n int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM reservations WHERE id = $1`, resID).Scan(&n); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM reservations WHERE site = 'default' AND program_id = $1`, programID).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 0 {
@@ -942,7 +940,7 @@ func TestDeleteRule_ReservationWithOnlyRecordIntentSurvivesDetached(t *testing.T
 
 	const programID int64 = 1970000197091234
 	ruleID := insertRuleFixture(t, pool, ctx)
-	resID := insertReservationDirect(t, pool, ctx, programID, &ruleID, 19700, 1970)
+	insertReservationDirect(t, pool, ctx, programID, &ruleID, 19700, 1970)
 
 	if _, err := pool.Exec(ctx, `
 INSERT INTO program_intents (site, program_id, action) VALUES ('default', $1, 'record')`,
@@ -967,7 +965,7 @@ INSERT INTO program_intents (site, program_id, action) VALUES ('default', $1, 'r
 	}
 
 	var n int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM reservations WHERE id = $1`, resID).Scan(&n); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM reservations WHERE site = 'default' AND program_id = $1`, programID).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {

@@ -62,8 +62,8 @@ const noOverlap: ProgramOverlaps = { count: 0, reservations: [] }
 const twoOverlaps: ProgramOverlaps = {
   count: 2,
   reservations: [
-    { id: 1, programId: 101, title: 'ニュース7', startAt: '2026-07-25T19:00:00+09:00', durationMs: 1800000 },
-    { id: 2, programId: 102, title: 'ドラマ特番', startAt: '2026-07-25T19:15:00+09:00', durationMs: 2700000 },
+    { programId: 101, title: 'ニュース7', startAt: '2026-07-25T19:00:00+09:00', durationMs: 1800000 },
+    { programId: 102, title: 'ドラマ特番', startAt: '2026-07-25T19:15:00+09:00', durationMs: 2700000 },
   ],
 }
 

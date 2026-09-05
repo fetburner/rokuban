@@ -8,10 +8,10 @@
 （「重複（録画 #345）」）や予約 → 録画の導線がリンクの終点を持てなかった。
 着地先は `/recordings/$id`。`recordings.id` は ingest（watcher）が一度作ったら
 変わらない不可逆な事実の id なので、そのまま URL に使ってよい ---
-`reservations.id` を URL に使わず `(site, programId)` を宛先にした予約詳細
-（`pages/reservation-detail.tsx`。`reservations` は ruler の導出削除・
-再実体化で id が変わりうる）とは事情が異なる。「一覧内スクロール + 展開」は
-無限リストで対象が読み込み済みとは限らず成立しないため、別ルートにした。
+予約詳細（`pages/reservation-detail.tsx`）が `(site, programId)` を宛先にして
+いるのとは事情が異なる。reservations 行は ruler が削除・再作成しうるので、
+行ではなく programId という概念そのものを宛先にしている。「一覧内スクロール +
+展開」は無限リストで対象が読み込み済みとは限らず成立しないため、別ルートにした。
 
 本体（プレイヤー・メタデータ・削除系操作。下記「ブラウザ再生」節と
 「ドロップ統計」節が対象とするもの）は `RecordingDetail`

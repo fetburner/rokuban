@@ -10,7 +10,7 @@
 
 **凍結する瞬間は ingest が原本 media_asset をコミットする tx の中**（`internal/worker/ingest.go` の `resolveAndSnapshotEncodePolicy`）であって、予約確定時でも録画開始時でもない。再導出（reservations 経由で毎回引き直す）は選べない —— 導出元（`reservations` / `program_overrides` / `program_intents`）は放送終了 + 猶予後に GC される寿命の短い表だが、`recordings` は永続資産（CLAUDE.md 不変条件 12「表は行の寿命で割る」）。導出に依存させると、番組が EPG から消えて GC された時点で desired が空になり、エンコード未完了の録画で原本削除が止まる／再エンコードが投入できなくなる。凍結した `recording_encode_policy` の行は「この録画の望ましい最終状態」であり、`recordings` 行と同時に生まれて同時に死ぬので不変条件 12 には反しない（衛星表として別テーブルに置くことは「行の寿命が同じ」であることと矛盾しない。不変条件 13 参照）。ただし凍結する以上、**ingest 完了より後の override 変更はその録画には反映されない**という境界が生まれる（[録画エンジン](../recording.md) §4.5）。
 
-**予約をどのキーで引くか**: `resolveAndSnapshotEncodePolicy` は予約を `reservations.id` への FK ではなく、放送イベントキー `(site, network_id, service_id, event_id)` で引く。`reservations.id` は ruler の導出削除・再実体化（EPG フリッカー、ルール編集、dedup）で変わりうる不安定な値（CLAUDE.md 不変条件 9「identity」: 導出器が作るキーで引かない）で、録画開始から ingest 完了までの窓（番組の尺ぶん、数時間）でこれが起きると FK は予約を見失う。放送イベントキーは `recordings` が録画開始時から凍結して持つ列（導出器が作るキーではない）なので、予約の再実体化を跨いでも変わらない。
+**予約をどのキーで引くか**: `resolveAndSnapshotEncodePolicy` は予約を `reservations` への FK ではなく、放送イベントキー `(site, network_id, service_id, event_id)` で引く。放送イベントキーは `recordings` が録画開始時から凍結して持つ列なので、録画開始から ingest 完了までの窓（番組の尺ぶん、数時間）で予約行が GC・再実体化（EPG フリッカー、ルール編集、dedup）されても見失わない。
 
 具体的には `program_snapshots` で `(network_id, service_id, event_id)` → `program_id` を引き、`reservations` を `program_id` で結合する（`GetReservationEncodePolicyByEvent`、`internal/db/queries/recording_policy.sql`）。`program_snapshots` は放送後 `epg.retention_grace`（既定 24h）で GC される寿命の短い表（[スキーマ](../schema.md) §3「射影にある間は更新、消えたら凍結」）で、ingest は通常なら録画終了直後 --- GC の猶予期間より十分前 --- に走る。**ただし「通常なら」であって、滞留の設計はこれを超える遅延を明示的に許容している**（下記「凍結が依存する寿命と、エッジの滞留の交点」）。
 

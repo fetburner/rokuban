@@ -14,9 +14,9 @@
 -- issue #158 で列自体を削除済み）ではなく放送イベントキー
 -- (site, network_id, service_id, event_id) --- recordings が
 -- 生まれたときから凍結して持つ列で、ruler の導出削除・再実体化で
--- reservations.id が変わっても値が変わらない（issue #149。CLAUDE.md 不変条件
--- 9「identity」: reservations.id は導出器 ruler が作るキーなので、FK 経由の
--- 参照にも使わない）。program_snapshots で (network_id, service_id, event_id)
+-- 予約行が入れ替わっても値が変わらない（issue #149。CLAUDE.md 不変条件
+-- 9「identity」: 導出器 ruler が作る予約行のキーを、FK 経由の参照にも使わない）。
+-- program_snapshots で (network_id, service_id, event_id)
 -- → program_id を引き、reservations を program_id で結合する。
 --
 -- program_snapshots は放送後 epg.retention_grace（既定 24h）で GC される寿命の

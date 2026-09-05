@@ -12,7 +12,6 @@ const dayStart = new Date(2026, 6, 25, 0, 0, 0, 0)
 
 function baseReservation(overrides: Partial<Reservation> = {}): Reservation {
   return {
-    id: 111,
     site: 'default',
     programId: 300000,
     source: 'manual',
@@ -59,7 +58,7 @@ function errorResponse(status: number, message: string): Response {
  * （`GET /api/rules`）・エンコードプロファイル一覧（`GET /api/encode-profiles`）
  * への問い合わせを振り分ける。`reservationOf` は `(site, programId)` から
  * 返す予約を引く関数で、再実体化（同じ `(site, programId)` でも呼び出しごとに
- * 違う `id` を返す）をシミュレートできるようにする。`sites`（既定
+ * 違う内容を返す）をシミュレートできるようにする。`sites`（既定
  * `['default']`）は `GET /api/sites` の応答 --- URL の
  * `$site` と異なる値を渡せるようにしている（下記「ゲート済み site と URL の
  * site が違う」テスト参照）。`rules`（既定 `[]`）はルール名の解決先
@@ -143,9 +142,9 @@ function renderAt(path: string) {
 
 describe('ReservationDetailPage', () => {
   // この issue (#99) の本体: ディープリンクは (site, programId) を宛先にする。
-  // 予約が ruler の導出削除・再実体化で id を変えても、同じ URL がそのまま解決する
+  // 予約行が ruler の導出削除・再実体化を経ても、同じ URL がそのまま解決する
   // ことを、生成された TanStack Query フックの実際のクエリキー
-  // （getGetProgramReservationQueryKey、id を含まない）を通して確認する。
+  // （getGetProgramReservationQueryKey、site/programId だけを含む）を通して確認する。
   // `programId` はこの URL の宛先であって画面のフィールドではない（issue #300、
   // 「programId をフィールドとして出さない」テスト参照）ので、ここでは資源の
   // 同定がタイトルの表示で確認できれば足りる。
@@ -206,30 +205,30 @@ describe('ReservationDetailPage', () => {
     expect(screen.getByText('7/25 00:00 · 30分')).toBeInTheDocument()
   })
 
-  // 核心: 予約行が再実体化されて id が変わっても、同じ URL のまま
+  // 核心: 予約行が再実体化されても、同じ URL のまま
   // （ナビゲーションもクエリキーの変更も無く）新しい内容に更新される。
-  // reservations.id をクエリキーやルートパラメータに使っていれば、この経路は
+  // 複合キー以外をクエリキーやルートパラメータに使っていれば、この経路は
   // 「別のキャッシュエントリ」または「別の URL」を要求するはずで、この
-  // テストは id だけを変えた再取得が同じ画面にそのまま反映されることを見る。
-  it('予約の再実体化（id の変化）を挟んでも同じ URL のまま新しい内容に更新される', async () => {
-    let currentId = 111
+  // テストは内容だけを変えた再取得が同じ画面にそのまま反映されることを見る。
+  it('予約の再実体化を挟んでも同じ URL のまま新しい内容に更新される', async () => {
+    let currentVersion = 111
     const fetchMock = stubFetch((site, programId) =>
       site === 'default' && programId === 300000
-        ? baseReservation({ id: currentId, title: `番組 (id=${currentId})` })
+        ? baseReservation({ title: `番組 (version=${currentVersion})` })
         : null,
     )
 
     const { queryClient } = renderAt('/reservations/default/300000')
 
-    expect(await screen.findByText('番組 (id=111)')).toBeInTheDocument()
+    expect(await screen.findByText('番組 (version=111)')).toBeInTheDocument()
 
-    // ruler の導出削除・再実体化を模す: 同じ (site, programId) だが id が変わる。
-    currentId = 222
+    // ruler の導出削除・再実体化を模す: 同じ (site, programId) だが内容が更新される。
+    currentVersion = 222
     await queryClient.invalidateQueries({
       queryKey: ['/api/reservations', 'detail', 'default', 300000],
     })
 
-    await waitFor(() => expect(screen.getByText('番組 (id=222)')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('番組 (version=222)')).toBeInTheDocument())
     // URL 自体は変わっていない（再取得だけで済んでいる = ナビゲーション不要）。
     expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/reservation'))).toBe(true)
   })

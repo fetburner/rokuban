@@ -44,7 +44,6 @@ function program(overrides: Partial<ProgramListItem>): ProgramListItem {
 
 function reservation(overrides: Partial<Reservation> = {}): Reservation {
   return {
-    id: 1,
     site: 'default',
     programId: 1,
     source: 'rule',

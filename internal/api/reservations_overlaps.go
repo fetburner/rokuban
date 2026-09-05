@@ -60,13 +60,12 @@ func (h *Server) GetProgramOverlaps(ctx context.Context, req GetProgramOverlapsR
 		// （不透明な overrides を SQL で読まない、という既存の規律に合わせる）。
 		eff, err := db.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)
 		if err != nil {
-			return nil, fmt.Errorf("resolving effective options for reservation %d: %w", row.Reservation.ID, err)
+			return nil, fmt.Errorf("resolving effective options for program %d: %w", row.Reservation.ProgramID, err)
 		}
 		if eff.IsSkipped() {
 			continue
 		}
 		overlaps = append(overlaps, OverlappingReservation{
-			Id:         row.Reservation.ID,
 			ProgramId:  row.Reservation.ProgramID,
 			Title:      row.ProgramSnapshot.Title,
 			StartAt:    row.ProgramSnapshot.StartAt,

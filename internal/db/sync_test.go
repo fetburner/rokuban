@@ -26,11 +26,11 @@ func TestEvaluateSyncCandidates_FiltersBaseSkip(t *testing.T) {
 	rows := []sqlcgen.ListReservationsForSyncEvaluationRow{
 		{
 			// M2-6 の重複排除が base.skip = true を立てた想定の行。
-			Reservation: sqlcgen.Reservation{ID: 1, ProgramID: 100, Base: []byte(`{"skip":true}`)},
+			Reservation: sqlcgen.Reservation{ProgramID: 100, Base: []byte(`{"skip":true}`)},
 		},
 		{
 			// 通常の（skip されていない）予約行。
-			Reservation: sqlcgen.Reservation{ID: 2, ProgramID: 200},
+			Reservation: sqlcgen.Reservation{ProgramID: 200},
 		},
 	}
 
@@ -40,19 +40,19 @@ func TestEvaluateSyncCandidates_FiltersBaseSkip(t *testing.T) {
 		t.Fatalf("len(candidates) = %d, want 2 (skip フラグ付きの形では両方取得できること)", len(candidates))
 	}
 
-	byID := make(map[int64]SyncCandidate, len(candidates))
+	byProgramID := make(map[int64]SyncCandidate, len(candidates))
 	for _, c := range candidates {
 		if c.Err != nil {
-			t.Fatalf("candidate for reservation %d has unexpected error: %v", c.Reservation.ID, c.Err)
+			t.Fatalf("candidate for program %d has unexpected error: %v", c.Reservation.ProgramID, c.Err)
 		}
-		byID[c.Reservation.ID] = c
+		byProgramID[c.Reservation.ProgramID] = c
 	}
 
-	if !byID[1].Skipped {
-		t.Error("reservation 1 (base.skip=true) should be Skipped=true in the unfiltered candidate list")
+	if !byProgramID[100].Skipped {
+		t.Error("program 100 (base.skip=true) should be Skipped=true in the unfiltered candidate list")
 	}
-	if byID[2].Skipped {
-		t.Error("reservation 2 (no skip) should be Skipped=false")
+	if byProgramID[200].Skipped {
+		t.Error("program 200 (no skip) should be Skipped=false")
 	}
 
 	// 絞り込み済みリスト: reconciler.listDesired と同じ絞り込み（Skipped を除く）。
@@ -63,8 +63,8 @@ func TestEvaluateSyncCandidates_FiltersBaseSkip(t *testing.T) {
 		}
 		filtered = append(filtered, c)
 	}
-	if len(filtered) != 1 || filtered[0].Reservation.ID != 2 {
-		t.Fatalf("filtered candidates = %+v, want only reservation id=2 "+
+	if len(filtered) != 1 || filtered[0].Reservation.ProgramID != 200 {
+		t.Fatalf("filtered candidates = %+v, want only program_id=200 "+
 			"(base.skip=true の予約が絞り込み済みリストに混ざってはならない)", filtered)
 	}
 }
@@ -77,7 +77,7 @@ func TestEvaluateSyncCandidates_FiltersBaseSkip(t *testing.T) {
 func TestEvaluateSyncCandidates_BrokenJSONReturnsErr(t *testing.T) {
 	rows := []sqlcgen.ListReservationsForSyncEvaluationRow{
 		{
-			Reservation: sqlcgen.Reservation{ID: 3, ProgramID: 300, Base: []byte(`not json`)},
+			Reservation: sqlcgen.Reservation{ProgramID: 300, Base: []byte(`not json`)},
 		},
 	}
 

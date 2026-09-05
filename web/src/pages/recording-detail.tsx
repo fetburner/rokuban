@@ -49,7 +49,7 @@ function recordingDetailQueryKey(id: number) {
  * `/recordings/$id` を宛先にする（推奨案どおり）。「一覧内スクロール + 展開」
  * は無限リストで対象が読み込み済みとは限らず成立しない。
  *
- * `reservations.id` のような導出 id とは違い、`recordings.id` は
+ * 旧 `reservations.id` のような導出 id とは違い、`recordings.id` は
  * ingest（watcher）が一度作ったら変わらない不可逆な事実の id なので、
  * `/reservations/$site/$programId` と違って id をそのまま URL に使ってよい。
  *

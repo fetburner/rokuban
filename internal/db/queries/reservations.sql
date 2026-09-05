@@ -1,13 +1,9 @@
--- name: GetReservation :one
-SELECT id, rule_id FROM reservations
-WHERE id = $1;
-
 -- base も返す（issue #104: PatchProgramOverrides が「既存 override + このパッチ +
 -- ルールの base」をマージした実効値を検証するために必要）。既存の呼び出し元
--- （internal/watcher, internal/reconciler）は ID / RuleID しか見ていないので
+-- （internal/watcher, internal/reconciler）は RuleID しか見ていないので
 -- 列追加の影響を受けない。
 -- name: GetReservationBySiteAndProgramID :one
-SELECT id, rule_id, base FROM reservations
+SELECT rule_id, base FROM reservations
 WHERE site = $1 AND program_id = $2;
 
 -- name: CreateManualReservation :one
@@ -49,12 +45,11 @@ RETURNING *;
 -- 見ず、一度欠測と書いたイベントを対象に戻さないので、表示とは意図的に別の述語
 -- である。
 --
--- 宛先は r.id ではなく (site, program_id)（issue #99）。書き込み側
--- （program_intents / program_overrides、issue #29）は既にこのキーに寄っていたが、
--- 読み取り（UI のディープリンク・クエリキャッシュ）は reservations.id という
--- ruler の導出削除・再実体化で変わりうる不安定な値のままだった。
--- UNIQUE (site, program_id) が既にあるのでキーとして成立する（#53 が mirakc の
--- tag を program:{programId} に変えたのと同じ論法）。
+-- 宛先は (site, program_id)（issue #99）。書き込み側
+-- （program_intents / program_overrides、issue #29）は既にこのキーに寄っており、
+-- reservations 自体もこの複合キーを主キーとして持つ。予約行が ruler の導出削除・
+-- 再実体化を跨いでも、このキーは変わらない（#53 が mirakc の tag を
+-- program:{programId} に変えたのと同じ論法）。
 -- name: GetReservationFullBySiteAndProgramID :one
 SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS overrides,
        (EXISTS (
@@ -158,14 +153,13 @@ LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
 WHERE r.site = $1
   AND NOT EXISTS (
       SELECT 1 FROM never_scheduled_events nse
-      -- 宛先のキーは**放送イベント**であって予約 id ではない。
-      -- reservations.id は ruler の導出削除・再実体化で変わる不安定な値で
-      -- （#53 が mirakc の tag を program:{programId} に移した理由。#99 も同じ）、
-      -- recordings.reservation_id（issue #158 で列自体を削除済み）は当時 ON DELETE SET NULL だった。予約 id で
-      -- 引くと、EPG フリッカーやルール編集で予約行が作り直された瞬間に
-      -- 「欠測行が無い」ことになり、終了済み予約が毎パス desired に
-      -- 戻り続ける（CLAUDE.md 不変条件 9 の identity: 導出器が作るキーを
-      -- 宛先にしない）。
+      -- 宛先のキーは**放送イベント**であって reservations 行ではない。reservations は
+      -- program_snapshots への FK が ON DELETE CASCADE なので、スナップショットが
+      -- GC された瞬間に一緒に消える。never_scheduled_events は program_snapshots への
+      -- FK を持たないので GC 後も観測が残り続ける（docs/schema/reservations.md の
+      -- 「行の物理削除」）。reservations 行に依存すると、GC された瞬間に
+      -- 「欠測行が無い」ことになり、終了済み予約が毎パス desired に戻り続ける
+      -- （CLAUDE.md 不変条件 9 の identity: 導出器が作るキーを宛先にしない、と同じ族）。
       WHERE nse.site = r.site
         AND nse.network_id = s.network_id
         AND nse.service_id = s.service_id

@@ -73,7 +73,6 @@ function recording(id: number, title: string, status: Recording['status'], overr
 
 function reservation(id: number, title: string, startOffsetMs: number, overrides: Partial<Reservation> = {}): Reservation {
   return {
-    id,
     site: 'default',
     programId: id * 10,
     source: 'manual',

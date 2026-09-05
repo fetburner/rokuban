@@ -185,10 +185,10 @@ const reservationsRoute = createRoute({
 /**
  * 予約詳細のディープリンクは `(site, programId)` を宛先にする（issue #99）。
  *
- * `reservations.id` は ruler の導出削除・再実体化（EPG フリッカー・ルール編集）
- * で変わりうる不安定な値なので、旧 `/reservations/$reservationId` を宛先に
+ * 旧 `reservations.id` は ruler の導出削除・再実体化（EPG フリッカー・ルール編集）
+ * で変わりうる不安定な値だったので、旧 `/reservations/$reservationId` を宛先に
  * ブックマーク・共有した URL は、予約が再実体化されると 404 になっていた。
- * `(site, programId)` は `UNIQUE (site, program_id)` があるキーなので、
+ * `(site, programId)` は `reservations` の主キーなので、
  * 予約行が作り直されても同じ URL で引ける
  * （`GET /api/sites/{site}/programs/{programId}/reservation`）。
  */
@@ -229,7 +229,7 @@ const recordingsRoute = createRoute({
 /**
  * 録画単体の着地先（issue #232 M6-4）。`recordings.id` は ingest（watcher）が
  * 一度作ったら変わらない不可逆な事実の id なので、`/reservations/$site/$programId`
- * （issue #99、`reservations.id` が ruler の再実体化で変わるため id を避けた）と
+ * （issue #99、旧 `reservations.id` が ruler の再実体化で変わったため id を避けた）と
  * 違って id をそのまま URL に使ってよい。
  */
 const recordingDetailRoute = createRoute({

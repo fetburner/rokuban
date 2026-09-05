@@ -103,24 +103,20 @@ func TestSchemaV1_ReservationCRUD(t *testing.T) {
 	now := time.Now().Truncate(time.Microsecond)
 	insertTestProgramSnapshot(t, pool, "home", 327360102415397, now)
 
-	var id int64
-	err := pool.QueryRow(ctx,
+	_, err := pool.Exec(ctx,
 		`INSERT INTO reservations (site, program_id)
-		 VALUES ($1, $2)
-		 RETURNING id`,
+		 VALUES ($1, $2)`,
 		"home", int64(327360102415397),
-	).Scan(&id)
+	)
 	if err != nil {
 		t.Fatalf("insert reservation: %v", err)
-	}
-	if id <= 0 {
-		t.Errorf("expected positive id, got %d", id)
 	}
 
 	var r Reservation
 	err = pool.QueryRow(ctx,
-		`SELECT id, site, program_id FROM reservations WHERE id = $1`, id,
-	).Scan(&r.ID, &r.Site, &r.ProgramID)
+		`SELECT site, program_id FROM reservations WHERE site = $1 AND program_id = $2`,
+		"home", int64(327360102415397),
+	).Scan(&r.Site, &r.ProgramID)
 	if err != nil {
 		t.Fatalf("select reservation: %v", err)
 	}

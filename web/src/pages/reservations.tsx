@@ -98,7 +98,7 @@ export function ReservationsPage() {
 
             return (
               <li
-                key={r.id}
+                key={`${r.site}:${r.programId}`}
                 className="relative flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5 hover:bg-muted/50"
               >
                 {/* 行本体のリンクは絶対配置で行全体を覆う「面」にし、通常フローから

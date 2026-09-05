@@ -57,7 +57,7 @@ type UpsertScheduleSyncParams struct {
 // issue #99 は reservation_id の FK（ON DELETE SET NULL）だけを外す案を
 // 挙げたが、PR #147 のレビューで取り下げられた --- 外すとこの列は「削除済み
 // 予約を指す古い id」を持ちうるようになり、NULL より紛らわしくなる
-// （インシデント対応で直接 SELECT する人を誤らせる）。reservations.id は
+// （インシデント対応で直接 SELECT する人を誤らせる）。予約行の導出キーは
 // ruler の導出削除・再実体化で変わる不安定な値（#53/#98/#99）であり、
 // 読み手のいない列にそれを保存し続ける理由が無いため、issue #148 で
 // 列自体を落とした（CLAUDE.md 不変条件 10「意味を持たない行を作らない」/

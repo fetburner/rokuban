@@ -1021,7 +1021,6 @@ type IngestProgressState string
 // OverlappingReservation defines model for OverlappingReservation.
 type OverlappingReservation struct {
 	DurationMs int64     `json:"durationMs"`
-	Id         int64     `json:"id"`
 	ProgramId  int64     `json:"programId"`
 	StartAt    time.Time `json:"startAt"`
 	Title      string    `json:"title"`
@@ -1294,7 +1293,6 @@ type Reservation struct {
 	// DedupSimilarity 上記マッチの pg_trgm 類似度（0.0〜1.0、マッチが無ければ省略）
 	DedupSimilarity *float32                `json:"dedupSimilarity,omitempty"`
 	DurationMs      int64                   `json:"durationMs"`
-	Id              int64                   `json:"id"`
 	Overrides       *map[string]interface{} `json:"overrides,omitempty"`
 	ProgramId       int64                   `json:"programId"`
 	RuleId          *int64                  `json:"ruleId,omitempty"`

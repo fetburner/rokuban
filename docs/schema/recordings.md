@@ -94,7 +94,7 @@ CREATE INDEX ON recordings (purged_at) WHERE purged_at IS NULL;  -- ごみ箱一
 
 - INSERT 条件は「番組終了」「今パスで schedule 非観測」「同じ放送イベントに live な `recordings` 行が無い」の積。live の定義は `recordings_unique_active_event` と同じ `deleted_at IS NULL AND superseded_at IS NULL`
 - `program_snapshots` への FK は張らない。snapshot は放送 + 猶予で GC されるが、欠測は永続の観測である。CASCADE で消すと GC 後に同期除外が外れ、終了済み予約が再び schedule 対象になる
-- `reservations.id` は持たない。予約は ruler の導出削除・再実体化で id が変わるため、読者も放送イベントキーで引く（不変条件 9「identity」）
+- `reservations` への FK は持たない。reservations 行は ruler が削除・再作成しうるので、読者は放送イベントキーで引く（不変条件 9「identity」）
 - 本物の record が後から来ても欠測行は消さない。録画は録画、欠測は欠測として両方残る。表示は本物の `recordings` 行の存在で orphaned を消すが、同期除外は欠測行の存在だけを見て終了済み予約を対象に戻さない（[reservations.md](reservations.md) §3）
 - mirakc 由来の `failed` は `recordings` にだけ現れ、この表には入らない。したがって録画途中の失敗からの再試行経路を妨げない
 - `observed_at` は reconciler が欠測を書いた時刻。同期除外・表示の判定軸は時刻ではなく行の存在だけ
