@@ -9,8 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/fetburner/rokuban/internal/contentpath"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/reservation"
 )
 
 // overridesFields は override として扱う全フィールド名（reset で許容する値、
@@ -20,7 +20,7 @@ import (
 // 担うフィールドで、PATCH では扱わない（取消は
 // PUT .../intent {action: skip}。docs/recording.md §4.2「overrides API の形」）。
 //
-// フィールド名 → db.ReservationOptions の構造体フィールドの対応は、この変数と
+// フィールド名 → reservation.ReservationOptions の構造体フィールドの対応は、この変数と
 // resetOverridesField（適用側）の 2 箇所だけに集約してある。新しいフィールドを
 // 足すときはこの 2 箇所を揃えて更新すればよい。
 var overridesFields = []ProgramOverridesInputReset{
@@ -39,7 +39,7 @@ func isKnownOverridesField(f ProgramOverridesInputReset) bool {
 // resetOverridesField は opts の該当フィールドを nil に戻す（override の削除）。
 // フィールド名 → 構造体フィールドの対応はこの switch に集約する
 // （overridesFields のコメント参照）。
-func resetOverridesField(opts *db.ReservationOptions, f ProgramOverridesInputReset) {
+func resetOverridesField(opts *reservation.ReservationOptions, f ProgramOverridesInputReset) {
 	switch f {
 	case Priority:
 		opts.Priority = nil
@@ -139,7 +139,7 @@ func (h *Server) PatchProgramOverrides(ctx context.Context, req PatchProgramOver
 	if err != nil {
 		return nil, fmt.Errorf("marshalling merged overrides: %w", err)
 	}
-	eff, err := db.EffectiveOptions(baseJSON, mergedJSON, nil)
+	eff, err := reservation.EffectiveOptions(baseJSON, mergedJSON, nil)
 	if err != nil {
 		return nil, fmt.Errorf("computing effective options for validation: %w", err)
 	}
@@ -169,8 +169,8 @@ func (h *Server) PatchProgramOverrides(ctx context.Context, req PatchProgramOver
 // issue #104）。rules（internal/api/rules.go の validateRuleInput）・
 // スキーマ（rules テーブルの CHECK: keep_original <> 'until_encoded' OR
 // cardinality(encode_profiles) > 0）と同じ規律を overrides にも揃える。
-func validateEffectiveKeepOriginal(eff db.ReservationOptions) error {
-	if eff.KeepOriginal == nil || *eff.KeepOriginal != db.KeepOriginalUntilEncoded {
+func validateEffectiveKeepOriginal(eff reservation.ReservationOptions) error {
+	if eff.KeepOriginal == nil || *eff.KeepOriginal != reservation.KeepOriginalUntilEncoded {
 		return nil
 	}
 	if eff.EncodeProfiles == nil || len(*eff.EncodeProfiles) == 0 {
@@ -178,7 +178,7 @@ func validateEffectiveKeepOriginal(eff db.ReservationOptions) error {
 			"effective keepOriginal is %q but effective encodeProfiles is empty "+
 				"(after merging with existing overrides and the rule's base); "+
 				"specify encodeProfiles or keep keepOriginal as %q",
-			db.KeepOriginalUntilEncoded, db.KeepOriginalAlways)
+			reservation.KeepOriginalUntilEncoded, reservation.KeepOriginalAlways)
 	}
 	return nil
 }
@@ -224,13 +224,13 @@ func (h *Server) DeleteProgramOverrides(ctx context.Context, req DeleteProgramOv
 // 分離してある。
 func mergeOverridesPatch(
 	existing json.RawMessage,
-	setters []func(*db.ReservationOptions),
+	setters []func(*reservation.ReservationOptions),
 	resetFields []ProgramOverridesInputReset,
-) (db.ReservationOptions, error) {
-	opts := db.ReservationOptions{}
+) (reservation.ReservationOptions, error) {
+	opts := reservation.ReservationOptions{}
 	if len(existing) > 0 {
 		if err := json.Unmarshal(existing, &opts); err != nil {
-			return db.ReservationOptions{}, fmt.Errorf("unmarshalling existing overrides: %w", err)
+			return reservation.ReservationOptions{}, fmt.Errorf("unmarshalling existing overrides: %w", err)
 		}
 	}
 	for _, set := range setters {
@@ -275,7 +275,7 @@ func persistOverrides(
 }
 
 // isEmptyOverridesJSON は jsonb の overrides が実質空（{}）かどうかを判定する。
-// db.ReservationOptions の全フィールドが omitempty なので、json.Marshal の結果が
+// reservation.ReservationOptions の全フィールドが omitempty なので、json.Marshal の結果が
 // {} であることと「型付き構造体に何も設定されていない」は同値になる
 // （新しいフィールドを足しても自動的に正しく動く）。
 func isEmptyOverridesJSON(raw json.RawMessage) bool {
@@ -294,8 +294,8 @@ func isEmptyOverridesJSON(raw json.RawMessage) bool {
 // filenameTemplate は internal/contentpath.Validate で検証する
 // （internal/api/rules.go の validateRuleInput と同じ流儀）。keepOriginal は
 // enum を検証する。
-func parseProgramOverridesInput(in ProgramOverridesInput) ([]func(*db.ReservationOptions), []ProgramOverridesInputReset, error) {
-	var setters []func(*db.ReservationOptions)
+func parseProgramOverridesInput(in ProgramOverridesInput) ([]func(*reservation.ReservationOptions), []ProgramOverridesInputReset, error) {
+	var setters []func(*reservation.ReservationOptions)
 	setFields := make(map[ProgramOverridesInputReset]struct{}, len(overridesFields))
 
 	if in.Priority != nil {
@@ -304,7 +304,7 @@ func parseProgramOverridesInput(in ProgramOverridesInput) ([]func(*db.Reservatio
 			return nil, nil, fmt.Errorf("invalid priority %d (must be >= 0)", *in.Priority)
 		}
 		p := *in.Priority
-		setters = append(setters, func(o *db.ReservationOptions) { o.Priority = &p })
+		setters = append(setters, func(o *reservation.ReservationOptions) { o.Priority = &p })
 		setFields[Priority] = struct{}{}
 	}
 	if in.ContentPath != nil {
@@ -317,7 +317,7 @@ func parseProgramOverridesInput(in ProgramOverridesInput) ([]func(*db.Reservatio
 			return nil, nil, fmt.Errorf(`contentPath must not be empty (use reset: ["contentPath"] to clear it)`)
 		}
 		v := *in.ContentPath
-		setters = append(setters, func(o *db.ReservationOptions) { o.ContentPath = &v })
+		setters = append(setters, func(o *reservation.ReservationOptions) { o.ContentPath = &v })
 		setFields[ContentPath] = struct{}{}
 	}
 	if in.FilenameTemplate != nil {
@@ -326,21 +326,21 @@ func parseProgramOverridesInput(in ProgramOverridesInput) ([]func(*db.Reservatio
 				*in.FilenameTemplate, err)
 		}
 		v := *in.FilenameTemplate
-		setters = append(setters, func(o *db.ReservationOptions) { o.FilenameTemplate = &v })
+		setters = append(setters, func(o *reservation.ReservationOptions) { o.FilenameTemplate = &v })
 		setFields[FilenameTemplate] = struct{}{}
 	}
 	if in.KeepOriginal != nil {
 		v := string(*in.KeepOriginal)
-		if v != db.KeepOriginalAlways && v != db.KeepOriginalUntilEncoded {
+		if v != reservation.KeepOriginalAlways && v != reservation.KeepOriginalUntilEncoded {
 			return nil, nil, fmt.Errorf("invalid keepOriginal %q (must be %q or %q)",
-				v, db.KeepOriginalAlways, db.KeepOriginalUntilEncoded)
+				v, reservation.KeepOriginalAlways, reservation.KeepOriginalUntilEncoded)
 		}
-		setters = append(setters, func(o *db.ReservationOptions) { o.KeepOriginal = &v })
+		setters = append(setters, func(o *reservation.ReservationOptions) { o.KeepOriginal = &v })
 		setFields[KeepOriginal] = struct{}{}
 	}
 	if in.EncodeProfiles != nil {
 		v := *in.EncodeProfiles
-		setters = append(setters, func(o *db.ReservationOptions) { o.EncodeProfiles = &v })
+		setters = append(setters, func(o *reservation.ReservationOptions) { o.EncodeProfiles = &v })
 		setFields[EncodeProfiles] = struct{}{}
 	}
 

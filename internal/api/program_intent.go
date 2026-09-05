@@ -7,8 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/reservation"
 )
 
 // ensureProgramSnapshot は program_snapshots に (site, programId) の行があることを
@@ -73,9 +73,9 @@ func (h *Server) PutProgramIntent(ctx context.Context, req PutProgramIntentReque
 	var action string
 	switch req.Body.Action {
 	case Record:
-		action = db.IntentRecord
+		action = reservation.IntentRecord
 	case Skip:
-		action = db.IntentSkip
+		action = reservation.IntentSkip
 	default:
 		return PutProgramIntent400JSONResponse{Error: fmt.Sprintf("invalid action %q", req.Body.Action)}, nil
 	}

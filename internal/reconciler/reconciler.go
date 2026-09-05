@@ -24,10 +24,10 @@ import (
 
 	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/contentpath"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/reservation"
 )
 
 // Config は Reconciler の設定。
@@ -403,7 +403,7 @@ func (r *Reconciler) observeSchedules(ctx context.Context, schedules []mirakc.Sc
 type desiredReservation struct {
 	res  sqlcgen.Reservation
 	snap sqlcgen.ProgramSnapshot
-	opts db.ReservationOptions
+	opts reservation.ReservationOptions
 }
 
 // listDesired は mirakc への同期対象を返す。
@@ -422,10 +422,10 @@ type desiredReservation struct {
 // → そのルールを編集して外す（detached）→ 同期対象から外れる、という経路で
 // ユーザーの手動予約が黙って録画されなくなっていた（M2-4 で修正）。
 //
-// effective.skip の絞り込みは db.EvaluateSyncCandidates に通す
-// （internal/db/sync.go）。この関数はここ（reconciler.listDesired）と
+// effective.skip の絞り込みは reservation.EvaluateSyncCandidates に通す
+// （internal/reservation/sync.go）。この関数はここ（reconciler.listDesired）と
 // cmd/rokuban/shadowdiff.go の 2 箇所から呼ばれる共通処理 --- 2 箇所が別々に
-// db.EffectiveOptions を呼ぶ形だと移植漏れが起きうる（issue #54 の見逃しの原因）。
+// reservation.EffectiveOptions を呼ぶ形だと移植漏れが起きうる（issue #54 の見逃しの原因）。
 func (r *Reconciler) listDesired(ctx context.Context) ([]desiredReservation, error) {
 	rows, err := sqlcgen.New(r.pool).ListReservationsForSyncEvaluation(ctx, r.site)
 	if err != nil {
@@ -433,7 +433,7 @@ func (r *Reconciler) listDesired(ctx context.Context) ([]desiredReservation, err
 	}
 
 	var desired []desiredReservation
-	for _, c := range db.EvaluateSyncCandidates(rows) {
+	for _, c := range reservation.EvaluateSyncCandidates(rows) {
 		if c.Err != nil {
 			// 壊れた jsonb で mirakc に既定値の schedule を作ってしまわないよう、
 			// この予約は同期対象から外してアラートする（握りつぶさない）。
@@ -476,7 +476,7 @@ func programEnded(snap sqlcgen.ProgramSnapshot, now time.Time) bool {
 // オプション差分反映の再作成（recreateSchedule）の両方から呼ばれる必要が
 // あるため、この 1 箇所に抽出してある。同じ式を 2 箇所に書き下すと、片方だけ
 // 直してもう片方を直し忘れる事故が起きる。
-func effectivePriority(defaultPriority int, opts db.ReservationOptions) int {
+func effectivePriority(defaultPriority int, opts reservation.ReservationOptions) int {
 	if opts.Priority != nil {
 		return *opts.Priority
 	}
@@ -491,7 +491,7 @@ func effectivePriority(defaultPriority int, opts db.ReservationOptions) int {
 // （ruler の computeBase が意図的に除外している）。ruler が base に contentPath を
 // 載せるようになったらこの同値が崩れ、テンプレート生成値が差分対象に混ざって
 // #19 が潰した churn が戻る。
-func explicitContentPath(opts db.ReservationOptions) (string, bool) {
+func explicitContentPath(opts reservation.ReservationOptions) (string, bool) {
 	if opts.ContentPath == nil || *opts.ContentPath == "" {
 		return "", false
 	}
@@ -542,12 +542,12 @@ func buildContentPath(snap sqlcgen.ProgramSnapshot, template string) (string, er
 // issue #101 で program_snapshots のチャンネル・イベント識別 6 列が
 // NOT NULL 化され、service_id が NULL になる状態自体が表現不可能になった
 // （起きない状態のための分岐を残さない）。
-func resolveContentPath(res sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, opts db.ReservationOptions) (string, error) {
+func resolveContentPath(res sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, opts reservation.ReservationOptions) (string, error) {
 	// contentPath は filenameTemplate（ruler が base に載せたテンプレート、または
 	// ユーザーの明示的な上書き）があればそれを展開し、なければ従来の固定形式
 	// （buildContentPath 参照）。ContentPath（フルパスの直接指定）が別途あれば
 	// そちらが最終的に勝つ — 展開結果よりユーザーの明示指定を優先する
-	// （db.ReservationOptions のドキュメントコメント参照）。
+	// （reservation.ReservationOptions のドキュメントコメント参照）。
 	template := ""
 	if opts.FilenameTemplate != nil {
 		template = *opts.FilenameTemplate
@@ -879,7 +879,7 @@ type startDelayed struct {
 //
 // reservations は呼び出し元（RunPass）が listDesired で得た desired 予約
 // リストをそのまま渡す想定で、次の 2 つは既にそこで除外されている。
-//   - effective.skip の予約（listDesired が db.EvaluateSyncCandidates の Skipped
+//   - effective.skip の予約（listDesired が reservation.EvaluateSyncCandidates の Skipped
 //     で絞っている）
 //   - 既に never-scheduled と判定された予約（listDesired の元クエリ
 //     ListReservationsForSyncEvaluation が、番組終了後に schedule が一度も

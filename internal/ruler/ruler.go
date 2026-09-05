@@ -24,9 +24,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/breaker"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/rulequery"
 )
 
@@ -317,7 +317,7 @@ func (r *Ruler) resolveWinners(ctx context.Context, site string, rules []sqlcgen
 // 独立に存在できるが、investment に無条件で足すことで「skip 意図があっても
 // overrides は desired に残す」（§4.3「record 意図または上書きがある →
 // 削除せず detached で保持」）を満たす。skip 側は intent.action='skip' が
-// effective.skip として引き続き効くので（db.EffectiveOptions）、reconciler は
+// effective.skip として引き続き効くので（reservation.EffectiveOptions）、reconciler は
 // この行を同期しない。行の存在が答えるのは「この番組にユーザーの投資が
 // あるか」で、録画するかどうかとは別の問い。
 func (r *Ruler) collectDesired(ctx context.Context, q *sqlcgen.Queries, site string, winner map[int64]int64) (map[int64]struct{}, map[int64]struct{}, error) {
@@ -327,7 +327,7 @@ func (r *Ruler) collectDesired(ctx context.Context, q *sqlcgen.Queries, site str
 	}
 	skipIntent := make(map[int64]struct{})
 	for _, in := range intents {
-		if in.Action == db.IntentSkip {
+		if in.Action == reservation.IntentSkip {
 			skipIntent[in.ProgramID] = struct{}{}
 		}
 	}
@@ -773,14 +773,14 @@ func (r *Ruler) retractGraceProtectedSubset(ctx context.Context, q *sqlcgen.Quer
 // 「録るな」は program_intents.action が担うフィールドで、base 側で表現すると
 // 優先順位の合成に jsonb マージの細工が要る。逆に重複排除は「ルール x 履歴」から
 // 毎パス導出される値なので base に載るのが正しく、ユーザーの action='record' が
-// これに勝つ合成は db.EffectiveOptions の 1 箇所で解かれる
+// これに勝つ合成は reservation.EffectiveOptions の 1 箇所で解かれる
 // （docs/recording.md §4.2「dedup skip（重複排除）」）。
 func computeBase(rule sqlcgen.Rule, dedupeSkip bool) (json.RawMessage, error) {
 	priority := int(rule.Priority)
 	keepOriginal := rule.KeepOriginal
 	profiles := slices.Clone(rule.EncodeProfiles)
 
-	opts := db.ReservationOptions{
+	opts := reservation.ReservationOptions{
 		Priority:       &priority,
 		KeepOriginal:   &keepOriginal,
 		EncodeProfiles: &profiles,

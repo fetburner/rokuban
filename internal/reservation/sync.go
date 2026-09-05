@@ -1,4 +1,4 @@
-package db
+package reservation
 
 import (
 	"fmt"
@@ -10,7 +10,7 @@ import (
 // 実効オプションと skip 判定に組み合わせたもの。
 //
 // クエリ名が約束するのは「同期対象の候補」までで、effective.skip による
-// 絞り込みは含まない。呼び出し元が自前でこの 2 段目（db.EffectiveOptions）を
+// 絞り込みは含まない。呼び出し元が自前でこの 2 段目（EffectiveOptions）を
 // 呼ぶ形だと移植漏れが起きうる（shadow-diff がその移植を忘れ、Rokuban が
 // 録らない予約を EPGStation と「一致」と誤報告した実例が issue #54）。
 // この型と EvaluateSyncCandidates が 2 段目を 1 か所にまとめる。
@@ -42,7 +42,7 @@ type SyncCandidate struct {
 }
 
 // EvaluateSyncCandidates は ListReservationsForSyncEvaluation の結果行それぞれを
-// db.EffectiveOptions に通し、(予約行, スナップショット, 実効オプション, skip 判定)
+// EffectiveOptions に通し、(予約行, スナップショット, 実効オプション, skip 判定)
 // の組にして返す。
 //
 // SQL 側は「候補」までしか絞っていない（issue #98 で never-scheduled

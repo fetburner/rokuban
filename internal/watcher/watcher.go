@@ -19,6 +19,7 @@ import (
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/ptr"
+	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
@@ -33,6 +34,15 @@ type Watcher struct {
 	river    *river.Client[pgx5.Tx]
 	webhook  *webhook.Client
 	services []mirakc.Service
+}
+
+// qualityEvent は recordings.quality_events に追加する 1 件の JSON 形状。
+// DB 行型ではなくこのパッケージの書き込み経路だけが使うペイロードなので、
+// sqlcgen のモデルや DB パッケージには置かない。
+type qualityEvent struct {
+	At     time.Time       `json:"at"`
+	Event  string          `json:"event"`
+	Reason json.RawMessage `json:"reason"`
 }
 
 // New は Watcher を生成する。webhook は任意（nil 可）。録画 finished / failed の通知に
@@ -250,7 +260,7 @@ func (w *Watcher) createRecording(ctx context.Context, q *sqlcgen.Queries, recor
 		ruleID = res.RuleID
 	}
 
-	source, err := db.DeriveRecordingSource(ctx, q, w.site, record.Program.ID, hasReservation)
+	source, err := reservation.DeriveRecordingSource(ctx, q, w.site, record.Program.ID, hasReservation)
 	if err != nil {
 		return 0, err
 	}
@@ -413,19 +423,19 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 	if err != nil {
 		return fmt.Errorf("marshalling failed reason: %w", err)
 	}
-	qe := db.QualityEvent{
+	qe := qualityEvent{
 		At:     time.Now(),
 		Event:  "recording.failed",
 		Reason: reasonJSON,
 	}
-	qeJSON, err := json.Marshal([]db.QualityEvent{qe})
+	qeJSON, err := json.Marshal([]qualityEvent{qe})
 	if err != nil {
 		return fmt.Errorf("marshalling quality events: %w", err)
 	}
 
 	// handleRecordingFailed は予約が無ければ上で早期 return しているので、
 	// ここに到達した時点で予約は必ず存在する。
-	source, err := db.DeriveRecordingSource(ctx, q, w.site, data.ProgramID, true)
+	source, err := reservation.DeriveRecordingSource(ctx, q, w.site, data.ProgramID, true)
 	if err != nil {
 		return err
 	}
@@ -522,12 +532,12 @@ func (w *Watcher) handleRecordBroken(ctx context.Context, data mirakc.RecordBrok
 	if err != nil {
 		return fmt.Errorf("marshalling broken reason: %w", err)
 	}
-	qe := db.QualityEvent{
+	qe := qualityEvent{
 		At:     time.Now(),
 		Event:  "recording.record-broken",
 		Reason: reasonJSON,
 	}
-	qeJSON, err := json.Marshal([]db.QualityEvent{qe})
+	qeJSON, err := json.Marshal([]qualityEvent{qe})
 	if err != nil {
 		return fmt.Errorf("marshalling quality events: %w", err)
 	}

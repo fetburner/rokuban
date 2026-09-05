@@ -23,6 +23,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/tsstat"
 )
 
@@ -36,6 +37,15 @@ const (
 	connectRetryBaseDelay = 200 * time.Millisecond
 	connectRetryMaxDelay  = 5 * time.Second
 )
+
+// qualityEvent は recordings.quality_events に追加する 1 件の JSON 形状。
+// DB 行型ではなく ingest の書き込み経路だけが使うペイロードなので、
+// sqlcgen のモデルや DB パッケージには置かない。
+type qualityEvent struct {
+	At     time.Time       `json:"at"`
+	Event  string          `json:"event"`
+	Reason json.RawMessage `json:"reason"`
+}
 
 // IngestWorker は mirakc からの TS ファイル転送を行う River ワーカー。
 type IngestWorker struct {
@@ -570,11 +580,11 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath st
 	}
 
 	if counter.TotalScrambled() > 0 {
-		event := db.QualityEvent{
+		event := qualityEvent{
 			At:    time.Now(),
 			Event: "bcas_anomaly",
 		}
-		evJSON, err := json.Marshal([]db.QualityEvent{event})
+		evJSON, err := json.Marshal([]qualityEvent{event})
 		if err != nil {
 			return fmt.Errorf("marshalling quality event: %w", err)
 		}
@@ -644,13 +654,13 @@ func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sq
 			"service_id", rec.ServiceID,
 			"event_id", rec.EventID,
 		}
-		if rec.Source == db.SourceRule {
+		if rec.Source == reservation.SourceRule {
 			slog.Warn("encode policy: reservation not found via broadcast event key; freezing defaults", logArgs...)
 		} else {
 			slog.Info("encode policy: reservation not found via broadcast event key; freezing defaults", logArgs...)
 		}
 	} else {
-		eff, err := db.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)
+		eff, err := reservation.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)
 		if err != nil {
 			return fmt.Errorf("computing effective options for program %d: %w", row.Reservation.ProgramID, err)
 		}

@@ -11,6 +11,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/inplace"
 	"github.com/fetburner/rokuban/internal/programid"
+	"github.com/fetburner/rokuban/internal/reservation"
 )
 
 // LibraryItem は 1 件の EPGStation Recorded を表す import 入力。
@@ -149,7 +150,7 @@ func ImportLibrary(ctx context.Context, pool *pgxpool.Pool, mediaDir, site strin
 
 		in := inplace.Input{
 			Recording: inplace.Recording{
-				Source:            db.SourceManual,
+				Source:            reservation.SourceManual,
 				Site:              site,
 				NetworkID:         networkID,
 				ServiceID:         serviceID,

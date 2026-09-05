@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/ruler"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -120,7 +121,7 @@ func baseSkip(t *testing.T, raw []byte) bool {
 	if len(raw) == 0 {
 		return false
 	}
-	var opts db.ReservationOptions
+	var opts reservation.ReservationOptions
 	if err := json.Unmarshal(raw, &opts); err != nil {
 		t.Fatalf("unmarshalling base %s: %v", raw, err)
 	}
@@ -557,7 +558,7 @@ VALUES ($1, $2, '{"priority":7}'::jsonb)`,
 
 // 12. 重複排除が base.skip を立てても、ユーザーの action='record' が勝つ
 // （EPGStation#473「この番組は重複扱いにしない」。docs/recording.md §4.2
-// 「dedup skip（重複排除）」）。db.EffectiveOptions の分岐との結線を見る。
+// 「dedup skip（重複排除）」）。reservation.EffectiveOptions の分岐との結線を見る。
 func TestRunPass_DedupeRecordIntentWins(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -576,7 +577,7 @@ func TestRunPass_DedupeRecordIntentWins(t *testing.T) {
 	}
 
 	// 意図が無い時点では effective.skip は true（base 由来）。
-	eff, err := db.EffectiveOptions(res.Base, nil, nil)
+	eff, err := reservation.EffectiveOptions(res.Base, nil, nil)
 	if err != nil {
 		t.Fatalf("EffectiveOptions without intent: %v", err)
 	}
@@ -599,12 +600,12 @@ VALUES ($1, $2, 'record')`,
 		t.Fatal("reservation missing after second pass")
 	}
 	// ruler は base.skip を立て続ける（判定結果は変わらない）。効力の合成は
-	// db.EffectiveOptions が担うので、base 側に record 意図を焼き込まない。
+	// reservation.EffectiveOptions が担うので、base 側に record 意図を焼き込まない。
 	if !baseSkip(t, res.Base) {
 		t.Errorf("ruler should keep base.skip regardless of the intent (base = %s)", res.Base)
 	}
-	action := db.IntentRecord
-	eff, err = db.EffectiveOptions(res.Base, nil, &action)
+	action := reservation.IntentRecord
+	eff, err = reservation.EffectiveOptions(res.Base, nil, &action)
 	if err != nil {
 		t.Fatalf("EffectiveOptions with record intent: %v", err)
 	}
@@ -850,8 +851,8 @@ VALUES ($1, $2, 'record')`,
 		testSite, f.programID); err != nil {
 		t.Fatalf("inserting program_intents fixture: %v", err)
 	}
-	action := db.IntentRecord
-	eff, err := db.EffectiveOptions(res.Base, nil, &action)
+	action := reservation.IntentRecord
+	eff, err := reservation.EffectiveOptions(res.Base, nil, &action)
 	if err != nil {
 		t.Fatalf("EffectiveOptions with record intent: %v", err)
 	}

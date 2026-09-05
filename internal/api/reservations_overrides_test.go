@@ -14,8 +14,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -170,7 +170,7 @@ func TestDeleteProgramOverrides_DoesNotTouchProgramIntents_ManualReservationSurv
 	ruleID := insertRuleFixture(t, pool, ctx)
 	insertReservationDirect(t, pool, ctx, programID, &ruleID, 11500, 1150)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: "default", ProgramID: programID, Action: db.IntentRecord,
+		Site: "default", ProgramID: programID, Action: reservation.IntentRecord,
 	}); err != nil {
 		t.Fatalf("seeding intent: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestDeleteProgramOverrides_DoesNotTouchProgramIntents_ManualReservationSurv
 		t.Fatalf("program_intents row must survive resetting overrides "+
 			"(the old single-table cleanup rule would have deleted it here): %v", err)
 	}
-	if intent.Action != db.IntentRecord {
+	if intent.Action != reservation.IntentRecord {
 		t.Errorf("action = %q, want record", intent.Action)
 	}
 
@@ -227,7 +227,7 @@ func TestPatchProgramOverrides_EmptyPatch_DoesNotTouchProgramIntents(t *testing.
 	ruleID := insertRuleFixture(t, pool, ctx)
 	insertReservationDirect(t, pool, ctx, programID, &ruleID, 11600, 1160)
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: "default", ProgramID: programID, Action: db.IntentRecord,
+		Site: "default", ProgramID: programID, Action: reservation.IntentRecord,
 	}); err != nil {
 		t.Fatalf("seeding intent: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestPatchProgramOverrides_EmptyPatch_DoesNotTouchProgramIntents(t *testing.
 			if err != nil {
 				t.Fatalf("no-op PATCH must not delete the intent row: %v", err)
 			}
-			if intent.Action != db.IntentRecord {
+			if intent.Action != reservation.IntentRecord {
 				t.Errorf("action = %q, want record", intent.Action)
 			}
 		})
@@ -659,7 +659,7 @@ func TestDeleteProgramOverrides_NoRow_IsIdempotent(t *testing.T) {
 	_ = resp.Body.Close()
 }
 
-// 13. PATCH の結果が db.EffectiveOptions を通して期待どおりの effective になる。
+// 13. PATCH の結果が reservation.EffectiveOptions を通して期待どおりの effective になる。
 func TestPatchProgramOverrides_EffectiveOptionsRoundTrip(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -690,7 +690,7 @@ func TestPatchProgramOverrides_EffectiveOptionsRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reloading reservation: %v", err)
 	}
-	eff, err := db.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)
+	eff, err := reservation.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)
 	if err != nil {
 		t.Fatalf("computing effective options: %v", err)
 	}
@@ -817,12 +817,12 @@ func TestPatchProgramOverrides_UntilEncodedWithProfilesFromBase_Succeeds(t *test
 	if err != nil {
 		t.Fatalf("reloading reservation: %v", err)
 	}
-	eff, err := db.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)
+	eff, err := reservation.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)
 	if err != nil {
 		t.Fatalf("computing effective options: %v", err)
 	}
-	if eff.KeepOriginal == nil || *eff.KeepOriginal != db.KeepOriginalUntilEncoded {
-		t.Errorf("effective keepOriginal = %v, want %q", eff.KeepOriginal, db.KeepOriginalUntilEncoded)
+	if eff.KeepOriginal == nil || *eff.KeepOriginal != reservation.KeepOriginalUntilEncoded {
+		t.Errorf("effective keepOriginal = %v, want %q", eff.KeepOriginal, reservation.KeepOriginalUntilEncoded)
 	}
 	if eff.EncodeProfiles == nil || len(*eff.EncodeProfiles) != 1 || (*eff.EncodeProfiles)[0] != "h264" {
 		t.Errorf("effective encodeProfiles = %v, want [h264] (from base)", eff.EncodeProfiles)
