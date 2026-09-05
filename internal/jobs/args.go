@@ -74,6 +74,10 @@ type RulerPassArgs struct {
 func (RulerPassArgs) Kind() string { return "ruler_pass" }
 
 // InsertOpts は ruler キューへ投入するための River 挿入オプションを返す。
+//
+// **Queue は site で修飾しない**（ingest/epg/reconciler/watcher と異なる）。
+// ruler は mirakc に一切触れない DB のみの仕事で、site 単位の到達性ガードが
+// 要らない（issue #185 M4-13、issue #138 の決定表）。
 func (RulerPassArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
 		Queue: RulerQueue,
@@ -147,7 +151,9 @@ func (EncodeJobArgs) InsertOpts() river.InsertOpts {
 }
 
 // EncodeEnqueueHintArgs は事後追加されたエンコードプロファイルを反映する
-// ヒントジョブの引数。
+// ヒントジョブの引数。api がヒント経由にしているのは、実行（不足分の encode
+// ジョブ投入）を常に worker ロールの中で完結させ、api が worker の実行ロジックを
+// 直接呼ぶ経路を増やさないため（RulerPassArgs と同じ結合パターン）。
 type EncodeEnqueueHintArgs struct {
 	RecordingID int64 `json:"recording_id"`
 }
@@ -192,6 +198,11 @@ type EncodeReconcileArgs struct{}
 func (EncodeReconcileArgs) Kind() string { return "encode_reconcile" }
 
 // InsertOpts は encode キューへ投入するための River 挿入オプションを返す。
+//
+// River のキュー単位の MaxWorkers はジョブ種を区別しないため、
+// `encode.concurrency: 1`（既定）の構成では実行中の encode ジョブが終わるまで
+// このパスは走らない。許容する: エンコードが詰まっている系では今すぐ投入しても
+// 実行されないので、検出が遅れても失うものが無い。
 func (EncodeReconcileArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
 		Queue: EncodeQueue,
@@ -221,6 +232,8 @@ func (DeleteReconcileArgs) InsertOpts() river.InsertOpts {
 }
 
 // CatalogExportArgs は catalog エクスポートジョブの引数。
+//
+// Keep が 0 以下なら catalog.DefaultKeep（7）を使う。
 type CatalogExportArgs struct {
 	Keep int `json:"keep,omitempty"`
 }
@@ -241,6 +254,9 @@ func (CatalogExportArgs) InsertOpts() river.InsertOpts {
 }
 
 // StorageSyncArgs はストレージ観測ジョブの引数。
+//
+// キューは専用の StorageQueue にする。CleanupQueue は「物理削除系ジョブ専用」と
+// 明記されているため、削除を一切しない観測ジョブをそこに混ぜない。
 type StorageSyncArgs struct{}
 
 // Kind は River ジョブの種別名を返す。

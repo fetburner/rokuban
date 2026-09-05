@@ -34,13 +34,20 @@ const (
 	// ThumbnailQueue はサムネイルジョブのキュー名。
 	ThumbnailQueue = "thumbnail"
 	// CleanupQueue は物理削除・カタログ出力ジョブのキュー名。
+	//
+	// 未解決: 既定（`worker.queues` 未指定 = 全キュー購読）のサイト束縛 worker は
+	// このキューも掴む。`worker.queues` を明示すれば除外できるが、単一サイト
+	// 構成でそれを外すと delete_reconcile が誰にも走らなくなるため、既定を変える
+	// かどうかは設計判断が必要で未実装。
 	CleanupQueue = "cleanup"
 	// StorageQueue はストレージ観測ジョブのキュー名。
 	StorageQueue = "storage"
 
 	// UniqueByQueue はキュー名を River の一意性キーへ含める設定。
 	// site 修飾やキューのリネーム後も、旧キューのジョブが新キューへの投入を
-	// 塞がないようにする。
+	// 塞がないようにする。**キュー名を変えた（変える予定がある）キューにだけ
+	// 付ける。** 対象外のキュー（encode/thumbnail/ruler）まで広げても保険には
+	// ならず、なぜ付いているかの説明が要る範囲だけが広がる。
 	UniqueByQueue = true
 
 	// RiverQueueNameMaxLen は River が許容するキュー名の最大長。
@@ -69,6 +76,13 @@ var pendingJobStates = []rivertype.JobState{
 // siteBoundQueueNames は mirakc への到達を必要とする、site 単位の論理キュー名。
 // ingest・epg・reconciler・watcher の 4 つで、挿入側と購読側の両方がこの集合を
 // 共有する。
+//
+// **この 1 変数が意図的に 2 役目を持つ**: PhysicalQueueName の修飾対象判定と、
+// RequiresSiteBinding の起動時ガードの両方がここを参照する。分けると 2 つの
+// 判定が食い違う経路ができる（issue #185）。
+//
+// **ruler はここに入らない**: mirakc に触れず DB のみで完結する仕事なので
+// site 修飾も起動時の site 束縛ガードも要らない（不変条件 1、issue #138 の決定）。
 var siteBoundQueueNames = []string{
 	IngestQueue,
 	EpgQueue,
