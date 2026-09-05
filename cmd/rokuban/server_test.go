@@ -493,10 +493,6 @@ func (e2eProbeArgs) Kind() string { return "e2e_probe" }
 // idleTimeout 後には戻る。(a) idleTimeout（60s）より十分短い時間で戻ること
 // （runServerCmdBounded の limit 20s がこれを担う）、(b) 試行を 1 回しか
 // 潰していないこと（壊れていると窓の中で何度も掴み直す）。
-type e2eProbeArgs struct{}
-
-func (e2eProbeArgs) Kind() string { return "e2e_probe" }
-
 func TestServerCmd_OnceModeExitsOnUnhandledJobKind(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()

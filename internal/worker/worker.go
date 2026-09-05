@@ -620,7 +620,7 @@ type ClientConfig struct {
 	// SoftStopTimeout が未設定（0）のとき work ctx を start ctx から継ぐので、
 	// `signal.NotifyContext` の ctx を `Start` に渡している構成では **SIGTERM が
 	// そのまま StopAndCancel 相当のハードストップになる**（river@v0.47.0 client.go の
-	// の workParentCtx）。実行中のジョブは即座に ctx を切られ、試行回数を 1 つ
+	// workParentCtx）。実行中のジョブは即座に ctx を切られ、試行回数を 1 つ
 	// 潰して `available` に戻る。0 を既定値に読み替えるのはこのためで、
 	// 「設定し忘れ」が最も危険な側に倒れないようにする。
 	//

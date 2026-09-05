@@ -139,8 +139,8 @@ func (c Config) Registry() []MirakcSite {
 
 // mirakcSiteNamePattern は site 名の構文制約。
 //
-// **River のキュー名の制約（`validateQueueName`、river@v0.47.0 client.go の
-// `validateQueueName` と同一で、緩めない。** M4-13 がキュー名を `ingest_<site>` の形に site で修飾する
+// **River のキュー名の制約（`validateQueueName`、river@v0.47.0 client.go）と
+// 同一で、緩めない。** M4-13 がキュー名を `ingest_<site>` の形に site で修飾する
 // ため、ここを緩めると M4-13 が site 名をキュー名として弾くことになる
 // （issue #183 の「罠」）。
 var mirakcSiteNamePattern = regexp.MustCompile(`^[a-z0-9]([_-]?[a-z0-9])*$`)
