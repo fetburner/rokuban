@@ -61,6 +61,7 @@ CREATE TABLE recordings (
 
 CREATE INDEX ON recordings (program_start_at DESC);        -- ライブラリ一覧
 CREATE INDEX ON recordings (network_id, service_id, event_id);
+CREATE INDEX ON recordings (rule_id) WHERE rule_id IS NOT NULL;  -- rules 削除・重複排除・ruleId 絞り込み
 CREATE INDEX ON recordings (deleted_at) WHERE deleted_at IS NOT NULL;  -- ごみ箱ビュー
 CREATE INDEX ON recordings (purged_at) WHERE purged_at IS NULL;  -- ごみ箱一覧の絞り込み
 -- 履歴ベース重複排除は title の trgm 類似度で判定するが、GIN は張っていない。
@@ -157,7 +158,7 @@ watcher の `createRecording`（`internal/watcher/watcher.go`）は `CreateRecor
 
 ```sql
 CREATE TABLE recording_encode_policy (
-    recording_id    bigint PRIMARY KEY REFERENCES recordings (id),
+    recording_id    bigint PRIMARY KEY REFERENCES recordings (id) ON DELETE CASCADE,
     keep_original   text   NOT NULL CHECK (keep_original IN ('always', 'until_encoded')),
     encode_profiles text[] NOT NULL,
     CHECK (keep_original <> 'until_encoded' OR cardinality(encode_profiles) > 0),
@@ -249,4 +250,3 @@ CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted';
 - **deleted への遷移後も行は消さない**（tombstone）。`drop_stats` と元サイズは原本削除後も UI で見られる
 - 物理削除に至る 3 ソース（ごみ箱の猶予超過 / `until_encoded` の派生物完備 / 孤児回収）はすべて 1 本の削除 reconcile ループに集約し、一括削除サーキットブレーカーをループ全体に 1 つかける
 - **`missing_media_assets` は `media_assets` を指す衛星表**（`media_asset_id` を PK かつ FK に取り、`ON DELETE CASCADE`）。行の存在 = 直前の走査で `state = 'active'` なのに実体ファイルを観測できなかったという主張で、「観測できた」を表す行は作らない（不変条件 10）。書き手は削除 reconcile であって台帳を書く worker ではないので本体の列にしない（不変条件 13）。`rel_path` / `kind` は複製せず読み出しで JOIN する（不変条件 9）。**この表を根拠に `media_assets` を自動で消す経路は無い** —— 判定基準と 2 つの安全弁（エイジング / 全損シグネチャ）は [storage/retention.md](../storage/retention.md) §7「孤児回収の逆」が権威
-

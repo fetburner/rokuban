@@ -34,7 +34,7 @@ erDiagram
     program_snapshots ||--o| program_overrides : "(site, program_id) FK, ON DELETE CASCADE"
     recordings ||--o{ record_sync : "recording_id (observed)"
     recordings ||--o{ media_assets : "recording_id"
-    recordings ||--o| recording_encode_policy : "recording_id (凍結。衛星表)"
+    recordings ||--o| recording_encode_policy : "recording_id (凍結。衛星表、ON DELETE CASCADE)"
     recordings ||--o| recording_ingest_progress : "recording_id (転送中。衛星表)"
     recordings ||--o| recording_purge_requests : "recording_id (即時削除の要求。衛星表)"
     recordings ||--o{ recording_encode_attempts : "recording_id (encode 試行の観測。衛星表)"
@@ -45,8 +45,7 @@ erDiagram
 - **desired**: `rules` + 子表（ユーザーが書く永続資産）/ `program_intents` + `program_overrides`（番組単位のユーザー意図。永続）/ `reservations`（ruler が導出）
 - **番組の事実のスナップショット**: `program_snapshots`（EPG プロジェクションから複製した、放送の寿命を持つキャッシュ。Phase 1。§3.7）
 - **observed**: `schedule_sync` / `record_sync`（mirakc の観測。短命・使い捨て）
-- **永続資産**: `recordings` / `media_assets` / `drop_stats`。`recording_encode_policy` は `recordings` を指す衛星表（行の存在 = 凍結済み）。`recording_ingest_progress` も同じく衛星表で、行の存在 = 原本を転送中（コミットで消える）。`recording_purge_requests` も衛星表で、行の存在 = ごみ箱の猶予を待たない完全削除の要求（復元は DELETE）。`recording_encode_attempts` も衛星表で、行の存在 = encode ジョブが running か failed のどちらか（完了で消える）
+- **永続資産**: `recordings` / `media_assets` / `drop_stats`。`recording_encode_policy` は `recordings` を指す衛星表（行の存在 = 凍結済み。`recordings` の削除で CASCADE）。`recording_ingest_progress` も同じく衛星表で、行の存在 = 原本を転送中（コミットで消える）。`recording_purge_requests` も衛星表で、行の存在 = ごみ箱の猶予を待たない完全削除の要求（復元は DELETE）。`recording_encode_attempts` も衛星表で、行の存在 = encode ジョブが running か failed のどちらか（完了で消える）
 - `missing_media_assets` は `media_assets` を指す衛星表（行の存在 = 直前の走査で実体ファイルを観測できなかった）。**削除 reconcile が毎パス作り直す観測**であって台帳ではないので `media_assets` の列にしない（不変条件 13）。この表を根拠に自動削除する経路は無い（[storage/retention.md](storage/retention.md) §7「孤児回収の逆」）。同じ削除 reconcile の帳簿でも `orphan_files` は `media_assets` にまだ無いファイルを追う表なので FK も衛星関係も持たず、この図には現れない
 - `program_intents` / `program_overrides` と `reservations` は互いに FK では対応しない。三者はいずれも共通の `(site, program_id)` で `program_snapshots` への FK（`ON DELETE CASCADE`）を持つことで結びつく（Phase 1）。**意図が skip で、かつ上書きが無い番組は `reservations` に行を持たない**（overrides があれば skip でも行は残る。detached として保持。§3.5）ため、常に 1:1 ではない
 - `reservations.rule_id` が持つのは**勝者ルール**のみ。負けたルールは記録しない —— 勝者以外は `base` に何も供給しないので、削除も無効化も予約を変えない（[schema/rules.md](schema/rules.md)）。マイグレーションの一覧は `internal/db/migrations/` が権威
-
