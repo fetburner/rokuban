@@ -61,6 +61,11 @@ function jsonResponse(body: unknown): Response {
   })
 }
 
+type CapacityResult =
+  | CapacityOverage[]
+  | Promise<CapacityOverage[]>
+  | (() => CapacityOverage[] | Promise<CapacityOverage[]>)
+
 /**
  * stubApi は予約一覧・超過区間・サーキットブレーカー（AppShell が常に訊く）を振り分ける。
  *
@@ -69,7 +74,7 @@ function jsonResponse(body: unknown): Response {
  */
 function stubApi(
   reservations: Reservation[],
-  overages: CapacityOverage[] | Promise<CapacityOverage[]>,
+  overages: CapacityResult,
 ) {
   const fetchMock = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
@@ -78,7 +83,8 @@ function stubApi(
     if (url.pathname === '/api/capacity/overages') {
       const start = new Date(url.searchParams.get('start') ?? 0).getTime()
       const end = new Date(url.searchParams.get('end') ?? 0).getTime()
-      return Promise.resolve(overages).then((items) =>
+      const result = typeof overages === 'function' ? overages() : overages
+      return Promise.resolve(result).then((items) =>
         jsonResponse(
           items.filter(
             (o) => new Date(o.endAt).getTime() > start && new Date(o.startAt).getTime() < end,
@@ -106,7 +112,7 @@ function renderPage(initialEntries?: string[]) {
 
 function renderWith(
   reservations: Reservation[],
-  overages: CapacityOverage[] | Promise<CapacityOverage[]>,
+  overages: CapacityResult,
   initialEntries?: string[],
 ) {
   const fetchMock = stubApi(reservations, overages)
@@ -308,6 +314,84 @@ describe('予約一覧の要確認フィルタ', () => {
 
     await act(async () => resolveOverages([]))
     expect(await screen.findByText('確認が要る予約はありません')).toBeInTheDocument()
+  })
+
+  it('容量の初回取得が失敗したら要確認なしを確定せず、理由と再試行を示す', async () => {
+    const user = userEvent.setup()
+    renderWith(
+      [reservation(1, '容量未確認の予約', 18 * 60, 60)],
+      () => Promise.reject(new Error('capacity unavailable')),
+      ['/reservations?only=attention'],
+    )
+
+    expect(
+      await screen.findByText('容量の確認に失敗しました。要確認の判定が不完全です'),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '再試行' })).toBeInTheDocument()
+    expect(screen.queryByText('確認が要る予約はありません')).toBeNull()
+    expect(screen.queryByRole('button', { name: /要確認/ })).toBeNull()
+    // 容量の絞り込みが壊れていても、全件表示へ戻る導線は使える
+    expect(screen.getByRole('button', { name: 'すべて（1）' })).toBeInTheDocument()
+    expect(screen.queryByText('容量未確認の予約')).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'すべて（1）' }))
+    expect(screen.getByText('容量未確認の予約')).toBeInTheDocument()
+  })
+
+  it('取得成功後の再取得失敗では、キャッシュ済みの超過区間を表示しない', async () => {
+    let attempts = 0
+    const { queryClient } = renderWith(
+      [reservation(1, '再取得に失敗する予約', 19 * 60, 60)],
+      () => {
+        attempts += 1
+        return attempts === 1
+          ? [overage(19 * 60, 20 * 60)]
+          : Promise.reject(new Error('capacity unavailable'))
+      },
+    )
+
+    expect(await screen.findByText('チューナー不足（BS が 1 本）')).toBeInTheDocument()
+    await overagesSettled(queryClient)
+
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['/api/capacity/overages'] })
+    })
+
+    expect(
+      await screen.findByText('容量の確認に失敗しました。要確認の判定が不完全です'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('チューナー不足（BS が 1 本）')).toBeNull()
+    expect(screen.queryByRole('button', { name: /要確認/ })).toBeNull()
+    expect(screen.getByText('再取得に失敗する予約')).toBeInTheDocument()
+  })
+
+  it('容量取得の再試行が成功すると不足バッジと要確認絞り込みが復旧する', async () => {
+    let attempts = 0
+    const user = userEvent.setup()
+    renderWith(
+      [reservation(1, '再試行で復旧する予約', 20 * 60, 60)],
+      () => {
+        attempts += 1
+        return attempts === 1
+          ? Promise.reject(new Error('capacity unavailable'))
+          : [overage(20 * 60, 21 * 60)]
+      },
+      ['/reservations?only=attention'],
+    )
+
+    expect(
+      await screen.findByText('容量の確認に失敗しました。要確認の判定が不完全です'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('再試行で復旧する予約')).toBeNull()
+
+    await user.click(screen.getByRole('button', { name: '再試行' }))
+
+    expect(await screen.findByText('チューナー不足（BS が 1 本）')).toBeInTheDocument()
+    expect(screen.getByText('再試行で復旧する予約')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '要確認（1）' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    expect(screen.queryByText('確認が要る予約はありません')).toBeNull()
   })
 
   it('要確認が 0 件なら要確認チップを置かず、URL 指定時は専用の空状態を出す', async () => {
