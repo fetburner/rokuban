@@ -198,6 +198,59 @@ func TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges(t *testing.T) 
 	}
 }
 
+func TestRescueLatest_ScansMediaDirSymlinkAndSkipsCatalog(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	baseDir := t.TempDir()
+	realMediaDir := filepath.Join(baseDir, "real-media")
+	mediaDir := filepath.Join(baseDir, "media")
+	if err := os.MkdirAll(filepath.Join(realMediaDir, "archive"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realMediaDir, mediaDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(realMediaDir, "archive", "show.m2ts"), []byte("original bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(realMediaDir, "catalog"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realMediaDir, "catalog", "old-backup.mp4"), []byte("not a media asset"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := RescueLatest(context.Background(), pool, mediaDir, "default", []string{"default"})
+	if err != nil {
+		t.Fatalf("RescueLatest through media_dir symlink: %v", err)
+	}
+	if result.Recordings != 1 || result.MediaAssets != 1 {
+		t.Fatalf("scan result = %+v, want 1 recording/asset", result)
+	}
+
+	var count int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets WHERE rel_path = 'archive/show.m2ts'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("rescued asset count = %d, want 1", count)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets WHERE rel_path LIKE 'catalog/%'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("catalog assets registered = %d, want 0", count)
+	}
+}
+
+func TestRescueLatest_ReturnsErrorWhenMediaDirCannotBeResolved(t *testing.T) {
+	missingMediaDir := filepath.Join(t.TempDir(), "missing-media")
+	_, err := RescueLatest(context.Background(), nil, missingMediaDir, "default", []string{"default"})
+	if err == nil {
+		t.Fatal("RescueLatest with missing media_dir should return an error")
+	}
+}
+
 // アーカイブは全 site で共有される単一のストレージなので、`sites/{site}/` 前置
 // ファイルは前置を持つ他 site の分も同じスキャンで見つかる。前置ありのファイルは
 // prefix から site を決め、`--site` の値（引数の "tokyo"）と食い違っても
