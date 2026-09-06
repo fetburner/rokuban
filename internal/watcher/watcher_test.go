@@ -17,6 +17,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reservation"
@@ -1483,6 +1484,30 @@ func TestProcessRecord_ManualReservationWithRuleMatch_SourceManual(t *testing.T)
 	}
 }
 
+// TestProcessRecord_ManualIntentWithoutReservation_SourceManual は、予約行が無くても
+// program_intents.action=record が残っていれば、ユーザーの明示的な意図を manual と
+// して保存することを確認する。予約の有無を先に見て unattributed に倒す実装では
+// この回帰テストが落ちる。
+func TestProcessRecord_ManualIntentWithoutReservation_SourceManual(t *testing.T) {
+	w, pool := setupTest(t)
+	ctx := context.Background()
+	programID := int64(700007)
+	insertTestProgramSnapshot(t, pool, programID)
+	if _, err := sqlcgen.New(pool).UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
+		Site: "default", ProgramID: programID, Action: reservation.IntentRecord,
+	}); err != nil {
+		t.Fatalf("creating record intent: %v", err)
+	}
+
+	if err := w.processRecord(ctx, testRecord("record-manual-intent-no-reservation-001", programID, "finished")); err != nil {
+		t.Fatalf("processRecord: %v", err)
+	}
+
+	if got := getRecordingSource(t, pool); got != reservation.SourceManual {
+		t.Errorf("recordings.source = %q, want %q (record intent is sufficient even without a reservation)", got, reservation.SourceManual)
+	}
+}
+
 // TestProcessRecord_RuleReservation_SourceRule は issue #26 の受け入れ基準 2:
 // ルール由来の予約（program_intents 行なし、rule_id あり）を録画すると
 // recordings.source は 'rule' になる。
@@ -1597,16 +1622,16 @@ func TestHandleRecordingFailed_SourceDerivedFromIntent(t *testing.T) {
 	}
 }
 
-// TestProcessRecord_MissingReservation_SourceManual は、tag は付いているが予約行が
-// 存在しない record（予約が削除された後に mirakc 側の録画が残っていた等）の
-// source が 'manual' になることを確認する。
+// TestProcessRecord_MissingReservation_SourceUnattributed は、tag は付いているが
+// 予約行も intent も存在しない record（予約が削除された後に mirakc 側の録画が
+// 残っていた等）の source が 'unattributed' になることを確認する。
 //
 // issue #26 の修正で source を program_intents から導出するようにしたが、
 // 「意図が無ければ rule」と素朴に倒すと**この経路が rule になってしまう**。
 // rule_id は NULL なので `source = 'rule'` かつ `rule_id IS NULL` という矛盾した
-// 組が生まれる。帰属できるルールが無いなら manual に倒すのが正しい
-// （issue #26 以前の実装も source の既定を "manual" にしていた）。
-func TestProcessRecord_MissingReservation_SourceManual(t *testing.T) {
+// 組が生まれる。ユーザーの intent も無いので manual と断定せず
+// unattributed にする。
+func TestProcessRecord_MissingReservation_SourceUnattributed(t *testing.T) {
 	w, pool := setupTest(t)
 	ctx := context.Background()
 
@@ -1628,34 +1653,34 @@ func TestProcessRecord_MissingReservation_SourceManual(t *testing.T) {
 	).Scan(&source, &ruleID); err != nil {
 		t.Fatalf("querying recordings: %v", err)
 	}
-	if source != reservation.SourceManual {
+	if source != reservation.SourceUnattributed {
 		t.Errorf("recordings.source = %q, want %q "+
-			"（帰属できるルールが無いのに rule と記録すると rule_id IS NULL と矛盾する。issue #26）",
-			source, reservation.SourceManual)
+			"（予約も intent も無い録画を manual と断定せず unattributed にする）",
+			source, reservation.SourceUnattributed)
 	}
 	if ruleID != nil {
 		t.Errorf("recordings.rule_id = %v, want nil", ruleID)
 	}
 }
 
-// TestProcessRecord_ReservationGCedBeyondGrace_SourceManual は issue #214 の
+// TestProcessRecord_ReservationGCedBeyondGrace_SourceUnattributed は issue #214 の
 // 交点の**前半**を固定する: エッジに record が滞留して復帰が
 // epg.retention_grace（既定 24h）より後になると、復帰時に recordings 行を作る
 // createRecording は既に GC された予約を引くことになり、ルール由来の録画でも
-// source が 'manual' に・rule_id が NULL になる。
+// source が 'unattributed' に・rule_id が NULL になる。
 //
-// TestProcessRecord_MissingReservation_SourceManual が「予約行が最初から無い」を
+// TestProcessRecord_MissingReservation_SourceUnattributed が「予約行が最初から無い」を
 // 模すのに対し、こちらは**ルール予約が確かに存在したうえで、実際の GC クエリ
 // （DeleteEndedProgramSnapshots。ruler の runGC が呼ぶのと同じもの）に刈られた**
 // 経路を通す。
 //
-// 後半（source='manual' の録画で ingest の凍結解決が失敗すると slog.Warn では
-// なく slog.Info になる）は internal/worker の
-// TestIngestWorker_LogsInfoWhenManualSourceReservationUnresolvable が持つ。
+// 後半（source='unattributed' の録画で ingest の凍結解決が失敗すると slog.Info
+// になる）は internal/worker の
+// TestIngestWorker_LogsInfoWhenUnattributedSourceReservationUnresolvable が持つ。
 // docs/storage.md §6 が書く回線断の経路はこの 2 本の合成であり、1 本で通す
 // テストは無い（パッケージ境界。internal/watcher は internal/worker に依存
 // できない。Watcher が依存するジョブ契約は internal/jobs に置かれている）。
-func TestProcessRecord_ReservationGCedBeyondGrace_SourceManual(t *testing.T) {
+func TestProcessRecord_ReservationGCedBeyondGrace_SourceUnattributed(t *testing.T) {
 	w, pool := setupTest(t)
 	ctx := context.Background()
 
@@ -1710,9 +1735,9 @@ func TestProcessRecord_ReservationGCedBeyondGrace_SourceManual(t *testing.T) {
 	).Scan(&source, &gotRuleID); err != nil {
 		t.Fatalf("querying recordings: %v", err)
 	}
-	if source != reservation.SourceManual {
+	if source != reservation.SourceUnattributed {
 		t.Errorf("recordings.source = %q, want %q "+
-			"（GC 済みの予約は引けないので manual に倒れる。issue #214 の交点）", source, reservation.SourceManual)
+			"（GC 済みの予約も intent も引けないので unattributed にする。issue #214 の交点）", source, reservation.SourceUnattributed)
 	}
 	if gotRuleID != nil {
 		t.Errorf("recordings.rule_id = %v, want nil （ルール予約は GC で失われている。issue #214）", *gotRuleID)

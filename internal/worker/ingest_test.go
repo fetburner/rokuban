@@ -27,6 +27,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -568,7 +569,7 @@ func insertTestRecording(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	q := sqlcgen.New(pool)
 	id, err := q.CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
-		Source:            "manual",
+		Source:            reservation.SourceUnattributed,
 		Site:              "default",
 		NetworkID:         32736,
 		ServiceID:         1024,
@@ -705,7 +706,7 @@ func insertTestRecordingForSite(t *testing.T, pool *pgxpool.Pool, site string, e
 	t.Helper()
 	q := sqlcgen.New(pool)
 	id, err := q.CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
-		Source:            "manual",
+		Source:            reservation.SourceUnattributed,
 		Site:              site,
 		NetworkID:         32736,
 		ServiceID:         1024,
@@ -1767,23 +1768,12 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 	}
 }
 
-// TestIngestWorker_LogsInfoWhenManualSourceReservationUnresolvable は
-// source='manual' の録画で JOIN が失敗した場合でも「引けなかった」が必ず
-// ログに残ることを確認する（レビュー指摘: DeriveRecordingSource
-// (internal/reservation/source.go) は intent action='record' があれば予約の
-// 有無に関わらず 'manual' を返すため、rec.Source == reservation.SourceRule だけを見る
-// 判定では「ユーザーが手動予約して encodeProfiles を指定した録画」で解決に
-// 失敗したときだけログが一切出ず、issue #149 が問題にした症状がそのまま
-// 残っていた）。
-//
-// このテストは「予約がそもそも存在しない日常的な manual 録画」
-// （insertTestRecording と同じ形。TestIngestWorker_NoReservation_LeavesEncodePolicyDefault
-// が既に確認している）を使って再現する —— DeriveRecordingSource は
-// intent 由来の 'manual' と予約皆無の 'manual' を区別できないので、
-// このケースでもログが出ることが「manual を判定軸にしない」ことの直接的な
-// 証拠になる。修正前の実装（rec.Source == reservation.SourceRule のときだけ警告）では
-// このテストは一切ログが出ずに落ちる。
-func TestIngestWorker_LogsInfoWhenManualSourceReservationUnresolvable(t *testing.T) {
+// TestIngestWorker_LogsInfoWhenUnattributedSourceReservationUnresolvable は
+// source='unattributed' の録画で JOIN が失敗した場合でも「引けなかった」が必ず
+// Info ログに残ることを確認する。予約も intent も無い日常的な録画では、解決失敗は
+// 異常ではないが、encode policy が既定値に凍結された事実は運用上追跡できる必要が
+// ある。
+func TestIngestWorker_LogsInfoWhenUnattributedSourceReservationUnresolvable(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -1820,7 +1810,7 @@ func TestIngestWorker_LogsInfoWhenManualSourceReservationUnresolvable(t *testing
 
 	logText := logBuf.String()
 	if !strings.Contains(logText, "level=INFO") {
-		t.Errorf("expected an INFO log for source=manual reservation unresolvable, got:\n%s", logText)
+		t.Errorf("expected an INFO log for source=unattributed reservation unresolvable, got:\n%s", logText)
 	}
 	if !strings.Contains(logText, "reservation not found via broadcast event key") {
 		t.Errorf("expected log message to mention the unresolved lookup, got:\n%s", logText)
@@ -1829,7 +1819,7 @@ func TestIngestWorker_LogsInfoWhenManualSourceReservationUnresolvable(t *testing
 		t.Errorf("expected log to contain recording_id=%d, got:\n%s", recordingID, logText)
 	}
 	if strings.Contains(logText, "level=WARN") {
-		t.Errorf("source=manual unresolved reservation must not be logged at WARN (mixes the daily case with the anomalous one), got:\n%s", logText)
+		t.Errorf("source=unattributed unresolved reservation must not be logged at WARN, got:\n%s", logText)
 	}
 
 	// source='rule' の対応テストと同じ理由で、行の有無そのものを確認する
@@ -1840,6 +1830,86 @@ func TestIngestWorker_LogsInfoWhenManualSourceReservationUnresolvable(t *testing
 	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
 	if keepOriginal != "always" || len(profiles) != 0 {
 		t.Errorf("keep_original/encode_profiles = %q/%v, want always/[] (unresolved, frozen to defaults)", keepOriginal, profiles)
+	}
+}
+
+// TestIngestWorker_LogsWarnWhenManualSourceReservationUnresolvable は、録画作成時に
+// program_intents.action=record があった録画を先に作り、その後に snapshot ごと GC
+// して予約解決を失敗させる。recordings.source は作成時の manual snapshot を保持する
+// ので、unattributed と混同せず Warn になることを確認する。
+func TestIngestWorker_LogsWarnWhenManualSourceReservationUnresolvable(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	programID := int64(900000000000011)
+	insertProgramSnapshotAndReservation(t, pool, programID, "手動意図の GC 番組")
+	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
+		Site: "default", ProgramID: programID, Action: reservation.IntentRecord,
+	}); err != nil {
+		t.Fatalf("creating record intent: %v", err)
+	}
+	recordingID := insertTestRecordingForReservation(t, pool, programID)
+	if _, err := pool.Exec(ctx, "UPDATE recordings SET source = $2 WHERE id = $1", recordingID, reservation.SourceManual); err != nil {
+		t.Fatalf("marking recording manual: %v", err)
+	}
+	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-manual-gced", programID)
+
+	// program_snapshots の削除は reservations / program_intents を CASCADE する。
+	if _, err := pool.Exec(ctx,
+		"DELETE FROM program_snapshots WHERE site = $1 AND program_id = $2", "default", programID); err != nil {
+		t.Fatalf("running snapshot GC: %v", err)
+	}
+	var intents, reservations int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM program_intents WHERE site = $1 AND program_id = $2", "default", programID,
+	).Scan(&intents); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM reservations WHERE site = $1 AND program_id = $2", "default", programID,
+	).Scan(&reservations); err != nil {
+		t.Fatal(err)
+	}
+	if intents != 0 || reservations != 0 {
+		t.Fatalf("GC left intent/reservation rows: intents=%d reservations=%d", intents, reservations)
+	}
+
+	tsData := makeTSData(20)
+	srv := newFullTransferServer(t, tsData, "test/policy-manual-gced.m2ts")
+	mc := mirakc.NewClient(srv.URL, nil)
+	w := &IngestWorker{
+		MirakcClients: singleSiteClients("", mc),
+		MediaDir:      t.TempDir(),
+		Pool:          pool,
+		StallTimeout:  5 * time.Second,
+	}
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-policy-manual-gced"},
+	}
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	if err := w.Work(riverWorkContext(t, pool), job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	logText := logBuf.String()
+	if !strings.Contains(logText, "level=WARN") {
+		t.Errorf("expected a WARN log for source=manual reservation unresolvable, got:\n%s", logText)
+	}
+	if !strings.Contains(logText, "reservation not found via broadcast event key") {
+		t.Errorf("expected log message to mention the unresolved lookup, got:\n%s", logText)
+	}
+	if !strings.Contains(logText, fmt.Sprintf("recording_id=%d", recordingID)) {
+		t.Errorf("expected log to contain recording_id=%d, got:\n%s", recordingID, logText)
 	}
 }
 

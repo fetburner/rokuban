@@ -42,6 +42,7 @@ import {
   clearRecordingsFilters,
   hasAnyRecordingsCondition,
   shouldShowRecordingSite,
+  sourceLabels,
   type RecordingsPageSearch,
 } from '@/lib/recording-search'
 import { cn } from '@/lib/utils'
@@ -742,6 +743,7 @@ function RecordingRow({
               {recording.site}
             </span>
           )}
+          <span className="shrink-0">{sourceLabels[recording.source]}</span>
           <span className="shrink-0">{recording.serviceName}</span>
           <span className="shrink-0">{formatDateTime(recording.startAt)}</span>
           <span className="shrink-0">{formatDuration(recording.durationMs)}</span>

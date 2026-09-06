@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -43,7 +44,7 @@ func TestRescueLatest_NoCatalogScansBareAssetsIdempotently(t *testing.T) {
 	}
 
 	rows, err := pool.Query(context.Background(), `
-		SELECT r.title, r.network_id, r.service_name,
+		SELECT r.title, r.source, r.network_id, r.service_name,
 		       a.kind, COALESCE(a.profile, ''), a.rel_path, a.size_bytes
 		FROM recordings r JOIN media_assets a ON a.recording_id = r.id
 		ORDER BY a.rel_path
@@ -53,14 +54,14 @@ func TestRescueLatest_NoCatalogScansBareAssetsIdempotently(t *testing.T) {
 	}
 	defer rows.Close()
 	type gotRow struct {
-		title, serviceName, kind, profile, relPath string
-		networkID                                  int32
-		size                                       int64
+		title, source, serviceName, kind, profile, relPath string
+		networkID                                          int32
+		size                                               int64
 	}
 	var got []gotRow
 	for rows.Next() {
 		var row gotRow
-		if err := rows.Scan(&row.title, &row.networkID, &row.serviceName,
+		if err := rows.Scan(&row.title, &row.source, &row.networkID, &row.serviceName,
 			&row.kind, &row.profile, &row.relPath, &row.size); err != nil {
 			t.Fatal(err)
 		}
@@ -81,6 +82,9 @@ func TestRescueLatest_NoCatalogScansBareAssetsIdempotently(t *testing.T) {
 		t.Errorf("m2ts row = %+v", got[1])
 	}
 	for _, row := range got {
+		if row.source != reservation.SourceUnattributed {
+			t.Errorf("rescued source = %q, want %q: %+v", row.source, reservation.SourceUnattributed, row)
+		}
 		if row.networkID >= 0 || row.serviceName != "Recovered file (metadata unavailable)" {
 			t.Errorf("synthetic metadata not explicit: %+v", row)
 		}

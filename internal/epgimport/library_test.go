@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -56,6 +57,14 @@ func TestImportLibrary_IdempotentRerun(t *testing.T) {
 	}
 	if recordings != 1 || assets != 1 {
 		t.Fatalf("recordings=%d assets=%d after rerun, want 1/1", recordings, assets)
+	}
+
+	var source string
+	if err := pool.QueryRow(context.Background(), `SELECT source FROM recordings`).Scan(&source); err != nil {
+		t.Fatal(err)
+	}
+	if source != reservation.SourceUnattributed {
+		t.Errorf("source = %q, want %q (a migrated library item has no rule or program_intents to attribute it to)", source, reservation.SourceUnattributed)
 	}
 }
 

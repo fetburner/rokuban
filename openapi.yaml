@@ -789,7 +789,7 @@ paths:
           required: false
           schema:
             type: string
-            enum: [rule, manual]
+            enum: [rule, manual, unattributed]
         - name: ruleId
           in: query
           required: false
@@ -1619,8 +1619,13 @@ components:
           type: integer
           format: int64
         source:
+          description: |
+            録画作成時に一度だけ焼かれる出自の snapshot。
+            `rule` は予約行があり、`program_intents.action=record` が無い録画、
+            `manual` はユーザーの録画意図があった録画、`unattributed` は予約も
+            意図も特定できない録画を表す。
           type: string
-          enum: [rule, manual]
+          enum: [rule, manual, unattributed]
         serviceName:
           type: string
         channelType:

@@ -209,12 +209,19 @@ export type Program = ProgramListItem & {
   audios?: AudioInfo[];
 };
 
+/**
+ * 録画作成時に一度だけ焼かれる出自の snapshot。
+ * `rule` は予約行があり、`program_intents.action=record` が無い録画、
+ * `manual` はユーザーの録画意図があった録画、`unattributed` は予約も
+ * 意図も特定できない録画を表す。
+ */
 export type RecordingSource = typeof RecordingSource[keyof typeof RecordingSource];
 
 
 export const RecordingSource = {
   rule: 'rule',
   manual: 'manual',
+  unattributed: 'unattributed',
 } as const;
 
 export type RecordingChannelType = typeof RecordingChannelType[keyof typeof RecordingChannelType];
@@ -440,6 +447,12 @@ export interface Recording {
      */
   site: string;
   ruleId?: number;
+  /**
+     * 録画作成時に一度だけ焼かれる出自の snapshot。
+     * `rule` は予約行があり、`program_intents.action=record` が無い録画、
+     * `manual` はユーザーの録画意図があった録画、`unattributed` は予約も
+     * 意図も特定できない録画を表す。
+     */
   source: RecordingSource;
   serviceName: string;
   channelType: RecordingChannelType;
@@ -1259,6 +1272,7 @@ export type ListRecordingsSource = typeof ListRecordingsSource[keyof typeof List
 export const ListRecordingsSource = {
   rule: 'rule',
   manual: 'manual',
+  unattributed: 'unattributed',
 } as const;
 
 export type ListRecordingsOrder = typeof ListRecordingsOrder[keyof typeof ListRecordingsOrder];
