@@ -34,10 +34,16 @@ export function ReservationsPage() {
     },
     { query: { enabled: listedWindow !== null } },
   )
-  // 取得の失敗・未完了は「バッジが出ない」に落ちる。元から沈黙は「収まる」ことの
-  // 保証ではないので（docs/data.md §6.5）、予約一覧そのものをエラーにはしない
-  const overages = useMemo(() => unwrap(overagesQuery.data) ?? [], [overagesQuery.data])
-  const attentionReady = listedWindow === null || !overagesQuery.isPending
+  // 成功した容量データだけを判定に使う。失敗時は React Query が前回成功した
+  // data を残すことがあるが、それを最新の確認結果として表示してはいけない。
+  // 容量取得の失敗・未完了は「不足なし」ではなく未確認なので、沈黙を保証にしない
+  // 方針（docs/data.md §6.5）を一覧の絞り込みにも適用する。
+  const overages = useMemo(
+    () => (overagesQuery.isSuccess ? (unwrap(overagesQuery.data) ?? []) : []),
+    [overagesQuery.data, overagesQuery.isSuccess],
+  )
+  const attentionReady = listedWindow === null || overagesQuery.isSuccess
+  const capacityUnavailable = listedWindow !== null && overagesQuery.isError
   const attentionReservations = useMemo(
     () => reservations.filter((reservation) => reservationNeedsAttention(reservation, overages)),
     [overages, reservations],
@@ -51,12 +57,12 @@ export function ReservationsPage() {
   return (
     <>
       <PageHeader title="予約">
-        {!query.isPending && !query.isError && attentionReady && (
+        {!query.isPending && !query.isError && (
           <div role="group" aria-label="予約の絞り込み" className="flex flex-wrap gap-2 px-4 pb-3">
             <Chip active={search.only === undefined} onClick={() => selectOnly(undefined)}>
               すべて（{reservations.length}）
             </Chip>
-            {attentionReservations.length > 0 && (
+            {attentionReady && attentionReservations.length > 0 && (
               <Chip active={search.only === 'attention'} onClick={() => selectOnly('attention')}>
                 要確認（{attentionReservations.length}）
               </Chip>
@@ -66,15 +72,23 @@ export function ReservationsPage() {
       </PageHeader>
 
       <PageContent>
+        {!query.isError && capacityUnavailable && (
+          <ErrorState onRetry={() => void overagesQuery.refetch()}>
+            容量の確認に失敗しました。要確認の判定が不完全です
+          </ErrorState>
+        )}
         {query.isError ? (
-        <ErrorState onRetry={() => void query.refetch()}>予約の取得に失敗しました</ErrorState>
-      ) : query.isPending || (search.only === 'attention' && !attentionReady) ? (
-        <ListSkeleton />
-      ) : visibleReservations.length === 0 ? (
-        <EmptyState>
-          {search.only === 'attention' ? '確認が要る予約はありません' : '予約がありません'}
-        </EmptyState>
-      ) : (
+          <ErrorState onRetry={() => void query.refetch()}>予約の取得に失敗しました</ErrorState>
+        ) : query.isPending ||
+          (search.only === 'attention' && !attentionReady && !capacityUnavailable) ? (
+          <ListSkeleton />
+        ) : visibleReservations.length === 0 ? (
+          capacityUnavailable && search.only === 'attention' ? null : (
+            <EmptyState>
+              {search.only === 'attention' ? '確認が要る予約はありません' : '予約がありません'}
+            </EmptyState>
+          )
+        ) : (
         <ul>
           {visibleReservations.map((r) => {
             // 行本体のリンクの accessible name。子要素を持たない絶対配置の
@@ -152,7 +166,7 @@ export function ReservationsPage() {
             )
           })}
         </ul>
-      )}
+        )}
       </PageContent>
     </>
   )
