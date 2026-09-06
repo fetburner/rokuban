@@ -2262,7 +2262,9 @@ WHERE site = $2 AND program_id = $3
 `, int64(48*time.Hour/time.Millisecond), "default", res.ProgramID); err != nil {
 		t.Fatalf("extending program duration: %v", err)
 	}
-	createStartedRecording(t, ctx, q, int32(res.ProgramID%100000), startAt, startAt.Add(time.Minute))
+	// mirakc がチューナーを開くのは予定の 15 秒前で、started_at はその時刻
+	// そのまま入る（実測 -00:00:14.99、docs/recording/delegation.md §2）。
+	createStartedRecording(t, ctx, q, int32(res.ProgramID%100000), startAt, startAt.Add(-15*time.Second))
 
 	rec := reconciler.New("default", mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {

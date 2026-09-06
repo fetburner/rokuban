@@ -34,8 +34,13 @@
 -- （ARIB TR-B14 第四編 8.2.1）。放送イベントキーだけでは過去に録画した同じ
 -- event_id を現在のイベントと区別できないため、started_at に時間の下界を掛ける。
 -- program_start_at ではなく started_at を使うのは、前者が予約側の start_at と
--- mirakc の別オブジェクト由来で、繰り下げ・延長時にずれるからである。呼び出し側は
--- 通常 now - 24 時間を渡し、24 時間を超える長時間番組だけ候補の start_at まで緩める。
+-- mirakc の別オブジェクト由来で、繰り下げ・延長時にずれるからである。event_id の
+-- 再利用は前イベント終了の 24 時間後以降でしか起きないので、下界は「候補の
+-- 開始時刻 - 24 時間」（呼び出し側は通常 now - 24 時間、これより古い候補があれば
+-- その候補の開始時刻 - 24 時間まで緩める）。started_at が予定ちょうどではなく
+-- 予定 - 15 秒になる（mirakc がチューナーを開く時刻。実測は
+-- docs/recording/delegation.md §2）ことに影響されないよう、候補の開始時刻
+-- ちょうどではなく一意性の窓の分だけ手前に置く。
 -- name: ListStartedBroadcastEventKeys :many
 SELECT DISTINCT rec.network_id, rec.service_id, rec.event_id
 FROM recordings rec

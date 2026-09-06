@@ -931,17 +931,28 @@ func (r *Reconciler) detectStartDelays(ctx context.Context, reservations []desir
 		return nil, nil
 	}
 
-	// event_id はイベント終了から 24 時間しか一意でないため、通常は直近 24 時間に
-	// 開始した録画だけを現在のイベントの観測とみなす。ただし 24 時間を超える長尺番組
-	// では現在の録画の started_at がその窓より前になりうるので、候補の開始時刻まで
-	// 下界を緩める。予約側の start_at は recordings.program_start_at と別オブジェクト
-	// 由来でずれるため、下界の判定に program_start_at は使わない。
+	// event_id はイベント終了から 24 時間しか一意でないため、event_id が再利用
+	// されるのは前イベント終了の 24 時間後以降でしかない。したがって「今回の
+	// イベントの録画」の started_at は必ず「今回のイベント開始 - 24 時間」以降に
+	// ある。候補の開始時刻ちょうどを下界にすると、24 時間を超える長尺番組では
+	// その番組自身の started_at が下界より古くなり、録画中なのに毎パス開始遅延と
+	// 誤検知する。recordings.started_at は mirakc がチューナーを開いた時刻そのままで、
+	// 構造的に「予定 - 15 秒」になる（実測 -00:00:14.99、前番組延長・
+	// running_status=2 ではさらに数秒〜十数秒早い。docs/recording/delegation.md
+	// §2「PSI/SI 追従」参照）。下界を「候補の開始時刻 - 24 時間」まで緩めれば、
+	// 再利用の除外を保ったまま、started_at が予定より早いことに影響されない。
 	startedAfter := now.Add(-broadcastEventIDUniquenessWindow)
 	for _, d := range candidates {
-		if d.snap.StartAt.Before(startedAfter) {
-			startedAfter = d.snap.StartAt
+		if b := d.snap.StartAt.Add(-broadcastEventIDUniquenessWindow); b.Before(startedAfter) {
+			startedAfter = b
 		}
 	}
+	// 下界は候補全体で共有する 1 値なので、バッチに長尺番組が 1 本混じると
+	// 他の候補（本来は直近 24 時間で足りる）の窓も一緒に広がる。候補ごとに
+	// 下界を分ければ避けられるが、そうすると 3 本の parallel array を
+	// generate_subscripts + 添字アクセスでタプル照合する下のクエリ形が崩れる
+	// （internal/db/queries/start_delay.sql 参照）。widen 側の誤検知を消す方を
+	// 優先し、この天井は許容する。
 
 	networkIDs := make([]int32, len(candidates))
 	serviceIDs := make([]int32, len(candidates))
