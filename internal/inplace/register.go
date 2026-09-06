@@ -100,28 +100,38 @@ func Register(ctx context.Context, pool *pgxpool.Pool, mediaDir string, in Input
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := sqlcgen.New(tx)
 
-	// rel_path は保存済みファイルの最も強い identity。既に公開済みなら、その録画が
-	// ごみ箱にあっても復元・複製せず同じ recording_id を使う。これにより rescue の
-	// 再実行がユーザーの deleted_at を覆さず、rel_path unique にも衝突しない。
-	existing := make([]*sqlcgen.GetPublishedInPlaceAssetByRelPathRow, len(assets))
+	// rel_path は保存済みファイルの最も強い identity。asset の state にかかわらず
+	// recording_id を再利用する。live asset なら既存 asset をそのまま返し、deleted
+	// asset なら下の upsert で同じ asset tuple を active に戻す。これにより rescue の
+	// 再実行で mtime が変わっても recording を複製せず、実ファイルが残る復旧を守る。
+	// program_start_at を rel_path 由来へ置き換える案は、既存 rescue 行の移行が必要で
+	// 表示用の mtime も失うため採らない。実ファイルが残る場合は台帳の deleted より
+	// ファイルを優先し、rel_path から既存の recording を引く。
+	existing := make([]*sqlcgen.GetInPlaceAssetByRelPathRow, len(assets))
 	var recordingID int64
 	for i, asset := range assets {
-		row, err := q.GetPublishedInPlaceAssetByRelPath(ctx, asset.relPath)
+		row, err := q.GetInPlaceAssetByRelPath(ctx, asset.relPath)
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue
 		}
 		if err != nil {
 			return nil, fmt.Errorf("looking up in-place asset %q: %w", asset.relPath, err)
 		}
-		if row.Kind != asset.kind || !sameStringPointer(row.Profile, asset.profile) {
-			return nil, fmt.Errorf("published asset %q is %s/%v, requested %s/%v",
-				asset.relPath, row.Kind, row.Profile, asset.kind, asset.profile)
-		}
 		if recordingID != 0 && recordingID != row.RecordingID {
 			return nil, fmt.Errorf("in-place assets belong to different recordings: %d and %d",
 				recordingID, row.RecordingID)
 		}
 		recordingID = row.RecordingID
+		if !row.Published {
+			// A deleted row supplies ownership only. Its old kind/profile may differ
+			// when the path was reused, so let UpsertInPlaceMediaAsset decide whether
+			// to reactivate or create the requested tuple.
+			continue
+		}
+		if row.Kind != asset.kind || !sameStringPointer(row.Profile, asset.profile) {
+			return nil, fmt.Errorf("published asset %q is %s/%v, requested %s/%v",
+				asset.relPath, row.Kind, row.Profile, asset.kind, asset.profile)
+		}
 		rowCopy := row
 		existing[i] = &rowCopy
 	}

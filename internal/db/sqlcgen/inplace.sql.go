@@ -10,30 +10,38 @@ import (
 	"time"
 )
 
-const getPublishedInPlaceAssetByRelPath = `-- name: GetPublishedInPlaceAssetByRelPath :one
+const getInPlaceAssetByRelPath = `-- name: GetInPlaceAssetByRelPath :one
 
-SELECT id, recording_id, kind, profile
+SELECT id, recording_id, kind, profile,
+       (state <> 'deleted')::boolean AS published
 FROM media_assets
-WHERE rel_path = $1 AND state <> 'deleted'
+WHERE rel_path = $1
+ORDER BY (state <> 'deleted')::boolean DESC, id DESC
+LIMIT 1
 `
 
-type GetPublishedInPlaceAssetByRelPathRow struct {
+type GetInPlaceAssetByRelPathRow struct {
 	ID          int64
 	RecordingID int64
 	Kind        string
 	Profile     *string
+	Published   bool
 }
 
 // In-place media registration shared by `rokuban rescue` and M3-10 imports.
 // Bytes are already under storage.media_dir; these queries only publish DB rows.
-func (q *Queries) GetPublishedInPlaceAssetByRelPath(ctx context.Context, relPath string) (GetPublishedInPlaceAssetByRelPathRow, error) {
-	row := q.db.QueryRow(ctx, getPublishedInPlaceAssetByRelPath, relPath)
-	var i GetPublishedInPlaceAssetByRelPathRow
+// media_assets_rel_path_idx は live な rel_path の同時存在だけを制約する。
+// ここは、実ファイルが残っている限り deleted 行もそのファイルの所属を示す
+// ので、recording_id を再利用できるように意図的に述語を持たない。
+func (q *Queries) GetInPlaceAssetByRelPath(ctx context.Context, relPath string) (GetInPlaceAssetByRelPathRow, error) {
+	row := q.db.QueryRow(ctx, getInPlaceAssetByRelPath, relPath)
+	var i GetInPlaceAssetByRelPathRow
 	err := row.Scan(
 		&i.ID,
 		&i.RecordingID,
 		&i.Kind,
 		&i.Profile,
+		&i.Published,
 	)
 	return i, err
 }

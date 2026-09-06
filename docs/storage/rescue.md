@@ -75,8 +75,11 @@ catalog/
 - `catalog/` があれば照合してフルメタデータ（番組情報・ドロップ統計・保持ポリシー）ごと復元。
   catalog の各行は自分の site を持つので `--site` は使わない
 - catalog が無ければ TS / M2TS を `original`、MP4 / MKV / WebM を `encoded`
-  （`profile = rescue-<拡張子>`）として、現在位置のまま登録する。タイトルと時刻は
-  ファイル名 / mtime、番組・サービス情報は「metadata unavailable」と明示した素の録画になる
+  （`profile = rescue-<拡張子>`）として、現在位置のまま登録する。タイトルはファイル名から作り、
+  `program_start_at` は初回 rescue 時の mtime とする。番組・サービス情報は「metadata unavailable」と明示した素の録画になる。
+  この列は recording identity にも含まれるが、再走査では rel_path から recording を再利用するため、
+  後から mtime が変わっても別 recording は作られない。mtime を rel_path 由来の値へ置き換える案は、
+  既存 rescue 行の移行が必要で表示時刻も失うため採らない
 - `catalog/` 自身、未知拡張子、symlink は走査対象にしない。ファイル本体はコピーも変更もしない
 - 同じ相対パスは安定した合成番組 identity へ写し、再実行しても録画・asset が増殖しない
 - 走査対象の site は `sites/{site}/` 前置（[contract.md](contract.md) §rel_path の名前空間）から決める。
