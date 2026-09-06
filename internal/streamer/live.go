@@ -164,6 +164,14 @@ const (
 	// timeout しない --- クライアントは playlistStartupTimeout（15s）でセッション
 	// 起動全体を待つので、prefix 読み取り専用の timeout は不要（B の決定）。
 	liveCaptionProbeTimeout = 5 * time.Second
+	// liveMirakcReleaseWait は、退避したセッションの mirakc 接続を Close して
+	// `<-s.done` を待った後、1 回だけ再試行する前の待ち時間。実 mirakc
+	// 4.0.0-dev.0 + fixture tuner 2 本 + 録画 1 本で、旧ライブの Close から次の
+	// 異なる波のライブ要求が通るまでを測ったところ 2.35〜4.18 秒だった（2026-09-06、
+	// internal/mirakc/conformance/live_release_test.go）。5 秒にして、mirakc 側の
+	// 非同期な tuner プロセス終了の揺れを吸収する。ここは再試行の回数を増やすための
+	// backoff ではなく、退避後に 1 回だけ行う解放待ちである。
+	liveMirakcReleaseWait = 5 * time.Second
 )
 
 // LiveStreamer はライブ視聴の HLS ルートを配信する。
@@ -908,6 +916,9 @@ func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64)
 	slog.Info("streamer: evicting idle live session before retry",
 		"service_id", victim.serviceID, "reason", reason)
 	victim.stop()
+	// mirakc は HTTP body の Close と tuner プロセスの解放を同期していない。
+	// stop が done まで待っても、直後の要求が容量エラーになる窓が実物で観測された。
+	time.Sleep(liveMirakcReleaseWait)
 
 	retry, retryErr := ls.getOrCreateSessionOnce(ctx, serviceID)
 	if retryErr != nil && retry != nil {
