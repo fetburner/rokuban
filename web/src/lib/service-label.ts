@@ -19,23 +19,25 @@ const serviceKey = (s: Service) => s.id
  * disambiguationParts はサービスを区別する候補の材料。上から順に足していき、
  * 名前が重複するグループ内で一意になったところで止める。programId を分解して
  * 作れる値（networkId・serviceId を逆算するもの)ではなく、API が `Service`
- * として既に返している値だけを使う（issue #306）。ワンセグ / サブサービスは
- * 主サービスと同じリモコン番号・物理チャンネルで並ぶことがあり、その場合だけ
- * 最後の `networkId` + `serviceId` まで進んで区別する。最後の材料はチップの
- * identity と同じ組なので、名前が重複するグループ内では必ず一意になる。
+ * として既に返している値だけを使う（issue #306）。地上波のマルチ編成は主サービスと
+ * 同じ名前・リモコン番号で並ぶことがあるため、3 桁チャンネル番号（リモコン番号 2 桁
+ * + serviceId から復元したサービス番号）を最初の材料にする。3 桁番号・物理チャンネル
+ * まで同じ場合だけ最後の `networkId` + `serviceId` まで進んで区別する。最後の材料は
+ * チップの identity と同じ組なので、名前が重複するグループ内では必ず一意になる。
  */
 const disambiguationParts: ((s: Service) => string)[] = [
   (s) =>
-    // リモコン番号は地上波の資源同定（channel-picker.tsx のバッジと同じ判定）。
-    // BS/CS には意味を持たない番号なので channelType でも絞る
+    // 地上デジタルの 3 桁番号はリモコン番号 2 桁 + サービス番号 1 桁。
+    // サービス番号は serviceId の下位 3bit に対応する（TR-B14）。BS/CS には
+    // リモコン番号から作る 3 桁番号の意味がないので channelType でも絞る
     // （テスト「BS がリモコン番号を持っていても番号を出さない」）。地上波でも
     // 0 は存在しないリモコン番号（mirakc が返さなかったときのゼロ値。
     // `internal/mirakc/types.go` の素の int → `epg_services.remote_control_key_id`
     // は NOT NULL → `internal/api/epg.go` がそのまま 0 を返す）なので、
-    // 「地上波 0」と書かずに種別だけを出す
+    // 「地上波 00x」と書かずに種別だけを出す
     // （テスト「リモコン番号 0 の地上波は種別だけを出す」）。
     s.channelType === 'GR' && s.remoteControlKeyId > 0
-      ? `${channelTypeLabel(s.channelType)} ${s.remoteControlKeyId}`
+      ? `${channelTypeLabel(s.channelType)} ${String(s.remoteControlKeyId).padStart(2, '0')}${(s.serviceId & 7) + 1}`
       : channelTypeLabel(s.channelType),
   (s) => s.channel,
   // チップの identity（`condition-fields.tsx` の key）と同じ組を最後の材料にする。
@@ -49,7 +51,7 @@ const disambiguationParts: ((s: Service) => string)[] = [
 /**
  * serviceDisambiguator は名前が重複するサービスに補助ラベルを与える。
  *
- * 検索・ルールのサービスチップは名前だけを表示していたため、ワンセグ /
+ * 検索・ルールのサービスチップは名前だけを表示していたため、マルチ編成の
  * サブサービスが同じ名前で複数並ぶとどれを選んでいるか分からなかった
  * （issue #306）。名前が重複していないサービスには何も返さない ---
  * 区別が要らない大多数のチップに常時ラベルを付けて読みにくくしないため。
@@ -88,7 +90,7 @@ export function serviceDisambiguator(
     if (group.length <= 1) continue
     // 段を配列に積み、空の段だけを落として連結する。連結の判定を
     // 「ここまでのラベルが空文字か」で代理すると、ある段が空文字を返したときに
-    // 区切りだけが残る（`地上波 5 ・  ・ #3273601024`）。今の API 契約では
+    // 区切りだけが残る（`地上波 051 ・  ・ #3273601024`）。今の API 契約では
     // `channel` も `channelType` も required なので空にはならないが、
     // 段の有無で判定しておけば形が崩れない
     // （テスト「材料が空文字の段は区切りごと飛ばす」）。

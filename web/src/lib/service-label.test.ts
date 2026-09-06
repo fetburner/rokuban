@@ -27,7 +27,7 @@ describe('serviceDisambiguator', () => {
     expect(disambiguate(services[1])).toBeUndefined()
   })
 
-  it('リモコン番号が違えば地上波の種別とリモコン番号だけで区別する', () => {
+  it('リモコン番号が違えば地上波の3桁番号だけで区別する', () => {
     // 同名だがリモコン番号が違う（= 実際は別の局・別の中継局）ケース。
     // 物理チャンネルや serviceId まで見なくても 1 段目で解決できることを確認する
     // （2 段目・3 段目まで進んだら値が変わってしまうので検証になる）。
@@ -37,30 +37,56 @@ describe('serviceDisambiguator', () => {
     ]
     const disambiguate = serviceDisambiguator(services)
 
-    expect(disambiguate(services[0])).toBe('地上波 5')
-    expect(disambiguate(services[1])).toBe('地上波 12')
+    expect(disambiguate(services[0])).toBe('地上波 051')
+    expect(disambiguate(services[1])).toBe('地上波 121')
   })
 
-  it('リモコン番号まで同じワンセグ/サブサービスは物理チャンネルで区別する', () => {
+  it('リモコン番号まで同じマルチ編成は3桁番号で区別する', () => {
     const services = [
       service({ serviceId: 1024, remoteControlKeyId: 5, channel: '27' }),
       service({ serviceId: 1025, remoteControlKeyId: 5, channel: '95' }),
     ]
     const disambiguate = serviceDisambiguator(services)
 
-    expect(disambiguate(services[0])).toBe('地上波 5 ・ 27')
-    expect(disambiguate(services[1])).toBe('地上波 5 ・ 95')
+    expect(disambiguate(services[0])).toBe('地上波 051')
+    expect(disambiguate(services[1])).toBe('地上波 052')
   })
 
-  it('リモコン番号・物理チャンネルまで同じなら serviceId で区別する', () => {
+  it('リモコン番号・物理チャンネルまで同じでも3桁番号で区別する', () => {
     const services = [
       service({ serviceId: 1024, remoteControlKeyId: 5, channel: '27' }),
       service({ serviceId: 1025, remoteControlKeyId: 5, channel: '27' }),
     ]
     const disambiguate = serviceDisambiguator(services)
 
-    expect(disambiguate(services[0])).toBe('地上波 5 ・ 27 ・ #3273601024')
-    expect(disambiguate(services[1])).toBe('地上波 5 ・ 27 ・ #3273601025')
+    expect(disambiguate(services[0])).toBe('地上波 051')
+    expect(disambiguate(services[1])).toBe('地上波 052')
+  })
+
+  it('同名のマルチ編成 3 本を3桁番号だけで区別する', () => {
+    const services = [
+      service({ networkId: 32675, serviceId: 5144, remoteControlKeyId: 5, channel: '27' }),
+      service({ networkId: 32675, serviceId: 5145, remoteControlKeyId: 5, channel: '27' }),
+      service({ networkId: 32675, serviceId: 5146, remoteControlKeyId: 5, channel: '27' }),
+    ]
+    const disambiguate = serviceDisambiguator(services)
+
+    expect(services.map((s) => disambiguate(s))).toEqual([
+      '地上波 051',
+      '地上波 052',
+      '地上波 053',
+    ])
+  })
+
+  it('3桁番号・物理チャンネルまで同じなら serviceId で区別する', () => {
+    const services = [
+      service({ serviceId: 1024, remoteControlKeyId: 5, channel: '27' }),
+      service({ serviceId: 1032, remoteControlKeyId: 5, channel: '27' }),
+    ]
+    const disambiguate = serviceDisambiguator(services)
+
+    expect(disambiguate(services[0])).toBe('地上波 051 ・ 27 ・ #3273601024')
+    expect(disambiguate(services[1])).toBe('地上波 051 ・ 27 ・ #3273601032')
   })
 
   // 判定は `channelType === 'GR' && remoteControlKeyId > 0` の 2 条件で、
@@ -130,15 +156,15 @@ describe('serviceDisambiguator', () => {
   it('材料が空文字の段は区切りごと飛ばす', () => {
     // 今の API 契約では `channel` は required なので空文字は来ない（= 防御）。
     // 段の連結を「ここまでのラベルが空文字か」で代理すると、この入力で
-    // `地上波 5 ・  ・ #3273601024` のように区切りだけが残る。
+    // `地上波 051 ・  ・ #3273601024` のように区切りだけが残る。
     const services = [
       service({ serviceId: 1024, remoteControlKeyId: 5, channel: '' }),
-      service({ serviceId: 1025, remoteControlKeyId: 5, channel: '' }),
+      service({ serviceId: 1032, remoteControlKeyId: 5, channel: '' }),
     ]
     const disambiguate = serviceDisambiguator(services)
 
-    expect(disambiguate(services[0])).toBe('地上波 5 ・ #3273601024')
-    expect(disambiguate(services[1])).toBe('地上波 5 ・ #3273601025')
+    expect(disambiguate(services[0])).toBe('地上波 051 ・ #3273601024')
+    expect(disambiguate(services[1])).toBe('地上波 051 ・ #3273601032')
   })
 
   it('渡した配列とは別オブジェクトでも同じ (networkId, serviceId) なら引ける', () => {
@@ -151,21 +177,20 @@ describe('serviceDisambiguator', () => {
     ]
     const disambiguate = serviceDisambiguator(services)
 
-    expect(disambiguate({ ...services[0] })).toBe('地上波 5 ・ 27')
-    expect(disambiguate({ ...services[1] })).toBe('地上波 5 ・ 95')
+    expect(disambiguate({ ...services[0] })).toBe('地上波 051')
+    expect(disambiguate({ ...services[1] })).toBe('地上波 052')
   })
 
   it('3 局以上の重複でも全員が区別できる（issue #306 の実例）', () => {
     const services = [
-      service({ serviceId: 1, remoteControlKeyId: 5, channel: '27' }),
-      service({ serviceId: 2, remoteControlKeyId: 5, channel: '27' }),
-      service({ serviceId: 3, remoteControlKeyId: 6, channel: '30' }),
+      service({ serviceId: 5144, remoteControlKeyId: 5, channel: '27' }),
+      service({ serviceId: 5145, remoteControlKeyId: 5, channel: '27' }),
+      service({ serviceId: 5146, remoteControlKeyId: 5, channel: '27' }),
     ]
     const disambiguate = serviceDisambiguator(services)
     const labels = services.map((s) => disambiguate(s))
 
-    expect(new Set(labels).size).toBe(3)
-    expect(labels.every((l) => l !== undefined)).toBe(true)
+    expect(labels).toEqual(['地上波 051', '地上波 052', '地上波 053'])
   })
 
   it('同名グループのうち番組を持たない側だけ「番組なし」を足す', () => {
@@ -179,8 +204,8 @@ describe('serviceDisambiguator', () => {
     ]
     const disambiguate = serviceDisambiguator(services)
 
-    expect(disambiguate(services[0])).toBe('地上波 5 ・ 27 ・ #3273601024')
-    expect(disambiguate(services[1])).toBe('地上波 5 ・ 27 ・ #3273601032 ・ 番組なし')
+    expect(disambiguate(services[0])).toBe('地上波 051 ・ 27 ・ #3273601024')
+    expect(disambiguate(services[1])).toBe('地上波 051 ・ 27 ・ #3273601032 ・ 番組なし')
   })
 
   it('hasPrograms が両方 true なら「番組なし」は付かない', () => {
@@ -191,8 +216,8 @@ describe('serviceDisambiguator', () => {
     ]
     const disambiguate = serviceDisambiguator(services)
 
-    expect(disambiguate(services[0])).toBe('地上波 5')
-    expect(disambiguate(services[1])).toBe('地上波 12')
+    expect(disambiguate(services[0])).toBe('地上波 051')
+    expect(disambiguate(services[1])).toBe('地上波 121')
   })
 
   it('同名グループ全員が番組を持たないなら「番組なし」は付かない', () => {
@@ -201,7 +226,7 @@ describe('serviceDisambiguator', () => {
     // 全員 false は本番で起きる:
     // ① 初回 EPG 取得前は全サービスが hasPrograms: false になる
     //    （`openapi.yaml` の `Service.hasPrograms` の定義）
-    // ② 同名のワンセグ / サブサービスが 2 本並び、どちらも番組を持たない族
+    // ② 同名のサブサービスが 2 本並び、どちらも番組を持たない族
     // 上乗せの条件から `group.some((s) => s.hasPrograms)` を落とすと（= 以前の
     // 「false なら全員に付ける」実装に戻すと）ここが落ちる。
     const services = [
@@ -210,7 +235,7 @@ describe('serviceDisambiguator', () => {
     ]
     const disambiguate = serviceDisambiguator(services)
 
-    expect(disambiguate(services[0])).toBe('地上波 5 ・ 27')
-    expect(disambiguate(services[1])).toBe('地上波 5 ・ 95')
+    expect(disambiguate(services[0])).toBe('地上波 051')
+    expect(disambiguate(services[1])).toBe('地上波 052')
   })
 })
