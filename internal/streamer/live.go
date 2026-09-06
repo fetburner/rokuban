@@ -138,6 +138,20 @@ var (
 	errStartupTimeout = errors.New("live session did not become ready in time")
 )
 
+// liveUpstreamStartError は mirakc の stream 要求が拒否された起動失敗を表す。
+// ffmpeg の起動失敗などとは、idle セッションを退避して再試行できる点が異なる。
+type liveUpstreamStartError struct {
+	err error
+}
+
+func (e *liveUpstreamStartError) Error() string {
+	return fmt.Sprintf("requesting mirakc live stream: %v", e.err)
+}
+
+func (e *liveUpstreamStartError) Unwrap() error {
+	return e.err
+}
+
 const (
 	// liveCaptionProbeBytes は live MPEG-TS の先頭を ffprobe に渡すサイズ。
 	// PAT/PMT は入力の先頭付近に現れるため、ライブ本体を先に消費しすぎずに
@@ -150,6 +164,14 @@ const (
 	// timeout しない --- クライアントは playlistStartupTimeout（15s）でセッション
 	// 起動全体を待つので、prefix 読み取り専用の timeout は不要（B の決定）。
 	liveCaptionProbeTimeout = 5 * time.Second
+	// liveMirakcReleaseWait は、退避したセッションの mirakc 接続を Close して
+	// `<-s.done` を待った後、1 回だけ再試行する前の待ち時間。実 mirakc
+	// 4.0.0-dev.0 + fixture tuner 2 本 + 録画 1 本で、旧ライブの Close から次の
+	// 異なる波のライブ要求が通るまでを測ったところ 2.35〜4.18 秒だった（2026-09-06、
+	// internal/mirakc/conformance/live_release_test.go）。5 秒にして、mirakc 側の
+	// 非同期な tuner プロセス終了の揺れを吸収する。ここは再試行の回数を増やすための
+	// backoff ではなく、退避後に 1 回だけ行う解放待ちである。
+	liveMirakcReleaseWait = 5 * time.Second
 )
 
 // LiveStreamer はライブ視聴の HLS ルートを配信する。
@@ -358,13 +380,24 @@ func (ls *LiveStreamer) gcInterval() time.Duration {
 // 「config と DB の境界」= 運用者の意思を否定しない）。導出側で守れば、危険な
 // 組み合わせの帰結は起動失敗ではなく「ヒントが効かないだけ」で済む。
 func (c LiveConfig) leaveGrace() time.Duration {
-	longestSegment := 0
+	return time.Duration(3*c.longestSegmentSeconds())*time.Second + 2*time.Second
+}
+
+func (c LiveConfig) longestSegmentSeconds() int {
+	longest := 0
 	for _, p := range c.Profiles {
-		if p.SegmentSeconds > longestSegment {
-			longestSegment = p.SegmentSeconds
+		if p.SegmentSeconds > longest {
+			longest = p.SegmentSeconds
 		}
 	}
-	return time.Duration(3*longestSegment)*time.Second + 2*time.Second
+	return longest
+}
+
+// idleEvictionThreshold は起動失敗時の退避候補に要求する idle 時間。
+// leaveGrace とは別の導出値で、正常な視聴者を起動失敗の圧力で切らないために
+// 最長セグメント 2 本ぶんを要求する。
+func (c LiveConfig) idleEvictionThreshold() time.Duration {
+	return time.Duration(2*c.longestSegmentSeconds()) * time.Second
 }
 
 // playlistStartupTimeout は元々「ffmpeg がプレイリストの初回書き出しを終える
@@ -851,12 +884,70 @@ func (ls *LiveStreamer) sessionCount() int {
 // への接続（StreamService、全体タイムアウト無し）がハングすると close(s.ready) に
 // 到達せず、ctx（呼び出し元のリクエストの ctx）だけでは呼び出し元が切断するまで
 // 戻らない。**この期限は呼び出し元の ctx に `context.WithTimeout` を被せる形では
-// 実装しない** --- 下の 2 か所の select にそれぞれ `case <-time.After(...)` を
-// 足すだけに留める。ctx を包んで下位の sessionCtx にまで渡してしまうと、この
+// 実装しない** --- getOrCreateSessionOnce の 2 か所の select にそれぞれ
+// `case <-time.After(...)` を足すだけに留める。ctx を包んで下位の sessionCtx にまで
+// 渡してしまうと、この
 // 呼び出しの待ちを諦めるだけのつもりが起動中のセッションそのものを巻き込んで
 // 中断してしまう（sessionCtx は `context.Background()` 由来で、ctx とは独立して
 // いなければならない。issue #189 の罠と同じ形）。
 func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64) (*liveSession, error) {
+	s, err := ls.getOrCreateSessionOnce(ctx, serviceID)
+	if err == nil {
+		return s, nil
+	}
+
+	reason, retryable := liveEvictionReason(err)
+	if !retryable {
+		return nil, err
+	}
+
+	// 上流拒否で ready が閉じても、runSession は map からの削除とディレクトリの
+	// 掃除を defer で行う。自分の失敗セッションを先に完全終了させないと、再試行が
+	// そのセッションを既存セッションとして拾って同じ startErr を返す。
+	if s != nil {
+		<-s.done
+	}
+
+	victim := ls.takeIdleSessionForRetry(time.Now())
+	if victim == nil {
+		return nil, err
+	}
+
+	slog.Info("streamer: evicting idle live session before retry",
+		"service_id", victim.serviceID, "reason", reason)
+	victim.stop()
+	// mirakc は HTTP body の Close と tuner プロセスの解放を同期していない。
+	// stop が done まで待っても、直後の要求が容量エラーになる窓が実物で観測された。
+	time.Sleep(liveMirakcReleaseWait)
+
+	retry, retryErr := ls.getOrCreateSessionOnce(ctx, serviceID)
+	if retryErr != nil && retry != nil {
+		// 再試行自身が ready 後に失敗した場合も、次の要求が同じ startErr を
+		// 拾わないように、そのセッションの後片付けを待ってから返す。
+		<-retry.done
+	}
+	result := "retry_failed"
+	if retryErr == nil {
+		result = "retry_succeeded"
+	}
+	metrics.LiveSessionEvictions.WithLabelValues(reason, result).Inc()
+	return retry, retryErr
+}
+
+func liveEvictionReason(err error) (string, bool) {
+	if errors.Is(err, errSessionLimit) {
+		return "session_limit", true
+	}
+	var upstreamErr *liveUpstreamStartError
+	if errors.As(err, &upstreamErr) && !errors.Is(err, context.Canceled) {
+		return "upstream", true
+	}
+	return "", false
+}
+
+// getOrCreateSessionOnce は 1 回のセッション取得・起動だけを行う。
+// 起動失敗からの退避と再試行は外側の getOrCreateSession が 1 回だけ担当する。
+func (ls *LiveStreamer) getOrCreateSessionOnce(ctx context.Context, serviceID int64) (*liveSession, error) {
 	ls.mu.Lock()
 	if s, ok := ls.sessions[serviceID]; ok {
 		ls.mu.Unlock()
@@ -864,7 +955,7 @@ func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64)
 			return nil, err
 		}
 		if s.startErr != nil {
-			return nil, s.startErr
+			return s, s.startErr
 		}
 		return s, nil
 	}
@@ -895,10 +986,58 @@ func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64)
 		return nil, err
 	}
 	if s.startErr != nil {
-		return nil, s.startErr
+		return s, s.startErr
 	}
 	metrics.LiveActiveSessions.Set(float64(ls.sessionCount()))
 	return s, nil
+}
+
+// takeIdleSessionForRetry は起動失敗時に退避するセッションを 1 本選び、選択と
+// map からの削除を同じロック内で行う。呼び出し側は返ったセッションの stop を
+// 完了させてから再試行する。
+//
+// ready 前のセッションは、待っているハンドラが playlistStartupTimeout の間 touch
+// し続けるため候補から除外する。waiter がいなくなって idleSince が同じ timeout を
+// 超えた起動待ちだけは、mirakc を掴んだままのハングとして退避を許す。ready 済みの
+// セッションは最長 segment_seconds の 2 倍より長く idle であることを要求し、その
+// 中で最も古いものを選ぶ。leaveGrace は lastAccess を十分に巻き戻すので、離脱ヒント
+// を受けたセッションもこの規則で最古の候補になる。
+func (ls *LiveStreamer) takeIdleSessionForRetry(now time.Time) *liveSession {
+	threshold := ls.cfg.idleEvictionThreshold()
+	ls.mu.Lock()
+	var victim *liveSession
+	var oldest time.Duration
+	for _, s := range ls.sessions {
+		idle := s.idleSince(now)
+		if idle <= threshold {
+			continue
+		}
+		if !sessionReady(s) && idle <= playlistStartupTimeout {
+			continue
+		}
+		if victim == nil || idle > oldest {
+			victim = s
+			oldest = idle
+		}
+	}
+	if victim != nil {
+		delete(ls.sessions, victim.serviceID)
+	}
+	ls.mu.Unlock()
+
+	if victim != nil {
+		metrics.LiveActiveSessions.Set(float64(ls.sessionCount()))
+	}
+	return victim
+}
+
+func sessionReady(s *liveSession) bool {
+	select {
+	case <-s.ready:
+		return true
+	default:
+		return false
+	}
 }
 
 // runSession は 1 セッションの全生涯（mirakc 接続 → ffmpeg 起動 → 終了待ち →
@@ -937,7 +1076,7 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 
 	body, err := ls.mirakc.StreamService(ctx, s.serviceID, ls.cfg.TunerPriority)
 	if err != nil {
-		s.startErr = fmt.Errorf("requesting mirakc live stream: %w", err)
+		s.startErr = &liveUpstreamStartError{err: err}
 		metrics.LiveSessionStartFailures.WithLabelValues("upstream_error").Inc()
 		slog.Error("streamer: requesting mirakc live stream", "service_id", s.serviceID, "err", err)
 		close(s.ready)

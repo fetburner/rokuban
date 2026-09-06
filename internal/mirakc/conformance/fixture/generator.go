@@ -5,6 +5,7 @@ package fixture
 import (
 	"context"
 	"io"
+	"strconv"
 	"time"
 )
 
@@ -114,6 +115,19 @@ func NewConfig() Config {
 		EventStart:       start,
 		EventDuration:    EventDuration,
 	}
+}
+
+// NewConfigForChannel は tuner command の channel 引数に対応する Config を作る。
+// conformance の解放遅延テストでは、同じ fixture tuner バイナリを複数の channel 定義から
+// 起動して、mirakc に別々のサービス（別々のチャンネル）として扱わせる。既存の正常系は
+// 引数なしで NewConfig を使うため、service ID は従来どおり変わらない。
+func NewConfigForChannel(channel string) Config {
+	cfg := NewConfig()
+	n, err := strconv.ParseUint(channel, 10, 16)
+	if err == nil && n <= uint64(^uint16(0)-100) {
+		cfg.ServiceID = uint16(n + 100)
+	}
+	return cfg
 }
 
 // NewConfigForCase は病態ケース用の Config を作る。

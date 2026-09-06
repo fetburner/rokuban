@@ -548,6 +548,21 @@ var (
 		Help: "Live-viewing session start failures by reason (session_limit, upstream_error, ffmpeg_error).",
 	}, []string{"reason"})
 
+	// LiveSessionEvictions は、起動失敗からの再試行のために idle セッションを
+	// 退避した回数。reason は再試行のトリガー、result は退避後の再試行結果。
+	//
+	// reason:
+	//   - "upstream": mirakc への stream 要求が拒否された
+	//   - "session_limit": このプロセスの同時セッション上限に達した
+	//
+	// result:
+	//   - "retry_succeeded": 退避後の再試行が成功した
+	//   - "retry_failed": 退避後の再試行も失敗した
+	LiveSessionEvictions = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "rokuban_live_session_evictions_total",
+		Help: "Live-viewing sessions evicted to retry a failed start, by trigger reason and retry result.",
+	}, []string{"reason", "result"})
+
 	// LiveIdleGCReclaimed は idle GC が回収した（クライアントが離れて ffmpeg を
 	// 止めた）ライブセッションの累計件数。
 	LiveIdleGCReclaimed = prometheus.NewCounter(prometheus.CounterOpts{
@@ -671,6 +686,7 @@ func NewRegistry(backlog ...prometheus.Collector) *prometheus.Registry {
 
 		LiveActiveSessions,
 		LiveSessionStartFailures,
+		LiveSessionEvictions,
 		LiveIdleGCReclaimed,
 		LiveLeaveHints,
 		LiveIdleGCLastPass,

@@ -53,6 +53,7 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	CapacityOverages.WithLabelValues(testSite).Set(0)
 	LiveActiveSessions.Set(0)
 	LiveSessionStartFailures.WithLabelValues("session_limit").Inc()
+	LiveSessionEvictions.WithLabelValues("upstream", "retry_succeeded").Inc()
 	LiveIdleGCReclaimed.Add(1)
 	LiveLeaveHints.WithLabelValues("deadline_shortened").Inc()
 	LiveIdleGCLastPass.SetToCurrentTime()
@@ -103,6 +104,7 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 		// issue #91: ライブ視聴
 		"rokuban_live_active_sessions",
 		"rokuban_live_session_start_failures_total",
+		"rokuban_live_session_evictions_total",
 		"rokuban_live_idle_gc_reclaimed_total",
 		"rokuban_live_idle_gc_last_pass_timestamp_seconds",
 		// issue #191: 離脱ヒント（idle GC 回収数と対で読む）

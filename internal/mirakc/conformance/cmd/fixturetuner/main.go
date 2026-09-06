@@ -26,8 +26,11 @@ func main() {
 	// （パイプが閉じられた）も ctx キャンセルも、どちらも「正常に止められた」として exit 0
 	// にする。
 	cfg := fixture.NewConfig()
+	if len(os.Args) > 1 {
+		cfg = fixture.NewConfigForChannel(os.Args[1])
+	}
 	if name := os.Getenv("ROKUBAN_FIXTURE_CASE"); name != "" {
-		cfg = fixture.NewConfigForCase(name)
+		cfg.Case = name
 	}
 	_ = fixture.Run(ctx, os.Stdout, cfg)
 }

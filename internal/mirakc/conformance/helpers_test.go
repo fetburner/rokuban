@@ -192,6 +192,49 @@ recording:
 `, tunerCommand)
 }
 
+// mirakcLiveReleaseConfigYAML はライブストリームのチューナー解放遅延を測るための構成。
+// 3 つの異なる channel / service を 2 本の tuner で受ける。録画 A とライブ B がそれぞれ
+// tuner を占有した状態でライブ C を要求し、B の Close 後に C が通るかを測る。
+func mirakcLiveReleaseConfigYAML(tunerCommand string) string {
+	return fmt.Sprintf(`server:
+  addrs:
+    - http: '0.0.0.0:40772'
+
+channels:
+  - name: conformance-a
+    type: GR
+    channel: '1'
+  - name: conformance-b
+    type: GR
+    channel: '2'
+  - name: conformance-c
+    type: GR
+    channel: '3'
+
+tuners:
+  - name: fixture-1
+    types: [GR]
+    command: %s
+    decoded: true
+  - name: fixture-2
+    types: [GR]
+    command: %s
+    decoded: true
+
+jobs:
+  scan-services:
+    schedule: '*/3 * * * * * *'
+  sync-clocks:
+    schedule: '*/3 * * * * * *'
+  update-schedules:
+    schedule: '*/3 * * * * * *'
+
+recording:
+  basedir: /recordings
+  records-dir: /recordings/records
+`, tunerCommand, tunerCommand)
+}
+
 // mirakcContainer は起動済みの mirakc コンテナへのハンドルである。
 type mirakcContainer struct {
 	name    string
@@ -221,6 +264,11 @@ func mirakcRunArgs(name, tunerBin, configPath, recBase, fixtureCase string) []st
 // startMirakc は mirakc 実物のコンテナを起こし、/api/version が応答するまで待つ。
 // t.Cleanup でコンテナの停止・削除を登録する。
 func startMirakc(t *testing.T, hostDir string, tunerBin string, fixtureCase string) *mirakcContainer {
+	return startMirakcWithConfig(t, hostDir, tunerBin, fixtureCase,
+		mirakcConfigYAML("/fixtures/fixturetuner"))
+}
+
+func startMirakcWithConfig(t *testing.T, hostDir string, tunerBin string, fixtureCase string, configYAML string) *mirakcContainer {
 	t.Helper()
 
 	recBase := filepath.Join(hostDir, "recordings")
@@ -234,7 +282,7 @@ func startMirakc(t *testing.T, hostDir string, tunerBin string, fixtureCase stri
 		t.Fatalf("mkdir config: %v", err)
 	}
 	configPath := filepath.Join(configDir, "config.yml")
-	if err := os.WriteFile(configPath, []byte(mirakcConfigYAML("/fixtures/fixturetuner")), 0o644); err != nil {
+	if err := os.WriteFile(configPath, []byte(configYAML), 0o644); err != nil {
 		t.Fatalf("write config.yml: %v", err)
 	}
 
