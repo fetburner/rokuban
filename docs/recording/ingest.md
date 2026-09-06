@@ -95,7 +95,9 @@ River の at-least-once + 指数バックオフ。**ゼロから作り直す**�
 
 #### 層 3: 完全性検証とコミット
 
-pull 完了後に書き込みバイト数を HEAD の Content-Length と照合 → 一致で `media_assets` コミット（コミット = DB 行。部分ファイルは孤児として cleanup が回収）→ **mirakc 側の record 削除はコミット後のみ**。**HEAD が長さを返さない場合（`Content-Length` 不明）はこの照合をスキップしてそのままコミットする**（`ingest.go` の `expectedLen >= 0` ガード）。どこで落ちても最悪「もう一度 pull」で、データ喪失は構造的に起きない。
+pull 完了後に書き込みバイト数を HEAD の Content-Length と照合 → 一致したら宛先ファイルを `fsync` → `Close` → 直近の親ディレクトリを `fsync` → `media_assets` コミット（コミット = DB 行。部分ファイルは孤児として cleanup が回収）→ **mirakc 側の record 削除はコミット後のみ**。**HEAD が長さを返さない場合（`Content-Length` 不明）はこの照合をスキップしてそのまま永続化確認へ進む**（`ingest.go` の `expectedLen >= 0` ガード）。永続化確認または `Close` に失敗した場合は DB 登録も record 削除も行わず、ジョブを失敗させる。どこで落ちても最悪「もう一度 pull」で、データ喪失は構造的に起きない。
+
+**process crash と host crash を分ける。** これまでの層 2 が扱う process crash は、ワーカーが途中で終了してもエッジ record が残り、次回ジョブが部分ファイルを truncate して最初から取り込む境界である。host crash（電源断など）では、プロセスの `Close` 成功だけでは dirty page の永続化を主張できないため、この層でファイル本体と直近の親ディレクトリを同期してから DB 登録・record 削除へ進む。ローカルファイルシステムではこの順序と同期成功を保証境界として扱うが、CSI / FUSE ごとの `fsync`・`Close` の意味論は実機検証していない（クラウド実機での検証は [#96](https://github.com/fetburner/rokuban/issues/96) の対象）。SIGKILL 試験で確認できるのは process crash の再試行と順序だけで、host crash に対する永続性の証拠にはしない。
 
 運用上の主なリスクは**長時間の転送失敗でエッジのリングバッファが溜まり続ける**こと。`IngestWorker` 自体は River の既定の試行上限のままで、上限に達すると discard（dead-letter）されうる。それでも record が宙に浮かないのは、mirakc 側の record がコミット成功後にしか削除されない（上記のとおり）ため: discard された後も record_sweep（5 分周期の定期全量突き合わせ。[watcher.md](watcher.md) §3.3 の (c)）が同じ finished record を見つけ、`processRecord` が同一トランザクションで ingest ジョブを再投入し続けるからである。「未 ingest の record 総量」をメトリクス化してエッジのディスク残量と突き合わせてアラートする（[storage.md](../storage.md) のサイジング指針参照）。
 
