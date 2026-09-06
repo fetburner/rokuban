@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -195,6 +196,68 @@ func TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges(t *testing.T) 
 	}
 	if !programStartAt.Equal(firstAt) {
 		t.Errorf("program_start_at changed from initial mtime: got %s, want %s", programStartAt, firstAt)
+	}
+}
+
+func TestRescueLatest_ScansMediaDirSymlinkAndSkipsCatalog(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	baseDir := t.TempDir()
+	realMediaDir := filepath.Join(baseDir, "real-media")
+	mediaDir := filepath.Join(baseDir, "media")
+	if err := os.MkdirAll(filepath.Join(realMediaDir, "archive"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realMediaDir, mediaDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(realMediaDir, "archive", "show.m2ts"), []byte("original bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(realMediaDir, "catalog"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realMediaDir, "catalog", "old-backup.mp4"), []byte("not a media asset"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := RescueLatest(context.Background(), pool, mediaDir, "default", []string{"default"})
+	if err != nil {
+		t.Fatalf("RescueLatest through media_dir symlink: %v", err)
+	}
+	if result.Recordings != 1 || result.MediaAssets != 1 {
+		t.Fatalf("scan result = %+v, want 1 recording/asset", result)
+	}
+
+	var count int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets WHERE rel_path = 'archive/show.m2ts'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("rescued asset count = %d, want 1", count)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets WHERE rel_path LIKE 'catalog/%'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("catalog assets registered = %d, want 0", count)
+	}
+}
+
+func TestRescueLatest_ReturnsErrorWhenMediaDirCannotBeResolved(t *testing.T) {
+	missingMediaDir := filepath.Join(t.TempDir(), "missing-media")
+	_, err := RescueLatest(context.Background(), nil, missingMediaDir, "default", []string{"default"})
+	if err == nil {
+		t.Fatal("RescueLatest with missing media_dir should return an error")
+	}
+	// symlink 解決の失敗（media_dir が無い）と catalog 読み取りの失敗を issue #665
+	// が求める通り文言で区別できることを見る。err == nil だけを見るアサーションだと
+	// EvalSymlinks を削除しても（filepath.WalkDir が root の lstat エラーを
+	// 返し、それを "scanning media_dir for rescue" が wrap するので）このテストは
+	// 通り続けてしまう。
+	const want = "resolving media_dir symlinks for rescue"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("RescueLatest with missing media_dir error = %q, want it to contain %q", err.Error(), want)
 	}
 }
 
