@@ -88,7 +88,7 @@ program_intents                  program_overrides
 
 `overrides` に jsonb を許すのは、**それが `program_overrides` 自身のロジックでは一切使われない不透明なペイロードだから**である。予約のパラメータを上書きするためだけに存在し、内容でクエリも制約もしない。
 
-したがって `CHECK (jsonb_strip_nulls(overrides) <> '{}')` のような**内容を検査する制約は置かない**。技術的には可能（`jsonb_strip_nulls` は IMMUTABLE なので CHECK に書けて `{"priority":null}` も弾ける）だが、「クエリをしない一方で制約をする」という中途半端な状態が一番悪い。**不透明なペイロードなら不透明に扱う。** 同じ理由でマージも SQL ではなく Go 側で型付きに行う。
+したがって `CHECK (jsonb_strip_nulls(overrides) <> '{}')` のような**内容を検査する制約は置かない**。技術的には可能である（`jsonb_strip_nulls` は IMMUTABLE なので CHECK に書けて `{"priority":null}` も弾ける）。しかし「クエリはしないが制約はする」という中途半端な状態が一番悪い。**不透明なペイロードなら不透明に扱う。** 同じ理由でマージも SQL ではなく Go 側で型付きに行う。
 
 この規則は他のテーブルの表現も説明する --- **内容でクエリするなら型付き列、Go に渡すだけなら jsonb**:
 
