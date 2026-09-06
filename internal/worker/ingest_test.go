@@ -70,6 +70,42 @@ func makeTSDataFill(packets int, fill byte) []byte {
 	return data
 }
 
+type ingestTestFile struct {
+	file     *os.File
+	syncErr  error
+	closeErr error
+	onSync   func()
+	onClose  func()
+}
+
+func (f *ingestTestFile) Write(p []byte) (int, error) {
+	return f.file.Write(p)
+}
+
+func (f *ingestTestFile) Sync() error {
+	if f.syncErr != nil {
+		return f.syncErr
+	}
+	if err := f.file.Sync(); err != nil {
+		return err
+	}
+	if f.onSync != nil {
+		f.onSync()
+	}
+	return nil
+}
+
+func (f *ingestTestFile) Close() error {
+	err := f.file.Close()
+	if f.onClose != nil {
+		f.onClose()
+	}
+	if err != nil {
+		return err
+	}
+	return f.closeErr
+}
+
 func TestIngestWorker_FullTransfer(t *testing.T) {
 	tsData := makeTSData(100)
 
@@ -458,6 +494,256 @@ func TestIngestWorker_SizeMismatch(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "size mismatch") {
 		t.Errorf("expected 'size mismatch' error, got: %v", err)
+	}
+}
+
+func TestIngestWorker_PersistsBeforeCommitAndDelete(t *testing.T) {
+	tsData := makeTSData(20)
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	recordingID := insertTestRecording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, "rec-durable-order")
+
+	var eventsMu sync.Mutex
+	var events []string
+	addEvent := func(event string) {
+		eventsMu.Lock()
+		defer eventsMu.Unlock()
+		events = append(events, event)
+	}
+
+	srv := newInstrumentedIngestServer(t, tsData, "test/durable-order.m2ts", func() {
+		var count int
+		if err := pool.QueryRow(context.Background(),
+			"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
+		).Scan(&count); err != nil {
+			t.Errorf("counting media_assets from DeleteRecord handler: %v", err)
+			return
+		}
+		addEvent(fmt.Sprintf("delete-assets=%d", count))
+	})
+
+	mediaDir := t.TempDir()
+	originalOpenFile := openIngestFile
+	originalOpenDirectory := openIngestDirectory
+	t.Cleanup(func() {
+		openIngestFile = originalOpenFile
+		openIngestDirectory = originalOpenDirectory
+	})
+
+	openIngestFile = func(path string) (ingestFile, error) {
+		file, err := os.Create(path)
+		if err != nil {
+			return nil, err
+		}
+		return &ingestTestFile{
+			file: file,
+			onSync: func() {
+				var count int
+				if err := pool.QueryRow(context.Background(),
+					"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
+				).Scan(&count); err != nil {
+					t.Errorf("counting media_assets during file Sync: %v", err)
+					return
+				}
+				addEvent(fmt.Sprintf("file-sync-assets=%d", count))
+			},
+			onClose: func() {
+				var count int
+				if err := pool.QueryRow(context.Background(),
+					"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
+				).Scan(&count); err != nil {
+					t.Errorf("counting media_assets during file Close: %v", err)
+					return
+				}
+				addEvent(fmt.Sprintf("file-close-assets=%d", count))
+			},
+		}, nil
+	}
+	openIngestDirectory = func(path string) (ingestFile, error) {
+		file, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		return &ingestTestFile{
+			file: file,
+			onSync: func() {
+				var count int
+				if err := pool.QueryRow(context.Background(),
+					"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
+				).Scan(&count); err != nil {
+					t.Errorf("counting media_assets during parent directory Sync: %v", err)
+					return
+				}
+				addEvent(fmt.Sprintf("directory-sync-assets=%d", count))
+			},
+			onClose: func() {
+				var count int
+				if err := pool.QueryRow(context.Background(),
+					"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
+				).Scan(&count); err != nil {
+					t.Errorf("counting media_assets during parent directory Close: %v", err)
+					return
+				}
+				addEvent(fmt.Sprintf("directory-close-assets=%d", count))
+			},
+		}, nil
+	}
+
+	w := &IngestWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		Pool:          pool,
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
+	}
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-durable-order"},
+	}
+
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	eventsMu.Lock()
+	gotEvents := slices.Clone(events)
+	eventsMu.Unlock()
+	wantEvents := []string{
+		"file-sync-assets=0",
+		"file-close-assets=0",
+		"directory-sync-assets=0",
+		"directory-close-assets=0",
+		"delete-assets=1",
+	}
+	if !slices.Equal(gotEvents, wantEvents) {
+		t.Errorf("operation events = %v, want %v", gotEvents, wantEvents)
+	}
+}
+
+func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
+	injectedErr := errors.New("injected durability failure")
+	tests := []struct {
+		name      string
+		fileSync  bool
+		fileClose bool
+		dirSync   bool
+		dirClose  bool
+	}{
+		{name: "file Sync", fileSync: true},
+		{name: "file Close", fileClose: true},
+		{name: "parent directory Sync", dirSync: true},
+		{name: "parent directory Close", dirClose: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tsData := makeTSData(20)
+			pool := setupTestPool(t)
+			if pool == nil {
+				return
+			}
+			recordingID := insertTestRecording(t, pool)
+			insertTestRecordSync(t, pool, recordingID, "rec-durable-failure")
+
+			var deleteAttempts atomic.Int32
+			srv := newInstrumentedIngestServer(t, tsData, "test/durable-failure.m2ts", func() {
+				deleteAttempts.Add(1)
+			})
+
+			mediaDir := t.TempDir()
+			originalOpenFile := openIngestFile
+			originalOpenDirectory := openIngestDirectory
+			t.Cleanup(func() {
+				openIngestFile = originalOpenFile
+				openIngestDirectory = originalOpenDirectory
+			})
+
+			openIngestFile = func(path string) (ingestFile, error) {
+				file, err := os.Create(path)
+				if err != nil {
+					return nil, err
+				}
+				var syncErr, closeErr error
+				if tt.fileSync {
+					syncErr = injectedErr
+				}
+				if tt.fileClose {
+					closeErr = injectedErr
+				}
+				return &ingestTestFile{file: file, syncErr: syncErr, closeErr: closeErr}, nil
+			}
+			openIngestDirectory = func(path string) (ingestFile, error) {
+				file, err := os.Open(path)
+				if err != nil {
+					return nil, err
+				}
+				var syncErr, closeErr error
+				if tt.dirSync {
+					syncErr = injectedErr
+				}
+				if tt.dirClose {
+					closeErr = injectedErr
+				}
+				return &ingestTestFile{file: file, syncErr: syncErr, closeErr: closeErr}, nil
+			}
+
+			w := &IngestWorker{
+				MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+				Pool:          pool,
+				MediaDir:      mediaDir,
+				StallTimeout:  5 * time.Second,
+			}
+			job := &river.Job[IngestJobArgs]{
+				JobRow: &rivertype.JobRow{},
+				Args:   IngestJobArgs{Site: "default", RecordID: "rec-durable-failure"},
+			}
+
+			if err := w.Work(context.Background(), job); err == nil {
+				t.Fatal("first Work() error = nil, want injected durability failure")
+			}
+			var assetCount int
+			if err := pool.QueryRow(context.Background(),
+				"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
+			).Scan(&assetCount); err != nil {
+				t.Fatalf("counting media_assets after failed Work(): %v", err)
+			}
+			if assetCount != 0 {
+				t.Errorf("media_assets rows after failed Work() = %d, want 0", assetCount)
+			}
+			if got := deleteAttempts.Load(); got != 0 {
+				t.Errorf("DeleteRecord attempts after failed Work() = %d, want 0", got)
+			}
+
+			// 再試行では実装本来の opener に戻す。失敗した部分ファイルは os.Create
+			// が truncate し、正しい原本を最初から公開できることを確認する。
+			openIngestFile = originalOpenFile
+			openIngestDirectory = originalOpenDirectory
+			if err := w.Work(context.Background(), job); err != nil {
+				t.Fatalf("retry Work() error: %v", err)
+			}
+
+			fullPath := filepath.Join(mediaDir, "sites", "default", "test", "durable-failure.m2ts")
+			gotData, err := os.ReadFile(fullPath)
+			if err != nil {
+				t.Fatalf("reading retried output file: %v", err)
+			}
+			if !bytes.Equal(gotData, tsData) {
+				t.Errorf("retried file content differs from the edge original")
+			}
+			if err := pool.QueryRow(context.Background(),
+				"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
+			).Scan(&assetCount); err != nil {
+				t.Fatalf("counting media_assets after retry: %v", err)
+			}
+			if assetCount != 1 {
+				t.Errorf("media_assets rows after retry = %d, want 1", assetCount)
+			}
+			if got := deleteAttempts.Load(); got != 1 {
+				t.Errorf("DeleteRecord attempts after retry = %d, want 1", got)
+			}
+		})
 	}
 }
 
@@ -1050,6 +1336,47 @@ func newFullTransferServer(t *testing.T, tsData []byte, contentPath string) *htt
 			_ = json.NewEncoder(w).Encode(record)
 
 		case r.Method == http.MethodDelete:
+			result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(result)
+
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func newInstrumentedIngestServer(t *testing.T, tsData []byte, contentPath string, onDelete func()) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(tsData)
+
+		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
+			w.WriteHeader(http.StatusOK)
+
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{
+					Options: mirakc.Options{ContentPath: strPtr(contentPath)},
+				},
+				Content: mirakc.ContentInfo{Path: "/recording/" + contentPath},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+
+		case r.Method == http.MethodDelete:
+			if onDelete != nil {
+				onDelete()
+			}
 			result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
