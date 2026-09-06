@@ -14,7 +14,7 @@
 
 具体的には `program_snapshots` で `(network_id, service_id, event_id)` → `program_id` を引き、`reservations` を `program_id` で結合する（`GetReservationEncodePolicyByEvent`、`internal/db/queries/recording_policy.sql`）。`program_snapshots` は放送後 `epg.retention_grace`（既定 24h）で GC される寿命の短い表（[スキーマ](../schema.md) §3「射影にある間は更新、消えたら凍結」）で、ingest は通常なら録画終了直後 --- GC の猶予期間より十分前 --- に走る。**ただし「通常なら」であって、滞留の設計はこれを超える遅延を明示的に許容している**（下記「凍結が依存する寿命と、エッジの滞留の交点」）。
 
-`recordings.source`（`DeriveRecordingSource`、`internal/reservation/source.go`）は録画作成時に一度だけ焼く snapshot であり、凍結時の JOIN 失敗の異常度を判定する軸にもなる。`source = 'rule'` は「作成時点で予約があり、かつ `program_intents.action = 'record'` の行が無かった」を意味するので、JOIN が失敗するのは常に「**予約はあったのに引けなくなった**」を意味し、`slog.Warn` に識別子（site/network_id/service_id/event_id）と recording_id を残す。`source = 'manual'` は「作成時点で `action = 'record'` の意図があった」ことを意味するので、予約が引けなければ同じく `slog.Warn` にする。`source = 'unattributed'` は作成時点で予約も意図も特定できなかったことを意味するので、手動起動などで予約が最初から無い日常的な JOIN 失敗は `slog.Info` にする。どの source でも黙って return せず、識別子を残す。
+`recordings.source`（`DeriveRecordingSource`、`internal/reservation/source.go`）は録画作成時に一度だけ焼く snapshot であり、凍結時の JOIN 失敗の異常度を判定する軸にもなる。`source = 'rule'` は「作成時点で予約があり、かつ `program_intents.action = 'record'` の行が無かった」を意味するので、JOIN が失敗するのは常に「**予約はあったのに引けなくなった**」を意味し、`slog.Warn` に識別子（site/network_id/service_id/event_id）と recording_id を残す。`source = 'manual'` は「作成時点で `action = 'record'` の意図があった」ことを意味するので、予約が引けなければ同じく `slog.Warn` にする。`source = 'unattributed'` は作成時点で予約も意図も特定できなかったことを意味するので、手動起動などで予約が最初から無い日常的な JOIN 失敗は `slog.Info` にする。どの source でも黙って return せず、識別子を残す。**この 3 値化より前に作られた `manual` 行は 2 経路が混ざったままで、遡って分類しない**（区別する材料が残っていない）。それらの行は Warn 側に倒れるので、切り替え直後に残っていた未 ingest のぶんだけ偽の Warn が出る。
 
 **retention reconcile ループ**（worker の cleanup 系ジョブ）が定期的に走り、次を**すべて**満たす原本アセットを削除する:
 

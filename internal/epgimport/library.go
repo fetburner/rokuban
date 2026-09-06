@@ -150,7 +150,11 @@ func ImportLibrary(ctx context.Context, pool *pgxpool.Pool, mediaDir, site strin
 
 		in := inplace.Input{
 			Recording: inplace.Recording{
-				Source:            reservation.SourceManual,
+				// LibraryItem は EPGStation 側のルール有無を持たず、rokuban の
+				// 予約も program_intents も無いので、ユーザーの録画意図を主張する
+				// 材料が無い。rescue のストレージ再スキャンと同じ扱いで
+				// unattributed にする。
+				Source:            reservation.SourceUnattributed,
 				Site:              site,
 				NetworkID:         networkID,
 				ServiceID:         serviceID,
