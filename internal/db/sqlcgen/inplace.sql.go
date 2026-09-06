@@ -10,30 +10,43 @@ import (
 	"time"
 )
 
-const getPublishedInPlaceAssetByRelPath = `-- name: GetPublishedInPlaceAssetByRelPath :one
+const getInPlaceAssetByRelPath = `-- name: GetInPlaceAssetByRelPath :one
 
-SELECT id, recording_id, kind, profile
+SELECT id, recording_id, kind, profile,
+       (state <> 'deleted')::boolean AS published
 FROM media_assets
-WHERE rel_path = $1 AND state <> 'deleted'
+WHERE rel_path = $1
+ORDER BY (state <> 'deleted')::boolean DESC, id DESC
+LIMIT 1
 `
 
-type GetPublishedInPlaceAssetByRelPathRow struct {
+type GetInPlaceAssetByRelPathRow struct {
 	ID          int64
 	RecordingID int64
 	Kind        string
 	Profile     *string
+	Published   bool
 }
 
 // In-place media registration shared by `rokuban rescue` and M3-10 imports.
 // Bytes are already under storage.media_dir; these queries only publish DB rows.
-func (q *Queries) GetPublishedInPlaceAssetByRelPath(ctx context.Context, relPath string) (GetPublishedInPlaceAssetByRelPathRow, error) {
-	row := q.db.QueryRow(ctx, getPublishedInPlaceAssetByRelPath, relPath)
-	var i GetPublishedInPlaceAssetByRelPathRow
+// media_assets_rel_path_idx は state <> 'deleted' の部分索引なので、実ファイルが残る限り
+// deleted 行もそのファイルの所属を示すという理由でここは意図的に述語を外し、索引を使えず
+// seq scan になる。述語を戻すと deleted 行を見落とし、mtime が変わった rescue 再実行で
+// 同じファイルに live な recordings が 2 行できる（issue #662。
+// TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges が検出する）。実測 (media_assets 3000 行、EXPLAIN (ANALYZE, TIMING OFF)): 旧クエリ
+// (述語あり) Index Scan 0.010 ms → 新クエリ (述語なし) Seq Scan 0.123 ms。Register は
+// asset 1 件ごとに呼ぶので rescue 全体ではアセット数に比例するが、家庭用サーバー規模を
+// 前提に許容する。増えたら非部分索引の追加が上げ幅。
+func (q *Queries) GetInPlaceAssetByRelPath(ctx context.Context, relPath string) (GetInPlaceAssetByRelPathRow, error) {
+	row := q.db.QueryRow(ctx, getInPlaceAssetByRelPath, relPath)
+	var i GetInPlaceAssetByRelPathRow
 	err := row.Scan(
 		&i.ID,
 		&i.RecordingID,
 		&i.Kind,
 		&i.Profile,
+		&i.Published,
 	)
 	return i, err
 }

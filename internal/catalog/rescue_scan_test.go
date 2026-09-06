@@ -115,6 +115,89 @@ func TestRescueLatest_NoCatalogScansBareAssetsIdempotently(t *testing.T) {
 	}
 }
 
+func TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	path := filepath.Join(mediaDir, "archive", "show.m2ts")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("original bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	firstAt := time.Date(2026, 7, 30, 3, 4, 5, 0, time.UTC)
+	secondAt := firstAt.Add(24 * time.Hour)
+	if err := os.Chtimes(path, firstAt, firstAt); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := RescueLatest(context.Background(), pool, mediaDir, "default", []string{"default"}); err != nil {
+		t.Fatalf("first RescueLatest: %v", err)
+	}
+	var recordingID, assetID int64
+	if err := pool.QueryRow(context.Background(), `
+		SELECT r.id, a.id
+		FROM recordings r JOIN media_assets a ON a.recording_id = r.id
+		WHERE a.rel_path = $1
+	`, "archive/show.m2ts").Scan(&recordingID, &assetID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reconcile can mark the asset deleted while the physical file remains. A later
+	// rescue must treat that file as the same recording even if its mtime changed.
+	if _, err := pool.Exec(context.Background(), `
+		UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1
+	`, assetID); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, secondAt, secondAt); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := RescueLatest(context.Background(), pool, mediaDir, "default", []string{"default"}); err != nil {
+		t.Fatalf("second RescueLatest: %v", err)
+	}
+
+	var recordings, assets, liveRecordings int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM recordings`).Scan(&recordings); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets`).Scan(&assets); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM recordings
+		WHERE deleted_at IS NULL AND superseded_at IS NULL
+	`).Scan(&liveRecordings); err != nil {
+		t.Fatal(err)
+	}
+	if recordings != 1 || assets != 1 || liveRecordings != 1 {
+		t.Fatalf("rows after rescue = recordings %d, assets %d, live recordings %d; want 1/1/1",
+			recordings, assets, liveRecordings)
+	}
+
+	var gotAssetID, gotRecordingID int64
+	var state string
+	var deletedAtIsNull bool
+	var programStartAt time.Time
+	if err := pool.QueryRow(context.Background(), `
+		SELECT a.id, a.recording_id, a.state, a.deleted_at IS NULL, r.program_start_at
+		FROM media_assets a JOIN recordings r ON r.id = a.recording_id
+		WHERE a.rel_path = $1
+	`, "archive/show.m2ts").Scan(
+		&gotAssetID, &gotRecordingID, &state, &deletedAtIsNull, &programStartAt,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if gotAssetID != assetID || gotRecordingID != recordingID || state != "active" || !deletedAtIsNull {
+		t.Fatalf("rescued asset = id %d, recording %d, state %q, deleted_at NULL %v; want original active asset",
+			gotAssetID, gotRecordingID, state, deletedAtIsNull)
+	}
+	if !programStartAt.Equal(firstAt) {
+		t.Errorf("program_start_at changed from initial mtime: got %s, want %s", programStartAt, firstAt)
+	}
+}
+
 // アーカイブは全 site で共有される単一のストレージなので、`sites/{site}/` 前置
 // ファイルは前置を持つ他 site の分も同じスキャンで見つかる。前置ありのファイルは
 // prefix から site を決め、`--site` の値（引数の "tokyo"）と食い違っても

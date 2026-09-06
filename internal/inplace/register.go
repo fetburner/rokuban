@@ -100,28 +100,34 @@ func Register(ctx context.Context, pool *pgxpool.Pool, mediaDir string, in Input
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := sqlcgen.New(tx)
 
-	// rel_path は保存済みファイルの最も強い identity。既に公開済みなら、その録画が
-	// ごみ箱にあっても復元・複製せず同じ recording_id を使う。これにより rescue の
-	// 再実行がユーザーの deleted_at を覆さず、rel_path unique にも衝突しない。
-	existing := make([]*sqlcgen.GetPublishedInPlaceAssetByRelPathRow, len(assets))
+	// rel_path が最も強い identity なので、asset の state にかかわらず recording_id を
+	// 再利用する。deleted 行から拾った場合は、下の UpsertInPlaceMediaAsset が同じ asset
+	// tuple を active に戻す。
+	existing := make([]*sqlcgen.GetInPlaceAssetByRelPathRow, len(assets))
 	var recordingID int64
 	for i, asset := range assets {
-		row, err := q.GetPublishedInPlaceAssetByRelPath(ctx, asset.relPath)
+		row, err := q.GetInPlaceAssetByRelPath(ctx, asset.relPath)
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue
 		}
 		if err != nil {
 			return nil, fmt.Errorf("looking up in-place asset %q: %w", asset.relPath, err)
 		}
-		if row.Kind != asset.kind || !sameStringPointer(row.Profile, asset.profile) {
-			return nil, fmt.Errorf("published asset %q is %s/%v, requested %s/%v",
-				asset.relPath, row.Kind, row.Profile, asset.kind, asset.profile)
-		}
 		if recordingID != 0 && recordingID != row.RecordingID {
 			return nil, fmt.Errorf("in-place assets belong to different recordings: %d and %d",
 				recordingID, row.RecordingID)
 		}
 		recordingID = row.RecordingID
+		if !row.Published {
+			// A deleted row supplies ownership only. Its old kind/profile may differ
+			// when the path was reused, so let UpsertInPlaceMediaAsset decide whether
+			// to reactivate or create the requested tuple.
+			continue
+		}
+		if row.Kind != asset.kind || !sameStringPointer(row.Profile, asset.profile) {
+			return nil, fmt.Errorf("published asset %q is %s/%v, requested %s/%v",
+				asset.relPath, row.Kind, row.Profile, asset.kind, asset.profile)
+		}
 		rowCopy := row
 		existing[i] = &rowCopy
 	}

@@ -90,6 +90,81 @@ func TestRegister_IdempotentExistingFile(t *testing.T) {
 	}
 }
 
+func TestRegister_PrefersLiveAssetOverDeletedForSameRelPath(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(mediaDir, "reused"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	relPath := "reused/show.ts"
+	if err := os.WriteFile(filepath.Join(mediaDir, relPath), []byte("bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	at := time.Date(2026, 7, 30, 1, 2, 3, 0, time.UTC)
+	const insertRecording = `
+		INSERT INTO recordings (
+			source, site, network_id, service_id, event_id,
+			service_name, channel_type, channel, title, program_start_at, program_duration_ms, status
+		) VALUES ('manual', 'default', $1, $2, $3, $4, 'GR', 'unknown', $4, $5, 0, 'finished')
+		RETURNING id`
+
+	// rel_path が再利用された後を模して、同じ rel_path に live 行 (新しい recording) と
+	// deleted 行 (古い recording) を直接仕込む。deleted 行を live 行より後に挿入して
+	// 大きい id を持たせる: これで id DESC の一発検索では deleted 行が先に来てしまう
+	// ため、live 行を優先する state の並び替えが効いているかを検証できる。
+	var liveRecordingID int64
+	if err := pool.QueryRow(ctx, insertRecording, -20, -21, -22, "new", at).Scan(&liveRecordingID); err != nil {
+		t.Fatal(err)
+	}
+	profile := "rescue-mp4"
+	var liveAssetID int64
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, state)
+		VALUES ($1, 'encoded', $2, $3, 5, 'active')
+		RETURNING id
+	`, liveRecordingID, profile, relPath).Scan(&liveAssetID); err != nil {
+		t.Fatal(err)
+	}
+
+	var deletedRecordingID int64
+	if err := pool.QueryRow(ctx, insertRecording, -10, -11, -12, "old", at).Scan(&deletedRecordingID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, state, deleted_at)
+		VALUES ($1, 'original', NULL, $2, 5, 'deleted', now())
+	`, deletedRecordingID, relPath); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Register(ctx, pool, mediaDir, Input{
+		Recording: Recording{
+			Source: "manual", Site: "default",
+			NetworkID: -20, ServiceID: -21, EventID: -22,
+			ServiceName: "new", ChannelType: "GR", Channel: "unknown",
+			Title: "new", ProgramStartAt: at, Status: "finished",
+		},
+		Assets: []Asset{{Kind: db.AssetKindEncoded, Profile: &profile, RelPath: relPath}},
+	})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if got.RecordingID != liveRecordingID || got.AssetIDs[0] != liveAssetID {
+		t.Fatalf("Register must pick the live row over the deleted one: got recording=%d asset=%d, want recording=%d asset=%d",
+			got.RecordingID, got.AssetIDs[0], liveRecordingID, liveAssetID)
+	}
+
+	var assetCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_assets WHERE rel_path = $1`, relPath).Scan(&assetCount); err != nil {
+		t.Fatal(err)
+	}
+	if assetCount != 2 {
+		t.Fatalf("Register must not create a new row when a live asset already exists at rel_path, got %d rows", assetCount)
+	}
+}
+
 func TestRegister_RejectsSymlink(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
