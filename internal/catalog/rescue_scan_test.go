@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -248,6 +249,15 @@ func TestRescueLatest_ReturnsErrorWhenMediaDirCannotBeResolved(t *testing.T) {
 	_, err := RescueLatest(context.Background(), nil, missingMediaDir, "default", []string{"default"})
 	if err == nil {
 		t.Fatal("RescueLatest with missing media_dir should return an error")
+	}
+	// symlink 解決の失敗（media_dir が無い）と catalog 読み取りの失敗を issue #665
+	// が求める通り文言で区別できることを見る。err == nil だけを見るアサーションだと
+	// EvalSymlinks を削除しても（filepath.WalkDir が root の lstat エラーを
+	// 返し、それを "scanning media_dir for rescue" が wrap するので）このテストは
+	// 通り続けてしまう。
+	const want = "resolving media_dir symlinks for rescue"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("RescueLatest with missing media_dir error = %q, want it to contain %q", err.Error(), want)
 	}
 }
 
