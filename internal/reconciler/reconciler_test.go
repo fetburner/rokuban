@@ -2178,6 +2178,104 @@ func TestReconciler_NoStartDelayWhenStarted(t *testing.T) {
 	}
 }
 
+// event_id はイベント終了から 24 時間しか一意でないため、同じ放送イベントキーで
+// 1 年前に録画開始した recordings 行があっても、現在のイベントの開始観測とは
+// みなさない。時間の下界を外すと古い行が現在の候補を抑止して、このアサーションが
+// 失敗する。
+func TestReconciler_DetectsStartDelayWhenOnlyHistoricalRecordingHasStarted(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	startAt := time.Now().Add(-10 * time.Minute)
+	programID := int64(100000500030012)
+	res := createReservation(t, ctx, q, programID, "event_id再利用後の開始遅延", startAt)
+
+	oldStartAt := time.Now().Add(-365 * 24 * time.Hour)
+	createStartedRecording(t, ctx, q, int32(programID%100000), oldStartAt, oldStartAt.Add(time.Minute))
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if got := startDelayGauge(t); got != 1 {
+		t.Errorf("rokuban_reconcile_start_delayed = %v, want 1 for program %d; historical started_at must not suppress the current event", got, res.ProgramID)
+	}
+}
+
+// recordings.program_start_at は予約の start_at と mirakc の別オブジェクト由来なので、
+// 繰り下げ・延長でずれても、現在の started_at による開始観測の抑止は維持する。
+func TestReconciler_NoStartDelayWhenRecordingProgramStartDiffers(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	startAt := time.Now().Add(-10 * time.Minute)
+	res := createReservation(t, ctx, q, 100000500030013, "繰り下げ中の開始済み番組", startAt)
+	recordingProgramStartAt := startAt.Add(5 * time.Minute)
+	createStartedRecording(t, ctx, q, int32(res.ProgramID%100000), recordingProgramStartAt, startAt.Add(6*time.Minute))
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if got := startDelayGauge(t); got != 0 {
+		t.Errorf("rokuban_reconcile_start_delayed = %v, want 0 when current started_at is observed despite program_start_at mismatch", got)
+	}
+}
+
+// 24 時間を超える長時間番組では、現在の recordings.started_at 自体が
+// now-24h より前になりうる。候補の start_at まで下界を緩めて、現在の録画を
+// 開始観測として扱う。
+func TestReconciler_NoStartDelayForStartedLongProgram(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	startAt := time.Now().Add(-25 * time.Hour)
+	programID := int64(100000500030014)
+	res := createReservation(t, ctx, q, programID, "長時間の開始済み番組", startAt)
+	if _, err := pool.Exec(ctx, `
+UPDATE program_snapshots
+SET duration_ms = $1
+WHERE site = $2 AND program_id = $3
+`, int64(48*time.Hour/time.Millisecond), "default", res.ProgramID); err != nil {
+		t.Fatalf("extending program duration: %v", err)
+	}
+	// mirakc がチューナーを開くのは予定の 15 秒前で、started_at はその時刻
+	// そのまま入る（実測 -00:00:14.99、docs/recording/delegation.md §2）。
+	createStartedRecording(t, ctx, q, int32(res.ProgramID%100000), startAt, startAt.Add(-15*time.Second))
+
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if got := startDelayGauge(t); got != 0 {
+		t.Errorf("rokuban_reconcile_start_delayed = %v, want 0 for a started long program", got)
+	}
+}
+
 // 受け入れ条件 3: 猶予の内側（開始直後）では検出されないこと（誤検知しない
 // こと。猶予を置いた理由そのもの）。
 func TestReconciler_NoStartDelayWithinGrace(t *testing.T) {
