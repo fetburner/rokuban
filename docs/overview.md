@@ -4,10 +4,10 @@ Rokuban（録番）は、クラウドネイティブに設計された録画サ�
 
 ## 背景: なぜ EPGStation の改修ではないのか
 
-EPGStation のコードを調査した結果、クラウド/k8s ホスティングを阻む構造的な問題が4つある：
+EPGStation のコードを調査した結果、プロセスをホストまたぎで分割したり、複数レプリカへ水平スケールしたりする際の構造的な制約が4つある：
 
 1. **プロセス間通信が Node.js の `child_process` IPC**（Operator / Service / EPGUpdater の3プロセス構成）。ネットワーク越しに分離できない
-2. **状態がほぼ全部インメモリ**。エンコードキューはプロセス再起動で全消失、録画スケジュールは `setTimeout` 保持
+2. **プロセス内状態への依存が残る**。エンコード待ち行列・実行管理と録画スケジュールの実行タイマーはプロセス内にある一方、予約・録画メタデータは DB に永続化される。「状態がほぼ全部インメモリ」とは一般化しない。根拠は EPGStation の [`DBOperator`](https://github.com/l3tnun/EPGStation/blob/5cf2ea383d37937eacecf424820dbd7a278d577e/src/model/db/DBOperator.ts#L34-L81) と [`EncodeManageModel`](https://github.com/l3tnun/EPGStation/blob/5cf2ea383d37937eacecf424820dbd7a278d577e/src/model/service/encode/EncodeManageModel.ts#L15-L73)
 3. **共有ファイルシステム前提**。録画・サムネイル・HLS セグメントを全プロセスがローカルパスで読み書き
 4. **シングルライター前提**。排他制御がプロセス内 Promise キューのみで、多重起動すると二重録画する
 
@@ -27,6 +27,13 @@ mirakc に録画を委譲すると（詳細は [recording.md](recording.md) 参�
 
 > **補足**: 「TS パケットを1バイトも触らない」の本意は「ストリーム処理（録画・demux・変換）をしない」ということであり、ingest 中の読み取り専用の統計採取（PID 別 continuity counter 不連続 / TEI / scrambling_control）は例外とする。詳細は [recording.md](recording.md) の ingest パイプラインを参照。
 
+### 保証の境界
+
+- **設計目的**: リアルタイムで期限のある録画はエッジの mirakc に委譲し、DB を真実の座とする処理をサーバー側で再試行可能なジョブに分ける
+- **コード上の保証**: ロール分割と定期 reconcile、予約同期は `cmd/rokuban/server.go`・`internal/reconciler`・`internal/worker` に実装され、既存テストで経路を確認している。これはクラウド上の可用性や性能を保証する記述ではない
+- **運用条件**: 録画を保証するのは mirakc に放送開始前まで同期済みの予約だけ。ingest には mirakc への接続、録画バッファの保持、書き込み可能なメディアストレージ、DB のロック・コミット経路が必要で、分散配置ではメディアストレージを共有できることも必要になる（詳細は [ストレージ契約](storage/contract.md) §3–5）
+- **実機未検証の範囲**: クラウド実機での挙動、長期の分散運用、帯域・容量の妥当性はこの概要だけでは判定しない。実際の配置では [運用](operations.md) の検証項目と各コンポーネントの既存試験を使う
+
 ## 構成図
 
 ```
@@ -41,10 +48,12 @@ mirakc に録画を委譲すると（詳細は [recording.md](recording.md) 参�
    │record pull    │  └ ingest / encode / thumbnail / cleanup /  │
    │               │    ruler_pass / reconcile_pass / epg_sync   │
    └───────────────├─────────────────────────────────────────┤
-                   │ PostgreSQL（唯一のステートフル基盤）           │
-                   │ ファイルシステム（クラウドでは CSI で S3）       │
+                   │ PostgreSQL（Rokuban の DB / ジョブキュー）       │
+                   │ メディアストレージ（原本・派生物。分散時は共有） │
                    └─────────────────────────────────────────┘
 ```
+
+ここでいう PostgreSQL 一本は、Rokuban のアプリケーション DB とジョブキューに限る。システム全体では、mirakc の予約と録画バッファ、Rokuban のメディアストレージも永続状態・永続データとして存在する。メディアストレージの書き込み順序、共有要件、録画バッファとの分離は [ストレージ契約](storage/contract.md) §3–5 を正典とする。
 
 nginx は構成図上の「箱」ではなく、推奨デプロイパターンの一部として位置づける（後述）。
 
@@ -54,6 +63,8 @@ nginx は構成図上の「箱」ではなく、推奨デプロイパターン�
 
 - `rokuban server --all`: 全ロールを1プロセスで（自宅向け、Docker Compose で Postgres と2コンテナ）
 - k8s ではロールごとに Deployment を分割：api は水平スケール、worker はキュー長で 0〜N（KEDA）、watcher はシングルトン（Postgres アドバイザリロックでリーダー選出）
+
+単一レプリカで配置できること、複数レプリカへ水平スケールできること、scale-to-zero できることは別の保証である。単一レプリカの配置は monolithic / distributed の形の選択、水平スケールはロールごとの DB・メディア・接続・排他条件を満たす場合の選択、scale-to-zero は長寿命接続を持たない api の DB-only なリクエスト経路に限る。notifier / watcher / streamer は接続を保持するため常駐が必要で、worker はキューが空なら 0 にできるが、ジョブ実行中は資源を保持する。いずれも api のリクエスト単位の scale-to-zero とは意味が異なる。
 
 ### ロール分類の基準: ソケットを持ち続けるか
 
@@ -125,9 +136,9 @@ nginx は構成図上の「箱」ではなく、推奨デプロイパターン�
 
 ## サーバーレスデプロイとハイブリッド構成
 
-レベルトリガー設計の帰結として、**予約・ルールの作成/編集（書き込み）すら DB-only** である。API は desired state を Postgres に書くだけで、mirakc への同期は reconciler が非同期に収束させる。したがって api ロールはサーバーレス（Cloud Run / Lambda 等）で scale-to-zero 可能であり、これは新要件ではなく既存設計が保証する性質。
+レベルトリガー設計の帰結として、**予約・ルールの作成/編集（書き込み）すら DB-only** である。API は desired state を Postgres に書くだけで、mirakc への同期は reconciler が非同期に収束させる。したがって Postgres が利用可能で、同期を担う reconciler が別に動く構成なら、api ロールはサーバーレス（Cloud Run / Lambda 等）で scale-to-zero にできる。API の書き込みだけでは録画予約は確定せず、reconciler が放送開始前までに mirakc へ同期できなかった新規・変更予約の録画は保証されない。
 
-SSE (`/api/events`) は notifier ロールに分離されており、api は mirakc にもファイルシステムにも長寿命接続にも依存しない純粋なリクエスト/レスポンス層である。scale-to-zero は実際に機能する。**SSE を api ロールに置いてはならない** --- 振り分け先が api 自身になるので、api を scale-to-zero にできなくなる。
+SSE (`/api/events`) は notifier ロールに分離されており、api は mirakc にもファイルシステムにも長寿命接続にも依存しない純粋なリクエスト/レスポンス層である。api の scale-to-zero はこの経路の配置条件であり、全ロールに共通する保証ではない。**SSE を api ロールに置いてはならない** --- 振り分け先が api 自身になるので、api を scale-to-zero にできなくなる。
 
 推奨のハイブリッド構成:
 
@@ -144,7 +155,7 @@ SSE (`/api/events`) は notifier ロールに分離されており、api は mir
 
 キュー × 置き場所 × site 軸の表（キュー名の site 修飾を含む）は [operations.md](operations.md) §5 を参照。
 
-自宅サーバーが落ちていても番組表・録画一覧・予約操作ができ（DB に積まれ、復帰後 reconciler が収束）、メディア視聴だけは自宅到達が必要と割り切る。SSE は長寿命接続なのでサーバーレスには乗せず、CDN のパスルーティングで `/api/events` だけ notifier ロールへ振り分ける（詳細: [api.md](api.md)）。notifier は mirakc への到達性を必要としない（Postgres の NOTIFY を配るだけ）ため、クラウド側に常駐プロセスとして置いても自宅側に置いても成立する。
+自宅サーバーが落ちていても、Postgres が利用可能なら番組表・録画一覧・予約操作は DB の desired state として扱える。録画を保証するのは mirakc に放送開始前まで同期済みの予約だけであり、復帰後の reconciler が期限を過ぎてから同期しても、その放送を取り戻すことはできない。メディア視聴と ingest は自宅側の mirakc・録画バッファ・メディアストレージへの到達が必要と割り切る。SSE は長寿命接続なのでサーバーレスには乗せず、CDN のパスルーティングで `/api/events` だけ notifier ロールへ振り分ける（詳細: [api.md](api.md)）。notifier は mirakc への到達性を必要としない（Postgres の NOTIFY を配るだけ）ため、クラウド側に常駐プロセスとして置いても自宅側に置いても成立する。
 
 サーバーレスの置き場所の選定、ハイブリッド構成の運用詳細は [operations.md](operations.md) を参照。
 
