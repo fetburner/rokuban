@@ -6,9 +6,12 @@ SELECT id, recording_id, kind, profile,
        (state <> 'deleted')::boolean AS published
 FROM media_assets
 WHERE rel_path = $1
--- media_assets_rel_path_idx は live な rel_path の同時存在だけを制約する。
--- ここは、実ファイルが残っている限り deleted 行もそのファイルの所属を示す
--- ので、recording_id を再利用できるように意図的に述語を持たない。
+-- media_assets_rel_path_idx は state <> 'deleted' の部分索引なので、実ファイルが残る限り
+-- deleted 行もそのファイルの所属を示すという理由でここは意図的に述語を外し、索引を使えず
+-- seq scan になる。実測 (media_assets 3000 行、EXPLAIN (ANALYZE, TIMING OFF)): 旧クエリ
+-- (述語あり) Index Scan 0.010 ms → 新クエリ (述語なし) Seq Scan 0.123 ms。Register は
+-- asset 1 件ごとに呼ぶので rescue 全体ではアセット数に比例するが、家庭用サーバー規模を
+-- 前提に許容する。増えたら非部分索引の追加が上げ幅。
 ORDER BY (state <> 'deleted')::boolean DESC, id DESC
 LIMIT 1;
 

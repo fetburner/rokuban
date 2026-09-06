@@ -100,13 +100,9 @@ func Register(ctx context.Context, pool *pgxpool.Pool, mediaDir string, in Input
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := sqlcgen.New(tx)
 
-	// rel_path は保存済みファイルの最も強い identity。asset の state にかかわらず
-	// recording_id を再利用する。live asset なら既存 asset をそのまま返し、deleted
-	// asset なら下の upsert で同じ asset tuple を active に戻す。これにより rescue の
-	// 再実行で mtime が変わっても recording を複製せず、実ファイルが残る復旧を守る。
-	// program_start_at を rel_path 由来へ置き換える案は、既存 rescue 行の移行が必要で
-	// 表示用の mtime も失うため採らない。実ファイルが残る場合は台帳の deleted より
-	// ファイルを優先し、rel_path から既存の recording を引く。
+	// rel_path が最も強い identity なので、asset の state にかかわらず recording_id を
+	// 再利用する。deleted 行から拾った場合は、下の UpsertInPlaceMediaAsset が同じ asset
+	// tuple を active に戻す。
 	existing := make([]*sqlcgen.GetInPlaceAssetByRelPathRow, len(assets))
 	var recordingID int64
 	for i, asset := range assets {
