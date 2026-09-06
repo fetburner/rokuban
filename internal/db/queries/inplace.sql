@@ -8,7 +8,9 @@ FROM media_assets
 WHERE rel_path = $1
 -- media_assets_rel_path_idx は state <> 'deleted' の部分索引なので、実ファイルが残る限り
 -- deleted 行もそのファイルの所属を示すという理由でここは意図的に述語を外し、索引を使えず
--- seq scan になる。実測 (media_assets 3000 行、EXPLAIN (ANALYZE, TIMING OFF)): 旧クエリ
+-- seq scan になる。述語を戻すと deleted 行を見落とし、mtime が変わった rescue 再実行で
+-- 同じファイルに live な recordings が 2 行できる（issue #662。
+-- TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges が検出する）。実測 (media_assets 3000 行、EXPLAIN (ANALYZE, TIMING OFF)): 旧クエリ
 -- (述語あり) Index Scan 0.010 ms → 新クエリ (述語なし) Seq Scan 0.123 ms。Register は
 -- asset 1 件ごとに呼ぶので rescue 全体ではアセット数に比例するが、家庭用サーバー規模を
 -- 前提に許容する。増えたら非部分索引の追加が上げ幅。
