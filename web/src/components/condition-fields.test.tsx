@@ -112,8 +112,9 @@ function stubServicesFetch(servicesBySite: Record<string, Service[]> = { default
 // 補助ラベルは名前と別のテキストノード（<span>）に置く。ここでは表示テキスト
 // （textContent）で比較する --- アクセシブルネームはノード間の空白の入り方が
 // 計算エンジン依存で、jsdom（dom-accessibility-api）の結果が実ブラウザと一致
-// する保証はない。3 桁番号で区別できる場合も、同じグループ内の表記を揃えるため
-// 全員に同じ段数の補助ラベルが付く。
+// する保証はない。この 4 件はリモコン番号が 5/12 の 2 組に分かれるが、
+// serviceId から復元した 3 桁番号がそれぞれ異なるため、4 件とも段 1（3 桁番号）
+// だけで一意になる。
 const label = {
   a: '瀬戸内海放送（地上波 051）', // 32676/1032
   b: '瀬戸内海放送（地上波 052）', // 32676/1033
@@ -150,8 +151,7 @@ describe('ConditionFields のサービスチップ', () => {
     expect(chips).toHaveLength(4)
     expect(new Set(chips.map((c) => c.textContent)).size).toBe(4)
 
-    // 同じネットワークの 1032/1033 も、32677 の 1033/1034 も 3 桁番号で区別する。
-    // 一部だけ短いラベルにはしない（グループ内の表記を揃える）。
+    // 同じネットワークの 1032/1033 も、32677 の 1033/1034 も 3 桁番号（段 1）だけで区別する。
     expect(findChipByText(group, label.a)).toBeInTheDocument()
     expect(findChipByText(group, label.b)).toBeInTheDocument()
     expect(findChipByText(group, label.c)).toBeInTheDocument()

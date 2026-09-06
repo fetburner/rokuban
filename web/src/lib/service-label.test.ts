@@ -41,7 +41,10 @@ describe('serviceDisambiguator', () => {
     expect(disambiguate(services[1])).toBe('地上波 121')
   })
 
-  it('リモコン番号まで同じマルチ編成は3桁番号で区別する', () => {
+  it('リモコン番号まで同じマルチ編成は、物理チャンネルが同じでも違っても3桁番号（段1）だけで区別する', () => {
+    // 物理チャンネルが同じ（同じ中継局）でも違う（別の中継局）でも、3 桁番号は
+    // serviceId から決まるので段 1 だけで一意になる --- 物理チャンネル（段 2）
+    // まで進んだら値が変わってしまうので、両ケースとも段 1 で止まることを見る。
     const services = [
       service({ serviceId: 1024, remoteControlKeyId: 5, channel: '27' }),
       service({ serviceId: 1025, remoteControlKeyId: 5, channel: '95' }),
@@ -50,17 +53,15 @@ describe('serviceDisambiguator', () => {
 
     expect(disambiguate(services[0])).toBe('地上波 051')
     expect(disambiguate(services[1])).toBe('地上波 052')
-  })
 
-  it('リモコン番号・物理チャンネルまで同じでも3桁番号で区別する', () => {
-    const services = [
+    const sameChannel = [
       service({ serviceId: 1024, remoteControlKeyId: 5, channel: '27' }),
       service({ serviceId: 1025, remoteControlKeyId: 5, channel: '27' }),
     ]
-    const disambiguate = serviceDisambiguator(services)
+    const disambiguateSameChannel = serviceDisambiguator(sameChannel)
 
-    expect(disambiguate(services[0])).toBe('地上波 051')
-    expect(disambiguate(services[1])).toBe('地上波 052')
+    expect(disambiguateSameChannel(sameChannel[0])).toBe('地上波 051')
+    expect(disambiguateSameChannel(sameChannel[1])).toBe('地上波 052')
   })
 
   it('同名のマルチ編成 3 本を3桁番号だけで区別する', () => {
@@ -218,6 +219,26 @@ describe('serviceDisambiguator', () => {
 
     expect(disambiguate(services[0])).toBe('地上波 051')
     expect(disambiguate(services[1])).toBe('地上波 121')
+  })
+
+  it('グループ内で一部だけ先に一意になっても段数を揃える', () => {
+    // 3 本目（地上波 061）は段 1 だけで既に一意だが、残り 2 本（同じ networkId・
+    // 同じリモコン番号で 3 桁番号も同じ）は段 2（物理チャンネル）まで進まないと
+    // 区別できない。一意性判定はグループ全体（`new Set(labels).size ===
+    // group.length`）で行うため、他の 2 本が段 2 まで進む間は 3 本目も同じ段数
+    // まで足並みを揃える（3 本目だけ短い段 1 のラベルにはしない）。
+    const services = [
+      service({ serviceId: 1024, remoteControlKeyId: 5, channel: '27' }),
+      service({ serviceId: 1032, remoteControlKeyId: 5, channel: '95' }),
+      service({ serviceId: 2048, remoteControlKeyId: 6, channel: '30' }),
+    ]
+    const disambiguate = serviceDisambiguator(services)
+
+    expect(services.map((s) => disambiguate(s))).toEqual([
+      '地上波 051 ・ 27',
+      '地上波 051 ・ 95',
+      '地上波 061 ・ 30',
+    ])
   })
 
   it('同名グループ全員が番組を持たないなら「番組なし」は付かない', () => {
