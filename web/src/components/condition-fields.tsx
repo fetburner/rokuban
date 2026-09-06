@@ -398,7 +398,7 @@ function ServiceFields({
       (s) => s.networkId === service.networkId && s.serviceId === service.serviceId,
     )
 
-  // 同じ名前のサービス（ワンセグ / サブサービス等）が並ぶとき、リモコン番号・
+  // 同じ名前のサービス（マルチ編成のサブサービス等）が並ぶとき、3 桁番号・
   // 物理チャンネル・serviceId から補助ラベルを作る（issue #306）。
   // `services` は `useAllSitesServices()` が毎レンダー新しい配列を返す
   // （identity は保証しない）ため `useMemo` は毎回不一致になり無意味だった

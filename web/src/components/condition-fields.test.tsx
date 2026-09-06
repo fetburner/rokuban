@@ -7,9 +7,9 @@ import { emptyDraft, type SearchDraft } from '@/lib/program-search'
 import { renderInRouter } from '@/test/router'
 
 /**
- * services は issue #306 の実例（「瀬戸内海放送」が 3 つ並ぶ）を縮小したもの。
- * 1032/1033 はリモコン番号まで同じ（ワンセグ/サブサービス相当）にして、
- * 物理チャンネルまで見て区別する経路を確実に通す。
+ * services は issue #306 の実例（「瀬戸内海放送」が複数並ぶ）を縮小したもの。
+ * 1032/1033 はリモコン番号まで同じ（マルチ編成のサブサービス相当）にして、
+ * serviceId から復元した 3 桁番号で区別する経路を確実に通す。
  *
  * さらに **32677/1033**（32676/1033 と serviceId だけ同じで networkId が違う）を
  * 置いてある。チップの選択・解除は `(networkId, serviceId)` の組で引き当てるが、
@@ -47,7 +47,7 @@ const services: Service[] = [
     serviceId: 1033,
     name: '瀬戸内海放送',
     channelType: 'GR',
-    // 1032 と同じリモコン番号だが物理チャンネルが違う（別の中継局のサブサービス）
+    // 1032 と同じリモコン番号だが物理チャンネルが違う（別の中継局のサービス）
     channel: '95',
     remoteControlKeyId: 5,
     hasLogoData: false,
@@ -66,7 +66,7 @@ const services: Service[] = [
   },
   {
     // 32676/1033 と serviceId だけ同じで networkId が違う（別の親局のネットワーク）。
-    // 物理チャンネルが違うので補助ラベルは物理チャンネルの段で一意になる。
+    // 3 桁番号も異なるが、チップの選択・解除は networkId も含む identity を使う。
     id: 3267701033,
     networkId: 32677,
     serviceId: 1033,
@@ -112,13 +112,14 @@ function stubServicesFetch(servicesBySite: Record<string, Service[]> = { default
 // 補助ラベルは名前と別のテキストノード（<span>）に置く。ここでは表示テキスト
 // （textContent）で比較する --- アクセシブルネームはノード間の空白の入り方が
 // 計算エンジン依存で、jsdom（dom-accessibility-api）の結果が実ブラウザと一致
-// する保証はない。32677 の 2 件はリモコン番号だけで 32676 の 2 件と区別できるが、
-// 同じグループ内の表記を揃えるため全員に物理チャンネルまで付く。
+// する保証はない。この 4 件はリモコン番号が 5/12 の 2 組に分かれるが、
+// serviceId から復元した 3 桁番号がそれぞれ異なるため、4 件とも段 1（3 桁番号）
+// だけで一意になる。
 const label = {
-  a: '瀬戸内海放送（地上波 5 ・ 21）', // 32676/1032
-  b: '瀬戸内海放送（地上波 5 ・ 95）', // 32676/1033
-  c: '瀬戸内海放送（地上波 12 ・ 30）', // 32677/1034
-  d: '瀬戸内海放送（地上波 12 ・ 31）', // 32677/1033
+  a: '瀬戸内海放送（地上波 051）', // 32676/1032
+  b: '瀬戸内海放送（地上波 052）', // 32676/1033
+  c: '瀬戸内海放送（地上波 123）', // 32677/1034
+  d: '瀬戸内海放送（地上波 122）', // 32677/1033
 }
 
 function findChipByText(group: HTMLElement, text: string): HTMLElement {
@@ -150,9 +151,7 @@ describe('ConditionFields のサービスチップ', () => {
     expect(chips).toHaveLength(4)
     expect(new Set(chips.map((c) => c.textContent)).size).toBe(4)
 
-    // 同じネットワークの 1032/1033 も、32677 の 1033/1034 もリモコン番号までは
-    // 同じ（ワンセグ/サブサービス相当）なので物理チャンネルまで見て区別する。
-    // 一部だけ短いラベルにはしない（グループ内の表記を揃える）。
+    // 同じネットワークの 1032/1033 も、32677 の 1033/1034 も 3 桁番号（段 1）だけで区別する。
     expect(findChipByText(group, label.a)).toBeInTheDocument()
     expect(findChipByText(group, label.b)).toBeInTheDocument()
     expect(findChipByText(group, label.c)).toBeInTheDocument()
@@ -313,10 +312,10 @@ describe('ConditionFields のサービスチップ', () => {
     // 計算エンジン依存で jsdom が実ブラウザと一致する保証はないため。
     // 上の `label` 定数と同じ規律）。
     expect(
-      findChipByText(group, '瀬戸内海放送（地上波 5 ・ 27 ・ #3273601024）'),
+      findChipByText(group, '瀬戸内海放送（地上波 051 ・ 27 ・ #3273601024）'),
     ).toBeInTheDocument()
     expect(
-      findChipByText(group, '瀬戸内海放送（地上波 5 ・ 27 ・ #3273601032 ・ 番組なし）'),
+      findChipByText(group, '瀬戸内海放送（地上波 051 ・ 27 ・ #3273601032 ・ 番組なし）'),
     ).toBeInTheDocument()
   })
 })
