@@ -13,8 +13,11 @@ import (
 // SourceRule はルール予約から作られた録画の provenance。
 const SourceRule = "rule"
 
-// SourceManual はユーザーの明示操作、または予約を特定できない録画の provenance。
+// SourceManual はユーザーが録画を明示した録画の provenance。
 const SourceManual = "manual"
+
+// SourceUnattributed は予約もユーザーの録画意図も特定できない録画の provenance。
+const SourceUnattributed = "unattributed"
 
 // DeriveRecordingSource は recordings.source を決める（issue #26）。
 //
@@ -27,15 +30,16 @@ const SourceManual = "manual"
 // intent は放送終了まで生きているので判定時点では参照でき、この行の有無が
 // 「ユーザーが録れと言ったか」の唯一の真実である。program_overrides
 // （priority 等の上書き）は M2-4 で intent と分離されているため、「ルール由来の
-// 予約に上書きを足しただけ」では intent 行が存在せず、正しく 'rule' のままになる
-// （docs/recording.md §4.4「manual 行にルールがマッチしても昇格は要らない」）。
+// 予約に上書きを足しただけ」では intent 行が存在せず、正しく予約行の有無から
+// 'rule' になる（docs/recording.md §4.4「manual 行にルールがマッチしても昇格は
+// 要らない」）。
 //
-// hasReservation は予約行が引けたかどうか。**意図が無いときの既定値**を分ける
-// ために必要になる。予約行が無い記録（tag は付いているが予約が既に削除
-// されている等）を 'rule' と記録するのは誤りで、`source = 'rule'` かつ
-// `rule_id IS NULL` という矛盾した組になってしまう。帰属できるルールが無いなら
-// 「人間が手で起こした録画」として 'manual' に倒す（issue #26 以前の実装が
-// `source := "manual"` を既定にしていたのと同じ判断）。
+// hasReservation は予約行が引けたかどうか。intent が無いときに 'rule' と
+// 'unattributed' を分けるために必要になる。予約行が無く intent も無い記録
+// （tag は付いているが予約と意図が既に GC された、mirakc 側で直接起こされた等）を
+// 'rule' と記録するのは誤りで、`source = 'rule'` かつ `rule_id IS NULL` という
+// 矛盾した組になってしまう。かといってユーザーの意図が残っていないものを
+// 'manual' と断定する材料も無いので、'unattributed' にする。
 //
 // internal/watcher の recordings 行を作る 2 経路（createRecording /
 // handleRecordingFailed）から呼ばれる。同じ式を 2 箇所に書き下すと片方だけ
@@ -50,7 +54,7 @@ func DeriveRecordingSource(ctx context.Context, q *sqlcgen.Queries, site string,
 		return "", fmt.Errorf("looking up program intent for program %d: %w", programID, err)
 	}
 	if !hasReservation {
-		return SourceManual, nil
+		return SourceUnattributed, nil
 	}
 	return SourceRule, nil
 }

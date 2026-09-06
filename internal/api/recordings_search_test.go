@@ -332,6 +332,7 @@ func TestListRecordings_StatusSourceRuleID(t *testing.T) {
 	seedRecordingFull(t, pool, seedRecordingOpts{title: "失敗", start: base.Add(time.Minute), status: "failed", eventID: 2})
 	seedRecordingFull(t, pool, seedRecordingOpts{title: "手動完了", start: base.Add(2 * time.Minute), status: "finished", eventID: 3, source: "manual"})
 	seedRecordingFull(t, pool, seedRecordingOpts{title: "ルール完了", start: base.Add(3 * time.Minute), status: "finished", eventID: 4, source: "rule", ruleID: &ruleID})
+	seedRecordingFull(t, pool, seedRecordingOpts{title: "帰属なし", start: base.Add(4 * time.Minute), status: "finished", eventID: 5, source: "unattributed"})
 
 	titles := getRecordingsTitles(t, srv.URL, url.Values{"status": {"failed"}})
 	if len(titles) != 1 || titles[0] != "失敗" {
@@ -341,6 +342,11 @@ func TestListRecordings_StatusSourceRuleID(t *testing.T) {
 	titles = getRecordingsTitles(t, srv.URL, url.Values{"source": {"rule"}})
 	if len(titles) != 1 || titles[0] != "ルール完了" {
 		t.Fatalf("source=rule got %v, want [ルール完了]", titles)
+	}
+
+	titles = getRecordingsTitles(t, srv.URL, url.Values{"source": {"unattributed"}})
+	if len(titles) != 1 || titles[0] != "帰属なし" {
+		t.Fatalf("source=unattributed got %v, want [帰属なし]", titles)
 	}
 
 	titles = getRecordingsTitles(t, srv.URL, url.Values{"ruleId": {fmt.Sprint(ruleID)}})

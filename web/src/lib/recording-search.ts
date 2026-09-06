@@ -83,12 +83,14 @@ export const statusLabels: Record<ListRecordingsStatus, string> = {
 export const recordingSourceValues: ListRecordingsSource[] = [
   ListRecordingsSource.rule,
   ListRecordingsSource.manual,
+  ListRecordingsSource.unattributed,
 ]
 
 /** sourceLabels は録画の出自（source）の日本語表記。 */
 export const sourceLabels: Record<ListRecordingsSource, string> = {
   rule: 'ルール',
   manual: '手動',
+  unattributed: '帰属なし',
 }
 
 /** emptyRecordingsSearch は条件を何も指定していない状態。 */

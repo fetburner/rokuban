@@ -17,7 +17,7 @@
 
 > **滞留を N 日まで許すつもりでリングバッファをサイジングするなら、`epg.retention_grace >= N` にする。**
 
-GC がその番組のスナップショットを刈った後に ingest が走ると、その録画は既定ポリシー（`keep_original='always'` / `encode_profiles=[]`）で凍結される。原本は残るのでデータは失われないが、**エンコードは投入されず、`recordings.source` は `manual` に・`rule_id` は NULL に落ちる**。復帰は障害復旧時に一括で起きるので、まとまった件数が同時にこうなりうる。事後回復は `POST /api/recordings/{id}/encode-profiles`（追加のみ）**だけ**で、`encode_reconcile` の定期パスは拾わない（desired が空なので候補にならない。[ストレージ](../storage.md) §6）。
+GC がその番組のスナップショットを刈った後に ingest が走ると、その録画は既定ポリシー（`keep_original='always'` / `encode_profiles=[]`）で凍結される。原本は残るのでデータは失われないが、**エンコードは投入されず、作成時点で予約も意図も無かった録画は `recordings.source = 'unattributed'` になり、`rule_id` は NULL に落ちる**。復帰は障害復旧時に一括で起きるので、まとまった件数が同時にこうなりうる。事後回復は `POST /api/recordings/{id}/encode-profiles`（追加のみ）**だけ**で、`encode_reconcile` の定期パスは拾わない（desired が空なので候補にならない。[ストレージ](../storage.md) §6）。
 
 **ただし GC 自身が止まる障害では話が違う**。worker 全停止や DB 到達不能のように `ruler_pass` ごと止まる障害では断のあいだ GC も進まない。復帰時は sweep + ingest と `ruler_pass` の競争になり、ingest が先に走れば意図は守られる（どちらが先かはジョブの実行順に依存する。未検証）。決定論的に上の帰結になるのは「**GC は動き続けたが、その録画の ingest だけが猶予を跨いで遅れた**」場合。
 

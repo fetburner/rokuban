@@ -16,6 +16,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/inplace"
+	"github.com/fetburner/rokuban/internal/reservation"
 )
 
 // rescueStorage は catalog が 1 世代も残っていないときに、認識可能な動画ファイルをスキャンする。
@@ -81,7 +82,10 @@ func rescueStorage(ctx context.Context, pool *pgxpool.Pool, mediaDir, site strin
 
 		_, err = inplace.Register(ctx, pool, mediaDir, inplace.Input{
 			Recording: inplace.Recording{
-				Source:    "manual",
+				// ストレージ再スキャンには予約も program_intents も残っていない。
+				// ユーザーの明示的な意図を示す材料が無いので manual ではなく
+				// unattributed として永続化する。
+				Source:    reservation.SourceUnattributed,
 				Site:      fileSite,
 				NetworkID: networkID, ServiceID: serviceID, EventID: eventID,
 				ServiceName: "Recovered file (metadata unavailable)",

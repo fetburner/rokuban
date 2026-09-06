@@ -633,11 +633,10 @@ func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sq
 		}
 		// source='rule' は常に「予約はあったのに引けなくなった」（doc コメント
 		// 「予約をどのキーで引くか」の 3 原因を参照。issue #214 の交点を含む）
-		// なので Warn、source='manual' は日常的なケース（予約が最初から
-		// 無い）と異常なケース（intent action='record' だったが予約が
-		// 恒久的に削除された）が混在するので Info に落とす。どちらの source
-		// でも黙って return しない —— 判別できないことをログの欠落で
-		// 埋め合わせない。
+		// なので Warn。source='manual' も「意図があった」ことを示す snapshot なので
+		// Warn にする。source='unattributed' は予約も意図も特定できない録画で、
+		// 予約が最初から無い日常的なケースを表すため Info に落とす。どの source
+		// でも黙って return しない —— 判別できないことをログの欠落で埋め合わせない。
 		logArgs := []any{
 			"recording_id", recordingID,
 			"site", rec.Site,
@@ -645,10 +644,10 @@ func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sq
 			"service_id", rec.ServiceID,
 			"event_id", rec.EventID,
 		}
-		if rec.Source == reservation.SourceRule {
-			slog.Warn("encode policy: reservation not found via broadcast event key; freezing defaults", logArgs...)
-		} else {
+		if rec.Source == reservation.SourceUnattributed {
 			slog.Info("encode policy: reservation not found via broadcast event key; freezing defaults", logArgs...)
+		} else {
+			slog.Warn("encode policy: reservation not found via broadcast event key; freezing defaults", logArgs...)
 		}
 	} else {
 		eff, err := reservation.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)

@@ -115,7 +115,9 @@ type RuleTime struct {
 	EndSec   int32 `json:"endSec"`
 }
 
-// Recording は recordings の 1 行（tombstone 含む）。
+// Recording は recordings の 1 行（tombstone 含む）。Source は録画作成時の
+// snapshot をそのまま保持する。ストレージ再スキャンの rescue は予約や意図を
+// 特定できないため "unattributed" を書き戻す。
 // recordings.reservation_id は元々「導出物なので export しない」として
 // 常に NULL で rescue していたが、issue #158 で列自体を落としたので、
 // この構造体にはそもそも存在しない。

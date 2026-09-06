@@ -42,6 +42,7 @@ import {
   clearRecordingsFilters,
   hasAnyRecordingsCondition,
   shouldShowRecordingSite,
+  sourceLabels,
   type RecordingsPageSearch,
 } from '@/lib/recording-search'
 import { cn } from '@/lib/utils'
@@ -728,6 +729,7 @@ function RecordingRow({
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
           <StatusBadge status={recording.status} />
+          <span className="shrink-0">{sourceLabels[recording.source]}</span>
           <IngestBadge recording={recording} />
           {/* エンコード失敗は StatusBadge / IngestBadge と同じ「この録画の
               パイプラインがどこで止まっているか」なので隣に置く。メタデータ列の

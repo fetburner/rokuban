@@ -153,7 +153,7 @@ func recordingsFilterFromParams(p ListRecordingsParams) (recordingsFilter, strin
 	}
 	if p.Source != nil {
 		if !p.Source.Valid() {
-			return recordingsFilter{}, fmt.Sprintf("invalid source %q (want rule or manual)", *p.Source)
+			return recordingsFilter{}, fmt.Sprintf("invalid source %q (want rule, manual or unattributed)", *p.Source)
 		}
 		f.Source = *p.Source
 	}

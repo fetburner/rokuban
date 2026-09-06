@@ -237,8 +237,9 @@ func (e RecordingChannelType) Valid() bool {
 
 // Defines values for RecordingSource.
 const (
-	RecordingSourceManual RecordingSource = "manual"
-	RecordingSourceRule   RecordingSource = "rule"
+	RecordingSourceManual       RecordingSource = "manual"
+	RecordingSourceRule         RecordingSource = "rule"
+	RecordingSourceUnattributed RecordingSource = "unattributed"
 )
 
 // Valid indicates whether the value is a known member of the RecordingSource enum.
@@ -247,6 +248,8 @@ func (e RecordingSource) Valid() bool {
 	case RecordingSourceManual:
 		return true
 	case RecordingSourceRule:
+		return true
+	case RecordingSourceUnattributed:
 		return true
 	default:
 		return false
@@ -615,8 +618,9 @@ func (e ListRecordingsParamsEncodeState) Valid() bool {
 
 // Defines values for ListRecordingsParamsSource.
 const (
-	ListRecordingsParamsSourceManual ListRecordingsParamsSource = "manual"
-	ListRecordingsParamsSourceRule   ListRecordingsParamsSource = "rule"
+	ListRecordingsParamsSourceManual       ListRecordingsParamsSource = "manual"
+	ListRecordingsParamsSourceRule         ListRecordingsParamsSource = "rule"
+	ListRecordingsParamsSourceUnattributed ListRecordingsParamsSource = "unattributed"
 )
 
 // Valid indicates whether the value is a known member of the ListRecordingsParamsSource enum.
@@ -625,6 +629,8 @@ func (e ListRecordingsParamsSource) Valid() bool {
 	case ListRecordingsParamsSourceManual:
 		return true
 	case ListRecordingsParamsSourceRule:
+		return true
+	case ListRecordingsParamsSourceUnattributed:
 		return true
 	default:
 		return false
@@ -1260,8 +1266,13 @@ type Recording struct {
 	// 含むので、区別が要るときは `ingest.state` を見る（issue #211 /
 	// #212）。**転送中の途中ファイルのサイズはここに混ぜない**（コミット =
 	// DB 行。不変条件 3）--- 途中経過は `ingest.writtenBytes`。
-	SizeBytes *int64          `json:"sizeBytes,omitempty"`
-	Source    RecordingSource `json:"source"`
+	SizeBytes *int64 `json:"sizeBytes,omitempty"`
+
+	// Source 録画作成時に一度だけ焼かれる出自の snapshot。
+	// `rule` は予約行があり、`program_intents.action=record` が無い録画、
+	// `manual` はユーザーの録画意図があった録画、`unattributed` は予約も
+	// 意図も特定できない録画を表す。
+	Source RecordingSource `json:"source"`
 
 	// StartAt 番組の放送開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。
 	StartAt time.Time `json:"startAt"`
@@ -1275,7 +1286,10 @@ type Recording struct {
 // RecordingChannelType defines model for Recording.ChannelType.
 type RecordingChannelType string
 
-// RecordingSource defines model for Recording.Source.
+// RecordingSource 録画作成時に一度だけ焼かれる出自の snapshot。
+// `rule` は予約行があり、`program_intents.action=record` が無い録画、
+// `manual` はユーザーの録画意図があった録画、`unattributed` は予約も
+// 意図も特定できない録画を表す。
 type RecordingSource string
 
 // RecordingStatus defines model for Recording.Status.

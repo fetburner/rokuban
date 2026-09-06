@@ -148,7 +148,7 @@ manual 予約は「base を持たず、`program_intents` に `action = 'record'`
 
 state は「今、誰が base を供給しているか」の答えに過ぎない: base = NULL なら誰もいない / `active` はルールが毎パス再計算 / `detached` はかつてのルール（凍結された base）。§4.3 のとおりこれは `(rule_id, base)` からの導出値であり、同期の可否を決めるフィルタに使ってはならない（列としては撤去済みで、API が都度計算する）。
 
-**「どう作られたか」を列に保存しない。** 2 つの事実は別々に読める --- 「ユーザーが録れと言った」は `program_intents.action='record'`、「いまルールが base を供給している」は `rule_id IS NOT NULL` --- ので、`source` は API が都度この 2 つから導出して返す。**この 2 つを 1 列に潰してはならない** --- 導出器は手動予約にルールがマッチすると manual → rule に**不可逆に**書き換え、watcher がそれを永続資産（`recordings.source`）にコピーするので、**手動予約した番組の録画履歴が恒久的に「ルール由来」と記録される**（[invariants.md](../invariants.md) §9）。
+**「どう作られたか」を予約の列に保存しない。** 2 つの事実は別々に読める --- 「ユーザーが録れと言った」は `program_intents.action='record'`、「いまルールが base を供給している」は `rule_id IS NOT NULL` --- ので、予約の `source` は API が都度この 2 つから導出して返す。**この 2 つを 1 列に潰してはならない** --- 導出器は手動予約にルールがマッチすると manual → rule に**不可逆に**書き換え、watcher がそれを永続資産（`recordings.source`）にコピーするので、**手動予約した番組の録画履歴が恒久的に「ルール由来」と記録される**（[invariants.md](../invariants.md) §9）。録画側の `recordings.source` は作成時に一度だけ焼く snapshot であり、予約も `record` 意図も引けない場合は `unattributed` とする。
 
 #### manual 行にルールがマッチしても昇格は要らない
 
@@ -193,4 +193,3 @@ UI で「開始後に意味を持つフィールド」を区別表示する。�
 ### 4.6 スコープ外
 
 「この番組シリーズは常に...」のような永続的例外は overrides（予約の寿命 = 短命）ではなくルール側の機能。必要になったら別途検討。
-

@@ -998,6 +998,19 @@ describe('RecordingsPage ページング', () => {
   })
 })
 
+describe('録画の出自ラベル', () => {
+  it('一覧に帰属なしを表示できる', async () => {
+    createFakeRecordingsServer({
+      library: [sampleRecording({ source: 'unattributed', title: '帰属なしの録画' })],
+    })
+
+    renderPage()
+
+    expect(await screen.findByText('帰属なしの録画')).toBeInTheDocument()
+    expect(screen.getByText('帰属なし')).toBeInTheDocument()
+  })
+})
+
 /**
  * 状態色の適用。**色そのものは jsdom では測れない**（Tailwind のクラスは
  * 解決されないし oklch も計算されない）ので、ここで見るのは「どのトークンの

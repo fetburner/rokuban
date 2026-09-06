@@ -10,7 +10,7 @@
 CREATE TABLE recordings (
     id                bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     rule_id           bigint,        -- トレーサビリティ。rules への FK（ON DELETE SET NULL）
-    source            text   NOT NULL CHECK (source IN ('rule', 'manual')),
+    source            text   NOT NULL CHECK (source IN ('rule', 'manual', 'unattributed')),
     site              text   NOT NULL,  -- どのサイトで録画したか（履歴として snapshot）
 
     -- 番組情報スナップショット（ARIB/ISDB の概念であり mirakc 固有ではない）
@@ -77,6 +77,7 @@ CREATE INDEX ON recordings (purged_at) WHERE purged_at IS NULL;  -- ごみ箱一
 - `recording.failed` で record が存在しないケース（start-recording-failed 等）→ status = `failed` の行を作り quality_events に理由を記録。**録画されなかった試行も履歴に残る**
 - **番組終了時点で schedule が一度も観測されなかった場合は試行ではないため、`recordings` に行を作らない。** reconciler が後述の `never_scheduled_events` に欠測を書き、ライブラリには failed 録画として出さない
 - 同一 active-event に mirakc 由来の failed 行が既にある状態で、後から成功 record が初観測されたとき → failed 行を supersede してから新しい行を INSERT する（下記「同一イベントの重複防止」の `superseded_at` 参照）
+- `source` は作成時点の出自を一度だけ snapshot する。予約行も `record` 意図も無い録画は `unattributed` とし、後から予約や意図を推測して書き換えない
 - ingest の完了は recordings の status ではなく **`media_assets` 行の有無**で表現する（コミット = DB 行。冗長な状態カラムを持たない）
 
 ### status の権威

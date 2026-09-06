@@ -217,7 +217,7 @@ describe('RecordingFilters 絞り込みパネル', () => {
     expect(onChangeCalls.at(-1)?.status).toBeUndefined()
   })
 
-  it('種別チップ（ルール・手動）が source を切り替える', async () => {
+  it('種別チップ（ルール・手動・帰属なし）が source を切り替える', async () => {
     const user = userEvent.setup()
     const { onChangeCalls } = renderFilters()
 
@@ -226,6 +226,9 @@ describe('RecordingFilters 絞り込みパネル', () => {
 
     await user.click(within(panel).getByRole('button', { name: '手動' }))
     expect(onChangeCalls.at(-1)?.source).toBe('manual')
+
+    await user.click(within(panel).getByRole('button', { name: '帰属なし' }))
+    expect(onChangeCalls.at(-1)?.source).toBe('unattributed')
   })
 
   it('ジャンルチップは複数選択で、選択中は同じチップを押すと外れる', async () => {
