@@ -1424,7 +1424,12 @@ func TestDeleteReconcileWorker_SymlinkMediaDir_ObservesFilesAndDoesNotReportMiss
 }
 
 // media_dir 自体が symlink の場合でも、解決後の root を基準に catalog/ を
-// 除外する。root だけ解決して相対パスの基準を古い値に戻す変異も防ぐ。
+// 除外する。root だけ解決して filepath.Rel の基準を古い値（symlink 側）に
+// 戻す変異が入ると、catalog 配下のファイルの rel_path は "../" を含む形
+// （例: "../../<real>/catalog/generation.json"）で記録されるため、
+// catalogRel 完全一致のクエリだけでは 0 件のまま通ってしまう ---
+// orphan_files の全件数も合わせて確認し、その変異が入っても緑にならない
+// ようにする。
 func TestDeleteReconcileWorker_SymlinkMediaDir_SkipsCatalog(t *testing.T) {
 	pool := setupTestPool(t)
 	realMediaDir := t.TempDir()
@@ -1459,32 +1464,70 @@ func TestDeleteReconcileWorker_SymlinkMediaDir_SkipsCatalog(t *testing.T) {
 	if orphanCount != 0 {
 		t.Errorf("orphan_files count for catalog file %q = %d, want 0", catalogRel, orphanCount)
 	}
+
+	var totalOrphanCount int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM orphan_files").Scan(&totalOrphanCount); err != nil {
+		t.Fatalf("querying orphan_files total: %v", err)
+	}
+	if totalOrphanCount != 0 {
+		t.Errorf("orphan_files total count = %d, want 0 (catalog file must not be recorded under any rel_path)", totalOrphanCount)
+	}
+
 	if !fileExists(catalogPath) {
 		t.Error("catalog file was removed")
 	}
 }
 
-func TestWalkMediaFiles_RejectsMissingOrNonDirectoryMediaDir(t *testing.T) {
+// walkMediaFiles(missing) は従来どおり 0 件・エラー無しで返す ---
+// reconcileMissingAssets の全損シグネチャ（seenOnDisk が空）がこれを拾って
+// 専用の見送り経路に入れるため、ここで error にすると全損検知の入口を
+// 迂回してしまう（#671 コメント参照）。walkMediaFiles(regular file) は
+// "." という幻の rel_path が seenOnDisk / orphan_files に混入する経路を
+// 塞ぐため error にする。
+func TestWalkMediaFiles_MissingMediaDirIsNoopButNonDirectoryErrors(t *testing.T) {
 	root := t.TempDir()
 	regularFile := filepath.Join(root, "media-file")
 	if err := os.WriteFile(regularFile, []byte("not a directory"), 0o644); err != nil {
 		t.Fatalf("writing regular file: %v", err)
 	}
 
-	tests := []struct {
-		name string
-		path string
-	}{
-		{name: "missing", path: filepath.Join(root, "missing")},
-		{name: "regular file", path: regularFile},
+	t.Run("missing", func(t *testing.T) {
+		var visited []string
+		path := filepath.Join(root, "missing")
+		if err := walkMediaFiles(path, func(relPath string, _ fs.FileInfo) {
+			visited = append(visited, relPath)
+		}); err != nil {
+			t.Fatalf("walkMediaFiles(%q) error = %v, want nil", path, err)
+		}
+		if len(visited) != 0 {
+			t.Errorf("walkMediaFiles(%q) visited = %v, want none", path, visited)
+		}
+	})
+
+	t.Run("regular file", func(t *testing.T) {
+		if err := walkMediaFiles(regularFile, func(string, fs.FileInfo) {}); err == nil {
+			t.Fatalf("walkMediaFiles(%q) error = nil, want error", regularFile)
+		}
+	})
+}
+
+// reconcileOrphanCandidates / Work が walkMediaFiles のエラーを実際に
+// 上まで伝播することを、helper 直接呼び出しの 1 段下ではなく Work() 経由で
+// 確認する。reconcileOrphanCandidates が将来 walk のエラーを握って空の
+// seenOnDisk を返すよう変わっても、helper 単体のテストは緑のまま通り、
+// 「0 件成功に化けさせない」保証が消えてしまうため。
+func TestDeleteReconcileWorker_NonDirectoryMediaDir_WorkFails(t *testing.T) {
+	pool := setupTestPool(t)
+	root := t.TempDir()
+	regularFile := filepath.Join(root, "media-file")
+	if err := os.WriteFile(regularFile, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("writing regular file: %v", err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := walkMediaFiles(tt.path, func(string, fs.FileInfo) {})
-			if err == nil {
-				t.Fatalf("walkMediaFiles(%q) error = nil, want error", tt.path)
-			}
-		})
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: regularFile}
+	if err := w.Work(context.Background(), nil); err == nil {
+		t.Fatal("Work() error = nil, want error for a non-directory media dir")
 	}
 }
 

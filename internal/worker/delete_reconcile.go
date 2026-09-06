@@ -872,6 +872,14 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath str
 // mediaDir 自体が symlink の場合は、走査 root・catalogDir・rel_path の基準を
 // 同じ実体パスに揃えるため、走査前に解決する。
 //
+// mediaDir が存在しない場合は従来どおり 0 件・エラー無しで返す ---
+// reconcileMissingAssets の全損シグネチャ（seenOnDisk が空）がこれを拾って
+// 専用の見送り経路に入れるため、ここで error にすると全損検知の入口を
+// 迂回してしまう（#671 コメント参照）。権限エラーや symlink ループ等
+// 不在以外の解決失敗、および解決後がディレクトリでない場合は error にする
+// --- 後者が閉じるのは "." という幻の rel_path が seenOnDisk / orphan_files
+// に混入する経路。
+//
 // 除外を足すときは reconcileMissingAssets の doc コメントを読む --- この結果は
 // 孤児方向と実体無し方向の両方が使い、除外の誤りの向きが二者で反対になる。
 //
@@ -887,10 +895,16 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath str
 func walkMediaFiles(mediaDir string, fn func(relPath string, info fs.FileInfo)) error {
 	resolvedMediaDir, err := filepath.EvalSymlinks(mediaDir)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
 		return fmt.Errorf("resolving media dir %q: %w", mediaDir, err)
 	}
 	rootInfo, err := os.Stat(resolvedMediaDir)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
 		return fmt.Errorf("stating resolved media dir %q: %w", resolvedMediaDir, err)
 	}
 	if !rootInfo.IsDir() {
