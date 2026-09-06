@@ -398,7 +398,7 @@ EPGStation・KonomiTV には構造的にできない表示。
   true の予約は reconciler が mirakc に同期しないためチューナーを消費しない
   （`internal/capacity/load.go` の `demandFromRow` --- `eff.IsSkipped()` が true の
   行は容量の需要から除外される。docs/data.md §6.5）。API が返す `Reservation.skip`
-  はまさにこの `effective.skip` なので、フロント側もこの値で同じ除外を行う
+  はまさにこの `effective.skip` なので、フロント側もこの値で同じ除外を適用する
 - **下界主義は容量バッジと同じ規律（docs/data.md §6.5）。** 「中断されます」と
   断言しない --- チューナーに余裕があれば中断されないが、余裕があるとも言えない
   （見えない消費者。並走 EPGStation・他のライブ視聴セッション・mirakc の

@@ -6,7 +6,7 @@
 
 対策:
 
-- **1 回の ruler パスでの削除数に閾値**（`ruler.max_deletes_per_pass`）を設け、超えたら削除を実行せず停止してアラート。手動確認後に再開
+- **1 回の ruler パスでの削除数に閾値**（`ruler.max_deletes_per_pass`）を設け、超えたら削除せず停止してアラート。手動確認後に再開
 - **数えて止めるのは「ルールが base を供給しているのに desired から外れた」削除だけ。** desired は「(ルール勝者 − intent skip) ∪ investment（record 意図 ∪ overrides）」から導出されるので、`toDelete`（既存予約のうち desired から外れた行）には EPG 由来の unmatch とユーザーの明示操作が混ざる。このうち**ユーザー（運用者）が投資を手放す書き込みをしない限り起きない削除はブレーカーの外**に置き、カウントにも入れずラッチ中でも実行する。判定は削除文の `WHERE` が適用の瞬間に行い、`program_investments` が空であることに加えて次のどちらかが立てば対象:
   - `reservations.rule_id IS NULL` — いまルールが base を供給していない行。**この列は EPG の変化だけでも NULL になる**（投資を持つ行はルールが外れても desired に残るのでそのパスで upsert され、`internal/ruler/sql.go` の `resolved` CTE が凍結するのは `base` と dedup 根拠 2 列だけ。`rule_id = EXCLUDED.rule_id` がそのまま NULL を書く。`TestRunPass_EpgUnmatchNullsRuleIDButInvestmentBlocksRelease` が実測で固定）ので、**これ単体はユーザー由来の証明にならない**
   - `program_intents.action='skip'` — ユーザーが「録るな」と書いた

@@ -2,8 +2,10 @@
   "name": "rokuban-docs",
   "private": true,
   "scripts": {
-    "docs:lint": "textlint README.md CLAUDE.md deploy/k8s/README.md deploy/k8s/e2e/README.md docs/configuration.md docs/operations.md 'docs/operations/**/*.md' docs/runbook.md 'docs/runbook/**/*.md'",
-    "docs:lint:all": "textlint README.md CLAUDE.md 'docs/**/*.md'"
+    "docs:lint": "npm run docs:lint:design && npm run docs:lint:operations",
+    "docs:lint:design": "textlint --config .textlintrc.design.json 'docs/**/*.md'",
+    "docs:lint:operations": "textlint README.md CLAUDE.md deploy/k8s/README.md deploy/k8s/e2e/README.md docs/configuration.md docs/operations.md 'docs/operations/**/*.md' docs/runbook.md 'docs/runbook/**/*.md'",
+    "docs:lint:all": "npm run docs:lint"
   },
   "devDependencies": {
     "textlint": "15.8.0",

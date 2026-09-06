@@ -33,7 +33,7 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 
 **`go test ./...` は Postgres を要求する**。`ROKUBAN_TEST_DATABASE_URL` を設定していないと DB を使うテストが落ちる（`internal/testutil` がパッケージごとに DB を作り、テストごとに TRUNCATE する）。ローカルなら `postgres://localhost:5432/postgres?sslmode=disable` で足りる。
 
-**docs を触ったら `npm run docs:lint` を回す**（textlint。CI の `docs-lint` ジョブと同じ）。**1 文 120 文字の上限が効く**ので、根拠を 1 文に詰め込むと落ちる。対象は README / CLAUDE.md / `docs/operations/**` / `docs/runbook/**` などで、`package.json` の `docs:lint` が権威。**Go のテストや `deploy/k8s/` の検査を全部回しても、この 1 つだけは別に落ちる**（実際に PR を出してから気付いた）。
+**docs を触ったら `npm run docs:lint` を回す**（textlint。CI の `docs-lint` ジョブと同じ）。運用文書では 1 文 120 文字の上限が効き、設計文書では他の日本語規則を検査する。対象は README / CLAUDE.md / deploy/k8s の README / `docs/**/*.md` で、`package.json` の `docs:lint` が権威。**Go のテストや `deploy/k8s/` の検査を全部回しても、この 1 つだけは別に落ちる**（実際に PR を出してから気付いた）。
 
 **sqlc は式の型を推論しきれないことがある。** `program_start_at + interval '...'` のような
 式に `::timestamptz` を明示しないと `int32` として生成され、`Scan` で必ず落ちる。
