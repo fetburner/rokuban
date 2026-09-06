@@ -29,11 +29,19 @@
 -- recordings 行そのものが無いキー（録画がまだ一切観測されていない）は当然
 -- ここに出てこないので、呼び出し側では「返らなかったキー = 観測なし」として
 -- 扱えばよい（started_at が NULL の行がある場合と同じ扱いになる）。
+--
+-- 同一サービス内の event_id の一意性はイベント終了から 24 時間しかない
+-- （ARIB TR-B14 第四編 8.2.1）。放送イベントキーだけでは過去に録画した同じ
+-- event_id を現在のイベントと区別できないため、started_at に時間の下界を掛ける。
+-- program_start_at ではなく started_at を使うのは、前者が予約側の start_at と
+-- mirakc の別オブジェクト由来で、繰り下げ・延長時にずれるからである。呼び出し側は
+-- 通常 now - 24 時間を渡し、24 時間を超える長時間番組だけ候補の start_at まで緩める。
 -- name: ListStartedBroadcastEventKeys :many
 SELECT DISTINCT rec.network_id, rec.service_id, rec.event_id
 FROM recordings rec
 WHERE rec.site = $1
   AND rec.started_at IS NOT NULL
+  AND rec.started_at >= sqlc.arg(started_after)::timestamptz
   AND EXISTS (
       SELECT 1 FROM generate_subscripts(sqlc.arg(network_ids)::integer[], 1) AS i
       WHERE (sqlc.arg(network_ids)::integer[])[i] = rec.network_id

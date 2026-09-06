@@ -7,6 +7,7 @@ package sqlcgen
 
 import (
 	"context"
+	"time"
 )
 
 const listStartedBroadcastEventKeys = `-- name: ListStartedBroadcastEventKeys :many
@@ -14,19 +15,21 @@ SELECT DISTINCT rec.network_id, rec.service_id, rec.event_id
 FROM recordings rec
 WHERE rec.site = $1
   AND rec.started_at IS NOT NULL
+  AND rec.started_at >= $2::timestamptz
   AND EXISTS (
-      SELECT 1 FROM generate_subscripts($2::integer[], 1) AS i
-      WHERE ($2::integer[])[i] = rec.network_id
-        AND ($3::integer[])[i] = rec.service_id
-        AND ($4::integer[])[i] = rec.event_id
+      SELECT 1 FROM generate_subscripts($3::integer[], 1) AS i
+      WHERE ($3::integer[])[i] = rec.network_id
+        AND ($4::integer[])[i] = rec.service_id
+        AND ($5::integer[])[i] = rec.event_id
   )
 `
 
 type ListStartedBroadcastEventKeysParams struct {
-	Site       string
-	NetworkIds []int32
-	ServiceIds []int32
-	EventIds   []int32
+	Site         string
+	StartedAfter time.Time
+	NetworkIds   []int32
+	ServiceIds   []int32
+	EventIds     []int32
 }
 
 type ListStartedBroadcastEventKeysRow struct {
@@ -66,9 +69,17 @@ type ListStartedBroadcastEventKeysRow struct {
 // recordings 行そのものが無いキー（録画がまだ一切観測されていない）は当然
 // ここに出てこないので、呼び出し側では「返らなかったキー = 観測なし」として
 // 扱えばよい（started_at が NULL の行がある場合と同じ扱いになる）。
+//
+// 同一サービス内の event_id の一意性はイベント終了から 24 時間しかない
+// （ARIB TR-B14 第四編 8.2.1）。放送イベントキーだけでは過去に録画した同じ
+// event_id を現在のイベントと区別できないため、started_at に時間の下界を掛ける。
+// program_start_at ではなく started_at を使うのは、前者が予約側の start_at と
+// mirakc の別オブジェクト由来で、繰り下げ・延長時にずれるからである。呼び出し側は
+// 通常 now - 24 時間を渡し、24 時間を超える長時間番組だけ候補の start_at まで緩める。
 func (q *Queries) ListStartedBroadcastEventKeys(ctx context.Context, arg ListStartedBroadcastEventKeysParams) ([]ListStartedBroadcastEventKeysRow, error) {
 	rows, err := q.db.Query(ctx, listStartedBroadcastEventKeys,
 		arg.Site,
+		arg.StartedAfter,
 		arg.NetworkIds,
 		arg.ServiceIds,
 		arg.EventIds,

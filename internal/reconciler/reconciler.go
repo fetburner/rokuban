@@ -30,6 +30,10 @@ import (
 	"github.com/fetburner/rokuban/internal/reservation"
 )
 
+// broadcastEventIDUniquenessWindow は ARIB TR-B14 第四編 8.2.1 が同一サービスの
+// event_id に保証する一意性の期間。運用で変更する値ではないため設定にはしない。
+const broadcastEventIDUniquenessWindow = 24 * time.Hour
+
 // Config は Reconciler の設定。
 type Config struct {
 	// MaxRecreatesPerPass は 1 パスで行う予約オプション差分反映の再作成
@@ -927,6 +931,18 @@ func (r *Reconciler) detectStartDelays(ctx context.Context, reservations []desir
 		return nil, nil
 	}
 
+	// event_id はイベント終了から 24 時間しか一意でないため、通常は直近 24 時間に
+	// 開始した録画だけを現在のイベントの観測とみなす。ただし 24 時間を超える長尺番組
+	// では現在の録画の started_at がその窓より前になりうるので、候補の開始時刻まで
+	// 下界を緩める。予約側の start_at は recordings.program_start_at と別オブジェクト
+	// 由来でずれるため、下界の判定に program_start_at は使わない。
+	startedAfter := now.Add(-broadcastEventIDUniquenessWindow)
+	for _, d := range candidates {
+		if d.snap.StartAt.Before(startedAfter) {
+			startedAfter = d.snap.StartAt
+		}
+	}
+
 	networkIDs := make([]int32, len(candidates))
 	serviceIDs := make([]int32, len(candidates))
 	eventIDs := make([]int32, len(candidates))
@@ -937,10 +953,11 @@ func (r *Reconciler) detectStartDelays(ctx context.Context, reservations []desir
 	}
 
 	started, err := sqlcgen.New(r.pool).ListStartedBroadcastEventKeys(ctx, sqlcgen.ListStartedBroadcastEventKeysParams{
-		Site:       r.site,
-		NetworkIds: networkIDs,
-		ServiceIds: serviceIDs,
-		EventIds:   eventIDs,
+		Site:         r.site,
+		NetworkIds:   networkIDs,
+		ServiceIds:   serviceIDs,
+		EventIds:     eventIDs,
+		StartedAfter: startedAfter,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing started broadcast event keys: %w", err)
