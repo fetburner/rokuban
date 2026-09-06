@@ -197,8 +197,8 @@ jobs:
         with:
           version: v2.13.2
 
-  # 利用者向け文書（README / CLAUDE / configuration / operations / runbook）の文体を
-  # textlint で検査する。深い設計文書は対象外（`npm run docs:lint:all` で手動実行できる）。
+  # README / CLAUDE / deploy/k8s の README / docs 全体を textlint で検査する。運用文書では
+  # sentence-length を有効にし、設計文書では他の日本語規則を検査する。
   docs-lint:
     runs-on: ubuntu-latest
     steps:
