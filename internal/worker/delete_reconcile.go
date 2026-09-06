@@ -869,6 +869,8 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath str
 
 // walkMediaFiles は mediaDir 配下の通常ファイルを列挙する。catalog.Subdir
 // （災害復旧用メタデータ）はメディアアセットではないので走査から除く。
+// mediaDir 自体が symlink の場合は、走査 root・catalogDir・rel_path の基準を
+// 同じ実体パスに揃えるため、走査前に解決する。
 //
 // 除外を足すときは reconcileMissingAssets の doc コメントを読む --- この結果は
 // 孤児方向と実体無し方向の両方が使い、除外の誤りの向きが二者で反対になる。
@@ -883,8 +885,20 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath str
 // mediaDir の外を指す symlink の扱い（rel_path が mediaDir の外のファイルを
 // 指すことになる）を先に決める必要があり、この検出器の範囲を超える。
 func walkMediaFiles(mediaDir string, fn func(relPath string, info fs.FileInfo)) error {
-	catalogDir := filepath.Join(mediaDir, catalog.Subdir)
-	return filepath.Walk(mediaDir, func(path string, info fs.FileInfo, err error) error {
+	resolvedMediaDir, err := filepath.EvalSymlinks(mediaDir)
+	if err != nil {
+		return fmt.Errorf("resolving media dir %q: %w", mediaDir, err)
+	}
+	rootInfo, err := os.Stat(resolvedMediaDir)
+	if err != nil {
+		return fmt.Errorf("stating resolved media dir %q: %w", resolvedMediaDir, err)
+	}
+	if !rootInfo.IsDir() {
+		return fmt.Errorf("resolved media dir %q is not a directory", resolvedMediaDir)
+	}
+
+	catalogDir := filepath.Join(resolvedMediaDir, catalog.Subdir)
+	return filepath.Walk(resolvedMediaDir, func(path string, info fs.FileInfo, err error) error {
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				return nil

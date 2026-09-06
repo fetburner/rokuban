@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -1365,6 +1366,125 @@ func TestDeleteReconcileWorker_MixedSitePrefixTree_NoFalseOrphans(t *testing.T) 
 	}
 	if trueOrphanCount != 1 {
 		t.Errorf("orphan_files count for %q = %d, want 1 (an unregistered file under sites/ must still be detected as an orphan candidate --- otherwise walkMediaFiles is silently excluding sites/, which is exactly the M4-11 failure mode the reserved directories exist to prevent)", trueOrphanRel, trueOrphanCount)
+	}
+}
+
+// media_dir 自体が symlink でも実体側を走査し、登録済み資産を missing と
+// 誤報せず、未登録の古いファイルを孤児候補として記録する。
+func TestDeleteReconcileWorker_SymlinkMediaDir_ObservesFilesAndDoesNotReportMissing(t *testing.T) {
+	pool := setupTestPool(t)
+	realMediaDir := t.TempDir()
+	mediaDir := filepath.Join(t.TempDir(), "media-link")
+	if err := os.Symlink(realMediaDir, mediaDir); err != nil {
+		t.Fatalf("creating media dir symlink: %v", err)
+	}
+
+	recordingID := insertTestRecording(t, pool)
+	assetID := seedOriginalAsset(t, pool, realMediaDir, recordingID,
+		"registered/original.m2ts", []byte("registered data"))
+
+	const orphanRel = "orphan/unregistered.m2ts"
+	orphanPath := filepath.Join(realMediaDir, filepath.FromSlash(orphanRel))
+	if err := os.MkdirAll(filepath.Dir(orphanPath), 0o755); err != nil {
+		t.Fatalf("mkdir for orphan: %v", err)
+	}
+	if err := os.WriteFile(orphanPath, []byte("orphan data"), 0o644); err != nil {
+		t.Fatalf("writing orphan: %v", err)
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(orphanPath, old, old); err != nil {
+		t.Fatalf("making orphan mtime old: %v", err)
+	}
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, OrphanMTimeGrace: 7 * 24 * time.Hour}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, assetID); got != "active" {
+		t.Errorf("registered asset state = %q, want active", got)
+	}
+	var missingCount int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM missing_media_assets WHERE media_asset_id = $1", assetID).Scan(&missingCount); err != nil {
+		t.Fatalf("querying missing_media_assets: %v", err)
+	}
+	if missingCount != 0 {
+		t.Errorf("missing_media_assets count for registered asset = %d, want 0", missingCount)
+	}
+
+	var orphanCount int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM orphan_files WHERE rel_path = $1", orphanRel).Scan(&orphanCount); err != nil {
+		t.Fatalf("querying orphan_files: %v", err)
+	}
+	if orphanCount != 1 {
+		t.Errorf("orphan_files count for %q = %d, want 1", orphanRel, orphanCount)
+	}
+}
+
+// media_dir 自体が symlink の場合でも、解決後の root を基準に catalog/ を
+// 除外する。root だけ解決して相対パスの基準を古い値に戻す変異も防ぐ。
+func TestDeleteReconcileWorker_SymlinkMediaDir_SkipsCatalog(t *testing.T) {
+	pool := setupTestPool(t)
+	realMediaDir := t.TempDir()
+	mediaDir := filepath.Join(t.TempDir(), "media-link")
+	if err := os.Symlink(realMediaDir, mediaDir); err != nil {
+		t.Fatalf("creating media dir symlink: %v", err)
+	}
+
+	const catalogRel = "catalog/generation.json"
+	catalogPath := filepath.Join(realMediaDir, filepath.FromSlash(catalogRel))
+	if err := os.MkdirAll(filepath.Dir(catalogPath), 0o755); err != nil {
+		t.Fatalf("mkdir for catalog: %v", err)
+	}
+	if err := os.WriteFile(catalogPath, []byte("catalog metadata"), 0o644); err != nil {
+		t.Fatalf("writing catalog file: %v", err)
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(catalogPath, old, old); err != nil {
+		t.Fatalf("making catalog mtime old: %v", err)
+	}
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, OrphanMTimeGrace: 7 * 24 * time.Hour}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	var orphanCount int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM orphan_files WHERE rel_path = $1", catalogRel).Scan(&orphanCount); err != nil {
+		t.Fatalf("querying orphan_files: %v", err)
+	}
+	if orphanCount != 0 {
+		t.Errorf("orphan_files count for catalog file %q = %d, want 0", catalogRel, orphanCount)
+	}
+	if !fileExists(catalogPath) {
+		t.Error("catalog file was removed")
+	}
+}
+
+func TestWalkMediaFiles_RejectsMissingOrNonDirectoryMediaDir(t *testing.T) {
+	root := t.TempDir()
+	regularFile := filepath.Join(root, "media-file")
+	if err := os.WriteFile(regularFile, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("writing regular file: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "missing", path: filepath.Join(root, "missing")},
+		{name: "regular file", path: regularFile},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := walkMediaFiles(tt.path, func(string, fs.FileInfo) {})
+			if err == nil {
+				t.Fatalf("walkMediaFiles(%q) error = nil, want error", tt.path)
+			}
+		})
 	}
 }
 
