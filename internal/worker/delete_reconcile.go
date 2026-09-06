@@ -911,7 +911,7 @@ func walkMediaFiles(mediaDir string, fn func(relPath string, info fs.FileInfo)) 
 			}
 			return nil
 		}
-		relPath, err := filepath.Rel(mediaDir, path)
+		relPath, err := filepath.Rel(resolvedMediaDir, path)
 		if err != nil {
 			return err
 		}
