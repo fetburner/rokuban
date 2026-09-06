@@ -36,12 +36,17 @@ import (
 // 大半 takamatsu のアーカイブに対して実行すると、ファイルの数だけ Info が出て
 // 読みにくくなるため）。
 func rescueStorage(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string, registrySites []string) (*RescueResult, error) {
+	realMediaDir, err := filepath.EvalSymlinks(mediaDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolving media_dir symlinks for rescue: %w", err)
+	}
+
 	result := &RescueResult{}
-	catalogDir := filepath.Clean(Dir(mediaDir))
+	catalogDir := filepath.Clean(Dir(realMediaDir))
 	crossSiteCounts := map[string]int{}
 	unknownSiteCounts := map[string]int{}
 
-	err := filepath.WalkDir(mediaDir, func(path string, entry fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(realMediaDir, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -66,7 +71,7 @@ func rescueStorage(ctx context.Context, pool *pgxpool.Pool, mediaDir, site strin
 		if !info.Mode().IsRegular() {
 			return nil
 		}
-		relPath, err := filepath.Rel(mediaDir, path)
+		relPath, err := filepath.Rel(realMediaDir, path)
 		if err != nil {
 			return fmt.Errorf("making rescue path relative for %q: %w", path, err)
 		}
@@ -80,7 +85,7 @@ func rescueStorage(ctx context.Context, pool *pgxpool.Pool, mediaDir, site strin
 
 		fileSite, crossSite, unknownSite := classifySiteForRescuedFile(relPath, site, registrySites)
 
-		_, err = inplace.Register(ctx, pool, mediaDir, inplace.Input{
+		_, err = inplace.Register(ctx, pool, realMediaDir, inplace.Input{
 			Recording: inplace.Recording{
 				// ストレージ再スキャンには予約も program_intents も残っていない。
 				// ユーザーの明示的な意図を示す材料が無いので manual ではなく
