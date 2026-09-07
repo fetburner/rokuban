@@ -300,6 +300,10 @@ POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
   自分側の last-access と起動失敗だけで判断しても外れた場合の結果は従来の 503 と同じになる。
   退避したセッションの `stop()` が完了しても mirakc の tuner 解放は非同期なので、再試行の
   前に実測値（2.35〜4.18 秒）に余裕を持たせた 5 秒の解放待ちを 1 回だけ入れる
+- **退避は上流拒否の理由を区別しない。** mirakc はチューナー枯渇も存在しない
+  service への要求も同じ 404/503 で返すため、streamer 側では区別できない。結果として、
+  存在しないチャンネルへの要求でも idle セッションの退避が走る（issue #677 の近似分析が
+  受け入れている性質）
 - **セグメントは `live.segment_dir`（tmpfs 前提）に書く。**録画バッファとは別ディスク
   （[operations.md](../operations.md) §5「ライブのセグメントを録画バッファと同じディスクに
   置かない」）。プロセス終了（`--all`/`--roles streamer` の SIGTERM）時は idle GC と同じ

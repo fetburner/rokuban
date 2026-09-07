@@ -164,15 +164,27 @@ const (
 	// timeout しない --- クライアントは playlistStartupTimeout（15s）でセッション
 	// 起動全体を待つので、prefix 読み取り専用の timeout は不要（B の決定）。
 	liveCaptionProbeTimeout = 5 * time.Second
-	// liveMirakcReleaseWait は、退避したセッションの mirakc 接続を Close して
-	// `<-s.done` を待った後、1 回だけ再試行する前の待ち時間。実 mirakc
-	// 4.0.0-dev.0 + fixture tuner 2 本 + 録画 1 本で、旧ライブの Close から次の
-	// 異なる波のライブ要求が通るまでを測ったところ 2.35〜4.18 秒だった（2026-09-06、
-	// internal/mirakc/conformance/live_release_test.go）。5 秒にして、mirakc 側の
-	// 非同期な tuner プロセス終了の揺れを吸収する。ここは再試行の回数を増やすための
-	// backoff ではなく、退避後に 1 回だけ行う解放待ちである。
-	liveMirakcReleaseWait = 5 * time.Second
 )
+
+// liveMirakcReleaseWait は、退避したセッションの mirakc 接続を Close して
+// `<-s.done` を待った後、1 回だけ再試行する前の待ち時間。実 mirakc
+// 4.0.0-dev.0 + fixture tuner 2 本 + 録画 1 本で、旧ライブの Close から次の
+// 異なる波のライブ要求が通るまでを測ったところ 2.35〜4.18 秒だった（2026-09-06、
+// internal/mirakc/conformance/live_release_test.go）。5 秒にして、mirakc 側の
+// 非同期な tuner プロセス終了の揺れを吸収する。ここは再試行の回数を増やすための
+// backoff ではなく、退避後に 1 回だけ行う解放待ちである。
+//
+// **ポーリングではなく固定待ちにしているのは単純さを取った選択。** 典型的な解放は
+// 2.35 秒で終わる（上記実測の最小値）が、固定 5 秒はその典型ケースで最大 2.6 秒を
+// 余分に払う。予算内で 100ms 間隔のポーリングに変える案もあるが、この PR の範囲
+// （issue #677 の「再試行は 1 回だけ」---反復禁止であって解放待ちの実装方式では
+// ない）を広げない。判定手段は internal/mirakc/conformance/live_release_test.go
+// に既にある（100ms ポーリングで解放を検出している）ので、ポーリング化するときは
+// そこを使って測り直す。
+//
+// var にしてあるのはテストからの上書き用（playlistStartupTimeout と同じ理由 ---
+// 5 秒の実待ちはテストを不必要に遅くする）。運用者向けの設定キーではない。
+var liveMirakcReleaseWait = 5 * time.Second
 
 // LiveStreamer はライブ視聴の HLS ルートを配信する。
 //
@@ -194,6 +206,14 @@ type LiveStreamer struct {
 	mu       sync.Mutex
 	sessions map[int64]*liveSession
 	closed   bool
+
+	// evictMu は退避（takeIdleSessionForRetry → stop → 解放待ち）を直列化する。
+	// getOrCreateSession の doc コメント参照 --- 「1 つの圧力イベントに対して退避は
+	// 1 本」を、呼び出しごとの不変条件ではなく LiveStreamer 全体の不変条件にする
+	// ためのロック。**保持区間に getOrCreateSessionOnce（最大 playlistStartupTimeout
+	// の起動待ち）を含めない** --- 含めると別サービスの無関係な起動待ちまでこの
+	// ロックで直列化されてしまう。
+	evictMu sync.Mutex
 }
 
 // NewLive は LiveStreamer を生成する。cfg.Enabled が false なら Mount は
@@ -406,8 +426,8 @@ func (c LiveConfig) idleEvictionThreshold() time.Duration {
 // （mirakc への接続 + ffmpeg exec が終わる = `close(s.ready)` を待つ経路）にも
 // 同じ値を掛けている --- 参照する箇所は次の 4 つ:
 //
-//   - getOrCreateSession の既存セッション経路の `<-s.ready` 待ち（Playlist が呼ぶ。issue #286）
-//   - getOrCreateSession の新規作成経路の `<-s.ready` 待ち（同上。issue #286 --- この
+//   - getOrCreateSessionOnce の既存セッション経路の `<-s.ready` 待ち（Playlist が呼ぶ。issue #286）
+//   - getOrCreateSessionOnce の新規作成経路の `<-s.ready` 待ち（同上。issue #286 --- この
 //     2 経路は互いに独立したコードパスであり、片方だけ直すと非対称が残る。
 //     実際にレビューで新規作成経路側だけテストが無いまま気付かれず、指摘された）
 //   - Segment の `<-s.ready` 待ち（issue #189）
@@ -415,15 +435,26 @@ func (c LiveConfig) idleEvictionThreshold() time.Duration {
 //
 // **4 箇所が同じ 1 つの変数を参照することが本質。** 分けると、どれか 1 つだけ
 // 直したときに非対称が残っても気付けない --- 実際に #189 で Segment だけ
-// 直したときに Playlist 側（getOrCreateSession）の非対称が見過ごされ、
+// 直したときに Playlist 側（getOrCreateSessionOnce）の非対称が見過ごされ、
 // レビューで #286 として指摘された。新しい待ちを足すときもここを増やさず
-// この変数を再利用すること。
+// この変数を再利用すること。**getOrCreateSession の退避 → 再試行経路は、上の
+// 2 つ（getOrCreateSessionOnce の既存/新規セッション経路）を同じ呼び出しの中で
+// 2 回通る**（1 回目の起動失敗判定と、退避後の再試行）--- 新しい select を
+// 足すのではなく、同じ getOrCreateSessionOnce をもう一度呼ぶ形でこの変数を
+// 再利用している（issue #677）。
 //
-// **Playlist ハンドラ 1 本の最悪応答時間はこの値の 1 回分ではない。**
-// getOrCreateSession の起動待ち（最大この値）が終わってから waitForPlaylist
-// （さらに最大この値）が直列で走るため、両方が上限いっぱいまでかかると
-// Playlist の合計は**この値の 2 倍**（既定なら 30s）になる。Segment は
-// getOrCreateSession を経由しない分、この値 1 回分（既定 15s）で済む。
+// **Playlist ハンドラ 1 本の最悪応答時間はこの値の 1 回分でも 2 回分でもない。**
+// 退避を経由しない通常経路は、getOrCreateSessionOnce の起動待ち（最大この値）の
+// 後に waitForPlaylist（さらに最大この値）が直列で走るため、両方が上限いっぱい
+// まで掛かると合計は**この値の 2 倍**（既定なら 30s）になる。**上流拒否/上限
+// 到達からの退避（getOrCreateSession）を経由する経路はさらに長い** ---
+// 1 回目の getOrCreateSessionOnce（最大この値）→ 退避の解放待ち
+// （liveMirakcReleaseWait、既定 5s）→ 退避後の再試行 getOrCreateSessionOnce
+// （最大この値）→ waitForPlaylist（最大この値）が直列に並び、全区間が上限
+// いっぱいまで掛かると合計は**この値の 3 倍 + liveMirakcReleaseWait**（既定なら
+// 15s×3 + 5s = 50s）になる。Segment は getOrCreateSession を経由しない
+// （getOrCreateSessionOnce を直接呼ばず、既存セッションの `<-s.ready` だけを
+// 待つ）分、通常経路はこの値 1 回分（既定 15s）で済む。
 //
 // var にしてあるのはテストからの上書き用（15 秒の実待ちはテストを不必要に
 // 遅くする）。運用者向けの設定キーではない。
@@ -890,6 +921,17 @@ func (ls *LiveStreamer) sessionCount() int {
 // 呼び出しの待ちを諦めるだけのつもりが起動中のセッションそのものを巻き込んで
 // 中断してしまう（sessionCtx は `context.Background()` 由来で、ctx とは独立して
 // いなければならない。issue #189 の罠と同じ形）。
+//
+// **退避（takeIdleSessionForRetry → stop → 解放待ち）は evictMu で直列化し、
+// LiveStreamer 全体で 1 本しか走らない（issue #677 のレビュー指摘）。** 同じ
+// serviceID を待っている同時要求は全員が同じ起動失敗を受け取るので、ロックが
+// 無いと全員が個別に退避を試み、圧力イベント 1 つに対して要求数ぶんの idle
+// セッションを殺してしまう。evictMu を取った直後に `ls.sessions[serviceID]`
+// を見て、**既に別の要求が退避と再試行を終えていれば**（先着の再試行が成功して
+// 新しいセッションが map に入っていれば）自分は退避せずその成果に相乗りする。
+// **evictMu の保持区間に getOrCreateSessionOnce（最大 playlistStartupTimeout の
+// 起動待ち）を含めない** --- 含めると、無関係な別サービスへの要求まで他サービスの
+// 起動待ちで足止めされる。実際の起動 I/O はロックの外で行う。
 func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64) (*liveSession, error) {
 	s, err := ls.getOrCreateSessionOnce(ctx, serviceID)
 	if err == nil {
@@ -908,8 +950,29 @@ func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64)
 		<-s.done
 	}
 
+	// 呼び出し元（HTTP リクエスト）が既に切れているなら、退避してまで再試行する
+	// 相手がいない。退避は 5 秒強 evictMu を占有するので、無意味な退避で他の
+	// 同時要求を待たせない。
+	if ctx.Err() != nil {
+		return nil, err
+	}
+
+	ls.evictMu.Lock()
+
+	// 別の同時要求が既に退避と再試行を終えていたら、退避せずその成果に相乗りする
+	// （相乗り経路では eviction counter を計上しない --- 実際に退避したのは
+	// 先着の 1 本だけである）。
+	ls.mu.Lock()
+	_, alreadyRecovered := ls.sessions[serviceID]
+	ls.mu.Unlock()
+	if alreadyRecovered {
+		ls.evictMu.Unlock()
+		return ls.getOrCreateSessionOnce(ctx, serviceID)
+	}
+
 	victim := ls.takeIdleSessionForRetry(time.Now())
 	if victim == nil {
+		ls.evictMu.Unlock()
 		return nil, err
 	}
 
@@ -918,7 +981,17 @@ func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64)
 	victim.stop()
 	// mirakc は HTTP body の Close と tuner プロセスの解放を同期していない。
 	// stop が done まで待っても、直後の要求が容量エラーになる窓が実物で観測された。
-	time.Sleep(liveMirakcReleaseWait)
+	select {
+	case <-ctx.Done():
+		// **退避は既に起きている**（victim.stop() は完了済み）。ここで諦めるのは
+		// このリクエストの再試行だけ --- mirakc の失敗ではないので retry_failed
+		// には混ぜず、専用の result で区別する。
+		ls.evictMu.Unlock()
+		metrics.LiveSessionEvictions.WithLabelValues(reason, "retry_abandoned").Inc()
+		return nil, ctx.Err()
+	case <-time.After(liveMirakcReleaseWait):
+	}
+	ls.evictMu.Unlock()
 
 	retry, retryErr := ls.getOrCreateSessionOnce(ctx, serviceID)
 	if retryErr != nil && retry != nil {
@@ -1000,8 +1073,21 @@ func (ls *LiveStreamer) getOrCreateSessionOnce(ctx context.Context, serviceID in
 // し続けるため候補から除外する。waiter がいなくなって idleSince が同じ timeout を
 // 超えた起動待ちだけは、mirakc を掴んだままのハングとして退避を許す。ready 済みの
 // セッションは最長 segment_seconds の 2 倍より長く idle であることを要求し、その
-// 中で最も古いものを選ぶ。leaveGrace は lastAccess を十分に巻き戻すので、離脱ヒント
-// を受けたセッションもこの規則で最古の候補になる。
+// 中で最も古いものを選ぶ。
+//
+// **離脱ヒントを受けたセッションがこの規則で最古の候補になるのは
+// `idle_timeout > 5 × segment_seconds + 2s` のときに限る（無条件ではない）。**
+// ヒント直後の idle 時間は `idle_timeout - leaveGrace` で、これが候補の閾値
+// （`2 × segment_seconds`）を上回るには `idle_timeout - (3×segment_seconds+2s) >
+// 2×segment_seconds`、すなわち上記の条件が要る（`leaveGrace` の定義そのもの。
+// 展開すると `idle_timeout > 5×segment_seconds + 2s`）。既定値（`idle_timeout: 30s` /
+// `segment_seconds: 2s`）はこれを満たす（ヒント後 idle 22s > 閾値 4s）。満たさない
+// 設定（例: `idle_timeout: 10s` / `segment_seconds: 2s` --- ヒント後 idle 2s < 閾値 4s）
+// では、ヒントは退避の候補化には効かない。ただしその設定では idle GC 自体の刻みが
+// 短いので（gcInterval が `idle_timeout` にも連動する）、露出は限定される ---
+// `TestLiveStreamer_EvictionCandidate_PrefersLeaveHint`（成立域）と
+// `TestLiveStreamer_EvictionCandidate_HintDoesNotQualifyBelowThreshold`（不成立域）が
+// 両側を固定する。
 func (ls *LiveStreamer) takeIdleSessionForRetry(now time.Time) *liveSession {
 	threshold := ls.cfg.idleEvictionThreshold()
 	ls.mu.Lock()
