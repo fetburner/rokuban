@@ -4,6 +4,7 @@ package fixture
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strconv"
 	"time"
@@ -121,12 +122,19 @@ func NewConfig() Config {
 // conformance の解放遅延テストでは、同じ fixture tuner バイナリを複数の channel 定義から
 // 起動して、mirakc に別々のサービス（別々のチャンネル）として扱わせる。既存の正常系は
 // 引数なしで NewConfig を使うため、service ID は従来どおり変わらない。
+//
+// channel が 8 bit 符号なし整数として解析できなければ panic する。以前は解析失敗を
+// 黙って既定 ServiceID にフォールバックしていたため、`{{{channel}}}` の Mustache
+// テンプレート展開が壊れると意図した 3 チャンネルが 1 サービスに潰れ、症状が
+// waitForService の 60s タイムアウトという読みにくい形でだけ出ていた。fixture tuner は
+// conformance 専用のテストバイナリなので、失敗はすぐ落として診断できる形にする。
 func NewConfigForChannel(channel string) Config {
 	cfg := NewConfig()
-	n, err := strconv.ParseUint(channel, 10, 16)
-	if err == nil && n <= uint64(^uint16(0)-100) {
-		cfg.ServiceID = uint16(n + 100)
+	n, err := strconv.ParseUint(channel, 10, 8)
+	if err != nil {
+		panic(fmt.Sprintf("fixture: invalid channel argument %q: %v", channel, err))
 	}
+	cfg.ServiceID = uint16(n) + 100
 	return cfg
 }
 

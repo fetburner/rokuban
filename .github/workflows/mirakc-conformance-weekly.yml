@@ -25,7 +25,7 @@ jobs:
     # ci.yml のジョブと同じ値を保つ。
     #
     # コード上の named timeout で積める分（helpers_test.go / conformance_test.go /
-    # pathology_test.go の定数から）:
+    # pathology_test.go / live_release_test.go の定数から）:
     #   コンテナ起動 ×6（waitForHTTP 30s + waitForPublishedPort 10s） ≈ 240s
     #   TestConformance ≈ 288s（epgBootstrapTimeout 60s×2 + recordingStartTimeout 20s×2 +
     #     RecordingInProgress の各種ポーリング ≈28s + recordingFinishTimeout 90s +
@@ -37,9 +37,11 @@ jobs:
     #     waitForPathologyRecord
     #     45s×3 = 135s + EventIDReset の judgeEventIDResetWithEvents 45s +
     #     waitForFinishedWithoutReplacement(45s 待ち + 10s settle) = 100s）
-    #   TestLiveStreamReleaseUnderRecording ≈ 285s（waitForService 60s×3 +
-    #     waitForProgram 60s + recording の開始待ち 40s + mirakc 解放待ち 5s）
-    #   小計 ≈ 1728s
+    #   TestLiveStreamReleaseUnderRecording ≈ 295s（waitForService 60s×3 = 180s +
+    #     waitForProgram 60s + recording の開始待ち 40s [waitForRecord 20s +
+    #     waitForRecordingStatus 20s] + 容量拒否確認の failedCtx 10s +
+    #     mirakc 解放待ちループ 5s）
+    #   小計 ≈ 1778s
     #
     # コード上に named timeout が無く積めない分（実測/見積もりであることを明示する。
     # digest を先に記録するため image pull は専用 step で行うが、可動タグは pin より
@@ -49,10 +51,11 @@ jobs:
     #     を見積もりで 30s とする） + buildFixtureTuner ×3（ローカル実測 arm64 cross
     #     build ≈0.6s/回、CI 変動を見て 5s/回） ≈ 40s
     #
-    # 合計 ≈ 1768s（29 分半弱）。-timeout はこれに対して余裕を残す。timeout-minutes は
-    # go test の -timeout に加えて checkout/setup-go、digest 用の image pull、GH Actions
-    # 側のジョブ終了処理のぶんの余裕を取る。
-    timeout-minutes: 35
+    # 合計 ≈ 1818s（30 分強）。**-timeout はこれに 282s（約 15%）の余裕を足した 2100s
+    # （35m）にする。** timeout-minutes は go test の -timeout に加えて checkout/setup-go、
+    # digest 用の image pull、GH Actions 側のジョブ終了処理のぶんの余裕（300s = 5m）を
+    # 足した 40m にする。
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -62,4 +65,4 @@ jobs:
         run: |
           docker pull "$ROKUBAN_CONFORMANCE_MIRAKC_IMAGE"
           docker inspect --format '{{index .RepoDigests 0}}' "$ROKUBAN_CONFORMANCE_MIRAKC_IMAGE"
-      - run: go test -tags conformance ./internal/mirakc/conformance/... -timeout 30m -v
+      - run: go test -tags conformance ./internal/mirakc/conformance/... -timeout 35m -v

@@ -7,6 +7,27 @@ import (
 	"time"
 )
 
+// TestNewConfigForChannel_ValidAndInvalid は channel 引数の解析を固定する。
+// 有効な 8 bit 符号なし整数は ServiceID = n+100 に写り、解析できない引数は
+// 黙って既定 ServiceID にフォールバックせず panic する（`{{{channel}}}` の
+// テンプレート展開が壊れたときに、waitForService の 60s タイムアウトという
+// 読みにくい形で症状が出るのを防ぐ）。
+func TestNewConfigForChannel_ValidAndInvalid(t *testing.T) {
+	if got := NewConfigForChannel("1").ServiceID; got != 101 {
+		t.Fatalf("ServiceID = %d, want 101", got)
+	}
+	if got := NewConfigForChannel("3").ServiceID; got != 103 {
+		t.Fatalf("ServiceID = %d, want 103", got)
+	}
+
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewConfigForChannel(\"not-a-number\") did not panic, want a diagnosable failure")
+		}
+	}()
+	NewConfigForChannel("not-a-number")
+}
+
 func TestPathologyEvents(t *testing.T) {
 	base := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
 	start := base.Truncate(30 * time.Second).Add(10 * time.Second)
