@@ -103,7 +103,9 @@ export function EmptyState({ children }: { children: React.ReactNode }) {
  *
  * `role="alert"`（WCAG 4.1.3）で読み上げに割り込む。`onRetry` を渡すと
  * 再試行ボタンを添える --- 一覧の初回読み込み失敗はこれに寄せる
- * （TNLAStation-frontend の共通 ErrorState 相当、issue #467）。
+ * （TNLAStation-frontend の共通 ErrorState 相当、issue #467）。一覧を描いたままの
+ * 部分失敗（`pages/reservations.tsx` の容量確認）もこれに寄せる --- 一覧本体の
+ * 再試行とは別の問い合わせを取り直すので、独立した再試行ボタンが必要になる。
  *
  * **続き取得の失敗（`pages/recordings.tsx` / `pages/programs.tsx` の
  * 「さらに読み込む」フォールバック）はこれを使わない。** 初回とは違い

@@ -524,6 +524,18 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:reservations-mobile
 ```
 
+### 予約一覧の容量確認失敗（`reservations-capacity-error.mjs`）
+
+予約一覧の容量超過 API が失敗すると、失敗を空配列として扱った「確認が要る予約は
+ありません」を表示してしまうことがある。実ブラウザで API の全リトライを失敗させ、
+容量を確認できない理由と再試行を表示すること、attention フィルタの空状態を確定しない
+こと、同じ予約に正常な容量応答を返したときバッジと要確認チップが復旧することを見る。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:reservations-capacity-error
+```
+
 ### 読み込み中のレイアウトシフト（`cls.mjs`）
 
 CLS（Cumulative Layout Shift）はレイアウトそのものの指標なので、jsdom
