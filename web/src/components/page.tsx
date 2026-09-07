@@ -113,6 +113,7 @@ export function EmptyState({ children }: { children: React.ReactNode }) {
  * `components/live-player.tsx` の `LiveErrorMessage`（`LiveLoadError` を
  * 表示する、hls.js/ネイティブ経路の再生エラー）の計 3 種）も寄せない**
  * --- 経路ごとに原因説明が異なり、単純な再試行では原因の違いが伝わらない。
+ * 一覧を描いたままの部分失敗（予約一覧の容量確認）にも寄せる。
  */
 export function ErrorState({
   children,

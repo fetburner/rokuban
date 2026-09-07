@@ -42,7 +42,10 @@ export function ReservationsPage() {
     () => (overagesQuery.isSuccess ? (unwrap(overagesQuery.data) ?? []) : []),
     [overagesQuery.data, overagesQuery.isSuccess],
   )
-  const attentionReady = listedWindow === null || overagesQuery.isSuccess
+  // 初回の結果を待つ間だけ true を保留する。失敗（isError）でも「容量抜きの
+  // 下界」として要確認を出す --- state !== 'active' の分だけでも導線を消さない
+  // ため（容量の判定が不完全なことは capacityUnavailable のバナーが別に言う）。
+  const attentionReady = listedWindow === null || !overagesQuery.isPending
   const capacityUnavailable = listedWindow !== null && overagesQuery.isError
   const attentionReservations = useMemo(
     () => reservations.filter((reservation) => reservationNeedsAttention(reservation, overages)),
@@ -79,93 +82,90 @@ export function ReservationsPage() {
         )}
         {query.isError ? (
           <ErrorState onRetry={() => void query.refetch()}>予約の取得に失敗しました</ErrorState>
-        ) : query.isPending ||
-          (search.only === 'attention' && !attentionReady && !capacityUnavailable) ? (
+        ) : query.isPending || (search.only === 'attention' && !attentionReady) ? (
           <ListSkeleton />
-        ) : visibleReservations.length === 0 ? (
-          capacityUnavailable && search.only === 'attention' ? null : (
-            <EmptyState>
-              {search.only === 'attention' ? '確認が要る予約はありません' : '予約がありません'}
-            </EmptyState>
-          )
-        ) : (
-        <ul>
-          {visibleReservations.map((r) => {
-            // 行本体のリンクの accessible name。子要素を持たない絶対配置の
-            // リンク（下記）にするため、children から自動で組めない分を明示する。
-            // 採否の基準は「行を一意に識別できるか」--- 局名は同タイトル・別局
-            // （同名ニュースの裏かぶり）を分ける唯一の情報なので、時刻・尺・state と
-            // 並べてここに入れる（issue #302）。skip / 容量バッジの文言は識別情報
-            // ではなく、かつ行の中の通常フロー要素として残ってブラウズ（矢印キー
-            // 走査）では読めるので、1 つの長いリンク名に押し込む必要はない。
-            const rowLabel = [
-              r.title || '（番組名なし）',
-              r.serviceName,
-              formatDateTime(r.startAt),
-              formatDuration(r.durationMs),
-              r.state === 'active' ? null : stateLabels[r.state],
-            ]
-              // 空文字も落とす（`serviceName` は API では required だが空文字を
-              // 禁じてはいないので、裸の区切りが名前に残らないようにする）
-              .filter((s): s is string => s !== null && s !== '')
-              .join(' ')
+        ) : visibleReservations.length > 0 ? (
+          <ul>
+            {visibleReservations.map((r) => {
+              // 行本体のリンクの accessible name。子要素を持たない絶対配置の
+              // リンク（下記）にするため、children から自動で組めない分を明示する。
+              // 採否の基準は「行を一意に識別できるか」--- 局名は同タイトル・別局
+              // （同名ニュースの裏かぶり）を分ける唯一の情報なので、時刻・尺・state と
+              // 並べてここに入れる（issue #302）。skip / 容量バッジの文言は識別情報
+              // ではなく、かつ行の中の通常フロー要素として残ってブラウズ（矢印キー
+              // 走査）では読めるので、1 つの長いリンク名に押し込む必要はない。
+              const rowLabel = [
+                r.title || '（番組名なし）',
+                r.serviceName,
+                formatDateTime(r.startAt),
+                formatDuration(r.durationMs),
+                r.state === 'active' ? null : stateLabels[r.state],
+              ]
+                // 空文字も落とす（`serviceName` は API では required だが空文字を
+                // 禁じてはいないので、裸の区切りが名前に残らないようにする）
+                .filter((s): s is string => s !== null && s !== '')
+                .join(' ')
 
-            return (
-              <li
-                key={`${r.site}:${r.programId}`}
-                className="relative flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5 hover:bg-muted/50"
-              >
-                {/* 行本体のリンクは絶対配置で行全体を覆う「面」にし、通常フローから
-                    外す（`position: relative` を li に置いて containing block に
-                    する）。**入れ子を解く方向を反転させた**（issue #233 のレビュー
-                    指摘）--- 最初の実装は容量バッジを行本体リンクの外（兄弟）へ
-                    移して <a> の入れ子を消したが、それは配置文法（バッジの位置・
-                    chevron の終端性・モバイルでのタイトル幅）を壊した。壊れていた
-                    のは「バッジが行の中にある」ことではなく「行本体そのものが
-                    子要素を抱えた <a> で、バッジという別の対話要素と競合する」こと
-                    --- 行の中身（タイトル・バッジ列・chevron）は元の配置のまま
-                    通常フローに残し、行本体のリンクだけを見えない全面カバーの層に
-                    退避させる。
-                    子要素を持たないため accessible name は aria-label で渡す
-                    （children から計算できない）。 */}
-                <Link
-                  to="/reservations/$site/$programId"
-                  params={{ site: r.site, programId: String(r.programId) }}
-                  aria-label={rowLabel}
-                  className="absolute inset-0"
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-base">{r.title || '（番組名なし）'}</div>
-                  <div
-                    data-testid="reservation-secondary"
-                    className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground"
-                  >
-                    <span className="shrink-0">{r.serviceName}</span>
-                    <span className="shrink-0">{formatDateTime(r.startAt)}</span>
-                    <span className="shrink-0">{formatDuration(r.durationMs)}</span>
-                    <StateBadge state={r.state} />
-                    <ReservationSkipBadge reservation={r} />
-                    {/* 容量バッジは番組表への別の Link（issue #233 M6-5）。
-                        バッジ自身が `relative z-10` を持ち、行全面の
-                        `absolute inset-0` リンクより手前で 24px の当たり判定を保つ。
-                        判定はサイトごとに独立している（docs/data.md §6.5）ので
-                        予約自身の site を渡す。定数を持たない。 */}
-                    <CapacityShortfallBadge
-                      overages={overages}
-                      site={r.site}
-                      startMs={new Date(r.startAt).getTime()}
-                      endMs={new Date(r.startAt).getTime() + r.durationMs}
-                    />
+              return (
+                <li
+                  key={`${r.site}:${r.programId}`}
+                  className="relative flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5 hover:bg-muted/50"
+                >
+                  {/* 行本体のリンクは絶対配置で行全体を覆う「面」にし、通常フローから
+                      外す（`position: relative` を li に置いて containing block に
+                      する）。**入れ子を解く方向を反転させた**（issue #233 のレビュー
+                      指摘）--- 最初の実装は容量バッジを行本体リンクの外（兄弟）へ
+                      移して <a> の入れ子を消したが、それは配置文法（バッジの位置・
+                      chevron の終端性・モバイルでのタイトル幅）を壊した。壊れていた
+                      のは「バッジが行の中にある」ことではなく「行本体そのものが
+                      子要素を抱えた <a> で、バッジという別の対話要素と競合する」こと
+                      --- 行の中身（タイトル・バッジ列・chevron）は元の配置のまま
+                      通常フローに残し、行本体のリンクだけを見えない全面カバーの層に
+                      退避させる。
+                      子要素を持たないため accessible name は aria-label で渡す
+                      （children から計算できない）。 */}
+                  <Link
+                    to="/reservations/$site/$programId"
+                    params={{ site: r.site, programId: String(r.programId) }}
+                    aria-label={rowLabel}
+                    className="absolute inset-0"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-base">{r.title || '（番組名なし）'}</div>
+                    <div
+                      data-testid="reservation-secondary"
+                      className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground"
+                    >
+                      <span className="shrink-0">{r.serviceName}</span>
+                      <span className="shrink-0">{formatDateTime(r.startAt)}</span>
+                      <span className="shrink-0">{formatDuration(r.durationMs)}</span>
+                      <StateBadge state={r.state} />
+                      <ReservationSkipBadge reservation={r} />
+                      {/* 容量バッジは番組表への別の Link（issue #233 M6-5）。
+                          バッジ自身が `relative z-10` を持ち、行全面の
+                          `absolute inset-0` リンクより手前で 24px の当たり判定を保つ。
+                          判定はサイトごとに独立している（docs/data.md §6.5）ので
+                          予約自身の site を渡す。定数を持たない。 */}
+                      <CapacityShortfallBadge
+                        overages={overages}
+                        site={r.site}
+                        startMs={new Date(r.startAt).getTime()}
+                        endMs={new Date(r.startAt).getTime() + r.durationMs}
+                      />
+                    </div>
                   </div>
-                </div>
-                <ChevronRight
-                  data-testid="reservation-chevron"
-                  className="size-4 shrink-0 text-muted-foreground"
-                />
-              </li>
-            )
-          })}
-        </ul>
+                  <ChevronRight
+                    data-testid="reservation-chevron"
+                    className="size-4 shrink-0 text-muted-foreground"
+                  />
+                </li>
+              )
+            })}
+          </ul>
+        ) : capacityUnavailable && search.only === 'attention' ? null : (
+          <EmptyState>
+            {search.only === 'attention' ? '確認が要る予約はありません' : '予約がありません'}
+          </EmptyState>
         )}
       </PageContent>
     </>

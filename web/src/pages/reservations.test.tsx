@@ -329,12 +329,36 @@ describe('予約一覧の要確認フィルタ', () => {
     ).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '再試行' })).toBeInTheDocument()
     expect(screen.queryByText('確認が要る予約はありません')).toBeNull()
+    // このフィクスチャは state: 'active' の 1 件だけなので、容量抜きの下界でも
+    // 要確認は 0 件になる。チップが消えるのは「実装がチップを丸ごと隠す」からではなく
+    // 「要確認が 0 件」だからであることは、次の「非 active + 容量失敗」のテストが
+    // 同じ状況でチップが出ることで区別する。
     expect(screen.queryByRole('button', { name: /要確認/ })).toBeNull()
     // 容量の絞り込みが壊れていても、全件表示へ戻る導線は使える
     expect(screen.getByRole('button', { name: 'すべて（1）' })).toBeInTheDocument()
     expect(screen.queryByText('容量未確認の予約')).toBeNull()
     await user.click(screen.getByRole('button', { name: 'すべて（1）' }))
     expect(screen.getByText('容量未確認の予約')).toBeInTheDocument()
+  })
+
+  it('非 active な予約は容量取得の失敗時も要確認から消えない（チップ・絞り込み導線とも維持する）', async () => {
+    renderWith(
+      [{ ...reservation(1, 'ルール外の予約', 18 * 60, 60), state: 'detached' as const }],
+      () => Promise.reject(new Error('capacity unavailable')),
+      ['/reservations?only=attention'],
+    )
+
+    // state !== 'active' は容量抜きでも確定できるので、容量取得が失敗していても
+    // チップと絞り込み結果は消えない（容量分の判定が不完全なことは別のバナーが言う）
+    expect(
+      await screen.findByText('容量の確認に失敗しました。要確認の判定が不完全です'),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '再試行' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '要確認（1）' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    expect(screen.getByText('ルール外の予約')).toBeInTheDocument()
   })
 
   it('取得成功後の再取得失敗では、キャッシュ済みの超過区間を表示しない', async () => {
@@ -360,6 +384,8 @@ describe('予約一覧の要確認フィルタ', () => {
       await screen.findByText('容量の確認に失敗しました。要確認の判定が不完全です'),
     ).toBeInTheDocument()
     expect(screen.queryByText('チューナー不足（BS が 1 本）')).toBeNull()
+    // このフィクスチャも state: 'active' の 1 件のみなので、再取得失敗で容量分の
+    // 判定が抜けると要確認は 0 件になる（チップを隠す実装かどうかではなく件数の主張）
     expect(screen.queryByRole('button', { name: /要確認/ })).toBeNull()
     expect(screen.getByText('再取得に失敗する予約')).toBeInTheDocument()
   })
