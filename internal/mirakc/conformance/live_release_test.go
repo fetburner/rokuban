@@ -117,7 +117,7 @@ func TestLiveStreamReleaseUnderRecording(t *testing.T) {
 	if target == nil {
 		t.Fatalf("StreamService(target) did not recover within %s after stale Close", 5*time.Second)
 	}
-	defer target.Close()
+	defer func() { _ = target.Close() }()
 
 	t.Logf("mirakc live tuner release: 2 tuners + 1 recording, Close -> next live response = %s (%d attempt(s))",
 		time.Since(closedAt), attempts)
