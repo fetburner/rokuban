@@ -107,4 +107,26 @@ func TestProgramEnded(t *testing.T) {
 	}
 }
 
+func TestIsRecreateAllowed(t *testing.T) {
+	for _, tt := range []struct {
+		state string
+		want  bool
+	}{
+		{state: mirakc.ScheduleStateScheduled, want: true},
+		{state: mirakc.ScheduleStateTracking, want: false},
+		{state: mirakc.ScheduleStateRecording, want: false},
+		{state: mirakc.ScheduleStateRescheduling, want: false},
+		{state: mirakc.ScheduleStateFinished, want: false},
+		{state: mirakc.ScheduleStateFailed, want: false},
+		{state: "future-state", want: false},
+		{state: "", want: false},
+	} {
+		t.Run(tt.state, func(t *testing.T) {
+			if got := IsRecreateAllowed(tt.state); got != tt.want {
+				t.Errorf("IsRecreateAllowed(%q) = %v, want %v", tt.state, got, tt.want)
+			}
+		})
+	}
+}
+
 func stringPtr(v string) *string { return &v }

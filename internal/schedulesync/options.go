@@ -100,3 +100,13 @@ func EffectivePriority(defaultPriority int, opts reservation.Options) int {
 	}
 	return defaultPriority
 }
+
+// IsRecreateAllowed は schedule の state が、予約オプション差分を反映する
+// DELETE→POST の再作成を安全に実行できる状態かを返す。
+//
+// mirakc が将来 state を追加しても、未知の値は安全側（再作成しない）に倒す。
+// reconciler と presync collector は同じ allowlist を使い、片方だけが「直せる
+// 差分」と判定することを防ぐ。
+func IsRecreateAllowed(state string) bool {
+	return state == mirakc.ScheduleStateScheduled
+}

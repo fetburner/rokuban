@@ -50,18 +50,23 @@ EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）で
 ### 開始前の未同期または観測不能
 
 予約の受付が DB に成功したことは、mirakc に実効 schedule が反映されたことを意味しない。
-次の 2 つの主系列をサイトごとに使う。
+次の主系列をサイトごとに使う。
 
 - `rokuban_presync_pending{site,reason="missing"}` — desired に対する observed schedule が無い
-- `rokuban_presync_pending{site,reason="options"}` — observed schedule はあるが、priority /
-  `program:{programId}` tag / 明示 `contentPath` が desired と一致しない
+- `rokuban_presync_pending{site,reason="options"}` — `scheduled` state の observed schedule はあるが、
+  priority / `program:{programId}` tag / 明示 `contentPath` が desired と一致せず、reconciler が
+  再作成を試みられる
+- `rokuban_presync_pending{site,reason="options_deferred"}` — options の不一致はあるが、state が
+  `scheduled` ではないため再作成を見送っている。放送終了を待つか、必要なら手動介入する
 - `rokuban_presync_pending_earliest_start_timestamp_seconds{site,reason}` — 同じ reason で
   pending な予約のうち最も開始が近い番組の start_at。pending が 0 の reason には
   この系列が出ない（0 を出すと `earliest - time() < lead` が常に真になり、健全な状態で鳴る）
 - `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` — schedule 全量 snapshot が DB に
   整合した形で最後に確定した時刻。0 は未確立
 
-判定は **観測不能 → 未同期（missing） → 未同期（options） → 同期済み** の順に読む。
+判定は **観測不能 → 未同期（missing） → 未同期（options） → 未同期（options_deferred） → 同期済み**
+の順に読む。`options` は reconciler / mirakc / DB を確認して開始前に直す対象、
+`options_deferred` は現在の schedule state では原理的に再作成できない対象で、担当者のアクションが異なる。
 snapshot が 0 または stale なら、pending の値が 0 でも「同期済み」とは扱わない。collector
 の DB 読み取りに失敗したときは pending / snapshot 自体が出ず、
 `rokuban_presync_scrape_errors_total{site}` が増えるので、0 への置換でアラートを消さない。
@@ -79,10 +84,24 @@ snapshot が 0 または stale なら、pending の値が 0 でも「同期済�
 time() - rokuban_schedule_snapshot_last_success_timestamp_seconds
   > <snapshot_stale_seconds>
 
-# fresh な snapshot に対してだけ、開始が近い未同期を通知する。
+# fresh な snapshot に対してだけ、開始が近い「直せる未同期」を通知する。
 # 十分先の予約（earliest - time() >= <lead_seconds>）は鳴らさない。
 (
-  rokuban_presync_pending_earliest_start_timestamp_seconds - time() < <lead_seconds>
+  rokuban_presync_pending_earliest_start_timestamp_seconds{reason=~"missing|options"}
+    - time() < <lead_seconds>
+)
+and on (site)
+(
+  time() - rokuban_schedule_snapshot_last_success_timestamp_seconds
+    <= <snapshot_stale_seconds>
+)
+
+# options_deferred は別の Alertmanager ルートへ送る。
+# 放送中は earliest が過去なので継続して成立するが、直ちに再作成せず、
+# 放送終了待ちまたは手動介入が必要な状態である。
+(
+  rokuban_presync_pending_earliest_start_timestamp_seconds{reason="options_deferred"}
+    - time() < <lead_seconds>
 )
 and on (site)
 (
@@ -96,8 +115,10 @@ and on (site)
 `for` を長く取る必要はない。
 
 通知は Prometheus の alert rule から Alertmanager へ送り、`site` と `reason` を
-ルーティングに残す。観測不能は同期状態の断定より優先して、担当者が reconciler の
-投入元・worker / ScaledJob の起動状態・DB 接続を確認する入口にする。
+ルーティングに残す。`missing` / `options` は開始前に reconciler・mirakc・DB を
+確認する通常の未同期ルート、`options_deferred` は放送終了待ちまたは手動介入を案内する
+別ルートにする。観測不能は同期状態の断定より優先して、担当者が reconciler の投入元・
+worker / ScaledJob の起動状態・DB 接続を確認する入口にする。
 
 `<lead_seconds>` を決める式は次のとおり（p95/p99 の実測値を代入する）。
 

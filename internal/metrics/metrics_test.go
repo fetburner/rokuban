@@ -474,6 +474,62 @@ func TestPresyncCollector_ReMaterializationReevaluatesCurrentOptions(t *testing.
 	}
 }
 
+// state=scheduled 以外の options 不一致は、reconciler が今すぐ再作成できない
+// ため options_deferred に分離する。番組終了後は未同期の母集団から消える。
+func TestPresyncCollector_DeferredOptionsDisappearAfterProgramEnds(t *testing.T) {
+	pool := rokutest.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	const programID int64 = 6800006
+	startAt := time.Now().Add(time.Hour).Truncate(time.Millisecond)
+	seedPresyncReservation(t, pool, programID, startAt)
+	seedObservedScheduleWithState(t, pool, programID, mirakc.ScheduleStateRecording, mirakc.Options{
+		Priority: 11,
+	}, []string{mirakc.ProgramTag(programID)})
+	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
+		t.Fatalf("marking schedule snapshot: %v", err)
+	}
+
+	c := NewPresyncCollector(pool, testSite)
+	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": reasonOptions}); got != 0 {
+		t.Errorf("scheduled options = %v, want 0", got)
+	}
+	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": reasonOptionsDeferred}); got != 1 {
+		t.Errorf("deferred options = %v, want 1", got)
+	}
+
+	endedAt := time.Now().Add(-time.Hour).Truncate(time.Millisecond)
+	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
+		Site:        testSite,
+		ProgramID:   programID,
+		Title:       "終了済みへ変更",
+		StartAt:     endedAt,
+		DurationMs:  30 * time.Minute.Milliseconds(),
+		NetworkID:   32678,
+		ServiceID:   5168,
+		ChannelType: "GR",
+		Channel:     "27",
+		EventID:     68006,
+		ServiceName: "テストチャンネル",
+	}); err != nil {
+		t.Fatalf("updating program snapshot time: %v", err)
+	}
+	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
+		t.Fatalf("refreshing schedule snapshot: %v", err)
+	}
+
+	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": reasonOptions}); got != 0 {
+		t.Errorf("ended options = %v, want 0", got)
+	}
+	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": reasonOptionsDeferred}); got != 0 {
+		t.Errorf("ended deferred options = %v, want 0", got)
+	}
+	if _, ok := labeledGaugeValueOk(t, c, "rokuban_presync_pending_earliest_start_timestamp_seconds", map[string]string{"reason": reasonOptionsDeferred}); ok {
+		t.Error("ended deferred options must not report an earliest series")
+	}
+}
+
 // DB query が失敗したときは pending / snapshot を 0 として出さず、専用の
 // エラーカウンタだけを出す。既存 BacklogCollector と同じ沈黙しない契約。
 func TestPresyncCollector_QueryFailure(t *testing.T) {
@@ -520,6 +576,10 @@ func seedPresyncReservation(t *testing.T, pool *pgxpool.Pool, programID int64, s
 }
 
 func seedObservedSchedule(t *testing.T, pool *pgxpool.Pool, programID int64, options mirakc.Options, tags []string) {
+	seedObservedScheduleWithState(t, pool, programID, mirakc.ScheduleStateScheduled, options, tags)
+}
+
+func seedObservedScheduleWithState(t *testing.T, pool *pgxpool.Pool, programID int64, state string, options mirakc.Options, tags []string) {
 	t.Helper()
 	optionsJSON, err := json.Marshal(options)
 	if err != nil {
@@ -528,7 +588,7 @@ func seedObservedSchedule(t *testing.T, pool *pgxpool.Pool, programID int64, opt
 	if err := sqlcgen.New(pool).UpsertScheduleSync(context.Background(), sqlcgen.UpsertScheduleSyncParams{
 		Site:      testSite,
 		ProgramID: programID,
-		State:     mirakc.ScheduleStateScheduled,
+		State:     state,
 		Options:   optionsJSON,
 		Tags:      tags,
 	}); err != nil {
