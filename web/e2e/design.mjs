@@ -1032,11 +1032,11 @@ for (const scenario of layoutScenarios) {
         requiredScroll: Math.max(0, targetRect.bottom - visibleBottom, visibleTop - targetRect.top),
       }
     })
-    // `no-observation` は管理情報の帯そのものが描かれない（E の空帯抑制）ので、
-    // 要素が無いときに `boundingBox()` が要素の出現をタイムアウトまで待たない
-    // よう、まず件数を見てから呼ぶ。
+    // 管理情報行は常に DOM に存在し、`empty:hidden`（recordings.tsx）が子ノード
+    // 0 個のときだけ `display: none` にする。`boundingBox()` は非表示要素に
+    // 対して null を返す（Playwright の契約）ので、存在確認を挟まず直接呼べる。
     const managementSummary = page.locator('[data-testid="recordings-management-summary"]')
-    const managementBox = (await managementSummary.count()) > 0 ? await managementSummary.boundingBox() : null
+    const managementBox = await managementSummary.boundingBox()
     const summaryLocator = page.locator('main > header details summary').first()
     const summaryText = (await summaryLocator.count()) > 0
       ? await summaryLocator.textContent()
@@ -1075,6 +1075,77 @@ for (const scenario of layoutScenarios) {
       if (metric.summary.includes('の見込み') || metric.summary.includes('観測:')) {
         ng.push(`録画一覧/正常/${viewport.name}: 正常時の予測/観測を summary に常置している`)
       }
+      // B: 展開時のレイアウト崩れ（`open:basis-full` / 展開グリッドの二重
+      // パディング）はスクリーンショット（撮るだけ）にしか触れていなかったので、
+      // 実際に開いて機械判定する。デスクトップは幅に余裕がありこの崩れ方が
+      // 再現しないため、崩れの実測対象だった 360/390px だけで見る。
+      if (viewport.name !== 'desktop') {
+        await page.locator('main > header details summary').first().click()
+        const opened = await page.evaluate(() => {
+          const details = document.querySelector('main > header details')
+          const management = document.querySelector('[data-testid="recordings-management-summary"]')
+          // StorageRootCapacity のカード内 <dl>（総容量/使用済み/空きの 3 列）。
+          // 崩れると `<dd>` の内容（例: 「813.7 GB」）が列幅に収まらず折り返す
+          // か、行自体が横に溢れる。
+          const dl = details?.querySelector('dl') ?? null
+          const dds = dl ? [...dl.querySelectorAll('dd')] : []
+          // flex item（details）が実際に占有できる幅は管理情報行の border-box
+          // 幅ではなく content-box 幅（`px-4` の左右パディングを除いた分）。
+          // border-box の幅同士を比べると、パディング分（32px）を「占有できて
+          // いない」と誤検出する。
+          const managementStyle = management ? getComputedStyle(management) : null
+          const managementContentWidth =
+            management && managementStyle
+              ? management.clientWidth -
+                parseFloat(managementStyle.paddingLeft) -
+                parseFloat(managementStyle.paddingRight)
+              : null
+          // 展開グリッド（details の直下、StorageRootCapacity を並べる div）自身の
+          // 左右パディング。二重パディング（外側 recordings-management-summary の
+          // px-4 + ここの px-4）は、このフィクスチャの桁数だと 3 列 dl が
+          // 折り返す/溢れるところまでは追い込めない（幅に余裕がある）ので、
+          // 症状（折り返し・溢れ）だけでなく実装がパディングを持たせていないこと
+          // 自体も直接測る。
+          const grid = details?.querySelector(':scope > div.grid') ?? null
+          const gridStyle = grid ? getComputedStyle(grid) : null
+          return {
+            detailsWidth: details?.getBoundingClientRect().width ?? null,
+            managementContentWidth,
+            dlOverflow: dl ? dl.scrollWidth > dl.clientWidth : null,
+            // text-xs の 1 行の高さは実測で 16px 程度。2 行に折り返すと
+            // 目に見えて超える。
+            maxDdHeight: dds.length > 0 ? Math.max(...dds.map((d) => d.getBoundingClientRect().height)) : null,
+            gridPaddingLeft: gridStyle ? parseFloat(gridStyle.paddingLeft) : null,
+            gridPaddingRight: gridStyle ? parseFloat(gridStyle.paddingRight) : null,
+          }
+        })
+        if (
+          opened.detailsWidth === null ||
+          opened.managementContentWidth === null ||
+          Math.abs(opened.detailsWidth - opened.managementContentWidth) > 1
+        ) {
+          ng.push(
+            `録画一覧/正常/${viewport.name}: 開いた詳細が管理情報行の幅いっぱいを占有していない` +
+              `（details=${opened.detailsWidth?.toFixed(1) ?? '—'}px, 行の内容幅=${opened.managementContentWidth?.toFixed(1) ?? '—'}px）`,
+          )
+        }
+        if (opened.dlOverflow !== false) {
+          ng.push(`録画一覧/正常/${viewport.name}: 展開したカードの内容が横に溢れている`)
+        }
+        if (opened.maxDdHeight === null || opened.maxDdHeight > 20) {
+          ng.push(
+            `録画一覧/正常/${viewport.name}: 展開したカードの値が折り返している` +
+              `（${opened.maxDdHeight?.toFixed(1) ?? '—'}px）`,
+          )
+        }
+        if (opened.gridPaddingLeft !== 0 || opened.gridPaddingRight !== 0) {
+          ng.push(
+            `録画一覧/正常/${viewport.name}: 展開グリッドが compact でも px-4 を持ち、` +
+              `外側の管理情報行の px-4 と二重になっている` +
+              `（left=${opened.gridPaddingLeft ?? '—'}px, right=${opened.gridPaddingRight ?? '—'}px）`,
+          )
+        }
+      }
     }
     if (scenario.name === 'capacity' && !metric.summary.includes('満杯見込み')) {
       ng.push(`録画一覧/満杯見込み/${viewport.name}: 満杯見込みが summary に常置されていない`)
@@ -1108,10 +1179,10 @@ for (const scenario of layoutScenarios) {
     if (scenario.name === 'no-observation') {
       // エンコード待機列の取得も失敗させ、StorageBalance と両方が何も描かない
       // 組み合わせにしてある（apiHandler 参照）。管理情報の帯（recordings.tsx の
-      // `recordings-management-summary`）そのものが描かれないことを直接測る ---
-      // 子が両方とも沈黙するときに空の帯だけが残る回帰は、この組み合わせでしか
-      // 機械判定できない。
-      if ((await page.locator('[data-testid="recordings-management-summary"]').count()) !== 0) {
+      // `recordings-management-summary`）は `empty:hidden` で DOM には残るが
+      // 子ノード 0 個で非表示になる想定なので、DOM の有無ではなく可視性を測る
+      // （count() は常に 1 を返すので判定にならない）。
+      if (await page.locator('[data-testid="recordings-management-summary"]').isVisible()) {
         ng.push(`録画一覧/${scenario.label}/${viewport.name}: 両方欠損時に空の管理情報帯が残っている`)
       }
     }

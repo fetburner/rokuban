@@ -14,7 +14,6 @@ import {
 } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { DropStatsTable } from '@/components/drop-stats-table'
-import { recentRecordingSampleLimit } from '@/lib/storage-forecast'
 import { routeTree } from '@/routes'
 
 /**
@@ -364,27 +363,11 @@ function renderPage(path = '/recordings') {
   return { queryClient, router }
 }
 
-/**
- * recordingsRequests は `/api/recordings` への GET 呼び出しの URL 一覧を返す。
- *
- * `StorageBalance` が同じエンドポイントへ併走させる見込み算出用のクエリ
- * （`status=finished` かつ `limit=recentRecordingSampleLimit`）は除く ---
- * 一覧本体のクエリ（`limit` は常に `pageSize`=50）と見分けが付かないと、
- * 到着順の偶然で `.at(-1)` を使うテストが揺れる（`recordings-management-summary`
- * の空帯抑制で `StorageBalance` の mount 自体が両方のクエリの解決を待つように
- * なり、到着順が変わったことで顕在化した）。
- */
+/** recordingsRequests は `/api/recordings` への GET 呼び出しの URL 一覧を返す。 */
 function recordingsRequests(fetchMock: ReturnType<typeof vi.fn>): URL[] {
   return fetchMock.mock.calls
     .map((call) => new URL(String(call[0]), 'http://localhost'))
     .filter((url) => url.pathname === '/api/recordings')
-    .filter(
-      (url) =>
-        !(
-          url.searchParams.get('status') === 'finished' &&
-          url.searchParams.get('limit') === String(recentRecordingSampleLimit)
-        ),
-    )
 }
 
 function mutationIds(fetchMock: ReturnType<typeof vi.fn>, suffix = '', method = 'POST'): number[] {
