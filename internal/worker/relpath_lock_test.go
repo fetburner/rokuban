@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -12,9 +13,9 @@ import (
 )
 
 // TestIngestRelPathLock_SecondAcquireFailsAndReleaseFrees は
-// acquireRelPathLock がセッションレベルの排他になっていることを固定する
-// （internal/role/leader_test.go の TestTryAcquire_Exclusive / _ReleaseAndReacquire
-// と同じ、独立した 2 プールを使う形）。
+// acquireRelPathLockWithHeartbeat がセッションレベルの排他になっていることを
+// 固定する（internal/role/leader_test.go の TestTryAcquire_Exclusive /
+// _ReleaseAndReacquire と同じ、独立した 2 プールを使う形）。
 //
 // **release / pool.Close の登録順序に注意する**（レビュー指摘の教訓を
 // このテストにも適用する）。t.Cleanup は LIFO で実行され、かつ t.Fatal は
@@ -24,8 +25,8 @@ import (
 // 先に t.Cleanup 登録し、release 系を後から t.Cleanup 登録することで、
 // どの t.Fatal 経路でも「release が先、Close が後」を保証する。
 //
-// **どの acquireRelPathLock 呼び出しの戻り値も、結果を見る前に必ず
-// t.Cleanup へ登録する。** 「失敗するはず」の呼び出しでも、`acquired` が
+// **どの acquireRelPathLockWithHeartbeat 呼び出しの戻り値も、結果を見る前に
+// 必ず t.Cleanup へ登録する。** 「失敗するはず」の呼び出しでも、`acquired` が
 // 変異で意図せず true になった場合は本物のコネクションを握ったままになり、
 // release を捨てると pool.Close が同じ理由でハングする（このテストを書く
 // 過程で実際に踏んだ: pool2 の 2 回目の呼び出しの戻り値を `_` で捨てていたら、
@@ -64,21 +65,27 @@ func TestIngestRelPathLock_SecondAcquireFailsAndReleaseFrees(t *testing.T) {
 			})
 		}
 	}
+	releaseFunc := func(lock *relPathLock) func() {
+		if lock == nil {
+			return nil
+		}
+		return lock.release
+	}
 
-	release1, acquired1, err := acquireRelPathLock(ctx, pool1, relPath, time.Second)
-	safeRelease1 := safeRelease(release1)
+	lock1, acquired1, err := acquireRelPathLockWithHeartbeat(ctx, pool1, relPath, time.Second)
+	safeRelease1 := safeRelease(releaseFunc(lock1))
 	t.Cleanup(safeRelease1) // pool1.Close より後に登録する（LIFO で先に走る）。
 	if err != nil {
-		t.Fatalf("acquireRelPathLock pool1: %v", err)
+		t.Fatalf("acquireRelPathLockWithHeartbeat pool1: %v", err)
 	}
 	if !acquired1 {
 		t.Fatal("expected pool1 to acquire the lock")
 	}
 
-	release2, acquired2, err := acquireRelPathLock(ctx, pool2, relPath, time.Second)
-	t.Cleanup(safeRelease(release2)) // pool2.Close より後に登録する。
+	lock2, acquired2, err := acquireRelPathLockWithHeartbeat(ctx, pool2, relPath, time.Second)
+	t.Cleanup(safeRelease(releaseFunc(lock2))) // pool2.Close より後に登録する。
 	if err != nil {
-		t.Fatalf("acquireRelPathLock pool2: %v", err)
+		t.Fatalf("acquireRelPathLockWithHeartbeat pool2: %v", err)
 	}
 	if acquired2 {
 		t.Fatal("expected pool2 to NOT acquire the lock (already held by pool1)")
@@ -86,26 +93,49 @@ func TestIngestRelPathLock_SecondAcquireFailsAndReleaseFrees(t *testing.T) {
 
 	safeRelease1()
 
-	release3, acquired3, err := acquireRelPathLock(ctx, pool2, relPath, time.Second)
-	t.Cleanup(safeRelease(release3)) // pool2.Close より後に登録する。
+	lock3, acquired3, err := acquireRelPathLockWithHeartbeat(ctx, pool2, relPath, time.Second)
+	t.Cleanup(safeRelease(releaseFunc(lock3))) // pool2.Close より後に登録する。
 	if err != nil {
-		t.Fatalf("acquireRelPathLock pool2 after release: %v", err)
+		t.Fatalf("acquireRelPathLockWithHeartbeat pool2 after release: %v", err)
 	}
 	if !acquired3 {
 		t.Fatal("expected pool2 to acquire the lock after pool1 released")
 	}
 }
 
+// TestIngestRelPathLock_HeartbeatPreservesHeldSessionAlive は、ロック保持中の
+// heartbeat が正常なセッションを誤って lost 扱いしないことを固定する。
+// `pg_locks` の bigint key 分解や objsubid 条件を壊す変異は、heartbeat 1 回後に
+// isLost が true になって落ちる。
+func TestIngestRelPathLock_HeartbeatPreservesHeldSessionAlive(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	lock, acquired, err := acquireRelPathLockWithHeartbeat(ctx, pool, "sites/default/test/lock-heartbeat.m2ts", time.Second)
+	if err != nil {
+		t.Fatalf("acquireRelPathLockWithHeartbeat: %v", err)
+	}
+	if !acquired {
+		t.Fatal("expected heartbeat test to acquire the lock")
+	}
+	t.Cleanup(lock.release)
+
+	time.Sleep(relPathLockHeartbeatInterval + 250*time.Millisecond)
+	if lock.isLost() {
+		t.Fatal("heartbeat marked a healthy rel_path lock as lost")
+	}
+}
+
 // TestIngestWorker_RelPathLockTimeoutDoesNotHang は、プールが枯渇していても
-// acquireRelPathLock がハングせず期限内にエラーで返ることを固定する
+// acquireRelPathLockWithHeartbeat がハングせず期限内にエラーで返ることを固定する
 // （ingest の River タイムアウトは無効なので、これが唯一の歯止め）。
 //
 // MaxConns=1 のプールの唯一のコネクションを別途保持した状態で
 // RelPathLockTimeout=100ms 相当の呼び出しを行う。ジョブ側の相当物である
-// acquireRelPathLock の戻りは goroutine + select で 2 秒の期限付きに受け、
-// 期限超過はハングではなく t.Fatal（アサーション失敗）で検出する。
+// acquireRelPathLockWithHeartbeat の戻りは goroutine + select で 2 秒の期限
+// 付きに受け、期限超過はハングではなく t.Fatal（アサーション失敗）で検出する。
 //
-// 壊し方: acquireRelPathLock 内で pool.Acquire に渡す ctx を
+// 壊し方: acquireRelPathLockWithHeartbeat 内で pool.Acquire に渡す ctx を
 // `acquireCtx`（期限付き）から素の `ctx` に戻すと、2 秒の期限を超えて
 // 「did not return within 2s」で落ちる（コンパイルは通る変異）。
 func TestIngestWorker_RelPathLockTimeoutDoesNotHang(t *testing.T) {
@@ -137,16 +167,111 @@ func TestIngestWorker_RelPathLockTimeoutDoesNotHang(t *testing.T) {
 	}
 	resultCh := make(chan result, 1)
 	go func() {
-		_, acquired, err := acquireRelPathLock(context.Background(), pool, "sites/default/test/lock-timeout.m2ts", 100*time.Millisecond)
+		_, acquired, err := acquireRelPathLockWithHeartbeat(context.Background(), pool, "sites/default/test/lock-timeout.m2ts", 100*time.Millisecond)
 		resultCh <- result{acquired: acquired, err: err}
 	}()
 
 	select {
 	case r := <-resultCh:
 		if r.err == nil {
-			t.Fatalf("acquireRelPathLock err = nil (acquired=%v), want a timeout error (pool exhausted)", r.acquired)
+			t.Fatalf("acquireRelPathLockWithHeartbeat err = nil (acquired=%v), want a timeout error (pool exhausted)", r.acquired)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("acquireRelPathLock did not return within 2s; pool.Acquire hung instead of timing out")
+		t.Fatal("acquireRelPathLockWithHeartbeat did not return within 2s; pool.Acquire hung instead of timing out")
+	}
+}
+
+// TestIngestRelPathLock_TransientHeartbeatFailuresDoNotMarkLostUntilThreshold
+// は、checkHeld 相当の一過性エラー（接続は生きているがクエリが失敗した）が
+// relPathLockMaxTransientFailures 回連続するまでは lost にならず、その回数に
+// 達したときだけ lost になることを固定する（issue #679 レビュー: DB の数秒の
+// レイテンシ 1 回だけで転送を再ダウンロードに戻さない）。checkHeldFunc を
+// 直接差し替え、heartbeatTick を実 DB / 実 heartbeatInterval 無しで呼ぶ。
+//
+// 壊し方: heartbeatTick の「permanent でなければ即 markLost しない」分岐
+// （consecutiveFailures をカウントして relPathLockMaxTransientFailures 未満なら
+// return false する部分）を消し、一過性エラーでも常に markLost するようにすると、
+// 1 回目の呼び出しで isLost() が true になり
+// "isLost() became true after only 1 transient failure" で落ちる。
+func TestIngestRelPathLock_TransientHeartbeatFailuresDoNotMarkLostUntilThreshold(t *testing.T) {
+	transientErr := errors.New("simulated transient db latency")
+	l := &relPathLock{
+		lost: make(chan struct{}),
+		checkHeldFunc: func() (held, permanent bool, err error) {
+			return false, false, transientErr
+		},
+	}
+
+	var consecutiveFailures int
+	for i := 1; i < relPathLockMaxTransientFailures; i++ {
+		if l.heartbeatTick(&consecutiveFailures) {
+			t.Fatalf("heartbeatTick stopped the loop on transient failure %d, want it to keep retrying until %d", i, relPathLockMaxTransientFailures)
+		}
+		if l.isLost() {
+			t.Fatalf("isLost() became true after only %d transient failure(s), want it to stay false until %d", i, relPathLockMaxTransientFailures)
+		}
+	}
+
+	if !l.heartbeatTick(&consecutiveFailures) {
+		t.Fatalf("heartbeatTick did not stop the loop on transient failure %d, want it to give up", relPathLockMaxTransientFailures)
+	}
+	if !l.isLost() {
+		t.Fatalf("isLost() is still false after %d consecutive transient failures, want lost", relPathLockMaxTransientFailures)
+	}
+}
+
+// TestIngestRelPathLock_TransientHeartbeatFailureResetsOnSuccess は、一過性
+// エラーの連続回数が、その後 checkHeld 相当が成功すればリセットされることを
+// 固定する（間欠的な失敗が積み上がって誤って lost にならないため）。
+//
+// 壊し方: heartbeatTick の成功時に `*consecutiveFailures = 0` をしないと、
+// このテストは 2 回目の一過性失敗 (relPathLockMaxTransientFailures 回目の
+// 「本来ならリセット後の 1 回目」) で誤って isLost()==true になり、
+// "isLost() became true" で落ちる。
+func TestIngestRelPathLock_TransientHeartbeatFailureResetsOnSuccess(t *testing.T) {
+	transientErr := errors.New("simulated transient db latency")
+	var succeedNext bool
+	l := &relPathLock{
+		lost: make(chan struct{}),
+		checkHeldFunc: func() (held, permanent bool, err error) {
+			if succeedNext {
+				succeedNext = false
+				return true, false, nil
+			}
+			return false, false, transientErr
+		},
+	}
+
+	var consecutiveFailures int
+	// relPathLockMaxTransientFailures - 1 回まで一過性エラーを積み上げる。
+	for i := 1; i < relPathLockMaxTransientFailures; i++ {
+		if l.heartbeatTick(&consecutiveFailures) {
+			t.Fatalf("heartbeatTick stopped the loop early on transient failure %d", i)
+		}
+	}
+
+	// 1 回成功させてカウンタをリセットさせる。
+	succeedNext = true
+	if l.heartbeatTick(&consecutiveFailures) {
+		t.Fatal("heartbeatTick stopped the loop on a successful check")
+	}
+	if consecutiveFailures != 0 {
+		t.Fatalf("consecutiveFailures = %d after a successful check, want 0", consecutiveFailures)
+	}
+
+	// リセット後は再び relPathLockMaxTransientFailures 回連続で初めて lost。
+	for i := 1; i < relPathLockMaxTransientFailures; i++ {
+		if l.heartbeatTick(&consecutiveFailures) {
+			t.Fatalf("heartbeatTick stopped the loop on transient failure %d after reset, want it to keep retrying", i)
+		}
+		if l.isLost() {
+			t.Fatalf("isLost() became true after only %d transient failure(s) post-reset", i)
+		}
+	}
+	if !l.heartbeatTick(&consecutiveFailures) {
+		t.Fatal("heartbeatTick did not stop the loop after the full threshold post-reset")
+	}
+	if !l.isLost() {
+		t.Fatal("isLost() is still false after the full threshold post-reset")
 	}
 }

@@ -51,6 +51,12 @@ var openIngestFile = func(path string) (ingestFile, error) {
 	return os.Create(path)
 }
 
+// acquireIngestRelPathLock は rel_path advisory lock の取得フック。既定は
+// acquireRelPathLockWithHeartbeat（relpath_lock.go）そのもの。openIngestFile と
+// 同じ形で、テストが取得直後の *relPathLock を捕捉して heartbeat を経由せずに
+// lock.isLost() ガード（下記 Work 参照）を検証するために差し替える。
+var acquireIngestRelPathLock = acquireRelPathLockWithHeartbeat
+
 // IngestWorker は mirakc からの TS ファイル転送を行う River ワーカー。
 type IngestWorker struct {
 	river.WorkerDefaults[jobs.IngestJobArgs]
@@ -175,8 +181,9 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	// 排他を索引より前に置く（docs/recording/ingest.md §5.3）。
 	//
 	// 負けた側（acquired=false）はバイトを 1 つも書かずに失敗し、River の
-	// バックオフで再試行する。ロックは commit まで defer で保持し続ける。
-	release, acquired, err := acquireRelPathLock(ctx, w.Pool, relPath, w.resolveRelPathLockTimeout())
+	// バックオフで再試行する。ロックは commit まで defer で保持し続け、
+	// heartbeat がセッション喪失を検知したら転送用 context をキャンセルする。
+	lock, acquired, err := acquireIngestRelPathLock(ctx, w.Pool, relPath, w.resolveRelPathLockTimeout())
 	if err != nil {
 		return fmt.Errorf("acquiring rel_path lock: %w", err)
 	}
@@ -184,7 +191,21 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 		log.Warn("ingest: rel_path is being transferred by another ingest job, deferring", "rel_path", relPath)
 		return fmt.Errorf("ingest: rel_path %q is being transferred by another ingest job; deferring (recording_id=%d)", relPath, recordingID)
 	}
-	defer release()
+	defer lock.release()
+
+	// ロック用コネクションは転送中ずっと pool から保持するが、セッションが
+	// 切れると Postgres は advisory lock を自動解放する。heartbeat の lost 通知を
+	// 転送全体の context に伝播させ、古い実行が後続実行と同じファイルへ書き続け
+	// ないようにする。検知前の短い窓は残るため、commit 前にも isLost を確認する。
+	ingestCtx, cancelIngest := context.WithCancel(ctx)
+	defer cancelIngest()
+	go func() {
+		select {
+		case <-lock.lost:
+			cancelIngest()
+		case <-ingestCtx.Done():
+		}
+	}()
 
 	// checkRelPathConflict はロックの下（＝転送開始前だが排他は既に確定した後）
 	// で引く。ロックを持っている間は他の ingest がこの rel_path を狙って
@@ -194,11 +215,14 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	// ない）recording が過去にこの rel_path を使って既にコミットした」という
 	// 恒久的な衝突（contentPath 重複、issue #197）で、これは delete_reconcile
 	// の状態遷移に対しては引き続きヒント（TOCTOU が残る）でしかない。
-	if conflictRecordingID, err := w.checkRelPathConflict(ctx, relPath); err != nil {
+	if conflictRecordingID, err := w.checkRelPathConflict(ingestCtx, relPath); err != nil {
 		return fmt.Errorf("checking rel_path conflict: %w", err)
 	} else if conflictRecordingID != 0 {
 		return fmt.Errorf("ingest: rel_path %q is already used by another media_asset that has not been deleted (recording_id=%d); refusing to overwrite its file (recording_id=%d)",
 			relPath, conflictRecordingID, recordingID)
+	}
+	if lock.isLost() {
+		return fmt.Errorf("ingest: rel_path advisory lock was lost before opening destination (recording_id=%d)", recordingID)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
@@ -227,20 +251,26 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	// そのものが「転送中」の主張なので（不変条件 10）、1 バイトも流れる前に
 	// 1 行書いてから始める --- 遅い回線で最初の 1 バイトが来るまで数十秒かかる
 	// ことがあり、そこが「何も起きていないように見える」時間帯そのものだから。
-	progress.start(ctx)
+	progress.start(ingestCtx)
 	// progressWriter は counter の外側に置く（io.Copy → progressWriter →
 	// counter → f）。TS 統計は counter が数えるので、ここでは書けたバイト数を
 	// 数えるだけ。
 	dst := &progressWriter{
 		w:       counter,
-		onWrite: func(written int64) { progress.report(ctx, written) },
+		onWrite: func(written int64) { progress.report(ingestCtx, written) },
 	}
 
-	offset, err := w.transferIngestRecord(ctx, client, args.RecordID, dst, progress, log)
+	offset, err := w.transferIngestRecord(ingestCtx, client, args.RecordID, dst, progress, log)
 	if err != nil {
+		if lock.isLost() {
+			return fmt.Errorf("ingest: rel_path advisory lock was lost during transfer: %w", err)
+		}
 		return err
 	}
-	expectedLen, err := client.HeadRecordStream(ctx, args.RecordID)
+	if lock.isLost() {
+		return fmt.Errorf("ingest: rel_path advisory lock was lost after transfer (recording_id=%d)", recordingID)
+	}
+	expectedLen, err := client.HeadRecordStream(ingestCtx, args.RecordID)
 	if err != nil {
 		return fmt.Errorf("HEAD record stream: %w", err)
 	}
@@ -261,6 +291,9 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("closing file: %w", err)
 	}
+	if lock.isLost() {
+		return fmt.Errorf("ingest: rel_path advisory lock was lost before commit (recording_id=%d)", recordingID)
+	}
 
 	// pid_type_changes > 0 は録画中に PMT が PID を付け替えたということ。
 	// 種別は最後に見たものを採用するので、変化そのものはここにしか残らない
@@ -273,7 +306,10 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 
 	recordIngestMetrics(offset, counter)
 
-	if err := w.commit(ctx, recordingID, relPath, offset, counter); err != nil {
+	if err := w.commit(ingestCtx, recordingID, relPath, offset, counter); err != nil {
+		if lock.isLost() {
+			return fmt.Errorf("ingest: rel_path advisory lock was lost during commit: %w", err)
+		}
 		return fmt.Errorf("committing ingest: %w", err)
 	}
 

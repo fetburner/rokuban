@@ -59,7 +59,8 @@ func makeTSData(packets int) []byte {
 // makeTSData(30) は makeTSData(50) のバイト単位の前置なので、長さの異なる
 // makeTSData だけでは「先行ファイルが後発のバイトで上書きされていないか」を
 // 全バイト比較しても実は前置一致で通ってしまう変異を見逃す。
-func makeTSDataFill(packets int, fill byte) []byte {
+func makeTSDataFill(fill byte) []byte {
+	const packets = 30
 	data := makeTSData(packets)
 	for i := 0; i < packets; i++ {
 		off := i * 188
@@ -2734,8 +2735,8 @@ func TestIngestWorker_ConcurrentSameRelPath_LoserNeverOpensStream(t *testing.T) 
 	// なる --- 何らかの理由で B が最後まで書き切ってしまう変異が起きても、
 	// 長さは A と一致したまま中身だけが違う状態になり、bytes.Equal による
 	// 全バイト比較でなければ検出できない。
-	tsDataA := makeTSDataFill(30, 0xAA)
-	tsDataB := makeTSDataFill(30, 0xBB)
+	tsDataA := makeTSDataFill(0xAA)
+	tsDataB := makeTSDataFill(0xBB)
 
 	reachedMidTransfer := make(chan struct{})
 	releaseTransfer := make(chan struct{})
@@ -2878,12 +2879,348 @@ func TestIngestWorker_ConcurrentSameRelPath_LoserNeverOpensStream(t *testing.T) 
 	}
 }
 
+// terminateRelPathLockBackend は pg_locks の advisory lock 保持者だけを
+// pg_terminate_backend で切断する。production code にテスト用の connection
+// hook を足さず、issue #679 の「ロック用セッションだけを失う」故障を実際の
+// PostgreSQL セッションで再現するための helper。
+//
+// `pg_locks` はクラスタ全体のビューで、advisory lock のキー空間は database
+// 単位（relPathLockKey は同じキーを database をまたいで再利用しうる）。
+// `AND database = current_database()` を付けないと、同じ Postgres サーバに
+// 対して本パッケージのテストを並列実行したとき（testutil は別 DB を作るが、
+// これは並列エージェント構成そのもの）他プロセスの同名 rel_path のロック接続
+// を誤って kill しうる（PR #704 レビュー指摘）。
+func terminateRelPathLockBackend(t *testing.T, pool *pgxpool.Pool, relPath string) {
+	t.Helper()
+	key := relPathLockKey(relPath)
+	ctx := context.Background()
+	deadline := time.Now().Add(5 * time.Second)
+
+	var pid int32
+	for {
+		err := pool.QueryRow(ctx, `
+			SELECT pid
+			FROM pg_locks
+			WHERE locktype = 'advisory'
+			  AND pid <> pg_backend_pid()
+			  AND classid = (($1::bigint >> 32) & 4294967295)::oid
+			  AND objid = ($1::bigint & 4294967295)::oid
+			  AND objsubid = 1
+			  AND granted
+			  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+			LIMIT 1`, key).Scan(&pid)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("finding rel_path lock backend: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("rel_path lock backend did not appear for %q", relPath)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	var terminated bool
+	if err := pool.QueryRow(ctx, "SELECT pg_terminate_backend($1)", pid).Scan(&terminated); err != nil {
+		t.Fatalf("terminating rel_path lock backend %d: %v", pid, err)
+	}
+	if !terminated {
+		t.Fatalf("pg_terminate_backend(%d) returned false", pid)
+	}
+}
+
+// TestIngestWorker_RelPathLockSessionLoss_AbortsOldTransfer は issue #679 の
+// 障害系列を実際に再現する。A/B は同じ長さ・同じ rel_path だがバイト列が異なる。
+// A の lock session だけを切断すると、heartbeat が A の転送 context をキャンセル
+// し、B が同じ宛先へ転送・commit できる。A の中断後に得られた B の DB 行と実ファイル
+// が全バイト一致することを検証する。
+//
+// 壊し方:
+//   - heartbeatLoop を消す / lost を転送 context に伝播しない
+//     → A の HTTP handler が context cancellation を観測せず、テストが timeout する
+//   - `ingestCtx` の代わりに元の `ctx` を transferIngestRecord へ渡す
+//     → 同じく A が止まらず、B が書いた後の宛先を A の残りバイトが変更する
+//   - A/B の fill を同じにする / 長さを変える
+//     → 内容の混在を長さだけで見てしまい、回帰試験の検出力が落ちる
+func TestIngestWorker_RelPathLockSessionLoss_AbortsOldTransfer(t *testing.T) {
+	p := setupTestPool(t)
+	if p == nil {
+		return
+	}
+	mediaDir := t.TempDir()
+
+	const relContentPath = "shared/lock-loss.m2ts"
+	const relPath = "sites/default/" + relContentPath
+	tsDataA := makeTSDataFill(0xAA)
+	tsDataB := makeTSDataFill(0xBB)
+
+	reachedMidTransfer := make(chan struct{})
+	aCanceled := make(chan struct{})
+	releaseTransfer := make(chan struct{})
+	var reachedOnce sync.Once
+	var canceledOnce sync.Once
+
+	srvA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			flusher, _ := w.(http.Flusher)
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsDataA)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(tsDataA[:188])
+			if flusher != nil {
+				flusher.Flush()
+			}
+			reachedOnce.Do(func() { close(reachedMidTransfer) })
+			select {
+			case <-r.Context().Done():
+				canceledOnce.Do(func() { close(aCanceled) })
+				return
+			case <-releaseTransfer:
+				_, _ = w.Write(tsDataA[188:])
+			}
+
+		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsDataA)))
+			w.WriteHeader(http.StatusOK)
+
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{Options: mirakc.Options{ContentPath: strPtr(relContentPath)}},
+				Content:   mirakc.ContentInfo{Path: "/recording/" + relContentPath},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+
+		case r.Method == http.MethodDelete:
+			result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(result)
+
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	// A の handler が barrier 待ちのまま t.Fatalf の cleanup に入る経路を
+	// 防ぐ。release は srvA.Close より先に実行する必要がある（t.Cleanup は LIFO）。
+	t.Cleanup(srvA.Close)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseTransfer) }) }
+	t.Cleanup(release)
+
+	srvB := newFullTransferServer(t, tsDataB, relContentPath)
+
+	recordingIDA := insertTestRecordingForSite(t, p, "default", 601)
+	insertTestRecordSyncForSite(t, p, "default", recordingIDA, "rec-lock-loss-a", 327361024000601)
+	recordingIDB := insertTestRecordingForSite(t, p, "default", 602)
+	insertTestRecordSyncForSite(t, p, "default", recordingIDB, "rec-lock-loss-b", 327361024000602)
+
+	wA := &IngestWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srvA.URL, nil)),
+		Pool:          p,
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
+	}
+	wB := &IngestWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srvB.URL, nil)),
+		Pool:          p,
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
+	}
+
+	jobA := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-lock-loss-a"},
+	}
+	jobB := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-lock-loss-b"},
+	}
+
+	errACh := make(chan error, 1)
+	go func() { errACh <- wA.Work(context.Background(), jobA) }()
+	<-reachedMidTransfer
+
+	terminateRelPathLockBackend(t, p, relPath)
+
+	select {
+	case <-aCanceled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("A's transfer was not canceled after its lock session was terminated")
+	}
+
+	var errA error
+	select {
+	case errA = <-errACh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("A's Work did not return after its lock session was terminated")
+	}
+	if errA == nil {
+		t.Fatal("A's Work() error = nil, want lock-loss failure")
+	}
+
+	if err := wB.Work(context.Background(), jobB); err != nil {
+		t.Fatalf("B's Work() error: %v", err)
+	}
+
+	fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+	gotData, err := os.ReadFile(fullPath)
+	if err != nil {
+		t.Fatalf("reading B's committed file: %v", err)
+	}
+	if !bytes.Equal(gotData, tsDataB) {
+		t.Errorf("B's committed file does not exactly match B's bytes (len got=%d want=%d)", len(gotData), len(tsDataB))
+	}
+
+	q := sqlcgen.New(p)
+	assetB, err := q.GetActiveOriginalMediaAsset(context.Background(), recordingIDB)
+	if err != nil {
+		t.Fatalf("B's original media_asset: %v", err)
+	}
+	if assetB.RelPath != relPath {
+		t.Errorf("B's media_asset rel_path = %q, want %q", assetB.RelPath, relPath)
+	}
+	if assetB.SizeBytes != int64(len(tsDataB)) {
+		t.Errorf("B's media_asset size_bytes = %d, want %d", assetB.SizeBytes, len(tsDataB))
+	}
+	var aAssetCount int
+	if err := p.QueryRow(context.Background(),
+		"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingIDA,
+	).Scan(&aAssetCount); err != nil {
+		t.Fatalf("counting media_assets for A: %v", err)
+	}
+	if aAssetCount != 0 {
+		t.Errorf("media_assets rows for A = %d, want 0 after lock-loss cancellation", aAssetCount)
+	}
+}
+
+// TestIngestWorker_LockLostBeforeCommit_AbortsWithoutCommitting は #704 の
+// レビュー指摘（internal/worker/ingest.go の 3 つの lock.isLost() ガードを
+// 全部消しても TestIngestWorker_RelPathLockSessionLoss_AbortsOldTransfer が
+// 緑のままだった）の回帰テスト。あちらは HTTP request context の
+// cancellation で転送そのものが止まり、3 つのガードのどれにも到達していない。
+// このテストは転送を正常に完走させ、commit 直前のガード（ingest.go の
+// f.Close() 直後の isLost() チェック）だけを単独で踏む。
+//
+// acquireIngestRelPathLock フックで取得直後の *relPathLock を捕捉し、原本
+// ファイルの Close（onClose）で直接 lock.markLost() を呼ぶ --- heartbeat も
+// 実 DB のセッション切断も経由しない。markLost は Work と同じ goroutine 上の
+// Close 呼び出し内で行い、直後のガード判定まで一切のブロッキング呼び出しを
+// 挟まないので、このガード自体は毎回確実に発火する（確認済み: 20 回連続実行で
+// 全て "lost before commit" のエラーで即時 return し、w.commit は一度も
+// 呼ばれない）。
+//
+// **outcome（media_assets の有無・DeleteRecord の呼び出し）だけでは、この
+// ガード単体の削除を検出できない。** markLost は Work 内の ctx キャンセル
+// 伝播用 goroutine（`go func(){ select { case <-lock.lost: cancelIngest()
+// ...} }()`）も同時に起こす。このガードを消しても、次に到達する
+// w.commit(ingestCtx, ...) の Begin(ctx) 自体が同じ ctx cancellation で
+// 失敗し、commit 失敗後の別のチェック（"lost during commit"）が代わりに
+// エラーを返すため、outcome は変わらない（実測: ガードを消して 5 回実行、
+// 全て "...beginning transaction: context canceled" で失敗し media_assets は
+// 作られなかった）。そのため、このガードが実際に発火したときにしか出ない
+// エラー文言 "lost before commit" を固定して初めて、削除を検出できる。
+//
+// 壊し方: ingest.go の commit 直前 `if lock.isLost() { return ... }` を消す
+// → エラーが "lost before commit" ではなく "lost during commit: ...
+// context canceled" に変わり、文言の assertion で落ちる（変異確認済み）。
+func TestIngestWorker_LockLostBeforeCommit_AbortsWithoutCommitting(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	tsData := makeTSData(10)
+
+	var deleteRequested atomic.Bool
+	srv := newInstrumentedIngestServer(t, tsData, "test/lock-lost-before-commit.m2ts", func() {
+		deleteRequested.Store(true)
+	})
+
+	originalAcquire := acquireIngestRelPathLock
+	t.Cleanup(func() { acquireIngestRelPathLock = originalAcquire })
+	var capturedLock *relPathLock
+	acquireIngestRelPathLock = func(ctx context.Context, p *pgxpool.Pool, relPath string, timeout time.Duration) (*relPathLock, bool, error) {
+		lock, acquired, err := originalAcquire(ctx, p, relPath, timeout)
+		if acquired {
+			capturedLock = lock
+		}
+		return lock, acquired, err
+	}
+
+	originalOpenFile := openIngestFile
+	t.Cleanup(func() { openIngestFile = originalOpenFile })
+	openIngestFile = func(path string) (ingestFile, error) {
+		file, err := os.Create(path)
+		if err != nil {
+			return nil, err
+		}
+		return &ingestTestFile{
+			file: file,
+			onClose: func() {
+				if capturedLock == nil {
+					t.Error("ingest file Close fired before acquireIngestRelPathLock captured a lock")
+					return
+				}
+				capturedLock.markLost()
+			},
+		}, nil
+	}
+
+	mediaDir := t.TempDir()
+	w := &IngestWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		Pool:          pool,
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
+	}
+
+	recordingID := insertTestRecording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, "rec-lock-lost-before-commit")
+
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-lock-lost-before-commit"},
+	}
+
+	// エラー文言そのものを検証する。commit() 自体は ingestCtx を使うため、
+	// commit 前のガード（288 行目）を消しても、w.commit の内部で
+	// Begin(ctx) 等が ctx cancellation で失敗し、commit 失敗後のチェック
+	// （「lost during commit」、ingest.go の commit 呼び出し直後の分岐）が
+	// 代わりに拾ってしまい、"media_assets rows = 0" というアサーションだけでは
+	// ガード自体が消えたことを検出できない（確認済み。壊し方参照）。
+	// 288 行目のガードが実際に発火したときにしか出ない文言
+	// （"lost before commit"）を固定することで、それを消した変異を検出する。
+	err := w.Work(context.Background(), job)
+	if err == nil {
+		t.Fatal("Work() error = nil, want a lock-loss failure before commit")
+	}
+	if !strings.Contains(err.Error(), "lost before commit") {
+		t.Errorf("Work() error = %q, want it to come from the pre-commit isLost() guard (\"lost before commit\")", err.Error())
+	}
+
+	var assetCount int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
+	).Scan(&assetCount); err != nil {
+		t.Fatalf("counting media_assets: %v", err)
+	}
+	if assetCount != 0 {
+		t.Errorf("media_assets rows = %d, want 0 (commit must not run after the lock is lost)", assetCount)
+	}
+	if deleteRequested.Load() {
+		t.Error("DeleteRecord was called; the edge record must be kept when commit is aborted")
+	}
+}
+
 // TestIngestWorker_ReleasesRelPathLockAfterCommit は、ingest 成功後に
 // rel_path の advisory lock が解放されていることを固定する。ingest が使った
 // のとは別の独立したプール（別セッション）から同じキーの
 // pg_try_advisory_lock が true を返せば、解放されている証拠になる。
 //
-// 壊し方: acquireRelPathLock の release から pg_advisory_unlock の呼び出しを
+// 壊し方: relPathLock.release から pg_advisory_unlock の呼び出しを
 // 消し conn.Release() だけ残す → ロックが保持されたまま残り、検証用の
 // 独立プールから pg_try_advisory_lock が false を返すため
 // "rel_path advisory lock still held" で落ちる（確認済み。もし通ってしまう
