@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/mirakc"
 	rokutest "github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -244,6 +246,253 @@ func TestBacklogCollector_QueryFailure(t *testing.T) {
 	}
 }
 
+// PresyncCollector は desired/observed の存在差分、実効 options の差分、
+// 終了済み予約、skip、snapshot marker の未確立を区別する。特に marker が無い
+// ときも pending の 0 と混同せず、PromQL 側で unobservable を最優先できる
+// timestamp=0 を出す。
+func TestPresyncCollector_ClassifiesPendingState(t *testing.T) {
+	pool := rokutest.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	const programID int64 = 6800001
+	startAt := time.Now().Add(time.Hour).Truncate(time.Millisecond)
+	seedPresyncReservation(t, pool, programID, startAt, 30*time.Minute)
+	c := NewPresyncCollector(pool, testSite)
+
+	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "missing"}); got != 1 {
+		t.Errorf("without snapshot marker, missing = %v, want 1", got)
+	}
+	if got := labeledGaugeValue(t, c, "rokuban_snapshot_last_success_timestamp_seconds", nil); got != 0 {
+		t.Errorf("without snapshot marker, snapshot timestamp = %v, want 0", got)
+	}
+
+	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
+		t.Fatalf("marking schedule snapshot: %v", err)
+	}
+	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "missing"}); got != 1 {
+		t.Errorf("missing = %v, want 1", got)
+	}
+	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "options"}); got != 0 {
+		t.Errorf("options = %v, want 0", got)
+	}
+	if got := labeledGaugeValue(t, c, "rokuban_snapshot_last_success_timestamp_seconds", nil); got <= 0 {
+		t.Errorf("snapshot timestamp = %v, want positive", got)
+	}
+
+	seedObservedSchedule(t, pool, programID, mirakc.Options{Priority: 10}, []string{mirakc.ProgramTag(programID)})
+	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "missing"}); got != 0 {
+		t.Errorf("synced missing = %v, want 0", got)
+	}
+	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "options"}); got != 0 {
+		t.Errorf("synced options = %v, want 0", got)
+	}
+
+	seedObservedSchedule(t, pool, programID, mirakc.Options{Priority: 11}, []string{mirakc.ProgramTag(programID)})
+	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "options"}); got != 1 {
+		t.Errorf("priority mismatch options = %v, want 1", got)
+	}
+
+	// 番組時刻が過去へ変更されて終了済みになった予約は、schedule が無くても
+	// presync 未同期として数えない。開始時刻変更の境界と ended filter を固定する。
+	endedAt := time.Now().Add(-time.Minute).Truncate(time.Millisecond)
+	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
+		Site:        testSite,
+		ProgramID:   programID,
+		Title:       "終了済みへ変更",
+		StartAt:     endedAt.Add(-time.Minute),
+		DurationMs:  60_000,
+		NetworkID:   32678,
+		ServiceID:   5168,
+		ChannelType: "GR",
+		Channel:     "27",
+		EventID:     68001,
+		ServiceName: "テストチャンネル",
+	}); err != nil {
+		t.Fatalf("updating program snapshot time: %v", err)
+	}
+	if _, err := q.DeleteProgramOverrides(ctx, sqlcgen.DeleteProgramOverridesParams{Site: testSite, ProgramID: programID}); err != nil {
+		t.Fatalf("deleting overrides: %v", err)
+	}
+	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
+		t.Fatalf("refreshing schedule snapshot: %v", err)
+	}
+	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "missing"}); got != 0 {
+		t.Errorf("ended reservation missing = %v, want 0", got)
+	}
+	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "options"}); got != 0 {
+		t.Errorf("ended reservation options = %v, want 0", got)
+	}
+
+	const skippedProgramID int64 = 6800004
+	seedPresyncReservation(t, pool, skippedProgramID, time.Now().Add(time.Hour), 30*time.Minute)
+	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{Site: testSite, ProgramID: skippedProgramID}); err != nil {
+		t.Fatalf("skipping reservation: %v", err)
+	}
+	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
+		t.Fatalf("refreshing schedule snapshot after skip: %v", err)
+	}
+	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "missing"}); got != 0 {
+		t.Errorf("skipped reservation missing = %v, want 0", got)
+	}
+}
+
+func TestPresyncCollector_StaleSnapshotRemainsObservable(t *testing.T) {
+	pool := rokutest.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
+		t.Fatalf("marking schedule snapshot: %v", err)
+	}
+
+	var staleAt time.Time
+	if err := pool.QueryRow(ctx, `
+		UPDATE schedule_sync_snapshots
+		SET snapshot_at = now() - interval '1 hour'
+		WHERE site = $1
+		RETURNING snapshot_at`, testSite).Scan(&staleAt); err != nil {
+		t.Fatalf("aging schedule snapshot: %v", err)
+	}
+
+	c := NewPresyncCollector(pool, testSite)
+	got := time.Unix(0, int64(labeledGaugeValue(t, c, "rokuban_snapshot_last_success_timestamp_seconds", nil)*float64(time.Second)))
+	if !got.Before(time.Now().Add(-30 * time.Minute)) {
+		t.Errorf("snapshot timestamp = %v, want a stale timestamp", got)
+	}
+	if !got.Equal(staleAt) {
+		t.Logf("collector timestamp = %v, database timestamp = %v (precision conversion is expected)", got, staleAt)
+	}
+}
+
+func TestPresyncCollector_ExplicitContentPathMismatch(t *testing.T) {
+	pool := rokutest.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	const programID int64 = 6800002
+	seedPresyncReservation(t, pool, programID, time.Now().Add(time.Hour), 30*time.Minute)
+	contentPath, err := json.Marshal(map[string]string{"contentPath": "custom/program.m2ts"})
+	if err != nil {
+		t.Fatalf("marshalling content path override: %v", err)
+	}
+	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
+		Site: testSite, ProgramID: programID, Overrides: contentPath,
+	}); err != nil {
+		t.Fatalf("upserting content path override: %v", err)
+	}
+	seedObservedSchedule(t, pool, programID, mirakc.Options{
+		Priority:    10,
+		ContentPath: stringPtr("other/program.m2ts"),
+	}, []string{mirakc.ProgramTag(programID)})
+	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
+		t.Fatalf("marking schedule snapshot: %v", err)
+	}
+
+	c := NewPresyncCollector(pool, testSite)
+	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "options"}); got != 1 {
+		t.Errorf("content path mismatch options = %v, want 1", got)
+	}
+}
+
+func TestPresyncCollector_ReMaterializationReevaluatesCurrentOptions(t *testing.T) {
+	pool := rokutest.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	const programID int64 = 6800005
+	seedPresyncReservation(t, pool, programID, time.Now().Add(time.Hour), 30*time.Minute)
+	seedObservedSchedule(t, pool, programID, mirakc.Options{Priority: 10}, []string{mirakc.ProgramTag(programID)})
+	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
+		t.Fatalf("marking schedule snapshot: %v", err)
+	}
+	c := NewPresyncCollector(pool, testSite)
+	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "options"}); got != 0 {
+		t.Fatalf("initial options mismatch = %v, want 0", got)
+	}
+
+	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE site = $1 AND program_id = $2`, testSite, programID); err != nil {
+		t.Fatalf("deleting reservation: %v", err)
+	}
+	if _, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{Site: testSite, ProgramID: programID}); err != nil {
+		t.Fatalf("recreating reservation: %v", err)
+	}
+	overrides, err := json.Marshal(map[string]int{"priority": 11})
+	if err != nil {
+		t.Fatalf("marshalling priority override: %v", err)
+	}
+	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
+		Site: testSite, ProgramID: programID, Overrides: overrides,
+	}); err != nil {
+		t.Fatalf("upserting priority override: %v", err)
+	}
+
+	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "options"}); got != 1 {
+		t.Errorf("re-materialized options mismatch = %v, want 1", got)
+	}
+}
+
+// DB query が失敗したときは pending / snapshot を 0 として出さず、専用の
+// エラーカウンタだけを出す。既存 BacklogCollector と同じ沈黙しない契約。
+func TestPresyncCollector_QueryFailure(t *testing.T) {
+	pool := rokutest.SetupDB(t)
+	c := NewPresyncCollector(pool, testSite)
+	pool.Close()
+
+	text := gatherText(t, c)
+	if strings.Contains(text, "rokuban_presync_pending") {
+		t.Error("query failure must not report presync_pending as zero")
+	}
+	if strings.Contains(text, "rokuban_snapshot_last_success_timestamp_seconds") {
+		t.Error("query failure must not report snapshot timestamp")
+	}
+	if !strings.Contains(text, "rokuban_presync_scrape_errors_total") {
+		t.Error("presync scrape error counter was not reported")
+	}
+}
+
+func seedPresyncReservation(t *testing.T, pool *pgxpool.Pool, programID int64, startAt time.Time, duration time.Duration) {
+	t.Helper()
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
+		Site:        testSite,
+		ProgramID:   programID,
+		Title:       "presync test",
+		StartAt:     startAt,
+		DurationMs:  duration.Milliseconds(),
+		NetworkID:   32678,
+		ServiceID:   5168,
+		ChannelType: "GR",
+		Channel:     "27",
+		EventID:     int32(programID % 100000),
+		ServiceName: "テストチャンネル",
+	}); err != nil {
+		t.Fatalf("upserting program snapshot: %v", err)
+	}
+	if _, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
+		Site: testSite, ProgramID: programID,
+	}); err != nil {
+		t.Fatalf("creating reservation: %v", err)
+	}
+}
+
+func seedObservedSchedule(t *testing.T, pool *pgxpool.Pool, programID int64, options mirakc.Options, tags []string) {
+	t.Helper()
+	optionsJSON, err := json.Marshal(options)
+	if err != nil {
+		t.Fatalf("marshalling observed options: %v", err)
+	}
+	if err := sqlcgen.New(pool).UpsertScheduleSync(context.Background(), sqlcgen.UpsertScheduleSyncParams{
+		Site:      testSite,
+		ProgramID: programID,
+		State:     mirakc.ScheduleStateScheduled,
+		Options:   optionsJSON,
+		Tags:      tags,
+	}); err != nil {
+		t.Fatalf("upserting observed schedule: %v", err)
+	}
+}
+
 // seedIngestFor は既存の record_sync に対応する録画に原本アセットを追加する。
 func seedIngestFor(t *testing.T, pool *pgxpool.Pool, recordID string) {
 	t.Helper()
@@ -293,6 +542,44 @@ func gaugeValue(t *testing.T, c prometheus.Collector, name string) float64 {
 	t.Fatalf("metric %q was not collected", name)
 	return 0
 }
+
+func labeledGaugeValue(t *testing.T, c prometheus.Collector, name string, labels map[string]string) float64 {
+	t.Helper()
+	ch := make(chan prometheus.Metric, 16)
+	c.Collect(ch)
+	close(ch)
+
+	for m := range ch {
+		if !strings.Contains(m.Desc().String(), `"`+name+`"`) {
+			continue
+		}
+		var pb dto.Metric
+		if err := m.Write(&pb); err != nil {
+			t.Fatalf("writing metric %q: %v", name, err)
+		}
+		if pb.Gauge == nil {
+			t.Fatalf("metric %q is not a gauge", name)
+		}
+		gotLabels := make(map[string]string, len(pb.Label))
+		for _, label := range pb.Label {
+			gotLabels[label.GetName()] = label.GetValue()
+		}
+		matches := true
+		for key, want := range labels {
+			if gotLabels[key] != want {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return pb.Gauge.GetValue()
+		}
+	}
+	t.Fatalf("metric %q with labels %v was not collected", name, labels)
+	return 0
+}
+
+func stringPtr(v string) *string { return &v }
 
 // gatherText は Collect の結果を Prometheus の text format にして返す。
 func gatherText(t *testing.T, c prometheus.Collector) string {

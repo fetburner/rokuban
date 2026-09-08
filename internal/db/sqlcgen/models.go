@@ -284,6 +284,11 @@ type ScheduleSync struct {
 	ObservedAt   time.Time
 }
 
+type ScheduleSyncSnapshot struct {
+	Site       string
+	SnapshotAt time.Time
+}
+
 type StorageSync struct {
 	Root           string
 	Path           string

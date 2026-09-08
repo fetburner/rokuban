@@ -47,6 +47,9 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_circuit_breaker_tripped{site,breaker}` | Gauge | **いま止まっているか**（1 = 発動中）。ラッチなのでアラートはこちら。`breaker="delete_reconcile"` は site が空文字列 |
 | `rokuban_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に完走したパスの時刻 |
 | `rokuban_reconcile_start_delayed{site}` | Gauge | **開始時刻を過ぎたのに録画が始まっていない予約数**。収束すればゼロに戻る |
+| `rokuban_presync_pending{site,reason}` | Gauge（DB） | 開始前〜録画中の desired reservation と observed schedule の未収束数。`reason="missing"` は schedule 不在、`reason="options"` は priority / program tag / 明示 `contentPath` の不一致。skip と終了済みは除外する |
+| `rokuban_snapshot_last_success_timestamp_seconds{site}` | Gauge（DB） | `schedule_sync` の全量 upsert + stale 削除 + marker 更新を同一トランザクションでコミットした最後の時刻。未確立は 0。`presync_pending` と対で観測不能を判定する |
+| `rokuban_presync_scrape_errors_total{site}` | Counter（DB） | presync collector の DB 読み取りまたは observed options の解釈に失敗した回数。失敗時は pending / snapshot を 0 として報告しない |
 | `rokuban_ruler_pass_duration_seconds` | Histogram | ruler 1 パスの所要時間（下記 ruler） |
 | `rokuban_ruler_reservations_total{action}` | Counter | ruler が作成/更新/削除した予約数（下記 ruler） |
 | `rokuban_ruler_circuit_breaker_trips_total` | Counter | 大量削除ブレーカーの発動遷移回数（下記 ruler） |
@@ -124,9 +127,17 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 
 3 番目が k8s 特有の落とし穴。`PeriodicJobs` はリーダーだけが投入するので、worker が 0 にスケールすると誰も投入しない（[データ層](../data.md) §2）。`rokuban enqueue` を叩く CronJob が設定されているかを最初に疑う。
 
-**未解決: 1 番目はロール分割（KEDA ScaledJob）の構成では機能しない。** `rokuban_*_last_pass_timestamp_seconds` は**プロセス内のゲージ**である。ジョブを走らせたプロセスは 1 件消化して終了する（`--once`）ので、その値を scrape できる窓が実質的に無い。常駐している Pod（api / notifier / watcher / streamer）はそのジョブを一度も走らせないので、**常に 0 を返す**。kind で実測した。判定 1〜5 を通した後の api Pod で、`reconcile` / `ruler` / `sweep` の 3 つとも `0` だった。
+`rokuban_reconcile_last_pass_timestamp_seconds` は引き続きプロセス内の補助観測であり、
+KEDA ScaledJob の `--once` では scrape 窓が無い。予約同期の鮮度には、DB-backed の
+`rokuban_snapshot_last_success_timestamp_seconds{site}` を使う。
+常駐 Pod（api / notifier / watcher / streamer）や別の worker が scrape しても、同じ DB
+の値になる。
+reconciler のジョブが未投入・未起動・途中失敗のどの場合も、最後に確定した snapshot
+からの経過時間として見える。
 
-したがってこの構成では、**鮮度の監視は 2 番目・3 番目（DB を引く側）でしか成り立たない**。`river_job` の `state` と `finalized_at` は残るので、そちらから鮮度を出すことはできる（DB を引くゲージにすればどのロールが scrape されても同じ値になる。§エンドポイントの「2 種類の使い分け」）。**プロセス内ゲージを DB ゲージに移すかどうかは設計判断なので、ここでは形を決めていない。**
+`rokuban_presync_pending` は snapshot の鮮度を代用しない。snapshot が古い / 0 のときは
+「未同期」と断定せず、まず観測不能として扱う。freshness と pending の判定順、常駐
+構成と ScaledJob 構成の収集元・復旧条件は [アラート設計](alerts.md) にまとめる。
 
 手動で走らせたいときは `rokuban enqueue <job>`。既に待機中なら投入せず終了コード 0 を返すので、cron から重ねて叩いても安全。
 

@@ -410,7 +410,8 @@ func installSignalHandler(parent context.Context) (context.Context, context.Canc
 // `defer pool.Close()` が閉じた pool を使い続けることになる。現在の実装は
 // error return がすべて `eg.Go` より前にあるのでこの形にはならない。
 func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, bound []config.MirakcSite, pool *pgxpool.Pool, eg *errgroup.Group) (*http.Server, error) {
-	backlog := newBoundBacklogCollectors(pool, bound)
+	metricCollectors := newBoundBacklogCollectors(pool, bound)
+	metricCollectors = append(metricCollectors, newConfiguredPresyncCollectors(pool, cfg.Registry())...)
 	routerCfg := api.RouterConfig{
 		AllowedHosts:       cfg.Server.AllowedHosts,
 		TrustForwardedHost: cfg.Server.TrustForwardedHost,
@@ -419,7 +420,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 		// site に束縛されない。bound ではなくレジストリ全体を渡すことで、
 		// 1 プロセスがレジストリの全 site を処理できる。
 		Sites:           registryNames(cfg.Registry()),
-		MetricsRegistry: metrics.NewRegistry(backlog...),
+		MetricsRegistry: metrics.NewRegistry(metricCollectors...),
 		// GET /api/capabilities に出すオプション機能。フロントはこれを見て
 		// ライブへの導線を出すかどうかを決める。
 		//

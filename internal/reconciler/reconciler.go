@@ -28,6 +28,7 @@ import (
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reservation"
+	"github.com/fetburner/rokuban/internal/schedulesync"
 )
 
 // broadcastEventIDUniquenessWindow は ARIB TR-B14 第四編 8.2.1 が同一サービスの
@@ -61,7 +62,7 @@ type Config struct {
 func defaultConfig() Config {
 	return Config{
 		MaxRecreatesPerPass: 20,
-		DefaultPriority:     10,
+		DefaultPriority:     schedulesync.DefaultPriority,
 		StartDelayGrace:     3 * time.Minute,
 	}
 }
@@ -122,8 +123,6 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 		return fmt.Errorf("listing mirakc schedules: %w", err)
 	}
 
-	sweepTime := time.Now()
-
 	if err := r.observeSchedules(ctx, schedules); err != nil {
 		return fmt.Errorf("observing schedules: %w", err)
 	}
@@ -145,13 +144,6 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 	deleted := r.deleteSchedules(ctx, toDelete, tripped, totalLoss)
 
 	recreated, updateDiff, stateGuarded, limitCarriedOver := r.recreateChanged(ctx, reservations, observedByProgram)
-
-	if err := q.DeleteStaleScheduleSyncs(ctx, sqlcgen.DeleteStaleScheduleSyncsParams{
-		Site:       r.site,
-		ObservedAt: sweepTime,
-	}); err != nil {
-		slog.Error("reconciler: cleaning stale schedule_syncs", "err", err)
-	}
 
 	if err := r.recordNeverScheduledOutcome(ctx, reservations, schedules, now); err != nil {
 		slog.Error("reconciler: recording never-scheduled outcome", "err", err)
@@ -360,7 +352,21 @@ func totalLossSample(toDelete []mirakc.Schedule) breaker.Sample {
 }
 
 func (r *Reconciler) observeSchedules(ctx context.Context, schedules []mirakc.Schedule) error {
-	q := sqlcgen.New(r.pool)
+	// schedule_sync の全量 upsert、stale 削除、snapshot marker の更新は 1 つの
+	// トランザクションに束ねる。途中で stale 削除だけ失敗したのに marker が
+	// 新しくなると、collector が不完全な observed を「新鮮」と誤認するため。
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning schedule snapshot transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := sqlcgen.New(tx)
+	sweepTime, err := q.ScheduleSyncSweepMark(ctx)
+	if err != nil {
+		return fmt.Errorf("getting schedule snapshot mark: %w", err)
+	}
+
 	for _, s := range schedules {
 		optionsJSON, err := json.Marshal(s.Options)
 		if err != nil {
@@ -391,6 +397,19 @@ func (r *Reconciler) observeSchedules(ctx context.Context, schedules []mirakc.Sc
 		}); err != nil {
 			return fmt.Errorf("upserting schedule_sync for program %d: %w", s.Program.ID, err)
 		}
+	}
+
+	if err := q.DeleteStaleScheduleSyncs(ctx, sqlcgen.DeleteStaleScheduleSyncsParams{
+		Site:       r.site,
+		ObservedAt: sweepTime,
+	}); err != nil {
+		return fmt.Errorf("cleaning stale schedule_syncs: %w", err)
+	}
+	if err := q.UpsertScheduleSyncSnapshot(ctx, r.site); err != nil {
+		return fmt.Errorf("updating schedule snapshot marker: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing schedule snapshot: %w", err)
 	}
 	return nil
 }
@@ -496,10 +515,7 @@ func effectivePriority(defaultPriority int, opts reservation.Options) int {
 // 載せるようになったらこの同値が崩れ、テンプレート生成値が差分対象に混ざって
 // #19 が潰した churn が戻る。
 func explicitContentPath(opts reservation.Options) (string, bool) {
-	if opts.ContentPath == nil || *opts.ContentPath == "" {
-		return "", false
-	}
-	return contentpath.SanitizeContentPath(*opts.ContentPath), true
+	return schedulesync.ExplicitContentPath(opts)
 }
 
 // buildContentPath は録画ファイルの content_path を組み立てる。
@@ -646,48 +662,25 @@ func (r *Reconciler) recreateChanged(
 			// 存在しない = create ループの対象（今パスで新規作成 or 未検出）。
 			continue
 		}
-		if !mirakc.IsOurs(s.Tags) {
-			// 自分が作った schedule だけ触る。tag のない schedule は外部産で、
-			// 既存の delete ループの ours 判定と揃えてある。
-			continue
-		}
-
-		wantPriority := effectivePriority(r.cfg.DefaultPriority, d.opts)
-		priorityMismatch := s.Options.Priority != wantPriority
-		// tag の programId が予約とずれていたら再作成する。tags は ingest が
-		// record と予約を突き合わせるのに使うため、ずれたまま残ると録画が別の
-		// 予約に紐付く。
-		//
-		// tag が読めないケースはここに来ない（上の IsOurs が弾いている）ので、
-		// programID の比較だけでよい。
-		tagProgramID, _ := mirakc.FindProgramTag(s.Tags)
-		tagMismatch := tagProgramID != d.res.ProgramID
-
-		// contentPath は明示指定（overrides.contentPath）があるときだけ比較する。
-		// 比較の左辺は observed の生値（再サニタイズしない） — POST する値
-		// （wantContentPath）と比較する値を同一にすることで、SanitizeContentPath
-		// の冪等性に依存せず 1 パスで収束する。明示指定が無いとき（reset された
-		// 場合を含む）は何も比較しない。テンプレート展開を desired として計算する
-		// 式をここに書くと #19 が潰した churn が戻る。
-		wantContentPath, hasExplicitContentPath := explicitContentPath(d.opts)
-		var observedContentPath string
-		if s.Options.ContentPath != nil {
-			observedContentPath = *s.Options.ContentPath
-		}
-		contentPathMismatch := hasExplicitContentPath && observedContentPath != wantContentPath
-
-		if !priorityMismatch && !tagMismatch && !contentPathMismatch {
+		diff, owned := schedulesync.CompareOptions(
+			d.res.ProgramID,
+			d.opts,
+			r.cfg.DefaultPriority,
+			s.Options,
+			s.Tags,
+		)
+		if !owned || !diff.Any() {
 			continue
 		}
 
 		var reasons []string
-		if priorityMismatch {
+		if diff.Priority {
 			reasons = append(reasons, "priority")
 		}
-		if tagMismatch {
+		if diff.Tag {
 			reasons = append(reasons, "tag")
 		}
-		if contentPathMismatch {
+		if diff.ContentPath {
 			reasons = append(reasons, "content_path")
 		}
 		candidates = append(candidates, recreateCandidate{d: d, observed: s, reason: strings.Join(reasons, ",")})

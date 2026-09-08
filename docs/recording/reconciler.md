@@ -4,6 +4,12 @@
 
 `reservations`（desired）と `schedule_sync`（observed: `GET /api/recording/schedules` の観測結果）の差分を POST/DELETE で消す、レベルトリガーの宣言的同期ループ。
 
+`schedule_sync` の全量 upsert、今回返らなかった stale 行の削除、サイト単位の
+`schedule_sync_snapshots` マーカー更新は同一トランザクションで確定する。マーカーは
+「GET が返った」だけでは進まず、DB に整合した observed snapshot が残ったときだけ
+進む。これにより reconciler が ScaledJob の `--once` で動く構成でも、常駐プロセスの
+DB-backed `/metrics` から観測鮮度を見られる。
+
 - **tags 対応付け**: mirakc schedule の `tags` に programId を埋め込む（例: `program:1234`）。手動で mirakc に入れられた schedule との判別もタグで可能。programId は EPG にある間ずっと安定している。reservations 行は ruler の判断で削除・再作成されることがあるため、tag には reservations 側の列ではなく programId を使う（不変条件 9「導出器が作るキーを宛先にしない」）
 - **contentPath 生成**: `recording.basedir` 相対パス必須。ファイル名テンプレート（[contentpath.md](contentpath.md)）の展開もここで行う。生成はテンプレートから初回作成時のみ行い、以後の再作成（後述の差分反映）は、明示 override（`overrides.contentPath`）があればその値、無ければ observed（mirakc に登録済みの schedule）の contentPath を引き継ぐことで実質固定される（`reservations.base` に生成値を書き戻すコードは無い）
 - **冪等**: 何度落ちても再実行で収束する。時刻精度もプロセス生存性も要求されない

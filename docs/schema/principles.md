@@ -4,10 +4,10 @@
 
 1. **desired / observed の分離**（k8s の spec/status と同型）
    - desired: `reservations`（ruler / api が書く「あるべき姿」）
-   - observed: `schedule_sync` / `record_sync`（mirakc の観測結果。短命・使い捨て）
+   - observed: `schedule_sync` / `record_sync`（mirakc の観測結果。短命・使い捨て）。`schedule_sync_snapshots` は全量観測のコミット鮮度だけを持つマーカー
    - reconciler / watcher はこの 2 つの差分だけを見る
 2. **mirakc 固有概念の隔離**（不変条件 7）
-   - mirakc の形をしてよいのは短命な導出状態（`reservations` の base、`schedule_sync`、`record_sync`）だけ
+   - mirakc の形をしてよいのは短命な導出状態（`reservations` の base、`schedule_sync`、`record_sync`）だけ。`schedule_sync_snapshots` は mirakc の予約を写さず、全量観測の鮮度だけを持つ
    - 永続テーブル（`recordings` / `media_assets` / `drop_stats`）に mirakc の ID や enum を**構造として**持ち込まない。mirakc の record id は `record_sync` にのみ存在し、`record_sync.recording_id` が永続側への片方向ポインタになる
    - 例外: 品質イベント（`recording.failed` の理由等）は履歴として価値があるため、**構造化カラムではなく jsonb の自由形式ログ**として保持する（システムのロジックはその中身に依存しない）
 3. **コミット = DB 行**（不変条件 3）: ファイルの公開は `media_assets` 行の INSERT。rename のアトミック性に依存しない
@@ -18,7 +18,7 @@
    - そのため `recordings` の永続的な放送イベント identity は、開始時刻を加えた `(site, network_id, service_id, event_id, program_start_at)` とする。
    - [設定](../configuration.md)は「多拠点が現実化したら `mirakcs:` リストで互換拡張」と定めており、その際のスキーマ波及を避けるため **mirakc を指すすべてのテーブルに `site` 列を最初から持つ**。理由は識別子が曖昧だからではなく、**行の存在と状態が site ごとの観測だから**である（同じ放送でも A では録画中、B では未予約になりうる）
    - `site` は設定ファイルで定義するサイト名（`config.mirakcs[].site`。各要素必須で既定値は無い）。サイトのレジストリは設定であり、DB に sites テーブルは作らない
-   - site を持つのは reservations / schedule_sync / record_sync / recordings（+ EPG プロジェクション）。media_assets / drop_stats は中央ストレージの台帳なので持たない
+   - site を持つのは reservations / schedule_sync / schedule_sync_snapshots / record_sync / recordings（+ EPG プロジェクション）。media_assets / drop_stats は中央ストレージの台帳なので持たない
    - **検索も同じ観測側に立つ。** 検索結果の programId は識別子ではなく存在のスコープなので、同一放送が複数 site でマッチすれば行ごとに site を持つ複数行を返し、畳まない
    - **API の資源同定は判定基準で決める**（[api/rest.md](../api/rest.md) §エンドポイント設計の規約）。site をパスに置くかどうかは、件数（単体か一覧か）でも資源の種類名でもなく、**その資源の存在・状態が特定 1 つの site（mirakc インスタンス）の観測に閉じているか**で決める。**判定の入力はその資源があるべき形であり、現行の実装が返すレスポンス形ではない**（現状の形を根拠に現状のパスを正当化すると、判定基準が何も条件しなくなる）。**集合を返す操作もこれに従う**: 要素の存在が site に閉じるなら、一覧であっても site をパスに置く。mirakc の record や、その site の EPG に存在するかで決まる programId はこれに該当し、単体でも一覧でも site をパスに含める。番組・意図・上書きを指すパスは `/api/sites/{site}/programs/{programId}` の形を取る（TanStack Query のクエリキー・SSE の invalidate 単位もサイトごとに階層化される）。同じ種類の資源でも、実体が site に閉じない場合（site 非依存で動くワーカーが書く行など）は種類名では判定せず、その資源だけを site 無しにする。**唯一の例外は、複数 site の要素を意図して 1 応答に集約する場合**——api が全 site を扱えること（不変条件 1）を使った明示的な設計で、要素自体は site に閉じていても site をパスに置かない。例外に入れてよいのは、その資源が**構造的に** site をまたぐ場合に限る。運用上あると便利、は理由にならない。`GET /api/reservations` / `GET /api/capacity/overages` がこの形（[api/rest.md](../api/rest.md)「録画一覧」の「既定は全サイトを返す」）。検索がこの例外に当たる理由と未解決は同節に書く。site に束縛されない資源（rokuban 採番の `recordings.id` 等）は、単体か一覧かによらず site をパスに固定せず、絞り込み条件として指定するか結果本体が運ぶ。導出行（`reservations`）は書き込みの宛先にしない —— 意図（`program_intents`）・上書き（`program_overrides`）は `(site, programId)` を自身のキーとして書く。`reservations` の導出の書き手は ruler だけ（例外はルール削除 API の同期削除 1 本。[reservations.md](reservations.md) §3 冒頭）
 6. **導出値と不可逆な事実を分ける**（CLAUDE.md 不変条件 9）

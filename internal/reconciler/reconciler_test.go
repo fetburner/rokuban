@@ -257,6 +257,48 @@ func TestReconciler_CreatesSchedule(t *testing.T) {
 	}
 }
 
+// schedule_sync の全量 upsert、stale 削除、snapshot marker 更新が 1 パスで確定
+// することを固定する。marker が DB にあるだけではなく、空の全量 snapshot でも
+// stale な observed 行を消したあとに更新される必要がある。
+func TestReconciler_CommitsScheduleSnapshotMarkerWithStaleSweep(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	q := sqlcgen.New(pool)
+	if err := q.UpsertScheduleSync(ctx, sqlcgen.UpsertScheduleSyncParams{
+		Site:      "default",
+		ProgramID: 6800003,
+		State:     mirakc.ScheduleStateScheduled,
+		Options:   json.RawMessage(`{"priority":10}`),
+		Tags:      []string{mirakc.ProgramTag(6800003)},
+	}); err != nil {
+		t.Fatalf("seeding stale schedule_sync: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE schedule_sync SET observed_at = now() - interval '1 minute'`); err != nil {
+		t.Fatalf("aging schedule_sync row: %v", err)
+	}
+
+	rec := reconciler.New("default", mirakc.NewClient(srv.URL, nil), pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if _, err := q.GetScheduleSyncSnapshot(ctx, "default"); err != nil {
+		t.Fatalf("schedule snapshot marker was not committed: %v", err)
+	}
+	var rows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schedule_sync WHERE site = 'default'`).Scan(&rows); err != nil {
+		t.Fatalf("counting schedule_sync rows: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("stale schedule_sync rows = %d, want 0 after empty full snapshot", rows)
+	}
+}
+
 // TestReconciler_DeletesOrphanedSchedule は、desired にまだ生きている予約が
 // 残っている状態で（= 全損シグネチャに当たらない）、それとは別の stale な
 // schedule が普通に削除されることを確かめる。

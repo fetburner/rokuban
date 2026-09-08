@@ -175,6 +175,18 @@ func newBoundBacklogCollectors(pool *pgxpool.Pool, bound []config.MirakcSite) []
 	return collectors
 }
 
+// newConfiguredPresyncCollectors は設定された全 site の schedule 同期状態を
+// 1 site 1 collector で登録する。presync は mirakc へ問い合わせず DB の
+// schedule_sync / snapshot marker を読むため、プロセスの --sites 束縛とは独立して
+// 常駐プロセスの /metrics から全 site を観測できる必要がある（issue #680）。
+func newConfiguredPresyncCollectors(pool *pgxpool.Pool, registry []config.MirakcSite) []prometheus.Collector {
+	collectors := make([]prometheus.Collector, 0, len(registry))
+	for _, s := range registry {
+		collectors = append(collectors, metrics.NewPresyncCollector(pool, s.Site))
+	}
+	return collectors
+}
+
 // resolveSiteFlag は `--site` フラグとレジストリから対象サイト名を決める。
 // `enqueue`（site 束縛ジョブ）・`rescue`・`shadow-diff` の 3 コマンドが共有する
 // 解決規則（issue #183 の「含むもの」6 で enqueue に導入、issue #533 で

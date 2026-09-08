@@ -27,3 +27,32 @@ ON CONFLICT (site, program_id) DO UPDATE SET
 -- name: DeleteStaleScheduleSyncs :exec
 DELETE FROM schedule_sync
 WHERE site = $1 AND observed_at < $2;
+
+-- 全量 snapshot の基準時刻を DB の時計から取る。schedule_sync の upsert も
+-- snapshot marker の更新も同じトランザクションに入れるため、アプリの時計の
+-- skew で今回投入した行を stale として消すことがない。
+-- name: ScheduleSyncSweepMark :one
+SELECT now()::timestamptz AS mark;
+
+-- schedule_sync の upsert と stale 削除が同一トランザクションで完了したときだけ
+-- 呼び出し側が最後に実行する。marker の時刻は「GET が返った」ではなく、DB に
+-- 全量 snapshot が確定した時刻を表す。
+-- name: UpsertScheduleSyncSnapshot :exec
+INSERT INTO schedule_sync_snapshots (site, snapshot_at)
+VALUES ($1, now())
+ON CONFLICT (site) DO UPDATE SET
+    snapshot_at = EXCLUDED.snapshot_at;
+
+-- marker がまだ一度も確定していないサイトは pgx.ErrNoRows になる。collector は
+-- これを DB 障害とは扱わず、snapshot_last_success_timestamp を 0 として出す。
+-- name: GetScheduleSyncSnapshot :one
+SELECT snapshot_at
+FROM schedule_sync_snapshots
+WHERE site = $1;
+
+-- presync collector が scrape ごとに現在の observed を読み直すための全量一覧。
+-- name: ListScheduleSyncsBySite :many
+SELECT site, program_id, state, options, tags, failed_reason, observed_at
+FROM schedule_sync
+WHERE site = $1
+ORDER BY program_id;

@@ -611,11 +611,9 @@ var (
 
 // NewRegistry は Rokuban のメトリクスを登録した registry を返す。
 //
-// backlog は束縛サイトごとの BacklogCollector（未 ingest record の滞留量を
-// scrape のたびに DB から取り直すコレクタ）。1 プロセスが N site を束縛できる
-// ため（issue #532）可変長引数にした --- 0 site（中央プロセス）は
-// `NewRegistry()`、N site 束縛は束縛サイトの数だけ渡す
-// （cmd/rokuban.newBoundBacklogCollectors）。
+// dbCollectors は scrape のたびに DB から値を取り直す collector 群。未 ingest
+// backlog はプロセスの site 束縛ごと、presync は設定された全 site ごとに渡す。
+// 1 プロセスが N site を束縛できるため（issue #532）可変長引数にした。
 //
 // **nil 要素はスキップする。** これは「具体型 nil を interface に入れると
 // 非 nil interface になる」という Go の罠（Register が nil レシーバの
@@ -626,7 +624,7 @@ var (
 // だけで、"無い" を表すのに nil の *BacklogCollector を使わない）。ここでの
 // nil スキップは、テスト等が明示的に `NewRegistry(nil)` を渡す（本物の nil
 // interface 値）呼び出し規約を壊さないための後方互換でしかない。
-func NewRegistry(backlog ...prometheus.Collector) *prometheus.Registry {
+func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 	reg := prometheus.NewRegistry()
 
 	reg.MustRegister(
@@ -697,11 +695,11 @@ func NewRegistry(backlog ...prometheus.Collector) *prometheus.Registry {
 		LiveIdleGCLastPass,
 	)
 
-	for _, b := range backlog {
-		if b == nil {
+	for _, collector := range dbCollectors {
+		if collector == nil {
 			continue
 		}
-		reg.MustRegister(b)
+		reg.MustRegister(collector)
 	}
 	return reg
 }
