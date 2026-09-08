@@ -70,6 +70,50 @@ func makeTSDataFill(packets int, fill byte) []byte {
 	return data
 }
 
+// ingestTestFile は ingest.go の ingestFile を差し替えるテストダブル。
+// Work は正常系でも Close を 2 回呼ぶ（明示 Close 1 回 + 早期 return 用 defer
+// 1 回。*os.File の 2 回目の Close は ErrClosed を返すだけで無害）ので、
+// onClose は 2 回目を鳴らさないよう closed で冪等にする。
+type ingestTestFile struct {
+	file     *os.File
+	syncErr  error
+	closeErr error
+	onSync   func()
+	onClose  func()
+	closed   bool
+}
+
+func (f *ingestTestFile) Write(p []byte) (int, error) {
+	return f.file.Write(p)
+}
+
+func (f *ingestTestFile) Sync() error {
+	if f.syncErr != nil {
+		return f.syncErr
+	}
+	if err := f.file.Sync(); err != nil {
+		return err
+	}
+	if f.onSync != nil {
+		f.onSync()
+	}
+	return nil
+}
+
+func (f *ingestTestFile) Close() error {
+	err := f.file.Close()
+	if !f.closed {
+		f.closed = true
+		if f.onClose != nil {
+			f.onClose()
+		}
+	}
+	if err != nil {
+		return err
+	}
+	return f.closeErr
+}
+
 func TestIngestWorker_FullTransfer(t *testing.T) {
 	tsData := makeTSData(100)
 
@@ -458,6 +502,192 @@ func TestIngestWorker_SizeMismatch(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "size mismatch") {
 		t.Errorf("expected 'size mismatch' error, got: %v", err)
+	}
+}
+
+// TestIngestWorker_PersistsBeforeCommitAndDelete は、原本ファイルの
+// Sync/Close が終わるより前に media_assets 行が存在せず、mirakc の
+// DeleteRecord 時点では存在することをイベント列の完全一致で検証する。
+// これは転送途中に定期 fsync を差し込む変異（S3 系 FUSE 上で実体化を増やす
+// 退行）も落とす --- 途中の fsync がイベント列を狂わせるため。
+func TestIngestWorker_PersistsBeforeCommitAndDelete(t *testing.T) {
+	tsData := makeTSData(20)
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	recordingID := insertTestRecording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, "rec-durable-order")
+
+	var eventsMu sync.Mutex
+	var events []string
+	// snapshot は「呼ばれた時点の media_assets 行数」を name=count の形で
+	// events へ append するクロージャを返す。fsync / Close / DeleteRecord の
+	// 各フックから同じ形で呼び、コミット前後の可視性を 1 実装で検査する。
+	snapshot := func(name string) func() {
+		return func() {
+			var count int
+			if err := pool.QueryRow(context.Background(),
+				"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
+			).Scan(&count); err != nil {
+				t.Errorf("counting media_assets (%s): %v", name, err)
+				return
+			}
+			eventsMu.Lock()
+			events = append(events, fmt.Sprintf("%s=%d", name, count))
+			eventsMu.Unlock()
+		}
+	}
+
+	srv := newInstrumentedIngestServer(t, tsData, "test/durable-order.m2ts", snapshot("delete-assets"))
+
+	mediaDir := t.TempDir()
+	originalOpenFile := openIngestFile
+	t.Cleanup(func() { openIngestFile = originalOpenFile })
+
+	openIngestFile = func(path string) (ingestFile, error) {
+		file, err := os.Create(path)
+		if err != nil {
+			return nil, err
+		}
+		return &ingestTestFile{
+			file:    file,
+			onSync:  snapshot("file-sync-assets"),
+			onClose: snapshot("file-close-assets"),
+		}, nil
+	}
+
+	w := &IngestWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		Pool:          pool,
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
+	}
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-durable-order"},
+	}
+
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	eventsMu.Lock()
+	gotEvents := slices.Clone(events)
+	eventsMu.Unlock()
+	wantEvents := []string{
+		"file-sync-assets=0",
+		"file-close-assets=0",
+		"delete-assets=1",
+	}
+	if !slices.Equal(gotEvents, wantEvents) {
+		t.Errorf("operation events = %v, want %v", gotEvents, wantEvents)
+	}
+}
+
+// TestIngestWorker_DurabilityFailuresKeepEdgeRecord は、原本ファイルの
+// Sync/Close が失敗した場合に media_assets へ登録されず mirakc の
+// DeleteRecord も呼ばれないこと、その後実装本来の opener に戻して再試行すると
+// 正しい原本が公開されることを確認する。
+func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
+	injectedErr := errors.New("injected durability failure")
+	tests := []struct {
+		name      string
+		fileSync  bool
+		fileClose bool
+	}{
+		{name: "file Sync", fileSync: true},
+		{name: "file Close", fileClose: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tsData := makeTSData(20)
+			pool := setupTestPool(t)
+			if pool == nil {
+				return
+			}
+			recordingID := insertTestRecording(t, pool)
+			insertTestRecordSync(t, pool, recordingID, "rec-durable-failure")
+
+			var deleteAttempts atomic.Int32
+			srv := newInstrumentedIngestServer(t, tsData, "test/durable-failure.m2ts", func() {
+				deleteAttempts.Add(1)
+			})
+
+			mediaDir := t.TempDir()
+			originalOpenFile := openIngestFile
+			t.Cleanup(func() { openIngestFile = originalOpenFile })
+
+			openIngestFile = func(path string) (ingestFile, error) {
+				file, err := os.Create(path)
+				if err != nil {
+					return nil, err
+				}
+				var syncErr, closeErr error
+				if tt.fileSync {
+					syncErr = injectedErr
+				}
+				if tt.fileClose {
+					closeErr = injectedErr
+				}
+				return &ingestTestFile{file: file, syncErr: syncErr, closeErr: closeErr}, nil
+			}
+
+			w := &IngestWorker{
+				MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+				Pool:          pool,
+				MediaDir:      mediaDir,
+				StallTimeout:  5 * time.Second,
+			}
+			job := &river.Job[IngestJobArgs]{
+				JobRow: &rivertype.JobRow{},
+				Args:   IngestJobArgs{Site: "default", RecordID: "rec-durable-failure"},
+			}
+
+			if err := w.Work(context.Background(), job); err == nil {
+				t.Fatal("first Work() error = nil, want injected durability failure")
+			}
+			var assetCount int
+			if err := pool.QueryRow(context.Background(),
+				"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
+			).Scan(&assetCount); err != nil {
+				t.Fatalf("counting media_assets after failed Work(): %v", err)
+			}
+			if assetCount != 0 {
+				t.Errorf("media_assets rows after failed Work() = %d, want 0", assetCount)
+			}
+			if got := deleteAttempts.Load(); got != 0 {
+				t.Errorf("DeleteRecord attempts after failed Work() = %d, want 0", got)
+			}
+
+			// 再試行では実装本来の opener に戻す。失敗した部分ファイルは os.Create
+			// が truncate し、正しい原本を最初から公開できることを確認する。
+			openIngestFile = originalOpenFile
+			if err := w.Work(context.Background(), job); err != nil {
+				t.Fatalf("retry Work() error: %v", err)
+			}
+
+			fullPath := filepath.Join(mediaDir, "sites", "default", "test", "durable-failure.m2ts")
+			gotData, err := os.ReadFile(fullPath)
+			if err != nil {
+				t.Fatalf("reading retried output file: %v", err)
+			}
+			if !bytes.Equal(gotData, tsData) {
+				t.Errorf("retried file content differs from the edge original")
+			}
+			if err := pool.QueryRow(context.Background(),
+				"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
+			).Scan(&assetCount); err != nil {
+				t.Fatalf("counting media_assets after retry: %v", err)
+			}
+			if assetCount != 1 {
+				t.Errorf("media_assets rows after retry = %d, want 1", assetCount)
+			}
+			if got := deleteAttempts.Load(); got != 1 {
+				t.Errorf("DeleteRecord attempts after retry = %d, want 1", got)
+			}
+		})
 	}
 }
 
@@ -1024,8 +1254,14 @@ func TestStallReader(t *testing.T) {
 // ingest コミット tx 内で recordings に焼くことをエンドツーエンドで確認する。
 
 // newFullTransferServer は「1 回で完走する」ingest 用のテストサーバーを返す。
-// 以下の 3 テストで共通の mirakc 差し替え。
+// newInstrumentedIngestServer の onDelete フック無し版（多数のテストで共通の
+// mirakc 差し替え）。
 func newFullTransferServer(t *testing.T, tsData []byte, contentPath string) *httptest.Server {
+	t.Helper()
+	return newInstrumentedIngestServer(t, tsData, contentPath, nil)
+}
+
+func newInstrumentedIngestServer(t *testing.T, tsData []byte, contentPath string, onDelete func()) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -1050,6 +1286,9 @@ func newFullTransferServer(t *testing.T, tsData []byte, contentPath string) *htt
 			_ = json.NewEncoder(w).Encode(record)
 
 		case r.Method == http.MethodDelete:
+			if onDelete != nil {
+				onDelete()
+			}
 			result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)

@@ -38,6 +38,19 @@ const (
 	connectRetryMaxDelay  = 5 * time.Second
 )
 
+// ingestFile は ingest の出力ファイルを抽象化する。os.File の全 API は
+// 必要ない。テストでは Sync / Close の失敗を注入して、失敗時に DB 登録と
+// エッジ原本削除へ進まないことを確認する。
+type ingestFile interface {
+	io.Writer
+	Sync() error
+	Close() error
+}
+
+var openIngestFile = func(path string) (ingestFile, error) {
+	return os.Create(path)
+}
+
 // IngestWorker は mirakc からの TS ファイル転送を行う River ワーカー。
 type IngestWorker struct {
 	river.WorkerDefaults[jobs.IngestJobArgs]
@@ -192,10 +205,13 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 		return fmt.Errorf("creating directory %s: %w", filepath.Dir(fullPath), err)
 	}
 
-	f, err := os.Create(fullPath)
+	f, err := openIngestFile(fullPath)
 	if err != nil {
 		return fmt.Errorf("creating file %s: %w", fullPath, err)
 	}
+	// 正常系では下で明示的に Close する。ここでの defer はエラーで早期
+	// return した経路の後始末専用で、正常系の二重 Close は *os.File なら
+	// ErrClosed を返すだけで無害なので捨てる。
 	defer func() { _ = f.Close() }()
 
 	counter := tsstat.NewCounter(f)
@@ -231,6 +247,17 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	if expectedLen >= 0 && offset != expectedLen {
 		return fmt.Errorf("size mismatch: written=%d expected=%d", offset, expectedLen)
 	}
+
+	// Linux では遅延した書き込みエラー（ENOSPC / I/O エラー）は Close() では
+	// 上がらず、fsync() でしか報告されない。offset はここまで転送できたバイト数を
+	// メモリ上で数えた値であって実際にディスクへ落ちたことの確認ではないので、
+	// 上の Content-Length 照合もこの種の失敗を素通りしてしまう。ここで fsync が
+	// 失敗したら DB へ登録せず、mirakc の record を保持して再試行させる。途中の
+	// 定期 fsync は行わない（S3 系 FUSE 上で転送途中の実体化を増やさないため）。
+	syncStarted := time.Now()
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("syncing file: %w", err)
+	}
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("closing file: %w", err)
 	}
@@ -241,7 +268,8 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	log.Info("ingest: transfer complete", "bytes", offset,
 		"drops", counter.TotalDrops(), "errors", counter.TotalErrors(),
 		"scrambled", counter.TotalScrambled(),
-		"pid_type_changes", counter.TypeChanges())
+		"pid_type_changes", counter.TypeChanges(),
+		"fsync_duration", time.Since(syncStarted))
 
 	recordIngestMetrics(offset, counter)
 

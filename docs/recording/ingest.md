@@ -95,7 +95,11 @@ River の at-least-once + 指数バックオフ。**ゼロから作り直す**�
 
 #### 層 3: 完全性検証とコミット
 
-pull 完了後に書き込みバイト数を HEAD の Content-Length と照合 → 一致で `media_assets` コミット（コミット = DB 行。部分ファイルは孤児として cleanup が回収）→ **mirakc 側の record 削除はコミット後のみ**。**HEAD が長さを返さない場合（`Content-Length` 不明）はこの照合をスキップしてそのままコミットする**（`ingest.go` の `expectedLen >= 0` ガード）。どこで落ちても最悪「もう一度 pull」で、データ喪失は構造的に起きない。
+pull 完了後に書き込みバイト数を HEAD の Content-Length と照合 → 一致したら宛先ファイルを `fsync` → `Close` → `media_assets` コミット（コミット = DB 行。部分ファイルは孤児として cleanup が回収）→ **mirakc 側の record 削除はコミット後のみ**。**HEAD が長さを返さない場合（`Content-Length` 不明）はこの照合をスキップしてそのまま fsync へ進む**（`ingest.go` の `expectedLen >= 0` ガード）。
+
+fsync を入れる理由は電源断ではなく、Linux では遅延した書き込みエラー（ENOSPC / I/O エラー）が `Close` では報告されず `fsync` でしか上がらないこと。書き込み済みバイト数（`offset`）はメモリ上で数えた値でしかないため、上の Content-Length 照合もこの種の失敗を素通りする。`fsync` か `Close` が失敗した場合は DB 登録も record 削除も行わず、ジョブを失敗させる。どこで落ちても最悪「もう一度 pull」で、データ喪失は構造的に起きない。
+
+未解決: ディレクトリエントリの永続化は扱っていない。ext4 / XFS ではファイルの `fsync` がジャーナルを commit するので新規作成したディレクトリエントリの永続化にも相乗りするが、それに依存しないバックエンド（FUSE 等）では未保証。
 
 運用上の主なリスクは**長時間の転送失敗でエッジのリングバッファが溜まり続ける**こと。`IngestWorker` 自体は River の既定の試行上限のままで、上限に達すると discard（dead-letter）されうる。それでも record が宙に浮かないのは、mirakc 側の record がコミット成功後にしか削除されない（上記のとおり）ため: discard された後も record_sweep（5 分周期の定期全量突き合わせ。[watcher.md](watcher.md) §3.3 の (c)）が同じ finished record を見つけ、`processRecord` が同一トランザクションで ingest ジョブを再投入し続けるからである。「未 ingest の record 総量」をメトリクス化してエッジのディスク残量と突き合わせてアラートする（[storage.md](../storage.md) のサイジング指針参照）。
 
