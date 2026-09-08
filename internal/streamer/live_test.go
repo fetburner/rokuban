@@ -103,6 +103,83 @@ func newFakeMirakcLiveServer(t *testing.T) (*httptest.Server, *fakeMirakcLiveSta
 	return srv, state
 }
 
+// scriptedMirakcLiveClient は上流の拒否とストリーム切断を同期的に観測する偽
+// mirakc クライアント。HTTP サーバーを使う偽 mirakc と違い、Close の記録が
+// response body の非同期な切断通知に依存しないので、退避完了と再試行の順序を
+// 固定できる。
+type scriptedMirakcLiveClient struct {
+	mu            sync.Mutex
+	failServiceID int64
+	failuresLeft  int
+	events        []string
+
+	// holdFailureUntil / holdEntered let a test deterministically sequence two
+	// concurrent callers onto the SAME session instead of relying on goroutine
+	// scheduling. When holdFailureUntil is non-nil, the failing response for
+	// failServiceID blocks until it is closed; holdEntered closes right before
+	// that wait starts, so a test can wait for it, then start a second
+	// concurrent caller with the guarantee that it will still see the first
+	// caller's (not-yet-failed) placeholder session in the map, rather than
+	// racing to create an independent one after the first has already failed
+	// and cleaned itself up.
+	holdFailureUntil chan struct{}
+	holdEntered      chan struct{}
+	holdOnce         sync.Once
+}
+
+func (c *scriptedMirakcLiveClient) StreamService(ctx context.Context, serviceID int64, _ int) (io.ReadCloser, error) {
+	c.mu.Lock()
+	c.events = append(c.events, fmt.Sprintf("request:%d", serviceID))
+	fail := serviceID == c.failServiceID && c.failuresLeft > 0
+	if fail {
+		c.failuresLeft--
+	}
+	c.mu.Unlock()
+
+	if fail {
+		if c.holdFailureUntil != nil {
+			c.holdOnce.Do(func() { close(c.holdEntered) })
+			<-c.holdFailureUntil
+		}
+		return nil, errors.New("scripted upstream rejection")
+	}
+
+	return &scriptedMirakcLiveBody{ctx: ctx, client: c, serviceID: serviceID}, nil
+}
+
+func (c *scriptedMirakcLiveClient) recordClose(serviceID int64) {
+	c.mu.Lock()
+	c.events = append(c.events, fmt.Sprintf("close:%d", serviceID))
+	c.mu.Unlock()
+}
+
+func (c *scriptedMirakcLiveClient) eventList() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.events)
+}
+
+type scriptedMirakcLiveBody struct {
+	ctx       context.Context
+	client    *scriptedMirakcLiveClient
+	serviceID int64
+	once      sync.Once
+}
+
+func (b *scriptedMirakcLiveBody) Read(p []byte) (int, error) {
+	select {
+	case <-b.ctx.Done():
+		return 0, b.ctx.Err()
+	case <-time.After(10 * time.Millisecond):
+		return copy(p, bytes188Packet()), nil
+	}
+}
+
+func (b *scriptedMirakcLiveBody) Close() error {
+	b.once.Do(func() { b.client.recordClose(b.serviceID) })
+	return nil
+}
+
 // newFastFakeMirakcLiveServer は newFakeMirakcLiveServer と同じ GET
 // /api/services/{id}/stream を実装するが、10ms ごとに 188 byte という
 // スロットリングを入れない（tight loop で書く）。captions 経路は起動時に
@@ -223,7 +300,12 @@ done
 func newTestLiveStreamer(t *testing.T, mirakcURL string, cfg LiveConfig) (*LiveStreamer, *httptest.Server) {
 	t.Helper()
 	client := mirakc.NewClient(mirakcURL, nil)
-	ls := NewLive(client, testLiveSite, cfg)
+	return newTestLiveStreamerWithClient(t, client, cfg)
+}
+
+func newTestLiveStreamerWithClient(t *testing.T, client mirakcLiveClient, cfg LiveConfig) (*LiveStreamer, *httptest.Server) {
+	t.Helper()
+	ls := newLiveStreamer(client, testLiveSite, cfg)
 	r := chi.NewRouter()
 	ls.Mount(r)
 	srv := httptest.NewServer(r)
@@ -247,6 +329,29 @@ func baseLiveConfig(t *testing.T) LiveConfig {
 			{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
 		},
 	}
+}
+
+// setShortLiveMirakcReleaseWait は liveMirakcReleaseWait を短い値に差し替え、
+// t.Cleanup で元の値に戻す（playlistStartupTimeout を上書きしている既存テストと
+// 同じやり方。既定 5 秒の実待ちで退避系テストを不必要に遅くしない）。
+func setShortLiveMirakcReleaseWait(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := liveMirakcReleaseWait
+	liveMirakcReleaseWait = d
+	t.Cleanup(func() { liveMirakcReleaseWait = prev })
+}
+
+func setLiveSessionLastAccess(t *testing.T, ls *LiveStreamer, serviceID int64, lastAccess time.Time) {
+	t.Helper()
+	ls.mu.Lock()
+	s, ok := ls.sessions[serviceID]
+	ls.mu.Unlock()
+	if !ok {
+		t.Fatalf("session %d does not exist", serviceID)
+	}
+	s.mu.Lock()
+	s.lastAccess = lastAccess
+	s.mu.Unlock()
 }
 
 // playlistURL は SI の (networkId, serviceId) からプレイリスト URL を組み立てる。
@@ -396,7 +501,11 @@ func TestLiveStreamer_SessionLimit(t *testing.T) {
 	mirakcSrv, _ := newFakeMirakcLiveServer(t)
 	cfg := baseLiveConfig(t)
 	cfg.MaxSessions = 1
+	// 起動コストや CI の揺れが idle 候補に見えないよう、候補閾値を十分に離す。
+	cfg.Profiles[0].SegmentSeconds = 10
 	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
+	sessionLimitRetrySucceededBefore := counterValue(t, metrics.LiveSessionEvictions.WithLabelValues("session_limit", "retry_succeeded"))
+	sessionLimitRetryFailedBefore := counterValue(t, metrics.LiveSessionEvictions.WithLabelValues("session_limit", "retry_failed"))
 
 	resp1, err := http.Get(playlistURL(srv.URL, 0, 1, "h264"))
 	if err != nil {
@@ -416,6 +525,12 @@ func TestLiveStreamer_SessionLimit(t *testing.T) {
 	if resp2.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("2nd service status = %d, want 503 (process-local session limit)", resp2.StatusCode)
 	}
+	if got := counterValue(t, metrics.LiveSessionEvictions.WithLabelValues("session_limit", "retry_succeeded")); got != sessionLimitRetrySucceededBefore {
+		t.Errorf("session-limit eviction successes = %v, want %v (no idle candidate was available)", got, sessionLimitRetrySucceededBefore)
+	}
+	if got := counterValue(t, metrics.LiveSessionEvictions.WithLabelValues("session_limit", "retry_failed")); got != sessionLimitRetryFailedBefore {
+		t.Errorf("session-limit eviction failures = %v, want %v (no idle candidate was available)", got, sessionLimitRetryFailedBefore)
+	}
 
 	// 既存セッション（1st service）は壊れていない。
 	resp1b, err := http.Get(playlistURL(srv.URL, 0, 1, "h264"))
@@ -429,6 +544,481 @@ func TestLiveStreamer_SessionLimit(t *testing.T) {
 	body1b, _ := io.ReadAll(resp1b.Body)
 	if string(body1) != string(body1b) {
 		t.Errorf("1st service playlist changed after limit hit: %q vs %q", body1, body1b)
+	}
+}
+
+// 起動拒否時は、最長セグメント 2 本ぶんより idle なセッションを退避してから
+// 1 回だけ再試行する。上流の拒否と退避完了の間に retry が割り込まないことも、
+// 偽 mirakc のイベント列で確認する。
+func TestLiveStreamer_UpstreamFailure_EvictsStaleSessionAndRetries(t *testing.T) {
+	setShortLiveMirakcReleaseWait(t, 10*time.Millisecond)
+	const staleServiceID, targetServiceID = 1, 2
+	cfg := baseLiveConfig(t)
+	cfg.IdleTimeout = 30 * time.Second
+	client := &scriptedMirakcLiveClient{failServiceID: targetServiceID, failuresLeft: 1}
+	ls, srv := newTestLiveStreamerWithClient(t, client, cfg)
+
+	_ = firstSegmentURL(t, playlistURL(srv.URL, 0, staleServiceID, "h264"))
+	setLiveSessionLastAccess(t, ls, staleServiceID,
+		time.Now().Add(-(cfg.idleEvictionThreshold() + time.Second)))
+
+	before := counterValue(t, metrics.LiveSessionEvictions.WithLabelValues("upstream", "retry_succeeded"))
+	_ = firstSegmentURL(t, playlistURL(srv.URL, 0, targetServiceID, "h264"))
+
+	wantEvents := []string{
+		"request:1",
+		"request:2",
+		"close:1",
+		"request:2",
+	}
+	if got := client.eventList(); !slices.Equal(got, wantEvents) {
+		t.Fatalf("mirakc events = %v, want %v (the retry must follow stale-session close)", got, wantEvents)
+	}
+	if got := counterValue(t, metrics.LiveSessionEvictions.WithLabelValues("upstream", "retry_succeeded")); got != before+1 {
+		t.Errorf("upstream eviction successes = %v, want %v", got, before+1)
+	}
+	if got := ls.sessionCount(); got != 1 {
+		t.Errorf("sessionCount after retry = %d, want 1", got)
+	}
+}
+
+// 退避しても再試行が失敗した場合は 503 のままとし、再試行を 2 回以上繰り返さない。
+// この結果は LiveSessionEvictions の retry_failed で観測できる。
+func TestLiveStreamer_UpstreamFailure_RetryFailureReturns503(t *testing.T) {
+	setShortLiveMirakcReleaseWait(t, 10*time.Millisecond)
+	const staleServiceID, targetServiceID = 1, 2
+	cfg := baseLiveConfig(t)
+	cfg.IdleTimeout = 30 * time.Second
+	client := &scriptedMirakcLiveClient{failServiceID: targetServiceID, failuresLeft: 2}
+	ls, srv := newTestLiveStreamerWithClient(t, client, cfg)
+
+	_ = firstSegmentURL(t, playlistURL(srv.URL, 0, staleServiceID, "h264"))
+	setLiveSessionLastAccess(t, ls, staleServiceID,
+		time.Now().Add(-(cfg.idleEvictionThreshold() + time.Second)))
+
+	before := counterValue(t, metrics.LiveSessionEvictions.WithLabelValues("upstream", "retry_failed"))
+	resp, body := get(t, playlistURL(srv.URL, 0, targetServiceID, "h264"), nil)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status after failed retry = %d, want 503", resp.StatusCode)
+	}
+	if got := client.eventList(); !slices.Equal(got, []string{
+		"request:1",
+		"request:2",
+		"close:1",
+		"request:2",
+	}) {
+		t.Errorf("mirakc events = %v, want one retry after stale-session close", got)
+	}
+	if got := counterValue(t, metrics.LiveSessionEvictions.WithLabelValues("upstream", "retry_failed")); got != before+1 {
+		t.Errorf("upstream eviction failures = %v, want %v", got, before+1)
+	}
+	if len(body) == 0 {
+		t.Error("failed retry response body is empty")
+	}
+	if got := ls.sessionCount(); got != 0 {
+		t.Errorf("sessionCount after failed retry = %d, want 0", got)
+	}
+}
+
+// errSessionLimit でも同じ退避規則を使う。退避後に map の空きができてから
+// 1 回だけ新しいセッションを起こす。
+func TestLiveStreamer_SessionLimit_EvictsStaleSessionAndRetries(t *testing.T) {
+	setShortLiveMirakcReleaseWait(t, 10*time.Millisecond)
+	mirakcSrv, state := newFakeMirakcLiveServer(t)
+	cfg := baseLiveConfig(t)
+	cfg.MaxSessions = 1
+	cfg.IdleTimeout = 30 * time.Second
+	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
+
+	_ = firstSegmentURL(t, playlistURL(srv.URL, 0, 1, "h264"))
+	setLiveSessionLastAccess(t, ls, 1,
+		time.Now().Add(-(cfg.idleEvictionThreshold() + time.Second)))
+
+	before := counterValue(t, metrics.LiveSessionEvictions.WithLabelValues("session_limit", "retry_succeeded"))
+	_ = firstSegmentURL(t, playlistURL(srv.URL, 0, 2, "h264"))
+
+	if got := state.requestCount(); got != 2 {
+		t.Errorf("mirakc stream requests = %d, want 2 (one request per surviving session)", got)
+	}
+	select {
+	case serviceID := <-state.disconnected:
+		if serviceID != 1 {
+			t.Errorf("disconnected service id = %d, want 1", serviceID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("stale session was not stopped before retry")
+	}
+	if got := counterValue(t, metrics.LiveSessionEvictions.WithLabelValues("session_limit", "retry_succeeded")); got != before+1 {
+		t.Errorf("session-limit eviction successes = %v, want %v", got, before+1)
+	}
+	if got := ls.sessionCount(); got != 1 {
+		t.Errorf("sessionCount after retry = %d, want 1", got)
+	}
+}
+
+// 同じ serviceID を待っている同時要求が全員が同じ起動失敗を受け取っても、候補が
+// 1 本しか無ければ退避は 1 回だけになる。**この形は idle 候補が 1 本のときは
+// takeIdleSessionForRetry 自身の原子性（選択と削除を同じロックで行う）だけでも
+// 保たれる** --- evictMu が本当に必要になるのは候補が複数あるとき
+// （TestLiveStreamer_UpstreamFailure_ConcurrentRequestsDoNotEvictAnUnrelatedIdleSession
+// 参照。無関係な 2 本目の候補を巻き込まないことを固定する）。
+//
+// **2 本目の要求を holdFailureUntil で意図的に足止めしてから起こす。** 素朴に
+// 2 つの goroutine から同時に http.Get するだけだと、既定 MaxSessions=2 かつ
+// 事前に存在するセッションが stale の 1 本だけなので、target の失敗セッションが
+// map から自己清掃した直後に一時的な空きができる --- 2 本目の要求がこの空きを
+// 使って（退避を経由せず）独立に新しいセッションを作り直し、たまたま mirakc が
+// もう拒否しない（failuresLeft を使い切っている）ため退避無しで成功してしまう
+// ことがあった（実際に flaky を確認した）。これは相乗りではない別の独立成功経路
+// で、この関数が固定したい性質を検証しない。holdFailureUntil で 1 本目の失敗を
+// 意図的に足止めし、1 本目の失敗セッション（placeholder）がまだ map に残っている
+// 間に 2 本目を起こすことで、2 本目が必ず「既存セッション」経路に collapse する
+// ことを保証する。
+func TestLiveStreamer_UpstreamFailure_ConcurrentRequestsEvictOnlyOnce(t *testing.T) {
+	setShortLiveMirakcReleaseWait(t, 50*time.Millisecond)
+	const staleServiceID, targetServiceID = 1, 2
+	cfg := baseLiveConfig(t)
+	cfg.IdleTimeout = 30 * time.Second
+	client := &scriptedMirakcLiveClient{
+		failServiceID:    targetServiceID,
+		failuresLeft:     1,
+		holdFailureUntil: make(chan struct{}),
+		holdEntered:      make(chan struct{}),
+	}
+	ls, srv := newTestLiveStreamerWithClient(t, client, cfg)
+
+	_ = firstSegmentURL(t, playlistURL(srv.URL, 0, staleServiceID, "h264"))
+	setLiveSessionLastAccess(t, ls, staleServiceID,
+		time.Now().Add(-(cfg.idleEvictionThreshold() + time.Second)))
+
+	beforeSucceeded := counterValue(t, metrics.LiveSessionEvictions.WithLabelValues("upstream", "retry_succeeded"))
+	beforeFailed := counterValue(t, metrics.LiveSessionEvictions.WithLabelValues("upstream", "retry_failed"))
+
+	const concurrency = 2
+	var wg sync.WaitGroup
+	statuses := make([]int, concurrency)
+	errs := make([]error, concurrency)
+	requestTarget := func(i int) {
+		defer wg.Done()
+		resp, err := http.Get(playlistURL(srv.URL, 0, targetServiceID, "h264"))
+		if err != nil {
+			errs[i] = err
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		statuses[i] = resp.StatusCode
+	}
+	wg.Add(1)
+	go requestTarget(0)
+	<-client.holdEntered // 1 本目の失敗セッションが map に placeholder として存在する
+	// 2 本目の goroutine を起こしてから、それが実際に「既存セッション」の
+	// waitReadyTouching まで到達するのを確実に待つ確定的な手段が無い（HTTP
+	// ラウンドトリップの内部到達点を観測するフックが無い）。ここは production
+	// コードではなくテストの足並み合わせなので、十分に余裕を持った待ちで
+	// 到達を待ってから hold を解く（holdFailureUntil を早く解きすぎると、2 本目が
+	// まだ map を見る前に 1 本目の失敗セッションが自己清掃してしまい、2 本目が
+	// 独立に新しいセッションを作ってしまう --- 実際に確認した）。
+	wg.Add(1)
+	go requestTarget(1) // 必ず 1 本目の既存セッションに collapse する
+	time.Sleep(100 * time.Millisecond)
+	close(client.holdFailureUntil)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+	}
+
+	closeEvents := 0
+	for _, e := range client.eventList() {
+		if e == fmt.Sprintf("close:%d", staleServiceID) {
+			closeEvents++
+		}
+	}
+	if closeEvents != 1 {
+		t.Fatalf("close events for the stale session = %d, want 1 (one pressure event must evict exactly one session)", closeEvents)
+	}
+
+	gotEvictions := (counterValue(t, metrics.LiveSessionEvictions.WithLabelValues("upstream", "retry_succeeded")) - beforeSucceeded) +
+		(counterValue(t, metrics.LiveSessionEvictions.WithLabelValues("upstream", "retry_failed")) - beforeFailed)
+	if gotEvictions != 1 {
+		t.Fatalf("eviction counter increment = %v, want 1", gotEvictions)
+	}
+
+	sawSuccess := false
+	for _, s := range statuses {
+		if s == http.StatusOK {
+			sawSuccess = true
+		}
+	}
+	if !sawSuccess {
+		t.Errorf("statuses = %v, want at least one 200 (the request that actually evicted must succeed since the retry is not rejected)", statuses)
+	}
+}
+
+// evictMu が無ければ、同じ失敗セッションを共有する 2 本の同時要求は、1 本目の
+// 退避・再試行を知らずにそれぞれ独立に takeIdleSessionForRetry を呼び、
+// **無関係な別の idle セッション（collateral）**まで巻き込んで退避してしまう
+// （issue #677 のレビュー指摘）。**session_limit では検出できない** ---
+// 1 本退避しただけで `len(sessions) < MaxSessions` が真になり、2 本目の要求は
+// 退避そのものを試みる必要が無くなって自然に収束するため、evictMu が無くても
+// collateral は生き残ってしまい、退行を検出できない（実際に確認した）。upstream
+// 拒否は容量に依存しないため、evictMu の有無がここで初めて観測できる。
+// evictMu + 「別の要求が既に退避と再試行を終えていたら相乗りする」チェックが、
+// この collateral session を守る。
+//
+// **MaxSessions=3 にして target の初回試行が必ず upstream を経由するようにする。**
+// 既定の 2 のままだと collateral+stale の 2 本で既に埋まっており、target の初回
+// 試行が先に session_limit を経由してしまい、この関数が検証したい「upstream 1 回
+// を複数の同時要求が共有する」形にならない。**2 本目を holdFailureUntil で足止め
+// してから起こすのも同じ理由**（ConcurrentRequestsEvictOnlyOnce の doc コメント
+// 参照。素朴な同時 http.Get だと、1 本目の失敗セッションが自己清掃した空きに
+// 2 本目が独立に収まり、退避を経由せず静かに成功することがあった）。
+func TestLiveStreamer_UpstreamFailure_ConcurrentRequestsDoNotEvictAnUnrelatedIdleSession(t *testing.T) {
+	setShortLiveMirakcReleaseWait(t, 50*time.Millisecond)
+	const collateralServiceID, staleServiceID, targetServiceID = 3, 1, 2
+	cfg := baseLiveConfig(t)
+	cfg.MaxSessions = 3
+	cfg.IdleTimeout = 30 * time.Second
+	client := &scriptedMirakcLiveClient{
+		failServiceID:    targetServiceID,
+		failuresLeft:     1,
+		holdFailureUntil: make(chan struct{}),
+		holdEntered:      make(chan struct{}),
+	}
+	ls, srv := newTestLiveStreamerWithClient(t, client, cfg)
+
+	_ = firstSegmentURL(t, playlistURL(srv.URL, 0, collateralServiceID, "h264"))
+	_ = firstSegmentURL(t, playlistURL(srv.URL, 0, staleServiceID, "h264"))
+
+	threshold := cfg.idleEvictionThreshold()
+	// staleServiceID の方を collateralServiceID より idle にし、
+	// takeIdleSessionForRetry が最初に選ぶのは常に staleServiceID にする。
+	setLiveSessionLastAccess(t, ls, collateralServiceID, time.Now().Add(-(threshold + time.Second)))
+	setLiveSessionLastAccess(t, ls, staleServiceID, time.Now().Add(-(threshold + 5*time.Second)))
+
+	before := counterValue(t, metrics.LiveSessionEvictions.WithLabelValues("upstream", "retry_succeeded"))
+
+	var wg sync.WaitGroup
+	requestTarget := func() {
+		defer wg.Done()
+		resp, err := http.Get(playlistURL(srv.URL, 0, targetServiceID, "h264"))
+		if err != nil {
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		_, _ = io.Copy(io.Discard, resp.Body)
+	}
+	wg.Add(1)
+	go requestTarget()
+	<-client.holdEntered // 1 本目の失敗セッションが map に placeholder として存在する
+	// 2 本目の goroutine を起こしてから、それが実際に「既存セッション」の
+	// waitReadyTouching まで到達するのを確実に待つ確定的な手段が無い（HTTP
+	// ラウンドトリップの内部到達点を観測するフックが無い）。ここは production
+	// コードではなくテストの足並み合わせなので、十分に余裕を持った待ちで
+	// 到達を待ってから hold を解く（holdFailureUntil を早く解きすぎると、2 本目が
+	// まだ map を見る前に 1 本目の失敗セッションが自己清掃してしまい、2 本目が
+	// 独立に新しいセッションを作ってしまう --- 実際に確認した）。
+	wg.Add(1)
+	go requestTarget() // 必ず 1 本目の既存セッションに collapse する
+	time.Sleep(100 * time.Millisecond)
+	close(client.holdFailureUntil)
+	wg.Wait()
+
+	collateralClosed := false
+	staleCloseCount := 0
+	for _, e := range client.eventList() {
+		switch e {
+		case fmt.Sprintf("close:%d", collateralServiceID):
+			collateralClosed = true
+		case fmt.Sprintf("close:%d", staleServiceID):
+			staleCloseCount++
+		}
+	}
+	if collateralClosed {
+		t.Errorf("collateral session was closed, want untouched (a second concurrent request must piggyback instead of evicting an unrelated idle session)")
+	}
+	if staleCloseCount != 1 {
+		t.Errorf("stale session close events = %d, want 1", staleCloseCount)
+	}
+	if got := counterValue(t, metrics.LiveSessionEvictions.WithLabelValues("upstream", "retry_succeeded")); got != before+1 {
+		t.Errorf("upstream eviction successes = %v, want %v (exactly one eviction for one pressure event)", got, before+1)
+	}
+	if got := ls.sessionCount(); got != 2 {
+		t.Errorf("sessionCount after = %d, want 2 (collateral + target)", got)
+	}
+}
+
+// 呼び出し元の ctx が既に切れているなら、退避を試みず元のエラーをそのまま返す
+// （5 秒強 evictMu を占有する退避を、相手のいない要求のために行わない）。
+func TestLiveStreamer_SessionLimit_DoesNotEvictWhenCallerContextAlreadyCanceled(t *testing.T) {
+	mirakcSrv, state := newFakeMirakcLiveServer(t)
+	cfg := baseLiveConfig(t)
+	cfg.MaxSessions = 1
+	cfg.IdleTimeout = 30 * time.Second
+	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
+
+	_ = firstSegmentURL(t, playlistURL(srv.URL, 0, 1, "h264"))
+	setLiveSessionLastAccess(t, ls, 1,
+		time.Now().Add(-(cfg.idleEvictionThreshold() + time.Second)))
+
+	before := counterValue(t, metrics.LiveSessionEvictions.WithLabelValues("session_limit", "retry_succeeded"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := ls.getOrCreateSession(ctx, 2)
+	if !errors.Is(err, errSessionLimit) {
+		t.Fatalf("err = %v, want errSessionLimit (an already-canceled ctx must skip eviction and surface the original error)", err)
+	}
+
+	select {
+	case serviceID := <-state.disconnected:
+		t.Fatalf("stale session %d was stopped even though the caller ctx was already canceled", serviceID)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if got := counterValue(t, metrics.LiveSessionEvictions.WithLabelValues("session_limit", "retry_succeeded")); got != before {
+		t.Errorf("eviction successes = %v, want unchanged %v (no eviction should happen)", got, before)
+	}
+	if got := ls.sessionCount(); got != 1 {
+		t.Errorf("sessionCount = %d, want 1 (stale session must remain untouched)", got)
+	}
+}
+
+// ctx が退避完了後・解放待ち中にキャンセルされたら、退避自体は完了させたまま
+// 再試行だけを諦める（result="retry_abandoned"）。mirakc の失敗ではないので
+// "retry_failed" とは区別する。
+func TestLiveStreamer_UpstreamFailure_AbandonsRetryWhenCallerContextCancelsDuringReleaseWait(t *testing.T) {
+	setShortLiveMirakcReleaseWait(t, 2*time.Second)
+	const staleServiceID, targetServiceID = 1, 2
+	cfg := baseLiveConfig(t)
+	cfg.IdleTimeout = 30 * time.Second
+	client := &scriptedMirakcLiveClient{failServiceID: targetServiceID, failuresLeft: 1}
+	ls, srv := newTestLiveStreamerWithClient(t, client, cfg)
+
+	_ = firstSegmentURL(t, playlistURL(srv.URL, 0, staleServiceID, "h264"))
+	setLiveSessionLastAccess(t, ls, staleServiceID,
+		time.Now().Add(-(cfg.idleEvictionThreshold() + time.Second)))
+
+	before := counterValue(t, metrics.LiveSessionEvictions.WithLabelValues("upstream", "retry_abandoned"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	time.AfterFunc(300*time.Millisecond, cancel)
+
+	_, err := ls.getOrCreateSession(ctx, targetServiceID)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if got := counterValue(t, metrics.LiveSessionEvictions.WithLabelValues("upstream", "retry_abandoned")); got != before+1 {
+		t.Errorf("retry_abandoned = %v, want %v", got, before+1)
+	}
+	wantEvents := []string{
+		fmt.Sprintf("request:%d", staleServiceID),
+		fmt.Sprintf("request:%d", targetServiceID),
+		fmt.Sprintf("close:%d", staleServiceID),
+	}
+	if got := client.eventList(); !slices.Equal(got, wantEvents) {
+		t.Fatalf("mirakc events = %v, want %v (eviction completes but no retry request follows)", got, wantEvents)
+	}
+}
+
+// ready 未 close の起動待ちセッションは、最長セグメント 2 本ぶん idle でも候補に
+// しない。ただし playlistStartupTimeout を超えて waiter がいない起動待ちは、
+// チューナーを掴んだままのハングとして退避できる。
+func TestLiveStreamer_EvictionCandidate_StartingSessionNeedsStartupTimeout(t *testing.T) {
+	now := time.Now()
+	ready := make(chan struct{})
+	done := make(chan struct{})
+	close(done)
+	s := &liveSession{
+		serviceID:  1,
+		ready:      ready,
+		done:       done,
+		lastAccess: now.Add(-(2*time.Second + time.Second)),
+	}
+	ls := &LiveStreamer{
+		cfg: LiveConfig{
+			Profiles: []LiveProfile{{SegmentSeconds: 1}},
+		},
+		sessions: map[int64]*liveSession{1: s},
+	}
+
+	if got := ls.takeIdleSessionForRetry(now); got != nil {
+		t.Fatalf("starting session was selected after %v idle, want no candidate", now.Sub(s.lastAccess))
+	}
+	if got := ls.sessionCount(); got != 1 {
+		t.Fatalf("sessionCount after excluding starting session = %d, want 1", got)
+	}
+
+	s.mu.Lock()
+	s.lastAccess = now.Add(-(playlistStartupTimeout + time.Second))
+	s.mu.Unlock()
+	if got := ls.takeIdleSessionForRetry(now); got != s {
+		t.Fatalf("starting session older than playlistStartupTimeout = %v, want it to be selected as a hung session", playlistStartupTimeout)
+	}
+}
+
+// 離脱ヒントで lastAccess を巻き戻したセッションは、別の idle セッションよりも
+// 古い候補になる。
+func TestLiveStreamer_EvictionCandidate_PrefersLeaveHint(t *testing.T) {
+	now := time.Now()
+	readyA := make(chan struct{})
+	readyB := make(chan struct{})
+	close(readyA)
+	close(readyB)
+	doneA := make(chan struct{})
+	doneB := make(chan struct{})
+	close(doneA)
+	close(doneB)
+	hinted := &liveSession{serviceID: 1, ready: readyA, done: doneA, lastAccess: now}
+	older := &liveSession{serviceID: 2, ready: readyB, done: doneB, lastAccess: now.Add(-5 * time.Second)}
+	cfg := LiveConfig{
+		IdleTimeout: 30 * time.Second,
+		Profiles:    []LiveProfile{{SegmentSeconds: 2}},
+	}
+	ls := &LiveStreamer{
+		cfg:      cfg,
+		sessions: map[int64]*liveSession{1: hinted, 2: older},
+	}
+
+	if !hinted.hintLeave(now, cfg.leaveGrace(), cfg.IdleTimeout) {
+		t.Fatal("hintLeave = false, want the deadline to be shortened")
+	}
+	if got := ls.takeIdleSessionForRetry(now); got != hinted {
+		t.Fatalf("selected session = %v, want hinted session %v", got, hinted)
+	}
+}
+
+// 境界: idle_timeout が 5×segment_seconds+2s を超えない設定では、離脱ヒントは
+// 退避の候補化に効かない（takeIdleSessionForRetry の doc コメント参照。
+// TestLiveStreamer_EvictionCandidate_PrefersLeaveHint の成立域と対で読む）。
+// baseLiveConfig の既定（idle_timeout 10s / segment_seconds 2s）はこの不成立域
+// そのもの --- ヒント後の idle は 10s-8s=2s で、候補の閾値 2×2s=4s を下回る。
+func TestLiveStreamer_EvictionCandidate_HintDoesNotQualifyBelowThreshold(t *testing.T) {
+	now := time.Now()
+	ready := make(chan struct{})
+	close(ready)
+	done := make(chan struct{})
+	close(done)
+	hinted := &liveSession{serviceID: 1, ready: ready, done: done, lastAccess: now}
+	cfg := LiveConfig{
+		IdleTimeout: 10 * time.Second,
+		Profiles:    []LiveProfile{{SegmentSeconds: 2}},
+	}
+	ls := &LiveStreamer{
+		cfg:      cfg,
+		sessions: map[int64]*liveSession{1: hinted},
+	}
+
+	if !hinted.hintLeave(now, cfg.leaveGrace(), cfg.IdleTimeout) {
+		t.Fatal("hintLeave = false, want the deadline to be shortened (grace 8s is still < idle_timeout 10s)")
+	}
+	if got := ls.takeIdleSessionForRetry(now); got != nil {
+		t.Fatalf("selected session = %v, want no candidate (idle_timeout %v does not satisfy > 5*segment_seconds+2s)", got, cfg.IdleTimeout)
 	}
 }
 
