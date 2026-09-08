@@ -257,7 +257,7 @@ func TestPresyncCollector_ClassifiesPendingState(t *testing.T) {
 
 	const programID int64 = 6800001
 	startAt := time.Now().Add(time.Hour).Truncate(time.Millisecond)
-	seedPresyncReservation(t, pool, programID, startAt, 30*time.Minute)
+	seedPresyncReservation(t, pool, programID, startAt)
 	c := NewPresyncCollector(pool, testSite)
 
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "missing"}); got != 1 {
@@ -325,7 +325,7 @@ func TestPresyncCollector_ClassifiesPendingState(t *testing.T) {
 	}
 
 	const skippedProgramID int64 = 6800004
-	seedPresyncReservation(t, pool, skippedProgramID, time.Now().Add(time.Hour), 30*time.Minute)
+	seedPresyncReservation(t, pool, skippedProgramID, time.Now().Add(time.Hour))
 	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{Site: testSite, ProgramID: skippedProgramID}); err != nil {
 		t.Fatalf("skipping reservation: %v", err)
 	}
@@ -370,7 +370,7 @@ func TestPresyncCollector_ExplicitContentPathMismatch(t *testing.T) {
 	q := sqlcgen.New(pool)
 
 	const programID int64 = 6800002
-	seedPresyncReservation(t, pool, programID, time.Now().Add(time.Hour), 30*time.Minute)
+	seedPresyncReservation(t, pool, programID, time.Now().Add(time.Hour))
 	contentPath, err := json.Marshal(map[string]string{"contentPath": "custom/program.m2ts"})
 	if err != nil {
 		t.Fatalf("marshalling content path override: %v", err)
@@ -400,7 +400,7 @@ func TestPresyncCollector_ReMaterializationReevaluatesCurrentOptions(t *testing.
 	q := sqlcgen.New(pool)
 
 	const programID int64 = 6800005
-	seedPresyncReservation(t, pool, programID, time.Now().Add(time.Hour), 30*time.Minute)
+	seedPresyncReservation(t, pool, programID, time.Now().Add(time.Hour))
 	seedObservedSchedule(t, pool, programID, mirakc.Options{Priority: 10}, []string{mirakc.ProgramTag(programID)})
 	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
 		t.Fatalf("marking schedule snapshot: %v", err)
@@ -450,7 +450,7 @@ func TestPresyncCollector_QueryFailure(t *testing.T) {
 	}
 }
 
-func seedPresyncReservation(t *testing.T, pool *pgxpool.Pool, programID int64, startAt time.Time, duration time.Duration) {
+func seedPresyncReservation(t *testing.T, pool *pgxpool.Pool, programID int64, startAt time.Time) {
 	t.Helper()
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
@@ -459,7 +459,7 @@ func seedPresyncReservation(t *testing.T, pool *pgxpool.Pool, programID int64, s
 		ProgramID:   programID,
 		Title:       "presync test",
 		StartAt:     startAt,
-		DurationMs:  duration.Milliseconds(),
+		DurationMs:  30 * time.Minute.Milliseconds(),
 		NetworkID:   32678,
 		ServiceID:   5168,
 		ChannelType: "GR",
