@@ -617,6 +617,54 @@ func TestExtractFrameBakesSAR(t *testing.T) {
 	}
 }
 
+func TestProbeDuration_IgnoresStderr(t *testing.T) {
+	dir := t.TempDir()
+	ffprobe := filepath.Join(dir, "ffprobe")
+	const wantSeconds = "2546.360222"
+	script := "#!/bin/sh\n" +
+		"echo '[mpeg2video @ 0x1234] Invalid frame dimensions 0x0.' >&2\n" +
+		"printf '%s\\n' '" + wantSeconds + "'\n"
+	if err := os.WriteFile(ffprobe, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := probeDuration(context.Background(), ffprobe, "input.m2ts", commandOutput)
+	if err != nil {
+		t.Fatalf("probeDuration() error: %v", err)
+	}
+	wantSec, err := strconv.ParseFloat(wantSeconds, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Duration(wantSec * float64(time.Second))
+	if got != want {
+		t.Errorf("probeDuration() = %v, want %v", got, want)
+	}
+}
+
+// TestCommandOutput_IncludesStderrOnFailure は commandOutput が失敗時、
+// *exec.ExitError の Stderr をエラーメッセージへ載せることを固定する
+// （cmd.Output() は cmd.CombinedOutput() と違い stderr を戻り値に混ぜないため、
+// 失敗時の診断はこの分岐でしか出てこない）。
+func TestCommandOutput_IncludesStderrOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "fake-ffprobe")
+	script := "#!/bin/sh\n" +
+		"echo 'diagnostic: something went wrong' >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := commandOutput(context.Background(), fake)
+	if err == nil {
+		t.Fatal("commandOutput() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "diagnostic: something went wrong") {
+		t.Errorf("commandOutput() error = %q, want it to contain stderr diagnostic", err.Error())
+	}
+}
+
 func indexOfArg(args []string, want string) int {
 	for i, a := range args {
 		if a == want {
@@ -702,7 +750,7 @@ func TestCommandOutput_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) 
 		t.Errorf("log output = %q, want a warning distinguishing the WaitDelay-on-success path", logBuf.String())
 	}
 	// out が捨てられていないこと（installLeakyExitZeroFakeFFmpeg は progress
-	// 行を標準出力へ書く。CombinedOutput はそれを含む）。
+	// 行を標準出力へ書く。Output は stdout を返す）。
 	if !strings.Contains(string(out), "progress=end") {
 		t.Errorf("out = %q, want captured stdout to survive the WaitDelay-success path", out)
 	}
