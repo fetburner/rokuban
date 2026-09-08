@@ -1,5 +1,5 @@
-import { X } from 'lucide-react'
-import { useState } from 'react'
+import { ChevronDown, ChevronUp, X } from 'lucide-react'
+import { useId, useState } from 'react'
 
 import {
   ProgramSearchRequestChannelTypesItem,
@@ -52,6 +52,14 @@ type FieldsProps = {
   disabled?: boolean
 }
 
+type ConditionFieldsProps = FieldsProps & {
+  /** 検索画面のように、詳細条件を初期状態で折りたたむか。 */
+  collapsible?: boolean
+  /** `collapsible` を使うときの開閉状態（指定時は controlled）。 */
+  detailsOpen?: boolean
+  onDetailsOpenChange?: (open: boolean) => void
+}
+
 /**
  * ConditionFields は検索条件（= ルール条件）の全次元の入力 UI。
  *
@@ -86,9 +94,9 @@ type FieldsProps = {
  * 出る**（フォームの最下部なので、モバイルでは折り目の 183px 下 --- 実測で
  * 390x844 のチップ列 top=1027）。**押される既描画の兄弟が無くなるわけではない**
  * --- `pages/search.tsx` は `<form>` の後ろに値札・ルール保存・検索結果を同じ
- * 縦カラムで積んでいるので、シフトは 0 にならず小さくなるだけ（実測: 390x844 で
- * 0、1280x900 で 0.00066、縦長の 390x1180 で 0.023。しきい値 0.10 以下。issue #290
- * でサービス選択肢を全 site の union に変えた後に測り直した値。フォームの形
+ * 縦カラムで積んでいるので、シフトは 0 にならず小さくなるだけ（issue #685 の
+ * 詳細節を明示的に開いた実測: 390x844 で 0.000008、1280x900 で 0.000003。
+ * しきい値 0.10 以下。フォームの形
  * ---「読み込み中…」の 1 行からチップの複数行へ入れ替わる `ServiceFields` の
  * 位置と、それより前が同期的に描かれること---は変えていないため、これ以前の
  * 実測値と同じ桁に収まっている）。issue #531 で `SiteFields`（サイトチップ）を
@@ -104,12 +112,118 @@ type FieldsProps = {
  * 実装で実際に落ちることを確認済み）。サービスが最下部に来る動線上の代償を
  * 受け入れた判断は `docs/frontend/search.md`。
  */
-export function ConditionFields({ draft, onChange, disabled }: FieldsProps): React.ReactElement {
+export function ConditionFields({
+  draft,
+  onChange,
+  disabled,
+  collapsible = false,
+  detailsOpen: controlledDetailsOpen,
+  onDetailsOpenChange,
+}: ConditionFieldsProps): React.ReactElement {
   const { services: serviceList, sites, isPending, isError } = useAllSitesServices()
+  const detailsId = useId()
+  const [uncontrolledDetailsOpen, setUncontrolledDetailsOpen] = useState(!collapsible)
+  const detailsOpen = controlledDetailsOpen ?? uncontrolledDetailsOpen
+
+  const setDetailsOpen = (open: boolean) => {
+    if (controlledDetailsOpen === undefined) setUncontrolledDetailsOpen(open)
+    onDetailsOpenChange?.(open)
+  }
 
   return (
     <>
       <TextMatchFields draft={draft} onChange={onChange} disabled={disabled} />
+      {collapsible ? (
+        <DetailedConditionSection
+          id={detailsId}
+          draft={draft}
+          services={serviceList}
+          open={detailsOpen}
+          onOpenChange={setDetailsOpen}
+          onChange={onChange}
+          disabled={disabled}
+        >
+          <DetailedConditionFields
+            draft={draft}
+            sites={sites}
+            services={serviceList}
+            isPending={isPending}
+            isError={isError}
+            onChange={onChange}
+            disabled={disabled}
+          />
+        </DetailedConditionSection>
+      ) : (
+        <DetailedConditionFields
+          draft={draft}
+          sites={sites}
+          services={serviceList}
+          isPending={isPending}
+          isError={isError}
+          onChange={onChange}
+          disabled={disabled}
+        />
+      )}
+    </>
+  )
+}
+
+function DetailedConditionSection({
+  id,
+  draft,
+  services,
+  open,
+  onOpenChange,
+  onChange,
+  disabled,
+  children,
+}: FieldsProps & {
+  id: string
+  services: Service[]
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  children: React.ReactNode
+}) {
+  const summaries = summarizeDetails(draft, services)
+
+  return (
+    <section className="flex flex-col gap-3" aria-label="詳細条件">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-xs font-medium text-muted-foreground">詳細条件</h2>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-expanded={open}
+          aria-controls={id}
+          aria-label={open ? '詳細条件を閉じる' : '詳細条件を表示'}
+          disabled={disabled}
+          onClick={() => onOpenChange(!open)}
+        >
+          {open ? '詳細条件を閉じる' : `詳細条件を表示${summaries.length > 0 ? `（${summaries.length}件）` : ''}`}
+          {open ? <ChevronUp aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}
+        </Button>
+      </div>
+
+      {!open && <DetailSummary summaries={summaries} onChange={onChange} disabled={disabled} />}
+      <div id={id} hidden={!open} className="flex flex-col gap-5">
+        {children}
+      </div>
+    </section>
+  )
+}
+
+function DetailedConditionFields({
+  draft,
+  sites,
+  services,
+  isPending,
+  isError,
+  onChange,
+  disabled,
+}: FieldsProps & { sites: string[]; services: Service[]; isPending: boolean; isError: boolean }) {
+  return (
+    <>
       <ChannelTypeFields draft={draft} onChange={onChange} disabled={disabled} />
       <GenreFields draft={draft} onChange={onChange} disabled={disabled} />
       <TimeWindowFields draft={draft} onChange={onChange} disabled={disabled} />
@@ -117,7 +231,7 @@ export function ConditionFields({ draft, onChange, disabled }: FieldsProps): Rea
       <SiteFields draft={draft} sites={sites} onChange={onChange} disabled={disabled} />
       <ServiceFields
         draft={draft}
-        services={serviceList}
+        services={services}
         // 取得中と失敗を区別する。空のチップ列を「サービスが無い」と
         // 読ませない（サービスは条件の一次元なので、無いのと分からないのは違う）
         isPending={isPending}
@@ -126,6 +240,143 @@ export function ConditionFields({ draft, onChange, disabled }: FieldsProps): Rea
         disabled={disabled}
       />
     </>
+  )
+}
+
+type DetailSummary = {
+  key: string
+  label: string
+  value: string
+  clear: (draft: SearchDraft) => SearchDraft
+}
+
+function compactValues(values: string[]): string {
+  const [first, ...rest] = values
+  if (first === undefined) return ''
+  return rest.length === 0 ? first : `${first}ほか${rest.length}件`
+}
+
+function summarizeDetails(draft: SearchDraft, services: Service[]): DetailSummary[] {
+  const summaries: DetailSummary[] = []
+
+  if (draft.channelTypes.length > 0) {
+    summaries.push({
+      key: 'channelTypes',
+      label: 'チャンネル種別',
+      value: compactValues(draft.channelTypes),
+      clear: (d) => ({ ...d, channelTypes: [] }),
+    })
+  }
+  if (draft.genres.length > 0) {
+    summaries.push({
+      key: 'genres',
+      label: 'ジャンル',
+      value: compactValues(draft.genres.map(genreCodeLabel)),
+      clear: (d) => ({ ...d, genres: [] }),
+    })
+  }
+  if (draft.times.length > 0) {
+    summaries.push({
+      key: 'times',
+      label: '時間帯',
+      value: `${draft.times.length}件`,
+      clear: (d) => ({ ...d, times: [] }),
+    })
+  }
+  if (draft.isFree !== 'any') {
+    summaries.push({
+      key: 'isFree',
+      label: '無料放送',
+      value: draft.isFree === 'yes' ? '無料のみ' : '有料のみ',
+      clear: (d) => ({ ...d, isFree: 'any' }),
+    })
+  }
+  if (draft.durationMinMinutes.trim() !== '' || draft.durationMaxMinutes.trim() !== '') {
+    const value =
+      draft.durationMinMinutes.trim() !== '' && draft.durationMaxMinutes.trim() !== ''
+        ? `${draft.durationMinMinutes}〜${draft.durationMaxMinutes}分`
+        : draft.durationMinMinutes.trim() !== ''
+          ? `${draft.durationMinMinutes}分以上`
+          : `${draft.durationMaxMinutes}分以下`
+    summaries.push({
+      key: 'duration',
+      label: '放送時間',
+      value,
+      clear: (d) => ({ ...d, durationMinMinutes: '', durationMaxMinutes: '' }),
+    })
+  }
+  if (draft.periodStartAt !== '' || draft.periodEndAt !== '') {
+    summaries.push({
+      key: 'period',
+      label: '期間',
+      value: `${draft.periodStartAt || '開始なし'}〜${draft.periodEndAt || '終了なし'}`,
+      clear: (d) => ({ ...d, periodStartAt: '', periodEndAt: '' }),
+    })
+  }
+  if (draft.sites.length > 0) {
+    summaries.push({
+      key: 'sites',
+      label: 'サイト',
+      value: compactValues(draft.sites),
+      clear: (d) => ({ ...d, sites: [] }),
+    })
+  }
+  if (draft.services.length > 0) {
+    const serviceNames = draft.services.map((selected) => {
+      const service = services.find(
+        (candidate) =>
+          candidate.networkId === selected.networkId && candidate.serviceId === selected.serviceId,
+      )
+      return service?.name ?? `${selected.networkId}/${selected.serviceId}`
+    })
+    summaries.push({
+      key: 'services',
+      label: 'チャンネル',
+      value: compactValues(serviceNames),
+      clear: (d) => ({ ...d, services: [] }),
+    })
+  }
+
+  return summaries
+}
+
+function DetailSummary({
+  summaries,
+  onChange,
+  disabled,
+}: {
+  summaries: DetailSummary[]
+  onChange: FieldsProps['onChange']
+  disabled?: boolean
+}) {
+  return (
+    <div className="flex flex-col gap-2" data-testid="detail-condition-summary">
+      <p className="text-xs text-muted-foreground">
+        {summaries.length === 0 ? '設定中の詳細条件はありません' : `設定中の詳細条件: ${summaries.length}件`}
+      </p>
+      {summaries.length > 0 && (
+        <ul className="flex flex-col gap-1">
+          {summaries.map((summary) => (
+            <li key={summary.key} className="flex min-w-0 items-center gap-2 text-xs">
+              <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                {summary.label}: {summary.value}
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                aria-label={`${summary.label}の条件を解除`}
+                title={`${summary.label}の条件を解除`}
+                disabled={disabled}
+                onClick={() => onChange(summary.clear)}
+              >
+                <X aria-hidden="true" />
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   )
 }
 
@@ -235,70 +486,76 @@ function TextMatchFields({ draft, onChange, disabled }: FieldsProps) {
       <ul className="flex flex-col gap-3">
         {rows.map((match, index) => (
           <li key={index} className="flex flex-col gap-2 rounded-lg border border-border p-3">
-            <div className="flex gap-2">
-              {/* 見出しは短く、読み上げの名前は行番号込みにする（同じ見出しの
-                  入力が行ごとに増えるため、名前が重複すると指し示せない） */}
-              <Field label="対象" className="w-28 shrink-0">
-                <Select
-                  aria-label={`テキスト条件 ${index + 1} の対象`}
-                  value={match.target}
-                  disabled={disabled}
-                  onChange={(e) => update(index, { target: e.target.value as RuleTextMatchTarget })}
-                >
-                  {Object.entries(textTargetLabels).map(([value, label]) => (
-                    <option key={value} value={value}>
-                      {label}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-              <Field label="モード" className="w-28 shrink-0">
-                <Select
-                  aria-label={`テキスト条件 ${index + 1} のモード`}
-                  value={match.mode}
-                  disabled={disabled}
-                  onChange={(e) => update(index, { mode: e.target.value as RuleTextMatchMode })}
-                >
-                  {Object.entries(textModeLabels).map(([value, label]) => (
-                    <option key={value} value={value}>
-                      {label}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-              <Field label="値" className="min-w-0 flex-1">
-                <Input
-                  aria-label={`テキスト条件 ${index + 1} の値`}
-                  value={match.value}
-                  placeholder={match.mode === 'regex' ? '^ニュース' : 'ニュース'}
-                  disabled={disabled}
-                  onChange={(e) => update(index, { value: e.target.value })}
-                />
-              </Field>
-              {
-                // 実体の無い見かけ上の行には出さない。無いものを消す
-                // ボタンは「押しても何も起きない」死んだコントロールになる
-                // （レビュー指摘）。
-                index < draft.textMatches.length && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`テキスト条件 ${index + 1} を削除`}
-                    className="mt-4 shrink-0"
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+              <div className="flex gap-2">
+                {/* 見出しは短く、読み上げの名前は行番号込みにする（同じ見出しの
+                    入力が行ごとに増えるため、名前が重複すると指し示せない） */}
+                <Field label="対象" className="w-28 shrink-0">
+                  <Select
+                    aria-label={`テキスト条件 ${index + 1} の対象`}
+                    value={match.target}
                     disabled={disabled}
-                    onClick={() => {
-                      if (draft.textMatches.length === 1) setUnmaterialized(newTextMatch())
-                      onChange((d) => ({
-                        ...d,
-                        textMatches: d.textMatches.filter((_, i) => i !== index),
-                      }))
-                    }}
+                    onChange={(e) =>
+                      update(index, { target: e.target.value as RuleTextMatchTarget })
+                    }
                   >
-                    <X />
-                  </Button>
-                )
-              }
+                    {Object.entries(textTargetLabels).map(([value, label]) => (
+                      <option key={value} value={value}>
+                        {label}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="モード" className="w-28 shrink-0">
+                  <Select
+                    aria-label={`テキスト条件 ${index + 1} のモード`}
+                    value={match.mode}
+                    disabled={disabled}
+                    onChange={(e) => update(index, { mode: e.target.value as RuleTextMatchMode })}
+                  >
+                    {Object.entries(textModeLabels).map(([value, label]) => (
+                      <option key={value} value={value}>
+                        {label}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              </div>
+              <div className="flex min-w-0 flex-1 items-end gap-2">
+                <Field label="値" className="min-w-0 flex-1">
+                  <Input
+                    aria-label={`テキスト条件 ${index + 1} の値`}
+                    value={match.value}
+                    placeholder={match.mode === 'regex' ? '^ニュース' : 'ニュース'}
+                    disabled={disabled}
+                    onChange={(e) => update(index, { value: e.target.value })}
+                  />
+                </Field>
+                {
+                  // 実体の無い見かけ上の行には出さない。無いものを消す
+                  // ボタンは「押しても何も起きない」死んだコントロールになる
+                  // （レビュー指摘）。
+                  index < draft.textMatches.length && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      aria-label={`テキスト条件 ${index + 1} を削除`}
+                      className="shrink-0"
+                      disabled={disabled}
+                      onClick={() => {
+                        if (draft.textMatches.length === 1) setUnmaterialized(newTextMatch())
+                        onChange((d) => ({
+                          ...d,
+                          textMatches: d.textMatches.filter((_, i) => i !== index),
+                        }))
+                      }}
+                    >
+                      <X />
+                    </Button>
+                  )
+                }
+              </div>
             </div>
             <div className="flex flex-wrap gap-2">
               <Chip

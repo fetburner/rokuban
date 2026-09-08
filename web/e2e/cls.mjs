@@ -124,6 +124,10 @@ async function measureSearch(viewport) {
   })
 
   await page.goto(URL_BASE + '/search', { waitUntil: 'domcontentloaded' })
+  // issue #685 で検索画面の詳細条件は初期状態が閉じている。ここでは、折りたたみ
+  // のままなら隠れているサービス節を明示的に開き、サービス一覧の非同期取得が
+  // 詳細フォームを押す従来の CLS シナリオを維持する。
+  await page.getByRole('button', { name: '詳細条件を表示', exact: true }).click()
   // サービス一覧が届いて再レイアウトが収まるまで待つ。
   await page.getByRole('button', { name: 'テスト局1', exact: true }).waitFor({ timeout: 15000 })
   await page.waitForTimeout(500)

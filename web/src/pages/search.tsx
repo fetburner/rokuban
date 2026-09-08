@@ -93,6 +93,10 @@ export function SearchPage() {
     const last = loadLastSearchConditions()
     return last === undefined ? emptyDraft() : conditionsToDraft(last)
   })
+  // 検索はまずキーワードを入力して結果を確かめる画面なので、詳細条件は
+  // 初期状態では閉じる。ルール画面（`/rules`）は `ConditionFields` にこの
+  // controlled state を渡さず、従来どおり全条件を展開したままにする。
+  const [detailsOpen, setDetailsOpen] = useState(false)
   const [visibleCount, setVisibleCount] = useState(pageSize)
   /**
    * serviceById は結果行（`SearchResultRow`）のサービス名解決に使う。
@@ -212,15 +216,24 @@ export function SearchPage() {
 
   const error = draftError(draft)
 
+  // 放送時間・期間などの検証エラーが折りたたんだ詳細の中にあると、エラー文だけ
+  // 見えても修正する欄へ辿れない。エラーが出た時だけ自動展開し、ユーザーが直した
+  // あとは開いた状態を保つ（閉じる操作を勝手に取り消さない）。
+  useEffect(() => {
+    if (error === undefined) return
+    // oxlint-disable-next-line react/set-state-in-effect -- 詳細欄の検証エラーを見える位置へ開く
+    setDetailsOpen(true)
+  }, [error])
+
   /**
    * resultsRef は「押した結果」の先頭（`検索結果` セクション）。主操作を条件
    * フォームの先頭に上げた代償として、押しても折り目の中では何も変わらない
    * （件数・値札・結果はチップ列全部の下）状態になったため、送信のたびに
    * ここへスクロールとフォーカスを移す。
    *
-   * **実測値**（390x844・テキスト条件「ニュース」・結果 20 件）: 移す前は
-   * クリック後も `window.scrollY = 0` のままで、件数行は y=1179（折り目 844 の
-   * 335px 下）。移した後は `scrollY = 1130` で件数行 y=49・結果 1 件目 y=81。
+   * **実測値**（390x844・テキスト条件「ニュース」・結果 20 件）: 詳細条件を
+   * 初期表示していた変更前は `scrollY = 1138`、詳細条件を初期非表示にした後は
+   * `scrollY = 502`。後者では件数行 y=49・結果 1 件目 y=81 になった。
    * 実ブラウザでの合否判定は `web/e2e/search-mobile.mjs` の④。
    *
    * **移動先は結果の先頭（件数行）で、値札と保存はその直前に残す。** 値札を
@@ -459,9 +472,10 @@ export function SearchPage() {
          * 「サービスチップ列より先に届く」という受け入れ基準は変わらない。
          *
          * **上に出しただけでは足りない。** 「押した結果」（値札・件数・結果）は
-         * この 1 本の縦カラムの末尾に残るので、主操作を上端へ動かしても総
-         * スクロール量は変わらず、負担が送信前から送信後に移るだけになる
-         * （押しても折り目の中では `検索中…` の一瞬のラベル変化しか起きない）。
+         * 詳細条件を開いたときはこの 1 本の縦カラムの末尾に結果が残るので、主操作を
+         * 上端へ動かしても総スクロール量は変わらず、負担が送信前から送信後に移る
+         * だけになる（押しても折り目の中では `検索中…` の一瞬のラベル変化しか
+         * 起きない）。
          * 送信のたびに結果の先頭へスクロールとフォーカスを移すことで対にする
          * （上の `resultsRef`）。
          */}
@@ -502,7 +516,13 @@ export function SearchPage() {
           </div>
         </div>
 
-        <ConditionFields draft={draft} onChange={setDraft} />
+        <ConditionFields
+          draft={draft}
+          onChange={setDraft}
+          collapsible
+          detailsOpen={detailsOpen}
+          onDetailsOpenChange={setDetailsOpen}
+        />
       </form>
 
       <RuleCostSummary status={costStatus} estimate={costEstimate} hasPeriod={searchedHasPeriod} />

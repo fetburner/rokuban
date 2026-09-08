@@ -130,6 +130,67 @@ function findChipByText(group: HTMLElement, text: string): HTMLElement {
   return chip
 }
 
+describe('ConditionFields の詳細条件の折り畳み', () => {
+  it('条件種別ごとの要約を出し、開くと各条件を編集できる', async () => {
+    stubServicesFetch()
+    const draft: SearchDraft = {
+      ...emptyDraft(),
+      channelTypes: ['GR', 'BS'],
+      genres: [0, 3],
+      times: [{ weekdays: 127, startSec: 0, endSec: 3600 }],
+      services: [{ networkId: 32736, serviceId: 1024 }],
+    }
+    const onChange = vi.fn()
+    const onDetailsOpenChange = vi.fn()
+
+    renderInRouter(
+      <ConditionFields
+        draft={draft}
+        onChange={onChange}
+        collapsible
+        detailsOpen={false}
+        onDetailsOpenChange={onDetailsOpenChange}
+      />,
+    )
+
+    const toggle = await screen.findByRole('button', { name: '詳細条件を表示' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByText('設定中の詳細条件: 4件')).toBeInTheDocument()
+    expect(screen.getByText('チャンネル種別: GRほか1件')).toBeInTheDocument()
+    expect(screen.getByText('ジャンル: ニュース・報道ほか1件')).toBeInTheDocument()
+    expect(screen.getByText('時間帯: 1件')).toBeInTheDocument()
+    expect(await screen.findByText('チャンネル: NTV')).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'ジャンル' })).not.toBeInTheDocument()
+
+    fireEvent.click(toggle)
+    expect(onDetailsOpenChange).toHaveBeenCalledWith(true)
+  })
+
+  it('要約の解除はその種別だけを下書きから外す', async () => {
+    stubServicesFetch()
+    const draft: SearchDraft = {
+      ...emptyDraft(),
+      genres: [0, 3],
+      services: [{ networkId: 32736, serviceId: 1024 }],
+    }
+    const onChange = vi.fn()
+
+    renderInRouter(
+      <ConditionFields
+        draft={draft}
+        onChange={onChange}
+        collapsible
+        detailsOpen={false}
+      />,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'ジャンルの条件を解除' }))
+    expect(onChange).toHaveBeenCalledTimes(1)
+    const update = onChange.mock.calls[0][0] as (draft: SearchDraft) => SearchDraft
+    expect(update(draft)).toEqual({ ...draft, genres: [] })
+  })
+})
+
 describe('ConditionFields のサービスチップ', () => {
   it('名前が重複しないサービスには補助ラベルを付けない', async () => {
     stubServicesFetch()
