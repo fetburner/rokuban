@@ -2878,6 +2878,215 @@ func TestIngestWorker_ConcurrentSameRelPath_LoserNeverOpensStream(t *testing.T) 
 	}
 }
 
+// terminateRelPathLockBackend は pg_locks の advisory lock 保持者だけを
+// pg_terminate_backend で切断する。production code にテスト用の connection
+// hook を足さず、issue #679 の「ロック用セッションだけを失う」故障を実際の
+// PostgreSQL セッションで再現するための helper。
+func terminateRelPathLockBackend(t *testing.T, pool *pgxpool.Pool, relPath string) {
+	t.Helper()
+	key := relPathLockKey(relPath)
+	ctx := context.Background()
+	deadline := time.Now().Add(5 * time.Second)
+
+	var pid int32
+	for {
+		err := pool.QueryRow(ctx, `
+			SELECT pid
+			FROM pg_locks
+			WHERE locktype = 'advisory'
+			  AND pid <> pg_backend_pid()
+			  AND classid = (($1::bigint >> 32) & 4294967295)::oid
+			  AND objid = ($1::bigint & 4294967295)::oid
+			  AND objsubid = 1
+			  AND granted
+			LIMIT 1`, key).Scan(&pid)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("finding rel_path lock backend: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("rel_path lock backend did not appear for %q", relPath)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	var terminated bool
+	if err := pool.QueryRow(ctx, "SELECT pg_terminate_backend($1)", pid).Scan(&terminated); err != nil {
+		t.Fatalf("terminating rel_path lock backend %d: %v", pid, err)
+	}
+	if !terminated {
+		t.Fatalf("pg_terminate_backend(%d) returned false", pid)
+	}
+}
+
+// TestIngestWorker_RelPathLockSessionLoss_AbortsOldTransfer は issue #679 の
+// 障害系列を実際に再現する。A/B は同じ長さ・同じ rel_path だがバイト列が異なる。
+// A の lock session だけを切断すると、heartbeat が A の転送 context をキャンセル
+// し、B が同じ宛先へ転送・commit できる。A の中断後に得られた B の DB 行と実ファイル
+// が全バイト一致することを検証する。
+//
+// 壊し方:
+//   - heartbeatLoop を消す / lost を転送 context に伝播しない
+//     → A の HTTP handler が context cancellation を観測せず、テストが timeout する
+//   - `ingestCtx` の代わりに元の `ctx` を transferIngestRecord へ渡す
+//     → 同じく A が止まらず、B が書いた後の宛先を A の残りバイトが変更する
+//   - A/B の fill を同じにする / 長さを変える
+//     → 内容の混在を長さだけで見てしまい、回帰試験の検出力が落ちる
+func TestIngestWorker_RelPathLockSessionLoss_AbortsOldTransfer(t *testing.T) {
+	p := setupTestPool(t)
+	if p == nil {
+		return
+	}
+	mediaDir := t.TempDir()
+
+	const relContentPath = "shared/lock-loss.m2ts"
+	const relPath = "sites/default/" + relContentPath
+	tsDataA := makeTSDataFill(30, 0xAA)
+	tsDataB := makeTSDataFill(30, 0xBB)
+
+	reachedMidTransfer := make(chan struct{})
+	aCanceled := make(chan struct{})
+	releaseTransfer := make(chan struct{})
+	var reachedOnce sync.Once
+	var canceledOnce sync.Once
+
+	srvA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			flusher, _ := w.(http.Flusher)
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsDataA)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(tsDataA[:188])
+			if flusher != nil {
+				flusher.Flush()
+			}
+			reachedOnce.Do(func() { close(reachedMidTransfer) })
+			select {
+			case <-r.Context().Done():
+				canceledOnce.Do(func() { close(aCanceled) })
+				return
+			case <-releaseTransfer:
+				_, _ = w.Write(tsDataA[188:])
+			}
+
+		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsDataA)))
+			w.WriteHeader(http.StatusOK)
+
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{Options: mirakc.Options{ContentPath: strPtr(relContentPath)}},
+				Content:   mirakc.ContentInfo{Path: "/recording/" + relContentPath},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+
+		case r.Method == http.MethodDelete:
+			result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(result)
+
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	// A の handler が barrier 待ちのまま t.Fatalf の cleanup に入る経路を
+	// 防ぐ。release は srvA.Close より先に実行する必要がある（t.Cleanup は LIFO）。
+	t.Cleanup(srvA.Close)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseTransfer) }) }
+	t.Cleanup(release)
+
+	srvB := newFullTransferServer(t, tsDataB, relContentPath)
+
+	recordingIDA := insertTestRecordingForSite(t, p, "default", 601)
+	insertTestRecordSyncForSite(t, p, "default", recordingIDA, "rec-lock-loss-a", 327361024000601)
+	recordingIDB := insertTestRecordingForSite(t, p, "default", 602)
+	insertTestRecordSyncForSite(t, p, "default", recordingIDB, "rec-lock-loss-b", 327361024000602)
+
+	wA := &IngestWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srvA.URL, nil)),
+		Pool:          p,
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
+	}
+	wB := &IngestWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srvB.URL, nil)),
+		Pool:          p,
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
+	}
+
+	jobA := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-lock-loss-a"},
+	}
+	jobB := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-lock-loss-b"},
+	}
+
+	errACh := make(chan error, 1)
+	go func() { errACh <- wA.Work(context.Background(), jobA) }()
+	<-reachedMidTransfer
+
+	terminateRelPathLockBackend(t, p, relPath)
+
+	select {
+	case <-aCanceled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("A's transfer was not canceled after its lock session was terminated")
+	}
+
+	var errA error
+	select {
+	case errA = <-errACh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("A's Work did not return after its lock session was terminated")
+	}
+	if errA == nil {
+		t.Fatal("A's Work() error = nil, want lock-loss failure")
+	}
+
+	if err := wB.Work(context.Background(), jobB); err != nil {
+		t.Fatalf("B's Work() error: %v", err)
+	}
+
+	fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+	gotData, err := os.ReadFile(fullPath)
+	if err != nil {
+		t.Fatalf("reading B's committed file: %v", err)
+	}
+	if !bytes.Equal(gotData, tsDataB) {
+		t.Errorf("B's committed file does not exactly match B's bytes (len got=%d want=%d)", len(gotData), len(tsDataB))
+	}
+
+	q := sqlcgen.New(p)
+	assetB, err := q.GetActiveOriginalMediaAsset(context.Background(), recordingIDB)
+	if err != nil {
+		t.Fatalf("B's original media_asset: %v", err)
+	}
+	if assetB.RelPath != relPath {
+		t.Errorf("B's media_asset rel_path = %q, want %q", assetB.RelPath, relPath)
+	}
+	if assetB.SizeBytes != int64(len(tsDataB)) {
+		t.Errorf("B's media_asset size_bytes = %d, want %d", assetB.SizeBytes, len(tsDataB))
+	}
+	var aAssetCount int
+	if err := p.QueryRow(context.Background(),
+		"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingIDA,
+	).Scan(&aAssetCount); err != nil {
+		t.Fatalf("counting media_assets for A: %v", err)
+	}
+	if aAssetCount != 0 {
+		t.Errorf("media_assets rows for A = %d, want 0 after lock-loss cancellation", aAssetCount)
+	}
+}
+
 // TestIngestWorker_ReleasesRelPathLockAfterCommit は、ingest 成功後に
 // rel_path の advisory lock が解放されていることを固定する。ingest が使った
 // のとは別の独立したプール（別セッション）から同じキーの

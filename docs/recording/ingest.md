@@ -119,7 +119,10 @@ fsync を入れる理由は電源断ではなく、Linux では遅延した書�
 - **ノンブロッキングであってブロッキング版（`pg_advisory_lock`）ではない。** ブロッキング版だと、ingest のキュー枠（site あたり 1〜2、下記 §5.4）を「待ち」で丸ごと塞いでしまう
 - **先読み（`checkRelPathConflict`、`GetLiveMediaAssetByRelPath`）はロックの下へ移した。** これにより **ingest 対 ingest に関してはもはや先読みではなく決着そのものになる** --- ロックを保持している間、他の ingest ジョブは同じ rel_path への転送を開始できないので、この SELECT の結果は `commit` まで安定する。ここで拾うのは「別の（今 transfer 中ではない）recording が過去にこの rel_path を使って既にコミットした」という恒久的な衝突であり、`state <> 'deleted'` の述語（`active` に限らず、delete_reconcile の unlink 前後の中間状態である `deleting` も含む）は変えていない。**ただし delete_reconcile の状態遷移に対しては、従来どおりヒントのまま** --- delete_reconcile は rel_path の advisory lock を取らないので、この SELECT と実際の `CreateMediaAsset` の INSERT の間に `deleting` → `deleted` の遷移が進む TOCTOU の窓は残る
 - **行の一意性の最後の砦は今も一意索引**（レベルトリガー、不変条件 5）。ロックはその代替ではなく、一意索引が効くより前の窓を閉じるためだけにある
-- **正直に書く劣化モード**: 転送中にロック用コネクションが死ぬと、ロックは早期に解放される。その窓はロック導入前と同じ TOCTOU に戻るだけで、新しい壊れ方を作るものではない（単調な改善であって完全な排他の証明ではない）
+- **ロック用セッションを heartbeat する**: 転送中は 1 秒ごとに同じ接続の `pg_locks` を照合する。接続断・ロック喪失・heartbeat の timeout は失敗側に倒し、転送 context をキャンセルする。これにより、ロックが解放された後も旧実行が書き続ける現行の劣化モードを、通常は heartbeat 1 回ぶんの検知窓に限定する。heartbeat 自体が通信を続けるので、idle session timeout / 経路上の idle 切断を防ぐ効果もある
+- **残る検出窓は保証として隠さない**: nominal には heartbeat 間隔 1 秒、1 回の応答待ち 2 秒の窓が残る。Postgres がロックを解放してから heartbeat が検知するまでに後続 ingest が同じ宛先を開くと、旧実行がその短い窓で書く可能性はある。この絶対的な窓を消す「試行ごとの不変パス + DB 採用」は最強だが、rel_path の名前空間（rescue の `sites/{site}/` 逆読み、`EncodedRelPath`、catalog）を変更し、失敗試行ごとに全長の孤児を 7 日 + 14 日残すため採らない。保存先側の `flock` も S3/FUSE で意味論が保証されず、採らない
+- **同一録画の再試行**: 現行の `IngestWorker.Timeout() = -1` と River の running を含む一意投入により、プロセス内の通常の River 経路では古い ingest と新しい ingest が同時に走らない。この前提が将来変わる場合も、`media_assets (recording_id, kind, profile)` の一意制約が採用行を 1 つに絞り、heartbeat が先行実行を止める。プロセス死後に running ingest が戻らない別の欠損は issue #690 で扱う
+- **孤児と追加 I/O**: heartbeat で中断した直接書きの部分ファイルは DB 行が無いので、既存の `orphan_files` の mtime 猶予（既定 7 日）とエイジング（既定 14 日）が回収する。正常な転送に別の全長コピーは追加せず、追加コストは実行中 ingest 1 本あたり 1 秒ごとの短い DB query だけである
 
 **今でも先に浮かぶ案が壊すもの**: 一時ファイル + `os.Rename` で宛先を作る案は採らない --- rename は S3 マウントの一部（AWS Mountpoint）に存在せず、他（geesefs/s3fs）では数十 GB の実コピーになる（[storage/contract.md](../storage/contract.md) §2）。commit を先にして rename を後にすると、rename が恒久失敗したとき行が指す唯一の実体が一時ファイルのまま残り、`active` 行の実体欠落を検出する経路が無いまま孤児回収に食われる。
 

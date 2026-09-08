@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,6 +20,27 @@ const relPathLockKeyPrefix = "rokuban:ingest:rel_path:"
 // （0）のときに使う既定値。ロック用コネクションの取得（pool.Acquire）と
 // pg_try_advisory_lock の両方に与える上限。
 const defaultRelPathLockTimeout = 10 * time.Second
+
+// relPathLockHeartbeatInterval は、長時間の ingest 中もロック用セッションを
+// idle にしないための疎通間隔。切断検知の窓もこの間隔を上限の目安にする。
+const relPathLockHeartbeatInterval = time.Second
+
+// relPathLockHeartbeatTimeout は heartbeat 1 回の応答を待つ上限。応答を待ち
+// 続けている間に後続 ingest が同じ rel_path の書き込みを始めると、古い実行を
+// 止められない窓が広がるので、失敗側に倒して転送を中断する。
+const relPathLockHeartbeatTimeout = 2 * time.Second
+
+const relPathLockHeldQuery = `
+SELECT EXISTS (
+    SELECT 1
+    FROM pg_locks
+    WHERE locktype = 'advisory'
+      AND pid = pg_backend_pid()
+      AND classid = (($1::bigint >> 32) & 4294967295)::oid
+      AND objid = ($1::bigint & 4294967295)::oid
+      AND objsubid = 1
+      AND granted
+)`
 
 // relPathLockKey は relPath から pg_try_advisory_lock(bigint) 用のキーを作る。
 // Postgres 組み込みの hashtext() ではなく Go 側の hash/fnv を使う ---
@@ -35,7 +57,95 @@ func relPathLockKey(relPath string) int64 {
 	return int64(h.Sum64())
 }
 
-// acquireRelPathLock は rel_path の Postgres **セッションレベル** advisory
+// relPathLock は rel_path の Postgres **セッションレベル** advisory
+// lock と、そのセッションの heartbeat を所有する。heartbeat が接続断または
+// セッション上のロック喪失を検知すると lost を閉じ、ingest 側の context を
+// キャンセルさせる。
+type relPathLock struct {
+	conn *pgxpool.Conn
+	key  int64
+
+	stopHeartbeat chan struct{}
+	heartbeatDone chan struct{}
+	lost          chan struct{}
+	releaseOnce   sync.Once
+	lostOnce      sync.Once
+}
+
+func (l *relPathLock) markLost() {
+	l.lostOnce.Do(func() { close(l.lost) })
+}
+
+func (l *relPathLock) heartbeatLoop() {
+	defer close(l.heartbeatDone)
+
+	ticker := time.NewTicker(relPathLockHeartbeatInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-l.stopHeartbeat:
+			return
+		case <-ticker.C:
+			held, err := l.checkHeld()
+			if err != nil {
+				slog.Warn("ingest: rel_path advisory lock heartbeat failed", "err", err)
+				l.markLost()
+				return
+			}
+			if !held {
+				slog.Warn("ingest: rel_path advisory lock was lost during transfer")
+				l.markLost()
+				return
+			}
+		}
+	}
+}
+
+func (l *relPathLock) checkHeld() (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), relPathLockHeartbeatTimeout)
+	defer cancel()
+
+	var held bool
+	if err := l.conn.QueryRow(ctx, relPathLockHeldQuery, l.key).Scan(&held); err != nil {
+		return false, err
+	}
+	return held, nil
+}
+
+func (l *relPathLock) isLost() bool {
+	select {
+	case <-l.lost:
+		return true
+	default:
+		return false
+	}
+}
+
+func (l *relPathLock) release() {
+	l.releaseOnce.Do(func() {
+		close(l.stopHeartbeat)
+		<-l.heartbeatDone
+
+		unlockCtx, unlockCancel := context.WithTimeout(context.Background(), defaultRelPathLockTimeout)
+		defer unlockCancel()
+
+		var stillHeld bool
+		if err := l.conn.QueryRow(unlockCtx, "SELECT pg_advisory_unlock($1)", l.key).Scan(&stillHeld); err != nil {
+			slog.Warn("ingest: failed to release rel_path advisory lock", "err", err)
+		} else if !stillHeld {
+			// pgxpool の Release() がセッション状態（advisory lock）を暗黙に
+			// リセットするとは仮定しない --- 明示的に unlock し、戻り値
+			// （pg_advisory_unlock は「保持していなかった」場合 false を返す）
+			// を見る。false は heartbeat が転送中にロック喪失を検知したか、
+			// それ以外の理由でセッションのロックが解放されていたことを示す。
+			slog.Warn("ingest: rel_path advisory lock was already lost before release")
+		}
+		l.conn.Release()
+	})
+}
+
+// acquireRelPathLockWithHeartbeat は rel_path の Postgres **セッションレベル** advisory
 // lock を **`pg_try_advisory_lock`（ノンブロッキング）** で試行する。
 // internal/role.TryAcquire と同じ形（`pool.Acquire` したコネクションを保持し
 // 続ける限りロックが維持され、コネクション切断で自動解放される）。
@@ -61,12 +171,15 @@ func relPathLockKey(relPath string) int64 {
 // acquired=false はロック取得の失敗（既に別の ingest ジョブが同じ rel_path を
 // 転送中）を示す通常の敗北であり、err ではない。
 //
-// **これは相互排除の絶対的な保証ではない（正直に書く劣化モード）。** 転送中に
-// このロック用コネクションが死ぬと、ロックは早期に解放される。その窓は
-// ロック導入前と同じ TOCTOU に戻るだけで、新しい壊れ方を作るものではない
-// （docs/recording/ingest.md §5.3「劣化モード」）。ロックを「正しさの根拠」と
-// 呼べるのは ingest 対 ingest の範囲に限る。
-func acquireRelPathLock(ctx context.Context, pool *pgxpool.Pool, relPath string, timeout time.Duration) (release func(), acquired bool, err error) {
+// heartbeat は転送中もこの接続へ定期的にクエリを送り、接続断または advisory
+// lock の喪失を検知したら lost を閉じる。ingest は lost を見て転送 context を
+// キャンセルし、DB commit とエッジ record の削除へ進まない。
+//
+// heartbeat による検知までの窓は残るため、これだけで相互排除の絶対的な証明に
+// はならない。ただし「接続が切れたらロックは解放されるだけ」と放置せず、旧実行
+// が後続実行と同じ宛先へ書き続ける時間を限定し、通常時は heartbeat 自体が idle
+// timeout による切断を防ぐ。残る窓の判断は docs/recording/ingest.md §5.3 に記録する。
+func acquireRelPathLockWithHeartbeat(ctx context.Context, pool *pgxpool.Pool, relPath string, timeout time.Duration) (*relPathLock, bool, error) {
 	if timeout <= 0 {
 		timeout = defaultRelPathLockTimeout
 	}
@@ -80,6 +193,7 @@ func acquireRelPathLock(ctx context.Context, pool *pgxpool.Pool, relPath string,
 	}
 
 	key := relPathLockKey(relPath)
+	var acquired bool
 	if err := conn.QueryRow(acquireCtx, "SELECT pg_try_advisory_lock($1)", key).Scan(&acquired); err != nil {
 		conn.Release()
 		return nil, false, fmt.Errorf("trying rel_path advisory lock: %w", err)
@@ -90,23 +204,23 @@ func acquireRelPathLock(ctx context.Context, pool *pgxpool.Pool, relPath string,
 		return nil, false, nil
 	}
 
-	release = func() {
-		unlockCtx, unlockCancel := context.WithTimeout(context.Background(), defaultRelPathLockTimeout)
-		defer unlockCancel()
-
-		var stillHeld bool
-		if err := conn.QueryRow(unlockCtx, "SELECT pg_advisory_unlock($1)", key).Scan(&stillHeld); err != nil {
-			slog.Warn("ingest: failed to release rel_path advisory lock", "err", err)
-		} else if !stillHeld {
-			// pgxpool の Release() がセッション状態（advisory lock）を暗黙に
-			// リセットするとは仮定しない --- 明示的に unlock し、戻り値
-			// （pg_advisory_unlock は「保持していなかった」場合 false を返す）
-			// を見る。false は転送中にこのコネクションが失われてロックが
-			// 早期解放されていた（劣化モード）ことの唯一の事後的な手がかり
-			// であり、これ自体は何かを防ぐものではない。
-			slog.Warn("ingest: rel_path advisory lock was already lost before release")
-		}
-		conn.Release()
+	lock := &relPathLock{
+		conn:          conn,
+		key:           key,
+		stopHeartbeat: make(chan struct{}),
+		heartbeatDone: make(chan struct{}),
+		lost:          make(chan struct{}),
 	}
-	return release, true, nil
+	go lock.heartbeatLoop()
+	return lock, true, nil
+}
+
+// acquireRelPathLock は既存の release 関数 API を保つ薄いラッパー。実際の
+// ingest は acquireRelPathLockWithHeartbeat を使い、ロック喪失通知も受け取る。
+func acquireRelPathLock(ctx context.Context, pool *pgxpool.Pool, relPath string, timeout time.Duration) (release func(), acquired bool, err error) {
+	lock, acquired, err := acquireRelPathLockWithHeartbeat(ctx, pool, relPath, timeout)
+	if err != nil || !acquired {
+		return nil, acquired, err
+	}
+	return lock.release, true, nil
 }

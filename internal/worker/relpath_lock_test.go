@@ -96,6 +96,29 @@ func TestIngestRelPathLock_SecondAcquireFailsAndReleaseFrees(t *testing.T) {
 	}
 }
 
+// TestIngestRelPathLock_HeartbeatPreservesHeldSessionAlive は、ロック保持中の
+// heartbeat が正常なセッションを誤って lost 扱いしないことを固定する。
+// `pg_locks` の bigint key 分解や objsubid 条件を壊す変異は、heartbeat 1 回後に
+// isLost が true になって落ちる。
+func TestIngestRelPathLock_HeartbeatPreservesHeldSessionAlive(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	lock, acquired, err := acquireRelPathLockWithHeartbeat(ctx, pool, "sites/default/test/lock-heartbeat.m2ts", time.Second)
+	if err != nil {
+		t.Fatalf("acquireRelPathLockWithHeartbeat: %v", err)
+	}
+	if !acquired {
+		t.Fatal("expected heartbeat test to acquire the lock")
+	}
+	t.Cleanup(lock.release)
+
+	time.Sleep(relPathLockHeartbeatInterval + 250*time.Millisecond)
+	if lock.isLost() {
+		t.Fatal("heartbeat marked a healthy rel_path lock as lost")
+	}
+}
+
 // TestIngestWorker_RelPathLockTimeoutDoesNotHang は、プールが枯渇していても
 // acquireRelPathLock がハングせず期限内にエラーで返ることを固定する
 // （ingest の River タイムアウトは無効なので、これが唯一の歯止め）。
