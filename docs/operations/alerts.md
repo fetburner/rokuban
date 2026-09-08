@@ -53,9 +53,9 @@ EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）で
 次の主系列をサイトごとに使う。
 
 - `rokuban_presync_pending{site,reason="missing"}` — desired に対する observed schedule が無い
-- `rokuban_presync_pending{site,reason="options"}` — `scheduled` state の observed schedule はあるが、
-  priority / `program:{programId}` tag / 明示 `contentPath` が desired と一致せず、reconciler が
-  再作成を試みられる
+- `rokuban_presync_pending{site,reason="options"}` — observed schedule が `scheduled` state にある。
+  priority / `program:{programId}` tag / 明示 `contentPath` が desired と一致しない場合に数える。
+  この差分は reconciler が再作成できる
 - `rokuban_presync_pending{site,reason="options_deferred"}` — options の不一致はあるが、state が
   `scheduled` ではないため再作成を見送っている。放送終了を待つか、必要なら手動介入する
 - `rokuban_presync_pending_earliest_start_timestamp_seconds{site,reason}` — 同じ reason で
