@@ -1177,6 +1177,92 @@ describe('ProgramsPage の進行方向の無限スクロール', () => {
     await userEvent.click(screen.getByRole('button', { name: 'さらに読み込む' }))
     await waitFor(() => expect(screen.queryByText('続きの取得に失敗しました')).not.toBeInTheDocument())
   })
+
+  it('空の時間窓でも次の時間帯へ進め、取得失敗後の再試行で番組へ到達できる', async () => {
+    const recovery = program(683001, 1024, 13, '空窓の先の番組')
+    const fetchMock = stubApi([], [], [recovery], (callIndex) => {
+      if (callIndex <= 2) return jsonResponse([])
+      if (callIndex === 3) return errorResponse(500, 'window unavailable')
+      return undefined
+    })
+    renderPage()
+
+    const programRequests = () =>
+      fetchMock.mock.calls.filter(
+        (call) =>
+          new URL(String(call[0]), 'http://localhost').pathname === '/api/sites/default/programs',
+      ).length
+
+    expect(await screen.findByText('この時間帯の番組がありません')).toBeInTheDocument()
+    expect(screen.queryByTestId('program-list-sentinel')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '次の時間帯を見る' })).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: '次の時間帯を見る' }))
+    await waitFor(() => expect(programRequests()).toBe(2))
+    expect(screen.getByRole('button', { name: '次の時間帯を見る' })).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: '次の時間帯を見る' }))
+    expect(await screen.findByText('続きの取得に失敗しました')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '次の時間帯を見る' })).toBeInTheDocument()
+    expect(programRequests()).toBe(3)
+
+    await userEvent.click(screen.getByRole('button', { name: '次の時間帯を見る' }))
+    expect(await screen.findByText('空窓の先の番組')).toBeInTheDocument()
+    expect(screen.queryByText('続きの取得に失敗しました')).not.toBeInTheDocument()
+    expect(screen.getByTestId('program-list-sentinel')).toBeInTheDocument()
+    expect(programRequests()).toBe(4)
+  })
+
+  it('番組表示後に空の時間窓へ進んだら、自動読み込みの番兵を外して手動導線に切り替える', async () => {
+    const firstWindow = Array.from({ length: 24 }, (_, index) =>
+      program(683100 + index, 1024, index / 4, `先に表示された番組${index}`),
+    )
+    const fetchMock = stubApi([], [], firstWindow, (callIndex) =>
+      callIndex === 2 ? jsonResponse([]) : undefined,
+    )
+    renderPage()
+
+    const programRequests = () =>
+      fetchMock.mock.calls.filter(
+        (call) =>
+          new URL(String(call[0]), 'http://localhost').pathname === '/api/sites/default/programs',
+      ).length
+
+    expect(await screen.findByText('先に表示された番組0')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'さらに読み込む' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'さらに読み込む' }))
+
+    await waitFor(() => expect(programRequests()).toBe(2))
+    expect(screen.getByText('先に表示された番組0')).toBeInTheDocument()
+    expect(screen.queryByTestId('program-list-sentinel')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '次の時間帯を見る' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'さらに読み込む' })).not.toBeInTheDocument()
+  })
+
+  it('最終時間窓が空なら次の時間帯ボタンを消し、追加取得をしない', async () => {
+    const fetchMock = stubApi([], [], [])
+    renderPage('/programs?day=2026-08-21')
+
+    const programRequests = () =>
+      fetchMock.mock.calls.filter(
+        (call) =>
+          new URL(String(call[0]), 'http://localhost').pathname === '/api/sites/default/programs',
+      ).length
+
+    expect(await screen.findByText('この時間帯の番組がありません')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '次の時間帯を見る' })).toBeInTheDocument()
+
+    for (let page = 2; page <= 4; page++) {
+      await userEvent.click(screen.getByRole('button', { name: '次の時間帯を見る' }))
+      await waitFor(() => expect(programRequests()).toBe(page))
+      if (page < 4) {
+        expect(screen.getByRole('button', { name: '次の時間帯を見る' })).toBeInTheDocument()
+      }
+    }
+
+    expect(screen.queryByRole('button', { name: '次の時間帯を見る' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'さらに読み込む' })).not.toBeInTheDocument()
+  })
 })
 
 describe('ProgramsPage の選択日の URL 化', () => {
