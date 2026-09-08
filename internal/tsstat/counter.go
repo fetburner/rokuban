@@ -36,7 +36,8 @@ type PIDStat struct {
 // DropPosition は 1 件のドロップを観測した位置。
 // ByteOffset は原本 TS の先頭からのバイト位置で、ElapsedMs は最初に観測した
 // PCR を録画開始とみなした経過時間。PCR をまだ観測していない、または PCR の
-// 逆行 / discontinuity を観測して時計を無効にした場合は ElapsedMs が nil になる。
+// 逆行 / PCR を運ぶパケット自身の discontinuity を観測して時計を無効にした場合は
+// ElapsedMs が nil になる（他 PID の discontinuity では無効にしない。pcrTracker 参照）。
 type DropPosition struct {
 	ByteOffset int64
 	ElapsedMs  *int64

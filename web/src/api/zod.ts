@@ -1227,7 +1227,7 @@ export const ListRecordingDropStatsResponseItem = zod.object({
   "positions": zod.array(zod.object({
   "byteOffset": zod.int().describe('原本 TS の先頭から、ドロップを観測したパケットまでのバイト位置'),
   "elapsedMs": zod.int().optional().describe('録画開始からの経過ミリ秒。PCR を得られない場合は省略')
-})).describe('ドロップを観測した原本内の位置。PID ごとに最大 100 件まで保持するため、\n`drops`（真のドロップ件数）と配列の長さは一致しないことがある。\n`byteOffset` は原本 TS の先頭からのバイト位置、`elapsedMs` は最初に\n観測した PCR を録画開始とみなした録画開始からの経過ミリ秒。\nPCR をまだ観測していない、または PCR の逆行 \/ discontinuity 後で時計を\n無効にした行では `elapsedMs` を省略する。絶対放送時刻ではない。\n')
+})).describe('ドロップを観測した原本内の位置。PID ごとに最大 100 件まで保持するため、\n`drops`（真のドロップ件数）と配列の長さは一致しないことがある。\n`byteOffset` は原本 TS の先頭からのバイト位置、`elapsedMs` は最初に\n観測した PCR を録画開始とみなした録画開始からの経過ミリ秒。\nPCR をまだ観測していない、または PCR の逆行 \/ PCR を運ぶパケット自身の\ndiscontinuity で時計を無効にした行では `elapsedMs` を省略する\n（他 PID の discontinuity では無効にしない）。絶対放送時刻ではない。\n')
 })
 export const ListRecordingDropStatsResponse = zod.array(ListRecordingDropStatsResponseItem)
 
