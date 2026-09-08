@@ -59,7 +59,12 @@ type pidTracker struct {
 // PCR を載せているパケットを素直に採用し、最初の PCR を原点にする。複数 PID が
 // PCR を持つ場合も、観測順で最後の値を採る。PCR base は 33 ビットで約 26.5 時間
 // で一周し、discontinuity でも戻りうるため、逆行を検出した時点で以後の経過時刻を
-// 無効にする（嘘の位置を出さないことを優先する）。
+// 無効にする（嘘の位置を出さないことを優先する）。ISO/IEC 13818-1 (H.222.0) では
+// system time-base discontinuity は PCR を運ぶパケット自身の discontinuity_indicator
+// で通知される（他 PID の discontinuity_indicator はその PID の continuity_counter
+// の不連続を示すだけで、時間基準には触れない）。そのため discontinuous は
+// observe に渡された値、つまり「この PCR を運んだパケット自身が discontinuous
+// だったか」だけで無効化を判定する。
 type pcrTracker struct {
 	firstBase uint64
 	lastBase  uint64
@@ -78,12 +83,6 @@ func (t *pcrTracker) observe(base uint64, discontinuous bool) {
 		t.invalid = true
 	}
 	t.lastBase = base
-}
-
-func (t *pcrTracker) markDiscontinuous() {
-	if t.hasValue {
-		t.invalid = true
-	}
 }
 
 func (t *pcrTracker) elapsedMS() *int64 {
@@ -210,11 +209,6 @@ func (c *Counter) processPacket(pkt *packet.Packet, byteOffset int64) {
 
 	hasAdaptation := packet.ContainsAdaptationField(pkt)
 	discontinuous := hasAdaptation && adaptationfield.Length(pkt) > 0 && adaptationfield.IsDiscontinuous(pkt)
-	if discontinuous {
-		// PCR が同じ adaptation field に無くても、その discontinuity より後の
-		// PCR を同じ時計として扱える保証はない。
-		c.pcr.markDiscontinuous()
-	}
 	// gots の HasPCR / PCR は adaptation-field の長さを検査しない。長さ 7 は
 	// flags 1 バイト + PCR 6 バイトを含む最小の正しい長さなので、自分で確認して
 	// から呼ぶ（壊れた放送波で payload を PCR と誤読しない）。
@@ -284,6 +278,8 @@ func (c *Counter) processPacket(pkt *packet.Packet, byteOffset int64) {
 // pcrBase は adaptationfield.PCR が返す生の 6 バイトから 33 ビットの PCR base
 // だけを取り出す。PCR extension は経過時間のミリ秒精度には使わない --- issue の
 // 方針どおり 90kHz の base を使う。
+// base の最下位 1 ビット（raw[4]>>7 の項）は 1/90000 秒単位でしか結果に効かず、
+// elapsed_ms（ミリ秒精度）にはほぼ現れないため、テストで固定していない。
 func pcrBase(raw []byte) uint64 {
 	return uint64(raw[0])<<25 |
 		uint64(raw[1])<<17 |

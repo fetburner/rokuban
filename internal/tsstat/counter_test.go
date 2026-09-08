@@ -83,6 +83,31 @@ func withPCRBase(base uint64) packetOpt {
 	}
 }
 
+// withDiscontinuousFlag は withPCRBase が設定した adaptation field はそのままに
+// discontinuity_indicator だけを立てる。withPCRBase の後に適用すること。
+func withDiscontinuousFlag() packetOpt {
+	return func(pkt *[packet.PacketSize]byte) {
+		pkt[5] |= 0x80
+	}
+}
+
+// withZeroLengthAdaptationFieldPayload は adaptation_field_control = 11 かつ
+// adaptation_field_length = 0 のパケットを作る。この形では pkt[5] は適応
+// フィールドではなく payload の先頭バイトになる。gots の
+// adaptationfield.IsDiscontinuous は adaptation_field_length を見ずに無条件で
+// pkt[5]&0x80 を読むので、ここに 0x80 以上の payload があると
+// discontinuity_indicator と誤読されうる（counter.go の Length(pkt) > 0
+// ガードがこれを防ぐ）。
+func withZeroLengthAdaptationFieldPayload(b byte) packetOpt {
+	return func(pkt *[packet.PacketSize]byte) {
+		pkt[3] = (pkt[3] & 0xCF) | 0x30 // adaptation_field_control = 11 (AF + payload)
+		pkt[4] = 0                      // adaptation_field_length = 0
+		for i := 5; i < packet.PacketSize; i++ {
+			pkt[i] = b
+		}
+	}
+}
+
 func mustWrite(t *testing.T, c *Counter, p []byte) {
 	t.Helper()
 	if _, err := c.Write(p); err != nil {
@@ -347,6 +372,23 @@ func TestCounter_DiscontinuityIndicatorResets(t *testing.T) {
 	}
 }
 
+// adaptation_field_control = 11 かつ adaptation_field_length = 0 では pkt[5] は
+// payload の先頭バイトであり、そこに 0x80 以上の値があっても discontinuity では
+// ない。CC が本物の欠落（0→2）を示していれば、誤って discontinuity と読んで
+// CC トラッカーをリセットし、取りこぼしてはならない。
+func TestCounter_ZeroLengthAdaptationFieldPayloadIsNotMisreadAsDiscontinuity(t *testing.T) {
+	var buf bytes.Buffer
+	c := NewCounter(&buf)
+
+	mustWrite(t, c, makePacket(0x100, 0))
+	mustWrite(t, c, makePacket(0x100, 2, withZeroLengthAdaptationFieldPayload(0x80)))
+
+	stats := c.Stats()
+	if stats[0x100].Drops != 1 {
+		t.Errorf("drops = %d, want 1 (payload 先頭バイトの 0x80 を discontinuity と誤読してはならない)", stats[0x100].Drops)
+	}
+}
+
 func TestCounter_MultiplePIDs(t *testing.T) {
 	var buf bytes.Buffer
 	c := NewCounter(&buf)
@@ -443,6 +485,38 @@ func TestCounter_DropPositionUsesOriginalOffsetAndPCR(t *testing.T) {
 	}
 }
 
+// TestCounter_DropPositionElapsedMsWithHighPCRBit は PCR base の上位ビット
+// （bit 25 以上）が立った値でも elapsed_ms が正しくデコードされることを固定する。
+// 2^25 tick ≒ 372.8 秒なので、実放送の PCR base はほぼ常にこの範囲を超える ---
+// counter_test.go の他のテストは全て 2^25 未満の値しか使っておらず、
+// pcrBase の `uint64(raw[0])<<25` を `<<26` に変えても go test は緑のままだった
+// （実測済み）。この 2 点は raw[0] が 1→2 に変わる境界をまたぐので、シフトを
+// 1 ビットずらすと最上位バイトの寄与だけが 2 点で異なる量ずれ、差分（elapsed_ms）
+// が変わって検出できる。
+func TestCounter_DropPositionElapsedMsWithHighPCRBit(t *testing.T) {
+	var buf bytes.Buffer
+	c := NewCounter(&buf)
+
+	const (
+		base1 = 1 << 25           // 33554432, raw[0] = 1
+		base2 = base1 + 90000*373 // raw[0] = 2 になる境界を越えて 373 秒後
+	)
+
+	mustWrite(t, c, makePacket(0x100, 0, withPCRBase(base1)))
+	mustWrite(t, c, makePacket(0x100, 4, withPCRBase(base2))) // CC gap → drop
+
+	positions := c.Stats()[0x100].Positions
+	if len(positions) != 1 {
+		t.Fatalf("positions = %d, want 1", len(positions))
+	}
+	if positions[0].ElapsedMs == nil {
+		t.Fatal("elapsed_ms = nil, want 373000")
+	}
+	if *positions[0].ElapsedMs != 373000 {
+		t.Errorf("elapsed_ms = %d, want 373000", *positions[0].ElapsedMs)
+	}
+}
+
 func TestCounter_DropPositionWithoutPCRHasNullElapsed(t *testing.T) {
 	var buf bytes.Buffer
 	c := NewCounter(&buf)
@@ -511,12 +585,16 @@ func TestCounter_PCRBackwardDisablesElapsedPositions(t *testing.T) {
 	}
 }
 
-func TestCounter_DiscontinuityWithoutPCRDisablesElapsedPositions(t *testing.T) {
+// PCR を運ばないパケットの discontinuity_indicator は、そのパケットの PID の
+// continuity_counter が不連続であることしか意味しない（ISO/IEC 13818-1 の
+// system time-base discontinuity は PCR を運ぶパケット自身の
+// discontinuity_indicator で通知される）。時計を無効にしてはならない。
+func TestCounter_DiscontinuityWithoutPCRDoesNotDisableElapsedPositions(t *testing.T) {
 	var buf bytes.Buffer
 	c := NewCounter(&buf)
 
 	mustWrite(t, c, makePacket(0x100, 0, withPCRBase(900000)))
-	// PCR を持たない discontinuity でも、後続 PCR を同じ時計として使わない。
+	// PCR を持たない discontinuity は時計に触れない。
 	mustWrite(t, c, makePacket(0x100, 7, withDiscontinuity()))
 	mustWrite(t, c, makePacket(0x100, 0, withPCRBase(990000)))
 
@@ -524,8 +602,32 @@ func TestCounter_DiscontinuityWithoutPCRDisablesElapsedPositions(t *testing.T) {
 	if len(positions) != 1 {
 		t.Fatalf("positions = %d, want 1", len(positions))
 	}
+	if positions[0].ElapsedMs == nil {
+		t.Fatal("elapsed_ms = nil, want 1000")
+	}
+	if *positions[0].ElapsedMs != 1000 {
+		t.Errorf("elapsed_ms = %d, want 1000", *positions[0].ElapsedMs)
+	}
+}
+
+// PCR を運ぶパケット自身が discontinuous なら、規格どおり時計を無効にする。
+func TestCounter_DiscontinuousPCRPacketDisablesElapsedPositions(t *testing.T) {
+	var buf bytes.Buffer
+	c := NewCounter(&buf)
+
+	mustWrite(t, c, makePacket(0x100, 0, withPCRBase(900000)))
+	// PCR を運ぶパケット自身の discontinuity_indicator。CC は連続しているので
+	// このパケット自体はドロップにならない。
+	mustWrite(t, c, makePacket(0x100, 1, withPCRBase(990000), withDiscontinuousFlag()))
+	// 時計は無効のまま。CC gap でドロップを発生させて確認する。
+	mustWrite(t, c, makePacket(0x100, 5))
+
+	positions := c.Stats()[0x100].Positions
+	if len(positions) != 1 {
+		t.Fatalf("positions = %d, want 1", len(positions))
+	}
 	if positions[0].ElapsedMs != nil {
-		t.Errorf("elapsed_ms = %d, want nil after discontinuity", *positions[0].ElapsedMs)
+		t.Errorf("elapsed_ms = %d, want nil after discontinuous PCR packet", *positions[0].ElapsedMs)
 	}
 }
 
