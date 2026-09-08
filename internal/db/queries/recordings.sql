@@ -263,7 +263,14 @@ ON CONFLICT (recording_id) DO UPDATE SET
 -- 観測の表ではなく録画ごとの宣言を保持する衛星表なので分割しない。
 -- name: SetRecordingKeepOriginal :exec
 INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
-VALUES (sqlc.arg('recording_id'), sqlc.arg('keep_original'), '{}')
+SELECT sqlc.arg('recording_id'),
+       sqlc.arg('keep_original'),
+       coalesce(
+           (SELECT encode_profiles
+            FROM recording_encode_policy
+            WHERE recording_id = sqlc.arg('recording_id')),
+           '{}'::text[]
+       )
 ON CONFLICT (recording_id) DO UPDATE SET
     keep_original = excluded.keep_original,
     updated_at = now();

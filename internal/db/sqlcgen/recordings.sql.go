@@ -468,7 +468,14 @@ func (q *Queries) ListRecordings(ctx context.Context, site string) ([]ListRecord
 
 const setRecordingKeepOriginal = `-- name: SetRecordingKeepOriginal :exec
 INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
-VALUES ($1, $2, '{}')
+SELECT $1,
+       $2,
+       coalesce(
+           (SELECT encode_profiles
+            FROM recording_encode_policy
+            WHERE recording_id = $1),
+           '{}'::text[]
+       )
 ON CONFLICT (recording_id) DO UPDATE SET
     keep_original = excluded.keep_original,
     updated_at = now()
