@@ -6,6 +6,7 @@ import type {
   CapacityOverage,
   Program,
   ProgramSearchRequest,
+  Reservation,
   Rule,
   RuleInput,
   Service,
@@ -67,6 +68,28 @@ function program(programId: number, serviceId: number, name: string): Program {
     description: '',
     genres: [0],
     isFree: true,
+  }
+}
+
+function reservation(
+  programId: number,
+  site = 'default',
+  source: Reservation['source'] = 'manual',
+): Reservation {
+  const startAt = new Date(origin + programId * 3_600_000).toISOString()
+  return {
+    site,
+    programId,
+    source,
+    state: 'active',
+    title: `予約 ${programId}`,
+    serviceName: 'NHK総合',
+    channelType: 'GR',
+    startAt,
+    durationMs: 1_800_000,
+    createdAt: new Date(origin).toISOString(),
+    updatedAt: new Date(origin).toISOString(),
+    skip: false,
   }
 }
 
@@ -168,6 +191,8 @@ function stubApi(options?: {
   /** GET /api/sites を先頭から指定回数だけ失敗させる。 */
   sitesFailures?: number
   holdSites?: boolean
+  /** `/api/reservations` の初期値。配列はテストから変更できる。 */
+  reservations?: Reservation[]
 }) {
   const searchBodies: ProgramSearchRequest[] = []
   const createRuleBodies: RuleInput[] = []
@@ -199,6 +224,7 @@ function stubApi(options?: {
   const overagesRequests: string[] = []
   const pendingOverages: (() => void)[] = []
   const registrySites = options?.sites ?? ['default']
+  const reservations = options?.reservations ?? []
   let remainingSitesFailures = options?.sitesFailures ?? 0
 
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
@@ -222,6 +248,15 @@ function stubApi(options?: {
 
     if (url.pathname === '/api/encode-profiles') {
       return Promise.resolve(jsonResponse([]))
+    }
+
+    if (url.pathname === '/api/reservations') {
+      return Promise.resolve(jsonResponse(reservations))
+    }
+
+    const intent = /^\/api\/sites\/([^/]+)\/programs\/(\d+)\/intent$/.exec(url.pathname)
+    if (intent && (method === 'PUT' || method === 'DELETE')) {
+      return Promise.resolve(new Response(null, { status: 204 }))
     }
 
     if (url.pathname === '/api/capacity/overages') {
@@ -1773,6 +1808,70 @@ describe('SearchPage', () => {
   })
 })
 
+describe('検索結果から単発予約（issue #684）', () => {
+  it('結果行の予約ボタンから番組を探し直さずに予約できる', async () => {
+    const { fetchMock } = stubApi()
+    renderPage()
+
+    await addKeyword('ニュース')
+    await userEvent.click(screen.getByRole('button', { name: '検索' }))
+
+    const results = within(await screen.findByTestId('search-results'))
+    const row = results.getByText('ニュース7').closest('li')
+    expect(row).not.toBeNull()
+    await userEvent.click(within(row as HTMLElement).getByRole('button', { name: '予約' }))
+
+    await waitFor(() => {
+      const intentCall = fetchMock.mock.calls.find((call) => {
+        const url = new URL(String(call[0]), 'http://localhost')
+        return (
+          url.pathname === `/api/sites/default/programs/${news.programId}/intent` &&
+          (call[1] as RequestInit | undefined)?.method === 'PUT'
+        )
+      })
+      expect(intentCall).toBeDefined()
+      if (intentCall === undefined) throw new Error('予約 intent が送信されていません')
+      expect(JSON.parse(String((intentCall[1] as RequestInit).body))).toEqual({ action: 'record' })
+    })
+
+    expect(within(row as HTMLElement).getByRole('button', { name: '取消' })).toBeInTheDocument()
+  })
+
+  it('既存の予約を結果行から取消し、トーストの Undo で元に戻せる', async () => {
+    const { fetchMock } = stubApi({ reservations: [reservation(news.programId)] })
+    renderPage()
+
+    await addKeyword('ニュース')
+    await userEvent.click(screen.getByRole('button', { name: '検索' }))
+
+    const results = within(await screen.findByTestId('search-results'))
+    const row = results.getByText('ニュース7').closest('li')
+    expect(row).not.toBeNull()
+    const rowElement = row as HTMLElement
+
+    await userEvent.click(within(rowElement).getByRole('button', { name: '取消' }))
+    expect(await screen.findByText('予約を取消しました')).toBeInTheDocument()
+    expect(within(rowElement).getByRole('button', { name: '予約' })).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: '元に戻す' }))
+    expect(within(rowElement).getByRole('button', { name: '取消' })).toBeInTheDocument()
+    expect(await screen.findByText('予約を元に戻しました')).toBeInTheDocument()
+
+    await waitFor(() => {
+      const intentBodies = fetchMock.mock.calls
+        .filter((call) => {
+          const url = new URL(String(call[0]), 'http://localhost')
+          return (
+            url.pathname === `/api/sites/default/programs/${news.programId}/intent` &&
+            (call[1] as RequestInit | undefined)?.method === 'PUT'
+          )
+        })
+        .map((call) => JSON.parse(String((call[1] as RequestInit).body)))
+      expect(intentBodies).toEqual([{ action: 'skip' }, { action: 'record' }])
+    })
+  })
+})
+
 /**
  * issue #531 受け入れ:
  * - 「検索結果が `[{site, programId}]` を描画し、同一放送が 2 サイトでマッチ
@@ -1844,9 +1943,10 @@ describe('複数サイトの検索結果（issue #531）', () => {
    * `sites`（空 = 全サイト）で default と takamatsu の両方の EPG を横断して
    * 引くため（Go 側の仕事。ここはその応答の形だけを固定する）。
    */
-  function stubMultiSiteApi() {
-    const fetchMock = vi.fn((input: string | URL | Request) => {
+  function stubMultiSiteApi(initialReservations: Reservation[] = []) {
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input), 'http://localhost')
+      const method = init?.method ?? 'GET'
       if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse([siteA, siteB]))
       if (url.pathname === `/api/sites/${siteA}/services`) {
         return Promise.resolve(jsonResponse([serviceA]))
@@ -1856,6 +1956,13 @@ describe('複数サイトの検索結果（issue #531）', () => {
       }
       if (url.pathname === '/api/encode-profiles') return Promise.resolve(jsonResponse([]))
       if (url.pathname === '/api/capacity/overages') return Promise.resolve(jsonResponse([]))
+      if (url.pathname === '/api/reservations') {
+        return Promise.resolve(jsonResponse(initialReservations))
+      }
+      const intent = /^\/api\/sites\/([^/]+)\/programs\/(\d+)\/intent$/.exec(url.pathname)
+      if (intent && (method === 'PUT' || method === 'DELETE')) {
+        return Promise.resolve(new Response(null, { status: 204 }))
+      }
       if (url.pathname === `/api/sites/${siteA}/programs/500`) {
         return Promise.resolve(jsonResponse(programA))
       }
@@ -1873,6 +1980,7 @@ describe('複数サイトの検索結果（issue #531）', () => {
       throw new Error(`unexpected fetch: ${url.pathname}`)
     })
     globalThis.fetch = fetchMock as unknown as typeof fetch
+    return fetchMock
   }
 
   it('2 行とも描画され、行ごとに自分の site から詳細とサービス名を引く（key の重複警告も出ない）', async () => {
@@ -1925,6 +2033,38 @@ describe('複数サイトの検索結果（issue #531）', () => {
     // このテストは落ちる（実際に確認済み。下の mutation 相当のロジックは
     // `lib/capacity.ts`/`lib/rule-cost.ts` の対応するユニットテストが担う）。
     expect(await screen.findByText(/約 2 件/)).toBeInTheDocument()
+  })
+
+  it('同じ programId でも、選んだ site の行だけを予約し、予約状態も site ごとに分かれる', async () => {
+    const fetchMock = stubMultiSiteApi([reservation(500, siteB)])
+    renderPage()
+
+    await openSearchDetails()
+    await screen.findByRole('button', { name: '局A' })
+    await userEvent.click(screen.getByRole('button', { name: '検索' }))
+    await screen.findByText('ニュース（default）')
+
+    const rows = within(screen.getByTestId('search-results')).getAllByRole('listitem')
+    expect(rows).toHaveLength(2)
+    expect(within(rows[0]).getByText(siteA)).toBeInTheDocument()
+    expect(within(rows[1]).getByText(siteB)).toBeInTheDocument()
+    expect(within(rows[0]).getByRole('button', { name: '予約' })).toBeInTheDocument()
+    expect(within(rows[1]).getByRole('button', { name: '取消' })).toBeInTheDocument()
+
+    await userEvent.click(within(rows[0]).getByRole('button', { name: '予約' }))
+
+    await waitFor(() => {
+      const intentCalls = fetchMock.mock.calls.filter((call) => {
+        const url = new URL(String(call[0]), 'http://localhost')
+        return url.pathname.endsWith('/intent') && (call[1] as RequestInit | undefined)?.method === 'PUT'
+      })
+      expect(intentCalls).toHaveLength(1)
+      expect(new URL(String(intentCalls[0]?.[0]), 'http://localhost').pathname).toBe(
+        `/api/sites/${siteA}/programs/500/intent`,
+      )
+    })
+    expect(within(rows[0]).getByRole('button', { name: '取消' })).toBeInTheDocument()
+    expect(within(rows[1]).getByRole('button', { name: '取消' })).toBeInTheDocument()
   })
 })
 

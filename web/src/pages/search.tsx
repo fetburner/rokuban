@@ -6,9 +6,11 @@ import {
   getGetProgramQueryOptions,
   useGetRule,
   useListCapacityOverages,
+  useListReservations,
   useSearchPrograms,
   type ProgramListItem,
   type ProgramSearchMatch,
+  type Reservation,
   type Service,
 } from '@/api/generated'
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
@@ -21,8 +23,9 @@ import {
   ShortfallOverlapNote,
 } from '@/components/rule-form'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader, Skeleton } from '@/components/page'
+import type { ReservationActions } from '@/components/program-list'
 import { Button } from '@/components/ui/button'
-import { useAllSitesServices } from '@/lib/all-sites-services'
+import { programIdentity, useAllSitesServices, type SiteProgram } from '@/lib/all-sites-services'
 import { countProgramsInShortfall } from '@/lib/capacity'
 import { dayOrigin } from '@/lib/day-offset'
 import { formatDateTime, formatDuration } from '@/lib/format'
@@ -35,6 +38,7 @@ import {
   type SearchDraft,
 } from '@/lib/program-search'
 import { loadLastSearchConditions, saveLastSearchConditions } from '@/lib/search-storage'
+import { useReservationActions } from '@/lib/reservation-actions'
 import {
   epgWindowDays,
   estimateRuleCost,
@@ -65,7 +69,8 @@ const pageSize = 30
  *   `PATCH /api/rules/{id}` による**上書き**にしている（下の `RuleEditSection`）。
  *   元のルールを残したまま別のルールとして保存する経路も副動作として残す
  *
- * 結果は表示のみ（予約操作を持たない）。理由は下の `SearchResultRow` を参照。
+ * 検索結果からも単発予約へ進める。条件からのルール作成・編集とは別の操作であり、
+ * 結果行の予約操作は既存の `useReservationActions` を通る。
  */
 export function SearchPage() {
   // nowMs はこのレンダーの間で一貫させる（`pages/home.tsx`・`pages/programs.tsx`
@@ -121,6 +126,7 @@ export function SearchPage() {
    * `networkId` を組にすることでこの衝突を避ける。
    */
   const {
+    sites,
     services: serviceList,
     isPending: registryPending,
     isError: registryError,
@@ -137,6 +143,31 @@ export function SearchPage() {
     for (const s of serviceList) map.set(`${s.networkId}:${s.serviceId}`, s)
     return map
   }, [serviceList])
+
+  // 検索結果からの単発予約も番組表と同じ共通経路を使う。予約一覧は全 site を返す
+  // ので、同じ programId が複数 site にある場合も site:programId で結び付ける。
+  const reservations = useListReservations()
+  const serverReservedProgramIds = useMemo(() => {
+    const set = new Set<string>()
+    for (const reservation of unwrap(reservations.data) ?? []) {
+      set.add(programIdentity(reservation.site, reservation.programId))
+    }
+    return set
+  }, [reservations.data])
+  const reservationSourceByProgramId = useMemo(() => {
+    const map = new Map<string, Reservation['source']>()
+    for (const reservation of unwrap(reservations.data) ?? []) {
+      map.set(
+        programIdentity(reservation.site, reservation.programId),
+        reservation.source,
+      )
+    }
+    return map
+  }, [reservations.data])
+  const reservationActions = useReservationActions(
+    serverReservedProgramIds,
+    reservationSourceByProgramId,
+  )
 
   // search（useMutation の戻り値）を毎レンダー新しいオブジェクトのまま
   // ハイドレーション effect の依存に置くと、ユーザーが 1 文字打つたびに
@@ -601,7 +632,12 @@ export function SearchPage() {
                 ? `${matches.length} 件（番組 ID 順）— ${visibleCount} 件を表示`
                 : `${matches.length} 件（番組 ID 順）`}
             </p>
-            <SearchResultList matches={matches.slice(0, visibleCount)} serviceById={serviceById} />
+            <SearchResultList
+              matches={matches.slice(0, visibleCount)}
+              serviceById={serviceById}
+              actions={reservationActions}
+              showSite={sites.length > 1}
+            />
             {visibleCount < matches.length && (
               <div className="px-4 py-6">
                 <Button
@@ -661,9 +697,13 @@ function SearchError({ error, onRetry }: { error: unknown; onRetry: () => void }
 function SearchResultList({
   matches,
   serviceById,
+  actions,
+  showSite,
 }: {
   matches: ProgramSearchMatch[]
   serviceById: Map<string, Service>
+  actions: ReservationActions
+  showSite: boolean
 }) {
   const details = useQueries({
     queries: matches.map((match) => getGetProgramQueryOptions(match.site, match.programId)),
@@ -678,8 +718,12 @@ function SearchResultList({
           <li key={`${match.site}:${match.programId}`}>
             {program !== undefined ? (
               <SearchResultRow
-                program={program}
+                // 詳細レスポンスは site を持たないので、検索結果の行が運ぶ site を
+                // 付けて予約操作の宛先・状態・key を site:programId に揃える。
+                program={{ ...program, site: match.site }}
                 serviceName={serviceById.get(`${program.networkId}:${program.serviceId}`)?.name}
+                actions={actions}
+                showSite={showSite}
               />
             ) : detail?.isError ? (
               // 取得できなかった行を黙って落とさない。EPG のローリング
@@ -703,11 +747,9 @@ function SearchResultList({
  * SearchResultRow は結果 1 件。番組リスト（components/program-row.tsx）と
  * 同じ語彙で描く。
  *
- * 予約ボタンを持たないのは、この画面が「条件を試す」ためのものだから。
- * `ProgramRow` をそのまま使うには (a) 予約操作を持ち込むか (b) 操作列を
- * 省けるように作り替えるかのどちらかが必要で、(a) は `programs.tsx` の
- * `useReservationActions` の複製、(b) は並行作業中のコンポーネントの改変になる。
- * どちらも M2-11 の範囲外なので申し送りにしてある。
+ * 右端の予約 / 取消ボタンは `ProgramRow` の展開やルール作成とは独立した
+ * 単発操作で、既存の `useReservationActions` に委譲する。検索結果の行本体は
+ * 引き続き非対話のままにして、予約操作のタップ領域だけを追加する。
  *
  * 時刻ではなく日時を出す。結果は programId 昇順（API の契約）で時刻順ではないため、
  * 番組リストのような日付ヘッダでは日付が繰り返し現れて意味を失う。
@@ -715,21 +757,43 @@ function SearchResultList({
 function SearchResultRow({
   program,
   serviceName,
+  actions,
+  showSite,
 }: {
-  program: ProgramListItem
+  program: SiteProgram
   serviceName?: string
+  actions: ReservationActions
+  showSite: boolean
 }) {
+  const reserved = actions.reservedProgramIds.has(programIdentity(program.site, program.programId))
+  const pending = actions.isBusy(program)
+
   return (
     <div className="flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5">
       <div className="w-20 shrink-0 text-sm">{formatDateTime(program.startAt)}</div>
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm">{program.name}</div>
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          {showSite && <span className="shrink-0">{program.site}</span>}
           {serviceName !== undefined && <span className="truncate">{serviceName}</span>}
           <span className="shrink-0">{formatDuration(program.durationMs)}</span>
           {!program.isFree && <span className="shrink-0">有料</span>}
         </div>
       </div>
+      <Button
+        data-testid="search-result-reserve"
+        type="button"
+        variant={reserved ? 'destructive' : 'default'}
+        size="sm"
+        disabled={pending}
+        onClick={() => {
+          if (reserved) actions.cancel(program)
+          else actions.reserve(program)
+        }}
+        className="min-h-11 min-w-11 shrink-0"
+      >
+        {reserved ? '取消' : '予約'}
+      </Button>
     </div>
   )
 }
