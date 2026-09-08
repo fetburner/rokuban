@@ -1,5 +1,5 @@
 -- catalog エクスポート / rescue 用（M3-9 / issue #71）。
--- 保護対象はルール・録画・media_assets・drop_stats・意図・上書き（と意図の FK 先
+-- 保護対象はルール・録画・media_assets・drop_stats・drop_positions・意図・上書き（と意図の FK 先
 -- program_snapshots）。EPG 射影と schedule/record/tuner_sync は再構築可能なので
 -- 含めない（docs/storage.md §8）。
 
@@ -49,6 +49,11 @@ SELECT * FROM media_assets ORDER BY id;
 
 -- name: CatalogListDropStats :many
 SELECT * FROM drop_stats ORDER BY media_asset_id, pid;
+
+-- drop_positions は原本を削除した後も残る不可逆な観測なので、drop_stats と
+-- 同じ catalog に含める。elapsed_ms の NULL は sqlc のポインタ型で保つ。
+-- name: CatalogListDropPositions :many
+SELECT * FROM drop_positions ORDER BY media_asset_id, byte_offset;
 
 -- 意図・上書きの FK 先。
 -- name: CatalogListProgramSnapshots :many
@@ -320,6 +325,14 @@ ON CONFLICT (media_asset_id, pid) DO UPDATE SET
     errors    = EXCLUDED.errors,
     scrambled = EXCLUDED.scrambled,
     pid_type  = EXCLUDED.pid_type;
+
+-- name: CatalogUpsertDropPosition :exec
+INSERT INTO drop_positions (
+    media_asset_id, byte_offset, pid, elapsed_ms
+) VALUES ($1, $2, $3, $4)
+ON CONFLICT (media_asset_id, byte_offset) DO UPDATE SET
+    pid        = EXCLUDED.pid,
+    elapsed_ms = EXCLUDED.elapsed_ms;
 
 -- IDENTITY 列のシーケンスを max(id) に揃える（再 insert で衝突しないように）。
 -- name: CatalogResetRulesIDSeq :exec

@@ -17,7 +17,7 @@ import (
 // 呼び手も持たなかったため issue #441 で落とした）。
 //
 // これは単一スナップショットからの読み取りである。recordings を読んだ後に
-// media_assets / drop_stats を読むため、トランザクション無しで発行すると
+// media_assets / drop_stats / drop_positions を読むため、トランザクション無しで発行すると
 // その間に作られた録画のアセットだけが media_assets 側に写り、
 // RescueFile（internal/catalog/rescue.go）が recordings → media_assets の順で
 // 1 トランザクション書き込むときに FK 違反でその世代がまるごと復元不能になる
@@ -67,6 +67,9 @@ func Export(ctx context.Context, pool *pgxpool.Pool) (*Document, error) {
 		return nil, err
 	}
 	if doc.DropStats, err = exportDropStats(ctx, q); err != nil {
+		return nil, err
+	}
+	if doc.DropPositions, err = exportDropPositions(ctx, q); err != nil {
 		return nil, err
 	}
 
@@ -250,6 +253,24 @@ func exportDropStats(ctx context.Context, q *sqlcgen.Queries) ([]DropStat, error
 			Errors:       d.Errors,
 			Scrambled:    d.Scrambled,
 			PidType:      d.PidType,
+		})
+	}
+	return out, nil
+}
+
+// exportDropPositions は drop_positions を文書の型付き行に変換する。
+func exportDropPositions(ctx context.Context, q *sqlcgen.Queries) ([]DropPosition, error) {
+	rows, err := q.CatalogListDropPositions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing drop_positions: %w", err)
+	}
+	out := make([]DropPosition, 0, len(rows))
+	for _, p := range rows {
+		out = append(out, DropPosition{
+			MediaAssetID: p.MediaAssetID,
+			ByteOffset:   p.ByteOffset,
+			Pid:          p.Pid,
+			ElapsedMs:    p.ElapsedMs,
 		})
 	}
 	return out, nil

@@ -127,6 +127,12 @@ WHERE o.kind = 'original'
 INSERT INTO drop_stats (media_asset_id, pid, packets, drops, errors, scrambled, pid_type)
 VALUES ($1, $2, $3, $4, $5, $6, $7);
 
+-- byte_offset は原本内の観測位置。elapsed_ms は PCR を観測できなかった位置では
+-- NULL のまま保存する（導出できないこと自体を値で表すために 0 を使わない）。
+-- name: InsertDropPosition :exec
+INSERT INTO drop_positions (media_asset_id, byte_offset, pid, elapsed_ms)
+VALUES ($1, $2, $3, $4);
+
 -- name: GetRecordingByID :one
 SELECT * FROM recordings WHERE id = $1;
 

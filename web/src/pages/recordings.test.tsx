@@ -57,6 +57,7 @@ const stat = (pid: number, pidType?: string): DropStat => ({
   drops: 0,
   errors: 0,
   scrambled: 0,
+  positions: [],
   ...(pidType === undefined ? {} : { pidType }),
 })
 
@@ -74,7 +75,7 @@ describe('DropStatsTable', () => {
 
     await screen.findByText('success')
     expect(screen.getByText('0x0200')).toBeInTheDocument()
-    expect(screen.getByText('—')).toBeInTheDocument()
+    expect(screen.getAllByText('—')).toHaveLength(2)
     expect(screen.queryByText('映像')).not.toBeInTheDocument()
   })
 
@@ -82,6 +83,53 @@ describe('DropStatsTable', () => {
     renderTable([stat(0x300, 'ecm')])
 
     expect(await screen.findByText('ecm')).toBeInTheDocument()
+  })
+
+  it('ドロップ位置は録画開始からの経過と原本位置で出る', async () => {
+    renderTable([
+      {
+        ...stat(0x100, 'video'),
+        drops: 2,
+        positions: [
+          { byteOffset: 188, elapsedMs: 1000 },
+          { byteOffset: 376 },
+        ],
+      },
+    ])
+
+    expect(await screen.findByText('録画開始からの経過')).toBeInTheDocument()
+    expect(screen.getByText(/00:00:01\.000/)).toBeInTheDocument()
+    expect(screen.getByText(/byte 188/)).toBeInTheDocument()
+    expect(screen.getByText(/時刻不明/)).toBeInTheDocument()
+    expect(screen.queryByText(/件中/)).not.toBeInTheDocument()
+  })
+
+  it('保存上限に達した PID は真の件数と表示件数を分ける', async () => {
+    renderTable([
+      {
+        pid: 0x100,
+        packets: 100,
+        drops: 214,
+        errors: 0,
+        scrambled: 0,
+        positions: [{ byteOffset: 188, elapsedMs: 1000 }],
+      },
+    ])
+
+    expect(await screen.findByText('214 件中 1 件を表示')).toBeInTheDocument()
+  })
+
+  it('この機能より前に ingest された録画は位置が 0 件でも「N 件中 0 件」を出さない', async () => {
+    renderTable([
+      {
+        ...stat(0x100, 'video'),
+        drops: 214,
+        positions: [],
+      },
+    ])
+
+    expect(await screen.findByText('位置は未採取')).toBeInTheDocument()
+    expect(screen.queryByText(/件中/)).not.toBeInTheDocument()
   })
 })
 

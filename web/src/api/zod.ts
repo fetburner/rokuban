@@ -1223,7 +1223,11 @@ export const ListRecordingDropStatsResponseItem = zod.object({
   "drops": zod.int(),
   "errors": zod.int(),
   "scrambled": zod.int(),
-  "pidType": zod.string().optional().describe('PID 種別（M2-13, issue #24）。\*\*値はすべて小文字\*\*で、権威は Go 側の定数\n（`internal\/tsstat`）。enum にしないのは分類の追加をスキーマ変更なしで\nできるようにするため（`drop_stats.pid_type` に CHECK を置かないのと同じ理由）。\n\n- `video` \/ `audio` --- PMT の stream_type から分類した ES\n- `other` --- PMT に載っているが映像でも音声でもない ES（字幕・文字スーパー・\n  データ放送はすべてここ。記述子を読まないため字幕と文字スーパーは区別しない）\n- `pat` \/ `cat` \/ `nit` \/ `sdt` \/ `eit` \/ `tot` --- 固定 PID（静的表。解析不要）\n- `pmt` --- PAT が PMT の在り処として指した PID\n\n\*\*分類できなければ省略する\*\*（PSI 解析の失敗は ingest を失敗させない。\ndocs\/recording.md「例外の境界」）。省略は「分類しなかった」であって\n「該当なし」ではない\n')
+  "pidType": zod.string().optional().describe('PID 種別（M2-13, issue #24）。\*\*値はすべて小文字\*\*で、権威は Go 側の定数\n（`internal\/tsstat`）。enum にしないのは分類の追加をスキーマ変更なしで\nできるようにするため（`drop_stats.pid_type` に CHECK を置かないのと同じ理由）。\n\n- `video` \/ `audio` --- PMT の stream_type から分類した ES\n- `other` --- PMT に載っているが映像でも音声でもない ES（字幕・文字スーパー・\n  データ放送はすべてここ。記述子を読まないため字幕と文字スーパーは区別しない）\n- `pat` \/ `cat` \/ `nit` \/ `sdt` \/ `eit` \/ `tot` --- 固定 PID（静的表。解析不要）\n- `pmt` --- PAT が PMT の在り処として指した PID\n\n\*\*分類できなければ省略する\*\*（PSI 解析の失敗は ingest を失敗させない。\ndocs\/recording.md「例外の境界」）。省略は「分類しなかった」であって\n「該当なし」ではない\n'),
+  "positions": zod.array(zod.object({
+  "byteOffset": zod.int().describe('原本 TS の先頭から、ドロップを観測したパケットまでのバイト位置'),
+  "elapsedMs": zod.int().optional().describe('録画開始からの経過ミリ秒。PCR を得られない場合は省略')
+})).describe('ドロップを観測した原本内の位置。PID ごとに最大 100 件まで保持するため、\n`drops`（真のドロップ件数）と配列の長さは一致しないことがある。\n`byteOffset` は原本 TS の先頭からのバイト位置、`elapsedMs` は最初に\n観測した PCR を録画開始とみなした録画開始からの経過ミリ秒。\nPCR をまだ観測していない、または PCR の逆行 \/ PCR を運ぶパケット自身の\ndiscontinuity で時計を無効にした行では `elapsedMs` を省略する\n（他 PID の discontinuity では無効にしない）。絶対放送時刻ではない。\n')
 })
 export const ListRecordingDropStatsResponse = zod.array(ListRecordingDropStatsResponseItem)
 

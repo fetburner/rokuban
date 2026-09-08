@@ -290,6 +290,30 @@ func (q *Queries) GetThumbnailMediaAssetForServing(ctx context.Context, recordin
 	return i, err
 }
 
+const insertDropPosition = `-- name: InsertDropPosition :exec
+INSERT INTO drop_positions (media_asset_id, byte_offset, pid, elapsed_ms)
+VALUES ($1, $2, $3, $4)
+`
+
+type InsertDropPositionParams struct {
+	MediaAssetID int64
+	ByteOffset   int64
+	Pid          int32
+	ElapsedMs    *int64
+}
+
+// byte_offset は原本内の観測位置。elapsed_ms は PCR を観測できなかった位置では
+// NULL のまま保存する（導出できないこと自体を値で表すために 0 を使わない）。
+func (q *Queries) InsertDropPosition(ctx context.Context, arg InsertDropPositionParams) error {
+	_, err := q.db.Exec(ctx, insertDropPosition,
+		arg.MediaAssetID,
+		arg.ByteOffset,
+		arg.Pid,
+		arg.ElapsedMs,
+	)
+	return err
+}
+
 const insertDropStat = `-- name: InsertDropStat :exec
 INSERT INTO drop_stats (media_asset_id, pid, packets, drops, errors, scrambled, pid_type)
 VALUES ($1, $2, $3, $4, $5, $6, $7)

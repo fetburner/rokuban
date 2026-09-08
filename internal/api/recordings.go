@@ -585,19 +585,36 @@ func (h *Server) insertEncodeEnqueueHint(ctx context.Context, tx pgx.Tx, recordi
 
 // ListRecordingDropStats は録画の PID 別ドロップ統計を返す。
 func (h *Server) ListRecordingDropStats(ctx context.Context, req ListRecordingDropStatsRequestObject) (ListRecordingDropStatsResponseObject, error) {
-	rows, err := sqlcgen.New(h.pool).ListRecordingDropStats(ctx, req.Id)
+	q := sqlcgen.New(h.pool)
+	rows, err := q.ListRecordingDropStats(ctx, req.Id)
 	if err != nil {
 		return nil, err
+	}
+	positionRows, err := q.ListRecordingDropPositions(ctx, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	positionsByPID := make(map[int32][]DropPosition, len(positionRows))
+	for _, p := range positionRows {
+		positionsByPID[p.Pid] = append(positionsByPID[p.Pid], DropPosition{
+			ByteOffset: p.ByteOffset,
+			ElapsedMs:  p.ElapsedMs,
+		})
 	}
 
 	result := make([]DropStat, 0, len(rows))
 	for _, d := range rows {
+		positions := positionsByPID[d.Pid]
+		if positions == nil {
+			positions = make([]DropPosition, 0)
+		}
 		stat := DropStat{
 			Pid:       int(d.Pid),
 			Packets:   d.Packets,
 			Drops:     d.Drops,
 			Errors:    d.Errors,
 			Scrambled: d.Scrambled,
+			Positions: positions,
 		}
 		// 分類できなかった PID では pidType を省略する（M2-13, issue #24）。
 		if d.PidType != nil && *d.PidType != "" {

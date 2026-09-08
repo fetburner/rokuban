@@ -1,7 +1,7 @@
 // Package catalog は災害復旧用のコアメタデータ JSON の export / rescue を担う
 // （docs/storage.md §8、issue #71 M3-9）。
 //
-// 保護対象はルール・録画履歴・media_assets・ドロップ統計・tombstone・
+// 保護対象はルール・録画履歴・media_assets・ドロップ統計と位置・tombstone・
 // 手動オーバーライド（と意図の FK 先 program_snapshots）のみ。EPG 射影と
 // ジョブキューは再構築可能なので含めない。pg_dump に依存しない。
 package catalog
@@ -55,6 +55,7 @@ type Document struct {
 	RecordingPurgeRequests  []RecordingPurgeRequest `json:"recordingPurgeRequests"`
 	MediaAssets             []MediaAsset            `json:"mediaAssets"`
 	DropStats               []DropStat              `json:"dropStats"`
+	DropPositions           []DropPosition          `json:"dropPositions"`
 	ProgramSnapshots        []ProgramSnapshot       `json:"programSnapshots"`
 	ProgramIntents          []ProgramIntent         `json:"programIntents"`
 	ProgramOverrides        []ProgramOverride       `json:"programOverrides"`
@@ -210,6 +211,14 @@ type DropStat struct {
 	Errors       int64   `json:"errors"`
 	Scrambled    int64   `json:"scrambled"`
 	PidType      *string `json:"pidType,omitempty"`
+}
+
+// DropPosition は drop_positions の 1 行。
+type DropPosition struct {
+	MediaAssetID int64  `json:"mediaAssetId"`
+	ByteOffset   int64  `json:"byteOffset"`
+	Pid          int32  `json:"pid"`
+	ElapsedMs    *int64 `json:"elapsedMs,omitempty"`
 }
 
 // ProgramSnapshot は program_snapshots の 1 行（意図・上書きの FK 先）。

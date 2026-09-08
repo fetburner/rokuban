@@ -185,6 +185,15 @@ JOIN media_assets a ON a.id = d.media_asset_id
 WHERE a.recording_id = $1 AND a.kind = 'original' AND a.state <> 'deleted'
 ORDER BY d.pid;
 
+-- 位置は PID 別統計とは別の行集合として読み、API 層で PID ごとの配列にまとめる。
+-- jsonb_agg の型推論に依存せず、elapsed_ms の NULL を sqlc のポインタ型で保つ。
+-- name: ListRecordingDropPositions :many
+SELECT p.pid, p.byte_offset, p.elapsed_ms
+FROM drop_positions p
+JOIN media_assets a ON a.id = p.media_asset_id
+WHERE a.recording_id = $1 AND a.kind = 'original' AND a.state <> 'deleted'
+ORDER BY p.pid, p.byte_offset;
+
 -- name: AppendQualityEvents :exec
 UPDATE recordings
 SET quality_events = quality_events || sqlc.arg('events')::jsonb,

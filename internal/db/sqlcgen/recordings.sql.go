@@ -274,6 +274,42 @@ func (q *Queries) GetRecordingEncodePolicy(ctx context.Context, recordingID int6
 	return i, err
 }
 
+const listRecordingDropPositions = `-- name: ListRecordingDropPositions :many
+SELECT p.pid, p.byte_offset, p.elapsed_ms
+FROM drop_positions p
+JOIN media_assets a ON a.id = p.media_asset_id
+WHERE a.recording_id = $1 AND a.kind = 'original' AND a.state <> 'deleted'
+ORDER BY p.pid, p.byte_offset
+`
+
+type ListRecordingDropPositionsRow struct {
+	Pid        int32
+	ByteOffset int64
+	ElapsedMs  *int64
+}
+
+// 位置は PID 別統計とは別の行集合として読み、API 層で PID ごとの配列にまとめる。
+// jsonb_agg の型推論に依存せず、elapsed_ms の NULL を sqlc のポインタ型で保つ。
+func (q *Queries) ListRecordingDropPositions(ctx context.Context, recordingID int64) ([]ListRecordingDropPositionsRow, error) {
+	rows, err := q.db.Query(ctx, listRecordingDropPositions, recordingID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRecordingDropPositionsRow
+	for rows.Next() {
+		var i ListRecordingDropPositionsRow
+		if err := rows.Scan(&i.Pid, &i.ByteOffset, &i.ElapsedMs); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRecordingDropStats = `-- name: ListRecordingDropStats :many
 SELECT d.pid, d.packets, d.drops, d.errors, d.scrambled, d.pid_type
 FROM drop_stats d

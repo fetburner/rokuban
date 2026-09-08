@@ -20,6 +20,13 @@ type CircuitBreaker struct {
 	Detail    json.RawMessage
 }
 
+type DropPosition struct {
+	MediaAssetID int64
+	ByteOffset   int64
+	Pid          int32
+	ElapsedMs    *int64
+}
+
 type DropStat struct {
 	MediaAssetID int64
 	Pid          int32

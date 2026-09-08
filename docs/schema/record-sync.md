@@ -59,3 +59,33 @@ CREATE TABLE drop_stats (
   **最後に見たものを採用**する。変化の回数は ingest の転送完了ログ（`pid_type_changes`）にだけ残し、
   列にはしない（導出値であり、統計の正しさに影響しない）
 
+### drop_positions — ドロップ位置（不可逆な観測）
+
+`drop_stats` が畳んだ合計だけでは「全域が壊れているのか、1 か所で数秒詰まっただけか」が分からない。
+ingest のインライン TS スキャンが drop を検知した瞬間の位置を、drop_stats と同一トランザクションで残す。
+
+```sql
+CREATE TABLE drop_positions (
+    media_asset_id bigint NOT NULL REFERENCES media_assets (id),
+    byte_offset    bigint NOT NULL,
+    pid            integer NOT NULL,
+    elapsed_ms     bigint,             -- 録画開始からの経過。PCR 未観測なら NULL
+    PRIMARY KEY (media_asset_id, byte_offset)
+);
+```
+
+- 原本のバイトが Rokuban のプロセスを通るのは ingest の 1 パスだけで、`keep_original='until_encoded'`
+  により原本は既に削除される運用が前提にある。エンコード後の出力からは欠落位置を復元できない
+  （デコーダの error concealment が隠蔽の跡を残さない）ため、位置は**再現できない導出値ではなく
+  ingest の 1 回でしか採れない不可逆な観測**である
+- 主キーが `(media_asset_id, byte_offset)` なのは、1 パケットは常に 1 PID にしか属さないため。
+  同じ原本内の同じバイト位置で 2 つの PID がドロップを起こすことはなく、連番の代理キーは要らない
+- `elapsed_ms` は最初に観測した PCR を録画開始とみなした相対経過で、PCR を 1 つも観測していなければ
+  NULL にする（`drop_stats.pid_type` を NULL にするのと同じ理由。採れなかったことを 0 のような
+  値ではなく NULL で表す）
+- 保存件数を「真の drops」と別列（`truncated` 等）で持たない。`count(*) < drop_stats.drops` で
+  上限に達したかどうかを導出できるため、値を複製する列を作らない
+- 絶対放送時刻ではなく「録画開始からの経過」で持つ。`recordings.started_at` は mirakc がチューナーを
+  開いた時刻で、予定時刻より約 15 秒早い（構造的なずれで、実測もある）。`started_at + elapsed_ms` を
+  放送時刻として扱うとこの誤差が乗るため、API も UI も経過時間のまま扱う
+
