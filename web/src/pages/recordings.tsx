@@ -10,6 +10,7 @@ import {
   purgeRecording as purgeRecordingRequest,
   restoreRecording as restoreRecordingRequest,
   useGetEncodeQueue,
+  useGetStorage,
   useListSites,
   type Recording,
 } from '@/api/generated'
@@ -45,6 +46,7 @@ import {
   sourceLabels,
   type RecordingsPageSearch,
 } from '@/lib/recording-search'
+import { findMediaRoot } from '@/lib/storage-forecast'
 import { cn } from '@/lib/utils'
 
 /** pageSize は 1 回のフェッチで取る件数（API の既定と同じ）。 */
@@ -111,6 +113,11 @@ export function RecordingsPage() {
   const sitesQuery = useListSites()
   const registeredSites = useMemo(() => unwrap(sitesQuery.data) ?? [], [sitesQuery.data])
   const encodeQueue = unwrap(useGetEncodeQueue().data)
+  // 管理情報行（エンコード待機列 + StorageBalance）の両方が何も描かないなら
+  // 帯ごと出さない。`StorageBalance` が null を返す条件（`media` root が無い）を
+  // ここでも判定する必要があるので、同じクエリ（キャッシュ共有で追加の
+  // fetch にはならない）を引いて `findMediaRoot` で同じ判定を再現する。
+  const hasStorageBalance = findMediaRoot(unwrap(useGetStorage().data) ?? []) !== undefined
   const updateSearch = (updater: (prev: RecordingsPageSearch) => RecordingsPageSearch) => {
     // debounce（キーワード）・チップの個別解除のどちらも history を汚さないよう
     // 常に replace で書く（docs/frontend.md「debounce と URL 同期で履歴を汚さない」）。
@@ -390,47 +397,60 @@ export function RecordingsPage() {
         {trash ? (
           <StorageBalance />
         ) : (
-          <div
-            data-testid="recordings-management-summary"
-            className="flex flex-wrap items-start gap-x-2 gap-y-1 border-t border-border px-4 py-1 text-xs text-muted-foreground"
-          >
-            {encodeQueue !== undefined && (
-              <div aria-label="エンコード待機列" className="flex shrink-0 flex-wrap items-center gap-2 py-1">
-                <span className="hidden lg:inline">エンコード</span>
-                <Chip
-                  compact
-                  active={search.encodeState === ListRecordingsEncodeState.queued}
-                  onClick={() =>
-                    updateSearch((s) => ({
-                      ...s,
-                      encodeState:
-                        s.encodeState === ListRecordingsEncodeState.queued
-                          ? undefined
-                          : ListRecordingsEncodeState.queued,
-                    }))
-                  }
+          // エンコード待機列（encodeQueue 未解決/失敗）と StorageBalance（media root
+          // 無し）が両方とも何も描かないときは、空の帯だけを残さない（不変条件 10
+          // と同じ「意味を持たない行を作らない」規律の UI 版）。
+          (encodeQueue !== undefined || hasStorageBalance) && (
+            <div
+              data-testid="recordings-management-summary"
+              className="flex flex-wrap items-start gap-x-2 gap-y-1 border-t border-border px-4 py-1 text-xs text-muted-foreground"
+            >
+              {encodeQueue !== undefined && (
+                <div
+                  role="group"
+                  aria-label="エンコード待機列"
+                  className="flex shrink-0 flex-wrap items-center gap-2"
                 >
-                  待機中 {encodeQueue.queued}件
-                </Chip>
-                <Chip
-                  compact
-                  active={search.encodeState === ListRecordingsEncodeState.running}
-                  onClick={() =>
-                    updateSearch((s) => ({
-                      ...s,
-                      encodeState:
-                        s.encodeState === ListRecordingsEncodeState.running
-                          ? undefined
-                          : ListRecordingsEncodeState.running,
-                    }))
-                  }
-                >
-                  実行中 {encodeQueue.running}件
-                </Chip>
-              </div>
-            )}
-            <StorageBalance compact />
-          </div>
+                  {/* ラベルを隠すと「待機中/実行中」チップが録画状態フィルタと
+                      誤読されうるが、360/390px 幅では常時表示にすると「エンコード」
+                      ラベル + 2 チップが 1 行に収まらず折り返し、管理情報行が
+                      45px 予算を超える（実測: 360px で 69px、390px で 53px。
+                      e2e/design.mjs「視聴対象への到達距離」参照）。誤読リスクより
+                      1 行に収める側を優先し、lg 未満では隠す。 */}
+                  <span className="hidden lg:inline">エンコード</span>
+                  <Chip
+                    active={search.encodeState === ListRecordingsEncodeState.queued}
+                    onClick={() =>
+                      updateSearch((s) => ({
+                        ...s,
+                        encodeState:
+                          s.encodeState === ListRecordingsEncodeState.queued
+                            ? undefined
+                            : ListRecordingsEncodeState.queued,
+                      }))
+                    }
+                  >
+                    待機中 {encodeQueue.queued}件
+                  </Chip>
+                  <Chip
+                    active={search.encodeState === ListRecordingsEncodeState.running}
+                    onClick={() =>
+                      updateSearch((s) => ({
+                        ...s,
+                        encodeState:
+                          s.encodeState === ListRecordingsEncodeState.running
+                            ? undefined
+                            : ListRecordingsEncodeState.running,
+                      }))
+                    }
+                  >
+                    実行中 {encodeQueue.running}件
+                  </Chip>
+                </div>
+              )}
+              <StorageBalance compact />
+            </div>
+          )
         )}
       </PageHeader>
 

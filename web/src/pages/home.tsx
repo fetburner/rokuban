@@ -288,9 +288,12 @@ export function HomePage() {
   // 出てくれば、他がまだ解決していなくても表示を始める（最も遅いクエリに
   // 引きずられない）。
   if (!anyVisible && !allSettled) {
+    // finishedShortcut は finishedShortcutVisible ⇒ finishedSectionVisible ⇒
+    // anyVisible の含意により、この分岐（!anyVisible）では必ず undefined。
+    // actions は渡さない。
     return (
       <>
-        <PageHeader title="ホーム" actions={finishedShortcut} />
+        <PageHeader title="ホーム" />
         <PageContent>
           <ListSkeleton />
         </PageContent>

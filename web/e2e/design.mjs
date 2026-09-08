@@ -311,6 +311,10 @@ const searchNoteOverage = {
   jammedTypes: ['GR'],
 }
 
+// `keepOriginal` は「retention policy を変更できる」機能で応答スキーマが
+// 必須化しており（zod に `.optional()`/`.default()` が無い）、これが無いと
+// 下の `validateFixturesOrExit` が落ちる。issue #686 とは無関係の既存の穴
+// （フィクスチャがそちらの必須化に追従していなかった）で、ここで揃える。
 const recordings = [
   { id: 11, site: SITE, source: 'rule', serviceName: 'NHK総合', channelType: 'GR', channel: '27', networkId: 32736, serviceId: 1024, eventId: 11, title: 'ニュース７', startAt: iso(nowMs - 600_000), durationMs: 1_800_000, status: 'recording', keepOriginal: 'always', createdAt: iso(nowMs - 600_000), startedAt: iso(nowMs - 600_000) },
   // encodedAssets を持たせて詳細ページ（/recordings/$id）で <video> が実ブラウザで
@@ -448,13 +452,26 @@ function apiHandler({
     // true を返す --- 返さないと主ナビが 5 項目になり、/live はチャンネル一覧ではなく
     // 「無効です」の空状態になる
     if (p === '/api/capabilities') return json({ live: true })
-    const layoutQueue = layoutScenario === 'normal' || layoutScenario === 'capacity' || layoutScenario === 'stale' || layoutScenario === 'storage-failure' || layoutScenario === 'no-observation'
-      ? { queued: 0, running: 0 }
-      : encodeQueue
     if (p === '/api/breakers') {
       return json(withBreaker || layoutScenario === 'many-warnings' ? breakers : [])
     }
-    if (p === '/api/encode-queue') return json(layoutQueue)
+    if (p === '/api/encode-queue') {
+      // `no-observation` はストレージ観測（media root）だけでなくエンコード待機列の
+      // 取得も失敗する「両方欠損」ケース専用に使う --- 管理情報の帯そのものが
+      // 描かれないこと（recordings.tsx の空の帯抑制）はこの組み合わせでしか
+      // 機械判定できない（片方でも生きていれば帯は残る）。
+      if (layoutScenario === 'no-observation') {
+        return route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: '{"error":"encode queue unavailable"}',
+        })
+      }
+      const layoutQueue = ['normal', 'capacity', 'stale', 'storage-failure'].includes(layoutScenario)
+        ? { queued: 0, running: 0 }
+        : encodeQueue
+      return json(layoutQueue)
+    }
     if (p === '/api/storage') {
       if (layoutScenario === 'storage-failure') {
         return route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"storage unavailable"}' })
@@ -705,7 +722,6 @@ const viewports = [
   // 一覧の行長上限は広幅で初めて効くので、デスクトップショットは 2560px で撮る。
   { name: 'desktop', width: 2560, height: 1440 },
   { name: 'mobile', width: 360, height: 844 },
-  { name: 'mobile-wide', width: 390, height: 844 },
 ]
 
 const themes = ['light', 'dark']
@@ -719,6 +735,15 @@ function screenOf(name) {
 
 /** desktop は「デスクトップでしか出ない要素」を撮る／判定するときの viewport。 */
 const desktop = viewports[0]
+/** mobile は「モバイルでしか出ない要素」を撮る／判定するときの viewport。 */
+const mobile = viewports[1]
+/**
+ * mobileWide は issue #686 の到達距離判定専用（iPhone 標準幅 390px）。
+ * 全画面スクリーンショットのループ（① / ②）には加えない --- 360px との
+ * フルショット差分の価値が低く、7 画面 × 2 テーマの 2 周を 1.5 倍に増やす
+ * だけになる（レビュー指摘）。
+ */
+const mobileWide = { name: 'mobile-wide', width: 390, height: 844 }
 
 rmSync(OUT_DIR, { recursive: true, force: true })
 mkdirSync(OUT_DIR, { recursive: true })
@@ -978,7 +1003,7 @@ const layoutScenarios = [
   { name: 'encode-queue', label: 'エンコード待機/実行中' },
   { name: 'many-warnings', label: '警告多数' },
 ]
-const layoutViewports = [desktop, viewports[1], viewports[2]]
+const layoutViewports = [desktop, mobile, mobileWide]
 const layoutMetrics = new Map()
 
 for (const scenario of layoutScenarios) {
@@ -1007,7 +1032,11 @@ for (const scenario of layoutScenarios) {
         requiredScroll: Math.max(0, targetRect.bottom - visibleBottom, visibleTop - targetRect.top),
       }
     })
-    const managementBox = await page.locator('[data-testid="recordings-management-summary"]').boundingBox()
+    // `no-observation` は管理情報の帯そのものが描かれない（E の空帯抑制）ので、
+    // 要素が無いときに `boundingBox()` が要素の出現をタイムアウトまで待たない
+    // よう、まず件数を見てから呼ぶ。
+    const managementSummary = page.locator('[data-testid="recordings-management-summary"]')
+    const managementBox = (await managementSummary.count()) > 0 ? await managementSummary.boundingBox() : null
     const summaryLocator = page.locator('main > header details summary').first()
     const summaryText = (await summaryLocator.count()) > 0
       ? await summaryLocator.textContent()
@@ -1060,9 +1089,30 @@ for (const scenario of layoutScenarios) {
         }
       }
     }
-    if (scenario.name === 'storage-failure' || scenario.name === 'no-observation') {
-      if (metric.summary.includes('空き') || metric.summary.includes('の見込み')) {
+    if (scenario.name === 'storage-failure') {
+      // ストレージ取得だけが失敗し、エンコード待機列（0/0）は解決するケース。
+      // `summaryLocator` が 0 件（= StorageBalance が描かれない）だと否定側の
+      // 判定が自明に通ってしまう（管理行が丸ごと消えても緑になる指摘）ので、
+      // 肯定側（チップが残っていること）と否定側（欠損した容量情報を出さない
+      // こと）の両方を測る。
+      if ((await page.getByRole('button', { name: '待機中 0件', exact: true }).count()) === 0) {
+        ng.push(`録画一覧/${scenario.label}/${viewport.name}: エンコードチップが残っていない`)
+      }
+      const headerText = (
+        (await page.locator('main > header').textContent()) ?? ''
+      ).replaceAll(/\s+/g, ' ')
+      if (headerText.includes('空き') || headerText.includes('の見込み')) {
         ng.push(`録画一覧/${scenario.label}/${viewport.name}: 欠損した容量情報を表示している`)
+      }
+    }
+    if (scenario.name === 'no-observation') {
+      // エンコード待機列の取得も失敗させ、StorageBalance と両方が何も描かない
+      // 組み合わせにしてある（apiHandler 参照）。管理情報の帯（recordings.tsx の
+      // `recordings-management-summary`）そのものが描かれないことを直接測る ---
+      // 子が両方とも沈黙するときに空の帯だけが残る回帰は、この組み合わせでしか
+      // 機械判定できない。
+      if ((await page.locator('[data-testid="recordings-management-summary"]').count()) !== 0) {
+        ng.push(`録画一覧/${scenario.label}/${viewport.name}: 両方欠損時に空の管理情報帯が残っている`)
       }
     }
     await context.close()
@@ -1251,7 +1301,7 @@ for (const spec of boundedListScreens) {
   await context.close()
 }
 {
-  const { context, page } = await open(viewports[1], 'light', screenOf('rules'))
+  const { context, page } = await open(mobile, 'light', screenOf('rules'))
   const headerCreate = page.locator('header').getByRole('button', { name: 'ルールを作成' })
   if ((await headerCreate.count()) > 0) {
     ng.push('rules/mobile: PageHeader に「ルールを作成」が出ている')
@@ -2570,7 +2620,6 @@ async function platformFontsOf(cdp, selector) {
 // 観測されていない。それでも `<li>` を直接数えるのは、ロールの計算をブラウザの
 // アクセシビリティ実装に依存させたくないという保険であり、「抑制が起きるから」
 // ではない（起きるかどうかは未検証。理由にしない）。
-const mobile = viewports[1]
 log('\n=== ④ 「その他」ポップオーバーの判定 ===')
 for (const theme of themes) {
   const { context, page } = await open(mobile, theme, screenOf('programs'))

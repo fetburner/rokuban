@@ -211,7 +211,12 @@ describe('StorageBalance', () => {
     expect(screen.getByText('186.3 GB')).toBeInTheDocument()
   })
 
-  it('コンパクト表示では通常の見込みと観測時刻を詳細側へ移す', async () => {
+  // jsdom は `<details>` の非表示を実装しないので、開いているかどうかに関わらず
+  // `details` の textContent に「の見込み」は既に存在する ---
+  // `toHaveTextContent` を開閉の前後で比べても何も検証できない（レビュー指摘）。
+  // ここで実際に測れるのは DOM の構造そのもの: 見込みが `<summary>` の子孫
+  // **ではない**（= 要約ではなく展開側にある）こと、かつ重複が無いこと。
+  it('コンパクト表示では通常の見込みを詳細側へ移す（観測時刻は要約にも詳細の追加行にも重ねない）', async () => {
     const user = userEvent.setup()
     mockApis({ recordings: [recording()], reservations: [reservation()] })
 
@@ -225,13 +230,23 @@ describe('StorageBalance', () => {
     expect(summary.closest('summary')).not.toHaveTextContent('観測:')
 
     await user.click(summary)
-
     expect(details).toHaveAttribute('open')
-    expect(details).toHaveTextContent(/の見込み/)
-    expect(details).toHaveTextContent(/観測:/)
+
+    // 見込みはちょうど 1 か所（展開側の追加行）にだけ存在し、<summary> の子孫では
+    // ない。
+    const forecastNodes = screen.getAllByText(/の見込み/)
+    expect(forecastNodes).toHaveLength(1)
+    expect(forecastNodes[0].closest('summary')).toBeNull()
+
+    // 観測時刻は `StorageRootCapacity` が root ごとに 1 回だけ出す（ここでは
+    // media root のみなので合計 1 件）。展開側の追加行に二重で持たせていない
+    // ことをここで固定する（指摘: 以前はここに `observationSummary` も
+    // 重ねており、`StorageRootCapacity` の「観測: …」と二重表示だった）。
+    expect(screen.getAllByText(/観測:/)).toHaveLength(1)
   })
 
   it('コンパクト表示でも満杯見込みの警告は要約に残す', async () => {
+    const user = userEvent.setup()
     mockApis({
       storage: [mediaRoot({ availableBytes: 100_000_000 })],
       recordings: [recording()],
@@ -245,9 +260,24 @@ describe('StorageBalance', () => {
 
     await renderSettled('success success success', true)
 
-    const summary = screen.getByText('詳細', { selector: 'span' }).closest('summary')
+    const summaryText = screen.getByText('詳細', { selector: 'span' })
+    const summary = summaryText.closest('summary')
     expect(summary).not.toBeNull()
     expect(summary).toHaveTextContent(/満杯見込み/)
+    // stale ではない（観測は新しい）ので観測時刻は要約に出ない（A の規則:
+    // 「summary に出すのは…stale のときだけ観測」）。指摘: 以前は
+    // `showForecastInSummary` が `hasWarning` に連動しており、満杯見込みで
+    // 「見込み」自体も要約に紛れ込んでいた（見込みは常に展開側の規則）。
+    expect(summary).not.toHaveTextContent('観測:')
+    expect(summary).not.toHaveTextContent('の見込み')
+
+    await user.click(summaryText)
+
+    // 観測時刻は消えたわけではなく、展開すると `StorageRootCapacity` が
+    // root ごとに 1 回だけ出す（要約に無かった分がここに現れる。重複はしない）。
+    const observationNodes = screen.getAllByText(/観測:/)
+    expect(observationNodes).toHaveLength(1)
+    expect(observationNodes[0].closest('summary')).toBeNull()
   })
 
   it('録画実績が 0 件のときは空きだけ出し、見込みは出さない', async () => {
