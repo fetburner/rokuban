@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -617,6 +618,31 @@ func TestExtractFrameBakesSAR(t *testing.T) {
 	}
 }
 
+func TestProbeDuration_IgnoresStderr(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("probe helper uses a POSIX shell")
+	}
+
+	dir := t.TempDir()
+	ffprobe := filepath.Join(dir, "ffprobe")
+	const wantSeconds = "2546.360222"
+	script := "#!/bin/sh\n" +
+		"echo '[mpeg2video @ 0x1234] Invalid frame dimensions 0x0.' >&2\n" +
+		"printf '%s\\n' '" + wantSeconds + "'\n"
+	if err := os.WriteFile(ffprobe, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := probeDuration(context.Background(), ffprobe, "input.m2ts", commandOutput)
+	if err != nil {
+		t.Fatalf("probeDuration() error: %v", err)
+	}
+	want := time.Duration(2546.360222 * float64(time.Second))
+	if got != want {
+		t.Errorf("probeDuration() = %v, want %v", got, want)
+	}
+}
+
 func indexOfArg(args []string, want string) int {
 	for i, a := range args {
 		if a == want {
@@ -702,7 +728,7 @@ func TestCommandOutput_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) 
 		t.Errorf("log output = %q, want a warning distinguishing the WaitDelay-on-success path", logBuf.String())
 	}
 	// out が捨てられていないこと（installLeakyExitZeroFakeFFmpeg は progress
-	// 行を標準出力へ書く。CombinedOutput はそれを含む）。
+	// 行を標準出力へ書く。Output は stdout を返す）。
 	if !strings.Contains(string(out), "progress=end") {
 		t.Errorf("out = %q, want captured stdout to survive the WaitDelay-success path", out)
 	}

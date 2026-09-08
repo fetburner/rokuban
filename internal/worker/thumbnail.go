@@ -289,7 +289,10 @@ func (w *ThumbnailWorker) commandOutput(ctx context.Context, name string, args .
 func commandOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	setWorkerExecWaitDelay(cmd)
-	out, err := cmd.CombinedOutput()
+	// ffprobe の stdout は duration や stream index などの機械可読な値を
+	// 返す。stderr の診断メッセージを混ぜると、その値をパースできなくなるため、
+	// stdout だけを返し、stderr はコマンド失敗時の診断にだけ使う。
+	out, err := cmd.Output()
 	if err != nil {
 		// ctx キャンセルを WaitDelay-success 分岐より先に見る（encode.go の
 		// runEncode と同型）。watchCtx の Cancel が os.ErrProcessDone を返す
@@ -316,7 +319,14 @@ func commandOutput(ctx context.Context, name string, args ...string) ([]byte, er
 				"name", name, "wait_delay", workerExecWaitDelay)
 			return out, nil
 		}
-		return out, fmt.Errorf("%s %v: %w\n%s", name, args, err, truncateOutput(out))
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			stderr := strings.TrimSpace(string(exitErr.Stderr))
+			if stderr != "" {
+				return out, fmt.Errorf("%s %v: %w\nstderr: %s", name, args, err, truncateOutput([]byte(stderr)))
+			}
+		}
+		return out, fmt.Errorf("%s %v: %w", name, args, err)
 	}
 	return out, nil
 }
