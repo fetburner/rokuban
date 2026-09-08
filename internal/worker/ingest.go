@@ -38,9 +38,9 @@ const (
 	connectRetryMaxDelay  = 5 * time.Second
 )
 
-// ingestFile は ingest の出力ファイルと、fsync 対象の親ディレクトリを
-// 抽象化する。os.File の全 API は必要ない。テストでは Sync / Close の失敗を
-// 注入して、失敗時に DB 登録とエッジ原本削除へ進まないことを確認する。
+// ingestFile は ingest の出力ファイルを抽象化する。os.File の全 API は
+// 必要ない。テストでは Sync / Close の失敗を注入して、失敗時に DB 登録と
+// エッジ原本削除へ進まないことを確認する。
 type ingestFile interface {
 	io.Writer
 	Sync() error
@@ -49,10 +49,6 @@ type ingestFile interface {
 
 var openIngestFile = func(path string) (ingestFile, error) {
 	return os.Create(path)
-}
-
-var openIngestDirectory = func(path string) (ingestFile, error) {
-	return os.Open(path)
 }
 
 // IngestWorker は mirakc からの TS ファイル転送を行う River ワーカー。
@@ -213,12 +209,10 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	if err != nil {
 		return fmt.Errorf("creating file %s: %w", fullPath, err)
 	}
-	fileClosed := false
-	defer func() {
-		if !fileClosed {
-			_ = f.Close()
-		}
-	}()
+	// 正常系では下で明示的に Close する。ここでの defer はエラーで早期
+	// return した経路の後始末専用で、正常系の二重 Close は *os.File なら
+	// ErrClosed を返すだけで無害なので捨てる。
+	defer func() { _ = f.Close() }()
 
 	counter := tsstat.NewCounter(f)
 
@@ -254,22 +248,18 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 		return fmt.Errorf("size mismatch: written=%d expected=%d", offset, expectedLen)
 	}
 
-	// Close 成功だけではホスト電源断後の永続化を保証しない。転送完了後に
-	// 一度だけファイル本体を fsync し、Close してから親ディレクトリの
-	// ディレクトリエントリも fsync する。途中の定期 fsync は行わない
-	// （S3 系 FUSE 上で転送途中の実体化を増やさないため）。この全てが成功する
-	// まで DB へ登録せず、失敗時は mirakc の record を保持して再試行させる。
-	persistStarted := time.Now()
+	// Linux では遅延した書き込みエラー（ENOSPC / I/O エラー）は Close() では
+	// 上がらず、fsync() でしか報告されない。offset はここまで転送できたバイト数を
+	// メモリ上で数えた値であって実際にディスクへ落ちたことの確認ではないので、
+	// 上の Content-Length 照合もこの種の失敗を素通りしてしまう。ここで fsync が
+	// 失敗したら DB へ登録せず、mirakc の record を保持して再試行させる。途中の
+	// 定期 fsync は行わない（S3 系 FUSE 上で転送途中の実体化を増やさないため）。
+	syncStarted := time.Now()
 	if err := f.Sync(); err != nil {
 		return fmt.Errorf("syncing file: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		fileClosed = true
 		return fmt.Errorf("closing file: %w", err)
-	}
-	fileClosed = true
-	if err := syncIngestParentDirectory(filepath.Dir(fullPath)); err != nil {
-		return err
 	}
 
 	// pid_type_changes > 0 は録画中に PMT が PID を付け替えたということ。
@@ -279,7 +269,7 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 		"drops", counter.TotalDrops(), "errors", counter.TotalErrors(),
 		"scrambled", counter.TotalScrambled(),
 		"pid_type_changes", counter.TypeChanges(),
-		"persist_duration", time.Since(persistStarted))
+		"fsync_duration", time.Since(syncStarted))
 
 	recordIngestMetrics(offset, counter)
 
@@ -292,32 +282,6 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 
 	w.enqueueIngestFollowups(ctx, client, args.RecordID, recordingID, log)
 
-	return nil
-}
-
-// syncIngestParentDirectory は新規ファイルの直近の親ディレクトリを fsync
-// する。ファイル本体の Sync だけでは、ディレクトリエントリが永続化される
-// 保証がないため、ファイルの Close 後かつ DB 登録前に呼ぶ。
-func syncIngestParentDirectory(path string) error {
-	dir, err := openIngestDirectory(path)
-	if err != nil {
-		return fmt.Errorf("opening parent directory %s: %w", path, err)
-	}
-	dirClosed := false
-	defer func() {
-		if !dirClosed {
-			_ = dir.Close()
-		}
-	}()
-
-	if err := dir.Sync(); err != nil {
-		return fmt.Errorf("syncing parent directory %s: %w", path, err)
-	}
-	if err := dir.Close(); err != nil {
-		dirClosed = true
-		return fmt.Errorf("closing parent directory %s: %w", path, err)
-	}
-	dirClosed = true
 	return nil
 }
 

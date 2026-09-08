@@ -70,12 +70,17 @@ func makeTSDataFill(packets int, fill byte) []byte {
 	return data
 }
 
+// ingestTestFile は ingest.go の ingestFile を差し替えるテストダブル。
+// Work は正常系でも Close を 2 回呼ぶ（明示 Close 1 回 + 早期 return 用 defer
+// 1 回。*os.File の 2 回目の Close は ErrClosed を返すだけで無害）ので、
+// onClose は 2 回目を鳴らさないよう closed で冪等にする。
 type ingestTestFile struct {
 	file     *os.File
 	syncErr  error
 	closeErr error
 	onSync   func()
 	onClose  func()
+	closed   bool
 }
 
 func (f *ingestTestFile) Write(p []byte) (int, error) {
@@ -97,8 +102,11 @@ func (f *ingestTestFile) Sync() error {
 
 func (f *ingestTestFile) Close() error {
 	err := f.file.Close()
-	if f.onClose != nil {
-		f.onClose()
+	if !f.closed {
+		f.closed = true
+		if f.onClose != nil {
+			f.onClose()
+		}
 	}
 	if err != nil {
 		return err
@@ -497,6 +505,11 @@ func TestIngestWorker_SizeMismatch(t *testing.T) {
 	}
 }
 
+// TestIngestWorker_PersistsBeforeCommitAndDelete は、原本ファイルの
+// Sync/Close が終わるより前に media_assets 行が存在せず、mirakc の
+// DeleteRecord 時点では存在することをイベント列の完全一致で検証する。
+// これは転送途中に定期 fsync を差し込む変異（S3 系 FUSE 上で実体化を増やす
+// 退行）も落とす --- 途中の fsync がイベント列を狂わせるため。
 func TestIngestWorker_PersistsBeforeCommitAndDelete(t *testing.T) {
 	tsData := makeTSData(20)
 	pool := setupTestPool(t)
@@ -508,30 +521,29 @@ func TestIngestWorker_PersistsBeforeCommitAndDelete(t *testing.T) {
 
 	var eventsMu sync.Mutex
 	var events []string
-	addEvent := func(event string) {
-		eventsMu.Lock()
-		defer eventsMu.Unlock()
-		events = append(events, event)
+	// snapshot は「呼ばれた時点の media_assets 行数」を name=count の形で
+	// events へ append するクロージャを返す。fsync / Close / DeleteRecord の
+	// 各フックから同じ形で呼び、コミット前後の可視性を 1 実装で検査する。
+	snapshot := func(name string) func() {
+		return func() {
+			var count int
+			if err := pool.QueryRow(context.Background(),
+				"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
+			).Scan(&count); err != nil {
+				t.Errorf("counting media_assets (%s): %v", name, err)
+				return
+			}
+			eventsMu.Lock()
+			events = append(events, fmt.Sprintf("%s=%d", name, count))
+			eventsMu.Unlock()
+		}
 	}
 
-	srv := newInstrumentedIngestServer(t, tsData, "test/durable-order.m2ts", func() {
-		var count int
-		if err := pool.QueryRow(context.Background(),
-			"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
-		).Scan(&count); err != nil {
-			t.Errorf("counting media_assets from DeleteRecord handler: %v", err)
-			return
-		}
-		addEvent(fmt.Sprintf("delete-assets=%d", count))
-	})
+	srv := newInstrumentedIngestServer(t, tsData, "test/durable-order.m2ts", snapshot("delete-assets"))
 
 	mediaDir := t.TempDir()
 	originalOpenFile := openIngestFile
-	originalOpenDirectory := openIngestDirectory
-	t.Cleanup(func() {
-		openIngestFile = originalOpenFile
-		openIngestDirectory = originalOpenDirectory
-	})
+	t.Cleanup(func() { openIngestFile = originalOpenFile })
 
 	openIngestFile = func(path string) (ingestFile, error) {
 		file, err := os.Create(path)
@@ -539,56 +551,9 @@ func TestIngestWorker_PersistsBeforeCommitAndDelete(t *testing.T) {
 			return nil, err
 		}
 		return &ingestTestFile{
-			file: file,
-			onSync: func() {
-				var count int
-				if err := pool.QueryRow(context.Background(),
-					"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
-				).Scan(&count); err != nil {
-					t.Errorf("counting media_assets during file Sync: %v", err)
-					return
-				}
-				addEvent(fmt.Sprintf("file-sync-assets=%d", count))
-			},
-			onClose: func() {
-				var count int
-				if err := pool.QueryRow(context.Background(),
-					"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
-				).Scan(&count); err != nil {
-					t.Errorf("counting media_assets during file Close: %v", err)
-					return
-				}
-				addEvent(fmt.Sprintf("file-close-assets=%d", count))
-			},
-		}, nil
-	}
-	openIngestDirectory = func(path string) (ingestFile, error) {
-		file, err := os.Open(path)
-		if err != nil {
-			return nil, err
-		}
-		return &ingestTestFile{
-			file: file,
-			onSync: func() {
-				var count int
-				if err := pool.QueryRow(context.Background(),
-					"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
-				).Scan(&count); err != nil {
-					t.Errorf("counting media_assets during parent directory Sync: %v", err)
-					return
-				}
-				addEvent(fmt.Sprintf("directory-sync-assets=%d", count))
-			},
-			onClose: func() {
-				var count int
-				if err := pool.QueryRow(context.Background(),
-					"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
-				).Scan(&count); err != nil {
-					t.Errorf("counting media_assets during parent directory Close: %v", err)
-					return
-				}
-				addEvent(fmt.Sprintf("directory-close-assets=%d", count))
-			},
+			file:    file,
+			onSync:  snapshot("file-sync-assets"),
+			onClose: snapshot("file-close-assets"),
 		}, nil
 	}
 
@@ -613,8 +578,6 @@ func TestIngestWorker_PersistsBeforeCommitAndDelete(t *testing.T) {
 	wantEvents := []string{
 		"file-sync-assets=0",
 		"file-close-assets=0",
-		"directory-sync-assets=0",
-		"directory-close-assets=0",
 		"delete-assets=1",
 	}
 	if !slices.Equal(gotEvents, wantEvents) {
@@ -622,19 +585,19 @@ func TestIngestWorker_PersistsBeforeCommitAndDelete(t *testing.T) {
 	}
 }
 
+// TestIngestWorker_DurabilityFailuresKeepEdgeRecord は、原本ファイルの
+// Sync/Close が失敗した場合に media_assets へ登録されず mirakc の
+// DeleteRecord も呼ばれないこと、その後実装本来の opener に戻して再試行すると
+// 正しい原本が公開されることを確認する。
 func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 	injectedErr := errors.New("injected durability failure")
 	tests := []struct {
 		name      string
 		fileSync  bool
 		fileClose bool
-		dirSync   bool
-		dirClose  bool
 	}{
 		{name: "file Sync", fileSync: true},
 		{name: "file Close", fileClose: true},
-		{name: "parent directory Sync", dirSync: true},
-		{name: "parent directory Close", dirClose: true},
 	}
 
 	for _, tt := range tests {
@@ -654,11 +617,7 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 
 			mediaDir := t.TempDir()
 			originalOpenFile := openIngestFile
-			originalOpenDirectory := openIngestDirectory
-			t.Cleanup(func() {
-				openIngestFile = originalOpenFile
-				openIngestDirectory = originalOpenDirectory
-			})
+			t.Cleanup(func() { openIngestFile = originalOpenFile })
 
 			openIngestFile = func(path string) (ingestFile, error) {
 				file, err := os.Create(path)
@@ -670,20 +629,6 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 					syncErr = injectedErr
 				}
 				if tt.fileClose {
-					closeErr = injectedErr
-				}
-				return &ingestTestFile{file: file, syncErr: syncErr, closeErr: closeErr}, nil
-			}
-			openIngestDirectory = func(path string) (ingestFile, error) {
-				file, err := os.Open(path)
-				if err != nil {
-					return nil, err
-				}
-				var syncErr, closeErr error
-				if tt.dirSync {
-					syncErr = injectedErr
-				}
-				if tt.dirClose {
 					closeErr = injectedErr
 				}
 				return &ingestTestFile{file: file, syncErr: syncErr, closeErr: closeErr}, nil
@@ -719,7 +664,6 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 			// 再試行では実装本来の opener に戻す。失敗した部分ファイルは os.Create
 			// が truncate し、正しい原本を最初から公開できることを確認する。
 			openIngestFile = originalOpenFile
-			openIngestDirectory = originalOpenDirectory
 			if err := w.Work(context.Background(), job); err != nil {
 				t.Fatalf("retry Work() error: %v", err)
 			}
@@ -1310,43 +1254,11 @@ func TestStallReader(t *testing.T) {
 // ingest コミット tx 内で recordings に焼くことをエンドツーエンドで確認する。
 
 // newFullTransferServer は「1 回で完走する」ingest 用のテストサーバーを返す。
-// 以下の 3 テストで共通の mirakc 差し替え。
+// newInstrumentedIngestServer の onDelete フック無し版（多数のテストで共通の
+// mirakc 差し替え）。
 func newFullTransferServer(t *testing.T, tsData []byte, contentPath string) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(tsData)
-
-		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-			w.WriteHeader(http.StatusOK)
-
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
-			record := mirakc.Record{
-				Recording: mirakc.RecordInfo{
-					Options: mirakc.Options{ContentPath: strPtr(contentPath)},
-				},
-				Content: mirakc.ContentInfo{Path: "/recording/" + contentPath},
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(record)
-
-		case r.Method == http.MethodDelete:
-			result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(result)
-
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(srv.Close)
-	return srv
+	return newInstrumentedIngestServer(t, tsData, contentPath, nil)
 }
 
 func newInstrumentedIngestServer(t *testing.T, tsData []byte, contentPath string, onDelete func()) *httptest.Server {
