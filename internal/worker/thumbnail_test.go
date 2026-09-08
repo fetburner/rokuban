@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -619,10 +618,6 @@ func TestExtractFrameBakesSAR(t *testing.T) {
 }
 
 func TestProbeDuration_IgnoresStderr(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("probe helper uses a POSIX shell")
-	}
-
 	dir := t.TempDir()
 	ffprobe := filepath.Join(dir, "ffprobe")
 	const wantSeconds = "2546.360222"
@@ -637,9 +632,36 @@ func TestProbeDuration_IgnoresStderr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("probeDuration() error: %v", err)
 	}
-	want := time.Duration(2546.360222 * float64(time.Second))
+	wantSec, err := strconv.ParseFloat(wantSeconds, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Duration(wantSec * float64(time.Second))
 	if got != want {
 		t.Errorf("probeDuration() = %v, want %v", got, want)
+	}
+}
+
+// TestCommandOutput_IncludesStderrOnFailure は commandOutput が失敗時、
+// *exec.ExitError の Stderr をエラーメッセージへ載せることを固定する
+// （cmd.Output() は cmd.CombinedOutput() と違い stderr を戻り値に混ぜないため、
+// 失敗時の診断はこの分岐でしか出てこない）。
+func TestCommandOutput_IncludesStderrOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "fake-ffprobe")
+	script := "#!/bin/sh\n" +
+		"echo 'diagnostic: something went wrong' >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := commandOutput(context.Background(), fake)
+	if err == nil {
+		t.Fatal("commandOutput() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "diagnostic: something went wrong") {
+		t.Errorf("commandOutput() error = %q, want it to contain stderr diagnostic", err.Error())
 	}
 }
 
