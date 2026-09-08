@@ -2828,8 +2828,8 @@ func TestIngestWorker_ConcurrentSameRelPath_LoserNeverOpensStream(t *testing.T) 
 	wA := &IngestWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(srvA.URL, nil)), Pool: pool, MediaDir: mediaDir, StallTimeout: 5 * time.Second}
 	wB := &IngestWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(srvB.URL, nil)), Pool: pool, MediaDir: mediaDir, StallTimeout: 5 * time.Second}
 
-	jobA := &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{}, Args: IngestJobArgs{Site: "default", RecordID: "rec-race-a"}}
-	jobB := &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{}, Args: IngestJobArgs{Site: "default", RecordID: "rec-race-b"}}
+	jobA := &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{ID: 690002}, Args: IngestJobArgs{Site: "default", RecordID: "rec-race-a"}}
+	jobB := &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{ID: 690003}, Args: IngestJobArgs{Site: "default", RecordID: "rec-race-b"}}
 
 	errACh := make(chan error, 1)
 	go func() { errACh <- wA.Work(context.Background(), jobA) }()
@@ -3031,11 +3031,11 @@ func TestIngestWorker_RelPathLockSessionLoss_AbortsOldTransfer(t *testing.T) {
 	}
 
 	jobA := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
+		JobRow: &rivertype.JobRow{ID: 690004},
 		Args:   IngestJobArgs{Site: "default", RecordID: "rec-lock-loss-a"},
 	}
 	jobB := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
+		JobRow: &rivertype.JobRow{ID: 690005},
 		Args:   IngestJobArgs{Site: "default", RecordID: "rec-lock-loss-b"},
 	}
 
@@ -3142,12 +3142,12 @@ func TestIngestWorker_LockLostBeforeCommit_AbortsWithoutCommitting(t *testing.T)
 	originalAcquire := acquireIngestRelPathLock
 	t.Cleanup(func() { acquireIngestRelPathLock = originalAcquire })
 	var capturedLock *relPathLock
-	acquireIngestRelPathLock = func(ctx context.Context, p *pgxpool.Pool, relPath string, timeout time.Duration) (*relPathLock, bool, error) {
-		lock, acquired, err := originalAcquire(ctx, p, relPath, timeout)
+	acquireIngestRelPathLock = func(ctx context.Context, lock *relPathLock, relPath string, timeout time.Duration) (bool, error) {
+		acquired, err := originalAcquire(ctx, lock, relPath, timeout)
 		if acquired {
 			capturedLock = lock
 		}
-		return lock, acquired, err
+		return acquired, err
 	}
 
 	originalOpenFile := openIngestFile

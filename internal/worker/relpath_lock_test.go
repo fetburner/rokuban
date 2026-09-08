@@ -103,6 +103,85 @@ func TestIngestRelPathLock_SecondAcquireFailsAndReleaseFrees(t *testing.T) {
 	}
 }
 
+// TestIngestJobAndRelPathLocksShareSession は、ingest のジョブ lock と rel_path
+// lock が同じ PostgreSQL セッションに積まれることを固定する。別セッションで
+// rel_path lock を取っている実装では、pool2 がジョブ lock だけでなく rel_path
+// lock も取得できてしまう。
+func TestIngestJobAndRelPathLocksShareSession(t *testing.T) {
+	dbURL := testutil.DatabaseURL(t)
+	ctx := context.Background()
+
+	pool1, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("creating pool1: %v", err)
+	}
+	t.Cleanup(pool1.Close)
+	pool2, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("creating pool2: %v", err)
+	}
+	t.Cleanup(pool2.Close)
+
+	const jobID int64 = 690001
+	const relPath = "sites/default/test/job-and-rel-path-lock.m2ts"
+
+	lock1, acquired, err := acquireIngestJobLock(ctx, pool1, jobID, time.Second)
+	if err != nil {
+		t.Fatalf("acquiring job lock: %v", err)
+	}
+	if !acquired {
+		t.Fatal("expected pool1 to acquire the job lock")
+	}
+	t.Cleanup(lock1.release)
+
+	acquired, err = lock1.acquireRelPath(ctx, relPath, time.Second)
+	if err != nil {
+		t.Fatalf("adding rel_path lock to job session: %v", err)
+	}
+	if !acquired {
+		t.Fatal("expected the job session to acquire the rel_path lock")
+	}
+
+	lock2, acquired, err := acquireIngestJobLock(ctx, pool2, jobID, time.Second)
+	if err != nil {
+		t.Fatalf("acquiring job lock from pool2: %v", err)
+	}
+	if lock2 != nil {
+		t.Cleanup(lock2.release)
+	}
+	if acquired {
+		t.Fatal("pool2 acquired the job lock while pool1 was holding it")
+	}
+
+	lock2, acquired, err = acquireRelPathLockWithHeartbeat(ctx, pool2, relPath, time.Second)
+	if err != nil {
+		t.Fatalf("acquiring rel_path lock from pool2: %v", err)
+	}
+	if lock2 != nil {
+		t.Cleanup(lock2.release)
+	}
+	if acquired {
+		t.Fatal("pool2 acquired the rel_path lock while pool1 was holding it")
+	}
+
+	lock1.release()
+	lock3, acquired, err := acquireIngestJobLock(ctx, pool2, jobID, time.Second)
+	if err != nil {
+		t.Fatalf("reacquiring job lock after release: %v", err)
+	}
+	if !acquired {
+		t.Fatal("pool2 did not acquire the job lock after release")
+	}
+	t.Cleanup(lock3.release)
+	acquired, err = lock3.acquireRelPath(ctx, relPath, time.Second)
+	if err != nil {
+		t.Fatalf("reacquiring rel_path lock after release: %v", err)
+	}
+	if !acquired {
+		t.Fatal("pool2 did not acquire the rel_path lock after release")
+	}
+}
+
 // TestIngestRelPathLock_HeartbeatPreservesHeldSessionAlive は、ロック保持中の
 // heartbeat が正常なセッションを誤って lost 扱いしないことを固定する。
 // `pg_locks` の bigint key 分解や objsubid 条件を壊す変異は、heartbeat 1 回後に

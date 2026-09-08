@@ -84,6 +84,13 @@ func (w *RecordSweepWorker) Work(ctx context.Context, job *river.Job[jobs.Record
 		return fmt.Errorf("getting river client from job context: %w", err)
 	}
 
+	// River の JobRescuer は ingest の Timeout()=-1 を尊重するため、プロセス死で
+	// running のまま残った ingest はここで回収する。時刻は候補抽出にだけ使い、
+	// ジョブ ID advisory lock を取得できた場合に限って死亡と確定する。
+	if err := recoverStaleIngestJobs(ctx, w.Pool, riverClient, job.Args.Site); err != nil {
+		return fmt.Errorf("recovering stale ingest jobs: %w", err)
+	}
+
 	wt := watcher.New(job.Args.Site, client, w.Pool, riverClient, w.Webhook)
 	return wt.Sweep(ctx)
 }

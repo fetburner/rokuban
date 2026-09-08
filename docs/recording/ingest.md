@@ -91,7 +91,29 @@ clean なファイルでは「誤検知がないこと」しか確かめられ�
 
 #### 層 2: ジョブ再試行（プロセス死）
 
-River の at-least-once + 指数バックオフ。**ゼロから作り直す**（部分ファイルは truncate）。中途再開はスキャナ状態の永続化とストレージ契約（シーケンシャル一発書き）違反の追記が必要になり、層 1 で大半が救われる以上、複雑さに見合わない。
+ingest の転送中にプロセスが死ぬと River の行は `running` のまま残り、`Timeout() = -1` の
+ingest は River の通常の stuck-job rescue 対象にならない。そこで `record_sweep` は watcher の
+全量突き合わせより前に、最後の活動（`recording_ingest_progress.observed_at`、行がまだ無ければ
+`river_job.attempted_at`）が 1 分以上古い `running` ingest を候補として調べる。
+
+候補を時刻だけで死亡と判定してはいけない。ingest は Work の開始時に
+`rokuban:ingest:job:<river_job.id>` の PostgreSQL セッションレベル advisory lock を取得し、
+既存の `rel_path` lock も同じセッションへ追加して commit まで保持する。`record_sweep` がその
+ジョブ ID の lock を `pg_try_advisory_lock` で取得できた場合だけ元プロセスのセッションが無い
+（= プロセス死）と確定する。lock を取れなかった live transfer は回収しないので、遅い転送や
+HEAD / fsync / commit 中の古い進捗を時間だけで打ち切らない。
+
+死亡と確定した場合は、古い `running` 行に回収理由と `finalized_at` を記録して `discarded` に
+終端化し、同じトランザクションで別 ID の ingest ジョブを投入する。古い行を `running` のまま
+再投入すると、UniqueOpts の `pendingJobStates` に `running` が含まれるため新しい試行が古い行へ
+合流し、回収できない状態が続く。進捗行が作られる前に死んだケースも、`attempted_at` fallback
+で同じ経路に乗る。新しい試行は部分ファイルを truncate してゼロから作り直す。中途再開は
+スキャナ状態の永続化とストレージ契約（シーケンシャル一発書き）違反の追記が必要になり、層 1
+で大半が救われる以上、複雑さに見合わない。
+
+回収は既定 5 分周期（起動時に 1 回実行）で走る `record_sweep` に組み込んでいるため、通常は
+候補になってから最大で約 6 分以内に再投入される。総時間 timeout を有限値にする案は、録画
+サイズや期待転送速度から安全な上限を決められず、正常な低速転送を殺すので採らない。
 
 #### 層 3: 完全性検証とコミット
 
@@ -121,7 +143,7 @@ fsync を入れる理由は電源断ではなく、Linux では遅延した書�
 - **行の一意性の最後の砦は今も一意索引**（レベルトリガー、不変条件 5）。ロックはその代替ではなく、一意索引が効くより前の窓を閉じるためだけにある
 - **ロック用セッションを heartbeat する**: 転送中は 1 秒ごとに同じ接続の `pg_locks` を照合する。**接続断・ロック喪失（held=false）は確定した事実として即座に失敗側に倒す**が、それ以外のクエリ失敗（checkpoint / failover / pgbouncer によるスタック、タイムアウトを含む）は一過性とみなし、3 回連続して初めて転送 context をキャンセルする --- そうしないと DB の数秒のレイテンシ 1 回で、進捗の進んだ転送が 0 バイトからの再試行に戻ってしまう（issue #679）。これにより、ロックが解放された後も旧実行が書き続ける現行の劣化モードを、接続断・ロック喪失なら heartbeat 1 回ぶんの検知窓に限定する。heartbeat 自体が通信を続けるので、idle session timeout / 経路上の idle 切断を防ぐ効果もある
 - **残る検出窓は保証として隠さない**: 接続断・ロック喪失は nominal には heartbeat 間隔 1 秒、1 回の応答待ち 2 秒の窓が残る。一過性のクエリ失敗が連続する場合はこの窓がさらに広がりうる（許容回数分の heartbeat 間隔 + 応答待ちの合計が上限の目安）。Postgres がロックを解放してから heartbeat が検知するまでに後続 ingest が同じ宛先を開くと、旧実行がその短い窓で書く可能性はある。この絶対的な窓を消す「試行ごとの不変パス + DB 採用」は最強だが、rel_path の名前空間（rescue の `sites/{site}/` 逆読み、`EncodedRelPath`、catalog）を変更し、失敗試行ごとに全長の孤児を 7 日 + 14 日残すため採らない。保存先側の `flock` も S3/FUSE で意味論が保証されず、採らない
-- **同一録画の再試行**: 現行の `IngestWorker.Timeout() = -1` と River の running を含む一意投入により、プロセス内の通常の River 経路では古い ingest と新しい ingest が同時に走らない。この前提が将来変わる場合も、`media_assets (recording_id, kind, profile)` の一意制約が採用行を 1 つに絞り、heartbeat が先行実行を止める。プロセス死後に running ingest が戻らない別の欠損は issue #690 で扱う
+- **同一録画の再試行**: 現行の `IngestWorker.Timeout() = -1` と River の running を含む一意投入により、プロセス内の通常の River 経路では古い ingest と新しい ingest が同時に走らない。プロセス死で running 行だけが残った場合も、上記のジョブ lock 確認と旧行の終端化を経て新しい試行へ進む。この前提が将来変わる場合も、`media_assets (recording_id, kind, profile)` の一意制約が採用行を 1 つに絞り、heartbeat が先行実行を止める
 - **孤児と追加 I/O**: heartbeat で中断した直接書きの部分ファイルは DB 行が無いので、既存の `orphan_files` の mtime 猶予（既定 7 日）とエイジング（既定 14 日）が回収する。正常な転送に別の全長コピーは追加せず、追加コストは実行中 ingest 1 本あたり 1 秒ごとの短い DB query だけである
 
 **今でも先に浮かぶ案が壊すもの**: 一時ファイル + `os.Rename` で宛先を作る案は採らない --- rename は S3 マウントの一部（AWS Mountpoint）に存在せず、他（geesefs/s3fs）では数十 GB の実コピーになる（[storage/contract.md](../storage/contract.md) §2）。commit を先にして rename を後にすると、rename が恒久失敗したとき行が指す唯一の実体が一時ファイルのまま残り、`active` 行の実体欠落を検出する経路が無いまま孤児回収に食われる。
