@@ -269,10 +269,6 @@ export function ProgramsPage() {
     // グリッド表示中はリストの窓を追いかけない（同じ時間帯を 2 つの形で
     // 同時に取りに行かない）。戻ったときはキャッシュがそのまま出る。
     enabled: !showGrid && sites.length > 0,
-    // 失敗した後続窓を TanStack Query の既定リトライに任せると、空窓の末尾で
-    // 自動取得が再開し、利用者が同じ窓を手動で再試行する導線に到達できない。
-    // 初回窓の失敗も同じく画面の再試行ボタンで復旧させる。
-    retry: false,
     // 日付ジャンプで originMs（＝ queryKey）が変わると infinite query が
     // 作り直される。未キャッシュの日だと `isPending` が即 true になり、
     // 下の分岐で `ProgramList` が `ListSkeleton` に挿し替わって文書高さが
@@ -722,7 +718,7 @@ export function ProgramsPage() {
             />
           )}
 
-          {showLoadMoreButton ? (
+          {showLoadMoreButton && (
             <div className="px-4 py-6">
               {query.isFetchNextPageError && (
                 <p className="pb-2 text-center text-sm text-destructive">
@@ -743,7 +739,7 @@ export function ProgramsPage() {
                     : 'さらに読み込む'}
               </Button>
             </div>
-          ) : null}
+          )}
         </PageContent>
       )}
     </>
