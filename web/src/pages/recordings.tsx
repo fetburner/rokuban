@@ -387,43 +387,65 @@ export function RecordingsPage() {
           />
         </div>
         <RecordingFilters search={search} onChange={updateSearch} />
-        {!trash && encodeQueue !== undefined && (
+        {trash ? (
+          <StorageBalance />
+        ) : (
+          // エンコード待機列（encodeQueue 未解決/失敗）と StorageBalance（media root
+          // 無し）が両方とも何も描かないときは、空の帯だけを残さない（不変条件 10
+          // と同じ「意味を持たない行を作らない」規律の UI 版）。判定を親で
+          // 再実装せず（`StorageBalance` の沈黙条件が増えると親が取り残される）、
+          // 子が両方とも無ければこの div は実際に子ノード 0 個になることを使って
+          // `empty:hidden` に任せる。
           <div
-            aria-label="エンコード待機列"
-            className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-2 text-xs text-muted-foreground"
+            data-testid="recordings-management-summary"
+            className="flex flex-wrap items-start gap-x-2 gap-y-1 border-t border-border px-4 py-1 text-xs text-muted-foreground empty:hidden"
           >
-            <span>エンコード</span>
-            <Chip
-              active={search.encodeState === ListRecordingsEncodeState.queued}
-              onClick={() =>
-                updateSearch((s) => ({
-                  ...s,
-                  encodeState:
-                    s.encodeState === ListRecordingsEncodeState.queued
-                      ? undefined
-                      : ListRecordingsEncodeState.queued,
-                }))
-              }
-            >
-              待機中 {encodeQueue.queued}件
-            </Chip>
-            <Chip
-              active={search.encodeState === ListRecordingsEncodeState.running}
-              onClick={() =>
-                updateSearch((s) => ({
-                  ...s,
-                  encodeState:
-                    s.encodeState === ListRecordingsEncodeState.running
-                      ? undefined
-                      : ListRecordingsEncodeState.running,
-                }))
-              }
-            >
-              実行中 {encodeQueue.running}件
-            </Chip>
+            {encodeQueue !== undefined && (
+              <div
+                role="group"
+                aria-label="エンコード待機列"
+                className="flex shrink-0 flex-wrap items-center gap-2"
+              >
+                {/* ラベルを隠すと「待機中/実行中」チップが録画状態フィルタと
+                    誤読されうるが、360/390px 幅では常時表示にすると「エンコード」
+                    ラベル + 2 チップが 1 行に収まらず折り返し、管理情報行が
+                    45px 予算を超える（実測: 360px で 69px、390px で 53px。
+                    e2e/design.mjs「視聴対象への到達距離」参照）。誤読リスクより
+                    1 行に収める側を優先し、lg 未満では隠す。 */}
+                <span className="hidden lg:inline">エンコード</span>
+                <Chip
+                  active={search.encodeState === ListRecordingsEncodeState.queued}
+                  onClick={() =>
+                    updateSearch((s) => ({
+                      ...s,
+                      encodeState:
+                        s.encodeState === ListRecordingsEncodeState.queued
+                          ? undefined
+                          : ListRecordingsEncodeState.queued,
+                    }))
+                  }
+                >
+                  待機中 {encodeQueue.queued}件
+                </Chip>
+                <Chip
+                  active={search.encodeState === ListRecordingsEncodeState.running}
+                  onClick={() =>
+                    updateSearch((s) => ({
+                      ...s,
+                      encodeState:
+                        s.encodeState === ListRecordingsEncodeState.running
+                          ? undefined
+                          : ListRecordingsEncodeState.running,
+                    }))
+                  }
+                >
+                  実行中 {encodeQueue.running}件
+                </Chip>
+              </div>
+            )}
+            <StorageBalance compact />
           </div>
         )}
-        <StorageBalance />
       </PageHeader>
 
       {/* 固定の選択バーで末尾行を覆わないだけのスクロール余白を、編集モード中だけ

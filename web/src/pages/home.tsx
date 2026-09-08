@@ -258,6 +258,16 @@ export function HomePage() {
   const warningSectionVisible = !warningsPending && warnings.length > 0
   const finishedSectionVisible =
     !finishedQuery.isPending && (finishedQuery.isError || recentFinished.length > 0)
+  const finishedShortcutVisible =
+    !finishedQuery.isPending && !finishedQuery.isError && recentFinished.length > 0
+  const finishedShortcut = finishedShortcutVisible ? (
+    <a
+      href="#home-finished"
+      className="shrink-0 text-sm text-primary underline-offset-2 hover:underline"
+    >
+      直近の完了へ
+    </a>
+  ) : undefined
 
   const anyVisible =
     recordingSectionVisible ||
@@ -278,6 +288,9 @@ export function HomePage() {
   // 出てくれば、他がまだ解決していなくても表示を始める（最も遅いクエリに
   // 引きずられない）。
   if (!anyVisible && !allSettled) {
+    // finishedShortcut は finishedShortcutVisible ⇒ finishedSectionVisible ⇒
+    // anyVisible の含意により、この分岐（!anyVisible）では必ず undefined。
+    // actions は渡さない。
     return (
       <>
         <PageHeader title="ホーム" />
@@ -292,7 +305,7 @@ export function HomePage() {
 
   return (
     <>
-      <PageHeader title="ホーム" />
+      <PageHeader title="ホーム" actions={finishedShortcut} />
 
       <PageContent>
         {allEmpty ? (
@@ -362,8 +375,15 @@ export function HomePage() {
           )}
 
           {finishedSectionVisible && (
-            <section aria-labelledby="home-finished">
-              <h2 id="home-finished" className="px-4 pt-4 pb-2 text-sm font-semibold">
+            <section
+              id="home-finished"
+              aria-labelledby="home-finished-heading"
+              style={{
+                scrollMarginTop:
+                  'calc(var(--page-header-height, 0px) + var(--sticky-banners-height, 0px))',
+              }}
+            >
+              <h2 id="home-finished-heading" className="px-4 pt-4 pb-2 text-sm font-semibold">
                 直近の完了
               </h2>
               {finishedQuery.isError ? (

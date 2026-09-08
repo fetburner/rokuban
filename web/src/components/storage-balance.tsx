@@ -53,6 +53,11 @@ function StorageRootCapacity({ root, nowMs }: { root: StorageRoot; nowMs: number
 /**
  * StorageBalance は「空き X GB / 今後 N 日の予約で約 +Y GB の見込み」を要約に出し、
  * 展開時はアーカイブとスクラッチの総容量・使用済み・空きを表示する。
+ * `compact` では録画一覧の管理情報行へ収めるため、通常時の見込みは展開側へ
+ * 常に移す（警告の有無に関わらない）。観測時刻は stale でない限り要約に出さず、
+ * 展開すれば `StorageRootCapacity` が root ごとに観測時刻を出すのでそちらに
+ * 譲る（展開側の追加行に二重で持たせない）。満杯見込みや観測 stale などの
+ * 警告は要約に残す。
  *
  * 導出（母数の取り方・満杯見込み日の算出）は `lib/storage-forecast.ts` にすべて
  * 集約する。ここは 3 つの API（`GET /api/storage` / `GET /api/recordings` /
@@ -73,7 +78,7 @@ function StorageRootCapacity({ root, nowMs }: { root: StorageRoot; nowMs: number
  *    規律と同じ。`docs/frontend/recordings.md`「ドロップ統計はバッジ + 展開」）
  * 4. **見込み消費が残量に収まる**ときは満杯見込み日を出さない（下界主義）
  */
-export function StorageBalance() {
+export function StorageBalance({ compact = false }: { compact?: boolean }) {
   const storageQuery = useGetStorage()
   const recordingsQuery = useListRecordings({
     status: 'finished',
@@ -124,25 +129,48 @@ export function StorageBalance() {
     nowMs,
   })
 
+  // 通常時の見込みは compact なら常に展開側へ移す（満杯見込み・stale の観測は
+  // 警告なので別枠のまま summary に残る。この変数を hasWarning に依存させると
+  // 「満杯見込みでも stale でもない compact」のときに観測時刻がどこにも出ない
+  // 抜け穴になる）。
+  const showForecastInSummary = !compact
+  const showObservationInSummary = !compact || stale
+  const forecastSummary =
+    forecast.hasEstimate &&
+    forecast.projectedConsumptionBytes !== undefined &&
+    forecast.projectedConsumptionBytes > 0 ? (
+      <span
+        title={`直近 ${forecast.sampleSize} 件の録画実績（原本 TS の実測ビットレート。変換後のファイルは含まない）から算出した見込み`}
+      >
+        今後{forecastWindowDays}日の予約で約 +
+        {formatBytes(forecast.projectedConsumptionBytes)} の見込み
+      </span>
+    ) : null
+
   return (
-    <details className="border-t border-border text-xs text-muted-foreground">
-      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2">
+    <details
+      className={cn(
+        'min-w-0 text-xs text-muted-foreground',
+        // compact は畳んだ状態では隣接するエンコードチップと 1 行に収まる幅
+        // （flex-1）に振る舞うが、開いたときはその幅のまま 3 カラムの詳細
+        // グリッドを押し込むと崩れる。open: variant で開いたときだけ自分の
+        // 行を占有させる。
+        compact ? 'flex-1 open:basis-full' : 'border-t border-border',
+      )}
+    >
+      <summary
+        className={cn(
+          'flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1',
+          compact ? 'py-1' : 'px-4 py-2',
+        )}
+      >
         <span>
           空き <span className="font-medium text-foreground">{formatBytes(media.availableBytes)}</span>
         </span>
 
         {/* projectedConsumptionBytes > 0 を条件にする（0 のものは出さない。
             予約が正当に 0 件のときも「+0 B の見込み」を描かない）。 */}
-        {forecast.hasEstimate &&
-          forecast.projectedConsumptionBytes !== undefined &&
-          forecast.projectedConsumptionBytes > 0 && (
-            <span
-              title={`直近 ${forecast.sampleSize} 件の録画実績（原本 TS の実測ビットレート。変換後のファイルは含まない）から算出した見込み`}
-            >
-              今後{forecastWindowDays}日の予約で約 +
-              {formatBytes(forecast.projectedConsumptionBytes)} の見込み
-            </span>
-          )}
+        {showForecastInSummary && forecastSummary}
 
         {forecast.exceedsAvailable && forecast.fullAtMs !== undefined && (
           <span className="flex items-center gap-1 text-warning">
@@ -151,17 +179,28 @@ export function StorageBalance() {
           </span>
         )}
 
-        <span
-          className={cn('flex items-center gap-1', stale && 'text-warning')}
-          title={stale ? '観測ループが止まっている可能性があります' : undefined}
-        >
-          {stale && <TriangleAlert className="size-3 shrink-0" aria-hidden="true" />}
-          観測: {formatDateTime(media.observedAt)}
-          {stale && '（古い可能性）'}
+        {showObservationInSummary && (
+          <span
+            className={cn('flex items-center gap-1', stale && 'text-warning')}
+            title={stale ? '観測ループが止まっている可能性があります' : undefined}
+          >
+            {stale && <TriangleAlert className="size-3 shrink-0" aria-hidden="true" />}
+            観測: {formatDateTime(media.observedAt)}
+            {stale && '（古い可能性）'}
+          </span>
+        )}
+        <span className={cn(!compact && 'ml-auto', 'underline-offset-2 hover:underline')}>
+          {compact && <span className="sr-only">ストレージ詳細</span>}
+          {compact ? <span aria-hidden="true">詳細</span> : 'ストレージ詳細'}
         </span>
-        <span className="ml-auto underline-offset-2 hover:underline">ストレージ詳細</span>
       </summary>
-      <div className="grid gap-2 px-4 pb-3 sm:grid-cols-2">
+      {/* compact のときだけ足す追加行。観測時刻は展開すると StorageRootCapacity が
+          root ごとに既に「観測: …」を出しているので、ここでは二重にしない
+          （forecastSummary だけを持つ）。 */}
+      {compact && forecastSummary && (
+        <div className="flex flex-wrap gap-x-3 gap-y-1 pb-2">{forecastSummary}</div>
+      )}
+      <div className={cn('grid gap-2 pb-3 sm:grid-cols-2', !compact && 'px-4')}>
         <StorageRootCapacity root={media} nowMs={nowMs} />
         {scratch !== undefined && <StorageRootCapacity root={scratch} nowMs={nowMs} />}
       </div>
