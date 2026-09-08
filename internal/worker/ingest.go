@@ -51,6 +51,12 @@ var openIngestFile = func(path string) (ingestFile, error) {
 	return os.Create(path)
 }
 
+// acquireIngestRelPathLock は rel_path advisory lock の取得フック。既定は
+// acquireRelPathLockWithHeartbeat（relpath_lock.go）そのもの。openIngestFile と
+// 同じ形で、テストが取得直後の *relPathLock を捕捉して heartbeat を経由せずに
+// lock.isLost() ガード（下記 Work 参照）を検証するために差し替える。
+var acquireIngestRelPathLock = acquireRelPathLockWithHeartbeat
+
 // IngestWorker は mirakc からの TS ファイル転送を行う River ワーカー。
 type IngestWorker struct {
 	river.WorkerDefaults[jobs.IngestJobArgs]
@@ -177,7 +183,7 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	// 負けた側（acquired=false）はバイトを 1 つも書かずに失敗し、River の
 	// バックオフで再試行する。ロックは commit まで defer で保持し続け、
 	// heartbeat がセッション喪失を検知したら転送用 context をキャンセルする。
-	lock, acquired, err := acquireRelPathLockWithHeartbeat(ctx, w.Pool, relPath, w.resolveRelPathLockTimeout())
+	lock, acquired, err := acquireIngestRelPathLock(ctx, w.Pool, relPath, w.resolveRelPathLockTimeout())
 	if err != nil {
 		return fmt.Errorf("acquiring rel_path lock: %w", err)
 	}

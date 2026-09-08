@@ -2883,6 +2883,13 @@ func TestIngestWorker_ConcurrentSameRelPath_LoserNeverOpensStream(t *testing.T) 
 // pg_terminate_backend で切断する。production code にテスト用の connection
 // hook を足さず、issue #679 の「ロック用セッションだけを失う」故障を実際の
 // PostgreSQL セッションで再現するための helper。
+//
+// `pg_locks` はクラスタ全体のビューで、advisory lock のキー空間は database
+// 単位（relPathLockKey は同じキーを database をまたいで再利用しうる）。
+// `AND database = current_database()` を付けないと、同じ Postgres サーバに
+// 対して本パッケージのテストを並列実行したとき（testutil は別 DB を作るが、
+// これは並列エージェント構成そのもの）他プロセスの同名 rel_path のロック接続
+// を誤って kill しうる（PR #704 レビュー指摘）。
 func terminateRelPathLockBackend(t *testing.T, pool *pgxpool.Pool, relPath string) {
 	t.Helper()
 	key := relPathLockKey(relPath)
@@ -2900,6 +2907,7 @@ func terminateRelPathLockBackend(t *testing.T, pool *pgxpool.Pool, relPath strin
 			  AND objid = ($1::bigint & 4294967295)::oid
 			  AND objsubid = 1
 			  AND granted
+			  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
 			LIMIT 1`, key).Scan(&pid)
 		if err == nil {
 			break
@@ -3088,12 +3096,131 @@ func TestIngestWorker_RelPathLockSessionLoss_AbortsOldTransfer(t *testing.T) {
 	}
 }
 
+// TestIngestWorker_LockLostBeforeCommit_AbortsWithoutCommitting は #704 の
+// レビュー指摘（internal/worker/ingest.go の 3 つの lock.isLost() ガードを
+// 全部消しても TestIngestWorker_RelPathLockSessionLoss_AbortsOldTransfer が
+// 緑のままだった）の回帰テスト。あちらは HTTP request context の
+// cancellation で転送そのものが止まり、3 つのガードのどれにも到達していない。
+// このテストは転送を正常に完走させ、commit 直前のガード（ingest.go の
+// f.Close() 直後の isLost() チェック）だけを単独で踏む。
+//
+// acquireIngestRelPathLock フックで取得直後の *relPathLock を捕捉し、原本
+// ファイルの Close（onClose）で直接 lock.markLost() を呼ぶ --- heartbeat も
+// 実 DB のセッション切断も経由しない。markLost は Work と同じ goroutine 上の
+// Close 呼び出し内で行い、直後のガード判定まで一切のブロッキング呼び出しを
+// 挟まないので、このガード自体は毎回確実に発火する（確認済み: 20 回連続実行で
+// 全て "lost before commit" のエラーで即時 return し、w.commit は一度も
+// 呼ばれない）。
+//
+// **outcome（media_assets の有無・DeleteRecord の呼び出し）だけでは、この
+// ガード単体の削除を検出できない。** markLost は Work 内の ctx キャンセル
+// 伝播用 goroutine（`go func(){ select { case <-lock.lost: cancelIngest()
+// ...} }()`）も同時に起こす。このガードを消しても、次に到達する
+// w.commit(ingestCtx, ...) の Begin(ctx) 自体が同じ ctx cancellation で
+// 失敗し、commit 失敗後の別のチェック（"lost during commit"）が代わりに
+// エラーを返すため、outcome は変わらない（実測: ガードを消して 5 回実行、
+// 全て "...beginning transaction: context canceled" で失敗し media_assets は
+// 作られなかった）。そのため、このガードが実際に発火したときにしか出ない
+// エラー文言 "lost before commit" を固定して初めて、削除を検出できる。
+//
+// 壊し方: ingest.go の commit 直前 `if lock.isLost() { return ... }` を消す
+// → エラーが "lost before commit" ではなく "lost during commit: ...
+// context canceled" に変わり、文言の assertion で落ちる（変異確認済み）。
+func TestIngestWorker_LockLostBeforeCommit_AbortsWithoutCommitting(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	tsData := makeTSData(10)
+
+	var deleteRequested atomic.Bool
+	srv := newInstrumentedIngestServer(t, tsData, "test/lock-lost-before-commit.m2ts", func() {
+		deleteRequested.Store(true)
+	})
+
+	originalAcquire := acquireIngestRelPathLock
+	t.Cleanup(func() { acquireIngestRelPathLock = originalAcquire })
+	var capturedLock *relPathLock
+	acquireIngestRelPathLock = func(ctx context.Context, p *pgxpool.Pool, relPath string, timeout time.Duration) (*relPathLock, bool, error) {
+		lock, acquired, err := originalAcquire(ctx, p, relPath, timeout)
+		if acquired {
+			capturedLock = lock
+		}
+		return lock, acquired, err
+	}
+
+	originalOpenFile := openIngestFile
+	t.Cleanup(func() { openIngestFile = originalOpenFile })
+	openIngestFile = func(path string) (ingestFile, error) {
+		file, err := os.Create(path)
+		if err != nil {
+			return nil, err
+		}
+		return &ingestTestFile{
+			file: file,
+			onClose: func() {
+				if capturedLock == nil {
+					t.Error("ingest file Close fired before acquireIngestRelPathLock captured a lock")
+					return
+				}
+				capturedLock.markLost()
+			},
+		}, nil
+	}
+
+	mediaDir := t.TempDir()
+	w := &IngestWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		Pool:          pool,
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
+	}
+
+	recordingID := insertTestRecording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, "rec-lock-lost-before-commit")
+
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-lock-lost-before-commit"},
+	}
+
+	// エラー文言そのものを検証する。commit() 自体は ingestCtx を使うため、
+	// commit 前のガード（288 行目）を消しても、w.commit の内部で
+	// Begin(ctx) 等が ctx cancellation で失敗し、commit 失敗後のチェック
+	// （「lost during commit」、ingest.go の commit 呼び出し直後の分岐）が
+	// 代わりに拾ってしまい、"media_assets rows = 0" というアサーションだけでは
+	// ガード自体が消えたことを検出できない（確認済み。壊し方参照）。
+	// 288 行目のガードが実際に発火したときにしか出ない文言
+	// （"lost before commit"）を固定することで、それを消した変異を検出する。
+	err := w.Work(context.Background(), job)
+	if err == nil {
+		t.Fatal("Work() error = nil, want a lock-loss failure before commit")
+	}
+	if !strings.Contains(err.Error(), "lost before commit") {
+		t.Errorf("Work() error = %q, want it to come from the pre-commit isLost() guard (\"lost before commit\")", err.Error())
+	}
+
+	var assetCount int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
+	).Scan(&assetCount); err != nil {
+		t.Fatalf("counting media_assets: %v", err)
+	}
+	if assetCount != 0 {
+		t.Errorf("media_assets rows = %d, want 0 (commit must not run after the lock is lost)", assetCount)
+	}
+	if deleteRequested.Load() {
+		t.Error("DeleteRecord was called; the edge record must be kept when commit is aborted")
+	}
+}
+
 // TestIngestWorker_ReleasesRelPathLockAfterCommit は、ingest 成功後に
 // rel_path の advisory lock が解放されていることを固定する。ingest が使った
 // のとは別の独立したプール（別セッション）から同じキーの
 // pg_try_advisory_lock が true を返せば、解放されている証拠になる。
 //
-// 壊し方: acquireRelPathLock の release から pg_advisory_unlock の呼び出しを
+// 壊し方: relPathLock.release から pg_advisory_unlock の呼び出しを
 // 消し conn.Release() だけ残す → ロックが保持されたまま残り、検証用の
 // 独立プールから pg_try_advisory_lock が false を返すため
 // "rel_path advisory lock still held" で落ちる（確認済み。もし通ってしまう
