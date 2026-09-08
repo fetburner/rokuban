@@ -47,6 +47,86 @@ EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）で
 そちらが一次情報になる。**増えていないのにこのゲージが立つのが最も危険**な状態で、mirakc が
 失敗を報告せずに録画を始めていないことを意味する（EPGStation#724 のクラス）。
 
+### 開始前の未同期または観測不能
+
+予約の受付が DB に成功したことは、mirakc に実効 schedule が反映されたことを意味しない。
+次の 2 つの主系列をサイトごとに使う。
+
+- `rokuban_presync_pending{site,reason="missing"}` — desired に対する observed schedule が無い
+- `rokuban_presync_pending{site,reason="options"}` — observed schedule はあるが、priority /
+  `program:{programId}` tag / 明示 `contentPath` が desired と一致しない
+- `rokuban_presync_pending_earliest_start_timestamp_seconds{site,reason}` — 同じ reason で
+  pending な予約のうち最も開始が近い番組の start_at。pending が 0 の reason には
+  この系列が出ない（0 を出すと `earliest - time() < lead` が常に真になり、健全な状態で鳴る）
+- `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` — schedule 全量 snapshot が DB に
+  整合した形で最後に確定した時刻。0 は未確立
+
+判定は **観測不能 → 未同期（missing） → 未同期（options） → 同期済み** の順に読む。
+snapshot が 0 または stale なら、pending の値が 0 でも「同期済み」とは扱わない。collector
+の DB 読み取りに失敗したときは pending / snapshot 自体が出ず、
+`rokuban_presync_scrape_errors_total{site}` が増えるので、0 への置換でアラートを消さない。
+
+件数の gauge だけでは、8 日先の予約 1 件と 2 分後開始の予約 1 件が同値になり
+区別できない（issue #680）。開始が近いかどうかは件数ではなく
+`rokuban_presync_pending_earliest_start_timestamp_seconds` で判定する。
+
+アラート式の閾値は、現時点ではリポジトリに固定しない。Prometheus 側で運用値を設定する
+（`<snapshot_stale_seconds>` と `<lead_seconds>` は環境ごとの recording rule / alert rule
+の値に置き換える）。論理形は次のとおり。
+
+```promql
+# 先に観測不能を通知する。
+time() - rokuban_schedule_snapshot_last_success_timestamp_seconds
+  > <snapshot_stale_seconds>
+
+# fresh な snapshot に対してだけ、開始が近い未同期を通知する。
+# 十分先の予約（earliest - time() >= <lead_seconds>）は鳴らさない。
+(
+  rokuban_presync_pending_earliest_start_timestamp_seconds - time() < <lead_seconds>
+)
+and on (site)
+(
+  time() - rokuban_schedule_snapshot_last_success_timestamp_seconds
+    <= <snapshot_stale_seconds>
+)
+```
+
+`for:` はここでは「pending が続いた時間」ではなく 1 scrape 分の揺らぎ吸収だけに
+使う。開始までの残り時間は上式が `earliest - time()` で直接見ているので、
+`for` を長く取る必要はない。
+
+通知は Prometheus の alert rule から Alertmanager へ送り、`site` と `reason` を
+ルーティングに残す。観測不能は同期状態の断定より優先して、担当者が reconciler の
+投入元・worker / ScaledJob の起動状態・DB 接続を確認する入口にする。
+
+`<lead_seconds>` を決める式は次のとおり（p95/p99 の実測値を代入する）。
+
+```text
+lead >= (
+  定期投入間隔 + KEDA poll + Pod 起動 + reconcile パス時間
+  + 作成した schedule の再観測 + 通知到達
+) の p95/p99 + 運用者の介入余裕
+```
+
+将来「開始までに同期できた割合」を測る場合の母集団は、サイトと放送イベントの
+`(site, program_id)` 単位にする。測定 lead より前に desired が確定し、明示 skip ではなく、
+開始前に options 一致を確認できた候補を分母にする。直前に作られた手動予約、開始後の
+操作、EPG の開始時刻変更で旧イベントと新イベントを跨いだ候補は別の母集団に分ける。
+skip は分母から除外する。現スコープではこの履歴を保存せず、collector は現在の desired /
+observed と snapshot 鮮度だけを出す。
+
+常駐 `PeriodicJobs` では reconciler が full snapshot を確定し、常駐プロセスの `/metrics`
+が DB の marker を読む。ScaledJob `--once` ではジョブ Pod 自身の process gauge を
+scrape しようとせず、常駐 Pod の collector が同じ marker を読む。ジョブ未投入・Pod
+未起動・パス失敗では marker が進まない。復旧して full snapshot がコミットされ、desired
+と observed の差分が解消すれば、marker は新しくなり pending は 0 に戻る。予約の削除・
+再実体化を跨いでも、collector はその時点の `(site, program_id)` と DB の desired /
+observed を再計算するため、`synced` 成功状態を永続化して古い成功を残さない。
+
+未測定の範囲は、定期投入から通知到達までの p95/p99、mirakc の POST 後に schedule が
+再観測されるまでの遅延、サイトごとの EPG 時刻変更頻度である。実測後に alert rule の
+閾値を変更し、アプリケーションを再ビルドしない。
+
 ### 経緯と失敗事例
 
 - サーキットブレーカーのラッチ化と `rokuban_circuit_breaker_tripped` ゲージは M2-5、開始遅延検出器（`rokuban_reconcile_start_delayed`）は M2-7。

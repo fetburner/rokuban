@@ -26,6 +26,73 @@ func (q *Queries) DeleteStaleScheduleSyncs(ctx context.Context, arg DeleteStaleS
 	return err
 }
 
+const getScheduleSyncSnapshot = `-- name: GetScheduleSyncSnapshot :one
+SELECT snapshot_at
+FROM schedule_sync_snapshots
+WHERE site = $1
+`
+
+// marker がまだ一度も確定していないサイトは pgx.ErrNoRows になる。collector は
+// これを DB 障害とは扱わず、snapshot_last_success_timestamp を 0 として出す。
+func (q *Queries) GetScheduleSyncSnapshot(ctx context.Context, site string) (time.Time, error) {
+	row := q.db.QueryRow(ctx, getScheduleSyncSnapshot, site)
+	var snapshot_at time.Time
+	err := row.Scan(&snapshot_at)
+	return snapshot_at, err
+}
+
+const listScheduleSyncsBySite = `-- name: ListScheduleSyncsBySite :many
+SELECT site, program_id, state, options, tags, failed_reason, observed_at
+FROM schedule_sync
+WHERE site = $1
+ORDER BY program_id
+`
+
+// presync collector が scrape ごとに現在の observed を読み直すための全量一覧。
+func (q *Queries) ListScheduleSyncsBySite(ctx context.Context, site string) ([]ScheduleSync, error) {
+	rows, err := q.db.Query(ctx, listScheduleSyncsBySite, site)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ScheduleSync
+	for rows.Next() {
+		var i ScheduleSync
+		if err := rows.Scan(
+			&i.Site,
+			&i.ProgramID,
+			&i.State,
+			&i.Options,
+			&i.Tags,
+			&i.FailedReason,
+			&i.ObservedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const scheduleSyncSweepMark = `-- name: ScheduleSyncSweepMark :one
+SELECT now()::timestamptz AS mark
+`
+
+// 全量 snapshot の基準時刻を DB の時計から取る。schedule_sync の upsert も
+// snapshot marker の更新も同じトランザクションに入れるため、アプリの時計の
+// skew で今回投入した行を stale として消すことがない。DeleteStaleScheduleSyncs
+// に渡す明示 param にしているのは、stale 削除を別トランザクションに移した
+// 瞬間に now() が全行を消してしまうため（同一トランザクション前提を明示する）。
+func (q *Queries) ScheduleSyncSweepMark(ctx context.Context) (time.Time, error) {
+	row := q.db.QueryRow(ctx, scheduleSyncSweepMark)
+	var mark time.Time
+	err := row.Scan(&mark)
+	return mark, err
+}
+
 const upsertScheduleSync = `-- name: UpsertScheduleSync :exec
 INSERT INTO schedule_sync (
     site, program_id, state,
@@ -51,8 +118,10 @@ type UpsertScheduleSyncParams struct {
 // schedule_sync は reservation_id 列（observed schedule がどの reservations
 // 行に対応するかの便宜的なポインタ）を持たない --- 読む本番コードが 1 つも
 // 無かった（この列を含む唯一の SELECT だった ListScheduleSyncsBySite も
-// 呼び出し元ゼロだったため、この issue で併せて落とした）。reconciler の
-// 「自分が作った schedule か」の判定は常に tags = mirakc.IsOurs で行う。
+// 呼び出し元ゼロだったため、この issue で併せて落とした。
+// ListScheduleSyncsBySite は presync collector という読み手ができたため
+// issue #680 で再追加した）。reconciler の「自分が作った schedule か」の
+// 判定は常に tags = mirakc.IsOurs で行う。
 //
 // issue #99 は reservation_id の FK（ON DELETE SET NULL）だけを外す案を
 // 挙げたが、PR #147 のレビューで取り下げられた --- 外すとこの列は「削除済み
@@ -71,5 +140,20 @@ func (q *Queries) UpsertScheduleSync(ctx context.Context, arg UpsertScheduleSync
 		arg.Tags,
 		arg.FailedReason,
 	)
+	return err
+}
+
+const upsertScheduleSyncSnapshot = `-- name: UpsertScheduleSyncSnapshot :exec
+INSERT INTO schedule_sync_snapshots (site, snapshot_at)
+VALUES ($1, now())
+ON CONFLICT (site) DO UPDATE SET
+    snapshot_at = EXCLUDED.snapshot_at
+`
+
+// schedule_sync の upsert と stale 削除が同一トランザクションで完了したときだけ
+// 呼び出し側が最後に実行する。marker の時刻は「GET が返った」ではなく、DB に
+// 全量 snapshot が確定した時刻を表す。
+func (q *Queries) UpsertScheduleSyncSnapshot(ctx context.Context, site string) error {
+	_, err := q.db.Exec(ctx, upsertScheduleSyncSnapshot, site)
 	return err
 }

@@ -334,6 +334,40 @@ func TestNewBoundBacklogCollector_ThroughNewRegistry(t *testing.T) {
 	})
 }
 
+// presync は --sites の束縛ではなく設定レジストリ全体を観測する。worker が
+// 1 site に束縛された構成でも、常駐プロセスの /metrics から他 site の
+// reconciler 停止を見逃さないための配線を固定する（issue #680）。
+func TestNewConfiguredPresyncCollectors_ExposeAllConfiguredSites(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	cs := newConfiguredPresyncCollectors(pool, []config.MirakcSite{tokyo, takamatsu})
+	if len(cs) != 2 {
+		t.Fatalf("collectors = %d, want 2", len(cs))
+	}
+
+	reg := metrics.NewRegistry(cs...)
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+
+	seen := make(map[string]bool)
+	for _, family := range families {
+		if family.GetName() != "rokuban_schedule_snapshot_last_success_timestamp_seconds" {
+			continue
+		}
+		for _, metric := range family.Metric {
+			for _, label := range metric.Label {
+				if label.GetName() == "site" {
+					seen[label.GetValue()] = true
+				}
+			}
+		}
+	}
+	if !seen["tokyo"] || !seen["takamatsu"] {
+		t.Errorf("presync site labels = %v, want tokyo and takamatsu", seen)
+	}
+}
+
 // newSiteFlagTestCmd は resolveSiteFlag のテストが使う、`--site` フラグだけを
 // 持つ最小の cobra.Command を作る（enqueue / rescue / shadow-diff の 3 コマンドが
 // 共有する解決規則なので、コマンド名には依存しない）。

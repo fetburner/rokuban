@@ -257,6 +257,73 @@ func TestReconciler_CreatesSchedule(t *testing.T) {
 	}
 }
 
+// schedule_sync の全量 upsert、stale 削除、snapshot marker 更新が 1 パスで確定
+// することを固定する。marker が DB にあるだけではなく、空の全量 snapshot でも
+// stale な observed 行を消したあとに更新される必要がある。
+func TestReconciler_CommitsScheduleSnapshotMarkerWithStaleSweep(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	// GET で生き残る schedule を 1 件仕込む。stale 行（6800003）とは別に、
+	// upsert される行が残ることを確認するため。
+	mock.schedules[6800009] = mirakc.Schedule{
+		State:   "scheduled",
+		Program: mirakc.Program{ID: 6800009, Duration: ptrInt64(300000)},
+		Tags:    []string{mirakc.ProgramTag(6800009)},
+	}
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	q := sqlcgen.New(pool)
+	if err := q.UpsertScheduleSync(ctx, sqlcgen.UpsertScheduleSyncParams{
+		Site:      "default",
+		ProgramID: 6800003,
+		State:     mirakc.ScheduleStateScheduled,
+		Options:   json.RawMessage(`{"priority":10}`),
+		Tags:      []string{mirakc.ProgramTag(6800003)},
+	}); err != nil {
+		t.Fatalf("seeding stale schedule_sync: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE schedule_sync SET observed_at = now() - interval '1 minute'`); err != nil {
+		t.Fatalf("aging schedule_sync row: %v", err)
+	}
+
+	rec := reconciler.New("default", mirakc.NewClient(srv.URL, nil), pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if _, err := q.GetScheduleSyncSnapshot(ctx, "default"); err != nil {
+		t.Fatalf("schedule snapshot marker was not committed: %v", err)
+	}
+	var rows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schedule_sync WHERE site = 'default'`).Scan(&rows); err != nil {
+		t.Fatalf("counting schedule_sync rows: %v", err)
+	}
+	if rows != 1 {
+		t.Errorf("schedule_sync rows = %d, want 1 (only the stale row swept, the observed one kept)", rows)
+	}
+
+	// 不完全な observed を「新鮮」と誤認させないことの直接検証: 全量 upsert +
+	// stale 削除 + marker 更新が同一トランザクションなら、marker の snapshot_at と
+	// upsert された行の observed_at はどちらも同じ now() になる。
+	// UpsertScheduleSyncSnapshot が tx の外（別トランザクション）に出ると、
+	// この 2 つの時刻はもう同一トランザクションの now() を共有しないため、
+	// タイミング次第でずれうる。
+	var sameTx bool
+	if err := pool.QueryRow(ctx, `
+		SELECT s.snapshot_at = ss.observed_at
+		FROM schedule_sync_snapshots s
+		JOIN schedule_sync ss ON ss.site = s.site
+		WHERE s.site = 'default'`).Scan(&sameTx); err != nil {
+		t.Fatalf("comparing snapshot_at and observed_at: %v", err)
+	}
+	if !sameTx {
+		t.Error("schedule_sync_snapshots.snapshot_at and schedule_sync.observed_at were not from the same transaction")
+	}
+}
+
 // TestReconciler_DeletesOrphanedSchedule は、desired にまだ生きている予約が
 // 残っている状態で（= 全損シグネチャに当たらない）、それとは別の stale な
 // schedule が普通に削除されることを確かめる。

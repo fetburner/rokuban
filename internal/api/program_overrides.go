@@ -309,8 +309,8 @@ func parseProgramOverridesInput(in ProgramOverridesInput) ([]func(*reservation.O
 	}
 	if in.ContentPath != nil {
 		// 空文字は「明示指定なし」に潰れて reconciler の差分対象から外れる
-		// （explicitContentPath、internal/reconciler/reconciler.go）ため、保存は
-		// 成功するが何も起きないケースになる。既存 schedule の有無は見ない —
+		// （schedulesync.ExplicitContentPath）ため、保存は成功するが何も起きない
+		// ケースになる。既存 schedule の有無は見ない —
 		// api は射影の状態（schedule_sync）に依存しない（不変条件 1）。override を
 		// 消すのは reset。
 		if *in.ContentPath == "" {

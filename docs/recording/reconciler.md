@@ -4,6 +4,18 @@
 
 `reservations`（desired）と `schedule_sync`（observed: `GET /api/recording/schedules` の観測結果）の差分を POST/DELETE で消す、レベルトリガーの宣言的同期ループ。
 
+`schedule_sync` の全量 upsert、今回返らなかった stale 行の削除、サイト単位の
+`schedule_sync_snapshots` マーカー更新は同一トランザクションで確定する。マーカーは
+「GET が返った」だけでは進まず、DB に整合した observed snapshot が残ったときだけ
+進む。これにより reconciler が ScaledJob の `--once` で動く構成でも、常駐プロセスの
+DB-backed `/metrics` から観測鮮度を見られる。
+
+この同一トランザクション化により、`observeSchedules`（stale 削除・マーカー更新を
+含む）の失敗時の挙動が変わった。以前はログだけを残してパスを続行していたが、
+今はトランザクション全体が失敗して `RunPass` がエラーを返す。次パスがレベル
+トリガーで収束させる —— 不完全な observed をマーカー更新まで進めて「新鮮」と
+誤認させるより、パス全体を失敗させて次パスに委ねる方が安全という判断。
+
 - **tags 対応付け**: mirakc schedule の `tags` に programId を埋め込む（例: `program:1234`）。手動で mirakc に入れられた schedule との判別もタグで可能。programId は EPG にある間ずっと安定している。reservations 行は ruler の判断で削除・再作成されることがあるため、tag には reservations 側の列ではなく programId を使う（不変条件 9「導出器が作るキーを宛先にしない」）
 - **contentPath 生成**: `recording.basedir` 相対パス必須。ファイル名テンプレート（[contentpath.md](contentpath.md)）の展開もここで行う。生成はテンプレートから初回作成時のみ行い、以後の再作成（後述の差分反映）は、明示 override（`overrides.contentPath`）があればその値、無ければ observed（mirakc に登録済みの schedule）の contentPath を引き継ぐことで実質固定される（`reservations.base` に生成値を書き戻すコードは無い）
 - **冪等**: 何度落ちても再実行で収束する。時刻精度もプロセス生存性も要求されない
@@ -51,7 +63,7 @@ override の削除（reset）は既存 schedule に反映しない。戻り先�
 
 比較は mirakc が `options.contentPath` をそのまま返す（正規化しない）ことに依存する。この前提は `internal/mirakc/conformance` の `TestConformance/ContentPathRoundTrip` が mirakc 4.0.0-dev.0 相当に対して判定している。正規化して返す実装だと毎パス再作成になるので、`rokuban_reconcile_pending_diff{action="update"}` がゼロに戻らないことと `reason=content_path` の再作成ログの反復で観測する。
 
-**再作成の POST は observed の `contentPath` を引き継ぐ**（テンプレートから再生成しない）。「差分と見なさない」だけでは priority 変更で再作成するときに何を入れるかが決まらない。再生成すると EPG の番組名が変わっていれば別のパスになり、**priority を変えただけでファイル名が変わる**という副作用になる。引き継げば「初回生成値に固定し以後変更しない」が文字どおり保たれる。引き継ぐ値は自分が書いたものの往復だが、mirakc 側を直接触られていた場合の保険として `SanitizeContentPath` は通す。明示 override があるときだけそれが observed への引き継ぎに勝ち、その場合もテンプレート再生成には落ちない（決定は `explicitContentPath` の 1 箇所に集約してある）。
+**再作成の POST は observed の `contentPath` を引き継ぐ**（テンプレートから再生成しない）。「差分と見なさない」だけでは priority 変更で再作成するときに何を入れるかが決まらない。再生成すると EPG の番組名が変わっていれば別のパスになり、**priority を変えただけでファイル名が変わる**という副作用になる。引き継げば「初回生成値に固定し以後変更しない」が文字どおり保たれる。引き継ぐ値は自分が書いたものの往復だが、mirakc 側を直接触られていた場合の保険として `SanitizeContentPath` は通す。明示 override があるときだけそれが observed への引き継ぎに勝ち、その場合もテンプレート再生成には落ちない（決定は `schedulesync.ExplicitContentPath` の 1 箇所に集約してある）。
 
 #### 再作成のガード
 
