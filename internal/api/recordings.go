@@ -267,12 +267,6 @@ func encodeJobStatusesFromFields(r recordingListFields, done []string, knownProf
 // knownProfiles は encodeJobStatusesFromFields に渡す（doc コメント参照。
 // nil なら「設定から消えたプロファイル」の判定をスキップする）。
 func recordingFromListFields(r recordingListFields, includeDeletedAt bool, knownProfiles map[string]struct{}) (Recording, error) {
-	keepOriginal := r.KeepOriginal
-	if keepOriginal == "" {
-		// SQL の射影は常に COALESCE する。単体テストなどで素の fields を
-		// 組み立てる場合も、policy 行が無い録画の安全側既定値に揃える。
-		keepOriginal = "always"
-	}
 	rec := Recording{
 		Id:           r.ID,
 		Site:         r.Site,
@@ -289,7 +283,7 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool, known
 		StartAt:      r.ProgramStartAt.UTC(),
 		DurationMs:   r.ProgramDurationMs,
 		Status:       RecordingStatus(r.Status),
-		KeepOriginal: RecordingKeepOriginal(keepOriginal),
+		KeepOriginal: RecordingKeepOriginal(r.KeepOriginal),
 		StartedAt:    utcTimePtr(r.StartedAt),
 		EndedAt:      utcTimePtr(r.EndedAt),
 		SizeBytes:    r.OriginalSizeBytes,
@@ -576,13 +570,25 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 	return AddRecordingEncodeProfiles204Response{}, nil
 }
 
+// wantKeepOriginalUntilEncodedMessage は encode_profiles が空/未凍結のときの
+// 409 メッセージ。SetRecordingKeepOriginal の UPDATE 自身の WHERE がこの条件を
+// 判定するため、ここでは rows==0 をこのメッセージに翻訳するだけ（下記 doc
+// コメント参照）。
+const wantKeepOriginalUntilEncodedMessage = "cannot set keepOriginal=until_encoded without desired encode profiles; add encode profiles first"
+
 // SetRecordingEncodePolicy は録画後に原本の保持ポリシーを上書きする（issue #697）。
 //
-// `keepOriginal` だけを書き、凍結済みの encode_profiles は変更しない。`until_encoded`
-// を指定するときは recording_encode_policy の行と desired なプロファイルを同一
-// トランザクション内で確認し、空または未凍結なら 409 を返す。`always` への変更は
-// 原本の状態を検査しないため、削除 reconcile が unlink 前の deleting 行を次回パスで
-// 再評価して active に戻せる（issue #105）。
+// `keepOriginal` だけを書き、凍結済みの encode_profiles は変更しない。この
+// エンドポイントは新しい recording_encode_policy 行を凍結しない ---
+// SetRecordingKeepOriginal は UPDATE のみ（INSERT アームを持たない）で、行が
+// 無い（未凍結）録画は既に 'always' と同じ扱いなので、`always` への変更は
+// 0 行のまま 204（no-op）、`until_encoded` への変更は 0 行のまま 409（recordings.sql
+// の SetRecordingKeepOriginal doc コメント参照）。`until_encoded` の
+// 「desired なプロファイルが空/未凍結なら 409」の判定は UPDATE 自身の WHERE
+// （cardinality(encode_profiles) > 0）が適用の瞬間に再評価するので、ここで
+// 事前読み取りは行わない（読み取り→書き込みの窓を作らない）。`always` への
+// 変更は原本の状態を検査しないため、削除 reconcile が unlink 前の deleting 行を
+// 次回パスで再評価して active に戻せる（issue #105）。
 //
 // 物理削除もヒントジョブの投入も行わない。削除 reconcile のレベル検知に任せることで、
 // encode_profiles の事後追加 API と違って River への二重書き込みを作らない。
@@ -603,36 +609,39 @@ func (h *Server) SetRecordingEncodePolicy(ctx context.Context, req SetRecordingE
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	q := sqlcgen.New(tx)
-	if _, err := q.GetRecordingByID(ctx, req.Id); err != nil {
+	rec, err := q.GetRecordingByID(ctx, req.Id)
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return SetRecordingEncodePolicy404JSONResponse{Error: "recording not found"}, nil
 		}
 		return nil, fmt.Errorf("loading recording %d: %w", req.Id, err)
 	}
-
-	keepOriginal := string(req.Body.KeepOriginal)
-	if req.Body.KeepOriginal == SetRecordingEncodePolicyInputKeepOriginalUntilEncoded {
-		policy, err := q.GetRecordingEncodePolicy(ctx, req.Id)
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return SetRecordingEncodePolicy409JSONResponse{
-					Error: "cannot set keepOriginal=until_encoded without desired encode profiles; add encode profiles first",
-				}, nil
-			}
-			return nil, fmt.Errorf("loading encode policy for recording %d: %w", req.Id, err)
-		}
-		if len(policy.EncodeProfiles) == 0 {
-			return SetRecordingEncodePolicy409JSONResponse{
-				Error: "cannot set keepOriginal=until_encoded without desired encode profiles; add encode profiles first",
-			}, nil
-		}
+	// GetRecordingByID は述語なし（ingest worker と共有するクエリなので緩めない）。
+	// purged_at が立った tombstone は GET /api/recordings/{id}（queryRecordingByID、
+	// purged_at IS NULL）と同じく 404 にする --- deleted_at（ごみ箱）は復元すれば
+	// 効くので inert ではなく、ここでは見ない。
+	if rec.PurgedAt != nil {
+		return SetRecordingEncodePolicy404JSONResponse{Error: "recording not found"}, nil
 	}
 
-	if err := q.SetRecordingKeepOriginal(ctx, sqlcgen.SetRecordingKeepOriginalParams{
+	keepOriginal := string(req.Body.KeepOriginal)
+	rows, err := q.SetRecordingKeepOriginal(ctx, sqlcgen.SetRecordingKeepOriginalParams{
 		RecordingID:  req.Id,
 		KeepOriginal: keepOriginal,
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, fmt.Errorf("setting recording %d keep_original: %w", req.Id, err)
+	}
+	if rows == 0 {
+		// 0 行の理由は 2 通り: (1) until_encoded で WHERE の cardinality 述語が
+		// 落ちた（desired なプロファイルが空/未凍結）、(2) 行自体が無い（未凍結の
+		// 録画）。(2) は always なら no-op（未凍結 = 既に always 相当）として
+		// 204 で成功、until_encoded なら (1) と区別せず同じ 409 にする ---
+		// どちらも「until_encoded にする根拠となる desired プロファイルが無い」
+		// という同じ事実だから。
+		if req.Body.KeepOriginal == SetRecordingEncodePolicyInputKeepOriginalUntilEncoded {
+			return SetRecordingEncodePolicy409JSONResponse{Error: wantKeepOriginalUntilEncodedMessage}, nil
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("committing recording %d encode policy: %w", req.Id, err)

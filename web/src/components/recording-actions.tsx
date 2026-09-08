@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { MoreVertical, Trash2 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { ApiError } from '@/api/client'
 import {
@@ -220,12 +220,31 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
  * 同じ `encodeSettingsError` で保存を止める。サーバー側でも同じ条件を同一
  * トランザクション内で検査するので、画面表示から保存までの間に状態が変わっても
  * 409 として利用者へ返る。
+ *
+ * 再生可能な原本が無い録画（録画中・ingest 待ち・原本削除済み）では何も出さない
+ * --- `AddEncodeProfilesAction` と同じ `hasOriginal`
+ * （`recording.sizeBytes !== undefined`）近似を再利用し、理由の文言は隣の
+ * `AddEncodeProfilesAction` が出す 1 つに任せる（同じ理由を 2 文並べない）。
+ * `state='deleting'`
+ * （unlink 待ち）は一覧の射影上 `sizeBytes` を持つ（`a.state <> 'deleted'`）ので
+ * `hasOriginal` は真のまま --- 「削除処理中に always へ戻す」（issue #105）経路は
+ * この画面から到達できる。
  */
 function KeepOriginalAction({ recording }: { recording: Recording }) {
+  const hasOriginal = recording.sizeBytes !== undefined
   const current = recording.keepOriginal as KeepOriginal
   const profiles = recording.encodeProfiles ?? []
   const [selected, setSelected] = useState<KeepOriginal>(current)
   const [confirmOpen, setConfirmOpen] = useState(false)
+  // confirmedRef は「確認ダイアログを確定して閉じた」ことを覚える。
+  // AlertDialogAction の onClick は commit() を呼んだ後、Radix が同じイベントの
+  // 中で onOpenChange(false) を発火させる --- そのクロージャの時点では
+  // setPolicy.isPending がまだ false（mutate の状態更新は次のレンダーでしか
+  // 反映されない）なので、!setPolicy.isPending だけを条件にすると確定操作でも
+  // 選択が current に巻き戻ってしまう（保存中… ボタンも一緒に消える）。commit() で
+  // true にし、ダイアログが開くたびに false へ戻すことで、キャンセル / Escape /
+  // オーバーレイクリックだけが巻き戻しの対象になる。
+  const confirmedRef = useRef(false)
   const queryClient = useQueryClient()
   const toast = useToast()
   const setPolicy = useSetRecordingEncodePolicy()
@@ -235,6 +254,9 @@ function KeepOriginalAction({ recording }: { recording: Recording }) {
     // oxlint-disable-next-line react/set-state-in-effect -- mutation 後の応答をフォームへ反映する
     setSelected(current)
   }, [current])
+
+
+  if (!hasOriginal) return null
 
   const error = encodeSettingsError(selected, profiles)
   const dirty = selected !== current
@@ -249,6 +271,7 @@ function KeepOriginalAction({ recording }: { recording: Recording }) {
   }
 
   const commit = () => {
+    confirmedRef.current = true
     setPolicy.mutate(
       { id: recording.id, data: { keepOriginal: selected } },
       {
@@ -303,7 +326,13 @@ function KeepOriginalAction({ recording }: { recording: Recording }) {
         open={confirmOpen}
         onOpenChange={(open) => {
           setConfirmOpen(open)
-          if (!open && !setPolicy.isPending) setSelected(current)
+          if (open) {
+            confirmedRef.current = false
+          } else if (!confirmedRef.current) {
+            // キャンセル / Escape / オーバーレイクリックだけがここに来る
+            // （確定操作は commit() が先に confirmedRef を立てる）。
+            setSelected(current)
+          }
         }}
       >
         <AlertDialogContent>

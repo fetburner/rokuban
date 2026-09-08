@@ -466,36 +466,34 @@ func (q *Queries) ListRecordings(ctx context.Context, site string) ([]ListRecord
 	return items, nil
 }
 
-const setRecordingKeepOriginal = `-- name: SetRecordingKeepOriginal :exec
-INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
-SELECT $1,
-       $2,
-       coalesce(
-           (SELECT encode_profiles
-            FROM recording_encode_policy
-            WHERE recording_id = $1),
-           '{}'::text[]
-       )
-ON CONFLICT (recording_id) DO UPDATE SET
-    keep_original = excluded.keep_original,
+const setRecordingKeepOriginal = `-- name: SetRecordingKeepOriginal :execrows
+UPDATE recording_encode_policy
+SET keep_original = $1,
     updated_at = now()
+WHERE recording_id = $2
+  AND ($1 <> 'until_encoded' OR cardinality(encode_profiles) > 0)
 `
 
 type SetRecordingKeepOriginalParams struct {
-	RecordingID  int64
 	KeepOriginal string
+	RecordingID  int64
 }
 
-// 録画後に原本の保持ポリシーだけを上書きする（issue #697）。
+// 録画後に原本の保持ポリシーだけを上書きする（issue #697）。UPDATE のみで
+// INSERT アームを持たない --- 行が無い（未凍結）録画は既に 'always' と同じ扱い
+// （docs/storage/retention.md §6）なので行を作る必要が無い。作ると ingest の
+// FreezeRecordingEncodePolicy（ON CONFLICT を意図的に付けない素の INSERT）が
+// PK 衝突し、原本 media_asset の INSERT と同一 tx ごとロールバックする
+// （不変条件 10「意味を持たない行を作らない」）。
 //
-// encode_profiles は desired state なので UPDATE アームでは触らない。行が無い
-// （原本だけを復旧登録した録画など）場合は、既存の事後追加 API と同じく
-// keep_original='always' / encode_profiles='{}' を既定値にして凍結する。
-// ingest と api が同じ desired state を書く 2 人の書き手になっても、これは
-// 観測の表ではなく録画ごとの宣言を保持する衛星表なので分割しない。
-func (q *Queries) SetRecordingKeepOriginal(ctx context.Context, arg SetRecordingKeepOriginalParams) error {
-	_, err := q.db.Exec(ctx, setRecordingKeepOriginal, arg.RecordingID, arg.KeepOriginal)
-	return err
+// cardinality の述語を UPDATE 自身の WHERE に置くことで、判定を Go 側に
+// 持ち出さずに CHECK 違反（recording_encode_policy_check）を防ぐ。
+func (q *Queries) SetRecordingKeepOriginal(ctx context.Context, arg SetRecordingKeepOriginalParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setRecordingKeepOriginal, arg.KeepOriginal, arg.RecordingID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const supersedeFailedRecording = `-- name: SupersedeFailedRecording :execrows

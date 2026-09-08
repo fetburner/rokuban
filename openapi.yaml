@@ -1054,10 +1054,14 @@ paths:
         変更できるのは保持ポリシーだけで、`encode_profiles` はこの API では変更しない。
         `encode_profiles` の事後追加は POST `/api/recordings/{id}/encode-profiles` を使う。
 
-        `until_encoded` は desired なエンコードプロファイルが 1 つ以上ある録画だけ
-        指定できる。プロファイルが空、または `recording_encode_policy` 行が無い場合は
-        409 を返すので、先に事後エンコード追加を依頼すること。`always` への変更は
-        原本の状態を検査せず、削除 reconcile が保持ポリシーを適用の瞬間に再評価する。
+        このエンドポイントは新しい `recording_encode_policy` 行を凍結しない。行が
+        無い（未凍結）録画は既に `always` と同じ扱いなので、`always` への変更は
+        204 で no-op、`until_encoded` への変更は（desired なプロファイルが 1 つも
+        無いのと同じ理由で）409 になる。`until_encoded` は desired なエンコード
+        プロファイルが 1 つ以上ある録画だけ指定でき、プロファイルが空、または
+        `recording_encode_policy` 行が無い場合は 409 を返すので、先に事後エンコード
+        追加を依頼すること。`always` への変更は原本の状態を検査せず、削除
+        reconcile が保持ポリシーを適用の瞬間に再評価する。
 
         この API はファイルを削除せず、River ジョブも投入しない。削除 reconcile の
         定期パス（既定 15 分）が desired を再評価するため、`until_encoded` への変更は
@@ -1072,7 +1076,7 @@ paths:
               $ref: "#/components/schemas/SetRecordingEncodePolicyInput"
       responses:
         "204":
-          description: Retention policy updated (or already had this value)
+          description: Retention policy updated, or a no-op for a recording with no frozen policy row (already always-equivalent)
         "400":
           description: Missing or invalid keepOriginal
           content:

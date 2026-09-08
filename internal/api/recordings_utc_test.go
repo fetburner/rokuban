@@ -55,6 +55,7 @@ func TestRecordingFromListFields_NormalizesTimestampsToUTC(t *testing.T) {
 		ServiceID:           1,
 		EventID:             1,
 		Title:               "UTC 正規化の確認用",
+		KeepOriginal:        "always",
 		ProgramStartAt:      nonUTC,
 		ProgramDurationMs:   1800000,
 		Status:              "finished",

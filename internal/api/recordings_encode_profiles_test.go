@@ -290,6 +290,74 @@ func TestSetRecordingEncodePolicy_UntilEncodedWithoutProfiles_Returns409(t *test
 	}
 }
 
+// 未 ingest（原本 media_asset も recording_encode_policy 行も無い）録画への
+// PATCH は 204（no-op）で、recording_encode_policy 行を作らないこと（issue #697
+// レビューのブロッカー: SetRecordingKeepOriginal が旧 ON CONFLICT の INSERT
+// だった頃はここで行を作ってしまい、後続の ingest が呼ぶ
+// FreezeRecordingEncodePolicy（ON CONFLICT 無しの素の INSERT）が PK 衝突して
+// 原本 media_asset の INSERT と同一 tx ごとロールバックし、原本が永久に
+// コミットされなかった）。行を作らないことに加え、ingest 相当の
+// FreezeRecordingEncodePolicy が実際に成功することまで確認する。
+func TestSetRecordingEncodePolicy_BeforeIngest_NoOpAndDoesNotBlockFreeze(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	defer srv.Close()
+
+	id := seedRecording(t, pool, "未 ingest への保持ポリシー変更", time.Now().Truncate(time.Second), "recording", 610)
+
+	resp := patchRecordingEncodePolicy(t, encodePolicyURL(srv.URL, id), "always")
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 (no-op for un-ingested recording)", resp.StatusCode)
+	}
+
+	var policyRows int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM recording_encode_policy WHERE recording_id = $1`, id,
+	).Scan(&policyRows); err != nil {
+		t.Fatalf("counting policy rows after 204: %v", err)
+	}
+	if policyRows != 0 {
+		t.Fatalf("policy rows after PATCH before ingest = %d, want 0 (endpoint must never freeze a new row)", policyRows)
+	}
+
+	// ingest の resolveAndSnapshotEncodePolicy が原本 media_asset の INSERT と
+	// 同一トランザクションで呼ぶ操作を模す。行が残っていれば PK 衝突する。
+	if err := sqlcgen.New(pool).FreezeRecordingEncodePolicy(context.Background(), sqlcgen.FreezeRecordingEncodePolicyParams{
+		RecordingID:    id,
+		KeepOriginal:   "always",
+		EncodeProfiles: []string{},
+	}); err != nil {
+		t.Fatalf("FreezeRecordingEncodePolicy after PATCH before ingest: %v (must succeed; the endpoint must not have pre-created a policy row)", err)
+	}
+}
+
+// purge 済み（purged_at が立った tombstone）の録画への PATCH は 404 で、
+// recording_encode_policy を書かないこと（issue #697 レビュー: GetRecordingByID
+// は述語なしで ingest worker と共有するため緩められないが、GET
+// /api/recordings/{id}（queryRecordingByID、purged_at IS NULL）との非対称を
+// このハンドラで埋める）。
+func TestSetRecordingEncodePolicy_Purged_ReturnsNotFoundAndDoesNotWrite(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	defer srv.Close()
+
+	id := seedRecording(t, pool, "purge 済み", time.Now().Truncate(time.Second), "finished", 611)
+	seedIngested(t, pool, id, 1000, nil)
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE recordings SET deleted_at = now(), purged_at = now() WHERE id = $1`, id,
+	); err != nil {
+		t.Fatalf("marking recording purged: %v", err)
+	}
+
+	resp := patchRecordingEncodePolicy(t, encodePolicyURL(srv.URL, id), "until_encoded")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+	if got := getRecordingKeepOriginal(t, pool, id); got != "always" {
+		t.Errorf("keep_original after 404 = %q, want unchanged always", got)
+	}
+}
+
 func TestSetRecordingEncodePolicy_NotFound(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))

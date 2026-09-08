@@ -69,7 +69,10 @@ function createFakeServer(options: {
   restoreResponse?: () => Response
   purgeResponse?: () => Response
   encodePostResponse?: () => Response
-  encodePolicyResponse?: () => Response
+  // encodePolicyResponse は Promise 版も許す --- PATCH が解決する前の中間状態
+  // （保存中…の表示）を確認するテストが、呼び出し側で自分の Promise を渡して
+  // 解決タイミングを制御できるようにするため。
+  encodePolicyResponse?: () => Response | Promise<Response>
 }) {
   let recording = options.recording
   const sites = options.sites ?? ['default']
@@ -420,6 +423,60 @@ describe('RecordingDetailPage 原本保持ポリシー (issue #697)', () => {
     )
     expect(screen.getByRole('button', { name: '保持ポリシーを保存' })).toBeDisabled()
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  })
+
+  // 回帰テスト: AlertDialogAction の onClick は commit() を呼んだ直後に Radix が
+  // 同じイベントの中で onOpenChange(false) を発火させる。そのクロージャの時点
+  // では setPolicy.isPending がまだ false（mutate の状態更新は次のレンダーでしか
+  // 反映されない）なので、!setPolicy.isPending だけを条件に巻き戻すと、確定
+  // 直後（PATCH が解決する前）に選択が current（変更前の値）へ戻ってしまう
+  // （保存中… ボタンも一緒に消える）。PATCH をまだ解決させない状態で、選択が
+  // until_encoded のままであることを確認する。
+  it('確定した PATCH が未解決の間も、選択は変更後の値のまま巻き戻らない', async () => {
+    const user = userEvent.setup()
+    let resolvePatch!: (response: Response) => void
+    const pendingPatch = new Promise<Response>((resolve) => {
+      resolvePatch = resolve
+    })
+    createFakeServer({
+      recording: sampleRecording({ sizeBytes: 1_000_000, encodeProfiles: ['h264'] }),
+      encodeProfiles: [{ name: 'h264' }],
+      encodePolicyResponse: () => pendingPatch,
+    })
+
+    renderAt('/recordings/3')
+
+    const select = await screen.findByLabelText('原本の保持')
+    await user.selectOptions(select, 'until_encoded')
+    await user.click(screen.getByRole('button', { name: '保持ポリシーを保存' }))
+    await user.click(await screen.findByRole('button', { name: 'エンコード後に削除する' }))
+
+    // PATCH がまだ解決していない中間状態。
+    expect(select).toHaveValue('until_encoded')
+    expect(screen.getByRole('button', { name: '保存中…' })).toBeInTheDocument()
+
+    resolvePatch(jsonResponse(null, 204))
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: '保存中…' })).not.toBeInTheDocument(),
+    )
+    expect(select).toHaveValue('until_encoded')
+  })
+
+  // 原本が無い（sizeBytes 省略）録画には保持ポリシーの提示自体をしない ---
+  // AddEncodeProfilesAction と同じ hasOriginal 近似を再利用し、理由の文言は
+  // 隣の AddEncodeProfilesAction が出す 1 つに任せる。
+  it('原本が無い（sizeBytes 省略）録画では保持ポリシーの選択肢を出さない', async () => {
+    createFakeServer({
+      recording: sampleRecording({ encodeProfiles: [] }),
+    })
+
+    renderAt('/recordings/3')
+
+    // 隣の事後追加の案内が出る = 描画完了。保持ポリシー側は何も出さない。
+    expect(
+      await screen.findByText('この録画には再生可能な原本がありません。追加のエンコードは依頼できません。'),
+    ).toBeInTheDocument()
+    expect(screen.queryByLabelText('原本の保持')).not.toBeInTheDocument()
   })
 })
 
