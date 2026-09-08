@@ -59,7 +59,8 @@ func makeTSData(packets int) []byte {
 // makeTSData(30) は makeTSData(50) のバイト単位の前置なので、長さの異なる
 // makeTSData だけでは「先行ファイルが後発のバイトで上書きされていないか」を
 // 全バイト比較しても実は前置一致で通ってしまう変異を見逃す。
-func makeTSDataFill(packets int, fill byte) []byte {
+func makeTSDataFill(fill byte) []byte {
+	const packets = 30
 	data := makeTSData(packets)
 	for i := 0; i < packets; i++ {
 		off := i * 188
@@ -2734,8 +2735,8 @@ func TestIngestWorker_ConcurrentSameRelPath_LoserNeverOpensStream(t *testing.T) 
 	// なる --- 何らかの理由で B が最後まで書き切ってしまう変異が起きても、
 	// 長さは A と一致したまま中身だけが違う状態になり、bytes.Equal による
 	// 全バイト比較でなければ検出できない。
-	tsDataA := makeTSDataFill(30, 0xAA)
-	tsDataB := makeTSDataFill(30, 0xBB)
+	tsDataA := makeTSDataFill(0xAA)
+	tsDataB := makeTSDataFill(0xBB)
 
 	reachedMidTransfer := make(chan struct{})
 	releaseTransfer := make(chan struct{})
@@ -2943,8 +2944,8 @@ func TestIngestWorker_RelPathLockSessionLoss_AbortsOldTransfer(t *testing.T) {
 
 	const relContentPath = "shared/lock-loss.m2ts"
 	const relPath = "sites/default/" + relContentPath
-	tsDataA := makeTSDataFill(30, 0xAA)
-	tsDataB := makeTSDataFill(30, 0xBB)
+	tsDataA := makeTSDataFill(0xAA)
+	tsDataB := makeTSDataFill(0xBB)
 
 	reachedMidTransfer := make(chan struct{})
 	aCanceled := make(chan struct{})
