@@ -153,7 +153,9 @@ describe('ConditionFields の詳細条件の折り畳み', () => {
       />,
     )
 
-    const toggle = await screen.findByRole('button', { name: '詳細条件を表示' })
+    // アクセシブル名は可視テキストと同じで件数を含む（issue #685 のレビュー
+    // 指摘: WCAG 2.5.3 Label in Name）。
+    const toggle = await screen.findByRole('button', { name: '詳細条件を表示（4件）' })
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
     expect(screen.getByText('設定中の詳細条件: 4件')).toBeInTheDocument()
     expect(screen.getByText('チャンネル種別: GRほか1件')).toBeInTheDocument()

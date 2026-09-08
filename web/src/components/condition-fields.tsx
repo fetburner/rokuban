@@ -95,7 +95,7 @@ type ConditionFieldsProps = FieldsProps & {
  * 390x844 のチップ列 top=1027）。**押される既描画の兄弟が無くなるわけではない**
  * --- `pages/search.tsx` は `<form>` の後ろに値札・ルール保存・検索結果を同じ
  * 縦カラムで積んでいるので、シフトは 0 にならず小さくなるだけ（issue #685 の
- * 詳細節を明示的に開いた実測: 390x844 で 0.000008、1280x900 で 0.000003。
+ * 詳細節を明示的に開いた実測: 390x844 で 0.024、1280x900 で 0.014。
  * しきい値 0.10 以下。フォームの形
  * ---「読み込み中…」の 1 行からチップの複数行へ入れ替わる `ServiceFields` の
  * 位置と、それより前が同期的に描かれること---は変えていないため、これ以前の
@@ -196,7 +196,6 @@ function DetailedConditionSection({
           size="sm"
           aria-expanded={open}
           aria-controls={id}
-          aria-label={open ? '詳細条件を閉じる' : '詳細条件を表示'}
           disabled={disabled}
           onClick={() => onOpenChange(!open)}
         >

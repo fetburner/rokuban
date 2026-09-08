@@ -28,6 +28,7 @@ import { dayOrigin } from '@/lib/day-offset'
 import { formatDateTime, formatDuration } from '@/lib/format'
 import {
   buildSearchRequest,
+  draftCollapsedError,
   draftError,
   emptyDraft,
   conditionsToDraft,
@@ -219,11 +220,17 @@ export function SearchPage() {
   // 放送時間・期間などの検証エラーが折りたたんだ詳細の中にあると、エラー文だけ
   // 見えても修正する欄へ辿れない。エラーが出た時だけ自動展開し、ユーザーが直した
   // あとは開いた状態を保つ（閉じる操作を勝手に取り消さない）。
+  //
+  // **`error`（`draftError`）ではなく `draftCollapsedError` を見る。** テキスト
+  // 条件（`TextMatchFields`）は折りたたみの外にあるため、そこだけが原因のエラー
+  // （例: 「条件を追加」直後の空の 2 行目）で詳細条件が開くのは、閉じている理由の
+  // 無い節を無言で開く回帰になる（issue #685 のレビュー指摘）。
+  const collapsedError = draftCollapsedError(draft)
   useEffect(() => {
-    if (error === undefined) return
+    if (collapsedError === undefined) return
     // oxlint-disable-next-line react/set-state-in-effect -- 詳細欄の検証エラーを見える位置へ開く
     setDetailsOpen(true)
-  }, [error])
+  }, [collapsedError])
 
   /**
    * resultsRef は「押した結果」の先頭（`検索結果` セクション）。主操作を条件

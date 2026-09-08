@@ -177,7 +177,14 @@ async function checkViewport(viewport) {
   // 検索画面は詳細条件を初期状態で閉じるため、開閉ボタンの描画を待つ。ここで
   // 待つのはレイアウトの安定を待つためで、以降は④まで操作・スクロールしない。
   await page.getByRole('button', { name: '詳細条件を表示', exact: true }).waitFor({ timeout: 15000 })
-  await page.waitForTimeout(200)
+  // サイト一覧取得中は「検索」ボタンの直上に role=status の行が出る
+  // （`pages/search.tsx` の `registryPending`）。取得が終わるとこの行が DOM から
+  // 消え、ボタンがその分だけ上へ動く。固定 200ms 待ちだと、環境によってはこの
+  // 行がまだ残っている間に①の矩形を測ってしまい、レイアウト確定前の値を見る
+  // （レビュー指摘）。「消えた」ことそのものを待つ。
+  await page
+    .getByText('サイト一覧を取得中…')
+    .waitFor({ state: 'hidden', timeout: 15000 })
 
   const label = `${viewport.width}x${viewport.height}`
 
@@ -257,6 +264,20 @@ async function checkViewport(viewport) {
         ng.push(
           `②@${label}: キーワード入力欄が専用行の幅を使っていない` +
             `（入力幅=${textBox.width}, フォーム内幅=${formContentWidth}）`,
+        )
+      }
+      // デスクトップ（640px 以上）は対象・モード・値が同じ行の従来レイアウト
+      // （`sm:flex-row`）のまま。モバイルの③つの assertion は全部 640px 未満に
+      // ガードされていたため、`sm:flex-row` を落とす変異（この分割が持ち込む
+      // 回帰そのもの）が全ビューポートで通ってしまっていた（レビュー指摘）。
+      // 対象・モード・値の top がほぼ一致する（= 同じ行にある）ことを見る。
+      if (
+        viewport.width >= 640 &&
+        (Math.abs(targetBox.y - modeBox.y) > 1 || Math.abs(targetBox.y - textBox.y) > 1)
+      ) {
+        ng.push(
+          `②@${label}: デスクトップで対象・モード・値が同じ行にない` +
+            `（対象 top=${targetBox.y}, モード top=${modeBox.y}, 値 top=${textBox.y}）`,
         )
       }
     }
@@ -364,7 +385,12 @@ async function checkRestoredDetails() {
 
   const summary = page.getByTestId('detail-condition-summary')
   await summary.getByText('設定中の詳細条件: 2件').waitFor({ timeout: 15000 })
-  const toggle = page.getByRole('button', { name: '詳細条件を表示', exact: true })
+  // 件数（issue #685）が入るとアクセシブル名が `詳細条件を表示（2件）` になる
+  // （アクセシブル名は可視テキストと同じ。WCAG 2.5.3 Label in Name。この
+  // フィクスチャは常に条件 2 件なので厳密にはこの文字列でも当てられるが、
+  // `pages/search.test.tsx` / `condition-fields.test.tsx` と同じ規約（先頭一致）
+  // に揃える）。
+  const toggle = page.getByRole('button', { name: /^詳細条件を表示/ })
   if ((await toggle.getAttribute('aria-expanded')) !== 'false') {
     ng.push('③: URL から復元した詳細条件が初期状態で閉じていない')
   }
@@ -390,7 +416,7 @@ async function checkRestoredDetails() {
   if (value !== 'ニュース') ng.push(`③: 日本語の修正結果が不正（${value}）`)
 
   await openToggle.click()
-  const closedToggle = page.getByRole('button', { name: '詳細条件を表示', exact: true })
+  const closedToggle = page.getByRole('button', { name: /^詳細条件を表示/ })
   if ((await closedToggle.getAttribute('aria-expanded')) !== 'false') {
     ng.push('③: 詳細条件を再び閉じられない')
   }

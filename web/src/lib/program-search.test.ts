@@ -7,6 +7,7 @@ import {
   buildRuleInput,
   buildSearchRequest,
   canonicalSearchConditions,
+  draftCollapsedError,
   draftError,
   emptyDraft,
   emptyRuleMeta,
@@ -186,6 +187,37 @@ describe('draftError', () => {
     expect(
       draftError(draft({ durationMinMinutes: '120', durationMaxMinutes: '30' })),
     ).toBeUndefined()
+  })
+})
+
+/**
+ * issue #685 のレビュー指摘: `TextMatchFields`（テキスト条件）は
+ * `ConditionFields` の折りたたみ（詳細条件）の外にある。自動展開
+ * （`pages/search.tsx`）はここだけを見て、折りたたみの外のエラーでは開かない。
+ */
+describe('draftCollapsedError', () => {
+  it('テキスト条件だけが原因のエラーは無視する（折りたたみの外）', () => {
+    expect(
+      draftCollapsedError(
+        draft({
+          textMatches: [
+            { target: 'name', mode: 'keyword', value: '', caseSensitive: false, negate: false },
+          ],
+        }),
+      ),
+    ).toBeUndefined()
+  })
+
+  it('折りたたみの中（時間帯）のエラーは返す', () => {
+    expect(
+      draftCollapsedError(draft({ times: [{ weekdays: 0, startSec: 0, endSec: 3600 }] })),
+    ).toBe('時間帯には曜日を 1 つ以上選んでください')
+  })
+
+  it('折りたたみの中（放送時間）のエラーは返す', () => {
+    expect(draftCollapsedError(draft({ durationMinMinutes: '-5' }))).toBe(
+      '放送時間の下限には 0 以上の分数を入力してください',
+    )
   })
 })
 

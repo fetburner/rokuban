@@ -405,9 +405,19 @@ async function addKeyword(value: string, mode: '正規表現' | 'キーワード
  * 検索画面の詳細条件をテストで操作するときだけ開く。検索画面の初期状態は
  * 折りたたみなので、サービス・ジャンル・時間帯などを触る既存テストはこの
  * ヘルパーを通してから要素を探す。
+ *
+ * **開いている状態を先に見て、開いていれば何もしない。** トグルのアクセシブル
+ * 名は開閉で変わる（閉: `詳細条件を表示` / 開: `詳細条件を閉じる`）ため、閉じた
+ * 名前だけで `findByRole` すると、既に開いている状態では見つからずタイムアウト
+ * する（＝冪等ガードとして機能していなかった。レビュー指摘）。両方の名前に
+ * 当たる 1 つの問い合わせにしてから状態を見る。
+ *
+ * 名前は正規表現で引く。件数（issue #685）が入ると閉じた名前は
+ * `詳細条件を表示（2件）` のように変わるため、完全一致だと件数付きの状態を
+ * 見失う。
  */
 async function openSearchDetails() {
-  const toggle = await screen.findByRole('button', { name: '詳細条件を表示' })
+  const toggle = await screen.findByRole('button', { name: /^詳細条件を(表示|閉じる)/ })
   if (toggle.getAttribute('aria-expanded') !== 'true') await userEvent.click(toggle)
 }
 
@@ -427,7 +437,9 @@ describe('SearchPage', () => {
     renderPage([`/search?cond=${encodeURIComponent(JSON.stringify(condition))}`])
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
-    const toggle = screen.getByRole('button', { name: '詳細条件を表示' })
+    // アクセシブル名は可視テキストと同じで件数を含む（issue #685 のレビュー
+    // 指摘: WCAG 2.5.3 Label in Name。アクセシブル名専用の別文言は持たない）。
+    const toggle = screen.getByRole('button', { name: '詳細条件を表示（2件）' })
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
     expect(screen.getByText('設定中の詳細条件: 2件')).toBeInTheDocument()
     expect(screen.getByText('ジャンル: ニュース・報道')).toBeInTheDocument()
@@ -438,7 +450,7 @@ describe('SearchPage', () => {
     expect(screen.getByRole('group', { name: 'ジャンル' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '詳細条件を閉じる' }))
-    expect(screen.getByRole('button', { name: '詳細条件を表示' })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: '詳細条件を表示（2件）' })).toHaveAttribute(
       'aria-expanded',
       'false',
     )
@@ -458,7 +470,7 @@ describe('SearchPage', () => {
     stubApi()
     renderPage()
 
-    expect(await screen.findByRole('button', { name: '詳細条件を表示' })).toHaveAttribute(
+    expect(await screen.findByRole('button', { name: '詳細条件を表示（2件）' })).toHaveAttribute(
       'aria-expanded',
       'false',
     )
@@ -481,6 +493,83 @@ describe('SearchPage', () => {
       'true',
     )
     expect(screen.getByRole('group', { name: '時間帯 1 の曜日' })).toBeInTheDocument()
+  })
+
+  /**
+   * issue #685 のレビュー指摘: `draftError` の第 1 分岐（テキスト条件の値が
+   * 空）は `TextMatchFields` --- `ConditionFields` の折りたたみの**外**にある
+   * 節 --- のエラーなので、これだけを理由に詳細条件（折りたたみの中）を開くのは
+   * 「エラーの起きた欄が見える位置へ開く」という自動展開の目的と噛み合わない。
+   *
+   * 1 行目に値を入れてから「条件を追加」を押すと 2 行目が空のまま増え、
+   * `draftError` はテキスト条件のエラーを返す（`draftCollapsedError` は
+   * これを理由に含めない）。詳細条件は閉じたままであること。
+   */
+  it('折りたたみの外（テキスト条件）のエラーでは自動展開しない', async () => {
+    stubApi()
+    renderPage()
+
+    await addKeyword('ニュース')
+    expect(screen.getByRole('button', { name: '詳細条件を表示' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: '条件を追加' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'テキスト条件の値を入力してください',
+    )
+    expect(screen.getByRole('button', { name: '詳細条件を表示' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+  })
+
+  /**
+   * 折りたたみの中（時間帯）のエラーは従来どおり自動展開する。**テキスト条件を
+   * 空にしない**（値を入れておく） --- 空だと `draftError` はテキスト条件の
+   * エラーを優先して返し（早期 return の連鎖）、時間帯のエラーがマスクされる
+   * ため、この状況では「テキスト条件が原因で開いていないだけ」と区別が付かず、
+   * 折りたたみの中のエラーを正しく検出できているかを主張できない。
+   */
+  it('折りたたみの中（時間帯の曜日）のエラーでは自動展開する（テキスト条件は空でない）', async () => {
+    const condition = {
+      textMatches: [{ target: 'name', mode: 'keyword', value: 'ニュース' }],
+      times: [{ weekdays: 0, startSec: 0, endSec: 0 }],
+    }
+    stubApi()
+    renderPage([`/search?cond=${encodeURIComponent(JSON.stringify(condition))}`])
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '時間帯には曜日を 1 つ以上選んでください',
+    )
+    expect(screen.getByRole('button', { name: '詳細条件を閉じる' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    expect(screen.getByRole('group', { name: '時間帯 1 の曜日' })).toBeInTheDocument()
+  })
+
+  /**
+   * `openSearchDetails`（上の helper）は既に開いていれば何もしない冪等ガードの
+   * はずだった。閉じた名前（`詳細条件を表示`）だけで `findByRole` していたため、
+   * 既に開いている状態では見つからずタイムアウトしていた（レビュー指摘）。
+   * 2 回連続で呼んでも 1 回目で開いたまま変わらないことを確認する。
+   */
+  it('openSearchDetails は既に開いていれば何もしない（冪等）', async () => {
+    stubApi()
+    renderPage()
+
+    await openSearchDetails()
+    expect(screen.getByRole('button', { name: '詳細条件を閉じる' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    await openSearchDetails()
+    expect(screen.getByRole('button', { name: '詳細条件を閉じる' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
   })
 
   it('site レジストリ取得中は検索を無効化して理由を表示する', async () => {

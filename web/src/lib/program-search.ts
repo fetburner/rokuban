@@ -283,6 +283,23 @@ export function draftError(draft: SearchDraft): string | undefined {
   return undefined
 }
 
+/**
+ * draftCollapsedError は `draftError` の理由のうち、`ConditionFields` の折りたたみ
+ * （詳細条件）の中にある欄が原因のものだけを返す。
+ *
+ * `TextMatchFields`（テキスト条件）は折りたたみの外にあるため、その理由
+ * （`draftError` の最初の分岐）は除く。自動展開（`pages/search.tsx`）はこちらを
+ * 使う --- `draftError` をそのまま使うと、折りたたみの外にあるテキスト条件が
+ * 空というだけで詳細条件が開いてしまう（issue #685 のレビュー指摘）。
+ *
+ * `draftError` を呼び直すことで判定を 1 箇所に保つ（`textMatches` だけ空に
+ * 差し替えて最初の分岐を無効化する）。`draftError` 自体のメッセージ・優先順位は
+ * 変えていない。
+ */
+export function draftCollapsedError(draft: SearchDraft): string | undefined {
+  return draftError({ ...draft, textMatches: [] })
+}
+
 /** RuleMetaDraft はルールの条件以外の部分（フォーム状態）。 */
 export type RuleMetaDraft = {
   name: string
