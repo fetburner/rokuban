@@ -362,6 +362,7 @@ SELECT
     COALESCE(d.drops, 0)::bigint        AS drop_drops,
     COALESCE(d.errors, 0)::bigint       AS drop_errors,
     COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled,
+    COALESCE(p.keep_original, 'always')::text AS keep_original,
     COALESCE(p.encode_profiles, '{}')::text[] AS encode_profiles,
     -- ブラウザ再生用。desired（p.encode_profiles）ではなく observed（active encoded）。
     -- sqlc は array_agg の型を推論しきれないことがあるので text[] に明示キャストする。
@@ -420,6 +421,7 @@ type ListRecordingsRow struct {
 	DropDrops                int64
 	DropErrors               int64
 	DropScrambled            int64
+	KeepOriginal             string
 	EncodeProfiles           []string
 	AvailableEncodedProfiles []string
 }
@@ -486,6 +488,7 @@ func (q *Queries) ListRecordings(ctx context.Context, site string) ([]ListRecord
 			&i.DropDrops,
 			&i.DropErrors,
 			&i.DropScrambled,
+			&i.KeepOriginal,
 			&i.EncodeProfiles,
 			&i.AvailableEncodedProfiles,
 		); err != nil {
@@ -497,6 +500,36 @@ func (q *Queries) ListRecordings(ctx context.Context, site string) ([]ListRecord
 		return nil, err
 	}
 	return items, nil
+}
+
+const setRecordingKeepOriginal = `-- name: SetRecordingKeepOriginal :execrows
+UPDATE recording_encode_policy
+SET keep_original = $1,
+    updated_at = now()
+WHERE recording_id = $2
+  AND ($1 <> 'until_encoded' OR cardinality(encode_profiles) > 0)
+`
+
+type SetRecordingKeepOriginalParams struct {
+	KeepOriginal string
+	RecordingID  int64
+}
+
+// 録画後に原本の保持ポリシーだけを上書きする（issue #697）。UPDATE のみで
+// INSERT アームを持たない --- 行が無い（未凍結）録画は既に 'always' と同じ扱い
+// （docs/storage/retention.md §6）なので行を作る必要が無い。作ると ingest の
+// FreezeRecordingEncodePolicy（ON CONFLICT を意図的に付けない素の INSERT）が
+// PK 衝突し、原本 media_asset の INSERT と同一 tx ごとロールバックする
+// （不変条件 10「意味を持たない行を作らない」）。
+//
+// cardinality の述語を UPDATE 自身の WHERE に置くことで、判定を Go 側に
+// 持ち出さずに CHECK 違反（recording_encode_policy_check）を防ぐ。
+func (q *Queries) SetRecordingKeepOriginal(ctx context.Context, arg SetRecordingKeepOriginalParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setRecordingKeepOriginal, arg.KeepOriginal, arg.RecordingID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const supersedeFailedRecording = `-- name: SupersedeFailedRecording :execrows

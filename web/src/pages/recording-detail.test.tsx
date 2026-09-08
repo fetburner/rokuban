@@ -23,6 +23,7 @@ function sampleRecording(overrides: Partial<Recording> = {}): Recording {
     startAt: '2026-01-01T12:00:00Z',
     durationMs: 1_800_000,
     status: 'finished',
+    keepOriginal: 'always',
     createdAt: '2026-01-01T12:30:00Z',
     ...overrides,
   }
@@ -68,6 +69,10 @@ function createFakeServer(options: {
   restoreResponse?: () => Response
   purgeResponse?: () => Response
   encodePostResponse?: () => Response
+  // encodePolicyResponse は Promise 版も許す --- PATCH が解決する前の中間状態
+  // （保存中…の表示）を確認するテストが、呼び出し側で自分の Promise を渡して
+  // 解決タイミングを制御できるようにするため。
+  encodePolicyResponse?: () => Response | Promise<Response>
 }) {
   let recording = options.recording
   const sites = options.sites ?? ['default']
@@ -78,6 +83,7 @@ function createFakeServer(options: {
   const restoreResponse = options.restoreResponse
   const purgeResponse = options.purgeResponse
   const encodePostResponse = options.encodePostResponse
+  const encodePolicyResponse = options.encodePolicyResponse
 
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
@@ -146,6 +152,22 @@ function createFakeServer(options: {
       recording = {
         ...recording,
         encodeProfiles: [...(recording.encodeProfiles ?? []), ...(body.profiles ?? [])],
+      }
+      return Promise.resolve(jsonResponse(null, 204))
+    }
+
+    const policyMatch = /^\/api\/recordings\/(\d+)\/encode-policy$/.exec(url.pathname)
+    if (policyMatch && method === 'PATCH') {
+      if (encodePolicyResponse) return Promise.resolve(encodePolicyResponse())
+      const id = Number(policyMatch[1])
+      if (!recording || recording.id !== id) {
+        return Promise.resolve(jsonResponse({ error: 'not found' }, 404))
+      }
+      const body: { keepOriginal?: Recording['keepOriginal'] } = init?.body
+        ? JSON.parse(String(init.body))
+        : {}
+      if (body.keepOriginal !== undefined) {
+        recording = { ...recording, keepOriginal: body.keepOriginal }
       }
       return Promise.resolve(jsonResponse(null, 204))
     }
@@ -339,6 +361,122 @@ describe('RecordingDetailPage', () => {
     await waitFor(() => expect(screen.getByText('追加済み: web')).toBeInTheDocument())
     // 追加済みになった選択肢はチェックボックスの一覧から消える（二重依頼に見せない）。
     expect(screen.queryByRole('checkbox', { name: 'web' })).not.toBeInTheDocument()
+  })
+})
+
+describe('RecordingDetailPage 原本保持ポリシー (issue #697)', () => {
+  it('until_encoded への変更は不可逆操作の確認後に PATCH する', async () => {
+    const user = userEvent.setup()
+    const { fetchMock } = createFakeServer({
+      recording: sampleRecording({ sizeBytes: 1_000_000, encodeProfiles: ['h264'] }),
+      encodeProfiles: [{ name: 'h264' }],
+    })
+
+    renderAt('/recordings/3')
+
+    const select = await screen.findByLabelText('原本の保持')
+    expect(select).toHaveValue('always')
+    await user.selectOptions(select, 'until_encoded')
+    const saveButton = screen.getByRole('button', { name: '保持ポリシーを保存' })
+    await user.click(saveButton)
+
+    const dialog = await screen.findByRole('alertdialog', { name: 'エンコード後に原本を削除しますか？' })
+    expect(dialog).toHaveTextContent(/原本の削除は\s+取り消せず、削除後は再エンコードできません。/)
+    expect(
+      fetchMock.mock.calls.filter(
+        (call) =>
+          String(call[0]).includes('/encode-policy') &&
+          (call[1] as RequestInit | undefined)?.method === 'PATCH',
+      ),
+    ).toHaveLength(0)
+
+    await user.click(screen.getByRole('button', { name: 'エンコード後に削除する' }))
+
+    expect(await screen.findByText('原本の保持ポリシーを変更しました')).toBeInTheDocument()
+    await waitFor(() => expect(select).toHaveValue('until_encoded'))
+    const patchCall = fetchMock.mock.calls.find(
+      (call) =>
+        String(call[0]).includes('/encode-policy') &&
+        (call[1] as RequestInit | undefined)?.method === 'PATCH',
+    )
+    expect(patchCall).toBeDefined()
+    if (!patchCall) throw new Error('encode policy PATCH was not sent')
+    expect(JSON.parse(String((patchCall[1] as RequestInit).body))).toEqual({
+      keepOriginal: 'until_encoded',
+    })
+  })
+
+  it('desired プロファイルが空なら until_encoded を保存できない', async () => {
+    const user = userEvent.setup()
+    createFakeServer({
+      recording: sampleRecording({ sizeBytes: 1_000_000, encodeProfiles: [] }),
+      encodeProfiles: [],
+    })
+
+    renderAt('/recordings/3')
+
+    const select = await screen.findByLabelText('原本の保持')
+    await user.selectOptions(select, 'until_encoded')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'エンコード後に原本を削除するには、プロファイルを 1 つ以上選んでください',
+    )
+    expect(screen.getByRole('button', { name: '保持ポリシーを保存' })).toBeDisabled()
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  })
+
+  // 回帰テスト: AlertDialogAction の onClick は commit() を呼んだ直後に Radix が
+  // 同じイベントの中で onOpenChange(false) を発火させる。そのクロージャの時点
+  // では setPolicy.isPending がまだ false（mutate の状態更新は次のレンダーでしか
+  // 反映されない）なので、!setPolicy.isPending だけを条件に巻き戻すと、確定
+  // 直後（PATCH が解決する前）に選択が current（変更前の値）へ戻ってしまう
+  // （保存中… ボタンも一緒に消える）。PATCH をまだ解決させない状態で、選択が
+  // until_encoded のままであることを確認する。
+  it('確定した PATCH が未解決の間も、選択は変更後の値のまま巻き戻らない', async () => {
+    const user = userEvent.setup()
+    let resolvePatch!: (response: Response) => void
+    const pendingPatch = new Promise<Response>((resolve) => {
+      resolvePatch = resolve
+    })
+    createFakeServer({
+      recording: sampleRecording({ sizeBytes: 1_000_000, encodeProfiles: ['h264'] }),
+      encodeProfiles: [{ name: 'h264' }],
+      encodePolicyResponse: () => pendingPatch,
+    })
+
+    renderAt('/recordings/3')
+
+    const select = await screen.findByLabelText('原本の保持')
+    await user.selectOptions(select, 'until_encoded')
+    await user.click(screen.getByRole('button', { name: '保持ポリシーを保存' }))
+    await user.click(await screen.findByRole('button', { name: 'エンコード後に削除する' }))
+
+    // PATCH がまだ解決していない中間状態。
+    expect(select).toHaveValue('until_encoded')
+    expect(screen.getByRole('button', { name: '保存中…' })).toBeInTheDocument()
+
+    resolvePatch(jsonResponse(null, 204))
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: '保存中…' })).not.toBeInTheDocument(),
+    )
+    expect(select).toHaveValue('until_encoded')
+  })
+
+  // 原本が無い（sizeBytes 省略）録画には保持ポリシーの提示自体をしない ---
+  // AddEncodeProfilesAction と同じ hasOriginal 近似を再利用し、理由の文言は
+  // 隣の AddEncodeProfilesAction が出す 1 つに任せる。
+  it('原本が無い（sizeBytes 省略）録画では保持ポリシーの選択肢を出さない', async () => {
+    createFakeServer({
+      recording: sampleRecording({ encodeProfiles: [] }),
+    })
+
+    renderAt('/recordings/3')
+
+    // 隣の事後追加の案内が出る = 描画完了。保持ポリシー側は何も出さない。
+    expect(
+      await screen.findByText('この録画には再生可能な原本がありません。追加のエンコードは依頼できません。'),
+    ).toBeInTheDocument()
+    expect(screen.queryByLabelText('原本の保持')).not.toBeInTheDocument()
   })
 })
 

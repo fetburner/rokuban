@@ -80,6 +80,7 @@ function recording(overrides: Partial<Recording> = {}): Recording {
     startAt: '2026-08-01T00:00:00Z',
     durationMs: 1_800_000, // 30分
     status: 'finished',
+    keepOriginal: 'always',
     createdAt: '2026-08-01T00:00:00Z',
     sizeBytes: 900_000_000, // 900MB / 30分
     ...overrides,

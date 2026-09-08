@@ -123,6 +123,9 @@ func TestListRecordings(t *testing.T) {
 	if old.SizeBytes == nil || *old.SizeBytes != 1000 {
 		t.Errorf("sizeBytes = %v, want 1000", old.SizeBytes)
 	}
+	if old.KeepOriginal != RecordingKeepOriginalAlways {
+		t.Errorf("keepOriginal = %q, want always", old.KeepOriginal)
+	}
 
 	// 未 ingest は「統計が全部 0」と区別できるよう dropSummary を省略する
 	pending := got[2]
@@ -137,6 +140,9 @@ func TestListRecordings(t *testing.T) {
 	}
 	if pending.Status != "recording" {
 		t.Errorf("status = %q, want recording", pending.Status)
+	}
+	if pending.KeepOriginal != RecordingKeepOriginalAlways {
+		t.Errorf("un-ingested keepOriginal = %q, want always", pending.KeepOriginal)
 	}
 
 	// 正常な録画も dropSummary は付く（全 0）
@@ -1128,6 +1134,9 @@ func TestGetRecording_Found(t *testing.T) {
 	}
 	if got.SizeBytes == nil || *got.SizeBytes != 1234 {
 		t.Errorf("sizeBytes = %v, want 1234", got.SizeBytes)
+	}
+	if got.KeepOriginal != RecordingKeepOriginalAlways {
+		t.Errorf("keepOriginal = %q, want always", got.KeepOriginal)
 	}
 	if got.DeletedAt != nil {
 		t.Errorf("deletedAt = %v, want nil (生きている行)", got.DeletedAt)

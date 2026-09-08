@@ -847,7 +847,7 @@ func TestEncodeEnqueueHintWorker_Work_WithoutClient_Errors(t *testing.T) {
 }
 
 // EncodeEnqueueHintWorker は EncodeEnqueueHintArgs ジョブを実際の River クライアント
-// 経由で処理すると、EnqueueMissingEncodes を呼んで desired（recordings.encode_profiles）
+// 経由で処理すると、EnqueueMissingEncodes を呼んで desired（recording_encode_policy.encode_profiles）
 // − observed（active encoded media_assets）の差分を encode ジョブとして投入すること。
 // 既に active encoded な h264 は再投入せず h265 だけが投入されることまで見る（issue
 // #133 の受け入れ「予約が無い録画で事後追加が成功し、encode_profiles に反映されて

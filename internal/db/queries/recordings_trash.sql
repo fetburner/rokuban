@@ -132,6 +132,7 @@ SELECT
     COALESCE(d.drops, 0)::bigint        AS drop_drops,
     COALESCE(d.errors, 0)::bigint       AS drop_errors,
     COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled,
+    COALESCE(p.keep_original, 'always')::text AS keep_original,
     COALESCE(p.encode_profiles, '{}')::text[] AS encode_profiles
 FROM recordings r
 LEFT JOIN media_assets a

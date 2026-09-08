@@ -1342,7 +1342,7 @@ func insertProgramSnapshotAndReservation(t *testing.T, pool *pgxpool.Pool, progr
 }
 
 // setReservationBase は ruler が書く reservations.base を模したテスト用フィクスチャ。
-// internal/worker/encode_test.go が recordings.encode_profiles を raw SQL で
+// internal/worker/encode_test.go が recording_encode_policy.encode_profiles を raw SQL で
 // 直接作るのと同じ規律（reservations.sql は #52 並走中につき、この目的のためだけの
 // 書き込みクエリを新設しない）。
 func setReservationBase(t *testing.T, pool *pgxpool.Pool, programID int64, base string) {
@@ -1463,7 +1463,7 @@ func countEncodeJobs(t *testing.T, pool *pgxpool.Pool, recordingID int64, profil
 
 // TestIngestWorker_SnapshotsEncodePolicyFromRuleBase は issue #103 の受け入れ基準
 // 「ルールに encodeProfiles を設定して録画 → ingest 完了後に
-// recordings.encode_profiles が一致し、encode ジョブが投入される」を確認する。
+// recording_encode_policy.encode_profiles が一致し、encode ジョブが投入される」を確認する。
 func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {

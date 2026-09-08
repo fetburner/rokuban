@@ -3,7 +3,8 @@ import type { ProgramOverridesInput, ReservationOverrides } from '@/api/generate
 /**
  * encodeProfiles / keepOriginal のクライアント側検証。
  *
- * API は `keepOriginal: until_encoded` かつ encodeProfiles 空で 400 を返す。
+ * ルール作成/更新 API は `keepOriginal: until_encoded` かつ encodeProfiles 空で 400 を返し、
+ * 録画単位の保持ポリシー API（PATCH .../encode-policy）は同じ条件を 409 で返す。
  * ルール作成/更新は rules.go の validateRuleInput がリクエストそのものを見る。
  * 予約 overrides（PATCH .../overrides）は program_overrides.go が
  * 「既存 override + このパッチ + ルールの base」をマージした実効値を見る

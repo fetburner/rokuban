@@ -215,6 +215,7 @@ const (
     COALESCE(d.drops, 0)::bigint        AS drop_drops,
     COALESCE(d.errors, 0)::bigint       AS drop_errors,
     COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled,
+    COALESCE(p.keep_original, 'always')::text AS keep_original,
     COALESCE(p.encode_profiles, '{}')::text[] AS encode_profiles,
     -- 完了していないエンコードプロファイルの試行状態（issue #316）。
     -- state そのものを SQL で CASE に潰さず recording_encode_attempts の生の
@@ -503,6 +504,7 @@ WHERE r.id = $1 AND r.purged_at IS NULL`
 		&fields.StartedAt, &fields.EndedAt, &fields.QualityEvents, &fields.DeletedAt, &fields.CreatedAt,
 		&fields.OriginalSizeBytes,
 		&fields.DropPackets, &fields.DropDrops, &fields.DropErrors, &fields.DropScrambled,
+		&fields.KeepOriginal,
 		&fields.EncodeProfiles,
 		&fields.EncodeAttempts,
 		&fields.HasOriginalAsset, &fields.HasIngestableRecord,
@@ -545,6 +547,7 @@ func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter
 			&fields.StartedAt, &fields.EndedAt, &fields.QualityEvents, &fields.DeletedAt, &fields.CreatedAt,
 			&fields.OriginalSizeBytes,
 			&fields.DropPackets, &fields.DropDrops, &fields.DropErrors, &fields.DropScrambled,
+			&fields.KeepOriginal,
 			&fields.EncodeProfiles,
 			&fields.EncodeAttempts,
 			&fields.HasOriginalAsset, &fields.HasIngestableRecord,

@@ -154,6 +154,7 @@ SELECT
     COALESCE(d.drops, 0)::bigint        AS drop_drops,
     COALESCE(d.errors, 0)::bigint       AS drop_errors,
     COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled,
+    COALESCE(p.keep_original, 'always')::text AS keep_original,
     COALESCE(p.encode_profiles, '{}')::text[] AS encode_profiles,
     -- ブラウザ再生用。desired（p.encode_profiles）ではなく observed（active encoded）。
     -- sqlc は array_agg の型を推論しきれないことがあるので text[] に明示キャストする。
@@ -261,3 +262,19 @@ ON CONFLICT (recording_id) DO UPDATE SET
         FROM unnest(recording_encode_policy.encode_profiles || excluded.encode_profiles) AS p
     ),
     updated_at = now();
+
+-- 録画後に原本の保持ポリシーだけを上書きする（issue #697）。UPDATE のみで
+-- INSERT アームを持たない --- 行が無い（未凍結）録画は既に 'always' と同じ扱い
+-- （docs/storage/retention.md §6）なので行を作る必要が無い。作ると ingest の
+-- FreezeRecordingEncodePolicy（ON CONFLICT を意図的に付けない素の INSERT）が
+-- PK 衝突し、原本 media_asset の INSERT と同一 tx ごとロールバックする
+-- （不変条件 10「意味を持たない行を作らない」）。
+--
+-- cardinality の述語を UPDATE 自身の WHERE に置くことで、判定を Go 側に
+-- 持ち出さずに CHECK 違反（recording_encode_policy_check）を防ぐ。
+-- name: SetRecordingKeepOriginal :execrows
+UPDATE recording_encode_policy
+SET keep_original = sqlc.arg('keep_original'),
+    updated_at = now()
+WHERE recording_id = sqlc.arg('recording_id')
+  AND (sqlc.arg('keep_original') <> 'until_encoded' OR cardinality(encode_profiles) > 0);

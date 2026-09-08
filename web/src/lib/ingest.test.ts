@@ -20,6 +20,7 @@ function recording(overrides: Partial<Recording> = {}): Recording {
     startAt: '2026-01-01T10:00:00Z',
     durationMs: 1_800_000,
     status: 'finished',
+    keepOriginal: 'always',
     createdAt: '2026-01-01T10:30:00Z',
     ...overrides,
   }

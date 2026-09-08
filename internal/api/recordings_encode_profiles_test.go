@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -40,6 +42,50 @@ func postEncodeProfiles(t *testing.T, url string, profiles []string) *http.Respo
 
 func encodeProfilesURL(base string, id int64) string {
 	return fmt.Sprintf("%s/api/recordings/%d/encode-profiles", base, id)
+}
+
+// patchRecordingEncodePolicy は PATCH /api/recordings/{id}/encode-policy を叩く。
+func patchRecordingEncodePolicy(t *testing.T, url string, keepOriginal string) *http.Response {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"keepOriginal": keepOriginal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPatch, url, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+func encodePolicyURL(base string, id int64) string {
+	return fmt.Sprintf("%s/api/recordings/%d/encode-policy", base, id)
+}
+
+func getRecordingKeepOriginal(t *testing.T, pool *pgxpool.Pool, id int64) string {
+	t.Helper()
+	var keepOriginal string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT keep_original FROM recording_encode_policy WHERE recording_id = $1`, id,
+	).Scan(&keepOriginal); err != nil {
+		t.Fatalf("loading keep_original for recording %d: %v", id, err)
+	}
+	return keepOriginal
+}
+
+func setRecordingEncodeProfiles(t *testing.T, pool *pgxpool.Pool, id int64, profiles []string) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE recording_encode_policy SET encode_profiles = $2 WHERE recording_id = $1`, id, profiles,
+	); err != nil {
+		t.Fatalf("setting encode_profiles for recording %d: %v", id, err)
+	}
 }
 
 // seedReservationForTest は reservations に最小限の行を直接 INSERT する。
@@ -116,8 +162,336 @@ func clearEncodeEnqueueHintJobs(t *testing.T, pool *pgxpool.Pool) {
 	}
 }
 
+func writePolicyTestFile(t *testing.T, mediaDir, relPath string) string {
+	t.Helper()
+	path := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("creating media directory for %s: %v", relPath, err)
+	}
+	if err := os.WriteFile(path, []byte("test media"), 0o644); err != nil {
+		t.Fatalf("writing media file %s: %v", relPath, err)
+	}
+	return path
+}
+
+const wantKeepOriginal409Message = "cannot set keepOriginal=until_encoded without desired encode profiles; add encode profiles first"
+
+// always と until_encoded の両方向で keep_original だけが変わり、desired の
+// encode_profiles は変わらないことを確認する。同じ値への PATCH は 204 で、
+// 保持ポリシー変更が encode_enqueue_hint を投入しないことも確認する（issue #697）。
+func TestSetRecordingEncodePolicy_SuccessPreservesProfilesAndIsIdempotent(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	riverClient, err := worker.NewInsertOnlyClient(pool)
+	if err != nil {
+		t.Fatalf("creating insert-only river client: %v", err)
+	}
+	router := NewRouter(RouterConfig{
+		Pool:               pool,
+		RiverClient:        riverClient,
+		EncodeProfileNames: []string{"h264", "h265"},
+	})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	id := seedRecording(t, pool, "保持ポリシー", time.Now().Truncate(time.Second), "finished", 601)
+	seedIngested(t, pool, id, 1000, nil)
+	setRecordingEncodeProfiles(t, pool, id, []string{"h264", "h265"})
+
+	if n := countEncodeEnqueueHintJobs(t, pool); n != 0 {
+		t.Fatalf("initial encode_enqueue_hint job count = %d, want 0", n)
+	}
+
+	resp := patchRecordingEncodePolicy(t, encodePolicyURL(srv.URL, id), "until_encoded")
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("until_encoded status = %d, want 204", resp.StatusCode)
+	}
+	if got := getRecordingKeepOriginal(t, pool, id); got != "until_encoded" {
+		t.Errorf("keep_original = %q, want until_encoded", got)
+	}
+	if got := getRecordingEncodeProfiles(t, pool, id); !slices.Equal(got, []string{"h264", "h265"}) {
+		t.Errorf("encode_profiles after until_encoded = %v, want [h264 h265]", got)
+	}
+	if n := countEncodeEnqueueHintJobs(t, pool); n != 0 {
+		t.Errorf("encode_enqueue_hint job count after until_encoded = %d, want 0", n)
+	}
+
+	// 同じ値への変更は冪等に成功する。
+	resp = patchRecordingEncodePolicy(t, encodePolicyURL(srv.URL, id), "until_encoded")
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("idempotent until_encoded status = %d, want 204", resp.StatusCode)
+	}
+
+	// 逆方向でも encode_profiles は縮まらない。
+	resp = patchRecordingEncodePolicy(t, encodePolicyURL(srv.URL, id), "always")
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("always status = %d, want 204", resp.StatusCode)
+	}
+	if got := getRecordingKeepOriginal(t, pool, id); got != "always" {
+		t.Errorf("keep_original = %q, want always", got)
+	}
+	if got := getRecordingEncodeProfiles(t, pool, id); !slices.Equal(got, []string{"h264", "h265"}) {
+		t.Errorf("encode_profiles after always = %v, want [h264 h265]", got)
+	}
+	if n := countEncodeEnqueueHintJobs(t, pool); n != 0 {
+		t.Errorf("encode_enqueue_hint job count after policy changes = %d, want 0", n)
+	}
+
+	resp = patchRecordingEncodePolicy(t, encodePolicyURL(srv.URL, id), "always")
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("idempotent always status = %d, want 204", resp.StatusCode)
+	}
+}
+
+// until_encoded は desired なプロファイルが空なら 409 を返し、ポリシーを
+// 変更しない。recording_encode_policy 行が無い場合も同じ扱いにする（issue #697）。
+func TestSetRecordingEncodePolicy_UntilEncodedWithoutProfiles_Returns409(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	router := NewRouter(RouterConfig{Pool: pool})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	emptyID := seedRecording(t, pool, "プロファイルなし", time.Now().Truncate(time.Second), "finished", 602)
+	seedIngested(t, pool, emptyID, 1000, nil)
+	resp := patchRecordingEncodePolicy(t, encodePolicyURL(srv.URL, emptyID), "until_encoded")
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("empty profiles status = %d, want 409", resp.StatusCode)
+	}
+	if body := decodeErrorResponse(t, resp); body.Error != wantKeepOriginal409Message {
+		t.Errorf("error = %q, want %q", body.Error, wantKeepOriginal409Message)
+	}
+	if got := getRecordingKeepOriginal(t, pool, emptyID); got != "always" {
+		t.Errorf("keep_original after 409 = %q, want unchanged always", got)
+	}
+
+	noPolicyID := seedRecording(t, pool, "未凍結", time.Now().Add(time.Second).Truncate(time.Second), "finished", 603)
+	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: noPolicyID,
+		Kind:        db.AssetKindOriginal,
+		RelPath:     fmt.Sprintf("test/%d.m2ts", noPolicyID),
+		SizeBytes:   1000,
+	}); err != nil {
+		t.Fatalf("seeding active original without policy: %v", err)
+	}
+	resp = patchRecordingEncodePolicy(t, encodePolicyURL(srv.URL, noPolicyID), "until_encoded")
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("missing policy status = %d, want 409", resp.StatusCode)
+	}
+	if body := decodeErrorResponse(t, resp); body.Error != wantKeepOriginal409Message {
+		t.Errorf("missing policy error = %q, want %q", body.Error, wantKeepOriginal409Message)
+	}
+	var policyRows int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM recording_encode_policy WHERE recording_id = $1`, noPolicyID,
+	).Scan(&policyRows); err != nil {
+		t.Fatalf("counting policy rows after 409: %v", err)
+	}
+	if policyRows != 0 {
+		t.Errorf("policy rows after 409 = %d, want 0", policyRows)
+	}
+}
+
+// 未 ingest（原本 media_asset も recording_encode_policy 行も無い）録画への
+// PATCH は 204（no-op）で、recording_encode_policy 行を作らないこと（issue #697
+// レビューのブロッカー: SetRecordingKeepOriginal が旧 ON CONFLICT の INSERT
+// だった頃はここで行を作ってしまい、後続の ingest が呼ぶ
+// FreezeRecordingEncodePolicy（ON CONFLICT 無しの素の INSERT）が PK 衝突して
+// 原本 media_asset の INSERT と同一 tx ごとロールバックし、原本が永久に
+// コミットされなかった）。行を作らないことに加え、ingest 相当の
+// FreezeRecordingEncodePolicy が実際に成功することまで確認する。
+func TestSetRecordingEncodePolicy_BeforeIngest_NoOpAndDoesNotBlockFreeze(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	defer srv.Close()
+
+	id := seedRecording(t, pool, "未 ingest への保持ポリシー変更", time.Now().Truncate(time.Second), "recording", 610)
+
+	resp := patchRecordingEncodePolicy(t, encodePolicyURL(srv.URL, id), "always")
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 (no-op for un-ingested recording)", resp.StatusCode)
+	}
+
+	var policyRows int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM recording_encode_policy WHERE recording_id = $1`, id,
+	).Scan(&policyRows); err != nil {
+		t.Fatalf("counting policy rows after 204: %v", err)
+	}
+	if policyRows != 0 {
+		t.Fatalf("policy rows after PATCH before ingest = %d, want 0 (endpoint must never freeze a new row)", policyRows)
+	}
+
+	// ingest の resolveAndSnapshotEncodePolicy が原本 media_asset の INSERT と
+	// 同一トランザクションで呼ぶ操作を模す。行が残っていれば PK 衝突する。
+	if err := sqlcgen.New(pool).FreezeRecordingEncodePolicy(context.Background(), sqlcgen.FreezeRecordingEncodePolicyParams{
+		RecordingID:    id,
+		KeepOriginal:   "always",
+		EncodeProfiles: []string{},
+	}); err != nil {
+		t.Fatalf("FreezeRecordingEncodePolicy after PATCH before ingest: %v (must succeed; the endpoint must not have pre-created a policy row)", err)
+	}
+}
+
+// purge 済み（purged_at が立った tombstone）の録画への PATCH は 404 で、
+// recording_encode_policy を書かないこと（issue #697 レビュー: GetRecordingByID
+// は述語なしで ingest worker と共有するため緩められないが、GET
+// /api/recordings/{id}（queryRecordingByID、purged_at IS NULL）との非対称を
+// このハンドラで埋める）。
+func TestSetRecordingEncodePolicy_Purged_ReturnsNotFoundAndDoesNotWrite(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	defer srv.Close()
+
+	id := seedRecording(t, pool, "purge 済み", time.Now().Truncate(time.Second), "finished", 611)
+	seedIngested(t, pool, id, 1000, nil)
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE recordings SET deleted_at = now(), purged_at = now() WHERE id = $1`, id,
+	); err != nil {
+		t.Fatalf("marking recording purged: %v", err)
+	}
+
+	resp := patchRecordingEncodePolicy(t, encodePolicyURL(srv.URL, id), "until_encoded")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+	if got := getRecordingKeepOriginal(t, pool, id); got != "always" {
+		t.Errorf("keep_original after 404 = %q, want unchanged always", got)
+	}
+}
+
+func TestSetRecordingEncodePolicy_NotFound(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	defer srv.Close()
+
+	resp := patchRecordingEncodePolicy(t, encodePolicyURL(srv.URL, 999999), "always")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestSetRecordingEncodePolicy_InvalidValueReturns400(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	defer srv.Close()
+
+	id := seedRecording(t, pool, "不正なポリシー", time.Now().Truncate(time.Second), "finished", 604)
+	seedIngested(t, pool, id, 1000, nil)
+	resp := patchRecordingEncodePolicy(t, encodePolicyURL(srv.URL, id), "sometimes")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	if got := getRecordingKeepOriginal(t, pool, id); got != "always" {
+		t.Errorf("keep_original after 400 = %q, want always", got)
+	}
+}
+
+// keepOriginal=until_encoded へ切り替えた後は、派生物とサムネイルが揃っていれば
+// 次の削除 reconcile パスが原本を削除する（issue #697）。API 自身はファイルにも
+// River にも触れず、既存のレベルトリガーだけが削除を行う。
+func TestSetRecordingEncodePolicy_UntilEncoded_DeletesOnReconcile(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	defer srv.Close()
+	mediaDir := t.TempDir()
+
+	id := seedRecording(t, pool, "reconcile で原本削除", time.Now().Truncate(time.Second), "finished", 605)
+	originalID := seedIngested(t, pool, id, 1000, nil)
+	setRecordingEncodeProfiles(t, pool, id, []string{"h264"})
+	originalPath := writePolicyTestFile(t, mediaDir, fmt.Sprintf("test/%d.m2ts", id))
+
+	profile := "h264"
+	q := sqlcgen.New(pool)
+	if _, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: id,
+		Kind:        db.AssetKindEncoded,
+		Profile:     &profile,
+		RelPath:     fmt.Sprintf("encoded/%d.mp4", id),
+		SizeBytes:   200,
+	}); err != nil {
+		t.Fatalf("seeding encoded asset: %v", err)
+	}
+	if _, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: id,
+		Kind:        db.AssetKindThumbnail,
+		RelPath:     fmt.Sprintf("thumbnail/%d.jpg", id),
+		SizeBytes:   50,
+	}); err != nil {
+		t.Fatalf("seeding thumbnail asset: %v", err)
+	}
+	writePolicyTestFile(t, mediaDir, fmt.Sprintf("encoded/%d.mp4", id))
+	writePolicyTestFile(t, mediaDir, fmt.Sprintf("thumbnail/%d.jpg", id))
+
+	resp := patchRecordingEncodePolicy(t, encodePolicyURL(srv.URL, id), "until_encoded")
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
+	}
+
+	w := &worker.DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("delete reconcile: %v", err)
+	}
+	var state string
+	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_assets WHERE id = $1`, originalID).Scan(&state); err != nil {
+		t.Fatalf("loading original state: %v", err)
+	}
+	if state != "deleted" {
+		t.Errorf("original state = %q, want deleted", state)
+	}
+	if _, err := os.Stat(originalPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("original file stat error = %v, want not exist", err)
+	}
+}
+
+// 原本が削除処理中でも always への変更を拒まない。次の reconcile パスが
+// until_encoded の判定から外れた deleting 行を、ファイルが残っている限り active に
+// 戻す（issue #105 / #697）。
+func TestSetRecordingEncodePolicy_AlwaysWhileDeleting_RevertsOnReconcile(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	defer srv.Close()
+	mediaDir := t.TempDir()
+
+	id := seedRecording(t, pool, "削除中に保持", time.Now().Truncate(time.Second), "finished", 606)
+	originalID := seedIngested(t, pool, id, 1000, nil)
+	setRecordingEncodeProfiles(t, pool, id, []string{"h264"})
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE recording_encode_policy SET keep_original = 'until_encoded' WHERE recording_id = $1`, id,
+	); err != nil {
+		t.Fatalf("setting initial until_encoded policy: %v", err)
+	}
+	originalPath := writePolicyTestFile(t, mediaDir, fmt.Sprintf("test/%d.m2ts", id))
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE media_assets SET state = 'deleting' WHERE id = $1`, originalID,
+	); err != nil {
+		t.Fatalf("marking original deleting: %v", err)
+	}
+
+	resp := patchRecordingEncodePolicy(t, encodePolicyURL(srv.URL, id), "always")
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
+	}
+	if got := getRecordingKeepOriginal(t, pool, id); got != "always" {
+		t.Errorf("keep_original = %q, want always", got)
+	}
+
+	w := &worker.DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("delete reconcile: %v", err)
+	}
+	var state string
+	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_assets WHERE id = $1`, originalID).Scan(&state); err != nil {
+		t.Fatalf("loading original state: %v", err)
+	}
+	if state != "active" {
+		t.Errorf("original state = %q, want active", state)
+	}
+	if _, err := os.Stat(originalPath); err != nil {
+		t.Errorf("original file stat error = %v, want file to remain", err)
+	}
+}
+
 // 予約が無い録画（mirakc に直接起こされた手動録画などを模す）でも事後追加が
-// 成功し、recordings.encode_profiles に追加専用（union + dedup）で反映され、
+// 成功し、recording_encode_policy.encode_profiles に追加専用（union + dedup）で反映され、
 // encode_enqueue_hint ヒントジョブが同一トランザクションで投入されること
 // （issue #133 の受け入れ 1 個目）。
 func TestAddRecordingEncodeProfiles_NoReservation_Success(t *testing.T) {

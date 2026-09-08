@@ -235,6 +235,24 @@ func (e RecordingChannelType) Valid() bool {
 	}
 }
 
+// Defines values for RecordingKeepOriginal.
+const (
+	RecordingKeepOriginalAlways       RecordingKeepOriginal = "always"
+	RecordingKeepOriginalUntilEncoded RecordingKeepOriginal = "until_encoded"
+)
+
+// Valid indicates whether the value is a known member of the RecordingKeepOriginal enum.
+func (e RecordingKeepOriginal) Valid() bool {
+	switch e {
+	case RecordingKeepOriginalAlways:
+		return true
+	case RecordingKeepOriginalUntilEncoded:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for RecordingSource.
 const (
 	RecordingSourceManual       RecordingSource = "manual"
@@ -490,6 +508,24 @@ func (e ServiceChannelType) Valid() bool {
 	}
 }
 
+// Defines values for SetRecordingEncodePolicyInputKeepOriginal.
+const (
+	SetRecordingEncodePolicyInputKeepOriginalAlways       SetRecordingEncodePolicyInputKeepOriginal = "always"
+	SetRecordingEncodePolicyInputKeepOriginalUntilEncoded SetRecordingEncodePolicyInputKeepOriginal = "until_encoded"
+)
+
+// Valid indicates whether the value is a known member of the SetRecordingEncodePolicyInputKeepOriginal enum.
+func (e SetRecordingEncodePolicyInputKeepOriginal) Valid() bool {
+	switch e {
+	case SetRecordingEncodePolicyInputKeepOriginalAlways:
+		return true
+	case SetRecordingEncodePolicyInputKeepOriginalUntilEncoded:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for StorageRootRoot.
 const (
 	Media   StorageRootRoot = "media"
@@ -658,7 +694,7 @@ func (e ListRecordingsParamsOrder) Valid() bool {
 // AddEncodeProfilesInput defines model for AddEncodeProfilesInput.
 type AddEncodeProfilesInput struct {
 	// Profiles 追加したいエンコードプロファイル名（config.encode.profiles に定義された
-	// 名前のみ許可。未知名は 400）。既存の recordings.encode_profiles には
+	// 名前のみ許可。未知名は 400）。既存の recording_encode_policy.encode_profiles には
 	// **追加専用**（union + dedup）で書かれ、全置換にはならない --- 既存の
 	// 指定を消す事故を避けるため。空配列は 400。
 	Profiles []string `json:"profiles"`
@@ -1232,7 +1268,7 @@ type Recording struct {
 	DurationMs  int64        `json:"durationMs"`
 
 	// EncodeProfiles 凍結された「望ましい」エンコードプロファイル一覧（desired。
-	// recordings.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は
+	// recording_encode_policy.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は
 	// `POST /api/recordings/{id}/encode-profiles` による事後追加（凍結の例外。
 	// docs/storage.md §6「原本 TS の保持ポリシー」）でのみ増える。
 	// `encodedAssets`（observed、再生可能なもの）とは異なり、まだ完了して
@@ -1262,11 +1298,18 @@ type Recording struct {
 	EncodedAssets *[]EncodedAsset `json:"encodedAssets,omitempty"`
 
 	// EndedAt 録画の実終了時刻。常に UTC（"Z" 終端の RFC3339）で返す。
-	EndedAt   *time.Time      `json:"endedAt,omitempty"`
-	EventId   int             `json:"eventId"`
-	Id        int64           `json:"id"`
-	Ingest    *IngestProgress `json:"ingest,omitempty"`
-	NetworkId int             `json:"networkId"`
+	EndedAt *time.Time      `json:"endedAt,omitempty"`
+	EventId int             `json:"eventId"`
+	Id      int64           `json:"id"`
+	Ingest  *IngestProgress `json:"ingest,omitempty"`
+
+	// KeepOriginal `recording_encode_policy.keep_original` に凍結された、この録画の原本保持
+	// ポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の
+	// `PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。
+	// `until_encoded` でも、desired な全エンコードプロファイルとサムネイルが
+	// 揃うまでは原本を削除しない。
+	KeepOriginal RecordingKeepOriginal `json:"keepOriginal"`
+	NetworkId    int                   `json:"networkId"`
 
 	// QualityEvents recording.failed / record-broken / bcas_anomaly の履歴
 	QualityEvents *[]map[string]interface{} `json:"qualityEvents,omitempty"`
@@ -1303,6 +1346,13 @@ type Recording struct {
 
 // RecordingChannelType defines model for Recording.ChannelType.
 type RecordingChannelType string
+
+// RecordingKeepOriginal `recording_encode_policy.keep_original` に凍結された、この録画の原本保持
+// ポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の
+// `PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。
+// `until_encoded` でも、desired な全エンコードプロファイルとサムネイルが
+// 揃うまでは原本を削除しない。
+type RecordingKeepOriginal string
 
 // RecordingSource 録画作成時に一度だけ焼かれる出自の snapshot。
 // `rule` は予約行があり、`program_intents.action=record` が無い録画、
@@ -1542,6 +1592,19 @@ type Service struct {
 // ServiceChannelType defines model for Service.ChannelType.
 type ServiceChannelType string
 
+// SetRecordingEncodePolicyInput defines model for SetRecordingEncodePolicyInput.
+type SetRecordingEncodePolicyInput struct {
+	// KeepOriginal 原本を常に保持するか、desired なエンコードとサムネイルが揃った後に
+	// 削除可能にするか。`until_encoded` を指定するには desired なエンコード
+	// プロファイルが 1 つ以上必要。
+	KeepOriginal SetRecordingEncodePolicyInputKeepOriginal `json:"keepOriginal"`
+}
+
+// SetRecordingEncodePolicyInputKeepOriginal 原本を常に保持するか、desired なエンコードとサムネイルが揃った後に
+// 削除可能にするか。`until_encoded` を指定するには desired なエンコード
+// プロファイルが 1 つ以上必要。
+type SetRecordingEncodePolicyInputKeepOriginal string
+
 // StorageRoot 1 つのストレージ root（`storage.media_dir` または `storage.scratch_dir`）の
 // 容量観測 1 件（`storage_sync` 行そのもの。issue #238 M7-5）。
 type StorageRoot struct {
@@ -1721,6 +1784,9 @@ type ListProgramsParams struct {
 // SearchProgramsJSONRequestBody defines body for SearchPrograms for application/json ContentType.
 type SearchProgramsJSONRequestBody = ProgramSearchRequest
 
+// SetRecordingEncodePolicyJSONRequestBody defines body for SetRecordingEncodePolicy for application/json ContentType.
+type SetRecordingEncodePolicyJSONRequestBody = SetRecordingEncodePolicyInput
+
 // AddRecordingEncodeProfilesJSONRequestBody defines body for AddRecordingEncodeProfiles for application/json ContentType.
 type AddRecordingEncodeProfilesJSONRequestBody = AddEncodeProfilesInput
 
@@ -1771,6 +1837,9 @@ type ServerInterface interface {
 	// ListRecordingDropStats Get per-PID drop statistics for a recording
 	// (GET /api/recordings/{id}/drop-stats)
 	ListRecordingDropStats(w http.ResponseWriter, r *http.Request, id int64)
+	// SetRecordingEncodePolicy Change the original retention policy for a recording
+	// (PATCH /api/recordings/{id}/encode-policy)
+	SetRecordingEncodePolicy(w http.ResponseWriter, r *http.Request, id int64)
 	// AddRecordingEncodeProfiles Request additional encode profiles for an already-ingested recording
 	// (POST /api/recordings/{id}/encode-profiles)
 	AddRecordingEncodeProfiles(w http.ResponseWriter, r *http.Request, id int64)
@@ -1915,6 +1984,12 @@ func (_ Unimplemented) GetRecording(w http.ResponseWriter, r *http.Request, id i
 // ListRecordingDropStats Get per-PID drop statistics for a recording
 // (GET /api/recordings/{id}/drop-stats)
 func (_ Unimplemented) ListRecordingDropStats(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// SetRecordingEncodePolicy Change the original retention policy for a recording
+// (PATCH /api/recordings/{id}/encode-policy)
+func (_ Unimplemented) SetRecordingEncodePolicy(w http.ResponseWriter, r *http.Request, id int64) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2529,6 +2604,32 @@ func (siw *ServerInterfaceWrapper) ListRecordingDropStats(w http.ResponseWriter,
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListRecordingDropStats(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SetRecordingEncodePolicy operation middleware
+func (siw *ServerInterfaceWrapper) SetRecordingEncodePolicy(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SetRecordingEncodePolicy(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3407,6 +3508,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/api/recordings/{id}/encode-profiles", wrapper.AddRecordingEncodeProfiles)
 	})
 	r.Group(func(r chi.Router) {
+		r.Patch(options.BaseURL+"/api/recordings/{id}/encode-policy", wrapper.SetRecordingEncodePolicy)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/recordings/{id}/drop-stats", wrapper.ListRecordingDropStats)
 	})
 	r.Group(func(r chi.Router) {
@@ -3751,6 +3855,65 @@ func (response ListRecordingDropStats200JSONResponse) VisitListRecordingDropStat
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SetRecordingEncodePolicyRequestObject struct {
+	Id   int64 `json:"id"`
+	Body *SetRecordingEncodePolicyJSONRequestBody
+}
+
+type SetRecordingEncodePolicyResponseObject interface {
+	VisitSetRecordingEncodePolicyResponse(w http.ResponseWriter) error
+}
+
+type SetRecordingEncodePolicy204Response struct {
+}
+
+func (response SetRecordingEncodePolicy204Response) VisitSetRecordingEncodePolicyResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type SetRecordingEncodePolicy400JSONResponse ErrorResponse
+
+func (response SetRecordingEncodePolicy400JSONResponse) VisitSetRecordingEncodePolicyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SetRecordingEncodePolicy404JSONResponse ErrorResponse
+
+func (response SetRecordingEncodePolicy404JSONResponse) VisitSetRecordingEncodePolicyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SetRecordingEncodePolicy409JSONResponse ErrorResponse
+
+func (response SetRecordingEncodePolicy409JSONResponse) VisitSetRecordingEncodePolicyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -4648,6 +4811,9 @@ type StrictServerInterface interface {
 	// ListRecordingDropStats Get per-PID drop statistics for a recording
 	// (GET /api/recordings/{id}/drop-stats)
 	ListRecordingDropStats(ctx context.Context, request ListRecordingDropStatsRequestObject) (ListRecordingDropStatsResponseObject, error)
+	// SetRecordingEncodePolicy Change the original retention policy for a recording
+	// (PATCH /api/recordings/{id}/encode-policy)
+	SetRecordingEncodePolicy(ctx context.Context, request SetRecordingEncodePolicyRequestObject) (SetRecordingEncodePolicyResponseObject, error)
 	// AddRecordingEncodeProfiles Request additional encode profiles for an already-ingested recording
 	// (POST /api/recordings/{id}/encode-profiles)
 	AddRecordingEncodeProfiles(ctx context.Context, request AddRecordingEncodeProfilesRequestObject) (AddRecordingEncodeProfilesResponseObject, error)
@@ -5040,6 +5206,39 @@ func (sh *strictHandler) ListRecordingDropStats(w http.ResponseWriter, r *http.R
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListRecordingDropStatsResponseObject); ok {
 		if err := validResponse.VisitListRecordingDropStatsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SetRecordingEncodePolicy operation middleware
+func (sh *strictHandler) SetRecordingEncodePolicy(w http.ResponseWriter, r *http.Request, id int64) {
+	var request SetRecordingEncodePolicyRequestObject
+
+	request.Id = id
+
+	var body SetRecordingEncodePolicyJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SetRecordingEncodePolicy(ctx, request.(SetRecordingEncodePolicyRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SetRecordingEncodePolicy")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SetRecordingEncodePolicyResponseObject); ok {
+		if err := validResponse.VisitSetRecordingEncodePolicyResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
