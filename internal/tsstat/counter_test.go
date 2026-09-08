@@ -66,6 +66,23 @@ func withDiscontinuity() packetOpt {
 	}
 }
 
+// withPCRBase は adaptation field に指定した PCR base を入れる。
+// PCR extension は使わず、base の値だけをテスト対象にする。
+func withPCRBase(base uint64) packetOpt {
+	return func(pkt *[packet.PacketSize]byte) {
+		// adaptation_field_control = 11 (AF + payload), length = flags 1 + PCR 6
+		pkt[3] = (pkt[3] & 0xCF) | 0x30
+		pkt[4] = 7
+		pkt[5] = 0x10 // PCR_flag
+		pkt[6] = byte(base >> 25)
+		pkt[7] = byte(base >> 17)
+		pkt[8] = byte(base >> 9)
+		pkt[9] = byte(base >> 1)
+		pkt[10] = byte((base&1)<<7) | 0x7E // reserved bits = 111111, extension = 0
+		pkt[11] = 0
+	}
+}
+
 func mustWrite(t *testing.T, c *Counter, p []byte) {
 	t.Helper()
 	if _, err := c.Write(p); err != nil {
@@ -392,6 +409,123 @@ func TestCounter_ChunkedWrite(t *testing.T) {
 	stats := c.Stats()
 	if stats[0x100].Packets != 2 {
 		t.Errorf("packets = %d, want 2 (chunked write should reassemble)", stats[0x100].Packets)
+	}
+}
+
+func TestCounter_DropPositionUsesOriginalOffsetAndPCR(t *testing.T) {
+	var buf bytes.Buffer
+	c := NewCounter(&buf)
+
+	// 先頭の 5 バイトは findSync が読み飛ばすゴミ。最初の PCR は録画内 5 バイト
+	// 地点で 10 秒、ドロップを検知する次のパケットは 11 秒の PCR を持つ。
+	data := []byte{0x00, 0x01, 0x02, 0x03, 0x04}
+	data = append(data, makePacket(0x100, 0, withPCRBase(900000))...)
+	data = append(data, makePacket(0x100, 3, withPCRBase(990000))...)
+
+	// c.buf に残る分割を含めて処理する。2 回目の Write では 2 パケットを
+	// 同じ feed で消費させ、offset はバッファ連結後も元の TS ストリーム上の
+	// 位置でなければならないことを固定する。
+	mustWrite(t, c, data[:97])
+	mustWrite(t, c, data[97:])
+
+	positions := c.Stats()[0x100].Positions
+	if len(positions) != 1 {
+		t.Fatalf("positions = %d, want 1: %+v", len(positions), positions)
+	}
+	if positions[0].ByteOffset != 5+packet.PacketSize {
+		t.Errorf("byte_offset = %d, want %d", positions[0].ByteOffset, 5+packet.PacketSize)
+	}
+	if positions[0].ElapsedMs == nil {
+		t.Fatal("elapsed_ms = nil, want 1000")
+	}
+	if *positions[0].ElapsedMs != 1000 {
+		t.Errorf("elapsed_ms = %d, want 1000", *positions[0].ElapsedMs)
+	}
+}
+
+func TestCounter_DropPositionWithoutPCRHasNullElapsed(t *testing.T) {
+	var buf bytes.Buffer
+	c := NewCounter(&buf)
+
+	mustWrite(t, c, makePacket(0x100, 0))
+	mustWrite(t, c, makePacket(0x100, 4))
+
+	positions := c.Stats()[0x100].Positions
+	if len(positions) != 1 {
+		t.Fatalf("positions = %d, want 1", len(positions))
+	}
+	if positions[0].ByteOffset != packet.PacketSize {
+		t.Errorf("byte_offset = %d, want %d", positions[0].ByteOffset, packet.PacketSize)
+	}
+	if positions[0].ElapsedMs != nil {
+		t.Errorf("elapsed_ms = %d, want nil", *positions[0].ElapsedMs)
+	}
+}
+
+func TestCounter_DropPositionsAreCappedPerPIDButDropsAreNot(t *testing.T) {
+	var buf bytes.Buffer
+	c := NewCounter(&buf)
+
+	mustWrite(t, c, makePacket(0x100, 0))
+	for i := 0; i < maxDropPositionsPerPID+1; i++ {
+		cc := 2
+		if i%2 == 1 {
+			cc = 0
+		}
+		mustWrite(t, c, makePacket(0x100, cc))
+	}
+
+	// 別 PID の位置は、映像 PID が上限に達しても採取できる。
+	mustWrite(t, c, makePacket(0x200, 0))
+	mustWrite(t, c, makePacket(0x200, 5))
+
+	stats := c.Stats()
+	if stats[0x100].Drops != maxDropPositionsPerPID+1 {
+		t.Errorf("PID 0x100 drops = %d, want %d", stats[0x100].Drops, maxDropPositionsPerPID+1)
+	}
+	if len(stats[0x100].Positions) != maxDropPositionsPerPID {
+		t.Errorf("PID 0x100 positions = %d, want %d", len(stats[0x100].Positions), maxDropPositionsPerPID)
+	}
+	if stats[0x200].Drops != 1 || len(stats[0x200].Positions) != 1 {
+		t.Errorf("PID 0x200 = drops %d, positions %d; want 1, 1", stats[0x200].Drops, len(stats[0x200].Positions))
+	}
+}
+
+func TestCounter_PCRBackwardDisablesElapsedPositions(t *testing.T) {
+	var buf bytes.Buffer
+	c := NewCounter(&buf)
+
+	mustWrite(t, c, makePacket(0x100, 0, withPCRBase((1<<33)-90000)))
+	// PCR base の一周をまたいだ直後。ここで時計を無効にし、以後も NULL にする。
+	mustWrite(t, c, makePacket(0x100, 3, withPCRBase(0)))
+	mustWrite(t, c, makePacket(0x100, 0, withPCRBase(90000)))
+
+	positions := c.Stats()[0x100].Positions
+	if len(positions) != 2 {
+		t.Fatalf("positions = %d, want 2", len(positions))
+	}
+	for i, position := range positions {
+		if position.ElapsedMs != nil {
+			t.Errorf("positions[%d].elapsed_ms = %d, want nil after PCR wrap", i, *position.ElapsedMs)
+		}
+	}
+}
+
+func TestCounter_DiscontinuityWithoutPCRDisablesElapsedPositions(t *testing.T) {
+	var buf bytes.Buffer
+	c := NewCounter(&buf)
+
+	mustWrite(t, c, makePacket(0x100, 0, withPCRBase(900000)))
+	// PCR を持たない discontinuity でも、後続 PCR を同じ時計として使わない。
+	mustWrite(t, c, makePacket(0x100, 7, withDiscontinuity()))
+	mustWrite(t, c, makePacket(0x100, 0, withPCRBase(990000)))
+
+	positions := c.Stats()[0x100].Positions
+	if len(positions) != 1 {
+		t.Fatalf("positions = %d, want 1", len(positions))
+	}
+	if positions[0].ElapsedMs != nil {
+		t.Errorf("elapsed_ms = %d, want nil after discontinuity", *positions[0].ElapsedMs)
 	}
 }
 

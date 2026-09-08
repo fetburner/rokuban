@@ -790,6 +790,15 @@ type DeleteRuleResponse struct {
 	Id                   int64 `json:"id"`
 }
 
+// DropPosition defines model for DropPosition.
+type DropPosition struct {
+	// ByteOffset 原本 TS の先頭から、ドロップを観測したパケットまでのバイト位置
+	ByteOffset int64 `json:"byteOffset"`
+
+	// ElapsedMs 録画開始からの経過ミリ秒。PCR を得られない場合は省略
+	ElapsedMs *int64 `json:"elapsedMs,omitempty"`
+}
+
 // DropStat defines model for DropStat.
 type DropStat struct {
 	Drops   int64 `json:"drops"`
@@ -810,8 +819,16 @@ type DropStat struct {
 	// **分類できなければ省略する**（PSI 解析の失敗は ingest を失敗させない。
 	// docs/recording.md「例外の境界」）。省略は「分類しなかった」であって
 	// 「該当なし」ではない
-	PidType   *string `json:"pidType,omitempty"`
-	Scrambled int64   `json:"scrambled"`
+	PidType *string `json:"pidType,omitempty"`
+
+	// Positions ドロップを観測した原本内の位置。PID ごとに最大 100 件まで保持するため、
+	// `drops`（真のドロップ件数）と配列の長さは一致しないことがある。
+	// `byteOffset` は原本 TS の先頭からのバイト位置、`elapsedMs` は最初に
+	// 観測した PCR を録画開始とみなした録画開始からの経過ミリ秒。
+	// PCR をまだ観測していない、または PCR の逆行 / discontinuity 後で時計を
+	// 無効にした行では `elapsedMs` を省略する。絶対放送時刻ではない。
+	Positions []DropPosition `json:"positions"`
+	Scrambled int64          `json:"scrambled"`
 }
 
 // DropSummary defines model for DropSummary.

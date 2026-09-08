@@ -15,7 +15,7 @@ import (
 // newRescueCmd は `rokuban rescue` サブコマンドを作る（M3-9 / issue #71）。
 //
 // media_dir/catalog/ の最新 catalog JSON を読み、コアメタデータ
-// （rules / recordings / media_assets / drop_stats / program_intents /
+// （rules / recordings / media_assets / drop_stats / drop_positions / program_intents /
 // program_overrides）を DB に冪等 upsert する。catalog が無ければ storage を走査し、
 // 認識できる動画ファイルを素の asset として in-place 登録する。
 func newRescueCmd() *cobra.Command {
@@ -93,6 +93,7 @@ func runRescue(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string, r
 	_, _ = fmt.Fprintf(out, "  recordings:         %d\n", result.Recordings)
 	_, _ = fmt.Fprintf(out, "  media_assets:       %d\n", result.MediaAssets)
 	_, _ = fmt.Fprintf(out, "  drop_stats:         %d\n", result.DropStats)
+	_, _ = fmt.Fprintf(out, "  drop_positions:     %d\n", result.DropPositions)
 	_, _ = fmt.Fprintf(out, "  program_snapshots:  %d\n", result.ProgramSnapshots)
 	_, _ = fmt.Fprintf(out, "  program_intents:    %d\n", result.ProgramIntents)
 	_, _ = fmt.Fprintf(out, "  program_overrides:  %d\n", result.ProgramOverrides)

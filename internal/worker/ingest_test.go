@@ -817,6 +817,8 @@ func insertTestRecording(t *testing.T, pool *pgxpool.Pool) int64 {
 	}
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(),
+			"DELETE FROM drop_positions WHERE media_asset_id IN (SELECT id FROM media_assets WHERE recording_id = $1)", id)
+		_, _ = pool.Exec(context.Background(),
 			"DELETE FROM drop_stats WHERE media_asset_id IN (SELECT id FROM media_assets WHERE recording_id = $1)", id)
 		_, _ = pool.Exec(context.Background(), "DELETE FROM media_assets WHERE recording_id = $1", id)
 		_, _ = pool.Exec(context.Background(), "DELETE FROM record_sync WHERE recording_id = $1", id)

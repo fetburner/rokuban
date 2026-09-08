@@ -553,6 +553,13 @@ export interface CapacityOverage {
   jammedTypes: CapacityOverageJammedTypesItem[];
 }
 
+export interface DropPosition {
+  /** 原本 TS の先頭から、ドロップを観測したパケットまでのバイト位置 */
+  byteOffset: number;
+  /** 録画開始からの経過ミリ秒。PCR を得られない場合は省略 */
+  elapsedMs?: number | null;
+}
+
 export interface DropStat {
   pid: number;
   packets: number;
@@ -575,6 +582,15 @@ export interface DropStat {
      * 「該当なし」ではない
      */
   pidType?: string;
+  /**
+     * ドロップを観測した原本内の位置。PID ごとに最大 100 件まで保持するため、
+     * `drops`（真のドロップ件数）と配列の長さは一致しないことがある。
+     * `byteOffset` は原本 TS の先頭からのバイト位置、`elapsedMs` は最初に
+     * 観測した PCR を録画開始とみなした録画開始からの経過ミリ秒。
+     * PCR をまだ観測していない、または PCR の逆行 / discontinuity 後で時計を
+     * 無効にした行では `elapsedMs` を省略する。絶対放送時刻ではない。
+     */
+  positions: DropPosition[];
 }
 
 export type ProgramIntentInputAction = typeof ProgramIntentInputAction[keyof typeof ProgramIntentInputAction];

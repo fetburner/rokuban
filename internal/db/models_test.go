@@ -58,7 +58,7 @@ func TestSchemaV1_Tables(t *testing.T) {
 	ctx := context.Background()
 
 	tables := []string{
-		"reservations", "schedule_sync", "recordings", "record_sync", "media_assets", "drop_stats",
+		"reservations", "schedule_sync", "recordings", "record_sync", "media_assets", "drop_stats", "drop_positions",
 		// M2-1
 		"rules", "rule_text_matches", "rule_services", "rule_channel_types",
 		"rule_genres", "rule_times", "rule_sites",

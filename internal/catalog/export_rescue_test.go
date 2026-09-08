@@ -14,6 +14,7 @@ import (
 )
 
 // Export → Write → 空 DB への Rescue で recordings / media_assets / drop_stats /
+// drop_positions /
 // rules が戻ること。再実行しても増殖しないこと。
 //
 //nolint:funlen // Export/Write/Rescue を通しで確認する結合テスト。分割は epic #585 のスコープ外（既存超過分を一括では直さない）
@@ -129,6 +130,15 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertDropStat: %v", err)
 	}
+	elapsedMs := int64(1000)
+	if err := q.InsertDropPosition(ctx, sqlcgen.InsertDropPositionParams{
+		MediaAssetID: assetID,
+		ByteOffset:   188,
+		Pid:          0x100,
+		ElapsedMs:    &elapsedMs,
+	}); err != nil {
+		t.Fatalf("InsertDropPosition: %v", err)
+	}
 
 	// program_snapshots + intent（FK のため snapshot が先）。
 	if _, err := pool.Exec(ctx, `
@@ -187,6 +197,10 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	if len(doc.DropStats) != 1 || doc.DropStats[0].Drops != 3 {
 		t.Fatalf("exported drop_stats = %+v", doc.DropStats)
 	}
+	if len(doc.DropPositions) != 1 || doc.DropPositions[0].ByteOffset != 188 ||
+		doc.DropPositions[0].ElapsedMs == nil || *doc.DropPositions[0].ElapsedMs != 1000 {
+		t.Fatalf("exported drop_positions = %+v", doc.DropPositions)
+	}
 	if len(doc.ProgramIntents) != 1 {
 		t.Fatalf("exported program_intents = %d, want 1", len(doc.ProgramIntents))
 	}
@@ -228,9 +242,9 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	if result.Generation == "" {
 		t.Fatalf("rescued from %+v, want a verified generation", result)
 	}
-	if result.Rules != 1 || result.Recordings != 2 || result.MediaAssets != 1 || result.DropStats != 1 {
-		t.Fatalf("rescue counts: rules=%d rec=%d assets=%d drops=%d",
-			result.Rules, result.Recordings, result.MediaAssets, result.DropStats)
+	if result.Rules != 1 || result.Recordings != 2 || result.MediaAssets != 1 || result.DropStats != 1 || result.DropPositions != 1 {
+		t.Fatalf("rescue counts: rules=%d rec=%d assets=%d drops=%d positions=%d",
+			result.Rules, result.Recordings, result.MediaAssets, result.DropStats, result.DropPositions)
 	}
 	if result.RecordingEncodePolicies != 1 {
 		t.Fatalf("rescue recording_encode_policies = %d, want 1 (unfrozen recording must not gain a row)",
@@ -333,6 +347,15 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}
 	if drops != 3 {
 		t.Errorf("drops = %d, want 3", drops)
+	}
+	var restoredElapsed *int64
+	if err := pool.QueryRow(ctx,
+		`SELECT elapsed_ms FROM drop_positions WHERE media_asset_id = $1 AND byte_offset = 188`, assetID,
+	).Scan(&restoredElapsed); err != nil {
+		t.Fatalf("query drop_position: %v", err)
+	}
+	if restoredElapsed == nil || *restoredElapsed != 1000 {
+		t.Errorf("restored elapsed_ms = %v, want 1000", restoredElapsed)
 	}
 
 	var matchValue string

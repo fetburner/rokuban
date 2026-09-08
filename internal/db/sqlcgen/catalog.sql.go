@@ -194,6 +194,37 @@ func (q *Queries) CatalogInsertRuleTime(ctx context.Context, arg CatalogInsertRu
 	return err
 }
 
+const catalogListDropPositions = `-- name: CatalogListDropPositions :many
+SELECT media_asset_id, byte_offset, pid, elapsed_ms FROM drop_positions ORDER BY media_asset_id, byte_offset
+`
+
+// drop_positions は原本を削除した後も残る不可逆な観測なので、drop_stats と
+// 同じ catalog に含める。elapsed_ms の NULL は sqlc のポインタ型で保つ。
+func (q *Queries) CatalogListDropPositions(ctx context.Context) ([]DropPosition, error) {
+	rows, err := q.db.Query(ctx, catalogListDropPositions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DropPosition
+	for rows.Next() {
+		var i DropPosition
+		if err := rows.Scan(
+			&i.MediaAssetID,
+			&i.ByteOffset,
+			&i.Pid,
+			&i.ElapsedMs,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const catalogListDropStats = `-- name: CatalogListDropStats :many
 SELECT media_asset_id, pid, packets, drops, errors, scrambled, pid_type FROM drop_stats ORDER BY media_asset_id, pid
 `
@@ -647,7 +678,7 @@ SELECT id, name, description, enabled, priority, is_free, duration_min_ms, durat
 `
 
 // catalog エクスポート / rescue 用（M3-9 / issue #71）。
-// 保護対象はルール・録画・media_assets・drop_stats・意図・上書き（と意図の FK 先
+// 保護対象はルール・録画・media_assets・drop_stats・drop_positions・意図・上書き（と意図の FK 先
 // program_snapshots）。EPG 射影と schedule/record/tuner_sync は再構築可能なので
 // 含めない（docs/storage.md §8）。
 // ---------------------------------------------------------------------------
@@ -727,6 +758,32 @@ SELECT setval(
 // IDENTITY 列のシーケンスを max(id) に揃える（再 insert で衝突しないように）。
 func (q *Queries) CatalogResetRulesIDSeq(ctx context.Context) error {
 	_, err := q.db.Exec(ctx, catalogResetRulesIDSeq)
+	return err
+}
+
+const catalogUpsertDropPosition = `-- name: CatalogUpsertDropPosition :exec
+INSERT INTO drop_positions (
+    media_asset_id, byte_offset, pid, elapsed_ms
+) VALUES ($1, $2, $3, $4)
+ON CONFLICT (media_asset_id, byte_offset) DO UPDATE SET
+    pid        = EXCLUDED.pid,
+    elapsed_ms = EXCLUDED.elapsed_ms
+`
+
+type CatalogUpsertDropPositionParams struct {
+	MediaAssetID int64
+	ByteOffset   int64
+	Pid          int32
+	ElapsedMs    *int64
+}
+
+func (q *Queries) CatalogUpsertDropPosition(ctx context.Context, arg CatalogUpsertDropPositionParams) error {
+	_, err := q.db.Exec(ctx, catalogUpsertDropPosition,
+		arg.MediaAssetID,
+		arg.ByteOffset,
+		arg.Pid,
+		arg.ElapsedMs,
+	)
 	return err
 }
 

@@ -369,6 +369,11 @@ func TestListRecordingDropStats(t *testing.T) {
 	if got[1].Scrambled != 5 {
 		t.Errorf("stat[1] = %+v", got[1])
 	}
+	for _, stat := range got {
+		if stat.Positions == nil {
+			t.Errorf("PID 0x%04x positions should be an empty array, not null", stat.Pid)
+		}
+	}
 
 	// 未 ingest の録画は空配列（null ではない）
 	bare := seedRecording(t, pool, "未 ingest", time.Now().Add(time.Hour).Truncate(time.Second), "recording", 2)
@@ -457,6 +462,70 @@ func TestListRecordingDropStats_PIDType(t *testing.T) {
 		if pid != 0x200 && !has {
 			t.Errorf("PID 0x%04x に pidType キーが無い: %v", pid, m)
 		}
+	}
+}
+
+func TestListRecordingDropStats_Positions(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+
+	id := seedRecording(t, pool, "位置付き録画", time.Now().Truncate(time.Second), "finished", 1)
+	assetID := seedIngested(t, pool, id, 1000, map[int32][4]int64{
+		0x100: {500, 2, 0, 0},
+	})
+	q := sqlcgen.New(pool)
+	elapsed := int64(1000)
+	for _, p := range []struct {
+		offset  int64
+		elapsed *int64
+	}{
+		{offset: 188, elapsed: &elapsed},
+		{offset: 376},
+	} {
+		if err := q.InsertDropPosition(context.Background(), sqlcgen.InsertDropPositionParams{
+			MediaAssetID: assetID,
+			ByteOffset:   p.offset,
+			Pid:          0x100,
+			ElapsedMs:    p.elapsed,
+		}); err != nil {
+			t.Fatalf("seeding drop position: %v", err)
+		}
+	}
+
+	var got []DropStat
+	resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d/drop-stats", srv.URL, id), &got)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if len(got) != 1 || len(got[0].Positions) != 2 {
+		t.Fatalf("drop stats = %+v, want one PID with two positions", got)
+	}
+	if got[0].Drops != 2 {
+		t.Errorf("drops = %d, want 2", got[0].Drops)
+	}
+	if got[0].Positions[0].ByteOffset != 188 || got[0].Positions[1].ByteOffset != 376 {
+		t.Errorf("byte offsets = %+v, want [188 376]", got[0].Positions)
+	}
+	if got[0].Positions[0].ElapsedMs == nil || *got[0].Positions[0].ElapsedMs != 1000 {
+		t.Errorf("first elapsed_ms = %v, want 1000", got[0].Positions[0].ElapsedMs)
+	}
+	if got[0].Positions[1].ElapsedMs != nil {
+		t.Errorf("second elapsed_ms = %d, want nil", *got[0].Positions[1].ElapsedMs)
+	}
+
+	// 原本の tombstone 化では位置行を消さない。API の既存の active-only
+	// 表示規約とは別に、不可逆な観測が DB に残ることを直接固定する。
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1", assetID); err != nil {
+		t.Fatalf("tombstoning media asset: %v", err)
+	}
+	var count int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM drop_positions WHERE media_asset_id = $1", assetID).Scan(&count); err != nil {
+		t.Fatalf("counting drop positions after tombstone: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("drop_positions after tombstone = %d, want 2", count)
 	}
 }
 

@@ -15,9 +15,10 @@ mirakc に録画を委譲することで、Rokuban のサーバー側に残る�
 | 許す | 許さない |
 |---|---|
 | PAT / PMT のセクション再構成 | **記述子を一切読まない**（`component_tag` も含む） |
-| ES ループの `elementary_PID` と `stream_type` の読み取り | 他テーブル（EIT / SDT / NIT / TOT）の解析 |
+| ES ループの `elementary_PID` と `stream_type` の読み取り | 他テーブル（TDT / EIT / SDT / NIT / TOT）の解析 |
 | 固定 PID の静的表による命名（PAT / CAT / NIT / SDT / EIT / TOT。解析不要） | ES ペイロードの解釈（字幕デコード・映像解析） |
 | PID → 種別の対応を統計メタデータとして記録 | PSI を根拠に EPG プロジェクションを補正すること |
+| 適応フィールドの `discontinuity_indicator` と PCR の読み取り（ドロップ位置の経過時刻に限る） | — |
 | — | TS の書き出し・変換・demux（この不変条件の本体） |
 
 **「記述子を読まない」が歯止めの本体。** 機械的に判定できる（`Descriptors()` を呼んでいたらレビューで落ちる）し、EIT の解析も自動的に排除される（EIT の中身は記述子）。

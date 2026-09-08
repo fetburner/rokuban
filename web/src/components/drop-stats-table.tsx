@@ -18,6 +18,17 @@ const pidTypeLabels: Record<string, string> = {
   tot: 'TOT',
 }
 
+function formatElapsedMs(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  const milliseconds = ms % 1000
+  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds
+    .toString()
+    .padStart(2, '0')}.${milliseconds.toString().padStart(3, '0')}`
+}
+
 export function DropStatsTable({ recordingId }: { recordingId: Recording['id'] }) {
   const query = useListRecordingDropStats(recordingId)
   const stats = unwrap(query.data) ?? []
@@ -35,15 +46,16 @@ export function DropStatsTable({ recordingId }: { recordingId: Recording['id'] }
   return (
     <section>
       <h4 className="mb-1 font-medium">PID 別ドロップ統計</h4>
-      <div className="grid grid-cols-[auto_auto_1fr_1fr_1fr_1fr] gap-x-3 gap-y-0.5">
+      <div className="grid grid-cols-[auto_auto_1fr_1fr_1fr_1fr_minmax(0,2fr)] gap-x-3 gap-y-0.5">
         <span className="text-muted-foreground">PID</span>
         <span className="text-muted-foreground">種別</span>
         <span className="text-right text-muted-foreground">packets</span>
         <span className="text-right text-muted-foreground">ドロップ</span>
         <span className="text-right text-muted-foreground">エラー</span>
         <span className="text-right text-muted-foreground">スクランブル</span>
+        <span className="text-muted-foreground">録画開始からの経過</span>
         {stats.map((s) => (
-          <div key={s.pid} className="col-span-6 grid grid-cols-subgrid">
+          <div key={s.pid} className="col-span-7 grid grid-cols-subgrid">
             <span>0x{s.pid.toString(16).padStart(4, '0')}</span>
             {/* 分類できなかった PID は種別なし（PID 番号だけで統計は成立する） */}
             <span className="text-muted-foreground">
@@ -59,6 +71,24 @@ export function DropStatsTable({ recordingId }: { recordingId: Recording['id'] }
             <span className={cn('text-right', s.scrambled > 0 && 'text-destructive')}>
               {s.scrambled.toLocaleString()}
             </span>
+            <div className="min-w-0">
+              <div className="flex flex-col">
+                {(s.positions ?? []).map((position) => (
+                  <span key={position.byteOffset}>
+                    {position.elapsedMs == null ? '時刻不明' : formatElapsedMs(position.elapsedMs)}{' '}
+                    <span className="text-muted-foreground">
+                      （byte {position.byteOffset.toLocaleString()}）
+                    </span>
+                  </span>
+                ))}
+                {s.drops > (s.positions ?? []).length && (
+                  <span className="text-muted-foreground">
+                    {s.drops.toLocaleString()} 件中 {(s.positions ?? []).length.toLocaleString()} 件を表示
+                  </span>
+                )}
+                {s.drops === 0 && (s.positions ?? []).length === 0 && '—'}
+              </div>
+            </div>
           </div>
         ))}
       </div>

@@ -596,6 +596,17 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath st
 		}); err != nil {
 			return fmt.Errorf("inserting drop_stat for PID %d: %w", pid, err)
 		}
+		for _, position := range s.Positions {
+			if err := q.InsertDropPosition(ctx, sqlcgen.InsertDropPositionParams{
+				MediaAssetID: assetID,
+				ByteOffset:   position.ByteOffset,
+				Pid:          int32(pid),
+				ElapsedMs:    position.ElapsedMs,
+			}); err != nil {
+				return fmt.Errorf("inserting drop position for PID %d at byte offset %d: %w",
+					pid, position.ByteOffset, err)
+			}
+		}
 	}
 
 	if counter.TotalScrambled() > 0 {

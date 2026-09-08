@@ -1915,7 +1915,7 @@ components:
 
     DropStat:
       type: object
-      required: [pid, packets, drops, errors, scrambled]
+      required: [pid, packets, drops, errors, scrambled, positions]
       properties:
         pid:
           type: integer
@@ -1947,6 +1947,31 @@ components:
             docs/recording.md「例外の境界」）。省略は「分類しなかった」であって
             「該当なし」ではない
           type: string
+        positions:
+          description: |
+            ドロップを観測した原本内の位置。PID ごとに最大 100 件まで保持するため、
+            `drops`（真のドロップ件数）と配列の長さは一致しないことがある。
+            `byteOffset` は原本 TS の先頭からのバイト位置、`elapsedMs` は最初に
+            観測した PCR を録画開始とみなした録画開始からの経過ミリ秒。
+            PCR をまだ観測していない、または PCR の逆行 / discontinuity 後で時計を
+            無効にした行では `elapsedMs` を省略する。絶対放送時刻ではない。
+          type: array
+          items:
+            $ref: "#/components/schemas/DropPosition"
+
+    DropPosition:
+      type: object
+      required: [byteOffset]
+      properties:
+        byteOffset:
+          description: 原本 TS の先頭から、ドロップを観測したパケットまでのバイト位置
+          type: integer
+          format: int64
+        elapsedMs:
+          description: 録画開始からの経過ミリ秒。PCR を得られない場合は省略
+          type: integer
+          format: int64
+          nullable: true
 
     # --- Program intent (issue #29) ---
 

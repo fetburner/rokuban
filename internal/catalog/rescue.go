@@ -29,6 +29,7 @@ type RescueResult struct {
 	RecordingPurgeRequests  int
 	MediaAssets             int
 	DropStats               int
+	DropPositions           int
 	ProgramSnapshots        int
 	ProgramIntents          int
 	ProgramOverrides        int
@@ -87,7 +88,7 @@ func RescueLatest(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string
 // RescueFile は path の catalog JSON を読んで DB に冪等 upsert する。
 //
 // 書き込み順: rules（+ 子）→ program_snapshots → program_intents /
-// program_overrides → recordings → media_assets → drop_stats。
+// program_overrides → recordings → media_assets → drop_stats → drop_positions。
 // 全部 1 トランザクションで、途中失敗なら何も残さない。
 func RescueFile(ctx context.Context, pool *pgxpool.Pool, path string) (*RescueResult, error) {
 	doc, err := Load(path)
@@ -187,6 +188,9 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 	}
 
 	if err := applyDropStats(ctx, q, doc.DropStats, res); err != nil {
+		return nil, err
+	}
+	if err := applyDropPositions(ctx, q, doc.DropPositions, res); err != nil {
 		return nil, err
 	}
 
@@ -425,6 +429,23 @@ func applyDropStats(ctx context.Context, q *sqlcgen.Queries, stats []DropStat, r
 		}
 	}
 	res.DropStats = len(stats)
+	return nil
+}
+
+// applyDropPositions は drop_positions を復元し、件数を res.DropPositions に書く。
+func applyDropPositions(ctx context.Context, q *sqlcgen.Queries, positions []DropPosition, res *RescueResult) error {
+	for _, p := range positions {
+		if err := q.CatalogUpsertDropPosition(ctx, sqlcgen.CatalogUpsertDropPositionParams{
+			MediaAssetID: p.MediaAssetID,
+			ByteOffset:   p.ByteOffset,
+			Pid:          p.Pid,
+			ElapsedMs:    p.ElapsedMs,
+		}); err != nil {
+			return fmt.Errorf("upserting drop_position asset=%d offset=%d: %w",
+				p.MediaAssetID, p.ByteOffset, err)
+		}
+	}
+	res.DropPositions = len(positions)
 	return nil
 }
 
