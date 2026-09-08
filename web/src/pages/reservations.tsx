@@ -109,7 +109,7 @@ export function ReservationsPage() {
               return (
                 <li
                   key={`${r.site}:${r.programId}`}
-                  className="relative flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5 hover:bg-muted/50"
+                  className="relative flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5 hover:bg-muted/40"
                 >
                   {/* 行本体のリンクは絶対配置で行全体を覆う「面」にし、通常フローから
                       外す（`position: relative` を li に置いて containing block に

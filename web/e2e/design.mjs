@@ -293,14 +293,14 @@ const searchNoteOverage = {
 }
 
 const recordings = [
-  { id: 11, site: SITE, source: 'rule', serviceName: 'NHK総合', channelType: 'GR', channel: '27', networkId: 32736, serviceId: 1024, eventId: 11, title: 'ニュース７', startAt: iso(nowMs - 600_000), durationMs: 1_800_000, status: 'recording', createdAt: iso(nowMs - 600_000), startedAt: iso(nowMs - 600_000) },
+  { id: 11, site: SITE, source: 'rule', serviceName: 'NHK総合', channelType: 'GR', channel: '27', networkId: 32736, serviceId: 1024, eventId: 11, title: 'ニュース７', startAt: iso(nowMs - 600_000), durationMs: 1_800_000, status: 'recording', keepOriginal: 'always', createdAt: iso(nowMs - 600_000), startedAt: iso(nowMs - 600_000) },
   // encodedAssets を持たせて詳細ページ（/recordings/$id）で <video> が実ブラウザで
   // 出ることを撮る（キーボード到達性の判定 ⑤）。`encodedProfiles`（非推奨の後方
   // 互換フィールド）だけでは `RecordingPlayer` が <video> を出さない
   // （`encodedAssets` を見るため）ので両方持たせる。
-  { id: 12, site: SITE, source: 'manual', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', channel: 'BS15_0', networkId: 4, serviceId: 101, eventId: 12, title: 'クラシック音楽館', startAt: iso(nowMs - 26 * HOUR), durationMs: 5_400_000, status: 'finished', sizeBytes: 8_123_456_789, createdAt: iso(nowMs - 26 * HOUR), dropSummary: { packets: 1_500_000, drops: 12, errors: 0, scrambled: 3 }, encodedAssets: [{ profile: 'hevc-1080p', sizeBytes: 2_345_678_901 }] },
-  { id: 13, site: SITE, source: 'rule', serviceName: 'テレビ大阪', channelType: 'GR', channel: '18', networkId: 32738, serviceId: 1040, eventId: 13, title: 'アニメ劇場', startAt: iso(nowMs - 50 * HOUR), durationMs: 1_800_000, status: 'failed', createdAt: iso(nowMs - 50 * HOUR) },
-  { id: 14, site: SITE, source: 'rule', serviceName: 'NHKEテレ', channelType: 'GR', channel: '26', networkId: 32737, serviceId: 1032, eventId: 14, title: '連続テレビ小説', startAt: iso(nowMs - 74 * HOUR), durationMs: 900_000, status: 'finished', sizeBytes: 1_234_567_890, createdAt: iso(nowMs - 74 * HOUR) },
+  { id: 12, site: SITE, source: 'manual', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', channel: 'BS15_0', networkId: 4, serviceId: 101, eventId: 12, title: 'クラシック音楽館', startAt: iso(nowMs - 26 * HOUR), durationMs: 5_400_000, status: 'finished', keepOriginal: 'always', sizeBytes: 8_123_456_789, createdAt: iso(nowMs - 26 * HOUR), dropSummary: { packets: 1_500_000, drops: 12, errors: 0, scrambled: 3 }, encodedAssets: [{ profile: 'hevc-1080p', sizeBytes: 2_345_678_901 }] },
+  { id: 13, site: SITE, source: 'rule', serviceName: 'テレビ大阪', channelType: 'GR', channel: '18', networkId: 32738, serviceId: 1040, eventId: 13, title: 'アニメ劇場', startAt: iso(nowMs - 50 * HOUR), durationMs: 1_800_000, status: 'failed', keepOriginal: 'always', createdAt: iso(nowMs - 50 * HOUR) },
+  { id: 14, site: SITE, source: 'rule', serviceName: 'NHKEテレ', channelType: 'GR', channel: '26', networkId: 32737, serviceId: 1032, eventId: 14, title: '連続テレビ小説', startAt: iso(nowMs - 74 * HOUR), durationMs: 900_000, status: 'finished', keepOriginal: 'always', sizeBytes: 1_234_567_890, createdAt: iso(nowMs - 74 * HOUR) },
 ]
 
 /**
@@ -325,6 +325,7 @@ const transferringRecording = {
   startAt: iso(nowMs - 10 * HOUR),
   durationMs: 1_800_000,
   status: 'finished',
+  keepOriginal: 'always',
   createdAt: iso(nowMs - 10 * HOUR),
   ingest: {
     state: 'transferring',
@@ -644,9 +645,9 @@ const screens = [
   { name: 'reservations', path: '/reservations', wait: 'text=チューナー不足' },
   { name: 'recordings', path: '/recordings', wait: 'text=録画中' },
   { name: 'rules', path: '/rules', wait: 'text=朝ドラ' },
-  // 検索は初期状態で結果を持たないので、フォームが立ち上がったことを目印にする
-  // （何も待たないと、クエリが解決する前の空のフォームを撮ってしまう）
-  { name: 'search', path: '/search', wait: 'text=チャンネル' },
+  // 検索は初期状態で結果を持たないので、常時表示のフォーム見出しを目印にする
+  // （詳細条件は初期状態で折りたたまれており、「チャンネル」は待機目印にならない）
+  { name: 'search', path: '/search', wait: 'text=テキスト条件' },
   { name: 'live', path: '/live', wait: 'text=NHK総合' },
 ]
 
@@ -1419,30 +1420,6 @@ const minTextContrast = 4.5
 /** 面・線（非テキスト）に要求する WCAG 比。 */
 const minUiContrast = 3
 
-/**
- * 下限を満たさないと分かっていて、いま直さないと決めた組み合わせ。
- *
- * **黙って下限を下げない。** ここに載せたものは合否には数えないが、必ず
- * 「既知の不足」として出力する（CLAUDE.md の「no silent caps」に相当）。
- * 空にできたらこの仕組みごと消す。
- */
-const knownGaps = new Map([
-  [
-    'light/失敗バッジの文字 / destructive の淡い地',
-    'destructive は shadcn 既定のまま（この PR の対象外）。' +
-      '明度を下げるとタリーレッドと見分けが付かなくなるので、直すなら色相ごと動かす判断が要る' +
-      '（実測値は上の表に出る。ここには書かない --- 2 通りの数字を持たないため）',
-  ],
-  [
-    'light/一覧の行の hover 中の副情報の文字 / muted の半透明地',
-    'hover 中だけの組み合わせで Lighthouse の監査対象に入らない（常時見える面は下限を満たす）。' +
-      '直すには一覧の行の副情報の文字色を 4 画面（録画・予約・ホーム・番組リスト）で' +
-      '一斉に上げることになり、常時表示の階層（本文 = foreground / 副情報 = muted）が ' +
-      'hover のあいだ崩れる。どちらを取るかは別で決める --- 割っている量は僅かなので、' +
-      'ここに載せて見えるようにしたうえで据え置く（実測値は上の表に出る）',
-  ],
-])
-
 /** contrasts は測ったコントラストを表として溜める（合否とは別に、数値を人に見せる）。 */
 const contrasts = []
 function checkContrast(theme, label, fg, measured, floor) {
@@ -1453,9 +1430,8 @@ function checkContrast(theme, label, fg, measured, floor) {
   }
   const bg = measured.backdrop
   const ratio = contrast(fg, bg)
-  const gap = knownGaps.get(`${theme}/${label}`)
-  contrasts.push({ theme, label, ratio, floor, gap })
-  if (ratio < floor && gap === undefined) {
+  contrasts.push({ theme, label, ratio, floor })
+  if (ratio < floor) {
     ng.push(`[${theme}] ${label} のコントラストが ${ratio.toFixed(2)}（下限 ${floor}）`)
   }
   return ratio
@@ -1638,15 +1614,14 @@ for (const theme of themes) {
     await context.close()
   }
 
-  // --- 録画一覧: 行の hover 中の副情報（`hover:bg-muted/50` + `text-muted-foreground`） ---
+  // --- 録画一覧: 行の hover 中の副情報（`hover:bg-muted/40` + `text-muted-foreground`） ---
   //
-  // 一覧の行は hover で `bg-muted/50` を敷き、その上に副情報（放送局名・日時・尺）が
+  // 一覧の行は hover で `bg-muted/40` を敷き、その上に副情報（放送局名・日時・尺）が
   // `text-muted-foreground` のまま乗る。**Lighthouse は hover を測らない**ので
   // 監査には出ないが、`bg-muted` + `text-muted-foreground` と同族の組み合わせで
-  // あることは変わらないので、下限を割るかどうかは推測せず実測する（割っている。
-  // 直さない判断は `knownGaps` に理由付きで載せてある）。同じ組み方は予約一覧・
-  // ホーム・番組リストの行にもあるが、地・文字のトークンと不透明度が同一なので
-  // 代表として録画一覧の行で 1 回測る。
+  // あることは変わらないので、下限を割るかどうかは推測せず実測する。同じ組み方は
+  // 予約一覧・ホーム・番組リストの行にもあるが、地・文字のトークンと不透明度が
+  // 同一なので代表として録画一覧の行で 1 回測る。
   {
     const { context, page } = await open(desktop, theme, screenOf('recordings'))
     const row = page.locator('li').filter({ hasText: 'クラシック音楽館' }).first()
@@ -3115,21 +3090,9 @@ for (const reducedMotion of ['reduce', 'no-preference']) {
 // 数値は docs に転記しない（転記した瞬間に二重管理になる）。docs は
 // 「ここで測る」とだけ言い、実際の数値はこの出力が権威。
 log('\n=== 測ったコントラスト ===')
-for (const { theme, label, ratio, floor, gap } of contrasts) {
-  const mark = ratio >= floor ? ' ' : gap !== undefined ? '△' : '×'
+for (const { theme, label, ratio, floor } of contrasts) {
+  const mark = ratio >= floor ? ' ' : '×'
   log(`  ${mark} [${theme}] ${label}: ${ratio.toFixed(2)}（下限 ${floor}）`)
-}
-const gaps = contrasts.filter((c) => c.ratio < c.floor && c.gap !== undefined)
-if (gaps.length > 0) {
-  log('\n  既知の不足（合否には数えていない）:')
-  for (const { theme, label, gap } of gaps) log(`    △ [${theme}] ${label} --- ${gap}`)
-}
-// 下限を満たすようになった gap は畳めるので、そのことも言う。
-// 言わないと knownGaps が「一度入れたら誰も見ない置き場」になる
-const stale = contrasts.filter((c) => c.ratio >= c.floor && c.gap !== undefined)
-for (const { theme, label, ratio } of stale) {
-  log(`\n  knownGaps に載っているが下限を満たしている（${ratio.toFixed(2)}）: [${theme}] ${label}`)
-  log('    → knownGaps から消せる')
 }
 
 await finish(ng, browser)

@@ -671,7 +671,7 @@ function RecordingRow({
         // base の gap は list 分岐に持たせる。card 分岐の gap-2 と両方 base に
         // 置くと twMerge が常に後勝ち（gap-2）で解決し、base の gap-3 は
         // list でも死にクラスになる（レビュー指摘）。
-        'relative hover:bg-muted/50',
+        'relative hover:bg-muted/40',
         card
           ? 'flex h-full flex-col gap-2 rounded border border-border p-2'
           : 'flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5',

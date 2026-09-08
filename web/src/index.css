@@ -127,7 +127,10 @@
     --muted-foreground: var(--scanline);
     --accent: var(--tone-100);
     --accent-foreground: var(--sumi);
-    --destructive: oklch(0.577 0.245 27.325);
+    /* タリー（hue 27）の塗りと区別できるよう色相をずらし、
+       `bg-destructive/10` の合成面でも AA を満たす値にする。失敗は文字 + 淡い地、
+       録画中は塗り + 紙白の文字という形の差も維持する（design.md「色は信号のみ」）。 */
+    --destructive: oklch(0.54 0.2 10);
     --tally: oklch(0.56 0.215 27);
     --tally-foreground: var(--paper);
     /* 琥珀は「文字 + 淡い地（bg-warning/10）」で使うので、地ではなくその淡い地の上で

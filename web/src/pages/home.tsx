@@ -404,7 +404,7 @@ function RecordingRow({ recording }: { recording: Recording }) {
       <Link
         to="/recordings/$id"
         params={{ id: String(recording.id) }}
-        className="flex min-h-14 flex-col justify-center gap-0.5 px-4 py-2.5 hover:bg-muted/50"
+        className="flex min-h-14 flex-col justify-center gap-0.5 px-4 py-2.5 hover:bg-muted/40"
       >
         <span className="truncate text-base">{recording.title || '（番組名なし）'}</span>
         <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
@@ -433,7 +433,7 @@ function ReservationRow({ reservation }: { reservation: Reservation }) {
       <Link
         to="/reservations/$site/$programId"
         params={{ site: reservation.site, programId: String(reservation.programId) }}
-        className="flex min-h-14 flex-col justify-center gap-0.5 px-4 py-2.5 hover:bg-muted/50"
+        className="flex min-h-14 flex-col justify-center gap-0.5 px-4 py-2.5 hover:bg-muted/40"
       >
         <span className="truncate text-base">{reservation.title || '（番組名なし）'}</span>
         <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
