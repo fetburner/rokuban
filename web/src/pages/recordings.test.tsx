@@ -118,6 +118,19 @@ describe('DropStatsTable', () => {
 
     expect(await screen.findByText('214 件中 1 件を表示')).toBeInTheDocument()
   })
+
+  it('この機能より前に ingest された録画は位置が 0 件でも「N 件中 0 件」を出さない', async () => {
+    renderTable([
+      {
+        ...stat(0x100, 'video'),
+        drops: 214,
+        positions: [],
+      },
+    ])
+
+    expect(await screen.findByText('位置は未採取')).toBeInTheDocument()
+    expect(screen.queryByText(/件中/)).not.toBeInTheDocument()
+  })
 })
 
 const sampleRecording = (overrides: Partial<Recording> = {}): Recording => ({
