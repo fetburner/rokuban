@@ -401,7 +401,177 @@ async function addKeyword(value: string, mode: '正規表現' | 'キーワード
   await userEvent.type(await screen.findByLabelText('テキスト条件 1 の値'), value)
 }
 
+/**
+ * 検索画面の詳細条件をテストで操作するときだけ開く。検索画面の初期状態は
+ * 折りたたみなので、サービス・ジャンル・時間帯などを触る既存テストはこの
+ * ヘルパーを通してから要素を探す。
+ *
+ * **開いている状態を先に見て、開いていれば何もしない。** トグルのアクセシブル
+ * 名は開閉で変わる（閉: `詳細条件を表示` / 開: `詳細条件を閉じる`）ため、閉じた
+ * 名前だけで `findByRole` すると、既に開いている状態では見つからずタイムアウト
+ * する（＝冪等ガードとして機能していなかった。レビュー指摘）。両方の名前に
+ * 当たる 1 つの問い合わせにしてから状態を見る。
+ *
+ * 名前は正規表現で引く。件数（issue #685）が入ると閉じた名前は
+ * `詳細条件を表示（2件）` のように変わるため、完全一致だと件数付きの状態を
+ * 見失う。
+ */
+async function openSearchDetails() {
+  const toggle = await screen.findByRole('button', { name: /^詳細条件を(表示|閉じる)/ })
+  if (toggle.getAttribute('aria-expanded') !== 'true') await userEvent.click(toggle)
+}
+
+async function waitForServiceChip() {
+  await openSearchDetails()
+  return screen.findByRole('button', { name: 'NHK総合' })
+}
+
 describe('SearchPage', () => {
+  it('検索画面では復元した詳細条件も初期は閉じ、要約から開いて編集できる', async () => {
+    const condition = {
+      textMatches: [{ target: 'name', mode: 'keyword', value: 'ニュース' }],
+      genres: [0],
+      services: [{ networkId: 32736, serviceId: 1024 }],
+    }
+    const { searchBodies } = stubApi()
+    renderPage([`/search?cond=${encodeURIComponent(JSON.stringify(condition))}`])
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    // アクセシブル名は可視テキストと同じで件数を含む（issue #685 のレビュー
+    // 指摘: WCAG 2.5.3 Label in Name。アクセシブル名専用の別文言は持たない）。
+    const toggle = screen.getByRole('button', { name: '詳細条件を表示（2件）' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByText('設定中の詳細条件: 2件')).toBeInTheDocument()
+    expect(screen.getByText('ジャンル: ニュース・報道')).toBeInTheDocument()
+    expect(screen.getByText('チャンネル: NHK総合')).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'ジャンル' })).not.toBeInTheDocument()
+
+    await userEvent.click(toggle)
+    expect(screen.getByRole('group', { name: 'ジャンル' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '詳細条件を閉じる' }))
+    expect(screen.getByRole('button', { name: '詳細条件を表示（2件）' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: 'ジャンルの条件を解除' }))
+    expect(screen.getByText('設定中の詳細条件: 1件')).toBeInTheDocument()
+    expect(screen.queryByText('ジャンル: ニュース・報道')).not.toBeInTheDocument()
+    // 要約から解除しても自動検索はせず、主操作を押した時だけ下書きを反映する。
+    expect(searchBodies).toHaveLength(1)
+  })
+
+  it('localStorage から復元した詳細条件も初期は閉じている', async () => {
+    localStorage.setItem(
+      'rokuban:search:last',
+      JSON.stringify({ genres: [3], services: [{ networkId: 32736, serviceId: 1024 }] }),
+    )
+    stubApi()
+    renderPage()
+
+    expect(await screen.findByRole('button', { name: '詳細条件を表示（2件）' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+    expect(screen.getByText('設定中の詳細条件: 2件')).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'チャンネル' })).not.toBeInTheDocument()
+  })
+
+  it('閉じた詳細条件の検証エラーがあると自動で展開する', async () => {
+    const condition = {
+      times: [{ weekdays: 0, startSec: 0, endSec: 0 }],
+    }
+    stubApi()
+    renderPage([`/search?cond=${encodeURIComponent(JSON.stringify(condition))}`])
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '時間帯には曜日を 1 つ以上選んでください',
+    )
+    expect(screen.getByRole('button', { name: '詳細条件を閉じる' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    expect(screen.getByRole('group', { name: '時間帯 1 の曜日' })).toBeInTheDocument()
+  })
+
+  /**
+   * issue #685 のレビュー指摘: `draftError` の第 1 分岐（テキスト条件の値が
+   * 空）は `TextMatchFields` --- `ConditionFields` の折りたたみの**外**にある
+   * 節 --- のエラーなので、これだけを理由に詳細条件（折りたたみの中）を開くのは
+   * 「エラーの起きた欄が見える位置へ開く」という自動展開の目的と噛み合わない。
+   *
+   * 1 行目に値を入れてから「条件を追加」を押すと 2 行目が空のまま増え、
+   * `draftError` はテキスト条件のエラーを返す（`draftCollapsedError` は
+   * これを理由に含めない）。詳細条件は閉じたままであること。
+   */
+  it('折りたたみの外（テキスト条件）のエラーでは自動展開しない', async () => {
+    stubApi()
+    renderPage()
+
+    await addKeyword('ニュース')
+    expect(screen.getByRole('button', { name: '詳細条件を表示' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: '条件を追加' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'テキスト条件の値を入力してください',
+    )
+    expect(screen.getByRole('button', { name: '詳細条件を表示' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+  })
+
+  /**
+   * 折りたたみの中（時間帯）のエラーは従来どおり自動展開する。**テキスト条件を
+   * 空にしない**（値を入れておく） --- 空だと `draftError` はテキスト条件の
+   * エラーを優先して返し（早期 return の連鎖）、時間帯のエラーがマスクされる
+   * ため、この状況では「テキスト条件が原因で開いていないだけ」と区別が付かず、
+   * 折りたたみの中のエラーを正しく検出できているかを主張できない。
+   */
+  it('折りたたみの中（時間帯の曜日）のエラーでは自動展開する（テキスト条件は空でない）', async () => {
+    const condition = {
+      textMatches: [{ target: 'name', mode: 'keyword', value: 'ニュース' }],
+      times: [{ weekdays: 0, startSec: 0, endSec: 0 }],
+    }
+    stubApi()
+    renderPage([`/search?cond=${encodeURIComponent(JSON.stringify(condition))}`])
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '時間帯には曜日を 1 つ以上選んでください',
+    )
+    expect(screen.getByRole('button', { name: '詳細条件を閉じる' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    expect(screen.getByRole('group', { name: '時間帯 1 の曜日' })).toBeInTheDocument()
+  })
+
+  /**
+   * `openSearchDetails`（上の helper）は既に開いていれば何もしない冪等ガードの
+   * はずだった。閉じた名前（`詳細条件を表示`）だけで `findByRole` していたため、
+   * 既に開いている状態では見つからずタイムアウトしていた（レビュー指摘）。
+   * 2 回連続で呼んでも 1 回目で開いたまま変わらないことを確認する。
+   */
+  it('openSearchDetails は既に開いていれば何もしない（冪等）', async () => {
+    stubApi()
+    renderPage()
+
+    await openSearchDetails()
+    expect(screen.getByRole('button', { name: '詳細条件を閉じる' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+    await openSearchDetails()
+    expect(screen.getByRole('button', { name: '詳細条件を閉じる' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+  })
+
   it('site レジストリ取得中は検索を無効化して理由を表示する', async () => {
     stubApi({ holdSites: true })
     renderPage()
@@ -443,7 +613,7 @@ describe('SearchPage', () => {
     const { searchBodies } = stubApi()
     renderPage()
 
-    const serviceChip = await screen.findByRole('button', { name: 'NHK総合' })
+    const serviceChip = await waitForServiceChip()
     // 「条件を追加」を押さずに、常時出ているはずの 1 行目を直接見つけて打つ。
     const textInput = screen.getByLabelText('テキスト条件 1 の値')
 
@@ -504,6 +674,7 @@ describe('SearchPage', () => {
     stubApi()
     renderPage()
 
+    await openSearchDetails()
     const serviceGroup = await screen.findByRole('group', { name: 'チャンネル' })
     // 同期節の最初と最後。サービスはこの両方より後ろでなければならない。
     const channelTypeHeading = screen.getByRole('heading', { name: 'チャンネル種別' })
@@ -539,7 +710,7 @@ describe('SearchPage', () => {
 
     try {
       renderPage()
-      await screen.findByRole('button', { name: 'NHK総合' })
+      await waitForServiceChip()
 
       const results = screen.getByRole('region', { name: '検索結果' })
       // 描画だけでは動かさない（押していないのにスクロールが起きるのは別の欠陥）
@@ -593,7 +764,7 @@ describe('SearchPage', () => {
     stubApi()
     renderPage()
 
-    await screen.findByRole('button', { name: 'NHK総合' })
+    await waitForServiceChip()
 
     expect(screen.queryByRole('button', { name: '条件を追加' })).not.toBeInTheDocument()
     expect(
@@ -613,7 +784,7 @@ describe('SearchPage', () => {
     stubApi()
     renderPage()
 
-    await screen.findByRole('button', { name: 'NHK総合' })
+    await waitForServiceChip()
 
     // 実体化前: 見かけ上の行は 1 本、削除ボタンは無い
     expect(screen.getAllByLabelText(/^テキスト条件 \d+ の値$/)).toHaveLength(1)
@@ -643,7 +814,7 @@ describe('SearchPage', () => {
     const user = userEvent.setup()
     renderPage()
 
-    await screen.findByRole('button', { name: 'NHK総合' })
+    await waitForServiceChip()
     const input = screen.getByLabelText('テキスト条件 1 の値')
     await user.type(input, 'ニュース')
     expect(screen.getByRole('button', { name: '検索' })).not.toBeDisabled()
@@ -664,7 +835,7 @@ describe('SearchPage', () => {
     const user = userEvent.setup()
     renderPage()
 
-    await screen.findByRole('button', { name: 'NHK総合' })
+    await waitForServiceChip()
     const searchButton = screen.getByRole('button', { name: '検索' })
 
     await user.click(screen.getByRole('button', { name: '除外' }))
@@ -687,7 +858,7 @@ describe('SearchPage', () => {
     const user = userEvent.setup()
     renderPage()
 
-    await screen.findByRole('button', { name: 'NHK総合' })
+    await waitForServiceChip()
     await user.click(screen.getByRole('button', { name: '除外' }))
     await user.type(screen.getByLabelText('テキスト条件 1 の値'), 'ニュース')
     await user.click(screen.getByRole('button', { name: '検索' }))
@@ -703,7 +874,7 @@ describe('SearchPage', () => {
     const user = userEvent.setup()
     renderPage()
 
-    await screen.findByRole('button', { name: 'NHK総合' })
+    await waitForServiceChip()
     await user.type(screen.getByLabelText('テキスト条件 1 の値'), 'ニュース')
     await user.click(screen.getByRole('button', { name: '条件を追加' }))
     await user.type(screen.getByLabelText('テキスト条件 2 の値'), 'ドラマ')
@@ -724,7 +895,7 @@ describe('SearchPage', () => {
 
     // サービスの取得を待ってから見る（待たずに見ると、まだ何も描かれていない
     // 状態を「案内が出ている」と読み違えうる）
-    expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+    expect(await waitForServiceChip()).toBeInTheDocument()
     expect(screen.getByText('条件を指定して検索してください')).toBeInTheDocument()
     expect(screen.queryByText('条件に一致する番組がありません')).not.toBeInTheDocument()
 
@@ -772,7 +943,8 @@ describe('SearchPage', () => {
     renderPage()
 
     // サービスチップはサービス一覧が届いてから出る
-    await userEvent.click(await screen.findByRole('button', { name: 'NHKEテレ' }))
+    await waitForServiceChip()
+    await userEvent.click(screen.getByRole('button', { name: 'NHKEテレ' }))
     await userEvent.click(screen.getByRole('button', { name: 'ドラマ' }))
     await userEvent.click(screen.getByRole('button', { name: '無料のみ' }))
     await userEvent.click(screen.getByRole('button', { name: '検索' }))
@@ -819,7 +991,7 @@ describe('SearchPage', () => {
     const { searchBodies } = stubApi()
     renderPage()
 
-    expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+    expect(await waitForServiceChip()).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '時間帯を追加' }))
 
     const weekdays = screen.getByRole('group', { name: '時間帯 1 の曜日' })
@@ -859,7 +1031,7 @@ describe('SearchPage', () => {
     stubApi()
     renderPage()
 
-    expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+    expect(await waitForServiceChip()).toBeInTheDocument()
     // 条件なしの検索は「全番組」という正しい問い。止めない
     await userEvent.click(screen.getByRole('button', { name: '検索' }))
 
@@ -910,7 +1082,7 @@ describe('SearchPage', () => {
       stubApi()
       renderPage()
 
-      expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+      expect(await waitForServiceChip()).toBeInTheDocument()
       expect(
         screen.getByText(
           '検索すると、この条件で保存した場合の週あたりの見込み（件数・録画時間）が表示されます',
@@ -951,7 +1123,7 @@ describe('SearchPage', () => {
       const { programDetailRequests } = stubApi()
       renderPage()
 
-      expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+      expect(await waitForServiceChip()).toBeInTheDocument()
       // 条件なしの検索で 37 件（pageSize=30 を超える）に当てる
       await userEvent.click(screen.getByRole('button', { name: '検索' }))
 
@@ -1169,7 +1341,7 @@ describe('SearchPage', () => {
       stubApi({ overages: [overage] })
       renderPage()
 
-      expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+      expect(await waitForServiceChip()).toBeInTheDocument()
       // 条件なしの検索で 37 件（pageSize=30 を超える）に当てる
       await userEvent.click(screen.getByRole('button', { name: '検索' }))
 
@@ -1186,7 +1358,7 @@ describe('SearchPage', () => {
       })
       renderPage()
 
-      expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+      expect(await waitForServiceChip()).toBeInTheDocument()
       // 条件なしの検索で 37 件（pageSize=30 を超える）に当てる。詳細は保留
       // されるので、この時点ではまだ 1 件も届いていない。
       await userEvent.click(screen.getByRole('button', { name: '検索' }))
@@ -1309,7 +1481,7 @@ describe('SearchPage', () => {
       const { createRuleBodies } = stubApi()
       renderPage()
 
-      expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+      expect(await waitForServiceChip()).toBeInTheDocument()
 
       await addKeyword('ニュース')
       await userEvent.click(screen.getByRole('button', { name: 'ドラマ' }))
@@ -1345,7 +1517,7 @@ describe('SearchPage', () => {
       stubApi()
       renderPage()
 
-      expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+      expect(await waitForServiceChip()).toBeInTheDocument()
       await addKeyword('ニュース')
       fireEvent.change(screen.getByLabelText('開始日時'), {
         target: { value: '2026-08-12T21:00' },
@@ -1361,7 +1533,7 @@ describe('SearchPage', () => {
       stubApi()
       renderPage()
 
-      expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+      expect(await waitForServiceChip()).toBeInTheDocument()
       await addKeyword('ニュース')
       await userEvent.click(screen.getByRole('button', { name: 'この条件でルールを作成' }))
 
@@ -1376,7 +1548,7 @@ describe('SearchPage', () => {
       const { createRuleBodies } = stubApi()
       renderPage()
 
-      expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+      expect(await waitForServiceChip()).toBeInTheDocument()
       // 条件を何も足さずに開く（emptyDraft は draftError を持たないのでボタンは押せる）
       await userEvent.click(screen.getByRole('button', { name: 'この条件でルールを作成' }))
       await userEvent.type(screen.getByLabelText('名前'), 'なんでも')
@@ -1411,7 +1583,7 @@ describe('SearchPage', () => {
       const { createRuleBodies } = stubApi({ sites: ['default', 'site2'] })
       renderPage()
 
-      expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+      expect(await waitForServiceChip()).toBeInTheDocument()
       const group = screen.getByRole('group', { name: 'サイト' })
       await userEvent.click(within(group).getByRole('button', { name: 'site2' }))
 
@@ -1512,6 +1684,7 @@ describe('SearchPage', () => {
 
       expect(await screen.findByText('ニュース7')).toBeInTheDocument()
 
+      await openSearchDetails()
       const group = await screen.findByRole('group', { name: 'サイト' })
       const defaultChip = within(group).getByRole('button', { name: 'default' })
       const site2Chip = within(group).getByRole('button', { name: 'site2' })
@@ -1711,6 +1884,7 @@ describe('複数サイトの検索結果（issue #531）', () => {
 
     // ルーターの初回マッチ解決とサービス一覧の取得を待ってから押す
     // （default だけが持つ「局A」チップが出れば両方済んでいる）。
+    await openSearchDetails()
     await screen.findByRole('button', { name: '局A' })
     await userEvent.click(screen.getByRole('button', { name: '検索' }))
 
@@ -1741,6 +1915,7 @@ describe('複数サイトの検索結果（issue #531）', () => {
     stubMultiSiteApi()
     renderPage()
 
+    await openSearchDetails()
     await screen.findByRole('button', { name: '局A' })
     await userEvent.click(screen.getByRole('button', { name: '検索' }))
     await screen.findByText('ニュース（default）')
@@ -1810,7 +1985,7 @@ describe('SearchPage の条件の復元', () => {
     expect(await screen.findByLabelText('テキスト条件 1 の値')).toHaveValue('ニュース')
     // 「まだ検索していない」を非同期の空虚な成功にしないため、実際に飛ぶ
     // 問い合わせ（サービス一覧）が解決するまで待ってから 0 件を主張する。
-    expect(await screen.findByRole('button', { name: 'NHK総合' })).toBeInTheDocument()
+    expect(await waitForServiceChip()).toBeInTheDocument()
     expect(searchBodies).toEqual([])
     expect(screen.queryByText('ニュース7')).not.toBeInTheDocument()
   })

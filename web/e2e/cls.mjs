@@ -25,7 +25,15 @@
 // に近づけるため、地上波 + BS + CS 相当の 24 局を用意する --- 2 局だけの
 // `search-mobile.mjs` のフィクスチャではチップが 1 行に収まってしまい、直す前の
 // 実装でも再現しない。**直す前の `condition-fields.tsx`（`ServiceFields` が
-// `TextMatchFields` の直後）では①が 0.165、②が 0.033 で、①が実際に落ちる。**
+// `TextMatchFields` の直後）では①が 0.257、②が 0.039 で、①が実際に落ちる。**
+// 直した後（現在の並び）は①が 0.024、②が 0.014。
+//
+// **`NETWORK_DELAY_MS` は 500ms より確実に大きくすること**（下の定義のコメント
+// 参照）。Chrome はクリック等の離散入力から 500ms 以内の layout-shift を
+// `hadRecentInput: true` にして `installClsObserver` の合計から除くため、遅延が
+// 短いとサービス一覧が届いたときのシフトが毎回この入力窓に収まって除外され、
+// 残留ノイズしか測れなくなる（レビュー指摘。旧 400ms では①の実測が
+// 0.00066 → 0.000008 まで落ち、上記の変異検出が効かなくなっていた）。
 //
 // **ホーム（`/`）はここでは CLS を測らない。** ラボ計測はホームのデスクトップで
 // 0.111（スロットル時のみ。LAN では 0）を報告するが、その原因（4 セクションの
@@ -47,8 +55,19 @@ import { finish, installApiStubs, launchBrowser, log, verifyBundleMatchesOrExit 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:4173'
 const SITE = 'default'
 const CLS_THRESHOLD = 0.1
-/** サービス一覧の GET に足す遅延（ms）。Lighthouse のスロットル下の RTT を模す。 */
-const NETWORK_DELAY_MS = 400
+/**
+ * サービス一覧の GET に足す遅延（ms）。Lighthouse のスロットル下の RTT を模す。
+ *
+ * **500ms より確実に大きくすること。** Chrome は離散入力（クリック・タップ・
+ * キー入力）から 500ms 以内に起きた layout-shift を全部 `hadRecentInput: true`
+ * にし、`installClsObserver` はそれを合計から除く。`measureSearch` は
+ * 「詳細条件を表示」をクリックしてから遅延後にサービス一覧が届くため、遅延が
+ * 500ms 未満だと届いたときのシフトがクリックの入力窓に収まって毎回除外され、
+ * ここで測っているのは残留ノイズだけになる（レビュー指摘。以前は 400ms で、
+ * README の実測値が①0.00066 → 0.000008 まで落ちて変異検出が効かなくなって
+ * いた）。
+ */
+const NETWORK_DELAY_MS = 1500
 
 const ng = []
 
@@ -124,6 +143,10 @@ async function measureSearch(viewport) {
   })
 
   await page.goto(URL_BASE + '/search', { waitUntil: 'domcontentloaded' })
+  // issue #685 で検索画面の詳細条件は初期状態が閉じている。ここでは、折りたたみ
+  // のままなら隠れているサービス節を明示的に開き、サービス一覧の非同期取得が
+  // 詳細フォームを押す従来の CLS シナリオを維持する。
+  await page.getByRole('button', { name: '詳細条件を表示', exact: true }).click()
   // サービス一覧が届いて再レイアウトが収まるまで待つ。
   await page.getByRole('button', { name: 'テスト局1', exact: true }).waitFor({ timeout: 15000 })
   await page.waitForTimeout(500)

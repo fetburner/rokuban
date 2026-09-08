@@ -2,22 +2,21 @@
 //
 // jsdom は `getBoundingClientRect()` が常に 0 を返し、レイアウト・可視性・
 // スクロール位置を測れない（web/e2e/README.md「jsdom が測れないもの」）。
-// 「390px 幅の初画面でボタンがボトムタブに隠れない」「テキスト条件の入力が
-// サービスチップより先に届く」はどちらも実レイアウトの上下関係そのものなので、
+// 「390px 幅の初画面でボタンがボトムタブに隠れない」「キーワード値が select の
+// 下に専用行で広がる」はどちらも実レイアウトの上下関係そのものなので、
 // ここでしか判定できない。
 //
 // 見るのは:
 //   ⓪ 前提条件 --- 配っている bundle が dist/ の現物と一致するか
 //      （badge-links.mjs / sse-refresh.mjs と同じ理由。web/e2e/README.md）
-//   ① 390px 幅で「検索」ボタンの矩形がビューポート内に収まり、モバイルの
+//   ① 360px / 390px 幅で「検索」ボタンの矩形がビューポート内に収まり、モバイルの
 //      ボトムタブ（`nav[aria-label="主ナビゲーション"].fixed`）と重なっていないこと
-//   ② テキスト条件 1 行目の値入力（`条件を追加` を押さなくても出ている。
-//      issue #305 の対処本体）が、初画面で「条件を追加」を押さずに直接
-//      見えており、サービスのチップ列より前（画面の上）にあること
-//   ③ 1280px（デスクトップ）でも同じ点を確認する --- issue 本文は
-//      「デスクトップではボタンは見えるが、キーワードは同じく一段奥」と
-//      言っており、②はデスクトップでも直す対象
-//   ④ 「検索」を押した後、その結果（件数行・結果 1 件目）が折り目の中に
+//   ② モバイルではテキスト条件 1 行目の対象・モードが同じ行にあり、値入力が
+//      その下の専用行をほぼ使うこと。現在の `w-28 shrink-0` 横並びへ戻す変異で
+//      失敗する（デスクトップは従来どおり一行レイアウトを確認する）
+//   ③ URL から復元した詳細条件が閉じたまま要約され、キーボードで開閉・
+//      日本語の入力修正・要約からの解除ができること
+//   ④ 1280px（デスクトップ）でも入力欄の存在と、「検索」を押した後の結果（件数行・結果 1 件目）が折り目の中に
 //      見えること。①②だけだと「押しても画面が変わらず、結果を見るために
 //      下までスクロールする」状態が緑で通る（レビューで実測）
 //
@@ -63,6 +62,11 @@ const services = [
     hasPrograms: true,
   },
 ]
+
+const restoredCondition = {
+  genres: [0],
+  services: [{ networkId: 32736, serviceId: 1024 }],
+}
 
 /**
  * matchedProgramIds は検索スタブが返す programId の集合（④で使う）。
@@ -170,10 +174,17 @@ async function checkViewport(viewport) {
   await installApiStubs(page, apiHandler)
   await page.goto(URL_BASE + '/search', { waitUntil: 'domcontentloaded' })
 
-  // サービスチップの描画を待つ（`useListServices` の解決後に出る）。ここで
-  // 待つのはレイアウトの安定を待つためで、以降は一切操作・スクロールしない。
-  await page.getByRole('button', { name: 'NHK総合' }).waitFor({ timeout: 15000 })
-  await page.waitForTimeout(200)
+  // 検索画面は詳細条件を初期状態で閉じるため、開閉ボタンの描画を待つ。ここで
+  // 待つのはレイアウトの安定を待つためで、以降は④まで操作・スクロールしない。
+  await page.getByRole('button', { name: '詳細条件を表示', exact: true }).waitFor({ timeout: 15000 })
+  // サイト一覧取得中は「検索」ボタンの直上に role=status の行が出る
+  // （`pages/search.tsx` の `registryPending`）。取得が終わるとこの行が DOM から
+  // 消え、ボタンがその分だけ上へ動く。固定 200ms 待ちだと、環境によってはこの
+  // 行がまだ残っている間に①の矩形を測ってしまい、レイアウト確定前の値を見る
+  // （レビュー指摘）。「消えた」ことそのものを待つ。
+  await page
+    .getByText('サイト一覧を取得中…')
+    .waitFor({ state: 'hidden', timeout: 15000 })
 
   const label = `${viewport.width}x${viewport.height}`
 
@@ -211,28 +222,62 @@ async function checkViewport(viewport) {
     }
   }
 
-  // --- ② テキスト条件の入力欄が「条件を追加」を押さずに見えており、
-  //        サービスチップ列より前に来る ---
+  // --- ② 対象・モードと値をモバイルで分け、値に専用行の幅を使う ---
   const textInput = page.getByLabel('テキスト条件 1 の値')
+  const textTarget = page.getByLabel('テキスト条件 1 の対象')
+  const textMode = page.getByLabel('テキスト条件 1 のモード')
   const textInputCount = await textInput.count()
-  if (textInputCount !== 1) {
+  const targetCount = await textTarget.count()
+  const modeCount = await textMode.count()
+  if (textInputCount !== 1 || targetCount !== 1 || modeCount !== 1) {
     ng.push(
-      `②@${label}: テキスト条件の入力欄が「条件を追加」を押さずには見えない` +
-        `（初画面に打つ場所が無い。見つかった数=${textInputCount}）`,
+      `②@${label}: テキスト条件の対象・モード・値が初画面に揃っていない` +
+        `（対象=${targetCount}, モード=${modeCount}, 値=${textInputCount}）`,
     )
   } else {
     const textBox = await textInput.boundingBox()
-    const chipBox = await page.getByRole('button', { name: 'NHK総合' }).boundingBox()
-    if (textBox === null || chipBox === null) {
-      ng.push(`②@${label}: テキスト条件欄またはサービスチップの矩形が取れない`)
+    const targetBox = await textTarget.boundingBox()
+    const modeBox = await textMode.boundingBox()
+    const formBox = await page.getByRole('form', { name: '検索条件' }).boundingBox()
+    if (textBox === null || targetBox === null || modeBox === null || formBox === null) {
+      ng.push(`②@${label}: テキスト条件または検索フォームの矩形が取れない`)
     } else {
+      const selectBottom = Math.max(targetBox.y + targetBox.height, modeBox.y + modeBox.height)
+      const formContentWidth = formBox.width - 32
       log(
-        `  ②@${label} テキスト条件欄 top=${Math.round(textBox.y)} / サービスチップ top=${Math.round(chipBox.y)}`,
+        `  ②@${label} 対象 top=${Math.round(targetBox.y)} / モード top=${Math.round(modeBox.y)}` +
+          ` / 値 top=${Math.round(textBox.y)} width=${Math.round(textBox.width)}` +
+          ` / フォーム内幅=${Math.round(formContentWidth)}`,
       )
-      if (textBox.y >= chipBox.y) {
+      if (viewport.width < 640 && textBox.y <= selectBottom) {
         ng.push(
-          `②@${label}: テキスト条件の入力欄（top=${textBox.y}）がサービスチップ列` +
-            `（top=${chipBox.y}）より後ろに来ている`,
+          `②@${label}: キーワード入力欄（top=${textBox.y}）が対象・モード行の下にない` +
+            `（select 行の下端=${selectBottom}）`,
+        )
+      }
+      if (viewport.width < 640 && Math.abs(targetBox.y - modeBox.y) > 1) {
+        ng.push(
+          `②@${label}: 対象とモードが同じ行にない（対象 top=${targetBox.y}, モード top=${modeBox.y}）`,
+        )
+      }
+      if (viewport.width < 640 && textBox.width < formContentWidth * 0.8) {
+        ng.push(
+          `②@${label}: キーワード入力欄が専用行の幅を使っていない` +
+            `（入力幅=${textBox.width}, フォーム内幅=${formContentWidth}）`,
+        )
+      }
+      // デスクトップ（640px 以上）は対象・モード・値が同じ行の従来レイアウト
+      // （`sm:flex-row`）のまま。モバイルの③つの assertion は全部 640px 未満に
+      // ガードされていたため、`sm:flex-row` を落とす変異（この分割が持ち込む
+      // 回帰そのもの）が全ビューポートで通ってしまっていた（レビュー指摘）。
+      // 対象・モード・値の top がほぼ一致する（= 同じ行にある）ことを見る。
+      if (
+        viewport.width >= 640 &&
+        (Math.abs(targetBox.y - modeBox.y) > 1 || Math.abs(targetBox.y - textBox.y) > 1)
+      ) {
+        ng.push(
+          `②@${label}: デスクトップで対象・モード・値が同じ行にない` +
+            `（対象 top=${targetBox.y}, モード top=${modeBox.y}, 値 top=${textBox.y}）`,
         )
       }
     }
@@ -330,8 +375,65 @@ async function checkSubmitFeedback(page, viewport, label) {
   }
 }
 
-log('\n=== ① ② ④ モバイル（390x844） ===')
+/** 復元した詳細条件の要約・開閉・キーボード入力を実ブラウザで確認する。 */
+async function checkRestoredDetails() {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } })
+  const page = await context.newPage()
+  await installApiStubs(page, apiHandler)
+  const cond = encodeURIComponent(JSON.stringify(restoredCondition))
+  await page.goto(`${URL_BASE}/search?cond=${cond}`, { waitUntil: 'domcontentloaded' })
+
+  const summary = page.getByTestId('detail-condition-summary')
+  await summary.getByText('設定中の詳細条件: 2件').waitFor({ timeout: 15000 })
+  // 件数（issue #685）が入るとアクセシブル名が `詳細条件を表示（2件）` になる
+  // （アクセシブル名は可視テキストと同じ。WCAG 2.5.3 Label in Name。この
+  // フィクスチャは常に条件 2 件なので厳密にはこの文字列でも当てられるが、
+  // `pages/search.test.tsx` / `condition-fields.test.tsx` と同じ規約（先頭一致）
+  // に揃える）。
+  const toggle = page.getByRole('button', { name: /^詳細条件を表示/ })
+  if ((await toggle.getAttribute('aria-expanded')) !== 'false') {
+    ng.push('③: URL から復元した詳細条件が初期状態で閉じていない')
+  }
+  if ((await page.getByRole('group', { name: 'チャンネル', exact: true }).count()) !== 0) {
+    ng.push('③: 閉じた詳細条件のチャンネル選択肢が画面に残っている')
+  }
+
+  await toggle.focus()
+  await page.keyboard.press('Enter')
+  const openToggle = page.getByRole('button', { name: '詳細条件を閉じる', exact: true })
+  if ((await openToggle.getAttribute('aria-expanded')) !== 'true') {
+    ng.push('③: キーボードの Enter で詳細条件を開けない')
+  }
+  await page.getByRole('group', { name: 'チャンネル', exact: true }).waitFor({ timeout: 15000 })
+
+  const input = page.getByLabel('テキスト条件 1 の値')
+  await input.fill('ニュース')
+  await input.press('End')
+  await input.press('Backspace')
+  await input.type('ス')
+  const value = await input.inputValue()
+  log(`  ③ 日本語の入力 → カーソル移動 → 削除 → 再入力: ${value}`)
+  if (value !== 'ニュース') ng.push(`③: 日本語の修正結果が不正（${value}）`)
+
+  await openToggle.click()
+  const closedToggle = page.getByRole('button', { name: /^詳細条件を表示/ })
+  if ((await closedToggle.getAttribute('aria-expanded')) !== 'false') {
+    ng.push('③: 詳細条件を再び閉じられない')
+  }
+  await summary.getByRole('button', { name: 'ジャンルの条件を解除' }).click()
+  if ((await summary.getByText('設定中の詳細条件: 1件').count()) === 0) {
+    ng.push('③: 要約からジャンルを解除しても件数が減らない')
+  }
+
+  await context.close()
+}
+
+log('\n=== ① ② ④ モバイル（360/390x844） ===')
+await checkViewport({ width: 360, height: 844 })
 await checkViewport({ width: 390, height: 844 })
+
+log('\n=== ③ 詳細条件の要約・キーボード操作（390x844） ===')
+await checkRestoredDetails()
 
 log('\n=== ③ デスクトップ（1280x900）でも②④を確認 ===')
 await checkViewport({ width: 1280, height: 900 })
