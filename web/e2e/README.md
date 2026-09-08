@@ -455,6 +455,19 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:programs-bottom-nav
 ```
 
+### 番組リストの空時間窓（`programs-empty-window.mjs`）
+
+番組 API が最初または途中の 6 時間窓を空で返しても、後続窓へ進む導線が消えない
+ことを 390px 幅の Chromium で見る。空窓を 2 回進め、後続取得の失敗後に同じ窓を
+手動再試行して番組へ到達すること、番組表示後の空窓で自動取得が連鎖しないこと、
+最終窓ではボタンと追加要求が消えることを判定する。通常の番組あり窓の日付移動と
+自動読み込みは `checks.mjs` が引き続き判定する。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:programs-empty-window
+```
+
 ### 検索の主操作がモバイル初画面に届くか（`search-mobile.mjs`）
 
 `/search` は条件フォームの大半をチップ列（サービス・チャンネル種別・ジャンル・

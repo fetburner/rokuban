@@ -269,6 +269,10 @@ export function ProgramsPage() {
     // グリッド表示中はリストの窓を追いかけない（同じ時間帯を 2 つの形で
     // 同時に取りに行かない）。戻ったときはキャッシュがそのまま出る。
     enabled: !showGrid && sites.length > 0,
+    // 失敗した後続窓を TanStack Query の既定リトライに任せると、空窓の末尾で
+    // 自動取得が再開し、利用者が同じ窓を手動で再試行する導線に到達できない。
+    // 初回窓の失敗も同じく画面の再試行ボタンで復旧させる。
+    retry: false,
     // 日付ジャンプで originMs（＝ queryKey）が変わると infinite query が
     // 作り直される。未キャッシュの日だと `isPending` が即 true になり、
     // 下の分岐で `ProgramList` が `ListSkeleton` に挿し替わって文書高さが
@@ -394,6 +398,31 @@ export function ProgramsPage() {
     () => filterProgramsFromListStart(programs, listStartMs, lowerBoundMs),
     [programs, listStartMs, lowerBoundMs],
   )
+
+  // 直近の時間窓が新しい表示行を追加したかを判定する。API は窓の境界に重なる
+  // 番組を返すので、最後の窓に値があっても、前の窓との重複だけなら表示行は増えて
+  // いない。また、ジャンプ先の窓より前に始まった番組は先頭から取り除くため、
+  // `lastPage.programs.length > 0` だけでは「空窓」を見落とす。
+  //
+  // 新しい表示行が無い窓に番兵を置くと、空窓の末尾が可視のまま自動読み込みが連鎖
+  // する。空窓では利用者が 6 時間ずつ進める導線に切り替える（docs/frontend/scroll.md）。
+  const latestWindowIsEmpty = useMemo(() => {
+    const pages = query.data?.pages
+    const lastPage = pages?.at(-1)
+    if (!pages || !lastPage) return false
+
+    const previousIdentities = new Set<string>()
+    for (const page of pages.slice(0, -1)) {
+      for (const program of page.programs) {
+        previousIdentities.add(programIdentity(program.site, program.programId))
+      }
+    }
+
+    return !lastPage.programs.some((program) => {
+      if (previousIdentities.has(programIdentity(program.site, program.programId))) return false
+      return filterProgramsFromListStart([program], listStartMs, lowerBoundMs).length > 0
+    })
+  }, [query.data, listStartMs, lowerBoundMs])
 
   // 絞り込む前の全サービスから作る。絞った側（filterableServices）から作ると、
   // hasPrograms が false の局の番組が来たとき（例えば選択直後にキャッシュが
@@ -533,14 +562,26 @@ export function ProgramsPage() {
 
   const sentinelRef = useRef<HTMLDivElement>(null)
 
-  // 番兵の <div> は一覧が実際に描かれたとき（!isPending && visiblePrograms.length
-  // > 0）にしか存在しない。データ取得が終わる前に IntersectionObserver を
+  // 番兵の <div> は一覧が実際に描かれ、直近の窓が新しい表示行を追加したとき
+  // （!isPending && !latestWindowIsEmpty && visiblePrograms.length > 0）にしか存在しない。
+  // 空窓の末尾を監視すると、自動読み込みが空窓を連鎖してしまうため、空窓では
+  // 「次の時間帯を見る」ボタンへ切り替える。データ取得が終わる前に
+  // IntersectionObserver を
   // 組み立てる effect（`[showGrid]` だけに依存する形）だと、初回マウント時点では
   // sentinelRef.current がまだ null で、以後 showGrid が変わらない限り
   // 二度と組み立て直されない ---
   // つまり自動読み込みが永遠に発火しない。番兵が実際に DOM にあるかどうかを
   // 明示的な依存にして、描画されたタイミングで確実に組み立て直す。
-  const sentinelMounted = !showGrid && !query.isPending && visiblePrograms.length > 0
+  const sentinelMounted =
+    !showGrid && !query.isPending && !latestWindowIsEmpty && visiblePrograms.length > 0
+  const autoLoadAvailable = domLayoutMeasurable()
+  const showLoadMoreButton =
+    (latestWindowIsEmpty && query.hasNextPage) ||
+    shouldShowLoadMoreButton({
+      hasNextPage: query.hasNextPage,
+      autoLoadAvailable,
+      autoLoadFailed,
+    })
 
   useEffect(() => {
     if (!sentinelMounted) return
@@ -669,17 +710,19 @@ export function ProgramsPage() {
           )}
 
           {/* 番兵。進行方向の自動読み込み（IntersectionObserver）はこれを見る。
+              直近の窓が空なら番兵を外し、「次の時間帯を見る」ボタンで 1 窓ずつ進める。
               計測できない環境では監視対象を作らないだけで、要素自体は無害
-              なので出したままにする。 */}
-          {!query.isPending && visiblePrograms.length > 0 && (
-            <div ref={sentinelRef} aria-hidden className="h-px" />
+              なので、通常窓では出したままにする。 */}
+          {sentinelMounted && (
+            <div
+              ref={sentinelRef}
+              data-testid="program-list-sentinel"
+              aria-hidden
+              className="h-px"
+            />
           )}
 
-          {shouldShowLoadMoreButton({
-            hasNextPage: query.hasNextPage,
-            autoLoadAvailable: domLayoutMeasurable(),
-            autoLoadFailed,
-          }) && (
+          {showLoadMoreButton ? (
             <div className="px-4 py-6">
               {query.isFetchNextPageError && (
                 <p className="pb-2 text-center text-sm text-destructive">
@@ -693,10 +736,14 @@ export function ProgramsPage() {
                 disabled={query.isFetchingNextPage}
                 onClick={() => void query.fetchNextPage()}
               >
-                {query.isFetchingNextPage ? '読み込み中…' : 'さらに読み込む'}
+                {query.isFetchingNextPage
+                  ? '読み込み中…'
+                  : latestWindowIsEmpty
+                    ? '次の時間帯を見る'
+                    : 'さらに読み込む'}
               </Button>
             </div>
-          )}
+          ) : null}
         </PageContent>
       )}
     </>
