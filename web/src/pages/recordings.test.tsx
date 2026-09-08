@@ -99,6 +99,7 @@ const sampleRecording = (overrides: Partial<Recording> = {}): Recording => ({
   startAt: '2026-01-01T12:00:00Z',
   durationMs: 1_800_000,
   status: 'finished',
+  keepOriginal: 'always',
   createdAt: '2026-01-01T12:30:00Z',
   ...overrides,
 })

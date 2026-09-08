@@ -154,6 +154,7 @@ SELECT
     COALESCE(d.drops, 0)::bigint        AS drop_drops,
     COALESCE(d.errors, 0)::bigint       AS drop_errors,
     COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled,
+    COALESCE(p.keep_original, 'always')::text AS keep_original,
     COALESCE(p.encode_profiles, '{}')::text[] AS encode_profiles,
     -- ブラウザ再生用。desired（p.encode_profiles）ではなく observed（active encoded）。
     -- sqlc は array_agg の型を推論しきれないことがあるので text[] に明示キャストする。
@@ -251,4 +252,18 @@ ON CONFLICT (recording_id) DO UPDATE SET
         SELECT coalesce(array_agg(DISTINCT p ORDER BY p), '{}')
         FROM unnest(recording_encode_policy.encode_profiles || excluded.encode_profiles) AS p
     ),
+    updated_at = now();
+
+-- 録画後に原本の保持ポリシーだけを上書きする（issue #697）。
+--
+-- encode_profiles は desired state なので UPDATE アームでは触らない。行が無い
+-- （原本だけを復旧登録した録画など）場合は、既存の事後追加 API と同じく
+-- keep_original='always' / encode_profiles='{}' を既定値にして凍結する。
+-- ingest と api が同じ desired state を書く 2 人の書き手になっても、これは
+-- 観測の表ではなく録画ごとの宣言を保持する衛星表なので分割しない。
+-- name: SetRecordingKeepOriginal :exec
+INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
+VALUES (sqlc.arg('recording_id'), sqlc.arg('keep_original'), '{}')
+ON CONFLICT (recording_id) DO UPDATE SET
+    keep_original = excluded.keep_original,
     updated_at = now();

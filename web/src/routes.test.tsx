@@ -64,6 +64,7 @@ function stubDetailFetch() {
     startAt: '2026-01-01T00:00:00Z',
     durationMs: 1_800_000,
     status: 'finished',
+    keepOriginal: 'always',
     createdAt: '2026-01-01T00:30:00Z',
   }
   const reservation: Reservation = {

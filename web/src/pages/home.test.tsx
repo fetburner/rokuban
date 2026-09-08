@@ -66,6 +66,7 @@ function recording(id: number, title: string, status: Recording['status'], overr
     startAt: iso(-HOUR),
     durationMs: HOUR,
     status,
+    keepOriginal: 'always',
     createdAt: iso(-HOUR),
     ...overrides,
   }

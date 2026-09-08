@@ -44,6 +44,9 @@ type recordingListFields struct {
 	DropDrops         int64
 	DropErrors        int64
 	DropScrambled     int64
+	// KeepOriginal は recording_encode_policy に凍結された原本保持ポリシー。
+	// policy 行が無い復旧録画は SQL 側で安全側の既定値 always に落とす。
+	KeepOriginal string
 	// AvailableEncodedAssets は recordingsAvailableEncodedAssetsSelect
 	// （jsonb_agg({profile, sizeBytes})）を Scan した生 JSON。プロファイル名の
 	// 配列とサイズの配列を並行に持つ形にしなかった理由は recordings_query.go の
@@ -51,7 +54,7 @@ type recordingListFields struct {
 	// encoded が無い行）は区別しない --- どちらも recordingFromListFields で
 	// EncodedAssets を省略する結果になる。
 	AvailableEncodedAssets json.RawMessage
-	// EncodeProfiles は凍結された desired 一覧（recordings.encode_profiles）。
+	// EncodeProfiles は凍結された desired 一覧（recording_encode_policy.encode_profiles）。
 	// AvailableEncodedAssets（observed、active のみ）とは異なり、pending な
 	// ジョブのプロファイルも含む。事後追加（issue #133）で増える唯一の経路。
 	EncodeProfiles []string
@@ -264,26 +267,33 @@ func encodeJobStatusesFromFields(r recordingListFields, done []string, knownProf
 // knownProfiles は encodeJobStatusesFromFields に渡す（doc コメント参照。
 // nil なら「設定から消えたプロファイル」の判定をスキップする）。
 func recordingFromListFields(r recordingListFields, includeDeletedAt bool, knownProfiles map[string]struct{}) (Recording, error) {
+	keepOriginal := r.KeepOriginal
+	if keepOriginal == "" {
+		// SQL の射影は常に COALESCE する。単体テストなどで素の fields を
+		// 組み立てる場合も、policy 行が無い録画の安全側既定値に揃える。
+		keepOriginal = "always"
+	}
 	rec := Recording{
-		Id:          r.ID,
-		Site:        r.Site,
-		RuleId:      r.RuleID,
-		Source:      RecordingSource(r.Source),
-		ServiceName: r.ServiceName,
-		ChannelType: RecordingChannelType(r.ChannelType),
-		Channel:     r.Channel,
-		NetworkId:   int(r.NetworkID),
-		ServiceId:   int(r.ServiceID),
-		EventId:     int(r.EventID),
-		Title:       r.Title,
-		Description: r.Description,
-		StartAt:     r.ProgramStartAt.UTC(),
-		DurationMs:  r.ProgramDurationMs,
-		Status:      RecordingStatus(r.Status),
-		StartedAt:   utcTimePtr(r.StartedAt),
-		EndedAt:     utcTimePtr(r.EndedAt),
-		SizeBytes:   r.OriginalSizeBytes,
-		CreatedAt:   r.CreatedAt.UTC(),
+		Id:           r.ID,
+		Site:         r.Site,
+		RuleId:       r.RuleID,
+		Source:       RecordingSource(r.Source),
+		ServiceName:  r.ServiceName,
+		ChannelType:  RecordingChannelType(r.ChannelType),
+		Channel:      r.Channel,
+		NetworkId:    int(r.NetworkID),
+		ServiceId:    int(r.ServiceID),
+		EventId:      int(r.EventID),
+		Title:        r.Title,
+		Description:  r.Description,
+		StartAt:      r.ProgramStartAt.UTC(),
+		DurationMs:   r.ProgramDurationMs,
+		Status:       RecordingStatus(r.Status),
+		KeepOriginal: RecordingKeepOriginal(keepOriginal),
+		StartedAt:    utcTimePtr(r.StartedAt),
+		EndedAt:      utcTimePtr(r.EndedAt),
+		SizeBytes:    r.OriginalSizeBytes,
+		CreatedAt:    r.CreatedAt.UTC(),
 	}
 	if includeDeletedAt {
 		rec.DeletedAt = utcTimePtr(r.DeletedAt)
@@ -564,6 +574,70 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 		return nil, err
 	}
 	return AddRecordingEncodeProfiles204Response{}, nil
+}
+
+// SetRecordingEncodePolicy は録画後に原本の保持ポリシーを上書きする（issue #697）。
+//
+// `keepOriginal` だけを書き、凍結済みの encode_profiles は変更しない。`until_encoded`
+// を指定するときは recording_encode_policy の行と desired なプロファイルを同一
+// トランザクション内で確認し、空または未凍結なら 409 を返す。`always` への変更は
+// 原本の状態を検査しないため、削除 reconcile が unlink 前の deleting 行を次回パスで
+// 再評価して active に戻せる（issue #105）。
+//
+// 物理削除もヒントジョブの投入も行わない。削除 reconcile のレベル検知に任せることで、
+// encode_profiles の事後追加 API と違って River への二重書き込みを作らない。
+func (h *Server) SetRecordingEncodePolicy(ctx context.Context, req SetRecordingEncodePolicyRequestObject) (SetRecordingEncodePolicyResponseObject, error) {
+	if req.Body == nil {
+		return SetRecordingEncodePolicy400JSONResponse{Error: "keepOriginal is required"}, nil
+	}
+	if !req.Body.KeepOriginal.Valid() {
+		return SetRecordingEncodePolicy400JSONResponse{
+			Error: fmt.Sprintf("invalid keepOriginal %q (want always or until_encoded)", req.Body.KeepOriginal),
+		}, nil
+	}
+
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("beginning transaction to set recording %d encode policy: %w", req.Id, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := sqlcgen.New(tx)
+	if _, err := q.GetRecordingByID(ctx, req.Id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return SetRecordingEncodePolicy404JSONResponse{Error: "recording not found"}, nil
+		}
+		return nil, fmt.Errorf("loading recording %d: %w", req.Id, err)
+	}
+
+	keepOriginal := string(req.Body.KeepOriginal)
+	if req.Body.KeepOriginal == SetRecordingEncodePolicyInputKeepOriginalUntilEncoded {
+		policy, err := q.GetRecordingEncodePolicy(ctx, req.Id)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return SetRecordingEncodePolicy409JSONResponse{
+					Error: "cannot set keepOriginal=until_encoded without desired encode profiles; add encode profiles first",
+				}, nil
+			}
+			return nil, fmt.Errorf("loading encode policy for recording %d: %w", req.Id, err)
+		}
+		if len(policy.EncodeProfiles) == 0 {
+			return SetRecordingEncodePolicy409JSONResponse{
+				Error: "cannot set keepOriginal=until_encoded without desired encode profiles; add encode profiles first",
+			}, nil
+		}
+	}
+
+	if err := q.SetRecordingKeepOriginal(ctx, sqlcgen.SetRecordingKeepOriginalParams{
+		RecordingID:  req.Id,
+		KeepOriginal: keepOriginal,
+	}); err != nil {
+		return nil, fmt.Errorf("setting recording %d keep_original: %w", req.Id, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("committing recording %d encode policy: %w", req.Id, err)
+	}
+	return SetRecordingEncodePolicy204Response{}, nil
 }
 
 // insertEncodeEnqueueHint は AddRecordingEncodeProfiles と同一トランザクションで

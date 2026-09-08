@@ -19,6 +19,7 @@ SELECT
     COALESCE(d.drops, 0)::bigint        AS drop_drops,
     COALESCE(d.errors, 0)::bigint       AS drop_errors,
     COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled,
+    COALESCE(p.keep_original, 'always')::text AS keep_original,
     COALESCE(p.encode_profiles, '{}')::text[] AS encode_profiles
 FROM recordings r
 LEFT JOIN media_assets a
@@ -67,6 +68,7 @@ type ListTrashRecordingsRow struct {
 	DropDrops         int64
 	DropErrors        int64
 	DropScrambled     int64
+	KeepOriginal      string
 	EncodeProfiles    []string
 }
 
@@ -141,6 +143,7 @@ func (q *Queries) ListTrashRecordings(ctx context.Context, site string) ([]ListT
 			&i.DropDrops,
 			&i.DropErrors,
 			&i.DropScrambled,
+			&i.KeepOriginal,
 			&i.EncodeProfiles,
 		); err != nil {
 			return nil, err

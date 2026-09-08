@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { MoreVertical, Trash2 } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { ApiError } from '@/api/client'
 import {
@@ -9,10 +9,12 @@ import {
   useDeleteRecording,
   useListEncodeProfiles,
   usePurgeRecording,
+  useSetRecordingEncodePolicy,
   type Recording,
 } from '@/api/generated'
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { Button } from '@/components/ui/button'
+import { Field, Select } from '@/components/ui/field'
 import { useToast } from '@/components/toaster'
 import {
   AlertDialog,
@@ -31,10 +33,12 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
+import { encodeSettingsError, keepOriginalLabel, type KeepOriginal } from '@/lib/encode-settings'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
 
 /**
- * RecordingActions は論理削除 / 復元 / 即時 purge 印 + 追加エンコードの依頼。
+ * RecordingActions は論理削除 / 復元 / 即時 purge 印 + 原本保持ポリシー変更 +
+ * 追加エンコードの依頼。
  * 削除系はいずれも DB だけを触り、ファイルは消さない（M3-7）。
  */
 export function RecordingActions({ recording, trash }: { recording: Recording; trash: boolean }) {
@@ -137,6 +141,7 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
           事後追加」）。ごみ箱に入った録画は削除 reconcile 対象なので出さない
           （下の trash 分岐と同じ理由）。
         */}
+        <KeepOriginalAction recording={recording} />
         <AddEncodeProfilesAction recording={recording} />
       </div>
     )
@@ -204,6 +209,118 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  )
+}
+
+/**
+ * KeepOriginalAction は録画後の原本保持ポリシーを変更する操作（issue #697）。
+ *
+ * `until_encoded` への変更は原本削除後に再エンコードできなくなるため、確認
+ * ダイアログを挟む。desired な encodeProfiles が空なら EncodeSettingsFields と
+ * 同じ `encodeSettingsError` で保存を止める。サーバー側でも同じ条件を同一
+ * トランザクション内で検査するので、画面表示から保存までの間に状態が変わっても
+ * 409 として利用者へ返る。
+ */
+function KeepOriginalAction({ recording }: { recording: Recording }) {
+  const current = recording.keepOriginal as KeepOriginal
+  const profiles = recording.encodeProfiles ?? []
+  const [selected, setSelected] = useState<KeepOriginal>(current)
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const queryClient = useQueryClient()
+  const toast = useToast()
+  const setPolicy = useSetRecordingEncodePolicy()
+
+  useEffect(() => {
+    // サーバーの再取得後に、保存済みのポリシーへフォームを同期する。
+    // oxlint-disable-next-line react/set-state-in-effect -- mutation 後の応答をフォームへ反映する
+    setSelected(current)
+  }, [current])
+
+  const error = encodeSettingsError(selected, profiles)
+  const dirty = selected !== current
+
+  const save = () => {
+    if (!dirty || error !== undefined || setPolicy.isPending) return
+    if (selected === 'until_encoded') {
+      setConfirmOpen(true)
+      return
+    }
+    commit()
+  }
+
+  const commit = () => {
+    setPolicy.mutate(
+      { id: recording.id, data: { keepOriginal: selected } },
+      {
+        onSuccess: () => {
+          void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
+          toast({ message: '原本の保持ポリシーを変更しました' })
+        },
+        onError: (err) =>
+          toast({
+            message:
+              err instanceof ApiError && err.status === 409
+                ? 'エンコードプロファイルを 1 つ以上追加してから、エンコード後に原本を削除する設定を選んでください'
+                : mutationErrorMessage('原本の保持ポリシーの変更に失敗しました', err),
+            kind: 'error',
+          }),
+      },
+    )
+  }
+
+  return (
+    <section className="flex flex-col gap-2 rounded-lg border border-border p-2">
+      <Field label="原本の保持">
+        <Select
+          value={selected}
+          disabled={setPolicy.isPending}
+          onChange={(e) => setSelected(e.target.value as KeepOriginal)}
+        >
+          <option value="always">{keepOriginalLabel('always')}</option>
+          <option value="until_encoded">{keepOriginalLabel('until_encoded')}</option>
+        </Select>
+      </Field>
+      <p className="text-xs text-muted-foreground">
+        「エンコード後に削除」を選ぶと、エンコードとサムネイルが揃った後、最大 15 分で原本を
+        削除します。原本削除後は再エンコードできません。
+      </p>
+      {error !== undefined && (
+        <p role="alert" className="text-xs text-destructive">
+          {error}
+        </p>
+      )}
+      {dirty && (
+        <Button
+          type="button"
+          size="sm"
+          disabled={error !== undefined || setPolicy.isPending}
+          onClick={save}
+        >
+          {setPolicy.isPending ? '保存中…' : '保持ポリシーを保存'}
+        </Button>
+      )}
+      <AlertDialog
+        open={confirmOpen}
+        onOpenChange={(open) => {
+          setConfirmOpen(open)
+          if (!open && !setPolicy.isPending) setSelected(current)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>エンコード後に原本を削除しますか？</AlertDialogTitle>
+            <AlertDialogDescription>
+              desired なエンコードとサムネイルが揃うと、最大 15 分後に原本を削除します。原本の削除は
+              取り消せず、削除後は再エンコードできません。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>キャンセル</AlertDialogCancel>
+            <AlertDialogAction onClick={() => commit()}>エンコード後に削除する</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </section>
   )
 }
 

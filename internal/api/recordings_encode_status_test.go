@@ -400,7 +400,7 @@ func TestEncodeJobStatusesFromFields(t *testing.T) {
 }
 
 // TestEncodeJobStatusesFromFields_PreservesDesiredOrder は encodeStatus の
-// 並びが desired（recordings.encode_profiles）の並びであることを固定する
+// 並びが desired（recording_encode_policy.encode_profiles）の並びであることを固定する
 // （上の表テストは結果を map に潰すので順序を主張していない）。
 //
 // 落ち方: 試行行の map（attempts）を回して組み立てる実装に差し替えると、Go の

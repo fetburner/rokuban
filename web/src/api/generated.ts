@@ -71,12 +71,34 @@ export interface EncodeProfileSummary {
 export interface AddEncodeProfilesInput {
   /**
      * 追加したいエンコードプロファイル名（config.encode.profiles に定義された
-     * 名前のみ許可。未知名は 400）。既存の recordings.encode_profiles には
+     * 名前のみ許可。未知名は 400）。既存の recording_encode_policy.encode_profiles には
      * **追加専用**（union + dedup）で書かれ、全置換にはならない --- 既存の
      * 指定を消す事故を避けるため。空配列は 400。
      * @minItems 1
      */
   profiles: string[];
+}
+
+/**
+ * 原本を常に保持するか、desired なエンコードとサムネイルが揃った後に
+ * 削除可能にするか。`until_encoded` を指定するには desired なエンコード
+ * プロファイルが 1 つ以上必要。
+ */
+export type SetRecordingEncodePolicyInputKeepOriginal = typeof SetRecordingEncodePolicyInputKeepOriginal[keyof typeof SetRecordingEncodePolicyInputKeepOriginal];
+
+
+export const SetRecordingEncodePolicyInputKeepOriginal = {
+  always: 'always',
+  until_encoded: 'until_encoded',
+} as const;
+
+export interface SetRecordingEncodePolicyInput {
+  /**
+     * 原本を常に保持するか、desired なエンコードとサムネイルが揃った後に
+     * 削除可能にするか。`until_encoded` を指定するには desired なエンコード
+     * プロファイルが 1 つ以上必要。
+     */
+  keepOriginal: SetRecordingEncodePolicyInputKeepOriginal;
 }
 
 export interface ErrorResponse {
@@ -242,6 +264,21 @@ export const RecordingStatus = {
   finished: 'finished',
   canceled: 'canceled',
   failed: 'failed',
+} as const;
+
+/**
+ * `recording_encode_policy.keep_original` に凍結された、この録画の原本保持
+ * ポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の
+ * `PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。
+ * `until_encoded` でも、desired な全エンコードプロファイルとサムネイルが
+ * 揃うまでは原本を削除しない。
+ */
+export type RecordingKeepOriginal = typeof RecordingKeepOriginal[keyof typeof RecordingKeepOriginal];
+
+
+export const RecordingKeepOriginal = {
+  always: 'always',
+  until_encoded: 'until_encoded',
 } as const;
 
 export type RecordingQualityEventsItem = { [key: string]: unknown };
@@ -466,6 +503,14 @@ export interface Recording {
   startAt: string;
   durationMs: number;
   status: RecordingStatus;
+  /**
+     * `recording_encode_policy.keep_original` に凍結された、この録画の原本保持
+     * ポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の
+     * `PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。
+     * `until_encoded` でも、desired な全エンコードプロファイルとサムネイルが
+     * 揃うまでは原本を削除しない。
+     */
+  keepOriginal: RecordingKeepOriginal;
   /** 録画の実開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。 */
   startedAt?: string;
   /** 録画の実終了時刻。常に UTC（"Z" 終端の RFC3339）で返す。 */
@@ -486,7 +531,7 @@ export interface Recording {
   encodedAssets?: EncodedAsset[];
   /**
      * 凍結された「望ましい」エンコードプロファイル一覧（desired。
-     * recordings.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は
+     * recording_encode_policy.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は
      * `POST /api/recordings/{id}/encode-profiles` による事後追加（凍結の例外。
      * docs/storage.md §6「原本 TS の保持ポリシー」）でのみ増える。
      * `encodedAssets`（observed、再生可能なもの）とは異なり、まだ完了して
@@ -4713,7 +4758,7 @@ export const getAddRecordingEncodeProfilesUrl = (id: number,) => {
 }
 
 /**
- * `recordings.encode_profiles` は ingest 完了時に一度だけ焼き込まれる凍結値
+ * `recording_encode_policy.encode_profiles` は ingest 完了時に一度だけ焼き込まれる凍結値
  * だが（docs/storage.md §6「原本 TS の保持ポリシー」）、ユーザー起点の事後
  * 追加だけは凍結の例外として認める（issue #133）。**追加専用**（union +
  * dedup）で書き、全置換にはしない --- 誤って他プロファイルの指定を消す事故を
@@ -4799,6 +4844,130 @@ export const useAddRecordingEncodeProfiles = <TError = ErrorResponse,
         TContext
       > => {
       return useMutation(getAddRecordingEncodeProfilesMutationOptions(options), queryClient);
+    }
+
+export type setRecordingEncodePolicyResponse204 = {
+  data: void
+  status: 204
+}
+
+export type setRecordingEncodePolicyResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
+export type setRecordingEncodePolicyResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type setRecordingEncodePolicyResponse409 = {
+  data: ErrorResponse
+  status: 409
+}
+
+export type setRecordingEncodePolicyResponseSuccess = (setRecordingEncodePolicyResponse204) & {
+  headers: Headers;
+};
+export type setRecordingEncodePolicyResponseError = (setRecordingEncodePolicyResponse400 | setRecordingEncodePolicyResponse404 | setRecordingEncodePolicyResponse409) & {
+  headers: Headers;
+};
+
+export type setRecordingEncodePolicyResponse = (setRecordingEncodePolicyResponseSuccess | setRecordingEncodePolicyResponseError)
+
+export const getSetRecordingEncodePolicyUrl = (id: number,) => {
+
+
+
+
+  return `/api/recordings/${id}/encode-policy`
+}
+
+/**
+ * 録画ごとに凍結された `recording_encode_policy.keep_original` を上書きする。
+ * 変更できるのは保持ポリシーだけで、`encode_profiles` はこの API では変更しない。
+ * `encode_profiles` の事後追加は POST `/api/recordings/{id}/encode-profiles` を使う。
+ *
+ * `until_encoded` は desired なエンコードプロファイルが 1 つ以上ある録画だけ
+ * 指定できる。プロファイルが空、または `recording_encode_policy` 行が無い場合は
+ * 409 を返すので、先に事後エンコード追加を依頼すること。`always` への変更は
+ * 原本の状態を検査せず、削除 reconcile が保持ポリシーを適用の瞬間に再評価する。
+ *
+ * この API はファイルを削除せず、River ジョブも投入しない。削除 reconcile の
+ * 定期パス（既定 15 分）が desired を再評価するため、`until_encoded` への変更は
+ * 条件を満たせば最大 15 分後に原本削除へ反映される。レベルトリガーの定期評価が
+ * 真実なので、ヒントジョブを追加する必要はなく、encode-profiles の事後追加と
+ * は非対称になる。
+ * @summary Change the original retention policy for a recording
+ */
+export const setRecordingEncodePolicy = async (id: number,
+    setRecordingEncodePolicyInput: SetRecordingEncodePolicyInput, options?: Parameters<typeof customInstance>[1]): Promise<setRecordingEncodePolicyResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Array.isArray(h)) return Object.fromEntries(h);
+    return h;
+  };
+return customInstance<setRecordingEncodePolicyResponse>(getSetRecordingEncodePolicyUrl(id),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(setRecordingEncodePolicyInput)
+  }
+);}
+
+
+
+
+
+export const getSetRecordingEncodePolicyMutationKey = () => ['setRecordingEncodePolicy'] as const;
+
+export const getSetRecordingEncodePolicyMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof setRecordingEncodePolicy>>, TError,SetRecordingEncodePolicyMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof setRecordingEncodePolicy>>, TError,SetRecordingEncodePolicyMutationVariables, TContext> => {
+
+const mutationKey = getSetRecordingEncodePolicyMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof setRecordingEncodePolicy>>, SetRecordingEncodePolicyMutationVariables> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  setRecordingEncodePolicy(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type SetRecordingEncodePolicyMutationResult = NonNullable<Awaited<ReturnType<typeof setRecordingEncodePolicy>>>
+    export type SetRecordingEncodePolicyMutationBody = SetRecordingEncodePolicyInput
+    export type SetRecordingEncodePolicyMutationError = ErrorResponse
+    export type SetRecordingEncodePolicyMutationVariables = {id: number;data: SetRecordingEncodePolicyInput}
+
+    /**
+ * @summary Change the original retention policy for a recording
+ */
+export const useSetRecordingEncodePolicy = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof setRecordingEncodePolicy>>, TError,SetRecordingEncodePolicyMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof setRecordingEncodePolicy>>,
+        TError,
+        SetRecordingEncodePolicyMutationVariables,
+        TContext
+      > => {
+      return useMutation(getSetRecordingEncodePolicyMutationOptions(options), queryClient);
     }
 
 export type listRecordingDropStatsResponse200 = {

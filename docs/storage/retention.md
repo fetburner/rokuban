@@ -8,7 +8,7 @@
 
 **ルール（または個別予約）が保持ポリシーを持つ**: `keepOriginal: always / until_encoded`。実効値（ルールの base + 予約単位の overrides）は `recording_encode_policy.keep_original` / `recording_encode_policy.encode_profiles` へスナップショットされ、「この録画の望ましい最終状態は『派生物のみ、原本なし』」という desired state になる。`recording_encode_policy` は `recordings` を `recording_id` で指す衛星表で、行の存在そのものが「凍結済み」を意味する（[スキーマ](../schema.md) §5 参照）。
 
-**凍結する瞬間は ingest が原本 media_asset をコミットする tx の中**（`internal/worker/ingest.go` の `resolveAndSnapshotEncodePolicy`）であって、予約確定時でも録画開始時でもない。再導出（reservations 経由で毎回引き直す）は選べない —— 導出元（`reservations` / `program_overrides` / `program_intents`）は放送終了 + 猶予後に GC される寿命の短い表だが、`recordings` は永続資産（CLAUDE.md 不変条件 12「表は行の寿命で割る」）。導出に依存させると、番組が EPG から消えて GC された時点で desired が空になり、エンコード未完了の録画で原本削除が止まる／再エンコードが投入できなくなる。凍結した `recording_encode_policy` の行は「この録画の望ましい最終状態」であり、`recordings` 行と同時に生まれて同時に死ぬので不変条件 12 には反しない（衛星表として別テーブルに置くことは「行の寿命が同じ」であることと矛盾しない。不変条件 13 参照）。ただし凍結する以上、**ingest 完了より後の override 変更はその録画には反映されない**という境界が生まれる（[録画エンジン](../recording.md) §4.5）。
+**凍結する瞬間は ingest が原本 media_asset をコミットする tx の中**（`internal/worker/ingest.go` の `resolveAndSnapshotEncodePolicy`）であって、予約確定時でも録画開始時でもない。再導出（reservations 経由で毎回引き直す）は選べない —— 導出元（`reservations` / `program_overrides` / `program_intents`）は放送終了 + 猶予後に GC される寿命の短い表だが、`recordings` は永続資産（CLAUDE.md 不変条件 12「表は行の寿命で割る」）。導出に依存させると、番組が EPG から消えて GC された時点で desired が空になり、エンコード未完了の録画で原本削除が止まる／再エンコードが投入できなくなる。凍結した `recording_encode_policy` の行は「この録画の望ましい最終状態」であり、`recordings` 行と同時に生まれて同時に死ぬので不変条件 12 には反しない（衛星表として別テーブルに置くことは「行の寿命が同じ」であることと矛盾しない。不変条件 13 参照）。ただし凍結する以上、**ingest 完了より後の override 変更はその録画には反映されない**という境界が生まれる（[録画エンジン](../recording.md) §4.5）。この境界を越えて変更するのは、下記の録画単位 API を明示的に呼んだ場合だけである。
 
 **予約をどのキーで引くか**: `resolveAndSnapshotEncodePolicy` は予約を `reservations` への FK ではなく、放送イベントキー `(site, network_id, service_id, event_id)` で引く。放送イベントキーは `recordings` が録画開始時から凍結して持つ列なので、録画開始から ingest 完了までの窓（番組の尺ぶん、数時間）で予約行が GC・再実体化（EPG フリッカー、ルール編集、dedup）されても見失わない。
 
@@ -78,15 +78,20 @@ GC 済みのスナップショットの上で ingest が走った場合に何が
 - エンコードプロファイル未指定のルールでは `until_encoded` を選択不可（原本が唯一の視聴可能物）
 - 視聴は常に派生物側（MPEG-2 TS はブラウザ直接再生に不向き）なので、原本削除で失うのは再エンコードの自由度だけ。H.265 で 1/4〜1/10 になるため、これが実質のストレージ戦略になる
 
-### 凍結の例外: 事後追加
+### 凍結の例外: 事後追加と保持ポリシー変更
 
 `recording_encode_policy.encode_profiles` は ingest 完了時に一度だけ焼き込まれる凍結値だが、**ユーザー起点の追加方向の書き換えだけは凍結の例外として認める**。予約が無い録画（mirakc に直接起こされた手動録画等）は `encode_profiles = '{}'` のまま永久に凍結されエンコードを依頼する手段が無かった問題と、録画完了後に「もう1つプロファイルを足したい」という要求に応える。
+
+この API による `keep_original` の上書きは、事後の `encode_profiles` 追加に続く**凍結の 2 つ目の例外**である。凍結の基本設計（ingest 完了時に desired を焼き込むこと）と、物理削除を reconcile に委ねる境界は変えない。
 
 - **範囲は追加のみ**。`POST /api/recordings/{id}/encode-profiles`（`internal/api/recordings.go` の `AddRecordingEncodeProfiles`）は `AppendRecordingEncodeProfiles`（`internal/db/queries/recordings.sql`）で union + dedup にしか書けない。全置換にすると、ユーザーが誤って既存のプロファイル指定を消す事故につながるため、その経路自体を用意しない
 - **原本が active でなければ不可**。`GetActiveOriginalMediaAsset` が `ErrNoRows` の録画（原本削除済み、`state = 'deleting'`（unlink 待ち。一覧の射影は `state <> 'deleted'` なので UI 上は「原本あり」に見える）、またはそもそも ingest が完了しておらず `kind='original'` の行自体が無い、のいずれか）には 409 を返す。`EnqueueMissingEncodes` はこのケースで黙って no-op になる（原本が無ければ何もしない設計。上記「安全性」参照）ため、サイレントな失敗にしないよう api 層で明示的に検査する
 - **`recording_encode_policy` に行が無い（未凍結）録画でも、原本が active なら追加できる**。`internal/inplace.Register`（災害復旧。カタログを 1 世代も持たない状態からのストレージ再スキャン）が作る原本は `internal/worker/ingest.go` の `resolveAndSnapshotEncodePolicy` を経由しないため、`recording_encode_policy` 行が無いまま原本だけが active な録画が存在しうる。`AppendRecordingEncodeProfiles` は `INSERT ... ON CONFLICT (recording_id) DO UPDATE` で書くので、行が無ければ「原本が active = 凍結済みとみなす」を適用して `keep_original = 'always'`（安全側の既定値）で新規に凍結し、行があれば `encode_profiles` だけ追記する。行の有無をここで判定してエラーにする経路は持たない —— 原本が active でなければ手前の `GetActiveOriginalMediaAsset` の 409 検査で既に止まっているため、この INSERT に到達する時点で「原本 active」は保証されている
 - **実行経路**: api がトランザクション内で `encode_profiles` を更新し、同一トランザクションで `EncodeEnqueueHintArgs`（ヒントジョブ）を投入する。実際の `EnqueueMissingEncodes` 呼び出し（desired − observed の差分を埋める encode ジョブの投入）は worker ロール側の `EncodeEnqueueHintWorker` が行う（既存の hint job パターン。`rules.go` の `insertRulerPassHint` と同型）。詳細は `internal/jobs/args.go` の `EncodeEnqueueHintArgs` の doc コメント参照
-- この例外を経ても「ingest 完了時点で確定した最終状態」という設計そのものは変わらない —— 削除・変更方向の書き換えは今も無い
+- **保持ポリシーの変更**: `PATCH /api/recordings/{id}/encode-policy` は `keep_original` だけを録画単位で上書きし、`encode_profiles` には触れない。`until_encoded` は desired プロファイルが 1 つ以上あることを同じ tx 内で確認してから書き、空または未凍結なら 409 にする。`always` 方向では原本の状態を検査しないので、原本が `deleting` の間でも次の reconcile パスで条件が再評価され、ファイルが残っていれば `active` に戻せる。
+- **保持ポリシー変更は物理削除を行わない**。River のヒントジョブも投入せず、削除 reconcile のレベルトリガーに任せる。定期パスは既定 15 分間隔なので、条件を満たす原本の削除には最大 15 分かかる。これは追加された desired を直ちに encode queue へ反映する事後追加 API とは意図的に非対称である。
+- この表の api 側の書き手は、ingest と同じくユーザーが宣言した desired state を書く。観測を複数ループで更新する脊椎表ではないため、`recording_encode_policy` は分割しない。
+- この例外を経ても「ingest 完了時点で確定した最終状態」という設計そのものは変わらない。凍結後の変更は、`encode_profiles` の事後追加と、この API による `keep_original` の明示的な上書きに限る。
 
 ## 7. 削除エンジン
 
