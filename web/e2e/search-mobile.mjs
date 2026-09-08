@@ -19,6 +19,8 @@
 //   ④ 1280px（デスクトップ）でも入力欄の存在と、「検索」を押した後の結果（件数行・結果 1 件目）が折り目の中に
 //      見えること。①②だけだと「押しても画面が変わらず、結果を見るために
 //      下までスクロールする」状態が緑で通る（レビューで実測）
+//   ⑤ 検索結果の予約ボタンがモバイルでも 44px の標的として出て、キーボードの
+//      Enter で単発予約へ進めること
 //
 // **①②は `page.goto` 直後、スクロールも操作も一切せずに測る** --- 「初画面」を
 // 検証する判定でスクロールしてしまうと、直したい問題自体を回避してしまう。
@@ -106,6 +108,11 @@ async function apiHandler({ path: p, json, route }) {
   if (p === '/api/sites') return json([SITE])
   if (p === '/api/capabilities') return json({ live: false })
   if (p === `/api/sites/${SITE}/services`) return json(services)
+  if (p === '/api/reservations') return json([])
+  const intent = /^\/api\/sites\/([^/]+)\/programs\/(\d+)\/intent$/.exec(p)
+  if (intent !== null && route.request().method() === 'PUT') {
+    return route.fulfill({ status: 204 })
+  }
   if (p === '/api/programs/search')
     return json(matchedProgramIds.map((programId) => ({ site: SITE, programId })))
   const detail = /^\/api\/sites\/[^/]+\/programs\/(\d+)$/.exec(p)
@@ -323,6 +330,7 @@ async function checkSubmitFeedback(page, viewport, label) {
   // 高さが違うので、届く前に測ると別のレイアウトを測ってしまう。
   const firstRow = page.locator('[data-testid="search-results"] > li').first()
   await firstRow.getByText(/^ニュース \d+$/).waitFor({ timeout: 15000 })
+  await checkResultReservation(page, firstRow, viewport, label)
   await page.waitForTimeout(200)
 
   const scrollY = await page.evaluate(() => window.scrollY)
@@ -372,6 +380,55 @@ async function checkSubmitFeedback(page, viewport, label) {
         `④@${label}: 結果 1 件目（top=${firstRowBox.y}）がボトムタブ（上端=${navBox.y}）より下`,
       )
     }
+  }
+}
+
+/**
+ * 検索結果の予約導線を、実ブラウザの Tab + Enter で確認する（⑤）。
+ *
+ * 予約ボタンは検索結果の行本体とは別のタブ停止可能な要素であり、モバイルでも
+ * 44px の標的を持つ。jsdom では実際の Tab 移動・ボタン矩形を測れないため、ここで
+ * 「探し直さず、その場の行から」操作できることを固定する。
+ */
+async function checkResultReservation(page, firstRow, viewport, label) {
+  const reserveButton = firstRow.getByRole('button', { name: '予約', exact: true })
+  const count = await reserveButton.count()
+  if (count !== 1) {
+    ng.push(`⑤@${label}: 結果 1 件目の「予約」ボタンがちょうど 1 本ではない（${count} 本）`)
+    return
+  }
+
+  const box = await reserveButton.boundingBox()
+  if (box === null) {
+    ng.push(`⑤@${label}: 結果 1 件目の「予約」ボタンの矩形が取れない`)
+    return
+  }
+  log(
+    `  ⑤@${label} 予約ボタンの矩形: width=${Math.round(box.width)} height=${Math.round(box.height)}`,
+  )
+  if (box.width < 44 || box.height < 44) {
+    ng.push(
+      `⑤@${label}: 結果行の予約ボタンが 44px の標的に満たない` +
+        `（width=${box.width}, height=${box.height}）`,
+    )
+  }
+
+  // 検索の決着後は結果セクションへフォーカスしている。そこから Tab で結果行の
+  // 予約ボタンへ入り、Enter で操作する --- locator.click() だけではキーボード
+  // 到達性を確認できない。
+  await page.keyboard.press('Tab')
+  const focusedByTab = await reserveButton.evaluate((element) => document.activeElement === element)
+  if (!focusedByTab) {
+    ng.push(`⑤@${label}: Tab で結果行の「予約」ボタンへ到達できない`)
+    await reserveButton.focus()
+  }
+  await page.keyboard.press('Enter')
+
+  const cancelButton = firstRow.getByRole('button', { name: '取消', exact: true })
+  try {
+    await cancelButton.waitFor({ timeout: 15000 })
+  } catch {
+    ng.push(`⑤@${label}: 結果行の「予約」を Enter で押しても「取消」状態にならない`)
   }
 }
 
@@ -428,7 +485,7 @@ async function checkRestoredDetails() {
   await context.close()
 }
 
-log('\n=== ① ② ④ モバイル（360/390x844） ===')
+log('\n=== ① ② ④ ⑤ モバイル（360/390x844） ===')
 await checkViewport({ width: 360, height: 844 })
 await checkViewport({ width: 390, height: 844 })
 
