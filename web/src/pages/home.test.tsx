@@ -244,6 +244,7 @@ describe('ホーム: 全セクションが空のときの単一の空状態', ()
     }
     // 「異常なし」「予約がありません」のような肯定/報告の文言を書いていない
     expect(screen.queryByText(/異常/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: '直近の完了へ' })).not.toBeInTheDocument()
   })
 
   it('1 セクションでもあれば単一の空状態は出ない（両方向）', async () => {
@@ -252,6 +253,28 @@ describe('ホーム: 全セクションが空のときの単一の空状態', ()
 
     expect(await screen.findByRole('heading', { name: 'いま録画中' })).toBeInTheDocument()
     expect(screen.queryByText('表示できる項目がありません')).not.toBeInTheDocument()
+  })
+})
+
+describe('ホーム: 完了録画へのショートカット（issue #686）', () => {
+  it('完了録画が取得済みで 1 件以上あるときだけ表示する', async () => {
+    stubApi({ finished: [recording(9, '完了した番組', 'finished')] })
+    renderHome()
+
+    const heading = await screen.findByRole('heading', { name: '直近の完了' })
+    const shortcut = screen.getByRole('link', { name: '直近の完了へ' })
+
+    expect(shortcut).toHaveAttribute('href', '#home-finished')
+    expect(heading.closest('section')).toHaveAttribute('id', 'home-finished')
+    expect(heading).toHaveAttribute('id', 'home-finished-heading')
+  })
+
+  it('完了録画の取得に失敗したときは表示しない', async () => {
+    stubApi({ errorPaths: new Set(['/api/recordings']) })
+    renderHome()
+
+    expect(await screen.findByText('直近の完了録画の取得に失敗しました')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: '直近の完了へ' })).not.toBeInTheDocument()
   })
 })
 

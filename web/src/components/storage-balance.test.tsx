@@ -156,7 +156,7 @@ function mockApis(options: {
  * 共有するので、ここで見えるステータスは `StorageBalance` 内部のクエリの
  * ステータスそのもの。
  */
-function Harness() {
+function Harness({ compact = false }: { compact?: boolean }) {
   const storageQuery = useGetStorage()
   const recordingsQuery = useListRecordings({
     status: 'finished',
@@ -169,14 +169,14 @@ function Harness() {
       <div data-testid="query-status">
         {storageQuery.status} {recordingsQuery.status} {reservationsQuery.status}
       </div>
-      <StorageBalance />
+      <StorageBalance compact={compact} />
     </>
   )
 }
 
 /** renderSettled は Harness を描き、3 クエリすべてが指定のステータスに確定するまで待つ。 */
-async function renderSettled(expectedStatus: string) {
-  const view = renderInRouter(<Harness />)
+async function renderSettled(expectedStatus: string, compact = false) {
+  const view = renderInRouter(<Harness compact={compact} />)
   await waitFor(() => expect(screen.getByTestId('query-status')).toHaveTextContent(expectedStatus))
   return view
 }
@@ -209,6 +209,45 @@ describe('StorageBalance', () => {
     expect(screen.getByText('アーカイブ')).toBeInTheDocument()
     expect(screen.getByText('スクラッチ')).toBeInTheDocument()
     expect(screen.getByText('186.3 GB')).toBeInTheDocument()
+  })
+
+  it('コンパクト表示では通常の見込みと観測時刻を詳細側へ移す', async () => {
+    const user = userEvent.setup()
+    mockApis({ recordings: [recording()], reservations: [reservation()] })
+
+    await renderSettled('success success success', true)
+
+    const summary = screen.getByText('詳細', { selector: 'span' })
+    const details = summary.closest('details')
+    expect(details).not.toBeNull()
+    expect(summary.closest('summary')).toHaveTextContent('空き')
+    expect(summary.closest('summary')).not.toHaveTextContent('の見込み')
+    expect(summary.closest('summary')).not.toHaveTextContent('観測:')
+
+    await user.click(summary)
+
+    expect(details).toHaveAttribute('open')
+    expect(details).toHaveTextContent(/の見込み/)
+    expect(details).toHaveTextContent(/観測:/)
+  })
+
+  it('コンパクト表示でも満杯見込みの警告は要約に残す', async () => {
+    mockApis({
+      storage: [mediaRoot({ availableBytes: 100_000_000 })],
+      recordings: [recording()],
+      reservations: Array.from({ length: 7 }, (_, i) =>
+        reservation({
+          programId: i + 1,
+          startAt: iso(i * 24 * 60 * 60 * 1000 + 1000),
+        }),
+      ),
+    })
+
+    await renderSettled('success success success', true)
+
+    const summary = screen.getByText('詳細', { selector: 'span' }).closest('summary')
+    expect(summary).not.toBeNull()
+    expect(summary).toHaveTextContent(/満杯見込み/)
   })
 
   it('録画実績が 0 件のときは空きだけ出し、見込みは出さない', async () => {

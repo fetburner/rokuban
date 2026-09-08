@@ -180,6 +180,25 @@ const reservations = [
   { id: 4, site: SITE, programId: 9004, source: 'rule', state: 'orphaned', title: '日曜洋画劇場', serviceName: 'テレビ大阪', channelType: 'GR', startAt: iso(nowMs + 26 * HOUR), durationMs: 7_200_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), skip: false },
 ]
 
+/** issue #686 の状態別レイアウト判定用。容量警告だけを増やし、他の条件は揃える。 */
+const layoutCapacityReservations = Array.from({ length: 7 }, (_, i) => ({
+  ...reservations[0],
+  id: 100 + i,
+  programId: 9100 + i,
+  title: `容量判定予約${i + 1}`,
+  startAt: iso(nowMs + (i + 1) * HOUR),
+}))
+
+const layoutStorageRoots = {
+  normal: storageRoots,
+  capacity: storageRoots.map((root) =>
+    root.root === 'media'
+      ? { ...root, usedBytes: 999_900_000_000, availableBytes: 100_000_000 }
+      : root,
+  ),
+  stale: storageRoots.map((root) => ({ ...root, observedAt: iso(nowMs - 2 * HOUR) })),
+}
+
 /** 予約 2 の時間帯に重ねる。琥珀の警告バッジ・帯を必ず 1 つ出すため。 */
 /**
  * nextHourBoundaryMs は与えられた時刻より後の直近の毎時 0 分（ローカル）を返す。
@@ -293,14 +312,14 @@ const searchNoteOverage = {
 }
 
 const recordings = [
-  { id: 11, site: SITE, source: 'rule', serviceName: 'NHK総合', channelType: 'GR', channel: '27', networkId: 32736, serviceId: 1024, eventId: 11, title: 'ニュース７', startAt: iso(nowMs - 600_000), durationMs: 1_800_000, status: 'recording', createdAt: iso(nowMs - 600_000), startedAt: iso(nowMs - 600_000) },
+  { id: 11, site: SITE, source: 'rule', serviceName: 'NHK総合', channelType: 'GR', channel: '27', networkId: 32736, serviceId: 1024, eventId: 11, title: 'ニュース７', startAt: iso(nowMs - 600_000), durationMs: 1_800_000, status: 'recording', keepOriginal: 'always', createdAt: iso(nowMs - 600_000), startedAt: iso(nowMs - 600_000) },
   // encodedAssets を持たせて詳細ページ（/recordings/$id）で <video> が実ブラウザで
   // 出ることを撮る（キーボード到達性の判定 ⑤）。`encodedProfiles`（非推奨の後方
   // 互換フィールド）だけでは `RecordingPlayer` が <video> を出さない
   // （`encodedAssets` を見るため）ので両方持たせる。
-  { id: 12, site: SITE, source: 'manual', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', channel: 'BS15_0', networkId: 4, serviceId: 101, eventId: 12, title: 'クラシック音楽館', startAt: iso(nowMs - 26 * HOUR), durationMs: 5_400_000, status: 'finished', sizeBytes: 8_123_456_789, createdAt: iso(nowMs - 26 * HOUR), dropSummary: { packets: 1_500_000, drops: 12, errors: 0, scrambled: 3 }, encodedAssets: [{ profile: 'hevc-1080p', sizeBytes: 2_345_678_901 }] },
-  { id: 13, site: SITE, source: 'rule', serviceName: 'テレビ大阪', channelType: 'GR', channel: '18', networkId: 32738, serviceId: 1040, eventId: 13, title: 'アニメ劇場', startAt: iso(nowMs - 50 * HOUR), durationMs: 1_800_000, status: 'failed', createdAt: iso(nowMs - 50 * HOUR) },
-  { id: 14, site: SITE, source: 'rule', serviceName: 'NHKEテレ', channelType: 'GR', channel: '26', networkId: 32737, serviceId: 1032, eventId: 14, title: '連続テレビ小説', startAt: iso(nowMs - 74 * HOUR), durationMs: 900_000, status: 'finished', sizeBytes: 1_234_567_890, createdAt: iso(nowMs - 74 * HOUR) },
+  { id: 12, site: SITE, source: 'manual', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', channel: 'BS15_0', networkId: 4, serviceId: 101, eventId: 12, title: 'クラシック音楽館', startAt: iso(nowMs - 26 * HOUR), durationMs: 5_400_000, status: 'finished', keepOriginal: 'always', sizeBytes: 8_123_456_789, createdAt: iso(nowMs - 26 * HOUR), dropSummary: { packets: 1_500_000, drops: 12, errors: 0, scrambled: 3 }, encodedAssets: [{ profile: 'hevc-1080p', sizeBytes: 2_345_678_901 }] },
+  { id: 13, site: SITE, source: 'rule', serviceName: 'テレビ大阪', channelType: 'GR', channel: '18', networkId: 32738, serviceId: 1040, eventId: 13, title: 'アニメ劇場', startAt: iso(nowMs - 50 * HOUR), durationMs: 1_800_000, status: 'failed', keepOriginal: 'always', createdAt: iso(nowMs - 50 * HOUR) },
+  { id: 14, site: SITE, source: 'rule', serviceName: 'NHKEテレ', channelType: 'GR', channel: '26', networkId: 32737, serviceId: 1032, eventId: 14, title: '連続テレビ小説', startAt: iso(nowMs - 74 * HOUR), durationMs: 900_000, status: 'finished', keepOriginal: 'always', sizeBytes: 1_234_567_890, createdAt: iso(nowMs - 74 * HOUR) },
 ]
 
 /**
@@ -325,6 +344,7 @@ const transferringRecording = {
   startAt: iso(nowMs - 10 * HOUR),
   durationMs: 1_800_000,
   status: 'finished',
+  keepOriginal: 'always',
   createdAt: iso(nowMs - 10 * HOUR),
   ingest: {
     state: 'transferring',
@@ -364,6 +384,9 @@ await validateFixturesOrExit(
     ...breakers.map((b, i) => [`breakers[${i}]`, ListCircuitBreakersResponseItem, b]),
     ['encodeQueue', GetEncodeQueueResponse, encodeQueue],
     ...storageRoots.map((root, i) => [`storage[${i}]`, GetStorageResponseItem, root]),
+    ...layoutStorageRoots.capacity.map((root, i) => [`layoutCapacityStorage[${i}]`, GetStorageResponseItem, root]),
+    ...layoutStorageRoots.stale.map((root, i) => [`layoutStaleStorage[${i}]`, GetStorageResponseItem, root]),
+    ...layoutCapacityReservations.map((r, i) => [`layoutCapacityReservations[${i}]`, ListReservationsResponseItem, r]),
     ...searchNotePrograms.map((p, i) => [`searchNotePrograms[${i}]`, GetProgramResponse, p]),
     ...searchNotePrograms.map((p, i) => [
       `searchResults[${i}]`,
@@ -397,6 +420,9 @@ await validateFixturesOrExit(
  * `ingest` フィールドを持つ録画がないと一度も描画されない --- 既定のフィク
  * スチャはどちらも満たさないので、これらを付けたときだけ `transferringRecording`
  * （2 つ目の site）を一覧に混ぜる。既定の全画面ショット/判定は影響を受けない。
+ *
+ * `layoutScenario` は issue #686 の到達距離判定専用で、正常・容量不足・古い観測・
+ * ストレージ取得失敗・観測なし・エンコード待機列・警告多数を分ける。
  */
 /**
  * apiHandler は design.mjs の各シナリオに応じた `/api/**` の応答を作る
@@ -409,6 +435,7 @@ function apiHandler({
   emptyHome = false,
   multiSite = false,
   extraRecording = false,
+  layoutScenario = 'default',
 } = {}) {
   return async ({ path: p, url, json, route }) => {
     if (delayPath !== null && p === delayPath) {
@@ -421,12 +448,28 @@ function apiHandler({
     // true を返す --- 返さないと主ナビが 5 項目になり、/live はチャンネル一覧ではなく
     // 「無効です」の空状態になる
     if (p === '/api/capabilities') return json({ live: true })
-    if (p === '/api/breakers') return json(withBreaker ? breakers : [])
-    if (p === '/api/encode-queue') return json(encodeQueue)
-    if (p === '/api/storage') return json(storageRoots)
+    const layoutQueue = layoutScenario === 'normal' || layoutScenario === 'capacity' || layoutScenario === 'stale' || layoutScenario === 'storage-failure' || layoutScenario === 'no-observation'
+      ? { queued: 0, running: 0 }
+      : encodeQueue
+    if (p === '/api/breakers') {
+      return json(withBreaker || layoutScenario === 'many-warnings' ? breakers : [])
+    }
+    if (p === '/api/encode-queue') return json(layoutQueue)
+    if (p === '/api/storage') {
+      if (layoutScenario === 'storage-failure') {
+        return route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"storage unavailable"}' })
+      }
+      if (layoutScenario === 'no-observation') return json([])
+      if (layoutScenario === 'capacity') return json(layoutStorageRoots.capacity)
+      if (layoutScenario === 'stale' || layoutScenario === 'many-warnings') return json(layoutStorageRoots.stale)
+      return json(layoutStorageRoots.normal)
+    }
     if (p === '/api/encode-profiles') return json([{ name: 'hevc-1080p', container: 'mp4' }])
     if (p === '/api/rules') return json(rules)
-    if (p === '/api/reservations') return json(emptyHome ? [] : reservations)
+    if (p === '/api/reservations') {
+      if (emptyHome) return json([])
+      return json(layoutScenario === 'capacity' ? layoutCapacityReservations : reservations)
+    }
     if (p === '/api/capacity/overages') return json(emptyHome ? [] : overages)
     if (p === '/api/recordings') {
       // ホーム（M8-3）は `status` / `limit` を実際に付けて 3 本問い合わせる
@@ -662,6 +705,7 @@ const viewports = [
   // 一覧の行長上限は広幅で初めて効くので、デスクトップショットは 2560px で撮る。
   { name: 'desktop', width: 2560, height: 1440 },
   { name: 'mobile', width: 360, height: 844 },
+  { name: 'mobile-wide', width: 390, height: 844 },
 ]
 
 const themes = ['light', 'dark']
@@ -797,7 +841,7 @@ for (const viewport of viewports) {
 for (const viewport of viewports) {
   for (const theme of themes) {
     const { context, page } = await open(viewport, theme, screenOf('recordings'))
-    await page.getByText('ストレージ詳細', { exact: true }).click()
+    await page.locator('main > header details summary').click()
     const file = path.join(OUT_DIR, `recordings-storage-${theme}-${viewport.name}.png`)
     await page.screenshot({ path: file })
     log(`  ${path.basename(file)}`)
@@ -913,6 +957,150 @@ for (const theme of themes) {
     await page.screenshot({ path: file })
     log(`  ${path.basename(file)}`)
     await checkMissingStrings(page, `home-empty/${theme}`)
+    await context.close()
+  }
+}
+
+// --- ①-A' issue #686: 視聴対象への到達距離 -------------------------------
+//
+// 変更前の基準値は 360/390px が録画詳細リンクの viewport 上端約 317px、
+// デスクトップが約 245px だった。ここでは固定時刻・同じ API モックで状態を分け、
+// ①リンクの viewport Y、②固定ヘッダー/ボトムナビに隠れないこと、③必要スクロール量、
+// ④ホームのショートカットを 1 操作で完了録画へ移せることを測る。
+// 数値は docs/frontend/recordings.md にも結果として記録するが、合否の権威はここ。
+log('\n=== ①-A\' issue #686 視聴対象への到達距離 ===')
+const layoutScenarios = [
+  { name: 'normal', label: '正常' },
+  { name: 'capacity', label: '満杯見込み' },
+  { name: 'stale', label: '古い観測' },
+  { name: 'storage-failure', label: 'ストレージ取得失敗' },
+  { name: 'no-observation', label: '観測なし' },
+  { name: 'encode-queue', label: 'エンコード待機/実行中' },
+  { name: 'many-warnings', label: '警告多数' },
+]
+const layoutViewports = [desktop, viewports[1], viewports[2]]
+const layoutMetrics = new Map()
+
+for (const scenario of layoutScenarios) {
+  for (const viewport of layoutViewports) {
+    const { context, page } = await open(viewport, 'light', screenOf('recordings'), {
+      layoutScenario: scenario.name,
+    })
+    const target = page.locator('main a[href^="/recordings/"]').first()
+    await target.waitFor({ timeout: 5000 }).catch(() => {})
+    if ((await target.count()) === 0) {
+      ng.push(`録画一覧/${scenario.label}/${viewport.name}: 最初の録画詳細リンクが無い`)
+      await context.close()
+      continue
+    }
+    const targetMetrics = await target.evaluate((el) => {
+      const targetRect = el.getBoundingClientRect()
+      const headerRect = document.querySelector('main > header')?.getBoundingClientRect()
+      const bottomRect = document.querySelector('[data-testid="bottom-nav"]')?.getBoundingClientRect()
+      const visibleTop = headerRect?.bottom ?? 0
+      const visibleBottom = window.innerHeight - (bottomRect?.height ?? 0)
+      return {
+        y: targetRect.top,
+        bottom: targetRect.bottom,
+        headerBottom: visibleTop,
+        visibleBottom,
+        requiredScroll: Math.max(0, targetRect.bottom - visibleBottom, visibleTop - targetRect.top),
+      }
+    })
+    const managementBox = await page.locator('[data-testid="recordings-management-summary"]').boundingBox()
+    const summaryLocator = page.locator('main > header details summary').first()
+    const summaryText = (await summaryLocator.count()) > 0
+      ? await summaryLocator.textContent()
+      : ''
+    const metric = {
+      ...targetMetrics,
+      managementHeight: managementBox?.height ?? null,
+      summary: summaryText?.replaceAll(/\s+/g, ' ').trim() ?? '',
+    }
+    layoutMetrics.set(`${scenario.name}/${viewport.name}`, metric)
+    log(
+      `  録画一覧/${scenario.label}/${viewport.name}: ` +
+        `Y=${metric.y.toFixed(1)}px scroll=${metric.requiredScroll.toFixed(1)}px ` +
+        `管理行=${metric.managementHeight?.toFixed(1) ?? '—'}px`,
+    )
+    if (metric.y < metric.headerBottom - 0.5) {
+      ng.push(`録画一覧/${scenario.label}/${viewport.name}: 録画リンクが固定ヘッダーに隠れる`)
+    }
+    if (metric.bottom > metric.visibleBottom + 0.5) {
+      ng.push(`録画一覧/${scenario.label}/${viewport.name}: 録画リンクがボトムナビに隠れる`)
+    }
+    if (scenario.name === 'normal') {
+      const yLimit = viewport.name === 'desktop' ? 230 : 280
+      if (metric.y > yLimit) {
+        ng.push(
+          `録画一覧/正常/${viewport.name}: 正常時の到達距離が短縮されていない` +
+            `（Y=${metric.y.toFixed(1)}px、上限 ${yLimit}px）`,
+        )
+      }
+      if (metric.managementHeight === null || metric.managementHeight > 45) {
+        ng.push(
+          `録画一覧/正常/${viewport.name}: 管理情報が 1 行に収まっていない` +
+            `（${metric.managementHeight?.toFixed(1) ?? '—'}px）`,
+        )
+      }
+      if (metric.summary.includes('の見込み') || metric.summary.includes('観測:')) {
+        ng.push(`録画一覧/正常/${viewport.name}: 正常時の予測/観測を summary に常置している`)
+      }
+    }
+    if (scenario.name === 'capacity' && !metric.summary.includes('満杯見込み')) {
+      ng.push(`録画一覧/満杯見込み/${viewport.name}: 満杯見込みが summary に常置されていない`)
+    }
+    if ((scenario.name === 'stale' || scenario.name === 'many-warnings') && !metric.summary.includes('古い可能性')) {
+      ng.push(`録画一覧/${scenario.label}/${viewport.name}: 古い観測が summary に常置されていない`)
+    }
+    if (scenario.name === 'encode-queue') {
+      for (const label of ['待機中 2件', '実行中 1件']) {
+        if ((await page.getByRole('button', { name: label, exact: true }).count()) === 0) {
+          ng.push(`録画一覧/エンコード待機列/${viewport.name}: ${label} が無い`)
+        }
+      }
+    }
+    if (scenario.name === 'storage-failure' || scenario.name === 'no-observation') {
+      if (metric.summary.includes('空き') || metric.summary.includes('の見込み')) {
+        ng.push(`録画一覧/${scenario.label}/${viewport.name}: 欠損した容量情報を表示している`)
+      }
+    }
+    await context.close()
+  }
+}
+
+for (const scenario of ['normal', 'many-warnings']) {
+  for (const viewport of layoutViewports) {
+    const { context, page } = await open(viewport, 'light', screenOf('home'), {
+      layoutScenario: scenario,
+    })
+    const finishedHeading = page.getByRole('heading', { name: '直近の完了', exact: true })
+    await finishedHeading.waitFor({ timeout: 5000 }).catch(() => {})
+    const shortcut = page.getByRole('link', { name: '直近の完了へ', exact: true })
+    if ((await shortcut.count()) !== 1) {
+      ng.push(`ホーム/${scenario}/${viewport.name}: 完了録画へのショートカットが 1 件でない`)
+      await context.close()
+      continue
+    }
+    const before = await page.locator('#home-finished').boundingBox()
+    await shortcut.click()
+    await page.waitForTimeout(100)
+    const after = await page.locator('#home-finished').boundingBox()
+    const header = await page.locator('main > header').boundingBox()
+    const bottom = await page.locator('[data-testid="bottom-nav"]').boundingBox()
+    const scrollY = await page.evaluate(() => window.scrollY)
+    const visibleBottom = viewport.height - (bottom?.height ?? 0)
+    log(
+      `  ホーム/${scenario}/${viewport.name}: ` +
+        `完了前Y=${before?.y?.toFixed(1) ?? '—'}px ` +
+        `完了後Y=${after?.y?.toFixed(1) ?? '—'}px scroll=${scrollY.toFixed(1)}px 操作=1`,
+    )
+    if (after === null || header === null || after.y < header.y + header.height - 0.5) {
+      ng.push(`ホーム/${scenario}/${viewport.name}: 完了録画セクションが固定ヘッダーに隠れる`)
+    }
+    if (after !== null && after.y > visibleBottom + 0.5) {
+      ng.push(`ホーム/${scenario}/${viewport.name}: 完了録画セクションが viewport 外に残る`)
+    }
     await context.close()
   }
 }
