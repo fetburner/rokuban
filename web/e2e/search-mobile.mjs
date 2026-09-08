@@ -24,7 +24,9 @@
 //
 // **①②は `page.goto` 直後、スクロールも操作も一切せずに測る** --- 「初画面」を
 // 検証する判定でスクロールしてしまうと、直したい問題自体を回避してしまう。
-// ④だけが「押した後」の判定なので、①②を測り終えてから操作する。
+// ④⑤だけが「押した後」の判定なので、①②を測り終えてから操作する。
+// **⑤は④の測定より後に置く**（⑤の Tab がスクロールを起こす。理由と実測値は
+// `checkResultReservation` のコメント）。
 //
 // **mirakc も実チューナーも DB も要らない。** API は `page.route` で丸ごと
 // 差し替える（design.mjs と同じ手）。
@@ -168,12 +170,17 @@ async function bottomNavBox(page, viewport, mark, label) {
   return box
 }
 
+/** firstResultRow は検索結果の 1 件目の行（④の矩形測定と⑤の操作が同じ行を見る）。 */
+function firstResultRow(page) {
+  return page.locator('[data-testid="search-results"] > li').first()
+}
+
 /**
- * checkViewport は 1 viewport ぶんの判定（①②④）をまとめて行う。
+ * checkViewport は 1 viewport ぶんの判定（①②④⑤）をまとめて行う。
  *
  * **①②を測り終えるまでスクロールも操作もしない** --- 「初画面（スクロール前）で
  * 主操作に届くか」を見る判定でスクロールすると、直したい問題そのものを回避して
- * しまう。④は定義上「押した後」なので、①②の後にだけ操作する。
+ * しまう。④⑤は定義上「押した後」なので、①②の後にだけ操作する。
  */
 async function checkViewport(viewport) {
   const context = await browser.newContext({ viewport })
@@ -295,6 +302,12 @@ async function checkViewport(viewport) {
   // ここから先だけ操作する（この順序は動かさないこと）。
   await checkSubmitFeedback(page, viewport, label)
 
+  // --- ⑤ 結果行の予約導線 ---
+  // **④を測り終えた後にだけ操作する**（`checkResultReservation` のコメント）。
+  // `checkSubmitFeedback` の中に置くと、その早期 return で⑤が黙って消えるため
+  // ここから呼ぶ。
+  await checkResultReservation(page, label)
+
   await context.close()
 }
 
@@ -328,9 +341,8 @@ async function checkSubmitFeedback(page, viewport, label) {
   }
   // 結果 1 件目の中身（skeleton → 本物）が届くのを待つ。skeleton と本物で行の
   // 高さが違うので、届く前に測ると別のレイアウトを測ってしまう。
-  const firstRow = page.locator('[data-testid="search-results"] > li').first()
+  const firstRow = firstResultRow(page)
   await firstRow.getByText(/^ニュース \d+$/).waitFor({ timeout: 15000 })
-  await checkResultReservation(page, firstRow, viewport, label)
   await page.waitForTimeout(200)
 
   const scrollY = await page.evaluate(() => window.scrollY)
@@ -389,8 +401,16 @@ async function checkSubmitFeedback(page, viewport, label) {
  * 予約ボタンは検索結果の行本体とは別のタブ停止可能な要素であり、モバイルでも
  * 44px の標的を持つ。jsdom では実際の Tab 移動・ボタン矩形を測れないため、ここで
  * 「探し直さず、その場の行から」操作できることを固定する。
+ *
+ * **④を測り終えた後にだけ呼ぶこと。** ここで押す `Tab` は要素にフォーカスを移し、
+ * フォーカスはブラウザ既定のスクロールを起こす。④より前に置くと、④が捕まえる
+ * べき「押しても結果が折り目の外」の回帰を⑤自身が回避してしまう
+ * （実測: 送信後の `scrollIntoView` を落として結果 1 件目を折り目の下へ出す変異で、
+ * ⑤を④の前に置くと `scrollY` が 0 のはずが 458 になり、件数行 816・結果 1 件目 848
+ * が 358・390 まで引き上げられて④が「すべて期待どおり」で通った）。
  */
-async function checkResultReservation(page, firstRow, viewport, label) {
+async function checkResultReservation(page, label) {
+  const firstRow = firstResultRow(page)
   const reserveButton = firstRow.getByRole('button', { name: '予約', exact: true })
   const count = await reserveButton.count()
   if (count !== 1) {
@@ -492,7 +512,7 @@ await checkViewport({ width: 390, height: 844 })
 log('\n=== ③ 詳細条件の要約・キーボード操作（390x844） ===')
 await checkRestoredDetails()
 
-log('\n=== ③ デスクトップ（1280x900）でも②④を確認 ===')
+log('\n=== ③ デスクトップ（1280x900）でも②④⑤を確認 ===')
 await checkViewport({ width: 1280, height: 900 })
 
 await finish(ng, browser)
