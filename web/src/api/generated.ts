@@ -557,7 +557,7 @@ export interface DropPosition {
   /** 原本 TS の先頭から、ドロップを観測したパケットまでのバイト位置 */
   byteOffset: number;
   /** 録画開始からの経過ミリ秒。PCR を得られない場合は省略 */
-  elapsedMs?: number | null;
+  elapsedMs?: number;
 }
 
 export interface DropStat {
