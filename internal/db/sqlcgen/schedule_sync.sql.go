@@ -83,7 +83,9 @@ SELECT now()::timestamptz AS mark
 
 // 全量 snapshot の基準時刻を DB の時計から取る。schedule_sync の upsert も
 // snapshot marker の更新も同じトランザクションに入れるため、アプリの時計の
-// skew で今回投入した行を stale として消すことがない。
+// skew で今回投入した行を stale として消すことがない。DeleteStaleScheduleSyncs
+// に渡す明示 param にしているのは、stale 削除を別トランザクションに移した
+// 瞬間に now() が全行を消してしまうため（同一トランザクション前提を明示する）。
 func (q *Queries) ScheduleSyncSweepMark(ctx context.Context) (time.Time, error) {
 	row := q.db.QueryRow(ctx, scheduleSyncSweepMark)
 	var mark time.Time
@@ -116,8 +118,10 @@ type UpsertScheduleSyncParams struct {
 // schedule_sync は reservation_id 列（observed schedule がどの reservations
 // 行に対応するかの便宜的なポインタ）を持たない --- 読む本番コードが 1 つも
 // 無かった（この列を含む唯一の SELECT だった ListScheduleSyncsBySite も
-// 呼び出し元ゼロだったため、この issue で併せて落とした）。reconciler の
-// 「自分が作った schedule か」の判定は常に tags = mirakc.IsOurs で行う。
+// 呼び出し元ゼロだったため、この issue で併せて落とした。
+// ListScheduleSyncsBySite は presync collector という読み手ができたため
+// issue #680 で再追加した）。reconciler の「自分が作った schedule か」の
+// 判定は常に tags = mirakc.IsOurs で行う。
 //
 // issue #99 は reservation_id の FK（ON DELETE SET NULL）だけを外す案を
 // 挙げたが、PR #147 のレビューで取り下げられた --- 外すとこの列は「削除済み

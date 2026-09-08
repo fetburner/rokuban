@@ -47,8 +47,9 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_circuit_breaker_tripped{site,breaker}` | Gauge | **いま止まっているか**（1 = 発動中）。ラッチなのでアラートはこちら。`breaker="delete_reconcile"` は site が空文字列 |
 | `rokuban_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に完走したパスの時刻 |
 | `rokuban_reconcile_start_delayed{site}` | Gauge | **開始時刻を過ぎたのに録画が始まっていない予約数**。収束すればゼロに戻る |
-| `rokuban_presync_pending{site,reason}` | Gauge（DB） | 開始前〜録画中の desired reservation と observed schedule の未収束数。`reason="missing"` は schedule 不在、`reason="options"` は priority / program tag / 明示 `contentPath` の不一致。skip と終了済みは除外する |
-| `rokuban_snapshot_last_success_timestamp_seconds{site}` | Gauge（DB） | `schedule_sync` の全量 upsert + stale 削除 + marker 更新を同一トランザクションでコミットした最後の時刻。未確立は 0。`presync_pending` と対で観測不能を判定する |
+| `rokuban_presync_pending{site,reason}` | Gauge（DB） | 開始前〜録画中の desired reservation と observed schedule の未収束数。`reason="missing"` は schedule 不在、`reason="options"` は priority / program tag / 明示 `contentPath` の不一致。skip と終了済みは除外する。DB 版の `rokuban_reconcile_pending_diff{action="create"}`（`missing`）/ `{action="update"}` + `{action="update_deferred"}`（`options`）に相当する |
+| `rokuban_presync_pending_earliest_start_timestamp_seconds{site,reason}` | Gauge（DB） | 同じ reason で pending な予約のうち最も開始が近い番組の start_at。件数だけでは判別できない「開始が近い未同期」と「十分先の未同期」を区別する（issue #680）。pending が 0 の reason には系列が出ない |
+| `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` | Gauge（DB） | `schedule_sync` の全量 upsert + stale 削除 + marker 更新を同一トランザクションでコミットした最後の時刻。未確立は 0。`presync_pending` と対で観測不能を判定する |
 | `rokuban_presync_scrape_errors_total{site}` | Counter（DB） | presync collector の DB 読み取りまたは observed options の解釈に失敗した回数。失敗時は pending / snapshot を 0 として報告しない |
 | `rokuban_ruler_pass_duration_seconds` | Histogram | ruler 1 パスの所要時間（下記 ruler） |
 | `rokuban_ruler_reservations_total{action}` | Counter | ruler が作成/更新/削除した予約数（下記 ruler） |
@@ -79,6 +80,12 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_live_idle_gc_reclaimed_total` | Counter | idle GC が回収したライブセッション数 |
 | `rokuban_live_leave_hints_total{result}` | Counter | 離脱ヒントの受信数（`deadline_shortened` / `no_session` / `no_effect`）。**回収数と対で読む** --- ヒントは停止命令ではないので一致しない（差が開いていれば共有セッションが多い）。`no_effect` が定常的に出るなら「猶予 ≥ `live.idle_timeout`」でヒントが効かない設定 |
 | `rokuban_live_idle_gc_last_pass_timestamp_seconds` | Gauge | 最後に完走した idle GC パスの時刻 |
+
+**ロール分割（KEDA ScaledJob）構成でアラートに使えるのは presync の DB 側 3 本だけである**。
+対象は上表の `rokuban_presync_pending` 系列 3 本（pending / earliest / snapshot）。
+プロセス内ゲージの `rokuban_reconcile_pending_diff` は reconciler のジョブを実行した
+Pod でしか値を持たない。その Pod は `--once` で終了するため scrape 窓が無い
+（下記「ジョブ化されたループの監視」）。
 
 **録画失敗は観測した時点で数える**。予約の照会や mirakc への問い合わせより後に
 置くと、それらが失敗したときに取りこぼす（物事がうまくいっていないときこそ数えたい）。
@@ -127,17 +134,28 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 
 3 番目が k8s 特有の落とし穴。`PeriodicJobs` はリーダーだけが投入するので、worker が 0 にスケールすると誰も投入しない（[データ層](../data.md) §2）。`rokuban enqueue` を叩く CronJob が設定されているかを最初に疑う。
 
-`rokuban_reconcile_last_pass_timestamp_seconds` は引き続きプロセス内の補助観測であり、
-KEDA ScaledJob の `--once` では scrape 窓が無い。予約同期の鮮度には、DB-backed の
-`rokuban_snapshot_last_success_timestamp_seconds{site}` を使う。
+`rokuban_*_last_pass_timestamp_seconds`（`reconcile` / `ruler` / `sweep`）は**プロセス内の
+ゲージ**である。ジョブを走らせたプロセスは 1 件消化して終了する（`--once`）ので、その値を
+scrape できる窓が実質的に無い。常駐している Pod（api / notifier / watcher / streamer）は
+そのジョブを一度も走らせないので、**常に 0 を返す**。kind で実測した。判定 1〜5 を通した後の
+api Pod で、`reconcile` / `ruler` / `sweep` の 3 つとも `0` だった。
+
+予約同期（reconcile）の鮮度には、この実測を踏まえて DB-backed の
+`rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` を新設した。
 常駐 Pod（api / notifier / watcher / streamer）や別の worker が scrape しても、同じ DB
-の値になる。
-reconciler のジョブが未投入・未起動・途中失敗のどの場合も、最後に確定した snapshot
-からの経過時間として見える。
+の値になる。reconciler のジョブが未投入・未起動・途中失敗のどの場合も、最後に確定した
+snapshot からの経過時間として見える。
 
 `rokuban_presync_pending` は snapshot の鮮度を代用しない。snapshot が古い / 0 のときは
 「未同期」と断定せず、まず観測不能として扱う。freshness と pending の判定順、常駐
 構成と ScaledJob 構成の収集元・復旧条件は [アラート設計](alerts.md) にまとめる。
+
+**未解決: ruler / sweep のパス鮮度は今回 DB ゲージ化していない。** DB ゲージ化したのは
+schedule 同期（reconcile）の鮮度だけである。ruler と record_sweep は依然として
+プロセス内ゲージしか持たない。ロール分割（KEDA ScaledJob）構成では、この 2 つの
+鮮度を観測できないままである。`river_job` の `state` / `finalized_at` からそちらの
+鮮度を出す案は残っているが、プロセス内ゲージを DB ゲージに移すかどうかは設計判断
+なので、ここでは形を決めていない。
 
 手動で走らせたいときは `rokuban enqueue <job>`。既に待機中なら投入せず終了コード 0 を返すので、cron から重ねて叩いても安全。
 

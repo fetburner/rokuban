@@ -86,7 +86,7 @@ func TestCompareOptions(t *testing.T) {
 	}
 }
 
-func TestProgramActiveAt(t *testing.T) {
+func TestProgramEnded(t *testing.T) {
 	startAt := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
 	const durationMs = int64(60_000)
 
@@ -95,13 +95,13 @@ func TestProgramActiveAt(t *testing.T) {
 		now  time.Time
 		want bool
 	}{
-		{name: "before end", now: startAt.Add(59 * time.Second), want: true},
-		{name: "at end", now: startAt.Add(time.Minute), want: true},
-		{name: "after end", now: startAt.Add(time.Minute + time.Nanosecond), want: false},
+		{name: "before end", now: startAt.Add(59 * time.Second), want: false},
+		{name: "at end", now: startAt.Add(time.Minute), want: false},
+		{name: "after end", now: startAt.Add(time.Minute + time.Nanosecond), want: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := ProgramActiveAt(startAt, durationMs, tt.now); got != tt.want {
-				t.Errorf("ProgramActiveAt() = %v, want %v", got, tt.want)
+			if got := ProgramEnded(startAt, durationMs, tt.now); got != tt.want {
+				t.Errorf("ProgramEnded() = %v, want %v", got, tt.want)
 			}
 		})
 	}

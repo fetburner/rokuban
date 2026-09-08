@@ -557,7 +557,7 @@ func TestPatchProgramOverrides_InvalidFields_Returns400(t *testing.T) {
 	_ = resp3.Body.Close()
 
 	// 空文字の contentPath は保存が成功するが reconciler の差分対象から外れて
-	// 何も反映されない状態になる（explicitContentPath、internal/reconciler）ため、
+	// 何も反映されない状態になる（schedulesync.ExplicitContentPath）ため、
 	// 保存時点で拒否する（issue #312）。override を消すのは reset。
 	resp4 := doPatch(t, srv, overridesPath(programID), `{"contentPath":""}`)
 	if resp4.StatusCode != http.StatusBadRequest {

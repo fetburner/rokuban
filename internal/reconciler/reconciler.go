@@ -489,33 +489,10 @@ func (r *Reconciler) listDesired(ctx context.Context) ([]desiredReservation, err
 // 23:10 開始の番組を 23:16:39 に予約しても正常に録画継続、426MB 到達）。
 // ガードの対象は「終了済み」だけで、「開始済み」で切ると放送中の番組を
 // 予約する経路が黙って壊れる。
-func programEnded(snap sqlcgen.ProgramSnapshot, now time.Time) bool {
-	endTime := snap.StartAt.Add(time.Duration(snap.DurationMs) * time.Millisecond)
-	return endTime.Before(now)
-}
-
-// effectivePriority は mirakc に送る priority を決める: opts.Priority が
-// あればそれ、なければ defaultPriority。初回作成（createSchedule）と予約
-// オプション差分反映の再作成（recreateSchedule）の両方から呼ばれる必要が
-// あるため、この 1 箇所に抽出してある。同じ式を 2 箇所に書き下すと、片方だけ
-// 直してもう片方を直し忘れる事故が起きる。
-func effectivePriority(defaultPriority int, opts reservation.Options) int {
-	if opts.Priority != nil {
-		return *opts.Priority
-	}
-	return defaultPriority
-}
-
-// explicitContentPath はユーザーが overrides.contentPath に明示指定した値を
-// サニタイズ済みで返す。ok=false は「明示指定が無い」= テンプレート生成に委ねる。
 //
-// effective の ContentPath が非 nil であることが「ユーザーが書いた」と同値である
-// のは、reservations.base に contentPath を載せる書き手が存在しないため
-// （ruler の computeBase が意図的に除外している）。ruler が base に contentPath を
-// 載せるようになったらこの同値が崩れ、テンプレート生成値が差分対象に混ざって
-// #19 が潰した churn が戻る。
-func explicitContentPath(opts reservation.Options) (string, bool) {
-	return schedulesync.ExplicitContentPath(opts)
+// 境界の式そのものは schedulesync.ProgramEnded が持つ（collector と共有するため）。
+func programEnded(snap sqlcgen.ProgramSnapshot, now time.Time) bool {
+	return schedulesync.ProgramEnded(snap.StartAt, snap.DurationMs, now)
 }
 
 // buildContentPath は録画ファイルの content_path を組み立てる。
@@ -590,7 +567,7 @@ func resolveContentPath(res sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, o
 func (r *Reconciler) createSchedule(ctx context.Context, d desiredReservation) error {
 	res, opts := d.res, d.opts
 
-	priority := effectivePriority(r.cfg.DefaultPriority, opts)
+	priority := schedulesync.EffectivePriority(r.cfg.DefaultPriority, opts)
 
 	contentPath, err := resolveContentPath(res, d.snap, opts)
 	if err != nil {
@@ -626,7 +603,7 @@ type recreateCandidate struct {
 	// reason は再作成の契機（"priority" / "tag" / "content_path" を立った順に
 	// 連結したもの）。recreateSchedule の Info ログに載せる —— mirakc が
 	// contentPath をそのまま返さない実装だった場合、この理由が反復して
-	// 出続けることが唯一の観測手段になる（explicitContentPath のコメント参照）。
+	// 出続けることが唯一の観測手段になる（schedulesync.ExplicitContentPath のコメント参照）。
 	reason string
 }
 
@@ -636,7 +613,7 @@ type recreateCandidate struct {
 // ループとは独立に走る（docs/recording.md §3.2、issue #19）。
 //
 // 差分対象は priority・reservation tag・明示指定された contentPath
-// （explicitContentPath が ok を返す場合のみ）。テンプレート生成の contentPath
+// （schedulesync.ExplicitContentPath が ok を返す場合のみ）。テンプレート生成の contentPath
 // （filenameTemplate 展開・既定形式）は差分対象にしない（EPG の番組名が変わる
 // たびに schedule が消えて作り直される churn になるため。recreateSchedule 側で
 // 明示指定が無ければ observed の contentPath をそのまま引き継ぐ）。
@@ -732,7 +709,7 @@ func (r *Reconciler) recreateChanged(
 //
 // contentPath の決定は 3 分岐で、順序が意味を持つ:
 //  1. 明示 override（overrides.contentPath）があればそれが最優先。
-//     explicitContentPath 経由にすることで、テンプレート再生成（resolveContentPath
+//     schedulesync.ExplicitContentPath 経由にすることで、テンプレート再生成（resolveContentPath
 //     が先に buildContentPath を通す）には絶対に落ちない — テンプレートが壊れて
 //     いても、明示指定がある限り再作成が失敗しないことが経路として担保される。
 //  2. 無ければ observed の contentPath を引き継ぐ（従来どおり。base に書き戻す
@@ -742,7 +719,7 @@ func (r *Reconciler) recreateSchedule(ctx context.Context, d desiredReservation,
 	res, opts := d.res, d.opts
 
 	var contentPath string
-	if cp, ok := explicitContentPath(opts); ok {
+	if cp, ok := schedulesync.ExplicitContentPath(opts); ok {
 		contentPath = cp
 	} else if observed.Options.ContentPath != nil && *observed.Options.ContentPath != "" {
 		// SanitizeContentPath を通すのは、mirakc 側を直接触られていた場合の保険
@@ -756,7 +733,7 @@ func (r *Reconciler) recreateSchedule(ctx context.Context, d desiredReservation,
 		contentPath = cp
 	}
 
-	priority := effectivePriority(r.cfg.DefaultPriority, opts)
+	priority := schedulesync.EffectivePriority(r.cfg.DefaultPriority, opts)
 
 	if err := r.mirakc.DeleteSchedule(ctx, res.ProgramID); err != nil {
 		return fmt.Errorf("DELETE schedule for recreate: %w", err)

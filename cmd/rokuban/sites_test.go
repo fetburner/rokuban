@@ -352,7 +352,7 @@ func TestNewConfiguredPresyncCollectors_ExposeAllConfiguredSites(t *testing.T) {
 
 	seen := make(map[string]bool)
 	for _, family := range families {
-		if family.GetName() != "rokuban_snapshot_last_success_timestamp_seconds" {
+		if family.GetName() != "rokuban_schedule_snapshot_last_success_timestamp_seconds" {
 			continue
 		}
 		for _, metric := range family.Metric {

@@ -22,6 +22,12 @@ import (
 // Prometheus の scrape timeout（既定 10 秒）より短くする。
 const presyncQueryTimeout = 5 * time.Second
 
+// reasonMissing / reasonOptions は presync が数える不一致の理由。
+const (
+	reasonMissing = "missing"
+	reasonOptions = "options"
+)
+
 // PresyncCollector は 1 サイトの desired reservation と schedule_sync の
 // observed を scrape ごとに突き合わせる DB-backed collector。
 //
@@ -34,6 +40,7 @@ type PresyncCollector struct {
 	site string
 
 	pending  *prometheus.Desc
+	earliest *prometheus.Desc
 	snapshot *prometheus.Desc
 	errors   prometheus.Counter
 }
@@ -49,8 +56,13 @@ func NewPresyncCollector(pool *pgxpool.Pool, site string) *PresyncCollector {
 			"Desired reservations not observed with the expected schedule state, by reason.",
 			[]string{"reason"}, labels,
 		),
+		earliest: prometheus.NewDesc(
+			"rokuban_presync_pending_earliest_start_timestamp_seconds",
+			"Earliest program start time among the pending desired reservations for this reason.",
+			[]string{"reason"}, labels,
+		),
 		snapshot: prometheus.NewDesc(
-			"rokuban_snapshot_last_success_timestamp_seconds",
+			"rokuban_schedule_snapshot_last_success_timestamp_seconds",
 			"Unix time of the last committed full schedule snapshot for this site. Zero means no snapshot has completed.",
 			nil, labels,
 		),
@@ -65,6 +77,7 @@ func NewPresyncCollector(pool *pgxpool.Pool, site string) *PresyncCollector {
 // Describe は prometheus.Collector を満たす。
 func (c *PresyncCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.pending
+	ch <- c.earliest
 	ch <- c.snapshot
 	c.errors.Describe(ch)
 }
@@ -86,12 +99,16 @@ func (c *PresyncCollector) Collect(ch chan<- prometheus.Metric) {
 		return
 	}
 
-	ch <- prometheus.MustNewConstMetric(
-		c.pending, prometheus.GaugeValue, float64(result.missing), "missing",
-	)
-	ch <- prometheus.MustNewConstMetric(
-		c.pending, prometheus.GaugeValue, float64(result.options), "options",
-	)
+	for _, reason := range []string{reasonMissing, reasonOptions} {
+		ch <- prometheus.MustNewConstMetric(c.pending, prometheus.GaugeValue,
+			float64(result.pending[reason]), reason)
+		// pending が 0 の reason は系列を出さない。0 を出すと
+		// `earliest - time() < lead` が常に真になり、健全な状態で鳴る。
+		if at, ok := result.earliest[reason]; ok {
+			ch <- prometheus.MustNewConstMetric(c.earliest, prometheus.GaugeValue,
+				float64(at.UnixNano())/float64(time.Second), reason)
+		}
+	}
 	ch <- prometheus.MustNewConstMetric(
 		c.snapshot, prometheus.GaugeValue, result.snapshotAt,
 	)
@@ -99,15 +116,27 @@ func (c *PresyncCollector) Collect(ch chan<- prometheus.Metric) {
 }
 
 type presyncResult struct {
-	missing    int
-	options    int
+	pending    map[string]int
+	earliest   map[string]time.Time
 	snapshotAt float64
+}
+
+// add は reason ごとの pending 件数と、その reason の中で最も開始が早い
+// 予約の start_at を更新する。
+func (r *presyncResult) add(reason string, startAt time.Time) {
+	r.pending[reason]++
+	if cur, ok := r.earliest[reason]; !ok || startAt.Before(cur) {
+		r.earliest[reason] = startAt
+	}
 }
 
 func (c *PresyncCollector) read(ctx context.Context) (presyncResult, error) {
 	q := sqlcgen.New(c.pool)
 
-	var result presyncResult
+	result := presyncResult{
+		pending:  make(map[string]int, 2),
+		earliest: make(map[string]time.Time, 2),
+	}
 	snapshotAt, err := q.GetScheduleSyncSnapshot(ctx, c.site)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -141,7 +170,7 @@ func (c *PresyncCollector) read(ctx context.Context) (presyncResult, error) {
 		if candidate.Err != nil {
 			return presyncResult{}, candidate.Err
 		}
-		if candidate.Skipped || !schedulesync.ProgramActiveAt(
+		if candidate.Skipped || schedulesync.ProgramEnded(
 			candidate.Snapshot.StartAt,
 			candidate.Snapshot.DurationMs,
 			now,
@@ -152,7 +181,7 @@ func (c *PresyncCollector) read(ctx context.Context) (presyncResult, error) {
 		programID := candidate.Reservation.ProgramID
 		observedOptions, ok := observed[programID]
 		if !ok {
-			result.missing++
+			result.add(reasonMissing, candidate.Snapshot.StartAt)
 			continue
 		}
 
@@ -164,7 +193,7 @@ func (c *PresyncCollector) read(ctx context.Context) (presyncResult, error) {
 			observedTags[programID],
 		)
 		if owned && diff.Any() {
-			result.options++
+			result.add(reasonOptions, candidate.Snapshot.StartAt)
 		}
 	}
 

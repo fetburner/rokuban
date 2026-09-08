@@ -50,24 +50,29 @@ func CompareOptions(
 		return OptionsDiff{}, false
 	}
 
-	diff.Priority = observed.Priority != effectivePriority(defaultPriority, desired)
+	diff.Priority = observed.Priority != EffectivePriority(defaultPriority, desired)
 	tagProgramID, _ := mirakc.FindProgramTag(tags)
 	diff.Tag = tagProgramID != programID
 
 	wantContentPath, explicit := ExplicitContentPath(desired)
-	if observed.ContentPath != nil && explicit {
-		diff.ContentPath = *observed.ContentPath != wantContentPath
-	} else if explicit {
-		// nil は mirakc が返した observed schedule に path が無い状態。
-		// desired は明示指定を持つので不一致として扱う。
-		diff.ContentPath = true
+	var observedContentPath string
+	if observed.ContentPath != nil {
+		observedContentPath = *observed.ContentPath
 	}
+	diff.ContentPath = explicit && observedContentPath != wantContentPath
 
 	return diff, true
 }
 
-// ExplicitContentPath は overrides.contentPath の明示値をサニタイズして返す。
+// ExplicitContentPath はユーザーが overrides.contentPath に明示指定した値を
+// サニタイズ済みで返す。ok=false は「明示指定が無い」= テンプレート生成に委ねる。
 // filenameTemplate の展開結果は明示指定ではないので false になる。
+//
+// effective の ContentPath が非 nil であることが「ユーザーが書いた」と同値である
+// のは、reservations.base に contentPath を載せる書き手が存在しないため
+// （ruler の computeBase が意図的に除外している）。ruler が base に contentPath を
+// 載せるようになったらこの同値が崩れ、テンプレート生成値が差分対象に混ざって
+// #19 が潰した churn が戻る。
 func ExplicitContentPath(opts reservation.Options) (string, bool) {
 	if opts.ContentPath == nil || *opts.ContentPath == "" {
 		return "", false
@@ -75,15 +80,21 @@ func ExplicitContentPath(opts reservation.Options) (string, bool) {
 	return contentpath.SanitizeContentPath(*opts.ContentPath), true
 }
 
-// ProgramActiveAt は番組終了時刻が now より前ではないかを返す。
-// 終了時刻ちょうどは active 側に倒し、reconciler の programEnded と同じ境界を
-// 共有する。presync は終了済み番組を未同期として警告してはならない。
-func ProgramActiveAt(startAt time.Time, durationMs int64, now time.Time) bool {
+// ProgramEnded は番組終了時刻が now より前かを返す。
+// 終了時刻ちょうどは「終了していない」側に倒し、reconciler の programEnded と
+// 同じ境界を共有する。presync は終了済み番組を未同期として警告してはならない。
+func ProgramEnded(startAt time.Time, durationMs int64, now time.Time) bool {
 	endAt := startAt.Add(time.Duration(durationMs) * time.Millisecond)
-	return !endAt.Before(now)
+	return endAt.Before(now)
 }
 
-func effectivePriority(defaultPriority int, opts reservation.Options) int {
+// EffectivePriority は mirakc に送る priority を決める: opts.Priority が
+// あればそれ、なければ defaultPriority。初回作成（createSchedule）と予約
+// オプション差分反映の再作成（recreateSchedule）の両方から呼ばれる必要が
+// あるため、この 1 箇所に抽出してある。同じ式を 2 箇所に書き下すと、片方だけ
+// 直してもう片方を直し忘れる事故が起きる。collector（CompareOptions 経由）も
+// 同じ値で observed options を比較するため、二重に定義しない。
+func EffectivePriority(defaultPriority int, opts reservation.Options) int {
 	if opts.Priority != nil {
 		return *opts.Priority
 	}

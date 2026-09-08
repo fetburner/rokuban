@@ -55,7 +55,10 @@ EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）で
 - `rokuban_presync_pending{site,reason="missing"}` — desired に対する observed schedule が無い
 - `rokuban_presync_pending{site,reason="options"}` — observed schedule はあるが、priority /
   `program:{programId}` tag / 明示 `contentPath` が desired と一致しない
-- `rokuban_snapshot_last_success_timestamp_seconds{site}` — schedule 全量 snapshot が DB に
+- `rokuban_presync_pending_earliest_start_timestamp_seconds{site,reason}` — 同じ reason で
+  pending な予約のうち最も開始が近い番組の start_at。pending が 0 の reason には
+  この系列が出ない（0 を出すと `earliest - time() < lead` が常に真になり、健全な状態で鳴る）
+- `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` — schedule 全量 snapshot が DB に
   整合した形で最後に確定した時刻。0 は未確立
 
 判定は **観測不能 → 未同期（missing） → 未同期（options） → 同期済み** の順に読む。
@@ -63,33 +66,40 @@ snapshot が 0 または stale なら、pending の値が 0 でも「同期済�
 の DB 読み取りに失敗したときは pending / snapshot 自体が出ず、
 `rokuban_presync_scrape_errors_total{site}` が増えるので、0 への置換でアラートを消さない。
 
+件数の gauge だけでは、8 日先の予約 1 件と 2 分後開始の予約 1 件が同値になり
+区別できない（issue #680）。開始が近いかどうかは件数ではなく
+`rokuban_presync_pending_earliest_start_timestamp_seconds` で判定する。
+
 アラート式の閾値は、現時点ではリポジトリに固定しない。Prometheus 側で運用値を設定する
-（`<snapshot_stale_seconds>` と `<pending_for>` は環境ごとの recording rule / alert rule
+（`<snapshot_stale_seconds>` と `<lead_seconds>` は環境ごとの recording rule / alert rule
 の値に置き換える）。論理形は次のとおり。
 
 ```promql
 # 先に観測不能を通知する。
-time() - rokuban_snapshot_last_success_timestamp_seconds
+time() - rokuban_schedule_snapshot_last_success_timestamp_seconds
   > <snapshot_stale_seconds>
 
-# fresh な snapshot に対してだけ、未同期の持続を通知する。
+# fresh な snapshot に対してだけ、開始が近い未同期を通知する。
+# 十分先の予約（earliest - time() >= <lead_seconds>）は鳴らさない。
 (
-  sum by (site, reason) (rokuban_presync_pending{reason=~"missing|options"}) > 0
+  rokuban_presync_pending_earliest_start_timestamp_seconds - time() < <lead_seconds>
 )
 and on (site)
 (
-  time() - rokuban_snapshot_last_success_timestamp_seconds
+  time() - rokuban_schedule_snapshot_last_success_timestamp_seconds
     <= <snapshot_stale_seconds>
 )
 ```
 
-実際の alert rule では後者に `for: <pending_for>` を付け、作成 POST、次の full
-observation、通知到達の正常な遅れを吸収する。`<pending_for>` と stale 閾値は、次の
-測定値を揃えてから決める。
+`for:` はここでは「pending が続いた時間」ではなく 1 scrape 分の揺らぎ吸収だけに
+使う。開始までの残り時間は上式が `earliest - time()` で直接見ているので、
+`for` を長く取る必要はない。
 
 通知は Prometheus の alert rule から Alertmanager へ送り、`site` と `reason` を
 ルーティングに残す。観測不能は同期状態の断定より優先して、担当者が reconciler の
 投入元・worker / ScaledJob の起動状態・DB 接続を確認する入口にする。
+
+`<lead_seconds>` を決める式は次のとおり（p95/p99 の実測値を代入する）。
 
 ```text
 lead >= (

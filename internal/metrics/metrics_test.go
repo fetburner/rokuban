@@ -263,7 +263,7 @@ func TestPresyncCollector_ClassifiesPendingState(t *testing.T) {
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "missing"}); got != 1 {
 		t.Errorf("without snapshot marker, missing = %v, want 1", got)
 	}
-	if got := labeledGaugeValue(t, c, "rokuban_snapshot_last_success_timestamp_seconds", nil); got != 0 {
+	if got := labeledGaugeValue(t, c, "rokuban_schedule_snapshot_last_success_timestamp_seconds", nil); got != 0 {
 		t.Errorf("without snapshot marker, snapshot timestamp = %v, want 0", got)
 	}
 
@@ -276,7 +276,7 @@ func TestPresyncCollector_ClassifiesPendingState(t *testing.T) {
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "options"}); got != 0 {
 		t.Errorf("options = %v, want 0", got)
 	}
-	if got := labeledGaugeValue(t, c, "rokuban_snapshot_last_success_timestamp_seconds", nil); got <= 0 {
+	if got := labeledGaugeValue(t, c, "rokuban_schedule_snapshot_last_success_timestamp_seconds", nil); got <= 0 {
 		t.Errorf("snapshot timestamp = %v, want positive", got)
 	}
 
@@ -337,6 +337,49 @@ func TestPresyncCollector_ClassifiesPendingState(t *testing.T) {
 	}
 }
 
+// presync_pending_earliest_start_timestamp_seconds は「開始が近い」を PromQL 側で
+// 判定するための最小 start_at。件数 gauge だけでは 8 日先の 1 件と 2 分後開始の
+// 1 件が同値になり、区別できない（issue #680）。
+func TestPresyncCollector_EarliestStart(t *testing.T) {
+	pool := rokutest.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	const farProgramID int64 = 6800101
+	farStart := time.Now().Add(8 * 24 * time.Hour).Truncate(time.Millisecond)
+	seedPresyncReservation(t, pool, farProgramID, farStart)
+	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
+		t.Fatalf("marking schedule snapshot: %v", err)
+	}
+	c := NewPresyncCollector(pool, testSite)
+
+	// ① 十分先の予約 1 件だけ: missing=1 かつ earliest - now > 7 日。
+	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "missing"}); got != 1 {
+		t.Fatalf("missing = %v, want 1", got)
+	}
+	earliest := labeledGaugeValue(t, c, "rokuban_presync_pending_earliest_start_timestamp_seconds", map[string]string{"reason": "missing"})
+	if got := time.Until(time.Unix(0, int64(earliest*float64(time.Second)))); got <= 7*24*time.Hour {
+		t.Errorf("earliest - now = %v, want > 7 days", got)
+	}
+
+	// ② 2 分後開始の予約を追加すると、その方が最小 start_at になる。
+	const nearProgramID int64 = 6800102
+	nearStart := time.Now().Add(2 * time.Minute).Truncate(time.Millisecond)
+	seedPresyncReservation(t, pool, nearProgramID, nearStart)
+	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
+		t.Fatalf("refreshing schedule snapshot: %v", err)
+	}
+	earliest = labeledGaugeValue(t, c, "rokuban_presync_pending_earliest_start_timestamp_seconds", map[string]string{"reason": "missing"})
+	if got := time.Until(time.Unix(0, int64(earliest*float64(time.Second)))); got >= 5*time.Minute {
+		t.Errorf("earliest - now = %v, want < 5 minutes", got)
+	}
+
+	// ③ pending が 0 の reason（options）には earliest 系列が出ない。
+	if _, ok := labeledGaugeValueOk(t, c, "rokuban_presync_pending_earliest_start_timestamp_seconds", map[string]string{"reason": "options"}); ok {
+		t.Error("earliest series must not be reported for a reason with zero pending")
+	}
+}
+
 func TestPresyncCollector_StaleSnapshotRemainsObservable(t *testing.T) {
 	pool := rokutest.SetupDB(t)
 	ctx := context.Background()
@@ -355,7 +398,7 @@ func TestPresyncCollector_StaleSnapshotRemainsObservable(t *testing.T) {
 	}
 
 	c := NewPresyncCollector(pool, testSite)
-	got := time.Unix(0, int64(labeledGaugeValue(t, c, "rokuban_snapshot_last_success_timestamp_seconds", nil)*float64(time.Second)))
+	got := time.Unix(0, int64(labeledGaugeValue(t, c, "rokuban_schedule_snapshot_last_success_timestamp_seconds", nil)*float64(time.Second)))
 	if !got.Before(time.Now().Add(-30 * time.Minute)) {
 		t.Errorf("snapshot timestamp = %v, want a stale timestamp", got)
 	}
@@ -442,7 +485,7 @@ func TestPresyncCollector_QueryFailure(t *testing.T) {
 	if strings.Contains(text, "rokuban_presync_pending") {
 		t.Error("query failure must not report presync_pending as zero")
 	}
-	if strings.Contains(text, "rokuban_snapshot_last_success_timestamp_seconds") {
+	if strings.Contains(text, "rokuban_schedule_snapshot_last_success_timestamp_seconds") {
 		t.Error("query failure must not report snapshot timestamp")
 	}
 	if !strings.Contains(text, "rokuban_presync_scrape_errors_total") {
@@ -545,6 +588,17 @@ func gaugeValue(t *testing.T, c prometheus.Collector, name string) float64 {
 
 func labeledGaugeValue(t *testing.T, c prometheus.Collector, name string, labels map[string]string) float64 {
 	t.Helper()
+	got, ok := labeledGaugeValueOk(t, c, name, labels)
+	if !ok {
+		t.Fatalf("metric %q with labels %v was not collected", name, labels)
+	}
+	return got
+}
+
+// labeledGaugeValueOk は labeledGaugeValue と同じ照合を行うが、系列が見つからない
+// ことをテスト対象にできるよう Fatal せず (0, false) を返す。
+func labeledGaugeValueOk(t *testing.T, c prometheus.Collector, name string, labels map[string]string) (float64, bool) {
+	t.Helper()
 	ch := make(chan prometheus.Metric, 16)
 	c.Collect(ch)
 	close(ch)
@@ -572,11 +626,10 @@ func labeledGaugeValue(t *testing.T, c prometheus.Collector, name string, labels
 			}
 		}
 		if matches {
-			return pb.Gauge.GetValue()
+			return pb.Gauge.GetValue(), true
 		}
 	}
-	t.Fatalf("metric %q with labels %v was not collected", name, labels)
-	return 0
+	return 0, false
 }
 
 func stringPtr(v string) *string { return &v }
