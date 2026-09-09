@@ -164,10 +164,6 @@ log('\n=== ② ライブ: hls.js が master の字幕 rendition を subtitleTrac
   if (!built) {
     skipped.push('② ライブ字幕 rendition: ffmpeg が無いためフィクスチャを生成できず測れない')
   } else {
-    const NETWORK_ID = 1
-    const SERVICE_ID = 9101
-    const COMPOSITE_ID = NETWORK_ID * 100_000 + SERVICE_ID
-
     const page = await browser.newPage()
     await installApiStubs(page, async ({ path: p, json }) => {
       if (p === '/api/sites') return json([SITE])

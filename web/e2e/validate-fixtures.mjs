@@ -1,25 +1,25 @@
 import { spawn } from 'node:child_process'
+import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-// 契約検証を持つスクリプトはここで列挙する。各スクリプトを個別の Node プロセスで
-// 実行するので、1 本のフィクスチャが壊れていても残りのスクリプトの検証を省略しない。
-// 新しいスクリプトに validateFixturesOrExit を足したら、この一覧にも追加する。
-const SCRIPTS = [
-  'badge-links.mjs',
-  'grid-reserved.mjs',
-  'personalization.mjs',
-  'design.mjs',
-  'programs-empty-window.mjs',
-  'reservations-capacity-error.mjs',
-  'reservations-mobile.mjs',
-  'multi-site.mjs',
-  'subtitles.mjs',
-  'recordings-selection.mjs',
-  'sse-refresh.mjs',
-]
-
 const E2E_DIR = path.dirname(fileURLToPath(import.meta.url))
+
+// 契約検証を持つスクリプトは手書きで一覧しない --- 手書きだと、並行して増えた
+// スクリプトの契約検証が一覧への追加漏れで静かに検査対象から外れる（実際に
+// programs-reservation-error.mjs で起きた）。各ファイルの中身に
+// validateFixturesOrExit の呼び出し（`await` に続く形）があるものを導出する。
+// `lib.mjs` は定義（`export async function` に続く形）なので当たらず自動的に
+// 外れる。このスクリプト自身が誤って一覧に入らないよう、判定に使う文字列は
+// 連結して組み立てている --- 1 つのリテラルとして書くとこのファイル自身の
+// ソースにその文字列が現れ、自分を一覧に入れてしまう（検証時に必ず確かめる）。
+// 各スクリプトを個別の Node プロセスで実行するので、1 本のフィクスチャが
+// 壊れていても残りのスクリプトの検証を省略しない。
+const CALL_MARKER = ['await', 'validateFixturesOrExit('].join(' ')
+const SCRIPTS = readdirSync(E2E_DIR)
+  .filter((f) => f.endsWith('.mjs'))
+  .filter((f) => readFileSync(path.join(E2E_DIR, f), 'utf8').includes(CALL_MARKER))
+  .sort()
 
 function run(script) {
   return new Promise((resolve) => {
