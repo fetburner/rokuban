@@ -35,6 +35,11 @@ import { firstIndexForDayOffset, programKeyAt, visibleDayOffset } from '@/lib/pr
  * `ProgramRow` の展開パネルで encodeProfiles / keepOriginal を既定から
  * 変えていれば、そのまま overrides の PATCH ボディとして渡ってくる。
  * 既定のままなら `undefined`（overrides の PATCH は呼ばない）。
+ *
+ * `reservationStateUnknown` も boolean prop ではなくここに載せる ---
+ * リスト・グリッド・検索結果の全呼び出し点がこの 1 つの契約を通るため、
+ * 表示形式ごとに渡し忘れて穴が開くことがない（issue #710 のグリッドの穴の
+ * 再発防止）。
  */
 export type ReservationActions = {
   reserve: (program: SiteProgram, overrides?: ProgramOverridesInput) => void
@@ -42,6 +47,8 @@ export type ReservationActions = {
   isBusy: (program: SiteProgram) => boolean
   /** サーバーの値に楽観的な上書きを重ねた「予約済み」集合。 */
   reservedProgramIds: ReadonlySet<string>
+  /** 予約一覧が未取得・失敗中なら、未予約行の `record` 操作を止める。 */
+  reservationStateUnknown: boolean
 }
 
 /**
@@ -164,8 +171,6 @@ export const ProgramList = forwardRef<
     serviceById: Map<string, SiteService>
     showSite?: boolean
     actions: ReservationActions
-    /** 予約一覧が未取得・失敗中なら、未予約行の `record` 操作を止める。 */
-    reservationStateUnknown?: boolean
     /**
      * 可視範囲の先頭の番組が変わるたびに「いま見ている日」の dayOffset を通知する。
      * `DayStrip` のハイライトはここから来る値を表示するだけで、ジャンプ先
@@ -182,7 +187,6 @@ export const ProgramList = forwardRef<
     serviceById,
     showSite = false,
     actions,
-    reservationStateUnknown = false,
     onVisibleDayChange,
     now,
   },
@@ -352,7 +356,7 @@ export const ProgramList = forwardRef<
               }
               reserved={reserved}
               pending={actions.isBusy(program)}
-              reservationStateUnknown={reservationStateUnknown}
+              reservationStateUnknown={actions.reservationStateUnknown}
               onReserve={(overrides) => actions.reserve(program, overrides)}
               onCancel={() => actions.cancel(program)}
             />

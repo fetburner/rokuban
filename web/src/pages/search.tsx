@@ -148,30 +148,37 @@ export function SearchPage() {
   // ので、同じ programId が複数 site にある場合も site:programId で結び付ける。
   const reservations = useListReservations()
   // 予約一覧は検索結果の表示そのものには不要なので、取得に失敗しても結果は
-  // 残す。ただし `unwrap(...) ?? []` は未取得を「予約 0 件」に変えるため、
-  // 初回取得中・失敗中は未予約と断定できない。未予約行の予約操作を止め、
-  // `record` intent が状態不明のまま送られるのを防ぐ。
-  const reservationStateUnknown = reservations.isPending || reservations.isError
+  // 残す。
+  const reservationList = unwrap(reservations.data)
+  // `unwrap(...) ?? []` は未取得を「予約 0 件」に変えるので、1 件も持っていない
+  // （初回取得中・初回失敗）間だけ未予約行の予約操作を止め、状態不明のまま
+  // `record` intent が送られるのを防ぐ。**`reservations.isError` では判定しない**
+  // --- 初回成功後の再取得が失敗しても直前の `data` は残る（TanStack Query v5）。
+  // 古いが既知のサーバー値は予約に使ってよく、止めるべきなのは値を 1 件も
+  // 持っていない状態だけ。バナー（`isPending`/`isError`）は別に出すので失敗
+  // 自体は伝わる。
+  const reservationStateUnknown = reservationList === undefined
   const serverReservedProgramIds = useMemo(() => {
     const set = new Set<string>()
-    for (const reservation of unwrap(reservations.data) ?? []) {
+    for (const reservation of reservationList ?? []) {
       set.add(programIdentity(reservation.site, reservation.programId))
     }
     return set
-  }, [reservations.data])
+  }, [reservationList])
   const reservationSourceByProgramId = useMemo(() => {
     const map = new Map<string, Reservation['source']>()
-    for (const reservation of unwrap(reservations.data) ?? []) {
+    for (const reservation of reservationList ?? []) {
       map.set(
         programIdentity(reservation.site, reservation.programId),
         reservation.source,
       )
     }
     return map
-  }, [reservations.data])
+  }, [reservationList])
   const reservationActions = useReservationActions(
     serverReservedProgramIds,
     reservationSourceByProgramId,
+    reservationStateUnknown,
   )
 
   // search（useMutation の戻り値）を毎レンダー新しいオブジェクトのまま
@@ -652,7 +659,6 @@ export function SearchPage() {
               matches={matches.slice(0, visibleCount)}
               serviceById={serviceById}
               actions={reservationActions}
-              reservationStateUnknown={reservationStateUnknown}
               showSite={sites.length > 1}
             />
             {visibleCount < matches.length && (
@@ -715,13 +721,11 @@ function SearchResultList({
   matches,
   serviceById,
   actions,
-  reservationStateUnknown,
   showSite,
 }: {
   matches: ProgramSearchMatch[]
   serviceById: Map<string, Service>
   actions: ReservationActions
-  reservationStateUnknown: boolean
   showSite: boolean
 }) {
   const details = useQueries({
@@ -742,7 +746,6 @@ function SearchResultList({
                 program={{ ...program, site: match.site }}
                 serviceName={serviceById.get(`${program.networkId}:${program.serviceId}`)?.name}
                 actions={actions}
-                reservationStateUnknown={reservationStateUnknown}
                 showSite={showSite}
               />
             ) : detail?.isError ? (
@@ -778,13 +781,11 @@ function SearchResultRow({
   program,
   serviceName,
   actions,
-  reservationStateUnknown,
   showSite,
 }: {
   program: SiteProgram
   serviceName?: string
   actions: ReservationActions
-  reservationStateUnknown: boolean
   showSite: boolean
 }) {
   const reserved = actions.reservedProgramIds.has(programIdentity(program.site, program.programId))
@@ -807,7 +808,7 @@ function SearchResultRow({
         type="button"
         variant={reserved ? 'destructive' : 'default'}
         size="sm"
-        disabled={pending || (!reserved && reservationStateUnknown)}
+        disabled={pending || (!reserved && actions.reservationStateUnknown)}
         onClick={() => {
           if (reserved) actions.cancel(program)
           else actions.reserve(program)
