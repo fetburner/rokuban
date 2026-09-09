@@ -8,6 +8,7 @@ import path from 'node:path'
 import { chromium, firefox, webkit } from 'playwright'
 
 const ENGINES = { chromium, firefox, webkit }
+const VALIDATE_FIXTURES_ONLY = process.env.E2E_VALIDATE_FIXTURES_ONLY === '1'
 
 /**
  * launchBrowser は指定したエンジンでブラウザを起動する。既定は chromium。
@@ -91,13 +92,19 @@ export async function verifyBundleMatchesOrExit(urlBase, ng, browser) {
  * から遅れていても「唯一の視覚オラクル」が欠損データのまま撮れて誰も気付かない、
  * という壊れ方が実際にあった）。`pairs` は `[label, schema, item]` の配列
  * （呼び出し側が `フィクスチャ配列.map(...)` で組む）。1 件でも不一致なら
- * 他の判定を一切せず `finish` で打ち切る（`browser` を渡せば終了前に close する）。
+ * 他の判定を一切せず `finish` で打ち切る。
  *
  * **配列そのものではなく要素のスキーマで parse する。** orval は配列スキーマ
  * （`List*Response`）と要素スキーマ（`List*ResponseItem`）を別名で出すため、
  * 呼び出し側は要素スキーマを明示して渡すこと。
+ *
+ * `E2E_VALIDATE_FIXTURES_ONLY=1` のときは、検証結果を出した時点でプロセスを終了する。
+ * このモードは各スクリプトの検証呼び出しがブラウザ起動より前にあることを前提に、
+ * ブラウザ・preview サーバー・ビルド済み bundle なしで契約だけを CI から確認する
+ * --- そのため呼び出し側はまだブラウザを起動しておらず、`finish` に渡す `browser`
+ * は持たない。
  */
-export async function validateFixturesOrExit(pairs, ng, browser) {
+export async function validateFixturesOrExit(pairs, ng) {
   const before = ng.length
   for (const [label, schema, item] of pairs) {
     const result = schema.safeParse(item)
@@ -107,9 +114,11 @@ export async function validateFixturesOrExit(pairs, ng, browser) {
     }
   }
   if (ng.length > before) {
-    await finish(ng, browser)
+    await finish(ng)
   }
   log('  すべてのフィクスチャが契約と一致')
+  // ここに到達した時点で新規の失敗は無い（あれば直前の finish が exit している）。
+  if (VALIDATE_FIXTURES_ONLY) process.exit(0)
 }
 
 /**

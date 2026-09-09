@@ -16,6 +16,7 @@
 // SSE の再接続時 invalidate はここでは見ない（実ブラウザで切断を決定的に
 // 起こす手段が無い）。単体テスト「再接続したら切断中の変更を全グループ取り直す」の担当。
 import {
+  GetStorageResponseItem,
   ListCircuitBreakersResponseItem,
   ListRecordingsResponseItem,
   ListReservationsResponseItem,
@@ -50,9 +51,6 @@ const check = (label, actual, expected) => {
   }
 }
 
-// ⓪ 配っている bundle が dist/ の現物と一致するか（e2e/lib.mjs 参照）。
-await verifyBundleMatchesOrExit(BASE, ng)
-
 const reservation = {
   id: 111,
   site: 'tokyo',
@@ -69,10 +67,62 @@ const reservation = {
   skip: false,
 }
 
+// ブラウザ起動後にしか使わないフィクスチャもここで構築する。契約検証のみモードが
+// ブラウザ起動や bundle 検証に到達する前に、スクリプト全体のフィクスチャを検査できる
+// ようにする。
+const breaker = {
+  site: 'tokyo',
+  name: 'ruler_deletes',
+  trippedAt: new Date(Date.now() - 3_600_000).toISOString(),
+  pending: 3,
+  threshold: 20,
+  detail: { total: 3, programs: [] },
+}
+const manyRecordings = Array.from({ length: 60 }, (_, i) => ({
+  id: i + 1,
+  site: 'tokyo',
+  source: 'manual',
+  serviceName: 'NHK総合',
+  channelType: 'GR',
+  channel: '27',
+  networkId: 32736,
+  serviceId: 1024,
+  eventId: i + 1,
+  title: `録画 ${i + 1}`,
+  startAt: new Date(Date.now() - (i + 1) * 3_600_000).toISOString(),
+  durationMs: 1_800_000,
+  status: 'finished',
+  keepOriginal: 'always',
+  createdAt: new Date(Date.now() - (i + 1) * 3_600_000).toISOString(),
+}))
+// observedAt は実行時刻から 1 分前にする。`page.clock.install()` は実時刻を初期値に
+// するので、固定日付を書くと storage-forecast.ts の observationStaleAfterMs（1 時間）を
+// 必ず超え、「観測が古い可能性」の表示を測ることになる。判定はリクエスト数だけなので
+// 合否は変わらないが、正常な観測が載っている画面を測る。
+const storageItem = {
+  root: 'media',
+  path: '/data/media',
+  totalBytes: 1_000_000_000_000,
+  usedBytes: 400_000_000_000,
+  availableBytes: 600_000_000_000,
+  observedAt: new Date(Date.now() - 60_000).toISOString(),
+}
+
 // 契約検証: フィクスチャが orval 生成の zod スキーマと一致するか
 // （`validateFixturesOrExit`。design.mjs / e2e/README.md §デザイン 参照）。
 log('\n=== 契約検証: フィクスチャの zod parse ===')
-await validateFixturesOrExit([['reservation', ListReservationsResponseItem, reservation]], ng)
+await validateFixturesOrExit(
+  [
+    ['reservation', ListReservationsResponseItem, reservation],
+    ['breaker', ListCircuitBreakersResponseItem, breaker],
+    ...manyRecordings.map((r) => [`recordings#${r.id}`, ListRecordingsResponseItem, r]),
+    ['storage', GetStorageResponseItem, storageItem],
+  ],
+  ng,
+)
+
+// ⓪ 配っている bundle が dist/ の現物と一致するか（e2e/lib.mjs 参照）。
+await verifyBundleMatchesOrExit(BASE, ng)
 
 const browser = await launchBrowser()
 
@@ -204,16 +254,8 @@ check('60 秒後: 予約詳細（運用状態グループ）', count(detail), 2)
 // 収束することを実ブラウザで確認する（docs/api/sse.md の実測値と対応させる）。
 log('\n=== ストレージ残高（/recordings）===')
 const storageMs = 300_000 // events.ts の storageRefreshIntervalMs と同じ値をリテラルで書く
-// observedAt は実行時刻から 1 分前にする。`page.clock.install()` は実時刻を初期値に
-// するので、固定日付を書くと storage-forecast.ts の observationStaleAfterMs（1 時間）を
-// 必ず超え、「観測が古い可能性」の表示を測ることになる。判定はリクエスト数だけなので
-// 合否は変わらないが、正常な観測が載っている画面を測る。
-const observedAt = new Date(Date.now() - 60_000).toISOString()
 const storagePage = await openStubbed('/recordings', '録画一覧 / ストレージ残高', {
-  '/api/storage':
-    '[{"root":"media","path":"/data/media","totalBytes":1000000000000,' +
-    '"usedBytes":400000000000,"availableBytes":600000000000,' +
-    `"observedAt":"${observedAt}"}]`,
+  '/api/storage': JSON.stringify([storageItem]),
 })
 
 log('初回ロード後:', Object.fromEntries([...counts.entries()].sort()))
@@ -255,41 +297,6 @@ log('\n=== 接続断バナー（/recordings）===')
   // PageHeader との非交差を見る（StickyBanners が両方の合計高さを publish して
   // いることの確認。接続断バナーだけでは、CircuitBreakerBanner 側だけが sticky を
   // 持つ退行を検出できない）。
-  const breaker = {
-    site: 'tokyo',
-    name: 'ruler_deletes',
-    trippedAt: new Date(Date.now() - 3_600_000).toISOString(),
-    pending: 3,
-    threshold: 20,
-    detail: { total: 3, programs: [] },
-  }
-  const manyRecordings = Array.from({ length: 60 }, (_, i) => ({
-    id: i + 1,
-    site: 'tokyo',
-    source: 'manual',
-    serviceName: 'NHK総合',
-    channelType: 'GR',
-    channel: '27',
-    networkId: 32736,
-    serviceId: 1024,
-    eventId: i + 1,
-    title: `録画 ${i + 1}`,
-    startAt: new Date(Date.now() - (i + 1) * 3_600_000).toISOString(),
-    durationMs: 1_800_000,
-    status: 'finished',
-    keepOriginal: 'always',
-    createdAt: new Date(Date.now() - (i + 1) * 3_600_000).toISOString(),
-  }))
-  // 契約検証（validateFixturesOrExit。冒頭の reservation と同じ理由）。
-  // browser は既に起動済みなので、不一致なら閉じてから打ち切る
-  await validateFixturesOrExit(
-    [
-      ['breaker', ListCircuitBreakersResponseItem, breaker],
-      ...manyRecordings.map((r) => [`recordings#${r.id}`, ListRecordingsResponseItem, r]),
-    ],
-    ng,
-    browser,
-  )
   await bannerPage.route('**/api/**', async (route) => {
     const requested = new URL(route.request().url()).pathname
     if (requested === '/api/events') {

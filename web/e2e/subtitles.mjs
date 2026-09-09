@@ -39,6 +39,50 @@ const SITE = 'default'
 const ng = []
 const skipped = []
 
+const recording = {
+  id: 1,
+  site: SITE,
+  source: 'manual',
+  serviceName: 'ＯＨＫ',
+  channelType: 'GR',
+  channel: '27',
+  networkId: 32678,
+  serviceId: 5168,
+  eventId: 1,
+  title: '字幕付き録画',
+  startAt: '2026-01-01T12:00:00Z',
+  durationMs: 1_800_000,
+  status: 'finished',
+  keepOriginal: 'always',
+  sizeBytes: 500_000_000,
+  encodedAssets: [{ profile: 'h264', sizeBytes: 400_000_000 }],
+  createdAt: '2026-01-02T12:30:00Z',
+}
+
+const NETWORK_ID = 1
+const SERVICE_ID = 9101
+const COMPOSITE_ID = NETWORK_ID * 100_000 + SERVICE_ID
+const liveService = {
+  id: COMPOSITE_ID,
+  networkId: NETWORK_ID,
+  serviceId: SERVICE_ID,
+  name: 'テスト局',
+  channelType: 'GR',
+  channel: '99',
+  remoteControlKeyId: 1,
+  hasLogoData: false,
+  hasPrograms: false,
+}
+
+log('\n=== 契約検証: フィクスチャの zod parse ===')
+await validateFixturesOrExit(
+  [
+    ['recording', ListRecordingsResponseItem, recording],
+    ['service', ListServicesResponseItem, liveService],
+  ],
+  ng,
+)
+
 await verifyBundleMatchesOrExit(URL_BASE, ng)
 
 const browser = await launchBrowser('chromium')
@@ -49,28 +93,6 @@ const browser = await launchBrowser('chromium')
 // ============================================================
 log('\n=== ① VOD: <track> が実ブラウザで WebVTT の cue を読み込む ===')
 {
-  const recording = {
-    id: 1,
-    site: SITE,
-    source: 'manual',
-    serviceName: 'ＯＨＫ',
-    channelType: 'GR',
-    channel: '27',
-    networkId: 32678,
-    serviceId: 5168,
-    eventId: 1,
-    title: '字幕付き録画',
-    startAt: '2026-01-01T12:00:00Z',
-    durationMs: 1_800_000,
-    status: 'finished',
-    keepOriginal: 'always',
-    sizeBytes: 500_000_000,
-    encodedAssets: [{ profile: 'h264', sizeBytes: 400_000_000 }],
-    createdAt: '2026-01-02T12:30:00Z',
-  }
-
-  await validateFixturesOrExit([['recording', ListRecordingsResponseItem, recording]], ng, browser)
-
   const vtt = 'WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nHello\n\n00:00:02.000 --> 00:00:04.000\nWorld\n'
 
   const page = await browser.newPage()
@@ -142,10 +164,6 @@ log('\n=== ② ライブ: hls.js が master の字幕 rendition を subtitleTrac
   if (!built) {
     skipped.push('② ライブ字幕 rendition: ffmpeg が無いためフィクスチャを生成できず測れない')
   } else {
-    const NETWORK_ID = 1
-    const SERVICE_ID = 9101
-    const COMPOSITE_ID = NETWORK_ID * 100_000 + SERVICE_ID
-
     const page = await browser.newPage()
     await installApiStubs(page, async ({ path: p, json }) => {
       if (p === '/api/sites') return json([SITE])
@@ -153,42 +171,10 @@ log('\n=== ② ライブ: hls.js が master の字幕 rendition を subtitleTrac
       if (p === '/api/breakers') return json([])
       if (p === '/api/events') return json([]) // このページは events を使わない
       if (p === `/api/sites/${SITE}/services`) {
-        const service = {
-          id: COMPOSITE_ID,
-          networkId: NETWORK_ID,
-          serviceId: SERVICE_ID,
-          name: 'テスト局',
-          channelType: 'GR',
-          channel: '99',
-          remoteControlKeyId: 1,
-          hasLogoData: false,
-          hasPrograms: false,
-        }
-        return json([service])
+        return json([liveService])
       }
       return json([])
     })
-    await validateFixturesOrExit(
-      [
-        [
-          'service',
-          ListServicesResponseItem,
-          {
-            id: COMPOSITE_ID,
-            networkId: NETWORK_ID,
-            serviceId: SERVICE_ID,
-            name: 'テスト局',
-            channelType: 'GR',
-            channel: '99',
-            remoteControlKeyId: 1,
-            hasLogoData: false,
-            hasPrograms: false,
-          },
-        ],
-      ],
-      ng,
-      browser,
-    )
 
     const liveBase = `/api/sites/${SITE}/networks/${NETWORK_ID}/services/${SERVICE_ID}/live`
     await page.route(`**${liveBase}/leave`, (route) => route.fulfill({ status: 204 }))
