@@ -3,22 +3,22 @@ import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const E2E_DIR = path.dirname(fileURLToPath(import.meta.url))
+const SELF = fileURLToPath(import.meta.url)
+const E2E_DIR = path.dirname(SELF)
 
 // 契約検証を持つスクリプトは手書きで一覧しない --- 手書きだと、並行して増えた
 // スクリプトの契約検証が一覧への追加漏れで静かに検査対象から外れる（実際に
-// programs-reservation-error.mjs で起きた）。各ファイルの中身に
-// validateFixturesOrExit の呼び出し（`await` に続く形）があるものを導出する。
-// `lib.mjs` は定義（`export async function` に続く形）なので当たらず自動的に
-// 外れる。このスクリプト自身が誤って一覧に入らないよう、判定に使う文字列は
-// 連結して組み立てている --- 1 つのリテラルとして書くとこのファイル自身の
-// ソースにその文字列が現れ、自分を一覧に入れてしまう（検証時に必ず確かめる）。
+// programs-reservation-error.mjs で起きた）。`await validateFixturesOrExit(`
+// を含むファイルを導出する。`lib.mjs` は定義（`export async function` に続く形）
+// なので当たらず自動的に外れる。**このファイル自身は名前で除く** --- 自分を
+// 一覧に入れると自分を spawn し続ける（除外を外して実測: 通常の完走が約 5 秒
+// なのに対し 25 秒で 5 段目に入りまだ増えていた。CI では job のタイムアウトまで
+// ハングする）。コメントに判定文字列を書いても自己参照しない形にしておく。
 // 各スクリプトを個別の Node プロセスで実行するので、1 本のフィクスチャが
 // 壊れていても残りのスクリプトの検証を省略しない。
-const CALL_MARKER = ['await', 'validateFixturesOrExit('].join(' ')
 const SCRIPTS = readdirSync(E2E_DIR)
-  .filter((f) => f.endsWith('.mjs'))
-  .filter((f) => readFileSync(path.join(E2E_DIR, f), 'utf8').includes(CALL_MARKER))
+  .filter((f) => f.endsWith('.mjs') && path.join(E2E_DIR, f) !== SELF)
+  .filter((f) => readFileSync(path.join(E2E_DIR, f), 'utf8').includes('await validateFixturesOrExit('))
   .sort()
 
 function run(script) {
