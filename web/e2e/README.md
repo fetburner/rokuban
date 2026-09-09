@@ -232,7 +232,8 @@ Node の ESM スクリプトから `../src/api/zod.ts` を直接 import でき�
     塗り・`/80` の sticky 日付見出し・`/30` の録画詳細パネルに加えて
     **hover 中の面**（一覧の行の `hover:bg-muted/40`）まで測る --- Lighthouse は
     hover を測らないので、監査に出ない面はここでしか押さえられない
-    （下限を割ったものは除外せず、通常の失敗として扱う）
+    （下限を割ったものは除外せず、通常の失敗として扱う）。選択モードで
+    選んだ行も同じ `bg-muted/40` を敷くが、こちらは常時見えるので測る
   - **和文が実際に Noto Sans JP、英数字が実際に Geist で描画されているか**
     （CDP `CSS.getPlatformFontsForNode` で番組リストの行（`li[data-program-id]`）
     の実使用フォントを見る --- `main` や `body` のようなブロック要素だけを

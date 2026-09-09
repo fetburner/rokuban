@@ -77,13 +77,10 @@ zinc はわずかに寒色（hue ≈ 286、chroma ≤ 0.016）で、これが「
 使う人がいないトークンは足さない（CLAUDE.md 不変条件 11）。琥珀を塗りに使いたく
 なったら、そのコードと同じ PR で `--warning-foreground` を足す。
 
-**タリーレッドと destructive は形で区別し、色相の差も補助に使う。**
+**タリーレッドと destructive は色相が近い。区別は色ではなく形が担う。**
 タリーは「点灯」なので塗り（`bg-tally` + 紙白の文字）、destructive は「壊れた」なので
 文字と淡い地（`text-destructive` + `bg-destructive/10`）。同じ赤でも、
-塗られているかどうかで「いま動いている」と「壊れた」が見分けられる。ライトの
-`--destructive` は、淡い地と合成した文字のコントラストを確保するための明度調整で
-タリーレッドへ近づきすぎないよう、色相をずらしている。これは色だけに状態を預ける
-変更ではなく、形の差を維持したうえで色相の衝突を避ける補助である。
+塗られているかどうかで「いま動いている」と「壊れた」が見分けられる。
 
 この排他性のために外した色が 1 つある。**日付ストリップの「日 = 赤 / 土 = 青」は使わない。**
 カレンダーの慣習ではあるが、赤が画面の中で 2 つの意味を持つと、
@@ -115,15 +112,17 @@ zinc はわずかに寒色（hue ≈ 286、chroma ≤ 0.016）で、これが「
 `getImageData` で採る。`background-image` に直接書いた色も読めないので、縞の色は
 カスタムプロパティに出してある（下記「走査線は 3 箇所限定」）。
 
-下限を割る組み合わせは除外せず、通常の失敗判定に入れる。失敗バッジは共通の
-`--destructive` を調整し、タリーレッドから色相を離しながら文字と淡い地のコントラストを
-改善した。録画中との識別は、従来どおり「塗り + 紙白の文字」と「文字 + 淡い地」の形の差を
-保つ。共通トークンを使うボタン・バナー・タグにも同じ判断が適用されるため、ライトと
-ダークの両テーマで見え方を確認する。
+下限を割る組み合わせは除外せず、通常の失敗判定に入れる（`knownGaps` のような
+除外リストは持たない）。失敗バッジはライトの `--destructive` の明度を下げて直した
+（**色相は動かしていない** --- タリーと近いままで、彩度だけがその明度で sRGB 色域に
+収まる上限まで連れて下がる。上記「タリーレッドと destructive は色相が近い」参照）。録画中との識別は、従来どおり「塗り + 紙白の文字」と「文字 + 淡い地」の
+形の差を保つ。
 
 一覧行の hover 中の副情報は `text-muted-foreground` を維持し、4 画面（録画一覧・予約一覧・
 ホーム・番組リスト）の `hover:bg-muted/40` を最も近い薄さへ揃えて、通常時の本文 = foreground /
 副情報 = muted の階層を崩さずに調整する。hover はライト／ダークの両テーマで実測する。
+録画一覧の選択モードで選んだ行も同じ `bg-muted/40` に揃えてある --- こちらは常時
+見える面（Lighthouse の監査対象）なので、hover と同じ理屈で `e2e:design` が実測する。
 
 `bg-muted` + `text-muted-foreground` は、地・文字とも走査線グレー側の段を経由する
 ためライトで 4.5 を割る。走査線グレーの値そのものは動かさず、**次に挙げる箇所を
@@ -142,7 +141,8 @@ chip（`components/ui/chip.tsx`）・day-strip（`components/day-strip.tsx`）�
 「通っている」ではない。今回の行 hover は、`components/program-row.tsx` /
 `pages/recordings.tsx` / `pages/reservations.tsx` / `pages/home.tsx` の 4 画面で
 `text-muted-foreground` を維持したまま面の濃さを揃え、代表として録画一覧の行を
-`e2e:design` が実際に hover して測る。
+`e2e:design` が実際に hover して測る。いま分かっている残りは:
+
 - **測ってあり、下限を満たす**: 録画詳細（`/recordings/$id`）の `bg-muted/30` の
   パネルに乗る説明文・`<dt>` 群・品質イベント（`RecordingDetail`。一覧はインライン
   展開を持たないので、この面が出るのは詳細ページだけ）。hover と違って**常時見えるので
@@ -154,7 +154,11 @@ chip（`components/ui/chip.tsx`）・day-strip（`components/day-strip.tsx`）�
   hover（`components/encode-settings-fields.tsx` の `hover:bg-muted/60` +
   コンテナ名の `text-muted-foreground`）。どちらも一瞬 / hover 中しか出ないため
   判定に載せていない。**他の不透明度の実測値から外挿もしない** --- 判定を足すまでは
-  「同じ手で直した」扱いにも「通っている」扱いにもしない
+  「同じ手で直した」扱いにも「通っている」扱いにもしない。destructive 側にも
+  同様に未測定の組み合わせがある: `Button variant="destructive"` の hover
+  （`hover:bg-destructive/20`。基底の `/10` より濃い面）と、
+  `circuit-breaker-banner.tsx` の理由文（`text-destructive/80` が
+  `bg-destructive/10` に乗る。文字自身が半透明）
 
 モバイル番組のチャンネルピッカートリガー（`bg-background` + `text-foreground`）は
 上記のバッジ群とは別の組み合わせで、他所（地の無彩 3 値そのものの対）で測っている

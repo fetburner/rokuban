@@ -1661,6 +1661,50 @@ for (const theme of themes) {
     await context.close()
   }
 
+  // --- 録画一覧: 選択中の行の副情報（`bg-muted/40` + `text-muted-foreground`） ---
+  //
+  // 選択モードで選んだ行は hover と同じ `bg-muted/40` が乗る（レビュー指摘。
+  // 選択中だけ `bg-muted/50` のままだと副情報のコントラストが下限すれすれになる）。
+  // hover と違って**常時見えるので Lighthouse の監査対象**に入るため、
+  // 下限を割るかどうかは推測せず実測する。
+  {
+    const { context, page } = await open(desktop, theme, screenOf('recordings'))
+    const row = page.locator('li').filter({ hasText: 'クラシック音楽館' }).first()
+    const sub = row.locator('span', { hasText: /^ＮＨＫＢＳ$/ }).first()
+    if ((await sub.count()) === 0) {
+      ng.push(`[${theme}] 録画一覧の行の副情報（放送局名）が見つからない（選択中の判定）`)
+    } else {
+      const before = await sub.evaluate(readColor, 'color')
+      await page.getByRole('button', { name: '選択' }).click()
+      await page.getByRole('checkbox', { name: 'クラシック音楽館を選択' }).click()
+      // hover が乗る位置のままだと測っているものが hover の面になるので、
+      // 行からマウスを離してから測る。
+      await page.mouse.move(0, 0)
+      await page.waitForTimeout(150)
+      const after = await sub.evaluate(readColor, 'color')
+      log(`  [${theme}] 一覧の行（選択中）の副情報 文字=${after.value} / 乗っている面 選択前=${before.backdrop} → 選択中=${after.backdrop}`)
+      // **選択が本当に効いていることをここで検査する。** hover ブロックと同じ
+      // 形の穴 --- 効いていなければ測っているのは通常時の面で、数字は
+      // 空虚な成功になる（design.md「判定を足したことと、それが効いていることは別」）。
+      const changed = [0, 1, 2].some((i) => Math.abs(after.backdrop[i] - before.backdrop[i]) >= 1)
+      if (!changed) {
+        ng.push(
+          `[${theme}] 録画一覧の行を選択しても副情報が乗る面が変わらない（${after.backdrop}）` +
+            ' --- 選択中の淡い地が効いていないか、locator が行の外を掴んでいる',
+        )
+      } else {
+        checkContrast(
+          theme,
+          '一覧の行の選択中の副情報の文字 / muted の半透明地',
+          after.rgba,
+          after,
+          minTextContrast,
+        )
+      }
+    }
+    await context.close()
+  }
+
   // --- 録画詳細: `bg-muted/30` のパネルに乗る muted の文字 ---
   //
   // 詳細（`/recordings/$id`）の本体は `bg-muted/30` の面で、その上の説明文・

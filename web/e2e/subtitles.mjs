@@ -63,6 +63,7 @@ log('\n=== ① VOD: <track> が実ブラウザで WebVTT の cue を読み込む
     startAt: '2026-01-01T12:00:00Z',
     durationMs: 1_800_000,
     status: 'finished',
+    keepOriginal: 'always',
     sizeBytes: 500_000_000,
     encodedAssets: [{ profile: 'h264', sizeBytes: 400_000_000 }],
     createdAt: '2026-01-02T12:30:00Z',

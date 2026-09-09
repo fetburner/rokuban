@@ -676,7 +676,7 @@ function RecordingRow({
           ? 'flex h-full flex-col gap-2 rounded border border-border p-2'
           : 'flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5',
         selecting && 'cursor-pointer',
-        selected && 'bg-muted/50',
+        selected && 'bg-muted/40',
       )}
     >
       {/* 編集モード中は全面リンクを外す。残すと checkbox と行クリックを奪う。 */}
