@@ -781,7 +781,6 @@ function SearchResultRow({
         </div>
       </div>
       <Button
-        data-testid="search-result-reserve"
         type="button"
         variant={reserved ? 'destructive' : 'default'}
         size="sm"
