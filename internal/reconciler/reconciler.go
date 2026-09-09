@@ -665,10 +665,10 @@ func (r *Reconciler) recreateChanged(
 
 	// ガードは state の allowlist。scheduled 以外（tracking/recording/
 	// rescheduling/finished/failed、および将来 mirakc が増やす未知の値）は
-	// 触らず次のパスに持ち越す（mirakc.ScheduleStateScheduled のコメント参照）。
+	// 触らず次のパスに持ち越す。判定は presync collector と共有する。
 	var eligible []recreateCandidate
 	for _, c := range candidates {
-		if c.observed.State != mirakc.ScheduleStateScheduled {
+		if !schedulesync.IsRecreateAllowed(c.observed.State) {
 			stateGuarded++
 			continue
 		}

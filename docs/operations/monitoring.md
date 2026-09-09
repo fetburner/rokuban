@@ -47,7 +47,7 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_circuit_breaker_tripped{site,breaker}` | Gauge | **いま止まっているか**（1 = 発動中）。ラッチなのでアラートはこちら。`breaker="delete_reconcile"` は site が空文字列 |
 | `rokuban_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に完走したパスの時刻 |
 | `rokuban_reconcile_start_delayed{site}` | Gauge | **開始時刻を過ぎたのに録画が始まっていない予約数**。収束すればゼロに戻る |
-| `rokuban_presync_pending{site,reason}` | Gauge（DB） | 開始前〜録画中の desired reservation と observed schedule の未収束数。`reason="missing"` は schedule 不在、`reason="options"` は priority / program tag / 明示 `contentPath` の不一致。skip と終了済みは除外する。DB 版の `rokuban_reconcile_pending_diff{action="create"}`（`missing`）/ `{action="update"}` + `{action="update_deferred"}`（`options`）に相当する |
+| `rokuban_presync_pending{site,reason}` | Gauge（DB） | 開始前〜録画中の desired reservation と observed schedule の未収束数。`reason="missing"` は schedule 不在、`reason="options"` は `scheduled` state で直せる priority / program tag / 明示 `contentPath` の不一致、`reason="options_deferred"` は state allowlist により今は再作成できない同不一致。skip と終了済みは除外する。DB 版の `rokuban_reconcile_pending_diff{action="create"}`（`missing`）/ `{action="update"}`（`options`）/ `{action="update_deferred"}`（`options_deferred`）に相当する |
 | `rokuban_presync_pending_earliest_start_timestamp_seconds{site,reason}` | Gauge（DB） | 同じ reason で pending な予約のうち最も開始が近い番組の start_at。件数だけでは判別できない「開始が近い未同期」と「十分先の未同期」を区別する（issue #680）。pending が 0 の reason には系列が出ない |
 | `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` | Gauge（DB） | `schedule_sync` の全量 upsert + stale 削除 + marker 更新を同一トランザクションでコミットした最後の時刻。未確立は 0。`presync_pending` と対で観測不能を判定する |
 | `rokuban_presync_scrape_errors_total{site}` | Counter（DB） | presync collector の DB 読み取りまたは observed options の解釈に失敗した回数。失敗時は pending / snapshot を 0 として報告しない |

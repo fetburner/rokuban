@@ -22,10 +22,12 @@ import (
 // Prometheus の scrape timeout（既定 10 秒）より短くする。
 const presyncQueryTimeout = 5 * time.Second
 
-// reasonMissing / reasonOptions は presync が数える不一致の理由。
+// reasonMissing / reasonOptions / reasonOptionsDeferred は presync が数える
+// 不一致の理由。
 const (
-	reasonMissing = "missing"
-	reasonOptions = "options"
+	reasonMissing         = "missing"
+	reasonOptions         = "options"
+	reasonOptionsDeferred = "options_deferred"
 )
 
 // PresyncCollector は 1 サイトの desired reservation と schedule_sync の
@@ -99,7 +101,7 @@ func (c *PresyncCollector) Collect(ch chan<- prometheus.Metric) {
 		return
 	}
 
-	for _, reason := range []string{reasonMissing, reasonOptions} {
+	for _, reason := range []string{reasonMissing, reasonOptions, reasonOptionsDeferred} {
 		ch <- prometheus.MustNewConstMetric(c.pending, prometheus.GaugeValue,
 			float64(result.pending[reason]), reason)
 		// pending が 0 の reason は系列を出さない。0 を出すと
@@ -134,8 +136,8 @@ func (c *PresyncCollector) read(ctx context.Context) (presyncResult, error) {
 	q := sqlcgen.New(c.pool)
 
 	result := presyncResult{
-		pending:  make(map[string]int, 2),
-		earliest: make(map[string]time.Time, 2),
+		pending:  make(map[string]int, 3),
+		earliest: make(map[string]time.Time, 3),
 	}
 	snapshotAt, err := q.GetScheduleSyncSnapshot(ctx, c.site)
 	if err != nil {
@@ -150,15 +152,22 @@ func (c *PresyncCollector) read(ctx context.Context) (presyncResult, error) {
 	if err != nil {
 		return presyncResult{}, fmt.Errorf("listing schedule observations: %w", err)
 	}
-	observed := make(map[int64]mirakc.Options, len(observedRows))
-	observedTags := make(map[int64][]string, len(observedRows))
+	type observedSchedule struct {
+		state   string
+		options mirakc.Options
+		tags    []string
+	}
+	observed := make(map[int64]observedSchedule, len(observedRows))
 	for _, row := range observedRows {
 		var options mirakc.Options
 		if err := json.Unmarshal(row.Options, &options); err != nil {
 			return presyncResult{}, fmt.Errorf("unmarshalling observed options for program %d: %w", row.ProgramID, err)
 		}
-		observed[row.ProgramID] = options
-		observedTags[row.ProgramID] = row.Tags
+		observed[row.ProgramID] = observedSchedule{
+			state:   row.State,
+			options: options,
+			tags:    row.Tags,
+		}
 	}
 
 	rows, err := q.ListReservationsForSyncEvaluation(ctx, c.site)
@@ -179,7 +188,7 @@ func (c *PresyncCollector) read(ctx context.Context) (presyncResult, error) {
 		}
 
 		programID := candidate.Reservation.ProgramID
-		observedOptions, ok := observed[programID]
+		obs, ok := observed[programID]
 		if !ok {
 			result.add(reasonMissing, candidate.Snapshot.StartAt)
 			continue
@@ -189,11 +198,15 @@ func (c *PresyncCollector) read(ctx context.Context) (presyncResult, error) {
 			programID,
 			candidate.Options,
 			schedulesync.DefaultPriority,
-			observedOptions,
-			observedTags[programID],
+			obs.options,
+			obs.tags,
 		)
 		if owned && diff.Any() {
-			result.add(reasonOptions, candidate.Snapshot.StartAt)
+			reason := reasonOptions
+			if !schedulesync.IsRecreateAllowed(obs.state) {
+				reason = reasonOptionsDeferred
+			}
+			result.add(reason, candidate.Snapshot.StartAt)
 		}
 	}
 
