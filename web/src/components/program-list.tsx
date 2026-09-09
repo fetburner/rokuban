@@ -35,6 +35,11 @@ import { firstIndexForDayOffset, programKeyAt, visibleDayOffset } from '@/lib/pr
  * `ProgramRow` の展開パネルで encodeProfiles / keepOriginal を既定から
  * 変えていれば、そのまま overrides の PATCH ボディとして渡ってくる。
  * 既定のままなら `undefined`（overrides の PATCH は呼ばない）。
+ *
+ * `reservationStateUnknown` も boolean prop ではなくここに載せる ---
+ * リスト・グリッド・検索結果の全呼び出し点がこの 1 つの契約を通るため、
+ * 表示形式ごとに渡し忘れて穴が開くことがない（issue #710 のグリッドの穴の
+ * 再発防止）。
  */
 export type ReservationActions = {
   reserve: (program: SiteProgram, overrides?: ProgramOverridesInput) => void
@@ -42,6 +47,8 @@ export type ReservationActions = {
   isBusy: (program: SiteProgram) => boolean
   /** サーバーの値に楽観的な上書きを重ねた「予約済み」集合。 */
   reservedProgramIds: ReadonlySet<string>
+  /** 予約一覧が未取得・失敗中なら、未予約行の `record` 操作を止める。 */
+  reservationStateUnknown: boolean
 }
 
 /**
@@ -174,7 +181,17 @@ export const ProgramList = forwardRef<
     /** テストから現在時刻を固定するための注入口。省略時は `Date.now()`。 */
     now?: number
   }
->(function ProgramList({ programs, serviceById, showSite = false, actions, onVisibleDayChange, now }, ref) {
+>(function ProgramList(
+  {
+    programs,
+    serviceById,
+    showSite = false,
+    actions,
+    onVisibleDayChange,
+    now,
+  },
+  ref,
+) {
   const listRef = useRef<HTMLUListElement>(null)
 
   // ページ全体がスクロールするので、リストの手前にある PageHeader のオフセットを
@@ -339,6 +356,7 @@ export const ProgramList = forwardRef<
               }
               reserved={reserved}
               pending={actions.isBusy(program)}
+              reservationStateUnknown={actions.reservationStateUnknown}
               onReserve={(overrides) => actions.reserve(program, overrides)}
               onCancel={() => actions.cancel(program)}
             />

@@ -59,7 +59,7 @@ function renderActions(initialServerReservedIds: ReadonlySet<string>) {
   )
   return renderHook(
     ({ serverReservedIds }: { serverReservedIds: ReadonlySet<string> }) =>
-      useReservationActions(serverReservedIds, sourceByProgramId),
+      useReservationActions(serverReservedIds, sourceByProgramId, false),
     { wrapper, initialProps: { serverReservedIds: initialServerReservedIds } },
   )
 }
@@ -88,5 +88,31 @@ describe('useReservationActions の楽観更新の自己修復', () => {
     // （バグ: リロードするまで誤表示が続く）。
     rerender({ serverReservedIds: new Set() })
     expect(result.current.reservedProgramIds.has(key)).toBe(false)
+  })
+})
+
+describe('useReservationActions の reservationStateUnknown ガード', () => {
+  it('reservationStateUnknown が true のとき、reserve を呼んでも PUT .../intent が飛ばない（ボタンの disabled とは別の二重の網）', async () => {
+    stubFetch()
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    )
+    const { result } = renderHook(
+      () => useReservationActions(new Set(), sourceByProgramId, true),
+      { wrapper },
+    )
+
+    // reserve は mutateAsync を await する非同期 IIFE。ガードが無ければ
+    // このマイクロタスクの間に fetch（PUT .../intent）が飛ぶ。
+    await act(async () => {
+      result.current.reserve(program)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })

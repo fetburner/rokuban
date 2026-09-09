@@ -56,6 +56,7 @@ function actions(overrides: Partial<ReservationActions> = {}): ReservationAction
     cancel: vi.fn(),
     isBusy: () => false,
     reservedProgramIds: new Set(),
+    reservationStateUnknown: false,
     ...overrides,
   }
 }

@@ -147,26 +147,38 @@ export function SearchPage() {
   // 検索結果からの単発予約も番組表と同じ共通経路を使う。予約一覧は全 site を返す
   // ので、同じ programId が複数 site にある場合も site:programId で結び付ける。
   const reservations = useListReservations()
+  // 予約一覧は検索結果の表示そのものには不要なので、取得に失敗しても結果は
+  // 残す。
+  const reservationList = unwrap(reservations.data)
+  // `unwrap(...) ?? []` は未取得を「予約 0 件」に変えるので、1 件も持っていない
+  // （初回取得中・初回失敗）間だけ未予約行の予約操作を止め、状態不明のまま
+  // `record` intent が送られるのを防ぐ。**`reservations.isError` では判定しない**
+  // --- 初回成功後の再取得が失敗しても直前の `data` は残る（TanStack Query v5）。
+  // 古いが既知のサーバー値は予約に使ってよく、止めるべきなのは値を 1 件も
+  // 持っていない状態だけ。バナー（`isPending`/`isError`）は別に出すので失敗
+  // 自体は伝わる。
+  const reservationStateUnknown = reservationList === undefined
   const serverReservedProgramIds = useMemo(() => {
     const set = new Set<string>()
-    for (const reservation of unwrap(reservations.data) ?? []) {
+    for (const reservation of reservationList ?? []) {
       set.add(programIdentity(reservation.site, reservation.programId))
     }
     return set
-  }, [reservations.data])
+  }, [reservationList])
   const reservationSourceByProgramId = useMemo(() => {
     const map = new Map<string, Reservation['source']>()
-    for (const reservation of unwrap(reservations.data) ?? []) {
+    for (const reservation of reservationList ?? []) {
       map.set(
         programIdentity(reservation.site, reservation.programId),
         reservation.source,
       )
     }
     return map
-  }, [reservations.data])
+  }, [reservationList])
   const reservationActions = useReservationActions(
     serverReservedProgramIds,
     reservationSourceByProgramId,
+    reservationStateUnknown,
   )
 
   // search（useMutation の戻り値）を毎レンダー新しいオブジェクトのまま
@@ -491,6 +503,17 @@ export function SearchPage() {
         </ErrorState>
       )}
 
+      {reservations.isPending && (
+        <p role="status" className="px-4 py-2 text-xs text-muted-foreground">
+          予約状態を確認中…
+        </p>
+      )}
+      {reservations.isError && (
+        <ErrorState onRetry={() => void reservations.refetch()}>
+          予約状態の取得に失敗しました
+        </ErrorState>
+      )}
+
       <form
         aria-label="検索条件"
         className="flex flex-col gap-5 border-b border-border px-4 py-4"
@@ -785,7 +808,7 @@ function SearchResultRow({
         type="button"
         variant={reserved ? 'destructive' : 'default'}
         size="sm"
-        disabled={pending}
+        disabled={pending || (!reserved && actions.reservationStateUnknown)}
         onClick={() => {
           if (reserved) actions.cancel(program)
           else actions.reserve(program)

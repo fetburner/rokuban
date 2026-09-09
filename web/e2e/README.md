@@ -563,6 +563,55 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:reservations-capacity-error
 ```
 
+### 予約一覧取得失敗時の番組表レイアウト（`programs-reservation-error.mjs`）
+
+`pages/programs.tsx` のグリッドは
+`height: calc(100dvh - var(--page-header-height, 0px) - var(--sticky-banners-height, 0px))`
+で高さ予算を決める。`reservations.isPending` / `isError` のバナーを
+`PageHeader` の**外**（通常フローの兄弟）に置くと、バナーの高さがどちらの
+CSS 変数にも入らず、100dvh で組んだ画面なのに文書がビューポートを超えて
+ページ全体がスクロールする（実測: 外に置くと 1440x900 で 949px / 900px、
+`PageHeader` の中なら 900px / 900px）。この壊れ方はレイアウトそのものなので
+jsdom（`pnpm test`）では原理的に検出できない。
+
+`pages/programs.tsx` のコメントが挙げる「グリッドの sticky ヘッダが画面外へ
+出る」という症状そのものは、**この構造では再現しなかった** --- 外に置いた
+状態で文書を最後までスクロールしても、グリッド内の `GenreLegend`（見出し行の
+上にある帯）が緩衝になって 39px の余裕が残る。下の判定 B はその症状の再現では
+なく、緩衝が無くなったときに気付くための網である。
+
+`GET /api/reservations` だけを常に 500 で返し、次を見る:
+
+- デスクトップ（1440x900、`/programs?view=grid`）
+  - A. `document.documentElement.scrollHeight` が `window.innerHeight` を
+    超えない（文書がはみ出さない）
+  - B. グリッドのサービス列見出し（`program-grid-header-cell`）の上端が
+    `PageHeader` の下端より下にあり、ビューポート内に見えている
+  - C. グリッドのセルを選ぶと出る選択済み番組の行の「予約」ボタンが
+    disabled であること（予約状態が不明なまま record intent を送らないことの
+    実ブラウザ確認。表示形式ごとに boolean prop を渡す実装ではグリッドだけが
+    渡し忘れており、実際に `PUT .../intent` が飛ぶことを測った）
+- モバイル（390x844、`/programs` リスト）
+  - D. 失敗バナーを飲み込んだ `<header>` の実測高さ（`offsetHeight`）。
+    合否ではなく測定値（sticky に入れた代償の定量化）。緩い上限
+    （viewport 高さの半分未満）だけ置く。実測は平常 121px / 1 行の帯 170px
+    （`ErrorState` を使っていた案では 281px）
+  - E. その状態でも番組リストの先頭行がヘッダの下に見えていること
+
+`design.mjs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え、時刻は
+`page.clock.setFixedTime` で固定）。⓪（配っている bundle と `dist/` の一致）
+も自分で確認する。
+
+**`pnpm e2e`（`checks.mjs`）には足さない。** `checks.mjs` は判定を集約する
+ハブではなく、番組リストの日付ジャンプだけを見る独立したスクリプト
+（既存の他スクリプトも `pnpm e2e` からは呼ばれていない）。したがって
+このスクリプトも他と同じく独立した `package.json` スクリプトのままにする。
+
+```sh
+pnpm build && go build -o /tmp/rokuban ../cmd/rokuban && /tmp/rokuban server --roles api --config ../dev.local.yml &
+pnpm e2e:programs-reservation-error
+```
+
 ### 読み込み中のレイアウトシフト（`cls.mjs`）
 
 CLS（Cumulative Layout Shift）はレイアウトそのものの指標なので、jsdom

@@ -50,6 +50,7 @@ export function ProgramRow({
   siteName,
   reserved,
   pending,
+  reservationStateUnknown,
   onReserve,
   onCancel,
 }: {
@@ -58,6 +59,14 @@ export function ProgramRow({
   siteName?: string
   reserved: boolean
   pending: boolean
+  /**
+   * 予約一覧が未取得・失敗中のとき、未予約側の操作を止める。
+   *
+   * 既定値を持たない必須 prop にしてある --- 渡し忘れを型で止める。以前は
+   * `= false` の既定値があり、グリッド表示（`ProgramGridView`）が渡し忘れた
+   * 1 箇所だけ予約状態不明でも `record` intent が飛ぶ穴になっていた（issue #710）。
+   */
+  reservationStateUnknown: boolean
   onReserve: (overrides?: ProgramOverridesInput) => void
   onCancel: () => void
 }) {
@@ -70,7 +79,8 @@ export function ProgramRow({
 
   const encodeError = encodeSettingsError(encodeValue.keepOriginal, encodeValue.encodeProfiles)
   const encodeDirty = !sameEncodeSettingsValue(encodeValue, defaultEncodeSettingsValue())
-  const reserveBlocked = pending || (encodeDirty && encodeError !== undefined)
+  const reserveBlocked =
+    pending || reservationStateUnknown || (encodeDirty && encodeError !== undefined)
 
   const handleReserve = () => {
     if (reserveBlocked) return
