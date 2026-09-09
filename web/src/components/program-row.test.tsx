@@ -107,6 +107,7 @@ describe('ProgramRow の外向き導線（issue #229）', () => {
         program={airingProgram({ programId: 7 })}
         reserved={true}
         pending={false}
+        reservationStateUnknown={false}
         onReserve={vi.fn()}
         onCancel={vi.fn()}
       />,
@@ -141,6 +142,7 @@ describe('ProgramRow の外向き導線（issue #229）', () => {
         program={airingProgram({ networkId: 32736, serviceId: 1024 })}
         reserved={false}
         pending={false}
+        reservationStateUnknown={false}
         onReserve={vi.fn()}
         onCancel={vi.fn()}
       />,
@@ -164,6 +166,7 @@ describe('ProgramRow の外向き導線（issue #229）', () => {
         program={program()}
         reserved={false}
         pending={false}
+        reservationStateUnknown={false}
         onReserve={vi.fn()}
         onCancel={vi.fn()}
       />,
@@ -184,6 +187,7 @@ describe('ProgramRow の外向き導線（issue #229）', () => {
         program={airingProgram()}
         reserved={false}
         pending={false}
+        reservationStateUnknown={false}
         onReserve={vi.fn()}
         onCancel={vi.fn()}
       />,
@@ -206,6 +210,7 @@ describe('ProgramRow の外向き導線（issue #229）', () => {
         program={program({ programId: 42 })}
         reserved={true}
         pending={false}
+        reservationStateUnknown={false}
         onReserve={vi.fn()}
         onCancel={vi.fn()}
       />,
@@ -229,6 +234,7 @@ describe('ProgramRow の外向き導線（issue #229）', () => {
         program={airingProgram()}
         reserved={false}
         pending={false}
+        reservationStateUnknown={false}
         onReserve={vi.fn()}
         onCancel={vi.fn()}
       />,
@@ -259,6 +265,7 @@ describe('ProgramRow の予約列の開閉配線（issue #310）', () => {
         program={program()}
         reserved={false}
         pending={false}
+        reservationStateUnknown={false}
         onReserve={vi.fn()}
         onCancel={vi.fn()}
       />,
@@ -287,6 +294,7 @@ describe('ProgramRow の予約列の開閉配線（issue #310）', () => {
         program={program()}
         reserved={true}
         pending={false}
+        reservationStateUnknown={false}
         onReserve={vi.fn()}
         onCancel={vi.fn()}
       />,
@@ -312,6 +320,7 @@ describe('ProgramRow の送信中フィードバック（issue #298）', () => {
         program={program()}
         reserved={true}
         pending={true}
+        reservationStateUnknown={false}
         onReserve={vi.fn()}
         onCancel={vi.fn()}
       />,
@@ -330,6 +339,7 @@ describe('ProgramRow の送信中フィードバック（issue #298）', () => {
         program={program()}
         reserved={false}
         pending={true}
+        reservationStateUnknown={false}
         onReserve={vi.fn()}
         onCancel={vi.fn()}
       />,

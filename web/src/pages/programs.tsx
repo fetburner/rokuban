@@ -448,25 +448,36 @@ export function ProgramsPage() {
   //
   // 一覧は全サイトの予約を返す（不変条件 1）。番組表の行も site を運ぶので、
   // 予約状態は site:programId で突き合わせる。
+  // 番組表は予約以外の閲覧にも使うため、予約一覧の失敗で番組まで隠さない。
+  const reservationList = unwrap(reservations.data)
+  // `unwrap(...) ?? []` は未取得を「予約 0 件」に変えるので、1 件も持っていない
+  // （初回取得中・初回失敗）間だけ未予約行の操作を止め、状態不明のまま
+  // `record` intent を送らない。**`reservations.isError` では判定しない** ---
+  // TanStack Query v5 は初回成功後の再取得が失敗しても直前の `data` を保持する
+  // （SSE の `reservations` トピック + 定期 invalidate + `refetchOnWindowFocus`
+  // でこの画面は頻繁に取り直すため、1 回の再取得失敗はよく起きる）。古いが
+  // 既知のサーバー値は予約に使ってよく、止めるべきなのは値を 1 件も持っていない
+  // 状態だけ。バナー（`isPending`/`isError`）は別に出すので失敗自体は伝わる。
+  const reservationStateUnknown = reservationList === undefined
   const serverReservedProgramIds = useMemo(() => {
     const set = new Set<string>()
-    for (const r of unwrap(reservations.data) ?? []) {
+    for (const r of reservationList ?? []) {
       set.add(programIdentity(r.site, r.programId))
     }
     return set
-  }, [reservations.data])
+  }, [reservationList])
 
   // Undo（取消の打ち消し）がルール由来か手動かで送る intent を変える必要が
   // あるため（`useReservationActions` の `revive` 参照）、site:programId から
-  // `reservation.source` を引けるようにしておく。同じ `reservations.data` から
+  // `reservation.source` を引けるようにしておく。同じ `reservationList` から
   // 作るので、`serverReservedProgramIds` と同じ identity の規則を揃える。
   const reservationSourceByProgramId = useMemo(() => {
     const map = new Map<string, Reservation['source']>()
-    for (const r of unwrap(reservations.data) ?? []) {
+    for (const r of reservationList ?? []) {
       map.set(programIdentity(r.site, r.programId), r.source)
     }
     return map
-  }, [reservations.data])
+  }, [reservationList])
 
   // 番組が 1 件でもあるサービスだけをチップに出す（issue #17 の S3）。
   // マルチ編成のないサブサービスは番組を持たないので自動的に消える。
@@ -501,7 +512,11 @@ export function ProgramsPage() {
     )
   }, [gridPrograms, siteServices])
 
-  const actions = useReservationActions(serverReservedProgramIds, reservationSourceByProgramId)
+  const actions = useReservationActions(
+    serverReservedProgramIds,
+    reservationSourceByProgramId,
+    reservationStateUnknown,
+  )
 
   // autoLoadFailed: 直近の自動読み込み（進行方向）が失敗したか。失敗したら
   // ボタン + エラー表示に落とし、番兵が可視のままでも自動では再試行しない
@@ -647,6 +662,40 @@ export function ProgramsPage() {
           days={selectableDays}
           onSelect={selectDay}
         />
+
+        {/* `PageHeader` の children に置く（`PageHeader` の外ではない）--- グリッドの
+            コンテナは `--page-header-height` を高さ予算に使うので、外に置くと
+            バナーの高さぶん文書がその予算からはみ出し、100dvh で組んだ画面なのに
+            ページ全体がスクロールする（`e2e:programs-reservation-error` の判定 A。
+            外に出すと 1440x900 で 949px / 900px、中に入れると 900px / 900px）。
+            副作用として理由表示が sticky になり、スクロールしても「なぜ押せないか」
+            が画面に残る。
+            そのぶん**他ページの `ErrorState`（`py-12` + ボタン）は使わない** ---
+            sticky なので失敗中はヘッダが占める高さがそのまま代償になる
+            （390x844 の実測: 平常 121px / この 1 行の帯 170px / `ErrorState`
+            なら 281px。同判定の測定 D）。色と枠は `CircuitBreakerBanner` と
+            同じ語彙（居座る失敗の帯）に揃える。 */}
+        {reservations.isPending && (
+          <p role="status" className="px-4 py-2 text-xs text-muted-foreground">
+            予約状態を確認中…
+          </p>
+        )}
+        {reservations.isError && (
+          <div
+            role="alert"
+            className="flex items-center gap-3 border-t border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive"
+          >
+            <p className="min-w-0 flex-1">予約状態の取得に失敗しました</p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void reservations.refetch()}
+            >
+              再試行
+            </Button>
+          </div>
+        )}
       </PageHeader>
 
       {showGrid ? (
@@ -841,6 +890,7 @@ function ProgramGridView({
               programIdentity(selected.site, selected.programId),
             )}
             pending={actions.isBusy(selected)}
+            reservationStateUnknown={actions.reservationStateUnknown}
             onReserve={(overrides) => actions.reserve(selected, overrides)}
             onCancel={() => actions.cancel(selected)}
           />

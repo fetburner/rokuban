@@ -37,10 +37,17 @@ import { mutationErrorMessage } from '@/lib/mutation-error-message'
  * ボディは `action` のみのまま変えず、overrides は別リクエストにする ---
  * ただし UI からは「予約」ボタン 1 回の操作に見える。overrides の PATCH が
  * 失敗しても予約自体（intent）は成立しているので、その旨を分けてトーストで示す。
+ *
+ * `reservationStateUnknown`（予約一覧が未取得・失敗中）は戻り値の
+ * `ReservationActions` に載せる ---
+ * 呼び出し元ごとの boolean prop にすると、リスト・グリッド・検索結果のいずれかが
+ * 渡し忘れたときだけ穴が開く（実際にグリッドが 1 箇所渡し忘れていた）。
+ * この 1 つの契約を全表示形式が通るので、渡し忘れがそもそも起きない。
  */
 export function useReservationActions(
   serverReservedIds: ReadonlySet<string>,
   sourceByProgramId: ReadonlyMap<string, Reservation['source']>,
+  reservationStateUnknown: boolean,
 ): ReservationActions {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -209,6 +216,11 @@ export function useReservationActions(
   // 呼ぶと「既定のまま」という意味の無い override 行を作ってしまう
   // （不変条件 10）。UI 上は「予約」ボタン 1 回の操作に見せる（issue #132）。
   const reserve = (program: SiteProgram, overrides?: ProgramOverridesInput) => {
+    // ボタンの disabled（`ProgramRow`/`SearchResultRow` 側）とは別に実行側でも
+    // 止める --- 呼び出し元が disabled の判定を誤って通す場合の二重の網。
+    // `cancel`/`revive` は止めない: 取消は `reserved` 側の操作で、
+    // `reserveBlocked` の対象にもならないためここには到達しない。
+    if (reservationStateUnknown) return
     const key = programIdentity(program.site, program.programId)
     setBusy(key, true)
     setOptimisticReserved(key, true)
@@ -267,5 +279,6 @@ export function useReservationActions(
     cancel,
     isBusy: (program) => busyProgramIds.has(programIdentity(program.site, program.programId)),
     reservedProgramIds,
+    reservationStateUnknown,
   }
 }
