@@ -8,6 +8,7 @@ import path from 'node:path'
 import { chromium, firefox, webkit } from 'playwright'
 
 const ENGINES = { chromium, firefox, webkit }
+const VALIDATE_FIXTURES_ONLY = process.env.E2E_VALIDATE_FIXTURES_ONLY === '1'
 
 /**
  * launchBrowser は指定したエンジンでブラウザを起動する。既定は chromium。
@@ -96,6 +97,10 @@ export async function verifyBundleMatchesOrExit(urlBase, ng, browser) {
  * **配列そのものではなく要素のスキーマで parse する。** orval は配列スキーマ
  * （`List*Response`）と要素スキーマ（`List*ResponseItem`）を別名で出すため、
  * 呼び出し側は要素スキーマを明示して渡すこと。
+ *
+ * `E2E_VALIDATE_FIXTURES_ONLY=1` のときは、検証結果を出した時点でプロセスを終了する。
+ * このモードは各スクリプトの検証呼び出しがブラウザ起動より前にあることを前提に、
+ * ブラウザ・preview サーバー・ビルド済み bundle なしで契約だけを CI から確認する。
  */
 export async function validateFixturesOrExit(pairs, ng, browser) {
   const before = ng.length
@@ -110,6 +115,7 @@ export async function validateFixturesOrExit(pairs, ng, browser) {
     await finish(ng, browser)
   }
   log('  すべてのフィクスチャが契約と一致')
+  if (VALIDATE_FIXTURES_ONLY) process.exit(ng.length === 0 ? 0 : 1)
 }
 
 /**

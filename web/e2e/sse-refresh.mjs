@@ -50,9 +50,6 @@ const check = (label, actual, expected) => {
   }
 }
 
-// ⓪ 配っている bundle が dist/ の現物と一致するか（e2e/lib.mjs 参照）。
-await verifyBundleMatchesOrExit(BASE, ng)
-
 const reservation = {
   id: 111,
   site: 'tokyo',
@@ -69,10 +66,49 @@ const reservation = {
   skip: false,
 }
 
+// ブラウザ起動後にしか使わないフィクスチャもここで構築する。契約検証のみモードが
+// ブラウザ起動や bundle 検証に到達する前に、スクリプト全体のフィクスチャを検査できる
+// ようにする。
+const breaker = {
+  site: 'tokyo',
+  name: 'ruler_deletes',
+  trippedAt: new Date(Date.now() - 3_600_000).toISOString(),
+  pending: 3,
+  threshold: 20,
+  detail: { total: 3, programs: [] },
+}
+const manyRecordings = Array.from({ length: 60 }, (_, i) => ({
+  id: i + 1,
+  site: 'tokyo',
+  source: 'manual',
+  serviceName: 'NHK総合',
+  channelType: 'GR',
+  channel: '27',
+  networkId: 32736,
+  serviceId: 1024,
+  eventId: i + 1,
+  title: `録画 ${i + 1}`,
+  startAt: new Date(Date.now() - (i + 1) * 3_600_000).toISOString(),
+  durationMs: 1_800_000,
+  status: 'finished',
+  keepOriginal: 'always',
+  createdAt: new Date(Date.now() - (i + 1) * 3_600_000).toISOString(),
+}))
+
 // 契約検証: フィクスチャが orval 生成の zod スキーマと一致するか
 // （`validateFixturesOrExit`。design.mjs / e2e/README.md §デザイン 参照）。
 log('\n=== 契約検証: フィクスチャの zod parse ===')
-await validateFixturesOrExit([['reservation', ListReservationsResponseItem, reservation]], ng)
+await validateFixturesOrExit(
+  [
+    ['reservation', ListReservationsResponseItem, reservation],
+    ['breaker', ListCircuitBreakersResponseItem, breaker],
+    ...manyRecordings.map((r) => [`recordings#${r.id}`, ListRecordingsResponseItem, r]),
+  ],
+  ng,
+)
+
+// ⓪ 配っている bundle が dist/ の現物と一致するか（e2e/lib.mjs 参照）。
+await verifyBundleMatchesOrExit(BASE, ng)
 
 const browser = await launchBrowser()
 
@@ -255,41 +291,6 @@ log('\n=== 接続断バナー（/recordings）===')
   // PageHeader との非交差を見る（StickyBanners が両方の合計高さを publish して
   // いることの確認。接続断バナーだけでは、CircuitBreakerBanner 側だけが sticky を
   // 持つ退行を検出できない）。
-  const breaker = {
-    site: 'tokyo',
-    name: 'ruler_deletes',
-    trippedAt: new Date(Date.now() - 3_600_000).toISOString(),
-    pending: 3,
-    threshold: 20,
-    detail: { total: 3, programs: [] },
-  }
-  const manyRecordings = Array.from({ length: 60 }, (_, i) => ({
-    id: i + 1,
-    site: 'tokyo',
-    source: 'manual',
-    serviceName: 'NHK総合',
-    channelType: 'GR',
-    channel: '27',
-    networkId: 32736,
-    serviceId: 1024,
-    eventId: i + 1,
-    title: `録画 ${i + 1}`,
-    startAt: new Date(Date.now() - (i + 1) * 3_600_000).toISOString(),
-    durationMs: 1_800_000,
-    status: 'finished',
-    keepOriginal: 'always',
-    createdAt: new Date(Date.now() - (i + 1) * 3_600_000).toISOString(),
-  }))
-  // 契約検証（validateFixturesOrExit。冒頭の reservation と同じ理由）。
-  // browser は既に起動済みなので、不一致なら閉じてから打ち切る
-  await validateFixturesOrExit(
-    [
-      ['breaker', ListCircuitBreakersResponseItem, breaker],
-      ...manyRecordings.map((r) => [`recordings#${r.id}`, ListRecordingsResponseItem, r]),
-    ],
-    ng,
-    browser,
-  )
   await bannerPage.route('**/api/**', async (route) => {
     const requested = new URL(route.request().url()).pathname
     if (requested === '/api/events') {

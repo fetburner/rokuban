@@ -26,9 +26,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
         working-directory: web
       # コンポーネント／lib のロジック回帰は CI では Vitest でしか止まらない（build は型エラーしか
-      # 拾わない。web/e2e/ もロジック回帰を止めうるが、CI では回さずローカル専用）。
+      # 拾わない。ブラウザを使う web/e2e/ もロジック回帰を止めうるが、CI では回さずローカル専用）。
       # Go toolchain も postgres service も要らないので独立した job にして test job の信号と混ぜない。
       - run: pnpm test
+        working-directory: web
+      # E2E のフィクスチャ契約だけを検証する。E2E_VALIDATE_FIXTURES_ONLY=1 で各スクリプトは
+      # ブラウザを起動せず終了し、実ブラウザを使う E2E 判定は引き続きローカル専用とする。
+      - run: pnpm e2e:fixtures
         working-directory: web
 
   test:

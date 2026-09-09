@@ -53,6 +53,18 @@ pnpm e2e                              # 既定で http://localhost:40773
 E2E_URL=http://localhost:40775 pnpm e2e
 ```
 
+### フィクスチャ契約の CI 検証
+
+各スクリプトが使う API フィクスチャと `web/src/api/zod.ts` の生成スキーマの一致だけは、
+実ブラウザを使わずに `pnpm e2e:fixtures` で検証する。これは `E2E_VALIDATE_FIXTURES_ONLY=1`
+を付けて契約検証を持つ 11 本のスクリプトを起動し、検証後に各プロセスを終了する経路である。
+preview サーバー、`dist/`、Playwright のブラウザ本体は必要ない。
+
+対象スクリプトの一覧は `e2e/validate-fixtures.mjs` に一か所だけ置く。各スクリプトはこのモードで
+全フィクスチャを検証してから `launchBrowser` や bundle 検証へ進まない。実ブラウザを使う判定は
+従来どおりこのコマンドの対象外で、ローカルの個別 E2E で行う。子プロセスは順番にすべて実行するので、
+先のスクリプトが失敗しても後続のフィクスチャ検証を省略しない。
+
 ### 多 site 番組表（`multi-site.mjs`）
 
 `tokyo` と `takamatsu` に同一 `networkId` / `serviceId` / `Service.id` / 局名 /
