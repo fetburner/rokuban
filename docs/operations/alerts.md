@@ -95,20 +95,13 @@ and on (site)
   time() - rokuban_schedule_snapshot_last_success_timestamp_seconds
     <= <snapshot_stale_seconds>
 )
-
-# options_deferred は別の Alertmanager ルートへ送る。
-# 放送中は earliest が過去なので継続して成立するが、直ちに再作成せず、
-# 放送終了待ちまたは手動介入が必要な状態である。
-(
-  rokuban_presync_pending_earliest_start_timestamp_seconds{reason="options_deferred"}
-    - time() < <lead_seconds>
-)
-and on (site)
-(
-  time() - rokuban_schedule_snapshot_last_success_timestamp_seconds
-    <= <snapshot_stale_seconds>
-)
 ```
+
+**`options_deferred` はアラートしない**。録画中の番組の priority を変えると、
+録画が終わるまで（数時間）`earliest` が過去のまま非ゼロが続くのが正常である
+（`update_deferred` と同じ判断。[monitoring.md](monitoring.md) §reconcile）。
+`missing` / `options` と分けて別系列にしたのは、この reason を上のアラート式から
+除外するためである。調査の入口は [troubleshooting.md](../runbook/troubleshooting.md) にある。
 
 `for:` はここでは「pending が続いた時間」ではなく 1 scrape 分の揺らぎ吸収だけに
 使う。開始までの残り時間は上式が `earliest - time()` で直接見ているので、
@@ -116,9 +109,8 @@ and on (site)
 
 通知は Prometheus の alert rule から Alertmanager へ送り、`site` と `reason` を
 ルーティングに残す。`missing` / `options` は開始前に reconciler・mirakc・DB を
-確認する通常の未同期ルート、`options_deferred` は放送終了待ちまたは手動介入を案内する
-別ルートにする。観測不能は同期状態の断定より優先して、担当者が reconciler の投入元・
-worker / ScaledJob の起動状態・DB 接続を確認する入口にする。
+確認する通常の未同期ルートにする。観測不能は同期状態の断定より優先して、担当者が
+reconciler の投入元・worker / ScaledJob の起動状態・DB 接続を確認する入口にする。
 
 `<lead_seconds>` を決める式は次のとおり（p95/p99 の実測値を代入する）。
 

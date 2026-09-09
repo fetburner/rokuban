@@ -188,7 +188,7 @@ func (c *PresyncCollector) read(ctx context.Context) (presyncResult, error) {
 		}
 
 		programID := candidate.Reservation.ProgramID
-		observedSchedule, ok := observed[programID]
+		obs, ok := observed[programID]
 		if !ok {
 			result.add(reasonMissing, candidate.Snapshot.StartAt)
 			continue
@@ -198,12 +198,12 @@ func (c *PresyncCollector) read(ctx context.Context) (presyncResult, error) {
 			programID,
 			candidate.Options,
 			schedulesync.DefaultPriority,
-			observedSchedule.options,
-			observedSchedule.tags,
+			obs.options,
+			obs.tags,
 		)
 		if owned && diff.Any() {
 			reason := reasonOptions
-			if !schedulesync.IsRecreateAllowed(observedSchedule.state) {
+			if !schedulesync.IsRecreateAllowed(obs.state) {
 				reason = reasonOptionsDeferred
 			}
 			result.add(reason, candidate.Snapshot.StartAt)
