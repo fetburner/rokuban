@@ -127,7 +127,14 @@
     --muted-foreground: var(--scanline);
     --accent: var(--tone-100);
     --accent-foreground: var(--sumi);
-    --destructive: oklch(0.577 0.245 27.325);
+    /* destructive を塗りとして使う箇所は無い（失敗バッジ・destructive ボタンは
+       どちらも「文字 + 淡い地」）ので、タリーとの区別は形（塗りか文字か）が
+       担い、色相をタリーから離す必要はない。**色相は shadcn 既定（27.325）から
+       動かさず、明度を落として** `bg-destructive/10` の合成面で AA を満たす値に
+       する。彩度はこの明度で sRGB 色域に収まる上限まで下げる（既定の 0.245 は
+       既定の明度でも色域外で、Chromium はクリップして描いていた --- 他ブラウザの
+       色域マッピングは未検証）。 */
+    --destructive: oklch(0.48 0.195 27.325);
     --tally: oklch(0.56 0.215 27);
     --tally-foreground: var(--paper);
     /* 琥珀は「文字 + 淡い地（bg-warning/10）」で使うので、地ではなくその淡い地の上で

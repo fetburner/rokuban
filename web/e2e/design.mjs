@@ -704,9 +704,9 @@ const screens = [
   { name: 'reservations', path: '/reservations', wait: 'text=チューナー不足' },
   { name: 'recordings', path: '/recordings', wait: 'text=録画中' },
   { name: 'rules', path: '/rules', wait: 'text=朝ドラ' },
-  // 検索は初期状態で結果を持たないので、フォームが立ち上がったことを目印にする
-  // （何も待たないと、クエリが解決する前の空のフォームを撮ってしまう）
-  { name: 'search', path: '/search', wait: 'text=チャンネル' },
+  // 検索は初期状態で結果を持たないので、常時表示のフォーム見出しを目印にする
+  // （詳細条件は初期状態で折りたたまれており、「チャンネル」は待機目印にならない）
+  { name: 'search', path: '/search', wait: 'text=テキスト条件' },
   { name: 'live', path: '/live', wait: 'text=NHK総合' },
 ]
 
@@ -1728,30 +1728,6 @@ const minTextContrast = 4.5
 /** 面・線（非テキスト）に要求する WCAG 比。 */
 const minUiContrast = 3
 
-/**
- * 下限を満たさないと分かっていて、いま直さないと決めた組み合わせ。
- *
- * **黙って下限を下げない。** ここに載せたものは合否には数えないが、必ず
- * 「既知の不足」として出力する（CLAUDE.md の「no silent caps」に相当）。
- * 空にできたらこの仕組みごと消す。
- */
-const knownGaps = new Map([
-  [
-    'light/失敗バッジの文字 / destructive の淡い地',
-    'destructive は shadcn 既定のまま（この PR の対象外）。' +
-      '明度を下げるとタリーレッドと見分けが付かなくなるので、直すなら色相ごと動かす判断が要る' +
-      '（実測値は上の表に出る。ここには書かない --- 2 通りの数字を持たないため）',
-  ],
-  [
-    'light/一覧の行の hover 中の副情報の文字 / muted の半透明地',
-    'hover 中だけの組み合わせで Lighthouse の監査対象に入らない（常時見える面は下限を満たす）。' +
-      '直すには一覧の行の副情報の文字色を 4 画面（録画・予約・ホーム・番組リスト）で' +
-      '一斉に上げることになり、常時表示の階層（本文 = foreground / 副情報 = muted）が ' +
-      'hover のあいだ崩れる。どちらを取るかは別で決める --- 割っている量は僅かなので、' +
-      'ここに載せて見えるようにしたうえで据え置く（実測値は上の表に出る）',
-  ],
-])
-
 /** contrasts は測ったコントラストを表として溜める（合否とは別に、数値を人に見せる）。 */
 const contrasts = []
 function checkContrast(theme, label, fg, measured, floor) {
@@ -1762,9 +1738,8 @@ function checkContrast(theme, label, fg, measured, floor) {
   }
   const bg = measured.backdrop
   const ratio = contrast(fg, bg)
-  const gap = knownGaps.get(`${theme}/${label}`)
-  contrasts.push({ theme, label, ratio, floor, gap })
-  if (ratio < floor && gap === undefined) {
+  contrasts.push({ theme, label, ratio, floor })
+  if (ratio < floor) {
     ng.push(`[${theme}] ${label} のコントラストが ${ratio.toFixed(2)}（下限 ${floor}）`)
   }
   return ratio
@@ -1947,15 +1922,14 @@ for (const theme of themes) {
     await context.close()
   }
 
-  // --- 録画一覧: 行の hover 中の副情報（`hover:bg-muted/50` + `text-muted-foreground`） ---
+  // --- 録画一覧: 行の hover 中の副情報（`hover:bg-muted/40` + `text-muted-foreground`） ---
   //
-  // 一覧の行は hover で `bg-muted/50` を敷き、その上に副情報（放送局名・日時・尺）が
+  // 一覧の行は hover で `bg-muted/40` を敷き、その上に副情報（放送局名・日時・尺）が
   // `text-muted-foreground` のまま乗る。**Lighthouse は hover を測らない**ので
   // 監査には出ないが、`bg-muted` + `text-muted-foreground` と同族の組み合わせで
-  // あることは変わらないので、下限を割るかどうかは推測せず実測する（割っている。
-  // 直さない判断は `knownGaps` に理由付きで載せてある）。同じ組み方は予約一覧・
-  // ホーム・番組リストの行にもあるが、地・文字のトークンと不透明度が同一なので
-  // 代表として録画一覧の行で 1 回測る。
+  // あることは変わらないので、下限を割るかどうかは推測せず実測する。同じ組み方は
+  // 予約一覧・ホーム・番組リストの行にもあるが、地・文字のトークンと不透明度が
+  // 同一なので代表として録画一覧の行で 1 回測る。
   {
     const { context, page } = await open(desktop, theme, screenOf('recordings'))
     const row = page.locator('li').filter({ hasText: 'クラシック音楽館' }).first()
@@ -1986,6 +1960,50 @@ for (const theme of themes) {
         checkContrast(
           theme,
           '一覧の行の hover 中の副情報の文字 / muted の半透明地',
+          after.rgba,
+          after,
+          minTextContrast,
+        )
+      }
+    }
+    await context.close()
+  }
+
+  // --- 録画一覧: 選択中の行の副情報（`bg-muted/40` + `text-muted-foreground`） ---
+  //
+  // 選択モードで選んだ行は hover と同じ `bg-muted/40` が乗る（レビュー指摘。
+  // 選択中だけ `bg-muted/50` のままだと副情報のコントラストが下限すれすれになる）。
+  // hover と違って**常時見えるので Lighthouse の監査対象**に入るため、
+  // 下限を割るかどうかは推測せず実測する。
+  {
+    const { context, page } = await open(desktop, theme, screenOf('recordings'))
+    const row = page.locator('li').filter({ hasText: 'クラシック音楽館' }).first()
+    const sub = row.locator('span', { hasText: /^ＮＨＫＢＳ$/ }).first()
+    if ((await sub.count()) === 0) {
+      ng.push(`[${theme}] 録画一覧の行の副情報（放送局名）が見つからない（選択中の判定）`)
+    } else {
+      const before = await sub.evaluate(readColor, 'color')
+      await page.getByRole('button', { name: '選択' }).click()
+      await page.getByRole('checkbox', { name: 'クラシック音楽館を選択' }).click()
+      // hover が乗る位置のままだと測っているものが hover の面になるので、
+      // 行からマウスを離してから測る。
+      await page.mouse.move(0, 0)
+      await page.waitForTimeout(150)
+      const after = await sub.evaluate(readColor, 'color')
+      log(`  [${theme}] 一覧の行（選択中）の副情報 文字=${after.value} / 乗っている面 選択前=${before.backdrop} → 選択中=${after.backdrop}`)
+      // **選択が本当に効いていることをここで検査する。** hover ブロックと同じ
+      // 形の穴 --- 効いていなければ測っているのは通常時の面で、数字は
+      // 空虚な成功になる（design.md「判定を足したことと、それが効いていることは別」）。
+      const changed = [0, 1, 2].some((i) => Math.abs(after.backdrop[i] - before.backdrop[i]) >= 1)
+      if (!changed) {
+        ng.push(
+          `[${theme}] 録画一覧の行を選択しても副情報が乗る面が変わらない（${after.backdrop}）` +
+            ' --- 選択中の淡い地が効いていないか、locator が行の外を掴んでいる',
+        )
+      } else {
+        checkContrast(
+          theme,
+          '一覧の行の選択中の副情報の文字 / muted の半透明地',
           after.rgba,
           after,
           minTextContrast,
@@ -3423,21 +3441,9 @@ for (const reducedMotion of ['reduce', 'no-preference']) {
 // 数値は docs に転記しない（転記した瞬間に二重管理になる）。docs は
 // 「ここで測る」とだけ言い、実際の数値はこの出力が権威。
 log('\n=== 測ったコントラスト ===')
-for (const { theme, label, ratio, floor, gap } of contrasts) {
-  const mark = ratio >= floor ? ' ' : gap !== undefined ? '△' : '×'
+for (const { theme, label, ratio, floor } of contrasts) {
+  const mark = ratio >= floor ? ' ' : '×'
   log(`  ${mark} [${theme}] ${label}: ${ratio.toFixed(2)}（下限 ${floor}）`)
-}
-const gaps = contrasts.filter((c) => c.ratio < c.floor && c.gap !== undefined)
-if (gaps.length > 0) {
-  log('\n  既知の不足（合否には数えていない）:')
-  for (const { theme, label, gap } of gaps) log(`    △ [${theme}] ${label} --- ${gap}`)
-}
-// 下限を満たすようになった gap は畳めるので、そのことも言う。
-// 言わないと knownGaps が「一度入れたら誰も見ない置き場」になる
-const stale = contrasts.filter((c) => c.ratio >= c.floor && c.gap !== undefined)
-for (const { theme, label, ratio } of stale) {
-  log(`\n  knownGaps に載っているが下限を満たしている（${ratio.toFixed(2)}）: [${theme}] ${label}`)
-  log('    → knownGaps から消せる')
 }
 
 await finish(ng, browser)

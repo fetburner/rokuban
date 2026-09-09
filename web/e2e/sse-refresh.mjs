@@ -277,6 +277,7 @@ log('\n=== 接続断バナー（/recordings）===')
     startAt: new Date(Date.now() - (i + 1) * 3_600_000).toISOString(),
     durationMs: 1_800_000,
     status: 'finished',
+    keepOriginal: 'always',
     createdAt: new Date(Date.now() - (i + 1) * 3_600_000).toISOString(),
   }))
   // 契約検証（validateFixturesOrExit。冒頭の reservation と同じ理由）。

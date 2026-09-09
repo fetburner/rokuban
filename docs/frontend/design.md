@@ -112,20 +112,17 @@ zinc はわずかに寒色（hue ≈ 286、chroma ≤ 0.016）で、これが「
 `getImageData` で採る。`background-image` に直接書いた色も読めないので、縞の色は
 カスタムプロパティに出してある（下記「走査線は 3 箇所限定」）。
 
-下限を割ると分かっていて直さないものは、`design.mjs` の `knownGaps` に**理由込みで**
-書く。合否には数えないが、実行するたびに「既知の不足」として出る。黙って下限を
-下げる形は取らない。いまそこに載っているのは 2 件:
+下限を割る組み合わせは除外せず、通常の失敗判定に入れる（`knownGaps` のような
+除外リストは持たない）。失敗バッジはライトの `--destructive` の明度を下げて直した
+（**色相は動かしていない** --- タリーと近いままで、彩度だけがその明度で sRGB 色域に
+収まる上限まで連れて下がる。上記「タリーレッドと destructive は色相が近い」参照）。録画中との識別は、従来どおり「塗り + 紙白の文字」と「文字 + 淡い地」の
+形の差を保つ。
 
-- **失敗バッジ（`text-destructive` / `bg-destructive/10`、ライト）。**
-  destructive は shadcn 既定のままにする決定なので触っていない。明度を下げると
-  タリーレッドと見分けが付かなくなるので、直すなら色相ごと動かす判断が要る
-  （実測値は `e2e:design` の出力に出る）
-- **一覧の行の hover 中の副情報（`hover:bg-muted/50` + `text-muted-foreground`、
-  ライト）。** hover 中しか出ない組み合わせなので Lighthouse の監査対象には入らない
-  が、実測すると下限を僅かに割る（実測値は `e2e:design` の出力に出る）。直すには
-  4 画面（録画一覧・予約一覧・ホーム・番組リスト）の行の副情報を一斉に
-  `text-foreground` へ上げることになり、常時表示の階層（本文 = foreground /
-  副情報 = muted）が hover のあいだ崩れる。どちらを取るかは別で決める
+一覧行の hover 中の副情報は `text-muted-foreground` を維持し、4 画面（録画一覧・予約一覧・
+ホーム・番組リスト）の `hover:bg-muted/40` を最も近い薄さへ揃えて、通常時の本文 = foreground /
+副情報 = muted の階層を崩さずに調整する。hover はライト／ダークの両テーマで実測する。
+録画一覧の選択モードで選んだ行も同じ `bg-muted/40` に揃えてある --- こちらは常時
+見える面（Lighthouse の監査対象）なので、hover と同じ理屈で `e2e:design` が実測する。
 
 `bg-muted` + `text-muted-foreground` は、地・文字とも走査線グレー側の段を経由する
 ためライトで 4.5 を割る。走査線グレーの値そのものは動かさず、**次に挙げる箇所を
@@ -139,18 +136,13 @@ chip（`components/ui/chip.tsx`）・day-strip（`components/day-strip.tsx`）�
 なく hover で `bg-muted` が乗る形で、Lighthouse は hover を測らないので合否の対象では
 ないが、同じ組み合わせである以上揃えて `hover:text-foreground` を対にしてある。
 
-**上の列挙は「直した箇所」で、`bg-muted` 系の面に muted の文字が乗る箇所の網羅では
-ない。** この節は一度「この組み合わせで文字を出す箇所はすべて直した」と書いて、
-実際には行の hover と詳細パネルが残っていた --- **docs で数え上げを維持しようと
-すると必ず嘘になる**。網羅の権威は `e2e:design` の出力の側に置く。そこに出ていない
-組み合わせは「測っていない」であって「通っている」ではない。いま分かっている残りは:
+**上の列挙は `bg-muted` 系の面に muted の文字が乗る箇所の網羅ではない。** 網羅の権威は
+`e2e:design` の出力の側に置く。そこに出ていない組み合わせは「測っていない」であって
+「通っている」ではない。今回の行 hover は、`components/program-row.tsx` /
+`pages/recordings.tsx` / `pages/reservations.tsx` / `pages/home.tsx` の 4 画面で
+`text-muted-foreground` を維持したまま面の濃さを揃え、代表として録画一覧の行を
+`e2e:design` が実際に hover して測る。いま分かっている残りは:
 
-- **測ってあり、下限を僅かに割る**: 一覧の行の hover（`hover:bg-muted/50`）に乗る
-  副情報（`components/program-row.tsx` / `pages/recordings.tsx` /
-  `pages/reservations.tsx` / `pages/home.tsx` の 4 画面。放送局名・日時・尺が
-  `text-muted-foreground` のまま）。代表として録画一覧の行を `e2e:design` が実際に
-  hover して測り、上記のとおり `knownGaps` に載せてある。Lighthouse は hover を
-  測らないので監査の合否には出ない
 - **測ってあり、下限を満たす**: 録画詳細（`/recordings/$id`）の `bg-muted/30` の
   パネルに乗る説明文・`<dt>` 群・品質イベント（`RecordingDetail`。一覧はインライン
   展開を持たないので、この面が出るのは詳細ページだけ）。hover と違って**常時見えるので
@@ -162,7 +154,11 @@ chip（`components/ui/chip.tsx`）・day-strip（`components/day-strip.tsx`）�
   hover（`components/encode-settings-fields.tsx` の `hover:bg-muted/60` +
   コンテナ名の `text-muted-foreground`）。どちらも一瞬 / hover 中しか出ないため
   判定に載せていない。**他の不透明度の実測値から外挿もしない** --- 判定を足すまでは
-  「同じ手で直した」扱いにも「通っている」扱いにもしない
+  「同じ手で直した」扱いにも「通っている」扱いにもしない。destructive 側にも
+  同様に未測定の組み合わせがある: `Button variant="destructive"` の hover
+  （`hover:bg-destructive/20`。基底の `/10` より濃い面）と、
+  `circuit-breaker-banner.tsx` の理由文（`text-destructive/80` が
+  `bg-destructive/10` に乗る。文字自身が半透明）
 
 モバイル番組のチャンネルピッカートリガー（`bg-background` + `text-foreground`）は
 上記のバッジ群とは別の組み合わせで、他所（地の無彩 3 値そのものの対）で測っている

@@ -110,7 +110,7 @@ export function ProgramRow({
           // `aria-expanded` を見るため）が引くマーカー。この button 自身が
           // `aria-expanded` を持ち、予約ボタンの列より DOM 上で先に来る
           // 兄弟なので `peer-aria-expanded:` で引ける。
-          className="peer flex min-h-14 min-w-0 flex-1 items-center gap-3 px-4 py-2.5 text-left hover:bg-muted/50"
+          className="peer flex min-h-14 min-w-0 flex-1 items-center gap-3 px-4 py-2.5 text-left hover:bg-muted/40"
         >
           <div className="w-11 shrink-0 text-sm">
             {/* 放送中の行は**色を使わず**太さで立てる。理由は 2 つあり、どちらも
