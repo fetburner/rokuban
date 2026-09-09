@@ -178,7 +178,7 @@ function firstResultRow(page) {
 }
 
 /**
- * checkViewport は 1 viewport ぶんの判定（①②④⑤）をまとめて行う。
+ * checkViewport は 1 viewport ぶんの判定（①②④⑤⑥）をまとめて行う。
  *
  * **①②を測り終えるまでスクロールも操作もしない** --- 「初画面（スクロール前）で
  * 主操作に届くか」を見る判定でスクロールすると、直したい問題そのものを回避して
@@ -304,6 +304,11 @@ async function checkViewport(viewport) {
   // ここから先だけ操作する（この順序は動かさないこと）。
   await checkSubmitFeedback(page, viewport, label)
 
+  // --- ⑥ 結果行のメタ行が 1 行に収まる ---
+  // `checkSubmitFeedback` の中に置くと、その早期 return（件数行のタイムアウト）で
+  // ⑥が黙って消えるため、⑤と同じ理由でここから呼ぶ。
+  await checkSearchResultMeta(page, label)
+
   // --- ⑤ 結果行の予約導線 ---
   // **④を測り終えた後にだけ操作する**（`checkResultReservation` のコメント）。
   // `checkSubmitFeedback` の中に置くと、その早期 return で⑤が黙って消えるため
@@ -346,8 +351,6 @@ async function checkSubmitFeedback(page, viewport, label) {
   const firstRow = firstResultRow(page)
   await firstRow.getByText(/^ニュース \d+$/).waitFor({ timeout: 15000 })
   await page.waitForTimeout(200)
-
-  await checkSearchResultMeta(page, label)
 
   const scrollY = await page.evaluate(() => window.scrollY)
   const countBox = await countRow.boundingBox()
@@ -400,12 +403,20 @@ async function checkSubmitFeedback(page, viewport, label) {
 }
 
 /**
- * checkSearchResultMeta は検索結果のメタ行が 1 行で描画されることを判定する（⑥）。
+ * checkSearchResultMeta は検索結果のメタ行が 1 行で描画され、結果行の高さが
+ * 不要に伸びていないことを判定する（⑥）。
  *
  * 長いサービス名と「有料」を同時に持つ fixture を使う。メタ行に `flex-wrap` が
  * 残っているとサービス名が縮む前に折り返し、`getBoundingClientRect()` の高さが
- * computed style の 1 行ぶんを超える。jsdom はレイアウトを計算しないため、実際の
- * Chromium でしかこの差を検出できない。
+ * 1 行ぶんを超える。jsdom はレイアウトを計算しないため、実際の Chromium でしか
+ * この差を検出できない。
+ *
+ * **基準は固定値にしてある**（被検体の `getComputedStyle().lineHeight` は読まない）。
+ * Tailwind v4 は named size ユーティリティ（`text-xs` 等）にしか `line-height` を
+ * 出さないため、将来 `text-[13px]` のような任意値へ変えると `'normal'` が返り
+ * `Number.parseFloat` が NaN になる --- 被検体自身を基準にすると、基準そのものが
+ * 壊れて「判定不能」になる。実測（360/390/1280px いずれも同じ）は結果行 65px・
+ * メタ行 16px。しきい値はそれぞれ余裕を持たせた 72px・20px。
  */
 async function checkSearchResultMeta(page, label) {
   const firstRow = firstResultRow(page)
@@ -418,14 +429,10 @@ async function checkSearchResultMeta(page, label) {
 
   const rowBox = await firstRow.boundingBox()
   const metaBox = await meta.boundingBox()
-  const metrics = await meta.evaluate((element) => {
-    const style = getComputedStyle(element)
-    return {
-      flexWrap: style.flexWrap,
-      lineHeight: Number.parseFloat(style.lineHeight),
-      text: element.textContent ?? '',
-    }
-  })
+  const metrics = await meta.evaluate((element) => ({
+    flexWrap: getComputedStyle(element).flexWrap,
+    text: element.textContent ?? '',
+  }))
 
   if (rowBox === null || metaBox === null) {
     ng.push(`⑥@${label}: 結果行またはメタ行の矩形が取れない`)
@@ -434,8 +441,7 @@ async function checkSearchResultMeta(page, label) {
 
   log(
     `  ⑥@${label} 結果行 height=${Math.round(rowBox.height)} / ` +
-      `メタ行 height=${Math.round(metaBox.height)} line-height=${metrics.lineHeight}` +
-      ` / flex-wrap=${metrics.flexWrap}`,
+      `メタ行 height=${Math.round(metaBox.height)} / flex-wrap=${metrics.flexWrap}`,
   )
 
   if (!metrics.text.includes('ＮＨＫＢＳプレミアム４Ｋ') || !metrics.text.includes('有料')) {
@@ -444,13 +450,14 @@ async function checkSearchResultMeta(page, label) {
   if (metrics.flexWrap !== 'nowrap') {
     ng.push(`⑥@${label}: 結果行のメタ行が折り返し禁止になっていない（${metrics.flexWrap}）`)
   }
-  if (!Number.isFinite(metrics.lineHeight)) {
-    ng.push(`⑥@${label}: メタ行の line-height を取得できない`)
-  } else if (metaBox.height > metrics.lineHeight + 1) {
-    ng.push(
-      `⑥@${label}: メタ行が 1 行に収まっていない（height=${metaBox.height}, ` +
-        `line-height=${metrics.lineHeight}）`,
-    )
+  if (metaBox.height > 20) {
+    ng.push(`⑥@${label}: メタ行が 1 行に収まっていない（height=${metaBox.height}, 上限=20px）`)
+  }
+  // メタ行が 1 行のままでも、`py-2.5` を広げる・名前カラムに 2 行目
+  // （`ProgramOverlapWarning` 相当）を足す等で結果行自体が高くなる取りこぼしを
+  // 捕まえる（レビュー指摘）。メタ行の判定だけでは緑のまま通ってしまっていた。
+  if (rowBox.height > 72) {
+    ng.push(`⑥@${label}: 結果行が想定より高い（height=${rowBox.height}, 上限=72px）`)
   }
 }
 
@@ -564,14 +571,14 @@ async function checkRestoredDetails() {
   await context.close()
 }
 
-log('\n=== ① ② ④ ⑤ モバイル（360/390x844） ===')
+log('\n=== ① ② ④ ⑤ ⑥ モバイル（360/390x844） ===')
 await checkViewport({ width: 360, height: 844 })
 await checkViewport({ width: 390, height: 844 })
 
 log('\n=== ③ 詳細条件の要約・キーボード操作（390x844） ===')
 await checkRestoredDetails()
 
-log('\n=== ③ デスクトップ（1280x900）でも②④⑤を確認 ===')
+log('\n=== ③ デスクトップ（1280x900）でも②④⑤⑥を確認 ===')
 await checkViewport({ width: 1280, height: 900 })
 
 await finish(ng, browser)

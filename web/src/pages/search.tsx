@@ -785,7 +785,7 @@ function SearchResultRow({
           className="flex items-center gap-2 text-xs text-muted-foreground"
         >
           {showSite && <span className="shrink-0">{program.site}</span>}
-          {serviceName !== undefined && <span className="truncate">{serviceName}</span>}
+          {serviceName && <span className="truncate">{serviceName}</span>}
           <span className="shrink-0">{formatDuration(program.durationMs)}</span>
           {!program.isFree && <span className="shrink-0">有料</span>}
         </div>
