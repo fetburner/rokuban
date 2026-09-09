@@ -767,8 +767,11 @@ function SearchResultList({
 }
 
 /**
- * SearchResultRow は結果 1 件。番組リスト（components/program-row.tsx）と
- * 同じ語彙で描く。
+ * SearchResultRow は結果 1 件。番組リスト（components/program-row.tsx）と、
+ * サイト名・サービス名・放送時間（長さ）・有料表示というメタ情報の語彙および
+ * メタ行の折り返し規則を揃えて描く。ただし検索結果は日時と予約ボタンを
+ * 収める密な 1 行（`min-h-14`）なので、メタ行は `ProgramRow` の `text-sm`
+ * ではなく `text-xs` にする。
  *
  * 右端の予約 / 取消ボタンは `ProgramRow` の展開やルール作成とは独立した
  * 単発操作で、既存の `useReservationActions` に委譲する。検索結果の行本体は
@@ -796,9 +799,16 @@ function SearchResultRow({
       <div className="w-20 shrink-0 text-sm">{formatDateTime(program.startAt)}</div>
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm">{program.name}</div>
-        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <div
+          // e2e（web/e2e/search-mobile.mjs）が長いサービス名の実レイアウトで
+          // メタ行が 1 行に収まることを測る。クラス名で選ぶと、ユーティリティ
+          // クラスを移しただけで別の要素を測ったまま通ってしまうため、測定対象を
+          // この要素自身に固定する。
+          data-testid="search-result-meta"
+          className="flex items-center gap-2 text-xs text-muted-foreground"
+        >
           {showSite && <span className="shrink-0">{program.site}</span>}
-          {serviceName !== undefined && <span className="truncate">{serviceName}</span>}
+          {serviceName && <span className="truncate">{serviceName}</span>}
           <span className="shrink-0">{formatDuration(program.durationMs)}</span>
           {!program.isFree && <span className="shrink-0">有料</span>}
         </div>
