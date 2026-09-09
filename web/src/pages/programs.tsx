@@ -448,6 +448,10 @@ export function ProgramsPage() {
   //
   // 一覧は全サイトの予約を返す（不変条件 1）。番組表の行も site を運ぶので、
   // 予約状態は site:programId で突き合わせる。
+  // 番組表は予約以外の閲覧にも使うため、予約一覧の失敗で番組まで隠さない。
+  // 一方、`unwrap(...) ?? []` は未取得を「予約 0 件」に変えるので、初回取得中・
+  // 失敗中は未予約行の操作を止め、状態不明のまま `record` intent を送らない。
+  const reservationStateUnknown = reservations.isPending || reservations.isError
   const serverReservedProgramIds = useMemo(() => {
     const set = new Set<string>()
     for (const r of unwrap(reservations.data) ?? []) {
@@ -649,6 +653,17 @@ export function ProgramsPage() {
         />
       </PageHeader>
 
+      {reservations.isPending && (
+        <p role="status" className="px-4 py-2 text-xs text-muted-foreground">
+          予約状態を確認中…
+        </p>
+      )}
+      {reservations.isError && (
+        <ErrorState onRetry={() => void reservations.refetch()}>
+          予約状態の取得に失敗しました
+        </ErrorState>
+      )}
+
       {showGrid ? (
         <ProgramGridView
           axis={axis}
@@ -693,6 +708,7 @@ export function ProgramsPage() {
                 serviceById={siteServiceByKey}
                 showSite={sites.length > 1}
                 actions={actions}
+                reservationStateUnknown={reservationStateUnknown}
                 // プレースホルダ表示中（未キャッシュ日へジャンプして新しい日の
                 // データを待っている間）は前の日のデータが出ているので、その
                 // 可視範囲から「いま見ている日」を通知させない ---

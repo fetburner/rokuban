@@ -50,6 +50,7 @@ export function ProgramRow({
   siteName,
   reserved,
   pending,
+  reservationStateUnknown = false,
   onReserve,
   onCancel,
 }: {
@@ -58,6 +59,8 @@ export function ProgramRow({
   siteName?: string
   reserved: boolean
   pending: boolean
+  /** 予約一覧が未取得・失敗中のとき、未予約側の操作を止める。 */
+  reservationStateUnknown?: boolean
   onReserve: (overrides?: ProgramOverridesInput) => void
   onCancel: () => void
 }) {
@@ -70,7 +73,8 @@ export function ProgramRow({
 
   const encodeError = encodeSettingsError(encodeValue.keepOriginal, encodeValue.encodeProfiles)
   const encodeDirty = !sameEncodeSettingsValue(encodeValue, defaultEncodeSettingsValue())
-  const reserveBlocked = pending || (encodeDirty && encodeError !== undefined)
+  const reserveBlocked =
+    pending || reservationStateUnknown || (encodeDirty && encodeError !== undefined)
 
   const handleReserve = () => {
     if (reserveBlocked) return

@@ -147,6 +147,11 @@ export function SearchPage() {
   // 検索結果からの単発予約も番組表と同じ共通経路を使う。予約一覧は全 site を返す
   // ので、同じ programId が複数 site にある場合も site:programId で結び付ける。
   const reservations = useListReservations()
+  // 予約一覧は検索結果の表示そのものには不要なので、取得に失敗しても結果は
+  // 残す。ただし `unwrap(...) ?? []` は未取得を「予約 0 件」に変えるため、
+  // 初回取得中・失敗中は未予約と断定できない。未予約行の予約操作を止め、
+  // `record` intent が状態不明のまま送られるのを防ぐ。
+  const reservationStateUnknown = reservations.isPending || reservations.isError
   const serverReservedProgramIds = useMemo(() => {
     const set = new Set<string>()
     for (const reservation of unwrap(reservations.data) ?? []) {
@@ -491,6 +496,17 @@ export function SearchPage() {
         </ErrorState>
       )}
 
+      {reservations.isPending && (
+        <p role="status" className="px-4 py-2 text-xs text-muted-foreground">
+          予約状態を確認中…
+        </p>
+      )}
+      {reservations.isError && (
+        <ErrorState onRetry={() => void reservations.refetch()}>
+          予約状態の取得に失敗しました
+        </ErrorState>
+      )}
+
       <form
         aria-label="検索条件"
         className="flex flex-col gap-5 border-b border-border px-4 py-4"
@@ -636,6 +652,7 @@ export function SearchPage() {
               matches={matches.slice(0, visibleCount)}
               serviceById={serviceById}
               actions={reservationActions}
+              reservationStateUnknown={reservationStateUnknown}
               showSite={sites.length > 1}
             />
             {visibleCount < matches.length && (
@@ -698,11 +715,13 @@ function SearchResultList({
   matches,
   serviceById,
   actions,
+  reservationStateUnknown,
   showSite,
 }: {
   matches: ProgramSearchMatch[]
   serviceById: Map<string, Service>
   actions: ReservationActions
+  reservationStateUnknown: boolean
   showSite: boolean
 }) {
   const details = useQueries({
@@ -723,6 +742,7 @@ function SearchResultList({
                 program={{ ...program, site: match.site }}
                 serviceName={serviceById.get(`${program.networkId}:${program.serviceId}`)?.name}
                 actions={actions}
+                reservationStateUnknown={reservationStateUnknown}
                 showSite={showSite}
               />
             ) : detail?.isError ? (
@@ -758,11 +778,13 @@ function SearchResultRow({
   program,
   serviceName,
   actions,
+  reservationStateUnknown,
   showSite,
 }: {
   program: SiteProgram
   serviceName?: string
   actions: ReservationActions
+  reservationStateUnknown: boolean
   showSite: boolean
 }) {
   const reserved = actions.reservedProgramIds.has(programIdentity(program.site, program.programId))
@@ -785,7 +807,7 @@ function SearchResultRow({
         type="button"
         variant={reserved ? 'destructive' : 'default'}
         size="sm"
-        disabled={pending}
+        disabled={pending || (!reserved && reservationStateUnknown)}
         onClick={() => {
           if (reserved) actions.cancel(program)
           else actions.reserve(program)

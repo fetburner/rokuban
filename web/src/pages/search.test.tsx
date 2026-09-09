@@ -193,6 +193,8 @@ function stubApi(options?: {
   holdSites?: boolean
   /** `/api/reservations` の初期値。配列はテストから変更できる。 */
   reservations?: Reservation[]
+  /** `/api/reservations` を先頭から指定回数だけ失敗させる。 */
+  reservationsFailures?: number
 }) {
   const searchBodies: ProgramSearchRequest[] = []
   const createRuleBodies: RuleInput[] = []
@@ -226,6 +228,7 @@ function stubApi(options?: {
   const registrySites = options?.sites ?? ['default']
   const reservations = options?.reservations ?? []
   let remainingSitesFailures = options?.sitesFailures ?? 0
+  let remainingReservationsFailures = options?.reservationsFailures ?? 0
 
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
@@ -251,6 +254,10 @@ function stubApi(options?: {
     }
 
     if (url.pathname === '/api/reservations') {
+      if (remainingReservationsFailures > 0) {
+        remainingReservationsFailures--
+        return Promise.resolve(jsonResponse({ error: 'reservations unavailable' }, 500))
+      }
       return Promise.resolve(jsonResponse(reservations))
     }
 
@@ -1809,6 +1816,49 @@ describe('SearchPage', () => {
 })
 
 describe('検索結果から単発予約（issue #684）', () => {
+  it('予約一覧の取得に失敗すると状態を知らせ、再試行まで未予約行を操作できない', async () => {
+    const { fetchMock } = stubApi({ reservationsFailures: 1 })
+    renderPage()
+
+    expect(await screen.findByText('予約状態の取得に失敗しました')).toBeInTheDocument()
+
+    await addKeyword('ニュース')
+    await userEvent.click(screen.getByRole('button', { name: '検索' }))
+    const results = within(await screen.findByTestId('search-results'))
+    const row = results.getByText('ニュース7').closest('li')
+    expect(row).not.toBeNull()
+    const reserveButton = within(row as HTMLElement).getByRole('button', { name: '予約' })
+    expect(reserveButton).toBeDisabled()
+
+    await userEvent.click(reserveButton)
+    expect(
+      fetchMock.mock.calls.filter((call) => {
+        const url = new URL(String(call[0]), 'http://localhost')
+        return (
+          url.pathname === `/api/sites/default/programs/${news.programId}/intent` &&
+          (call[1] as RequestInit | undefined)?.method === 'PUT'
+        )
+      }),
+    ).toHaveLength(0)
+
+    await userEvent.click(screen.getByRole('button', { name: '再試行' }))
+    await waitFor(() =>
+      expect(screen.queryByText('予約状態の取得に失敗しました')).not.toBeInTheDocument(),
+    )
+    await userEvent.click(within(row as HTMLElement).getByRole('button', { name: '予約' }))
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some((call) => {
+          const url = new URL(String(call[0]), 'http://localhost')
+          return (
+            url.pathname === `/api/sites/default/programs/${news.programId}/intent` &&
+            (call[1] as RequestInit | undefined)?.method === 'PUT'
+          )
+        }),
+      ).toBe(true)
+    })
+  })
+
   it('結果行の予約ボタンから番組を探し直さずに予約できる', async () => {
     const { fetchMock } = stubApi()
     renderPage()

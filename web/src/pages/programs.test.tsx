@@ -241,6 +241,9 @@ const encodeProfiles = [{ name: 'h264', container: 'mp4' as const }]
  * `intentPutResponse` は `PUT /api/sites/default/programs/{id}/intent`
  * （予約 / 予約取消）の応答を差し替える（issue #457 のサーバー本文つき失敗テスト用）。
  * 未指定なら常に 204。
+ *
+ * `reservationsFailures` は `/api/reservations` を先頭から指定回数だけ 500 にする
+ * （予約状態不明時の表示・操作停止・再試行のテスト用）。
  */
 function stubApi(
   reservations: Reservation[] = [],
@@ -250,8 +253,10 @@ function stubApi(
   overridesPatchResponse?: () => Response,
   extraServices: Service[] = [],
   intentPutResponse?: () => Response,
+  reservationsFailures = 0,
 ) {
   let programsCallIndex = 0
+  let remainingReservationsFailures = reservationsFailures
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
     // ページが GET /api/sites を解決する
@@ -271,7 +276,13 @@ function stubApi(
     // AppShell が全ページの手前でサーキットブレーカーの有無を読む
     // （`pages/recordings.test.tsx` の fetchMock と同じ stub）
     if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
-    if (url.pathname === '/api/reservations') return Promise.resolve(jsonResponse(reservations))
+    if (url.pathname === '/api/reservations') {
+      if (remainingReservationsFailures > 0) {
+        remainingReservationsFailures--
+        return Promise.resolve(errorResponse(500, 'reservations unavailable'))
+      }
+      return Promise.resolve(jsonResponse(reservations))
+    }
     if (url.pathname === '/api/capacity/overages') {
       return Promise.resolve(jsonResponse(overages))
     }
@@ -426,6 +437,40 @@ async function reservationsSettled(queryClient: QueryClient): Promise<void> {
 }
 
 describe('ProgramsPage の表示形式', () => {
+  it('予約一覧の取得に失敗すると状態を知らせ、再試行まで未予約行を操作できない', async () => {
+    const fetchMock = stubApi([], [], allPrograms, undefined, undefined, [], undefined, 1)
+    renderPage()
+
+    expect(await screen.findByText('予約状態の取得に失敗しました')).toBeInTheDocument()
+    const reserveButtons = await screen.findAllByRole('button', { name: '予約' })
+    const reserveButton = reserveButtons[0]!
+    expect(reserveButton).toBeDisabled()
+
+    await userEvent.click(reserveButton)
+    expect(
+      fetchMock.mock.calls.filter(
+        (call) =>
+          new URL(String(call[0]), 'http://localhost').pathname.endsWith('/intent') &&
+          (call[1] as RequestInit | undefined)?.method === 'PUT',
+      ),
+    ).toHaveLength(0)
+
+    await userEvent.click(screen.getByRole('button', { name: '再試行' }))
+    await waitFor(() =>
+      expect(screen.queryByText('予約状態の取得に失敗しました')).not.toBeInTheDocument(),
+    )
+    await userEvent.click((await screen.findAllByRole('button', { name: '予約' }))[0]!)
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          (call) =>
+            new URL(String(call[0]), 'http://localhost').pathname.endsWith('/intent') &&
+            (call[1] as RequestInit | undefined)?.method === 'PUT',
+        ),
+      ).toBe(true)
+    })
+  })
+
   it('/api/sites の失敗を永久スケルトンにせず、再試行で一覧を復旧する', async () => {
     const fetchMock = stubApi()
     const implementation = fetchMock.getMockImplementation()!

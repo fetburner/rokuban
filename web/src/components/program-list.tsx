@@ -164,6 +164,8 @@ export const ProgramList = forwardRef<
     serviceById: Map<string, SiteService>
     showSite?: boolean
     actions: ReservationActions
+    /** 予約一覧が未取得・失敗中なら、未予約行の `record` 操作を止める。 */
+    reservationStateUnknown?: boolean
     /**
      * 可視範囲の先頭の番組が変わるたびに「いま見ている日」の dayOffset を通知する。
      * `DayStrip` のハイライトはここから来る値を表示するだけで、ジャンプ先
@@ -174,7 +176,18 @@ export const ProgramList = forwardRef<
     /** テストから現在時刻を固定するための注入口。省略時は `Date.now()`。 */
     now?: number
   }
->(function ProgramList({ programs, serviceById, showSite = false, actions, onVisibleDayChange, now }, ref) {
+>(function ProgramList(
+  {
+    programs,
+    serviceById,
+    showSite = false,
+    actions,
+    reservationStateUnknown = false,
+    onVisibleDayChange,
+    now,
+  },
+  ref,
+) {
   const listRef = useRef<HTMLUListElement>(null)
 
   // ページ全体がスクロールするので、リストの手前にある PageHeader のオフセットを
@@ -339,6 +352,7 @@ export const ProgramList = forwardRef<
               }
               reserved={reserved}
               pending={actions.isBusy(program)}
+              reservationStateUnknown={reservationStateUnknown}
               onReserve={(overrides) => actions.reserve(program, overrides)}
               onCancel={() => actions.cancel(program)}
             />
