@@ -3,12 +3,15 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	pgx5 "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
@@ -175,6 +178,95 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 	}
 	if ingestCount != 1 {
 		t.Errorf("ingest job count = %d, want 1", ingestCount)
+	}
+}
+
+// TestRecordSweepWorker_ContinuesSweepWhenRecoveryFails は、stale ingest 回収
+// （recoverStaleIngestJobsFunc）が失敗しても wt.Sweep（真実の再取得、不変条件 5）に
+// 必ず進むことを固定する（record_sweep.go の Work のコメント参照）。
+// recoverStaleIngestJobsFunc を差し替えて実 DB 無しで回収失敗を注入し、finished
+// record が拾われて recordings 行が作られることで Sweep が最後まで実行された
+// ことを確認する。
+//
+// 壊し方: record_sweep.go の Work が回収のエラーを warn するだけにせず
+// `return fmt.Errorf(...)` へ戻すと、wt.Sweep に到達せず recordings が作られない
+// まま Work が early return し、このテストは "recordings count = 0, want 1" で落ちる。
+func TestRecordSweepWorker_ContinuesSweepWhenRecoveryFails(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
+		t.Fatalf("cleaning river_job: %v", err)
+	}
+
+	original := recoverStaleIngestJobsFunc
+	recoverStaleIngestJobsFunc = func(context.Context, *pgxpool.Pool, *river.Client[pgx5.Tx], string) error {
+		return errors.New("forced recovery failure (test)")
+	}
+	t.Cleanup(func() { recoverStaleIngestJobsFunc = original })
+
+	const programID int64 = 700000600079876
+	networkID, serviceID := int32(32736), int32(1024)
+	channelType, channel := "GR", "27"
+	q := sqlcgen.New(pool)
+	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
+		Site:        testSite,
+		ProgramID:   programID,
+		Title:       "record_sweep 回収失敗継続テスト",
+		StartAt:     time.Now().Add(-time.Hour),
+		DurationMs:  1800000,
+		NetworkID:   networkID,
+		ServiceID:   serviceID,
+		ChannelType: channelType,
+		Channel:     channel,
+	}); err != nil {
+		t.Fatalf("upserting program snapshot fixture: %v", err)
+	}
+	if _, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
+		Site:      testSite,
+		ProgramID: programID,
+	}); err != nil {
+		t.Fatalf("creating reservation fixture: %v", err)
+	}
+
+	startAt := mirakc.Milliseconds(time.Now().Add(-time.Hour))
+	recStart := mirakc.Milliseconds(time.Now().Add(-time.Hour))
+	endTime := mirakc.Milliseconds(time.Now())
+	duration := int64(1800000)
+	name := "record_sweep 回収失敗継続テスト番組"
+	record := mirakc.Record{
+		ID: "record-sweep-recovery-failure-001",
+		Program: mirakc.Program{
+			ID: programID, EventID: 1, ServiceID: int(serviceID), NetworkID: int(networkID),
+			StartAt: &startAt, Duration: &duration, IsFree: true, Name: &name,
+		},
+		Service:   mirakc.Service{Name: "テスト局", Channel: mirakc.ServiceChannel{Type: channelType, Channel: channel}},
+		Tags:      []string{mirakc.ProgramTag(programID)},
+		Recording: mirakc.RecordInfo{Status: "finished", StartTime: recStart, EndTime: &endTime},
+		Content:   mirakc.ContentInfo{Path: "test.m2ts"},
+	}
+
+	srv := newRecordSweepStub(t, []mirakc.Record{record})
+	defer srv.Close()
+
+	w := &RecordSweepWorker{
+		MirakcClients: singleSiteClients(testSite, mirakc.NewClient(srv.URL, nil)),
+		Pool:          pool,
+	}
+	job := &river.Job[jobs.RecordSweepArgs]{
+		JobRow: &rivertype.JobRow{ID: 905},
+		Args:   jobs.RecordSweepArgs{Site: testSite},
+	}
+	if err := w.Work(riverWorkContext(t, pool), job); err != nil {
+		t.Fatalf("RecordSweepWorker.Work: %v (want Work to succeed despite forced recovery failure)", err)
+	}
+
+	var recCount int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recCount); err != nil {
+		t.Fatalf("querying recordings: %v", err)
+	}
+	if recCount != 1 {
+		t.Fatalf("recordings count = %d, want 1 (wt.Sweep must still run when recovery fails)", recCount)
 	}
 }
 

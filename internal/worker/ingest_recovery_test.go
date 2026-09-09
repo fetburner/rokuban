@@ -19,6 +19,13 @@ import (
 // が残った状態で再現する。回収前は record_sweep 相当の同じ ingest 投入がその行へ
 // 合流し、未 ingest backlog も減らない。回収後は古い行を終端化して別 ID の試行を
 // 作るため、次の record_sweep で再び拾える状態になる。
+//
+// mirakc スタブは対象 recordID を status='finished' の record として返す
+// （production では回収の直後に同じ Work の中で wt.Sweep が走るため、
+// 「回収が投入した available 行」と「Sweep が InsertTx しようとする行」が
+// 必ず並ぶ。record 0 件のスタブ（旧テスト）ではこの並びが再現されず、
+// 「回収した結果として同じ recording の ingest が二重に走らないこと」
+// （issue #690）が測れていなかった）。
 func TestRecordSweepRecovery_ReplacesStaleRunningIngest(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -26,7 +33,8 @@ func TestRecordSweepRecovery_ReplacesStaleRunningIngest(t *testing.T) {
 	recordingID := insertTestRecording(t, pool)
 	const recordID = "rec-stale-running-ingest"
 	insertTestRecordSync(t, pool, recordingID, recordID)
-	oldJobID, attemptedAt := insertStaleRunningIngestJob(t, pool, testSite, recordID)
+	oldJobID, attemptedAt := insertStaleRunningIngestJob(t, pool, recordID)
+	setIngestProgressObservedAt(t, pool, recordingID, attemptedAt)
 
 	client, err := NewInsertOnlyClient(pool)
 	if err != nil {
@@ -58,7 +66,24 @@ func TestRecordSweepRecovery_ReplacesStaleRunningIngest(t *testing.T) {
 		t.Fatalf("un-ingested backlog before recovery = %d, want 1", got)
 	}
 
-	srv := newRecordSweepStub(t, nil)
+	startAt := mirakc.Milliseconds(time.Now().Add(-time.Hour))
+	recStart := mirakc.Milliseconds(time.Now().Add(-time.Hour))
+	endTime := mirakc.Milliseconds(time.Now())
+	duration := int64(1800000)
+	name := "record_sweep recovery テスト番組"
+	record := mirakc.Record{
+		ID: recordID,
+		Program: mirakc.Program{
+			ID: 700000600079999, EventID: 1, ServiceID: 1024, NetworkID: 32736,
+			StartAt: &startAt, Duration: &duration, IsFree: true, Name: &name,
+		},
+		Service:   mirakc.Service{Name: "テスト局", Channel: mirakc.ServiceChannel{Type: "GR", Channel: "27"}},
+		Tags:      []string{},
+		Recording: mirakc.RecordInfo{Status: "finished", StartTime: recStart, EndTime: &endTime},
+		Content:   mirakc.ContentInfo{Path: "test.m2ts"},
+	}
+
+	srv := newRecordSweepStub(t, []mirakc.Record{record})
 	defer srv.Close()
 	w := &RecordSweepWorker{
 		MirakcClients: singleSiteClients(testSite, mirakc.NewClient(srv.URL, nil)),
@@ -122,6 +147,19 @@ func TestRecordSweepRecovery_ReplacesStaleRunningIngest(t *testing.T) {
 	if got := unIngestedBacklogCount(t, pool, testSite); got != 1 {
 		t.Fatalf("un-ingested backlog after recovery = %d, want 1 until replacement ingest runs", got)
 	}
+
+	// 二重実行が起きていないこと: mirakc が同じ record_id を finished record として
+	// 返し続けても（このテストのスタブ）、wt.Sweep の InsertTx は回収が投入した
+	// available 行へ UniqueOpts で合流するだけで、実際に走りうる（discarded ではない）
+	// ingest 行はちょうど 1 本のまま。
+	assertNonDiscardedIngestJobCount(t, pool, testSite, recordID, 1)
+
+	// 死んだ attempt が残した recording_ingest_progress 行は回収と同じ tx で
+	// 消える。消し忘れると、代替 ingest が commit するまで API の進捗表示が
+	// 古い値のまま止まって見える。
+	if recordingIngestProgressExists(t, pool, recordingID) {
+		t.Fatal("recording_ingest_progress row still exists after recovery, want it cleared in the same tx")
+	}
 }
 
 // TestRecordSweepRecovery_RecentProgressIsNotStale は attempted_at だけが古くても、
@@ -133,7 +171,7 @@ func TestRecordSweepRecovery_RecentProgressIsNotStale(t *testing.T) {
 	recordingID := insertTestRecording(t, pool)
 	const recordID = "rec-recent-ingest-progress"
 	insertTestRecordSync(t, pool, recordingID, recordID)
-	oldJobID, _ := insertStaleRunningIngestJob(t, pool, testSite, recordID)
+	oldJobID, _ := insertStaleRunningIngestJob(t, pool, recordID)
 	setIngestProgressObservedAt(t, pool, recordingID, time.Now().UTC())
 
 	w := newEmptyRecordSweepWorker(t, pool)
@@ -152,6 +190,52 @@ func TestRecordSweepRecovery_RecentProgressIsNotStale(t *testing.T) {
 	assertIngestJobCount(t, pool, testSite, recordID, 1)
 }
 
+// TestRecordSweepRecovery_FreshRetryAfterStaleProgressIsNotStale は、失敗した
+// attempt が古い recording_ingest_progress 行を残したまま River のバックオフで
+// 再試行が始まり、attempted_at だけが新しくなった running 行を回収しないことを
+// 固定する。DeleteRecordingIngestProgress（internal/worker/ingest.go）は成功した
+// attempt（commit / already-committed 経路）でしか呼ばれないため、失敗して
+// 再試行した attempt は古い進捗行を残したまま state='running', attempted_at=now()
+// になる --- 「最後の活動」を観測時刻の COALESCE（進捗が無ければ attempted_at）で
+// 決めると、新しい attempted_at より古い observed_at が優先されてしまい、
+// 再試行してまだ acquireIngestJobLock にすら到達していない生きたジョブを
+// 即座に候補にしてしまう。
+//
+// 壊し方: listStaleIngestJobsQuery の GREATEST(p.observed_at, j.attempted_at) を
+// COALESCE(p.observed_at, j.attempted_at) に戻すと、新しい attempted_at を無視して
+// 古い observed_at を「最後の活動」として採用し、生きたばかりの running 行を
+// discarded にしてこのテストが落ちる。
+func TestRecordSweepRecovery_FreshRetryAfterStaleProgressIsNotStale(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	recordingID := insertTestRecording(t, pool)
+	const recordID = "rec-fresh-retry-stale-progress"
+	insertTestRecordSync(t, pool, recordingID, recordID)
+	oldJobID, _ := insertStaleRunningIngestJob(t, pool, recordID)
+	setIngestProgressObservedAt(t, pool, recordingID, time.Now().UTC().Add(-2*ingestRecoveryStaleAfter))
+
+	freshAttemptedAt := time.Now().UTC()
+	if _, err := pool.Exec(ctx, "UPDATE river_job SET attempted_at = $2 WHERE id = $1", oldJobID, freshAttemptedAt); err != nil {
+		t.Fatalf("refreshing attempted_at to simulate a live retry: %v", err)
+	}
+
+	w := newEmptyRecordSweepWorker(t, pool)
+	job := &river.Job[jobs.RecordSweepArgs]{
+		JobRow: &rivertype.JobRow{ID: 904},
+		Args:   jobs.RecordSweepArgs{Site: testSite},
+	}
+	if err := w.Work(riverWorkContext(t, pool), job); err != nil {
+		t.Fatalf("RecordSweepWorker.Work: %v", err)
+	}
+
+	state, finalizedAt := ingestJobStateAndFinalizedAt(t, pool, oldJobID)
+	if state != string(rivertype.JobStateRunning) || finalizedAt != nil {
+		t.Fatalf("freshly-retried ingest with stale progress = state %q finalized_at=%v, want running/NULL", state, finalizedAt)
+	}
+	assertIngestJobCount(t, pool, testSite, recordID, 1)
+}
+
 // TestRecordSweepRecovery_DoesNotTakeLiveJobWhenProgressIsStale は進捗時刻が古くても、
 // 生きている ingest が保持するジョブ advisory lock を奪わないことを固定する。これは
 // HEAD / fsync / commit 中など、最後の DB 進捗が一時的に古く見える live transfer を
@@ -163,7 +247,7 @@ func TestRecordSweepRecovery_DoesNotTakeLiveJobWhenProgressIsStale(t *testing.T)
 	recordingID := insertTestRecording(t, pool)
 	const recordID = "rec-live-ingest-lock"
 	insertTestRecordSync(t, pool, recordingID, recordID)
-	oldJobID, attemptedAt := insertStaleRunningIngestJob(t, pool, testSite, recordID)
+	oldJobID, attemptedAt := insertStaleRunningIngestJob(t, pool, recordID)
 	setIngestProgressObservedAt(t, pool, recordingID, attemptedAt)
 
 	lock, acquired, err := acquireIngestJobLock(ctx, pool, oldJobID, time.Second)
@@ -191,14 +275,16 @@ func TestRecordSweepRecovery_DoesNotTakeLiveJobWhenProgressIsStale(t *testing.T)
 	assertIngestJobCount(t, pool, testSite, recordID, 1)
 }
 
-func insertStaleRunningIngestJob(t *testing.T, pool *pgxpool.Pool, site, recordID string) (int64, time.Time) {
+// insertStaleRunningIngestJob は常に testSite の下でフィクスチャを作る
+// （呼び出し側は全てそうしている。golangci-lint の unparam 参照）。
+func insertStaleRunningIngestJob(t *testing.T, pool *pgxpool.Pool, recordID string) (int64, time.Time) {
 	t.Helper()
 	ctx := context.Background()
 	client, err := NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("NewInsertOnlyClient: %v", err)
 	}
-	result, err := client.Insert(ctx, jobs.IngestJobArgs{Site: site, RecordID: recordID}, nil)
+	result, err := client.Insert(ctx, jobs.IngestJobArgs{Site: testSite, RecordID: recordID}, nil)
 	if err != nil {
 		t.Fatalf("inserting ingest fixture: %v", err)
 	}
@@ -260,6 +346,38 @@ func assertIngestJobCount(t *testing.T, pool *pgxpool.Pool, site, recordID strin
 	if got != want {
 		t.Fatalf("ingest job count = %d, want %d", got, want)
 	}
+}
+
+// assertNonDiscardedIngestJobCount は assertIngestJobCount と異なり discarded を
+// 除外して数える。回収が旧行を discarded にした直後は assertIngestJobCount では
+// 「旧 1 本 + 代替 1 本 = 2 本」になり得るため、二重実行（実際に走りうる ingest
+// 行が 2 本になっていないこと）を見るには discarded を除いた母数が要る。
+func assertNonDiscardedIngestJobCount(t *testing.T, pool *pgxpool.Pool, site, recordID string, want int) {
+	t.Helper()
+	var got int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*)
+		FROM river_job
+		WHERE kind = 'ingest' AND args->>'site' = $1 AND args->>'record_id' = $2 AND state <> 'discarded'`, site, recordID,
+	).Scan(&got); err != nil {
+		t.Fatalf("counting non-discarded ingest jobs: %v", err)
+	}
+	if got != want {
+		t.Fatalf("non-discarded ingest job count = %d, want %d", got, want)
+	}
+}
+
+// recordingIngestProgressExists は recording_ingest_progress にその recording の
+// 行が残っているかを返す。回収が同じ tx で進捗行を消し忘れていないかを見る。
+func recordingIngestProgressExists(t *testing.T, pool *pgxpool.Pool, recordingID int64) bool {
+	t.Helper()
+	var exists bool
+	if err := pool.QueryRow(context.Background(),
+		"SELECT EXISTS(SELECT 1 FROM recording_ingest_progress WHERE recording_id = $1)", recordingID,
+	).Scan(&exists); err != nil {
+		t.Fatalf("checking recording_ingest_progress existence: %v", err)
+	}
+	return exists
 }
 
 func unIngestedBacklogCount(t *testing.T, pool *pgxpool.Pool, site string) int {

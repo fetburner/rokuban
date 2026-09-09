@@ -182,6 +182,74 @@ func TestIngestJobAndRelPathLocksShareSession(t *testing.T) {
 	}
 }
 
+// TestIngestRelPathLock_HeartbeatDetectsJobKeyLossWhileRelPathKeyStillHeld は、
+// production 経路（acquireIngestJobLock → acquireRelPath で同一セッションに
+// job lock と rel_path lock の 2 本を積む）で作った relPathLock に対し、
+// job 側のキーだけを同一セッションから外部に pg_advisory_unlock したとき、
+// rel_path 側のキーはまだ保持されているにもかかわらず heartbeat が lost を
+// 閉じることを固定する。grep でわかるとおり acquireRelPathLockWithHeartbeat の
+// production の呼び手はいない（テストのみ）ため、既存の heartbeat 回帰テストは
+// すべて 1 キー構成でしか checkHeld のループを通していなかった --- production の
+// 2 キー構成でループが全キーを見ることは、このテストが無いと固定されていない。
+//
+// job キーの unlock は **acquireRelPath（＝ startHeartbeat）より前**に行う。
+// heartbeat が起動した後に同じ lock.conn へ直接クエリを投げると、heartbeat
+// goroutine の checkHeld と test goroutine の unlock クエリが同じ
+// *pgxpool.Conn（pgx はコネクション単位で goroutine-safe ではない）を同時に
+// 使ってしまい、データレースになる（-race で検出）。acquireIngestJobLock 直後
+// はまだ heartbeat が存在しないため、この窓で unlock すれば conn の同時使用が
+// 起きない。その後で acquireRelPath を呼んで rel_path キーを追加し、そこで
+// 初めて heartbeat を起動する --- 「job 側のキーは失われ、rel_path 側の
+// キーはまだ保持されている」という検証対象の状態そのものは変わらない。
+//
+// 壊し方: checkHeld のループを l.advisoryKeys() の末尾（rel_path 側）だけを見る
+// よう弱める（production 導入前の単一キー実装への後退。当時は rel_path lock しか
+// 存在しなかった）と、job 側のキー喪失を無視し、このテストは lost が閉じられず
+// タイムアウトで落ちる。
+func TestIngestRelPathLock_HeartbeatDetectsJobKeyLossWhileRelPathKeyStillHeld(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	const jobID int64 = 690006
+	const relPath = "sites/default/test/lock-heartbeat-job-key-loss.m2ts"
+
+	lock, acquired, err := acquireIngestJobLock(ctx, pool, jobID, time.Second)
+	if err != nil {
+		t.Fatalf("acquiring job lock: %v", err)
+	}
+	if !acquired {
+		t.Fatal("expected to acquire the job lock")
+	}
+	t.Cleanup(lock.release)
+
+	// heartbeat はまだ起動していない（acquireRelPath 呼び出し前）ので、この
+	// 接続を他の goroutine と competing せずに直接使える。job 側のキーだけを
+	// 同一セッションからアンロックする。rel_path 側のキーはまだ存在すらしない
+	// --- 後で acquireRelPath が追加してから heartbeat が初めて動き出す。
+	jobKey := ingestJobLockKey(jobID)
+	var stillHeld bool
+	if err := lock.conn.QueryRow(ctx, "SELECT pg_advisory_unlock($1)", jobKey).Scan(&stillHeld); err != nil {
+		t.Fatalf("unlocking job key out of band: %v", err)
+	}
+	if !stillHeld {
+		t.Fatal("job key was not held before the out-of-band unlock")
+	}
+
+	acquired, err = lock.acquireRelPath(ctx, relPath, time.Second)
+	if err != nil {
+		t.Fatalf("adding rel_path lock to the job session: %v", err)
+	}
+	if !acquired {
+		t.Fatal("expected to acquire the rel_path lock in the same session")
+	}
+
+	select {
+	case <-lock.lost:
+	case <-time.After(relPathLockHeartbeatInterval + relPathLockHeartbeatTimeout + 3*time.Second):
+		t.Fatal("heartbeat did not close lost after the job advisory lock key was released out of band while the rel_path key was still held")
+	}
+}
+
 // TestIngestRelPathLock_HeartbeatPreservesHeldSessionAlive は、ロック保持中の
 // heartbeat が正常なセッションを誤って lost 扱いしないことを固定する。
 // `pg_locks` の bigint key 分解や objsubid 条件を壊す変異は、heartbeat 1 回後に
@@ -274,11 +342,9 @@ func TestIngestWorker_RelPathLockTimeoutDoesNotHang(t *testing.T) {
 // "isLost() became true after only 1 transient failure" で落ちる。
 func TestIngestRelPathLock_TransientHeartbeatFailuresDoNotMarkLostUntilThreshold(t *testing.T) {
 	transientErr := errors.New("simulated transient db latency")
-	l := &relPathLock{
-		lost: make(chan struct{}),
-		checkHeldFunc: func() (held, permanent bool, err error) {
-			return false, false, transientErr
-		},
+	l := newRelPathLock(nil, 1, "test")
+	l.checkHeldFunc = func() (held, permanent bool, err error) {
+		return false, false, transientErr
 	}
 
 	var consecutiveFailures int
@@ -310,15 +376,13 @@ func TestIngestRelPathLock_TransientHeartbeatFailuresDoNotMarkLostUntilThreshold
 func TestIngestRelPathLock_TransientHeartbeatFailureResetsOnSuccess(t *testing.T) {
 	transientErr := errors.New("simulated transient db latency")
 	var succeedNext bool
-	l := &relPathLock{
-		lost: make(chan struct{}),
-		checkHeldFunc: func() (held, permanent bool, err error) {
-			if succeedNext {
-				succeedNext = false
-				return true, false, nil
-			}
-			return false, false, transientErr
-		},
+	l := newRelPathLock(nil, 1, "test")
+	l.checkHeldFunc = func() (held, permanent bool, err error) {
+		if succeedNext {
+			succeedNext = false
+			return true, false, nil
+		}
+		return false, false, transientErr
 	}
 
 	var consecutiveFailures int

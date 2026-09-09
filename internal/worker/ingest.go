@@ -152,8 +152,10 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 		return fmt.Errorf("acquiring ingest job lock: %w", err)
 	}
 	if !acquired {
-		log.Warn("ingest: job is being executed by another process, deferring", "job_id", job.ID)
-		return fmt.Errorf("ingest: job %d is being executed by another process; deferring", job.ID)
+		// 断定はしない: この分岐には、別プロセスが本当に実行中の場合だけでなく、
+		// record_sweep の回収側が同じキーを一瞬 try して保持している場合も落ちる。
+		log.Warn("ingest: job advisory lock is held by another session, deferring", "job_id", job.ID)
+		return fmt.Errorf("ingest: job %d advisory lock is held by another session; deferring", job.ID)
 	}
 	defer jobLock.release()
 

@@ -31,9 +31,10 @@ const defaultRelPathLockTimeout = 10 * time.Second
 // idle にしないための疎通間隔。切断検知の窓もこの間隔を上限の目安にする。
 const relPathLockHeartbeatInterval = time.Second
 
-// relPathLockHeartbeatTimeout は heartbeat 1 回の応答を待つ上限。応答を待ち
-// 続けている間に後続 ingest が同じ rel_path の書き込みを始めると、古い実行を
-// 止められない窓が広がるので、失敗側に倒して転送を中断する。
+// relPathLockHeartbeatTimeout は checkHeld のクエリ 1 回あたりの応答を待つ上限
+// （ループでキーごとに個別の budget として使う。checkHeld のコメント参照）。
+// 応答を待ち続けている間に後続 ingest が同じ rel_path の書き込みを始めると、
+// 古い実行を止められない窓が広がるので、失敗側に倒して転送を中断する。
 const relPathLockHeartbeatTimeout = 2 * time.Second
 
 // relPathLockMaxTransientFailures は、checkHeld が一過性のエラー（接続は生きて
@@ -87,19 +88,18 @@ func ingestJobLockKey(jobID int64) int64 {
 // rel_path lock を保持する場合の heartbeat を所有する。heartbeat が接続断または
 // セッション上のロック喪失を検知すると lost を閉じ、ingest 側の context を
 // キャンセルさせる。ジョブ lock と rel_path lock は同じ接続へ積む。
+//
+// keys は保持している advisory lock の唯一の権威（取得順。production は
+// [job, rel_path] の 2 本）。個別フィールドで重複して持たない。
 type relPathLock struct {
-	conn    *pgxpool.Conn
-	key     int64
-	relPath string
-	keys    []heldAdvisoryKey
+	conn *pgxpool.Conn
+	keys []heldAdvisoryKey
 
-	stopHeartbeat      chan struct{}
-	heartbeatDone      chan struct{}
-	lost               chan struct{}
-	releaseOnce        sync.Once
-	lostOnce           sync.Once
-	heartbeatStartOnce sync.Once
-	heartbeatStarted   bool
+	stopHeartbeat chan struct{}
+	heartbeatDone chan struct{}
+	lost          chan struct{}
+	releaseOnce   sync.Once
+	lostOnce      sync.Once
 
 	// checkHeldFunc は heartbeatTick が呼ぶフック。nil なら
 	// l.checkHeldAndClassify を使う（本番の既定）。テストが実 DB 無しで
@@ -114,30 +114,35 @@ type heldAdvisoryKey struct {
 
 func newRelPathLock(conn *pgxpool.Conn, key int64, label string) *relPathLock {
 	return &relPathLock{
-		conn:    conn,
-		key:     key,
-		relPath: label,
-		keys:    []heldAdvisoryKey{{key: key, label: label}},
-		lost:    make(chan struct{}),
+		conn: conn,
+		keys: []heldAdvisoryKey{{key: key, label: label}},
+		lost: make(chan struct{}),
 	}
 }
 
-// advisoryKeys は既存の relPathLock テストが構造体リテラルで作るケースも
-// 保持しつつ、実運用ではこのセッションが保持している全キーを返す。
+// advisoryKeys はこのセッションが保持している全キーを返す（keys が唯一の権威）。
 func (l *relPathLock) advisoryKeys() []heldAdvisoryKey {
-	if len(l.keys) > 0 {
-		return l.keys
-	}
-	return []heldAdvisoryKey{{key: l.key, label: l.relPath}}
+	return l.keys
 }
 
+// label はログ用の代表ラベル。最後に取得した（＝最も具体的な）キーのラベルを使う
+// --- production では rel_path lock を追加した後は rel_path、ジョブ lock しか
+// 持っていない間は job のラベルになる。
+func (l *relPathLock) label() string {
+	return l.keys[len(l.keys)-1].label
+}
+
+// startHeartbeat は heartbeat goroutine を起動する。呼び出し元は常に
+// acquireRelPath という単一の goroutine（ingest の Work 自身）からしか呼ばない
+// ため、複数 goroutine からの競合を気にする sync.Once は要らない --- 二重起動を
+// 防ぎたいだけなら nil チェックで足りる。
 func (l *relPathLock) startHeartbeat() {
-	l.heartbeatStartOnce.Do(func() {
-		l.stopHeartbeat = make(chan struct{})
-		l.heartbeatDone = make(chan struct{})
-		l.heartbeatStarted = true
-		go l.heartbeatLoop()
-	})
+	if l.stopHeartbeat != nil {
+		return
+	}
+	l.stopHeartbeat = make(chan struct{})
+	l.heartbeatDone = make(chan struct{})
+	go l.heartbeatLoop()
 }
 
 // acquireRelPath は既にジョブ advisory lock を保持している同じセッションへ
@@ -159,7 +164,6 @@ func (l *relPathLock) acquireRelPath(ctx context.Context, relPath string, timeou
 	}
 
 	l.keys = append(l.keys, heldAdvisoryKey{key: key, label: relPath})
-	l.relPath = relPath
 	l.startHeartbeat()
 	return true, nil
 }
@@ -199,24 +203,24 @@ func (l *relPathLock) heartbeatTick(consecutiveFailures *int) bool {
 	held, permanent, err := check()
 	if err != nil {
 		if permanent {
-			slog.Warn("ingest: rel_path advisory lock heartbeat failed", "rel_path", l.relPath, "err", err)
+			slog.Warn("ingest: rel_path advisory lock heartbeat failed", "rel_path", l.label(), "err", err)
 			l.markLost()
 			return true
 		}
 		*consecutiveFailures++
 		if *consecutiveFailures >= relPathLockMaxTransientFailures {
-			slog.Warn("ingest: rel_path advisory lock heartbeat failed", "rel_path", l.relPath, "err", err, "consecutive_failures", *consecutiveFailures)
+			slog.Warn("ingest: rel_path advisory lock heartbeat failed", "rel_path", l.label(), "err", err, "consecutive_failures", *consecutiveFailures)
 			l.markLost()
 			return true
 		}
 		slog.Warn("ingest: rel_path advisory lock heartbeat check failed transiently, retrying",
-			"rel_path", l.relPath, "err", err, "consecutive_failures", *consecutiveFailures)
+			"rel_path", l.label(), "err", err, "consecutive_failures", *consecutiveFailures)
 		return false
 	}
 
 	*consecutiveFailures = 0
 	if !held {
-		slog.Warn("ingest: rel_path advisory lock was lost during transfer", "rel_path", l.relPath)
+		slog.Warn("ingest: rel_path advisory lock was lost during transfer", "rel_path", l.label())
 		l.markLost()
 		return true
 	}
@@ -242,13 +246,20 @@ func (l *relPathLock) isPermanentCheckHeldError() bool {
 	return l.conn.Conn().IsClosed()
 }
 
+// checkHeld はセッションが保持している全キー（production では job lock と
+// rel_path lock の 2 本）を 1 本ずつ順に確認する。**timeout はキーごとの
+// budget**（relPathLockHeartbeatTimeout）で、ループ全体では共有しない ---
+// 共有すると 2 本目のクエリは 1 本目が食った残り時間しか使えず、一過性失敗の
+// 頻度が上がって issue #679 が避けようとした側（99% 進んだ転送を 0 バイトから
+// 再試行させる）へ寄ってしまう。いずれかのキーが held=false ならその時点で
+// 打ち切って false を返す（確定した喪失なので残りのキーを見ても意味がない）。
 func (l *relPathLock) checkHeld() (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), relPathLockHeartbeatTimeout)
-	defer cancel()
-
 	for _, lockKey := range l.advisoryKeys() {
+		ctx, cancel := context.WithTimeout(context.Background(), relPathLockHeartbeatTimeout)
 		var held bool
-		if err := l.conn.QueryRow(ctx, relPathLockHeldQuery, lockKey.key).Scan(&held); err != nil {
+		err := l.conn.QueryRow(ctx, relPathLockHeldQuery, lockKey.key).Scan(&held)
+		cancel()
+		if err != nil {
 			return false, err
 		}
 		if !held {
@@ -269,7 +280,7 @@ func (l *relPathLock) isLost() bool {
 
 func (l *relPathLock) release() {
 	l.releaseOnce.Do(func() {
-		if l.heartbeatStarted {
+		if l.stopHeartbeat != nil {
 			close(l.stopHeartbeat)
 			<-l.heartbeatDone
 		}
@@ -329,16 +340,9 @@ func acquireAdvisoryLock(ctx context.Context, pool *pgxpool.Pool, key int64, lab
 }
 
 // acquireIngestJobLock は ingest Work の開始時にジョブ ID のセッションロックを
-// 取得する。record_sweep の回収側も同じキーを try し、取得できた場合だけ元の
-// プロセスが死んでいると確定する。
-func acquireIngestJobLock(ctx context.Context, pool *pgxpool.Pool, jobID int64, timeout time.Duration) (*relPathLock, bool, error) {
-	return acquireAdvisoryLock(ctx, pool, ingestJobLockKey(jobID), fmt.Sprintf("ingest job %d", jobID), timeout)
-}
-
-// acquireRelPathLockWithHeartbeat は rel_path の Postgres **セッションレベル** advisory
-// lock を **`pg_try_advisory_lock`（ノンブロッキング）** で試行する。
-// internal/role.TryAcquire と同じ形（`pool.Acquire` したコネクションを保持し
-// 続ける限りロックが維持され、コネクション切断で自動解放される）。
+// 取得し、commit まで保持する（呼び出し元が defer release する）。record_sweep の
+// 回収側も同じキーを pg_try_advisory_lock で試し、取得できた場合に限って元の
+// プロセスが死んでいる（セッションが切れてロックが自動解放された）と確定する。
 //
 // **セッションレベルであってトランザクションレベル（`pg_advisory_xact_lock`）
 // ではない。** ingest の転送は数時間かかりうる。xact ロックだと同じ長さの
@@ -355,11 +359,28 @@ func acquireIngestJobLock(ctx context.Context, pool *pgxpool.Pool, jobID int64, 
 // ingest の River タイムアウトは無効（IngestWorker.Timeout が -1）なので、
 // `pool.Acquire` と `pg_try_advisory_lock` は timeout 付きの ctx の下で行う
 // --- 素の ctx のままだとプール枯渇時に無期限に待ち、ジョブが二度と終わらずに
-// ハングする（internal/db/db.go の roleConnBudget コメント参照。実行中の
-// ingest 1 本ごとにこのロック用コネクションを 1 本、転送が終わるまで長期保持する）。
+// ハングする（internal/db/db.go の roleConnBudget コメント参照。この lock 用の
+// コネクションは Work の冒頭から commit まで、rel_path lock 追加後も同じ 1 本を
+// 長期保持し続ける）。
 //
-// acquired=false はロック取得の失敗（既に別の ingest ジョブが同じ rel_path を
-// 転送中）を示す通常の敗北であり、err ではない。
+// acquired=false はロック取得の失敗（既に別セッション --- 実行中の同じジョブか、
+// record_sweep の回収側が一瞬 try している最中 --- がこのジョブ ID のロックを
+// 保持中）を示す通常の敗北であり、err ではない。
+func acquireIngestJobLock(ctx context.Context, pool *pgxpool.Pool, jobID int64, timeout time.Duration) (*relPathLock, bool, error) {
+	return acquireAdvisoryLock(ctx, pool, ingestJobLockKey(jobID), fmt.Sprintf("ingest job %d", jobID), timeout)
+}
+
+// acquireRelPathLockWithHeartbeat は rel_path の advisory lock を単独で（ジョブ
+// lock を経由せず）取得する。**production の呼び手はいない**（唯一の呼び手は
+// テスト --- `grep -rn acquireRelPathLockWithHeartbeat internal/` で確認できる）。
+// production は必ず `acquireIngestJobLock` → `relPathLock.acquireRelPath` の
+// 2 段で同じセッションへ両方のキーを積む（`IngestWorker.Work` 参照）。
+//
+// 契約（セッションレベル・ノンブロッキング・タイムアウトでハングを防ぐ理由）の
+// 記述は `acquireIngestJobLock` の doc コメントに、heartbeat の契約（一過性
+// 失敗の許容・残る検出窓）は `acquireRelPath` 呼び出し後にこの関数がしている
+// ことと同じなので下記に集約する。この関数自体は、1 プロセス相当の単独取得を
+// テストで組み立てやすくするための入口として残す。
 //
 // heartbeat は転送中もこの接続へ定期的にクエリを送り、接続断または advisory
 // lock の喪失を検知したら lost を閉じる。ingest は lost を見て転送 context を
@@ -382,7 +403,6 @@ func acquireRelPathLockWithHeartbeat(ctx context.Context, pool *pgxpool.Pool, re
 	if err != nil || !acquired {
 		return lock, acquired, err
 	}
-	lock.relPath = relPath
 	lock.keys[0].label = relPath
 	lock.startHeartbeat()
 	return lock, true, nil
