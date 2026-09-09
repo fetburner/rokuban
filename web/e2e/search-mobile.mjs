@@ -21,6 +21,8 @@
 //      下までスクロールする」状態が緑で通る（レビューで実測）
 //   ⑤ 検索結果の予約ボタンがモバイルでも 44px の標的として出て、キーボードの
 //      Enter で単発予約へ進めること
+//   ⑥ 長いサービス名と有料表示を持つ結果行で、メタ行が 1 行に収まり、行が
+//      不要に 2 行ぶん高くならないこと（issue #712）
 //
 // **①②は `page.goto` 直後、スクロールも操作も一切せずに測る** --- 「初画面」を
 // 検証する判定でスクロールしてしまうと、直したい問題自体を回避してしまう。
@@ -47,7 +49,7 @@ const services = [
     id: 3273601024,
     networkId: 32736,
     serviceId: 1024,
-    name: 'NHK総合',
+    name: 'ＮＨＫＢＳプレミアム４Ｋ',
     channelType: 'GR',
     channel: '27',
     remoteControlKeyId: 1,
@@ -101,7 +103,7 @@ function programDetail(id, index) {
     name: `ニュース ${index + 1}`,
     description: '',
     genres: [0],
-    isFree: true,
+    isFree: false,
   }
 }
 
@@ -345,6 +347,8 @@ async function checkSubmitFeedback(page, viewport, label) {
   await firstRow.getByText(/^ニュース \d+$/).waitFor({ timeout: 15000 })
   await page.waitForTimeout(200)
 
+  await checkSearchResultMeta(page, label)
+
   const scrollY = await page.evaluate(() => window.scrollY)
   const countBox = await countRow.boundingBox()
   const firstRowBox = await firstRow.boundingBox()
@@ -392,6 +396,61 @@ async function checkSubmitFeedback(page, viewport, label) {
         `④@${label}: 結果 1 件目（top=${firstRowBox.y}）がボトムタブ（上端=${navBox.y}）より下`,
       )
     }
+  }
+}
+
+/**
+ * checkSearchResultMeta は検索結果のメタ行が 1 行で描画されることを判定する（⑥）。
+ *
+ * 長いサービス名と「有料」を同時に持つ fixture を使う。メタ行に `flex-wrap` が
+ * 残っているとサービス名が縮む前に折り返し、`getBoundingClientRect()` の高さが
+ * computed style の 1 行ぶんを超える。jsdom はレイアウトを計算しないため、実際の
+ * Chromium でしかこの差を検出できない。
+ */
+async function checkSearchResultMeta(page, label) {
+  const firstRow = firstResultRow(page)
+  const meta = firstRow.getByTestId('search-result-meta')
+  const count = await meta.count()
+  if (count !== 1) {
+    ng.push(`⑥@${label}: 結果 1 件目のメタ行がちょうど 1 本ではない（${count} 本）`)
+    return
+  }
+
+  const rowBox = await firstRow.boundingBox()
+  const metaBox = await meta.boundingBox()
+  const metrics = await meta.evaluate((element) => {
+    const style = getComputedStyle(element)
+    return {
+      flexWrap: style.flexWrap,
+      lineHeight: Number.parseFloat(style.lineHeight),
+      text: element.textContent ?? '',
+    }
+  })
+
+  if (rowBox === null || metaBox === null) {
+    ng.push(`⑥@${label}: 結果行またはメタ行の矩形が取れない`)
+    return
+  }
+
+  log(
+    `  ⑥@${label} 結果行 height=${Math.round(rowBox.height)} / ` +
+      `メタ行 height=${Math.round(metaBox.height)} line-height=${metrics.lineHeight}` +
+      ` / flex-wrap=${metrics.flexWrap}`,
+  )
+
+  if (!metrics.text.includes('ＮＨＫＢＳプレミアム４Ｋ') || !metrics.text.includes('有料')) {
+    ng.push(`⑥@${label}: 長いサービス名と「有料」の fixture が結果行に出ていない`)
+  }
+  if (metrics.flexWrap !== 'nowrap') {
+    ng.push(`⑥@${label}: 結果行のメタ行が折り返し禁止になっていない（${metrics.flexWrap}）`)
+  }
+  if (!Number.isFinite(metrics.lineHeight)) {
+    ng.push(`⑥@${label}: メタ行の line-height を取得できない`)
+  } else if (metaBox.height > metrics.lineHeight + 1) {
+    ng.push(
+      `⑥@${label}: メタ行が 1 行に収まっていない（height=${metaBox.height}, ` +
+        `line-height=${metrics.lineHeight}）`,
+    )
   }
 }
 
