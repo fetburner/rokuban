@@ -35,11 +35,16 @@ const defaultAPIStatementTimeout = 30 * time.Second
 //     notifier がそれぞれ別に 1 本ずつではない）。これに加え、設定されたキューの
 //     MaxWorkers（ingest/encode/thumbnail の合計は通常数本、ruler/reconciler/epg_sync/
 //     record_sweep 等の定期ジョブ専用キューは MaxWorkers 1）を合わせても世帯スケールでは
-//     十分な余裕がある。**加えて、実行中の ingest 1 本ごとに rel_path advisory lock 用の
-//     コネクションを 1 本、転送が終わるまで長期保持する**（internal/worker/relpath_lock.go、
-//     docs/recording/ingest.md §5.3）。ingest の同時実行は site あたり 1〜2 にキャップ
-//     されており、この 8 は 1 site ぶんを見込んだ値。2 site 目以降は
-//     perSiteConnBudget が worker あたり workerPerSiteConns を上乗せする
+//     十分な余裕がある。**加えて、実行中の ingest 1 本ごとに advisory lock 用の
+//     コネクションを 1 本、Work の冒頭（ジョブ ID lock の確保）から commit まで長期保持
+//     する**（internal/worker/relpath_lock.go、docs/recording/ingest.md §5.3）。本数は
+//     変わらない --- ジョブ ID lock と rel_path lock は同一セッション（同じコネクション）
+//     に相乗りする。ただし保持の開始が転送前の `lookupIngestTarget` /
+//     `hasOriginalMediaAsset` / `determineRelPath`（mirakc への HTTP を含む）まで前倒しに
+//     なっている（プロセス死からの回収がこのジョブ ID lock を見るため。層 2 参照）。
+//     ingest の同時実行は site あたり 1〜2 にキャップされており、この 8 は 1 site ぶんを
+//     見込んだ値。2 site 目以降は perSiteConnBudget が worker あたり workerPerSiteConns
+//     を上乗せする
 //   - watcher (3): 1 site ぶんのリーダー選出の advisory lock 用に 1 本を保持し
 //     続け、record 処理の短いクエリが散発する。2 site 目以降は site ごとに
 //     goroutine + advisory lock を持つため（cmd/rokuban/server.go の watcher

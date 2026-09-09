@@ -51,11 +51,13 @@ var openIngestFile = func(path string) (ingestFile, error) {
 	return os.Create(path)
 }
 
-// acquireIngestRelPathLock は rel_path advisory lock の取得フック。既定は
-// acquireRelPathLockWithHeartbeat（relpath_lock.go）そのもの。openIngestFile と
+// acquireIngestRelPathLock は、Work の開始時に取得したジョブ advisory lock と
+// 同じセッションへ rel_path advisory lock を追加する取得フック。openIngestFile と
 // 同じ形で、テストが取得直後の *relPathLock を捕捉して heartbeat を経由せずに
 // lock.isLost() ガード（下記 Work 参照）を検証するために差し替える。
-var acquireIngestRelPathLock = acquireRelPathLockWithHeartbeat
+var acquireIngestRelPathLock = func(ctx context.Context, lock *relPathLock, relPath string, timeout time.Duration) (bool, error) {
+	return lock.acquireRelPath(ctx, relPath, timeout)
+}
 
 // IngestWorker は mirakc からの TS ファイル転送を行う River ワーカー。
 type IngestWorker struct {
@@ -141,6 +143,22 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 		return err
 	}
 
+	// Work の開始から commit まで、ジョブ ID 固有の advisory lock を保持する。
+	// record_sweep の回収側が同じキーを pg_try できた場合だけ、元プロセスが死んで
+	// セッションが解放されたと確定できる。rel_path lock も後でこのセッションへ
+	// 追加する（同じ接続であることが回収判定の前提）。
+	jobLock, acquired, err := acquireIngestJobLock(ctx, w.Pool, job.ID, w.resolveRelPathLockTimeout())
+	if err != nil {
+		return fmt.Errorf("acquiring ingest job lock: %w", err)
+	}
+	if !acquired {
+		// 断定はしない: この分岐には、別プロセスが本当に実行中の場合だけでなく、
+		// record_sweep の回収側が同じキーを一瞬 try して保持している場合も落ちる。
+		log.Warn("ingest: job advisory lock is held by another session, deferring", "job_id", job.ID)
+		return fmt.Errorf("ingest: job %d advisory lock is held by another session; deferring", job.ID)
+	}
+	defer jobLock.release()
+
 	recordingID, expectedBytes, err := w.lookupIngestTarget(ctx, args)
 	if err != nil {
 		return fmt.Errorf("looking up recording_id: %w", err)
@@ -183,7 +201,8 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	// 負けた側（acquired=false）はバイトを 1 つも書かずに失敗し、River の
 	// バックオフで再試行する。ロックは commit まで defer で保持し続け、
 	// heartbeat がセッション喪失を検知したら転送用 context をキャンセルする。
-	lock, acquired, err := acquireIngestRelPathLock(ctx, w.Pool, relPath, w.resolveRelPathLockTimeout())
+	lock := jobLock
+	acquired, err = acquireIngestRelPathLock(ctx, lock, relPath, w.resolveRelPathLockTimeout())
 	if err != nil {
 		return fmt.Errorf("acquiring rel_path lock: %w", err)
 	}
@@ -191,8 +210,6 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 		log.Warn("ingest: rel_path is being transferred by another ingest job, deferring", "rel_path", relPath)
 		return fmt.Errorf("ingest: rel_path %q is being transferred by another ingest job; deferring (recording_id=%d)", relPath, recordingID)
 	}
-	defer lock.release()
-
 	// ロック用コネクションは転送中ずっと pool から保持するが、セッションが
 	// 切れると Postgres は advisory lock を自動解放する。heartbeat の lost 通知を
 	// 転送全体の context に伝播させ、古い実行が後続実行と同じファイルへ書き続け

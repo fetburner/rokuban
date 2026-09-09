@@ -28,6 +28,11 @@
 
 ruler / reconciler と違い、**起動契機は定期のみ**（ヒントで前倒しする経路を持たない）。
 
+`record_sweep` は全量取得を始める前に、プロセス死で `running` のまま残った ingest の回収も
+行う。最後の進捗時刻が古い行を候補にするが、ジョブ ID の advisory lock を取得できた場合だけ
+死亡と確定し、旧行を終端化して新しい ingest を投入する。生きている転送は lock を保持して
+いるため、進捗時刻が古くても回収しない。
+
 | 契機 | 種別 |
 |---|---|
 | 定期（既定 5 分、旧 watcher の `ReconcileInterval` を継承） | **真実**。デプロイ形態に応じて River `PeriodicJobs` か k8s CronJob（`rokuban enqueue record-sweep`）が投入する（[データ層](../data.md) §2） |
@@ -52,4 +57,3 @@ ruler / reconciler は「作成・更新イベント」というヒントを同�
 - **DB に新しい状態を持たせない。** 毎パス再計算できる導出値なので `rokuban_reconcile_start_delayed{site}` ゲージ 1 つで表す（不変条件 5）。`quality_events` には書かない --- それは `recordings` の列で、録画が始まっていない番組には行が無いことがある（§3.2「DELETE 成功 → POST 失敗」と同じ制約）
 
 ---
-

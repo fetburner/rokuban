@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	pgx5 "github.com/jackc/pgx/v5"
@@ -32,6 +33,11 @@ const (
 	// 含まれない（ストリーム転送は別の ingest ジョブが担う）ため、無制限にはしない。
 	recordSweepTimeout = 10 * time.Minute
 )
+
+// recoverStaleIngestJobsFunc は Work が呼ぶフック。nil を許さず常にこの変数
+// 経由で呼ぶことで、テストが実 DB 無しで回収の失敗を注入できる（ingest.go の
+// openIngestFile / relpath_lock.go の checkHeldFunc と同じ形）。
+var recoverStaleIngestJobsFunc = recoverStaleIngestJobs
 
 // RecordSweepWorker は watcher の定期全量突き合わせ（(c)）を実行する River ワーカー。
 //
@@ -82,6 +88,18 @@ func (w *RecordSweepWorker) Work(ctx context.Context, job *river.Job[jobs.Record
 	riverClient, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
 	if err != nil {
 		return fmt.Errorf("getting river client from job context: %w", err)
+	}
+
+	// River の JobRescuer は ingest の Timeout()=-1 を尊重するため、プロセス死で
+	// running のまま残った ingest はここで回収する。時刻は候補抽出にだけ使い、
+	// ジョブ ID advisory lock を取得できた場合に限って死亡と確定する。
+	//
+	// 回収の失敗は record_sweep 本体（wt.Sweep、真実の再取得。不変条件 5）を
+	// 止めない。回収はあくまで補助経路で、取りこぼしても次の record_sweep パスが
+	// 再び候補として拾える（レベルトリガー）。回収がプールの逼迫等で
+	// 一時的に失敗するたびに sweep 全体が落ちる方が実害が大きい。
+	if err := recoverStaleIngestJobsFunc(ctx, w.Pool, riverClient, job.Args.Site); err != nil {
+		slog.Warn("record_sweep: recovering stale ingest jobs failed, continuing to sweep", "site", job.Args.Site, "err", err)
 	}
 
 	wt := watcher.New(job.Args.Site, client, w.Pool, riverClient, w.Webhook)
