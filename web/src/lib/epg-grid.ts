@@ -65,15 +65,17 @@ export function pxToTime(axis: TimeAxis, px: number): number {
  * scaledScrollTopPx は時間軸の縮尺変更後も、スクロール領域の上端に来ていた
  * 時刻を保つための新しい scrollTop を返す。
  *
- * グリッドの sticky ヘッダは軸の先頭より上に固定されるので、ヘッダぶんを
- * 除いた軸上の距離だけを倍率変更する。これを単純に scrollTop 全体へ掛けると、
- * ヘッダの高さも時間として拡大されて、同じ時刻がずれる。
+ * グリッドの sticky ヘッダ（36px）はフローに高さを占めたままビューポート上端に
+ * 貼り付くので、スクロール容器の `scrollTop` は「ヘッダ下端＝最初に見える行に
+ * 来る軸上 px」と 1:1 で一致する（オフセット 0。実ブラウザで測定済み）。この
+ * 規約は同じ effect 内の初期スクロール（`timeToPx(axis, targetMs) - ...`）や
+ * `visibleTimeWindow` の `pxToTime(axis, scrollTopPx - overscanPx)` とも一致する。
+ * したがってヘッダぶんを引く必要はなく、`scrollTop` へそのまま倍率を掛ける。
  */
 export function scaledScrollTopPx(
   scrollTopPx: number,
   previousPxPerHour: number,
   nextPxPerHour: number,
-  fixedHeaderPx = 0,
 ): number {
   if (!Number.isFinite(scrollTopPx)) return 0
   if (
@@ -84,8 +86,7 @@ export function scaledScrollTopPx(
   ) {
     return Math.max(0, scrollTopPx)
   }
-  const axisOffsetPx = scrollTopPx - fixedHeaderPx
-  return Math.max(0, fixedHeaderPx + axisOffsetPx * (nextPxPerHour / previousPxPerHour))
+  return Math.max(0, scrollTopPx * (nextPxPerHour / previousPxPerHour))
 }
 
 /** SpanRect は軸上の矩形。 */

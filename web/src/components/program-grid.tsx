@@ -38,7 +38,10 @@ const overscanPx = 400
 /** 画面外にも描いておく列数（左右それぞれ）。 */
 const overscanColumns = 1
 
-/** 現在時刻インジケータを動かす間隔。1 分未満のずれは 2px 未満なので 30 秒で足りる。 */
+/**
+ * 現在時刻インジケータを動かす間隔。ずれの見た目の大きさは縮尺に依存する
+ * （既定の 120px/時なら 30 秒で 1px、最大の 480px/時でも 4px）ので、30 秒で足りる。
+ */
 const clockIntervalMs = 30_000
 
 /**
@@ -225,12 +228,7 @@ export function ProgramGrid({
       previousAxis.endMs === axis.endMs &&
       previousAxis.pxPerHour !== axis.pxPerHour
     ) {
-      el.scrollTop = scaledScrollTopPx(
-        el.scrollTop,
-        previousAxis.pxPerHour,
-        axis.pxPerHour,
-        headerHeightPx,
-      )
+      el.scrollTop = scaledScrollTopPx(el.scrollTop, previousAxis.pxPerHour, axis.pxPerHour)
       previousAxisRef.current = axis
       measure()
       return

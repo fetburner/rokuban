@@ -25,7 +25,6 @@ const FIXED_NOW = new Date('2026-08-14T12:00:00+09:00')
 const nowMs = FIXED_NOW.getTime()
 const iso = (ms) => new Date(ms).toISOString()
 const GRID_SCALE_KEY = 'rokuban:programs:grid-scale'
-const HEADER_HEIGHT_PX = 36
 
 const ng = []
 
@@ -149,8 +148,10 @@ if (savedScale !== '480') ng.push(`① 縮尺が localStorage に保存されな
 
 // --- ② ズーム前後で同じ時刻を表示し続ける -------------------------------
 log('\n=== ② ズーム前後の表示時刻 ===')
-// ページは「今」の少し前へ初期スクロールする。倍率を戻して比較し、
-// sticky ヘッダの下端を基準に同じ軸上時刻が残ることを測る。
+// scrollTop をヘッダ高さの定数で読み解く式を実装と共有すると、実装が同じ式で
+// ずれていても検出できない（オラクルが実装のバグを追認してしまう）。ここでは
+// DOM を実測する: アンカー時刻が保たれるなら、任意の目盛り要素の「ヘッダ下端
+// からの距離」はズームの倍率どおりに伸びるはず、という不変条件を見る。
 await page.getByRole('button', { name: '120 px/時' }).click()
 await page.waitForTimeout(100)
 // 初期スクロール先は固定時刻やヘッダのレイアウトに依存するため、既知の軸上位置を
@@ -161,16 +162,69 @@ await grid.evaluate((el) => {
   el.dispatchEvent(new Event('scroll'))
 })
 await page.waitForTimeout(100)
-const beforeZoom = await grid.evaluate((el) => el.scrollTop)
-const beforeVisibleHours = (beforeZoom - HEADER_HEIGHT_PX) / 120
+
+// ヘッダ下端（[data-testid="program-grid-header-cell"] の bottom）から、その
+// 直後に現れる目盛り（[data-testid="program-grid-tick"]）までの距離を測る。
+// `tickIndex` を渡すと、1 回目に選んだのと同じ目盛り（時間軸上の同じ時刻）を
+// ズーム後も測り直せる。
+async function measureTickAnchor(tickIndex) {
+  return grid.evaluate((el, tickIndex) => {
+    const headerCell = el.querySelector('[data-testid="program-grid-header-cell"]')
+    const ticks = Array.from(el.querySelectorAll('[data-testid="program-grid-tick"]'))
+    if (!headerCell || ticks.length === 0) return null
+    const gridTop = el.getBoundingClientRect().top
+    const headerBottom = headerCell.getBoundingClientRect().bottom - gridTop
+    const topOf = (tick) => tick.getBoundingClientRect().top - gridTop
+    let index = tickIndex
+    if (index === undefined) {
+      // ヘッダ下端以降に現れる最初の目盛り（= 可視範囲内）を選ぶ。
+      index = ticks.reduce(
+        (best, tick, i) => (topOf(tick) >= headerBottom && (best < 0 || topOf(tick) < topOf(ticks[best])) ? i : best),
+        -1,
+      )
+    }
+    const tick = ticks[index]
+    if (!tick) return null
+    return {
+      scrollTop: el.scrollTop,
+      headerBottom,
+      tickIndex: index,
+      tickLabel: tick.textContent,
+      tickOffset: topOf(tick) - headerBottom,
+    }
+  }, tickIndex)
+}
+
+const beforeZoom = await measureTickAnchor()
+if (!beforeZoom) ng.push('② ヘッダ下端以降に目盛りが見つからない')
+
 await page.getByRole('button', { name: '480 px/時' }).click()
 await page.waitForTimeout(100)
-const afterZoom = await grid.evaluate((el) => el.scrollTop)
-const afterVisibleHours = (afterZoom - HEADER_HEIGHT_PX) / 480
-log(`  scrollTop: ${beforeZoom}px -> ${afterZoom}px`)
-log(`  軸上の可視起点: ${beforeVisibleHours.toFixed(3)}h -> ${afterVisibleHours.toFixed(3)}h`)
-if (Math.abs(beforeVisibleHours - afterVisibleHours) > 0.02) {
-  ng.push(`② ズーム前後で可視起点の時刻がずれる（${beforeVisibleHours} -> ${afterVisibleHours}h）`)
+const afterZoom = beforeZoom ? await measureTickAnchor(beforeZoom.tickIndex) : null
+
+log(
+  `  120px/時: scrollTop=${beforeZoom?.scrollTop}px headerBottom=${beforeZoom?.headerBottom.toFixed(1)}px ` +
+    `目盛り${beforeZoom?.tickLabel} offset=${beforeZoom?.tickOffset.toFixed(1)}px`,
+)
+log(
+  `  480px/時: scrollTop=${afterZoom?.scrollTop}px headerBottom=${afterZoom?.headerBottom.toFixed(1)}px ` +
+    `目盛り${afterZoom?.tickLabel} offset=${afterZoom?.tickOffset.toFixed(1)}px`,
+)
+
+if (beforeZoom && afterZoom) {
+  if (beforeZoom.tickLabel !== afterZoom.tickLabel) {
+    ng.push(`② ズーム前後で対象の目盛りが変わった（${beforeZoom.tickLabel} -> ${afterZoom.tickLabel}）`)
+  }
+  const expectedOffset = beforeZoom.tickOffset * 4
+  // 許容誤差はサブピクセルの丸め（実測 1px 程度）が倍率ぶん増幅されることを見込む
+  // （120 -> 480 は 4 倍）。実装のバグは 100px 超のずれを生むので、これでも
+  // 十分に判別できる。
+  if (Math.abs(afterZoom.tickOffset - expectedOffset) > 5) {
+    ng.push(
+      `② ズーム前後でアンカー時刻がずれる（目盛りオフセット ${beforeZoom.tickOffset.toFixed(1)}px -> ` +
+        `${afterZoom.tickOffset.toFixed(1)}px、期待値 ${expectedOffset.toFixed(1)}px）`,
+    )
+  }
 }
 
 // --- ③ 隣接セルの境界付近を押しても対象が入れ替わらない ---------------
