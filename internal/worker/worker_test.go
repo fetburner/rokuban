@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -143,7 +144,7 @@ func TestNoOpJob(t *testing.T) {
 // TestReconcilePassPeriodicJob）が共有する配線のセットアップだけを担う。
 // ジョブ種別・キュー名・args の主張はテスト側に残す（CLAUDE.md「実装の定数と
 // 比較するテストは何も主張していない」）。
-func startPeriodicJobClient(t *testing.T, pool *pgxpool.Pool, deps *Deps, cfg ClientConfig, eventKind river.EventKind) <-chan *river.Event {
+func startPeriodicJobClient(t *testing.T, pool *pgxpool.Pool, deps *Deps, cfg ClientConfig, eventKind river.EventKind) *periodicJobEventWaiter {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
@@ -169,33 +170,148 @@ func startPeriodicJobClient(t *testing.T, pool *pgxpool.Pool, deps *Deps, cfg Cl
 		<-client.Stopped()
 	})
 
-	return subscribeCh
+	return newPeriodicJobEventWaiter(pool, subscribeCh)
 }
 
-// waitPeriodicJobEvent は startPeriodicJobClient と対になる待ち受けの
-// 共通部分（timeout 付き select）だけを担う。kind / queue / args の主張は
-// 呼び出し側に残す。
+// periodicJobWaitTimeout は定期ジョブ完了イベントの待ち時間上限である。
 //
-// **jobKind が一致するイベントが来るまで読み飛ばす。** issue #532 で
+// CI で TestRulerPassPeriodicJob がタイムアウトした（issue #740）。失敗は 2 回目の
+// reconcile_pass 待ちで発生しており、到着順の読み捨て（経路 2）は回帰テストで
+// 再現できる。一方、経路 1 の待ち時間を `go test ./internal/worker/ -run
+// '^TestRulerPassPeriodicJob$' -count=20 -v` で測ると、ruler_pass は 1.282〜5.290
+// 秒、reconcile_pass は 18/20 回が ruler_pass の直後 1ms 未満、2/20 回が既に
+// 保留済みだった。最大 5.290 秒に対して 20 秒は 3.7 倍以上の余裕があるため、
+// 予算は増やさず、到着順の読み捨てだけを修正する。CI での元の失敗自体は再現
+// できていないため、経路 1 が発生しないとは断言しない。
+const periodicJobWaitTimeout = 20 * time.Second
+
+// periodicJobEventWaiter は River の購読チャネルと、そのチャネルから読み取った
+// もののまだ呼び出し側へ返していないイベントを保持する。呼び出し側は同じ
+// waiter に対して順番に waitPeriodicJobEvent を呼ぶ。
+type periodicJobEventWaiter struct {
+	subscribeCh   <-chan *river.Event
+	pool          *pgxpool.Pool
+	pending       map[string][]*river.Event
+	observedKinds []string
+}
+
+func newPeriodicJobEventWaiter(pool *pgxpool.Pool, subscribeCh <-chan *river.Event) *periodicJobEventWaiter {
+	return &periodicJobEventWaiter{
+		subscribeCh: subscribeCh,
+		pool:        pool,
+		pending:     make(map[string][]*river.Event),
+	}
+}
+
+// waitPeriodicJobEvent は startPeriodicJobClient と対になる待ち受けの共通部分を
+// 担う。kind / queue / args の主張は呼び出し側に残す。
+//
+// **jobKind が一致しないイベントを読み捨てない。** issue #532 で
 // ClientConfig.BoundSites が epg_sync/tuner_sync/ruler_pass/reconcile_pass/
 // record_sweep の 5 種をまとめて登録するようになったため、1 つの site を
 // 束縛しただけで残り 4 種も RunOnStart で同時に走る。呼び出し側が見たいのは
-// そのうちの 1 種だけなので、最初に届いたイベントを無条件に返すと別の種類の
-// ジョブに化けたときにテストが誤判定する（実際、複数種が同時完了する構成で
-// 順序は保証されない）。
-func waitPeriodicJobEvent(t *testing.T, subscribeCh <-chan *river.Event, jobKind string) *river.Event {
+// そのうちの 1 種だけなので、別の種類のイベントも受け取る必要がある。しかし
+// それを捨てると、次の待ち受けが同じイベントを受け取れず飢える。kind ごとに
+// 保留しておくことで、同じ購読を複数回待っても到着順に依存しない。
+func waitPeriodicJobEvent(t *testing.T, waiter *periodicJobEventWaiter, jobKind string) *river.Event {
 	t.Helper()
-	deadline := time.After(20 * time.Second)
+	if pending := waiter.pending[jobKind]; len(pending) > 0 {
+		event := pending[0]
+		waiter.pending[jobKind] = pending[1:]
+		t.Logf("periodic %s event was already observed; observed event kinds=%v", jobKind, waiter.observedKinds)
+		return event
+	}
+
+	startedAt := time.Now()
+	deadline := time.NewTimer(periodicJobWaitTimeout)
+	defer deadline.Stop()
 	for {
 		select {
-		case event := <-subscribeCh:
-			if event.Job.Kind == jobKind {
+		case event, ok := <-waiter.subscribeCh:
+			if !ok {
+				t.Fatalf("periodic %s event subscription closed; river_job kind/state counts=%s; observed event kinds=%v",
+					jobKind, waiter.riverJobKindStateCounts(), waiter.observedKinds)
+				return nil
+			}
+			if event == nil || event.Job == nil {
+				waiter.observedKinds = append(waiter.observedKinds, "<nil>")
+				continue
+			}
+			kind := event.Job.Kind
+			waiter.observedKinds = append(waiter.observedKinds, kind)
+			if kind == jobKind {
+				t.Logf("periodic %s event received after %s; observed event kinds=%v",
+					jobKind, time.Since(startedAt).Round(time.Millisecond), waiter.observedKinds)
 				return event
 			}
-		case <-deadline:
-			t.Fatalf("timed out waiting for the periodic %s job", jobKind)
+			waiter.pending[kind] = append(waiter.pending[kind], event)
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for the periodic %s job after %s; river_job kind/state counts=%s; observed event kinds=%v",
+				jobKind, periodicJobWaitTimeout, waiter.riverJobKindStateCounts(), waiter.observedKinds)
 			return nil
 		}
+	}
+}
+
+// riverJobKindStateCounts は timeout 時点の River ジョブを kind/state 別に要約する。
+// 定期ジョブが投入されていないのか、投入されたが available/running のままなのか、
+// あるいは別種のイベントだけが先に届いたのかを、再現手順なしで区別できるようにする。
+func (waiter *periodicJobEventWaiter) riverJobKindStateCounts() string {
+	if waiter.pool == nil {
+		return "unavailable (no database pool)"
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	rows, err := waiter.pool.Query(ctx, `
+		SELECT kind, state, count(*)
+		FROM river_job
+		GROUP BY kind, state
+		ORDER BY kind, state`)
+	if err != nil {
+		return fmt.Sprintf("unavailable (%v)", err)
+	}
+	defer rows.Close()
+
+	var counts []string
+	for rows.Next() {
+		var kind, state string
+		var count int64
+		if err := rows.Scan(&kind, &state, &count); err != nil {
+			return fmt.Sprintf("unavailable (scanning rows: %v)", err)
+		}
+		counts = append(counts, fmt.Sprintf("%s/%s=%d", kind, state, count))
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Sprintf("unavailable (iterating rows: %v)", err)
+	}
+	if len(counts) == 0 {
+		return "empty"
+	}
+	return strings.Join(counts, ", ")
+}
+
+// TestWaitPeriodicJobEventRetainsOutOfOrderEvents は、同じ購読チャネルに届いた
+// reconcile_pass を ruler_pass の待ち受けが読み取っても、後続の待ち受けがその
+// イベントを取得できることを固定する。これがないと、reconcile_pass が先に完了
+// したとき TestRulerPassPeriodicJob の 2 回目の待ち受けがタイムアウトする。
+//
+// このテストの変異確認では、waitPeriodicJobEvent の kind 不一致イベントを
+// `pending` に追加する処理を外す。コンパイルは通ったまま、2 回目の
+// waitPeriodicJobEvent がタイムアウトして落ちるため、実際の飢えの経路を検証できる。
+func TestWaitPeriodicJobEventRetainsOutOfOrderEvents(t *testing.T) {
+	subscribeCh := make(chan *river.Event, 2)
+	reconcileEvent := &river.Event{Job: &rivertype.JobRow{Kind: "reconcile_pass"}}
+	rulerEvent := &river.Event{Job: &rivertype.JobRow{Kind: "ruler_pass"}}
+	subscribeCh <- reconcileEvent
+	subscribeCh <- rulerEvent
+
+	waiter := newPeriodicJobEventWaiter(nil, subscribeCh)
+	if got := waitPeriodicJobEvent(t, waiter, "ruler_pass"); got != rulerEvent {
+		t.Fatalf("ruler_pass event = %p, want %p", got, rulerEvent)
+	}
+	if got := waitPeriodicJobEvent(t, waiter, "reconcile_pass"); got != reconcileEvent {
+		t.Fatalf("reconcile_pass event = %p, want %p", got, reconcileEvent)
 	}
 }
 
@@ -213,13 +329,13 @@ func TestEpgSyncPeriodicJob(t *testing.T) {
 	// t.Cleanup（defer だとクライアント停止より先に走り、動いている最中にスタブを閉じる）。
 	t.Cleanup(srv.Close)
 
-	subscribeCh := startPeriodicJobClient(t, pool, &Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, ClientConfig{
+	waiter := startPeriodicJobClient(t, pool, &Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, ClientConfig{
 		PeriodicJobs:    true,
 		BoundSites:      []string{"default"},
 		EpgSyncInterval: time.Hour, // RunOnStart で 1 回だけ走らせる
 	}, river.EventKindJobFailed)
 
-	event := waitPeriodicJobEvent(t, subscribeCh, "epg_sync")
+	event := waitPeriodicJobEvent(t, waiter, "epg_sync")
 	if event.Job.Kind != "epg_sync" {
 		t.Errorf("job kind = %q, want %q", event.Job.Kind, "epg_sync")
 	}
@@ -428,6 +544,7 @@ func TestRulerPassPeriodicJob(t *testing.T) {
 	}
 
 	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
+	waiter := newPeriodicJobEventWaiter(pool, subscribeCh)
 	defer subscribeCancel()
 
 	clientCtx, clientCancel := context.WithCancel(ctx)
@@ -441,7 +558,7 @@ func TestRulerPassPeriodicJob(t *testing.T) {
 		<-client.Stopped()
 	}()
 
-	rulerEvent := waitPeriodicJobEvent(t, subscribeCh, "ruler_pass")
+	rulerEvent := waitPeriodicJobEvent(t, waiter, "ruler_pass")
 	if rulerEvent.Job.Queue != rulerQueue {
 		t.Errorf("job queue = %q, want %q", rulerEvent.Job.Queue, rulerQueue)
 	}
@@ -456,7 +573,7 @@ func TestRulerPassPeriodicJob(t *testing.T) {
 	// この構成（BoundSites=[default] + mirakc スタブ）で reconcile_pass が実際に
 	// 正常完了することの確認（どちらが完了したかは上のコメントの通り区別しない）。
 	// 正常完了しないとここが 20 秒でタイムアウトする。
-	reconcileEvent := waitPeriodicJobEvent(t, subscribeCh, "reconcile_pass")
+	reconcileEvent := waitPeriodicJobEvent(t, waiter, "reconcile_pass")
 	var reconcileArgs ReconcilePassArgs
 	if err := json.Unmarshal(reconcileEvent.Job.EncodedArgs, &reconcileArgs); err != nil {
 		t.Fatalf("unmarshalling reconcile_pass args: %v", err)

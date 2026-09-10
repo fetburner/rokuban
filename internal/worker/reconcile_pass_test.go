@@ -96,13 +96,13 @@ func TestReconcilePassPeriodicJob(t *testing.T) {
 	// t.Cleanup（defer だとクライアント停止より先に走り、動いている最中にスタブを閉じる）。
 	t.Cleanup(srv.Close)
 
-	subscribeCh := startPeriodicJobClient(t, pool, &Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, ClientConfig{
+	waiter := startPeriodicJobClient(t, pool, &Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, ClientConfig{
 		PeriodicJobs:          true,
 		BoundSites:            []string{testSite},
 		ReconcilePassInterval: time.Hour, // RunOnStart で 1 回だけ走らせる
 	}, river.EventKindJobCompleted)
 
-	event := waitPeriodicJobEvent(t, subscribeCh, "reconcile_pass")
+	event := waitPeriodicJobEvent(t, waiter, "reconcile_pass")
 	if event.Job.Kind != "reconcile_pass" {
 		t.Errorf("job kind = %q, want %q", event.Job.Kind, "reconcile_pass")
 	}
@@ -264,6 +264,7 @@ func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 	}
 
 	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
+	waiter := newPeriodicJobEventWaiter(pool, subscribeCh)
 	defer subscribeCancel()
 
 	clientCtx, clientCancel := context.WithCancel(ctx)
@@ -281,14 +282,7 @@ func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 		t.Fatalf("inserting ruler_pass job: %v", err)
 	}
 
-	select {
-	case event := <-subscribeCh:
-		if event.Job.Kind != "ruler_pass" {
-			t.Fatalf("job kind = %q, want %q", event.Job.Kind, "ruler_pass")
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("timed out waiting for ruler_pass job completion")
-	}
+	_ = waitPeriodicJobEvent(t, waiter, "ruler_pass")
 
 	var count int
 	if err := pool.QueryRow(ctx,
@@ -309,10 +303,10 @@ func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 	//
 	// oracle: ヒントの投入（riverClient.Insert）を止めると（ruler_pass.go の
 	// Work 末尾）、count のチェックで 0 != 1 として落ちる。ヒントは投入される
-	// が実行が失敗する場合（例えば MirakcClients を外す）は、上の select が
+	// が実行が失敗する場合（例えば MirakcClients を外す）は、上の ruler_pass 待ち受けが
 	// 拾わない限り reconcile_pass の JobCompleted が来ず、下の待ち受けが
 	// 20 秒でタイムアウトして落ちる。
-	hintEvent := waitPeriodicJobEvent(t, subscribeCh, "reconcile_pass")
+	hintEvent := waitPeriodicJobEvent(t, waiter, "reconcile_pass")
 	var hintArgs ReconcilePassArgs
 	if err := json.Unmarshal(hintEvent.Job.EncodedArgs, &hintArgs); err != nil {
 		t.Fatalf("unmarshalling reconcile_pass hint args: %v", err)

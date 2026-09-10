@@ -41,13 +41,13 @@ func TestRecordSweepPeriodicJob(t *testing.T) {
 	// t.Cleanup（defer だとクライアント停止より先に走り、動いている最中にスタブを閉じる）。
 	t.Cleanup(srv.Close)
 
-	subscribeCh := startPeriodicJobClient(t, pool, &Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, ClientConfig{
+	waiter := startPeriodicJobClient(t, pool, &Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, ClientConfig{
 		PeriodicJobs:        true,
 		BoundSites:          []string{testSite},
 		RecordSweepInterval: time.Hour, // RunOnStart で 1 回だけ走らせる
 	}, river.EventKindJobCompleted)
 
-	event := waitPeriodicJobEvent(t, subscribeCh, "record_sweep")
+	event := waitPeriodicJobEvent(t, waiter, "record_sweep")
 	if event.Job.Kind != "record_sweep" {
 		t.Errorf("job kind = %q, want %q", event.Job.Kind, "record_sweep")
 	}
