@@ -11,21 +11,20 @@ RETURNING id;
 SELECT id FROM media_assets
 WHERE recording_id = $1 AND kind = 'original';
 
--- ingest の宛先事前チェック用（issue #197）。worker/ingest.go の Work が
--- rel_path の advisory lock を取得した後・os.Create で宛先ファイルを開く前に、
--- 別のまだ削除されていない（state <> 'deleted'。'active' に限らず、
--- delete_reconcile の unlink 前後の中間状態である 'deleting' も含む）
--- media_asset が同じ rel_path を既に使っていないかを確認する。名前を
+-- ingest の転送前ヒント用（issue #197）。worker/ingest.go の Work が
+-- 試行固有の一時ファイルを作る前に、別のまだ削除されていない
+-- （state <> 'deleted'。'active' に限らず、delete_reconcile の unlink 前後の
+-- 中間状態である 'deleting' も含む）media_asset が同じ rel_path を既に使って
+-- いないかを確認する。名前を
 -- "Active" ではなく "Live" にしているのは、他の Get*Active*MediaAsset* 系
 -- クエリ（state = 'active' を厳密に見る）と述語が違うことを名前からも
 -- 分かるようにするため（PR #267 のレビュー指摘: "active" という語だと
 -- 'deleting' 行にも発火する事実とずれる）。
 --
--- **ingest 対 ingest に関しては、これはもはや先読みではなく決着そのもの**
--- （issue #281）。Work はこの SELECT を呼ぶ前に同じ relPath の advisory lock
--- を commit まで保持し続けるので、他の ingest ジョブがこの relPath への
--- 転送を同時に始めることはもう起こらない。ここで拾うのは「別の recording が
--- 過去にこの rel_path を使って既にコミットした」という恒久的な衝突である。
+-- **ingest 対 ingest の決着はこの SELECT ではない**（issue #731）。複数の
+-- 試行が一時ファイルへ並行転送でき、commit 内の media_assets INSERT と
+-- 部分一意索引が採用を一つに決める。ここで拾うのは転送を始める価値が無い
+-- 「別の recording が既にコミットした」という恒久的な衝突である。
 -- **ただし delete_reconcile の状態遷移に対しては、従来どおりヒントのまま**
 -- --- delete_reconcile は advisory lock を取らないので、この SELECT と
 -- 実際の CreateMediaAsset の INSERT の間に 'deleting' → 'deleted' の遷移が

@@ -3,6 +3,8 @@ package worker
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/tsstat"
@@ -42,9 +44,19 @@ func TestIngestWorker_CommitDropPositions(t *testing.T) {
 	if n, err := counter.Write(data); err != nil || n != len(data) {
 		t.Fatalf("counter.Write() = %d, %v; want %d, nil", n, err, len(data))
 	}
+	mediaDir := t.TempDir()
+	relPath := "test/drop-position.m2ts"
+	fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatalf("creating media directory: %v", err)
+	}
+	tempPath := filepath.Join(filepath.Dir(fullPath), ".rokuban-ingest-test")
+	if err := os.WriteFile(tempPath, data, 0o600); err != nil {
+		t.Fatalf("creating ingest temporary file: %v", err)
+	}
 
 	if err := (&IngestWorker{Pool: pool}).commit(
-		context.Background(), recordingID, "test/drop-position.m2ts", int64(len(data)), counter,
+		context.Background(), recordingID, relPath, tempPath, fullPath, int64(len(data)), counter,
 	); err != nil {
 		t.Fatalf("commit() error: %v", err)
 	}

@@ -36,7 +36,7 @@ const (
 
 // recoverStaleIngestJobsFunc は Work が呼ぶフック。nil を許さず常にこの変数
 // 経由で呼ぶことで、テストが実 DB 無しで回収の失敗を注入できる（ingest.go の
-// openIngestFile / relpath_lock.go の checkHeldFunc と同じ形）。
+// openIngestFile / ingest_job_lock.go の checkHeldFunc と同じ形）。
 var recoverStaleIngestJobsFunc = recoverStaleIngestJobs
 
 // RecordSweepWorker は watcher の定期全量突き合わせ（(c)）を実行する River ワーカー。

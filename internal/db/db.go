@@ -35,10 +35,11 @@ const defaultAPIStatementTimeout = 30 * time.Second
 //     notifier がそれぞれ別に 1 本ずつではない）。これに加え、設定されたキューの
 //     MaxWorkers（ingest/encode/thumbnail の合計は通常数本、ruler/reconciler/epg_sync/
 //     record_sweep 等の定期ジョブ専用キューは MaxWorkers 1）を合わせても世帯スケールでは
-//     十分な余裕がある。**加えて、実行中の ingest 1 本ごとに advisory lock 用の
-//     コネクションを 1 本、Work の冒頭（ジョブ ID lock の確保）から commit まで長期保持
-//     する**（internal/worker/relpath_lock.go、docs/recording/ingest.md §5.3）。本数は
-//     変わらない --- ジョブ ID lock と rel_path lock は同一セッション（同じコネクション）
+//     十分な余裕がある。**加えて、実行中の ingest 1 本ごとに job advisory lock 用の
+//     コネクションを 1 本、Work の冒頭から commit まで長期保持する**
+//     （internal/worker/ingest_job_lock.go、docs/recording/ingest.md §5.3）。
+//     rel_path の排他は DB の一意 reservation と一時ファイルで行う。本数は
+//     変わらない --- job lock は同一セッション（同じコネクション）
 //     に相乗りする。ただし保持の開始が転送前の `lookupIngestTarget` /
 //     `hasOriginalMediaAsset` / `determineRelPath`（mirakc への HTTP を含む）まで前倒しに
 //     なっている（プロセス死からの回収がこのジョブ ID lock を見るため。層 2 参照）。
@@ -69,7 +70,7 @@ const (
 	// site ごとに role.RunSingleton を呼ぶ。issue #532）。
 	watcherPerSiteConns = 1
 	// workerPerSiteConns: 2 site 目以降、ingest の同時実行キャップ（既定 2、
-	// internal/worker.defaultIngestConcurrency）ぶんの rel_path advisory lock
+	// internal/worker.defaultIngestConcurrency）ぶんの job advisory lock 用
 	// コネクションが site ごとに追加で乗りうる（roleConnBudget の worker 8 が
 	// 見込んでいるのは 1 site ぶんだけ）。
 	workerPerSiteConns = 2
@@ -145,7 +146,7 @@ var poolerIncompatibleRoles = []string{"worker", "watcher", "notifier"}
 // numSites はこのプロセスが束縛している mirakc サイト数（cmd/rokuban が --sites
 // から解決した `bound` の長さ。issue #532）。watcher は site ごとに advisory lock
 // 用のコネクションを 1 本専有し続け、worker も site ごとの ingest キューが
-// rel_path advisory lock 用のコネクションを追加で必要としうるため、2 サイト以上の
+// job advisory lock 用のコネクションを追加で必要としうるため、2 サイト以上の
 // 束縛ではこの数を pool サイジングに反映する（roleConnBudget / minRequiredConns の
 // doc コメント参照）。site 束縛の概念が無い呼び出し元（rescue/enqueue/shadow-diff
 // 等の単発 CLI コマンド、testutil）は 0 を渡す --- roles が空ならどのみち
@@ -268,7 +269,7 @@ func uniqueRoles(roles []string) map[string]struct{} {
 //   - worker: River の内部機構の LISTEN（elector と notifier で共有される 1 本。
 //     `river@v0.47.0 client.go` の `notifier.New` と `leadership.NewElector` で確認済み）。これは site 数に依存
 //     しないプロセス単位の資源なので、site が増えても専有本数は変わらない
-//     ---ingest の rel_path advisory lock は転送中だけの一時専有であり、
+//     ---ingest の job advisory lock は転送中だけの一時専有であり、
 //     watcher の advisory lock のように「プロセスが生きている間ずっと」では
 //     ないため、この恒久専有のカウントには含めない（roleConnBudget /
 //     perSiteConnBudget の workerPerSiteConns はソフトな見込みとして別に

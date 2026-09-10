@@ -121,7 +121,7 @@ const DefaultSoftStopTimeout = 5 * time.Second
 // verifySite が拾いたいのはまさにこの「args.Site 自体が壊れている経路」
 // （このコメント冒頭の説明）なので、jobSite を素の値のまま引く。
 //
-// 呼び出し側は mirakc/FS に触れる**前**（最初の HTTP 呼び出し・os.Create 等より
+// 呼び出し側は mirakc/FS に触れる**前**（最初の HTTP 呼び出し・一時ファイル作成等より
 // 前）に呼ぶこと。合わないジョブは即座に失敗させ、再試行は River に委ねる
 // （同じジョブが必ず自サイトの worker に回る保証はないが、他サイトの worker が
 // いずれ拾う。うるさいが安全 --- issue #139 本文の「id が自サイトに存在しない」

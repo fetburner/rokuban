@@ -32,6 +32,7 @@ func TestRescueLatest_NoCatalogScansBareAssetsIdempotently(t *testing.T) {
 	}
 	write("archive/show.m2ts", "original bytes")
 	write("archive/movie.mp4", "encoded bytes")
+	write("archive/.rokuban-ingest-deadbeef.m2ts", "partial bytes")
 	write("archive/notes.txt", "not media")
 	// catalog/ は拡張子が動画でも必ず除外する。
 	write("catalog/old-backup.mp4", "not a media asset")

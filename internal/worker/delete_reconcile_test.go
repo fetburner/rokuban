@@ -1602,6 +1602,66 @@ func TestDeleteReconcileWorker_Orphan_RecentMTime_NotRegistered(t *testing.T) {
 	}
 }
 
+// ingest の試行固有 temp は canonical file と同じ走査対象に残し、プロセス死後に
+// orphan_files へ記録して aging 回収する。ここで walk から除外すると、壊れた試行の
+// 部分ファイルが永久に残る。
+func TestDeleteReconcileWorker_Orphan_IngestTempIsAgedAndDeleted(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+
+	const relPath = "sites/default/test/.rokuban-ingest-process-dead.m2ts"
+	tempPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(tempPath), 0o755); err != nil {
+		t.Fatalf("creating temp parent directory: %v", err)
+	}
+	if err := os.WriteFile(tempPath, []byte("partial"), 0o644); err != nil {
+		t.Fatalf("writing ingest temp: %v", err)
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(tempPath, old, old); err != nil {
+		t.Fatalf("making ingest temp old: %v", err)
+	}
+
+	w := &DeleteReconcileWorker{
+		Pool: pool, MediaDir: mediaDir,
+		OrphanMTimeGrace: 7 * 24 * time.Hour,
+		OrphanAge:        14 * 24 * time.Hour,
+	}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("first Work() error: %v", err)
+	}
+	if !fileExists(tempPath) {
+		t.Fatal("ingest temp was deleted before orphan aging completed")
+	}
+	var count int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&count); err != nil {
+		t.Fatalf("querying orphan_files after discovery: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("orphan_files count for ingest temp = %d, want 1", count)
+	}
+
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE orphan_files SET first_seen = $2 WHERE rel_path = $1",
+		relPath, time.Now().Add(-20*24*time.Hour)); err != nil {
+		t.Fatalf("aging ingest temp orphan row: %v", err)
+	}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("second Work() error: %v", err)
+	}
+	if fileExists(tempPath) {
+		t.Fatal("aged ingest temp still exists")
+	}
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&count); err != nil {
+		t.Fatalf("querying orphan_files after deletion: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("orphan_files count after ingest temp deletion = %d, want 0", count)
+	}
+}
+
 // mtime が古いファイルは孤児候補として記録され、エイジング済みなら削除される。
 func TestDeleteReconcileWorker_Orphan_AgedOut_Deletes(t *testing.T) {
 	pool := setupTestPool(t)

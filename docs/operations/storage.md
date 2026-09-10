@@ -2,6 +2,28 @@
 
 ## 4. ストレージ運用
 
+### 原本 ingest 先の FS 契約
+
+`storage.media_dir` は、ファイル `fsync`、`Close` のエラー報告、同一 FS 内の
+atomic rename、rename 後の親ディレクトリ `fsync` を信頼できる root に限定する。
+worker は ingest キューを購読する起動時に、temp 作成 → file `fsync` → `Close` →
+同一ディレクトリ内 rename → 親ディレクトリ `fsync` の probe を行う。この probe は
+実際の操作列が一度成功することだけを確認する。パス文字列から FS の種類や意味論を
+推測する検査ではない。
+
+- ローカル FS / JuiceFS / NFS は対象内。ただし NFS export は `sync`、client mount は
+  `hard` を推奨する。NFS の open 中 unlink による `.nfsXXXX`（silly rename）が一時的な
+  orphan 候補に見えても、孤児回収の aging で扱える無害な残骸である
+- geesefs / s3fs / AWS Mountpoint など FUSE S3 は原本 ingest 先に使わない。atomic
+  rename、file/parent `fsync`、`Close` のエラー意味論を原本の公開根拠として信頼できない
+- FUSE S3 の実機検証の範囲は派生物専用の領域に限る。`storage.media_dir` を
+  FUSE S3 にして probe が通ったとしても、設定契約違反を解消したことにはならない
+
+ingest の一時ファイルは canonical path と同じディレクトリに作られる。プロセス死や
+rename 後の DB 失敗で残った temp / canonical orphan は、既存の mtime 猶予 + aging
+（既定 7 日 + 14 日）で回収される。rescue の catalog 無し走査は temp を original として
+復元しない。
+
 ### 録画バッファのサイジング
 
 録画バッファ（mirakc `recording.basedir`、エッジのローカルディスク）のサイジング指針:
@@ -36,10 +58,11 @@ GC がその番組のスナップショットを刈った後に ingest が走る
 
 ### アーカイブの速度要件
 
-アーカイブ（Rokuban のメディアストレージ。ローカル FS / NAS / CSI の S3）は低速で良い:
+アーカイブ（Rokuban のメディアストレージ。ローカル FS / 条件付き NFS / JuiceFS）は
+低速で良い。ただし `storage.media_dir` は上の強い FS 契約を満たす必要がある:
 
 - **平均スループット >= 1 日の録画総量 / 24 時間**。瞬間的な変動は録画バッファが吸収するので、リアルタイム性は一切要求されない。エンコードの読み出しもバッチなので遅くて良い
-- 唯一レイテンシが人間に見えるのは**再生時のシーク**（S3 + FUSE の range read）。原本削除ポリシーと組み合わせた「視聴は H.265 派生物、原本は消すか S3 の奥」という運用が前提なら実用上問題にならない見込み
+- 唯一レイテンシが人間に見えるのは**再生時のシーク**（派生物を置いた S3 + FUSE の range read など）。原本削除ポリシーと組み合わせた「視聴は H.265 派生物、原本は消すか別の低頻度領域」という運用を採る
 
 ### disaster recovery（catalog + rescue）
 

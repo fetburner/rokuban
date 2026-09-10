@@ -139,3 +139,24 @@ func TestSubtitleSibling(t *testing.T) {
 		})
 	}
 }
+
+func TestIsIngestTempFile(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "reserved basename", path: ".rokuban-ingest-1234", want: true},
+		{name: "reserved basename with media extension", path: "sites/default/.rokuban-ingest-abcd.m2ts", want: true},
+		{name: "canonical media file", path: "sites/default/recording.m2ts", want: false},
+		{name: "similar but different prefix", path: ".rokuban-ingest", want: false},
+		{name: "ordinary hidden file", path: ".partial-recording.m2ts", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsIngestTempFile(tt.path); got != tt.want {
+				t.Errorf("IsIngestTempFile(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}

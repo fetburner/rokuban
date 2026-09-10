@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -228,6 +229,59 @@ func TestServerCmd_QueuesFlagUnblocksCentralEncodeWorker(t *testing.T) {
 	}
 }
 
+func TestServerCmd_IngestWorkerProbesStorageBeforeDatabase(t *testing.T) {
+	mediaDir := filepath.Join(t.TempDir(), "missing-media")
+	configText := strings.Replace(serverCmdTestConfig, "media_dir: /mnt/media", "media_dir: "+mediaDir, 1)
+	path := writeServerTestConfig(t, configText)
+
+	err := runServerCmdForTest(t, path, "--roles", "worker", "--sites", "tokyo", "--queues=ingest")
+	if err == nil {
+		t.Fatal("missing media_dir should fail before the database connection")
+	}
+	if !strings.Contains(err.Error(), "validating ingest storage") {
+		t.Errorf("err = %v, want ingest storage probe error", err)
+	}
+	if strings.Contains(err.Error(), "connecting to database") {
+		t.Errorf("err = %v: database connection was attempted before the ingest storage probe", err)
+	}
+}
+
+// TestServerCmd_IngestWorkerProbeSucceedsWithReadOnlyMediaRoot は、media_dir の
+// root が実行ユーザーで書けず sites/ 配下だけ書ける構成（fsGroup が root にしか
+// 効かない CSI ドライバ。deploy/k8s/base/media-pvc.yaml の「未解決: マウントの
+// 所有権」参照）でも起動できることを固定する。probe が media_dir の root へ
+// 書く実装に戻すと、この構成では実際に ingest が書く場所には触れないのに
+// probe だけが root への書き込み権限を要求し、fail-fast そのものが偽陽性で
+// worker を CrashLoop させる。
+func TestServerCmd_IngestWorkerProbeSucceedsWithReadOnlyMediaRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits only")
+	}
+	mediaDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(mediaDir, "sites"), 0o755); err != nil {
+		t.Fatalf("creating sites dir: %v", err)
+	}
+	if err := os.Chmod(mediaDir, 0o555); err != nil {
+		t.Fatalf("making media_dir root read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(mediaDir, 0o755) })
+	if probe := filepath.Join(mediaDir, "root-write-probe"); os.WriteFile(probe, []byte("x"), 0o644) == nil {
+		_ = os.Remove(probe)
+		t.Skip("running as a user that bypasses permission bits (e.g. root)")
+	}
+
+	configText := strings.Replace(serverCmdTestConfig, "media_dir: /mnt/media", "media_dir: "+mediaDir, 1)
+	path := writeServerTestConfig(t, configText)
+
+	err := runServerCmdForTest(t, path, "--roles", "worker", "--sites", "tokyo", "--queues=ingest")
+	if err == nil {
+		t.Fatal("到達不能な DB を指しているので error を期待したが nil だった")
+	}
+	if !strings.Contains(err.Error(), "connecting to database") {
+		t.Errorf("err = %v, want the ingest storage probe to succeed (root read-only, sites/ writable) and fail at the DB instead", err)
+	}
+}
+
 // **--soft-stop-timeout の検査が RunE の配線に載っていること**（ロール検査が
 // DB より前に効く）。
 //
@@ -254,7 +308,11 @@ func TestServerCmd_SoftStopTimeoutRequiresWorkerRoleInRunE(t *testing.T) {
 	}
 
 	// 反対方向: worker ロールなら検査を通り、DB まで到達する。
-	err = runServerCmdForTest(t, path,
+	// worker が ingest を購読する場合は media_dir の起動 probe も通す必要がある。
+	workerConfig := strings.Replace(serverCmdTestConfig,
+		"media_dir: /mnt/media", "media_dir: "+t.TempDir(), 1)
+	workerPath := writeServerTestConfig(t, workerConfig)
+	err = runServerCmdForTest(t, workerPath,
 		"--roles", "worker", "--sites", "tokyo", "--soft-stop-timeout", "5m")
 	if err == nil {
 		t.Fatal("到達不能な DB を指しているので error を期待したが nil だった")

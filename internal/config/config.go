@@ -240,6 +240,12 @@ func isAbsoluteURL(s string) bool {
 }
 
 // StorageConfig はメディアファイルの保存先設定。
+//
+// MediaDir は ingest の強いファイルシステム契約（file fsync、Close のエラー報告、
+// 同一 FS 内の atomic rename、rename 後の親ディレクトリ fsync）を満たす root に
+// 限る。worker は ingest キューを購読するとき起動時に操作プローブを行うが、
+// パス文字列から FS の種類を推測しない。geesefs / s3fs / Mountpoint のような
+// FUSE S3 を原本 ingest 先には使わず、派生物専用の領域でのみ使う。
 type StorageConfig struct {
 	MediaDir   string `yaml:"media_dir"`
 	ScratchDir string `yaml:"scratch_dir"`
