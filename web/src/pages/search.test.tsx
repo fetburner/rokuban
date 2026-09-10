@@ -422,6 +422,17 @@ function renderPage(initialEntries: string[] = ['/search']) {
 }
 
 /**
+ * 検索結果の予約列は `ProgramRow` の開閉規則に従う。ユニットテストでは CSS の幅を
+ * 測れないが、実ブラウザと同じく行を展開してから予約列の操作を行う。
+ */
+async function expandProgramRow(row: HTMLElement) {
+  const toggle = row.querySelector('button[aria-expanded]')
+  if (!(toggle instanceof HTMLButtonElement)) throw new Error('番組行の展開ボタンが見つからない')
+  await userEvent.click(toggle)
+  await waitFor(() => expect(toggle).toHaveAttribute('aria-expanded', 'true'))
+}
+
+/**
  * addKeyword はテキスト条件の 1 行目に値を入れる（既存の唯一の条件として使う
  * ヘルパー。2 行目以降を足すテストは別に「条件を追加」を明示的に押す）。
  *
@@ -957,7 +968,7 @@ describe('SearchPage', () => {
     await userEvent.click(screen.getByRole('button', { name: '検索' }))
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
-    expect(screen.getByText('1 件（番組 ID 順）')).toBeInTheDocument()
+    expect(screen.getByText('1 件')).toBeInTheDocument()
     expect(screen.queryByText('深夜ドラマ')).not.toBeInTheDocument()
     // サービス名と放送時間も番組リストと同じ語彙で出る（サービス名は
     // 絞り込みチップにも出るので、結果一覧の中に限って探す）
@@ -977,7 +988,7 @@ describe('SearchPage', () => {
     await addKeyword('ニュース')
     await userEvent.click(screen.getByRole('button', { name: '検索' }))
 
-    expect(await screen.findByRole('status')).toHaveTextContent('1 件（番組 ID 順）')
+    expect(await screen.findByRole('status')).toHaveTextContent('1 件')
   })
 
   it('チップで選んだ条件がリクエストに乗る', async () => {
@@ -1077,16 +1088,35 @@ describe('SearchPage', () => {
     // 条件なしの検索は「全番組」という正しい問い。止めない
     await userEvent.click(screen.getByRole('button', { name: '検索' }))
 
-    expect(await screen.findByText('37 件（番組 ID 順）— 30 件を表示')).toBeInTheDocument()
+    expect(await screen.findByText('37 件 — 30 件を表示')).toBeInTheDocument()
     expect(await screen.findByText('番組 1')).toBeInTheDocument()
-    // programId 昇順なので、詰め物のあとに来る 2 件は最初のページに入らない
+    // 開始時刻順でも、詰め物のあとに来る 2 件は最初のページに入らない
     expect(screen.queryByText('ニュース7')).not.toBeInTheDocument()
 
     await userEvent.click(screen.getByRole('button', { name: 'さらに表示' }))
 
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
-    expect(screen.getByText('37 件（番組 ID 順）')).toBeInTheDocument()
+    expect(screen.getByText('37 件')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'さらに表示' })).not.toBeInTheDocument()
+  })
+
+  it('検索結果を開始時刻順に並べ、日付が変わる箇所にヘッダを出す', async () => {
+    const early = program(900, 1024, '時刻が早い番組')
+    early.startAt = new Date(origin - 24 * 60 * 60_000).toISOString()
+    early.endAt = new Date(origin - 24 * 60 * 60_000 + early.durationMs).toISOString()
+    stubApi({ extraPrograms: [early] })
+    renderPage()
+
+    await waitForServiceChip()
+    await userEvent.click(screen.getByRole('button', { name: '検索' }))
+
+    const results = await screen.findByTestId('search-results')
+    const rows = within(results).getAllByRole('listitem')
+    expect(within(rows[0] as HTMLElement).getByText('時刻が早い番組')).toBeInTheDocument()
+    expect(within(results).getAllByTestId('search-result-date-heading')).toHaveLength(4)
+
+    // 最初の 30 件を時刻順に切るため、高い programId の番組でも先頭ページに入る。
+    expect(screen.queryByRole('button', { name: 'さらに表示' })).toBeInTheDocument()
   })
 
   it('検索レスポンスの表示情報だけで行を描画し、番組詳細を取得しない', async () => {
@@ -1097,7 +1127,7 @@ describe('SearchPage', () => {
     await userEvent.click(screen.getByRole('button', { name: '検索' }))
 
     // 検索結果が持つ表示情報だけで行が描画される。
-    expect(await screen.findByText('1 件（番組 ID 順）')).toBeInTheDocument()
+    expect(await screen.findByText('1 件')).toBeInTheDocument()
     expect(await screen.findByText('幽霊')).toBeInTheDocument()
     expect(programDetailRequests).toHaveLength(0)
   })
@@ -1742,7 +1772,9 @@ describe('検索結果から単発予約（issue #684）', () => {
     const results = within(await screen.findByTestId('search-results'))
     const row = results.getByText('ニュース7').closest('li')
     expect(row).not.toBeNull()
-    const reserveButton = within(row as HTMLElement).getByRole('button', { name: '予約' })
+    const rowElement = row as HTMLElement
+    await expandProgramRow(rowElement)
+    const reserveButton = within(rowElement).getByRole('button', { name: '予約' })
     expect(reserveButton).toBeDisabled()
 
     await userEvent.click(reserveButton)
@@ -1760,7 +1792,7 @@ describe('検索結果から単発予約（issue #684）', () => {
     await waitFor(() =>
       expect(screen.queryByText('予約状態の取得に失敗しました')).not.toBeInTheDocument(),
     )
-    await userEvent.click(within(row as HTMLElement).getByRole('button', { name: '予約' }))
+    await userEvent.click(within(rowElement).getByRole('button', { name: '予約' }))
     await waitFor(() => {
       expect(
         fetchMock.mock.calls.some((call) => {
@@ -1784,7 +1816,9 @@ describe('検索結果から単発予約（issue #684）', () => {
     const results = within(await screen.findByTestId('search-results'))
     const row = results.getByText('ニュース7').closest('li')
     expect(row).not.toBeNull()
-    await userEvent.click(within(row as HTMLElement).getByRole('button', { name: '予約' }))
+    const rowElement = row as HTMLElement
+    await expandProgramRow(rowElement)
+    await userEvent.click(within(rowElement).getByRole('button', { name: '予約' }))
 
     await waitFor(() => {
       const intentCall = fetchMock.mock.calls.find((call) => {
@@ -1799,7 +1833,7 @@ describe('検索結果から単発予約（issue #684）', () => {
       expect(JSON.parse(String((intentCall[1] as RequestInit).body))).toEqual({ action: 'record' })
     })
 
-    expect(within(row as HTMLElement).getByRole('button', { name: '取消' })).toBeInTheDocument()
+    expect(within(rowElement).getByRole('button', { name: '取消' })).toBeInTheDocument()
   })
 
   it('既存の予約を結果行から取消し、トーストの Undo で元に戻せる', async () => {
@@ -1813,6 +1847,7 @@ describe('検索結果から単発予約（issue #684）', () => {
     const row = results.getByText('ニュース7').closest('li')
     expect(row).not.toBeNull()
     const rowElement = row as HTMLElement
+    await expandProgramRow(rowElement)
 
     await userEvent.click(within(rowElement).getByRole('button', { name: '取消' }))
     expect(await screen.findByText('予約を取消しました')).toBeInTheDocument()
@@ -1890,7 +1925,7 @@ describe('複数サイトの検索結果（issue #531）', () => {
       endAt: new Date(origin + 1_800_000).toISOString(),
       durationMs: 1_800_000,
       name: `${name}（${site}）`,
-      description: '',
+      description: `説明（${site}）`,
       genres: [0],
       isFree: true,
     }
@@ -1937,16 +1972,6 @@ describe('複数サイトの検索結果（issue #531）', () => {
         return Promise.resolve(
           jsonResponse([
             {
-              site: siteA,
-              programId: programA.programId,
-              networkId: programA.networkId,
-              serviceId: programA.serviceId,
-              startAt: programA.startAt,
-              durationMs: programA.durationMs,
-              name: programA.name,
-              isFree: programA.isFree,
-            },
-            {
               site: siteB,
               programId: programB.programId,
               networkId: programB.networkId,
@@ -1955,6 +1980,16 @@ describe('複数サイトの検索結果（issue #531）', () => {
               durationMs: programB.durationMs,
               name: programB.name,
               isFree: programB.isFree,
+            },
+            {
+              site: siteA,
+              programId: programA.programId,
+              networkId: programA.networkId,
+              serviceId: programA.serviceId,
+              startAt: programA.startAt,
+              durationMs: programA.durationMs,
+              name: programA.name,
+              isFree: programA.isFree,
             },
           ]),
         )
@@ -1983,7 +2018,7 @@ describe('複数サイトの検索結果（issue #531）', () => {
     expect(await screen.findByText('ニュース（takamatsu）')).toBeInTheDocument()
 
     // 件数（値札の母数）は畳まず 2 行のまま。
-    expect(screen.getByText('2 件（番組 ID 順）')).toBeInTheDocument()
+    expect(screen.getByText('2 件')).toBeInTheDocument()
 
     // 行ごとのサービス名は自サイトの登録から解決される（union）。
     // `within` で結果一覧に絞る --- 「局A」はチャンネル条件のチップにも
@@ -2004,6 +2039,33 @@ describe('複数サイトの検索結果（issue #531）', () => {
     )
     expect(duplicateKeyWarning).toBe(false)
     consoleError.mockRestore()
+  })
+
+  it('同じ programId の行を展開すると site ごとに固有の詳細領域と説明を持つ', async () => {
+    stubMultiSiteApi()
+    renderPage()
+
+    await openSearchDetails()
+    await screen.findByRole('button', { name: '局A' })
+    await userEvent.click(screen.getByRole('button', { name: '検索' }))
+    await screen.findByText('ニュース（default）')
+
+    const rows = within(screen.getByTestId('search-results')).getAllByRole('listitem')
+    expect(rows).toHaveLength(2)
+    await expandProgramRow(rows[0] as HTMLElement)
+    await expandProgramRow(rows[1] as HTMLElement)
+
+    expect(rows[0]?.querySelector('button[aria-expanded]')).toHaveAttribute(
+      'aria-controls',
+      `program-row-detail-${siteA}-500`,
+    )
+    expect(rows[1]?.querySelector('button[aria-expanded]')).toHaveAttribute(
+      'aria-controls',
+      `program-row-detail-${siteB}-500`,
+    )
+    expect(document.querySelectorAll('[id^="program-row-detail-"]')).toHaveLength(2)
+    expect(await screen.findByText(`説明（${siteA}）`)).toBeInTheDocument()
+    expect(await screen.findByText(`説明（${siteB}）`)).toBeInTheDocument()
   })
 
   it('値札の件数は行数（= 予約数）で、programId で畳まない', async () => {
@@ -2035,6 +2097,8 @@ describe('複数サイトの検索結果（issue #531）', () => {
     expect(rows).toHaveLength(2)
     expect(within(rows[0]).getByText(siteA)).toBeInTheDocument()
     expect(within(rows[1]).getByText(siteB)).toBeInTheDocument()
+    await expandProgramRow(rows[0] as HTMLElement)
+    await expandProgramRow(rows[1] as HTMLElement)
     expect(within(rows[0]).getByRole('button', { name: '予約' })).toBeInTheDocument()
     expect(within(rows[1]).getByRole('button', { name: '取消' })).toBeInTheDocument()
 

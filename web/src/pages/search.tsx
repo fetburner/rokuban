@@ -21,12 +21,13 @@ import {
   ShortfallOverlapNote,
 } from '@/components/rule-form'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
+import { ProgramRow } from '@/components/program-row'
 import type { ReservationActions } from '@/components/program-list'
 import { Button } from '@/components/ui/button'
 import { programIdentity, useAllSitesServices } from '@/lib/all-sites-services'
 import { countProgramsInShortfall } from '@/lib/capacity'
 import { dayOrigin } from '@/lib/day-offset'
-import { formatDateTime, formatDuration } from '@/lib/format'
+import { dayKey, formatDate } from '@/lib/format'
 import {
   buildSearchRequest,
   draftCollapsedError,
@@ -100,7 +101,7 @@ export function SearchPage() {
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [visibleCount, setVisibleCount] = useState(pageSize)
   /**
-   * serviceById は結果行（`SearchResultRow`）のサービス名解決に使う。
+   * serviceById は検索結果の `ProgramRow` に表示するサービス名解決に使う。
    *
    * **`sites` が条件 UI に出た（issue #531）ので、検索結果は複数 site の行を
    * 含みうる。** 以前は検索が常に先頭 site 固定の単一 site にしか
@@ -348,7 +349,17 @@ export function SearchPage() {
    * 2 site でマッチすれば 2 予約になる）なので、件数を数えるところは常に
    * `matches.length` を使い、`programId` で重複排除しない（issue #531）。
    */
-  const matches = unwrap(search.data) ?? []
+  // `unwrap(...) ?? []` をそのまま置くと未検索・検索中のたびに空配列の参照が変わり、
+  // 下の並べ替え用 `useMemo` が毎レンダー走る。検索結果データの参照だけを依存にして
+  // その揺れを止める。
+  const matches = useMemo(() => unwrap(search.data) ?? [], [search.data])
+
+  /**
+   * 検索 API の応答順は表示順の契約ではない。全件を先に時刻順へ並べ替えてから
+   * `visibleCount` で切ることで、「さらに表示」の境界で時刻が巻き戻らないように
+   * する。同時刻は site と programId で決め、API の応答順に依存しない。
+   */
+  const orderedMatches = useMemo(() => [...matches].sort(compareSearchMatches), [matches])
 
   /**
    * costStatus は値札（`RuleCostSummary`）に渡す検索の状態。「未検索」（idle）と
@@ -615,17 +626,17 @@ export function SearchPage() {
             <p role="status" className="px-4 py-2 text-xs text-muted-foreground">
               {/* 件数は 1 つの文字列にする（JSX で連結するとテキストノードが分かれ、
                   読み上げも「37」「件」と切れる） */}
-              {visibleCount < matches.length
-                ? `${matches.length} 件（番組 ID 順）— ${visibleCount} 件を表示`
-                : `${matches.length} 件（番組 ID 順）`}
+              {visibleCount < orderedMatches.length
+                ? `${orderedMatches.length} 件 — ${visibleCount} 件を表示`
+                : `${orderedMatches.length} 件`}
             </p>
             <SearchResultList
-              matches={matches.slice(0, visibleCount)}
+              matches={orderedMatches.slice(0, visibleCount)}
               serviceById={serviceById}
               actions={reservationActions}
               showSite={sites.length > 1}
             />
-            {visibleCount < matches.length && (
+            {visibleCount < orderedMatches.length && (
               <div className="px-4 py-6">
                 <Button
                   type="button"
@@ -665,11 +676,18 @@ function SearchError({ error, onRetry }: { error: unknown; onRetry: () => void }
   )
 }
 
+function compareSearchMatches(a: ProgramSearchMatch, b: ProgramSearchMatch): number {
+  const startDifference = Date.parse(a.startAt) - Date.parse(b.startAt)
+  if (startDifference !== 0) return startDifference
+
+  if (a.site !== b.site) return a.site < b.site ? -1 : 1
+  return a.programId - b.programId
+}
+
 /**
- * SearchResultList は検索 API が返した表示用の行をそのまま描画する。
- *
- * 番組名・日時・サービス識別子・長さ・有料表示は検索結果に含まれるため、
- * `GET /api/sites/{site}/programs/{programId}` の N+1 は発生しない。
+ * SearchResultList は検索結果を開始時刻順に並べ、番組表と同じ日付ヘッダと
+ * `ProgramRow` を使って描画する。表示用の検索射影は `ProgramRow` の最小形を満たす
+ * ので、初期描画では番組詳細の取得を起こさず、行を展開したときだけ段階的に取得する。
  *
  * **key は `${site}:${programId}`。** 同一放送（同じ `programId`）が複数 site で
  * マッチすると行が複数出る（畳まない契約）ため、`programId` だけを key にすると
@@ -688,80 +706,37 @@ function SearchResultList({
 }) {
   return (
     <ul data-testid="search-results">
-      {matches.map((match) => (
-        <li key={`${match.site}:${match.programId}`}>
-          <SearchResultRow
-            program={match}
-            serviceName={serviceById.get(`${match.networkId}:${match.serviceId}`)?.name}
-            actions={actions}
-            showSite={showSite}
-          />
-        </li>
-      ))}
+      {matches.map((match, index) => {
+        const previous = matches[index - 1]
+        const showDateHeader = previous === undefined || dayKey(previous.startAt) !== dayKey(match.startAt)
+        const reserved = actions.reservedProgramIds.has(
+          programIdentity(match.site, match.programId),
+        )
+
+        return (
+          <li key={`${match.site}:${match.programId}`}>
+            {showDateHeader && (
+              <h2
+                data-testid="search-result-date-heading"
+                className="border-y border-border bg-muted/80 px-4 py-1.5 text-xs font-medium text-foreground"
+              >
+                {formatDate(match.startAt)}
+              </h2>
+            )}
+            <ProgramRow
+              program={match}
+              siteName={showSite ? match.site : undefined}
+              serviceName={serviceById.get(`${match.networkId}:${match.serviceId}`)?.name}
+              reserved={reserved}
+              pending={actions.isBusy(match)}
+              reservationStateUnknown={actions.reservationStateUnknown}
+              overlaps={actions.overlapsFor(match)}
+              onReserve={(overrides) => actions.reserve(match, overrides)}
+              onCancel={() => actions.cancel(match)}
+            />
+          </li>
+        )
+      })}
     </ul>
-  )
-}
-
-/**
- * SearchResultRow は結果 1 件。番組リスト（components/program-row.tsx）と、
- * サイト名・サービス名・放送時間（長さ）・有料表示というメタ情報の語彙および
- * メタ行の折り返し規則を揃えて描く。ただし検索結果は日時と予約ボタンを
- * 収める密な 1 行（`min-h-14`）なので、メタ行は `ProgramRow` の `text-sm`
- * ではなく `text-xs` にする。
- *
- * 右端の予約 / 取消ボタンは `ProgramRow` の展開やルール作成とは独立した
- * 単発操作で、既存の `useReservationActions` に委譲する。検索結果の行本体は
- * 引き続き非対話のままにして、予約操作のタップ領域だけを追加する。
- *
- * 時刻ではなく日時を出す。結果は programId 昇順（API の契約）で時刻順ではないため、
- * 番組リストのような日付ヘッダでは日付が繰り返し現れて意味を失う。
- */
-function SearchResultRow({
-  program,
-  serviceName,
-  actions,
-  showSite,
-}: {
-  program: ProgramSearchMatch
-  serviceName?: string
-  actions: ReservationActions
-  showSite: boolean
-}) {
-  const reserved = actions.reservedProgramIds.has(programIdentity(program.site, program.programId))
-  const pending = actions.isBusy(program)
-
-  return (
-    <div className="flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5">
-      <div className="w-20 shrink-0 text-sm">{formatDateTime(program.startAt)}</div>
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-sm">{program.name}</div>
-        <div
-          // e2e（web/e2e/search-mobile.mjs）が長いサービス名の実レイアウトで
-          // メタ行が 1 行に収まることを測る。クラス名で選ぶと、ユーティリティ
-          // クラスを移しただけで別の要素を測ったまま通ってしまうため、測定対象を
-          // この要素自身に固定する。
-          data-testid="search-result-meta"
-          className="flex items-center gap-2 text-xs text-muted-foreground"
-        >
-          {showSite && <span className="shrink-0">{program.site}</span>}
-          {serviceName && <span className="truncate">{serviceName}</span>}
-          <span className="shrink-0">{formatDuration(program.durationMs)}</span>
-          {!program.isFree && <span className="shrink-0">有料</span>}
-        </div>
-      </div>
-      <Button
-        type="button"
-        variant={reserved ? 'destructive' : 'default'}
-        size="sm"
-        disabled={pending || (!reserved && actions.reservationStateUnknown)}
-        onClick={() => {
-          if (reserved) actions.cancel(program)
-          else actions.reserve(program)
-        }}
-        className="min-h-11 min-w-11 shrink-0"
-      >
-        {reserved ? '取消' : '予約'}
-      </Button>
-    </div>
   )
 }

@@ -2,6 +2,15 @@ import type { ProgramOverlaps, Reservation } from '@/api/generated'
 import type { SiteProgram } from '@/lib/all-sites-services'
 
 /**
+ * 重なり判定に必要な番組の最小形。検索結果は `endAt` を持たないため、指定されて
+ * いなければ `startAt + durationMs` を終了時刻として使う。
+ */
+export type ProgramOverlapTarget = Pick<
+  SiteProgram,
+  'site' | 'programId' | 'startAt' | 'durationMs'
+> & { endAt?: string }
+
+/**
  * ReservationOverlapEntry は `deriveProgramOverlaps` が索引を引くための
  * 事前パース済み予約 1 件分。`useReservationActions` が `reservations` から
  * 1 回だけ作る（`web/src/lib/reservation-actions.ts` 参照）。`startMs` /
@@ -37,11 +46,13 @@ export type ReservationOverlapEntry = {
  * 受け取っていないため直す手段が無く、`state` が使える最良の近似。
  */
 export function deriveProgramOverlaps(
-  program: SiteProgram,
+  program: ProgramOverlapTarget,
   reservations: readonly ReservationOverlapEntry[],
 ): ProgramOverlaps {
   const programStartMs = new Date(program.startAt).getTime()
-  const programEndMs = new Date(program.endAt).getTime()
+  const programEndMs = new Date(
+    program.endAt ?? new Date(programStartMs + program.durationMs).toISOString(),
+  ).getTime()
   const overlapping = reservations.filter((reservation) => {
     if (reservation.site !== program.site) return false
     if (reservation.programId === program.programId) return false

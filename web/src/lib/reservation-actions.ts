@@ -236,7 +236,7 @@ export function useReservationActions(
   // 呼ぶと「既定のまま」という意味の無い override 行を作ってしまう
   // （不変条件 10）。UI 上は「予約」ボタン 1 回の操作に見せる（issue #132）。
   const reserve = (program: ReservableProgram, overrides?: ProgramOverridesInput) => {
-    // ボタンの disabled（`ProgramRow`/`SearchResultRow` 側）とは別に実行側でも
+    // ボタンの disabled（`ProgramRow` 側）とは別に実行側でも
     // 止める --- 呼び出し元が disabled の判定を誤って通す場合の二重の網。
     // `cancel`/`revive` は止めない: 取消は `reserved` 側の操作で、
     // `reserveBlocked` の対象にもならないためここには到達しない。

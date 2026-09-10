@@ -372,7 +372,7 @@ log('\n=== ② 細ポインタ: 展開パネル操作中も操作列が開いた
   }
 
   // 展開パネル内（`.group` の外）へマウスを移す。行ヘッダからは離れる。
-  const detail = page.locator(`#program-row-detail-${program.programId}`)
+  const detail = page.locator(`#program-row-detail-${SITE}-${program.programId}`)
   await detail.waitFor({ timeout: 5000 }).catch(() => {})
   const detailBox = await detail.boundingBox()
   if (detailBox) {
