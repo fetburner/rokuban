@@ -17,7 +17,7 @@ import (
 // media_dir/catalog/ の最新 catalog JSON を読み、コアメタデータ
 // （rules / recordings / media_assets / drop_stats / drop_positions / program_intents /
 // program_overrides）を DB に冪等 upsert する。catalog が無ければ storage を走査し、
-// 認識できる動画ファイルを素の asset として in-place 登録する。
+// `sites/{site}/` 前置を持つ認識可能な動画ファイルを素の asset として in-place 登録する。
 func newRescueCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "rescue",
@@ -26,21 +26,11 @@ func newRescueCmd() *cobra.Command {
 media_assets・ドロップ統計・手動意図/上書きを Postgres に冪等 upsert する
 （docs/storage.md §8、災害復旧）。
 
-catalog が無ければ media_dir を走査し、TS / M2TS / MP4 / MKV / WebM を
-既存位置のまま素の asset として登録する。再実行しても増殖しない。`,
+catalog が無ければ media_dir を走査し、sites/{site}/ 前置を持つ TS / M2TS /
+MP4 / MKV / WebM を既存位置のまま素の asset として登録する。前置の無いファイルは
+登録しない。再実行しても増殖しない。`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := loadConfig(cmd)
-			if err != nil {
-				return err
-			}
-
-			// --site の解決規則は enqueue / shadow-diff と共有する
-			// （resolveSiteFlag。issue #533）。catalog JSON からの復元は各行が
-			// 自分の site を持つので --site を使わないが、catalog を 1 世代も
-			// 復元できずストレージ走査に落ちたときは、走査対象ファイルが site を
-			// 持たない（sites/{site}/ 前置の無い、前置導入前の ingest）ケースの
-			// フォールバック先として使う（internal/catalog.classifySiteForRescuedFile）。
-			site, err := resolveSiteFlag(cmd, cfg.Registry())
 			if err != nil {
 				return err
 			}
@@ -54,12 +44,9 @@ catalog が無ければ media_dir を走査し、TS / M2TS / MP4 / MKV / WebM �
 			}
 			defer pool.Close()
 
-			return runRescue(ctx, pool, cfg.Storage.MediaDir, site, registryNames(cfg.Registry()), cmd.OutOrStdout())
+			return runRescue(ctx, pool, cfg.Storage.MediaDir, registryNames(cfg.Registry()), cmd.OutOrStdout())
 		},
 	}
-	cmd.Flags().String("site", "",
-		"対象サイト名（catalog が無くストレージ走査に落ちたとき、site 前置の無いファイルに使う。"+
-			"省略時: レジストリが 1 要素ならその 1 つ、2 要素以上なら必須）")
 	return cmd
 }
 
@@ -69,8 +56,8 @@ catalog が無ければ media_dir を走査し、TS / M2TS / MP4 / MKV / WebM �
 // registrySites は `mirakcs:` レジストリの site 名一覧
 // （catalog.RescueLatest 参照。ストレージ走査で見つけた sites/{site}/ 前置の
 // site がタイポかどうかの判定に使う）。
-func runRescue(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string, registrySites []string, out io.Writer) error {
-	result, err := catalog.RescueLatest(ctx, pool, mediaDir, site, registrySites)
+func runRescue(ctx context.Context, pool *pgxpool.Pool, mediaDir string, registrySites []string, out io.Writer) error {
+	result, err := catalog.RescueLatest(ctx, pool, mediaDir, registrySites)
 	if err != nil {
 		return err
 	}

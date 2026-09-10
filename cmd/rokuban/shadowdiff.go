@@ -47,7 +47,7 @@ func newShadowDiffCmd() *cobra.Command {
 			}
 
 			// EPGStation は東京の 1 台なので、比較対象の site を --site で名指し
-			// する（issue #533）。解決規則は enqueue / rescue と共有
+			// する（issue #533）。解決規則は enqueue と共有
 			// （resolveSiteFlag: 未指定かつレジストリ 1 要素ならその 1 つ、
 			// 2 要素以上なら必須。--site の値はレジストリ照合し、タイポを無音で
 			// 成功させない）。

@@ -1,7 +1,9 @@
 package catalog
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +14,7 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-func TestRescueLatest_NoCatalogScansBareAssetsIdempotently(t *testing.T) {
+func TestRescueLatest_NoCatalogScansSitePrefixedAssetsIdempotently(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	at := time.Date(2026, 7, 30, 3, 4, 5, 0, time.UTC)
@@ -30,14 +32,14 @@ func TestRescueLatest_NoCatalogScansBareAssetsIdempotently(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("archive/show.m2ts", "original bytes")
-	write("archive/movie.mp4", "encoded bytes")
-	write("archive/.rokuban-ingest-deadbeef.m2ts", "partial bytes")
-	write("archive/notes.txt", "not media")
+	write("sites/default/archive/show.m2ts", "original bytes")
+	write("sites/default/archive/movie.mp4", "encoded bytes")
+	write("sites/default/archive/.rokuban-ingest-deadbeef.m2ts", "partial bytes")
+	write("sites/default/archive/notes.txt", "not media")
 	// catalog/ は拡張子が動画でも必ず除外する。
 	write("catalog/old-backup.mp4", "not a media asset")
 
-	result, err := RescueLatest(context.Background(), pool, mediaDir, "default", []string{"default"})
+	result, err := RescueLatest(context.Background(), pool, mediaDir, []string{"default"})
 	if err != nil {
 		t.Fatalf("RescueLatest without catalog: %v", err)
 	}
@@ -75,11 +77,11 @@ func TestRescueLatest_NoCatalogScansBareAssetsIdempotently(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("registered rows = %+v", got)
 	}
-	if got[0].relPath != "archive/movie.mp4" || got[0].kind != "encoded" ||
+	if got[0].relPath != "sites/default/archive/movie.mp4" || got[0].kind != "encoded" ||
 		got[0].profile != "rescue-mp4" || got[0].title != "movie" || got[0].size != 13 {
 		t.Errorf("mp4 row = %+v", got[0])
 	}
-	if got[1].relPath != "archive/show.m2ts" || got[1].kind != "original" ||
+	if got[1].relPath != "sites/default/archive/show.m2ts" || got[1].kind != "original" ||
 		got[1].profile != "" || got[1].title != "show" || got[1].size != 14 {
 		t.Errorf("m2ts row = %+v", got[1])
 	}
@@ -93,7 +95,7 @@ func TestRescueLatest_NoCatalogScansBareAssetsIdempotently(t *testing.T) {
 	}
 
 	// 再実行で同じ合成 identity / asset tuple を upsert し、増殖しない。
-	if _, err := RescueLatest(context.Background(), pool, mediaDir, "default", []string{"default"}); err != nil {
+	if _, err := RescueLatest(context.Background(), pool, mediaDir, []string{"default"}); err != nil {
 		t.Fatalf("second RescueLatest: %v", err)
 	}
 	var recordingCount, assetCount int
@@ -108,7 +110,7 @@ func TestRescueLatest_NoCatalogScansBareAssetsIdempotently(t *testing.T) {
 	}
 
 	// in-place 登録はファイル本体を変更しない。
-	body, err := os.ReadFile(filepath.Join(mediaDir, "archive", "show.m2ts"))
+	body, err := os.ReadFile(filepath.Join(mediaDir, "sites", "default", "archive", "show.m2ts"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,10 +119,52 @@ func TestRescueLatest_NoCatalogScansBareAssetsIdempotently(t *testing.T) {
 	}
 }
 
+func TestRescueLatest_NoCatalogSkipsBareAssets(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+
+	for _, rel := range []string{"archive/old.m2ts", "archive/old.mp4"} {
+		path := filepath.Join(mediaDir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("old bytes"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var logBuf bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	result, err := RescueLatest(context.Background(), pool, mediaDir, []string{"default"})
+	if err != nil {
+		t.Fatalf("RescueLatest: %v", err)
+	}
+	if result.Recordings != 0 || result.MediaAssets != 0 {
+		t.Fatalf("scan result = %+v, want no rescued rows", result)
+	}
+
+	var recordings, assets int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM recordings`).Scan(&recordings); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets`).Scan(&assets); err != nil {
+		t.Fatal(err)
+	}
+	if recordings != 0 || assets != 0 {
+		t.Errorf("database rows = recordings %d, assets %d; want 0/0", recordings, assets)
+	}
+	if got := strings.Count(logBuf.String(), "skipping file without a sites/{site}/ prefix"); got != 2 {
+		t.Errorf("bare-file warnings = %d, want one warning per bare file", got)
+	}
+}
+
 func TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
-	path := filepath.Join(mediaDir, "archive", "show.m2ts")
+	path := filepath.Join(mediaDir, "sites", "default", "archive", "show.m2ts")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +177,7 @@ func TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	if _, err := RescueLatest(context.Background(), pool, mediaDir, "default", []string{"default"}); err != nil {
+	if _, err := RescueLatest(context.Background(), pool, mediaDir, []string{"default"}); err != nil {
 		t.Fatalf("first RescueLatest: %v", err)
 	}
 	var recordingID, assetID int64
@@ -141,7 +185,7 @@ func TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges(t *testing.T) 
 		SELECT r.id, a.id
 		FROM recordings r JOIN media_assets a ON a.recording_id = r.id
 		WHERE a.rel_path = $1
-	`, "archive/show.m2ts").Scan(&recordingID, &assetID); err != nil {
+	`, "sites/default/archive/show.m2ts").Scan(&recordingID, &assetID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -156,7 +200,7 @@ func TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	if _, err := RescueLatest(context.Background(), pool, mediaDir, "default", []string{"default"}); err != nil {
+	if _, err := RescueLatest(context.Background(), pool, mediaDir, []string{"default"}); err != nil {
 		t.Fatalf("second RescueLatest: %v", err)
 	}
 
@@ -186,7 +230,7 @@ func TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges(t *testing.T) 
 		SELECT a.id, a.recording_id, a.state, a.deleted_at IS NULL, r.program_start_at
 		FROM media_assets a JOIN recordings r ON r.id = a.recording_id
 		WHERE a.rel_path = $1
-	`, "archive/show.m2ts").Scan(
+	`, "sites/default/archive/show.m2ts").Scan(
 		&gotAssetID, &gotRecordingID, &state, &deletedAtIsNull, &programStartAt,
 	); err != nil {
 		t.Fatal(err)
@@ -205,14 +249,14 @@ func TestRescueLatest_ScansMediaDirSymlinkAndSkipsCatalog(t *testing.T) {
 	baseDir := t.TempDir()
 	realMediaDir := filepath.Join(baseDir, "real-media")
 	mediaDir := filepath.Join(baseDir, "media")
-	if err := os.MkdirAll(filepath.Join(realMediaDir, "archive"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(realMediaDir, "sites", "default", "archive"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(realMediaDir, mediaDir); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := os.WriteFile(filepath.Join(realMediaDir, "archive", "show.m2ts"), []byte("original bytes"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(realMediaDir, "sites", "default", "archive", "show.m2ts"), []byte("original bytes"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(realMediaDir, "catalog"), 0o755); err != nil {
@@ -222,7 +266,7 @@ func TestRescueLatest_ScansMediaDirSymlinkAndSkipsCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := RescueLatest(context.Background(), pool, mediaDir, "default", []string{"default"})
+	result, err := RescueLatest(context.Background(), pool, mediaDir, []string{"default"})
 	if err != nil {
 		t.Fatalf("RescueLatest through media_dir symlink: %v", err)
 	}
@@ -231,7 +275,7 @@ func TestRescueLatest_ScansMediaDirSymlinkAndSkipsCatalog(t *testing.T) {
 	}
 
 	var count int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets WHERE rel_path = 'archive/show.m2ts'`).Scan(&count); err != nil {
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets WHERE rel_path = 'sites/default/archive/show.m2ts'`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 {
@@ -247,7 +291,7 @@ func TestRescueLatest_ScansMediaDirSymlinkAndSkipsCatalog(t *testing.T) {
 
 func TestRescueLatest_ReturnsErrorWhenMediaDirCannotBeResolved(t *testing.T) {
 	missingMediaDir := filepath.Join(t.TempDir(), "missing-media")
-	_, err := RescueLatest(context.Background(), nil, missingMediaDir, "default", []string{"default"})
+	_, err := RescueLatest(context.Background(), nil, missingMediaDir, []string{"default"})
 	if err == nil {
 		t.Fatal("RescueLatest with missing media_dir should return an error")
 	}
@@ -264,13 +308,8 @@ func TestRescueLatest_ReturnsErrorWhenMediaDirCannotBeResolved(t *testing.T) {
 
 // アーカイブは全 site で共有される単一のストレージなので、`sites/{site}/` 前置
 // ファイルは前置を持つ他 site の分も同じスキャンで見つかる。前置ありのファイルは
-// prefix から site を決め、`--site` の値（引数の "tokyo"）と食い違っても
-// （takamatsu のファイル）prefix を正として復元する --- 除外すると孤児回収の
-// 通常の掃除対象になり 2 週間ほどで実削除されてしまう（docs/storage/rescue.md）。
-// 前置の無いファイルは前置導入前（単一 site 時代）の ingest なので `--site` に
-// フォールバックする。レジストリに無い site の前置（`junkdir`）も typo の疑いは
-// あるが復元は止めない --- 一覧・削除は site 非依存なので事後に UI から消せる
-// （issue #533 の「含むもの」3）。
+// prefix から site を決め、レジストリに無い site の前置（`junkdir`）も typo の疑いは
+// あるが復元は止めない。前置の無いファイルは site を決められないため登録しない。
 func TestRescueLatest_ScansSitePrefixedAssetsUsingThePrefixSite(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
@@ -293,16 +332,21 @@ func TestRescueLatest_ScansSitePrefixedAssetsUsingThePrefixSite(t *testing.T) {
 	write("sites/takamatsu/movie.mp4")
 	write("sites/junkdir/typo.m2ts")
 	write("legacy/old.m2ts")
+	write("legacy/old-2.m2ts")
 
-	// `rescue --site tokyo` を模す: 呼び出し側は "tokyo" しか渡さないが、
+	var logBuf bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
 	// takamatsu / junkdir 前置のファイルもそれぞれの site として復元されなければ
 	// ならない。registrySites には junkdir を含めない（レジストリに無い typo の形）。
-	result, err := RescueLatest(context.Background(), pool, mediaDir, "tokyo", []string{"tokyo", "takamatsu"})
+	result, err := RescueLatest(context.Background(), pool, mediaDir, []string{"tokyo", "takamatsu"})
 	if err != nil {
 		t.Fatalf("RescueLatest: %v", err)
 	}
-	if result.Recordings != 4 || result.MediaAssets != 4 {
-		t.Fatalf("result = %+v, want 4 recordings/assets", result)
+	if result.Recordings != 3 || result.MediaAssets != 3 {
+		t.Fatalf("result = %+v, want 3 recordings/assets", result)
 	}
 
 	siteOf := func(t *testing.T, relPath string) string {
@@ -322,50 +366,53 @@ func TestRescueLatest_ScansSitePrefixedAssetsUsingThePrefixSite(t *testing.T) {
 		t.Errorf("site for sites/tokyo/show.m2ts = %q, want tokyo", got)
 	}
 	if got := siteOf(t, "sites/takamatsu/movie.mp4"); got != "takamatsu" {
-		t.Errorf("site for sites/takamatsu/movie.mp4 = %q, want takamatsu (prefix must win over --site=tokyo)", got)
+		t.Errorf("site for sites/takamatsu/movie.mp4 = %q, want takamatsu", got)
 	}
 	if got := siteOf(t, "sites/junkdir/typo.m2ts"); got != "junkdir" {
 		t.Errorf("site for sites/junkdir/typo.m2ts = %q, want junkdir "+
 			"(unregistered prefix site still restores, just under a different log level)", got)
 	}
-	if got := siteOf(t, "legacy/old.m2ts"); got != "tokyo" {
-		t.Errorf("site for legacy/old.m2ts = %q, want tokyo (no prefix, falls back to --site)", got)
+	var count int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets WHERE rel_path = 'legacy/old.m2ts'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Errorf("bare rescue assets = %d, want 0", count)
+	}
+	if got := strings.Count(logBuf.String(), "skipping file without a sites/{site}/ prefix"); got != 2 {
+		t.Errorf("bare-file warnings = %d, want one warning per bare file", got)
 	}
 }
 
-// classifySiteForRescuedFile はファイルごとに1回だけ判定される非自明な分岐
-// （no-prefix フォールバック / 前置一致 / 前置が flag と食い違う / さらにその
-// 前置がレジストリに無い、の 4 通り）を持つ純粋関数なので、テーブルテストで
-// 直接固定する。境界ケース（`sites/` 単体・`sites/x.m2ts`・二重スラッシュ・
-// 先頭以外に現れる `sites/`・大文字・先頭スラッシュ）はすべてフォールバックに
-// 倒れることを固定する --- filepath.WalkDir + filepath.Rel を経由した relPath
-// では作れない形だが、関数単体としての契約を決めておく。
+// classifySiteForRescuedFile はファイルごとに1回だけ判定される純粋関数で、
+// 有効な前置が無い場合は空の site を返す。境界ケース（`sites/` 単体・
+// `sites/x.m2ts`・二重スラッシュ・先頭以外に現れる `sites/`・大文字・先頭
+// スラッシュ）はすべて「登録不可」に倒れることを固定する。
 func TestClassifySiteForRescuedFile(t *testing.T) {
 	registrySites := []string{"tokyo", "takamatsu"}
 	tests := []struct {
-		name                           string
-		relPath, flagSite              string
-		wantSite                       string
-		wantCrossSite, wantUnknownSite bool
+		name            string
+		relPath         string
+		wantSite        string
+		wantUnknownSite bool
 	}{
-		{"no prefix falls back to flag", "legacy/old.m2ts", "tokyo", "tokyo", false, false},
-		{"prefix matches flag", "sites/tokyo/x.m2ts", "tokyo", "tokyo", false, false},
-		{"prefix differs, known site", "sites/takamatsu/x.m2ts", "tokyo", "takamatsu", true, false},
-		{"prefix differs, unknown site", "sites/junkdir/x.m2ts", "tokyo", "junkdir", true, true},
-		{"bare sites dir falls back", "sites/", "tokyo", "tokyo", false, false},
-		{"sites/ with no site segment falls back", "sites/x.m2ts", "tokyo", "tokyo", false, false},
-		{"empty site segment falls back", "sites//a.ts", "tokyo", "tokyo", false, false},
-		{"sites/ not at path start falls back", "a/sites/tokyo/x.ts", "tokyo", "tokyo", false, false},
-		{"case-sensitive prefix falls back", "Sites/tokyo/x.ts", "tokyo", "tokyo", false, false},
-		{"leading slash falls back", "/sites/tokyo/x.ts", "tokyo", "tokyo", false, false},
+		{"no prefix has no site", "legacy/old.m2ts", "", false},
+		{"prefix matches known site", "sites/tokyo/x.m2ts", "tokyo", false},
+		{"known prefix does not need a flag", "sites/takamatsu/x.m2ts", "takamatsu", false},
+		{"unknown prefix is retained", "sites/junkdir/x.m2ts", "junkdir", true},
+		{"bare sites dir has no site", "sites/", "", false},
+		{"sites/ with no site segment has no site", "sites/x.m2ts", "", false},
+		{"empty site segment has no site", "sites//a.ts", "", false},
+		{"sites/ not at path start has no site", "a/sites/tokyo/x.ts", "", false},
+		{"case-sensitive prefix has no site", "Sites/tokyo/x.ts", "", false},
+		{"leading slash has no site", "/sites/tokyo/x.ts", "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			site, crossSite, unknownSite := classifySiteForRescuedFile(tt.relPath, tt.flagSite, registrySites)
-			if site != tt.wantSite || crossSite != tt.wantCrossSite || unknownSite != tt.wantUnknownSite {
-				t.Errorf("classifySiteForRescuedFile(%q, %q) = (%q, %v, %v), want (%q, %v, %v)",
-					tt.relPath, tt.flagSite, site, crossSite, unknownSite,
-					tt.wantSite, tt.wantCrossSite, tt.wantUnknownSite)
+			site, unknownSite := classifySiteForRescuedFile(tt.relPath, registrySites)
+			if site != tt.wantSite || unknownSite != tt.wantUnknownSite {
+				t.Errorf("classifySiteForRescuedFile(%q) = (%q, %v), want (%q, %v)",
+					tt.relPath, site, unknownSite, tt.wantSite, tt.wantUnknownSite)
 			}
 		})
 	}

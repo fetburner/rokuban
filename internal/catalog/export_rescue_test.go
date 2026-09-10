@@ -74,7 +74,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	assetID, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
 		RecordingID: recID,
 		Kind:        "original",
-		RelPath:     "20260729/120000_ニュース_1024.m2ts",
+		RelPath:     "sites/default/20260729/120000_ニュース_1024.m2ts",
 		SizeBytes:   1_000_000,
 	})
 	if err != nil {
@@ -239,7 +239,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 
 	// --- rescue ---
 	// 実際の入口（RescueLatest）を通す: 世代の完成判定 → 選択 → 復元まで。
-	result, err := RescueLatest(ctx, pool, mediaDir, "default", []string{"default"})
+	result, err := RescueLatest(ctx, pool, mediaDir, []string{"default"})
 	if err != nil {
 		t.Fatalf("RescueLatest: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}
 
 	// --- idempotent second pass ---
-	result2, err := RescueLatest(ctx, pool, mediaDir, "default", []string{"default"})
+	result2, err := RescueLatest(ctx, pool, mediaDir, []string{"default"})
 	if err != nil {
 		t.Fatalf("RescueLatest second: %v", err)
 	}
@@ -531,7 +531,7 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 	if _, err := Write(mediaDir, lastDoc, 7); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	if _, err := RescueLatest(ctx, pool, mediaDir, "default", []string{"default"}); err != nil {
+	if _, err := RescueLatest(ctx, pool, mediaDir, []string{"default"}); err != nil {
 		t.Fatalf("RescueLatest after concurrent export: %v", err)
 	}
 }

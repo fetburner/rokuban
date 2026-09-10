@@ -36,7 +36,7 @@ func TestRunRescue_FallsBackAndReportsSkippedGeneration(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runRescue(context.Background(), pool, mediaDir, "default", []string{"default"}, &out); err != nil {
+	if err := runRescue(context.Background(), pool, mediaDir, []string{"default"}, &out); err != nil {
 		t.Fatalf("runRescue: %v", err)
 	}
 	got := out.String()
@@ -55,7 +55,7 @@ func TestRunRescue_DistinguishesNoCatalogFromNoCompleteGeneration(t *testing.T) 
 
 	t.Run("no catalog at all", func(t *testing.T) {
 		var out bytes.Buffer
-		if err := runRescue(context.Background(), pool, t.TempDir(), "default", []string{"default"}, &out); err != nil {
+		if err := runRescue(context.Background(), pool, t.TempDir(), []string{"default"}, &out); err != nil {
 			t.Fatalf("runRescue: %v", err)
 		}
 		if !strings.Contains(out.String(), "catalog not found") {
@@ -71,7 +71,7 @@ func TestRunRescue_DistinguishesNoCatalogFromNoCompleteGeneration(t *testing.T) 
 		}
 
 		var out bytes.Buffer
-		if err := runRescue(context.Background(), pool, mediaDir, "default", []string{"default"}, &out); err != nil {
+		if err := runRescue(context.Background(), pool, mediaDir, []string{"default"}, &out); err != nil {
 			t.Fatalf("runRescue: %v", err)
 		}
 		if !strings.Contains(out.String(), "no complete catalog generation") {
@@ -101,24 +101,9 @@ storage:
   media_dir: /mnt/media
 `
 
-const rescueCmdTestConfigOneSite = `
-db:
-  host: 127.0.0.1
-  port: 1
-  user: rokuban
-  password: secret
-  database: rokuban
-mirakcs:
-  - site: tokyo
-    url: http://mirakc-tokyo:40772
-storage:
-  media_dir: /mnt/media
-`
-
 // runRescueCmdForTest は rescue サブコマンドの RunE を実際に走らせる。
-// 単体の resolveSiteFlag だけを直接呼ぶテストでは RunE の配線（--site フラグの
-// 登録・requireSingleSite からの置き換え）が検証できない（server_test.go の
-// runServerCmdForTest と同じ理由）。
+// コマンドに廃止済みの `--site` を渡したとき、RunE まで進まず Cobra の
+// unknown-flag エラーになることもこの入口で検証する。
 func runRescueCmdForTest(t *testing.T, configPath string, args ...string) error {
 	t.Helper()
 	cmd := newRescueCmd()
@@ -131,60 +116,31 @@ func runRescueCmdForTest(t *testing.T, configPath string, args ...string) error 
 	return cmd.Execute()
 }
 
-// mirakcs: 2 要素 + --site tokyo は site 解決を通り、DB 接続まで進むこと
-// （issue #533 の受け入れ基準 1）。
-func TestRescueCmd_SiteFlag_MultiSiteRegistryResolvesNamedSite(t *testing.T) {
+// `rescue` は site 非依存になったため、複数サイトのレジストリでも `--site` 無しで
+// DB まで進む。
+func TestRescueCmd_MultiSiteRegistryDoesNotRequireSiteFlag(t *testing.T) {
+	path := writeServerTestConfig(t, rescueCmdTestConfigTwoSites)
+	err := runRescueCmdForTest(t, path)
+	if err == nil {
+		t.Fatal("到達不能な DB を指しているので error を期待したが nil だった")
+	}
+	if !strings.Contains(err.Error(), "connecting to database") {
+		t.Errorf("err = %v, want to fail at the DB stage", err)
+	}
+}
+
+// `--site` は rescue の site 解決とともに廃止した。未知のフラグを黙って無視せず、
+// DB 接続より前にエラーにする。
+func TestRescueCmd_RejectsRemovedSiteFlag(t *testing.T) {
 	path := writeServerTestConfig(t, rescueCmdTestConfigTwoSites)
 	err := runRescueCmdForTest(t, path, "--site", "tokyo")
 	if err == nil {
-		t.Fatal("到達不能な DB を指しているので error を期待したが nil だった")
-	}
-	if !strings.Contains(err.Error(), "connecting to database") {
-		t.Errorf("err = %v, want to fail at the DB stage (= site 解決を通ったこと)", err)
-	}
-}
-
-// mirakcs: 2 要素 + --site 省略は DB に触る前の起動エラーになること
-// （issue #533 の受け入れ基準 1）。
-func TestRescueCmd_SiteFlag_MultiSiteRegistryRequiresSite(t *testing.T) {
-	path := writeServerTestConfig(t, rescueCmdTestConfigTwoSites)
-	err := runRescueCmdForTest(t, path)
-	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "--site is required") {
-		t.Errorf("err = %v, want the --site required error (DB に触る前に落ちること)", err)
+	if !strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("err = %v, want an unknown-flag error", err)
 	}
 	if strings.Contains(err.Error(), "connecting to database") {
-		t.Errorf("err = %v: DB まで進んでいる（--site の必須化が効いていない）", err)
-	}
-}
-
-// レジストリに無い --site はタイポの早期検出のため起動エラーになり、
-// どの site にも一致しないまま静かに成功してはならない（issue #533 の「罠」）。
-func TestRescueCmd_SiteFlag_UnknownSiteIsError(t *testing.T) {
-	path := writeServerTestConfig(t, rescueCmdTestConfigTwoSites)
-	err := runRescueCmdForTest(t, path, "--site", "osaka")
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "unknown site") {
-		t.Errorf("err = %v, want an unknown-site error", err)
-	}
-	if strings.Contains(err.Error(), "connecting to database") {
-		t.Errorf("err = %v: DB まで進んでいる（未知 site の照合が効いていない）", err)
-	}
-}
-
-// mirakcs: 1 要素では --site 省略でも従来どおり動くこと（issue #533 の受け入れ
-// 基準 2）。
-func TestRescueCmd_SiteFlag_SingleSiteRegistryOptional(t *testing.T) {
-	path := writeServerTestConfig(t, rescueCmdTestConfigOneSite)
-	err := runRescueCmdForTest(t, path)
-	if err == nil {
-		t.Fatal("到達不能な DB を指しているので error を期待したが nil だった")
-	}
-	if !strings.Contains(err.Error(), "connecting to database") {
-		t.Errorf("err = %v, want to fail at the DB stage (単一サイトレジストリは --site 無しで解決する)", err)
+		t.Errorf("err = %v: DB まで進んでいる（廃止済み --site を受け付けている）", err)
 	}
 }
