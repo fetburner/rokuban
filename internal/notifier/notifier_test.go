@@ -199,17 +199,21 @@ func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, sta
 	if err != nil {
 		t.Fatalf("seeding media_asset: %v", err)
 	}
+	params := make([]sqlcgen.InsertDropStatParams, 0, len(stats))
 	for pid, s := range stats {
-		if err := q.InsertDropStat(ctx, sqlcgen.InsertDropStatParams{
+		params = append(params, sqlcgen.InsertDropStatParams{
 			MediaAssetID: assetID,
 			Pid:          pid,
 			Packets:      s[0],
 			Drops:        s[1],
 			Errors:       s[2],
 			Scrambled:    s[3],
-		}); err != nil {
-			t.Fatalf("seeding drop_stat: %v", err)
-		}
+		})
+	}
+	batch := q.InsertDropStat(ctx, params)
+	batch.Exec(nil)
+	if err := batch.Close(); err != nil {
+		t.Fatalf("seeding drop_stat batch: %v", err)
 	}
 }
 

@@ -18,6 +18,124 @@ var (
 	ErrBatchAlreadyClosed = errors.New("batch already closed")
 )
 
+const insertDropPosition = `-- name: InsertDropPosition :batchexec
+INSERT INTO drop_positions (media_asset_id, byte_offset, pid, elapsed_ms)
+VALUES ($1, $2, $3, $4)
+`
+
+type InsertDropPositionBatchResults struct {
+	br     pgx.BatchResults
+	tot    int
+	closed bool
+}
+
+type InsertDropPositionParams struct {
+	MediaAssetID int64
+	ByteOffset   int64
+	Pid          int32
+	ElapsedMs    *int64
+}
+
+// byte_offset は原本内の観測位置。elapsed_ms は PCR を観測できなかった位置では
+// NULL のまま保存する（導出できないこと自体を値で表すために 0 を使わない）。
+func (q *Queries) InsertDropPosition(ctx context.Context, arg []InsertDropPositionParams) *InsertDropPositionBatchResults {
+	batch := &pgx.Batch{}
+	for _, a := range arg {
+		vals := []interface{}{
+			a.MediaAssetID,
+			a.ByteOffset,
+			a.Pid,
+			a.ElapsedMs,
+		}
+		batch.Queue(insertDropPosition, vals...)
+	}
+	br := q.db.SendBatch(ctx, batch)
+	return &InsertDropPositionBatchResults{br, len(arg), false}
+}
+
+func (b *InsertDropPositionBatchResults) Exec(f func(int, error)) {
+	defer b.br.Close()
+	for t := 0; t < b.tot; t++ {
+		if b.closed {
+			if f != nil {
+				f(t, ErrBatchAlreadyClosed)
+			}
+			continue
+		}
+		_, err := b.br.Exec()
+		if f != nil {
+			f(t, err)
+		}
+	}
+}
+
+func (b *InsertDropPositionBatchResults) Close() error {
+	b.closed = true
+	return b.br.Close()
+}
+
+const insertDropStat = `-- name: InsertDropStat :batchexec
+INSERT INTO drop_stats (media_asset_id, pid, packets, drops, errors, scrambled, pid_type)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+`
+
+type InsertDropStatBatchResults struct {
+	br     pgx.BatchResults
+	tot    int
+	closed bool
+}
+
+type InsertDropStatParams struct {
+	MediaAssetID int64
+	Pid          int32
+	Packets      int64
+	Drops        int64
+	Errors       int64
+	Scrambled    int64
+	PidType      *string
+}
+
+// pid_type は分類できなかった PID では NULL（空文字を入れない）。
+// 値の権威は internal/tsstat（列に CHECK は無い）。
+func (q *Queries) InsertDropStat(ctx context.Context, arg []InsertDropStatParams) *InsertDropStatBatchResults {
+	batch := &pgx.Batch{}
+	for _, a := range arg {
+		vals := []interface{}{
+			a.MediaAssetID,
+			a.Pid,
+			a.Packets,
+			a.Drops,
+			a.Errors,
+			a.Scrambled,
+			a.PidType,
+		}
+		batch.Queue(insertDropStat, vals...)
+	}
+	br := q.db.SendBatch(ctx, batch)
+	return &InsertDropStatBatchResults{br, len(arg), false}
+}
+
+func (b *InsertDropStatBatchResults) Exec(f func(int, error)) {
+	defer b.br.Close()
+	for t := 0; t < b.tot; t++ {
+		if b.closed {
+			if f != nil {
+				f(t, ErrBatchAlreadyClosed)
+			}
+			continue
+		}
+		_, err := b.br.Exec()
+		if f != nil {
+			f(t, err)
+		}
+	}
+}
+
+func (b *InsertDropStatBatchResults) Close() error {
+	b.closed = true
+	return b.br.Close()
+}
+
 const upsertEpgProgram = `-- name: UpsertEpgProgram :batchexec
 INSERT INTO epg_programs (
     site, program_id, network_id, service_id, event_id,

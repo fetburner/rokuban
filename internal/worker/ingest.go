@@ -64,6 +64,16 @@ var commitIngestTransaction = func(ctx context.Context, tx pgx5.Tx) error {
 	return tx.Commit(ctx)
 }
 
+// newIngestCommitQueries builds the sqlc Queries commit() issues its statements
+// through. Tests override this to wrap tx in a sqlcgen.DBTX that counts SendBatch
+// calls directly, because pgx v5.10's Conn.SendBatch returns emptyBatchResults for a
+// zero-length batch before ever invoking a pgx.QueryTracer's TraceBatchStart
+// (conn.go:943) — a tracer-based oracle cannot observe whether an empty batch was
+// sent at all.
+var newIngestCommitQueries = func(tx pgx5.Tx) *sqlcgen.Queries {
+	return sqlcgen.New(tx)
+}
+
 func createIngestTempFile(dir string) (string, ingestFile, error) {
 	for attempt := 0; attempt < 10; attempt++ {
 		path := filepath.Join(dir, mediapath.IngestTempFilePrefix+uuid.NewString())
@@ -572,7 +582,7 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, t
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	q := sqlcgen.New(tx)
+	q := newIngestCommitQueries(tx)
 
 	assetID, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
@@ -604,6 +614,8 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, t
 	}
 	sort.Ints(pids)
 
+	statParams := make([]sqlcgen.InsertDropStatParams, 0, len(pids))
+	positionParams := make([]sqlcgen.InsertDropPositionParams, 0)
 	for _, pid := range pids {
 		s := stats[pid]
 		// 分類できなかった PID は種別なし（NULL）。空文字を「未分類」という値として
@@ -613,7 +625,7 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, t
 			t := s.Type
 			pidType = &t
 		}
-		if err := q.InsertDropStat(ctx, sqlcgen.InsertDropStatParams{
+		statParams = append(statParams, sqlcgen.InsertDropStatParams{
 			MediaAssetID: assetID,
 			Pid:          int32(pid),
 			Packets:      s.Packets,
@@ -621,19 +633,29 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, t
 			Errors:       s.Errors,
 			Scrambled:    s.Scrambled,
 			PidType:      pidType,
-		}); err != nil {
-			return fmt.Errorf("inserting drop_stat for PID %d: %w", pid, err)
-		}
+		})
 		for _, position := range s.Positions {
-			if err := q.InsertDropPosition(ctx, sqlcgen.InsertDropPositionParams{
+			positionParams = append(positionParams, sqlcgen.InsertDropPositionParams{
 				MediaAssetID: assetID,
 				ByteOffset:   position.ByteOffset,
 				Pid:          int32(pid),
 				ElapsedMs:    position.ElapsedMs,
-			}); err != nil {
-				return fmt.Errorf("inserting drop position for PID %d at byte offset %d: %w",
-					pid, position.ByteOffset, err)
-			}
+			})
+		}
+	}
+	// drop_stats と drop_positions はどちらも同じ tx に属する不可逆な観測で、
+	// 片方だけ別 transaction にしない。epgBatchSize ごとに chunk するのは
+	// epg.go の syncServices / syncPrograms と同じ理由（メモリと 1 バッチあたりの
+	// 所要を抑える）。chunks は空スライスに対して 0 回しか yield しないので、
+	// 空の batch は pgx に送られない。
+	for chunk := range chunks(statParams, epgBatchSize) {
+		if err := execBatch(q.InsertDropStat(ctx, chunk)); err != nil {
+			return fmt.Errorf("inserting drop_stats batch: %w", err)
+		}
+	}
+	for chunk := range chunks(positionParams, epgBatchSize) {
+		if err := execBatch(q.InsertDropPosition(ctx, chunk)); err != nil {
+			return fmt.Errorf("inserting drop_positions batch: %w", err)
 		}
 	}
 

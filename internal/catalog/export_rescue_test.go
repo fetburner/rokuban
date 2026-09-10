@@ -119,7 +119,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}
 
 	pidType := "video"
-	if err := q.InsertDropStat(ctx, sqlcgen.InsertDropStatParams{
+	statBatch := q.InsertDropStat(ctx, []sqlcgen.InsertDropStatParams{{
 		MediaAssetID: assetID,
 		Pid:          0x100,
 		Packets:      10000,
@@ -127,16 +127,20 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 		Errors:       0,
 		Scrambled:    0,
 		PidType:      &pidType,
-	}); err != nil {
+	}})
+	statBatch.Exec(nil)
+	if err := statBatch.Close(); err != nil {
 		t.Fatalf("InsertDropStat: %v", err)
 	}
 	elapsedMs := int64(1000)
-	if err := q.InsertDropPosition(ctx, sqlcgen.InsertDropPositionParams{
+	positionBatch := q.InsertDropPosition(ctx, []sqlcgen.InsertDropPositionParams{{
 		MediaAssetID: assetID,
 		ByteOffset:   188,
 		Pid:          0x100,
 		ElapsedMs:    &elapsedMs,
-	}); err != nil {
+	}})
+	positionBatch.Exec(nil)
+	if err := positionBatch.Close(); err != nil {
 		t.Fatalf("InsertDropPosition: %v", err)
 	}
 
