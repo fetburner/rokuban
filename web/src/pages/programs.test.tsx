@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CapacityOverage, ProgramListItem, Reservation, Service } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { dayOrigin } from '@/lib/day-offset'
+import { programsQueryKeyPrefix } from '@/lib/events'
 import { routeTree } from '@/routes'
 
 /**
@@ -908,6 +909,49 @@ describe('ProgramsPage の表示形式', () => {
     if (!overlay) throw new Error('Dialog overlay が見つからない')
     await userEvent.click(overlay)
     await waitFor(() => expect(screen.queryByRole('dialog', { name: soon.name })).not.toBeInTheDocument())
+  })
+
+  it('選択中の番組が一覧から消えて戻ってきても、モーダルは再度開かない（レビュー指摘）', async () => {
+    // `open` は `programs.find(...)` からの導出。選択中の番組が一時的に
+    // 一覧から消える（背景の invalidate が欠けた一覧を返す等）と、ダイアログは
+    // `onOpenChange` を発火せずただ閉じるだけなので `selectedProgramId` が
+    // 古いまま残る。番組が一覧へ戻ってきたときに、そのままではモーダルが
+    // 勝手に再オープンしてフォーカスを閉じ込めてしまう。
+    stubApi(undefined, undefined, undefined, (callIndex) =>
+      callIndex === 2
+        ? jsonResponse(allPrograms.filter((p) => p.programId !== soon.programId))
+        : undefined,
+    )
+    stubMatchMedia(true)
+    const { queryClient } = renderPage('/programs?view=grid')
+
+    await screen.findByTestId('program-grid')
+    const cell = document.querySelector<HTMLElement>(`[data-program-id="${soon.programId}"]`)
+    if (!cell) throw new Error('選択対象のセルが見つからない')
+    await userEvent.click(cell)
+    expect(await screen.findByRole('dialog', { name: soon.name })).toBeInTheDocument()
+
+    // 1 回目の invalidate: 選択中の番組が一覧から消える
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: [programsQueryKeyPrefix] })
+    })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    // 番組が消えると、そのセルもグリッドから消える。
+    await waitFor(() =>
+      expect(document.querySelector(`[data-program-id="${soon.programId}"]`)).toBeNull(),
+    )
+
+    // 2 回目の invalidate: 番組が一覧へ戻る。「fetch が発行された」のような
+    // 間接シグナルで判定すると、復帰前にアサートが走って通ってしまう
+    // 空虚な成功になりうる（CLAUDE.md のテスト規律）。セルが実際に DOM へ
+    // 戻ってきたこと自体を陽性のシグナルとして待ってから判定する。
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: [programsQueryKeyPrefix] })
+    })
+    await waitFor(() =>
+      expect(document.querySelector(`[data-program-id="${soon.programId}"]`)).not.toBeNull(),
+    )
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
   it('グリッド表示で選んだ番組にも、予約一覧から導出した重なり警告が出る', async () => {

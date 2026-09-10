@@ -32,7 +32,12 @@ function DialogOverlay({
     <DialogPrimitive.Backdrop
       data-slot="dialog-overlay"
       className={cn(
-        "fixed inset-0 isolate z-50 bg-black/10 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
+        // NOTE(rokuban): data-closed の閉じアニメは付けない。呼び出し元
+        // （`pages/programs.tsx`）は `{selected && <DialogContent>}` で
+        // 条件レンダリングしており、閉じると同じレンダーで即アンマウント
+        // されるため、閉じ側のアニメは発火する経路が無い（測っていない
+        // 挙動をクラス名として主張しない）。
+        "fixed inset-0 isolate z-50 bg-black/10 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0",
         className,
       )}
       {...props}
@@ -50,7 +55,10 @@ function DialogContent({
       <DialogPrimitive.Popup
         data-slot="dialog-content"
         className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid w-[calc(100%-2rem)] max-h-[calc(100dvh-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto rounded-xl bg-popover p-4 text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          // NOTE(rokuban): data-closed の閉じアニメは付けない（上の
+          // DialogOverlay と同じ理由。呼び出し元の条件レンダリングが
+          // 閉じると同時にアンマウントするため、閉じ側は発火しない）。
+          "fixed top-1/2 left-1/2 z-50 grid w-[calc(100%-2rem)] max-h-[calc(100dvh-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto rounded-xl bg-popover p-4 text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95",
           className,
         )}
         {...props}

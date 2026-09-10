@@ -1,5 +1,6 @@
 import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
+import { X } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { CapacityBandLabels, CapacityBands } from '@/components/capacity-band'
@@ -861,21 +862,23 @@ function ProgramGridView({
   showSite: boolean
 }) {
   const [selectedProgramId, setSelectedProgramId] = useState<string | null>(null)
-  const selectedCellRef = useRef<HTMLElement | null>(null)
 
   // 日付やサービスを変えると選択中の番組が消えることがある。id ではなく
   // 実体を引き直して、消えていれば選択も無かったことにする。
   const selected = programs.find((p) => programIdentity(p.site, p.programId) === selectedProgramId)
 
-  const closeSelectedProgram = () => setSelectedProgramId(null)
+  // `open` はこの `selected` からの導出なので、選択中の番組が（背景の
+  // invalidate が一時的に欠けた一覧を返す等で）一覧から消えると、Dialog は
+  // `onOpenChange` を発火せずただ閉じるだけで `selectedProgramId` は古いまま
+  // 残る。番組が一覧へ戻ってきたときにモーダルが勝手に再オープンしないよう、
+  // 消えた時点で選択も明示的に手放す（レビュー指摘。落ちるテストで確認済み）。
+  useEffect(() => {
+    if (selectedProgramId === null || selected !== undefined) return
+    // oxlint-disable-next-line react/set-state-in-effect -- 外部データ（番組一覧）が選択中の番組を手放したことへ画面状態を同期する
+    setSelectedProgramId(null)
+  }, [selected, selectedProgramId])
 
-  const selectProgram = (program: SiteProgram) => {
-    // controlled Dialog には Dialog.Trigger が無いので、base-ui の既定の
-    // フォーカス復帰先を頼らず、開いた瞬間のクリック元セルを明示する。
-    const active = document.activeElement
-    selectedCellRef.current = active instanceof HTMLElement ? active : null
-    setSelectedProgramId(programIdentity(program.site, program.programId))
-  }
+  const closeSelectedProgram = () => setSelectedProgramId(null)
 
   if (isError) return <ErrorState onRetry={onRetry}>番組の取得に失敗しました</ErrorState>
   if (isPending) return <ListSkeleton />
@@ -900,8 +903,12 @@ function ProgramGridView({
       >
         {selected && (
           <DialogContent
-            finalFocus={selectedCellRef}
-            className="max-w-2xl p-0 pt-14"
+            // Popup 自体はスクロールさせない（flex flex-col で `grid` を
+            // 上書きし、overflow-hidden で `overflow-y-auto` を上書きする）。
+            // 閉じるボタンはこの非スクロールの箱に対して absolute 配置なので、
+            // 番組概要が長くて中身がスクロールしても画面外へ出ない
+            // （下の `pt-14` の内側 div だけがスクロールする）。
+            className="flex max-w-2xl flex-col overflow-hidden p-0"
             data-testid="program-dialog"
           >
             <DialogTitle className="sr-only">{selected.name}</DialogTitle>
@@ -909,37 +916,42 @@ function ProgramGridView({
               render={
                 <Button
                   type="button"
-                  variant="outline"
-                  size="icon"
+                  variant="ghost"
+                  size="icon-sm"
                   aria-label="閉じる"
                   className="absolute top-3 right-3 z-10"
                 >
-                  ×
+                  <X />
                 </Button>
               }
             />
-            {/* key は選択番組の identity に紐づける。Popup は閉じると
-                アンマウントされるが、選択対象が差し替わる経路でも
-                `ProgramRow` のエンコード設定の下書きを別番組へ渡さない。 */}
-            <ProgramRow
-              key={programIdentity(selected.site, selected.programId)}
-              program={selected}
-              siteName={showSite ? selected.site : undefined}
-              serviceName={
-                serviceById.get(
-                  siteServiceKey(selected.site, selected.networkId, selected.serviceId),
-                )?.name
-              }
-              reserved={actions.reservedProgramIds.has(
-                programIdentity(selected.site, selected.programId),
-              )}
-              pending={actions.isBusy(selected)}
-              reservationStateUnknown={actions.reservationStateUnknown}
-              defaultExpanded
-              overlaps={actions.overlapsFor(selected)}
-              onReserve={(overrides) => actions.reserve(selected, overrides)}
-              onCancel={() => actions.cancel(selected)}
-            />
+            <div
+              className="min-h-0 flex-1 overflow-y-auto p-4 pt-14"
+              data-testid="program-dialog-body"
+            >
+              {/* key は選択番組の identity に紐づける。Popup は閉じると
+                  アンマウントされるが、選択対象が差し替わる経路でも
+                  `ProgramRow` のエンコード設定の下書きを別番組へ渡さない。 */}
+              <ProgramRow
+                key={programIdentity(selected.site, selected.programId)}
+                program={selected}
+                siteName={showSite ? selected.site : undefined}
+                serviceName={
+                  serviceById.get(
+                    siteServiceKey(selected.site, selected.networkId, selected.serviceId),
+                  )?.name
+                }
+                reserved={actions.reservedProgramIds.has(
+                  programIdentity(selected.site, selected.programId),
+                )}
+                pending={actions.isBusy(selected)}
+                reservationStateUnknown={actions.reservationStateUnknown}
+                defaultExpanded
+                overlaps={actions.overlapsFor(selected)}
+                onReserve={(overrides) => actions.reserve(selected, overrides)}
+                onCancel={() => actions.cancel(selected)}
+              />
+            </div>
           </DialogContent>
         )}
       </Dialog>
@@ -950,7 +962,7 @@ function ProgramGridView({
           axis={axis}
           reservationByProgramId={actions.reservedProgramIds}
           selectedProgramId={selected ? programIdentity(selected.site, selected.programId) : null}
-          onSelect={selectProgram}
+          onSelect={(program) => setSelectedProgramId(programIdentity(program.site, program.programId))}
           scrollToMs={scrollToMs}
           showSite={showSite}
           // 帯はセルより上・ヘッダより下の層に入る。軸を受け取って同じ

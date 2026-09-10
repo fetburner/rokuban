@@ -440,14 +440,23 @@ E2E_URL=http://localhost:4173 pnpm e2e:grid-reserved
 
 番組表のセルをクリックしたとき、選択した番組が番組表の最上部へ移動するのではなく
 ダイアログで開くことを実ブラウザで見る。jsdom では CSS による可視性、フォーカストラップ、
-overlay / Escape による閉鎖後のフォーカス復帰を測れないため、次の 5 点を判定する:
+overlay / Escape による閉鎖後のフォーカス復帰、スクロール中の要素の可視性を測れないため、
+次の 6 点を判定する:
 
 - ① セルのクリックで番組名を `aria-labelledby` に持つダイアログが開く
 - ② ダイアログ内の `ProgramRow` の「予約」が hover なしで可視・操作可能で、1 回のクリックで
   `PUT .../intent` が 1 回だけ飛ぶ
-- ③ Tab 走査がダイアログの外へ出ない
-- ④ Escape で閉じ、クリック元セルへフォーカスが戻る
-- ⑤ overlay と「閉じる」ボタンでも閉じ、クリック元セルへフォーカスが戻る
+- ③ 番組概要が長くて本文がスクロールしても、閉じるボタンが画面外へ出ない
+- ④ Tab 走査がダイアログの外へ出ない
+- ⑤ Escape で閉じ、クリック元セルへフォーカスが戻る
+- ⑥ overlay と「閉じる」ボタンでも閉じ、クリック元セルへフォーカスが戻る
+
+**フォーカス復帰は base-ui の `Dialog.Popup` の既定（`finalFocus` 省略時の
+「trigger or previously focused element」）に任せている。** controlled Dialog
+（`Dialog.Trigger` が無い）でも既定はクリック直前のフォーカス要素へ戻るため、
+このページ側で `finalFocus` を自作する必要は無い（自作すると、ボタンの
+クリックで focus を移さない macOS/iOS Safari で `document.body` を
+掴んでしまい、既定より悪化する）。
 
 API は `page.route` で丸ごと差し替えるので mirakc・実チューナー・DB は要らない。
 ⓪（配っている bundle と `dist/` の一致）とフィクスチャの zod 契約検証も行う。

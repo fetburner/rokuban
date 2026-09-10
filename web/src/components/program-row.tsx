@@ -69,7 +69,7 @@ export function ProgramRow({
    * 既定値を持たない必須 prop にしてある --- 渡し忘れを型で止める。以前は
    * `= false` の既定値があり、グリッド表示（`ProgramGridView`）が渡し忘れた
    * 1 箇所だけ予約状態不明でも `record` intent が飛ぶ穴になっていた（issue #710）。
-  */
+   */
   reservationStateUnknown: boolean
   /** 初期状態で詳細を展開し、予約列を hover なしで表示する。 */
   defaultExpanded?: boolean

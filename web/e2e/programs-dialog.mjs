@@ -48,7 +48,9 @@ const program = {
   endAt: '2026-08-13T02:00:00.000Z',
   durationMs: 3_600_000,
   name: 'モーダル予約確認番組',
-  description: 'モーダルから予約できることを確認する番組',
+  // モーダル内でスクロールが発生するくらい長くする（閉じるボタンが
+  // スクロールで画面外へ出ないことの確認に使う。レビュー指摘）。
+  description: 'モーダルから予約できることを確認する番組。'.repeat(300),
   genres: [0],
   isFree: true,
 }
@@ -86,14 +88,6 @@ async function isFocusedCell(page) {
       active.getAttribute('data-program-id') === String(programId)
     )
   }, PROGRAM_ID)
-}
-
-/** isFocusedInsideDialog は Tab 走査がモーダルの外へ出ていないことを確認する。 */
-async function isFocusedInsideDialog(page) {
-  return page.evaluate(() => {
-    const active = document.activeElement
-    return active instanceof HTMLElement && active.closest('[role="dialog"]') !== null
-  })
 }
 
 log('\n=== 契約検証: フィクスチャの zod parse ===')
@@ -146,6 +140,41 @@ if ((await cell.getAttribute('aria-pressed')) !== 'true') {
   ng.push('モーダル表示中も選択セルのハイライトが維持されていない')
 }
 
+log('\n=== 長い番組概要でスクロールしても閉じるボタンが画面外へ出ない ===')
+const closeButton = dialog.getByRole('button', { name: '閉じる', exact: true })
+const dialogBody = page.locator('[data-testid="program-dialog-body"]')
+const scrollTopBefore = await dialogBody.evaluate((el) => el.scrollTop)
+await dialogBody.evaluate((el) => {
+  el.scrollTop = el.scrollHeight
+})
+const scrolled = await dialogBody.evaluate((el) => el.scrollTop > 0)
+if (!scrolled) ng.push('モーダル本文がスクロールしていない（テスト前提が崩れている）')
+// `boundingBox()`/`isVisible()` は overflow で clip されているかを見ない
+// （clip されていても要素自体の矩形は正の幅高さのまま返る）。閉じるボタンが
+// ダイアログの可視領域の外へ出ていないかは、ダイアログ自身の矩形に完全に
+// 収まっているかで判定する。
+const dialogBoxAfterScroll = await dialog.boundingBox()
+const closeBoxAfterScroll = await closeButton.boundingBox()
+const closeButtonWithinDialog =
+  dialogBoxAfterScroll &&
+  closeBoxAfterScroll &&
+  closeBoxAfterScroll.x >= dialogBoxAfterScroll.x &&
+  closeBoxAfterScroll.y >= dialogBoxAfterScroll.y &&
+  closeBoxAfterScroll.x + closeBoxAfterScroll.width <= dialogBoxAfterScroll.x + dialogBoxAfterScroll.width &&
+  closeBoxAfterScroll.y + closeBoxAfterScroll.height <= dialogBoxAfterScroll.y + dialogBoxAfterScroll.height
+if (
+  !(await closeButton.isVisible()) ||
+  !closeBoxAfterScroll ||
+  closeBoxAfterScroll.width <= 0 ||
+  closeBoxAfterScroll.height <= 0 ||
+  !closeButtonWithinDialog
+) {
+  ng.push('本文をスクロールすると閉じるボタンがダイアログの外へ出る')
+}
+await dialogBody.evaluate((el, top) => {
+  el.scrollTop = top
+}, scrollTopBefore)
+
 log('\n=== Tab 走査をモーダル内に閉じ込める ===')
 for (let i = 0; i < 8; i++) {
   await page.keyboard.press('Tab')
@@ -162,7 +191,7 @@ for (let i = 0; i < 8; i++) {
     )
     .then(() => true)
     .catch(() => false)
-  if (!focusStayedInside || !(await isFocusedInsideDialog(page))) {
+  if (!focusStayedInside) {
     ng.push('Tab 走査中にモーダルの外へフォーカスが移動した')
     break
   }
