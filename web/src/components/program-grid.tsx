@@ -11,10 +11,12 @@ import {
   epgColumnWidthPx,
   groupProgramsByService,
   hourTicks,
+  neighborProgram,
   spanToPx,
   timeToPx,
   visibleColumnRange,
   visibleTimeWindow,
+  type GridNavigationDirection,
   type PlacedProgram,
   type TimeAxis,
 } from '@/lib/epg-grid'
@@ -61,6 +63,87 @@ type Viewport = {
 
 /** 未計測の viewport。幅・高さが 0 のとき仮想化は「全部描く」に倒れる（lib/epg-grid.ts）。 */
 const unmeasuredViewport: Viewport = { top: 0, left: 0, width: 0, height: 0 }
+
+/** フォーカス移動後に目的セルを DOM から探すための identity。 */
+function programCellIdentity(program: SiteProgram): string {
+  return programIdentity(program.site, program.programId)
+}
+
+/** 現在フォーカスしているセルを、仮想化前の番組データから引く。 */
+function placedProgramForCell(
+  placedByService: ReadonlyMap<string, readonly PlacedProgram<SiteProgram>[]>,
+  cell: HTMLElement,
+): PlacedProgram<SiteProgram> | null {
+  const site = cell.dataset.site
+  const programId = Number(cell.dataset.programId)
+  if (!site || !Number.isFinite(programId)) return null
+  const identity = `${site}:${programId}`
+  for (const candidates of placedByService.values()) {
+    const placed = candidates.find((candidate) => programCellIdentity(candidate.program) === identity)
+    if (placed) return placed
+  }
+  return null
+}
+
+/** 仮想化されたセルを identity で DOM から探す。 */
+function programCellForProgram(root: HTMLElement, program: SiteProgram): HTMLButtonElement | null {
+  const identity = programCellIdentity(program)
+  for (const cell of root.querySelectorAll<HTMLButtonElement>('[data-testid="program-grid-cell"]')) {
+    if (`${cell.dataset.site}:${cell.dataset.programId}` === identity) return cell
+  }
+  return null
+}
+
+/**
+ * 目的セルが現在の可視範囲から外れていれば、セルを出せる位置までスクロールする。
+ *
+ * 縦軸は sticky header の下から見えるため、セルの top は header 分を加えて判定する。
+ * 横軸は sticky gutter の右側から見えるため、サービス列の座標から gutter 分を
+ * 除いて判定する。ここでは DOM の存在を判定材料にせず、番組とサービスの座標だけを
+ * 使うので、仮想化で目的セルがまだ無くても先にスクロールできる。
+ */
+function scrollProgramIntoView(
+  scroller: HTMLDivElement,
+  program: PlacedProgram<SiteProgram>,
+  services: readonly SiteService[],
+  axis: TimeAxis,
+  columnWidthPx: number,
+): boolean {
+  let changed = false
+  const programTopPx = headerHeightPx + timeToPx(axis, program.startMs)
+  const programBottomPx = headerHeightPx + timeToPx(axis, program.endMs)
+  const visibleTopPx = scroller.scrollTop + headerHeightPx
+  const visibleBottomPx = scroller.scrollTop + scroller.clientHeight
+
+  if (programTopPx < visibleTopPx) {
+    scroller.scrollTop = Math.max(0, timeToPx(axis, program.startMs))
+    changed = true
+  } else if (programBottomPx > visibleBottomPx) {
+    scroller.scrollTop = Math.max(0, programBottomPx - scroller.clientHeight)
+    changed = true
+  }
+
+  const serviceIndex = services.findIndex(
+    (service) =>
+      siteServiceKey(service.site, service.networkId, service.serviceId) ===
+      siteServiceKey(program.program.site, program.program.networkId, program.program.serviceId),
+  )
+  if (serviceIndex < 0 || columnWidthPx <= 0) return changed
+
+  const targetLeftPx = serviceIndex * columnWidthPx
+  const targetRightPx = targetLeftPx + columnWidthPx
+  const visibleColumnWidthPx = Math.max(0, scroller.clientWidth - gutterWidthPx)
+  const visibleLeftPx = scroller.scrollLeft
+  const visibleRightPx = visibleLeftPx + visibleColumnWidthPx
+  if (targetLeftPx < visibleLeftPx) {
+    scroller.scrollLeft = targetLeftPx
+    changed = true
+  } else if (targetRightPx > visibleRightPx) {
+    scroller.scrollLeft = Math.max(0, targetRightPx - visibleColumnWidthPx)
+    changed = true
+  }
+  return changed
+}
 
 /** 凡例に出す、淡色を持つ ARIB 大分類。予備・拡張・その他は無彩色なので含めない。 */
 const tintedGenreCodes = Array.from({ length: 12 }, (_, code) => code)
@@ -172,6 +255,7 @@ export function ProgramGrid({
   gutterOverlay?: (axis: TimeAxis) => React.ReactNode
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null)
+  const pendingFocusRef = useRef<PlacedProgram<SiteProgram> | null>(null)
   const [viewport, setViewport] = useState<Viewport>(unmeasuredViewport)
   const clock = useNow(clockIntervalMs)
   const currentMs = now ?? clock
@@ -220,6 +304,14 @@ export function ProgramGrid({
   }, [axis, currentMs, scrollToMs, measure])
 
   const placedByService = useMemo(() => groupProgramsByService(programs), [programs])
+  const navigablePlacedByService = useMemo(() => {
+    const navigable = new Map<string, PlacedProgram<SiteProgram>[]>()
+    for (const [serviceKey, placed] of placedByService) {
+      const inAxis = placed.filter((program) => program.endMs > axis.startMs && program.startMs < axis.endMs)
+      if (inAxis.length > 0) navigable.set(serviceKey, inAxis)
+    }
+    return navigable
+  }, [axis, placedByService])
   const ticks = useMemo(() => hourTicks(axis), [axis])
 
   const totalHeightPx = axisHeightPx(axis)
@@ -251,10 +343,63 @@ export function ProgramGrid({
   const nowTopPx =
     currentMs >= axis.startMs && currentMs < axis.endMs ? timeToPx(axis, currentMs) : null
 
+  // 目的セルが仮想化でまだ DOM に無い場合は、先にスクロールして次の描画で
+  // フォーカスを当てる。DOM を先に探して null で終えると、画面外への矢印移動が
+  // 仮想化の境界で止まってしまう。
+  useLayoutEffect(() => {
+    const pending = pendingFocusRef.current
+    const scroller = scrollerRef.current
+    if (!pending || !scroller) return
+    const cell = programCellForProgram(scroller, pending.program)
+    if (!cell) return
+    pendingFocusRef.current = null
+    cell.focus({ preventScroll: true })
+  }, [placedByService, viewport])
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const directionByKey: Partial<Record<string, GridNavigationDirection>> = {
+      ArrowUp: 'up',
+      ArrowDown: 'down',
+      ArrowLeft: 'left',
+      ArrowRight: 'right',
+    }
+    const direction = directionByKey[event.key]
+    if (!direction) return
+
+    const cell =
+      event.target instanceof HTMLElement
+        ? event.target.closest<HTMLElement>('[data-testid="program-grid-cell"]')
+        : null
+    if (!cell || !event.currentTarget.contains(cell)) return
+
+    // region 自体にフォーカスがある場合はここへ来ない。セルにフォーカスが
+    // あるときだけ矢印を空間移動へ割り当て、既存の領域スクロールを奪わない。
+    event.preventDefault()
+    const current = placedProgramForCell(placedByService, cell)
+    if (!current) return
+    const target = neighborProgram(navigablePlacedByService, services, current, direction)
+    if (!target) return
+
+    const scroller = event.currentTarget
+    pendingFocusRef.current = target
+    scrollProgramIntoView(scroller, target, services, axis, columnWidthPx)
+    const targetCell = programCellForProgram(scroller, target.program)
+    if (targetCell) {
+      pendingFocusRef.current = null
+      targetCell.focus({ preventScroll: true })
+      return
+    }
+
+    // scrollTop / scrollLeft の変更で onScroll が非同期になるブラウザでも、
+    // 次の render で可視判定を確実に更新する。
+    measure()
+  }
+
   return (
     <div
       ref={scrollerRef}
       onScroll={measure}
+      onKeyDown={handleKeyDown}
       data-testid="program-grid"
       // キーボードだけでもスクロールできるように領域として focus 可能にする。
       // 絶対配置のセルに role="grid"/"gridcell" を被せると行の構造を偽ることに

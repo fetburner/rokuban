@@ -157,6 +157,9 @@ export type PlacedProgram<P extends { startAt: string; endAt: string }> = {
   endMs: number
 }
 
+/** 番組表でフォーカスを移す方向。 */
+export type GridNavigationDirection = 'up' | 'down' | 'left' | 'right'
+
 /**
  * groupProgramsByService はサービスごとに番組を開始時刻の昇順で並べて返す。
  *
@@ -180,6 +183,88 @@ export function groupProgramsByService<
   }
   for (const list of byService.values()) list.sort((a, b) => a.startMs - b.startMs)
   return byService
+}
+
+/**
+ * neighborProgram はフォーカス中の番組から空間的な隣の番組を返す。
+ *
+ * 規則は DOM の形からではなく、番組表の時間区間から定める。上下は同じ
+ * サービスで開始時刻順に並ぶ前後の番組へ移るので、番組の間の空き時間は飛ばす。
+ * 左右は隣のサービスだけを対象にし、フォーカス中の番組の開始時刻を半開区間
+ * [startMs, endMs) に含む番組を優先する。該当する番組が無ければ開始時刻の差が
+ * 最小の番組を選び、同距離なら早く始まる方を選ぶ。隣にサービスが無い、または
+ * そのサービスに番組が無い場合は端として null を返す。
+ *
+ * `placedByService` は `groupProgramsByService` の結果を受け取る。可視範囲外の
+ * 番組もここには残すことで、仮想化の境界で DOM の存在を探索の判定にしない。
+ * 目的のセルを DOM に出すこととフォーカスを当てることは呼び出し側が行う。
+ */
+export function neighborProgram<
+  P extends {
+    site: string
+    programId: number
+    startAt: string
+    endAt: string
+  },
+  S extends { site: string; networkId: number; serviceId: number },
+>(
+  placedByService: ReadonlyMap<string, readonly PlacedProgram<P>[]>,
+  orderedServices: readonly S[],
+  current: PlacedProgram<P>,
+  direction: GridNavigationDirection,
+): PlacedProgram<P> | null {
+  const currentIdentity = `${current.program.site}:${current.program.programId}`
+  let currentServiceKey: string | undefined
+  let currentServicePrograms: readonly PlacedProgram<P>[] | undefined
+  let currentIndex = -1
+
+  for (const [serviceKey, candidates] of placedByService) {
+    const index = candidates.findIndex(
+      (candidate) => `${candidate.program.site}:${candidate.program.programId}` === currentIdentity,
+    )
+    if (index < 0) continue
+    currentServiceKey = serviceKey
+    currentServicePrograms = candidates
+    currentIndex = index
+    break
+  }
+
+  if (!currentServiceKey || !currentServicePrograms || currentIndex < 0) return null
+
+  if (direction === 'up' || direction === 'down') {
+    const targetIndex = currentIndex + (direction === 'up' ? -1 : 1)
+    return currentServicePrograms[targetIndex] ?? null
+  }
+
+  const serviceIndex = orderedServices.findIndex(
+    (service) =>
+      siteServiceKey(service.site, service.networkId, service.serviceId) === currentServiceKey,
+  )
+  if (serviceIndex < 0) return null
+
+  const targetService = orderedServices[serviceIndex + (direction === 'left' ? -1 : 1)]
+  if (!targetService) return null
+  const targetPrograms = placedByService.get(
+    siteServiceKey(targetService.site, targetService.networkId, targetService.serviceId),
+  )
+  if (!targetPrograms || targetPrograms.length === 0) return null
+
+  const containing = targetPrograms.find(
+    (candidate) => candidate.startMs <= current.startMs && current.startMs < candidate.endMs,
+  )
+  if (containing) return containing
+
+  return targetPrograms.reduce((closest, candidate) => {
+    const candidateDistance = Math.abs(candidate.startMs - current.startMs)
+    const closestDistance = Math.abs(closest.startMs - current.startMs)
+    if (
+      candidateDistance < closestDistance ||
+      (candidateDistance === closestDistance && candidate.startMs < closest.startMs)
+    ) {
+      return candidate
+    }
+    return closest
+  })
 }
 
 /** チャンネル種別の並び順。リモコン番号の意味が種別ごとに違うので、まず種別で束ねる。 */

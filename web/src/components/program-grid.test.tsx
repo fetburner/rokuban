@@ -295,6 +295,52 @@ describe('ProgramGrid', () => {
     expect(onSelect.mock.calls[0][0].programId).toBe(1)
   })
 
+  it('セルにフォーカスがあると矢印で同列の前後へ移る', () => {
+    renderGrid({
+      programs: [
+        program(1, 1024, 19 * 60, 30),
+        program(2, 1024, 21 * 60, 30),
+      ],
+    })
+
+    const first = cell(1)
+    first.focus()
+    fireEvent.keyDown(first, { key: 'ArrowDown' })
+
+    expect(document.activeElement).toBe(cell(2))
+  })
+
+  it('セルにフォーカスがあると矢印で隣列へ移り、領域自身のフォーカスは奪わない', () => {
+    const services = [service(1024, 'NHK総合'), service(1032, 'NHKEテレ')]
+    renderGrid({
+      services,
+      programs: [
+        program(1, 1024, 19 * 60 + 30, 30),
+        program(2, 1032, 19 * 60, 60),
+      ],
+    })
+
+    const first = cell(1)
+    first.focus()
+    fireEvent.keyDown(first, { key: 'ArrowRight' })
+    expect(document.activeElement).toBe(cell(2))
+
+    const grid = screen.getByTestId('program-grid')
+    grid.focus()
+    fireEvent.keyDown(grid, { key: 'ArrowRight' })
+    expect(document.activeElement).toBe(grid)
+  })
+
+  it('隣が無い端ではセルのフォーカスを動かさない', () => {
+    renderGrid({ programs: [program(1, 1024, 19 * 60, 30)] })
+
+    const only = cell(1)
+    only.focus()
+    fireEvent.keyDown(only, { key: 'ArrowUp' })
+
+    expect(document.activeElement).toBe(only)
+  })
+
   it('選択中の番組は aria-pressed で示す', () => {
     renderGrid({
       programs: [program(1, 1024, 19 * 60, 60), program(2, 1024, 20 * 60, 60)],
