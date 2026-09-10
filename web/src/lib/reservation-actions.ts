@@ -10,9 +10,9 @@ import {
   type Reservation,
 } from '@/api/generated'
 import { apiErrorMessage } from '@/api/unwrap'
-import type { ReservationActions } from '@/components/program-list'
+import type { ReservableProgram, ReservationActions } from '@/components/program-list'
 import { useToast } from '@/components/toaster'
-import { programIdentity, type SiteProgram } from '@/lib/all-sites-services'
+import { programIdentity } from '@/lib/all-sites-services'
 import {
   capacityOveragesQueryKeyPrefix,
   reservationsQueryKeyPrefix,
@@ -157,7 +157,7 @@ export function useReservationActions(
   // 変わってしまう（`internal/api/handler.go` の source 導出、
   // `TestGetReservation_SourceManualDespiteRuleMatch`）。ルール由来の厳密な
   // 逆操作は `DELETE .../intent`（明示的な意見を取り下げ、ルール評価に戻す）。
-  const revive = (program: SiteProgram, source: Reservation['source'] | undefined) => {
+  const revive = (program: ReservableProgram, source: Reservation['source'] | undefined) => {
     const key = programIdentity(program.site, program.programId)
     setBusy(key, true)
     setOptimisticReserved(key, true)
@@ -185,7 +185,7 @@ export function useReservationActions(
 
   // cancel も同じ理由（トーストの「取消」action・`revive` からの「元に戻す」
   // action、双方が遷移をまたぎうる）で `mutateAsync` + try/catch にする。
-  const cancel = (program: SiteProgram) => {
+  const cancel = (program: ReservableProgram) => {
     const key = programIdentity(program.site, program.programId)
     // Undo の分岐に使う。取消の瞬間の source を捕まえておく --- 取消後は
     // サーバー値（`sourceByProgramId` の元になる `reservations.data`）が
@@ -217,7 +217,7 @@ export function useReservationActions(
     })()
   }
 
-  const reservationToastActions = (program: SiteProgram) => [
+  const reservationToastActions = (program: ReservableProgram) => [
     { label: '取消', onClick: () => cancel(program) },
     {
       label: '設定',
@@ -235,7 +235,7 @@ export function useReservationActions(
   // `undefined` で渡ってくるので、この場合は PATCH 自体を呼ばない ---
   // 呼ぶと「既定のまま」という意味の無い override 行を作ってしまう
   // （不変条件 10）。UI 上は「予約」ボタン 1 回の操作に見せる（issue #132）。
-  const reserve = (program: SiteProgram, overrides?: ProgramOverridesInput) => {
+  const reserve = (program: ReservableProgram, overrides?: ProgramOverridesInput) => {
     // ボタンの disabled（`ProgramRow`/`SearchResultRow` 側）とは別に実行側でも
     // 止める --- 呼び出し元が disabled の判定を誤って通す場合の二重の網。
     // `cancel`/`revive` は止めない: 取消は `reserved` 側の操作で、

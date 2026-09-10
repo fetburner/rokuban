@@ -12,7 +12,7 @@
 //   cd web && corepack pnpm build
 //   corepack pnpm preview --port 4173 --strictPort &
 //   E2E_URL=http://localhost:4173 corepack pnpm e2e:personalization
-import { ListRecordingsResponseItem } from '../src/api/zod.ts'
+import { ListRecordingsResponseItem, SearchProgramsResponseItem } from '../src/api/zod.ts'
 import {
   finish,
   installApiStubs,
@@ -122,7 +122,16 @@ async function apiHandler({ path, url, json, route }) {
     return json(
       programs
         .filter((p) => p.name.includes(keyword))
-        .map((p) => ({ site: 'default', programId: p.programId })),
+        .map((p) => ({
+          site: 'default',
+          programId: p.programId,
+          networkId: p.networkId,
+          serviceId: p.serviceId,
+          startAt: p.startAt,
+          durationMs: p.durationMs,
+          name: p.name,
+          isFree: p.isFree,
+        })),
     )
   }
   const program = /^\/api\/sites\/[^/]+\/programs\/(\d+)$/.exec(path)
@@ -133,7 +142,23 @@ async function apiHandler({ path, url, json, route }) {
 log(`URL: ${URL_BASE}`)
 log('\n=== 契約検証: フィクスチャの zod parse ===')
 await validateFixturesOrExit(
-  recordings.map((recording, i) => [`recordings[${i}]`, ListRecordingsResponseItem, recording]),
+  [
+    ...recordings.map((recording, i) => [`recordings[${i}]`, ListRecordingsResponseItem, recording]),
+    ...programs.map((p, i) => [
+      `searchResults[${i}]`,
+      SearchProgramsResponseItem,
+      {
+        site: 'default',
+        programId: p.programId,
+        networkId: p.networkId,
+        serviceId: p.serviceId,
+        startAt: p.startAt,
+        durationMs: p.durationMs,
+        name: p.name,
+        isFree: p.isFree,
+      },
+    ]),
+  ],
   ng,
 )
 

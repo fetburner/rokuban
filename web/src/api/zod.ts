@@ -656,10 +656,12 @@ export const ListTunersResponse = zod.array(ListTunersResponseItem)
  * ruler 評価と同一の SQL 経路を通る（M2-2）。UI 検索（M2-11）の土台。
  *
  * **`sites`（絞り込み条件、空または省略 = 全サイト）が検索対象のサイト軸を決める。**
- * レスポンスは `{site, programId}` のフラットな配列で、同一放送が複数サイトで
+ * レスポンスは表示用の最小情報を持つフラットな行の配列で、同一放送が複数サイトで
  * マッチすれば行が複数出る（畳まない）。ruler はマッチした全サイトで予約を作る
  * （N 予約が既定。docs/recording/ruler.md「サイトの扱い」）ため、行数がそのまま
- * 実体化される予約数になる。
+ * 実体化される予約数になる。番組名・開始時刻・長さ・サービス識別子・有料表示は
+ * 検索対象の `epg_programs` 行から同じクエリで返し、番組詳細エンドポイントを
+ * 行ごとに追加取得する必要はない。
  *
  * `sites` の既定を「空 = 全サイト」と定義するのは、Go 側がレジストリ全件を埋めて
  * `Compile` に渡す前提のため。旧パス `POST /api/sites/{site}/programs/search` は
@@ -711,7 +713,13 @@ export const SearchProgramsBody = zod.object({
 
 export const SearchProgramsResponseItem = zod.object({
   "site": zod.string().describe('マッチした放送のサイト'),
-  "programId": zod.int().describe('マッチした放送の programId（`GET \/api\/sites\/{site}\/programs\/{programId}` などで使う ID）。同一放送は全サイトで同じ値を持つ（Mirakurun の ID 合成）')
+  "programId": zod.int().describe('マッチした放送の programId（`GET \/api\/sites\/{site}\/programs\/{programId}` などで使う ID）。同一放送は全サイトで同じ値を持つ（Mirakurun の ID 合成）'),
+  "networkId": zod.int().describe('マッチした放送のネットワーク識別子'),
+  "serviceId": zod.int().describe('マッチした放送のサービス識別子'),
+  "startAt": zod.iso.datetime({"offset":true}).describe('マッチした放送の開始時刻'),
+  "durationMs": zod.int().describe('マッチした放送の長さ（ミリ秒）'),
+  "name": zod.string().describe('マッチした放送の番組名'),
+  "isFree": zod.boolean().describe('マッチした放送が無料かどうか')
 }).describe('検索がマッチした 1 件（1 サイトの 1 放送）')
 export const SearchProgramsResponse = zod.array(SearchProgramsResponseItem)
 

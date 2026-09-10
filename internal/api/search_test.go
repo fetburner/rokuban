@@ -125,8 +125,14 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 // このファイルは package api、sites_multi_test.go は package api_test なので
 // 型を共有できず、この 1 ファイル内だけの複製として持つ。
 type searchMatchRow struct {
-	Site      string `json:"site"`
-	ProgramId int64  `json:"programId"`
+	Site       string    `json:"site"`
+	ProgramId  int64     `json:"programId"`
+	NetworkId  int       `json:"networkId"`
+	ServiceId  int       `json:"serviceId"`
+	StartAt    time.Time `json:"startAt"`
+	DurationMs int64     `json:"durationMs"`
+	Name       string    `json:"name"`
+	IsFree     bool      `json:"isFree"`
 }
 
 // searchFixtureGenre は insertSearchProgramFixture が焼き込むジャンル
@@ -179,6 +185,45 @@ func postSearchPrograms(t *testing.T, srv *httptest.Server, body map[string]any)
 		t.Fatal(err)
 	}
 	return matches
+}
+
+// TestSearchPrograms_IncludesDisplayFields は検索結果 1 行に、画面が自動表示する
+// 最小限の番組情報が含まれることを確認する。これが `{site, programId}` だけへ
+// 戻ると、検索画面が番組詳細 GET の N+1 に戻る。
+func TestSearchPrograms_IncludesDisplayFields(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	const (
+		site      = "siteA"
+		programID = 6003
+	)
+	insertSearchProgramFixture(t, pool, ctx, site, programID)
+
+	router := NewRouter(RouterConfig{Pool: pool, Sites: []string{site}})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	matches := postSearchPrograms(t, srv, map[string]any{
+		"genres": []int{searchFixtureGenre},
+	})
+	if len(matches) != 1 {
+		t.Fatalf("matches = %+v, want 1 row", matches)
+	}
+
+	got := matches[0]
+	wantStart := time.Date(2026, 8, 1, 12, 0, 0, 0, time.FixedZone("JST", 9*3600))
+	if got.Site != site || got.ProgramId != programID {
+		t.Fatalf("identity = {%q, %d}, want {%q, %d}", got.Site, got.ProgramId, site, programID)
+	}
+	if got.NetworkId != 32736 || got.ServiceId != 1024 {
+		t.Fatalf("service identity = {%d, %d}, want {32736, 1024}", got.NetworkId, got.ServiceId)
+	}
+	if !got.StartAt.Equal(wantStart) || got.DurationMs != 1_800_000 {
+		t.Fatalf("broadcast window = {%s, %d}, want {%s, %d}", got.StartAt, got.DurationMs, wantStart, 1_800_000)
+	}
+	if got.Name != "テスト番組" || !got.IsFree {
+		t.Fatalf("display fields = {%q, %t}, want {%q, true}", got.Name, got.IsFree, "テスト番組")
+	}
 }
 
 // TestSearchPrograms_SitesOmittedDefaultsToAllRegisteredSites は sites を省略すると

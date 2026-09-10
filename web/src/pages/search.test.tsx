@@ -164,7 +164,6 @@ function jsonResponse(body: unknown, status = 200): Response {
  */
 function stubApi(options?: {
   rules?: Rule[]
-  holdProgramDetails?: boolean
   overages?: CapacityOverage[]
   /**
    * `/api/capacity/overages` の 2 回目以降を保留する（`pages/home.test.tsx` の
@@ -200,26 +199,9 @@ function stubApi(options?: {
   const createRuleBodies: RuleInput[] = []
   const updateRuleBodies: { id: number; data: RuleInput }[] = []
   const programs = [...allPrograms, ...(options?.extraPrograms ?? [])]
-  // 値札（RuleCostSummary）用の useQueries が `SearchResultList` と同じクエリキー
-  // を再利用しても追加のリクエストが発生しないことを実測するための記録
-  // （`pages/search.tsx` のコメント「値札のために追加の HTTP リクエストは
-  // 発生しない」の裏付け。下の「値札用の useQueries を足しても...」テストで使う）。
+  // 検索結果から番組詳細 GET が発生していないことを実測するための記録
+  // （`pages/search.tsx` の N+1 回帰テストで使う）。
   const programDetailRequests: number[] = []
-  // `holdProgramDetails` が true のとき、番組の詳細（GET /api/sites/{site}/programs/{programId}）を
-  // 即座に解決せず保留する。「検索は解決したが durationMs は 1 件も届いていない」
-  // 瞬間（`loadedDurationsMs` が空のまま `totalCount > 0`）を確実に再現するための
-  // 仕掛け --- 実タイマーに依存すると環境差でその瞬間を取りこぼしうる。
-  // `releaseProgramDetails()` で保留分をまとめて解決する。`releaseOneProgramDetail()`
-  // は先頭の 1 件だけ --- 詳細が 1 件ずつ別のレンダーへ届く実ネットワークを模す。
-  const pendingProgramDetails: (() => void)[] = []
-  function releaseProgramDetails() {
-    const toRelease = pendingProgramDetails.splice(0, pendingProgramDetails.length)
-    for (const resolve of toRelease) resolve()
-  }
-  function releaseOneProgramDetail() {
-    const resolve = pendingProgramDetails.shift()
-    resolve?.()
-  }
   const rules = options?.rules ? [...options.rules] : []
   // 容量ノート（`ShortfallOverlapNote`）用のリクエスト記録。窓が点滅する回帰を
   // このリクエスト回数と `start` の種類数で固定する。
@@ -336,13 +318,7 @@ function stubApi(options?: {
     if (detail) {
       programDetailRequests.push(Number(detail[1]))
       const found = programs.find((p) => p.programId === Number(detail[1]))
-      const response = found ? jsonResponse(found) : jsonResponse({ error: 'not found' }, 404)
-      if (options?.holdProgramDetails) {
-        return new Promise<Response>((resolve) => {
-          pendingProgramDetails.push(() => resolve(response))
-        })
-      }
-      return Promise.resolve(response)
+      return Promise.resolve(found ? jsonResponse(found) : jsonResponse({ error: 'not found' }, 404))
     }
 
     if (url.pathname === '/api/programs/search') {
@@ -354,9 +330,22 @@ function stubApi(options?: {
           return Promise.resolve(jsonResponse({ error: invalidRegexMessage }, 400))
         }
         // EPG のローリングウィンドウから抜けた番組が結果に残る状況の再現。
-        // 検索は当たるが詳細（GET /api/sites/{site}/programs/{programId}）が 404 になる
+        // 検索結果に表示用の番組情報が含まれることを確認するための行。
         if (match.value === '幽霊')
-          return Promise.resolve(jsonResponse([{ site: 'default', programId: 999 }]))
+          return Promise.resolve(
+            jsonResponse([
+              {
+                site: 'default',
+                programId: 999,
+                networkId: 32736,
+                serviceId: 1024,
+                startAt: new Date(origin).toISOString(),
+                durationMs: 1_800_000,
+                name: '幽霊',
+                isFree: true,
+              },
+            ]),
+          )
       }
 
       const matched = programs.filter((p) => {
@@ -388,7 +377,20 @@ function stubApi(options?: {
           matched
             .map((p) => p.programId)
             .sort((a, b) => a - b)
-            .map((programId) => ({ site: 'default', programId })),
+            .map((programId) => {
+              const p = programs.find((program) => program.programId === programId)
+              if (p === undefined) throw new Error(`unknown fixture program ${programId}`)
+              return {
+                site: 'default',
+                programId: p.programId,
+                networkId: p.networkId,
+                serviceId: p.serviceId,
+                startAt: p.startAt,
+                durationMs: p.durationMs,
+                name: p.name,
+                isFree: p.isFree,
+              }
+            }),
         ),
       )
     }
@@ -404,8 +406,6 @@ function stubApi(options?: {
     updateRuleBodies,
     rules,
     programDetailRequests,
-    releaseProgramDetails,
-    releaseOneProgramDetail,
     overagesRequests,
     /** 未解決の `/api/capacity/overages` の本数（保留の仕掛けが効いていることの確認用）。 */
     unresolvedOverages: () => pendingOverages.length,
@@ -485,7 +485,7 @@ describe('SearchPage', () => {
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
     expect(screen.getByText('設定中の詳細条件: 2件')).toBeInTheDocument()
     expect(screen.getByText('ジャンル: ニュース・報道')).toBeInTheDocument()
-    expect(screen.getByText('チャンネル: NHK総合')).toBeInTheDocument()
+    expect(await screen.findByText('チャンネル: NHK総合')).toBeInTheDocument()
     expect(screen.queryByRole('group', { name: 'ジャンル' })).not.toBeInTheDocument()
 
     await userEvent.click(toggle)
@@ -1089,16 +1089,17 @@ describe('SearchPage', () => {
     expect(screen.queryByRole('button', { name: 'さらに表示' })).not.toBeInTheDocument()
   })
 
-  it('詳細を取得できなかった結果を黙って落とさない', async () => {
-    stubApi()
+  it('検索レスポンスの表示情報だけで行を描画し、番組詳細を取得しない', async () => {
+    const { programDetailRequests } = stubApi()
     renderPage()
 
     await addKeyword('幽霊')
     await userEvent.click(screen.getByRole('button', { name: '検索' }))
 
-    // 件数は 1 件と言っているのに行が 0 本、という食い違いを作らない
+    // 検索結果が持つ表示情報だけで行が描画される。
     expect(await screen.findByText('1 件（番組 ID 順）')).toBeInTheDocument()
-    expect(await screen.findByText('番組 #999 の詳細を取得できませんでした')).toBeInTheDocument()
+    expect(await screen.findByText('幽霊')).toBeInTheDocument()
+    expect(programDetailRequests).toHaveLength(0)
   })
 
   it('条件をクリアすると検索前の状態に戻る', async () => {
@@ -1145,7 +1146,7 @@ describe('SearchPage', () => {
       ).not.toBeInTheDocument()
     })
 
-    it('1 件マッチしたときは 7 日換算した件数・時間が出る（母数 = サンプルなので外挿の注記は出ない）', async () => {
+    it('1 件マッチしたときは 7 日換算した件数・時間が出る', async () => {
       stubApi()
       renderPage()
 
@@ -1157,81 +1158,27 @@ describe('SearchPage', () => {
       const summary = await screen.findByText(
         /この条件で保存すると、週あたり見込みで約 1 件・約 26分/,
       )
-      // 読み込み済み 1 件 = 母数 1 件なので、外挿であることの注記は不要
-      expect(summary.textContent).not.toMatch(/先頭/)
+      expect(summary.textContent).not.toContain('先頭')
     })
 
-    it('読み込みが母数に追いついていない間は「先頭 N 件」からの外挿である旨を明記し、追いつくと消える（値札のために追加の HTTP リクエストは発生しない）', async () => {
+    it('検索結果全件の durationMs を使い、表示件数に関係なく番組詳細を取得しない', async () => {
       const { programDetailRequests } = stubApi()
       renderPage()
 
       expect(await waitForServiceChip()).toBeInTheDocument()
-      // 条件なしの検索で 37 件（pageSize=30 を超える）に当てる
+      // 条件なしの検索で 37 件（pageSize=30 を超える）に当てる。
       await userEvent.click(screen.getByRole('button', { name: '検索' }))
 
       // 37 件 * 7/8 = 32.375 → 約 32 件。全 37 件が一様に 30 分（1_800_000ms）なので、
-      // 平均 30 分 * 37 件 * 7/8 = 971.25 分 = 16時間11分。最初の 30 件だけのサンプル
-      // でも平均は同じ 30 分になるため、この値自体は「読み込みが全件に届いたとき」
-      // と変わらない（下の「さらに表示」後の再検証で確認する）。
+      // 合計は 971.25 分 = 16時間11分。
       await screen.findByText(/この条件で保存すると、週あたり見込みで約 32 件・約 16時間11分/)
-      // まだ最初の 30 件しか durationMs を読み込んでいないので、外挿であることを明記する。
-      // 「読み込み済み」ではなく「先頭」と言う --- サンプルは programId 昇順の
-      // 先頭 N 件で無作為抽出ではない（`lib/rule-cost.ts` の `RuleCostSample` 参照）
-      await waitFor(() => {
-        expect(screen.getByText(/この条件で保存すると/).textContent).toContain(
-          '（時間は先頭 30 件の平均から算出）',
-        )
-      })
-
-      // 値札用に足した `useQueries`（`pages/search.tsx` の `costSampleIds`）が
-      // `SearchResultList` と同じクエリキーを使うため、追加の HTTP リクエストが
-      // 発生しないことをここで実測する（30 件・重複無し。60 件になっていないか）。
-      await waitFor(() => expect(programDetailRequests.length).toBe(30))
-      expect(new Set(programDetailRequests).size).toBe(30)
+      expect(screen.getByText(/この条件で保存すると/).textContent).not.toContain('先頭')
+      expect(programDetailRequests).toHaveLength(0)
 
       await userEvent.click(screen.getByRole('button', { name: 'さらに表示' }))
 
-      // 全件（37 件）の詳細が読み込み終わると、外挿の注記が消える
-      // （値そのものは一様な 30 分番組なので変わらない）
-      await waitFor(() => {
-        expect(
-          screen.getByText(/この条件で保存すると、週あたり見込みで約 32 件・約 16時間11分/)
-            .textContent,
-        ).not.toContain('先頭')
-      })
-
-      // 残り 7 件（37 - 30）がさらに読み込まれ、重複は無い（合計 37 件）
-      await waitFor(() => expect(programDetailRequests.length).toBe(37))
-      expect(new Set(programDetailRequests).size).toBe(37)
-    })
-
-    it('番組の詳細が 1 件も届いていない間は「0 件の平均から算出」という自己矛盾した文言を出さない', async () => {
-      const { releaseProgramDetails } = stubApi({ holdProgramDetails: true })
-      renderPage()
-
-      await addKeyword('ニュース')
-      await userEvent.click(screen.getByRole('button', { name: '検索' }))
-
-      // 検索（POST .../search）は解決したが、番組の詳細（GET /api/sites/{site}/programs/{programId}）は
-      // まだ 1 件も返っていない瞬間を確実に再現する（`holdProgramDetails` で保留）。
-      // 件数は totalCount だけで確定するので先に出るが、時間はサンプルが無いので
-      // 「算出中…」になる。
-      const summary = await screen.findByText(
-        /この条件で保存すると、週あたり見込みで約 1 件・算出中…/,
-      )
-      // 「0 件の平均から算出」（sampleSize = 0 のまま外挿の注記だけが出る自己矛盾）
-      // にならないことを確認する
-      expect(summary.textContent).not.toContain('平均から算出')
-      expect(summary.textContent).not.toContain('0 件')
-
-      releaseProgramDetails()
-
-      // 詳細が届くと通常の表示に戻る
-      await waitFor(() => {
-        expect(
-          screen.getByText(/この条件で保存すると、週あたり見込みで約 1 件・約 26分/),
-        ).toBeInTheDocument()
-      })
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+      expect(programDetailRequests).toHaveLength(0)
     })
 
     it('期間条件で絞っている検索では 8 日換算の根拠を出さず、実際より小さく出ることを明記する（両方向）', async () => {
@@ -1340,7 +1287,7 @@ describe('SearchPage', () => {
 
       expect(await screen.findByText('ニュース7')).toBeInTheDocument()
       expect(
-        await screen.findByText('既にチューナー不足の区間と重なる番組が 1 件あります'),
+        await screen.findByText('検索結果のうち、既にチューナー不足の区間と重なる番組が 1 件あります'),
       ).toBeInTheDocument()
     })
 
@@ -1369,9 +1316,8 @@ describe('SearchPage', () => {
       ).not.toBeInTheDocument()
     })
 
-    it('サンプルが上限で切れているときは「先頭 N 件のうち」と明記する', async () => {
-      // programId 5（filler の 1 つ、programId 昇順の先頭 30 件に含まれる）の
-      // 放送時間帯とだけ交差する不足区間。
+    it('検索結果全件を対象に不足区間との交差を表示する', async () => {
+      // programId 5（filler の 1 つ）の放送時間帯とだけ交差する不足区間。
       const startMs = origin + 5 * 3_600_000
       const overage: CapacityOverage = {
         site: 'default',
@@ -1389,37 +1335,9 @@ describe('SearchPage', () => {
 
       expect(
         await screen.findByText(
-          '先頭 30 件のうち、既にチューナー不足の区間と重なる番組が 1 件あります',
+          '検索結果のうち、既にチューナー不足の区間と重なる番組が 1 件あります',
         ),
       ).toBeInTheDocument()
-    })
-
-    it('番組詳細が 1 件ずつ非同期に届いても、容量ノートの問い合わせは増え続けない', async () => {
-      const { overagesRequests, releaseOneProgramDetail, programDetailRequests } = stubApi({
-        holdProgramDetails: true,
-      })
-      renderPage()
-
-      expect(await waitForServiceChip()).toBeInTheDocument()
-      // 条件なしの検索で 37 件（pageSize=30 を超える）に当てる。詳細は保留
-      // されるので、この時点ではまだ 1 件も届いていない。
-      await userEvent.click(screen.getByRole('button', { name: '検索' }))
-      await waitFor(() => expect(programDetailRequests.length).toBe(30))
-
-      // 30 件の番組詳細を 1 件ずつ解決する。`filler` は programId 昇順
-      // （1..30）でリクエストされ、`releaseOneProgramDetail` は先頭（＝最初に
-      // リクエストされた番組）から解決するので、番組名の出現順で解決を追える。
-      for (let id = 1; id <= 30; id++) {
-        releaseOneProgramDetail()
-        // eslint-disable-next-line no-await-in-loop
-        await waitFor(() => expect(screen.getByText(`番組 ${id}`)).toBeInTheDocument())
-      }
-
-      // 窓が `Date.now()` だけに依存する固定窓であれば、30 回の個別解決を
-      // 経ても `/api/capacity/overages` への要求は高々 1 回で足りる（React の
-      // 再レンダーの割れ方に依存させないよう、上限には少し余裕を持たせる）。
-      expect(overagesRequests.length).toBeGreaterThanOrEqual(1)
-      expect(overagesRequests.length).toBeLessThanOrEqual(3)
     })
 
     /**
@@ -1459,7 +1377,7 @@ describe('SearchPage', () => {
       expect(await screen.findByText('終了未定番組')).toBeInTheDocument()
       // 「不足区間があるのに沈黙」に落ちていないこと（ノートが実際に出る）。
       expect(
-        await screen.findByText('既にチューナー不足の区間と重なる番組が 1 件あります'),
+        await screen.findByText('検索結果のうち、既にチューナー不足の区間と重なる番組が 1 件あります'),
       ).toBeInTheDocument()
 
       // 窓が退化していれば `/api/capacity/overages` の `end` が `start` 以下に
@@ -1482,20 +1400,17 @@ describe('SearchPage', () => {
     it('時境界を越えてクエリキーが進み、新しいキーが未解決でもノートは消えない', async () => {
       // 時境界（`origin` は毎時 0 分）の 500ms 前に「今」を置く。
       vi.setSystemTime(origin - 500)
-      const { overagesRequests, releaseOneProgramDetail, unresolvedOverages } = stubApi({
+      const { overagesRequests, unresolvedOverages } = stubApi({
         overages: [overlappingOverage()],
-        holdProgramDetails: true,
         holdOveragesAfterFirst: true,
       })
       renderPage()
 
       await addKeyword('ニュース')
       await userEvent.click(screen.getByRole('button', { name: '検索' }))
-      // 詳細が届いて初めてノートの母集団ができる（1 件目 = `news`）。
       await waitFor(() => expect(overagesRequests.length).toBe(1))
-      releaseOneProgramDetail()
       expect(
-        await screen.findByText('既にチューナー不足の区間と重なる番組が 1 件あります'),
+        await screen.findByText('検索結果のうち、既にチューナー不足の区間と重なる番組が 1 件あります'),
       ).toBeInTheDocument()
 
       // 時境界を越えたうえで再レンダーの引き金を引く（下書きを 1 文字足す）。
@@ -1513,7 +1428,7 @@ describe('SearchPage', () => {
       expect(unresolvedOverages()).toBe(1)
 
       expect(
-        screen.getByText('既にチューナー不足の区間と重なる番組が 1 件あります'),
+        screen.getByText('検索結果のうち、既にチューナー不足の区間と重なる番組が 1 件あります'),
       ).toBeInTheDocument()
     })
   })
@@ -1926,8 +1841,7 @@ describe('検索結果から単発予約（issue #684）', () => {
  * issue #531 受け入れ:
  * - 「検索結果が `[{site, programId}]` を描画し、同一放送が 2 サイトでマッチ
  *   したときに key が重複しない」
- * - 「番組詳細が結果の運ぶ site で引かれる（第 2 サイトだけの結果が 404 に
- *   ならない）」
+ * - 「検索結果の表示情報を使い、site ごとの番組詳細 GET を発行しない」
  * - 「値札の件数が予約数（= 行数）と一致することを主張するテストがある」
  * - 「結果行だけ先頭サイト解決という非対称を無自覚に残さない」（serviceById）
  *
@@ -1937,7 +1851,7 @@ describe('検索結果から単発予約（issue #684）', () => {
 describe('複数サイトの検索結果（issue #531）', () => {
   // **siteA は `test/router.tsx` の `testSite`（'default'）に合わせる。**
   // `renderInRouter`（`renderPage` が使う）は単一 site fixture を使うので、
-  // `GET /api/sites` の応答に関わらずこの値になる（番組詳細取得のパスが
+  // `GET /api/sites` の応答に関わらずこの値になる（予約 intent のパスが
   // これで決まる）。
   const siteA = 'default'
   const siteB = 'takamatsu'
@@ -2022,8 +1936,26 @@ describe('複数サイトの検索結果（issue #531）', () => {
       if (url.pathname === '/api/programs/search') {
         return Promise.resolve(
           jsonResponse([
-            { site: siteA, programId: 500 },
-            { site: siteB, programId: 500 },
+            {
+              site: siteA,
+              programId: programA.programId,
+              networkId: programA.networkId,
+              serviceId: programA.serviceId,
+              startAt: programA.startAt,
+              durationMs: programA.durationMs,
+              name: programA.name,
+              isFree: programA.isFree,
+            },
+            {
+              site: siteB,
+              programId: programB.programId,
+              networkId: programB.networkId,
+              serviceId: programB.serviceId,
+              startAt: programB.startAt,
+              durationMs: programB.durationMs,
+              name: programB.name,
+              isFree: programB.isFree,
+            },
           ]),
         )
       }
@@ -2033,8 +1965,8 @@ describe('複数サイトの検索結果（issue #531）', () => {
     return fetchMock
   }
 
-  it('2 行とも描画され、行ごとに自分の site から詳細とサービス名を引く（key の重複警告も出ない）', async () => {
-    stubMultiSiteApi()
+  it('2 行とも描画され、行ごとのサービス名を解決し、番組詳細を取得しない', async () => {
+    const fetchMock = stubMultiSiteApi()
     // React が重複 key を検出すると console.error に警告を出す。`programId`
     // だけを key にする実装（直す前）に戻すとここで捕まる。
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -2046,9 +1978,7 @@ describe('複数サイトの検索結果（issue #531）', () => {
     await screen.findByRole('button', { name: '局A' })
     await userEvent.click(screen.getByRole('button', { name: '検索' }))
 
-    // 2 行とも「自分の site の名前」で届く。currentSite（default）固定で
-    // 引く実装（直す前）だと、2 行目も `/api/sites/default/programs/500` を
-    // 見に行ってしまい、同じ「ニュース（default）」が 2 回出る。
+    // 2 行とも検索レスポンスが運ぶ「自分の site の名前」で描画される。
     expect(await screen.findByText('ニュース（default）')).toBeInTheDocument()
     expect(await screen.findByText('ニュース（takamatsu）')).toBeInTheDocument()
 
@@ -2061,6 +1991,13 @@ describe('複数サイトの検索結果（issue #531）', () => {
     const results = within(screen.getByTestId('search-results'))
     expect(results.getByText('局A')).toBeInTheDocument()
     expect(results.getByText('局B')).toBeInTheDocument()
+
+    const programDetailCalls = fetchMock.mock.calls.filter((call) =>
+      /^\/api\/sites\/[^/]+\/programs\/\d+$/.test(
+        new URL(String(call[0]), 'http://localhost').pathname,
+      ),
+    )
+    expect(programDetailCalls).toHaveLength(0)
 
     const duplicateKeyWarning = consoleError.mock.calls.some((args) =>
       args.some((a) => typeof a === 'string' && /same key/i.test(a)),

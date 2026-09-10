@@ -1,14 +1,12 @@
-import { keepPreviousData, useQueries } from '@tanstack/react-query'
+import { keepPreviousData } from '@tanstack/react-query'
 import { useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import {
-  getGetProgramQueryOptions,
   useGetRule,
   useListCapacityOverages,
   useListReservations,
   useSearchPrograms,
-  type ProgramListItem,
   type ProgramSearchMatch,
   type Reservation,
   type Service,
@@ -22,10 +20,10 @@ import {
   RuleSourceBanner,
   ShortfallOverlapNote,
 } from '@/components/rule-form'
-import { EmptyState, ErrorState, ListSkeleton, PageHeader, Skeleton } from '@/components/page'
+import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
 import type { ReservationActions } from '@/components/program-list'
 import { Button } from '@/components/ui/button'
-import { programIdentity, useAllSitesServices, type SiteProgram } from '@/lib/all-sites-services'
+import { programIdentity, useAllSitesServices } from '@/lib/all-sites-services'
 import { countProgramsInShortfall } from '@/lib/capacity'
 import { dayOrigin } from '@/lib/day-offset'
 import { formatDateTime, formatDuration } from '@/lib/format'
@@ -44,11 +42,8 @@ import {
   estimateRuleCost,
 } from '@/lib/rule-cost'
 /**
- * pageSize は一度に詳細を取りに行く結果の件数。
- *
- * 検索 API が返すのは `{site, programId}` の行だけなので、1 件表示するたびに
- * `GET /api/sites/{site}/programs/{programId}` が必要になる。数百件を一斉に取りに行かないよう区切る
- * （API に一括取得がないことの申し送りは issue #24 のコメント）。
+ * pageSize は一度に画面へ表示する検索結果の件数。検索 API は各行に表示情報を含む
+ * ため、表示件数を増やす操作で番組詳細の追加取得は発生しない。
  */
 const pageSize = 30
 
@@ -116,9 +111,8 @@ export function SearchPage() {
    * で畳んだ union）に揃える）。
    *
    * **キーは `Service.id` そのものではなく `${networkId}:${serviceId}`。**
-   * `GET /api/sites/{site}/programs/{programId}` のレスポンス（`ProgramListItem`）は
-   * `networkId` / `serviceId` を別フィールドで持ち、合成済みの `Service.id`
-   * は持たないため、番組側からは同じ式でキーを組み直す必要がある。かつては
+   * 検索レスポンスも `networkId` / `serviceId` を別フィールドで持ち、合成済みの
+   * `Service.id` は持たないため、番組側からは同じ式でキーを組み直す必要がある。かつては
    * `serviceId` 単独をキーにしていたが、それは network をまたぐと一意でない
    * （`condition-fields.test.tsx` のフィクスチャに実例あり: 32676/1033 と
    * 32677/1033 --- どちらも「瀬戸内海放送」で serviceId 1033 が重複する）ため、
@@ -349,7 +343,7 @@ export function SearchPage() {
   }, [search.status])
 
   /**
-   * matches は検索結果の行そのもの（`[{site, programId}]`。畳まない）。
+   * matches は検索結果の表示用行そのもの（site と programId で畳まない）。
    * **行数 = 予約数**（ruler はマッチした全 site で予約を作るため、同一放送が
    * 2 site でマッチすれば 2 予約になる）なので、件数を数えるところは常に
    * `matches.length` を使い、`programId` で重複排除しない（issue #531）。
@@ -370,38 +364,17 @@ export function SearchPage() {
         : 'success'
 
   /**
-   * costSample は値札の時間見積もりに使う番組の部分集合。`SearchResultList`
-   * が表示のために取得する `matches.slice(0, visibleCount)`（下の JSX）と同じ
-   * 集合を使う。`useQueries` のクエリキー（`getGetProgramQueryOptions(site, id)`）が
-   * 一致するので、値札のために追加の HTTP リクエストは発生しない（React Query が
-   * キャッシュを共有する）。**実測済み**: `search.test.tsx` の
-   * 「読み込みが母数に追いついていない間は『先頭 N 件』からの外挿である旨を
-   * 明記し、追いつくと消える（値札のために追加の HTTP リクエストは発生しない）」
-   * が `GET /api/sites/{site}/programs/{programId}` の呼び出し件数を数えて確認している（37 件マッチ
-   * で 30 → 37 と増える一方、重複が無いこと）。
-   *
-   * **詳細取得の `site` は行が運ぶ `match.site` を使う**
-   * （issue #531）。`epg_programs` の主キーは `(site, program_id)` なので、
-   * 現在 site 固定で引くと第 2 site だけの結果が 404 になる
-   * （`docs/frontend/shell.md`「サイトの扱い」の「行が運ぶ」と同じ規律）。
-   *
-   * `loadedDurationsMs` の由来（先頭 N 件で無作為抽出ではない）は
-   * `lib/rule-cost.ts` の `RuleCostSample` のコメントを参照。
+   * 検索 API は結果の全行に `durationMs` を含めるため、値札は表示中の先頭 N 件では
+   * なく検索結果全件から計算する。検索結果の行数は site を含む予約数なので、
+   * `programId` で畳まない（issue #531）。
    */
-  const costSample = matches.slice(0, visibleCount)
-  const costDetails = useQueries({
-    queries: costSample.map((match) => getGetProgramQueryOptions(match.site, match.programId)),
-  })
-  const loadedDurationsMs = costDetails
-    .map((d) => unwrap(d.data)?.durationMs)
-    .filter((ms): ms is number => ms !== undefined)
+  const durationsMs = matches.map((match) => match.durationMs)
 
   /**
-   * costEstimate は値札（件数・時間の見込み）。`RuleCostSummary` と
-   * `ShortfallOverlapNote` の両方に同じ 1 つを渡す --- 呼び出し側ごとに
-   * 母集団の式を書き直すと、同じ「先頭 N 件」がずれうる（レビュー指摘）。
+   * costEstimate は値札（件数・時間の見込み）と容量ノートの共通の母集団から計算する。
+   * `durationsMs` は検索レスポンス全件由来なので、先頭 N 件からの外挿にはならない。
    */
-  const costEstimate = estimateRuleCost({ totalCount: matches.length, loadedDurationsMs })
+  const costEstimate = estimateRuleCost({ totalCount: matches.length, durationsMs })
 
   /**
    * 容量ノート（`ShortfallOverlapNote`）用の `GET /api/capacity/overages` の窓は
@@ -442,21 +415,13 @@ export function SearchPage() {
   /**
    * shortfallCount は容量への影響の近似（判定 (b)）。新たな不足を予測しない理由・
    * 0 件の意味・終了未定番組の扱いは `lib/capacity.ts` の
-   * `countProgramsInShortfall`。母集団は `costEstimate` と同じサンプルに揃える
-   * （別の母集団だと同じ値札の中で「先頭 N 件」の意味が場所によって変わる）。
+   * `countProgramsInShortfall`。母集団は検索レスポンス全件に揃える。
    *
    * **サイト軸は行ごと**（issue #531。`lib/capacity.ts` の
-   * `countProgramsInShortfall` のコメント参照）。`costDetails[i]` は
-   * `costSample[i]` と同じ添字（`useQueries` は入力順を保つ）なので、
-   * 番組の詳細に `costSample[i].site` を添えて渡す。
+   * `countProgramsInShortfall` のコメント参照）。検索結果の行自身が site と
+   * 放送時間を運ぶので、別の番組詳細取得は行わない。
    */
-  const loadedPrograms = costSample
-    .map((match, i) => {
-      const program = unwrap(costDetails[i]?.data)
-      return program === undefined ? undefined : { ...program, site: match.site }
-    })
-    .filter((p): p is ProgramListItem & { site: string } => p !== undefined)
-  const shortfallCount = countProgramsInShortfall(overages, loadedPrograms)
+  const shortfallCount = countProgramsInShortfall(overages, matches)
 
   /**
    * searchedHasPeriod は値札に「8 日分を 7 日換算」という根拠を出してよいかの判定。
@@ -464,7 +429,7 @@ export function SearchPage() {
    * その期間そのものになるため、8 日を根拠にすると偽の説明になる。
    *
    * **下書き（`draft`）ではなく実行した検索（`search.variables`）から導く。**
-   * 値札の数値（`matches.length` / `loadedDurationsMs`）は実行済みの検索の産物なので、
+   * 値札の数値（`matches.length` / `durationsMs`）は実行済みの検索の産物なので、
    * 根拠だけをフォームの現在値から取ると再検索するまでの間だけ両者が食い違う ---
    * 期間を入れて検索したあと欄を空にするだけで、期間で絞った数値に
    * 「8 日分を 7 日換算」という偽の根拠が付き直す（逆向きも同様）。検証:
@@ -590,8 +555,6 @@ export function SearchPage() {
       <RuleCostSummary status={costStatus} estimate={costEstimate} hasPeriod={searchedHasPeriod} />
       <ShortfallOverlapNote
         count={shortfallCount}
-        sampleSize={costEstimate.sampleSize}
-        isSampled={costEstimate.isSampled}
       />
 
       {ruleId !== undefined ? (
@@ -703,16 +666,10 @@ function SearchError({ error, onRetry }: { error: unknown; onRetry: () => void }
 }
 
 /**
- * SearchResultList は検索結果の行（`[{site, programId}]`）を番組の行にする。
+ * SearchResultList は検索 API が返した表示用の行をそのまま描画する。
  *
- * 検索 API は `site` と `programId` しか返さないため、行ごとに
- * `GET /api/sites/{site}/programs/{programId}` を引く。`useQueries` で 1 箇所に
- * まとめているのは、行コンポーネントに hook を置くと「行が消えるとクエリも
- * 消える」形になり、表示件数を増やしたときの取得状態が追いにくくなるため。
- *
- * **`site` は行が運ぶ `match.site` を使う**
- * ---`epg_programs` の主キーは `(site, program_id)` なので、現在 site 固定で
- * 引くと第 2 site だけの結果が 404 になる（issue #531）。
+ * 番組名・日時・サービス識別子・長さ・有料表示は検索結果に含まれるため、
+ * `GET /api/sites/{site}/programs/{programId}` の N+1 は発生しない。
  *
  * **key は `${site}:${programId}`。** 同一放送（同じ `programId`）が複数 site で
  * マッチすると行が複数出る（畳まない契約）ため、`programId` だけを key にすると
@@ -729,40 +686,18 @@ function SearchResultList({
   actions: ReservationActions
   showSite: boolean
 }) {
-  const details = useQueries({
-    queries: matches.map((match) => getGetProgramQueryOptions(match.site, match.programId)),
-  })
-
   return (
     <ul data-testid="search-results">
-      {matches.map((match, i) => {
-        const detail = details[i]
-        const program = unwrap(detail?.data)
-        return (
-          <li key={`${match.site}:${match.programId}`}>
-            {program !== undefined ? (
-              <SearchResultRow
-                // 詳細レスポンスは site を持たないので、検索結果の行が運ぶ site を
-                // 付けて予約操作の宛先・状態・key を site:programId に揃える。
-                program={{ ...program, site: match.site }}
-                serviceName={serviceById.get(`${program.networkId}:${program.serviceId}`)?.name}
-                actions={actions}
-                showSite={showSite}
-              />
-            ) : detail?.isError ? (
-              // 取得できなかった行を黙って落とさない。EPG のローリング
-              // ウィンドウから抜けた番組が検索結果に残ることは実際に起きる
-              <p className="border-b border-border px-4 py-3 text-xs text-destructive">
-                番組 #{match.programId} の詳細を取得できませんでした
-              </p>
-            ) : (
-              <div className="border-b border-border px-4 py-2.5">
-                <Skeleton className="h-9" />
-              </div>
-            )}
-          </li>
-        )
-      })}
+      {matches.map((match) => (
+        <li key={`${match.site}:${match.programId}`}>
+          <SearchResultRow
+            program={match}
+            serviceName={serviceById.get(`${match.networkId}:${match.serviceId}`)?.name}
+            actions={actions}
+            showSite={showSite}
+          />
+        </li>
+      ))}
     </ul>
   )
 }
@@ -787,7 +722,7 @@ function SearchResultRow({
   actions,
   showSite,
 }: {
-  program: SiteProgram
+  program: ProgramSearchMatch
   serviceName?: string
   actions: ReservationActions
   showSite: boolean
