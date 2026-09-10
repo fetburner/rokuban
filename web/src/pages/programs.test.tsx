@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CapacityOverage, ProgramListItem, Reservation, Service } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { dayOrigin } from '@/lib/day-offset'
+import { programsQueryKeyPrefix } from '@/lib/events'
 import { routeTree } from '@/routes'
 
 /**
@@ -50,6 +51,7 @@ function windowOrigin(): number {
 }
 
 const origin = windowOrigin()
+const viewKey = 'rokuban:programs:view'
 
 const services: Service[] = [
   {
@@ -372,6 +374,7 @@ function stubMatchMedia(initial: boolean) {
 
 afterEach(() => {
   Reflect.deleteProperty(window, 'matchMedia')
+  localStorage.clear()
 })
 
 /**
@@ -544,6 +547,35 @@ describe('ProgramsPage の表示形式', () => {
     expect(screen.queryByRole('group', { name: '表示形式' })).not.toBeInTheDocument()
   })
 
+  it('保存した番組表を初回レンダーから使い、リストの infinite query を開始しない', async () => {
+    localStorage.setItem(viewKey, 'grid')
+    stubApi()
+    stubMatchMedia(true)
+    const { queryClient } = renderPage()
+
+    // 最初のコミットがリスト分岐になっていないことを確認する。データ取得後だけを
+    // 見ると、`useMediaQuery` が初回 false でも effect 後のグリッドを見て通ってしまう。
+    expect(screen.queryByTestId('bounded-page-content')).not.toBeInTheDocument()
+    expect(await screen.findByTestId('program-grid')).toBeInTheDocument()
+
+    const listQueries = queryClient
+      .getQueryCache()
+      .findAll({ queryKey: [programsQueryKeyPrefix, 'infinite'] })
+    expect(listQueries.length).toBeGreaterThan(0)
+    expect(listQueries.every((query) => query.state.fetchStatus === 'idle')).toBe(true)
+  })
+
+  it('URL の view=list は保存済みの番組表より優先される', async () => {
+    localStorage.setItem(viewKey, 'grid')
+    stubApi()
+    stubMatchMedia(true)
+    renderPage('/programs?view=list')
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    expect(screen.queryByTestId('program-grid')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'リスト' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
   it('lg 以上では切り替えが出て、番組表を選ぶとグリッドになる', async () => {
     stubApi()
     stubMatchMedia(true)
@@ -556,6 +588,7 @@ describe('ProgramsPage の表示形式', () => {
     await userEvent.click(screen.getByRole('button', { name: '番組表' }))
 
     expect(await screen.findByTestId('program-grid')).toBeInTheDocument()
+    expect(localStorage.getItem(viewKey)).toBe('grid')
     // リスト側の「予約」ボタン（行右端）は消える
     expect(screen.queryByRole('button', { name: 'さらに読み込む' })).not.toBeInTheDocument()
   })
@@ -1492,10 +1525,8 @@ describe('ProgramsPage の日付ジャンプ（先頭の窓に重なる前日の
  * `lg` 以上かどうかを `useMediaQuery` から推論してグリッドへ自動切替していたが、
  * `view` を URL に持つようになったのでバッジ自身が明示する）。
  *
- * グリッドの実際のスクロール位置（px）・グリッドが実際に何レンダー目でマウント
- * されるか（`useMediaQuery` は初回レンダーでは必ず false を返すので、`showGrid`
- * が true になるのは早くても 1 レンダー遅れる。`docs/frontend/programs.md`
- * 「番組表への `at` 導線」参照）は jsdom で測れないので e2e の担当（`web/e2e/`）。
+ * グリッドの実際のスクロール位置（px）・初回フレームの出し分け（`matchMedia` の
+ * 同期初期化を含む）は jsdom で測れないので e2e の担当（`web/e2e/`）。
  * ここで見るのは jsdom でも判定できる部分だけ --- (1) `lg` 未満では `view=grid`
  * があってもグリッドを出さず、「その時刻が属する日」への日付ジャンプに
  * フォールバックすること、(2) `lg` 以上では `view=grid` どおりグリッド表示に

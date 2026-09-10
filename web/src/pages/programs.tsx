@@ -47,6 +47,7 @@ import {
 } from '@/lib/programs-search'
 import { filterProgramsFromListStart } from '@/lib/program-list'
 import { lgMediaQuery, useMediaQuery } from '@/lib/use-media-query'
+import { loadPreferredView, savePreferredView, type PreferredView } from '@/lib/view-storage'
 
 /**
  * windowHours は、進行方向（下スクロールでの自動読み込み・「さらに読み込む」）
@@ -67,7 +68,7 @@ const gridWindowHours = 24
 const gridPxPerHour = 120
 
 /** ProgramView は番組の表示形式。グリッドは `lg` 以上でのみ選べる。 */
-type ProgramView = 'list' | 'grid'
+type ProgramView = PreferredView
 
 /**
  * ProgramsPage は番組表（`/programs`）。
@@ -139,13 +140,11 @@ export function ProgramsPage() {
   // 通知する）。DayStrip のハイライトはこちらを見る。ジャンプ直後は dayOffset と
   // 一致するが、その後リストをスクロールすればこちらだけが動く。
   const [visibleDay, setVisibleDay] = useState(dayOffset)
-  // view は表示形式（グリッド / リスト）。URL 化してある（`search.view`）。
-  // 既定はリスト --- 容量不足バッジが `view: 'grid'` を明示したときはこの値が
-  // 直ちに 'grid' になるが、実際にグリッドが出るかは `showGrid`（下記）が
-  // 決める。`showGrid` は `wideScreen`（`useMediaQuery`）の判定を待つため、
-  // グリッドのマウント自体は初回レンダーより 1 レンダー遅れる
-  // （docs/frontend/programs.md「番組表への `at` 導線」参照）。
-  const view: ProgramView = search.view ?? 'list'
+  // 表示形式は URL が指定していればそれを優先し、指定が無い素の `/programs` では
+  // 端末に保存した前回の選択へ戻る。`storedView` は mount 時に 1 回だけ読む ---
+  // URL の遷移や幅の変化で、後から localStorage の値が画面を上書きしないため。
+  const [storedView] = useState<ProgramView>(() => loadPreferredView() ?? 'list')
+  const view: ProgramView = search.view ?? storedView
 
   // ProgramList への命令的 API（`components/program-list.tsx` の
   // `ProgramListHandle`）。「既にジャンプ先になっている日」を再タップしたときに
@@ -647,7 +646,10 @@ export function ProgramsPage() {
             {wideScreen && (
               <ViewChips
                 view={view}
-                onSelect={(next) => updateSearch((s) => ({ ...s, view: next }))}
+                onSelect={(next) => {
+                  savePreferredView(next)
+                  updateSearch((s) => ({ ...s, view: next }))
+                }}
               />
             )}
           </>

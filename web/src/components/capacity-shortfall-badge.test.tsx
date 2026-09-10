@@ -55,9 +55,8 @@ describe('CapacityShortfallBadge', () => {
 
     const link = await screen.findByRole('link')
     // `view=grid` を明示することで、`at` の有無や画面幅からの推論が要らなくなる
-    // （`pages/programs.tsx` の `showGrid` は `wideScreen` を待つので、グリッドの
-    // マウント自体は初回レンダーより 1 レンダー遅れる。`docs/frontend/programs.md`
-    // 「番組表への `at` 導線」参照）
+    // （`pages/programs.tsx` の `showGrid` は `wideScreen` と URL の view で決まる。
+    // 初回フレームの出し分けは実ブラウザの E2E で確認する）
     expect(link).toHaveAttribute('href', `/programs?view=grid&at=${atMs(19 * 60)}`)
   })
 

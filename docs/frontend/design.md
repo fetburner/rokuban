@@ -391,6 +391,7 @@ Rokuban は利用者という概念を持たない（[api/deployment.md](../api/
 | 再生位置 | `rokuban:playback:<録画 id>:<プロファイル>` | 録画ごと |
 | 再生速度 | `rokuban:playback-rate` | **端末ごとに 1 つ**（録画ごとではない） |
 | 録画一覧の表示形式（リスト / カード） | `rokuban:recordings:view` | 出す情報は同じで並べ方だけが変わる |
+| 番組表の表示形式（リスト / 番組表） | `rokuban:programs:view` | URL の `view` が優先。モバイルは常にリスト |
 | 最後の検索条件 | `rokuban:search:last` | URL が優先（下記） |
 
 **再生速度を録画ごとに持たない**のは、速度が「この録画をどう見るか」ではなく「自分が
