@@ -1369,17 +1369,22 @@ for (const spec of boundedListScreens) {
     ng.push(`rules/desktop: 「ルールを作成」が内容幅でない（${createBox.width}px）`)
   }
 
-  const editBg = await computedOf(
-    page.getByRole('link', { name: '検索しながら編集' }).first(),
-    'background-color',
+  // issue #728: 主編集導線はルール名そのもの（`variant="link"` = `text-primary`）
+  // で、「編集」という primary 塗りのボタンはもう無い。**背景色ではなく
+  // 文字色**が primary トークンと一致することを見る --- `text-primary` /
+  // `bg-primary` はどちらも Tailwind の `--color-primary`（= `--primary`）を
+  // 参照するので、リンクの文字色と作成ボタンの背景色は同じ rgba になる。
+  const editColor = await computedOf(
+    page.getByRole('link', { name: /^ルール「.+」を編集$/ }).first(),
+    'color',
   )
   const createBg = await computedOf(create, 'background-color')
   if (
-    editBg === null ||
+    editColor === null ||
     createBg === null ||
-    !editBg.rgba.every((value, index) => value === createBg.rgba[index])
+    !editColor.rgba.every((value, index) => value === createBg.rgba[index])
   ) {
-    ng.push('rules/desktop: 主操作「検索しながら編集」が primary ボタンでない')
+    ng.push('rules/desktop: ルール名の編集リンクが primary の文字色でない')
   }
   await context.close()
 }
@@ -3044,7 +3049,9 @@ for (const theme of themes) {
 // 24px にする。バッジの z-index も見て、行全面リンクの上で当たり判定が生きることを固定する。
 {
   const { context, page } = await open(desktop, 'light', screenOf('rules'))
-  const smallButton = page.getByRole('link', { name: '検索しながら編集', exact: true }).first()
+  // issue #728: sm の実測サンプルはルール名の編集リンク（size="sm" の
+  // `min-h-8`）に付け替える。旧「検索しながら編集」ボタンは無くなった。
+  const smallButton = page.getByRole('link', { name: /^ルール「.+」を編集$/ }).first()
   const box = (await smallButton.count()) === 0 ? null : await smallButton.boundingBox()
   log(`  Button size=sm: height=${box?.height}`)
   if (box === null || box.height < 32) {

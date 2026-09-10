@@ -407,7 +407,12 @@ describe('RulesPage 新規作成', () => {
     const link = screen.getByRole('link', { name: 'ルール「平日ニュース」を編集' })
     expect(link).toHaveAttribute('href', '/search?ruleId=2')
     expect(link).toHaveClass('min-h-8', 'text-primary')
-    expect(screen.queryByRole('link', { name: '検索しながら編集' })).not.toBeInTheDocument()
+    // ラベルではなく href そのものを数える --- 別ラベルの 2 本目を足しても
+    // 「同じ導線を重複させない」という主張はラベルの不在テストでは検査できない。
+    const searchLinks = screen
+      .getAllByRole('link')
+      .filter((el) => el.getAttribute('href') === '/search?ruleId=2')
+    expect(searchLinks).toHaveLength(1)
   })
 
   // issue #137: ルールから、そのルール由来の録画だけに絞った一覧への導線。

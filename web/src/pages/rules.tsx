@@ -344,11 +344,21 @@ function RuleRow({
     <div className="rounded-lg border border-border px-3 py-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
+          {/* flex-nowrap: 「無効」バッジは常に名前と同じ行に残す（旧・素の
+              truncate span の挙動を維持）。flex-wrap のままだと、長い名前の
+              hypothetical な主軸サイズ（flex-wrap の折返し判定は shrink 適用前の
+              値を見る）だけで行いっぱいになり、shrink を足してもバッジは次行へ
+              折り返る --- 実ブラウザで確認済み（同じ min-w-0 shrink のまま
+              flex-wrap → flex-nowrap にした変更だけで折返りが消えた）。 */}
+          <div className="flex flex-nowrap items-center gap-2">
             <Button
               variant="link"
               size="sm"
-              className="min-w-0 max-w-full justify-start overflow-hidden px-0 text-left text-base font-medium"
+              // min-w-0 shrink: 共通 Button の base クラスが shrink-0 を持つため
+              // 上書きしないと 0 まで縮まない。nowrap の行内でバッジ分の幅を
+              // 譲るには、この Button 自身が縮み、中の truncate span が
+              // テキストを省略できる必要がある。
+              className="min-w-0 shrink justify-start overflow-hidden px-0 text-left text-base font-medium"
               render={
                 <Link
                   to="/search"
@@ -360,9 +370,10 @@ function RuleRow({
               <span className="truncate">{rule.name}</span>
             </Button>
             {!rule.enabled && (
-              /* 文字色は text-foreground（bg-muted 小バッジの合成後コントラスト
+              /* shrink-0: nowrap 化した行の中で、名前に幅を譲って自分は潰れない
+                 （文字色は text-foreground。bg-muted 小バッジの合成後コントラスト
                  対策。docs/frontend/design.md「コントラストは毎回測る」）。 */
-              <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">
+              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">
                 無効
               </span>
             )}
