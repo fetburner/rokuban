@@ -318,7 +318,7 @@ async function clickPlay(page) {
  * この assert より前に `resolveServiceId`（宣言部）がサービス一覧に見つからず
  * 落ちる。
  *
- * この判定が本来見たいのは「タップだけではプレイリスト/セグメント要求が飛ばない」
+ * この判定が本来見たいのは「チャンネルを選ぶだけではプレイリスト/セグメント要求が飛ばない」
  * こと自体であり、実データ（H.264/AAC）や実再生は要らない --- ①〜⑦と違って
  * ffmpeg フィクスチャに依存せず、bundled Chromium だけで常に測れる。
  *
@@ -411,14 +411,19 @@ async function runConsentCheck() {
       )
     }
 
-    const playButton = page.getByRole('button', { name: /再生/ })
-    if ((await playButton.count()) === 0) {
-      ng.push('⓪ 「再生」ボタンが見つからない')
+    const preview = page.getByRole('button', { name: /再生/ })
+    if ((await preview.count()) === 0) {
+      ng.push('⓪ 選択プレビューが見つからない')
       return
     }
 
     requestLog.length = 0
-    await playButton.click()
+    const previewBox = await preview.boundingBox()
+    if (previewBox === null) {
+      ng.push('⓪ 選択プレビューの位置を取得できない')
+      return
+    }
+    await page.mouse.click(previewBox.x + 4, previewBox.y + 4)
     let fired = false
     try {
       await page.waitForFunction(
@@ -433,8 +438,8 @@ async function runConsentCheck() {
     } catch {
       fired = false
     }
-    log(`  再生ボタン押下後にプレイリスト要求が飛んだ: ${fired ? 'YES' : 'NO'}`)
-    if (!fired) ng.push('⓪ 「再生」ボタンを押してもプレイリスト要求が飛ばない')
+    log(`  選択プレビューの角を押した後にプレイリスト要求が飛んだ: ${fired ? 'YES' : 'NO'}`)
+    if (!fired) ng.push('⓪ 選択プレビューの角を押してもプレイリスト要求が飛ばない')
 
     // --- ⓪' 再生中に別チャンネルへ切り替えても、押していない方の playlist/
     // segment 要求が飛ばない ---

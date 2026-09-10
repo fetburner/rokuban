@@ -796,6 +796,44 @@ describe('LivePage', () => {
     },
   )
 
+  describe('選択プレビューの再生操作', () => {
+    function renderSelectionPreview() {
+      stubFetch({
+        services: [service({ serviceId: 10, name: 'チャンネル A' })],
+        programsByServiceId: { 10: [program({ serviceId: 10, name: 'A の番組' })] },
+      })
+      renderLive()
+    }
+
+    it('プレビュー面をクリックすると再生が始まる', async () => {
+      const user = userEvent.setup()
+      renderSelectionPreview()
+
+      const preview = await screen.findByRole('button', { name: 'チャンネル Aを再生' })
+      expect(preview.querySelector('button')).not.toBeInTheDocument()
+
+      await user.click(preview)
+
+      await waitFor(() => expect(playlistFetchCalled()).toBe(true))
+    })
+
+    it.each([
+      ['Enter', '{Enter}'],
+      ['Space', '[Space]'],
+    ])('プレビュー面は%sキーでも再生できる', async (_keyName, key) => {
+      const user = userEvent.setup()
+      renderSelectionPreview()
+
+      const preview = await screen.findByRole('button', { name: 'チャンネル Aを再生' })
+      preview.focus()
+      expect(preview).toHaveFocus()
+
+      await user.keyboard(key)
+
+      await waitFor(() => expect(playlistFetchCalled()).toBe(true))
+    })
+  })
+
   it('?service= の直開きでも選択状態で止まり、再生ボタンを押すまでプレイリストを取りに行かない（issue #234 の含むもの 3）', async () => {
     stubFetch({
       services: [service({ serviceId: 10, name: 'チャンネル A' })],
