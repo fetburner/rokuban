@@ -58,15 +58,6 @@ linters:
       lines: 150
       statements: -1
 
-  exclusions:
-    rules:
-      # sqlc の :batchexec 生成テンプレートは Exec 内で batch results の
-      # Close を defer する。Close は下の公開 Close でも呼ばれ、生成コードを
-      # 手編集できないため、生成物全体に errcheck を適用しない。
-      - path: internal/db/sqlcgen/batch\.go
-        linters:
-          - errcheck
-
 issues:
   new-from-rev: origin/main
   # funlen は診断位置を func 宣言行に打つ。whole-files が無いと

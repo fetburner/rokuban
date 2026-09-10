@@ -5,12 +5,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/tsstat"
 )
 
@@ -33,40 +34,35 @@ func pcrPacket(pid, cc int, base uint64) []byte {
 	return pkt
 }
 
-type ingestBatchTracer struct {
+// sendBatchCounter wraps a sqlcgen.DBTX and records every SendBatch call directly
+// (call count and the length of each batch), instead of relying on pgx's
+// TraceBatchStart hook. pgx v5.10's Conn.SendBatch returns emptyBatchResults for a
+// zero-length batch *before* ever invoking a QueryTracer's TraceBatchStart
+// (conn.go:943), so a tracer-based oracle cannot observe whether commit() sent an
+// empty batch at all — it only ever sees the batches pgx chose to trace.
+type sendBatchCounter struct {
+	sqlcgen.DBTX
 	batchSizes []int
 }
 
-func (t *ingestBatchTracer) TraceBatchStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
-	t.batchSizes = append(t.batchSizes, len(data.Batch.QueuedQueries))
-	return ctx
+func (c *sendBatchCounter) SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults {
+	c.batchSizes = append(c.batchSizes, b.Len())
+	return c.DBTX.SendBatch(ctx, b)
 }
 
-func (*ingestBatchTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
-	return ctx
-}
-
-func (*ingestBatchTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
-func (*ingestBatchTracer) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBatchQueryData) {}
-
-func (*ingestBatchTracer) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
-
-func setupIngestBatchTracePool(t *testing.T) (*pgxpool.Pool, *ingestBatchTracer) {
+// withIngestCommitBatchCounter installs a sendBatchCounter into commit()'s query
+// builder (via newIngestCommitQueries) for the duration of the test.
+func withIngestCommitBatchCounter(t *testing.T) *sendBatchCounter {
 	t.Helper()
 
-	base := setupTestPool(t)
-	config := base.Config()
-	base.Close()
-
-	tracer := &ingestBatchTracer{}
-	config.ConnConfig.Tracer = tracer
-	pool, err := pgxpool.NewWithConfig(context.Background(), config)
-	if err != nil {
-		t.Fatalf("creating traced test pool: %v", err)
+	counter := &sendBatchCounter{}
+	original := newIngestCommitQueries
+	newIngestCommitQueries = func(tx pgx.Tx) *sqlcgen.Queries {
+		counter.DBTX = tx
+		return sqlcgen.New(counter)
 	}
-	t.Cleanup(pool.Close)
-	return pool, tracer
+	t.Cleanup(func() { newIngestCommitQueries = original })
+	return counter
 }
 
 func TestIngestWorker_CommitDropPositions(t *testing.T) {
@@ -134,7 +130,11 @@ func TestIngestWorker_CommitDropPositions(t *testing.T) {
 }
 
 func TestIngestWorker_CommitDropStatsAndPositionsUsesTwoBatches(t *testing.T) {
-	pool, tracer := setupIngestBatchTracePool(t)
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	batchCounter := withIngestCommitBatchCounter(t)
 	recordingID := insertTestRecording(t, pool)
 
 	data := make([]byte, 0, 4*188)
@@ -167,13 +167,17 @@ func TestIngestWorker_CommitDropStatsAndPositionsUsesTwoBatches(t *testing.T) {
 		t.Fatalf("commit() error: %v", err)
 	}
 
-	if got, want := tracer.batchSizes, []int{2, 2}; !equalInts(got, want) {
+	if got, want := batchCounter.batchSizes, []int{2, 2}; !slices.Equal(got, want) {
 		t.Errorf("SendBatch sizes = %v, want %v", got, want)
 	}
 }
 
 func TestIngestWorker_CommitSkipsEmptyDropBatches(t *testing.T) {
-	pool, tracer := setupIngestBatchTracePool(t)
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	batchCounter := withIngestCommitBatchCounter(t)
 	recordingID := insertTestRecording(t, pool)
 
 	mediaDir := t.TempDir()
@@ -202,7 +206,7 @@ func TestIngestWorker_CommitSkipsEmptyDropBatches(t *testing.T) {
 	}
 
 	// stats は 1 件だが positions は 0 件なので、stats batch だけが送信される。
-	if got, want := tracer.batchSizes, []int{1}; !equalInts(got, want) {
+	if got, want := batchCounter.batchSizes, []int{1}; !slices.Equal(got, want) {
 		t.Fatalf("stats-only SendBatch sizes = %v, want %v", got, want)
 	}
 
@@ -219,7 +223,7 @@ func TestIngestWorker_CommitSkipsEmptyDropBatches(t *testing.T) {
 		t.Fatalf("empty commit() error: %v", err)
 	}
 
-	if got, want := tracer.batchSizes, []int{1}; !equalInts(got, want) {
+	if got, want := batchCounter.batchSizes, []int{1}; !slices.Equal(got, want) {
 		t.Errorf("empty SendBatch sizes = %v, want unchanged %v", got, want)
 	}
 }
@@ -309,16 +313,4 @@ func TestIngestWorker_CommitDropBatchFailureRollsBack(t *testing.T) {
 	if _, err := os.Stat(fullPath); !os.IsNotExist(err) {
 		t.Errorf("canonical file stat error = %v, want file to remain unpublished", err)
 	}
-}
-
-func equalInts(a, b []int) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
