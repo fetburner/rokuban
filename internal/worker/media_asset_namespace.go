@@ -14,7 +14,7 @@ SELECT id, kind, rel_path
 FROM media_assets
 WHERE state <> 'deleted'
   AND kind IN ('original', 'encoded')
-  AND rel_path NOT LIKE 'sites/_%/%'
+  AND rel_path !~ '^sites/[^/]+/'
 ORDER BY id
 LIMIT 1
 `
@@ -22,10 +22,11 @@ LIMIT 1
 // ValidateMediaAssetRelPathNamespace は worker が起動する前に、原本と encoded の
 // 生きた media_assets 行が `sites/{site}/` 名前空間に入っていることを検査する。
 //
-// site セグメントが空の `sites//...` や、セグメントの区切りが無い
-// `sites/show.m2ts` も拒否する。`NOT LIKE 'sites/%'` だけだと後者を通してしまい、
+// 述語は前方一致ではなく空でない site セグメント 1 つを要求する正規表現である。
+// `LIKE 'sites/%'` は `sites/show.m2ts` を、`LIKE 'sites/_%/%'` は `_` が `/` にも
+// 当たるため `sites//a/b` を通してしまう。どちらも
 // classifySiteForRescuedFile（internal/catalog/rescue_scan.go）は site を決められず
-// 空文字を返すため、この検査を通った行が DB 喪失後の rescue では復元を拒否され、
+// 空文字を返すので、この検査を通った行が DB 喪失後の rescue では復元を拒否され、
 // orphan 回収でエイジング後に消える --- 「移行済み」の主張と実際の rescue 可否が
 // 食い違う。
 //

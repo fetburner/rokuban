@@ -59,6 +59,15 @@ func TestValidateMediaAssetRelPathNamespace(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			// Same reason, with the empty site segment followed by more path:
+			// LIKE 'sites/_%/%' lets this through because "_" also matches "/".
+			name:    "empty site segment is rejected",
+			kind:    db.AssetKindOriginal,
+			relPath: "sites//archive/show.m2ts",
+			state:   "active",
+			wantErr: true,
+		},
+		{
 			name:    "deleting bare encoded is rejected",
 			kind:    db.AssetKindEncoded,
 			profile: stringPtr("h264"),
