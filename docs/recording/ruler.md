@@ -114,7 +114,7 @@ tie-break を決定的にするのは必須で、任意ではない。同じ類�
 1. `recordings.rule_id` は `rules` への FK `recordings_rule_id_fkey` が `ON DELETE SET NULL` なので、そのルールで録れた履歴の `rule_id` が NULL に落ちる。以後どのルールの比較対象にもならない
 2. 同じ条件でルールを**作り直しても** id は新しくなるので、過去の録画は 1 件もマッチしない。直後のパスでは重複としてスキップされなくなる（実際に余分に録れる量は下記のとおり一過性）
 
-**これは仕様である**（`internal/ruler/dedupe_test.go` の `TestRunPass_DedupeHistoryLeavesScopeOnRuleDelete` が 3 段階で固定している: ルールが生きていれば skip / 削除→作り直し直後は skip しない / 新ルールで 1 本録れるとまた skip する）。条件を大きく変えたいだけなら**削除して作り直すのではなく編集する** —— `PATCH /api/rules/{id}`（UI の「編集」「検索しながら編集」）は id を保つので履歴も保たれる。
+**これは仕様である**（`internal/ruler/dedupe_test.go` の `TestRunPass_DedupeHistoryLeavesScopeOnRuleDelete` が 3 段階で固定している: ルールが生きていれば skip / 削除→作り直し直後は skip しない / 新ルールで 1 本録れるとまた skip する）。条件を大きく変えたいだけなら**削除して作り直すのではなく編集する** —— `PATCH /api/rules/{id}`（UI の「検索しながら編集」）は id を保つので履歴も保たれる。
 
 `deleted_at` の tombstone 契約（上表）との非対称に見えるが、守っている主語が違う。tombstone が守るのは「録画したという不可逆な事実」で、ユーザーがファイルを消しても事実は残る。ルール削除で失われるのは事実ではなく**比較の枠**で、`recordings` の行は 1 行も減っていない。倒れる方向も「録り逃し」ではなく「余計に録る」側であり（[予約モデル](reservation-model.md) §4.3「迷ったら録る側に倒す」）、**新ルールの下で 1 本録れれば以降の再放送はまた弾かれる**（上と同じテストの段階 3 で測っている: `base.skip` が true に戻り、根拠 2 列は新しい録画を指す）—— 履歴が積み直るまでの一過性の過剰録画になる。この一文が受け入れ可能かどうかの分かれ目で、偽なら帰結は「窓の中の再放送を全部録り直す」に戻る。
 
