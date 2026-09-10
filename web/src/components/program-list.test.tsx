@@ -9,6 +9,7 @@ import {
   type ProgramListHandle,
   type ReservationActions,
 } from '@/components/program-list'
+import type { Reservation } from '@/api/generated'
 import { formatDate } from '@/lib/format'
 import { siteServiceKey, type SiteProgram, type SiteService } from '@/lib/all-sites-services'
 
@@ -61,16 +62,10 @@ function actions(overrides: Partial<ReservationActions> = {}): ReservationAction
   }
 }
 
-/**
- * jsonResponse は overlaps エンドポイントのスタブ応答。ProgramRow は未予約の行に
- * 常に ProgramOverlapWarning を出し、それが `GET .../overlaps` を叩くため、
- * ProgramList を単体でマウントするだけでも fetch のスタブが要る
- * （programs.test.tsx の stubApi と同じ理由）。
- */
 function stubFetch() {
   globalThis.fetch = vi.fn(() =>
     Promise.resolve(
-      new Response(JSON.stringify({ count: 0, reservations: [] }), {
+      new Response(JSON.stringify({ live: false }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }),
@@ -86,6 +81,7 @@ function renderList(
     now?: number
     ref?: React.RefObject<ProgramListHandle | null>
     showSite?: boolean
+    reservations?: readonly Reservation[]
   } = {},
 ) {
   stubFetch()
@@ -96,6 +92,7 @@ function renderList(
         ref={extra.ref}
         programs={programs}
         serviceById={services}
+        reservations={extra.reservations ?? []}
         showSite={extra.showSite}
         actions={reservationActions}
         onVisibleDayChange={extra.onVisibleDayChange}

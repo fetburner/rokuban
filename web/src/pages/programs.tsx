@@ -30,6 +30,7 @@ import {
   programsQueryKeyPrefix,
 } from '@/lib/events'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
+import { deriveProgramOverlaps } from '@/lib/program-overlaps'
 import { useReservationActions } from '@/lib/reservation-actions'
 import {
   programIdentity,
@@ -704,6 +705,7 @@ export function ProgramsPage() {
           programs={gridPrograms}
           services={gridServices}
           serviceById={siteServiceByKey}
+          reservations={reservationList}
           overages={overages}
           actions={actions}
           scrollToMs={scrollToMs}
@@ -740,6 +742,7 @@ export function ProgramsPage() {
                 ref={programListRef}
                 programs={visiblePrograms}
                 serviceById={siteServiceByKey}
+                reservations={reservationList}
                 showSite={sites.length > 1}
                 actions={actions}
                 // プレースホルダ表示中（未キャッシュ日へジャンプして新しい日の
@@ -827,6 +830,7 @@ function ProgramGridView({
   programs,
   services,
   serviceById,
+  reservations,
   overages,
   actions,
   isPending,
@@ -839,6 +843,8 @@ function ProgramGridView({
   programs: SiteProgram[]
   services: SiteService[]
   serviceById: Map<string, SiteService>
+  /** 未取得（初回取得中・失敗中）は undefined。0 件とは扱わず警告を出さない。 */
+  reservations: readonly Reservation[] | undefined
   /** チューナーが不足している区間。番組ではなく区間として帯に描く（M2-10）。 */
   overages: readonly CapacityOverage[]
   actions: ReservationActions
@@ -891,6 +897,11 @@ function ProgramGridView({
             )}
             pending={actions.isBusy(selected)}
             reservationStateUnknown={actions.reservationStateUnknown}
+            overlaps={
+              reservations === undefined
+                ? undefined
+                : deriveProgramOverlaps(selected, reservations)
+            }
             onReserve={(overrides) => actions.reserve(selected, overrides)}
             onCancel={() => actions.cancel(selected)}
           />

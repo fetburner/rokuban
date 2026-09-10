@@ -2,7 +2,7 @@ import { Link } from '@tanstack/react-router'
 import { ChevronDown } from 'lucide-react'
 import { useState } from 'react'
 
-import { useGetProgram, type ProgramOverridesInput } from '@/api/generated'
+import { useGetProgram, type ProgramOverlaps, type ProgramOverridesInput } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { EncodeSettingsFields } from '@/components/encode-settings-fields'
 import { ProgramOverlapWarning } from '@/components/program-overlap-warning'
@@ -53,6 +53,7 @@ export function ProgramRow({
   reservationStateUnknown,
   onReserve,
   onCancel,
+  overlaps,
 }: {
   program: SiteProgram
   serviceName?: string
@@ -69,6 +70,8 @@ export function ProgramRow({
   reservationStateUnknown: boolean
   onReserve: (overrides?: ProgramOverridesInput) => void
   onCancel: () => void
+  /** 予約一覧から導出した重なり。未取得の間は undefined で警告を出さない。 */
+  overlaps?: ProgramOverlaps
 }) {
   const site = program.site
   const liveEnabled = useLiveEnabled()
@@ -102,7 +105,7 @@ export function ProgramRow({
   // `nowMs` は tick（`setInterval`）を持たず毎レンダー `Date.now()` を読むだけ、
   // QueryClient（`main.tsx`）は `staleTime: 30_000` と `refetchOnWindowFocus`
   // のみで `refetchInterval` は無く、このコンポーネント自身が張るクエリ
-  // （capabilities / 番組詳細 / overlaps）も定期再取得しない。したがって
+  // （capabilities / 番組詳細）も定期再取得しない。したがって
   // 「数十秒で追いつく」保証は無い。それでも良いのは上記の理由（誤った遷移先を
   // 指さない）だけであり、pages/live.tsx の `nowMs`（30 秒 tick）のような
   // 常時性の高い表示を求められたら別の設計が要る。
@@ -148,9 +151,9 @@ export function ProgramRow({
               {!program.isFree && <span className="shrink-0">有料</span>}
             </div>
             {/* 予約する前に見せる（issue #24 M2-8）。展開しなくても常に見える位置に置く
-                （予約後に知らせても遅いため）。取消可能な「取消」ボタン側（既に予約済み）
-                では自分自身との重なりしか出ようがないので問い合わせ自体をしない。 */}
-            {!reserved && <ProgramOverlapWarning site={site} programId={program.programId} />}
+                （予約後に知らせても遅いため）。重なりは番組表で取得済みの予約一覧から
+                導出するので、行ごとの overlaps API はここから呼ばない。 */}
+            {!reserved && <ProgramOverlapWarning overlaps={overlaps} />}
           </div>
           <ChevronDown
             className={cn(

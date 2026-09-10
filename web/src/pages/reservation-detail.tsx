@@ -15,7 +15,7 @@ import {
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { EncodeOverridesEditor } from '@/components/encode-settings-fields'
 import { ErrorState, ListSkeleton, PageHeader } from '@/components/page'
-import { ProgramOverlapWarning } from '@/components/program-overlap-warning'
+import { ProgramOverlapWarningFromApi } from '@/components/program-overlap-warning'
 import { ReservationSkipReason } from '@/components/reservation-skip-reason'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
@@ -228,7 +228,7 @@ export function ReservationDetailPage() {
             {/* この予約が作られたあとで他の予約が増え、重なりが生じることもあるので
                 詳細画面でも常に出す（issue #24 M2-8。件数だけ・断定なし）。 */}
             <div className="mt-2">
-              <ProgramOverlapWarning site={site} programId={reservation.programId} />
+              <ProgramOverlapWarningFromApi site={site} programId={reservation.programId} />
             </div>
           </section>
 

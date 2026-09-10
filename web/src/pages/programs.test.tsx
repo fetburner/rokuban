@@ -224,6 +224,8 @@ const encodeProfiles = [{ name: 'h264', container: 'mp4' as const }]
  *
  * 予約 / 取消は `PUT /api/sites/default/programs/{id}/intent` を叩く
  * （issue #29。reservations 行は同期的に作らない）。テストは常に成功させる。
+ * 番組表の重なり警告は `/api/reservations` から導出するため、番組別 overlaps
+ * エンドポイントはスタブせず、誤って行ごとに取得するとテストが失敗するようにする。
  *
  * `programs` は絞り込み対象の番組集合（既定は `allPrograms`）。日付ジャンプの
  * テストは絶対時刻で配置した専用の番組を渡す。`onProgramsCall` は
@@ -284,9 +286,6 @@ function stubApi(
     }
     if (url.pathname === '/api/encode-profiles') {
       return Promise.resolve(jsonResponse(encodeProfiles))
-    }
-    if (/^\/api\/sites\/default\/programs\/\d+\/overlaps$/.test(url.pathname)) {
-      return Promise.resolve(jsonResponse({ count: 0, reservations: [] }))
     }
     // 行を展開すると ProgramDetail（program-row.tsx）が単体取得を叩く
     // （段階的開示。issue #132 のテストで行を展開するので必要になった）。
@@ -433,6 +432,54 @@ async function reservationsSettled(queryClient: QueryClient): Promise<void> {
 }
 
 describe('ProgramsPage の表示形式', () => {
+  it('予約一覧から重なり警告を導出し、番組別 overlaps API を取得しない', async () => {
+    const fetchMock = stubApi([reservation(alsoSoon.programId, '手話ニュース')])
+    const { queryClient } = renderPage()
+
+    await reservationsSettled(queryClient)
+    expect(
+      screen.getByText(/同じ時間帯に1件の予約があります（.*手話ニュース/),
+    ).toBeInTheDocument()
+
+    expect(
+      fetchMock.mock.calls.filter((call) =>
+        new URL(String(call[0]), 'http://localhost').pathname.endsWith('/overlaps'),
+      ),
+    ).toHaveLength(0)
+  })
+
+  it('取消後は reservations の invalidate によって重なり警告も更新される', async () => {
+    const reservations = [reservation(alsoSoon.programId, '手話ニュース')]
+    const fetchMock = stubApi(
+      reservations,
+      [],
+      allPrograms,
+      undefined,
+      undefined,
+      [],
+      () => {
+        reservations.length = 0
+        return noContentResponse()
+      },
+    )
+    const { queryClient } = renderPage()
+
+    await reservationsSettled(queryClient)
+    expect(screen.getByText(/同じ時間帯に1件の予約があります（.*手話ニュース/)).toBeInTheDocument()
+
+    await userEvent.click(await screen.findByRole('button', { name: '取消' }))
+    await screen.findByText('予約を取消しました')
+
+    await waitFor(() => {
+      expect(screen.queryByText(/同じ時間帯に1件の予約があります/)).not.toBeInTheDocument()
+    })
+    expect(
+      fetchMock.mock.calls.filter((call) =>
+        new URL(String(call[0]), 'http://localhost').pathname.endsWith('/overlaps'),
+      ),
+    ).toHaveLength(0)
+  })
+
   it('予約一覧の取得に失敗すると状態を知らせ、再試行まで未予約行を操作できない', async () => {
     const fetchMock = stubApi()
     const implementation = fetchMock.getMockImplementation()!

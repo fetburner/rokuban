@@ -8,7 +8,7 @@ import {
   useRef,
 } from 'react'
 
-import type { ProgramOverridesInput } from '@/api/generated'
+import type { ProgramOverridesInput, Reservation } from '@/api/generated'
 import { ProgramRow } from '@/components/program-row'
 import {
   programIdentity,
@@ -18,6 +18,7 @@ import {
 } from '@/lib/all-sites-services'
 import { dayKey, formatDate } from '@/lib/format'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
+import { deriveProgramOverlaps } from '@/lib/program-overlaps'
 import { firstIndexForDayOffset, programKeyAt, visibleDayOffset } from '@/lib/program-list'
 
 /**
@@ -169,6 +170,8 @@ export const ProgramList = forwardRef<
   {
     programs: SiteProgram[]
     serviceById: Map<string, SiteService>
+    /** 未取得（初回取得中・失敗中）は undefined。0 件とは扱わず警告を出さない。 */
+    reservations: readonly Reservation[] | undefined
     showSite?: boolean
     actions: ReservationActions
     /**
@@ -185,6 +188,7 @@ export const ProgramList = forwardRef<
   {
     programs,
     serviceById,
+    reservations,
     showSite = false,
     actions,
     onVisibleDayChange,
@@ -321,6 +325,8 @@ export const ProgramList = forwardRef<
       {renderedIndices.map((index) => {
         const program = programs[index]
         const reserved = actions.reservedProgramIds.has(programIdentity(program.site, program.programId))
+        const overlaps =
+          reservations === undefined ? undefined : deriveProgramOverlaps(program, reservations)
 
         return (
           <li
@@ -357,6 +363,7 @@ export const ProgramList = forwardRef<
               reserved={reserved}
               pending={actions.isBusy(program)}
               reservationStateUnknown={actions.reservationStateUnknown}
+              overlaps={overlaps}
               onReserve={(overrides) => actions.reserve(program, overrides)}
               onCancel={() => actions.cancel(program)}
             />

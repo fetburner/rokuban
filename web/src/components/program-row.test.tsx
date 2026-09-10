@@ -37,10 +37,9 @@ function airingProgram(overrides: Partial<ProgramListItem> = {}): SiteProgram {
 }
 
 /**
- * stubFetch は ProgramRow の展開パネルが叩く 2 本 + 能力 API を振り分ける。
+ * stubFetch は ProgramRow の展開パネルが叩く番組詳細 + 能力 API を振り分ける。
  *
  * - `GET /api/capabilities`: 「ライブで見る」の出し分け（issue #209 / #229）
- * - `GET .../overlaps`: 未予約行が常に問い合わせる（`ProgramOverlapWarning`）
  * - `GET .../programs/{programId}`: 展開時に `ProgramDetail` が問い合わせる番組詳細
  */
 function stubFetch({ live = true }: { live?: boolean } = {}) {
@@ -49,14 +48,6 @@ function stubFetch({ live = true }: { live?: boolean } = {}) {
     if (url.pathname === '/api/capabilities') {
       return Promise.resolve(
         new Response(JSON.stringify({ live }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        }),
-      )
-    }
-    if (url.pathname.endsWith('/overlaps')) {
-      return Promise.resolve(
-        new Response(JSON.stringify({ count: 0, reservations: [] }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         }),
