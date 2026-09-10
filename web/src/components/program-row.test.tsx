@@ -39,7 +39,7 @@ function airingProgram(overrides: Partial<ProgramListItem> = {}): SiteProgram {
 /**
  * stubFetch は ProgramRow の展開パネルが叩く番組詳細 + 能力 API を振り分ける。
  *
- * - `GET /api/capabilities`: 「ライブで見る」の出し分け（issue #209 / #229）
+ * - `GET /api/capabilities`: ライブボタンの出し分け（issue #209 / #755）
  * - `GET .../programs/{programId}`: 展開時に `ProgramDetail` が問い合わせる番組詳細
  */
 function stubFetch({ live = true }: { live?: boolean } = {}) {
@@ -85,14 +85,11 @@ async function expandRow() {
   await user.click(button)
 }
 
-describe('ProgramRow の外向き導線（issue #229）', () => {
-  it('展開前は、放送中かつ予約済みの行でも外向きリンクが 1 つも出ない（展開領域限定）', async () => {
-    // issue #229 の「決定済みの方向」（固有名詞へのリンクは折りたたみ行では
-    // なく展開領域側に置く）そのものを守るテスト。他のテストは全部
-    // expandRow() を通してから見るので、展開前に何が無いかを見るのはこの
-    // 1 本だけ --- リンクを `{expanded && ...}` の外（行ヘッダの兄弟）へ
-    // 移す変異は、他のテストを崩さずにこれだけを落とす。
-    const fetchMock = stubFetch()
+describe('ProgramRow の外向き導線（issue #229 / #755）', () => {
+  it('展開前は、予約済みの行でも展開領域の「予約の設定」が出ない', async () => {
+    // 「予約の設定」は実体へのリンクなので展開領域に限定する。ライブは
+    // 行に対する動作として予約列へ移ったため、展開前にも別のリンクが存在する。
+    stubFetch()
     renderInRouter(
       <ProgramRow
         program={airingProgram({ programId: 7 })}
@@ -104,30 +101,12 @@ describe('ProgramRow の外向き導線（issue #229）', () => {
       />,
     )
 
-    // 行本体が描かれるまで待つ（ルーターの初回マッチ解決は非同期）。
     await screen.findByText('対象番組')
-    // 能力 API の解決を待ってから確認する。未解決のうちは fail-closed で
-    // 元から「ライブで見る」が出ないだけなので、それだけで「出ない」を
-    // 確認すると空虚な成功になる（CLAUDE.md テスト規律）。
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringContaining('/api/capabilities'),
-        expect.anything(),
-      ),
-    )
-
-    expect(screen.queryAllByRole('link')).toHaveLength(0)
+    expect(screen.queryByRole('link', { name: '予約の設定' })).not.toBeInTheDocument()
   })
 
-  /**
-   * issue #438: `/live` の URL も他画面と同じ `?service=<Service.id>`
-   * （`networkId * 100000 + serviceId`）に統一した。`program` は SI の
-   * `networkId` / `serviceId` しか持たないため、リンクはそこから合成する。
-   * href のクエリ文字列を個別に検証する（キーの順序に依存する文字列一致には
-   * しない）。
-   */
-  it('放送中の番組を展開すると「ライブで見る」が出て /live?service=<Service.id> へのリンクになる', async () => {
-    stubFetch()
+  it('放送中の行では予約列にライブボタンが出て /live?service=<Service.id>&site=<site> を指す', async () => {
+    const fetchMock = stubFetch()
     renderInRouter(
       <ProgramRow
         program={airingProgram({ networkId: 32736, serviceId: 1024 })}
@@ -139,19 +118,29 @@ describe('ProgramRow の外向き導線（issue #229）', () => {
       />,
     )
 
-    await expandRow()
+    await screen.findByText('対象番組')
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/api/capabilities'),
+        expect.anything(),
+      ),
+    )
 
-    const link = await screen.findByRole('link', { name: 'ライブで見る' })
+    const reserveWrapper = screen.getByTestId('program-row-reserve')
+    const link = await within(reserveWrapper).findByRole('link', { name: 'ライブで見る' })
+    expect(link).toHaveAttribute('aria-label', 'ライブで見る')
+    expect(link.querySelector('svg')).not.toBeNull()
     const href = link.getAttribute('href') ?? ''
     expect(href.startsWith('/live?')).toBe(true)
     const params = new URLSearchParams(href.slice('/live?'.length))
     // 期待値はリテラルで書く（合成式を書き写すと `composeServiceId` の変更に
     // 追随してしまい何も主張しなくなる）。networkId 32736 / serviceId 1024。
     expect(params.get('service')).toBe('3273601024')
+    expect(params.get('site')).toBe(testSite)
   })
 
-  it('放送中でない番組を展開しても「ライブで見る」は出ない', async () => {
-    stubFetch()
+  it('放送中でない行には予約列のライブボタンが出ない', async () => {
+    const fetchMock = stubFetch()
     renderInRouter(
       <ProgramRow
         program={program()}
@@ -163,16 +152,22 @@ describe('ProgramRow の外向き導線（issue #229）', () => {
       />,
     )
 
-    await expandRow()
-
-    // 番組詳細（ProgramDetail）の読み込みが解決するまで待ってから「無い」ことを
-    // 確認する（非同期の空虚な成功を避ける。CLAUDE.md テスト規律）。
-    await waitFor(() => expect(screen.queryByText('詳細を読み込み中…')).not.toBeInTheDocument())
-    expect(screen.queryByRole('link', { name: 'ライブで見る' })).not.toBeInTheDocument()
+    await screen.findByText('対象番組')
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/api/capabilities'),
+        expect.anything(),
+      ),
+    )
+    expect(
+      within(screen.getByTestId('program-row-reserve')).queryByRole('link', {
+        name: 'ライブで見る',
+      }),
+    ).not.toBeInTheDocument()
   })
 
-  it('live.enabled=false（能力 API が disabled）では放送中でも「ライブで見る」を出さない（ナビと同じ挙動）', async () => {
-    stubFetch({ live: false })
+  it('live.enabled=false（能力 API が disabled）では放送中でもライブボタンを出さない（ナビと同じ挙動）', async () => {
+    const fetchMock = stubFetch({ live: false })
     renderInRouter(
       <ProgramRow
         program={airingProgram()}
@@ -184,14 +179,18 @@ describe('ProgramRow の外向き導線（issue #229）', () => {
       />,
     )
 
-    await expandRow()
-
-    // 能力 API（pending の間は fail-closed でまだ出ていないだけ）の解決を、
-    // 同じ展開パネルが問い合わせる番組詳細の解決を目印に待つ
-    // （app-shell.test.tsx の waitForNavSettled と同じ「別の確実な完了を
-    // 目印にしてマイクロタスクを回す」やり方）。
-    await waitFor(() => expect(screen.queryByText('詳細を読み込み中…')).not.toBeInTheDocument())
-    expect(screen.queryByRole('link', { name: 'ライブで見る' })).not.toBeInTheDocument()
+    await screen.findByText('対象番組')
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/api/capabilities'),
+        expect.anything(),
+      ),
+    )
+    expect(
+      within(screen.getByTestId('program-row-reserve')).queryByRole('link', {
+        name: 'ライブで見る',
+      }),
+    ).not.toBeInTheDocument()
   })
 
   it('予約済みの番組を展開すると「予約の設定」が出て /reservations/$site/$programId へのリンクになる', async () => {
@@ -213,12 +212,7 @@ describe('ProgramRow の外向き導線（issue #229）', () => {
     expect(link).toHaveAttribute('href', `/reservations/${testSite}/42`)
   })
 
-  it('放送中で未予約の番組を展開すると「ライブで見る」だけが出て「予約の設定」は出ない', async () => {
-    // 展開パネルのリンク行は `(showLiveLink || reserved)` の外側ゲートで
-    // 覆われている。`program()`（放送中でない）を使うと外側ゲートごと
-    // 閉じてしまい、内側の `reserved &&` を反転させても検出できない
-    // （空虚な成功）。`airingProgram()` で `showLiveLink` を true にして
-    // 外側ゲートを開けたまま、内側の `reserved` 分岐だけを検証する。
+  it('ライブボタンは展開パネルに移らず、放送中で未予約の行には設定リンクも出ない', async () => {
     stubFetch()
     renderInRouter(
       <ProgramRow
@@ -234,16 +228,23 @@ describe('ProgramRow の外向き導線（issue #229）', () => {
     await expandRow()
     await waitFor(() => expect(screen.queryByText('詳細を読み込み中…')).not.toBeInTheDocument())
 
-    // 外側ゲートが開いていて、リンク行自体は実際に描画されていることを先に
-    // 確認する（これが無いと、リンク行ごと出ていないだけの空虚な成功に戻る）。
-    expect(await screen.findByRole('link', { name: 'ライブで見る' })).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: '予約の設定' })).not.toBeInTheDocument()
+    const detail = document.getElementById('program-row-detail-1')
+    expect(detail).not.toBeNull()
+    if (!detail) throw new Error('展開パネルが見つからない')
+    expect(within(detail).queryByRole('link', { name: 'ライブで見る' })).not.toBeInTheDocument()
+    expect(within(detail).queryByRole('link', { name: '予約の設定' })).not.toBeInTheDocument()
+    expect(
+      await within(screen.getByTestId('program-row-reserve')).findByRole('link', {
+        name: 'ライブで見る',
+      }),
+    ).toBeInTheDocument()
   })
 })
 
-describe('ProgramRow の予約列の開閉配線（issue #310）', () => {
+describe('ProgramRow の操作列の開閉配線（issue #310 / #755）', () => {
   // 実際の開閉（列幅が :hover / :focus-visible / pointer メディア特性で
-  // w-0 ↔ w-20 に変わること）は jsdom では測れない（レイアウトを持たない）
+  // w-0 ↔ w-20（放送中は w-[7.75rem]）に変わること）は jsdom では測れない
+  // （レイアウトを持たない）
   // --- 唯一の判定は e2e/reserve-visibility.mjs（web/e2e/README.md）。ここで
   // 見るのは、その CSS が依存する配線（`group` / `peer` マーカーと
   // `data-testid`）が消えていないことだけ。マーカーが消えると e2e はセレクタが
@@ -297,7 +298,7 @@ describe('ProgramRow の予約列の開閉配線（issue #310）', () => {
     expect(within(reserveWrapper).getByRole('button', { name: '取消' })).toBeInTheDocument()
   })
 
-  it('defaultExpanded を指定すると、モーダル用に詳細と予約列を初期展開する', async () => {
+  it('defaultExpanded を指定すると、モーダル用に詳細と操作列を初期展開する', async () => {
     stubFetch()
     renderInRouter(
       <ProgramRow

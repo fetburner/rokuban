@@ -41,9 +41,13 @@ site と組み合わせて行う**（選択中のハイライトと `aria-curren
 site も運ぶ**（`?service=` の値域も `/programs` と同じ生成スキーマで検証する）。
 初期選択は「site と `Service.id` が一致すればそれ、無ければ番組を持つ先頭」だけで決まる
 （`pickInitialService(services, requestedId, requestedSite)`。`lib/live.ts`）。
-番組リスト（`components/program-row.tsx`）の「ライブで見る」リンクは
-`ProgramListItem` が SI の `networkId` / `serviceId` しか持たないため、
-`composeServiceId`（`lib/service-id.ts`）で合成してから渡す。
+番組リスト（`components/program-row.tsx`）の放送中行には、予約ボタンの左に
+`aria-label="ライブで見る"` の 44px アイコンボタン「ライブ」を置く。これは行に
+対する動作なので展開領域のテキストリンクにはしない。アイコンはライブ画面
+（`pages/live.tsx`）と同じ `Play` を使う。遷移先は
+`/live?service=<Service.id>&site=<site>`。`ProgramListItem` が SI の `networkId` /
+`serviceId` しか持たないため、`composeServiceId`（`lib/service-id.ts`）で合成してから
+渡す。
 
 **番組表と録画の絞り込みも network を含む厳密形式を持つ。** 高松の地上波だけを
 受信する実運用 mirakc では 19 サービス中の重複は 0 件だったが、この測定は GR の
@@ -94,7 +98,7 @@ reset effect が走って unmount してももう遅い（`internal/streamer/liv
 **直リンク・ブックマーク（`/live?service=<Service.id>` の直開き）も選択状態で止まる。**
 再生開始の同意を取る構造は、通常のチャンネル一覧からの選択と直リンクで区別しない
 --- 直開きだけ自動再生にすると「タップで選んだときは同意が要るが URL 経由なら
-要らない」という一貫しない規則になり、番組行の「ライブで見る」等の外部導線
+要らない」という一貫しない規則になり、番組行の「ライブ」ボタン等の外部導線
 （`components/program-row.tsx`）から来た場合もチューナーを暗黙に掴んでしまう。
 
 **チャンネル切り替えのデバウンスは持たない。** 選択自体が probe もセッションも
