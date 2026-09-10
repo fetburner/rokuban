@@ -153,7 +153,7 @@ scheduled）の場合は新規に投入されず合流する。その場合も�
 //
 // site 束縛ジョブ:
 //   - resolveSiteFlag と同じ規則（未指定かつレジストリ 1 要素ならその 1 つ、
-//     2 要素以上なら必須。rescue / shadow-diff とも共有する）
+//     2 要素以上なら必須。shadow-diff とも共有する）
 func resolveEnqueueJobSite(cmd *cobra.Command, job string, registry []config.MirakcSite) (string, error) {
 	spec, ok := enqueueJobs[job]
 	if !ok {

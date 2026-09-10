@@ -21,6 +21,7 @@ import (
 	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/role"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
@@ -279,6 +280,59 @@ func TestServerCmd_IngestWorkerProbeSucceedsWithReadOnlyMediaRoot(t *testing.T) 
 	}
 	if !strings.Contains(err.Error(), "connecting to database") {
 		t.Errorf("err = %v, want the ingest storage probe to succeed (root read-only, sites/ writable) and fail at the DB instead", err)
+	}
+}
+
+// worker は media_assets の原本 / encoded がすべて sites/{site}/ 前置を持つことを
+// DB 接続直後に検査する。移行前の行を残したまま worker を動かすと、ingest 以外の
+// ファイル処理も新旧の rel_path 契約を混在させるため、最初の仕事より前に拒否する。
+func TestServerCmd_WorkerRejectsBareMediaAssetRelPath(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	recordingID, err := sqlcgen.New(pool).CreateRecording(ctx, sqlcgen.CreateRecordingParams{
+		Source:            "manual",
+		Site:              "home",
+		NetworkID:         1,
+		ServiceID:         1,
+		EventID:           1,
+		ServiceName:       "test",
+		ChannelType:       "GR",
+		Channel:           "1",
+		Title:             "old path",
+		ProgramStartAt:    time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC),
+		ProgramDurationMs: 60_000,
+		Status:            "finished",
+	})
+	if err != nil {
+		t.Fatalf("CreateRecording: %v", err)
+	}
+	if _, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+		RecordingID: recordingID,
+		Kind:        "original",
+		RelPath:     "archive/old.m2ts",
+		SizeBytes:   1,
+	}); err != nil {
+		t.Fatalf("CreateMediaAsset: %v", err)
+	}
+
+	path := writeWorkerTestConfig(t, "http://127.0.0.1:1")
+	err = runServerCmdForTest(t, path, "--roles", "worker", "--sites=", "--queues=cleanup")
+	if err == nil {
+		t.Fatal("worker with a bare original rel_path should fail before starting")
+	}
+	if !strings.Contains(err.Error(), "validating media asset rel_path namespace") ||
+		!strings.Contains(err.Error(), "archive/old.m2ts") {
+		t.Errorf("err = %v, want the namespace validation and offending path", err)
+	}
+}
+
+// 前置違反が無い DB では、同じ検査を通過して worker が通常どおり起動できる。
+func TestServerCmd_WorkerStartsWhenMediaAssetRelPathsAreSitePrefixed(t *testing.T) {
+	testutil.SetupDB(t)
+	path := writeWorkerTestConfig(t, "http://127.0.0.1:1")
+	if _, err := runServerCmdBounded(t, 10*time.Second, path,
+		"--roles", "worker", "--sites=", "--queues=cleanup", "--once", "--once-idle-timeout=100ms"); err != nil {
+		t.Fatalf("worker with site-prefixed media asset rel_paths: %v", err)
 	}
 }
 

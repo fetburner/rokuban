@@ -320,6 +320,17 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// River の defer が先に実行される。
 	defer pool.Close()
 
+	if slices.Contains(roles, "worker") {
+		// ProbeIngestStorage は media_dir の FS 操作列を DB 接続前に検査する。
+		// こちらは DB にしかない rel_path の名前空間を検査する対応する guard で、
+		// 前置導入前の行や移行前バックアップから復元した行を worker が読む前に
+		// 拒否する。api はファイルシステムに依存しないため、この検査は worker
+		// にだけ置く。
+		if err := worker.ValidateMediaAssetRelPathNamespace(ctx, pool); err != nil {
+			return fmt.Errorf("validating media asset rel_path namespace: %w", err)
+		}
+	}
+
 	slog.Info("starting server", "roles", roles)
 
 	eg, egCtx := errgroup.WithContext(ctx)

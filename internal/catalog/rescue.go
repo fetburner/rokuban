@@ -40,20 +40,28 @@ type RescueResult struct {
 	SkippedProgramSnapshots int
 	SkippedProgramIntents   int
 	SkippedProgramOverrides int
+
+	// SkippedFilesWithoutSitePrefix はストレージ走査（catalog が 1 世代も
+	// 無いときの rescueStorage）で見つかったが `sites/{site}/` 前置が無く
+	// site を決められないため登録しなかったファイルの件数。DB を喪失した後の
+	// rescue で唯一この件数だけが復元漏れを示す（slog の Warn は運用者の目に
+	// 触れるとは限らない）ので、呼び出し側のサマリ表示に必ず出す。
+	SkippedFilesWithoutSitePrefix int
 }
 
 // RescueLatest は media_dir/catalog/ の**最新の完成世代**を読んで DB に冪等
 // upsert する（完成判定は SelectLatest / VerifyGeneration。docs/storage.md §8）。
 //
 // 最新世代が不完全・checksum 不一致なら 1 つ前の完成世代へ落ちる。完成世代が
-// 1 つも無ければ media_dir を走査して認識できる動画ファイルを素の asset として
-// in-place 登録する。どの経路もファイル本体はコピー・変更しない。
+// 1 つも無ければ media_dir を走査して `sites/{site}/` 前置を持つ認識可能な動画
+// ファイルを素の asset として in-place 登録する。前置の無いファイルは登録しない。
+// どの経路もファイル本体はコピー・変更しない。
 //
 // registrySites は `mirakcs:` レジストリの site 名一覧。ストレージ走査で
 // `sites/{site}/` 前置から site を読んだとき、その site がレジストリに
 // 無ければ typo/ゴミディレクトリの疑いがあるとして Warn で目立たせる
 // （classifySiteForRescuedFile 参照）。catalog JSON からの復元では使わない。
-func RescueLatest(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string, registrySites []string) (*RescueResult, error) {
+func RescueLatest(ctx context.Context, pool *pgxpool.Pool, mediaDir string, registrySites []string) (*RescueResult, error) {
 	sel, err := SelectLatest(mediaDir)
 	if sel != nil {
 		for _, r := range sel.Rejected {
@@ -65,7 +73,7 @@ func RescueLatest(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string
 		if os.IsNotExist(err) {
 			// 「catalog が 1 つも無い」と「あったが全部不完全だった」を
 			// 混同させない: 飛ばした世代は結果に載せて呼び出し側に報告させる。
-			result, scanErr := rescueStorage(ctx, pool, mediaDir, site, registrySites)
+			result, scanErr := rescueStorage(ctx, pool, mediaDir, registrySites)
 			if scanErr != nil {
 				return nil, scanErr
 			}

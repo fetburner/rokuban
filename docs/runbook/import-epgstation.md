@@ -32,10 +32,18 @@ EPGStation の REST API（`GET /api/recorded`）は実ファイルの相対パ�
 `storage.media_dir`（`config.yml`）の下にそのまま見える位置へマウントする
 （bind mount / symlink 等、手段は問わない）。
 
-例: EPGStation の録画が `/opt/epgstation/recorded/` にあるとする。rokuban の
-`media_dir` が `/mnt/media` なら、`/mnt/media/epgstation/` に bind mount する。
-このとき JSON の `relPath` は `epgstation/...`（`media_dir` からの相対パス）
-になる。
+原本（`videoFiles[].type = "ts"`）は `sites/{site}/` 名前空間に属する必要がある
+（worker が起動時に検査する。docs/storage/contract.md §「rel_path の名前空間」）。
+`{site}` は `--library-json` 実行時の `config.yml` に登録した唯一の site 名である
+（`import epgstation` は単一 site 限定）。`ImportLibrary` がこれを rel_path へ
+自動で前置するので、JSON 自体にこの前置を含める必要はない。
+**マウント先は `sites/{site}/` の配下にする。**
+
+例: EPGStation の録画が `/opt/epgstation/recorded/` にあるとする。
+rokuban の `media_dir` が `/mnt/media`、site 名が `tokyo` なら
+`/mnt/media/sites/tokyo/epgstation/` に bind mount する。
+このとき JSON の `relPath` は `epgstation/...`（マウント先からの相対パス）になる。
+`sites/tokyo/` は含めない。
 
 #### 2. JSON を書き出す
 
@@ -157,6 +165,36 @@ rokuban import epgstation --config config.yml --library-json library.json
 
 再実行しても行は増えない（`recordings` の放送 identity と
 `media_assets.rel_path` の両方に一意制約がある）。
+
+### 前置導入前に取り込んだライブラリの移行
+
+`sites/{site}/` 前置を自動で付ける前のバージョンで `--library-json` を実行
+済みの場合、そのとき登録した原本の `rel_path` に前置が無い。worker は起動時
+にこれを検査して拒否する（docs/storage/contract.md §「rel_path の名前空間」）。
+以下の手順は worker と streamer を止めてから行う（動かしたまま `mv` すると
+`active` 行が一時的に実体無しと誤検出される）。
+
+1. 対象行を出す（`site` は import 時に指定した site 名）:
+
+   ```sql
+   SELECT a.id, a.rel_path, r.site
+     FROM media_assets a JOIN recordings r ON r.id = a.recording_id
+    WHERE a.state <> 'deleted'
+      AND a.kind = 'original'
+      AND a.rel_path NOT LIKE 'sites/%';
+   ```
+
+2. 各行について `{media_dir}/{rel_path}` を `{media_dir}/sites/{site}/{rel_path}`
+   へ `mkdir -p` + `mv` する（同一 FS 内なので rename）。
+3. 全ファイルの `mv` が終わったら 1 トランザクションで
+   `UPDATE media_assets SET rel_path = 'sites/' || r.site || '/' || a.rel_path`
+   を対象行に適用する（`deleting` 状態の行も対象に含める。含めないと
+   delete_reconcile が旧パスを unlink しに行き実体無しと誤検出する）。
+4. 旧パスを指す `orphan_files` の行が残っていれば削除する（導出台帳なので
+   次パスで作り直される）。
+5. `rokuban enqueue catalog_export` で新しい catalog 世代を書き、
+   `rokuban catalog verify` で完成を確認する。以後 rescue は移行前の
+   `rel_path` を持つ旧世代を選ばせないよう、確認後に旧世代を消す。
 
 ### 履歴（RecordedHistory）は未対応
 
