@@ -152,6 +152,17 @@ const sampleRecording = (overrides: Partial<Recording> = {}): Recording => ({
   ...overrides,
 })
 
+const sampleRule = (overrides: Partial<Rule> = {}): Rule => ({
+  id: 5,
+  name: 'サンプルルール',
+  enabled: true,
+  priority: 0,
+  keepOriginal: 'always',
+  createdAt: '2026-01-01T00:00:00Z',
+  updatedAt: '2026-01-01T00:00:00Z',
+  ...overrides,
+})
+
 const sampleService = (overrides: Partial<Service> = {}): Service => ({
   id: (overrides.networkId ?? 32736) * 100_000 + (overrides.serviceId ?? 5168),
   networkId: 32736,
@@ -906,6 +917,36 @@ describe('RecordingsPage 検索条件', () => {
     await user.click(screen.getByText('状態: 失敗'))
     expect(await screen.findByText('完了した録画')).toBeInTheDocument()
     expect(screen.getByText('失敗した録画')).toBeInTheDocument()
+  })
+
+  it('絞り込みパネルでルールを選ぶと URL と録画取得の ruleId に反映される', async () => {
+    const user = userEvent.setup()
+    const server = createFakeRecordingsServer({
+      rules: [sampleRule({ name: 'ニュース録画ルール' })],
+      library: [
+        sampleRecording({ title: 'ルールで録る録画', ruleId: 5, source: 'rule' }),
+        sampleRecording({ id: 2, title: '手動で録る録画', source: 'manual' }),
+      ],
+    })
+    const { router } = renderPage()
+
+    expect(await screen.findByText('ルールで録る録画')).toBeInTheDocument()
+    expect(screen.getByText('手動で録る録画')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const panel = await screen.findByRole('dialog', { name: '絞り込み' })
+    const ruleSelect = await within(panel).findByRole('combobox', { name: 'ルール' })
+    await user.selectOptions(ruleSelect, '5')
+
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ ruleId: 5 }))
+    await waitFor(() => {
+      expect(
+        recordingsRequests(server.fetchMock).some((url) => url.searchParams.get('ruleId') === '5'),
+      ).toBe(true)
+    })
+    expect(await screen.findByText('ルールで録る録画')).toBeInTheDocument()
+    expect(screen.queryByText('手動で録る録画')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'ルール: ニュース録画ルール' })).toBeInTheDocument()
   })
 
   it('ジャンル・チャンネルの選択が GET のクエリに乗る', async () => {

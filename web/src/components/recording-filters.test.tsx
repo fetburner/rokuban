@@ -4,9 +4,9 @@ import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { Service } from '@/api/generated'
+import type { Rule, Service } from '@/api/generated'
 import { RecordingFilters } from '@/components/recording-filters'
-import { emptyRecordingsSearch, type RecordingsPageSearch } from '@/lib/recording-search'
+import { emptyRecordingsSearch, parseRecordingsSearch, type RecordingsPageSearch } from '@/lib/recording-search'
 
 function service(overrides: Partial<Service> = {}): Service {
   return {
@@ -19,6 +19,19 @@ function service(overrides: Partial<Service> = {}): Service {
     remoteControlKeyId: 1,
     hasLogoData: false,
     hasPrograms: true,
+    ...overrides,
+  }
+}
+
+function rule(overrides: Partial<Rule> = {}): Rule {
+  return {
+    id: 1,
+    name: 'ニュース録画ルール',
+    enabled: true,
+    priority: 0,
+    keepOriginal: 'always',
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
     ...overrides,
   }
 }
@@ -40,12 +53,17 @@ function renderFilters(
   initial: RecordingsPageSearch = emptyRecordingsSearch(),
   services: Service[] = [service()],
   otherSites: Record<string, Service[]> = {},
+  rules: Rule[] = [],
+  rulesResponse?: () => Promise<Response>,
 ) {
   const servicesBySite = { default: services, ...otherSites }
   globalThis.fetch = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === '/api/sites') {
       return Promise.resolve(jsonResponse(Object.keys(servicesBySite)))
+    }
+    if (url.pathname === '/api/rules') {
+      return rulesResponse?.() ?? Promise.resolve(jsonResponse(rules))
     }
     const match = /^\/api\/sites\/([^/]+)\/services$/.exec(url.pathname)
     if (match && match[1] in servicesBySite) {
@@ -229,6 +247,174 @@ describe('RecordingFilters 絞り込みパネル', () => {
 
     await user.click(within(panel).getByRole('button', { name: '帰属なし' }))
     expect(onChangeCalls.at(-1)?.source).toBe('unattributed')
+  })
+
+  it('ルールを選ぶと ruleId を反映し、source を外して手動・帰属なしを無効にする', async () => {
+    const user = userEvent.setup()
+    const { getCurrent } = renderFilters(
+      { source: 'manual' },
+      [service()],
+      {},
+      [rule({ id: 8, name: '先に返ったルール' }), rule({ id: 3, name: '後に返ったルール' })],
+    )
+
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const panel = await screen.findByRole('dialog', { name: '絞り込み' })
+    const ruleSelect = await within(panel).findByRole('combobox', { name: 'ルール' })
+    expect(Array.from(ruleSelect.querySelectorAll('option')).map((option) => option.value)).toEqual([
+      '',
+      '8',
+      '3',
+    ])
+
+    await user.selectOptions(ruleSelect, '3')
+    await waitFor(() => expect(getCurrent()).toMatchObject({ ruleId: 3, source: undefined }))
+
+    const sourceGroup = within(panel).getByRole('group', { name: '種別' })
+    expect(within(sourceGroup).getByRole('button', { name: '手動' })).toBeDisabled()
+    expect(within(sourceGroup).getByRole('button', { name: '帰属なし' })).toBeDisabled()
+    expect(within(sourceGroup).getByRole('button', { name: 'ルール' })).not.toBeDisabled()
+
+    await user.selectOptions(ruleSelect, '')
+    await waitFor(() => expect(getCurrent().ruleId).toBeUndefined())
+  })
+
+  it('ルールの取得中はルール節に読み込み中を出す', async () => {
+    const user = userEvent.setup()
+    let resolveRules: (response: Response) => void = () => undefined
+    const pendingRules = new Promise<Response>((resolve) => {
+      resolveRules = resolve
+    })
+    renderFilters(emptyRecordingsSearch(), [service()], {}, [], () => pendingRules)
+
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const panel = await screen.findByRole('dialog', { name: '絞り込み' })
+    const ruleSection = within(panel).getByRole('heading', { name: 'ルール' }).parentElement
+    expect(ruleSection).not.toBeNull()
+    expect(within(ruleSection as HTMLElement).getByRole('status')).toHaveTextContent('読み込み中…')
+
+    resolveRules(jsonResponse([rule()]))
+    await waitFor(() => expect(within(ruleSection as HTMLElement).getByRole('combobox', { name: 'ルール' })).toBeInTheDocument())
+  })
+
+  // E: 機能しないコントロールは置かない --- ルールが 0 件の新規インストールでは
+  // 「問わない」だけの select を常に出さない。取得完了を明示的に待ってから
+  // 節ごと消えることを見る（`resolveRules` を手で叩くことで、フェッチが速すぎて
+  // pending の一瞬を観測し損ねる空虚な成功を避ける）。
+  it('ルールが 0 件ならルール節ごと出さない', async () => {
+    const user = userEvent.setup()
+    let resolveRules: (response: Response) => void = () => undefined
+    const pendingRules = new Promise<Response>((resolve) => {
+      resolveRules = resolve
+    })
+    renderFilters(emptyRecordingsSearch(), [service()], {}, [], () => pendingRules)
+
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const panel = await screen.findByRole('dialog', { name: '絞り込み' })
+    // 取得中は節が出て理由（読み込み中）が読める（チャンネル節と同じ流儀）。
+    const ruleSection = within(panel).getByRole('heading', { name: 'ルール' }).parentElement
+    expect(ruleSection).not.toBeNull()
+    expect(within(ruleSection as HTMLElement).getByRole('status')).toHaveTextContent('読み込み中…')
+
+    resolveRules(jsonResponse([]))
+    await waitFor(() => expect(within(panel).queryByRole('heading', { name: 'ルール' })).not.toBeInTheDocument())
+  })
+
+  it('ルールが 1 件以上あればルール節を出す', async () => {
+    const user = userEvent.setup()
+    renderFilters(emptyRecordingsSearch(), [service()], {}, [rule()])
+
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const panel = await screen.findByRole('dialog', { name: '絞り込み' })
+    expect(await within(panel).findByRole('combobox', { name: 'ルール' })).toBeInTheDocument()
+  })
+
+  it('ルールが 0 件でも search.ruleId があればルール節を出す（削除済みルールで絞っている状態を読める）', async () => {
+    const user = userEvent.setup()
+    renderFilters({ ruleId: 5 }, [service()], {}, [])
+
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const panel = await screen.findByRole('dialog', { name: '絞り込み' })
+    expect(await within(panel).findByRole('heading', { name: 'ルール' })).toBeInTheDocument()
+  })
+
+  // A: 一覧に無い ruleId（削除済みルール・古い共有リンク）を select が
+  // 「問わない」に落として見せてしまうと、適用中チップ（`ルール #N`）と
+  // パネルの表示が食い違う。フォールバック option を足して選択状態を保つ。
+  it('一覧に無い ruleId は select にフォールバック option を足して選択状態にする', async () => {
+    const user = userEvent.setup()
+    renderFilters({ ruleId: 99 }, [service()], {}, [rule({ id: 8, name: '先に返ったルール' })])
+
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const panel = await screen.findByRole('dialog', { name: '絞り込み' })
+    const ruleSelect = (await within(panel).findByRole('combobox', { name: 'ルール' })) as HTMLSelectElement
+
+    expect(ruleSelect.value).toBe('99')
+    expect(ruleSelect.selectedIndex).not.toBe(0)
+    expect(within(panel).getByRole('option', { name: 'ルール #99' })).toBeInTheDocument()
+  })
+
+  it('一覧にある ruleId は名前の option を選択状態にする（フォールバックを足さない）', async () => {
+    const user = userEvent.setup()
+    renderFilters({ ruleId: 8 }, [service()], {}, [rule({ id: 8, name: '先に返ったルール' })])
+
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const panel = await screen.findByRole('dialog', { name: '絞り込み' })
+    const ruleSelect = (await within(panel).findByRole('combobox', { name: 'ルール' })) as HTMLSelectElement
+
+    expect(ruleSelect.value).toBe('8')
+    expect(within(panel).queryByRole('option', { name: /^ルール #/ })).not.toBeInTheDocument()
+  })
+
+  // B: `parseRecordingsSearch` が URL 段階で落とすので、パネルへ渡る search
+  // には active かつ disabled なチップが原理的に現れない（表現不可能にする。
+  // 不変条件 10）。壊すと（正規化を外すと）このテストは落ちる。
+  it('ruleId と source=manual を同時に指定する URL を開いても、active かつ disabled な種別チップは無い', async () => {
+    const user = userEvent.setup()
+    const initial = parseRecordingsSearch({ ruleId: 8, source: 'manual' })
+    renderFilters(initial, [service()], {}, [rule({ id: 8 })])
+
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const panel = await screen.findByRole('dialog', { name: '絞り込み' })
+    const sourceGroup = within(panel).getByRole('group', { name: '種別' })
+    const activeDisabled = within(sourceGroup)
+      .getAllByRole('button')
+      .filter((btn) => btn.getAttribute('aria-pressed') === 'true' && (btn as HTMLButtonElement).disabled)
+
+    expect(activeDisabled).toHaveLength(0)
+  })
+
+  // C: 「種別=ルール」を選んだあとに特定のルールを選び、select を
+  // 「問わない」へ戻しても、`updateRuleFilter` が解除してよいのは
+  // manual / unattributed だけ --- source='rule' は ruleId と矛盾しないので
+  // 残る。壊すと（無条件に source を解除すると）このテストは落ちる。
+  it('種別=ルールのまま特定のルールを選び、select を「問わない」に戻しても source=rule は残る', async () => {
+    const user = userEvent.setup()
+    const { getCurrent } = renderFilters({ source: 'rule' }, [service()], {}, [rule({ id: 8 })])
+
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const panel = await screen.findByRole('dialog', { name: '絞り込み' })
+    const ruleSelect = await within(panel).findByRole('combobox', { name: 'ルール' })
+
+    await user.selectOptions(ruleSelect, '8')
+    await waitFor(() => expect(getCurrent()).toMatchObject({ ruleId: 8, source: 'rule' }))
+
+    await user.selectOptions(ruleSelect, '')
+    await waitFor(() => expect(getCurrent()).toMatchObject({ ruleId: undefined, source: 'rule' }))
+  })
+
+  it('ルールの取得に失敗したときはルール節に理由を出す', async () => {
+    const user = userEvent.setup()
+    renderFilters(emptyRecordingsSearch(), [service()], {}, [], () =>
+      Promise.resolve(new Response('failed', { status: 500 })),
+    )
+
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const panel = await screen.findByRole('dialog', { name: '絞り込み' })
+    const ruleSection = within(panel).getByRole('heading', { name: 'ルール' }).parentElement
+    expect(ruleSection).not.toBeNull()
+    expect(await within(ruleSection as HTMLElement).findByText('ルールの取得に失敗しました')).toBeInTheDocument()
+    expect(within(ruleSection as HTMLElement).queryByRole('combobox', { name: 'ルール' })).not.toBeInTheDocument()
   })
 
   it('ジャンルチップは複数選択で、選択中は同じチップを押すと外れる', async () => {
