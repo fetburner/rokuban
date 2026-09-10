@@ -303,11 +303,16 @@ LEFT JOIN media_assets a
     ON a.recording_id = r.id AND a.kind = 'original' AND a.state <> 'deleted'
 LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
 LEFT JOIN recording_ingest_progress ip ON ip.recording_id = r.id
+-- state を絞らず kind = 'original' の media_assets 行を JOIN しても二重計上しないのは、
+-- media_assets_recording_id_kind_profile_key（UNIQUE NULLS NOT DISTINCT
+-- (recording_id, kind, profile)）が recording_id ごとに original を高々 1 行に
+-- 制約しているため。
 LEFT JOIN LATERAL (
-    SELECT sum(packets) AS packets, sum(drops) AS drops,
-           sum(errors) AS errors, sum(scrambled) AS scrambled
-    FROM drop_stats
-    WHERE media_asset_id = a.id
+    SELECT sum(ds.packets) AS packets, sum(ds.drops) AS drops,
+           sum(ds.errors) AS errors, sum(ds.scrambled) AS scrambled
+    FROM drop_stats ds
+    JOIN media_assets da ON da.id = ds.media_asset_id
+    WHERE da.recording_id = r.id AND da.kind = 'original'
 ) d ON true`
 )
 

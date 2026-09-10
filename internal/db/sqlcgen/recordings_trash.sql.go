@@ -26,10 +26,11 @@ LEFT JOIN media_assets a
     ON a.recording_id = r.id AND a.kind = 'original' AND a.state <> 'deleted'
 LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
 LEFT JOIN LATERAL (
-    SELECT sum(packets) AS packets, sum(drops) AS drops,
-           sum(errors) AS errors, sum(scrambled) AS scrambled
-    FROM drop_stats
-    WHERE media_asset_id = a.id
+    SELECT sum(ds.packets) AS packets, sum(ds.drops) AS drops,
+           sum(ds.errors) AS errors, sum(ds.scrambled) AS scrambled
+    FROM drop_stats ds
+    JOIN media_assets da ON da.id = ds.media_asset_id
+    WHERE da.recording_id = r.id AND da.kind = 'original'
 ) d ON true
 WHERE r.site = $1 AND r.deleted_at IS NOT NULL AND r.purged_at IS NULL
 ORDER BY r.deleted_at DESC, r.id DESC

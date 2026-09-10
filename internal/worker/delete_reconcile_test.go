@@ -197,6 +197,63 @@ func inTrash(t *testing.T, pool *pgxpool.Pool, recordingID int64) bool {
 	return false
 }
 
+// ListTrashRecordings（ごみ箱一覧）は原本 media_asset が state='deleted' に
+// 遷移した後も drop 集計を返す（issue #737）。GET /api/recordings 側
+// （recordings_query.go の recordingsFromJoins）は既に同じ形に直っており、
+// ここはその参考実装であるごみ箱クエリ自身が揃っていることを固定する。
+//
+// 壊し方: recordings_trash.sql の LATERAL を
+// `FROM drop_stats WHERE media_asset_id = a.id`（state <> 'deleted' の a に
+// 依存する旧形）に戻すと、原本削除後は a.id が NULL になり drop 集計が
+// 全て 0 に落ちてこのテストのアサーションで落ちる。
+func TestListTrashRecordings_DropSummarySurvivesOriginalDeletion(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "trash/dropsurvive.m2ts", []byte("data"))
+	q := sqlcgen.New(pool)
+	batch := q.InsertDropStat(context.Background(), []sqlcgen.InsertDropStatParams{{
+		MediaAssetID: assetID,
+		Pid:          0x100,
+		Packets:      500,
+		Drops:        2,
+		Errors:       1,
+		Scrambled:    0,
+	}})
+	batch.Exec(nil)
+	if err := batch.Close(); err != nil {
+		t.Fatalf("seeding drop_stat batch: %v", err)
+	}
+
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE recordings SET deleted_at = now() WHERE id = $1", recordingID); err != nil {
+		t.Fatalf("soft-deleting recording: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1", assetID); err != nil {
+		t.Fatalf("tombstoning original media asset: %v", err)
+	}
+
+	rows, err := q.ListTrashRecordings(context.Background(), db.DefaultSite)
+	if err != nil {
+		t.Fatalf("ListTrashRecordings: %v", err)
+	}
+	var found *sqlcgen.ListTrashRecordingsRow
+	for i := range rows {
+		if rows[i].ID == recordingID {
+			found = &rows[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("recording missing from ListTrashRecordings")
+	}
+	if found.DropPackets != 500 || found.DropDrops != 2 || found.DropErrors != 1 {
+		t.Errorf("drop summary after original deletion = packets=%d drops=%d errors=%d, want 500/2/1 (original deletion must not zero out drop history)",
+			found.DropPackets, found.DropDrops, found.DropErrors)
+	}
+}
+
 // ごみ箱の猶予を過ぎた録画の原本は物理削除され、行は deleted に遷移する。
 func TestDeleteReconcileWorker_TrashPastRetention_Deletes(t *testing.T) {
 	pool := setupTestPool(t)

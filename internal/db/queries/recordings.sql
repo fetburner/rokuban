@@ -171,10 +171,11 @@ LEFT JOIN media_assets a
     ON a.recording_id = r.id AND a.kind = 'original' AND a.state <> 'deleted'
 LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
 LEFT JOIN LATERAL (
-    SELECT sum(packets) AS packets, sum(drops) AS drops,
-           sum(errors) AS errors, sum(scrambled) AS scrambled
-    FROM drop_stats
-    WHERE media_asset_id = a.id
+    SELECT sum(ds.packets) AS packets, sum(ds.drops) AS drops,
+           sum(ds.errors) AS errors, sum(ds.scrambled) AS scrambled
+    FROM drop_stats ds
+    JOIN media_assets da ON da.id = ds.media_asset_id
+    WHERE da.recording_id = r.id AND da.kind = 'original'
 ) d ON true
 WHERE r.site = $1 AND r.deleted_at IS NULL
 ORDER BY r.program_start_at DESC, r.id DESC;
@@ -183,7 +184,7 @@ ORDER BY r.program_start_at DESC, r.id DESC;
 SELECT d.pid, d.packets, d.drops, d.errors, d.scrambled, d.pid_type
 FROM drop_stats d
 JOIN media_assets a ON a.id = d.media_asset_id
-WHERE a.recording_id = $1 AND a.kind = 'original' AND a.state <> 'deleted'
+WHERE a.recording_id = $1 AND a.kind = 'original'
 ORDER BY d.pid;
 
 -- 位置は PID 別統計とは別の行集合として読み、API 層で PID ごとの配列にまとめる。
@@ -192,7 +193,7 @@ ORDER BY d.pid;
 SELECT p.pid, p.byte_offset, p.elapsed_ms
 FROM drop_positions p
 JOIN media_assets a ON a.id = p.media_asset_id
-WHERE a.recording_id = $1 AND a.kind = 'original' AND a.state <> 'deleted'
+WHERE a.recording_id = $1 AND a.kind = 'original'
 ORDER BY p.pid, p.byte_offset;
 
 -- name: AppendQualityEvents :exec

@@ -233,6 +233,123 @@ func TestListRecordings_DeletingOriginal_StillShowsSizeBytes(t *testing.T) {
 	}
 }
 
+// 原本の media_asset が deleted になっても、原本の現在可用性を表す射影と
+// 不可逆な drop 履歴の射影を混同せず、一覧・詳細・PID 別 API が削除前と同じ
+// 観測結果を返すことを固定する。sizeBytes は従来どおり省略し、ingest は
+// committed のままにする（docs/storage/retention.md §6「安全性」）。
+func TestRecordingDropHistorySurvivesOriginalDeletion(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+	ctx := context.Background()
+
+	id := seedRecording(t, pool, "原本削除後も drop 履歴を表示", time.Now().Truncate(time.Second), "finished", 402)
+	assetID := seedIngested(t, pool, id, 500, map[int32][4]int64{
+		0x100: {500, 2, 1, 0},
+		0x110: {300, 0, 0, 5},
+	})
+	q := sqlcgen.New(pool)
+	elapsed := int64(1000)
+	positionParams := make([]sqlcgen.InsertDropPositionParams, 0, 2)
+	for _, p := range []struct {
+		pid     int32
+		offset  int64
+		elapsed *int64
+	}{
+		{pid: 0x100, offset: 188, elapsed: &elapsed},
+		{pid: 0x110, offset: 376},
+	} {
+		positionParams = append(positionParams, sqlcgen.InsertDropPositionParams{
+			MediaAssetID: assetID,
+			ByteOffset:   p.offset,
+			Pid:          p.pid,
+			ElapsedMs:    p.elapsed,
+		})
+	}
+	batch := q.InsertDropPosition(ctx, positionParams)
+	batch.Exec(nil)
+	if err := batch.Close(); err != nil {
+		t.Fatalf("seeding drop position batch: %v", err)
+	}
+
+	fetchListRecording := func() Recording {
+		t.Helper()
+		var recordings []Recording
+		resp := getJSON(t, srv.URL+"/api/recordings", &recordings)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("list status = %d, want 200", resp.StatusCode)
+		}
+		if len(recordings) != 1 || recordings[0].Id != id {
+			t.Fatalf("list recordings = %+v, want recording %d", recordings, id)
+		}
+		return recordings[0]
+	}
+	fetchDetail := func() Recording {
+		t.Helper()
+		var recording Recording
+		resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id), &recording)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("detail status = %d, want 200", resp.StatusCode)
+		}
+		return recording
+	}
+	fetchDropStats := func() []DropStat {
+		t.Helper()
+		var stats []DropStat
+		resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d/drop-stats", srv.URL, id), &stats)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("drop-stats status = %d, want 200", resp.StatusCode)
+		}
+		return stats
+	}
+
+	beforeList := fetchListRecording()
+	beforeDetail := fetchDetail()
+	beforeStats := fetchDropStats()
+	wantSummary := DropSummary{Packets: 800, Drops: 2, Errors: 1, Scrambled: 5}
+	if beforeList.DropSummary == nil || *beforeList.DropSummary != wantSummary {
+		t.Fatalf("list dropSummary before deletion = %+v, want %+v", beforeList.DropSummary, wantSummary)
+	}
+	if beforeDetail.DropSummary == nil || *beforeDetail.DropSummary != wantSummary {
+		t.Fatalf("detail dropSummary before deletion = %+v, want %+v", beforeDetail.DropSummary, wantSummary)
+	}
+	if len(beforeStats) != 2 || beforeStats[0].Pid != 0x100 || beforeStats[1].Pid != 0x110 {
+		t.Fatalf("drop stats before deletion = %+v, want two sorted PIDs", beforeStats)
+	}
+	if len(beforeStats[0].Positions) != 1 || beforeStats[0].Positions[0].ByteOffset != 188 {
+		t.Fatalf("PID 0x100 positions before deletion = %+v", beforeStats[0].Positions)
+	}
+	if len(beforeStats[1].Positions) != 1 || beforeStats[1].Positions[0].ByteOffset != 376 {
+		t.Fatalf("PID 0x110 positions before deletion = %+v", beforeStats[1].Positions)
+	}
+
+	if _, err := pool.Exec(ctx,
+		"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1", assetID); err != nil {
+		t.Fatalf("tombstoning original media asset: %v", err)
+	}
+
+	afterList := fetchListRecording()
+	afterDetail := fetchDetail()
+	afterStats := fetchDropStats()
+	if afterList.DropSummary == nil || !reflect.DeepEqual(*afterList.DropSummary, *beforeList.DropSummary) {
+		t.Errorf("list dropSummary after deletion = %+v, want %+v", afterList.DropSummary, beforeList.DropSummary)
+	}
+	if afterDetail.DropSummary == nil || !reflect.DeepEqual(*afterDetail.DropSummary, *beforeDetail.DropSummary) {
+		t.Errorf("detail dropSummary after deletion = %+v, want %+v", afterDetail.DropSummary, beforeDetail.DropSummary)
+	}
+	if !reflect.DeepEqual(afterStats, beforeStats) {
+		t.Errorf("drop stats after deletion = %+v, want unchanged %+v", afterStats, beforeStats)
+	}
+	if afterList.SizeBytes != nil || afterDetail.SizeBytes != nil {
+		t.Errorf("sizeBytes after deletion = list %v, detail %v; want omitted", afterList.SizeBytes, afterDetail.SizeBytes)
+	}
+	if afterList.Ingest == nil || afterList.Ingest.State != Committed {
+		t.Errorf("list ingest after deletion = %+v, want committed", afterList.Ingest)
+	}
+	if afterDetail.Ingest == nil || afterDetail.Ingest.State != Committed {
+		t.Errorf("detail ingest after deletion = %+v, want committed", afterDetail.Ingest)
+	}
+}
+
 // ListRecordings は active な encoded 派生物（プロファイル名 + サイズ）を返すこと
 // （ブラウザ再生用。issue #236 M7-3 で単なる名前の配列からサイズ付きに変わった）。
 func TestListRecordings_EncodedProfiles(t *testing.T) {
