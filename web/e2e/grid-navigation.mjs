@@ -9,7 +9,20 @@
 //   ③ 最初は仮想化で DOM に無い同列の遠い番組へ ArrowDown を押すと、スクロール後に
 //      そのセルへフォーカスが移る
 //   ④ viewport より高い番組（12 時間）へ ArrowDown で移ると、移動先セルの上端が
-//      sticky header の上へ隠れない（画面内に残る）
+//      sticky header の裏（画面外だけでなく、header 行の下端より上）へ隠れない
+//
+// 直す前はそれぞれ次のとおり落ちる（実測。実測していない挙動は書かない）:
+//   ①③ 矢印キーのハンドラ自体が無かった実装（本 PR で新規に足した機能）では、
+//      ArrowRight を押してもフォーカスは 726001（nearA）のまま動かない。ArrowDown も
+//      同様にフォーカスは動かず、scrollTop だけ 0px → 40px とわずかに進む
+//      （フォーカス中の領域 `role="region"` へのネイティブなキー操作によるスクロール
+//      で、矢印移動ではない）
+//   ② 修飾キーのガード（`event.ctrlKey || ... || event.shiftKey` の早期 return）を
+//      外すと、nearB（726002）にフォーカスした状態で Alt+ArrowLeft を押すだけで
+//      フォーカスが隣列の nearA（726001）へ移る
+//   ④ clamp（`Math.min(programBottomPx - clientHeight, timeToPx(axis, startMs))`）を
+//      外し旧式の `Math.max(0, programBottomPx - clientHeight)` に戻すと、移動先
+//      セル（tallA）の rect.top が -540px まで画面の上へ出る
 //
 // 各判定は `.catch()` で失敗を `ng` に積むだけで、素の `waitFor` / `waitForFunction`
 // の timeout で throw させない --- 直前の判定が失敗してもブラウザを閉じて
@@ -235,10 +248,20 @@ if (farAFocused) {
   if (tallFocus.programId !== String(tallA.programId) || tallFocus.site !== SITE) {
     ng.push(`④ ArrowDown 後のフォーカスが長時間番組へ移らない（${JSON.stringify(tallFocus)}）`)
   } else {
+    // 「画面外でない」（top >= 0）だけでは、sticky header の裏（0 〜 header 下端）に
+    // 隠れる壊れ方を見逃す。sticky なヘッダ行（program-grid-header-cell）自身の
+    // rect.bottom を実測し、それを移動先セルの rect.top の下限として使う ---
+    // `headerHeightPx`（program-grid.tsx）をこちらにリテラルで写すと権威が割れる。
+    const headerBottom = await page
+      .getByTestId('program-grid-header-cell')
+      .first()
+      .evaluate((element) => element.getBoundingClientRect().bottom)
     const rectTop = await tallACell.evaluate((element) => element.getBoundingClientRect().top)
-    log(`  移動先セルの rect.top: ${rectTop}px`)
-    if (rectTop < 0) {
-      ng.push(`④ 移動先セルの上端が画面の上へ隠れる（top: ${rectTop}px）`)
+    log(`  header 行の下端: ${headerBottom}px / 移動先セルの rect.top: ${rectTop}px`)
+    if (rectTop < headerBottom) {
+      ng.push(
+        `④ 移動先セルの上端が sticky header の裏に隠れる（header 下端: ${headerBottom}px, セル top: ${rectTop}px）`,
+      )
     }
   }
 }
