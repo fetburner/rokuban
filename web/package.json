@@ -19,6 +19,7 @@
     "e2e:reserve-visibility": "node e2e/reserve-visibility.mjs",
     "e2e:programs-bottom-nav": "node e2e/programs-bottom-nav.mjs",
     "e2e:programs-empty-window": "node e2e/programs-empty-window.mjs",
+    "e2e:programs-dialog": "node e2e/programs-dialog.mjs",
     "e2e:programs-reservation-error": "node e2e/programs-reservation-error.mjs",
     "e2e:grid-reserved": "node e2e/grid-reserved.mjs",
     "e2e:search-mobile": "node e2e/search-mobile.mjs",

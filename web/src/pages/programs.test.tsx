@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CapacityOverage, ProgramListItem, Reservation, Service } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { dayOrigin } from '@/lib/day-offset'
+import { programsQueryKeyPrefix } from '@/lib/events'
 import { routeTree } from '@/routes'
 
 /**
@@ -891,8 +892,8 @@ describe('ProgramsPage の表示形式', () => {
     expect(screen.queryByRole('button', { name: '取消' })).not.toBeInTheDocument()
   })
 
-  it('グリッドのセルを押すと、リストと同じ行で予約できる', async () => {
-    stubApi()
+  it('グリッドのセルを押すと、モーダル内の ProgramRow から予約できる', async () => {
+    const fetchMock = stubApi()
     stubMatchMedia(true)
     renderPage()
 
@@ -906,8 +907,99 @@ describe('ProgramsPage の表示形式', () => {
     const cell = document.querySelector(`[data-program-id="${soon.programId}"]`)
     await userEvent.click(cell as HTMLElement)
 
-    // 選択した番組がリストの行として現れ、そこから予約できる
-    expect(await screen.findByRole('button', { name: '予約' })).toBeInTheDocument()
+    const dialog = await screen.findByRole('dialog', { name: soon.name })
+    expect(cell).toHaveAttribute('aria-pressed', 'true')
+    // モーダル内の ProgramRow は初期展開されるため、hover なしで予約ボタンが使える。
+    const reserveButton = within(dialog).getByRole('button', { name: '予約' })
+    expect(reserveButton).toBeInTheDocument()
+
+    await userEvent.click(reserveButton)
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          (call) =>
+            new URL(String(call[0]), 'http://localhost').pathname.endsWith('/intent') &&
+            (call[1] as RequestInit | undefined)?.method === 'PUT',
+        ),
+      ).toBe(true)
+    })
+  })
+
+  it('モーダルを Escape で閉じると、クリック元のセルへフォーカスを戻す', async () => {
+    stubApi()
+    stubMatchMedia(true)
+    renderPage('/programs?view=grid')
+
+    await screen.findByTestId('program-grid')
+    const cell = document.querySelector<HTMLElement>(`[data-program-id="${soon.programId}"]`)
+    if (!cell) throw new Error('選択対象のセルが見つからない')
+    await userEvent.click(cell)
+    expect(await screen.findByRole('dialog', { name: soon.name })).toBeInTheDocument()
+
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: soon.name })).not.toBeInTheDocument())
+    expect(document.activeElement).toBe(cell)
+    expect(cell).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('モーダルの overlay をクリックすると閉じる', async () => {
+    stubApi()
+    stubMatchMedia(true)
+    renderPage('/programs?view=grid')
+
+    await screen.findByTestId('program-grid')
+    const cell = document.querySelector<HTMLElement>(`[data-program-id="${soon.programId}"]`)
+    if (!cell) throw new Error('選択対象のセルが見つからない')
+    await userEvent.click(cell)
+    expect(await screen.findByRole('dialog', { name: soon.name })).toBeInTheDocument()
+
+    const overlay = document.querySelector('[data-slot="dialog-overlay"]')
+    if (!overlay) throw new Error('Dialog overlay が見つからない')
+    await userEvent.click(overlay)
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: soon.name })).not.toBeInTheDocument())
+  })
+
+  it('選択中の番組が一覧から消えて戻ってきても、モーダルは再度開かない（レビュー指摘）', async () => {
+    // `open` は `programs.find(...)` からの導出。選択中の番組が一時的に
+    // 一覧から消える（背景の invalidate が欠けた一覧を返す等）と、ダイアログは
+    // `onOpenChange` を発火せずただ閉じるだけなので `selectedProgramId` が
+    // 古いまま残る。番組が一覧へ戻ってきたときに、そのままではモーダルが
+    // 勝手に再オープンしてフォーカスを閉じ込めてしまう。
+    stubApi(undefined, undefined, undefined, (callIndex) =>
+      callIndex === 2
+        ? jsonResponse(allPrograms.filter((p) => p.programId !== soon.programId))
+        : undefined,
+    )
+    stubMatchMedia(true)
+    const { queryClient } = renderPage('/programs?view=grid')
+
+    await screen.findByTestId('program-grid')
+    const cell = document.querySelector<HTMLElement>(`[data-program-id="${soon.programId}"]`)
+    if (!cell) throw new Error('選択対象のセルが見つからない')
+    await userEvent.click(cell)
+    expect(await screen.findByRole('dialog', { name: soon.name })).toBeInTheDocument()
+
+    // 1 回目の invalidate: 選択中の番組が一覧から消える
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: [programsQueryKeyPrefix] })
+    })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    // 番組が消えると、そのセルもグリッドから消える。
+    await waitFor(() =>
+      expect(document.querySelector(`[data-program-id="${soon.programId}"]`)).toBeNull(),
+    )
+
+    // 2 回目の invalidate: 番組が一覧へ戻る。「fetch が発行された」のような
+    // 間接シグナルで判定すると、復帰前にアサートが走って通ってしまう
+    // 空虚な成功になりうる（CLAUDE.md のテスト規律）。セルが実際に DOM へ
+    // 戻ってきたこと自体を陽性のシグナルとして待ってから判定する。
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: [programsQueryKeyPrefix] })
+    })
+    await waitFor(() =>
+      expect(document.querySelector(`[data-program-id="${soon.programId}"]`)).not.toBeNull(),
+    )
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
   it('グリッド表示で選んだ番組にも、予約一覧から導出した重なり警告が出る', async () => {

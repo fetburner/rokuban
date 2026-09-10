@@ -43,6 +43,8 @@ import { cn } from '@/lib/utils'
  * （issue #229）。行本体 = 展開 / 右端 44px = 予約、というタップ予算
  * （docs/frontend/reservations.md §予約はワンタップ）に触れないよう、
  * 折りたたみ行ではなく展開領域側に置く。
+ * `defaultExpanded` は、番組表のモーダルのように初期表示から詳細と予約操作を
+ * 使えるようにする呼び出し元だけが指定する。省略時のリストの挙動は変えない。
  */
 export function ProgramRow({
   program,
@@ -51,6 +53,7 @@ export function ProgramRow({
   reserved,
   pending,
   reservationStateUnknown,
+  defaultExpanded = false,
   onReserve,
   onCancel,
   overlaps,
@@ -68,6 +71,8 @@ export function ProgramRow({
    * 1 箇所だけ予約状態不明でも `record` intent が飛ぶ穴になっていた（issue #710）。
    */
   reservationStateUnknown: boolean
+  /** 初期状態で詳細を展開し、予約列を hover なしで表示する。 */
+  defaultExpanded?: boolean
   onReserve: (overrides?: ProgramOverridesInput) => void
   onCancel: () => void
   /**
@@ -79,7 +84,7 @@ export function ProgramRow({
 }) {
   const site = program.site
   const liveEnabled = useLiveEnabled()
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useState(defaultExpanded)
   // 展開して初めて出る欄で、開かなければ既定値のまま
   // （= 「予約」を押しても overrides の PATCH は飛ばない）。
   const [encodeValue, setEncodeValue] = useState<EncodeSettingsValue>(defaultEncodeSettingsValue())
