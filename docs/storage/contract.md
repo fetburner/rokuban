@@ -6,52 +6,74 @@
 
 ## 2. FUSE 越し S3 の制約
 
-S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以下が成立しない:
+S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以下を
+`storage.media_dir` の原本 root の契約として信頼できない:
 
-- **アトミック rename がない**（コピー + 削除になる。数十 GB の録画で実コピーが走る。Mountpoint は rename 自体非対応）
-- **ランダムライトができない/遅い**。特に **ffmpeg は MP4 出力時にヘッダ（moov atom）を書き戻すためシークする**ので、S3 マウント上への直接エンコード出力は壊れるか激遅になる
-- fsync・close 時のエラー報告・ファイルロックの意味論も怪しい
+- **同一 FS 内の atomic rename がない**（コピー + 削除になる。数十 GB の録画で
+  実コピーが走る。Mountpoint は rename 自体非対応）
+- **ランダムライトができない/遅い**。特に **ffmpeg は MP4 出力時にヘッダ
+  （moov atom）を書き戻すためシークする**ので、S3 マウント上への直接エンコード
+  出力は壊れるか激遅になる
+- ファイル `fsync`、`Close` のエラー報告、親ディレクトリ `fsync`、ファイル
+  ロックの意味論が、原本を公開する根拠として信頼できない
 
-これらの制約を踏まえ、アプリのファイル操作を安全なサブセットに制約する（次節のストレージ契約）。
+したがって FUSE S3 は原本の ingest 先には使わない。派生物を置く領域としての
+利用可能性と、原本 root の契約を混同しない（#96 の実機検証対象もこの境界に
+従う）。
 
 ## 3. ストレージ契約（4 つのルール）
 
-以下を守る限りローカルディスクでも S3 マウントでも同じコードが動く:
+`storage.media_dir` は、ファイル `fsync`、`Close`、同一 FS 内の atomic rename、
+rename 後の親ディレクトリ `fsync` を信頼できる通常の POSIX FS に限る。ローカル
+FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest の対象外である。
+以下のルールは、原本 root とローカル `scratch_dir` の組み合わせに適用する:
 
 1. **書き込みは常にシーケンシャル・一発書き**。追記もランダムライトもしない
 2. **「作業はローカル、置くのは一回」**: ffmpeg の出力は必ずワーカーのローカルスクラッチ（k8s では emptyDir）に書き、完成したファイルをストレージへストリームコピーして fsync。MP4 のシーク問題と書きかけファイル問題が同時に消える。
-   **例外: mirakc からの record pull（ingest）は宛先へ直接シーケンシャルに書く**（スクラッチ経由にしない）。根拠は 3 つ:
-   (1) このルールの主動機は ffmpeg の moov atom 書き戻し（シーク）であり、TS の 1 パス・追記なしのシーケンシャル書きにはそもそも当たらない、
-   (2) スクラッチ経由にすると最大録画サイズぶんのスクラッチ容量を要求し（k8s の emptyDir サイジングが変わる）、システム内で最大のバイト流に 2 度目のローカル I/O パスを作る（[recording/ingest.md](../recording/ingest.md) §5.1 が明示的に却下した設計）、
-   (3) このルールが本来消すはずだった書きかけ残骸は、ルール 3（公開 = DB 登録）と cleanup の孤児回収が既に扱う。
-   したがって **転送中は宛先パスに書きかけのバイトが存在しうる。これは契約の許容範囲**（読み手は DB に載っているパスしか見ない）。その代わり「同じ `rel_path` へ 2 本の ingest が同時に書かない」ことは別に保証する必要があり、ingest は `rel_path` の Postgres advisory lock で確保する（[recording/ingest.md](../recording/ingest.md) §5.3）。ロック用セッションは転送中も heartbeat し、接続断を検知したら転送をキャンセルして commit / record 削除へ進まない。heartbeat の検出窓は残るが、ファイルシステムの `flock` には依存しない。ffmpeg（encode / thumbnail）はこの例外の対象外で、ルール 2 のまま
-3. **「公開済み」の定義は rename ではなく DB 登録**: コピー完了 → `media_assets` 行の登録、が公開の定義。読み手は DB に載っているパスしか見ない。rename のアトミック性に依存しないので S3 マウントの弱い意味論が許容範囲に入る。書きかけ・コピー失敗の残骸は cleanup ジョブが「DB に対応行のないファイル」として掃除する。
-   **この順序を反転させない**: 「行を先に登録し、rename で宛先を作る」案は、rename 非対応バックエンド（Mountpoint）で宛先が恒久的に作られず、行が指す唯一の実体が一時ファイルのまま残り、それを孤児回収がいずれ消してしまう（`active` 行の実体欠落を検出する経路が無い）。コピー完了 → 登録、の順序は守る
-   **ingest のコピー完了には fsync まで含める**: mirakc の record pull は宛先へ直接書く例外だが、転送後に宛先ファイルの `fsync` → `Close` をこの順に行い、両方成功してから `media_assets` を登録する。理由は Linux では遅延した書き込みエラー（ENOSPC / I/O エラー）が `Close` では報告されず `fsync` でしか上がらないこと --- 書き込み済みバイト数はメモリ上の計数でしかないので、ルール 1 の一発書きが完走したように見えても実体は欠けうる。`fsync` か `Close` が失敗したら登録せず、エッジの record を保持して再試行する。未解決: ディレクトリエントリの永続化は扱っていない（ext4 / XFS ではファイルの `fsync` がジャーナル commit に相乗りするが、それに依存しないバックエンドでは未保証）
+   **ingest は同じ root・同じディレクトリの試行固有 temp へ書く**。scratch から
+   rename すると `EXDEV` になり、コピーへの劣化を許すため確定操作には使わない。
+   canonical path は転送中に触らず、HEAD の長さ照合 → temp の `fsync` → `Close`
+   → DB transaction 内の original 行 INSERT（rel_path の一意 reservation）→ temp
+   を canonical へ atomic rename → 親ディレクトリ `fsync`、の順で進める。
+3. **公開点は DB commit**: DB transaction 内の INSERT は一意性を予約するが、
+   他セッションから見える公開ではない。rename と親ディレクトリ `fsync` が成功して
+   から transaction を commit し、commit が成功した時点で `media_assets` 行と
+   canonical file の組を公開する。rename 後に fsync または DB commit が失敗した
+   場合は transaction を rollback し、canonical file は orphan として aging 回収
+   に委ねる。mirakc record は削除しない。rename 前の失敗では試行固有 temp だけを
+   消す。**この順序を反転させない**: DB commit 後に rename すると、行が指す実体の
+   欠落を作る。
+   **ingest のコピー完了には fsync と Close のエラー確認まで含める**。Linux では
+   遅延した書き込みエラー（ENOSPC / I/O エラー）が `Close` では報告されず `fsync`
+でしか上がらない。rename 後の親ディレクトリ `fsync` は新しい directory entry
+の永続化を確定する。いずれかが失敗したら DB 登録と record 削除をせず再試行する。
 4. **DB には相対パスのみ保存**。ルートは設定で与える。ロック・xattr・パーミッションに依存しない
 
-ポイントはルール 3。Postgres を真実の座に置く設計（[データ層](../data.md) 参照）なので、「ストレージは信頼性の低いただの置き場、整合性は DB とジョブの冪等性で担保」と割り切れる。
+ポイントはルール 3。DB commit を公開点にしつつ、公開前のファイル操作は強い FS
+契約で確定させる。起動時 probe はこの操作列が実行できることだけを確認し、FS の
+種類や atomic rename の実装品質をパス文字列から推測しない。
 
 ## 4. クラウド側のマウント選択肢
 
 | 選択肢 | 特徴 |
 |---|---|
-| **JuiceFS**（第一候補） | メタデータを DB に、データを S3 に置く FUSE FS。本物のアトミック rename を含むまともな POSIX 意味論。**メタデータストアに PostgreSQL を使える**ため「ステートフル基盤は Postgres と S3 だけ」という構成に綺麗にはまる |
-| k8s-csi-s3（geesefs） | シーケンシャル書き込みは高速で契約とは相性が良い。コミュニティドライバ |
-| RWX PVC（NFS 等） | S3 にこだわらないならこれでも契約は満たせる |
+| ローカル FS | file fsync / Close / atomic rename / 親 directory fsync を通常の POSIX 意味論で満たす。第一候補 |
+| **JuiceFS**（対象内） | メタデータを DB に、データを S3 に置く FS。atomic rename を含む POSIX 意味論を信頼できる構成で使う。**メタデータストアに PostgreSQL を使う場合は別インスタンスを推奨** |
+| **NFS**（対象内） | export は `sync`、client mount は `hard` を推奨。`.nfsXXXX` の silly rename が一時的な orphan 候補に見えても、通常の aging 回収で無害に扱う |
+| k8s-csi-s3（geesefs / s3fs）・AWS Mountpoint | 原本 ingest 先には使わない。派生物専用の領域に限る（#96 の実機検証範囲） |
 
 **注意**: JuiceFS のメタデータストアに Rokuban と同じ Postgres インスタンスを使うと、DB 障害がストレージ障害に連鎖し「DB が詰まっても仕事は失われない」の前提を崩す。使うなら別インスタンスを明記すること。
 
 ## 5. 2 階層: 録画バッファとアーカイブ
 
-「mirakc が直接書くストレージは高速に、録画後の保存先はアーカイブ用途（S3 可）で低速に」という分離は、ingest の設計（[録画エンジン](../recording.md) 参照）が既に実現している。新機能は不要で、「録画後のファイル移動」= ingest そのもの。
+「mirakc が直接書くストレージは高速に、録画後の保存先はアーカイブ用途で低速に」という分離は、ingest の設計（[録画エンジン](../recording.md) 参照）が既に実現している。新機能は不要で、「録画後のファイル移動」= ingest そのもの。Rokuban の原本 ingest root は上の強い FS 契約を満たす必要があり、FUSE S3 は派生物専用の別領域でのみ検討する。
 
 ### 2 階層の対応関係
 
 | 階層 | 実体 | 要件 | 寿命 |
 |---|---|---|---|
 | 録画バッファ | mirakc `recording.basedir`（エッジのローカルディスク） | 高速・低レイテンシ（I/O 飽和 = ドロップ直結） | ingest コミット後に record 削除（リングバッファ） |
-| アーカイブ | Rokuban のメディアストレージ（ローカル FS / NAS / CSI の S3） | 低速可（書き込みはリトライ可能な転送のみ） | 保持ポリシーに従う |
+| アーカイブ | Rokuban のメディアストレージ（ローカル FS / 条件付き NFS / JuiceFS） | 低速可（書き込みはリトライ可能な転送のみ。ただし原本 root の強い FS 契約は必要） | 保持ポリシーに従う |
 
 「mirakc に最終保存先を直接書かせない」根拠はまさにこの要件: 録画はシステム内で唯一のリアルタイム・リトライ不能な操作であり、遅いストレージのストールが放送の欠損に直結する。monolith モードでも basedir を NVMe、メディアストレージを HDD/NAS に置くだけで同じ分離が効く（設定レベルの話でコードは変わらない）。
 
@@ -91,7 +113,7 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以�
 - **トップレベルの予約ディレクトリは `catalog/` / `thumbnails/` / `sites/` の 3 つ。** `catalog/` は削除 reconcile の孤児回収と rescue スキャンが SkipDir する予約ディレクトリ、`thumbnails/` はサムネイルの名前空間（§5.1）、`sites/` が site スコープの原本の名前空間
 - **前置の 1 段目を site 名そのもの（`{site}/...`）にせず、固定の `sites/` を挟む。** 当初案（site 名を先頭成分にする）は、前置前に ingest 済みの既存行の先頭成分と site 名が偶然一致すると衝突する --- 例えば `filename_template` が `"tokyo/..."` のような静的接頭辞を書いていて、かつ site 名が `tokyo` だと、新規 ingest の rel_path が既存行と同じになり、一意索引が効く前に実ファイルが上書きされる（site 名の構文 `^[a-z0-9]([_-]?[a-z0-9])*$` は日付ディレクトリ名や `anime` のような静的な語も許すため、理論上だけの懸念ではない）。`sites/` を固定の 1 段目に挟むことで、新規 ingest の rel_path は必ず `sites/` から始まり、それ以前の既存行が `sites/` から始まっていない限り構造的に衝突しない
 - **前置するのは ingest（`internal/worker/ingest.go` の `determineRelPath`）であって、contentPath テンプレートではない。** ingest は原本 `rel_path` の唯一の書き手なので、ここで前置すれば入力（reconciler が生成する contentPath の形や、ユーザーが書く `filename_template` の内容）に関わらず名前空間が保たれる
-- **前置は空の相対パスを通す前に弾く。** contentPath / Content.Path がどちらも空だと前置前の相対パスは `.`（カレントディレクトリ）になる。前置後は `sites/{site}/.` が `Join`/`Clean` で `.` が消えて `sites/{site}` という一見正当なパスになり `mediapath.Resolve` の脱出検知を通ってしまう。すると `os.Create` が `{media_dir}/sites/{site}` を通常ファイルとして作ってしまい、以後その site 配下の ingest が全て `MkdirAll` で「not a directory」になる。`determineRelPath` は前置前に相対パスが `.` であることを明示的に検査して弾く
+- **前置は空の相対パスを通す前に弾く。** contentPath / Content.Path がどちらも空だと前置前の相対パスは `.`（カレントディレクトリ）になる。前置後は `sites/{site}/.` が `Join`/`Clean` で `.` が消えて `sites/{site}` という一見正当なパスになり `mediapath.Resolve` の脱出検知を通ってしまう。すると一時ファイル作成が `{media_dir}/sites/{site}` を通常ファイルとして作ってしまい、以後その site 配下の ingest が全て `MkdirAll` で「not a directory」になる。`determineRelPath` は前置前に相対パスが `.` であることを明示的に検査して弾く
 - **`media_dir` 配下に、録画の実体を指すリンクを作らない（symlink / hard link）。** 孤児回収の走査（`internal/worker/delete_reconcile.go` の `walkMediaFiles`）は symlink かどうかを見ずに台帳と突き合わせるため、置いた symlink は未知の rel_path として孤児候補になり、[retention.md](retention.md) §7 のエイジング（mtime 猶予 7 日 + 14 日）後に `os.Remove` でリンクだけ黙って消える（`mediapath.Resolve` は字句判定のみで symlink を評価せず止めない）。hard link は regular file と区別できず、同じ実体に live な録画が 2 行並ぶ（`(dev, ino)` による検出はスキャンをまたぐと inode がバックアップ復元で変わるため実装しない）。rescue の走査と `inplace.Register` は symlink だけを弾く
 - **ディレクトリへの symlink も作らない。** rescue と孤児回収の走査はどちらも symlink を辿らないため、配下のファイルは孤児候補にすらならず rescue からも見えない（災害復旧で救えない）。symlink エントリ自身は未知の rel_path として渡り、上と同じ理由でエイジング後にリンクだけ消える。リンク先が `media_dir` 内を指す構成では、配下の active 行が実体無しとして誤報され続ける
 - **`media_dir` 自身が symlink であることは許す**（`/var/lib/rokuban/media -> /mnt/disk1/media`）。**成り立つのは、走査 2 本 --- rescue（`rescueStorage`）と削除 reconcile（`walkMediaFiles`）--- が root を `filepath.EvalSymlinks` で解決してから walk しているからであって、この解決を外すと両方とも黙って壊れる**: `filepath.Walk` / `WalkDir` は root を `Lstat` して `IsDir()` が false ならコールバックを 1 回呼んで終わるので、rescue は 0 件のまま「成功」し（災害復旧が最も要る場面だけが壊れる）、削除 reconcile は `seenOnDisk` が `.` の 1 件になるため全損セーフガード（走査が 0 件なら記録を見送る）も働かず `active` な行が全件「実体無し」と誤報される。解決した値は root だけでなく `catalog/` の除外判定と `rel_path` の基準にも同じものを使う（片方だけ解決すると `filepath.Rel` が `../` を積んだ rel_path を返し、台帳と一致しなくなる）。root を解決することと、配下にリンクを作らないこと（上の 2 つ）は別の話であって、片方をもう片方の根拠にしない

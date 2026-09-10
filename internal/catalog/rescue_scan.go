@@ -16,6 +16,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/inplace"
+	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/reservation"
 )
 
@@ -57,6 +58,13 @@ func rescueStorage(ctx context.Context, pool *pgxpool.Pool, mediaDir, site strin
 			return nil
 		}
 		if entry.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
+		// ingest のプロセス死で残った試行固有 temp は孤児回収の対象であり、
+		// catalog 無し rescue では original に昇格させない。拡張子だけで判定
+		// すると、将来の命名変更や basename に複数のドットがある場合に
+		// 一時ファイルが救済される余地が残る。
+		if mediapath.IsIngestTempFile(entry.Name()) {
 			return nil
 		}
 

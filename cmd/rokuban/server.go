@@ -298,6 +298,16 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err := validateSiteBinding(roles, bound, queues); err != nil {
 		return err
 	}
+	if slices.Contains(roles, "worker") &&
+		(len(queues) == 0 || slices.Contains(queues, jobs.IngestQueue)) {
+		// ingest は media_dir の強い FS 契約（file fsync / Close / 同一 FS の
+		// atomic rename / 親 directory fsync）に依存する。起動時に実際の操作列を
+		// 1 回通す。ingest を購読しない中央 worker は media_dir を書かないので
+		// probe の対象外。パス文字列から FS の種類は判定しない。
+		if err := worker.ProbeIngestStorage(cfg.Storage.MediaDir); err != nil {
+			return fmt.Errorf("validating ingest storage: %w", err)
+		}
+	}
 
 	ctx, stop := installSignalHandler(cmd.Context())
 	defer stop()

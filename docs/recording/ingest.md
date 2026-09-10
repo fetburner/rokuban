@@ -98,18 +98,22 @@ ingest は River の通常の stuck-job rescue 対象にならない。そこで
 
 候補を時刻だけで死亡と判定してはいけない。ingest は Work の開始時に
 `rokuban:ingest:job:<river_job.id>` の PostgreSQL セッションレベル advisory lock を取得し、
-既存の `rel_path` lock も同じセッションへ追加して commit まで保持する。`record_sweep` がその
-ジョブ ID の lock を `pg_try_advisory_lock` で取得できた場合だけ元プロセスのセッションが無い
-（= プロセス死）と確定する。lock を取れなかった live transfer は回収しないので、遅い転送や
-HEAD / fsync / commit 中の古い進捗を時間だけで打ち切らない。
+commit まで保持する。`record_sweep` がそのジョブ ID の lock を
+`pg_try_advisory_lock` で取得できた場合だけ元プロセスのセッションが無い（= プロセス死）と
+確定する。lock を取れなかった live transfer は回収しないので、遅い転送や HEAD / fsync /
+commit 中の古い進捗を時間だけで打ち切らない。rel_path の排他にはこの lock を使わない。
+
+job lock の heartbeat は lock 用セッションを idle 切断から守る keepalive だけを担う。
+lock 喪失を検知しても転送をキャンセルしない。一時ファイル方式では古い実行が残っても
+canonical file を壊せず、DB の一意 reservation が採用を決めるためである。
 
 死亡と確定した場合は、古い `running` 行に回収理由と `finalized_at` を記録して `discarded` に
 終端化し、同じトランザクションで別 ID の ingest ジョブを投入する。古い行を `running` のまま
 再投入すると、UniqueOpts の `pendingJobStates` に `running` が含まれるため新しい試行が古い行へ
 合流し、回収できない状態が続く。進捗行が作られる前に死んだケースも、`attempted_at` fallback
-で同じ経路に乗る。新しい試行は部分ファイルを truncate してゼロから作り直す。中途再開は
-スキャナ状態の永続化とストレージ契約（シーケンシャル一発書き）違反の追記が必要になり、層 1
-で大半が救われる以上、複雑さに見合わない。
+で同じ経路に乗る。新しい試行は canonical とは別の一意な temp にゼロから転送する。プロセス死で
+temp が残った場合は既存の orphan 回収（mtime 猶予 + aging）が拾う。中途再開はスキャナ状態の
+永続化と追記が必要になり、層 1 で大半が救われる以上、複雑さに見合わない。
 
 回収は既定 5 分周期（起動時に 1 回実行）で走る `record_sweep` に組み込んでいるため、通常は
 候補になってから最大で約 6 分以内に再投入される。総時間 timeout を有限値にする案は、録画
@@ -129,37 +133,33 @@ River のバックオフと `attempt` カウンタは失われる。この窓を
 
 #### 層 3: 完全性検証とコミット
 
-pull 完了後に書き込みバイト数を HEAD の Content-Length と照合 → 一致したら宛先ファイルを `fsync` → `Close` → `media_assets` コミット（コミット = DB 行。部分ファイルは孤児として cleanup が回収）→ **mirakc 側の record 削除はコミット後のみ**。**HEAD が長さを返さない場合（`Content-Length` 不明）はこの照合をスキップしてそのまま fsync へ進む**（`ingest.go` の `expectedLen >= 0` ガード）。
+pull 完了後に書き込みバイト数を HEAD の Content-Length と照合する。長さが一致したら、canonical rel_path と同じディレクトリに作った試行固有 temp の `fsync` → `Close` を行う。`Content-Length` が不明（`HeadRecordStream` が `-1`）なら照合だけをスキップして `fsync` へ進む（`ingest.go` の `expectedLen >= 0` ガード）。
 
-fsync を入れる理由は電源断ではなく、Linux では遅延した書き込みエラー（ENOSPC / I/O エラー）が `Close` では報告されず `fsync` でしか上がらないこと。書き込み済みバイト数（`offset`）はメモリ上で数えた値でしかないため、上の Content-Length 照合もこの種の失敗を素通りする。`fsync` か `Close` が失敗した場合は DB 登録も record 削除も行わず、ジョブを失敗させる。どこで落ちても最悪「もう一度 pull」で、データ喪失は構造的に起きない。
+その後の短い DB transaction で original の `media_assets` 行を INSERT し、rel_path の一意性を予約する。INSERT は transaction が commit するまで他セッションから見えない。この transaction を保持したまま temp → canonical の atomic rename と親ディレクトリ `fsync` を行い、最後に DB transaction を commit する。**DB commit が公開点であり、mirakc 側の record 削除は commit 後だけ**である。
 
-未解決: ディレクトリエントリの永続化は扱っていない。ext4 / XFS ではファイルの `fsync` がジャーナルを commit するので新規作成したディレクトリエントリの永続化にも相乗りするが、それに依存しないバックエンド（FUSE 等）では未保証。
+rename 前に失敗した試行は自分の temp を消す。rename 後の親ディレクトリ `fsync` または DB commit が失敗した場合は transaction を rollback し、canonical file は orphan として aging 回収に委ねる。mirakc record は削除しない。rename と DB commit の順序を反転させて、DB が指す実体を先に公開してはならない。
 
-運用上の主なリスクは**長時間の転送失敗でエッジのリングバッファが溜まり続ける**こと。`IngestWorker` 自体は River の既定の試行上限のままで、上限に達すると discard（dead-letter）されうる。それでも record が宙に浮かないのは、mirakc 側の record がコミット成功後にしか削除されない（上記のとおり）ため: discard された後も record_sweep（5 分周期の定期全量突き合わせ。[watcher.md](watcher.md) §3.3 の (c)）が同じ finished record を見つけ、`processRecord` が同一トランザクションで ingest ジョブを再投入し続けるからである。「未 ingest の record 総量」をメトリクス化してエッジのディスク残量と突き合わせてアラートする（[storage.md](../storage.md) のサイジング指針参照）。
+fsync を入れる理由は電源断だけではなく、Linux では遅延した書き込みエラー（ENOSPC / I/O エラー）が `Close` では報告されず `fsync` でしか上がらないためである。rename 後の親ディレクトリ `fsync` は新しい directory entry の永続化を確定する。ファイル `fsync` / `Close` / rename / 親ディレクトリ `fsync` のいずれかが失敗した場合は DB 登録も record 削除も行わず、ジョブを失敗させる。どこで落ちても最悪「もう一度 pull」で、データ喪失は構造的に起きない。
+
+運用上の主なリスクは**長時間の転送失敗でエッジのリングバッファが溜まり続ける**こと。`IngestWorker` 自体は River の既定の試行上限のままで、上限に達すると discard（dead-letter）されうる。それでも record が宙に浮かないのは、mirakc 側の record が DB commit 成功後にしか削除されないため: discard された後も record_sweep（5 分周期の定期全量突き合わせ。[watcher.md](watcher.md) §3.3 の (c)）が同じ finished record を見つけ、`processRecord` が同一トランザクションで ingest ジョブを再投入し続けるからである。「未 ingest の record 総量」をメトリクス化してエッジのディスク残量と突き合わせてアラートする（[storage.md](../storage.md) のサイジング指針参照）。
 
 **帰結はディスクだけではない。** 滞留が `epg.retention_grace`（既定 24h）を跨ぐと、その録画の encode policy は予約から解決できず既定値で凍結される（エンコードが投入されない）。原本は残るのでデータは失われない。`recordings.source` と `rule_id` がどうなるかは、その録画の `recordings` 行が作られたのが GC より前か後かで分かれる。作成時にまだ予約が引ければどちらも通常どおり書かれ、影響は encode policy の凍結だけにとどまる。作成が GC 後にずれ込んだ場合は `rule_id` が NULL になり `source` も `unattributed` に落ちる。**このケースは下記 §5.5 の `encode_reconcile` でも回復しない**（desired が空になるので候補に入らない）。詳細と、滞留の型ごとに見るメトリクスが分かれること（**未 ingest 総量は回線断の滞留を数えない**）は [storage.md](../storage.md) §6「凍結が依存する寿命と、エッジの滞留の交点」と [operations.md](../operations.md) §4。
 
 #### 冪等性: コミット済みなら転送をやり直さない
 
-`media_assets` に `kind='original'` の行が既にコミットされていれば、ジョブは転送せず、エッジ record の削除だけを再試行して終わる（`IngestWorker.hasOriginalMediaAsset`）。エッジ record の削除は失敗してもログのみで ingest 自体は成功扱いにしているため、mirakc 側に record が残ったまま record_sweep 経由で同じ record の ingest ジョブが再投入されうる。ここで止めないと `os.Create` がコミット済みファイルを 0 バイトに切り詰めて全量を再ダウンロードし、streamer が不変条件 3（コミット = DB 行）に反して欠けたファイルを配ることになる。
+`media_assets` に `kind='original'` の行が既にコミットされていれば、ジョブは転送せず、エッジ record の削除だけを再試行して終わる（`IngestWorker.hasOriginalMediaAsset`）。エッジ record の削除は失敗してもログのみで ingest 自体は成功扱いにしているため、mirakc 側に record が残ったまま record_sweep 経由で同じ record の ingest ジョブが再投入されうる。ここで止めないと新しい試行が canonical file を置き換えて全量を再ダウンロードし、streamer は不変条件 3（コミット = DB 行）に反して欠けたファイルを配ることになる。
 
-#### 宛先 rel_path の排他: 一意索引が効く前に決着させる
+#### 同じ rel_path の競合: 一意 reservation で採用を決める
 
-`media_assets` の一意索引（`rel_path`, `WHERE state <> 'deleted'`）が効くのは `commit` の INSERT の瞬間だが、宛先へのバイトはそれより前に落ちる（[storage/contract.md](../storage/contract.md) §3 ルール 3 の順序そのもの --- コピー完了 → 行の登録）。**したがって順序では実ファイルを守れない。** 別の `recording_id` が同じ rel_path を算出するケース（同一サイト内で `contentPath` が偶然重複する等）で 2 つの ingest ジョブがほぼ同時に走ると、両方が `os.Create` で宛先を開き、先にコミットした側のファイルを後発が上書きしうる（PR #196 のレビューで実測、issue #197）。
+canonical path へ転送中のバイトが存在しないため、同じ `rel_path` を算出した複数の ingest は、それぞれ自分の一意な temp へ並行して pull できる。`checkRelPathConflict` / `GetLiveMediaAssetByRelPath` は転送前の安価なヒントであり、同時 ingest の決着には使わない。
 
-これを閉じるため、`IngestWorker.Work` は `determineRelPath` の直後・`os.Create` より前・mirakc のストリームを開くより前に、`rel_path` のハッシュをキーにした **Postgres のセッションレベル advisory lock** を `pg_try_advisory_lock`（ノンブロッキング）で取得し、`commit` まで保持する。負けた側はバイトを 1 つも書かずに失敗し、River のバックオフで再試行する。
+各 transaction の original INSERT が部分一意索引を予約する。先に INSERT した transaction が rename・親 directory `fsync`・DB commit を完了すれば、その内容が canonical file の勝者になる。後発 transaction の INSERT は先発の commit / rollback を待ち、先発が commit した場合は unique violation で失敗する。後発の temp は自分で消えるので canonical file は勝者の内容のまま保たれる。delete_reconcile の `deleting` 行との TOCTOU は閉じない: 先読みはヒントであり、正しさは一意索引と適用時の状態遷移に残る。
 
-- **セッションレベルであってトランザクションレベルではない。** 転送は数時間かかりうるので、トランザクションロック（`pg_advisory_xact_lock`）だと同じ長さのトランザクションを開き続けることになる。セッションロックはコネクションの生存期間にだけ紐づくので、`commit` は別の短命なトランザクションとして自由に行える
-- **ノンブロッキングであってブロッキング版（`pg_advisory_lock`）ではない。** ブロッキング版だと、ingest のキュー枠（site あたり 1〜2、下記 §5.4）を「待ち」で丸ごと塞いでしまう
-- **先読み（`checkRelPathConflict`、`GetLiveMediaAssetByRelPath`）はロックの下へ移した。** これにより **ingest 対 ingest に関してはもはや先読みではなく決着そのものになる** --- ロックを保持している間、他の ingest ジョブは同じ rel_path への転送を開始できないので、この SELECT の結果は `commit` まで安定する。ここで拾うのは「別の（今 transfer 中ではない）recording が過去にこの rel_path を使って既にコミットした」という恒久的な衝突であり、`state <> 'deleted'` の述語（`active` に限らず、delete_reconcile の unlink 前後の中間状態である `deleting` も含む）は変えていない。**ただし delete_reconcile の状態遷移に対しては、従来どおりヒントのまま** --- delete_reconcile は rel_path の advisory lock を取らないので、この SELECT と実際の `CreateMediaAsset` の INSERT の間に `deleting` → `deleted` の遷移が進む TOCTOU の窓は残る
-- **行の一意性の最後の砦は今も一意索引**（レベルトリガー、不変条件 5）。ロックはその代替ではなく、一意索引が効くより前の窓を閉じるためだけにある
-- **ロック用セッションを heartbeat する**: 転送中は 1 秒ごとに同じ接続の `pg_locks` を照合する。ingest は Work の開始時にジョブ ID の advisory lock も同じセッションへ確保している（層 2 参照）ので、heartbeat は**保持しているキーごとに 1 クエリを順に**投げる --- 転送中（rel_path lock を追加した後）は job lock と rel_path lock の 2 本。**接続断・ロック喪失（held=false）は確定した事実として即座に失敗側に倒す**が、それ以外のクエリ失敗（checkpoint / failover / pgbouncer によるスタック、タイムアウトを含む）は一過性とみなし、3 回連続して初めて転送 context をキャンセルする --- そうしないと DB の数秒のレイテンシ 1 回で、進捗の進んだ転送が 0 バイトからの再試行に戻ってしまう（issue #679）。タイムアウトはクエリ 1 回ごとに与える（ループ全体では共有しない）--- 共有すると 2 本目のキーのクエリが 1 本目の残り時間しか使えず、一過性失敗の頻度が上がってこの避けたい側に寄ってしまう。これにより、ロックが解放された後も旧実行が書き続ける現行の劣化モードを、接続断・ロック喪失なら heartbeat 1 回ぶんの検知窓に限定する。heartbeat 自体が通信を続けるので、idle session timeout / 経路上の idle 切断を防ぐ効果もある
-- **残る検出窓は保証として隠さない**: 接続断・ロック喪失は nominal には heartbeat 間隔 1 秒、キー 1 本あたりの応答待ち 2 秒の窓が残る（転送中は 2 本ぶん直列なので最大 4 秒）。一過性のクエリ失敗が連続する場合はこの窓がさらに広がりうる（許容回数分の heartbeat 間隔 + 応答待ちの合計が上限の目安）。Postgres がロックを解放してから heartbeat が検知するまでに後続 ingest が同じ宛先を開くと、旧実行がその短い窓で書く可能性はある。この絶対的な窓を消す「試行ごとの不変パス + DB 採用」は最強だが、rel_path の名前空間（rescue の `sites/{site}/` 逆読み、`EncodedRelPath`、catalog）を変更し、失敗試行ごとに全長の孤児を 7 日 + 14 日残すため採らない。保存先側の `flock` も S3/FUSE で意味論が保証されず、採らない
-- **同一録画の再試行**: 現行の `IngestWorker.Timeout() = -1` と River の running を含む一意投入により、プロセス内の通常の River 経路では古い ingest と新しい ingest が同時に走らない。プロセス死で running 行だけが残った場合も、上記のジョブ lock 確認と旧行の終端化を経て新しい試行へ進む。この前提が将来変わる場合も、`media_assets (recording_id, kind, profile)` の一意制約が採用行を 1 つに絞り、heartbeat が先行実行を止める
-- **孤児と追加 I/O**: heartbeat で中断した直接書きの部分ファイルは DB 行が無いので、既存の `orphan_files` の mtime 猶予（既定 7 日）とエイジング（既定 14 日）が回収する。正常な転送に別の全長コピーは追加せず、追加コストは実行中 ingest 1 本あたり 1 秒ごとの短い DB query だけである（保持しているキーごとに 1 本なので、転送中は job lock と rel_path lock の 2 本）
+- **rel_path advisory lock は削除した。** canonical path に直接書かないので、ロック喪失から検知までの窓と heartbeat による転送 cancel は不要である。残る job-id advisory lock は record_sweep が live job と死亡 job を区別するためだけに使い、heartbeat はそのセッションの keepalive だけを担う
+- **同一録画の再試行**: 現行の `IngestWorker.Timeout() = -1` と River の running を含む一意投入により、プロセス内の通常の River 経路では古い ingest と新しい ingest が同時に走らない。プロセス死で running 行だけが残った場合も、上記のジョブ lock 確認と旧行の終端化を経て新しい試行へ進む。temp は試行ごとに新しい名前になる
+- **孤児と追加 I/O**: 失敗試行の temp は自分で消し、プロセス死や rename 後の DB 失敗で残るファイルは既存の `orphan_files` の mtime 猶予（既定 7 日）とエイジング（既定 14 日）が回収する。正常な転送に scratch 経由の全長コピーは追加せず、追加コストは temp の作成・rename・親 directory `fsync` である
 
-**今でも先に浮かぶ案が壊すもの**: 一時ファイル + `os.Rename` で宛先を作る案は採らない --- rename は S3 マウントの一部（AWS Mountpoint）に存在せず、他（geesefs/s3fs）では数十 GB の実コピーになる（[storage/contract.md](../storage/contract.md) §2）。commit を先にして rename を後にすると、rename が恒久失敗したとき行が指す唯一の実体が一時ファイルのまま残り、`active` 行の実体欠落を検出する経路が無いまま孤児回収に食われる。
-
+**弱い FS へ原本を直接書く設計は、FUSE の rename 非対応や fsync/Close の不確かな意味論に合わせるための将来課題へ戻した。** 本 issue では `storage.media_dir` を強い FS に限定し、FUSE S3 は派生物専用の領域に限る。
 ### 5.4 負荷分担: worker
 
 `records/{id}/stream` の負荷が乗るのは worker（ingest ジョブ、KEDA で 0〜N）であり、reconciler は数百件のメタデータ diff を回すだけの軽いジョブのまま。ただし**本当のボトルネックはクラウド側ではなくエッジ側**:

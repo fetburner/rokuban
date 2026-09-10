@@ -141,7 +141,7 @@ func recoverStaleIngestJobs(ctx context.Context, pool *pgxpool.Pool, riverClient
 // 作った available 行に合流するだけで、二重に ingest が走ることはない
 // （TestRecordSweepRecovery_ReplacesStaleRunningIngest 参照）。
 func recoverStaleIngestJob(ctx context.Context, pool *pgxpool.Pool, riverClient *river.Client[pgx5.Tx], site string, candidate staleIngestJob) error {
-	lock, acquired, err := acquireIngestJobLock(ctx, pool, candidate.id, defaultRelPathLockTimeout)
+	lock, acquired, err := acquireIngestJobLock(ctx, pool, candidate.id, defaultIngestJobLockTimeout)
 	if err != nil {
 		return fmt.Errorf("acquiring advisory lock for stale ingest job %d: %w", candidate.id, err)
 	}
@@ -150,6 +150,9 @@ func recoverStaleIngestJob(ctx context.Context, pool *pgxpool.Pool, riverClient 
 		return nil
 	}
 	defer lock.release()
+	// Work の長時間転送とは違い、recovery はこの lock 用 connection 自身で
+	// transaction を実行する。heartbeat と pgx connection を同時利用しない。
+	lock.stopHeartbeatLoop()
 
 	recoveredAt := time.Now().UTC()
 	errorJSON, err := json.Marshal(rivertype.AttemptError{

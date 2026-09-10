@@ -52,7 +52,11 @@ mirakcs:
 
 # ストレージ（media_dir は必須）
 storage:
-  media_dir: /mnt/media          # アーカイブ層 (S3-via-CSI 可)
+  media_dir: /mnt/media          # 原本 ingest 先。file fsync / Close / 同一 FS の
+                                  # atomic rename / 親 directory fsync を信頼できる
+                                  # ローカル FS / JuiceFS / NFS に限定する。geesefs / s3fs /
+                                  # Mountpoint など FUSE S3 は原本 ingest 先に使わない
+                                  # （派生物専用の領域なら可。docs/storage/contract.md）。
   scratch_dir: /var/tmp/rokuban  # ローカルスクラッチ
   # accel_location: /_media/     # X-Accel-Redirect の internal location。
                                  # 設定すると録画ファイルのバイト転送を nginx に委ねる。

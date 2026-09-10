@@ -23,12 +23,12 @@
   束縛サイトごとに advisory lock 用コネクションを 1 本専有し続ける**（site ごとに
   `role.RunSingleton` の goroutine を持つ。`cmd/rokuban/server.go` の watcher ループ）。
   2 サイト目以降は budget にも自動で上乗せされる（`internal/db.perSiteConnBudget`。
-  worker も ingest の rel_path advisory lock ぶんを同様に上乗せする）。
+  worker も ingest の job advisory lock ぶんを同様に上乗せする）。
   `db.max_conns` を明示指定する場合の fail-fast（`internal/db.minRequiredConns`）も束縛サイト数を
   見る --- watcher の専有分（1 サイトあたり 1 本）の合計 + 他の仕事のための余地 1 本を下回ると
   起動時エラーになる。**worker の fail-fast はサイト数を見ない**（固定 1 本のまま）:
   River の LISTEN 用の 1 本だけが「プロセスの生存期間中ずっと専有される」資源で、ingest の
-  rel_path advisory lock は転送中だけの一時専有（転送が終われば解放される）なので、無症状
+  ingest の job advisory lock は転送中だけの一時専有（転送が終われば解放される）なので、無症状
   デッドロックの検査（“二度と戻ってこないコネクション”）には含めていない。ソフトな budget
   側の上乗せ（上記）が実運用の目安である。
 - **API 系クエリに `statement_timeout`** を設定する。クエリ単位の context timeout だと「付け忘れた 1 本」が

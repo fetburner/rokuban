@@ -12,6 +12,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/google/uuid"
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
@@ -47,16 +48,50 @@ type ingestFile interface {
 	Close() error
 }
 
+// openIngestFile は試行固有の一時ファイルを O_EXCL で作る。ファイル名は呼び出し
+// 側で毎回生成するため、River の再試行や別プロセスの同時実行が同じファイルを
+// 共有しない。
 var openIngestFile = func(path string) (ingestFile, error) {
-	return os.Create(path)
+	return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
 }
 
-// acquireIngestRelPathLock は、Work の開始時に取得したジョブ advisory lock と
-// 同じセッションへ rel_path advisory lock を追加する取得フック。openIngestFile と
-// 同じ形で、テストが取得直後の *relPathLock を捕捉して heartbeat を経由せずに
-// lock.isLost() ガード（下記 Work 参照）を検証するために差し替える。
-var acquireIngestRelPathLock = func(ctx context.Context, lock *relPathLock, relPath string, timeout time.Duration) (bool, error) {
-	return lock.acquireRelPath(ctx, relPath, timeout)
+// renameIngestFile / syncIngestParentDir は確定プロトコルの OS 操作をテストから
+// 観測・失敗注入できるようにする。実装の順序（DB INSERT → rename → 親 dir fsync
+// → DB commit）を、ファイルシステムの実体に依存せず検証するためのフックである。
+var renameIngestFile = os.Rename
+var syncIngestParentDir = syncIngestDirectory
+var commitIngestTransaction = func(ctx context.Context, tx pgx5.Tx) error {
+	return tx.Commit(ctx)
+}
+
+func createIngestTempFile(dir string) (string, ingestFile, error) {
+	for attempt := 0; attempt < 10; attempt++ {
+		path := filepath.Join(dir, mediapath.IngestTempFilePrefix+uuid.NewString())
+		file, err := openIngestFile(path)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return "", nil, err
+		}
+		return path, file, nil
+	}
+	return "", nil, fmt.Errorf("could not create unique ingest temporary file in %s", dir)
+}
+
+func syncIngestDirectory(path string) error {
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("opening parent directory: %w", err)
+	}
+	if err := dir.Sync(); err != nil {
+		_ = dir.Close()
+		return fmt.Errorf("syncing parent directory: %w", err)
+	}
+	if err := dir.Close(); err != nil {
+		return fmt.Errorf("closing parent directory: %w", err)
+	}
+	return nil
 }
 
 // IngestWorker は mirakc からの TS ファイル転送を行う River ワーカー。
@@ -81,13 +116,6 @@ type IngestWorker struct {
 	// （resolveProgressInterval）。テストが転送の途中経過を観測するために
 	// 短くできるようにしてあるだけで、運用上は既定のままでよい。
 	ProgressInterval time.Duration
-
-	// RelPathLockTimeout は rel_path advisory lock の取得（pool.Acquire と
-	// pg_try_advisory_lock）に与える上限。0 は「未設定」で
-	// defaultRelPathLockTimeout に解決する（ProgressInterval と同じ規約。
-	// resolveRelPathLockTimeout 参照。config キーが無い --- ProgressInterval の
-	// doc コメント参照）。
-	RelPathLockTimeout time.Duration
 }
 
 // Timeout は River の総時間タイムアウトを無効化する。
@@ -110,16 +138,6 @@ func (w *IngestWorker) resolveProgressInterval() time.Duration {
 		return ingestProgressInterval
 	}
 	return w.ProgressInterval
-}
-
-// resolveRelPathLockTimeout は設定された RelPathLockTimeout があればそれを、
-// なければ既定の defaultRelPathLockTimeout を返す（resolveProgressInterval と
-// 同じ「0 は未設定」の規約）。
-func (w *IngestWorker) resolveRelPathLockTimeout() time.Duration {
-	if w.RelPathLockTimeout == 0 {
-		return defaultRelPathLockTimeout
-	}
-	return w.RelPathLockTimeout
 }
 
 // Work は ingest ジョブを実行する。ストリーム取得・TS 統計収集・DB コミット・エッジ削除を行う。
@@ -145,9 +163,9 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 
 	// Work の開始から commit まで、ジョブ ID 固有の advisory lock を保持する。
 	// record_sweep の回収側が同じキーを pg_try できた場合だけ、元プロセスが死んで
-	// セッションが解放されたと確定できる。rel_path lock も後でこのセッションへ
-	// 追加する（同じ接続であることが回収判定の前提）。
-	jobLock, acquired, err := acquireIngestJobLock(ctx, w.Pool, job.ID, w.resolveRelPathLockTimeout())
+	// セッションが解放されたと確定できる。heartbeat はこのセッションの keepalive
+	// だけを担い、canonical file の排他には使わない。
+	jobLock, acquired, err := acquireIngestJobLock(ctx, w.Pool, job.ID, defaultIngestJobLockTimeout)
 	if err != nil {
 		return fmt.Errorf("acquiring ingest job lock: %w", err)
 	}
@@ -171,8 +189,8 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	// record が残ったまま 5 分後の record_sweep → watcher.processRecord
 	// （status=finished）経由で同じ record の ingest ジョブが再投入されうる。
 	// pendingJobStates の UniqueOpts は completed を除外するのでこの再投入は
-	// 止まらない。ここで止めないと os.Create がコミット済みファイルを 0
-	// バイトに切り詰めて全量を再ダウンロードし、streamer は不変条件 3
+	// 止まらない。ここで止めないと新しい試行がコミット済み canonical file を
+	// 置き換えて全量を再ダウンロードし、streamer は不変条件 3
 	// （コミット = DB 行）で既にコミット済みの録画に対して欠けたファイルを
 	// 配ることになる。
 	alreadyCommitted, err := w.hasOriginalMediaAsset(ctx, recordingID)
@@ -190,70 +208,39 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 		return fmt.Errorf("determining rel_path: %w", err)
 	}
 
-	// rel_path の advisory lock を、mirakc のストリームを開く
-	// （transferIngestRecord の StreamRecord）より前・下の os.Create より前に
-	// 取る。media_assets の一意索引
-	// （rel_path, WHERE state <> 'deleted'）が効くのは commit の INSERT の
-	// 瞬間だが、宛先へのバイトはそれより前に落ちる（docs/storage/contract.md
-	// §3 ルール 3 の順序そのもの）。順序だけでは実ファイルを守れないので、
-	// 排他を索引より前に置く（docs/recording/ingest.md §5.3）。
-	//
-	// 負けた側（acquired=false）はバイトを 1 つも書かずに失敗し、River の
-	// バックオフで再試行する。ロックは commit まで defer で保持し続け、
-	// heartbeat がセッション喪失を検知したら転送用 context をキャンセルする。
-	lock := jobLock
-	acquired, err = acquireIngestRelPathLock(ctx, lock, relPath, w.resolveRelPathLockTimeout())
-	if err != nil {
-		return fmt.Errorf("acquiring rel_path lock: %w", err)
-	}
-	if !acquired {
-		log.Warn("ingest: rel_path is being transferred by another ingest job, deferring", "rel_path", relPath)
-		return fmt.Errorf("ingest: rel_path %q is being transferred by another ingest job; deferring (recording_id=%d)", relPath, recordingID)
-	}
-	// ロック用コネクションは転送中ずっと pool から保持するが、セッションが
-	// 切れると Postgres は advisory lock を自動解放する。heartbeat の lost 通知を
-	// 転送全体の context に伝播させ、古い実行が後続実行と同じファイルへ書き続け
-	// ないようにする。検知前の短い窓は残るため、commit 前にも isLost を確認する。
-	ingestCtx, cancelIngest := context.WithCancel(ctx)
-	defer cancelIngest()
-	go func() {
-		select {
-		case <-lock.lost:
-			cancelIngest()
-		case <-ingestCtx.Done():
-		}
-	}()
-
-	// checkRelPathConflict はロックの下（＝転送開始前だが排他は既に確定した後）
-	// で引く。ロックを持っている間は他の ingest がこの rel_path を狙って
-	// 転送を始めることはできないので、ここでの SELECT の結果は commit まで
-	// 安定する --- **ingest 対 ingest に関してはもはや先読みではなく決着その
-	// もの**（doc コメント参照）。ここで拾うのは「別の（今 transfer 中では
-	// ない）recording が過去にこの rel_path を使って既にコミットした」という
-	// 恒久的な衝突（contentPath 重複、issue #197）で、これは delete_reconcile
-	// の状態遷移に対しては引き続きヒント（TOCTOU が残る）でしかない。
-	if conflictRecordingID, err := w.checkRelPathConflict(ingestCtx, relPath); err != nil {
+	// 既に同じ rel_path を使う行がある場合は、無駄な転送を始める前に拒む。
+	// これは安価なヒントであり、ingest 同士の競合を決着させるものではない。
+	// 本当の採用順序は commit 内の未コミット INSERT（unique index の予約）で
+	// 保証する。
+	if conflictRecordingID, err := w.checkRelPathConflict(ctx, relPath); err != nil {
 		return fmt.Errorf("checking rel_path conflict: %w", err)
 	} else if conflictRecordingID != 0 {
 		return fmt.Errorf("ingest: rel_path %q is already used by another media_asset that has not been deleted (recording_id=%d); refusing to overwrite its file (recording_id=%d)",
 			relPath, conflictRecordingID, recordingID)
-	}
-	if lock.isLost() {
-		return fmt.Errorf("ingest: rel_path advisory lock was lost before opening destination (recording_id=%d)", recordingID)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		return fmt.Errorf("creating directory %s: %w", filepath.Dir(fullPath), err)
 	}
 
-	f, err := openIngestFile(fullPath)
+	tempPath, f, err := createIngestTempFile(filepath.Dir(fullPath))
 	if err != nil {
-		return fmt.Errorf("creating file %s: %w", fullPath, err)
+		return fmt.Errorf("creating ingest temporary file in %s: %w", filepath.Dir(fullPath), err)
 	}
+	// rename 前の全失敗経路では試行固有の一時ファイルを消す。rename 後に DB
+	// commit が失敗した場合は tempPath が既に無いので、canonical file は孤児回収
+	// に委ねられる（mirakc record は削除しない）。
+	defer func() { _ = os.Remove(tempPath) }()
 	// 正常系では下で明示的に Close する。ここでの defer はエラーで早期
 	// return した経路の後始末専用で、正常系の二重 Close は *os.File なら
 	// ErrClosed を返すだけで無害なので捨てる。
 	defer func() { _ = f.Close() }()
+
+	// 一時ファイル方式では canonical path を転送中に一度も触らない。したがって
+	// job lock の heartbeat がセッション喪失を検知しても、古い転送を context
+	// cancel する必要はない。古い試行は自分の temp file に閉じ込められ、DB の
+	// unique reservation が採用を一つに決める。
+	ingestCtx := ctx
 
 	counter := tsstat.NewCounter(f)
 
@@ -279,13 +266,7 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 
 	offset, err := w.transferIngestRecord(ingestCtx, client, args.RecordID, dst, progress, log)
 	if err != nil {
-		if lock.isLost() {
-			return fmt.Errorf("ingest: rel_path advisory lock was lost during transfer: %w", err)
-		}
 		return err
-	}
-	if lock.isLost() {
-		return fmt.Errorf("ingest: rel_path advisory lock was lost after transfer (recording_id=%d)", recordingID)
 	}
 	expectedLen, err := client.HeadRecordStream(ingestCtx, args.RecordID)
 	if err != nil {
@@ -308,9 +289,6 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("closing file: %w", err)
 	}
-	if lock.isLost() {
-		return fmt.Errorf("ingest: rel_path advisory lock was lost before commit (recording_id=%d)", recordingID)
-	}
 
 	// pid_type_changes > 0 は録画中に PMT が PID を付け替えたということ。
 	// 種別は最後に見たものを採用するので、変化そのものはここにしか残らない
@@ -323,10 +301,7 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 
 	recordIngestMetrics(offset, counter)
 
-	if err := w.commit(ingestCtx, recordingID, relPath, offset, counter); err != nil {
-		if lock.isLost() {
-			return fmt.Errorf("ingest: rel_path advisory lock was lost during commit: %w", err)
-		}
+	if err := w.commit(ingestCtx, recordingID, relPath, tempPath, fullPath, offset, counter); err != nil {
 		return fmt.Errorf("committing ingest: %w", err)
 	}
 
@@ -362,8 +337,8 @@ func (w *IngestWorker) handleAlreadyCommittedIngest(ctx context.Context, client 
 	}
 }
 
-// transferIngestRecord は mirakc のストリームを Range 再開しながら宛先へ転送する。
-// rel_path の advisory lock は呼び出し元が取得済みであることを前提にする。
+// transferIngestRecord は mirakc のストリームを Range 再開しながら試行固有の
+// 一時ファイルへ転送する。
 func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.Client, recordID string, dst io.Writer, progress *ingestProgressReporter, log *slog.Logger) (int64, error) {
 	var offset int64
 	for attempt := 0; ; attempt++ {
@@ -469,19 +444,9 @@ func (w *IngestWorker) hasOriginalMediaAsset(ctx context.Context, recordingID in
 
 // checkRelPathConflict は relPath を既に使っている、まだ削除されていない
 // （state <> 'deleted'。'active' に限らず、削除処理中の 'deleting' も含む）
-// media_asset があれば、その recording_id を返す（無ければ 0, nil）。Work が
-// rel_path の advisory lock を取得した後・os.Create の前に呼ぶ。
-//
-// **ingest 対 ingest に関しては、これはもはや「先読み」ではなく決着そのもの
-// である。** Work はこの関数を呼ぶ前に同じ relPath の advisory lock を
-// commit まで保持し続けるので（acquireRelPathLock）、他の ingest ジョブは
-// この関数が実行されている間、同じ relPath への転送を一切開始できない ---
-// したがってこの SELECT の結果（衝突の有無）は、この ingest が commit する
-// 瞬間まで安定する。ここで拾うのは「別の（今 transfer 中ではない）
-// recording が過去にこの rel_path を使って既にコミットした」という恒久的な
-// 衝突（同一サイト内の contentPath 重複、issue #197）であり、advisory lock
-// を取っていない別の recording が同時に同じ relPath へ転送を始めることは
-// もう起こらない。
+// media_asset があれば、その recording_id を返す（無ければ 0, nil）。これは
+// 転送前の安価なヒントであり、同時 ingest の決着ではない。採用の根拠は commit
+// 内の media_assets INSERT と部分一意索引である。
 //
 // **ただし delete_reconcile の状態遷移に対しては、従来どおりヒントのまま
 // である。** delete_reconcile は rel_path の advisory lock を取らないので、
@@ -557,7 +522,7 @@ func (w *IngestWorker) lookupIngestTarget(ctx context.Context, args jobs.IngestJ
 // contentPath / Content.Path がどちらも空だと relPath が "."（カレント
 // ディレクトリ）になる。前置後は "sites/{site}/." が Join/Clean で "." が
 // 消えて "sites/{site}" という一見正当なパスになり mediapath.Resolve を
-// 通ってしまい、os.Create が "{media_dir}/sites/{site}" を通常ファイルとして
+// 通ってしまい、一時ファイル作成が "{media_dir}/sites/{site}" を通常ファイルとして
 // 作ってしまう（以後その site 配下の ingest が全て MkdirAll で
 // "not a directory" になる。docs/storage/contract.md §rel_path の名前空間
 // 参照）。前置前に弾く（下記）。
@@ -590,7 +555,17 @@ func (w *IngestWorker) determineRelPath(ctx context.Context, args jobs.IngestJob
 	return relPath, fullPath, nil
 }
 
-func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath string, size int64, counter *tsstat.Counter) error {
+// commit は原本の公開プロトコルを 1 回実行する。
+//
+// DB transaction 内で media_assets の INSERT を先に行うことで、rel_path の unique
+// index が同じ宛先への競合を予約する。INSERT はまだ他セッションから見えないため、
+// その transaction を保持したまま temp -> canonical の atomic rename と親ディレクトリ
+// fsync を行い、最後にだけ transaction を commit する。
+//
+// rename 後の fsync / DB commit が失敗した場合は canonical file を消さない。tempPath
+// は既に消えているので呼び出し側の cleanup は no-op になり、ファイルは orphan として
+// aging 回収される。一方 rename 前に失敗した場合は呼び出し側が tempPath を消す。
+func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, tempPath, fullPath string, size int64, counter *tsstat.Counter) error {
 	tx, err := w.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
@@ -679,7 +654,16 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath st
 		}
 	}
 
-	if err := tx.Commit(ctx); err != nil {
+	// INSERT は一意性の予約であり、公開点ではない。canonical path を作るのは
+	// ここからで、失敗時に DB transaction を rollback できる順序を保つ。
+	if err := renameIngestFile(tempPath, fullPath); err != nil {
+		return fmt.Errorf("renaming ingest temporary file into canonical path: %w", err)
+	}
+	if err := syncIngestParentDir(fullPath); err != nil {
+		return fmt.Errorf("syncing canonical parent directory: %w", err)
+	}
+
+	if err := commitIngestTransaction(ctx, tx); err != nil {
 		return fmt.Errorf("committing transaction: %w", err)
 	}
 
