@@ -184,7 +184,7 @@ export function RecordingDetail({ recording, trash }: { recording: Recording; tr
  * 原則「固有名詞はリンク」（issue #221）に従い、ルールの識別（名前 or
  * `#N`）そのものをリンクテキストにする --- 装飾テキストの隣にリンクを
  * 置く形にしない。リンク先は `/search?ruleId=N`（ルールの実質的な編集画面。
- * `RulesPage` の「検索しながら編集」と同じ着地先）。
+ * `RulesPage` のルール名リンクと同じ着地先）。
  */
 function RuleSection({ ruleId }: { ruleId: number }) {
   const query = useListRules()

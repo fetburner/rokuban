@@ -68,7 +68,7 @@ import { cn } from '@/lib/utils'
  * `condition-fields.tsx` / `lib/program-search.ts` の切り出しで同じ UI を使えるように
  * なった）。
  *
- * 既存ルールの上書きは各行の「検索しながら編集」（`/search?ruleId=N`）に
+ * 既存ルールの上書きは各行のルール名から `/search?ruleId=N` を開く導線に
  * 一本化する。検索側は条件に一致する番組を見ながら編集でき、UI を持たない項目も
  * `buildRuleInput` の `preserve` 引数で引き継ぐ（`RuleEditForm` の doc comment と
  * `docs/frontend/search.md` を参照）。
@@ -146,7 +146,7 @@ export function RulesPage() {
  * 条件で作り直しても新しい id になるので過去の録画は 1 件もマッチしない
  * （`docs/recording/ruler.md` §3.1「ルールの削除は履歴のスコープを消す」）。
  * 帰結は録り逃しではないが、押した後に取り消せる操作でもないので、条件を
- * 変えたいだけなら削除ではなく「検索しながら編集」（id を保つ上書き保存）を
+ * 変えたいだけなら削除ではなくルール名からの編集（id を保つ上書き保存）を
  * 使えることまで書く。
  *
  * **被害の大きさを docs より強く書かない。** 過剰録画は一過性で、新しい
@@ -166,7 +166,7 @@ function deleteRuleWarning(rule: Rule): string {
   return (
     `${base}このルールの重複排除の履歴も一緒に外れます。同じ条件で作り直しても引き継がれないので、` +
     '次の再放送を録り直します（新しいルールで 1 本録れれば以降はまた弾かれます）。' +
-    '条件を変えたいだけなら「検索しながら編集」で上書きしてください。'
+    '条件を変えたいだけならルール名から編集して上書きしてください。'
   )
 }
 
@@ -210,10 +210,12 @@ function deleteRuleResultMessage(res: DeleteRuleResponse | undefined): string | 
 /**
  * RuleRow は一覧の 1 行。
  *
- * 主操作の「検索しながら編集」は `/search?ruleId=N` に遷移し、条件に一致する
- * 番組を見ながら既存ルールを上書きする。以前の `/rules` インライン編集と
- * 役割が重複していたため、ここを主ボタンにして編集の入口を一本化する。
- * ラベルは遷移先が検索画面であることを伝えるため「編集」には戻さない。
+ * ルール名は `/search?ruleId=N` への主要な編集リンクにする。検索側では条件に
+ * 一致する番組を見ながら既存ルールを上書きでき、ルール名という固有名詞自体を
+ * リンクにすることで一覧を読んでいる位置から編集へ移れる。
+ * **右列に同じ編集ボタンは置かない。** 編集の入口を名前に一本化し、右列には
+ * 名前だけでは表せない有効切替・録画一覧・その他メニューを残す。これで同じ
+ * `/search?ruleId=N` への導線をカード内に二重化しない。
  * 削除（稀・破壊的）だけを overflow メニューに寄せる（issue #227）。
  * 「無効」バッジと有効スイッチは意図的に併存させる。バッジは一覧を読み流す
  * ときの状態表示、スイッチは操作対象であり、片方だけではもう片方の役割を
@@ -343,7 +345,20 @@ function RuleRow({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="truncate text-base font-medium">{rule.name}</span>
+            <Button
+              variant="link"
+              size="sm"
+              className="min-w-0 max-w-full justify-start overflow-hidden px-0 text-left text-base font-medium"
+              render={
+                <Link
+                  to="/search"
+                  search={{ ruleId: rule.id }}
+                  aria-label={`ルール「${rule.name}」を編集`}
+                />
+              }
+            >
+              <span className="truncate">{rule.name}</span>
+            </Button>
             {!rule.enabled && (
               /* 文字色は text-foreground（bg-muted 小バッジの合成後コントラスト
                  対策。docs/frontend/design.md「コントラストは毎回測る」）。 */
@@ -379,9 +394,6 @@ function RuleRow({
         </div>
         <div className="flex shrink-0 items-start gap-1">
           <div className="flex flex-col items-end gap-2">
-            <Button size="sm" render={<Link to="/search" search={{ ruleId: rule.id }} />}>
-              検索しながら編集
-            </Button>
             <button
               type="button"
               role="switch"

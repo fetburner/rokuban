@@ -286,7 +286,7 @@ function overrideValue(reservation: Reservation, key: string): string | undefine
  * `components/recording-detail-panel.tsx` の `RuleSection` と同じ手を使う ---
  * `useListRules()`（パラメータなし = 常に全件）のキャッシュから名前を引く。
  * `/rules` に単一ルートは無く、ルールの実質的な編集画面は `/search?ruleId=N`
- * （`RulesPage` の「検索しながら編集」と同じ着地先）なので、リンク先もそこに揃える。
+ * （`RulesPage` のルール名リンクと同じ着地先）なので、リンク先もそこに揃える。
  *
  * `rules.find` が見つからない間（一覧が未解決・失敗、または一覧にまだ無い）は
  * `#N` に落とす --- ルールが削除された場合は `reservations.rule_id` の FK が
