@@ -92,5 +92,13 @@ func runRescue(ctx context.Context, pool *pgxpool.Pool, mediaDir string, registr
 				"(and %d program_intents / %d program_overrides that referenced them)\n",
 			result.SkippedProgramSnapshots, result.SkippedProgramIntents, result.SkippedProgramOverrides)
 	}
+	// このファイルは登録されなかった --- 台帳が知らないままなので、後で孤児回収の
+	// エイジングを経て黙って削除される。件数だけでも運用者の目に触れるサマリに出す
+	// （slog の Warn は運用者が見ているとは限らない）。
+	if result.SkippedFilesWithoutSitePrefix > 0 {
+		_, _ = fmt.Fprintf(out,
+			"  warning: skipped %d file(s) without a sites/{site}/ prefix (site could not be inferred; not registered)\n",
+			result.SkippedFilesWithoutSitePrefix)
+	}
 	return nil
 }

@@ -91,6 +91,7 @@ func rescueStorage(ctx context.Context, pool *pgxpool.Pool, mediaDir string, reg
 		if fileSite == "" {
 			slog.Warn("rescue: skipping file without a sites/{site}/ prefix; site cannot be inferred",
 				"rel_path", relPath)
+			result.SkippedFilesWithoutSitePrefix++
 			return nil
 		}
 

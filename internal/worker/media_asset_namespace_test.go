@@ -47,6 +47,18 @@ func TestValidateMediaAssetRelPathNamespace(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			// classifySiteForRescuedFile (internal/catalog/rescue_scan.go) requires
+			// a "/" after the site segment to extract a site name; a path that
+			// starts with the literal "sites/" but has no site segment cannot be
+			// rescued, so the startup guard must reject it too even though it
+			// begins with "sites/%".
+			name:    "sites-prefixed original without a site segment is rejected",
+			kind:    db.AssetKindOriginal,
+			relPath: "sites/show.m2ts",
+			state:   "active",
+			wantErr: true,
+		},
+		{
 			name:    "deleting bare encoded is rejected",
 			kind:    db.AssetKindEncoded,
 			profile: stringPtr("h264"),

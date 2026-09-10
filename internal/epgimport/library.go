@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/catalog"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/inplace"
 	"github.com/fetburner/rokuban/internal/programid"
@@ -46,8 +47,11 @@ type LibraryItem struct {
 	Thumbnails  []LibraryThumbnail `json:"thumbnails,omitempty"`
 }
 
-// LibraryVideoFile は VideoFile 1 件。RelPath は media_dir をマウントした
-// あとの相対パス（EPGStation の filePath を運用者が変換したもの）。
+// LibraryVideoFile は VideoFile 1 件。RelPath は EPGStation の録画
+// ディレクトリをマウントした先から見た相対パス（EPGStation の filePath を
+// 運用者が変換したもの）で、`sites/{site}/` は含めない --- ImportLibrary が
+// 呼び出し時の site からその前置を付けて登録する（worker が起動時に検査する
+// 原本の名前空間。docs/runbook/import-epgstation.md 参照）。
 // Type は EPGStation の VideoFileType（"ts" | "encoded"）。
 //
 // サイズは持たない: inplace.Register が実ファイルを stat してサイズを
@@ -86,6 +90,12 @@ type LibraryImportResult struct {
 // 名前が無い。誤った profile 名で登録すると配信経路（
 // GetEncodedMediaAssetForServing 等）が不整合を起こすため、"encoded" は
 // インポートせず警告して捨てる（"ts" だけを kind=original として登録する）。
+//
+// "ts" は kind=original として登録する前に rel_path へ site を前置する
+// （catalog.SiteRelPathPrefix + site）。原本は必ず `sites/{site}/` 名前空間に
+// 入っていることを worker 起動時に検査する（internal/worker/media_asset_namespace.go）
+// ので、import 経路もこれに合わせないと import 済みの録画で worker が
+// crash-loop する。
 func ImportLibrary(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string, items []LibraryItem) (LibraryImportResult, error) {
 	var res LibraryImportResult
 	for _, item := range items {
@@ -93,7 +103,10 @@ func ImportLibrary(ctx context.Context, pool *pgxpool.Pool, mediaDir, site strin
 		for _, vf := range item.VideoFiles {
 			switch vf.Type {
 			case "ts":
-				assets = append(assets, inplace.Asset{Kind: db.AssetKindOriginal, RelPath: vf.RelPath})
+				assets = append(assets, inplace.Asset{
+					Kind:    db.AssetKindOriginal,
+					RelPath: catalog.SiteRelPathPrefix + site + "/" + vf.RelPath,
+				})
 			case "encoded":
 				res.Warnings = append(res.Warnings, fmt.Sprintf(
 					"recorded %q: videoFile %q is type=encoded, which has no equivalent rokuban encode profile name — skipped (only type=ts is imported)",

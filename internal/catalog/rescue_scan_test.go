@@ -159,6 +159,13 @@ func TestRescueLatest_NoCatalogSkipsBareAssets(t *testing.T) {
 	if got := strings.Count(logBuf.String(), "skipping file without a sites/{site}/ prefix"); got != 2 {
 		t.Errorf("bare-file warnings = %d, want one warning per bare file", got)
 	}
+	// slog output alone is not a reliable operator-visible signal (review
+	// finding: a skip that only reaches slog can go unnoticed until the
+	// orphan-file aging deletes the file for good). The result must carry the
+	// same count so cmd/rokuban/rescue.go can put it in the printed summary.
+	if result.SkippedFilesWithoutSitePrefix != 2 {
+		t.Errorf("result.SkippedFilesWithoutSitePrefix = %d, want 2", result.SkippedFilesWithoutSitePrefix)
+	}
 }
 
 func TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges(t *testing.T) {

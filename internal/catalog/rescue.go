@@ -40,6 +40,13 @@ type RescueResult struct {
 	SkippedProgramSnapshots int
 	SkippedProgramIntents   int
 	SkippedProgramOverrides int
+
+	// SkippedFilesWithoutSitePrefix はストレージ走査（catalog が 1 世代も
+	// 無いときの rescueStorage）で見つかったが `sites/{site}/` 前置が無く
+	// site を決められないため登録しなかったファイルの件数。DB を喪失した後の
+	// rescue で唯一この件数だけが復元漏れを示す（slog の Warn は運用者の目に
+	// 触れるとは限らない）ので、呼び出し側のサマリ表示に必ず出す。
+	SkippedFilesWithoutSitePrefix int
 }
 
 // RescueLatest は media_dir/catalog/ の**最新の完成世代**を読んで DB に冪等

@@ -16,10 +16,10 @@ import (
 func TestImportLibrary_IdempotentRerun(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(mediaDir, "imported"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(mediaDir, "sites", "default", "imported"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(mediaDir, "imported", "show.ts"), []byte("bytes"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(mediaDir, "sites", "default", "imported", "show.ts"), []byte("bytes"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -65,6 +65,46 @@ func TestImportLibrary_IdempotentRerun(t *testing.T) {
 	}
 	if source != reservation.SourceUnattributed {
 		t.Errorf("source = %q, want %q (a migrated library item has no rule or program_intents to attribute it to)", source, reservation.SourceUnattributed)
+	}
+}
+
+// TestImportLibrary_OriginalRelPathGetsSitePrefix is the acceptance
+// criterion behind blocking finding 1 (PR #763 review): worker startup
+// rejects any live original/encoded media_assets row whose rel_path is not
+// under `sites/{site}/` (internal/worker/media_asset_namespace.go). Imported
+// "ts" video files must be registered with that prefix, or a documented
+// `rokuban import epgstation` run crash-loops the worker on next restart.
+func TestImportLibrary_OriginalRelPathGetsSitePrefix(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(mediaDir, "sites", "tokyo", "imported"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mediaDir, "sites", "tokyo", "imported", "show.ts"), []byte("bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	items := []LibraryItem{{
+		ChannelID:   3273601024,
+		ChannelType: "GR",
+		StartAt:     1785000000000,
+		EndAt:       1785001800000,
+		Name:        "番組A",
+		VideoFiles:  []LibraryVideoFile{{Type: "ts", RelPath: "imported/show.ts"}},
+	}}
+
+	if _, err := ImportLibrary(context.Background(), pool, mediaDir, "tokyo", items); err != nil {
+		t.Fatalf("ImportLibrary: %v", err)
+	}
+
+	var relPath string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT rel_path FROM media_assets WHERE kind = 'original'`).Scan(&relPath); err != nil {
+		t.Fatal(err)
+	}
+	const want = "sites/tokyo/imported/show.ts"
+	if relPath != want {
+		t.Errorf("rel_path = %q, want %q (site not prefixed onto the original asset path)", relPath, want)
 	}
 }
 
