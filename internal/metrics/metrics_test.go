@@ -585,14 +585,24 @@ func seedObservedScheduleWithState(t *testing.T, pool *pgxpool.Pool, programID i
 	if err != nil {
 		t.Fatalf("marshalling observed options: %v", err)
 	}
-	if err := sqlcgen.New(pool).UpsertScheduleSync(context.Background(), sqlcgen.UpsertScheduleSyncParams{
+	batch := sqlcgen.New(pool).UpsertScheduleSync(context.Background(), []sqlcgen.UpsertScheduleSyncParams{{
 		Site:      testSite,
 		ProgramID: programID,
 		State:     state,
 		Options:   optionsJSON,
 		Tags:      tags,
-	}); err != nil {
-		t.Fatalf("upserting observed schedule: %v", err)
+	}})
+	var batchErr error
+	batch.Exec(func(_ int, err error) {
+		if err != nil && batchErr == nil {
+			batchErr = err
+		}
+	})
+	if closeErr := batch.Close(); closeErr != nil && batchErr == nil {
+		batchErr = closeErr
+	}
+	if batchErr != nil {
+		t.Fatalf("upserting observed schedule: %v", batchErr)
 	}
 }
 

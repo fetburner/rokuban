@@ -367,6 +367,7 @@ func (r *Reconciler) observeSchedules(ctx context.Context, schedules []mirakc.Sc
 		return fmt.Errorf("getting schedule snapshot mark: %w", err)
 	}
 
+	params := make([]sqlcgen.UpsertScheduleSyncParams, 0, len(schedules))
 	for _, s := range schedules {
 		optionsJSON, err := json.Marshal(s.Options)
 		if err != nil {
@@ -387,15 +388,36 @@ func (r *Reconciler) observeSchedules(ctx context.Context, schedules []mirakc.Sc
 			failedReasonJSON = data
 		}
 
-		if err := q.UpsertScheduleSync(ctx, sqlcgen.UpsertScheduleSyncParams{
+		params = append(params, sqlcgen.UpsertScheduleSyncParams{
 			Site:         r.site,
 			ProgramID:    s.Program.ID,
 			State:        s.State,
 			Options:      optionsJSON,
 			Tags:         tags,
 			FailedReason: failedReasonJSON,
-		}); err != nil {
-			return fmt.Errorf("upserting schedule_sync for program %d: %w", s.Program.ID, err)
+		})
+	}
+
+	// 空の全量 snapshot では空 batch を送らない。stale 削除と snapshot marker の
+	// 更新は、schedule が 0 件でも従来どおりこのトランザクションで実行する。
+	if len(params) > 0 {
+		batch := q.UpsertScheduleSync(ctx, params)
+		var batchErr error
+		batch.Exec(func(i int, err error) {
+			if err == nil || batchErr != nil {
+				return
+			}
+			if i < 0 || i >= len(params) {
+				batchErr = fmt.Errorf("batch item %d: %w", i, err)
+				return
+			}
+			batchErr = fmt.Errorf("upserting schedule_sync for program %d: %w", params[i].ProgramID, err)
+		})
+		if closeErr := batch.Close(); closeErr != nil && batchErr == nil {
+			batchErr = fmt.Errorf("closing schedule_sync batch: %w", closeErr)
+		}
+		if batchErr != nil {
+			return batchErr
 		}
 	}
 
