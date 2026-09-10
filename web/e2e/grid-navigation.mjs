@@ -10,6 +10,10 @@
 //      そのセルへフォーカスが移る
 //   ④ viewport より高い番組（12 時間）へ ArrowDown で移ると、移動先セルの上端が
 //      sticky header の裏（画面外だけでなく、header 行の下端より上）へ隠れない
+//   ⑤ 選択ダイアログ（main #753）が開いている間は矢印キーがグリッドへ届かず、
+//      閉じるとフォーカスが元のセルへ戻り、矢印移動を再開できる
+//   ⑥ 既定でない縮尺（main #758/#724 のズーム。480px/時）でも矢印移動と
+//      viewport より高い番組への追従が壊れない
 //
 // 直す前はそれぞれ次のとおり落ちる（実測。実測していない挙動は書かない）:
 //   ①③ 矢印キーのハンドラ自体が無かった実装（本 PR で新規に足した機能）では、
@@ -92,8 +96,11 @@ const nearB = makeProgram(726002, serviceB, nowMs, 60 * 60_000, '近くの右番
 // 初期の可視窓から意図的に外す。ArrowDown はここまでスクロールしてからフォーカスする。
 const farA = makeProgram(726003, serviceA, nowMs + 10 * 60 * 60_000, 30 * 60_000, '遠くの左番組')
 // farA（19:00-19:30）の次に同列で始まる、viewport より高い番組（12 時間 = 1440px。
-// pxPerHour は pages/programs.tsx の gridPxPerHour = 120）。④は farA から
-// ArrowDown でこれへ移り、移動先セルの上端が隠れないことを見る。
+// pxPerHour は lib/programs-grid-scale-storage.ts の defaultGridPxPerHour = 120。
+// この e2e は新しい browser context を毎回作るので localStorage は常に空
+// --- `loadProgramsGridPxPerHour() ?? defaultGridPxPerHour` が既定縮尺に落ちる
+// ことを前提にしている）。④は farA から ArrowDown でこれへ移り、移動先セルの
+// 上端が隠れないことを見る。
 const tallA = makeProgram(726004, serviceA, nowMs + 11 * 60 * 60_000, 12 * 60 * 60_000, '長時間の左番組')
 const programs = [nearA, nearB, farA, tallA]
 
@@ -222,6 +229,7 @@ if ((await nearACell.count()) > 0) {
 }
 
 log('\n=== ④ ArrowDown: viewport より高い番組へ移っても上端が隠れない ===')
+let movedToTallA = false
 const farAFocused = await farACell
   .focus({ timeout: 10000 })
   .then(() => true)
@@ -263,6 +271,146 @@ if (farAFocused) {
         `④ 移動先セルの上端が sticky header の裏に隠れる（header 下端: ${headerBottom}px, セル top: ${rectTop}px）`,
       )
     }
+    movedToTallA = true
+  }
+}
+
+// main の #753（番組表セルの操作をモーダルにする）とこの PR の空間ナビゲーションが
+// 同じコンポーネントを触るため、両者の相互作用を測る。Radix/Base UI のダイアログは
+// フォーカスをトラップし portal で document.body 直下に出るため、開いている間は
+// キー入力がグリッドの DOM 部分木を経由せず、`handleKeyDown` へ届かないはず。
+log('\n=== ⑤ ダイアログ表示中は矢印キーがグリッドへ届かない（モーダル化との整合） ===')
+if (movedToTallA) {
+  await tallACell.click()
+  const dialog = page.getByRole('dialog', { name: tallA.name })
+  const dialogOpened = await dialog
+    .waitFor({ timeout: 10000 })
+    .then(() => true)
+    .catch(() => {
+      ng.push('⑤ セルをクリックしてもダイアログが開かない')
+      return false
+    })
+  if (dialogOpened) {
+    await page.keyboard.press('ArrowDown')
+    await page.waitForTimeout(100)
+    const focusInDialog = await page.evaluate(() => {
+      const active = document.activeElement
+      return active instanceof HTMLElement && active.closest('[role="dialog"]') !== null
+    })
+    log(`  ダイアログ表示中に ArrowDown を押した後もフォーカスがダイアログ内: ${focusInDialog}`)
+    if (!focusInDialog) {
+      ng.push(
+        '⑤ ダイアログ表示中に ArrowDown を押すとフォーカスがダイアログの外へ出る（handleKeyDown が発火している）',
+      )
+    }
+
+    await page.keyboard.press('Escape')
+    const dialogClosed = await dialog
+      .waitFor({ state: 'detached', timeout: 10000 })
+      .then(() => true)
+      .catch(() => {
+        ng.push('⑤ Escape でダイアログが閉じない')
+        return false
+      })
+    if (dialogClosed) {
+      const returnedFocus = await page.evaluate(() =>
+        document.activeElement?.getAttribute('data-program-id'),
+      )
+      log(`  Escape 後のフォーカス先 programId: ${returnedFocus}`)
+      if (returnedFocus !== String(tallA.programId)) {
+        ng.push(`⑤ ダイアログを閉じてもフォーカスが元のセルへ戻らない（${returnedFocus}）`)
+      } else {
+        // フォーカス復帰後も矢印移動を再開できることを見る（同列の直前 = farA へ戻る）。
+        await page.keyboard.press('ArrowUp')
+        const afterFocus = await page.evaluate(() =>
+          document.activeElement?.getAttribute('data-program-id'),
+        )
+        log(`  ダイアログを閉じた後の ArrowUp: ${afterFocus}`)
+        if (afterFocus !== String(farA.programId)) {
+          ng.push(`⑤ ダイアログを閉じた後、矢印移動を再開できない（${afterFocus}）`)
+        }
+      }
+    }
+  }
+} else {
+  ng.push('⑤ ④の前提（長時間番組へのフォーカス）が崩れているため検証できない')
+}
+
+// main の #758/#724（番組表をズーム）で axis.pxPerHour が可変になった。
+// `scrollProgramIntoView` は `timeToPx` 経由の計算なので縮尺非依存に見えるが、
+// 式を読むだけでは「実際に壊れていない」ことは言えないので、既定でない縮尺
+// （480px/時、3 段階のうち最大）でも矢印移動と追従が壊れないことを実ブラウザで測る。
+log('\n=== ⑥ 既定でない縮尺（480px/時）でも矢印移動と追従が壊れない ===')
+await grid.evaluate((element) => {
+  element.scrollTop = 0
+  element.scrollLeft = 0
+})
+const scaleButton = page.getByRole('button', { name: '480 px/時' })
+const scaleButtonFound = (await scaleButton.count()) > 0
+if (!scaleButtonFound) {
+  ng.push('⑥ 縮尺切替ボタン（480 px/時）が見つからない')
+} else {
+  await scaleButton.click()
+  // GridScaleChips の状態更新と再レイアウトを待つ（他の判定と同じ 100ms 予算）。
+  await page.waitForTimeout(150)
+  const savedScale = await page.evaluate(() => localStorage.getItem('rokuban:programs:grid-scale'))
+  log(`  縮尺切替後の localStorage: ${savedScale}`)
+  if (savedScale !== '480') ng.push(`⑥ 縮尺が 480 に切り替わらない（${savedScale}）`)
+
+  if ((await nearACell.count()) > 0) {
+    await nearACell.focus()
+    await nearACell.press('ArrowRight')
+    const rightFocus480 = await page.evaluate(() => ({
+      programId: document.activeElement?.getAttribute('data-program-id'),
+      site: document.activeElement?.getAttribute('data-site'),
+    }))
+    log(`  480px/時 ArrowRight フォーカス先: ${JSON.stringify(rightFocus480)}`)
+    if (rightFocus480.programId !== String(nearB.programId) || rightFocus480.site !== SITE) {
+      ng.push(`⑥ 480px/時で ArrowRight 後のフォーカスが隣列へ移らない（${JSON.stringify(rightFocus480)}）`)
+    }
+
+    await nearACell.focus()
+    await nearACell.press('ArrowDown')
+    const reachedFarA480 = await page
+      .waitForFunction(
+        (programId) => document.activeElement?.getAttribute('data-program-id') === String(programId),
+        farA.programId,
+        { timeout: 10000 },
+      )
+      .then(() => true)
+      .catch(() => {
+        ng.push('⑥ 480px/時で ArrowDown 後のフォーカスが遠い同列へ移らない（timeout）')
+        return false
+      })
+    if (reachedFarA480) {
+      await page.keyboard.press('ArrowDown')
+      const reachedTallA480 = await page
+        .waitForFunction(
+          (programId) => document.activeElement?.getAttribute('data-program-id') === String(programId),
+          tallA.programId,
+          { timeout: 10000 },
+        )
+        .then(() => true)
+        .catch(() => {
+          ng.push('⑥ 480px/時で ArrowDown 後のフォーカスが長時間番組へ移らない（timeout）')
+          return false
+        })
+      if (reachedTallA480) {
+        const headerBottom480 = await page
+          .getByTestId('program-grid-header-cell')
+          .first()
+          .evaluate((element) => element.getBoundingClientRect().bottom)
+        const rectTop480 = await tallACell.evaluate((element) => element.getBoundingClientRect().top)
+        log(`  480px/時 header 行の下端: ${headerBottom480}px / 移動先セルの rect.top: ${rectTop480}px`)
+        if (rectTop480 < headerBottom480) {
+          ng.push(
+            `⑥ 480px/時で移動先セルの上端が sticky header の裏に隠れる（header 下端: ${headerBottom480}px, セル top: ${rectTop480}px）`,
+          )
+        }
+      }
+    }
+  } else {
+    ng.push('⑥ 縮尺切替後に近くの左番組のセルが見当たらない')
   }
 }
 
