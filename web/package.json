@@ -29,6 +29,7 @@
     "e2e:multi-site": "node e2e/multi-site.mjs",
     "e2e:grid-navigation": "node e2e/grid-navigation.mjs",
     "e2e:recordings-selection": "node e2e/recordings-selection.mjs",
+    "e2e:recordings-rule-filter": "node e2e/recordings-rule-filter.mjs",
     "e2e:cls": "node e2e/cls.mjs",
     "e2e:chip-overflow": "node e2e/chip-overflow.mjs",
     "e2e:personalization": "node e2e/personalization.mjs",
