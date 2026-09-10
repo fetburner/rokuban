@@ -164,7 +164,6 @@ function jsonResponse(body: unknown, status = 200): Response {
  */
 function stubApi(options?: {
   rules?: Rule[]
-  holdProgramDetails?: boolean
   overages?: CapacityOverage[]
   /**
    * `/api/capacity/overages` の 2 回目以降を保留する（`pages/home.test.tsx` の
@@ -203,17 +202,6 @@ function stubApi(options?: {
   // 検索結果から番組詳細 GET が発生していないことを実測するための記録
   // （`pages/search.tsx` の N+1 回帰テストで使う）。
   const programDetailRequests: number[] = []
-  // 旧来の番組詳細 GET を保留する仕掛け。N+1 が復活した場合にテストを
-  // 明確に失敗させるため、スタブ自体は残す。
-  const pendingProgramDetails: (() => void)[] = []
-  function releaseProgramDetails() {
-    const toRelease = pendingProgramDetails.splice(0, pendingProgramDetails.length)
-    for (const resolve of toRelease) resolve()
-  }
-  function releaseOneProgramDetail() {
-    const resolve = pendingProgramDetails.shift()
-    resolve?.()
-  }
   const rules = options?.rules ? [...options.rules] : []
   // 容量ノート（`ShortfallOverlapNote`）用のリクエスト記録。窓が点滅する回帰を
   // このリクエスト回数と `start` の種類数で固定する。
@@ -330,13 +318,7 @@ function stubApi(options?: {
     if (detail) {
       programDetailRequests.push(Number(detail[1]))
       const found = programs.find((p) => p.programId === Number(detail[1]))
-      const response = found ? jsonResponse(found) : jsonResponse({ error: 'not found' }, 404)
-      if (options?.holdProgramDetails) {
-        return new Promise<Response>((resolve) => {
-          pendingProgramDetails.push(() => resolve(response))
-        })
-      }
-      return Promise.resolve(response)
+      return Promise.resolve(found ? jsonResponse(found) : jsonResponse({ error: 'not found' }, 404))
     }
 
     if (url.pathname === '/api/programs/search') {
@@ -424,8 +406,6 @@ function stubApi(options?: {
     updateRuleBodies,
     rules,
     programDetailRequests,
-    releaseProgramDetails,
-    releaseOneProgramDetail,
     overagesRequests,
     /** 未解決の `/api/capacity/overages` の本数（保留の仕掛けが効いていることの確認用）。 */
     unresolvedOverages: () => pendingOverages.length,

@@ -79,14 +79,13 @@ export type RuleCostEstimate = {
   /** 7 日あたりの見込み件数 */
   countPerWeek: number
   /**
-   * 7 日あたりの見込み時間（ms）。
+   * 7 日あたりの見込み時間（ms）。`totalCount` が 0 のときは確定した `0`。
    *
-   * `totalCount` が 0 のときだけ確定した `0`。`totalCount > 0` で
-   * `durationsMs` がまだ 1 件も無いときは `undefined` ---
-   * 「まだ算出できていない」と「算出した結果が 0」を同じ値で表さない
-   * （`/search` の「未検索と 0 件を混同しない」規律と同じ精神）。
+   * `durationsMs` は検索レスポンスの全行が運ぶ `durationMs` なので、
+   * `totalCount > 0` なら必ず 1 件以上ある（呼び出し側が `durationsMs.length`
+   * を `totalCount` として渡す。`estimateRuleCost` のコメント参照）。
    */
-  durationMsPerWeek: number | undefined
+  durationMsPerWeek: number
 }
 
 /**
@@ -105,11 +104,7 @@ export function estimateRuleCost(input: RuleCostInput): RuleCostEstimate {
   const countPerWeek = totalCount * factor
 
   const durationMsPerWeek =
-    totalCount === 0
-      ? 0
-      : durationsMs.length === 0
-        ? undefined
-        : durationsMs.reduce((sum, ms) => sum + ms, 0) * factor
+    totalCount === 0 ? 0 : durationsMs.reduce((sum, ms) => sum + ms, 0) * factor
 
   return { totalCount, countPerWeek, durationMsPerWeek }
 }

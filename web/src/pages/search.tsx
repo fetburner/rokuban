@@ -421,12 +421,7 @@ export function SearchPage() {
    * `countProgramsInShortfall` のコメント参照）。検索結果の行自身が site と
    * 放送時間を運ぶので、別の番組詳細取得は行わない。
    */
-  const loadedPrograms = matches.map((match) => ({
-    site: match.site,
-    startAt: match.startAt,
-    durationMs: match.durationMs,
-  }))
-  const shortfallCount = countProgramsInShortfall(overages, loadedPrograms)
+  const shortfallCount = countProgramsInShortfall(overages, matches)
 
   /**
    * searchedHasPeriod は値札に「8 日分を 7 日換算」という根拠を出してよいかの判定。

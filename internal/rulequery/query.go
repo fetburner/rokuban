@@ -81,12 +81,14 @@ ORDER BY p.program_id, p.site`
 }
 
 // MatchProgramIDsForRule は rule_id の条件で、site 1 つ分のマッチする program_id を返す。
-// ruler がサイトごとに呼ぶ（1 パスは site のループで全ルールを評価する。
-// docs/recording/ruler.md「サイトの扱い」）。
+// ruler がサイトごとに、rule × site × 定期パスで呼ぶ（1 パスは site のループで
+// 全ルールを評価する。docs/recording/ruler.md「サイトの扱い」）。呼び出し頻度が
+// 高いホットパスなので、`MatchPrograms` が返す表示用の 6 列（`name` は trgm 索引
+// 付きの text）は引かず、programId だけの狭い射影で問い合わせる。
 //
 // rule_sites（c.Sites）が非空かつ site を含まなければ、そのルールは site の対象外
-// なのでクエリを投げずに空を返す。対象内なら site 1 件に絞って MatchPrograms を呼び、
-// site は呼び出し側が既知なので programId だけ返す。
+// なのでクエリを投げずに空を返す。対象内なら site 1 件に絞って `Compile` の
+// WHERE 句だけを共有し、SELECT リストは別に持つ。
 func MatchProgramIDsForRule(ctx context.Context, pool *pgxpool.Pool, site string, ruleID int64) ([]int64, error) {
 	c, err := LoadConditions(ctx, sqlcgen.New(pool), ruleID)
 	if err != nil {
@@ -96,13 +98,40 @@ func MatchProgramIDsForRule(ctx context.Context, pool *pgxpool.Pool, site string
 		return nil, nil
 	}
 	c.Sites = []string{site}
-	matches, err := MatchPrograms(ctx, pool, c)
+
+	compiled, err := Compile(c)
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]int64, len(matches))
-	for i, m := range matches {
-		ids[i] = m.ProgramID
+
+	var sql string
+	if compiled.NeedsServiceJoin {
+		sql = `
+SELECT p.program_id
+FROM epg_programs p
+JOIN epg_services s
+  ON s.site = p.site AND s.network_id = p.network_id AND s.service_id = p.service_id
+WHERE ` + compiled.Where
+	} else {
+		sql = `
+SELECT p.program_id
+FROM epg_programs p
+WHERE ` + compiled.Where
 	}
-	return ids, nil
+
+	rows, err := pool.Query(ctx, sql, compiled.Args...)
+	if err != nil {
+		return nil, fmt.Errorf("matching program ids for rule: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }

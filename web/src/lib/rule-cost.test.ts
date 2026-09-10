@@ -13,16 +13,6 @@ describe('estimateRuleCost', () => {
     expect(estimate.durationMsPerWeek).toBe(0)
   })
 
-  it('結果があるのに durationMs が空なら時間は未算出（undefined）', () => {
-    // 件数は totalCount だけで確定するが、durationMs が無いと時間は計算できない。
-    // ここで 0 を返すと「未算出」と「該当が無い」を混同する。
-    const input: RuleCostInput = { totalCount: 10, durationsMs: [] }
-    const estimate = estimateRuleCost(input)
-
-    expect(estimate.countPerWeek).toBeCloseTo(10 * (7 / 8))
-    expect(estimate.durationMsPerWeek).toBeUndefined()
-  })
-
   it('7 日換算の係数（windowDays=8 の既定値）を件数・時間の両方に適用する', () => {
     // 全 8 件、各 30 分（1_800_000ms）。8 日分の実測を 7 日分に正規化する。
     const durations = Array.from({ length: 8 }, () => 1_800_000)

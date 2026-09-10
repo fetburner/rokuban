@@ -37,7 +37,15 @@
 //   E2E_URL=http://localhost:4173 node e2e/search-mobile.mjs
 //
 // 合格なら exit 0、1 つでも NG なら exit 1。
-import { finish, installApiStubs, launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'
+import { SearchProgramsResponseItem } from '../src/api/zod.ts'
+import {
+  finish,
+  installApiStubs,
+  launchBrowser,
+  log,
+  validateFixturesOrExit,
+  verifyBundleMatchesOrExit,
+} from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:4173'
 const SITE = 'default'
@@ -77,9 +85,9 @@ const restoredCondition = {
 /**
  * matchedProgramIds は検索スタブが返す programId の集合（④で使う）。
  *
- * 検索 API（`POST /api/programs/search`）は `{site, programId}` の
- * フラットな配列を返し、画面は 1 件ごとに `GET /api/sites/{site}/programs/{id}` を
- * 叩く（実物と同じ形）。
+ * 検索 API（`POST /api/programs/search`）は表示に要るメタデータ込みの行
+ * （`networkId` / `serviceId` / `startAt` / `durationMs` / `name` / `isFree`）を
+ * 返す。詳細 GET を 1 件ずつ叩く N+1 は無い（実物と同じ形）。
  *
  * **件数を 20 件にしているのは、結果がスクロールの余地を作るため。** 数件だと
  * 結果の先頭へ寄せる操作がドキュメント末尾で頭打ちになり、`scroll-margin-top`
@@ -118,7 +126,21 @@ async function apiHandler({ path: p, json, route }) {
     return route.fulfill({ status: 204 })
   }
   if (p === '/api/programs/search')
-    return json(matchedProgramIds.map((programId) => ({ site: SITE, programId })))
+    return json(
+      matchedProgramIds.map((programId, index) => {
+        const detail = programDetail(programId, index)
+        return {
+          site: SITE,
+          programId,
+          networkId: detail.networkId,
+          serviceId: detail.serviceId,
+          startAt: detail.startAt,
+          durationMs: detail.durationMs,
+          name: detail.name,
+          isFree: detail.isFree,
+        }
+      }),
+    )
   const detail = /^\/api\/sites\/[^/]+\/programs\/(\d+)$/.exec(p)
   if (detail !== null) {
     const id = Number(detail[1])
@@ -130,6 +152,32 @@ async function apiHandler({ path: p, json, route }) {
   }
   return json([])
 }
+
+// 検索スタブが orval 生成の zod スキーマ（`SearchProgramsResponseItem`）から
+// 遅れていないかを design.mjs と同じ手で確認する（issue #468 と同じ理由）。
+// `validateFixturesOrExit` はブラウザ・preview サーバーなしで CI から回るため、
+// ブラウザ起動・`verifyBundleMatchesOrExit` より前に置く。
+log('\n=== 契約検証: フィクスチャの zod parse ===')
+await validateFixturesOrExit(
+  matchedProgramIds.map((programId, index) => {
+    const detail = programDetail(programId, index)
+    return [
+      `searchResults[${index}]`,
+      SearchProgramsResponseItem,
+      {
+        site: SITE,
+        programId,
+        networkId: detail.networkId,
+        serviceId: detail.serviceId,
+        startAt: detail.startAt,
+        durationMs: detail.durationMs,
+        name: detail.name,
+        isFree: detail.isFree,
+      },
+    ]
+  }),
+  ng,
+)
 
 log('\n=== ⓪ 前提条件 ===')
 await verifyBundleMatchesOrExit(URL_BASE, ng)

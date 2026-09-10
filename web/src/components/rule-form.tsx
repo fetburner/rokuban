@@ -66,8 +66,7 @@ import { cn } from '@/lib/utils'
  * （呼び出し側の `searchedHasPeriod` を参照）。数値と根拠の由来が食い違うと、
  * 消したはずの偽の根拠が「フォームを触っただけ」で復活する。
  *
- * `estimate` は呼び出し側が 1 回計算したものを受け取る（`ShortfallOverlapNote`
- * も同じものを使うので、ここで計算し直さない）。
+ * `estimate` は呼び出し側が 1 回計算したものを受け取る（ここで計算し直さない）。
  */
 export function RuleCostSummary({
   status,
@@ -97,10 +96,7 @@ export function RuleCostSummary({
   }
 
   const countText = `約 ${Math.round(estimate.countPerWeek)} 件`
-  const durationText =
-    estimate.durationMsPerWeek === undefined
-      ? '算出中…'
-      : `約 ${formatDuration(estimate.durationMsPerWeek)}`
+  const durationText = `約 ${formatDuration(estimate.durationMsPerWeek)}`
 
   // 期間条件で絞っている検索は観測スパンが 8 日ではないため、8 日を根拠にする
   // 文言は出さず、実際より小さく出ることを明記する（上のコメント参照）。

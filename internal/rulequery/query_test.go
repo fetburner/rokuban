@@ -2,9 +2,11 @@ package rulequery
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -220,5 +222,70 @@ func TestMatchProgramIDsForRule_RuleSitesGatesEvaluationSite(t *testing.T) {
 	}
 	if len(ids) != 1 || ids[0] != programID {
 		t.Fatalf("tokyo (対象内) ids = %v, want [%d]", ids, programID)
+	}
+}
+
+// sqlCapturingTracer は pool へ実際に流れた SQL 文字列を素朴に記録する
+// pgx.QueryTracer。ホットパスが狭い射影を使っていることを、Go の定数比較では
+// なく実行された SQL そのものから確認するために使う。
+type sqlCapturingTracer struct {
+	sqls []string
+}
+
+func (tr *sqlCapturingTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	tr.sqls = append(tr.sqls, data.SQL)
+	return ctx
+}
+
+func (*sqlCapturingTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// TestMatchProgramIDsForRule_NarrowProjection は ruler が呼ぶホットパスが、
+// MatchPrograms の表示用 6 列（name は trgm 索引付きの text）を選ばず、
+// programId だけの狭い射影で epg_programs に問い合わせることを確認する。
+// 実装の定数と比較するのではなく、実際に pool へ流れた SQL 文字列を見る。
+func TestMatchProgramIDsForRule_NarrowProjection(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	start := time.Date(2026, 8, 15, 12, 0, 0, 0, time.FixedZone("JST", 9*3600))
+	const programID int64 = 9101
+	insertProgramFixture(t, pool, ctx, "default", programID, start)
+
+	var ruleID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO rules (name) VALUES ('narrow projection test') RETURNING id`).Scan(&ruleID); err != nil {
+		t.Fatal(err)
+	}
+
+	tracer := &sqlCapturingTracer{}
+	config := pool.Config()
+	config.ConnConfig.Tracer = tracer
+	traced, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatalf("creating traced pool: %v", err)
+	}
+	defer traced.Close()
+
+	ids, err := MatchProgramIDsForRule(ctx, traced, "default", ruleID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != programID {
+		t.Fatalf("ids = %v, want [%d]", ids, programID)
+	}
+
+	var epgQuery string
+	for _, sql := range tracer.sqls {
+		if strings.Contains(sql, "FROM epg_programs") {
+			epgQuery = sql
+		}
+	}
+	if epgQuery == "" {
+		t.Fatal("epg_programs へのクエリが記録されていない")
+	}
+	if strings.Contains(epgQuery, "p.name") {
+		t.Fatalf("MatchProgramIDsForRule が表示用の広い射影（p.name 含む）を選んでいる: %s", epgQuery)
+	}
+	if !strings.Contains(epgQuery, "p.program_id") {
+		t.Fatalf("MatchProgramIDsForRule が program_id を選んでいない: %s", epgQuery)
 	}
 }
