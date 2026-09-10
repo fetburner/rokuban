@@ -1223,11 +1223,29 @@ type ProgramOverridesInputReset string
 
 // ProgramSearchMatch 検索がマッチした 1 件（1 サイトの 1 放送）
 type ProgramSearchMatch struct {
+	// DurationMs マッチした放送の長さ（ミリ秒）
+	DurationMs int64 `json:"durationMs"`
+
+	// IsFree マッチした放送が無料かどうか
+	IsFree bool `json:"isFree"`
+
+	// Name マッチした放送の番組名
+	Name string `json:"name"`
+
+	// NetworkId マッチした放送のネットワーク識別子
+	NetworkId int `json:"networkId"`
+
 	// ProgramId マッチした放送の programId（`GET /api/sites/{site}/programs/{programId}` などで使う ID）。同一放送は全サイトで同じ値を持つ（Mirakurun の ID 合成）
 	ProgramId int64 `json:"programId"`
 
+	// ServiceId マッチした放送のサービス識別子
+	ServiceId int `json:"serviceId"`
+
 	// Site マッチした放送のサイト
 	Site string `json:"site"`
+
+	// StartAt マッチした放送の開始時刻
+	StartAt time.Time `json:"startAt"`
 }
 
 // ProgramSearchRequest ルール条件の条件部分と同じ形。rulequery.Conditions に写像される。

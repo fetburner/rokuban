@@ -94,6 +94,10 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 	if len(ids) != 1 || ids[0] != 1001 {
 		t.Fatalf("keyword match = %v, want [1001]", ids)
 	}
+	if got := matches[0]; got.Site != "default" || got.NetworkID != 32736 || got.ServiceID != 1024 ||
+		!got.StartAt.Equal(start) || got.DurationMs != 1_800_000 || got.Name != "ニュース7" || !got.IsFree {
+		t.Fatalf("keyword match fields = %+v, want the matching program projection", got)
+	}
 
 	// genre 7
 	matches, err = MatchPrograms(ctx, pool, Conditions{Sites: []string{"default"}, Genres: []int16{7}})

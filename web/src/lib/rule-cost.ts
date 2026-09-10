@@ -60,40 +60,16 @@ export const epgWindowDays = 8
 export const ruleCostWeekDays = 7
 
 /**
- * RuleCostSample は値札の入力。
+ * RuleCostInput は値札の入力。
  *
- * `totalCount` は検索結果（`{site, programId}` の配列）の全件数 --- 検索 API
- * （`POST /api/programs/search`、`internal/api/search.go`）は
- * `rulequery.MatchPrograms` の結果を `LIMIT` なしでそのまま返すため、ページングも
- * 上位 N 件打ち切りも無く、返る配列の長さがそのまま母数になる（実際にコードを
- * 確認済み。`internal/rulequery/query.go` の SQL に LIMIT は無い）。同一放送が
- * 複数 site でマッチすると複数行になるので、`totalCount` は番組数ではなく
- * 行（ruler が作る予約の見込み数）を数えている。
- *
- * `loadedDurationsMs` は番組ごとの `durationMs`。検索 API は `{site, programId}` しか
- * 返さないため、`GET /api/sites/{site}/programs/{programId}` で個別に取得できた
- * 分だけがここに入る
- * （`pages/search.tsx` が結果一覧の表示のために取得している分をそのまま再利用する
- * ので、値札のために追加のリクエストは発生しない。実測は `components/rule-form.tsx` の
- * `RuleCostSummary` のコメントを参照）。全件に届いていないとき
- * （`loadedDurationsMs.length < totalCount`）は平均から外挿する --- 黙って
- * 読み込み済みの合計だけを見せると実際より小さく見えるため。
- *
- * **このサンプルは無作為抽出ではない。** `loadedDurationsMs` の由来は結果の
- * `programId` 昇順の先頭 N 件（`internal/rulequery/query.go` の
- * `ORDER BY p.program_id, p.site`。programId が第 1 ソートキーなので昇順の性質は変わらない）で、
- * `programId` はネットワーク・サービス順に固まる
- * （Mirakurun 互換の合成規則 `(networkId*100000 + serviceId)*100000 + eventId`。
- * `internal/programid/ids.go` の `ComposeProgramID` / `SplitProgramID` と同じ式で、
- * mirakc 固有の合成規則への依存は Go 側のこの 1 箇所に閉じている --- ここでは
- * 分解はせず、「昇順に並べるとチャンネル順に固まる」ことの根拠として引くだけ）。
- * 複数チャンネルに
- * 跨がるルール（例: 30 分番組の多い GR と 120 分番組の多い BS が両方マッチする）では、
- * 先頭 N 件が特定チャンネルに偏り、平均尺が全体の平均から外れた標本になりうる。
+ * `totalCount` は検索結果の全行数。検索 API は site を含む行を畳まずに返すため、
+ * 同一放送が複数 site でマッチした場合も ruler が作る予約数と一致する。
+ * `durationsMs` は検索レスポンスに含まれる全行の `durationMs` で、番組詳細の追加
+ * 取得や先頭 N 件からの外挿は行わない。
  */
-export type RuleCostSample = {
+export type RuleCostInput = {
   totalCount: number
-  loadedDurationsMs: number[]
+  durationsMs: number[]
 }
 
 /** RuleCostEstimate は `estimateRuleCost` の出力。 */
@@ -106,44 +82,34 @@ export type RuleCostEstimate = {
    * 7 日あたりの見込み時間（ms）。
    *
    * `totalCount` が 0 のときだけ確定した `0`。`totalCount > 0` で
-   * `loadedDurationsMs` がまだ 1 件も無いとき（読み込み中）は `undefined` ---
+   * `durationsMs` がまだ 1 件も無いときは `undefined` ---
    * 「まだ算出できていない」と「算出した結果が 0」を同じ値で表さない
    * （`/search` の「未検索と 0 件を混同しない」規律と同じ精神）。
    */
   durationMsPerWeek: number | undefined
-  /** 時間の見積もりに使ったサンプル件数（`loadedDurationsMs.length`） */
-  sampleSize: number
-  /** サンプルが全件に届いていない（＝時間は外挿である）かどうか */
-  isSampled: boolean
 }
 
 /**
  * estimateRuleCost は検索結果から「7 日あたり約 N 番組 / 合計約 H 時間」を導出する。
  *
- * 件数は `totalCount` から厳密に計算できる（母数が全件であることは
- * `RuleCostSample` のコメントの通り確認済み）。時間は `loadedDurationsMs`
- * （読み込み済みの一部でありうる。無作為抽出ではないことは `RuleCostSample` の
- * コメントの通り）の平均を `totalCount` に外挿する --- 全件の詳細を取得し直すと
- * 数百件規模のルールでリクエストが数百本に膨らむため（`pages/search.tsx` の
- * `pageSize` のコメントと同じ理由）、既に画面が持っている分だけを使う。
+ * 件数は `totalCount` から厳密に計算できる。時間も検索レスポンスが運ぶ全行の
+ * `durationMs` を合計して計算するため、結果一覧の表示件数に左右されない。
  *
  * 7 日への正規化係数（`ruleCostWeekDays / epgWindowDays`）が過大にも過小にも
  * 振れる近似であることは `epgWindowDays` のコメントの通り。
  */
-export function estimateRuleCost(sample: RuleCostSample): RuleCostEstimate {
-  const { totalCount, loadedDurationsMs } = sample
+export function estimateRuleCost(input: RuleCostInput): RuleCostEstimate {
+  const { totalCount, durationsMs } = input
   const factor = ruleCostWeekDays / epgWindowDays
-  const sampleSize = loadedDurationsMs.length
-  const isSampled = sampleSize < totalCount
 
   const countPerWeek = totalCount * factor
 
   const durationMsPerWeek =
     totalCount === 0
       ? 0
-      : sampleSize === 0
+      : durationsMs.length === 0
         ? undefined
-        : (loadedDurationsMs.reduce((sum, ms) => sum + ms, 0) / sampleSize) * totalCount * factor
+        : durationsMs.reduce((sum, ms) => sum + ms, 0) * factor
 
-  return { totalCount, countPerWeek, durationMsPerWeek, sampleSize, isSampled }
+  return { totalCount, countPerWeek, durationMsPerWeek }
 }

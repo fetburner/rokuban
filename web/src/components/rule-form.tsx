@@ -51,15 +51,9 @@ import { cn } from '@/lib/utils'
  * 条件を指定し忘れているだけなのか、条件が正しく絞り込めているのかは区別が要る
  * （`/search` の既存規律「未検索と 0 件を混同しない」と同じ精神）。
  *
- * 件数は `totalCount`（検索 API が返す全件、ページングなし）から厳密に出せる。
- * 時間は番組ごとの `durationMs` が要るため `loadedDurationsMs`（画面が結果表示の
- * ために読み込んだ分。`programId` 昇順の先頭 N 件で、無作為抽出ではない ---
- * `lib/rule-cost.ts` の `RuleCostSample` のコメントを参照）の平均から外挿する
- * 近似値になる。母数（`totalCount`）に対して読み込みが追いついていないときは
- * `estimateRuleCost` の `isSampled` を見て「先頭 N 件」であることを文言に足す
- * （黙って過小に見せない。かつ読み込みが 1 件も済んでいない間はこの注記を出さない
- * --- `estimate.durationMsPerWeek === undefined`（算出中）のときに
- * 「0 件の平均から算出」という自己矛盾した文言を出さないため）。
+ * 件数は `totalCount`（検索 API が返す全件、ページングなし）から、時間は検索 API が
+ * 各行に含める `durationMs` の全件合計から厳密に出せる。表示中の行数や番組詳細の
+ * 追加取得には依存しない。
  *
  * `hasPeriod` が真（`periodStartAt` / `periodEndAt` で期間を絞った検索）のときは
  * 「8 日分を 7 日換算」という根拠を出さない --- その根拠は「検索結果は EPG の
@@ -117,20 +111,12 @@ export function RuleCostSummary({
     ? '（期間条件で絞っているため、週あたりの見込みは実際より小さく出ます）'
     : ''
 
-  // 読み込みが 1 件も済んでいない間（durationMsPerWeek === undefined）は
-  // 「0 件の平均から算出」という自己矛盾した文言を出さない。
-  const sampledNote =
-    estimate.durationMsPerWeek !== undefined && estimate.isSampled
-      ? `（時間は先頭 ${estimate.sampleSize} 件の平均から算出）`
-      : ''
-
   // 件数は 1 つの文字列にする（JSX で連結するとテキストノードが分かれ、
   // 読み上げも切れて聞こえる。上の検索結果件数の表示と同じ流儀）。
   const text =
     `この条件で保存すると、週あたり見込みで${countText}・${durationText}` +
     basisText +
-    periodNote +
-    sampledNote
+    periodNote
 
   return <p className="px-4 py-2 text-xs text-muted-foreground">{text}</p>
 }
@@ -139,24 +125,14 @@ export function RuleCostSummary({
  * ShortfallOverlapNote は検索結果のうち放送時間帯が既存のチューナー不足区間と
  * 交差する番組の件数を値札の隣に出す（判定 (b)。docs/frontend/search.md
  * 「保存前の値札」）。**0 件のときは何も描画しない**（`CapacityShortfallBadge`
- * と同じ「沈黙は保証ではない」規律。緑にも「収まります」にもしない）。上限で
- * 切れているときは値札の他の注記と同じ形で「先頭 N 件のうち」と明記する。
+ * と同じ「沈黙は保証ではない」規律。緑にも「収まります」にもしない）。
  */
-export function ShortfallOverlapNote({
-  count,
-  sampleSize,
-  isSampled,
-}: {
-  count: number
-  sampleSize: number
-  isSampled: boolean
-}) {
+export function ShortfallOverlapNote({ count }: { count: number }) {
   if (count === 0) return null
 
-  const scope = isSampled ? `先頭 ${sampleSize} 件のうち、` : ''
   return (
     <p className="px-4 py-2 text-xs text-muted-foreground">
-      {scope}既にチューナー不足の区間と重なる番組が {count} 件あります
+      検索結果のうち、既にチューナー不足の区間と重なる番組が {count} 件あります
     </p>
   )
 }

@@ -46,7 +46,16 @@ func (h *Server) SearchPrograms(ctx context.Context, req SearchProgramsRequestOb
 	// 行ごとに実際にマッチした site を返す。畳まない。
 	matches := make([]ProgramSearchMatch, len(rows))
 	for i, row := range rows {
-		matches[i] = ProgramSearchMatch{Site: row.Site, ProgramId: row.ProgramID}
+		matches[i] = ProgramSearchMatch{
+			Site:       row.Site,
+			ProgramId:  row.ProgramID,
+			NetworkId:  int(row.NetworkID),
+			ServiceId:  int(row.ServiceID),
+			StartAt:    row.StartAt,
+			DurationMs: row.DurationMs,
+			Name:       row.Name,
+			IsFree:     row.IsFree,
+		}
 	}
 	return SearchPrograms200JSONResponse(matches), nil
 }
