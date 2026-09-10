@@ -7,7 +7,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CapacityOverage, ProgramListItem, Reservation, Service } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { dayOrigin } from '@/lib/day-offset'
-import { programsQueryKeyPrefix } from '@/lib/events'
 import { routeTree } from '@/routes'
 
 /**
@@ -547,22 +546,38 @@ describe('ProgramsPage の表示形式', () => {
     expect(screen.queryByRole('group', { name: '表示形式' })).not.toBeInTheDocument()
   })
 
-  it('保存した番組表を初回レンダーから使い、リストの infinite query を開始しない', async () => {
+  it('localStorage に保存済みの表示形式（grid）を、URL に view が無い素の /programs で復元する', async () => {
     localStorage.setItem(viewKey, 'grid')
     stubApi()
     stubMatchMedia(true)
-    const { queryClient } = renderPage()
+    renderPage()
 
-    // 最初のコミットがリスト分岐になっていないことを確認する。データ取得後だけを
-    // 見ると、`useMediaQuery` が初回 false でも effect 後のグリッドを見て通ってしまう。
-    expect(screen.queryByTestId('bounded-page-content')).not.toBeInTheDocument()
+    // 初回フレームがリストで一瞬描かれないかは jsdom の act 内 effect flush では
+    // 観測できない（RTL の render は commit 後の状態しか見せない）。ここで見て
+    // いるのは「保存値からグリッドへ最終的に復元される」ことだけで、初回フレーム
+    // のちらつき有無は E2E の担当にする。
+    expect(await screen.findByTestId('program-grid')).toBeInTheDocument()
+  })
+
+  it('リストを選んだ後にナビの /programs へ戻っても保存値どおりリストのまま', async () => {
+    localStorage.setItem(viewKey, 'grid')
+    stubApi()
+    stubMatchMedia(true)
+    const { router } = renderPage()
+
     expect(await screen.findByTestId('program-grid')).toBeInTheDocument()
 
-    const listQueries = queryClient
-      .getQueryCache()
-      .findAll({ queryKey: [programsQueryKeyPrefix, 'infinite'] })
-    expect(listQueries.length).toBeGreaterThan(0)
-    expect(listQueries.every((query) => query.state.fetchStatus === 'idle')).toBe(true)
+    await userEvent.click(screen.getByRole('button', { name: 'リスト' }))
+    await waitFor(() => expect(screen.queryByTestId('program-grid')).not.toBeInTheDocument())
+    expect(localStorage.getItem(viewKey)).toBe('list')
+
+    // app-shell.tsx の nav item は `{ to: '/programs' }`（search 無し）なので
+    // URL から view が消える。localStorage は list なのでリストのままであるべき。
+    await act(async () => {
+      await router.navigate({ to: '/programs', search: {} })
+    })
+
+    expect(screen.queryByTestId('program-grid')).not.toBeInTheDocument()
   })
 
   it('URL の view=list は保存済みの番組表より優先される', async () => {

@@ -47,7 +47,7 @@ import {
 } from '@/lib/programs-search'
 import { filterProgramsFromListStart } from '@/lib/program-list'
 import { lgMediaQuery, useMediaQuery } from '@/lib/use-media-query'
-import { loadPreferredView, savePreferredView, type PreferredView } from '@/lib/view-storage'
+import { loadProgramsView, saveProgramsView, type ProgramsView } from '@/lib/programs-view-storage'
 
 /**
  * windowHours は、進行方向（下スクロールでの自動読み込み・「さらに読み込む」）
@@ -66,9 +66,6 @@ const gridWindowHours = 24
  * これより詰めると 15 分番組が読めず、広げると 24 時間の全長が伸びすぎる。
  */
 const gridPxPerHour = 120
-
-/** ProgramView は番組の表示形式。グリッドは `lg` 以上でのみ選べる。 */
-type ProgramView = PreferredView
 
 /**
  * ProgramsPage は番組表（`/programs`）。
@@ -141,10 +138,14 @@ export function ProgramsPage() {
   // 一致するが、その後リストをスクロールすればこちらだけが動く。
   const [visibleDay, setVisibleDay] = useState(dayOffset)
   // 表示形式は URL が指定していればそれを優先し、指定が無い素の `/programs` では
-  // 端末に保存した前回の選択へ戻る。`storedView` は mount 時に 1 回だけ読む ---
-  // URL の遷移や幅の変化で、後から localStorage の値が画面を上書きしないため。
-  const [storedView] = useState<ProgramView>(() => loadPreferredView() ?? 'list')
-  const view: ProgramView = search.view ?? storedView
+  // 端末に保存した前回の選択へ戻る。`storedView` は mount 時に localStorage から
+  // 読み、以後は選択のたびに `setStoredView` で自分も更新する ---
+  // localStorage だけ更新して state を置き去りにすると、`search` 無しのナビ
+  // （`app-shell.tsx` のナビ項目は `{ to: '/programs' }`）で `/programs` へ戻った
+  // ときに mount 時点の古い値へ巻き戻る（`programs.test.tsx`
+  // 「リストを選んだ後にナビの /programs へ戻っても保存値どおりリストのまま」）。
+  const [storedView, setStoredView] = useState<ProgramsView>(() => loadProgramsView() ?? 'list')
+  const view: ProgramsView = search.view ?? storedView
 
   // ProgramList への命令的 API（`components/program-list.tsx` の
   // `ProgramListHandle`）。「既にジャンプ先になっている日」を再タップしたときに
@@ -647,7 +648,8 @@ export function ProgramsPage() {
               <ViewChips
                 view={view}
                 onSelect={(next) => {
-                  savePreferredView(next)
+                  saveProgramsView(next)
+                  setStoredView(next)
                   updateSearch((s) => ({ ...s, view: next }))
                 }}
               />
@@ -801,8 +803,8 @@ function ViewChips({
   view,
   onSelect,
 }: {
-  view: ProgramView
-  onSelect: (view: ProgramView) => void
+  view: ProgramsView
+  onSelect: (view: ProgramsView) => void
 }) {
   return (
     <div role="group" aria-label="表示形式" className="flex gap-2 px-4 pb-3">

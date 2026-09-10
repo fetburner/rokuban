@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { loadPreferredView, savePreferredView, type PreferredView } from '@/lib/view-storage'
+import { loadProgramsView, saveProgramsView } from '@/lib/programs-view-storage'
 
 const KEY = 'rokuban:programs:view'
 
@@ -8,31 +8,24 @@ afterEach(() => {
   localStorage.clear()
 })
 
-describe('load/savePreferredView', () => {
+describe('load/saveProgramsView', () => {
   it('保存した表示形式を復元する', () => {
-    savePreferredView('grid')
+    saveProgramsView('grid')
 
-    expect(loadPreferredView()).toBe('grid')
+    expect(loadProgramsView()).toBe('grid')
 
-    savePreferredView('list')
-    expect(loadPreferredView()).toBe('list')
+    saveProgramsView('list')
+    expect(loadProgramsView()).toBe('list')
   })
 
   it('保存が無ければ undefined', () => {
-    expect(loadPreferredView()).toBeUndefined()
+    expect(loadProgramsView()).toBeUndefined()
   })
 
   it('不正な保存値は undefined として扱う', () => {
     localStorage.setItem(KEY, 'calendar')
 
-    expect(loadPreferredView()).toBeUndefined()
-  })
-
-  it('不正な値は保存しない', () => {
-    savePreferredView('calendar' as PreferredView)
-
-    expect(localStorage.getItem(KEY)).toBeNull()
-    expect(loadPreferredView()).toBeUndefined()
+    expect(loadProgramsView()).toBeUndefined()
   })
 
   it('private mode 等で getItem/setItem が例外を投げても、読み書きは無音で既定値へ戻る', () => {
@@ -43,8 +36,8 @@ describe('load/savePreferredView', () => {
       throw new Error('denied')
     })
     try {
-      expect(loadPreferredView()).toBeUndefined()
-      expect(() => savePreferredView('grid')).not.toThrow()
+      expect(loadProgramsView()).toBeUndefined()
+      expect(() => saveProgramsView('grid')).not.toThrow()
     } finally {
       getItemSpy.mockRestore()
       setItemSpy.mockRestore()

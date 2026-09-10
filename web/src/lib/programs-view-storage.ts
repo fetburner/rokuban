@@ -8,27 +8,26 @@
 
 const KEY = 'rokuban:programs:view'
 
-export type PreferredView = 'list' | 'grid'
+export type ProgramsView = 'list' | 'grid'
 
-function isPreferredView(value: unknown): value is PreferredView {
+function isProgramsView(value: unknown): value is ProgramsView {
   return value === 'list' || value === 'grid'
 }
 
-/** loadPreferredView は保存済みの表示形式を返す。無い・壊れているなら undefined。 */
-export function loadPreferredView(): PreferredView | undefined {
+/** loadProgramsView は保存済みの表示形式を返す。無い・壊れているなら undefined。 */
+export function loadProgramsView(): ProgramsView | undefined {
   try {
     const value = localStorage.getItem(KEY)
-    return isPreferredView(value) ? value : undefined
+    return isProgramsView(value) ? value : undefined
   } catch {
     // private mode などで localStorage 自体が使えない場合は既定値へ戻る
     return undefined
   }
 }
 
-/** savePreferredView は表示形式を保存する。不正な値は保存しない。 */
-export function savePreferredView(view: PreferredView): void {
+/** saveProgramsView は表示形式を保存する。 */
+export function saveProgramsView(view: ProgramsView): void {
   try {
-    if (!isPreferredView(view)) return
     localStorage.setItem(KEY, view)
   } catch {
     // ignore

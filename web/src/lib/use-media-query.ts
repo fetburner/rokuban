@@ -19,11 +19,11 @@ export const lgMediaQuery = '(min-width: 64rem)'
 export function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
-    return window.matchMedia(query)?.matches ?? false
+    return window.matchMedia(query).matches
   })
 
   useEffect(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+    if (typeof window.matchMedia !== 'function') return
     const list = window.matchMedia(query)
     const update = () => setMatches(list.matches)
     update()
