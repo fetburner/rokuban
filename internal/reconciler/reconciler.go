@@ -375,6 +375,10 @@ func (r *Reconciler) observeSchedules(ctx context.Context, schedules []mirakc.Sc
 	// params はチャンクごとに組み立てる（internal/worker/epg.go の syncPrograms と
 	// 同じ理由）。schedules 全件分を一度に組み立てると、1 パス分の
 	// []mirakc.Schedule と再マーシャルした jsonb ペイロードを同時に抱えることになる。
+	//
+	// 空の全量 snapshot ではこのループ自体が回らないので空 batch は送らない。
+	// stale 削除と snapshot marker の更新は、schedule が 0 件でも従来どおり
+	// このトランザクションで実行する。
 	for chunk := range chunks(schedules, scheduleSyncBatchSize) {
 		params := make([]sqlcgen.UpsertScheduleSyncParams, 0, len(chunk))
 		for _, s := range chunk {
@@ -407,11 +411,6 @@ func (r *Reconciler) observeSchedules(ctx context.Context, schedules []mirakc.Sc
 			})
 		}
 
-		// 空の全量 snapshot では空 batch を送らない。stale 削除と snapshot marker の
-		// 更新は、schedule が 0 件でも従来どおりこのトランザクションで実行する。
-		if len(params) == 0 {
-			continue
-		}
 		if err := execScheduleSyncBatch(ctx, q, params); err != nil {
 			return err
 		}
