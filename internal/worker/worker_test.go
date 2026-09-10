@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -170,19 +169,22 @@ func startPeriodicJobClient(t *testing.T, pool *pgxpool.Pool, deps *Deps, cfg Cl
 		<-client.Stopped()
 	})
 
-	return newPeriodicJobEventWaiter(pool, subscribeCh)
+	return newPeriodicJobEventWaiter(subscribeCh)
 }
 
 // periodicJobWaitTimeout は定期ジョブ完了イベントの待ち時間上限である。
 //
-// CI で TestRulerPassPeriodicJob がタイムアウトした（issue #740）。失敗は 2 回目の
-// reconcile_pass 待ちで発生しており、到着順の読み捨て（経路 2）は回帰テストで
-// 再現できる。一方、経路 1 の待ち時間を `go test ./internal/worker/ -run
-// '^TestRulerPassPeriodicJob$' -count=20 -v` で測ると、ruler_pass は 1.282〜5.290
-// 秒、reconcile_pass は 18/20 回が ruler_pass の直後 1ms 未満、2/20 回が既に
-// 保留済みだった。最大 5.290 秒に対して 20 秒は 3.7 倍以上の余裕があるため、
-// 予算は増やさず、到着順の読み捨てだけを修正する。CI での元の失敗自体は再現
-// できていないため、経路 1 が発生しないとは断言しない。
+// **River は別キューのジョブ間で完了イベントの到着順を保証しない。** 完了は
+// バッチでまとめて DB に書かれ、イベントもそのバッチ単位で配られるので、到着順は
+// 実際に Work が終わった順ではない（v0.47.0 では BatchCompleter が 250ms ごとに
+// flush し、river_job.id 昇順で返す）。到着順に依存する待ち受けは原理的に flaky
+// なので、waitPeriodicJobEvent は順序に依存しない形にしてある。
+//
+// 予算 20 秒はこの修正でも据え置く。`go test ./internal/worker/ -run
+// '^TestRulerPassPeriodicJob$' -count=20 -v` で測ると ruler_pass の完了は
+// 1.282〜5.290 秒で、最大値に対して 3.7 倍以上の余裕がある。同じ 20 回のうち
+// 2 回は reconcile_pass が ruler_pass より先に届いており、修正前のコードでは
+// この 2 回が読み捨てになって 2 回目の待ちが飢える（issue #740 の CI 失敗と同じ形）。
 const periodicJobWaitTimeout = 20 * time.Second
 
 // periodicJobEventWaiter は River の購読チャネルと、そのチャネルから読み取った
@@ -190,15 +192,13 @@ const periodicJobWaitTimeout = 20 * time.Second
 // waiter に対して順番に waitPeriodicJobEvent を呼ぶ。
 type periodicJobEventWaiter struct {
 	subscribeCh   <-chan *river.Event
-	pool          *pgxpool.Pool
 	pending       map[string][]*river.Event
 	observedKinds []string
 }
 
-func newPeriodicJobEventWaiter(pool *pgxpool.Pool, subscribeCh <-chan *river.Event) *periodicJobEventWaiter {
+func newPeriodicJobEventWaiter(subscribeCh <-chan *river.Event) *periodicJobEventWaiter {
 	return &periodicJobEventWaiter{
 		subscribeCh: subscribeCh,
-		pool:        pool,
 		pending:     make(map[string][]*river.Event),
 	}
 }
@@ -229,13 +229,9 @@ func waitPeriodicJobEvent(t *testing.T, waiter *periodicJobEventWaiter, jobKind 
 		select {
 		case event, ok := <-waiter.subscribeCh:
 			if !ok {
-				t.Fatalf("periodic %s event subscription closed; river_job kind/state counts=%s; observed event kinds=%v",
-					jobKind, waiter.riverJobKindStateCounts(), waiter.observedKinds)
+				t.Fatalf("periodic %s event subscription closed; observed event kinds=%v",
+					jobKind, waiter.observedKinds)
 				return nil
-			}
-			if event == nil || event.Job == nil {
-				waiter.observedKinds = append(waiter.observedKinds, "<nil>")
-				continue
 			}
 			kind := event.Job.Kind
 			waiter.observedKinds = append(waiter.observedKinds, kind)
@@ -246,49 +242,11 @@ func waitPeriodicJobEvent(t *testing.T, waiter *periodicJobEventWaiter, jobKind 
 			}
 			waiter.pending[kind] = append(waiter.pending[kind], event)
 		case <-deadline.C:
-			t.Fatalf("timed out waiting for the periodic %s job after %s; river_job kind/state counts=%s; observed event kinds=%v",
-				jobKind, periodicJobWaitTimeout, waiter.riverJobKindStateCounts(), waiter.observedKinds)
+			t.Fatalf("timed out waiting for the periodic %s job after %s; observed event kinds=%v",
+				jobKind, periodicJobWaitTimeout, waiter.observedKinds)
 			return nil
 		}
 	}
-}
-
-// riverJobKindStateCounts は timeout 時点の River ジョブを kind/state 別に要約する。
-// 定期ジョブが投入されていないのか、投入されたが available/running のままなのか、
-// あるいは別種のイベントだけが先に届いたのかを、再現手順なしで区別できるようにする。
-func (waiter *periodicJobEventWaiter) riverJobKindStateCounts() string {
-	if waiter.pool == nil {
-		return "unavailable (no database pool)"
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	rows, err := waiter.pool.Query(ctx, `
-		SELECT kind, state, count(*)
-		FROM river_job
-		GROUP BY kind, state
-		ORDER BY kind, state`)
-	if err != nil {
-		return fmt.Sprintf("unavailable (%v)", err)
-	}
-	defer rows.Close()
-
-	var counts []string
-	for rows.Next() {
-		var kind, state string
-		var count int64
-		if err := rows.Scan(&kind, &state, &count); err != nil {
-			return fmt.Sprintf("unavailable (scanning rows: %v)", err)
-		}
-		counts = append(counts, fmt.Sprintf("%s/%s=%d", kind, state, count))
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Sprintf("unavailable (iterating rows: %v)", err)
-	}
-	if len(counts) == 0 {
-		return "empty"
-	}
-	return strings.Join(counts, ", ")
 }
 
 // TestWaitPeriodicJobEventRetainsOutOfOrderEvents は、同じ購読チャネルに届いた
@@ -306,7 +264,7 @@ func TestWaitPeriodicJobEventRetainsOutOfOrderEvents(t *testing.T) {
 	subscribeCh <- reconcileEvent
 	subscribeCh <- rulerEvent
 
-	waiter := newPeriodicJobEventWaiter(nil, subscribeCh)
+	waiter := newPeriodicJobEventWaiter(subscribeCh)
 	if got := waitPeriodicJobEvent(t, waiter, "ruler_pass"); got != rulerEvent {
 		t.Fatalf("ruler_pass event = %p, want %p", got, rulerEvent)
 	}
@@ -544,7 +502,7 @@ func TestRulerPassPeriodicJob(t *testing.T) {
 	}
 
 	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
-	waiter := newPeriodicJobEventWaiter(pool, subscribeCh)
+	waiter := newPeriodicJobEventWaiter(subscribeCh)
 	defer subscribeCancel()
 
 	clientCtx, clientCancel := context.WithCancel(ctx)

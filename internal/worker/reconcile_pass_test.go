@@ -264,7 +264,7 @@ func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 	}
 
 	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
-	waiter := newPeriodicJobEventWaiter(pool, subscribeCh)
+	waiter := newPeriodicJobEventWaiter(subscribeCh)
 	defer subscribeCancel()
 
 	clientCtx, clientCancel := context.WithCancel(ctx)
@@ -303,9 +303,8 @@ func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 	//
 	// oracle: ヒントの投入（riverClient.Insert）を止めると（ruler_pass.go の
 	// Work 末尾）、count のチェックで 0 != 1 として落ちる。ヒントは投入される
-	// が実行が失敗する場合（例えば MirakcClients を外す）は、上の ruler_pass 待ち受けが
-	// 拾わない限り reconcile_pass の JobCompleted が来ず、下の待ち受けが
-	// 20 秒でタイムアウトして落ちる。
+	// が実行が失敗する場合（例えば MirakcClients を外す）は、reconcile_pass の
+	// JobCompleted が来ず、下の待ち受けが 20 秒でタイムアウトして落ちる。
 	hintEvent := waitPeriodicJobEvent(t, waiter, "reconcile_pass")
 	var hintArgs ReconcilePassArgs
 	if err := json.Unmarshal(hintEvent.Job.EncodedArgs, &hintArgs); err != nil {
