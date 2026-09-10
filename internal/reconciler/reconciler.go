@@ -35,6 +35,11 @@ import (
 // event_id に保証する一意性の期間。運用で変更する値ではないため設定にはしない。
 const broadcastEventIDUniquenessWindow = 24 * time.Hour
 
+// scheduleSyncBatchSize は 1 回の pgx.Batch に詰める行数。internal/worker/epg.go の
+// epgBatchSize と同じ理由（メモリと 1 バッチあたりの所要を抑える）で揃える。
+// schedule_sync の行数は EPG 窓のルール生成予約に比例するので数千件は現実的。
+const scheduleSyncBatchSize = 1000
+
 // Config は Reconciler の設定。
 type Config struct {
 	// MaxRecreatesPerPass は 1 パスで行う予約オプション差分反映の再作成
@@ -367,35 +372,47 @@ func (r *Reconciler) observeSchedules(ctx context.Context, schedules []mirakc.Sc
 		return fmt.Errorf("getting schedule snapshot mark: %w", err)
 	}
 
-	for _, s := range schedules {
-		optionsJSON, err := json.Marshal(s.Options)
-		if err != nil {
-			return fmt.Errorf("marshalling options: %w", err)
-		}
-
-		tags := s.Tags
-		if tags == nil {
-			tags = []string{}
-		}
-
-		var failedReasonJSON json.RawMessage
-		if s.FailedReason != nil {
-			data, mErr := json.Marshal(s.FailedReason)
-			if mErr != nil {
-				return fmt.Errorf("marshalling failed_reason: %w", mErr)
+	// params はチャンクごとに組み立てる（internal/worker/epg.go の syncPrograms と
+	// 同じ理由）。schedules 全件分を一度に組み立てると、1 パス分の
+	// []mirakc.Schedule と再マーシャルした jsonb ペイロードを同時に抱えることになる。
+	//
+	// 空の全量 snapshot ではこのループ自体が回らないので空 batch は送らない。
+	// stale 削除と snapshot marker の更新は、schedule が 0 件でも従来どおり
+	// このトランザクションで実行する。
+	for chunk := range chunks(schedules, scheduleSyncBatchSize) {
+		params := make([]sqlcgen.UpsertScheduleSyncParams, 0, len(chunk))
+		for _, s := range chunk {
+			optionsJSON, err := json.Marshal(s.Options)
+			if err != nil {
+				return fmt.Errorf("marshalling options: %w", err)
 			}
-			failedReasonJSON = data
+
+			tags := s.Tags
+			if tags == nil {
+				tags = []string{}
+			}
+
+			var failedReasonJSON json.RawMessage
+			if s.FailedReason != nil {
+				data, mErr := json.Marshal(s.FailedReason)
+				if mErr != nil {
+					return fmt.Errorf("marshalling failed_reason: %w", mErr)
+				}
+				failedReasonJSON = data
+			}
+
+			params = append(params, sqlcgen.UpsertScheduleSyncParams{
+				Site:         r.site,
+				ProgramID:    s.Program.ID,
+				State:        s.State,
+				Options:      optionsJSON,
+				Tags:         tags,
+				FailedReason: failedReasonJSON,
+			})
 		}
 
-		if err := q.UpsertScheduleSync(ctx, sqlcgen.UpsertScheduleSyncParams{
-			Site:         r.site,
-			ProgramID:    s.Program.ID,
-			State:        s.State,
-			Options:      optionsJSON,
-			Tags:         tags,
-			FailedReason: failedReasonJSON,
-		}); err != nil {
-			return fmt.Errorf("upserting schedule_sync for program %d: %w", s.Program.ID, err)
+		if err := execScheduleSyncBatch(ctx, q, params); err != nil {
+			return err
 		}
 	}
 
@@ -412,6 +429,42 @@ func (r *Reconciler) observeSchedules(ctx context.Context, schedules []mirakc.Sc
 		return fmt.Errorf("committing schedule snapshot: %w", err)
 	}
 	return nil
+}
+
+// execScheduleSyncBatch は 1 チャンク分の schedule_sync pgx.Batch を実行し、
+// 最初のエラーを program ID 付きで返す。Close は成功・失敗どちらの経路でも
+// 呼び出し元の defer tx.Rollback より前に完了する。
+//
+// sqlc 生成の :batchexec Exec は t ∈ [0, len(params)) でしか
+// f(t, err) を呼ばないため、範囲外 i の防御分岐は置かない。
+func execScheduleSyncBatch(ctx context.Context, q *sqlcgen.Queries, params []sqlcgen.UpsertScheduleSyncParams) error {
+	batch := q.UpsertScheduleSync(ctx, params)
+	var batchErr error
+	batch.Exec(func(i int, err error) {
+		if err == nil || batchErr != nil {
+			return
+		}
+		batchErr = fmt.Errorf("upserting schedule_sync for program %d: %w", params[i].ProgramID, err)
+	})
+	if closeErr := batch.Close(); closeErr != nil && batchErr == nil {
+		batchErr = fmt.Errorf("closing schedule_sync batch: %w", closeErr)
+	}
+	return batchErr
+}
+
+// chunks は s を size 件ずつに分割して yield する。
+// internal/worker/epg.go の同名関数と同じ形（パッケージ間 import は
+// internal/worker が internal/reconciler に依存しているため import cycle になり
+// 共有できない）。
+func chunks[T any](s []T, size int) func(func([]T) bool) {
+	return func(yield func([]T) bool) {
+		for start := 0; start < len(s); start += size {
+			end := min(start+size, len(s))
+			if !yield(s[start:end]) {
+				return
+			}
+		}
+	}
 }
 
 // desiredReservation は予約行・番組スナップショットと、そこから解決済みの

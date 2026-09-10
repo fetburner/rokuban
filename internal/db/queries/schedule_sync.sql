@@ -14,7 +14,7 @@
 -- 読み手のいない列にそれを保存し続ける理由が無いため、issue #148 で
 -- 列自体を落とした（CLAUDE.md 不変条件 10「意味を持たない行を作らない」/
 -- 11「これを書く / 使うコードは今あるか」）。
--- name: UpsertScheduleSync :exec
+-- name: UpsertScheduleSync :batchexec
 INSERT INTO schedule_sync (
     site, program_id, state,
     options, tags, failed_reason, observed_at
