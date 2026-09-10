@@ -8,7 +8,7 @@ import {
   useRef,
 } from 'react'
 
-import type { ProgramOverridesInput, Reservation } from '@/api/generated'
+import type { ProgramOverlaps, ProgramOverridesInput } from '@/api/generated'
 import { ProgramRow } from '@/components/program-row'
 import {
   programIdentity,
@@ -18,7 +18,6 @@ import {
 } from '@/lib/all-sites-services'
 import { dayKey, formatDate } from '@/lib/format'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
-import { deriveProgramOverlaps } from '@/lib/program-overlaps'
 import { firstIndexForDayOffset, programKeyAt, visibleDayOffset } from '@/lib/program-list'
 
 /**
@@ -41,6 +40,13 @@ import { firstIndexForDayOffset, programKeyAt, visibleDayOffset } from '@/lib/pr
  * リスト・グリッド・検索結果の全呼び出し点がこの 1 つの契約を通るため、
  * 表示形式ごとに渡し忘れて穴が開くことがない（issue #710 のグリッドの穴の
  * 再発防止）。
+ *
+ * `overlapsFor` も同じ理由でここに載せる（`reservations` を呼び出し元ごとの
+ * prop にすると渡し忘れたときだけ穴が開く。以前グリッドが 1 箇所渡し忘れて
+ * いた）。実装（`useReservationActions`）が `reservations` から事前パース
+ * 済みの索引を 1 回だけ作り、`overlapsFor` はその索引を閉じ込めた関数として
+ * 返す。未取得のときも `count: 0` を返す（未取得と 0 件は区別しない ---
+ * `ProgramOverlapWarning` 側がどちらも「描かない」に潰すため）。
  */
 export type ReservationActions = {
   reserve: (program: SiteProgram, overrides?: ProgramOverridesInput) => void
@@ -50,6 +56,8 @@ export type ReservationActions = {
   reservedProgramIds: ReadonlySet<string>
   /** 予約一覧が未取得・失敗中なら、未予約行の `record` 操作を止める。 */
   reservationStateUnknown: boolean
+  /** 予約一覧から導出した重なり。未取得の間も `count: 0` を返す。 */
+  overlapsFor: (program: SiteProgram) => ProgramOverlaps
 }
 
 /**
@@ -170,8 +178,6 @@ export const ProgramList = forwardRef<
   {
     programs: SiteProgram[]
     serviceById: Map<string, SiteService>
-    /** 未取得（初回取得中・失敗中）は undefined。0 件とは扱わず警告を出さない。 */
-    reservations: readonly Reservation[] | undefined
     showSite?: boolean
     actions: ReservationActions
     /**
@@ -188,7 +194,6 @@ export const ProgramList = forwardRef<
   {
     programs,
     serviceById,
-    reservations,
     showSite = false,
     actions,
     onVisibleDayChange,
@@ -325,8 +330,6 @@ export const ProgramList = forwardRef<
       {renderedIndices.map((index) => {
         const program = programs[index]
         const reserved = actions.reservedProgramIds.has(programIdentity(program.site, program.programId))
-        const overlaps =
-          reservations === undefined ? undefined : deriveProgramOverlaps(program, reservations)
 
         return (
           <li
@@ -363,7 +366,7 @@ export const ProgramList = forwardRef<
               reserved={reserved}
               pending={actions.isBusy(program)}
               reservationStateUnknown={actions.reservationStateUnknown}
-              overlaps={overlaps}
+              overlaps={actions.overlapsFor(program)}
               onReserve={(overrides) => actions.reserve(program, overrides)}
               onCancel={() => actions.cancel(program)}
             />

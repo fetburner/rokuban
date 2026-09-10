@@ -107,10 +107,10 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
 - **重なり警告は取得済みの予約一覧から導出する。** 番組表で別の overlaps API を行ごとに
   呼ぶと、仮想化された行が画面へ入るたびに取得が増える。`GET /api/reservations` の各行を
   `site`、`programId`、`state`、`skip`、開始時刻、尺で照合し、同じ site・別番組・
-  `state !== 'orphaned'`・`skip === false` かつ半開区間で重なる予約を表示する。
-  予約一覧が未取得または失敗中は、重なり 0 件とは断定しない。予約詳細の単一番組では
-  従来どおり overlaps API を使う。予約・取消後は既存の予約一覧の invalidate と再取得で
-  警告も更新する
+  `state !== 'orphaned'`・`skip === false` かつ半開区間で重なる予約を表示する。導出は
+  `useReservationActions`（`lib/reservation-actions.ts`）の `overlapsFor` に 1 本化してあり、
+  リストとグリッドの両方がこれを呼ぶ。予約詳細の単一番組では従来どおり overlaps API を使う。
+  予約・取消後は既存の予約一覧の invalidate と再取得で警告も更新する
 - **仮想化は TanStack Virtual（`useWindowVirtualizer`）を使う**
   （`components/program-list.tsx`）。グリッドが自前実装を選んだ理由（縦軸が
   連続量で番組セルが目盛りをまたぐ区間なので、行の並びを前提とする仮想化

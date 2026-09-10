@@ -59,7 +59,7 @@ function renderActions(initialServerReservedIds: ReadonlySet<string>) {
   )
   return renderHook(
     ({ serverReservedIds }: { serverReservedIds: ReadonlySet<string> }) =>
-      useReservationActions(serverReservedIds, sourceByProgramId, false),
+      useReservationActions(serverReservedIds, sourceByProgramId, false, undefined),
     { wrapper, initialProps: { serverReservedIds: initialServerReservedIds } },
   )
 }
@@ -101,7 +101,7 @@ describe('useReservationActions の reservationStateUnknown ガード', () => {
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     )
     const { result } = renderHook(
-      () => useReservationActions(new Set(), sourceByProgramId, true),
+      () => useReservationActions(new Set(), sourceByProgramId, true, undefined),
       { wrapper },
     )
 

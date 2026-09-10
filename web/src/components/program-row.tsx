@@ -70,7 +70,11 @@ export function ProgramRow({
   reservationStateUnknown: boolean
   onReserve: (overrides?: ProgramOverridesInput) => void
   onCancel: () => void
-  /** 予約一覧から導出した重なり。未取得の間は undefined で警告を出さない。 */
+  /**
+   * 予約一覧から導出した重なり。呼び出し元（`ReservationActions.overlapsFor`）は
+   * 予約一覧が未取得の間も `count: 0` を返すので undefined を渡さない ---
+   * 型が `?:` のままなのは `ProgramOverlapWarning` 側の契約に合わせているだけ。
+   */
   overlaps?: ProgramOverlaps
 }) {
   const site = program.site
@@ -152,7 +156,13 @@ export function ProgramRow({
             </div>
             {/* 予約する前に見せる（issue #24 M2-8）。展開しなくても常に見える位置に置く
                 （予約後に知らせても遅いため）。重なりは番組表で取得済みの予約一覧から
-                導出するので、行ごとの overlaps API はここから呼ばない。 */}
+                導出するので、行ごとの overlaps API はここから呼ばない。
+                `!reserved` は予約済み行では出さないという表示上の判断であり、
+                「自分自身との重なりしか出ようがない」からではない ---
+                サーバー（`r.program_id <> target_program_id`）も導出
+                （`deriveProgramOverlaps`）もどちらも自分自身を除くので、
+                予約済み行に出せば他の予約との重なりが見える。出す/出さないは
+                別の判断で、ここでは従来どおり出さない。 */}
             {!reserved && <ProgramOverlapWarning overlaps={overlaps} />}
           </div>
           <ChevronDown

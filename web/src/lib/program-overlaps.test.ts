@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ProgramListItem, Reservation } from '@/api/generated'
-import { deriveProgramOverlaps } from '@/lib/program-overlaps'
+import { buildReservationOverlapIndex, deriveProgramOverlaps } from '@/lib/program-overlaps'
 import type { SiteProgram } from '@/lib/all-sites-services'
 
 const targetStart = new Date('2026-08-14T10:00:00+09:00').getTime()
@@ -46,6 +46,10 @@ function reservation(
   }
 }
 
+function index(reservations: readonly Reservation[]) {
+  return buildReservationOverlapIndex(reservations)
+}
+
 describe('deriveProgramOverlaps', () => {
   it('同一 site・別 programId・半開区間で重なる予約だけを件数と内訳に含める', () => {
     const target = program()
@@ -62,16 +66,19 @@ describe('deriveProgramOverlaps', () => {
       title: '直後の予約',
     })
 
-    const overlaps = deriveProgramOverlaps(target, [
-      included,
-      crossingStart,
-      adjacentBefore,
-      adjacentAfter,
-      reservation(target.programId, targetStart + 1_800_000, { title: '自分自身' }),
-      reservation(6, targetStart + 1_800_000, { site: 'other', title: '別 site' }),
-      reservation(7, targetStart + 1_800_000, { state: 'orphaned', title: 'orphaned' }),
-      reservation(8, targetStart + 1_800_000, { skip: true, title: 'skip' }),
-    ])
+    const overlaps = deriveProgramOverlaps(
+      target,
+      index([
+        included,
+        crossingStart,
+        adjacentBefore,
+        adjacentAfter,
+        reservation(target.programId, targetStart + 1_800_000, { title: '自分自身' }),
+        reservation(6, targetStart + 1_800_000, { site: 'other', title: '別 site' }),
+        reservation(7, targetStart + 1_800_000, { state: 'orphaned', title: 'orphaned' }),
+        reservation(8, targetStart + 1_800_000, { skip: true, title: 'skip' }),
+      ]),
+    )
 
     expect(overlaps).toEqual({
       count: 2,
@@ -96,7 +103,7 @@ describe('deriveProgramOverlaps', () => {
     const target = program()
     const detached = reservation(2, targetStart + 1_800_000, { state: 'detached' })
 
-    expect(deriveProgramOverlaps(target, [detached])).toEqual({
+    expect(deriveProgramOverlaps(target, index([detached]))).toEqual({
       count: 1,
       reservations: [
         {

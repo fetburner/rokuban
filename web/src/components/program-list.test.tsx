@@ -9,7 +9,6 @@ import {
   type ProgramListHandle,
   type ReservationActions,
 } from '@/components/program-list'
-import type { Reservation } from '@/api/generated'
 import { formatDate } from '@/lib/format'
 import { siteServiceKey, type SiteProgram, type SiteService } from '@/lib/all-sites-services'
 
@@ -58,6 +57,7 @@ function actions(overrides: Partial<ReservationActions> = {}): ReservationAction
     isBusy: () => false,
     reservedProgramIds: new Set(),
     reservationStateUnknown: false,
+    overlapsFor: () => ({ count: 0, reservations: [] }),
     ...overrides,
   }
 }
@@ -81,7 +81,6 @@ function renderList(
     now?: number
     ref?: React.RefObject<ProgramListHandle | null>
     showSite?: boolean
-    reservations?: readonly Reservation[]
   } = {},
 ) {
   stubFetch()
@@ -92,7 +91,6 @@ function renderList(
         ref={extra.ref}
         programs={programs}
         serviceById={services}
-        reservations={extra.reservations ?? []}
         showSite={extra.showSite}
         actions={reservationActions}
         onVisibleDayChange={extra.onVisibleDayChange}
