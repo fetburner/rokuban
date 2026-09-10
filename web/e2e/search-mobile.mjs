@@ -455,10 +455,16 @@ async function checkSubmitFeedback(page, viewport, label) {
  * `ProgramRow` の高さが
  * 不要に伸びていないことを判定する（⑥）。
  *
- * 長いサービス名と「有料」を同時に持つ fixture を使う。メタ行に `flex-wrap` が
- * 残っているとサービス名が縮む前に折り返し、`getBoundingClientRect()` の高さが
- * 1 行ぶんを超える。jsdom はレイアウトを計算しないため、実際の Chromium でしか
- * この差を検出できない。
+ * 長いサービス名と「有料」を同時に持つ fixture を使う。jsdom はレイアウトを
+ * 計算しないため、実際の Chromium でしか折り返しの差を検出できない。
+ *
+ * **`flex-wrap` を戻した変異を捕まえるのは computed style の判定であって、
+ * メタ行の高さではない。** `ProgramRow` のサービス名は `truncate` なので、
+ * `flex-wrap: wrap` を入れても縮んで収まり、メタ行は 20px のまま
+ * （360/390/1280px で実測。落ちるのは `flexWrap !== 'nowrap'` の判定だけ）。
+ * 高さのしきい値が受け持つのは `py-2.5`→`py-5` や名前カラムに 2 行目を足す変異で、
+ * これは行（72px）側に出る。メタ行の高さは、`truncate` が外れて本当に
+ * 2 行になる組み合わせに対する保険として残してある。
  *
  * **基準は固定値にしてある**（被検体の `getComputedStyle().lineHeight` は読まない）。
  * Tailwind v4 は named size ユーティリティ（`text-xs` 等）にしか `line-height` を
