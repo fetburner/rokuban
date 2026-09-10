@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from 'react'
 
 import {
   ListRecordingsOrder,
-  ListRecordingsSource,
   useListRules,
   useListSites,
   type Rule,
@@ -21,6 +20,7 @@ import {
   clearRecordingsFilters,
   describeRecordingsFilters,
   isoToLocalDateTimeInput,
+  isSourceMootWithRule,
   localDateTimeInputToIso,
   parseRuleId,
   recordingSourceValues,
@@ -202,6 +202,14 @@ function OrderSelect({
  * `<select>` の value は文字列でも、URL へ戻す値は `parseRuleId` で検証した
  * 正の安全整数に揃える。ルール選択時の検索条件更新は `updateRuleFilter` に
  * 集約する。
+ *
+ * **`value` が一覧に無いとき、フォールバック option を足す。** 一覧に無い
+ * `value`（削除済みルールで絞っている URL）を渡すと、React の
+ * controlled `<select>` はどの option にも一致しないので先頭（「問わない」）
+ * を選択状態にする（実測: jsdom で `value="99"` / `options=['', '8']` のとき
+ * `selectedIndex === 0`）。適用中チップは `ルール #N` を出しているのに
+ * パネルは「問わない」と表示され、URL と食い違う。ラベルはチップと同じ
+ * `#N` フォールバックに揃える。
  */
 function RuleSelect({
   value,
@@ -222,6 +230,9 @@ function RuleSelect({
         className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none"
       >
         <option value="">問わない</option>
+        {value !== undefined && !rules.some((rule) => rule.id === value) && (
+          <option value={String(value)}>ルール #{value}</option>
+        )}
         {rules.map((rule) => (
           <option key={rule.id} value={String(rule.id)}>
             {rule.name}
@@ -236,14 +247,15 @@ function RuleSelect({
  * updateRuleFilter はルール選択を検索条件へ反映する。
  *
  * 特定のルールを選んだ状態で `source=manual` / `source=unattributed` を残すと
- * 必ず 0 件になる。どのルールかが分かれば出自をさらに問う必要がないため、
- * `ruleId` を選んだ時点で source を解除し、同じ組み合わせを UI から作れないようにする。
+ * 必ず 0 件になるため、`ruleId` を選んだ時点でこの 2 つだけ解除する
+ * （`source='rule'` は `ruleId` と併存しても矛盾しないので残す。判定は
+ * `parseRecordingsSearch` の正規化と同じ `isSourceMootWithRule` を使う）。
  */
 function updateRuleFilter(search: RecordingsPageSearch, ruleId: number | undefined): RecordingsPageSearch {
   return {
     ...search,
     ruleId,
-    ...(ruleId === undefined ? {} : { source: undefined }),
+    source: ruleId !== undefined && isSourceMootWithRule(search.source) ? undefined : search.source,
   }
 }
 
@@ -437,24 +449,31 @@ function FilterPanel({
               </div>
             </section>
 
-            <section className="flex flex-col gap-1.5">
-              <h3 className="text-xs font-medium text-muted-foreground">ルール</h3>
-              {rulesError ? (
-                <p className="text-xs text-destructive">ルールの取得に失敗しました</p>
-              ) : rulesPending ? (
-                <p role="status" className="text-xs text-muted-foreground">
-                  読み込み中…
-                </p>
-              ) : (
-                <RuleSelect
-                  value={search.ruleId}
-                  rules={rules}
-                  onChange={(ruleId) =>
-                    onChange((s) => updateRuleFilter(s, ruleId))
-                  }
-                />
-              )}
-            </section>
+            {/* ルール一覧が空でも `search.ruleId` があれば節を残す ---
+                削除済みルールで絞っている状態を読めるようにするため
+                （`RuleSelect` のフォールバック option と同じ理由）。
+                取得中・失敗の表示はゲートの前に出す（理由が分かるようにする。
+                チャンネル節と同じ流儀）。 */}
+            {(rules.length > 0 || search.ruleId !== undefined || rulesPending || rulesError) && (
+              <section className="flex flex-col gap-1.5">
+                <h3 className="text-xs font-medium text-muted-foreground">ルール</h3>
+                {rulesError ? (
+                  <p className="text-xs text-destructive">ルールの取得に失敗しました</p>
+                ) : rulesPending ? (
+                  <p role="status" className="text-xs text-muted-foreground">
+                    読み込み中…
+                  </p>
+                ) : (
+                  <RuleSelect
+                    value={search.ruleId}
+                    rules={rules}
+                    onChange={(ruleId) =>
+                      onChange((s) => updateRuleFilter(s, ruleId))
+                    }
+                  />
+                )}
+              </section>
+            )}
 
             <section className="flex flex-col gap-1.5">
               <h3 className="text-xs font-medium text-muted-foreground">種別</h3>
@@ -466,11 +485,7 @@ function FilterPanel({
                   <Chip
                     key={value}
                     active={search.source === value}
-                    disabled={
-                      search.ruleId !== undefined &&
-                      (value === ListRecordingsSource.manual ||
-                        value === ListRecordingsSource.unattributed)
-                    }
+                    disabled={search.ruleId !== undefined && isSourceMootWithRule(value)}
                     onClick={() => onChange((s) => ({ ...s, source: value }))}
                   >
                     {sourceLabels[value]}

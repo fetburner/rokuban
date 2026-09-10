@@ -946,7 +946,7 @@ describe('RecordingsPage 検索条件', () => {
     })
     expect(await screen.findByText('ルールで録る録画')).toBeInTheDocument()
     expect(screen.queryByText('手動で録る録画')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'ニュース録画ルール' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'ルール: ニュース録画ルール' })).toBeInTheDocument()
   })
 
   it('ジャンル・チャンネルの選択が GET のクエリに乗る', async () => {

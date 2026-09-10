@@ -39,13 +39,15 @@ describe('parseRecordingsSearch', () => {
   })
 
   it('有効な値をそのまま受け取る', () => {
+    // source は 'rule'（ruleId と矛盾しない組み合わせ）で確認する --- 'manual' /
+    // 'unattributed' は ruleId と同時に指定すると正規化で落ちる（別テストで確認）。
     expect(
       parseRecordingsSearch({
         q: 'ニュース',
         genre: [0, 1],
         service: [3273601024],
         status: 'failed',
-        source: 'manual',
+        source: 'rule',
         ruleId: 5,
         from: '2026-01-01T00:00:00.000Z',
         to: '2026-01-02T00:00:00.000Z',
@@ -56,7 +58,7 @@ describe('parseRecordingsSearch', () => {
       genre: [0, 1],
       service: [3273601024],
       status: 'failed',
-      source: 'manual',
+      source: 'rule',
       ruleId: 5,
       from: '2026-01-01T00:00:00.000Z',
       to: '2026-01-02T00:00:00.000Z',
@@ -159,6 +161,23 @@ describe('parseRecordingsSearch', () => {
     expect(parseRecordingsSearch({ ruleId: 1.5 })).toEqual({})
     expect(parseRecordingsSearch({ ruleId: '1.5' })).toEqual({})
     expect(parseRecordingsSearch({ ruleId: 5 })).toEqual({ ruleId: 5 })
+  })
+
+  // `ruleId` が決まっているとき、常に 0 件になる `source=manual` /
+  // `source=unattributed` は URL のパース時点で落とす（表現不可能にする。
+  // 不変条件 10）。`source=rule` は矛盾しないので落とさない。`ruleId` が
+  // 無ければ `source` はそのまま通す（両方向で確認する）。
+  it('ruleId があるとき source=manual / unattributed は落とす', () => {
+    expect(parseRecordingsSearch({ ruleId: 1, source: 'manual' })).toEqual({ ruleId: 1 })
+    expect(parseRecordingsSearch({ ruleId: 1, source: 'unattributed' })).toEqual({ ruleId: 1 })
+  })
+
+  it('ruleId があっても source=rule は落とさない', () => {
+    expect(parseRecordingsSearch({ ruleId: 1, source: 'rule' })).toEqual({ ruleId: 1, source: 'rule' })
+  })
+
+  it('ruleId が無ければ source=manual はそのまま通す', () => {
+    expect(parseRecordingsSearch({ source: 'manual' })).toEqual({ source: 'manual' })
   })
 
   it('from/to は解釈できる日時なら ISO 8601（UTC）へ正規化する', () => {
@@ -313,12 +332,12 @@ describe('describeRecordingsFilters', () => {
   ]
 
   it('条件が無ければチップも無い', () => {
-    expect(describeRecordingsFilters(emptyRecordingsSearch(), services)).toEqual([])
+    expect(describeRecordingsFilters(emptyRecordingsSearch(), services, undefined)).toEqual([])
   })
 
   it('ジャンル・チャンネルは値ごとに 1 チップになり、外すとその値だけ落ちる', () => {
     const search: RecordingsPageSearch = { genre: [0, 1], service: [3273601024] }
-    const chips = describeRecordingsFilters(search, services)
+    const chips = describeRecordingsFilters(search, services, undefined)
     expect(chips.map((c) => c.label)).toEqual([
       'ジャンル: ニュース・報道',
       'ジャンル: スポーツ',
@@ -331,7 +350,7 @@ describe('describeRecordingsFilters', () => {
 
   it('最後の 1 件を外すと配列キー自体が消える（空配列を残さない）', () => {
     const search: RecordingsPageSearch = { genre: [0] }
-    const chips = describeRecordingsFilters(search, services)
+    const chips = describeRecordingsFilters(search, services, undefined)
     expect(chips[0].clear(search)).toEqual({ genre: undefined })
   })
 
@@ -339,7 +358,7 @@ describe('describeRecordingsFilters', () => {
   // 最後の 1 つを消したらキーごと undefined になることを見る。
   it('site のチップを出し、押すとその値だけ消える', () => {
     const search: RecordingsPageSearch = { site: ['default', 'site2'] }
-    const chips = describeRecordingsFilters(search, services)
+    const chips = describeRecordingsFilters(search, services, undefined)
     const siteChips = chips.filter((c) => c.key.startsWith('site-'))
     expect(siteChips.map((c) => c.label)).toEqual(['サイト: default', 'サイト: site2'])
     expect(siteChips[0].clear(search).site).toEqual(['site2'])
@@ -348,7 +367,7 @@ describe('describeRecordingsFilters', () => {
 
   it('チャンネル名が分からない service は id で出す', () => {
     const search: RecordingsPageSearch = { service: [9999] }
-    const chips = describeRecordingsFilters(search, services)
+    const chips = describeRecordingsFilters(search, services, undefined)
     expect(chips[0].label).toBe('チャンネル: チャンネル #9999')
   })
 
@@ -359,7 +378,7 @@ describe('describeRecordingsFilters', () => {
       ruleId: 7,
       from: '2026-01-01T00:00:00Z',
     }
-    const chips = describeRecordingsFilters(search, services)
+    const chips = describeRecordingsFilters(search, services, undefined)
     expect(chips.map((c) => c.key)).toEqual(['status', 'source', 'ruleId', 'period'])
     expect(chips.find((c) => c.key === 'status')?.label).toBe('状態: 失敗')
     expect(chips.find((c) => c.key === 'ruleId')?.label).toBe('ルール #7')
@@ -370,9 +389,9 @@ describe('describeRecordingsFilters', () => {
     )
   })
 
-  it('ルール一覧にあれば名前で、無ければルール #N で表示する', () => {
+  it('ルール一覧にあれば「ルール: 名前」、無ければ「ルール #N」で表示する', () => {
     const resolved = describeRecordingsFilters({ ruleId: 7 }, services, rules)
-    expect(resolved.find((chip) => chip.key === 'ruleId')?.label).toBe('ニュース録画ルール')
+    expect(resolved.find((chip) => chip.key === 'ruleId')?.label).toBe('ルール: ニュース録画ルール')
 
     const unresolved = describeRecordingsFilters({ ruleId: 99 }, services, rules)
     expect(unresolved.find((chip) => chip.key === 'ruleId')?.label).toBe('ルール #99')
@@ -382,12 +401,13 @@ describe('describeRecordingsFilters', () => {
     const both = describeRecordingsFilters(
       { from: '2026-01-01T00:00:00Z', to: '2026-01-02T00:00:00Z' },
       services,
+      undefined,
     )
     expect(both[0].label).toBe(
       `期間: ${formatDateTime('2026-01-01T00:00:00Z')} 〜 ${formatDateTime('2026-01-02T00:00:00Z')}`,
     )
 
-    const toOnly = describeRecordingsFilters({ to: '2026-01-02T00:00:00Z' }, services)
+    const toOnly = describeRecordingsFilters({ to: '2026-01-02T00:00:00Z' }, services, undefined)
     expect(toOnly[0].label).toBe(`期間: 〜 ${formatDateTime('2026-01-02T00:00:00Z')}`)
   })
 
@@ -396,13 +416,13 @@ describe('describeRecordingsFilters', () => {
       from: '2026-01-01T00:00:00Z',
       to: '2026-01-02T00:00:00Z',
     }
-    const chips = describeRecordingsFilters(search, services)
+    const chips = describeRecordingsFilters(search, services, undefined)
     expect(chips[0].clear(search)).toEqual({ from: undefined, to: undefined })
   })
 
   // キーワードはチップにしない（検索欄自体が値を表示しているため）。
   it('q はチップにならない', () => {
-    expect(describeRecordingsFilters({ q: 'ニュース' }, services)).toEqual([])
+    expect(describeRecordingsFilters({ q: 'ニュース' }, services, undefined)).toEqual([])
   })
 })
 

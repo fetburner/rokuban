@@ -116,6 +116,19 @@ export function parseRuleId(raw: unknown): number | undefined {
   return parsePositiveIntId(raw)
 }
 
+/**
+ * isSourceMootWithRule は、`ruleId` が決まっているときにその `source` を
+ * 問う意味が無いかを返す。`ruleId` が指す録画は必ずルール由来なので、
+ * `source='manual'` / `'unattributed'` との組み合わせは常に 0 件になる
+ * （`source='rule'` は矛盾しないので対象外）。`parseRecordingsSearch`
+ * （URL 側の正規化）と `components/recording-filters.tsx` の
+ * `updateRuleFilter`（パネル操作時の正規化）の両方がこの判定を使うので、
+ * 「0 件になる組み合わせ」の定義が 1 箇所に集約される。
+ */
+export function isSourceMootWithRule(source: ListRecordingsSource | undefined): boolean {
+  return source === ListRecordingsSource.manual || source === ListRecordingsSource.unattributed
+}
+
 /** parseIsoDate は日時として解釈できる文字列を ISO 8601（UTC）へ正規化する。 */
 function parseIsoDate(raw: unknown): string | undefined {
   if (typeof raw !== 'string') return undefined
@@ -147,8 +160,17 @@ function parseIsoDate(raw: unknown): string | undefined {
  *
  * `tab` の既定はライブラリで、`tab=library` も `undefined` に正準化する。既定値を
  * URL に書かないのは、タブ操作で履歴を汚さず共有 URL を短く保つため。
+ *
+ * **`ruleId` が決まっているとき、`source` の `manual` / `unattributed` は落とす。**
+ * この組み合わせは常に 0 件になる（`isSourceMootWithRule`）。パネル側の
+ * `updateRuleFilter` は選択操作の経路をここに塞いでいるが、URL は直接編集・
+ * 古い共有リンクで両方が独立に決まりうるので、表現不可能にするには
+ * パース側でも同じ正規化が要る（そうしないと `disabled` な種別チップが
+ * active のまま出る）。`source='rule'` は矛盾しないので落とさない。
  */
 export function parseRecordingsSearch(search: Record<string, unknown>): RecordingsPageSearch {
+  const ruleId = parseRuleId(search.ruleId)
+  const source = validValue<ListRecordingsSource>(q.source.unwrap(), search.source)
   return {
     tab: search.tab === 'trash' ? 'trash' : undefined,
     q: typeof search.q === 'string' && search.q.trim() !== '' ? search.q : undefined,
@@ -175,8 +197,8 @@ export function parseRecordingsSearch(search: Record<string, unknown>): Recordin
     }),
     status: validValue<ListRecordingsStatus>(q.status.unwrap(), search.status),
     encodeState: validValue<ListRecordingsEncodeStateValue>(q.encodeState.unwrap(), search.encodeState),
-    source: validValue<ListRecordingsSource>(q.source.unwrap(), search.source),
-    ruleId: parseRuleId(search.ruleId),
+    source: ruleId !== undefined && isSourceMootWithRule(source) ? undefined : source,
+    ruleId,
     from: parseIsoDate(search.from),
     to: parseIsoDate(search.to),
     order: parseEnum(search.order, [ListRecordingsOrder.desc, ListRecordingsOrder.asc] as const),
@@ -314,7 +336,7 @@ function periodLabel(from: string | undefined, to: string | undefined): string {
 export function describeRecordingsFilters(
   search: RecordingsPageSearch,
   serviceLabelById: ReadonlyMap<number, string>,
-  rules: Rule[] | undefined = undefined,
+  rules: Rule[] | undefined,
 ): RecordingsFilterChip[] {
   const chips: RecordingsFilterChip[] = []
 
@@ -379,7 +401,12 @@ export function describeRecordingsFilters(
     const rule = rules?.find((candidate) => candidate.id === search.ruleId)
     chips.push({
       key: 'ruleId',
-      label: rule?.name ?? `ルール #${search.ruleId}`,
+      // 他のチップは全て軸を前置する（`ジャンル: ` 等）。解決できたときだけ
+      // 裸の名前になっていると、その名前がたまたま他の軸の値と紛らわしいとき
+      // （例: ジャンル「ニュース」の隣にルール名「ニュース」）どちらの軸の
+      // チップか読めない。ルール一覧で解決できないとき（削除済みルール）は
+      // `ルール #N` のまま --- こちらは軸が読める。
+      label: rule !== undefined ? `ルール: ${rule.name}` : `ルール #${search.ruleId}`,
       clear: (s) => ({ ...s, ruleId: undefined }),
     })
   }
