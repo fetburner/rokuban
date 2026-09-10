@@ -782,6 +782,18 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:personalization
 ```
 
+### 番組表の表示形式（`programs-view.mjs`）
+
+番組表で選んだ表示形式が端末に保存され、URL に `view` が無いリロードでも復元されることを
+確認する（issue #722）。加えて、リロード後に `list` の DOM が先に現れず、最初の表示分岐が
+`grid` になることを実ブラウザの `MutationObserver` で判定する。これは `useMediaQuery` の
+初回値を固定の `false` に戻す変異で `list → grid` として失敗する。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:programs-view
+```
+
 ## CI では回さない
 
 実サーバーと実 mirakc のデータに依存するため、CI には載せない。**ローカルでの受け入れ確認**の

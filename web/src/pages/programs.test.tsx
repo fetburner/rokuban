@@ -50,6 +50,7 @@ function windowOrigin(): number {
 }
 
 const origin = windowOrigin()
+const viewKey = 'rokuban:programs:view'
 
 const services: Service[] = [
   {
@@ -371,6 +372,7 @@ function stubMatchMedia(initial: boolean) {
 
 afterEach(() => {
   Reflect.deleteProperty(window, 'matchMedia')
+  localStorage.clear()
 })
 
 /**
@@ -629,6 +631,51 @@ describe('ProgramsPage の表示形式', () => {
     expect(screen.queryByRole('group', { name: '表示形式' })).not.toBeInTheDocument()
   })
 
+  it('localStorage に保存済みの表示形式（grid）を、URL に view が無い素の /programs で復元する', async () => {
+    localStorage.setItem(viewKey, 'grid')
+    stubApi()
+    stubMatchMedia(true)
+    renderPage()
+
+    // 初回フレームがリストで一瞬描かれないかは jsdom の act 内 effect flush では
+    // 観測できない（RTL の render は commit 後の状態しか見せない）。ここで見て
+    // いるのは「保存値からグリッドへ最終的に復元される」ことだけで、初回フレーム
+    // のちらつき有無は E2E の担当にする。
+    expect(await screen.findByTestId('program-grid')).toBeInTheDocument()
+  })
+
+  it('リストを選んだ後にナビの /programs へ戻っても保存値どおりリストのまま', async () => {
+    localStorage.setItem(viewKey, 'grid')
+    stubApi()
+    stubMatchMedia(true)
+    const { router } = renderPage()
+
+    expect(await screen.findByTestId('program-grid')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: 'リスト' }))
+    await waitFor(() => expect(screen.queryByTestId('program-grid')).not.toBeInTheDocument())
+    expect(localStorage.getItem(viewKey)).toBe('list')
+
+    // app-shell.tsx の nav item は `{ to: '/programs' }`（search 無し）なので
+    // URL から view が消える。localStorage は list なのでリストのままであるべき。
+    await act(async () => {
+      await router.navigate({ to: '/programs', search: {} })
+    })
+
+    expect(screen.queryByTestId('program-grid')).not.toBeInTheDocument()
+  })
+
+  it('URL の view=list は保存済みの番組表より優先される', async () => {
+    localStorage.setItem(viewKey, 'grid')
+    stubApi()
+    stubMatchMedia(true)
+    renderPage('/programs?view=list')
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    expect(screen.queryByTestId('program-grid')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'リスト' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
   it('lg 以上では切り替えが出て、番組表を選ぶとグリッドになる', async () => {
     stubApi()
     stubMatchMedia(true)
@@ -641,6 +688,7 @@ describe('ProgramsPage の表示形式', () => {
     await userEvent.click(screen.getByRole('button', { name: '番組表' }))
 
     expect(await screen.findByTestId('program-grid')).toBeInTheDocument()
+    expect(localStorage.getItem(viewKey)).toBe('grid')
     // リスト側の「予約」ボタン（行右端）は消える
     expect(screen.queryByRole('button', { name: 'さらに読み込む' })).not.toBeInTheDocument()
   })
@@ -1598,10 +1646,8 @@ describe('ProgramsPage の日付ジャンプ（先頭の窓に重なる前日の
  * `lg` 以上かどうかを `useMediaQuery` から推論してグリッドへ自動切替していたが、
  * `view` を URL に持つようになったのでバッジ自身が明示する）。
  *
- * グリッドの実際のスクロール位置（px）・グリッドが実際に何レンダー目でマウント
- * されるか（`useMediaQuery` は初回レンダーでは必ず false を返すので、`showGrid`
- * が true になるのは早くても 1 レンダー遅れる。`docs/frontend/programs.md`
- * 「番組表への `at` 導線」参照）は jsdom で測れないので e2e の担当（`web/e2e/`）。
+ * グリッドの実際のスクロール位置（px）・初回フレームの出し分け（`matchMedia` の
+ * 同期初期化を含む）は jsdom で測れないので e2e の担当（`web/e2e/`）。
  * ここで見るのは jsdom でも判定できる部分だけ --- (1) `lg` 未満では `view=grid`
  * があってもグリッドを出さず、「その時刻が属する日」への日付ジャンプに
  * フォールバックすること、(2) `lg` 以上では `view=grid` どおりグリッド表示に

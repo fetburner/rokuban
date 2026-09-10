@@ -85,10 +85,8 @@ export function CapacityShortfallBadge({
       // `view: 'grid'` を明示することで、`at` の有無や画面幅から「グリッドに
       // したいか」を推論する必要が無くなる（`view` が最初から確定している）。
       // ただしグリッドが実際にマウントされるかは `pages/programs.tsx` の
-      // `showGrid`（`wideScreen` を待つ）が決めるので、初回レンダーでの
-      // マウントを保証するわけではない（`docs/frontend/programs.md`
-      // 「番組表への `at` 導線」参照）。`lg` 未満では `showGrid` が
-      // `wideScreen` で落とすので無害。
+      // `showGrid`（`wideScreen` と URL の view）が決める。`lg` 未満では
+      // `showGrid` が `wideScreen` で落とすので無害。
       search={{ view: 'grid', at: overageWindow(worst).startMs }}
       className={cn(
         'relative z-10 flex shrink-0 items-center gap-1 rounded bg-warning/10 px-1.5 py-0.5 text-xs text-warning hover:bg-warning/20 focus-visible:outline-2 focus-visible:outline-warning before:absolute before:top-1/2 before:h-6 before:inset-x-0 before:-translate-y-1/2',
