@@ -11,6 +11,7 @@ import {
   epgColumnWidthPx,
   groupProgramsByService,
   hourTicks,
+  scaledScrollTopPx,
   spanToPx,
   timeToPx,
   visibleColumnRange,
@@ -37,7 +38,10 @@ const overscanPx = 400
 /** 画面外にも描いておく列数（左右それぞれ）。 */
 const overscanColumns = 1
 
-/** 現在時刻インジケータを動かす間隔。1 分未満のずれは 2px 未満なので 30 秒で足りる。 */
+/**
+ * 現在時刻インジケータを動かす間隔。ずれの見た目の大きさは縮尺に依存する
+ * （既定の 120px/時なら 30 秒で 1px、最大の 480px/時でも 4px）ので、30 秒で足りる。
+ */
 const clockIntervalMs = 30_000
 
 /**
@@ -207,10 +211,31 @@ export function ProgramGrid({
   // 開いた直後は「今」（または `scrollToMs` が指す時刻）が見えている方が
   // 有用なので、そこまでスクロールしておく。軸が変わったとき（日付を変えた
   // とき）だけやり直す — 時計の更新で毎分スクロール位置が戻ると操作できない。
+  //
+  // 縮尺だけが変わったときは初期スクロールをやり直さない。現在の
+  // `scrollTop` を新旧倍率で変換し、画面上端に来ていた時刻を保つ。これが無いと
+  // 5 分セルを選ぶために拡大した瞬間、見ていた時間帯がずれる。
+  const previousAxisRef = useRef<TimeAxis | null>(null)
   const scrolledForAxisRef = useRef<number | null>(null)
   useLayoutEffect(() => {
     const el = scrollerRef.current
-    if (!el || scrolledForAxisRef.current === axis.startMs) return
+    if (!el) return
+
+    const previousAxis = previousAxisRef.current
+    if (
+      previousAxis &&
+      previousAxis.startMs === axis.startMs &&
+      previousAxis.endMs === axis.endMs &&
+      previousAxis.pxPerHour !== axis.pxPerHour
+    ) {
+      el.scrollTop = scaledScrollTopPx(el.scrollTop, previousAxis.pxPerHour, axis.pxPerHour)
+      previousAxisRef.current = axis
+      measure()
+      return
+    }
+
+    previousAxisRef.current = axis
+    if (scrolledForAxisRef.current === axis.startMs) return
     scrolledForAxisRef.current = axis.startMs
     const targetMs = scrollToMs ?? currentMs
     const inAxis = targetMs >= axis.startMs && targetMs < axis.endMs

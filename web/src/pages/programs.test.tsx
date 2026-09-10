@@ -52,6 +52,7 @@ function windowOrigin(): number {
 
 const origin = windowOrigin()
 const viewKey = 'rokuban:programs:view'
+const gridScaleKey = 'rokuban:programs:grid-scale'
 
 const services: Service[] = [
   {
@@ -692,6 +693,48 @@ describe('ProgramsPage の表示形式', () => {
     expect(localStorage.getItem(viewKey)).toBe('grid')
     // リスト側の「予約」ボタン（行右端）は消える
     expect(screen.queryByRole('button', { name: 'さらに読み込む' })).not.toBeInTheDocument()
+  })
+
+  it('グリッドの時間軸を 3 段階で拡大し、セルの高さも同じ倍率になる', async () => {
+    stubApi()
+    stubMatchMedia(true)
+    renderPage('/programs?view=grid')
+
+    await screen.findByTestId('program-grid')
+    const scaleGroup = screen.getByRole('group', { name: '時間軸の縮尺' })
+    expect(within(scaleGroup).getByRole('button', { name: '120 px/時' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    const cell = document.querySelector(`[data-testid="program-grid-cell"][data-program-id="${soon.programId}"]`)
+    expect(cell).toHaveStyle({ height: '120px' })
+
+    await userEvent.click(within(scaleGroup).getByRole('button', { name: '240 px/時' }))
+    await waitFor(() => expect(cell).toHaveStyle({ height: '240px' }))
+    expect(localStorage.getItem(gridScaleKey)).toBe('240')
+    expect(within(scaleGroup).getByRole('button', { name: '240 px/時' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+
+    await userEvent.click(within(scaleGroup).getByRole('button', { name: '480 px/時' }))
+    await waitFor(() => expect(cell).toHaveStyle({ height: '480px' }))
+  })
+
+  it('保存済みの時間軸の縮尺をグリッドの初期値として復元する', async () => {
+    localStorage.setItem(gridScaleKey, '480')
+    stubApi()
+    stubMatchMedia(true)
+    renderPage('/programs?view=grid')
+
+    await screen.findByTestId('program-grid')
+    const scaleGroup = screen.getByRole('group', { name: '時間軸の縮尺' })
+    expect(within(scaleGroup).getByRole('button', { name: '480 px/時' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    const cell = document.querySelector(`[data-testid="program-grid-cell"][data-program-id="${soon.programId}"]`)
+    expect(cell).toHaveStyle({ height: '480px' })
   })
 
   it('ジャンル凡例はグリッドだけに出て、リストへ戻すと消える', async () => {

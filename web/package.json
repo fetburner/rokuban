@@ -22,6 +22,7 @@
     "e2e:programs-dialog": "node e2e/programs-dialog.mjs",
     "e2e:programs-reservation-error": "node e2e/programs-reservation-error.mjs",
     "e2e:grid-reserved": "node e2e/grid-reserved.mjs",
+    "e2e:programs-grid-zoom": "node e2e/programs-grid-zoom.mjs",
     "e2e:search-mobile": "node e2e/search-mobile.mjs",
     "e2e:reservations-mobile": "node e2e/reservations-mobile.mjs",
     "e2e:reservations-capacity-error": "node e2e/reservations-capacity-error.mjs",
