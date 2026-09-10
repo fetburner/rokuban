@@ -66,17 +66,21 @@ func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, sta
 		 VALUES ($1, 'always', '{}')`, recordingID); err != nil {
 		t.Fatalf("seeding recording_encode_policy: %v", err)
 	}
+	params := make([]sqlcgen.InsertDropStatParams, 0, len(stats))
 	for pid, s := range stats {
-		if err := q.InsertDropStat(ctx, sqlcgen.InsertDropStatParams{
+		params = append(params, sqlcgen.InsertDropStatParams{
 			MediaAssetID: assetID,
 			Pid:          pid,
 			Packets:      s[0],
 			Drops:        s[1],
 			Errors:       s[2],
 			Scrambled:    s[3],
-		}); err != nil {
-			t.Fatalf("seeding drop_stat: %v", err)
-		}
+		})
+	}
+	batch := q.InsertDropStat(ctx, params)
+	batch.Exec(nil)
+	if err := batch.Close(); err != nil {
+		t.Fatalf("seeding drop_stat batch: %v", err)
 	}
 	return assetID
 }
@@ -414,15 +418,19 @@ func TestListRecordingDropStats_PIDType(t *testing.T) {
 		0x100: "video",
 		0x110: "audio",
 	}
+	statParams := make([]sqlcgen.InsertDropStatParams, 0, len(typed))
 	for pid, pidType := range typed {
-		if err := q.InsertDropStat(context.Background(), sqlcgen.InsertDropStatParams{
+		statParams = append(statParams, sqlcgen.InsertDropStatParams{
 			MediaAssetID: assetID,
 			Pid:          pid,
 			Packets:      10,
 			PidType:      &pidType,
-		}); err != nil {
-			t.Fatalf("seeding typed drop_stat: %v", err)
-		}
+		})
+	}
+	batch := q.InsertDropStat(context.Background(), statParams)
+	batch.Exec(nil)
+	if err := batch.Close(); err != nil {
+		t.Fatalf("seeding typed drop_stat batch: %v", err)
 	}
 
 	var got []DropStat
@@ -481,6 +489,7 @@ func TestListRecordingDropStats_Positions(t *testing.T) {
 	})
 	q := sqlcgen.New(pool)
 	elapsed := int64(1000)
+	positionParams := make([]sqlcgen.InsertDropPositionParams, 0, 2)
 	for _, p := range []struct {
 		offset  int64
 		elapsed *int64
@@ -488,14 +497,17 @@ func TestListRecordingDropStats_Positions(t *testing.T) {
 		{offset: 188, elapsed: &elapsed},
 		{offset: 376},
 	} {
-		if err := q.InsertDropPosition(context.Background(), sqlcgen.InsertDropPositionParams{
+		positionParams = append(positionParams, sqlcgen.InsertDropPositionParams{
 			MediaAssetID: assetID,
 			ByteOffset:   p.offset,
 			Pid:          0x100,
 			ElapsedMs:    p.elapsed,
-		}); err != nil {
-			t.Fatalf("seeding drop position: %v", err)
-		}
+		})
+	}
+	batch := q.InsertDropPosition(context.Background(), positionParams)
+	batch.Exec(nil)
+	if err := batch.Close(); err != nil {
+		t.Fatalf("seeding drop position batch: %v", err)
 	}
 
 	var got []DropStat

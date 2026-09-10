@@ -604,6 +604,8 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, t
 	}
 	sort.Ints(pids)
 
+	statParams := make([]sqlcgen.InsertDropStatParams, 0, len(pids))
+	positionParams := make([]sqlcgen.InsertDropPositionParams, 0)
 	for _, pid := range pids {
 		s := stats[pid]
 		// 分類できなかった PID は種別なし（NULL）。空文字を「未分類」という値として
@@ -613,7 +615,7 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, t
 			t := s.Type
 			pidType = &t
 		}
-		if err := q.InsertDropStat(ctx, sqlcgen.InsertDropStatParams{
+		statParams = append(statParams, sqlcgen.InsertDropStatParams{
 			MediaAssetID: assetID,
 			Pid:          int32(pid),
 			Packets:      s.Packets,
@@ -621,19 +623,26 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, t
 			Errors:       s.Errors,
 			Scrambled:    s.Scrambled,
 			PidType:      pidType,
-		}); err != nil {
-			return fmt.Errorf("inserting drop_stat for PID %d: %w", pid, err)
-		}
+		})
 		for _, position := range s.Positions {
-			if err := q.InsertDropPosition(ctx, sqlcgen.InsertDropPositionParams{
+			positionParams = append(positionParams, sqlcgen.InsertDropPositionParams{
 				MediaAssetID: assetID,
 				ByteOffset:   position.ByteOffset,
 				Pid:          int32(pid),
 				ElapsedMs:    position.ElapsedMs,
-			}); err != nil {
-				return fmt.Errorf("inserting drop position for PID %d at byte offset %d: %w",
-					pid, position.ByteOffset, err)
-			}
+			})
+		}
+	}
+	// drop_stats と drop_positions はどちらも同じ tx に属する不可逆な観測で、
+	// 片方だけ別 transaction にしない。空の batch は pgx に送らない。
+	if len(statParams) > 0 {
+		if err := execBatch(q.InsertDropStat(ctx, statParams)); err != nil {
+			return fmt.Errorf("inserting drop_stats batch: %w", err)
+		}
+	}
+	if len(positionParams) > 0 {
+		if err := execBatch(q.InsertDropPosition(ctx, positionParams)); err != nil {
+			return fmt.Errorf("inserting drop_positions batch: %w", err)
 		}
 	}
 
