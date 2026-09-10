@@ -465,7 +465,7 @@ async function checkSubmitFeedback(page, viewport, label) {
  * 出さないため、将来 `text-[13px]` のような任意値へ変えると `'normal'` が返り
  * `Number.parseFloat` が NaN になる --- 被検体自身を基準にすると、基準そのものが
  * 壊れて「判定不能」になる。ProgramRow の実測（360/390/1280px いずれも同じ）は
- * 行 65px・メタ行 20px。しきい値はそれぞれ余裕を持たせた 72px・20px。
+ * 行 65px・メタ行 20px。しきい値はそれぞれ余裕を持たせた 72px・24px。
  */
 async function checkSearchResultMeta(page, label) {
   const firstRow = firstResultRow(page)
@@ -505,8 +505,8 @@ async function checkSearchResultMeta(page, label) {
   if (metrics.flexWrap !== 'nowrap') {
     ng.push(`⑥@${label}: ProgramRow のメタ行が折り返し禁止になっていない（${metrics.flexWrap}）`)
   }
-  if (metaBox.height > 20) {
-    ng.push(`⑥@${label}: メタ行が 1 行に収まっていない（height=${metaBox.height}, 上限=20px）`)
+  if (metaBox.height > 24) {
+    ng.push(`⑥@${label}: メタ行が 1 行に収まっていない（height=${metaBox.height}, 上限=24px）`)
   }
   // メタ行が 1 行のままでも、`py-2.5` を広げる・名前カラムに 2 行目
   // （`ProgramOverlapWarning` 相当）を足す等で結果行自体が高くなる取りこぼしを
@@ -540,10 +540,15 @@ async function checkResultReservation(page, label) {
   }
 
   // `ProgramRow` の操作列は展開中だけ開くため、まず行本体をキーボードで展開する。
-  // 結果セクションへ移したフォーカスからの最初の Tab はこの展開ボタンに入る。
+  // 結果セクションへ移したフォーカスからの最初の Tab はこの展開ボタンに入るはず
+  // ---それ自体をここで確認する（下の予約ボタンの Tab 判定と同じ形: NG を積んで
+  // から focus で補って先へ進む）。
   await page.keyboard.press('Tab')
   const focusedToggle = await rowToggle.evaluate((element) => document.activeElement === element)
-  if (!focusedToggle) await rowToggle.focus()
+  if (!focusedToggle) {
+    ng.push(`⑤@${label}: Tab で結果行の展開ボタンへ到達できない`)
+    await rowToggle.focus()
+  }
   await page.keyboard.press('Enter')
   try {
     await rowToggle.waitFor({ state: 'attached', timeout: 15000 })

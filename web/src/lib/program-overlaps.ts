@@ -50,9 +50,8 @@ export function deriveProgramOverlaps(
   reservations: readonly ReservationOverlapEntry[],
 ): ProgramOverlaps {
   const programStartMs = new Date(program.startAt).getTime()
-  const programEndMs = new Date(
-    program.endAt ?? new Date(programStartMs + program.durationMs).toISOString(),
-  ).getTime()
+  const programEndMs =
+    program.endAt === undefined ? programStartMs + program.durationMs : Date.parse(program.endAt)
   const overlapping = reservations.filter((reservation) => {
     if (reservation.site !== program.site) return false
     if (reservation.programId === program.programId) return false

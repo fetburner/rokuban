@@ -99,6 +99,33 @@ describe('deriveProgramOverlaps', () => {
     })
   })
 
+  it('endAt を持たない対象番組では startAt + durationMs から終了時刻を導出する', () => {
+    // `program()` は常に endAt を持つので、ここだけ ProgramOverlapTarget の最小形を
+    // 直接組む（endAt を意図的に持たせない）。
+    const target = {
+      site: 'default',
+      programId: 1,
+      startAt: new Date(targetStart).toISOString(),
+      durationMs: 3_600_000,
+    }
+    // 予約は導出した終了時刻（targetStart + 1h）の直前に始まるので、durationMs を
+    // 終了時刻の計算から落とす変異（例: `programStartMs + program.durationMs` を
+    // `programStartMs` に壊す）だと重ならなくなり count が 0 に落ちる。
+    const included = reservation(2, targetStart + 1_800_000, { title: '含める予約' })
+
+    expect(deriveProgramOverlaps(target, index([included]))).toEqual({
+      count: 1,
+      reservations: [
+        {
+          programId: included.programId,
+          title: included.title,
+          startAt: included.startAt,
+          durationMs: included.durationMs,
+        },
+      ],
+    })
+  })
+
   it('orphaned 以外の state は重なりに含める', () => {
     const target = program()
     const detached = reservation(2, targetStart + 1_800_000, { state: 'detached' })

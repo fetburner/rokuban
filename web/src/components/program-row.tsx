@@ -128,7 +128,7 @@ export function ProgramRow({
   // 検索結果の表示用射影は `endAt` を運ばない。番組表から来る場合は API の値を
   // そのまま使い、検索結果から来る場合だけ長さから終了時刻を導出する。
   const endAt =
-    program.endAt ?? new Date(new Date(program.startAt).getTime() + program.durationMs).toISOString()
+    program.endAt ?? new Date(Date.parse(program.startAt) + program.durationMs).toISOString()
   const airing = isAiring(program.startAt, endAt)
 
   // now の評価タイミングは「描画される瞬間（＋その後の再レンダー）」で
