@@ -276,13 +276,13 @@ func TestTunerSyncPeriodicJob(t *testing.T) {
 		{Index: 0, Name: "PX-S1UD_T1", Types: []string{"GR"}, IsAvailable: true},
 	}})
 
-	subscribeCh := startPeriodicJobClient(t, pool, &Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, ClientConfig{
+	waiter := startPeriodicJobClient(t, pool, &Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, ClientConfig{
 		PeriodicJobs:      true,
 		BoundSites:        []string{testSite},
 		TunerSyncInterval: time.Hour, // RunOnStart で 1 回だけ走らせる
 	}, river.EventKindJobCompleted)
 
-	event := waitPeriodicJobEvent(t, subscribeCh, "tuner_sync")
+	event := waitPeriodicJobEvent(t, waiter, "tuner_sync")
 	if event.Job.Kind != "tuner_sync" {
 		t.Errorf("job kind = %q, want %q", event.Job.Kind, "tuner_sync")
 	}
