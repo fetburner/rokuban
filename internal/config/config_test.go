@@ -537,9 +537,6 @@ func TestLoad_DBPoolingDefaults(t *testing.T) {
 	if cfg.DB.APIStatementTimeout != 0 {
 		t.Errorf("db.api_statement_timeout = %v, want 0 (built-in default)", cfg.DB.APIStatementTimeout)
 	}
-	if cfg.DB.PoolerCompat {
-		t.Error("db.pooler_compat の既定値は false")
-	}
 }
 
 func TestLoad_DBPoolingOverridden(t *testing.T) {
@@ -551,7 +548,6 @@ db:
   database: rokuban
   max_conns: 20
   api_statement_timeout: 15s
-  pooler_compat: true
 mirakcs:
   - site: default
     url: http://mirakc.local:40772
@@ -567,9 +563,6 @@ storage:
 	}
 	if cfg.DB.APIStatementTimeout != 15*time.Second {
 		t.Errorf("db.api_statement_timeout = %v, want 15s", cfg.DB.APIStatementTimeout)
-	}
-	if !cfg.DB.PoolerCompat {
-		t.Error("db.pooler_compat = false, want true")
 	}
 }
 
@@ -771,7 +764,6 @@ db:
   sslmode: require
   max_conns: 20
   api_statement_timeout: 45s
-  pooler_compat: true
 mirakcs:
   - site: tokyo
     url: http://10.0.0.1:40772
@@ -903,7 +895,7 @@ func TestLoad_AllFieldsOverridden(t *testing.T) {
 			DBConfig{
 				Host: "db.example.com", Port: 5433, User: "admin", Password: "hunter2",
 				Database: "rokuban_prod", SSLMode: "require",
-				MaxConns: 20, APIStatementTimeout: 45 * time.Second, PoolerCompat: true,
+				MaxConns: 20, APIStatementTimeout: 45 * time.Second,
 			},
 		},
 		{

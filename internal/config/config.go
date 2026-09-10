@@ -72,16 +72,6 @@ type DBConfig struct {
 	// 0（未指定）なら既定値（30s）を使う。api ロールを含まないプロセス
 	// （worker/watcher 単独等）には適用しない。
 	APIStatementTimeout time.Duration `yaml:"api_statement_timeout"`
-
-	// PoolerCompat を true にすると PgBouncer / Neon pooler の transaction pooling
-	// 越しでも壊れないよう pgx の prepared statement キャッシュを無効化する
-	// （DefaultQueryExecMode を QueryExecModeExec にする）。
-	//
-	// **pooler を通せるのは api ロールと streamer ロールだけ**（デプロイの契約。docs/operations.md §3）。
-	// worker（River 内部の LISTEN）/ watcher（advisory lock）/ notifier（LISTEN）は
-	// セッション状態に依存するため transaction pooling 越しでは構造的に壊れる。
-	// db.NewPool はこれらのロールと PoolerCompat=true の組み合わせを起動時エラーにする。
-	PoolerCompat bool `yaml:"pooler_compat"`
 }
 
 // validate は DB 設定のうち、値の範囲で決まるものを検査する（Load 時）。

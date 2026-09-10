@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/config"
@@ -100,22 +99,18 @@ func perSiteConnBudget(roles []string, numSites int) int32 {
 // （watcher/notifier の 3）を上書きしないよう、それより低い値にしてある。
 const minAutoMaxConns = 2
 
-// KnownRoles は internal/db がロール別の挙動（roleConnBudget によるプール
-// サイジング・poolerIncompatibleRoles による pooler_compat の fail-fast）を
-// 知っているロール名の集合を、重複を除いてソート済みで返す。
+// KnownRoles は internal/db がプールサイジングを知っているロール名の集合を、
+// 重複を除いてソート済みで返す。
 //
 // これは `cmd/rokuban` の allRoles と一致しているべき、権威が 2 箇所に分かれた
 // 値である。両者が unexported のままだと「一致している」ことをテストで書けず、
-// M4-6 で新しいロールが増えたときに roleConnBudget / poolerIncompatibleRoles への
-// 追記漏れが静かに素通りする（新ロールは自動的に minAutoMaxConns にフォールバック
-// し、pooler_compat の fail-fast も素通りする）。`cmd/rokuban` 側のテストで
-// `allRoles` と KnownRoles() の集合が一致することを確認する（issue #90 レビュー）。
+// M4-6 で新しいロールが増えたときに roleConnBudget への追記漏れが静かに素通りする
+// （新ロールは自動的に minAutoMaxConns にフォールバックする）。`cmd/rokuban` 側の
+// テストで `allRoles` と KnownRoles() の集合が一致することを確認する（issue #90
+// レビュー）。
 func KnownRoles() []string {
-	seen := make(map[string]struct{}, len(roleConnBudget)+len(poolerIncompatibleRoles))
+	seen := make(map[string]struct{}, len(roleConnBudget))
 	for r := range roleConnBudget {
-		seen[r] = struct{}{}
-	}
-	for _, r := range poolerIncompatibleRoles {
 		seen[r] = struct{}{}
 	}
 	roles := make([]string, 0, len(seen))
@@ -125,13 +120,6 @@ func KnownRoles() []string {
 	slices.Sort(roles)
 	return roles
 }
-
-// poolerIncompatibleRoles は cfg.PoolerCompat=true のとき同居できないロール。
-// advisory lock（watcher）と LISTEN/NOTIFY（worker が使う River の内部機構 / notifier）は
-// セッション状態に依存するため、transaction pooling で物理コネクションが要求ごとに
-// 入れ替わると構造的に壊れる。pooler を通せるのは api ロールと streamer ロールだけ、というデプロイの契約
-// （docs/operations.md §3）を起動時 fail-fast で強制する。
-var poolerIncompatibleRoles = []string{"worker", "watcher", "notifier"}
 
 // NewPool は接続プールを作成し、Ping で疎通確認する。
 // 接続失敗を起動時に即検出する (EPGStation#628 の教訓: エラーを握り潰さない)。
@@ -151,10 +139,6 @@ var poolerIncompatibleRoles = []string{"worker", "watcher", "notifier"}
 // doc コメント参照）。site 束縛の概念が無い呼び出し元（rescue/enqueue/shadow-diff
 // 等の単発 CLI コマンド、testutil）は 0 を渡す --- roles が空ならどのみち
 // site 数は判定に使われない。
-//
-// cfg.PoolerCompat=true のとき roles に worker/watcher/notifier のいずれかが
-// 含まれる場合はエラーを返す（pooler を通せるのは api ロールと streamer ロールだけ、という
-// デプロイの契約。docs/operations.md §3）。
 func NewPool(ctx context.Context, cfg config.DBConfig, roles []string, numSites int) (*pgxpool.Pool, error) {
 	poolCfg, err := buildPoolConfig(cfg, roles, numSites)
 	if err != nil {
@@ -174,21 +158,9 @@ func NewPool(ctx context.Context, cfg config.DBConfig, roles []string, numSites 
 	return pool, nil
 }
 
-// buildPoolConfig は NewPool のロジック本体（MaxConns の算出・pooler 互換設定の適用・
-// statement_timeout の設定・fail-fast 検査）を、実接続を伴わずにテストできる形で切り出す。
+// buildPoolConfig は NewPool のロジック本体（MaxConns の算出と
+// statement_timeout の設定）を、実接続を伴わずにテストできる形で切り出す。
 func buildPoolConfig(cfg config.DBConfig, roles []string, numSites int) (*pgxpool.Config, error) {
-	if cfg.PoolerCompat {
-		for _, r := range poolerIncompatibleRoles {
-			if slices.Contains(roles, r) {
-				return nil, fmt.Errorf(
-					"db.pooler_compat=true is incompatible with role %q: "+
-						"transaction pooling breaks LISTEN/NOTIFY and advisory locks "+
-						"used by worker/watcher/notifier (docs/operations.md §3, only "+
-						"the api and streamer roles may be deployed behind a pooler)", r)
-			}
-		}
-	}
-
 	poolCfg, err := pgxpool.ParseConfig(cfg.DSN())
 	if err != nil {
 		return nil, fmt.Errorf("parsing connection string: %w", err)
@@ -208,12 +180,6 @@ func buildPoolConfig(cfg config.DBConfig, roles []string, numSites int) (*pgxpoo
 		poolCfg.MaxConns = int32(cfg.MaxConns)
 	case len(roles) > 0:
 		poolCfg.MaxConns = maxConnsForRoles(roles, numSites)
-	}
-
-	if cfg.PoolerCompat {
-		// prepared statement キャッシュは transaction pooling 下で壊れるため、
-		// 拡張プロトコルの prepare をやめて毎回テキストで送る（QueryExecModeExec）。
-		poolCfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec
 	}
 
 	if slices.Contains(roles, "api") {
