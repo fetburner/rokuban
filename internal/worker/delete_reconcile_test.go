@@ -213,15 +213,17 @@ func TestListTrashRecordings_DropSummarySurvivesOriginalDeletion(t *testing.T) {
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "trash/dropsurvive.m2ts", []byte("data"))
 	q := sqlcgen.New(pool)
-	if err := q.InsertDropStat(context.Background(), sqlcgen.InsertDropStatParams{
+	batch := q.InsertDropStat(context.Background(), []sqlcgen.InsertDropStatParams{{
 		MediaAssetID: assetID,
 		Pid:          0x100,
 		Packets:      500,
 		Drops:        2,
 		Errors:       1,
 		Scrambled:    0,
-	}); err != nil {
-		t.Fatalf("seeding drop_stat: %v", err)
+	}})
+	batch.Exec(nil)
+	if err := batch.Close(); err != nil {
+		t.Fatalf("seeding drop_stat batch: %v", err)
 	}
 
 	if _, err := pool.Exec(context.Background(),

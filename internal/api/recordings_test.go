@@ -249,6 +249,7 @@ func TestRecordingDropHistorySurvivesOriginalDeletion(t *testing.T) {
 	})
 	q := sqlcgen.New(pool)
 	elapsed := int64(1000)
+	positionParams := make([]sqlcgen.InsertDropPositionParams, 0, 2)
 	for _, p := range []struct {
 		pid     int32
 		offset  int64
@@ -257,14 +258,17 @@ func TestRecordingDropHistorySurvivesOriginalDeletion(t *testing.T) {
 		{pid: 0x100, offset: 188, elapsed: &elapsed},
 		{pid: 0x110, offset: 376},
 	} {
-		if err := q.InsertDropPosition(ctx, sqlcgen.InsertDropPositionParams{
+		positionParams = append(positionParams, sqlcgen.InsertDropPositionParams{
 			MediaAssetID: assetID,
 			ByteOffset:   p.offset,
 			Pid:          p.pid,
 			ElapsedMs:    p.elapsed,
-		}); err != nil {
-			t.Fatalf("seeding drop position: %v", err)
-		}
+		})
+	}
+	batch := q.InsertDropPosition(ctx, positionParams)
+	batch.Exec(nil)
+	if err := batch.Close(); err != nil {
+		t.Fatalf("seeding drop position batch: %v", err)
 	}
 
 	fetchListRecording := func() Recording {
