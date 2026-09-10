@@ -53,6 +53,7 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_presync_scrape_errors_total{site}` | Counter（DB） | presync collector の DB 読み取りまたは observed options の解釈に失敗した回数。失敗時は pending / snapshot を 0 として報告しない |
 | `rokuban_ruler_pass_duration_seconds` | Histogram | ruler 1 パスの所要時間（下記 ruler） |
 | `rokuban_ruler_reservations_total{action}` | Counter | ruler が作成/更新/削除した予約数（下記 ruler） |
+| `rokuban_ruler_program_id_reuse_total` | Counter | 終了済み snapshot と EPG の開始時刻が 24 時間超ずれた `program_id` の観測件数。再利用を検出しても挙動は変えない |
 | `rokuban_ruler_circuit_breaker_trips_total` | Counter | 大量削除ブレーカーの発動遷移回数（下記 ruler） |
 | `rokuban_ruler_last_pass_timestamp_seconds` | Gauge | 最後に成功した ruler パスの時刻 |
 | `rokuban_sweep_last_pass_timestamp_seconds` | Gauge | 最後に成功した record_sweep パスの時刻 |
@@ -176,6 +177,7 @@ schedule 同期（reconcile）の鮮度だけである。ruler と record_sweep 
 |---|---|
 | `rokuban_ruler_pass_duration_seconds` | 1 パス（全ルール x 全射影番組）の所要時間。射影が有界なので伸び続けることはない |
 | `rokuban_ruler_reservations_total{action}` | `created` / `updated` / `deleted` / `released` / `gc`。**`updated` が毎パス予約数と同じ値で増え続けるなら差分書き込みが効いていない**（[録画エンジン](../recording.md) §3.1）。`released` は**ブレーカーを通っていない削除**（ユーザーが投資を手放す書き込みをしない限り起きないもの。同 §3.2）で、`deleted`（EPG 由来の導出削除）と混ぜない。`ruler.retract_grace` で見送った件数はこのメトリクスに無い（パスごとに再計上される水準なのでカウンタに乗せると増加率の意味が壊れる）--- ブレーカーのラッチと見分けたいときは `ruler: pass complete` ログの `grace_protected` フィールドを見る |
+| `rokuban_ruler_program_id_reuse_total` | 終了済みの旧 snapshot と EPG 射影の開始時刻が 24 時間超ずれた行を、ruler の各パスで観測した件数。snapshot が更新されるまで同じ不一致を複数回数えうる。検出は読み取り専用 |
 | `rokuban_ruler_circuit_breaker_trips_total` | 大量削除で停止した回数。EPG の一時欠損を疑う入口 |
 | `rokuban_circuit_breaker_tripped{breaker="ruler_deletes"}` | **1 の間は導出削除が一切走らない**（手動再開まで止まるラッチ）。カウンタと違い「いま止まっているか」に答える |
 | `rokuban_ruler_last_pass_timestamp_seconds` | 最終パス時刻。`time() - この値` でパスが止まっていることを検出する（gauge が凍る問題への対策） |

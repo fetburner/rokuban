@@ -237,6 +237,49 @@ func (q *Queries) ListEpgProgramIDsBySiteAndProgramIDs(ctx context.Context, arg 
 	return items, nil
 }
 
+const listProgramIDReusesBySite = `-- name: ListProgramIDReusesBySite :many
+SELECT s.program_id,
+       s.start_at AS snapshot_start_at,
+       p.start_at AS projection_start_at
+FROM program_snapshots s
+JOIN epg_programs p
+  ON p.site = s.site AND p.program_id = s.program_id
+WHERE s.site = $1
+  AND s.start_at + (s.duration_ms * interval '1 millisecond') < now()
+  AND p.start_at > s.start_at + interval '24 hours'
+`
+
+type ListProgramIDReusesBySiteRow struct {
+	ProgramID         int64
+	SnapshotStartAt   time.Time
+	ProjectionStartAt time.Time
+}
+
+// 射影側で program_id が別番組に再利用された可能性を観測する。
+// program_snapshots の値が更新される前に ruler から読むこと。旧番組の snapshot が
+// 既に終了していて、射影側の同じ programId が開始時刻を 24 時間超後ろへ動かした
+// 場合だけを拾う。放送中の番組の先行 EIT や通常の繰り下げは対象にしない。
+// これは読み取り専用の検出器であり、検出結果によって snapshot や予約を変更しない。
+func (q *Queries) ListProgramIDReusesBySite(ctx context.Context, site string) ([]ListProgramIDReusesBySiteRow, error) {
+	rows, err := q.db.Query(ctx, listProgramIDReusesBySite, site)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListProgramIDReusesBySiteRow
+	for rows.Next() {
+		var i ListProgramIDReusesBySiteRow
+		if err := rows.Scan(&i.ProgramID, &i.SnapshotStartAt, &i.ProjectionStartAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProgramIntentActionsBySite = `-- name: ListProgramIntentActionsBySite :many
 SELECT program_id, action FROM program_intents WHERE site = $1
 `

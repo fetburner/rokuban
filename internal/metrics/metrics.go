@@ -252,6 +252,14 @@ var (
 			"released (deletes outside the breaker; they require an explicit write that drops the user's investment) / gc.",
 	}, []string{"action"})
 
+	// RulerProgramIDReuses は、終了済み snapshot と射影の開始時刻が 24 時間超
+	// ずれている program_id の検出件数。検出は読み取り専用で、同じ不一致が
+	// snapshot の更新まで複数パスにわたって観測される可能性がある。
+	RulerProgramIDReuses = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "rokuban_ruler_program_id_reuse_total",
+		Help: "Possible program_id reuse events observed by the ruler.",
+	})
+
 	// RulerCircuitBreakerTrips は大量削除サーキットブレーカーが**発動に遷移した**
 	// 回数（M2-5）。
 	//
@@ -655,6 +663,7 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 
 		RulerPassDuration,
 		RulerReservations,
+		RulerProgramIDReuses,
 		RulerCircuitBreakerTrips,
 		RulerLastPass,
 

@@ -43,6 +43,7 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	ReconcileScheduleLost.Add(1)
 	ReconcileLastPass.SetToCurrentTime()
 	ReconcileStartDelayed.WithLabelValues(testSite).Set(0)
+	RulerProgramIDReuses.Inc()
 	RecordingsFailed.WithLabelValues("need-rescheduling").Inc()
 	RecordsBroken.WithLabelValues("io-error").Inc()
 	SweepLastPass.SetToCurrentTime()
@@ -99,6 +100,7 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 		"rokuban_epg_programs_projected",
 		"rokuban_epg_channels_without_programs",
 		"rokuban_epg_sync_last_success_timestamp_seconds",
+		"rokuban_ruler_program_id_reuse_total",
 		// M2-10: チューナー射影と容量超過
 		"rokuban_tuners_projected",
 		"rokuban_tuner_sync_last_success_timestamp_seconds",

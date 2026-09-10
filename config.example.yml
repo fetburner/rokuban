@@ -67,7 +67,8 @@ ingest:
 # EPG プロジェクション
 epg:
   sync_interval: 10m             # mirakc から EPG を全量取得する間隔
-  retention_grace: 24h           # 放送終了からこの時間で番組を刈り取る。EPG 射影
+  retention_grace: 24h           # 放送終了からこの時間で番組を刈り取る。8 日超では
+                                 # program_id 再利用の衝突窓が常時開く。EPG 射影
                                  # （epg_programs）と ruler の GC（予約・意図・上書き）の
                                  # 両方の窓がこの 1 つの値で決まる。
                                  # 後者があるので、これが「encode 意図が生き残る滞留の上限」に

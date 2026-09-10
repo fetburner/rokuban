@@ -73,7 +73,7 @@ CREATE INDEX ON reservations (rule_id);
 **同期対象かのフィルタに使ってよいのは「この予約に対応する放送イベントに `never_scheduled_events` の欠測行が無いこと」だけ**（`ListReservationsForSyncEvaluation` が絞る）。
 
 1. **`active` / `detached` をフィルタにしてはならない。** どちらも UI 表示用の派生値であり、同期の可否を決めるのは `effective.skip` である。導出値を同期フィルタに使うと、ルールが外れた**手動予約が黙って録画されなくなる**（[invariants.md](../invariants.md) §9）
-2. **同期除外は欠測表の行の存在だけを見る。** 一度欠測と判定された放送イベントは、本物の record が後から来ても、行が寿命内にある限り同期対象に戻らない。終了済み予約を再び schedule しないため。この表の読者はいずれも `reservations` 行を経由して届き、その `reservations` は番組終了 + `retention_grace` で先に GC されるので、行を `retention_grace + 30日` まで残しても読者からは観測されない
+2. **同期除外は欠測表の行の存在だけを見る。** 一度欠測と判定された放送イベントは、本物の record が後から来ても、行が寿命内にある限り同期対象に戻らない。終了済み予約を再び schedule しないため。通常はこの表の読者が `reservations` 行を経由し、番組終了 + `retention_grace` で先に GC されるので、行を `retention_grace + 30日` まで残しても読者からは観測されない。ただし `program_id` 再利用で同じ放送イベントキーから新番組が到達可能になる経路はこの限りではない（§3.7 の未解決の窓）
 3. **表示（`never_recorded`）は欠測行に加えて、本物の `recordings` 行が無いことも見る。** record が来たら orphaned は消えるが、欠測行はその寿命内では残る。recordings の照合は live 限定にしないため、ごみ箱操作で orphaned に戻らない
 4. **どちらも mirakc 由来の途中失敗だけでは成立しない。** failed 試行は `recordings` にだけ入り欠測表には入らないため、再試行経路を壊さない
 
@@ -197,6 +197,7 @@ CREATE TABLE program_snapshots (
 
 - **値の出所は EPG プロジェクションただ 1 つ。** 書き手は api（意図・上書きの作成時。`ensureProgramSnapshot` が `GetProgramSnapshotSource` で `epg_programs ⋈ epg_services` から引く）と ruler（毎パス、`UpsertProgramSnapshotsFromProjection`）の 2 人だが、両者とも射影から引くので値の権威は割れない。**クライアントからは受け取らない**（サーバー権威）。射影に番組がなければ 400
 - **射影にある間は更新、消えたら凍結。** 延長・繰り下げで EPG 側の時刻は変わるので、射影に番組がある間は毎パス追従し、消えたときに凍結する。凍結しっぱなしにしないのは、GC 判定・容量超過判定（[データ層](../data.md) §6.5）が予約の時刻を需要区間として使うため。予約が無く skip 意図だけが行を支える場合も、skip 意図を導出値と混同せず、番組が射影にある限り ruler が追従させる
+- **未解決: `program_id` 再利用による下流の付け替え窓がある。** EPG の放送地平を約 8 日、旧番組 A と新番組 B が同時には射影されないと仮定すると、(a) `program_snapshots` は A の終了 + `retention_grace` まで残るため、B の開始が A の終了から 8 日を超えて `8日 + retention_grace` 以内の約 1 日幅で、A の snapshot が B に上書きされる。(b) `never_scheduled_events` の A の欠測行は `retention_grace + 30日` 生きるため、B の開始が A の終了から 8 日を超えて既定の 31 日以内なら、約 23 日幅で B が A の欠測として扱われる。これは運用からの推論を含む未検証の窓であり、identity を変更せず検出器で実測する
 - **チャンネル識別はスナップショットする（programId を分解しない）。** Mirakurun 互換の programId は `NID*10^10 + SID*10^5 + EID` という合成規則を持つが、本番コードでこれを逆算してはならない。`network_id` / `service_id` / `channel_type` / `channel` は API のフィールドから素直に引く
   - reconciler の contentPath 生成はこのスナップショットを読む
   - 容量超過の判定（[データ層](../data.md) §6.5）の需要単位が `(channel_type, channel)` なので、使い捨ての EPG 射影への JOIN に頼らずここを読む
