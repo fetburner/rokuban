@@ -2,7 +2,14 @@ import { Popover as PopoverPrimitive } from '@base-ui/react/popover'
 import { ChevronDown, Search as SearchIcon, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
-import { ListRecordingsOrder, useListSites, type Service } from '@/api/generated'
+import {
+  ListRecordingsOrder,
+  ListRecordingsSource,
+  useListRules,
+  useListSites,
+  type Rule,
+  type Service,
+} from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { ChannelPicker } from '@/components/channel-picker'
 import { Chip } from '@/components/ui/chip'
@@ -15,6 +22,7 @@ import {
   describeRecordingsFilters,
   isoToLocalDateTimeInput,
   localDateTimeInputToIso,
+  parseRuleId,
   recordingSourceValues,
   recordingStatusValues,
   sourceLabels,
@@ -44,6 +52,8 @@ export function RecordingFilters({
 }) {
   const sitesQuery = useListSites()
   const sites = unwrap(sitesQuery.data) ?? []
+  const rulesQuery = useListRules()
+  const rules = unwrap(rulesQuery.data)
   // **`Service.id` で重複を潰す。** 同じチャンネルを 2 サイトで受けていても
   // 選択肢は 1 つ（identity は合成 id で、site は別軸の `?site=`）。潰さないと
   // ピッカーに同名の候補が site の数だけ並び、押しても同じ id が入るだけの
@@ -67,7 +77,7 @@ export function RecordingFilters({
     )
   }
 
-  const chips = describeRecordingsFilters(search, serviceLabelById)
+  const chips = describeRecordingsFilters(search, serviceLabelById, rules)
 
   return (
     <div className="flex flex-col gap-2 border-t border-border px-4 py-2">
@@ -82,6 +92,9 @@ export function RecordingFilters({
           siteNames={sites}
           servicesPending={servicesPending}
           servicesError={servicesError}
+          rules={rules ?? []}
+          rulesPending={rulesQuery.isPending}
+          rulesError={rulesQuery.isError}
           onChange={onChange}
         />
         <OrderSelect
@@ -184,6 +197,57 @@ function OrderSelect({
 }
 
 /**
+ * RuleSelect は絞り込みパネルのルール選択欄。
+ *
+ * `<select>` の value は文字列でも、URL へ戻す値は `parseRuleId` で検証した
+ * 正の安全整数に揃える。ルール選択時の検索条件更新は `updateRuleFilter` に
+ * 集約する。
+ */
+function RuleSelect({
+  value,
+  rules,
+  onChange,
+}: {
+  value: number | undefined
+  rules: Rule[]
+  onChange: (ruleId: number | undefined) => void
+}) {
+  return (
+    <label className="flex h-11 min-w-0 items-center rounded-lg border border-border bg-background px-3 text-sm text-foreground">
+      <span className="sr-only">ルール</span>
+      <select
+        aria-label="ルール"
+        value={value === undefined ? '' : String(value)}
+        onChange={(e) => onChange(parseRuleId(e.target.value))}
+        className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none"
+      >
+        <option value="">問わない</option>
+        {rules.map((rule) => (
+          <option key={rule.id} value={String(rule.id)}>
+            {rule.name}
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
+/**
+ * updateRuleFilter はルール選択を検索条件へ反映する。
+ *
+ * 特定のルールを選んだ状態で `source=manual` / `source=unattributed` を残すと
+ * 必ず 0 件になる。どのルールかが分かれば出自をさらに問う必要がないため、
+ * `ruleId` を選んだ時点で source を解除し、同じ組み合わせを UI から作れないようにする。
+ */
+function updateRuleFilter(search: RecordingsPageSearch, ruleId: number | undefined): RecordingsPageSearch {
+  return {
+    ...search,
+    ruleId,
+    ...(ruleId === undefined ? {} : { source: undefined }),
+  }
+}
+
+/**
  * FilterPanel は「絞り込み ▾」のポップオーバー本体。
  *
  * チャンネル種別（`channelType`）はここに置かない --- 個々のチャンネルを選べる
@@ -198,6 +262,9 @@ function FilterPanel({
   siteNames,
   servicesPending,
   servicesError,
+  rules,
+  rulesPending,
+  rulesError,
   onChange,
 }: {
   search: RecordingsPageSearch
@@ -213,6 +280,9 @@ function FilterPanel({
   siteNames: string[]
   servicesPending: boolean
   servicesError: boolean
+  rules: Rule[]
+  rulesPending: boolean
+  rulesError: boolean
   onChange: Update
 }) {
   const [open, setOpen] = useState(false)
@@ -368,6 +438,25 @@ function FilterPanel({
             </section>
 
             <section className="flex flex-col gap-1.5">
+              <h3 className="text-xs font-medium text-muted-foreground">ルール</h3>
+              {rulesError ? (
+                <p className="text-xs text-destructive">ルールの取得に失敗しました</p>
+              ) : rulesPending ? (
+                <p role="status" className="text-xs text-muted-foreground">
+                  読み込み中…
+                </p>
+              ) : (
+                <RuleSelect
+                  value={search.ruleId}
+                  rules={rules}
+                  onChange={(ruleId) =>
+                    onChange((s) => updateRuleFilter(s, ruleId))
+                  }
+                />
+              )}
+            </section>
+
+            <section className="flex flex-col gap-1.5">
               <h3 className="text-xs font-medium text-muted-foreground">種別</h3>
               <div role="group" aria-label="種別" className="flex flex-wrap gap-1.5">
                 <Chip active={search.source === undefined} onClick={() => onChange((s) => ({ ...s, source: undefined }))}>
@@ -377,6 +466,11 @@ function FilterPanel({
                   <Chip
                     key={value}
                     active={search.source === value}
+                    disabled={
+                      search.ruleId !== undefined &&
+                      (value === ListRecordingsSource.manual ||
+                        value === ListRecordingsSource.unattributed)
+                    }
                     onClick={() => onChange((s) => ({ ...s, source: value }))}
                   >
                     {sourceLabels[value]}

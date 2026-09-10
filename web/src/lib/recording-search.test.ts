@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import type { Rule } from '@/api/generated'
 import { ListRecordingsQueryParams } from '@/api/zod'
 import { formatDateTime } from '@/lib/format'
 import {
@@ -299,6 +300,17 @@ describe('datetime-local と ISO の相互変換', () => {
 
 describe('describeRecordingsFilters', () => {
   const services = new Map<number, string>([[3273601024, 'ＮＨＫ総合 (default)']])
+  const rules: Rule[] = [
+    {
+      id: 7,
+      name: 'ニュース録画ルール',
+      enabled: true,
+      priority: 0,
+      keepOriginal: 'always',
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    },
+  ]
 
   it('条件が無ければチップも無い', () => {
     expect(describeRecordingsFilters(emptyRecordingsSearch(), services)).toEqual([])
@@ -356,6 +368,14 @@ describe('describeRecordingsFilters', () => {
     expect(chips.find((c) => c.key === 'period')?.label).toBe(
       `期間: ${formatDateTime('2026-01-01T00:00:00Z')} 〜`,
     )
+  })
+
+  it('ルール一覧にあれば名前で、無ければルール #N で表示する', () => {
+    const resolved = describeRecordingsFilters({ ruleId: 7 }, services, rules)
+    expect(resolved.find((chip) => chip.key === 'ruleId')?.label).toBe('ニュース録画ルール')
+
+    const unresolved = describeRecordingsFilters({ ruleId: 99 }, services, rules)
+    expect(unresolved.find((chip) => chip.key === 'ruleId')?.label).toBe('ルール #99')
   })
 
   it('期間チップは from/to 両方あれば範囲を、片方だけなら開いた側を「〜」で示す', () => {

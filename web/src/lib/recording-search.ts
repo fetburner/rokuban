@@ -21,6 +21,7 @@ import {
   ListRecordingsStatus,
   type ListRecordingsEncodeState as ListRecordingsEncodeStateValue,
   type ListRecordingsParams,
+  type Rule,
 } from '@/api/generated'
 import { formatDateTime } from '@/lib/format'
 import { parsePositiveIntId } from '@/lib/positive-id'
@@ -313,6 +314,7 @@ function periodLabel(from: string | undefined, to: string | undefined): string {
 export function describeRecordingsFilters(
   search: RecordingsPageSearch,
   serviceLabelById: ReadonlyMap<number, string>,
+  rules: Rule[] | undefined = undefined,
 ): RecordingsFilterChip[] {
   const chips: RecordingsFilterChip[] = []
 
@@ -374,9 +376,10 @@ export function describeRecordingsFilters(
   }
 
   if (search.ruleId !== undefined) {
+    const rule = rules?.find((candidate) => candidate.id === search.ruleId)
     chips.push({
       key: 'ruleId',
-      label: `ルール #${search.ruleId}`,
+      label: rule?.name ?? `ルール #${search.ruleId}`,
       clear: (s) => ({ ...s, ruleId: undefined }),
     })
   }
