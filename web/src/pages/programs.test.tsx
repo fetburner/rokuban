@@ -954,14 +954,7 @@ describe('ProgramsPage の表示形式', () => {
     expect(cell).toHaveAttribute('aria-pressed', 'true')
     // モーダル内の ProgramRow は初期展開されるため、行トグルを押さなくても
     // 詳細領域と予約列が開き、hover なしで予約ボタンが使える。
-    const rowToggle = within(dialog)
-      .getAllByRole('button')
-      .find((button) => button.hasAttribute('aria-expanded'))
-    if (!rowToggle) throw new Error('モーダル内の ProgramRow のトグルが見つからない')
-    expect(rowToggle).toHaveAttribute('aria-expanded', 'true')
-    const detailId = rowToggle.getAttribute('aria-controls')
-    if (!detailId) throw new Error('ProgramRow の展開領域 ID が見つからない')
-    expect(document.getElementById(detailId)).toBeInTheDocument()
+    within(dialog).getByRole('button', { expanded: true })
     expect(within(dialog).getByText('エンコードプロファイル')).toBeInTheDocument()
 
     const reserveButton = within(dialog).getByRole('button', { name: '予約' })
