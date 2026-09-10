@@ -46,6 +46,13 @@ import {
   type ProgramsPageSearch,
 } from '@/lib/programs-search'
 import { filterProgramsFromListStart } from '@/lib/program-list'
+import {
+  defaultGridPxPerHour,
+  gridPxPerHourOptions,
+  loadProgramsGridPxPerHour,
+  saveProgramsGridPxPerHour,
+  type GridPxPerHour,
+} from '@/lib/programs-grid-scale-storage'
 import { lgMediaQuery, useMediaQuery } from '@/lib/use-media-query'
 import { loadProgramsView, saveProgramsView, type ProgramsView } from '@/lib/programs-view-storage'
 
@@ -60,12 +67,6 @@ const windowHours = 6
 
 /** グリッドが一度に描く時間の幅。M2-9 の受け入れ条件が「全サービス x 24 時間」。 */
 const gridWindowHours = 24
-
-/**
- * グリッドの縦の縮尺。30 分番組が 60px になるので、開始時刻とタイトルの 2 行が入る。
- * これより詰めると 15 分番組が読めず、広げると 24 時間の全長が伸びすぎる。
- */
-const gridPxPerHour = 120
 
 /**
  * ProgramsPage は番組表（`/programs`）。
@@ -146,6 +147,12 @@ export function ProgramsPage() {
   // 「リストを選んだ後にナビの /programs へ戻っても保存値どおりリストのまま」）。
   const [storedView, setStoredView] = useState<ProgramsView>(() => loadProgramsView() ?? 'list')
   const view: ProgramsView = search.view ?? storedView
+  // 短い番組を正確に選ぶための縮尺は、視覚的な高さの下限や重なるヒット領域では
+  // なく、時間軸全体の倍率で解決する。URL には持たせず端末ごとの好みとして保存
+  // する（共有 URL が同じ時刻の空間表現を別端末で強制しないため）。
+  const [gridPxPerHour, setGridPxPerHour] = useState<GridPxPerHour>(
+    () => loadProgramsGridPxPerHour() ?? defaultGridPxPerHour,
+  )
 
   // ProgramList への命令的 API（`components/program-list.tsx` の
   // `ProgramListHandle`）。「既にジャンプ先になっている日」を再タップしたときに
@@ -328,7 +335,7 @@ export function ProgramsPage() {
   const gridPrograms = useMemo(() => gridQuery.data ?? [], [gridQuery.data])
   const axis = useMemo<TimeAxis>(
     () => ({ startMs: originMs, endMs: gridEndMs, pxPerHour: gridPxPerHour }),
-    [originMs, gridEndMs],
+    [originMs, gridEndMs, gridPxPerHour],
   )
 
   // チューナー不足の区間。グリッドの窓と同じ範囲を訊く（帯は軸の上に描かれるので
@@ -646,14 +653,25 @@ export function ProgramsPage() {
             {/* 表示形式の切り替えは `lg` 以上でのみ出す。CSS で隠すのではなく
                 出さないのは、モバイルに存在しない選択肢を読み上げさせないため */}
             {wideScreen && (
-              <ViewChips
-                view={view}
-                onSelect={(next) => {
-                  saveProgramsView(next)
-                  setStoredView(next)
-                  updateSearch((s) => ({ ...s, view: next }))
-                }}
-              />
+              <>
+                <ViewChips
+                  view={view}
+                  onSelect={(next) => {
+                    saveProgramsView(next)
+                    setStoredView(next)
+                    updateSearch((s) => ({ ...s, view: next }))
+                  }}
+                />
+                {view === 'grid' && (
+                  <GridScaleChips
+                    pxPerHour={gridPxPerHour}
+                    onSelect={(next) => {
+                      saveProgramsGridPxPerHour(next)
+                      setGridPxPerHour(next)
+                    }}
+                  />
+                )}
+              </>
             )}
           </>
         }
@@ -815,6 +833,24 @@ function ViewChips({
       <Chip active={view === 'grid'} onClick={() => onSelect('grid')}>
         番組表
       </Chip>
+    </div>
+  )
+}
+
+function GridScaleChips({
+  pxPerHour,
+  onSelect,
+}: {
+  pxPerHour: GridPxPerHour
+  onSelect: (pxPerHour: GridPxPerHour) => void
+}) {
+  return (
+    <div role="group" aria-label="時間軸の縮尺" className="flex gap-2 px-4 pb-3">
+      {gridPxPerHourOptions.map((option) => (
+        <Chip key={option} active={pxPerHour === option} onClick={() => onSelect(option)}>
+          {option} px/時
+        </Chip>
+      ))}
     </div>
   )
 }

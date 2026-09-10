@@ -61,6 +61,33 @@ export function pxToTime(axis: TimeAxis, px: number): number {
   return axis.startMs + (px / axis.pxPerHour) * msPerHour
 }
 
+/**
+ * scaledScrollTopPx は時間軸の縮尺変更後も、スクロール領域の上端に来ていた
+ * 時刻を保つための新しい scrollTop を返す。
+ *
+ * グリッドの sticky ヘッダは軸の先頭より上に固定されるので、ヘッダぶんを
+ * 除いた軸上の距離だけを倍率変更する。これを単純に scrollTop 全体へ掛けると、
+ * ヘッダの高さも時間として拡大されて、同じ時刻がずれる。
+ */
+export function scaledScrollTopPx(
+  scrollTopPx: number,
+  previousPxPerHour: number,
+  nextPxPerHour: number,
+  fixedHeaderPx = 0,
+): number {
+  if (!Number.isFinite(scrollTopPx)) return 0
+  if (
+    !Number.isFinite(previousPxPerHour) ||
+    !Number.isFinite(nextPxPerHour) ||
+    previousPxPerHour <= 0 ||
+    nextPxPerHour <= 0
+  ) {
+    return Math.max(0, scrollTopPx)
+  }
+  const axisOffsetPx = scrollTopPx - fixedHeaderPx
+  return Math.max(0, fixedHeaderPx + axisOffsetPx * (nextPxPerHour / previousPxPerHour))
+}
+
 /** SpanRect は軸上の矩形。 */
 export type SpanRect = {
   topPx: number

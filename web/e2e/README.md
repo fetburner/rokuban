@@ -794,6 +794,27 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:programs-view
 ```
 
+### 番組表の短い番組選択（`programs-grid-zoom.mjs`）
+
+短い番組の選択は、セルの視覚的な高さに下限を入れず、時間軸全体を 120 / 240 /
+480 px/時で拡大することで解決する（issue #724）。jsdom ではセルの実矩形や
+`scrollTop`、隣接セルの境界付近を実際に押した結果を測れないため、実ブラウザで
+次を確認する。
+
+- 既定の 5 分 / 10 分 / 30 分セルが 10 / 20 / 60px、480px/時では 40 / 80 /
+  240px になり、高さ = 放送時間の比例が保たれる
+- ズーム前後でグリッドの可視起点の時刻がずれない
+- 隣接する 5 分・10 分・30 分番組を境界付近で押しても、別セルが選択されない
+
+実装前は時間軸ズームの操作点が存在せず、5 分セルは 10px のままなので、①と
+③の判定が落ちることを確認できる。API は `page.route` で差し替えるため mirakc・
+実チューナー・DB は不要で、フィクスチャは `validateFixturesOrExit` で契約検証する。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:programs-grid-zoom
+```
+
 ## CI では回さない
 
 実サーバーと実 mirakc のデータに依存するため、CI には載せない。**ローカルでの受け入れ確認**の

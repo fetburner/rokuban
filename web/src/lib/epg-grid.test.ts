@@ -10,6 +10,7 @@ import {
   hourTicks,
   orderServices,
   pxToTime,
+  scaledScrollTopPx,
   spanToPx,
   timeToPx,
   visibleColumnRange,
@@ -65,6 +66,19 @@ describe('時間軸の写像', () => {
   it('pxToTime は timeToPx の逆写像', () => {
     expect(pxToTime(axis, 0)).toBe(axis.startMs)
     expect(pxToTime(axis, 19 * 120)).toBe(at(19 * 60))
+  })
+
+  it('縮尺変更後も固定ヘッダの下端に同じ時刻を保つ scrollTop を返す', () => {
+    // ヘッダ 36px、軸の 10:00（起点から 10 時間）は 1236px の scrollTop で
+    // ビューポート上端に来ている。120 -> 240 では軸上の距離だけを 2 倍する。
+    expect(scaledScrollTopPx(1236, 120, 240, 36)).toBe(2436)
+    expect(scaledScrollTopPx(2436, 240, 120, 36)).toBe(1236)
+  })
+
+  it('不正な縮尺はスクロール位置を壊さない', () => {
+    expect(scaledScrollTopPx(120, 0, 240, 36)).toBe(120)
+    expect(scaledScrollTopPx(-10, 120, 240, 36)).toBe(0)
+    expect(scaledScrollTopPx(Number.NaN, 120, 240, 36)).toBe(0)
   })
 })
 
