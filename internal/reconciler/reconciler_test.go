@@ -426,6 +426,64 @@ func TestReconciler_UsesSingleBatchForScheduleSnapshot(t *testing.T) {
 	}
 }
 
+// 上限（scheduleSyncBatchSize=1000）をまたぐ件数は複数の SendBatch に分割され、
+// かつ全件が書かれる。「上限内は 1 バッチにまとめる」ことは
+// TestReconciler_UsesSingleBatchForScheduleSnapshot が引き続き主張するので、
+// ここでは上限を超えたときの分割と全件書き込みだけを確認する。
+func TestReconciler_SplitsScheduleSnapshotBatchAtLimit(t *testing.T) {
+	basePool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	const total = 1001 // scheduleSyncBatchSize を 1 件だけ超える
+
+	mock := newMockMirakc()
+	for i := int64(0); i < total; i++ {
+		programID := int64(7331000) + i
+		mock.schedules[programID] = mirakc.Schedule{
+			State:   mirakc.ScheduleStateScheduled,
+			Program: mirakc.Program{ID: programID},
+			Options: mirakc.Options{Priority: int(i)},
+			Tags:    []string{mirakc.ProgramTag(programID)},
+		}
+	}
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	tracer := &scheduleSyncBatchTracer{}
+	poolConfig := basePool.Config().Copy()
+	poolConfig.ConnConfig.Tracer = tracer
+	tracedPool, err := pgxpool.NewWithConfig(ctx, poolConfig)
+	if err != nil {
+		t.Fatalf("creating traced pool: %v", err)
+	}
+	t.Cleanup(tracedPool.Close)
+
+	rec := reconciler.New("default", mirakc.NewClient(srv.URL, nil), tracedPool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	sizes := tracer.sizes()
+	if len(sizes) != 2 {
+		t.Fatalf("schedule_sync SendBatch count = %d (sizes=%v), want 2", len(sizes), sizes)
+	}
+	sum := 0
+	for _, s := range sizes {
+		sum += s
+	}
+	if sum != total {
+		t.Errorf("schedule_sync SendBatch total rows across batches = %d, want %d", sum, total)
+	}
+
+	var rows int
+	if err := tracedPool.QueryRow(ctx, `SELECT count(*) FROM schedule_sync WHERE site = 'default'`).Scan(&rows); err != nil {
+		t.Fatalf("counting schedule_sync rows: %v", err)
+	}
+	if rows != total {
+		t.Errorf("schedule_sync rows = %d, want %d", rows, total)
+	}
+}
+
 // 空 snapshot でも stale sweep と marker 更新は実行する。空 batch を送らない
 // 経路のため、既存の :exec ループの空振りとは異なり SendBatch は不要である。
 func TestReconciler_EmptyScheduleSnapshotSweepsAndMarks(t *testing.T) {
@@ -496,9 +554,15 @@ func TestReconciler_ScheduleSnapshotBatchFailureRollsBack(t *testing.T) {
 		t.Fatalf("adding batch failure constraint: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `
+		// testutil.SetupDB はパッケージ単位で DB を再利用し TRUNCATE しかしない
+		// （制約は落とさない）ので、この DROP が失敗すると CHECK 制約が以降の
+		// 全テストに生き残り、program_id = 7330302 を書く別テストが無関係な
+		// CHECK 違反で落ちる。エラーを握り潰さない。
+		if _, err := pool.Exec(context.Background(), `
 			ALTER TABLE schedule_sync
-			DROP CONSTRAINT IF EXISTS schedule_sync_test_reject_second`)
+			DROP CONSTRAINT IF EXISTS schedule_sync_test_reject_second`); err != nil {
+			t.Errorf("dropping batch failure constraint: %v", err)
+		}
 	})
 
 	mock := newMockMirakc()
