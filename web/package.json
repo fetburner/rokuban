@@ -27,6 +27,7 @@
     "e2e:reservations-mobile": "node e2e/reservations-mobile.mjs",
     "e2e:reservations-capacity-error": "node e2e/reservations-capacity-error.mjs",
     "e2e:multi-site": "node e2e/multi-site.mjs",
+    "e2e:grid-navigation": "node e2e/grid-navigation.mjs",
     "e2e:recordings-selection": "node e2e/recordings-selection.mjs",
     "e2e:cls": "node e2e/cls.mjs",
     "e2e:chip-overflow": "node e2e/chip-overflow.mjs",

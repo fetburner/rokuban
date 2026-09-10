@@ -409,6 +409,24 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:reserve-visibility
 ```
 
+### 番組表グリッドの空間ナビゲーション（`grid-navigation.mjs`）
+
+番組表のセルにフォーカスを置いたとき、矢印キーで空間的に移動できることを実ブラウザ
+で確認する。`role="region"` とセルの Tab 停止点は維持したまま、次の 2 点を見る:
+
+- ① `ArrowRight` で、フォーカス中の番組の開始時刻を含む隣列の番組へ移る
+- ② 仮想化で最初は DOM に無い同列の遠い番組へ `ArrowDown` で移り、スクロール後に
+  そのセルへフォーカスが移る
+
+jsdom ではレイアウト・スクロール位置・仮想化後のフォーカスを同時に測れない。API は
+`page.route` で差し替え、固定時刻と 2 列の番組だけを使うので mirakc も DB も要らない。
+フィクスチャは `validateFixturesOrExit` で生成スキーマと一致することも確認する。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:grid-navigation
+```
+
 ### 番組表グリッドの予約済み印（`grid-reserved.mjs`）
 
 番組表グリッドで予約済みがジャンルの淡い塗りに埋もれる（issue #307）。

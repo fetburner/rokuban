@@ -8,6 +8,7 @@ import {
   groupByChannelType,
   groupProgramsByService,
   hourTicks,
+  neighborProgram,
   orderServices,
   pxToTime,
   scaledScrollTopPx,
@@ -212,6 +213,99 @@ describe('groupProgramsByService', () => {
     expect([...grouped.keys()].sort()).toEqual(['default:4:101', 'default:6:101'])
     expect(grouped.get('default:4:101')?.map((p) => p.program.programId)).toEqual([1])
     expect(grouped.get('default:6:101')?.map((p) => p.program.programId)).toEqual([2])
+  })
+})
+
+describe('neighborProgram', () => {
+  const services = [
+    { site: 'default', networkId: 32736, serviceId: 1024 },
+    { site: 'default', networkId: 32736, serviceId: 1032 },
+    { site: 'default', networkId: 32736, serviceId: 1040 },
+  ]
+
+  const program = (programId: number, serviceId: number, startMinutes: number, durationMinutes: number) => ({
+    site: 'default',
+    programId,
+    networkId: 32736,
+    serviceId,
+    startAt: new Date(at(startMinutes)).toISOString(),
+    endAt: new Date(at(startMinutes + durationMinutes)).toISOString(),
+  })
+
+  type TestPlacedProgram = {
+    program: ReturnType<typeof program>
+    startMs: number
+    endMs: number
+  }
+
+  const current = (
+    grouped: ReadonlyMap<string, readonly TestPlacedProgram[]>,
+    programId: number,
+  ): TestPlacedProgram => {
+    for (const candidates of grouped.values()) {
+      const found = candidates.find((candidate) => candidate.program.programId === programId)
+      if (found) return found
+    }
+    throw new Error(`program ${programId} not found`)
+  }
+
+  it('上下は同列の前後へ移り、空き時間を飛ばす', () => {
+    const grouped = groupProgramsByService([
+      program(1, 1024, 19 * 60, 30),
+      program(2, 1024, 21 * 60, 30),
+    ])
+
+    expect(neighborProgram(grouped, services, current(grouped, 1), 'down')?.program.programId).toBe(2)
+    expect(neighborProgram(grouped, services, current(grouped, 2), 'up')?.program.programId).toBe(1)
+  })
+
+  it('上下は同列で重なる番組も開始時刻順の前後として扱う', () => {
+    const grouped = groupProgramsByService([
+      program(1, 1024, 19 * 60, 90),
+      program(2, 1024, 19 * 60 + 30, 90),
+    ])
+
+    expect(neighborProgram(grouped, services, current(grouped, 1), 'down')?.program.programId).toBe(2)
+    expect(neighborProgram(grouped, services, current(grouped, 2), 'up')?.program.programId).toBe(1)
+  })
+
+  it('上下左右の端では null を返す', () => {
+    const grouped = groupProgramsByService([program(1, 1024, 19 * 60, 30)])
+    const first = current(grouped, 1)
+
+    expect(neighborProgram(grouped, services, first, 'up')).toBeNull()
+    expect(neighborProgram(grouped, services, first, 'down')).toBeNull()
+    expect(neighborProgram(grouped, services, first, 'left')).toBeNull()
+  })
+
+  it('左右は隣列で開始時刻を含む番組を優先する', () => {
+    const grouped = groupProgramsByService([
+      program(1, 1024, 19 * 60, 60),
+      program(2, 1032, 19 * 60 + 30, 30),
+      program(3, 1032, 20 * 60, 30),
+    ])
+
+    expect(neighborProgram(grouped, services, current(grouped, 1), 'right')?.program.programId).toBe(2)
+    expect(neighborProgram(grouped, services, current(grouped, 2), 'left')?.program.programId).toBe(1)
+  })
+
+  it('左右で時刻を含む番組が無ければ開始時刻が近い番組を選ぶ（同距離は早い方）', () => {
+    const grouped = groupProgramsByService([
+      program(1, 1024, 19 * 60 + 30, 10),
+      program(2, 1032, 18 * 60, 30),
+      program(3, 1032, 21 * 60, 30),
+    ])
+
+    expect(neighborProgram(grouped, services, current(grouped, 1), 'right')?.program.programId).toBe(2)
+  })
+
+  it('左右の隣列に番組が無ければ null を返す', () => {
+    const grouped = groupProgramsByService([
+      program(1, 1024, 19 * 60, 30),
+      program(3, 1040, 19 * 60, 30),
+    ])
+
+    expect(neighborProgram(grouped, services, current(grouped, 1), 'right')).toBeNull()
   })
 })
 
