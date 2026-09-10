@@ -1360,14 +1360,17 @@ for (const spec of boundedListScreens) {
     ng.push(`rules/desktop: 「ルールを作成」が内容幅でない（${createBox.width}px）`)
   }
 
-  const editBg = await computedOf(page.getByRole('button', { name: '編集' }).first(), 'background-color')
+  const editBg = await computedOf(
+    page.getByRole('link', { name: '検索しながら編集' }).first(),
+    'background-color',
+  )
   const createBg = await computedOf(create, 'background-color')
   if (
     editBg === null ||
     createBg === null ||
     !editBg.rgba.every((value, index) => value === createBg.rgba[index])
   ) {
-    ng.push('rules/desktop: 主操作「編集」が primary ボタンでない')
+    ng.push('rules/desktop: 主操作「検索しながら編集」が primary ボタンでない')
   }
   await context.close()
 }
@@ -3021,7 +3024,7 @@ for (const theme of themes) {
 // 24px にする。バッジの z-index も見て、行全面リンクの上で当たり判定が生きることを固定する。
 {
   const { context, page } = await open(desktop, 'light', screenOf('rules'))
-  const smallButton = page.getByRole('button', { name: '編集', exact: true }).first()
+  const smallButton = page.getByRole('link', { name: '検索しながら編集', exact: true }).first()
   const box = (await smallButton.count()) === 0 ? null : await smallButton.boundingBox()
   log(`  Button size=sm: height=${box?.height}`)
   if (box === null || box.height < 32) {

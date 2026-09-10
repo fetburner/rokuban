@@ -120,7 +120,7 @@ tie-break を決定的にするのは必須で、任意ではない。同じ類�
 
 `recordings.rule_id` の FK を外して値を残す案は採らない。作り直したルールが新しい id を持つ以上、上の 2 が残って**症状が消えない**（履歴に旧 id を保存しても新ルールの比較対象にはならない）。削除→作り直しをまたいで効かせるには「ルール名をキーにする」等の別の同定が要るが、名前キーは同名の別ルールの履歴を黙って混ぜるので、いま乗っている前提より弱い前提に置き換わる。加えて、恒久に解決しない `ruleId` を履歴に残すと「一覧が未解決だから解決できない」という**一時的な**状態の表示（[フロントエンド](../frontend/recordings.md)「ルール名の解決」）と区別が付かなくなる。
 
-削除の確認ダイアログは、`dedupeEnabled` なルールに限りこの帰結を事前に伝える（`web/src/pages/rules.tsx` の `deleteRuleConfirmMessage`。文面は上の測定に合わせ「次の再放送を録り直す / 1 本録れれば以降はまた弾かれる」までを言う）。**重複排除の設定自体を編集する UI は現状無い**（`web/src` で `dedupe*` に触るのは `buildRuleInput` の `preserve` と skip 理由の表示だけ）。`dedupeEnabled` なルールは `POST` / `PATCH /api/rules` を直接叩いて作ったものに限られ、この確認文に到達する経路も今はそこだけになる。
+削除の確認ダイアログは、`dedupeEnabled` なルールに限りこの帰結を事前に伝える（`web/src/pages/rules.tsx` の `deleteRuleWarning`。文面は上の測定に合わせ「次の再放送を録り直す / 1 本録れれば以降はまた弾かれる」までを言う）。**重複排除の設定自体を編集する UI は現状無い**（`web/src` で `dedupe*` に触るのは `buildRuleInput` の `preserve` と skip 理由の表示だけ）。`dedupeEnabled` なルールは `POST` / `PATCH /api/rules` を直接叩いて作ったものに限られ、この確認文に到達する経路も今はそこだけになる。
 
 **類似度検索に trgm GIN は効かない。** `gin_trgm_ops` が加速するのは `%` / `<%` / LIKE / 正規表現で、`similarity()` の関数呼び出しはインデックスに乗らない。`%` は閾値をルール単位ではなく GUC `pg_trgm.similarity_threshold` から読むため `rules.dedupe_threshold` と直接は噛み合わない（前段フィルタにする手順は `internal/ruler/dedupe.go` のコメントに残してある）。家庭用の履歴規模では素の走査で足りるので、隠れたセッション状態を持ち込む前に実測する。
 

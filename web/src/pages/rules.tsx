@@ -259,6 +259,8 @@ function RuleRow({
         data: buildRuleInput(
           conditionsToDraft(rule),
           { ...ruleToMeta(rule), enabled },
+          // preserve を落とすと UI を持たない項目（description / dedupe* /
+          // filenameTemplate / metadata）が UpdateRule の全置換で黙って消える。
           rule,
         ),
       },

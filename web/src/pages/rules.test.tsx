@@ -641,6 +641,33 @@ describe('RulesPage ルールの有効スイッチ', () => {
     expect(await screen.findByText('サーバーが更新を拒否しました')).toBeInTheDocument()
     await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'))
   })
+
+  it('PATCH 本文は UI を持たない項目（dedupe* / filenameTemplate / metadata）を保持する', async () => {
+    const disabledRule = { ...ruleWithConditions, enabled: false }
+    const { putBodies } = stubApi([disabledRule])
+    const user = userEvent.setup()
+    renderPage()
+
+    const toggle = await screen.findByRole('switch', {
+      name: 'ルール「平日ニュース」を有効にする',
+    })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    await user.click(toggle)
+
+    await waitFor(() => expect(putBodies).toHaveLength(1))
+    expect(putBodies[0]).toMatchObject({
+      id: 2,
+      body: {
+        name: '平日ニュース',
+        enabled: true,
+        dedupeEnabled: true,
+        dedupeThreshold: 0.8,
+        dedupeWindowSeconds: 3600,
+        filenameTemplate: '{title}',
+        metadata: { source: 'legacy' },
+      },
+    })
+  })
 })
 
 // issue #227（M5-4）: 削除（稀・破壊的）を行の overflow メニューへ寄せ、
