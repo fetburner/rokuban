@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
@@ -29,6 +30,9 @@ import (
 type mockMirakc struct {
 	mu        sync.Mutex
 	schedules map[int64]mirakc.Schedule
+	// additionalSchedules は map では表現できない順序固定の追加要素を
+	// テストするための追加要素。
+	additionalSchedules []mirakc.Schedule
 
 	// deleteCalls / postCalls は DELETE / POST が呼ばれた順に programID を記録する。
 	// 再作成（DELETE→POST）の呼ばれ方をテストで確認するため。
@@ -57,6 +61,7 @@ func (m *mockMirakc) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for _, s := range m.schedules {
 			list = append(list, s)
 		}
+		list = append(list, m.additionalSchedules...)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(list)
 
@@ -145,6 +150,59 @@ func countInt64(xs []int64, v int64) int {
 func ptrInt64(v int64) *int64 { return &v }
 
 func ptrString(v string) *string { return &v }
+
+// execScheduleSyncBatchForTest は生成された :batchexec query の結果を読み切る
+// テスト用ヘルパー。実装側と同じく、行番号付きのエラーを失わない。
+func execScheduleSyncBatchForTest(t *testing.T, ctx context.Context, q *sqlcgen.Queries, params ...sqlcgen.UpsertScheduleSyncParams) {
+	t.Helper()
+	batch := q.UpsertScheduleSync(ctx, params)
+	var batchErr error
+	batch.Exec(func(i int, err error) {
+		if err != nil && batchErr == nil {
+			batchErr = fmt.Errorf("batch item %d: %w", i, err)
+		}
+	})
+	if closeErr := batch.Close(); closeErr != nil && batchErr == nil {
+		batchErr = closeErr
+	}
+	if batchErr != nil {
+		t.Fatalf("executing schedule_sync batch: %v", batchErr)
+	}
+}
+
+type scheduleSyncBatchTracer struct {
+	mu        sync.Mutex
+	batchSize []int
+}
+
+func (t *scheduleSyncBatchTracer) TraceBatchStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
+	if len(data.Batch.QueuedQueries) > 0 && strings.Contains(data.Batch.QueuedQueries[0].SQL, "INSERT INTO schedule_sync") {
+		t.mu.Lock()
+		t.batchSize = append(t.batchSize, data.Batch.Len())
+		t.mu.Unlock()
+	}
+	return ctx
+}
+
+func (t *scheduleSyncBatchTracer) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBatchQueryData) {
+}
+
+func (t *scheduleSyncBatchTracer) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
+
+func (t *scheduleSyncBatchTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	return ctx
+}
+
+func (t *scheduleSyncBatchTracer) TraceQueryEnd(_ context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
+}
+
+func (t *scheduleSyncBatchTracer) sizes() []int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	sizes := make([]int, len(t.batchSize))
+	copy(sizes, t.batchSize)
+	return sizes
+}
 
 // createReservation は networkID=10000/serviceID=5000/GR/27 のチャンネル
 // スナップショット（contentpath_test.go と同じ値）を持つ手動予約を作る。
@@ -276,15 +334,13 @@ func TestReconciler_CommitsScheduleSnapshotMarkerWithStaleSweep(t *testing.T) {
 	defer srv.Close()
 
 	q := sqlcgen.New(pool)
-	if err := q.UpsertScheduleSync(ctx, sqlcgen.UpsertScheduleSyncParams{
+	execScheduleSyncBatchForTest(t, ctx, q, sqlcgen.UpsertScheduleSyncParams{
 		Site:      "default",
 		ProgramID: 6800003,
 		State:     mirakc.ScheduleStateScheduled,
 		Options:   json.RawMessage(`{"priority":10}`),
 		Tags:      []string{mirakc.ProgramTag(6800003)},
-	}); err != nil {
-		t.Fatalf("seeding stale schedule_sync: %v", err)
-	}
+	})
 	if _, err := pool.Exec(ctx, `UPDATE schedule_sync SET observed_at = now() - interval '1 minute'`); err != nil {
 		t.Fatalf("aging schedule_sync row: %v", err)
 	}
@@ -321,6 +377,228 @@ func TestReconciler_CommitsScheduleSnapshotMarkerWithStaleSweep(t *testing.T) {
 	}
 	if !sameTx {
 		t.Error("schedule_sync_snapshots.snapshot_at and schedule_sync.observed_at were not from the same transaction")
+	}
+}
+
+// 複数件の snapshot は個別 Exec ではなく、1 回の SendBatch にまとめる。
+// batch tracer の対象テストなので、旧実装の :exec ループへ戻すと batch 数が 0
+// になって失敗する。
+func TestReconciler_UsesSingleBatchForScheduleSnapshot(t *testing.T) {
+	basePool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	for i := int64(0); i < 3; i++ {
+		programID := int64(7330100) + i
+		mock.schedules[programID] = mirakc.Schedule{
+			State:   mirakc.ScheduleStateScheduled,
+			Program: mirakc.Program{ID: programID},
+			Options: mirakc.Options{Priority: int(i) + 10},
+			Tags:    []string{mirakc.ProgramTag(programID)},
+		}
+	}
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	tracer := &scheduleSyncBatchTracer{}
+	poolConfig := basePool.Config().Copy()
+	poolConfig.ConnConfig.Tracer = tracer
+	tracedPool, err := pgxpool.NewWithConfig(ctx, poolConfig)
+	if err != nil {
+		t.Fatalf("creating traced pool: %v", err)
+	}
+	t.Cleanup(tracedPool.Close)
+
+	rec := reconciler.New("default", mirakc.NewClient(srv.URL, nil), tracedPool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if got := tracer.sizes(); len(got) != 1 || got[0] != 3 {
+		t.Fatalf("schedule_sync SendBatch sizes = %v, want [3]", got)
+	}
+	var rows int
+	if err := tracedPool.QueryRow(ctx, `SELECT count(*) FROM schedule_sync WHERE site = 'default'`).Scan(&rows); err != nil {
+		t.Fatalf("counting schedule_sync rows: %v", err)
+	}
+	if rows != 3 {
+		t.Errorf("schedule_sync rows = %d, want 3", rows)
+	}
+}
+
+// 上限（scheduleSyncBatchSize=1000）をまたぐ件数は複数の SendBatch に分割され、
+// かつ全件が書かれる。「上限内は 1 バッチにまとめる」ことは
+// TestReconciler_UsesSingleBatchForScheduleSnapshot が引き続き主張するので、
+// ここでは上限を超えたときの分割と全件書き込みだけを確認する。
+func TestReconciler_SplitsScheduleSnapshotBatchAtLimit(t *testing.T) {
+	basePool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	const total = 1001 // scheduleSyncBatchSize を 1 件だけ超える
+
+	mock := newMockMirakc()
+	for i := int64(0); i < total; i++ {
+		programID := int64(7331000) + i
+		mock.schedules[programID] = mirakc.Schedule{
+			State:   mirakc.ScheduleStateScheduled,
+			Program: mirakc.Program{ID: programID},
+			Options: mirakc.Options{Priority: int(i)},
+			Tags:    []string{mirakc.ProgramTag(programID)},
+		}
+	}
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	tracer := &scheduleSyncBatchTracer{}
+	poolConfig := basePool.Config().Copy()
+	poolConfig.ConnConfig.Tracer = tracer
+	tracedPool, err := pgxpool.NewWithConfig(ctx, poolConfig)
+	if err != nil {
+		t.Fatalf("creating traced pool: %v", err)
+	}
+	t.Cleanup(tracedPool.Close)
+
+	rec := reconciler.New("default", mirakc.NewClient(srv.URL, nil), tracedPool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	sizes := tracer.sizes()
+	if len(sizes) != 2 {
+		t.Fatalf("schedule_sync SendBatch count = %d (sizes=%v), want 2", len(sizes), sizes)
+	}
+	sum := 0
+	for _, s := range sizes {
+		sum += s
+	}
+	if sum != total {
+		t.Errorf("schedule_sync SendBatch total rows across batches = %d, want %d", sum, total)
+	}
+
+	var rows int
+	if err := tracedPool.QueryRow(ctx, `SELECT count(*) FROM schedule_sync WHERE site = 'default'`).Scan(&rows); err != nil {
+		t.Fatalf("counting schedule_sync rows: %v", err)
+	}
+	if rows != total {
+		t.Errorf("schedule_sync rows = %d, want %d", rows, total)
+	}
+}
+
+// 空 snapshot でも stale sweep と marker 更新は実行する。空 batch を送らない
+// 経路のため、既存の :exec ループの空振りとは異なり SendBatch は不要である。
+func TestReconciler_EmptyScheduleSnapshotSweepsAndMarks(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	execScheduleSyncBatchForTest(t, ctx, q,
+		sqlcgen.UpsertScheduleSyncParams{
+			Site:      "default",
+			ProgramID: 7330201,
+			State:     mirakc.ScheduleStateScheduled,
+			Options:   json.RawMessage(`{"priority":10}`),
+			Tags:      []string{mirakc.ProgramTag(7330201)},
+		},
+		sqlcgen.UpsertScheduleSyncParams{
+			Site:      "default",
+			ProgramID: 7330202,
+			State:     mirakc.ScheduleStateFailed,
+			Options:   json.RawMessage(`{"priority":20}`),
+			Tags:      []string{mirakc.ProgramTag(7330202)},
+		},
+	)
+	if _, err := pool.Exec(ctx, `UPDATE schedule_sync SET observed_at = now() - interval '1 minute'`); err != nil {
+		t.Fatalf("aging schedule_sync rows: %v", err)
+	}
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	rec := reconciler.New("default", mirakc.NewClient(srv.URL, nil), pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	var rows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schedule_sync WHERE site = 'default'`).Scan(&rows); err != nil {
+		t.Fatalf("counting schedule_sync rows: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("schedule_sync rows after empty snapshot = %d, want 0", rows)
+	}
+	if _, err := q.GetScheduleSyncSnapshot(ctx, "default"); err != nil {
+		t.Fatalf("empty snapshot marker was not committed: %v", err)
+	}
+}
+
+// batch 内の 2 行目を DB 制約で失敗させたとき、既に成功した 1 行目も
+// stale sweep / marker と一緒に rollback され、失敗した program ID の文脈が残る。
+func TestReconciler_ScheduleSnapshotBatchFailureRollsBack(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+	programID := int64(7330301)
+	rejectedProgramID := int64(7330302)
+
+	execScheduleSyncBatchForTest(t, ctx, q, sqlcgen.UpsertScheduleSyncParams{
+		Site:      "default",
+		ProgramID: programID,
+		State:     "previous",
+		Options:   json.RawMessage(`{"priority":1}`),
+		Tags:      []string{mirakc.ProgramTag(programID)},
+	})
+	if _, err := pool.Exec(ctx, `
+		ALTER TABLE schedule_sync
+		ADD CONSTRAINT schedule_sync_test_reject_second CHECK (program_id <> 7330302)`); err != nil {
+		t.Fatalf("adding batch failure constraint: %v", err)
+	}
+	t.Cleanup(func() {
+		// testutil.SetupDB はパッケージ単位で DB を再利用し TRUNCATE しかしない
+		// （制約は落とさない）ので、この DROP が失敗すると CHECK 制約が以降の
+		// 全テストに生き残り、program_id = 7330302 を書く別テストが無関係な
+		// CHECK 違反で落ちる。エラーを握り潰さない。
+		if _, err := pool.Exec(context.Background(), `
+			ALTER TABLE schedule_sync
+			DROP CONSTRAINT IF EXISTS schedule_sync_test_reject_second`); err != nil {
+			t.Errorf("dropping batch failure constraint: %v", err)
+		}
+	})
+
+	mock := newMockMirakc()
+	mock.schedules[programID] = mirakc.Schedule{
+		State:   mirakc.ScheduleStateScheduled,
+		Program: mirakc.Program{ID: programID},
+		Options: mirakc.Options{Priority: 10},
+		Tags:    []string{mirakc.ProgramTag(programID)},
+	}
+	mock.additionalSchedules = []mirakc.Schedule{{
+		State:   mirakc.ScheduleStateScheduled,
+		Program: mirakc.Program{ID: rejectedProgramID},
+		Options: mirakc.Options{Priority: 20},
+		Tags:    []string{mirakc.ProgramTag(rejectedProgramID)},
+	}}
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	rec := reconciler.New("default", mirakc.NewClient(srv.URL, nil), pool, nil)
+	err := rec.RunPass(ctx)
+	if err == nil {
+		t.Fatal("RunPass unexpectedly succeeded for a failed schedule snapshot batch")
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("program %d", rejectedProgramID)) {
+		t.Errorf("RunPass error = %v, want failed program context for %d", err, rejectedProgramID)
+	}
+
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT state FROM schedule_sync WHERE site = 'default' AND program_id = $1`, programID).Scan(&state); err != nil {
+		t.Fatalf("reading rolled-back schedule_sync row: %v", err)
+	}
+	if state != "previous" {
+		t.Errorf("schedule_sync state after batch failure = %q, want previous", state)
+	}
+	if _, err := q.GetScheduleSyncSnapshot(ctx, "default"); err == nil {
+		t.Error("schedule snapshot marker was committed despite batch failure")
 	}
 }
 

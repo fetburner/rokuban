@@ -14,7 +14,9 @@ import (
 	"time"
 
 	pgx5 "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db"
@@ -23,6 +25,37 @@ import (
 
 // tinyJPEG は最小限の有効な JPEG（SOI + EOI）。fake ffmpeg が書き出す。
 var tinyJPEG = []byte{0xFF, 0xD8, 0xFF, 0xD9}
+
+type countingJobInsertMiddleware struct {
+	river.MiddlewareDefaults
+	insertManyCalls int
+	batchSizes      []int
+	hasUniqueOpts   []bool
+}
+
+func (m *countingJobInsertMiddleware) InsertMany(ctx context.Context, params []*rivertype.JobInsertParams, doInner func(context.Context) ([]*rivertype.JobInsertResult, error)) ([]*rivertype.JobInsertResult, error) {
+	m.insertManyCalls++
+	m.batchSizes = append(m.batchSizes, len(params))
+	for _, param := range params {
+		m.hasUniqueOpts = append(m.hasUniqueOpts, len(param.UniqueKey) > 0 && param.UniqueStates != 0)
+	}
+	return doInner(ctx)
+}
+
+func newThumbnailInsertClient(t *testing.T, pool *pgxpool.Pool, middleware *countingJobInsertMiddleware) *river.Client[pgx5.Tx] {
+	t.Helper()
+	workers := river.NewWorkers()
+	river.AddWorker(workers, &ThumbnailWorker{})
+	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
+		Queues:     map[string]river.QueueConfig{thumbnailQueue: {MaxWorkers: 1}},
+		Workers:    workers,
+		Middleware: []rivertype.Middleware{middleware},
+	})
+	if err != nil {
+		t.Fatalf("river.NewClient: %v", err)
+	}
+	return client
+}
 
 func TestThumbnailSeek(t *testing.T) {
 	tests := []struct {
@@ -564,6 +597,144 @@ func TestEnqueueMissingThumbnails_ExcludesTrash(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("EnqueueMissingThumbnails enqueued %d jobs, want 0 (only the trashed recording is missing a thumbnail)", n)
+	}
+}
+
+func TestEnqueueMissingThumbnails_UsesInsertMany(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	liveIDs := []int64{insertTestRecording(t, pool), insertTestRecording(t, pool)}
+	for i, id := range liveIDs {
+		if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+			RecordingID: id,
+			Kind:        db.AssetKindOriginal,
+			RelPath:     fmt.Sprintf("live%d.m2ts", i),
+			SizeBytes:   1,
+		}); err != nil {
+			t.Fatalf("seed live original %d: %v", id, err)
+		}
+	}
+
+	// original が無い録画は対象外。
+	insertTestRecording(t, pool)
+
+	// active thumbnail がある録画は対象外。
+	withThumbnailID := insertTestRecording(t, pool)
+	if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+		RecordingID: withThumbnailID,
+		Kind:        db.AssetKindOriginal,
+		RelPath:     "complete.m2ts",
+		SizeBytes:   1,
+	}); err != nil {
+		t.Fatalf("seed complete original: %v", err)
+	}
+	if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+		RecordingID: withThumbnailID,
+		Kind:        db.AssetKindThumbnail,
+		RelPath:     thumbnailRelPath(withThumbnailID),
+		SizeBytes:   1,
+	}); err != nil {
+		t.Fatalf("seed complete thumbnail: %v", err)
+	}
+
+	// ごみ箱の録画は対象外。
+	trashedID := insertTestRecording(t, pool)
+	if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+		RecordingID: trashedID,
+		Kind:        db.AssetKindOriginal,
+		RelPath:     "trashed.m2ts",
+		SizeBytes:   1,
+	}); err != nil {
+		t.Fatalf("seed trashed original: %v", err)
+	}
+	if _, err := q.SoftDeleteRecording(ctx, trashedID); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+
+	middleware := &countingJobInsertMiddleware{}
+	client := newThumbnailInsertClient(t, pool, middleware)
+	n, err := EnqueueMissingThumbnails(ctx, pool, client)
+	if err != nil {
+		t.Fatalf("EnqueueMissingThumbnails: %v", err)
+	}
+	if n != len(liveIDs) {
+		t.Fatalf("EnqueueMissingThumbnails returned %d, want %d", n, len(liveIDs))
+	}
+	if middleware.insertManyCalls != 1 {
+		t.Fatalf("InsertMany calls = %d, want 1", middleware.insertManyCalls)
+	}
+	if len(middleware.batchSizes) != 1 || middleware.batchSizes[0] != len(liveIDs) {
+		t.Fatalf("InsertMany batch sizes = %v, want [%d]", middleware.batchSizes, len(liveIDs))
+	}
+	for i, hasUniqueOpts := range middleware.hasUniqueOpts {
+		if !hasUniqueOpts {
+			t.Errorf("InsertMany param %d lost ThumbnailJobArgs unique options", i)
+		}
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT (args->>'recording_id')::bigint, queue
+		FROM river_job
+		WHERE kind = 'thumbnail'
+		ORDER BY id`)
+	if err != nil {
+		t.Fatalf("query thumbnail jobs: %v", err)
+	}
+	defer rows.Close()
+
+	counts := make(map[int64]int, len(liveIDs))
+	for rows.Next() {
+		var id int64
+		var queue string
+		if err := rows.Scan(&id, &queue); err != nil {
+			t.Fatalf("scan thumbnail job: %v", err)
+		}
+		if queue != thumbnailQueue {
+			t.Errorf("thumbnail job %d queue = %q, want %q", id, queue, thumbnailQueue)
+		}
+		counts[id]++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate thumbnail jobs: %v", err)
+	}
+
+	for _, id := range liveIDs {
+		if counts[id] != 1 {
+			t.Errorf("thumbnail jobs for live recording %d = %d, want 1", id, counts[id])
+		}
+	}
+	for _, id := range []int64{withThumbnailID, trashedID} {
+		if counts[id] != 0 {
+			t.Errorf("thumbnail jobs for excluded recording %d = %d, want 0", id, counts[id])
+		}
+	}
+}
+
+func TestEnqueueMissingThumbnails_EmptySkipsRiver(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	// original が無い録画だけなら、River の投入 API 自体を呼ばない。
+	insertTestRecording(t, pool)
+	middleware := &countingJobInsertMiddleware{}
+	client := newThumbnailInsertClient(t, pool, middleware)
+
+	n, err := EnqueueMissingThumbnails(context.Background(), pool, client)
+	if err != nil {
+		t.Fatalf("EnqueueMissingThumbnails: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("EnqueueMissingThumbnails returned %d, want 0", n)
+	}
+	if middleware.insertManyCalls != 0 {
+		t.Fatalf("InsertMany calls = %d, want 0 for empty input", middleware.insertManyCalls)
 	}
 }
 

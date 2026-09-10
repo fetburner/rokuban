@@ -29,6 +29,7 @@
     "e2e:cls": "node e2e/cls.mjs",
     "e2e:chip-overflow": "node e2e/chip-overflow.mjs",
     "e2e:personalization": "node e2e/personalization.mjs",
+    "e2e:programs-view": "node e2e/programs-view.mjs",
     "e2e:subtitles": "node e2e/subtitles.mjs",
     "e2e:fixtures": "node e2e/validate-fixtures.mjs"
   },

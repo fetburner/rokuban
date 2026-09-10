@@ -13,9 +13,14 @@ export const lgMediaQuery = '(min-width: 64rem)'
  *
  * `window.matchMedia` を持たない環境では false を返す。グリッドが出ない側
  * （= リスト）に倒れるので、第一級のビューが失われることはない。
+ * 初回値も同期的に `matchMedia` から読む。初回だけ false にすると、保存済みの
+ * 番組表がリストとして一度描画されてからグリッドへ差し替わり、ちらつく。
  */
 export function useMediaQuery(query: string): boolean {
-  const [matches, setMatches] = useState(false)
+  const [matches, setMatches] = useState(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
+    return window.matchMedia(query).matches
+  })
 
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') return

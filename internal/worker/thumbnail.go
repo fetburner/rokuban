@@ -427,12 +427,17 @@ func EnqueueMissingThumbnails(ctx context.Context, pool *pgxpool.Pool, riverClie
 	if err != nil {
 		return 0, fmt.Errorf("listing missing thumbnails: %w", err)
 	}
-	n := 0
-	for _, id := range ids {
-		if _, err := riverClient.Insert(ctx, jobs.ThumbnailJobArgs{RecordingID: id}, nil); err != nil {
-			return n, fmt.Errorf("inserting thumbnail job for recording %d: %w", id, err)
-		}
-		n++
+	if len(ids) == 0 {
+		return 0, nil
 	}
-	return n, nil
+
+	params := make([]river.InsertManyParams, len(ids))
+	for i, id := range ids {
+		params[i] = river.InsertManyParams{Args: jobs.ThumbnailJobArgs{RecordingID: id}}
+	}
+	results, err := riverClient.InsertMany(ctx, params)
+	if err != nil {
+		return 0, fmt.Errorf("inserting thumbnail jobs: %w", err)
+	}
+	return len(results), nil
 }

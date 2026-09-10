@@ -7,7 +7,6 @@ package sqlcgen
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 )
 
@@ -91,56 +90,6 @@ func (q *Queries) ScheduleSyncSweepMark(ctx context.Context) (time.Time, error) 
 	var mark time.Time
 	err := row.Scan(&mark)
 	return mark, err
-}
-
-const upsertScheduleSync = `-- name: UpsertScheduleSync :exec
-INSERT INTO schedule_sync (
-    site, program_id, state,
-    options, tags, failed_reason, observed_at
-) VALUES ($1, $2, $3, $4, $5, $6, now())
-ON CONFLICT (site, program_id) DO UPDATE SET
-    state          = EXCLUDED.state,
-    options        = EXCLUDED.options,
-    tags           = EXCLUDED.tags,
-    failed_reason  = EXCLUDED.failed_reason,
-    observed_at    = now()
-`
-
-type UpsertScheduleSyncParams struct {
-	Site         string
-	ProgramID    int64
-	State        string
-	Options      json.RawMessage
-	Tags         []string
-	FailedReason json.RawMessage
-}
-
-// schedule_sync は reservation_id 列（observed schedule がどの reservations
-// 行に対応するかの便宜的なポインタ）を持たない --- 読む本番コードが 1 つも
-// 無かった（この列を含む唯一の SELECT だった ListScheduleSyncsBySite も
-// 呼び出し元ゼロだったため、この issue で併せて落とした。
-// ListScheduleSyncsBySite は presync collector という読み手ができたため
-// issue #680 で再追加した）。reconciler の「自分が作った schedule か」の
-// 判定は常に tags = mirakc.IsOurs で行う。
-//
-// issue #99 は reservation_id の FK（ON DELETE SET NULL）だけを外す案を
-// 挙げたが、PR #147 のレビューで取り下げられた --- 外すとこの列は「削除済み
-// 予約を指す古い id」を持ちうるようになり、NULL より紛らわしくなる
-// （インシデント対応で直接 SELECT する人を誤らせる）。予約行の導出キーは
-// ruler の導出削除・再実体化で変わる不安定な値（#53/#98/#99）であり、
-// 読み手のいない列にそれを保存し続ける理由が無いため、issue #148 で
-// 列自体を落とした（CLAUDE.md 不変条件 10「意味を持たない行を作らない」/
-// 11「これを書く / 使うコードは今あるか」）。
-func (q *Queries) UpsertScheduleSync(ctx context.Context, arg UpsertScheduleSyncParams) error {
-	_, err := q.db.Exec(ctx, upsertScheduleSync,
-		arg.Site,
-		arg.ProgramID,
-		arg.State,
-		arg.Options,
-		arg.Tags,
-		arg.FailedReason,
-	)
-	return err
 }
 
 const upsertScheduleSyncSnapshot = `-- name: UpsertScheduleSyncSnapshot :exec

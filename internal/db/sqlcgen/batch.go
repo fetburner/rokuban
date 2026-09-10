@@ -18,6 +18,124 @@ var (
 	ErrBatchAlreadyClosed = errors.New("batch already closed")
 )
 
+const insertDropPosition = `-- name: InsertDropPosition :batchexec
+INSERT INTO drop_positions (media_asset_id, byte_offset, pid, elapsed_ms)
+VALUES ($1, $2, $3, $4)
+`
+
+type InsertDropPositionBatchResults struct {
+	br     pgx.BatchResults
+	tot    int
+	closed bool
+}
+
+type InsertDropPositionParams struct {
+	MediaAssetID int64
+	ByteOffset   int64
+	Pid          int32
+	ElapsedMs    *int64
+}
+
+// byte_offset は原本内の観測位置。elapsed_ms は PCR を観測できなかった位置では
+// NULL のまま保存する（導出できないこと自体を値で表すために 0 を使わない）。
+func (q *Queries) InsertDropPosition(ctx context.Context, arg []InsertDropPositionParams) *InsertDropPositionBatchResults {
+	batch := &pgx.Batch{}
+	for _, a := range arg {
+		vals := []interface{}{
+			a.MediaAssetID,
+			a.ByteOffset,
+			a.Pid,
+			a.ElapsedMs,
+		}
+		batch.Queue(insertDropPosition, vals...)
+	}
+	br := q.db.SendBatch(ctx, batch)
+	return &InsertDropPositionBatchResults{br, len(arg), false}
+}
+
+func (b *InsertDropPositionBatchResults) Exec(f func(int, error)) {
+	defer b.br.Close()
+	for t := 0; t < b.tot; t++ {
+		if b.closed {
+			if f != nil {
+				f(t, ErrBatchAlreadyClosed)
+			}
+			continue
+		}
+		_, err := b.br.Exec()
+		if f != nil {
+			f(t, err)
+		}
+	}
+}
+
+func (b *InsertDropPositionBatchResults) Close() error {
+	b.closed = true
+	return b.br.Close()
+}
+
+const insertDropStat = `-- name: InsertDropStat :batchexec
+INSERT INTO drop_stats (media_asset_id, pid, packets, drops, errors, scrambled, pid_type)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+`
+
+type InsertDropStatBatchResults struct {
+	br     pgx.BatchResults
+	tot    int
+	closed bool
+}
+
+type InsertDropStatParams struct {
+	MediaAssetID int64
+	Pid          int32
+	Packets      int64
+	Drops        int64
+	Errors       int64
+	Scrambled    int64
+	PidType      *string
+}
+
+// pid_type は分類できなかった PID では NULL（空文字を入れない）。
+// 値の権威は internal/tsstat（列に CHECK は無い）。
+func (q *Queries) InsertDropStat(ctx context.Context, arg []InsertDropStatParams) *InsertDropStatBatchResults {
+	batch := &pgx.Batch{}
+	for _, a := range arg {
+		vals := []interface{}{
+			a.MediaAssetID,
+			a.Pid,
+			a.Packets,
+			a.Drops,
+			a.Errors,
+			a.Scrambled,
+			a.PidType,
+		}
+		batch.Queue(insertDropStat, vals...)
+	}
+	br := q.db.SendBatch(ctx, batch)
+	return &InsertDropStatBatchResults{br, len(arg), false}
+}
+
+func (b *InsertDropStatBatchResults) Exec(f func(int, error)) {
+	defer b.br.Close()
+	for t := 0; t < b.tot; t++ {
+		if b.closed {
+			if f != nil {
+				f(t, ErrBatchAlreadyClosed)
+			}
+			continue
+		}
+		_, err := b.br.Exec()
+		if f != nil {
+			f(t, err)
+		}
+	}
+}
+
+func (b *InsertDropStatBatchResults) Close() error {
+	b.closed = true
+	return b.br.Close()
+}
+
 const upsertEpgProgram = `-- name: UpsertEpgProgram :batchexec
 INSERT INTO epg_programs (
     site, program_id, network_id, service_id, event_id,
@@ -190,6 +308,88 @@ func (b *UpsertEpgServiceBatchResults) Exec(f func(int, error)) {
 }
 
 func (b *UpsertEpgServiceBatchResults) Close() error {
+	b.closed = true
+	return b.br.Close()
+}
+
+const upsertScheduleSync = `-- name: UpsertScheduleSync :batchexec
+INSERT INTO schedule_sync (
+    site, program_id, state,
+    options, tags, failed_reason, observed_at
+) VALUES ($1, $2, $3, $4, $5, $6, now())
+ON CONFLICT (site, program_id) DO UPDATE SET
+    state          = EXCLUDED.state,
+    options        = EXCLUDED.options,
+    tags           = EXCLUDED.tags,
+    failed_reason  = EXCLUDED.failed_reason,
+    observed_at    = now()
+`
+
+type UpsertScheduleSyncBatchResults struct {
+	br     pgx.BatchResults
+	tot    int
+	closed bool
+}
+
+type UpsertScheduleSyncParams struct {
+	Site         string
+	ProgramID    int64
+	State        string
+	Options      json.RawMessage
+	Tags         []string
+	FailedReason json.RawMessage
+}
+
+// schedule_sync は reservation_id 列（observed schedule がどの reservations
+// 行に対応するかの便宜的なポインタ）を持たない --- 読む本番コードが 1 つも
+// 無かった（この列を含む唯一の SELECT だった ListScheduleSyncsBySite も
+// 呼び出し元ゼロだったため、この issue で併せて落とした。
+// ListScheduleSyncsBySite は presync collector という読み手ができたため
+// issue #680 で再追加した）。reconciler の「自分が作った schedule か」の
+// 判定は常に tags = mirakc.IsOurs で行う。
+//
+// issue #99 は reservation_id の FK（ON DELETE SET NULL）だけを外す案を
+// 挙げたが、PR #147 のレビューで取り下げられた --- 外すとこの列は「削除済み
+// 予約を指す古い id」を持ちうるようになり、NULL より紛らわしくなる
+// （インシデント対応で直接 SELECT する人を誤らせる）。予約行の導出キーは
+// ruler の導出削除・再実体化で変わる不安定な値（#53/#98/#99）であり、
+// 読み手のいない列にそれを保存し続ける理由が無いため、issue #148 で
+// 列自体を落とした（CLAUDE.md 不変条件 10「意味を持たない行を作らない」/
+// 11「これを書く / 使うコードは今あるか」）。
+func (q *Queries) UpsertScheduleSync(ctx context.Context, arg []UpsertScheduleSyncParams) *UpsertScheduleSyncBatchResults {
+	batch := &pgx.Batch{}
+	for _, a := range arg {
+		vals := []interface{}{
+			a.Site,
+			a.ProgramID,
+			a.State,
+			a.Options,
+			a.Tags,
+			a.FailedReason,
+		}
+		batch.Queue(upsertScheduleSync, vals...)
+	}
+	br := q.db.SendBatch(ctx, batch)
+	return &UpsertScheduleSyncBatchResults{br, len(arg), false}
+}
+
+func (b *UpsertScheduleSyncBatchResults) Exec(f func(int, error)) {
+	defer b.br.Close()
+	for t := 0; t < b.tot; t++ {
+		if b.closed {
+			if f != nil {
+				f(t, ErrBatchAlreadyClosed)
+			}
+			continue
+		}
+		_, err := b.br.Exec()
+		if f != nil {
+			f(t, err)
+		}
+	}
+}
+
+func (b *UpsertScheduleSyncBatchResults) Close() error {
 	b.closed = true
 	return b.br.Close()
 }
