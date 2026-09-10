@@ -862,6 +862,31 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:programs-grid-zoom
 ```
 
+### 録画一覧の絞り込みパネルのルール節（`recordings-rule-filter.mjs`）
+
+絞り込みパネルは `max-h-[min(34rem,80vh)]` の中をスクロールさせるので、節を 1 つ
+足したときに高さ予算を超えないか・末尾の節まで届くかは jsdom では測れない。選択肢
+に無い `ruleId`（削除済みルール・古い共有リンク）を渡したときの `<select>` の挙動
+も、HTML の ask-for-a-reset に従うかどうかは実装依存なので実ブラウザで測る。
+
+- 390px / 1280px でパネルの実測高さが 544px（34rem）以内に収まり、ルール節の
+  `<select>` と末尾の「種別」節がスクロールで到達でき（中心のヒットテストが
+  その要素に当たる）、ページが横に溢れない
+- `?ruleId=99`（一覧に無い）で開くと `<select>` がフォールバック option
+  `ルール #99` を選択状態にする（先頭の「問わない」に落ちない）
+- `?ruleId=8`（一覧にある）では名前の option が選ばれ、チップが `ルール: <名前>`
+  で出る
+- ルールが 0 件なら節ごと出さない
+
+直す前の実装（フォールバック option・チップの接頭辞・節のゲートが無い版）では
+実測で③④⑤が落ち、`<select>` は実 Chrome でも `value=""` / 表示「問わない」に
+なる。①②は節が増える前から予算内なので落ちない。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:recordings-rule-filter
+```
+
 ## CI では回さない
 
 実サーバーと実 mirakc のデータに依存するため、CI には載せない。**ローカルでの受け入れ確認**の
