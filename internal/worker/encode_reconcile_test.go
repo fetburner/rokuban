@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/riverqueue/river"
@@ -218,13 +219,13 @@ func TestEncodeReconcile_DoesNotDoubleEnqueue(t *testing.T) {
 	}
 }
 
-// TestListRecordingsMissingEncodes は候補クエリを両方向で見る。
+// TestListMissingEncodeProfiles は不足プロファイルクエリを両方向で見る。
 //
 // 「投入されないこと」をジョブ数で見ても意味が無いケースがある --- 例えば
 // 「原本が無い（ingest 未完了）」は EnqueueMissingEncodes 側でも弾かれるので、
 // クエリから条件を落としてもジョブ数のアサーションは通ってしまう。候補集合
 // そのものを見る。
-func TestListRecordingsMissingEncodes(t *testing.T) {
+func TestListMissingEncodeProfiles(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -287,26 +288,28 @@ func TestListRecordingsMissingEncodes(t *testing.T) {
 
 	// (h) desired が現在の設定に無いプロファイル（改名 / 削除された）→ 候補に
 	// しない。投入しても EncodeWorker が `unknown encode profile` で弾くだけで
-	// 永久に満たされず、recording_id 昇順の窓を恒久的に占有する
-	// （EncodeReconcileWorker の doc コメント「窓は回らない」）。
+	// 永久に満たされないため、定期パスの投入対象から外す。
 	renamed := seedRecordingWithOriginal(t, pool, mediaDir, "q/renamed.m2ts", []string{"gone"}, []byte("x"))
 
 	// (i) 空文字列のプロファイル名 → 候補にしない。EnqueueMissingEncodes が
 	// 空文字列をスキップするので、候補に挙げると (h) と同じ「永久に満たされない
-	// 候補」になる。設定側の名前は必須検証済みなので known_profiles には
-	// 空文字列が入らず、(h) と同じ仕組みで落ちる。
+	// 候補」になる。クエリでも空文字列を明示的に落とす。
 	emptyProfile := seedRecordingWithOriginal(t, pool, mediaDir, "q/empty.m2ts", []string{""}, []byte("x"))
 
-	got, err := q.ListRecordingsMissingEncodes(ctx, sqlcgen.ListRecordingsMissingEncodesParams{
+	got, err := q.ListMissingEncodeProfiles(ctx, sqlcgen.ListMissingEncodeProfilesParams{
 		KnownProfiles: []string{"h264", "h265"},
 		RowLimit:      encodeReconcileRowLimit,
 	})
 	if err != nil {
-		t.Fatalf("ListRecordingsMissingEncodes: %v", err)
+		t.Fatalf("ListMissingEncodeProfiles: %v", err)
 	}
-	if !slices.Equal(got, []int64{missing, encodedGone}) {
-		t.Errorf("candidates = %v, want [%d %d] (complete=%d noProfiles=%d incomplete=%d originalGone=%d trashed=%d renamed=%d emptyProfile=%d)",
-			got, missing, encodedGone, complete, noProfiles, incomplete, originalGone, trashed, renamed, emptyProfile)
+	want := []sqlcgen.ListMissingEncodeProfilesRow{
+		{RecordingID: missing, Profile: "h265"},
+		{RecordingID: encodedGone, Profile: "h264"},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("missing encode profiles = %v, want %v (complete=%d noProfiles=%d incomplete=%d originalGone=%d trashed=%d renamed=%d emptyProfile=%d)",
+			got, want, complete, noProfiles, incomplete, originalGone, trashed, renamed, emptyProfile)
 	}
 
 	// AfterRecordingID（#326 の窓の回転が使う keyset 述語）: missing の id より
@@ -314,16 +317,17 @@ func TestListRecordingsMissingEncodes(t *testing.T) {
 	if missing >= encodedGone {
 		t.Fatalf("expected missing (%d) < encodedGone (%d) for this assertion to mean anything", missing, encodedGone)
 	}
-	gotAfter, err := q.ListRecordingsMissingEncodes(ctx, sqlcgen.ListRecordingsMissingEncodesParams{
+	gotAfter, err := q.ListMissingEncodeProfiles(ctx, sqlcgen.ListMissingEncodeProfilesParams{
 		AfterRecordingID: missing,
 		KnownProfiles:    []string{"h264", "h265"},
 		RowLimit:         encodeReconcileRowLimit,
 	})
 	if err != nil {
-		t.Fatalf("ListRecordingsMissingEncodes with AfterRecordingID: %v", err)
+		t.Fatalf("ListMissingEncodeProfiles with AfterRecordingID: %v", err)
 	}
-	if !slices.Equal(gotAfter, []int64{encodedGone}) {
-		t.Errorf("candidates with AfterRecordingID=%d = %v, want [%d]", missing, gotAfter, encodedGone)
+	wantAfter := []sqlcgen.ListMissingEncodeProfilesRow{{RecordingID: encodedGone, Profile: "h264"}}
+	if !slices.Equal(gotAfter, wantAfter) {
+		t.Errorf("missing encode profiles with AfterRecordingID=%d = %v, want %v", missing, gotAfter, wantAfter)
 	}
 
 	// 落とした側（(h)/(i)）は数えて見せる --- 黙って落とすと「エンコードされない
@@ -341,8 +345,75 @@ func TestListRecordingsMissingEncodes(t *testing.T) {
 	}
 }
 
+// TestEncodeReconcileWorker_BatchesCandidateReads は、reconcile パスが候補ごとの
+// 原本・ポリシー・encoded の再取得をしないことを固定する。River Insert は不足
+// プロファイルごとに残るが、読み取りは候補数に比例して増えない。
+func TestEncodeReconcileWorker_BatchesCandidateReads(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	mediaDir := t.TempDir()
+	seedRecordingWithOriginal(t, pool, mediaDir, "batch/1.m2ts", []string{"h264", "h265"}, []byte("x"))
+	seedRecordingWithOriginal(t, pool, mediaDir, "batch/2.m2ts", []string{"h264", "h265"}, []byte("x"))
+
+	counter := &encodeReconcileQueryCounter{}
+	tracedPool := poolWithQueryTracer(t, pool, counter)
+	w := &EncodeReconcileWorker{Pool: tracedPool, Profiles: encodeConfigWith("h264", "h265"), RowLimit: 2}
+	runEncodeReconcilePass(t, tracedPool, w)
+
+	if got := counter.listMissing.Load(); got != 1 {
+		t.Errorf("ListMissingEncodeProfiles calls = %d, want 1", got)
+	}
+	if got := counter.activeOriginal.Load(); got != 0 {
+		t.Errorf("GetActiveOriginalMediaAsset calls = %d, want 0", got)
+	}
+	if got := counter.encodePolicy.Load(); got != 0 {
+		t.Errorf("GetRecordingEncodePolicy calls = %d, want 0", got)
+	}
+	if got := counter.activeEncoded.Load(); got != 0 {
+		t.Errorf("GetActiveEncodedMediaAssetID calls = %d, want 0", got)
+	}
+}
+
+type encodeReconcileQueryCounter struct {
+	listMissing    atomic.Int64
+	activeOriginal atomic.Int64
+	encodePolicy   atomic.Int64
+	activeEncoded  atomic.Int64
+}
+
+func (c *encodeReconcileQueryCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	switch {
+	case strings.Contains(data.SQL, "-- name: ListMissingEncodeProfiles"):
+		c.listMissing.Add(1)
+	case strings.Contains(data.SQL, "-- name: GetActiveOriginalMediaAsset"):
+		c.activeOriginal.Add(1)
+	case strings.Contains(data.SQL, "-- name: GetRecordingEncodePolicy"):
+		c.encodePolicy.Add(1)
+	case strings.Contains(data.SQL, "-- name: GetActiveEncodedMediaAssetID"):
+		c.activeEncoded.Add(1)
+	}
+	return ctx
+}
+
+func (*encodeReconcileQueryCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {
+}
+
+func poolWithQueryTracer(t *testing.T, pool *pgxpool.Pool, tracer pgx.QueryTracer) *pgxpool.Pool {
+	t.Helper()
+	config := pool.Config()
+	config.ConnConfig.Tracer = tracer
+	traced, err := pgxpool.NewWithConfig(context.Background(), config)
+	if err != nil {
+		t.Fatalf("creating traced pool: %v", err)
+	}
+	t.Cleanup(traced.Close)
+	return traced
+}
+
 // TestUnknownDesiredProfile_PredicateAsymmetry は「desired が全部揃っているか」
-// という同じ形の述語が 3 箇所（このパスの ListRecordingsMissingEncodes /
+// という同じ形の述語が 3 箇所（このパスの ListMissingEncodeProfiles /
 // ListUnsatisfiableEncodeProfiles、削除エンジンの
 // until_encoded_deletable_originals view）にあり、known_profiles で絞るかどうかで
 // 意図的に食い違っていることを固定する回帰テスト（決定は
@@ -375,15 +446,17 @@ func TestUnknownDesiredProfile_PredicateAsymmetry(t *testing.T) {
 
 	// 方向 A: 候補クエリ（known_profiles で絞る）に現れない。
 	q := sqlcgen.New(pool)
-	candidates, err := q.ListRecordingsMissingEncodes(context.Background(), sqlcgen.ListRecordingsMissingEncodesParams{
+	candidates, err := q.ListMissingEncodeProfiles(context.Background(), sqlcgen.ListMissingEncodeProfilesParams{
 		KnownProfiles: []string{"h264"},
 		RowLimit:      encodeReconcileRowLimit,
 	})
 	if err != nil {
-		t.Fatalf("ListRecordingsMissingEncodes: %v", err)
+		t.Fatalf("ListMissingEncodeProfiles: %v", err)
 	}
-	if slices.Contains(candidates, recordingID) {
-		t.Errorf("ListRecordingsMissingEncodes candidates = %v, recording %d (desired profile %q not in current config) must not be a candidate",
+	if slices.IndexFunc(candidates, func(row sqlcgen.ListMissingEncodeProfilesRow) bool {
+		return row.RecordingID == recordingID
+	}) >= 0 {
+		t.Errorf("ListMissingEncodeProfiles candidates = %v, recording %d (desired profile %q not in current config) must not be a candidate",
 			candidates, recordingID, "gone")
 	}
 
@@ -585,6 +658,41 @@ func TestEncodeReconcileWorker_RowLimitCapsWorkPerPass(t *testing.T) {
 	// 検出できなくなる）。
 	if got := promtestutil.ToFloat64(metrics.EncodeReconcileLastPass); got == 0 {
 		t.Error("last-pass gauge was not set; a stalled pass would be undetectable")
+	}
+}
+
+// TestEncodeReconcileWorker_RowLimitCountsRecordings は、1 録画の複数 profile が
+// RowLimit を消費しないことと、window の再開位置が recording_id 単位で進むことを
+// 固定する。
+func TestEncodeReconcileWorker_RowLimitCountsRecordings(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	mediaDir := t.TempDir()
+	first := seedRecordingWithOriginal(t, pool, mediaDir, "row-limit/1.m2ts", []string{"h264", "h265"}, []byte("x"))
+	second := seedRecordingWithOriginal(t, pool, mediaDir, "row-limit/2.m2ts", []string{"h265"}, []byte("x"))
+	if first >= second {
+		t.Fatalf("expected ascending recording ids, got first=%d second=%d", first, second)
+	}
+
+	w := &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h264", "h265"), RowLimit: 1}
+	runEncodeReconcilePass(t, pool, w)
+	if got := countEncodeJobs(t, pool, first, "h264"); got != 1 {
+		t.Errorf("pass 1: encode jobs for first/h264 = %d, want 1", got)
+	}
+	if got := countEncodeJobs(t, pool, first, "h265"); got != 1 {
+		t.Errorf("pass 1: encode jobs for first/h265 = %d, want 1 (all profiles of one recording must be returned)", got)
+	}
+	if got := countEncodeJobs(t, pool, second, "h265"); got != 0 {
+		t.Errorf("pass 1: encode jobs for second/h265 = %d, want 0 (RowLimit is in recordings)", got)
+	}
+
+	// 1 profile ではなく 1 録画を window の単位にしているので、次のパスで 2 件目へ
+	// 進む。
+	runEncodeReconcilePass(t, pool, w)
+	if got := countEncodeJobs(t, pool, second, "h265"); got != 1 {
+		t.Errorf("pass 2: encode jobs for second/h265 = %d, want 1 (resume position must be a recording id)", got)
 	}
 }
 

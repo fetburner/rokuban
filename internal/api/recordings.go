@@ -183,7 +183,7 @@ type encodeAttemptRow struct {
 // 「来る根拠」が無いので queued を出さない 2 パターン:
 //
 //  1. ごみ箱の録画（r.DeletedAt が非 nil）。EncodeReconcileWorker の
-//     EnqueueMissingEncodesForKnownProfiles / ListRecordingsMissingEncodes は
+//     EnqueueMissingEncodesForKnownProfiles / ListMissingEncodeProfiles は
 //     deleted_at IS NULL で絞っており、ごみ箱の録画にジョブは二度と投入されない
 //     （internal/worker/encode_reconcile.go 参照）。EncodedAssets/プレイヤーを
 //     trash で出さないのと揃え、**running/failed の行が既にあっても

@@ -9,39 +9,61 @@ import (
 	"context"
 )
 
-const listRecordingsMissingEncodes = `-- name: ListRecordingsMissingEncodes :many
+const listMissingEncodeProfiles = `-- name: ListMissingEncodeProfiles :many
 
-SELECT p.recording_id
-FROM recording_encode_policy p
-JOIN recordings r ON r.id = p.recording_id
-WHERE p.recording_id > $1::bigint
-  AND cardinality(p.encode_profiles) > 0
-  AND r.deleted_at IS NULL
-  AND EXISTS (
-    SELECT 1 FROM media_assets o
-    WHERE o.recording_id = p.recording_id
-      AND o.kind = 'original'
-      AND o.state = 'active'
+WITH candidate_recordings AS (
+  SELECT p.recording_id, p.encode_profiles
+  FROM recording_encode_policy p
+  JOIN recordings r ON r.id = p.recording_id
+  WHERE p.recording_id > $2::bigint
+    AND cardinality(p.encode_profiles) > 0
+    AND r.deleted_at IS NULL
+    AND EXISTS (
+      SELECT 1 FROM media_assets o
+      WHERE o.recording_id = p.recording_id
+        AND o.kind = 'original'
+        AND o.state = 'active'
+    )
+    AND EXISTS (
+      SELECT 1 FROM unnest(p.encode_profiles) AS want(profile)
+      WHERE want.profile <> ''
+        AND want.profile = ANY($1::text[])
+        AND NOT EXISTS (
+          SELECT 1 FROM media_assets e
+          WHERE e.recording_id = p.recording_id
+            AND e.kind = 'encoded'
+            AND e.state = 'active'
+            AND e.profile = want.profile
+        )
+    )
+  ORDER BY recording_id
+  LIMIT $3
+)
+SELECT c.recording_id, want.profile::text AS profile
+FROM candidate_recordings c
+CROSS JOIN LATERAL unnest(c.encode_profiles) WITH ORDINALITY AS want(profile, ordinality)
+WHERE want.profile <> ''
+  AND want.profile = ANY($1::text[])
+  AND NOT EXISTS (
+    SELECT 1 FROM media_assets e
+    WHERE e.recording_id = c.recording_id
+      AND e.kind = 'encoded'
+      AND e.state = 'active'
+      AND e.profile = want.profile
   )
-  AND EXISTS (
-    SELECT 1 FROM unnest(p.encode_profiles) AS want(profile)
-    WHERE want.profile = ANY($2::text[])
-      AND NOT EXISTS (
-        SELECT 1 FROM media_assets e
-        WHERE e.recording_id = p.recording_id
-          AND e.kind = 'encoded'
-          AND e.state = 'active'
-          AND e.profile = want.profile
-      )
-  )
-ORDER BY p.recording_id
-LIMIT $3
+GROUP BY c.recording_id, want.profile
+ORDER BY c.recording_id, min(want.ordinality)
 `
 
-type ListRecordingsMissingEncodesParams struct {
-	AfterRecordingID int64
+type ListMissingEncodeProfilesParams struct {
 	KnownProfiles    []string
+	AfterRecordingID int64
 	RowLimit         int32
+}
+
+type ListMissingEncodeProfilesRow struct {
+	RecordingID int64
+	Profile     string
 }
 
 // encode の desired−observed 定期 reconcile（internal/worker/encode_reconcile.go）が
@@ -83,10 +105,12 @@ type ListRecordingsMissingEncodesParams struct {
 // ListUnsatisfiableEncodeProfiles）は共通化せず、この非対称を仕様として
 // コメントに固定する。ドリフトの検出は internal/worker のテストが担う
 // （同じフィクスチャで両側の答えが食い違うことを固定する）。
-// ListRecordingsMissingEncodes は「原本が active でコミット済み、かつ
+// ListMissingEncodeProfiles は「原本が active でコミット済み、かつ
 // known_profiles に含まれる desired のうち少なくとも 1 つについて active な
-// encoded が無い」録画のうち recording_id が after_recording_id より大きいものを
-// recording_id 昇順で返す。
+// encoded が無い」録画について、不足している (recording_id, profile) を返す。
+// recording_id が after_recording_id より大きい録画を recording_id 昇順で
+// row_limit 件選んでから profile を展開するので、row_limit は profile 行数ではなく
+// 録画件数の上限になる。候補の判定は LIMIT 前に行い、完全な録画を先に消費しない。
 //
 // 条件の意味:
 //   - recording_encode_policy に行がある = エンコードポリシーが凍結済み
@@ -96,18 +120,18 @@ type ListRecordingsMissingEncodesParams struct {
 //     コミット済み。ingest 未完了の録画を対象にしない。state='active' まで見るのは
 //     EnqueueMissingEncodes 側の判定（GetActiveOriginalMediaAsset）と一致させる
 //     ため --- 原本が until_encoded で物理削除済みの録画をここで候補に挙げても、
-//     EnqueueMissingEncodes が no-op を返すだけで前進しない
+//     EnqueueMissingEncodes が no-op を返すだけで前進しない。reconcile パスでは
+//     このクエリが同じ判定を行うので、候補ごとの再取得はしない
 //   - r.deleted_at IS NULL = ごみ箱の録画は対象外。ヒント経路（ingest 完了 /
 //     POST /api/recordings/{id}/encode-profiles）は「今その録画に何かが起きた」
 //     という個別のイベントで発火するが、この定期パスは全録画を毎回なめるので、
 //     ユーザーが捨てた録画のエンコードを延々と再投入し続けることになる。
 //     until_encoded_deletable_originals が同じ述語を持つのと同じ理由
-//   - want.profile = ANY(known_profiles) = 現在の設定に存在するプロファイルだけを
-//     欠落判定の対象にする。設定から消えたプロファイルを候補に含めると、投入しても
+//   - want.profile が空文字列でなく、known_profiles に含まれる = 現在の設定に存在する
+//     非空のプロファイルだけを欠落判定の対象にする。設定から消えたプロファイルを候補に含めると、投入しても
 //     EncodeWorker が `unknown encode profile` で弾く（encode.go）録画が窓を
-//     恒久的に占有し続ける（他の候補が減らない限り）。空文字列のプロファイル名が
-//     ここで自動的に落ちるのも同じ仕組み（設定側の名前は必須検証済みなので
-//     known_profiles に空文字列は入らない）
+//     恒久的に占有し続ける（他の候補が減らない限り）。空文字列のプロファイル名も
+//     ここで明示的に落とす（単発 hint 経路の `name == ""` スキップと揃える）
 //   - p.recording_id > after_recording_id = 呼び出し側（EncodeReconcileWorker）が
 //     持つ、プロセスローカルな再開位置。前パスが LIMIT ちょうどまで埋まったなら
 //     続きから、そうでなければ 0（先頭）から見る。窓が「毎パス先頭から」ではなく
@@ -129,19 +153,19 @@ type ListRecordingsMissingEncodesParams struct {
 // until_encoded_deletable_originals は known_profiles で絞らない。
 // これは意図的な非対称（安全側の仕様。上の「名前付き述語」節と
 // docs/storage/retention.md §保持ポリシー）であって揃え忘れではない。
-func (q *Queries) ListRecordingsMissingEncodes(ctx context.Context, arg ListRecordingsMissingEncodesParams) ([]int64, error) {
-	rows, err := q.db.Query(ctx, listRecordingsMissingEncodes, arg.AfterRecordingID, arg.KnownProfiles, arg.RowLimit)
+func (q *Queries) ListMissingEncodeProfiles(ctx context.Context, arg ListMissingEncodeProfilesParams) ([]ListMissingEncodeProfilesRow, error) {
+	rows, err := q.db.Query(ctx, listMissingEncodeProfiles, arg.KnownProfiles, arg.AfterRecordingID, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []int64
+	var items []ListMissingEncodeProfilesRow
 	for rows.Next() {
-		var recording_id int64
-		if err := rows.Scan(&recording_id); err != nil {
+		var i ListMissingEncodeProfilesRow
+		if err := rows.Scan(&i.RecordingID, &i.Profile); err != nil {
 			return nil, err
 		}
-		items = append(items, recording_id)
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
