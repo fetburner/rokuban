@@ -57,20 +57,15 @@ function actions(overrides: Partial<ReservationActions> = {}): ReservationAction
     isBusy: () => false,
     reservedProgramIds: new Set(),
     reservationStateUnknown: false,
+    overlapsFor: () => ({ count: 0, reservations: [] }),
     ...overrides,
   }
 }
 
-/**
- * jsonResponse は overlaps エンドポイントのスタブ応答。ProgramRow は未予約の行に
- * 常に ProgramOverlapWarning を出し、それが `GET .../overlaps` を叩くため、
- * ProgramList を単体でマウントするだけでも fetch のスタブが要る
- * （programs.test.tsx の stubApi と同じ理由）。
- */
 function stubFetch() {
   globalThis.fetch = vi.fn(() =>
     Promise.resolve(
-      new Response(JSON.stringify({ count: 0, reservations: [] }), {
+      new Response(JSON.stringify({ live: false }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }),

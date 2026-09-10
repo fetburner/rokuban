@@ -18,6 +18,7 @@ import {
   reservationsQueryKeyPrefix,
 } from '@/lib/events'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
+import { buildReservationOverlapIndex, deriveProgramOverlaps } from '@/lib/program-overlaps'
 
 /**
  * useReservationActions は予約 / 取消の実行を組み立てる。
@@ -43,11 +44,20 @@ import { mutationErrorMessage } from '@/lib/mutation-error-message'
  * 呼び出し元ごとの boolean prop にすると、リスト・グリッド・検索結果のいずれかが
  * 渡し忘れたときだけ穴が開く（実際にグリッドが 1 箇所渡し忘れていた）。
  * この 1 つの契約を全表示形式が通るので、渡し忘れがそもそも起きない。
+ *
+ * 重なり警告の導出（`overlapsFor`）も同じ理由でここに載せる ---
+ * 呼び出し元ごとの `reservations` prop にすると渡し忘れたときだけ穴が開く。
+ * `reservations` から `orphaned`/`skip` 除外済み・開始終了時刻パース済みの
+ * 索引を `useMemo` で 1 回だけ作り、`overlapsFor` はその索引を閉じ込めた
+ * 関数を返す --- 行ごとの計算を整数比較だけにする（仮想化された行が
+ * スクロールのたびに再レンダーされるため、行の中で毎回パースすると
+ * フレームごとに全予約を走査してしまう）。
  */
 export function useReservationActions(
   serverReservedIds: ReadonlySet<string>,
   sourceByProgramId: ReadonlyMap<string, Reservation['source']>,
   reservationStateUnknown: boolean,
+  reservations: readonly Reservation[] | undefined,
 ): ReservationActions {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -88,6 +98,16 @@ export function useReservationActions(
     }
     return set
   }, [serverReservedIds, optimistic])
+
+  // `reservations` が変わったときだけ 1 回、重なり警告に使う索引を作る。
+  // 未取得（`undefined`）の間は空の索引にする --- `overlapsFor` は常に
+  // `count: 0` の `ProgramOverlaps` を返し、未取得と 0 件を区別しない
+  // （区別しても `ProgramOverlapWarning` 側が両方とも「描かない」に潰すため
+  // 観測可能な効果が無い。詳細は `web/src/components/program-overlap-warning.tsx`）。
+  const overlapIndex = useMemo(
+    () => buildReservationOverlapIndex(reservations ?? []),
+    [reservations],
+  )
 
   const setBusy = (programId: string, busy: boolean) => {
     setBusyProgramIds((current) => {
@@ -280,5 +300,6 @@ export function useReservationActions(
     isBusy: (program) => busyProgramIds.has(programIdentity(program.site, program.programId)),
     reservedProgramIds,
     reservationStateUnknown,
+    overlapsFor: (program) => deriveProgramOverlaps(program, overlapIndex),
   }
 }

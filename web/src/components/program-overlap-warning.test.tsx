@@ -3,7 +3,10 @@ import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { useGetProgramOverlaps, type ProgramOverlaps } from '@/api/generated'
-import { ProgramOverlapWarning } from '@/components/program-overlap-warning'
+import {
+  ProgramOverlapWarning,
+  ProgramOverlapWarningFromApi,
+} from '@/components/program-overlap-warning'
 
 /** testSite はこのテストが `ProgramOverlapWarning` に渡す site。 */
 const testSite = 'default'
@@ -24,7 +27,7 @@ function Harness({ programId }: { programId: number }) {
   return (
     <>
       <div data-testid="query-status">{query.status}</div>
-      <ProgramOverlapWarning site={testSite} programId={programId} />
+      <ProgramOverlapWarningFromApi site={testSite} programId={programId} />
     </>
   )
 }
@@ -68,6 +71,14 @@ const twoOverlaps: ProgramOverlaps = {
 }
 
 describe('ProgramOverlapWarning', () => {
+  it('渡された重なりの件数と内訳を表示する', () => {
+    render(<ProgramOverlapWarning overlaps={twoOverlaps} />)
+
+    expect(screen.getByText(/同じ時間帯に2件の予約があります/)).toBeInTheDocument()
+    expect(screen.getByText(/ニュース7/)).toBeInTheDocument()
+    expect(screen.getByText(/ドラマ特番/)).toBeInTheDocument()
+  })
+
   it('件数が 0 なら何も表示されない', async () => {
     stubFetch(noOverlap)
     renderWarning()

@@ -2,7 +2,7 @@ import { Link } from '@tanstack/react-router'
 import { ChevronDown } from 'lucide-react'
 import { useState } from 'react'
 
-import { useGetProgram, type ProgramOverridesInput } from '@/api/generated'
+import { useGetProgram, type ProgramOverlaps, type ProgramOverridesInput } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { EncodeSettingsFields } from '@/components/encode-settings-fields'
 import { ProgramOverlapWarning } from '@/components/program-overlap-warning'
@@ -53,6 +53,7 @@ export function ProgramRow({
   reservationStateUnknown,
   onReserve,
   onCancel,
+  overlaps,
 }: {
   program: SiteProgram
   serviceName?: string
@@ -69,6 +70,12 @@ export function ProgramRow({
   reservationStateUnknown: boolean
   onReserve: (overrides?: ProgramOverridesInput) => void
   onCancel: () => void
+  /**
+   * 予約一覧から導出した重なり。呼び出し元（`ReservationActions.overlapsFor`）は
+   * 予約一覧が未取得の間も `count: 0` を返すので undefined を渡さない ---
+   * 型が `?:` のままなのは `ProgramOverlapWarning` 側の契約に合わせているだけ。
+   */
+  overlaps?: ProgramOverlaps
 }) {
   const site = program.site
   const liveEnabled = useLiveEnabled()
@@ -102,7 +109,7 @@ export function ProgramRow({
   // `nowMs` は tick（`setInterval`）を持たず毎レンダー `Date.now()` を読むだけ、
   // QueryClient（`main.tsx`）は `staleTime: 30_000` と `refetchOnWindowFocus`
   // のみで `refetchInterval` は無く、このコンポーネント自身が張るクエリ
-  // （capabilities / 番組詳細 / overlaps）も定期再取得しない。したがって
+  // （capabilities / 番組詳細）も定期再取得しない。したがって
   // 「数十秒で追いつく」保証は無い。それでも良いのは上記の理由（誤った遷移先を
   // 指さない）だけであり、pages/live.tsx の `nowMs`（30 秒 tick）のような
   // 常時性の高い表示を求められたら別の設計が要る。
@@ -148,9 +155,15 @@ export function ProgramRow({
               {!program.isFree && <span className="shrink-0">有料</span>}
             </div>
             {/* 予約する前に見せる（issue #24 M2-8）。展開しなくても常に見える位置に置く
-                （予約後に知らせても遅いため）。取消可能な「取消」ボタン側（既に予約済み）
-                では自分自身との重なりしか出ようがないので問い合わせ自体をしない。 */}
-            {!reserved && <ProgramOverlapWarning site={site} programId={program.programId} />}
+                （予約後に知らせても遅いため）。重なりは番組表で取得済みの予約一覧から
+                導出するので、行ごとの overlaps API はここから呼ばない。
+                `!reserved` は予約済み行では出さないという表示上の判断であり、
+                「自分自身との重なりしか出ようがない」からではない ---
+                サーバー（`r.program_id <> target_program_id`）も導出
+                （`deriveProgramOverlaps`）もどちらも自分自身を除くので、
+                予約済み行に出せば他の予約との重なりが見える。出す/出さないは
+                別の判断で、ここでは従来どおり出さない。 */}
+            {!reserved && <ProgramOverlapWarning overlaps={overlaps} />}
           </div>
           <ChevronDown
             className={cn(

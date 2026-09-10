@@ -179,6 +179,7 @@ export function SearchPage() {
     serverReservedProgramIds,
     reservationSourceByProgramId,
     reservationStateUnknown,
+    reservationList,
   )
 
   // search（useMutation の戻り値）を毎レンダー新しいオブジェクトのまま

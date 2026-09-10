@@ -516,6 +516,7 @@ export function ProgramsPage() {
     serverReservedProgramIds,
     reservationSourceByProgramId,
     reservationStateUnknown,
+    reservationList,
   )
 
   // autoLoadFailed: 直近の自動読み込み（進行方向）が失敗したか。失敗したら
@@ -891,6 +892,7 @@ function ProgramGridView({
             )}
             pending={actions.isBusy(selected)}
             reservationStateUnknown={actions.reservationStateUnknown}
+            overlaps={actions.overlapsFor(selected)}
             onReserve={(overrides) => actions.reserve(selected, overrides)}
             onCancel={() => actions.cancel(selected)}
           />

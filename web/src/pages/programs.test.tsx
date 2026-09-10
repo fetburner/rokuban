@@ -224,6 +224,8 @@ const encodeProfiles = [{ name: 'h264', container: 'mp4' as const }]
  *
  * 予約 / 取消は `PUT /api/sites/default/programs/{id}/intent` を叩く
  * （issue #29。reservations 行は同期的に作らない）。テストは常に成功させる。
+ * 番組表の重なり警告は `/api/reservations` から導出するため、番組別 overlaps
+ * エンドポイントはスタブせず、誤って行ごとに取得するとテストが失敗するようにする。
  *
  * `programs` は絞り込み対象の番組集合（既定は `allPrograms`）。日付ジャンプの
  * テストは絶対時刻で配置した専用の番組を渡す。`onProgramsCall` は
@@ -284,9 +286,6 @@ function stubApi(
     }
     if (url.pathname === '/api/encode-profiles') {
       return Promise.resolve(jsonResponse(encodeProfiles))
-    }
-    if (/^\/api\/sites\/default\/programs\/\d+\/overlaps$/.test(url.pathname)) {
-      return Promise.resolve(jsonResponse({ count: 0, reservations: [] }))
     }
     // 行を展開すると ProgramDetail（program-row.tsx）が単体取得を叩く
     // （段階的開示。issue #132 のテストで行を展開するので必要になった）。
@@ -433,6 +432,92 @@ async function reservationsSettled(queryClient: QueryClient): Promise<void> {
 }
 
 describe('ProgramsPage の表示形式', () => {
+  it('予約一覧から重なり警告を導出し、番組別 overlaps API を取得しない', async () => {
+    const fetchMock = stubApi([reservation(alsoSoon.programId, '手話ニュース')])
+    const { queryClient } = renderPage()
+
+    await reservationsSettled(queryClient)
+    expect(
+      screen.getByText(/同じ時間帯に1件の予約があります（.*手話ニュース/),
+    ).toBeInTheDocument()
+
+    expect(
+      fetchMock.mock.calls.filter((call) =>
+        new URL(String(call[0]), 'http://localhost').pathname.endsWith('/overlaps'),
+      ),
+    ).toHaveLength(0)
+  })
+
+  it('取消後は reservations の invalidate によって重なり警告も更新される', async () => {
+    const reservations = [reservation(alsoSoon.programId, '手話ニュース')]
+    const fetchMock = stubApi(
+      reservations,
+      [],
+      allPrograms,
+      undefined,
+      undefined,
+      [],
+      () => {
+        reservations.length = 0
+        return noContentResponse()
+      },
+    )
+    const { queryClient } = renderPage()
+
+    await reservationsSettled(queryClient)
+    expect(screen.getByText(/同じ時間帯に1件の予約があります（.*手話ニュース/)).toBeInTheDocument()
+
+    await userEvent.click(await screen.findByRole('button', { name: '取消' }))
+    await screen.findByText('予約を取消しました')
+
+    await waitFor(() => {
+      expect(screen.queryByText(/同じ時間帯に1件の予約があります/)).not.toBeInTheDocument()
+    })
+    expect(
+      fetchMock.mock.calls.filter((call) =>
+        new URL(String(call[0]), 'http://localhost').pathname.endsWith('/overlaps'),
+      ),
+    ).toHaveLength(0)
+  })
+
+  it('予約一覧が未取得の間は重なり警告を出さない', async () => {
+    // 未取得と重なり 0 件は同じ「描かない」に潰すため、`overlapsFor` は
+    // 区別しない（docs/frontend/programs.md）。ここで固定したいのは実際に
+    // 保証していること --- 未取得の間は（後で重なりが分かるとしても）
+    // 警告を描かない、という 1 点。
+    let resolveReservations!: (response: Response) => void
+    const pending = new Promise<Response>((resolve) => {
+      resolveReservations = resolve
+    })
+    const fetchMock = stubApi()
+    const implementation = fetchMock.getMockImplementation()!
+    let reservationCalls = 0
+    fetchMock.mockImplementation((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.pathname === '/api/reservations' && ++reservationCalls === 1) {
+        return pending
+      }
+      return implementation(input, init)
+    })
+    renderPage()
+
+    // 番組は表示されるが、予約一覧の解決前（=クエリが確定していない状態）
+    // であることをバナーで確認してから、警告が無いことを見る --- クエリが
+    // 解決する前にアサーションが走って空虚に通るのを避けるため
+    // （CLAUDE.md「非同期の空虚な成功に注意する」）。
+    await screen.findByText('ニュース7')
+    expect(screen.getByText('予約状態を確認中…')).toBeInTheDocument()
+    expect(screen.queryByText(/同じ時間帯に.*件の予約があります/)).not.toBeInTheDocument()
+
+    resolveReservations(jsonResponse([reservation(alsoSoon.programId, '手話ニュース')]))
+
+    // 予約一覧が届けば、同じ画面のまま警告が現れる（未取得を恒久的に
+    // 「描かない」へ倒したわけではないことの確認）。
+    expect(
+      await screen.findByText(/同じ時間帯に1件の予約があります（.*手話ニュース/),
+    ).toBeInTheDocument()
+  })
+
   it('予約一覧の取得に失敗すると状態を知らせ、再試行まで未予約行を操作できない', async () => {
     const fetchMock = stubApi()
     const implementation = fetchMock.getMockImplementation()!
@@ -775,6 +860,27 @@ describe('ProgramsPage の表示形式', () => {
 
     // 選択した番組がリストの行として現れ、そこから予約できる
     expect(await screen.findByRole('button', { name: '予約' })).toBeInTheDocument()
+  })
+
+  it('グリッド表示で選んだ番組にも、予約一覧から導出した重なり警告が出る', async () => {
+    // 修正前はグリッド側（`ProgramGridView` の選択行）だけが `overlaps` prop を
+    // 渡し忘れても検出できなかった（リスト表示のテストしかなかった）。
+    // リスト側のテスト（「予約一覧から重なり警告を導出し…」）と同じ組み合わせ
+    // （alsoSoon の予約がある状態で soon を選択）をグリッド経由で確認する。
+    stubApi([reservation(alsoSoon.programId, '手話ニュース')])
+    stubMatchMedia(true)
+    renderPage()
+
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '番組表' }))
+    await screen.findByTestId('program-grid')
+
+    const cell = document.querySelector(`[data-program-id="${soon.programId}"]`)
+    await userEvent.click(cell as HTMLElement)
+
+    expect(
+      await screen.findByText(/同じ時間帯に1件の予約があります（.*手話ニュース/),
+    ).toBeInTheDocument()
   })
 })
 
