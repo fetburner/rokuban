@@ -77,50 +77,6 @@ func SetupDB(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// SetupDBPoolerCompat は SetupDB と同じくパッケージ専用データベースを空の状態で
-// 用意するが、プールを `pgxpool.New` で直接作らず `db.NewPool` 経由で
-// `PoolerCompat: true`（QueryExecModeExec、拡張プロトコルの prepared statement
-// キャッシュを使わないモード）で構築する。
-//
-// SetupDB は pgxpool.New を直接呼ぶため、db.NewPool / buildPoolConfig が実装する
-// pooler_compat の経路（issue #90）を一切通らない。PgBouncer / Neon pooler の
-// transaction pooling 越しでも既存クエリ（jsonb 列・配列パラメータ等）が壊れない
-// ことをパッケージのテストスイートで確認したいときに、SetupDB の代わりにこちらを使う
-// （全パッケージ・全テストで常用する必要はない。pooler_compat は api ロール専用の
-// オプトイン設定であり、通常のテストは通常モードで十分）。
-func SetupDBPoolerCompat(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	ctx := context.Background()
-	base := DatabaseURL(t)
-
-	packageTestDB.once.Do(func() {
-		packageTestDB.url, packageTestDB.err = ensurePackageTestDatabase(ctx, base)
-	})
-	if packageTestDB.err != nil {
-		t.Fatalf("preparing package test database: %v", packageTestDB.err)
-	}
-
-	if err := truncateAllTables(ctx, packageTestDB.url); err != nil {
-		t.Fatalf("truncating tables: %v", err)
-	}
-
-	cfg, err := dbConfigFromURL(packageTestDB.url)
-	if err != nil {
-		t.Fatalf("parsing package test database url: %v", err)
-	}
-	cfg.PoolerCompat = true
-
-	// roles は渡さない。ここで検証したいのは pooler_compat（QueryExecModeExec）
-	// 自体の効果であって、api ロールの statement_timeout や worker/watcher/notifier
-	// との fail-fast 判定とは無関係なので混ぜない。
-	pool, err := db.NewPool(ctx, cfg, nil, 0)
-	if err != nil {
-		t.Fatalf("creating pooler-compat pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
 // DatabaseConfig はパッケージ用テスト DB の接続設定を返す（SetupDB と同じ DB）。
 //
 // プールではなく config.DBConfig が要るのは、**config ファイルを書いて
@@ -146,8 +102,8 @@ func DatabaseConfig(t *testing.T) config.DBConfig {
 	return cfg
 }
 
-// dbConfigFromURL は接続 URL を config.DBConfig に変換する。db.NewPool を経由
-// させるには DSN 文字列ではなく DBConfig が要るため、テスト DB の URL から組む。
+// dbConfigFromURL は接続 URL を config.DBConfig に変換する。DatabaseConfig が
+// config ファイル用に config.DBConfig を組むために使う。
 func dbConfigFromURL(raw string) (config.DBConfig, error) {
 	u, err := url.Parse(raw)
 	if err != nil {

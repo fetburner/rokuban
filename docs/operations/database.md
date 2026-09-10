@@ -41,26 +41,12 @@
   `record_sweep` 等が別トランザクションの行ロックを長く待つ状況では statement_timeout で中断されうる。
   中断されても River が再試行するので致命的ではないが、意図しない再試行が増える兆候として覚えておく
 
-### pooler 越しに置けるのは api ロールと streamer ロールだけ
+### transaction pooling は通さない
 
-`db.pooler_compat: true` は PgBouncer / Neon pooler の **transaction pooling** 越しの接続を想定したモード。
-pgx の prepared statement キャッシュを無効化する（`DefaultQueryExecMode` を `QueryExecModeExec` にする）。
-
-これはデプロイの契約であり、**pooler を通せるのは api ロールと streamer ロールだけ**である。
-worker は River の内部機構が LISTEN を使う。`notifier.New` で作る 1 個の Listener を leadership の
-elector と job-available 通知が共有している。elector と notifier がそれぞれ別に 1 本ずつではない
-（`river@v0.47.0 client.go` の `notifier.New` と `leadership.NewElector` で確認済み）。watcher は advisory lock によるリーダー選出を使う。
-notifier はブラウザへの SSE 配送のために LISTEN を使う。いずれもセッション状態に依存する。
-transaction pooling で物理コネクションが要求ごとに入れ替わると構造的に壊れる（[data.md](../data.md) §2 / §3）。
-`internal/db.NewPool` は `pooler_compat: true` と worker/watcher/notifier のいずれかのロールの
-組み合わせを起動時エラーにする（fail-fast）。**streamer は LISTEN も advisory lock も長期状態も
-使わない**。pooler と組み合わせてよい（`internal/streamer` で確認済み。バイト転送も
-X-Accel-Redirect か Go のファイル配信で、DB 接続を保持し続けない）。
-
-`db.api_statement_timeout` は接続の起動パケット（`RuntimeParams`）で渡す。PgBouncer の
-`ignore_startup_parameters` 設定次第では接続拒否、または黙って無視される可能性がある。
-`pool.Ping` が失敗すれば起動時に大きく落ちるので気付ける。api + pooler を組み合わせて
-運用する場合は `ignore_startup_parameters` に `statement_timeout` を含めない設定にしておく。
+Rokuban は transaction pooling を通さない。
+worker は River の LISTEN を使い、`notifier.New` の 1 個の Listener を elector と job-available 通知で共有する（`river@v0.47.0` で確認済み）。
+watcher は advisory lock、notifier は SSE 用の LISTEN を使うため、transaction pooling で接続が要求ごとに入れ替わると壊れる（[data.md](../data.md) §2 / §3）。
+将来ハイブリッド構成を実装するときは、必要な pooler 対応の形をその PR で改めて決める。
 
 ### EPG churn / autovacuum
 

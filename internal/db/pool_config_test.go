@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/config"
@@ -300,58 +299,6 @@ func TestBuildPoolConfig_APIStatementTimeout(t *testing.T) {
 		if _, ok := poolCfg.ConnConfig.RuntimeParams["statement_timeout"]; ok {
 			t.Errorf("statement_timeout RuntimeParam set for a process without the api role: %q",
 				poolCfg.ConnConfig.RuntimeParams["statement_timeout"])
-		}
-	})
-}
-
-func TestBuildPoolConfig_PoolerCompat(t *testing.T) {
-	t.Run("api role: allowed, disables prepared statement caching", func(t *testing.T) {
-		cfg := testDBConfig()
-		cfg.PoolerCompat = true
-		poolCfg, err := buildPoolConfig(cfg, []string{"api"}, 1)
-		if err != nil {
-			t.Fatalf("buildPoolConfig: %v", err)
-		}
-		if poolCfg.ConnConfig.DefaultQueryExecMode != pgx.QueryExecModeExec {
-			t.Errorf("DefaultQueryExecMode = %v, want QueryExecModeExec", poolCfg.ConnConfig.DefaultQueryExecMode)
-		}
-	})
-
-	t.Run("streamer role: allowed", func(t *testing.T) {
-		cfg := testDBConfig()
-		cfg.PoolerCompat = true
-		if _, err := buildPoolConfig(cfg, []string{"streamer"}, 1); err != nil {
-			t.Errorf("buildPoolConfig: unexpected error for streamer + pooler_compat: %v", err)
-		}
-	})
-
-	for _, role := range []string{"worker", "watcher", "notifier"} {
-		t.Run(role+" role: fail-fast", func(t *testing.T) {
-			cfg := testDBConfig()
-			cfg.PoolerCompat = true
-			_, err := buildPoolConfig(cfg, []string{role}, 1)
-			if err == nil {
-				t.Fatalf("expected error for pooler_compat + %s, got nil", role)
-			}
-		})
-	}
-
-	t.Run("mixed roles: any incompatible role fails even alongside api", func(t *testing.T) {
-		cfg := testDBConfig()
-		cfg.PoolerCompat = true
-		_, err := buildPoolConfig(cfg, []string{"api", "worker"}, 1)
-		if err == nil {
-			t.Fatal("expected error for pooler_compat + api,worker, got nil")
-		}
-	})
-
-	t.Run("disabled: DefaultQueryExecMode is untouched", func(t *testing.T) {
-		poolCfg, err := buildPoolConfig(testDBConfig(), []string{"api"}, 1)
-		if err != nil {
-			t.Fatalf("buildPoolConfig: %v", err)
-		}
-		if poolCfg.ConnConfig.DefaultQueryExecMode == pgx.QueryExecModeExec {
-			t.Error("DefaultQueryExecMode should not be QueryExecModeExec when pooler_compat is false")
 		}
 	})
 }

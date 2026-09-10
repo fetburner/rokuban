@@ -42,7 +42,6 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 | `db.sslmode` | `disable` | |
 | `db.max_conns` | `0`（roles から自動算出） | プロセスが持つ唯一のプールの上限（下記「db の運用ノブ」） |
 | `db.api_statement_timeout` | `0`（= 30s） | api ロールを含むプロセスにだけ適用（同上） |
-| `db.pooler_compat` | `false` | transaction pooling 互換モード（同上） |
 | `mirakcs` | —（必須。既定なし） | mirakc エンドポイントの `{site, url}` 配列。`site` も既定なしで各要素必須（下記「mirakc レジストリ」） |
 | `storage.media_dir` | —（必須） | 原本 ingest 先。fsync・close・同一 FS rename・親ディレクトリ fsync を保証するローカル FS / JuiceFS / NFS。FUSE S3 は原本 ingest 先にしない |
 | `storage.scratch_dir` | `/var/tmp/rokuban` | ローカルスクラッチ |
@@ -90,13 +89,12 @@ config の読み込みより前に出るログだけは既定（text 形式・In
 
 最小 3 つ: `db`（資格情報）・`mirakcs`（下記「mirakc レジストリ」参照）・`storage.media_dir`。残りは全部デフォルトを持ち、最小構成は 10 行程度に収まる。
 
-### db の運用ノブ（max_conns / api_statement_timeout / pooler_compat）
+### db の運用ノブ（max_conns / api_statement_timeout）
 
-3 つとも詳細は [operations.md](operations.md) §3「DB 運用」に決まっている。要点だけ:
+2 つとも詳細は [operations.md](operations.md) §3「DB 運用」に決まっている。要点だけ:
 
 - `db.max_conns`: プロセスは常に 1 個のプールしか持たず全ロールが共有する。未指定（0）なら起動時の roles からロール別 budget を合計して自動算出する
 - `db.api_statement_timeout`: api ロールを含むプロセスのプール全体に適用される（monolith では worker 側にもかかる）。既定 30s
-- `db.pooler_compat`: pooler（transaction pooling）を通せるのは api ロールと streamer ロールだけで、worker/watcher/notifier との組み合わせは起動時エラー
 
 ### ingest.stall_timeout
 

@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -191,35 +190,6 @@ func TestNewPool_ConnectionFailure(t *testing.T) {
 	_, err := NewPool(ctx, cfg, nil, 0)
 	if err == nil {
 		t.Fatal("expected connection error, got nil")
-	}
-}
-
-// TestNewPool_PoolerCompatFailFast_DoesNotDial は pooler_compat と worker ロールの
-// 組み合わせが、実際に DB へ接続を試みる前に（=ホストが到達不能でも即座に）
-// エラーになることを確認する。TryAcquire 相当のチェックが NewPool の先頭で
-// 行われている（buildPoolConfig で pgxpool.NewWithConfig より前に検査する）ことの
-// 回帰テスト。チェックを NewWithConfig の後段に動かすと、到達不能ホストへの接続
-// タイムアウト（数十秒）が発生してこのテストがタイムアウトで落ちる。
-func TestNewPool_PoolerCompatFailFast_DoesNotDial(t *testing.T) {
-	cfg := config.DBConfig{
-		Host:         "10.255.255.1", // ルーティングされない予約アドレス（到達不能を意図）
-		Port:         5432,
-		User:         "u",
-		Password:     "p",
-		Database:     "d",
-		SSLMode:      "disable",
-		PoolerCompat: true,
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	_, err := NewPool(ctx, cfg, []string{"worker"}, 0)
-	if err == nil {
-		t.Fatal("expected fail-fast error for pooler_compat + worker, got nil")
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("NewPool tried to dial the unreachable host instead of failing fast: %v", err)
 	}
 }
 
