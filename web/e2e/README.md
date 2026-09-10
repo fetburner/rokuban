@@ -436,6 +436,27 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:grid-reserved
 ```
 
+### 番組表セルの操作モーダル（`programs-dialog.mjs`）
+
+番組表のセルをクリックしたとき、選択した番組が番組表の最上部へ移動するのではなく
+ダイアログで開くことを実ブラウザで見る。jsdom では CSS による可視性、フォーカストラップ、
+overlay / Escape による閉鎖後のフォーカス復帰を測れないため、次の 5 点を判定する:
+
+- ① セルのクリックで番組名を `aria-labelledby` に持つダイアログが開く
+- ② ダイアログ内の `ProgramRow` の「予約」が hover なしで可視・操作可能で、1 回のクリックで
+  `PUT .../intent` が 1 回だけ飛ぶ
+- ③ Tab 走査がダイアログの外へ出ない
+- ④ Escape で閉じ、クリック元セルへフォーカスが戻る
+- ⑤ overlay と「閉じる」ボタンでも閉じ、クリック元セルへフォーカスが戻る
+
+API は `page.route` で丸ごと差し替えるので mirakc・実チューナー・DB は要らない。
+⓪（配っている bundle と `dist/` の一致）とフィクスチャの zod 契約検証も行う。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:programs-dialog
+```
+
 ### ボトムタブの高さと本文の下パディング（`programs-bottom-nav.mjs`）
 
 `--bottom-nav-height`（`web/src/index.css`）がボトムタブの実際の描画高さと一致して

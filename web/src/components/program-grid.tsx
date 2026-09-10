@@ -264,7 +264,8 @@ export function ProgramGrid({
       aria-label="番組表"
       // 高さは親から与える（h-full）。内側だけがスクロールする箱にしないと
       // ページ全体が 2880px 伸びて sticky なヘッダが効かない。高さの予算を
-      // 持つのは呼び出し側（選択中の番組を上に挟むかどうかを知っているのはそちら）。
+      // 持つのは呼び出し側（ページヘッダとバナーの高さを知っているのはそちら）。
+      // 選択中の番組はダイアログで表示するので、グリッドの高さを消費しない。
       className="relative h-full overflow-auto overscroll-contain border-t border-border"
     >
       <div className="w-max">

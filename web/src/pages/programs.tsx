@@ -16,6 +16,12 @@ import { ProgramRow } from '@/components/program-row'
 import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
 import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import {
   listPrograms,
   useListCapacityOverages,
   useListReservations,
@@ -816,12 +822,15 @@ function ViewChips({
 }
 
 /**
- * ProgramGridView はグリッド表示。選択した番組をグリッドの上にリストの行として出す。
+ * ProgramGridView はグリッド表示。選択した番組を通常ダイアログで開く。
  *
  * セルの中に予約ボタンや詳細を作り込まない。セルの高さは放送時間そのもの
  * （5 分番組は 10px）なので、そこに操作を置くと押せない番組ができる。
- * リスト行（ProgramRow）をそのまま再利用すれば、予約・取消・詳細の展開・
- * 重なり警告がリストと同一の実装になり、見え方が表示形式で分岐しない。
+ * セル選択時にダイアログを開き、リスト行（ProgramRow）をそのまま再利用することで、
+ * 予約・取消・詳細の展開・重なり警告が同一実装になる。
+ * 予約操作をモーダル内で初期表示から見せるのは、細かいセルから右端の操作列へ移動させる
+ * コストを下げるためである（Fitts の法則）。iPad 横向きのような粗いポインタでも、
+ * 初期展開中は予約操作を維持する `ProgramRow` の既存規則に従う。
  */
 function ProgramGridView({
   axis,
@@ -852,10 +861,21 @@ function ProgramGridView({
   showSite: boolean
 }) {
   const [selectedProgramId, setSelectedProgramId] = useState<string | null>(null)
+  const selectedCellRef = useRef<HTMLElement | null>(null)
 
   // 日付やサービスを変えると選択中の番組が消えることがある。id ではなく
   // 実体を引き直して、消えていれば選択も無かったことにする。
   const selected = programs.find((p) => programIdentity(p.site, p.programId) === selectedProgramId)
+
+  const closeSelectedProgram = () => setSelectedProgramId(null)
+
+  const selectProgram = (program: SiteProgram) => {
+    // controlled Dialog には Dialog.Trigger が無いので、base-ui の既定の
+    // フォーカス復帰先を頼らず、開いた瞬間のクリック元セルを明示する。
+    const active = document.activeElement
+    selectedCellRef.current = active instanceof HTMLElement ? active : null
+    setSelectedProgramId(programIdentity(program.site, program.programId))
+  }
 
   if (isError) return <ErrorState onRetry={onRetry}>番組の取得に失敗しました</ErrorState>
   if (isPending) return <ListSkeleton />
@@ -872,32 +892,57 @@ function ProgramGridView({
       }}
     >
       <GenreLegend />
-      {selected && (
-        <div className="shrink-0 border-b border-border bg-card">
-          {/* key を選択中の programId にする --- 番組を選び直しても同じ木の
-              位置なのでコンポーネントは再マウントされず、`ProgramRow` が
-              持つエンコード設定の下書き（issue #132）が前に選んでいた
-              番組のまま残ってしまう。key で強制的に作り直す。 */}
-          <ProgramRow
-            key={programIdentity(selected.site, selected.programId)}
-            program={selected}
-            siteName={showSite ? selected.site : undefined}
-            serviceName={
-              serviceById.get(
-                siteServiceKey(selected.site, selected.networkId, selected.serviceId),
-              )?.name
-            }
-            reserved={actions.reservedProgramIds.has(
-              programIdentity(selected.site, selected.programId),
-            )}
-            pending={actions.isBusy(selected)}
-            reservationStateUnknown={actions.reservationStateUnknown}
-            overlaps={actions.overlapsFor(selected)}
-            onReserve={(overrides) => actions.reserve(selected, overrides)}
-            onCancel={() => actions.cancel(selected)}
-          />
-        </div>
-      )}
+      <Dialog
+        open={selected !== undefined}
+        onOpenChange={(open) => {
+          if (!open) closeSelectedProgram()
+        }}
+      >
+        {selected && (
+          <DialogContent
+            finalFocus={selectedCellRef}
+            className="max-w-2xl p-0 pt-14"
+            data-testid="program-dialog"
+          >
+            <DialogTitle className="sr-only">{selected.name}</DialogTitle>
+            <DialogClose
+              render={
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  aria-label="閉じる"
+                  className="absolute top-3 right-3 z-10"
+                >
+                  ×
+                </Button>
+              }
+            />
+            {/* key は選択番組の identity に紐づける。Popup は閉じると
+                アンマウントされるが、選択対象が差し替わる経路でも
+                `ProgramRow` のエンコード設定の下書きを別番組へ渡さない。 */}
+            <ProgramRow
+              key={programIdentity(selected.site, selected.programId)}
+              program={selected}
+              siteName={showSite ? selected.site : undefined}
+              serviceName={
+                serviceById.get(
+                  siteServiceKey(selected.site, selected.networkId, selected.serviceId),
+                )?.name
+              }
+              reserved={actions.reservedProgramIds.has(
+                programIdentity(selected.site, selected.programId),
+              )}
+              pending={actions.isBusy(selected)}
+              reservationStateUnknown={actions.reservationStateUnknown}
+              defaultExpanded
+              overlaps={actions.overlapsFor(selected)}
+              onReserve={(overrides) => actions.reserve(selected, overrides)}
+              onCancel={() => actions.cancel(selected)}
+            />
+          </DialogContent>
+        )}
+      </Dialog>
       <div className="min-h-0 flex-1">
         <ProgramGrid
           services={services}
@@ -905,9 +950,7 @@ function ProgramGridView({
           axis={axis}
           reservationByProgramId={actions.reservedProgramIds}
           selectedProgramId={selected ? programIdentity(selected.site, selected.programId) : null}
-          onSelect={(program) =>
-            setSelectedProgramId(programIdentity(program.site, program.programId))
-          }
+          onSelect={selectProgram}
           scrollToMs={scrollToMs}
           showSite={showSite}
           // 帯はセルより上・ヘッダより下の層に入る。軸を受け取って同じ

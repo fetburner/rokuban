@@ -266,6 +266,7 @@ describe('ProgramRow の予約列の開閉配線（issue #310）', () => {
     const toggle = title.closest('button')
     expect(toggle).not.toBeNull()
     expect(toggle).toHaveClass('peer')
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
 
     const reserveWrapper = screen.getByTestId('program-row-reserve')
     // ホバー / フォーカス駆動の可視性が乗る `group`（行コンテナ）と
@@ -294,6 +295,26 @@ describe('ProgramRow の予約列の開閉配線（issue #310）', () => {
     await screen.findByText('対象番組')
     const reserveWrapper = screen.getByTestId('program-row-reserve')
     expect(within(reserveWrapper).getByRole('button', { name: '取消' })).toBeInTheDocument()
+  })
+
+  it('defaultExpanded を指定すると、モーダル用に詳細と予約列を初期展開する', async () => {
+    stubFetch()
+    renderInRouter(
+      <ProgramRow
+        program={program()}
+        reserved={false}
+        pending={false}
+        reservationStateUnknown={false}
+        defaultExpanded
+        onReserve={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    const title = await screen.findByText('対象番組')
+    const toggle = title.closest('button')
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('エンコードプロファイル')).toBeInTheDocument()
   })
 })
 
