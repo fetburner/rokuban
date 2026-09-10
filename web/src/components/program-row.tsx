@@ -110,23 +110,32 @@ export function ProgramRow({
   // 自前で「いま何が流れているか」を再取得して表示するので、真実はそちら側に
   // ある（issue #229 / #755 の指示どおり）。
   //
-  // **このズレに上界は無い。** 行を展開したまま放置すると、次にこの行が
-  // 再レンダーされるまで判定は更新されない --- `pages/programs.tsx` の
-  // `nowMs` は tick（`setInterval`）を持たず毎レンダー `Date.now()` を読むだけ、
+  // **このズレに上界は無い。** 以前はこの計算を `{expanded && …}` の内側でしか
+  // 使っておらず、露出は行を展開したまま放置した場合に限られていた。いまは
+  // 畳んだ行にも同じ `showLiveLink` を使うため、対象はスクロールしない限り
+  // 画面内にマウントされている行全体に広がる --- 次にその行が再レンダー
+  // されるまで判定は更新されない。`pages/programs.tsx` の `nowMs` は
+  // tick（`setInterval`）を持たず毎レンダー `Date.now()` を読むだけ、
   // QueryClient（`main.tsx`）は `staleTime: 30_000` と `refetchOnWindowFocus`
   // のみで `refetchInterval` は無く、このコンポーネント自身が張るクエリ
   // （capabilities / 番組詳細）も定期再取得しない。したがって
-  // 「数十秒で追いつく」保証は無い。それでも良いのは上記の理由（誤った遷移先を
-  // 指さない）だけであり、pages/live.tsx の `nowMs`（30 秒 tick）のような
-  // 常時性の高い表示を求められたら別の設計が要る。
+  // 「数十秒で追いつく」保証は無く、終わった番組にライブボタンが残ったまま
+  // 消えない窓・始まった番組にまだ出ない窓のどちらも、スクロールが起きるまで
+  // 閉じない。それでも良いのは上記の理由（誤った遷移先を指さない）だけであり、
+  // pages/live.tsx の `nowMs`（30 秒 tick）のような常時性の高い表示を
+  // 求められたら別の設計が要る。
   const showLiveLink = liveEnabled && isAiring(program.startAt, program.endAt)
   // 放送中の行だけライブボタン（44px）を予約ボタン（80px）の左に置くため、
-  // 操作列もその合計幅（124px）に広げる。Tailwind のクラスは動的な文字列に
-  // せず分岐ごとにリテラルで書く --- ビルド時に 3 つの開閉セレクタをすべて
-  // 収集でき、開閉条件そのものも通常行と放送中行で変わらない。
-  const reserveColumnOpenClasses = showLiveLink
-    ? 'pointer-fine:group-hover:w-[7.75rem] pointer-fine:group-hover:border-l group-has-[:focus-visible]:w-[7.75rem] group-has-[:focus-visible]:border-l peer-aria-expanded:w-[7.75rem] peer-aria-expanded:border-l'
-    : 'pointer-fine:group-hover:w-20 pointer-fine:group-hover:border-l group-has-[:focus-visible]:w-20 group-has-[:focus-visible]:border-l peer-aria-expanded:w-20 peer-aria-expanded:border-l'
+  // 操作列もその合計幅（124px）に広げる。開閉条件（3 つのセレクタ）は通常行と
+  // 放送中行で変わらないので border-l は分岐させず、幅だけ分岐させる。
+  // Tailwind のクラスは動的な文字列にせずリテラルで書く --- ビルド時に
+  // すべてのセレクタを収集できる。
+  const reserveColumnOpenClasses = cn(
+    'pointer-fine:group-hover:border-l group-has-[:focus-visible]:border-l peer-aria-expanded:border-l',
+    showLiveLink
+      ? 'pointer-fine:group-hover:w-[7.75rem] group-has-[:focus-visible]:w-[7.75rem] peer-aria-expanded:w-[7.75rem]'
+      : 'pointer-fine:group-hover:w-20 group-has-[:focus-visible]:w-20 peer-aria-expanded:w-20',
+  )
 
   return (
     <div className="flex flex-col border-b border-border">
@@ -192,6 +201,12 @@ export function ProgramRow({
             展開中の行だけ立てる。
             **列は畳んで（w-0）ホバー / フォーカス / 展開で開く。** 放送中の行は
             ライブ（44px）を予約（80px）の左に足すため 124px、その他の行は 80px。
+            `box-content` でこの 124px / 80px をボタン側の content box として
+            確保し、開いたときだけ付く border-l（1px）はその外側に足す ---
+            border-box（既定）のままだと border-l がボタン側から 1px 侵食し、
+            `justify-center` で両端 0.5px ずつ `overflow-hidden` に切られる
+            （外寸は 125px / 81px。e2e `reserve-visibility.mjs` が実測するのも
+            こちらの外寸）。
             開くと行トグル（flex-1）が縮み、その右端にあるシェブロンが左へ
             スライドして操作ボタンのスペースを空ける。常時 w-20 を確保していた
             旧版（見た目の空きが不恰好）から、この開閉方式に変えた（オーナー
@@ -214,7 +229,9 @@ export function ProgramRow({
                 `.group` の中に :focus-visible な要素（行トグル、あるいは
                 Tab で予約ボタン自身に進んだ後はそのボタン自身）があれば
                 `group-has-[:focus-visible]:w-20`（放送中は `w-[7.75rem]`）で開く。行トグルへ Tab
-                で入ると列が開き、次の Tab でそのまま予約ボタンへ進める。
+                で入ると列が開き、次の Tab はその列内の最初のボタンへ進む
+                （放送中行はライブボタンが先、その後に予約ボタン。通常行は
+                予約ボタンのみ）。
                 ここを `pointer-fine:` で縛ると、タッチスクリーン + 外付け
                 キーボードや pointer:none の環境でフォーカスは乗るのに
                 列は畳まれたまま（フォーカス可視だが操作不能）という状態を
@@ -250,7 +267,7 @@ export function ProgramRow({
           // で付けている。
           data-testid="program-row-reserve"
           className={cn(
-            'flex w-0 shrink-0 items-center justify-center overflow-hidden border-border',
+            'flex w-0 shrink-0 items-center justify-center overflow-hidden border-border box-content',
             'transition-[width] duration-150 motion-reduce:transition-none',
             reserveColumnOpenClasses,
           )}

@@ -21,12 +21,15 @@
 // 見逃していた欠陥そのもの。
 //
 // 見るのは 4 状態（すべて操作列の実レイアウト幅 `getBoundingClientRect().width`
-// で判定する。畳＝約 0px、通常行の開＝約 80px、放送中行の開＝約 124px）:
+// で判定する。畳＝約 0px、通常行の開＝81px（border-l の 1px 込み）、
+// 放送中行の開＝125px（同）:
 //   ① 細ポインタ（既定の Chromium コンテキスト = hover:hover + pointer:fine）で
 //      ホバーもフォーカスもしていない行 --- 畳んでいる。ホバー / :focus-visible で
 //      開く（両方向）。あわせて**縦方向の CLS が無いこと**（行の高さ不変）も測る
 //      --- 横方向（列幅・タイトルの truncate 位置）は開閉で動くのが本設計の
-//      仕様なので、通常行は約 80px、放送中行は約 124px へ開くことを確かめる
+//      仕様なので、通常行は 81px、放送中行は 125px へ開くことを確かめる。
+//      横方向の溢れが無い（子要素が overflow-hidden に切られていない）ことも
+//      あわせて測る
 //   ② 細ポインタで行を展開すると、その後マウス / フォーカスが行ヘッダから
 //      離れても操作列は開いたまま（展開パネルは `.group` の外の兄弟なので
 //      `group-hover` / `group-has-[:focus-visible]` はそこから発火しない ---
@@ -133,13 +136,31 @@ async function readReserveWidth(locator) {
   return locator.first().evaluate((el) => el.getBoundingClientRect().width)
 }
 
-// 通常行の開＝約 80px（w-20）、放送中行の開＝約 124px（w-[7.75rem]）、
-// 畳＝約 0px。transition（150ms）の途中を拾わないよう、各測定の前に十分待つ
-// （下の waitForTimeout(250)）。
-const OPEN_WIDTH = 80
-const AIRING_OPEN_WIDTH = 124
-const isOpen = (w, expected) => typeof w === 'number' && Math.abs(w - expected) < 2
+// 通常行の開＝81px（w-20 の 80px content box + border-l の 1px、box-content で
+// ボタン側から侵食させない）、放送中行の開＝125px（w-[7.75rem] の 124px +
+// border-l の 1px）、畳＝約 0px。transition（150ms）の途中を拾わないよう、
+// 各測定の前に十分待つ（下の waitForTimeout(250)）。
+//
+// 許容を 2px にすると border-l の 1px 分の食い違い（box-content の有無）を
+// 区別できない（80px vs 期待 81px でも差 1 < 2 で通ってしまう）ため、1px 未満
+// に締めている。
+const OPEN_WIDTH = 81
+const AIRING_OPEN_WIDTH = 125
+const isOpen = (w, expected) => typeof w === 'number' && Math.abs(w - expected) < 1
 const isCollapsed = (w) => typeof w === 'number' && w < 1
+
+/**
+ * hasNoOverflow は、開いた操作列の中身が横方向にはみ出していないか
+ * （`scrollWidth <= clientWidth`）を返す。幅の一致だけでは列がボタンを
+ * 正しく収めているかを測れない --- `getBoundingClientRect()` は border-box の
+ * 外寸を返すので、中身が 1px 溢れて `overflow-hidden` に切られていても
+ * 列自体の幅は「期待どおり」に見えてしまう（実際に box-content 抜きでは
+ * 幅は一致するのに子要素が溢れて切られていた）。
+ */
+async function hasNoOverflow(locator) {
+  if ((await locator.count()) === 0) return null
+  return locator.first().evaluate((el) => el.scrollWidth <= el.clientWidth + 0.5)
+}
 
 // ⓪ 配っている bundle が dist/ の現物と一致するか（e2e/lib.mjs 参照）。
 await verifyBundleMatchesOrExit(BASE, ng)
@@ -192,7 +213,7 @@ log('\n=== ① 細ポインタ（hover:hover かつ pointer:fine） ===')
   const focusedFirst = await readReserveWidth(reserve)
   log(`  （ポインタ操作前）行トグルへフォーカス中の列幅: ${focusedFirst}px`)
   if (!isOpen(focusedFirst, OPEN_WIDTH)) {
-    ng.push(`①-f: 行トグルへフォーカスしても通常行の操作列が約 80px にならない（幅=${focusedFirst}px）`)
+    ng.push(`①-f: 行トグルへフォーカスしても通常行の操作列が 81px にならない（幅=${focusedFirst}px）`)
   }
   await toggle.evaluate((el) => el.blur())
   await page.waitForTimeout(250)
@@ -207,7 +228,7 @@ log('\n=== ① 細ポインタ（hover:hover かつ pointer:fine） ===')
   const airingFocused = await readReserveWidth(airingReserve)
   log(`  （ポインタ操作前）放送中行トグルへフォーカス中の列幅: ${airingFocused}px`)
   if (!isOpen(airingFocused, AIRING_OPEN_WIDTH)) {
-    ng.push(`①-f': 放送中行の操作列が約 124px にならない（幅=${airingFocused}px）`)
+    ng.push(`①-f': 放送中行の操作列が 125px にならない（幅=${airingFocused}px）`)
   }
   await airingToggle.evaluate((el) => el.blur())
   await page.waitForTimeout(250)
@@ -225,7 +246,12 @@ log('\n=== ① 細ポインタ（hover:hover かつ pointer:fine） ===')
   const hovered = await readReserveWidth(reserve)
   log(`  通常行のホバー中の列幅: ${hovered}px`)
   if (!isOpen(hovered, OPEN_WIDTH)) {
-    ng.push(`①-b: 通常行をホバーしても操作列が約 80px にならない（幅=${hovered}px）`)
+    ng.push(`①-b: 通常行をホバーしても操作列が 81px にならない（幅=${hovered}px）`)
+  }
+  const noOverflow = await hasNoOverflow(reserve)
+  log(`  通常行の開いた操作列に横方向の溢れが無いか: ${noOverflow}`)
+  if (noOverflow === false) {
+    ng.push('①-h: 開いた通常行の操作列でボタンが overflow-hidden に切られている（scrollWidth > clientWidth）')
   }
 
   const rowBoxHovered = await row.boundingBox()
@@ -246,7 +272,12 @@ log('\n=== ① 細ポインタ（hover:hover かつ pointer:fine） ===')
   const airingHovered = await readReserveWidth(airingReserve)
   log(`  放送中行のホバー中の列幅: ${airingHovered}px`)
   if (!isOpen(airingHovered, AIRING_OPEN_WIDTH)) {
-    ng.push(`①-b': 放送中行をホバーしても操作列が約 124px にならない（幅=${airingHovered}px）`)
+    ng.push(`①-b': 放送中行をホバーしても操作列が 125px にならない（幅=${airingHovered}px）`)
+  }
+  const airingNoOverflow = await hasNoOverflow(airingReserve)
+  log(`  放送中行の開いた操作列に横方向の溢れが無いか: ${airingNoOverflow}`)
+  if (airingNoOverflow === false) {
+    ng.push('①-i: 開いた放送中行の操作列でボタンが overflow-hidden に切られている（scrollWidth > clientWidth）')
   }
   const liveButtonBox = await liveButton.boundingBox()
   log(
@@ -355,7 +386,7 @@ log('\n=== ② 細ポインタ: 展開パネル操作中も操作列が開いた
   if (!isOpen(whileExpanded, OPEN_WIDTH)) {
     ng.push(
       `②-b: 展開パネル操作中（行ヘッダの hover/focus-within が外れている）に通常行の操作列が` +
-        `約 80px で開いていない（幅=${whileExpanded}px）`,
+        `81px で開いていない（幅=${whileExpanded}px）`,
     )
   }
 
@@ -420,7 +451,7 @@ log('\n=== ③ タッチ / 粗いポインタ ===')
   log(`  折りたたみ行のまま行トグルへフォーカス中の列幅: ${focusedCoarse}px`)
   if (!isOpen(focusedCoarse, OPEN_WIDTH)) {
     ng.push(
-      `③-b: 粗いポインタでも通常行の操作列が約 80px まで開かない` +
+      `③-b: 粗いポインタでも通常行の操作列が 81px まで開かない` +
         `（幅=${focusedCoarse}px。タブレット + 外付けキーボードで操作不能になる）`,
     )
   }
@@ -437,7 +468,7 @@ log('\n=== ③ タッチ / 粗いポインタ ===')
   log(`  折りたたみ放送中行のまま行トグルへフォーカス中の列幅: ${airingFocusedCoarse}px`)
   if (!isOpen(airingFocusedCoarse, AIRING_OPEN_WIDTH)) {
     ng.push(
-      `③-b': 粗いポインタで放送中行の操作列が約 124px まで開かない` +
+      `③-b(airing): 粗いポインタで放送中行の操作列が 125px まで開かない` +
         `（幅=${airingFocusedCoarse}px。タブレット + 外付けキーボードで操作不能になる）`,
     )
   }
@@ -445,7 +476,7 @@ log('\n=== ③ タッチ / 粗いポインタ ===')
   await page.waitForTimeout(250)
   const airingBlurredCoarse = await readReserveWidth(airingReserve)
   if (!isCollapsed(airingBlurredCoarse)) {
-    ng.push(`③-b(airing): フォーカスを外しても放送中行の操作列が開いたまま（幅=${airingBlurredCoarse}px）`)
+    ng.push(`③-b'(airing): フォーカスを外しても放送中行の操作列が開いたまま（幅=${airingBlurredCoarse}px）`)
   }
 
   await toggle.tap()
@@ -457,7 +488,7 @@ log('\n=== ③ タッチ / 粗いポインタ ===')
   const expanded = await readReserveWidth(reserve)
   log(`  展開後（aria-expanded=true）の列幅: ${expanded}px`)
   if (!isOpen(expanded, OPEN_WIDTH)) {
-    ng.push(`③-d: タッチで展開した通常行の操作列が約 80px にならない（幅=${expanded}px）`)
+    ng.push(`③-d: タッチで展開した通常行の操作列が 81px にならない（幅=${expanded}px）`)
   }
 
   await toggle.tap()
@@ -477,7 +508,7 @@ log('\n=== ③ タッチ / 粗いポインタ ===')
   const airingExpanded = await readReserveWidth(airingReserve)
   log(`  放送中行の展開後（aria-expanded=true）の列幅: ${airingExpanded}px`)
   if (!isOpen(airingExpanded, AIRING_OPEN_WIDTH)) {
-    ng.push(`③-g: タッチで展開した放送中行の操作列が約 124px にならない（幅=${airingExpanded}px）`)
+    ng.push(`③-g: タッチで展開した放送中行の操作列が 125px にならない（幅=${airingExpanded}px）`)
   }
 
   await airingToggle.tap()
@@ -503,6 +534,11 @@ log('\n=== ③ タッチ / 粗いポインタ ===')
 // ここでは意図的にロケータを使わず、行の右端（開いたら操作列が来る位置）の
 // 実座標へ `page.touchscreen.tap(x, y)` を投げ、あわせて `elementFromPoint` で
 // その座標の実際のヒットテスト結果を確認する。
+//
+// 放送中行の操作列には遷移する `<a>`（ライブボタン）が入ったので、通常行と
+// 同じ判定に加えて、生タップ後も URL が `/programs` のままで `/live` へ
+// 黙って遷移していないことも見る --- phantom tap が PUT より悪い「サイレント
+// 遷移」を起こしていないかは、これでしか検出できない。
 log('\n=== ④ タッチ / 粗いポインタ: 折りたたみ行の操作列位置への見えないタップ ===')
 {
   const context = await browser.newContext({
@@ -516,6 +552,11 @@ log('\n=== ④ タッチ / 粗いポインタ: 折りたたみ行の操作列位
   let putCalled = false
   await page.route(`**/api/sites/${SITE}/programs/${program.programId}/intent`, async (route) => {
     putCalled = true
+    await route.fulfill({ status: 204 })
+  })
+  let airingPutCalled = false
+  await page.route(`**/api/sites/${SITE}/programs/${airingProgram.programId}/intent`, async (route) => {
+    airingPutCalled = true
     await route.fulfill({ status: 204 })
   })
   await page.goto(BASE + '/programs', { waitUntil: 'domcontentloaded' })
@@ -557,6 +598,60 @@ log('\n=== ④ タッチ / 粗いポインタ: 折りたたみ行の操作列位
     log(`  画面の「予約しました」トースト候補: ${toastCandidates}`)
     if (toastCandidates > 0) {
       ng.push('④-c: 見えない操作列位置への生タップ後に「予約しました」トーストが出た')
+    }
+    const url = page.url()
+    log(`  素タップ後の URL: ${url}`)
+    if (!url.endsWith('/programs')) {
+      ng.push(`④-d: 折りたたみ行の操作列位置への生タップで /programs から遷移した（url=${url}）`)
+    }
+  }
+
+  // 放送中行: ライブボタン（<a>）を含む分、通常行と同じ 3 判定に加えて
+  // 遷移していないことも見る。
+  const airingRow = page.locator(`li[data-program-id="${airingProgram.programId}"]`)
+  await airingRow.waitFor({ timeout: 15000 })
+  const airingReserve = airingRow.getByTestId('program-row-reserve')
+
+  const airingRowBox = await airingRow.boundingBox()
+  if (airingRowBox === null) {
+    ng.push('④(airing): 放送中行の bounding box が取れない')
+  } else {
+    const x = airingRowBox.x + airingRowBox.width - 2
+    const y = airingRowBox.y + airingRowBox.height / 2
+    log(
+      `  折りたたみ放送中行の操作列幅=${await readReserveWidth(airingReserve)}px、` +
+        `右端座標=(${x}, ${y}) を素タップ`,
+    )
+
+    const hitIsReserve = await page.evaluate(
+      ({ x, y }) => {
+        const el = document.elementFromPoint(x, y)
+        return el ? el.closest('[data-testid="program-row-reserve"]') !== null : false
+      },
+      { x, y },
+    )
+    log(`  その座標のヒットテスト標的が操作列の内側か: ${hitIsReserve}`)
+    if (hitIsReserve) {
+      ng.push('④-a(airing): 折りたたみ放送中行の右端が操作列（幅 0 のはず）にヒットする（phantom tap target）')
+    }
+
+    await page.touchscreen.tap(x, y)
+    await page.waitForTimeout(300)
+    log(`  見えない操作列位置を素タップ → PUT intent が飛んだか: ${airingPutCalled}`)
+    if (airingPutCalled) {
+      ng.push('④-b(airing): 折りたたみ放送中行の操作列位置への生タップで PUT intent が飛んだ（phantom tap target）')
+    }
+    const airingToastCandidates = await page.getByText(/予約しました/).count()
+    log(`  画面の「予約しました」トースト候補: ${airingToastCandidates}`)
+    if (airingToastCandidates > 0) {
+      ng.push('④-c(airing): 見えない操作列位置への生タップ後に「予約しました」トーストが出た')
+    }
+    const airingUrl = page.url()
+    log(`  素タップ後の URL: ${airingUrl}`)
+    if (!airingUrl.endsWith('/programs')) {
+      ng.push(
+        `④-d(airing): 折りたたみ放送中行の操作列位置への生タップで /live へ遷移した（url=${airingUrl}）`,
+      )
     }
   }
 
