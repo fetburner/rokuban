@@ -12,7 +12,7 @@
  */
 
 import type { Service } from '@/api/generated'
-import { siteServiceKey } from '@/lib/all-sites-services'
+import { programIdentity, siteServiceKey } from '@/lib/all-sites-services'
 
 const msPerHour = 3_600_000
 
@@ -192,7 +192,10 @@ export function groupProgramsByService<
  * サービスで開始時刻順に並ぶ前後の番組へ移るので、番組の間の空き時間は飛ばす。
  * 左右は隣のサービスだけを対象にし、フォーカス中の番組の開始時刻を半開区間
  * [startMs, endMs) に含む番組を優先する。該当する番組が無ければ開始時刻の差が
- * 最小の番組を選び、同距離なら早く始まる方を選ぶ。隣にサービスが無い、または
+ * 最小の番組を選ぶ。`groupProgramsByService` が各サービスを開始時刻の昇順で
+ * 返すため、reduce は常に早く始まる方を先に見つけて保持する ---
+ * 同距離の tie-break は入力の並び順そのものが決めており、比較式の中には表れない。
+ * 隣にサービスが無い、または
  * そのサービスに番組が無い場合は端として null を返す。
  *
  * `placedByService` は `groupProgramsByService` の結果を受け取る。可視範囲外の
@@ -213,14 +216,15 @@ export function neighborProgram<
   current: PlacedProgram<P>,
   direction: GridNavigationDirection,
 ): PlacedProgram<P> | null {
-  const currentIdentity = `${current.program.site}:${current.program.programId}`
+  const currentIdentity = programIdentity(current.program.site, current.program.programId)
   let currentServiceKey: string | undefined
   let currentServicePrograms: readonly PlacedProgram<P>[] | undefined
   let currentIndex = -1
 
   for (const [serviceKey, candidates] of placedByService) {
     const index = candidates.findIndex(
-      (candidate) => `${candidate.program.site}:${candidate.program.programId}` === currentIdentity,
+      (candidate) =>
+        programIdentity(candidate.program.site, candidate.program.programId) === currentIdentity,
     )
     if (index < 0) continue
     currentServiceKey = serviceKey
@@ -257,13 +261,7 @@ export function neighborProgram<
   return targetPrograms.reduce((closest, candidate) => {
     const candidateDistance = Math.abs(candidate.startMs - current.startMs)
     const closestDistance = Math.abs(closest.startMs - current.startMs)
-    if (
-      candidateDistance < closestDistance ||
-      (candidateDistance === closestDistance && candidate.startMs < closest.startMs)
-    ) {
-      return candidate
-    }
-    return closest
+    return candidateDistance < closestDistance ? candidate : closest
   })
 }
 

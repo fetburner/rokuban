@@ -1,13 +1,19 @@
 // 番組表グリッドの空間的なキーボードナビゲーションの受け入れ判定。
 //
 // jsdom ではフォーカスとスクロール位置、仮想化後の DOM を同時に測れないため、
-// 実ブラウザで次の 2 点を見る:
+// 実ブラウザで次の 4 点を見る:
 //   ① セルにフォーカスして ArrowRight を押すと、開始時刻を含む隣列のセルへ移る
-//   ② 最初は仮想化で DOM に無い同列の遠い番組へ ArrowDown を押すと、スクロール後に
+//   ② セルにフォーカスして Alt+ArrowLeft を押しても、空間移動は起きない
+//      （修飾キー付きの矢印はブラウザ標準の挙動 --- 「戻る」等 --- に譲る）。
+//      ②は③がスクロールで nearB を仮想化の外へ追い出す前、①の直後に行う
+//   ③ 最初は仮想化で DOM に無い同列の遠い番組へ ArrowDown を押すと、スクロール後に
 //      そのセルへフォーカスが移る
+//   ④ viewport より高い番組（12 時間）へ ArrowDown で移ると、移動先セルの上端が
+//      sticky header の上へ隠れない（画面内に残る）
 //
-// 直す前は ArrowRight でフォーカスが移らず、ArrowDown でもネイティブの領域スクロール
-// だけになるため、この判定は現行実装で失敗する。
+// 各判定は `.catch()` で失敗を `ng` に積むだけで、素の `waitFor` / `waitForFunction`
+// の timeout で throw させない --- 直前の判定が失敗してもブラウザを閉じて
+// `=== 結果 ===` を出すところまでは必ず到達する（web/e2e/badge-links.mjs 等と同じ規約）。
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
 //   E2E_URL=http://localhost:4173 pnpm e2e:grid-navigation
@@ -72,7 +78,11 @@ const nearA = makeProgram(726001, serviceA, nowMs + 15 * 60_000, 30 * 60_000, '�
 const nearB = makeProgram(726002, serviceB, nowMs, 60 * 60_000, '近くの右番組')
 // 初期の可視窓から意図的に外す。ArrowDown はここまでスクロールしてからフォーカスする。
 const farA = makeProgram(726003, serviceA, nowMs + 10 * 60 * 60_000, 30 * 60_000, '遠くの左番組')
-const programs = [nearA, nearB, farA]
+// farA（19:00-19:30）の次に同列で始まる、viewport より高い番組（12 時間 = 1440px。
+// pxPerHour は pages/programs.tsx の gridPxPerHour = 120）。④は farA から
+// ArrowDown でこれへ移り、移動先セルの上端が隠れないことを見る。
+const tallA = makeProgram(726004, serviceA, nowMs + 11 * 60 * 60_000, 12 * 60 * 60_000, '長時間の左番組')
+const programs = [nearA, nearB, farA, tallA]
 
 async function apiHandler({ path: p, json }) {
   if (p === '/api/sites') return json([SITE])
@@ -107,7 +117,9 @@ await installApiStubs(page, apiHandler)
 await page.goto(`${BASE}/programs?view=grid`, { waitUntil: 'domcontentloaded' })
 
 const grid = page.getByTestId('program-grid')
-await grid.waitFor({ timeout: 15000 })
+await grid.waitFor({ timeout: 15000 }).catch(() => {
+  ng.push('番組表グリッドが描画されない')
+})
 
 const cellFor = (program) =>
   page.locator(
@@ -117,49 +129,118 @@ const cellFor = (program) =>
 const nearACell = cellFor(nearA)
 const nearBCell = cellFor(nearB)
 const farACell = cellFor(farA)
-await nearACell.waitFor({ timeout: 10000 })
-await nearBCell.waitFor({ timeout: 10000 })
+const tallACell = cellFor(tallA)
+await nearACell.waitFor({ timeout: 10000 }).catch(() => {
+  ng.push('近くの左番組のセルが描画されない')
+})
+await nearBCell.waitFor({ timeout: 10000 }).catch(() => {
+  ng.push('近くの右番組のセルが描画されない')
+})
 
-// 遠い番組が最初から DOM にあると、②が仮想化境界を通らないので判定を止める。
+// 遠い番組が最初から DOM にあると、③が仮想化境界を通らないので判定を止める。
 if ((await farACell.count()) !== 0) {
-  ng.push('② 遠い番組が初期表示から DOM にあり、仮想化後の移動を検証できない')
+  ng.push('③ 遠い番組が初期表示から DOM にあり、仮想化後の移動を検証できない')
 }
 
 log('\n=== ① ArrowRight: 開始時刻を含む隣列へ移動 ===')
-await nearACell.focus()
-await nearACell.press('ArrowRight')
-const rightFocus = await page.evaluate(() => {
-  const active = document.activeElement
-  return {
-    programId: active?.getAttribute('data-program-id'),
-    site: active?.getAttribute('data-site'),
+if ((await nearACell.count()) > 0) {
+  await nearACell.focus()
+  await nearACell.press('ArrowRight')
+  const rightFocus = await page.evaluate(() => {
+    const active = document.activeElement
+    return {
+      programId: active?.getAttribute('data-program-id'),
+      site: active?.getAttribute('data-site'),
+    }
+  })
+  log(`  フォーカス先: ${JSON.stringify(rightFocus)}`)
+  if (rightFocus.programId !== String(nearB.programId) || rightFocus.site !== SITE) {
+    ng.push(`① ArrowRight 後のフォーカスが隣列へ移らない（${JSON.stringify(rightFocus)}）`)
   }
-})
-log(`  フォーカス先: ${JSON.stringify(rightFocus)}`)
-if (rightFocus.programId !== String(nearB.programId) || rightFocus.site !== SITE) {
-  ng.push(`① ArrowRight 後のフォーカスが隣列へ移らない（${JSON.stringify(rightFocus)}）`)
+} else {
+  ng.push('① 近くの左番組のセルが無いため検証できない')
 }
 
-log('\n=== ② ArrowDown: 仮想化された遠い番組へ追従 ===')
-const scrollBefore = await grid.evaluate((element) => element.scrollTop)
-await nearACell.focus()
-await nearACell.press('ArrowDown')
-await page.waitForFunction(
-  (programId) => document.activeElement?.getAttribute('data-program-id') === String(programId),
-  farA.programId,
-  { timeout: 10000 },
-)
-const scrollAfter = await grid.evaluate((element) => element.scrollTop)
-const downFocus = await page.evaluate(() => ({
-  programId: document.activeElement?.getAttribute('data-program-id'),
-  site: document.activeElement?.getAttribute('data-site'),
-}))
-log(`  scrollTop: ${scrollBefore}px → ${scrollAfter}px / フォーカス先: ${JSON.stringify(downFocus)}`)
-if (downFocus.programId !== String(farA.programId) || downFocus.site !== SITE) {
-  ng.push(`② ArrowDown 後のフォーカスが遠い同列へ移らない（${JSON.stringify(downFocus)}）`)
+log('\n=== ② Alt+ArrowLeft: 修飾キー付き矢印は空間移動を起こさない ===')
+if ((await nearBCell.count()) > 0) {
+  await nearBCell.focus()
+  await nearBCell.press('Alt+ArrowLeft')
+  const altFocus = await page.evaluate(() => document.activeElement?.getAttribute('data-program-id'))
+  log(`  フォーカス先の programId: ${altFocus}`)
+  // 修飾キー無しの ArrowLeft なら、nearB の開始時刻（09:00）に最も近い隣列の
+  // 番組（nearA, 09:15）へ移る。Alt+ArrowLeft でこれが起きればガード漏れ。
+  if (altFocus !== String(nearB.programId)) {
+    ng.push(`② Alt+ArrowLeft でフォーカスが移動する（${altFocus} へ）`)
+  }
+} else {
+  ng.push('② 近くの右番組のセルが無いため検証できない')
 }
-if (scrollAfter <= scrollBefore) {
-  ng.push(`② 目的セルへ追従してスクロールしない（${scrollBefore}px → ${scrollAfter}px）`)
+
+log('\n=== ③ ArrowDown: 仮想化された遠い番組へ追従 ===')
+if ((await nearACell.count()) > 0) {
+  await nearACell.focus()
+  // focus 自身がスクロールを起こしうる（`locator.focus()` は `preventScroll` では
+  // ない）ため、矢印移動の成果と混ざらないよう scrollBefore は focus の後で読む。
+  const scrollBefore = await grid.evaluate((element) => element.scrollTop)
+  await nearACell.press('ArrowDown')
+  await page
+    .waitForFunction(
+      (programId) => document.activeElement?.getAttribute('data-program-id') === String(programId),
+      farA.programId,
+      { timeout: 10000 },
+    )
+    .catch(() => {
+      ng.push('③ ArrowDown 後のフォーカスが遠い同列へ移らない（timeout）')
+    })
+  const scrollAfter = await grid.evaluate((element) => element.scrollTop)
+  const downFocus = await page.evaluate(() => ({
+    programId: document.activeElement?.getAttribute('data-program-id'),
+    site: document.activeElement?.getAttribute('data-site'),
+  }))
+  log(`  scrollTop: ${scrollBefore}px → ${scrollAfter}px / フォーカス先: ${JSON.stringify(downFocus)}`)
+  if (downFocus.programId !== String(farA.programId) || downFocus.site !== SITE) {
+    ng.push(`③ ArrowDown 後のフォーカスが遠い同列へ移らない（${JSON.stringify(downFocus)}）`)
+  }
+  if (scrollAfter <= scrollBefore) {
+    ng.push(`③ 目的セルへ追従してスクロールしない（${scrollBefore}px → ${scrollAfter}px）`)
+  }
+} else {
+  ng.push('③ 近くの左番組のセルが無いため検証できない')
+}
+
+log('\n=== ④ ArrowDown: viewport より高い番組へ移っても上端が隠れない ===')
+const farAFocused = await farACell
+  .focus({ timeout: 10000 })
+  .then(() => true)
+  .catch(() => {
+    ng.push('④ 長時間番組の前段（遠くの左番組）のセルにフォーカスできない')
+    return false
+  })
+if (farAFocused) {
+  await farACell.press('ArrowDown')
+  await page
+    .waitForFunction(
+      (programId) => document.activeElement?.getAttribute('data-program-id') === String(programId),
+      tallA.programId,
+      { timeout: 10000 },
+    )
+    .catch(() => {
+      ng.push('④ ArrowDown 後のフォーカスが長時間番組へ移らない（timeout）')
+    })
+  const tallFocus = await page.evaluate(() => ({
+    programId: document.activeElement?.getAttribute('data-program-id'),
+    site: document.activeElement?.getAttribute('data-site'),
+  }))
+  log(`  フォーカス先: ${JSON.stringify(tallFocus)}`)
+  if (tallFocus.programId !== String(tallA.programId) || tallFocus.site !== SITE) {
+    ng.push(`④ ArrowDown 後のフォーカスが長時間番組へ移らない（${JSON.stringify(tallFocus)}）`)
+  } else {
+    const rectTop = await tallACell.evaluate((element) => element.getBoundingClientRect().top)
+    log(`  移動先セルの rect.top: ${rectTop}px`)
+    if (rectTop < 0) {
+      ng.push(`④ 移動先セルの上端が画面の上へ隠れる（top: ${rectTop}px）`)
+    }
+  }
 }
 
 await finish(ng, browser)

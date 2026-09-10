@@ -77,7 +77,7 @@ function placedProgramForCell(
   const site = cell.dataset.site
   const programId = Number(cell.dataset.programId)
   if (!site || !Number.isFinite(programId)) return null
-  const identity = `${site}:${programId}`
+  const identity = programIdentity(site, programId)
   for (const candidates of placedByService.values()) {
     const placed = candidates.find((candidate) => programCellIdentity(candidate.program) === identity)
     if (placed) return placed
@@ -89,7 +89,9 @@ function placedProgramForCell(
 function programCellForProgram(root: HTMLElement, program: SiteProgram): HTMLButtonElement | null {
   const identity = programCellIdentity(program)
   for (const cell of root.querySelectorAll<HTMLButtonElement>('[data-testid="program-grid-cell"]')) {
-    if (`${cell.dataset.site}:${cell.dataset.programId}` === identity) return cell
+    const site = cell.dataset.site
+    const programId = Number(cell.dataset.programId)
+    if (site && Number.isFinite(programId) && programIdentity(site, programId) === identity) return cell
   }
   return null
 }
@@ -108,8 +110,7 @@ function scrollProgramIntoView(
   services: readonly SiteService[],
   axis: TimeAxis,
   columnWidthPx: number,
-): boolean {
-  let changed = false
+): void {
   const programTopPx = headerHeightPx + timeToPx(axis, program.startMs)
   const programBottomPx = headerHeightPx + timeToPx(axis, program.endMs)
   const visibleTopPx = scroller.scrollTop + headerHeightPx
@@ -117,10 +118,15 @@ function scrollProgramIntoView(
 
   if (programTopPx < visibleTopPx) {
     scroller.scrollTop = Math.max(0, timeToPx(axis, program.startMs))
-    changed = true
   } else if (programBottomPx > visibleBottomPx) {
-    scroller.scrollTop = Math.max(0, programBottomPx - scroller.clientHeight)
-    changed = true
+    // 対象が可視高さより高い番組だと、下端に合わせる素朴な計算
+    // （programBottomPx - clientHeight）は上端（開始時刻・番組名を描く行）を
+    // header の上へ押し出してしまう。上端を header の直下に置く scrollTop
+    // （timeToPx(axis, program.startMs)）を下回らないよう clamp する。
+    scroller.scrollTop = Math.max(
+      0,
+      Math.min(programBottomPx - scroller.clientHeight, timeToPx(axis, program.startMs)),
+    )
   }
 
   const serviceIndex = services.findIndex(
@@ -128,7 +134,7 @@ function scrollProgramIntoView(
       siteServiceKey(service.site, service.networkId, service.serviceId) ===
       siteServiceKey(program.program.site, program.program.networkId, program.program.serviceId),
   )
-  if (serviceIndex < 0 || columnWidthPx <= 0) return changed
+  if (serviceIndex < 0 || columnWidthPx <= 0) return
 
   const targetLeftPx = serviceIndex * columnWidthPx
   const targetRightPx = targetLeftPx + columnWidthPx
@@ -137,12 +143,9 @@ function scrollProgramIntoView(
   const visibleRightPx = visibleLeftPx + visibleColumnWidthPx
   if (targetLeftPx < visibleLeftPx) {
     scroller.scrollLeft = targetLeftPx
-    changed = true
   } else if (targetRightPx > visibleRightPx) {
     scroller.scrollLeft = Math.max(0, targetRightPx - visibleColumnWidthPx)
-    changed = true
   }
-  return changed
 }
 
 /** 凡例に出す、淡色を持つ ARIB 大分類。予備・拡張・その他は無彩色なので含めない。 */
@@ -357,6 +360,9 @@ export function ProgramGrid({
   }, [placedByService, viewport])
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    // 修飾キー付きの矢印（Alt+←/→ の「戻る」、Cmd+←/→、Shift+↑ 等）は奪わない
+    // （recording-player.tsx / live-player.tsx と同じ規約）。
+    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return
     const directionByKey: Partial<Record<string, GridNavigationDirection>> = {
       ArrowUp: 'up',
       ArrowDown: 'down',
