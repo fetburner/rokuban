@@ -318,7 +318,7 @@ async function clickPlay(page) {
  * この assert より前に `resolveServiceId`（宣言部）がサービス一覧に見つからず
  * 落ちる。
  *
- * この判定が本来見たいのは「タップだけではプレイリスト/セグメント要求が飛ばない」
+ * この判定が本来見たいのは「チャンネルを選ぶだけではプレイリスト/セグメント要求が飛ばない」
  * こと自体であり、実データ（H.264/AAC）や実再生は要らない --- ①〜⑦と違って
  * ffmpeg フィクスチャに依存せず、bundled Chromium だけで常に測れる。
  *
@@ -328,6 +328,15 @@ async function clickPlay(page) {
  * 実 chromium に対して `pickInitialService` を `s.serviceId === requestedId` に
  * 変異させると落ちる（印が 2 件になり href も要求先と違う。exit 1）。変異を
  * 戻すと ⓪〜⑧ すべて緑（exit 0）。
+ *
+ * **当たり判定の広さ（`previewBox.width < 600`）の assert は未実行。**
+ * issue #725 でこの assert を足した PR では e2e スクリプト自体を一度も
+ * 実行していない（サーバーもテストデータも無い）ため、実サーバー + 実
+ * ブラウザに対して実際に落ちる/通ることは未確認。ただし「角を押す判定が
+ * 旧実装（面全体が div で、中央の小さい <button> だけが aria-label を持つ）
+ * でも通ってしまうこと」と「幅で見れば旧実装 51px / 新実装 768px と大きく
+ * 割れること」は Chromium（viewport 960x640）で実測済み --- 判定手段として
+ * この閾値を選んだ根拠はその実測にある。
  */
 async function runConsentCheck() {
   const browser = await launchBrowser()
@@ -411,14 +420,35 @@ async function runConsentCheck() {
       )
     }
 
-    const playButton = page.getByRole('button', { name: /再生/ })
-    if ((await playButton.count()) === 0) {
-      ng.push('⓪ 「再生」ボタンが見つからない')
+    const preview = page.getByRole('button', { name: /再生/ })
+    if ((await preview.count()) === 0) {
+      ng.push('⓪ 選択プレビューが見つからない')
       return
     }
 
     requestLog.length = 0
-    await playButton.click()
+    // **当たり判定の広さを見る。** `getByRole('button', { name: /再生/ })` は
+    // 「role と名前を持つ要素」に解決するので、旧実装（面全体が div で、中央の
+    // 小さい <button> だけが aria-label を持つ）でもここには小ボタンがヒットし、
+    // 角クリックが失敗しても気付けない --- 実測: 旧実装 51x36 / 新実装
+    // 768x432（Chromium、viewport 960x640）。閾値 600 はこの 2 値を十分に割る。
+    const previewBox = await preview.boundingBox()
+    if (previewBox === null) {
+      ng.push('⓪ 選択プレビューの位置を取得できない')
+      return
+    }
+    log(`  選択プレビューの当たり判定: ${previewBox.width}x${previewBox.height}`)
+    if (previewBox.width < 600) {
+      ng.push(
+        `⓪ 選択プレビューの当たり判定が幅 ${previewBox.width}px しかない` +
+          '（面全体ではなく中央の小さいボタンだけが aria-label を持っている疑い）',
+      )
+    }
+    // **`page.mouse.click` ではなく `locator.click({ position })` を使う。**
+    // `mouse.click` はスクロールも actionability 待ちもしないので、viewport
+    // 960x640 でプレビューがフォールドの下に出ると、例外も出ないまま何にも
+    // 当たらず偽陰性になる（実測）。`locator.click` はスクロールしてから押す。
+    await preview.click({ position: { x: 4, y: 4 } })
     let fired = false
     try {
       await page.waitForFunction(
@@ -433,8 +463,8 @@ async function runConsentCheck() {
     } catch {
       fired = false
     }
-    log(`  再生ボタン押下後にプレイリスト要求が飛んだ: ${fired ? 'YES' : 'NO'}`)
-    if (!fired) ng.push('⓪ 「再生」ボタンを押してもプレイリスト要求が飛ばない')
+    log(`  選択プレビューの角を押した後にプレイリスト要求が飛んだ: ${fired ? 'YES' : 'NO'}`)
+    if (!fired) ng.push('⓪ 選択プレビューの角を押してもプレイリスト要求が飛ばない')
 
     // --- ⓪' 再生中に別チャンネルへ切り替えても、押していない方の playlist/
     // segment 要求が飛ばない ---

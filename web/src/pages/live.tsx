@@ -12,7 +12,7 @@ import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/p
 import { LiveInterruptionWarning } from '@/components/live-interruption-warning'
 import { LivePlayer } from '@/components/live-player'
 import { TunerStatus } from '@/components/tuner-status'
-import { Button } from '@/components/ui/button'
+import { buttonVariants } from '@/components/ui/button'
 import { useLiveCapability } from '@/lib/capabilities'
 import {
   currentProgramWindow,
@@ -365,6 +365,7 @@ export function LivePage() {
  *
  * `LivePlayer` と同じ寸法（`aspect-video` の黒地）にして、再生ボタンを押した
  * 瞬間のレイアウトシフトを避ける。probe もセッションもここでは起こさない ---
+ * プレビュー面全体を単一のボタンにし、中央の再生表示は affordance として残す。
  * 「再生」ボタンを押した後に呼び出し側が `LivePlayer` をマウントするまで、
  * ネットワーク要求は一切発生しない（チャンネル切り替えの中間コミットも含む。
  * `playingKey` の判定をレンダー中に落とす必要があった理由も同じ ---
@@ -380,12 +381,17 @@ function LiveSelectionPreview({
   onPlay: () => void
 }) {
   return (
-    <div className="relative flex aspect-video w-full max-w-3xl items-center justify-center rounded bg-black">
-      <Button type="button" size="lg" aria-label={`${serviceName}を再生`} onClick={onPlay}>
+    <button
+      type="button"
+      aria-label={`${serviceName}を再生`}
+      onClick={onPlay}
+      className="group relative flex aspect-video w-full max-w-3xl items-center justify-center rounded border border-transparent bg-black p-0 outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+    >
+      <span className={cn(buttonVariants({ size: 'lg' }), 'group-hover:bg-primary/80')}>
         <Play data-icon="inline-start" />
         再生
-      </Button>
-    </div>
+      </span>
+    </button>
   )
 }
 

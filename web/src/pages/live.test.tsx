@@ -796,6 +796,34 @@ describe('LivePage', () => {
     },
   )
 
+  describe('選択プレビューの再生操作（issue #725）', () => {
+    // 「面全体が押せる」こと自体（角を押しても当たる）は jsdom では原理的に
+    // 測れないレイアウトの話なので、そちらは web/e2e/live.mjs ⓪ が実ブラウザで
+    // 見る。ここで見られるのは「aria-label で取れる要素がプレビュー面
+    // そのもの（中に入れ子の button が無い）」ことと、そのクリックで再生が
+    // 始まることまで。
+    it('aria-label で取れる要素がプレビュー面そのもので、クリックすると再生が始まる', async () => {
+      const user = userEvent.setup()
+      stubFetch({
+        services: [service({ serviceId: 10, name: 'チャンネル A' })],
+        programsByServiceId: { 10: [program({ serviceId: 10, name: 'A の番組' })] },
+      })
+      renderLive()
+
+      const preview = await screen.findByRole('button', { name: 'チャンネル Aを再生' })
+      // 旧実装（中央の小さい <button> が aria-label を持ち、面全体は div）では
+      // この要素が aspect-video を持たない（親 div 側にある）ため落ちる
+      expect(preview).toHaveClass('aspect-video')
+      // 入れ子の button の再発防止（これ単独では旧実装でも通ってしまうので、
+      // 上の aspect-video の assert と併せて見る）
+      expect(preview.querySelector('button')).not.toBeInTheDocument()
+
+      await user.click(preview)
+
+      await waitFor(() => expect(playlistFetchCalled()).toBe(true))
+    })
+  })
+
   it('?service= の直開きでも選択状態で止まり、再生ボタンを押すまでプレイリストを取りに行かない（issue #234 の含むもの 3）', async () => {
     stubFetch({
       services: [service({ serviceId: 10, name: 'チャンネル A' })],

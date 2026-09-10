@@ -158,9 +158,10 @@ site を含まない `POST /api/breakers/{name}/resume` を叩く
 で結ぶ。**検索（`/search`）も 3 段にまたがる**: 検索リクエスト（`POST /api/programs/search`）は
 サイトをパスに持たず、body の空 `sites` で全 site を対象にする。条件フォームのサイトチップ・
 サービス選択肢は `/rules` と同じくレジストリが運ぶ全 site、そして**検索結果は行が運ぶ**
-（`[{site, programId}]` がフラットに返る --- `sites` を空以外にすれば
-現在サイト以外の行も返る）。番組詳細の取得・結果行のサービス名解決は行の
-`site` を使う（[search.md](search.md)）。
+（表示に要る `networkId` / `serviceId` / `startAt` / `durationMs` / `name` / `isFree` を
+行自体が持つフラットな配列で返る --- `sites` を空以外にすれば現在サイト以外の
+行も返る）。結果行のサービス名解決は行の `site` / `networkId` / `serviceId` を使う
+（[search.md](search.md)）。
 
 **全 site の番組表・ライブでは、画面内の各値が site を運ぶ。** 番組の identity は
 `site:programId`、サービス列の identity は `site:networkId:serviceId` とし、同じ

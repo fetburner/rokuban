@@ -55,4 +55,5 @@ function Button({
   )
 }
 
-export { Button }
+// oxlint-disable-next-line react/only-export-components -- preview uses the button's visual variants without nesting a button
+export { Button, buttonVariants }

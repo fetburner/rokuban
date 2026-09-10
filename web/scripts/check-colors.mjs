@@ -37,6 +37,7 @@ const ALLOW = new Map([
       'レイアウトシフト/フラッシュを避ける --- live-player.tsx と同じ理由',
   ],
   ['src/components/ui/alert-dialog.tsx', 'ダイアログの幕（shadcn 生成物）。背後を沈める黒で、地の色ではない'],
+  ['src/components/ui/dialog.tsx', 'ダイアログの幕（shadcn 生成物）。背後を沈める黒で、地の色ではない'],
 ])
 
 /** Tailwind 標準パレットの色名（無彩・有彩とも。トークン側の名前と衝突しないもの）。 */

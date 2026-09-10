@@ -395,7 +395,16 @@ await validateFixturesOrExit(
     ...searchNotePrograms.map((p, i) => [
       `searchResults[${i}]`,
       SearchProgramsResponseItem,
-      { site: SITE, programId: p.programId },
+      {
+        site: SITE,
+        programId: p.programId,
+        networkId: p.networkId,
+        serviceId: p.serviceId,
+        startAt: p.startAt,
+        durationMs: p.durationMs,
+        name: p.name,
+        isFree: p.isFree,
+      },
     ]),
     ['searchNoteOverage', ListCapacityOveragesResponseItem, searchNoteOverage],
   ],
@@ -1615,7 +1624,18 @@ log("\n=== ①'''' search: 容量ノートの安定性（窓の点滅・退化�
     if (p === '/api/encode-profiles') return json([])
 
     if (p === '/api/programs/search' && method === 'POST') {
-      return json(searchNotePrograms.map((pr) => ({ site: SITE, programId: pr.programId })))
+      return json(
+        searchNotePrograms.map((pr) => ({
+          site: SITE,
+          programId: pr.programId,
+          networkId: pr.networkId,
+          serviceId: pr.serviceId,
+          startAt: pr.startAt,
+          durationMs: pr.durationMs,
+          name: pr.name,
+          isFree: pr.isFree,
+        })),
+      )
     }
     const detail = new RegExp(`^/api/sites/${SITE}/programs/(\\d+)$`).exec(p)
     if (detail) {

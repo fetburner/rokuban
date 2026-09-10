@@ -32,11 +32,11 @@
   2 つ以上のときだけ出す --- 下記「サイトチップの選択肢は…」参照。録画一覧の
   絞り込みも同じ判定規律）が
   `SearchDraft.sites` を編集し、`buildSearchRequest` / `conditionsToDraft` /
-  `buildRuleInput` がそのまま運ぶ。**検索結果は `[{site, programId}]` の
+  `buildRuleInput` がそのまま運ぶ。**検索結果は表示用の最小情報を持つ
   フラットな行**（畳まない。行数 = 予約数。下記「保存前の値札」）になるため、
-  番組詳細の取得（`GET /api/sites/{site}/programs/{programId}`）は
-  **行が運ぶ `site`** を使う ---
-  [shell.md](shell.md)「サイトの扱い」の「行が運ぶ」と同じ規律。検索はサイトを
+  番組名・日時・サービス識別子・長さ・有料表示は検索レスポンスだけで描画でき、
+  番組詳細の取得（`GET /api/sites/{site}/programs/{programId}`）は行ごとに発生しない。
+  行の identity は引き続き **`site` と `programId`** で作る。検索はサイトを
   パスに持たず、「どの site の EPG を対象にするか」を本文の `sites` で決める。
   **条件フォーム（`<ConditionFields>`）のサービス選択肢はこれとは別の理由で
   全 site の union にする。** 保存されたルールは全 site で評価される（`sites`
@@ -237,28 +237,17 @@
   だけから導出でき未決に依存しないため、そこをスコープの切れ目にしている
 - **母数は厳密で、畳まない行数がそのまま件数になる。** 検索 API
   （`POST /api/programs/search`）は `rulequery.MatchPrograms`
-  の結果を `LIMIT` なしでそのまま `[{site, programId}]` の行として返す
+  の結果を `LIMIT` なしでそのまま表示用の行として返す
   （ページングも上位 N 件打ち切りも無い、`internal/rulequery/query.go` で確認済み）
   ため、件数（`totalCount`）は常に全件の行数から厳密に出せる。**`programId`
   で畳んではいけない** --- 同一放送が複数 site でマッチすれば複数行になり、
   ruler はマッチした全 site で予約を作る（N 予約が既定）ため、畳むと実際に
   走る録画の本数をサイト数ぶん過小報告する（`totalCount` は「マッチする番組数」
   ではなく「ruler が作る予約の見込み数」を数えている）
-- **時間は近似で、かつサンプルは無作為抽出ではない。** 検索 API 自体は `site` と
-  `programId` しか返さないため、番組ごとの `durationMs` は
-  `GET /api/sites/{site}/programs/{programId}` を行が運ぶ `site` で個別に
-  叩いて集める必要がある。全件を叩くと数百件規模のルールでリクエストが数百本に
-  膨らむため、結果一覧の表示のために既に読み込んでいる分（先頭 N 件。追加の
-  リクエストは発生しない --- `search.test.tsx` の実測テストで確認）の平均から
-  全件に外挿する。
-  **読み込みが母数に追いついていない間はその旨を明記する**（黙って過小に見せない。
-  文言は「先頭 N 件」と言う）。全件読み込み終わると外挿ではなく実測の合計になり、
-  注記は消える。**この「先頭 N 件」は無作為抽出ではない**: 行は
-  `ORDER BY p.program_id, p.site` で programId 昇順（同じ programId 内は site 昇順）
-  に並び、`programId` 自体がネットワーク・サービス順に固まる値
-  （`(networkId*100000 + serviceId)*100000 + eventId`）のため、
-  複数チャンネルに跨がるルールでは尺の偏った標本になりうる（詳細は
-  `lib/rule-cost.ts` の `RuleCostSample` のコメント）
+- **時間は検索レスポンス全件の `durationMs` を使う。** 検索 API は表示に必要な
+  `networkId`、`serviceId`、`startAt`、`durationMs`、`name`、`isFree` を各行に載せる。
+  そのため値札は表示中の先頭 N 件や番組詳細 GET の完了状況に依存せず、検索結果全件の
+  `durationMs` を合計して算出する。値札のために追加の HTTP は発生しない。
 - **7 日（1 週間）に正規化するが、この分母は近似であり方向の保証は無い。**
   ルールの時間帯条件は曜日単位（1 週間周期）なので、EPG の前方保持日数の目安である
   8 日（[../data/projections.md](../data/projections.md)「ローリングウィンドウ

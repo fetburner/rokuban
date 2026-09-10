@@ -11,6 +11,7 @@ import {
   neighborProgram,
   orderServices,
   pxToTime,
+  scaledScrollTopPx,
   spanToPx,
   timeToPx,
   visibleColumnRange,
@@ -66,6 +67,21 @@ describe('時間軸の写像', () => {
   it('pxToTime は timeToPx の逆写像', () => {
     expect(pxToTime(axis, 0)).toBe(axis.startMs)
     expect(pxToTime(axis, 19 * 120)).toBe(at(19 * 60))
+  })
+
+  it('縮尺変更後もヘッダ下端に来ていた時刻を保つ scrollTop を返す', () => {
+    // sticky ヘッダ（36px）はフローに高さを占めたまま貼り付くので、scrollTop は
+    // ヘッダ下端に来る軸上 px とそのまま一致する（オフセット 0）。軸の 10:00
+    // （起点から 10 時間）は scrollTop = 1200px でヘッダ下端に来ている。
+    // 120 -> 240 では scrollTop をそのまま 2 倍する。
+    expect(scaledScrollTopPx(1200, 120, 240)).toBe(2400)
+    expect(scaledScrollTopPx(2400, 240, 120)).toBe(1200)
+  })
+
+  it('不正な縮尺はスクロール位置を壊さない', () => {
+    expect(scaledScrollTopPx(120, 0, 240)).toBe(120)
+    expect(scaledScrollTopPx(-10, 120, 240)).toBe(0)
+    expect(scaledScrollTopPx(Number.NaN, 120, 240)).toBe(0)
   })
 })
 

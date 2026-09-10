@@ -454,6 +454,36 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:grid-reserved
 ```
 
+### 番組表セルの操作モーダル（`programs-dialog.mjs`）
+
+番組表のセルをクリックしたとき、選択した番組が番組表の最上部へ移動するのではなく
+ダイアログで開くことを実ブラウザで見る。jsdom では CSS による可視性、フォーカストラップ、
+overlay / Escape による閉鎖後のフォーカス復帰、スクロール中の要素の可視性を測れないため、
+次の 6 点を判定する:
+
+- ① セルのクリックで番組名を `aria-labelledby` に持つダイアログが開く
+- ② ダイアログ内の `ProgramRow` の「予約」が hover なしで可視・操作可能で、1 回のクリックで
+  `PUT .../intent` が 1 回だけ飛ぶ
+- ③ 番組概要が長くて本文がスクロールしても、閉じるボタンが画面外へ出ない
+- ④ Tab 走査がダイアログの外へ出ない
+- ⑤ Escape で閉じ、クリック元セルへフォーカスが戻る
+- ⑥ overlay と「閉じる」ボタンでも閉じ、クリック元セルへフォーカスが戻る
+
+**フォーカス復帰は base-ui の `Dialog.Popup` の既定（`finalFocus` 省略時の
+「trigger or previously focused element」）に任せている。** controlled Dialog
+（`Dialog.Trigger` が無い）でも既定はクリック直前のフォーカス要素へ戻るため、
+このページ側で `finalFocus` を自作する必要は無い（自作すると、ボタンの
+クリックで focus を移さない macOS/iOS Safari で `document.body` を
+掴んでしまい、既定より悪化する）。
+
+API は `page.route` で丸ごと差し替えるので mirakc・実チューナー・DB は要らない。
+⓪（配っている bundle と `dist/` の一致）とフィクスチャの zod 契約検証も行う。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:programs-dialog
+```
+
 ### ボトムタブの高さと本文の下パディング（`programs-bottom-nav.mjs`）
 
 `--bottom-nav-height`（`web/src/index.css`）がボトムタブの実際の描画高さと一致して
@@ -550,8 +580,7 @@ Chromium で次を確認する。
 1280px では対象・モード・値の top がほぼ一致すること（= 同じ行にある）を見て
 従来のデスクトップの一行レイアウトを確認し、同じ④⑥を実行する。`sm:flex-row` を
 落として一行を崩す変異で実際に落ちることを確認済み。
-`page.route` のスタブは mirakc も DB も使わず、検索 API の `{site, programId}` と
-番組詳細の 2 本を差し替える。
+`page.route` のスタブは mirakc も DB も使わず、検索 API と番組詳細の 2 本を差し替える。
 
 **ボトムタブは `nav[aria-label="主ナビゲーション"].fixed` で指す。** この
 `aria-label` の `<nav>` はサイドバーとボトムタブの 2 本あり、`.last()` で当てると
@@ -810,6 +839,27 @@ E2E_URL=http://localhost:4173 pnpm e2e:personalization
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:programs-view
+```
+
+### 番組表の短い番組選択（`programs-grid-zoom.mjs`）
+
+短い番組の選択は、セルの視覚的な高さに下限を入れず、時間軸全体を 120 / 240 /
+480 px/時で拡大することで解決する（issue #724）。jsdom ではセルの実矩形や
+`scrollTop`、隣接セルの境界付近を実際に押した結果を測れないため、実ブラウザで
+次を確認する。
+
+- 既定の 5 分 / 10 分 / 30 分セルが 10 / 20 / 60px、480px/時では 40 / 80 /
+  240px になり、高さ = 放送時間の比例が保たれる
+- ズーム前後でグリッドの可視起点の時刻がずれない
+- 隣接する 5 分・10 分・30 分番組を境界付近で押しても、別セルが選択されない
+
+実装前は時間軸ズームの操作点が存在せず、5 分セルは 10px のままなので、①と
+③の判定が落ちることを確認できる。API は `page.route` で差し替えるため mirakc・
+実チューナー・DB は不要で、フィクスチャは `validateFixturesOrExit` で契約検証する。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:programs-grid-zoom
 ```
 
 ## CI では回さない

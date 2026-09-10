@@ -21,6 +21,12 @@ import { domLayoutMeasurable } from '@/lib/list-virtualization'
 import { firstIndexForDayOffset, programKeyAt, visibleDayOffset } from '@/lib/program-list'
 
 /**
+ * 予約操作が必要とする番組の最小形。検索結果は詳細表示用の全 ProgramListItem を
+ * 持たず、検索 API が返す表示用の射影だけで予約できるようにする。
+ */
+export type ReservableProgram = Pick<SiteProgram, 'site' | 'programId' | 'name'>
+
+/**
  * ReservationActions は番組からの予約 / 取消と、番組ごとの実行中状態。
  *
  * 実行そのもの（`useReservationActions`）は `lib/reservation-actions.ts` に置く
@@ -49,9 +55,9 @@ import { firstIndexForDayOffset, programKeyAt, visibleDayOffset } from '@/lib/pr
  * `ProgramOverlapWarning` 側がどちらも「描かない」に潰すため）。
  */
 export type ReservationActions = {
-  reserve: (program: SiteProgram, overrides?: ProgramOverridesInput) => void
-  cancel: (program: SiteProgram) => void
-  isBusy: (program: SiteProgram) => boolean
+  reserve: (program: ReservableProgram, overrides?: ProgramOverridesInput) => void
+  cancel: (program: ReservableProgram) => void
+  isBusy: (program: ReservableProgram) => boolean
   /** サーバーの値に楽観的な上書きを重ねた「予約済み」集合。 */
   reservedProgramIds: ReadonlySet<string>
   /** 予約一覧が未取得・失敗中なら、未予約行の `record` 操作を止める。 */
