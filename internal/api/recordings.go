@@ -292,9 +292,11 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool, known
 	if includeDeletedAt {
 		rec.DeletedAt = utcTimePtr(r.DeletedAt)
 	}
-	// ドロップ統計は ingest 済み（media_assets 行がある）録画にしか存在しない。
-	// 未 ingest と「統計が全部 0」を区別できるよう、原本が無ければ省略する。
-	if r.OriginalSizeBytes != nil {
+	// ドロップ統計は ingest 済み（original の media_assets 行がある）録画にしか
+	// 存在しない。原本を削除した後も tombstone 行と観測結果は残るため、現在の
+	// サイズ（OriginalSizeBytes）ではなく HasOriginalAsset で判定する。未 ingest
+	// と「統計が全部 0」を区別できるよう、original 行自体が無ければ省略する。
+	if r.HasOriginalAsset {
 		rec.DropSummary = &DropSummary{
 			Packets:   r.DropPackets,
 			Drops:     r.DropDrops,
