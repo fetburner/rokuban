@@ -32,10 +32,9 @@ const (
 
 	// encodeReconcileTimeout は 1 パス全体の上限。
 	//
-	// River の既定（1 分）より長く与える: 候補 1 件ごとに
-	// EnqueueMissingEncodesForKnownProfiles が原本の確認・ポリシーの読み出し・
-	// プロファイルごとの encoded 確認と、不足分の Insert を行うため、候補数
-	// （最大 encodeReconcileRowLimit）に比例して DB のラウンドトリップが積み上がる。
+	// River の既定（1 分）より長く与える: 候補の読み取りは専用クエリでまとめるが、
+	// 不足している (recording_id, profile) ごとの River Insert は残るため、候補数
+	// （最大 encodeReconcileRowLimit）とプロファイル数に比例して DB の処理が積み上がる。
 	// ffmpeg は一切起動しない（不変条件 4 に触れない。投入するだけ）ので、
 	// encode ジョブ本体（Timeout() が -1）のような無制限は要らない。
 	encodeReconcileTimeout = 5 * time.Minute
@@ -48,9 +47,9 @@ const (
 	// encode ジョブ側なので、パス自身は候補を 1 件も減らさない。以前はこの非対称が
 	// 「永久に満たせない候補が先頭に溜まると窓を恒久的に占有する」という到達性の
 	// 穴になっていたが、EncodeReconcileWorker.resumeAfter が窓を回すことでコストと
-	// 被覆を分離した。**この定数は今は純粋なコストのつまみ**（1 パスあたりの DB
-	// ラウンドトリップ数の上限）で、値を変えても被覆の保証（EncodeReconcileWorker
-	// の doc コメント「窓を回す」の C1/C2/C3）は変わらない。
+	// 被覆を分離した。**この定数は今は純粋なコストのつまみ**（1 パスあたりの
+	// 候補録画数と、それに伴う River Insert 数の上限）で、値を変えても被覆の保証
+	// （EncodeReconcileWorker の doc コメント「窓を回す」の C1/C2/C3）は変わらない。
 	encodeReconcileRowLimit = 1000
 )
 
@@ -154,14 +153,11 @@ func (w *EncodeReconcileWorker) Timeout(*river.Job[jobs.EncodeReconcileArgs]) ti
 
 // Work は 1 パス分の encode reconcile を実行する。
 //
-// 候補の抽出（ListRecordingsMissingEncodes）と実際の投入判断
-// （EnqueueMissingEncodesForKnownProfiles）を分けてある。候補クエリは「1 件も
-// 差分が無い録画を 1 件ずつ舐めない」ための絞り込みであって、投入するかどうかの
-// 判断そのものは常に EnqueueMissingEncodes 系の 1 実装の側にある（ヒント経路と
-// 同じ関数を通す。判断が 2 か所に分かれると片方だけ直る）。known_profiles だけは
-// SQL と Go の両方に渡す --- SQL 側は窓を恒久候補で埋めないため、Go 側は
-// 「候補に選ばれた録画のついでに、設定に無いプロファイルまで投入する」のを
-// 防ぐため。
+// 候補の抽出と不足プロファイルの判定は ListMissingEncodeProfiles でまとめて行う。
+// これにより、候補ごとの原本・ポリシー・encoded の再取得を避ける。known_profiles
+// も SQL に渡して、設定から消えたプロファイルや空のプロファイル名を投入対象から
+// 外す。単発のヒント経路は用途が異なるため、引き続き EnqueueMissingEncodes 系の
+// 実装を使う。
 //
 // 1 件の失敗でパス全体を止めない（record_sweep の processRecord・
 // delete_reconcile の deleteMediaAsset と同じ判断）。次パスが同じ候補を
@@ -188,22 +184,32 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.Enco
 	after := w.resumeAfter.Load()
 
 	q := sqlcgen.New(w.Pool)
-	candidates, err := q.ListRecordingsMissingEncodes(ctx, sqlcgen.ListRecordingsMissingEncodesParams{
+	missing, err := q.ListMissingEncodeProfiles(ctx, sqlcgen.ListMissingEncodeProfilesParams{
 		AfterRecordingID: after,
 		KnownProfiles:    known,
 		RowLimit:         rowLimit,
 	})
 	if err != nil {
 		// 再開位置は触らない。次パスが同じ位置から引き直す。
-		return fmt.Errorf("listing recordings missing encodes: %w", err)
+		return fmt.Errorf("listing missing encode profiles: %w", err)
 	}
 
+	// クエリは recording_id ごとに全不足プロファイルを返す。結果は recording_id
+	// 昇順なので、ここで候補録画を一度だけ数える。RowLimit は profile 行数ではなく
+	// この録画数に適用され、window の再開位置も録画単位で進む。
+	candidates := make([]int64, 0, len(missing))
 	failed := 0
-	for _, recordingID := range candidates {
-		if err := EnqueueMissingEncodesForKnownProfiles(ctx, client, w.Pool, recordingID, known); err != nil {
+	for _, row := range missing {
+		if len(candidates) == 0 || candidates[len(candidates)-1] != row.RecordingID {
+			candidates = append(candidates, row.RecordingID)
+		}
+		if _, err := client.Insert(ctx, jobs.EncodeJobArgs{
+			RecordingID: row.RecordingID,
+			Profile:     row.Profile,
+		}, nil); err != nil {
 			failed++
 			slog.Error("encode_reconcile: failed to enqueue missing encodes",
-				"recording_id", recordingID, "err", err)
+				"recording_id", row.RecordingID, "profile", row.Profile, "err", err)
 		}
 	}
 

@@ -447,7 +447,7 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure_MultibyteTruncation(t *testing.
 // タイムアウトまで待つ）の後の defer で走るので、その間に River が停止して
 // ctx がキャンセルされ得る。job の ctx をそのまま渡していると DELETE が
 // 失敗し、encoded 資産があるのに running を主張する行が恒久的に残る ---
-// そのプロファイルは ListRecordingsMissingEncodes の候補から外れるので、
+// そのプロファイルは ListMissingEncodeProfiles の候補から外れるので、
 // 冪等スキップ経路の掃除も二度と走らない（不変条件 10）。
 // clearEncodeAttempt から attemptWriteContext を外すとこのテストが落ちる。
 func TestEncodeWorker_ClearAttempt_SurvivesCanceledCtx(t *testing.T) {

@@ -508,7 +508,7 @@ func (w *EncodeWorker) markEncodeAttemptFailed(ctx context.Context, recordingID 
 // 書き込みは job の ctx から切り離す（attemptWriteContext）。commitEncoded の
 // 成功後〜defer の間（webhook 通知を挟む）に ctx がキャンセルされると、job の
 // ctx では DELETE が失敗して running を主張する行が恒久的に残る --- この
-// プロファイルは active な encoded を持つので ListRecordingsMissingEncodes の
+// プロファイルは active な encoded を持つので ListMissingEncodeProfiles の
 // 候補から外れ、冪等スキップ経路の掃除も二度と走らない（不変条件 10:
 // 何も主張していない/嘘の行を残さない）。
 func (w *EncodeWorker) clearEncodeAttempt(ctx context.Context, recordingID int64, profile string) {
