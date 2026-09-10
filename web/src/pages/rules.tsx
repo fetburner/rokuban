@@ -58,28 +58,25 @@ import {
 import { cn } from '@/lib/utils'
 
 /**
- * RulesPage は録画ルールの一覧と作成・編集。
+ * RulesPage は録画ルールの一覧と新規作成。
  *
  * 条件（テキスト・チャンネル種別・ジャンル・時間帯・無料放送・放送時間・期間・
  * サイト・サービス。列挙は DOM 順で、サービスが最後なのは読み込み中のレイアウト
  * シフト対策 --- `condition-fields.tsx`）は検索画面（`/search`）と同じ
- * `ConditionFields` / `internal/rulequery` を通るので、ここでも全次元を編集できる
+ * `ConditionFields` / `internal/rulequery` を通るので、新規作成でも全次元を指定できる
  * （M3-6 の時点では encodeProfiles / keepOriginal だけの編集に留めていたが、
- * `condition-fields.tsx` / `lib/program-search.ts` の切り出しでルール側にも
- * 同じ UI を持ち込めるようになった）。`UpdateRule` は子テーブル全置換なので、
- * UI が持たない項目（description / dedupe* / filenameTemplate / metadata）は
- * `buildRuleInput` の `preserve` 引数で引き継ぐ（`sites` は issue #531 で
- * `ConditionFields` の次元になったため、いまは下書きからそのまま送る）。
+ * `condition-fields.tsx` / `lib/program-search.ts` の切り出しで同じ UI を使えるように
+ * なった）。
  *
- * 各行の「検索しながら編集」（`/search?ruleId=N`）からも同じルールを上書き
- * 保存できる。導出ロジックが割り込む余地は無い純粋な「ユーザーの同期的な
- * 編集」同士なので、2 画面を同時に開いても単に最後に保存した方が勝つ
- * （docs/frontend.md「検索とルールは同じ条件 UI を双方向に共有する」）。
+ * 既存ルールの上書きは各行の「検索しながら編集」（`/search?ruleId=N`）に
+ * 一本化する。検索側は条件に一致する番組を見ながら編集でき、UI を持たない項目も
+ * `buildRuleInput` の `preserve` 引数で引き継ぐ（`RuleEditForm` の doc comment と
+ * `docs/frontend/search.md` を参照）。
  */
 export function RulesPage() {
   const query = useListRules()
   const rules = unwrap(query.data) ?? []
-  const [editingId, setEditingId] = useState<number | 'new' | null>(null)
+  const [isCreating, setIsCreating] = useState(false)
   const [isCountingReservations, setIsCountingReservations] = useState(false)
 
   return (
@@ -87,12 +84,12 @@ export function RulesPage() {
       <PageHeader
         title="ルール"
         actions={
-          editingId !== 'new' && (
+          !isCreating && (
             <Button
               type="button"
               size="lg"
               className="hidden lg:inline-flex"
-              onClick={() => setEditingId('new')}
+              onClick={() => setIsCreating(true)}
             >
               ルールを作成
             </Button>
@@ -101,18 +98,17 @@ export function RulesPage() {
       />
 
       <PageContent className="flex flex-col gap-4 px-4 py-4">
-        {editingId === 'new' ? (
+        {isCreating ? (
           <RuleForm
-            mode="create"
-            onCancel={() => setEditingId(null)}
-            onSaved={() => setEditingId(null)}
+            onCancel={() => setIsCreating(false)}
+            onSaved={() => setIsCreating(false)}
           />
         ) : (
           <Button
             type="button"
             size="lg"
             className="w-full lg:hidden"
-            onClick={() => setEditingId('new')}
+            onClick={() => setIsCreating(true)}
           >
             ルールを作成
           </Button>
@@ -122,27 +118,17 @@ export function RulesPage() {
           <ErrorState onRetry={() => void query.refetch()}>ルールの取得に失敗しました</ErrorState>
         ) : query.isPending ? (
           <ListSkeleton />
-        ) : rules.length === 0 && editingId !== 'new' ? (
+        ) : rules.length === 0 && !isCreating ? (
           <EmptyState>ルールがありません</EmptyState>
         ) : (
           <ul className="flex flex-col gap-3">
             {rules.map((rule) => (
               <li key={rule.id}>
-                {editingId === rule.id ? (
-                  <RuleForm
-                    mode="edit"
-                    rule={rule}
-                    onCancel={() => setEditingId(null)}
-                    onSaved={() => setEditingId(null)}
-                  />
-                ) : (
-                  <RuleRow
-                    rule={rule}
-                    isCountingReservations={isCountingReservations}
-                    onCountingReservationsChange={setIsCountingReservations}
-                    onEdit={() => setEditingId(rule.id)}
-                  />
-                )}
+                <RuleRow
+                  rule={rule}
+                  isCountingReservations={isCountingReservations}
+                  onCountingReservationsChange={setIsCountingReservations}
+                />
               </li>
             ))}
           </ul>
@@ -160,8 +146,8 @@ export function RulesPage() {
  * 条件で作り直しても新しい id になるので過去の録画は 1 件もマッチしない
  * （`docs/recording/ruler.md` §3.1「ルールの削除は履歴のスコープを消す」）。
  * 帰結は録り逃しではないが、押した後に取り消せる操作でもないので、条件を
- * 変えたいだけなら削除ではなく「編集」（id を保つ上書き保存）を使えることまで
- * 書く。
+ * 変えたいだけなら削除ではなく「検索しながら編集」（id を保つ上書き保存）を
+ * 使えることまで書く。
  *
  * **被害の大きさを docs より強く書かない。** 過剰録画は一過性で、新しい
  * ルールの下で 1 本録れれば以降の再放送はまた弾かれる（`internal/ruler`
@@ -180,7 +166,7 @@ function deleteRuleWarning(rule: Rule): string {
   return (
     `${base}このルールの重複排除の履歴も一緒に外れます。同じ条件で作り直しても引き継がれないので、` +
     '次の再放送を録り直します（新しいルールで 1 本録れれば以降はまた弾かれます）。' +
-    '条件を変えたいだけなら「編集」で上書きしてください。'
+    '条件を変えたいだけなら「検索しながら編集」で上書きしてください。'
   )
 }
 
@@ -224,12 +210,11 @@ function deleteRuleResultMessage(res: DeleteRuleResponse | undefined): string | 
 /**
  * RuleRow は一覧の 1 行。
  *
- * 主操作（編集 / 検索しながら編集 / このルールの録画）は露出のまま、削除
- * （稀・破壊的）だけを overflow メニューに寄せる（issue #227）。以前は
- * 「編集」を開いた先の `RuleForm` フッタに保存・キャンセルと同格の
- * `destructive` ボタンとして置いていたが、それだと編集を開くたびに
- * 破壊的操作が主操作と並んでしまう。行を離れた overflow に置くことで、
- * 一覧を眺めているだけでは目に入らない位置にする。
+ * 主操作の「検索しながら編集」は `/search?ruleId=N` に遷移し、条件に一致する
+ * 番組を見ながら既存ルールを上書きする。以前の `/rules` インライン編集と
+ * 役割が重複していたため、ここを主ボタンにして編集の入口を一本化する。
+ * ラベルは遷移先が検索画面であることを伝えるため「編集」には戻さない。
+ * 削除（稀・破壊的）だけを overflow メニューに寄せる（issue #227）。
  * 「無効」バッジと有効スイッチは意図的に併存させる。バッジは一覧を読み流す
  * ときの状態表示、スイッチは操作対象であり、片方だけではもう片方の役割を
  * 満たさない。
@@ -238,12 +223,10 @@ function RuleRow({
   rule,
   isCountingReservations,
   onCountingReservationsChange,
-  onEdit,
 }: {
   rule: Rule
   isCountingReservations: boolean
   onCountingReservationsChange: (counting: boolean) => void
-  onEdit: () => void
 }) {
   const profiles = rule.encodeProfiles ?? []
   const keep = (rule.keepOriginal ?? 'always') as KeepOriginal
@@ -276,6 +259,8 @@ function RuleRow({
         data: buildRuleInput(
           conditionsToDraft(rule),
           { ...ruleToMeta(rule), enabled },
+          // preserve を落とすと UI を持たない項目（description / dedupe* /
+          // filenameTemplate / metadata）が UpdateRule の全置換で黙って消える。
           rule,
         ),
       },
@@ -394,8 +379,8 @@ function RuleRow({
         </div>
         <div className="flex shrink-0 items-start gap-1">
           <div className="flex flex-col items-end gap-2">
-            <Button type="button" size="sm" onClick={onEdit}>
-              編集
+            <Button size="sm" render={<Link to="/search" search={{ ruleId: rule.id }} />}>
+              検索しながら編集
             </Button>
             <button
               type="button"
@@ -420,13 +405,6 @@ function RuleRow({
                 />
               </span>
             </button>
-            <Button
-              variant="ghost"
-              size="sm"
-              render={<Link to="/search" search={{ ruleId: rule.id }} />}
-            >
-              検索しながら編集
-            </Button>
             {/* このルール由来の録画だけに絞った /recordings への導線（issue #137）。
                 条件モデルは検索（ProgramSearchRequest）と共有しないので、遷移先は
                 /search ではなく /recordings?ruleId=N になる。 */}
@@ -504,22 +482,13 @@ function RuleRow({
   )
 }
 
-type RuleFormProps =
-  | { mode: 'create'; onCancel: () => void; onSaved: () => void }
-  | { mode: 'edit'; rule: Rule; onCancel: () => void; onSaved: () => void }
-
-function RuleForm(props: RuleFormProps) {
+function RuleForm({ onCancel, onSaved }: { onCancel: () => void; onSaved: () => void }) {
   const toast = useToast()
   const queryClient = useQueryClient()
   const createRule = useCreateRule()
-  const updateRule = useUpdateRule()
 
-  const [draft, setDraft] = useState<SearchDraft>(() =>
-    props.mode === 'edit' ? conditionsToDraft(props.rule) : emptyDraft(),
-  )
-  const [meta, setMeta] = useState<RuleMetaDraft>(() =>
-    props.mode === 'edit' ? ruleToMeta(props.rule) : emptyRuleMeta(),
-  )
+  const [draft, setDraft] = useState<SearchDraft>(emptyDraft)
+  const [meta, setMeta] = useState<RuleMetaDraft>(emptyRuleMeta)
 
   const encodeValue: EncodeSettingsValue = {
     keepOriginal: meta.keepOriginal,
@@ -529,14 +498,14 @@ function RuleForm(props: RuleFormProps) {
     setMeta((m) => ({ ...m, keepOriginal: next.keepOriginal, encodeProfiles: next.encodeProfiles }))
 
   const formError = draftError(draft) ?? ruleMetaError(meta)
-  const pending = createRule.isPending || updateRule.isPending
+  const pending = createRule.isPending
   const [matchAllConfirmOpen, setMatchAllConfirmOpen] = useState(false)
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: getListRulesQueryKey() })
 
-  // 実際の作成/更新リクエスト。条件なしガードを通過した（or 元々条件が
-  // あった）後の、保存の本体だけを持つ。
+  // 実際の作成リクエスト。条件なしガードを通過した（or 元々条件があった）後の、
+  // 保存の本体だけを持つ。
   //
   // **作成は成功トーストを残す。** `ListRules` は `ORDER BY priority DESC,
   // id ASC` で並ぶため、既定優先度（0）で作った新しい行は多くの場合
@@ -547,53 +516,29 @@ function RuleForm(props: RuleFormProps) {
   // 画面外になりうる。issue #297 は「画面外になりうる効果」にはトースト
   // を残すことを認めており（RuleRow の削除と同じ判断基準）、無音化しない。
   //
-  // **更新は成功トーストを出さない（issue #297）。** 編集フォームは対象の
-  // 行をその場（ユーザーが「編集」を押した、既にスクロールして見えている
-  // 位置）で置き換えるので、保存直後の画面には常に更新後の内容が現れる。
-  // 作成と違って「一覧のどこか別の場所に新しく現れる」経路が無い。
-  //
-  // どちらも Undo（予約作成のような）にはしない。作成・更新は名前・条件・
-  // エンコード設定を複数フィールド分書き込む操作で、予約のワンタップや
-  // 削除のワンタップとは重みが違う --- 誤タップで即座に取り消したくなる
-  // 操作ではない。取り消したければ、削除は既存の overflow メニュー +
-  // 確認ダイアログが、更新のやり直しは「編集」が既にある。
+  // Undo（予約作成のような）にはしない。作成は名前・条件・エンコード設定を
+  // 複数フィールド分書き込む操作で、予約のワンタップや削除のワンタップとは
+  // 重みが違う --- 誤タップで即座に取り消したくなる操作ではない。
   const doSave = () => {
-    const data = buildRuleInput(draft, meta, props.mode === 'edit' ? props.rule : undefined)
-    if (props.mode === 'create') {
-      createRule.mutate(
-        { data },
-        {
-          onSuccess: () => {
-            toast({ message: 'ルールを作成しました' })
-            void invalidate()
-            props.onSaved()
-          },
-          onError: (err) =>
-            toast({
-              message: apiErrorMessage(err) ?? 'ルールの作成に失敗しました',
-              kind: 'error',
-            }),
+    const data = buildRuleInput(draft, meta)
+    createRule.mutate(
+      { data },
+      {
+        onSuccess: () => {
+          toast({ message: 'ルールを作成しました' })
+          void invalidate()
+          onSaved()
         },
-      )
-    } else {
-      updateRule.mutate(
-        { id: props.rule.id, data },
-        {
-          onSuccess: () => {
-            void invalidate()
-            props.onSaved()
-          },
-          onError: (err) =>
-            toast({
-              message: apiErrorMessage(err) ?? 'ルールの更新に失敗しました',
-              kind: 'error',
-            }),
-        },
-      )
-    }
+        onError: (err) =>
+          toast({
+            message: apiErrorMessage(err) ?? 'ルールの作成に失敗しました',
+            kind: 'error',
+          }),
+      },
+    )
   }
 
-  // 条件が 1 つも無いルールは全番組にマッチする。編集フォームは条件の
+  // 条件が 1 つも無いルールは全番組にマッチする。作成フォームは条件の
   // どの次元も必須にしていない（何も指定しない = 「絞り込まない」が
   // 正しい状態でありうる、検索画面と同じ設計）ため、保存を止めるのではなく
   // 明示的な確認を挟む。一覧の要約表示（`summarizeRuleConditions` が
@@ -617,7 +562,7 @@ function RuleForm(props: RuleFormProps) {
 
   return (
     <form
-      aria-label={props.mode === 'create' ? 'ルールを作成' : 'ルールを編集'}
+      aria-label="ルールを作成"
       className="flex flex-col gap-5 rounded-lg border border-border p-3"
       onSubmit={(e) => {
         e.preventDefault()
@@ -684,10 +629,10 @@ function RuleForm(props: RuleFormProps) {
         <Button type="submit" size="lg" disabled={formError !== undefined || pending}>
           {pending ? '保存中…' : '保存'}
         </Button>
-        <Button type="button" variant="outline" size="lg" disabled={pending} onClick={props.onCancel}>
+        <Button type="button" variant="outline" size="lg" disabled={pending} onClick={onCancel}>
           キャンセル
         </Button>
-        {/* 削除はルール行の overflow メニューに移した（issue #227）。編集フォームは
+        {/* 削除はルール行の overflow メニューに移した（issue #227）。作成フォームは
             保存・キャンセルという主操作だけを持つ。 */}
       </div>
 

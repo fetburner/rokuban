@@ -244,7 +244,8 @@ describe('RulesPage encode settings', () => {
     renderPage()
 
     expect(await screen.findByText('ニュース')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '編集' }))
+    await user.click(await findCreateRuleButton())
+    await user.type(screen.getByLabelText('名前'), '新規ルール')
 
     // フォームが出てから keepOriginal を until_encoded に
     const keepSelect = await screen.findByLabelText('原本の保持')
@@ -266,7 +267,8 @@ describe('RulesPage encode settings', () => {
     renderPage()
 
     await screen.findByText('ニュース')
-    await user.click(screen.getByRole('button', { name: '編集' }))
+    await user.click(await findCreateRuleButton())
+    await user.type(screen.getByLabelText('名前'), '新規ルール')
 
     const keepSelect = await screen.findByLabelText('原本の保持')
     await user.selectOptions(keepSelect, 'until_encoded')
@@ -279,7 +281,7 @@ describe('RulesPage encode settings', () => {
   })
 })
 
-describe('RulesPage 条件編集', () => {
+describe('RulesPage 新規作成', () => {
   it('新規作成で入力した条件が RuleInput に入る', async () => {
     const { postBodies } = stubApi([])
     const user = userEvent.setup()
@@ -374,104 +376,6 @@ describe('RulesPage 条件編集', () => {
     await waitFor(() => expect(postBodies.length).toBe(1))
   })
 
-  it('編集で既存ルールの条件がフォームに復元される', async () => {
-    stubApi([ruleWithConditions])
-    const user = userEvent.setup()
-    renderPage()
-
-    await screen.findByText('平日ニュース')
-    await user.click(screen.getByRole('button', { name: '編集' }))
-
-    const valueInput = await screen.findByLabelText<HTMLInputElement>('テキスト条件 1 の値')
-    expect(valueInput.value).toBe('ニュース')
-
-    const startInput = screen.getByLabelText<HTMLInputElement>('時間帯 1 の開始')
-    expect(startInput.value).toBe('21:00')
-    const endInput = screen.getByLabelText<HTMLInputElement>('時間帯 1 の終了')
-    expect(endInput.value).toBe('23:00')
-
-    // ジャンル（1 = スポーツ）が選択済みチップとして復元される
-    const genreGroup = screen.getByRole('group', { name: 'ジャンル' })
-    expect(within(genreGroup).getByRole('button', { name: 'スポーツ' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    )
-  })
-
-  it('編集で一部の条件だけ変えても他の条件が落ちない', async () => {
-    const { putBodies } = stubApi([ruleWithConditions])
-    const user = userEvent.setup()
-    renderPage()
-
-    await screen.findByText('平日ニュース')
-    await user.click(screen.getByRole('button', { name: '編集' }))
-
-    // ジャンルだけ増やす（テキスト条件・時間帯には触れない）
-    await screen.findByLabelText('テキスト条件 1 の値')
-    await user.click(screen.getByRole('button', { name: 'ドラマ' }))
-
-    await user.click(screen.getByRole('button', { name: '保存' }))
-
-    await waitFor(() => expect(putBodies.length).toBe(1))
-    const body = putBodies[0].body
-    expect(body.textMatches).toEqual([
-      { target: 'name', mode: 'keyword', value: 'ニュース' },
-    ])
-    expect(body.times).toEqual([{ weekdays: 31, startSec: 75600, endSec: 82800 }])
-    expect(body.genres).toEqual([1, 3])
-  })
-
-  it('編集保存時に UI を持たない項目（dedupe* / filenameTemplate / metadata）が落ちない', async () => {
-    const { putBodies } = stubApi([ruleWithConditions])
-    const user = userEvent.setup()
-    renderPage()
-
-    await screen.findByText('平日ニュース')
-    await user.click(screen.getByRole('button', { name: '編集' }))
-    await screen.findByLabelText('テキスト条件 1 の値')
-
-    await user.click(screen.getByRole('button', { name: '保存' }))
-
-    await waitFor(() => expect(putBodies.length).toBe(1))
-    const body = putBodies[0].body
-    expect(body.dedupeEnabled).toBe(true)
-    expect(body.dedupeThreshold).toBe(0.8)
-    expect(body.dedupeWindowSeconds).toBe(3600)
-    expect(body.filenameTemplate).toBe('{title}')
-    expect(body.metadata).toEqual({ source: 'legacy' })
-  })
-
-  /**
-   * issue #531:「検索・ルールは同じ条件 UI を双方向に共有する」ので、
-   * `/rules` の編集フォームでもサイトチップの復元・編集・往復を確かめる
-   * （`pages/search.test.tsx` の対になるテスト）。
-   */
-  it('サイトチップは rule_sites から復元され、編集して保存すると変更後の sites が運ばれる', async () => {
-    const ruleWithSites: Rule = { ...ruleWithConditions, sites: ['default', 'site2'] }
-    const { putBodies } = stubApi([ruleWithSites], undefined, undefined, undefined, [
-      'default',
-      'site2',
-    ])
-    const user = userEvent.setup()
-    renderPage()
-
-    await screen.findByText('平日ニュース')
-    await user.click(screen.getByRole('button', { name: '編集' }))
-    await screen.findByLabelText('テキスト条件 1 の値')
-
-    const group = screen.getByRole('group', { name: 'サイト' })
-    const defaultChip = within(group).getByRole('button', { name: 'default' })
-    const site2Chip = within(group).getByRole('button', { name: 'site2' })
-    expect(defaultChip).toHaveAttribute('aria-pressed', 'true')
-    expect(site2Chip).toHaveAttribute('aria-pressed', 'true')
-
-    await user.click(site2Chip)
-    await user.click(screen.getByRole('button', { name: '保存' }))
-
-    await waitFor(() => expect(putBodies.length).toBe(1))
-    expect(putBodies[0].body.sites).toEqual(['default'])
-  })
-
   it('一覧に条件の要約が出て、空のルールは「すべての番組」と分かる', async () => {
     stubApi([sampleRule, ruleWithConditions])
     renderPage()
@@ -495,13 +399,15 @@ describe('RulesPage 条件編集', () => {
     expect(badge.className).not.toContain('text-muted-foreground')
   })
 
-  it('「検索しながら編集」リンクが /search?ruleId=<id> を指す', async () => {
+  it('既存ルールの編集は検索画面への主ボタンに一本化する', async () => {
     stubApi([ruleWithConditions])
     renderPage()
 
     await screen.findByText('平日ニュース')
     const link = screen.getByRole('link', { name: '検索しながら編集' })
     expect(link).toHaveAttribute('href', '/search?ruleId=2')
+    expect(link).toHaveClass('bg-primary')
+    expect(screen.queryByRole('button', { name: '編集' })).not.toBeInTheDocument()
   })
 
   // issue #137: ルールから、そのルール由来の録画だけに絞った一覧への導線。
@@ -542,8 +448,8 @@ describe('RulesPage ルールの有効スイッチ', () => {
 
     await user.click(screen.getByRole('button', { name: '無効にする' }))
     await waitFor(() => expect(putBodies).toHaveLength(1))
-    // PATCH は RuleInput.name が必須で全置換する契約なので、編集フォームと同じ
-    // 入力を送りつつ enabled だけを変更する。
+    // PATCH は RuleInput.name が必須で全置換する契約なので、検索画面の上書き
+    // フォームと同じ入力を送りつつ enabled だけを変更する。
     expect(putBodies[0]).toMatchObject({ id: 1, body: { name: 'ニュース', enabled: false } })
     expect(toggle).toHaveAttribute('aria-checked', 'false')
 
@@ -735,10 +641,37 @@ describe('RulesPage ルールの有効スイッチ', () => {
     expect(await screen.findByText('サーバーが更新を拒否しました')).toBeInTheDocument()
     await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'))
   })
+
+  it('PATCH 本文は UI を持たない項目（dedupe* / filenameTemplate / metadata）を保持する', async () => {
+    const disabledRule = { ...ruleWithConditions, enabled: false }
+    const { putBodies } = stubApi([disabledRule])
+    const user = userEvent.setup()
+    renderPage()
+
+    const toggle = await screen.findByRole('switch', {
+      name: 'ルール「平日ニュース」を有効にする',
+    })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    await user.click(toggle)
+
+    await waitFor(() => expect(putBodies).toHaveLength(1))
+    expect(putBodies[0]).toMatchObject({
+      id: 2,
+      body: {
+        name: '平日ニュース',
+        enabled: true,
+        dedupeEnabled: true,
+        dedupeThreshold: 0.8,
+        dedupeWindowSeconds: 3600,
+        filenameTemplate: '{title}',
+        metadata: { source: 'legacy' },
+      },
+    })
+  })
 })
 
 // issue #227（M5-4）: 削除（稀・破壊的）を行の overflow メニューへ寄せ、
-// 編集フォームの保存・キャンセルと同格には並べない。
+// 作成フォームの保存・キャンセルと同格には並べない。
 describe('RulesPage 削除は overflow メニュー', () => {
   it('一覧の行に「削除」ボタンが直接は出ない（overflow の中）', async () => {
     stubApi()
@@ -822,7 +755,7 @@ describe('RulesPage 削除は overflow メニュー', () => {
   // ルールを削除すると履歴がスコープから外れ、同じ条件で作り直しても
   // 引き継がれない（docs/recording/ruler.md §3.1）。押した後では取り返せない
   // 副作用なので、確認の時点で伝える。
-  it('重複排除が有効なルールの削除確認に、履歴が外れることと「編集」への案内が出る', async () => {
+  it('重複排除が有効なルールの削除確認に、履歴が外れることと検索編集への案内が出る', async () => {
     stubApi([ruleWithConditions])
     const user = userEvent.setup()
     renderPage()
@@ -835,7 +768,7 @@ describe('RulesPage 削除は overflow メニュー', () => {
     const description = screen.getByText(/重複排除の履歴も一緒に外れます/)
     expect(description.textContent).toContain('重複排除の履歴も一緒に外れます')
     expect(description.textContent).toContain('作り直しても引き継がれない')
-    expect(description.textContent).toContain('「編集」')
+    expect(description.textContent).toContain('「検索しながら編集」')
     // 被害の大きさを docs より強く書かない（過剰録画は一過性で、新ルールの
     // 下で 1 本録れれば以降は再び弾かれる ——
     // TestRunPass_DedupeHistoryLeavesScopeOnRuleDelete 段階 3 の測定）。
@@ -894,26 +827,11 @@ describe('RulesPage 削除は overflow メニュー', () => {
     expect(screen.getByText('ニュース')).toBeInTheDocument()
   })
 
-  it('編集フォームには削除ボタンが無い（保存・キャンセルだけが主操作）', async () => {
-    stubApi()
-    const user = userEvent.setup()
-    renderPage()
-
-    await screen.findByText('ニュース')
-    await user.click(screen.getByRole('button', { name: '編集' }))
-
-    await screen.findByLabelText('名前')
-    expect(screen.queryByRole('button', { name: '削除' })).not.toBeInTheDocument()
-  })
 })
 
-// issue #297: 削除・更新の効果は一覧の同じ行として画面に現れる
-// （RulesPage はフィルタもページングも持たない）ので、素の成功トーストは
-// 無音化する。作成は `ListRules` が `priority DESC, id ASC` で並べるため
-// 新しい行がフォールドの外に入りうり、画面外になりうる効果はトーストを
-// 残す（issue #297 が認める例外）。失敗は一覧からは分からない新しい情報
-// なので、いずれも残す。
-describe('RulesPage 成功トーストの無音化 (issue #297)', () => {
+// issue #297: 作成の効果は一覧の下の方に入りうるため、画面外になりうる。
+// 成功トーストを残し、失敗も一覧からは分からない新しい情報なので残す。
+describe('RulesPage 作成成功トースト (issue #297)', () => {
   it('作成に成功すると成功トーストが出る（新しい行は並び順次第でフォールドの外に入りうる）', async () => {
     const { postBodies } = stubApi([])
     const user = userEvent.setup()
@@ -934,26 +852,6 @@ describe('RulesPage 成功トーストの無音化 (issue #297)', () => {
     expect(await screen.findByText('ルールを作成しました')).toBeInTheDocument()
   })
 
-  it('更新に成功しても成功トーストは出ず、一覧の同じ行に反映される', async () => {
-    const { putBodies } = stubApi([ruleWithConditions])
-    const user = userEvent.setup()
-    renderPage()
-
-    await screen.findByText('平日ニュース')
-    await user.click(screen.getByRole('button', { name: '編集' }))
-    await screen.findByLabelText('テキスト条件 1 の値')
-
-    const nameInput = screen.getByLabelText('名前')
-    await user.clear(nameInput)
-    await user.type(nameInput, '改名した平日ニュース')
-    await user.click(screen.getByRole('button', { name: '保存' }))
-    await waitFor(() => expect(putBodies.length).toBe(1))
-
-    expect(await screen.findByText('改名した平日ニュース')).toBeInTheDocument()
-    expect(await screen.findByRole('button', { name: '編集' })).toBeInTheDocument()
-    expect(screen.queryByText('ルールを更新しました')).not.toBeInTheDocument()
-  })
-
   it('作成に失敗すれば失敗トーストは出る（フォームも開いたまま残る）', async () => {
     stubApi([], undefined, { create: 500 })
     const user = userEvent.setup()
@@ -967,19 +865,6 @@ describe('RulesPage 成功トーストの無音化 (issue #297)', () => {
     expect(await screen.findByText('サーバーが作成を拒否しました')).toBeInTheDocument()
     // 失敗時はフォームが送信前のまま残る（半端な状態で消えない）
     expect(screen.getByLabelText('名前')).toBeInTheDocument()
-  })
-
-  it('更新に失敗すれば失敗トーストは出る', async () => {
-    stubApi([ruleWithConditions], undefined, { update: 500 })
-    const user = userEvent.setup()
-    renderPage()
-
-    await screen.findByText('平日ニュース')
-    await user.click(screen.getByRole('button', { name: '編集' }))
-    await screen.findByLabelText('テキスト条件 1 の値')
-    await user.click(screen.getByRole('button', { name: '保存' }))
-
-    expect(await screen.findByText('サーバーが更新を拒否しました')).toBeInTheDocument()
   })
 
   it('削除に失敗すれば失敗トーストは出て、行は一覧に残る', async () => {
