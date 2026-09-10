@@ -102,8 +102,8 @@ func DatabaseConfig(t *testing.T) config.DBConfig {
 	return cfg
 }
 
-// dbConfigFromURL は接続 URL を config.DBConfig に変換する。db.NewPool を経由
-// させるには DSN 文字列ではなく DBConfig が要るため、テスト DB の URL から組む。
+// dbConfigFromURL は接続 URL を config.DBConfig に変換する。DatabaseConfig が
+// config ファイル用に config.DBConfig を組むために使う。
 func dbConfigFromURL(raw string) (config.DBConfig, error) {
 	u, err := url.Parse(raw)
 	if err != nil {

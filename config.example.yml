@@ -30,6 +30,7 @@ db:
                                  # statement_timeout。未指定（0）なら既定値 30s。
                                  # api ロールを含まないプロセス（worker/watcher 単独等）には
                                  # 適用されない
+
 # mirakc エンドポイントのレジストリ（必須。1 要素なら単一サイト構成）。
 # site 名は ^[a-z0-9]([_-]?[a-z0-9])*$ / 53 文字以内、catalog / thumbnails は
 # 予約名で使えない。DB 全テーブルと API パスの /api/sites/{site}/... をこの名前で
