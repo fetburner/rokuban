@@ -2476,13 +2476,17 @@ func TestIngestWorker_RelPathConflict_RefusesWithoutCorruptingExistingFile(t *te
 // 本体。existingState は先行の media_asset に与える state（"active" /
 // "deleting"）。
 //
-// 修正前（determineRelPath の直後の事前チェックを外す）は、2 つ目の
-// Work() が canonical file を
-// 0 バイトに truncate し、新しい TS（tsDataNew）で上書きしてから
-// media_assets の一意索引違反（23505）でようやく失敗する --- つまり
-// エラーは返るが、その時点で先行ファイルは既に壊れている。「両方失敗する」
-// だけでは検知できないため、このテストは失敗後に**先行ファイルの中身を
-// 実際に読んで**元のバイト列のままであることを確認する。
+// このテストが実際に守っているもの（一時ファイル方式では checkRelPathConflict
+// を無効化しても先行ファイルは壊れない --- commit は canonical path を temp から
+// の rename でしか触らないので truncate も上書きも起きない。実測: 事前チェックを
+// 無効化する変異では先行ファイルはバイト一致のまま残り、落ちるのは下記の
+// エラー文言アサーションと streamRequests == 0 のアサーションだけだった）:
+// 事前チェックが無いと、2 つ目の Work() は衝突に気付かないまま無駄な全量転送を
+// 完走し、commit 内の media_assets 一意索引違反（23505）でようやく失敗する
+// --- エラーメッセージは "refusing to overwrite" ではなく生の unique-violation
+// になり、streamRequests も 0 のままにはならない。事前チェックはこの無駄な
+// 転送とエラー文言の劣化を防ぐためのものであり、先行ファイルの保護そのものは
+// 一時ファイル方式が事前チェック無しでも既に満たしている。
 func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, existingState string) {
 	pool := setupTestPool(t)
 	if pool == nil {

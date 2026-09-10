@@ -160,6 +160,7 @@ canonical path へ転送中のバイトが存在しないため、同じ `rel_pa
 - **孤児と追加 I/O**: 失敗試行の temp は自分で消し、プロセス死や rename 後の DB 失敗で残るファイルは既存の `orphan_files` の mtime 猶予（既定 7 日）とエイジング（既定 14 日）が回収する。正常な転送に scratch 経由の全長コピーは追加せず、追加コストは temp の作成・rename・親 directory `fsync` である
 
 **弱い FS へ原本を直接書く設計は、FUSE の rename 非対応や fsync/Close の不確かな意味論に合わせるための将来課題へ戻した。** 本 issue では `storage.media_dir` を強い FS に限定し、FUSE S3 は派生物専用の領域に限る。
+
 ### 5.4 負荷分担: worker
 
 `records/{id}/stream` の負荷が乗るのは worker（ingest ジョブ、KEDA で 0〜N）であり、reconciler は数百件のメタデータ diff を回すだけの軽いジョブのまま。ただし**本当のボトルネックはクラウド側ではなくエッジ側**:

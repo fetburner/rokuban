@@ -102,56 +102,76 @@ func TestIngestJobLock_TimeoutDoesNotHang(t *testing.T) {
 	}
 }
 
-// TestIngestJobLock_TransientHeartbeatFailures は、一過性の DB エラーでは転送を
-// cancel せず、閾値に達したら heartbeat だけを停止する判定を固定する。
-func TestIngestJobLock_TransientHeartbeatFailures(t *testing.T) {
+// TestIngestJobLock_TransientHeartbeatFailuresNeverStop は、一過性の DB エラーでは
+// heartbeat が止まらないことを固定する。旧設計（rel_path advisory lock）では
+// 「heartbeat 停止 = markLost = 転送キャンセル」という終端判断だったので閾値で
+// 止める理由があったが、新設計の heartbeat の唯一の仕事は job lock 用セッションを
+// idle 切断から守る keepalive である（型の doc コメント参照）。一過性失敗で
+// keepalive 自身を止めると、唯一の保護を自分から捨てることになる
+// （セッションが idle のまま放置 → pgbouncer 等の idle timeout で切断 →
+// advisory lock 解放 → record_sweep が生存中の running 行を discard → 重複
+// ジョブ投入 → 全量再ダウンロード）。
+func TestIngestJobLock_TransientHeartbeatFailuresNeverStop(t *testing.T) {
 	transientErr := errors.New("simulated transient db latency")
 	l := newIngestJobLock(nil, 1, "test")
 	l.checkHeldFunc = func() (held, permanent bool, err error) {
 		return false, false, transientErr
 	}
 
-	var consecutiveFailures int
-	for i := 1; i < ingestJobLockMaxTransientFailures; i++ {
-		if l.heartbeatTick(&consecutiveFailures) {
-			t.Fatalf("heartbeatTick stopped after transient failure %d", i)
+	for i := 1; i <= 50; i++ {
+		if l.heartbeatTick() {
+			t.Fatalf("heartbeatTick stopped after transient failure %d; transient failures must never stop the keepalive", i)
 		}
-	}
-	if !l.heartbeatTick(&consecutiveFailures) {
-		t.Fatalf("heartbeatTick did not stop after %d transient failures", ingestJobLockMaxTransientFailures)
-	}
-
-	// job lock には rel_path lock のような lost channel がない。ここで止まるのは
-	// keepalive goroutine だけであり、Work の transfer context を cancel する状態を
-	// lock 自体が持たないことをコンパイル時・構造上も確認する。
-	if consecutiveFailures != ingestJobLockMaxTransientFailures {
-		t.Fatalf("consecutiveFailures = %d, want %d", consecutiveFailures, ingestJobLockMaxTransientFailures)
 	}
 }
 
-func TestIngestJobLock_HeartbeatFailureResetsOnSuccess(t *testing.T) {
+// TestIngestJobLock_PermanentHeartbeatFailureStops は、コネクション切断
+// （permanent）を検知したら即座に heartbeat を止めることを固定する。
+func TestIngestJobLock_PermanentHeartbeatFailureStops(t *testing.T) {
+	permanentErr := errors.New("simulated closed connection")
+	l := newIngestJobLock(nil, 1, "test")
+	l.checkHeldFunc = func() (held, permanent bool, err error) {
+		return false, true, permanentErr
+	}
+
+	if !l.heartbeatTick() {
+		t.Fatal("heartbeatTick did not stop on a permanent connection failure")
+	}
+}
+
+// TestIngestJobLock_LockLostStopsHeartbeat は、lock 喪失が確定した
+// （held=false, err=nil）場合に heartbeat を止めることを固定する。
+func TestIngestJobLock_LockLostStopsHeartbeat(t *testing.T) {
+	l := newIngestJobLock(nil, 1, "test")
+	l.checkHeldFunc = func() (held, permanent bool, err error) {
+		return false, false, nil
+	}
+
+	if !l.heartbeatTick() {
+		t.Fatal("heartbeatTick did not stop after the lock was confirmed lost")
+	}
+}
+
+// TestIngestJobLock_HeartbeatRecoversAfterTransientFailures は、一過性失敗が
+// 何度続いても、その後 held=true が返れば heartbeat が動き続けることを固定する。
+func TestIngestJobLock_HeartbeatRecoversAfterTransientFailures(t *testing.T) {
 	transientErr := errors.New("simulated transient db latency")
 	var succeedNext bool
 	l := newIngestJobLock(nil, 1, "test")
 	l.checkHeldFunc = func() (held, permanent bool, err error) {
 		if succeedNext {
-			succeedNext = false
 			return true, false, nil
 		}
 		return false, false, transientErr
 	}
 
-	var consecutiveFailures int
-	for i := 1; i < ingestJobLockMaxTransientFailures; i++ {
-		if l.heartbeatTick(&consecutiveFailures) {
-			t.Fatalf("heartbeatTick stopped before threshold at failure %d", i)
+	for i := 1; i <= 5; i++ {
+		if l.heartbeatTick() {
+			t.Fatalf("heartbeatTick stopped before recovery at failure %d", i)
 		}
 	}
 	succeedNext = true
-	if l.heartbeatTick(&consecutiveFailures) {
+	if l.heartbeatTick() {
 		t.Fatal("heartbeatTick stopped after a successful check")
-	}
-	if consecutiveFailures != 0 {
-		t.Fatalf("consecutiveFailures = %d after success, want 0", consecutiveFailures)
 	}
 }

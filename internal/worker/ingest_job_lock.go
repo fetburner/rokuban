@@ -29,11 +29,6 @@ const ingestJobLockHeartbeatInterval = time.Second
 // ingestJobLockHeartbeatTimeout は heartbeat のクエリ 1 回あたりの応答待ち上限。
 const ingestJobLockHeartbeatTimeout = 2 * time.Second
 
-// ingestJobLockMaxTransientFailures は一過性の heartbeat 失敗を連続して許す回数。
-// DB の短いレイテンシで転送を不必要に再試行させないため、接続断や lock 喪失と
-// 別に扱う。
-const ingestJobLockMaxTransientFailures = 3
-
 const ingestJobLockHeldQuery = `
 SELECT EXISTS (
     SELECT 1
@@ -100,13 +95,12 @@ func (l *ingestJobLock) heartbeatLoop() {
 	ticker := time.NewTicker(ingestJobLockHeartbeatInterval)
 	defer ticker.Stop()
 
-	var consecutiveFailures int
 	for {
 		select {
 		case <-l.stopHeartbeat:
 			return
 		case <-ticker.C:
-			if l.heartbeatTick(&consecutiveFailures) {
+			if l.heartbeatTick() {
 				return
 			}
 		}
@@ -115,7 +109,15 @@ func (l *ingestJobLock) heartbeatLoop() {
 
 // heartbeatTick は heartbeat 1 回分の判定を行う。true を返した場合は、以後の
 // heartbeat を止める。ただし ingest の転送や commit をキャンセルする責務は持たない。
-func (l *ingestJobLock) heartbeatTick(consecutiveFailures *int) bool {
+//
+// このループの唯一の仕事は job lock 用セッションを idle 切断から守る keepalive
+// である（型の doc コメント、docs/recording/ingest.md 参照）。一過性の DB
+// エラーではループを止めない --- 止めると keepalive が失われてセッションが idle
+// のまま放置され、pgbouncer 等の server_idle_timeout で切断されて advisory lock
+// が解放され、転送が停滞していれば record_sweep が生存中の running 行を discard
+// して重複ジョブを投入し、全量を再ダウンロードすることになる。止めるのは
+// permanent（コネクション切断）と !held（lock 喪失の確定）のときだけ。
+func (l *ingestJobLock) heartbeatTick() bool {
 	check := l.checkHeldFunc
 	if check == nil {
 		check = l.checkHeldAndClassify
@@ -127,16 +129,10 @@ func (l *ingestJobLock) heartbeatTick(consecutiveFailures *int) bool {
 			slog.Warn("ingest: job advisory lock heartbeat connection lost", "job", l.label, "err", err)
 			return true
 		}
-		*consecutiveFailures++
-		if *consecutiveFailures >= ingestJobLockMaxTransientFailures {
-			slog.Warn("ingest: job advisory lock heartbeat stopped after transient failures", "job", l.label, "err", err, "consecutive_failures", *consecutiveFailures)
-			return true
-		}
-		slog.Warn("ingest: job advisory lock heartbeat check failed transiently, retrying", "job", l.label, "err", err, "consecutive_failures", *consecutiveFailures)
+		slog.Warn("ingest: job advisory lock heartbeat check failed transiently; continuing", "job", l.label, "err", err)
 		return false
 	}
 
-	*consecutiveFailures = 0
 	if !held {
 		slog.Warn("ingest: job advisory lock was lost; continuing with temporary-file protocol", "job", l.label)
 		return true

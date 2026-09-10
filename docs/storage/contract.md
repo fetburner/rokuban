@@ -18,7 +18,7 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以�
   ロックの意味論が、原本を公開する根拠として信頼できない
 
 したがって FUSE S3 は原本の ingest 先には使わない。派生物を置く領域としての
-利用可能性と、原本 root の契約を混同しない（#96 の実機検証対象もこの境界に
+利用可能性と、原本 root の契約を混同しない（実機検証の対象範囲もこの境界に
 従う）。
 
 ## 3. ストレージ契約（4 つのルール）
@@ -45,8 +45,8 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
    欠落を作る。
    **ingest のコピー完了には fsync と Close のエラー確認まで含める**。Linux では
    遅延した書き込みエラー（ENOSPC / I/O エラー）が `Close` では報告されず `fsync`
-でしか上がらない。rename 後の親ディレクトリ `fsync` は新しい directory entry
-の永続化を確定する。いずれかが失敗したら DB 登録と record 削除をせず再試行する。
+   でしか上がらない。rename 後の親ディレクトリ `fsync` は新しい directory entry
+   の永続化を確定する。いずれかが失敗したら DB 登録と record 削除をせず再試行する。
 4. **DB には相対パスのみ保存**。ルートは設定で与える。ロック・xattr・パーミッションに依存しない
 
 ポイントはルール 3。DB commit を公開点にしつつ、公開前のファイル操作は強い FS
@@ -60,7 +60,7 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
 | ローカル FS | file fsync / Close / atomic rename / 親 directory fsync を通常の POSIX 意味論で満たす。第一候補 |
 | **JuiceFS**（対象内） | メタデータを DB に、データを S3 に置く FS。atomic rename を含む POSIX 意味論を信頼できる構成で使う。**メタデータストアに PostgreSQL を使う場合は別インスタンスを推奨** |
 | **NFS**（対象内） | export は `sync`、client mount は `hard` を推奨。`.nfsXXXX` の silly rename が一時的な orphan 候補に見えても、通常の aging 回収で無害に扱う |
-| k8s-csi-s3（geesefs / s3fs）・AWS Mountpoint | 原本 ingest 先には使わない。派生物専用の領域に限る（#96 の実機検証範囲） |
+| k8s-csi-s3（geesefs / s3fs）・AWS Mountpoint | 原本 ingest 先には使わない。実機検証の範囲は派生物専用の領域に限る |
 
 **注意**: JuiceFS のメタデータストアに Rokuban と同じ Postgres インスタンスを使うと、DB 障害がストレージ障害に連鎖し「DB が詰まっても仕事は失われない」の前提を崩す。使うなら別インスタンスを明記すること。
 

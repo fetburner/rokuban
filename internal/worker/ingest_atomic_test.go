@@ -100,10 +100,13 @@ func TestIngestWorker_ConcurrentSameRelPathUsesTempFiles(t *testing.T) {
 		Args:   IngestJobArgs{Site: "default", RecordID: "rec-concurrent-b"},
 	}
 
-	type result struct{ err error }
+	type result struct {
+		data []byte
+		err  error
+	}
 	results := make(chan result, 2)
-	go func() { results <- result{err: wA.Work(context.Background(), jobA)} }()
-	go func() { results <- result{err: wB.Work(context.Background(), jobB)} }()
+	go func() { results <- result{data: tsDataA, err: wA.Work(context.Background(), jobA)} }()
+	go func() { results <- result{data: tsDataB, err: wB.Work(context.Background(), jobB)} }()
 
 	for i := 0; i < 2; i++ {
 		select {
@@ -115,12 +118,22 @@ func TestIngestWorker_ConcurrentSameRelPathUsesTempFiles(t *testing.T) {
 	}
 	close(release)
 
+	// winnerData の由来: DB でコミットが成功した側 (Work が nil を返した側) の
+	// バイト列。この 1 行が「INSERT が rename より先」という commit の核心の
+	// 不変条件を固定している --- rename + 親 fsync を CreateMediaAsset の前へ
+	// 移す変異は、canonical file の中身を「A か B のどちらか」としか見ない
+	// 旧アサーションでは検出できず、worker パッケージ全体が緑のまま通っていた
+	// (変異で確認済み)。DB の勝者と canonical file の中身が食い違えば、それは
+	// 敗者が勝者の canonical file を上書きしてから自分の INSERT で失敗した
+	// (順序が逆転した) ことを意味する。
 	var success, failure int
+	var winnerData []byte
 	for i := 0; i < 2; i++ {
 		select {
 		case result := <-results:
 			if result.err == nil {
 				success++
+				winnerData = result.data
 			} else {
 				failure++
 			}
@@ -140,8 +153,8 @@ func TestIngestWorker_ConcurrentSameRelPathUsesTempFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading winning canonical file: %v", err)
 	}
-	if !bytes.Equal(got, tsDataA) && !bytes.Equal(got, tsDataB) {
-		t.Errorf("canonical file is neither complete winner: got %d bytes", len(got))
+	if !bytes.Equal(got, winnerData) {
+		t.Errorf("canonical file does not match the DB winner: got %d bytes", len(got))
 	}
 	assertNoIngestTempFiles(t, mediaDir)
 

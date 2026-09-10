@@ -449,10 +449,10 @@ func (w *IngestWorker) hasOriginalMediaAsset(ctx context.Context, recordingID in
 // 内の media_assets INSERT と部分一意索引である。
 //
 // **ただし delete_reconcile の状態遷移に対しては、従来どおりヒントのまま
-// である。** delete_reconcile は rel_path の advisory lock を取らないので、
-// この SELECT と実際の CreateMediaAsset の INSERT の間に delete_reconcile が
-// 'deleting' → 'deleted' の遷移を進める TOCTOU の窓は残る。正しさの根拠は
-// 常に media_assets の一意索引（CREATE UNIQUE INDEX ON media_assets
+// である。** この SELECT と実際の CreateMediaAsset の INSERT の間に
+// delete_reconcile が 'deleting' → 'deleted' の遷移を進める TOCTOU の窓は残る
+// （先読みはヒントであり、正しさは一意索引と適用時の状態遷移に残る）。正しさの
+// 根拠は常に media_assets の一意索引（CREATE UNIQUE INDEX ON media_assets
 // (rel_path) WHERE state <> 'deleted'）であり、
 // レベルトリガー（CLAUDE.md 不変条件 5）の原則どおり、この関数を「一意索引を
 // 通す前の安価なゲート」以上の役割にしない。一意索引を緩めたり INSERT の

@@ -16,7 +16,7 @@ worker は ingest キューを購読する起動時に、temp 作成 → file `f
   orphan 候補に見えても、孤児回収の aging で扱える無害な残骸である
 - geesefs / s3fs / AWS Mountpoint など FUSE S3 は原本 ingest 先に使わない。atomic
   rename、file/parent `fsync`、`Close` のエラー意味論を原本の公開根拠として信頼できない
-- FUSE S3 の実機検証（#96）の範囲は派生物専用の領域に限る。`storage.media_dir` を
+- FUSE S3 の実機検証の範囲は派生物専用の領域に限る。`storage.media_dir` を
   FUSE S3 にして probe が通ったとしても、設定契約違反を解消したことにはならない
 
 ingest の一時ファイルは canonical path と同じディレクトリに作られる。プロセス死や
