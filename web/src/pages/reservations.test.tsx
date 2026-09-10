@@ -530,6 +530,16 @@ describe('予約一覧の行本体リンクの accessible name（issue #233 レ�
     const rowLink = screen.getByRole('link', { name: /交差する番組/ })
     expect(rowLink).toHaveAttribute('href', '/reservations/default/10')
   })
+
+  it('タイトルが空文字なら表示とリンク名を「番組名なし」にする', async () => {
+    renderWith([reservation(1, '', 19 * 60, 60)], [])
+
+    expect(await screen.findByText('（番組名なし）')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /（番組名なし）/ })).toHaveAttribute(
+      'href',
+      '/reservations/default/10',
+    )
+  })
 })
 
 /**

@@ -10,6 +10,7 @@ import { ReservationSkipBadge } from '@/components/reservation-skip-reason'
 import { Chip } from '@/components/ui/chip'
 import { coveringWindow } from '@/lib/capacity'
 import { formatDateTime, formatDuration } from '@/lib/format'
+import { programTitle } from '@/lib/program-labels'
 import {
   reservationNeedsAttention,
   stateLabels,
@@ -95,7 +96,7 @@ export function ReservationsPage() {
               // ではなく、かつ行の中の通常フロー要素として残ってブラウズ（矢印キー
               // 走査）では読めるので、1 つの長いリンク名に押し込む必要はない。
               const rowLabel = [
-                r.title || '（番組名なし）',
+                programTitle(r.title),
                 r.serviceName,
                 formatDateTime(r.startAt),
                 formatDuration(r.durationMs),
@@ -131,7 +132,7 @@ export function ReservationsPage() {
                     className="absolute inset-0"
                   />
                   <div className="min-w-0 flex-1">
-                    <div className="truncate text-base">{r.title || '（番組名なし）'}</div>
+                    <div className="truncate text-base">{programTitle(r.title)}</div>
                     <div
                       data-testid="reservation-secondary"
                       className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground"

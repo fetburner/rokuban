@@ -22,6 +22,7 @@ import { Button } from '@/components/ui/button'
 import { reservationsQueryKeyPrefix } from '@/lib/events'
 import { formatDateTime, formatDuration } from '@/lib/format'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
+import { programTitle } from '@/lib/program-labels'
 import { stateLabels } from '@/lib/reservation-labels'
 
 /**
@@ -212,7 +213,7 @@ export function ReservationDetailPage() {
       ) : (
         <div className="flex flex-col gap-6 px-4 py-4">
           <section>
-            <h2 className="text-lg font-medium">{reservation.title || '（番組名なし）'}</h2>
+            <h2 className="text-lg font-medium">{programTitle(reservation.title)}</h2>
             {/* 局名・開始時刻・尺を中点でつなぐ。`serviceName` は API では required
                 だが空文字を禁じてはいないので、空の成分を落としてから join する
                 （無条件連結だと先頭に裸の `·` が残る）。 */}

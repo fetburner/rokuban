@@ -37,6 +37,7 @@ import { recordingsQueryKeyPrefix } from '@/lib/events'
 import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
 import { hasLiveIngestProgress, ingestRefetchIntervalMs } from '@/lib/ingest'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
+import { programTitle } from '@/lib/program-labels'
 import {
   buildListRecordingsParams,
   clearRecordingsFilters,
@@ -706,14 +707,14 @@ function RecordingRow({
         <Link
           to="/recordings/$id"
           params={{ id: String(recording.id) }}
-          aria-label={recording.title || '（番組名なし）'}
+          aria-label={programTitle(recording.title)}
           className="absolute inset-0"
         />
       )}
       {selecting && (
         <input
           type="checkbox"
-          aria-label={`${recording.title || '（番組名なし）'}を選択`}
+          aria-label={`${programTitle(recording.title)}を選択`}
           className="size-4 shrink-0 accent-primary"
           checked={selected}
           onClick={(event) => event.stopPropagation()}
@@ -747,7 +748,7 @@ function RecordingRow({
       </div>
       <div className="min-w-0 flex-1">
         <div className={cn('text-base', card ? 'line-clamp-2' : 'truncate')}>
-          {recording.title || '（番組名なし）'}
+          {programTitle(recording.title)}
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
           <StatusBadge status={recording.status} />

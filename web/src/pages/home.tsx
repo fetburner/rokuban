@@ -19,6 +19,7 @@ import { describeBreakerName } from '@/lib/breaker'
 import { shortageRangeMessage } from '@/lib/capacity'
 import { dayOrigin } from '@/lib/day-offset'
 import { formatDateTime, formatDuration } from '@/lib/format'
+import { programTitle } from '@/lib/program-labels'
 import { cn } from '@/lib/utils'
 
 /**
@@ -426,7 +427,7 @@ function RecordingRow({ recording }: { recording: Recording }) {
         params={{ id: String(recording.id) }}
         className="flex min-h-14 flex-col justify-center gap-0.5 px-4 py-2.5 hover:bg-muted/40"
       >
-        <span className="truncate text-base">{recording.title || '（番組名なし）'}</span>
+        <span className="truncate text-base">{programTitle(recording.title)}</span>
         <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
           <span className="shrink-0">{recording.serviceName}</span>
           <span className="shrink-0">{formatDateTime(recording.startAt)}</span>
@@ -455,7 +456,7 @@ function ReservationRow({ reservation }: { reservation: Reservation }) {
         params={{ site: reservation.site, programId: String(reservation.programId) }}
         className="flex min-h-14 flex-col justify-center gap-0.5 px-4 py-2.5 hover:bg-muted/40"
       >
-        <span className="truncate text-base">{reservation.title || '（番組名なし）'}</span>
+        <span className="truncate text-base">{programTitle(reservation.title)}</span>
         <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
           <span className="shrink-0">{reservation.serviceName}</span>
           <span className="shrink-0">{formatDateTime(reservation.startAt)}</span>
@@ -532,7 +533,7 @@ function buildWarnings({
     items.push({
       key: `failed:${recording.id}`,
       kind: 'failed',
-      message: `${recording.title || '（番組名なし）'}: 録画失敗（${failedDurationText(recording)} / ${reasonSegment}）`,
+      message: `${programTitle(recording.title)}: 録画失敗（${failedDurationText(recording)} / ${reasonSegment}）`,
       link: { to: '/recordings/$id', id: recording.id },
     })
   }
@@ -561,7 +562,7 @@ function buildWarnings({
     items.push({
       key: `drop:${recording.id}`,
       kind: 'drop',
-      message: `${recording.title || '（番組名なし）'}: ${parts}`,
+      message: `${programTitle(recording.title)}: ${parts}`,
       link: { to: '/recordings/$id', id: recording.id },
     })
   }
