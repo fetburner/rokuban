@@ -236,8 +236,8 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
 - **ライブ視聴（`/live`）からは「この局の番組表」で厳密な 1 局へ飛べる。**
   番組表と同じ `?service=<Service.id>` の 1 要素配列を使う（1 局のためだけの
   別形式を持たない）。逆方向（番組表 → ライブ）はページ単位の導線を置かない ---
-  放送中の番組の展開に「ライブで見る」を出す導線は行（`ProgramRow`）単位の担当
-  （issue #229）にする。ページ全体に 2 つ目のライブ導線を足すと、複数
+  放送中の番組に「ライブ」ボタンを出す導線は行（`ProgramRow`）単位の担当
+  （issue #229 / #755）にする。ページ全体に 2 つ目のライブ導線を足すと、複数
   チャンネルを絞り込んでいるとき・放送中の番組が絞り込みの外にあるときに
   どこへ飛ぶかを決める基準が無く、個々の番組から飛べる導線と役割が重複する
   （issue #231 の決定）
@@ -275,25 +275,27 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
 
 ## 展開領域の外向き導線
 
-行本体（タップで展開）と行右端 44px（予約 / 取消）というタップ予算
-（[reservations.md](reservations.md) §予約はワンタップ + トーストから取消）に
-触れないよう、**固有名詞（放送中のチャンネル・予約という実体）へのリンクは
-折りたたみ行ではなく展開領域側に置く**。`components/program-row.tsx` の
-展開パネルに次の 2 本を持つ:
+行本体（タップで展開）と右端の操作列（予約 / 取消 / 放送中のライブ）を分ける
+（[reservations.md](reservations.md) §予約はワンタップ + トーストから取消）。原則は、
+**実体へのリンク（「予約の設定」）は展開領域に、行に対する動作（予約 / 取消 / ライブ）は
+右端の操作列に置く**ことである。
 
-- **放送中**（`startAt <= now < endAt`）の番組: 「ライブで見る」 →
-  `/live?service=<Service.id>`。番組表・録画の絞り込みと同じ `Service.id`
-  （合成 id）を渡す --- `ProgramListItem` は SI の `networkId` / `serviceId`
-  しか持たないため、`composeServiceId`（`lib/service-id.ts`）で合成してから渡す
-  （[live.md](live.md)「フロントエンド実装」）。
-  `live.enabled` が無効なデプロイでは主ナビと同じ判断（`lib/capabilities.ts` の
-  `useLiveEnabled()`）で出さない
-- **予約済み**の番組: 「予約の詳細」 → `/reservations/$site/$programId`。overrides
+`components/program-row.tsx` は次の導線を持つ:
+
+- **放送中**（`startAt <= now < endAt`）の番組: 右端の操作列に 44px のアイコン
+  ボタン「ライブ」（`aria-label="ライブで見る"`）を予約ボタンの左に置き、
+  `/live?service=<Service.id>&site=<site>` へ遷移する。アイコンはライブ画面
+  （`pages/live.tsx`）と同じ `Play` を使う。番組表・録画の絞り込みと同じ
+  `Service.id`（合成 id）を渡す --- `ProgramListItem` は SI の `networkId` /
+  `serviceId` しか持たないため、`composeServiceId`（`lib/service-id.ts`）で合成してから
+  渡す（[live.md](live.md)「フロントエンド実装」）。`live.enabled` が無効な
+  デプロイでは主ナビと同じ判断（`lib/capabilities.ts` の `useLiveEnabled()`）で出さない
+- **予約済み**の番組: 展開領域に「予約の設定」 → `/reservations/$site/$programId`。overrides
   編集は予約詳細画面の担当で、番組行の展開パネル（未予約時の encodeProfiles /
   keepOriginal 欄）はここを引き継がない
 
 `now` の判定は「展開されて描画される瞬間（とその後の再レンダー）」で行い、専用の
-tick タイマーは持たない。このリンクは番組 ID を運ばず `networkId` + `serviceId` を渡すため、
+tick タイマーは持たない。このライブ導線は番組 ID を運ばず `networkId` + `serviceId` を渡すため、
 番組境界を挟んで多少ズレても遷移先を誤らない --- 遷移先の `/live` 画面が自前で
 「いま何が流れているか」を再取得するので、真実はそちら側にある。
 

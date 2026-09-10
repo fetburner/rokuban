@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, Play } from 'lucide-react'
 import { useState } from 'react'
 
 import { useGetProgram, type ProgramOverlaps, type ProgramOverridesInput } from '@/api/generated'
@@ -23,9 +23,10 @@ import { cn } from '@/lib/utils'
 /**
  * ProgramRow は番組リストの 1 行。
  *
- * 行本体のタップで詳細を展開し、予約ボタンは右端の列に分離する（列は畳んで
- * おき、hover / フォーカス / 展開で開く。下の予約列の doc コメント参照）。
- * スクロール中に予約ボタンへ誤って触れないようタップ領域を分けている。
+ * 行本体のタップで詳細を展開し、行に対する動作（予約 / 取消 / ライブ）は
+ * 右端の操作列に分離する（列は畳んでおき、hover / フォーカス / 展開で開く。
+ * 下の操作列の doc コメント参照）。スクロール中に操作ボタンへ誤って触れないよう
+ * タップ領域を分けている。
  *
  * 展開すると（まだ予約されていない番組に限り）encodeProfiles / keepOriginal
  * を指定する欄も出す（issue #132）。「予約」ボタンは、この欄が既定から
@@ -39,10 +40,10 @@ import { cn } from '@/lib/utils'
  * 無効な HTML になり、それらへのクリックが展開トグルにもバブリングして
  * 意図しない開閉を起こす。
  *
- * 展開領域には外向きの導線（「ライブで見る」「予約の設定」）も置く
- * （issue #229）。行本体 = 展開 / 右端 44px = 予約、というタップ予算
- * （docs/frontend/reservations.md §予約はワンタップ）に触れないよう、
- * 折りたたみ行ではなく展開領域側に置く。
+ * 実体へのリンク（「予約の設定」）は展開領域に置き、行に対する動作である
+ * 「ライブで見る」は予約 / 取消と同じ操作列へ置く（issue #755）。
+ * 行本体 = 展開 / 右端の操作列 = 行の動作、というタップ予算
+ * （docs/frontend/reservations.md §予約はワンタップ）に触れないようにする。
  * `defaultExpanded` は、番組表のモーダルのように初期表示から詳細と予約操作を
  * 使えるようにする呼び出し元だけが指定する。省略時のリストの挙動は変えない。
  */
@@ -71,7 +72,7 @@ export function ProgramRow({
    * 1 箇所だけ予約状態不明でも `record` intent が飛ぶ穴になっていた（issue #710）。
    */
   reservationStateUnknown: boolean
-  /** 初期状態で詳細を展開し、予約列を hover なしで表示する。 */
+  /** 初期状態で詳細を展開し、操作列を hover なしで表示する。 */
   defaultExpanded?: boolean
   onReserve: (overrides?: ProgramOverridesInput) => void
   onCancel: () => void
@@ -101,24 +102,40 @@ export function ProgramRow({
 
   const detailId = `program-row-detail-${program.programId}`
 
-  // now の評価タイミングは「展開されて描画される瞬間（＋その後の再レンダー）」で
+  // now の評価タイミングは「描画される瞬間（＋その後の再レンダー）」で
   // 足りるとし、専用の tick タイマーは持たない。
   //
-  // 理由: このリンクは番組 ID を運ばず `networkId` + `serviceId`（チャンネル）
+  // 理由: このライブ導線は番組 ID を運ばず `networkId` + `serviceId`（チャンネル）
   // だけを渡すので、境界を挟んで多少ズレても遷移先を誤ることはない --- 遷移先の /live 画面が
   // 自前で「いま何が流れているか」を再取得して表示するので、真実はそちら側に
-  // ある（issue #229 の指示どおり）。
+  // ある（issue #229 / #755 の指示どおり）。
   //
-  // **このズレに上界は無い。** 行を展開したまま放置すると、次にこの行が
-  // 再レンダーされるまで判定は更新されない --- `pages/programs.tsx` の
-  // `nowMs` は tick（`setInterval`）を持たず毎レンダー `Date.now()` を読むだけ、
+  // **このズレに上界は無い。** 以前はこの計算を `{expanded && …}` の内側でしか
+  // 使っておらず、露出は行を展開したまま放置した場合に限られていた。いまは
+  // 畳んだ行にも同じ `showLiveLink` を使うため、対象はスクロールしない限り
+  // 画面内にマウントされている行全体に広がる --- 次にその行が再レンダー
+  // されるまで判定は更新されない。`pages/programs.tsx` の `nowMs` は
+  // tick（`setInterval`）を持たず毎レンダー `Date.now()` を読むだけ、
   // QueryClient（`main.tsx`）は `staleTime: 30_000` と `refetchOnWindowFocus`
   // のみで `refetchInterval` は無く、このコンポーネント自身が張るクエリ
   // （capabilities / 番組詳細）も定期再取得しない。したがって
-  // 「数十秒で追いつく」保証は無い。それでも良いのは上記の理由（誤った遷移先を
-  // 指さない）だけであり、pages/live.tsx の `nowMs`（30 秒 tick）のような
-  // 常時性の高い表示を求められたら別の設計が要る。
+  // 「数十秒で追いつく」保証は無く、終わった番組にライブボタンが残ったまま
+  // 消えない窓・始まった番組にまだ出ない窓のどちらも、スクロールが起きるまで
+  // 閉じない。それでも良いのは上記の理由（誤った遷移先を指さない）だけであり、
+  // pages/live.tsx の `nowMs`（30 秒 tick）のような常時性の高い表示を
+  // 求められたら別の設計が要る。
   const showLiveLink = liveEnabled && isAiring(program.startAt, program.endAt)
+  // 放送中の行だけライブボタン（44px）を予約ボタン（80px）の左に置くため、
+  // 操作列もその合計幅（124px）に広げる。開閉条件（3 つのセレクタ）は通常行と
+  // 放送中行で変わらないので border-l は分岐させず、幅だけ分岐させる。
+  // Tailwind のクラスは動的な文字列にせずリテラルで書く --- ビルド時に
+  // すべてのセレクタを収集できる。
+  const reserveColumnOpenClasses = cn(
+    'pointer-fine:group-hover:border-l group-has-[:focus-visible]:border-l peer-aria-expanded:border-l',
+    showLiveLink
+      ? 'pointer-fine:group-hover:w-[7.75rem] group-has-[:focus-visible]:w-[7.75rem] peer-aria-expanded:w-[7.75rem]'
+      : 'pointer-fine:group-hover:w-20 group-has-[:focus-visible]:w-20 peer-aria-expanded:w-20',
+  )
 
   return (
     <div className="flex flex-col border-b border-border">
@@ -178,12 +195,20 @@ export function ProgramRow({
           />
         </button>
 
-        {/* 予約ボタンは行本体と分離した右端の列。最小 44px のタップ領域を確保する。
+        {/* 行に対する動作（予約 / 取消 / ライブ）は行本体と分離した右端の操作列に置く。
+            各ボタンは最小 44px のタップ領域を確保する。
             issue #310: 常時は出さず、ホバー / フォーカスした行（細ポインタ）か
             展開中の行だけ立てる。
-            **列は畳んで（w-0）ホバー / フォーカス / 展開で開く（w-20）。**
+            **列は畳んで（w-0）ホバー / フォーカス / 展開で開く。** 放送中の行は
+            ライブ（44px）を予約（80px）の左に足すため 124px、その他の行は 80px。
+            `box-content` でこの 124px / 80px をボタン側の content box として
+            確保し、開いたときだけ付く border-l（1px）はその外側に足す ---
+            border-box（既定）のままだと border-l がボタン側から 1px 侵食し、
+            `justify-center` で両端 0.5px ずつ `overflow-hidden` に切られる
+            （外寸は 125px / 81px。e2e `reserve-visibility.mjs` が実測するのも
+            こちらの外寸）。
             開くと行トグル（flex-1）が縮み、その右端にあるシェブロンが左へ
-            スライドして予約ボタンのスペースを空ける。常時 w-20 を確保していた
+            スライドして操作ボタンのスペースを空ける。常時 w-20 を確保していた
             旧版（見た目の空きが不恰好）から、この開閉方式に変えた（オーナー
             承認済み。docs/frontend/reservations.md）。
             横方向は開くたびにタイトルの truncate 位置が動く（受け入れ済みの
@@ -199,12 +224,14 @@ export function ProgramRow({
             誤って触れないための分離を保つ。旧版が `opacity-0` で踏んだ
             「見えないタップ標的」の欠陥をここでも避ける）。
               - 細ポインタ（hover:hover かつ pointer:fine）の :hover:
-                `pointer-fine:group-hover:w-20`
+                `pointer-fine:group-hover:w-20`（放送中は 124px）
               - キーボードは **ポインタ種別で条件分けしない**（無条件）:
                 `.group` の中に :focus-visible な要素（行トグル、あるいは
                 Tab で予約ボタン自身に進んだ後はそのボタン自身）があれば
-                `group-has-[:focus-visible]:w-20` で開く。行トグルへ Tab
-                で入ると列が開き、次の Tab でそのまま予約ボタンへ進める。
+                `group-has-[:focus-visible]:w-20`（放送中は `w-[7.75rem]`）で開く。行トグルへ Tab
+                で入ると列が開き、次の Tab はその列内の最初のボタンへ進む
+                （放送中行はライブボタンが先、その後に予約ボタン。通常行は
+                予約ボタンのみ）。
                 ここを `pointer-fine:` で縛ると、タッチスクリーン + 外付け
                 キーボードや pointer:none の環境でフォーカスは乗るのに
                 列は畳まれたまま（フォーカス可視だが操作不能）という状態を
@@ -221,7 +248,7 @@ export function ProgramRow({
                 ものなので、ポインタ操作直後のフォーカスでは false になり
                 この回帰が起きない
               - 展開中（aria-expanded="true"）も同様に無条件で開く
-                （`peer-aria-expanded:w-20`）。タッチ / 粗いポインタでの
+                （放送中は `peer-aria-expanded:w-[7.75rem]`）。タッチ / 粗いポインタでの
                 「展開中の行だけ出す」はこれで満たされる。加えて、細ポインタでも
                 展開パネル（`.group` の外の兄弟）内で encodeProfiles /
                 keepOriginal を操作している間は行ヘッダの :hover /
@@ -240,19 +267,41 @@ export function ProgramRow({
           // で付けている。
           data-testid="program-row-reserve"
           className={cn(
-            'flex w-0 shrink-0 items-center justify-center overflow-hidden border-border',
+            'flex w-0 shrink-0 items-center justify-center overflow-hidden border-border box-content',
             'transition-[width] duration-150 motion-reduce:transition-none',
-            'pointer-fine:group-hover:w-20 pointer-fine:group-hover:border-l',
-            'group-has-[:focus-visible]:w-20 group-has-[:focus-visible]:border-l',
-            'peer-aria-expanded:w-20 peer-aria-expanded:border-l',
+            reserveColumnOpenClasses,
           )}
         >
+          {showLiveLink && (
+            // ライブは番組という実体へのリンクではなく、この行に対する「視聴する」
+            // 動作なので操作列に置く。アイコンはライブ画面（pages/live.tsx）と同じ
+            // Play を使い、同じ動作を同じ視覚語彙で示す。番組の境界をまたいでも
+            // 次の再レンダーまでは表示が残りうるが、/live はチャンネルを受け取って
+            // 「いま」を再取得するため、遷移先を誤らない（上の now コメント参照）。
+            <Button
+              variant="default"
+              size="icon"
+              aria-label="ライブで見る"
+              render={
+                <Link
+                  to="/live"
+                  search={{
+                    service: composeServiceId(program.networkId, program.serviceId),
+                    site,
+                  }}
+                />
+              }
+              className="min-h-11 min-w-11 rounded-none"
+            >
+              <Play />
+            </Button>
+          )}
           <Button
             variant={reserved ? 'destructive' : 'default'}
             size="sm"
             disabled={reserved ? pending : reserveBlocked}
             onClick={reserved ? onCancel : handleReserve}
-            className="min-h-11 w-full rounded-none"
+            className="min-h-11 w-20 rounded-none"
           >
             {/* 送信中でもスピナーを重ねない。楽観更新（lib/reservation-actions.ts の
                 useReservationActions）がタップ即座にこのラベル・色へ確定させ、
@@ -269,37 +318,19 @@ export function ProgramRow({
         <div id={detailId} className="px-4 pb-3">
           <ProgramDetail program={program} />
 
-          {/* 固有名詞（放送中のチャンネル・予約という実体）はリンクにする
-              （issue #229「決定済みの方向」）。折りたたみ行のタップ予算には
-              触れず、展開領域側に置く。 */}
-          {(showLiveLink || reserved) && (
+          {/* 実体へのリンク（「予約の設定」）は展開領域側に置く。ライブは
+              行に対する動作なので、上の操作列に置いてここには残さない。 */}
+          {reserved && (
             <div className="mt-3 flex flex-wrap gap-4 text-xs">
-              {showLiveLink && (
-                <Link
-                  to="/live"
-                  // `program` は SI の `networkId` / `serviceId` しか持たないため
-                  // `Service.id` を合成する（issue #438。`/live` の `?service=` も
-                  // 他画面と同じ合成 id を使う）。
-                  search={{
-                    service: composeServiceId(program.networkId, program.serviceId),
-                    site,
-                  }}
-                  className="text-primary underline-offset-2 hover:underline"
-                >
-                  ライブで見る
-                </Link>
-              )}
               {/* 予約済みの番組の overrides 編集は予約詳細画面の担当（下記コメント）。
                   その画面への導線をここに置く。 */}
-              {reserved && (
-                <Link
-                  to="/reservations/$site/$programId"
-                  params={{ site, programId: String(program.programId) }}
-                  className="text-primary underline-offset-2 hover:underline"
-                >
-                  予約の設定
-                </Link>
-              )}
+              <Link
+                to="/reservations/$site/$programId"
+                params={{ site, programId: String(program.programId) }}
+                className="text-primary underline-offset-2 hover:underline"
+              >
+                予約の設定
+              </Link>
             </div>
           )}
 
