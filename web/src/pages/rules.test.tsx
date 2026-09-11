@@ -399,15 +399,20 @@ describe('RulesPage 新規作成', () => {
     expect(badge.className).not.toContain('text-muted-foreground')
   })
 
-  it('既存ルールの編集は検索画面への主ボタンに一本化する', async () => {
+  it('ルール名が検索画面への編集リンクになり、同じ導線を重複させない', async () => {
     stubApi([ruleWithConditions])
     renderPage()
 
     await screen.findByText('平日ニュース')
-    const link = screen.getByRole('link', { name: '検索しながら編集' })
+    const link = screen.getByRole('link', { name: 'ルール「平日ニュース」を編集' })
     expect(link).toHaveAttribute('href', '/search?ruleId=2')
-    expect(link).toHaveClass('bg-primary')
-    expect(screen.queryByRole('button', { name: '編集' })).not.toBeInTheDocument()
+    expect(link).toHaveClass('min-h-8', 'text-primary')
+    // ラベルではなく href そのものを数える --- 別ラベルの 2 本目を足しても
+    // 「同じ導線を重複させない」という主張はラベルの不在テストでは検査できない。
+    const searchLinks = screen
+      .getAllByRole('link')
+      .filter((el) => el.getAttribute('href') === '/search?ruleId=2')
+    expect(searchLinks).toHaveLength(1)
   })
 
   // issue #137: ルールから、そのルール由来の録画だけに絞った一覧への導線。
@@ -768,7 +773,7 @@ describe('RulesPage 削除は overflow メニュー', () => {
     const description = screen.getByText(/重複排除の履歴も一緒に外れます/)
     expect(description.textContent).toContain('重複排除の履歴も一緒に外れます')
     expect(description.textContent).toContain('作り直しても引き継がれない')
-    expect(description.textContent).toContain('「検索しながら編集」')
+    expect(description.textContent).toContain('ルール名から編集')
     // 被害の大きさを docs より強く書かない（過剰録画は一過性で、新ルールの
     // 下で 1 本録れれば以降は再び弾かれる ——
     // TestRunPass_DedupeHistoryLeavesScopeOnRuleDelete 段階 3 の測定）。

@@ -131,7 +131,7 @@ priority は reconciler が mirakc への差分反映（優先度差分での sc
 
 原則「固有名詞はリンク」に従い、ルールの識別（名前 or `#N`）そのものをリンク
 テキストにする。`/rules` に単一ルート（`/rules/{id}`）は無いので、リンク先は
-`/search?ruleId=N`（`RulesPage` の「検索しながら編集」と同じ着地先、ルールの
+`/search?ruleId=N`（`RulesPage` のルール名リンクと同じ着地先、ルールの
 実質的な編集画面）。
 
 ## 予約が録られない理由を出す
