@@ -98,6 +98,10 @@ export function useProgramReservation({
     setEncodeValue,
     reserveBlocked,
     handleReserve,
+    // 放送中判定は描画時＋その後の再レンダーの評価のみで、専用の tick を持たない。
+    // それでも遷移先を誤らないのは、ライブ導線が programId を運ばずチャンネル
+    // （networkId + serviceId）だけを渡すため --- /live が「いま何が流れているか」を
+    // 自前で再取得する側に真実がある。
     showLiveLink: liveEnabled && isAiring(program.startAt, endAt),
   }
 }

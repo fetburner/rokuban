@@ -11,9 +11,6 @@ import {
 } from '@/components/program-reservation'
 import { cn } from '@/lib/utils'
 
-/** 既存の import 先を保ちつつ、予約 UI の共有モデルを公開する。 */
-export type { ProgramReservationProgram as ProgramRowProgram } from '@/components/program-reservation'
-
 /**
  * ProgramRow は番組リスト / 検索結果の 1 行。
  *
