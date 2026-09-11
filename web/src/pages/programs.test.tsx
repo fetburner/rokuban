@@ -935,7 +935,7 @@ describe('ProgramsPage の表示形式', () => {
     expect(screen.queryByRole('button', { name: '取消' })).not.toBeInTheDocument()
   })
 
-  it('グリッドのセルを押すと、モーダル内の ProgramRow から予約できる', async () => {
+  it('グリッドのセルを押すと、リスト chrome の無い予約パネルから予約できる', async () => {
     const fetchMock = stubApi()
     stubMatchMedia(true)
     renderPage()
@@ -952,9 +952,11 @@ describe('ProgramsPage の表示形式', () => {
 
     const dialog = await screen.findByRole('dialog', { name: soon.name })
     expect(cell).toHaveAttribute('aria-pressed', 'true')
-    // モーダル内の ProgramRow は初期展開されるため、行トグルを押さなくても
-    // 詳細領域と予約列が開き、hover なしで予約ボタンが使える。
-    within(dialog).getByRole('button', { expanded: true })
+    // ダイアログは ProgramRow をマウントせず、折りたたみトグルも持たない。
+    expect(within(dialog).queryByTestId('program-row')).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { expanded: true })).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('heading', { name: soon.name })).toBeInTheDocument()
+    expect(within(dialog).getByTestId('program-dialog-actions')).toBeInTheDocument()
     expect(within(dialog).getByText('エンコードプロファイル')).toBeInTheDocument()
 
     const reserveButton = within(dialog).getByRole('button', { name: '予約' })
