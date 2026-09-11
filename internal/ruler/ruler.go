@@ -157,6 +157,10 @@ func (r *Ruler) RunPass(ctx context.Context) error {
 func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	q := sqlcgen.New(r.pool)
 
+	// program_snapshots の追従更新より前に観測する。検出クエリの失敗は
+	// 読み取り専用の観測機能の失敗なので、このパスの評価・適用は止めない。
+	observeProgramIDReuses(ctx, q, site)
+
 	tripped, err := r.observeDeleteBreaker(ctx, q, site)
 	if err != nil {
 		return err
@@ -260,6 +264,33 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		"delete_candidates", len(deleteCandidates),
 	)
 	return nil
+}
+
+// observeProgramIDReuses は、終了済みの program_snapshot と EPG 射影を同じ
+// program_id で結合し、射影側の start_at が 24 時間超後ろへ動いた行を数える。
+// program_id の再利用はまだ挙動を変更する根拠がないため、ここでは警告と
+// Prometheus カウンタによる検出だけを行う。
+//
+// snapshot の追従更新より前に呼ぶ必要がある。後に呼ぶと、UpsertProgramSnapshotsFromProjection
+// が旧値を新値で上書きして検出材料を消してしまう。クエリの失敗は ruler の
+// 本体パスを止めない: この検出器は読み取り専用の補助観測であり、検出できない
+// こと自体をエラーとして予約の導出に伝播させない。
+func observeProgramIDReuses(ctx context.Context, q *sqlcgen.Queries, site string) {
+	reuses, err := q.ListProgramIDReusesBySite(ctx, site)
+	if err != nil {
+		slog.Error("ruler: program_id reuse detection failed", "site", site, "err", err)
+		return
+	}
+
+	for _, reuse := range reuses {
+		slog.Warn("ruler: possible program_id reuse detected",
+			"site", site,
+			"program_id", reuse.ProgramID,
+			"old_start_at", reuse.SnapshotStartAt,
+			"new_start_at", reuse.ProjectionStartAt,
+		)
+		metrics.RulerProgramIDReuses.Inc()
+	}
 }
 
 // observeDeleteBreaker はパスの先頭でブレーカーの発動状態を DB の真実に合わせ直す
@@ -622,11 +653,13 @@ func (r *Ruler) observeTrip(ctx context.Context, tq *sqlcgen.Queries, site strin
 // RunPass のサイトループの外から 1 回だけ呼ばれる。never_scheduled_events の
 // 読者（never_recorded の導出・容量需要・重複判定。internal/db/queries の
 // reservations.sql / capacity.sql / overlaps.sql）はどれも reservations 行を
-// 経由してこの表にたどり着くが、reservations は program_snapshots への FK が
-// ON DELETE CASCADE なので番組終了 + RetentionGrace で先に消える。つまりどの
-// 読者も、nse 行がこの GC で刈られる 30 日以上前に既に到達不能になっており、
-// この寿命の差を観測できない。だから EPG の放送地平を超えて残しても実害は
-// なく、RetentionGrace + 30 日を寿命にする。recordings.reservation_id
+// 経由してこの表にたどり着く。通常の同一 program_id の寿命では reservations が
+// program_snapshots への FK の ON DELETE CASCADE により番組終了 + RetentionGrace
+// で先に消えるため、nse 行がこの GC で刈られるまでの寿命差は読者から見えない。
+// ただし program_id の再利用で新番組が旧番組と同じ放送イベントキーから到達可能に
+// なる経路では、この前提は成り立たず、古い nse 行が新番組に影響しうる。再利用は
+// 上の検出器で観測するが、ここでは挙動を変更せず RetentionGrace + 30 日を寿命にする。
+// recordings.reservation_id
 // は当時 ON DELETE SET NULL だった（issue #158 で列自体を削除済み）ので、削除しても
 // 録画履歴（recordings/media_assets）は失われない。
 //

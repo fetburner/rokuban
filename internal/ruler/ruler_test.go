@@ -10,10 +10,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	dto "github.com/prometheus/client_model/go"
 
 	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/ruler"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -649,6 +651,87 @@ WHERE site = $2 AND program_id = $3`, staleStart, testSite, programID); err != n
 	}
 	if !snapshot.StartAt.Equal(liveStart) {
 		t.Errorf("program snapshot did not follow delayed EPG program: got %v want %v", snapshot.StartAt, liveStart)
+	}
+}
+
+// program_id の再利用検出は、snapshot の追従更新より前に実行される読み取り専用の
+// 観測である。終了済みの旧 snapshot に 8 日先の射影が現れた場合だけ数える。
+func TestRunPass_ObservesProgramIDReuse(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	const programID int64 = 67501
+	oldStart := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	insertProgramSnapshotDirect(t, pool, ctx, programID, "旧番組", oldStart)
+	newStart := time.Now().Add(8 * 24 * time.Hour).Truncate(time.Second)
+	insertProgram(t, pool, ctx, programID, "新番組", newStart)
+	q := sqlcgen.New(pool)
+	if _, err := q.SkipProgram(ctx, sqlcgen.SkipProgramParams{Site: testSite, ProgramID: programID}); err != nil {
+		t.Fatalf("creating skip intent: %v", err)
+	}
+
+	before := programIDReuseCount(t)
+	r := ruler.New([]string{testSite}, pool, nil)
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if got := programIDReuseCount(t) - before; got != 1 {
+		t.Fatalf("program_id reuse counter delta = %v, want 1", got)
+	}
+	snapshot, err := q.GetProgramSnapshot(ctx, sqlcgen.GetProgramSnapshotParams{Site: testSite, ProgramID: programID})
+	if err != nil {
+		t.Fatalf("getting updated program snapshot: %v", err)
+	}
+	if !snapshot.StartAt.Equal(newStart) {
+		t.Fatalf("program snapshot start_at = %v, want %v", snapshot.StartAt, newStart)
+	}
+}
+
+// 放送中の旧番組は、後続番組が 8 日先に見えても再利用とは数えない。旧 snapshot の
+// 終了判定を外すと、このテストが誤検出を拾う（検出条件の両側を固定する）。
+func TestRunPass_ProgramIDReuseIgnoresUnendedSnapshot(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	const programID int64 = 67502
+	oldStart := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
+	insertProgramSnapshotDirect(t, pool, ctx, programID, "放送中の旧番組", oldStart)
+	insertProgram(t, pool, ctx, programID, "新番組", time.Now().Add(8*24*time.Hour).Truncate(time.Second))
+
+	before := programIDReuseCount(t)
+	r := ruler.New([]string{testSite}, pool, nil)
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if got := programIDReuseCount(t) - before; got != 0 {
+		t.Fatalf("unended program_id reuse counter delta = %v, want 0", got)
+	}
+}
+
+// 開始時刻の通常の繰り下げ（24 時間未満）は再利用とは数えない。旧番組は終了済みに
+// して、しきい値の判定だけを検証する。
+func TestRunPass_ProgramIDReuseIgnoresSmallStartShift(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	const programID int64 = 67503
+	oldStart := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	insertProgramSnapshotDirect(t, pool, ctx, programID, "繰り下げ前", oldStart)
+	insertProgram(t, pool, ctx, programID, "繰り下げ後", oldStart.Add(time.Hour))
+
+	before := programIDReuseCount(t)
+	r := ruler.New([]string{testSite}, pool, nil)
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if got := programIDReuseCount(t) - before; got != 0 {
+		t.Fatalf("small start shift counter delta = %v, want 0", got)
 	}
 }
 
@@ -2673,4 +2756,16 @@ func TestRunPass_RetractGrace_LiveStartAtWinsOverStaleSnapshotWhenDelayed(t *tes
 	if reservationExists(t, pool, ctx, programID) {
 		t.Error("reservation should have been deleted: the live (epg_programs) start time is 5 hours out, outside the grace window (program_snapshots follows to the same value, but that must not matter)")
 	}
+}
+
+func programIDReuseCount(t *testing.T) float64 {
+	t.Helper()
+	var metric dto.Metric
+	if err := metrics.RulerProgramIDReuses.Write(&metric); err != nil {
+		t.Fatalf("writing program_id reuse metric: %v", err)
+	}
+	if metric.Counter == nil {
+		t.Fatal("program_id reuse metric is not a counter")
+	}
+	return metric.Counter.GetValue()
 }
