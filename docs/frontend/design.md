@@ -167,6 +167,48 @@ chip（`components/ui/chip.tsx`）・day-strip（`components/day-strip.tsx`）�
 開いたポップオーバーの選択肢（`ChannelOption`）側にあり、ポップオーバーは
 `keepMounted` を付けていないので閉じている間は DOM に存在しない。
 
+### 操作標的の寸法は基準を先に決めて実測する
+
+形を直す前に基準を固定する（[不変条件 11](../invariants.md)）。操作標的は
+`jsdom` の DOM 属性や Tailwind のクラス名から推測せず、`web/e2e/design.mjs` の
+④-A が Playwright の実ブラウザで `getBoundingClientRect()` を読み、主要画面
+（番組・検索・予約・録画・ルール・ライブ）の実際に表示された標的を列挙する。
+対象は `button, a[href], [role="button"], [role="switch"], input, select`。
+`display:none` / `visibility:hidden` / 祖先の `overflow` で隠れたものは除外し、
+行の操作列のように折りたたまれた要素を「見えない標的」として数えない。
+容量不足バッジの `::before` のような見た目と当たり判定が異なる実装は、擬似要素の
+実寸を hit 寸法へ加える。スキップリンクは未フォーカス時の `sr-only` を除外し、
+Tab 後に通常サイズへ戻る既存判定で測る。
+
+現在の基準は次のとおり。数値は物理端末の pt / dp ではなく、ブラウザの CSS px
+である。
+
+| ポインタ / 用途 | 最低寸法 | 根拠と適用 |
+|---|---:|---|
+| fine / coarse の全操作標的 | 24 × 24px | [WCAG 2.5.8 Minimum (AA)](https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum)。実効 hit 寸法で判定し、24px 未満は spacing 例外で見逃さない |
+| coarse で頻度の高い主操作 | 高さ 44px 以上 | 行の予約・取消・ライブ、日付セル、チャンネル候補、ライブのチャンネル一覧。日付セルの幅は狭幅で列を均等配分するため 24px 以上を保ち、高さを44pxにする |
+| coarse のモバイル主ナビ | 高さ 56px | `min-h-14` で safe-area と合わせて 44px 以上を確保し、4 項目（「その他」を含む）の一等地を維持する |
+
+この下限を全ボタンへ 44px で強制しない。Rokuban は管理画面として、fine 側の
+ボタン・chip・入力・select を 24〜36px 程度の密度で使う。一方、行の主操作や
+モバイルで親指が頻繁に触る面だけ、配置文法として 44px 高さを採用する。予約行の
+右端列の幅や主操作の重なりは [reservations.md](reservations.md) の規則が権威である。
+
+④-A は fine のデスクトップと coarse の 360px モバイルを実測し、各標的の visual / hit
+寸法、標的間の最小エッジ間隔、意図的な重なり件数を出力する。間隔は実測して記録する
+が、全面リンクと行内操作のような意図的な重なりがあるため、全画面へ一律の gap を
+課さない。合否は、列挙漏れがないこと、実効寸法が 24px 下限を満たすこと、そして
+44px を役割として決めた標的の個別契約を満たすことで決まる。トーストの action
+（`size="sm"`）は 32px、close（`size="icon-sm"`）は 28px として #729 の導線も
+判定に含める。
+
+[WCAG 2.5.5 Enhanced (AAA)](https://www.w3.org/WAI/WCAG22/Understanding/target-size-enhanced)
+の 44 × 44px は強い参考線だが、WCAG のレベルも適用範囲も 2.5.8 とは異なる。
+[Apple のアクセシビリティ指針](https://developer.apple.com/design/human-interface-guidelines/accessibility)
+の 44pt、[Material のアクセシビリティ指針](https://m1.material.io/usability/accessibility.html)
+の 48dp も各プラットフォームの指針であり、CSS px へそのまま置き換えない。
+これらを根拠に dense な全画面を拡大するのではなく、用途とポインタを分けて実測する。
+
 ## トークン外の生の色値を書かない
 
 コンポーネントが書いてよいのは**意味を持つトークン名**だけ
