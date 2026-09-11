@@ -42,7 +42,7 @@ function airingProgram(overrides: Partial<ProgramListItem> = {}): SiteProgram {
  * - `GET /api/capabilities`: ライブボタンの出し分け（issue #209 / #755）
  * - `GET .../programs/{programId}`: 展開時に `ProgramDetail` が問い合わせる番組詳細
  */
-function stubFetch({ live = true }: { live?: boolean } = {}) {
+function stubFetch({ live = true, description }: { live?: boolean; description?: string } = {}) {
   const fetchMock = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === '/api/capabilities') {
@@ -65,7 +65,7 @@ function stubFetch({ live = true }: { live?: boolean } = {}) {
     }
     // 番組詳細（ProgramDetail）。テストは中身を見ないので最小限。
     return Promise.resolve(
-      new Response(JSON.stringify({}), {
+      new Response(JSON.stringify(description === undefined ? {} : { description }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }),
@@ -137,6 +137,39 @@ describe('ProgramRow の外向き導線（issue #229 / #755）', () => {
     // 追随してしまい何も主張しなくなる）。networkId 32736 / serviceId 1024。
     expect(params.get('service')).toBe('3273601024')
     expect(params.get('site')).toBe(testSite)
+  })
+
+  it('endAt を持たない検索結果の射影でも startAt + durationMs から放送中を判定する', async () => {
+    stubFetch()
+    const airingSearchProgram = {
+      site: testSite,
+      programId: 55,
+      networkId: 32736,
+      serviceId: 1024,
+      startAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+      durationMs: 30 * 60_000,
+      name: '放送中の検索結果',
+      isFree: true,
+    }
+    renderInRouter(
+      <ProgramRow
+        program={airingSearchProgram}
+        reserved={false}
+        pending={false}
+        reservationStateUnknown={false}
+        onReserve={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    await screen.findByText('放送中の検索結果')
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId('program-row-reserve')).getByRole('link', {
+          name: 'ライブで見る',
+        }),
+      ).toBeInTheDocument(),
+    )
   })
 
   it('放送中でない行には予約列のライブボタンが出ない', async () => {
@@ -228,7 +261,7 @@ describe('ProgramRow の外向き導線（issue #229 / #755）', () => {
     await expandRow()
     await waitFor(() => expect(screen.queryByText('詳細を読み込み中…')).not.toBeInTheDocument())
 
-    const detail = document.getElementById('program-row-detail-1')
+    const detail = document.getElementById(`program-row-detail-${testSite}-1`)
     expect(detail).not.toBeNull()
     if (!detail) throw new Error('展開パネルが見つからない')
     expect(within(detail).queryByRole('link', { name: 'ライブで見る' })).not.toBeInTheDocument()
@@ -238,6 +271,58 @@ describe('ProgramRow の外向き導線（issue #229 / #755）', () => {
         name: 'ライブで見る',
       }),
     ).toBeInTheDocument()
+  })
+
+  it('検索結果の最小射影を展開すると詳細の説明へフォールバックする', async () => {
+    stubFetch({ description: '展開時に取得した説明' })
+    const searchProgram = {
+      site: testSite,
+      programId: 88,
+      networkId: 32736,
+      serviceId: 1024,
+      startAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      durationMs: 30 * 60_000,
+      name: '検索結果の番組',
+      isFree: true,
+    }
+    renderInRouter(
+      <ProgramRow
+        program={searchProgram}
+        reserved={false}
+        pending={false}
+        reservationStateUnknown={false}
+        onReserve={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    const title = await screen.findByText('検索結果の番組')
+    const toggle = title.closest('button')
+    expect(toggle).not.toBeNull()
+    await userEvent.click(toggle as HTMLButtonElement)
+
+    expect(await screen.findByText('展開時に取得した説明')).toBeInTheDocument()
+    expect(toggle).toHaveAttribute('aria-controls', `program-row-detail-${testSite}-88`)
+  })
+
+  it('一覧側に description があれば、展開時に取得した詳細の説明より優先する', async () => {
+    stubFetch({ description: '詳細から取得した別の説明' })
+    renderInRouter(
+      <ProgramRow
+        program={program({ programId: 99, description: '一覧側の説明' })}
+        reserved={false}
+        pending={false}
+        reservationStateUnknown={false}
+        onReserve={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    await expandRow()
+    await waitFor(() => expect(screen.queryByText('詳細を読み込み中…')).not.toBeInTheDocument())
+
+    expect(screen.getByText('一覧側の説明')).toBeInTheDocument()
+    expect(screen.queryByText('詳細から取得した別の説明')).not.toBeInTheDocument()
   })
 })
 

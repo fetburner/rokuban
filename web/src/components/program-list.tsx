@@ -19,6 +19,7 @@ import {
 import { dayKey, formatDate } from '@/lib/format'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
 import { firstIndexForDayOffset, programKeyAt, visibleDayOffset } from '@/lib/program-list'
+import type { ProgramOverlapTarget } from '@/lib/program-overlaps'
 
 /**
  * 予約操作が必要とする番組の最小形。検索結果は詳細表示用の全 ProgramListItem を
@@ -63,7 +64,7 @@ export type ReservationActions = {
   /** 予約一覧が未取得・失敗中なら、未予約行の `record` 操作を止める。 */
   reservationStateUnknown: boolean
   /** 予約一覧から導出した重なり。未取得の間も `count: 0` を返す。 */
-  overlapsFor: (program: SiteProgram) => ProgramOverlaps
+  overlapsFor: (program: ProgramOverlapTarget) => ProgramOverlaps
 }
 
 /**

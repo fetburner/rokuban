@@ -21,8 +21,8 @@
 //      下までスクロールする」状態が緑で通る（レビューで実測）
 //   ⑤ 検索結果の予約ボタンがモバイルでも 44px の標的として出て、キーボードの
 //      Enter で単発予約へ進めること
-//   ⑥ 長いサービス名と有料表示を持つ結果行で、メタ行が 1 行に収まり、行が
-//      不要に 2 行ぶん高くならないこと（issue #712）
+//   ⑥ 長いサービス名と有料表示を持つ `ProgramRow` で、メタ行が 1 行に収まり、
+//      行が不要に 2 行ぶん高くならないこと（issue #712）
 //
 // **①②は `page.goto` 直後、スクロールも操作も一切せずに測る** --- 「初画面」を
 // 検証する判定でスクロールしてしまうと、直したい問題自体を回避してしまう。
@@ -377,7 +377,7 @@ async function checkViewport(viewport) {
  * 検索して結果に届くか」なので、そこまで判定を伸ばす。
  *
  * 見るのは、テキスト条件に打って「検索」を押した後:
- * - 件数行（`N 件（番組 ID 順）`）の矩形がビューポート内にあり、ページヘッダ
+ * - 件数行（`N 件`）の矩形がビューポート内にあり、ページヘッダ
  *   （`sticky`）の下に潜っていないこと（`scroll-margin-top` の付け忘れはここで出る）
  * - ボトムタブに隠れていないこと
  * - 結果の 1 件目の上端も折り目の中にあること（件数行だけ見えて結果が全部
@@ -387,7 +387,7 @@ async function checkSubmitFeedback(page, viewport, label) {
   await page.getByLabel('テキスト条件 1 の値').fill('ニュース')
   await page.getByRole('button', { name: '検索', exact: true }).click()
 
-  const countRow = page.getByText(/件（番組 ID 順）/)
+  const countRow = page.getByRole('region', { name: '検索結果' }).getByRole('status')
   try {
     await countRow.waitFor({ timeout: 15000 })
   } catch {
@@ -451,31 +451,44 @@ async function checkSubmitFeedback(page, viewport, label) {
 }
 
 /**
- * checkSearchResultMeta は検索結果のメタ行が 1 行で描画され、結果行の高さが
+ * checkSearchResultMeta は検索結果の `ProgramRow` のメタ行が 1 行で描画され、
+ * `ProgramRow` の高さが
  * 不要に伸びていないことを判定する（⑥）。
  *
- * 長いサービス名と「有料」を同時に持つ fixture を使う。メタ行に `flex-wrap` が
- * 残っているとサービス名が縮む前に折り返し、`getBoundingClientRect()` の高さが
- * 1 行ぶんを超える。jsdom はレイアウトを計算しないため、実際の Chromium でしか
- * この差を検出できない。
+ * 長いサービス名と「有料」を同時に持つ fixture を使う。jsdom はレイアウトを
+ * 計算しないため、実際の Chromium でしか折り返しの差を検出できない。
+ *
+ * **`flex-wrap` を戻した変異を捕まえるのは computed style の判定であって、
+ * メタ行の高さではない。** `ProgramRow` のサービス名は `truncate` なので、
+ * `flex-wrap: wrap` を入れても縮んで収まり、メタ行は 20px のまま
+ * （360/390/1280px で実測。落ちるのは `flexWrap !== 'nowrap'` の判定だけ）。
+ * 高さのしきい値が受け持つのは `py-2.5`→`py-5` や名前カラムに 2 行目を足す変異で、
+ * これは行（72px）側に出る。メタ行の高さは、`truncate` が外れて本当に
+ * 2 行になる組み合わせに対する保険として残してある。
  *
  * **基準は固定値にしてある**（被検体の `getComputedStyle().lineHeight` は読まない）。
  * Tailwind v4 は named size ユーティリティ（`text-xs` 等）にしか `line-height` を
  * 出さないため、将来 `text-[13px]` のような任意値へ変えると `'normal'` が返り
  * `Number.parseFloat` が NaN になる --- 被検体自身を基準にすると、基準そのものが
- * 壊れて「判定不能」になる。実測（360/390/1280px いずれも同じ）は結果行 65px・
- * メタ行 16px。しきい値はそれぞれ余裕を持たせた 72px・20px。
+ * 壊れて「判定不能」になる。ProgramRow の実測（360/390/1280px いずれも同じ）は
+ * 行 65px・メタ行 20px。しきい値はそれぞれ余裕を持たせた 72px・24px。
  */
 async function checkSearchResultMeta(page, label) {
   const firstRow = firstResultRow(page)
-  const meta = firstRow.getByTestId('search-result-meta')
+  const programRow = firstRow.getByTestId('program-row')
+  const rowCount = await programRow.count()
+  if (rowCount !== 1) {
+    ng.push(`⑥@${label}: 結果 1 件目の ProgramRow がちょうど 1 本ではない（${rowCount} 本）`)
+    return
+  }
+  const meta = programRow.getByTestId('program-row-meta')
   const count = await meta.count()
   if (count !== 1) {
     ng.push(`⑥@${label}: 結果 1 件目のメタ行がちょうど 1 本ではない（${count} 本）`)
     return
   }
 
-  const rowBox = await firstRow.boundingBox()
+  const rowBox = await programRow.boundingBox()
   const metaBox = await meta.boundingBox()
   const metrics = await meta.evaluate((element) => ({
     flexWrap: getComputedStyle(element).flexWrap,
@@ -483,7 +496,7 @@ async function checkSearchResultMeta(page, label) {
   }))
 
   if (rowBox === null || metaBox === null) {
-    ng.push(`⑥@${label}: 結果行またはメタ行の矩形が取れない`)
+    ng.push(`⑥@${label}: ProgramRow またはメタ行の矩形が取れない`)
     return
   }
 
@@ -493,19 +506,19 @@ async function checkSearchResultMeta(page, label) {
   )
 
   if (!metrics.text.includes('ＮＨＫＢＳプレミアム４Ｋ') || !metrics.text.includes('有料')) {
-    ng.push(`⑥@${label}: 長いサービス名と「有料」の fixture が結果行に出ていない`)
+    ng.push(`⑥@${label}: 長いサービス名と「有料」の fixture が ProgramRow に出ていない`)
   }
   if (metrics.flexWrap !== 'nowrap') {
-    ng.push(`⑥@${label}: 結果行のメタ行が折り返し禁止になっていない（${metrics.flexWrap}）`)
+    ng.push(`⑥@${label}: ProgramRow のメタ行が折り返し禁止になっていない（${metrics.flexWrap}）`)
   }
-  if (metaBox.height > 20) {
-    ng.push(`⑥@${label}: メタ行が 1 行に収まっていない（height=${metaBox.height}, 上限=20px）`)
+  if (metaBox.height > 24) {
+    ng.push(`⑥@${label}: メタ行が 1 行に収まっていない（height=${metaBox.height}, 上限=24px）`)
   }
   // メタ行が 1 行のままでも、`py-2.5` を広げる・名前カラムに 2 行目
   // （`ProgramOverlapWarning` 相当）を足す等で結果行自体が高くなる取りこぼしを
   // 捕まえる（レビュー指摘）。メタ行の判定だけでは緑のまま通ってしまっていた。
   if (rowBox.height > 72) {
-    ng.push(`⑥@${label}: 結果行が想定より高い（height=${rowBox.height}, 上限=72px）`)
+    ng.push(`⑥@${label}: ProgramRow が想定より高い（height=${rowBox.height}, 上限=72px）`)
   }
 }
 
@@ -525,6 +538,36 @@ async function checkSearchResultMeta(page, label) {
  */
 async function checkResultReservation(page, label) {
   const firstRow = firstResultRow(page)
+  const rowToggle = firstRow.locator('button[aria-expanded]')
+  const toggleCount = await rowToggle.count()
+  if (toggleCount !== 1) {
+    ng.push(`⑤@${label}: 結果 1 件目の展開ボタンがちょうど 1 本ではない（${toggleCount} 本）`)
+    return
+  }
+
+  // `ProgramRow` の操作列は展開中だけ開くため、まず行本体をキーボードで展開する。
+  // 結果セクションへ移したフォーカスからの最初の Tab はこの展開ボタンに入るはず
+  // ---それ自体をここで確認する（下の予約ボタンの Tab 判定と同じ形: NG を積んで
+  // から focus で補って先へ進む）。
+  await page.keyboard.press('Tab')
+  const focusedToggle = await rowToggle.evaluate((element) => document.activeElement === element)
+  if (!focusedToggle) {
+    ng.push(`⑤@${label}: Tab で結果行の展開ボタンへ到達できない`)
+    await rowToggle.focus()
+  }
+  await page.keyboard.press('Enter')
+  try {
+    await rowToggle.waitFor({ state: 'attached', timeout: 15000 })
+    await page.waitForFunction(
+      (element) => element.getAttribute('aria-expanded') === 'true',
+      await rowToggle.elementHandle(),
+      { timeout: 15000 },
+    )
+  } catch {
+    ng.push(`⑤@${label}: 結果 1 件目を展開できない`)
+    return
+  }
+
   const reserveButton = firstRow.getByRole('button', { name: '予約', exact: true })
   const count = await reserveButton.count()
   if (count !== 1) {
@@ -547,9 +590,8 @@ async function checkResultReservation(page, label) {
     )
   }
 
-  // 検索の決着後は結果セクションへフォーカスしている。そこから Tab で結果行の
-  // 予約ボタンへ入り、Enter で操作する --- locator.click() だけではキーボード
-  // 到達性を確認できない。
+  // 展開ボタンから Tab で操作列の「予約」ボタンへ入り、Enter で操作する ---
+  // locator.click() だけではキーボード到達性を確認できない。
   await page.keyboard.press('Tab')
   const focusedByTab = await reserveButton.evaluate((element) => document.activeElement === element)
   if (!focusedByTab) {

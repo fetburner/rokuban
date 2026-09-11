@@ -21,6 +21,30 @@ import { composeServiceId } from '@/lib/service-id'
 import { cn } from '@/lib/utils'
 
 /**
+ * ProgramRow が描画に必要とする番組の最小形。
+ *
+ * 番組表の一覧は `endAt` / `description` を持つ `SiteProgram` を渡すが、検索 API
+ * の表示用射影にはその 2 つが含まれない。終了時刻は `startAt + durationMs` から
+ * このコンポーネントで導出することで、検索側に表示しない値を先回りして運ばない。
+ * `description` は一覧に既知の値があれば使い、検索結果のように未指定なら展開時に
+ * 取得した詳細へフォールバックする。
+ */
+export type ProgramRowProgram = Pick<
+  SiteProgram,
+  | 'site'
+  | 'programId'
+  | 'networkId'
+  | 'serviceId'
+  | 'startAt'
+  | 'durationMs'
+  | 'name'
+  | 'isFree'
+> & {
+  endAt?: string
+  description?: string
+}
+
+/**
  * ProgramRow は番組リストの 1 行。
  *
  * 行本体のタップで詳細を展開し、行に対する動作（予約 / 取消 / ライブ）は
@@ -59,7 +83,7 @@ export function ProgramRow({
   onCancel,
   overlaps,
 }: {
-  program: SiteProgram
+  program: ProgramRowProgram
   serviceName?: string
   siteName?: string
   reserved: boolean
@@ -100,7 +124,12 @@ export function ProgramRow({
     onReserve(encodeSettingsOverridesBody(encodeValue, defaultEncodeSettingsValue()))
   }
 
-  const detailId = `program-row-detail-${program.programId}`
+  const detailId = `program-row-detail-${program.site}-${program.programId}`
+  // 検索結果の表示用射影は `endAt` を運ばない。番組表から来る場合は API の値を
+  // そのまま使い、検索結果から来る場合だけ長さから終了時刻を導出する。
+  const endAt =
+    program.endAt ?? new Date(Date.parse(program.startAt) + program.durationMs).toISOString()
+  const airing = isAiring(program.startAt, endAt)
 
   // now の評価タイミングは「描画される瞬間（＋その後の再レンダー）」で
   // 足りるとし、専用の tick タイマーは持たない。
@@ -124,7 +153,7 @@ export function ProgramRow({
   // 閉じない。それでも良いのは上記の理由（誤った遷移先を指さない）だけであり、
   // pages/live.tsx の `nowMs`（30 秒 tick）のような常時性の高い表示を
   // 求められたら別の設計が要る。
-  const showLiveLink = liveEnabled && isAiring(program.startAt, program.endAt)
+  const showLiveLink = liveEnabled && airing
   // 放送中の行だけライブボタン（44px）を予約ボタン（80px）の左に置くため、
   // 操作列もその合計幅（124px）に広げる。開閉条件（3 つのセレクタ）は通常行と
   // 放送中行で変わらないので border-l は分岐させず、幅だけ分岐させる。
@@ -138,7 +167,7 @@ export function ProgramRow({
   )
 
   return (
-    <div className="flex flex-col border-b border-border">
+    <div className="flex flex-col border-b border-border" data-testid="program-row">
       <div className="group flex items-stretch">
         <button
           type="button"
@@ -163,14 +192,17 @@ export function ProgramRow({
               // 測る。クラス名でセレクタを組むと、そのユーティリティクラスが
               // 別の要素へ移っただけで**別の要素を測ったまま通る**
               data-testid="program-row-time"
-              className={cn(isAiring(program.startAt, program.endAt) && 'font-medium')}
+              className={cn(airing && 'font-medium')}
             >
               {formatTime(program.startAt)}
             </div>
           </div>
           <div className="min-w-0 flex-1">
             <div className="truncate text-base">{program.name}</div>
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <div
+              data-testid="program-row-meta"
+              className="flex items-center gap-2 text-sm text-muted-foreground"
+            >
               {siteName && <span className="shrink-0">{siteName}</span>}
               {serviceName && <span className="truncate">{serviceName}</span>}
               <span className="shrink-0">{formatDuration(program.durationMs)}</span>
@@ -358,14 +390,15 @@ export function ProgramRow({
  * 説明・出演者・映像音声属性は一覧レスポンスに含まれないため、
  * 展開したときに GET /api/sites/{site}/programs/{programId} で取得する（段階的開示）。
  */
-function ProgramDetail({ program }: { program: SiteProgram }) {
+function ProgramDetail({ program }: { program: ProgramRowProgram }) {
   const detail = useGetProgram(program.site, program.programId)
   const d = unwrap(detail.data)
+  const description = program.description ?? d?.description
 
   return (
     <div className="flex flex-col gap-2 text-xs">
-      {program.description && (
-        <p className="whitespace-pre-wrap text-muted-foreground">{program.description}</p>
+      {description && (
+        <p className="whitespace-pre-wrap text-muted-foreground">{description}</p>
       )}
 
       {detail.isPending && (
