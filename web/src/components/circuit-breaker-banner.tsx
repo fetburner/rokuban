@@ -25,6 +25,7 @@ import { Button } from '@/components/ui/button'
 import { describeBreakerName, describeBreakerReason } from '@/lib/breaker'
 import { formatDateTime } from '@/lib/format'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
+import { programTitle } from '@/lib/program-labels'
 
 /**
  * CircuitBreakerBanner は発動中の大量削除サーキットブレーカーを全画面に出す
@@ -172,7 +173,7 @@ function BreakerRow({ breaker }: { breaker: CircuitBreaker }) {
             <ul className="flex flex-col gap-1">
               {programs.map((program) => (
                 <li key={program.programId} className="truncate">
-                  #{program.programId} {program.title || '（番組名なし）'}
+                  #{program.programId} {programTitle(program.title)}
                 </li>
               ))}
             </ul>

@@ -3,6 +3,7 @@ import { TriangleAlert } from 'lucide-react'
 import { useGetProgramOverlaps, type ProgramOverlaps } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { formatTime } from '@/lib/format'
+import { programTitle } from '@/lib/program-labels'
 
 /**
  * ProgramOverlapWarning は指定番組の放送時間帯と重なる既存予約の件数と内訳を出す。
@@ -27,7 +28,7 @@ export function ProgramOverlapWarning({ overlaps }: { overlaps?: ProgramOverlaps
       <span>
         同じ時間帯に{overlaps.count}件の予約があります（
         {overlaps.reservations
-          .map((r) => `${formatTime(r.startAt)} ${r.title || '（番組名なし）'}`)
+          .map((r) => `${formatTime(r.startAt)} ${programTitle(r.title)}`)
           .join('・')}
         ）
       </span>

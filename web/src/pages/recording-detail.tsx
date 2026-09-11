@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
 import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
 import { hasLiveIngestProgress, ingestRefetchIntervalMs } from '@/lib/ingest'
+import { programTitle } from '@/lib/program-labels'
 
 /**
  * recordingDetailQueryKey は単体ページ自身のクエリキー。
@@ -121,7 +122,7 @@ export function RecordingDetailPage() {
               )}
             </div>
             <div className="min-w-0 flex-1">
-              <h2 className="text-lg font-medium">{recording.title || '（番組名なし）'}</h2>
+              <h2 className="text-lg font-medium">{programTitle(recording.title)}</h2>
               <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
                 <StatusBadge status={recording.status} />
                 <IngestBadge recording={recording} />
