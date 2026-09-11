@@ -100,6 +100,7 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 		"rokuban_epg_programs_projected",
 		"rokuban_epg_channels_without_programs",
 		"rokuban_epg_sync_last_success_timestamp_seconds",
+		// program_id 再利用検出（ruler）
 		"rokuban_ruler_program_id_reuse_total",
 		// M2-10: チューナー射影と容量超過
 		"rokuban_tuners_projected",

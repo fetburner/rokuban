@@ -266,10 +266,6 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	return nil
 }
 
-type programIDReuseLister interface {
-	ListProgramIDReusesBySite(context.Context, string) ([]sqlcgen.ListProgramIDReusesBySiteRow, error)
-}
-
 // observeProgramIDReuses は、終了済みの program_snapshot と EPG 射影を同じ
 // program_id で結合し、射影側の start_at が 24 時間超後ろへ動いた行を数える。
 // program_id の再利用はまだ挙動を変更する根拠がないため、ここでは警告と
@@ -279,7 +275,7 @@ type programIDReuseLister interface {
 // が旧値を新値で上書きして検出材料を消してしまう。クエリの失敗は ruler の
 // 本体パスを止めない: この検出器は読み取り専用の補助観測であり、検出できない
 // こと自体をエラーとして予約の導出に伝播させない。
-func observeProgramIDReuses(ctx context.Context, q programIDReuseLister, site string) {
+func observeProgramIDReuses(ctx context.Context, q *sqlcgen.Queries, site string) {
 	reuses, err := q.ListProgramIDReusesBySite(ctx, site)
 	if err != nil {
 		slog.Error("ruler: program_id reuse detection failed", "site", site, "err", err)
