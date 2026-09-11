@@ -530,7 +530,16 @@ describe('予約一覧の行本体リンクの accessible name（issue #233 レ�
     const rowLink = screen.getByRole('link', { name: /交差する番組/ })
     expect(rowLink).toHaveAttribute('href', '/reservations/default/10')
   })
+})
 
+/**
+ * 欠損タイトルの表示規則（`web/src/lib/program-labels.ts` の `programTitle`）。
+ *
+ * 上のブロックは行本体リンクのアクセシブルネームが取れることが主題（issue
+ * #233）で、こちらはタイトルが空文字のときに表示・リンク名の双方が
+ * 「番組名なし」に揃うこと自体が主題なので、別件として独立に固定する。
+ */
+describe('予約一覧の行本体表示のタイトル欠損', () => {
   it('タイトルが空文字なら表示とリンク名を「番組名なし」にする', async () => {
     renderWith([reservation(1, '', 19 * 60, 60)], [])
 
