@@ -216,7 +216,10 @@ if (cellRect.top < 0 || cellRect.top >= docMetrics.innerHeight || cellRect.heigh
 // --- C. グリッドでも予約が押せない（reservationStateUnknown のまま） ---
 log('\n=== C. グリッドの選択行の「予約」ボタンが disabled ===')
 await desktopPage.locator('[data-testid="program-grid-cell"]').first().click()
-const reserveButton = desktopPage.getByTestId('program-row-reserve').getByRole('button')
+const reserveButton = desktopPage
+  .getByTestId('program-dialog-actions')
+  .locator('[data-program-action="reserve"]')
+  .getByRole('button')
 await reserveButton.waitFor({ timeout: 10000 })
 const reserveLabel = (await reserveButton.textContent())?.trim()
 const reserveDisabled = await reserveButton.isDisabled()

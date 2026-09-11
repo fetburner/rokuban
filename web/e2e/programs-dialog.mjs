@@ -1,9 +1,9 @@
-// 番組表のセル選択後の操作をモーダルへ寄せる受け入れ判定（issue #723）。
+// 番組表のセル選択後の操作を予約パネルへ寄せる受け入れ判定（issue #774）。
 //
 // jsdom はレイアウトとフォーカスの実挙動を測れないため、単体テストでは
-// 「モーダル内に予約ボタンがある」までを確認し、ここでは実ブラウザで次を測る:
+// 「ダイアログ内に予約ボタンがある」までを確認し、ここでは実ブラウザで次を測る:
 //   - セルをクリックすると番組名でラベル付けされたダイアログが開く
-//   - hover なしでモーダル内の予約ボタンが可視・操作可能で、1 回のクリックで予約できる
+//   - hover なしでダイアログ内の予約ボタンが可視・操作可能で、1 回のクリックで予約できる
 //   - Escape / overlay クリックで閉じ、クリック元セルへフォーカスが戻る
 //
 // API は `page.route` で差し替える。mirakc・実チューナー・DB は要らない。
@@ -124,6 +124,12 @@ log('\n=== セル選択でモーダルを開く ===')
 await cell.click()
 const dialog = page.getByRole('dialog', { name: program.name })
 await dialog.waitFor({ timeout: 15000 })
+if (await dialog.locator('[data-testid="program-row"]').count() !== 0) {
+  ng.push('ダイアログ内にリスト用の ProgramRow がマウントされている')
+}
+if (await dialog.getByRole('button', { expanded: true }).count() !== 0) {
+  ng.push('ダイアログ内に折りたたみトグルが残っている')
+}
 const labelledBy = await dialog.getAttribute('aria-labelledby')
 if (!labelledBy) ng.push('aria-labelledby がダイアログに設定されていない')
 if (labelledBy && (await page.locator(`#${labelledBy}`).textContent()) !== program.name) {
@@ -197,12 +203,12 @@ for (let i = 0; i < 8; i++) {
   }
 }
 
-// 予約一覧の初回取得が終わるまでは ProgramRow の安全ガードで disabled になる。
+// 予約一覧の初回取得が終わるまでは共有予約部品の安全ガードで disabled になる。
 // 「表示されている」だけでクリックすると、このガードを待たずに空虚な成功になる。
 await page.waitForFunction(
   () => {
     const button = document.querySelector(
-      '[data-testid="program-dialog"] [data-testid="program-row-reserve"] button',
+      '[data-testid="program-dialog-actions"] [data-program-action="reserve"] button',
     )
     return button instanceof HTMLButtonElement && !button.disabled
   },

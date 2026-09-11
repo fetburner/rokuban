@@ -383,7 +383,7 @@ describe('ProgramRow の操作列の開閉配線（issue #310 / #755）', () => 
     expect(within(reserveWrapper).getByRole('button', { name: '取消' })).toBeInTheDocument()
   })
 
-  it('defaultExpanded を指定すると、モーダル用に詳細と操作列を初期展開する', async () => {
+  it('リストでは詳細と予約列を折りたたんで出す', async () => {
     stubFetch()
     renderInRouter(
       <ProgramRow
@@ -391,27 +391,6 @@ describe('ProgramRow の操作列の開閉配線（issue #310 / #755）', () => 
         reserved={false}
         pending={false}
         reservationStateUnknown={false}
-        defaultExpanded
-        onReserve={vi.fn()}
-        onCancel={vi.fn()}
-      />,
-    )
-
-    const title = await screen.findByText('対象番組')
-    const toggle = title.closest('button')
-    expect(toggle).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByText('エンコードプロファイル')).toBeInTheDocument()
-  })
-
-  it('defaultExpanded={false} なら、リスト用に詳細と予約列を折りたたんで出す', async () => {
-    stubFetch()
-    renderInRouter(
-      <ProgramRow
-        program={program()}
-        reserved={false}
-        pending={false}
-        reservationStateUnknown={false}
-        defaultExpanded={false}
         onReserve={vi.fn()}
         onCancel={vi.fn()}
       />,

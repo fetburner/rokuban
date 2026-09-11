@@ -7,21 +7,16 @@ import { CapacityBandLabels, CapacityBands } from '@/components/capacity-band'
 import { ChannelPicker } from '@/components/channel-picker'
 import { DayStrip } from '@/components/day-strip'
 import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
+import { ProgramDialogPanel } from '@/components/program-dialog-panel'
 import { GenreLegend, ProgramGrid } from '@/components/program-grid'
 import {
   ProgramList,
   type ProgramListHandle,
   type ReservationActions,
 } from '@/components/program-list'
-import { ProgramRow } from '@/components/program-row'
 import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogTitle,
-} from '@/components/ui/dialog'
+import { Dialog, DialogClose, DialogContent } from '@/components/ui/dialog'
 import {
   listPrograms,
   useListCapacityOverages,
@@ -867,12 +862,9 @@ function GridScaleChips({
  *
  * セルの中に予約ボタンや詳細を作り込まない。セルの高さは放送時間そのもの
  * （5 分番組は 10px）なので、そこに操作を置くと押せない番組ができる。
- * セル選択時にダイアログを開き、リスト行（ProgramRow）をそのまま再利用することで、
- * 予約・取消・詳細の展開・重なり警告が同一実装になる。
- * ダイアログ内の `ProgramRow` は `defaultExpanded` で初期展開する。予約操作を
- * 初期表示から見せるのは、細かいセルから右端の操作列へ移動させるコストを下げるためである
- * （Fitts の法則）。iPad 横向きのような粗いポインタでも、初期展開中は予約操作を維持する
- * `ProgramRow` の既存規則に従う。
+ * セル選択時はリスト行ではなく `ProgramDialogPanel` を開く。予約・取消・詳細・
+ * encode 規則・重なり警告は chrome なしの共有部品で揃え、リスト専用の折りたたみや
+ * 右端幅アニメーションはダイアログへ持ち込まない。
  */
 function ProgramGridView({
   axis,
@@ -947,12 +939,10 @@ function ProgramGridView({
             // Popup 自体はスクロールさせない（flex flex-col で `grid` を
             // 上書きし、overflow-hidden で `overflow-y-auto` を上書きする）。
             // 閉じるボタンはこの非スクロールの箱に対して absolute 配置なので、
-            // 番組概要が長くて中身がスクロールしても画面外へ出ない
-            // （下の `pt-14` の内側 div だけがスクロールする）。
+            // 番組概要が長くて中身がスクロールしても画面外へ出ない。
             className="flex max-w-2xl flex-col overflow-hidden p-0"
             data-testid="program-dialog"
           >
-            <DialogTitle className="sr-only">{selected.name}</DialogTitle>
             <DialogClose
               render={
                 <Button
@@ -967,13 +957,12 @@ function ProgramGridView({
               }
             />
             <div
-              className="min-h-0 flex-1 overflow-y-auto p-4 pt-14"
+              className="min-h-0 flex-1 overflow-y-auto p-6"
               data-testid="program-dialog-body"
             >
-              {/* key は選択番組の identity に紐づける。Popup は閉じると
-                  アンマウントされるが、選択対象が差し替わる経路でも
-                  `ProgramRow` のエンコード設定の下書きを別番組へ渡さない。 */}
-              <ProgramRow
+              {/* key は選択番組の identity に紐づける。選択対象が差し替わる経路でも
+                  ダイアログのエンコード設定の下書きを別番組へ渡さない。 */}
+              <ProgramDialogPanel
                 key={programIdentity(selected.site, selected.programId)}
                 program={selected}
                 siteName={showSite ? selected.site : undefined}
@@ -987,7 +976,6 @@ function ProgramGridView({
                 )}
                 pending={actions.isBusy(selected)}
                 reservationStateUnknown={actions.reservationStateUnknown}
-                defaultExpanded
                 overlaps={actions.overlapsFor(selected)}
                 onReserve={(overrides) => actions.reserve(selected, overrides)}
                 onCancel={() => actions.cancel(selected)}
