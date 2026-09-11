@@ -123,6 +123,102 @@ describe('ToastProvider', () => {
     expect(screen.queryByText('保存しました')).not.toBeInTheDocument()
   })
 
+  it('Alt+T で最新トーストの先頭 action にフォーカスを移す', () => {
+    renderHarness()
+    fireEvent.click(screen.getByText('info を出す'))
+    fireEvent.click(screen.getByText('action 付きを出す'))
+
+    fireEvent.keyDown(window, { key: 't', altKey: true })
+
+    expect(screen.getByRole('button', { name: '取消' })).toHaveFocus()
+  })
+
+  it('Alt+T で action のない最新トーストの閉じるボタンにフォーカスを移す', () => {
+    renderHarness()
+    fireEvent.click(screen.getByText('action 付きを出す'))
+    fireEvent.click(screen.getByText('2 通目の info を出す'))
+
+    fireEvent.keyDown(window, { key: 't', altKey: true })
+
+    const closeButtons = screen.getAllByRole('button', { name: '閉じる' })
+    expect(closeButtons[1]).toHaveFocus()
+  })
+
+  it('トーストが無いとき Alt+T は何もしない', () => {
+    renderHarness()
+
+    fireEvent.keyDown(window, { key: 't', altKey: true })
+
+    expect(document.activeElement).toBe(document.body)
+  })
+
+  it('入力中は Alt+T でトーストへフォーカスを移さない', () => {
+    function InputHarness() {
+      const toast = useToast()
+      return (
+        <>
+          <button onClick={() => toast({ message: '保存しました' })}>info を出す</button>
+          <input aria-label="入力" />
+          <textarea aria-label="複数行入力" />
+          <select aria-label="選択">
+            <option>選択肢</option>
+          </select>
+          <div contentEditable aria-label="編集領域" />
+        </>
+      )
+    }
+
+    render(
+      <ToastProvider>
+        <InputHarness />
+      </ToastProvider>,
+    )
+    fireEvent.click(screen.getByText('info を出す'))
+    const targets = [
+      screen.getByLabelText('入力'),
+      screen.getByLabelText('複数行入力'),
+      screen.getByLabelText('選択'),
+      screen.getByLabelText('編集領域'),
+    ]
+
+    for (const target of targets) {
+      target.focus()
+      fireEvent.keyDown(target, { key: 't', altKey: true })
+      expect(target).toHaveFocus()
+    }
+  })
+
+  it('Alt+T に Ctrl または Cmd を重ねても反応しない', () => {
+    renderHarness()
+    fireEvent.click(screen.getByText('info を出す'))
+    const closeButton = screen.getByRole('button', { name: '閉じる' })
+
+    fireEvent.keyDown(window, { key: 't', altKey: true, ctrlKey: true })
+    expect(closeButton).not.toHaveFocus()
+    fireEvent.keyDown(window, { key: 't', altKey: true, metaKey: true })
+    expect(closeButton).not.toHaveFocus()
+  })
+
+  it('Alt+T でフォーカス中はタイマーが止まり、Blur 後に残り時間で消える', async () => {
+    vi.useFakeTimers()
+    renderHarness()
+    fireEvent.click(screen.getByText('info を出す'))
+
+    await advance(3_000)
+    fireEvent.keyDown(window, { key: 't', altKey: true })
+    const closeButton = screen.getByRole('button', { name: '閉じる' })
+    expect(closeButton).toHaveFocus()
+
+    await advance(10_000)
+    expect(screen.getByText('保存しました')).toBeInTheDocument()
+
+    fireEvent.blur(closeButton)
+    await advance(2_999)
+    expect(screen.getByText('保存しました')).toBeInTheDocument()
+    await advance(1)
+    expect(screen.queryByText('保存しました')).not.toBeInTheDocument()
+  })
+
   it('action 付きは 10 秒で消える', async () => {
     vi.useFakeTimers()
     renderHarness()
@@ -164,6 +260,10 @@ describe('ToastProvider', () => {
 
     fireEvent.click(screen.getByText('予約する'))
     expect(screen.getByRole('button', { name: '取消' })).toBeInTheDocument()
+
+    fireEvent.keyDown(window, { key: 't', altKey: true })
+    expect(screen.getByRole('button', { name: '取消' })).toHaveFocus()
+
     fireEvent.click(screen.getByRole('button', { name: '設定' }))
     expect(selected).toEqual(['settings'])
     expect(screen.queryByText('予約しました')).not.toBeInTheDocument()

@@ -310,6 +310,12 @@ grep -rln --include='*.ts' --include='*.tsx' --include='*.css' 'scanlines' web/s
 （`animation: none` にはしない --- 理由は `index.css` のコメント参照）。
 実ブラウザでの縮退・非縮退の両方向の確認は `web/e2e/design.mjs` が権威。
 
+## トーストのキーボード到達性
+
+短命トーストへは Alt+T で移動し、action があれば先頭の action、無ければ閉じるボタンへ
+フォーカスする。input / textarea / select / contenteditable で入力中、または Ctrl / Cmd を
+併用しているときはフォーカスを奪わず、フォーカス中はタイマーを止める。
+
 ## 角は立てる
 
 `--radius` は `0.25rem`。shadcn 既定の `0.625rem`（10px）は SaaS のカードの丸みで、
