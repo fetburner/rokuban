@@ -400,6 +400,9 @@ describe('ProgramRow の操作列の開閉配線（issue #310 / #755）', () => 
     const toggle = title.closest('button')
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByText('エンコードプロファイル')).not.toBeInTheDocument()
+
+    const reserveWrapper = screen.getByTestId('program-row-reserve')
+    expect(reserveWrapper).toHaveClass('w-0', 'overflow-hidden')
   })
 })
 

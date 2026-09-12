@@ -5,6 +5,8 @@
 //   - セルをクリックすると番組名でラベル付けされたダイアログが開く
 //   - hover なしでダイアログ内の予約ボタンが可視・操作可能で、1 回のクリックで予約できる
 //   - Escape / overlay クリックで閉じ、クリック元セルへフォーカスが戻る
+//   - 操作列が要約行の右端に収まり、通常 81px / 放送中 125px である
+//   - 通常 / 放送中のダイアログを e2e/screenshots/ に保存する
 //
 // API は `page.route` で差し替える。mirakc・実チューナー・DB は要らない。
 //
@@ -12,6 +14,9 @@
 //   E2E_URL=http://localhost:4173 pnpm e2e:programs-dialog
 //
 // 合格なら exit 0、1 つでも NG なら exit 1。
+import { mkdirSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { ListProgramsResponseItem, ListServicesResponseItem } from '../src/api/zod.ts'
 import {
   finish,
@@ -25,7 +30,11 @@ import {
 const BASE = process.env.E2E_URL ?? 'http://localhost:4173'
 const SITE = 'default'
 const PROGRAM_ID = 723001
+const AIRING_PROGRAM_ID = 723002
 const FIXED_NOW = new Date('2026-08-13T00:00:00.000Z')
+const SCREENSHOT_DIR =
+  process.env.E2E_SCREENSHOT_DIR ?? path.join(path.dirname(fileURLToPath(import.meta.url)), 'screenshots')
+mkdirSync(SCREENSHOT_DIR, { recursive: true })
 
 const service = {
   id: 3273601024,
@@ -55,23 +64,35 @@ const program = {
   isFree: true,
 }
 
+const airingProgram = {
+  ...program,
+  programId: AIRING_PROGRAM_ID,
+  eventId: 2,
+  startAt: '2026-08-12T23:30:00.000Z',
+  endAt: '2026-08-13T00:30:00.000Z',
+  name: '放送中モーダル予約確認番組',
+}
+
 const ng = []
 let intentPutCount = 0
 
 /** apiHandler は番組表モーダルの描画と予約操作に必要な応答を作る。 */
 async function apiHandler({ path: p, json, route }) {
   if (p === '/api/sites') return json([SITE])
-  if (p === '/api/capabilities') return json({ live: false })
+  if (p === '/api/capabilities') return json({ live: true })
   if (p === '/api/reservations') return json([])
   if (p === '/api/capacity/overages') return json([])
   if (p === '/api/encode-profiles') return json([])
   if (p === `/api/sites/${SITE}/services`) return json([service])
-  if (p === `/api/sites/${SITE}/programs`) return json([program])
+  if (p === `/api/sites/${SITE}/programs`) return json([program, airingProgram])
   if (p === `/api/sites/${SITE}/programs/${PROGRAM_ID}/intent` && route.request().method() === 'PUT') {
     intentPutCount++
     return route.fulfill({ status: 204 })
   }
-  if (p === `/api/sites/${SITE}/programs/${PROGRAM_ID}`) {
+  if (
+    p === `/api/sites/${SITE}/programs/${PROGRAM_ID}` ||
+    p === `/api/sites/${SITE}/programs/${AIRING_PROGRAM_ID}`
+  ) {
     return json({ extended: {}, audios: [] })
   }
   if (/\/overlaps$/.test(p)) return json({ count: 0, reservations: [] })
@@ -95,6 +116,7 @@ await validateFixturesOrExit(
   [
     ['service', ListServicesResponseItem, service],
     ['program', ListProgramsResponseItem, program],
+    ['airing program', ListProgramsResponseItem, airingProgram],
   ],
   ng,
 )
@@ -124,6 +146,7 @@ log('\n=== セル選択でモーダルを開く ===')
 await cell.click()
 const dialog = page.getByRole('dialog', { name: program.name })
 await dialog.waitFor({ timeout: 15000 })
+await page.waitForTimeout(250)
 if (await dialog.locator('[data-testid="program-row"]').count() !== 0) {
   ng.push('ダイアログ内にリスト用の ProgramRow がマウントされている')
 }
@@ -139,12 +162,29 @@ if (labelledBy && (await page.locator(`#${labelledBy}`).textContent()) !== progr
 const reserveButton = dialog.getByRole('button', { name: '予約', exact: true })
 const reserveBox = await reserveButton.boundingBox()
 log(`  モーダル内の予約ボタン: ${reserveBox ? `${reserveBox.width}x${reserveBox.height}px` : '見つからない'}`)
-if (!(await reserveButton.isVisible()) || !reserveBox || reserveBox.width <= 0 || reserveBox.height <= 0) {
+if (!(await reserveButton.isVisible()) || !reserveBox || reserveBox.width <= 0 || reserveBox.height < 44) {
   ng.push('モーダル内の予約ボタンが hover なしで可視・操作可能になっていない')
+}
+const summaryRow = dialog.getByTestId('program-dialog-summary-row')
+const actions = dialog.getByTestId('program-dialog-actions')
+const summaryBox = await summaryRow.boundingBox()
+const actionsBox = await actions.boundingBox()
+log(`  未放送の操作列: ${actionsBox ? `${actionsBox.width}px` : '見つからない'}`)
+if (!summaryBox || !actionsBox || Math.abs(actionsBox.width - 81) >= 1) {
+  ng.push(`未放送の操作列が要約行右端の 81px に収まっていない（幅=${actionsBox?.width ?? '不明'}px）`)
+}
+if (
+  !summaryBox ||
+  !actionsBox ||
+  Math.abs(actionsBox.x + actionsBox.width - (summaryBox.x + summaryBox.width)) >= 1
+) {
+  ng.push('未放送の操作列が要約行の右端に揃っていない')
 }
 if ((await cell.getAttribute('aria-pressed')) !== 'true') {
   ng.push('モーダル表示中も選択セルのハイライトが維持されていない')
 }
+
+await dialog.screenshot({ path: path.join(SCREENSHOT_DIR, 'program-dialog-not-airing.png') })
 
 log('\n=== 長い番組概要でスクロールしても閉じるボタンが画面外へ出ない ===')
 const closeButton = dialog.getByRole('button', { name: '閉じる', exact: true })
@@ -249,6 +289,48 @@ if (!(await isFocusedCell(page))) ng.push('overlay クリック後にクリッ�
 if ((await cell.getAttribute('aria-pressed')) !== 'false') {
   ng.push('overlay クリック後にセルの選択が解除されない')
 }
+
+log('\n=== 放送中番組の操作列とスクリーンショット ===')
+const airingCell = page.locator(
+  `[data-testid="program-grid-cell"][data-program-id="${AIRING_PROGRAM_ID}"]`,
+)
+await airingCell.waitFor({ timeout: 15000 })
+await airingCell.scrollIntoViewIfNeeded()
+await airingCell.click()
+const airingDialog = page.getByRole('dialog', { name: airingProgram.name })
+await airingDialog.waitFor({ timeout: 15000 })
+await page.waitForTimeout(250)
+const liveLink = airingDialog.getByRole('link', { name: 'ライブで見る' })
+await liveLink.waitFor({ state: 'visible', timeout: 15000 })
+const airingReserveButton = airingDialog.getByRole('button', { name: '予約', exact: true })
+const airingReserveBox = await airingReserveButton.boundingBox()
+const airingSummaryRow = airingDialog.getByTestId('program-dialog-summary-row')
+const airingActions = airingDialog.getByTestId('program-dialog-actions')
+const airingSummaryBox = await airingSummaryRow.boundingBox()
+const airingActionsBox = await airingActions.boundingBox()
+log(`  放送中の予約ボタン: ${airingReserveBox ? `${airingReserveBox.width}x${airingReserveBox.height}px` : '見つからない'}`)
+log(`  放送中の操作列: ${airingActionsBox ? `${airingActionsBox.width}px` : '見つからない'}`)
+if (
+  !(await airingReserveButton.isVisible()) ||
+  !airingReserveBox ||
+  airingReserveBox.width <= 0 ||
+  airingReserveBox.height < 44
+) {
+  ng.push('放送中の予約ボタンが hover なしで可視・44px 以上になっていない')
+}
+if (!airingSummaryBox || !airingActionsBox || Math.abs(airingActionsBox.width - 125) >= 1) {
+  ng.push(`放送中の操作列が要約行右端の 125px に収まっていない（幅=${airingActionsBox?.width ?? '不明'}px）`)
+}
+if (
+  !airingSummaryBox ||
+  !airingActionsBox ||
+  Math.abs(
+    airingActionsBox.x + airingActionsBox.width - (airingSummaryBox.x + airingSummaryBox.width),
+  ) >= 1
+) {
+  ng.push('放送中の操作列が要約行の右端に揃っていない')
+}
+await airingDialog.screenshot({ path: path.join(SCREENSHOT_DIR, 'program-dialog-airing.png') })
 
 await context.close()
 await finish(ng, browser)
