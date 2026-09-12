@@ -287,18 +287,16 @@ func (q *Queries) ListEpgProgramIDsBySiteAndProgramIDs(ctx context.Context, arg 
 	return items, nil
 }
 
-const listFulfilledReservationProgramIDsBySite = `-- name: ListFulfilledReservationProgramIDsBySite :many
-SELECT r.program_id
-FROM reservations r
-JOIN program_snapshots s
-  ON s.site = r.site AND s.program_id = r.program_id
-WHERE r.site = $1
+const listFulfilledProgramIDsBySite = `-- name: ListFulfilledProgramIDsBySite :many
+SELECT s.program_id
+FROM program_snapshots s
+WHERE s.site = $1
   AND EXISTS (
       SELECT 1
       FROM recordings rec
       JOIN media_assets a ON a.recording_id = rec.id
        AND a.kind = 'original'
-      WHERE rec.site = r.site
+      WHERE rec.site = s.site
         AND rec.network_id = s.network_id
         AND rec.service_id = s.service_id
         AND rec.event_id = s.event_id
@@ -308,9 +306,10 @@ WHERE r.site = $1
 // fulfilled は原本 media_asset が存在する放送イベントに対応する予約。
 // state は問わない（原本を tombstone しても、録画・ingest が完了した事実は戻らない）。
 // reservations の desired から外す判定は放送イベントキーで行い、ruler が作る予約行の
-// identity に依存しない（CLAUDE.md 不変条件 9）。
-func (q *Queries) ListFulfilledReservationProgramIDsBySite(ctx context.Context, site string) ([]int64, error) {
-	rows, err := q.db.Query(ctx, listFulfilledReservationProgramIDsBySite, site)
+// identity に依存しない（CLAUDE.md 不変条件 9）。reservations 自体は削除後に無くなる
+// ため、program_snapshots を起点にしないと次の ruler パスで同じ番組を再生成してしまう。
+func (q *Queries) ListFulfilledProgramIDsBySite(ctx context.Context, site string) ([]int64, error) {
+	rows, err := q.db.Query(ctx, listFulfilledProgramIDsBySite, site)
 	if err != nil {
 		return nil, err
 	}

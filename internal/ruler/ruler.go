@@ -375,7 +375,7 @@ func (r *Ruler) collectDesired(ctx context.Context, q *sqlcgen.Queries, site str
 	for _, programID := range investmentProgramIDs {
 		desired[programID] = struct{}{}
 	}
-	fulfilled, err := q.ListFulfilledReservationProgramIDsBySite(ctx, site)
+	fulfilled, err := q.ListFulfilledProgramIDsBySite(ctx, site)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("listing fulfilled reservations: %w", err)
 	}

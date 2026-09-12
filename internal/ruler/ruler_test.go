@@ -1067,6 +1067,15 @@ func TestRunPass_FulfilledReservationIsRemovedWithoutGrace(t *testing.T) {
 	if reservationExists(t, pool, ctx, programID) {
 		t.Fatal("fulfilled reservation should be removed without waiting for retention grace")
 	}
+
+	// 削除後も program_snapshots と原本は残る。fulfilled 判定が reservations 行に依存すると
+	// 次の ruler パスでルールから再生成されるため、もう一度走らせても消えたままにする。
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("second RunPass after fulfilled delete: %v", err)
+	}
+	if reservationExists(t, pool, ctx, programID) {
+		t.Fatal("fulfilled reservation must not be recreated on the next ruler pass")
+	}
 }
 
 // 原本を後から tombstone しても、録画・ingest が完了した事実は戻らないので fulfilled
