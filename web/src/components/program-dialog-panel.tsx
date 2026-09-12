@@ -67,7 +67,7 @@ export function ProgramDialogPanel({
         <div
           data-testid="program-dialog-actions"
           className={cn(
-            'mr-5 flex shrink-0 items-center justify-center overflow-hidden border-l border-border box-content',
+            'mr-5 flex shrink-0 items-center justify-center border-l border-border box-content',
             draft.showLiveLink ? 'w-[7.75rem]' : 'w-20',
           )}
         >
