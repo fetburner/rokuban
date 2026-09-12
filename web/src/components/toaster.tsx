@@ -176,7 +176,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         {toasts.map((toast) => (
           <div
             key={toast.id}
-            className="pointer-events-auto flex w-full max-w-sm items-start justify-between gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm shadow-lg"
+            className="pointer-events-auto flex w-full max-w-sm items-center justify-between gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm shadow-lg"
           >
             <span className="min-w-0 line-clamp-3">{toast.message}</span>
             <div className="flex shrink-0 items-center gap-1">

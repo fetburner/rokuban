@@ -155,6 +155,20 @@ function programsFor(startISO, endISO, serviceIds) {
 
 const nowMs = FIXED_NOW.getTime()
 const iso = (ms) => new Date(ms).toISOString()
+/** #779 の多行トースト判定だけで使う専用番組。共有の `titles` 輪番には混ぜない。 */
+const toastLayoutProgram = {
+  programId: 779001,
+  networkId: 32736,
+  serviceId: 1024,
+  eventId: 779,
+  startAt: iso(nowMs + 30 * 60_000),
+  endAt: iso(nowMs + 60 * 60_000),
+  durationMs: 30 * 60_000,
+  name: 'トーストの複数行表示を確認するための非常に長い番組名です。狭い画面でも確実に折り返されます。',
+  description: '多行トーストの縦中央揃えを実ブラウザで確認するための番組。',
+  genres: [0],
+  isFree: true,
+}
 const encodeQueue = { queued: 2, running: 1 }
 const storageRoots = [
   {
@@ -382,6 +396,7 @@ await validateFixturesOrExit(
   [
     ...services.map((s, i) => [`services[${i}]`, ListServicesResponseItem, s]),
     ...programsFor(iso(nowMs), iso(nowMs + 6 * HOUR)).map((p, i) => [`programs[${i}]`, ListProgramsResponseItem, p]),
+    ['toastLayoutProgram', ListProgramsResponseItem, toastLayoutProgram],
     ...reservations.map((r, i) => [`reservations[${i}]`, ListReservationsResponseItem, r]),
     // transferringRecording も既定オプション（multiSite + extraRecording）で
     // 実際にブラウザへ配る（:308 参照）ので検証対象に含める。
@@ -438,6 +453,9 @@ await validateFixturesOrExit(
  *
  * `layoutScenario` は issue #686 の到達距離判定専用で、正常・容量不足・古い観測・
  * ストレージ取得失敗・観測なし・エンコード待機列・警告多数を分ける。
+ *
+ * `toastLayout` は issue #779 の多行トースト判定専用で、共有の番組輪番を変えずに
+ * 専用番組 1 件だけを返す。
  */
 /**
  * apiHandler は design.mjs の各シナリオに応じた `/api/**` の応答を作る
@@ -451,6 +469,7 @@ function apiHandler({
   multiSite = false,
   extraRecording = false,
   layoutScenario = 'default',
+  toastLayout = false,
 } = {}) {
   return async ({ path: p, url, json, route }) => {
     if (delayPath !== null && p === delayPath) {
@@ -533,12 +552,18 @@ function apiHandler({
     if (/^\/api\/recordings\/\d+\/thumbnail$/.test(p)) return route.fulfill({ status: 404 })
     if (p === `/api/sites/${SITE}/services`) return json(services)
     if (p === `/api/sites/${SITE}/programs`) {
+      const startISO = url.searchParams.get('start') ?? iso(nowMs)
+      const endISO = url.searchParams.get('end') ?? iso(nowMs + 6 * HOUR)
+      const requestedServiceIds = url.searchParams.getAll('serviceId')
+      if (
+        toastLayout &&
+        Date.parse(toastLayoutProgram.startAt) < Date.parse(endISO) &&
+        Date.parse(toastLayoutProgram.endAt) > Date.parse(startISO)
+      ) {
+        return json([toastLayoutProgram])
+      }
       return json(
-        programsFor(
-          url.searchParams.get('start') ?? iso(nowMs),
-          url.searchParams.get('end') ?? iso(nowMs + 6 * HOUR),
-          url.searchParams.getAll('serviceId'),
-        ),
+        programsFor(startISO, endISO, requestedServiceIds),
       )
     }
     if (/\/overlaps$/.test(p)) return json({ count: 0, reservations: [] })
@@ -3292,6 +3317,109 @@ for (const theme of themes) {
     }
     if (target.zIndex === 'auto' || Number(target.zIndex) <= 0) {
       ng.push('容量不足バッジが行全面リンクより上の重なり順を持たない')
+    }
+  }
+  await context.close()
+}
+
+// --- ④-A' issue #779: 多行トーストの action / close を縦中央へ揃える ---
+//
+// `titles` の輪番へ長い題名を混ぜると、既存のスクリーンショットや別判定で
+// 予約する番組が変わる。そこでこの判定だけ `toastLayout` の専用応答にし、
+// 長い番組を 1 件だけ返して予約する。モバイルの `max-w-sm` で本当に 2 行以上へ
+// 折り返したことを先に確認してから、メッセージ span と右側の action 群 / close
+// の `getBoundingClientRect()` の縦中心を比較する。jsdom ではこの判定はできない。
+{
+  const { context, page } = await open(mobile, 'light', screenOf('programs'), { toastLayout: true })
+  const row = page.locator('li[data-program-id]').filter({ hasText: toastLayoutProgram.name }).first()
+  const rowVisible = await row
+    .waitFor({ timeout: 5000 })
+    .then(() => true)
+    .catch(() => false)
+  if (!rowVisible) {
+    ng.push('[#779] 多行トースト用の専用番組が表示されない')
+  } else {
+    const expander = row.locator('button[aria-expanded]').first()
+    const expanderVisible = await expander
+      .waitFor({ timeout: 5000 })
+      .then(() => true)
+      .catch(() => false)
+    if (!expanderVisible) {
+      ng.push('[#779] 多行トースト用番組の展開ボタンが見つからない')
+    } else {
+      await expander.click()
+      await page.waitForTimeout(250)
+      const reserveAction = row.locator('[data-program-action="reserve"] button').first()
+      const reserveVisible = await reserveAction
+        .waitFor({ timeout: 5000 })
+        .then(() => true)
+        .catch(() => false)
+      if (!reserveVisible) {
+        ng.push('[#779] 多行トースト用番組の予約ボタンが見つからない')
+      } else {
+        await reserveAction.click()
+        const toast = page.locator('[aria-live="polite"] > div').last()
+        const action = toast.getByRole('button', { name: '取消', exact: true })
+        const toastVisible = await action
+          .waitFor({ timeout: 5000 })
+          .then(() => true)
+          .catch(() => false)
+        if (!toastVisible) {
+          ng.push('[#779] 予約後の多行トーストが表示されない')
+        } else {
+          const metrics = await toast.evaluate((el) => {
+            const rectOf = (node) => {
+              if (!(node instanceof HTMLElement)) return null
+              const rect = node.getBoundingClientRect()
+              return {
+                top: rect.top,
+                height: rect.height,
+                center: rect.top + rect.height / 2,
+              }
+            }
+            const message = el.querySelector(':scope > span')
+            const actions = el.querySelector(':scope > div')
+            const cancel = el.querySelector('button:not([aria-label="閉じる"])')
+            const close = el.querySelector('button[aria-label="閉じる"]')
+            return {
+              message: rectOf(message),
+              actions: rectOf(actions),
+              cancel: rectOf(cancel),
+              close: rectOf(close),
+            }
+          })
+          const messageHeight = metrics.message?.height ?? 0
+          log(
+            `  [#779] 多行トースト message=${metrics.message?.center?.toFixed(1) ?? '—'} ` +
+              `actions=${metrics.actions?.center?.toFixed(1) ?? '—'} ` +
+              `cancel=${metrics.cancel?.center?.toFixed(1) ?? '—'} ` +
+              `close=${metrics.close?.center?.toFixed(1) ?? '—'} ` +
+              `messageHeight=${messageHeight.toFixed(1)}px`,
+          )
+          if (metrics.message === null || metrics.actions === null || metrics.cancel === null || metrics.close === null) {
+            ng.push('[#779] 多行トーストの message / action / close の矩形が取得できない')
+          } else if (messageHeight <= 24) {
+            ng.push(
+              `[#779] 多行トーストが 1 行のまま（message height ${messageHeight.toFixed(1)}px）`,
+            )
+          } else {
+            const centerDelta = (a, b) => Math.abs(a.center - b.center)
+            const deltas = {
+              actions: centerDelta(metrics.message, metrics.actions),
+              cancel: centerDelta(metrics.message, metrics.cancel),
+              close: centerDelta(metrics.message, metrics.close),
+            }
+            const maxDelta = Math.max(...Object.values(deltas))
+            if (maxDelta > 1) {
+              ng.push(
+                `[#779] 多行トーストの縦中心が揃っていない（最大差 ${maxDelta.toFixed(1)}px ` +
+                  ` / actions ${deltas.actions.toFixed(1)}px / cancel ${deltas.cancel.toFixed(1)}px / ` +
+                  `close ${deltas.close.toFixed(1)}px）`,
+              )
+            }
+          }
+        }
+      }
     }
   }
   await context.close()
