@@ -239,7 +239,7 @@ export function ProgramReservationBody({
           <Link
             to="/reservations/$site/$programId"
             params={{ site: program.site, programId: String(program.programId) }}
-            className="text-primary underline-offset-2 hover:underline"
+            className="inline-flex min-h-6 items-center text-primary underline-offset-2 hover:underline"
           >
             予約の設定
           </Link>

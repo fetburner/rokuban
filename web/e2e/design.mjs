@@ -30,6 +30,8 @@
 //      - Chip / 録画タブ / チャンネル候補 / 日付セルの focus-visible リングが
 //        Button と同じ --ring の実画素で出るか
 //      - Button size="sm" と容量不足バッジの当たり判定が 24px 以上か
+//      - 主要 6 画面の button / link / input / select 等を実測し、24px 未満を
+//        ポインタ別に列挙して落とすか（標的間の実際の間隔も併記する）
 //   ⑤ 録画一覧の行リンクを Enter で開いて詳細（/recordings/$id）へ遷移し、
 //      詳細でキーボードの Tab だけで `<video>` に到達できるか（`tabIndex={-1}` を
 //      付けると jsdom の focus spy は通り続けるが実ブラウザの Tab 走査から外れる）
@@ -566,7 +568,7 @@ function apiHandler({
     }
     if (/\/overlaps$/.test(p)) return json({ count: 0, reservations: [] })
     if (/\/programs\/\d+$/.test(p)) return json({ extended: {}, audios: [] })
-    if (toastLayout && /\/intent$/.test(p)) return route.fulfill({ status: 204 })
+    if (/\/intent$/.test(p)) return route.fulfill({ status: 204 })
     if (/\/reservation$/.test(p)) return route.fulfill({ status: 404, contentType: 'application/json', body: '{"error":"not found"}' })
     return json([])
   }
@@ -780,6 +782,15 @@ const mobile = viewports[1]
  */
 const mobileWide = { name: 'mobile-wide', width: 390, height: 844 }
 
+const INTERACTIVE_TARGET_SELECTOR =
+  'button, a[href], [role="button"], [role="switch"], input, select, summary'
+const INTERACTIVE_TARGET_MIN_PX = 24
+const targetScreenNames = ['programs', 'search', 'reservations', 'recordings', 'rules', 'live']
+const targetPointerProfiles = [
+  { name: 'fine', pointer: 'fine', viewport: desktop },
+  { name: 'coarse', pointer: 'coarse', viewport: mobile },
+]
+
 rmSync(OUT_DIR, { recursive: true, force: true })
 mkdirSync(OUT_DIR, { recursive: true })
 
@@ -792,16 +803,22 @@ let checkedColorSchemeChange = false
 
 /** open は 1 ページを開いてスタブ・時刻・テーマを整えるところまでやる。 */
 async function open(viewport, theme, screen, opts = {}) {
+  const { pointer = 'fine', ...apiOpts } = opts
+  if (pointer !== 'fine' && pointer !== 'coarse') {
+    throw new Error(`未対応のポインタプロファイル: ${pointer}`)
+  }
   const context = await browser.newContext({
     viewport: { width: viewport.width, height: viewport.height },
     locale: 'ja-JP',
     timezoneId: 'Asia/Tokyo',
     colorScheme: theme,
     deviceScaleFactor: 2,
+    hasTouch: pointer === 'coarse',
+    isMobile: pointer === 'coarse',
   })
   const page = await context.newPage()
   await page.clock.setFixedTime(FIXED_NOW)
-  await installApiStubs(page, apiHandler(opts))
+  await installApiStubs(page, apiHandler(apiOpts))
   await page.goto(URL_BASE + screen.path, { waitUntil: 'domcontentloaded' })
   // ダークは `.dark` クラスで切り替わる（index.css の @custom-variant）。
   // アプリ自身が `prefers-color-scheme` を初回描画前に `html.dark` へ反映する
@@ -843,6 +860,191 @@ async function open(viewport, theme, screen, opts = {}) {
   await page.evaluate(() => document.fonts.ready)
   await page.waitForTimeout(400)
   return { context, page }
+}
+
+/**
+ * 実ブラウザで描画された操作標的を列挙する。
+ *
+ * `getBoundingClientRect()` は element 自身の矩形しか返さないため、祖先の
+ * overflow で実際には隠れている操作列をクリップする。容量不足バッジのように
+ * 見た目を変えず `::before` だけで当たり判定を広げる実装も、擬似要素の実寸を
+ * hit 寸法へ加える。jsdom の DOM 属性や class 名ではなく、ブラウザがレイアウト
+ * した値だけを判定へ使う。
+ */
+async function measureInteractiveTargets(page, label) {
+  const result = await page.evaluate(
+    ({ selector }) => {
+      const clippedRect = (element) => {
+        const raw = element.getBoundingClientRect()
+        let left = raw.left
+        let right = raw.right
+        let top = raw.top
+        let bottom = raw.bottom
+
+        for (let parent = element.parentElement; parent !== null; parent = parent.parentElement) {
+          const style = getComputedStyle(parent)
+          if (
+            ['hidden', 'clip', 'auto', 'scroll'].includes(style.overflowX) ||
+            ['hidden', 'clip', 'auto', 'scroll'].includes(style.overflow)
+          ) {
+            const rect = parent.getBoundingClientRect()
+            left = Math.max(left, rect.left)
+            right = Math.min(right, rect.right)
+          }
+          if (
+            ['hidden', 'clip', 'auto', 'scroll'].includes(style.overflowY) ||
+            ['hidden', 'clip', 'auto', 'scroll'].includes(style.overflow)
+          ) {
+            const rect = parent.getBoundingClientRect()
+            top = Math.max(top, rect.top)
+            bottom = Math.min(bottom, rect.bottom)
+          }
+        }
+
+        const width = right - left
+        const height = bottom - top
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+          return null
+        }
+        return { left, right, top, bottom, width, height }
+      }
+
+      const isHidden = (element) => {
+        for (let current = element; current !== null; current = current.parentElement) {
+          const style = getComputedStyle(current)
+          if (
+            style.display === 'none' ||
+            style.visibility === 'hidden' ||
+            style.visibility === 'collapse'
+          ) {
+            return true
+          }
+        }
+        return false
+      }
+
+      const isVisuallyHidden = (element) => {
+        const style = getComputedStyle(element)
+        return (
+          (element.classList.contains('sr-only') && !element.matches(':focus')) ||
+          (style.width === '1px' &&
+            style.height === '1px' &&
+            style.overflow === 'hidden' &&
+            style.clip !== 'auto' &&
+            style.clip !== 'none')
+        )
+      }
+
+      const pseudoExtent = (element, pseudo) => {
+        const style = getComputedStyle(element, pseudo)
+        if (
+          style.content === 'none' ||
+          style.display === 'none' ||
+          style.visibility === 'hidden' ||
+          !['absolute', 'fixed'].includes(style.position)
+        ) {
+          return { width: 0, height: 0 }
+        }
+        const width = Number.parseFloat(style.width)
+        const height = Number.parseFloat(style.height)
+        return {
+          width: Number.isFinite(width) ? width : 0,
+          height: Number.isFinite(height) ? height : 0,
+        }
+      }
+
+      const accessibleLabel = (element) => {
+        const candidates = [
+          element.getAttribute('aria-label'),
+          element.getAttribute('placeholder'),
+          element.getAttribute('title'),
+          element.getAttribute('data-testid'),
+          element.textContent?.replace(/\s+/g, ' ').trim(),
+        ]
+        return (candidates.find((value) => value !== null && value !== '') ?? '(無名)').slice(0, 80)
+      }
+
+      const targets = Array.from(document.querySelectorAll(selector))
+        .filter((element) => {
+          if (element instanceof HTMLInputElement && element.type === 'hidden') return false
+          // Skip link はキーボードフォーカス時にだけ通常サイズへ戻る。常時
+          // sr-only の矩形を標的サイズの失敗にせず、既存の④-Aで Tab 後の
+          // 実寸（かつ main への到達）を別途固定する。
+          if (isVisuallyHidden(element)) return false
+          return !isHidden(element)
+        })
+        .map((element) => {
+          const rect = clippedRect(element)
+          if (rect === null) return null
+          const before = pseudoExtent(element, '::before')
+          const after = pseudoExtent(element, '::after')
+          const role = element.getAttribute('role')
+          const position = getComputedStyle(element).position
+          return {
+            tag: element.tagName.toLowerCase(),
+            role,
+            label: accessibleLabel(element),
+            visualWidth: rect.width,
+            visualHeight: rect.height,
+            hitWidth: Math.max(rect.width, before.width, after.width),
+            hitHeight: Math.max(rect.height, before.height, after.height),
+            left: rect.left,
+            right: rect.right,
+            top: rect.top,
+            bottom: rect.bottom,
+            overlay: position === 'absolute' || position === 'fixed',
+          }
+        })
+        .filter((target) => target !== null)
+
+      const edgeGap = (a, b) => {
+        const horizontal = Math.max(a.left - b.right, b.left - a.right, 0)
+        const vertical = Math.max(a.top - b.bottom, b.top - a.bottom, 0)
+        return Math.hypot(horizontal, vertical)
+      }
+
+      let minimumGap = null
+      let overlapPairs = 0
+      for (let i = 0; i < targets.length; i += 1) {
+        for (let j = i + 1; j < targets.length; j += 1) {
+          const gap = edgeGap(targets[i], targets[j])
+          if (minimumGap === null || gap < minimumGap) minimumGap = gap
+          if (gap === 0) overlapPairs += 1
+        }
+      }
+
+      return { targets, minimumGap, overlapPairs }
+    },
+    { selector: INTERACTIVE_TARGET_SELECTOR },
+  )
+
+  const undersized = result.targets.filter(
+    (target) =>
+      target.hitWidth < INTERACTIVE_TARGET_MIN_PX || target.hitHeight < INTERACTIVE_TARGET_MIN_PX,
+  )
+  log(
+    `  [${label}] 操作標的=${result.targets.length} 件 ` +
+      `最小間隔=${result.minimumGap === null ? '—' : `${result.minimumGap.toFixed(1)}px`} ` +
+      `重なり=${result.overlapPairs} 件 ` +
+      `判定=${undersized.length === 0 ? 'OK' : 'NG'}`,
+  )
+  for (const target of result.targets) {
+    log(
+      `    ${target.tag}${target.role === null ? '' : `[role=${target.role}]`} 「${target.label}」 ` +
+        `visual=${target.visualWidth.toFixed(1)}×${target.visualHeight.toFixed(1)}px ` +
+        `hit=${target.hitWidth.toFixed(1)}×${target.hitHeight.toFixed(1)}px`,
+    )
+  }
+  for (const target of undersized) {
+    ng.push(
+      `[${label}] 「${target.label}」の操作標的が ${target.hitWidth.toFixed(1)}×${target.hitHeight.toFixed(1)}px ` +
+        `(基準 ${INTERACTIVE_TARGET_MIN_PX}×${INTERACTIVE_TARGET_MIN_PX}px 未満)`,
+    )
+  }
+  if (result.targets.length === 0) {
+    ng.push(`[${label}] 操作標的を 1 件も列挙できない`)
+  }
+  return result
 }
 
 /**
@@ -3219,6 +3421,111 @@ for (const theme of themes) {
         }
       }
     }
+  }
+  await context.close()
+}
+
+// 主要画面の実装された操作標的を、ポインタの性質ごとに同じ実ブラウザで列挙する。
+// ここでは 44px を一律に要求しない。密度を保った管理画面の共通下限は 24px とし、
+// 日付・チャンネル候補・行の主操作・ライブチャンネルの 44px と、モバイルナビの
+// 幅44px・高さ56pxは下記の個別契約で固定する。
+for (const profile of targetPointerProfiles) {
+  for (const screenName of targetScreenNames) {
+    const { context, page } = await open(
+      profile.viewport,
+      'light',
+      screenOf(screenName),
+      { pointer: profile.pointer },
+    )
+    const measurement = await measureInteractiveTargets(page, `${profile.name}/${screenName}`)
+    if (
+      screenName === 'recordings' &&
+      !measurement.targets.some((target) => target.tag === 'summary')
+    ) {
+      ng.push(`[${profile.name}/recordings] <summary> を操作標的として列挙できない`)
+    }
+    await context.close()
+  }
+}
+
+/** 役割ごとの個別寸法を採用している標的の実寸を固定する。 */
+async function checkMinimumTargetSize(locator, label, minimumWidth, minimumHeight = minimumWidth) {
+  const count = await locator.count()
+  if (count === 0) {
+    ng.push(`${label} が見つからず標的サイズを判定できない`)
+    return
+  }
+  for (let index = 0; index < count; index += 1) {
+    const box = await locator.nth(index).boundingBox()
+    log(
+      `  ${label}[${index + 1}/${count}]: ` +
+        `${box === null ? '取得不能' : `${box.width.toFixed(1)}×${box.height.toFixed(1)}px`} ` +
+        `(基準 ${minimumWidth}×${minimumHeight}px)`,
+    )
+    if (box === null || box.width < minimumWidth || box.height < minimumHeight) {
+      ng.push(
+        `${label}[${index + 1}] が ${box === null ? '取得不能' : `${box.width.toFixed(1)}×${box.height.toFixed(1)}px`} ` +
+          `(基準 ${minimumWidth}×${minimumHeight}px 未満)`,
+      )
+    }
+  }
+}
+
+// 高頻度の主操作は、共通下限とは別に 44px 高の配置契約を保つ
+// （モバイル主ナビだけは高さ56px）。
+{
+  const { context, page } = await open(mobile, 'light', screenOf('programs'), { pointer: 'coarse' })
+  await checkMinimumTargetSize(
+    page.locator('button[aria-label*="月"][aria-label*="("]'),
+    '日付セル',
+    24,
+    44,
+  )
+  const channelTrigger = page.getByRole('button', { name: /^チャンネル:/ }).first()
+  await checkMinimumTargetSize(channelTrigger, 'チャンネルピッカー', 44)
+  await channelTrigger.click()
+  const channelPopup = page.getByRole('dialog', { name: 'チャンネル' })
+  await channelPopup.waitFor({ timeout: 5000 }).catch(() => {})
+  await checkMinimumTargetSize(channelPopup.getByRole('button'), 'チャンネル候補', 44)
+  await context.close()
+}
+
+{
+  const { context, page } = await open(mobile, 'light', screenOf('live'), { pointer: 'coarse' })
+  const bottomNav = page.getByTestId('bottom-nav')
+  const bottomLinks = bottomNav.getByRole('link')
+  const bottomItemCount = await bottomNav.locator('li').count()
+  log(`  モバイル主ナビの項目本数=${bottomItemCount}`)
+  if (bottomItemCount !== 4) ng.push(`モバイル主ナビの項目本数が 4 ではない（${bottomItemCount}）`)
+  await checkMinimumTargetSize(bottomLinks, 'モバイル主ナビ', 44, 56)
+  await checkMinimumTargetSize(bottomNav.getByRole('button'), 'モバイル「その他」', 44, 56)
+  await checkMinimumTargetSize(page.locator('nav[aria-label="チャンネル一覧"] a'), 'ライブチャンネル', 44)
+  await context.close()
+}
+
+// タッチで展開した番組行の予約 / ライブ操作と、#729 のトースト action / close
+// も同じ実寸判定に載せる。予約 API はこのスクリプトのスタブで 204 を返す。
+{
+  const { context, page } = await open(mobile, 'light', screenOf('programs'), { pointer: 'coarse' })
+  const row = page.locator('li[data-program-id]').filter({ hasText: '大相撲中継' }).first()
+  const expander = row.locator('button[aria-expanded]').first()
+  if ((await expander.count()) === 0) {
+    ng.push('番組行の展開ボタンが見つからず行主操作を判定できない')
+  } else {
+    await expander.click()
+    await page.waitForTimeout(250)
+    const reserveAction = row.locator('[data-program-action="reserve"] button').first()
+    await checkMinimumTargetSize(reserveAction, '番組行の予約操作', 44)
+    const liveAction = row.locator('[data-program-action="live"] a, [data-program-action="live"] button')
+    if ((await liveAction.count()) > 0) {
+      await checkMinimumTargetSize(liveAction.first(), '番組行のライブ操作', 44)
+    }
+    await reserveAction.click()
+    const toast = page.locator('[aria-live="polite"] > div').last()
+    await toast.getByRole('button', { name: '取消', exact: true }).waitFor({ timeout: 5000 }).catch(() => {})
+    await checkMinimumTargetSize(toast.getByRole('button', { name: '取消', exact: true }), 'トースト action', 32)
+    await checkMinimumTargetSize(toast.getByRole('button', { name: '閉じる', exact: true }), 'トースト close', 28)
+    await measureInteractiveTargets(page, 'coarse/programs/展開行+トースト')
   }
   await context.close()
 }
