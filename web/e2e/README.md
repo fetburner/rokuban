@@ -284,13 +284,13 @@ Node の ESM スクリプトから `../src/api/zod.ts` を直接 import でき�
   `disconnectedBannerDelayMs`（10 秒）分は実時間で待つ
 - 測ったコントラストの表。**数値の権威はこの出力**で、docs には転記しない
 - `④-A` の操作標的計測。fine のデスクトップと coarse の 360px モバイルで、主要 6 画面
-  の `button, a[href], [role="button"], [role="switch"], input, select` を実際の描画矩形から
+  の `button, a[href], [role="button"], [role="switch"], input, select, summary` を実際の描画矩形から
   列挙する。各標的の visual / hit 寸法、最小エッジ間隔、意図的な重なり件数を出力し、
   実効 hit 寸法が 24×24 CSS px 未満なら exit 1 にする。`::before` / `::after` による
   当たり判定の拡張と祖先の overflow によるクリップを含めるので、クラス名だけの
   推測にならない。未フォーカスの sr-only スキップリンクは既存の Tab 後計測で扱う。
-  日付セル・チャンネル候補・行主操作・ライブチャンネル・モバイルナビは、別途 44px
-  高（モバイルナビは 56px）を、#729 のトースト action は 32px、close は 28px を個別に
+  日付セル・チャンネル候補・行主操作・ライブチャンネルは別途 44px 高、モバイルナビは
+  幅44px・高さ56pxを、#729 のトースト action は 32px、close は 28px を個別に
   固定する。全面リンク等の意図的な重なりがあるため、間隔に全画面一律の閾値は置かず、
   配置の意味は `docs/frontend/reservations.md` に従う
 - モバイルの「その他」ポップオーバー（`components/app-shell.tsx` の `MoreMenu`）

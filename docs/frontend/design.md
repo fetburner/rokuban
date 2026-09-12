@@ -173,7 +173,7 @@ chip（`components/ui/chip.tsx`）・day-strip（`components/day-strip.tsx`）�
 `jsdom` の DOM 属性や Tailwind のクラス名から推測せず、`web/e2e/design.mjs` の
 ④-A が Playwright の実ブラウザで `getBoundingClientRect()` を読み、主要画面
 （番組・検索・予約・録画・ルール・ライブ）の実際に表示された標的を列挙する。
-対象は `button, a[href], [role="button"], [role="switch"], input, select`。
+対象は `button, a[href], [role="button"], [role="switch"], input, select, summary`。
 `display:none` / `visibility:hidden` / 祖先の `overflow` で隠れたものは除外し、
 行の操作列のように折りたたまれた要素を「見えない標的」として数えない。
 容量不足バッジの `::before` のような見た目と当たり判定が異なる実装は、擬似要素の

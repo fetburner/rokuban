@@ -758,7 +758,7 @@ const mobile = viewports[1]
 const mobileWide = { name: 'mobile-wide', width: 390, height: 844 }
 
 const INTERACTIVE_TARGET_SELECTOR =
-  'button, a[href], [role="button"], [role="switch"], input, select'
+  'button, a[href], [role="button"], [role="switch"], input, select, summary'
 const INTERACTIVE_TARGET_MIN_PX = 24
 const targetScreenNames = ['programs', 'search', 'reservations', 'recordings', 'rules', 'live']
 const targetPointerProfiles = [
@@ -3299,7 +3299,8 @@ for (const theme of themes) {
 
 // 主要画面の実装された操作標的を、ポインタの性質ごとに同じ実ブラウザで列挙する。
 // ここでは 44px を一律に要求しない。密度を保った管理画面の共通下限は 24px とし、
-// 日付・チャンネル候補・行の主操作・モバイルナビの 44px は下記の個別契約で固定する。
+// 日付・チャンネル候補・行の主操作・ライブチャンネルの 44px と、モバイルナビの
+// 幅44px・高さ56pxは下記の個別契約で固定する。
 for (const profile of targetPointerProfiles) {
   for (const screenName of targetScreenNames) {
     const { context, page } = await open(
@@ -3308,12 +3309,18 @@ for (const profile of targetPointerProfiles) {
       screenOf(screenName),
       { pointer: profile.pointer },
     )
-    await measureInteractiveTargets(page, `${profile.name}/${screenName}`)
+    const measurement = await measureInteractiveTargets(page, `${profile.name}/${screenName}`)
+    if (
+      screenName === 'recordings' &&
+      !measurement.targets.some((target) => target.tag === 'summary')
+    ) {
+      ng.push(`[${profile.name}/recordings] <summary> を操作標的として列挙できない`)
+    }
     await context.close()
   }
 }
 
-/** 44px を役割として採用している標的の実寸を固定する。 */
+/** 役割ごとの個別寸法を採用している標的の実寸を固定する。 */
 async function checkMinimumTargetSize(locator, label, minimumWidth, minimumHeight = minimumWidth) {
   const count = await locator.count()
   if (count === 0) {
@@ -3336,7 +3343,8 @@ async function checkMinimumTargetSize(locator, label, minimumWidth, minimumHeigh
   }
 }
 
-// 高頻度の主操作は、共通下限とは別に既存の 44px 配置契約を保つ。
+// 高頻度の主操作は、共通下限とは別に 44px 高の配置契約を保つ
+// （モバイル主ナビだけは高さ56px）。
 {
   const { context, page } = await open(mobile, 'light', screenOf('programs'), { pointer: 'coarse' })
   await checkMinimumTargetSize(
@@ -3361,8 +3369,8 @@ async function checkMinimumTargetSize(locator, label, minimumWidth, minimumHeigh
   const bottomItemCount = await bottomNav.locator('li').count()
   log(`  モバイル主ナビの項目本数=${bottomItemCount}`)
   if (bottomItemCount !== 4) ng.push(`モバイル主ナビの項目本数が 4 ではない（${bottomItemCount}）`)
-  await checkMinimumTargetSize(bottomLinks, 'モバイル主ナビ', 44)
-  await checkMinimumTargetSize(bottomNav.getByRole('button'), 'モバイル「その他」', 44)
+  await checkMinimumTargetSize(bottomLinks, 'モバイル主ナビ', 44, 56)
+  await checkMinimumTargetSize(bottomNav.getByRole('button'), 'モバイル「その他」', 44, 56)
   await checkMinimumTargetSize(page.locator('nav[aria-label="チャンネル一覧"] a'), 'ライブチャンネル', 44)
   await context.close()
 }
