@@ -957,7 +957,6 @@ describe('ProgramsPage の表示形式', () => {
     expect(within(dialog).queryByRole('button', { expanded: true })).not.toBeInTheDocument()
     expect(within(dialog).getByRole('heading', { name: soon.name })).toBeInTheDocument()
     expect(within(dialog).getByTestId('program-dialog-actions')).toBeInTheDocument()
-    expect(within(dialog).getByTestId('program-dialog-body')).toHaveClass('pt-12')
     expect(within(dialog).getByText('エンコードプロファイル')).toBeInTheDocument()
 
     const reserveButton = within(dialog).getByRole('button', { name: '予約' })

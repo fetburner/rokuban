@@ -50,7 +50,7 @@ export function ProgramDialogPanel({
     <div data-testid="program-dialog-panel" className="flex flex-col gap-5">
       <div
         data-testid="program-dialog-summary-row"
-        className="flex min-w-0 items-stretch gap-3"
+        className="flex min-w-0 items-start gap-3"
       >
         <ProgramReservationSummary
           program={program}
@@ -63,11 +63,11 @@ export function ProgramDialogPanel({
           }
         />
 
-        {/* 本文より前に届く操作列だが、詳細と一緒に流れ、閉じるボタンのように固定はしない。 */}
+          {/* 閉じるボタンの直下から始める操作列。詳細と一緒に流れ、固定はしない。 */}
         <div
           data-testid="program-dialog-actions"
           className={cn(
-            'flex shrink-0 items-center justify-center overflow-hidden border-l border-border box-content',
+            'mt-4 flex shrink-0 items-center justify-center overflow-hidden border-l border-border box-content',
             draft.showLiveLink ? 'w-[7.75rem]' : 'w-20',
           )}
         >
