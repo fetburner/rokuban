@@ -14,9 +14,9 @@ import { cn } from '@/lib/utils'
  *
  * `ProgramRow` はリスト専用の段階的開示と操作列を持つため、ダイアログで再利用しない。
  * 予約の意味・詳細・encode 規則・ボタンは chrome なしの共有部品を使い、ここでは
- * ダイアログの見出し・要約行右端の固定操作列・余白だけを決める。操作列を要約直下に
- * 横断させず題名を第一眼に読めるようにしながら、開いた時点で 1 操作・44px 以上の
- * タップ領域を保つため、通常 80px、放送中 124px の幅を選ぶ。
+ * ダイアログの見出し・要約行右側の固定操作列・余白だけを決める。閉じるボタンの
+ * 占有領域を避けて操作列を左へ寄せ、タイトルと上端を揃えながら、開いた時点で
+ * 1 操作・44px 以上のタップ領域を保つため、通常 80px、放送中 124px の幅を選ぶ。
  */
 export function ProgramDialogPanel({
   program,
@@ -59,15 +59,15 @@ export function ProgramDialogPanel({
           reserved={reserved}
           overlaps={overlaps}
           title={
-            <DialogTitle className="pr-14 break-words">{program.name}</DialogTitle>
+            <DialogTitle className="break-words">{program.name}</DialogTitle>
           }
         />
 
-          {/* 閉じるボタンの直下から始める操作列。詳細と一緒に流れ、固定はしない。 */}
+        {/* 閉じるボタンの左側へ寄せた操作列。詳細と一緒に流れ、固定はしない。 */}
         <div
           data-testid="program-dialog-actions"
           className={cn(
-            'mt-4 flex shrink-0 items-center justify-center overflow-hidden border-l border-border box-content',
+            'mr-5 flex shrink-0 items-center justify-center overflow-hidden border-l border-border box-content',
             draft.showLiveLink ? 'w-[7.75rem]' : 'w-20',
           )}
         >

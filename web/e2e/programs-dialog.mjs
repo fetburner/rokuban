@@ -5,7 +5,7 @@
 //   - セルをクリックすると番組名でラベル付けされたダイアログが開く
 //   - hover なしでダイアログ内の予約ボタンが可視・操作可能で、1 回のクリックで予約できる
 //   - Escape / overlay クリックで閉じ、クリック元セルへフォーカスが戻る
-//   - 操作列が要約行の右端に収まり、通常 81px / 放送中 125px である
+//   - 操作列が閉じるボタンの左側に収まり、通常 81px / 放送中 125px である
 //   - 通常 / 放送中のダイアログを e2e/screenshots/ に保存する
 //
 // API は `page.route` で差し替える。mirakc・実チューナー・DB は要らない。
@@ -186,14 +186,17 @@ const summaryBox = await summaryRow.boundingBox()
 const actionsBox = await actions.boundingBox()
 log(`  未放送の操作列: ${actionsBox ? `${actionsBox.width}px` : '見つからない'}`)
 if (!summaryBox || !actionsBox || Math.abs(actionsBox.width - 81) >= 1) {
-  ng.push(`未放送の操作列が要約行右端の 81px に収まっていない（幅=${actionsBox?.width ?? '不明'}px）`)
+  ng.push(`未放送の操作列が閉じるボタン左側の 81px に収まっていない（幅=${actionsBox?.width ?? '不明'}px）`)
 }
 if (
   !summaryBox ||
   !actionsBox ||
-  Math.abs(actionsBox.x + actionsBox.width - (summaryBox.x + summaryBox.width)) >= 1
+  Math.abs(actionsBox.y - summaryBox.y) >= 1
 ) {
-  ng.push('未放送の操作列が要約行の右端に揃っていない')
+  ng.push('未放送の操作列の上端が要約行に揃っていない')
+}
+if (!closeBox || !actionsBox || actionsBox.x + actionsBox.width > closeBox.x) {
+  ng.push('未放送の操作列が閉じるボタンの左側へ避けられていない')
 }
 if ((await cell.getAttribute('aria-pressed')) !== 'true') {
   ng.push('モーダル表示中も選択セルのハイライトが維持されていない')
@@ -338,16 +341,21 @@ if (airingReserveBox && airingCloseBox && boxesOverlap(airingReserveBox, airingC
   ng.push('放送中の予約ボタンと閉じるボタンが重なっている')
 }
 if (!airingSummaryBox || !airingActionsBox || Math.abs(airingActionsBox.width - 125) >= 1) {
-  ng.push(`放送中の操作列が要約行右端の 125px に収まっていない（幅=${airingActionsBox?.width ?? '不明'}px）`)
+  ng.push(`放送中の操作列が閉じるボタン左側の 125px に収まっていない（幅=${airingActionsBox?.width ?? '不明'}px）`)
 }
 if (
   !airingSummaryBox ||
   !airingActionsBox ||
-  Math.abs(
-    airingActionsBox.x + airingActionsBox.width - (airingSummaryBox.x + airingSummaryBox.width),
-  ) >= 1
+  Math.abs(airingActionsBox.y - airingSummaryBox.y) >= 1
 ) {
-  ng.push('放送中の操作列が要約行の右端に揃っていない')
+  ng.push('放送中の操作列の上端が要約行に揃っていない')
+}
+if (
+  !airingCloseBox ||
+  !airingActionsBox ||
+  airingActionsBox.x + airingActionsBox.width > airingCloseBox.x
+) {
+  ng.push('放送中の操作列が閉じるボタンの左側へ避けられていない')
 }
 await airingDialog.screenshot({ path: path.join(SCREENSHOT_DIR, 'program-dialog-airing.png') })
 

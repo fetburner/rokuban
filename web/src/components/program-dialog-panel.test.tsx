@@ -30,7 +30,7 @@ function stubFetch(live = false) {
 }
 
 describe('ProgramDialogPanel', () => {
-  it('ProgramRow の chrome なしで見出し・詳細・要約行右端の予約操作を描く', async () => {
+  it('ProgramRow の chrome なしで見出し・詳細・閉じるボタン左側の予約操作を描く', async () => {
     stubFetch()
     renderInRouter(
       <Dialog open>
@@ -54,7 +54,9 @@ describe('ProgramDialogPanel', () => {
     const summaryRow = within(dialog).getByTestId('program-dialog-summary-row')
     const actions = within(summaryRow).getByTestId('program-dialog-actions')
     expect(actions.parentElement).toBe(summaryRow)
-    expect(actions).toHaveClass('shrink-0', 'border-l', 'box-content', 'w-20')
+    expect(actions).toHaveClass('shrink-0', 'border-l', 'box-content', 'mr-5', 'w-20')
+    expect(actions).not.toHaveClass('mt-4')
+    expect(within(dialog).getByRole('heading', { name: program.name })).not.toHaveClass('pr-14')
     expect(within(actions).getByRole('button', { name: '予約' })).toHaveClass(
       'min-h-11',
       'w-full',
@@ -62,7 +64,7 @@ describe('ProgramDialogPanel', () => {
     expect(await within(dialog).findByText('エンコードプロファイル')).toBeInTheDocument()
   })
 
-  it('放送中も同じ要約行の右端でライブと予約を操作できる', async () => {
+  it('放送中も閉じるボタンを避けた同じ要約行でライブと予約を操作できる', async () => {
     stubFetch(true)
     const airingProgram = {
       ...program,
@@ -90,7 +92,8 @@ describe('ProgramDialogPanel', () => {
     await within(dialog).findByRole('link', { name: 'ライブで見る' })
     const summaryRow = within(dialog).getByTestId('program-dialog-summary-row')
     const actions = within(summaryRow).getByTestId('program-dialog-actions')
-    expect(actions).toHaveClass('shrink-0', 'border-l', 'box-content', 'w-[7.75rem]')
+    expect(actions).toHaveClass('shrink-0', 'border-l', 'box-content', 'mr-5', 'w-[7.75rem]')
+    expect(actions).not.toHaveClass('mt-4')
     expect(within(actions).getByRole('link', { name: 'ライブで見る' })).toHaveClass(
       'min-h-11',
       'min-w-11',
