@@ -134,6 +134,14 @@ NID/SID は放送規格のスコープでサイトに依存しないため、地
 
 サイト名は安定識別子として扱い、オンラインのリネームはサポートしない（SQL 付け替えを伴う運用作業）。無断リネームは旧サイトの射影が stale になり導出削除として現れるため、サーキットブレーカーが受け止める。
 
+#### 録画・ingest 完了後の fulfilled 削除
+
+予約は mirakc に同期すべき schedule を表す。原本 `media_asset`（`kind='original'`、state 不問）が存在する放送イベントは録画と ingest が完了しており、`epg.retention_grace`（既定 24h）を待たずに desired から外す。判定は `collectDesired` が放送イベントキーで行い、同じパスの後段で `DeleteFulfilledReservationsBySiteAndProgramIDs` が削除する（`internal/db/queries/ruler.sql` の `ListFulfilledProgramIDsBySite`）。原本を後から tombstone しても、録画・ingest が完了した事実は戻らないので fulfilled のままだ（`keepOriginal=until_encoded` でエンコード後に原本を消す運用が予約を再表示させないための回帰。`TestRunPass_FulfilledReservationTombstonedOriginalStillRemoved`）。
+
+fulfilled 削除は観測された事実（ingest 完了）に基づく確定的な寿命終了で、EPG 欠損に起因する導出削除ではない。したがって `program_investments`（record 意図・overrides）や EPG 射影の残存に依存せず、大量削除サーキットブレーカーの対象にもならない（`TestRunPass_FulfilledWithInvestmentStillRemoved` / `TestRunPass_FulfilledDeletesDoNotCountTowardBreaker`）。ingest が原本 `media_asset` の INSERT と同じ transaction で `recording_encode_policy` を凍結するため、この削除が走るのは凍結の lookup より後になる（凍結との競合は生じない）。
+
+録画が finished でも原本がまだ無い録画（ingest 待ち・転送中）と欠測（`never_scheduled_events`）は fulfilled ではなく、従来どおり予約に残して要確認に含める（`TestRunPass_UnfulfilledReservationRemainsUntilOriginalCommitted`）。
+
 #### 番組終了後の GC
 
 `reservations` / `program_intents` / `program_overrides` の物理削除（GC）と `never_scheduled_events` の物理削除は、ruler の 1 パス内で全サイト評価の後に 1 回だけ行う（`internal/ruler/ruler.go` の `runGC`）。**DELETE は 2 本ある。** 1 本目は `program_snapshots` が対象で、`start_at + duration_ms < now() - 猶予` を満たす行を消す（`reservations` の active/detached/orphaned を問わない）。`(site, program_id)` FK が `ON DELETE CASCADE` なので、`reservations` / `program_intents` / `program_overrides` はスナップショットと一緒に落ちる。猶予には既存の `epg.retention_grace`（既定 24h、EPG プロジェクションのローリングウィンドウと同じ設定）をそのまま流用する。専用の設定項目を増やさず、「EPG から消える」と「予約・意図として GC される」の寿命を揃える。2 本目は `never_scheduled_events` が対象で、`program_snapshots` への FK を持たないため 1 本目の CASCADE では消えず、`retention_grace + 30日` を超えた行だけを独立に刈る。この表の読者（`never_recorded` の導出・容量需要・重複判定）は通常どおり `reservations` 行を経由して届くが、`program_id` 再利用で新番組が旧番組と同じキーから到達可能になる経路ではこの寿命差が実害を持つ。`program_id` 再利用の発生頻度と判定基準は未検証で、ruler は現在検出だけを行う。`recordings` はこの 2 本の削除で録画履歴（recordings/media_assets）を失わない。
