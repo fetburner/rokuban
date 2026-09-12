@@ -128,7 +128,16 @@ describe('ToastProvider', () => {
     fireEvent.click(screen.getByText('info を出す'))
     fireEvent.click(screen.getByText('action 付きを出す'))
 
-    fireEvent.keyDown(window, { key: 't', altKey: true })
+    fireEvent.keyDown(window, { key: 't', code: 'KeyT', altKey: true })
+
+    expect(screen.getByRole('button', { name: '取消' })).toHaveFocus()
+  })
+
+  it('macOS の Alt+T（key が記号化される場合）でもフォーカスを移す', () => {
+    renderHarness()
+    fireEvent.click(screen.getByText('action 付きを出す'))
+
+    fireEvent.keyDown(window, { key: '†', code: 'KeyT', altKey: true })
 
     expect(screen.getByRole('button', { name: '取消' })).toHaveFocus()
   })
@@ -138,7 +147,7 @@ describe('ToastProvider', () => {
     fireEvent.click(screen.getByText('action 付きを出す'))
     fireEvent.click(screen.getByText('2 通目の info を出す'))
 
-    fireEvent.keyDown(window, { key: 't', altKey: true })
+    fireEvent.keyDown(window, { key: 't', code: 'KeyT', altKey: true })
 
     const closeButtons = screen.getAllByRole('button', { name: '閉じる' })
     expect(closeButtons[1]).toHaveFocus()
@@ -147,7 +156,7 @@ describe('ToastProvider', () => {
   it('トーストが無いとき Alt+T は何もしない', () => {
     renderHarness()
 
-    fireEvent.keyDown(window, { key: 't', altKey: true })
+    fireEvent.keyDown(window, { key: 't', code: 'KeyT', altKey: true })
 
     expect(document.activeElement).toBe(document.body)
   })
@@ -183,7 +192,7 @@ describe('ToastProvider', () => {
 
     for (const target of targets) {
       target.focus()
-      fireEvent.keyDown(target, { key: 't', altKey: true })
+      fireEvent.keyDown(target, { key: 't', code: 'KeyT', altKey: true })
       expect(target).toHaveFocus()
     }
   })
@@ -193,9 +202,9 @@ describe('ToastProvider', () => {
     fireEvent.click(screen.getByText('info を出す'))
     const closeButton = screen.getByRole('button', { name: '閉じる' })
 
-    fireEvent.keyDown(window, { key: 't', altKey: true, ctrlKey: true })
+    fireEvent.keyDown(window, { key: 't', code: 'KeyT', altKey: true, ctrlKey: true })
     expect(closeButton).not.toHaveFocus()
-    fireEvent.keyDown(window, { key: 't', altKey: true, metaKey: true })
+    fireEvent.keyDown(window, { key: 't', code: 'KeyT', altKey: true, metaKey: true })
     expect(closeButton).not.toHaveFocus()
   })
 
@@ -205,7 +214,7 @@ describe('ToastProvider', () => {
     fireEvent.click(screen.getByText('info を出す'))
 
     await advance(3_000)
-    fireEvent.keyDown(window, { key: 't', altKey: true })
+    fireEvent.keyDown(window, { key: 't', code: 'KeyT', altKey: true })
     const closeButton = screen.getByRole('button', { name: '閉じる' })
     expect(closeButton).toHaveFocus()
 
@@ -261,7 +270,7 @@ describe('ToastProvider', () => {
     fireEvent.click(screen.getByText('予約する'))
     expect(screen.getByRole('button', { name: '取消' })).toBeInTheDocument()
 
-    fireEvent.keyDown(window, { key: 't', altKey: true })
+    fireEvent.keyDown(window, { key: 't', code: 'KeyT', altKey: true })
     expect(screen.getByRole('button', { name: '取消' })).toHaveFocus()
 
     fireEvent.click(screen.getByRole('button', { name: '設定' }))

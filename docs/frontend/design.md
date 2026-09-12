@@ -312,9 +312,8 @@ grep -rln --include='*.ts' --include='*.tsx' --include='*.css' 'scanlines' web/s
 
 ## トーストのキーボード到達性
 
-短命トーストへは Alt+T で移動し、action があれば先頭の action、無ければ閉じるボタンへ
-フォーカスする。input / textarea / select / contenteditable で入力中、または Ctrl / Cmd を
-併用しているときはフォーカスを奪わず、フォーカス中はタイマーを止める。
+短命トーストの action には Alt+T でキーボードからアクセスできる。Alt+T でフォーカスを
+移すことで、フォーカス中にタイマーを止める既存の一時停止もキーボードから利用できる。
 
 ## 角は立てる
 

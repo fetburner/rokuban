@@ -47,8 +47,8 @@ type PauseReason = 'hover' | 'focus'
  * ないため、閉じるボタンを押すまで残る。成功・情報だけがタイマーで消える。
  *
  * **キーボード到達性**: Alt+T で最新のトースト内の先頭の操作（action が無ければ
- * 閉じるボタン）へフォーカスを移す。フォーカス中はタイマーを止めるため、Alt+T
- * を WCAG 2.2.1 の Extend に使える明示的な操作とする（テスト名にも意図を残す）。
+ * 閉じるボタン）へフォーカスを移す。これにより、フォーカス中にタイマーを止める
+ * 既存の一時停止へキーボードから到達できる。
  */
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -160,7 +160,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key.toLowerCase() !== 't' || !event.altKey || event.ctrlKey || event.metaKey) {
+      if (event.code !== 'KeyT' || !event.altKey || event.ctrlKey || event.metaKey) {
         return
       }
       if (
