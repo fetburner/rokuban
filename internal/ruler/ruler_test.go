@@ -1036,6 +1036,221 @@ func TestRunPass_DisablingRuleDetachesReservationWithInvestment(t *testing.T) {
 	}
 }
 
+// fulfilled 予約は mirakc に同期する必要がなく、ruler の次パスで desired から
+// 外れて予約行も削除される（issue #769）。原本のコミットは ingest 完了の観測なので、
+// EPG の retention grace を待たずに予約の寿命を終える。
+func TestRunPass_FulfilledReservationIsRemovedWithoutGrace(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(-time.Hour).Truncate(time.Second)
+	const programID = 41001
+	insertProgram(t, pool, ctx, programID, "録画済み番組", start)
+
+	ruleID := insertRule(t, pool, ctx, "fulfilled", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "録画済み番組")
+
+	r := ruler.New([]string{testSite}, pool, nil)
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+	if !reservationExists(t, pool, ctx, programID) {
+		t.Fatal("reservation should exist before ingest completes")
+	}
+
+	insertFulfilledRecording(t, pool, ctx, programID, "active")
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass after ingest: %v", err)
+	}
+
+	if reservationExists(t, pool, ctx, programID) {
+		t.Fatal("fulfilled reservation should be removed without waiting for retention grace")
+	}
+}
+
+// 原本を後から tombstone しても、録画・ingest が完了した事実は戻らないので fulfilled
+// のまま削除される。エンコード後に原本を消す運用（keepOriginal=until_encoded）で、
+// 予約が再表示されてしまわないことを回帰で固定する。
+func TestRunPass_FulfilledReservationTombstonedOriginalStillRemoved(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(-time.Hour).Truncate(time.Second)
+	const programID = 41002
+	insertProgram(t, pool, ctx, programID, "録画済み番組", start)
+
+	ruleID := insertRule(t, pool, ctx, "fulfilled-tombstone", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "録画済み番組")
+
+	r := ruler.New([]string{testSite}, pool, nil)
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+	insertFulfilledRecording(t, pool, ctx, programID, "deleted")
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass after ingest (tombstoned original): %v", err)
+	}
+
+	if reservationExists(t, pool, ctx, programID) {
+		t.Fatal("reservation with a tombstoned original should still be fulfilled and removed")
+	}
+}
+
+// 反対方向: finished 録画が既にあっても原本（kind='original'）が無い間は fulfilled では
+// なく、予約が残る（ingest 待ち・転送中は要確認として予約一覧に残す）。
+func TestRunPass_UnfulfilledReservationRemainsUntilOriginalCommitted(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(-time.Hour).Truncate(time.Second)
+	const programID = 41003
+	insertProgram(t, pool, ctx, programID, "録画済み番組", start)
+
+	ruleID := insertRule(t, pool, ctx, "unfulfilled", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "録画済み番組")
+
+	r := ruler.New([]string{testSite}, pool, nil)
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+	// finished 録画だけ作り、原本 media_asset は作らない。
+	insertRecordingForTitle(t, pool, ctx, ruleID, start)
+
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass with finished recording but no original: %v", err)
+	}
+
+	if !reservationExists(t, pool, ctx, programID) {
+		t.Fatal("reservation without an original asset should remain (ingest not yet committed)")
+	}
+}
+
+// fulfilled 予約は program_investments（record 意図・overrides）があっても削除する。
+// desired の investment ∪ と fulfilled の減算の順序を正しく保ち、手動予約由来の投資が
+// 済み録画の予約を再生成しないことを固定する。
+func TestRunPass_FulfilledWithInvestmentStillRemoved(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(-time.Hour).Truncate(time.Second)
+	const programID = 41004
+	insertProgram(t, pool, ctx, programID, "録画済み番組", start)
+	insertProgramSnapshotDirect(t, pool, ctx, programID, "録画済み番組", start)
+
+	ruleID := insertRule(t, pool, ctx, "fulfilled-investment", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "録画済み番組")
+
+	// record 意図を残す（program_investments に行が残る）。
+	q := sqlcgen.New(pool)
+	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
+		Site: testSite, ProgramID: programID, Action: reservation.IntentRecord,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := ruler.New([]string{testSite}, pool, nil)
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+	if !reservationExists(t, pool, ctx, programID) {
+		t.Fatal("reservation should exist after the first pass (record intent)")
+	}
+	insertFulfilledRecording(t, pool, ctx, programID, "active")
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass after ingest (with investment): %v", err)
+	}
+
+	if reservationExists(t, pool, ctx, programID) {
+		t.Fatal("fulfilled reservation should be removed even when a record intent remains")
+	}
+}
+
+// fulfilled の一斉削除は録画完了という観測に基づく確定的な削除で、EPG 欠損に起因する
+// 導出削除ではない。大量に fulfilled になっても ruler の削除ブレーカーを発動させない。
+func TestRunPass_FulfilledDeletesDoNotCountTowardBreaker(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	start := time.Now().Add(-time.Hour).Truncate(time.Second)
+	ruleID := insertRule(t, pool, ctx, "fulfilled-bulk", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "録画済み番組")
+
+	const n = 3
+	for i := range n {
+		insertProgram(t, pool, ctx, int64(41010+i), "録画済み番組", start)
+	}
+
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 2})
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+	for i := range n {
+		if !reservationExists(t, pool, ctx, int64(41010+i)) {
+			t.Fatalf("reservation %d should exist before ingest commits", 41010+i)
+		}
+		insertFulfilledRecording(t, pool, ctx, int64(41010+i), "active")
+	}
+
+	// 3 件が fulfilled になるが、これは導出削除ではないので閾値 2 を超えても発動しない。
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass after bulk ingest: %v", err)
+	}
+	if _, tripped := getRulerDeletesBreaker(t, pool, ctx); tripped {
+		t.Fatal("fulfilled deletes must not trip the derived-delete circuit breaker")
+	}
+	for i := range n {
+		if reservationExists(t, pool, ctx, int64(41010+i)) {
+			t.Errorf("fulfilled reservation %d should be removed", 41010+i)
+		}
+	}
+}
+
+// insertFulfilledRecording は対象番組に対応する finished 録画と原本 media_asset を作り、
+// ingest 完了後の recordings / media_assets を模す。assetState は原本の state
+// （active / deleted）で、tombstone 済み原本のケースを test から指定できる。
+func insertFulfilledRecording(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, assetState string) {
+	t.Helper()
+	var recordingID int64
+	err := pool.QueryRow(ctx, `
+INSERT INTO recordings (
+  source, site, network_id, service_id, event_id,
+  service_name, channel_type, channel, title,
+  program_start_at, program_duration_ms, status
+) VALUES ('rule', $1, $2, $3, 0, 'テスト局', 'GR', '27', '録画済み番組', $4, $5, 'finished')
+RETURNING id`, testSite, testNetworkID, testServiceID, time.Now().Add(-time.Hour), testDurationMs).Scan(&recordingID)
+	if err != nil {
+		t.Fatalf("inserting fulfilled recording fixture: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, state)
+VALUES ($1, 'original', $2, 1024, $3)`, recordingID, fmt.Sprintf("fulfilled-%d.m2ts", programID), assetState); err != nil {
+		t.Fatalf("inserting fulfilled media asset fixture: %v", err)
+	}
+}
+
+// insertRecordingForTitle は finished 録画だけを作り、原本 media_asset は作らない。
+// table-driven な fulfilled 判定の反対側（ingest 未コミット）を fixture する。
+func insertRecordingForTitle(t *testing.T, pool *pgxpool.Pool, ctx context.Context, ruleID int64, startAt time.Time) int64 {
+	t.Helper()
+	var id int64
+	err := pool.QueryRow(ctx, `
+INSERT INTO recordings (
+  rule_id, source, site, network_id, service_id, event_id,
+  service_name, channel_type, channel, title,
+  program_start_at, program_duration_ms, status
+) VALUES ($1, 'rule', $2, $3, $4, 0, 'テスト局', 'GR', '27', '録画済み番組', $5, $6, 'finished')
+RETURNING id`, ruleID, testSite, testNetworkID, testServiceID, startAt, testDurationMs).Scan(&id)
+	if err != nil {
+		t.Fatalf("inserting finished recording (no original) fixture: %v", err)
+	}
+	return id
+}
+
 // insertProgramSnapshotDirect は program_snapshots 行だけを直接作る。
 // program_intents / program_overrides への FK（#27）を満たすためだけに使う
 // 軽量ヘルパーで、reservations 行は作らない。api.CreateReservation が

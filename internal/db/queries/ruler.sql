@@ -250,3 +250,48 @@ WHERE r.site = $1
   AND EXISTS (
       SELECT 1 FROM rules ru WHERE ru.id = r.rule_id AND ru.enabled
   );
+
+-- fulfilled は原本 media_asset が存在する放送イベントに対応する予約。
+-- state は問わない（原本を tombstone しても、録画・ingest が完了した事実は戻らない）。
+-- reservations の desired から外す判定は放送イベントキーで行い、ruler が作る予約行の
+-- identity に依存しない（CLAUDE.md 不変条件 9）。
+-- name: ListFulfilledReservationProgramIDsBySite :many
+SELECT r.program_id
+FROM reservations r
+JOIN program_snapshots s
+  ON s.site = r.site AND s.program_id = r.program_id
+WHERE r.site = $1
+  AND EXISTS (
+      SELECT 1
+      FROM recordings rec
+      JOIN media_assets a ON a.recording_id = rec.id
+       AND a.kind = 'original'
+      WHERE rec.site = r.site
+        AND rec.network_id = s.network_id
+        AND rec.service_id = s.service_id
+        AND rec.event_id = s.event_id
+  );
+
+-- fulfilled 予約の削除は、原本コミットという観測結果に基づく確定的な寿命終了である。
+-- EPG の一時欠損を原因とする導出削除ではないため、program_investments・EPG 射影の残存・
+-- ruler の大量削除ブレーカーに依存させず、この文の WHERE で適用時に再評価して削除する。
+-- ingest は原本 INSERT と同じ transaction で encode policy を凍結するため、この削除が
+-- 次の ruler パスで走っても凍結の lookup より先には起きない。
+-- name: DeleteFulfilledReservationsBySiteAndProgramIDs :many
+DELETE FROM reservations r
+USING program_snapshots s
+WHERE r.site = $1
+  AND r.program_id = ANY(sqlc.arg(program_ids)::bigint[])
+  AND s.site = r.site
+  AND s.program_id = r.program_id
+  AND EXISTS (
+      SELECT 1
+      FROM recordings rec
+      JOIN media_assets a ON a.recording_id = rec.id
+       AND a.kind = 'original'
+      WHERE rec.site = r.site
+        AND rec.network_id = s.network_id
+        AND rec.service_id = s.service_id
+        AND rec.event_id = s.event_id
+  )
+RETURNING r.program_id;

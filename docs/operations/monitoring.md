@@ -176,7 +176,7 @@ schedule 同期（reconcile）の鮮度だけである。ruler と record_sweep 
 | メトリクス | 説明 |
 |---|---|
 | `rokuban_ruler_pass_duration_seconds` | 1 パス（全ルール x 全射影番組）の所要時間。射影が有界なので伸び続けることはない |
-| `rokuban_ruler_reservations_total{action}` | `created` / `updated` / `deleted` / `released` / `gc`。**`updated` が毎パス予約数と同じ値で増え続けるなら差分書き込みが効いていない**（[録画エンジン](../recording.md) §3.1）。`released` は**ブレーカーを通っていない削除**（ユーザーが投資を手放す書き込みをしない限り起きないもの。同 §3.2）で、`deleted`（EPG 由来の導出削除）と混ぜない。`ruler.retract_grace` で見送った件数はこのメトリクスに無い（パスごとに再計上される水準なのでカウンタに乗せると増加率の意味が壊れる）--- ブレーカーのラッチと見分けたいときは `ruler: pass complete` ログの `grace_protected` フィールドを見る |
+| `rokuban_ruler_reservations_total{action}` | `created` / `updated` / `deleted` / `released` / `gc` / `fulfilled`。**`updated` が毎パス予約数と同じ値で増え続けるなら差分書き込みが効いていない**（[録画エンジン](../recording.md) §3.1）。`released` は**ブレーカーを通っていない削除**（ユーザーが投資を手放す書き込みをしない限り起きないもの。同 §3.2）で、`deleted`（EPG 由来の導出削除）と混ぜない。`fulfilled` は録画・ingest 完了（原本 `media_asset` あり）による削除で、同じくブレーカーを通らない（同 §3.1「録画・ingest 完了後の fulfilled 削除」）。`ruler.retract_grace` で見送った件数はこのメトリクスに無い（パスごとに再計上される水準なのでカウンタに乗せると増加率の意味が壊れる）--- ブレーカーのラッチと見分けたいときは `ruler: pass complete` ログの `grace_protected` フィールドを見る |
 | `rokuban_ruler_program_id_reuse_total` | 終了済みの旧 snapshot と EPG 射影の開始時刻が 24 時間超ずれた行を、ruler の各パスで観測した件数。snapshot が更新されるまで同じ不一致を複数回数えうる。`followSnapshots` が追従させるのは desired ∪ skip 意図 ∪ 既存予約だけ。`program_overrides` だけが支える snapshot は追従されず、`retention_grace` の間ずっと数え続ける。カウンタは再利用イベント数ではないため、件数は warn ログの `program_id` で重複を除いて読む。検出は読み取り専用 |
 | `rokuban_ruler_circuit_breaker_trips_total` | 大量削除で停止した回数。EPG の一時欠損を疑う入口 |
 | `rokuban_circuit_breaker_tripped{breaker="ruler_deletes"}` | **1 の間は導出削除が一切走らない**（手動再開まで止まるラッチ）。カウンタと違い「いま止まっているか」に答える |

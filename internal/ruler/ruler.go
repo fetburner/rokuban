@@ -176,7 +176,7 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		return err
 	}
 
-	desired, skipIntent, err := r.collectDesired(ctx, q, site, winner)
+	desired, skipIntent, fulfilled, err := r.collectDesired(ctx, q, site, winner)
 	if err != nil {
 		return err
 	}
@@ -190,6 +190,9 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	if err != nil {
 		return err
 	}
+	// fulfilled は専用経路でブレーカーの外から削除するため、同じ行を導出削除の
+	// 候補として数えない。EPG 射影から既に消えた fulfilled 行も専用 DELETE は拾う。
+	toDelete = subtract(toDelete, fulfilled)
 
 	dedupeMatches, err := r.applyDedupe(ctx, site, desiredIDs, winner, ruleByID)
 	if err != nil {
@@ -207,6 +210,11 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		return err
 	}
 	created, updated, err := createReservations(ctx, tx, tq, site, desiredIDs, winner, ruleByID, dedupeMatches)
+	if err != nil {
+		return err
+	}
+
+	fulfilledDeleted, err := deleteFulfilledReservations(ctx, tq, site, fulfilled)
 	if err != nil {
 		return err
 	}
@@ -246,6 +254,7 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	// 混ぜると「閾値を下回る導出削除が素通りしていないか」を deleted の増え方で
 	// 見る運用（docs/operations.md §2）が、明示操作の分で汚れる。
 	metrics.RulerReservations.WithLabelValues("released").Add(float64(len(released)))
+	metrics.RulerReservations.WithLabelValues("fulfilled").Add(float64(fulfilledDeleted))
 	// grace_protected はカウンタにしない: 他の 5 値は「行が 1 回寄与するエッジ」
 	// だが、猶予で残った行は毎パス（既定 10 分）再計上される「水準」なので、
 	// increase() で見ると値がパス頻度に比例してしまい、録れた予約の数を意味しない
@@ -260,6 +269,7 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		"updated", updated,
 		"deleted", deleted,
 		"released", len(released),
+		"fulfilled", fulfilledDeleted,
 		"grace_protected", graceProtectedCount,
 		"delete_candidates", len(deleteCandidates),
 	)
@@ -333,29 +343,18 @@ func (r *Ruler) resolveWinners(ctx context.Context, site string, rules []sqlcgen
 // program_investments view（#162）に一本化したので、record 側は
 // ListProgramInvestmentProgramIDsBySite から引く。
 //
-// 「この番組にユーザーの投資があるか」（record 意図 ∪ overrides の行）は
-// program_investments view（#162）から引く。ruler は overrides の中身も
-// record 意図の中身も一切読まないので programId だけを取る。
+// 原本 media_asset が存在する放送イベントは録画・ingest が完了しており、もう
+// mirakc に同期する schedule ではない。fulfilled 予約は desired から外すが、同じ
+// パスの後段で専用 DELETE も行うため、EPG の射影や program_investments の有無には
+// 依存しない（issue #769）。
 //
-// desired = (ルールにマッチした番組 − intent.skip) ∪ program_investments
+// desired = ((ルールにマッチした番組 − intent.skip) ∪ program_investments) − fulfilled
 // （docs/recording.md §4.2「ruler から見た load-bearing な行」。
 // program_intents / program_overrides は絶対に書かない — 読むだけ）。
-//
-// investment（record 意図 ∪ overrides）は skip を引いた後の winner に
-// 無条件で足す。順序を入れ替えても record 側の結果は変わらない ---
-// `program_intents` は (site, program_id) に 1 行しか持てないため
-// action='record' と action='skip' は同じ番組で排他であり、winner から
-// skip を引く操作は record 側の投資に触れない。overrides 側は skip と
-// 独立に存在できるが、investment に無条件で足すことで「skip 意図があっても
-// overrides は desired に残す」（§4.3「record 意図または上書きがある →
-// 削除せず detached で保持」）を満たす。skip 側は intent.action='skip' が
-// effective.skip として引き続き効くので（reservation.EffectiveOptions）、reconciler は
-// この行を同期しない。行の存在が答えるのは「この番組にユーザーの投資が
-// あるか」で、録画するかどうかとは別の問い。
-func (r *Ruler) collectDesired(ctx context.Context, q *sqlcgen.Queries, site string, winner map[int64]int64) (map[int64]struct{}, map[int64]struct{}, error) {
+func (r *Ruler) collectDesired(ctx context.Context, q *sqlcgen.Queries, site string, winner map[int64]int64) (map[int64]struct{}, map[int64]struct{}, []int64, error) {
 	intents, err := q.ListProgramIntentActionsBySite(ctx, site)
 	if err != nil {
-		return nil, nil, fmt.Errorf("listing program intents: %w", err)
+		return nil, nil, nil, fmt.Errorf("listing program intents: %w", err)
 	}
 	skipIntent := make(map[int64]struct{})
 	for _, in := range intents {
@@ -365,7 +364,7 @@ func (r *Ruler) collectDesired(ctx context.Context, q *sqlcgen.Queries, site str
 	}
 	investmentProgramIDs, err := q.ListProgramInvestmentProgramIDsBySite(ctx, site)
 	if err != nil {
-		return nil, nil, fmt.Errorf("listing program investments: %w", err)
+		return nil, nil, nil, fmt.Errorf("listing program investments: %w", err)
 	}
 	desired := make(map[int64]struct{}, len(winner)+len(investmentProgramIDs))
 	for programID := range winner {
@@ -376,7 +375,14 @@ func (r *Ruler) collectDesired(ctx context.Context, q *sqlcgen.Queries, site str
 	for _, programID := range investmentProgramIDs {
 		desired[programID] = struct{}{}
 	}
-	return desired, skipIntent, nil
+	fulfilled, err := q.ListFulfilledReservationProgramIDsBySite(ctx, site)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("listing fulfilled reservations: %w", err)
+	}
+	for _, programID := range fulfilled {
+		delete(desired, programID)
+	}
+	return desired, skipIntent, fulfilled, nil
 }
 
 // collectDeleteCandidates は削除候補 = 既存予約のうち desired から外れたものを集める。
@@ -551,6 +557,21 @@ func releaseReservations(ctx context.Context, tq *sqlcgen.Queries, site string, 
 		return nil, fmt.Errorf("deleting user-released reservations: %w", err)
 	}
 	return released, nil
+}
+
+// deleteFulfilledReservations は原本 media_asset が存在する放送イベントに対応する予約を
+// 削除する。録画・ingest の完了は観測された事実なので、EPG 欠損時の一斉削除とは関係なく、
+// program_investments や EPG 射影の残存にも依存しない。programIds は collectDesired が
+// 既に引いた集合をそのまま渡すが、削除の可否は SQL 側の WHERE が適用時に再評価する。
+func deleteFulfilledReservations(ctx context.Context, tq *sqlcgen.Queries, site string, programIDs []int64) (int64, error) {
+	if len(programIDs) == 0 {
+		return 0, nil
+	}
+	deleted, err := tq.DeleteFulfilledReservationsBySiteAndProgramIDs(ctx, sqlcgen.DeleteFulfilledReservationsBySiteAndProgramIDsParams{Site: site, ProgramIds: programIDs})
+	if err != nil {
+		return 0, fmt.Errorf("deleting fulfilled reservations: %w", err)
+	}
+	return int64(len(deleted)), nil
 }
 
 // applyRetractGrace は猶予（ruler.retract_grace, issue #428）を開始直前にルールから外れた
