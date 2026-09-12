@@ -115,14 +115,12 @@ export function ProgramReservationSummary({
   program,
   serviceName,
   siteName,
-  reserved,
   overlaps,
   title,
 }: {
   program: ProgramReservationProgram
   serviceName?: string
   siteName?: string
-  reserved: boolean
   overlaps?: ProgramOverlaps
   title?: ReactNode
 }) {
@@ -148,7 +146,7 @@ export function ProgramReservationSummary({
           <span className="shrink-0">{formatDuration(program.durationMs)}</span>
           {!program.isFree && <span className="shrink-0">有料</span>}
         </div>
-        {!reserved && <ProgramOverlapWarning overlaps={overlaps} />}
+        <ProgramOverlapWarning overlaps={overlaps} />
       </div>
     </div>
   )
