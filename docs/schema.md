@@ -12,7 +12,7 @@
 | §3 §3.5 §3.6 §3.7 | **desired**: `reservations`（予約）/ `program_intents`・`program_overrides`（ユーザー意図）/ `circuit_breakers`（ブレーカーのラッチ）/ `program_snapshots`（番組の事実のスナップショット。Phase 1） | [schema/reservations.md](schema/reservations.md) |
 | §4 | **observed**: `schedule_sync`（mirakc schedule の観測）/ `schedule_sync_snapshots`（サイト単位の全量観測鮮度） | [schema/schedule-sync.md](schema/schedule-sync.md) |
 | §5 §6 | **永続資産**: `recordings`（録画履歴）/ `media_assets`（メディアアセット台帳）。`recording_encode_policy`（原本保持ポリシーの凍結）・`recording_ingest_progress`（転送の途中経過）・`recording_purge_requests`（即時完全削除の要求）・`recording_encode_attempts`（encode ジョブの直近の試行状態）の 4 つの衛星表も§5 内、`missing_media_assets`（実体無しの観測）は§6 内。`never_scheduled_events`（放送地平を超えて残す schedule 欠測）は `retention_grace + 30日` で刈る | [schema/recordings.md](schema/recordings.md) |
-| §7 | **observed**: `record_sync`（mirakc record の観測）と `drop_stats` | [schema/record-sync.md](schema/record-sync.md) |
+| §7 | **observed**: `record_sync`（mirakc record の観測）/ `drop_stats` / `drop_positions` | [schema/record-sync.md](schema/record-sync.md) |
 | §8 | jsonb ドキュメント形式（base / overrides / quality_events の形） | [schema/jsonb.md](schema/jsonb.md) |
 | §9 §9.5 | **使い捨てキャッシュ**: `epg_services` / `epg_programs`（EPG 射影）/ `tuner_sync`（チューナー射影） | [schema/projections.md](schema/projections.md) |
 | — | **永続資産**: `rules` 一式（`rules` + 条件の子テーブル 6 つ） | [schema/rules.md](schema/rules.md) |
@@ -39,6 +39,7 @@ erDiagram
     recordings ||--o| recording_purge_requests : "recording_id (即時削除の要求。衛星表)"
     recordings ||--o{ recording_encode_attempts : "recording_id (encode 試行の観測。衛星表)"
     media_assets ||--o{ drop_stats : "media_asset_id"
+    media_assets ||--o{ drop_positions : "media_asset_id"
     media_assets ||--o| missing_media_assets : "media_asset_id (実体無しの観測。衛星表)"
 ```
 
