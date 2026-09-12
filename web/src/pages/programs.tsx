@@ -957,7 +957,10 @@ function ProgramGridView({
               }
             />
             <div
-              className="min-h-0 flex-1 overflow-y-auto p-6"
+              // 閉じるボタン（top-3 + size-7）の下端 40px と操作列が重ならないよう、
+              // 本文の上端に 48px の安全帯を置く。横方向を空けるとタイトルと操作列を
+              // 狭めるので、操作列は要約行の右端まで使えるままにする。
+              className="min-h-0 flex-1 overflow-y-auto px-6 pb-6 pt-12"
               data-testid="program-dialog-body"
             >
               {/* key は選択番組の identity に紐づける。選択対象が差し替わる経路でも

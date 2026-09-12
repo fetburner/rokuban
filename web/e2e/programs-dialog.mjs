@@ -76,6 +76,16 @@ const airingProgram = {
 const ng = []
 let intentPutCount = 0
 
+/** boxesOverlap は 2 つの実レイアウト矩形が交差しているかを返す。 */
+function boxesOverlap(a, b) {
+  return (
+    a.x < b.x + b.width &&
+    a.x + a.width > b.x &&
+    a.y < b.y + b.height &&
+    a.y + a.height > b.y
+  )
+}
+
 /** apiHandler は番組表モーダルの描画と予約操作に必要な応答を作る。 */
 async function apiHandler({ path: p, json, route }) {
   if (p === '/api/sites') return json([SITE])
@@ -165,6 +175,11 @@ log(`  モーダル内の予約ボタン: ${reserveBox ? `${reserveBox.width}x${
 if (!(await reserveButton.isVisible()) || !reserveBox || reserveBox.width <= 0 || reserveBox.height < 44) {
   ng.push('モーダル内の予約ボタンが hover なしで可視・操作可能になっていない')
 }
+const closeButton = dialog.getByRole('button', { name: '閉じる', exact: true })
+const closeBox = await closeButton.boundingBox()
+if (reserveBox && closeBox && boxesOverlap(reserveBox, closeBox)) {
+  ng.push('未放送の予約ボタンと閉じるボタンが重なっている')
+}
 const summaryRow = dialog.getByTestId('program-dialog-summary-row')
 const actions = dialog.getByTestId('program-dialog-actions')
 const summaryBox = await summaryRow.boundingBox()
@@ -187,7 +202,6 @@ if ((await cell.getAttribute('aria-pressed')) !== 'true') {
 await dialog.screenshot({ path: path.join(SCREENSHOT_DIR, 'program-dialog-not-airing.png') })
 
 log('\n=== 長い番組概要でスクロールしても閉じるボタンが画面外へ出ない ===')
-const closeButton = dialog.getByRole('button', { name: '閉じる', exact: true })
 const dialogBody = page.locator('[data-testid="program-dialog-body"]')
 const scrollTopBefore = await dialogBody.evaluate((el) => el.scrollTop)
 await dialogBody.evaluate((el) => {
@@ -304,6 +318,8 @@ const liveLink = airingDialog.getByRole('link', { name: 'ライブで見る' })
 await liveLink.waitFor({ state: 'visible', timeout: 15000 })
 const airingReserveButton = airingDialog.getByRole('button', { name: '予約', exact: true })
 const airingReserveBox = await airingReserveButton.boundingBox()
+const airingCloseButton = airingDialog.getByRole('button', { name: '閉じる', exact: true })
+const airingCloseBox = await airingCloseButton.boundingBox()
 const airingSummaryRow = airingDialog.getByTestId('program-dialog-summary-row')
 const airingActions = airingDialog.getByTestId('program-dialog-actions')
 const airingSummaryBox = await airingSummaryRow.boundingBox()
@@ -317,6 +333,9 @@ if (
   airingReserveBox.height < 44
 ) {
   ng.push('放送中の予約ボタンが hover なしで可視・44px 以上になっていない')
+}
+if (airingReserveBox && airingCloseBox && boxesOverlap(airingReserveBox, airingCloseBox)) {
+  ng.push('放送中の予約ボタンと閉じるボタンが重なっている')
 }
 if (!airingSummaryBox || !airingActionsBox || Math.abs(airingActionsBox.width - 125) >= 1) {
   ng.push(`放送中の操作列が要約行右端の 125px に収まっていない（幅=${airingActionsBox?.width ?? '不明'}px）`)
