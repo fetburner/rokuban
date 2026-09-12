@@ -555,7 +555,6 @@ function apiHandler({
       const requestedServiceIds = url.searchParams.getAll('serviceId')
       if (
         toastLayout &&
-        (requestedServiceIds.length === 0 || requestedServiceIds.includes(String(toastLayoutProgram.serviceId))) &&
         Date.parse(toastLayoutProgram.startAt) < Date.parse(endISO) &&
         Date.parse(toastLayoutProgram.endAt) > Date.parse(startISO)
       ) {
@@ -567,7 +566,7 @@ function apiHandler({
     }
     if (/\/overlaps$/.test(p)) return json({ count: 0, reservations: [] })
     if (/\/programs\/\d+$/.test(p)) return json({ extended: {}, audios: [] })
-    if (/\/intent$/.test(p)) return route.fulfill({ status: 204 })
+    if (toastLayout && /\/intent$/.test(p)) return route.fulfill({ status: 204 })
     if (/\/reservation$/.test(p)) return route.fulfill({ status: 404, contentType: 'application/json', body: '{"error":"not found"}' })
     return json([])
   }
