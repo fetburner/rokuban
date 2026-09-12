@@ -817,8 +817,9 @@ export const GetProgramResponse = zod.object({
  * 連続しているため、閉区間で判定すると隣接番組がすべて重なりになってしまう）。
  *
  * 対象は同じ site の予約のうち、自分自身（同じ programId の予約）を除き、
- * `state <> 'orphaned'`、実効オプション（`reservation.EffectiveOptions`）の `skip` が
- * true でないもの。
+ * 実効オプション（`reservation.EffectiveOptions`）の `skip` が true でない予約。
+ * ただし、`never_scheduled_events` に行がある放送イベントに紐づく予約は除外する
+ * （同期評価・容量需要と同じ述語）。`state` は評価しない。
  *
  * **これは重なりの件数だけを返す。チューナー本数との比較や容量超過の判定は
  * 行わない**（[issue #21](https://github.com/fetburner/rokuban/issues/21) の

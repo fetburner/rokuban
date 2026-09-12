@@ -177,9 +177,9 @@ func (h *Server) ListReservations(ctx context.Context, _ ListReservationsRequest
 // state 列そのものは Phase 1（#27/#28/#30）で reservations から落とされた ---
 // active/detached は (rule_id, base) から導出できる値として列を持たないことに
 // した。orphaned は一度 orphaned_at（reconciler だけが書く不可逆な観測）を
-// 経たが、issue #98 で orphaned_at 自体も廃止され、「この予約に
-// status='failed' の recordings 行が存在するか」という EXISTS 判定
-// （neverRecorded。呼び出し元がクエリの never_recorded 列から受け取る）に
+// 経たが、issue #98 で orphaned_at 自体も廃止され、「この放送イベントに
+// never_scheduled_events の行が存在し、かつ recordings の行が存在しない」という
+// 判定（neverRecorded。呼び出し元がクエリの never_recorded 列から受け取る）に
 // 置き換わった。API レスポンスは 1 バイトも変えないため、ここで毎回計算して
 // 返す（CLAUDE.md 不変条件 9「導出値と不可逆な事実を同じ列に載せない」・
 // 「導出は読むたびに評価する」）。

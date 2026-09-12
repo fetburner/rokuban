@@ -174,6 +174,33 @@ func TestGetProgramOverlaps_ExcludesNeverScheduled(t *testing.T) {
 	}
 }
 
+// never_scheduled_events の行があれば、同じ放送イベントに recordings の行が
+// あっても重なりから除外する。state ベースの述語ならこの予約は数えられるため、
+// overlaps API の権威が never_scheduled_events 単独であることを固定する。
+func TestGetProgramOverlaps_NeverScheduledExclusionWinsOverRecording(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	srv := newAPIServer(t, pool)
+
+	base := time.Now().Truncate(time.Hour).Add(24 * time.Hour)
+	seedEpgService(t, pool, 32678, 5168, 8, "テスト局", "27")
+	seedEpgProgram(t, pool, 232, 32678, 5168, 1, "対象番組", base, false)
+	seedEpgProgram(t, pool, 233, 32678, 5168, 2, "never-scheduled 後に録画された番組", base.Add(30*time.Minute), false)
+
+	reserveViaAPI(t, srv.URL, pool, ctx, 233)
+	seedNeverScheduledEvent(t, pool, ctx, "default", 32678, 5168, 2)
+	seedRecording(t, pool, "never-scheduled 後に録画された番組", base.Add(30*time.Minute), "finished", 2)
+
+	var got ProgramOverlaps
+	resp := getJSON(t, overlapsURL(srv.URL, 232), &got)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got.Count != 0 {
+		t.Errorf("count = %d, want 0 (never_scheduled_events があれば recordings があっても数えない): %+v", got.Count, got.Reservations)
+	}
+}
+
 // 放送中の mirakc 由来の失敗は欠測表に入らず同期除外の対象にならないので、
 // 重なり判定でも数える。TestGetProgramOverlaps_ExcludesNeverScheduled と対になる
 // 反転テスト。
