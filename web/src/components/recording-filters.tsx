@@ -187,7 +187,7 @@ function OrderSelect({
         aria-label="並び順"
         value={value}
         onChange={(e) => onChange(e.target.value as ListRecordingsOrder)}
-        className="bg-transparent text-sm text-foreground outline-none"
+        className="h-6 bg-transparent text-sm text-foreground outline-none"
       >
         <option value={ListRecordingsOrder.desc}>新しい順</option>
         <option value={ListRecordingsOrder.asc}>古い順</option>
@@ -227,7 +227,7 @@ function RuleSelect({
         aria-label="ルール"
         value={value === undefined ? '' : String(value)}
         onChange={(e) => onChange(parseRuleId(e.target.value))}
-        className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none"
+        className="h-6 min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none"
       >
         <option value="">問わない</option>
         {value !== undefined && !rules.some((rule) => rule.id === value) && (
