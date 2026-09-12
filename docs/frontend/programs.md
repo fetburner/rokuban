@@ -158,6 +158,8 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
   `state !== 'orphaned'`・`skip === false` かつ半開区間で重なる予約を表示する。導出は
   `useReservationActions`（`lib/reservation-actions.ts`）の `overlapsFor` に 1 本化してあり、
   リストとグリッドの両方がこれを呼ぶ。予約詳細の単一番組では従来どおり overlaps API を使う。
+  これはサーバー overlaps API の `never_scheduled_events` 単独の述語を近似するもので、
+  never-scheduled 後に録画された放送イベントでは両者の述語が異なる。
   予約・取消後は既存の予約一覧の invalidate と再取得で警告も更新する
 - **仮想化は TanStack Virtual（`useWindowVirtualizer`）を使う**
   （`components/program-list.tsx`）。グリッドが自前実装を選んだ理由（縦軸が
