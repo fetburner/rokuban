@@ -225,7 +225,29 @@ if (resolved.value !== '8' || resolved.selectedText !== '平日夜のニュー�
 }
 await page.keyboard.press('Escape')
 
-log('\n=== ⑤ ルールが 0 件なら節ごと出さない（機能しないコントロールは置かない） ===')
+log('\n=== ⑤ 同名のルールは option とチップで id を添えて押し分ける ===')
+ruleList = [
+  { ...rules[0], name: '同名ルール' },
+  { ...rules[1], name: '同名ルール' },
+]
+await page.goto(URL_BASE + '/recordings?ruleId=8', { waitUntil: 'domcontentloaded' })
+await page.getByText('ルール由来の録画').waitFor({ timeout: 15000 })
+if ((await page.getByRole('button', { name: 'ルール: 同名ルール (#8)' }).count()) !== 1) {
+  ng.push('⑤ 同名ルールのチップが「ルール: 同名ルール (#8)」で出ない')
+}
+await page.getByRole('button', { name: /絞り込み/ }).click()
+const duplicatePanel = page.getByRole('dialog', { name: '絞り込み' })
+await duplicatePanel.waitFor({ timeout: 15000 })
+const duplicateOptions = await duplicatePanel
+  .getByRole('combobox', { name: 'ルール' })
+  .locator('option')
+  .allTextContents()
+if (!duplicateOptions.includes('同名ルール (#8)') || !duplicateOptions.includes('同名ルール (#3)')) {
+  ng.push(`⑤ 同名ルールの option が id 付きで出ない（${JSON.stringify(duplicateOptions)}）`)
+}
+await page.keyboard.press('Escape')
+
+log('\n=== ⑥ ルールが 0 件なら節ごと出さない（機能しないコントロールは置かない） ===')
 ruleList = []
 await page.goto(URL_BASE + '/recordings', { waitUntil: 'domcontentloaded' })
 await page.getByText('ルール由来の録画').waitFor({ timeout: 15000 })

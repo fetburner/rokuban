@@ -55,6 +55,7 @@ import {
   type RuleMetaDraft,
   type SearchDraft,
 } from '@/lib/program-search'
+import { ruleDisambiguator } from '@/lib/rule-label'
 import { cn } from '@/lib/utils'
 
 /**
@@ -72,10 +73,15 @@ import { cn } from '@/lib/utils'
  * 一本化する。検索側は条件に一致する番組を見ながら編集でき、UI を持たない項目も
  * `buildRuleInput` の `preserve` 引数で引き継ぐ（`RuleEditForm` の doc comment と
  * `docs/frontend/search.md` を参照）。
+ *
+ * `rules.name` は一意ではないため、一覧で同名のルールが並ぶときだけ `#<id>` を
+ * 名前に添えて押し分ける。単独の名前には補助ラベルを付けず、通常時の一覧を短く
+ * 保つ。
  */
 export function RulesPage() {
   const query = useListRules()
   const rules = unwrap(query.data) ?? []
+  const disambiguateRule = ruleDisambiguator(rules)
   const [isCreating, setIsCreating] = useState(false)
   const [isCountingReservations, setIsCountingReservations] = useState(false)
 
@@ -126,6 +132,7 @@ export function RulesPage() {
               <li key={rule.id}>
                 <RuleRow
                   rule={rule}
+                  disambiguate={disambiguateRule}
                   isCountingReservations={isCountingReservations}
                   onCountingReservationsChange={setIsCountingReservations}
                 />
@@ -223,16 +230,20 @@ function deleteRuleResultMessage(res: DeleteRuleResponse | undefined): string | 
  */
 function RuleRow({
   rule,
+  disambiguate,
   isCountingReservations,
   onCountingReservationsChange,
 }: {
   rule: Rule
+  disambiguate: (rule: Rule) => string | undefined
   isCountingReservations: boolean
   onCountingReservationsChange: (counting: boolean) => void
 }) {
   const profiles = rule.encodeProfiles ?? []
   const keep = (rule.keepOriginal ?? 'always') as KeepOriginal
   const conditions = summarizeRuleConditions(rule)
+  const disambiguator = disambiguate(rule)
+  const displayName = disambiguator === undefined ? rule.name : `${rule.name} (${disambiguator})`
   const toast = useToast()
   const queryClient = useQueryClient()
   const updateRule = useUpdateRule()
@@ -363,11 +374,11 @@ function RuleRow({
                 <Link
                   to="/search"
                   search={{ ruleId: rule.id }}
-                  aria-label={`ルール「${rule.name}」を編集`}
+                  aria-label={`ルール「${displayName}」を編集`}
                 />
               }
             >
-              <span className="truncate">{rule.name}</span>
+              <span className="truncate">{displayName}</span>
             </Button>
             {!rule.enabled && (
               /* shrink-0: nowrap 化した行の中で、名前に幅を譲って自分は潰れない
@@ -409,7 +420,7 @@ function RuleRow({
               type="button"
               role="switch"
               aria-checked={rule.enabled}
-              aria-label={`ルール「${rule.name}」を有効にする`}
+              aria-label={`ルール「${displayName}」を有効にする`}
               disabled={updateRule.isPending || isCountingReservations}
               className="inline-flex min-h-8 items-center rounded-full px-1 outline-none disabled:opacity-50 focus-visible:ring-3 focus-visible:ring-ring/50"
               onClick={() => void toggleEnabled()}
@@ -447,7 +458,7 @@ function RuleRow({
                   type="button"
                   variant="ghost"
                   size="icon"
-                  aria-label={`ルール「${rule.name}」のその他の操作`}
+                  aria-label={`ルール「${displayName}」のその他の操作`}
                 />
               }
             >
@@ -470,9 +481,9 @@ function RuleRow({
       <AlertDialog open={disableConfirmOpen} onOpenChange={setDisableConfirmOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>ルール「{rule.name}」を無効にしますか？</AlertDialogTitle>
+            <AlertDialogTitle>ルール「{displayName}」を無効にしますか？</AlertDialogTitle>
             <AlertDialogDescription>
-              {`「${rule.name}」を無効にすると、このルールによる予約 ${activeReservationCount} 件が取り消されます。手動で予約したものは残ります。`}
+              {`「${displayName}」を無効にすると、このルールによる予約 ${activeReservationCount} 件が取り消されます。手動で予約したものは残ります。`}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -490,7 +501,7 @@ function RuleRow({
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>ルール「{rule.name}」を削除しますか？</AlertDialogTitle>
+            <AlertDialogTitle>ルール「{displayName}」を削除しますか？</AlertDialogTitle>
             <AlertDialogDescription>{deleteRuleWarning(rule)}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

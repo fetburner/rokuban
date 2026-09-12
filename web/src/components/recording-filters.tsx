@@ -15,6 +15,7 @@ import { Chip } from '@/components/ui/chip'
 import { Field, Input } from '@/components/ui/field'
 import { useAllSitesServices } from '@/lib/all-sites-services'
 import { genreCodeLabel, genreCodes } from '@/lib/program-search'
+import { ruleDisambiguator } from '@/lib/rule-label'
 import { serviceDisambiguator } from '@/lib/service-label'
 import {
   clearRecordingsFilters,
@@ -203,6 +204,10 @@ function OrderSelect({
  * 正の安全整数に揃える。ルール選択時の検索条件更新は `updateRuleFilter` に
  * 集約する。
  *
+ * 同名のルールは `#<id>` を補助ラベルにして選択肢を押し分ける。名前が重複して
+ * いないルールには補助ラベルを付けない --- 大多数の選択肢を読みやすく保つ。
+ * DB の `rules.name` は一意ではなく、選択の identity は常に `rule.id` である。
+ *
  * **`value` が一覧に無いとき、フォールバック option を足す。** 一覧に無い
  * `value`（削除済みルールで絞っている URL）を渡すと、React の
  * controlled `<select>` はどの option にも一致しないので先頭（「問わない」）
@@ -220,6 +225,12 @@ function RuleSelect({
   rules: Rule[]
   onChange: (ruleId: number | undefined) => void
 }) {
+  const disambiguate = ruleDisambiguator(rules)
+  const labelOf = (rule: Rule) => {
+    const disambiguator = disambiguate(rule)
+    return disambiguator === undefined ? rule.name : `${rule.name} (${disambiguator})`
+  }
+
   return (
     <label className="flex h-11 min-w-0 items-center rounded-lg border border-border bg-background px-3 text-sm text-foreground">
       <span className="sr-only">ルール</span>
@@ -235,7 +246,7 @@ function RuleSelect({
         )}
         {rules.map((rule) => (
           <option key={rule.id} value={String(rule.id)}>
-            {rule.name}
+            {labelOf(rule)}
           </option>
         ))}
       </select>

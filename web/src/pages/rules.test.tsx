@@ -415,6 +415,21 @@ describe('RulesPage 新規作成', () => {
     expect(searchLinks).toHaveLength(1)
   })
 
+  it('同名のルールは一覧の名前と操作ラベルに id を添えて押し分ける', async () => {
+    stubApi([
+      sampleRule,
+      { ...sampleRule, id: 2, name: 'ニュース' },
+    ])
+    renderPage()
+
+    expect(await screen.findByText('ニュース (#1)')).toBeInTheDocument()
+    expect(await screen.findByText('ニュース (#2)')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'ルール「ニュース (#1)」を編集' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'ルール「ニュース (#2)」を編集' })).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'ルール「ニュース (#1)」を有効にする' })).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'ルール「ニュース (#2)」を有効にする' })).toBeInTheDocument()
+  })
+
   // issue #137: ルールから、そのルール由来の録画だけに絞った一覧への導線。
   // 条件モデルを検索と共有しないため、遷移先は /search ではなく /recordings。
   it('「このルールの録画」リンクが /recordings?ruleId=<id> を指す', async () => {
