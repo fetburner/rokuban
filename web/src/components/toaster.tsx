@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -46,13 +46,13 @@ type PauseReason = 'hover' | 'focus'
  * **失敗（`kind: 'error'`）は自動で消えない。** 読み終える前に消えるべきで
  * ないため、閉じるボタンを押すまで残る。成功・情報だけがタイマーで消える。
  *
- * **機構のみ**: hover 中または focus-within の間はタイマーを止め、両方から
- * 離れたら残り時間で再開する。WCAG 2.2.1 の充足手段（Turn off / Adjust /
- * Extend）のいずれかを満たすと断定はしない（未検証。閉じるボタンへ 6 秒以内に
- * Tab で到達する経路が無く、キーボードのみでの充足は現時点で成立していない）。
+ * **キーボード到達性**: Alt+T で最新のトースト内の先頭の操作（action が無ければ
+ * 閉じるボタン）へフォーカスを移す。これにより、フォーカス中にタイマーを止める
+ * 既存の一時停止へキーボードから到達できる。
  */
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
+  const toastElements = useRef(new Map<number, HTMLDivElement>())
 
   // タイマーは state ではなく ref に持つ。toasts 配列を依存に含む useEffect で
   // 再スケジュールする形にすると、1 件足すたびに全トーストのタイマーが
@@ -158,6 +158,35 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     [armTimer],
   )
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.code !== 'KeyT' || !event.altKey || event.ctrlKey || event.metaKey) {
+        return
+      }
+      if (
+        event.target instanceof Element &&
+        event.target.closest('input, textarea, select, [contenteditable]')
+      ) {
+        return
+      }
+
+      const latestToast = toasts[toasts.length - 1]
+      if (!latestToast) return
+
+      const toastElement = toastElements.current.get(latestToast.id)
+      const focusTarget = toastElement?.querySelector<HTMLButtonElement>(
+        latestToast.actions?.length ? 'button' : 'button[aria-label="閉じる"]',
+      )
+      if (!focusTarget) return
+
+      focusTarget.focus()
+      event.preventDefault()
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [toasts])
+
   const value = useMemo(() => show, [show])
 
   return (
@@ -176,6 +205,13 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         {toasts.map((toast) => (
           <div
             key={toast.id}
+            ref={(element) => {
+              if (element) {
+                toastElements.current.set(toast.id, element)
+              } else {
+                toastElements.current.delete(toast.id)
+              }
+            }}
             className="pointer-events-auto flex w-full max-w-sm items-center justify-between gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm shadow-lg"
           >
             <span className="min-w-0 line-clamp-3">{toast.message}</span>
