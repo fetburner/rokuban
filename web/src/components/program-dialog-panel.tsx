@@ -56,7 +56,6 @@ export function ProgramDialogPanel({
           program={program}
           serviceName={serviceName}
           siteName={siteName}
-          reserved={reserved}
           overlaps={overlaps}
           title={
             <DialogTitle className="break-words">{program.name}</DialogTitle>

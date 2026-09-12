@@ -2,7 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { ProgramListItem } from '@/api/generated'
+import type { ProgramListItem, ProgramOverlaps } from '@/api/generated'
 import { ProgramRow } from '@/components/program-row'
 import type { SiteProgram } from '@/lib/all-sites-services'
 import { renderInRouter, testSite } from '@/test/router'
@@ -243,6 +243,35 @@ describe('ProgramRow の外向き導線（issue #229 / #755）', () => {
 
     const link = await screen.findByRole('link', { name: '予約の設定' })
     expect(link).toHaveAttribute('href', `/reservations/${testSite}/42`)
+  })
+
+  it('予約済みの行でも重なり警告を表示する', async () => {
+    stubFetch()
+    const overlaps: ProgramOverlaps = {
+      count: 1,
+      reservations: [
+        {
+          programId: 2,
+          title: '重複番組',
+          startAt: new Date(Date.now() + 99 * 3_600_000).toISOString(),
+          durationMs: 3_600_000,
+        },
+      ],
+    }
+    renderInRouter(
+      <ProgramRow
+        program={program()}
+        reserved={true}
+        pending={false}
+        reservationStateUnknown={false}
+        onReserve={vi.fn()}
+        onCancel={vi.fn()}
+        overlaps={overlaps}
+      />,
+    )
+
+    const row = await screen.findByTestId('program-row')
+    expect(within(row).getByText(/同じ時間帯に1件の予約があります（.*重複番組/)).toBeInTheDocument()
   })
 
   it('ライブボタンは展開パネルに移らず、放送中で未予約の行には設定リンクも出ない', async () => {

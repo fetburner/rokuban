@@ -160,7 +160,8 @@ Android のジェスチャーナビは左右端からの横スワイプが「戻
   リストとグリッドの両方がこれを呼ぶ。予約詳細の単一番組では従来どおり overlaps API を使う。
   これはサーバー overlaps API の `never_scheduled_events` 単独の述語を近似するもので、
   never-scheduled 後に録画された放送イベントでは両者の述語が異なる。
-  予約・取消後は既存の予約一覧の invalidate と再取得で警告も更新する
+  予約・取消後は既存の予約一覧の invalidate と再取得で警告も更新する。
+  予約状態（予約済み / 未予約）にかかわらず表示する。
 - **仮想化は TanStack Virtual（`useWindowVirtualizer`）を使う**
   （`components/program-list.tsx`）。グリッドが自前実装を選んだ理由（縦軸が
   連続量で番組セルが目盛りをまたぐ区間なので、行の並びを前提とする仮想化

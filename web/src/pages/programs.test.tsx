@@ -437,12 +437,21 @@ async function reservationsSettled(queryClient: QueryClient): Promise<void> {
 
 describe('ProgramsPage の表示形式', () => {
   it('予約一覧から重なり警告を導出し、番組別 overlaps API を取得しない', async () => {
-    const fetchMock = stubApi([reservation(alsoSoon.programId, '手話ニュース')])
+    const fetchMock = stubApi([
+      reservation(soon.programId, 'ニュース7'),
+      reservation(alsoSoon.programId, '手話ニュース'),
+    ])
     const { queryClient } = renderPage()
 
     await reservationsSettled(queryClient)
+    const reservedRow = screen
+      .getAllByTestId('program-row')
+      .find((row) => within(row).queryByText('ニュース7'))
+    expect(reservedRow).toBeDefined()
+    if (!reservedRow) throw new Error('予約済みのニュース7行が見つからない')
+    expect(within(reservedRow).getByRole('button', { name: '取消' })).toBeInTheDocument()
     expect(
-      screen.getByText(/同じ時間帯に1件の予約があります（.*手話ニュース/),
+      within(reservedRow).getByText(/同じ時間帯に1件の予約があります（.*手話ニュース/),
     ).toBeInTheDocument()
 
     expect(
@@ -1055,8 +1064,11 @@ describe('ProgramsPage の表示形式', () => {
     // 修正前はグリッド側（`ProgramGridView` の選択行）だけが `overlaps` prop を
     // 渡し忘れても検出できなかった（リスト表示のテストしかなかった）。
     // リスト側のテスト（「予約一覧から重なり警告を導出し…」）と同じ組み合わせ
-    // （alsoSoon の予約がある状態で soon を選択）をグリッド経由で確認する。
-    stubApi([reservation(alsoSoon.programId, '手話ニュース')])
+    // （soon と alsoSoon の両方が予約済みの状態で soon を選択）をグリッド経由で確認する。
+    stubApi([
+      reservation(soon.programId, 'ニュース7'),
+      reservation(alsoSoon.programId, '手話ニュース'),
+    ])
     stubMatchMedia(true)
     renderPage()
 
@@ -1067,8 +1079,10 @@ describe('ProgramsPage の表示形式', () => {
     const cell = document.querySelector(`[data-program-id="${soon.programId}"]`)
     await userEvent.click(cell as HTMLElement)
 
+    const dialog = await screen.findByRole('dialog', { name: soon.name })
+    expect(within(dialog).getByRole('button', { name: '取消' })).toBeInTheDocument()
     expect(
-      await screen.findByText(/同じ時間帯に1件の予約があります（.*手話ニュース/),
+      within(dialog).getByText(/同じ時間帯に1件の予約があります（.*手話ニュース/),
     ).toBeInTheDocument()
   })
 })

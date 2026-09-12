@@ -76,7 +76,6 @@ export function ProgramRow({
             program={program}
             serviceName={serviceName}
             siteName={siteName}
-            reserved={reserved}
             overlaps={overlaps}
           />
           <ChevronDown
