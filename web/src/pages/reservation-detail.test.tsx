@@ -390,6 +390,24 @@ describe('ReservationDetailPage', () => {
     expect(screen.queryByText('#7')).not.toBeInTheDocument()
   })
 
+  it('同名のルールは予約詳細のリンクでも id を添えて押し分ける', async () => {
+    stubFetch(
+      (site, programId) =>
+        site === 'default' && programId === 300000
+          ? baseReservation({ source: 'rule', ruleId: 7 })
+          : null,
+      ['default'],
+      [sampleRule({ id: 7, name: '同名ルール' }), sampleRule({ id: 8, name: '同名ルール' })],
+    )
+
+    renderAt('/reservations/default/300000')
+
+    expect(await screen.findByRole('link', { name: '同名ルール (#7)' })).toHaveAttribute(
+      'href',
+      '/search?ruleId=7',
+    )
+  })
+
   // issue #300: ルール一覧にまだ該当ルールが無い間（一覧が未解決・失敗、また
   // は返ってきた一覧にその id がまだ無い一時的な状態）だけ `#N` に落ちる。
   it('ルール一覧に該当ルールが無い間は #N に落ちる', async () => {

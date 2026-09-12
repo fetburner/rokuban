@@ -791,6 +791,20 @@ describe('RecordingDetailPage ルール導線 (issue #230)', () => {
     )
   })
 
+  it('同名のルールは詳細のリンクでも id を添えて押し分ける', async () => {
+    createFakeServer({
+      recording: sampleRecording({ ruleId: 5, source: 'rule' }),
+      rules: [sampleRule({ id: 5, name: '同名ルール' }), sampleRule({ id: 6, name: '同名ルール' })],
+    })
+
+    renderAt('/recordings/3')
+
+    expect(await screen.findByRole('link', { name: '同名ルール (#5)' })).toHaveAttribute(
+      'href',
+      '/search?ruleId=5',
+    )
+  })
+
   it('ruleId が無い録画には「ルール」セクションを出さない（手動予約由来）', async () => {
     createFakeServer({ recording: sampleRecording({ source: 'manual' }) })
 

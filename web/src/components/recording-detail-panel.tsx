@@ -7,6 +7,7 @@ import { RecordingActions } from '@/components/recording-actions'
 import { RecordingPlayer } from '@/components/recording-player'
 import { formatBytes, formatDateTime } from '@/lib/format'
 import { ingestDisplay, type IngestDisplay } from '@/lib/ingest'
+import { ruleDisambiguator } from '@/lib/rule-label'
 import { shouldShowRecordingSite, sourceLabels } from '@/lib/recording-search'
 
 /**
@@ -183,14 +184,20 @@ export function RecordingDetail({ recording, trash }: { recording: Recording; tr
  *
  * 原則「固有名詞はリンク」（issue #221）に従い、ルールの識別（名前 or
  * `#N`）そのものをリンクテキストにする --- 装飾テキストの隣にリンクを
- * 置く形にしない。リンク先は `/search?ruleId=N`（ルールの実質的な編集画面。
- * `RulesPage` のルール名リンクと同じ着地先）。
+ * 置く形にしない。名前が重複する場合だけ `#<id>` を名前に添える。リンク先は
+ * `/search?ruleId=N`（ルールの実質的な編集画面。`RulesPage` のルール名リンクと
+ * 同じ着地先）。
  */
 function RuleSection({ ruleId }: { ruleId: number }) {
   const query = useListRules()
   const rules = unwrap(query.data) ?? []
   const rule = rules.find((r) => r.id === ruleId)
-  const label = rule?.name ?? `#${ruleId}`
+  const disambiguateRule = ruleDisambiguator(rules)
+  const disambiguator = rule === undefined ? undefined : disambiguateRule(rule)
+  const label =
+    rule === undefined
+      ? `#${ruleId}`
+      : `${rule.name}${disambiguator === undefined ? '' : ` (${disambiguator})`}`
 
   return (
     <section>

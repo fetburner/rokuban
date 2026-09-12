@@ -23,6 +23,7 @@ import { reservationsQueryKeyPrefix } from '@/lib/events'
 import { formatDateTime, formatDuration } from '@/lib/format'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
 import { programTitle } from '@/lib/program-labels'
+import { ruleDisambiguator } from '@/lib/rule-label'
 import { stateLabels } from '@/lib/reservation-labels'
 
 /**
@@ -289,6 +290,9 @@ function overrideValue(reservation: Reservation, key: string): string | undefine
  * `/rules` に単一ルートは無く、ルールの実質的な編集画面は `/search?ruleId=N`
  * （`RulesPage` のルール名リンクと同じ着地先）なので、リンク先もそこに揃える。
  *
+ * 名前が重複する場合だけ `#<id>` を名前に添えて予約詳細でも押し分ける。名前が
+ * 一意でないことは DB の仕様なので、表示上の補助ラベルで解決する。
+ *
  * `rules.find` が見つからない間（一覧が未解決・失敗、または一覧にまだ無い）は
  * `#N` に落とす --- ルールが削除された場合は `reservations.rule_id` の FK が
  * `ON DELETE SET NULL` なので `Reservation.ruleId` 自体が省略され、呼び出し側
@@ -298,7 +302,12 @@ function RuleName({ ruleId }: { ruleId: number }) {
   const query = useListRules()
   const rules = unwrap(query.data) ?? []
   const rule = rules.find((r) => r.id === ruleId)
-  const label = rule?.name ?? `#${ruleId}`
+  const disambiguateRule = ruleDisambiguator(rules)
+  const disambiguator = rule === undefined ? undefined : disambiguateRule(rule)
+  const label =
+    rule === undefined
+      ? `#${ruleId}`
+      : `${rule.name}${disambiguator === undefined ? '' : ` (${disambiguator})`}`
 
   return (
     <Link

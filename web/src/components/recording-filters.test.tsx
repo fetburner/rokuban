@@ -363,7 +363,28 @@ describe('RecordingFilters 絞り込みパネル', () => {
     const ruleSelect = (await within(panel).findByRole('combobox', { name: 'ルール' })) as HTMLSelectElement
 
     expect(ruleSelect.value).toBe('8')
+    expect(within(panel).getByRole('option', { name: '先に返ったルール' })).toBeInTheDocument()
     expect(within(panel).queryByRole('option', { name: /^ルール #/ })).not.toBeInTheDocument()
+  })
+
+  it('同名のルールは option と適用中チップで id を添えて押し分ける', async () => {
+    const user = userEvent.setup()
+    renderFilters(
+      { ruleId: 8 },
+      [service()],
+      {},
+      [rule({ id: 8, name: '同名ルール' }), rule({ id: 3, name: '同名ルール' })],
+    )
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'ルール: 同名ルール (#8)' })).toBeInTheDocument(),
+    )
+
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const panel = await screen.findByRole('dialog', { name: '絞り込み' })
+    await within(panel).findByRole('combobox', { name: 'ルール' })
+    expect(within(panel).getByRole('option', { name: '同名ルール (#8)' })).toBeInTheDocument()
+    expect(within(panel).getByRole('option', { name: '同名ルール (#3)' })).toBeInTheDocument()
   })
 
   // B: `parseRecordingsSearch` が URL 段階で落とすので、パネルへ渡る search

@@ -397,6 +397,24 @@ describe('describeRecordingsFilters', () => {
     expect(unresolved.find((chip) => chip.key === 'ruleId')?.label).toBe('ルール #99')
   })
 
+  it('同名のルールには id を添え、同名でないルールには添えない', () => {
+    const duplicateRules = [
+      rules[0],
+      {
+        ...rules[0],
+        id: 8,
+      },
+    ]
+
+    const duplicate = describeRecordingsFilters({ ruleId: 7 }, services, duplicateRules)
+    expect(duplicate.find((chip) => chip.key === 'ruleId')?.label).toBe(
+      'ルール: ニュース録画ルール (#7)',
+    )
+
+    const unique = describeRecordingsFilters({ ruleId: 7 }, services, rules)
+    expect(unique.find((chip) => chip.key === 'ruleId')?.label).toBe('ルール: ニュース録画ルール')
+  })
+
   it('期間チップは from/to 両方あれば範囲を、片方だけなら開いた側を「〜」で示す', () => {
     const both = describeRecordingsFilters(
       { from: '2026-01-01T00:00:00Z', to: '2026-01-02T00:00:00Z' },

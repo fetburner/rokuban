@@ -1718,8 +1718,8 @@ describe('SearchPage', () => {
       expect(await screen.findByText('ニュース7')).toBeInTheDocument()
       await userEvent.click(screen.getByRole('button', { name: '別の新しいルールとして保存' }))
 
-      // `rules.name` に一意制約が無いので、名前をそのまま引き継ぐと同名の 2 本が
-      // 一覧に並び、条件の要約でしか見分けられなくなる。
+      // `rules.name` に一意制約は無いが、コピー元と意図的に別のルールであることを
+      // 通常の表示だけで読めるよう、同じ名前なら `〜 のコピー` を付ける。
       await waitFor(() => expect(createRuleBodies).toHaveLength(1))
       expect(createRuleBodies[0]?.name).toBe('ニュースルール のコピー')
       expect(createRuleBodies[0]?.name).not.toBe(ruleFixture.name)

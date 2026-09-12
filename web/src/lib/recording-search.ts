@@ -27,6 +27,7 @@ import { formatDateTime } from '@/lib/format'
 import { parsePositiveIntId } from '@/lib/positive-id'
 import { ListRecordingsQueryParams } from '@/api/zod'
 import { genreCodeLabel } from '@/lib/program-search'
+import { ruleDisambiguator } from '@/lib/rule-label'
 import { ascending, asInteger, parseEnum, validArray, validValue } from '@/lib/url-search'
 
 /**
@@ -339,6 +340,7 @@ export function describeRecordingsFilters(
   rules: Rule[] | undefined,
 ): RecordingsFilterChip[] {
   const chips: RecordingsFilterChip[] = []
+  const disambiguateRule = ruleDisambiguator(rules ?? [])
 
   for (const code of search.genre ?? []) {
     chips.push({
@@ -399,6 +401,7 @@ export function describeRecordingsFilters(
 
   if (search.ruleId !== undefined) {
     const rule = rules?.find((candidate) => candidate.id === search.ruleId)
+    const disambiguator = rule === undefined ? undefined : disambiguateRule(rule)
     chips.push({
       key: 'ruleId',
       // 他のチップは全て軸を前置する（`ジャンル: ` 等）。解決できたときだけ
@@ -406,7 +409,10 @@ export function describeRecordingsFilters(
       // （例: ジャンル「ニュース」の隣にルール名「ニュース」）どちらの軸の
       // チップか読めない。ルール一覧で解決できないとき（削除済みルール）は
       // `ルール #N` のまま --- こちらは軸が読める。
-      label: rule !== undefined ? `ルール: ${rule.name}` : `ルール #${search.ruleId}`,
+      label:
+        rule !== undefined
+          ? `ルール: ${rule.name}${disambiguator === undefined ? '' : ` (${disambiguator})`}`
+          : `ルール #${search.ruleId}`,
       clear: (s) => ({ ...s, ruleId: undefined }),
     })
   }
