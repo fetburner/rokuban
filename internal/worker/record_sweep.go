@@ -22,11 +22,11 @@ const (
 	// 引き継ぐ（docs/recording.md §3.3）。
 	defaultRecordSweepInterval = 5 * time.Minute
 
-	// recordSweepTimeout は 1 パス（`GET /api/recording/records` の全量取得 + record
-	// ごとの processRecord）全体の上限。
+	// recordSweepTimeout は 1 パス（schedules / `GET /api/recording/records` の全量
+	// 取得 + record ごとの processRecord）全体の上限。
 	//
 	// reconciler（reconcilePassTimeout、10 分）と同じ理由で river の既定（1 分）より
-	// 長く与える: mirakc への HTTP（records の全量 GET 1 回）に加え、record ごとに
+	// 長く与える: mirakc への HTTP（schedules / records の全量 GET）に加え、record ごとに
 	// DB トランザクションが 1 回発生する（record_sync の行ロック確保 + recordings
 	// upsert 相当）ため、record 件数に比例して往復コストが積み上がる。
 	// ingest（Timeout() が -1）とは異なり、record のバイト転送そのものはこのジョブに

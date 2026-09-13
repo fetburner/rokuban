@@ -28,6 +28,37 @@ func (q *Queries) AppendQualityEvents(ctx context.Context, arg AppendQualityEven
 	return err
 }
 
+const appendQualityEventsIfMissing = `-- name: AppendQualityEventsIfMissing :execrows
+UPDATE recordings AS r
+SET quality_events = r.quality_events || $1::jsonb,
+    updated_at = now()
+WHERE r.id = $2
+  AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(r.quality_events) AS existing_event
+      CROSS JOIN jsonb_array_elements($1::jsonb) AS incoming_event
+      WHERE existing_event->>'event' = incoming_event->>'event'
+        AND existing_event->'reason' = incoming_event->'reason'
+  )
+`
+
+type AppendQualityEventsIfMissingParams struct {
+	Events json.RawMessage
+	ID     int64
+}
+
+// 同じ失敗理由を records/schedules sweep が繰り返し観測しても品質イベントを
+// 増殖させない。event と reason の組を同一録画内の観測識別子として扱う。
+// record-broken など SSE のイベント履歴は既存の AppendQualityEvents でそのまま
+// 追記するので、mirakc から同じイベントが複数回届いた事実は失わない。
+func (q *Queries) AppendQualityEventsIfMissing(ctx context.Context, arg AppendQualityEventsIfMissingParams) (int64, error) {
+	result, err := q.db.Exec(ctx, appendQualityEventsIfMissing, arg.Events, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const appendRecordingEncodeProfiles = `-- name: AppendRecordingEncodeProfiles :exec
 INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
 VALUES (
@@ -146,6 +177,76 @@ func (q *Queries) CreateFailedRecording(ctx context.Context, arg CreateFailedRec
 		arg.QualityEvents,
 	)
 	return err
+}
+
+const createOrGetFailedRecording = `-- name: CreateOrGetFailedRecording :one
+INSERT INTO recordings (
+    rule_id, source, site,
+    network_id, service_id, event_id, service_name,
+    channel_type, channel, title, description,
+    extended, genres, is_free,
+    program_start_at, program_duration_ms,
+    status
+) VALUES (
+    $1, $2, $3,
+    $4, $5, $6, $7,
+    $8, $9, $10, $11,
+    $12, $13, $14,
+    $15, $16,
+    'failed'
+)
+ON CONFLICT (site, network_id, service_id, event_id, program_start_at)
+    WHERE deleted_at IS NULL AND superseded_at IS NULL
+DO UPDATE SET
+    updated_at = recordings.updated_at
+RETURNING id
+`
+
+type CreateOrGetFailedRecordingParams struct {
+	RuleID            *int64
+	Source            string
+	Site              string
+	NetworkID         int32
+	ServiceID         int32
+	EventID           int32
+	ServiceName       string
+	ChannelType       string
+	Channel           string
+	Title             string
+	Description       *string
+	Extended          json.RawMessage
+	Genres            json.RawMessage
+	IsFree            bool
+	ProgramStartAt    time.Time
+	ProgramDurationMs int64
+}
+
+// records API や schedules API から再構成した failed を保存する。SSE の
+// recording.failed は同じ通知を履歴として複数追記する CreateFailedRecording を
+// 使う一方、周期 sweep は同じ観測を何度も見るため、active-event の行を再利用する
+// このクエリで recordings の重複を防ぐ。
+func (q *Queries) CreateOrGetFailedRecording(ctx context.Context, arg CreateOrGetFailedRecordingParams) (int64, error) {
+	row := q.db.QueryRow(ctx, createOrGetFailedRecording,
+		arg.RuleID,
+		arg.Source,
+		arg.Site,
+		arg.NetworkID,
+		arg.ServiceID,
+		arg.EventID,
+		arg.ServiceName,
+		arg.ChannelType,
+		arg.Channel,
+		arg.Title,
+		arg.Description,
+		arg.Extended,
+		arg.Genres,
+		arg.IsFree,
+		arg.ProgramStartAt,
+		arg.ProgramDurationMs,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
 }
 
 const createRecording = `-- name: CreateRecording :one

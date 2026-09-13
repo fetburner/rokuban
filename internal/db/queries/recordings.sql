@@ -126,6 +126,49 @@ DO UPDATE SET
     quality_events = recordings.quality_events || EXCLUDED.quality_events,
     updated_at     = now();
 
+-- records API や schedules API から再構成した failed を保存する。SSE の
+-- recording.failed は同じ通知を履歴として複数追記する CreateFailedRecording を
+-- 使う一方、周期 sweep は同じ観測を何度も見るため、active-event の行を再利用する
+-- このクエリで recordings の重複を防ぐ。
+-- name: CreateOrGetFailedRecording :one
+INSERT INTO recordings (
+    rule_id, source, site,
+    network_id, service_id, event_id, service_name,
+    channel_type, channel, title, description,
+    extended, genres, is_free,
+    program_start_at, program_duration_ms,
+    status
+) VALUES (
+    $1, $2, $3,
+    $4, $5, $6, $7,
+    $8, $9, $10, $11,
+    $12, $13, $14,
+    $15, $16,
+    'failed'
+)
+ON CONFLICT (site, network_id, service_id, event_id, program_start_at)
+    WHERE deleted_at IS NULL AND superseded_at IS NULL
+DO UPDATE SET
+    updated_at = recordings.updated_at
+RETURNING id;
+
+-- 同じ失敗理由を records/schedules sweep が繰り返し観測しても品質イベントを
+-- 増殖させない。event と reason の組を同一録画内の観測識別子として扱う。
+-- record-broken など SSE のイベント履歴は既存の AppendQualityEvents でそのまま
+-- 追記するので、mirakc から同じイベントが複数回届いた事実は失わない。
+-- name: AppendQualityEventsIfMissing :execrows
+UPDATE recordings AS r
+SET quality_events = r.quality_events || sqlc.arg('events')::jsonb,
+    updated_at = now()
+WHERE r.id = sqlc.arg('id')
+  AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(r.quality_events) AS existing_event
+      CROSS JOIN jsonb_array_elements(sqlc.arg('events')::jsonb) AS incoming_event
+      WHERE existing_event->>'event' = incoming_event->>'event'
+        AND existing_event->'reason' = incoming_event->'reason'
+  );
+
 -- 録画一覧。原本のサイズと PID 別 drop_stats の合計、
 -- 再生可能な encoded プロファイル名を同梱する。
 -- PID 別の内訳は行数が多く一覧では使わないので ListRecordingDropStats で別に取る。
