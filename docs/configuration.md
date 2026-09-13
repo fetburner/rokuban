@@ -107,7 +107,7 @@ config の読み込みより前に出るログだけは既定（text 形式・In
 
 ### worker.periodic_jobs と worker.queues
 
-- `worker.periodic_jobs`: プロセス内で定期ジョブを投入するか。対象は epg_sync / tuner_sync / ruler_pass / reconcile_pass / record_sweep。catalog_export / delete_reconcile / encode_reconcile / storage_sync も対象。k8s では false にし、CronJob から `rokuban enqueue` で投入する（River の PeriodicJobs はリーダーだけが投入するため、KEDA で 0 にスケールすると誰も投入しなくなる。[data.md](data.md) §2）
+- `worker.periodic_jobs`: プロセス内で定期ジョブを投入するか。対象は epg_sync / tuner_sync / ruler_pass / reconcile_pass / record_sweep。catalog_export / delete_reconcile / encode_reconcile / thumbnail_reconcile / storage_sync も対象。k8s では false にし、CronJob から `rokuban enqueue` で投入する（River の PeriodicJobs はリーダーだけが投入するため、KEDA で 0 にスケールすると誰も投入しなくなる。[data.md](data.md) §2）
 - `worker.queues`: worker ロールが引くキューを絞る。空なら全部。ロールを増やさずに「ruler / reconciler だけ別 Pod」を実現するための knob。**同じものを `--queues` で argv からも指定でき、両方指定は起動エラー**（k8s では ConfigMap 1 個を全 Pod で共有し Pod ごとの差分を argv に寄せるため。[operations.md](operations.md) §5）。書くのは物理名ではなく**論理名**。使えるのは `ingest` / `epg` / `ruler` / `reconciler` / `watcher` / `encode`。`thumbnail` / `cleanup` / `storage` / `default` も使える。site 単位のキューの物理名への展開・ロールとの関係（worker ロールが無いプロセスはこの設定に関わらずキューを引かない）は [operations.md](operations.md) §5 を参照
 
 ### ffmpeg の存在検査
@@ -192,7 +192,9 @@ argv の順序（live）は同じ規則を入力 1 本・出力 N 本の形に�
 - `--sites tokyo` は tokyo に束縛する。`--sites tokyo,tokyo` のような重複は 1 つに畳む（束縛数の判定が紛らわしいエラーにならないようにするため）
 - `watcher` ロールは 1 プロセスが N サイトを束縛できる。束縛サイトごとに独立した goroutine + advisory lock（`watcher:<site>`）を持つため、複数サイトを同じプロセスで watch しても互いに干渉しない。0 サイト束縛では watch 対象が無いだけで、起動エラーにはしない
 - `worker` ロールも 1 プロセスが N サイトを束縛できる。mirakc クライアントは site → 値の map になり、site 単位のキュー・定期ジョブが対象にする束縛サイトも 1 つの site ではなく集合になった。site 単位のキュー（ingest/epg/reconciler/watcher）は束縛サイトの数だけ物理キュー（`<queue>_<site>`）を購読する。site 単位の定期ジョブ（epg_sync/tuner_sync/ruler_pass/reconcile_pass/record_sweep）も束縛サイトごとに 1 本ずつ登録する。**0 サイト（中央プロセス）の束縛は `worker.queues` / `--queues` を site 非依存キューに絞ったときだけ許す**。`worker.queues` が空（既定=全キュー）のまま、または site 単位のキューを含んだまま 0 サイトで起動すると、届く site 単位のジョブは束縛サイトの集合のどれとも一致せず全滅して再試行し続けるだけになる。そのため起動エラーにする。どのキューが site 単位か・物理キュー名への展開は [operations.md](operations.md) §5 を参照
-- `enqueue` サブコマンドは **site 束縛ジョブだけ** `--site` で投入先を選ぶ（未指定かつレジストリ 1 要素ならその 1 つ、2 要素以上なら必須）。`catalog-export` は site 非依存で `--site` を付けない（詳細は [operations.md](operations.md) §1「ジョブ化されたループの監視」）
+- `enqueue` サブコマンドは **site 束縛ジョブだけ** `--site` で投入先を選ぶ（未指定かつレジストリ 1 要素ならその 1 つ、2 要素以上なら必須）
+- `catalog-export` / `delete-reconcile` / `encode-reconcile` / `thumbnail-reconcile` / `storage-sync` は site 非依存である。
+- これらには `--site` を付けない（詳細は [operations.md](operations.md) §1「ジョブ化されたループの監視」）
 - `shadow-diff` も同じ解決規則の `--site` を持つ。EPGStation は東京の 1 台なので、比較対象の site を名指しする
 - `rescue` は site 非依存で、`--site` を持たない。catalog の各行は自分の site を持ち、catalog が無い場合のストレージ走査も `sites/{site}/` 前置から site を決める。前置の無いファイルは登録せず Warn にする
 

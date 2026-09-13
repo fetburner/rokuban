@@ -275,6 +275,9 @@ func NewWorkers(deps *Deps) *river.Workers {
 		FFmpeg:     deps.Encode.FFmpeg,
 		FFprobe:    deps.Encode.FFprobe,
 	})
+	river.AddWorker(workers, &ThumbnailReconcileWorker{
+		Pool: deps.Pool,
+	})
 	river.AddWorker(workers, &DeleteReconcileWorker{
 		Pool:              deps.Pool,
 		MediaDir:          deps.MediaDir,
@@ -423,6 +426,14 @@ type ClientConfig struct {
 	// EncodeReconcileInterval は encode reconcile の間隔。0 なら既定値（15 分）。
 	EncodeReconcileInterval time.Duration
 
+	// ThumbnailReconcile が true なら thumbnail の desired−observed 定期パスを
+	// 定期ジョブとして登録する（PeriodicJobs が true のときのみ）。EncodeReconcile
+	// と同じくサイト非依存で、thumbnail キューを実ジョブと共有する。
+	ThumbnailReconcile bool
+
+	// ThumbnailReconcileInterval は thumbnail reconcile の間隔。0 なら既定値（15 分）。
+	ThumbnailReconcileInterval time.Duration
+
 	// StorageSync が true ならストレージ観測（issue #238 M7-5）を定期ジョブとして
 	// 登録する（PeriodicJobs が true のときのみ）。CatalogExport / DeleteReconcile と
 	// 同じくサイト非依存（観測対象は単一の MediaDir / ScratchDir）。
@@ -432,7 +443,7 @@ type ClientConfig struct {
 	StorageSyncInterval time.Duration
 
 	// PeriodicJobs が false なら、BoundSites / CatalogExport / DeleteReconcile /
-	// EncodeReconcile / StorageSync が設定されていても River の PeriodicJobs を
+	// EncodeReconcile / ThumbnailReconcile / StorageSync が設定されていても River の PeriodicJobs を
 	// 一切登録しない。
 	// k8s では false にして、CronJob が
 	// `rokuban enqueue` を叩く形に委ねる（docs/data.md §2「定期実行の契機は
@@ -746,6 +757,7 @@ func configureGlobalPeriodicJobs(riverCfg *river.Config, cfg ClientConfig) {
 	appendPeriodic(cfg.CatalogExport, cfg.CatalogExportInterval, defaultCatalogExportInterval, jobs.CatalogExportArgs{})
 	appendPeriodic(cfg.DeleteReconcile, cfg.DeleteReconcileInterval, defaultDeleteReconcileInterval, jobs.DeleteReconcileArgs{})
 	appendPeriodic(cfg.EncodeReconcile, cfg.EncodeReconcileInterval, defaultEncodeReconcileInterval, jobs.EncodeReconcileArgs{})
+	appendPeriodic(cfg.ThumbnailReconcile, cfg.ThumbnailReconcileInterval, defaultThumbnailReconcileInterval, jobs.ThumbnailReconcileArgs{})
 	appendPeriodic(cfg.StorageSync, cfg.StorageSyncInterval, defaultStorageSyncInterval, jobs.StorageSyncArgs{})
 }
 
