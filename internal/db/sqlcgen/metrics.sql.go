@@ -16,6 +16,7 @@ SELECT
 FROM record_sync rs
 WHERE rs.site = $1
   AND rs.status = 'finished'
+  AND rs.recording_id IS NOT NULL
   AND NOT EXISTS (
       SELECT 1 FROM media_assets a
       WHERE a.recording_id = rs.recording_id

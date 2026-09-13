@@ -1275,6 +1275,82 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 	}
 }
 
+// TestSweep_RemovesStaleRecordSyncs は、ListRecords の全量結果に無い
+// record_sync 行を外部産 / Rokuban 産のどちらも削除し、今回観測した外部産行は
+// 残すことを確認する。record_sync は mirakc の全 record の写しなので、
+// recording_id の有無で stale 削除の対象を分けてはならない。
+func TestSweep_RemovesStaleRecordSyncs(t *testing.T) {
+	w, pool := setupTest(t)
+	ctx := context.Background()
+
+	q := sqlcgen.New(pool)
+	oursRecordingID := insertTestRecordingAt(t, pool, DefaultSite, 1, 1, 901,
+		time.Now().Add(-time.Hour), "finished")
+	oursLength := int64(100)
+	if err := q.UpsertRecordSync(ctx, sqlcgen.UpsertRecordSyncParams{
+		Site:          DefaultSite,
+		RecordID:      "stale-ours",
+		RecordingID:   &oursRecordingID,
+		ProgramID:     901,
+		Status:        "finished",
+		ContentLength: &oursLength,
+		Tags:          []string{mirakc.ProgramTag(901)},
+	}); err != nil {
+		t.Fatalf("upserting stale ours record_sync: %v", err)
+	}
+
+	externalLength := int64(200)
+	if err := q.UpsertRecordSync(ctx, sqlcgen.UpsertRecordSyncParams{
+		Site:          DefaultSite,
+		RecordID:      "stale-external",
+		ProgramID:     902,
+		Status:        "finished",
+		ContentLength: &externalLength,
+		Tags:          []string{},
+	}); err != nil {
+		t.Fatalf("upserting stale external record_sync: %v", err)
+	}
+
+	current := testRecord("current-external", 903, "finished")
+	current.Tags = nil
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Record{current})
+	})
+	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Service{})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	w.mirakc = mirakc.NewClient(server.URL, nil)
+
+	if err := w.Sweep(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	var gotCount int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM record_sync WHERE site = $1", DefaultSite,
+	).Scan(&gotCount); err != nil {
+		t.Fatalf("counting record_sync rows: %v", err)
+	}
+	if gotCount != 1 {
+		t.Fatalf("record_sync row count = %d, want 1 (stale ours / external rows must be deleted)", gotCount)
+	}
+
+	var gotID string
+	if err := pool.QueryRow(ctx,
+		"SELECT record_id FROM record_sync WHERE site = $1", DefaultSite,
+	).Scan(&gotID); err != nil {
+		t.Fatalf("reading remaining record_sync row: %v", err)
+	}
+	if gotID != current.ID {
+		t.Errorf("remaining record_sync record_id = %q, want %q", gotID, current.ID)
+	}
+}
+
 // TestSweepAndHandleEvent_ConcurrentIdempotent は本タスク（M2-18）の核心を検証する。
 // 3 段構え（docs/recording.md §3.3）のうち (a) SSE 由来の handleEvent と (c) 定期の
 // Sweep（record_sweep ジョブから呼ばれる）が同一 record を同時に処理しても、

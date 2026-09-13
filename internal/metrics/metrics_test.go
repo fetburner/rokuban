@@ -223,6 +223,32 @@ func TestBacklogCollector(t *testing.T) {
 	}
 }
 
+// 外部産の finished record は record_sync で観測し続けるが、Rokuban が ingest する
+// 対象ではないので backlog には入らない。
+func TestBacklogCollector_ExcludesExternalRecords(t *testing.T) {
+	pool := rokutest.SetupDB(t)
+
+	externalLength := int64(400)
+	if err := sqlcgen.New(pool).UpsertRecordSync(context.Background(), sqlcgen.UpsertRecordSyncParams{
+		Site:          testSite,
+		RecordID:      "external-rec",
+		ProgramID:     900001,
+		Status:        "finished",
+		ContentLength: &externalLength,
+		Tags:          []string{},
+	}); err != nil {
+		t.Fatalf("upserting external record_sync: %v", err)
+	}
+
+	c := NewBacklogCollector(pool, testSite)
+	if got := gaugeValue(t, c, "rokuban_uningested_records"); got != 0 {
+		t.Errorf("rokuban_uningested_records = %v, want 0", got)
+	}
+	if got := gaugeValue(t, c, "rokuban_uningested_record_bytes"); got != 0 {
+		t.Errorf("rokuban_uningested_record_bytes = %v, want 0", got)
+	}
+}
+
 // 滞留 0 のときも 0 として報告されること（メトリクスが消えない）。
 func TestBacklogCollector_Empty(t *testing.T) {
 	pool := rokutest.SetupDB(t)

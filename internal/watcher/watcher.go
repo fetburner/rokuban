@@ -142,12 +142,21 @@ func (w *Watcher) Sweep(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listing records: %w", err)
 	}
+	recordIDs := make([]string, 0, len(records))
 	for _, record := range records {
+		recordIDs = append(recordIDs, record.ID)
 		if err := w.processRecord(ctx, record); err != nil {
 			slog.Error("sweep: processing record", "record_id", record.ID, "err", err)
 		}
 	}
-	slog.Info("watcher sweep complete", "records", len(records))
+	stale, err := sqlcgen.New(w.pool).DeleteStaleRecordSyncs(ctx, sqlcgen.DeleteStaleRecordSyncsParams{
+		Site:      w.site,
+		RecordIds: recordIDs,
+	})
+	if err != nil {
+		return fmt.Errorf("deleting stale record_syncs: %w", err)
+	}
+	slog.Info("watcher sweep complete", "records", len(records), "stale", stale)
 	metrics.SweepLastPass.SetToCurrentTime()
 	return nil
 }
