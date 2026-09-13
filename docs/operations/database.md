@@ -77,4 +77,4 @@ monolith モードでは Postgres のデータディレクトリとエンコー�
 
 ### 経緯と失敗事例
 
-- 輻輳時の隔離の実装規律（ロール別プール上限・`statement_timeout` の一括適用）は issue #90 で実装した。
+- 輻輳時の隔離の実装規律（ロール別プール上限・`statement_timeout` の一括適用）。

@@ -170,11 +170,11 @@ Rokuban には長寿命接続が 2 つある --- notifier がブラウザへ送�
 
 - **「取りこぼしは stale-time 経過後の再取得で自然回復する」と docs 3 箇所（ここ・
   frontend/stack.md・frontend/shell.md）に書いていたが、そのような再取得はどこにも
-  存在しなかった**（issue #181）。`staleTime` は判定の期限であってタイマーではない。
+  存在しなかった**。`staleTime` は判定の期限であってタイマーではない。
   レベルトリガー設計の「イベントはヒント、真実は定期再取得」のうち**定期の側が
   フロントに無い**まま、docs だけが在ることにしていた。定期 invalidate と再接続時の
   invalidate を足して埋めた
-- **`epg` トピックが番組リストに一度も届いていなかった**（同 issue #181 で発見）。
+- **`epg` トピックが番組リストに一度も届いていなかった**。
   接頭辞は `/api/sites/` だけだったが、番組リストのキーは手書きの
   `['/api/programs', 'infinite', ...]`。**jsdom のテストは「トピックを撃つと
   `/api/sites/...` のクエリが stale になる」ことしか見ておらず、画面が実際に使って
@@ -183,7 +183,7 @@ Rokuban には長寿命接続が 2 つある --- notifier がブラウザへ送�
   リクエスト数を数える）で「10 分進めても `/api/sites/tokyo/programs` の回数が
   1 のまま」を観測したとき。回帰テストは `web/src/lib/events.test.tsx` の
   「epg のイベントで番組リスト（手書きのクエリキー）も取り直す」
-- **予約詳細も同じ形で漏れていた**（同 issue #181 のレビューで、生成キー 20 本 + 手書き
+- **予約詳細も同じ形で漏れていた**（生成キー 20 本 + 手書き
   2 本を全部 `startsWith` に当てる全数確認をして発見）。orval の生成キー
   `['/api/sites/{site}/programs/{programId}/reservation']` は `'/api/reservations'` に
   前方一致しないので `reservations` トピックが届かず、代わりに `'/api/sites/'` に
@@ -192,6 +192,6 @@ Rokuban には長寿命接続が 2 つある --- notifier がブラウザへ送�
   気付けなかった。回帰テストは `pages/reservation-detail.test.tsx` の
   「予約一覧の invalidate（`['/api/reservations']`）が詳細ページにも届く」と
   `lib/events.test.tsx` の「予約詳細は運用状態グループ（60 秒）で取り直す」
-- SSE の初期実装は M1-7 で api ロール内（`internal/api/events.go` の `EventHub`）に
-  置かれ、M2-19（issue #24）で notifier ロールへ分離した。ロールを分ける判断と
-  「2 つの SSE を集約しない」判断は issue #25 §4
+- SSE は api ロール内（`internal/api/events.go` の `EventHub`）に
+  置かれていたが、notifier ロールへ分離した。ロールを分ける判断と
+  「2 つの SSE を集約しない」判断は上記「2 つの SSE を 1 つに集約しない」

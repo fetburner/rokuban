@@ -204,4 +204,4 @@ EPGStation の `RecordedHistory`（再放送重複排除の種）はこのコマ
 が使う in-place 登録（`internal/inplace.Register`）は rule_id を書く列を
 持たない。`RecordedHistory` 自体にも EPGStation 側のルール id が無い。
 取り込んでも重複排除には一切効かないため、`internal/ruler` 側の対応と
-合わせて別途扱う（GitHub issue #72 のコメント参照）。
+合わせて別途扱う。

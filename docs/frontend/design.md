@@ -199,7 +199,7 @@ Tab 後に通常サイズへ戻る既存判定で測る。
 が、全面リンクと行内操作のような意図的な重なりがあるため、全画面へ一律の gap を
 課さない。合否は、列挙漏れがないこと、実効寸法が 24px 下限を満たすこと、そして
 44px を役割として決めた標的の個別契約を満たすことで決まる。トーストの action
-（`size="sm"`）は 32px、close（`size="icon-sm"`）は 28px として #729 の導線も
+（`size="sm"`）は 32px、close（`size="icon-sm"`）は 28px として undo トーストの導線も
 判定に含める。
 
 [WCAG 2.5.5 Enhanced (AAA)](https://www.w3.org/WAI/WCAG22/Understanding/target-size-enhanced)

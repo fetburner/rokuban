@@ -146,10 +146,9 @@ ALTER TABLE recordings ADD CONSTRAINT recordings_rule_id_fkey
 
 ## 経緯と失敗事例
 
-- `rules` 一式は M2-1（issue #3 / #24）の成果物
 - **dedupe の値域 CHECK はコードレビューで発覚した欠落。** 当初の CHECK は
   `dedupe_enabled = false OR dedupe_threshold IS NOT NULL` しか見ておらず、値そのものの
-  範囲は API 層にも DB 層にも無かった。恒真トラップ（閾値 0）は M2-5 のサーキット
+  範囲は API 層にも DB 層にも無かった。恒真トラップ（閾値 0）はサーキット
   ブレーカー（削除しか守らない）にも止められない経路だった。既存の違反行は値を推測して
   丸めず、`dedupe_enabled = false` に倒して無効化した（意図不明の値で重複排除を有効の
   まま残すと「黙って録画が止まる / 黙って無効化される」症状が継続するため。値域は

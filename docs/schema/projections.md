@@ -169,7 +169,5 @@ CREATE TABLE tuner_sync (
 
 ## 経緯と失敗事例
 
-- EPG プロジェクションは M1-6、`tuner_sync` は M2-10 の成果物。
-  存在理由の元 issue は #3、サブサービスの扱いは issue #17、大量削除で立ち止まる規律は issue #11
-- **`tuner_sync` の PK**: issue #21 は投影列に `index` を挙げているのに DDL 案が持たず
+- **`tuner_sync` の PK**: 投影列に `index` を挙げているのに DDL 案が持たず
   PK が `name` になっていた。この不整合を `index` を採る側で解消した（本文 §9.5 の理由）

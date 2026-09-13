@@ -95,7 +95,7 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
 
 `storage.media_dir`（アーカイブ）と `storage.scratch_dir`（ローカルスクラッチ）の
 容量は、worker が定期的に statfs 相当で観測して `storage_sync` に射影し、
-`GET /api/storage` で読める（issue #238 M7-5）。api ロールはファイルシステムに
+`GET /api/storage` で読める。api ロールはファイルシステムに
 依存しない（不変条件 1）ので、観測はファイルシステムを持つ worker の仕事に
 限る --- mirakc の recording.basedir（録画バッファ、上記「2 階層」表のエッジ側）は
 対象外で、Rokuban 自身が直接読み書きする 2 つのローカルパスだけを見る。
@@ -148,6 +148,6 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
 
 ## 経緯と失敗事例
 
-- 原本 `rel_path` への `sites/{site}/` 前置は issue #186（M4-14）。「site 名を先頭成分にする」当初案が既存 rel_path と衝突しうることは PR #196 のレビューで発見された
-- site 名としての `catalog` / `thumbnails` の禁止（`reservedSiteNames`）は M4-11 で導入。`sites` 自体を site 名にできる理由づけは issue #186 のコメント参照
-- サムネイルの導入は M3-4。ごみ箱の録画を投入対象から除外する判断は issue #109
+- 原本 `rel_path` への `sites/{site}/` 前置。「site 名を先頭成分にする」当初案が既存 rel_path と衝突しうることはレビューで発見された
+- site 名としての `catalog` / `thumbnails` の禁止（`reservedSiteNames`）。`sites` 自体を site 名にすることは禁止していない —— `sites/sites/...` になるだけで衝突しない
+- サムネイルは派生物として投入する。ごみ箱の録画は投入対象から除外する

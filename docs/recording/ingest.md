@@ -231,7 +231,7 @@ NULL とは違い、非 null な `*int64(0)` として `watcher.go` の `content
 ない。`internal/api/recordings.go` の `ingestProgressFromFields`）。`kind='original'` の行が
 `state` を問わず存在すれば `committed` —— `state='deleted'`（取り込んだ後に削除した）でも
 `committed` のままにするのは、**「取り込めなかった」と「取り込んだ後に消した」を混同しない**
-ため（[#211](https://github.com/fetburner/rokuban/issues/211) の症状。原本が**いま**あるかは
+ため（原本が**いま**あるかは
 `sizeBytes` の有無が答える）。取り残された進捗行がコミット済みの録画に「取り込み中」を
 名乗らないのも、この優先順位による（真実は `media_assets` 側。不変条件 5）。
 

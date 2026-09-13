@@ -58,6 +58,5 @@ mirakc は起動中の局ロゴ抽出（放送波からの動的抽出）をサ�
 
 ## 経緯と失敗事例
 
-- 手動予約とルール予約を同じ `reservations` に統一し、区別を `program_intents.action` の有無から導出する決定は issue #26
-- 意図（`program_intents` / `program_overrides`）を導出行と別の永続表に置く設計の経緯（issue #18 の案 A）は [録画エンジン](../recording.md) §4「予約モデル」
-- サービスロゴのドロップは M2-12。検討の経緯は issue #24 のコメント参照
+- 手動予約とルール予約を同じ `reservations` に統一し、区別を `program_intents.action` の有無から導出する
+- 意図（`program_intents` / `program_overrides`）を導出行と別の永続表に置く設計は [録画エンジン](../recording.md) §4「予約モデル」

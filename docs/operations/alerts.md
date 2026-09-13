@@ -72,7 +72,7 @@ snapshot が 0 または stale なら、pending の値が 0 でも「同期済�
 `rokuban_presync_scrape_errors_total{site}` が増えるので、0 への置換でアラートを消さない。
 
 件数の gauge だけでは、8 日先の予約 1 件と 2 分後開始の予約 1 件が同値になり
-区別できない（issue #680）。開始が近いかどうかは件数ではなく
+区別できない。開始が近いかどうかは件数ではなく
 `rokuban_presync_pending_earliest_start_timestamp_seconds` で判定する。
 
 アラート式の閾値は、現時点ではリポジトリに固定しない。Prometheus 側で運用値を設定する
@@ -142,4 +142,4 @@ observed を再計算するため、`synced` 成功状態を永続化して古�
 
 ### 経緯と失敗事例
 
-- サーキットブレーカーのラッチ化と `rokuban_circuit_breaker_tripped` ゲージは M2-5、開始遅延検出器（`rokuban_reconcile_start_delayed`）は M2-7。
+- サーキットブレーカーは「発動遷移」だけを数えるラッチ化。開始遅延検出器（`rokuban_reconcile_start_delayed`）は「開始時刻を過ぎても `recording.started` が観測されない予約」を reconcile ループで検出する。

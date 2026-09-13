@@ -48,7 +48,7 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に完走したパスの時刻 |
 | `rokuban_reconcile_start_delayed{site}` | Gauge | **開始時刻を過ぎたのに録画が始まっていない予約数**。収束すればゼロに戻る |
 | `rokuban_presync_pending{site,reason}` | Gauge（DB） | 開始前〜録画中の desired reservation と observed schedule の未収束数。`reason="missing"` は schedule 不在、`reason="options"` は `scheduled` state で直せる priority / program tag / 明示 `contentPath` の不一致、`reason="options_deferred"` は state allowlist により今は再作成できない同不一致。skip と終了済みは除外する。DB 版の `rokuban_reconcile_pending_diff{action="create"}`（`missing`）/ `{action="update"}`（`options`）/ `{action="update_deferred"}`（`options_deferred`）に相当する |
-| `rokuban_presync_pending_earliest_start_timestamp_seconds{site,reason}` | Gauge（DB） | 同じ reason で pending な予約のうち最も開始が近い番組の start_at。件数だけでは判別できない「開始が近い未同期」と「十分先の未同期」を区別する（issue #680）。pending が 0 の reason には系列が出ない |
+| `rokuban_presync_pending_earliest_start_timestamp_seconds{site,reason}` | Gauge（DB） | 同じ reason で pending な予約のうち最も開始が近い番組の start_at。件数だけでは判別できない「開始が近い未同期」と「十分先の未同期」を区別する。pending が 0 の reason には系列が出ない |
 | `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` | Gauge（DB） | `schedule_sync` の全量 upsert + stale 削除 + marker 更新を同一トランザクションでコミットした最後の時刻。未確立は 0。`presync_pending` と対で観測不能を判定する |
 | `rokuban_presync_scrape_errors_total{site}` | Counter（DB） | presync collector の DB 読み取りまたは observed options の解釈に失敗した回数。失敗時は pending / snapshot を 0 として報告しない |
 | `rokuban_ruler_pass_duration_seconds` | Histogram | ruler 1 パスの所要時間（下記 ruler） |
@@ -167,7 +167,7 @@ schedule 同期（reconcile）の鮮度だけである。ruler と record_sweep 
 | site 束縛 | `epg-sync` / `tuner-sync` / `ruler-pass` / `reconcile-pass` / `record-sweep` | 多サイトでは必須（1 サイトなら省略可） | **サイトごとに 1 本**（`--site tokyo` 等） |
 | site 非依存 | `catalog-export` / `encode-reconcile` / `storage-sync` | **付けない**（付けるとエラー） | **全体で 1 本**（サイトごとに立てない） |
 
-`catalog-export` / `storage-sync` はアーカイブ（+ スクラッチ）が単一なので site の属性を持たない。`encode-reconcile` はエンコードのプロファイルとアーカイブがどちらも単一だから同じ扱い。サイトごとの CronJob から叩くと N 回投入される（River の一意制約で 1 本に合流はするが意図が読めない）。**`worker.periodic_jobs: false` の構成では `storage-sync` の CronJob を忘れると `storage_sync` が一度も投入されない**。`GET /api/storage` が永遠に空配列を返す（issue #238 のレビュー指摘）。**`encode-reconcile` を忘れた場合の症状は静かで、ヒントを落とした録画だけがエンコードされないまま残る**（[ingest](../recording/ingest.md) §5.5）。検出は `rokuban_encode_reconcile_last_pass_timestamp_seconds` の鮮度で行う（投入を忘れれば進まない）。
+`catalog-export` / `storage-sync` はアーカイブ（+ スクラッチ）が単一なので site の属性を持たない。`encode-reconcile` はエンコードのプロファイルとアーカイブがどちらも単一だから同じ扱い。サイトごとの CronJob から叩くと N 回投入される（River の一意制約で 1 本に合流はするが意図が読めない）。**`worker.periodic_jobs: false` の構成では `storage-sync` の CronJob を忘れると `storage_sync` が一度も投入されない**。`GET /api/storage` が永遠に空配列を返す（レビュー指摘）。**`encode-reconcile` を忘れた場合の症状は静かで、ヒントを落とした録画だけがエンコードされないまま残る**（[ingest](../recording/ingest.md) §5.5）。検出は `rokuban_encode_reconcile_last_pass_timestamp_seconds` の鮮度で行う（投入を忘れれば進まない）。
 
 **record_sweep には ruler / reconciler と違ってヒント経路（前倒し投入）がない**。定期投入だけが契機で、間隔は既定 5 分（`worker.RecordSweepInterval`、旧 watcher の `ReconcileInterval` を継承）。SSE 再接続をヒントにする案は検討したが、`internal/mirakc.Client.Subscribe` が再接続を内部に隠していて呼び出し側に通知できないため見送った（[録画エンジン](../recording.md) §3.3「record_sweep の起動契機」）。取りこぼしの実害は SSE の (a)(b) が大半を吸収し、record_sweep は定期パスとして収束させる保険という位置づけなので、5 分間隔で十分と判断している。
 
@@ -255,7 +255,6 @@ schedule 同期（reconcile）の鮮度だけである。ruler と record_sweep 
 
 ### 経緯と失敗事例
 
-- `/metrics` エンドポイントは M1-9、開始遅延検出器は M2-7、record_sweep のジョブ化は M2-18。チューナー射影と `rokuban_capacity_overages` は M2-10、`catalog-export` が `--site` を取らない決定は issue #200。
-- **`rokuban_reconcile_circuit_breaker_trips_total` は M2-5 で意味が変わった**（メトリクス名は既存のダッシュボード・アラートを壊さないため据え置き）。以前は「1 パスの削除数が閾値を超えた」を数えていたが、その件数ベースの判定は誤発火しかしないので撤去した。今は「desired が空なのに自分の schedule が観測される」という全損シグネチャの発動を数える。`rokuban_circuit_breaker_tripped` ゲージと、ブレーカーのラッチ化（発動遷移だけを数える）も同じ M2-5。
-- `pending_diff` の `update` / `update_deferred` の分離は M2-4。
-- 「沈黙は保証ではない」の表は M2 の手動検証 runbook から移設した。`pidType` が `other` の音声 PID は `gots` の `IsAudioContent()` の値域に従っているだけで、自前の `stream_type` 表は作らない方針（観測したら 1 行で足せる）。
+- **`rokuban_reconcile_circuit_breaker_trips_total` は意味が変わった**（メトリクス名は既存のダッシュボード・アラートを壊さないため据え置き）。以前は「1 パスの削除数が閾値を超えた」を数えていたが、その件数ベースの判定は誤発火しかしないので撤去した。今は「desired が空なのに自分の schedule が観測される」という全損シグネチャの発動を数える。`rokuban_circuit_breaker_tripped` ゲージと、ブレーカーのラッチ化（発動遷移だけを数える）も同じ。
+- `pending_diff` の `update` / `update_deferred` の分離。
+- 「沈黙は保証ではない」の表は手動検証 runbook から移設した。`pidType` が `other` の音声 PID は `gots` の `IsAudioContent()` の値域に従っているだけで、自前の `stream_type` 表は作らない方針（観測したら 1 行で足せる）。

@@ -86,11 +86,10 @@ nginx は「アーキテクチャ図に現れる箱」ではなく「推奨デ�
 
 ## 経緯と失敗事例
 
-- `X-Forwarded-Host` の解釈と `X-Forwarded-*` 系の棚卸し（検討したが実装しないもの）は
-  M4-1（issue #89）。EPGStation#694（絶対 URL 生成が散らばって `X-Forwarded-Prefix`
+- `X-Forwarded-Host` の解釈と `X-Forwarded-*` 系の棚卸し（検討したが実装しないもの）。
+  EPGStation#694（絶対 URL 生成が散らばって `X-Forwarded-Prefix`
   対応が後から効かなかった）が棚卸しの動機
-- M4-1 の実装は `X-Forwarded-Host` があれば無条件にそちらを検証対象にする形だった。
+- `X-Forwarded-Host` の当初実装は `X-Forwarded-Host` があれば無条件にそちらを検証対象にする形だった。
   前段にプロキシが居ない直接露出構成でも同じ無条件解釈が効いてしまい、DNS rebinding
   攻撃ページが allowlist に載る値を自己申告するだけで Host allowlist を素通りできる
   欠陥があった。`server.trust_forwarded_host`（既定 false）による opt-in 化で修正
-  （issue #216）

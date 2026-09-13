@@ -128,7 +128,5 @@ notifier は**シングルトンではない**（`cmd/rokuban/server.go` の `si
 
 ## 経緯と失敗事例
 
-- notifier ロールの分離（api から LISTEN セッションを外し、SSE 配送を独立プロセスにする）の設計経緯は issue #24（M2-19）と issue #25 §4
-- watcher の常駐/ジョブ分割（真実の定期突き合わせを `record_sweep` ジョブに切り出し、常駐に SSE 購読とヒント処理だけを残した）は M2-16 / M2-18。詳細は [録画エンジン](../recording.md) §3.3
-- 「River のジョブ一意性の注意」の `ByQueue` の罠は、キューを site 修飾にリネームしたデプロイで旧キューの残骸が新キューへの Insert を黙って塞いだ実事故から（issue #185 M4-13）
-- 飢餓防止（ロール別プール上限・`statement_timeout`）の実装は issue #90
+- watcher の常駐/ジョブ分割（真実の定期突き合わせを `record_sweep` ジョブに切り出し、常駐に SSE 購読とヒント処理だけを残した）。詳細は [録画エンジン](../recording.md) §3.3
+- 「River のジョブ一意性の注意」の `ByQueue` の罠は、キューを site 修飾にリネームしたデプロイで旧キューの残骸が新キューへの Insert を黙って塞いだ実事故から
