@@ -148,7 +148,7 @@ docker run --rm --name rokuban-nginx-check \
 
 ```sh
 curl -sk -o /dev/null -w '%{http_code}\n' "$URL/api/version"
-curl -sk -o /dev/null -w '%{http_code}\n' "$URL/api/recordings/$ID/file"
+curl -sk -o /dev/null -w '%{http_code}\n' "$URL/api/media/recordings/$ID/file"
 curl -sk -o /dev/null -w '%{http_code}\n' "$URL/api/events"
 curl -sk -o /dev/null -w '%{http_code}\n' "$URL/recordings/123"
 ```
@@ -187,7 +187,7 @@ curl -sS -H 'Host: rokuban.example.com' \
 `Accept-Ranges: bytes` と正しい `Content-Length` を返すことを確認する。
 
 ```sh
-curl -skI -u "$AUTH" "$URL/api/recordings/$ID/file"
+curl -skI -u "$AUTH" "$URL/api/media/recordings/$ID/file"
 ```
 
 次に先頭 188 バイトだけを取得する。
@@ -196,7 +196,7 @@ curl -skI -u "$AUTH" "$URL/api/recordings/$ID/file"
 ```sh
 curl -sk -u "$AUTH" -D "$TMP/range.headers" \
   -H 'Range: bytes=0-187' -o "$TMP/range.body" \
-  "$URL/api/recordings/$ID/file"
+  "$URL/api/media/recordings/$ID/file"
 wc -c "$TMP/range.body"
 grep -E 'HTTP/|Accept-Ranges:|Content-Range:' "$TMP/range.headers"
 ```
@@ -209,7 +209,7 @@ nginx 経由ではそのヘッダーが内部リダイレクトに消費され�
 ```sh
 curl -sS -H 'Host: rokuban.example.com' \
   -D "$TMP/app.headers" -o "$TMP/app.body" \
-  "http://127.0.0.1:40773/api/recordings/$ID/file"
+  "http://127.0.0.1:40773/api/media/recordings/$ID/file"
 grep -E 'HTTP/|Content-Type:|X-Accel-Redirect:' "$TMP/app.headers"
 wc -c "$TMP/app.body"
 ```

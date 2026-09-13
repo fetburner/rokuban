@@ -100,7 +100,7 @@ export function savePlaybackRate(rate: number): void {
 
 /** recordingFileURL は streamer のバイナリ配信 URL を組み立てる（OpenAPI 外）。 */
 export function recordingFileURL(recordingId: number, profile?: string): string {
-  const base = `/api/recordings/${recordingId}/file`
+  const base = `/api/media/recordings/${recordingId}/file`
   if (!profile) return base
   return `${base}?profile=${encodeURIComponent(profile)}`
 }

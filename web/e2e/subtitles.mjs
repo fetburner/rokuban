@@ -101,10 +101,10 @@ log('\n=== ① VOD: <track> が実ブラウザで WebVTT の cue を読み込む
     if (p === '/api/capabilities') return json({ live: true })
     if (p === '/api/breakers') return json([])
     if (p === '/api/events') return sseKeepAlive(route)
-    if (/^\/api\/recordings\/\d+\/thumbnail$/.test(p)) return route.fulfill({ status: 404 })
+    if (/^\/api\/media\/recordings\/\d+\/thumbnail$/.test(p)) return route.fulfill({ status: 404 })
     if (p === '/api/recordings' && route.request().method() === 'GET') return json([recording])
     if (/^\/api\/recordings\/\d+$/.test(p)) return json(recording)
-    if (/^\/api\/recordings\/\d+\/file$/.test(p)) {
+    if (/^\/api\/media\/recordings\/\d+\/file$/.test(p)) {
       if (url.searchParams.get('track') === 'subtitles') {
         return route.fulfill({ status: 200, contentType: 'text/vtt; charset=utf-8', body: vtt })
       }

@@ -213,7 +213,7 @@ describe('RecordingDetailPage', () => {
     expect(await screen.findByText('単体ページの録画')).toBeInTheDocument()
     expect(await screen.findByRole('region', { name: '再生' })).toBeInTheDocument()
     expect(document.querySelector('video')).toBeInTheDocument()
-    expect(document.querySelector('img[src="/api/recordings/3/thumbnail"]')).toBeInTheDocument()
+    expect(document.querySelector('img[src="/api/media/recordings/3/thumbnail"]')).toBeInTheDocument()
     // issue #236（M7-3）: ダウンロード / VLC リンクは押す前にサイズを常置する
     expect(screen.getByRole('link', { name: /ダウンロード \/ VLC \(976\.6 KB\)/ })).toBeInTheDocument()
     // 取り返せる操作（Undo あり）なので secondary --- 取り返しがつかない完全削除
