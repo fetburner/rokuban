@@ -97,6 +97,66 @@ spec:
 apiVersion: batch/v1
 kind: CronJob
 metadata:
+  name: rokuban-enqueue-thumbnail-reconcile
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: enqueue
+spec:
+  # in-process の既定は 15 分（internal/worker の defaultThumbnailReconcileInterval）。
+  # ヒントを落としたサムネイルを拾い直す唯一の定期経路。
+  schedule: "*/15 * * * *"
+  startingDeadlineSeconds: 600
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: rokuban
+            app.kubernetes.io/component: enqueue
+        spec:
+          restartPolicy: Never
+          enableServiceLinks: false
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: enqueue
+              image: ghcr.io/fetburner/rokuban:latest
+              args: ["enqueue", "thumbnail-reconcile", "--config", "/etc/rokuban/config.yml"]
+              envFrom:
+                - secretRef:
+                    name: rokuban-secrets
+              volumeMounts:
+                - name: config
+                  mountPath: /etc/rokuban
+                  readOnly: true
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 32Mi
+                limits:
+                  memory: 128Mi
+          volumes:
+            - name: config
+              configMap:
+                name: rokuban-config
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
   name: rokuban-enqueue-delete-reconcile
   labels:
     app.kubernetes.io/name: rokuban

@@ -85,6 +85,13 @@ var enqueueJobs = map[string]enqueueJob{
 		RequiresSite: false,
 		NewArgs:      func(string) river.JobArgs { return jobs.EncodeReconcileArgs{} },
 	},
+	"thumbnail-reconcile": {
+		// thumbnail は encode と同じく site 非依存の共有ストレージ上の仕事。
+		// `worker.periodic_jobs: false` の構成でも CronJob からこの定期パスを
+		// 起動できるようにする。
+		RequiresSite: false,
+		NewArgs:      func(string) river.JobArgs { return jobs.ThumbnailReconcileArgs{} },
+	},
 	"storage-sync": {
 		// catalog-export と同じ理由（アーカイブ/スクラッチが単一で Site を
 		// 持たない。issue #238 M7-5）。delete_reconcile とは異なり読み取り専用

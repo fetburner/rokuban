@@ -133,8 +133,11 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
   River `thumbnail` キューへ unique ジョブ（`recording_id`）を積む。ごみ箱の録画を
   除外するのは、配信側（`GetThumbnailMediaAssetForServing`）が `deleted_at IS NULL`
   を要求するため、生成しても誰にも配られず猶予期間ぶん ffmpeg を無駄打ちするだけ
-  だから。ingest コミット後のヒント投入と、ギャップ埋め
-  （`ListRecordingIDsMissingThumbnail`）の両方で同じ条件を使う。
+  だから。ingest コミット後のヒント投入と `thumbnail_reconcile` の定期ギャップ
+  埋めは同じ条件を使う。定期パスは、delete reconcile が原本の実体無しを確認した
+  `missing_media_assets` の原本を既知の恒久失敗として除外する。ファイル復旧後に
+  マーカーが消えれば、次の定期パスで再び候補になる。`EnqueueMissingThumbnails`
+  による明示的な復旧投入はこの除外をせず、ファイルを戻した直後などに使える。
   命令的チェーン（「ingest 成功 → 必ず thumbnail」）は採らない
 - **抽出位置（固定ポリシー）**: `seek = min(duration × 10%, 30s)`。duration は
   ffprobe が読む実ファイル長。取れなければ 0 秒（先頭フレーム）。設定キーは設けない

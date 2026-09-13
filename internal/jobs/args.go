@@ -191,6 +191,25 @@ func (ThumbnailJobArgs) InsertOpts() river.InsertOpts {
 	}
 }
 
+// ThumbnailReconcileArgs は thumbnail の desired−observed 定期 reconcile ジョブの
+// 引数。thumbnail キューは実ジョブと共有するが、River の pending 一意性で定期
+// パス同士が重ならないようにする。
+type ThumbnailReconcileArgs struct{}
+
+// Kind は River ジョブの種別名を返す。
+func (ThumbnailReconcileArgs) Kind() string { return "thumbnail_reconcile" }
+
+// InsertOpts は thumbnail キューへ投入するための River 挿入オプションを返す。
+func (ThumbnailReconcileArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue: ThumbnailQueue,
+		UniqueOpts: river.UniqueOpts{
+			ByArgs:  true,
+			ByState: pendingJobStates,
+		},
+	}
+}
+
 // EncodeReconcileArgs は encode の desired−observed 定期 reconcile ジョブの引数。
 type EncodeReconcileArgs struct{}
 
@@ -290,6 +309,7 @@ var (
 	_ river.JobArgsWithInsertOpts = EncodeJobArgs{}
 	_ river.JobArgsWithInsertOpts = EncodeEnqueueHintArgs{}
 	_ river.JobArgsWithInsertOpts = ThumbnailJobArgs{}
+	_ river.JobArgsWithInsertOpts = ThumbnailReconcileArgs{}
 	_ river.JobArgsWithInsertOpts = EncodeReconcileArgs{}
 	_ river.JobArgsWithInsertOpts = DeleteReconcileArgs{}
 	_ river.JobArgsWithInsertOpts = CatalogExportArgs{}

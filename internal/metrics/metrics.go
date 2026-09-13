@@ -479,6 +479,24 @@ var (
 	}, []string{"profile"})
 )
 
+// thumbnail の desired−observed 定期 reconcile（internal/worker/thumbnail_reconcile.go）
+// のメトリクス。
+var (
+	// ThumbnailReconcileLastPass は最後に完走した thumbnail reconcile パスの時刻
+	// （UNIX 秒）。CronJob / PeriodicJobs の投入停止を検知するために使う。
+	ThumbnailReconcileLastPass = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rokuban_thumbnail_reconcile_last_pass_timestamp_seconds",
+		Help: "Unix time of the last completed thumbnail-reconcile pass. Use with time() to detect a stalled pass.",
+	})
+
+	// ThumbnailReconcileCandidates は直近のパスが見た候補件数。上限に張り付く
+	// ときは後続候補が窓の先に残っている可能性がある。
+	ThumbnailReconcileCandidates = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rokuban_thumbnail_reconcile_candidates",
+		Help: "Recordings seen by the last thumbnail-reconcile pass that still lack an active thumbnail. Sitting at the pass row limit means the backlog is at least that large; the window resumes from where the previous pass stopped.",
+	})
+)
+
 // ストレージ観測（issue #238 M7-5）のメトリクス。
 //
 // StorageSyncLastSuccess はジョブ全体（1 パス）の完走を見るゲージで、
@@ -689,6 +707,8 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		EncodeReconcileLastPass,
 		EncodeReconcileCandidates,
 		EncodeReconcileUnsatisfiable,
+		ThumbnailReconcileLastPass,
+		ThumbnailReconcileCandidates,
 
 		StorageSyncLastSuccess,
 		StorageRootLastSuccess,
