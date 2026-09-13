@@ -479,10 +479,9 @@ func softStopSeconds(t *testing.T, s string) int {
 //
 // 内訳は docs/operations.md §5「Deployment 併用時」。**等号にしない** ---
 // 右辺はプロセスが消えるまでの最悪値そのものなので、等号だと SIGKILL と同着に
-// なる。同着になるのは予算を使い切ったケース、つまりここで避けようとしている
-// 「行が `running` のまま残る」経路そのものである。**そのとき回収する
-// `JobRescuer` はリーダーだけが動かす保守サービスなので、ロール分割構成では
-// 誰も回収しない。**
+// なる。同着になるのは予算を使い切ったケースで、実行中のジョブの行が一時的に
+// `running` のまま残る。encode / ingest は定期 recovery が lock 解放後に回収するが、
+// 回収までの遅延を避けるために、ここでは先に SIGKILL を受けない予算を要求する。
 //
 // api（worker ロールを持たない）側の足し算は
 // manifests_test.go の TestTerminationBudgetCoversPreStop。
