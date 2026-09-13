@@ -50,7 +50,7 @@ GC がその番組のスナップショットを刈った後に ingest が走る
 | 滞留の型 | 見るメトリクス |
 |---|---|
 | `finished` として観測済みなのに ingest が詰まる（worker 停止・ストレージ障害・キュー詰まり。**断の直前に `finished` として観測済み**の record もこちら） | `rokuban_uningested_records{site}` / `rokuban_uningested_record_bytes{site}` の増加 |
-| エッジ↔クラウドの回線断で、**断の最中に始まった録画と、断が始まった時点でまだ録画中だった録画** | `rokuban_sweep_last_pass_timestamp_seconds` / `rokuban_epg_sync_last_success_timestamp_seconds` の停滞 |
+| エッジ↔クラウドの回線断で、**断の最中に始まった録画と、断が始まった時点でまだ録画中だった録画** | `rokuban_sweep_last_success_timestamp_seconds{site}` / `rokuban_epg_sync_last_success_timestamp_seconds` の停滞 |
 
 後者では未 ingest メトリクスは増えない。`GetUningestedRecordBacklog`（`internal/db/queries/metrics.sql`）の述語は `record_sync.status = 'finished'` である。その行は watcher が mirakc を観測して初めて作られる・更新される。したがって**断の最中に始まった録画（行そのものが無い）だけでなく、断が始まった時点で `status='recording'` だった録画も gauge には現れない**。`finished` への更新には復帰後の再観測が要るため、断のあいだ gauge は平らなまま。**滞留量のアラートだけでは回線断を検知できない。**
 

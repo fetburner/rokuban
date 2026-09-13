@@ -686,6 +686,39 @@ VALUES ($1, 0, 'name', 'keyword', 'テスト', true, false)`, ruleID); err != ni
 	if count != 1 {
 		t.Fatalf("reservations count = %d, want 1 (ruler_pass ジョブがルール評価を実行して予約を作ったはず)", count)
 	}
+
+	var markerCount int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM ruler_pass_snapshots WHERE site = $1`, site,
+	).Scan(&markerCount); err != nil {
+		t.Fatalf("querying ruler pass marker: %v", err)
+	}
+	if markerCount != 1 {
+		t.Errorf("ruler pass marker rows = %d, want 1", markerCount)
+	}
+}
+
+// ruler の処理が失敗したときは、ScaledJob の再試行を促すため marker を進めない。
+func TestRulerPassWorker_DoesNotMarkFailedPass(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	w := &RulerPassWorker{Pool: pool}
+	job := &river.Job[RulerPassArgs]{Args: RulerPassArgs{Site: "default"}}
+	if err := w.Work(ctx, job); err == nil {
+		t.Fatal("Work() error = nil, want canceled ruler pass to fail")
+	}
+
+	var markerCount int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM ruler_pass_snapshots WHERE site = $1`, "default",
+	).Scan(&markerCount); err != nil {
+		t.Fatalf("querying ruler pass marker: %v", err)
+	}
+	if markerCount != 0 {
+		t.Errorf("ruler pass marker rows after failed pass = %d, want 0", markerCount)
+	}
 }
 
 // UniqueOpts による合流: 同じサイトの ruler_pass を 2 回投入すると 1 件しか

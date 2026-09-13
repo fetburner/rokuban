@@ -129,6 +129,7 @@ func (r *Ruler) RunPass(ctx context.Context) error {
 	start := time.Now()
 
 	var firstErr error
+	successfulSites := make([]string, 0, len(r.sites))
 	for _, site := range r.sites {
 		if err := r.runPassForSite(ctx, site); err != nil {
 			slog.Error("ruler: pass failed for site", "site", site, "err", err)
@@ -137,12 +138,27 @@ func (r *Ruler) RunPass(ctx context.Context) error {
 			}
 			continue
 		}
+		successfulSites = append(successfulSites, site)
 	}
 
-	if err := r.runGC(ctx); err != nil {
-		slog.Error("ruler: GC failed", "err", err)
+	gcErr := r.runGC(ctx)
+	if gcErr != nil {
+		slog.Error("ruler: GC failed", "err", gcErr)
 		if firstErr == nil {
-			firstErr = fmt.Errorf("gc: %w", err)
+			firstErr = fmt.Errorf("gc: %w", gcErr)
+		}
+	}
+
+	// DB-backed marker は、site の評価と全体 GC が成功したパスだけを観測する。
+	// in-process のゲージとは異なり、ScaledJob の --once でプロセスが終了しても
+	// 常駐プロセスの scrape から読める。複数 site の marker は同一トランザクション
+	// で更新し、途中まで成功した見え方を作らない。
+	if gcErr == nil && len(successfulSites) > 0 {
+		if err := r.markSuccessfulPasses(ctx, successfulSites); err != nil {
+			slog.Error("ruler: marking successful passes failed", "err", err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("marking successful passes: %w", err)
+			}
 		}
 	}
 
@@ -151,6 +167,28 @@ func (r *Ruler) RunPass(ctx context.Context) error {
 		metrics.RulerLastPass.SetToCurrentTime()
 	}
 	return firstErr
+}
+
+// markSuccessfulPasses は site ごとの ruler パス成功 marker を更新する。
+// marker の更新に失敗した場合も RunPass を失敗扱いにすることで、DB に成功を
+// 記録できていないのに River のジョブだけが成功する状態を避ける。
+func (r *Ruler) markSuccessfulPasses(ctx context.Context, sites []string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning marker tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := sqlcgen.New(tx)
+	for _, site := range sites {
+		if err := q.UpsertRulerPassSnapshot(ctx, site); err != nil {
+			return fmt.Errorf("upserting site %s marker: %w", site, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing marker tx: %w", err)
+	}
+	return nil
 }
 
 // runPassForSite は 1 サイト分の全量評価 + 差分書き込みを行う。
