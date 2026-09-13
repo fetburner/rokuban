@@ -28,7 +28,7 @@ func TestEncodeRecovery_ReplacesStaleRunningJobAndEncodeCompletes(t *testing.T) 
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "recovery/stale.m2ts", []string{"h264"}, []byte("payload"))
-	oldJobID, _ := insertStaleRunningEncodeJob(t, pool, recordingID, "h264")
+	oldJobID := insertStaleRunningEncodeJob(t, pool, recordingID, "h264")
 
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO recording_encode_attempts (recording_id, profile, state)
@@ -140,7 +140,7 @@ func TestEncodeRecovery_DoesNotDiscardLiveStaleJob(t *testing.T) {
 	pool := setupTestPool(t)
 	ctx := context.Background()
 	recordingID := seedRecordingWithOriginal(t, pool, t.TempDir(), "recovery/live.m2ts", []string{"h264"}, []byte("payload"))
-	oldJobID, _ := insertStaleRunningEncodeJob(t, pool, recordingID, "h264")
+	oldJobID := insertStaleRunningEncodeJob(t, pool, recordingID, "h264")
 
 	lock, acquired, err := acquireEncodeJobLock(ctx, pool, oldJobID, time.Second)
 	if err != nil {
@@ -279,7 +279,7 @@ func TestEncodeWorker_HoldsJobLock(t *testing.T) {
 	released.release()
 }
 
-func insertStaleRunningEncodeJob(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string) (int64, time.Time) {
+func insertStaleRunningEncodeJob(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string) int64 {
 	t.Helper()
 	client, err := NewInsertOnlyClient(pool)
 	if err != nil {
@@ -299,7 +299,7 @@ func insertStaleRunningEncodeJob(t *testing.T, pool *pgxpool.Pool, recordingID i
 		WHERE id = $1`, result.Job.ID, attemptedAt); err != nil {
 		t.Fatalf("making encode fixture running: %v", err)
 	}
-	return result.Job.ID, attemptedAt
+	return result.Job.ID
 }
 
 func assertNonDiscardedEncodeJobCount(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string, want int) {

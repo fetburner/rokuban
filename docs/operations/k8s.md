@@ -265,7 +265,7 @@ River 自身の既定ロガー（WARN 止まり）だけが出る。
 
 **0 は「無制限」ではなく「待たない」**である。River は `SoftStopTimeout` が 0 のとき work ctx を start ctx から継ぐ。`signal.NotifyContext` の ctx を `Start` に渡しているこの構成では、SIGTERM が `StopAndCancel` 相当になる（この節が長く「未解決」として抱えていた壊れ方そのもの）。
 
-**真の上限は `terminationGracePeriodSeconds` 経過後の SIGKILL であり、それは River の外である。** したがって猶予は k8s 側の猶予の内側に置く。外に出すと、猶予が切れる前に SIGKILL が来て、実行中のジョブの行は一時的に `running` のまま残る。`ingest` は `record_sweep`、`encode` は `encode_reconcile` が、次の定期パスで job-id advisory lock の解放を確認したうえで旧行を終端化し、代替ジョブを投入する（候補の stale 判定は 1 分）。ライブ中のジョブは lock を保持するので回収しない。その他のジョブは従来どおり `JobRescuer`（リーダーだけが動かす保守サービス）に依存するため、猶予は依然として十分に取る必要がある。内側に置けば、プロセス自身がジョブを `available` に戻してから終わる。
+**真の上限は `terminationGracePeriodSeconds` 経過後の SIGKILL であり、それは River の外である。** したがって猶予は k8s 側の猶予の内側に置く。外に出すと、猶予が切れる前に SIGKILL が来る。実行中のジョブの行は一時的に `running` のまま残る。`ingest` は `record_sweep`、`encode` は `encode_reconcile` が回収する。次の定期パスで job-id advisory lock の解放を確認したうえで、旧行を終端化し、代替ジョブを投入する（候補の stale 判定は 1 分）。ライブ中のジョブは lock を保持するので回収しない。その他のジョブは従来どおり `JobRescuer`（リーダーだけが動かす保守サービス）に依存するため、猶予は依然として十分に取る必要がある。内側に置けば、プロセス自身がジョブを `available` に戻してから終わる。
 
 **worker ロールを走らせる Pod**（Deployment でも KEDA ScaledJob が起こす Job Pod でも同じ）のプロセス側の最悪値は次の足し算になる:
 

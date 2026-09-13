@@ -58,14 +58,6 @@ func jobLockKey(prefix string, jobID int64) int64 {
 	return advisoryLockKey(prefix, strconv.FormatInt(jobID, 10))
 }
 
-func ingestJobLockKey(jobID int64) int64 {
-	return jobLockKey(ingestJobLockKeyPrefix, jobID)
-}
-
-func encodeJobLockKey(jobID int64) int64 {
-	return jobLockKey(encodeJobLockKeyPrefix, jobID)
-}
-
 // jobLock はジョブの process-death 検出用セッション lock と、そのセッションを
 // idle 切断から守る keepalive を所有する。
 //
@@ -87,13 +79,6 @@ type jobLock struct {
 
 func newJobLock(conn *pgxpool.Conn, key int64, label string) *jobLock {
 	return &jobLock{conn: conn, key: key, label: label}
-}
-
-// ingestJobLock は既存の ingest テストと呼び出し側の名前を保つ互換 alias。
-type ingestJobLock = jobLock
-
-func newIngestJobLock(conn *pgxpool.Conn, key int64, label string) *jobLock {
-	return newJobLock(conn, key, label)
 }
 
 func (l *jobLock) startHeartbeat() {
