@@ -1455,6 +1455,105 @@ func TestSweep_RecoversFailedRecord(t *testing.T) {
 	}
 }
 
+// TestSweep_DoesNotAttributeFailureToFinishedRecording は「本物の record が推論に
+// 必ず勝つ」を failed 再構成側から固定する。同一 active-event に生きている
+// finished 行があって、mirakc が state=failed の schedule をまだ返す間（本タスク
+// の docs が「schedule が削除された後は回収できない」＝削除まで残ると言っている）
+// に sweep が走っても、失敗を成功した行へ追記してはならない。CreateOrGetFailedRecording
+// の ON CONFLICT は status='failed' の行だけ再利用するので、finished 行には衝突せず
+// RETURNING が 0 行になり、processFailedSchedule は追記せず返る。
+func TestSweep_DoesNotAttributeFailureToFinishedRecording(t *testing.T) {
+	baseWatcher, pool := setupTest(t)
+	ctx := context.Background()
+
+	const programID = int64(200006)
+	createTestReservation(t, pool, programID)
+
+	startAt := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
+	duration := int64(3600000)
+	name := "Already Finished Program"
+	message := "failed to start recording"
+	schedule := mirakc.Schedule{
+		State: "failed",
+		Program: mirakc.Program{
+			ID:        programID,
+			EventID:   6,
+			ServiceID: 1024,
+			NetworkID: 32736,
+			StartAt:   &startAt,
+			Duration:  &duration,
+			IsFree:    true,
+			Name:      &name,
+		},
+		Tags: []string{mirakc.ProgramTag(programID)},
+		FailedReason: &mirakc.FailedReason{
+			Type:    "start-recording-failed",
+			Message: &message,
+		},
+	}
+	// 同一 active-event に生きている finished 行を先に作る。
+	finishedID := insertTestRecordingAt(t, pool, DefaultSite,
+		int32(schedule.Program.NetworkID), int32(schedule.Program.ServiceID),
+		int32(schedule.Program.EventID), time.UnixMilli(startAt.Time().UnixMilli()), "finished")
+
+	services := []mirakc.Service{{
+		ServiceID: 1024,
+		NetworkID: 32736,
+		Name:      "NHK総合",
+		Channel:   mirakc.ServiceChannel{Type: "GR", Channel: "27"},
+	}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(services)
+	})
+	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{schedule})
+	})
+	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Record{})
+	})
+	mockServer := httptest.NewServer(mux)
+	defer mockServer.Close()
+
+	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, baseWatcher.river, nil)
+	if err := w.Sweep(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	var status string
+	var qeJSON json.RawMessage
+	if err := pool.QueryRow(ctx,
+		"SELECT status, quality_events FROM recordings WHERE id = $1", finishedID,
+	).Scan(&status, &qeJSON); err != nil {
+		t.Fatalf("querying finished recording: %v", err)
+	}
+	if status != "finished" {
+		t.Errorf("finished status = %q, want \"finished\"", status)
+	}
+	var events []db.QualityEvent
+	if err := json.Unmarshal(qeJSON, &events); err != nil {
+		t.Fatalf("unmarshalling quality_events: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("finished recording gained %d quality events, want 0 (failed predicate must not touch a success row)", len(events))
+	}
+
+	// failed 行は増えていない（finished 行に帰属させるのではなく何もしない）。
+	var recCount int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM recordings WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4",
+		DefaultSite, schedule.Program.NetworkID, schedule.Program.ServiceID, schedule.Program.EventID,
+	).Scan(&recCount); err != nil {
+		t.Fatalf("querying recordings: %v", err)
+	}
+	if recCount != 1 {
+		t.Errorf("recording count = %d, want 1 (only the finished row)", recCount)
+	}
+}
+
 func TestSweepAndHandleRecordingFailed_ConcurrentIdempotent(t *testing.T) {
 	baseWatcher, pool := setupTest(t)
 	ctx := context.Background()

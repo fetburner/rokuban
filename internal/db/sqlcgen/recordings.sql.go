@@ -199,6 +199,7 @@ ON CONFLICT (site, network_id, service_id, event_id, program_start_at)
     WHERE deleted_at IS NULL AND superseded_at IS NULL
 DO UPDATE SET
     updated_at = recordings.updated_at
+WHERE recordings.status = 'failed'
 RETURNING id
 `
 
@@ -225,6 +226,16 @@ type CreateOrGetFailedRecordingParams struct {
 // recording.failed は同じ通知を履歴として複数追記する CreateFailedRecording を
 // 使う一方、周期 sweep は同じ観測を何度も見るため、active-event の行を再利用する
 // このクエリで recordings の重複を防ぐ。
+//
+// 再利用するのは status='failed' の行に限る。recordings_unique_active_event の
+// 述語は status を持たないので、ON CONFLICT の DO UPDATE 側で failed を要求する。
+// これがないと、sweep が failed 行を作った後に本物の success record が届いて
+// supersede した後、次パスでまだ残る failed schedule を観測したとき、supersede
+// 済み failed 行ではなく生きている success 行に衝突してその id を返し、
+// 成功した行へ recording.failed を追記してしまう（「本物の record が推論に必ず
+// 勝つ」の逆転）。DO UPDATE の WHERE が偽だと RETURNING は 0 行になり、呼び出し側
+// は pgx.ErrNoRows として「再利用する failed 行が無い」ことを検出して失敗を
+// 帰属させずに返す。
 func (q *Queries) CreateOrGetFailedRecording(ctx context.Context, arg CreateOrGetFailedRecordingParams) (int64, error) {
 	row := q.db.QueryRow(ctx, createOrGetFailedRecording,
 		arg.RuleID,

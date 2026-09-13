@@ -226,17 +226,25 @@ func (w *Watcher) processRecord(ctx context.Context, record mirakc.Record) error
 		} else {
 			id, createErr = w.createRecording(ctx, q, record)
 		}
-		if createErr != nil {
+		switch {
+		case record.Recording.Status == db.RecordingStatusFailed && errors.Is(createErr, pgx5.ErrNoRows):
+			// 同一 active-event に生きている non-failed 行（本物の success record が
+			// 既に枠を得た状態）がある。この failed record をその行へ帰属させず、
+			// recordings は作らない（recordings_unique_active_event の枠は success が
+			// 占有する）。record_sync には recording_id = NULL の観測として残すだけで、
+			// ingest も起きない。
+		case createErr != nil:
 			return fmt.Errorf("creating recording: %w", createErr)
-		}
-		recordingID = &id
-		title = ptr.Deref(record.Program.Name)
-		if record.Recording.Status == db.RecordingStatusFailed {
-			// CreateOrGetFailedRecording は既存の active-event 行を再利用する
-			// ことがある。その場合も records API の status / startTime を反映し、
-			// recording 中の行を failed のまま残さない。
-			if err := w.updateRecordingStatus(ctx, q, id, record); err != nil {
-				return fmt.Errorf("updating failed recording status: %w", err)
+		default:
+			recordingID = &id
+			title = ptr.Deref(record.Program.Name)
+			if record.Recording.Status == db.RecordingStatusFailed {
+				// CreateOrGetFailedRecording は既存の active-event 行を再利用する
+				// ことがある。その場合も records API の status / startTime を反映し、
+				// recording 中の行を failed のまま残さない。
+				if err := w.updateRecordingStatus(ctx, q, id, record); err != nil {
+					return fmt.Errorf("updating failed recording status: %w", err)
+				}
 			}
 		}
 	}
@@ -397,6 +405,12 @@ func (w *Watcher) processFailedSchedule(ctx context.Context, schedule mirakc.Sch
 		ProgramStartAt:    programStartAt,
 		ProgramDurationMs: ptr.Deref(schedule.Program.Duration),
 	})
+	if errors.Is(err, pgx5.ErrNoRows) {
+		// 同一 active-event に生きている non-failed 行がある。本物の record が
+		// 既に枠を得たあとに failed schedule が残っていても、成功した行へ
+		// recording.failed を追記しない。
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("creating failed recording from schedule: %w", err)
 	}
