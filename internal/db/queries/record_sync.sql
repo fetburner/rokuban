@@ -7,10 +7,10 @@ WHERE site = $1 AND record_id = $2;
 -- SSE と並行して動くため。PostgreSQL の now() はトランザクション開始時刻なので、
 -- sweep 開始前に始まった processRecord が sweep 後にコミットすると、実際には
 -- 新しい観測でも古い時刻を持ち、ingest 投入直後の行を stale として消し得る。
--- 全量応答に含まれる ID を削除対象から除外すれば、現在 mirakc にある record は
--- processRecord の成否や並行実行順にかかわらず保護できる。空配列は「この site の
--- record が 1 件も無い」なので、site の全行を消す。record_ids は呼び出し側で
--- non-nil の空スライスも含めて渡すこと。
+-- 呼び出し側は全量応答から ID を集めた直後、snapshot の processRecord より前に
+-- 実行する。これにより、ListRecords 後に SSE が作った行をこの削除が巻き込まない。
+-- 空配列は「この site の record が 1 件も無い」なので、site の全行を消す。
+-- record_ids は呼び出し側で non-nil の空スライスも含めて渡すこと。
 -- name: DeleteStaleRecordSyncs :execrows
 DELETE FROM record_sync
 WHERE site = $1

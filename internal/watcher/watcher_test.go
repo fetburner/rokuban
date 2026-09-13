@@ -1351,6 +1351,71 @@ func TestSweep_RemovesStaleRecordSyncs(t *testing.T) {
 	}
 }
 
+// TestSweep_SSERecordCommittedMidLoopSurvives は、stale 削除が snapshot の
+// processRecord より前に来る順序を回帰的に固定する。
+//
+// 壊す前の実装（削除をループの後に置く）では、(a) SSE 由来の processRecord が
+// ListRecords 応答に無い record（= snapshot 取得後に現れた record）をループ中に
+// 書き込むと、その record_sync 行を stale として消してしまい、recordings は残るのに
+// record_sync が無い zombie 状態になる。beforeSweepProcessRecords フックで「削除の
+// 直後、snapshot の processRecord の直前」に B の観測を注入し、B の record_sync 行が
+// sweep 後も残る（recording_id も残る）ことを決定的に確認する。
+// 壊し方: watcher.go の Sweep で DeleteStaleRecordSyncs をループの後に移すと、
+// B が recordIDs に無いので削除され、このアサーションが落ちる。
+func TestSweep_SSERecordCommittedMidLoopSurvives(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
+		t.Fatalf("cleaning river_job: %v", err)
+	}
+	rc := newTestRiverClient(t, pool)
+
+	b := testRecord("sse-mid-loop", 700001, "finished")
+	createTestReservation(t, pool, 700001)
+
+	// ListRecords は anchor 1 件だけを返す（B は snapshot に無い）。
+	anchor := testRecord("anchor", 700002, "finished")
+	anchor.Tags = nil
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Record{anchor})
+	})
+	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Service{})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	w := New(DefaultSite, mirakc.NewClient(server.URL, nil), pool, rc, nil)
+
+	// 削除の直後・processRecord ループの直前に、SSE 由来の B を注入する。
+	beforeSweepProcessRecords = func() {
+		if err := w.processRecord(ctx, b); err != nil {
+			t.Errorf("injecting B via processRecord: %v", err)
+		}
+	}
+	t.Cleanup(func() { beforeSweepProcessRecords = nil })
+
+	if err := w.Sweep(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	var syncRecordingID *int64
+	if err := pool.QueryRow(ctx,
+		"SELECT recording_id FROM record_sync WHERE site = $1 AND record_id = $2",
+		DefaultSite, b.ID,
+	).Scan(&syncRecordingID); err != nil {
+		t.Fatalf("B の record_sync 行が stale 削除で消えた: %v", err)
+	}
+	if syncRecordingID == nil {
+		t.Fatalf("B の record_sync.recording_id = NULL, want non-nil")
+	}
+}
+
 // TestSweepAndHandleEvent_ConcurrentIdempotent は本タスク（M2-18）の核心を検証する。
 // 3 段構え（docs/recording.md §3.3）のうち (a) SSE 由来の handleEvent と (c) 定期の
 // Sweep（record_sweep ジョブから呼ばれる）が同一 record を同時に処理しても、
