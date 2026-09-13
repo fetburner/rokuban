@@ -1275,6 +1275,287 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 	}
 }
 
+func TestSweep_RecoversFailedSchedule(t *testing.T) {
+	baseWatcher, pool := setupTest(t)
+	ctx := context.Background()
+
+	const programID = int64(200003)
+	createTestReservation(t, pool, programID)
+
+	startAt := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
+	duration := int64(3600000)
+	name := "Recordless Failed Program"
+	message := "failed to start recording"
+	schedule := mirakc.Schedule{
+		State: "failed",
+		Program: mirakc.Program{
+			ID:        programID,
+			EventID:   3,
+			ServiceID: 1024,
+			NetworkID: 32736,
+			StartAt:   &startAt,
+			Duration:  &duration,
+			IsFree:    true,
+			Name:      &name,
+		},
+		Tags: []string{mirakc.ProgramTag(programID)},
+		FailedReason: &mirakc.FailedReason{
+			Type:    "start-recording-failed",
+			Message: &message,
+		},
+	}
+	services := []mirakc.Service{{
+		ServiceID: 1024,
+		NetworkID: 32736,
+		Name:      "NHK総合",
+		Channel:   mirakc.ServiceChannel{Type: "GR", Channel: "27"},
+	}}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(services)
+	})
+	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{schedule})
+	})
+	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Record{})
+	})
+	mockServer := httptest.NewServer(mux)
+	defer mockServer.Close()
+
+	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, baseWatcher.river, nil)
+	if err := w.Sweep(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	var status string
+	var qeJSON json.RawMessage
+	if err := pool.QueryRow(ctx,
+		"SELECT status, quality_events FROM recordings",
+	).Scan(&status, &qeJSON); err != nil {
+		t.Fatalf("querying recovered recording: %v", err)
+	}
+	if status != db.RecordingStatusFailed {
+		t.Errorf("recovered recording status = %q, want %q", status, db.RecordingStatusFailed)
+	}
+	var events []db.QualityEvent
+	if err := json.Unmarshal(qeJSON, &events); err != nil {
+		t.Fatalf("unmarshalling quality_events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("quality_events count = %d, want 1", len(events))
+	}
+	if events[0].Event != "recording.failed" {
+		t.Errorf("quality_events[0].event = %q, want recording.failed", events[0].Event)
+	}
+	var reason mirakc.FailedReason
+	if err := json.Unmarshal(events[0].Reason, &reason); err != nil {
+		t.Fatalf("unmarshalling failed reason: %v", err)
+	}
+	if reason.Type != "start-recording-failed" {
+		t.Errorf("failed reason type = %q, want start-recording-failed", reason.Type)
+	}
+
+	var syncCount int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM record_sync").Scan(&syncCount); err != nil {
+		t.Fatalf("querying record_sync: %v", err)
+	}
+	if syncCount != 0 {
+		t.Errorf("record_sync count = %d, want 0 for a recordless failure", syncCount)
+	}
+
+	// failed schedule は次の sweep にも残るが、同じ観測を quality_events に
+	// 追加し続けてはいけない。
+	if err := w.Sweep(ctx); err != nil {
+		t.Fatalf("sweep (2nd): %v", err)
+	}
+	if err := pool.QueryRow(ctx, "SELECT quality_events FROM recordings").Scan(&qeJSON); err != nil {
+		t.Fatalf("querying quality_events (2nd): %v", err)
+	}
+	if err := json.Unmarshal(qeJSON, &events); err != nil {
+		t.Fatalf("unmarshalling quality_events (2nd): %v", err)
+	}
+	if len(events) != 1 {
+		t.Errorf("quality_events count after 2nd sweep = %d, want 1", len(events))
+	}
+}
+
+func TestSweep_RecoversFailedRecord(t *testing.T) {
+	baseWatcher, pool := setupTest(t)
+	ctx := context.Background()
+
+	const programID = int64(200004)
+	createTestReservation(t, pool, programID)
+	record := testRecord("reconcile-failed-record-001", programID, db.RecordingStatusFailed)
+	message := "pipeline exited with an error"
+	record.Recording.FailedReason = &mirakc.FailedReason{
+		Type:    "pipeline-error",
+		Message: &message,
+	}
+
+	services := []mirakc.Service{{
+		ServiceID: 1024,
+		NetworkID: 32736,
+		Name:      "NHK総合",
+		Channel:   mirakc.ServiceChannel{Type: "GR", Channel: "27"},
+	}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(services)
+	})
+	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{})
+	})
+	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Record{record})
+	})
+	mockServer := httptest.NewServer(mux)
+	defer mockServer.Close()
+
+	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, baseWatcher.river, nil)
+	if err := w.Sweep(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if err := w.Sweep(ctx); err != nil {
+		t.Fatalf("sweep (2nd): %v", err)
+	}
+
+	var recordingID *int64
+	if err := pool.QueryRow(ctx,
+		"SELECT recording_id FROM record_sync WHERE site = $1 AND record_id = $2",
+		DefaultSite, record.ID,
+	).Scan(&recordingID); err != nil {
+		t.Fatalf("querying record_sync: %v", err)
+	}
+	if recordingID == nil {
+		t.Fatal("record_sync.recording_id is nil")
+	}
+
+	var recCount, eventCount int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recCount); err != nil {
+		t.Fatalf("querying recordings: %v", err)
+	}
+	if recCount != 1 {
+		t.Errorf("recording count = %d, want 1", recCount)
+	}
+	if err := pool.QueryRow(ctx,
+		"SELECT jsonb_array_length(quality_events) FROM recordings WHERE id = $1", *recordingID,
+	).Scan(&eventCount); err != nil {
+		t.Fatalf("querying quality_events: %v", err)
+	}
+	if eventCount != 1 {
+		t.Errorf("quality_events count = %d, want 1 after two sweeps", eventCount)
+	}
+}
+
+func TestSweepAndHandleRecordingFailed_ConcurrentIdempotent(t *testing.T) {
+	baseWatcher, pool := setupTest(t)
+	ctx := context.Background()
+
+	const programID = int64(200005)
+	createTestReservation(t, pool, programID)
+
+	startAt := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
+	duration := int64(3600000)
+	name := "Concurrent Recordless Failed Program"
+	schedule := mirakc.Schedule{
+		State: "failed",
+		Program: mirakc.Program{
+			ID:        programID,
+			EventID:   5,
+			ServiceID: 1024,
+			NetworkID: 32736,
+			StartAt:   &startAt,
+			Duration:  &duration,
+			IsFree:    true,
+			Name:      &name,
+		},
+		Tags: []string{mirakc.ProgramTag(programID)},
+	}
+	reason := mirakc.FailedReason{Type: "start-recording-failed"}
+	schedule.FailedReason = &reason
+	services := []mirakc.Service{{
+		ServiceID: 1024,
+		NetworkID: 32736,
+		Name:      "NHK総合",
+		Channel:   mirakc.ServiceChannel{Type: "GR", Channel: "27"},
+	}}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(services)
+	})
+	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{schedule})
+	})
+	mux.HandleFunc("/api/recording/schedules/", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(schedule)
+	})
+	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Record{})
+	})
+	mockServer := httptest.NewServer(mux)
+	defer mockServer.Close()
+
+	sweepWatcher := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, baseWatcher.river, nil)
+	eventWatcher := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, baseWatcher.river, nil)
+	// Sweep は services を更新するが、eventWatcher と別の Watcher にして同時 read/write
+	// を発生させない。
+	sweepWatcher.services = services
+	eventWatcher.services = services
+
+	event := mirakc.RecordingFailedData{ProgramID: programID, Reason: reason}
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		errs <- sweepWatcher.Sweep(ctx)
+	}()
+	go func() {
+		defer wg.Done()
+		errs <- eventWatcher.handleRecordingFailed(ctx, event)
+	}()
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent failed recovery: %v", err)
+		}
+	}
+
+	var recCount, eventCount int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM recordings WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4",
+		DefaultSite, schedule.Program.NetworkID, schedule.Program.ServiceID, schedule.Program.EventID,
+	).Scan(&recCount); err != nil {
+		t.Fatalf("querying recordings: %v", err)
+	}
+	if recCount != 1 {
+		t.Fatalf("recording count = %d, want 1", recCount)
+	}
+	if err := pool.QueryRow(ctx,
+		"SELECT jsonb_array_length(quality_events) FROM recordings WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4",
+		DefaultSite, schedule.Program.NetworkID, schedule.Program.ServiceID, schedule.Program.EventID,
+	).Scan(&eventCount); err != nil {
+		t.Fatalf("querying quality_events: %v", err)
+	}
+	if eventCount < 1 {
+		t.Fatalf("quality_events count = %d, want at least 1", eventCount)
+	}
+}
+
 // TestSweepAndHandleEvent_ConcurrentIdempotent は本タスク（M2-18）の核心を検証する。
 // 3 段構え（docs/recording.md §3.3）のうち (a) SSE 由来の handleEvent と (c) 定期の
 // Sweep（record_sweep ジョブから呼ばれる）が同一 record を同時に処理しても、
