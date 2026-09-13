@@ -630,7 +630,7 @@ func (w *EncodeWorker) commitEncoded(ctx context.Context, recordingID int64, pro
 //	[hwaccel ブロック] [input_extra_args…]         # -i より前
 //	-i INPUT
 //	-c:v VC -c:a AC
-//	[-vf <scaler が決めた filter>]                 # height>0 のときだけ、常に 1 個
+//	[-vf <deinterlace[, scaler が決めた scale]>]   # deinterlace=true または height>0 のときだけ、常に 1 個
 //	[-crf N | -qp N] [-preset P]
 //	[extra_args…]                                  # ユーザー（出力側）
 //	-f CONTAINER -progress pipe:1 -loglevel error OUTPUT  # アプリ所有の末尾
@@ -668,7 +668,7 @@ func BuildFFmpegArgs(profile config.EncodeProfile, input, output string, withSub
 		"-c:v", profile.VideoCodec,
 		"-c:a", profile.AudioCodec,
 	)
-	if filter, ok := ffargs.ScaleArgs(profile.Scaler, profile.Height); ok {
+	if filter, ok := ffargs.VideoFilterArgs(profile.Scaler, profile.Height, profile.Deinterlace); ok {
 		args = append(args, "-vf", filter)
 	}
 	args = append(args, ffargs.QualityArgs(profile.CRF, profile.QP)...)

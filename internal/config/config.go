@@ -399,9 +399,9 @@ type EncodeConfig struct {
 //     コマンド言語で、`scale_vaapi=...,drawtext=...` と書けた時点で cmd を
 //     別名で解禁したのと同じになる。幾何の入力は height 1 本に保つ。
 //  3. height + HW スケールでソフトの scale=-2:H が出ないのは検査ではなく構造。
-//     filter を作る経路が ffargs.ScaleArgs(scaler, height) の 1 本だけで、
-//     返るのは常に filter 1 個。「両方 append する」コードが書けなければ
-//     両方は出ない。
+//     filter を作る経路が ffargs.VideoFilterArgs(scaler, height, deinterlace) の
+//     1 本だけで、返るのは常に 1 本の chain。「両方 append する」コードが書けなければ
+//     両方は出ない。deinterlace が有効なら解除が chain の先頭に入る。
 //  4. 品質は crf / qp の 2 キー排他。quality: {mode, value} は採らない。
 //     キー名がエンコーダ自身のオプション名そのものなので、系統が増えるたびに
 //     腐るマッピング表が要らない。両方書いたら起動エラー（優先順位を
@@ -424,6 +424,10 @@ type EncodeConfig struct {
 //  8. device の存在は起動時に検査しない。公式イメージと device の無い CI が
 //     落ちる。無い device を書いたプロファイルはジョブ失敗でよい（マウントは
 //     k8s resources.limits / Docker --device の話でこの構造体の外）。
+//  9. deinterlace は bool の系統スイッチとし、filter の綴りは scaler から導出する。
+//     software なら yadif、vaapi なら deinterlace_vaapi を選ぶ。`deinterlace: yadif`
+//     のように filter 名を直接書ける形にすると、scaler と矛盾する組み合わせを
+//     表現でき、`-vf` を別名で解禁することになるため採らない。
 //
 // scaler が受け付ける値の集合は「filter の綴りを実際に確かめた系統」に限る
 // （ffargs.AllowedScalers の doc コメント参照。未検証の綴りを黙って許すより
@@ -452,6 +456,12 @@ type EncodeProfile struct {
 	// height が 0 のときに書くと起動エラー（何も主張しないキーを黙って無視
 	// しない。不変条件 10 と同じ形）。
 	Scaler ffargs.Scaler `yaml:"scaler"`
+
+	// Deinterlace はインターレース解除を有効にする系統スイッチ。既定 false は
+	// 現行互換で、filter の実体は Scaler から導出する（software は yadif、vaapi は
+	// deinterlace_vaapi）。filtergraph 文字列を直接受け取るキーにしないのは、scaler
+	// と矛盾する組み合わせを設定できないようにし、`-vf` を別名で解禁しないため。
+	Deinterlace bool `yaml:"deinterlace"`
 
 	// CRF は品質指定（任意。未設定は nil）。qp との同時指定は起動エラー。
 	CRF *int `yaml:"crf"`
@@ -695,6 +705,12 @@ type LiveProfile struct {
 	// Scaler はスケール filter の系統（既定 ""=software。ffargs.Scaler）。
 	// height が 0 のときに書くと起動エラー。
 	Scaler ffargs.Scaler `yaml:"scaler"`
+
+	// Deinterlace はインターレース解除を有効にする系統スイッチ。既定 false は
+	// 現行互換で、filter の実体は Scaler から導出する（software は yadif、vaapi は
+	// deinterlace_vaapi）。filtergraph 文字列を直接受け取るキーにしないのは、scaler
+	// と矛盾する組み合わせを設定できないようにし、`-vf` を別名で解禁しないため。
+	Deinterlace bool `yaml:"deinterlace"`
 
 	// CRF は品質指定（任意。未設定は nil）。qp との同時指定は起動エラー。
 	CRF *int `yaml:"crf"`

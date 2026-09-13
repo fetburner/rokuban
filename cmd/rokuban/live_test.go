@@ -42,6 +42,7 @@ func TestConvertLiveConfig_NoFieldLeftBehind(t *testing.T) {
 				AudioCodec:     "aac",
 				Height:         720,
 				Scaler:         ffargs.ScalerVAAPI,
+				Deinterlace:    true,
 				CRF:            &crf,
 				QP:             &qp,
 				Preset:         "veryfast",

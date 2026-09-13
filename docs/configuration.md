@@ -135,6 +135,7 @@ config の読み込みより前に出るログだけは既定（text 形式・In
 | キー | 説明 |
 |---|---|
 | `encode.profiles[].scaler` / `live.profiles[].scaler` | スケール filter の系統名（`-vf` の filter 文字列そのものではない）。既定 `""`（= `software`）。**許す値は `software` と `vaapi` のみ** --- qsv / cuda はこの環境の ffmpeg で `scale_qsv` / `scale_cuda` の綴りを確認できておらず未検証のため除外してある。`height` が 0 のときに書くと起動エラー |
+| `encode.profiles[].deinterlace` / `live.profiles[].deinterlace` | インターレース解除の系統スイッチ。既定 `false`（現行互換）。`true` なら `scaler` から software=`yadif` / vaapi=`deinterlace_vaapi` を導出し、scale があれば解除の後ろに連結する。filtergraph 文字列は直接指定しない |
 | `encode.profiles[].qp` / `live.profiles[].qp` | `-qp`（品質指定）。`crf` との同時指定は起動エラー（優先順位を実行時に決めさせない） |
 | `encode.profiles[].hwaccel` | プロファイル毎の `-i` 前置ブロック（`kind` 必須 / `device` / `output_format` 任意）。VOD はプロファイルごとに入力を開き直すため、プロファイル単位で持たせられる |
 | `live.hwaccel` | **`live.profiles[]` 内ではなく `live:` 直下**。ライブは 1 回の ffmpeg で入力 1 本・出力 N 本なので、プロファイル毎に持たせると「プロファイル 2 つが別の hwaccel を要求する」という表現できない設定が書けてしまう --- セクション直下に置けばそれが表現不可能になる |
@@ -151,13 +152,15 @@ argv の順序（VOD）:
 [input_extra_args…]                                            # ユーザー（入力側）
 -i INPUT                                                       # アプリ
 -c:v VC -c:a AC
-[-vf <scaler が決めた filter>]                                 # height>0 のときだけ、常に 1 個
+[-vf <deinterlace[, scaler が決めた scale]>]                   # deinterlace=true または height>0 のときだけ、常に 1 個
 [-crf N | -qp N] [-preset P]
 [extra_args…]                                                  # ユーザー（出力側）
 -f CONTAINER -progress pipe:1 -loglevel error OUTPUT           # アプリ所有の末尾
 ```
 
-argv の順序（live）は同じ規則を入力 1 本・出力 N 本の形に展開したものである。入力側は `live.hwaccel` → `-probesize`/`-analyzeduration` → `live.input_extra_args` → `-f mpegts -i pipe:0`。そのあと、プロファイルごとに `-map` `-c:v`/`-c:a` → `[-vf]` → `[-crf|-qp]` → `[-preset]`。続けて `-force_key_frames` → `profile.extra_args` → `-f hls ...`。
+argv の順序（live）は同じ規則を入力 1 本・出力 N 本の形に展開したものである。入力側は `live.hwaccel` → `-probesize`/`-analyzeduration` → `live.input_extra_args` → `-f mpegts -i pipe:0`。そのあと、プロファイルごとに `-map` `-c:v`/`-c:a` → `[-vf]`（captions 有効時は `-filter:v:N`）→ `[-crf|-qp]` → `[-preset]`。filter は `deinterlace` が true なら解除を先頭に置き、height があれば scale をその後ろに 1 個だけ連結する。続けて `-force_key_frames` → `profile.extra_args` → `-f hls ...`。
+
+`deinterlace` は bool とし、filter の実体を `scaler` から導出する。`scaler: software` なのに `deinterlace_vaapi` を書くような矛盾した設定や、`-vf` を別名で自由に書く設定を表現できないようにするためである。`deinterlace: false`（省略）のときは、生成する argv を従来から変えない。
 
 **`extra_args` の位置が 1 点だけ動いた**。VOD 側は以前 `-f`（コンテナ）の後ろだったが、今は前に移った --- 「ユーザーのオプションはコーデック/品質/スケール指定の後・アプリ所有の末尾の前」という規則を VOD と live で 1 つにするため。`-f` は下記の allowlist に含まれないので、この移動でユーザーが相対順序に依存していた挙動が変わることはない。
 
