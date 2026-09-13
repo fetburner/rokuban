@@ -265,7 +265,7 @@ River 自身の既定ロガー（WARN 止まり）だけが出る。
 
 **0 は「無制限」ではなく「待たない」**である。River は `SoftStopTimeout` が 0 のとき work ctx を start ctx から継ぐ。`signal.NotifyContext` の ctx を `Start` に渡しているこの構成では、SIGTERM が `StopAndCancel` 相当になる（この節が長く「未解決」として抱えていた壊れ方そのもの）。
 
-**真の上限は `terminationGracePeriodSeconds` 経過後の SIGKILL であり、それは River の外である。** したがって猶予は k8s 側の猶予の内側に置く。外に出すと、猶予が切れる前に SIGKILL が来て、実行中のジョブの行は `running` のまま残る。回収するのは `JobRescuer`（リーダーだけが動かす保守サービス）である。ロール分割構成では常駐する River クライアントが 1 つも無いので**誰も回収しない**（この節の「スケーラのクエリ」と同じ族の問題）。内側に置けば、プロセスが自分でエスカレートして行を `available` に戻してから終わる。**「次の Pod が引き直せる」と「誰も引き直せない」の差**である。
+**真の上限は `terminationGracePeriodSeconds` 経過後の SIGKILL であり、それは River の外である。** したがって猶予は k8s 側の猶予の内側に置く。外に出すと、猶予が切れる前に SIGKILL が来て、実行中のジョブの行は一時的に `running` のまま残る。`ingest` は `record_sweep`、`encode` は `encode_reconcile` が、次の定期パスで job-id advisory lock の解放を確認したうえで旧行を終端化し、代替ジョブを投入する（候補の stale 判定は 1 分）。ライブ中のジョブは lock を保持するので回収しない。その他のジョブは従来どおり `JobRescuer`（リーダーだけが動かす保守サービス）に依存するため、猶予は依然として十分に取る必要がある。内側に置けば、プロセス自身がジョブを `available` に戻してから終わる。
 
 **worker ロールを走らせる Pod**（Deployment でも KEDA ScaledJob が起こす Job Pod でも同じ）のプロセス側の最悪値は次の足し算になる:
 
@@ -281,15 +281,15 @@ preStop の sleep + 10s + --soft-stop-timeout + 10s      ← 既定なら preSto
 - SSE（`/api/events`）を掴んだクライアントが居ると HTTP の停止はこの上限を使い切る。`Shutdown` は実行中のリクエストの ctx を cancel せず、SSE ハンドラは自分の接続が切れるまで抜けないからである（機構からの導出。実測はしていない）
 - 3 項目は**猶予が切れたあと畳み終えるぶん**（ctx を切られたジョブが `Work` から戻り、River の completer が結果を書く）。**所要は測っていない** --- HTTP の停止と同じ大きさに揃えただけである
 - 数時間のエンコード / ingest は既定の 5 秒では完走しない。**`--soft-stop-timeout` と `terminationGracePeriodSeconds` は対で引き上げる**（片方だけ上げても、短い側が先に効く）
-- **既定が短いのは「何も書かなかった人が SIGKILL されない」ためである。** プラットフォーム側の既定の猶予は Docker が 10 秒、k8s が 30 秒しかない。実測: 既定（5 秒）のプロセスは停止に 5.06 秒しか使わない（2026-09-05、river v0.47.0）。かつての既定 30 秒では 30.09 秒必要で、k8s の既定猶予に 0.09 秒負けた。負けると行は `running` のまま残る。回収は `JobRescuer`（既定 1 時間。ロール分割構成では動かす常駐クライアントが無いので誰も回収しない）に委ねられる。**長い drain は、猶予を明示的に書いたデプロイだけが手に入れる**
+- **既定が短いのは「何も書かなかった人が SIGKILL されない」ためである。** プラットフォーム側の既定の猶予は Docker が 10 秒、k8s が 30 秒しかない。実測: 既定（5 秒）のプロセスは停止に 5.06 秒しか使わない（2026-09-05、river v0.47.0）。かつての既定 30 秒では 30.09 秒必要で、k8s の既定猶予に 0.09 秒負けた。負けると行は一時的に `running` のまま残るが、`ingest` / `encode` はそれぞれ `record_sweep` / `encode_reconcile` が lock 解放後に回収する。その他のジョブは `JobRescuer`（既定 1 時間）に委ねられる。**長い drain は、猶予を明示的に書いたデプロイだけが手に入れる**
 - **ローリング更新の間は worker の DB コネクション budget が二重に乗る**（旧 Pod が drain のあいだプールを握り続ける。[§3](database.md) のロール別 budget）。猶予を数時間に取る構成では、その時間ぶん重なる
-- プロセス側の待ちが猶予から導かれていることは `TestStopRiverForShutdown_DeadlineFollowsSoftStopTimeout` が固定している。猶予より長いことは `TestShutdownBudget_CoversTheSoftStop` が固定している。ここが固定値だと、猶予の内側で完走するはずのジョブを**プロセスが先に抜けることで**打ち切る（このときジョブの ctx は cancel すらされないので、上記の「誰も回収しない」形になる）
+- プロセス側の待ちが猶予から導かれていることは `TestStopRiverForShutdown_DeadlineFollowsSoftStopTimeout` が固定している。猶予より長いことは `TestShutdownBudget_CoversTheSoftStop` が固定している。ここが固定値だと、猶予の内側で完走するはずのジョブを**プロセスが先に抜けることで**打ち切る（このときジョブの ctx は cancel すらされない）。`ingest` / `encode` はその後の定期 recovery が拾えるが、回収までの遅延と、その他のジョブの `JobRescuer` 待ちを増やすので、猶予不足を前提にしない
 
 **バイナリを戻すときは argv からも消す。** `--soft-stop-timeout` を書いたマニフェストのままイメージを古い版に戻すと `unknown flag` で起動しない（実測）。Deployment なら CrashLoopBackOff、ScaledJob なら Job が即 failed になり、KEDA は滞留を見続けて Job を作り続ける。DB スキーマは触っていないので、argv さえ戻せば可逆である。
 
 `docker-compose.yml` の `stop_grace_period` も同じ形で置いてある。**Docker の既定は 10 秒**なので、書かないと drain の途中で SIGKILL される。
 
-**SIGTERM を 2 発撃てば強制終了できる。** drain 中に 2 発目を受けると、シグナルの登録は既に外れているので既定動作でプロセスが落ちる。数時間の猶予を設定した worker を手で止めるときの逃げ道である。**代償は SIGKILL と同じ**である --- River の completer は結果を書けないので、実行中だったジョブの行は `running` のまま残る。急いで止めたいときだけ使う。実測（猶予 600 秒・drain 中）: 2 発目で即座に exit 143。**登録を外さないと 2 発目は捨てられ**、同じ条件でプロセスは生き残ってジョブの完走まで走り続けた（手順は [runbook/testing.md](../runbook/testing.md)）。
+**SIGTERM を 2 発撃てば強制終了できる。** drain 中に 2 発目を受けると、シグナルの登録は既に外れているので既定動作でプロセスが落ちる。数時間の猶予を設定した worker を手で止めるときの逃げ道である。**代償は SIGKILL と同じ**である --- River の completer は結果を書けないので、実行中だったジョブの行は一時的に `running` のまま残る。`ingest` / `encode` はそれぞれ次の `record_sweep` / `encode_reconcile` が lock 解放後に回収するが、その他のジョブは `JobRescuer` に委ねられる。急いで止めたいときだけ使う。実測（猶予 600 秒・drain 中）: 2 発目で即座に exit 143。**登録を外さないと 2 発目は捨てられ**、同じ条件でプロセスは生き残ってジョブの完走まで走り続けた（手順は [runbook/testing.md](../runbook/testing.md)）。
 
 1 件消化モードの graceful stop にも同じ猶予が効く（`--once` の Job もノード退避やローリング更新で SIGTERM を受ける）。ジョブ 1 件を消化したあとの正常終了の経路も同じで、**取りこぼしのジョブ（上記「既知の窓」）を掴んでいた場合、その完走を待つのは猶予までである**。ctx を見ないワーカーはそれでも止まらないので、最終的な上限が SIGKILL であることは変わらない。
 

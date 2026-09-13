@@ -191,9 +191,10 @@ spec:
         automountServiceAccountToken: false
         # **drain と対で引き上げる。** 10s + `--soft-stop-timeout` 1h + 10s を
         # 包む（docs/operations.md §5）。片方だけ上げても短い側が先に効く。
-        # 猶予の外に出すと SIGKILL が先に来て、実行中のジョブの行が `running` の
-        # まま残る --- 回収する `JobRescuer` はリーダーだけが動かす保守サービス
-        # なので、ロール分割構成では**誰も回収しない**。
+        # 猶予の外に出すと SIGKILL が先に来て、実行中のジョブの行が一時的に
+        # `running` のまま残る。encode は次の `encode_reconcile` が job-id lock の
+        # 解放を確認して旧行を終端化し、代替ジョブを投入するが、猶予はその遅延を
+        # 避けるためにも十分に取る。
         terminationGracePeriodSeconds: 3660
         securityContext:
           runAsNonRoot: true

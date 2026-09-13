@@ -110,7 +110,7 @@ notifier は**シングルトンではない**（`cmd/rokuban/server.go` の `si
 
 - **録画は、mirakc に番組終了前まで同期済みの予約に限って DB 停止から分離される**。スケジュールは mirakc 側の `schedules.json` に永続化済みで、録画実行は mirakc が自律的に行う。ただし mirakc 自身、録画バッファ、チューナーが動作していることが条件であり、新規・変更予約は reconciler が期限内に同期できなければ録画されない
 - **実行中の ingest は、転送中のバイト I/O だけを見れば DB の外側にあるが、ジョブ全体は DB に依存する**。開始時の `record_sync` 参照、転送中を通して保持する job-id advisory lock（生存確認用で転送先の排他ではない）、進捗の書き込み、公開点である `media_assets` コミットが必要である。DB 障害で接続やコミットを失えば、録画バッファに record が残り、再試行できる範囲では収束する。job lock 用接続が転送中に死んでも転送は止まらないが、`record_sweep` が生きた転送をプロセス死と誤認して二重 pull しうる。決着は DB の一意 INSERT が付け、canonical file は壊れない（詳細は [ingest](../recording/ingest.md) §5.3）
-- **実行中の encode は ffmpeg のバイト処理だけを見れば DB の外側にあり、公開も `media_assets` コミットで決まるが、プロセス死の回収は ingest より弱い**。encode は `Timeout() = -1` のため River の stuck-job rescue（JobRescuer）対象外で、ingest の `record_sweep` のような代替回収も無い。ロール分割で常駐の River クライアントが無い構成では `running` のまま残る（詳細は [k8s 運用](../operations/k8s.md)）
+- **実行中の encode は ffmpeg のバイト処理だけを見れば DB の外側にあり、公開も `media_assets` コミットで決まる**。encode は `Timeout() = -1` なので River の stuck-job rescue（JobRescuer）対象外だが、`EncodeWorker` が Work 全体で job-id advisory lock を保持し、`encode_reconcile` が 1 分以上古い `running` 行を候補にして lock の解放を確認する。取得できた場合だけ旧行を `discarded` にして別 ID の代替ジョブを投入するため、ライブ中の長時間 encode は時刻だけでは回収しない。`recording_encode_attempts` は回収時には触らず、代替ジョブの開始時に上書きする（詳細は [k8s 運用](../operations/k8s.md)）
 - **長時間の滞留はポリシーを失うことがある**。ingest が `epg.retention_grace` を跨ぐと、予約から encode policy を解決できず既定値で凍結され、作成時点で予約も意図も無ければ `source` は `unattributed` になる。原本の保持・エンコードの扱い、回線断を含む滞留の測り方は [ストレージ運用](../operations.md) §4 と [ストレージ](../storage.md) §6 を参照する
 - **ルール評価は UI と同期しない**。ルール編集 API は編集を書いて再評価ジョブを投入するだけで即応答し、評価は ruler がバックグラウンドで実行。ユーザーが連打してもキューで直列化され、DB を占有する形にならない
 

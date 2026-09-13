@@ -35,7 +35,9 @@ rokuban は SIGTERM を受けると実行中のジョブを `--soft-stop-timeout
 まで待ってから畳む。**Docker の既定の猶予は 10 秒**なので、既定のままなら収まるが、
 猶予を伸ばす（長いエンコードを守る）ときは `stop_grace_period` も対で伸ばす。
 足りないと `docker compose down` / `stop` のたびに実行中のジョブが SIGKILL される。
-その行は `running` のまま最大 1 時間（`JobRescuer` の既定）止まる。
+encode / ingest の行は、次の `encode_reconcile` / `record_sweep` が lock の解放を
+確認した後に代替ジョブへ置き換える。その他のジョブは `JobRescuer` の既定 1 時間を
+待つことがある。
 リポジトリの `docker-compose.yml` には 30 秒を書いてある
 （[docs/operations.md](../operations.md) §5「Deployment 併用時」の足し算）。
 
@@ -161,4 +163,3 @@ docker compose exec rokuban rokuban enqueue storage-sync --config /config.yml
    ヒントが入るので通常は即座。ヒントが落ちれば最大 10 分
 3. **reconciler が mirakc に schedule を作る** — `ruler_pass` の完了がヒントなので
    続けて走る。落ちれば最大 30 秒
-

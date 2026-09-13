@@ -55,7 +55,9 @@ const (
 
 // EncodeReconcileWorker は desired（recording_encode_policy.encode_profiles）−
 // observed（active な encoded media_assets）の差分を定期的に埋める River ワーカー
-// （issue #163）。
+// （issue #163）。加えて、encode の Timeout()=-1 では River の JobRescuer が
+// 回収しないプロセス死した running ジョブを、同じ encode キューのこのパスで
+// job-id advisory lock により回収する（issue #797）。
 //
 // エンコード投入は本来レベルトリガー（不変条件 5）だが、実際に差分を埋める
 // きっかけは長らくヒント 2 経路（ingest 完了時のベストエフォート投入と
@@ -153,7 +155,8 @@ func (w *EncodeReconcileWorker) Timeout(*river.Job[jobs.EncodeReconcileArgs]) ti
 
 // Work は 1 パス分の encode reconcile を実行する。
 //
-// 候補の抽出と不足プロファイルの判定は ListMissingEncodeProfiles でまとめて行う。
+// まず stale running encode の回収を行い、その後に候補の抽出と不足プロファイルの
+// 判定を ListMissingEncodeProfiles でまとめて行う。
 // これにより、候補ごとの原本・ポリシー・encoded の再取得を避ける。known_profiles
 // も SQL に渡して、設定から消えたプロファイルや空のプロファイル名を投入対象から
 // 外す。単発のヒント経路は用途が異なるため、引き続き EnqueueMissingEncodes 系の
@@ -169,6 +172,15 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.Enco
 		// 「encode ジョブを実際に投入すること」なので、client が取れないことを
 		// 黙った no-op にすると取りこぼしの回復そのものが消える。
 		return fmt.Errorf("encode reconcile: getting river client: %w", err)
+	}
+
+	// EncodeWorker.Timeout() は録画長に依存するため -1 のままにする。その代わり、
+	// プロセス死で running のまま残った encode は job-id advisory lock の解放を
+	// 確認して旧行を discarded にし、別 ID の代替ジョブへ置き換える。回収の失敗は
+	// gap-fill（desired−observed の真実の再取得。不変条件 5）を止めない ---
+	// 回収は補助経路で、次のパスが同じ候補を再び調べられるためである。
+	if err := recoverStaleEncodeJobsFunc(ctx, w.Pool, client); err != nil {
+		slog.Warn("encode_reconcile: recovering stale encode jobs failed, continuing with gap-fill", "err", err)
 	}
 
 	rowLimit := w.RowLimit
