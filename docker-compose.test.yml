@@ -9,7 +9,12 @@ services:
       POSTGRES_PASSWORD: rokuban
       POSTGRES_DB: rokuban
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U rokuban"]
+      # 公式イメージは initdb 中、CREATE DATABASE のために
+      # listen_addresses='' の一時サーバーを Unix socket だけで起動する。
+      # ホストを指定して TCP とアプリ DB を検査しないと、その一時サーバーを
+      # healthy と誤認し、本サーバーの再起動中に migrate が 57P03 で落ちる。
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U rokuban -d rokuban"]
+      start_period: 10s
       interval: 2s
       timeout: 3s
       retries: 10
