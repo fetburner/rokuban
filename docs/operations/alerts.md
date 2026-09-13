@@ -10,7 +10,7 @@
 
 未 ingest record 総量メトリクスとエッジディスク残量を突き合わせてアラートする。ingest が詰まって未 ingest の record が溜まり続けるシナリオへの備え（[ストレージ](../storage.md) のサイジング指針と対）。
 
-**このアラートは回線断を検知できない**。未 ingest 総量が数えるのは `record_sync` に `status='finished'` として観測済みの record だけである。その行は watcher が mirakc を観測して初めて作られる。**エッジ↔クラウドの回線が切れている間に始まった録画はここに現れないので、断のあいだこの値は平らなまま**（録画中に断が始まったぶんも、`finished` への更新が復帰後になるので同じ）。回線断は `rokuban_sweep_last_pass_timestamp_seconds` / `rokuban_epg_sync_last_success_timestamp_seconds` の**停滞**で別に見張る。断が `epg.retention_grace` を超えると encode 意図が落ちる（[ストレージ運用](storage.md)「N 日は容量だけでは決まらない」）。
+**このアラートは回線断を検知できない**。未 ingest 総量が数えるのは `record_sync` に `status='finished'` として観測済みの record だけである。その行は watcher が mirakc を観測して初めて作られる。**エッジ↔クラウドの回線が切れている間に始まった録画はここに現れないので、断のあいだこの値は平らなまま**（録画中に断が始まったぶんも、`finished` への更新が復帰後になるので同じ）。回線断は `rokuban_sweep_last_success_timestamp_seconds{site}` / `rokuban_epg_sync_last_success_timestamp_seconds` の**停滞**で別に見張る。断が `epg.retention_grace` を超えると encode 意図が落ちる（[ストレージ運用](storage.md)「N 日は容量だけでは決まらない」）。
 
 ### 大量削除サーキットブレーカー発動
 

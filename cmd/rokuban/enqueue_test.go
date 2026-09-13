@@ -215,6 +215,34 @@ func TestRunEnqueue_EncodeReconcile(t *testing.T) {
 	}
 }
 
+// thumbnail-reconcile も投入できること。site 非依存で、k8s の CronJob から
+// `worker.periodic_jobs: false` の構成でも起動できる必要がある。
+func TestRunEnqueue_ThumbnailReconcile(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	var out bytes.Buffer
+	if err := runEnqueue(ctx, pool, "thumbnail-reconcile", "", &out); err != nil {
+		t.Fatalf("runEnqueue: %v", err)
+	}
+	if !strings.Contains(out.String(), "inserted job") {
+		t.Errorf("output = %q, want to contain %q", out.String(), "inserted job")
+	}
+	if strings.Contains(out.String(), "for site") {
+		t.Errorf("output = %q, site-independent job must not mention site", out.String())
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM river_job WHERE kind = 'thumbnail_reconcile'`,
+	).Scan(&count); err != nil {
+		t.Fatalf("counting thumbnail_reconcile jobs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("thumbnail_reconcile job count = %d, want 1", count)
+	}
+}
+
 // storage-sync も投入できること（issue #238 M7-5）。catalog-export と同じく
 // site 非依存なので site は空で渡す。
 func TestRunEnqueue_StorageSync(t *testing.T) {
@@ -412,10 +440,10 @@ func TestResolveEnqueueJobSite(t *testing.T) {
 // enqueueJobs の分類が一貫していること。RequiresSite の集合が「次にジョブを
 // 足す人がどちらかを更新し忘れる」経路にならないよう、現状の契約を固定する
 // （issue #200）。catalog-export と storage-sync（issue #238 M7-5）、
-// encode-reconcile（issue #163）、delete-reconcile が site 非依存。
+// encode-reconcile（issue #163）、thumbnail-reconcile、delete-reconcile が site 非依存。
 func TestEnqueueJobs_SiteClassification(t *testing.T) {
 	independent := sortedJobNamesBySite(false)
-	wantIndependent := []string{"catalog-export", "delete-reconcile", "encode-reconcile", "storage-sync"}
+	wantIndependent := []string{"catalog-export", "delete-reconcile", "encode-reconcile", "storage-sync", "thumbnail-reconcile"}
 	if strings.Join(independent, ",") != strings.Join(wantIndependent, ",") {
 		t.Errorf("site-independent jobs = %v, want %v", independent, wantIndependent)
 	}

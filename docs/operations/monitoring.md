@@ -40,6 +40,8 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_encode_jobs_total{result}` | Counter | encode の成功/失敗件数 |
 | `rokuban_thumbnail_duration_seconds` | Histogram | thumbnail 1 件の所要時間 |
 | `rokuban_thumbnail_jobs_total{result}` | Counter | thumbnail の成功/失敗件数 |
+| `rokuban_thumbnail_reconcile_last_pass_timestamp_seconds` | Gauge | thumbnail reconcile の最終完走時刻。投入停止は `time() -` で検出 |
+| `rokuban_thumbnail_reconcile_candidates` | Gauge | 直近の thumbnail reconcile が見た不足録画数。行上限に張り付く場合はバックログが上限以上 |
 | `rokuban_reconcile_pending_diff{action}` | Gauge | reconcile 差分数（**収束すればゼロ**。アラートはこちら） |
 | `rokuban_reconcile_schedules_total{action}` | Counter | 実際に差分を消した量 |
 | `rokuban_reconcile_schedule_lost_total` | Counter | 再作成で DELETE 成功 → POST 失敗（下記 reconcile。**0 以外はアラート対象**） |
@@ -56,7 +58,10 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_ruler_program_id_reuse_total` | Counter | 終了済み snapshot と EPG の開始時刻が 24 時間超ずれた `program_id` の観測件数。再利用を検出しても挙動は変えない |
 | `rokuban_ruler_circuit_breaker_trips_total` | Counter | 大量削除ブレーカーの発動遷移回数（下記 ruler） |
 | `rokuban_ruler_last_pass_timestamp_seconds` | Gauge | 最後に成功した ruler パスの時刻 |
+| `rokuban_ruler_last_success_timestamp_seconds{site}` | Gauge（DB） | `ruler_pass` が site 単位で成功した最後の時刻。marker 未確立は 0 |
 | `rokuban_sweep_last_pass_timestamp_seconds` | Gauge | 最後に成功した record_sweep パスの時刻 |
+| `rokuban_sweep_last_success_timestamp_seconds{site}` | Gauge（DB） | `record_sweep` が site 単位で成功した最後の時刻。marker 未確立は 0 |
+| `rokuban_loop_pass_marker_scrape_errors_total{site}` | Counter（DB） | ruler / record_sweep の成功 marker を scrape できなかった回数 |
 | `rokuban_epg_sync_duration_seconds` | Histogram | EPG 全量同期の所要 |
 | `rokuban_epg_programs_projected` | Gauge | 直近パスの投影件数 |
 | `rokuban_epg_channels_without_programs` | Gauge | 番組を返さなかったチャンネル数 |
@@ -82,8 +87,13 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_live_leave_hints_total{result}` | Counter | 離脱ヒントの受信数（`deadline_shortened` / `no_session` / `no_effect`）。**回収数と対で読む** --- ヒントは停止命令ではないので一致しない（差が開いていれば共有セッションが多い）。`no_effect` が定常的に出るなら「猶予 ≥ `live.idle_timeout`」でヒントが効かない設定 |
 | `rokuban_live_idle_gc_last_pass_timestamp_seconds` | Gauge | 最後に完走した idle GC パスの時刻 |
 
-**ロール分割（KEDA ScaledJob）構成でアラートに使えるのは presync の DB 側 3 本だけである**。
-対象は上表の `rokuban_presync_pending` 系列 3 本（pending / earliest / snapshot）。
+**ロール分割（KEDA ScaledJob）構成でアラートに使う成功鮮度は DB 側 5 本である**。
+対象は上表の `rokuban_presync_pending` 系列 3 本（pending / earliest / snapshot）である。
+加えて、次の 2 本を使う。
+
+- `rokuban_ruler_last_success_timestamp_seconds{site}`
+- `rokuban_sweep_last_success_timestamp_seconds{site}`
+
 プロセス内ゲージの `rokuban_reconcile_pending_diff` は reconciler のジョブを実行した
 Pod でしか値を持たない。その Pod は `--once` で終了するため scrape 窓が無い
 （下記「ジョブ化されたループの監視」）。
@@ -118,7 +128,7 @@ mirakc の追従品質は EDCB ほどの長期実績がないため、品質メ�
 
 | メトリクス | ソース | 用途 |
 |---|---|---|
-| `recording.failed` 理由別カウンタ | watcher が mirakc SSE から受信。理由は構造化されている: `start-recording-failed` / `io-error` / `pipeline-error` / `need-rescheduling` / `schedule-expired` / `removed-from-epg` | 録画失敗の傾向分析、mirakc 品質の実測 |
+| `recording.failed` 理由別カウンタ | watcher が mirakc SSE または `record_sweep` の schedules / records API から観測。理由は構造化されている: `start-recording-failed` / `io-error` / `pipeline-error` / `need-rescheduling` / `schedule-expired` / `removed-from-epg` | 録画失敗の傾向分析、mirakc 品質の実測 |
 | `recording.record-broken` | watcher が mirakc SSE から受信（理由付き、複数回あり） | 録画中の異常検出 |
 | ドロップ統計（PID 別 continuity counter 不連続 / TEI） | ingest のインラインスキャン。188 バイト境界の TS パケット統計を転送中に読み取り専用で採取（追加 I/O パスゼロ） | EPGStation のドロップログ相当。PID 別サマリを `drop_stats` テーブルに格納し UI で表示 |
 | scrambled カウンタ | ingest のインラインスキャン。`scrambling_control` ビットのカウント | B-CAS/復号障害の検出（[アラート設計](alerts.md) の対象） |
@@ -130,6 +140,7 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 | 見るもの | 意味 |
 |---|---|
 | `rokuban_*_last_pass_timestamp_seconds`（`reconcile` / `ruler` / `sweep`） | `time() - この値` が周期を大きく超えたら止まっている。**KEDA ScaledJob の構成では使えない**（下記） |
+| `rokuban_ruler_last_success_timestamp_seconds{site}` / `rokuban_sweep_last_success_timestamp_seconds{site}` | DB に確定した site 単位の成功時刻。`time() - この値` が周期を大きく超えたら、ScaledJob でも止まっている |
 | `river_job` の `state='available'` が滞留 | 投入はされているが誰も引いていない（worker が 0 か、キューを引いていない） |
 | `river_job` が増えない | **投入自体が止まっている**。`worker.periodic_jobs: false` なのに CronJob が動いていない、あるいはリーダーが不在 |
 
@@ -138,8 +149,8 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 `rokuban_*_last_pass_timestamp_seconds`（`reconcile` / `ruler` / `sweep`）は**プロセス内の
 ゲージ**である。ジョブを走らせたプロセスは 1 件消化して終了する（`--once`）ので、その値を
 scrape できる窓が実質的に無い。常駐している Pod（api / notifier / watcher / streamer）は
-そのジョブを一度も走らせないので、**常に 0 を返す**。kind で実測した。判定 1〜5 を通した後の
-api Pod で、`reconcile` / `ruler` / `sweep` の 3 つとも `0` だった。
+そのジョブを一度も走らせないので、値は成功時刻を表さない。ruler / record_sweep については、
+この既存ゲージを互換性のため残したまま、DB-backed の site ラベル付きメトリクスを追加した。
 
 予約同期（reconcile）の鮮度には、この実測を踏まえて DB-backed の
 `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` を新設した。
@@ -151,12 +162,10 @@ snapshot からの経過時間として見える。
 「未同期」と断定せず、まず観測不能として扱う。freshness と pending の判定順、常駐
 構成と ScaledJob 構成の収集元・復旧条件は [アラート設計](alerts.md) にまとめる。
 
-**未解決: ruler / sweep のパス鮮度は今回 DB ゲージ化していない。** DB ゲージ化したのは
-schedule 同期（reconcile）の鮮度だけである。ruler と record_sweep は依然として
-プロセス内ゲージしか持たない。ロール分割（KEDA ScaledJob）構成では、この 2 つの
-鮮度を観測できないままである。`river_job` の `state` / `finalized_at` からそちらの
-鮮度を出す案は残っているが、プロセス内ゲージを DB ゲージに移すかどうかは設計判断
-なので、ここでは形を決めていない。
+`ruler_pass` と `record_sweep` は成功したパスの最後に site 単位の衛星表を upsert する。
+処理が途中で失敗した場合は marker を更新しないので、DB-backed の値は「最後に成功した
+時刻」であり「最後に試みた時刻」ではない。各 marker は常駐プロセスの scrape から読めるため、
+`time() - <metric> > 閾値` を ScaledJob 構成の停止検出に使える。
 
 手動で走らせたいときは `rokuban enqueue <job>`。既に待機中なら投入せず終了コード 0 を返すので、cron から重ねて叩いても安全。
 
@@ -165,11 +174,23 @@ schedule 同期（reconcile）の鮮度だけである。ruler と record_sweep 
 | 種別 | ジョブ | `--site` | CronJob の立て方 |
 |---|---|---|---|
 | site 束縛 | `epg-sync` / `tuner-sync` / `ruler-pass` / `reconcile-pass` / `record-sweep` | 多サイトでは必須（1 サイトなら省略可） | **サイトごとに 1 本**（`--site tokyo` 等） |
-| site 非依存 | `catalog-export` / `encode-reconcile` / `storage-sync` | **付けない**（付けるとエラー） | **全体で 1 本**（サイトごとに立てない） |
+| site 非依存 | 下記の 5 種 | **付けない**（付けるとエラー） | **全体で 1 本**（サイトごとに立てない） |
 
-`catalog-export` / `storage-sync` はアーカイブ（+ スクラッチ）が単一なので site の属性を持たない。`encode-reconcile` はエンコードのプロファイルとアーカイブがどちらも単一だから同じ扱い。サイトごとの CronJob から叩くと N 回投入される（River の一意制約で 1 本に合流はするが意図が読めない）。**`worker.periodic_jobs: false` の構成では `storage-sync` の CronJob を忘れると `storage_sync` が一度も投入されない**。`GET /api/storage` が永遠に空配列を返す（レビュー指摘）。**`encode-reconcile` を忘れた場合の症状は静かで、ヒントを落とした録画だけがエンコードされないまま残る**（[ingest](../recording/ingest.md) §5.5）。検出は `rokuban_encode_reconcile_last_pass_timestamp_seconds` の鮮度で行う（投入を忘れれば進まない）。
+対象は `catalog-export` / `delete-reconcile` / `encode-reconcile` / `thumbnail-reconcile` / `storage-sync` である。
+`catalog-export` / `storage-sync` はアーカイブ（+ スクラッチ）が単一なので site の属性を持たない。
+`encode-reconcile` はエンコードのプロファイルとアーカイブがどちらも単一である。
+`thumbnail-reconcile` はサムネイルの名前空間とアーカイブが単一である。
+`delete-reconcile` は単一の物理ストレージ全体を走査する。
+以上のジョブをサイトごとの CronJob から叩くと N 回投入される（River の一意制約で 1 本に合流はするが意図が読めない）。
+**`worker.periodic_jobs: false` の構成では `storage-sync` の CronJob を忘れると `storage_sync` が一度も投入されない**。`GET /api/storage` が永遠に空配列を返す。
+**`encode-reconcile` / `thumbnail-reconcile` を忘れた場合の症状は静かである。**
+ヒントを落とした録画だけが派生物を持たないまま残る（[ingest](../recording/ingest.md) §5.5）。
+検出は `rokuban_encode_reconcile_last_pass_timestamp_seconds` の鮮度で行う。
+thumbnail は `rokuban_thumbnail_reconcile_last_pass_timestamp_seconds` を見る。投入を忘れれば値が進まない。
 
-**record_sweep には ruler / reconciler と違ってヒント経路（前倒し投入）がない**。定期投入だけが契機で、間隔は既定 5 分（`worker.RecordSweepInterval`、旧 watcher の `ReconcileInterval` を継承）。SSE 再接続をヒントにする案は検討したが、`internal/mirakc.Client.Subscribe` が再接続を内部に隠していて呼び出し側に通知できないため見送った（[録画エンジン](../recording.md) §3.3「record_sweep の起動契機」）。取りこぼしの実害は SSE の (a)(b) が大半を吸収し、record_sweep は定期パスとして収束させる保険という位置づけなので、5 分間隔で十分と判断している。
+thumbnail reconcile の候補から除外される既知の原本欠落は `rokuban_media_assets_missing{kind="original"}` で確認する。これはファイルが復旧して delete reconcile がマーカーを消すまで、定期パスが同じ失敗を作り続けないためのガードである。
+
+**record_sweep には ruler / reconciler と違ってヒント経路（前倒し投入）がない**。定期投入だけが契機で、間隔は既定 5 分（`worker.RecordSweepInterval`、旧 watcher の `ReconcileInterval` を継承）。SSE 再接続をヒントにする案は検討したが、`internal/mirakc.Client.Subscribe` が再接続を内部に隠していて呼び出し側に通知できないため見送った（[録画エンジン](../recording.md) §3.3「record_sweep の起動契機」）。取りこぼしの実害は SSE の (a)(b) が大半を吸収し、record_sweep は定期パスとして収束させる保険という位置づけなので、5 分間隔で十分と判断している。パス成功時は `rokuban_sweep_last_success_timestamp_seconds{site}` の DB marker を更新し、mirakc の取得失敗時は更新しない。
 
 ### ruler
 
@@ -181,6 +202,7 @@ schedule 同期（reconcile）の鮮度だけである。ruler と record_sweep 
 | `rokuban_ruler_circuit_breaker_trips_total` | 大量削除で停止した回数。EPG の一時欠損を疑う入口 |
 | `rokuban_circuit_breaker_tripped{breaker="ruler_deletes"}` | **1 の間は導出削除が一切走らない**（手動再開まで止まるラッチ）。カウンタと違い「いま止まっているか」に答える |
 | `rokuban_ruler_last_pass_timestamp_seconds` | 最終パス時刻。`time() - この値` でパスが止まっていることを検出する（gauge が凍る問題への対策） |
+| `rokuban_ruler_last_success_timestamp_seconds{site}` | DB に確定した site 単位の最終成功時刻。ScaledJob ではこちらで停止を検出する |
 
 `deleted` と `gc` は区別する。`deleted` は「ルールがマッチしなくなった」導出削除で**サーキットブレーカーの対象**、`gc` は「番組終了 + 猶予経過」の時間駆動で**対象外**（停止後の再開で大量に消えるのが正常）。
 
@@ -228,7 +250,7 @@ schedule 同期（reconcile）の鮮度だけである。ruler と record_sweep 
 | `rokuban_reconcile_start_delayed` が 0 | 録画が始まったことの確認ではない（猶予 3 分の内側は検出しない） | `recordings.started_at` |
 | `GET /api/storage` に root が載っている | 最新の観測とは限らない。1 root の statfs 失敗時は前回の観測行をそのまま残すため、行の存在だけでは「観測が続いている」ことを保証しない | 各要素の `observedAt` の鮮度 / `rokuban_storage_root_last_success_timestamp_seconds{root}` |
 | worker Pod の scrape が落ちた（`up == 0`） | 死んだとは限らない。**drain 中は HTTP を先に閉じてからジョブを走らせ続ける**ので、`--soft-stop-timeout` のあいだ `/metrics` も `/healthz` も落ちる（猶予を数時間に取る encode 構成では、その間ずっと）。停止のたびに出る | 同時刻に `stopping river client` の ERROR が出ていないこと |
-| `rokuban server` が exit 0 で終わった | drain が成功したとは限らない。`riverClient.Stop` の戻り値は ERROR ログに落としており、**終了コードには出ない**。予算切れで戻った場合、実行中だったジョブの行は `running` のまま残り、ロール分割構成では `JobRescuer` を動かす常駐クライアントが 1 つも無いので誰も回収しない（[§5](k8s.md)「Deployment 併用時」） | ログの `stopping river client`（ERROR）をアラート対象にする |
+| `rokuban server` が exit 0 で終わった | drain が成功したとは限らない。`riverClient.Stop` の戻り値は ERROR ログに落としており、**終了コードには出ない**。予算切れで戻った場合、実行中だったジョブの行は一時的に `running` のまま残る。`ingest` / `encode` はそれぞれ `record_sweep` / `encode_reconcile` が lock 解放後に回収するが、その他のジョブは `JobRescuer`（既定 1 時間）に依存する（[§5](k8s.md)「Deployment 併用時」） | ログの `stopping river client`（ERROR）をアラート対象にする |
 | `rokuban_media_assets_missing` が 0（または全 kind の系列が消えている） | 「実体無しの資産が無い」を意味しない。マウントが落ちている・空マウントを疑ったパスは記録自体を見送るため、その間はこのゲージが前回値のまま凍結する。**疑いを経ずに凍結する経路もある** --- 走査エラー・DB エラーでパスが途中 return した場合はゲージに触れないまま終わり、疑いのカウンタも進まない | `rokuban_missing_asset_scan_suspected_storage_failure_total` が増えていないこと **かつ** `rokuban_delete_reconcile_last_pass_timestamp_seconds` が進んでいること（前者は疑い経路、後者はエラー経路の凍結を捕まえる） |
 
 ### チューナー故障はライブ画面の 1 行で見せる

@@ -1244,9 +1244,9 @@ func TestReadinessDoesNotEvictOnASingleFailure(t *testing.T) {
 //
 //	grace >= preStop の sleep + 10s + --soft-stop-timeout + 10s
 //
-// 内訳と、包まなかったときに何が起きるか（行が `running` のまま残り、ロール分割
-// 構成では `JobRescuer` を動かす常駐クライアントが居ないので誰も回収しない）は
-// docs/operations.md §5「Deployment 併用時」にある。ここを worker Pod へ広げる
+// 内訳と、包まなかったときに何が起きるか（行が一時的に `running` のまま残り、
+// encode / ingest は定期 recovery が lock 解放後に回収する）は docs/operations.md
+// §5「Deployment 併用時」にある。ここを worker Pod へ広げる
 // のは、worker の pod spec を書くタスクの担当である --- いま汎用のループを書いても
 // 対象が 0 件で、通るだけのテストになる。
 func TestTerminationBudgetCoversPreStop(t *testing.T) {

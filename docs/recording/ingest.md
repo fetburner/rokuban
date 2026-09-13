@@ -178,6 +178,10 @@ canonical path へ転送中のバイトが存在しないため、同じ `rel_pa
 
 対象は「原本（`kind='original'`）が active でコミット済み」かつ「ごみ箱に入っていない」録画に限る（ingest 未完了の録画とユーザーが捨てた録画を掘り起こさない）。エンコードは site の属性を持たない（アーカイブもプロファイルも単一）ので、このジョブは record_sweep のような site 単位ではなく全体で 1 本。`worker.periodic_jobs: false` の構成では `rokuban enqueue encode-reconcile` を CronJob から叩く（[operations/monitoring.md](../operations/monitoring.md) の CronJob 一覧）。
 
+**thumbnail も同じ穴を定期パスで埋める。** ingest 完了後の thumbnail ヒント投入が失敗し、その後に `DeleteRecord` が成功すると、edge record が無いため record_sweep から再投入できない。この状態を `thumbnail_reconcile`（既定 15 分周期）が active な原本と active な thumbnail の差分として拾い、`thumbnail` ジョブを再投入する。対象は encode と同じく site 非依存で、ごみ箱の録画は除外する。原本が `missing_media_assets` に記録されている間は、ファイルが無いことが分かっているため定期パスから除外し、復旧後のマーカー解除を待つ。`worker.periodic_jobs: false` の構成では `rokuban enqueue thumbnail-reconcile` を CronJob から叩く。
+
+定期パスは pending 中の thumbnail ジョブを River の一意制約で合流させ、抽出に失敗し続ける録画があっても候補窓を recording ID 順に回す。これにより同じ失敗を 1 パスごとに無制限に新規投入せず、後続の録画を恒久的に隠さない。明示的な `EnqueueMissingThumbnails` は復旧・テスト用の全件投入なので、ファイルを戻した直後の即時回収に使える。
+
 **繰り返すパスは「投入しても必ず失敗する仕事」を作ってはならない。** ヒントは一度きりなので、設定から消えたプロファイルを投入して `unknown encode profile` で失敗させるのは運用者への通知として妥当だが、15 分ごとに同じことをすると失敗を無限に作り続ける。定期パスは desired を**現在の `encode.profiles` に存在する名前だけ**に絞る。落とした録画は数えて出す（`rokuban_encode_reconcile_unsatisfiable`。プロファイルを改名すると、その名前で凍結済みの過去録画が一斉にここへ落ちる）。
 
 **挙動の変更**: このパスが入るまで、25 回失敗して discarded になった encode ジョブはそこで止まっていた。これからは `encoded` が生まれない限り 15 分ごとに投入し直す（River の一意制約は pending 状態にしか効かず、discarded 済みの引数には合流しない）。真実は River のジョブ履歴ではなく `media_assets` の有無なのでレベルトリガーとしては意図通りだが、**恒久的に失敗するエンコードは「静かに諦める」から「延々と再試行する」に変わる**。

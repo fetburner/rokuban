@@ -33,6 +33,7 @@ func TestJobArgsContract(t *testing.T) {
 		{name: "encode", args: EncodeJobArgs{RecordingID: 1, Profile: "mobile"}, kind: "encode", queue: "encode"},
 		{name: "encode_enqueue_hint", args: EncodeEnqueueHintArgs{RecordingID: 1}, kind: "encode_enqueue_hint", queue: "encode"},
 		{name: "thumbnail", args: ThumbnailJobArgs{RecordingID: 1}, kind: "thumbnail", queue: "thumbnail"},
+		{name: "thumbnail_reconcile", args: ThumbnailReconcileArgs{}, kind: "thumbnail_reconcile", queue: "thumbnail"},
 		{name: "encode_reconcile", args: EncodeReconcileArgs{}, kind: "encode_reconcile", queue: "encode"},
 		{name: "delete_reconcile", args: DeleteReconcileArgs{}, kind: "delete_reconcile", queue: "cleanup", byQueue: true},
 		{name: "catalog_export", args: CatalogExportArgs{Keep: 3}, kind: "catalog_export", queue: "cleanup", byQueue: true},

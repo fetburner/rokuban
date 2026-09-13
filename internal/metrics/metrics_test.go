@@ -63,6 +63,8 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	EncodeReconcileLastPass.SetToCurrentTime()
 	EncodeReconcileCandidates.Set(0)
 	EncodeReconcileUnsatisfiable.WithLabelValues("h264").Set(0)
+	ThumbnailReconcileLastPass.SetToCurrentTime()
+	ThumbnailReconcileCandidates.Set(0)
 	MediaAssetsMissing.WithLabelValues("original").Set(0)
 	MissingAssetScanSuspectedStorageFailure.Add(1)
 
@@ -120,6 +122,8 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 		"rokuban_encode_reconcile_last_pass_timestamp_seconds",
 		"rokuban_encode_reconcile_candidates",
 		"rokuban_encode_reconcile_unsatisfiable",
+		"rokuban_thumbnail_reconcile_last_pass_timestamp_seconds",
+		"rokuban_thumbnail_reconcile_candidates",
 		// issue #343: active な media_asset の実体無し検出。
 		// docs/operations/monitoring.md がこの 2 本を対で読む運用を約束して
 		// いるので、片方の登録漏れが黙って通らないようにここに載せる
@@ -146,6 +150,44 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 func TestNewRegistry_Twice(t *testing.T) {
 	_ = NewRegistry(nil)
 	_ = NewRegistry(nil)
+}
+
+// ruler / record_sweep の成功時刻はプロセス内ゲージではなく DB の marker から
+// scrape できることを固定する。ScaledJob が終了した後も常駐プロセスから読める
+// 経路なので、collector が旧ゲージを読む実装に戻るとこのテストで分かる。
+func TestLoopPassCollector_ReadsDBBackedMarkers(t *testing.T) {
+	pool := rokutest.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	if err := q.UpsertRulerPassSnapshot(ctx, testSite); err != nil {
+		t.Fatalf("upserting ruler marker: %v", err)
+	}
+	if err := q.UpsertRecordSweepSnapshot(ctx, testSite); err != nil {
+		t.Fatalf("upserting record sweep marker: %v", err)
+	}
+
+	c := NewLoopPassCollector(pool, testSite)
+	if got := gaugeValue(t, c, "rokuban_ruler_last_success_timestamp_seconds"); got <= 0 {
+		t.Errorf("ruler last success = %v, want a positive DB timestamp", got)
+	}
+	if got := gaugeValue(t, c, "rokuban_sweep_last_success_timestamp_seconds"); got <= 0 {
+		t.Errorf("sweep last success = %v, want a positive DB timestamp", got)
+	}
+}
+
+// marker がまだ無い site も「未確立 = 0」として観測できる。系列自体を消すと、
+// 初回実行前と collector の登録漏れを区別できない。
+func TestLoopPassCollector_ReportsZeroBeforeFirstPass(t *testing.T) {
+	pool := rokutest.SetupDB(t)
+	c := NewLoopPassCollector(pool, testSite)
+
+	if got := gaugeValue(t, c, "rokuban_ruler_last_success_timestamp_seconds"); got != 0 {
+		t.Errorf("ruler last success before first pass = %v, want 0", got)
+	}
+	if got := gaugeValue(t, c, "rokuban_sweep_last_success_timestamp_seconds"); got != 0 {
+		t.Errorf("sweep last success before first pass = %v, want 0", got)
+	}
 }
 
 func seedFinishedRecord(t *testing.T, pool *pgxpool.Pool, recordID string, contentLength int64, ingested bool) {

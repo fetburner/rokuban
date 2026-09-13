@@ -70,10 +70,11 @@ const (
 //
 // 既定を長く（例えば 30 秒に）すると、猶予を書いていないデプロイで**プロセスが
 // 畳み終える前に SIGKILL が来る**。実測: 既定 30 秒のプロセスは停止に 30.09 秒
-// 必要で、k8s の既定猶予 30 秒に 0.09 秒負けた。負けると River の行は `running`
-// のまま残り、回収は `JobRescuer`（既定 1 時間。ロール分割構成では動かす常駐
-// クライアントが無いので誰も回収しない）に委ねられる --- **設定を間違えた人では
-// なく、何も書かなかった人に当たる**壊れ方である。この PR の前は同じ操作が
+// 必要で、k8s の既定猶予 30 秒に 0.09 秒負けた。負けると River の行は一時的に
+// `running` のまま残る。ingest / encode はそれぞれ `record_sweep` /
+// `encode_reconcile` が lock 解放後に回収するが、その他のジョブは `JobRescuer`
+// （既定 1 時間）に委ねられる --- **設定を間違えた人ではなく、何も書かなかった人に
+// 当たる**壊れ方を増やさないためにも猶予を正しく設定する。この PR の前は同じ操作が
 // 「試行を 1 つ潰して即座に `available`」で済んでいたので、そこを退行させない。
 //
 // 数時間かかる encode / ingest は当然この既定では完走できない。それらを載せる
@@ -275,6 +276,9 @@ func NewWorkers(deps *Deps) *river.Workers {
 		FFmpeg:     deps.Encode.FFmpeg,
 		FFprobe:    deps.Encode.FFprobe,
 	})
+	river.AddWorker(workers, &ThumbnailReconcileWorker{
+		Pool: deps.Pool,
+	})
 	river.AddWorker(workers, &DeleteReconcileWorker{
 		Pool:              deps.Pool,
 		MediaDir:          deps.MediaDir,
@@ -423,6 +427,14 @@ type ClientConfig struct {
 	// EncodeReconcileInterval は encode reconcile の間隔。0 なら既定値（15 分）。
 	EncodeReconcileInterval time.Duration
 
+	// ThumbnailReconcile が true なら thumbnail の desired−observed 定期パスを
+	// 定期ジョブとして登録する（PeriodicJobs が true のときのみ）。EncodeReconcile
+	// と同じくサイト非依存で、thumbnail キューを実ジョブと共有する。
+	ThumbnailReconcile bool
+
+	// ThumbnailReconcileInterval は thumbnail reconcile の間隔。0 なら既定値（15 分）。
+	ThumbnailReconcileInterval time.Duration
+
 	// StorageSync が true ならストレージ観測（issue #238 M7-5）を定期ジョブとして
 	// 登録する（PeriodicJobs が true のときのみ）。CatalogExport / DeleteReconcile と
 	// 同じくサイト非依存（観測対象は単一の MediaDir / ScratchDir）。
@@ -432,7 +444,7 @@ type ClientConfig struct {
 	StorageSyncInterval time.Duration
 
 	// PeriodicJobs が false なら、BoundSites / CatalogExport / DeleteReconcile /
-	// EncodeReconcile / StorageSync が設定されていても River の PeriodicJobs を
+	// EncodeReconcile / ThumbnailReconcile / StorageSync が設定されていても River の PeriodicJobs を
 	// 一切登録しない。
 	// k8s では false にして、CronJob が
 	// `rokuban enqueue` を叩く形に委ねる（docs/data.md §2「定期実行の契機は
@@ -746,6 +758,7 @@ func configureGlobalPeriodicJobs(riverCfg *river.Config, cfg ClientConfig) {
 	appendPeriodic(cfg.CatalogExport, cfg.CatalogExportInterval, defaultCatalogExportInterval, jobs.CatalogExportArgs{})
 	appendPeriodic(cfg.DeleteReconcile, cfg.DeleteReconcileInterval, defaultDeleteReconcileInterval, jobs.DeleteReconcileArgs{})
 	appendPeriodic(cfg.EncodeReconcile, cfg.EncodeReconcileInterval, defaultEncodeReconcileInterval, jobs.EncodeReconcileArgs{})
+	appendPeriodic(cfg.ThumbnailReconcile, cfg.ThumbnailReconcileInterval, defaultThumbnailReconcileInterval, jobs.ThumbnailReconcileArgs{})
 	appendPeriodic(cfg.StorageSync, cfg.StorageSyncInterval, defaultStorageSyncInterval, jobs.StorageSyncArgs{})
 }
 

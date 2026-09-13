@@ -47,8 +47,8 @@ spec:
       # Pod（Deployment でも ScaledJob の Job Pod でも）は River の drain が
       # 加わるので `+ --soft-stop-timeout + 10s` が要る。この YAML をテンプレート
       # として写すときは docs/operations.md §5「Deployment 併用時」の足し算を
-      # 見ること --- 猶予が足りないと実行中のジョブが SIGKILL され、行が
-      # running のまま誰にも回収されない。
+      # 見ること --- 猶予が足りないと実行中のジョブが SIGKILL され、行が一時的に
+      # running のまま残る（ingest / encode は次の定期 recovery が回収する）。
       terminationGracePeriodSeconds: 30
       # レプリカを別ノードに散らす。**ScheduleAnyway（soft）にする** ---
       # DoNotSchedule だと 1 ノードの kind や単一ノードのエッジで 2 本目が

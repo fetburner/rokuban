@@ -179,6 +179,55 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 	if ingestCount != 1 {
 		t.Errorf("ingest job count = %d, want 1", ingestCount)
 	}
+
+	var markerCount int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM record_sweep_snapshots WHERE site = $1`, testSite,
+	).Scan(&markerCount); err != nil {
+		t.Fatalf("querying record sweep marker: %v", err)
+	}
+	if markerCount != 1 {
+		t.Errorf("record sweep marker rows = %d, want 1", markerCount)
+	}
+}
+
+// mirakc の全量取得に失敗した record_sweep は成功扱いにせず、前回成功時刻を
+// 進めない。ScaledJob の停止検出で「HTTP 障害なのに新鮮」と誤認させないため。
+func TestRecordSweepWorker_DoesNotMarkFailedSweep(t *testing.T) {
+	pool := testutil.SetupDB(t)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Service{})
+	})
+	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
+		http.Error(rw, "forced record list failure", http.StatusServiceUnavailable)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	w := &RecordSweepWorker{
+		MirakcClients: singleSiteClients(testSite, mirakc.NewClient(srv.URL, nil)),
+		Pool:          pool,
+	}
+	job := &river.Job[jobs.RecordSweepArgs]{
+		JobRow: &rivertype.JobRow{ID: 906},
+		Args:   jobs.RecordSweepArgs{Site: testSite},
+	}
+	if err := w.Work(riverWorkContext(t, pool), job); err == nil {
+		t.Fatal("Work() error = nil, want record list failure")
+	}
+
+	var markerCount int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM record_sweep_snapshots WHERE site = $1`, testSite,
+	).Scan(&markerCount); err != nil {
+		t.Fatalf("querying record sweep marker: %v", err)
+	}
+	if markerCount != 0 {
+		t.Errorf("record sweep marker rows after failed sweep = %d, want 0", markerCount)
+	}
 }
 
 // TestRecordSweepWorker_ContinuesSweepWhenRecoveryFails は、stale ingest 回収

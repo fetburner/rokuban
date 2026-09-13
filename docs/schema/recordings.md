@@ -74,7 +74,8 @@ CREATE INDEX ON recordings (purged_at) WHERE purged_at IS NULL;  -- ごみ箱一
 **`recordings` は mirakc が報告した録画試行だけを持つ。書き手は watcher だけ。**
 
 - watcher が mirakc record を初観測（SSE または全量突き合わせ）→ record の program / service ペイロードからスナップショットして INSERT、`record_sync` 行から参照
-- `recording.failed` で record が存在しないケース（start-recording-failed 等）→ status = `failed` の行を作り quality_events に理由を記録。**録画されなかった試行も履歴に残る**
+- `recording.failed` で record が存在しないケース（start-recording-failed 等）→ status = `failed` の行を作り quality_events に理由を記録。SSE を取りこぼしても、failed schedule が schedules API に残っている間は `record_sweep` が同じ行を再構成する。**録画されなかった試行も履歴に残る**
+- records API に残る `recording.status=failed` / `failedReason` 付き record も `record_sweep` が失敗理由を quality_events に補完する。schedule が削除済みの recordless failed と `record-broken` は mirakc API だけでは再構成できず、SSE 専用である
 - **番組終了時点で schedule が一度も観測されなかった場合は試行ではないため、`recordings` に行を作らない。** reconciler が後述の `never_scheduled_events` に欠測を書き、ライブラリには failed 録画として出さない
 - 同一 active-event に mirakc 由来の failed 行が既にある状態で、後から成功 record が初観測されたとき → failed 行を supersede してから新しい行を INSERT する（下記「同一イベントの重複防止」の `superseded_at` 参照）
 - `source` は作成時点の出自を一度だけ snapshot する。予約行も `record` 意図も無い録画は `unattributed` とし、後から予約や意図を推測して書き換えない
@@ -210,10 +211,10 @@ CREATE TABLE recording_encode_attempts (
 
 - **行の存在そのものが「running か failed のどちらかを主張している」ことを意味する**（不変条件 10）。「待っている（queued）」を表す行は作らない ―― queued は API 側で「desired にあって行が無い」として導出する
 - **書き手は脊椎（watcher / reconciler）ではない**ので本体の列にしない（不変条件 13。`recording_ingest_progress` と同じ判断）
-- **River の `river_job` は読まない。** `river_job` の state を直接引く設計も検討したが、`EncodeReconcileWorker` は「encoded が無い」観測が続く限り discarded になった encode ジョブを 15 分ごとに再投入し続ける（録画単位の恒久失敗、入力ファイルの破損など）ものの、恒久失敗の代表格である「設定から消えたプロファイル」は `known_profiles` の絞り込みで投入対象から外しており、そちらは River のリトライ（`EncodeJobArgs.InsertOpts` は MaxAttempts を上書きしていないので既定の 25 回）を使い切って discarded になった後は再投入されない（`internal/worker/encode_reconcile.go`）。**「一度失敗したら再投入されない」ではない** —— `EncodeWorker` は unknown profile を普通のエラー（`river.JobCancel` ではない）で返すだけなので、その 25 回の各試行で `markEncodeAttemptRunning` が先に走り、`running` と `failed` を往復する。往復の長さは River 既定のバックオフ `attempt^4` 秒（`DefaultClientRetryPolicy`）の合計で 2〜3 週間のオーダー ―― 実行時計測ではなく既定ポリシーからの算術。どちらにしても river の「いま」の state だけでは「一度も失敗していない」と「直前に失敗して再投入された直後」を見分けられない。この表は `EncodeWorker` が試行の開始・成功・失敗をそのタイミングで明示的に書くので、river の内部状態（リトライ回数・バックオフ）を一切露出させずに済む。[recording/ingest.md](../recording/ingest.md) §5.6 と共通なのは「`river_job` を露出しない」ことだけ ―― §5.6 は「リトライ中」と「取り込み待ち」を区別しないと決めたが、この表は逆に running/failed を持たせて区別する
+- **API は `river_job` を読まない。** 内部の `EncodeReconcileWorker` は例外として、プロセス死回収のため `kind='encode'` かつ `state='running'` の古い行を読み、job-id advisory lock を取得できたときだけ旧行を `discarded` にして代替ジョブを投入する。これは River の状態を API に露出するためではない。`recording_encode_attempts` は引き続き `EncodeWorker` が試行の開始・成功・失敗のタイミングで明示的に書き、River のリトライ回数やバックオフを API 契約に載せない。設定から消えたプロファイルは `known_profiles` で投入対象から外し、入力ファイルの破損など録画単位の恒久失敗は desired が残る限り 15 分ごとに再投入される（`internal/worker/encode_reconcile.go`）
 - 消えるのは 2 経路だけ ―― `EncodeWorker.runEncode` の defer が成功時に試行行を消す（DELETE は派生物 INSERT の直後ではなく、間に webhook 通知が入り同一トランザクションでもない。「完了しているのに失敗中」が読者から見えないのは、API 側が encoded 資産のあるプロファイルを試行状態の対象から先に除外しているため）と、`recordings` 行の削除（`ON DELETE CASCADE`）
 - PK が `(recording_id, profile)` の複合なのは、1 録画に複数プロファイルを事後追加できるため
-- `error` / `attempted_at` の読み手は **API ではなく運用者の SELECT**（[runbook/troubleshooting.md](../runbook/troubleshooting.md)「エンコードが失敗している」。`recording_ingest_progress` を運用者が読むのと同じ立場）。`EncodeJobStatus` は `profile` / `state` だけを配る ―― 失敗理由は ffmpeg の内部情報で、クライアントに配る契約に載せると切り詰め方や書式が API 互換の対象になる。`recording_ingest_progress` の `observed_at` のような停滞判定をこの表に持たせるなら、それを使う API/フロントと同じ PR で決める（不変条件 11）。**`state='running'` のまま残る行を掃除する回収器は無い**（worker が実行中に落ち、かつ再投入もされない組み合わせ）。塞ぐなら `attempted_at` を根拠にできるが、判定基準（何秒で見捨てるか）を決めていないので作っていない
+- `error` / `attempted_at` の読み手は **API ではなく運用者の SELECT**（[runbook/troubleshooting.md](../runbook/troubleshooting.md)「エンコードが失敗している」。`recording_ingest_progress` を運用者が読むのと同じ立場）。`EncodeJobStatus` は `profile` / `state` だけを配る ―― 失敗理由は ffmpeg の内部情報で、クライアントに配る契約に載せると切り詰め方や書式が API 互換の対象になる。`recording_ingest_progress` の `observed_at` のような停滞判定をこの表に持たせるなら、それを使う API/フロントと同じ PR で決める（不変条件 11）。プロセス死で `state='running'` のまま残った encode は、`attempted_at` が 1 分以上古く、かつ job-id advisory lock を取得できた場合だけ `encode_reconcile` が回収する。ライブの長時間 encode は回収せず、`recording_encode_attempts` は代替ジョブの開始まで `running` を保つ
 
 ## 6. media_assets — メディアアセット（永続資産）
 

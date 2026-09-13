@@ -1352,6 +1352,61 @@ func deleteAllEpgPrograms(t *testing.T, pool *pgxpool.Pool, ctx context.Context)
 	}
 }
 
+// GC が失敗したパスでは、site 評価が成功していても ruler marker を進めない。
+// marker 更新の条件（site 成功 + GC 成功）を実際の runGC 経路で固定する。
+func TestRunPass_DoesNotMarkWhenGCFails(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	const functionName = "ruler_marker_gc_failure"
+	const triggerName = "ruler_marker_gc_failure_trigger"
+
+	_, err := pool.Exec(ctx, "DROP TRIGGER IF EXISTS "+triggerName+" ON program_snapshots")
+	if err != nil {
+		t.Fatalf("removing stale test trigger: %v", err)
+	}
+	_, err = pool.Exec(ctx, "DROP FUNCTION IF EXISTS "+functionName+"()")
+	if err != nil {
+		t.Fatalf("removing stale test function: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), "DROP TRIGGER IF EXISTS "+triggerName+" ON program_snapshots")
+		_, _ = pool.Exec(context.Background(), "DROP FUNCTION IF EXISTS "+functionName+"()")
+	})
+	_, err = pool.Exec(ctx, `
+		CREATE FUNCTION ruler_marker_gc_failure() RETURNS trigger
+		LANGUAGE plpgsql AS $$
+		BEGIN
+			RAISE EXCEPTION 'injected ruler GC failure';
+		END;
+		$$`)
+	if err != nil {
+		t.Fatalf("creating test trigger function: %v", err)
+	}
+	_, err = pool.Exec(ctx, `
+		CREATE TRIGGER ruler_marker_gc_failure_trigger
+		BEFORE DELETE ON program_snapshots
+		FOR EACH ROW EXECUTE FUNCTION ruler_marker_gc_failure()`)
+	if err != nil {
+		t.Fatalf("creating test trigger: %v", err)
+	}
+
+	insertProgramSnapshotDirect(t, pool, ctx, 10000, "GC エラー", time.Now().Add(-2*time.Hour))
+	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetentionGrace: time.Hour})
+	if err := r.RunPass(ctx); err == nil {
+		t.Fatal("RunPass() error = nil, want GC failure")
+	}
+
+	var markerCount int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM ruler_pass_snapshots WHERE site = $1`, testSite,
+	).Scan(&markerCount); err != nil {
+		t.Fatalf("querying ruler pass marker: %v", err)
+	}
+	if markerCount != 0 {
+		t.Errorf("ruler pass marker rows after failed GC = %d, want 0", markerCount)
+	}
+}
+
 // 受け入れ基準 10（GC）: 番組終了 + RetentionGrace 経過の予約・program_intents・
 // program_overrides は GC で削除される（同じ cutoff。docs/schema.md §3.5）。
 func TestRunPass_GC_DeletesEndedPastGrace(t *testing.T) {

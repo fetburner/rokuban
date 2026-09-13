@@ -113,7 +113,7 @@ func TestIngestJobLock_TimeoutDoesNotHang(t *testing.T) {
 // ジョブ投入 → 全量再ダウンロード）。
 func TestIngestJobLock_TransientHeartbeatFailuresNeverStop(t *testing.T) {
 	transientErr := errors.New("simulated transient db latency")
-	l := newIngestJobLock(nil, 1, "test")
+	l := newJobLock(nil, 1, "test")
 	l.checkHeldFunc = func() (held, permanent bool, err error) {
 		return false, false, transientErr
 	}
@@ -129,7 +129,7 @@ func TestIngestJobLock_TransientHeartbeatFailuresNeverStop(t *testing.T) {
 // （permanent）を検知したら即座に heartbeat を止めることを固定する。
 func TestIngestJobLock_PermanentHeartbeatFailureStops(t *testing.T) {
 	permanentErr := errors.New("simulated closed connection")
-	l := newIngestJobLock(nil, 1, "test")
+	l := newJobLock(nil, 1, "test")
 	l.checkHeldFunc = func() (held, permanent bool, err error) {
 		return false, true, permanentErr
 	}
@@ -142,7 +142,7 @@ func TestIngestJobLock_PermanentHeartbeatFailureStops(t *testing.T) {
 // TestIngestJobLock_LockLostStopsHeartbeat は、lock 喪失が確定した
 // （held=false, err=nil）場合に heartbeat を止めることを固定する。
 func TestIngestJobLock_LockLostStopsHeartbeat(t *testing.T) {
-	l := newIngestJobLock(nil, 1, "test")
+	l := newJobLock(nil, 1, "test")
 	l.checkHeldFunc = func() (held, permanent bool, err error) {
 		return false, false, nil
 	}
@@ -157,7 +157,7 @@ func TestIngestJobLock_LockLostStopsHeartbeat(t *testing.T) {
 func TestIngestJobLock_HeartbeatRecoversAfterTransientFailures(t *testing.T) {
 	transientErr := errors.New("simulated transient db latency")
 	var succeedNext bool
-	l := newIngestJobLock(nil, 1, "test")
+	l := newJobLock(nil, 1, "test")
 	l.checkHeldFunc = func() (held, permanent bool, err error) {
 		if succeedNext {
 			return true, false, nil
