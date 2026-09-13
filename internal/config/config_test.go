@@ -747,7 +747,7 @@ func durPtr(v time.Duration) *time.Duration { return &v }
 //
 // encode.profiles / live.profiles は 2 要素にし、crf と qp（互いに排他）を
 // 1 要素ずつに分けて両方の yaml タグを踏む。hwaccel ブロックの中身
-// （kind/device/output_format、internal/ffargs のタグで config.go の 87 個には
+// （kind/device/output_format、internal/ffargs のタグで config.go の 89 個には
 // 含まれない）は TestLoad_EncodeProfileHWAccel / TestLoad_LiveHWAccel が別途
 // 固定しているので、ここではブロックが非 nil で通ることだけを確認する。
 const allFieldsOverriddenConfig = `
@@ -797,6 +797,7 @@ encode:
       audio_codec: aac
       height: 1080
       scaler: software
+      deinterlace: true
       crf: 23
       preset: medium
       input_extra_args: ["-analyzeduration", "10M"]
@@ -830,6 +831,7 @@ live:
       audio_codec: aac
       height: 720
       scaler: software
+      deinterlace: true
       crf: 24
       preset: veryfast
       segment_seconds: 4
@@ -860,7 +862,7 @@ log:
   format: text
 `
 
-// TestLoad_AllFieldsOverridden は Config の yaml タグ（config.go に 87 個）を
+// TestLoad_AllFieldsOverridden は Config の yaml タグ（config.go に 89 個）を
 // 全部上書きした設定を読み、セクションごとに実際の値と期待値をテーブルで
 // 突き合わせる。
 //
@@ -942,7 +944,7 @@ func TestLoad_AllFieldsOverridden(t *testing.T) {
 				Profiles: []EncodeProfile{
 					{
 						Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
-						Height: 1080, Scaler: ffargs.ScalerSoftware, CRF: intPtr(23), Preset: "medium",
+						Height: 1080, Scaler: ffargs.ScalerSoftware, Deinterlace: true, CRF: intPtr(23), Preset: "medium",
 						InputExtraArgs: []string{"-analyzeduration", "10M"},
 						ExtraArgs:      []string{"-movflags", "+faststart"},
 					},
@@ -965,7 +967,7 @@ func TestLoad_AllFieldsOverridden(t *testing.T) {
 				Profiles: []LiveProfile{
 					{
 						Name: "high", VideoCodec: "libx264", AudioCodec: "aac", Height: 720,
-						Scaler: ffargs.ScalerSoftware, CRF: intPtr(24), Preset: "veryfast",
+						Scaler: ffargs.ScalerSoftware, Deinterlace: true, CRF: intPtr(24), Preset: "veryfast",
 						SegmentSeconds: 4, PlaylistSize: 8,
 						ExtraArgs: []string{"-movflags", "+faststart"},
 					},

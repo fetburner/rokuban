@@ -34,6 +34,37 @@ func TestScaleArgs(t *testing.T) {
 	}
 }
 
+// TestVideoFilterArgs は deinterlace が scale より前に 1 本の filter chain として
+// 入り、deinterlace=false では既存の ScaleArgs と同じ値になることを固定する。
+func TestVideoFilterArgs(t *testing.T) {
+	cases := []struct {
+		name        string
+		scaler      Scaler
+		height      int
+		deinterlace bool
+		wantFilter  string
+		wantOK      bool
+	}{
+		{"software scale without deinterlace", ScalerSoftware, 720, false, "scale=-2:720", true},
+		{"software deinterlace before scale", ScalerSoftware, 720, true, "yadif,scale=-2:720", true},
+		{"software deinterlace without scale", ScalerSoftware, 0, true, "yadif", true},
+		{"vaapi deinterlace before scale", ScalerVAAPI, 720, true, "deinterlace_vaapi,scale_vaapi=w=-2:h=720", true},
+		{"vaapi deinterlace without scale", ScalerVAAPI, 0, true, "deinterlace_vaapi", true},
+		{"no filter", ScalerSoftware, 0, false, "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			filter, ok := VideoFilterArgs(c.scaler, c.height, c.deinterlace)
+			if ok != c.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, c.wantOK)
+			}
+			if filter != c.wantFilter {
+				t.Errorf("filter = %q, want %q", filter, c.wantFilter)
+			}
+		})
+	}
+}
+
 // TestQualityArgs_Literal は crf/qp の排他マッピングをリテラルで固定する。
 func TestQualityArgs(t *testing.T) {
 	crf := 23

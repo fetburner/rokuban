@@ -43,6 +43,40 @@ const (
 	ScalerVAAPI Scaler = "vaapi"
 )
 
+// VideoFilterArgs は deinterlace と scale を組み合わせた `-vf` の filter 値と、
+// filter を出すべきかを返す。
+//
+// deinterlace は scaler と同じ系統名から導出する。software は `yadif`、VAAPI は
+// `deinterlace_vaapi` を使い、scale がある場合は必ず deinterlace の後ろに 1 個だけ
+// 連結する。`scaler` と独立した filter 名を設定値にしないことで、software の映像に
+// VAAPI filter を付けるような表現できない組み合わせを作らない。
+//
+// **確認記録（2026-09-14）**: `ffmpeg version 9.0.1` の Homebrew ビルドで
+// `ffmpeg -hide_banner -h filter=yadif` を実行し、`yadif` の綴りと既定 mode
+// `send_frame` を確認した。同じビルドで `ffmpeg -hide_banner -h filter=bwdif` も
+// 実行し、`bwdif` の綴りと既定 mode `send_field` を確認した。EPGStation の既存
+// software 設定に合わせて、この実装では `yadif` を選んでいる（両者の実 TS の
+// 見た目を比較したものではない）。同じビルドは VAAPI を含まず、
+// `ffmpeg -hide_banner -h filter=deinterlace_vaapi` は `Unknown filter
+// 'deinterlace_vaapi'` になったため、VAAPI の filter 名と実機での動作は未検証。
+func VideoFilterArgs(scaler Scaler, height int, deinterlace bool) (filter string, ok bool) {
+	var filters []string
+	if deinterlace {
+		if scaler.normalized() == ScalerVAAPI {
+			filters = append(filters, "deinterlace_vaapi")
+		} else {
+			filters = append(filters, "yadif")
+		}
+	}
+	if scale, hasScale := ScaleArgs(scaler, height); hasScale {
+		filters = append(filters, scale)
+	}
+	if len(filters) == 0 {
+		return "", false
+	}
+	return strings.Join(filters, ","), true
+}
+
 // AllowedScalers は Validate が許す `scaler` の値の全集合（`""` は暗黙に
 // ScalerSoftware として許可されるのでここには含めない）。
 //

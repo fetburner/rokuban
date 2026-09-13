@@ -89,6 +89,10 @@ type LiveProfile struct {
 	// Scaler はスケール filter の系統（config.LiveProfile.Scaler と同じ ffargs.Scaler）。
 	Scaler ffargs.Scaler
 
+	// Deinterlace はインターレース解除を有効にする系統スイッチ。filter の実体は
+	// Scaler から導出する（software は yadif、vaapi は deinterlace_vaapi）。
+	Deinterlace bool
+
 	// CRF / QP は品質指定（config.LiveProfile と同じく相互排他。両方 nil も可）。
 	CRF *int
 	QP  *int
@@ -1381,7 +1385,8 @@ func (w *cappedWriter) String() string {
 //	-f mpegts -i pipe:0
 //	  ── プロファイルごとに繰り返し ──
 //	  -map 0:v:0 -map 0:a:0  -c:v  -c:a
-//	  [-vf <scaler>]  [-crf|-qp]  [-preset]
+//	  [-vf <deinterlace[, scaler が決めた scale]>]  [-crf|-qp]  [-preset]
+//	  （captions 経路では `-filter:v:N` を使う）
 //	  -force_key_frames expr:…
 //	  [profile.extra_args…]                         # ユーザー（出力側）
 //	  -f hls ... OUT.m3u8                            # アプリ所有の末尾
@@ -1413,7 +1418,7 @@ func BuildLiveFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []strin
 		// 最初の .m3u8 にしか適用されず、2 本目以降は自動ストリーム選択に戻る。
 		args = append(args, "-map", "0:v:0", "-map", "0:a:0")
 		args = append(args, "-c:v", p.VideoCodec, "-c:a", p.AudioCodec)
-		if filter, ok := ffargs.ScaleArgs(p.Scaler, p.Height); ok {
+		if filter, ok := ffargs.VideoFilterArgs(p.Scaler, p.Height, p.Deinterlace); ok {
 			args = append(args, "-vf", filter)
 		}
 		args = append(args, ffargs.QualityArgs(p.CRF, p.QP)...)
@@ -1488,7 +1493,7 @@ func buildLiveCaptionFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) 
 			args = append(args, "-map", "0:s:0?")
 		}
 		args = append(args, "-c:v:"+strconv.Itoa(i), p.VideoCodec, "-c:a:"+strconv.Itoa(i), p.AudioCodec)
-		if filter, ok := ffargs.ScaleArgs(p.Scaler, p.Height); ok {
+		if filter, ok := ffargs.VideoFilterArgs(p.Scaler, p.Height, p.Deinterlace); ok {
 			args = append(args, "-filter:v:"+strconv.Itoa(i), filter)
 		}
 		args = append(args, ffargs.QualityArgs(p.CRF, p.QP)...)

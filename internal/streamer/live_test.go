@@ -2789,6 +2789,59 @@ func TestBuildLiveFFmpegArgs(t *testing.T) {
 	}
 }
 
+// TestBuildLiveFFmpegArgs_Deinterlace は live の通常経路と captions 経路の両方で、
+// deinterlace が同じプロファイルの scale より前に入ることを固定する。
+// 壊し方: いずれかの経路で profile.Deinterlace を VideoFilterArgs に渡さない。
+func TestBuildLiveFFmpegArgs_Deinterlace(t *testing.T) {
+	cases := []struct {
+		name       string
+		cfg        LiveConfig
+		flag       string
+		wantFilter string
+	}{
+		{
+			name: "without captions",
+			cfg: LiveConfig{Profiles: []LiveProfile{{
+				Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", Height: 720,
+				Deinterlace: true, SegmentSeconds: 2, PlaylistSize: 6,
+			}}},
+			flag:       "-vf",
+			wantFilter: "yadif,scale=-2:720",
+		},
+		{
+			name: "with captions",
+			cfg: LiveConfig{Captions: true, Profiles: []LiveProfile{{
+				Name: "h264_vaapi", VideoCodec: "h264_vaapi", AudioCodec: "aac", Height: 720,
+				Scaler: ffargs.ScalerVAAPI, Deinterlace: true, SegmentSeconds: 2, PlaylistSize: 6,
+			}}},
+			flag:       "-filter:v:0",
+			wantFilter: "deinterlace_vaapi,scale_vaapi=w=-2:h=720",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			args := BuildLiveFFmpegArgs(c.cfg, "/tmp/live/1", false)
+			filterIdx := slices.Index(args, c.flag)
+			if filterIdx < 0 || filterIdx+1 >= len(args) {
+				t.Fatalf("missing %s and filter value: %v", c.flag, args)
+			}
+			if got := args[filterIdx+1]; got != c.wantFilter {
+				t.Errorf("filter = %q, want %q", got, c.wantFilter)
+			}
+			count := 0
+			for _, arg := range args {
+				if arg == c.flag {
+					count++
+				}
+			}
+			if count != 1 {
+				t.Errorf("%s count = %d, want 1: %v", c.flag, count, args)
+			}
+		})
+	}
+}
+
 func TestBuildLiveFFmpegArgs_CaptionsUsesMasterAndWebVTT(t *testing.T) {
 	args := BuildLiveFFmpegArgs(LiveConfig{
 		Captions: true,

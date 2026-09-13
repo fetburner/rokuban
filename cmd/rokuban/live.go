@@ -23,6 +23,7 @@ func convertLiveConfig(c config.LiveConfig) streamer.LiveConfig {
 			AudioCodec:     p.AudioCodec,
 			Height:         p.Height,
 			Scaler:         p.Scaler,
+			Deinterlace:    p.Deinterlace,
 			CRF:            p.CRF,
 			QP:             p.QP,
 			Preset:         p.Preset,

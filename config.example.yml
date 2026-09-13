@@ -141,6 +141,7 @@ encode:
   #     audio_codec: aac
   #     subtitles: webvtt        # optional。原本の ARIB 字幕を隣接する .vtt に出力
   #     height: 1080             # 0 or omit = スケールしない
+  #     deinterlace: true        # インターレース解除。scaler=software なら yadif
   #     crf: 23                  # qp との同時指定は起動エラー
   #     preset: medium           # optional
   #     extra_args: []           # コーデック/品質/スケールの後・アプリ所有の末尾
@@ -202,6 +203,7 @@ live:
                                  #   向けに H.264 へ変換する
   #     audio_codec: aac
   #     height: 720               # 0 or omit = スケールしない
+  #     deinterlace: true         # インターレース解除。scaler=software なら yadif
   #     preset: veryfast          # optional
   #     segment_seconds: 2        # 0 なら既定値 2
   #     playlist_size: 6          # 0 なら既定値 6
@@ -211,6 +213,7 @@ live:
   #     audio_codec: aac
   #     height: 720
   #     scaler: vaapi
+  #     deinterlace: true         # scaler から解除 filter を導出（vaapi なら deinterlace_vaapi）
   #     qp: 26
   #     segment_seconds: 2
   #     playlist_size: 6

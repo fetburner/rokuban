@@ -89,6 +89,38 @@ func TestBuildFFmpegArgs(t *testing.T) {
 	}
 }
 
+// TestBuildFFmpegArgs_Deinterlace は VOD の実際の -vf 組み立て経路で、解除が縮小
+// より前に入り、-vf が 1 本だけ出ることを固定する。
+// 壊し方: BuildFFmpegArgs で profile.Deinterlace を渡さずに ScaleArgs を呼ぶ。
+func TestBuildFFmpegArgs_Deinterlace(t *testing.T) {
+	profile := config.EncodeProfile{
+		Name:        "h264",
+		Container:   "mp4",
+		VideoCodec:  "libx264",
+		AudioCodec:  "aac",
+		Height:      720,
+		Deinterlace: true,
+	}
+	args := BuildFFmpegArgs(profile, "/in.m2ts", "/out.mp4", false)
+
+	filterIdx := slices.Index(args, "-vf")
+	if filterIdx < 0 || filterIdx+1 >= len(args) {
+		t.Fatalf("missing -vf and filter value: %v", args)
+	}
+	if got := args[filterIdx+1]; got != "yadif,scale=-2:720" {
+		t.Errorf("filter = %q, want %q", got, "yadif,scale=-2:720")
+	}
+	count := 0
+	for _, arg := range args {
+		if arg == "-vf" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("-vf count = %d, want 1: %v", count, args)
+	}
+}
+
 func TestBuildFFmpegArgs_WebVTTSubtitleSidecar(t *testing.T) {
 	p := config.EncodeProfile{
 		Name: "web", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac", Subtitles: "webvtt",
