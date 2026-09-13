@@ -86,8 +86,12 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_live_idle_gc_last_pass_timestamp_seconds` | Gauge | 最後に完走した idle GC パスの時刻 |
 
 **ロール分割（KEDA ScaledJob）構成でアラートに使う成功鮮度は DB 側 5 本である**。
-対象は上表の `rokuban_presync_pending` 系列 3 本（pending / earliest / snapshot）と、
-`rokuban_ruler_last_success_timestamp_seconds{site}` / `rokuban_sweep_last_success_timestamp_seconds{site}`。
+対象は上表の `rokuban_presync_pending` 系列 3 本（pending / earliest / snapshot）である。
+加えて、次の 2 本を使う。
+
+- `rokuban_ruler_last_success_timestamp_seconds{site}`
+- `rokuban_sweep_last_success_timestamp_seconds{site}`
+
 プロセス内ゲージの `rokuban_reconcile_pending_diff` は reconciler のジョブを実行した
 Pod でしか値を持たない。その Pod は `--once` で終了するため scrape 窓が無い
 （下記「ジョブ化されたループの監視」）。
