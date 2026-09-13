@@ -120,6 +120,10 @@ func (w *Watcher) handleEvent(ctx context.Context, ev mirakc.Event) {
 	}
 }
 
+// beforeSweepProcessRecords は Sweep が stale 削除の直後、snapshot の
+// processRecord の直前に呼ぶテスト用フック。本番では nil。
+var beforeSweepProcessRecords func()
+
 // Sweep は mirakc の schedules / records API を取得し、DB（record_sync /
 // recordings）と突き合わせる。3 段構えの (c)（docs/recording.md §3.3）にあたる
 // レベルトリガーの真実で、SSE のヒント（(a)(b)）を取りこぼしても収束させる。
@@ -157,6 +161,22 @@ func (w *Watcher) Sweep(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listing records: %w", err)
 	}
+	recordIDs := make([]string, 0, len(records))
+	for _, record := range records {
+		recordIDs = append(recordIDs, record.ID)
+	}
+	// stale 削除は snapshot の processRecord より前に実行する。後に置くと、
+	// ListRecords 後に SSE が作った行をこの削除が巻き込む。
+	stale, err := sqlcgen.New(w.pool).DeleteStaleRecordSyncs(ctx, sqlcgen.DeleteStaleRecordSyncsParams{
+		Site:      w.site,
+		RecordIds: recordIDs,
+	})
+	if err != nil {
+		return fmt.Errorf("deleting stale record_syncs: %w", err)
+	}
+	if beforeSweepProcessRecords != nil {
+		beforeSweepProcessRecords()
+	}
 	for _, record := range records {
 		if err := w.processRecord(ctx, record); err != nil {
 			slog.Error("sweep: processing record", "record_id", record.ID, "err", err)
@@ -165,7 +185,7 @@ func (w *Watcher) Sweep(ctx context.Context) error {
 	if err := sqlcgen.New(w.pool).UpsertRecordSweepSnapshot(ctx, w.site); err != nil {
 		return fmt.Errorf("marking record sweep success: %w", err)
 	}
-	slog.Info("watcher sweep complete", "records", len(records))
+	slog.Info("watcher sweep complete", "records", len(records), "stale", stale)
 	metrics.SweepLastPass.SetToCurrentTime()
 	return nil
 }
