@@ -29,6 +29,8 @@
 
 ### 要件一覧
 
+単一ホスト名で api / notifier / streamer を分けるときは、標準 Ingress の `Exact` またはパス要素単位の `Prefix` だけを入力にし、メソッド・クエリ・ヘッダー・正規表現に依存せず、すべての経路の backend が一意に決まることを判定基準とする。`/api/events` は Exact で notifier へ、site を具体化できるライブ配信は `/api/sites/<site>/networks` の Prefix で streamer へ振れるが、録画 VOD は `{id}` の後ろで api と streamer が分かれるため現行の `/api/recordings/{id}/...` では不足し、応答の性質を表す固定接頭辞 `/api/media/recordings` へ移す（現行 URL は移設の実装まで変更しない）。
+
 | 要件 | 詳細 |
 |---|---|
 | `X-Forwarded-Host` の解釈 | `server.trust_forwarded_host: true` を明示した構成に限り、Host allowlist（`internal/api.AllowedHosts`）の検証対象をヘッダーの値に切り替える。既定（false）では常に `Host` を使う |

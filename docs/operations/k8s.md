@@ -79,6 +79,8 @@ site 単位のキューを一切購読できない（`jobs.RequiresSiteBinding` 
 | 録画配信 / サムネイル | メディアストレージの隣 | 水平（N） | 素の round-robin | 公式（ffmpeg 不要） |
 | ライブ視聴 | mirakc に到達できる場所（WAN 越しの pull を許す） | 既定 1 | `(site, networkId, serviceId)` の consistent hash | `Dockerfile.full` |
 
+単一ホスト名の入口は、標準 Ingress の `Exact` / パス要素単位の `Prefix` だけで Service が一意に決まることを判定基準にする。録画配信には `/api/media/recordings` を予約し、ライブは有限の site 名ごとに `/api/sites/<site>/networks` を Prefix 化して同部分木を予約し、既存の URL を維持する。
+
 **判定基準: WAN に乗せてよいのは失っても再取得できるストリーム（ingest の pull、ライブの pull）だけで、録画ストリームは乗せない**（各サイトの mirakc がローカルに書くため）。[recording/reference.md](../recording/reference.md) §mirakc の多段集約と同じ軸である。
 
 素の TS の帯域目安は地上波 約 17 Mbps / BS 約 24 Mbps（1 セッションあたり、規格値）。streamer は 1 プロセスが N サイトを束縛できる（`cmd/rokuban/server.go`）。`live.enabled: true` に束縛サイト数の制約は無く、0 サイト束縛（中央の録画配信 Deployment）はライブのルートを持たないだけで他のロールは通常どおり動く。ライブを実際にどう配置する（overlay の切り方）かはここでは決めない。`deploy/k8s/` はライブの streamer を出荷していない。
