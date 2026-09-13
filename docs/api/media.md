@@ -329,7 +329,7 @@ mirakc は起動中の局ロゴ抽出をサポートせず、運用者が事前�
 
 ## 経緯と失敗事例
 
-- 再生位置を localStorage に置く決定は [frontend](../frontend.md) 側の現行決定
+- 再生位置を localStorage に置く決定は [frontend/design.md](../frontend/design.md)「個人化は localStorage だけに置く」
 - **ライブのセッションレス資源同定**はセッション ID を URL にもクッキーにも置かない方針。
   「DB を引かない」の判断は着手前コメントのとおり
 - **ライブの id 空間**は 2 度動いた。当初は SI の `serviceId` を渡していて mirakc が

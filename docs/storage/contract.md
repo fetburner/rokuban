@@ -149,5 +149,5 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
 ## 経緯と失敗事例
 
 - 原本 `rel_path` への `sites/{site}/` 前置。「site 名を先頭成分にする」当初案が既存 rel_path と衝突しうることはレビューで発見された
-- site 名としての `catalog` / `thumbnails` の禁止（`reservedSiteNames`）。`sites` 自体を site 名にできる理由づけは上記「相対パス」のとおり
+- site 名としての `catalog` / `thumbnails` の禁止（`reservedSiteNames`）。`sites` 自体を site 名にすることは禁止していない —— `sites/sites/...` になるだけで衝突しない
 - サムネイルは派生物として投入する。ごみ箱の録画は投入対象から除外する

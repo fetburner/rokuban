@@ -194,4 +194,4 @@ Rokuban には長寿命接続が 2 つある --- notifier がブラウザへ送�
   `lib/events.test.tsx` の「予約詳細は運用状態グループ（60 秒）で取り直す」
 - SSE は api ロール内（`internal/api/events.go` の `EventHub`）に
   置かれていたが、notifier ロールへ分離した。ロールを分ける判断と
-  「2 つの SSE を集約しない」判断は上記 §3
+  「2 つの SSE を集約しない」判断は上記「2 つの SSE を 1 つに集約しない」
