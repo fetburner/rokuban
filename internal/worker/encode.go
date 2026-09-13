@@ -78,7 +78,8 @@ func probeEncodeDuration(
 //
 // エンコード所要は録画長とコーデックで決まり、既定 1 分では足りない。
 // 進捗は -progress pipe:1 で観測する（ストール検知は将来拡張。M3-3 では
-// プロセス終了を待つ）。
+// プロセス終了を待つ）。プロセス死で running のまま残ったジョブは、
+// encode_reconcile が job-id advisory lock の解放を確認して回収する。
 func (w *EncodeWorker) Timeout(*river.Job[jobs.EncodeJobArgs]) time.Duration {
 	return -1
 }
@@ -94,7 +95,25 @@ func (w *EncodeWorker) Timeout(*river.Job[jobs.EncodeJobArgs]) time.Duration {
 // encode.failed が試行ごとに配送される。受け側が最終試行を見分けられるよう
 // attempt / maxAttempts をペイロードに載せる（M3-11）。
 func (w *EncodeWorker) Work(ctx context.Context, job *river.Job[jobs.EncodeJobArgs]) error {
-	err := w.runEncode(ctx, job)
+	log := slog.With("recording_id", job.Args.RecordingID, "profile", job.Args.Profile)
+
+	// Work の開始から終了まで、ジョブ ID 固有の advisory lock を保持する。
+	// encode_reconcile の回収側が同じキーを pg_try できた場合だけ、元プロセスが
+	// 死んでセッションが解放されたと確定できる。lock は ffmpeg の出力を排他する
+	// ものではなく、recovery が live job を時刻だけで殺さないための生存確認である。
+	jobLock, acquired, err := acquireEncodeJobLock(ctx, w.Pool, job.ID, defaultJobLockTimeout)
+	if err != nil {
+		return fmt.Errorf("acquiring encode job lock: %w", err)
+	}
+	if !acquired {
+		// 断定はしない: この分岐には、別プロセスが本当に実行中の場合だけでなく、
+		// encode_reconcile の回収側が同じキーを一瞬 try して保持している場合も落ちる。
+		log.Warn("encode: job advisory lock is held by another session, deferring", "job_id", job.ID)
+		return fmt.Errorf("encode: job %d advisory lock is held by another session; deferring", job.ID)
+	}
+	defer jobLock.release()
+
+	err = w.runEncode(ctx, job)
 	if shouldNotifyEncodeFailure(err, ctx.Err()) {
 		ev := webhook.Event{
 			Type:        webhook.EventEncodeFailed,

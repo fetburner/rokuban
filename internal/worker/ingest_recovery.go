@@ -141,7 +141,7 @@ func recoverStaleIngestJobs(ctx context.Context, pool *pgxpool.Pool, riverClient
 // 作った available 行に合流するだけで、二重に ingest が走ることはない
 // （TestRecordSweepRecovery_ReplacesStaleRunningIngest 参照）。
 func recoverStaleIngestJob(ctx context.Context, pool *pgxpool.Pool, riverClient *river.Client[pgx5.Tx], site string, candidate staleIngestJob) error {
-	lock, acquired, err := acquireIngestJobLock(ctx, pool, candidate.id, defaultIngestJobLockTimeout)
+	lock, acquired, err := acquireIngestJobLock(ctx, pool, candidate.id, defaultJobLockTimeout)
 	if err != nil {
 		return fmt.Errorf("acquiring advisory lock for stale ingest job %d: %w", candidate.id, err)
 	}

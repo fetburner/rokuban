@@ -327,11 +327,11 @@ ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切�
   再 reconcile されない**（接続文字列を直した後も 3 分間
   `ScaledJobCheckFailed` のままだった。実測）。作り直すのが早い
 - **判定 3 が置いていく残骸が 2 つある。** 3.4 が Job を消すので、掴まれていた
-  `river_job` の行は **`running` のまま残る**（回収する `JobRescuer` は
-  リーダーだけが動かす保守サービスなので、ロール分割構成では誰も回収しない ---
-  これは製品の壊れ方そのものであって、ハーネスの都合ではない）。それと
-  media ボリュームの原本。どちらも `produce_real_encode_job` が周回の頭で
-  消してから測り直す。**`$producer` は関数名でもコマンド文字列でも受ける**
+  `river_job` の行は一時的に **`running` のまま残る**。encode は
+  `encode_reconcile` が job-id lock の解放後に旧行を終端化して代替ジョブを投入するが、
+  ハーネスは次の判定を待たず、`produce_real_encode_job` が周回の頭で消してから測り直す。
+  それと media ボリュームの原本。どちらも周回の頭で消してから測り直す。
+  **`$producer` は関数名でもコマンド文字列でも受ける**
   （引用せずに展開する）ので、別の作り方を試すときは env で差し替えればよい
 - **未解決: 判定 3 は encode を KEDA ScaledJob で回す形を前提にしている。**
   別の形（Deployment + HPA 等）を採るなら、この判定は永久に TODO のままになる。

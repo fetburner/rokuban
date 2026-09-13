@@ -175,7 +175,7 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	// record_sweep の回収側が同じキーを pg_try できた場合だけ、元プロセスが死んで
 	// セッションが解放されたと確定できる。heartbeat はこのセッションの keepalive
 	// だけを担い、canonical file の排他には使わない。
-	jobLock, acquired, err := acquireIngestJobLock(ctx, w.Pool, job.ID, defaultIngestJobLockTimeout)
+	jobLock, acquired, err := acquireIngestJobLock(ctx, w.Pool, job.ID, defaultJobLockTimeout)
 	if err != nil {
 		return fmt.Errorf("acquiring ingest job lock: %w", err)
 	}
