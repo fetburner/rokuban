@@ -74,7 +74,8 @@ CREATE INDEX ON recordings (purged_at) WHERE purged_at IS NULL;  -- ごみ箱一
 **`recordings` は mirakc が報告した録画試行だけを持つ。書き手は watcher だけ。**
 
 - watcher が mirakc record を初観測（SSE または全量突き合わせ）→ record の program / service ペイロードからスナップショットして INSERT、`record_sync` 行から参照
-- `recording.failed` で record が存在しないケース（start-recording-failed 等）→ status = `failed` の行を作り quality_events に理由を記録。**録画されなかった試行も履歴に残る**
+- `recording.failed` で record が存在しないケース（start-recording-failed 等）→ status = `failed` の行を作り quality_events に理由を記録。SSE を取りこぼしても、failed schedule が schedules API に残っている間は `record_sweep` が同じ行を再構成する。**録画されなかった試行も履歴に残る**
+- records API に残る `recording.status=failed` / `failedReason` 付き record も `record_sweep` が失敗理由を quality_events に補完する。schedule が削除済みの recordless failed と `record-broken` は mirakc API だけでは再構成できず、SSE 専用である
 - **番組終了時点で schedule が一度も観測されなかった場合は試行ではないため、`recordings` に行を作らない。** reconciler が後述の `never_scheduled_events` に欠測を書き、ライブラリには failed 録画として出さない
 - 同一 active-event に mirakc 由来の failed 行が既にある状態で、後から成功 record が初観測されたとき → failed 行を supersede してから新しい行を INSERT する（下記「同一イベントの重複防止」の `superseded_at` 参照）
 - `source` は作成時点の出自を一度だけ snapshot する。予約行も `record` 意図も無い録画は `unattributed` とし、後から予約や意図を推測して書き換えない
