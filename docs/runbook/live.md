@@ -12,7 +12,7 @@ import・MSE への実再生・チャンネル切替時の cleanup --- だけを
 1 つ以上設定済み（[config.example.yml](../../config.example.yml) の `live:` 節）。
 
 **`live.enabled` が false（既定。`config.compose.yml` にも `live:` 節は無い）だと
-そもそもライブに辿り着けない**（issue #209）。主ナビに「ライブ」が出ず、`/live` を
+そもそもライブに辿り着けない**。主ナビに「ライブ」が出ず、`/live` を
 直接開くと「この環境ではライブ視聴が無効です」になる。設定が効いているかは
 `curl -s http://localhost:40773/api/capabilities` が `{"live":true}` を返すかで
 確かめられる。
@@ -22,7 +22,7 @@ docker compose exec rokuban rokuban server --all --config /config.yml
 ```
 
 1. ブラウザで `/live` を開き、チャンネルを選ぶ（この時点ではまだ何も始まらない
-   --- issue #234 M7-1 で選択と視聴開始を分離した）。「再生」ボタンを押すと
+   --- 選択と視聴開始は分離してある）。「再生」ボタンを押すと
    数秒で再生が始まる
 2. **iPhone の Safari で `/live` を開いて再生できることを確認する（未実施）**。
    iPhone は `window.MediaSource` を持たない（`ManagedMediaSource` のみ。iPad と
@@ -59,7 +59,7 @@ docker compose exec rokuban rokuban server --all --config /config.yml
    後になる（実測 33 秒））。**この秒数は偽 mirakc + 偽 ffmpeg に対する実バイナリ
    （`rokuban server --roles streamer`）で実測した**（ヒントあり 13 秒 /
    ヒント無し 33 秒。`rokuban_live_active_sessions` が 0 に戻るまでを 1 秒間隔で
-   ポーリング。issue #191）。**実チューナー・実 ffmpeg では未測定** ---
+   ポーリング）。**実チューナー・実 ffmpeg では未測定** ---
    ffmpeg の停止に掛かる時間だけ伸びうるので、この手順で確かめる
    - 同じチャンネルを 2 つのタブで開いて片方だけ閉じると、
      `rokuban_live_leave_hints_total` は増えるが
@@ -74,7 +74,7 @@ docker compose exec rokuban rokuban server --all --config /config.yml
    枯渇した場合は 503 `live stream unavailable` が返る（画面には
    「チューナー不足または同時視聴数の上限」+ 30 秒待つ案内が出る）。**チャンネル
    選択自体（`?service=<Service.id>` を切り替えるだけ）はセッションを起こさない**
-   （issue #234 M7-1）ため、ここで積まれるのは実際に「再生」を押した本数だけで、
+   （選択と視聴開始は分離してある）ため、ここで積まれるのは実際に「再生」を押した本数だけで、
    通り過ぎただけのチャンネルは対象外 --- 以前あった 400ms のデバウンス
    （ザッピングでセッションが積まれないようにする緩和）は選択自体がコスト 0 に
    なったことで存在理由が消え、削除した。押して留まったチャンネルの前セッションは
@@ -98,7 +98,7 @@ docker compose exec rokuban rokuban server --all --config /config.yml
 でブラウザ側から丸ごと差し替える。streamer 側は `live.enabled` を立てる
 必要すら無い（サーバーは「サービス一覧を返す」以外の実仕事をしない）。
 `GET /api/capabilities` も同じく差し替えている --- 立てていないサーバーだと
-画面が「無効です」になって①〜⑦が全滅するため（issue #209）。
+画面が「無効です」になって①〜⑦が全滅するため。
 
 `E2E_LIVE_SERVICE_A` / `_B` に渡すのは **SI の `serviceId`**（下の投入例なら
 9001 / 9002）。セグメント/プレイリスト/離脱ヒントの URL に載るのも SI の
@@ -156,7 +156,7 @@ pnpm exec playwright install chromium webkit
 
 判定する点（詳細はスクリプト冒頭のコメント）:
 
-0. **選択と視聴開始の分離（issue #234 M7-1）**: `/live?service=<Service.id>` を
+0. **選択と視聴開始の分離**: `/live?service=<Service.id>` を
    開いた直後はプレイリスト/セグメント要求が 0 件（`page.route` で観測）。
    「再生」ボタンを押して初めて要求が飛ぶ。**併せて、要求した `Service.id` が
    実際に選ばれたことも見る**。チャンネル一覧の `aria-current="page"` が
@@ -229,7 +229,7 @@ pnpm exec playwright install chromium webkit
 
 ## 経緯と失敗事例
 
-- ②の判定手段（`web/e2e/live.mjs`）は、ライブ視聴のフロントエンド実装
-  （issue #92 / M4-4）の着手時点には無く、レビューで「テストが実際には何も
+- ②の判定手段（`web/e2e/live.mjs`）は、ライブ視聴のフロントエンド実装の
+  着手時点には無く、レビューで「テストが実際には何も
   守っていない」ことが判明して作られた。実装より先に判定手段を作る教訓の実例
   （CLAUDE.md「テスト規律」）

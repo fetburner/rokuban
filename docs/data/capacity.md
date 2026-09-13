@@ -144,5 +144,4 @@ twin vertices の縮約も、実は前提が完全には成り立たない。mir
 
 ## 経緯と失敗事例
 
-- チューナー射影の設計は issue #21、実装は M2-10
 - 需要から除外する never-scheduled の判定は、当初 `reservations` の `orphaned` 状態（のちの `orphaned_at` 列）、次に `recordings` の擬似 failed 行から導出していた。現在は試行と欠測を分け、`never_scheduled_events` 専用表の行の存在を放送イベントキーで引く。`recordings` の failed 試行は除外条件に含めない

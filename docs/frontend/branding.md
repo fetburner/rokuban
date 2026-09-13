@@ -58,7 +58,7 @@ Web フォント本体（Geist Variable / Noto Sans JP Variable）のライセ�
 落ちることを実測で確認した（[stack.md](stack.md)「フォントは英数字と和文で
 2 書体を使い分ける」）ので、`public/` 配下の生ファイルにしてビルドを経由させない
 形にしている。依存全体（npm パッケージ・Go モジュール）のライセンス表示は
-これでも埋まらず、issue #22 のまま残っている。
+これでも埋まらず、未対応のまま残っている。
 
 ラスタ版（`favicon.ico` / `apple-touch-icon.png`）は npm 依存にない外部ツール
 （rsvg-convert / ImageMagick）で作るため自動化していない。
@@ -74,7 +74,7 @@ S3 経路の両方に自動で乗る。
 
 ## 経緯と失敗事例
 
-- 依存全体のライセンス表示は [issue #22](https://github.com/fetburner/rokuban/issues/22) の論点 5 として残っている
+- 依存全体のライセンス表示は未対応のまま残っている（配布物への THIRD_PARTY_NOTICES 同梱）
 - **同じ Noto Sans JP の著作権表示が 2 箇所で異なる文言になっている。**
   `favicon.svg` のコメントは「Copyright 2014-2021 Adobe」、`public/font-licenses.txt`
   は npm パッケージ（`@fontsource-variable/noto-sans-jp`）の `LICENSE` 冒頭に

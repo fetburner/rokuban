@@ -343,9 +343,9 @@ DB 接続失敗はエラーを握り潰さず fail-fast + 明示ログとする�
 
 ### 経緯と将来の構想
 
-#### `internal/role`（`RunSingleton`）は watcher 専用になったが畳まない（issue #24 M2-20）
+#### `internal/role`（`RunSingleton`）は watcher 専用になったが畳まない
 
-M2-17 / M2-18 で ruler / reconciler / record_sweep がジョブになり、利用箇所は
+ruler / reconciler / record_sweep がジョブになり、利用箇所は
 `cmd/rokuban/server.go` の 1 箇所だけになった。それでも独立したパッケージとして残す。
 **「ソケットを connect し続ける」という形のロールが存在する限り必要な機構**だからである
 （[overview.md](../overview.md) §ロール分類の基準）。リーダー選出の失敗モード
@@ -358,11 +358,10 @@ preemption 対策は上記の ScaledJob で十分であり、チャンク化の�
 
 実装方針の見立て: 実ファイルは分割せず、各ジョブに (開始時刻, 長さ) を渡して 2 段 seek（`-ss` を `-i` の前後で併用）でフレーム精度の境界を出す。映像はチャンクごとに独立ジョブ（境界は強制 IDR）。音声は音声フレーム境界のズレによる接合ノイズを避けるため分割せず、全体を 1 パスで別エンコードして最後に mux（ISDB の番組途中の音声レイアウト切替の正規化もここに集約）。全チャンク完了後に concat demuxer でロスレス結合 + 検証の fan-in ジョブ。構造化エンコードプロファイル（[docs/storage.md](../storage.md)）とは独立な executor の戦略なので、プロファイル定義に手を入れず後付けできる。
 
-#### 番号の対応
+#### 経緯
 
-- ロールとキュー購読の構造的保証は issue #113（`--roles watcher` 構成で起動時検査が実態より広い安心を与える経路があった）。
-- キュー名の site 修飾（`<論理名>_<site>`）と watcher の advisory lock キーの site 修飾（`watcher:<site>`）は issue #185 M4-13。`delete_reconcile` / `catalog_export` の `cleanup` キューへの配置も同じ issue。
-- `--sites` フラグと `mirakcs:` レジストリは issue #183 M4-11。
-- streamer のスケール設計（sticky を使わない / consistent hash / 既定 replicas=1 の可逆性）は issue #56。ライブの資源同定 `/api/sites/{site}/services/{serviceId}/...` は M3-1。id 空間を一覧 API に揃えるため `networks/{networkId}/services/{serviceId}` に変えたのは issue #217。ingress-nginx の `upstream-hash-by` で consistent hash の同じキャプチャがどう書けるかは M4-6 で実機確認するとされた（本文では未検証と記載）。
-- 録画配信の URL に site を持たない決定（`recordings.id` は surrogate）は issue #31。
-- watcher の `processRecord` 冪等化（singleton 性が「正しさ」の要件でなくなった）は M2-16。
+- ロールとキュー購読の構造的保証（`--roles watcher` 構成で起動時検査が実態より広い安心を与える経路があった）。
+- キュー名の site 修飾（`<論理名>_<site>`）と watcher の advisory lock キーの site 修飾（`watcher:<site>`）。`delete_reconcile` / `catalog_export` は `cleanup` キューへ配置する。
+- streamer のスケール設計（sticky を使わない / consistent hash / 既定 replicas=1 の可逆性）。id 空間を一覧 API に揃えるため `networks/{networkId}/services/{serviceId}` に変えた。ingress-nginx の `upstream-hash-by` で consistent hash の同じキャプチャがどう書けるかは実機確認が残る（本文では未検証と記載）。
+- 録画配信の URL に site を持たない決定（`recordings.id` は surrogate）。
+- watcher の `processRecord` 冪等化（singleton 性が「正しさ」の要件でなくなった）。

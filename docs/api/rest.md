@@ -28,7 +28,7 @@
 **フロントは config を読めない**（api ロールは設定ファイルを配らない。不変条件 1）。
 一方で `live.enabled` のように「無効ならその機能への導線ごと出したくない」設定が
 ある。無効な機能の導線を出すと、押した先で「無い」に当たるだけになる ---
-issue #209 では `live.enabled: false` のときも主ナビに「ライブ」が出続け、
+`live.enabled: false` のときも主ナビに「ライブ」が出続け、
 プレイリストの URL が SPA フォールバックの HTML 200 を返していたため、
 **「無効な機能」ではなく「壊れた再生」として見えていた**。
 
@@ -147,7 +147,7 @@ AND」に揃える。
 **`GET /api/storage` は上記と違って `site` フィールドを持たない。** アーカイブ
 （`storage.media_dir`）とスクラッチ（`storage.scratch_dir`）は mirakc サイトの
 ように複数存在しうる資源ではなく単一なので、「全サイトを返し各要素に `site` を
-持たせる」形は当てはまらない（issue #238 M7-5。詳細は
+持たせる」形は当てはまらない（詳細は
 [docs/storage.md](../storage.md) §5「残量の観測」）。
 
 **`trash=true` でもカーソル軸は `program_start_at` 降順のまま**（`deleted_at`
@@ -249,24 +249,22 @@ tombstone（`purged_at` が立った行）だけは 404** にする --- ファ�
 
 ## 経緯と失敗事例
 
-- **絶対 URL ビルダーの棚卸し**（M4-1、issue #89）: EPGStation#694 の教訓（絶対
+- **絶対 URL ビルダーの棚卸し**: EPGStation#694 の教訓（絶対
   URL 生成が散らばって `X-Forwarded-Prefix` 対応が後から効かなかった）を踏まえて
   Go 側・TS 側双方を棚卸しした結果、絶対 URL を生成している箇所はゼロだった。
   同じ棚卸しで `X-Forwarded-*` 系の扱いも決めた（[deployment.md](deployment.md)
   末尾「経緯と失敗事例」）
-- **site を資源同定に含める決定**は issue #29 / #31 / #53 の案 A（M3-1）。導出行
+- **site を資源同定に含める決定**は site を観測する資源に限定する案。導出行
   （`reservations`）を書き込みの宛先にした旧 API の失敗は
   [docs/invariants.md](../invariants.md) §9「identity」。1 プロセスが全 site を
-  処理する形（site 非依存の一覧 API）は issue #184（M4-12）。当時は「site を含める」
+  処理する形（site 非依存の一覧 API）もある。当時は「site を含める」
   という一律の結論だったが、現在は上記「エンドポイント設計の規約」の判定基準に
   置き換えている
 - **`trash=true` の並び順**は旧 `ListTrashRecordings`
   （`internal/db/queries/recordings_trash.sql`）の `deleted_at DESC, id DESC`
   （「最近捨てたものが上」）から `program_start_at` 降順へ意図的に変更した
-  （PR #187 レビュー、M4。一覧・ごみ箱のキーセット契約統一時）
-- **EPG の読み取り**は M1-6 / M1-7、**録画一覧のキーセット化**は M3-24 の成果物
-- **録画単体（`GET /api/recordings/{id}`）**は M6-4（issue #232）
-- **能力 API（`GET /api/capabilities`）と `/api/` の 404 化**は issue #209。
+  （一覧・ごみ箱のキーセット契約統一時）
+- **能力 API（`GET /api/capabilities`）と `/api/` の 404 化**。
   「無効な機能への導線が常時出ていて壊れているように見える」という報告で、
   原因は 2 つ重なっていた: フロントが `live.enabled` を知る手段が無かったことと、
   未登録の `/api/` パスが SPA の HTML 200 になっていたこと。**後者だけを直しても
