@@ -25,9 +25,10 @@ CREATE INDEX ON record_sync (recording_id);
 CREATE INDEX ON record_sync (status);
 ```
 
-- ingest ジョブは (site, record_id) をここから取る。ingest コミット → エッジ record 削除 → 次回同期で行が消える（リングバッファの写像）
-- `recording_id IS NULL`（rokuban タグのない record）は ingest 対象外
-- 「未 ingest record 総量」メトリクスはこのテーブルの集計。ingest のサイト単位同時実行キャップも site 列で分割する
+- **この表は mirakc の全 record を写す。** watcher は `recording_id` に rokuban の録画行を差すか否かだけを変え、**外部産 record（rokuban tag の無い record）も行を作って観測だけする**。友人の手動・他ツールの録画を消さないための境界であり、`IsOurs`（tag 判定）が単独で保証する —— `record_sync` のスキーマや `recording_id` の NULL には依存しない
+- `recording_id IS NULL`（rokuban tag のない record）は ingest 対象外。判別の truth は `tags`（mirakc の生の値、`mirakc.IsOurs`）であり、`recording_id` の NULL は「外部産」と「recordings が物理削除された」（ON DELETE SET NULL）を区別しない代理に過ぎない
+- ingest ジョブは (site, record_id) をここから取る。行の寿命は mirakc 上の record と一致させる（全量 upsert + 今回観測されなかった行の削除）のが契約だが、**未解決: stale 削除の経路は未実装**
+- 「未 ingest record 総量」メトリクスはこのテーブルの集計。ingest のサイト単位同時実行キャップも site 列で分割する。**このメトリクスが数えるのは Rokuban 自身の滞留のみ**なので、集計は `recording_id IS NOT NULL` で外部産を除外する
 
 ### drop_stats — PID 別ドロップ統計（永続資産）
 

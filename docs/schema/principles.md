@@ -10,6 +10,7 @@
    - mirakc の形をしてよいのは短命な導出状態（`reservations` の base、`schedule_sync`、`record_sync`）だけ。`schedule_sync_snapshots` は mirakc の予約を写さず、全量観測の鮮度だけを持つ
    - 永続テーブル（`recordings` / `media_assets` / `drop_stats`）に mirakc の ID や enum を**構造として**持ち込まない。mirakc の record id は `record_sync` にのみ存在し、`record_sync.recording_id` が永続側への片方向ポインタになる
    - 例外: 品質イベント（`recording.failed` の理由等）は履歴として価値があるため、**構造化カラムではなく jsonb の自由形式ログ**として保持する（システムのロジックはその中身に依存しない）
+   - **未解決: 同一 mirakc を複数の Rokuban が共有すると `IsOurs` の tag（`program:{id}`）が衝突し、互いの schedule / record を自分のものと誤認して消し合う。** config で tag を焼き分けても解消しない（mirakc の schedule は programId が主キーなので、複数 Rokuban の desired が同一番組を取り合う問題が tag の手前で残る）。対処は「複数共有を支持するか」の判定基準を決めてから
 3. **コミット = DB 行**（不変条件 3）: ファイルの公開は `media_assets` 行の INSERT。rename のアトミック性に依存しない
 4. **tombstone**: 物理削除後もメタデータ行は残す。ドロップ統計・録画履歴・重複排除は削除後も機能する
 5. **識別子 / 存在のスコープ**: mirakc が指すものは 2 種類ある。**record id はインスタンス単位で採番される識別子**で、取り違えると別の録画を指してしまう。**programId（`Service.id` も同型）は放送そのものから合成される値**で、識別子ではなく存在のスコープしか持たない。取り違えても別の番組にはならず、その site の EPG に無ければ 404 になるだけである（[ruler](../recording/ruler.md)「サイトの扱い」）
