@@ -16,7 +16,7 @@
 | §8 | jsonb ドキュメント形式（base / overrides / quality_events の形） | [schema/jsonb.md](schema/jsonb.md) |
 | §9 §9.5 | **使い捨てキャッシュ**: `epg_services` / `epg_programs`（EPG 射影）/ `tuner_sync`（チューナー射影） | [schema/projections.md](schema/projections.md) |
 | — | **永続資産**: `rules` 一式（`rules` + 条件の子テーブル 6 つ） | [schema/rules.md](schema/rules.md) |
-| §10 §11 | マイグレーションの権威の所在 / 未決事項 | [schema/future.md](schema/future.md) |
+| §10 | マイグレーションの権威の所在 | [schema/future.md](schema/future.md) |
 
 ## 2. 全体図
 
