@@ -135,8 +135,9 @@ copy-up が `nobody` 所有を焼くので、`user:` を 65534 以外にする�
 
 手で即時実行できる。ジョブ名はハイフン区切り。site 束縛ジョブ（`epg-sync` /
 `tuner-sync` / `ruler-pass` / `reconcile-pass` / `record-sweep`）は多サイトでは
-`--site` が必須。`catalog-export` / `encode-reconcile` / `storage-sync` は
-site 非依存で `--site` を付けない
+`--site` が必須。`catalog-export` / `delete-reconcile` / `encode-reconcile` /
+`thumbnail-reconcile` / `storage-sync` は site 非依存である。これらには
+`--site` を付けない
 （[operations.md](../operations.md) §ジョブ化されたループの監視）。
 
 ```sh

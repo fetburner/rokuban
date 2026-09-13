@@ -208,8 +208,8 @@ spec:
             type: RuntimeDefault
         containers:
           - name: worker
-            # **encode / thumbnail キューを購読する worker だけ ffmpeg 入りの
-            # イメージを使う**（公式イメージは ffmpeg を同梱しないので起動時に
+            # **encode / thumbnail キュー（thumbnail_reconcile を含む）を購読する worker だけ
+            # ffmpeg 入りのイメージを使う**（公式イメージは ffmpeg を同梱しないので起動時に
             # fail-fast する。`jobs.RequiresEncodeTools`）。image 名を分けて
             # あるのは、kustomize の `images:` が名前ごとの置換だからである ---
             # 分けないと「ffmpeg 入りに差し替えたら api も一緒に変わる」になる。

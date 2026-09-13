@@ -21,6 +21,7 @@ type RecordSweepArgs = jobs.RecordSweepArgs
 type EncodeJobArgs = jobs.EncodeJobArgs
 type EncodeEnqueueHintArgs = jobs.EncodeEnqueueHintArgs
 type ThumbnailJobArgs = jobs.ThumbnailJobArgs
+type ThumbnailReconcileArgs = jobs.ThumbnailReconcileArgs
 type EncodeReconcileArgs = jobs.EncodeReconcileArgs
 type DeleteReconcileArgs = jobs.DeleteReconcileArgs
 type CatalogExportArgs = jobs.CatalogExportArgs

@@ -689,15 +689,16 @@ func TestCronJobArgsAreFlatElements(t *testing.T) {
 // （internal/worker の既定値を参照すると、両方を同時に変えたときに何も主張
 // しなくなる）。値の根拠は各 CronJob のコメント（in-process の既定間隔）。
 var productionSchedules = map[string]string{
-	"rokuban-enqueue-epg-sync":         "*/10 * * * *",
-	"rokuban-enqueue-tuner-sync":       "*/10 * * * *",
-	"rokuban-enqueue-ruler-pass":       "*/10 * * * *",
-	"rokuban-enqueue-reconcile-pass":   "* * * * *",
-	"rokuban-enqueue-record-sweep":     "*/5 * * * *",
-	"rokuban-enqueue-catalog-export":   "0 4 * * *",
-	"rokuban-enqueue-delete-reconcile": "*/15 * * * *",
-	"rokuban-enqueue-encode-reconcile": "*/15 * * * *",
-	"rokuban-enqueue-storage-sync":     "*/5 * * * *",
+	"rokuban-enqueue-epg-sync":            "*/10 * * * *",
+	"rokuban-enqueue-tuner-sync":          "*/10 * * * *",
+	"rokuban-enqueue-ruler-pass":          "*/10 * * * *",
+	"rokuban-enqueue-reconcile-pass":      "* * * * *",
+	"rokuban-enqueue-record-sweep":        "*/5 * * * *",
+	"rokuban-enqueue-catalog-export":      "0 4 * * *",
+	"rokuban-enqueue-delete-reconcile":    "*/15 * * * *",
+	"rokuban-enqueue-encode-reconcile":    "*/15 * * * *",
+	"rokuban-enqueue-thumbnail-reconcile": "*/15 * * * *",
+	"rokuban-enqueue-storage-sync":        "*/5 * * * *",
 }
 
 // base / site の schedule が実運用の間隔であること。

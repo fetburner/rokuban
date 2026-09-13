@@ -574,6 +574,7 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, queues 
 		CatalogExport:        true,
 		DeleteReconcile:      true,
 		EncodeReconcile:      true,
+		ThumbnailReconcile:   true,
 		StorageSync:          true,
 	}
 	return worker.NewClient(pool, workers, clientCfg)

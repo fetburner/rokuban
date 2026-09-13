@@ -40,6 +40,8 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_encode_jobs_total{result}` | Counter | encode の成功/失敗件数 |
 | `rokuban_thumbnail_duration_seconds` | Histogram | thumbnail 1 件の所要時間 |
 | `rokuban_thumbnail_jobs_total{result}` | Counter | thumbnail の成功/失敗件数 |
+| `rokuban_thumbnail_reconcile_last_pass_timestamp_seconds` | Gauge | thumbnail reconcile の最終完走時刻。投入停止は `time() -` で検出 |
+| `rokuban_thumbnail_reconcile_candidates` | Gauge | 直近の thumbnail reconcile が見た不足録画数。行上限に張り付く場合はバックログが上限以上 |
 | `rokuban_reconcile_pending_diff{action}` | Gauge | reconcile 差分数（**収束すればゼロ**。アラートはこちら） |
 | `rokuban_reconcile_schedules_total{action}` | Counter | 実際に差分を消した量 |
 | `rokuban_reconcile_schedule_lost_total` | Counter | 再作成で DELETE 成功 → POST 失敗（下記 reconcile。**0 以外はアラート対象**） |
@@ -165,9 +167,21 @@ schedule 同期（reconcile）の鮮度だけである。ruler と record_sweep 
 | 種別 | ジョブ | `--site` | CronJob の立て方 |
 |---|---|---|---|
 | site 束縛 | `epg-sync` / `tuner-sync` / `ruler-pass` / `reconcile-pass` / `record-sweep` | 多サイトでは必須（1 サイトなら省略可） | **サイトごとに 1 本**（`--site tokyo` 等） |
-| site 非依存 | `catalog-export` / `encode-reconcile` / `storage-sync` | **付けない**（付けるとエラー） | **全体で 1 本**（サイトごとに立てない） |
+| site 非依存 | 下記の 5 種 | **付けない**（付けるとエラー） | **全体で 1 本**（サイトごとに立てない） |
 
-`catalog-export` / `storage-sync` はアーカイブ（+ スクラッチ）が単一なので site の属性を持たない。`encode-reconcile` はエンコードのプロファイルとアーカイブがどちらも単一だから同じ扱い。サイトごとの CronJob から叩くと N 回投入される（River の一意制約で 1 本に合流はするが意図が読めない）。**`worker.periodic_jobs: false` の構成では `storage-sync` の CronJob を忘れると `storage_sync` が一度も投入されない**。`GET /api/storage` が永遠に空配列を返す（レビュー指摘）。**`encode-reconcile` を忘れた場合の症状は静かで、ヒントを落とした録画だけがエンコードされないまま残る**（[ingest](../recording/ingest.md) §5.5）。検出は `rokuban_encode_reconcile_last_pass_timestamp_seconds` の鮮度で行う（投入を忘れれば進まない）。
+対象は `catalog-export` / `delete-reconcile` / `encode-reconcile` / `thumbnail-reconcile` / `storage-sync` である。
+`catalog-export` / `storage-sync` はアーカイブ（+ スクラッチ）が単一なので site の属性を持たない。
+`encode-reconcile` はエンコードのプロファイルとアーカイブがどちらも単一である。
+`thumbnail-reconcile` はサムネイルの名前空間とアーカイブが単一である。
+`delete-reconcile` は単一の物理ストレージ全体を走査する。
+以上のジョブをサイトごとの CronJob から叩くと N 回投入される（River の一意制約で 1 本に合流はするが意図が読めない）。
+**`worker.periodic_jobs: false` の構成では `storage-sync` の CronJob を忘れると `storage_sync` が一度も投入されない**。`GET /api/storage` が永遠に空配列を返す。
+**`encode-reconcile` / `thumbnail-reconcile` を忘れた場合の症状は静かである。**
+ヒントを落とした録画だけが派生物を持たないまま残る（[ingest](../recording/ingest.md) §5.5）。
+検出は `rokuban_encode_reconcile_last_pass_timestamp_seconds` の鮮度で行う。
+thumbnail は `rokuban_thumbnail_reconcile_last_pass_timestamp_seconds` を見る。投入を忘れれば値が進まない。
+
+thumbnail reconcile の候補から除外される既知の原本欠落は `rokuban_media_assets_missing{kind="original"}` で確認する。これはファイルが復旧して delete reconcile がマーカーを消すまで、定期パスが同じ失敗を作り続けないためのガードである。
 
 **record_sweep には ruler / reconciler と違ってヒント経路（前倒し投入）がない**。定期投入だけが契機で、間隔は既定 5 分（`worker.RecordSweepInterval`、旧 watcher の `ReconcileInterval` を継承）。SSE 再接続をヒントにする案は検討したが、`internal/mirakc.Client.Subscribe` が再接続を内部に隠していて呼び出し側に通知できないため見送った（[録画エンジン](../recording.md) §3.3「record_sweep の起動契機」）。取りこぼしの実害は SSE の (a)(b) が大半を吸収し、record_sweep は定期パスとして収束させる保険という位置づけなので、5 分間隔で十分と判断している。
 

@@ -63,6 +63,8 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	EncodeReconcileLastPass.SetToCurrentTime()
 	EncodeReconcileCandidates.Set(0)
 	EncodeReconcileUnsatisfiable.WithLabelValues("h264").Set(0)
+	ThumbnailReconcileLastPass.SetToCurrentTime()
+	ThumbnailReconcileCandidates.Set(0)
 	MediaAssetsMissing.WithLabelValues("original").Set(0)
 	MissingAssetScanSuspectedStorageFailure.Add(1)
 
@@ -120,6 +122,8 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 		"rokuban_encode_reconcile_last_pass_timestamp_seconds",
 		"rokuban_encode_reconcile_candidates",
 		"rokuban_encode_reconcile_unsatisfiable",
+		"rokuban_thumbnail_reconcile_last_pass_timestamp_seconds",
+		"rokuban_thumbnail_reconcile_candidates",
 		// issue #343: active な media_asset の実体無し検出。
 		// docs/operations/monitoring.md がこの 2 本を対で読む運用を約束して
 		// いるので、片方の登録漏れが黙って通らないようにここに載せる
