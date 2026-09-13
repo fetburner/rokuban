@@ -31,7 +31,8 @@ mirakc に録画を委譲すると（詳細は [recording.md](recording.md) 参�
 
 - **設計目的**: リアルタイムで期限のある録画はエッジの mirakc に委譲し、DB を真実の座とする処理をサーバー側で再試行可能なジョブに分ける
 - **コード上の保証**: ロール分割と定期 reconcile、予約同期は `cmd/rokuban/server.go`・`internal/reconciler`・`internal/worker` に実装され、既存テストで経路を確認している。これはクラウド上の可用性や性能を保証する記述ではない
-- **運用条件**: 録画を保証するのは mirakc に放送開始前まで同期済みの予約だけ。ingest には mirakc への接続、録画バッファの保持、書き込み可能なメディアストレージ、DB のロック・コミット経路が必要で、分散配置ではメディアストレージを共有できることも必要になる（詳細は [ストレージ契約](storage/contract.md) §3–5）
+- **運用条件**: 録画を保証するのは mirakc に番組終了前まで同期済みの予約だけ。ingest には mirakc への接続、録画バッファの保持、書き込み可能なメディアストレージ、DB のロック・コミット経路が必要で、分散配置ではメディアストレージを共有できることも必要になる（詳細は [ストレージ契約](storage/contract.md) §3–5）
+- **レベルトリガー・crash-only の前提**: 「イベントを取りこぼしても定期 reconcile で収束する」「どこで落ちても再起動すれば収束する」は、定期投入の経路（River `PeriodicJobs` か k8s CronJob。[data.md](data.md) §2 / [operations.md](operations.md) §5）が動いている範囲で成り立つ。`worker.periodic_jobs: false` で CronJob を欠くと、落ちたイベントは永久に拾われない。crash-only はプロセス単位であり、`--all` ではロール単独の復旧は起きない
 - **実機未検証の範囲**: クラウド実機での挙動、長期の分散運用、帯域・容量の妥当性はこの概要だけでは判定しない。実際の配置では [運用](operations.md) の検証項目と各コンポーネントの既存試験を使う
 
 ## 構成図
@@ -155,7 +156,7 @@ SSE (`/api/events`) は notifier ロールに分離されており、api は mir
 
 キュー × 置き場所 × site 軸の表（キュー名の site 修飾を含む）は [operations.md](operations.md) §5 を参照。
 
-自宅サーバーが落ちていても、Postgres が利用可能なら番組表・録画一覧・予約操作は DB の desired state として扱える。録画を保証するのは mirakc に放送開始前まで同期済みの予約だけであり、復帰後の reconciler が期限を過ぎてから同期しても、その放送を取り戻すことはできない。メディア視聴と ingest は自宅側の mirakc・録画バッファ・メディアストレージへの到達が必要と割り切る。SSE は長寿命接続なのでサーバーレスには乗せず、CDN のパスルーティングで `/api/events` だけ notifier ロールへ振り分ける（詳細: [api.md](api.md)）。notifier は mirakc への到達性を必要としない（Postgres の NOTIFY を配るだけ）ため、クラウド側に常駐プロセスとして置いても自宅側に置いても成立する。
+自宅サーバーが落ちていても、Postgres が利用可能なら番組表・録画一覧・予約操作は DB の desired state として扱える。録画を保証するのは mirakc に番組終了前まで同期済みの予約だけであり、復帰後の reconciler が期限を過ぎてから同期しても、その放送を取り戻すことはできない。メディア視聴と ingest は自宅側の mirakc・録画バッファ・メディアストレージへの到達が必要と割り切る。SSE は長寿命接続なのでサーバーレスには乗せず、CDN のパスルーティングで `/api/events` だけ notifier ロールへ振り分ける（詳細: [api.md](api.md)）。notifier は mirakc への到達性を必要としない（Postgres の NOTIFY を配るだけ）ため、クラウド側に常駐プロセスとして置いても自宅側に置いても成立する。
 
 サーバーレスの置き場所の選定、ハイブリッド構成の運用詳細は [operations.md](operations.md) を参照。
 
