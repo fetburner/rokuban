@@ -20,6 +20,8 @@ GET  /api/recordings/{id}/thumbnail         →  image/jpeg
 HEAD /api/recordings/{id}/thumbnail         →  ヘッダーのみ
 ```
 
+録画配信は一覧・詳細 API と `/api/recordings/{id}` の部分木を共有し、要求時まで列挙できない `{id}` より後ろで api と streamer が分かれるため、標準 Ingress の `Exact` / `Prefix` だけでは単一ホスト名から一意に振り分けられない。分割可能な外向きの形は応答の性質を表す固定接頭辞 `/api/media/recordings/{id}/...` とし、現行 URL は移設の実装まで変更せず、移設時にメソッド（`GET` / `HEAD`）とクエリを変えない。
+
 **ブラウザ VOD は MP4 progressive + Range とする（HLS ではない）。** 家庭 LAN の
 オンデマンド再生では単一ファイル + `http.ServeContent` の Range が十分で、
 セグメント化・プレイリスト・hls.js のコストに見合わない。ライブ視聴の HLS は
