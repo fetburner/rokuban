@@ -148,6 +148,44 @@ func TestNewRegistry_Twice(t *testing.T) {
 	_ = NewRegistry(nil)
 }
 
+// ruler / record_sweep の成功時刻はプロセス内ゲージではなく DB の marker から
+// scrape できることを固定する。ScaledJob が終了した後も常駐プロセスから読める
+// 経路なので、collector が旧ゲージを読む実装に戻るとこのテストで分かる。
+func TestLoopPassCollector_ReadsDBBackedMarkers(t *testing.T) {
+	pool := rokutest.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	if err := q.UpsertRulerPassSnapshot(ctx, testSite); err != nil {
+		t.Fatalf("upserting ruler marker: %v", err)
+	}
+	if err := q.UpsertRecordSweepSnapshot(ctx, testSite); err != nil {
+		t.Fatalf("upserting record sweep marker: %v", err)
+	}
+
+	c := NewLoopPassCollector(pool, testSite)
+	if got := gaugeValue(t, c, "rokuban_ruler_last_success_timestamp_seconds"); got <= 0 {
+		t.Errorf("ruler last success = %v, want a positive DB timestamp", got)
+	}
+	if got := gaugeValue(t, c, "rokuban_sweep_last_success_timestamp_seconds"); got <= 0 {
+		t.Errorf("sweep last success = %v, want a positive DB timestamp", got)
+	}
+}
+
+// marker がまだ無い site も「未確立 = 0」として観測できる。系列自体を消すと、
+// 初回実行前と collector の登録漏れを区別できない。
+func TestLoopPassCollector_ReportsZeroBeforeFirstPass(t *testing.T) {
+	pool := rokutest.SetupDB(t)
+	c := NewLoopPassCollector(pool, testSite)
+
+	if got := gaugeValue(t, c, "rokuban_ruler_last_success_timestamp_seconds"); got != 0 {
+		t.Errorf("ruler last success before first pass = %v, want 0", got)
+	}
+	if got := gaugeValue(t, c, "rokuban_sweep_last_success_timestamp_seconds"); got != 0 {
+		t.Errorf("sweep last success before first pass = %v, want 0", got)
+	}
+}
+
 func seedFinishedRecord(t *testing.T, pool *pgxpool.Pool, recordID string, contentLength int64, ingested bool) {
 	t.Helper()
 	ctx := context.Background()

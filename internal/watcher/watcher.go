@@ -147,6 +147,9 @@ func (w *Watcher) Sweep(ctx context.Context) error {
 			slog.Error("sweep: processing record", "record_id", record.ID, "err", err)
 		}
 	}
+	if err := sqlcgen.New(w.pool).UpsertRecordSweepSnapshot(ctx, w.site); err != nil {
+		return fmt.Errorf("marking record sweep success: %w", err)
+	}
 	slog.Info("watcher sweep complete", "records", len(records))
 	metrics.SweepLastPass.SetToCurrentTime()
 	return nil

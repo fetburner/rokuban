@@ -187,6 +187,17 @@ func newConfiguredPresyncCollectors(pool *pgxpool.Pool, registry []config.Mirakc
 	return collectors
 }
 
+// newConfiguredLoopPassCollectors は設定された全 site の ruler / record_sweep
+// 成功 marker を 1 site 1 collector で登録する。marker は DB だけを読むため、
+// プロセスの --sites 束縛とは独立して常駐プロセスから全 site を観測できる。
+func newConfiguredLoopPassCollectors(pool *pgxpool.Pool, registry []config.MirakcSite) []prometheus.Collector {
+	collectors := make([]prometheus.Collector, 0, len(registry))
+	for _, s := range registry {
+		collectors = append(collectors, metrics.NewLoopPassCollector(pool, s.Site))
+	}
+	return collectors
+}
+
 // resolveSiteFlag は `--site` フラグとレジストリから対象サイト名を決める。
 // `enqueue`（site 束縛ジョブ）と `shadow-diff` が共有する解決規則（issue #183 の
 // 「含むもの」6 で enqueue に導入、issue #533 で shadow-diff にも一般化した）。
