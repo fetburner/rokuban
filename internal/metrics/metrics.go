@@ -273,8 +273,10 @@ var (
 		Help: "Times the bulk-delete circuit breaker transitioned into the tripped state for a ruler site. Use rokuban_circuit_breaker_tripped to see whether it is currently latched.",
 	})
 
-	// RulerLastPass は最後に（全サイトとも）成功したパスの時刻（UNIX 秒）。
-	// reconciler.ReconcileLastPass と同じ理由でゲージの凍結対策として持つ。
+	// RulerLastPass はこのプロセスで最後に（全サイトとも）成功したパスの時刻
+	// （UNIX 秒）。reconciler.ReconcileLastPass と同じ理由でゲージの凍結対策として
+	// 持つ。DB-backed の site 単位メトリクスは LoopPassCollector が別名で公開する。
+	// この in-process ゲージは既存の scrape 契約を壊さないため併存させる。
 	RulerLastPass = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_ruler_last_pass_timestamp_seconds",
 		Help: "Unix time of the last successful ruler pass. Use with time() to detect a stalled ruler.",
@@ -298,9 +300,11 @@ var (
 		Help: "mirakc record-broken events by reason.",
 	}, []string{"reason"})
 
-	// SweepLastPass は最後に成功した record_sweep パス（3 段構えの (c)、
-	// docs/recording.md §3.3）の時刻（UNIX 秒）。ReconcileLastPass / RulerLastPass /
-	// EpgSyncLastSuccess と同じ理由（ゲージの凍結対策）で持つ（M2-18）。
+	// SweepLastPass はこのプロセスで最後に成功した record_sweep パス（3 段構えの
+	// (c)、docs/recording.md §3.3）の時刻（UNIX 秒）。ReconcileLastPass /
+	// RulerLastPass / EpgSyncLastSuccess と同じ理由（ゲージの凍結対策）で持つ
+	// （M2-18）。DB-backed の site 単位メトリクスは LoopPassCollector が別名で
+	// 公開する。この in-process ゲージは既存の scrape 契約を壊さないため併存させる。
 	SweepLastPass = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_sweep_last_pass_timestamp_seconds",
 		Help: "Unix time of the last successful record_sweep pass. Use with time() to detect a stalled sweep.",

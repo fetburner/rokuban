@@ -368,6 +368,45 @@ func TestNewConfiguredPresyncCollectors_ExposeAllConfiguredSites(t *testing.T) {
 	}
 }
 
+// ruler / record_sweep の marker も --sites の束縛ではなく設定レジストリ全体を
+// 観測する。ScaledJob が site ごとに終了しても、常駐プロセスから全 site の鮮度を
+// scrape できることを配線で固定する。
+func TestNewConfiguredLoopPassCollectors_ExposeAllConfiguredSites(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	cs := newConfiguredLoopPassCollectors(pool, []config.MirakcSite{tokyo, takamatsu})
+	if len(cs) != 2 {
+		t.Fatalf("collectors = %d, want 2", len(cs))
+	}
+
+	reg := metrics.NewRegistry(cs...)
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+
+	for _, name := range []string{
+		"rokuban_ruler_last_success_timestamp_seconds",
+		"rokuban_sweep_last_success_timestamp_seconds",
+	} {
+		seen := make(map[string]bool)
+		for _, family := range families {
+			if family.GetName() != name {
+				continue
+			}
+			for _, metric := range family.Metric {
+				for _, label := range metric.Label {
+					if label.GetName() == "site" {
+						seen[label.GetValue()] = true
+					}
+				}
+			}
+		}
+		if !seen["tokyo"] || !seen["takamatsu"] {
+			t.Errorf("%s site labels = %v, want tokyo and takamatsu", name, seen)
+		}
+	}
+}
+
 // newSiteFlagTestCmd は resolveSiteFlag のテストが使う、`--site` フラグだけを
 // 持つ最小の cobra.Command を作る（enqueue / shadow-diff の 2 コマンドが
 // 共有する解決規則なので、コマンド名には依存しない）。

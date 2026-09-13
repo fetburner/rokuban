@@ -138,6 +138,11 @@ type ProgramSnapshot struct {
 	ServiceName string
 }
 
+type RecordSweepSnapshot struct {
+	Site          string
+	LastSuccessAt time.Time
+}
+
 type RecordSync struct {
 	Site          string
 	RecordID      string
@@ -279,6 +284,11 @@ type RuleTime struct {
 	Weekdays int32
 	StartSec int32
 	EndSec   int32
+}
+
+type RulerPassSnapshot struct {
+	Site          string
+	LastSuccessAt time.Time
 }
 
 type ScheduleSync struct {
