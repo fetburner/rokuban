@@ -1000,6 +1000,46 @@ func TestDeploymentSelectorMatchesOwnTemplate(t *testing.T) {
 	}
 }
 
+// 中央 streamer の Pod だけを保護・分散する selector であること。
+// site streamer まで混ぜると、中央 Pod の PDB と topology spread が効かなくなる。
+func TestCentralStreamerSelectorsAreScoped(t *testing.T) {
+	var deployment, pdb object
+	for _, o := range loadBase(t) {
+		switch o.id() {
+		case "Deployment/rokuban-streamer":
+			deployment = o
+		case "PodDisruptionBudget/rokuban-streamer":
+			pdb = o
+		}
+	}
+	if deployment.kind() == "" {
+		t.Fatal("central streamer Deployment not found")
+	}
+	if pdb.kind() == "" {
+		t.Fatal("central streamer PodDisruptionBudget not found")
+	}
+
+	const scopeKey = "rokuban.fetburner.net/streamer-scope"
+	const centralScope = "central"
+	checkScope := func(name string, labels map[string]any) {
+		t.Helper()
+		if got := fmt.Sprint(labels[scopeKey]); got != centralScope {
+			t.Errorf("%s selector %s = %q, want %q", name, scopeKey, got, centralScope)
+		}
+	}
+	checkScope("central streamer PDB", mapAt(pdb.doc, "spec", "selector", "matchLabels"))
+
+	constraints := sliceAt(deployment.doc, "spec", "template", "spec", "topologySpreadConstraints")
+	if len(constraints) == 0 {
+		t.Fatal("central streamer has no topology spread constraint")
+	}
+	constraint, ok := constraints[0].(map[string]any)
+	if !ok {
+		t.Fatalf("central streamer topology spread constraint is %T, want map", constraints[0])
+	}
+	checkScope("central streamer topology spread", mapAt(constraint, "labelSelector", "matchLabels"))
+}
+
 // base/ の YAML ファイルが、resources か generator の入力のどちらかに必ず
 // 挙がっていること。
 //

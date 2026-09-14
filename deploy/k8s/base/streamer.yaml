@@ -53,6 +53,7 @@ spec:
             matchLabels:
               app.kubernetes.io/name: rokuban
               app.kubernetes.io/component: streamer
+              rokuban.fetburner.net/streamer-scope: central
       securityContext:
         runAsNonRoot: true
         runAsUser: 65534
@@ -167,3 +168,4 @@ spec:
     matchLabels:
       app.kubernetes.io/name: rokuban
       app.kubernetes.io/component: streamer
+      rokuban.fetburner.net/streamer-scope: central
