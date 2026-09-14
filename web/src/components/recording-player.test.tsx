@@ -186,8 +186,61 @@ describe('RecordingPlayer のサイズ常置（値札、issue #236）', () => {
         originalSizeBytes={4_500_000_000}
       />,
     )
-    const link = container.querySelector('a')!
+    const link = container.querySelector('a[href="/api/media/recordings/25/file"]')!
     expect(link.textContent).toContain('ダウンロード / VLC (4.2 GB)')
+  })
+})
+
+describe('RecordingPlayer の encoded ダウンロード', () => {
+  it('複数プロファイルでは選択中プロファイルの URL とファイル名に追従する', () => {
+    const { container } = render(
+      <RecordingPlayer
+        recordingId={26}
+        encodedAssets={[
+          { profile: 'h264', sizeBytes: 100 },
+          { profile: 'h265', sizeBytes: 200 },
+        ]}
+      />,
+    )
+    const link = container.querySelector('a[aria-label="encoded 動画をダウンロード"]')!
+
+    expect(link).toHaveAttribute('href', '/api/media/recordings/26/file?profile=h264')
+    expect(link).toHaveAttribute('download', 'recording-26-h264.mp4')
+
+    fireEvent.change(container.querySelector('select')!, { target: { value: 'h265' } })
+
+    expect(link).toHaveAttribute('href', '/api/media/recordings/26/file?profile=h265')
+    expect(link).toHaveAttribute('download', 'recording-26-h265.mp4')
+  })
+
+  it('単一プロファイルでもサイズ表示の隣にダウンロードリンクを出す', () => {
+    const { container } = render(
+      <RecordingPlayer recordingId={27} encodedAssets={[{ profile: 'h264', sizeBytes: 1_200_000 }]} />,
+    )
+    const link = container.querySelector('a[aria-label="encoded 動画をダウンロード"]')!
+
+    expect(link).toHaveAttribute('href', '/api/media/recordings/27/file?profile=h264')
+    expect(link).toHaveAttribute('download', 'recording-27-h264.mp4')
+    expect(link).toHaveTextContent('ダウンロード')
+    expect(link).not.toHaveTextContent('1.1 MB')
+    expect(container.textContent).toContain('h264 (1.1 MB)')
+  })
+
+  it('encoded 用リンクと原本 TS リンクを同時に出す', () => {
+    const { container } = render(
+      <RecordingPlayer
+        recordingId={28}
+        encodedAssets={[{ profile: 'h264', sizeBytes: 100 }]}
+        hasOriginal
+        originalSizeBytes={200}
+      />,
+    )
+
+    expect(container.querySelector('a[aria-label="encoded 動画をダウンロード"]')).toBeInTheDocument()
+    expect(container.querySelector('a[href="/api/media/recordings/28/file"]')).toHaveTextContent(
+      'ダウンロード / VLC',
+    )
+    expect(container.querySelectorAll('a')).toHaveLength(2)
   })
 })
 

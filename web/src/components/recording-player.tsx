@@ -160,6 +160,19 @@ export function RecordingPlayer({
 
   const src = recordingFileURL(recordingId, selectedProfile)
   const selectedAsset = encodedAssets.find((a) => a.profile === selectedProfile)
+  // EncodedAsset に container 列がないため、プロファイルから拡張子を推測せず、
+  // ダウンロード名は提案どおり .mp4 に固定する。保存されるデータ自体には影響しない。
+  const downloadFilename = `recording-${recordingId}-${selectedProfile}.mp4`
+  const encodedDownloadLink = (
+    <a
+      href={src}
+      download={downloadFilename}
+      aria-label="encoded 動画をダウンロード"
+      className="text-primary underline-offset-2 hover:underline"
+    >
+      ダウンロード
+    </a>
+  )
 
   return (
     <section className={cn('flex flex-col gap-2', className)} aria-label="再生">
@@ -180,15 +193,19 @@ export function RecordingPlayer({
               </option>
             ))}
           </select>
+          {encodedDownloadLink}
         </div>
       ) : (
         // 選択肢が 1 つ（= セレクタを出さない）でも、押す前にサイズを見せる
         // という値札の方針（issue #236 M7-3）は変わらないので、常にキャプション
         // として出す。サイズが取れない資産でも選択肢（プロファイル名）自体は
         // 隠さない --- 分類の失敗で機能を隠さないというドロップ統計と同じ判断。
-        selectedAsset && (
-          <p className="text-muted-foreground">{assetOptionLabel(selectedAsset)}</p>
-        )
+        <div className="flex flex-wrap items-center gap-2">
+          {selectedAsset && (
+            <p className="text-muted-foreground">{assetOptionLabel(selectedAsset)}</p>
+          )}
+          {encodedDownloadLink}
+        </div>
       )}
 
       <div className="flex flex-wrap items-center gap-2">
