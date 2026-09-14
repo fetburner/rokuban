@@ -549,7 +549,7 @@ function apiHandler({
     }
     if (/^\/api\/recordings\/\d+\/drop-stats$/.test(p)) return json([])
     // サムネイルは 404 に落として実装側のプレースホルダを撮る（画像を作らない）
-    if (/^\/api\/recordings\/\d+\/thumbnail$/.test(p)) return route.fulfill({ status: 404 })
+    if (/^\/api\/media\/recordings\/\d+\/thumbnail$/.test(p)) return route.fulfill({ status: 404 })
     if (p === `/api/sites/${SITE}/services`) return json(services)
     if (p === `/api/sites/${SITE}/programs`) {
       const startISO = url.searchParams.get('start') ?? iso(nowMs)

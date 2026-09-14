@@ -52,7 +52,7 @@ async function apiHandler({ path, url, json, route }) {
   if (path === '/api/encode-profiles' || path === '/api/rules') return json([])
   if (path === '/api/events') return sseKeepAlive(route)
   if (/^\/api\/sites\/[^/]+\/services$/.test(path)) return json([])
-  if (/^\/api\/recordings\/\d+\/thumbnail$/.test(path)) {
+  if (/^\/api\/media\/recordings\/\d+\/thumbnail$/.test(path)) {
     return route.fulfill({ status: 404 })
   }
   if (path === '/api/recordings' && method === 'GET') {

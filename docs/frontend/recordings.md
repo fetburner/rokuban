@@ -41,7 +41,7 @@ prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らな
 
 ## 録画のブラウザ再生
 
-**VOD は MP4 progressive + Range。** streamer の `GET /api/recordings/{id}/file?profile=<name>` を
+**VOD は MP4 progressive + Range。** streamer の `GET /api/media/recordings/{id}/file?profile=<name>` を
 ネイティブ `<video controls>` の src に渡す。HLS / hls.js は使わない（家庭 LAN の
 オンデマンドではセグメント化のコストに見合わない。決定は [api.md](../api.md)）。
 

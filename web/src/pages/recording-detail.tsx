@@ -112,7 +112,7 @@ export function RecordingDetailPage() {
             <div className="aspect-video h-20 shrink-0 overflow-hidden rounded bg-muted">
               {!trash && !thumbFailed ? (
                 <img
-                  src={`/api/recordings/${recording.id}/thumbnail`}
+                  src={`/api/media/recordings/${recording.id}/thumbnail`}
                   alt=""
                   className="size-full object-cover"
                   onError={() => setThumbFailed(true)}

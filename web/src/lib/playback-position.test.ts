@@ -125,14 +125,14 @@ describe('private mode 等で localStorage が例外を投げる場合', () => {
 
 describe('recordingFileURL', () => {
   it('原本は query 無し', () => {
-    expect(recordingFileURL(3)).toBe('/api/recordings/3/file')
+    expect(recordingFileURL(3)).toBe('/api/media/recordings/3/file')
   })
 
   it('encoded は profile query', () => {
-    expect(recordingFileURL(3, 'h264')).toBe('/api/recordings/3/file?profile=h264')
+    expect(recordingFileURL(3, 'h264')).toBe('/api/media/recordings/3/file?profile=h264')
   })
 
   it('プロファイル名を encode する', () => {
-    expect(recordingFileURL(3, 'a b')).toBe('/api/recordings/3/file?profile=a%20b')
+    expect(recordingFileURL(3, 'a b')).toBe('/api/media/recordings/3/file?profile=a%20b')
   })
 })

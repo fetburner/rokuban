@@ -106,7 +106,7 @@ async function apiHandler({ path, url, json, route }) {
       },
     ])
   }
-  if (/^\/api\/recordings\/\d+\/thumbnail$/.test(path)) return route.fulfill({ status: 404 })
+  if (/^\/api\/media\/recordings\/\d+\/thumbnail$/.test(path)) return route.fulfill({ status: 404 })
   if (path === '/api/recordings' && method === 'GET') {
     return json(url.searchParams.get('trash') === 'true' ? [] : recordings)
   }

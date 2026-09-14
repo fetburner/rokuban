@@ -722,7 +722,7 @@ function RecordingRow({
         />
       )}
       {/*
-        サムネイルは openapi 外の streamer 経路（/api/recordings/{id}/thumbnail）。
+        サムネイルは openapi 外の streamer 経路（/api/media/recordings/{id}/thumbnail）。
         未生成時は 404 → onError でプレースホルダ。hasThumbnail 列は持たない（M3-4）。
         ごみ箱の録画は配信側が deleted_at IS NOT NULL を 404 にする契約（docs/api.md
         §メディア配信）なので、そもそもリクエストを出さずプレースホルダ固定にする
@@ -736,7 +736,7 @@ function RecordingRow({
       >
         {!trash && !thumbFailed ? (
           <img
-            src={`/api/recordings/${recording.id}/thumbnail`}
+            src={`/api/media/recordings/${recording.id}/thumbnail`}
             alt=""
             className="size-full object-cover"
             loading="lazy"

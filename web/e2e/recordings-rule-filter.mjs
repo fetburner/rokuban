@@ -81,7 +81,7 @@ async function apiHandler({ path, json, route }) {
   if (path === '/api/rules') return json(ruleList)
   if (path === '/api/events') return sseKeepAlive(route)
   if (/^\/api\/sites\/[^/]+\/services$/.test(path)) return json([])
-  if (/^\/api\/recordings\/\d+\/thumbnail$/.test(path)) return route.fulfill({ status: 404 })
+  if (/^\/api\/media\/recordings\/\d+\/thumbnail$/.test(path)) return route.fulfill({ status: 404 })
   if (path === '/api/recordings') return json([recording])
   return json([])
 }

@@ -69,7 +69,7 @@ func TestMonolith_RESTAndSSEAndMediaCoexist(t *testing.T) {
 	}
 
 	// メディア配信: streamer の Mounter
-	fileResp, err := http.Get(fmt.Sprintf("%s/api/recordings/%d/file", srv.URL, recordingID))
+	fileResp, err := http.Get(fmt.Sprintf("%s/api/media/recordings/%d/file", srv.URL, recordingID))
 	if err != nil {
 		t.Fatalf("GET recording file: %v", err)
 	}

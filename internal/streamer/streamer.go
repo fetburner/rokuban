@@ -60,7 +60,7 @@ func New(pool *pgxpool.Pool, cfg Config) *Streamer {
 
 // Mount はルーターに配信エンドポイントを登録する。
 func (s *Streamer) Mount(r chi.Router) {
-	const path = "/api/recordings/{id}/file"
+	const path = "/api/media/recordings/{id}/file"
 	r.Get(path, s.RecordingFile)
 	// HEAD も登録する。VLC やブラウザはシーク前に HEAD で Content-Length と
 	// Accept-Ranges を取るため、405 を返すとシーク再生に失敗しうる。
@@ -69,7 +69,7 @@ func (s *Streamer) Mount(r chi.Router) {
 
 	// サムネイルは openapi に載せない（原本 /file と同じ理由。バイナリ配信で
 	// 生成クライアントが壊れる。issue #66 / docs/api.md）。
-	const thumbPath = "/api/recordings/{id}/thumbnail"
+	const thumbPath = "/api/media/recordings/{id}/thumbnail"
 	r.Get(thumbPath, s.RecordingThumbnail)
 	r.Head(thumbPath, s.RecordingThumbnail)
 }
@@ -88,7 +88,7 @@ type serveAsset struct {
 	contentType string
 }
 
-// RecordingFile は GET/HEAD /api/recordings/{id}/file を処理する。
+// RecordingFile は GET/HEAD /api/media/recordings/{id}/file を処理する。
 //
 // profile クエリが無ければ原本（kind=original）、あれば encoded 派生物。
 // Range・If-Range・If-Modified-Since の扱いは http.ServeContent に任せる。
@@ -133,7 +133,7 @@ func (s *Streamer) RecordingFile(w http.ResponseWriter, r *http.Request) {
 	s.serveAsset(w, r, id, asset)
 }
 
-// RecordingThumbnail は GET /api/recordings/{id}/thumbnail を処理する。
+// RecordingThumbnail は GET /api/media/recordings/{id}/thumbnail を処理する。
 //
 // kind = 'thumbnail' の active アセットを JPEG で返す。未生成・ごみ箱は 404。
 // openapi には載せない（原本 /file と同じ。docs/api.md）。

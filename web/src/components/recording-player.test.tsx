@@ -35,7 +35,7 @@ describe('RecordingPlayer の字幕サイドカー', () => {
     const track = container.querySelector('track')
     expect(track).not.toBeNull()
     expect(track?.kind).toBe('subtitles')
-    expect(track?.src).toContain('/api/recordings/7/file?profile=h264&track=subtitles')
+    expect(track?.src).toContain('/api/media/recordings/7/file?profile=h264&track=subtitles')
   })
 })
 

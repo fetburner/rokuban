@@ -79,7 +79,9 @@ site 単位のキューを一切購読できない（`jobs.RequiresSiteBinding` 
 | 録画配信 / サムネイル | メディアストレージの隣 | 水平（N） | 素の round-robin | 公式（ffmpeg 不要） |
 | ライブ視聴 | mirakc に到達できる場所（WAN 越しの pull を許す） | 既定 1 | `(site, networkId, serviceId)` の consistent hash | `Dockerfile.full` |
 
-単一ホスト名の入口は、標準 Ingress の `Exact` / パス要素単位の `Prefix` だけで Service が一意に決まることを判定基準にする。録画配信には `/api/media/recordings` を予約し、ライブは有限の site 名ごとに `/api/sites/<site>/networks` を Prefix 化して同部分木を予約し、既存の URL を維持する。
+単一ホスト名の入口は、標準 Ingress の `Exact` / パス要素単位の `Prefix` だけで Service が一意に決まることを判定基準にする。
+録画配信は現行の `/api/media/recordings` を streamer Service へ振り分ける。
+ライブは有限の site 名ごとに `/api/sites/<site>/networks` を Prefix 化して streamer Service へ振り分け、既存の URL を維持する。
 
 **判定基準: WAN に乗せてよいのは失っても再取得できるストリーム（ingest の pull、ライブの pull）だけで、録画ストリームは乗せない**（各サイトの mirakc がローカルに書くため）。[recording/reference.md](../recording/reference.md) §mirakc の多段集約と同じ軸である。
 

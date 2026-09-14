@@ -75,7 +75,7 @@ func newFixture(t *testing.T, relPath string, writeFile bool) *fixture {
 }
 
 func (f *fixture) url() string {
-	return fmt.Sprintf("%s/api/recordings/%d/file", f.srv.URL, f.recordingID)
+	return fmt.Sprintf("%s/api/media/recordings/%d/file", f.srv.URL, f.recordingID)
 }
 
 func seedRecording(t *testing.T, pool *pgxpool.Pool) int64 {
@@ -163,7 +163,7 @@ func TestRecordingThumbnail_ServesJPEG(t *testing.T) {
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
-	resp, body := get(t, fmt.Sprintf("%s/api/recordings/%d/thumbnail", srv.URL, recordingID), nil)
+	resp, body := get(t, fmt.Sprintf("%s/api/media/recordings/%d/thumbnail", srv.URL, recordingID), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
@@ -172,6 +172,13 @@ func TestRecordingThumbnail_ServesJPEG(t *testing.T) {
 	}
 	if ct := resp.Header.Get("Content-Type"); ct != thumbnailContentType {
 		t.Errorf("Content-Type = %q, want %q", ct, thumbnailContentType)
+	}
+
+	// 旧 URL は alias を残さず 404 にする。ロール分割時に前段が正しい backend
+	// へ振り分けられないため、単一プロセス構成だけの互換を持たせない。
+	legacyResp, _ := get(t, fmt.Sprintf("%s/api/recordings/%d/thumbnail", srv.URL, recordingID), nil)
+	if legacyResp.StatusCode != http.StatusNotFound {
+		t.Errorf("legacy thumbnail status = %d, want 404", legacyResp.StatusCode)
 	}
 }
 
@@ -183,7 +190,7 @@ func TestRecordingThumbnail_NotFoundWithoutAsset(t *testing.T) {
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
-	resp, _ := get(t, fmt.Sprintf("%s/api/recordings/%d/thumbnail", srv.URL, recordingID), nil)
+	resp, _ := get(t, fmt.Sprintf("%s/api/media/recordings/%d/thumbnail", srv.URL, recordingID), nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", resp.StatusCode)
 	}
@@ -208,6 +215,11 @@ func TestRecordingFile_FullContent(t *testing.T) {
 	}
 	if cl := resp.Header.Get("Content-Length"); cl != fmt.Sprint(len(f.content)) {
 		t.Errorf("Content-Length = %q, want %d", cl, len(f.content))
+	}
+
+	legacyResp, _ := get(t, fmt.Sprintf("%s/api/recordings/%d/file", f.srv.URL, f.recordingID), nil)
+	if legacyResp.StatusCode != http.StatusNotFound {
+		t.Errorf("legacy file status = %d, want 404", legacyResp.StatusCode)
 	}
 }
 
@@ -280,14 +292,14 @@ func TestRecordingFile_NotFound(t *testing.T) {
 	f := newFixture(t, "recording.m2ts", true)
 
 	t.Run("存在しない録画 ID", func(t *testing.T) {
-		resp, _ := get(t, fmt.Sprintf("%s/api/recordings/9999/file", f.srv.URL), nil)
+		resp, _ := get(t, fmt.Sprintf("%s/api/media/recordings/9999/file", f.srv.URL), nil)
 		if resp.StatusCode != http.StatusNotFound {
 			t.Errorf("status = %d, want 404", resp.StatusCode)
 		}
 	})
 
 	t.Run("数値でない ID", func(t *testing.T) {
-		resp, _ := get(t, fmt.Sprintf("%s/api/recordings/abc/file", f.srv.URL), nil)
+		resp, _ := get(t, fmt.Sprintf("%s/api/media/recordings/abc/file", f.srv.URL), nil)
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("status = %d, want 400", resp.StatusCode)
 		}
@@ -314,7 +326,7 @@ func TestRecordingFile_NoAsset(t *testing.T) {
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
-	resp, _ := get(t, fmt.Sprintf("%s/api/recordings/%d/file", srv.URL, recordingID), nil)
+	resp, _ := get(t, fmt.Sprintf("%s/api/media/recordings/%d/file", srv.URL, recordingID), nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
@@ -363,7 +375,7 @@ func TestRecordingFile_DeletedIsNotServed(t *testing.T) {
 			srv := httptest.NewServer(r)
 			defer srv.Close()
 
-			resp, _ := get(t, fmt.Sprintf("%s/api/recordings/%d/file", srv.URL, recordingID), nil)
+			resp, _ := get(t, fmt.Sprintf("%s/api/media/recordings/%d/file", srv.URL, recordingID), nil)
 			if resp.StatusCode != http.StatusNotFound {
 				t.Errorf("status = %d, want 404", resp.StatusCode)
 			}
@@ -392,7 +404,7 @@ func TestRecordingFile_RejectsPathTraversal(t *testing.T) {
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
-	resp, body := get(t, fmt.Sprintf("%s/api/recordings/%d/file", srv.URL, recordingID), nil)
+	resp, body := get(t, fmt.Sprintf("%s/api/media/recordings/%d/file", srv.URL, recordingID), nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
@@ -455,7 +467,7 @@ func TestRecordingFile_AccelRedirect(t *testing.T) {
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
-	resp, body := get(t, fmt.Sprintf("%s/api/recordings/%d/file", srv.URL, recordingID), nil)
+	resp, body := get(t, fmt.Sprintf("%s/api/media/recordings/%d/file", srv.URL, recordingID), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
@@ -491,7 +503,7 @@ func TestRecordingFile_AccelRedirectRejectsTraversal(t *testing.T) {
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
-	resp, _ := get(t, fmt.Sprintf("%s/api/recordings/%d/file", srv.URL, recordingID), nil)
+	resp, _ := get(t, fmt.Sprintf("%s/api/media/recordings/%d/file", srv.URL, recordingID), nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
@@ -540,7 +552,7 @@ func TestRecordingFile_EncodedProfile(t *testing.T) {
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
-	url := fmt.Sprintf("%s/api/recordings/%d/file?profile=h264", srv.URL, recordingID)
+	url := fmt.Sprintf("%s/api/media/recordings/%d/file?profile=h264", srv.URL, recordingID)
 	resp, body := get(t, url, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
@@ -591,7 +603,7 @@ func TestRecordingFile_Subtitles_Served(t *testing.T) {
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
-	url := fmt.Sprintf("%s/api/recordings/%d/file?profile=h264&track=subtitles", srv.URL, recordingID)
+	url := fmt.Sprintf("%s/api/media/recordings/%d/file?profile=h264&track=subtitles", srv.URL, recordingID)
 	resp, body := get(t, url, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
@@ -638,7 +650,7 @@ func TestRecordingFile_Subtitles_MissingSidecar_NoWarnLog(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
 	t.Cleanup(func() { slog.SetDefault(origLogger) })
 
-	url := fmt.Sprintf("%s/api/recordings/%d/file?profile=h264&track=subtitles", srv.URL, recordingID)
+	url := fmt.Sprintf("%s/api/media/recordings/%d/file?profile=h264&track=subtitles", srv.URL, recordingID)
 	resp, _ := get(t, url, nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", resp.StatusCode)
@@ -671,7 +683,7 @@ func TestRecordingFile_Subtitles_ExtensionlessEncodedRelPath_NotFound(t *testing
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
-	url := fmt.Sprintf("%s/api/recordings/%d/file?profile=h264&track=subtitles", srv.URL, recordingID)
+	url := fmt.Sprintf("%s/api/media/recordings/%d/file?profile=h264&track=subtitles", srv.URL, recordingID)
 	resp, _ := get(t, url, nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
@@ -696,7 +708,7 @@ func TestRecordingFile_EncodedNotFound(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	t.Run("未知プロファイル", func(t *testing.T) {
-		resp, _ := get(t, fmt.Sprintf("%s/api/recordings/%d/file?profile=h265", srv.URL, recordingID), nil)
+		resp, _ := get(t, fmt.Sprintf("%s/api/media/recordings/%d/file?profile=h265", srv.URL, recordingID), nil)
 		if resp.StatusCode != http.StatusNotFound {
 			t.Errorf("status = %d, want 404", resp.StatusCode)
 		}
@@ -708,7 +720,7 @@ func TestRecordingFile_EncodedNotFound(t *testing.T) {
 			 WHERE recording_id = $1 AND kind = 'encoded'`, recordingID); err != nil {
 			t.Fatalf("mark deleted: %v", err)
 		}
-		resp, _ := get(t, fmt.Sprintf("%s/api/recordings/%d/file?profile=h264", srv.URL, recordingID), nil)
+		resp, _ := get(t, fmt.Sprintf("%s/api/media/recordings/%d/file?profile=h264", srv.URL, recordingID), nil)
 		if resp.StatusCode != http.StatusNotFound {
 			t.Errorf("status = %d, want 404", resp.StatusCode)
 		}
@@ -735,7 +747,7 @@ func TestRecordingFile_EncodedDeletedRecording(t *testing.T) {
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
-	resp, _ := get(t, fmt.Sprintf("%s/api/recordings/%d/file?profile=h264", srv.URL, recordingID), nil)
+	resp, _ := get(t, fmt.Sprintf("%s/api/media/recordings/%d/file?profile=h264", srv.URL, recordingID), nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
@@ -757,11 +769,11 @@ func TestRecordingFile_OriginalVsEncoded(t *testing.T) {
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
-	resp, _ := get(t, fmt.Sprintf("%s/api/recordings/%d/file", srv.URL, recordingID), nil)
+	resp, _ := get(t, fmt.Sprintf("%s/api/media/recordings/%d/file", srv.URL, recordingID), nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("without profile status = %d, want 404 (no original)", resp.StatusCode)
 	}
-	resp, body := get(t, fmt.Sprintf("%s/api/recordings/%d/file?profile=h264", srv.URL, recordingID), nil)
+	resp, body := get(t, fmt.Sprintf("%s/api/media/recordings/%d/file?profile=h264", srv.URL, recordingID), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("with profile status = %d, want 200", resp.StatusCode)
 	}
@@ -791,7 +803,7 @@ func TestMount_CoexistsWithGeneratedRoutes(t *testing.T) {
 	for _, path := range []string{
 		"/api/recordings",
 		fmt.Sprintf("/api/recordings/%d/drop-stats", recordingID),
-		fmt.Sprintf("/api/recordings/%d/file", recordingID),
+		fmt.Sprintf("/api/media/recordings/%d/file", recordingID),
 	} {
 		resp, _ := get(t, srv.URL+path, nil)
 		if resp.StatusCode != http.StatusOK {
