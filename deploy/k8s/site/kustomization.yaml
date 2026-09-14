@@ -29,5 +29,6 @@ kind: Kustomization
 
 resources:
   - watcher.yaml
+  - live-streamer.yaml
   - worker-scaledjobs.yaml
   - cronjobs.yaml

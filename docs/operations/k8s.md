@@ -85,7 +85,7 @@ site 単位のキューを一切購読できない（`jobs.RequiresSiteBinding` 
 
 **判定基準: WAN に乗せてよいのは失っても再取得できるストリーム（ingest の pull、ライブの pull）だけで、録画ストリームは乗せない**（各サイトの mirakc がローカルに書くため）。[recording/reference.md](../recording/reference.md) §mirakc の多段集約と同じ軸である。
 
-素の TS の帯域目安は地上波 約 17 Mbps / BS 約 24 Mbps（1 セッションあたり、規格値）。streamer は 1 プロセスが N サイトを束縛できる（`cmd/rokuban/server.go`）。`live.enabled: true` に束縛サイト数の制約は無く、0 サイト束縛（中央の録画配信 Deployment）はライブのルートを持たないだけで他のロールは通常どおり動く。ライブを実際にどう配置する（overlay の切り方）かはここでは決めない。`deploy/k8s/` はライブの streamer を出荷していない。
+素の TS の帯域目安は地上波 約 17 Mbps / BS 約 24 Mbps（1 セッションあたり、規格値）。streamer は 1 プロセスが N サイトを束縛できる（`cmd/rokuban/server.go`）。`live.enabled: true` に束縛サイト数の制約は無く、0 サイト束縛（中央の録画配信 Deployment）はライブのルートを持たないだけで他のロールは通常どおり動く。`deploy/k8s/` では中央 streamer と site ごとのライブ streamer を別 Pod として出荷し、overlay が単一 Ingress に site 名を具体化した Prefix を追加する。
 
 #### 録画配信はセッション親和性を必要としない
 
