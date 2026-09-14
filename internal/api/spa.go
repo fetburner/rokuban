@@ -21,7 +21,7 @@ func isAPIPath(path string) bool {
 }
 
 // spaOrAPINotFound は未マッチのリクエストを振り分けるハンドラを返す。
-// `/api/` 配下は 404（JSON）、それ以外は SPA（index.html）へフォールバックする。
+// `/api/` 配下は 404（JSON）、それ以外は fallback へ渡す。
 //
 // **`/api/` を index.html に落とすと「無い」が「200 の HTML」になる。**
 // 実害の出た経路（issue #209）: live.enabled が false のとき streamer はライブの
@@ -35,7 +35,7 @@ func isAPIPath(path string) bool {
 // 同じ形は登録されないルートすべてに効く（api ロール単独の `/api/events` など。
 // router.go の Mounter のコメントが「生えない（404 になる）」と書いていた挙動は、
 // SPA を配る構成では実際には HTML 200 だった）。
-func spaOrAPINotFound(spa http.Handler) http.HandlerFunc {
+func spaOrAPINotFound(fallback http.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if isAPIPath(r.URL.Path) {
 			w.Header().Set("Content-Type", "application/json")
@@ -45,7 +45,7 @@ func spaOrAPINotFound(spa http.Handler) http.HandlerFunc {
 			_ = json.NewEncoder(w).Encode(ErrorResponse{Error: "not found"})
 			return
 		}
-		spa.ServeHTTP(w, r)
+		fallback.ServeHTTP(w, r)
 	}
 }
 

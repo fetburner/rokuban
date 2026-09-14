@@ -141,9 +141,13 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		ErrorHandlerFunc: writeBindError,
 	})
 
+	// API の未マッチは SPA の有無に関わらず JSON 404 にする。SPA を配らない
+	// ロールでは、API 以外の未マッチだけ chi の既定と同じ通常の 404 に戻す。
+	notFoundFallback := http.NotFoundHandler()
 	if cfg.DistFS != nil {
-		r.NotFound(spaOrAPINotFound(NewSPAHandler(cfg.DistFS)))
+		notFoundFallback = NewSPAHandler(cfg.DistFS)
 	}
+	r.NotFound(spaOrAPINotFound(notFoundFallback))
 
 	return r
 }
