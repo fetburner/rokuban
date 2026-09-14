@@ -31,8 +31,8 @@ patch を 1 つも書かない**。入口のライブ経路だけは Ingress に
 
 **入口の構成**:
 
-- `base/ingress.yaml` は単一ホスト `rokuban.local` の共通入口で、`/api/events` →
-  notifier、`/api/media/recordings` → 中央 streamer、`/` → api（SPA 含む）を持つ
+- `base/ingress.yaml` は単一ホスト `rokuban.local` の共通入口。
+  `/api/events` は notifier、`/api/media/recordings` は中央 streamer、`/` は api（SPA 含む）へ送る
 - `overlays/kind` は `default` のライブ Prefix を、`overlays/e2e` は `sitea` / `siteb`
   のライブ Prefix を同じ Ingress に追加する。site 名を具体化しない live の catch-all
   は書かない
