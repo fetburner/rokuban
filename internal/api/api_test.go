@@ -1101,6 +1101,33 @@ func TestSPA_APIPathsNotFallback(t *testing.T) {
 	}
 }
 
+// SPA を配らないロールでも /api/ 配下の未マッチは JSON 404 にする。
+func TestAPIPathsNotFoundWithoutSPA(t *testing.T) {
+	router := NewRouter(RouterConfig{})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/does-not-exist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	var body ErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if body.Error != "not found" {
+		t.Errorf("error = %q, want %q", body.Error, "not found")
+	}
+}
+
 // issue #209 の再現そのもの。live.enabled が false のとき streamer はライブの
 // ルートを登録しないので、このパスは未マッチになる。SPA に落とすと
 // probeLivePlaylist（web/src/lib/live.ts）が HTML 200 を成功扱いし、
