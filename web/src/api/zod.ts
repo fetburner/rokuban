@@ -1047,7 +1047,7 @@ export const ListRecordingsResponseItem = zod.object({
   "encodedAssets": zod.array(zod.object({
   "profile": zod.string(),
   "sizeBytes": zod.int().optional().describe('encoded 派生物の実サイズ。`media_assets.size_bytes` は NOT NULL\nなので active な行が存在する限り常に付く（未検証の断言にしないため:\n`media_assets.size_bytes` 列の `NOT NULL` 制約が根拠、実行時計測\nではない。同テーブルの CHECK は\n`kind` \/ `profile` \/ `state` に掛かるものだけで `size_bytes` には\n無い）。省略可能にしているのは、サイズが取れない資産があっても\n選択肢そのものは隠さない（ドロップ統計の「分類できなかった PID」と\n同じ判断。docs\/frontend\/recordings.md）という UI 側の表示規律を\n型で表現するため。\n')
-})).optional().describe('再生可能な encoded 派生物（media_assets の active のみ）。\nブラウザ再生は GET \/api\/recordings\/{id}\/file?profile=<name> を使う。\ndesired（encodeProfiles）ではなく observed。空配列は省略可。\n'),
+})).optional().describe('再生可能な encoded 派生物（media_assets の active のみ）。\nブラウザ再生は GET \/api\/media\/recordings\/{id}\/file?profile=<name> を使う。\ndesired（encodeProfiles）ではなく observed。空配列は省略可。\n'),
   "encodeProfiles": zod.array(zod.string()).optional().describe('凍結された「望ましい」エンコードプロファイル一覧（desired。\nrecording_encode_policy.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は\n`POST \/api\/recordings\/{id}\/encode-profiles` による事後追加（凍結の例外。\ndocs\/storage.md §6「原本 TS の保持ポリシー」）でのみ増える。\n`encodedAssets`（observed、再生可能なもの）とは異なり、まだ完了して\nいない pending なジョブのプロファイルも含む --- UI が「追加済み」を\n判定するのに使う。空配列は省略可。\n'),
   "encodeStatus": zod.array(zod.object({
   "profile": zod.string(),
@@ -1122,7 +1122,7 @@ export const GetRecordingResponse = zod.object({
   "encodedAssets": zod.array(zod.object({
   "profile": zod.string(),
   "sizeBytes": zod.int().optional().describe('encoded 派生物の実サイズ。`media_assets.size_bytes` は NOT NULL\nなので active な行が存在する限り常に付く（未検証の断言にしないため:\n`media_assets.size_bytes` 列の `NOT NULL` 制約が根拠、実行時計測\nではない。同テーブルの CHECK は\n`kind` \/ `profile` \/ `state` に掛かるものだけで `size_bytes` には\n無い）。省略可能にしているのは、サイズが取れない資産があっても\n選択肢そのものは隠さない（ドロップ統計の「分類できなかった PID」と\n同じ判断。docs\/frontend\/recordings.md）という UI 側の表示規律を\n型で表現するため。\n')
-})).optional().describe('再生可能な encoded 派生物（media_assets の active のみ）。\nブラウザ再生は GET \/api\/recordings\/{id}\/file?profile=<name> を使う。\ndesired（encodeProfiles）ではなく observed。空配列は省略可。\n'),
+})).optional().describe('再生可能な encoded 派生物（media_assets の active のみ）。\nブラウザ再生は GET \/api\/media\/recordings\/{id}\/file?profile=<name> を使う。\ndesired（encodeProfiles）ではなく observed。空配列は省略可。\n'),
   "encodeProfiles": zod.array(zod.string()).optional().describe('凍結された「望ましい」エンコードプロファイル一覧（desired。\nrecording_encode_policy.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は\n`POST \/api\/recordings\/{id}\/encode-profiles` による事後追加（凍結の例外。\ndocs\/storage.md §6「原本 TS の保持ポリシー」）でのみ増える。\n`encodedAssets`（observed、再生可能なもの）とは異なり、まだ完了して\nいない pending なジョブのプロファイルも含む --- UI が「追加済み」を\n判定するのに使う。空配列は省略可。\n'),
   "encodeStatus": zod.array(zod.object({
   "profile": zod.string(),

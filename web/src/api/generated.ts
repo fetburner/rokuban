@@ -525,7 +525,7 @@ export interface Recording {
   sizeBytes?: number;
   /**
      * 再生可能な encoded 派生物（media_assets の active のみ）。
-     * ブラウザ再生は GET /api/recordings/{id}/file?profile=<name> を使う。
+     * ブラウザ再生は GET /api/media/recordings/{id}/file?profile=<name> を使う。
      * desired（encodeProfiles）ではなく observed。空配列は省略可。
      */
   encodedAssets?: EncodedAsset[];

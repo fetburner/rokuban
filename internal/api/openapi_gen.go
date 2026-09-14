@@ -1311,7 +1311,7 @@ type Recording struct {
 	EncodeStatus *[]EncodeJobStatus `json:"encodeStatus,omitempty"`
 
 	// EncodedAssets 再生可能な encoded 派生物（media_assets の active のみ）。
-	// ブラウザ再生は GET /api/recordings/{id}/file?profile=<name> を使う。
+	// ブラウザ再生は GET /api/media/recordings/{id}/file?profile=<name> を使う。
 	// desired（encodeProfiles）ではなく observed。空配列は省略可。
 	EncodedAssets *[]EncodedAsset `json:"encodedAssets,omitempty"`
 
