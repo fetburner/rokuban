@@ -1,0 +1,43 @@
+# 単一ホスト名の共通入口。
+#
+# site 名を持つライブ経路は base に書かない。base は site 非依存であり、具体的な
+# site の Service は deploy/k8s/site を overlay で生やすためである。overlays/kind
+# と overlays/e2e が、この Ingress に site ごとの Prefix を追加する。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rokuban-ingress
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: ingress
+spec:
+  rules:
+    - host: rokuban.local
+      http:
+        paths:
+          # SSE は notifier の Service へだけ送る。Exact なので /api/events/
+          # のような別経路は api の catch-all に落ちる。
+          - path: /api/events
+            pathType: Exact
+            backend:
+              service:
+                name: rokuban-notifier
+                port:
+                  name: http
+          # VOD は id より前に固定接頭辞を持つので、標準 Prefix で streamer に
+          # 分けられる。Range / query / HEAD に依存しない。
+          - path: /api/media/recordings
+            pathType: Prefix
+            backend:
+              service:
+                name: rokuban-streamer
+                port:
+                  name: http
+          # api は JSON API と SPA の両方を同じ Service から配る。
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: rokuban-api
+                port:
+                  name: http

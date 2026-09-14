@@ -32,6 +32,23 @@ storage:
   media_dir: /mnt/media
   scratch_dir: /var/tmp/rokuban
 
+# site ごとのライブ streamer も同じ ConfigMap を読む。ハーネスはライブ経路を
+# 実再生しないが、出荷構成と同じ live.enabled / full image の起動条件を検査する。
+live:
+  enabled: true
+  segment_dir: /dev/shm/rokuban-live
+  max_sessions: 4
+  idle_timeout: 30s
+  tuner_priority: 1
+  profiles:
+    - name: h264
+      video_codec: libx264
+      audio_codec: aac
+      height: 720
+      preset: veryfast
+      segment_seconds: 2
+      playlist_size: 6
+
 # **判定 3（実行中の encode Job がスケールインで殺されない）のためだけにある。**
 # base の config.yml には `encode:` が無い（プロファイルはデプロイごとの選択で、
 # 参照実装が既定を決める話ではない）ので、ここで 1 つだけ定義する。

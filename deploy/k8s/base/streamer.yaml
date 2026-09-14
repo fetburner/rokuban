@@ -1,12 +1,11 @@
-# 録画配信（VOD・サムネイル）の streamer。
+# 録画配信（VOD・サムネイル）の中央 streamer。
 #
-# **ライブ視聴の streamer はここに無い。** 同じロール・同じバイナリで
-# デプロイのパラメータだけが違う（docs/operations.md §5「streamer のスケール」）
-# はずだが、`live.enabled: true` は **streamer ロールの全 Pod にちょうど 1
-# サイトの束縛を要求する**（cmd/rokuban/server.go）。config は全 Pod で 1 個
-# 共有なので、ライブを有効にした瞬間にこの中央 Deployment（`--sites=`）が
-# 起動しなくなる。**この 1 式ではライブを出荷しない**（deploy/k8s/README.md
-# §まだ無いもの）。
+# **ライブ視聴の streamer は site/ にある。** 同じロール・同じバイナリで
+# デプロイのパラメータだけが違う（docs/operations/k8s.md §5「streamer のスケール」）。
+# config は全 Pod で共有するため `live.enabled: true` だが、中央 Deployment は
+# `--sites=` なので liveSites が空でライブのルートを登録しない。ffmpeg の起動検査
+# を通すため、中央 streamer も full image を使う（Service の selector は site 側と
+# 分離する）。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -14,6 +13,7 @@ metadata:
   labels:
     app.kubernetes.io/name: rokuban
     app.kubernetes.io/component: streamer
+    rokuban.fetburner.net/streamer-scope: central
 spec:
   # **録画配信はセッション親和性を必要としない**（DB からアセットを解決して
   # `http.ServeContent` で配るだけ。docs/operations.md §5）。したがって水平に
@@ -24,11 +24,13 @@ spec:
     matchLabels:
       app.kubernetes.io/name: rokuban
       app.kubernetes.io/component: streamer
+      rokuban.fetburner.net/streamer-scope: central
   template:
     metadata:
       labels:
         app.kubernetes.io/name: rokuban
         app.kubernetes.io/component: streamer
+        rokuban.fetburner.net/streamer-scope: central
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "40773"
@@ -70,10 +72,10 @@ spec:
           type: RuntimeDefault
       containers:
         - name: streamer
-          # 録画配信だけを担う streamer は ffmpeg を要求しない（`live.enabled` が
-          # false のとき LookPath 検査をしない。cmd/rokuban/server.go）ので
-          # 公式イメージのまま。
-          image: ghcr.io/fetburner/rokuban:latest
+          # live.enabled は共有 config なので、中央 streamer も起動時の ffmpeg
+          # 検査を通す full image を使う。中央 Pod は --sites= のため ffmpeg を
+          # 実際のライブ要求には使わない。
+          image: ghcr.io/fetburner/rokuban-full:latest
           # **アーカイブは単一なので録画配信は site 非依存**（docs/operations.md
           # §5）。`recordings.id` は surrogate でサイト間で曖昧にならないので、
           # どの Pod でもどの録画を配れる。
@@ -146,6 +148,7 @@ spec:
   selector:
     app.kubernetes.io/name: rokuban
     app.kubernetes.io/component: streamer
+    rokuban.fetburner.net/streamer-scope: central
   ports:
     - name: http
       port: 40773

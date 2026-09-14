@@ -455,6 +455,57 @@ func TestManifestReferencesResolve(t *testing.T) {
 		}
 	}
 
+	// Ingress の backend は kubeconform では存在確認されない。Service 名を 1 文字
+	// 間違えても Ingress 自体は apply でき、該当経路だけ 503 になるため、Service
+	// と名前付き port まで同じ入力から解決する。ライブの site 経路は overlay の
+	// patch で追加されるが、共通 Ingress の 3 経路もこの検査を通る。
+	servicePorts := map[string]map[string]bool{}
+	for _, o := range objs {
+		if o.kind() != "Service" {
+			continue
+		}
+		ports := map[string]bool{}
+		for _, raw := range sliceAt(o.doc, "spec", "ports") {
+			port, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if name := strAt(port, "name"); name != "" {
+				ports[name] = true
+			}
+		}
+		servicePorts[o.name()] = ports
+	}
+	for _, o := range objs {
+		if o.kind() != "Ingress" {
+			continue
+		}
+		for _, rawRule := range sliceAt(o.doc, "spec", "rules") {
+			rule, ok := rawRule.(map[string]any)
+			if !ok {
+				continue
+			}
+			for _, rawPath := range sliceAt(mapAt(rule, "http"), "paths") {
+				path, ok := rawPath.(map[string]any)
+				if !ok {
+					continue
+				}
+				service := mapAt(path, "backend", "service")
+				name := strAt(service, "name")
+				checked++
+				ports, exists := servicePorts[name]
+				if !exists {
+					t.Errorf("%s path %q references Service %q, which no manifest in %s/ defines", o.id(), strAt(path, "path"), name, baseDir)
+					continue
+				}
+				portName := strAt(service, "port", "name")
+				if portName != "" && !ports[portName] {
+					t.Errorf("%s path %q references port %q of Service %q, which that Service does not define", o.id(), strAt(path, "path"), portName, name)
+				}
+			}
+		}
+	}
+
 	// base + site の全ワークロードぶん（config volume / envFrom /
 	// `POSTGRES_CONNECTION_STRING` の secretKeyRef）で 55 件ある。
 	// ワークロードを足すなら増える一方なので、下回ったら検査が空回りしている。

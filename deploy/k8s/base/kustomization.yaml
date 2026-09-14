@@ -23,6 +23,7 @@ resources:
   - pdb.yaml
   - notifier.yaml
   - streamer.yaml
+  - ingress.yaml
   - media-pvc.yaml
   - worker-scaledjobs.yaml
   - cronjobs.yaml

@@ -11,9 +11,10 @@ kind: Kustomization
 # Always になり、`kind load` で入れたローカルイメージではなく ghcr の公式
 # イメージを引いてしまうため。
 #
-# **単一サイト構成の overlay は patch を 1 つも書かない。** `../../site` は
-# site 名 `default`（base/config.yml の `mirakcs:` 1 要素目と同じ名前）で
-# 書いてあるので、そのまま噛み合う。
+# **単一サイト構成の site ワークロードは patch を 1 つも書かない。** `../../site`
+# は site 名 `default`（base/config.yml の `mirakcs:` 1 要素目と同じ名前）で
+# 書いてあるので、そのまま噛み合う。Ingress のライブ経路だけは、共通 Ingress
+# に具体的な Service を追加するためここで patch する。
 
 resources:
   - ../../base
@@ -46,3 +47,22 @@ secretGenerator:
     literals:
       - POSTGRES_PASSWORD=kindtest
       - POSTGRES_CONNECTION_STRING=postgresql://rokuban:kindtest@postgres.default.svc.cluster.local:5432/rokuban?sslmode=disable
+
+patches:
+  # `/api/sites/<site>/networks` は site 名を具体化しないと標準 Ingress で
+  # backend を一意に決められない。単一サイト overlay の Service 名は suffix
+  # 無しの `rokuban-live-streamer` である。
+  - target:
+      kind: Ingress
+      name: rokuban-ingress
+    patch: |-
+      - op: add
+        path: /spec/rules/0/http/paths/2
+        value:
+          path: /api/sites/default/networks
+          pathType: Prefix
+          backend:
+            service:
+              name: rokuban-live-streamer
+              port:
+                name: http

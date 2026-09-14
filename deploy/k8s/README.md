@@ -6,10 +6,11 @@
 ```
 base/            中央（site 非依存）1 式:
                  config.yml（configMapGenerator の入力）/ migration Job /
-                 api・notifier・streamer(録画配信) の Deployment + Service + PDB /
+                 api・notifier・中央 streamer(録画配信) の Deployment + Service + PDB /
+                 共通 Ingress（events / VOD / API + SPA）/
                  media の PVC / site 非依存キューの KEDA ScaledJob /
                  site 非依存ジョブの CronJob
-site/            **サイト 1 組ぶん**: watcher Deployment /
+site/            **サイト 1 組ぶん**: watcher / ライブ streamer の Deployment + Service /
                  site 束縛キュー（ingest・epg・reconciler・watcher）の ScaledJob /
                  site 束縛ジョブの CronJob
 overlays/kind/   kind での動作確認用（base + site 1 組 + image の差し替え）
@@ -24,18 +25,21 @@ schemas/         kubeconform に渡す CRD スキーマ（KEDA の ScaledJob）
 判定は `workloads_test.go` の `TestBaseIsSiteIndependent`。
 
 `site/` は site 名 `default` で書いてある。`base/config.yml` の `mirakcs:` も
-1 要素目の site を `default` にしてあるので、**単一サイトの overlay は patch を
-1 つも書かない**。
+1 要素目の site を `default` にしてあるので、**単一サイトの site ワークロードは
+patch を 1 つも書かない**。入口のライブ経路だけは Ingress に具体的な Service を
+足すため overlay の patch が要る。
 
-**まだ無いもの**:
+**入口の構成**:
 
-- **入口（Ingress）**。当面は `kubectl port-forward svc/rokuban-api 40773` で触る
-- **ライブ視聴の streamer。** streamer は 1 プロセスが N サイトを束縛でき、
-  `live.enabled: true` に束縛サイト数の制約は無い（`cmd/rokuban/server.go`）。
-  そのため「録画配信は中央（site 非依存、0 サイト束縛）、ライブはサイトごと」を
-  同じ streamer ロールの別 Pod として書くこと自体はできる。実装していないのは
-  overlay の切り方（`site/` の streamer にライブ用の設定・Service をどう足すか）
-  がまだ無いだけで、issue に提起してある
+- `base/ingress.yaml` は単一ホスト `rokuban.local` の共通入口で、`/api/events` →
+  notifier、`/api/media/recordings` → 中央 streamer、`/` → api（SPA 含む）を持つ
+- `overlays/kind` は `default` のライブ Prefix を、`overlays/e2e` は `sitea` / `siteb`
+  のライブ Prefix を同じ Ingress に追加する。site 名を具体化しない live の catch-all
+  は書かない
+- **sticky（session affinity）は使わない。** VOD は round-robin、ライブは URL の
+  `(site, networkId, serviceId)` を鍵にした前段の consistent hash を使う
+- 単体で base / site を apply する手順でも API / VOD / SSE は使える。ライブを含む
+  入口までまとめて apply する場合は `overlays/kind` などの overlay を使う
 - **Prometheus の Operator 連携**（ServiceMonitor / PodMonitor）。常駐の Pod には
   `prometheus.io/scrape` の annotation を付けてあるが、**ScaledJob が起こす Job の
   Pod は数秒で消えるので scrape が間に合わない**。ジョブ側の観測は
@@ -74,7 +78,7 @@ kubectl create secret generic rokuban-secrets \
   --from-literal=POSTGRES_PASSWORD='...' \
   --from-literal=POSTGRES_CONNECTION_STRING='postgresql://rokuban:...@postgres.<ns>.svc.cluster.local:5432/rokuban?sslmode=disable'
 
-# 2. マイグレーション → 中央 → サイトの順で通す
+# 2. マイグレーション → 中央 → サイトの順で通す（入口までまとめる場合は overlay を使う）
 kubectl delete job rokuban-migrate --ignore-not-found
 kustomize build base | kubectl apply -f -
 kubectl wait --for=condition=complete job/rokuban-migrate --timeout=300s
@@ -136,8 +140,10 @@ CRD が無いクラスタに apply すると、その部分だけが
   の `password:` のコメントに実測付き）。記号（`'` `"` `\` `*` `{` `#` `: `）は通る
 - **image はロールごとに差し替えられる。** overlay の `images:` で
   `ghcr.io/fetburner/rokuban` を置換する（`overlays/kind` が実例）。ffmpeg を要する
-  役（worker / ライブ視聴を使う streamer）は別の image 名を書く（公式イメージは
-  ffmpeg を含まない。`Dockerfile.full` でセルフビルドする）
+  役（worker / site のライブ streamer）は別の image 名を書く（公式イメージは
+  ffmpeg を含まない。`Dockerfile.full` でセルフビルドする）。共有 config の
+  `live.enabled: true` による起動時検査を通すため、中央の streamer も full image
+  を指すが、中央 Pod は `--sites=` なので ffmpeg を実際の要求には使わない
 - **api は 2 レプリカ + PDB（`minAvailable: 1`）で出荷**。PDB が無いと
   `kubectl drain` が両方同時に退去させるので、ノード 1 台の退避で全断する。
   レプリカを別ノードへ散らす指定は soft（`ScheduleAnyway`）にしてあるので、

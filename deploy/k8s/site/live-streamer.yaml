@@ -1,0 +1,132 @@
+# site ごとのライブ視聴 streamer。
+#
+# 生 TS は mirakc の隣で読み、HLS になった後だけ Ingress の外へ出す。Service は
+# site overlay が nameSuffix で固有名にし、Ingress の `/api/sites/<site>/networks`
+# Prefix からこの site の Pod へ送る。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rokuban-live-streamer
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: streamer
+    rokuban.fetburner.net/streamer-scope: site
+    rokuban.fetburner.net/site-scoped: "true"
+spec:
+  # 既定は 1。増やす場合は前段で (site, networkId, serviceId) の consistent
+  # hash を設定する（docs/operations/k8s.md §5）。cookie affinity は使わない。
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rokuban
+      app.kubernetes.io/component: streamer
+      rokuban.fetburner.net/streamer-scope: site
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rokuban
+        app.kubernetes.io/component: streamer
+        rokuban.fetburner.net/streamer-scope: site
+        rokuban.fetburner.net/site-scoped: "true"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "40773"
+        prometheus.io/path: /metrics
+    spec:
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        # PVC には Docker の named volume の copy-up が無い。media を読む
+        # streamer も fsGroup で uid/gid 65534 の所有権を確実に受ける。
+        fsGroup: 65534
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: live-streamer
+          image: ghcr.io/fetburner/rokuban-full:latest
+          # **argv の 5 番目（index 4）が site 名。** site overlay の patch は
+          # watcher と同じ位置を差し替える。
+          args: ["server", "--roles", "streamer", "--sites", "default", "--config", "/etc/rokuban/config.yml"]
+          ports:
+            - name: http
+              containerPort: 40773
+          envFrom:
+            - secretRef:
+                name: rokuban-secrets
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 4
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/rokuban
+              readOnly: true
+            - name: media
+              mountPath: /mnt/media
+              readOnly: true
+            # live.segment_dir は録画バッファと共有しない Pod 内 tmpfs。
+            - name: live-segments
+              mountPath: /dev/shm/rokuban-live
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 1Gi
+      volumes:
+        - name: config
+          configMap:
+            name: rokuban-config
+        - name: media
+          persistentVolumeClaim:
+            claimName: rokuban-media
+        - name: live-segments
+          emptyDir:
+            medium: Memory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rokuban-live-streamer
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: streamer
+    rokuban.fetburner.net/streamer-scope: site
+    rokuban.fetburner.net/site-scoped: "true"
+spec:
+  type: ClusterIP
+  # sticky / sessionAffinity は書かない。ライブの URL がサービス同定子を持つため
+  # 前段の consistent hash に任せ、cookie affinity には依存しない。
+  selector:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: streamer
+    rokuban.fetburner.net/streamer-scope: site
+  ports:
+    - name: http
+      port: 40773
+      targetPort: http
