@@ -426,6 +426,8 @@ func TestSubscribeSSE(t *testing.T) {
 			_, _ = fmt.Fprintf(w, "event:%s\ndata:%s\n\n", e.eventType, e.data)
 			flusher.Flush()
 		}
+		// 接続を開いたままにして、確立ログが切断後ではなくストリーム開始時に出ることを検証する。
+		<-r.Context().Done()
 	}))
 	defer srv.Close()
 
