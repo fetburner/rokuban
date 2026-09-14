@@ -73,6 +73,7 @@ func (c *Client) Subscribe(ctx context.Context, ch chan<- Event, cfg *SSEConfig)
 		}
 		if connected {
 			backoff = cfg.InitialBackoff
+			slog.Info("SSE connected (stream started)", "last_event_id", lastEventID)
 		}
 		slog.Warn("SSE connection lost, reconnecting", "err", err, "backoff", backoff)
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -14,6 +15,15 @@ import (
 	"testing"
 	"time"
 )
+
+type slogRecordWriter struct {
+	records chan<- string
+}
+
+func (w slogRecordWriter) Write(p []byte) (int, error) {
+	w.records <- string(p)
+	return len(p), nil
+}
 
 func TestGetVersion(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -419,6 +429,11 @@ func TestSubscribeSSE(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	logRecords := make(chan string, 10)
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(slogRecordWriter{records: logRecords}, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
 	c := NewClient(srv.URL, nil)
 	ch := make(chan Event, 10)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -443,8 +458,38 @@ func TestSubscribeSSE(t *testing.T) {
 			t.Fatal("timed out waiting for events")
 		}
 	}
+
+	var logs []string
+	select {
+	case line := <-logRecords:
+		logs = append(logs, line)
+		if !strings.Contains(line, `msg="SSE connected (stream started)"`) {
+			t.Fatalf("first SSE log = %q, want connection log", line)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for SSE connection log")
+	}
 	cancel()
 	wg.Wait()
+	for {
+		select {
+		case line := <-logRecords:
+			logs = append(logs, line)
+		default:
+			goto logsCollected
+		}
+	}
+
+logsCollected:
+	connectedLogs := 0
+	for _, line := range logs {
+		if strings.Contains(line, `msg="SSE connected (stream started)"`) {
+			connectedLogs++
+		}
+	}
+	if connectedLogs != 1 {
+		t.Errorf("SSE connection logs = %d, want 1; logs:\n%s", connectedLogs, strings.Join(logs, ""))
+	}
 
 	if events[0].Type != "recording.record-saved" {
 		t.Errorf("event[0].type = %q, want %q", events[0].Type, "recording.record-saved")
