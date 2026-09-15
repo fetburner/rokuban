@@ -20,6 +20,12 @@ const outputPaths = [
   join(webDir, 'public', 'THIRD_PARTY_NOTICES'),
 ]
 const goModulePath = readGoModulePath()
+// 公式 OCI イメージは linux/amd64 と linux/arm64 を配布する。ホスト OS の違いで
+// notice が揺れないよう、両ターゲットの依存を union して棚卸しする。
+const goTargets = [
+  { GOOS: 'linux', GOARCH: 'amd64' },
+  { GOOS: 'linux', GOARCH: 'arm64' },
+]
 
 const noticeFilePattern = /^(?:license|copying|notice|patents?)(?:[._-].*)?$/i
 const licenseFilePattern = /^(?:license|copying)(?:[._-].*)?$/i
@@ -94,8 +100,8 @@ function parseJSONStream(input) {
   return values
 }
 
-function runGo(args) {
-  return run('go', args, rootDir, { CGO_ENABLED: '0' })
+function runGo(args, target = goTargets[0]) {
+  return run('go', args, rootDir, { CGO_ENABLED: '0', ...target })
 }
 
 function findNoticeFiles(directory) {
@@ -118,19 +124,21 @@ function findFileUpward(directory, name) {
   return undefined
 }
 
-function parseGoPackages() {
-  return parseJSONStream(runGo(['list', '-deps', '-json', './cmd/rokuban']))
+function parseGoPackages(target) {
+  return parseJSONStream(runGo(['list', '-deps', '-json', './cmd/rokuban'], target))
 }
 
 function collectGoComponents() {
   const modules = new Map()
-  for (const packageInfo of parseGoPackages()) {
-    const module = packageInfo.Module
-    if (!module || module.Path === goModulePath) continue
-    if (!module.Version || !module.Dir) {
-      throw new Error(`Go モジュールのバージョンまたはソースディレクトリがありません: ${module.Path}`)
+  for (const target of goTargets) {
+    for (const packageInfo of parseGoPackages(target)) {
+      const module = packageInfo.Module
+      if (!module || module.Path === goModulePath) continue
+      if (!module.Version || !module.Dir) {
+        throw new Error(`Go モジュールのバージョンまたはソースディレクトリがありません: ${module.Path}`)
+      }
+      modules.set(`${module.Path}@${module.Version}`, module)
     }
-    modules.set(`${module.Path}@${module.Version}`, module)
   }
 
   const goEnvironment = runGo(['env', 'GOVERSION', 'GOROOT']).trim().split(/\r?\n/)
