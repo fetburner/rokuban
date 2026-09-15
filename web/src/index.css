@@ -4,7 +4,7 @@
 @import "@fontsource-variable/geist";
 /*
  * Noto Sans JP は SIL OFL 1.1（Copyright Google Inc.）。ライセンス表示は
- * public/font-licenses.txt に置く --- ここに `/*!` バナーコメントを書いても
+ * public/THIRD_PARTY_NOTICES に置く --- ここに `/*!` バナーコメントを書いても
  * Tailwind v4（Lightning CSS）のビルドで丸ごと落ちることを実測で確認した
  * （dist の CSS にコメントが 1 つも残らない）。public/ 配下ならビルドを
  * 経由せず dist 直下にそのままコピーされる（ファビコンの SVG コメントと同じ

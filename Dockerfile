@@ -10,7 +10,7 @@ COPY openapi.yaml /build/
 RUN pnpm build
 
 # Stage 2: Go バイナリビルド
-FROM golang:1.27 AS backend
+FROM golang:1.27.1 AS backend
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
@@ -30,6 +30,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl
 COPY --from=backend /rokuban /usr/local/bin/rokuban
+COPY LICENSE THIRD_PARTY_NOTICES /usr/share/doc/rokuban/
 # storage.media_dir の既定値（config.example.yml）に合わせたマウント点。
 # 空の named volume をマウントすると Docker がマウント点の所有権を volume 側へ
 # コピーするので、ここで nobody 所有にしておけば media_dir に書く全ループ

@@ -4,7 +4,8 @@
   "scripts": {
     "docs:lint": "npm run docs:lint:design; s=$?; npm run docs:lint:operations; t=$?; exit $((s || t))",
     "docs:lint:design": "textlint --config .textlintrc.design.js --ignore-path .textlintignore.design 'docs/**/*.md'",
-    "docs:lint:operations": "textlint README.md CLAUDE.md deploy/k8s/README.md deploy/k8s/e2e/README.md docs/configuration.md docs/operations.md 'docs/operations/**/*.md' docs/runbook.md 'docs/runbook/**/*.md'"
+    "docs:lint:operations": "textlint README.md CLAUDE.md deploy/k8s/README.md deploy/k8s/e2e/README.md docs/configuration.md docs/operations.md 'docs/operations/**/*.md' docs/runbook.md 'docs/runbook/**/*.md'",
+    "third-party-notices": "node scripts/third-party-notices.mjs"
   },
   "devDependencies": {
     "textlint": "15.8.0",

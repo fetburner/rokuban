@@ -133,6 +133,17 @@ nginx は構成図上の「箱」ではなく、推奨デプロイパターン�
 
 ベースイメージは **`debian:bookworm-slim` + `ca-certificates` / `curl`**（`Dockerfile`。実行ユーザーは `nobody`）。同梱するのは `curl` 1 つだけで、これは Docker Compose の healthcheck が HTTP を叩く手段を必要とするため（`docker-compose.yml` の `curl -sf .../healthz`）。**distroless/static に置き換えると、そのまま healthcheck が壊れる。** 攻撃面を縮めたいという動機は正しいが、それは compose の healthcheck を別の手段に作り替える判断と一緒でなければ成立しない（Go 側に自己チェック用のサブコマンドを持たせる等）。イメージだけ差し替えるのは変更にならない。
 
+公式イメージには `/usr/share/doc/rokuban/LICENSE` と
+`/usr/share/doc/rokuban/THIRD_PARTY_NOTICES` を置く。後者は Go バイナリの実ビルド依存、
+Go 標準ライブラリ、`web/dist` に組み込む本番 Web 依存のソース archive・著作権表示・
+ライセンス全文を含む生成物で、イメージ内だけで確認できる。Debian ベースイメージと
+apt パッケージのライセンス情報は Debian 側の配布物に任せ、ここでは重複させない。
+
+notice は `npm run third-party-notices` で lockfile に基づくインストール済み Web 依存と
+`go list -deps ./cmd/rokuban` の実ビルド依存から生成する。生成器は追加のランタイム依存を
+持たず、CI の `generated-diff` ジョブで `--check` を実行するため、本番依存を追加・更新
+したときや notice から項目を除外したときは検査が失敗する。
+
 この判断を支える規律として、**ffmpeg / ffprobe の exec は worker と streamer ロールに閉じ込める**。api ロールが ffmpeg を要求した瞬間、公式イメージだけで動く構成（サーバーレス api 含む）が壊れる。「どのロールが ffmpeg を要求するか」がそのまま配布物の境界になっている。
 
 ## サーバーレスデプロイとハイブリッド構成

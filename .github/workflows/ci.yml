@@ -146,6 +146,13 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
         working-directory: web
+      # go:embed と実ビルド依存の棚卸しに web/dist が必要。
+      - run: pnpm build
+        working-directory: web
+      # 公式 Go バイナリと web/dist に入る本番依存の LICENSE / NOTICE / PATENTS を
+      # lockfile と実ビルド依存から再生成し、コミット済み notice との差分を検出する。
+      - name: Check third-party notices
+        run: npm run third-party-notices -- --check
       # sqlc / oapi-codegen は go.mod の依存に入れず、golangci-lint と同じくローカルバイナリ
       # 前提（CLAUDE.md）。CI では都度その版をインストールして GOPATH/bin を PATH に足す。
       - run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
