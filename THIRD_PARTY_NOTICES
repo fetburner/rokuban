@@ -12,7 +12,7 @@ ffmpeg and Debian base-image packages are outside this file; their own
 distribution notices remain in the image supplied by their distributors.
 Component: Go standard library
 Version: go1.27.1
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright 2009 The Go Authors.
 License: BSD-3-Clause
 Source: https://go.dev/dl/go1.27.1.src.tar.gz
@@ -72,7 +72,7 @@ shall terminate as of the date such litigation is filed.
 
 Component: github.com/apapsch/go-jsonmerge/v2
 Version: v2.0.0
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2016-2019 Artur Kraev
 License: MIT
 Source: https://proxy.golang.org/github.com/apapsch/go-jsonmerge/v2/@v/v2.0.0.zip
@@ -103,7 +103,7 @@ SOFTWARE.
 
 Component: github.com/beorn7/perks
 Version: v1.0.1
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (C) 2013 Blake Mizerany
 License: MIT
 Source: https://proxy.golang.org/github.com/beorn7/perks/@v/v1.0.1.zip
@@ -133,7 +133,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Component: github.com/cespare/xxhash/v2
 Version: v2.3.0
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2016 Caleb Spare
 License: MIT
 Source: https://proxy.golang.org/github.com/cespare/xxhash/v2/@v/v2.3.0.zip
@@ -165,7 +165,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Component: github.com/Comcast/gots/v3
 Version: v3.0.1
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright 2016 Comcast Cable Communications Management, LLC
 License: MIT
 Source: https://proxy.golang.org/github.com/!comcast/gots/v3/@v/v3.0.1.zip
@@ -202,7 +202,7 @@ This product includes software developed at Comcast (http://www.comcast.com/).
 
 Component: github.com/drone/envsubst
 Version: v1.0.3
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2017 drone.io
 License: MIT
 Source: https://proxy.golang.org/github.com/drone/envsubst/@v/v1.0.3.zip
@@ -233,7 +233,7 @@ SOFTWARE.
 
 Component: github.com/go-chi/chi/v5
 Version: v5.3.2
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2015-present Peter Kieltyka (https://github.com/pkieltyka), Google Inc.
 License: MIT
 Source: https://proxy.golang.org/github.com/go-chi/chi/v5/@v/v5.3.2.zip
@@ -263,7 +263,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Component: github.com/goccy/go-yaml
 Version: v1.19.2
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2019 Masaaki Goshima
 License: MIT
 Source: https://proxy.golang.org/github.com/goccy/go-yaml/@v/v1.19.2.zip
@@ -294,7 +294,7 @@ SOFTWARE.
 
 Component: github.com/google/uuid
 Version: v1.6.0
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2009,2014 Google Inc. All rights reserved.
 License: BSD-3-Clause
 Source: https://proxy.golang.org/github.com/google/uuid/@v/v1.6.0.zip
@@ -331,7 +331,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Component: github.com/jackc/pgpassfile
 Version: v1.0.0
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2019 Jack Christensen
 License: MIT
 Source: https://proxy.golang.org/github.com/jackc/pgpassfile/@v/v1.0.0.zip
@@ -363,7 +363,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Component: github.com/jackc/pgservicefile
 Version: v0.0.0-20240606120523-5a60cdf6a761
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2020 Jack Christensen
 License: MIT
 Source: https://proxy.golang.org/github.com/jackc/pgservicefile/@v/v0.0.0-20240606120523-5a60cdf6a761.zip
@@ -395,7 +395,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Component: github.com/jackc/pgx/v5
 Version: v5.10.0
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2013-2021 Jack Christensen
 License: MIT
 Source: https://proxy.golang.org/github.com/jackc/pgx/v5/@v/v5.10.0.zip
@@ -427,7 +427,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Component: github.com/jackc/puddle/v2
 Version: v2.2.2
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2018 Jack Christensen
 License: MIT
 Source: https://proxy.golang.org/github.com/jackc/puddle/v2/@v/v2.2.2.zip
@@ -459,7 +459,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Component: github.com/mfridman/interpolate
 Version: v0.0.2
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2014-2017 Buildkite Pty Ltd / Copyright (c) 2023 Michael Fridman
 License: MIT
 Source: https://proxy.golang.org/github.com/mfridman/interpolate/@v/v0.0.2.zip
@@ -493,7 +493,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Component: github.com/munnerz/goautoneg
 Version: v0.0.0-20191010083416-a7dc8b61c822
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2011, Open Knowledge Foundation Ltd.
 License: BSD-3-Clause
 Source: https://proxy.golang.org/github.com/munnerz/goautoneg/@v/v0.0.0-20191010083416-a7dc8b61c822.zip
@@ -534,7 +534,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Component: github.com/oapi-codegen/runtime
 Version: v1.7.0
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Included license/notice files below
 License: Apache-2.0
 Source: https://proxy.golang.org/github.com/oapi-codegen/runtime/@v/v1.7.0.zip
@@ -745,7 +745,7 @@ Source: https://proxy.golang.org/github.com/oapi-codegen/runtime/@v/v1.7.0.zip
 
 Component: github.com/pressly/goose/v3
 Version: v3.27.3
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Original work Copyright (c) 2012 Liam Staskawicz / Modified work Copyright (c) 2016 Vojtech Vitek / Modified work Copyright (c) 2021 Michael Fridman, Vojtech Vitek
 License: MIT
 Source: https://proxy.golang.org/github.com/pressly/goose/v3/@v/v3.27.3.zip
@@ -777,7 +777,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Component: github.com/prometheus/client_golang
 Version: v1.24.1
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright 2012-2015 The Prometheus Authors / Copyright 2013-2015 Blake Mizerany, Björn Rabenstein / Copyright 2010 The Go Authors
 License: Apache-2.0
 Source: https://proxy.golang.org/github.com/prometheus/client_golang/@v/v1.24.1.zip
@@ -1007,7 +1007,7 @@ See source code for license details.
 
 Component: github.com/prometheus/client_model
 Version: v0.6.3
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright 2012-2015 The Prometheus Authors
 License: Apache-2.0
 Source: https://proxy.golang.org/github.com/prometheus/client_model/@v/v0.6.3.zip
@@ -1224,7 +1224,7 @@ SoundCloud Ltd. (http://soundcloud.com/).
 
 Component: github.com/prometheus/common
 Version: v0.71.0
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright 2015 The Prometheus Authors
 License: Apache-2.0
 Source: https://proxy.golang.org/github.com/prometheus/common/@v/v0.71.0.zip
@@ -1441,7 +1441,7 @@ SoundCloud Ltd. (http://soundcloud.com/).
 
 Component: github.com/prometheus/procfs
 Version: v0.21.1
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright 2014-2015 The Prometheus Authors
 License: Apache-2.0
 Source: https://proxy.golang.org/github.com/prometheus/procfs/@v/v0.21.1.zip
@@ -1660,7 +1660,7 @@ SoundCloud Ltd. (http://soundcloud.com/).
 
 Component: github.com/riverqueue/river
 Version: v0.47.0
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Included license/notice files below
 License: MPL-2.0
 Source: https://proxy.golang.org/github.com/riverqueue/river/@v/v0.47.0.zip
@@ -2043,7 +2043,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
 
 Component: github.com/riverqueue/river/riverdriver
 Version: v0.47.0
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Included license/notice files below
 License: MPL-2.0
 Source: https://proxy.golang.org/github.com/riverqueue/river/riverdriver/@v/v0.47.0.zip
@@ -2426,7 +2426,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
 
 Component: github.com/riverqueue/river/riverdriver/riverpgxv5
 Version: v0.47.0
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Included license/notice files below
 License: MPL-2.0
 Source: https://proxy.golang.org/github.com/riverqueue/river/riverdriver/riverpgxv5/@v/v0.47.0.zip
@@ -2809,7 +2809,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
 
 Component: github.com/riverqueue/river/rivershared
 Version: v0.47.0
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Included license/notice files below
 License: MPL-2.0
 Source: https://proxy.golang.org/github.com/riverqueue/river/rivershared/@v/v0.47.0.zip
@@ -3192,7 +3192,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
 
 Component: github.com/riverqueue/river/rivertype
 Version: v0.47.0
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Included license/notice files below
 License: MPL-2.0
 Source: https://proxy.golang.org/github.com/riverqueue/river/rivertype/@v/v0.47.0.zip
@@ -3575,7 +3575,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
 
 Component: github.com/sethvargo/go-retry
 Version: v0.4.0
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Included license/notice files below
 License: Apache-2.0
 Source: https://proxy.golang.org/github.com/sethvargo/go-retry/@v/v0.4.0.zip
@@ -3787,7 +3787,7 @@ Source: https://proxy.golang.org/github.com/sethvargo/go-retry/@v/v0.4.0.zip
 
 Component: github.com/spf13/cobra
 Version: v1.10.2
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Included license/notice files below
 License: Apache-2.0
 Source: https://proxy.golang.org/github.com/spf13/cobra/@v/v1.10.2.zip
@@ -3971,7 +3971,7 @@ Source: https://proxy.golang.org/github.com/spf13/cobra/@v/v1.10.2.zip
 
 Component: github.com/spf13/pflag
 Version: v1.0.9
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2012 Alex Ogier. All rights reserved. / Copyright (c) 2012 The Go Authors. All rights reserved.
 License: BSD-3-Clause
 Source: https://proxy.golang.org/github.com/spf13/pflag/@v/v1.0.9.zip
@@ -4009,7 +4009,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Component: github.com/tidwall/gjson
 Version: v1.19.0
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2016 Josh Baker
 License: MIT
 Source: https://proxy.golang.org/github.com/tidwall/gjson/@v/v1.19.0.zip
@@ -4039,7 +4039,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Component: github.com/tidwall/match
 Version: v1.2.0
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2016 Josh Baker
 License: MIT
 Source: https://proxy.golang.org/github.com/tidwall/match/@v/v1.2.0.zip
@@ -4069,7 +4069,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Component: github.com/tidwall/pretty
 Version: v1.2.1
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2017 Josh Baker
 License: MIT
 Source: https://proxy.golang.org/github.com/tidwall/pretty/@v/v1.2.1.zip
@@ -4099,7 +4099,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Component: github.com/tidwall/sjson
 Version: v1.2.5
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2016 Josh Baker
 License: MIT
 Source: https://proxy.golang.org/github.com/tidwall/sjson/@v/v1.2.5.zip
@@ -4129,7 +4129,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Component: go.uber.org/multierr
 Version: v1.11.0
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2017-2021 Uber Technologies, Inc.
 License: MIT
 Source: https://proxy.golang.org/go.uber.org/multierr/@v/v1.11.0.zip
@@ -4158,7 +4158,7 @@ THE SOFTWARE.
 
 Component: golang.org/x/sync
 Version: v0.22.0
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright 2009 The Go Authors.
 License: BSD-3-Clause
 Source: https://proxy.golang.org/golang.org/x/sync/@v/v0.22.0.zip
@@ -4218,7 +4218,7 @@ shall terminate as of the date such litigation is filed.
 
 Component: golang.org/x/sys
 Version: v0.47.0
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright 2009 The Go Authors.
 License: BSD-3-Clause
 Source: https://proxy.golang.org/golang.org/x/sys/@v/v0.47.0.zip
@@ -4278,7 +4278,7 @@ shall terminate as of the date such litigation is filed.
 
 Component: golang.org/x/text
 Version: v0.41.0
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright 2009 The Go Authors.
 License: BSD-3-Clause
 Source: https://proxy.golang.org/golang.org/x/text/@v/v0.41.0.zip
@@ -4338,7 +4338,7 @@ shall terminate as of the date such litigation is filed.
 
 Component: google.golang.org/protobuf
 Version: v1.36.12
-Included in: CGO_ENABLED=0 でビルドする公式 Go バイナリ
+Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2018 The Go Authors. All rights reserved.
 License: BSD-3-Clause
 Source: https://proxy.golang.org/google.golang.org/protobuf/@v/v1.36.12.zip
@@ -4398,7 +4398,7 @@ shall terminate as of the date such litigation is filed.
 
 Component: @babel/runtime
 Version: 7.29.7
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2014-present Sebastian McKenzie and other contributors
 License: MIT
 Source: https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.7.tgz
@@ -4431,7 +4431,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Component: @base-ui/react
 Version: 1.7.0
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2019 Material-UI SAS
 License: MIT
 Source: https://registry.npmjs.org/@base-ui/react/-/react-1.7.0.tgz
@@ -4463,7 +4463,7 @@ SOFTWARE.
 
 Component: @base-ui/utils
 Version: 0.3.2
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2019 Material-UI SAS
 License: MIT
 Source: https://registry.npmjs.org/@base-ui/utils/-/utils-0.3.2.tgz
@@ -4495,7 +4495,7 @@ SOFTWARE.
 
 Component: @floating-ui/core
 Version: 1.8.0
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Floating UI contributors
 License: MIT
 Source: https://registry.npmjs.org/@floating-ui/core/-/core-1.8.0.tgz
@@ -4526,7 +4526,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Component: @floating-ui/dom
 Version: 1.8.0
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Floating UI contributors
 License: MIT
 Source: https://registry.npmjs.org/@floating-ui/dom/-/dom-1.8.0.tgz
@@ -4557,7 +4557,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Component: @floating-ui/react-dom
 Version: 2.1.9
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Floating UI contributors
 License: MIT
 Source: https://registry.npmjs.org/@floating-ui/react-dom/-/react-dom-2.1.9.tgz
@@ -4588,7 +4588,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Component: @floating-ui/utils
 Version: 0.2.12
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Floating UI contributors
 License: MIT
 Source: https://registry.npmjs.org/@floating-ui/utils/-/utils-0.2.12.tgz
@@ -4619,7 +4619,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Component: @fontsource-variable/geist
 Version: 5.3.0
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright 2024 The Geist Project Authors (https://github.com/vercel/geist-font) Geist-Italic[wght].ttf: Copyright 2024 The Geist Project Authors (https://github.com/vercel/geist-font)
 License: OFL-1.1
 Source: https://registry.npmjs.org/@fontsource-variable/geist/-/geist-5.3.0.tgz
@@ -4723,7 +4723,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 Component: @fontsource-variable/noto-sans-jp
 Version: 5.3.0
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Google Inc.
 License: OFL-1.1
 Source: https://registry.npmjs.org/@fontsource-variable/noto-sans-jp/-/noto-sans-jp-5.3.0.tgz
@@ -4827,7 +4827,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 Component: @tanstack/history
 Version: 1.162.1
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Tanner Linsley
 License: MIT
 Source: https://registry.npmjs.org/@tanstack/history/-/history-1.162.1.tgz
@@ -4859,7 +4859,7 @@ SOFTWARE.
 
 Component: @tanstack/query-core
 Version: 5.102.8
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Tanner Linsley
 License: MIT
 Source: https://registry.npmjs.org/@tanstack/query-core/-/query-core-5.102.8.tgz
@@ -4891,7 +4891,7 @@ SOFTWARE.
 
 Component: @tanstack/react-query
 Version: 5.102.8
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Tanner Linsley
 License: MIT
 Source: https://registry.npmjs.org/@tanstack/react-query/-/react-query-5.102.8.tgz
@@ -4923,7 +4923,7 @@ SOFTWARE.
 
 Component: @tanstack/react-router
 Version: 1.170.32
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Tanner Linsley
 License: MIT
 Source: https://registry.npmjs.org/@tanstack/react-router/-/react-router-1.170.32.tgz
@@ -4955,7 +4955,7 @@ SOFTWARE.
 
 Component: @tanstack/react-store
 Version: 0.9.3
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021 Tanner Linsley
 License: MIT
 Source: https://registry.npmjs.org/@tanstack/react-store/-/react-store-0.9.3.tgz
@@ -4987,7 +4987,7 @@ SOFTWARE.
 
 Component: @tanstack/react-virtual
 Version: 3.14.10
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Tanner Linsley
 License: MIT
 Source: https://registry.npmjs.org/@tanstack/react-virtual/-/react-virtual-3.14.10.tgz
@@ -5019,7 +5019,7 @@ SOFTWARE.
 
 Component: @tanstack/router-core
 Version: 1.171.27
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Tanner Linsley
 License: MIT
 Source: https://registry.npmjs.org/@tanstack/router-core/-/router-core-1.171.27.tgz
@@ -5051,7 +5051,7 @@ SOFTWARE.
 
 Component: @tanstack/store
 Version: 0.9.3
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021 Tanner Linsley
 License: MIT
 Source: https://registry.npmjs.org/@tanstack/store/-/store-0.9.3.tgz
@@ -5083,7 +5083,7 @@ SOFTWARE.
 
 Component: @tanstack/virtual-core
 Version: 3.17.8
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Tanner Linsley
 License: MIT
 Source: https://registry.npmjs.org/@tanstack/virtual-core/-/virtual-core-3.17.8.tgz
@@ -5115,7 +5115,7 @@ SOFTWARE.
 
 Component: class-variance-authority
 Version: 0.7.1
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright 2022 Joe Bell
 License: Apache-2.0
 Source: https://registry.npmjs.org/class-variance-authority/-/class-variance-authority-0.7.1.tgz
@@ -5316,7 +5316,7 @@ Upstream: https://github.com/joe-bell/cva
 
 Component: clsx
 Version: 2.1.1
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) Luke Edwards <luke.edwards05@gmail.com> (lukeed.com)
 License: MIT
 Source: https://registry.npmjs.org/clsx/-/clsx-2.1.1.tgz
@@ -5336,7 +5336,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 Component: cookie-es
 Version: 3.1.1
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Cookie-es copyright (c) Pooya Parsa <pooya@pi0.io> / Copyright (c) 2012-2014 Roman Shtylman <shtylman@gmail.com> / Copyright (c) 2015 Douglas Christopher Wilson <doug@somethingdoug.com> / Copyright (c) 2015 Nathan Friedly <nathan@nfriedly.com> (http://nfriedly.com/)
 License: MIT
 Source: https://registry.npmjs.org/cookie-es/-/cookie-es-3.1.1.tgz
@@ -5375,7 +5375,7 @@ SOFTWARE.
 
 Component: hls.js
 Version: 1.7.1
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2017 Dailymotion (http://www.dailymotion.com) / Copyright (c) 2013-2015 Brightcove
 License: Apache-2.0
 Source: https://registry.npmjs.org/hls.js/-/hls.js-1.7.1.tgz
@@ -5414,7 +5414,7 @@ THE SOFTWARE.
 
 Component: isbot
 Version: 5.2.2
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Included license/notice files below
 License: Unlicense
 Source: https://registry.npmjs.org/isbot/-/isbot-5.2.2.tgz
@@ -5451,7 +5451,7 @@ For more information, please refer to <http://unlicense.org/>
 
 Component: lucide-react
 Version: 1.38.0
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2026 Lucide Icons and Contributors / Copyright (c) 2013-present Cole Bemis
 License: ISC
 Source: https://registry.npmjs.org/lucide-react/-/lucide-react-1.38.0.tgz
@@ -5505,7 +5505,7 @@ SOFTWARE.
 
 Component: react
 Version: 19.2.8
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) Meta Platforms, Inc. and affiliates.
 License: MIT
 Source: https://registry.npmjs.org/react/-/react-19.2.8.tgz
@@ -5537,7 +5537,7 @@ SOFTWARE.
 
 Component: react-dom
 Version: 19.2.8
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) Meta Platforms, Inc. and affiliates.
 License: MIT
 Source: https://registry.npmjs.org/react-dom/-/react-dom-19.2.8.tgz
@@ -5569,7 +5569,7 @@ SOFTWARE.
 
 Component: reselect
 Version: 5.3.0
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2015-2018 Reselect Contributors
 License: MIT
 Source: https://registry.npmjs.org/reselect/-/reselect-5.3.0.tgz
@@ -5601,7 +5601,7 @@ SOFTWARE.
 
 Component: scheduler
 Version: 0.27.0
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) Meta Platforms, Inc. and affiliates.
 License: MIT
 Source: https://registry.npmjs.org/scheduler/-/scheduler-0.27.0.tgz
@@ -5633,7 +5633,7 @@ SOFTWARE.
 
 Component: seroval
 Version: 1.6.4
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: MIT License Copyright (c) 2025 Alexis Munsayac <alexis.munsayac@gmail.com>
 License: MIT
 Source: https://registry.npmjs.org/seroval/-/seroval-1.6.4.tgz
@@ -5651,7 +5651,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 Component: seroval-plugins
 Version: 1.6.4
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: MIT License Copyright (c) 2025 Alexis Munsayac <alexis.munsayac@gmail.com>
 License: MIT
 Source: https://registry.npmjs.org/seroval-plugins/-/seroval-plugins-1.6.4.tgz
@@ -5669,7 +5669,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 Component: tailwind-merge
 Version: 3.6.0
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021 Dany Castillo
 License: MIT
 Source: https://registry.npmjs.org/tailwind-merge/-/tailwind-merge-3.6.0.tgz
@@ -5701,7 +5701,7 @@ SOFTWARE.
 
 Component: tw-animate-css
 Version: 1.4.0
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2025 Wombosvideo
 License: MIT
 Source: https://registry.npmjs.org/tw-animate-css/-/tw-animate-css-1.4.0.tgz
@@ -5733,7 +5733,7 @@ SOFTWARE.
 
 Component: use-sync-external-store
 Version: 1.6.0
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) Meta Platforms, Inc. and affiliates.
 License: MIT
 Source: https://registry.npmjs.org/use-sync-external-store/-/use-sync-external-store-1.6.0.tgz
@@ -5765,7 +5765,7 @@ SOFTWARE.
 
 Component: zod
 Version: 4.5.4
-Included in: web/dist に組み込む本番 Web 依存
+Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2025 Colin McDonnell
 License: MIT
 Source: https://registry.npmjs.org/zod/-/zod-4.5.4.tgz
