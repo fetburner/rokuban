@@ -80,4 +80,8 @@ k8s でのロール分割デプロイまで動作する。
 
 ## ライセンス
 
-Rokuban の独自コードは [MIT License](LICENSE) で提供する。依存ライブラリと同梱アセットには、それぞれのライセンスが適用される。
+Rokuban の独自コードは [MIT License](LICENSE) で提供する。公式バイナリと
+`web/dist` に含まれる依存ライブラリ・フォントの著作権表示とライセンス全文は
+[`THIRD_PARTY_NOTICES`](THIRD_PARTY_NOTICES) にまとめている。依存元の変更後は
+`npm run third-party-notices` で更新し、`npm run third-party-notices -- --check` で
+生成漏れを検査できる。

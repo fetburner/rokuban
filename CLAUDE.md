@@ -12,6 +12,8 @@ go generate ./internal/api/   # openapi.yaml → 生成ハンドラ/型。生成
 go build ./...
 go test ./...
 golangci-lint run
+npm run third-party-notices  # Go/Web 本番依存の notice を生成
+npm run third-party-notices -- --check  # 生成済み notice が最新か検査
 ```
 
 **Node のバージョンは `.node-version`（パッチ版まで固定）に固定してある**。nodenv などでその Node に pnpm の shim が無ければ `corepack pnpm ...`（`packageManager` フィールドに従う）で直接呼べる。oxlint の native binding は optional dependency の engines 判定でインストール時にだけ絞り込まれる。そのため古い Node で `pnpm install --frozen-lockfile` すると警告なしにバインディングが欠落する。CI は `actions/setup-node` の `node-version-file: .node-version` でこの版を読むが、`Dockerfile` の `FROM node:` は読めない。`.node-version` を上げるときは同じ PR で `Dockerfile` も揃える。
