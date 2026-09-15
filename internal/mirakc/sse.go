@@ -105,6 +105,10 @@ func (c *Client) subscribeOnce(ctx context.Context, ch chan<- Event, lastEventID
 		return false, "", fmt.Errorf("SSE endpoint returned %s", resp.Status)
 	}
 
+	// 200 を受けた時点で接続は張れている。subscribeOnce はストリーム終了まで
+	// ブロックするので、確立ログはここ（切断後ではない）に出す。
+	slog.Info("SSE connected (stream started)", "last_event_id", lastEventID)
+
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	var eventType string
