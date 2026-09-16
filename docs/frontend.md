@@ -7,7 +7,7 @@ Vite + React + TypeScript の SPA。go:embed で単一バイナリに同梱し�
 | 内容 | ファイル |
 |---|---|
 | デザイン言語（トークン / 状態色 / 原則）。**UI を触るなら最初に読む** | [frontend/design.md](frontend/design.md) |
-| 前提条件 / 採用スタック / 決め手（技術選定の経緯） | [frontend/stack.md](frontend/stack.md) |
+| 前提条件 / 採用スタック / 技術選定の決め手 | [frontend/stack.md](frontend/stack.md) |
 | 共通シェル: ナビゲーション / サイトの扱い（多サイト時に何が見えるか） / 生成クライアントとエラー運搬 / SSE 通知 / `<html lang>` / PWA | [frontend/shell.md](frontend/shell.md) |
 | ホーム（`/`）: 集約するセクション・窓と上限・空セクションの扱い | [frontend/home.md](frontend/home.md) |
 | 番組リスト・番組表グリッド（`/programs`） / 日付・チャンネル絞り込み / 容量超過の表示 | [frontend/programs.md](frontend/programs.md) |
