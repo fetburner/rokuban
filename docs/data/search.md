@@ -44,7 +44,3 @@ pg_trgm（標準 contrib、運用コストゼロ）で始め、形態素解析�
 
 1. **EPG テーブルの churn / bloat**: 1 日に何度も大量 upsert されるため、遅くなるとしたら検索でなく書き込みと autovacuum の追従。バッチ upsert、GIN fastupdate、テーブル別 autovacuum チューニングで対処（運用ノート）
 2. **番組表グリッドのペイロード**: 検索性能でなく転送量と描画の問題。決定済みの仮想化（TanStack Virtual）+ API の時間窓・サービス絞り込みで対処
-
-## 経緯と失敗事例
-
-- 全角/半角正規化の immutable 関数 + 式インデックスで吸収する

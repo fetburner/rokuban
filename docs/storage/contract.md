@@ -148,9 +148,3 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
 - **相対パス**: `thumbnails/{recording_id}.jpg`（原本の contentPath に依存しない。
   原本削除後もパスが安定する）
 - **配信**: streamer の `GET /api/media/recordings/{id}/thumbnail`（openapi 外。api はファイルを開かない）
-
-## 経緯と失敗事例
-
-- 原本 `rel_path` への `sites/{site}/` 前置。「site 名を先頭成分にする」当初案が既存 rel_path と衝突しうることはレビューで発見された
-- site 名としての `catalog` / `thumbnails` の禁止（`reservedSiteNames`）。`sites` 自体を site 名にすることは禁止していない —— `sites/sites/...` になるだけで衝突しない
-- サムネイルは派生物として投入する。ごみ箱の録画は投入対象から除外する

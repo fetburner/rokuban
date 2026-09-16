@@ -7,7 +7,7 @@
 対策:
 
 - **1 回の ruler パスでの削除数に閾値**（`ruler.max_deletes_per_pass`）を設け、超えたら削除せず停止してアラート。手動確認後に再開
-- **数えて止めるのは「ルールが base を供給しているのに desired から外れた」削除だけ。** desired は「(ルール勝者 − intent skip) ∪ investment（record 意図 ∪ overrides）」から導出されるので、`toDelete`（既存予約のうち desired から外れた行）には EPG 由来の unmatch とユーザーの明示操作が混ざる。このうち**ユーザー（運用者）が投資を手放す書き込みをしない限り起きない削除はブレーカーの外**に置き、カウントにも入れずラッチ中でも実行する。判定は削除文の `WHERE` が適用の瞬間に行い、`program_investments` が空であることに加えて次のどちらかが立てば対象:
+- **数えて止めるのは「ルールが base を供給しているのに desired から外れた」削除だけ。** desired は「(ルール勝者 − intent skip) ∪ investment（record 意図 ∪ overrides）」から導出されるので、`toDelete`（既存予約のうち desired から外れた行）には EPG 由来の unmatch とユーザーの明示操作が混ざる。このうち**ユーザー（運用者）が投資を手放す書き込みをしない限り起きない削除はブレーカーの外**に置き、カウントにも入れずラッチ中でも実行する。判定は削除文の `WHERE` が適用の瞬間に行い（Go 側の読み取りに移すと、読みと適用の間に着地した意図を踏み潰す窓が戻る）、`program_investments` が空であることに加えて次のどちらかが立てば対象:
   - `reservations.rule_id IS NULL` — いまルールが base を供給していない行。**この列は EPG の変化だけでも NULL になる**（投資を持つ行はルールが外れても desired に残るのでそのパスで upsert され、`internal/ruler/sql.go` の `resolved` CTE が凍結するのは `base` と dedup 根拠 2 列だけ。`rule_id = EXCLUDED.rule_id` がそのまま NULL を書く。`TestRunPass_EpgUnmatchNullsRuleIDButInvestmentBlocksRelease` が実測で固定）ので、**これ単体はユーザー由来の証明にならない**
   - `program_intents.action='skip'` — ユーザーが「録るな」と書いた
 
@@ -24,7 +24,7 @@
 
 ##### 止められる場所は ruler だけ
 
-削除件数の閾値を持つのは ruler 側だけで、**reconciler 側には置かない**（両方に置いていた時期があるが、reconciler 側は誤発火しかしないので撤去した。末尾「経緯と失敗事例」）。reconciler が「消すべき schedule」と判断する経路は、desired（reservations）を減らす操作の数だけあるが、reconciler からはどれも「desired に無い schedule がある」以上には区別できない。ruler のブレーカーの対象かどうかで束ねると次の 5 通りに分かれる:
+削除件数の閾値を持つのは ruler 側だけで、**reconciler 側には置かない**（reconciler 側に置いても誤発火するだけで、守れるものも無い。理由は下記のとおり）。reconciler が「消すべき schedule」と判断する経路は、desired（reservations）を減らす操作の数だけあるが、reconciler からはどれも「desired に無い schedule がある」以上には区別できない。ruler のブレーカーの対象かどうかで束ねると次の 5 通りに分かれる:
 
 | 経路 | ruler の `MaxDeletesPerPass` の対象か |
 |---|---|
@@ -56,19 +56,10 @@ GC・ユーザー操作では他の予約が残るので誤発火しない。全
 - **GC は発動中でも動く**（下記「GC は対象にしない」の理由がそのまま効く）
 - `detail` に「何が消されようとしていたか」の抜粋（最大 20 件の programId と題名）を焼く。**手動確認には対象が見える必要がある**
 - 再開は `POST /api/sites/{site}/breakers/{name}/resume`（資源の PK が `(site, name)` であることに合わせる）。`DELETE /api/sites/{site}/breakers/{name}` にしないのは、運用者から見た操作が「行を削除する」ではなく「確認したので再開する」だから（行が消えるのは実装詳細）
-- **site を持たないブレーカー（`delete_reconcile`。`internal/breaker.IsSiteless`）だけは `POST /api/breakers/{name}/resume` で再開する。** 理由と経緯は `internal/worker/delete_reconcile.go` の `DeleteReconcileWorker` doc コメント参照
+- **site を持たないブレーカー（`delete_reconcile`。`internal/breaker.IsSiteless`）だけは `POST /api/breakers/{name}/resume` で再開する。** 理由は `internal/worker/delete_reconcile.go` の `DeleteReconcileWorker` doc コメント参照
+- **ブレーカー名を足すときは `internal/breaker.All` と `openapi.yaml` の enum の両方に足す。** 片方だけだと `GET /api/breakers` に出るのに resume が 400 を返す。ずれは `internal/breaker/all_test.go` / `internal/api/breakers_test.go` が検出する
 
 ##### GC は対象にしない
 
 **番組終了後の GC（[ruler.md](ruler.md)「番組終了後の GC」）は `MaxDeletesPerPass` の対象にしない。** ブレーカーが守るのは「ルール x EPG」の評価結果から導出される削除だけで、EPG の一時的な欠損・フリッカーに引きずられて予約を大量に消してしまう事故（上記 EPGStation#692 のクラス）を防ぐためのもの。GC の削除対象は時刻の比較だけで決定的に定まり、EPG の状態には一切左右されない。むしろ reconciler/ruler が長時間停止していた場合、再開後に溜まった期限切れ行を一括で消すのは正常な挙動であり、ここをブレーカーで止めると実害のない削除が積み上がり続けるだけになる。
 
----
-
-#### 経緯と失敗事例
-
-- **reconciler 側の閾値の撤去**: ruler と reconciler の両方に削除件数の閾値を置いていたが、reconciler 側は誤発火しかしないので撤去した。理由は上記「止められる場所は ruler だけ」のとおり
-- **ラッチ化**: 当初の骨格はパス内で完結していて、次のパスでは何も覚えていなかった。「手動確認後に再開」を実現するために `circuit_breakers` 表による永続ラッチにした
-- 再開 API の資源同定は `(site, name)` を PK とする `/breakers/{name}/resume`
-- **明示操作をブレーカーの外に出した**: ラッチ化後も `toDelete` は「desired から外れた理由」を区別せず数え・保留していた。intent skip は `effective.skip` が録画を止めるので実害が予約一覧の表示上の残留に留まったが、**intent クリア（`DELETE .../intent`）は `effective.skip` を立てない**ため、ラッチ中は「クリアしたのに人間が再開するまで録り続ける」になっていた（実装レビューで発見）。3 択（録画も止める／導出削除の対象から外す／UI 説明で足りるとする）のうち「対象から外す」を採った。「録画も止める」（reconciler 側で現在の desired を再評価する）は、根拠のない予約行が一覧に残り続ける上に desired の判定器が 2 つになる（reconciler が ruler と同じ材料を読み直す）ので却下。「UI 説明」は、ラッチが人間の再開を待つ無期限の状態である以上「クリアしたのに録れる」を真にできないので却下。判定を削除文の `WHERE` に置いたのは、読み取りと適用の間に着地した意図を踏み潰す窓を作らないため —— 呼び出し側は `toDelete` 全体を渡し、`RETURNING` で「実際に明示操作由来として消えた集合」を受け取って、残りをブレーカーに掛ける。分類がトランザクション外の古い読み取りで決まる余地がない。境界 (a)(b)(c) を上記「大量削除サーキットブレーカー」に明記してある —— 「明示操作は必ず即座に効く」とは書かない。**最初の版は「`rule_id` は EPG が動いても据え置かれるので EPG 由来の unmatch は `rule_id IS NULL` を作れない」という論証を書いたが、これは実測で偽だった**（投資を持つ行は desired に残るので upsert され、`resolved` CTE は `rule_id` を凍結しない）。結論は変わらないが、支えているのは `rule_id` の不変性ではなく「投資を消せるのは人だけ」のほうである（レビュー指摘）
-- **既知集合の漏れ**: `internal/api` が resume の妥当性検証に使う既知集合（`knownCircuitBreakerNames`）に `breaker.DeleteReconcile` が入っておらず、`GET /api/breakers` には発動中として出るのに resume が 400 を返す状態が長く放置されていた（DB を直接触るしか復旧手段が無かった）。1 回目の修正は `internal/breaker.All` を新設して `internal/api` の手書きマップをそこから導出する形にしたが、これは複製を消したのではなく `internal/api` ↔ `internal/breaker` から `breaker.go` の const ブロック ↔ `All` へ**移しただけ**で、レビューで「`All` から 1 件落とす mutation を入れても `go test ./...` が全緑」と実測され差し戻された。同じ理由で、当時の doc コメントに書いた「Go の定数はリフレクションで列挙できないので静的解析でも機械的には捕まえられない」も誤りだった（リフレクションを使わない `go/parser` によるソース解析なら検出できる。同じレビューで実測済み）。2 回目の修正で `internal/breaker/all_test.go`（`TestAll_MatchesDeclaredConstants`）を足し、const ブロックと `All` の不一致を検出できるようにした。さらに `openapi.yaml` の `CircuitBreakerName` enum にも同型の複製（`ruler_deletes` / `reconcile_total_loss` のみで `delete_reconcile` が無い）が残っていたため、そちらも `delete_reconcile` を足して生成物（`internal/api/openapi_gen.go` / `web/src/api/generated.ts`）を再生成した。この 2 回目の修正で `ListCircuitBreakers`（`internal/api/breakers.go`）に `CircuitBreakerName.Valid()` の検査を足し、enum 外の値を 500 にする実装を入れたが、これも 3 回目のレビューで差し戻された —— `GET /api/breakers` の唯一の消費者 `web/src/components/circuit-breaker-banner.tsx`（`web/src/pages/home.tsx` も同様）は `isError` を見ておらず、500 は「エラーとして気付かれる」のではなく「発動中の一覧が丸ごと消える」（enum 外の 1 行のせいで、同時に発動している他のブレーカーまで見えなくなる）という、対処しようとした問題（ラベル・理由が空欄になる）より重い結果になっていた。最終的に enum と `breaker.All` のずれの検知は `internal/api/breakers_test.go` の `TestBreakerAllNamesAreValidCircuitBreakerNameEnumMembers`（DB も HTTP も使わない純ユニットテスト）に閉じ、`ListCircuitBreakers` は値をそのまま通す設計にした。あわせて `internal/breaker/all_test.go` も、非公開の無関係な文字列定数を誤ってブレーカー名と見なす偽陽性と、`breaker.go` 以外のファイルに定数を足すと見逃す偽陰性の 2 つを塞いだ（エクスポート済み識別子のみを対象にし、パッケージディレクトリ全体をスキャンする）
-- **`docs/operations/alerts.md` の運用手順の誤り**: `delete_reconcile` 発動時に「対象の内訳は `media_assets` を直接クエリする」と書いていたが、孤児回収の候補は定義上 `media_assets` に無いファイルであり、実際には `orphan_files` テーブルにある。ごみ箱・`until_encoded` 待ちの 2 ソースと孤児回収の 1 ソースを取り違えると、運用者が手順通りに実行しても目的の情報に辿り着けない

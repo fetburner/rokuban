@@ -143,13 +143,3 @@ ALTER TABLE recordings ADD CONSTRAINT recordings_rule_id_fkey
 ```
 
 ルール削除で予約・録画履歴の行は消えず、参照だけ NULL になる（トレーサビリティは失うが履歴は残る）。ルール削除時の予約側の同期削除は [reservations.md](reservations.md) §3 冒頭。
-
-## 経緯と失敗事例
-
-- **dedupe の値域 CHECK はコードレビューで発覚した欠落。** 当初の CHECK は
-  `dedupe_enabled = false OR dedupe_threshold IS NOT NULL` しか見ておらず、値そのものの
-  範囲は API 層にも DB 層にも無かった。恒真トラップ（閾値 0）はサーキット
-  ブレーカー（削除しか守らない）にも止められない経路だった。既存の違反行は値を推測して
-  丸めず、`dedupe_enabled = false` に倒して無効化した（意図不明の値で重複排除を有効の
-  まま残すと「黙って録画が止まる / 黙って無効化される」症状が継続するため。値域は
-  `rules_dedupe_threshold_range` CHECK（`dedupe_threshold` は `(0, 1]` の範囲）が守る）
