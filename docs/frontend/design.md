@@ -40,7 +40,7 @@ zinc はわずかに寒色（hue ≈ 286、chroma ≤ 0.016）で、これが「
 成立させている: 地が寒色側に寄っているぶん、暖色の信号（タリーレッド・琥珀）だけが
 色として立ち上がる。
 
-**3 値の一致は `web/tests/design-tokens.test.ts` が両方のファイルを読んで検査する。**
+**3 値の一致は `web/tests/design-tokens.test.ts` が両方のファイルを読んで検査する**。
 同じ決定が 2 箇所（`index.css` と `scripts/gen-favicon.mjs`）に書いてあるので、
 片方だけ動かすと黙って食い違う。
 
@@ -77,7 +77,7 @@ zinc はわずかに寒色（hue ≈ 286、chroma ≤ 0.016）で、これが「
 使う人がいないトークンは足さない（CLAUDE.md 不変条件 11）。琥珀を塗りに使いたく
 なったら、そのコードと同じ PR で `--warning-foreground` を足す。
 
-**タリーレッドと destructive は色相が近い。区別は色ではなく形が担う。**
+**タリーレッドと destructive は色相が近い**。**区別は色ではなく形が担う**。
 タリーは「点灯」なので塗り（`bg-tally` + 紙白の文字）、destructive は「壊れた」なので
 文字と淡い地（`text-destructive` + `bg-destructive/10`）。同じ赤でも、
 塗られているかどうかで「いま動いている」と「壊れた」が見分けられる。
@@ -101,10 +101,10 @@ zinc はわずかに寒色（hue ≈ 286、chroma ≤ 0.016）で、これが「
 `text-warning` が乗るのは地ではなく `bg-warning/10` の上なので、地に対する比だけを
 見ると 0.5〜0.7 ほど甘い数字が出る。
 
-**判定を足したことと、それが効いていることは別。** 合成の実装を入れても、淡い地を
+**判定を足したことと、それが効いていることは別**。合成の実装を入れても、淡い地を
 持つのが外側の要素で文字を持つのが内側の要素だと、locator が内側だけを掴んで背景が
-透明になり、**合成が恒等関数になる**（この状態では色を暗くした修正を revert しても
-判定は緑のまま通った）。いまは「祖先を遡って最初に不透明な面に当たるまで重ねる」形
+透明になる。その結果**合成が恒等関数になる**（この状態では色を暗くした修正を
+revert しても判定は緑のまま通った）。いまは「祖先を遡って最初に不透明な面に当たるまで重ねる」形
 にし、**掴んだ要素の背景が透明ならそのこと自体で落とす**。
 
 **実画素は `getComputedStyle` からは読めない。** トークンが oklch なので Chromium は
@@ -113,12 +113,12 @@ zinc はわずかに寒色（hue ≈ 286、chroma ≤ 0.016）で、これが「
 カスタムプロパティに出してある（下記「走査線は 3 箇所限定」）。
 
 下限を割る組み合わせは除外せず、通常の失敗判定に入れる（`knownGaps` のような
-除外リストは持たない）。失敗バッジはライトの `--destructive` の明度を下げて直した
-（**色相は動かしていない** --- タリーと近いままで、彩度だけがその明度で sRGB 色域に
-収まる上限まで連れて下がる。上記「タリーレッドと destructive は色相が近い」参照）。録画中との識別は、従来どおり「塗り + 紙白の文字」と「文字 + 淡い地」の
+除外リストは持たない）。失敗バッジはライトの `--destructive` の明度を下げて直した。
+**色相は動かしていない** --- タリーと近いままで、彩度だけがその明度で sRGB 色域に
+収まる上限まで連れて下がる（上記「タリーレッドと destructive は色相が近い」参照）。録画中との識別は、従来どおり「塗り + 紙白の文字」と「文字 + 淡い地」の
 形の差を保つ。
 
-一覧行の hover 中の副情報は `text-muted-foreground` を維持し、4 画面（録画一覧・予約一覧・
+一覧行の hover 中の副情報は `text-muted-foreground` を維持する。4 画面（録画一覧・予約一覧・
 ホーム・番組リスト）の `hover:bg-muted/40` を最も近い薄さへ揃えて、通常時の本文 = foreground /
 副情報 = muted の階層を崩さずに調整する。hover はライト／ダークの両テーマで実測する。
 録画一覧の選択モードで選んだ行も同じ `bg-muted/40` に揃えてある --- こちらは常時
@@ -126,33 +126,36 @@ zinc はわずかに寒色（hue ≈ 286、chroma ≤ 0.016）で、これが「
 
 `bg-muted` + `text-muted-foreground` は、地・文字とも走査線グレー側の段を経由する
 ためライトで 4.5 を割る。走査線グレーの値そのものは動かさず、**次に挙げる箇所を
-`text-foreground` にして直した**（録画一覧の「完了」・取り込みバッジ・site タグ、
+`text-foreground` にして直した**。録画一覧の「完了」・取り込みバッジ・site タグ、
 番組リストの sticky 日付見出し、番組表グリッドとチャンネルピッカーのリモコン番号
-タグ、予約一覧の `StateBadge`/`ReservationSkipBadge`、ルール一覧の「無効」、ライブの
-チャンネル種別タグ・チャンネル一覧のリモコン番号タグ、chip / day-strip の hover）
---- foreground は地の無彩 3 値の一部で信号色ではないので「色は信号のみ」とは矛盾
+タグである。さらに予約一覧の `StateBadge`/`ReservationSkipBadge`、ルール一覧の
+「無効」、ライブのチャンネル種別タグ・チャンネル一覧のリモコン番号タグ、
+chip / day-strip の hover も直した。
+foreground は地の無彩 3 値の一部で信号色ではないので「色は信号のみ」とは矛盾
 しない。新しく `bg-muted` の小バッジを足すときはこの手を最初から使う。
 chip（`components/ui/chip.tsx`）・day-strip（`components/day-strip.tsx`）は常時では
-なく hover で `bg-muted` が乗る形で、Lighthouse は hover を測らないので合否の対象では
-ないが、同じ組み合わせである以上揃えて `hover:text-foreground` を対にしてある。
+なく hover で `bg-muted` が乗る形である。Lighthouse は hover を測らないので合否の
+対象ではないが、同じ組み合わせである以上揃えて `hover:text-foreground` を
+対にしてある。
 
 **上の列挙は `bg-muted` 系の面に muted の文字が乗る箇所の網羅ではない。** 網羅の権威は
 `e2e:design` の出力の側に置く。そこに出ていない組み合わせは「測っていない」であって
-「通っている」ではない。今回の行 hover は、`components/program-row.tsx` /
-`pages/recordings.tsx` / `pages/reservations.tsx` / `pages/home.tsx` の 4 画面で
-`text-muted-foreground` を維持したまま面の濃さを揃え、代表として録画一覧の行を
-`e2e:design` が実際に hover して測る。いま分かっている残りは:
+「通っている」ではない。今回の行 hover は 4 画面で `text-muted-foreground` を
+維持したまま面の濃さを揃えた。対象は `components/program-row.tsx` /
+`pages/recordings.tsx` / `pages/reservations.tsx` / `pages/home.tsx` である。
+代表として録画一覧の行を `e2e:design` が実際に hover して測る。いま分かっている残りは:
 
 - **測ってあり、下限を満たす**: 録画詳細（`/recordings/$id`）の `bg-muted/30` の
-  パネルに乗る説明文・`<dt>` 群・品質イベント（`RecordingDetail`。一覧はインライン
-  展開を持たないので、この面が出るのは詳細ページだけ）。hover と違って**常時見えるので
+  パネルに乗る説明文・`<dt>` 群・品質イベント（`RecordingDetail`）。一覧は
+  インライン展開を持たないので、この面が出るのは詳細ページだけである。hover と違って**常時見えるので
   Lighthouse の監査対象**に入るため、`e2e:design` が同じパネルの `<dt>` を測っている
   （同じ面・同じトークン対なので説明文・品質イベントも同値）
 - **測っていない（未検証）**: 検索の `RuleSourceBanner`（`components/rule-form.tsx`）の
-  読み込み中の枝（`bg-muted/40`。ルールが解決した本体は `text-muted-foreground` を
-  持たず、エラーの枝は `text-destructive`）と、エンコード対象プロファイルの行の
-  hover（`components/encode-settings-fields.tsx` の `hover:bg-muted/60` +
-  コンテナ名の `text-muted-foreground`）。どちらも一瞬 / hover 中しか出ないため
+  読み込み中の枝（`bg-muted/40`）である。ここではルールが解決した本体が
+  `text-muted-foreground` を持たず、エラーの枝は `text-destructive` である。
+  もう 1 つはエンコード対象プロファイルの行の hover である
+  （`components/encode-settings-fields.tsx` の `hover:bg-muted/60`）。そこでは
+  コンテナ名が `text-muted-foreground` である。どちらも一瞬 / hover 中しか出ないため
   判定に載せていない。**他の不透明度の実測値から外挿もしない** --- 判定を足すまでは
   「同じ手で直した」扱いにも「通っている」扱いにもしない。destructive 側にも
   同様に未測定の組み合わせがある: `Button variant="destructive"` の hover
@@ -163,14 +166,14 @@ chip（`components/ui/chip.tsx`）・day-strip（`components/day-strip.tsx`）�
 モバイル番組のチャンネルピッカートリガー（`bg-background` + `text-foreground`）は
 上記のバッジ群とは別の組み合わせで、他所（地の無彩 3 値そのものの対）で測っている
 のでここでは測っていない。「トリガーが読めない」という古い観測がどの要素を指して
-いたかは同定できていない（未検証）--- リモコン番号タグはトリガーの中ではなく、
-開いたポップオーバーの選択肢（`ChannelOption`）側にあり、ポップオーバーは
-`keepMounted` を付けていないので閉じている間は DOM に存在しない。
+いたかは同定できていない（未検証）。リモコン番号タグはトリガーの中ではなく、
+開いたポップオーバーの選択肢（`ChannelOption`）側にある。ポップオーバーは
+`keepMounted` を付けていないので、閉じている間は DOM に存在しない。
 
 ### 操作標的の寸法は基準を先に決めて実測する
 
 形を直す前に基準を固定する（[不変条件 11](../invariants.md)）。操作標的は
-`jsdom` の DOM 属性や Tailwind のクラス名から推測せず、`web/e2e/design.mjs` の
+`jsdom` の DOM 属性や Tailwind のクラス名から推測しない。`web/e2e/design.mjs` の
 ④-A が Playwright の実ブラウザで `getBoundingClientRect()` を読み、主要画面
 （番組・検索・予約・録画・ルール・ライブ）の実際に表示された標的を列挙する。
 対象は `button, a[href], [role="button"], [role="switch"], input, select, summary`。
@@ -249,10 +252,10 @@ CI の lint job でも回る。除外は理由込みで `web/scripts/check-color
 時刻・尺・サイズ・ドロップ数・PID は縦に並ぶので、等幅数字にしないと桁が揃わず
 「並べて比べる」という計器盤の唯一の仕事ができない。
 
-**`html` に 1 度だけ当てて全域に効かせる。コンポーネント側で個別に指定しない。**
-触るたびに指定を思い出す必要をなくすためで、`web/tests/font-tokens.test.ts` が
-「コンポーネント側に `tabular-nums` の個別指定が残っていないこと」を検査する
-（残っていると全域適用に統合した決定と矛盾するので、そこで落ちる）。フォントと
+**`html` に 1 度だけ当てて全域に効かせる**。**コンポーネント側で個別に指定しない**。
+触るたびに指定を思い出す必要をなくすためである。`web/tests/font-tokens.test.ts` が
+「コンポーネント側に `tabular-nums` の個別指定が残っていないこと」を検査する。
+残っていれば全域適用に統合した決定と矛盾するので、そこで落ちる。フォントと
 tabular-nums の実効性（どの書体が実際に等幅を作るか）は
 [stack.md](stack.md)「フォントは英数字と和文で 2 書体を使い分ける」にある。
 
@@ -267,7 +270,7 @@ tabular-nums の実効性（どの書体が実際に等幅を作るか）は
 [branding.md](branding.md)「走査線は 3 値で描く」のファビコンと同じ設計を流用する。
 
 **「読み込み中」が指すのは共通の `Skeleton` / `ListSkeleton`（components/page.tsx）
-だけ。** `ListSkeleton` は `role="status"` + sr-only の「読み込み中」を 1 リージョンに
+だけである**。`ListSkeleton` は `role="status"` + sr-only の「読み込み中」を 1 リージョンに
 つき 1 度だけ持つ（内側の `Skeleton` は装飾のみで `aria-hidden`）。一覧の初回読み込みは
 すべてこれを経由している。
 
@@ -292,47 +295,49 @@ IntersectionObserver でスクロールのたびに mount/unmount するため�
 
 **ファビコンの 3 値をそのまま持ち込むと本文の AA を割る。** ファビコンは 16px の
 1 文字で WCAG の対象ではないが、空状態・ON AIR は実際に読む文字が乗る。
-「輝線・間隙・字が互いに異なる 3 値」という**構造**だけを流用し、縞 2 色の
-具体的な値は本文の文字色（4.5 下限）に対して十分なコントラストが立つ段へ
-選び直してある（`.scanlines` のコメント参照。値そのものはここに書かない ---
-`index.css` が権威）。ON AIR は色は信号のみの例外としてタリーレッドの塗りを
-使ってよい（上記「色は信号のみ」）。片方の縞にはタリーそのもの（録画中バッジと
-同じ、AA を満たす組み合わせ）を使い、もう片方は**色相・彩度を変えずに明度だけ
-落として**沈めてある --- 色相を変える手段（`color-mix(in oklch, ...)` を墨と
-混ぜる等）は、oklch の補間が色相を極座標の最短弧で結ぶせいでタリーの色相から
-外れた第 5 の信号色（マゼンタ寄り）を生みかねない。CSS Color 4 の相対カラー
+「輝線・間隙・字が互いに異なる 3 値」という**構造**だけを流用する。
+縞 2 色の具体的な値は、本文の文字色（4.5 下限）に対して十分なコントラストが
+立つ段へ選び直してある（`.scanlines` のコメント参照）。値そのものはここに
+書かない --- `index.css` が権威である。ON AIR は色は信号のみの例外として
+タリーレッドの塗りを使ってよい（上記「色は信号のみ」）。片方の縞にはタリーそのもの
+（録画中バッジと同じ、AA を満たす組み合わせ）を使う。もう片方は**色相・彩度を
+変えずに明度だけ落として**沈めてある。色相を変える手段
+（`color-mix(in oklch, ...)` を墨と混ぜる等）は、oklch の補間が色相を極座標の
+最短弧で結ぶせいでタリーの色相から外れた第 5 の信号色（マゼンタ寄り）を
+生みかねない。CSS Color 4 の相対カラー
 構文（`oklch(from var(--tally) calc(l * ...) c h)`）で明度だけを操作すれば
 色相・彩度は変数元と完全に同じ値のまま動かない。
 
 **縞の 2 色（`--scan-gap` / `--scan-lit`）は「文字に対してコントラストが低い
-側」を `--scan-gap` に割り当てる。「暗い側」ではない。** 空状態はライト・
+側」を `--scan-gap` に割り当てる**。**「暗い側」ではない**。空状態はライト・
 ダークで字の明暗が入れ替わる（「地は『イ』の 3 値」）ので、不利になる縞も
-入れ替わる --- ライトは字が暗いので明るい側（間隙）が不利、ダークは字が
-明るいので明るい側（輝線相当）が不利になり、`--scan-gap` はダークでは
-輝線側を指す。ON AIR は字（`--tally-foreground` = 紙白）が両テーマで変わらない
-ので `--scan-gap` は常にタリーそのもの側を指す。
+入れ替わる。ライトは字が暗いので、明るい側（間隙）が不利になる。ダークは字が
+明るいので、明るい側（輝線相当）が不利になる。そのため `--scan-gap` は
+ダークでは輝線側を指す。ON AIR は字（`--tally-foreground` = 紙白）が両テーマで
+変わらないので、`--scan-gap` は常にタリーそのもの側を指す。
 
-実装は縞の 2 色を `--scan-gap`（= `background-color`）と `--scan-lit`（=
-`background-image` の `repeating-linear-gradient` が参照するカスタム
-プロパティ）に分けてある。**`background-color` は `getComputedStyle` で
+実装は縞の 2 色を `--scan-gap` と `--scan-lit` に分けてある。`--scan-gap` は
+`background-color` で、`--scan-lit` は `background-image` の
+`repeating-linear-gradient` が参照するカスタムプロパティである。
+**`background-color` は `getComputedStyle` で
 読めるが、`background-image` に直接書いた色は読めない** --- カスタム
-プロパティに出しておけば `e2e:design` がどちらの縞も個別に読め、**両方**を
+プロパティに出しておけば、`e2e:design` がどちらの縞も個別に読める。**両方**を
 文字色との AA で判定できる。**「どちらが最悪ケースか」を決め打って片方だけ
-測ってはいけない** --- そう決め打つと、決め打ちが外れたとき（あるいは
-決め打ちが正しくても、測っていない側を文字と同じ色にする変異が入ったとき）に
-判定がすり抜ける（「コントラストは毎回測る」の「判定を足したことと、それが
-効いていることは別」と同じ形）。使う側は
+測ってはいけない** --- そう決め打つと、決め打ちが外れたときに判定がすり抜ける。
+決め打ちが正しくても、測っていない側を文字と同じ色にする変異が入ったときも
+同じである。これは「コントラストは毎回測る」の「判定を足したことと、それが
+効いていることは別」と同じ形である。使う側は
 文字色を必ず `text-foreground`（ON AIR は `text-tally-foreground`）にする。
 
 アニメーションは付けていない。CRT の走査を模した動きを検討したが、
 このアプリの他の状態色がどれも静止していることを理由に見送った。**走査線
-そのものの動きは無いが、読み込み中（`Skeleton`）は走査線とは無関係に
-`animate-pulse`（不透明度の明滅）を持つ。**
+そのものの動きは無い。ただし読み込み中（`Skeleton`）は走査線とは無関係に
+`animate-pulse`（不透明度の明滅）を持つ**。
 
 3 箇所以外に走査線クラス（`scanlines` / `tally-scanlines`）が無いことは
-`web/tests/scanline-usage.test.ts` が固定する（`scanlines` は `index.css`
+`web/tests/scanline-usage.test.ts` が固定する。`scanlines` は `index.css`
 定義 + `components/page.tsx`、`tally-scanlines` は `index.css` 定義 +
-`pages/live.tsx` だけに閉じていることを見る。4 箇所目を足すと落ちる）。
+`pages/live.tsx` だけに閉じていることを見る判定である。4 箇所目を足すと落ちる。
 手で確認するなら（`tally-scanlines` は文字列として `scanlines` を含むので、
 ヒットしたファイルを目で見て 3 箇所に収まっているかを判断する）:
 
@@ -342,12 +347,12 @@ grep -rln --include='*.ts' --include='*.tsx' --include='*.css' 'scanlines' web/s
 
 ## アニメーションは `prefers-reduced-motion` で縮退する
 
-`animate-pulse`（`Skeleton`）・
-ポップオーバー/ダイアログの `slide-in-from-*` / `zoom-in-95` / `fade-in-0`・
-`Button` の押下フィードバック（`translate`）が動きの発生源（他にも
-あり得るが、洗い出しは網羅していない）。個別のクラスへ毎回縮退を書き足すのではなく、
-`html` の `tabular-nums` と同じ方針で `web/src/index.css` の 1 ブロック
-（`@media (prefers-reduced-motion: reduce)`）に集約し、
+動きの発生源は `animate-pulse`（`Skeleton`）である。ほかに、
+ポップオーバー/ダイアログの `slide-in-from-*` / `zoom-in-95` / `fade-in-0` と、
+`Button` の押下フィードバック（`translate`）がある。他にも
+あり得るが、洗い出しは網羅していない。個別のクラスへ毎回縮退を書き足すのではなく、
+`html` の `tabular-nums` と同じ方針で集約する。集約先は `web/src/index.css` の
+1 ブロック（`@media (prefers-reduced-motion: reduce)`）である。
 `animation-duration` / `transition-duration` をほぼ 0 に切り詰める
 （`animation: none` にはしない --- 理由は `index.css` のコメント参照）。
 実ブラウザでの縮退・非縮退の両方向の確認は `web/e2e/design.mjs` が権威。
@@ -375,12 +380,12 @@ grep -rln --include='*.ts' --include='*.tsx' --include='*.css' 'scanlines' web/s
 
 単一世帯の運用なので、頻度の仮説は自分の行動で検証してよい。
 
-**「端」に寄せる実装手段は overflow メニュー（`components/ui/dropdown-menu.tsx`。
-`@base-ui/react` の `Menu` を shadcn の作法でラップした標準部品）。** 破壊的・
-稀な操作はこれに乗せ、開く/編集のような主操作とは同格に並べない。新しい
-破壊的・稀な操作を行に足すときは、新しい overflow の作法を都度作らずこの
-部品を再利用する（適用先は増減しうるので、ここには数え上げない --- 実際の
-適用箇所は `dropdown-menu` の import 元を grep すれば分かる）。
+**「端」に寄せる実装手段は overflow メニュー（`components/ui/dropdown-menu.tsx`）
+である**。`@base-ui/react` の `Menu` を shadcn の作法でラップした標準部品で
+ある。破壊的・稀な操作はこれに乗せ、開く/編集のような主操作とは同格に並べない。
+新しい破壊的・稀な操作を行に足すときは、新しい overflow の作法を都度作らずこの
+部品を再利用する。適用先は増減しうるので、ここには数え上げない --- 実際の
+適用箇所は `dropdown-menu` の import 元を grep すれば分かる。
 
 ## 合否は画素で測る
 
@@ -403,9 +408,9 @@ grep -rln --include='*.ts' --include='*.tsx' --include='*.css' 'scanlines' web/s
 手順は [web/e2e/README.md](../../web/e2e/README.md) §デザイン。
 **判定を足すときは、直す前の実装で実際に落ちることを確認する。**
 
-**`e2e:design` は CI に無いので、手元で走らせて exit code を見るところまでやる。**
-判定側が DOM の変化（バッジが `<span>` から `<a>` に変わる等）に追随できていないと
-locator が空を掴んで赤くなるが、誰も走らせなければ数マイルストーン気付かれない
+**`e2e:design` は CI に無いので、手元で走らせて exit code を見るところまでやる**。
+判定側が DOM の変化（バッジが `<span>` から `<a>` に変わる等）に追随できていないと、
+locator が空を掴んで赤くなる。しかし誰も走らせなければ数マイルストーン気付かれない
 （実際に起きた）。
 
 `e2e/design.mjs` は API を `page.route` で丸ごと差し替えるので、mirakc も実チューナーも
