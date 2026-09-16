@@ -328,30 +328,3 @@ go:embed 配信でハッシュ付きアセット immutable + それ以外 no-cac
 ### サービスロゴ: ドロップ
 
 mirakc は起動中の局ロゴ抽出をサポートせず、運用者が事前抽出したファイルを静的登録して配るだけの機構しか持たない。Rokuban 側で再取得・自前配信する価値が薄いため実装しない（[data.md](../data.md) の「サービスロゴ: ドロップ」参照）。
-
-## 経緯と失敗事例
-
-- 再生位置を localStorage に置く決定は [frontend/design.md](../frontend/design.md)「個人化は localStorage だけに置く」
-- **ライブのセッションレス資源同定**はセッション ID を URL にもクッキーにも置かない方針。
-  「DB を引かない」の判断は着手前コメントのとおり
-- **ライブの id 空間**は 2 度動いた。当初は SI の `serviceId` を渡していて mirakc が
-  404 を返し、Mirakurun 合成 id をフロントで合成する形に直した。
-  これで `services/{serviceId}` が一覧 API と別の id 空間を指すようになり、
-  合成規則が Go と TypeScript に二重化した（e2e ④ はこの食い違いを踏んで
-  `network_id != 0` の環境で必ずタイムアウトし、一覧 API から合成 id を
-  解決し直す迂回を必要とした。[frontend/live.md](../frontend/live.md)）。
-  `networks/{networkId}/services/{serviceId}` に変え、合成を streamer に戻した
-- **「不明な id は mirakc が拒否する」は測っていない断言だった**。
-  streamer 側で 16 bit 整数として解析することで、mirakc の挙動に依存せずに
-  「何を送るか」だけを主張する形に置き換えた
-- **離脱ヒント**は「チャンネル切り替えの窓は idle GC に
-  任せる」で通した判断を、チューナー 2 本の環境で 30〜45 秒が実害になるとして
-  縮めたもの。**素朴な「セッション削除 API」を作れないのはセッションレス資源同定
-  （共有・identity 無し）が理由**であり、それを覆さずに窓だけを縮める形として
-  「ヒント + 猶予」に落ちた。参照カウント案（identity の導入）はこの決定への差し戻しに
-  なるため採らなかった
-- **tmpfs の後始末**: 当初この doc は「tmpfs はコンテナ再起動で消える」前提で書かれて
-  いたが誤りで（ノード再起動でしか消えない）、レビュー指摘で起動時スイープに直した
-  （`internal/streamer/live.go` の `NewLive` のコメント参照）
-- ごみ箱（`deleted_at`）を 404 にする契約は削除エンジン、
-  `purged_at` の tombstone は復元と物理削除の競合を閉じるための印
