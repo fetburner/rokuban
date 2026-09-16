@@ -21,20 +21,20 @@
 - API パスは常に**ルート相対パス `/api/*`**（ドメインを含まない絶対パス）を使用する。CDN / リバースプロキシ構成で CORS 不要・実行時コンフィグ注入不要とするため
 - **絶対 URL ビルダーは作らない。** Rokuban には絶対 URL を生成している箇所が現状ゼロ（API・webhook ペイロードともルート相対パスのみ）。無い箇所にビルダーを先回りで作らない（不変条件 11）。必要になった時点で単一ビルダーへ一元化する。絶対 URL 生成を散らばせると、後からホストや接頭辞の書き換えを効かせられない
 - **API の資源同定は判定基準で決める**（[スキーマ](../schema.md) §1-5）。site をパスに置くかどうかは、件数（単体か一覧か）でも資源の種類名でもなく、**その資源の存在・状態が特定 1 つの site（mirakc インスタンス）の観測に閉じているか**で決める。**判定の入力はその資源があるべき形であり、現行の実装が返すレスポンス形ではない**（現状の形を根拠に現状のパスを正当化すると、判定基準が何も条件しなくなる）。**集合を返す操作もこれに従う**: 要素の存在が site に閉じるなら、一覧であっても site をパスに置く。mirakc の record や、その site の EPG に存在するかで決まる programId はこれに該当し、単体でも一覧でも site をパスに含める。番組・意図・上書きを指すパスは `/api/sites/{site}/programs/{programId}...` の形を取る。同じ種類の資源でも、実体が site に閉じない場合（site 非依存で動くワーカーが書く行など）は種類名では判定せず、その資源だけを site 無しにする。**唯一の例外は、複数 site の要素を意図して 1 応答に集約する場合**——api が全 site を扱えること（不変条件 1）を使った明示的な設計で、要素自体は site に閉じていても site をパスに置かない。例外に入れてよいのは、その資源が**構造的に** site をまたぐ場合に限る。運用上あると便利、は理由にならない。`GET /api/reservations` / `GET /api/capacity/overages` がこの形（下記「録画一覧」の「既定は全サイトを返す」）。**検索はこの例外に該当する**: 検索はルール条件のマッチングをプレビューする機能で、ルールはマッチした全 site で評価され site ごとに 1 予約が生まれる（[ruler](../recording/ruler.md)「サイトの扱い」の N 予約）。したがって検索結果も本来は site をまたぎ、要素それぞれが site を持つべきもので、複数 site の要素を集約する上記の例外に当たる。実装は `sites`（絞り込み条件。空 = 全 site）で複数 site を横断し、結果の各行が実際にマッチした site を運ぶ（畳まない）。検索のパスは `/api/programs/search` とし、`{site}` は置かない。絞り込みは `sites` に一本化されており、検索結果は複数 site を横断するため、パスによる既知 site の検証も行わない。site に束縛されない資源（rokuban 採番の `recordings.id` 等）は、単体か一覧かによらず site をパスに固定せず、絞り込み条件として指定するか結果本体が運ぶ。**api プロセス自身はどの site にも束縛されない**（不変条件 1: mirakc にもファイルシステムにも依存しない）。権威は `config.mirakcs` レジストリに site が存在するかで、1 プロセスがレジストリの全 site を処理できる。レジストリに無い site を指定すると、読み取り系（GET）は 404、書き込み系（POST/PUT/PATCH/DELETE）は 400 を返す。存在する site の一覧は `GET /api/sites`（mirakc の URL は含まない）で取得できる。導出行の id を書き込みの宛先にしない（[invariants.md](../invariants.md) §9「identity」）
-- **サーキットブレーカーの再開はこの判定基準の実例**。site を持つ名前（`ruler_deletes` / `reconcile_total_loss`）は `POST /api/sites/{site}/breakers/{name}/resume`、site 非依存の worker が書く名前（`delete_reconcile`）は `POST /api/breakers/{name}/resume` にパスを分ける。種類名（「ブレーカー」）ではなく `internal/breaker.IsSiteless` という資源ごとの分類で決まる
+- **サーキットブレーカーの再開はこの判定基準の実例**。site を持つ名前（`ruler_deletes` / `reconcile_total_loss`）は `POST /api/sites/{site}/breakers/{name}/resume` に分ける。site 非依存の worker が書く名前（`delete_reconcile`）は `POST /api/breakers/{name}/resume` に分ける。種類名（「ブレーカー」）ではなく `internal/breaker.IsSiteless` という資源ごとの分類で決まる
 
 ### 機能の有効/無効は能力 API で観測する
 
 **フロントは config を読めない**（api ロールは設定ファイルを配らない。不変条件 1）。
 一方で `live.enabled` のように「無効ならその機能への導線ごと出したくない」設定が
 ある。無効な機能の導線を出すと、押した先で「無い」に当たるだけになる ---
-`live.enabled: false` のときも主ナビに「ライブ」が出続け、
+`live.enabled: false` のときも主ナビに「ライブ」が出続けていた。
 プレイリストの URL が SPA フォールバックの HTML 200 を返していたため、
 **「無効な機能」ではなく「壊れた再生」として見えていた**。
 
 `GET /api/capabilities`（真偽値の集合）で観測する。判断:
 
-- **設定値そのものは返さない。** 返すのは「導線を出してよいか」だけで、config の
+- **設定値そのものは返さない**。返すのは「導線を出してよいか」だけである。config の
   キー名・値・ffmpeg のパス・プロファイル定義は載せない（`GET /api/encode-profiles`
   / `GET /api/sites` と同じ規律）。将来 `live.profiles` の一覧が要るなら、それは
   能力ではなく選択肢なので別のエンドポイントになる
@@ -47,12 +47,12 @@
 - **ビルド時フラグにはしない。** 実行時 config で on/off する設計と食い違う
   （同じ SPA アセットがどの構成にも配れる、という前提を壊す）
 
-**能力の値はロールに依存させない。** 生成ルートはロールで絞られない（api ロールを
-持たないプロセスでも `/api/capabilities` は生える）ので、注入を api ロールの分岐に
-置くと同じ config の別プロセスだけ違う答えを返す（`cmd/rokuban/server.go`。
+**能力の値はロールに依存させない**。生成ルートはロールで絞られない（api ロールを
+持たないプロセスでも `/api/capabilities` は生える）。そのため注入を api ロールの分岐に
+置くと、同じ config の別プロセスだけが違う答えを返す（`cmd/rokuban/server.go`。
 `Sites` / `MetricsRegistry` を無条件に渡しているのと同じ理由）。
 
-**`/api/` 配下の未マッチは SPA に落とさず 404（JSON）にする。**（`internal/api/spa.go`）
+**`/api/` 配下の未マッチは SPA に落とさず 404（JSON）にする**（`internal/api/spa.go`）。
 落とすと「無い」が「200 の HTML」になり、プレイリストを probe するような
 「取れたか」で判断するクライアントが成功と誤認する。ライブに限らず、
 登録されないルート全般（api ロール単独の `/api/events` など）に効く。
@@ -88,9 +88,9 @@ EPG 射影の存在がその site の観測に閉じているため（§エン�
 #### サービス一覧は `hasPrograms` を足すが、それでは絞らない
 
 `Service.hasPrograms` は、EPG プロジェクション**全体**（表示中の時間窓ではない）に
-そのサービスの番組が 1 件でもあるかを表す。時間窓に依存させないのは、フロントの
-チャンネル絞り込み候補をこのフラグから作るため（[frontend.md](../frontend.md)）
---- 候補が時間窓や絞り込み選択に依存すると、「1 局に絞ると他局へ切り替えられ
+そのサービスの番組が 1 件でもあるかを表す。時間窓に依存させないのは、
+フロントのチャンネル絞り込み候補をこのフラグから作るためである（[frontend.md](../frontend.md)）。
+候補が時間窓や絞り込み選択に依存すると、「1 局に絞ると他局へ切り替えられ
 なくなる」「ページを読み込むほど候補が増える」という壊れ方をする。
 
 **このエンドポイント自体は `hasPrograms` で行を絞らない。** 番組を持たない
@@ -109,8 +109,8 @@ audios 込み）で形を分ける。`epg_programs` は UI 完全形なので `e
 （出演者等）が数 KB あり、全列返すと 1 日分 335 行で 1.5 MB になるが、
 一覧用の軽い列だけなら約 85 KB/日。UI は行を展開したときに詳細を取る。
 
-**フィールド選択（`?fields=`）は入れない。** 生成される型が実質 `Partial<T>` に
-劣化して OpenAPI + コード生成の利点が消え、TanStack Query のドキュメント
+**フィールド選択（`?fields=`）は入れない**。生成される型が実質 `Partial<T>` に
+劣化して、OpenAPI + コード生成の利点が消える。TanStack Query のドキュメント
 キャッシュも分裂する（フィールドセットが違うと別エントリになる）。GraphQL を
 却下した論拠「クライアントは 1 つで、必要なクエリの形はすべて既知」に従い、
 **形を名前付きで少数だけ用意する**。形が 4 つ 5 つと増えて組み合わせ爆発の兆候が
@@ -146,18 +146,18 @@ mirakc に触れるかの話で、絞り込みは読み出しの述語にすぎ�
 他の軸と違う意味論（組の選言）を持つことになる。全軸を「軸内は OR、軸間は
 AND」に揃える。
 
-**`GET /api/storage` は上記と違って `site` フィールドを持たない。** アーカイブ
-（`storage.media_dir`）とスクラッチ（`storage.scratch_dir`）は mirakc サイトの
-ように複数存在しうる資源ではなく単一なので、「全サイトを返し各要素に `site` を
-持たせる」形は当てはまらない（詳細は
+**`GET /api/storage` は上記と違って `site` フィールドを持たない**。アーカイブ
+（`storage.media_dir`）とスクラッチ（`storage.scratch_dir`）は、mirakc サイトの
+ように複数存在しうる資源ではなく単一である。そのため「全サイトを返し各要素に
+`site` を持たせる」形は当てはまらない（詳細は
 [docs/storage.md](../storage.md) §5「残量の観測」）。
 
 **`trash=true` でもカーソル軸は `program_start_at` 降順のまま**（`deleted_at`
 降順にしない）。一覧・ごみ箱を 1 つのキーセット契約に統一するにあたり、`trash` に
-よってカーソル軸が変わる形は採らなかった --- `before` / `beforeId` の意味が
-`trash` の値に依存すると、同じパラメータ名で違う軸を指すことになり API 契約として
-破綻する（1 エンドポイントの前提が `trash` という別のフラグの値で変わるのは、
-形をモード分岐させる代償の方が大きい。不変条件 11）。ごみ箱 UI で「最近捨てた
+よってカーソル軸が変わる形は採らなかった。`before` / `beforeId` の意味が
+`trash` の値に依存すると、同じパラメータ名で違う軸を指すことになり、
+API 契約として破綻する。1 エンドポイントの前提が `trash` という別のフラグの値で
+変わるのは、形をモード分岐させる代償の方が大きい（不変条件 11）。ごみ箱 UI で「最近捨てた
 ものが上」が要る場合は、フロント側で `deletedAt` により再ソートする（1 ページ内
 なら安価。ページを跨いだ再ソートが要るなら別途検討）。
 旧 `ListTrashRecordings` の `deleted_at` 降順からの意図的な変更であり、戻さない。
@@ -166,19 +166,19 @@ AND」に揃える。
 
 `internal/api/recordings_query.go` が `internal/rulequery.Compile` と同じ
 `arg` クロージャ方式で WHERE を組む。sqlc の 1 querytext に `($n IS NULL OR ...)`
-形で全軸を詰め込むと、`q` のような選択条件でも汎用プランに落ちて
+形で全軸を詰め込むと、`q` のような選択条件でも汎用プランに落ちる。すると
 `recordings_title_trgm` / `recordings_description_trgm`（式 GIN）が使われないことがある。
 条件が実際に指定されたときだけ節を足す形にすることで、Postgres が最初に立てる
 プランは常に具体的になる。
 
-**これだけでは片方の劣化しか塞げない。** pgx の既定 `QueryExecModeCacheStatement`
-は SQL テキストごとに named prepared statement を作ってキャッシュし、
+**これだけでは片方の劣化しか塞げない**。pgx の既定 `QueryExecModeCacheStatement`
+は、SQL テキストごとに named prepared statement を作ってキャッシュする。
 Postgres 自身がその statement を 6 回目以降 custom plan から generic plan に
-切り替えることがある（PostgreSQL の PREPARE のプラン選択規則。generic plan は
-bind 値を見ないため trgm 式 GIN が選ばれない可能性がある。実測: 6 回目の実行で
-0.7ms → 290ms）。これは動的 WHERE
-ビルダが解決する「汎用述語（`$n IS NULL OR ...`）による劣化」とは別の劣化経路
-なので、`queryRecordings` はこの経路だけ `pgx.QueryExecModeExec`
+切り替えることがある。これは PostgreSQL の PREPARE のプラン選択規則である。
+generic plan は bind 値を見ないため、trgm 式 GIN が選ばれない可能性がある
+（実測では 6 回目の実行で 0.7ms → 290ms になった）。
+これは動的 WHERE ビルダが解決する「汎用述語（`$n IS NULL OR ...`）による劣化」とは
+別の劣化経路である。そのため `queryRecordings` は、この経路だけ `pgx.QueryExecModeExec`
 （unnamed statement で毎回明示的に再計画）を指定して別途塞いでいる。この経路は
 絞り込みの組み合わせごとに SQL テキスト自体が変わるため、そもそも named
 statement のキャッシュが効く場面が少ない（キャッシュを維持するコストに対して
@@ -211,13 +211,13 @@ DB に残した観測（`recording_ingest_progress`）だけ。api は**毎リ�
 ### エンコードの試行状態も一覧の要素に載せる
 
 未完了のエンコードプロファイルの状態は `Recording.encodeStatus` として一覧要素と
-単体 GET の両方に載せる。取り込み状態（上記）と同じ 3 点を同じ理由で決めている ---
-**別エンドポイントにしない**（「この録画のエンコードは進んでいるのか」は一覧を
-引いた時点で答えが要る質問で、分けると行数ぶんの N+1 になる）、**毎リクエスト
-導出する**（真実は worker が書いた `recording_encode_attempts` の行で、api は
-それと `media_assets` の active な `encoded` から毎回組み立てる。列に焼かない。
-不変条件 9）、**SSE で押さない**（専用トピックも NOTIFY も持たず、既存の
-`recordings` グループの 60 秒 invalidate で収束させる。不変条件 5）。
+単体 GET の両方に載せる。取り込み状態（上記）と同じ 3 点を同じ理由で決めている。
+1 点目は**別エンドポイントにしない**ことである（「この録画のエンコードは進んでいるのか」
+は一覧を引いた時点で答えが要る質問で、分けると行数ぶんの N+1 になる）。2 点目は
+**毎リクエスト導出する**ことである。真実は worker が書いた `recording_encode_attempts`
+の行である。api はそれと `media_assets` の active な `encoded` から毎回組み立てる
+（列に焼かない。不変条件 9）。3 点目は**SSE で押さない**ことである（専用トピックも
+NOTIFY も持たず、既存の `recordings` グループの 60 秒 invalidate で収束させる。不変条件 5）。
 
 取り込み状態と違う点は 2 つある。
 
@@ -225,10 +225,10 @@ DB に残した観測（`recording_ingest_progress`）だけ。api は**毎リ�
   同じ情報を 2 つの配列で主張しない（`encodeStatus` は desired − observed の差だけ）。
 - **`queued` は「来る根拠」があるものにしか付けない。** api ロールは worker にも
   mirakc にも問い合わせない（不変条件 1）ので、「来る」と言えるかどうかは DB と
-  自分の設定だけで決める必要がある。ごみ箱の録画（reconciler が `deleted_at IS NULL`
-  で絞るのでジョブは二度と投入されない）と、`config.encode.profiles` から消えた
-  プロファイル（reconciler の `known_profiles` 絞り込みが投入対象から外す）は、
-  その要素自体を省略する --- 進捗の無いプログレスバーを出さないのと同じ判断
+  自分の設定だけで決める必要がある。ごみ箱の録画は省略する。reconciler が
+  `deleted_at IS NULL` で絞るので、ジョブは二度と投入されない。`config.encode.profiles`
+  から消えたプロファイルも省略する。reconciler の `known_profiles` 絞り込みが
+  投入対象から外すためである。これは進捗の無いプログレスバーを出さないのと同じ判断
   （[frontend/recordings.md](../frontend/recordings.md)）。**「設定を読む」判定を
   api に置いたのはここだけで、mirakc への問い合わせは足していない。**
 
@@ -242,7 +242,7 @@ DB に残した観測（`recording_ingest_progress`）だけ。api は**毎リ�
 
 一覧要素と同形の 1 件（skip 理由・予約からの導線の着地先）。
 **ごみ箱（`deleted_at IS NOT NULL`）の録画も 200 で返す** --- 一覧の
-`trash=true` が既にメタデータを 200 で返しているため、単体 GET だけ厳しくする
+`trash=true` が既にメタデータを 200 で返している。そのため単体 GET だけ厳しくする
 理由が無い（メディア配信が `deleted_at IS NOT NULL` を 404 にする契約
 [api/media.md](media.md) とは別の判断）。**完全削除（purge）済みの
 tombstone（`purged_at` が立った行）だけは 404** にする --- ファイルが既に無く
