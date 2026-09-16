@@ -100,6 +100,9 @@ docker compose exec rokuban rokuban server --all --config /config.yml
 `GET /api/capabilities` も同じく差し替えている --- 立てていないサーバーだと
 画面が「無効です」になって①〜⑦が全滅するため。
 
+**jsdom で測れない領域は、実装より先に判定手段を作る。** この ② はその教訓の実例である
+（CLAUDE.md「テスト規律」）。
+
 `E2E_LIVE_SERVICE_A` / `_B` に渡すのは **SI の `serviceId`**（下の投入例なら
 9001 / 9002）。セグメント/プレイリスト/離脱ヒントの URL に載るのも SI の
 `(network_id, service_id)` そのものである。そちら側の読み替えは要らない。一方
@@ -226,10 +229,3 @@ pnpm exec playwright install chromium webkit
 サーバー + Postgres + Chrome があれば CI でも回せる。ただし、実 Chrome チャンネルの
 インストールと ffmpeg の用意が CI イメージに新しい依存を足すため、現時点では
 ローカル受け入れ確認の位置づけのままにしてある。
-
-## 経緯と失敗事例
-
-- ②の判定手段（`web/e2e/live.mjs`）は、ライブ視聴のフロントエンド実装の
-  着手時点には無く、レビューで「テストが実際には何も
-  守っていない」ことが判明して作られた。実装より先に判定手段を作る教訓の実例
-  （CLAUDE.md「テスト規律」）

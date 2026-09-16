@@ -5,9 +5,8 @@
 ### ロールとキュー購読の関係
 
 **worker ロールだけが River のキューを引く**。他のロールは、そのプロセスが実際に
-worker ロールを持つかどうかに関わらず、ジョブを実行しない。ロール分割デプロイで
-`--roles watcher` のような worker を含まない構成を組んだときに、
-起動時検査が実態より広い安心を与える経路が過去にあった（末尾「経緯と将来の構想」）。
+worker ロールを持つかどうかに関わらず、ジョブを実行しない。worker を含まない構成
+（`--roles watcher` 等）を組んでも、起動時検査が実態より広い安心を与えないよう、
 現在は次の 2 点で構造的に保証している:
 
 1. **watcher 単独プロセスは River クライアントを Start しない**（`--roles worker`
@@ -239,6 +238,12 @@ ScaledJob 本体への annotation だけでは消えない。KEDA が rollout �
 
 site 修飾と `rollout.strategy` は [deploy/k8s/e2e](../../deploy/k8s/e2e/README.md) のハーネスが機械判定する（判定 5 / 3）。**接続先の FQDN には判定が無い** --- 症状はスケールしないことなので判定 2 / 3 / 5 の赤として現れるが、原因を名指しはしない。
 
+#### 将来オプション: チャンク並列エンコード（未実装）
+
+preemption 対策は上記の ScaledJob で十分であり、チャンク化の価値はクラウドバーストによる高速化（数時間のエンコードを worker N 台で数分の壁時計時間に短縮）に限られる。自宅の HW エンコード（QSV/VAAPI）は実時間の数倍で足りるため価値が薄く、クラウド構成専用のオプション。初期実装には含めない。
+
+実装方針の見立て: 実ファイルは分割せず、各ジョブに (開始時刻, 長さ) を渡して 2 段 seek（`-ss` を `-i` の前後で併用）でフレーム精度の境界を出す。映像はチャンクごとに独立ジョブ（境界は強制 IDR）。音声は音声フレーム境界のズレによる接合ノイズを避けるため分割せず、全体を 1 パスで別エンコードして最後に mux（ISDB の番組途中の音声レイアウト切替の正規化もここに集約）。全チャンク完了後に concat demuxer でロスレス結合 + 検証の fan-in ジョブ。構造化エンコードプロファイル（[docs/storage.md](../storage.md)）とは独立な executor の戦略なので、プロファイル定義に手を入れず後付けできる。
+
 ### 定期投入: `rokuban enqueue` の CronJob
 
 `worker.periodic_jobs: false` で出荷し、定期ジョブは CronJob から `rokuban enqueue <ジョブ名>` で投入する。River の `PeriodicJobs` はリーダーだけが投入するので、worker が 0 にスケールする構成では誰も投入しなくなる（[§1](monitoring.md) 参照）。
@@ -314,6 +319,14 @@ watcher はシングルトンロール。`pg_try_advisory_lock` による監督�
 
 k8s の Lease API に依存しないため monolithic mode でも同じコードが動く（[データ層](../data.md) 参照）。フェイルオーバー遅延は最大 poll 間隔（〜15s）だが、いずれも定期 reconcile 前提のロールなので許容範囲。短時間の split-brain はシングルトンロールの仕事がすべて冪等（レベルトリガー + 冪等原則）であるため安全。
 
+#### `internal/role`（`RunSingleton`）は watcher 専用だが畳まない
+
+利用箇所は `cmd/rokuban/server.go` の 1 箇所だけである。それでも独立したパッケージとして残す。
+**「ソケットを connect し続ける」という形のロールが存在する限り必要な機構**だからである
+（[overview.md](../overview.md) §ロール分類の基準）。リーダー選出の失敗モード
+（heartbeat 喪失・split-brain・フェイルオーバー遅延）はテストで固定しておく価値が単独である。
+呼び出し元が 1 つであることは、機構の複雑さが 1 つに減ったという成果であって、削除の根拠ではない。
+
 ### healthz と readyz: liveness は依存を見ない、readiness は DB を見る
 
 `/healthz` は **liveness probe 専用**。依存サービス（DB・mirakc）の状態は一切チェックせず、プロセスが HTTP を返せる限り常に 200 を返す。
@@ -344,28 +357,3 @@ DB 接続失敗はエラーを握り潰さず fail-fast + 明示ログとする�
 
 - **ジョブのストール検知**: ingest のタイムアウトは総時間ではなく**ストール検知**（N 秒間無進捗で切断扱い）。総時間タイムアウトは遅い回線の正常な転送を殺す
 - **外部 liveness**: k8s の liveness probe / systemd watchdog を推奨構成に含める
-
-### 経緯と将来の構想
-
-#### `internal/role`（`RunSingleton`）は watcher 専用になったが畳まない
-
-ruler / reconciler / record_sweep がジョブになり、利用箇所は
-`cmd/rokuban/server.go` の 1 箇所だけになった。それでも独立したパッケージとして残す。
-**「ソケットを connect し続ける」という形のロールが存在する限り必要な機構**だからである
-（[overview.md](../overview.md) §ロール分類の基準）。リーダー選出の失敗モード
-（heartbeat 喪失・split-brain・フェイルオーバー遅延）はテストで固定しておく価値が単独である。
-呼び出し元が 1 つであることは、機構の複雑さが 1 つに減ったという成果であって、削除の根拠ではない。
-
-#### 将来オプション: チャンク並列エンコード（未実装）
-
-preemption 対策は上記の ScaledJob で十分であり、チャンク化の価値はクラウドバーストによる高速化（数時間のエンコードを worker N 台で数分の壁時計時間に短縮）に限られる。自宅の HW エンコード（QSV/VAAPI）は実時間の数倍で足りるため価値が薄く、クラウド構成専用のオプション。初期実装には含めない。
-
-実装方針の見立て: 実ファイルは分割せず、各ジョブに (開始時刻, 長さ) を渡して 2 段 seek（`-ss` を `-i` の前後で併用）でフレーム精度の境界を出す。映像はチャンクごとに独立ジョブ（境界は強制 IDR）。音声は音声フレーム境界のズレによる接合ノイズを避けるため分割せず、全体を 1 パスで別エンコードして最後に mux（ISDB の番組途中の音声レイアウト切替の正規化もここに集約）。全チャンク完了後に concat demuxer でロスレス結合 + 検証の fan-in ジョブ。構造化エンコードプロファイル（[docs/storage.md](../storage.md)）とは独立な executor の戦略なので、プロファイル定義に手を入れず後付けできる。
-
-#### 経緯
-
-- ロールとキュー購読の構造的保証（`--roles watcher` 構成で起動時検査が実態より広い安心を与える経路があった）。
-- キュー名の site 修飾（`<論理名>_<site>`）と watcher の advisory lock キーの site 修飾（`watcher:<site>`）。`delete_reconcile` / `catalog_export` は `cleanup` キューへ配置する。
-- streamer のスケール設計（sticky を使わない / consistent hash / 既定 replicas=1 の可逆性）。id 空間を一覧 API に揃えるため `networks/{networkId}/services/{serviceId}` に変えた。ingress-nginx の `upstream-hash-by` で consistent hash の同じキャプチャがどう書けるかは実機確認が残る（本文では未検証と記載）。
-- 録画配信の URL に site を持たない決定（`recordings.id` は surrogate）。
-- watcher の `processRecord` 冪等化（singleton 性が「正しさ」の要件でなくなった）。
