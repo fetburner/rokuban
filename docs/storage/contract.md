@@ -94,46 +94,46 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
 ### 残量の観測
 
 `storage.media_dir`（アーカイブ）と `storage.scratch_dir`（ローカルスクラッチ）の
-容量は、worker が定期的に statfs 相当で観測して `storage_sync` に射影し、
+容量は、worker が定期的に statfs 相当で観測して `storage_sync` に射影する。
 `GET /api/storage` で読める。api ロールはファイルシステムに
-依存しない（不変条件 1）ので、観測はファイルシステムを持つ worker の仕事に
+依存しない（不変条件 1）。そのため観測は、ファイルシステムを持つ worker の仕事に
 限る --- mirakc の recording.basedir（録画バッファ、上記「2 階層」表のエッジ側）は
-対象外で、Rokuban 自身が直接読み書きする 2 つのローカルパスだけを見る。
+対象外である。Rokuban 自身が直接読み書きする 2 つのローカルパスだけを見る。
 
 `tuner_sync`（[docs/data.md](../data.md) §6.5）と同じ「使い捨てプロジェクション」の
-形を採る: 真実は常にファイルシステム側にあり、毎パス全量を作り直せる観測値
-なので全行 upsert で常に最新観測だけを保持する（過去の観測を積むログにはしない。
+形を採る。真実は常にファイルシステム側にあり、毎パス全量を作り直せる観測値である。
+そのため全行 upsert で常に最新観測だけを保持する（過去の観測を積むログにはしない。
 不変条件 9）。`observed_at` の鮮度が「観測ループが止まっている」ことを示す唯一の
 手がかりになる（沈黙は保証ではない --- docs/data.md §6.5 の同じ姿勢）。
 
 ### rel_path の名前空間
 
-アーカイブ（`media_assets`）は `site` 列を持たず単一だが、原本の `rel_path` は mirakc の contentPath 由来でサイトスコープの名前である。2 サイトが同じ contentPath で録ると同じ実ファイルを取り合う（DB は `rel_path` の一意索引で片方の commit を落とすが、実ファイルは先に書いた方が上書きされて壊れる）ため、**原本は `sites/{site}/` を前置する**。
+アーカイブ（`media_assets`）は `site` 列を持たず単一だが、原本の `rel_path` は mirakc の contentPath 由来でサイトスコープの名前である。2 サイトが同じ contentPath で録ると、同じ実ファイルを取り合う。DB は `rel_path` の一意索引で片方の commit を落とすが、実ファイルは先に書いた方が上書きされて壊れる。そのため**原本は `sites/{site}/` を前置する**。
 
-- **トップレベルの予約ディレクトリは `catalog/` / `thumbnails/` / `sites/` の 3 つ。** `catalog/` は削除 reconcile の孤児回収と rescue スキャンが SkipDir する予約ディレクトリ、`thumbnails/` はサムネイルの名前空間（§5.1）、`sites/` が site スコープの原本の名前空間
-- **前置の 1 段目を site 名そのもの（`{site}/...`）にせず、固定の `sites/` を挟む。** 当初案（site 名を先頭成分にする）は、前置前に ingest 済みの既存行の先頭成分と site 名が偶然一致すると衝突する --- 例えば `filename_template` が `"tokyo/..."` のような静的接頭辞を書いていて、かつ site 名が `tokyo` だと、新規 ingest の rel_path が既存行と同じになり、一意索引が効く前に実ファイルが上書きされる（site 名の構文 `^[a-z0-9]([_-]?[a-z0-9])*$` は日付ディレクトリ名や `anime` のような静的な語も許すため、理論上だけの懸念ではない）。`sites/` を固定の 1 段目に挟むことで、新規 ingest の rel_path は必ず `sites/` から始まり、それ以前の既存行が `sites/` から始まっていない限り構造的に衝突しない
-- **前置するのは ingest（`internal/worker/ingest.go` の `determineRelPath`）であって、contentPath テンプレートではない。** ingest は原本 `rel_path` の唯一の書き手なので、ここで前置すれば入力（reconciler が生成する contentPath の形や、ユーザーが書く `filename_template` の内容）に関わらず名前空間が保たれる
+- **トップレベルの予約ディレクトリは `catalog/` / `thumbnails/` / `sites/` の 3 つ**。`catalog/` は削除 reconcile の孤児回収と rescue スキャンが SkipDir する予約ディレクトリである。`thumbnails/` はサムネイルの名前空間（§5.1）、`sites/` が site スコープの原本の名前空間である
+- **前置の 1 段目を site 名そのもの（`{site}/...`）にせず、固定の `sites/` を挟む**。当初案（site 名を先頭成分にする）は、前置前に ingest 済みの既存行の先頭成分と site 名が偶然一致すると衝突する。例えば `filename_template` が `"tokyo/..."` のような静的接頭辞を書いていて、かつ site 名が `tokyo` だと、新規 ingest の rel_path が既存行と同じになる。すると一意索引が効く前に、実ファイルが上書きされる。site 名の構文 `^[a-z0-9]([_-]?[a-z0-9])*$` は日付ディレクトリ名や `anime` のような静的な語も許すため、理論上だけの懸念ではない。`sites/` を固定の 1 段目に挟むことで、新規 ingest の rel_path は必ず `sites/` から始まる。それ以前の既存行が `sites/` から始まっていない限り、構造的に衝突しない
+- **前置するのは ingest（`internal/worker/ingest.go` の `determineRelPath`）であって、contentPath テンプレートではない**。ingest は原本 `rel_path` の唯一の書き手である。そのためここで前置すれば、入力（reconciler が生成する contentPath の形や、ユーザーが書く `filename_template` の内容）に関わらず名前空間が保たれる
 - **前置は空の相対パスを通す前に弾く。** contentPath / Content.Path がどちらも空だと前置前の相対パスは `.`（カレントディレクトリ）になる。前置後は `sites/{site}/.` が `Join`/`Clean` で `.` が消えて `sites/{site}` という一見正当なパスになり `mediapath.Resolve` の脱出検知を通ってしまう。すると一時ファイル作成が `{media_dir}/sites/{site}` を通常ファイルとして作ってしまい、以後その site 配下の ingest が全て `MkdirAll` で「not a directory」になる。`determineRelPath` は前置前に相対パスが `.` であることを明示的に検査して弾く
-- **`media_dir` 配下に、録画の実体を指すリンクを作らない（symlink / hard link）。** 孤児回収の走査（`internal/worker/delete_reconcile.go` の `walkMediaFiles`）は symlink かどうかを見ずに台帳と突き合わせるため、置いた symlink は未知の rel_path として孤児候補になり、[retention.md](retention.md) §7 のエイジング（mtime 猶予 7 日 + 14 日）後に `os.Remove` でリンクだけ黙って消える（`mediapath.Resolve` は字句判定のみで symlink を評価せず止めない）。hard link は regular file と区別できず、同じ実体に live な録画が 2 行並ぶ（`(dev, ino)` による検出はスキャンをまたぐと inode がバックアップ復元で変わるため実装しない）。rescue の走査と `inplace.Register` は symlink だけを弾く
+- **`media_dir` 配下に、録画の実体を指すリンクを作らない（symlink / hard link）**。孤児回収の走査（`internal/worker/delete_reconcile.go` の `walkMediaFiles`）は symlink かどうかを見ずに台帳と突き合わせる。そのため置いた symlink は、未知の rel_path として孤児候補になる。[retention.md](retention.md) §7 のエイジング（mtime 猶予 7 日 + 14 日）後に `os.Remove` でリンクだけ黙って消える（`mediapath.Resolve` は字句判定のみで symlink を評価せず止めない）。hard link は regular file と区別できず、同じ実体に live な録画が 2 行並ぶ（`(dev, ino)` による検出はスキャンをまたぐと inode がバックアップ復元で変わるため実装しない）。rescue の走査と `inplace.Register` は symlink だけを弾く
 - **ディレクトリへの symlink も作らない。** rescue と孤児回収の走査はどちらも symlink を辿らないため、配下のファイルは孤児候補にすらならず rescue からも見えない（災害復旧で救えない）。symlink エントリ自身は未知の rel_path として渡り、上と同じ理由でエイジング後にリンクだけ消える。リンク先が `media_dir` 内を指す構成では、配下の active 行が実体無しとして誤報され続ける
-- **`media_dir` 自身が symlink であることは許す**（`/var/lib/rokuban/media -> /mnt/disk1/media`）。**成り立つのは、走査 2 本 --- rescue（`rescueStorage`）と削除 reconcile（`walkMediaFiles`）--- が root を `filepath.EvalSymlinks` で解決してから walk しているからであって、この解決を外すと両方とも黙って壊れる**: `filepath.Walk` / `WalkDir` は root を `Lstat` して `IsDir()` が false ならコールバックを 1 回呼んで終わるので、rescue は 0 件のまま「成功」し（災害復旧が最も要る場面だけが壊れる）、削除 reconcile は `seenOnDisk` が `.` の 1 件になるため全損セーフガード（走査が 0 件なら記録を見送る）も働かず `active` な行が全件「実体無し」と誤報される。解決した値は root だけでなく `catalog/` の除外判定と `rel_path` の基準にも同じものを使う（片方だけ解決すると `filepath.Rel` が `../` を積んだ rel_path を返し、台帳と一致しなくなる）。root を解決することと、配下にリンクを作らないこと（上の 2 つ）は別の話であって、片方をもう片方の根拠にしない
+- **`media_dir` 自身が symlink であることは許す**（`/var/lib/rokuban/media -> /mnt/disk1/media`）。**成り立つのは、走査 2 本が root を `filepath.EvalSymlinks` で解決してから walk しているからである**。走査 2 本とは、rescue の `rescueStorage` と削除 reconcile の `walkMediaFiles` である。**この解決を外すと両方とも黙って壊れる**。`filepath.Walk` / `WalkDir` は root を `Lstat` して `IsDir()` が false ならコールバックを 1 回呼んで終わる。そのため rescue は 0 件のまま「成功」する（災害復旧が最も要る場面だけが壊れる）。削除 reconcile は `seenOnDisk` が `.` の 1 件になるため、全損セーフガード（走査が 0 件なら記録を見送る）も働かない。その結果 `active` な行が全件「実体無し」と誤報される。解決した値は root だけでなく、`catalog/` の除外判定と `rel_path` の基準にも同じものを使う（片方だけ解決すると `filepath.Rel` が `../` を積んだ rel_path を返し、台帳と一致しなくなる）。root を解決することと、配下にリンクを作らないこと（上の 2 つ）は別の話である。片方をもう片方の根拠にしない
 - **サムネイルは `thumbnails/{recording_id}.jpg` のまま**（§5.1）。原本の contentPath に依存しないので `sites/` 前置の影響を受けない（構造的に衝突しない）
-- **派生物は原本の dir を引き継ぐので自動的に前置される**（`EncodedRelPath`、[retention.md](retention.md) §6 参照。原本が `sites/tokyo/20240101/....m2ts` なら派生物は `sites/tokyo/20240101/...._h264.mp4` になる）
+- **派生物は原本の dir を引き継ぐので自動的に前置される**（`EncodedRelPath`、[retention.md](retention.md) §6 参照）。原本が `sites/tokyo/20240101/....m2ts` なら、派生物は `sites/tokyo/20240101/...._h264.mp4` になる
 - **原本と encoded の全行は `sites/{site}/` 前置済みである。** 前置なしの行は worker の起動時検査で拒否する
 - **2 種類の予約を分けて理解する。** どちらも `internal/config` にコードがあるが、根拠が違う:
   1. **トップレベルディレクトリ名の予約**（`catalog` / `thumbnails` / `sites` の 3 つ）。これは**今も load-bearing**: `catalog/` は削除 reconcile の孤児回収と rescue スキャンが SkipDir する対象、`thumbnails/` はサムネイルの名前空間、`sites/` は本節の原本の名前空間。この 3 つのいずれかを一般のディレクトリ名として使うと実際に壊れるので、この予約は外せない
-  2. **site 名としての `catalog` / `thumbnails` の禁止**（`internal/config.reservedSiteNames`）。導入時の根拠は「`{site}/` を先頭成分にする前提で、site 名がこの 2 つと一致するとトップレベル予約ディレクトリと直接衝突する」だったが、`sites/` を挟んだことで site 名は常に `sites/{site}/...` に閉じ込められ、トップレベルの `catalog/` / `thumbnails/` とは構造的に衝突しなくなった。**この禁止を残しているのはパス衝突を防ぐためではなく、緩めても得られる自由度（`catalog` / `thumbnails` を site 名にしたい運用要求は無い）が、緩めるコスト（`internal/config` のバリデーション・テストの変更）に見合わないため。** `sites` 自体を site 名にすることは禁止する必要がない（`sites/sites/...` になるだけで衝突しない）
+  2. **site 名としての `catalog` / `thumbnails` の禁止**（`internal/config.reservedSiteNames`）。導入時の根拠は「`{site}/` を先頭成分にする前提で、site 名がこの 2 つと一致するとトップレベル予約ディレクトリと直接衝突する」だった。だが `sites/` を挟んだことで、site 名は常に `sites/{site}/...` に閉じ込められる。トップレベルの `catalog/` / `thumbnails/` とは構造的に衝突しなくなった。**この禁止を残しているのはパス衝突を防ぐためではない**。緩めても得られる自由度（`catalog` / `thumbnails` を site 名にしたい運用要求は無い）が、緩めるコスト（`internal/config` のバリデーション・テストの変更）に見合わないためである。`sites` 自体を site 名にすることは禁止する必要がない（`sites/sites/...` になるだけで衝突しない）
 
 ## 5.1 サムネイル
 
 録画 1 本につき `kind = 'thumbnail'` の media_asset を 1 つ作る（`UNIQUE (recording_id, kind, profile)`）。
 
-- **投入（レベルトリガー）**: active な original があり active な thumbnail が無く、
-  かつごみ箱（`recordings.deleted_at IS NOT NULL`）に入っていない録画だけ
-  River `thumbnail` キューへ unique ジョブ（`recording_id`）を積む。ごみ箱の録画を
-  除外するのは、配信側（`GetThumbnailMediaAssetForServing`）が `deleted_at IS NULL`
-  を要求するため、生成しても誰にも配られず猶予期間ぶん ffmpeg を無駄打ちするだけ
-  だから。ingest コミット後のヒント投入と `thumbnail_reconcile` の定期ギャップ
+- **投入（レベルトリガー）**: 次の条件を満たす録画だけ、River `thumbnail` キューへ
+  unique ジョブ（`recording_id`）を積む。条件は「active な original があり、active な
+  thumbnail が無く、かつごみ箱（`recordings.deleted_at IS NOT NULL`）に入っていない」
+  ことである。ごみ箱の録画を除外するのは、配信側（`GetThumbnailMediaAssetForServing`）
+  が `deleted_at IS NULL` を要求するためである。生成しても誰にも配られず、猶予期間ぶん
+  ffmpeg を無駄打ちするだけになる。ingest コミット後のヒント投入と `thumbnail_reconcile` の定期ギャップ
   埋めは同じ条件を使う。定期パスは、delete reconcile が原本の実体無しを確認した
   `missing_media_assets` の原本を既知の恒久失敗として除外する。ファイル復旧後に
   マーカーが消えれば、次の定期パスで再び候補になる。`EnqueueMissingThumbnails`
@@ -144,7 +144,8 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
 - **画素縦横比**: ffmpeg で入力の SAR を偶数幅の正方形ピクセルへ焼き込んでから
   JPEG 化する。JPEG の SAR を解釈しないブラウザでも anamorphic 映像を歪ませない
 - **ストレージ契約**: ffmpeg は `storage.scratch_dir` に JPEG を書き、完成後に
-  メディアへストリームコピー + fsync → `media_assets` INSERT（`ON CONFLICT DO NOTHING`）
+  メディアへストリームコピー + fsync する。その後 `media_assets` に INSERT する
+  （`ON CONFLICT DO NOTHING`）
 - **相対パス**: `thumbnails/{recording_id}.jpg`（原本の contentPath に依存しない。
   原本削除後もパスが安定する）
 - **配信**: streamer の `GET /api/media/recordings/{id}/thumbnail`（openapi 外。api はファイルを開かない）

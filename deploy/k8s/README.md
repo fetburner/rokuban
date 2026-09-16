@@ -133,9 +133,6 @@ CRD が無いクラスタに apply すると、その部分だけが
 - **KEDA のトリガのクエリは物理キュー名で書く。** site 束縛キューは
   `<論理名>_<site>` に修飾される。論理名のまま書くと**誰も入れないキューを
   数え続けて永久にスケールしない**（判定は `TestScaledJobTriggersMatchTheirQueue`）
-
-この 2 つ（generator にする / env を機微に限る）の判断の根拠は
-[docs/operations/k8s.md](../../docs/operations/k8s.md) §マニフェストの配布形式。
 - **パスワードに改行を含むものは使えない。前後の空白は落ちる**（`base/config.yml`
   の `password:` のコメントに実測付き）。記号（`'` `"` `\` `*` `{` `#` `: `）は通る
 - **image はロールごとに差し替えられる。** overlay の `images:` で
@@ -153,6 +150,9 @@ CRD が無いクラスタに apply すると、その部分だけが
   遅らせるため。レプリカを増やしても同じ DB を見ているので同時に落ちる。
   この形の全断が起きるなら、閾値ではなく DB 側（プール上限・statement_timeout。
   [docs/operations.md](../../docs/operations.md) §3）を見る
+
+**config を generator にする / env を機微に限る、の 2 つの判断の根拠は
+[docs/operations/k8s.md](../../docs/operations/k8s.md) §マニフェストの配布形式にある。**
 
 kind での動作確認手順は [docs/runbook/k8s.md](../../docs/runbook/k8s.md)。
 

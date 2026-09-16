@@ -10,7 +10,7 @@
    - mirakc の形をしてよいのは短命な導出状態（`reservations` の base、`schedule_sync`、`record_sync`）だけ。`schedule_sync_snapshots` は mirakc の予約を写さず、全量観測の鮮度だけを持つ
    - 永続テーブル（`recordings` / `media_assets` / `drop_stats`）に mirakc の ID や enum を**構造として**持ち込まない。mirakc の record id は `record_sync` にのみ存在し、`record_sync.recording_id` が永続側への片方向ポインタになる
    - 例外: 品質イベント（`recording.failed` の理由等）は履歴として価値があるため、**構造化カラムではなく jsonb の自由形式ログ**として保持する（システムのロジックはその中身に依存しない）
-   - **未解決: 同一 mirakc を複数の Rokuban が共有すると `IsOurs` の tag（`program:{id}`）が衝突し、互いの schedule / record を自分のものと誤認して消し合う。** config で tag を焼き分けても解消しない（mirakc の schedule は programId が主キーなので、複数 Rokuban の desired が同一番組を取り合う問題が tag の手前で残る）。対処は「複数共有を支持するか」の判定基準を決めてから
+   - **未解決: 同一 mirakc を複数の Rokuban が共有すると `IsOurs` の tag（`program:{id}`）が衝突し、互いの schedule / record を自分のものと誤認して消し合う**。config で tag を焼き分けても解消しない。mirakc の schedule は programId が主キーなので、複数 Rokuban の desired が同一番組を取り合う問題が tag の手前で残る。対処は「複数共有を支持するか」の判定基準を決めてから
 3. **コミット = DB 行**（不変条件 3）: ファイルの公開は `media_assets` 行の INSERT。rename のアトミック性に依存しない
 4. **tombstone**: 物理削除後もメタデータ行は残す。ドロップ統計・録画履歴・重複排除は削除後も機能する
 5. **識別子 / 存在のスコープ**: mirakc が指すものは 2 種類ある。**record id はインスタンス単位で採番される識別子**で、取り違えると別の録画を指してしまう。**programId（`Service.id` も同型）は放送そのものから合成される値**で、識別子ではなく存在のスコープしか持たない。取り違えても別の番組にはならず、その site の EPG に無ければ 404 になるだけである（[ruler](../recording/ruler.md)「サイトの扱い」）
@@ -27,7 +27,7 @@
    - 例外は **`circuit_breakers`**（§3.6）。「誰かが確認した」は再取得できないので、このスキーマで唯一の意図的な非導出状態
 7. **意味を持たない行を作らない**（CLAUDE.md 不変条件 10）
    - **行の存在そのものを主張として使う**。空の上書きは「行が無い」（`program_overrides`）、停止していないブレーカーは「行が無い」（`circuit_breakers`）。詳細は [invariants.md](../invariants.md) §10
-   - **同じ述語を 2 箇所目のクエリファイルに書く前に view にする。** 述語の一致をコメント（「揃えること」）で守るのは、CHECK で禁止するより弱い —— view なら乖離が表現不可能になる（`program_investments`）。ただし述語の正体が**再計算できない観測**（一度きりの事実であって、毎回作り直せる派生値ではない）なら、view で導出せず専用表の行の存在にする（`never_scheduled_events`。表自体は GC で有限の寿命を持つが、行が持つ値そのものは観測結果であり式では導けない）
+   - **同じ述語を 2 箇所目のクエリファイルに書く前に view にする。** 述語の一致をコメント（「揃えること」）で守るのは、CHECK で禁止するより弱い —— view なら乖離が表現不可能になる（`program_investments`）。ただし述語の正体が**再計算できない観測**（一度きりの事実であって、毎回作り直せる派生値ではない）なら、view で導出せず専用表の行の存在にする（`never_scheduled_events`）。表自体は GC で有限の寿命を持つが、行が持つ値そのものは観測結果であり、式では導けない
 8. **型の規律**
    - 状態は Postgres の enum 型ではなく `text` + `CHECK`（enum 型はマイグレーションが面倒で利点が薄い）
    - 時刻はすべて `timestamptz`
@@ -40,7 +40,7 @@
 9. **表は行の寿命で割る**（[CLAUDE.md](../../CLAUDE.md) 不変条件 12）
    - **1 表 = 1 つの書き手 = 1 つの寿命。** 原則 6 は列の粒度なので、行に寿命が混ざるケースを網に掛けられない。`reservations` に 3 つの寿命が同居していた実例は [invariants.md](../invariants.md) §12
    - 新しい列を足すときは「**この値はこの行と同時に生まれて同時に死ぬか**」を問う。違えば `(site, program_id)` を主キーにした別表にする
-   - **この寿命チェックは永続表に対して盲目**（[CLAUDE.md](../../CLAUDE.md) 不変条件 13）。**recordings 本体は「試行の帰結の観測」だけを持つ脊椎で、脊椎（watcher / reconciler）以外のループが書く状態は `recording_id` を FK に持つ衛星表（`media_assets` がその形）に置く。** 境界（`deleted_at` / `superseded_at` は衛星に出せない等）は [invariants.md](../invariants.md) §13
+   - **この寿命チェックは永続表に対して盲目**（[CLAUDE.md](../../CLAUDE.md) 不変条件 13）。**recordings 本体は「試行の帰結の観測」だけを持つ脊椎**。脊椎（watcher / reconciler）以外のループが書く状態は、`recording_id` を FK に持つ衛星表（`media_assets` がその形）に置く。境界（`deleted_at` / `superseded_at` は衛星に出せない等）は [invariants.md](../invariants.md) §13 にある
 10. **形を固定する前に、その形を決める判定基準を書く**（[CLAUDE.md](../../CLAUDE.md) 不変条件 11）
     - 導出テーブルの列は**書き手のコードと同じ PR で決める**。新しい列を足すときは「これを書くコードは今あるか」を問う。判定基準が後から来て `reservations` の列が 5 回変更された経緯は [invariants.md](../invariants.md) §11
     - 将来への先払いは**高い方から**。`site` 列（安い方、DB）は v1 から先払いしていたが、API の資源同定（高い方）は後から判定基準を書いた（[api/rest.md](../api/rest.md) §エンドポイント設計の規約）。現行のパスが全エンドポイントでこの基準に適合しているとは限らない（同節の未解決を参照）

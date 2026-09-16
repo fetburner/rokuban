@@ -121,8 +121,8 @@ worker ロールの River 定期ジョブ `epg_sync`（既定 10 分間隔、専
 逆にマルチ編成の実番組は `name` を持つのでこのフィルタを通り、予約・録画できる。
 
 EPGStation は `relatedItems` を見る `isMainProgram()` と name チェックの二段で同じことを
-しているが、実データ 7139 件で「`name` があって shared の main でない番組」が 0 件だったため、
-`name` の有無だけで同一の結果になる（`relatedItems` の移植は不要）。
+している。だが実データ 7139 件で「`name` があって shared の main でない番組」が 0 件だった
+ため、`name` の有無だけで同一の結果になる（`relatedItems` の移植は不要）。
 
 予約・録画はこのテーブルに依存しない。予約の GC は `program_start_at + program_duration_ms`
 で判定し（§3）、録画した番組情報は recordings に非正規化スナップショットされる（§5）。

@@ -213,8 +213,8 @@ jobs:
         with:
           version: v2.13.2
 
-  # README / CLAUDE / deploy/k8s の README / docs 全体を textlint で検査する。運用文書では
-  # sentence-length を有効にし、設計文書では他の日本語規則を検査する。
+  # 保守対象の Markdown 全体（README.md / CLAUDE.md / deploy/**/*.md / docs/**/*.md /
+  # web/e2e/**/*.md）を textlint で検査する。プロファイルは 1 本で、違反 0 件が gate。
   docs-lint:
     runs-on: ubuntu-latest
     steps:

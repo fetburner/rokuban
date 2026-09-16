@@ -4,7 +4,7 @@
 
 ### 4.2 base / overrides の分離
 
-**潰したい形は「ユーザーの意図を、コントローラが再生成する行に書く」こと。** EPGStation v2.10.0 の運用では、この形から 2 つの症状が出ていた --- ①除外がルール予約単位なので、複数ルールがマッチしていると別ルールの予約が生きて録画される ②除外フラグが導出状態（予約行）にあるので、EPG 更新でルーラーが予約を再生成するとフラグごと消える。以下の設計は両方を構造的に潰す。
+**潰したい形は「ユーザーの意図を、コントローラが再生成する行に書く」こと**。EPGStation v2.10.0 の運用では、この形から 2 つの症状が出ていた。①除外がルール予約単位なので、複数ルールがマッチしていると別ルールの予約が生きて録画される。②除外フラグが導出状態（予約行）にあるので、EPG 更新でルーラーが予約を再生成するとフラグごと消える。以下の設計は両方を構造的に潰す。
 
 reservations の行を 2 層に分ける:
 
@@ -12,7 +12,7 @@ reservations の行を 2 層に分ける:
 - **overrides**: ユーザーが上書きしたフィールドのみを持つ疎な jsonb。**`program_overrides` 表に載り、api（ユーザー操作）だけが書く**
 - **effective = base + overrides**。reconciler が mirakc に同期し ingest/encode が参照するのは常に effective
 
-**意図（overrides）は導出行（reservations）とは別の表に置く。** ruler が base だけを書く規律でも上書きは守れるが、1 行が「ユーザー意図の永続記録」と「ruler の導出結果」を兼ねると、昇格・取消の分岐・削除の例外という 3 つの複雑さが派生する。表を分けると:
+**意図（overrides）は導出行（reservations）とは別の表に置く**。ruler が base だけを書く規律でも上書きは守れる。だが 1 行が「ユーザー意図の永続記録」と「ruler の導出結果」を兼ねると、昇格・取消の分岐・削除の例外という 3 つの複雑さが派生する。表を分けると:
 
 | 1 表だったときに必要だったもの | 意図を分けた後 |
 |---|---|
@@ -22,11 +22,11 @@ reservations の行を 2 層に分ける:
 
 `skip` は overrides のキーではなく **`program_intents.action`（`record` / `skip`）** という列にする。列なので base 側の skip に対する優先順位が明示的に決まり（`effective.skip = (action = 'skip') OR (意図がなく base.skip)`）、jsonb マージに細工を仕込まなくてよい。重複排除が base に skip を立てても、ユーザーの `record` 意図が勝つ。
 
-**この式は両方向をテストする。** `action = 'skip'` のときだけ `skip = true` を書く実装は式の片側しか満たしておらず、`action = 'record'` が base 側の skip を打ち消さない --- 「重複と判定された番組をユーザーが録れと指定しても録られない」として現れる。**意図があれば `action` が skip を決め切る**（`record` なら false で上書きする）。
+**この式は両方向をテストする**。`action = 'skip'` のときだけ `skip = true` を書く実装は式の片側しか満たしていない。その実装では `action = 'record'` が base 側の skip を打ち消さず、「重複と判定された番組をユーザーが録れと指定しても録られない」として現れる。**意図があれば `action` が skip を決め切る**（`record` なら false で上書きする）。
 
 意図と上書きの寿命は放送の寿命に揃える（番組終了後に GC）。
 
-ruler は EPG 更新のたびに base を丸ごと再計算してよい --- **overrides は別表（`program_overrides`）にあるので構造的に触れない**。3-way merge は不要。ruler は `reservations` を、api は `program_intents` / `program_overrides` を書くので競合もない（ruler のパスはサイト単位で排他。[データ層](../data.md) §2）。api が `reservations` を書くのはルール削除 API の同期削除 1 本だけで、そこも WHERE の NOT EXISTS を適用の瞬間に再評価するため、並行して着地する手動予約を踏み潰す窓は生じない（ruler はルール一覧と desired を tx の外で読み tx 内で書くため、ルール削除と同時走行したパスが `rule_id` の FK 制約で失敗し再試行になる形自体は残る。§4.4）。**ルール側の変更は上書きしていないフィールドにだけ自動伝播する**（ユーザーの直感と一致）。
+ruler は EPG 更新のたびに base を丸ごと再計算してよい --- **overrides は別表（`program_overrides`）にあるので構造的に触れない**。3-way merge は不要。ruler は `reservations` を、api は `program_intents` / `program_overrides` を書くので競合もない（ruler のパスはサイト単位で排他。[データ層](../data.md) §2）。api が `reservations` を書くのはルール削除 API の同期削除 1 本だけである。そこも WHERE の NOT EXISTS を適用の瞬間に再評価するので、並行して着地する手動予約を踏み潰す窓は生じない。ruler はルール一覧と desired を tx の外で読み tx 内で書くため、ルール削除と同時走行したパスが `rule_id` の FK 制約で失敗し再試行になる形自体は残る（§4.4）。**ルール側の変更は上書きしていないフィールドにだけ自動伝播する**（ユーザーの直感と一致）。
 
 UI: 上書き中のフィールドにマーカー表示 + フィールド単位/予約単位の「ルールに戻す」（override を消すだけ）。
 
@@ -45,14 +45,14 @@ UI: 上書き中のフィールドにマーカー表示 + フィールド単位/
 
 #### overrides API の形
 
-- `PATCH /api/sites/{site}/programs/{programId}/overrides` --- 値を書いたフィールドは override を設定、`reset` 配列に名前を挙げたフィールドは override を削除、どちらにも現れないフィールドは変更しない
+- `PATCH /api/sites/{site}/programs/{programId}/overrides` --- 値を書いたフィールドは override を設定する。`reset` 配列に名前を挙げたフィールドは override を削除する。どちらにも現れないフィールドは変更しない
 - `DELETE /api/sites/{site}/programs/{programId}/overrides` --- 番組単位の「ルールに戻す」（`action` は触らない）
 
 **`null` で消す形にはしない。** Go の `*T`（oapi-codegen が optional に生成する形）は「キーが無い」と「`null`」を区別できないため、null 方式では「消す」が「変更しない」に化けて黙って壊れる。明示的な `reset` 配列なら曖昧さがない。同じフィールドを値と `reset` の両方に書いたら 400（意図が不明なので推測しない）、`reset` に未知のフィールド名があったら 400（タイポを黙って無視しない）。
 
 `skip` は PATCH では扱わない（`action` 列が担う）。取消は `PUT /api/sites/{site}/programs/{programId}/intent {action: skip}`（§4.4「取消」参照）。
 
-マージは **Go 側で `reservation.Options` の型付きフィールドとして行う**。SQL で `overrides || $1::jsonb` / `overrides - $1::text[]` とやらないのは下記「jsonb を許す条件」のため。同時 PATCH の心配は要らない（Rokuban は構造的に単一世帯用アプリで認証機構を持たない。[overview.md](../overview.md) §認証）ので、`program_snapshots` 行（PATCH の前段で必ず upsert する。FK の前提）を UPSERT の行ロックで直列化する。宛先が `reservations` ではなく `(site, programId)` なので、`reservations` 行の存在に依存しない。
+マージは **Go 側で `reservation.Options` の型付きフィールドとして行う**。SQL で `overrides || $1::jsonb` / `overrides - $1::text[]` とやらないのは下記「jsonb を許す条件」のため。同時 PATCH の心配は要らない（Rokuban は構造的に単一世帯用アプリで認証機構を持たない。[overview.md](../overview.md) §認証）。そのため `program_snapshots` 行（PATCH の前段で必ず upsert する。FK の前提）を UPSERT の行ロックで直列化する。宛先が `reservations` ではなく `(site, programId)` なので、`reservations` 行の存在に依存しない。
 
 #### overrides は `program_intents` とは別の表に置く
 
@@ -132,13 +132,13 @@ state は 2 種類の別の情報を答えている。いずれも列として�
 
 導出値を「同期対象か」のフィルタとして使ってはならない。`active` / `detached` は UI 表示（マーカー）のための派生値として扱う。**列に焼くと、実装は式ではなく前パスからの遷移を書くことになり、片側の分岐しか持たなくなる**（ルールを削除した経路は FK が先に `rule_id` を落とすので detached にならない、等。[invariants.md](../invariants.md) §9「式」）。
 
-重要: **skip の意図そのものは削除しない**。予約行は desired に入らないので消えるが、除外は `program_intents` に残る（この行の FK は `program_snapshots` を指すので予約行の削除では落ちない）。そのため「EPG の一時不整合で番組消失 → 予約行が消える → EPG 回復 → ruler が新規生成」という経路を通っても除外は生き残り、EPGStation の症状②（除外が外れる。§4.2 冒頭）は EPG フリッカー経由では再発しない。
+重要: **skip の意図そのものは削除しない**。予約行は desired に入らないので消えるが、除外は `program_intents` に残る（この行の FK は `program_snapshots` を指すので予約行の削除では落ちない）。そのため「EPG の一時不整合で番組消失 → 予約行が消える → EPG 回復 → ruler が新規生成」という経路を通っても除外は生き残る。EPGStation の症状②（除外が外れる。§4.2 冒頭）は EPG フリッカー経由では再発しない。
 
 - **再アタッチ**: ルールが再マッチしたら base を再計算して再アタッチ（overrides はそのまま）。EPG がちらついても除外は生き残る
 - **GC**: detached 行の削除は「番組の終了時刻を過ぎた後」のみ。ユーザー意図の寿命を放送の寿命に揃える
 - programId 一意性は detached 行にも適用され、再マッチ時の重複予約は構造的に生まれない
-- ルール自体の削除も同じ規則（**`record` 意図または上書きなし → 削除 / `record` 意図または上書きあり → 残す**。`program_investments` view の定義そのもの。`intent{skip}` のみの予約は投資に数えず削除する）。**ユーザーが個別に編集した予約は、ルールを消しても手動予約と同等に生き残る**。意図は番組単位のユーザーの投資であり、ルール削除とは別の意図。録画ドメインでは録り逃しが不可逆で余計な録画は消せば済むため、迷ったら録る側に倒す
-- **ルール削除の UX は可視化で解決する**: 削除 API は内訳（予約 N 件を削除、M 件は編集済みのため detached 化）を返し、UI は**削除後のトースト**に出す（`web/src/pages/rules.tsx` の `deleteRuleResultMessage`。両方 0 件なら数字を出さない —— 何も起きていない削除に数字を添えても読み手の判断は変わらない）。**確認ダイアログに件数は出さない**。内訳は削除の実行結果だが、原理的には押す前にも数えられる（`DeleteRule` は削除の**前に** `CountReservationsByRuleWithIntent` で同じ述語を数えている）—— 数えるための GET を `openapi.yaml` に足す必要があり、件数は「消すか消さないか」の判断を変えないので足さない、という判断である。事前に伝えるのは押した後で取り返せない帰結の方で、重複排除を有効にしたルールでは「履歴も比較のスコープから外れる」を警告する（`deleteRuleWarning`。[ruler](ruler.md) §3.1「ルールの削除は履歴のスコープを消す」）。detached 行は予約一覧にマーカー付きで現れ、個別に削除できる（§4.4 の取消分岐）。残る行は定義上「ユーザーが触ったものだけ」なので件数は常に少なく、1 件ずつ説明可能
+- ルール自体の削除も同じ規則である（**`record` 意図または上書きなし → 削除 / `record` 意図または上書きあり → 残す**）。これは `program_investments` view の定義そのものである。`intent{skip}` のみの予約は投資に数えず削除する。**ユーザーが個別に編集した予約は、ルールを消しても手動予約と同等に生き残る**。意図は番組単位のユーザーの投資であり、ルール削除とは別の意図。録画ドメインでは録り逃しが不可逆で余計な録画は消せば済むため、迷ったら録る側に倒す
+- **ルール削除の UX は可視化で解決する**。削除 API は内訳（予約 N 件を削除、M 件は編集済みのため detached 化）を返す。UI はそれを**削除後のトースト**に出す（`web/src/pages/rules.tsx` の `deleteRuleResultMessage`。両方 0 件なら数字を出さない —— 何も起きていない削除に数字を添えても読み手の判断は変わらない）。**確認ダイアログに件数は出さない**。内訳は削除の実行結果だが、原理的には押す前にも数えられる（`DeleteRule` は削除の**前に** `CountReservationsByRuleWithIntent` で同じ述語を数えている）。だが数えるための GET を `openapi.yaml` に足す必要がある。件数は「消すか消さないか」の判断を変えないので足さない、という判断である。事前に伝えるのは押した後で取り返せない帰結の方で、重複排除を有効にしたルールでは「履歴も比較のスコープから外れる」を警告する（`deleteRuleWarning`。[ruler](ruler.md) §3.1「ルールの削除は履歴のスコープを消す」）。detached 行は予約一覧にマーカー付きで現れ、個別に削除できる（§4.4 の取消分岐）。残る行は定義上「ユーザーが触ったものだけ」なので件数は常に少なく、1 件ずつ説明可能
 
 除外が外れるのは、ユーザーが自分で「ルールに戻す」を押したときだけになる。
 
@@ -148,7 +148,7 @@ manual 予約は「base を持たず、`program_intents` に `action = 'record'`
 
 state は「今、誰が base を供給しているか」の答えに過ぎない: base = NULL なら誰もいない / `active` はルールが毎パス再計算 / `detached` はかつてのルール（凍結された base）。§4.3 のとおりこれは `(rule_id, base)` からの導出値であり、同期の可否を決めるフィルタに使ってはならない（列としては撤去済みで、API が都度計算する）。
 
-**「どう作られたか」を予約の列に保存しない。** 2 つの事実は別々に読める --- 「ユーザーが録れと言った」は `program_intents.action='record'`、「いまルールが base を供給している」は `rule_id IS NOT NULL` --- ので、予約の `source` は API が都度この 2 つから導出して返す。**この 2 つを 1 列に潰してはならない** --- 導出器は手動予約にルールがマッチすると manual → rule に**不可逆に**書き換え、watcher がそれを永続資産（`recordings.source`）にコピーするので、**手動予約した番組の録画履歴が恒久的に「ルール由来」と記録される**（[invariants.md](../invariants.md) §9）。録画側の `recordings.source` は作成時に一度だけ焼く snapshot であり、予約も `record` 意図も引けない場合は `unattributed` とする。
+**「どう作られたか」を予約の列に保存しない**。2 つの事実は別々に読める。「ユーザーが録れと言った」は `program_intents.action='record'`、「いまルールが base を供給している」は `rule_id IS NOT NULL` である。そのため予約の `source` は、API が都度この 2 つから導出して返す。**この 2 つを 1 列に潰してはならない** --- 導出器は手動予約にルールがマッチすると manual → rule に**不可逆に**書き換える。watcher がそれを永続資産（`recordings.source`）にコピーするので、**手動予約した番組の録画履歴が恒久的に「ルール由来」と記録される**（[invariants.md](../invariants.md) §9）。録画側の `recordings.source` は作成時に一度だけ焼く snapshot であり、予約も `record` 意図も引けない場合は `unattributed` とする。
 
 #### manual 行にルールがマッチしても昇格は要らない
 
@@ -162,18 +162,18 @@ manual 予約を「その番組 1 つにマッチする自動生成ルール」�
 
 #### 取消は `PUT .../intent {action: skip}`。api は `reservations` に触れない
 
-`PUT /api/sites/{site}/programs/{programId}/intent {action: skip}` は `program_intents` を書くだけで、`reservations` の行は同一トランザクションで削除しない（導出行 `reservations` の書き手は ruler だけにする）。行の削除は ruler が次の全量パスで「意図に基づいて desired から除外された」ことを検出して行う（非同期。`insertRulerPassHint` で ruler_pass を即座に投入するので実質秒オーダー。フロントエンドは楽観更新で一覧の見た目を即時反映する）。**行の状態による分岐はない。**
+`PUT /api/sites/{site}/programs/{programId}/intent {action: skip}` は `program_intents` を書くだけである。`reservations` の行は同一トランザクションで削除しない（導出行 `reservations` の書き手は ruler だけにする）。行の削除は ruler が次の全量パスで「意図に基づいて desired から除外された」ことを検出して行う（非同期）。`insertRulerPassHint` で ruler_pass を即座に投入するので実質秒オーダーである。フロントエンドは楽観更新で一覧の見た目を即時反映する。**行の状態による分岐はない。**
 
-この「ruler だけ」の原則には例外が 1 つある。`DELETE /api/rules/{id}`（§4.3「ルール削除の UX」）はルール削除と同一 tx で `reservations` を直接 DELETE する（`internal/api/rules.go` の `DeleteRule` → `DeleteReservationsByRuleWithoutIntent`）。実装の手抜きではなく、次の 4 点の帰結である:
+この「ruler だけ」の原則には例外が 1 つある。`DELETE /api/rules/{id}`（§4.3「ルール削除の UX」）は、ルール削除と同一 tx で `reservations` を直接 DELETE する。呼ぶのは `internal/api/rules.go` の `DeleteRule` から `DeleteReservationsByRuleWithoutIntent` である。実装の手抜きではなく、次の 4 点の帰結である:
 
-1. **要求は §4.3「削除 API は内訳（削除 N 件・detached M 件）を返す」。** DELETE 自体のロウカウントが要るのは deleted 側だけで、detached 側は削除前の別 COUNT（`CountReservationsByRuleWithIntent`）から得る
+1. **要求は §4.3「削除 API は内訳（削除 N 件・detached M 件）を返す」**。DELETE 自体のロウカウントが要るのは deleted 側だけである。detached 側は削除前の別 COUNT（`CountReservationsByRuleWithIntent`）から得る
 2. **非同期化（削除前 COUNT だけ返し実削除は ruler の次パスに委ねる）は採らない。** 「削除 API は成功を返したのに一覧にまだ残っている」窓が生まれ、その削除が大量削除サーキットブレーカーの導出削除カウントに合流してしまう
 3. **明示操作は同期・ブレーカー対象外という既存の線**（[breaker.md](breaker.md)「大量削除サーキットブレーカー」が明示操作を対象にしない理由と同じ側）に乗る
-4. **1 つの表に書き手が 2 人いる形**（不変条件 12 の兆候）だが、`DeleteReservationsByRuleWithoutIntent` の WHERE 句は `program_investments`（intent / overrides）を DELETE 実行の瞬間に再評価するので、「適用の瞬間の窓」（並行して着地する手動予約を踏み潰す）は生じない。詳細は `internal/db/queries/rules.sql` の同クエリのコメント参照
+4. **1 つの表に書き手が 2 人いる形**（不変条件 12 の兆候）である。だが `DeleteReservationsByRuleWithoutIntent` の WHERE 句は `program_investments`（intent / overrides）を DELETE 実行の瞬間に再評価する。そのため「適用の瞬間の窓」（並行して着地する手動予約を踏み潰す）は生じない。詳細は `internal/db/queries/rules.sql` の同クエリのコメント参照
 
 api が行を直接消さない理由は ruler 側の GC ロジックと同じ: 行を消すだけにしてはならない。**消された行と最初から無かった行は ruler から区別できない**（DELETE は「録画するな」という負の意図ごと情報を破壊する）ため、次の全量パスが復活させてしまう。意図が別表に残るので、勝者ルールが入れ替わっても・全ルールがマッチしなくなっても・再アタッチされても、除外は一貫して守られる。
 
-意図そのものを捨てたい（「この番組についての指定をなかったことにする」）場合は `DELETE /api/sites/{site}/programs/{programId}/intent` で `program_intents` の行を消す。ルールがマッチしていればその後の全量パスで普通のルール予約として作り直される。これは `program_intents` の行を消すだけの操作であり、`DELETE .../overrides`（ルールに戻す）が `program_overrides` の行を消すだけで `program_intents` に触れない（`internal/api/program_overrides.go` の `DeleteProgramOverrides`。回帰テストは `internal/api/reservations_overrides_test.go`）のと対になる --- それぞれが自分の表の行を消すだけで、互いの表に波及しない。
+意図そのものを捨てたい（「この番組についての指定をなかったことにする」）場合は `DELETE /api/sites/{site}/programs/{programId}/intent` で `program_intents` の行を消す。ルールがマッチしていればその後の全量パスで普通のルール予約として作り直される。これは `program_intents` の行を消すだけの操作である。`DELETE .../overrides`（ルールに戻す）は `program_overrides` の行を消すだけで、`program_intents` に触れない。実装は `internal/api/program_overrides.go` の `DeleteProgramOverrides` である。回帰テストは `internal/api/reservations_overrides_test.go` にある。両者は対になる --- それぞれが自分の表の行を消すだけで、互いの表に波及しない。
 
 ### 4.5 録画開始後の編集
 
@@ -182,13 +182,13 @@ api が行を直接消さない理由は ruler 側の GC ロジックと同じ: 
 - `priority` は schedule の再作成で反映されるが、録画開始後の recorder には効かない可能性が高い
 - `contentPath`（明示指定）は `state == "scheduled"` の間なら既存の schedule にも反映される（録画開始後は反映されない）
 - `filenameTemplate` とテンプレート生成の contentPath は既存の schedule には反映されない（初回生成値に固定。まだ schedule が作られていない予約にだけ効く）
-- `encodeProfiles` / `keepOriginal` は **ingest が原本 media_asset をコミットする tx の中で `recording_encode_policy` 行の INSERT として焼かれる（凍結される）瞬間まで効く**。録画開始後の変更でも、放送終了・ingest 完了より前ならこの録画に反映される。**ingest 完了後の変更はこの録画には反映されない**（次にルールがマッチする別の録画には反映される）
+- `encodeProfiles` / `keepOriginal` の効き目は、**ingest が原本 media_asset をコミットする tx の中で凍結される瞬間**までである。凍結は `recording_encode_policy` 行の INSERT として行われる。録画開始後の変更でも、放送終了・ingest 完了より前ならこの録画に反映される。**ingest 完了後の変更はこの録画には反映されない**（次にルールがマッチする別の録画には反映される）
 
 UI で「開始後に意味を持つフィールド」を区別表示する。この内容は overrides API のフィールド説明（`openapi.yaml`）にも同じことを書く --- API だけを見ている利用者が「上書きしたのに反映されない」で詰まらないようにするため。
 
-「ingest 完了まで効く」には上限がある。凍結の導出元（`program_snapshots` と CASCADE で連なる 3 表）は放送終了 + `epg.retention_grace`（既定 24h）で GC されるので、**エッジに record が滞留して ingest がそれより遅れると、指定は効かず既定値で凍結される**（原本は残るのでデータは失われないが、エンコードは投入されない）。エッジのリングバッファのサイジングと `epg.retention_grace` の関係として [ストレージ](../storage.md) §6「凍結が依存する寿命と、エッジの滞留の交点」に書いてある。
+「ingest 完了まで効く」には上限がある。凍結の導出元（`program_snapshots` と CASCADE で連なる 3 表）は放送終了 + `epg.retention_grace`（既定 24h）で GC される。そのため**エッジに record が滞留して ingest がそれより遅れると、指定は効かず既定値で凍結される**（原本は残るのでデータは失われないが、エンコードは投入されない）。エッジのリングバッファのサイジングと `epg.retention_grace` の関係として [ストレージ](../storage.md) §6「凍結が依存する寿命と、エッジの滞留の交点」に書いてある。
 
-**凍結の設計の権威は [ストレージ](../storage.md) §6「原本 TS の保持ポリシー」にある。** ingest コミット時に凍結する理由（導出元の `reservations` / `program_intents` / `program_overrides` は放送終了 + 猶予後に GC される短命な表で、参照のまま依存させると原本削除・再エンコードが壊れる）、衛星表 `recording_encode_policy`（行の存在 = 凍結済み）の設計、凍結の例外（`POST /api/recordings/{id}/encode-profiles` による追加専用の事後書き換え。原本が active でなければ 409）は、いずれも同 §6 を参照。
+**凍結の設計の権威は [ストレージ](../storage.md) §6「原本 TS の保持ポリシー」にある**。ingest コミット時に凍結する理由は次のとおりである。導出元の `reservations` / `program_intents` / `program_overrides` は放送終了 + 猶予後に GC される短命な表である。参照のまま依存させると、原本削除と再エンコードが壊れる。衛星表 `recording_encode_policy`（行の存在 = 凍結済み）の設計も同 §6 にある。凍結の例外は `POST /api/recordings/{id}/encode-profiles` による追加専用の事後書き換えである（原本が active でなければ 409）。これらはいずれも同 §6 を参照。
 
 ### 4.6 スコープ外
 

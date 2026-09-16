@@ -25,8 +25,8 @@ CREATE INDEX ON record_sync (recording_id);
 CREATE INDEX ON record_sync (status);
 ```
 
-- **この表は mirakc の全 record を写す。** watcher は `recording_id` に rokuban の録画行を差すか否かだけを変え、**外部産 record（rokuban tag の無い record）も行を作って観測だけする**。友人の手動・他ツールの録画を消さないための境界であり、`IsOurs`（tag 判定）が単独で保証する —— `record_sync` のスキーマや `recording_id` の NULL には依存しない
-- `recording_id IS NULL`（rokuban tag のない record）は ingest 対象外。判別の truth は `tags`（mirakc の生の値、`mirakc.IsOurs`）であり、`recording_id` の NULL は「外部産」と「recordings が物理削除された」（ON DELETE SET NULL）を区別しない代理に過ぎない
+- **この表は mirakc の全 record を写す**。watcher は `recording_id` に rokuban の録画行を差すか否かだけを変え、**外部産 record（rokuban tag の無い record）も行を作って観測だけする**。友人の手動・他ツールの録画を消さないための境界であり、`IsOurs`（tag 判定）が単独で保証する —— `record_sync` のスキーマや `recording_id` の NULL には依存しない
+- `recording_id IS NULL`（rokuban tag のない record）は ingest 対象外。判別の根拠は `tags`（mirakc の生の値、`mirakc.IsOurs`）である。`recording_id` の NULL は「外部産」と「recordings が物理削除された」（ON DELETE SET NULL）を区別しない代理に過ぎない
 - ingest ジョブは (site, record_id) をここから取る。行の寿命は mirakc 上の record と一致させる。watcher は `ListRecords` が成功したとき、応答に含まれない `record_id` を site 単位で削除する。削除は snapshot の `processRecord` より前に行う（後に置くと、ListRecords 後に SSE が作った行を巻き込む）。削除対象を `observed_at` の時刻比較で決めないのは、SSE と sweep の `processRecord` が並行し、トランザクション開始時刻とコミット時刻がずれるためである
 - 「未 ingest record 総量」メトリクスはこのテーブルの集計。ingest のサイト単位同時実行キャップも site 列で分割する。**このメトリクスが数えるのは Rokuban 自身の滞留のみ**なので、集計は `recording_id IS NOT NULL` で外部産を除外する
 
@@ -82,8 +82,8 @@ CREATE TABLE drop_positions (
 - 主キーが `(media_asset_id, byte_offset)` なのは、1 パケットは常に 1 PID にしか属さないため。
   同じ原本内の同じバイト位置で 2 つの PID がドロップを起こすことはなく、連番の代理キーは要らない
 - `elapsed_ms` は最初に観測した PCR を録画開始とみなした相対経過で、PCR を 1 つも観測していなければ
-  NULL にする（`drop_stats.pid_type` を NULL にするのと同じ理由。採れなかったことを 0 のような
-  値ではなく NULL で表す）
+  NULL にする（`drop_stats.pid_type` を NULL にするのと同じ理由）。採れなかったことは 0 のような
+  値ではなく NULL で表す。
 - 保存件数を「真の drops」と別列（`truncated` 等）で持たない。`count(*) < drop_stats.drops` で
   上限に達したかどうかを導出できるため、値を複製する列を作らない
 - 絶対放送時刻ではなく「録画開始からの経過」で持つ。`recordings.started_at` は mirakc がチューナーを

@@ -1,7 +1,8 @@
 # API 設計（索引）
 
-**openapi.yaml に載っている API（`/api/*` の JSON REST）を触る → openapi.yaml + [api/rest.md](api/rest.md) の該当節（判断のみ。パス・パラメータ・enum・既定値は openapi.yaml が権威）。**
-**SSE・メディア配信（録画バイト配信・ライブ HLS・サムネイル）・SPA アセット・認証・プロキシを触る → `docs/api/` が唯一の権威**（openapi.yaml には載せない方針。`internal/api/router.go` / `internal/streamer/streamer.go` のコメント参照）。
+**openapi.yaml に載っている API（`/api/*` の JSON REST）を触る → openapi.yaml + [api/rest.md](api/rest.md) の該当節**。rest.md にあるのは判断だけである。パス・パラメータ・enum・既定値の権威は openapi.yaml にある。
+
+**SSE・メディア配信（録画バイト配信・ライブ HLS・サムネイル）・SPA アセット・認証・プロキシを触る → `docs/api/` が唯一の権威**。openapi.yaml には載せない方針である（`internal/api/router.go` / `internal/streamer/streamer.go` のコメント参照）。
 
 ## 設計方針: REST + SSE + メディア配信の 3 本
 

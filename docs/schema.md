@@ -2,7 +2,7 @@
 
 設計根拠は [データ層](data.md)・[メディアストレージ](storage.md)、および [invariants.md](invariants.md)。
 
-**「最終形で切る」の対象は永続資産（`recordings` / `media_assets` / `drop_stats` / `rules`）に限る。** 導出テーブル（`reservations` / `*_sync` / 射影）の列は、それを書くコードと同じ PR で決める（不変条件 11。導出テーブルまで先に固めて churn を生んだ経緯は [invariants.md](invariants.md) §11）。
+**「最終形で切る」の対象は永続資産（`recordings` / `media_assets` / `drop_stats` / `rules`）に限る**。導出テーブル（`reservations` / `*_sync` / 射影）の列は、それを書くコードと同じ PR で決める。導出テーブルまで先に固めて churn を生んだ経緯は不変条件 11 にある（[invariants.md](invariants.md) §11）。
 
 **本文は `docs/schema/` に分割してある。節番号は分割前のまま**なので、コードコメントの「schema.md §3.5」等はこの表で該当ファイルを引ける。
 

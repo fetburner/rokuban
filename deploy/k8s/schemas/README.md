@@ -20,14 +20,15 @@ CRDs-catalog を CI 時に fetch する形も採っていない（同じ理由�
 
 **ファイル名は小文字**である。`kubeconform` の `{{.ResourceKind}}` は小文字化した
 名前を埋めるので、`ScaledJob_v1alpha1.json` にすると **macOS では通って Linux の
-CI だけが落ちる**（大文字小文字を区別するファイルシステムかどうかの差。実測）。
+CI だけが落ちる**。原因は大文字小文字を区別するファイルシステムかどうかの差である
+（実測）。
 
 ## `-strict` で効かせるための加工
 
-**素の CRD スキーマをそのまま置くと、`-strict` を付けても未知のキーを弾かない。**
+**素の CRD スキーマをそのまま置くと、`-strict` を付けても未知のキーを弾かない**。
 `kubeconform` の `-strict` は「`-strict` サフィックス付きのスキーマファイルを
-取りに行く」だけの仕組みで、こちらが渡したファイルの中身を厳しくはしない
-（実測: `pollingIntervall` の typo が Valid で通った）。
+取りに行く」だけの仕組みで、こちらが渡したファイルの中身を厳しくはしない。
+実測では `pollingIntervall` の typo が Valid で通った。
 
 そこで、**`properties` を持つオブジェクトに `additionalProperties: false` を
 入れた版**を置いてある（`x-kubernetes-preserve-unknown-fields` が立っている枝は

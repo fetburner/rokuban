@@ -192,7 +192,7 @@ rokuban import epgstation --config config.yml --library-json library.json
    delete_reconcile が旧パスを unlink しに行き実体無しと誤検出する）。
 4. 旧パスを指す `orphan_files` の行が残っていれば削除する（導出台帳なので
    次パスで作り直される）。
-5. `rokuban enqueue catalog_export` で新しい catalog 世代を書き、
+5. `rokuban enqueue catalog-export` で新しい catalog 世代を書き、
    `rokuban catalog verify` で完成を確認する。以後 rescue は移行前の
    `rel_path` を持つ旧世代を選ばせないよう、確認後に旧世代を消す。
 

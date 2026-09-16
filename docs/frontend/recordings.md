@@ -7,32 +7,34 @@
 録画は一覧内展開でしか見られず単体の URL を持たなかったため、skip 理由
 （「重複（録画 #345）」）や予約 → 録画の導線がリンクの終点を持てなかった。
 着地先は `/recordings/$id`。`recordings.id` は ingest（watcher）が一度作ったら
-変わらない不可逆な事実の id なので、そのまま URL に使ってよい ---
+変わらない、不可逆な事実の id である。そのためそのまま URL に使ってよい ---
 予約詳細（`pages/reservation-detail.tsx`）が `(site, programId)` を宛先にして
 いるのとは事情が異なる。reservations 行は ruler が削除・再作成しうるので、
 行ではなく programId という概念そのものを宛先にしている。「一覧内スクロール +
 展開」は無限リストで対象が読み込み済みとは限らず成立しないため、別ルートにした。
 
-本体（プレイヤー・メタデータ・削除系操作。下記「ブラウザ再生」節と
-「ドロップ統計」節が対象とするもの）は `RecordingDetail`
-（`components/recording-detail-panel.tsx`）が持ち、単体ページ
+本体（プレイヤー・メタデータ・削除系操作）は `RecordingDetail`
+（`components/recording-detail-panel.tsx`）が持つ。対象は下記「ブラウザ再生」節と
+「ドロップ統計」節である。単体ページ
 （`pages/recording-detail.tsx`）がこれを描画する。一覧はこの本体を
 インライン展開せず、行本体から単体ページへ移動する。以下の各節（ブラウザ再生の
 出し分け・ごみ箱の非表示規律）は単体ページに適用される。
 
 **単体ページ自身のクエリキーは、一覧の invalidate に前方一致させてある**
-（`pages/recording-detail.tsx` の `recordingDetailQueryKey`。先頭要素を
-`getListRecordingsQueryKey` と同じ `'/api/recordings'` に揃える）。
-削除 / 復元 / 完全削除 / 追加エンコードはすべて `RecordingDetail` の下から
+（`pages/recording-detail.tsx` の `recordingDetailQueryKey`）。先頭要素を
+`getListRecordingsQueryKey` と同じ `'/api/recordings'` に揃えるためである。
+削除 / 復元 / 完全削除 / 追加エンコードの 4 つは、この 1 本の呼び出しに集約されて
+いる。`RecordingDetail` の下から
 `queryClient.invalidateQueries({ queryKey: ['/api/recordings'] })` を呼ぶだけ
-（`RecordingActions.invalidate` / `AddEncodeProfilesAction` の `onSuccess`、
-どちらも `components/recording-actions.tsx`）で、単体ページも自動的に再検証される。
+である。呼ぶのは `RecordingActions.invalidate` / `AddEncodeProfilesAction` の
+`onSuccess` である（どちらも `components/recording-actions.tsx`）。これにより
+単体ページも自動的に再検証される。
 prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らなかった ---
 `RecordingDetail` の下に mutater を足すたびに「単体ページへの配線を通す」
-ことを覚えていないといけない形は、通し忘れても型エラーにならず黒く抜ける
-（最初の実装がこれで、`RecordingActions` にだけ配線したため
-`AddEncodeProfilesAction` が素通しになり「事後エンコードを依頼しても単体
-ページの『追加済み』表示が更新されない」を実機再現された）。
+ことを覚えていないといけない。その形は通し忘れても型エラーにならず黒く抜ける。
+最初の実装がこれで、`RecordingActions` にだけ配線したため
+`AddEncodeProfilesAction` が素通しになり、「事後エンコードを依頼しても単体
+ページの『追加済み』表示が更新されない」を実機再現された。
 
 `GET /api/recordings/{id}` はごみ箱の録画も 200 で返す（メタデータの
 可視性はメディア配信の 404 契約とは別の判断。[api/rest.md](../api/rest.md)
@@ -41,7 +43,7 @@ prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らな
 
 ## 録画のブラウザ再生
 
-**VOD は MP4 progressive + Range。** streamer の `GET /api/media/recordings/{id}/file?profile=<name>` を
+**VOD は MP4 progressive + Range**。streamer の `GET /api/media/recordings/{id}/file?profile=<name>` を
 ネイティブ `<video controls>` の src に渡す。HLS / hls.js は使わない（家庭 LAN の
 オンデマンドではセグメント化のコストに見合わない。決定は [api.md](../api.md)）。
 
@@ -54,30 +56,30 @@ prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らな
 - ページのキー操作は入力欄・選択欄・リンク・ボタン・編集可能領域と `<video>` に
   フォーカスがあるときは働かない。ネイティブ controls や入力操作と二重に処理しない
 - 原本 TS はブラウザでは再生せず、ダウンロード / VLC リンクとして残す
-- **ごみ箱ビューではサムネイル・プレイヤー・原本リンクを一切出さない。**
+- **ごみ箱ビューではサムネイル・プレイヤー・原本リンクを一切出さない**。
   配信側（`GetOriginalMediaAssetForServing` 等）は `recordings.deleted_at IS NOT NULL`
-  を 404 にする契約（[api.md](../api.md) §メディア配信）なので、出しても必ず 404 になる。
+  を 404 にする契約である（[api.md](../api.md) §メディア配信）。そのため出しても必ず 404 になる。
   復元してから見る運用にする。ごみ箱では `encodedAssets` を返さないのも
   同じ理由（プレイヤーを出さないので揃える必要がない）
 
 ### 操作点にサイズを常置する（値札）
 
 **資源を消費する操作には実行前に値札。値札は事実（実測サイズ）のみ**（転送時間の
-見積などは書かない）。プロファイルセレクタの各選択肢（`<option>`）・ダウンロード
-リンク・VLC リンクのすべてに `formatBytes`（`lib/format.ts`）のサイズを常置する
-（`components/recording-player.tsx` の `assetOptionLabel`）。プロファイルが 1 つ
+見積などは書かない）。サイズの常置先は、プロファイルセレクタの各選択肢
+（`<option>`）・ダウンロードリンク・VLC リンクのすべてである
+（`components/recording-player.tsx` の `assetOptionLabel`）。値は
+`formatBytes`（`lib/format.ts`）で作る。プロファイルが 1 つ
 （= セレクタ自体を出さない）でも、押す前にサイズを見せるという方針は変わらないため
 キャプションとして常に出す。
 
-**サイズが取れない資産は隠すのではなくサイズだけ省く。** `EncodedAsset.sizeBytes`
+**サイズが取れない資産は隠すのではなくサイズだけ省く**。`EncodedAsset.sizeBytes`
 （openapi.yaml）は省略可能な形にしてある --- 選択肢（プロファイル名）自体は
 分類の失敗（ここではサイズの欠落）を理由に隠さない。ドロップ統計の「分類できな
 かった PID は種別を空にして PID 数値だけ出す」（下記「ドロップ統計」節）と同じ
-判断。`media_assets.size_bytes` は `NOT NULL` 列制約なので active な encoded 行が
-ある限り実際には常にサイズが付く（`media_assets.size_bytes` は列制約が
-`NOT NULL`。同テーブルの CHECK 制約は `kind` / `profile` / `state` にしか
-掛かっておらず `size_bytes` には無い）が、型としては
-省略可能にしてこの表示規律をテストで固定している（`recording-player.test.tsx`）。
+判断。`media_assets.size_bytes` は `NOT NULL` 列制約なので、active な encoded 行が
+ある限り実際には常にサイズが付く。同テーブルの CHECK 制約は `kind` / `profile` /
+`state` にしか掛かっておらず、`size_bytes` には無い。それでも型としては
+省略可能にして、この表示規律をテストで固定している（`recording-player.test.tsx`）。
 
 ### 一覧の行は詳細へのリンクにする
 
@@ -100,8 +102,8 @@ prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らな
 の再生ボタンを明示的に押すまで `.play()` を呼ばない。コストのかかる本編転送を
 一覧の行選択だけで始めないという値札の方針を保つ。
 
-**`<video>` に `tabIndex` は明示しない。** 実 Chromium で測った結果、
-`<video controls>` は tabindex 無しでもそれ自体が Tab stop になり、`tabIndex={-1}` を
+**`<video>` に `tabIndex` は明示しない**。実 Chromium で測った結果、
+`<video controls>` は tabindex 無しでもそれ自体が Tab stop になる。`tabIndex={-1}` を
 付けると Tab 順から完全に外れる。`web/e2e/design.mjs` は録画一覧の行リンクを Enter で
 開き、詳細ページで `<video>` に Tab 到達できることを実ブラウザで機械判定する。
 
@@ -140,11 +142,11 @@ prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らな
   知らせる情報ではない。録画中の全行に「取り込み待ち」が並ぶのは何も言っていないのと同じ
 - `ingest` そのものが無い（API が古い）: 推測で埋めない
 - **ingest ジョブが来ない録画（`failed` / `canceled`）**: `state` が `unknown` で
-  返るので何も出ない。ここで「取り込み待ち」を出すと**来ない未来を UI が断定する**
-  ことになり、`sizeBytes` について直したはずの誤りを `pending` について作り直す
-  --- `pending` の根拠を `record_sync` 行の**存在**に取るとこれが起きる（watcher が
-  ingest を投入するのは record が `finished` のときだけで、`record_sync` 行は消え
-  ないため、`failed` / `canceled` の録画が永久に「取り込み待ち」を名乗る）。根拠は
+  返るので何も出ない。ここで「取り込み待ち」を出すと、**来ない未来を UI が断定する**
+  ことになる。`sizeBytes` について直したはずの誤りを `pending` について作り直す
+  形だ。`pending` の根拠を `record_sync` 行の**存在**に取るとこれが起きる。watcher が
+  ingest を投入するのは record が `finished` のときだけなので、`record_sync` 行は
+  消えない。そのため `failed` / `canceled` の録画が永久に「取り込み待ち」を名乗る。根拠は
   **watcher が ingest を投入する条件と同じ述語**（`record_sync.status = 'finished'`）
   に揃える。**状態の名前が「これから起きる」を含むなら、起きる根拠を述語として
   書けるか確かめる**
@@ -153,10 +155,10 @@ prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らな
 （いま電波に乗っている）でも destructive（取り返しがつかない）でもない
 （[design.md](design.md)「色は信号のみ」）。停滞は文言で言う。
 
-**「原本は削除済み」と言えるのは `committed` かつ `sizeBytes` 無しのときだけ。**
+**「原本は削除済み」と言えるのは `committed` かつ `sizeBytes` 無しのときだけ**。
 `sizeBytes` の省略は「取り込んだ後に消した」と「まだ取り込めていない」の両方を
-含むので、これだけを見ると権限不足で ingest がリトライ中の録画に「削除済み」と
-読める表示が出る。
+含む。そのためこれだけを見ると、権限不足で ingest がリトライ中の録画に
+「削除済み」と読める表示が出る。
 サーバーが「`kind='original'` の行が `state` を問わず存在するか」を見て `committed` を
 返すので、UI 側はその区別をそのまま使える。
 
@@ -181,26 +183,26 @@ prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らな
 いずれも [shell.md](shell.md) の 60 秒 invalidate（`lib/events.ts` の
 `operationalRefreshIntervalMs`）が拾うので、放置ではなく「周期を落とす」だけになる。
 **「終わっている画面はポーリングしない」を保つには、未完了の状態すべてを短い周期の
-対象にしてはならない** --- `record_sync` 行が消えない以上「未完了」は恒久的に残り
-うるので、失敗録画が 1 件でも読み込み済みページにあればポーリングが恒久化する。
+対象にしてはならない** --- `record_sync` 行が消えない以上、「未完了」は恒久的に残り
+うる。そのため失敗録画が 1 件でも読み込み済みページにあれば、ポーリングが恒久化する。
 
 ## エンコードの待ち・実行中・失敗を画面に出す
 
 `Recording.encodeProfiles`（desired）と `Recording.encodedAssets`（observed、
-再生可能なもの）の差だけでは「まだ来ていない」としか言えず、いま走っているのか
-失敗して再試行待ちなのかを区別できなかった。`Recording.encodeStatus`
-（openapi.yaml。desired のうち observed にまだ現れていないプロファイルだけを
-`queued` / `running` / `failed` のいずれかで列挙する）をバッジで出す
-（`EncodeStatusBadges`。一覧の行と単体ページのヘッダー、`IngestBadge` の隣）。
+再生可能なもの）の差だけでは「まだ来ていない」としか言えない。いま走っているのか
+失敗して再試行待ちなのかは区別できなかった。`Recording.encodeStatus`
+（openapi.yaml）をバッジで出す（`EncodeStatusBadges`。一覧の行と単体ページの
+ヘッダー、`IngestBadge` の隣）。desired のうち observed にまだ現れていない
+プロファイルだけを、`queued` / `running` / `failed` のいずれかで列挙する。
 
-- **`running` は進捗イベントを受け取るまで `%` を出さない。** worker が実入力を
+- **`running` は進捗イベントを受け取るまで `%` を出さない**。worker が実入力を
   ffprobe して得た duration を分母にし、ffmpeg の `-progress pipe:1` の `out_time`
   から割合を作る。duration を取得できない場合や SSE を取りこぼした場合は
   架空の割合で埋めず「エンコード中」のままにする
 - **プロファイル未設定・全プロファイル完了済みの録画では `encodeStatus` が
-  省略される**ので、`EncodeStatusBadges` は何も描かない --- 機能しないキュー
-  画面や空の進捗バーを出さない判断はサーバー側のこの省略で表現されており、
-  フロントはそれをそのまま描くだけでよい
+  省略される**。そのため `EncodeStatusBadges` は何も描かない --- 機能しないキュー
+  画面や空の進捗バーを出さない判断は、サーバー側のこの省略で表現されて
+  いる。フロントはそれをそのまま描くだけでよい
 - **`failed` だけ destructive**（`bg-destructive/10` + `text-destructive`。
   `DropBadges` と同じ判断: 実害があるので色で目立たせる）。`queued` /
   `running` は `IngestBadge` と同じ `bg-muted`（状況の説明であって信号ではない。
@@ -222,9 +224,9 @@ prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らな
   `encode-progress` SSE は接続中だけ届く揮発テレメトリで、`running` の文言に割合を
   重ねるためだけに使う。durable 状態が `running` でなくなったら最後の値を破棄し、
   `progress=end` や 100% だけで完了を断定しない
-- **進捗はテーブルへ保存しない。** 再起動後に不要な秒単位の値で WAL・dead tuple・
-  vacuum 対象を増やさず、worker → PostgreSQL NOTIFY → notifier の EventHub → SSE
-  という best-effort 経路で最大 1 回/秒だけ運ぶ。画面を途中から開いた場合は REST
+- **進捗はテーブルへ保存しない**。再起動後に不要な秒単位の値で WAL・dead tuple・
+  vacuum 対象を増やさないためである。worker → PostgreSQL NOTIFY → notifier の
+  EventHub → SSE という best-effort 経路で、最大 1 回/秒だけ運ぶ。画面を途中から開いた場合は REST
   由来の `running` を先に出し、次のイベントから割合を表示する
 - `queued` / `running` / `failed` の収束は既存の
   `operationalRefreshIntervalMs`（`/api/recordings` を再取得する 60 秒周期。
@@ -270,8 +272,8 @@ prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らな
 最大 100 件なので、保存件数が真の `drops` より少ないときは「N 件中 M 件を表示」
 と出す。
 
-**ただし保存が 0 件なら「N 件中 0 件」とは出さない。** ドロップ位置を採る前に
-ingest した録画は `drops > 0` でも位置を 1 件も持たないので、同じ文言にすると
+**ただし保存が 0 件なら「N 件中 0 件」とは出さない**。ドロップ位置を採る前に
+ingest した録画は、`drops > 0` でも位置を 1 件も持たない。同じ文言にすると、
 上限で切り詰めたのか元から採っていないのかが読者に区別できない。位置が 0 件
 かつ `drops > 0` は「未採取」、`drops` も 0 なら「異常なし」として出し分ける。
 
@@ -279,23 +281,25 @@ ingest した録画は `drops > 0` でも位置を 1 件も持たないので、
 
 EPGStation にある「録画済みの検索」に対応する機能だが、`/search`（EPG 検索。
 [search.md](search.md)）とは**別ルートにしない**。録画検索は録画一覧そのものの
-絞り込みであり、`/search` を
+絞り込みである。`/search` を
 独立ルートにした理由（「番組表は EPG を時間軸で眺める画面、検索は ruler と同じ条件
-コンパイラを叩く別の問いの画面」）が録画には当てはまらない --- 録画一覧に検索専用の
-別画面を作ると、絞り込み結果と一覧が別画面になり「絞り込んだ録画をそのまま操作
-（削除・復元・エンコード追加）する」という主用途が 2 画面に分裂する。
+コンパイラを叩く別の問いの画面」）は、録画には当てはまらない。録画一覧に検索専用の
+別画面を作ると、絞り込み結果と一覧が別画面になる。その結果、「絞り込んだ録画を
+そのまま操作（削除・復元・エンコード追加）する」という主用途が 2 画面に分裂する。
 
-**`/search` と条件モデルを共有しない。** `ProgramSearchRequest`（`internal/rulequery`
-を通る EPG 検索・ルール条件）と `GET /api/recordings` の絞り込みは別のクエリで、
-フィールドの意味も重ならない（録画検索の `status` / `source` は録画の観測・出自、
-`/search` にはそもそも無い次元）。あちらの条件をこちらに持ってくる導線（相互流用）も
+**`/search` と条件モデルを共有しない**。`ProgramSearchRequest`（`internal/rulequery`
+を通る EPG 検索・ルール条件）と `GET /api/recordings` の絞り込みは別のクエリである。
+フィールドの意味も重ならない。録画検索の `status` / `source` は録画の観測・出自で、
+`/search` にはそもそも無い次元である。
+あちらの条件をこちらに持ってくる導線（相互流用）も
 作らない --- 両者は別の問いに答えている。
 
 ### 条件は URL に持つ。`lib/recording-search.ts` に純関数として集約する
 
 `RecordingsPageSearch`（型）・`parseRecordingsSearch`（`validateSearch`）・
-`buildListRecordingsParams`（→ API クエリ）・`describeRecordingsFilters`
-（→ 適用中の条件チップ）・`clearRecordingsFilters` はすべてここに置く。
+`buildListRecordingsParams`（→ API クエリ）はすべてここに置く。
+`describeRecordingsFilters`（→ 適用中の条件チップ）・`clearRecordingsFilters`
+も同様である。
 `lib/program-search.ts`（`/search` の下書き）とは意図的に分離している ---
 条件モデルを共有しないので、変換ロジックを共有する理由も無い。
 
@@ -331,8 +335,8 @@ EPGStation にある「録画済みの検索」に対応する機能だが、`/s
   表示する。** レジストリから消えた site の録画でも拠点を識別できるようにするためで
   ある。録画一覧では無限スクロールで別 site の行を後から読み込んだ場合、既存行にも
   site が表示される。
-- **チャンネル種別（`channelType`）・`qTarget` は UI に出さない。** チャンネルは
-  個々のサービスを選べる `<ChannelPicker>`（`Service.id`）の方が細かく絞れ、
+- **チャンネル種別（`channelType`）・`qTarget` は UI に出さない**。チャンネルは
+  個々のサービスを選べる `<ChannelPicker>`（`Service.id`）の方が細かく絞れる。
   種別だけの選択肢を並列に置く理由が無い。`qTarget` も UI 案に
   無い次元で、出しても検証できないコントロールを増やすだけ（「機能しない
   コントロールは置かない」の逆）。パラメータ自体は `ListRecordingsParams` に
@@ -372,46 +376,49 @@ checkbox は Tab で到達できる。Shift+クリックの範囲選択は持た
 ### debounce と URL 同期で履歴を汚さない
 
 キーワード入力は 300ms の debounce を挟んでから条件（URL）に確定する
-（`components/recording-filters.tsx` の `KeywordField`。`RecordingFilters` 自体は
-状態を持たず、debounce 用の下書きだけを例外とする）。条件の URL への書き込みは、
+（`components/recording-filters.tsx` の `KeywordField`）。`RecordingFilters` 自体は
+状態を持たず、debounce 用の下書きだけを例外とする。条件の URL への書き込みは、
 debounce（キーワード）もチップの個別解除も常に `replace` で navigate する
-（`pages/recordings.tsx`）--- 1 文字ごと・操作ごとに URL を書き換えて履歴を
-汚さないため。
+（`pages/recordings.tsx`）。1 文字ごと・操作ごとに URL を書き換えて履歴を
+汚さないためである。
 
 ### TanStack Router の `validateSearch` は無効な値を「省略」しても消えない
 
 `parseRecordingsSearch` は非 strict モード（既定）の TanStack Router で使われる。
-このモードは実際のルートマッチでも（`matchRoutesInternal`。`@tanstack/router-core`
-の `router.js` 内、`preMatchSearch = { ...parentSearch, ...strictSearch }` ---
-`parentSearch` は生の未検証の値）、ビルドロケーション用の軽量マッチでも
-（`matchRoutesLightweight` の `accumulatedSearch`。`Object.assign(accumulatedSearch,
-validateSearch(...))`）、`validateSearch` の戻り値を「生の（未検証の）
-`location.search` の上に重ねる」形で合成する。**戻り値からキーを省略すると、その
-キーは上書きされない**ので、生の不正な値（`?status=bogus` の文字列そのもの等）が
+このモードは、`validateSearch` の戻り値を「生の（未検証の）`location.search` の
+上に重ねる」形で合成する。実際のルートマッチでもそうなる。`matchRoutesInternal`
+（`@tanstack/router-core` の `router.js` 内）では
+`preMatchSearch = { ...parentSearch, ...strictSearch }` を使う。ここで
+`parentSearch` は生の未検証の値である。ビルドロケーション用の軽量マッチでも
+同じである。`matchRoutesLightweight` の `accumulatedSearch` に
+`Object.assign(accumulatedSearch, validateSearch(...))` する。
+**戻り値からキーを省略すると、その
+キーは上書きされない**。そのため生の不正な値（`?status=bogus` の文字列そのもの等）が
 「検証済みのつもり」の結果へそのまま残って漏れる --- 実機で確認済み（壊れた URL の
 不正な値がチップにそのまま出た）。対策は**落とした次元も `undefined` を明示的に
 代入する**（キーを省略しない）。`{ ...x, k: undefined }` はどちらの合成方式で見ても
 実際に上書きになるため、これで確実に消える。
 
 `/live` の `service` と `/search` の `ruleId` はどちらもこの形に揃えてある
-（`routes.tsx`。`routes.test.tsx` が `router.state.matches` の `search` を直接見て
-固定している）。
+（`routes.tsx`）。`routes.test.tsx` が `router.state.matches` の `search` を
+直接見て固定している。
 
 ### 一覧は自前で組んだ `useInfiniteQuery`
 
 orval は無限クエリのフックを生成しない（生成されるのは単発の `useQuery` ラッパーの
-み）ので、生成された `listRecordings` 関数を `@tanstack/react-query` の
+み）。そのため生成された `listRecordings` 関数を、`@tanstack/react-query` の
 `useInfiniteQuery` に自分で渡す。`queryKey` は `getListRecordingsQueryKey(絞り込み +
-limit)`（カーソル `before` / `beforeId` を含めない）にする --- 同じ絞り込みの中で
+limit)`（カーソル `before` / `beforeId` を含めない）にする。同じ絞り込みの中で
 ページを積んでいくのが `useInfiniteQuery` の前提であり、カーソルを含めるとページ
-ごとに別クエリになってしまう。先頭要素が `'/api/recordings'` になる形は保たれるので、
-`RecordingActions` の `invalidateQueries({ queryKey: ['/api/recordings'] })`（前方
-一致）が変わらず効く。
+ごとに別クエリになってしまう。先頭要素が `'/api/recordings'` になる形は保たれる。
+そのため `RecordingActions` の
+`invalidateQueries({ queryKey: ['/api/recordings'] })`（前方一致）が変わらず効く。
 
-進行方向の読み込み（番兵 + IntersectionObserver、失敗後はボタンへ落とす
-`lib/auto-load.ts` の `shouldAutoLoadNextPage` / `shouldShowLoadMoreButton`、
-計測できない環境の判定 `lib/list-virtualization.ts` の `domLayoutMeasurable`）は
-`pages/programs.tsx` と同じ部品を再利用する。録画一覧はグリッドのような座標系を
+進行方向の読み込み（番兵 + IntersectionObserver、失敗後はボタンへ落とす）は、
+`pages/programs.tsx` と同じ部品を再利用する。部品は `lib/auto-load.ts` の
+`shouldAutoLoadNextPage` / `shouldShowLoadMoreButton` である。計測できない
+環境の判定は `lib/list-virtualization.ts` の `domLayoutMeasurable` を使う。
+録画一覧はグリッドのような座標系を
 持たないリストなので仮想化はしていない。固定の `limit` は渡さず、既定ページサイズ
 （50）で継ぎ足す。
 
@@ -434,31 +441,32 @@ limit)`（カーソル `before` / `beforeId` を含めない）にする --- 同
 （`ruleId` が無い手動予約由来の録画では**セクションごと出さない** ---
 「機能しないコントロールは置かない」の既存規律）。
 
-- **ルール名の解決は `useListRules` のキャッシュから引く。** ルール専用の単体
-  取得エンドポイント（`GET /api/rules/{id}` / `useGetRule`）はあるが使わない
-  --- `RulesPage` が `useListRules()`（パラメータなし = 常に全件）を引く設計に
-  既に乗っているので、録画ごとに個別の 1 件取得を増やす理由がない（`/rules` を
-  経由していればキャッシュに乗っており、していなければ詳細を開いたときに引く。
-  後者は下記の `#N` → ルール名の差し替えとして見える）
+- **ルール名の解決は `useListRules` のキャッシュから引く**。ルール専用の単体
+  取得エンドポイント（`GET /api/rules/{id}` / `useGetRule`）はあるが使わない。
+  `RulesPage` が `useListRules()`（パラメータなし = 常に全件）を引く設計に
+  既に乗っているためである。録画ごとに個別の 1 件取得を増やす理由がない。
+  `/rules` を経由していればキャッシュに乗っており、していなければ詳細を開いた
+  ときに引く。後者は下記の `#N` → ルール名の差し替えとして見える
 - 同じ一覧に同名のルールが複数あるときは、名前に `#<id>` を添えて識別する。
   名前が重複していないときは補助ラベルを付けない。録画の帰属とリンク先は
   いずれも `ruleId` で決まるので、表示名の重複を DB の一意性制約で禁止しない。
-- **`rules.find` で見つからない ruleId は `#N` 表記に落とす。ただしこれは
-  「ルールが削除された」ケースではない。** `recordings.rule_id` は `rules`
-  への FK が `ON DELETE SET NULL` なので、ルールを削除
-  すると `recordings.rule_id` が NULL になり `Recording.ruleId` 自体が省略
-  される --- つまりルール削除後は「ルール」セクションごと消え、`#N` へは
-  落ちない。`#N` に落ちるのは `rules.find` が空を返す間、つまり一覧クエリが
-  未解決 / 失敗（どちらも `query.data` が `undefined`）か、返ってきた一覧に
-  その id がまだ無い（新しく作られたルール等）という一時的な状態
-  （`recording-detail.test.tsx`「ルール一覧にまだ載っていない ruleId でも
-  #N 表記に落ちて壊れない」で固定した）
+- **`rules.find` で見つからない ruleId は `#N` 表記に落とす**。**ただしこれは
+  「ルールが削除された」ケースではない**。`recordings.rule_id` は `rules`
+  への FK が `ON DELETE SET NULL` である。そのためルールを削除すると
+  `recordings.rule_id` が NULL になり、`Recording.ruleId` 自体が省略
+  される。つまりルール削除後は「ルール」セクションごと消え、`#N` へは
+  落ちない。`#N` に落ちるのは `rules.find` が空を返す間の一時的な状態である。
+  一覧クエリが未解決 / 失敗（どちらも `query.data` が `undefined`）か、
+  返ってきた一覧にその id がまだ無い（新しく作られたルール等）のいずれかで
+  ある。判定は `recording-detail.test.tsx`「ルール一覧にまだ載っていない
+  ruleId でも #N 表記に落ちて壊れない」で固定した
 - **原則「固有名詞はリンク」に従い**、ルールの識別（名前 or `#N`）そのものを
   リンクテキストにする。リンク先は `/search?ruleId=N`（`RuleRow` の
   ルール名リンクと同じ着地先、ルールの実質的な編集画面）。もう 1 本の
-  リンク「このルールの録画で絞る」は `/recordings?ruleId=N` --- 同一ページ
-  （`/recordings`）内の検索条件変更であり、既存の `parseRecordingsSearch`
-  （`lib/recording-search.ts`）を通るので条件チップにもそのまま出る
+  リンク「このルールの録画で絞る」は `/recordings?ruleId=N` である。これは
+  同一ページ（`/recordings`）内の検索条件変更であり、既存の
+  `parseRecordingsSearch`（`lib/recording-search.ts`）を通るので条件チップにも
+  そのまま出る
 
 ## ストレージ残高と満杯見込み
 
@@ -498,11 +506,11 @@ root の種類が増えた時点で専用ページを検討する。
 `GET /api/reservations`）の取得と表示の出し分けだけを持つ。`/recordings` は
 ストレージを最も直接に消費する画面であるため、全体像の設置先にした。
 
-**見込みが参照する root は `media`（`storage.media_dir`。アーカイブ）だけ。**
-`scratch` は取り込みの一時領域で、録画の最終的な保存先ではないため、
-残量の表示には含めるが今後の予約による消費見込みには使わない
-（[storage/contract.md](../storage/contract.md) §残量の観測、同ファイル §5
-「2 階層: 録画バッファとアーカイブ」）。
+**見込みが参照する root は `media`（`storage.media_dir`、アーカイブ）だけ**。
+`scratch` は取り込みの一時領域で、録画の最終的な保存先ではない。そのため
+残量の表示には含めるが、今後の予約による消費見込みには使わない。出所は
+[storage/contract.md](../storage/contract.md) の §残量の観測と、同ファイル §5
+「2 階層: 録画バッファとアーカイブ」である。
 
 ### 4 つの沈黙
 
@@ -516,15 +524,15 @@ root の種類が増えた時点で専用ページを検討する。
 - **見込み消費が残量に収まる**ときは満杯見込み日を出さない（下界主義。
   `lib/capacity.ts` の「主張は下界に限る」と同じ精神）
 
-**「取得失敗」と「正当な 0 件」を混同しない。** 予約の取得が失敗/未解決のとき
-（`lib/storage-forecast.ts` の `upcomingReservationSchedule` の結果が
-`undefined`）は `estimateStorageForecast` が `hasEstimate: false` を返し、見込み
-そのものを算出しない。予約が正当に 0 件のとき（結果が空配列 `[]`）は見込みを
+**「取得失敗」と「正当な 0 件」を混同しない**。予約の取得が失敗/未解決のときは
+`estimateStorageForecast` が `hasEstimate: false` を返す。見込み
+そのものを算出しない。判定材料は `lib/storage-forecast.ts` の
+`upcomingReservationSchedule` の結果で、それが `undefined` のときである。予約が正当に 0 件のとき（結果が空配列 `[]`）は見込みを
 算出した上で `projectedConsumptionBytes: 0` になる。**この 2 つを区別せず
 `undefined` を `[]` にフォールバックすると、取得失敗時に「今後 7 日の予約で
-約 +0 B の見込み」という、欠損データから捏造した肯定を描いてしまう**
-（実際にこの不具合を実装直後のレビューで指摘された。プローブで実際の描画
-「空き 931.3 GB今後7日の予約で約 +0 B の見込み観測: 8/13 15:57」を確認済み）。
+約 +0 B の見込み」という、欠損データから捏造した肯定を描いてしまう**。
+実際にこの不具合を実装直後のレビューで指摘された。プローブで実際の描画
+「空き 931.3 GB今後7日の予約で約 +0 B の見込み観測: 8/13 15:57」を確認済みである。
 録画側（`recordings` が `undefined`）も同じ理由で `averageBitrate` を
 `undefined` のまま渡し、`0` にフォールバックしない。
 
@@ -537,18 +545,18 @@ root の種類が増えた時点で専用ページを検討する。
 `recentRecordingSampleLimit`）。日数ではなく件数にしたのは、録画頻度が運用ごとに
 大きく違うため（固定の日数では少ない側で標本が枯渇し、多い側で 1 回のフェッチの
 上限 200 件に収まらなくなる）。`status=finished` に絞るのは、`Recording.durationMs`
-が番組の放送時間（全尺）であって実際に録画できた時間ではないため --- `failed`
+が番組の放送時間（全尺）であって実際に録画できた時間ではないためである。`failed`
 （途中で終わった録画）を含めると「途中までの `sizeBytes`」を「全尺の `durationMs`」
 で割ることになり、ビットレートが実際より低く出る方向に偏る。`sizeBytes` が無い
 録画（原本削除済み。`Recording.sizeBytes` の説明「原本の実サイズ。ingest 済みの
 場合のみ」参照 --- 未 ingest も含む）も除く。
 
-**`sizeBytes` は原本 TS のみでエンコード派生物を含まない。** エンコードプロファイル
+**`sizeBytes` は原本 TS のみでエンコード派生物を含まない**。エンコードプロファイル
 を設定しているルール（既定 `keepOriginal: always`。[storage/retention.md](../storage/retention.md)）
 では実消費は原本 + 派生物なので、この見込みは**過小**に振れる。逆に
 `keepOriginal: until_encoded` を選んでいるルールでは、エンコード完了後に原本が
-削除され実消費が派生物サイズ（原本の 1/4〜1/10、同 doc）へ縮むため、原本サイズを
-今後も一定と仮定するこの見込みは**過大**に振れる。どちらの方向にも振れることを
+削除され、実消費が派生物サイズ（原本の 1/4〜1/10、同 doc）へ縮む。原本サイズを
+今後も一定と仮定するこの見込みは、そのぶん**過大**に振れる。どちらの方向にも振れることを
 前提にしており、`lib/rule-cost.ts` の「見込み」と同じく一方向の保証は書かない。
 
 ### 鮮度: 1 時間を超えたら「古い可能性」
@@ -564,9 +572,9 @@ UI 側で必ず判定する。worker の観測間隔は現在 **5 分固定**
 それでも間隔の値をフロントへ輸入して「5 分の N 倍」を定義しないのは、この値が
 worker 側の実装詳細であって `GET /api/storage` の契約に含まれないため。1 時間
 （`lib/storage-forecast.ts` の `observationStaleAfterMs`）は代わりに置いた
-**独立した固定の安全マージン**で、現在の 5 分間隔に対して 12 倍の余裕があり、
-1 回の失敗パスや再起動直後の遅延では誤って「古い」と出ない一方、観測ループが
-本当に止まっていれば 1 時間以内に検知できる。将来この間隔が実際に設定可能になり
+**独立した固定の安全マージン**である。現在の 5 分間隔に対して 12 倍の余裕があり、
+1 回の失敗パスや再起動直後の遅延では誤って「古い」と出ない。一方で観測ループが
+本当に止まっていれば、1 時間以内に検知できる。将来この間隔が実際に設定可能になり
 既定より大きく延ばす運用が出てきた場合は基準が弱くなるため、そのときに見直す。
 
 この行自体は 5 分周期の定期 invalidate で取り直している（[docs/api/sse.md](../api/sse.md)
@@ -581,17 +589,18 @@ worker 側の実装詳細であって `GET /api/storage` の契約に含まれ�
 持たないため全件を取得し、クライアント側で `[now, now+7日)` に開始する予約だけを
 合算する。
 
-**`skip === true` の予約は消費に数えない。** `skip` は `effective.skip`
+**`skip === true` の予約は消費に数えない**。`skip` は `effective.skip`
 （[recording/reservation-model.md](../recording/reservation-model.md) §4.3「同期の
-可否を決めるのは state ではなく effective.skip である」）で、true の間 reconciler
-は mirakc に同期しない --- つまりディスクを消費しない。`state`
+可否を決めるのは state ではなく effective.skip である」）である。true の間
+reconciler は mirakc に同期しない --- つまりディスクを消費しない。`state`
 （active/detached/orphaned）は表示用の導出値であって同期可否のフィルタに使っては
 ならない（同節）ため、フィルタには使わない。
 
-**満杯見込み日は一様分布を仮定しない。** `GET /api/reservations` で各予約の
-開始時刻・尺は既に取得済みなので、`upcomingReservationSchedule` が `startMs` 昇順に
-整列した消費イベント列を作り、`estimateStorageForecast`（`projectedFullAtMs`）が
-先頭から累積消費を積み上げて残量を最初に超える瞬間を報告する。
+**満杯見込み日は一様分布を仮定しない**。`GET /api/reservations` で各予約の
+開始時刻・尺は既に取得済みである。そこで `upcomingReservationSchedule` が
+`startMs` 昇順に整列した消費イベント列を作る。`estimateStorageForecast`
+（`projectedFullAtMs`）が先頭から累積消費を積み上げ、残量を最初に超える瞬間を
+報告する。
 
 **「見込み消費を 7 日間に均等に分布する」線形外挿は採らない。** 予約が窓の終盤/
 冒頭に偏ると、実際より早い/遅い満杯見込み日を出す。後者は下界主義に反する
@@ -608,21 +617,22 @@ worker 側の実装詳細であって `GET /api/storage` の契約に含まれ�
    録画される予約（複数チューナー構成では普通）があっても合成レートにはしない。
    この近似も両方向に振れる:
    - 同時に始まる複数予約では、直列近似は実際より**遅い**満杯見込みを出す
-     （過小警告・危険な方向。実測: 同時開始の 6 時間予約 2 本が残量を消費する
-     とき、直列近似は 2.78 時間後と報告するが、実際の合成レートでは 1.39 時間後
-     に満杯になる）
+     （過小警告・危険な方向）。実測では、同時開始の 6 時間予約 2 本が残量を消費
+     するとき、直列近似は 2.78 時間後と報告するが、実際の合成レートでは 1.39 時間後
+     に満杯になる
    - 長い予約の途中に短い予約が重なるだけなら、直列近似は実際より**早い**満杯
-     見込みを出す（過大警告・安全側だが不正確。実測: 24 時間予約に 30 分予約が
-     重なるケースで、直列近似は 10 分後と報告するが、実際は約 23.67 時間後）
+     見込みを出す（過大警告・安全側だが不正確）。実測では、24 時間予約に 30 分
+     予約が重なるケースで、直列近似は 10 分後と報告するが、実際は約 23.67 時間後
+     である
 
    誤差の大きさは重なる予約のうち長い方の尺で頭打ちになる（実測で数時間〜
    約 1 日程度）。上記の一様分布の系統誤差（最大で窓の長さそのもの、7 日）
    より小さいが、ゼロではない。`lib/storage-forecast.test.ts` の「既知の近似」
    2 テストが両方向を固定している。**実装は変えていない** --- 重なりを合成
    レートで扱うには、予約どうしの重なり区間を都度計算する必要があり、この
-   タスクのスコープを超えるための判断（値札の精度を上げるコストが、今の
-   下界主義的な運用判断への寄与に見合うほど高くない）。
+   タスクのスコープを超える。値札の精度を上げるコストが、今の下界主義的な
+   運用判断への寄与に見合うほど高くないという判断である。
 
-この 3 つ（と、まだ見つかっていない近似があるかもしれないこと）のために
-「満杯見込み日」はあくまで目安であって確約ではない --- `lib/rule-cost.ts` の
+この 3 つ（と、まだ見つかっていない近似があるかもしれないこと）のために、
+「満杯見込み日」はあくまで目安であって確約ではない。`lib/rule-cost.ts` の
 「見込み」と同じく、一方向の保証（「多めには出ない」等）は書かない。

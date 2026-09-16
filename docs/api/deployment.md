@@ -6,7 +6,7 @@
 
 ### 根拠: 法的制約がスコープを決める
 
-技術的な簡略化ではなく、スコープの問題として考える。日本の著作権法では放送の録画が適法なのは私的使用（30 条）の範囲内であり、世帯外に視聴させる形態は複製権・公衆送信権（送信可能化権）に抵触しうる（まねきTV / ロクラクII 最判 2011 が示した通り、機器・サービスを介した「公衆」向け提供は事業者側の侵害とされた）。
+技術的な簡略化ではなく、スコープの問題として考える。日本の著作権法では、放送の録画が適法なのは私的使用（30 条）の範囲内である。世帯外に視聴させる形態は複製権・公衆送信権（送信可能化権）に抵触しうる（まねきTV / ロクラクII 最判 2011 が示した通り、機器・サービスを介した「公衆」向け提供は事業者側の侵害とされた）。
 
 つまり **Rokuban は構造的に単一世帯用アプリ**であり、以下は将来も含めてスコープ外:
 
@@ -20,7 +20,7 @@
 
 1. **ユーザーという概念を持たない** --- user テーブルなし、API に authn/authz 層なし。視聴履歴・再生位置などの状態は世帯グローバル
 2. **リモートアクセスは私的使用の範囲で構成側が担保** --- 推奨は VPN / Tailscale。公開インターネット経由ならリバースプロキシで TLS + Basic 認証（や Authelia 等）。リバースプロキシ・フレンドリー要件がそのまま効く
-3. **アプリ内に残る唯一のセキュリティ要件: Host ヘッダー検証** --- 認証なしの LAN アプリは DNS rebinding（悪意あるサイト → 攻撃者ドメインを LAN アドレスに解決 → ブラウザ経由で API 叩き放題）が定番の穴。許可 Host の allowlist 検証だけはアプリ側で持つ。Cookie 認証を持たないので CSRF は構造的にほぼ無関係
+3. **アプリ内に残る唯一のセキュリティ要件: Host ヘッダー検証** --- 認証なしの LAN アプリでは DNS rebinding が定番の穴である。DNS rebinding とは、悪意あるサイトが攻撃者ドメインを LAN アドレスに解決させ、ブラウザ経由で API を叩き放題にする攻撃である。許可 Host の allowlist 検証だけはアプリ側で持つ。Cookie 認証を持たないので CSRF は構造的にほぼ無関係
 4. **ドキュメントで明示** --- 「インターネットに直接露出させない」「認証が要る構成の nginx 例」を同梱構成例に含める
 
 ## リバースプロキシ・フレンドリー要件
@@ -29,7 +29,7 @@
 
 ### 要件一覧
 
-単一ホスト名で api / notifier / streamer を分けるときは、標準 Ingress の `Exact` またはパス要素単位の `Prefix` だけを入力にし、メソッド・クエリ・ヘッダー・正規表現に依存せず、すべての経路の backend が一意に決まることを判定基準とする。`/api/events` は Exact で notifier へ、site を具体化できるライブ配信は `/api/sites/<site>/networks` の Prefix で streamer へ振れるが、録画 VOD は `{id}` の後ろで api と streamer が分かれるため現行の `/api/recordings/{id}/...` では不足する。そこで応答の性質を表す固定接頭辞 `/api/media/recordings` へ移設した。
+単一ホスト名で api / notifier / streamer を分けるときは、標準 Ingress の `Exact` またはパス要素単位の `Prefix` だけを入力にする。メソッド・クエリ・ヘッダー・正規表現に依存せず、すべての経路の backend が一意に決まることを判定基準とする。`/api/events` は Exact で notifier へ振れる。site を具体化できるライブ配信は `/api/sites/<site>/networks` の Prefix で streamer へ振れる。だが録画 VOD は `{id}` の後ろで api と streamer が分かれるため、現行の `/api/recordings/{id}/...` では不足する。そこで応答の性質を表す固定接頭辞 `/api/media/recordings` へ移設した。
 
 | 要件 | 詳細 |
 |---|---|
@@ -39,12 +39,12 @@
 | SPA フォールバック | Go 側の catch-all で `index.html` を返す |
 | keep-alive アイドル接続の上限 | サーバー自身が `IdleTimeout`（120 秒）でリクエスト間のアイドル接続を切る。**upstream keep-alive を有効にしているプロキシ構成では**（nginx なら `upstream` ブロックに `keepalive N` を書いた場合。書かなければ upstream には都度 `Connection: close` で繋ぐので無関係）、プロキシ側のアイドルタイムアウトを 120 秒以下に揃える。長く取ると、プロキシがまだ生きていると思っている接続をサーバー側が先に切る |
 
-`X-Forwarded-Host` の解釈は **`server.trust_forwarded_host` による opt-in**（既定 false）。DNS rebinding の攻撃ページは Rokuban と同一オリジンとして扱われるため任意のリクエストヘッダーを付けられ、前段にプロキシが存在しない直接露出構成（`--all` の既定構成）でこのヘッダーを無条件に信頼すると、Host allowlist（§認証 帰結3）を自己申告値で素通りできてしまう。信頼できるプロキシが必ず前段に居り、かつそのプロキシが外来の `X-Forwarded-Host` を上書きする構成でだけ有効にする。判断の詳細と設定キーは [configuration.md](../configuration.md) §server.allowed_hosts を参照。
+`X-Forwarded-Host` の解釈は **`server.trust_forwarded_host` による opt-in**（既定 false）。DNS rebinding の攻撃ページは Rokuban と同一オリジンとして扱われるため、任意のリクエストヘッダーを付けられる。前段にプロキシが存在しない直接露出構成（`--all` の既定構成）でこのヘッダーを無条件に信頼すると、Host allowlist（§認証 帰結3）を自己申告値で素通りできてしまう。信頼できるプロキシが必ず前段に居り、かつそのプロキシが外来の `X-Forwarded-Host` を上書きする構成でだけ有効にする。判断の詳細と設定キーは [configuration.md](../configuration.md) §server.allowed_hosts を参照。
 
 ### 検討したが実装しないもの
 
 - **`X-Forwarded-For`**: 解釈しない。Rokuban は認証・レート制限・認可を持たない（本ファイル §認証）ため、なりすまされても実害はアクセスログの精度が落ちるだけだが、**そのアクセスログ機構自体が存在しない**（`internal/api` にリクエスト単位のロギングが無い）。出力先の無いヘッダー解釈は意味を持たないコードになる（不変条件 10）。アクセスログを新設する機会があれば、そのとき合わせて検討する
-- **`X-Forwarded-Proto` / `X-Forwarded-Prefix` / `public_url`（絶対 URL ビルダー）**: 実装しない。絶対 URL を生成している箇所を Go 側（`internal/api` / `internal/streamer` / `internal/notifier` / `internal/webhook`）・TS 側（`web/src`）双方で棚卸しした結果ゼロだった。API はすべてルート相対パス `/api/*`（[rest.md](rest.md) §エンドポイント設計の規約）、webhook のペイロードにも URL は載らない（[configuration.md](../configuration.md) §webhook）。ビルダーが要る箇所が無いので作らない（不変条件 11「これを書く/使うコードは今あるか」）。サブパス配信（`X-Forwarded-Prefix`）が必要になる構成が出てきたら、そのときに棚卸しからやり直す
+- **`X-Forwarded-Proto` / `X-Forwarded-Prefix` / `public_url`（絶対 URL ビルダー）**: 実装しない。絶対 URL を生成している箇所を、Go 側（`internal/api` / `internal/streamer` / `internal/notifier` / `internal/webhook`）と TS 側（`web/src`）の双方で棚卸しした。結果はゼロだった。API はすべてルート相対パス `/api/*`（[rest.md](rest.md) §エンドポイント設計の規約）、webhook のペイロードにも URL は載らない（[configuration.md](../configuration.md) §webhook）。ビルダーが要る箇所が無いので作らない（不変条件 11「これを書く/使うコードは今あるか」）。サブパス配信（`X-Forwarded-Prefix`）が必要になる構成が出てきたら、そのときに棚卸しからやり直す
 
 ### 単一バイナリの自己完結は維持
 
