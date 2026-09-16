@@ -176,7 +176,7 @@
 「試した条件」と「保存される条件」が食い違う。**
 
 下書き（`SearchDraft`）と `RuleInput` の相互変換は `lib/program-search.ts` の
-`buildRuleInput` / `ruleToDraft` に置き、**往復テストで固定する**。分と ms、
+`buildRuleInput` / `conditionsToDraft` に置き、**往復テストで固定する**。分と ms、
 ローカル壁時計と UTC の取り違えは UI 越しには見えにくい。
 
 - **検索 → ルール**: 検索画面の「この条件でルールを作成」（`?ruleId` を伴わない
