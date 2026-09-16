@@ -32,7 +32,7 @@ mirakc に録画を委譲すると（詳細は [recording.md](recording.md) 参�
 - **設計目的**: リアルタイムで期限のある録画はエッジの mirakc に委譲し、DB を真実の座とする処理をサーバー側で再試行可能なジョブに分ける
 - **コード上の保証**: ロール分割と定期 reconcile、予約同期は `cmd/rokuban/server.go`・`internal/reconciler`・`internal/worker` に実装され、既存テストで経路を確認している。これはクラウド上の可用性や性能を保証する記述ではない
 - **運用条件**: 録画を保証するのは mirakc に番組終了前まで同期済みの予約だけ。ingest には mirakc への接続、録画バッファの保持、書き込み可能なメディアストレージ、DB のロック・コミット経路が必要で、分散配置ではメディアストレージを共有できることも必要になる（詳細は [ストレージ契約](storage/contract.md) §3–5）
-- **レベルトリガー・crash-only の前提**: 「イベントを取りこぼしても定期 reconcile で収束する」「どこで落ちても再起動すれば収束する」は、定期投入の経路（River `PeriodicJobs` か k8s CronJob。[data.md](data.md) §2 / [operations.md](operations.md) §5）が動いている範囲で成り立つ。`worker.periodic_jobs: false` で CronJob を欠くと、落ちたイベントは永久に拾われない。crash-only はプロセス単位であり、`--all` ではロール単独の復旧は起きない
+- **レベルトリガー・crash-only の前提**: 「イベントを取りこぼしても定期 reconcile で収束する」「どこで落ちても再起動すれば収束する」は、定期投入の経路が動いている範囲で成り立つ。その経路とは River `PeriodicJobs` か k8s CronJob である（[data.md](data.md) §2 / [operations.md](operations.md) §5）。`worker.periodic_jobs: false` で CronJob を欠くと、落ちたイベントは永久に拾われない。crash-only はプロセス単位であり、`--all` ではロール単独の復旧は起きない
 - **実機未検証の範囲**: クラウド実機での挙動、長期の分散運用、帯域・容量の妥当性はこの概要だけでは判定しない。実際の配置では [運用](operations.md) の検証項目と各コンポーネントの既存試験を使う
 
 ## 構成図
@@ -65,7 +65,7 @@ nginx は構成図上の「箱」ではなく、推奨デプロイパターン�
 - `rokuban server --all`: 全ロールを1プロセスで（自宅向け、Docker Compose で Postgres と2コンテナ）
 - k8s ではロールごとに Deployment を分割：api は水平スケール、worker はキュー長で 0〜N（KEDA）、watcher はシングルトン（Postgres アドバイザリロックでリーダー選出）
 
-単一レプリカで配置できること、複数レプリカへ水平スケールできること、scale-to-zero できることは別の保証である。単一レプリカの配置は monolithic / distributed の形の選択、水平スケールはロールごとの DB・メディア・接続・排他条件を満たす場合の選択、scale-to-zero は長寿命接続を持たない api の DB-only なリクエスト経路に限る。notifier / watcher / streamer は接続を保持するため常駐が必要で、worker はキューが空なら 0 にできるが、ジョブ実行中は資源を保持する。いずれも api のリクエスト単位の scale-to-zero とは意味が異なる。
+単一レプリカで配置できること、複数レプリカへ水平スケールできること、scale-to-zero できることは別の保証である。単一レプリカの配置は monolithic / distributed の形の選択である。水平スケールは、ロールごとの DB・メディア・接続・排他条件を満たす場合の選択である。scale-to-zero は長寿命接続を持たない api の DB-only なリクエスト経路に限る。notifier / watcher / streamer は接続を保持するため常駐が必要で、worker はキューが空なら 0 にできるが、ジョブ実行中は資源を保持する。いずれも api のリクエスト単位の scale-to-zero とは意味が異なる。
 
 ### ロール分類の基準: ソケットを持ち続けるか
 
@@ -95,7 +95,8 @@ nginx は構成図上の「箱」ではなく、推奨デプロイパターン�
   `PeriodicJobs`、k8s では CronJob が投入する。同じジョブ本体が両方から呼ばれる（[data.md](data.md) §2）
 - **SSE を扱うことはロールの根拠になる**（ソケットを持ち続けるので）。ただし SSE だからといって
   1 つのロールに集約する理由はない --- notifier（ブラウザへ送る）と watcher（mirakc から受ける）は
-  機構が同じでも相手・向き・障害時の影響範囲が無関係なので、別ロールのまま置く（[api.md](api.md) §SSE）
+  機構が同じでも、相手・向き・障害時の影響範囲が無関係である。そのため別ロールのまま置く
+  （[api.md](api.md) §SSE）
 
 コード上はただの modular monolith。**IPC は最初から作らない**ので、EPGStation が抱えた「分離しようにも IPC が剥がせない」問題は構造的に発生しない。
 
@@ -117,7 +118,7 @@ nginx は構成図上の「箱」ではなく、推奨デプロイパターン�
 
 ## HTTP 配信層と nginx
 
-**nginx は必須コンポーネントにしない。ただし「前段に置ける設計」を HTTP 層の要件として最初から織り込む。** `--all` で nginx なしでも全機能動作する自己完結性は維持しつつ、リバースプロキシ・フレンドリー性（`X-Forwarded-Host` 解釈（opt-in）、ルート相対パス徹底、WebSocket 不使用）と X-Accel-Redirect オプションを要件化する。
+**nginx は必須コンポーネントにしない。ただし「前段に置ける設計」を HTTP 層の要件として最初から織り込む**。`--all` で nginx なしでも全機能動作する自己完結性は維持する。そのうえでリバースプロキシ・フレンドリー性（`X-Forwarded-Host` 解釈（opt-in）、ルート相対パス徹底、WebSocket 不使用）と X-Accel-Redirect オプションを要件化する。
 
 用途別の判断、リバースプロキシ要件一覧、nginx リファレンス構成は [api.md](api.md) を参照。
 
@@ -129,9 +130,9 @@ nginx は構成図上の「箱」ではなく、推奨デプロイパターン�
 
 ## イメージ戦略と配布物
 
-**公式配布物は ffmpeg を含まないコンテナイメージと素のバイナリの 2 つだけ。** ffmpeg 入りイメージはユーザーが同梱の `Dockerfile.full` で自分用にビルドする（自分のためのビルドは再配布ではないので GPL 遵守事務・特許プールの問題が生じない）。
+**公式配布物は ffmpeg を含まないコンテナイメージと素のバイナリの 2 つだけ**。ffmpeg 入りイメージはユーザーが同梱の `Dockerfile.full` で自分用にビルドする。自分のためのビルドは再配布ではないので、GPL 遵守事務・特許プールの問題が生じない。
 
-ベースイメージは **`debian:bookworm-slim` + `ca-certificates` / `curl`**（`Dockerfile`。実行ユーザーは `nobody`）。同梱するのは `curl` 1 つだけで、これは Docker Compose の healthcheck が HTTP を叩く手段を必要とするため（`docker-compose.yml` の `curl -sf .../healthz`）。**distroless/static に置き換えると、そのまま healthcheck が壊れる。** 攻撃面を縮めたいという動機は正しいが、それは compose の healthcheck を別の手段に作り替える判断と一緒でなければ成立しない（Go 側に自己チェック用のサブコマンドを持たせる等）。イメージだけ差し替えるのは変更にならない。
+ベースイメージは **`debian:bookworm-slim` + `ca-certificates` / `curl`**（`Dockerfile`。実行ユーザーは `nobody`）。同梱するのは `curl` 1 つだけで、これは Docker Compose の healthcheck が HTTP を叩く手段を必要とするため（`docker-compose.yml` の `curl -sf .../healthz`）。**distroless/static に置き換えると、そのまま healthcheck が壊れる**。攻撃面を縮めたいという動機は正しい。だがそれは、compose の healthcheck を別の手段に作り替える判断と一緒でなければ成立しない（Go 側に自己チェック用のサブコマンドを持たせる等）。イメージだけ差し替えるのは変更にならない。
 
 公式イメージには `/usr/share/doc/rokuban/LICENSE` と
 `/usr/share/doc/rokuban/THIRD_PARTY_NOTICES` を置く。後者は Go バイナリの実ビルド依存、
@@ -160,8 +161,8 @@ SSE (`/api/events`) は notifier ロールに分離されており、api は mir
 ```
 
 `worker` が自宅側にあるのは、**キューの置き場所の制約**であってロールの都合ではない。mirakc への到達性を
-要するキュー（`reconciler` / `epg` / `watcher` / `ingest`）とアーカイブのファイルシステムを要するキュー
-（`encode` / `thumbnail` / `cleanup`）は自宅側、DB しか触らない `ruler` はどちらでも動く。
+要するキュー（`reconciler` / `epg` / `watcher` / `ingest`）と、アーカイブのファイルシステムを要する
+キュー（`encode` / `thumbnail` / `cleanup`）は自宅側にある。DB しか触らない `ruler` はどちらでも動く。
 ロールを増やさずキューの割り当て（`worker.queues`。デプロイ時のパラメータ）だけで置き場所が決まるのは、
 ロールが「プロセスの形」だけを表しているため。
 
@@ -175,7 +176,7 @@ SSE (`/api/events`) は notifier ロールに分離されており、api は mir
 
 ### 決定: 受容する
 
-エンジン抽象化も EDCB ドライバも作らない。mirakc は単一メンテナ OSS であり、スキーマ自体を mirakc の形（programId / RecordingOptions / tags）に合わせたため「継ぎ目は reconciler/watcher に局所化」という保険は言うほど厚くない。それでも受容できるのは、賭け金が見た目より小さいためである。
+エンジン抽象化も EDCB ドライバも作らない。mirakc は単一メンテナ OSS であり、スキーマ自体を mirakc の形（programId / RecordingOptions / tags）に合わせている。そのため「継ぎ目は reconciler/watcher に局所化」という保険は、言うほど厚くない。それでも受容できるのは、賭け金が見た目より小さいためである。
 
 ### 爆風半径は有界（意図せず手に入っている担保）
 
@@ -187,7 +188,7 @@ mirakc の形をしているのは**短命な導出状態だけ**：
 | **mirakc の形（短命・導出）** | reservations の base（ルールから毎回再計算）、schedule_sync（observed、エンジンから再同期） |
 | **外部識別子（API の資源同定という長寿命の契約）** | `programId`。`(site, programId)` が API のパスとクライアントのクエリキー階層に入り、`docs/schema/principles.md` §1-5 の資源同定そのものになった。爆風半径としては上の「短命・導出」より一段重い —— クライアントのブックマーク・キャッシュキーという、DB のマイグレーションより差し替えコストが高い場所に染み出している |
 
-**この行の自己評価**: `programId` は mirakc 固有の連番 ID ではなく、NID（ネットワーク識別）/SID（サービス識別）/EID（イベント識別）という ARIB（地上波・BS/CS 放送の標準規格）由来の値から合成される（Mirakurun 互換の合成規則）。エンジンを載せ替えても放送波そのものの NID/SID/EID は変わらないため、新エンジンの上に同じ合成規則（または新エンジンが提供する同値の識別子）を被せれば `programId` を再合成できる。つまりこの依存は「mirakc というプロセスの内部 ID に縛られている」のではなく「ARIB という止まらない外部標準に縛られている」ため、実際の載せ替えコストは表の見た目（API 契約への浸透）ほど高くない。
+**この行の自己評価**: `programId` は mirakc 固有の連番 ID ではない。NID（ネットワーク識別）/SID（サービス識別）/EID（イベント識別）という ARIB（地上波・BS/CS 放送の標準規格）由来の値から合成される（Mirakurun 互換の合成規則）。エンジンを載せ替えても放送波そのものの NID/SID/EID は変わらないため、新エンジンの上に同じ合成規則（または新エンジンが提供する同値の識別子）を被せれば `programId` を再合成できる。つまりこの依存は「mirakc というプロセスの内部 ID に縛られている」のではなく「ARIB という止まらない外部標準に縛られている」ため、実際の載せ替えコストは表の見た目（API 契約への浸透）ほど高くない。
 
 エンジンを載せ替える場合でも、書き直すのは reconciler / watcher / ingest の取得部と予約まわりのスキーマだけで、**ライブラリと履歴は無傷で持ち越せる**。desired/observed 分離とレベルトリガーの帰結。
 
