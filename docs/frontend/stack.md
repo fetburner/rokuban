@@ -17,7 +17,7 @@ go:embed で単一バイナリに同梱するため、成果物は**静的ファ
 | 動画再生 | ネイティブ `<video>`（VOD / MP4 progressive）+ hls.js（ライブ。ライブ視聴画面のみ動的 import。バンドルは別チャンク） |
 | フォント | Geist Variable（英数字）+ Noto Sans JP Variable（和文）。どちらも `@fontsource-variable/*` で自前配布 |
 
-## 決め手（技術選定の経緯）
+## 技術選定の決め手
 
 ### 1. SSE との組み合わせがバックエンドの思想と対称になる
 
