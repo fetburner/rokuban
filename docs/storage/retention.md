@@ -10,7 +10,7 @@
 
 **凍結する瞬間は ingest が原本 media_asset をコミットする tx の中**（`internal/worker/ingest.go` の `resolveAndSnapshotEncodePolicy`）であって、予約確定時でも録画開始時でもない。再導出（reservations 経由で毎回引き直す）は選べない —— 導出元（`reservations` / `program_overrides` / `program_intents`）は放送終了 + 猶予後に GC される寿命の短い表だが、`recordings` は永続資産（CLAUDE.md 不変条件 12「表は行の寿命で割る」）。導出に依存させると、番組が EPG から消えて GC された時点で desired が空になり、エンコード未完了の録画で原本削除が止まる／再エンコードが投入できなくなる。凍結した `recording_encode_policy` の行は「この録画の望ましい最終状態」であり、`recordings` 行と同時に生まれて同時に死ぬので不変条件 12 には反しない（衛星表として別テーブルに置くことは「行の寿命が同じ」であることと矛盾しない。不変条件 13 参照）。ただし凍結する以上、**ingest 完了より後の override 変更はその録画には反映されない**という境界が生まれる（[録画エンジン](../recording.md) §4.5）。この境界を越えて変更するのは、下記の録画単位 API を明示的に呼んだ場合だけである。
 
-**予約をどのキーで引くか**: `resolveAndSnapshotEncodePolicy` は予約を `reservations` への FK ではなく、放送イベントキー `(site, network_id, service_id, event_id)` で引く。放送イベントキーは `recordings` が録画開始時から凍結して持つ列なので、録画開始から ingest 完了までの窓（番組の尺ぶん、数時間）で予約行が GC・再実体化（EPG フリッカー、ルール編集、dedup）されても見失わない。
+**予約をどのキーで引くか**: `resolveAndSnapshotEncodePolicy` は予約を `reservations` への FK ではなく、放送イベントキー `(site, network_id, service_id, event_id)` で引く（導出器が作る予約 id で引かない。不変条件 9 / [invariants.md](../invariants.md) §9）。放送イベントキーは `recordings` が録画開始時から凍結して持つ列なので、録画開始から ingest 完了までの窓（番組の尺ぶん、数時間）で予約行が GC・再実体化（EPG フリッカー、ルール編集、dedup）されても見失わない。
 
 具体的には `program_snapshots` で `(network_id, service_id, event_id)` → `program_id` を引き、`reservations` を `program_id` で結合する（`GetReservationEncodePolicyByEvent`、`internal/db/queries/recording_policy.sql`）。`program_snapshots` は放送後 `epg.retention_grace`（既定 24h）で GC される寿命の短い表（[スキーマ](../schema.md) §3「射影にある間は更新、消えたら凍結」）で、ingest は通常なら録画終了直後 --- GC の猶予期間より十分前 --- に走る。**ただし「通常なら」であって、滞留の設計はこれを超える遅延を明示的に許容している**（下記「凍結が依存する寿命と、エッジの滞留の交点」）。
 
@@ -168,12 +168,3 @@ rescue の昇格には進まない。
 
 - **「放送データのコピーが常に 1 つ以上」は DB 喪失時も維持される**: エッジ record の削除は ingest の DB コミット後 → コミット直後に DB を失ってもファイルはアーカイブに存在し、安全弁が守り、rescue が再登録する
 - cleanup は mirakc の basedir に絶対に触らない（エッジ側削除は ingest の検証済み削除のみ）
-
-## 経緯と失敗事例
-
-- 保持ポリシーの `recording_encode_policy` への凍結。「行の存在 = 凍結済み」の衛星表化は `recording_encode_policy` とは別表
-- 予約を放送イベントキーで引く形。旧実装は `recordings.reservation_id`（bigint FK、`ON DELETE SET NULL`）で予約を引いており、録画開始から ingest 完了までの窓で ruler の導出削除・再実体化が起きると FK が NULL に落ち、「予約が無い」と誤認して encode policy を凍結し損なっていた（ログにも出ない）。列自体は削除。導出器が作るキーで引く同族の失敗がこの列以外にもあった
-- 空の `encode_profiles` で「全称量化が空集合に自明に真」となり原本が即座に消える罠。ガードを名前付き述語 1 箇所に置く形 —— それ以前はガードが 5 複製の 1 つ（入口）にしか入っておらずドリフトしていた
-- エンコードプロファイルの事後追加（凍結の例外）。未凍結（`internal/inplace.Register` 由来）の録画の扱いはレビューで発見
-- 「凍結が依存する寿命と、エッジの滞留の交点」。docs 全体のレビューで見つかった設計前提の衝突で、コードのバグ報告ではない。**片方の doc が「ingest は GC 猶予より前に走る」と書き、もう片方が「N 日分の滞留を吸収する」と書いていて、互いを見ていなかった。** GC を `record_sync` と連動させる案・凍結を録画開始へ前倒す案は、どちらも滞留の主因である回線断の**未観測ぶん**（断の最中に始まった録画。クラウド側にアンカーが無い）を塞げないことが分かったので採らず、`epg.retention_grace` とリングバッファの N 日の関係として書いた。**初版は「クラウド側にアンカーが無い」を無条件に書いていた** —— 断の前に観測済みの record にはアンカーがある（`AcquireRecordSync` は status を問わず行を作る）ので、正しい分割は「リンクが生きているか」ではなく「その record の観測が届いていたか」。同じ PR で「未 ingest 滞留のアラートは回線断への備え」と書いていた 3 箇所（`internal/db/queries/metrics.sql` / [アラート設計](../operations/alerts.md) / [ストレージ契約](contract.md)）も、この結論と衝突したまま残っていたので直した。
-- `recordings.purged_at` は復元と物理削除の競合を閉じるための印（適用の瞬間の再評価と `stat` 確認）

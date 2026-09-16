@@ -18,7 +18,7 @@
 
 **需要の単位は「異なる物理チャンネル数」**。予約件数ではない（同一物理チャンネルなら 1 本で相乗りできる）。副産物としてマルチ編成が自然に畳まれる --- サブサービスは同一チャンネルなので需要 1。
 
-数えるのは**reconciler が実際に schedule を作る予約だけ**。effective の `skip` が true の行と、never-scheduled（番組が終了したのに schedule が一度も観測されなかった事実）の欠測行がある予約は需要にならない。欠測は `never_scheduled_events` 表を放送イベントキーで引く。mirakc 由来の failed 試行は `recordings` にだけ現れるので需要除外にはならず、再試行経路を妨げない。
+数えるのは**reconciler が実際に schedule を作る予約だけ**。effective の `skip` が true の行と、never-scheduled（番組が終了したのに schedule が一度も観測されなかった事実）の欠測行がある予約は需要にならない。欠測は `never_scheduled_events` 表を放送イベントキーで引く。mirakc 由来の failed 試行は `recordings` にだけ現れるので需要除外にはならず、再試行経路を妨げない。**欠測を `reservations` の状態や `recordings` の failed 行から導出し直さない。** 試行（`recordings`）と欠測（`never_scheduled_events`）は別の事実で、混ぜると failed 試行が需要を消し警告を見逃す側に倒れる。
 
 #### 縮約の条件は「隣接集合が同じ」であること
 
@@ -141,7 +141,3 @@ twin vertices の縮約も、実は前提が完全には成り立たない。mir
 需要の単位が `(channel_type, channel)` なので、予約側に `network_id` / `service_id` / `channel_type` / `channel` のスナップショット列が必要になる。**使い捨ての EPG 射影への JOIN に頼ると、射影が刈られた/欠損した瞬間に容量判定が壊れる**。録画行への非正規化スナップショット（§6、[projections.md](projections.md)）と同じ規律で、予約時に焼き付ける。この列は `reservations` ではなく `program_snapshots`（[スキーマ](../schema.md) §3.7）にあり、`reservations` は `(site, program_id)` の FK で JOIN して読む
 
 既知の盲点: mirakc の `update-schedules` ジョブは周期が分かっているので、cron 設定を取得できれば需要に織り込んで精度を上げられる（API で取得可能かは未確認）。
-
-## 経緯と失敗事例
-
-- 需要から除外する never-scheduled の判定は、当初 `reservations` の `orphaned` 状態（のちの `orphaned_at` 列）、次に `recordings` の擬似 failed 行から導出していた。現在は試行と欠測を分け、`never_scheduled_events` 専用表の行の存在を放送イベントキーで引く。`recordings` の failed 試行は除外条件に含めない

@@ -37,7 +37,7 @@ var epgToTemplateVar = map[string]string{
 // 1 つでもあれば変換自体を行わず、その一覧を unsupported として返す
 // （tmpl は空文字）。%変数% 記法では未対応の変数名は黙って空文字に置換され、
 // ユーザーは数週間後にファイル名が崩れて初めて気づく
-// （docs/recording/contentpath.md「経緯と失敗事例」）。呼び出し側
+// （docs/recording/contentpath.md「ファイル名テンプレート」）。呼び出し側
 // （buildRuleFields）はこの空変換を「filename_template を書かず
 // DefaultTemplate にフォールバックし、警告を出す」に倒す。
 func ConvertRecordedFormat(epgFormat string) (tmpl string, unsupported []string) {

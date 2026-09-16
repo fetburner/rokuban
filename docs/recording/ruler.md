@@ -136,7 +136,7 @@ NID/SID は放送規格のスコープでサイトに依存しないため、地
 
 #### 録画・ingest 完了後の fulfilled 削除
 
-予約は mirakc に同期すべき schedule を表す。原本 `media_asset`（`kind='original'`、state 不問）が存在する放送イベントは録画と ingest が完了しており、`epg.retention_grace`（既定 24h）を待たずに desired から外す。判定は `collectDesired` が放送イベントキーで行い、同じパスの後段で `DeleteFulfilledReservationsBySiteAndProgramIDs` が削除する（`internal/db/queries/ruler.sql` の `ListFulfilledProgramIDsBySite`）。原本を後から tombstone しても、録画・ingest が完了した事実は戻らないので fulfilled のままだ（`keepOriginal=until_encoded` でエンコード後に原本を消す運用が予約を再表示させないための回帰。`TestRunPass_FulfilledReservationTombstonedOriginalStillRemoved`）。
+予約は mirakc に同期すべき schedule を表す。原本 `media_asset`（`kind='original'`、state 不問）が存在する放送イベントは録画と ingest が完了しており、`epg.retention_grace`（既定 24h）を待たずに desired から外す。判定は `collectDesired` が放送イベントキーで行い（導出器が作る予約 id で引かない。不変条件 9 / [invariants.md](../invariants.md) §9）、同じパスの後段で `DeleteFulfilledReservationsBySiteAndProgramIDs` が削除する（`internal/db/queries/ruler.sql` の `ListFulfilledProgramIDsBySite`）。原本を後から tombstone しても、録画・ingest が完了した事実は戻らないので fulfilled のままだ（`keepOriginal=until_encoded` でエンコード後に原本を消す運用が予約を再表示させないための回帰。`TestRunPass_FulfilledReservationTombstonedOriginalStillRemoved`）。
 
 fulfilled 削除は観測された事実（ingest 完了）に基づく確定的な寿命終了で、EPG 欠損に起因する導出削除ではない。したがって `program_investments`（record 意図・overrides）や EPG 射影の残存に依存せず、大量削除サーキットブレーカーの対象にもならない（`TestRunPass_FulfilledWithInvestmentStillRemoved` / `TestRunPass_FulfilledDeletesDoNotCountTowardBreaker`）。ingest が原本 `media_asset` の INSERT と同じ transaction で `recording_encode_policy` を凍結するため、この削除が走るのは凍結の lookup より後になる（凍結との競合は生じない）。
 
@@ -148,10 +148,3 @@ fulfilled 削除は観測された事実（ingest 完了）に基づく確定的
 
 **GC は大量削除サーキットブレーカー（`MaxDeletesPerPass`）の対象にせず、ブレーカー発動中でも動く**。GC の削除対象は時刻の比較だけで決定的に定まり、EPG の状態には一切左右されないため（理由の全体は [breaker.md](breaker.md)「GC は対象にしない」）。
 
----
-
-#### 経緯と失敗事例
-
-- GC は当初 3 表それぞれに別々の DELETE 文があり、表ごとに違うスナップショット列を見てドリフトしていた（表ごとに違う時刻で GC していた）。`program_snapshots` への `ON DELETE CASCADE` FK による 1 本の DELETE（`DeleteEndedProgramSnapshots`）に集約した
-- `recordings.reservation_id` 列（GC 当時は `ON DELETE SET NULL`）は列自体を削除した
-- 「ルールの削除は履歴のスコープを消す」。`recordings.rule_id` の FK を外して値を残す案（`dedup_match_recording_id` で FK を張らなかった議論と同型）を評価したうえで採らなかった —— 作り直したルールが新 id を持つ以上、値を残しても症状（`dedupe_window` 内の再放送を録り直す）が消えないため。

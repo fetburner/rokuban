@@ -55,8 +55,3 @@ mirakc に触るのは watcher / ruler / reconciler / worker のみ。この不�
 mirakc は起動中の局ロゴ抽出（放送波からの動的抽出）をサポートしていない（[dekiru-mirakc: logos](https://mirakc.github.io/dekiru-mirakc/stable/config/logos.html)）。運用者が `mirakc-arib` 等で事前抽出したファイルを `config.yml` に静的パスとして登録し、mirakc の `GET /api/services/{id}/logo` はそれを配るだけ。つまりロゴは放送から自動では増えず、運用者が mirakc 側の設定を触った時点で既に手元にファイルがある。この静的アセットを Rokuban 側でもう一度取得・ハッシュ管理・自前配信する価値は薄く、「api ロールはファイルシステムに依存しない」不変条件との境界（配信を streamer 経由にするか等）を余分に検討するコストに見合わない。
 
 `epg_services.has_logo_data` / `logo_id` 列は mirakc の `Service` 構造体をそのまま射影しているだけなので残っているが、これらを使ってロゴ本体を取得・配信する機構は作らない。
-
-## 経緯と失敗事例
-
-- 手動予約とルール予約を同じ `reservations` に統一し、区別を `program_intents.action` の有無から導出する
-- 意図（`program_intents` / `program_overrides`）を導出行と別の永続表に置く設計は [録画エンジン](../recording.md) §4「予約モデル」
