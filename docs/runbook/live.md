@@ -191,7 +191,6 @@ pnpm exec playwright install chromium webkit
    probe は HTTP 層しか見ないので、ここを `<video>` のイベントで拾えていないと
    **永久に止まった黒いプレイヤー**になる。壊れ方で出るイベントが違う
    （404 は `error`、無応答は `stalled` のみ）ので 2 通りとも見る
-
 8. **チャンネル切り替えで離脱ヒントが実際に飛ぶ**（`POST .../live/leave`。④ と
    同じ切り替え操作を観測する）。**jsdom では原理的に測れない** ---
    `navigator.sendBeacon` が jsdom に無いため、ユニットテストが見ているのは
