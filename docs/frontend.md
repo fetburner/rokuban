@@ -2,7 +2,7 @@
 
 Vite + React + TypeScript の SPA。go:embed で単一バイナリに同梱し、同じ `dist/` を S3+CDN 配信にも使う。
 
-**本文は `docs/frontend/` に分割してある。** コードコメント・他 doc の「docs/frontend.md「節名」」参照は、下の表で該当ファイルを引ける。
+**本文は `docs/frontend/` に分割してある。** コードコメントや他 doc にある「docs/frontend.md「節名」」形式の参照は、下の表で該当ファイルを引ける。
 
 | 内容 | ファイル |
 |---|---|
