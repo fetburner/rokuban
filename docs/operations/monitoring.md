@@ -45,7 +45,7 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_reconcile_pending_diff{action}` | Gauge | reconcile 差分数（**収束すればゼロ**。アラートはこちら） |
 | `rokuban_reconcile_schedules_total{action}` | Counter | 実際に差分を消した量 |
 | `rokuban_reconcile_schedule_lost_total` | Counter | 再作成で DELETE 成功 → POST 失敗（下記 reconcile。**0 以外はアラート対象**） |
-| `rokuban_reconcile_circuit_breaker_trips_total` | Counter | 全損シグネチャでの発動（件数の閾値ではない。下記「経緯と失敗事例」） |
+| `rokuban_reconcile_circuit_breaker_trips_total` | Counter | 全損シグネチャでの発動（件数の閾値ではない）。**意味が変わってもメトリクス名は既存のダッシュボード・アラートを壊さないため据え置き** |
 | `rokuban_circuit_breaker_tripped{site,breaker}` | Gauge | **いま止まっているか**（1 = 発動中）。ラッチなのでアラートはこちら。`breaker="delete_reconcile"` は site が空文字列 |
 | `rokuban_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に完走したパスの時刻 |
 | `rokuban_reconcile_start_delayed{site}` | Gauge | **開始時刻を過ぎたのに録画が始まっていない予約数**。収束すればゼロに戻る |
@@ -244,7 +244,7 @@ thumbnail reconcile の候補から除外される既知の原本欠落は `roku
 | `/api/capacity/overages` が空 | 収まるとは限らない。並走 EPGStation・ライブ視聴・EPG 収集は見えず、mirakc の `excluded_channels` は `/api/tuners` に載らないので**知る術がない** | `rokuban_tuners_projected` が 0 でないこと |
 | 同上（射影が空） | 射影が 1 行も無いサイトは**何も主張しない**ので、同期が壊れると警告が黙って消える | `tuner_sync` の行と `tuner_sync_last_success` の鮮度 |
 | `drop-stats` の `pidType` が無い | 分類できなかっただけで、ドロップ統計そのものは正しい | `packets` / `drops` は種別と独立に信頼できる |
-| `pidType` が `other` | 音声の可能性がある（LATM AAC は `other` に落ちる） | 4K/8K を録ったなら疑う |
+| `pidType` が `other` | 音声の可能性がある（LATM AAC は `other` に落ちる。**自前の `stream_type` 表は作らず、`gots` の `IsAudioContent()` の値域に従う**） | 4K/8K を録ったなら疑う |
 | `/api/sites/{site}/programs/{programId}/overlaps` の `count = 0` | 録れるとは限らない（他サイトや mirakc の他の消費者は数えていない） | 重なりの手動確認（[docs/runbook/](../runbook.md) 側） |
 | `/api/breakers` が空 | 削除が正しかったとは限らない。**閾値を下回る削除は素通りする**し、明示操作由来の削除（`action="released"`）はそもそもブレーカーを通らない | `rokuban_ruler_reservations_total{action="deleted"}` の増え方 |
 | `rokuban_reconcile_start_delayed` が 0 | 録画が始まったことの確認ではない（猶予 3 分の内側は検出しない） | `recordings.started_at` |
@@ -274,9 +274,3 @@ thumbnail reconcile の候補から除外される既知の原本欠落は `roku
 同じ 1 行に `observedAt` の鮮度（射影ループが止まっていないか）を併置して
 あるので、**実用上の値はそちらにある** --- 射影ループの停止は実際に捉えられる。
 故障のほうは Mirakurun 互換 API の契約として読む形だけ残してある。
-
-### 経緯と失敗事例
-
-- **`rokuban_reconcile_circuit_breaker_trips_total` は意味が変わった**（メトリクス名は既存のダッシュボード・アラートを壊さないため据え置き）。以前は「1 パスの削除数が閾値を超えた」を数えていたが、その件数ベースの判定は誤発火しかしないので撤去した。今は「desired が空なのに自分の schedule が観測される」という全損シグネチャの発動を数える。`rokuban_circuit_breaker_tripped` ゲージと、ブレーカーのラッチ化（発動遷移だけを数える）も同じ。
-- `pending_diff` の `update` / `update_deferred` の分離。
-- 「沈黙は保証ではない」の表は手動検証 runbook から移設した。`pidType` が `other` の音声 PID は `gots` の `IsAudioContent()` の値域に従っているだけで、自前の `stream_type` 表は作らない方針（観測したら 1 行で足せる）。

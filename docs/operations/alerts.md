@@ -139,7 +139,3 @@ observed を再計算するため、`synced` 成功状態を永続化して古�
 未測定の範囲は、定期投入から通知到達までの p95/p99、mirakc の POST 後に schedule が
 再観測されるまでの遅延、サイトごとの EPG 時刻変更頻度である。実測後に alert rule の
 閾値を変更し、アプリケーションを再ビルドしない。
-
-### 経緯と失敗事例
-
-- サーキットブレーカーは「発動遷移」だけを数えるラッチ化。開始遅延検出器（`rokuban_reconcile_start_delayed`）は「開始時刻を過ぎても `recording.started` が観測されない予約」を reconcile ループで検出する。

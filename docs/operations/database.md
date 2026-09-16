@@ -74,7 +74,3 @@ monolith モードでは Postgres のデータディレクトリとエンコー�
   - **`rokuban rescue` を健全性の確認に使わない。破壊的な操作である**。rescue は検証の後に必ず DB へ書き、live DB を catalog スナップショットで**上書きする**。`recordings.status` / `deleted_at` / `purged_at`、`media_assets.state` / `deleted_at` を catalog の値で上書きし、id シーケンスを巻き戻す。健全な DB に対して実行すると、catalog を書き出した時点まで状態が巻き戻る（削除済み asset の復活を含む）。使うのは DB を失った後だけ
 - **pg_dump（推奨・非必須）**: フル忠実度が欲しい場合の日次 pg_dump 構成例をドキュメントに記載する
 - 世帯スケールでは catalog + 任意の pg_dump で十分。WAL アーカイビングは過剰
-
-### 経緯と失敗事例
-
-- 輻輳時の隔離の実装規律（ロール別プール上限・`statement_timeout` の一括適用）。
