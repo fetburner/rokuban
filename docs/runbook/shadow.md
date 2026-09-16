@@ -40,7 +40,6 @@ rokuban tag（`program:{programId}`）が無い schedule を触らない。デ�
 
 ### shadow-diff で予約差分を確認する
 
-
 EPGStation 側の API の形は**実機（v2.10.0）で確認済み**。`GET /api/reserves` は
 `{ reserves: [...], total: n }` を返す。各要素は `programId`（数値の Mirakurun ID）を持つ。ほかに
 `startAt` / `endAt`（UnixtimeMS）/ `isSkip` / `isConflict` / `isOverlap` /

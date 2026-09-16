@@ -19,12 +19,12 @@
 
 いずれも jsdom では**原理的に検出できない**。ここに置いた判定はそのためのもの。
 
-`lib.mjs` は各スクリプトの前置き（ブラウザの起動・終了、`/api/**` の配線、配って
-いる bundle が `dist/` の現物と一致するかの確認、フィクスチャが orval 生成の
-zod スキーマと一致するかの確認（`validateFixturesOrExit`。詳細は下記
-§デザイン）、結果の集計と終了コード）を共有する。各スクリプト固有の判定
+`lib.mjs` は各スクリプトの前置きを共有する。中身はブラウザの起動・終了、`/api/**` の
+配線、配っている bundle が `dist/` の現物と一致するかの確認、結果の集計と終了コード
+である。あわせてフィクスチャが orval 生成の zod スキーマと一致するかの確認
+（`validateFixturesOrExit`。詳細は下記 §デザイン）も持つ。各スクリプト固有の判定
 （何が OK/NG かの基準）はここには置かず各 *.mjs 本体にとどめる ---
-フィクスチャ自体（どの値を使うか）はスクリプトごとに違うので、
+フィクスチャ自体（どの値を使うか）はスクリプトごとに違うためである。
 `validateFixturesOrExit` は「フィクスチャ配列 → 呼び出し側が組む」形にして
 判定ロジックだけを共有する。
 
@@ -61,7 +61,7 @@ E2E_URL=http://localhost:40775 pnpm e2e
 preview サーバー、`dist/`、Playwright のブラウザ本体は必要ない。
 
 対象スクリプトは `e2e/validate-fixtures.mjs` が手書きの一覧ではなくファイル内容
-（`validateFixturesOrExit` の呼び出しの有無）から導出する --- 手書きだと、並行して
+（`validateFixturesOrExit` の呼び出しの有無）から導出する。手書きだと、並行して
 増えたスクリプトの契約検証が一覧への追加漏れで静かに検査対象から外れる。各スクリプトは
 このモードで全フィクスチャを検証してから `launchBrowser` や bundle 検証へ進まない。
 実ブラウザを使う判定は従来どおりこのコマンドの対象外で、ローカルの個別 E2E で行う。
@@ -69,8 +69,8 @@ preview サーバー、`dist/`、Playwright のブラウザ本体は必要ない
 省略しない。
 
 **`E2E_VALIDATE_FIXTURES_ONLY=1` をシェルに export したまま忘れると、以降の `pnpm e2e:*`
-は全部「契約検証だけして exit 0」になる --- 実判定を 1 つも走らせていない緑になるので、
-このコマンドを使うときはコマンドの前にだけ付ける。**
+は全部「契約検証だけして exit 0」になる。実判定を 1 つも走らせていない緑になる。**この
+コマンドを使うときはコマンドの前にだけ付ける。
 
 ### 多 site 番組表（`multi-site.mjs`）
 
@@ -85,7 +85,7 @@ site 固定撤去前（フロントが単一 site 決め打ちだった頃）は
 共有 BS 1 局 + GR 2 局 × 2 site）。
 
 **GR fixture（両 site で同じリモコン番号を持つが別放送の局。実在の東京・高松の
-NHK 総合・NHK E テレと同じ形）も配る。** `orderServices`（`lib/epg-grid.ts`）が
+NHK 総合・NHK E テレと同じ形）も配る**。 `orderServices`（`lib/epg-grid.ts`）が
 リモコン番号を site より先に比べる実装だと、この 4 局は 1 列ごとに site が交互
 する順になる（レビュー指摘）。左端からの並びで「同じ site が連続する走」を数え、
 各 site の走が種別の本数（GR 1 本 + BS 1 本 = 2 本）に収まっていることを実測する
@@ -95,8 +95,8 @@ NHK 総合・NHK E テレと同じ形）も配る。** `orderServices`（`lib/ep
 1 site につき 1 つだけであることも実測する（②）。
 
 **列ヘッダーの site 名が `overflow-hidden` で視覚的に切れていないことも実測する
-（①´）。** `allTextContents()` は切れていても文字列自体は取れてしまうため、
-要素の矩形が列ヘッダーの矩形（`program-grid-header-cell`）に収まっているかを
+（①´）**。`allTextContents()` は切れていても文字列自体は取れてしまう。
+そのため要素の矩形が列ヘッダーの矩形（`program-grid-header-cell`）に収まっているかを
 `getBoundingClientRect()` で確認する。ヘッダーの高さを意図的に詰めた実装
 （`headerHeightPx` を縮める）で実際に落ちることを確認済み。
 
@@ -110,7 +110,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:multi-site
 容量不足バッジ（予約一覧）から番組表への導線（issue #233 M6-5、`view` の URL 化は
 issue #437）。見るのは主に 2 点 --- ①バッジが行本体の詳細リンクの中に入れ子の
 `<a>` として置かれておらず、クリックすると番組表（`/programs?view=grid&at=...`）へ
-飛ぶこと、②`lg` 以上ではリンクが積んだ `view=grid` どおりグリッド表示になり、
+飛ぶこと。②`lg` 以上ではリンクが積んだ `view=grid` どおりグリッド表示になり、
 不足区間の帯がスクロール後に可視範囲へ入っていること（②' として「今日」ボタンを
 押した後 `at` の位置ではなく現在時刻へスクロールし直すことも見る）。加えて③として
 `lg` 未満（グリッドが出ずリスト表示のまま）でもクリックが機能しエラーにならないこと
@@ -127,20 +127,20 @@ E2E_URL=http://localhost:4173 pnpm e2e:badge-links
 ```
 
 **配っている bundle が `dist/` の現物と一致するかは、スクリプト自身が毎回 ⓪ として
-自動で確認する**（`verifyBundleMatches`。不一致なら他の判定をせず即 exit 1 する）ので、
-`curl`/`ls` で手動照合する必要はない。これは実際に踏んだ事故（`--strictPort` を
-付けていても、複数の worktree を並行して触っていると別の worktree の preview が
-同じポートに先に居座っており、自分の起動が黙って失敗して `E2E_URL` が無関係な
-古いビルドを指したまま判定が進んでしまった）の再発を、人の確認忘れに頼らず機械で
-止めるための仕組み。ポート自体は空いているものを選ぶこと（`--strictPort` が起動を
-失敗させるので、選び間違えればここで気付ける）。
+自動で確認する**（`verifyBundleMatches`）。不一致なら他の判定をせず即 exit 1 するので、
+`curl`/`ls` で手動照合する必要はない。これは実際に踏んだ事故の再発を、人の確認忘れに
+頼らず機械で止めるための仕組みである。その事故は `--strictPort` を付けていても
+起きた --- 複数の worktree を並行して触っていると、別の worktree の preview が
+同じポートに先に居座る。すると自分の起動が黙って失敗し、`E2E_URL` が無関係な古い
+ビルドを指したまま判定が進んでしまう。ポート自体は空いているものを選ぶこと
+（`--strictPort` が起動を失敗させるので、選び間違えればここで気付ける）。
 
 ### ライブ視聴（`live.mjs`）
 
 番組リストと違い、**mirakc も実チューナーも要らない** --- HLS プレイリスト/
 セグメントは `page.route` でブラウザ側から丸ごと差し替える。動的 import
 （hls.js のバンドル分割）・MSE への実再生・チャンネル切替時の cleanup は
-jsdom で原理的に測れず、`vi.mock` によるフェイクの配線検査（Vitest）だけでは
+jsdom で原理的に測れない。`vi.mock` によるフェイクの配線検査（Vitest）でも
 「配線が呼ばれること」までしか見えない。手順は
 [docs/runbook/live.md](../../docs/runbook/live.md) §②。
 
@@ -148,27 +148,28 @@ jsdom で原理的に測れず、`vi.mock` によるフェイクの配線検査�
 E2E_LIVE_SERVICE_A=9001 E2E_LIVE_SERVICE_B=9002 pnpm e2e:live
 ```
 
-`E2E_LIVE_SERVICE_A` / `_B` に渡すのは **SI の `serviceId`**（`E2E_LIVE_NETWORK_ID`
-と組で、DB へ投入した行の `(network_id, service_id)` そのもの。既定は `network_id=1`）。
-`/live` のページ URL は他画面と同じ `?service=<Service.id>`（合成 id）で、
+`E2E_LIVE_SERVICE_A` / `_B` に渡すのは **SI の `serviceId`** である。これは
+`E2E_LIVE_NETWORK_ID` と組で、DB へ投入した行の `(network_id, service_id)` そのもの。
+既定は `network_id=1`。
+`/live` のページ URL は他画面と同じ `?service=<Service.id>`（合成 id）である。
 スクリプトは起動時に `GET /api/sites/{site}/services` から対応する `Service.id` を
 引く（`resolveServiceId`）--- 合成規則をスクリプト側に複製しない。セグメント/
 プレイリスト/離脱ヒントの URL には従来どおり SI の `serviceId` がそのまま載る
-（issue #217。streamer 側の資源同定は変えていない）ので、env の投入例
-（DB の `network_id` / `service_id` 列）は変わらない。`GET /api/capabilities` も
+（issue #217。streamer 側の資源同定は変えていない）。したがって env の投入例
+（DB の `network_id` / `service_id` 列）も変わらない。`GET /api/capabilities` も
 `page.route` で `{live: true}` に差し替えるので、サーバー側の `live.enabled` は
-false（既定）のままでよい --- 差し替えないと画面が「無効です」になって
+false（既定）のままでよい。差し替えないと画面が「無効です」になって
 ①〜⑦が全滅する（issue #209）。①〜⑦は「再生」ボタンを押した後の挙動を見るもの
 なので、`page.goto` の直後に `clickPlay` でボタンを押す手順が入っている
 （issue #234 M7-1。下記⓪参照）。
 
 **⓪ 選択と視聴開始の分離（issue #234 M7-1）は ffmpeg フィクスチャに依存せず、
-bundled Chromium だけで常に測れる。** チャンネルを開いた直後にプレイリスト/
+bundled Chromium だけで常に測れる。**チャンネルを開いた直後にプレイリスト/
 セグメント要求が飛ばないこと、「再生」ボタンを押した後に初めて飛ぶことを
-`page.route` の要求ログで観測する --- 「タップだけでは要求が飛ばない」ことは
-jsdom では判定できない（`fetch` を丸ごとモックする Vitest のテストは、mock 自体を
-呼ぶかどうかしか見られず、`<video src>` への直接代入のように `fetch` を経由しない
-実ブラウザの資源取得は原理的に検出できない）ため、ここが唯一の判定手段になる。
+`page.route` の要求ログで観測する。「タップだけでは要求が飛ばない」ことは
+jsdom では判定できないため、ここが唯一の判定手段になる。たとえば `fetch` を丸ごと
+モックする Vitest のテストは mock 自体を呼ぶかどうかしか見られず、`<video src>` への
+直接代入のように `fetch` を経由しない実ブラウザの資源取得は原理的に検出できない。
 この判定を足す前の実装（チャンネルをタップした瞬間に probe する版）で実際に
 落ちることを確認済み（詳細は issue #234 の実装 PR #259 の変異リスト）。
 
@@ -177,8 +178,8 @@ jsdom では判定できない（`fetch` を丸ごとモックする Vitest の�
 1. `supportsNativeHls` が実 Chrome の `canPlayType` の戻り値 `'maybe'` を誤って
    ネイティブ対応と判定し、Chrome がサイレントに再生できなくなる
 2. **その修正（`'probably'` のみを対応と見なす）がどの実ブラウザでも false に
-   なり、Safari までが hls.js 経路に落ちる。** この回帰は①〜⑤（Chromium 系
-   だけ）では検出できず、**e2e 緑のまま通った** --- 「実ブラウザで測っている」
+   なり、Safari までが hls.js 経路に落ちる。**この回帰は①〜⑤（Chromium 系
+   だけ）では検出できず、**e2e 緑のまま通った**。つまり「実ブラウザで測っている」
    ことは「壊れる側のブラウザで測っている」ことを意味しない。⑥（WebKit）を
    足して初めて機械判定できるようになった
 
@@ -207,25 +208,25 @@ E2E_URL=http://localhost:4173 pnpm e2e:design
 丸ごと差し替える（`live.mjs` が HLS でやっているのと同じ手）。時刻も
 `page.clock.setFixedTime` で固定してあるので、ショットの差分は実装の差分だけになる。
 
-**フィクスチャは契約で検証される。** 「唯一の視覚オラクル」が欠損データのまま
+**フィクスチャは契約で検証される。**「唯一の視覚オラクル」が欠損データのまま
 撮れていても、契約（`openapi.yaml`）が動くたびに誰も気付かない、という壊れ方が
-実際にあった（ルールの `textMatches` が旧形 `{ field, kind }` のまま
+実際にあった。ルールの `textMatches` が旧形 `{ field, kind }` のまま
 `{ target, mode }` に追従しておらず、ルール一覧に「undefinedに…を含む」が
-描かれたまま exit 0 していた）。判定本体は `validateFixturesOrExit`
-（`e2e/lib.mjs`）--- `verifyBundleMatchesOrExit` と同じ**前提条件**チェックで、
-スクリプト固有の OK/NG 判定ではないため共有ハーネス側に置いてある。フィクスチャを
+描かれたまま exit 0 していた。判定本体は `validateFixturesOrExit`
+（`e2e/lib.mjs`）である。これは `verifyBundleMatchesOrExit` と同じ**前提条件**チェックで、
+スクリプト固有の OK/NG 判定ではないため、共有ハーネス側に置いてある。フィクスチャを
 orval 生成の zod スキーマ（`web/src/api/zod.ts` の `List*ResponseItem`）で
-`parse` し、1 件でも不一致なら他の判定を一切せず exit 1 する（⓪ の
-`verifyBundleMatchesOrExit` と同じ「前提が崩れていたら打ち切る」扱い）。
+`parse` し、1 件でも不一致なら他の判定を一切せず exit 1 する。これは ⓪ の
+`verifyBundleMatchesOrExit` と同じ「前提が崩れていたら打ち切る」扱いである。
 `design.mjs` に加えて `badge-links.mjs` / `sse-refresh.mjs` /
 `grid-reserved.mjs` / `reservations-mobile.mjs` も自分のフィクスチャで呼ぶ。
 **契約を変えたら、フィクスチャを持つ各スクリプトも同じ PR で直す。**
 
 `zod.ts` は `import.meta.env` 等 Vite 依存を持たない素の TypeScript なので、
-Node の ESM スクリプトから `../src/api/zod.ts` を直接 import できる ---
+Node の ESM スクリプトから `../src/api/zod.ts` を直接 import できる。
 追加のローダー（tsx・vite-node）は要らない。Node は型注釈だけを消す型
-ストリッピングを既定で持ち（`.node-version` の 24.20.0 で実際に import
-できることを確認済み）、`zod.ts` は enum・namespace・parameter properties の
+ストリッピングを既定で持つ（`.node-version` の 24.20.0 で実際に import
+できることを確認済み）。`zod.ts` は enum・namespace・parameter properties の
 ような変換が要る構文を持たないため、これだけで通る。`package.json` の
 `e2e:design` 等の各スクリプトもそのままで変更していない。
 
@@ -238,12 +239,12 @@ Node の ESM スクリプトから `../src/api/zod.ts` を直接 import でき�
 出るもの:
 
 - `e2e/screenshots/*.png`（追跡しない）。主要 7 画面（M8-3 でホームを追加）×
-  ライト / ダーク × デスクトップ / モバイル、加えて番組表グリッド・
-  サーキットブレーカー発動中・モバイルの「その他」を開いた状態・
-  読み込み中（Skeleton の走査線を撮るため録画一覧の応答を遅延させたもの）・
+  ライト / ダーク × デスクトップ / モバイル。加えて番組表グリッド・
+  サーキットブレーカー発動中・モバイルの「その他」を開いた状態・読み込み中
+  （Skeleton の走査線を撮るため録画一覧の応答を遅延させたもの）を撮る。
   空状態（EmptyState の走査線。既定のショットでは折り返しの下に隠れて
-  文字が写らないので、スクロールしてから撮る）・
-  ホームの全セクション空状態（`home-empty-*`）の 40 枚。
+  文字が写らないので、スクロールしてから撮る）とホームの全セクション空状態
+  （`home-empty-*`）を足して 40 枚。
   **人が見て判断するための成果物**で、機械が比較するものではない
 - 合否（exit code）。以下をすべて実画素・実描画で判定する:
   - 状態色（塗りか文字か / 赤か琥珀か）・地の無彩性・**WCAG コントラスト**
@@ -253,15 +254,16 @@ Node の ESM スクリプトから `../src/api/zod.ts` を直接 import でき�
     hover を測らないので、監査に出ない面はここでしか押さえられない
     （下限を割ったものは除外せず、通常の失敗として扱う）。選択モードで
     選んだ行も同じ `bg-muted/40` を敷くが、こちらは常時見えるので測る
-  - **和文が実際に Noto Sans JP、英数字が実際に Geist で描画されているか**
-    （CDP `CSS.getPlatformFontsForNode` で番組リストの行（`li[data-program-id]`）
-    の実使用フォントを見る --- `main` や `body` のようなブロック要素だけを
-    子に持つノードを渡すと常に空配列が返るため使えない。
-    `getComputedStyle().fontFamily` は指定文字列を返すだけで実描画の保証には
-    ならない）。あわせて**和文まじりの文字列でも tabular-nums が実際に等幅を
+  - **和文が実際に Noto Sans JP、英数字が実際に Geist で描画されているか**を
+    見る。CDP `CSS.getPlatformFontsForNode` に番組リストの行
+    （`li[data-program-id]`）を渡し、その実使用フォントを読む。
+    `main` や `body` のようなブロック要素だけを子に持つノードを渡すと
+    常に空配列が返るため使えない。`getComputedStyle().fontFamily` は
+    指定文字列を返すだけで実描画の保証にはならない。
+    あわせて**和文まじりの文字列でも tabular-nums が実際に等幅を
     作っているか**を DOM の実測幅で見る（`docs/frontend/stack.md`
     「フォントは英数字と和文で 2 書体を使い分ける」）
-- 色以外にも、jsdom では原理的に測れないキーボード到達性を 1 件持つ:
+- 色以外にも、jsdom では原理的に測れないキーボード到達性を 1 件持つ。
   録画一覧の行リンクを Enter で開いて詳細（`/recordings/$id`）へ遷移し、
   詳細で Tab 走査だけで `<video>` へ到達すること（視聴は詳細ページに寄せる）。
   `<video>` に `tabIndex` を明示すると（jsdom の focus spy
@@ -283,9 +285,11 @@ Node の ESM スクリプトから `../src/api/zod.ts` を直接 import でき�
   Content-Type 不一致で SSE が即座に失敗し、追加の配線なしで「切断中」を作れる。
   `disconnectedBannerDelayMs`（10 秒）分は実時間で待つ
 - 測ったコントラストの表。**数値の権威はこの出力**で、docs には転記しない
-- `④-A` の操作標的計測。fine のデスクトップと coarse の 360px モバイルで、主要 6 画面
-  の `button, a[href], [role="button"], [role="switch"], input, select, summary` を実際の描画矩形から
-  列挙する。各標的の visual / hit 寸法、最小エッジ間隔、意図的な重なり件数を出力し、
+- `④-A` の操作標的計測では、fine のデスクトップと coarse の 360px モバイルを使う。
+  主要 6 画面の
+  `button, a[href], [role="button"], [role="switch"], input, select, summary` を
+  実際の描画矩形から列挙する。各標的の visual / hit 寸法、最小エッジ間隔、
+  意図的な重なり件数を出力し、
   実効 hit 寸法が 24×24 CSS px 未満なら exit 1 にする。`::before` / `::after` による
   当たり判定の拡張と祖先の overflow によるクリップを含めるので、クラス名だけの
   推測にならない。未フォーカスの sr-only スキップリンクは既存の Tab 後計測で扱う。
@@ -320,7 +324,7 @@ Node の ESM スクリプトから `../src/api/zod.ts` を直接 import でき�
 ダークは Playwright context の `colorScheme` で OS 設定をエミュレートする。
 `design.mjs` はクラスを直接付けず、アプリが初回描画前に `html.dark` へ同期する到達経路を判定する。
 
-**`getComputedStyle()` の戻り値を正規表現で読んではいけない。**
+**`getComputedStyle()` の戻り値を正規表現で読んではいけない**。
 トークンが oklch なので Chromium は計算値も `oklch(...)` のまま返し、
 `rgb(...)` を期待した実装は全部の判定を「読めない」で素通りさせる。
 `design.mjs` は 1px 塗って `getImageData` で実画素を採っている。
@@ -338,27 +342,27 @@ pnpm check:colors
 ### SSE 抜きでの定期再取得・接続断バナー（`sse-refresh.mjs`）
 
 SSE の通知を 1 通も届けないまま接続だけ維持したとき、**定めた周期で REST 再取得が
-実際に起きるか**を、リクエスト数を数えて判定する（運用状態 60 秒 / ストレージ残高
-5 分 / EPG 10 分。周期と対象は [docs/api/sse.md](../../docs/api/sse.md)
-§レベルトリガーの対称性）。時計は `page.clock.runFor` で進めるので 10 分待たない。
+実際に起きるか**を、リクエスト数を数えて判定する。周期と対象は運用状態 60 秒 /
+ストレージ残高 5 分 / EPG 10 分で、[docs/api/sse.md](../../docs/api/sse.md)
+§レベルトリガーの対称性に書いてある。時計は `page.clock.runFor` で進めるので 10 分待たない。
 `design.mjs` と同じく `/api/**` を丸ごと差し替えるため、mirakc も DB も Go サーバーも
 要らない。
 
-**接続断バナー（`components/connection-banner.tsx`、issue #456）もここで見る。**
+**接続断バナー（`components/connection-banner.tsx`、issue #456）もここで見る**。
 `/api/events` を `page.route` で abort し、`disconnectedBannerDelayMs`（10 秒。
-`page.clock` の仮想時計で進める）後に帯が出る → route を復旧させる → 帯が消える、
-までを実ブラウザで確認する。復旧の再接続はブラウザ実装側のタイマー（実時間、
-`page.clock` は進めない）に依るため実時間でポーリングする。加えて、帯と
-`CircuitBreakerBanner`（`/api/breakers` を 1 件返して同時に出す）が `PageHeader`
-と `getBoundingClientRect` で交差しないことも見る --- スクロールして両方を
-sticky の「張り付いた」状態にしてから測る（未スクロールでは top のずらしを
-外しても重ならずに通ってしまう）。
+`page.clock` の仮想時計で進める）後に帯が出る。そこから route を復旧させ、
+帯が消えるまでを実ブラウザで確認する。復旧の再接続はブラウザ実装側のタイマー
+（実時間、`page.clock` は進めない）に依るため実時間でポーリングする。加えて、
+帯と `CircuitBreakerBanner`（`/api/breakers` を 1 件返して同時に出す）が
+`PageHeader` と `getBoundingClientRect` で交差しないことも見る。スクロールして
+両方を sticky の「張り付いた」状態にしてから測る。未スクロールでは top のずらしを
+外しても重ならずに通ってしまうためだ。
 
 **単体テスト（`src/lib/events.test.tsx`）と重なっていない部分がここの存在理由。**
 単体テストはフックとテスト用のクエリキーしか通らないので、**画面が実際に使っている
 キーを取りこぼしている**という壊れ方を検出できない。実際、`epg` トピックが番組リスト
 （`useInfiniteQuery` の手書きキー `['/api/programs', 'infinite', ...]`）に一度も
-届いていなかったのを見つけたのはこの判定（詳細は docs/api/sse.md §レベルトリガーの対称性）。
+届いていなかった。これを見つけたのはこの判定である（詳細は docs/api/sse.md §レベルトリガーの対称性）。
 同じ形の漏れを押さえるため、**画面を 3 つ開く**。ページごとにカウンタを作り直すので、
 増分はそのページの回復経路だけを表す。
 
@@ -380,23 +384,23 @@ E2E_URL=http://localhost:4173 pnpm e2e:sse-refresh
 ### 番組リストの操作列（`reserve-visibility.mjs`）
 
 番組リストの予約 / 取消 / ライブボタンを含む操作列を「ホバー / フォーカスした行・
-展開中の行」だけ立てる（issue #310 / #755。判断は
+展開中の行」だけ立てる（issue #310 / #755）。判断は
 [docs/frontend/reservations.md](../../docs/frontend/reservations.md) §番組リストの操作列は
-ホバー / フォーカスした行だけ立てる）。**この開閉は
+ホバー / フォーカスした行だけ立てるに従う。**この開閉は
 `:hover` / `:focus-visible` / `pointer:` メディア特性で駆動するので jsdom では
-原理的に測れない** --- jsdom はレイアウトを持たず、
-`getBoundingClientRect().width` は常に 0 になる。`pnpm test` は「常時開いたまま」
+原理的に測れない**。jsdom はレイアウトを持たず、
+`getBoundingClientRect().width` は常に 0 になるためだ。`pnpm test` は「常時開いたまま」
 というクラス名の変異を検出できない。単体側
 （`program-row.test.tsx`）が見るのは `group` / `peer` マーカーと `data-testid` の
 配線だけで、可視性そのものはここが唯一の判定手段。
 
-見るのは 4 状態（すべて操作列の実描画幅 `getBoundingClientRect().width` を直接読む。
-畳は約 0px、通常行の開は 81px、放送中行はライブボタン分を足した 125px ---
-どちらも `box-content` でボタン合計幅を content box として確保した上に
-`border-l` の 1px が外側に乗った外寸）:
+見るのは 4 状態である（すべて操作列の実描画幅 `getBoundingClientRect().width` を
+直接読む）。畳は約 0px、通常行の開は 81px、放送中行はライブボタン分を足した
+125px である。どちらも `box-content` でボタン合計幅を content box として確保した
+上に `border-l` の 1px が外側に乗った外寸:
 
 - ① 細ポインタ（既定の Chromium = hover:hover + pointer:fine）: ホバーも
-  フォーカスもしていない通常行と放送中行は畳む / ホバー・`:focus-visible` で
+  フォーカスもしていない通常行と放送中行は畳む。ホバー・`:focus-visible` で
   それぞれ 81px / 125px まで開く（両方向）。あわせてホバー前後で行の
   高さが変わらない（CLS 無し）こと、開いている列の中でボタンが
   `overflow-hidden` に切られていない（`scrollWidth <= clientWidth`）こと、
@@ -410,7 +414,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:sse-refresh
   （WCAG 2.4.7 / 2.4.11）
 - ④ 折りたたみ行の操作列を実座標へ `page.touchscreen.tap()` で生タップ
   （ロケータのアクショナビリティ判定を迂回する）しても PUT が飛ばない・
-  トーストも出ない --- **これがレビューで見つかった欠陥そのもの**。`opacity-0`
+  トーストも出ない。**これがレビューで見つかった欠陥そのもの**である。`opacity-0`
   では見えない 80×56px がヒットテストに残って予約が成立していた。幅 0 +
   `overflow-hidden` は列そのものを畳むので飛ばない。放送中行は操作列に
   遷移する `<a>`（ライブボタン）が入っているため、同じ生タップの後も
@@ -489,11 +493,11 @@ overlay / Escape による閉鎖後のフォーカス復帰、スクロール中
 - ⑥ overlay と「閉じる」ボタンでも閉じ、クリック元セルへフォーカスが戻る
 
 **フォーカス復帰は base-ui の `Dialog.Popup` の既定（`finalFocus` 省略時の
-「trigger or previously focused element」）に任せている。** controlled Dialog
+「trigger or previously focused element」）に任せている。**controlled Dialog
 （`Dialog.Trigger` が無い）でも既定はクリック直前のフォーカス要素へ戻るため、
-このページ側で `finalFocus` を自作する必要は無い（自作すると、ボタンの
+このページ側で `finalFocus` を自作する必要は無い。自作すると、ボタンの
 クリックで focus を移さない macOS/iOS Safari で `document.body` を
-掴んでしまい、既定より悪化する）。
+掴んでしまい、既定より悪化する。
 
 API は `page.route` で丸ごと差し替えるので mirakc・実チューナー・DB は要らない。
 ⓪（配っている bundle と `dist/` の一致）とフィクスチャの zod 契約検証も行う。
@@ -509,14 +513,14 @@ E2E_URL=http://localhost:4173 pnpm e2e:programs-dialog
 いるかを 390×844 の実ブラウザで見る。jsdom は `getBoundingClientRect` を計算しない
 （常に 0 を返す）ので、ここで見る値はどれもユニットテストでは原理的に取れない。
 
-**タブは `fixed` のオーバーレイのままとし、ここで保証するのは到達可能性だけである。**
+**タブは `fixed` のオーバーレイのままとし、ここで保証するのは到達可能性だけである**。
 ページ全体スクロール + `fixed` なタブでは、途中のスクロール位置で行がタブの裏に
-入ることを仕様として受け入れ、重なり量の観測・判定は行わない（
+入ることを仕様として受け入れる。重なり量の観測・判定は行わない（
 `docs/frontend/scroll.md`「ボトムタブの裏に隠れる行」）。
 
-このスクリプトが見ているのは別の欠陥 --- `--bottom-nav-height` から nav の上辺の
-境界線ぶん（1px）が落ちていて、`main` の `padding-bottom`（64px）がタブの実寸
-（65px）に足りていなかったこと。**この状態でも最下端での余白はちょうど 0px で、
+このスクリプトが見ているのは別の欠陥である。`--bottom-nav-height` から nav の
+上辺の境界線ぶん（1px）が落ちており、`main` の `padding-bottom`（64px）がタブの
+実寸（65px）に足りていなかった。**この状態でも最下端での余白はちょうど 0px で、
 隠れていた画素は無かった**（実測）。落ちていたのは計算の正しさと 1px ぶんの余裕だけで、
 見た目に現れる症状ではない。
 
@@ -599,13 +603,13 @@ Chromium で次を確認する。
   `truncate` なので、折り返しを許してもメタ行は 20px のまま）。
 
 1280px では対象・モード・値の top がほぼ一致すること（= 同じ行にある）を見て
-従来のデスクトップの一行レイアウトを確認し、同じ④⑥を実行する。`sm:flex-row` を
+従来のデスクトップの一行レイアウトを確認し、④と⑥も同じ条件で実行する。`sm:flex-row` を
 落として一行を崩す変異で実際に落ちることを確認済み。
 `page.route` のスタブは mirakc も DB も使わず、検索 API と番組詳細の 2 本を差し替える。
 
-**ボトムタブは `nav[aria-label="主ナビゲーション"].fixed` で指す。** この
+**ボトムタブは `nav[aria-label="主ナビゲーション"].fixed` で指す。**この
 `aria-label` の `<nav>` はサイドバーとボトムタブの 2 本あり、`.last()` で当てると
-`AppShell` の DOM 順に依存する --- 順が入れ替わると 390px でも `hidden md:flex` の
+`AppShell` の DOM 順に依存する。順が入れ替わると 390px でも `hidden md:flex` の
 サイドバー側を掴んで矩形が null になり、**重なり判定が黙って消えて全体は green の
 まま**になる。`md` 未満で矩形が取れないことは NG として報告する（スキップしない）。
 
@@ -623,7 +627,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:search-mobile
 `shrink-0` の可変幅要素を並べていると、モバイル幅で長い局名 + 状態バッジの
 組み合わせがシェブロンに重なる（issue #302 のレビュー指摘）。折り返し・
 overflow・要素間の重なりは jsdom（`getBoundingClientRect()` が常に 0 を返す）
-では原理的に測れないので、既存の単体テスト（`pages/reservations.test.tsx`）は
+では原理的に測れない。既存の単体テスト（`pages/reservations.test.tsx`）は
 「局名の文字列が行の中に居る」ことしか見ておらず、この壊れ方を検出できない。
 
 見るのは 360px 幅（レビューの実測条件）で:
@@ -631,7 +635,7 @@ overflow・要素間の重なりは jsdom（`getBoundingClientRect()` が常に 
 - ① 副情報コンテナ（`[data-testid="reservation-secondary"]`）が横方向に
   オーバーフローしていない（`scrollWidth <= clientWidth`）
 - ② 副情報の各子要素の右端がシェブロン（`[data-testid="reservation-chevron"]`）
-  の左端を超えていない --- ①はコンテナが中身を外に漏らしていないことしか見ないので、
+  の左端を超えていない。①はコンテナが中身を外に漏らしていないことしか見ないので、
   コンテナの外形自体が食い込む場合を捕まえるにはこちらが要る
 - ③ ページ全体が横スクロールしない（退行の網。単体では①②の代わりにならない）
 
@@ -657,19 +661,19 @@ E2E_URL=http://localhost:4173 pnpm e2e:reservations-capacity-error
 
 ### 予約一覧取得失敗時の番組表レイアウト（`programs-reservation-error.mjs`）
 
-`pages/programs.tsx` のグリッドは
+`pages/programs.tsx` のグリッドの高さ予算は次の式で決まる。
 `height: calc(100dvh - var(--page-header-height, 0px) - var(--sticky-banners-height, 0px))`
-で高さ予算を決める。`reservations.isPending` / `isError` のバナーを
+である。`reservations.isPending` / `isError` のバナーを
 `PageHeader` の**外**（通常フローの兄弟）に置くと、バナーの高さがどちらの
-CSS 変数にも入らず、100dvh で組んだ画面なのに文書がビューポートを超えて
+CSS 変数にも入らない。すると 100dvh で組んだ画面なのに文書がビューポートを超え、
 ページ全体がスクロールする（実測: 外に置くと 1440x900 で 949px / 900px、
 `PageHeader` の中なら 900px / 900px）。この壊れ方はレイアウトそのものなので
 jsdom（`pnpm test`）では原理的に検出できない。
 
 `pages/programs.tsx` のコメントが挙げる「グリッドの sticky ヘッダが画面外へ
-出る」という症状そのものは、**この構造では再現しなかった** --- 外に置いた
+出る」という症状そのものは、**この構造では再現しなかった**。外に置いた
 状態で文書を最後までスクロールしても、グリッド内の `GenreLegend`（見出し行の
-上にある帯）が緩衝になって 39px の余裕が残る。下の判定 B はその症状の再現では
+上にある帯）が緩衝になって 39px の余裕が残るためだ。下の判定 B はその症状の再現では
 なく、緩衝が無くなったときに気付くための網である。
 
 `GET /api/reservations` だけを常に 500 で返し、次を見る:
@@ -680,9 +684,9 @@ jsdom（`pnpm test`）では原理的に検出できない。
   - B. グリッドのサービス列見出し（`program-grid-header-cell`）の上端が
     `PageHeader` の下端より下にあり、ビューポート内に見えている
   - C. グリッドのセルを選ぶと出る選択済み番組の行の「予約」ボタンが
-    disabled であること（予約状態が不明なまま record intent を送らないことの
-    実ブラウザ確認。表示形式ごとに boolean prop を渡す実装ではグリッドだけが
-    渡し忘れており、実際に `PUT .../intent` が飛ぶことを測った）
+    disabled であること。予約状態が不明なまま record intent を送らないことの
+    実ブラウザ確認である。表示形式ごとに boolean prop を渡す実装ではグリッドだけが
+    渡し忘れており、実際に `PUT .../intent` が飛ぶことを測った
 - モバイル（390x844、`/programs` リスト）
   - D. 失敗バナーを飲み込んだ `<header>` の実測高さ（`offsetHeight`）。
     合否ではなく測定値（sticky に入れた代償の定量化）。緩い上限
@@ -707,21 +711,21 @@ pnpm e2e:programs-reservation-error
 ### 読み込み中のレイアウトシフト（`cls.mjs`）
 
 CLS（Cumulative Layout Shift）はレイアウトそのものの指標なので、jsdom
-（`getBoundingClientRect()` が常に 0 を返す）では原理的に測れない --- Lighthouse で
-検索に要改善域の CLS が出たことの唯一の判定手段になる。
+（`getBoundingClientRect()` が常に 0 を返す）では原理的に測れない。
+Lighthouse で検索に要改善域の CLS が出たことの唯一の判定手段になる。
 
 ブラウザの Layout Instability API（`PerformanceObserver({type: 'layout-shift'})`）で
 `hadRecentInput === false` の `value` を単純合計する。**これは Lighthouse が実際に
-報告する CLS の近似であって同一ではない**（Lighthouse は session window でグルーピング
-してその最大値を採るが、ここでは windowing をせず全期間の単純合計を見る --- 単純合計は
-session window の最大値より大きくなることしかないので、ここで 0.10 以下なら Lighthouse
-の値も 0.10 以下になる。逆方向の保証はしない、未検証）。
+報告する CLS の近似であって同一ではない**。Lighthouse は session window で
+グルーピングしてその最大値を採るが、ここでは windowing をせず全期間の単純合計を
+見る。単純合計は session window の最大値より大きくなることしかないので、ここで
+0.10 以下なら Lighthouse の値も 0.10 以下になる。逆方向の保証はしない、未検証。
 
 見るのは検索（`/search`。`components/condition-fields.tsx`）の 2 点:
 
 - ① モバイル幅（390x844）でサービス一覧の取得を遅延させた状態（Lighthouse の
   スロットル下を模す）で読み込み中の CLS が 0.10 以下
-- ② デスクトップ幅（1280x900）で①と同じ遅延を掛けた状態で 0.10 以下 --- ラボ計測は
+- ② デスクトップ幅（1280x900）で①と同じ遅延を掛けた状態で 0.10 以下。ラボ計測は
   検索デスクトップも 0.087（しきい値の一歩手前）を報告しており、`ConditionFields` の
   対策の根拠はビューポート依存の議論（「押される側が折り目の外に出る」）なので、
   モバイルだけでは踏んでいない
@@ -733,14 +737,14 @@ session window の最大値より大きくなることしかないので、こ�
 サービス数は 24 局（地上波 + BS + CS 相当）にしてある --- 2 局だけでは 390px でも
 チップが 1 行に収まってしまい、直す前の実装でも再現しない。
 
-**サービス一覧の遅延（`NETWORK_DELAY_MS`）は 500ms より確実に大きくすること。**
+**サービス一覧の遅延（`NETWORK_DELAY_MS`）は 500ms より確実に大きくすること**。
 Chrome はクリック等の離散入力から 500ms 以内の layout-shift を全部
 `hadRecentInput: true` にし、`installClsObserver` はそれを合計から除く。
-`measureSearch` は「詳細条件を表示」をクリックしてから遅延後にサービス一覧が
-届くため、遅延が 500ms 未満だと届いたときのシフトが毎回この入力窓に収まって
-除外され、残留ノイズしか測れなくなる（レビュー指摘。旧 400ms では①の実測が
-0.00066 → 0.000008 まで落ち、下記の変異検出が効かなくなっていた）。いまは
-1500ms にしてあり、直す前の
+`measureSearch` は「詳細条件を表示」をクリックしてから遅延後にサービス一覧が届く。
+そのため遅延が 500ms 未満だと、届いたときのシフトが毎回この入力窓に収まって
+除外され、残留ノイズしか測れなくなる。レビュー指摘では、旧 400ms で①の実測が
+0.00066 → 0.000008 まで落ち、下記の変異検出が効かなくなっていた。いまは
+1500ms にしてある。直す前の
 `condition-fields.tsx`（`ServiceFields` が `TextMatchFields` の直後）を当てると
 ①が 0.257（②は 0.039）で、①が実際に落ちることを確認済み。
 
@@ -749,16 +753,16 @@ Chrome はクリック等の離散入力から 500ms 以内の layout-shift を�
 0.10 に対して十分小さいまま。
 
 **検索条件にサイトチップ（`SiteFields`）を足した（issue #531）後も測り直したが
-値は変わらない（今回の実測では①が 0.024、②が 0.014）。** `SiteFields` はレジストリの
-解決した `GET /api/sites` のキャッシュを再利用する同期的な節で、かつ
-レジストリと下書きの和集合が 2 つ以上のときしか描画しない --- この
+値は変わらない（今回の実測では①が 0.024、②が 0.014）。**この `SiteFields` は
+レジストリの解決した `GET /api/sites` のキャッシュを再利用する同期的な節である。
+しかも、レジストリと下書きの和集合が 2 つ以上のときしか描画しない。この
 フィクスチャは単一サイトかつ下書きが空なので DOM に一切増えない。
 
-**ホーム（`/`）はここでは見ない。** ラボ計測はホームのデスクトップでも 0.111
-（スロットル時のみ）を報告しているが、原因は「4 セクションの表示順は固定なのに解決順は
+**ホーム（`/`）はここでは見ない。**ラボ計測はホームのデスクトップでも 0.111
+（スロットル時のみ）を報告している。原因は「4 セクションの表示順は固定なのに解決順は
 不定で、後続セクションが先に見えている状態で先行セクションが実データごと上に挿し込まれる」
-形で、対策には `docs/frontend/home.md`「セクションの可視性は個別に」を変える設計判断が
-要る。判定手段（この形のフィクスチャ）ごとその判断のあとに足す --- しきい値を超えたまま
+形である。対策には `docs/frontend/home.md`「セクションの可視性は個別に」を変える
+設計判断が要る。判定手段（この形のフィクスチャ）ごとその判断のあとに足す --- しきい値を超えたまま
 緑にできない判定を置くと、この受け入れ全体が「常に赤いので誰も見ない」ものになる。
 
 `design.mjs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え）で mirakc も
@@ -793,9 +797,9 @@ E2E_URL=http://localhost:4173 pnpm e2e:cls
   ---レジストリに無い site を `?site=` に載せて開き、和集合で増えたチップが
   320px に収まることを確認する
 
-**レジストリは 2 サイトにしてある（issue #531）。** `<ConditionFields>` の
-サイトチップはレジストリと下書きの和集合が 2 つ以上のときしか描画しない
-ため、単一サイトかつ下書きが空のスタブでは判定対象自体が存在しなかった。
+**レジストリは 2 サイトにしてある（issue #531）。**`<ConditionFields>` の
+サイトチップはレジストリと下書きの和集合が 2 つ以上のときしか描画しない。
+そのため単一サイトかつ下書きが空のスタブでは、判定対象自体が存在しなかった。
 片方を長い site 名にして①のサービスチップと同じ `Chip` を通し、
 「サイト」のチップ列がちょうど 2 件描かれることと、①の横スクロール判定に
 一緒に含めている。
@@ -933,7 +937,7 @@ CI に載せられるが、いまは他と同じくローカル実行のまま�
 （`design.mjs`・`pages/home.test.tsx` の「実時計でのクエリキー安定性」参照）。
 
 **`waitFor` の失敗を `.catch(() => {})` で飲むときは、後段が飲んで良い理由になっているか
-を確かめる。** 後段が「待っていた条件そのもの」を直接読み直して合否を出す形（例:
+を確かめる。**後段が「待っていた条件そのもの」を直接読み直して合否を出す形（例:
 `document.activeElement === el` を評価し直す）なら、待ちの成否を経由しないので飲んでよい。
 そうでない形（後段が別の要素・別の状態を測る）で飲むと、「待ちが失敗した」ことが
 その別の判定の NG 文言に化けて出る --- スタイル回帰と区別が付かず、しかもタイミング
@@ -941,12 +945,12 @@ CI に載せられるが、いまは他と同じくローカル実行のまま�
 示せていない（予防的なもの）--- 下記 ChannelOption の一件は、調べる過程でこの形の
 壊れ方ではないと分かった。
 
-**before/after diff を取る共有ヘルパーは、before の基準を自分で制御しないと壊れる。**
-`design.mjs` の `checkExplicitFocusRing`（ChannelOption 呼び出し）で実際に踏んだ:
+**before/after diff を取る共有ヘルパーは、before の基準を自分で制御しないと壊れる**。
+`design.mjs` の `checkExplicitFocusRing`（ChannelOption 呼び出し）で実際に踏んだ。
 base-ui の Popover は開いた直後、先頭候補へ非同期に既定フォーカスを当てる
 （queueMicrotask → requestAnimationFrame 1 回）。この既定フォーカスが「まだ来ていない」
 か「もう来た」かで before の box-shadow が実行のたびに割れ、before/after の差分判定
-（before と after が同じなら NG）が偽陽性を出していた --- ポップアップの開閉待ち自体は
+（before と after が同じなら NG）が偽陽性を出していた。ポップアップの開閉待ち自体は
 5000ms の予算に対し 1〜3ms で毎回成功しており、swallow とは無関係だった（4 回計測、
 8/8 で `beforeShadow !== 'none'` と NG が一致）。直すには before を測る前に明示的に
 `blur()` して基準を確定させ、かつ相手の既定フォーカスが済むのを待ってから呼ぶ
