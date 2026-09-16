@@ -52,7 +52,7 @@ SIL OFL 1.1（Copyright 2014-2021 Adobe）で、著作権表示を生成され�
 輪郭を同梱する権利がないため使えない。
 
 **自前配布している Web フォント本体（Geist Variable / Noto Sans JP Variable）を含む
-依存全体のライセンス表示は `public/THIRD_PARTY_NOTICES` に置く。** CSS のバナーコメント
+依存全体のライセンス表示は `public/THIRD_PARTY_NOTICES` に置く**。CSS のバナーコメント
 （`/*! ... */`）は Tailwind のビルドで丸ごと落ちるため、`public/` 配下の生ファイルに
 してビルドを経由させない。生成物には各フォントパッケージの LICENSE 全文が入り、
 `dist/` だけを取り出しても OFL 1.1 の表示が完結する。
