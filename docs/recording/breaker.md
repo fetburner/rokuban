@@ -57,7 +57,7 @@ GC・ユーザー操作では他の予約が残るので誤発火しない。全
 - `detail` に「何が消されようとしていたか」の抜粋（最大 20 件の programId と題名）を焼く。**手動確認には対象が見える必要がある**
 - 再開は `POST /api/sites/{site}/breakers/{name}/resume`（資源の PK が `(site, name)` であることに合わせる）。`DELETE /api/sites/{site}/breakers/{name}` にしないのは、運用者から見た操作が「行を削除する」ではなく「確認したので再開する」だから（行が消えるのは実装詳細）
 - **site を持たないブレーカー（`delete_reconcile`。`internal/breaker.IsSiteless`）だけは `POST /api/breakers/{name}/resume` で再開する。** 理由は `internal/worker/delete_reconcile.go` の `DeleteReconcileWorker` doc コメント参照
-- **ブレーカー名を足すときは `internal/breaker.All` と `openapi.yaml` の enum の両方に足す。** 片方だけだと `GET /api/breakers` に出るのに resume が 400 を返す。ずれは `internal/breaker/all_test.go` / `internal/api/breakers_test.go` が検出する
+- **ブレーカー名を足すときは `internal/breaker.All` と `openapi.yaml` の enum の両方に足す。** resume は `All` で検証するので、`All` を落とすと 400 になる。const↔`All` は `all_test.go`、`All`→enum は `breakers_test.go` が検出する（enum 側だけの余分はどちらも検出しない）
 
 ##### GC は対象にしない
 
