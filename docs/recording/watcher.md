@@ -21,12 +21,14 @@
 
 `Watcher.Sweep` が failed を再構成できる範囲は次の通りである。
 
-- `GET /api/recording/schedules` に `state=failed` と `failedReason` が残っている、かつ
-  Rokuban の予約として特定できる schedule は、record が無くても `recordings.status=failed`
-  と `quality_events` を作る。schedule が mirakc から削除された後はこの経路では回収できない。
+- `GET /api/recording/schedules` に `state=failed` と `failedReason` が残っており、かつ
+  Rokuban の予約として特定できる schedule がある。この schedule は、record が無くても
+  `recordings.status=failed` と `quality_events` を作る。schedule が mirakc から削除された後は
+  この経路では回収できない。
 - `GET /api/recording/records` に残る `recording.status=failed` と `recording.failedReason` を
-  持つ record は、通常の record と同じく `record_sync` / `recordings` に反映し、失敗理由も
-  `quality_events` に残す。これは mirakc が失敗 record のメタデータを保持している場合に限る。
+  持つ record は、通常の record と同じく扱う。この record は `record_sync` / `recordings` に
+  反映し、失敗理由も `quality_events` に残す。これは mirakc が失敗 record のメタデータを
+  保持している場合に限る。
 - record が無く、failed schedule も既に削除済み、または `failedReason` が返らない
   `recording.failed` は API から再構成できないため、SSE 専用で sweep では回収されない。
   `recording.record-broken` も同様に、イベントの record ID と理由を API が履歴として返さない
@@ -42,7 +44,7 @@ sweep が同じ失敗を次回以降も観測しても、同じ event と reason
 
 #### record 処理は並行実行しても壊れない
 
-`processRecord` は `record_sync` の `(site, record_id)` 行を**先に確保して行ロックを取ってから** `recordings` を作る。同一 record を 2 つの経路（SSE 由来の (a) と record_sweep ジョブの (c)、あるいは 2 プロセス）が同時に処理しても、2 つ目は 1 つ目のコミットを待ってから `recording_id` が埋まっているのを見る。
+`processRecord` は `record_sync` の `(site, record_id)` 行を**先に確保して行ロックを取ってから** `recordings` を作る。同一 record を 2 つの経路（SSE 由来の (a) と record_sweep ジョブの (c)、あるいは 2 プロセス）が同時に処理したとする。2 つ目は 1 つ目のコミットを待ってから、`recording_id` が埋まっているのを見る。
 
 これがないと両方が「行なし」を見て両方が `createRecording` し、部分ユニークインデックス `recordings_unique_active_event` 違反で片方が失敗する。既にある PK を使うだけなので、`pg_advisory_xact_lock` のような追加の機構は要らない。
 
@@ -61,7 +63,7 @@ ruler / reconciler と違い、**起動契機は定期のみ**（ヒントで前
 |---|---|
 | 定期（既定 5 分、旧 watcher の `ReconcileInterval` を継承） | **真実**。デプロイ形態に応じて River `PeriodicJobs` か k8s CronJob（`rokuban enqueue record-sweep`）が投入する（[データ層](../data.md) §2） |
 
-ruler / reconciler は「作成・更新イベント」というヒントを同一トランザクションで投入できたが、record_sweep には対応する自然なヒントがない。**最も自然な候補は SSE の再接続**（切れて再接続した = 取りこぼした可能性がある区間ができた合図）だが、`internal/mirakc.Client.Subscribe` は再接続を内部で処理して自動リトライするだけで、呼び出し側（watcher）に再接続を通知する仕組み（コールバック等）を持たない。追加するなら `mirakc.SSEConfig` に `OnReconnect` のようなフックを生やす設計判断が要るため見送り、定期投入のみとしている。
+ruler / reconciler は「作成・更新イベント」というヒントを同一トランザクションで投入できたが、record_sweep には対応する自然なヒントがない。**最も自然な候補は SSE の再接続**（切れて再接続した = 取りこぼした可能性がある区間ができた合図）である。だが `internal/mirakc.Client.Subscribe` は再接続を内部で処理して自動リトライするだけで、呼び出し側（watcher）に再接続を通知する仕組み（コールバック等）を持たない。追加するなら `mirakc.SSEConfig` に `OnReconnect` のようなフックを生やす設計判断が要るため見送り、定期投入のみとしている。
 
 #### 品質メタデータ記録
 
@@ -72,7 +74,7 @@ recordless failed は SSE 専用である。
 
 #### 開始遅延検出器
 
-録画開始は mirakc に委譲済みで Rokuban 側から防ぐ手段はないが、EPGStation#724（チューナー再接続ハングで開始が 10 分遅延）のような mirakc 側の未知の不具合への保険として、**「開始時刻を過ぎたのに recording.started が観測されない予約」を reconcile ループで検出してアラート**する。既存の品質メトリクス（recording.failed / record-broken / ドロップ統計）に加える。レベルトリガーの枠内で安価に実装できる。
+録画開始は mirakc に委譲済みで、Rokuban 側から防ぐ手段はない。だが EPGStation#724（チューナー再接続ハングで開始が 10 分遅延）のような mirakc 側の未知の不具合への保険として、次の検出を置く。**「開始時刻を過ぎたのに recording.started が観測されない予約」を reconcile ループで検出してアラート**する。既存の品質メトリクス（recording.failed / record-broken / ドロップ統計）に加える。レベルトリガーの枠内で安価に実装できる。
 
 実装（`reconciler.detectStartDelays`）:
 

@@ -93,6 +93,6 @@ ARIB TR-B14 の「開始判定は following の `start_time` を使う」とい�
 
 `/events` SSE は接続時に既存全 record の `recording.record-saved` を再送する。watcher が落ちていた間のイベントを取りこぼしても、再接続すれば現状と突き合わせて回復できる（実質 at-least-once + 状態同期）。
 
-この再送と、同一 record への `record-saved` の複数回配信は、`internal/mirakc/conformance` の `TestConformance/RecordSavedResentOnConnect` / `TestConformance/RecordSavedFiresMultipleTimes` が mirakc 4.0.0-dev.0 相当に対して判定している。
+この再送と、同一 record への `record-saved` の複数回配信は、`internal/mirakc/conformance` が判定している。判定するテストは `TestConformance/RecordSavedResentOnConnect` と `TestConformance/RecordSavedFiresMultipleTimes` である。対象は mirakc 4.0.0-dev.0 相当である。
 
 ---

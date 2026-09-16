@@ -2,9 +2,9 @@
 
 #### ファイル名テンプレート
 
-`filenameTemplate`（予約オプション。[reservation-model.md](reservation-model.md) §4.2 の一覧表参照）は Go の [`text/template`](https://pkg.go.dev/text/template) 記法。reconciler が予約行のスナップショットだけを使って展開し（`internal/contentpath` パッケージ。`internal/reconciler` の `buildContentPath` から呼ばれる）、拡張子は含まない前提で常に `.m2ts` を付す。未指定・空文字なら既定の `DefaultTemplate`（見た目は `YYYYMMDD/HHMMSS_タイトル_サービスID.m2ts` と同じ）を使う。既定も他の template と同じく JST で解決するため、サーバー TZ が JST 以外の環境では既定パスが変わる。
+`filenameTemplate`（予約オプション。[reservation-model.md](reservation-model.md) §4.2 の一覧表参照）は Go の [`text/template`](https://pkg.go.dev/text/template) 記法。reconciler が予約行のスナップショットだけを使って展開する（`internal/contentpath` パッケージ。`internal/reconciler` の `buildContentPath` から呼ばれる）。拡張子は含まない前提で、常に `.m2ts` を付す。未指定・空文字なら既定の `DefaultTemplate`（見た目は `YYYYMMDD/HHMMSS_タイトル_サービスID.m2ts` と同じ）を使う。既定も他の template と同じく JST で解決するため、サーバー TZ が JST 以外の環境では既定パスが変わる。
 
-`text/template` を採る理由は、**ルール作成/更新時にテンプレートを検証して 400 で弾ける**こと（`internal/api/rules.go` の `validateRuleInput` が `internal/contentpath.Validate` を呼ぶ。既存の正規表現検証と同じ場所・同じ形）。変数名の誤りが黙って空文字になる記法だと、ユーザーは数週間後にファイル名が崩れて初めて気づく。
+`text/template` を採る理由は、**ルール作成/更新時にテンプレートを検証して 400 で弾ける**ことである。検証は `internal/api/rules.go` の `validateRuleInput` が `internal/contentpath.Validate` を呼ぶ（既存の正規表現検証と同じ場所・同じ形）。変数名の誤りが黙って空文字になる記法だと、ユーザーは数週間後にファイル名が崩れて初めて気づく。
 
 ##### 使えるフィールド
 
@@ -36,7 +36,7 @@
 
 ##### サニタイズと階層の規約
 
-- `Title` / `Channel` / `ChannelType` は `internal/contentpath.NewData` の時点で `sanitizeComponent` を通した「1 パス成分に収まる」文字列になっている（ただし空文字は空文字のまま）。番組名に `/` が普通に入る（「A/B」等）ため、データ由来の `/` が区切りに昇格することはない
+- `Title` / `Channel` / `ChannelType` は `internal/contentpath.NewData` の時点で `sanitizeComponent` を通した「1 パス成分に収まる」文字列になっている。ただし空文字は空文字のままである。番組名に `/` が普通に入る（「A/B」等）ため、データ由来の `/` が区切りに昇格することはない
 - **階層を作れるのはテンプレートに書かれた `/`（および `{{.StartAt.Format "2006/01"}}` のようにユーザーが明示的に書いた書式）だけ**
 - **拡張子はテンプレートに含めない**。常に `.m2ts` を付す
 - 展開結果は最後に必ず `internal/contentpath.SanitizeContentPath` を通すため、テンプレート自体に `..` や絶対パスが書かれていてもパストラバーサル・意図しない絶対パスにはならない
@@ -44,7 +44,7 @@
 
 ##### ルール作成時の検証
 
-`text/template` として `Parse` した後、サンプルデータに対して `Execute` まで行って初めて有効と判定する（`{{.Foo}}` のような未知フィールドは `Parse` では素通りし、`Execute` で初めてエラーになるため）。構文エラー・未知フィールドはどちらもルール作成/更新 API で 400 になる。
+`text/template` として `Parse` した後、サンプルデータに対して `Execute` まで行って初めて有効と判定する。`{{.Foo}}` のような未知フィールドは `Parse` では素通りし、`Execute` で初めてエラーになるためである。構文エラー・未知フィールドはどちらもルール作成/更新 API で 400 になる。
 
 ##### EPGStation からの変換（`rokuban import epgstation`）
 
