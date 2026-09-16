@@ -6,7 +6,7 @@
 
 この表に残るのは **ruler の 1 パスの出力**（`rule_id` / `base` / dedup 根拠 2 列）だけで、**導出の書き手は ruler ただ 1 人**（不変条件 12「1 表 = 1 つの書き手 = 1 つの寿命」）。番組の事実は `program_snapshots`（§3.7）、不可逆な観測は `recordings` の試行行（[recordings.md](recordings.md) §5）が持つ。**この 3 つを 1 行に同居させてはならない**（[invariants.md](../invariants.md) §12）。
 
-例外が 1 つだけある: `DELETE /api/rules/{id}`（ルール削除）は、ユーザーの投資（`program_investments`）がない予約行をルール削除と同一トランザクションで同期削除する。1 表に書き手が 2 人いる形（不変条件 12 の兆候）だが、両者の DELETE 文はいずれも WHERE で `program_investments`（intent / overrides）を**適用の瞬間に再評価**するため、導出の判定と適用の間に並行して着地する手動予約を踏み潰す窓（[invariants.md](../invariants.md) §9「適用の瞬間」）は生じない。同期を選んだ理由は [録画エンジン](../recording.md) §4.4「取消は `PUT .../intent {action: skip}`」に詳しい。
+例外が 1 つだけある: `DELETE /api/rules/{id}`（ルール削除）は、ユーザーの投資（`program_investments`）がない予約行をルール削除と同一トランザクションで同期削除する。1 表に書き手が 2 人いる形（不変条件 12 の兆候）だが、両者の DELETE 文はいずれも WHERE で `program_investments`（intent / overrides）を**適用の瞬間に再評価**する。そのため、導出の判定と適用の間に並行して着地する手動予約を踏み潰す窓（[invariants.md](../invariants.md) §9「適用の瞬間」）は生じない。同期を選んだ理由は [録画エンジン](../recording.md) §4.4「取消は `PUT .../intent {action: skip}`」に詳しい。
 
 ```sql
 CREATE TABLE reservations (
@@ -37,11 +37,11 @@ CREATE INDEX ON reservations (rule_id);
 
 - 同一の BS/CS 番組が複数サイトの EPG に現れた場合、site が違えば別予約になる（両サイトで録る、が表現可能）。サイト横断の重複排除はルール側の関心事（履歴ベース重複排除で扱う）
 - **番組の事実のスナップショット（title / 開始時刻 / 尺 / チャンネル識別）はこの表にはない。** `(site, program_id)` の FK で参照する `program_snapshots`（§3.7）にある
-- **不可逆な観測を書く列も無い。** 「番組終了後に schedule が観測されなかった」という観測は `recordings` の試行行が持つ（[recordings.md](recordings.md) §5「行の作られ方」）。この事実は短命な導出表ではなく履歴側に置く --- 導出表に残すと ruler の再実体化で消え、`recordings_unique_active_event` による「1 放送イベントに active な試行は 1 行」の宣言的な強制も効かない
+- **不可逆な観測を書く列も無い。** 「番組終了後に schedule が観測されなかった」という観測は `recordings` の試行行が持つ（[recordings.md](recordings.md) §5「行の作られ方」）。この事実は短命な導出表ではなく履歴側に置く --- 導出表に残すと ruler の再実体化で消える。`recordings_unique_active_event` による「1 放送イベントに active な試行は 1 行」の宣言的な強制も効かない。
 
 ### 重複排除の根拠に FK を張らない
 
-`dedup_match_recording_id` は `recordings(id)` を指すが **FK を張っていない**。`REFERENCES recordings (id) ON DELETE SET NULL` と上の CHECK は両立しないためである。FK アクションは FK 側の列しか NULL にできないので、参照されている `recordings` 行を物理削除すると `(NULL, 0.87)` という行ができて CHECK に違反し、**DELETE 自体が中断する**（後片付けの機構が安全網に引っかかって削除を不可能にする）。
+`dedup_match_recording_id` は `recordings(id)` を指すが **FK を張っていない**。`REFERENCES recordings (id) ON DELETE SET NULL` と上の CHECK は両立しないためである。FK アクションは FK 側の列しか NULL にできない。そのため参照されている `recordings` 行を物理削除すると `(NULL, 0.87)` という行ができて CHECK に違反し、**DELETE 自体が中断する**（後片付けの機構が安全網に引っかかって削除を不可能にする）。
 
 外すのは FK の方にした。
 
@@ -58,7 +58,9 @@ CREATE INDEX ON reservations (rule_id);
 
 ### active / detached / orphaned は API が都度導出する
 
-`state` という列は存在しない。**この状態を列に焼いてはならない** --- 導出値と不可逆な観測を 1 列に潰す形そのもので、実装は式ではなく前パスからの遷移を書くことになり、片側の分岐しか持たなくなる（[invariants.md](../invariants.md) §9「式」）。予約の状態は API 層（`internal/api/handler.go` の `reservationState`）が読むたびに計算して返す。`active` / `detached` は `(rule_id, base)` から、`orphaned` は **「この予約の放送イベントに `never_scheduled_events` の欠測行があり、かつ同じイベントの `recordings` 行が 1 つも無いか」**（`GetReservationFull` / `ListReservationsFull` の `never_recorded` 列）から導出する。**「schedule が観測されなかった」は `epg_last_seen_at` のようなタイムスタンプからは導出できない** --- 観測側が事実として欠測行を書く必要がある。予約行の結合は不安定な導出 id ではなく、放送イベント `(site, network_id, service_id, event_id)` を使う（不変条件 9 の identity。`internal/db/queries/reservations.sql` のコメントが権威）。
+`state` という列は存在しない。**この状態を列に焼いてはならない** --- 導出値と不可逆な観測を 1 列に潰す形そのもので、実装は式ではなく前パスからの遷移を書くことになり、片側の分岐しか持たなくなる（[invariants.md](../invariants.md) §9「式」）。予約の状態は API 層（`internal/api/handler.go` の `reservationState`）が読むたびに計算して返す。`active` / `detached` は `(rule_id, base)` から導出する。`orphaned` は **「この予約の放送イベントに `never_scheduled_events` の欠測行があり、かつ同じイベントの `recordings` 行が 1 つも無いか」**から導出する。判定に使うのは `GetReservationFull` / `ListReservationsFull` の `never_recorded` 列である。
+
+**「schedule が観測されなかった」は `epg_last_seen_at` のようなタイムスタンプからは導出できない** --- 観測側が事実として欠測行を書く必要がある。予約行の結合には、不安定な導出 id ではなく放送イベント `(site, network_id, service_id, event_id)` を使う。これは不変条件 9 の identity であり、`internal/db/queries/reservations.sql` のコメントが権威である。
 
 | 値 | 意味 | 導出元 |
 |---|---|---|
@@ -66,8 +68,8 @@ CREATE INDEX ON reservations (rule_id);
 | `detached` | ルールがマッチしなくなったが `record` 意図または上書きがある行（= `program_investments` view に行がある）。base は凍結され、実質 manual として動く（`intent{skip}` なら録画しない detached） | `rule_id IS NULL AND base IS NOT NULL` |
 | `orphaned` | **この予約に対応する放送イベントについて、一度も schedule が観測されなかった欠測行があり、本物の録画試行は 1 行も無い**。mirakc 由来の途中失敗は欠測表に入らない（再試行経路を壊さない）。即削除せず残して「録れなかった」を説明可能にする | `never_scheduled_events` 表の EXISTS と、同じ放送イベントの `recordings` 全履歴に対する NOT EXISTS の積（`GetReservationFull` の `never_recorded`）。recordings は live 限定にしないため、本物の録画をごみ箱に入れても orphaned に戻らない。放送イベントキーは `program_snapshots` を経由して引く --- 予約行の導出 id を結合先にしてはならない（[invariants.md](../invariants.md) §9「identity」） |
 
-- **行の物理削除（GC）は「番組の終了時刻を過ぎた後」のみ**。番組の終了時刻は `program_snapshots.start_at + duration_ms` で判定し（§3.7）、`reservations` は `program_snapshots` への FK が `ON DELETE CASCADE` なのでスナップショットが GC された瞬間に一緒に落ちる（active/detached/orphaned のいずれでも問わない）。`never_scheduled_events` は `program_snapshots` への FK を持たないので、同時には消えないが、放送地平を超える `retention_grace + 30日` で別途刈られる（[recordings.md](recordings.md) §5）
-- 意図も上書きもない active 予約がルール・EPG から消えた場合は通常の宣言的動作として削除（大量削除サーキットブレーカーの対象）。ただし放送開始直前（`ruler.retract_grace` 以内）は猶予で削除しない --- 猶予中の行は `rule_id` が前パスのまま据え置かれるので、この表の `active` の導出（`rule_id IS NOT NULL`）はそのまま成立し続ける。専用の状態は増やさない（[ruler.md](../recording/ruler.md)「直前 unmatch の猶予」）
+- **行の物理削除（GC）は「番組の終了時刻を過ぎた後」のみ**。番組の終了時刻は `program_snapshots.start_at + duration_ms` で判定する（§3.7）。`reservations` は `program_snapshots` への FK が `ON DELETE CASCADE` なので、スナップショットが GC された瞬間に一緒に落ちる。active / detached / orphaned のいずれであるかは問わない。`never_scheduled_events` は `program_snapshots` への FK を持たないので、同時には消えないが、放送地平を超える `retention_grace + 30日` で別途刈られる（[recordings.md](recordings.md) §5）
+- 意図も上書きもない active 予約がルール・EPG から消えた場合は通常の宣言的動作として削除（大量削除サーキットブレーカーの対象）。ただし放送開始直前（`ruler.retract_grace` 以内）は猶予で削除しない --- 猶予中の行は `rule_id` が前パスのまま据え置かれる。そのため、この表の `active` の導出（`rule_id IS NOT NULL`）はそのまま成立し続ける。専用の状態は増やさない（[ruler.md](../recording/ruler.md)「直前 unmatch の猶予」）
 - ルール再マッチで base 再計算のうえ `active` に戻る（overrides は無傷）
 
 **同期対象かのフィルタに使ってよいのは「この予約に対応する放送イベントに `never_scheduled_events` の欠測行が無いこと」だけ**（`ListReservationsForSyncEvaluation` が絞る）。
@@ -87,7 +89,7 @@ CREATE INDEX ON reservations (rule_id);
 | `program_snapshots` の GC（番組終了 + `epg.retention_grace` 経過）と、そこからの FK CASCADE による `reservations` / `program_intents` / `program_overrides` の GC | ruler のパス（`runGC`。§3.7） |
 | `program_intents`（action）、`program_overrides`（overrides） | api |
 
-api は `reservations` に INSERT/UPDATE しない。手動予約は `program_intents` に `action='record'` を書くだけで、行自体は次の ruler パスが `program_investments`（§3.5）を desired に含めることで生成する（[録画エンジン](../recording.md) §4.4）。
+api は `reservations` に INSERT/UPDATE しない。手動予約は `program_intents` に `action='record'` を書くだけである。行自体は、次の ruler パスが `program_investments`（§3.5）を desired に含めることで生成する（[録画エンジン](../recording.md) §4.4）。
 
 ## 3.5 program_intents / program_overrides — 番組単位のユーザー意図（永続）
 
@@ -127,7 +129,7 @@ CREATE TABLE program_overrides (
 - **site スコープ**: 「サイト A では録らない、B では録る」が N 予約の下では意味を持つため（[録画エンジン](../recording.md) §3.1）
 - SSE ヒントはどちらも `reservations` トピックに寄せる（意図の変更は予約一覧・番組表の両方に現れる）
 
-**どちらの表も行の存在が予約を存在させる**（ruler の desired に入る）。ただし `program_intents` については `action = 'record'` の行に限る --- `action = 'skip'` の行は単独では逆に予約を desired から外す側（§3「意図が skip で、かつ上書きが無い番組は予約行を持たない」）なので、行の存在で予約を保つのは `program_overrides` と同じ意味にならない。`program_overrides` に行があるだけで予約が保たれるのは「overrides あり → 削除せず detached で保持」（[録画エンジン](../recording.md) §4.3）の要求。この 2 条件（`record` 意図 ∪ overrides）は `program_investments` view が 1 箇所にまとめて定義している。
+**どちらの表も行の存在が予約を存在させる**（ruler の desired に入る）。ただし `program_intents` については `action = 'record'` の行に限る --- `action = 'skip'` の行は単独では逆に予約を desired から外す側だからである。これは §3「意図が skip で、かつ上書きが無い番組は予約行を持たない」の通りである。そのため、行の存在で予約を保つのは `program_overrides` と同じ意味にならない。`program_overrides` に行があるだけで予約が保たれるのは「overrides あり → 削除せず detached で保持」（[録画エンジン](../recording.md) §4.3）の要求。この 2 条件（`record` 意図 ∪ overrides）は `program_investments` view が 1 箇所にまとめて定義している。
 
 取消は**無条件に `intent{skip}` を書いて導出行を落とす**。行を消すだけでは「消された行」と「最初から無かった行」が ruler から区別できず、次の全量パスが復活させる。
 
@@ -140,7 +142,7 @@ UNION
 SELECT site, program_id FROM program_overrides;
 ```
 
-削除ガード（ruler の導出削除・`DeleteRule` の detached 判定）と desired の union の第 2・3 項が同じ述語を指すのに、view 化前は 4 箇所に散在し 2 つの形（`program_intents` を `action` で絞るかどうか）が併存していた。パラメータを持たない集合演算なので view で足りる。定義を変えると 4 箇所の消費者すべてのテストが落ちる。
+削除ガード（ruler の導出削除・`DeleteRule` の detached 判定）と desired の union の第 2・3 項は同じ述語を指す。だが view 化前は 4 箇所に散在し、2 つの形（`program_intents` を `action` で絞るかどうか）が併存していた。パラメータを持たない集合演算なので view で足りる。定義を変えると 4 箇所の消費者すべてのテストが落ちる。
 
 ## 3.6 circuit_breakers — 大量削除ブレーカーのラッチ
 
@@ -174,7 +176,7 @@ CREATE TABLE circuit_breakers (
 
 ## 3.7 program_snapshots — 番組の事実のスナップショット
 
-EPG プロジェクション（§9）は使い捨てキャッシュなので、番組が射影から消えても `reservations` / `program_intents` / `program_overrides` の GC 判定と UI 表示は成立し続けなければならない。この「番組の事実」を持つのがこの表。**3 表がそれぞれコピーを持つ形にしてはならない** --- 書き込み時点が違うのでドリフトし、GC の判定が表ごとに違う時刻を使うことになる（[invariants.md](../invariants.md) §12）。
+EPG プロジェクション（§9）は使い捨てキャッシュである。そのため番組が射影から消えても、`reservations` / `program_intents` / `program_overrides` の GC 判定と UI 表示は成立し続けなければならない。この「番組の事実」を持つのがこの表。**3 表がそれぞれコピーを持つ形にしてはならない** --- 書き込み時点が違うのでドリフトし、GC の判定が表ごとに違う時刻を使うことになる（[invariants.md](../invariants.md) §12）。
 
 ```sql
 CREATE TABLE program_snapshots (
@@ -195,14 +197,14 @@ CREATE TABLE program_snapshots (
 );
 ```
 
-- **値の出所は EPG プロジェクションただ 1 つ。** 書き手は api（意図・上書きの作成時。`ensureProgramSnapshot` が `GetProgramSnapshotSource` で `epg_programs ⋈ epg_services` から引く）と ruler（毎パス、`UpsertProgramSnapshotsFromProjection`）の 2 人だが、両者とも射影から引くので値の権威は割れない。**クライアントからは受け取らない**（サーバー権威）。射影に番組がなければ 400
+- **値の出所は EPG プロジェクションただ 1 つ**。書き手は api と ruler の 2 人だが、両者とも射影から引くので値の権威は割れない。api は意図・上書きの作成時に `ensureProgramSnapshot` が `GetProgramSnapshotSource` で `epg_programs ⋈ epg_services` から引く。ruler は毎パス `UpsertProgramSnapshotsFromProjection` で引く。**クライアントからは受け取らない**（サーバー権威）。射影に番組がなければ 400
 - **射影にある間は更新、消えたら凍結。** 延長・繰り下げで EPG 側の時刻は変わるので、射影に番組がある間は毎パス追従し、消えたときに凍結する。凍結しっぱなしにしないのは、GC 判定・容量超過判定（[データ層](../data.md) §6.5）が予約の時刻を需要区間として使うため。予約が無く skip 意図だけが行を支える場合も、skip 意図を導出値と混同せず、番組が射影にある限り ruler が追従させる
-- **未解決: `program_id` 再利用による下流の付け替え窓がある。** EPG の放送地平を約 8 日、旧番組 A と新番組 B が同時には射影されないと仮定すると、(a) `program_snapshots` は A の終了 + `retention_grace` まで残るため、B の開始が A の終了から 8 日を超えて `8日 + retention_grace` 以内の約 1 日幅で、A の snapshot が B に上書きされる。(b) `never_scheduled_events` の A の欠測行は `retention_grace + 30日` 生きるため、B の開始が A の終了から 8 日を超えて既定の 31 日以内なら、約 23 日幅で B が A の欠測として扱われる。identity は変更せず、検出器（`ListProgramIDReusesBySite` / `rokuban_ruler_program_id_reuse_total`）で実測を試みるが、この検出器が `program_snapshots ⋈ epg_programs` を引く以上、観測できるのは A の snapshot がまだ生きている窓 (a) だけである。窓 (b) は snapshot が先に GC された後の話なので、検出器には原理的に映らない。したがってカウンタが 0 でも「再利用が起きていない」ことの根拠にはならず、「窓 (a) では観測されなかった」ことしか意味しない
-- **チャンネル識別はスナップショットする（programId を分解しない）。** Mirakurun 互換の programId は `NID*10^10 + SID*10^5 + EID` という合成規則を持つが、本番コードでこれを逆算してはならない。`network_id` / `service_id` / `channel_type` / `channel` は API のフィールドから素直に引く
+- **未解決: `program_id` 再利用による下流の付け替え窓がある**。EPG の放送地平を約 8 日、旧番組 A と新番組 B が同時には射影されないと仮定する。すると (a) `program_snapshots` は A の終了 + `retention_grace` まで残る。そのため B の開始が A の終了から 8 日を超えて `8日 + retention_grace` 以内の約 1 日幅で、A の snapshot が B に上書きされる。(b) `never_scheduled_events` の A の欠測行は `retention_grace + 30日` 生きる。そのため B の開始が A の終了から 8 日を超えて既定の 31 日以内なら、約 23 日幅で B が A の欠測として扱われる。identity は変更せず、検出器（`ListProgramIDReusesBySite` / `rokuban_ruler_program_id_reuse_total`）で実測を試みる。だがこの検出器が `program_snapshots ⋈ epg_programs` を引く以上、観測できるのは A の snapshot がまだ生きている窓 (a) だけである。窓 (b) は snapshot が先に GC された後の話なので、検出器には原理的に映らない。したがってカウンタが 0 でも「再利用が起きていない」ことの根拠にはならず、「窓 (a) では観測されなかった」ことしか意味しない
+- **チャンネル識別はスナップショットする（programId を分解しない）**。Mirakurun 互換の programId は `NID*10^10 + SID*10^5 + EID` という合成規則を持つが、本番コードでこれを逆算してはならない。`network_id` / `service_id` / `channel_type` / `channel` は API のフィールドから素直に引く
   - reconciler の contentPath 生成はこのスナップショットを読む
   - 容量超過の判定（[データ層](../data.md) §6.5）の需要単位が `(channel_type, channel)` なので、使い捨ての EPG 射影への JOIN に頼らずここを読む
-- **`event_id` / `service_name` も同じ経路でスナップショットする。** `reconciler.recordNeverScheduled` が `never_scheduled_events` に欠測を書くときに放送イベントの識別 `(network_id, service_id, event_id)` が要り、watcher が `recordings` を作るときに表示名 `service_name` が要る。`event_id` は他のチャンネル識別列と同様に `epg_programs.event_id` から素直に引き、**programId を分解して逆算しない**
-- **チャンネル・放送イベント識別 6 列は NOT NULL。** 新規書き込みの 2 経路（`GetProgramSnapshotSource` / `UpsertProgramSnapshotsFromProjection`）はどちらも `epg_programs` / `epg_services` への INNER JOIN で NULL を書けない。reconciler 側の「NULL なら推測せず schedule を作らない / 試行行を作らない」という分岐も、この状態が表現不可能になったことで削除している（不変条件 10）
-- **GC はこの表からの 1 本の DELETE に集約されている**（`DeleteEndedProgramSnapshots`。条件は `start_at + duration_ms < now() - epg.retention_grace`）。`reservations` / `program_intents` / `program_overrides` はこの表への `(site, program_id)` FK を `ON DELETE CASCADE` で持つので、この 1 本の DELETE で 3 表とも一緒に落ちる。`recordings` は `reservations` への FK を持たないので、この削除で録画履歴（recordings/media_assets）が失われることはない
-- **この表からの DELETE 経路は GC 1 本に限定すること。** 他の場所から消せると意図を巻き添えにする。特に「参照が 1 つも無いスナップショット行を掃除する」規則を足してはならない --- 掃除しないなら害はない（GC が拾う）が、掃除規則は intent の作成とレースする（ruler の導出削除が並行して作られた手動予約を消したのと同じ形。[invariants.md](../invariants.md) §9「適用の瞬間」）
+- **`event_id` / `service_name` も同じ経路でスナップショットする**。`reconciler.recordNeverScheduled` が `never_scheduled_events` に欠測を書くときに放送イベントの識別 `(network_id, service_id, event_id)` が要る。watcher が `recordings` を作るときにも表示名 `service_name` が要る。`event_id` は他のチャンネル識別列と同様に `epg_programs.event_id` から素直に引き、**programId を分解して逆算しない**
+- **チャンネル・放送イベント識別 6 列は NOT NULL**。新規書き込みの経路は `GetProgramSnapshotSource` と `UpsertProgramSnapshotsFromProjection` の 2 つである。どちらも `epg_programs` / `epg_services` への INNER JOIN で NULL を書けない。reconciler 側の「NULL なら推測せず schedule を作らない / 試行行を作らない」という分岐も、この状態が表現不可能になったことで削除している（不変条件 10）
+- **GC はこの表からの 1 本の DELETE に集約されている**（`DeleteEndedProgramSnapshots`。条件は `start_at + duration_ms < now() - epg.retention_grace`）。`reservations` / `program_intents` / `program_overrides` はこの表への `(site, program_id)` FK を `ON DELETE CASCADE` で持つ。そのためこの 1 本の DELETE で 3 表とも一緒に落ちる。`recordings` は `reservations` への FK を持たないので、この削除で録画履歴（recordings/media_assets）が失われることはない
+- **この表からの DELETE 経路は GC 1 本に限定すること。** 他の場所から消せると意図を巻き添えにする。特に「参照が 1 つも無いスナップショット行を掃除する」規則を足してはならない --- 掃除しないなら害はない（GC が拾う）。だが掃除規則は intent の作成とレースする（ruler の導出削除が並行して作られた手動予約を消したのと同じ形。[invariants.md](../invariants.md) §9「適用の瞬間」）
 - `recordings` はこの FK の対象外。録画時点のスナップショット（§5）として独立にコピーを持つため、番組終了後に `program_snapshots` が消えても録画履歴には影響しない
