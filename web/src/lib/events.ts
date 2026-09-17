@@ -133,6 +133,12 @@ type QueryGroup = {
   topic: string | null
   /** invalidate 対象のクエリキーの接頭辞（orval のキーは `[url, params]`）。 */
   prefixes: string[]
+  /**
+   * 定期 invalidate で使う接頭辞。省略時は `prefixes` 全体を使う。
+   * SSE では更新が必要だが、応答が大きく定期取得には含めたくない射影を
+   * イベント経路だけに足すために使う（programs の `intent` が該当する）。
+   */
+  refreshPrefixes?: string[]
   /** SSE が 1 通も届かなくても、この周期で invalidate する。 */
   refreshIntervalMs: number
 }
@@ -154,8 +160,14 @@ const queryGroups: QueryGroup[] = [
     topic: 'reservations',
     // 容量超過（チューナー不足）は予約集合からの導出値なので、予約が変わったら
     // 一緒に取り直す（docs/data.md §6.5）。専用のトピックは無い --- 導出値に
-    // 独自の通知を持たせると、元データと導出値が別々の鮮度で並ぶことになる
-    prefixes: [reservationsQueryKeyPrefix, capacityOveragesQueryKeyPrefix],
+    // 独自の通知を持たせると、元データと導出値が別々の鮮度で並ぶことになる。
+    // program_intents.action も予約の変更と同じ reservations トピックで通知される
+    // （意図は予約一覧と番組表の両方に現れるため、docs/schema/reservations.md §3.5）。
+    prefixes: [reservationsQueryKeyPrefix, capacityOveragesQueryKeyPrefix, programsQueryKeyPrefix],
+    // 番組一覧は EPG 全体の大きな時間窓なので、60 秒ごとの定期取得には含めない。
+    // 意図変更時は上の SSE 経路で即時に、SSE を落とした場合は epg グループの
+    // 10 分周期で収束させる。
+    refreshPrefixes: [reservationsQueryKeyPrefix, capacityOveragesQueryKeyPrefix],
     refreshIntervalMs: operationalRefreshIntervalMs,
   },
   {
@@ -204,9 +216,9 @@ const queryGroups: QueryGroup[] = [
   },
 ]
 
-/** invalidateGroup は 1 グループ分のクエリキー接頭辞をまとめて invalidate する。 */
-function invalidateGroup(queryClient: QueryClient, group: QueryGroup): void {
-  for (const prefix of group.prefixes) {
+/** 指定したクエリキー接頭辞をまとめて invalidate する。 */
+function invalidatePrefixes(queryClient: QueryClient, prefixes: Iterable<string>): void {
+  for (const prefix of prefixes) {
     // orval のクエリキーは [url, params] の形なので、URL 接頭辞で照合する
     void queryClient.invalidateQueries({
       predicate: (query) => {
@@ -215,6 +227,27 @@ function invalidateGroup(queryClient: QueryClient, group: QueryGroup): void {
       },
     })
   }
+}
+
+/** invalidateGroup は指定した 1 グループ分のクエリキー接頭辞をまとめて invalidate する。 */
+function invalidateGroup(
+  queryClient: QueryClient,
+  group: QueryGroup,
+  prefixes: readonly string[] = group.prefixes,
+): void {
+  invalidatePrefixes(queryClient, prefixes)
+}
+
+/**
+ * 再接続時は同じ射影が複数グループに属することがあるため、接頭辞を一度だけ
+ * invalidate する。programs は EPG 更新と予約意図更新の両方で変わる。
+ */
+function invalidateAllGroups(queryClient: QueryClient): void {
+  const prefixes = new Set<string>()
+  for (const group of queryGroups) {
+    for (const prefix of group.prefixes) prefixes.add(prefix)
+  }
+  invalidatePrefixes(queryClient, prefixes)
 }
 
 type EncodeProgressSnapshot = ReadonlyMap<number, ReadonlyMap<string, number>>
@@ -428,7 +461,7 @@ export function useServerEvents() {
       setConnectionState({ status: 'open', lastConnectedAt: new Date().toISOString() })
       if (!disconnected) return
       disconnected = false
-      for (const group of queryGroups) invalidateGroup(queryClient, group)
+      invalidateAllGroups(queryClient)
     })
 
     return () => {
@@ -447,7 +480,9 @@ export function useServerEvents() {
         // （main.tsx の QueryClient 既定）
         if (document.visibilityState === 'hidden') return
         for (const group of queryGroups) {
-          if (group.refreshIntervalMs === intervalMs) invalidateGroup(queryClient, group)
+          if (group.refreshIntervalMs === intervalMs) {
+            invalidateGroup(queryClient, group, group.refreshPrefixes)
+          }
         }
       }, intervalMs),
     )

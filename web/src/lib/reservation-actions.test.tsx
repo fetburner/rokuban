@@ -40,6 +40,7 @@ const program: SiteProgram = {
 } satisfies ProgramListItem & { site: string }
 
 const sourceByProgramId = new Map<string, Reservation['source']>()
+const programListKey = ['/api/programs', 'infinite'] as const
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -53,15 +54,18 @@ function stubFetch() {
 }
 
 function renderActions(initialServerReservedIds: ReadonlySet<string>) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+  })
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
   )
-  return renderHook(
+  const view = renderHook(
     ({ serverReservedIds }: { serverReservedIds: ReadonlySet<string> }) =>
       useReservationActions(serverReservedIds, sourceByProgramId, false, undefined),
     { wrapper, initialProps: { serverReservedIds: initialServerReservedIds } },
   )
+  return { ...view, queryClient }
 }
 
 describe('useReservationActions の楽観更新の自己修復', () => {
@@ -118,10 +122,12 @@ describe('useReservationActions の reservationStateUnknown ガード', () => {
 })
 
 describe('useReservationActions の skip 意図解除', () => {
-  it('clearIntent は DELETE .../intent を送る', async () => {
+  it('clearIntent は DELETE .../intent を送り、番組一覧を無効化する', async () => {
     stubFetch()
     const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
-    const { result } = renderActions(new Set())
+    const { result, queryClient } = renderActions(new Set())
+    queryClient.setQueryData(programListKey, [])
+    expect(queryClient.getQueryCache().find({ queryKey: programListKey })?.isStale()).toBe(false)
 
     await act(async () => {
       result.current.clearIntent(program)
@@ -133,5 +139,21 @@ describe('useReservationActions の skip 意図解除', () => {
       `/api/sites/${site}/programs/${programId}/intent`,
       expect.objectContaining({ method: 'DELETE' }),
     )
+    expect(queryClient.getQueryCache().find({ queryKey: programListKey })?.isStale()).toBe(true)
+  })
+
+  it('reserve は番組一覧を無効化しない', async () => {
+    stubFetch()
+    const { result, queryClient } = renderActions(new Set())
+    queryClient.setQueryData(programListKey, [])
+
+    await act(async () => {
+      result.current.reserve(program)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    // reserve は skip 意図を変更せず、予約集合と容量超過だけを更新する。
+    expect(queryClient.getQueryCache().find({ queryKey: programListKey })?.isStale()).toBe(false)
   })
 })

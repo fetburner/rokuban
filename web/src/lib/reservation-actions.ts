@@ -133,6 +133,9 @@ export function useReservationActions(
     // 容量超過は予約集合からの導出値なので、予約が増減すれば作り直させる。
     // 帯を古いまま残すと「予約したのに不足が消えない / 出ない」になる
     void queryClient.invalidateQueries({ queryKey: [capacityOveragesQueryKeyPrefix] })
+  }
+
+  const invalidateProgramList = () => {
     // 番組一覧も program_intents.action を返す。意図の変更後にこの射影を更新しないと、
     // 予約行が消えた番組の「スキップ中」や恒久的な解除導線が古いまま残る。
     void queryClient.invalidateQueries({ queryKey: [programsQueryKeyPrefix] })
@@ -147,7 +150,7 @@ export function useReservationActions(
     void (async () => {
       try {
         await deleteIntent.mutateAsync({ site: program.site, programId: program.programId })
-        invalidateReservations()
+        invalidateProgramList()
         toast({ message: 'スキップを解除しました' })
       } catch (err) {
         toast({ message: mutationErrorMessage('スキップの解除に失敗しました', err), kind: 'error' })
@@ -196,6 +199,7 @@ export function useReservationActions(
           })
         }
         invalidateReservations()
+        invalidateProgramList()
         toast({ message: '予約を元に戻しました' })
       } catch (err) {
         toast({ message: mutationErrorMessage('予約への復帰に失敗しました', err) })
@@ -224,6 +228,7 @@ export function useReservationActions(
           data: { action: 'skip' },
         })
         invalidateReservations()
+        invalidateProgramList()
         // 予約のワンタップ + トースト「取消」と対称にする（issue #453）。
         // 誤タップの被害は「録れない」側に出るので、取消にも同じ取り返し
         // 手段を置く。

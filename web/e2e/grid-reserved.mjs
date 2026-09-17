@@ -1,4 +1,4 @@
-// 番組表グリッドの予約済み印の受け入れ判定（issue #307）。
+// 番組表グリッドの予約済み印とスキップ意図印の受け入れ判定（issue #307 / #845）。
 //
 // jsdom はレイアウトも色も測れないので、`pnpm test` の
 // 「data-reserved / aria-label に『予約済み』がある」だけでは、
@@ -12,6 +12,8 @@
 //   ③ 予約済み（未選択）と選択中（未予約）は別の形。予約済みだけに見える
 //      「予約」があり、選択中だけに太い ring がある
 //   ④ 予約の印はタリー / 琥珀 / destructive ではない（色は信号のみ）
+//   ⑤ 未予約の skip は通常の高さなら「スキップ中」、5 分（10px）なら
+//      高さいっぱいの状態マーカーになり、文字がセルから切れない
 //
 // 別ファイルにしたのは、design.mjs が既にグリッドの現在時刻線・容量帯を持ち、
 // 他 PR がそこを編集している可能性があるため（reserve-visibility.mjs と同じ理由）。
@@ -55,7 +57,7 @@ const service = {
   hasPrograms: true,
 }
 
-// 3 本ともニュース（genres: [0] = bg-sky-50）。ジャンル色が同じでないと
+// 5 本ともニュース（genres: [0] = bg-sky-50）。ジャンル色が同じでないと
 // 「予約済みがジャンル色に埋もれる」を測れない。
 const reserved = {
   programId: 307001,
@@ -100,6 +102,37 @@ const shortReserved = {
   isFree: true,
 }
 
+const skipped = {
+  programId: 307004,
+  networkId: service.networkId,
+  serviceId: service.serviceId,
+  eventId: 4,
+  startAt: iso(nowMs + 51 * 60_000),
+  endAt: iso(nowMs + 71 * 60_000),
+  durationMs: 20 * 60_000,
+  name: 'スキップ確認ニュース',
+  description: '',
+  genres: [0],
+  isFree: true,
+  intent: 'skip',
+}
+
+// 5 分 = 10px（120px/時）。文字のバッジは切れるので右端マーカーへ切り替える。
+const shortSkipped = {
+  programId: 307005,
+  networkId: service.networkId,
+  serviceId: service.serviceId,
+  eventId: 5,
+  startAt: iso(nowMs + 71 * 60_000),
+  endAt: iso(nowMs + 76 * 60_000),
+  durationMs: 5 * 60_000,
+  name: '短尺スキップ確認ニュース',
+  description: '',
+  genres: [0],
+  isFree: true,
+  intent: 'skip',
+}
+
 const reservation = (program) => ({
   id: program.programId,
   site: SITE,
@@ -124,7 +157,9 @@ async function apiHandler({ path: p, json }) {
   if (p === '/api/capacity/overages') return json([])
   if (p === '/api/encode-profiles') return json([])
   if (p === `/api/sites/${SITE}/services`) return json([service])
-  if (p === `/api/sites/${SITE}/programs`) return json([reserved, unreserved, shortReserved])
+  if (p === `/api/sites/${SITE}/programs`) {
+    return json([reserved, unreserved, shortReserved, skipped, shortSkipped])
+  }
   if (/\/overlaps$/.test(p)) return json({ count: 0, reservations: [] })
   if (/\/programs\/\d+$/.test(p)) return json({ extended: {}, audios: [] })
   return json([])
@@ -217,6 +252,8 @@ await validateFixturesOrExit(
     ['reserved', ListProgramsResponseItem, reserved],
     ['unreserved', ListProgramsResponseItem, unreserved],
     ['shortReserved', ListProgramsResponseItem, shortReserved],
+    ['skipped', ListProgramsResponseItem, skipped],
+    ['shortSkipped', ListProgramsResponseItem, shortSkipped],
     ['reservation(reserved)', ListReservationsResponseItem, reservation(reserved)],
     ['reservation(shortReserved)', ListReservationsResponseItem, reservation(shortReserved)],
   ],
@@ -243,9 +280,17 @@ const unreservedCell = page.locator(
 const shortCell = page.locator(
   `[data-testid="program-grid-cell"][data-program-id="${shortReserved.programId}"]`,
 )
+const skippedCell = page.locator(
+  `[data-testid="program-grid-cell"][data-program-id="${skipped.programId}"]`,
+)
+const shortSkippedCell = page.locator(
+  `[data-testid="program-grid-cell"][data-program-id="${shortSkipped.programId}"]`,
+)
 await reservedCell.waitFor({ timeout: 10000 })
 await unreservedCell.waitFor()
 await shortCell.waitFor()
+await skippedCell.waitFor()
+await shortSkippedCell.waitFor()
 
 // --- ① 予約済みに見える「予約」。未予約には無い ------------------------------
 log('\n=== ① 見える「予約」 ===')
@@ -281,8 +326,46 @@ if (!shortLabel && !shortBar) {
   )
 }
 
-// --- ③ 予約済みと選択中は別の形 --------------------------------------------
-log('\n=== ③ 予約済み ≠ 選択中 ===')
+// --- ③ 未予約 skip 意図の表示 ------------------------------------------------
+log('\n=== ③ 未予約 skip 意図のセル表示 ===')
+const skipBadge = skippedCell.getByTestId('program-grid-cell-skip-intent-badge')
+const skipBadgeBox = await skipBadge.boundingBox()
+const skippedCellBox = await skippedCell.boundingBox()
+log(`  通常セルの「スキップ中」: ${skipBadgeBox ? `${skipBadgeBox.width}x${skipBadgeBox.height}px` : '見つからない'}`)
+if (
+  !(await skipBadge.isVisible()) ||
+  !skipBadgeBox ||
+  !skippedCellBox ||
+  skipBadgeBox.width < 16 ||
+  skipBadgeBox.height <= 0
+) {
+  ng.push('③ 通常の未予約 skip セルに見える「スキップ中」バッジが無い')
+}
+if ((await skippedCell.getAttribute('data-skip-intent')) !== 'true') {
+  ng.push('③ 通常の未予約 skip セルに data-skip-intent が無い')
+}
+
+const shortSkipBadge = shortSkippedCell.getByTestId('program-grid-cell-skip-intent-badge')
+const shortSkipMarker = shortSkippedCell.getByTestId('program-grid-cell-skip-intent-marker')
+const shortSkipCellBox = await shortSkippedCell.boundingBox()
+const shortSkipMarkerBox = await shortSkipMarker.boundingBox()
+log(`  5 分セルの状態マーカー: ${shortSkipMarkerBox ? `${shortSkipMarkerBox.width}x${shortSkipMarkerBox.height}px` : '見つからない'}`)
+if (
+  !shortSkipCellBox ||
+  shortSkipCellBox.height < 8 ||
+  shortSkipCellBox.height > 14 ||
+  !shortSkipMarkerBox ||
+  shortSkipMarkerBox.height < shortSkipCellBox.height * 0.8 ||
+  shortSkipMarkerBox.x + shortSkipMarkerBox.width < shortSkipCellBox.x + shortSkipCellBox.width - 4
+) {
+  ng.push('③ 5 分の未予約 skip セルに切れない状態マーカーが無い')
+}
+if ((await shortSkipBadge.count()) !== 0) {
+  ng.push('③ 5 分の未予約 skip セルに切れる文字バッジを描いている')
+}
+
+// --- ④ 予約済みと選択中は別の形 --------------------------------------------
+log('\n=== ④ 予約済み ≠ 選択中 ===')
 await unreservedCell.click()
 await page.waitForTimeout(200)
 const selectedPressed = await unreservedCell.getAttribute('aria-pressed')
@@ -293,16 +376,16 @@ log(`  未予約を選択: aria-pressed=${selectedPressed} shadow=${selectedInfo
 log(`  予約済みのまま: aria-pressed=${reservedPressed} shadow=${reservedStill.boxShadow}`)
 
 if (selectedPressed !== 'true') {
-  ng.push(`③ 未予約セルを押しても aria-pressed が true にならない（${selectedPressed}）`)
+  ng.push(`④ 未予約セルを押しても aria-pressed が true にならない（${selectedPressed}）`)
 }
 if (selectedInfo.texts.some((t) => t.visibility === 'visible')) {
-  ng.push('③ 選択中の未予約セルに見える「予約」がある（予約と選択が同じ印）')
+  ng.push('④ 選択中の未予約セルに見える「予約」がある（予約と選択が同じ印）')
 }
 const reservedLabelAfter = reservedStill.texts.find(
   (t) => t.visibility === 'visible' && t.width >= 16,
 )
 if (!reservedLabelAfter) {
-  ng.push('③ 未予約を選んだあと、予約済みセルの見える「予約」が消えた')
+  ng.push('④ 未予約を選んだあと、予約済みセルの見える「予約」が消えた')
 }
 // 選択中は ring（box-shadow）。予約済み未選択は輪以外の印なので、
 // 同じ box-shadow だけが差、という現状を落とす。
@@ -312,14 +395,14 @@ const sameShadow =
   selectedInfo.boxShadow.replace(/\d+(\.\d+)?px/g, '') ===
     reservedStill.boxShadow.replace(/\d+(\.\d+)?px/g, '')
 if (sameShadow && !reservedLabelAfter) {
-  ng.push('③ 予約済みと選択中の差が ring の太さだけで、別の形が無い')
+  ng.push('④ 予約済みと選択中の差が ring の太さだけで、別の形が無い')
 }
 
-// --- ④ 印の色は信号色ではない ----------------------------------------------
-log('\n=== ④ 色は信号のみ ===')
+// --- ⑤ 印の色は信号色ではない ----------------------------------------------
+log('\n=== ⑤ 色は信号のみ ===')
 const markSource = visibleLabel ?? shortLabel ?? shortBar
 if (!markSource) {
-  ng.push('④ 測る印が無い（①②が落ちている）')
+  ng.push('⑤ 測る印が無い（①②が落ちている）')
 } else {
   const colorTarget = visibleLabel
     ? reservedCell.getByText('予約', { exact: true }).first()
@@ -336,7 +419,7 @@ if (!markSource) {
     if (!rgba) continue
     if (rgba[3] === 0) continue
     if (isRed(rgba) || isAmber(rgba)) {
-      ng.push(`④ 予約の印の${name}が信号色（${rgba}）`)
+      ng.push(`⑤ 予約の印の${name}が信号色（${rgba}）`)
     }
   }
 }
