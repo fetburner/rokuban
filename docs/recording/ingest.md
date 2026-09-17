@@ -270,7 +270,9 @@ NULL とは違う。非 null な `*int64(0)` として `watcher.go` の `content
 
 **進捗の分母は追従ループが更新する。** `record_sync.content_length` は watcher が観測した時点の値である。Work 開始時に固定すると、録画が伸びて `written_bytes` が分母を追い越し、UI が「取り込み中 100%」を録画中ずっと出し続ける。Web 側は `min(100, ...)` で頭打ちにするので、嘘が % として出る。
 
-追従ループは毎ポーリング `GetRecord` を呼んでおり、その `content.length` が同じ観測なので追加リクエスト無しで分母を更新できる（`ingestProgressReporter.observeProgress`）。`TestIngestWorker_FollowingCaughtUpKeepsProgressFresh` が分母と observed_at の両方を固定している。分母が NULL のときは % を出さずバイト数だけを出す。照合（層 3）には使わない --- 照合は finished 確認後の HEAD だけである。
+追従ループは毎ポーリング `GetRecord` を呼んでおり、その `content.length` が同じ観測なので追加リクエスト無しで分母を更新できる（`ingestProgressReporter.observeProgress`）。`TestIngestWorker_FollowingCaughtUpKeepsProgressFresh` が分母と observed_at の両方を固定している。
+
+**録画中の分母は最終サイズではないので、UI は % を出さない。** 録画中に読めるのは「mirakc がその時点で観測しているサイズ」であり、`writtenBytes` がそれを追い越すことがある。割合にすると `min(100, ...)` で「録画全体を取り込み済み」と読める嘘になる。分母が確定するのは録画終了後で、% はそこから出す（`web/src/lib/ingest.ts` の `ingestDisplay`）。分母が NULL のときも同じくバイト数だけを出す。照合（層 3）には使わない --- 照合は finished 確認後の HEAD だけである。
 
 **API の状態は 4 値で、原本 `media_assets` 行の有無を最優先に導出する**（列に焼いた値では
 ない。`internal/api/recordings.go` の `ingestProgressFromFields`）。`kind='original'` の行が

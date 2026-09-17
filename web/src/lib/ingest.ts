@@ -76,6 +76,9 @@ export type IngestDisplay =
  * `recording` 中は watcher が ingest を投入し、`transferring` の進捗を表示する。
  * これは以前の「録画中は表示しない」という前提と異なる。
  *
+ * **ただし録画中は割合（`percent`）を出さない。** 分母が最終サイズではないため
+ * である（`ingestDisplay` の実装コメント参照）。
+ *
  *
  * `originalDeleted`（`committed` かつ `sizeBytes` 無し）だけは `status` に
  * 関わらず返す --- これが **「まだ取り込めていない」と「取り込んだ後に消した」を
@@ -95,11 +98,18 @@ export function ingestDisplay(recording: Recording, nowMs: number): IngestDispla
 
   if (ingest.state === 'transferring') {
     const writtenBytes = ingest.writtenBytes ?? 0
-    const expectedBytes = ingest.expectedBytes
+    // **録画中は分母を出さない。** 追従 ingest（docs/recording/ingest.md §5.1）は
+    // 録画開始から走るので、録画中の `expectedBytes` は「mirakc がその時点で
+    // 観測しているサイズ」であって最終サイズではない。書けたバイト数がそれを
+    // 追い越すこともあり、そのまま割合にすると `min(100, ...)` で「録画全体の
+    // 100% を取り込んだ」と読める嘘になる（実機で観測した）。
+    //
+    // 分母が確定するのは録画終了後なので、それまではバイト数だけを出す。分母が
+    // 有るかどうかで出し分けるのではなく、**録画中かどうか**で落とす。
+    const expectedBytes = recording.status === 'recording' ? undefined : ingest.expectedBytes
     // 分母が 0 / 未指定のときに Infinity や NaN を作らない。100 で頭打ちに
-    // するのは、record_sync.content_length が転送開始時点の観測なので
-    // written がそれを僅かに超えることがあるため（超過を 103% と出しても
-    // 何も伝わらない）。
+    // するのは、`record_sync.content_length` の観測が転送より僅かに遅れることが
+    // あり written がそれを超えるため（超過を 103% と出しても何も伝わらない）。
     const percent =
       expectedBytes !== undefined && expectedBytes > 0
         ? Math.min(100, Math.floor((writtenBytes / expectedBytes) * 100))

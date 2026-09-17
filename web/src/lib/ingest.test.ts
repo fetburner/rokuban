@@ -112,9 +112,31 @@ describe('ingestDisplay', () => {
 
   // 録画中も watcher が ingest を投入し、worker が追従する。進捗が来ていれば
   // 「転送中」を出す（issue #425）。
-  it('録画中でも転送中の進捗を出す', () => {
+  //
+  // **ただし割合は出さない。** 録画中の分母（`expectedBytes`）は「mirakc が
+  // その時点で観測しているサイズ」であって最終サイズではない。書けたバイト数が
+  // それを追い越すと `min(100, ...)` で「100%」になり、録画全体を取り込み済みと
+  // 読める嘘になる（実機の id=33 で written > expected を観測した）。
+  it('録画中は割合を出さずバイト数だけを出す', () => {
     const rec = recording({
       status: 'recording',
+      ingest: {
+        state: 'transferring',
+        writtenBytes: 250,
+        expectedBytes: 1000,
+        observedAt: new Date(now - 1000).toISOString(),
+      },
+    })
+    const got = ingestDisplay(rec, now)
+    expect(got).toMatchObject({ kind: 'transferring', writtenBytes: 250 })
+    expect(got && 'percent' in got ? got.percent : 'missing').toBeUndefined()
+    expect(got && 'expectedBytes' in got ? got.expectedBytes : 'missing').toBeUndefined()
+  })
+
+  // 分母が最終サイズになるのは録画終了後。そこでは割合を出す（#212 の元の用途）。
+  it('録画終了後は割合を出す', () => {
+    const rec = recording({
+      status: 'finished',
       ingest: {
         state: 'transferring',
         writtenBytes: 250,
@@ -125,6 +147,7 @@ describe('ingestDisplay', () => {
     expect(ingestDisplay(rec, now)).toMatchObject({
       kind: 'transferring',
       writtenBytes: 250,
+      expectedBytes: 1000,
       percent: 25,
     })
   })

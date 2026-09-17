@@ -991,10 +991,17 @@ type HealthResponse struct {
 
 // IngestProgress defines model for IngestProgress.
 type IngestProgress struct {
-	// ExpectedBytes 転送の分母。`record_sync.content_length`（watcher が mirakc record の
-	// `content.length` として観測した値）を転送開始時に写したもの。mirakc が
+	// ExpectedBytes 転送の分母。Work 開始時は `record_sync.content_length`（watcher が
+	// mirakc record の `content.length` として観測した値）で初期化し、追従中は
+	// 転送ループが `GetRecord` の `content.length` で更新する。mirakc が
 	// length を返していなければ**省略する** --- でっち上げた分母を置かない。
-	// 省略時、UI は % を出さず `writtenBytes` だけを出す。
+	//
+	// **録画中は最終サイズではない。** 追従 ingest は録画開始から走るので、
+	// `status = 'recording'` の間のこの値は「mirakc がその時点で観測している
+	// サイズ」であり、`writtenBytes` が追い越すこともある。最終サイズとして
+	// 読めるのは record が終了してからである。**UI は録画中に % を出さない**
+	// （`writtenBytes` だけを出す）。分母が確定するのは録画終了後なので、
+	// そのときは % を出す。
 	ExpectedBytes *int64 `json:"expectedBytes,omitempty"`
 
 	// ObservedAt 進捗を最後に観測した時刻。`state = transferring` のときだけ付く。
@@ -1015,7 +1022,8 @@ type IngestProgress struct {
 	//   いる（River のバックオフ待ち・ストール）。**録画中の追従で
 	//   追い付いている状態は停滞ではない** --- worker は健全に 1 周した
 	//   ポーリングで `observedAt` を進めるので、追い付いたままでも
-	//   `observedAt` は新しくなる
+	//   `observedAt` は新しくなる。録画中は `expectedBytes` が最終サイズでは
+	//   ないため、**クライアントは % を出さずバイト数だけを出す**
 	// - `pending`: 原本行も進捗行も無く、**ingest ジョブが投入される
 	//   はずの** mirakc record の観測（`record_sync.status` が `recording`
 	//   または `finished`。watcher が ingest を投入する条件と同じ述語）が
@@ -1063,7 +1071,8 @@ type IngestProgress struct {
 //     いる（River のバックオフ待ち・ストール）。**録画中の追従で
 //     追い付いている状態は停滞ではない** --- worker は健全に 1 周した
 //     ポーリングで `observedAt` を進めるので、追い付いたままでも
-//     `observedAt` は新しくなる
+//     `observedAt` は新しくなる。録画中は `expectedBytes` が最終サイズでは
+//     ないため、**クライアントは % を出さずバイト数だけを出す**
 //   - `pending`: 原本行も進捗行も無く、**ingest ジョブが投入される
 //     はずの** mirakc record の観測（`record_sync.status` が `recording`
 //     または `finished`。watcher が ingest を投入する条件と同じ述語）が
