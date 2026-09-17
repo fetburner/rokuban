@@ -678,6 +678,8 @@ function ProgramCell({
   const ended = placed.endMs < currentMs
   // 5 分セルは 10px しかなく、終了の見た目を足さず読み上げだけで伝える。
   const visiblyEnded = ended && rect.heightPx > axis.pxPerHour / 12
+  // 予約行が消えた後も残る除外の意図を、予約済みの表示とは分けて示す。
+  const skipIntent = program.intent === 'skip' && !reserved
   const genre = genreLabel(program.genres[0])
   // 予約済みであることは色ではなく名前でも伝える（色だけの情報にしない）。
   // 読み上げ用だけでなく、セルの中にも見える「予約」を置く。
@@ -686,6 +688,7 @@ function ProgramCell({
     program.name,
     genre,
     reserved ? '予約済み' : undefined,
+    skipIntent ? 'スキップ中' : undefined,
     ended ? '放送終了' : undefined,
   ]
     .filter(Boolean)
@@ -698,6 +701,7 @@ function ProgramCell({
       data-program-id={program.programId}
       data-site={program.site}
       data-reserved={reserved ? 'true' : undefined}
+      data-skip-intent={skipIntent ? 'true' : undefined}
       data-ended={ended ? 'true' : undefined}
       aria-pressed={selected}
       aria-label={label}
@@ -728,6 +732,14 @@ function ProgramCell({
             予約
           </span>
         </>
+      )}
+      {skipIntent && (
+        <span
+          data-testid="program-grid-cell-skip-intent-badge"
+          className="pointer-events-none absolute top-0 right-1 z-[1] rounded-sm bg-muted px-1 text-[10px] font-medium leading-tight text-foreground"
+        >
+          スキップ中
+        </span>
       )}
       <span
         data-testid="program-grid-cell-time"

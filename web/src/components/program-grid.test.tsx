@@ -264,6 +264,23 @@ describe('ProgramGrid', () => {
     expect(cell(2)).not.toHaveTextContent('予約')
   })
 
+  it('未予約の skip 意図を番組セルにも「スキップ中」と表示する', () => {
+    renderGrid({
+      programs: [
+        program(1, 1024, 19 * 60, 60, { intent: 'skip' }),
+        program(2, 1024, 20 * 60, 60, { intent: 'skip' }),
+      ],
+      reservations: new Set([programIdentity('default', 2)]),
+    })
+
+    expect(cell(1)).toHaveAttribute('data-skip-intent', 'true')
+    expect(cell(1)).toHaveTextContent('スキップ中')
+    expect(cell(1).getAttribute('aria-label')).toContain('スキップ中')
+    // 予約行が残っている番組は、既存の「予約」表示を優先する。
+    expect(cell(2)).not.toHaveAttribute('data-skip-intent')
+    expect(cell(2)).not.toHaveTextContent('スキップ中')
+  })
+
   it('5 分の予約済み番組でも見える「予約」が残る', () => {
     renderGrid({
       programs: [program(1, 1024, 19 * 60, 5)],
