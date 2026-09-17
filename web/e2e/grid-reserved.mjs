@@ -9,11 +9,11 @@
 //      大きい（幅 16px 以上）。未予約セルには無い
 //   ② 5 分（10px）の予約済みセルでも印が消えない --- セルの高さの 8 割以上を
 //      覆う縦の帯がある（点は高さ 6px なので 10px セルでもこの判定をすり抜けない）
-//   ③ 予約済み（未選択）と選択中（未予約）は別の形。予約済みだけに見える
-//      「予約」があり、選択中だけに太い ring がある
-//   ④ 予約の印はタリー / 琥珀 / destructive ではない（色は信号のみ）
-//   ⑤ 未予約の skip は通常の高さなら「スキップ中」、5 分（10px）なら
+//   ③ 未予約の skip は通常の高さなら「スキップ中」、5 分（10px）なら
 //      高さいっぱいの状態マーカーになり、文字がセルから切れない
+//   ④ 予約済み（未選択）と選択中（未予約）は別の形。予約済みだけに見える
+//      「予約」があり、選択中だけに太い ring がある
+//   ⑤ 予約の印はタリー / 琥珀 / destructive ではない（色は信号のみ）
 //
 // 別ファイルにしたのは、design.mjs が既にグリッドの現在時刻線・容量帯を持ち、
 // 他 PR がそこを編集している可能性があるため（reserve-visibility.mjs と同じ理由）。
@@ -329,11 +329,14 @@ if (!shortLabel && !shortBar) {
 // --- ③ 未予約 skip 意図の表示 ------------------------------------------------
 log('\n=== ③ 未予約 skip 意図のセル表示 ===')
 const skipBadge = skippedCell.getByTestId('program-grid-cell-skip-intent-badge')
-const skipBadgeBox = await skipBadge.boundingBox()
+const skipBadgeCount = await skipBadge.count()
+const skipBadgeVisible = skipBadgeCount === 1 && (await skipBadge.isVisible())
+const skipBadgeBox = skipBadgeCount === 1 ? await skipBadge.boundingBox() : null
 const skippedCellBox = await skippedCell.boundingBox()
 log(`  通常セルの「スキップ中」: ${skipBadgeBox ? `${skipBadgeBox.width}x${skipBadgeBox.height}px` : '見つからない'}`)
 if (
-  !(await skipBadge.isVisible()) ||
+  skipBadgeCount !== 1 ||
+  !skipBadgeVisible ||
   !skipBadgeBox ||
   !skippedCellBox ||
   skipBadgeBox.width < 16 ||
@@ -347,20 +350,23 @@ if ((await skippedCell.getAttribute('data-skip-intent')) !== 'true') {
 
 const shortSkipBadge = shortSkippedCell.getByTestId('program-grid-cell-skip-intent-badge')
 const shortSkipMarker = shortSkippedCell.getByTestId('program-grid-cell-skip-intent-marker')
+const shortSkipBadgeCount = await shortSkipBadge.count()
+const shortSkipMarkerCount = await shortSkipMarker.count()
 const shortSkipCellBox = await shortSkippedCell.boundingBox()
-const shortSkipMarkerBox = await shortSkipMarker.boundingBox()
+const shortSkipMarkerBox = shortSkipMarkerCount === 1 ? await shortSkipMarker.boundingBox() : null
 log(`  5 分セルの状態マーカー: ${shortSkipMarkerBox ? `${shortSkipMarkerBox.width}x${shortSkipMarkerBox.height}px` : '見つからない'}`)
 if (
   !shortSkipCellBox ||
   shortSkipCellBox.height < 8 ||
   shortSkipCellBox.height > 14 ||
+  shortSkipMarkerCount !== 1 ||
   !shortSkipMarkerBox ||
   shortSkipMarkerBox.height < shortSkipCellBox.height * 0.8 ||
   shortSkipMarkerBox.x + shortSkipMarkerBox.width < shortSkipCellBox.x + shortSkipCellBox.width - 4
 ) {
   ng.push('③ 5 分の未予約 skip セルに切れない状態マーカーが無い')
 }
-if ((await shortSkipBadge.count()) !== 0) {
+if (shortSkipBadgeCount !== 0) {
   ng.push('③ 5 分の未予約 skip セルに切れる文字バッジを描いている')
 }
 
