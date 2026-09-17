@@ -67,14 +67,15 @@ export type IngestDisplay =
  * 出さないケース:
  *
  * - `ingest` が無い（API が古い）。**推測で埋めない**
- * - `status = 'recording'`: 取り込みがまだ始まっていないのは正常であって
- *   「待っている」ことを知らせる情報ではない。録画中の全行に「取り込み待ち」が
- *   並ぶのは、何も言っていないのと同じ
  * - `committed` かつ原本がある（`sizeBytes` あり）: 正常な完了形なので黙る
  * - `unknown`: 取り込みが始まった観測が無い。mirakc record が観測されていないか、
- *   record が `finished` でない（録画中・`failed`・`canceled` ---
- *   **この録画に ingest ジョブは投入されない**）。前者は言えることが無く、後者は
- *   「取り込み待ち」と言うと来ない未来を断定することになるので、どちらも黙る
+ *   `failed` / `canceled` の record（この録画に ingest ジョブは投入されない）。
+ *   前者は言えることが無く、後者は「取り込み待ち」と言うと来ない未来を断定する
+ *   ことになるので、どちらも黙る
+ *
+ * `recording` 中は watcher が ingest を投入し、`transferring` の進捗を表示する。
+ * これは以前の「録画中は表示しない」という前提と異なる。
+ *
  *
  * `originalDeleted`（`committed` かつ `sizeBytes` 無し）だけは `status` に
  * 関わらず返す --- これが **「まだ取り込めていない」と「取り込んだ後に消した」を
@@ -91,7 +92,6 @@ export function ingestDisplay(recording: Recording, nowMs: number): IngestDispla
   if (ingest.state === 'committed') {
     return recording.sizeBytes === undefined ? { kind: 'originalDeleted' } : undefined
   }
-  if (recording.status === 'recording') return undefined
 
   if (ingest.state === 'transferring') {
     const writtenBytes = ingest.writtenBytes ?? 0
@@ -132,7 +132,7 @@ export function ingestDisplay(recording: Recording, nowMs: number): IngestDispla
  *   record_sweep（5 分周期）が再投入するのを待っている状態。分オーダーでしか
  *   動かないものを 5 秒で叩き続ける理由が無い。**再開すれば `observedAt` が
  *   新しくなり、この関数は自動的に真に戻る**（自己回復する）
- * - `status = 'recording'`: 録画中に取り込みの数字は動かない
+ * - `status = 'recording'`: 録画中も ingest が追従し、数字が動く
  *
  * いずれも `lib/events.ts` の 60 秒 invalidate（`operationalRefreshIntervalMs`）
  * が拾うので、放置ではなく「周期を落とす」だけになる。

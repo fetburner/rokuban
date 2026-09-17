@@ -249,7 +249,7 @@ const (
     ) AS has_original_asset,
     -- has_ingestable_record の述語は **watcher が ingest ジョブを投入する条件と
     -- 同じもの**を見る（internal/watcher/watcher.go の
-    -- record.Recording.Status == "finished"）。record_sync.status は mirakc の
+    -- record.Recording.Status == "recording" または "finished"）。record_sync.status は mirakc の
     -- recordingStatus そのまま（CHECK 無し。docs/schema/record-sync.md）。
     --
     -- **status で絞らずに行の存在だけを見てはならない。** record_sync 行は
@@ -259,7 +259,7 @@ const (
     -- （= UI が来ない未来を断定する。issue #211 と同じ形の誤り）。
     EXISTS (
         SELECT 1 FROM record_sync rs
-        WHERE rs.recording_id = r.id AND rs.status = 'finished'
+        WHERE rs.recording_id = r.id AND rs.status IN ('recording', 'finished')
     ) AS has_ingestable_record,
     ip.written_bytes  AS ingest_written_bytes,
     ip.expected_bytes AS ingest_expected_bytes,

@@ -73,10 +73,10 @@ type recordingListFields struct {
 	// mirakc record の観測がこの録画に紐付いているか。原本も進捗も無いときに
 	// 「取り込み待ち」と「そもそも取り込みが来ない」を分ける。
 	//
-	// 単なる record_sync 行の存在ではなく `status = 'finished'` で絞る
-	// （recordings_query.go の SQL コメント参照）。watcher が ingest を投入する
-	// 条件と同じものを見ていないと、failed / canceled の録画が永久に pending を
-	// 名乗る。
+	// 単なる record_sync 行の存在ではなく `status IN ('recording', 'finished')`
+	// で絞る（recordings_query.go の SQL コメント参照）。watcher が ingest を
+	// 投入する条件と同じものを見ていないと、failed / canceled の録画が永久に
+	// pending を名乗る。
 	HasIngestableRecord bool
 	// IngestWrittenBytes / IngestExpectedBytes / IngestObservedAt は
 	// recording_ingest_progress の 1 行（無ければすべて nil）。
@@ -118,10 +118,12 @@ func utcTimePtr(t *time.Time) *time.Time {
 //     名乗らないようにするため（真実は media_assets 側。不変条件 5）。
 //  2. 進捗行があれば transferring。バイト数と観測時刻を添える。
 //  3. **ingest ジョブが来るはずの** record 観測だけがあれば pending
-//     （取り込み待ち / 再試行待ち）。
+//     （取り込み待ち / 再試行待ち）。録画中も watcher が ingest を投入するので
+//     recording の観測もここに入る。進捗行がまだ無い録画開始直後の数秒は
+//     pending になる。
 //  4. どれでもなければ unknown --- 取り込みが始まった観測が無い。record 自体が
-//     観測されていないか、mirakc の record が finished でない（録画中・失敗・
-//     中止。この録画に ingest ジョブは投入されない）。
+//     観測されていないか、mirakc の record が failed / canceled（この録画に
+//     ingest ジョブは投入されない）。
 //
 // **pending は「これから来る」の断定なので、来る根拠が無いものを入れない。**
 // record_sync 行の存在だけを根拠にすると、failed / canceled の録画（ingest が

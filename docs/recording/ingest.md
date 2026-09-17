@@ -2,18 +2,34 @@
 
 ## 5. ingest パイプライン
 
-録画完了後、mirakc のエッジから Rokuban のアーカイブストレージへ録画データを取り込む一連の処理。
+mirakc のエッジから Rokuban のアーカイブストレージへ録画データを取り込む一連の処理。**録画開始と同時に始まり、録画に追従する。**
 
 ### 5.1 転送方式: API pull 固定
 
 `records/{id}/stream` による HTTP pull を全構成で統一する。「monolith モードなら mirakc の basedir を直接読めるのでは」を検討し、**HTTP loopback 経由を維持**と結論した:
 
-- **ディスク I/O は直読みでも減らない**。basedir（リングバッファ）→ メディアストレージのコピー自体は必要で、節約できるのは loopback TCP のオーバーヘッドだけ。1 日数本・数十 GB では無視できる
+- **ディスク I/O は直読みでも減らない**。basedir（リングバッファ）→ メディアストレージのコピー自体は必要で、節約できるのは loopback TCP のオーバーヘッドだけ。1 日数本・数十 GB では無視できる。追従では各ポーリングが返すのが直前の間隔ぶんの伸び（放送レートで数 MB）なので、その読み出しはページキャッシュに乗っており実ディスク読みはほぼ生じない
 - **コピー自体が耐障害設計**。録画はシステム内で唯一のリアルタイム・リトライ不能な操作である。そのためローカルディスクへ録画 → 完了後にリトライ可能な転送、という分離は崩さない（mirakc に最終保存先へ直接書かせる案は、録画中の NAS/FUSE ストールが放送の欠損に直結するため不採用）。ドロップスキャンも転送パスがあるからタダで載る
 - **コードパスが 1 本**。HTTP pull は monolith / 分散 / ハイブリッドの全構成で動く唯一の方法
 - **所有権が明確**。basedir は mirakc の所有物で、Rokuban は API 越しの客に徹する
 
-「同居時の basedir 直読み」は loopback が実測でボトルネックになった時の最適化オプション（YAGNI）。契約は **mirakc とは常に API、自身のストレージとは常にファイルシステム**の 2 面で固定（[storage.md](../storage.md) 参照）。
+**録画中も Range ポーリングで追従する。** `records/{id}/stream` の非 Range GET は、録画中の record に対して mirakc が `tail -f` 相当で追従配信する。だがこれは常に先頭からで、切断後に途中オフセットから戻る手段が mirakc 側に無い。使うと「初回は追従・再開は Range」の 2 経路になり、追い付いた後に追従へ戻れない。
+
+`Range: bytes=N-` を**初回（N=0）から常に送る**ことで経路が 1 本に閉じ、応答は常に「リクエスト時点のサイズまでの差分」になる。これは mirakc の配信実装（子プロセスか `tokio::fs` か、無入力タイムアウトの定数）に依存せず、HTTP の契約だけに閉じる。
+
+**追い付いたかどうかは Range の応答では分からない。** 差分を読み切った時点は「その時点のサイズまで読んだ」に過ぎない。したがって `GET /recording/records/{id}` の `recording.status` を真実として読む（不変条件 5）。
+
+`recording` なら待って再度 Range、`finished` を観測してから最後の差分を drain して commit する。`canceled` / `failed` でもストリームは正常終了と同じ形で終わるので、終了の理由は必ず record の状態で読む。
+
+**追い付いたときの応答は 416 か 206 の 0 バイトのどちらでも来る。** 録画中は `ContentRange::without_size` が first/last を検査しないので 206 になる。完了後は `with_size` が弾いて 416 になる。呼び側はどちらも「追い付いた」と扱い、接続失敗のリトライには数えない。
+
+`204` は content file がまだ 0 バイトの状態で、録画開始直後の 1〜2 秒に必ず出る。これも同じく待つ。
+
+**Range を無視した `200` は offset 0 だけ受理する。** RFC 9110 はサーバが Range を無視して完全な表現を返すことを許す。offset 0 では本文が求めた差分と同一なので、そのまま受理してよい。
+
+offset > 0 では本文が先頭から始まる。そのまま追記すると先頭から offset ぶんが二重になり、先頭を捨てて読むとポーリングごとに offset バイトを再転送する黙った O(n^2) になる。どちらも取らず、原因がログに残る形で失敗させる。フィルタを併用すると mirakc は Range を黙って無視するので、この分岐はその構成でだけ到達しうる（ingest はフィルタなしで pull する）。
+
+**「同居時の basedir 直読み」は loopback が実測でボトルネックになった時の最適化オプション（YAGNI）。**契約は **mirakc とは常に API、自身のストレージとは常にファイルシステム**の 2 面で固定（[storage.md](../storage.md) 参照）。
 
 ### 5.2 インライン TS ドロップスキャン
 
@@ -82,12 +98,19 @@ clean なファイルでは「誤検知がないこと」しか確かめられ�
 ### 5.3 リトライ設計（3 層）
 
 - `GET /records/{id}/stream` は **Range ヘッダー対応** → `Range: bytes=N-` で途中再開可能。`internal/mirakc/conformance` が mirakc 4.0.0-dev.0 相当に対して判定している。対象は `TestConformance/CompletedRecordStreamAndDelete`（完了後）と `TestConformance/RecordingInProgress`（録画中）である。録画中の Range 応答は `Content-Range: bytes N-M/*` のように総サイズが `*`（不明）になる（実測。Content-Length 自体は具体値を返す）
-- **フィルタ併用時は Range が 400**。ingest は素の TS が欲しいのでフィルタなしで pull する。したがって常に Range 可である（ソース確認。`mirakc-core/src/web/api/recording/records/stream.rs`。conformance テストはフィルタを併用しないので未判定）
+- **フィルタ併用時は Range を黙って無視して 200 になる**。ingest は素の TS が欲しいのでフィルタなしで pull する。
+- Range を無視した 200 は offset 0 だけ受理する。途中再開の offset > 0 では拒否する（ソース確認。`mirakc-core/src/web/api/recording/records/stream.rs`。conformance テストはフィルタを併用しないので未判定）
 - **HEAD エンドポイントあり** → 転送せず正確な Content-Length を取得できる。ただし録画中は Content-Length を返さない（`HeadRecordStream` は `-1`。黙って `-1` を長さとして使うと ingest がゼロ長ファイルを正しいものとして扱いかねない）。そのため HEAD を打つのは下記「層 3」のとおり録画完了後に限る。これらは mirakc 4.0.0-dev.0 相当に対して判定されている。`TestConformance/RecordingInProgress` は録画中に `-1` を返すことを判定している。`TestConformance/CompletedRecordStreamAndDelete` は完了後の Content-Length 一致を判定している
 
 #### 層 1: 接続断の再開（ジョブ内リトライループ）
 
 切断時は書き込み済みオフセットから `Range: bytes=N-` で再接続して追記。ドロップスキャンのカウンタはメモリ上に生きているので継続できる。タイムアウトは総時間ではなく**ストール検知**（`ingest.stall_timeout`、既定 30 秒間無進捗で切断扱い）--- 総時間タイムアウトは遅い回線の正常な転送を殺す。
+
+**この層は追従の通常経路でもある。** 録画中はループが `Range → status → 待つ` を回し続けるので、層 1 の再開は切断時だけでなく毎ポーリングで使われる。待ちはジョブ内（River にジョブを戻さない）ので、temp file・offset・スキャナ状態が同じ Work の中で生き続ける。`Work` を終わらせて別のジョブに続きを書かせるには、temp パス・offset・PID ごとのスキャナ状態を永続化する必要があり、それは「チャンクごとに進捗をコミットして続きを追記する」案そのもの（層 2 の却下理由を参照）。
+
+**層 1 のリトライ上限は「連続した一時障害」の数である。** 累積にすると、数時間の録画中に散散した偶発的な失敗が上限に達して正常な録画を失敗させる。`204` / `416` / `206` の 0 バイト / status の取得成功はいずれも連続カウンタをリセットし、mirakc が落ち続けたときだけジョブを River へ戻す。
+
+**録画中の worker 再起動は番組頭からの全速再 pull を生む。** 追従では録画中は常に ingest ジョブが走っているので、`SoftStopTimeout` を超える SIGTERM は必ず層 2 のゼロからの再開になる。作り直しの単位は「番組頭から現在まで」で、再開可能 ingest（チャンクごとに進捗をコミットして続きを追記）は契約 §3 ルール 1 が塞いでいる。
 
 #### 層 2: ジョブ再試行（プロセス死）
 
@@ -169,7 +192,13 @@ canonical path へ転送中のバイトが存在しないため、同じ `rel_pa
 - ハイブリッド構成では自宅アップリンク帯域が律速。worker を増やしても速くならない
 - エッジでは録画中の書き込みと pull の読み出しが同じディスクで競合する。pull がディスクを飽和させて録画をドロップさせるのは本末転倒
 
-→ **ingest の同時実行数は mirakc サイト単位で少数（1〜2）にキャップ**する（サイト別キュー or River の同時実行数設定）。worker の水平スケールが効くのは encode（CPU バウンド、入力はクラウド側ストレージ）の方。
+→ **ingest の同時実行数は mirakc サイト単位で `チューナー数 + 全速 pull の許容本数（1〜2）`** にする（`ingest.concurrency`。サイト別キュー or River の同時実行数設定）。worker の水平スケールが効くのは encode（CPU バウンド、入力はクラウド側ストレージ）の方。
+
+**追従は番組長のあいだ worker 枠を占有するが、占有そのものは無害である。** 枠は River のカウンタであって物理資源ではなく、追従が持つ枠は放送レートでしか動かない。問題は枠が足りないことの側で、N 本の同時録画には N 個の追従枠が要る。
+
+**この余り枠は 2 つの仕事を兼ねる。** 追従後も全速 pull は残る（障害復旧後のバックログ・`record_sweep` の再投入・遅れて枠を得た追従の追い付き）。枠を録画数ちょうどにすると全速 pull が枠待ちで詰まり、逆に録画数に合わせて広げると復旧中の全速 pull が並列に走ってエッジの録画書き込みと競合する。N 本録画中は N 枠を追従が持ち、残りだけが全速 pull に回る。録画が無いときは全枠が全速 pull に回るが、そのときは邪魔する録画書き込みも無い。
+
+**追従は追い付きより優先する。** watcher は投入時にどちらかを知っているので、River の `Priority` で追従を 1、finished 後の追い付きを 2 にする。バックログ消化中に始まった生録画の追従が、枠待ちで後ろに回らないようにするためである。
 
 ### 5.5 ingest 完了後のフロー
 
@@ -232,6 +261,10 @@ NULL とは違う。非 null な `*int64(0)` として `watcher.go` の `content
 （`ingest.stall_timeout` = 30 秒）で正常に再接続している往復を「停滞」と呼ばないためである
 （`web/src/lib/ingest.ts` の `ingestStaleAfterMs`）。
 
+**追従の待ちを「停滞」と呼ばない。** `stall_timeout` は 1 回の Range 応答の本文が止まったときにだけ効く。追従の差分は数 MB なので通常は発火しない。信号断で録画ファイルが伸びない間は「追い付いた → 待つ → 状態確認」のポーリングが回るだけで、切断もリトライ消費も起きない。`observed_at` は差分が来るたびに進むので、UI の停滞判定はこの待ちを停滞と読まない。
+
+**進捗の分母は録画中には伸び続ける。** `record_sync.content_length` は watcher が観測した時点の値なので、録画中に読むと小さい（最初の観測は 0 でありうる）。UI は分母が 0 なら % を出さずバイト数だけを出す。照合（層 3）には使わない --- 照合は finished 確認後の HEAD だけである。
+
 **API の状態は 4 値で、原本 `media_assets` 行の有無を最優先に導出する**（列に焼いた値では
 ない。`internal/api/recordings.go` の `ingestProgressFromFields`）。`kind='original'` の行が
 `state` を問わず存在すれば `committed` である。`state='deleted'`（取り込んだ後に削除した）でも
@@ -241,7 +274,7 @@ NULL とは違う。非 null な `*int64(0)` として `watcher.go` の `content
 名乗らないのも、この優先順位による（真実は `media_assets` 側。不変条件 5）。
 
 **`pending`（取り込み待ち）の根拠は、watcher が ingest ジョブを投入する条件と同じ述語に
-揃える**（`record_sync.status = 'finished'`）。`record_sync` 行の**存在**を根拠にしては
+揃える**（`record_sync.status` が `recording` または `finished`）。`record_sync` 行の**存在**を根拠にしては
 ならない。行は `failed` / `canceled` の record にも作られ、Rokuban はこの行を消さない
 （本番に `DELETE FROM record_sync` の経路は無い）。そのため ingest ジョブが一度も投入されない
 録画が**永久に「取り込み待ち」を名乗る**。`pending` は「これから来る」の断定なので、

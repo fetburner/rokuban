@@ -43,7 +43,7 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
    に委ねる。mirakc record は削除しない。rename 前の失敗では試行固有 temp だけを
    消す。**この順序を反転させない**: DB commit 後に rename すると、行が指す実体の
    欠落を作る。
-   **ingest のコピー完了には fsync と Close のエラー確認まで含める**。Linux では
+   **ingest のコピー完了には fsync と Close のエラー確認まで含める**。転送途中に fsync して進捗を確定してはならない。追従 ingest は番組長のあいだ fd を開くが、途中 fsync は部分オブジェクトの実体化やサイズ比例の再コピーを起こし、S3 系 FUSE では以後その fd に書けない実装もある。fsync はストリームコピー完了後の 1 回だけにする。Linux では
    遅延した書き込みエラー（ENOSPC / I/O エラー）が `Close` では報告されず `fsync`
    でしか上がらない。rename 後の親ディレクトリ `fsync` は新しい directory entry
    の永続化を確定する。いずれかが失敗したら DB 登録と record 削除をせず再試行する。

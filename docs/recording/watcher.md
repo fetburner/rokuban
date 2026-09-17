@@ -2,7 +2,7 @@
 
 ### 3.3 watcher（SSE 購読・状態反映）
 
-`/events` SSE を購読し、`recording.record-saved` で `recordingStatus: finished` になったら ingest ジョブを投入する。
+`/events` SSE を購読し、`recording.record-saved` で `recordingStatus: recording` または `finished` を観測したら ingest ジョブを投入する。録画中の追従は River priority 1、finished 後の追い付きは priority 2 とし、生録画がバックログに埋もれないようにする。
 
 #### 3 段構えの信頼性設計
 

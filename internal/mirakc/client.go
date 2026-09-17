@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,6 +13,19 @@ import (
 	"strconv"
 	"time"
 )
+
+// ErrRecordNotReady は mirakc が records/{id}/stream に 204 No Content を返した
+// ことを表す。録画が始まった直後は content file がまだ 0 バイト（または未作成）
+// で、mirakc は理由を本文に書かずに 204 を返す。**これは正常な状態であって
+// 接続失敗ではない**ので、ingest は接続リトライの予算を消費せずに待つ。
+var ErrRecordNotReady = errors.New("mirakc: record content is not ready")
+
+// ErrRangeNotSatisfiable は mirakc が records/{id}/stream に 416 を返したこと
+// を表す。`Range: bytes=N-` の N が現在のサイズ以上、つまり**読むものが無い
+// （追い付いた）**という意味である。録画中の record では `ContentRange::
+// without_size` が first/last を検査しないため同じ状態が 206 + 0 バイトでも
+// 現れる（どちらも呼び側は「追い付いた」として扱う）。
+var ErrRangeNotSatisfiable = errors.New("mirakc: range not satisfiable")
 
 // Client は mirakc の Web API クライアント。
 // M1-1 のスコープ: schedules CRUD / records list・get・delete / records stream (Range, HEAD) / version。
@@ -155,35 +169,68 @@ func (c *Client) DeleteRecord(ctx context.Context, id string, purge bool) (*Reco
 	return &result, nil
 }
 
-// StreamRecord は GET /api/recording/records/{id}/stream を呼ぶ。
-// offset > 0 の場合、Range: bytes=offset- ヘッダーを付与する。
-// 呼び出し側が body を Close する責任を持つ。
+// StreamRecord は GET /api/recording/records/{id}/stream を呼び、offset 以降の
+// 差分を返す。呼び出し側が body を Close する責任を持つ。
+//
+// **offset 0 でも必ず `Range: bytes=N-` を送り、206 を期待する。**
+// mirakc の `ContentSource::new` は `(None, RecordingStatus::Recording)` のとき
+// だけ `tail -f -c +0` を選ぶ。これは常に先頭から配る追従配信で、切断後に
+// 途中オフセットから戻る手段が mirakc 側に無い。Range を送れば
+// `(Some(range), _)` の 1 分岐に閉じ、応答は常に「リクエスト時点のサイズまでの
+// 差分」になる（`last` はリクエスト時に確定し、以後の追記を追わない）。
+// 経路が 2 本にならないことが、録画中の追従と切断後の再開を同じ契約で
+// 扱える根拠である（docs/recording/ingest.md §5.1）。
+//
+// 戻り値の ContentLength は 206 の**本文長**（差分の長さ）であって総サイズでは
+// ない。録画中は `Content-Range` の total が `*` になる。
 func (c *Client) StreamRecord(ctx context.Context, id string, offset int64) (io.ReadCloser, int64, error) {
 	path := fmt.Sprintf("/api/recording/records/%s/stream", id)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
 		return nil, 0, fmt.Errorf("building request: %w", err)
 	}
-
-	if offset > 0 {
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
-	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 
 	resp, err := c.streamClient.Do(req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("sending request: %w", err)
 	}
 
-	if offset > 0 {
-		if err := checkStatus(resp, http.StatusPartialContent); err != nil {
+	// 204 / 416 はどちらも「いま読めるものが無い」の表現で、録画中の正常な
+	// 状態である。接続失敗と同じ扱いにすると、録画開始直後の 204 が続く窓や
+	// 追い付いた後の 416 がリトライ予算を食い潰す。呼び側が区別できるよう
+	// sentinel に落とす。
+	switch resp.StatusCode {
+	case http.StatusNoContent:
+		_ = resp.Body.Close()
+		return nil, 0, ErrRecordNotReady
+	case http.StatusRequestedRangeNotSatisfiable:
+		_ = resp.Body.Close()
+		return nil, 0, ErrRangeNotSatisfiable
+	case http.StatusOK:
+		// RFC 9110 はサーバが Range を無視して 200 で完全な表現を返すことを
+		// 許す。offset 0 ではその本文が求めた差分と同一なので受理する
+		// （Range 非対応のサーバやフィルタ併用時に、完了済み record の
+		// 全量取得が壊れない）。
+		//
+		// **offset > 0 では受理しない。** 本文は先頭から始まるので、そのまま
+		// 追記すると先頭から offset ぶんが二重になり、先頭を捨てて読むと
+		// ポーリングごとに offset バイトを再転送する黙った O(n^2) になる。
+		// どちらも取らないので、原因がログに残る形で失敗させる。
+		if offset > 0 {
 			_ = resp.Body.Close()
-			return nil, 0, err
+			return nil, 0, &APIError{
+				StatusCode: resp.StatusCode,
+				Status:     resp.Status,
+				Body:       "Range was ignored on a resumed request; appending would duplicate the head",
+			}
 		}
-	} else {
-		if err := checkStatus(resp, http.StatusOK); err != nil {
-			_ = resp.Body.Close()
-			return nil, 0, err
-		}
+		return resp.Body, resp.ContentLength, nil
+	}
+
+	if err := checkStatus(resp, http.StatusPartialContent); err != nil {
+		_ = resp.Body.Close()
+		return nil, 0, err
 	}
 
 	return resp.Body, resp.ContentLength, nil

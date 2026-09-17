@@ -150,8 +150,12 @@ func TestListRecordingsIngestState(t *testing.T) {
 }
 
 // TestListRecordingsIngestNoJobComing は、ingest ジョブが投入されない録画
-// （mirakc の record が finished でない = failed / canceled / 録画中）が
-// **「取り込み待ち」を名乗らない**ことを固定する（PR #323 レビュー）。
+// （mirakc の record が failed / canceled）が **「取り込み待ち」を名乗らない**
+// ことを固定する（PR #323 レビュー）。
+//
+// **録画中はこの集合から外れた。** watcher は `recording` を観測した時点で
+// ingest を投入し、worker が追従する。録画中に進捗行がまだ無いのは「これから
+// 来る」が真である期間なので、pending を名乗ってよい。
 //
 // record_sync 行は failed / canceled でも作られ、Rokuban はこの行を消さない
 // （本番に DELETE FROM record_sync の経路は無い）。行の存在だけを pending の
@@ -195,7 +199,7 @@ func TestListRecordingsIngestNoJobComing(t *testing.T) {
 	}{
 		{"failed", failed, "unknown"},
 		{"canceled", canceled, "unknown"},
-		{"録画中", recording, "unknown"},
+		{"録画中（進捗行がまだ無い）", recording, "pending"},
 		{"finished（対照群）", waiting, "pending"},
 	} {
 		rec, ok := byID[tc.id]

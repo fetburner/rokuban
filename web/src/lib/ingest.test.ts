@@ -110,11 +110,28 @@ describe('ingestDisplay', () => {
     expect(ingestDisplay(stale, now)).toMatchObject({ stale: true })
   })
 
-  // サーバーは録画中の録画に state='unknown' を返す（record が finished でない）
-  // が、UI 側でも二重に落とす。万一 pending が来ても「取り込み待ち」とは言わない。
-  it('録画中は取り込みの状態を出さない（まだ始まらないのが正常）', () => {
+  // 録画中も watcher が ingest を投入し、worker が追従する。進捗が来ていれば
+  // 「転送中」を出す（issue #425）。
+  it('録画中でも転送中の進捗を出す', () => {
+    const rec = recording({
+      status: 'recording',
+      ingest: {
+        state: 'transferring',
+        writtenBytes: 250,
+        expectedBytes: 1000,
+        observedAt: new Date(now - 1000).toISOString(),
+      },
+    })
+    expect(ingestDisplay(rec, now)).toMatchObject({
+      kind: 'transferring',
+      writtenBytes: 250,
+      percent: 25,
+    })
+  })
+
+  it('録画中で進捗行がまだ無ければ取り込み待ちとして出す', () => {
     const rec = recording({ status: 'recording', ingest: { state: 'pending' } })
-    expect(ingestDisplay(rec, now)).toBeUndefined()
+    expect(ingestDisplay(rec, now)).toEqual({ kind: 'pending' })
   })
 
   // ingest ジョブが一度も投入されない録画。サーバーが state='unknown' を返す

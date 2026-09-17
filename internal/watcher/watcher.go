@@ -290,8 +290,18 @@ func (w *Watcher) processRecord(ctx context.Context, record mirakc.Record) error
 		return fmt.Errorf("upserting record_sync: %w", err)
 	}
 
-	if record.Recording.Status == "finished" && recordingID != nil {
-		if _, err := w.river.InsertTx(ctx, tx, jobs.IngestJobArgs{Site: w.site, RecordID: record.ID}, nil); err != nil {
+	if recordingID != nil && (record.Recording.Status == db.RecordingStatusRecording || record.Recording.Status == db.RecordingStatusFinished) {
+		var insertOpts *river.InsertOpts
+		if record.Recording.Status == db.RecordingStatusFinished {
+			// 録画中の追従は番組長のあいだ worker 枠を保持する。finished 後に
+			// 初めて投入されるバックログ（または安全網の再投入）より先に
+			// 枠を得る必要があるので、River priority 1 の追従より priority 2
+			// の追い付きへ下げる。recording の nil は IngestJobArgs の既定値
+			// priority 1 と UniqueOpts をそのまま使うために残す。
+			priority := 2
+			insertOpts = &river.InsertOpts{Priority: priority}
+		}
+		if _, err := w.river.InsertTx(ctx, tx, jobs.IngestJobArgs{Site: w.site, RecordID: record.ID}, insertOpts); err != nil {
 			return fmt.Errorf("enqueuing ingest job: %w", err)
 		}
 	}

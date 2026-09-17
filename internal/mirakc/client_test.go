@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -200,28 +201,125 @@ func TestDeleteRecord(t *testing.T) {
 	}
 }
 
-func TestStreamRecord(t *testing.T) {
-	content := strings.Repeat("A", 1000)
+// streamRangeServer は mirakc の records/{id}/stream を Range 前提で模す。
+// status が http.StatusOK なら「Range を無視して全量を 200 で返す」サーバ、
+// 204 / 416 ならその status をそのまま返すサーバになる。status 0 は Range 準拠。
+func streamRangeServer(t *testing.T, content []byte, status int) *httptest.Server {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/recording/records/rec1/stream" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
-		rangeHeader := r.Header.Get("Range")
-		if rangeHeader != "" {
-			w.WriteHeader(http.StatusPartialContent)
-			_, _ = fmt.Fprint(w, content[500:])
-		} else {
-			_, _ = fmt.Fprint(w, content)
+		switch status {
+		case http.StatusOK:
+			// Range を無視して完全な表現を返す（RFC 9110 が許す挙動）。
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(content)
+			return
+		case 0:
+			// Range 準拠。
+		default:
+			w.WriteHeader(status)
+			return
 		}
+		first, ok := parseRangeFirst(r.Header.Get("Range"))
+		if !ok {
+			t.Errorf("Range ヘッダが無い。offset 0 でも Range を送る契約（応答が tail -f 経路に落ちる）")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(content)
+			return
+		}
+		if first >= int64(len(content)) {
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		body := content[first:]
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(body)
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
+	return srv
+}
 
-	c := NewClient(srv.URL, nil)
+// parseRangeFirst は `bytes=N-` の N を返す。
+func parseRangeFirst(h string) (int64, bool) {
+	rest, ok := strings.CutPrefix(h, "bytes=")
+	if !ok {
+		return 0, false
+	}
+	numStr, ok := strings.CutSuffix(rest, "-")
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(numStr, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
 
-	t.Run("full", func(t *testing.T) {
+func TestStreamRecord(t *testing.T) {
+	content := []byte(strings.Repeat("A", 1000))
+
+	t.Run("offset 0 でも Range を送り 206 を受ける", func(t *testing.T) {
+		c := NewClient(streamRangeServer(t, content, 0).URL, nil)
+		body, length, err := c.StreamRecord(context.Background(), "rec1", 0)
+		if err != nil {
+			t.Fatalf("StreamRecord(offset=0): %v", err)
+		}
+		defer func() { _ = body.Close() }()
+		data, _ := io.ReadAll(body)
+		if len(data) != 1000 {
+			t.Errorf("len = %d, want 1000", len(data))
+		}
+		if length != 1000 {
+			t.Errorf("Content-Length = %d, want 1000", length)
+		}
+	})
+
+	t.Run("offset>0 は差分を返す", func(t *testing.T) {
+		c := NewClient(streamRangeServer(t, content, 0).URL, nil)
+		body, _, err := c.StreamRecord(context.Background(), "rec1", 500)
+		if err != nil {
+			t.Fatalf("StreamRecord(offset=500): %v", err)
+		}
+		defer func() { _ = body.Close() }()
+		data, _ := io.ReadAll(body)
+		if len(data) != 500 {
+			t.Errorf("len = %d, want 500", len(data))
+		}
+	})
+
+	// 204 は「content file がまだ 0 バイト」を表す正常な応答である。録画の
+	// 最初の 1〜2 秒は必ずここを通るので、接続失敗として数えてはならない。
+	t.Run("204 は ErrRecordNotReady", func(t *testing.T) {
+		c := NewClient(streamRangeServer(t, content, http.StatusNoContent).URL, nil)
+		_, _, err := c.StreamRecord(context.Background(), "rec1", 0)
+		if !errors.Is(err, ErrRecordNotReady) {
+			t.Fatalf("err = %v, want ErrRecordNotReady", err)
+		}
+	})
+
+	// 416 は追い付いた状態（offset >= 現在サイズ）を表す正常な応答である
+	// --- 録画中は `ContentRange::without_size` が first/last を検査しないため
+	// 206 + 0 バイト、完了後は `with_size` が弾いて 416 になる。
+	t.Run("416 は ErrRangeNotSatisfiable", func(t *testing.T) {
+		c := NewClient(streamRangeServer(t, content, http.StatusRequestedRangeNotSatisfiable).URL, nil)
+		_, _, err := c.StreamRecord(context.Background(), "rec1", 0)
+		if !errors.Is(err, ErrRangeNotSatisfiable) {
+			t.Fatalf("err = %v, want ErrRangeNotSatisfiable", err)
+		}
+	})
+
+	// RFC 9110 はサーバが Range を無視して 200 で完全な表現を返すことを許す。
+	// offset 0 ではその本文が求めた差分と同一なので受理する。
+	t.Run("offset 0 の 200 は受理する（Range 無視）", func(t *testing.T) {
+		c := NewClient(streamRangeServer(t, content, http.StatusOK).URL, nil)
 		body, _, err := c.StreamRecord(context.Background(), "rec1", 0)
 		if err != nil {
-			t.Fatalf("StreamRecord: %v", err)
+			t.Fatalf("StreamRecord(offset=0) の 200: %v", err)
 		}
 		defer func() { _ = body.Close() }()
 		data, _ := io.ReadAll(body)
@@ -230,15 +328,22 @@ func TestStreamRecord(t *testing.T) {
 		}
 	})
 
-	t.Run("range", func(t *testing.T) {
-		body, _, err := c.StreamRecord(context.Background(), "rec1", 500)
-		if err != nil {
-			t.Fatalf("StreamRecord with offset: %v", err)
+	// offset > 0 の 200 は本文が先頭から始まる。そのまま追記すると先頭から
+	// offset ぶんが二重になり、先頭を捨てて読むとリクエストごとに offset バイトを
+	// 再転送する黙った O(n^2) になる。どちらも取らないので失敗させる。
+	//
+	// フィルタを併用すると mirakc は Range を黙って無視する（doc にある 400 は
+	// 複数 Range のときだけ）。ingest はフィルタなしで pull するので通常は
+	// 到達しないが、到達したときに黙って壊れないようここで止める。
+	t.Run("offset>0 の 200 は拒否する", func(t *testing.T) {
+		c := NewClient(streamRangeServer(t, content, http.StatusOK).URL, nil)
+		_, _, err := c.StreamRecord(context.Background(), "rec1", 500)
+		if err == nil {
+			t.Fatal("offset>0 で Range を無視した 200 を成功として扱った（先頭から二重に書く）")
 		}
-		defer func() { _ = body.Close() }()
-		data, _ := io.ReadAll(body)
-		if len(data) != 500 {
-			t.Errorf("len = %d, want 500", len(data))
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusOK {
+			t.Fatalf("err = %v, want *APIError(200)", err)
 		}
 	})
 }

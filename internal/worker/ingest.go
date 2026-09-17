@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -38,6 +39,17 @@ const (
 	connectRetryBaseDelay = 200 * time.Millisecond
 	connectRetryMaxDelay  = 5 * time.Second
 )
+
+// followPollInterval は録画中の Range ポーリング間隔。
+//
+// recording のあいだは差分の有無に関わらず必ず待つ。待たないと ingest が
+// 放送より速いとき 1 秒に数十〜百リクエストを mirakc に送り、DoS になる。
+// 待ちはジョブ内（River には出さない）—— Work を終わらせると temp / offset /
+// tsstat が消え、再開可能 ingest が要る。
+//
+// 1 秒は commit 遅延の下限（平均 0.5s）を小さく取る側。設定キーにはしない。
+// # ponytail: 固定 1s。実機の追い付き遅れがこれを否定したら ingest.follow_poll_interval にする。
+var followPollInterval = time.Second
 
 // ingestFile は ingest の出力ファイルを抽象化する。os.File の全 API は
 // 必要ない。テストでは Sync / Close の失敗を注入して、失敗時に DB 登録と
@@ -347,27 +359,51 @@ func (w *IngestWorker) handleAlreadyCommittedIngest(ctx context.Context, client 
 	}
 }
 
-// transferIngestRecord は mirakc のストリームを Range 再開しながら試行固有の
-// 一時ファイルへ転送する。
+// transferIngestRecord は mirakc のストリームを Range ポーリングしながら
+// 試行固有の一時ファイルへ転送する。
+//
+// Range の本文はリクエスト時点で有限なので、本文を読み切っただけでは record の
+// 終了を意味しない。GetRecord の recording.status を真実として読む。recording 中
+// は差分の有無に関わらず followPollInterval 待って次を取り、finished を観測して
+// から最後の差分を drain して戻る。
 func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.Client, recordID string, dst io.Writer, progress *ingestProgressReporter, log *slog.Logger) (int64, error) {
 	var offset int64
-	for attempt := 0; ; attempt++ {
+	var consecutiveFailures int
+	finishedObserved := false
+
+	for {
 		stallCtx, stallCancel := context.WithCancel(ctx)
-		body, _, err := client.StreamRecord(stallCtx, recordID, offset)
-		if err != nil {
+		body, _, streamErr := client.StreamRecord(stallCtx, recordID, offset)
+		if streamErr != nil {
 			stallCancel()
-			if ctx.Err() != nil {
-				return 0, ctx.Err()
+			if errors.Is(streamErr, mirakc.ErrRecordNotReady) || errors.Is(streamErr, mirakc.ErrRangeNotSatisfiable) {
+				// 204 は content file がまだ空、416 は現在のサイズに追い付いた状態。
+				// どちらも録画中の正常な応答で、接続失敗の予算を消費しない。
+				if finishedObserved {
+					return offset, nil
+				}
+				status, err := w.pollRecordStatus(ctx, client, recordID)
+				if err != nil {
+					if retryErr := retryPoll(ctx, &consecutiveFailures, err, log, "record status"); retryErr != nil {
+						return 0, retryErr
+					}
+					continue
+				}
+				consecutiveFailures = 0
+				if err := w.afterPollStatus(status, &finishedObserved); err != nil {
+					return 0, err
+				}
+				if finishedObserved {
+					continue
+				}
+				if err := waitForFollowPoll(ctx); err != nil {
+					return 0, err
+				}
+				continue
 			}
-			if attempt >= maxInJobRetries {
-				return 0, fmt.Errorf("streaming record (attempt %d): %w", attempt, err)
-			}
-			delay := connectRetryDelay(attempt)
-			log.Warn("ingest: stream connect failed, retrying", "attempt", attempt, "err", err, "delay", delay)
-			select {
-			case <-time.After(delay):
-			case <-ctx.Done():
-				return 0, ctx.Err()
+
+			if retryErr := retryPoll(ctx, &consecutiveFailures, streamErr, log, "stream connect"); retryErr != nil {
+				return 0, retryErr
 			}
 			continue
 		}
@@ -380,23 +416,116 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 		offset += n
 
 		// バイトを書けた転送試行が終わるたび、最後の値を間引き無しで焼く。
-		// interval 内の burst 後に接続が切れ、その後の再開も全て失敗すると、
-		// ここで書かなければ最後の間引き前の値のままジョブが終わる。0 バイトの
-		// 試行は進捗ではないので observed_at を新しくしない。
 		if n > 0 {
 			progress.flush(ctx, offset)
 		}
-		if copyErr == nil {
-			return offset, nil
+		if copyErr != nil {
+			if ctx.Err() != nil {
+				return 0, ctx.Err()
+			}
+			if retryErr := retryPoll(ctx, &consecutiveFailures, copyErr, log, "transfer"); retryErr != nil {
+				return 0, fmt.Errorf("transfer failed after %d consecutive retries at offset %d: %w", maxInJobRetries, offset, retryErr)
+			}
+			continue
 		}
-		if ctx.Err() != nil {
-			return 0, ctx.Err()
+
+		if finishedObserved {
+			// finished を観測した後も、最後の Range 応答に含まれなかった追記が
+			// あればもう一度 drain する。空で戻ったときだけ完全に追い付いた。
+			if n == 0 {
+				return offset, nil
+			}
+			consecutiveFailures = 0
+			continue
 		}
-		if attempt >= maxInJobRetries {
-			return 0, fmt.Errorf("transfer failed after %d retries at offset %d: %w", attempt, offset, copyErr)
+
+		status, err := w.pollRecordStatus(ctx, client, recordID)
+		if err != nil {
+			if retryErr := retryPoll(ctx, &consecutiveFailures, err, log, "record status"); retryErr != nil {
+				return 0, retryErr
+			}
+			continue
 		}
-		log.Warn("ingest: transfer interrupted, retrying with Range", "offset", offset, "attempt", attempt, "err", copyErr)
+		consecutiveFailures = 0
+		if err := w.afterPollStatus(status, &finishedObserved); err != nil {
+			return 0, err
+		}
+		if finishedObserved {
+			continue
+		}
+		if err := waitForFollowPoll(ctx); err != nil {
+			return 0, err
+		}
 	}
+}
+
+// pollRecordStatus は録画中の Range 応答後に record の状態を再取得する。
+func (w *IngestWorker) pollRecordStatus(ctx context.Context, client *mirakc.Client, recordID string) (string, error) {
+	record, err := client.GetRecord(ctx, recordID)
+	if err != nil {
+		return "", err
+	}
+	return record.Recording.Status, nil
+}
+
+// afterPollStatus は status の観測を転送ループの状態へ適用する。
+func (w *IngestWorker) afterPollStatus(status string, finished *bool) error {
+	switch status {
+	case db.RecordingStatusRecording:
+		return nil
+	case db.RecordingStatusFinished:
+		*finished = true
+		return nil
+	case db.RecordingStatusCanceled, db.RecordingStatusFailed:
+		return fmt.Errorf("mirakc record ended with status %q", status)
+	default:
+		return fmt.Errorf("mirakc record has unknown status %q", status)
+	}
+}
+
+// waitForFollowPoll は recording 中の次の Range まで待つ。River にジョブを
+// 戻さないので temp file・offset・tsstat の状態を同じ Work の中で保持できる。
+func waitForFollowPoll(ctx context.Context) error {
+	timer := time.NewTimer(followPollInterval)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// retryPoll は一時障害の連続回数だけを数える。録画が数時間続く間に偶発的な
+// 失敗が散発しても River の attempt を消費しない一方、mirakc が落ち続ける
+// とジョブを River の再試行へ戻す。
+func retryPoll(ctx context.Context, consecutiveFailures *int, err error, log *slog.Logger, phase string) error {
+	if !isRetryablePollError(err) {
+		return fmt.Errorf("%s: %w", phase, err)
+	}
+	*consecutiveFailures++
+	attempt := *consecutiveFailures - 1
+	if *consecutiveFailures > maxInJobRetries {
+		return fmt.Errorf("%s failed %d consecutive times: %w", phase, *consecutiveFailures, err)
+	}
+	delay := connectRetryDelay(attempt)
+	log.Warn("ingest: transient poll failure, retrying", "phase", phase, "consecutive_failures", *consecutiveFailures, "err", err, "delay", delay)
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func isRetryablePollError(err error) bool {
+	var apiErr *mirakc.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode >= http.StatusInternalServerError
+	}
+	return true
 }
 
 // recordIngestMetrics は転送結果のバイト数・TS 統計をメトリクスへ記録する。
