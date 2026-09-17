@@ -1012,15 +1012,18 @@ type IngestProgress struct {
 	//   消した」を混同しないため。issue #211）
 	// - `transferring`: 原本行が無く、転送の進捗行がある。`writtenBytes` /
 	//   `observedAt` が付く。`observedAt` が古いまま止まっていれば停滞して
-	//   いる（River のバックオフ待ち・ストール）
+	//   いる（River のバックオフ待ち・ストール）。**録画中の追従で
+	//   追い付いている状態は停滞ではない** --- worker は健全に 1 周した
+	//   ポーリングで `observedAt` を進めるので、追い付いたままでも
+	//   `observedAt` は新しくなる
 	// - `pending`: 原本行も進捗行も無く、**ingest ジョブが投入される
-	//   はずの** mirakc record の観測（`record_sync.status = 'finished'`。
-	//   watcher が ingest を投入する条件と同じ述語）がある。取り込み待ち、
-	//   または失敗して再試行待ち
+	//   はずの** mirakc record の観測（`record_sync.status` が `recording`
+	//   または `finished`。watcher が ingest を投入する条件と同じ述語）が
+	//   ある。取り込み待ち、または失敗して再試行待ち。録画開始直後で進捗行が
+	//   まだ無い数秒もここに入る
 	// - `unknown`: 上のどれでもない。取り込みが始まった観測が無い ---
-	//   mirakc record が観測されていないか、record が `finished` でない
-	//   （録画中・`failed`・`canceled`。**この録画に ingest ジョブは
-	//   投入されない**）
+	//   mirakc record が観測されていないか、record が `failed` / `canceled`
+	//   （**この録画に ingest ジョブは投入されない**）
 	//
 	// **`pending` は「これから来る」の断定なので、来る根拠が無いものは
 	// 入れない。** `record_sync` 行の存在だけを根拠にすると、`failed` /
@@ -1057,15 +1060,18 @@ type IngestProgress struct {
 //     消した」を混同しないため。issue #211）
 //   - `transferring`: 原本行が無く、転送の進捗行がある。`writtenBytes` /
 //     `observedAt` が付く。`observedAt` が古いまま止まっていれば停滞して
-//     いる（River のバックオフ待ち・ストール）
+//     いる（River のバックオフ待ち・ストール）。**録画中の追従で
+//     追い付いている状態は停滞ではない** --- worker は健全に 1 周した
+//     ポーリングで `observedAt` を進めるので、追い付いたままでも
+//     `observedAt` は新しくなる
 //   - `pending`: 原本行も進捗行も無く、**ingest ジョブが投入される
-//     はずの** mirakc record の観測（`record_sync.status = 'finished'`。
-//     watcher が ingest を投入する条件と同じ述語）がある。取り込み待ち、
-//     または失敗して再試行待ち
+//     はずの** mirakc record の観測（`record_sync.status` が `recording`
+//     または `finished`。watcher が ingest を投入する条件と同じ述語）が
+//     ある。取り込み待ち、または失敗して再試行待ち。録画開始直後で進捗行が
+//     まだ無い数秒もここに入る
 //   - `unknown`: 上のどれでもない。取り込みが始まった観測が無い ---
-//     mirakc record が観測されていないか、record が `finished` でない
-//     （録画中・`failed`・`canceled`。**この録画に ingest ジョブは
-//     投入されない**）
+//     mirakc record が観測されていないか、record が `failed` / `canceled`
+//     （**この録画に ingest ジョブは投入されない**）
 //
 // **`pending` は「これから来る」の断定なので、来る根拠が無いものは
 // 入れない。** `record_sync` 行の存在だけを根拠にすると、`failed` /
