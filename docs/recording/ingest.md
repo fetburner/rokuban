@@ -243,8 +243,9 @@ canonical path へ転送中のバイトが存在しないため、同じ `rel_pa
   混ざる（不変条件 13）
 
 **分母は `record_sync.content_length`**（watcher が mirakc record の `content.length` として
-観測済みの値）。転送開始時に読んで衛星表へ写す。HEAD の `Content-Length` は転送完了後の
-照合（層 3）にしか取っておらず転送中には使えない。ファイル stat は api ロールが
+観測済みの値）。転送開始時に読んで衛星表へ写し、追従中は下記のとおり `GetRecord` の
+`content.length` で更新する（開始時の値に固定すると録画中に 100% で止まる）。HEAD の
+`Content-Length` は転送完了後の照合（層 3）にしか取っておらず転送中には使えない。ファイル stat は api ロールが
 ファイルシステムに触れない（不変条件 1）ので分母にできない。mirakc が length を返さない
 record では分母を NULL のままにし、UI は % を出さずバイト数だけを出す（でっち上げた分母を
 置かない）。この分母が録画中も非 null で時間とともに増えることは、`TestConformance/RecordingInProgress`
