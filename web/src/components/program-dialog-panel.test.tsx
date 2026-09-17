@@ -2,6 +2,7 @@ import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { ProgramDialogPanel } from '@/components/program-dialog-panel'
 import { renderInRouter, testSite } from '@/test/router'
 import { screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
 const program = {
@@ -102,5 +103,30 @@ describe('ProgramDialogPanel', () => {
       'min-h-11',
       'w-full',
     )
+  })
+
+  it('未予約の skip 意図を表示し、ダイアログの「解除」で意図を消せる', async () => {
+    stubFetch()
+    const onClearIntent = vi.fn()
+    renderInRouter(
+      <Dialog open>
+        <DialogContent>
+          <ProgramDialogPanel
+            program={{ ...program, intent: 'skip' as const }}
+            reserved={false}
+            pending={false}
+            reservationStateUnknown={false}
+            onReserve={vi.fn()}
+            onCancel={vi.fn()}
+            onClearIntent={onClearIntent}
+          />
+        </DialogContent>
+      </Dialog>,
+    )
+
+    const dialog = await screen.findByRole('dialog', { name: program.name })
+    expect(within(dialog).getByTestId('program-skip-intent-badge')).toHaveTextContent('スキップ中')
+    await userEvent.click(within(dialog).getByRole('button', { name: '解除' }))
+    expect(onClearIntent).toHaveBeenCalledOnce()
   })
 })

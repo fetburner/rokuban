@@ -180,6 +180,7 @@ func TestListPrograms_Window(t *testing.T) {
 	seedEpgProgram(t, pool, 1, 32678, 5168, 1, "A-1", base, true)
 	seedEpgProgram(t, pool, 2, 32678, 5168, 2, "A-2", base.Add(time.Hour), false)
 	seedEpgProgram(t, pool, 3, 32676, 5152, 1, "B-1", base.Add(30*time.Minute), false)
+	seedProgramIntent(t, pool, 2, base.Add(time.Hour), 32678, 5168, 2, "skip")
 
 	// 窓に一部でも重なる番組が入る（開区間）
 	var got []ProgramListItem
@@ -203,6 +204,27 @@ func TestListPrograms_Window(t *testing.T) {
 	}
 	if !got[0].EndAt.Equal(got[0].StartAt.Add(time.Hour)) {
 		t.Errorf("endAt = %v, startAt = %v", got[0].EndAt, got[0].StartAt)
+	}
+	if got[0].Intent != nil || got[1].Intent != nil {
+		t.Errorf("programs without intent should omit intent: %+v, %+v", got[0].Intent, got[1].Intent)
+	}
+	if got[2].Intent == nil || *got[2].Intent != "skip" {
+		t.Errorf("A-2 intent = %v, want skip", got[2].Intent)
+	}
+	var wire []struct {
+		ProgramID int64           `json:"programId"`
+		Intent    json.RawMessage `json:"intent"`
+	}
+	getJSON(t, programsURL(srv.URL, base.Add(45*time.Minute), base.Add(75*time.Minute)), &wire)
+	byID := make(map[int64]json.RawMessage, len(wire))
+	for _, item := range wire {
+		byID[item.ProgramID] = item.Intent
+	}
+	if len(byID[1]) != 0 || len(byID[3]) != 0 {
+		t.Errorf("programs without intent should omit the JSON field: %+v", byID)
+	}
+	if string(byID[2]) != `"skip"` {
+		t.Errorf("A-2 wire intent = %s, want %q", byID[2], "skip")
 	}
 
 	// 窓にちょうど接するだけの番組は入らない（A-1 は end == window_start）
@@ -322,6 +344,7 @@ func TestGetProgram(t *testing.T) {
 	base := time.Now().Truncate(time.Hour)
 	seedEpgProgram(t, pool, 42, 32678, 5168, 1, "詳細あり", base, true)
 	seedEpgProgram(t, pool, 43, 32678, 5168, 2, "詳細なし", base.Add(time.Hour), false)
+	seedProgramIntent(t, pool, 42, base, 32678, 5168, 1, "skip")
 
 	var got Program
 	resp := getJSON(t, fmt.Sprintf("%s/api/sites/default/programs/42", srv.URL), &got)
@@ -330,6 +353,9 @@ func TestGetProgram(t *testing.T) {
 	}
 	if got.Name != "詳細あり" {
 		t.Errorf("name = %q", got.Name)
+	}
+	if got.Intent == nil || *got.Intent != "skip" {
+		t.Errorf("intent = %v, want skip", got.Intent)
 	}
 	if got.Extended == nil || (*got.Extended)["出演者"] != "テスト太郎" {
 		t.Errorf("extended = %v", got.Extended)
@@ -347,12 +373,52 @@ func TestGetProgram(t *testing.T) {
 	// jsonb が NULL の番組は省略される（空オブジェクトを返さない）
 	var bare Program
 	getJSON(t, fmt.Sprintf("%s/api/sites/default/programs/43", srv.URL), &bare)
-	if bare.Extended != nil || bare.Video != nil || bare.Audios != nil || bare.GenreDetails != nil {
+	if bare.Extended != nil || bare.Video != nil || bare.Audios != nil || bare.GenreDetails != nil || bare.Intent != nil {
 		t.Errorf("bare program should omit detail payloads, got %+v", bare)
+	}
+	var bareWire map[string]json.RawMessage
+	getJSON(t, fmt.Sprintf("%s/api/sites/default/programs/43", srv.URL), &bareWire)
+	if _, present := bareWire["intent"]; present {
+		t.Errorf("program without intent should omit the JSON field: %s", bareWire["intent"])
 	}
 
 	resp = getJSON(t, fmt.Sprintf("%s/api/sites/default/programs/999", srv.URL), nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("missing program status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// seedProgramIntent は EPG 射影の番組に、API が返すユーザー意図を用意する。
+// program_intents は program_snapshots への FK を持つため、先にスナップショットを
+// 作る（実運用では意図 API の ensureProgramSnapshot がこの順序を担保する）。
+func seedProgramIntent(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	programID int64,
+	start time.Time,
+	networkID, serviceID, eventID int32,
+	action string,
+) {
+	t.Helper()
+	q := sqlcgen.New(pool)
+	if err := q.UpsertProgramSnapshot(context.Background(), sqlcgen.UpsertProgramSnapshotParams{
+		Site:        db.DefaultSite,
+		ProgramID:   programID,
+		Title:       "テスト番組",
+		StartAt:     start,
+		DurationMs:  testProgramDuration.Milliseconds(),
+		NetworkID:   networkID,
+		ServiceID:   serviceID,
+		ChannelType: "GR",
+		Channel:     "27",
+		EventID:     eventID,
+		ServiceName: "テスト局",
+	}); err != nil {
+		t.Fatalf("seeding program snapshot: %v", err)
+	}
+	if _, err := q.UpsertProgramIntent(context.Background(), sqlcgen.UpsertProgramIntentParams{
+		Site: db.DefaultSite, ProgramID: programID, Action: action,
+	}); err != nil {
+		t.Fatalf("seeding program intent: %v", err)
 	}
 }

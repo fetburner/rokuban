@@ -763,7 +763,8 @@ export const ListProgramsResponseItem = zod.object({
   "name": zod.string(),
   "description": zod.string(),
   "genres": zod.array(zod.int()).describe('ジャンル絞り込み用の lv1 のみ。詳細は Program.genreDetails'),
-  "isFree": zod.boolean()
+  "isFree": zod.boolean(),
+  "intent": zod.enum(['record', 'skip']).optional().describe('この番組についてのユーザー意図。意図が無い場合は省略する。\n`skip` は予約行が消えた後も「録らない」という主張が残っていることを示す。\n')
 })
 export const ListProgramsResponse = zod.array(ListProgramsResponseItem)
 
@@ -787,7 +788,8 @@ export const GetProgramResponse = zod.object({
   "name": zod.string(),
   "description": zod.string(),
   "genres": zod.array(zod.int()).describe('ジャンル絞り込み用の lv1 のみ。詳細は Program.genreDetails'),
-  "isFree": zod.boolean()
+  "isFree": zod.boolean(),
+  "intent": zod.enum(['record', 'skip']).optional().describe('この番組についてのユーザー意図。意図が無い場合は省略する。\n`skip` は予約行が消えた後も「録らない」という主張が残っていることを示す。\n')
 }).and(zod.object({
   "extended": zod.record(zod.string(), zod.string()).optional().describe('拡張形式イベント（出演者等）'),
   "genreDetails": zod.array(zod.object({
@@ -868,7 +870,7 @@ export const PutProgramIntentParams = zod.object({
 })
 
 export const PutProgramIntentBody = zod.object({
-  "action": zod.enum(['record', 'skip'])
+  "action": zod.enum(['record', 'skip']).describe('この番組に対するユーザー操作の意図。`program_intents.action` に対応する。\n')
 }).describe('PUT \/api\/sites\/{site}\/programs\/{programId}\/intent のボディ。\n`record` は「録れ」（手動予約、およびルール由来予約への上書き）。\n`skip` は「録るな」（どのルール経由でも一貫して除外される）。\n')
 
 export const PutProgramIntentResponse = zod.void()

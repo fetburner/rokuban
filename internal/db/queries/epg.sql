@@ -103,26 +103,30 @@ ORDER BY start_at, network_id, service_id;
 -- `unnest(a, b)` は sqlc の組み込み analyzer が解決できないため、start_delay.sql と
 -- 同じ generate_subscripts + 添字参照を使う。
 -- name: ListEpgProgramsForList :many
-SELECT site, program_id, network_id, service_id, event_id,
-       start_at, duration_ms, end_at, is_free, name, description, genre_lv1
-FROM epg_programs
-WHERE site = $1
-  AND start_at < sqlc.arg(window_end)::timestamptz
-  AND end_at   > sqlc.arg(window_start)::timestamptz
+SELECT p.site, p.program_id, p.network_id, p.service_id, p.event_id,
+       p.start_at, p.duration_ms, p.end_at, p.is_free, p.name, p.description,
+       p.genre_lv1, i.action AS intent_action
+FROM epg_programs p
+LEFT JOIN program_intents i ON i.site = p.site AND i.program_id = p.program_id
+WHERE p.site = $1
+  AND p.start_at < sqlc.arg(window_end)::timestamptz
+  AND p.end_at   > sqlc.arg(window_start)::timestamptz
   AND (
     coalesce(cardinality(sqlc.arg(exact_network_ids)::integer[]), 0) = 0
     OR EXISTS (
       SELECT 1
       FROM generate_subscripts(sqlc.arg(exact_network_ids)::integer[], 1) AS i
-      WHERE (sqlc.arg(exact_network_ids)::integer[])[i] = epg_programs.network_id
-        AND (sqlc.arg(exact_service_ids)::integer[])[i] = epg_programs.service_id
+      WHERE (sqlc.arg(exact_network_ids)::integer[])[i] = p.network_id
+        AND (sqlc.arg(exact_service_ids)::integer[])[i] = p.service_id
     )
   )
-ORDER BY start_at, network_id, service_id;
+ORDER BY p.start_at, p.network_id, p.service_id;
 
 -- name: GetEpgProgram :one
-SELECT * FROM epg_programs
-WHERE site = $1 AND program_id = $2;
+SELECT sqlc.embed(p), i.action AS intent_action
+FROM epg_programs p
+LEFT JOIN program_intents i ON i.site = p.site AND i.program_id = p.program_id
+WHERE p.site = $1 AND p.program_id = $2;
 
 -- 意図・上書きの書き込み時に、program_snapshots へスナップショットする番組の事実
 -- （title / 開始時刻 / 尺 / チャンネル識別）を EPG プロジェクションから引く。

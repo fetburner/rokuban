@@ -274,6 +274,48 @@ describe('ProgramRow の外向き導線（issue #229 / #755）', () => {
     expect(within(row).getByText(/同じ時間帯に1件の予約があります（.*重複番組/)).toBeInTheDocument()
   })
 
+  it('未予約の skip 意図を「スキップ中」と表示し、「解除」で意図を消せる', async () => {
+    stubFetch()
+    const onClearIntent = vi.fn()
+    renderInRouter(
+      <ProgramRow
+        program={program({ intent: 'skip' })}
+        reserved={false}
+        pending={false}
+        reservationStateUnknown={false}
+        onReserve={vi.fn()}
+        onCancel={vi.fn()}
+        onClearIntent={onClearIntent}
+      />,
+    )
+
+    const row = await screen.findByTestId('program-row')
+    expect(within(row).getByTestId('program-skip-intent-badge')).toHaveTextContent('スキップ中')
+    const clearButton = within(row).getByRole('button', { name: '解除' })
+    expect(clearButton).toBeEnabled()
+
+    await userEvent.click(clearButton)
+    expect(onClearIntent).toHaveBeenCalledOnce()
+  })
+
+  it('予約済みの skip 意図は既存の予約操作を優先し、未予約用の解除バッジを出さない', async () => {
+    stubFetch()
+    renderInRouter(
+      <ProgramRow
+        program={program({ intent: 'skip' })}
+        reserved={true}
+        pending={false}
+        reservationStateUnknown={false}
+        onReserve={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    const row = await screen.findByTestId('program-row')
+    expect(within(row).queryByTestId('program-skip-intent-badge')).not.toBeInTheDocument()
+    expect(within(row).getByRole('button', { name: '取消' })).toBeInTheDocument()
+  })
+
   it('ライブボタンは展開パネルに移らず、放送中で未予約の行には設定リンクも出ない', async () => {
     stubFetch()
     renderInRouter(

@@ -45,8 +45,8 @@ func (h *Server) GetProgramOverlaps(ctx context.Context, req GetProgramOverlapsR
 	rows, err := q.ListOverlappingReservations(ctx, sqlcgen.ListOverlappingReservationsParams{
 		Site:            req.Site,
 		TargetProgramID: req.ProgramId,
-		WindowStart:     program.StartAt,
-		WindowEnd:       program.EndAt,
+		WindowStart:     program.EpgProgram.StartAt,
+		WindowEnd:       program.EpgProgram.EndAt,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing overlapping reservations: %w", err)

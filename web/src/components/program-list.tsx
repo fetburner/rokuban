@@ -58,6 +58,7 @@ export type ReservableProgram = Pick<SiteProgram, 'site' | 'programId' | 'name'>
 export type ReservationActions = {
   reserve: (program: ReservableProgram, overrides?: ProgramOverridesInput) => void
   cancel: (program: ReservableProgram) => void
+  clearIntent: (program: ReservableProgram) => void
   isBusy: (program: ReservableProgram) => boolean
   /** サーバーの値に楽観的な上書きを重ねた「予約済み」集合。 */
   reservedProgramIds: ReadonlySet<string>
@@ -376,6 +377,7 @@ export const ProgramList = forwardRef<
               overlaps={actions.overlapsFor(program)}
               onReserve={(overrides) => actions.reserve(program, overrides)}
               onCancel={() => actions.cancel(program)}
+              onClearIntent={() => actions.clearIntent(program)}
             />
           </li>
         )

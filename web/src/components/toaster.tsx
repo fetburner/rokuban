@@ -53,6 +53,7 @@ type PauseReason = 'hover' | 'focus'
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
   const toastElements = useRef(new Map<number, HTMLDivElement>())
+  const nextToastId = useRef(0)
 
   // タイマーは state ではなく ref に持つ。toasts 配列を依存に含む useEffect で
   // 再スケジュールする形にすると、1 件足すたびに全トーストのタイマーが
@@ -136,7 +137,9 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   const show = useCallback(
     (toast: ToastInput) => {
       const kind = toast.kind ?? 'info'
-      const id = Date.now() + Math.random()
+      // ID は provider 内でしか参照しない。Date.now() + Math.random() は大きな
+      // 浮動小数点数の加算で同一時刻に衝突しうるため、単調増加にする。
+      const id = nextToastId.current++
 
       // デデュープするのは error だけ（積み上がるのは自動で消えない error だけ
       // なので）。actions は個体ごとにクロージャが違うので、actions 付きは

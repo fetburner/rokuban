@@ -86,8 +86,10 @@ func (q *Queries) EpgSweepMark(ctx context.Context) (time.Time, error) {
 }
 
 const getEpgProgram = `-- name: GetEpgProgram :one
-SELECT site, program_id, network_id, service_id, event_id, start_at, duration_ms, end_at, is_free, name, description, extended, genres, video, audios, observed_at, genre_lv1 FROM epg_programs
-WHERE site = $1 AND program_id = $2
+SELECT p.site, p.program_id, p.network_id, p.service_id, p.event_id, p.start_at, p.duration_ms, p.end_at, p.is_free, p.name, p.description, p.extended, p.genres, p.video, p.audios, p.observed_at, p.genre_lv1, i.action AS intent_action
+FROM epg_programs p
+LEFT JOIN program_intents i ON i.site = p.site AND i.program_id = p.program_id
+WHERE p.site = $1 AND p.program_id = $2
 `
 
 type GetEpgProgramParams struct {
@@ -95,27 +97,33 @@ type GetEpgProgramParams struct {
 	ProgramID int64
 }
 
-func (q *Queries) GetEpgProgram(ctx context.Context, arg GetEpgProgramParams) (EpgProgram, error) {
+type GetEpgProgramRow struct {
+	EpgProgram   EpgProgram
+	IntentAction *string
+}
+
+func (q *Queries) GetEpgProgram(ctx context.Context, arg GetEpgProgramParams) (GetEpgProgramRow, error) {
 	row := q.db.QueryRow(ctx, getEpgProgram, arg.Site, arg.ProgramID)
-	var i EpgProgram
+	var i GetEpgProgramRow
 	err := row.Scan(
-		&i.Site,
-		&i.ProgramID,
-		&i.NetworkID,
-		&i.ServiceID,
-		&i.EventID,
-		&i.StartAt,
-		&i.DurationMs,
-		&i.EndAt,
-		&i.IsFree,
-		&i.Name,
-		&i.Description,
-		&i.Extended,
-		&i.Genres,
-		&i.Video,
-		&i.Audios,
-		&i.ObservedAt,
-		&i.GenreLv1,
+		&i.EpgProgram.Site,
+		&i.EpgProgram.ProgramID,
+		&i.EpgProgram.NetworkID,
+		&i.EpgProgram.ServiceID,
+		&i.EpgProgram.EventID,
+		&i.EpgProgram.StartAt,
+		&i.EpgProgram.DurationMs,
+		&i.EpgProgram.EndAt,
+		&i.EpgProgram.IsFree,
+		&i.EpgProgram.Name,
+		&i.EpgProgram.Description,
+		&i.EpgProgram.Extended,
+		&i.EpgProgram.Genres,
+		&i.EpgProgram.Video,
+		&i.EpgProgram.Audios,
+		&i.EpgProgram.ObservedAt,
+		&i.EpgProgram.GenreLv1,
+		&i.IntentAction,
 	)
 	return i, err
 }
@@ -238,22 +246,24 @@ func (q *Queries) ListEpgPrograms(ctx context.Context, arg ListEpgProgramsParams
 }
 
 const listEpgProgramsForList = `-- name: ListEpgProgramsForList :many
-SELECT site, program_id, network_id, service_id, event_id,
-       start_at, duration_ms, end_at, is_free, name, description, genre_lv1
-FROM epg_programs
-WHERE site = $1
-  AND start_at < $2::timestamptz
-  AND end_at   > $3::timestamptz
+SELECT p.site, p.program_id, p.network_id, p.service_id, p.event_id,
+       p.start_at, p.duration_ms, p.end_at, p.is_free, p.name, p.description,
+       p.genre_lv1, i.action AS intent_action
+FROM epg_programs p
+LEFT JOIN program_intents i ON i.site = p.site AND i.program_id = p.program_id
+WHERE p.site = $1
+  AND p.start_at < $2::timestamptz
+  AND p.end_at   > $3::timestamptz
   AND (
     coalesce(cardinality($4::integer[]), 0) = 0
     OR EXISTS (
       SELECT 1
       FROM generate_subscripts($4::integer[], 1) AS i
-      WHERE ($4::integer[])[i] = epg_programs.network_id
-        AND ($5::integer[])[i] = epg_programs.service_id
+      WHERE ($4::integer[])[i] = p.network_id
+        AND ($5::integer[])[i] = p.service_id
     )
   )
-ORDER BY start_at, network_id, service_id
+ORDER BY p.start_at, p.network_id, p.service_id
 `
 
 type ListEpgProgramsForListParams struct {
@@ -265,18 +275,19 @@ type ListEpgProgramsForListParams struct {
 }
 
 type ListEpgProgramsForListRow struct {
-	Site        string
-	ProgramID   int64
-	NetworkID   int32
-	ServiceID   int32
-	EventID     int32
-	StartAt     time.Time
-	DurationMs  int64
-	EndAt       time.Time
-	IsFree      bool
-	Name        string
-	Description string
-	GenreLv1    []int16
+	Site         string
+	ProgramID    int64
+	NetworkID    int32
+	ServiceID    int32
+	EventID      int32
+	StartAt      time.Time
+	DurationMs   int64
+	EndAt        time.Time
+	IsFree       bool
+	Name         string
+	Description  string
+	GenreLv1     []int16
+	IntentAction *string
 }
 
 // 一覧向けの軽い形。extended / video / audios は返さない（1 行あたり数 KB になり
@@ -314,6 +325,7 @@ func (q *Queries) ListEpgProgramsForList(ctx context.Context, arg ListEpgProgram
 			&i.Name,
 			&i.Description,
 			&i.GenreLv1,
+			&i.IntentAction,
 		); err != nil {
 			return nil, err
 		}

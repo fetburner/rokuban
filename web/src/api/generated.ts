@@ -182,6 +182,17 @@ export interface Tuner {
   observedAt: string;
 }
 
+/**
+ * この番組に対するユーザー操作の意図。`program_intents.action` に対応する。
+ */
+export type ProgramIntent = typeof ProgramIntent[keyof typeof ProgramIntent];
+
+
+export const ProgramIntent = {
+  record: 'record',
+  skip: 'skip',
+} as const;
+
 export interface ProgramListItem {
   programId: number;
   networkId: number;
@@ -195,6 +206,11 @@ export interface ProgramListItem {
   /** ジャンル絞り込み用の lv1 のみ。詳細は Program.genreDetails */
   genres: number[];
   isFree: boolean;
+  /**
+     * この番組についてのユーザー意図。意図が無い場合は省略する。
+     * `skip` は予約行が消えた後も「録らない」という主張が残っていることを示す。
+     */
+  intent?: ProgramIntent;
 }
 
 /**
@@ -639,21 +655,13 @@ export interface DropStat {
   positions: DropPosition[];
 }
 
-export type ProgramIntentInputAction = typeof ProgramIntentInputAction[keyof typeof ProgramIntentInputAction];
-
-
-export const ProgramIntentInputAction = {
-  record: 'record',
-  skip: 'skip',
-} as const;
-
 /**
  * PUT /api/sites/{site}/programs/{programId}/intent のボディ。
  * `record` は「録れ」（手動予約、およびルール由来予約への上書き）。
  * `skip` は「録るな」（どのルール経由でも一貫して除外される）。
  */
 export interface ProgramIntentInput {
-  action: ProgramIntentInputAction;
+  action: ProgramIntent;
 }
 
 /**

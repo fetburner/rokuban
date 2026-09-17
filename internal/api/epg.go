@@ -89,6 +89,7 @@ func (h *Server) ListPrograms(ctx context.Context, req ListProgramsRequestObject
 			Description: p.Description,
 			Genres:      genreLv1List(p.GenreLv1),
 			IsFree:      p.IsFree,
+			Intent:      programIntentAction(p.IntentAction),
 		})
 	}
 	return ListPrograms200JSONResponse(result), nil
@@ -110,34 +111,47 @@ func (h *Server) GetProgram(ctx context.Context, req GetProgramRequestObject) (G
 		return nil, err
 	}
 
+	epg := row.EpgProgram
 	p := Program{
-		ProgramId:   row.ProgramID,
-		NetworkId:   int(row.NetworkID),
-		ServiceId:   int(row.ServiceID),
-		EventId:     int(row.EventID),
-		StartAt:     row.StartAt,
-		EndAt:       row.EndAt,
-		DurationMs:  row.DurationMs,
-		Name:        row.Name,
-		Description: row.Description,
-		Genres:      genreLv1List(row.GenreLv1),
-		IsFree:      row.IsFree,
+		ProgramId:   epg.ProgramID,
+		NetworkId:   int(epg.NetworkID),
+		ServiceId:   int(epg.ServiceID),
+		EventId:     int(epg.EventID),
+		StartAt:     epg.StartAt,
+		EndAt:       epg.EndAt,
+		DurationMs:  epg.DurationMs,
+		Name:        epg.Name,
+		Description: epg.Description,
+		Genres:      genreLv1List(epg.GenreLv1),
+		IsFree:      epg.IsFree,
+		Intent:      programIntentAction(row.IntentAction),
 	}
 	// jsonb はそのまま構造体に載せ替える。プロジェクション時点で mirakc の
 	// ペイロードをそのまま入れているので、ここでの変換は unmarshal だけ。
-	if err := unmarshalIfPresent(row.Extended, &p.Extended); err != nil {
-		return nil, fmt.Errorf("decoding extended for program %d: %w", row.ProgramID, err)
+	if err := unmarshalIfPresent(epg.Extended, &p.Extended); err != nil {
+		return nil, fmt.Errorf("decoding extended for program %d: %w", epg.ProgramID, err)
 	}
-	if err := unmarshalIfPresent(row.Genres, &p.GenreDetails); err != nil {
-		return nil, fmt.Errorf("decoding genres for program %d: %w", row.ProgramID, err)
+	if err := unmarshalIfPresent(epg.Genres, &p.GenreDetails); err != nil {
+		return nil, fmt.Errorf("decoding genres for program %d: %w", epg.ProgramID, err)
 	}
-	if err := unmarshalIfPresent(row.Video, &p.Video); err != nil {
-		return nil, fmt.Errorf("decoding video for program %d: %w", row.ProgramID, err)
+	if err := unmarshalIfPresent(epg.Video, &p.Video); err != nil {
+		return nil, fmt.Errorf("decoding video for program %d: %w", epg.ProgramID, err)
 	}
-	if err := unmarshalIfPresent(row.Audios, &p.Audios); err != nil {
-		return nil, fmt.Errorf("decoding audios for program %d: %w", row.ProgramID, err)
+	if err := unmarshalIfPresent(epg.Audios, &p.Audios); err != nil {
+		return nil, fmt.Errorf("decoding audios for program %d: %w", epg.ProgramID, err)
 	}
 	return GetProgram200JSONResponse(p), nil
+}
+
+// programIntentAction は SQL の nullable な action を OpenAPI の省略可能な
+// intent へ写像する。program_intents.action は DB の CHECK 制約で record/skip
+// に限定されているので、ここでは文字列を契約型へ変換するだけでよい。
+func programIntentAction(action *string) *ProgramIntent {
+	if action == nil {
+		return nil
+	}
+	value := ProgramIntent(*action)
+	return &value
 }
 
 // windowError は時間窓が不正なら理由を返す。妥当なら空文字を返す。

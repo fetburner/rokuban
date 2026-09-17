@@ -15,6 +15,7 @@ import { useToast } from '@/components/toaster'
 import { programIdentity } from '@/lib/all-sites-services'
 import {
   capacityOveragesQueryKeyPrefix,
+  programsQueryKeyPrefix,
   reservationsQueryKeyPrefix,
 } from '@/lib/events'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
@@ -134,6 +135,31 @@ export function useReservationActions(
     void queryClient.invalidateQueries({ queryKey: [capacityOveragesQueryKeyPrefix] })
   }
 
+  const invalidateProgramList = () => {
+    // 番組一覧も program_intents.action を返す。意図の変更後にこの射影を更新しないと、
+    // 予約行が消えた番組の「スキップ中」や恒久的な解除導線が古いまま残る。
+    void queryClient.invalidateQueries({ queryKey: [programsQueryKeyPrefix] })
+  }
+
+  // clearIntent は予約行が無い skip 意図を「意見なし」に戻すための恒久的な解除。
+  // 予約行の取消（cancel）とは違い、予約を作る optimistic state は持たない。
+  // intent を含む番組一覧を invalidate し、成功後はサーバーの値を再取得する。
+  const clearIntent = (program: ReservableProgram) => {
+    const key = programIdentity(program.site, program.programId)
+    setBusy(key, true)
+    void (async () => {
+      try {
+        await deleteIntent.mutateAsync({ site: program.site, programId: program.programId })
+        invalidateProgramList()
+        toast({ message: 'スキップを解除しました' })
+      } catch (err) {
+        toast({ message: mutationErrorMessage('スキップの解除に失敗しました', err), kind: 'error' })
+      } finally {
+        setBusy(key, false)
+      }
+    })()
+  }
+
   // revive は取消トーストの「元に戻す」から呼ぶ（issue #453）。`reserve` と
   // 同じ楽観更新の経路（setOptimisticReserved → catch で undefined に戻す）
   // を通す。
@@ -173,6 +199,7 @@ export function useReservationActions(
           })
         }
         invalidateReservations()
+        invalidateProgramList()
         toast({ message: '予約を元に戻しました' })
       } catch (err) {
         toast({ message: mutationErrorMessage('予約への復帰に失敗しました', err) })
@@ -201,6 +228,7 @@ export function useReservationActions(
           data: { action: 'skip' },
         })
         invalidateReservations()
+        invalidateProgramList()
         // 予約のワンタップ + トースト「取消」と対称にする（issue #453）。
         // 誤タップの被害は「録れない」側に出るので、取消にも同じ取り返し
         // 手段を置く。
@@ -297,6 +325,7 @@ export function useReservationActions(
   return {
     reserve,
     cancel,
+    clearIntent,
     isBusy: (program) => busyProgramIds.has(programIdentity(program.site, program.programId)),
     reservedProgramIds,
     reservationStateUnknown,

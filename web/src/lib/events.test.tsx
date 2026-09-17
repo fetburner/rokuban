@@ -276,7 +276,7 @@ describe('useServerEvents', () => {
     expect(view.getByTestId('43-mobile')).toHaveTextContent('unknown')
   })
 
-  it('reservations のイベントで容量超過も取り直す（予約集合からの導出値）', () => {
+  it('reservations のイベントで容量超過と番組リストも取り直す', () => {
     globalThis.EventSource = EventSourceStub as unknown as typeof EventSource
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false, staleTime: Infinity } },
@@ -284,17 +284,22 @@ describe('useServerEvents', () => {
     // 新鮮なデータとしてキャッシュに置く（staleTime: Infinity なので放置では stale にならない）
     queryClient.setQueryData(['/api/reservations'], [])
     queryClient.setQueryData(['/api/capacity/overages', { start: 'a', end: 'b' }], [])
+    queryClient.setQueryData(programListKey, [])
     queryClient.setQueryData(['/api/recordings'], [])
     renderSubscriber(queryClient)
 
     expect(isStale(queryClient, ['/api/reservations'])).toBe(false)
     expect(isStale(queryClient, ['/api/capacity/overages', { start: 'a', end: 'b' }])).toBe(false)
+    expect(isStale(queryClient, programListKey)).toBe(false)
 
     EventSourceStub.last?.emit('reservations')
 
     expect(isStale(queryClient, ['/api/reservations'])).toBe(true)
     // 容量超過は予約から導出されるので、予約が変わったら一緒に無効化する
     expect(isStale(queryClient, ['/api/capacity/overages', { start: 'a', end: 'b' }])).toBe(true)
+    // program_intents.action も reservations トピックに寄せているので、別タブの
+    // 意図変更でも番組セル / 番組行の射影が取り残されない
+    expect(isStale(queryClient, programListKey)).toBe(true)
     // 無関係なトピックは巻き込まない
     expect(isStale(queryClient, ['/api/recordings'])).toBe(false)
   })
