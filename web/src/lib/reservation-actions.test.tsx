@@ -116,3 +116,22 @@ describe('useReservationActions の reservationStateUnknown ガード', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })
+
+describe('useReservationActions の skip 意図解除', () => {
+  it('clearIntent は DELETE .../intent を送る', async () => {
+    stubFetch()
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+    const { result } = renderActions(new Set())
+
+    await act(async () => {
+      result.current.clearIntent(program)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/sites/${site}/programs/${programId}/intent`,
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+  })
+})

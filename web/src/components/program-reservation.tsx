@@ -36,6 +36,7 @@ export type ProgramReservationProgram = Pick<
   | 'durationMs'
   | 'name'
   | 'isFree'
+  | 'intent'
 > & {
   endAt?: string
   description?: string
@@ -116,12 +117,14 @@ export function ProgramReservationSummary({
   serviceName,
   siteName,
   overlaps,
+  skipIntent = false,
   title,
 }: {
   program: ProgramReservationProgram
   serviceName?: string
   siteName?: string
   overlaps?: ProgramOverlaps
+  skipIntent?: boolean
   title?: ReactNode
 }) {
   const endAt =
@@ -139,12 +142,20 @@ export function ProgramReservationSummary({
         {title ?? <div className="truncate text-base">{program.name}</div>}
         <div
           data-testid="program-row-meta"
-          className="flex items-center gap-2 text-sm text-muted-foreground"
+          className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground"
         >
           {siteName && <span className="shrink-0">{siteName}</span>}
           {serviceName && <span className="truncate">{serviceName}</span>}
           <span className="shrink-0">{formatDuration(program.durationMs)}</span>
           {!program.isFree && <span className="shrink-0">有料</span>}
+          {skipIntent && (
+            <span
+              data-testid="program-skip-intent-badge"
+              className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-foreground"
+            >
+              スキップ中
+            </span>
+          )}
         </div>
         <ProgramOverlapWarning overlaps={overlaps} />
       </div>
@@ -161,17 +172,21 @@ export function ProgramReservationActions({
   reserved,
   pending,
   reserveBlocked,
+  skipIntent,
   showLiveLink,
   onReserve,
   onCancel,
+  onClearIntent,
 }: {
   program: ProgramReservationProgram
   reserved: boolean
   pending: boolean
   reserveBlocked: boolean
+  skipIntent: boolean
   showLiveLink: boolean
   onReserve: () => void
   onCancel: () => void
+  onClearIntent: () => void
 }) {
   return (
     <>
@@ -200,12 +215,12 @@ export function ProgramReservationActions({
         <Button
           variant={reserved ? 'destructive' : 'default'}
           size="sm"
-          disabled={reserved ? pending : reserveBlocked}
-          onClick={reserved ? onCancel : onReserve}
+          disabled={skipIntent ? pending : reserved ? pending : reserveBlocked}
+          onClick={skipIntent ? onClearIntent : reserved ? onCancel : onReserve}
           className="min-h-11 w-full rounded-none"
         >
           {/* 楽観更新でラベルを即時確定させるため、送信中もスピナーは重ねない。 */}
-          {reserved ? '取消' : '予約'}
+          {skipIntent ? '解除' : reserved ? '取消' : '予約'}
         </Button>
       </div>
     </>

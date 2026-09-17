@@ -124,14 +124,14 @@ func (e IngestProgressState) Valid() bool {
 	}
 }
 
-// Defines values for ProgramIntentInputAction.
+// Defines values for ProgramIntent.
 const (
-	Record ProgramIntentInputAction = "record"
-	Skip   ProgramIntentInputAction = "skip"
+	Record ProgramIntent = "record"
+	Skip   ProgramIntent = "skip"
 )
 
-// Valid indicates whether the value is a known member of the ProgramIntentInputAction enum.
-func (e ProgramIntentInputAction) Valid() bool {
+// Valid indicates whether the value is a known member of the ProgramIntent enum.
+func (e ProgramIntent) Valid() bool {
 	switch e {
 	case Record:
 		return true
@@ -1099,25 +1099,30 @@ type Program struct {
 	GenreDetails *[]Genre           `json:"genreDetails,omitempty"`
 
 	// Genres ジャンル絞り込み用の lv1 のみ。詳細は Program.genreDetails
-	Genres    []int      `json:"genres"`
-	IsFree    bool       `json:"isFree"`
-	Name      string     `json:"name"`
-	NetworkId int        `json:"networkId"`
-	ProgramId int64      `json:"programId"`
-	ServiceId int        `json:"serviceId"`
-	StartAt   time.Time  `json:"startAt"`
-	Video     *VideoInfo `json:"video,omitempty"`
+	Genres []int `json:"genres"`
+
+	// Intent この番組についてのユーザー意図。意図が無い場合は省略する。
+	// `skip` は予約行が消えた後も「録らない」という主張が残っていることを示す。
+	Intent    *ProgramIntent `json:"intent,omitempty"`
+	IsFree    bool           `json:"isFree"`
+	Name      string         `json:"name"`
+	NetworkId int            `json:"networkId"`
+	ProgramId int64          `json:"programId"`
+	ServiceId int            `json:"serviceId"`
+	StartAt   time.Time      `json:"startAt"`
+	Video     *VideoInfo     `json:"video,omitempty"`
 }
+
+// ProgramIntent この番組に対するユーザー操作の意図。`program_intents.action` に対応する。
+type ProgramIntent string
 
 // ProgramIntentInput PUT /api/sites/{site}/programs/{programId}/intent のボディ。
 // `record` は「録れ」（手動予約、およびルール由来予約への上書き）。
 // `skip` は「録るな」（どのルール経由でも一貫して除外される）。
 type ProgramIntentInput struct {
-	Action ProgramIntentInputAction `json:"action"`
+	// Action この番組に対するユーザー操作の意図。`program_intents.action` に対応する。
+	Action ProgramIntent `json:"action"`
 }
-
-// ProgramIntentInputAction defines model for ProgramIntentInput.Action.
-type ProgramIntentInputAction string
 
 // ProgramListItem defines model for ProgramListItem.
 type ProgramListItem struct {
@@ -1127,13 +1132,17 @@ type ProgramListItem struct {
 	EventId     int       `json:"eventId"`
 
 	// Genres ジャンル絞り込み用の lv1 のみ。詳細は Program.genreDetails
-	Genres    []int     `json:"genres"`
-	IsFree    bool      `json:"isFree"`
-	Name      string    `json:"name"`
-	NetworkId int       `json:"networkId"`
-	ProgramId int64     `json:"programId"`
-	ServiceId int       `json:"serviceId"`
-	StartAt   time.Time `json:"startAt"`
+	Genres []int `json:"genres"`
+
+	// Intent この番組についてのユーザー意図。意図が無い場合は省略する。
+	// `skip` は予約行が消えた後も「録らない」という主張が残っていることを示す。
+	Intent    *ProgramIntent `json:"intent,omitempty"`
+	IsFree    bool           `json:"isFree"`
+	Name      string         `json:"name"`
+	NetworkId int            `json:"networkId"`
+	ProgramId int64          `json:"programId"`
+	ServiceId int            `json:"serviceId"`
+	StartAt   time.Time      `json:"startAt"`
 }
 
 // ProgramOverlaps defines model for ProgramOverlaps.

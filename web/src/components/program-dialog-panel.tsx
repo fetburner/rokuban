@@ -28,6 +28,7 @@ export function ProgramDialogPanel({
   overlaps,
   onReserve,
   onCancel,
+  onClearIntent,
 }: {
   program: ProgramReservationProgram
   serviceName?: string
@@ -38,6 +39,7 @@ export function ProgramDialogPanel({
   overlaps?: ProgramOverlaps
   onReserve: (overrides?: ProgramOverridesInput) => void
   onCancel: () => void
+  onClearIntent?: () => void
 }) {
   const draft = useProgramReservation({
     program,
@@ -45,6 +47,7 @@ export function ProgramDialogPanel({
     reservationStateUnknown,
     onReserve,
   })
+  const skipIntent = program.intent === 'skip' && !reserved
 
   return (
     <div data-testid="program-dialog-panel" className="flex flex-col gap-5">
@@ -56,6 +59,7 @@ export function ProgramDialogPanel({
           program={program}
           serviceName={serviceName}
           siteName={siteName}
+          skipIntent={skipIntent}
           overlaps={overlaps}
           title={
             <DialogTitle className="break-words">{program.name}</DialogTitle>
@@ -75,9 +79,11 @@ export function ProgramDialogPanel({
             reserved={reserved}
             pending={pending}
             reserveBlocked={draft.reserveBlocked}
+            skipIntent={skipIntent}
             showLiveLink={draft.showLiveLink}
             onReserve={draft.handleReserve}
             onCancel={onCancel}
+            onClearIntent={() => onClearIntent?.()}
           />
         </div>
       </div>

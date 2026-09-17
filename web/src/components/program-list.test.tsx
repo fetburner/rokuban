@@ -54,6 +54,7 @@ function actions(overrides: Partial<ReservationActions> = {}): ReservationAction
   return {
     reserve: vi.fn(),
     cancel: vi.fn(),
+    clearIntent: vi.fn(),
     isBusy: () => false,
     reservedProgramIds: new Set(),
     reservationStateUnknown: false,

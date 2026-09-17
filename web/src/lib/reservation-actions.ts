@@ -15,6 +15,7 @@ import { useToast } from '@/components/toaster'
 import { programIdentity } from '@/lib/all-sites-services'
 import {
   capacityOveragesQueryKeyPrefix,
+  programsQueryKeyPrefix,
   reservationsQueryKeyPrefix,
 } from '@/lib/events'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
@@ -132,6 +133,28 @@ export function useReservationActions(
     // 容量超過は予約集合からの導出値なので、予約が増減すれば作り直させる。
     // 帯を古いまま残すと「予約したのに不足が消えない / 出ない」になる
     void queryClient.invalidateQueries({ queryKey: [capacityOveragesQueryKeyPrefix] })
+    // 番組一覧も program_intents.action を返す。意図の変更後にこの射影を更新しないと、
+    // 予約行が消えた番組の「スキップ中」や恒久的な解除導線が古いまま残る。
+    void queryClient.invalidateQueries({ queryKey: [programsQueryKeyPrefix] })
+  }
+
+  // clearIntent は予約行が無い skip 意図を「意見なし」に戻すための恒久的な解除。
+  // 予約行の取消（cancel）とは違い、予約を作る optimistic state は持たない。
+  // intent を含む番組一覧を invalidate し、成功後はサーバーの値を再取得する。
+  const clearIntent = (program: ReservableProgram) => {
+    const key = programIdentity(program.site, program.programId)
+    setBusy(key, true)
+    void (async () => {
+      try {
+        await deleteIntent.mutateAsync({ site: program.site, programId: program.programId })
+        invalidateReservations()
+        toast({ message: 'スキップを解除しました' })
+      } catch (err) {
+        toast({ message: mutationErrorMessage('スキップの解除に失敗しました', err), kind: 'error' })
+      } finally {
+        setBusy(key, false)
+      }
+    })()
   }
 
   // revive は取消トーストの「元に戻す」から呼ぶ（issue #453）。`reserve` と
@@ -297,6 +320,7 @@ export function useReservationActions(
   return {
     reserve,
     cancel,
+    clearIntent,
     isBusy: (program) => busyProgramIds.has(programIdentity(program.site, program.programId)),
     reservedProgramIds,
     reservationStateUnknown,

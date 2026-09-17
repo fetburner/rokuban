@@ -854,6 +854,33 @@ describe('ProgramsPage の表示形式', () => {
     expect(notReserved).not.toHaveAttribute('data-reserved')
   })
 
+  it('予約行が消えた skip 意図を番組リストから解除できる', async () => {
+    const skipped = { ...soon, name: 'スキップ中の番組', intent: 'skip' as const }
+    const fetchMock = stubApi([], [], [skipped])
+    const { queryClient } = renderPage()
+
+    await reservationsSettled(queryClient)
+    const row = (await screen.findAllByTestId('program-row')).find((candidate) =>
+      within(candidate).queryByText(skipped.name),
+    )
+    expect(row).toBeDefined()
+    if (!row) throw new Error('スキップ中の番組行が見つからない')
+    expect(within(row).getByTestId('program-skip-intent-badge')).toHaveTextContent('スキップ中')
+
+    await userEvent.click(within(row).getByRole('button', { name: '解除' }))
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some((call) => {
+          const url = new URL(String(call[0]), 'http://localhost')
+          return (
+            url.pathname === `/api/sites/default/programs/${skipped.programId}/intent` &&
+            (call[1] as RequestInit | undefined)?.method === 'DELETE'
+          )
+        }),
+      ).toBe(true)
+    })
+  })
+
   it('グリッドでも予約状態が不明なら予約ボタンを押せない', async () => {
     // レビュー指摘: `ProgramGridView` の選択済み番組行（`ProgramRow`）が
     // `actions.reservationStateUnknown` を渡していないと、この行だけボタンの

@@ -1602,6 +1602,11 @@ components:
             type: integer
         isFree:
           type: boolean
+        intent:
+          description: |
+            この番組についてのユーザー意図。意図が無い場合は省略する。
+            `skip` は予約行が消えた後も「録らない」という主張が残っていることを示す。
+          $ref: "#/components/schemas/ProgramIntent"
 
     # 詳細。ProgramListItem に UI 完全形のペイロードを足したもの。
     Program:
@@ -2062,6 +2067,12 @@ components:
 
     # --- Program intent (issue #29) ---
 
+    ProgramIntent:
+      type: string
+      description: |
+        この番組に対するユーザー操作の意図。`program_intents.action` に対応する。
+      enum: [record, skip]
+
     ProgramIntentInput:
       type: object
       description: |
@@ -2072,8 +2083,7 @@ components:
         - action
       properties:
         action:
-          type: string
-          enum: [record, skip]
+          $ref: "#/components/schemas/ProgramIntent"
 
     # --- Program overrides (M2-4 / issue #29) ---
 

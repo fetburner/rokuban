@@ -28,6 +28,7 @@ export function ProgramRow({
   reservationStateUnknown,
   onReserve,
   onCancel,
+  onClearIntent,
   overlaps,
 }: {
   program: ProgramReservationProgram
@@ -39,6 +40,7 @@ export function ProgramRow({
   reservationStateUnknown: boolean
   onReserve: (overrides?: ProgramOverridesInput) => void
   onCancel: () => void
+  onClearIntent?: () => void
   /** 予約一覧から導出した重なり。 */
   overlaps?: ProgramOverlaps
 }) {
@@ -51,6 +53,7 @@ export function ProgramRow({
   })
 
   const detailId = `program-row-detail-${program.site}-${program.programId}`
+  const skipIntent = program.intent === 'skip' && !reserved
   // リストの操作列は、予約ボタン 80px と放送中のライブボタン 44px を
   // まとめて開く。これはリストだけの幅アニメーションで、共有操作側へ渡さない。
   const reserveColumnOpenClasses = cn(
@@ -76,6 +79,7 @@ export function ProgramRow({
             program={program}
             serviceName={serviceName}
             siteName={siteName}
+            skipIntent={skipIntent}
             overlaps={overlaps}
           />
           <ChevronDown
@@ -105,9 +109,11 @@ export function ProgramRow({
             reserved={reserved}
             pending={pending}
             reserveBlocked={draft.reserveBlocked}
+            skipIntent={skipIntent}
             showLiveLink={draft.showLiveLink}
             onReserve={draft.handleReserve}
             onCancel={onCancel}
+            onClearIntent={() => onClearIntent?.()}
           />
         </div>
       </div>

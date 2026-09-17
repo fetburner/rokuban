@@ -979,6 +979,7 @@ function ProgramGridView({
                 overlaps={actions.overlapsFor(selected)}
                 onReserve={(overrides) => actions.reserve(selected, overrides)}
                 onCancel={() => actions.cancel(selected)}
+                onClearIntent={() => actions.clearIntent(selected)}
               />
             </div>
           </DialogContent>
