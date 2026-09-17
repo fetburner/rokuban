@@ -138,18 +138,21 @@ prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らな
 **表示しないケースを決めておく**（言うことが無いときに行を並べない）:
 
 - 正常に取り込めて原本もある録画（`committed` かつ `sizeBytes` あり）: 何も出さない
-- `status = 'recording'`: 取り込みがまだ始まっていないのは正常であって「待っている」を
-  知らせる情報ではない。録画中の全行に「取り込み待ち」が並ぶのは何も言っていないのと同じ
 - `ingest` そのものが無い（API が古い）: 推測で埋めない
 - **ingest ジョブが来ない録画（`failed` / `canceled`）**: `state` が `unknown` で
   返るので何も出ない。ここで「取り込み待ち」を出すと、**来ない未来を UI が断定する**
   ことになる。`sizeBytes` について直したはずの誤りを `pending` について作り直す
-  形だ。`pending` の根拠を `record_sync` 行の**存在**に取るとこれが起きる。watcher が
-  ingest を投入するのは record が `finished` のときだけなので、`record_sync` 行は
-  消えない。そのため `failed` / `canceled` の録画が永久に「取り込み待ち」を名乗る。根拠は
-  **watcher が ingest を投入する条件と同じ述語**（`record_sync.status = 'finished'`）
-  に揃える。**状態の名前が「これから起きる」を含むなら、起きる根拠を述語として
-  書けるか確かめる**
+  形だ。`pending` の根拠を `record_sync` 行の**存在**に取るとこれが起きる。根拠は
+  **watcher が ingest を投入する条件と同じ述語**（`record_sync.status` が
+  `recording` または `finished`）に揃える。**状態の名前が「これから起きる」を含むなら、
+  起きる根拠を述語として書けるか確かめる**
+
+**`status = 'recording'` も取り込みを出す。** watcher は録画開始を観測した時点で
+ingest を投入し、worker が録画に追従する（[recording/ingest.md](../recording/ingest.md)
+§5.1）。したがって録画中の行にも「取り込み待ち」（進捗行がまだ無い開始直後の数秒）と
+「取り込み中」が出る。以前は「録画中に取り込みの数字は動かない」前提でここを伏せて
+いたが、追従では数字が動く。**停滞を出さないことの根拠も変わった** --- 追い付いている
+状態は正常なので worker が `observed_at` を進める（§5.6）
 
 **色は使わない**（`bg-muted` のまま）。停滞も含めて状況の説明であって、タリー
 （いま電波に乗っている）でも destructive（取り返しがつかない）でもない
@@ -178,7 +181,9 @@ prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らな
   record_sweep（5 分周期）が再投入するのを待っている状態。分オーダーでしか
   動かないものを 5 秒で叩かない。**再開すれば `observedAt` が新しくなって自動で
   短い周期に戻る**（自己回復する）
-- **`status = 'recording'`**: 録画中に取り込みの数字は動かない
+- **`status = 'recording'`**: 録画中も数字は動くが、追い付いた状態では `written_bytes` が
+  止まって見える。**停滞とは違う**ので、worker 側が健全なポーリングで `observed_at` を
+  進める（§5.6）
 
 いずれも [shell.md](shell.md) の 60 秒 invalidate（`lib/events.ts` の
 `operationalRefreshIntervalMs`）が拾うので、放置ではなく「周期を落とす」だけになる。

@@ -382,7 +382,7 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 				if finishedObserved {
 					return offset, nil
 				}
-				status, err := w.pollRecordStatus(ctx, client, recordID)
+				poll, err := w.pollRecord(ctx, client, recordID)
 				if err != nil {
 					if retryErr := retryPoll(ctx, &consecutiveFailures, err, log, "record status"); retryErr != nil {
 						return 0, retryErr
@@ -390,9 +390,10 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 					continue
 				}
 				consecutiveFailures = 0
-				if err := w.afterPollStatus(status, &finishedObserved); err != nil {
+				if err := w.afterPollStatus(poll.Status, &finishedObserved); err != nil {
 					return 0, err
 				}
+				progress.observeProgress(ctx, offset, poll.ContentLength)
 				if finishedObserved {
 					continue
 				}
@@ -439,7 +440,7 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 			continue
 		}
 
-		status, err := w.pollRecordStatus(ctx, client, recordID)
+		poll, err := w.pollRecord(ctx, client, recordID)
 		if err != nil {
 			if retryErr := retryPoll(ctx, &consecutiveFailures, err, log, "record status"); retryErr != nil {
 				return 0, retryErr
@@ -447,9 +448,10 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 			continue
 		}
 		consecutiveFailures = 0
-		if err := w.afterPollStatus(status, &finishedObserved); err != nil {
+		if err := w.afterPollStatus(poll.Status, &finishedObserved); err != nil {
 			return 0, err
 		}
+		progress.observeProgress(ctx, offset, poll.ContentLength)
 		if finishedObserved {
 			continue
 		}
@@ -459,13 +461,47 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 	}
 }
 
-// pollRecordStatus は録画中の Range 応答後に record の状態を再取得する。
-func (w *IngestWorker) pollRecordStatus(ctx context.Context, client *mirakc.Client, recordID string) (string, error) {
+// recordPoll は追従ループの 1 周で観測した record の状態。
+type recordPoll struct {
+	// Status は mirakc の recordingStatus（recording / finished / canceled / failed）。
+	Status string
+	// ContentLength は GetRecord の content.length（mirakc が返さなければ nil）。
+	// 追従ではこれが録画とともに伸びるので、進捗の分母を更新する材料になる。
+	ContentLength *int64
+}
+
+// pollRecord は録画中の Range 応答後に record の状態を再取得する。
+//
+// GetRecord は既に毎ポーリング呼んでいるので、content.length を分母の更新に
+// 使うのは追加リクエスト無しで済む。Work 開始時の record_sync.content_length を
+// 分母に固定すると、追従では written が古い分母を追い越して UI が「100%」を
+// 出し続ける（Web 側は min(100, ...) で頭打ちにするため、嘘が % として出る）。
+func (w *IngestWorker) pollRecord(ctx context.Context, client *mirakc.Client, recordID string) (recordPoll, error) {
 	record, err := client.GetRecord(ctx, recordID)
 	if err != nil {
-		return "", err
+		return recordPoll{}, err
 	}
-	return record.Recording.Status, nil
+	var length *int64
+	if record.Content.Length != nil {
+		l := int64(*record.Content.Length)
+		length = &l
+	}
+	return recordPoll{Status: record.Recording.Status, ContentLength: length}, nil
+}
+
+// observeProgress は健全に 1 周したポーリングを進捗として記録する。
+//
+// **0 バイトでも observed_at を進める。** 追い付いている状態は「止まっている」
+// のではなく追従が正常な状態そのもので、observed_at を据え置くと UI の停滞判定
+// （60 秒）がこれを「停滞」と読む。分母も同時に更新する。
+//
+// 間引きは report が持つ（最短 2 秒）。接続断の再試行はここを通らないので、
+// 「0 バイトの試行は進捗ではない」という既存の規律は失敗経路側に残る。
+func (r *ingestProgressReporter) observeProgress(ctx context.Context, written int64, expected *int64) {
+	if expected != nil {
+		r.expectedBytes = expected
+	}
+	r.report(ctx, written)
 }
 
 // afterPollStatus は status の観測を転送ループの状態へ適用する。

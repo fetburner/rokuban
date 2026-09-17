@@ -261,9 +261,15 @@ NULL とは違う。非 null な `*int64(0)` として `watcher.go` の `content
 （`ingest.stall_timeout` = 30 秒）で正常に再接続している往復を「停滞」と呼ばないためである
 （`web/src/lib/ingest.ts` の `ingestStaleAfterMs`）。
 
-**追従の待ちを「停滞」と呼ばない。** `stall_timeout` は 1 回の Range 応答の本文が止まったときにだけ効く。追従の差分は数 MB なので通常は発火しない。信号断で録画ファイルが伸びない間は「追い付いた → 待つ → 状態確認」のポーリングが回るだけで、切断もリトライ消費も起きない。`observed_at` は差分が来るたびに進むので、UI の停滞判定はこの待ちを停滞と読まない。
+**追従の待ちを「停滞」と呼ばない。** `stall_timeout` は 1 回の Range 応答の本文が止まったときにだけ効く。追従の差分は数 MB なので通常は発火しない。信号断で録画ファイルが伸びない間は「追い付いた → 待つ → 状態確認」のポーリングが回るだけで、切断もリトライ消費も起きない。
 
-**進捗の分母は録画中には伸び続ける。** `record_sync.content_length` は watcher が観測した時点の値なので、録画中に読むと小さい（最初の観測は 0 でありうる）。UI は分母が 0 なら % を出さずバイト数だけを出す。照合（層 3）には使わない --- 照合は finished 確認後の HEAD だけである。
+**健全に 1 周したポーリングは `observed_at` を進める（0 バイトでも）。** 追い付いている状態は止まっているのではなく、追従が正常な状態そのものである。observed_at を「バイトを書けたときだけ」進めると、**正常に追従できている録画ほど** UI の停滞判定（60 秒）に引っかかり「取り込み中（停滞）」と表示される。
+
+間引きは既存の進捗書き込みと同じ最短 2 秒なので、追従中の DB 書き込みは録画 1 本あたり秒 0.5 行に留まる。接続断の再試行はここを通らないため、**「0 バイトの試行は進捗ではない」という規律は失敗経路側に残る**（`TestIngestWorker_ProgressFlushesInterruptedBurst` が固定している）。
+
+**進捗の分母は追従ループが更新する。** `record_sync.content_length` は watcher が観測した時点の値である。Work 開始時に固定すると、録画が伸びて `written_bytes` が分母を追い越し、UI が「取り込み中 100%」を録画中ずっと出し続ける。Web 側は `min(100, ...)` で頭打ちにするので、嘘が % として出る。
+
+追従ループは毎ポーリング `GetRecord` を呼んでおり、その `content.length` が同じ観測なので追加リクエスト無しで分母を更新できる（`ingestProgressReporter.observeProgress`）。`TestIngestWorker_FollowingCaughtUpKeepsProgressFresh` が分母と observed_at の両方を固定している。分母が NULL のときは % を出さずバイト数だけを出す。照合（層 3）には使わない --- 照合は finished 確認後の HEAD だけである。
 
 **API の状態は 4 値で、原本 `media_assets` 行の有無を最優先に導出する**（列に焼いた値では
 ない。`internal/api/recordings.go` の `ingestProgressFromFields`）。`kind='original'` の行が
