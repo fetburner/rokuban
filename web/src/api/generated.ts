@@ -413,7 +413,12 @@ export interface DropSummary {
  *   mirakc record が観測されていないか、record が `failed` / `canceled`
  *   で `record_sync.status` が上の述語を満たさない。録画中に投入済みの
  *   ingest ジョブがあっても、`failed` / `canceled` を観測したジョブは
- *   進捗行を消してから終端するのでここへ落ちる
+ *   進捗行を消してから終端するのでここへ落ちる。
+ *   **`failed` / `canceled` の観測は `transferring` より優先する。**
+ *   進捗行の DELETE が失敗すると行が残りうるが、二度と取り込まれない
+ *   録画の残骸を「取り込み中」と読ませない（`ingestProgressFromFields`
+ *   の優先順位参照）。`success` した録画の原本行はこの判定より先に
+ *   見るので、コミット済みの録画を後に取り消しても `committed` のまま
  *
  * **`pending` は「これから来る」の断定なので、来る根拠が無いものは
  * 入れない。** `record_sync` 行の存在だけを根拠にすると、`failed` /
@@ -461,7 +466,12 @@ export interface IngestProgress {
      *   mirakc record が観測されていないか、record が `failed` / `canceled`
      *   で `record_sync.status` が上の述語を満たさない。録画中に投入済みの
      *   ingest ジョブがあっても、`failed` / `canceled` を観測したジョブは
-     *   進捗行を消してから終端するのでここへ落ちる
+     *   進捗行を消してから終端するのでここへ落ちる。
+     *   **`failed` / `canceled` の観測は `transferring` より優先する。**
+     *   進捗行の DELETE が失敗すると行が残りうるが、二度と取り込まれない
+     *   録画の残骸を「取り込み中」と読ませない（`ingestProgressFromFields`
+     *   の優先順位参照）。`success` した録画の原本行はこの判定より先に
+     *   見るので、コミット済みの録画を後に取り消しても `committed` のまま
      *
      * **`pending` は「これから来る」の断定なので、来る根拠が無いものは
      * 入れない。** `record_sync` 行の存在だけを根拠にすると、`failed` /

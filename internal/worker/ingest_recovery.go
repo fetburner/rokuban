@@ -35,6 +35,8 @@ const (
 // （internal/worker/ingest.go の commit / already-committed 経路）は成功した
 // attempt でしか呼ばれないため、失敗して再試行した attempt は古い
 // recording_ingest_progress 行を残したまま attempted_at だけを更新する。
+// （cancel / fail を観測した終端経路も同じ関数を呼ぶが、そこではジョブが
+// state='running' でなくなるのでこのクエリの候補にはならない。）
 // River のバックオフ（attempt^4 秒）で attempt 3 以降は間隔が
 // ingestRecoveryStaleAfter（1 分）を超えるので、COALESCE(p.observed_at,
 // j.attempted_at) のまま新しい attempted_at を無視すると、再試行が

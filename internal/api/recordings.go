@@ -78,6 +78,12 @@ type recordingListFields struct {
 	// 投入する条件と同じものを見ていないと、failed / canceled の録画が永久に
 	// pending を名乗る。
 	HasIngestableRecord bool
+	// HasAbnormallyEndedRecord は mirakc の record が canceled / failed で終わった
+	// 観測があるか（`record_sync.status`）。**HasIngestableRecord の否定ではない** ---
+	// 未知の status では worker が追従を続けるので、その間の進捗行は生きた観測で
+	// ある。この列は「二度と ingest されない record に進捗行が残っている」ときだけ
+	// 真になり、その残骸を transferring として読ませないために使う。
+	HasAbnormallyEndedRecord bool
 	// IngestWrittenBytes / IngestExpectedBytes / IngestObservedAt は
 	// recording_ingest_progress の 1 行（無ければすべて nil）。
 	IngestWrittenBytes  *int64
@@ -116,12 +122,17 @@ func utcTimePtr(t *time.Time) *time.Time {
 //     有無が答える。原本行を進捗行より先に見るのは、コミット済みの録画に
 //     取り残された進捗行（別経路で原本が登録された場合など）が「取り込み中」を
 //     名乗らないようにするため（真実は media_assets 側。不変条件 5）。
-//  2. 進捗行があれば transferring。バイト数と観測時刻を添える。
-//  3. **ingest ジョブが来るはずの** record 観測だけがあれば pending
+//  2. **record が canceled / failed で終わっている**（HasAbnormallyEndedRecord）
+//     なら unknown。進捗行より先に見る --- worker は cancel / fail を観測したとき
+//     進捗行を消してから終端するが、その DELETE は失敗してもログだけで続行するので、
+//     行が残りうる。残骸を transferring と読むと、二度と取り込まれない録画が
+//     恒久的に「取り込み中（停滞）」を名乗る
+//  3. 進捗行があれば transferring。バイト数と観測時刻を添える。
+//  4. **ingest ジョブが来るはずの** record 観測だけがあれば pending
 //     （取り込み待ち / 再試行待ち）。録画中も watcher が ingest を投入するので
 //     recording の観測もここに入る。進捗行がまだ無い録画開始直後の数秒は
 //     pending になる。
-//  4. どれでもなければ unknown --- 取り込みが始まった観測が無い。record 自体が
+//  5. どれでもなければ unknown --- 取り込みが始まった観測が無い。record 自体が
 //     観測されていないか、mirakc の record が failed / canceled になった。
 //     録画中に投入済みの ingest ジョブがあっても、status を failed / canceled と
 //     観測したジョブは進捗行を消してから終端する（internal/worker/ingest.go の
@@ -140,6 +151,11 @@ func ingestProgressFromFields(r recordingListFields) IngestProgress {
 	switch {
 	case r.HasOriginalAsset:
 		return IngestProgress{State: Committed}
+	case r.HasAbnormallyEndedRecord:
+		// 取り消し・失敗した record の進捗行は残骸である（上の 2 の説明）。
+		// 原本行の判定より後・進捗行より前に置くのは、コミット済みの録画を
+		// 取り消した場合に原本の存在を優先させるためである。
+		return IngestProgress{State: Unknown}
 	case r.IngestWrittenBytes != nil:
 		written := *r.IngestWrittenBytes
 		return IngestProgress{

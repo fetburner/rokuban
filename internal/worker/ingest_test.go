@@ -1007,6 +1007,147 @@ func TestIngestWorker_FollowingCaughtUpKeepsProgressFresh(t *testing.T) {
 	}
 }
 
+// TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart は、未知の status を
+// 観測したときに **River へ戻さずジョブ内で再試行し、offset を捨てない**ことを
+// 固定する。
+//
+// transferIngestRecord は offset をジョブのメモリにしか持たないので、ここで
+// error を返すと次の試行が先頭から引き直す（errIngestRecordEndedAbnormally の
+// doc コメントと同じ理由）。未知の status は一過性かもしれない --- 実機では
+// mirakc が一時的に応答を欠いたとき status が空になりうる。
+//
+// 変異「未知の status で即 error を返す」は Work() が非 nil になって落ちる。
+// 変異「未知の status を終端 sentinel に混ぜる」も同じく落ちる。
+func TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart(t *testing.T) {
+	setFollowPollInterval(t, time.Millisecond)
+	full := makeTSData(10)
+
+	var recordGets atomic.Int32
+	var zeroOffsetRequests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			offset := parseStreamRangeOffset(r)
+			if offset == 0 {
+				zeroOffsetRequests.Add(1)
+			}
+			if offset >= int64(len(full)) {
+				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+				return
+			}
+			body := full[offset:]
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(body)
+		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(full)))
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			n := recordGets.Add(1)
+			status := ""
+			if n >= 4 {
+				status = "finished"
+			}
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{Status: status, Options: mirakc.Options{ContentPath: strPtr("test/unknown.m2ts")}},
+				Content:   mirakc.ContentInfo{Path: "/recording/test/unknown.m2ts"},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+		case r.Method == http.MethodDelete:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	w := &IngestWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MediaDir:      t.TempDir(),
+		StallTimeout:  time.Second,
+		Pool:          pool,
+	}
+	recordingID := insertTestRecording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, "rec-unknown")
+	if err := w.Work(context.Background(), &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{ID: 425020}, Args: IngestJobArgs{Site: "default", RecordID: "rec-unknown"}}); err != nil {
+		t.Fatalf("Work() = %v, want nil（未知の status はジョブ内で再試行する。River に戻すと先頭から引き直す）", err)
+	}
+	got, err := os.ReadFile(filepath.Join(w.MediaDir, "sites", "default", "test", "unknown.m2ts"))
+	if err != nil {
+		t.Fatalf("reading committed file: %v", err)
+	}
+	if !bytes.Equal(got, full) {
+		t.Fatalf("committed bytes = %d, want %d", len(got), len(full))
+	}
+	if got := zeroOffsetRequests.Load(); got != 1 {
+		t.Errorf("offset 0 の Range 要求 = %d, want 1（未知の status で先頭から引き直している）", got)
+	}
+}
+
+// TestIngestWorker_PermanentlyUnknownStatusIsBounded は、未知の status が続いても
+// ジョブ内の再試行が上限で止まり、無限にポーリングしないことを固定する。
+//
+// **連続失敗カウンタのリセット位置**を固定するテストである。リセットを
+// followAfterStatusPoll の前（観測の成否を問わない位置）に戻すと、未知の status に
+// 対してカウンタが毎周 1 に戻り、上限に達しないまま回り続ける。
+func TestIngestWorker_PermanentlyUnknownStatusIsBounded(t *testing.T) {
+	setFollowPollInterval(t, time.Millisecond)
+
+	var recordGets atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			// 常に追い付いた状態。status の観測だけを見る。
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			recordGets.Add(1)
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{Status: "", Options: mirakc.Options{ContentPath: strPtr("test/forever-unknown.m2ts")}},
+				Content:   mirakc.ContentInfo{Path: "/recording/test/forever-unknown.m2ts"},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	w := &IngestWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MediaDir:      t.TempDir(),
+		StallTimeout:  time.Second,
+		Pool:          pool,
+	}
+	recordingID := insertTestRecording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, "rec-forever-unknown")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	// 上限（maxInJobRetries = 5）に達すれば数秒で error を返す。返らなければ
+	// カウンタがリセットされ続けている。
+	if err := w.Work(ctx, &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{ID: 425021}, Args: IngestJobArgs{Site: "default", RecordID: "rec-forever-unknown"}}); err == nil {
+		t.Fatal("Work() = nil, want an error（未知の status が続いたら上限で止まる）")
+	}
+	// determineRelPath の 1 回 + 上限までの 6 回。余裕を見て 10 で切る。
+	if got := recordGets.Load(); got > 10 {
+		t.Errorf("status の観測回数 = %d, want <= 10（連続失敗カウンタがリセットされ続けている）", got)
+	}
+}
+
 func TestIngestWorker_SizeMismatch(t *testing.T) {
 	tsData := makeTSData(50)
 

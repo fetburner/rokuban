@@ -32,7 +32,7 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_ingest_scrambled_packets_total` | Counter | scrambled カウンタ |
 | `rokuban_ingest_bytes_total` | Counter | ingest バイト数 |
 | `rokuban_ingest_duration_seconds` | Histogram | ingest 所要時間 |
-| `rokuban_ingest_jobs_total{result}` | Counter | ingest の成功/失敗件数 |
+| `rokuban_ingest_jobs_total{result}` | Counter | ingest の結果別件数。`success` / `failure` / `canceled`。**`canceled` は取り消し・失敗した録画**（利用者が止めた録画）で、`failure` に混ぜない --- 混ぜると失敗率に取消が積まれて本物の失敗が埋もれる |
 | `rokuban_uningested_records{site}` | Gauge（DB） | 未 ingest record 総量（件数）。**`finished` として観測済みのぶんだけ**（下記 ingest） |
 | `rokuban_uningested_record_bytes{site}` | Gauge（DB） | 未 ingest record 総量（バイト）。同上 |
 | `rokuban_uningested_backlog_scrape_errors_total{site}` | Counter | 上記の取得失敗 |

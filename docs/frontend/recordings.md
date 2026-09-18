@@ -151,6 +151,11 @@ prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らな
   **watcher が ingest を投入する条件と同じ述語**（`record_sync.status` が
   `recording` または `finished`）に揃える。**状態の名前が「これから起きる」を含むなら、
   起きる根拠を述語として書けるか確かめる**
+  - **リトライで消えなかった進捗行が残っていても `unknown` になる。** worker は
+    cancel / fail を観測したとき進捗行を消してからジョブを終端するが、その DELETE は
+    失敗してもログだけで続行する。server 側の導出が `failed` / `canceled` の観測を
+    `transferring` より優先するので、二度と取り込まれない録画が
+    「取り込み中（停滞）」を名乗り続けることはない
 
 **`status = 'recording'` も取り込みを出す。** watcher は録画開始を観測した時点で
 ingest を投入し、worker が録画に追従する（[recording/ingest.md](../recording/ingest.md)

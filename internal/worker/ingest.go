@@ -309,6 +309,10 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 			if delErr := sqlcgen.New(w.Pool).DeleteRecordingIngestProgress(ctx, recordingID); delErr != nil {
 				log.Warn("ingest: failed to clear stale transfer progress", "recording_id", recordingID, "err", delErr)
 			}
+			// 取り消し・失敗は「転送が壊れた」ではないので、失敗として数えない。
+			// 同じ result="failure" に混ぜると、利用者が止めた録画が失敗率に
+			// 積まれて本物の失敗が埋もれる。
+			result = "canceled"
 			return river.JobCancel(err)
 		}
 		return err
@@ -407,26 +411,18 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 				}
 				poll, err := w.pollRecord(ctx, client, recordID)
 				if err != nil {
-					if retryErr := retryPoll(ctx, &consecutiveFailures, err, log, "record status"); retryErr != nil {
+					if retryErr := retryPoll(ctx, &consecutiveFailures, err, log, "record status", offset); retryErr != nil {
 						return 0, retryErr
 					}
 					continue
 				}
-				consecutiveFailures = 0
-				if err := w.afterPollStatus(poll.Status, &finishedObserved); err != nil {
-					return 0, err
-				}
-				progress.observeProgress(ctx, offset, poll.ContentLength)
-				if finishedObserved {
-					continue
-				}
-				if err := waitForFollowPoll(ctx); err != nil {
+				if err := w.followAfterStatusPoll(ctx, poll, &finishedObserved, &consecutiveFailures, offset, progress, log); err != nil {
 					return 0, err
 				}
 				continue
 			}
 
-			if retryErr := retryPoll(ctx, &consecutiveFailures, streamErr, log, "stream connect"); retryErr != nil {
+			if retryErr := retryPoll(ctx, &consecutiveFailures, streamErr, log, "stream connect", offset); retryErr != nil {
 				return 0, retryErr
 			}
 			continue
@@ -447,7 +443,7 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 			if ctx.Err() != nil {
 				return 0, ctx.Err()
 			}
-			if retryErr := retryPoll(ctx, &consecutiveFailures, copyErr, log, "transfer"); retryErr != nil {
+			if retryErr := retryPoll(ctx, &consecutiveFailures, copyErr, log, "transfer", offset); retryErr != nil {
 				// retryPoll 自身が "transfer failed N consecutive times" を
 				// 付けている。ここで包み直すと固定回数（maxInJobRetries）と
 				// retryPoll が数えた回数がずれた文になり、ctx キャンセル時は
@@ -470,20 +466,12 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 
 		poll, err := w.pollRecord(ctx, client, recordID)
 		if err != nil {
-			if retryErr := retryPoll(ctx, &consecutiveFailures, err, log, "record status"); retryErr != nil {
+			if retryErr := retryPoll(ctx, &consecutiveFailures, err, log, "record status", offset); retryErr != nil {
 				return 0, retryErr
 			}
 			continue
 		}
-		consecutiveFailures = 0
-		if err := w.afterPollStatus(poll.Status, &finishedObserved); err != nil {
-			return 0, err
-		}
-		progress.observeProgress(ctx, offset, poll.ContentLength)
-		if finishedObserved {
-			continue
-		}
-		if err := waitForFollowPoll(ctx); err != nil {
+		if err := w.followAfterStatusPoll(ctx, poll, &finishedObserved, &consecutiveFailures, offset, progress, log); err != nil {
 			return 0, err
 		}
 	}
@@ -496,6 +484,32 @@ type recordPoll struct {
 	// ContentLength は GetRecord の content.length（mirakc が返さなければ nil）。
 	// 追従ではこれが録画とともに伸びるので、進捗の分母を更新する材料になる。
 	ContentLength *int64
+}
+
+// followAfterStatusPoll は status を 1 回観測した後のループ制御をまとめる。
+// 戻り値が非 nil なら呼び出し側はそれを返し、nil ならループを続ける。
+//
+// **終わったと確定した record を River の再試行に戻さない**
+// （errIngestRecordEndedAbnormally の doc コメント参照）。一方、**未知の status は
+// ジョブ内で再試行する** --- 一過性（status が欠落した応答など）かもしれず、
+// ここで River に戻すと次の試行が先頭から引き直す。連続回数は retryPoll が数える
+// ので、恒久的に未知ならジョブは River へ戻る。
+func (w *IngestWorker) followAfterStatusPoll(ctx context.Context, poll recordPoll, finishedObserved *bool, consecutiveFailures *int, offset int64, progress *ingestProgressReporter, log *slog.Logger) error {
+	if statusErr := w.afterPollStatus(poll.Status, finishedObserved); statusErr != nil {
+		if errors.Is(statusErr, errIngestRecordEndedAbnormally) {
+			return statusErr
+		}
+		return retryPoll(ctx, consecutiveFailures, statusErr, log, "record status", offset)
+	}
+	// 観測が 1 周ぶん成功したので連続失敗を戻す。**未知の status でここを通しては
+	// ならない** --- リセットしてから retryPoll を呼ぶと、恒久的に未知の status に
+	// 対してカウンタが毎周 1 に戻り、上限に達しないまま回り続ける。
+	*consecutiveFailures = 0
+	progress.observeProgress(ctx, offset, poll.ContentLength)
+	if *finishedObserved {
+		return nil
+	}
+	return waitForFollowPoll(ctx)
 }
 
 // pollRecord は録画中の Range 応答後に record の状態を再取得する。
@@ -563,17 +577,17 @@ func waitForFollowPoll(ctx context.Context) error {
 // retryPoll は一時障害の連続回数だけを数える。録画が数時間続く間に偶発的な
 // 失敗が散発しても River の attempt を消費しない一方、mirakc が落ち続ける
 // とジョブを River の再試行へ戻す。
-func retryPoll(ctx context.Context, consecutiveFailures *int, err error, log *slog.Logger, phase string) error {
+func retryPoll(ctx context.Context, consecutiveFailures *int, err error, log *slog.Logger, phase string, offset int64) error {
 	if !isRetryablePollError(err) {
 		return fmt.Errorf("%s: %w", phase, err)
 	}
 	*consecutiveFailures++
 	attempt := *consecutiveFailures - 1
 	if *consecutiveFailures > maxInJobRetries {
-		return fmt.Errorf("%s failed %d consecutive times: %w", phase, *consecutiveFailures, err)
+		return fmt.Errorf("%s failed %d consecutive times at offset %d: %w", phase, *consecutiveFailures, offset, err)
 	}
 	delay := connectRetryDelay(attempt)
-	log.Warn("ingest: transient poll failure, retrying", "phase", phase, "consecutive_failures", *consecutiveFailures, "err", err, "delay", delay)
+	log.Warn("ingest: transient poll failure, retrying", "phase", phase, "consecutive_failures", *consecutiveFailures, "offset", offset, "err", err, "delay", delay)
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {

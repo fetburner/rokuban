@@ -282,6 +282,15 @@ NULL とは違う。非 null な `*int64(0)` として `watcher.go` の `content
 `sizeBytes` の有無が答える）。取り残された進捗行がコミット済みの録画に「取り込み中」を
 名乗らないのも、この優先順位による（真実は `media_assets` 側。不変条件 5）。
 
+**原本の次に優先するのは「record が `failed` / `canceled` で終わった観測」である。** 進捗行
+より先に見る。worker は cancel / fail を観測したとき進捗行を消してからジョブを終端するが、
+その DELETE は失敗してもログだけで続行する（成功したジョブの後始末を失敗で巻き戻さない
+既存の判断に揃えている）。行が残ると、二度と取り込まれない録画が恒久的に「取り込み中
+（停滞）」を名乗る。**この述語は `has_ingestable_record` の否定にしてはならない** ---
+未知の status では worker は追従を続けるので、その間の進捗行は生きた観測である
+（`followAfterStatusPoll`）。終端する status の集合は worker の
+`errIngestRecordEndedAbnormally` と一致させる。
+
 **`pending`（取り込み待ち）の根拠は、watcher が ingest ジョブを投入する条件と同じ述語に
 揃える**（`record_sync.status` が `recording` または `finished`）。`record_sync` 行の**存在**を根拠にしては
 ならない。行は `failed` / `canceled` の record にも作られ、Rokuban はこの行を消さない

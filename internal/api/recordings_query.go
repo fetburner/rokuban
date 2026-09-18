@@ -261,6 +261,25 @@ const (
         SELECT 1 FROM record_sync rs
         WHERE rs.recording_id = r.id AND rs.status IN ('recording', 'finished')
     ) AS has_ingestable_record,
+    -- has_abnormally_ended_record は「record が canceled / failed で終わった」。
+    -- **述語は worker の終端条件と一致させる**（internal/worker/ingest.go の
+    -- afterPollStatus が errIngestRecordEndedAbnormally を返す status の集合）。
+    --
+    -- この列が要るのは、取り消した録画の recording_ingest_progress 行が
+    -- 残りうるからである。worker は cancel / fail を観測したとき進捗行を消して
+    -- からジョブを終端するが、その DELETE が失敗してもログだけで続行する
+    -- （成功したジョブの後始末を失敗で巻き戻さない既存の判断に揃えている）。
+    -- 行が残ると ingest_written_bytes が非 NULL になり、ingestProgressFromFields
+    -- は has_ingestable_record より進捗行を先に見るので、二度と取り込まれない
+    -- 録画が恒久的に「取り込み中（停滞）」を名乗る。
+    --
+    -- **has_ingestable_record の否定にしてはならない。** 未知の status では
+    -- worker は追従を続ける（followAfterStatusPoll がジョブ内で再試行する）ので、
+    -- その間の進捗行は生きた観測である。
+    EXISTS (
+        SELECT 1 FROM record_sync rs
+        WHERE rs.recording_id = r.id AND rs.status IN ('canceled', 'failed')
+    ) AS has_abnormally_ended_record,
     ip.written_bytes  AS ingest_written_bytes,
     ip.expected_bytes AS ingest_expected_bytes,
     ip.observed_at    AS ingest_observed_at`
@@ -512,7 +531,7 @@ WHERE r.id = $1 AND r.purged_at IS NULL`
 		&fields.KeepOriginal,
 		&fields.EncodeProfiles,
 		&fields.EncodeAttempts,
-		&fields.HasOriginalAsset, &fields.HasIngestableRecord,
+		&fields.HasOriginalAsset, &fields.HasIngestableRecord, &fields.HasAbnormallyEndedRecord,
 		&fields.IngestWrittenBytes, &fields.IngestExpectedBytes, &fields.IngestObservedAt,
 		&fields.AvailableEncodedAssets,
 	)
@@ -555,7 +574,7 @@ func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter
 			&fields.KeepOriginal,
 			&fields.EncodeProfiles,
 			&fields.EncodeAttempts,
-			&fields.HasOriginalAsset, &fields.HasIngestableRecord,
+			&fields.HasOriginalAsset, &fields.HasIngestableRecord, &fields.HasAbnormallyEndedRecord,
 			&fields.IngestWrittenBytes, &fields.IngestExpectedBytes, &fields.IngestObservedAt,
 			&fields.AvailableEncodedAssets,
 		); err != nil {
