@@ -40,6 +40,20 @@ const (
 	connectRetryMaxDelay  = 5 * time.Second
 )
 
+// errIngestRecordEndedAbnormally は、追従中の record が finished ではなく
+// canceled / failed で終わったことを表す sentinel（afterPollStatus が wrap し、
+// Work が errors.Is で拾う）。
+//
+// **これを River の再試行に戻してはならない。** transferIngestRecord は offset を
+// ジョブのメモリにしか持たないので、再試行のたびに先頭から引き直す。River の
+// MaxAttempts は既定のまま（25）で、エッジの record は commit 成功時にしか
+// 消えないため、取り消した長時間録画が全量再取得を繰り返す形になる。
+//
+// 部分ファイルを資産として commit するかどうかは別の設計判断で、ここでは決めない。
+// いまの挙動は「canceled / failed の record は取り込まない」で、録画中も ingest を
+// 投入するようになる前と揃っている。
+var errIngestRecordEndedAbnormally = errors.New("mirakc record ended abnormally")
+
 // followPollInterval は録画中の Range ポーリング間隔。
 //
 // recording のあいだは差分の有無に関わらず必ず待つ。待たないと ingest が
@@ -288,6 +302,15 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 
 	offset, err := w.transferIngestRecord(ingestCtx, client, args.RecordID, dst, progress, log)
 	if err != nil {
+		if errors.Is(err, errIngestRecordEndedAbnormally) {
+			// 再試行に戻さない（errIngestRecordEndedAbnormally の doc コメント
+			// 参照）。進捗行は他の削除経路（commit /
+			// handleAlreadyCommittedIngest）と揃え、失敗してもジョブは落とさない。
+			if delErr := sqlcgen.New(w.Pool).DeleteRecordingIngestProgress(ctx, recordingID); delErr != nil {
+				log.Warn("ingest: failed to clear stale transfer progress", "recording_id", recordingID, "err", delErr)
+			}
+			return river.JobCancel(err)
+		}
 		return err
 	}
 	expectedLen, err := client.HeadRecordStream(ingestCtx, args.RecordID)
@@ -425,7 +448,12 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 				return 0, ctx.Err()
 			}
 			if retryErr := retryPoll(ctx, &consecutiveFailures, copyErr, log, "transfer"); retryErr != nil {
-				return 0, fmt.Errorf("transfer failed after %d consecutive retries at offset %d: %w", maxInJobRetries, offset, retryErr)
+				// retryPoll 自身が "transfer failed N consecutive times" を
+				// 付けている。ここで包み直すと固定回数（maxInJobRetries）と
+				// retryPoll が数えた回数がずれた文になり、ctx キャンセル時は
+				// ctx.Err() が「N 回連続失敗」を名乗ってしまう。他の 2 箇所
+				// （"record status" / "stream connect"）と同じくそのまま返す。
+				return 0, retryErr
 			}
 			continue
 		}
@@ -513,7 +541,7 @@ func (w *IngestWorker) afterPollStatus(status string, finished *bool) error {
 		*finished = true
 		return nil
 	case db.RecordingStatusCanceled, db.RecordingStatusFailed:
-		return fmt.Errorf("mirakc record ended with status %q", status)
+		return fmt.Errorf("mirakc record ended with status %q: %w", status, errIngestRecordEndedAbnormally)
 	default:
 		return fmt.Errorf("mirakc record has unknown status %q", status)
 	}

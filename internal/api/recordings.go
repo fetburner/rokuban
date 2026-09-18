@@ -122,8 +122,11 @@ func utcTimePtr(t *time.Time) *time.Time {
 //     recording の観測もここに入る。進捗行がまだ無い録画開始直後の数秒は
 //     pending になる。
 //  4. どれでもなければ unknown --- 取り込みが始まった観測が無い。record 自体が
-//     観測されていないか、mirakc の record が failed / canceled（この録画に
-//     ingest ジョブは投入されない）。
+//     観測されていないか、mirakc の record が failed / canceled になった。
+//     録画中に投入済みの ingest ジョブがあっても、status を failed / canceled と
+//     観測したジョブは進捗行を消してから終端する（internal/worker/ingest.go の
+//     Work。TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry）ので、
+//     この分岐へ落ちる。ジョブがまだ観測していない間は 2（transferring）が拾う。
 //
 // **pending は「これから来る」の断定なので、来る根拠が無いものを入れない。**
 // record_sync 行の存在だけを根拠にすると、failed / canceled の録画（ingest が

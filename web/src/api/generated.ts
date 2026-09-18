@@ -402,8 +402,8 @@ export interface DropSummary {
  *   いる（River のバックオフ待ち・ストール）。**録画中の追従で
  *   追い付いている状態は停滞ではない** --- worker は健全に 1 周した
  *   ポーリングで `observedAt` を進めるので、追い付いたままでも
- *   `observedAt` は新しくなる。録画中は `expectedBytes` が最終サイズでは
- *   ないため、**クライアントは % を出さずバイト数だけを出す**
+ *   `observedAt` は新しくなる。% を出してよい条件は
+ *   `expectedBytes` 側に書いた
  * - `pending`: 原本行も進捗行も無く、**ingest ジョブが投入される
  *   はずの** mirakc record の観測（`record_sync.status` が `recording`
  *   または `finished`。watcher が ingest を投入する条件と同じ述語）が
@@ -411,12 +411,14 @@ export interface DropSummary {
  *   まだ無い数秒もここに入る
  * - `unknown`: 上のどれでもない。取り込みが始まった観測が無い ---
  *   mirakc record が観測されていないか、record が `failed` / `canceled`
- *   （**この録画に ingest ジョブは投入されない**）
+ *   で `record_sync.status` が上の述語を満たさない。録画中に投入済みの
+ *   ingest ジョブがあっても、`failed` / `canceled` を観測したジョブは
+ *   進捗行を消してから終端するのでここへ落ちる
  *
  * **`pending` は「これから来る」の断定なので、来る根拠が無いものは
  * 入れない。** `record_sync` 行の存在だけを根拠にすると、`failed` /
- * `canceled` の録画（ingest が一度も投入されず、`record_sync` 行も
- * 消えない）が永久に「取り込み待ち」を名乗る。
+ * `canceled` の録画（`record_sync` 行は消えない）が永久に
+ * 「取り込み待ち」を名乗る。
  *
  * **「リトライ中」を `pending` と区別する値は持たない。** 区別するには
  * River の `river_job` を API 契約に露出させる（内部実装の露出）か、
@@ -448,8 +450,8 @@ export interface IngestProgress {
      *   いる（River のバックオフ待ち・ストール）。**録画中の追従で
      *   追い付いている状態は停滞ではない** --- worker は健全に 1 周した
      *   ポーリングで `observedAt` を進めるので、追い付いたままでも
-     *   `observedAt` は新しくなる。録画中は `expectedBytes` が最終サイズでは
-     *   ないため、**クライアントは % を出さずバイト数だけを出す**
+     *   `observedAt` は新しくなる。% を出してよい条件は
+     *   `expectedBytes` 側に書いた
      * - `pending`: 原本行も進捗行も無く、**ingest ジョブが投入される
      *   はずの** mirakc record の観測（`record_sync.status` が `recording`
      *   または `finished`。watcher が ingest を投入する条件と同じ述語）が
@@ -457,12 +459,14 @@ export interface IngestProgress {
      *   まだ無い数秒もここに入る
      * - `unknown`: 上のどれでもない。取り込みが始まった観測が無い ---
      *   mirakc record が観測されていないか、record が `failed` / `canceled`
-     *   （**この録画に ingest ジョブは投入されない**）
+     *   で `record_sync.status` が上の述語を満たさない。録画中に投入済みの
+     *   ingest ジョブがあっても、`failed` / `canceled` を観測したジョブは
+     *   進捗行を消してから終端するのでここへ落ちる
      *
      * **`pending` は「これから来る」の断定なので、来る根拠が無いものは
      * 入れない。** `record_sync` 行の存在だけを根拠にすると、`failed` /
-     * `canceled` の録画（ingest が一度も投入されず、`record_sync` 行も
-     * 消えない）が永久に「取り込み待ち」を名乗る。
+     * `canceled` の録画（`record_sync` 行は消えない）が永久に
+     * 「取り込み待ち」を名乗る。
      *
      * **「リトライ中」を `pending` と区別する値は持たない。** 区別するには
      * River の `river_job` を API 契約に露出させる（内部実装の露出）か、
@@ -490,12 +494,16 @@ export interface IngestProgress {
      * 転送ループが `GetRecord` の `content.length` で更新する。mirakc が
      * length を返していなければ**省略する** --- でっち上げた分母を置かない。
      *
-     * **録画中は最終サイズではない。** 追従 ingest は録画開始から走るので、
-     * `status = 'recording'` の間のこの値は「mirakc がその時点で観測している
-     * サイズ」であり、`writtenBytes` が追い越すこともある。最終サイズとして
-     * 読めるのは record が終了してからである。**UI は録画中に % を出さない**
-     * （`writtenBytes` だけを出す）。分母が確定するのは録画終了後なので、
-     * そのときは % を出す。
+     * **この値はいつでも分母として使えるわけではない。** クライアントは
+     * 次の 2 つのどちらかに当たる間、% を出さずバイト数だけを出す。
+     *
+     * - `status = 'recording'`: 追従 ingest は録画開始から走るので、この値は
+     *   「mirakc がその時点で観測しているサイズ」であって番組の最終サイズ
+     *   ではない。割合にすると「番組の 9 割を取り込んだ」と読める嘘になる
+     * - `writtenBytes` がこの値を超えている: この観測が転送より遅れて古い
+     *   ことの証拠である。実機では録画終了後の drain 中に超過が続いた。
+     *   **超過を 100% に丸めて隠してはならない** --- 丸めると drain が
+     *   終わるまで「取り込み済み」と読める表示が出続ける
      */
   expectedBytes?: number;
   /**

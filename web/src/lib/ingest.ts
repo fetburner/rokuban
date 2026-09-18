@@ -54,7 +54,7 @@ export type IngestDisplay =
       kind: 'transferring'
       writtenBytes: number
       expectedBytes?: number
-      /** 0〜100 の整数。分母が無い / 0 のときは undefined。 */
+      /** 0〜100 の整数。分母が無い / 0 / written が追い越しているときは undefined。 */
       percent?: number
       stale: boolean
     }
@@ -69,9 +69,10 @@ export type IngestDisplay =
  * - `ingest` が無い（API が古い）。**推測で埋めない**
  * - `committed` かつ原本がある（`sizeBytes` あり）: 正常な完了形なので黙る
  * - `unknown`: 取り込みが始まった観測が無い。mirakc record が観測されていないか、
- *   `failed` / `canceled` の record（この録画に ingest ジョブは投入されない）。
- *   前者は言えることが無く、後者は「取り込み待ち」と言うと来ない未来を断定する
- *   ことになるので、どちらも黙る
+ *   `failed` / `canceled` の record で `has_ingestable_record`
+ *   （`record_sync.status` が `recording` / `finished`）が偽か。前者は言えることが
+ *   無く、後者は「取り込み待ち」と言うと来ない未来を断定することになるので、
+ *   どちらも黙る
  *
  * `recording` 中は watcher が ingest を投入し、`transferring` の進捗を表示する。
  * これは以前の「録画中は表示しない」という前提と異なる。
@@ -107,12 +108,14 @@ export function ingestDisplay(recording: Recording, nowMs: number): IngestDispla
     // 分母が確定するのは録画終了後なので、それまではバイト数だけを出す。分母が
     // 有るかどうかで出し分けるのではなく、**録画中かどうか**で落とす。
     const expectedBytes = recording.status === 'recording' ? undefined : ingest.expectedBytes
-    // 分母が 0 / 未指定のときに Infinity や NaN を作らない。100 で頭打ちに
-    // するのは、`record_sync.content_length` の観測が転送より僅かに遅れることが
-    // あり written がそれを超えるため（超過を 103% と出しても何も伝わらない）。
+    // 分母が 0 / 未指定のときに Infinity や NaN を作らない。**written が
+    // expected を追い越していたら % を出さない**（`min(100, ...)` で隠さない）。
+    // 追い越しは「分母が転送より遅れて古い」ことの証拠そのものなので、隠すと
+    // 録画終了後の drain 中ずっと 100% を出す。追い越しは実機で観測されている
+    // （追従中に written − expected が −2.2 MB で張り付いた区間がある）。
     const percent =
-      expectedBytes !== undefined && expectedBytes > 0
-        ? Math.min(100, Math.floor((writtenBytes / expectedBytes) * 100))
+      expectedBytes !== undefined && expectedBytes > 0 && writtenBytes <= expectedBytes
+        ? Math.floor((writtenBytes / expectedBytes) * 100)
         : undefined
 
     const observedMs = ingest.observedAt === undefined ? NaN : Date.parse(ingest.observedAt)
@@ -142,10 +145,14 @@ export function ingestDisplay(recording: Recording, nowMs: number): IngestDispla
  *   record_sweep（5 分周期）が再投入するのを待っている状態。分オーダーでしか
  *   動かないものを 5 秒で叩き続ける理由が無い。**再開すれば `observedAt` が
  *   新しくなり、この関数は自動的に真に戻る**（自己回復する）
- * - `status = 'recording'`: 録画中も ingest が追従し、数字が動く
  *
  * いずれも `lib/events.ts` の 60 秒 invalidate（`operationalRefreshIntervalMs`）
  * が拾うので、放置ではなく「周期を落とす」だけになる。
+ *
+ * **`status = 'recording'` はこの一覧に入らない（真にする側）。** 録画中も
+ * watcher が ingest を投入し worker が追従するので、進捗が新しい限り数字は
+ * 動いている。したがってこの短い周期は録画時間のあいだ続く
+ * （`pages/recordings.tsx` の `refetchInterval`）。
  */
 export function hasLiveIngestProgress(recording: Recording, nowMs: number): boolean {
   const display = ingestDisplay(recording, nowMs)

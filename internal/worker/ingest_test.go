@@ -720,6 +720,100 @@ func TestIngestWorker_CatchUpWhileRecordingDoesNotCommit(t *testing.T) {
 	}
 }
 
+// TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry は、録画中に
+// observe した mirakc record が canceled / failed へ遷移したとき、Work が
+// River のジョブを終端（cancel）し、offset を持たない全量再ダウンロードを
+// 二度と走らせないことを固定する。
+//
+// river.JobCancelError を返すこと・進捗行が消えること・原本 media_asset が
+// 作られていない（部分ファイルを commit していない）ことの 3 点を固定する。
+// 単に「error が非 nil」だけを見るテストにはしない --- それでは
+// river.JobCancel を外して素の error を返すだけの変異も通ってしまう。
+func TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		status      string
+		recordID    string
+		contentPath string
+		jobID       int64
+	}{
+		{name: "canceled", status: "canceled", recordID: "rec-canceled", contentPath: "test/canceled.m2ts", jobID: 425010},
+		{name: "failed", status: "failed", recordID: "rec-failed", contentPath: "test/failed.m2ts", jobID: 425011},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			setFollowPollInterval(t, time.Millisecond)
+
+			var recordGets atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+					// 追い付いた状態のまま：このテストは status 遷移だけを見る。
+					w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+					n := recordGets.Add(1)
+					status := "recording"
+					if n >= 2 {
+						status = tt.status
+					}
+					record := mirakc.Record{
+						Recording: mirakc.RecordInfo{Status: status, Options: mirakc.Options{ContentPath: strPtr(tt.contentPath)}},
+						Content:   mirakc.ContentInfo{Path: "/recording/" + tt.contentPath},
+					}
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(record)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(srv.Close)
+
+			pool := setupTestPool(t)
+			if pool == nil {
+				return
+			}
+			w := &IngestWorker{
+				MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+				MediaDir:      t.TempDir(),
+				StallTimeout:  time.Second,
+				Pool:          pool,
+			}
+			recordingID := insertTestRecording(t, pool)
+			insertTestRecordSync(t, pool, recordingID, tt.recordID)
+
+			err := w.Work(context.Background(), &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{ID: tt.jobID}, Args: IngestJobArgs{Site: "default", RecordID: tt.recordID}})
+			if err == nil {
+				t.Fatal("Work() = nil, want a river.JobCancelError")
+			}
+			// river 自身の sentinel に対して判定する（JobCancelError.Is は型だけを見る）。
+			var cancelErr *river.JobCancelError
+			if !errors.As(err, &cancelErr) {
+				t.Fatalf("Work() = %v (%T), want a *river.JobCancelError (job must be terminated, not retried)", err, err)
+			}
+
+			var progressRows int
+			if err := pool.QueryRow(context.Background(),
+				"SELECT count(*) FROM recording_ingest_progress WHERE recording_id = $1", recordingID,
+			).Scan(&progressRows); err != nil {
+				t.Fatalf("counting recording_ingest_progress: %v", err)
+			}
+			if progressRows != 0 {
+				t.Errorf("recording_ingest_progress rows = %d, want 0 (stale progress row must be cleared on cancel/fail)", progressRows)
+			}
+
+			var assetRows int
+			if err := pool.QueryRow(context.Background(),
+				"SELECT count(*) FROM media_assets WHERE recording_id = $1 AND kind = 'original'", recordingID,
+			).Scan(&assetRows); err != nil {
+				t.Fatalf("counting media_assets: %v", err)
+			}
+			if assetRows != 0 {
+				t.Errorf("media_assets rows = %d, want 0 (must not commit a partial recording)", assetRows)
+			}
+		})
+	}
+}
+
 // TestIngestWorker_NotReadyAndEmptyBodyDoNotConsumeRetries は、録画開始直後に必ず出る
 // 204（content file がまだ空）と、追い付いた状態の 206 + 0 バイトを、接続失敗として
 // 数えないことを固定する。どちらも maxInJobRetries（5）を超えて続けてから

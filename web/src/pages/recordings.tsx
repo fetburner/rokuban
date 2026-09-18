@@ -148,6 +148,9 @@ export function RecordingsPage() {
     // 進捗は REST の再取得で収束させる。止まったら止める --- 一覧は無限リストで、
     // 常時ポーリングすると積んだページ全部を取り直す。止めた後の収束は
     // lib/events.ts の 60 秒 invalidate が担う（hasLiveIngestProgress 参照）。
+    // **録画中は ingest が録画開始から追従するので、この 5 秒周期が録画時間の
+    // 間ずっと続く**（issue #425）。「止まったら止める」は停滞・完了後の収束
+    // であって、録画中を短周期の対象から外すものではない。
     refetchInterval: (q) => {
       const now = Date.now()
       const live = (q.state.data?.pages ?? []).some((page) =>

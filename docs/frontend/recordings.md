@@ -186,9 +186,12 @@ ingest を投入し、worker が録画に追従する（[recording/ingest.md](..
   record_sweep（5 分周期）が再投入するのを待っている状態。分オーダーでしか
   動かないものを 5 秒で叩かない。**再開すれば `observedAt` が新しくなって自動で
   短い周期に戻る**（自己回復する）
-- **`status = 'recording'`**: 録画中も数字は動くが、追い付いた状態では `written_bytes` が
-  止まって見える。**停滞とは違う**ので、worker 側が健全なポーリングで `observed_at` を
-  進める（§5.6）
+
+**`status = 'recording'` は張る側。** watcher が録画開始時点で ingest を投入し
+worker が追従するので、進捗が新しい間は 5 秒周期の対象になる。追い付いた状態
+（`written_bytes` が止まって見える）は上記の「停滞した `transferring`」と同じ
+扱いで、`observed_at` が健全なポーリングで進む限り短い周期を保つ。**この周期は
+録画時間の間ずっと続く**（無限リストの積んだページを毎回取り直す）。
 
 いずれも [shell.md](shell.md) の 60 秒 invalidate（`lib/events.ts` の
 `operationalRefreshIntervalMs`）が拾うので、放置ではなく「周期を落とす」だけになる。

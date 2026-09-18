@@ -83,12 +83,30 @@ describe('ingestDisplay', () => {
     expect(got && 'percent' in got ? got.percent : 'missing').toBeUndefined()
   })
 
-  it('分母を超えて書けていても 100% で頭打ちにする', () => {
+  // 録画終了後の drain 中は分母が古いまま written に追い越されることがある
+  // （実機で −2.2 MB の追い越しを観測）。`min(100, ...)` で隠すとその間ずっと
+  // 100% を出す。追い越しは分母が古い証拠なので、隠さず percent を落とす。
+  it('録画終了後に分母を追い越していたら % を出さない', () => {
     const rec = recording({
+      status: 'finished',
       ingest: { state: 'transferring', writtenBytes: 1200, expectedBytes: 1000 },
+    })
+    const got = ingestDisplay(rec, now)
+    expect(got).toMatchObject({ kind: 'transferring', writtenBytes: 1200 })
+    expect(got && 'percent' in got ? got.percent : 'missing').toBeUndefined()
+  })
+
+  // 境界: written === expected はちょうど 100%。`<=` を `<` にすると壊れる。
+  it('録画終了後に分母ちょうどまで書けていたら 100% を出す', () => {
+    const rec = recording({
+      status: 'finished',
+      ingest: { state: 'transferring', writtenBytes: 1000, expectedBytes: 1000 },
     })
     expect(ingestDisplay(rec, now)).toMatchObject({ percent: 100 })
   })
+
+  // 分母未満のケースは「転送中は分母があれば % を出す」「録画終了後は割合を
+  // 出す」が既に固定している。
 
   it('観測時刻が古ければ停滞と判定する', () => {
     const fresh = recording({
