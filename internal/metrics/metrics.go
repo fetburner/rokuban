@@ -35,7 +35,10 @@ var (
 		Buckets: []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800},
 	})
 
-	// IngestJobs は ingest ジョブの結果別の件数。
+	// IngestJobs は ingest ジョブの結果別の件数。result は success / failure /
+	// canceled。**取り消し・失敗した録画を failure に混ぜない** --- 利用者が止めた
+	// 録画が失敗率に積まれると本物の失敗が埋もれる（追従 ingest では録画中の
+	// 取消が ingest ジョブに初めて到達する。internal/worker/ingest.go の Work）。
 	IngestJobs = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_ingest_jobs_total",
 		Help: "Ingest jobs by result.",

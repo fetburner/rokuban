@@ -150,8 +150,12 @@ func TestListRecordingsIngestState(t *testing.T) {
 }
 
 // TestListRecordingsIngestNoJobComing は、ingest ジョブが投入されない録画
-// （mirakc の record が finished でない = failed / canceled / 録画中）が
-// **「取り込み待ち」を名乗らない**ことを固定する（PR #323 レビュー）。
+// （mirakc の record が failed / canceled）が **「取り込み待ち」を名乗らない**
+// ことを固定する（PR #323 レビュー）。
+//
+// **録画中はこの集合から外れた。** watcher は `recording` を観測した時点で
+// ingest を投入し、worker が追従する。録画中に進捗行がまだ無いのは「これから
+// 来る」が真である期間なので、pending を名乗ってよい。
 //
 // record_sync 行は failed / canceled でも作られ、Rokuban はこの行を消さない
 // （本番に DELETE FROM record_sync の経路は無い）。行の存在だけを pending の
@@ -174,6 +178,14 @@ func TestListRecordingsIngestNoJobComing(t *testing.T) {
 	recording := seedRecording(t, pool, "録画中", base.Add(-30*time.Minute), "recording", 3)
 	seedRecordSync(t, pool, recording, "rec-recording", "recording", nil)
 
+	// 取り消した録画に進捗行が残っているケース。worker は cancel / fail を
+	// 観測したとき進捗行を消してからジョブを終端するが、その DELETE は失敗しても
+	// ログだけで続行するので行が残りうる。残骸を transferring と読むと、二度と
+	// 取り込まれない録画が恒久的に「取り込み中（停滞）」を名乗る。
+	leftover := seedRecording(t, pool, "取り消し後に進捗行が残った録画", base.Add(-4*time.Hour), "canceled", 5)
+	seedRecordSync(t, pool, leftover, "rec-canceled-leftover", "canceled", nil)
+	seedIngestProgress(t, pool, leftover, 1024, nil, time.Now())
+
 	// 対照群: 同じ形（原本も進捗も無い）でも record が finished なら pending。
 	// これが無いと「常に unknown を返す」実装でもこのテストが通ってしまう。
 	waiting := seedRecording(t, pool, "取り込み待ち", base.Add(-3*time.Hour), "finished", 4)
@@ -195,7 +207,8 @@ func TestListRecordingsIngestNoJobComing(t *testing.T) {
 	}{
 		{"failed", failed, "unknown"},
 		{"canceled", canceled, "unknown"},
-		{"録画中", recording, "unknown"},
+		{"録画中（進捗行がまだ無い）", recording, "pending"},
+		{"取り消し後に進捗行が残った録画", leftover, "unknown"},
 		{"finished（対照群）", waiting, "pending"},
 	} {
 		rec, ok := byID[tc.id]
@@ -242,9 +255,14 @@ func TestListRecordingsIngestExpectedBytesOmitted(t *testing.T) {
 
 // TestIngestProgressFromFields は導出の優先順位を DB なしで固定する。
 //
-// 特に「原本行があるなら進捗行より原本を優先する」--- 取り残された進捗行が
-// コミット済みの録画に「取り込み中」を名乗らせないこと（真実は media_assets
-// 側。不変条件 5）。
+// 特に 2 点を固定する:
+//
+//   - 「原本行があるなら進捗行より原本を優先する」 --- 取り残された進捗行が
+//     コミット済みの録画に「取り込み中」を名乗らせないこと（真実は media_assets
+//     側。不変条件 5）
+//   - 「取り消し・失敗した record なら進捗行より異常終了を優先する」 --- worker の
+//     進捗行 DELETE が失敗しても、二度と取り込まれない録画が「取り込み中」を
+//     名乗らないこと
 func TestIngestProgressFromFields(t *testing.T) {
 	written := int64(42)
 	observed := time.Unix(1700000000, 0).UTC()
@@ -276,6 +294,40 @@ func TestIngestProgressFromFields(t *testing.T) {
 				IngestObservedAt:    &observed,
 			},
 			wantState: "transferring",
+		},
+		{
+			// 取り消し・失敗した record の進捗行は残骸である。worker は進捗行を
+			// 消してから終端するが、その DELETE は失敗してもログだけで続行する
+			// ので行が残りうる。残骸を transferring と読むと、二度と取り込まれない
+			// 録画が恒久的に「取り込み中（停滞）」を名乗る。
+			name: "取り消した record に進捗行が残っている",
+			fields: recordingListFields{
+				HasAbnormallyEndedRecord: true,
+				IngestWrittenBytes:       &written,
+				IngestObservedAt:         &observed,
+			},
+			wantState: "unknown",
+		},
+		{
+			name: "failed の record に進捗行が残っている",
+			fields: recordingListFields{
+				HasAbnormallyEndedRecord: true,
+				IngestWrittenBytes:       &written,
+				IngestObservedAt:         &observed,
+			},
+			wantState: "unknown",
+		},
+		{
+			// 原本行があるならそちらが優先する（コミット済みの録画を取り消した
+			// 場合に「取り込み済み」を失わない）。
+			name: "取り消した record でも原本行があれば committed",
+			fields: recordingListFields{
+				HasOriginalAsset:         true,
+				HasAbnormallyEndedRecord: true,
+				IngestWrittenBytes:       &written,
+				IngestObservedAt:         &observed,
+			},
+			wantState: "committed",
 		},
 		{
 			name:      "ingest が来るはずの record 観測だけ",

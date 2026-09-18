@@ -573,6 +573,13 @@ func (w *DeleteReconcileWorker) notifyPurgedRecordings(ctx context.Context, purg
 // （孤児かどうかを問わない）。reconcileMissingAssets が同じ走査結果を使って
 // 逆方向（active なのに実体が無い行）を検出するため（issue #343。2 回目の
 // 全量ディレクトリ走査を避ける）。
+//
+// **この mtime 猶予は、追従 ingest が番組長のあいだ書き続ける試行固有 temp を
+// 回収しないことの根拠でもある。** 録画中の temp は書き込みのたびに mtime が
+// 新しくなるので候補にならない。猶予を「正常系の ingest が数時間で完結する」
+// 前提から短くすると、録画中の書きかけ temp が孤児として aging され、生きて
+// いる転送の足元からファイルが消える（unlink 済み inode への書き込みは成功
+// し続けるので、失敗は commit の rename で初めて現れる）。
 func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, q *sqlcgen.Queries, mtimeGrace time.Duration) (map[string]struct{}, error) {
 	known, err := q.ListAllMediaAssetRelPaths(ctx)
 	if err != nil {

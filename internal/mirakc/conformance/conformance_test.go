@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"testing"
 	"time"
 
@@ -140,30 +139,34 @@ func TestConformance(t *testing.T) {
 		}
 		firstLen := *rec.Content.Length
 
-		// 罠（`GetRecord` の `content.length` とは別物）: `records/{id}/stream` への
-		// **Range なし** の GET は録画中は Content-Length ヘッダを返さない
-		// （`transfer-encoding: chunked` になる。実 mirakc で確認した --- `compute_content_length`
-		// が `None` を返す）。content がまだ 0 バイトの間は 204 になりうる（これも実 mirakc で
-		// 確認した挙動。実測: 204 が 1.96 秒で 19 連続）ので、実際にバイトが流れ始めるまで
-		// 軽くリトライしてから判定する。この 204 の窓はここより後ろに時間のかかる処理を
-		// 置くと通り過ぎてしまうので、この節は「録画中」検出直後に置く。
-		// Go の http.Response.ContentLength は Content-Length ヘッダの有無だけで決まる
-		// （無ければ -1）ので、Client の戻り値だけでこの前提を判定できる（生のヘッダを読まなくてよい）。
+		// **Client は offset 0 でも Range を送る**ので、録画中の応答は常に
+		// 「リクエスト時点のサイズまでの差分」= 206 + 具体的な Content-Length である
+		// （実測: `content-range: bytes 1-114687/*` のように total は `*` でも
+		// `content-length: 114687` は具体値）。「Range なしの GET は録画中
+		// Content-Length を返さない（`transfer-encoding: chunked`）」という mirakc の
+		// もう 1 つの挙動は、Client が Range を常に送るようになったためここからは
+		// 観測できない（`ContentSource::new` の `(None, Recording) => tail -f` 分岐で、
+		// ingest が意図的に使わない経路）。判定を残すなら生の HTTP が要るが、それは
+		// 「Client の契約を判定する」というこのスイートの前提から外れる。
+		//
+		// content がまだ 0 バイトの間は 204 になる（実測: 204 が 1.96 秒で 19 連続）。
+		// この窓はここより後ろに時間のかかる処理を置くと通り過ぎてしまうので、この節は
+		// 「録画中」検出直後に置く。Go の http.Response.ContentLength は Content-Length
+		// ヘッダの有無だけで決まる（無ければ -1）ので、Client の戻り値だけで判定できる。
 		length, err := streamContentLengthDuringRecording(t, ctx, client, recordID, 0)
 		if err != nil {
 			t.Errorf("StreamRecord(offset=0)（録画中）: %v", err)
-		} else if length >= 0 {
-			t.Errorf("録画中の StreamRecord(offset=0) の Content-Length = %d、録画中は不明（負値）のはず", length)
+		} else if length < 0 {
+			t.Errorf("録画中の StreamRecord(offset=0) の Content-Length = %d、Range 付きなら定まるはず", length)
 		}
 
-		// Range 付き（offset>0）は録画中でも 206 で返り、**Content-Length ヘッダ自体は
-		// 付く**（値はオフセットから今バッファに溜まっている末尾まで。実 mirakc で確認した:
-		// `content-range: bytes 1-114687/*` のように total は `*` でも
-		// `content-length: 114687` は具体値）。issue の「Range 付きでも Content-Range の
-		// 総サイズが無い」は Content-Range の total フィールドの話であって、
-		// Content-Length が不明になるわけではない --- 上の offset=0 の「不明」と混同しない。
-		// 206 を返さない（= Range が届いていない）と Client 内の checkStatus(206) が
-		// 失敗するので、StreamRecord の Range ヘッダを落とす変異はここでも検出できる。
+		// 変異「StreamRecord が offset 0 で Range を送らない」はここで落ちる:
+		// Range なしだと録画中の GET は `tail -f` 経路になり Content-Length を
+		// 返さない（負値になる）。
+		//
+		// offset>0 も同じく 206 + 具体値である。206 を返さない（= Range が届いて
+		// いない）と Client 内の checkStatus(206) が失敗するので、Range ヘッダを
+		// 落とす変異はここでも検出できる。
 		rangedLength, err := streamContentLengthDuringRecording(t, ctx, client, recordID, 1)
 		if err != nil {
 			t.Errorf("StreamRecord(offset=1)（録画中）: %v（Range が届いていない）", err)
@@ -447,8 +450,9 @@ func streamContentLengthDuringRecording(t *testing.T, ctx context.Context, c *mi
 			_ = body.Close()
 			return length, nil
 		}
-		var apiErr *mirakc.APIError
-		if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNoContent || !time.Now().Before(deadline) {
+		// 204 は Client が ErrRecordNotReady に落とす（録画開始直後の正常な応答で
+		// あって接続失敗ではない）。
+		if !errors.Is(err, mirakc.ErrRecordNotReady) || !time.Now().Before(deadline) {
 			return 0, err
 		}
 		time.Sleep(100 * time.Millisecond)

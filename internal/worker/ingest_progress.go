@@ -39,7 +39,9 @@ const ingestProgressInterval = 2 * time.Second
 type ingestProgressReporter struct {
 	pool        *pgxpool.Pool
 	recordingID int64
-	// expectedBytes は進捗の分母（record_sync.content_length のコピー）。
+	// expectedBytes は進捗の分母。Work 開始時は record_sync.content_length
+	// （watcher の観測）で初期化し、追従中は observeProgress が GetRecord の
+	// content.length で更新する（固定すると録画中に 100% で止まる。issue #425）。
 	// mirakc が length を返していなければ nil のままにする（でっち上げた分母を
 	// 置かない）。
 	expectedBytes *int64

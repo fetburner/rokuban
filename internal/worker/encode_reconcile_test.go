@@ -83,9 +83,7 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(tsData)
+			writeRecordStream(w, r, tsData)
 
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
@@ -94,6 +92,7 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 			record := mirakc.Record{
 				Recording: mirakc.RecordInfo{
+					Status:  "finished",
 					Options: mirakc.Options{ContentPath: strPtr("test/lost-hint.m2ts")},
 				},
 				Content: mirakc.ContentInfo{Path: "/recording/test/lost-hint.m2ts"},

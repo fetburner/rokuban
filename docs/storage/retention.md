@@ -29,7 +29,7 @@
 
 ### 凍結が依存する寿命と、エッジの滞留の交点
 
-凍結の JOIN 先（`program_snapshots` と、そこへの FK CASCADE で連なる `reservations` / `program_intents` / `program_overrides`）の**行の寿命は放送の時計**で決まる。式は `start_at + duration_ms` + `epg.retention_grace` である。一方、その最後の読者である ingest がいつ走るかは**エッジの排出の時計**で決まる。エッジのリングバッファは「回線断・クラウド側障害で未 ingest の record が N 日分溜まる」ことを前提にサイジングする（[運用](../operations.md) §4「録画バッファのサイジング」）。2 つの時計の間には制約が書かれていない。交点はこう書ける:
+凍結の JOIN 先（`program_snapshots` と、そこへの FK CASCADE で連なる `reservations` / `program_intents` / `program_overrides`）の**行の寿命は放送の時計**で決まる。式は `start_at + duration_ms` + `epg.retention_grace` である。一方、その最後の読者である ingest がいつ走るかは**エッジの排出の時計**で決まる。エッジのリングバッファは「回線断・クラウド側障害で未 ingest の record が N 日分溜まる」ことを前提にサイジングする。録画中の record はすでに ingest が追従しているため、未 ingest 総量として滞留を数えるのは例外時の finished record に限る（[運用](../operations.md) §4「録画バッファのサイジング」）。2 つの時計の間には制約が書かれていない。交点はこう書ける:
 
 > **encode 意図が生き残る滞留の上限は `epg.retention_grace`（既定 24h）であって、リングバッファの N 日ではない。滞留を N 日まで許すつもりなら `epg.retention_grace >= N` にする。**
 

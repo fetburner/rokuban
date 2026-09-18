@@ -83,12 +83,30 @@ describe('ingestDisplay', () => {
     expect(got && 'percent' in got ? got.percent : 'missing').toBeUndefined()
   })
 
-  it('分母を超えて書けていても 100% で頭打ちにする', () => {
+  // 録画終了後の drain 中は分母が古いまま written に追い越されることがある
+  // （実機で −2.2 MB の追い越しを観測）。`min(100, ...)` で隠すとその間ずっと
+  // 100% を出す。追い越しは分母が古い証拠なので、隠さず percent を落とす。
+  it('録画終了後に分母を追い越していたら % を出さない', () => {
     const rec = recording({
+      status: 'finished',
       ingest: { state: 'transferring', writtenBytes: 1200, expectedBytes: 1000 },
+    })
+    const got = ingestDisplay(rec, now)
+    expect(got).toMatchObject({ kind: 'transferring', writtenBytes: 1200 })
+    expect(got && 'percent' in got ? got.percent : 'missing').toBeUndefined()
+  })
+
+  // 境界: written === expected はちょうど 100%。`<=` を `<` にすると壊れる。
+  it('録画終了後に分母ちょうどまで書けていたら 100% を出す', () => {
+    const rec = recording({
+      status: 'finished',
+      ingest: { state: 'transferring', writtenBytes: 1000, expectedBytes: 1000 },
     })
     expect(ingestDisplay(rec, now)).toMatchObject({ percent: 100 })
   })
+
+  // 分母未満のケースは「転送中は分母があれば % を出す」「録画終了後は割合を
+  // 出す」が既に固定している。
 
   it('観測時刻が古ければ停滞と判定する', () => {
     const fresh = recording({
@@ -110,11 +128,51 @@ describe('ingestDisplay', () => {
     expect(ingestDisplay(stale, now)).toMatchObject({ stale: true })
   })
 
-  // サーバーは録画中の録画に state='unknown' を返す（record が finished でない）
-  // が、UI 側でも二重に落とす。万一 pending が来ても「取り込み待ち」とは言わない。
-  it('録画中は取り込みの状態を出さない（まだ始まらないのが正常）', () => {
+  // 録画中も watcher が ingest を投入し、worker が追従する。進捗が来ていれば
+  // 「転送中」を出す（issue #425）。
+  //
+  // **ただし割合は出さない。** 録画中の分母（`expectedBytes`）は「mirakc が
+  // その時点で観測しているサイズ」であって最終サイズではない。書けたバイト数が
+  // それを追い越すと `min(100, ...)` で「100%」になり、録画全体を取り込み済みと
+  // 読める嘘になる（実機の id=33 で written > expected を観測した）。
+  it('録画中は割合を出さずバイト数だけを出す', () => {
+    const rec = recording({
+      status: 'recording',
+      ingest: {
+        state: 'transferring',
+        writtenBytes: 250,
+        expectedBytes: 1000,
+        observedAt: new Date(now - 1000).toISOString(),
+      },
+    })
+    const got = ingestDisplay(rec, now)
+    expect(got).toMatchObject({ kind: 'transferring', writtenBytes: 250 })
+    expect(got && 'percent' in got ? got.percent : 'missing').toBeUndefined()
+    expect(got && 'expectedBytes' in got ? got.expectedBytes : 'missing').toBeUndefined()
+  })
+
+  // 分母が最終サイズになるのは録画終了後。そこでは割合を出す（#212 の元の用途）。
+  it('録画終了後は割合を出す', () => {
+    const rec = recording({
+      status: 'finished',
+      ingest: {
+        state: 'transferring',
+        writtenBytes: 250,
+        expectedBytes: 1000,
+        observedAt: new Date(now - 1000).toISOString(),
+      },
+    })
+    expect(ingestDisplay(rec, now)).toMatchObject({
+      kind: 'transferring',
+      writtenBytes: 250,
+      expectedBytes: 1000,
+      percent: 25,
+    })
+  })
+
+  it('録画中で進捗行がまだ無ければ取り込み待ちとして出す', () => {
     const rec = recording({ status: 'recording', ingest: { state: 'pending' } })
-    expect(ingestDisplay(rec, now)).toBeUndefined()
+    expect(ingestDisplay(rec, now)).toEqual({ kind: 'pending' })
   })
 
   // ingest ジョブが一度も投入されない録画。サーバーが state='unknown' を返す

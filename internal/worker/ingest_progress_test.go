@@ -120,16 +120,27 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 	tsData := makeTSData(1000) // 188 KB
 	release := make(chan struct{})
 
+	// 追従ループは 1 回の Work で /stream を複数回叩く（差分 + finished 後の
+	// drain）。停止は**最初の 1 回だけ**に掛ける --- 毎回掛けると 2 回目で
+	// 再びブロックしてテストが進まない。2 回目以降は Range に従って差分を返す。
+	var gate sync.Once
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-			w.WriteHeader(http.StatusOK)
-			half := len(tsData) / 2
-			_, _ = w.Write(tsData[:half])
+			offset := parseStreamRangeOffset(r)
+			if offset >= int64(len(tsData)) {
+				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+				return
+			}
+			rest := tsData[offset:]
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(rest)))
+			w.WriteHeader(http.StatusPartialContent)
+			half := len(rest) / 2
+			_, _ = w.Write(rest[:half])
 			w.(http.Flusher).Flush()
-			<-release
-			_, _ = w.Write(tsData[half:])
+			gate.Do(func() { <-release })
+			_, _ = w.Write(rest[half:])
 
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
@@ -138,6 +149,7 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 			record := mirakc.Record{
 				Recording: mirakc.RecordInfo{
+					Status:  "finished",
 					Options: mirakc.Options{ContentPath: strPtr("test/progress.m2ts")},
 				},
 				Content: mirakc.ContentInfo{Path: "/recording/test/progress.m2ts"},
@@ -250,9 +262,11 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			if r.Header.Get("Range") == "" {
+			// StreamRecord は offset 0 でも Range を送るので、初回の判定は
+			// ヘッダの有無ではなくオフセットで行う。
+			if parseStreamRangeOffset(r) == 0 {
 				w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-				w.WriteHeader(http.StatusOK)
+				w.WriteHeader(http.StatusPartialContent)
 				_, _ = w.Write(tsData[:burst])
 				return
 			}
@@ -274,6 +288,7 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 			record := mirakc.Record{
 				Recording: mirakc.RecordInfo{
+					Status:  "finished",
 					Options: mirakc.Options{ContentPath: strPtr("test/interrupted-progress.m2ts")},
 				},
 				Content: mirakc.ContentInfo{Path: "/recording/test/interrupted-progress.m2ts"},
@@ -353,9 +368,7 @@ func TestIngestWorker_ProgressRemainsAfterFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(tsData)
+			writeRecordStream(w, r, tsData)
 
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			// 転送量と食い違う長さ → size mismatch でジョブが失敗する。
@@ -365,6 +378,7 @@ func TestIngestWorker_ProgressRemainsAfterFailure(t *testing.T) {
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 			record := mirakc.Record{
 				Recording: mirakc.RecordInfo{
+					Status:  "finished",
 					Options: mirakc.Options{ContentPath: strPtr("test/failing.m2ts")},
 				},
 				Content: mirakc.ContentInfo{Path: "/recording/test/failing.m2ts"},

@@ -313,6 +313,13 @@ func TestProcessRecord_CreateRecordingAndSync(t *testing.T) {
 	if jobCount != 1 {
 		t.Errorf("ingest job count = %d, want 1", jobCount)
 	}
+	var priority int
+	if err := pool.QueryRow(ctx, "SELECT priority FROM river_job WHERE kind = 'ingest'").Scan(&priority); err != nil {
+		t.Fatalf("querying ingest priority: %v", err)
+	}
+	if priority != 2 {
+		t.Errorf("finished ingest priority = %d, want 2", priority)
+	}
 }
 
 func TestProcessRecord_Idempotent(t *testing.T) {
@@ -356,13 +363,21 @@ func TestProcessRecord_StatusProgression(t *testing.T) {
 		t.Fatalf("processRecord (recording): %v", err)
 	}
 
-	// No ingest job while recording
+	// 録画開始時点で ingest を投入する。追従ジョブが録画中ずっと枠を
+	// 保持することで、finished 後の全量 pull と同じ job 形を使える。
 	var jobCount int
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM river_job WHERE kind = 'ingest'").Scan(&jobCount); err != nil {
 		t.Fatalf("querying river_job: %v", err)
 	}
-	if jobCount != 0 {
-		t.Errorf("ingest job count during recording = %d, want 0", jobCount)
+	if jobCount != 1 {
+		t.Errorf("ingest job count during recording = %d, want 1", jobCount)
+	}
+	var recordingPriority int
+	if err := pool.QueryRow(ctx, "SELECT priority FROM river_job WHERE kind = 'ingest'").Scan(&recordingPriority); err != nil {
+		t.Fatalf("querying recording ingest priority: %v", err)
+	}
+	if recordingPriority != 1 {
+		t.Errorf("recording ingest priority = %d, want 1", recordingPriority)
 	}
 
 	var recStatus string
@@ -393,6 +408,13 @@ func TestProcessRecord_StatusProgression(t *testing.T) {
 	}
 	if jobCount != 1 {
 		t.Errorf("ingest job count after finished = %d, want 1", jobCount)
+	}
+	var finishedPriority int
+	if err := pool.QueryRow(ctx, "SELECT priority FROM river_job WHERE kind = 'ingest'").Scan(&finishedPriority); err != nil {
+		t.Fatalf("querying finished ingest priority: %v", err)
+	}
+	if finishedPriority != 1 {
+		t.Errorf("finished notification must reuse the recording job at priority 1, got %d", finishedPriority)
 	}
 
 	// Still only one recording
@@ -2288,7 +2310,7 @@ func TestProcessRecord_StatusValues(t *testing.T) {
 		wantRecStatus string // 正規化後、recordings.status に入るはずの値
 		wantIngestJob bool
 	}{
-		{name: "recording", mirakcStatus: "recording", wantRecStatus: "recording", wantIngestJob: false},
+		{name: "recording", mirakcStatus: "recording", wantRecStatus: "recording", wantIngestJob: true},
 		{name: "finished", mirakcStatus: "finished", wantRecStatus: "finished", wantIngestJob: true},
 		{name: "canceled", mirakcStatus: "canceled", wantRecStatus: "canceled", wantIngestJob: false},
 		{name: "failed", mirakcStatus: "failed", wantRecStatus: "failed", wantIngestJob: false},

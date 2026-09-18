@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -44,20 +45,24 @@ func TestIngestWorker_ConcurrentSameRelPathUsesTempFiles(t *testing.T) {
 	release := make(chan struct{})
 	var deleteCalls atomic.Int32
 	newBlockedServer := func(tsData []byte) *httptest.Server {
+		// 追従ループは 1 回の Work で /stream を複数回叩く（差分 + finished 後の
+		// drain）。ゲートは**最初の 1 回だけ**に掛ける --- 毎回掛けると 2 回目で
+		// 再びブロックし、release 前に自分自身を待ってデッドロックする。
+		var gate sync.Once
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch {
 			case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-				started <- struct{}{}
-				<-release
-				w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write(tsData)
+				gate.Do(func() {
+					started <- struct{}{}
+					<-release
+				})
+				writeRecordStream(w, r, tsData)
 			case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 				w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
 				w.WriteHeader(http.StatusOK)
 			case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 				record := mirakc.Record{
-					Recording: mirakc.RecordInfo{Options: mirakc.Options{ContentPath: strPtr(contentPath)}},
+					Recording: mirakc.RecordInfo{Status: "finished", Options: mirakc.Options{ContentPath: strPtr(contentPath)}},
 					Content:   mirakc.ContentInfo{Path: "/recording/" + contentPath},
 				}
 				w.Header().Set("Content-Type", "application/json")

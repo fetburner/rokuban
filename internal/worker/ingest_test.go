@@ -122,9 +122,7 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(tsData)
+			writeRecordStream(w, r, tsData)
 
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
@@ -133,6 +131,7 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 			record := mirakc.Record{
 				Recording: mirakc.RecordInfo{
+					Status:  "finished",
 					Options: mirakc.Options{ContentPath: strPtr("test/recording.m2ts")},
 				},
 				Content: mirakc.ContentInfo{Path: "/recording/test/recording.m2ts"},
@@ -212,13 +211,13 @@ func TestIngestWorker_SiteMismatch(t *testing.T) {
 		requests.Add(1)
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			w.WriteHeader(http.StatusOK)
+			w.WriteHeader(http.StatusPartialContent)
 			_, _ = w.Write(makeTSData(1))
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 			record := mirakc.Record{
-				Recording: mirakc.RecordInfo{Options: mirakc.Options{ContentPath: strPtr("mismatch/recording.m2ts")}},
+				Recording: mirakc.RecordInfo{Status: "finished", Options: mirakc.Options{ContentPath: strPtr("mismatch/recording.m2ts")}},
 				Content:   mirakc.ContentInfo{Path: "/recording/mismatch/recording.m2ts"},
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -279,15 +278,13 @@ func TestIngestWorker_SiteMatch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(tsData)
+			writeRecordStream(w, r, tsData)
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
 			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 			record := mirakc.Record{
-				Recording: mirakc.RecordInfo{Options: mirakc.Options{ContentPath: strPtr("match/recording.m2ts")}},
+				Recording: mirakc.RecordInfo{Status: "finished", Options: mirakc.Options{ContentPath: strPtr("match/recording.m2ts")}},
 				Content:   mirakc.ContentInfo{Path: "/recording/match/recording.m2ts"},
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -347,18 +344,22 @@ func TestIngestWorker_MidTransferDisconnect(t *testing.T) {
 	cutoff := 50 * 188
 
 	var attempt atomic.Int32
+	// resumedAt は「書き込み済みオフセットから再開した」リクエストのオフセット。
+	// attempt の回数だけでは足りない --- 追従ループは finished 後の drain でも
+	// もう 1 回 /stream を叩くので、回数は再接続の証拠にならない。
+	var resumedAt atomic.Int64
+	resumedAt.Store(-1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			rangeHeader := r.Header.Get("Range")
-			var offset int
-			if rangeHeader != "" {
-				_, _ = fmt.Sscanf(rangeHeader, "bytes=%d-", &offset)
+			offset := parseStreamRangeOffset(r)
+			if offset == int64(cutoff) {
+				resumedAt.Store(offset)
 			}
 
 			if attempt.Add(1) == 1 && offset == 0 {
 				w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-				w.WriteHeader(http.StatusOK)
+				w.WriteHeader(http.StatusPartialContent)
 				_, _ = w.Write(tsData[:cutoff])
 				return
 			}
@@ -368,7 +369,7 @@ func TestIngestWorker_MidTransferDisconnect(t *testing.T) {
 			if offset > 0 {
 				w.WriteHeader(http.StatusPartialContent)
 			} else {
-				w.WriteHeader(http.StatusOK)
+				w.WriteHeader(http.StatusPartialContent)
 			}
 			_, _ = w.Write(remaining)
 
@@ -379,6 +380,7 @@ func TestIngestWorker_MidTransferDisconnect(t *testing.T) {
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 			record := mirakc.Record{
 				Recording: mirakc.RecordInfo{
+					Status:  "finished",
 					Options: mirakc.Options{ContentPath: strPtr("test/partial.m2ts")},
 				},
 				Content: mirakc.ContentInfo{Path: "/recording/test/partial.m2ts"},
@@ -437,8 +439,712 @@ func TestIngestWorker_MidTransferDisconnect(t *testing.T) {
 		t.Errorf("file size = %d, want %d", len(data), len(tsData))
 	}
 
+	if got := resumedAt.Load(); got != int64(cutoff) {
+		t.Errorf("Range 再開のオフセット = %d, want %d（切断後に書き込み済みオフセットから再開していない）", got, cutoff)
+	}
 	if attempt.Load() < 2 {
 		t.Errorf("expected at least 2 stream attempts, got %d", attempt.Load())
+	}
+}
+
+// TestIngestWorker_FollowsRecordingWithRangePolling は、Range 応答がリクエスト時点
+// で有限である mirakc の録画中挙動を再現する。差分を読み切った時点では commit
+// せず、recording.status を再取得して待ち、finished を観測してから最後の空 Range
+// まで drain することを固定する。
+//
+// 固定するのは「差分を読み切っただけでは commit しない」ことである。**追い付き
+// （416）が録画中に来て、その後に録画が伸びる**経路は
+// TestIngestWorker_CatchUpWhileRecordingDoesNotCommit が持つ（このテストの 416 は
+// finished を観測した後なので、416 を無条件に完了とみなす変異がここでは通る）。
+// 204 と 206 の 0 バイトは
+// TestIngestWorker_NotReadyAndEmptyBodyDoNotConsumeRetries が持つ。
+// 「recording 中に待たない」は TestIngestWorker_FollowPollingIsRateLimited が持つ。
+func TestIngestWorker_FollowsRecordingWithRangePolling(t *testing.T) {
+	setFollowPollInterval(t, time.Millisecond)
+	full := makeTSData(10)
+	first := full[:5*188]
+	second := full[5*188:]
+	var rangeRequests atomic.Int32
+	var statusRequests atomic.Int32
+	var status atomic.Value
+	status.Store("recording")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			rangeRequests.Add(1)
+			offset := parseStreamRangeOffset(r)
+			switch offset {
+			case 0:
+				w.Header().Set("Content-Length", fmt.Sprintf("%d", len(first)))
+				w.WriteHeader(http.StatusPartialContent)
+				_, _ = w.Write(first)
+			case int64(len(first)):
+				w.Header().Set("Content-Length", fmt.Sprintf("%d", len(second)))
+				w.WriteHeader(http.StatusPartialContent)
+				_, _ = w.Write(second)
+			default:
+				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			}
+		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(full)))
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			statusRequests.Add(1)
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{Status: status.Load().(string), Options: mirakc.Options{ContentPath: strPtr("test/follow.m2ts")}},
+				Content:   mirakc.ContentInfo{Path: "/recording/test/follow.m2ts"},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+			// 2 つ目の差分を返した直後の status 観測から finished にする。
+			if statusRequests.Load() >= 2 {
+				status.Store("finished")
+			}
+		case r.Method == http.MethodDelete:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	w := &IngestWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MediaDir:      t.TempDir(),
+		StallTimeout:  time.Second,
+		Pool:          pool,
+	}
+	recordingID := insertTestRecording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, "rec-follow")
+	if err := w.Work(context.Background(), &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{ID: 425001}, Args: IngestJobArgs{Site: "default", RecordID: "rec-follow"}}); err != nil {
+		t.Fatalf("Work(): %v", err)
+	}
+	path := filepath.Join(w.MediaDir, "sites", "default", "test", "follow.m2ts")
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading committed file: %v", err)
+	}
+	if !bytes.Equal(got, full) {
+		t.Fatalf("committed bytes differ from the two Range segments")
+	}
+	if rangeRequests.Load() != 3 {
+		t.Errorf("Range requests = %d, want 3 (two segments + catch-up 416)", rangeRequests.Load())
+	}
+	if statusRequests.Load() != 3 {
+		t.Errorf("status requests = %d, want 3 (recording, recording, finished)", statusRequests.Load())
+	}
+}
+
+// TestIngestWorker_FollowPollingIsRateLimited は、ingest が放送より速いときでも
+// mirakc へのリクエストがポーリング間隔で律速されることを固定する。
+//
+// 待ちを「差分が 0 バイトだったときだけ」にすると、放送が続いて毎回わずかに
+// 差分が返る定常状態でリクエストが往復時間で律速され、1 秒に数十〜百回
+// mirakc を叩く。recording のあいだは差分の有無に関わらず待つ。
+func TestIngestWorker_FollowPollingIsRateLimited(t *testing.T) {
+	setFollowPollInterval(t, 50*time.Millisecond)
+	data := makeTSData(200)
+	const packetsPerPoll = 5
+
+	var size atomic.Int64
+	var rangeRequests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			rangeRequests.Add(1)
+			// 放送は進み続ける（毎ポーリングで差分が出る）。
+			cur := size.Add(packetsPerPoll * 188)
+			offset := parseStreamRangeOffset(r)
+			if offset >= cur {
+				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+				return
+			}
+			body := data[offset:cur]
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(body)
+		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", size.Load()))
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{Status: "recording", Options: mirakc.Options{ContentPath: strPtr("test/rate.m2ts")}},
+				Content:   mirakc.ContentInfo{Path: "/recording/test/rate.m2ts"},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	w := &IngestWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MediaDir:      t.TempDir(),
+		StallTimeout:  time.Second,
+		Pool:          pool,
+	}
+	recordingID := insertTestRecording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, "rec-rate")
+
+	const window = 600 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), window)
+	defer cancel()
+	if err := w.Work(ctx, &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{ID: 425002}, Args: IngestJobArgs{Site: "default", RecordID: "rec-rate"}}); err == nil {
+		t.Fatal("Work() succeeded, want the context deadline error")
+	}
+
+	// 律速が効いていれば 1 間隔に 1 回以下。待ちを外すと往復時間で回り、
+	// この窓で数百回になる。
+	allowed := int(window/followPollInterval) + 3
+	if got := rangeRequests.Load(); int(got) > allowed {
+		t.Errorf("Range requests = %d in %s, want <= %d (polling is not rate limited)", got, window, allowed)
+	}
+
+	// 録画中なので commit していない。
+	var assets int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assets); err != nil {
+		t.Fatalf("counting media_assets: %v", err)
+	}
+	if assets != 0 {
+		t.Errorf("media_assets rows = %d, want 0 (nothing may commit while recording)", assets)
+	}
+}
+
+// TestIngestWorker_CatchUpWhileRecordingDoesNotCommit は、production の追い付き経路
+// そのものを固定する: **録画中に 416（= 現在のサイズに追い付いた）が返り、その後
+// さらに録画が伸びて、最後に finished になる**。
+//
+// これが無いと「416 を record の状態を見ずに完了とみなす」変異が通る（最初の 416 の
+// 時点ではまだ 5 パケットしか無いので、HEAD 照合で size mismatch になり落ちる）。
+func TestIngestWorker_CatchUpWhileRecordingDoesNotCommit(t *testing.T) {
+	setFollowPollInterval(t, time.Millisecond)
+	full := makeTSData(20)
+
+	// /records/{id} の観測回数で「いまの content サイズ」と status を決める。
+	// 同じサイズを 2 回続けて返すところが「追い付いた」状態になる。
+	// 1 回目は determineRelPath の GetRecord である。
+	sizes := []int{5, 5, 10, 10, 20}
+	var recordGets atomic.Int32
+	var rangeRequests atomic.Int32
+	lastSize := func() int {
+		n := int(recordGets.Load())
+		if n < 1 {
+			n = 1
+		}
+		if n > len(sizes) {
+			n = len(sizes)
+		}
+		return sizes[n-1] * 188
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			rangeRequests.Add(1)
+			offset := parseStreamRangeOffset(r)
+			if offset >= int64(lastSize()) {
+				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+				return
+			}
+			body := full[offset:lastSize()]
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(body)
+		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(full)))
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			n := recordGets.Add(1)
+			st := "recording"
+			if int(n) >= len(sizes) {
+				st = "finished"
+			}
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{Status: st, Options: mirakc.Options{ContentPath: strPtr("test/catchup.m2ts")}},
+				Content:   mirakc.ContentInfo{Path: "/recording/test/catchup.m2ts"},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+		case r.Method == http.MethodDelete:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	w := &IngestWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MediaDir:      t.TempDir(),
+		StallTimeout:  time.Second,
+		Pool:          pool,
+	}
+	recordingID := insertTestRecording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, "rec-catchup")
+	if err := w.Work(context.Background(), &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{ID: 425003}, Args: IngestJobArgs{Site: "default", RecordID: "rec-catchup"}}); err != nil {
+		t.Fatalf("Work(): %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(w.MediaDir, "sites", "default", "test", "catchup.m2ts"))
+	if err != nil {
+		t.Fatalf("reading committed file: %v", err)
+	}
+	if !bytes.Equal(got, full) {
+		t.Fatalf("committed bytes = %d, want %d (追い付きの後で伸びたぶんが欠けている)", len(got), len(full))
+	}
+	// 5 パケットへの追い付きで止まっていれば Range は 3 回以下で終わる。
+	if rangeRequests.Load() < 5 {
+		t.Errorf("Range requests = %d, want >= 5 (追い付きのたびに打ち切っていない)", rangeRequests.Load())
+	}
+}
+
+// TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry は、録画中に
+// observe した mirakc record が canceled / failed へ遷移したとき、Work が
+// River のジョブを終端（cancel）し、offset を持たない全量再ダウンロードを
+// 二度と走らせないことを固定する。
+//
+// river.JobCancelError を返すこと・進捗行が消えること・原本 media_asset が
+// 作られていない（部分ファイルを commit していない）ことの 3 点を固定する。
+// 単に「error が非 nil」だけを見るテストにはしない --- それでは
+// river.JobCancel を外して素の error を返すだけの変異も通ってしまう。
+func TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		status      string
+		recordID    string
+		contentPath string
+		jobID       int64
+	}{
+		{name: "canceled", status: "canceled", recordID: "rec-canceled", contentPath: "test/canceled.m2ts", jobID: 425010},
+		{name: "failed", status: "failed", recordID: "rec-failed", contentPath: "test/failed.m2ts", jobID: 425011},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			setFollowPollInterval(t, time.Millisecond)
+
+			var recordGets atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+					// 追い付いた状態のまま：このテストは status 遷移だけを見る。
+					w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+					n := recordGets.Add(1)
+					status := "recording"
+					if n >= 2 {
+						status = tt.status
+					}
+					record := mirakc.Record{
+						Recording: mirakc.RecordInfo{Status: status, Options: mirakc.Options{ContentPath: strPtr(tt.contentPath)}},
+						Content:   mirakc.ContentInfo{Path: "/recording/" + tt.contentPath},
+					}
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(record)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(srv.Close)
+
+			pool := setupTestPool(t)
+			if pool == nil {
+				return
+			}
+			w := &IngestWorker{
+				MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+				MediaDir:      t.TempDir(),
+				StallTimeout:  time.Second,
+				Pool:          pool,
+			}
+			recordingID := insertTestRecording(t, pool)
+			insertTestRecordSync(t, pool, recordingID, tt.recordID)
+
+			err := w.Work(context.Background(), &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{ID: tt.jobID}, Args: IngestJobArgs{Site: "default", RecordID: tt.recordID}})
+			if err == nil {
+				t.Fatal("Work() = nil, want a river.JobCancelError")
+			}
+			// river 自身の sentinel に対して判定する（JobCancelError.Is は型だけを見る）。
+			var cancelErr *river.JobCancelError
+			if !errors.As(err, &cancelErr) {
+				t.Fatalf("Work() = %v (%T), want a *river.JobCancelError (job must be terminated, not retried)", err, err)
+			}
+
+			var progressRows int
+			if err := pool.QueryRow(context.Background(),
+				"SELECT count(*) FROM recording_ingest_progress WHERE recording_id = $1", recordingID,
+			).Scan(&progressRows); err != nil {
+				t.Fatalf("counting recording_ingest_progress: %v", err)
+			}
+			if progressRows != 0 {
+				t.Errorf("recording_ingest_progress rows = %d, want 0 (stale progress row must be cleared on cancel/fail)", progressRows)
+			}
+
+			var assetRows int
+			if err := pool.QueryRow(context.Background(),
+				"SELECT count(*) FROM media_assets WHERE recording_id = $1 AND kind = 'original'", recordingID,
+			).Scan(&assetRows); err != nil {
+				t.Fatalf("counting media_assets: %v", err)
+			}
+			if assetRows != 0 {
+				t.Errorf("media_assets rows = %d, want 0 (must not commit a partial recording)", assetRows)
+			}
+		})
+	}
+}
+
+// TestIngestWorker_NotReadyAndEmptyBodyDoNotConsumeRetries は、録画開始直後に必ず出る
+// 204（content file がまだ空）と、追い付いた状態の 206 + 0 バイトを、接続失敗として
+// 数えないことを固定する。どちらも maxInJobRetries（5）を超えて続けてから
+// finished になる。
+//
+// 数えるように変異させると、正常な録画が 6 回目のポーリングで失敗する。
+func TestIngestWorker_NotReadyAndEmptyBodyDoNotConsumeRetries(t *testing.T) {
+	setFollowPollInterval(t, time.Millisecond)
+	full := makeTSData(10)
+	const notReadyPolls = 8
+	const emptyBodyPolls = 8
+
+	var streamRequests atomic.Int32
+	var status atomic.Value
+	status.Store("recording")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			n := streamRequests.Add(1)
+			switch {
+			case int(n) <= notReadyPolls:
+				w.WriteHeader(http.StatusNoContent)
+			case int(n) <= notReadyPolls+emptyBodyPolls:
+				// 追い付いた状態の 206。本文は 0 バイト。
+				w.Header().Set("Content-Length", "0")
+				w.WriteHeader(http.StatusPartialContent)
+			default:
+				offset := parseStreamRangeOffset(r)
+				if offset >= int64(len(full)) {
+					w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+					return
+				}
+				body := full[offset:]
+				w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+				w.WriteHeader(http.StatusPartialContent)
+				_, _ = w.Write(body)
+			}
+		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(full)))
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			// 空本文のポーリングが終わったところで finished にする。
+			if streamRequests.Load() > int32(notReadyPolls+emptyBodyPolls) {
+				status.Store("finished")
+			}
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{Status: status.Load().(string), Options: mirakc.Options{ContentPath: strPtr("test/notready.m2ts")}},
+				Content:   mirakc.ContentInfo{Path: "/recording/test/notready.m2ts"},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+		case r.Method == http.MethodDelete:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	w := &IngestWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MediaDir:      t.TempDir(),
+		StallTimeout:  time.Second,
+		Pool:          pool,
+	}
+	recordingID := insertTestRecording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, "rec-notready")
+	if err := w.Work(context.Background(), &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{ID: 425004}, Args: IngestJobArgs{Site: "default", RecordID: "rec-notready"}}); err != nil {
+		t.Fatalf("Work() = %v, want nil（204 と 206/0 は接続失敗ではない）", err)
+	}
+	got, err := os.ReadFile(filepath.Join(w.MediaDir, "sites", "default", "test", "notready.m2ts"))
+	if err != nil {
+		t.Fatalf("reading committed file: %v", err)
+	}
+	if !bytes.Equal(got, full) {
+		t.Fatalf("committed bytes = %d, want %d", len(got), len(full))
+	}
+	if got := streamRequests.Load(); int(got) <= notReadyPolls+emptyBodyPolls {
+		t.Errorf("stream requests = %d, want > %d (変異で短絡していない)", got, notReadyPolls+emptyBodyPolls)
+	}
+}
+
+// TestIngestWorker_FollowingCaughtUpKeepsProgressFresh は、追い付いた状態の
+// ポーリングが進捗行を古びさせないことを固定する。
+//
+// 追い付き（416 / 206 の 0 バイト）は差分を書かないので、observed_at を
+// 「バイトを書けたときだけ」進めると、**正常に追従できている録画ほど**
+// UI の停滞判定（60 秒）に引っかかって「取り込み中（停滞）」と表示される。
+//
+// 分母も同時に更新する。Work 開始時の record_sync.content_length を固定すると、
+// 録画が伸びて written が古い分母を追い越した時点で UI が「取り込み中 100%」を
+// 出し続ける（Web 側は min(100, ...) で頭打ちにするので嘘が % として出る）。
+func TestIngestWorker_FollowingCaughtUpKeepsProgressFresh(t *testing.T) {
+	setFollowPollInterval(t, 10*time.Millisecond)
+	const staleDenominator = 100
+
+	var statusGets atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			// 常に追い付いた状態（読むものが無い）。
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			n := statusGets.Add(1)
+			length := uint64(n) * 1000
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{Status: "recording", Options: mirakc.Options{ContentPath: strPtr("test/fresh.m2ts")}},
+				Content:   mirakc.ContentInfo{Path: "/recording/test/fresh.m2ts", Length: &length},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	w := &IngestWorker{
+		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MediaDir:         t.TempDir(),
+		StallTimeout:     time.Second,
+		Pool:             pool,
+		ProgressInterval: 10 * time.Millisecond,
+	}
+	recordingID := insertTestRecording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, "rec-fresh")
+	setRecordSyncContentLength(t, pool, "rec-fresh", staleDenominator)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- w.Work(ctx, &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{ID: 425005}, Args: IngestJobArgs{Site: "default", RecordID: "rec-fresh"}})
+	}()
+	t.Cleanup(func() { cancel(); <-done })
+
+	// 進捗行ができ、いくつかポーリングが回るまで待つ。
+	var firstObservedAt time.Time
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if statusGets.Load() >= 3 {
+			if err := pool.QueryRow(context.Background(),
+				`SELECT observed_at FROM recording_ingest_progress WHERE recording_id = $1`, recordingID,
+			).Scan(&firstObservedAt); err == nil {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("進捗行が観測できなかった（statusGets=%d）", statusGets.Load())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// 追い付いたまま更にポーリングさせる。
+	time.Sleep(200 * time.Millisecond)
+
+	var observedAt time.Time
+	var expected *int64
+	var written int64
+	if err := pool.QueryRow(context.Background(),
+		`SELECT observed_at, expected_bytes, written_bytes FROM recording_ingest_progress WHERE recording_id = $1`, recordingID,
+	).Scan(&observedAt, &expected, &written); err != nil {
+		t.Fatalf("reading progress row: %v", err)
+	}
+	if !observedAt.After(firstObservedAt) {
+		t.Errorf("observed_at = %s, want > %s（追い付いたまま古びている。UI は 60 秒で「停滞」と読む）",
+			observedAt, firstObservedAt)
+	}
+	if expected == nil {
+		t.Fatal("expected_bytes が nil")
+	}
+	if *expected <= staleDenominator {
+		t.Errorf("expected_bytes = %d, want > %d（分母が Work 開始時の値で凍結している）", *expected, staleDenominator)
+	}
+	if written != 0 {
+		t.Errorf("written_bytes = %d, want 0（1 バイトも書いていない）", written)
+	}
+}
+
+// TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart は、未知の status を
+// 観測したときに **River へ戻さずジョブ内で再試行し、offset を捨てない**ことを
+// 固定する。
+//
+// transferIngestRecord は offset をジョブのメモリにしか持たないので、ここで
+// error を返すと次の試行が先頭から引き直す（errIngestRecordEndedAbnormally の
+// doc コメントと同じ理由）。未知の status は一過性かもしれない --- 実機では
+// mirakc が一時的に応答を欠いたとき status が空になりうる。
+//
+// 変異「未知の status で即 error を返す」は Work() が非 nil になって落ちる。
+// 変異「未知の status を終端 sentinel に混ぜる」も同じく落ちる。
+func TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart(t *testing.T) {
+	setFollowPollInterval(t, time.Millisecond)
+	full := makeTSData(10)
+
+	var recordGets atomic.Int32
+	var zeroOffsetRequests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			offset := parseStreamRangeOffset(r)
+			if offset == 0 {
+				zeroOffsetRequests.Add(1)
+			}
+			if offset >= int64(len(full)) {
+				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+				return
+			}
+			body := full[offset:]
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(body)
+		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(full)))
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			n := recordGets.Add(1)
+			status := ""
+			if n >= 4 {
+				status = "finished"
+			}
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{Status: status, Options: mirakc.Options{ContentPath: strPtr("test/unknown.m2ts")}},
+				Content:   mirakc.ContentInfo{Path: "/recording/test/unknown.m2ts"},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+		case r.Method == http.MethodDelete:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	w := &IngestWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MediaDir:      t.TempDir(),
+		StallTimeout:  time.Second,
+		Pool:          pool,
+	}
+	recordingID := insertTestRecording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, "rec-unknown")
+	if err := w.Work(context.Background(), &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{ID: 425020}, Args: IngestJobArgs{Site: "default", RecordID: "rec-unknown"}}); err != nil {
+		t.Fatalf("Work() = %v, want nil（未知の status はジョブ内で再試行する。River に戻すと先頭から引き直す）", err)
+	}
+	got, err := os.ReadFile(filepath.Join(w.MediaDir, "sites", "default", "test", "unknown.m2ts"))
+	if err != nil {
+		t.Fatalf("reading committed file: %v", err)
+	}
+	if !bytes.Equal(got, full) {
+		t.Fatalf("committed bytes = %d, want %d", len(got), len(full))
+	}
+	if got := zeroOffsetRequests.Load(); got != 1 {
+		t.Errorf("offset 0 の Range 要求 = %d, want 1（未知の status で先頭から引き直している）", got)
+	}
+}
+
+// TestIngestWorker_PermanentlyUnknownStatusIsBounded は、未知の status が続いても
+// ジョブ内の再試行が上限で止まり、無限にポーリングしないことを固定する。
+//
+// **連続失敗カウンタのリセット位置**を固定するテストである。リセットを
+// followAfterStatusPoll の前（観測の成否を問わない位置）に戻すと、未知の status に
+// 対してカウンタが毎周 1 に戻り、上限に達しないまま回り続ける。
+func TestIngestWorker_PermanentlyUnknownStatusIsBounded(t *testing.T) {
+	setFollowPollInterval(t, time.Millisecond)
+
+	var recordGets atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			// 常に追い付いた状態。status の観測だけを見る。
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			recordGets.Add(1)
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{Status: "", Options: mirakc.Options{ContentPath: strPtr("test/forever-unknown.m2ts")}},
+				Content:   mirakc.ContentInfo{Path: "/recording/test/forever-unknown.m2ts"},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	w := &IngestWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MediaDir:      t.TempDir(),
+		StallTimeout:  time.Second,
+		Pool:          pool,
+	}
+	recordingID := insertTestRecording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, "rec-forever-unknown")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	// 上限（maxInJobRetries = 5）に達すれば数秒で error を返す。返らなければ
+	// カウンタがリセットされ続けている。
+	if err := w.Work(ctx, &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{ID: 425021}, Args: IngestJobArgs{Site: "default", RecordID: "rec-forever-unknown"}}); err == nil {
+		t.Fatal("Work() = nil, want an error（未知の status が続いたら上限で止まる）")
+	}
+	// determineRelPath の 1 回 + 上限までの 6 回。余裕を見て 10 で切る。
+	if got := recordGets.Load(); got > 10 {
+		t.Errorf("status の観測回数 = %d, want <= 10（連続失敗カウンタがリセットされ続けている）", got)
 	}
 }
 
@@ -448,9 +1154,7 @@ func TestIngestWorker_SizeMismatch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(tsData)
+			writeRecordStream(w, r, tsData)
 
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			// HEAD が異なるサイズを返す → size mismatch
@@ -460,6 +1164,7 @@ func TestIngestWorker_SizeMismatch(t *testing.T) {
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 			record := mirakc.Record{
 				Recording: mirakc.RecordInfo{
+					Status:  "finished",
 					Options: mirakc.Options{ContentPath: strPtr("test/mismatch.m2ts")},
 				},
 				Content: mirakc.ContentInfo{Path: "/recording/test/mismatch.m2ts"},
@@ -707,7 +1412,7 @@ func TestIngestWorker_StallDetection(t *testing.T) {
 			if offset == 0 {
 				flusher, ok := w.(http.Flusher)
 				w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-				w.WriteHeader(http.StatusOK)
+				w.WriteHeader(http.StatusPartialContent)
 				_, _ = w.Write(tsData[:188])
 				if ok {
 					flusher.Flush()
@@ -729,6 +1434,7 @@ func TestIngestWorker_StallDetection(t *testing.T) {
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 			record := mirakc.Record{
 				Recording: mirakc.RecordInfo{
+					Status:  "finished",
 					Options: mirakc.Options{ContentPath: strPtr("test/stall.m2ts")},
 				},
 				Content: mirakc.ContentInfo{Path: "/recording/test/stall.m2ts"},
@@ -789,6 +1495,46 @@ func TestIngestWorker_StallDetection(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// writeRecordStream は mirakc の records/{id}/stream を Range 前提で模す。
+// StreamRecord は offset 0 でも Range を送り 206 を要求する。200 で全量を
+// 返すと Client が契約違反として落とす。
+func writeRecordStream(w http.ResponseWriter, r *http.Request, data []byte) {
+	writeRecordStreamPrefix(w, r, data, len(data))
+}
+
+// writeRecordStreamPrefix は Range 先頭から最大 n バイトだけ返す。
+// 切断・途中打ち切りのテスト用。n が残りより大きければ残り全部。
+func writeRecordStreamPrefix(w http.ResponseWriter, r *http.Request, data []byte, n int) {
+	offset := parseStreamRangeOffset(r)
+	if offset >= int64(len(data)) {
+		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+		return
+	}
+	end := offset + int64(n)
+	if end > int64(len(data)) {
+		end = int64(len(data))
+	}
+	body := data[offset:end]
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+	w.WriteHeader(http.StatusPartialContent)
+	_, _ = w.Write(body)
+}
+
+func parseStreamRangeOffset(r *http.Request) int64 {
+	var offset int64
+	if h := r.Header.Get("Range"); h != "" {
+		_, _ = fmt.Sscanf(h, "bytes=%d-", &offset)
+	}
+	return offset
+}
+
+func setFollowPollInterval(t *testing.T, d time.Duration) {
+	t.Helper()
+	orig := followPollInterval
+	followPollInterval = d
+	t.Cleanup(func() { followPollInterval = orig })
+}
 
 // setupTestPool はマイグレーション済みのテスト用プールを返す。
 func setupTestPool(t *testing.T) *pgxpool.Pool {
@@ -995,9 +1741,7 @@ func TestIngestWorker_JobReexecution(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(tsData)
+			writeRecordStream(w, r, tsData)
 
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
@@ -1006,6 +1750,7 @@ func TestIngestWorker_JobReexecution(t *testing.T) {
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 			record := mirakc.Record{
 				Recording: mirakc.RecordInfo{
+					Status:  "finished",
 					Options: mirakc.Options{ContentPath: strPtr("test/reexec.m2ts")},
 				},
 				Content: mirakc.ContentInfo{Path: "/recording/test/reexec.m2ts"},
@@ -1092,9 +1837,7 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
 			streamRequests.Add(1)
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(tsData)
+			writeRecordStream(w, r, tsData)
 
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
@@ -1103,6 +1846,7 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 			record := mirakc.Record{
 				Recording: mirakc.RecordInfo{
+					Status:  "finished",
 					Options: mirakc.Options{ContentPath: strPtr("test/reingest.m2ts")},
 				},
 				Content: mirakc.ContentInfo{Path: "/recording/test/reingest.m2ts"},
@@ -1188,8 +1932,11 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 		t.Error("file content changed after second Work() (transfer should have been skipped)")
 	}
 
-	if got := streamRequests.Load(); got != 1 {
-		t.Errorf("stream requests = %d, want 1 (second Work() must skip the transfer entirely)", got)
+	// 1 回目の Work は Range 1 回 + finished 観測後の drain 1 回で 2。2 回目は
+	// 原本コミット済みなので転送に入らない（この数が 2 のままであることが、
+	// 「転送をやり直していない」の判定になる）。
+	if got := streamRequests.Load(); got != 2 {
+		t.Errorf("stream requests = %d, want 2 (first Work drains twice; second Work must skip the transfer)", got)
 	}
 
 	var mediaAssetCount int
@@ -1269,9 +2016,7 @@ func newInstrumentedIngestServer(t *testing.T, tsData []byte, contentPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(tsData)
+			writeRecordStream(w, r, tsData)
 
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
@@ -1280,6 +2025,7 @@ func newInstrumentedIngestServer(t *testing.T, tsData []byte, contentPath string
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 			record := mirakc.Record{
 				Recording: mirakc.RecordInfo{
+					Status:  "finished",
 					Options: mirakc.Options{ContentPath: strPtr(contentPath)},
 				},
 				Content: mirakc.ContentInfo{Path: "/recording/" + contentPath},
@@ -2163,15 +2909,13 @@ func mirakcRecordServer(t *testing.T, tsData []byte, contentPath *string, conten
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(tsData)
+			writeRecordStream(w, r, tsData)
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
 			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 			record := mirakc.Record{
-				Recording: mirakc.RecordInfo{Options: mirakc.Options{ContentPath: contentPath}},
+				Recording: mirakc.RecordInfo{Status: "finished", Options: mirakc.Options{ContentPath: contentPath}},
 				Content:   mirakc.ContentInfo{Path: contentFilePath},
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -2542,15 +3286,13 @@ func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, exist
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
 			streamRequests.Add(1)
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsDataNew)))
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(tsDataNew)
+			writeRecordStream(w, r, tsDataNew)
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsDataNew)))
 			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 			record := mirakc.Record{
-				Recording: mirakc.RecordInfo{Options: mirakc.Options{ContentPath: strPtr("shared/conflict.m2ts")}},
+				Recording: mirakc.RecordInfo{Status: "finished", Options: mirakc.Options{ContentPath: strPtr("shared/conflict.m2ts")}},
 				Content:   mirakc.ContentInfo{Path: "/recording/shared/conflict.m2ts"},
 			}
 			w.Header().Set("Content-Type", "application/json")
