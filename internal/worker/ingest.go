@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -74,6 +76,28 @@ type ingestFile interface {
 	io.Writer
 	Sync() error
 	Close() error
+}
+
+// hashingWriter は下流 writer が受理したバイトだけを hash に流す。
+//
+// 下流が (n > 0, err != nil) の部分書き込みを返しても、次の Range 再開は
+// その n バイトの直後から始まる。hash を io.MultiWriter の 2 番目に置くと
+// 1 番目の writer のエラーで hash への Write が呼ばれないため、受理済みの
+// バイトがハッシュから欠落する。
+type hashingWriter struct {
+	w io.Writer
+	h hash.Hash
+}
+
+func (w *hashingWriter) Write(p []byte) (int, error) {
+	n, err := w.w.Write(p)
+	if n > 0 {
+		_, hashErr := w.h.Write(p[:n])
+		if err == nil {
+			err = hashErr
+		}
+	}
+	return n, err
 }
 
 // openIngestFile は試行固有の一時ファイルを O_EXCL で作る。ファイル名は呼び出し
@@ -280,8 +304,8 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	// unique reservation が採用を一つに決める。
 	ingestCtx := ctx
 
-	counter := tsstat.NewCounter(f)
 	hasher := sha256.New()
+	counter := tsstat.NewCounter(&hashingWriter{w: f, h: hasher})
 
 	progress := &ingestProgressReporter{
 		pool:          w.Pool,
@@ -296,10 +320,10 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	// ことがあり、そこが「何も起きていないように見える」時間帯そのものだから。
 	progress.start(ingestCtx)
 	// progressWriter は counter の外側に置く（io.Copy → progressWriter →
-	// counter → f）。TS 統計は counter が数え、SHA-256 は同じ転送バイト列を
-	// 1 パスで受け取る。
+	// counter → hashingWriter → f）。TS 統計は counter が数え、SHA-256 は
+	// hashingWriter がファイルに受理された同じ転送バイト列を 1 パスで受け取る。
 	dst := &progressWriter{
-		w:       io.MultiWriter(counter, hasher),
+		w:       counter,
 		onWrite: func(written int64) { progress.report(ingestCtx, written) },
 	}
 
@@ -327,10 +351,19 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	if expectedLen >= 0 && offset != expectedLen {
 		return fmt.Errorf("size mismatch: written=%d expected=%d", offset, expectedLen)
 	}
-	if expectedSHA256 != nil {
+	sha256Verification := "skipped"
+	expectedHash, hashAvailable := normalizeContentSHA256(expectedSHA256)
+	if expectedSHA256 != nil && !hashAvailable {
+		sha256Verification = "invalid_skipped"
+		log.Warn("ingest: skipping invalid content sha256", "value", *expectedSHA256)
+	}
+	if hashAvailable {
+		sha256Verification = "verified"
 		actualSHA256 := hex.EncodeToString(hasher.Sum(nil))
-		if actualSHA256 != *expectedSHA256 {
-			return fmt.Errorf("hash mismatch: written=%s expected=%s", actualSHA256, *expectedSHA256)
+		if actualSHA256 != expectedHash {
+			metrics.IngestHashMismatches.Inc()
+			log.Warn("ingest: content sha256 mismatch", "actual", actualSHA256, "expected", expectedHash, "bytes", offset)
+			return fmt.Errorf("hash mismatch: actual=%s expected=%s bytes=%d", actualSHA256, expectedHash, offset)
 		}
 	}
 
@@ -355,6 +388,7 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 		"drops", counter.TotalDrops(), "errors", counter.TotalErrors(),
 		"scrambled", counter.TotalScrambled(),
 		"pid_type_changes", counter.TypeChanges(),
+		"sha256_verification", sha256Verification,
 		"fsync_duration", time.Since(syncStarted))
 
 	recordIngestMetrics(offset, counter)
@@ -407,12 +441,6 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 	var consecutiveFailures int
 	finishedObserved := false
 	var expectedSHA256 *string
-	captureFinishedSHA256 := func(poll recordPoll) {
-		if finishedObserved && poll.ContentSHA256 != nil {
-			sha256 := *poll.ContentSHA256
-			expectedSHA256 = &sha256
-		}
-	}
 
 	for {
 		stallCtx, stallCancel := context.WithCancel(ctx)
@@ -432,10 +460,9 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 					}
 					continue
 				}
-				if err := w.followAfterStatusPoll(ctx, poll, &finishedObserved, &consecutiveFailures, offset, progress, log); err != nil {
+				if err := w.followAfterStatusPoll(ctx, poll, &finishedObserved, &expectedSHA256, &consecutiveFailures, offset, progress, log); err != nil {
 					return 0, nil, err
 				}
-				captureFinishedSHA256(poll)
 				continue
 			}
 
@@ -488,10 +515,9 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 			}
 			continue
 		}
-		if err := w.followAfterStatusPoll(ctx, poll, &finishedObserved, &consecutiveFailures, offset, progress, log); err != nil {
+		if err := w.followAfterStatusPoll(ctx, poll, &finishedObserved, &expectedSHA256, &consecutiveFailures, offset, progress, log); err != nil {
 			return 0, nil, err
 		}
-		captureFinishedSHA256(poll)
 	}
 }
 
@@ -503,7 +529,8 @@ type recordPoll struct {
 	// 追従ではこれが録画とともに伸びるので、進捗の分母を更新する材料になる。
 	ContentLength *int64
 	// ContentSHA256 は finished を観測した GetRecord の content.sha256。
-	// 旧 mirakc やハッシュ計算不能の record では nil なので照合をスキップする。
+	// recording 中の値は pollRecord で捨てる。旧 mirakc やハッシュ計算不能の
+	// record では nil なので照合をスキップする。
 	ContentSHA256 *string
 }
 
@@ -515,7 +542,7 @@ type recordPoll struct {
 // ジョブ内で再試行する** --- 一過性（status が欠落した応答など）かもしれず、
 // ここで River に戻すと次の試行が先頭から引き直す。連続回数は retryPoll が数える
 // ので、恒久的に未知ならジョブは River へ戻る。
-func (w *IngestWorker) followAfterStatusPoll(ctx context.Context, poll recordPoll, finishedObserved *bool, consecutiveFailures *int, offset int64, progress *ingestProgressReporter, log *slog.Logger) error {
+func (w *IngestWorker) followAfterStatusPoll(ctx context.Context, poll recordPoll, finishedObserved *bool, expectedSHA256 **string, consecutiveFailures *int, offset int64, progress *ingestProgressReporter, log *slog.Logger) error {
 	if statusErr := w.afterPollStatus(poll.Status, finishedObserved); statusErr != nil {
 		if errors.Is(statusErr, errIngestRecordEndedAbnormally) {
 			return statusErr
@@ -528,9 +555,30 @@ func (w *IngestWorker) followAfterStatusPoll(ctx context.Context, poll recordPol
 	*consecutiveFailures = 0
 	progress.observeProgress(ctx, offset, poll.ContentLength)
 	if *finishedObserved {
+		if poll.ContentSHA256 != nil {
+			sha256 := *poll.ContentSHA256
+			*expectedSHA256 = &sha256
+		}
 		return nil
 	}
 	return waitForFollowPoll(ctx)
+}
+
+// normalizeContentSHA256 は mirakc の optional な SHA-256 表記を比較用の
+// 小文字 hex に正規化する。空文字や非 hex の値は「使えるハッシュなし」として
+// 扱う。値が不正な proxy / 旧実装で ingest 全体を永久に塞がないためである。
+func normalizeContentSHA256(value *string) (string, bool) {
+	if value == nil {
+		return "", false
+	}
+	normalized := strings.ToLower(strings.TrimSpace(*value))
+	if len(normalized) != sha256.Size*2 {
+		return "", false
+	}
+	if _, err := hex.DecodeString(normalized); err != nil {
+		return "", false
+	}
+	return normalized, true
 }
 
 // pollRecord は録画中の Range 応答後に record の状態を再取得する。
@@ -549,10 +597,14 @@ func (w *IngestWorker) pollRecord(ctx context.Context, client *mirakc.Client, re
 		l := int64(*record.Content.Length)
 		length = &l
 	}
+	var contentSHA256 *string
+	if record.Recording.Status == db.RecordingStatusFinished {
+		contentSHA256 = record.Content.Sha256
+	}
 	return recordPoll{
 		Status:        record.Recording.Status,
 		ContentLength: length,
-		ContentSHA256: record.Content.Sha256,
+		ContentSHA256: contentSHA256,
 	}, nil
 }
 

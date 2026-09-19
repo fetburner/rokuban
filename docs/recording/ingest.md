@@ -157,7 +157,7 @@ River のバックオフと `attempt` カウンタは失われる。この窓を
 
 #### 層 3: 完全性検証とコミット
 
-pull 完了後に書き込みバイト数を HEAD の Content-Length と照合する。finished を観測した record のメタデータに `content.sha256` が存在する場合は、Range 再開を含む同じ転送バイト列から 1 パスで計算した SHA-256（小文字 hex）とも照合する。これは stream レスポンスの Digest / ETag ヘッダーではない。`content.sha256` が `null` または欠落している場合は旧 mirakc やハッシュ計算不能の record として照合をスキップする。Content-Length が不明（`HeadRecordStream` が `-1`）なら長さの照合だけをスキップする（`ingest.go` の `expectedLen >= 0` ガード）。長さまたは SHA-256 が不一致なら `hash mismatch` / `size mismatch` で失敗し、commit と edge record の削除へ進まない。
+pull 完了後に書き込みバイト数を HEAD の Content-Length と照合する。finished を観測した record のメタデータに `content.sha256` が存在する場合は、Range 再開を含む同じ転送バイト列から 1 パスで計算した SHA-256（小文字 hex）とも照合する。これは stream レスポンスの Digest / ETag ヘッダーではない。`content.sha256` が `null` または欠落している場合は旧 mirakc やハッシュ計算不能の record として照合をスキップする。空文字・空白付きの値は正規化し、64 文字の hex でない値は警告を出してスキップする。Content-Length が不明（`HeadRecordStream` が `-1`）なら長さの照合だけをスキップする（`ingest.go` の `expectedLen >= 0` ガード）。長さまたは SHA-256 が不一致なら `hash mismatch` / `size mismatch` で失敗し、commit と edge record の削除へ進まない。不一致は通常の River 再試行に戻し、専用メトリクス `rokuban_ingest_hash_mismatches_total` で観測する。
 
 長さと（存在する場合の）SHA-256 の照合を通ったら、canonical rel_path と同じディレクトリに作った試行固有 temp の `fsync` → `Close` を行う。
 

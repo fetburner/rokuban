@@ -32,7 +32,8 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
 2. **「作業はローカル、置くのは一回」**: ffmpeg の出力は必ずワーカーのローカルスクラッチ（k8s では emptyDir）に書き、完成したファイルをストレージへストリームコピーして fsync。MP4 のシーク問題と書きかけファイル問題が同時に消える。
    **ingest は同じ root・同じディレクトリの試行固有 temp へ書く**。scratch から
    rename すると `EXDEV` になり、コピーへの劣化を許すため確定操作には使わない。
-   canonical path は転送中に触らず、HEAD の長さ照合 → temp の `fsync` → `Close`
+   canonical path は転送中に触らず、HEAD の長さ照合と、存在する場合の
+   `content.sha256` 照合 → temp の `fsync` → `Close`
    → DB transaction 内の original 行 INSERT（rel_path の一意 reservation）→ temp
    を canonical へ atomic rename → 親ディレクトリ `fsync`、の順で進める。
 3. **公開点は DB commit**: DB transaction 内の INSERT は一意性を予約するが、
