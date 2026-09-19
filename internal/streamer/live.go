@@ -1033,8 +1033,9 @@ func streamRecordFollowWithin(ctx context.Context, client mirakcRecordClient, re
 	case result := <-resultCh:
 		if result.err != nil {
 			cancel()
+			return nil, result.err
 		}
-		return result.body, result.err
+		return &cancelOnCloseReadCloser{ReadCloser: result.body, cancel: cancel}, nil
 	case <-timer.C:
 		cancel()
 		return nil, errChaseRecordNotReadyTimeout
@@ -1042,6 +1043,17 @@ func streamRecordFollowWithin(ctx context.Context, client mirakcRecordClient, re
 		cancel()
 		return nil, ctx.Err()
 	}
+}
+
+type cancelOnCloseReadCloser struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (r *cancelOnCloseReadCloser) Close() error {
+	err := r.ReadCloser.Close()
+	r.cancel()
+	return err
 }
 
 // resolveRequest はパスから (site, networkId, serviceId) を取り出し、site が
@@ -1444,14 +1456,6 @@ func liveEvictionReason(err error) (string, bool) {
 		return "upstream", true
 	}
 	return "", false
-}
-
-// getOrCreateSessionOnce は 1 回のセッション取得・起動だけを行う。
-// 起動失敗からの退避と再試行は外側の getOrCreateSession が 1 回だけ担当する。
-func (ls *LiveStreamer) getOrCreateSessionOnce(ctx context.Context, serviceID int64) (*liveSession, error) {
-	return ls.getOrCreateSessionOnceFor(ctx, sessionKey{kind: liveSessionKind, id: serviceID}, func(ctx context.Context) (io.ReadCloser, error) {
-		return ls.mirakc.StreamService(ctx, serviceID, ls.cfg.TunerPriority)
-	})
 }
 
 func (ls *LiveStreamer) getOrCreateSessionOnceFor(ctx context.Context, key sessionKey, source sessionSource) (*liveSession, error) {
