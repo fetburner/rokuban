@@ -157,7 +157,9 @@ River のバックオフと `attempt` カウンタは失われる。この窓を
 
 #### 層 3: 完全性検証とコミット
 
-pull 完了後に書き込みバイト数を HEAD の Content-Length と照合する。長さが一致したら、canonical rel_path と同じディレクトリに作った試行固有 temp の `fsync` → `Close` を行う。`Content-Length` が不明（`HeadRecordStream` が `-1`）なら照合だけをスキップして `fsync` へ進む（`ingest.go` の `expectedLen >= 0` ガード）。
+pull 完了後に書き込みバイト数を HEAD の Content-Length と照合する。finished を観測した record のメタデータに `content.sha256` が存在する場合は、Range 再開を含む同じ転送バイト列から 1 パスで計算した SHA-256（小文字 hex）とも照合する。これは stream レスポンスの Digest / ETag ヘッダーではない。`content.sha256` が `null` または欠落している場合は旧 mirakc やハッシュ計算不能の record として照合をスキップする。空文字・空白付きの値は正規化し、64 文字の hex でない値は警告を出してスキップする。Content-Length が不明（`HeadRecordStream` が `-1`）なら長さの照合だけをスキップする（`ingest.go` の `expectedLen >= 0` ガード）。長さまたは SHA-256 が不一致なら `hash mismatch` / `size mismatch` で失敗し、commit と edge record の削除へ進まない。不一致は通常の River 再試行に戻し、専用メトリクス `rokuban_ingest_hash_mismatches_total` で観測する。
+
+長さと（存在する場合の）SHA-256 の照合を通ったら、canonical rel_path と同じディレクトリに作った試行固有 temp の `fsync` → `Close` を行う。
 
 その後の短い DB transaction で original の `media_assets` 行を INSERT し、rel_path の一意性を予約する。INSERT は transaction が commit するまで他セッションから見えない。この transaction を保持したまま temp → canonical の atomic rename と親ディレクトリ `fsync` を行い、最後に DB transaction を commit する。**DB commit が公開点であり、mirakc 側の record 削除は commit 後だけ**である。
 
@@ -272,7 +274,7 @@ NULL とは違う。非 null な `*int64(0)` として `watcher.go` の `content
 
 追従ループは毎ポーリング `GetRecord` を呼んでおり、その `content.length` が同じ観測なので追加リクエスト無しで分母を更新できる（`ingestProgressReporter.observeProgress`）。`TestIngestWorker_FollowingCaughtUpKeepsProgressFresh` が分母と observed_at の両方を固定している。
 
-**録画中の分母は最終サイズではないので、UI は % を出さない。** 録画中に読めるのは「mirakc がその時点で観測しているサイズ」であり、`writtenBytes` がそれを追い越すことがある。割合にすると `min(100, ...)` で「録画全体を取り込み済み」と読める嘘になる。分母が確定するのは録画終了後で、% はそこから出す（`web/src/lib/ingest.ts` の `ingestDisplay`）。分母が NULL のときも同じくバイト数だけを出す。照合（層 3）には使わない --- 照合は finished 確認後の HEAD だけである。
+**録画中の分母は最終サイズではないので、UI は % を出さない。** 録画中に読めるのは「mirakc がその時点で観測しているサイズ」であり、`writtenBytes` がそれを追い越すことがある。割合にすると `min(100, ...)` で「録画全体を取り込み済み」と読める嘘になる。分母が確定するのは録画終了後で、% はそこから出す（`web/src/lib/ingest.ts` の `ingestDisplay`）。分母が NULL のときも同じくバイト数だけを出す。`content.length` は照合には使わない --- 照合は finished 確認後の HEAD と、存在する場合の record メタデータ `content.sha256` で行う。
 
 **API の状態は 4 値で、原本 `media_assets` 行の有無を最優先に導出する**（列に焼いた値では
 ない。`internal/api/recordings.go` の `ingestProgressFromFields`）。`kind='original'` の行が

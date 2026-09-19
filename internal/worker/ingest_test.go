@@ -3,6 +3,8 @@ package worker
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -383,7 +385,7 @@ func TestIngestWorker_MidTransferDisconnect(t *testing.T) {
 					Status:  "finished",
 					Options: mirakc.Options{ContentPath: strPtr("test/partial.m2ts")},
 				},
-				Content: mirakc.ContentInfo{Path: "/recording/test/partial.m2ts"},
+				Content: mirakc.ContentInfo{Path: "/recording/test/partial.m2ts", Sha256: strPtr(sha256Hex(tsData))},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -491,9 +493,14 @@ func TestIngestWorker_FollowsRecordingWithRangePolling(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 			statusRequests.Add(1)
+			currentStatus := status.Load().(string)
+			var contentSHA256 *string
+			if currentStatus == "finished" {
+				contentSHA256 = strPtr(sha256Hex(full))
+			}
 			record := mirakc.Record{
-				Recording: mirakc.RecordInfo{Status: status.Load().(string), Options: mirakc.Options{ContentPath: strPtr("test/follow.m2ts")}},
-				Content:   mirakc.ContentInfo{Path: "/recording/test/follow.m2ts"},
+				Recording: mirakc.RecordInfo{Status: currentStatus, Options: mirakc.Options{ContentPath: strPtr("test/follow.m2ts")}},
+				Content:   mirakc.ContentInfo{Path: "/recording/test/follow.m2ts", Sha256: contentSHA256},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -1211,6 +1218,229 @@ func TestIngestWorker_SizeMismatch(t *testing.T) {
 	}
 }
 
+func TestIngestWorker_HashMismatch(t *testing.T) {
+	tsData := makeTSData(50)
+	wrongData := bytes.Clone(tsData)
+	wrongData[len(wrongData)-1] ^= 0xff
+
+	var deleteAttempts atomic.Int32
+	expectedSHA256 := sha256Hex(wrongData)
+	srv := newIngestServerWithContentSHA256(t, tsData, "test/hash-mismatch.m2ts", &expectedSHA256, false, func() {
+		deleteAttempts.Add(1)
+	})
+
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	recordingID := insertTestRecording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, "rec-hash-mismatch")
+
+	mediaDir := t.TempDir()
+	w := &IngestWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		Pool:          pool,
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
+	}
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-hash-mismatch"},
+	}
+
+	err := w.Work(context.Background(), job)
+	if err == nil {
+		t.Fatal("expected error for hash mismatch, got nil")
+	}
+	if !strings.Contains(err.Error(), "hash mismatch") {
+		t.Errorf("expected 'hash mismatch' error, got: %v", err)
+	}
+
+	var assetCount int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
+	).Scan(&assetCount); err != nil {
+		t.Fatalf("counting media_assets after hash mismatch: %v", err)
+	}
+	if assetCount != 0 {
+		t.Errorf("media_assets rows after hash mismatch = %d, want 0", assetCount)
+	}
+	if got := deleteAttempts.Load(); got != 0 {
+		t.Errorf("DeleteRecord attempts after hash mismatch = %d, want 0", got)
+	}
+	if _, err := os.Stat(filepath.Join(mediaDir, "sites", "default", "test", "hash-mismatch.m2ts")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("canonical file after hash mismatch: stat error = %v, want not exist", err)
+	}
+}
+
+func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		null      bool
+		shaValue  func([]byte) string
+		wantError bool
+	}{
+		{name: "missing"},
+		{name: "null", null: true},
+		{name: "uppercase-and-space", shaValue: func(data []byte) string {
+			return "  " + strings.ToUpper(sha256Hex(data)) + "  "
+		}},
+		{name: "empty", shaValue: func([]byte) string { return "" }},
+		{name: "uppercase-and-space-mismatch", wantError: true, shaValue: func(data []byte) string {
+			wrongData := bytes.Clone(data)
+			wrongData[len(wrongData)-1] ^= 0xff
+			return "  " + strings.ToUpper(sha256Hex(wrongData)) + "  "
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tsData := makeTSData(20)
+			var deleteAttempts atomic.Int32
+			var contentSHA256 *string
+			if tt.shaValue != nil {
+				value := tt.shaValue(tsData)
+				contentSHA256 = &value
+			}
+			srv := newIngestServerWithContentSHA256(t, tsData, "test/optional-"+tt.name+".m2ts", contentSHA256, tt.null, func() {
+				deleteAttempts.Add(1)
+			})
+
+			pool := setupTestPool(t)
+			if pool == nil {
+				return
+			}
+			recordID := "rec-optional-hash-" + tt.name
+			recordingID := insertTestRecording(t, pool)
+			insertTestRecordSync(t, pool, recordingID, recordID)
+
+			w := &IngestWorker{
+				MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+				Pool:          pool,
+				MediaDir:      t.TempDir(),
+				StallTimeout:  5 * time.Second,
+			}
+			job := &river.Job[IngestJobArgs]{
+				JobRow: &rivertype.JobRow{},
+				Args:   IngestJobArgs{Site: "default", RecordID: recordID},
+			}
+
+			err := w.Work(context.Background(), job)
+			if tt.wantError {
+				if err == nil {
+					t.Fatal("Work() error = nil, want hash mismatch")
+				}
+				if !strings.Contains(err.Error(), "hash mismatch") {
+					t.Fatalf("Work() error = %v, want hash mismatch", err)
+				}
+				var assetCount int
+				if err := pool.QueryRow(context.Background(),
+					"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
+				).Scan(&assetCount); err != nil {
+					t.Fatalf("counting media_assets after hash mismatch: %v", err)
+				}
+				if assetCount != 0 {
+					t.Errorf("media_assets rows after hash mismatch = %d, want 0", assetCount)
+				}
+				if got := deleteAttempts.Load(); got != 0 {
+					t.Errorf("DeleteRecord attempts after hash mismatch = %d, want 0", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Work() error: %v", err)
+			}
+			var assetCount int
+			if err := pool.QueryRow(context.Background(),
+				"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
+			).Scan(&assetCount); err != nil {
+				t.Fatalf("counting media_assets: %v", err)
+			}
+			if assetCount != 1 {
+				t.Errorf("media_assets rows = %d, want 1", assetCount)
+			}
+			if got := deleteAttempts.Load(); got != 1 {
+				t.Errorf("DeleteRecord attempts = %d, want 1", got)
+			}
+		})
+	}
+}
+
+type partialErrorWriter struct {
+	n   int
+	err error
+}
+
+func (w partialErrorWriter) Write(p []byte) (int, error) {
+	return w.n, w.err
+}
+
+func TestHashingWriterHashesAcceptedBytes(t *testing.T) {
+	input := []byte("accepted prefix plus rejected suffix")
+	injectedErr := errors.New("injected partial write")
+	hasher := sha256.New()
+	w := &hashingWriter{
+		w: partialErrorWriter{n: len("accepted prefix"), err: injectedErr},
+		h: hasher,
+	}
+
+	n, err := w.Write(input)
+	if !errors.Is(err, injectedErr) {
+		t.Fatalf("Write() error = %v, want injected partial write", err)
+	}
+	if n != len("accepted prefix") {
+		t.Fatalf("Write() bytes = %d, want %d", n, len("accepted prefix"))
+	}
+	if got, want := hex.EncodeToString(hasher.Sum(nil)), sha256Hex(input[:n]); got != want {
+		t.Errorf("hash of accepted bytes = %s, want %s", got, want)
+	}
+}
+
+func TestFollowAfterStatusPoll_CapturesHashOnlyAfterFinished(t *testing.T) {
+	wrongHash := strings.Repeat("0", sha256.Size*2)
+	progress := &ingestProgressReporter{log: slog.Default()}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	finished := false
+	var expectedSHA256 *string
+	failures := 0
+	if err := (&IngestWorker{}).followAfterStatusPoll(
+		ctx,
+		recordPoll{Status: "recording", ContentSHA256: &wrongHash},
+		&finished,
+		&expectedSHA256,
+		&failures,
+		0,
+		progress,
+		slog.Default(),
+	); !errors.Is(err, context.Canceled) {
+		t.Fatalf("recording poll error = %v, want context.Canceled", err)
+	}
+	if expectedSHA256 != nil {
+		t.Fatalf("recording poll captured content.sha256 = %q, want nil", *expectedSHA256)
+	}
+
+	ctx, cancel = context.WithCancel(context.Background())
+	cancel()
+	finished = false
+	expectedSHA256 = nil
+	failures = 0
+	if err := (&IngestWorker{}).followAfterStatusPoll(
+		ctx,
+		recordPoll{Status: "finished", ContentSHA256: &wrongHash},
+		&finished,
+		&expectedSHA256,
+		&failures,
+		0,
+		progress,
+		slog.Default(),
+	); err != nil {
+		t.Fatalf("finished poll error = %v", err)
+	}
+	if expectedSHA256 == nil || *expectedSHA256 != wrongHash {
+		t.Fatalf("finished poll captured content.sha256 = %v, want %q", expectedSHA256, wrongHash)
+	}
+}
+
 // TestIngestWorker_PersistsBeforeCommitAndDelete は、原本ファイルの
 // Sync/Close が終わるより前に media_assets 行が存在せず、mirakc の
 // DeleteRecord 時点では存在することをイベント列の完全一致で検証する。
@@ -1495,6 +1725,11 @@ func TestIngestWorker_StallDetection(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+func sha256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
 
 // writeRecordStream は mirakc の records/{id}/stream を Range 前提で模す。
 // StreamRecord は offset 0 でも Range を送り 206 を要求する。200 で全量を
@@ -2012,6 +2247,10 @@ func newFullTransferServer(t *testing.T, tsData []byte, contentPath string) *htt
 }
 
 func newInstrumentedIngestServer(t *testing.T, tsData []byte, contentPath string, onDelete func()) *httptest.Server {
+	return newIngestServerWithContentSHA256(t, tsData, contentPath, nil, false, onDelete)
+}
+
+func newIngestServerWithContentSHA256(t *testing.T, tsData []byte, contentPath string, contentSHA256 *string, contentSHA256Null bool, onDelete func()) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -2023,12 +2262,18 @@ func newInstrumentedIngestServer(t *testing.T, tsData []byte, contentPath string
 			w.WriteHeader(http.StatusOK)
 
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			if contentSHA256Null {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprintf(w, `{"recording":{"status":"finished","options":{"contentPath":%q}},"content":{"path":%q,"sha256":null}}`, contentPath, "/recording/"+contentPath)
+				return
+			}
 			record := mirakc.Record{
 				Recording: mirakc.RecordInfo{
 					Status:  "finished",
 					Options: mirakc.Options{ContentPath: strPtr(contentPath)},
 				},
-				Content: mirakc.ContentInfo{Path: "/recording/" + contentPath},
+				Content: mirakc.ContentInfo{Path: "/recording/" + contentPath, Sha256: contentSHA256},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)

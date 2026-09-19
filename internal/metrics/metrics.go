@@ -44,6 +44,14 @@ var (
 		Help: "Ingest jobs by result.",
 	}, []string{"result"})
 
+	// IngestHashMismatches は mirakc の content.sha256 と転送内容の不一致。
+	// ジョブは Issue #796 の契約どおり通常の失敗・再試行へ戻すが、外部からの
+	// 同長書き換えなどで再試行が収束しない場合を観測できるよう専用に数える。
+	IngestHashMismatches = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "rokuban_ingest_hash_mismatches_total",
+		Help: "Total ingest transfers whose content SHA-256 did not match mirakc metadata.",
+	})
+
 	// 以下は TS のインラインドロップスキャン（M1-5-1）の観測値。
 	// 個々の録画の内訳は drop_stats テーブルにあるので、ここでは全体の趨勢だけを見る。
 
@@ -667,6 +675,7 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		IngestBytes,
 		IngestDuration,
 		IngestJobs,
+		IngestHashMismatches,
 		IngestDroppedPackets,
 		IngestErrorPackets,
 		IngestScrambledPackets,

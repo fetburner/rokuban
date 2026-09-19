@@ -162,7 +162,7 @@ func TestGetRecord(t *testing.T) {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"id":"rec1","program":{"id":1,"eventId":1,"serviceId":1,"networkId":1,"isFree":true},"service":{"id":1,"serviceId":1,"networkId":1,"type":1,"name":"NHK","channel":{"type":"GR","channel":"27"},"hasLogoData":false},"tags":[],"recording":{"options":{"priority":1},"status":"finished","startTime":1700000000000},"content":{"path":"test.m2ts","type":"video/MP2T"}}`)
+		_, _ = fmt.Fprint(w, `{"id":"rec1","program":{"id":1,"eventId":1,"serviceId":1,"networkId":1,"isFree":true},"service":{"id":1,"serviceId":1,"networkId":1,"type":1,"name":"NHK","channel":{"type":"GR","channel":"27"},"hasLogoData":false},"tags":[],"recording":{"options":{"priority":1},"status":"finished","startTime":1700000000000},"content":{"path":"test.m2ts","type":"video/MP2T","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`)
 	}))
 	defer srv.Close()
 
@@ -173,6 +173,9 @@ func TestGetRecord(t *testing.T) {
 	}
 	if r.ID != "rec1" {
 		t.Errorf("id = %q, want %q", r.ID, "rec1")
+	}
+	if r.Content.Sha256 == nil || *r.Content.Sha256 != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Errorf("content.sha256 = %v, want lowercase SHA-256 hex", r.Content.Sha256)
 	}
 }
 

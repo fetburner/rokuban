@@ -2,15 +2,19 @@ package worker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -72,6 +76,28 @@ type ingestFile interface {
 	io.Writer
 	Sync() error
 	Close() error
+}
+
+// hashingWriter は下流 writer が受理したバイトだけを hash に流す。
+//
+// 下流が (n > 0, err != nil) の部分書き込みを返しても、次の Range 再開は
+// その n バイトの直後から始まる。hash を io.MultiWriter の 2 番目に置くと
+// 1 番目の writer のエラーで hash への Write が呼ばれないため、受理済みの
+// バイトがハッシュから欠落する。
+type hashingWriter struct {
+	w io.Writer
+	h hash.Hash
+}
+
+func (w *hashingWriter) Write(p []byte) (int, error) {
+	n, err := w.w.Write(p)
+	if n > 0 {
+		_, hashErr := w.h.Write(p[:n])
+		if err == nil {
+			err = hashErr
+		}
+	}
+	return n, err
 }
 
 // openIngestFile は試行固有の一時ファイルを O_EXCL で作る。ファイル名は呼び出し
@@ -278,7 +304,8 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	// unique reservation が採用を一つに決める。
 	ingestCtx := ctx
 
-	counter := tsstat.NewCounter(f)
+	hasher := sha256.New()
+	counter := tsstat.NewCounter(&hashingWriter{w: f, h: hasher})
 
 	progress := &ingestProgressReporter{
 		pool:          w.Pool,
@@ -293,14 +320,14 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	// ことがあり、そこが「何も起きていないように見える」時間帯そのものだから。
 	progress.start(ingestCtx)
 	// progressWriter は counter の外側に置く（io.Copy → progressWriter →
-	// counter → f）。TS 統計は counter が数えるので、ここでは書けたバイト数を
-	// 数えるだけ。
+	// counter → hashingWriter → f）。TS 統計は counter が数え、SHA-256 は
+	// hashingWriter がファイルに受理された同じ転送バイト列を 1 パスで受け取る。
 	dst := &progressWriter{
 		w:       counter,
 		onWrite: func(written int64) { progress.report(ingestCtx, written) },
 	}
 
-	offset, err := w.transferIngestRecord(ingestCtx, client, args.RecordID, dst, progress, log)
+	offset, expectedSHA256, err := w.transferIngestRecord(ingestCtx, client, args.RecordID, dst, progress, log)
 	if err != nil {
 		if errors.Is(err, errIngestRecordEndedAbnormally) {
 			// 再試行に戻さない（errIngestRecordEndedAbnormally の doc コメント
@@ -324,6 +351,21 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	if expectedLen >= 0 && offset != expectedLen {
 		return fmt.Errorf("size mismatch: written=%d expected=%d", offset, expectedLen)
 	}
+	sha256Verification := "skipped"
+	expectedHash, hashAvailable := normalizeContentSHA256(expectedSHA256)
+	if expectedSHA256 != nil && !hashAvailable {
+		sha256Verification = "invalid_skipped"
+		log.Warn("ingest: skipping invalid content sha256", "value", *expectedSHA256)
+	}
+	if hashAvailable {
+		sha256Verification = "verified"
+		actualSHA256 := hex.EncodeToString(hasher.Sum(nil))
+		if actualSHA256 != expectedHash {
+			metrics.IngestHashMismatches.Inc()
+			log.Warn("ingest: content sha256 mismatch", "actual", actualSHA256, "expected", expectedHash, "bytes", offset)
+			return fmt.Errorf("hash mismatch: actual=%s expected=%s bytes=%d", actualSHA256, expectedHash, offset)
+		}
+	}
 
 	// Linux では遅延した書き込みエラー（ENOSPC / I/O エラー）は Close() では
 	// 上がらず、fsync() でしか報告されない。offset はここまで転送できたバイト数を
@@ -346,6 +388,7 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 		"drops", counter.TotalDrops(), "errors", counter.TotalErrors(),
 		"scrambled", counter.TotalScrambled(),
 		"pid_type_changes", counter.TypeChanges(),
+		"sha256_verification", sha256Verification,
 		"fsync_duration", time.Since(syncStarted))
 
 	recordIngestMetrics(offset, counter)
@@ -393,10 +436,11 @@ func (w *IngestWorker) handleAlreadyCommittedIngest(ctx context.Context, client 
 // 終了を意味しない。GetRecord の recording.status を真実として読む。recording 中
 // は差分の有無に関わらず followPollInterval 待って次を取り、finished を観測して
 // から最後の差分を drain して戻る。
-func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.Client, recordID string, dst io.Writer, progress *ingestProgressReporter, log *slog.Logger) (int64, error) {
+func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.Client, recordID string, dst io.Writer, progress *ingestProgressReporter, log *slog.Logger) (int64, *string, error) {
 	var offset int64
 	var consecutiveFailures int
 	finishedObserved := false
+	var expectedSHA256 *string
 
 	for {
 		stallCtx, stallCancel := context.WithCancel(ctx)
@@ -407,23 +451,23 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 				// 204 は content file がまだ空、416 は現在のサイズに追い付いた状態。
 				// どちらも録画中の正常な応答で、接続失敗の予算を消費しない。
 				if finishedObserved {
-					return offset, nil
+					return offset, expectedSHA256, nil
 				}
 				poll, err := w.pollRecord(ctx, client, recordID)
 				if err != nil {
 					if retryErr := retryPoll(ctx, &consecutiveFailures, err, log, "record status", offset); retryErr != nil {
-						return 0, retryErr
+						return 0, nil, retryErr
 					}
 					continue
 				}
-				if err := w.followAfterStatusPoll(ctx, poll, &finishedObserved, &consecutiveFailures, offset, progress, log); err != nil {
-					return 0, err
+				if err := w.followAfterStatusPoll(ctx, poll, &finishedObserved, &expectedSHA256, &consecutiveFailures, offset, progress, log); err != nil {
+					return 0, nil, err
 				}
 				continue
 			}
 
 			if retryErr := retryPoll(ctx, &consecutiveFailures, streamErr, log, "stream connect", offset); retryErr != nil {
-				return 0, retryErr
+				return 0, nil, retryErr
 			}
 			continue
 		}
@@ -441,7 +485,7 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 		}
 		if copyErr != nil {
 			if ctx.Err() != nil {
-				return 0, ctx.Err()
+				return 0, nil, ctx.Err()
 			}
 			if retryErr := retryPoll(ctx, &consecutiveFailures, copyErr, log, "transfer", offset); retryErr != nil {
 				// retryPoll 自身が "transfer failed N consecutive times" を
@@ -449,7 +493,7 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 				// retryPoll が数えた回数がずれた文になり、ctx キャンセル時は
 				// ctx.Err() が「N 回連続失敗」を名乗ってしまう。他の 2 箇所
 				// （"record status" / "stream connect"）と同じくそのまま返す。
-				return 0, retryErr
+				return 0, nil, retryErr
 			}
 			continue
 		}
@@ -458,7 +502,7 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 			// finished を観測した後も、最後の Range 応答に含まれなかった追記が
 			// あればもう一度 drain する。空で戻ったときだけ完全に追い付いた。
 			if n == 0 {
-				return offset, nil
+				return offset, expectedSHA256, nil
 			}
 			consecutiveFailures = 0
 			continue
@@ -467,12 +511,12 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 		poll, err := w.pollRecord(ctx, client, recordID)
 		if err != nil {
 			if retryErr := retryPoll(ctx, &consecutiveFailures, err, log, "record status", offset); retryErr != nil {
-				return 0, retryErr
+				return 0, nil, retryErr
 			}
 			continue
 		}
-		if err := w.followAfterStatusPoll(ctx, poll, &finishedObserved, &consecutiveFailures, offset, progress, log); err != nil {
-			return 0, err
+		if err := w.followAfterStatusPoll(ctx, poll, &finishedObserved, &expectedSHA256, &consecutiveFailures, offset, progress, log); err != nil {
+			return 0, nil, err
 		}
 	}
 }
@@ -484,6 +528,10 @@ type recordPoll struct {
 	// ContentLength は GetRecord の content.length（mirakc が返さなければ nil）。
 	// 追従ではこれが録画とともに伸びるので、進捗の分母を更新する材料になる。
 	ContentLength *int64
+	// ContentSHA256 は GetRecord の content.sha256。finished を観測したときだけ
+	// followAfterStatusPoll が照合用に採用する。旧 mirakc やハッシュ計算不能の
+	// record では nil なので照合をスキップする。
+	ContentSHA256 *string
 }
 
 // followAfterStatusPoll は status を 1 回観測した後のループ制御をまとめる。
@@ -494,7 +542,7 @@ type recordPoll struct {
 // ジョブ内で再試行する** --- 一過性（status が欠落した応答など）かもしれず、
 // ここで River に戻すと次の試行が先頭から引き直す。連続回数は retryPoll が数える
 // ので、恒久的に未知ならジョブは River へ戻る。
-func (w *IngestWorker) followAfterStatusPoll(ctx context.Context, poll recordPoll, finishedObserved *bool, consecutiveFailures *int, offset int64, progress *ingestProgressReporter, log *slog.Logger) error {
+func (w *IngestWorker) followAfterStatusPoll(ctx context.Context, poll recordPoll, finishedObserved *bool, expectedSHA256 **string, consecutiveFailures *int, offset int64, progress *ingestProgressReporter, log *slog.Logger) error {
 	if statusErr := w.afterPollStatus(poll.Status, finishedObserved); statusErr != nil {
 		if errors.Is(statusErr, errIngestRecordEndedAbnormally) {
 			return statusErr
@@ -507,9 +555,30 @@ func (w *IngestWorker) followAfterStatusPoll(ctx context.Context, poll recordPol
 	*consecutiveFailures = 0
 	progress.observeProgress(ctx, offset, poll.ContentLength)
 	if *finishedObserved {
+		if poll.ContentSHA256 != nil {
+			sha256 := *poll.ContentSHA256
+			*expectedSHA256 = &sha256
+		}
 		return nil
 	}
 	return waitForFollowPoll(ctx)
+}
+
+// normalizeContentSHA256 は mirakc の optional な SHA-256 表記を比較用の
+// 小文字 hex に正規化する。空文字や非 hex の値は「使えるハッシュなし」として
+// 扱う。値が不正な proxy / 旧実装で ingest 全体を永久に塞がないためである。
+func normalizeContentSHA256(value *string) (string, bool) {
+	if value == nil {
+		return "", false
+	}
+	normalized := strings.ToLower(strings.TrimSpace(*value))
+	if len(normalized) != sha256.Size*2 {
+		return "", false
+	}
+	if _, err := hex.DecodeString(normalized); err != nil {
+		return "", false
+	}
+	return normalized, true
 }
 
 // pollRecord は録画中の Range 応答後に record の状態を再取得する。
@@ -528,7 +597,11 @@ func (w *IngestWorker) pollRecord(ctx context.Context, client *mirakc.Client, re
 		l := int64(*record.Content.Length)
 		length = &l
 	}
-	return recordPoll{Status: record.Recording.Status, ContentLength: length}, nil
+	return recordPoll{
+		Status:        record.Recording.Status,
+		ContentLength: length,
+		ContentSHA256: record.Content.Sha256,
+	}, nil
 }
 
 // observeProgress は健全に 1 周したポーリングを進捗として記録する。

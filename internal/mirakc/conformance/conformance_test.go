@@ -10,6 +10,8 @@ package conformance
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -247,8 +249,8 @@ func TestConformance(t *testing.T) {
 		}
 	})
 
-	// 受け入れ項目 3「完了後」: HEAD の Content-Length・Range 再開・DeleteRecord(purge=true)
-	// による content 削除。
+	// 受け入れ項目 3「完了後」: HEAD の Content-Length・Range 再開・content.sha256・
+	// DeleteRecord(purge=true) による content 削除。
 	t.Run("CompletedRecordStreamAndDelete", func(t *testing.T) {
 		rec, err := client.GetRecord(ctx, recordID)
 		if err != nil {
@@ -281,7 +283,8 @@ func TestConformance(t *testing.T) {
 		if err != nil {
 			t.Fatalf("StreamRecord(offset=0): %v", err)
 		}
-		n, err := io.Copy(io.Discard, full)
+		hasher := sha256.New()
+		n, err := io.Copy(hasher, full)
 		_ = full.Close()
 		if err != nil {
 			t.Fatalf("reading full stream: %v", err)
@@ -293,6 +296,14 @@ func TestConformance(t *testing.T) {
 		// 録画中のような「不明でもよい」猶予はない。
 		if fullLen != wantLen {
 			t.Errorf("StreamRecord(offset=0) の Content-Length = %d、want %d", fullLen, wantLen)
+		}
+		if rec.Content.Sha256 == nil {
+			t.Log("完了後の content.sha256 は null / 欠落。worker は SHA-256 照合をスキップする")
+		} else {
+			actualSHA256 := hex.EncodeToString(hasher.Sum(nil))
+			if actualSHA256 != *rec.Content.Sha256 {
+				t.Errorf("content.sha256 = %q、StreamRecord の SHA-256 = %q と不一致", *rec.Content.Sha256, actualSHA256)
+			}
 		}
 
 		// 変異「StreamRecord の Range ヘッダを落とす」はここで落ちる: Range を送らなければ
