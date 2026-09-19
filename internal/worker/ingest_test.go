@@ -3,6 +3,8 @@ package worker
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -493,7 +495,7 @@ func TestIngestWorker_FollowsRecordingWithRangePolling(t *testing.T) {
 			statusRequests.Add(1)
 			record := mirakc.Record{
 				Recording: mirakc.RecordInfo{Status: status.Load().(string), Options: mirakc.Options{ContentPath: strPtr("test/follow.m2ts")}},
-				Content:   mirakc.ContentInfo{Path: "/recording/test/follow.m2ts"},
+				Content:   mirakc.ContentInfo{Path: "/recording/test/follow.m2ts", Sha256: strPtr(sha256Hex(full))},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -1211,6 +1213,163 @@ func TestIngestWorker_SizeMismatch(t *testing.T) {
 	}
 }
 
+func TestIngestWorker_HashMismatch(t *testing.T) {
+	tsData := makeTSData(50)
+	wrongData := bytes.Clone(tsData)
+	wrongData[len(wrongData)-1] ^= 0xff
+
+	var deleteAttempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			writeRecordStream(w, r, tsData)
+
+		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
+			w.WriteHeader(http.StatusOK)
+
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{
+					Status:  "finished",
+					Options: mirakc.Options{ContentPath: strPtr("test/hash-mismatch.m2ts")},
+				},
+				Content: mirakc.ContentInfo{
+					Path:   "/recording/test/hash-mismatch.m2ts",
+					Sha256: strPtr(sha256Hex(wrongData)),
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+
+		case r.Method == http.MethodDelete:
+			deleteAttempts.Add(1)
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true})
+
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	recordingID := insertTestRecording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, "rec-hash-mismatch")
+
+	mediaDir := t.TempDir()
+	w := &IngestWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		Pool:          pool,
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
+	}
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-hash-mismatch"},
+	}
+
+	err := w.Work(context.Background(), job)
+	if err == nil {
+		t.Fatal("expected error for hash mismatch, got nil")
+	}
+	if !strings.Contains(err.Error(), "hash mismatch") {
+		t.Errorf("expected 'hash mismatch' error, got: %v", err)
+	}
+
+	var assetCount int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
+	).Scan(&assetCount); err != nil {
+		t.Fatalf("counting media_assets after hash mismatch: %v", err)
+	}
+	if assetCount != 0 {
+		t.Errorf("media_assets rows after hash mismatch = %d, want 0", assetCount)
+	}
+	if got := deleteAttempts.Load(); got != 0 {
+		t.Errorf("DeleteRecord attempts after hash mismatch = %d, want 0", got)
+	}
+	if _, err := os.Stat(filepath.Join(mediaDir, "sites", "default", "test", "hash-mismatch.m2ts")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("canonical file after hash mismatch: stat error = %v, want not exist", err)
+	}
+}
+
+func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		shaField string
+	}{
+		{name: "missing"},
+		{name: "null", shaField: `,"sha256":null`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tsData := makeTSData(20)
+			var deleteAttempts atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+					writeRecordStream(w, r, tsData)
+
+				case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
+					w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
+					w.WriteHeader(http.StatusOK)
+
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+					_, _ = fmt.Fprintf(w, `{"recording":{"status":"finished","options":{"contentPath":"test/optional-%s.m2ts"}},"content":{"path":"/recording/test/optional-%s.m2ts"%s}}`, tt.name, tt.name, tt.shaField)
+
+				case r.Method == http.MethodDelete:
+					deleteAttempts.Add(1)
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true})
+
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(srv.Close)
+
+			pool := setupTestPool(t)
+			if pool == nil {
+				return
+			}
+			recordID := "rec-optional-hash-" + tt.name
+			recordingID := insertTestRecording(t, pool)
+			insertTestRecordSync(t, pool, recordingID, recordID)
+
+			w := &IngestWorker{
+				MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+				Pool:          pool,
+				MediaDir:      t.TempDir(),
+				StallTimeout:  5 * time.Second,
+			}
+			job := &river.Job[IngestJobArgs]{
+				JobRow: &rivertype.JobRow{},
+				Args:   IngestJobArgs{Site: "default", RecordID: recordID},
+			}
+
+			if err := w.Work(context.Background(), job); err != nil {
+				t.Fatalf("Work() error: %v", err)
+			}
+			var assetCount int
+			if err := pool.QueryRow(context.Background(),
+				"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
+			).Scan(&assetCount); err != nil {
+				t.Fatalf("counting media_assets: %v", err)
+			}
+			if assetCount != 1 {
+				t.Errorf("media_assets rows = %d, want 1", assetCount)
+			}
+			if got := deleteAttempts.Load(); got != 1 {
+				t.Errorf("DeleteRecord attempts = %d, want 1", got)
+			}
+		})
+	}
+}
+
 // TestIngestWorker_PersistsBeforeCommitAndDelete は、原本ファイルの
 // Sync/Close が終わるより前に media_assets 行が存在せず、mirakc の
 // DeleteRecord 時点では存在することをイベント列の完全一致で検証する。
@@ -1495,6 +1654,11 @@ func TestIngestWorker_StallDetection(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+func sha256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
 
 // writeRecordStream は mirakc の records/{id}/stream を Range 前提で模す。
 // StreamRecord は offset 0 でも Range を送り 206 を要求する。200 で全量を

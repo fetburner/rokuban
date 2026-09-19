@@ -87,6 +87,9 @@ type ContentInfo struct {
 	Path   string  `json:"path"`
 	Type   string  `json:"type"`
 	Length *uint64 `json:"length,omitempty"`
+	// Sha256 は録画コンテンツの SHA-256（小文字 hex）。旧 mirakc や
+	// ハッシュ計算に失敗した record では nil になりうる。
+	Sha256 *string `json:"sha256,omitempty"`
 }
 
 // FailedReason は録画失敗の理由。discriminated union (type フィールド)。
