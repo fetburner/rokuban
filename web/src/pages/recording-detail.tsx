@@ -143,7 +143,12 @@ export function RecordingDetailPage() {
             </div>
           </section>
 
-          <RecordingDetail recording={recording} trash={trash} chase={location.hash === 'chase'} />
+          <RecordingDetail
+            key={`${recording.id}:${location.hash}`}
+            recording={recording}
+            trash={trash}
+            chase={location.hash === 'chase'}
+          />
         </div>
       )}
     </>

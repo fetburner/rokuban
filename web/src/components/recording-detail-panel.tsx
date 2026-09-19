@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 
 import { useListRules, useListSites, type Recording } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
@@ -76,12 +76,7 @@ export function RecordingDetail({
 }) {
   const liveEnabled = useLiveEnabled()
   const [chasing, setChasing] = useState(chase)
-  useEffect(() => {
-    setChasing(chase)
-  }, [chase])
-  useEffect(() => {
-    if (recording.status !== 'recording') setChasing(false)
-  }, [recording.status])
+  const showChase = !trash && recording.status === 'recording' && liveEnabled && chasing
   const encodedAssets = recording.encodedAssets ?? []
   const hasOriginal = recording.sizeBytes !== undefined
   // 詳細データの再取得ごとに取り込み状態を現在時刻で再評価する。mount 時に固定
@@ -101,7 +96,7 @@ export function RecordingDetail({
         ListTrashRecordings が available_encoded_assets を射影しないままなのも
         この理由による（プレイヤーを出さないので揃える必要がない）。
       */}
-      {!trash && recording.status === 'recording' && liveEnabled && chasing && (
+      {showChase && (
         <section className="flex flex-col gap-2" aria-label="追っかけ再生">
           <div className="flex items-center justify-between gap-2">
             <h4 className="font-medium">追っかけ再生</h4>
@@ -127,7 +122,7 @@ export function RecordingDetail({
         </button>
       )}
 
-      {!trash && !chasing && (encodedAssets.length > 0 || hasOriginal) && (
+      {!trash && !showChase && (encodedAssets.length > 0 || hasOriginal) && (
         <RecordingPlayer
           recordingId={recording.id}
           encodedAssets={encodedAssets}

@@ -154,10 +154,11 @@ consistent hash によって振る**。この鍵は既に資源同定の中に�
 scratch を分ける指針（[§3](database.md)）と同じ系列の規則。
 
 **録画中の追っかけ再生も同じ `live.segment_dir` の scratch を使う。** URL は
-`/api/recordings/{recordings.id}/chase/...` の固定深さで、録画 id は routing の identity
-として前段で同じ streamer へ送る。ライブと追っかけは同じ process-local な
-`live.max_sessions` を共有し、メトリクスは `rokuban_live_active_sessions{kind="live"}` /
-`{kind="chase"}` に分かれるが、scratch の容量は合算する。
+`/api/recordings/{recordings.id}/chase/...` の固定深さである。録画 id を前段の
+ルーティングキーにして、同じ streamer へ送る。ライブと追っかけは同じ
+process-local な `live.max_sessions` を共有する。メトリクスは
+`rokuban_live_active_sessions{kind="live"}` / `{kind="chase"}` に分かれるが、
+scratch の容量は合算する。
 
 追っかけは録画中の先頭から EOF までの EVENT playlist を `delete_segments` 無しで保持し、
 ffmpeg 終了後も idle GC まで全セグメントを残す。したがって「数本のライブセグメント
