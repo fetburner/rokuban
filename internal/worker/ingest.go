@@ -528,8 +528,8 @@ type recordPoll struct {
 	// ContentLength は GetRecord の content.length（mirakc が返さなければ nil）。
 	// 追従ではこれが録画とともに伸びるので、進捗の分母を更新する材料になる。
 	ContentLength *int64
-	// ContentSHA256 は finished を観測した GetRecord の content.sha256。
-	// recording 中の値は pollRecord で捨てる。旧 mirakc やハッシュ計算不能の
+	// ContentSHA256 は GetRecord の content.sha256。finished を観測したときだけ
+	// followAfterStatusPoll が照合用に採用する。旧 mirakc やハッシュ計算不能の
 	// record では nil なので照合をスキップする。
 	ContentSHA256 *string
 }
@@ -597,14 +597,10 @@ func (w *IngestWorker) pollRecord(ctx context.Context, client *mirakc.Client, re
 		l := int64(*record.Content.Length)
 		length = &l
 	}
-	var contentSHA256 *string
-	if record.Recording.Status == db.RecordingStatusFinished {
-		contentSHA256 = record.Content.Sha256
-	}
 	return recordPoll{
 		Status:        record.Recording.Status,
 		ContentLength: length,
-		ContentSHA256: contentSHA256,
+		ContentSHA256: record.Content.Sha256,
 	}, nil
 }
 

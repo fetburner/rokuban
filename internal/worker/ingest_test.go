@@ -1275,9 +1275,10 @@ func TestIngestWorker_HashMismatch(t *testing.T) {
 
 func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
 	for _, tt := range []struct {
-		name     string
-		null     bool
-		shaValue func([]byte) string
+		name      string
+		null      bool
+		shaValue  func([]byte) string
+		wantError bool
 	}{
 		{name: "missing"},
 		{name: "null", null: true},
@@ -1285,6 +1286,11 @@ func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
 			return "  " + strings.ToUpper(sha256Hex(data)) + "  "
 		}},
 		{name: "empty", shaValue: func([]byte) string { return "" }},
+		{name: "uppercase-and-space-mismatch", wantError: true, shaValue: func(data []byte) string {
+			wrongData := bytes.Clone(data)
+			wrongData[len(wrongData)-1] ^= 0xff
+			return "  " + strings.ToUpper(sha256Hex(wrongData)) + "  "
+		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			tsData := makeTSData(20)
@@ -1317,7 +1323,29 @@ func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
 				Args:   IngestJobArgs{Site: "default", RecordID: recordID},
 			}
 
-			if err := w.Work(context.Background(), job); err != nil {
+			err := w.Work(context.Background(), job)
+			if tt.wantError {
+				if err == nil {
+					t.Fatal("Work() error = nil, want hash mismatch")
+				}
+				if !strings.Contains(err.Error(), "hash mismatch") {
+					t.Fatalf("Work() error = %v, want hash mismatch", err)
+				}
+				var assetCount int
+				if err := pool.QueryRow(context.Background(),
+					"SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID,
+				).Scan(&assetCount); err != nil {
+					t.Fatalf("counting media_assets after hash mismatch: %v", err)
+				}
+				if assetCount != 0 {
+					t.Errorf("media_assets rows after hash mismatch = %d, want 0", assetCount)
+				}
+				if got := deleteAttempts.Load(); got != 0 {
+					t.Errorf("DeleteRecord attempts after hash mismatch = %d, want 0", got)
+				}
+				return
+			}
+			if err != nil {
 				t.Fatalf("Work() error: %v", err)
 			}
 			var assetCount int
