@@ -36,6 +36,7 @@ import { shouldAutoLoadNextPage, shouldShowLoadMoreButton } from '@/lib/auto-loa
 import { recordingsQueryKeyPrefix } from '@/lib/events'
 import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
 import { hasLiveIngestProgress, ingestRefetchIntervalMs } from '@/lib/ingest'
+import { useLiveEnabled } from '@/lib/capabilities'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
 import { programTitle } from '@/lib/program-labels'
 import {
@@ -108,6 +109,7 @@ export function RecordingsPage() {
   const search = useRouteSearch({ from: '/recordings' })
   const navigate = useNavigate()
   const trash = search.tab === 'trash'
+  const liveEnabled = useLiveEnabled()
 
   const sitesQuery = useListSites()
   const registeredSites = useMemo(() => unwrap(sitesQuery.data) ?? [], [sitesQuery.data])
@@ -504,6 +506,7 @@ export function RecordingsPage() {
                   selecting={selecting}
                   selected={selected.has(r.id)}
                   onToggle={() => toggleSelected(r.id)}
+                  liveEnabled={liveEnabled}
                 />
               </li>
             ))}
@@ -670,6 +673,7 @@ function RecordingRow({
   selecting,
   selected,
   onToggle,
+  liveEnabled,
 }: {
   recording: Recording
   trash: boolean
@@ -684,6 +688,7 @@ function RecordingRow({
   selecting: boolean
   selected: boolean
   onToggle: () => void
+  liveEnabled: boolean
 }) {
   const [thumbFailed, setThumbFailed] = useState(false)
   const card = view === 'card'
@@ -782,6 +787,17 @@ function RecordingRow({
           {recording.dropSummary && <DropBadges summary={recording.dropSummary} />}
         </div>
       </div>
+      {!selecting && liveEnabled && recording.status === 'recording' && (
+        <Link
+          to="/recordings/$id"
+          params={{ id: String(recording.id) }}
+          hash="chase"
+          aria-label={`${programTitle(recording.title)}を追っかけ再生`}
+          className="relative z-10 shrink-0 rounded border border-border px-2 py-1 text-xs text-primary hover:bg-muted"
+        >
+          追っかけ
+        </Link>
+      )}
       {/* カードは行ではないので、行末の「開く」記号は出さない（面全体がリンク）。 */}
       {!selecting && !card && <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}
     </div>

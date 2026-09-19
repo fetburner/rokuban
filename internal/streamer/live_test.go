@@ -1681,6 +1681,10 @@ func TestLiveStreamer_URLPathFixedDepth(t *testing.T) {
 		// 離脱ヒント（issue #191）。セッション ID を持たない = 宛先はプレイリスト /
 		// セグメントと同じ (site, networkId, serviceId) のまま、固定深さも保つ。
 		"/api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave",
+		"/api/recordings/{id}/chase/playlist.m3u8",
+		"/api/recordings/{id}/chase/segments/{name}",
+		"/api/recordings/{id}/chase/{name}",
+		"/api/recordings/{id}/chase/leave",
 	}
 	slices.Sort(routes)
 	slices.Sort(want)
@@ -3134,12 +3138,12 @@ func TestLiveStreamer_ActiveSessionsGauge(t *testing.T) {
 	if got := ls.sessionCount(); got != 1 {
 		t.Fatalf("sessionCount = %d, want 1", got)
 	}
-	if got := gaugeValue(t, metrics.LiveActiveSessions); got != 1 {
+	if got := gaugeValue(t, metrics.LiveActiveSessions.WithLabelValues("live")); got != 1 {
 		t.Errorf("rokuban_live_active_sessions = %v, want 1", got)
 	}
 
 	ls.shutdown()
-	if got := gaugeValue(t, metrics.LiveActiveSessions); got != 0 {
+	if got := gaugeValue(t, metrics.LiveActiveSessions.WithLabelValues("live")); got != 0 {
 		t.Errorf("rokuban_live_active_sessions after shutdown = %v, want 0", got)
 	}
 }

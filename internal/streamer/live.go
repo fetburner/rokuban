@@ -35,7 +35,10 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -126,6 +129,13 @@ type mirakcLiveClient interface {
 	StreamService(ctx context.Context, serviceID int64, priority int) (io.ReadCloser, error)
 }
 
+// mirakcRecordClient is kept separate from mirakcLiveClient so existing live-only
+// test doubles do not need to implement the recording endpoint. The production
+// *mirakc.Client implements both interfaces.
+type mirakcRecordClient interface {
+	StreamRecordFollow(ctx context.Context, recordID string) (io.ReadCloser, error)
+}
+
 var (
 	// errSessionLimit はプロセスローカルな同時セッション上限に達したことを示す。
 	// **プロセスローカル**であり、グローバルな天井（チューナー数、mirakc が裁定）
@@ -140,6 +150,10 @@ var (
 	// （sessionCtx 由来の runSession）やセッション自体の状態には影響しない**
 	// --- 諦めるのはこの呼び出しの待ちだけで、セッションはそのまま起動を続ける。
 	errStartupTimeout = errors.New("live session did not become ready in time")
+	// errChaseRecordNotReadyTimeout is deliberately not a liveUpstreamStartError:
+	// repeated 204 responses are a normal recording-start state, not a failed tuner
+	// connection. It becomes a 503 only after the shared startup budget expires.
+	errChaseRecordNotReadyTimeout = errors.New("chase record did not become readable in time")
 )
 
 // liveUpstreamStartError は mirakc の stream 要求が拒否された起動失敗を表す。
@@ -206,10 +220,12 @@ type LiveStreamer struct {
 	mirakc mirakcLiveClient
 	site   string
 	cfg    LiveConfig
+	pool   *pgxpool.Pool
 
-	mu       sync.Mutex
-	sessions map[int64]*liveSession
-	closed   bool
+	mu            sync.Mutex
+	sessions      map[int64]*liveSession
+	chaseSessions map[int64]*liveSession
+	closed        bool
 
 	// evictMu は退避（takeIdleSessionForRetry → stop → 解放待ち）を直列化する。
 	// getOrCreateSession の doc コメント参照 --- 「1 つの圧力イベントに対して退避は
@@ -241,18 +257,31 @@ type LiveStreamer struct {
 // 1 回でよい仕事。site 数が増えて無視できないコストになったら
 // newLiveStreamersBySite 側で 1 回だけ呼ぶ形に上げる。
 func NewLive(mirakcClient *mirakc.Client, site string, cfg LiveConfig) *LiveStreamer {
-	return newLiveStreamer(mirakcClient, site, cfg)
+	return newLiveStreamerWithPool(nil, mirakcClient, site, cfg)
 }
 
 func newLiveStreamer(client mirakcLiveClient, site string, cfg LiveConfig) *LiveStreamer {
+	return newLiveStreamerWithPool(nil, client, site, cfg)
+}
+
+// NewLiveWithPool is the production constructor. Live and chase sessions share
+// the same LiveStreamer so their process-local cap, idle GC, leave semantics,
+// and active-session gauge describe one resource pool.
+func NewLiveWithPool(pool *pgxpool.Pool, mirakcClient *mirakc.Client, site string, cfg LiveConfig) *LiveStreamer {
+	return newLiveStreamerWithPool(pool, mirakcClient, site, cfg)
+}
+
+func newLiveStreamerWithPool(pool *pgxpool.Pool, client mirakcLiveClient, site string, cfg LiveConfig) *LiveStreamer {
 	if cfg.Enabled && cfg.SegmentDir != "" {
 		sweepStaleLiveSegments(cfg.SegmentDir)
 	}
 	return &LiveStreamer{
-		mirakc:   client,
-		site:     site,
-		cfg:      cfg,
-		sessions: make(map[int64]*liveSession),
+		mirakc:        client,
+		site:          site,
+		cfg:           cfg,
+		pool:          pool,
+		sessions:      make(map[int64]*liveSession),
+		chaseSessions: make(map[int64]*liveSession),
 	}
 }
 
@@ -299,6 +328,11 @@ func sweepStaleLiveSegments(dir string) {
 // 罠）ので、export してどちらもこの定数を参照する。
 const LiveRoutePattern = "/api/sites/{site}/networks/{networkId}/services/{serviceId}/live"
 
+// ChaseRoutePattern は録画中の追っかけ再生の固定深さパターン。recording id から
+// DB で (site, mirakc record id) を逆引きするため、URL に site や mirakc の id を
+// 複製しない。OpenAPI には載せず、streamer がバイナリとして登録する。
+const ChaseRoutePattern = "/api/recordings/{id}/chase"
+
 // Mount はライブ視聴のルートを登録する（cfg.Enabled が true のときだけ）。
 //
 // **production では呼ばれない。** cmd/rokuban は 1 プロセスが束縛する site ごとに
@@ -321,6 +355,14 @@ func (ls *LiveStreamer) Mount(r chi.Router) {
 		r.Get(LiveRoutePattern+"/{name}", ls.Segment)
 	}
 	r.Post(LiveRoutePattern+"/leave", ls.Leave)
+
+	// 追っかけ再生も同じ LiveStreamer のセッションプールを使う。captions の
+	// 設定は site ごとに異なり得るので、variant playlist の固定深さルートは
+	// liveSites と同様に常に登録し、実際の可否は Segment 側で判定する。
+	r.Get(ChaseRoutePattern+"/playlist.m3u8", ls.ChasePlaylist)
+	r.Get(ChaseRoutePattern+"/segments/{name}", ls.ChaseSegment)
+	r.Get(ChaseRoutePattern+"/{name}", ls.ChaseSegment)
+	r.Post(ChaseRoutePattern+"/leave", ls.ChaseLeave)
 }
 
 // Run は idle GC ループを ctx が Done になるまで回す。ctx が Done になったら
@@ -685,6 +727,323 @@ func (ls *LiveStreamer) Leave(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// ChaseTarget is the durable-to-mirakc mapping needed by a chase session.
+// recordingID is the canonical recordings.id from the URL; RecordID is the
+// opaque id accepted by mirakc and is never exposed in the public URL.
+type ChaseTarget struct {
+	RecordingID     int64
+	Site            string
+	RecordID        string
+	Status          string
+	RecordingStatus string
+}
+
+// LookupChaseTarget resolves a recording id without starting a session. It is
+// exported for cmd/rokuban's multi-site dispatcher, which must choose the
+// mirakc client before the request reaches a site-local LiveStreamer.
+func (ls *LiveStreamer) LookupChaseTarget(ctx context.Context, recordingID int64) (ChaseTarget, error) {
+	if ls.pool == nil {
+		return ChaseTarget{}, errors.New("chase target database is unavailable")
+	}
+	row, err := sqlcgen.New(ls.pool).GetChaseTarget(ctx, recordingID)
+	if err != nil {
+		return ChaseTarget{}, err
+	}
+	if row.Status != "recording" || row.RecordingStatus != "recording" || row.DeletedAt != nil ||
+		row.Site == "" || row.RecordID == "" {
+		return ChaseTarget{}, pgx.ErrNoRows
+	}
+	return ChaseTarget{
+		RecordingID:     recordingID,
+		Site:            row.Site,
+		RecordID:        row.RecordID,
+		Status:          row.Status,
+		RecordingStatus: row.RecordingStatus,
+	}, nil
+}
+
+// ChasePlaylist handles the single-site form of the chase route. The
+// multi-site production router resolves the target once and calls
+// ChasePlaylistForTarget so segments do not need a DB lookup on every HLS poll.
+func (ls *LiveStreamer) ChasePlaylist(w http.ResponseWriter, r *http.Request) {
+	recordingID, ok := parseCanonicalRecordingID(chi.URLParam(r, "id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	target, err := ls.LookupChaseTarget(r.Context(), recordingID)
+	if err != nil {
+		writeChaseTargetError(w, r, err)
+		return
+	}
+	if target.Site != ls.site {
+		http.NotFound(w, r)
+		return
+	}
+	ls.ChasePlaylistForTarget(w, r, target)
+}
+
+// ChasePlaylistForTarget starts or joins the one shared ffmpeg session for a
+// recording and serves an EVENT playlist from its head. All viewers of the
+// same recordings.id use the same session key.
+func (ls *LiveStreamer) ChasePlaylistForTarget(w http.ResponseWriter, r *http.Request, target ChaseTarget) {
+	if target.Site != ls.site {
+		http.NotFound(w, r)
+		return
+	}
+	profile, ok := ls.cfg.profile(r.URL.Query().Get("profile"))
+	if !ok {
+		http.Error(w, "unknown chase profile", http.StatusBadRequest)
+		return
+	}
+	client, ok := ls.mirakc.(mirakcRecordClient)
+	if !ok {
+		http.Error(w, "chase stream unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	source := func(ctx context.Context) (io.ReadCloser, error) {
+		return waitForChaseRecord(ctx, client, target.RecordID)
+	}
+	s, err := ls.getOrCreateSessionFor(r.Context(), sessionKey{
+		kind: chaseSessionKind,
+		id:   target.RecordingID,
+	}, source)
+	if err != nil {
+		writeSessionError(w, err)
+		return
+	}
+	s.touch()
+
+	playlistName := profile.Name + ".m3u8"
+	readyMarker := "#EXTINF"
+	if ls.cfg.Captions {
+		playlistName = "playlist.m3u8"
+		readyMarker = "#EXT-X-STREAM-INF"
+	}
+	playlistPath := filepath.Join(s.dir, playlistName)
+	content, ok := waitForPlaylist(r.Context(), s, playlistPath, playlistStartupTimeout, readyMarker)
+	if !ok {
+		slog.Error("streamer: chase playlist did not appear in time",
+			"recording_id", target.RecordingID, "profile", profile.Name, "dir", s.dir)
+		http.Error(w, "chase stream did not start in time", http.StatusGatewayTimeout)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(content)
+}
+
+// ChaseSegment serves segments and variant playlists from the recording-keyed
+// session. The dispatcher uses HasChaseSession to select the site in memory;
+// the hot segment path therefore does not query Postgres repeatedly.
+func (ls *LiveStreamer) ChaseSegment(w http.ResponseWriter, r *http.Request) {
+	recordingID, ok := parseCanonicalRecordingID(chi.URLParam(r, "id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	name := chi.URLParam(r, "name")
+	if !segmentNamePattern.MatchString(name) || (!ls.cfg.Captions && !strings.HasSuffix(name, ".ts")) {
+		http.Error(w, "invalid segment name", http.StatusBadRequest)
+		return
+	}
+
+	ls.mu.Lock()
+	s, ok := ls.chaseSessions[recordingID]
+	ls.mu.Unlock()
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if err := waitReadyTouching(r.Context(), s, playlistStartupTimeout); err != nil {
+		if errors.Is(err, errStartupTimeout) {
+			http.Error(w, "chase stream did not start in time", http.StatusGatewayTimeout)
+		}
+		return
+	}
+	if s.startErr != nil {
+		http.NotFound(w, r)
+		return
+	}
+	s.touch()
+
+	path := filepath.Join(s.dir, "segments", name)
+	if ls.cfg.Captions && (strings.HasSuffix(name, ".m3u8") || strings.HasSuffix(name, ".vtt")) {
+		path = filepath.Join(s.dir, name)
+	}
+	if ls.cfg.Captions && strings.HasSuffix(name, ".m3u8") {
+		content, ok := waitForPlaylist(r.Context(), s, path, playlistStartupTimeout, "#EXTINF")
+		if !ok {
+			http.Error(w, "chase stream did not start in time", http.StatusGatewayTimeout)
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(content)
+		return
+	}
+	if filepath.Ext(name) == ".vtt" {
+		w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
+	} else {
+		w.Header().Set("Content-Type", "video/mp2t")
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	http.ServeFile(w, r, path)
+}
+
+// ChaseLeave is a leave hint, not a stop command, with the same shared-session
+// semantics as live Leave. A missing session is intentionally still 204.
+func (ls *LiveStreamer) ChaseLeave(w http.ResponseWriter, r *http.Request) {
+	recordingID, ok := parseCanonicalRecordingID(chi.URLParam(r, "id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	ls.mu.Lock()
+	s, ok := ls.chaseSessions[recordingID]
+	ls.mu.Unlock()
+	if !ok {
+		metrics.LiveLeaveHints.WithLabelValues("no_session").Inc()
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if !s.hintLeave(time.Now(), ls.cfg.leaveGrace(), ls.cfg.IdleTimeout) {
+		metrics.LiveLeaveHints.WithLabelValues("no_effect").Inc()
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	metrics.LiveLeaveHints.WithLabelValues("deadline_shortened").Inc()
+	slog.Info("streamer: chase leave hint received, shortening idle deadline",
+		"recording_id", recordingID, "grace", ls.cfg.leaveGrace())
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// HasChaseSession is used by the multi-site dispatcher for segment/leave
+// requests, whose fixed-depth URL intentionally carries no site.
+func (ls *LiveStreamer) HasChaseSession(rawRecordingID string) bool {
+	recordingID, ok := parseCanonicalRecordingID(rawRecordingID)
+	if !ok {
+		return false
+	}
+	ls.mu.Lock()
+	_, ok = ls.chaseSessions[recordingID]
+	ls.mu.Unlock()
+	return ok
+}
+
+func writeChaseTargetError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, pgx.ErrNoRows) {
+		http.NotFound(w, r)
+		return
+	}
+	slog.Error("streamer: looking up chase target", "err", err)
+	http.Error(w, "chase stream unavailable", http.StatusInternalServerError)
+}
+
+// parseCanonicalRecordingID accepts only the decimal spelling used by
+// recordings.id in URLs. This is also the spelling used by the nginx consistent
+// hash key, so aliases such as 00123 cannot route the same resource differently.
+func parseCanonicalRecordingID(raw string) (int64, bool) {
+	if raw == "" || (len(raw) > 1 && raw[0] == '0') {
+		return 0, false
+	}
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || v < 0 || strconv.FormatInt(v, 10) != raw {
+		return 0, false
+	}
+	return v, true
+}
+
+// ParseCanonicalRecordingID exposes the URL identity check to the multi-site
+// dispatcher without duplicating the decimal/canonical rules in cmd/rokuban.
+func ParseCanonicalRecordingID(raw string) (int64, bool) {
+	return parseCanonicalRecordingID(raw)
+}
+
+func waitForChaseRecord(ctx context.Context, client mirakcRecordClient, recordID string) (io.ReadCloser, error) {
+	deadline := time.Now().Add(playlistStartupTimeout)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, errChaseRecordNotReadyTimeout
+		}
+		body, err := streamRecordFollowWithin(ctx, client, recordID, remaining)
+		if err == nil {
+			return body, nil
+		}
+		if errors.Is(err, errChaseRecordNotReadyTimeout) {
+			return nil, err
+		}
+		if !errors.Is(err, mirakc.ErrRecordNotReady) {
+			return nil, err
+		}
+
+		// 204 means “the recording file is still empty”, not a broken connection.
+		// Retry until the same 15s startup budget used by playlist readiness expires;
+		// this keeps 204 retries out of connection-failure accounting while still
+		// guaranteeing that a request eventually returns 503.
+		remaining = time.Until(deadline)
+		if remaining <= 0 {
+			return nil, errChaseRecordNotReadyTimeout
+		}
+		wait := playlistPollInterval
+		if remaining < wait {
+			wait = remaining
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+// streamRecordFollowWithin bounds the response-header wait without imposing the
+// same deadline on the returned long-lived body. A context deadline passed
+// directly to StreamRecordFollow would also cancel a successful body after the
+// chase startup budget, which would truncate the ffmpeg input. On timeout we
+// cancel the request context; on success the request context remains attached to
+// the body and is released with the session context.
+func streamRecordFollowWithin(ctx context.Context, client mirakcRecordClient, recordID string, timeout time.Duration) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	attemptCtx, cancel := context.WithCancel(ctx)
+	type result struct {
+		body io.ReadCloser
+		err  error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		body, err := client.StreamRecordFollow(attemptCtx, recordID)
+		resultCh <- result{body: body, err: err}
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			cancel()
+		}
+		return result.body, result.err
+	case <-timer.C:
+		cancel()
+		return nil, errChaseRecordNotReadyTimeout
+	case <-ctx.Done():
+		cancel()
+		return nil, ctx.Err()
+	}
+}
+
 // resolveRequest はパスから (site, networkId, serviceId) を取り出し、site が
 // このプロセスの担当（`--sites` で束縛された site）と一致することを確かめたうえで、
 // mirakc に渡す合成 service id を返す。DB は引かない（issue #91 の決定 3）---
@@ -793,12 +1152,30 @@ func waitForPlaylist(ctx context.Context, s *liveSession, path string, timeout t
 	}
 }
 
-// liveSession は 1 サービスぶんのライブセッション（1 mirakc 接続 + 1 ffmpeg プロセス）。
+type sessionKind string
+
+const (
+	liveSessionKind  sessionKind = "live"
+	chaseSessionKind sessionKind = "chase"
+)
+
+type sessionKey struct {
+	kind sessionKind
+	id   int64
+}
+
+type sessionSource func(context.Context) (io.ReadCloser, error)
+
+// liveSession はライブまたは追っかけ再生の 1 セッション（1 mirakc 接続 +
+// 1 ffmpeg プロセス）。種別だけが資源の入口と出力ディレクトリを変え、上限・
+// startup wait・idle GC・leave は同じ状態機械を通る。
 //
 // crash-only の唯一の例外（使い捨てのインメモリ状態）。DB には一切書かない。
 type liveSession struct {
 	serviceID int64
-	dir       string // SegmentDir/site/serviceID。segments/ 配下にセグメント、直下に <profile>.m3u8
+	key       sessionKey
+	source    sessionSource
+	dir       string // SegmentDir/site/{serviceID|chase/recordingID}
 
 	ready chan struct{} // startSession が終わったら閉じる（成功でも失敗でも）
 	done  chan struct{} // ffmpeg プロセスが完全に終了したら閉じる
@@ -901,7 +1278,48 @@ func (s *liveSession) stop() {
 func (ls *LiveStreamer) sessionCount() int {
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
-	return len(ls.sessions)
+	return len(ls.sessions) + len(ls.chaseSessions)
+}
+
+func sessionKindOf(s *liveSession) sessionKind {
+	if s.key.kind == chaseSessionKind {
+		return chaseSessionKind
+	}
+	return liveSessionKind
+}
+
+func sessionIDOf(s *liveSession) int64 {
+	if sessionKindOf(s) == chaseSessionKind {
+		return s.key.id
+	}
+	return s.serviceID
+}
+
+// sessionMapLocked returns the map for a kind. The caller must hold ls.mu.
+func (ls *LiveStreamer) sessionMapLocked(kind sessionKind) map[int64]*liveSession {
+	if kind == chaseSessionKind {
+		if ls.chaseSessions == nil {
+			ls.chaseSessions = make(map[int64]*liveSession)
+		}
+		return ls.chaseSessions
+	}
+	if ls.sessions == nil {
+		ls.sessions = make(map[int64]*liveSession)
+	}
+	return ls.sessions
+}
+
+func (ls *LiveStreamer) deleteSessionLocked(s *liveSession) {
+	delete(ls.sessionMapLocked(sessionKindOf(s)), sessionIDOf(s))
+}
+
+func (ls *LiveStreamer) setActiveSessionMetrics() {
+	ls.mu.Lock()
+	live := len(ls.sessions)
+	chase := len(ls.chaseSessions)
+	ls.mu.Unlock()
+	metrics.LiveActiveSessions.WithLabelValues(string(liveSessionKind)).Set(float64(live))
+	metrics.LiveActiveSessions.WithLabelValues(string(chaseSessionKind)).Set(float64(chase))
 }
 
 // getOrCreateSession は serviceID のセッションを返す。無ければ作る。
@@ -937,7 +1355,13 @@ func (ls *LiveStreamer) sessionCount() int {
 // 起動待ち）を含めない** --- 含めると、無関係な別サービスへの要求まで他サービスの
 // 起動待ちで足止めされる。実際の起動 I/O はロックの外で行う。
 func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64) (*liveSession, error) {
-	s, err := ls.getOrCreateSessionOnce(ctx, serviceID)
+	return ls.getOrCreateSessionFor(ctx, sessionKey{kind: liveSessionKind, id: serviceID}, func(ctx context.Context) (io.ReadCloser, error) {
+		return ls.mirakc.StreamService(ctx, serviceID, ls.cfg.TunerPriority)
+	})
+}
+
+func (ls *LiveStreamer) getOrCreateSessionFor(ctx context.Context, key sessionKey, source sessionSource) (*liveSession, error) {
+	s, err := ls.getOrCreateSessionOnceFor(ctx, key, source)
 	if err == nil {
 		return s, nil
 	}
@@ -967,11 +1391,11 @@ func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64)
 	// （相乗り経路では eviction counter を計上しない --- 実際に退避したのは
 	// 先着の 1 本だけである）。
 	ls.mu.Lock()
-	_, alreadyRecovered := ls.sessions[serviceID]
+	_, alreadyRecovered := ls.sessionMapLocked(key.kind)[key.id]
 	ls.mu.Unlock()
 	if alreadyRecovered {
 		ls.evictMu.Unlock()
-		return ls.getOrCreateSessionOnce(ctx, serviceID)
+		return ls.getOrCreateSessionOnceFor(ctx, key, source)
 	}
 
 	victim := ls.takeIdleSessionForRetry(time.Now())
@@ -980,8 +1404,8 @@ func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64)
 		return nil, err
 	}
 
-	slog.Info("streamer: evicting idle live session before retry",
-		"service_id", victim.serviceID, "reason", reason)
+	slog.Info("streamer: evicting idle session before retry",
+		"kind", string(sessionKindOf(victim)), "session_id", sessionIDOf(victim), "reason", reason)
 	victim.stop()
 	// mirakc は HTTP body の Close と tuner プロセスの解放を同期していない。
 	// stop が done まで待っても、直後の要求が容量エラーになる窓が実物で観測された。
@@ -997,7 +1421,7 @@ func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64)
 	}
 	ls.evictMu.Unlock()
 
-	retry, retryErr := ls.getOrCreateSessionOnce(ctx, serviceID)
+	retry, retryErr := ls.getOrCreateSessionOnceFor(ctx, key, source)
 	if retryErr != nil && retry != nil {
 		// 再試行自身が ready 後に失敗した場合も、次の要求が同じ startErr を
 		// 拾わないように、そのセッションの後片付けを待ってから返す。
@@ -1025,8 +1449,15 @@ func liveEvictionReason(err error) (string, bool) {
 // getOrCreateSessionOnce は 1 回のセッション取得・起動だけを行う。
 // 起動失敗からの退避と再試行は外側の getOrCreateSession が 1 回だけ担当する。
 func (ls *LiveStreamer) getOrCreateSessionOnce(ctx context.Context, serviceID int64) (*liveSession, error) {
+	return ls.getOrCreateSessionOnceFor(ctx, sessionKey{kind: liveSessionKind, id: serviceID}, func(ctx context.Context) (io.ReadCloser, error) {
+		return ls.mirakc.StreamService(ctx, serviceID, ls.cfg.TunerPriority)
+	})
+}
+
+func (ls *LiveStreamer) getOrCreateSessionOnceFor(ctx context.Context, key sessionKey, source sessionSource) (*liveSession, error) {
 	ls.mu.Lock()
-	if s, ok := ls.sessions[serviceID]; ok {
+	sessions := ls.sessionMapLocked(key.kind)
+	if s, ok := sessions[key.id]; ok {
 		ls.mu.Unlock()
 		if err := waitReadyTouching(ctx, s, playlistStartupTimeout); err != nil {
 			return nil, err
@@ -1040,7 +1471,7 @@ func (ls *LiveStreamer) getOrCreateSessionOnce(ctx context.Context, serviceID in
 		ls.mu.Unlock()
 		return nil, errShuttingDown
 	}
-	if len(ls.sessions) >= ls.cfg.MaxSessions {
+	if len(ls.sessions)+len(ls.chaseSessions) >= ls.cfg.MaxSessions {
 		ls.mu.Unlock()
 		metrics.LiveSessionStartFailures.WithLabelValues("session_limit").Inc()
 		return nil, errSessionLimit
@@ -1048,14 +1479,22 @@ func (ls *LiveStreamer) getOrCreateSessionOnce(ctx context.Context, serviceID in
 
 	sessionCtx, cancel := context.WithCancel(context.Background())
 	s := &liveSession{
-		serviceID:  serviceID,
+		serviceID:  key.id,
+		key:        key,
+		source:     source,
 		ready:      make(chan struct{}),
 		done:       make(chan struct{}),
 		lastAccess: time.Now(),
 		cancel:     cancel,
 	}
-	ls.sessions[serviceID] = s
+	if key.kind == chaseSessionKind {
+		// Chase sessions use recordings.id as the key, while serviceID remains
+		// populated for the live-only tests and logs that predate this shared map.
+		s.serviceID = 0
+	}
+	sessions[key.id] = s
 	ls.mu.Unlock()
+	ls.setActiveSessionMetrics()
 
 	go ls.runSession(sessionCtx, s)
 
@@ -1065,7 +1504,7 @@ func (ls *LiveStreamer) getOrCreateSessionOnce(ctx context.Context, serviceID in
 	if s.startErr != nil {
 		return s, s.startErr
 	}
-	metrics.LiveActiveSessions.Set(float64(ls.sessionCount()))
+	ls.setActiveSessionMetrics()
 	return s, nil
 }
 
@@ -1097,26 +1536,28 @@ func (ls *LiveStreamer) takeIdleSessionForRetry(now time.Time) *liveSession {
 	ls.mu.Lock()
 	var victim *liveSession
 	var oldest time.Duration
-	for _, s := range ls.sessions {
-		idle := s.idleSince(now)
-		if idle <= threshold {
-			continue
-		}
-		if !sessionReady(s) && idle <= playlistStartupTimeout {
-			continue
-		}
-		if victim == nil || idle > oldest {
-			victim = s
-			oldest = idle
+	for _, sessions := range []map[int64]*liveSession{ls.sessions, ls.chaseSessions} {
+		for _, s := range sessions {
+			idle := s.idleSince(now)
+			if idle <= threshold {
+				continue
+			}
+			if !sessionReady(s) && idle <= playlistStartupTimeout {
+				continue
+			}
+			if victim == nil || idle > oldest {
+				victim = s
+				oldest = idle
+			}
 		}
 	}
 	if victim != nil {
-		delete(ls.sessions, victim.serviceID)
+		ls.deleteSessionLocked(victim)
 	}
 	ls.mu.Unlock()
 
 	if victim != nil {
-		metrics.LiveActiveSessions.Set(float64(ls.sessionCount()))
+		ls.setActiveSessionMetrics()
 	}
 	return victim
 }
@@ -1133,6 +1574,8 @@ func sessionReady(s *liveSession) bool {
 // runSession は 1 セッションの全生涯（mirakc 接続 → ffmpeg 起動 → 終了待ち →
 // 後片付け）を担う。呼び出し元は go で起動し、s.ready / s.done で同期する。
 func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
+	kind := sessionKindOf(s)
+	keepCompletedChase := false
 	// close(s.done) は必ず最後（他の全ての後片付けの後）に行う。stop() は
 	// `<-s.done` が閉じたら「片付け完了」とみなして戻るので、途中の状態
 	// （map から消す前・ディレクトリを消す前）で閉じると、呼び出し側が
@@ -1143,19 +1586,22 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 		ls.mu.Lock()
 		// idle GC が先にこの id を削除して新しいセッションに入れ替えていたら、
 		// 新しいセッションを消さない（cur == s のときだけ削除）。
-		if cur, ok := ls.sessions[s.serviceID]; ok && cur == s {
-			delete(ls.sessions, s.serviceID)
-		}
-		ls.mu.Unlock()
-		if s.dir != "" {
-			if err := os.RemoveAll(s.dir); err != nil {
-				slog.Warn("streamer: live segment cleanup failed", "service_id", s.serviceID, "dir", s.dir, "err", err)
+		if !keepCompletedChase {
+			if cur, ok := ls.sessionMapLocked(kind)[sessionIDOf(s)]; ok && cur == s {
+				delete(ls.sessionMapLocked(kind), sessionIDOf(s))
 			}
 		}
-		metrics.LiveActiveSessions.Set(float64(ls.sessionCount()))
+		ls.mu.Unlock()
+		if !keepCompletedChase && s.dir != "" {
+			cleanupSessionDir(s)
+		}
+		ls.setActiveSessionMetrics()
 	}()
 
-	dir := filepath.Join(ls.cfg.SegmentDir, ls.site, strconv.FormatInt(s.serviceID, 10))
+	dir := filepath.Join(ls.cfg.SegmentDir, ls.site, strconv.FormatInt(sessionIDOf(s), 10))
+	if kind == chaseSessionKind {
+		dir = filepath.Join(ls.cfg.SegmentDir, ls.site, "chase", strconv.FormatInt(sessionIDOf(s), 10))
+	}
 	if err := os.MkdirAll(filepath.Join(dir, "segments"), 0o755); err != nil {
 		s.startErr = fmt.Errorf("creating live segment dir: %w", err)
 		metrics.LiveSessionStartFailures.WithLabelValues("ffmpeg_error").Inc()
@@ -1164,11 +1610,17 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 	}
 	s.dir = dir
 
-	body, err := ls.mirakc.StreamService(ctx, s.serviceID, ls.cfg.TunerPriority)
+	body, err := s.source(ctx)
 	if err != nil {
-		s.startErr = &liveUpstreamStartError{err: err}
-		metrics.LiveSessionStartFailures.WithLabelValues("upstream_error").Inc()
-		slog.Error("streamer: requesting mirakc live stream", "service_id", s.serviceID, "err", err)
+		if errors.Is(err, errChaseRecordNotReadyTimeout) {
+			s.startErr = err
+			metrics.LiveSessionStartFailures.WithLabelValues("record_not_ready_timeout").Inc()
+		} else {
+			s.startErr = &liveUpstreamStartError{err: err}
+			metrics.LiveSessionStartFailures.WithLabelValues("upstream_error").Inc()
+		}
+		slog.Error("streamer: requesting session upstream",
+			"kind", string(kind), "session_id", sessionIDOf(s), "err", err)
 		close(s.ready)
 		return
 	}
@@ -1202,18 +1654,21 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 			return
 		}
 		if readErr != nil && !errors.Is(readErr, io.ErrUnexpectedEOF) && !errors.Is(readErr, io.EOF) {
-			slog.Warn("streamer: reading live probe prefix failed; continuing without captions",
-				"service_id", s.serviceID, "err", readErr)
+			slog.Warn("streamer: reading probe prefix failed; continuing without captions",
+				"kind", string(kind), "session_id", sessionIDOf(s), "err", readErr)
 		}
 		var probeErr error
 		captionInput, probeErr = probeLiveCaptionStream(ctx, ls.cfg.FFprobe, prefix)
 		if probeErr != nil {
-			slog.Warn("streamer: probing live subtitle streams failed; continuing without captions",
-				"service_id", s.serviceID, "err", probeErr)
+			slog.Warn("streamer: probing subtitle streams failed; continuing without captions",
+				"kind", string(kind), "session_id", sessionIDOf(s), "err", probeErr)
 			captionInput = false
 		}
 	}
 	args := BuildLiveFFmpegArgs(ls.cfg, dir, captionInput)
+	if kind == chaseSessionKind {
+		args = BuildChaseFFmpegArgs(ls.cfg, dir, captionInput)
+	}
 	cmd := exec.CommandContext(ctx, ls.cfg.FFmpeg, args...)
 	cmd.Stdin = input
 	stderr := newCappedWriter(stderrCap)
@@ -1233,7 +1688,7 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 		return
 	}
 
-	slog.Info("streamer: live session started", "service_id", s.serviceID, "dir", dir,
+	slog.Info("streamer: session started", "kind", string(kind), "session_id", sessionIDOf(s), "dir", dir,
 		"profiles", len(ls.cfg.Profiles))
 	close(s.ready)
 
@@ -1244,14 +1699,30 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 			// fd を握ったままで WaitDelay が先に切れた（internal/worker の
 			// runEncode / commandOutput と同型のハングの exit 0 版）。正常な
 			// セッション終了なので運用者向けの Error にはしない。
-			slog.Warn("streamer: live ffmpeg exited successfully but WaitDelay expired before I/O completed",
-				"service_id", s.serviceID, "wait_delay", cmd.WaitDelay)
+			slog.Warn("streamer: ffmpeg exited successfully but WaitDelay expired before I/O completed",
+				"kind", string(kind), "session_id", sessionIDOf(s), "wait_delay", cmd.WaitDelay)
 		} else {
 			// ctx.Err() == nil ということは idle GC / shutdown による意図した kill ではない
 			// ---ffmpeg 自身が落ちた（mirakc 側の切断、コーデックエラー等）。
-			slog.Error("streamer: live ffmpeg exited unexpectedly",
-				"service_id", s.serviceID, "err", waitErr, "stderr", strings.TrimSpace(stderr.String()))
+			slog.Error("streamer: ffmpeg exited unexpectedly",
+				"kind", string(kind), "session_id", sessionIDOf(s), "err", waitErr, "stderr", strings.TrimSpace(stderr.String()))
 		}
+	}
+	if kind == chaseSessionKind && ctx.Err() == nil {
+		// Keep the completed EVENT playlist and all segments until the shared idle
+		// GC reclaims the session. Removing them here would turn upstream EOF into
+		// a 404 before the browser can fetch ENDLIST and seek the recorded head.
+		keepCompletedChase = true
+	}
+}
+
+func cleanupSessionDir(s *liveSession) {
+	if s.dir == "" {
+		return
+	}
+	if err := os.RemoveAll(s.dir); err != nil {
+		slog.Warn("streamer: segment cleanup failed", "kind", string(sessionKindOf(s)),
+			"session_id", sessionIDOf(s), "dir", s.dir, "err", err)
 	}
 }
 
@@ -1274,12 +1745,14 @@ func (ls *LiveStreamer) reapIdleAt(now time.Time) {
 
 	ls.mu.Lock()
 	var idle []*liveSession
-	for id, s := range ls.sessions {
-		if s.idleSince(now) >= ls.cfg.IdleTimeout {
-			idle = append(idle, s)
-			// 即座にマップから外す。新しい要求が stop() の完了を待たずに
-			// 別のセッションを起こせるようにする。
-			delete(ls.sessions, id)
+	for _, sessions := range []map[int64]*liveSession{ls.sessions, ls.chaseSessions} {
+		for id, s := range sessions {
+			if s.idleSince(now) >= ls.cfg.IdleTimeout {
+				idle = append(idle, s)
+				// 即座にマップから外す。新しい要求が stop() の完了を待たずに
+				// 別のセッションを起こせるようにする。
+				delete(sessions, id)
+			}
 		}
 	}
 	ls.mu.Unlock()
@@ -1295,14 +1768,17 @@ func (ls *LiveStreamer) reapIdleAt(now time.Time) {
 		wg.Add(1)
 		go func(s *liveSession) {
 			defer wg.Done()
-			slog.Info("streamer: live session idle, stopping", "service_id", s.serviceID)
+			slog.Info("streamer: session idle, stopping", "kind", string(sessionKindOf(s)), "session_id", sessionIDOf(s))
 			s.stop()
+			// A chase session whose ffmpeg already reached EOF keeps its EVENT
+			// files until this common idle-GC path. Live cleanup is idempotent.
+			cleanupSessionDir(s)
 			metrics.LiveIdleGCReclaimed.Inc()
 		}(s)
 	}
 	wg.Wait()
 
-	metrics.LiveActiveSessions.Set(float64(ls.sessionCount()))
+	ls.setActiveSessionMetrics()
 }
 
 // shutdown はプロセス停止時に呼ぶ。新規セッションの受付を止め、既存の全セッションを
@@ -1313,9 +1789,11 @@ func (ls *LiveStreamer) reapIdleAt(now time.Time) {
 func (ls *LiveStreamer) shutdown() {
 	ls.mu.Lock()
 	ls.closed = true
-	sessions := make([]*liveSession, 0, len(ls.sessions))
-	for _, s := range ls.sessions {
-		sessions = append(sessions, s)
+	sessions := make([]*liveSession, 0, len(ls.sessions)+len(ls.chaseSessions))
+	for _, sessionMap := range []map[int64]*liveSession{ls.sessions, ls.chaseSessions} {
+		for _, s := range sessionMap {
+			sessions = append(sessions, s)
+		}
 	}
 	ls.mu.Unlock()
 
@@ -1325,9 +1803,18 @@ func (ls *LiveStreamer) shutdown() {
 		go func(s *liveSession) {
 			defer wg.Done()
 			s.stop()
+			cleanupSessionDir(s)
 		}(s)
 	}
 	wg.Wait()
+	ls.mu.Lock()
+	for _, s := range sessions {
+		if cur, ok := ls.sessionMapLocked(sessionKindOf(s))[sessionIDOf(s)]; ok && cur == s {
+			delete(ls.sessionMapLocked(sessionKindOf(s)), sessionIDOf(s))
+		}
+	}
+	ls.mu.Unlock()
+	ls.setActiveSessionMetrics()
 }
 
 // stderrCap は ffmpeg の stderr から保持する末尾バイト数。encode.go の
@@ -1396,8 +1883,19 @@ func (w *cappedWriter) String() string {
 // （false なら字幕 map / rendition を完全に省き、字幕の無い番組でも映像・音声の
 // HLS を継続できる）。Captions=false のときは無視される。
 func BuildLiveFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []string {
+	return buildHLSFFmpegArgs(cfg, dir, withSubtitles, false)
+}
+
+// BuildChaseFFmpegArgs builds the same multi-profile HLS graph as live, but as
+// an EVENT playlist. Event output keeps the whole recording history and must
+// never use delete_segments.
+func BuildChaseFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []string {
+	return buildHLSFFmpegArgs(cfg, dir, withSubtitles, true)
+}
+
+func buildHLSFFmpegArgs(cfg LiveConfig, dir string, withSubtitles, eventPlaylist bool) []string {
 	if cfg.Captions {
-		return buildLiveCaptionFFmpegArgs(cfg, dir, withSubtitles)
+		return buildLiveCaptionFFmpegArgs(cfg, dir, withSubtitles, eventPlaylist)
 	}
 	args := []string{
 		"-hide_banner", "-nostats", "-loglevel", "error",
@@ -1431,15 +1929,29 @@ func BuildLiveFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []strin
 		if len(p.ExtraArgs) > 0 {
 			args = append(args, p.ExtraArgs...)
 		}
+		hlsFlags := "delete_segments+temp_file"
+		playlistSize := strconv.Itoa(p.PlaylistSize)
+		playlistOptions := []string{}
+		if eventPlaylist {
+			// EVENT playlists grow from the head until ffmpeg sees EOF. list_size 0
+			// and the absence of delete_segments retain every segment for seeking.
+			playlistSize = "0"
+			hlsFlags = "temp_file"
+			playlistOptions = []string{"-hls_playlist_type", "event"}
+		}
 		args = append(args,
 			"-f", "hls",
 			"-hls_time", strconv.Itoa(p.SegmentSeconds),
-			"-hls_list_size", strconv.Itoa(p.PlaylistSize),
+			"-hls_list_size", playlistSize,
+		)
+		args = append(args, playlistOptions...)
+		args = append(args,
 			// delete_segments: プレイリスト長を超えた古いセグメントを削除する
 			//（プロセスが落ちても残骸を溜め続けない。正常系の掃除）。
 			// temp_file: 一時ファイルに書いてから rename するので、配信側が
-			// 書き込み途中のファイルを読むことがない。
-			"-hls_flags", "delete_segments+temp_file",
+			// 書き込み途中のファイルを読むことがない。追っかけ再生は
+			// delete_segments を使わない（BuildChaseFFmpegArgs）。
+			"-hls_flags", hlsFlags,
 			"-hls_segment_filename", filepath.Join(dir, "segments", p.Name+"_seg%05d.ts"),
 			// hls_base_url: プレイリストの各セグメント行に付ける接頭辞。
 			// **これが無いと ffmpeg は basename だけを書く**（実機で確認済み）。
@@ -1472,7 +1984,7 @@ func BuildLiveFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []strin
 // フィルタが両方の video ストリームに適用されて警告が出ることを実測で確認。
 // `-c:v:N` や `-preset:v:N` のような型を伴わない他オプションでの `:v:N` 付与は
 // 問題なく機能する --- `-vf`/`-filter:v` だけの挙動）。
-func buildLiveCaptionFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []string {
+func buildLiveCaptionFFmpegArgs(cfg LiveConfig, dir string, withSubtitles, eventPlaylist bool) []string {
 	args := []string{"-hide_banner", "-nostats", "-loglevel", "error"}
 	args = append(args, cfg.HWAccel.Args()...)
 	args = append(args, "-probesize", "5M", "-analyzeduration", "3M")
@@ -1517,13 +2029,24 @@ func buildLiveCaptionFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) 
 		}
 		variants = append(variants, mapping)
 	}
+	hlsFlags := "delete_segments+temp_file"
+	playlistSize := strconv.Itoa(cfg.Profiles[0].PlaylistSize)
+	playlistOptions := []string{}
+	if eventPlaylist {
+		playlistSize = "0"
+		hlsFlags = "temp_file"
+		playlistOptions = []string{"-hls_playlist_type", "event"}
+	}
 	args = append(args,
 		"-var_stream_map", strings.Join(variants, " "),
 		"-master_pl_name", "playlist.m3u8",
 		"-f", "hls",
 		"-hls_time", strconv.Itoa(cfg.Profiles[0].SegmentSeconds),
-		"-hls_list_size", strconv.Itoa(cfg.Profiles[0].PlaylistSize),
-		"-hls_flags", "delete_segments+temp_file",
+		"-hls_list_size", playlistSize,
+	)
+	args = append(args, playlistOptions...)
+	args = append(args,
+		"-hls_flags", hlsFlags,
 		"-hls_base_url", "segments/",
 		"-hls_segment_filename", filepath.Join(dir, "segments", "%v_seg%05d.ts"),
 	)

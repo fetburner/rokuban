@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/fetburner/rokuban/internal/config"
@@ -17,10 +20,14 @@ import (
 // {site} で選ぶ）。それぞれ自分の site の mirakc.Client を持つ。bound が空
 // （0 サイト束縛）なら空の liveSites を返し、Mount/Run は何もしない。
 func newLiveStreamersBySite(bound []config.MirakcSite, cfg streamer.LiveConfig) liveSites {
+	return newLiveStreamersBySiteWithPool(nil, bound, cfg)
+}
+
+func newLiveStreamersBySiteWithPool(pool *pgxpool.Pool, bound []config.MirakcSite, cfg streamer.LiveConfig) liveSites {
 	sites := make(liveSites, len(bound))
 	for _, s := range bound {
 		mc := mirakc.NewClient(s.URL, nil)
-		sites[s.Site] = streamer.NewLive(mc, s.Site, cfg)
+		sites[s.Site] = streamer.NewLiveWithPool(pool, mc, s.Site, cfg)
 	}
 	return sites
 }
@@ -63,6 +70,15 @@ func (ls liveSites) Mount(r chi.Router) {
 	// 構成を覗く必要が無い。
 	r.Get(base+"/{name}", ls.dispatch((*streamer.LiveStreamer).Segment))
 	r.Post(base+"/leave", ls.dispatch((*streamer.LiveStreamer).Leave))
+
+	// Chase URLs intentionally have no site segment. Resolve the durable
+	// recordings.id -> record_sync.site mapping for the playlist, then use the
+	// in-memory session map for the hot segment/leave paths.
+	const chaseBase = streamer.ChaseRoutePattern
+	r.Get(chaseBase+"/playlist.m3u8", ls.dispatchChasePlaylist)
+	r.Get(chaseBase+"/segments/{name}", ls.dispatchChaseSession)
+	r.Get(chaseBase+"/{name}", ls.dispatchChaseSession)
+	r.Post(chaseBase+"/leave", ls.dispatchChaseLeave)
 }
 
 // dispatch は method（LiveStreamer.Playlist/Segment/Leave のいずれか）を、
@@ -78,6 +94,73 @@ func (ls liveSites) dispatch(method func(*streamer.LiveStreamer, http.ResponseWr
 		}
 		method(s, w, r)
 	}
+}
+
+func (ls liveSites) first() *streamer.LiveStreamer {
+	for _, s := range ls {
+		return s
+	}
+	return nil
+}
+
+func (ls liveSites) dispatchChasePlaylist(w http.ResponseWriter, r *http.Request) {
+	recordingID, ok := streamer.ParseCanonicalRecordingID(chi.URLParam(r, "id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	lookup := ls.first()
+	if lookup == nil {
+		http.NotFound(w, r)
+		return
+	}
+	target, err := lookup.LookupChaseTarget(r.Context(), recordingID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.NotFound(w, r)
+		} else {
+			http.Error(w, "chase stream unavailable", http.StatusInternalServerError)
+		}
+		return
+	}
+	s, ok := ls[target.Site]
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	s.ChasePlaylistForTarget(w, r, target)
+}
+
+func (ls liveSites) dispatchChaseSession(w http.ResponseWriter, r *http.Request) {
+	rawID := chi.URLParam(r, "id")
+	for _, s := range ls {
+		if s.HasChaseSession(rawID) {
+			s.ChaseSegment(w, r)
+			return
+		}
+	}
+	if s := ls.first(); s != nil {
+		// This preserves the canonical-id 404 / invalid-segment response without
+		// querying the DB when no session owns the resource.
+		s.ChaseSegment(w, r)
+		return
+	}
+	http.NotFound(w, r)
+}
+
+func (ls liveSites) dispatchChaseLeave(w http.ResponseWriter, r *http.Request) {
+	rawID := chi.URLParam(r, "id")
+	for _, s := range ls {
+		if s.HasChaseSession(rawID) {
+			s.ChaseLeave(w, r)
+			return
+		}
+	}
+	if s := ls.first(); s != nil {
+		s.ChaseLeave(w, r)
+		return
+	}
+	http.NotFound(w, r)
 }
 
 // Run は束ねた全 LiveStreamer の idle GC ループ（LiveStreamer.Run）を並行に

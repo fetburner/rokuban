@@ -16,6 +16,32 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 - **ライブ視聴セッションは意図的に in-memory**。落ちたらクライアント再接続で済む使い捨て状態であり、「すべての状態を Postgres に」の原則の明示的な例外（参照: [overview.md](../overview.md) の crash-only 設計原則）
 - 「クライアントがいなくなったら ffmpeg を止める」idle GC が必要。セグメント要求がアプリを通ることで last-access の更新がタダで手に入る（参照: [api.md](../api.md) のライブ HLS 配信）
 
+## 録画中の追っかけ再生
+
+録画一覧・録画詳細では、`status = recording` かつライブ能力が有効なときだけ
+「追っかけ」導線を出す。一覧は `/recordings/{recordings.id}#chase` へリンクし、詳細の
+録画中パネルは `LivePlayer mode="chase"` を再利用する。録画が終了・削除された再取得後は
+追っかけプレイヤーを閉じ、終了済み録画の VOD 表示へ戻る。
+
+追っかけの URL は次の固定深さで、site や mirakc の record id をブラウザ側に持たない。
+
+```
+/api/recordings/{recordings.id}/chase/playlist.m3u8[?profile=<name>]
+/api/recordings/{recordings.id}/chase/segments/{name}
+/api/recordings/{recordings.id}/chase/leave
+```
+
+ブラウザの再生経路はライブと同じ HLS の梯子（Safari の native HLS / hls.js）を通るが、
+hls.js には `startPosition: 0` を渡して録画先頭から始める。EVENT playlist が伸びている間の
+現在位置は通常の video controls でシークでき、`最新` は playlist の現在の duration（または
+buffered の末尾）へ移動して再生を試みる。
+
+再生位置は既存の VOD と同じ localStorage のキー
+`rokuban:playback:{recordingId}:{profile}` を共有する。録画 ID とプロファイルが同じなら、
+追っかけと完了後の VOD で「続きから」が一致する。先頭付近と終端 5 秒以内は保存しない。
+画面遷移・`pagehide`・visibility hidden では `POST .../chase/leave` を sendBeacon 優先で
+送るが、これは共有セッションを即時停止する命令ではなく idle GC を早めるヒントである。
+
 ## フロントエンド実装
 
 **独立したルート `/live` を持つ。** 番組表グリッドの「いま」から入る形は、グリッド自体が

@@ -3,11 +3,18 @@ import { useEffect, useRef, useState } from 'react'
 import type { LiveDiagnostics, LiveLoadError } from '@/lib/live'
 import {
   claimsHlsPlaylistSupport,
+  chasePlaylistURL,
   livePlaylistURL,
   probeLivePlaylist,
+  sendChaseLeaveHint,
   sendLiveLeaveHint,
   supportsNativeHls,
 } from '@/lib/live'
+import {
+  loadPlaybackPosition,
+  savePlaybackPosition,
+  shouldSavePlaybackPosition,
+} from '@/lib/playback-position'
 import { cn } from '@/lib/utils'
 
 /** HlsLike は hls.js の型を静的 import せずに使うための最小限の形。 */
@@ -69,11 +76,17 @@ function readNativeDiagnostics(media: HTMLVideoElement): LiveDiagnostics {
 }
 
 type LivePlayerProps = {
-  site: string
+  /** live は site/network/service、chase は recordingId を使う。 */
+  mode?: 'live' | 'chase'
+  site?: string
   /** SI の networkId。mirakc 合成 service id の組み立てに使う（issue #208）。 */
-  networkId: number
+  networkId?: number
   /** SI の serviceId。パスに載る前に networkId と合成する（issue #208）。 */
-  serviceId: number
+  serviceId?: number
+  /** recordings.id。mode="chase" のとき必須。 */
+  recordingId?: number
+  /** chase playlist のプロファイル。省略時は streamer の先頭プロファイル。 */
+  profile?: string
   className?: string
   /**
    * onDiagnostics は遅延・バッファの計器（issue #476）の値を 1 秒ごとに
@@ -114,24 +127,35 @@ export const nativeStallTimeoutMs = 12_000
  * いる別の視聴者がいれば何も起きない（`lib/live.ts` の `sendLiveLeaveHint`）。
  */
 export function LivePlayer({
+  mode = 'live',
   site,
   networkId,
   serviceId,
+  recordingId,
+  profile,
   className,
   onDiagnostics,
 }: LivePlayerProps) {
+  const isChase = mode === 'chase'
   const videoRef = useRef<HTMLVideoElement>(null)
   const hlsRef = useRef<HlsLike | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<LiveLoadError | null>(null)
   // retryNonce を変えると effect が再実行される（依存配列に入れる）
   const [retryNonce, setRetryNonce] = useState(0)
+  const restorePending = useRef(true)
+  const lastSavedSecond = useRef<number | null>(null)
   // onDiagnostics は ref 越しに読む。probe / hls.js のセットアップを担う
   // メイン effect の依存配列に関数 prop をそのまま入れると、呼び出し側が
   // 毎レンダー新しい関数を渡した場合にプレイリストの再取得・hls インスタンスの
   // 再生成が起きてしまう --- ref なら常に最新の関数を呼びつつ、メイン effect の
   // 再実行条件からは切り離せる。
   const onDiagnosticsRef = useRef(onDiagnostics)
+  useEffect(() => {
+    restorePending.current = true
+    lastSavedSecond.current = null
+  }, [mode, recordingId, profile, site, networkId, serviceId])
+
   useEffect(() => {
     onDiagnosticsRef.current = onDiagnostics
   }, [onDiagnostics])
@@ -182,7 +206,9 @@ export function LivePlayer({
     setError(null)
     onDiagnosticsRef.current?.(null)
 
-    const url = livePlaylistURL(site, networkId, serviceId)
+    const url = isChase
+      ? chasePlaylistURL(recordingId ?? 0, profile)
+      : livePlaylistURL(site ?? '', networkId ?? 0, serviceId ?? 0)
 
     // teardown はこの effect が張ったものを外す手続き（メディアイベントの
     // リスナと stall 監視のタイマー）。cleanup から呼ぶ
@@ -415,7 +441,10 @@ export function LivePlayer({
         // 付ける/付けないを録画ごとに選べない。ライブは ffmpeg が字幕ストリームを
         // 実際に map できたときだけ rendition が master に載るので、この問題が無い
         // --- 既定 ON にできるのはライブ側だけ、という非対称である。
-        const hls = new Hls() as unknown as HlsLike
+        // hls.js otherwise chooses the live edge for an EVENT playlist. Chase
+        // playback must begin at the recording head; the user can then seek
+        // forward with the native controls or the 最新 button below.
+        const hls = new Hls(isChase ? { startPosition: 0 } : undefined) as unknown as HlsLike
         hls.subtitleDisplay = true
         hlsRef.current = hls
         const stopDiagnostics = watchLiveDiagnostics(() => readHlsDiagnostics(hls))
@@ -429,7 +458,11 @@ export function LivePlayer({
           // 実 hls.js は destroy 後に読んでも例外は投げないが（watchLiveDiagnostics
           // のコメント参照）、意味の無くなった値を毎秒読み続けない衛生として止める
           stopDiagnostics()
-          setError({ kind: 'other', status: 0, message: 'ライブ再生中にエラーが発生しました' })
+          setError({
+            kind: 'other',
+            status: 0,
+            message: isChase ? '追っかけ再生中にエラーが発生しました' : 'ライブ再生中にエラーが発生しました',
+          })
         })
         hls.loadSource(url)
         hls.attachMedia(video)
@@ -458,7 +491,7 @@ export function LivePlayer({
         video.load()
       }
     }
-  }, [site, networkId, serviceId, retryNonce])
+  }, [isChase, mode, profile, recordingId, site, networkId, serviceId, retryNonce])
 
   // 離脱のヒント（issue #191）。**再生を担っているのはこのコンポーネントだけ**
   // なので、その生存（= このチャンネルを見ている間）にヒントの送信を紐づける。
@@ -482,7 +515,12 @@ export function LivePlayer({
   //     続いていれば、その要求が期限を戻す。`lib/live.ts` の
   //     `sendLiveLeaveHint` 参照）
   useEffect(() => {
-    const leave = () => sendLiveLeaveHint(site, networkId, serviceId)
+    const leave = () => {
+      if (isChase && recordingId !== undefined) sendChaseLeaveHint(recordingId)
+      else if (!isChase && site !== undefined && networkId !== undefined && serviceId !== undefined) {
+        sendLiveLeaveHint(site, networkId, serviceId)
+      }
+    }
     const onVisibilityChange = () => {
       if (document.visibilityState === 'hidden') leave()
     }
@@ -493,7 +531,41 @@ export function LivePlayer({
       document.removeEventListener('visibilitychange', onVisibilityChange)
       leave()
     }
-  }, [site, networkId, serviceId])
+  }, [isChase, recordingId, site, networkId, serviceId])
+
+  const seekLatest = () => {
+    const video = videoRef.current
+    if (!video) return
+    const bufferedEnd =
+      video.buffered.length > 0 ? video.buffered.end(video.buffered.length - 1) : Number.NaN
+    const target = Number.isFinite(video.duration) ? video.duration : bufferedEnd
+    if (!Number.isFinite(target) || target <= 0) return
+    // VOD-like EVENT playlists can report their current end as `duration`. Seeking
+    // to that exact end and then calling play() makes Chromium treat the media as
+    // ended and restart from 0. Stay just inside the available edge; for very short
+    // media there is no useful margin to subtract.
+    const latest = target > 0.25 ? target - 0.1 : target
+    // Start playback first, then seek. hls.js may apply its configured
+    // startPosition while play() is being scheduled; seeking before play can
+    // therefore be overwritten back to 0 in a growing EVENT playlist.
+    const playPromise = video.play()
+    video.currentTime = latest
+    const reassertLatest = () => {
+      if (Math.abs(video.currentTime - latest) > 0.5) video.currentTime = latest
+    }
+    // Some browsers leave the play() promise pending while MediaSource is
+    // attaching, so the promise callback alone is not sufficient.
+    window.setTimeout(reassertLatest, 100)
+    void playPromise
+      .then(() => {
+        // hls.js can apply `startPosition` after play() resolves. Re-assert the
+        // requested live edge once playback has actually started.
+        reassertLatest()
+      })
+      .catch(() => {
+        // Autoplay policy may require the user's existing play gesture.
+      })
+  }
 
   return (
     <div className={cn('relative aspect-video w-full max-w-3xl rounded bg-black', className)}>
@@ -502,7 +574,37 @@ export function LivePlayer({
         controls
         playsInline
         className={cn('size-full rounded', (loading || error) && 'invisible')}
+        onLoadedMetadata={(event) => {
+          if (!isChase || recordingId === undefined || !restorePending.current) return
+          restorePending.current = false
+          const saved = loadPlaybackPosition(recordingId, profile ?? '')
+          event.currentTarget.currentTime = saved !== null && saved > 0 ? saved : 0
+        }}
+        onTimeUpdate={(event) => {
+          if (!isChase || recordingId === undefined) return
+          const video = event.currentTarget
+          if (!shouldSavePlaybackPosition(lastSavedSecond.current, video.currentTime)) return
+          lastSavedSecond.current = Math.floor(video.currentTime)
+          savePlaybackPosition(recordingId, profile ?? '', video.currentTime, video.duration)
+        }}
+        onPause={(event) => {
+          if (!isChase || recordingId === undefined) return
+          const video = event.currentTarget
+          savePlaybackPosition(recordingId, profile ?? '', video.currentTime, video.duration)
+        }}
       />
+
+      {isChase && !error && (
+        <div className="flex justify-end px-1 py-1">
+          <button
+            type="button"
+            onClick={seekLatest}
+            className="rounded border border-border px-2 py-1 text-xs text-foreground hover:bg-muted"
+          >
+            最新
+          </button>
+        </div>
+      )}
 
       {loading && !error && (
         <div
@@ -515,7 +617,7 @@ export function LivePlayer({
 
       {error && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-4 text-center">
-          <LiveErrorMessage error={error} />
+          <LiveErrorMessage error={error} chase={isChase} />
           <button
             type="button"
             onClick={() => setRetryNonce((n) => n + 1)}
@@ -537,7 +639,7 @@ export function LivePlayer({
  * §サーバーレスデプロイ）。`capacity` / `other` は本文をそのまま見せる
  * （docs/frontend.md「エラーの本文も UI まで運ぶ」。400 を黙って隠さない、と同じ規律）。
  */
-function LiveErrorMessage({ error }: { error: LiveLoadError }) {
+function LiveErrorMessage({ error, chase = false }: { error: LiveLoadError; chase?: boolean }) {
   if (error.kind === 'unreachable') {
     return (
       <p className="text-sm text-muted-foreground">
@@ -567,7 +669,7 @@ function LiveErrorMessage({ error }: { error: LiveLoadError }) {
   }
   return (
     <div className="text-sm text-destructive">
-      <p>ライブ視聴でエラーが発生しました。</p>
+      <p>{chase ? '追っかけ再生でエラーが発生しました。' : 'ライブ視聴でエラーが発生しました。'}</p>
       {error.message !== '' && <p className="text-muted-foreground">{error.message}</p>}
     </div>
   )

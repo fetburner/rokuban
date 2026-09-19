@@ -1,4 +1,4 @@
-import { Link, useParams } from '@tanstack/react-router'
+import { Link, useLocation, useParams } from '@tanstack/react-router'
 import { ArrowLeft } from 'lucide-react'
 import { useState } from 'react'
 
@@ -60,6 +60,7 @@ function recordingDetailQueryKey(id: number) {
  */
 export function RecordingDetailPage() {
   const { id } = useParams({ from: '/recordings/$id' })
+  const location = useLocation()
   const idNum = Number(id)
   const [thumbFailed, setThumbFailed] = useState(false)
 
@@ -142,7 +143,7 @@ export function RecordingDetailPage() {
             </div>
           </section>
 
-          <RecordingDetail recording={recording} trash={trash} />
+          <RecordingDetail recording={recording} trash={trash} chase={location.hash === 'chase'} />
         </div>
       )}
     </>

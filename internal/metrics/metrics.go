@@ -565,28 +565,29 @@ var (
 
 // ライブ視聴（HLS streamer、issue #91）のメトリクス。
 var (
-	// LiveActiveSessions はこのプロセスが現在持っているライブセッション（≒ ffmpeg
-	// プロセス）数。
+	// LiveActiveSessions はこのプロセスが現在持っているライブ/追っかけセッション
+	// （≒ ffmpeg プロセス）数。
 	//
 	// **per-process gauge。** グローバルな天井はチューナー数で裁定者は mirakc
 	// であり、この値を全体像として読む UI を作らない（docs/operations.md §5
 	// 「既定を 1 にする根拠と、増やす判定基準」）。全体を見たいときは Prometheus 側で
 	// sum する。
-	LiveActiveSessions = prometheus.NewGauge(prometheus.GaugeOpts{
+	LiveActiveSessions = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rokuban_live_active_sessions",
-		Help: "Live-viewing sessions (ffmpeg processes) currently held by this process. Per-process; sum across replicas in Prometheus for the whole picture.",
-	})
+		Help: "Live-viewing and chase-playback sessions (ffmpeg processes) currently held by this process. Per-process; sum across replicas in Prometheus for the whole picture.",
+	}, []string{"kind"})
 
-	// LiveSessionStartFailures はライブセッションの開始に失敗した回数の理由別件数。
+	// LiveSessionStartFailures はライブ/追っかけセッションの開始に失敗した回数の理由別件数。
 	//
 	// reason:
 	//   - "session_limit": このプロセスの同時セッション上限（live.max_sessions、
 	//     プロセスローカル）に達していた
 	//   - "upstream_error": mirakc への stream 要求が失敗した（チューナー枯渇を含む）
 	//   - "ffmpeg_error": ffmpeg の起動に失敗した
+	//   - "record_not_ready_timeout": 追っかけ対象の録画が起動待ち時間内に読めなかった
 	LiveSessionStartFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_live_session_start_failures_total",
-		Help: "Live-viewing session start failures by reason (session_limit, upstream_error, ffmpeg_error).",
+		Help: "Live-viewing and chase-playback session start failures by reason (session_limit, upstream_error, ffmpeg_error, record_not_ready_timeout).",
 	}, []string{"reason"})
 
 	// LiveSessionEvictions は、起動失敗からの再試行のために idle セッションを

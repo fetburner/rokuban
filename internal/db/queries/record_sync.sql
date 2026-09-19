@@ -2,6 +2,19 @@
 SELECT recording_id FROM record_sync
 WHERE site = $1 AND record_id = $2;
 
+-- name: GetChaseTarget :one
+-- recordings.id は URL の正準な資源 id。record_sync から mirakc の site / record_id
+-- を逆引きし、recording と観測の両方がまだ録画中であることを呼び出し側が確認する。
+-- deleted_at はごみ箱の録画を追っかけ再生へ流さないために必要。
+SELECT rs.site,
+       rs.record_id,
+       rs.status,
+       r.status AS recording_status,
+       r.deleted_at
+FROM recordings AS r
+JOIN record_sync AS rs ON rs.recording_id = r.id
+WHERE r.id = $1;
+
 -- DeleteStaleRecordSyncs は成功した ListRecords の結果に無い record_sync 行を消す。
 -- `observed_at` の時刻比較を使わないのは、processRecord が 1 record = 1 tx で
 -- SSE と並行して動くため。PostgreSQL の now() はトランザクション開始時刻なので、

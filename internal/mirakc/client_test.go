@@ -351,6 +351,52 @@ func TestStreamRecord(t *testing.T) {
 	})
 }
 
+func TestStreamRecordFollow(t *testing.T) {
+	content := "recording-follow"
+	var gotPath string
+	var gotRange string
+	var gotPriority string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path + "?" + r.URL.RawQuery
+		gotRange = r.Header.Get("Range")
+		gotPriority = r.Header.Get("X-Mirakurun-Priority")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, content)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, nil)
+	body, err := c.StreamRecordFollow(context.Background(), "record-1")
+	if err != nil {
+		t.Fatalf("StreamRecordFollow: %v", err)
+	}
+	defer func() { _ = body.Close() }()
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+	if string(data) != content {
+		t.Errorf("body = %q, want %q", data, content)
+	}
+	if gotPath != "/api/recording/records/record-1/stream?" {
+		t.Errorf("path+query = %q, want the exact non-Range record stream path", gotPath)
+	}
+	if gotRange != "" {
+		t.Errorf("Range = %q, want empty", gotRange)
+	}
+	if gotPriority != "" {
+		t.Errorf("X-Mirakurun-Priority = %q, want empty", gotPriority)
+	}
+
+	t.Run("204 is not ready", func(t *testing.T) {
+		c := NewClient(streamRangeServer(t, nil, http.StatusNoContent).URL, nil)
+		_, err := c.StreamRecordFollow(context.Background(), "rec1")
+		if !errors.Is(err, ErrRecordNotReady) {
+			t.Fatalf("err = %v, want ErrRecordNotReady", err)
+		}
+	})
+}
+
 func TestHeadRecordStream(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodHead {
