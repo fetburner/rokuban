@@ -263,7 +263,7 @@ func TestCompletedChaseRetainsEventFilesUntilIdleGC(t *testing.T) {
 			PlaylistSize:   6,
 		}},
 	}
-	ls := newLiveStreamer(chaseTestLiveClient{}, "default", cfg)
+	ls := newLiveStreamer(chaseTestLiveClient{}, cfg)
 	targetID := int64(42)
 	s, err := ls.getOrCreateSessionFor(context.Background(), sessionKey{
 		kind: chaseSessionKind,
@@ -326,7 +326,7 @@ func TestFailedChaseIsRemovedAndCanRestart(t *testing.T) {
 			PlaylistSize:   6,
 		}},
 	}
-	ls := newLiveStreamer(chaseTestLiveClient{}, "default", cfg)
+	ls := newLiveStreamer(chaseTestLiveClient{}, cfg)
 	t.Cleanup(ls.shutdown)
 
 	start := func() *liveSession {
@@ -380,7 +380,7 @@ func TestEvictingCompletedChaseCleansRetainedFiles(t *testing.T) {
 			PlaylistSize:   6,
 		}},
 	}
-	ls := newLiveStreamer(chaseTestLiveClient{}, "default", cfg)
+	ls := newLiveStreamer(chaseTestLiveClient{}, cfg)
 	t.Cleanup(ls.shutdown)
 
 	chase, err := ls.getOrCreateSessionFor(context.Background(), sessionKey{

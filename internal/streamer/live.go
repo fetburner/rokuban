@@ -260,8 +260,8 @@ func NewLive(mirakcClient *mirakc.Client, site string, cfg LiveConfig) *LiveStre
 	return newLiveStreamerWithPool(nil, mirakcClient, site, cfg)
 }
 
-func newLiveStreamer(client mirakcLiveClient, site string, cfg LiveConfig) *LiveStreamer {
-	return newLiveStreamerWithPool(nil, client, site, cfg)
+func newLiveStreamer(client mirakcLiveClient, cfg LiveConfig) *LiveStreamer {
+	return newLiveStreamerWithPool(nil, client, "default", cfg)
 }
 
 // NewLiveWithPool is the production constructor. Live and chase sessions share

@@ -305,7 +305,7 @@ func newTestLiveStreamer(t *testing.T, mirakcURL string, cfg LiveConfig) (*LiveS
 
 func newTestLiveStreamerWithClient(t *testing.T, client mirakcLiveClient, cfg LiveConfig) (*LiveStreamer, *httptest.Server) {
 	t.Helper()
-	ls := newLiveStreamer(client, testLiveSite, cfg)
+	ls := newLiveStreamer(client, cfg)
 	r := chi.NewRouter()
 	ls.Mount(r)
 	srv := httptest.NewServer(r)
