@@ -461,15 +461,23 @@ describe('LivePlayer の状態遷移', () => {
       await waitFor(() => expect(screen.queryByText('読み込み中…')).not.toBeInTheDocument())
     })
 
-    it('追っかけは録画先頭から開始し、最新ボタンで EVENT の末尾へ移動する', async () => {
-      savePlaybackPosition(7, 'h264', 12)
+    it('追っかけは配信プロファイルと別のVODプロファイルで位置を復元する', async () => {
+      savePlaybackPosition(7, 'vod-h264', 12)
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
-      render(<LivePlayer mode="chase" recordingId={7} profile="h264" />)
+      render(
+        <LivePlayer
+          mode="chase"
+          site="default"
+          recordingId={7}
+          profile="live-720p"
+          playbackProfile="vod-h264"
+        />,
+      )
 
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
       expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition: 0 }])
       expect(hlsMockState.instances[0]!.loadSource).toHaveBeenCalledWith(
-        '/api/recordings/7/chase/playlist.m3u8?profile=h264',
+        '/api/sites/default/recordings/7/chase/playlist.m3u8?profile=live-720p',
       )
       const latest = screen.getByRole('button', { name: '最新' })
       const video = document.querySelector('video')!
@@ -878,12 +886,12 @@ describe('LivePlayer の状態遷移', () => {
     it('追っかけのアンマウントでは recording id の leave ヒントを送る', async () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
       const sent = stubBeacon()
-      const { unmount } = render(<LivePlayer mode="chase" recordingId={42} />)
+      const { unmount } = render(<LivePlayer mode="chase" site="default" recordingId={42} />)
       await waitForPlaying()
 
       unmount()
 
-      expect(sent).toEqual(['/api/recordings/42/chase/leave'])
+      expect(sent).toEqual(['/api/sites/default/recordings/42/chase/leave'])
     })
 
     it('チャンネル切り替えでは「離れた側」の serviceId にヒントを送る', async () => {

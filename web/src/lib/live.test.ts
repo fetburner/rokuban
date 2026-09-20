@@ -51,14 +51,16 @@ describe('livePlaylistURL', () => {
 
 describe('chasePlaylistURL', () => {
   it('recordings.id を固定深さの追っかけ URL に載せる', () => {
-    expect(chasePlaylistURL(42)).toBe('/api/recordings/42/chase/playlist.m3u8')
+    expect(chasePlaylistURL('default', 42)).toBe(
+      '/api/sites/default/recordings/42/chase/playlist.m3u8',
+    )
   })
 
   it('profile をエスケープし、leave は同じ recording id を使う', () => {
-    expect(chasePlaylistURL(42, 'h264 720p')).toBe(
-      '/api/recordings/42/chase/playlist.m3u8?profile=h264%20720p',
+    expect(chasePlaylistURL('a b', 42, 'h264 720p')).toBe(
+      '/api/sites/a%20b/recordings/42/chase/playlist.m3u8?profile=h264%20720p',
     )
-    expect(chaseLeaveURL(42)).toBe('/api/recordings/42/chase/leave')
+    expect(chaseLeaveURL('a b', 42)).toBe('/api/sites/a%20b/recordings/42/chase/leave')
   })
 })
 

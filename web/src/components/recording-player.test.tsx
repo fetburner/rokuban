@@ -399,6 +399,22 @@ describe('RecordingPlayer の再生操作', () => {
 })
 
 describe('RecordingPlayer の selectedProfile 導出', () => {
+  it('preferredProfile が資産にあれば追っかけと同じ既定値を選ぶ', () => {
+    const { container } = render(
+      <RecordingPlayer
+        recordingId={39}
+        preferredProfile="h265"
+        encodedAssets={[
+          { profile: 'h264', sizeBytes: 100 },
+          { profile: 'h265', sizeBytes: 200 },
+        ]}
+      />,
+    )
+
+    expect((container.querySelector('select') as HTMLSelectElement).value).toBe('h265')
+    expect(container.querySelector('video')?.src).toContain('profile=h265')
+  })
+
   it('選択中プロファイルが encodedAssets から消えたら先頭へフォールバックする', () => {
     const { container, rerender } = render(
       <RecordingPlayer

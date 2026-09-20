@@ -1681,15 +1681,15 @@ func TestLiveStreamer_URLPathFixedDepth(t *testing.T) {
 		// 離脱ヒント（issue #191）。セッション ID を持たない = 宛先はプレイリスト /
 		// セグメントと同じ (site, networkId, serviceId) のまま、固定深さも保つ。
 		"/api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave",
-		"/api/recordings/{id}/chase/playlist.m3u8",
-		"/api/recordings/{id}/chase/segments/{name}",
-		"/api/recordings/{id}/chase/{name}",
-		"/api/recordings/{id}/chase/leave",
+		"/api/sites/{site}/recordings/{id}/chase/playlist.m3u8",
+		"/api/sites/{site}/recordings/{id}/chase/segments/{name}",
+		"/api/sites/{site}/recordings/{id}/chase/{name}",
+		"/api/sites/{site}/recordings/{id}/chase/leave",
 	}
 	slices.Sort(routes)
 	slices.Sort(want)
 	if !slices.Equal(routes, want) {
-		t.Fatalf("mounted live routes = %v, want exactly %v", routes, want)
+		t.Fatalf("mounted live/chase routes = %v, want exactly %v", routes, want)
 	}
 
 	// 実際に 200 が返る要求の URL にも、docs/operations.md §5 の nginx map と同じ

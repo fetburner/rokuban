@@ -48,14 +48,14 @@ export function liveLeaveURL(site: string, networkId: number, serviceId: number)
 }
 
 /** chasePlaylistURL は録画中の追っかけ再生 EVENT playlist の URL を組み立てる。 */
-export function chasePlaylistURL(recordingId: number, profile?: string): string {
-  const base = `/api/recordings/${recordingId}/chase/playlist.m3u8`
+export function chasePlaylistURL(site: string, recordingId: number, profile?: string): string {
+  const base = `/api/sites/${encodeURIComponent(site)}/recordings/${recordingId}/chase/playlist.m3u8`
   return profile ? `${base}?profile=${encodeURIComponent(profile)}` : base
 }
 
 /** chaseLeaveURL は追っかけ再生セッションへの離脱ヒントの宛先。 */
-export function chaseLeaveURL(recordingId: number): string {
-  return `/api/recordings/${recordingId}/chase/leave`
+export function chaseLeaveURL(site: string, recordingId: number): string {
+  return `/api/sites/${encodeURIComponent(site)}/recordings/${recordingId}/chase/leave`
 }
 
 /**
@@ -87,8 +87,8 @@ export function sendLiveLeaveHint(site: string, networkId: number, serviceId: nu
 }
 
 /** sendChaseLeaveHint は sendLiveLeaveHint と同じ fire-and-forget 契約で追っかけを離れる。 */
-export function sendChaseLeaveHint(recordingId: number): void {
-  const url = chaseLeaveURL(recordingId)
+export function sendChaseLeaveHint(site: string, recordingId: number): void {
+  const url = chaseLeaveURL(site, recordingId)
   if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
     navigator.sendBeacon(url)
     return

@@ -70,22 +70,27 @@ func TestBaseIngressUsesOnlyFixedCommonRoutes(t *testing.T) {
 	}
 }
 
-// overlay の live route patch は、具体的な site 名と同じ site Service を指す。
+// overlay の live / chase route patch は、具体的な site 名と同じ site Service を指す。
 // JSON patch の value は kubeconform には見えるが、Service 名の typo は見えない。
-func TestIngressOverlaysAddConcreteLiveRoutes(t *testing.T) {
+func TestIngressOverlaysAddConcreteLiveAndChaseRoutes(t *testing.T) {
 	cases := []struct {
 		dir  string
 		want map[string]string
 	}{
 		{
-			dir:  "overlays/kind",
-			want: map[string]string{"/api/sites/default/networks": "rokuban-live-streamer"},
+			dir: "overlays/kind",
+			want: map[string]string{
+				"/api/sites/default/recordings": "rokuban-live-streamer",
+				"/api/sites/default/networks":   "rokuban-live-streamer",
+			},
 		},
 		{
 			dir: "overlays/e2e",
 			want: map[string]string{
-				"/api/sites/sitea/networks": "rokuban-live-streamer-sitea",
-				"/api/sites/siteb/networks": "rokuban-live-streamer-siteb",
+				"/api/sites/sitea/recordings": "rokuban-live-streamer-sitea",
+				"/api/sites/sitea/networks":   "rokuban-live-streamer-sitea",
+				"/api/sites/siteb/recordings": "rokuban-live-streamer-siteb",
+				"/api/sites/siteb/networks":   "rokuban-live-streamer-siteb",
 			},
 		},
 	}

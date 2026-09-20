@@ -41,29 +41,30 @@ docker compose exec rokuban rokuban server --all --config /config.yml
 
    ```sh
    curl -s http://localhost:40773/metrics | grep rokuban_live
-   # rokuban_live_active_sessions 0
+   # rokuban_live_active_sessions{kind="live"} 0
+   # rokuban_live_active_sessions{kind="chase"} 0
    # rokuban_live_idle_gc_reclaimed_total 0
    # rokuban_live_leave_hints_total{result="deadline_shortened"} 0
    # rokuban_live_idle_gc_last_pass_timestamp_seconds 1.7...e9
    ```
 
-   再生中は `rokuban_live_active_sessions` が `1`（見ているチャンネル数）になる
+   ライブ再生中は `rokuban_live_active_sessions{kind="live"}` が `1`（見ているチャンネル数）になる
 4. ブラウザのタブを閉じる（または別チャンネルへ切り替える）。**離脱ヒントが届けば
    十数秒**（猶予 8 秒 = `3 × segment_seconds + 2s` + GC 周期 4 秒ぶんの遅れ。
    実測 13 秒）で
-   `rokuban_live_active_sessions` が `0` に戻り、
+   `rokuban_live_active_sessions{kind="live"}` が `0` に戻り、
    `rokuban_live_idle_gc_reclaimed_total` が `1` 増える。同時に
    `rokuban_live_leave_hints_total{result="deadline_shortened"}` も `1` 増えている
    はず（**ここが増えずに回収された場合、ヒントは届いていない** ---
    その場合の回収は `live.idle_timeout` 既定 30 秒 + GC 周期 4 秒 = **30 秒強**
    後になる（実測 33 秒））。**この秒数は偽 mirakc + 偽 ffmpeg に対する実バイナリ
    （`rokuban server --roles streamer`）で実測した**（ヒントあり 13 秒 /
-   ヒント無し 33 秒。`rokuban_live_active_sessions` が 0 に戻るまでを 1 秒間隔で
+   ヒント無し 33 秒。`rokuban_live_active_sessions{kind="live"}` が 0 に戻るまでを 1 秒間隔で
    ポーリング）。**実チューナー・実 ffmpeg では未測定** ---
    ffmpeg の停止に掛かる時間だけ伸びうるので、この手順で確かめる
    - 同じチャンネルを 2 つのタブで開いて片方だけ閉じると、
      `rokuban_live_leave_hints_total` は増えるが
-     `rokuban_live_active_sessions` は `1` のまま下がらない（残っているタブの
+     `rokuban_live_active_sessions{kind="live"}` は `1` のまま下がらない（残っているタブの
      セグメント要求が idle 期限を戻す）。**これがヒントを「停止命令」にしなかった
      理由そのもの**（[api.md](../api.md) §ライブ視聴の HLS）。偽 mirakc に対する
      実バイナリでは実測済み（2 秒ごとに `leave` を送りながらセグメントを取り

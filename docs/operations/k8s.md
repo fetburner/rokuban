@@ -154,8 +154,11 @@ consistent hash によって振る**。この鍵は既に資源同定の中に�
 scratch を分ける指針（[§3](database.md)）と同じ系列の規則。
 
 **録画中の追っかけ再生も同じ `live.segment_dir` の scratch を使う。** URL は
-`/api/recordings/{recordings.id}/chase/...` の固定深さである。録画 id を前段の
-ルーティングキーにして、同じ streamer へ送る。ライブと追っかけは同じ
+`/api/sites/{site}/recordings/{recordings.id}/chase/...` の固定深さである。site を
+前段のルーティングキーにして、録画を担当する site の streamer へ送る。標準の
+Ingress では各 site overlay が `/api/sites/<site>/recordings` をその Service へ追加する。
+録画 id は DB 内の mirakc record id を隠すための公開キーで、同じ streamer 内のセッションを
+共有する。ライブと追っかけは同じ
 process-local な `live.max_sessions` を共有する。メトリクスは
 `rokuban_live_active_sessions{kind="live"}` / `{kind="chase"}` に分かれるが、
 scratch の容量は合算する。

@@ -76,7 +76,7 @@ function readNativeDiagnostics(media: HTMLVideoElement): LiveDiagnostics {
 }
 
 type LivePlayerProps = {
-  /** live は site/network/service、chase は recordingId を使う。 */
+  /** live は site/network/service、chase は site/recordingId を使う。 */
   mode?: 'live' | 'chase'
   site?: string
   /** SI の networkId。mirakc 合成 service id の組み立てに使う（issue #208）。 */
@@ -87,6 +87,8 @@ type LivePlayerProps = {
   recordingId?: number
   /** chase playlist のプロファイル。省略時は streamer の先頭プロファイル。 */
   profile?: string
+  /** 追っかけとVODで共有する再生位置のキー。liveの配信プロファイルとは別に持つ。 */
+  playbackProfile?: string
   className?: string
   /**
    * onDiagnostics は遅延・バッファの計器（issue #476）の値を 1 秒ごとに
@@ -133,6 +135,7 @@ export function LivePlayer({
   serviceId,
   recordingId,
   profile,
+  playbackProfile,
   className,
   onDiagnostics,
 }: LivePlayerProps) {
@@ -154,7 +157,7 @@ export function LivePlayer({
   useEffect(() => {
     restorePending.current = true
     lastSavedSecond.current = null
-  }, [mode, recordingId, profile, site, networkId, serviceId])
+  }, [mode, recordingId, profile, playbackProfile, site, networkId, serviceId])
 
   useEffect(() => {
     onDiagnosticsRef.current = onDiagnostics
@@ -207,7 +210,7 @@ export function LivePlayer({
     onDiagnosticsRef.current?.(null)
 
     const url = isChase
-      ? chasePlaylistURL(recordingId ?? 0, profile)
+      ? chasePlaylistURL(site ?? '', recordingId ?? 0, profile)
       : livePlaylistURL(site ?? '', networkId ?? 0, serviceId ?? 0)
 
     // teardown はこの effect が張ったものを外す手続き（メディアイベントの
@@ -516,8 +519,9 @@ export function LivePlayer({
   //     `sendLiveLeaveHint` 参照）
   useEffect(() => {
     const leave = () => {
-      if (isChase && recordingId !== undefined) sendChaseLeaveHint(recordingId)
-      else if (!isChase && site !== undefined && networkId !== undefined && serviceId !== undefined) {
+      if (isChase && site !== undefined && recordingId !== undefined) {
+        sendChaseLeaveHint(site, recordingId)
+      } else if (!isChase && site !== undefined && networkId !== undefined && serviceId !== undefined) {
         sendLiveLeaveHint(site, networkId, serviceId)
       }
     }
@@ -532,6 +536,8 @@ export function LivePlayer({
       leave()
     }
   }, [isChase, recordingId, site, networkId, serviceId])
+
+  const chasePlaybackProfile = playbackProfile ?? profile ?? ''
 
   const seekLatest = () => {
     const video = videoRef.current
@@ -577,7 +583,7 @@ export function LivePlayer({
         onLoadedMetadata={(event) => {
           if (!isChase || recordingId === undefined || !restorePending.current) return
           restorePending.current = false
-          const saved = loadPlaybackPosition(recordingId, profile ?? '')
+          const saved = loadPlaybackPosition(recordingId, chasePlaybackProfile)
           event.currentTarget.currentTime = saved !== null && saved > 0 ? saved : 0
         }}
         onTimeUpdate={(event) => {
@@ -585,12 +591,12 @@ export function LivePlayer({
           const video = event.currentTarget
           if (!shouldSavePlaybackPosition(lastSavedSecond.current, video.currentTime)) return
           lastSavedSecond.current = Math.floor(video.currentTime)
-          savePlaybackPosition(recordingId, profile ?? '', video.currentTime, video.duration)
+          savePlaybackPosition(recordingId, chasePlaybackProfile, video.currentTime, video.duration)
         }}
         onPause={(event) => {
           if (!isChase || recordingId === undefined) return
           const video = event.currentTarget
-          savePlaybackPosition(recordingId, profile ?? '', video.currentTime, video.duration)
+          savePlaybackPosition(recordingId, chasePlaybackProfile, video.currentTime, video.duration)
         }}
       />
 

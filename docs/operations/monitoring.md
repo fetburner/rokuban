@@ -80,11 +80,11 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_storage_sync_last_success_timestamp_seconds` | Gauge | **全 root を観測できた**パスの時刻。1 root でも失敗した部分成功では進まない（下の per-root ゲージと対で見る） |
 | `rokuban_storage_root_last_success_timestamp_seconds{root}` | Gauge | root（`media` / `scratch`）ごとに最後に観測できた時刻。片方だけ恒久的に壊れているケースをここで特定する（下記「沈黙は保証ではない」）。**この鮮度でアラートを組んでよい** --- `storage.scratch_dir` を空にして root を観測対象から外すと、次のパスで `{root="scratch"}` の系列自体が消える（凍結した値が残って恒久的な偽陽性になることはない） |
 | `rokuban_storage_total_bytes{root}` / `rokuban_storage_used_bytes{root}` / `rokuban_storage_available_bytes{root}` | Gauge | root ごとの直近観測バイト数。`GET /api/storage` を経由せず Prometheus 側で容量アラートを組める |
-| `rokuban_live_active_sessions` | Gauge | ライブセッション数（**per-process**。全体は Prometheus 側で sum。[k8s 運用](k8s.md) §5） |
-| `rokuban_live_session_start_failures_total{reason}` | Counter | ライブセッション開始失敗（`session_limit` / `upstream_error` / `ffmpeg_error`） |
-| `rokuban_live_session_evictions_total{reason,result}` | Counter | 起動失敗からの再試行のために退避したライブセッション数（`reason`: `upstream` / `session_limit`、`result`: `retry_succeeded` / `retry_failed` / `retry_abandoned`。`retry_abandoned` は退避完了後、mirakc の解放待ち中に呼び出し元が切断して再試行しなかった件数で、mirakc 側の失敗（`retry_failed`）とは区別する） |
-| `rokuban_live_idle_gc_reclaimed_total` | Counter | idle GC が回収したライブセッション数 |
-| `rokuban_live_leave_hints_total{result}` | Counter | 離脱ヒントの受信数（`deadline_shortened` / `no_session` / `no_effect`）。**回収数と対で読む** --- ヒントは停止命令ではないので一致しない（差が開いていれば共有セッションが多い）。`no_effect` が定常的に出るなら「猶予 ≥ `live.idle_timeout`」でヒントが効かない設定 |
+| `rokuban_live_active_sessions{kind}` | GaugeVec | ライブ / 追っかけセッション数（`kind`: `live` / `chase`。**per-process**。全体は Prometheus 側で sum。[k8s 運用](k8s.md) §5） |
+| `rokuban_live_session_start_failures_total{reason}` | Counter | ライブ / 追っかけセッション開始失敗（`session_limit` / `upstream_error` / `ffmpeg_error` / `record_not_ready_timeout`） |
+| `rokuban_live_session_evictions_total{reason,result}` | Counter | 起動失敗からの再試行のために退避したライブ / 追っかけセッション数（`reason`: `upstream` / `session_limit`、`result`: `retry_succeeded` / `retry_failed` / `retry_abandoned`。`retry_abandoned` は退避完了後、mirakc の解放待ち中に呼び出し元が切断して再試行しなかった件数で、mirakc 側の失敗（`retry_failed`）とは区別する） |
+| `rokuban_live_idle_gc_reclaimed_total` | Counter | idle GC が回収したライブ / 追っかけセッション数 |
+| `rokuban_live_leave_hints_total{result}` | Counter | ライブ / 追っかけの離脱ヒント受信数（`deadline_shortened` / `no_session` / `no_effect`）。**回収数と対で読む** --- ヒントは停止命令ではないので一致しない（差が開いていれば共有セッションが多い）。`no_effect` が定常的に出るなら「猶予 ≥ `live.idle_timeout`」でヒントが効かない設定 |
 | `rokuban_live_idle_gc_last_pass_timestamp_seconds` | Gauge | 最後に完走した idle GC パスの時刻 |
 
 **ロール分割（KEDA ScaledJob）構成でアラートに使う成功鮮度は DB 側 5 本である**。

@@ -328,20 +328,21 @@ POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
 ヒントを共有するが、資源の同定子は録画の durable id である。
 
 ```
-GET  /api/recordings/{id}/chase/playlist.m3u8[?profile=<name>]
+GET  /api/sites/{site}/recordings/{id}/chase/playlist.m3u8[?profile=<name>]
        → application/vnd.apple.mpegurl
-GET  /api/recordings/{id}/chase/segments/{name}
-GET  /api/recordings/{id}/chase/{name}       （字幕付き master の variant / subtitle playlist）
+GET  /api/sites/{site}/recordings/{id}/chase/segments/{name}
+GET  /api/sites/{site}/recordings/{id}/chase/{name}       （字幕付き master の variant / subtitle playlist）
        → video/mp2t / text/vtt / application/vnd.apple.mpegurl
-POST /api/recordings/{id}/chase/leave
+POST /api/sites/{site}/recordings/{id}/chase/leave
        → 204（離脱のヒント）
 ```
 
 これらは録画ファイル配信と同じく `openapi.yaml` には載せない。`{id}` は
 `recordings.id` の十進正準形で、DB の `record_sync` から `(site, record_id, status)`
 を逆引きする。録画行と同期行がどちらも `recording` で、論理削除されていないものだけを
-受け付ける。ごみ箱・終了済み・失敗・未束縛・存在しない id は 404 である。site は
-URL に露出せず、`cmd/rokuban` の site 束縛へルーティングする。
+受け付ける。ごみ箱・終了済み・失敗・未束縛・存在しない id は 404 である。URL の
+`site` は `cmd/rokuban` の site 束縛へルーティングするための値で、DB の録画 site と
+一致しない要求は 404 にする。
 
 mirakc へは `GET /api/recording/records/{record_id}/stream` を Range なし・優先度
 ヘッダーなしで要求する。録画ファイルがまだ 0 バイトなら 204 を一定時間再試行し、
@@ -350,9 +351,10 @@ mirakc へは `GET /api/recording/records/{record_id}/stream` を Range なし�
 
 追っかけの ffmpeg は通常ライブの「直近だけを残す」HLS と異なり、`EVENT` playlist、
 `hls_list_size=0`、`temp_file` を使い、`delete_segments` を使わない。mirakc の入力が
-EOF になれば `ENDLIST` を出し、ffmpeg が終了しても idle GC が回収するまで playlist と
-全セグメントを保持する。これにより、録画完了直後にブラウザが最後の playlist / segment を
-取りに来る窓を失わない。
+EOF になれば `ENDLIST` を出し、ffmpeg が**正常終了した場合**は idle GC が回収するまで
+playlist と全セグメントを保持する。これにより、録画完了直後にブラウザが最後の playlist /
+segment を取りに来る窓を失わない。ffmpeg が異常終了した場合は壊れたセッションを保持せず、
+map とファイルを直ちに解放して次の playlist 要求で再起動できるようにする。
 
 ライブと追っかけのセッション数は合算し、Prometheus の
 `rokuban_live_active_sessions{kind="live"|"chase"}` で内訳を見る。セグメントの保存先は

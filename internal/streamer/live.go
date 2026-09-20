@@ -328,10 +328,10 @@ func sweepStaleLiveSegments(dir string) {
 // 罠）ので、export してどちらもこの定数を参照する。
 const LiveRoutePattern = "/api/sites/{site}/networks/{networkId}/services/{serviceId}/live"
 
-// ChaseRoutePattern は録画中の追っかけ再生の固定深さパターン。recording id から
-// DB で (site, mirakc record id) を逆引きするため、URL に site や mirakc の id を
-// 複製しない。OpenAPI には載せず、streamer がバイナリとして登録する。
-const ChaseRoutePattern = "/api/recordings/{id}/chase"
+// ChaseRoutePattern は録画中の追っかけ再生の固定深さパターン。site は前段の
+// site ごとの Service へ振り分けるために URL に含め、mirakc record id は DB から
+// 解決する。OpenAPI には載せず、streamer がバイナリとして登録する。
+const ChaseRoutePattern = "/api/sites/{site}/recordings/{id}/chase"
 
 // Mount はライブ視聴のルートを登録する（cfg.Enabled が true のときだけ）。
 //
@@ -738,9 +738,7 @@ type ChaseTarget struct {
 	RecordingStatus string
 }
 
-// LookupChaseTarget resolves a recording id without starting a session. It is
-// exported for cmd/rokuban's multi-site dispatcher, which must choose the
-// mirakc client before the request reaches a site-local LiveStreamer.
+// LookupChaseTarget resolves a recording id without starting a session.
 func (ls *LiveStreamer) LookupChaseTarget(ctx context.Context, recordingID int64) (ChaseTarget, error) {
 	if ls.pool == nil {
 		return ChaseTarget{}, errors.New("chase target database is unavailable")
@@ -762,10 +760,13 @@ func (ls *LiveStreamer) LookupChaseTarget(ctx context.Context, recordingID int64
 	}, nil
 }
 
-// ChasePlaylist handles the single-site form of the chase route. The
-// multi-site production router resolves the target once and calls
-// ChasePlaylistForTarget so segments do not need a DB lookup on every HLS poll.
+// ChasePlaylist handles the site-local form of the chase route. Only the
+// playlist lookup touches the database; segments use the in-memory session.
 func (ls *LiveStreamer) ChasePlaylist(w http.ResponseWriter, r *http.Request) {
+	if chi.URLParam(r, "site") != ls.site {
+		http.NotFound(w, r)
+		return
+	}
 	recordingID, ok := parseCanonicalRecordingID(chi.URLParam(r, "id"))
 	if !ok {
 		http.NotFound(w, r)
@@ -836,9 +837,13 @@ func (ls *LiveStreamer) ChasePlaylistForTarget(w http.ResponseWriter, r *http.Re
 }
 
 // ChaseSegment serves segments and variant playlists from the recording-keyed
-// session. The dispatcher uses HasChaseSession to select the site in memory;
-// the hot segment path therefore does not query Postgres repeatedly.
+// session. The site in the URL selects the LiveStreamer, so the hot segment path
+// does not query Postgres repeatedly.
 func (ls *LiveStreamer) ChaseSegment(w http.ResponseWriter, r *http.Request) {
+	if chi.URLParam(r, "site") != ls.site {
+		http.NotFound(w, r)
+		return
+	}
 	recordingID, ok := parseCanonicalRecordingID(chi.URLParam(r, "id"))
 	if !ok {
 		http.NotFound(w, r)
@@ -897,6 +902,10 @@ func (ls *LiveStreamer) ChaseSegment(w http.ResponseWriter, r *http.Request) {
 // ChaseLeave is a leave hint, not a stop command, with the same shared-session
 // semantics as live Leave. A missing session is intentionally still 204.
 func (ls *LiveStreamer) ChaseLeave(w http.ResponseWriter, r *http.Request) {
+	if chi.URLParam(r, "site") != ls.site {
+		http.NotFound(w, r)
+		return
+	}
 	recordingID, ok := parseCanonicalRecordingID(chi.URLParam(r, "id"))
 	if !ok {
 		http.NotFound(w, r)
@@ -921,19 +930,6 @@ func (ls *LiveStreamer) ChaseLeave(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// HasChaseSession is used by the multi-site dispatcher for segment/leave
-// requests, whose fixed-depth URL intentionally carries no site.
-func (ls *LiveStreamer) HasChaseSession(rawRecordingID string) bool {
-	recordingID, ok := parseCanonicalRecordingID(rawRecordingID)
-	if !ok {
-		return false
-	}
-	ls.mu.Lock()
-	_, ok = ls.chaseSessions[recordingID]
-	ls.mu.Unlock()
-	return ok
-}
-
 func writeChaseTargetError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, pgx.ErrNoRows) {
 		http.NotFound(w, r)
@@ -944,8 +940,8 @@ func writeChaseTargetError(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 // parseCanonicalRecordingID accepts only the decimal spelling used by
-// recordings.id in URLs. This is also the spelling used by the nginx consistent
-// hash key, so aliases such as 00123 cannot route the same resource differently.
+// recordings.id in URLs. Aliases such as 00123 are rejected so one recording
+// cannot have multiple cache or session identities.
 func parseCanonicalRecordingID(raw string) (int64, bool) {
 	if raw == "" || (len(raw) > 1 && raw[0] == '0') {
 		return 0, false
@@ -955,12 +951,6 @@ func parseCanonicalRecordingID(raw string) (int64, bool) {
 		return 0, false
 	}
 	return v, true
-}
-
-// ParseCanonicalRecordingID exposes the URL identity check to the multi-site
-// dispatcher without duplicating the decimal/canonical rules in cmd/rokuban.
-func ParseCanonicalRecordingID(raw string) (int64, bool) {
-	return parseCanonicalRecordingID(raw)
 }
 
 func waitForChaseRecord(ctx context.Context, client mirakcRecordClient, recordID string) (io.ReadCloser, error) {
@@ -1419,6 +1409,11 @@ func (ls *LiveStreamer) getOrCreateSessionFor(ctx context.Context, key sessionKe
 	slog.Info("streamer: evicting idle session before retry",
 		"kind", string(sessionKindOf(victim)), "session_id", sessionIDOf(victim), "reason", reason)
 	victim.stop()
+	// live の runSession は自分で掃除するが、完了済み chase は EVENT playlist
+	// を idle GC まで保持するため defer が掃除を意図的に省略する。退去経路では
+	// map から既に外れており通常の GC / shutdown が到達できないため、ここで明示的
+	// にディレクトリを解放する。live 側に対しても冪等なので共通化する。
+	cleanupSessionDir(victim)
 	// mirakc は HTTP body の Close と tuner プロセスの解放を同期していない。
 	// stop が done まで待っても、直後の要求が容量エラーになる窓が実物で観測された。
 	select {
@@ -1697,8 +1692,10 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 	close(s.ready)
 
 	waitErr := cmd.Wait()
+	ffmpegCompleted := waitErr == nil
 	if waitErr != nil && ctx.Err() == nil {
 		if errors.Is(waitErr, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+			ffmpegCompleted = true
 			// ffmpeg 自体は exit 0 で完走したが、孫プロセスが stdin/stderr の
 			// fd を握ったままで WaitDelay が先に切れた（internal/worker の
 			// runEncode / commandOutput と同型のハングの exit 0 版）。正常な
@@ -1712,7 +1709,7 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 				"kind", string(kind), "session_id", sessionIDOf(s), "err", waitErr, "stderr", strings.TrimSpace(stderr.String()))
 		}
 	}
-	if kind == chaseSessionKind && ctx.Err() == nil {
+	if kind == chaseSessionKind && ctx.Err() == nil && ffmpegCompleted {
 		// Keep the completed EVENT playlist and all segments until the shared idle
 		// GC reclaims the session. Removing them here would turn upstream EOF into
 		// a 404 before the browser can fetch ENDLIST and seek the recorded head.

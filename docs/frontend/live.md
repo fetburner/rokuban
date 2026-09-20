@@ -23,12 +23,14 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 録画中パネルは `LivePlayer mode="chase"` を再利用する。録画が終了・削除された再取得後は
 追っかけプレイヤーを閉じ、終了済み録画の VOD 表示へ戻る。
 
-追っかけの URL は次の固定深さで、site や mirakc の record id をブラウザ側に持たない。
+追っかけの URL は次の固定深さで、mirakc の record id をブラウザ側に持たない。`site` は
+前段が site ごとの streamer Service を選ぶために含め、DB 上の録画の site と一致しない
+要求は streamer が 404 にする。
 
 ```
-/api/recordings/{recordings.id}/chase/playlist.m3u8[?profile=<name>]
-/api/recordings/{recordings.id}/chase/segments/{name}
-/api/recordings/{recordings.id}/chase/leave
+/api/sites/{site}/recordings/{recordings.id}/chase/playlist.m3u8[?profile=<name>]
+/api/sites/{site}/recordings/{recordings.id}/chase/segments/{name}
+/api/sites/{site}/recordings/{recordings.id}/chase/leave
 ```
 
 ブラウザの再生経路はライブと同じ HLS の梯子（Safari の native HLS / hls.js）を通るが、
@@ -37,8 +39,10 @@ hls.js には `startPosition: 0` を渡して録画先頭から始める。EVENT
 buffered の末尾）へ移動して再生を試みる。
 
 再生位置は既存の VOD と同じ localStorage のキー
-`rokuban:playback:{recordingId}:{profile}` を共有する。録画 ID とプロファイルが同じなら、
-追っかけと完了後の VOD で「続きから」が一致する。先頭付近と終端 5 秒以内は保存しない。
+`rokuban:playback:{recordingId}:{profile}` を共有する。live の配信プロファイルと encode の
+VOD プロファイルは別設定なので、追っかけは VOD 側の既定プロファイル名を再生位置のキー
+として使い、録画 ID とその名前が同じなら完了後の VOD と「続きから」が一致する。先頭付近と
+終端 5 秒以内は保存しない。
 画面遷移・`pagehide`・visibility hidden では `POST .../chase/leave` を sendBeacon 優先で
 送るが、これは共有セッションを即時停止する命令ではなく idle GC を早めるヒントである。
 
@@ -333,7 +337,7 @@ in-flight `fetch` を `AbortController` で中断する。hls.js の `destroy()`
 既定 4、猶予は 8 秒（`3 × segment_seconds + 2s`）である。GC 周期は猶予の半分 = 4 秒
 （`internal/config/config.go` / `internal/streamer/live.go`）。**実測は実バイナリ
 `rokuban server --roles streamer` + 偽 mirakc + 偽 ffmpeg で行った**。
-`rokuban_live_active_sessions`
+`rokuban_live_active_sessions{kind="live"}`
 が 0 に戻るまでを 1 秒間隔でポーリングした結果は、**ヒントあり 13 秒 / ヒント無し 33 秒**である。
 実チューナー・実 ffmpeg では ffmpeg の停止に掛かる時間だけ伸びうる（未測定）。
 手順は [runbook.md](../runbook.md) のライブ視聴の節 ①-4。

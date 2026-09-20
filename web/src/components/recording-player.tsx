@@ -16,6 +16,8 @@ import { cn } from '@/lib/utils'
 
 type RecordingPlayerProps = {
   recordingId: number
+  /** 追っかけ再生と揃えるVOD側の既定プロファイル。資産に無ければ先頭を使う。 */
+  preferredProfile?: string
   /**
    * 再生可能な encoded 派生物（active media_assets）。空ならプレイヤーを出さない。
    * `sizeBytes` が省略された要素も**選択肢そのものは隠さない**（M7-3 の値札
@@ -36,6 +38,7 @@ type RecordingPlayerProps = {
  */
 export function RecordingPlayer({
   recordingId,
+  preferredProfile,
   encodedAssets,
   hasOriginal = false,
   originalSizeBytes,
@@ -46,7 +49,11 @@ export function RecordingPlayer({
   // 変化したと判定されて毎回走ってしまう（中身は冪等で setProfile を呼ばない
   // 限りループにはならないが、無駄な再実行を避ける）。
   const profiles = useMemo(() => encodedAssets.map((a) => a.profile), [encodedAssets])
-  const [profile, setProfile] = useState(profiles[0] ?? '')
+  const [profile, setProfile] = useState(
+    preferredProfile !== undefined && profiles.includes(preferredProfile)
+      ? preferredProfile
+      : (profiles[0] ?? ''),
+  )
   // props の資産一覧が更新されて選択中プロファイルが消えた場合は、effect で一度
   // 無効な値を描いてから直すのではなく、表示値をその場で先頭へ導出する。
   const selectedProfile = profiles.includes(profile) ? profile : (profiles[0] ?? '')

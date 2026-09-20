@@ -78,6 +78,11 @@ export function RecordingDetail({
   const [chasing, setChasing] = useState(chase)
   const showChase = !trash && recording.status === 'recording' && liveEnabled && chasing
   const encodedAssets = recording.encodedAssets ?? []
+  // 追っかけの配信プロファイル（live.profiles）と、完了後のVODプロファイル
+  // （encode.profiles）は別設定なので、URL用の profile を共有しない。再生位置だけ
+  // VODの既定プロファイル名に寄せる。active asset が既にあればその実在する先頭を
+  // 優先し、録画中でまだ無ければ凍結済み desired の先頭を使う。
+  const preferredPlaybackProfile = encodedAssets[0]?.profile ?? recording.encodeProfiles?.[0]
   const hasOriginal = recording.sizeBytes !== undefined
   // 詳細データの再取得ごとに取り込み状態を現在時刻で再評価する。mount 時に固定
   // すると、停滞表示が更新されなくなるため state 初期値には移せない。
@@ -108,7 +113,12 @@ export function RecordingDetail({
               閉じる
             </button>
           </div>
-          <LivePlayer mode="chase" recordingId={recording.id} />
+          <LivePlayer
+            mode="chase"
+            site={recording.site}
+            recordingId={recording.id}
+            playbackProfile={preferredPlaybackProfile}
+          />
         </section>
       )}
 
@@ -125,6 +135,7 @@ export function RecordingDetail({
       {!trash && !showChase && (encodedAssets.length > 0 || hasOriginal) && (
         <RecordingPlayer
           recordingId={recording.id}
+          preferredProfile={preferredPlaybackProfile}
           encodedAssets={encodedAssets}
           hasOriginal={hasOriginal}
           originalSizeBytes={recording.sizeBytes}

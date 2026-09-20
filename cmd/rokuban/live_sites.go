@@ -2,11 +2,9 @@ package main
 
 import (
 	"context"
-	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
 
@@ -33,7 +31,7 @@ func newLiveStreamersBySiteWithPool(pool *pgxpool.Pool, bound []config.MirakcSit
 }
 
 // liveSites は site 名 → streamer.LiveStreamer の map で、api.Mounter を
-// 実装する。ライブ視聴のリクエストを URL の `{site}` セグメントで選んだ
+// 実装する。ライブ視聴と追っかけ再生のリクエストを URL の `{site}` セグメントで選んだ
 // LiveStreamer へ委譲する（issue #532 の「含むもの」4「URL の {site} で選ぶ
 // （URL は既に site を運ぶ）」）。
 //
@@ -49,7 +47,7 @@ func newLiveStreamersBySiteWithPool(pool *pgxpool.Pool, bound []config.MirakcSit
 // LiveStreamer に委譲する。
 type liveSites map[string]*streamer.LiveStreamer
 
-// Mount はライブ視聴のルートを登録する。bound sites が 0 なら何も登録しない
+// Mount はライブ視聴と追っかけ再生のルートを登録する。bound sites が 0 なら何も登録しない
 // （live.enabled かつ 0 サイト束縛の組み合わせは検査で弾いていないが、
 // 中央プロセスに「このサイト」は無いので登録するルートも無い）。
 func (ls liveSites) Mount(r chi.Router) {
@@ -71,14 +69,13 @@ func (ls liveSites) Mount(r chi.Router) {
 	r.Get(base+"/{name}", ls.dispatch((*streamer.LiveStreamer).Segment))
 	r.Post(base+"/leave", ls.dispatch((*streamer.LiveStreamer).Leave))
 
-	// Chase URLs intentionally have no site segment. Resolve the durable
-	// recordings.id -> record_sync.site mapping for the playlist, then use the
-	// in-memory session map for the hot segment/leave paths.
+	// Chase URLs carry the recording site so the same site-local Service can
+	// select the correct mirakc client for playlist, segment, and leave requests.
 	const chaseBase = streamer.ChaseRoutePattern
-	r.Get(chaseBase+"/playlist.m3u8", ls.dispatchChasePlaylist)
-	r.Get(chaseBase+"/segments/{name}", ls.dispatchChaseSession)
-	r.Get(chaseBase+"/{name}", ls.dispatchChaseSession)
-	r.Post(chaseBase+"/leave", ls.dispatchChaseLeave)
+	r.Get(chaseBase+"/playlist.m3u8", ls.dispatch((*streamer.LiveStreamer).ChasePlaylist))
+	r.Get(chaseBase+"/segments/{name}", ls.dispatch((*streamer.LiveStreamer).ChaseSegment))
+	r.Get(chaseBase+"/{name}", ls.dispatch((*streamer.LiveStreamer).ChaseSegment))
+	r.Post(chaseBase+"/leave", ls.dispatch((*streamer.LiveStreamer).ChaseLeave))
 }
 
 // dispatch は method（LiveStreamer.Playlist/Segment/Leave のいずれか）を、
@@ -94,73 +91,6 @@ func (ls liveSites) dispatch(method func(*streamer.LiveStreamer, http.ResponseWr
 		}
 		method(s, w, r)
 	}
-}
-
-func (ls liveSites) first() *streamer.LiveStreamer {
-	for _, s := range ls {
-		return s
-	}
-	return nil
-}
-
-func (ls liveSites) dispatchChasePlaylist(w http.ResponseWriter, r *http.Request) {
-	recordingID, ok := streamer.ParseCanonicalRecordingID(chi.URLParam(r, "id"))
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	lookup := ls.first()
-	if lookup == nil {
-		http.NotFound(w, r)
-		return
-	}
-	target, err := lookup.LookupChaseTarget(r.Context(), recordingID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			http.NotFound(w, r)
-		} else {
-			http.Error(w, "chase stream unavailable", http.StatusInternalServerError)
-		}
-		return
-	}
-	s, ok := ls[target.Site]
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	s.ChasePlaylistForTarget(w, r, target)
-}
-
-func (ls liveSites) dispatchChaseSession(w http.ResponseWriter, r *http.Request) {
-	rawID := chi.URLParam(r, "id")
-	for _, s := range ls {
-		if s.HasChaseSession(rawID) {
-			s.ChaseSegment(w, r)
-			return
-		}
-	}
-	if s := ls.first(); s != nil {
-		// This preserves the canonical-id 404 / invalid-segment response without
-		// querying the DB when no session owns the resource.
-		s.ChaseSegment(w, r)
-		return
-	}
-	http.NotFound(w, r)
-}
-
-func (ls liveSites) dispatchChaseLeave(w http.ResponseWriter, r *http.Request) {
-	rawID := chi.URLParam(r, "id")
-	for _, s := range ls {
-		if s.HasChaseSession(rawID) {
-			s.ChaseLeave(w, r)
-			return
-		}
-	}
-	if s := ls.first(); s != nil {
-		s.ChaseLeave(w, r)
-		return
-	}
-	http.NotFound(w, r)
 }
 
 // Run は束ねた全 LiveStreamer の idle GC ループ（LiveStreamer.Run）を並行に

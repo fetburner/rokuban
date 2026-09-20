@@ -176,7 +176,7 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
   }
   if (requestPath === '/api/recordings' && method === 'GET') return json([recording])
   if (requestPath === '/api/recordings/1' && method === 'GET') return json(recording)
-  if (requestPath === '/api/recordings/1/chase/leave' && method === 'POST') {
+  if (requestPath === '/api/sites/default/recordings/1/chase/leave' && method === 'POST') {
     return route.fulfill({ status: 204 })
   }
   // `url` is intentionally read here so the handler remains total if a future
@@ -185,7 +185,7 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
   return json([])
 })
 
-const chaseBase = '/api/recordings/1/chase'
+const chaseBase = '/api/sites/default/recordings/1/chase'
 let playlistRequests = 0
 const playlistSizes = []
 let playlistEnded = false

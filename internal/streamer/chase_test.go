@@ -238,6 +238,16 @@ exit 0
 	return path
 }
 
+func installFailedChaseFFmpeg(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fake-ffmpeg-chase-fail")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestCompletedChaseRetainsEventFilesUntilIdleGC(t *testing.T) {
 	cfg := LiveConfig{
 		Enabled:     true,
@@ -298,5 +308,119 @@ func TestCompletedChaseRetainsEventFilesUntilIdleGC(t *testing.T) {
 	}
 	if ls.sessionCount() != 0 {
 		t.Errorf("sessionCount after idle GC = %d, want 0", ls.sessionCount())
+	}
+}
+
+func TestFailedChaseIsRemovedAndCanRestart(t *testing.T) {
+	cfg := LiveConfig{
+		Enabled:     true,
+		FFmpeg:      installFailedChaseFFmpeg(t),
+		SegmentDir:  t.TempDir(),
+		MaxSessions: 1,
+		IdleTimeout: time.Minute,
+		Profiles: []LiveProfile{{
+			Name:           "h264",
+			VideoCodec:     "libx264",
+			AudioCodec:     "aac",
+			SegmentSeconds: 2,
+			PlaylistSize:   6,
+		}},
+	}
+	ls := newLiveStreamer(chaseTestLiveClient{}, "default", cfg)
+	t.Cleanup(ls.shutdown)
+
+	start := func() *liveSession {
+		s, err := ls.getOrCreateSessionFor(context.Background(), sessionKey{
+			kind: chaseSessionKind,
+			id:   43,
+		}, func(context.Context) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader("input")), nil
+		})
+		if err != nil {
+			t.Fatalf("starting chase session: %v", err)
+		}
+		select {
+		case <-s.done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("failed chase ffmpeg did not exit")
+		}
+		return s
+	}
+
+	first := start()
+	ls.mu.Lock()
+	_, present := ls.chaseSessions[first.key.id]
+	ls.mu.Unlock()
+	if present {
+		t.Fatal("failed chase session remained in the session map")
+	}
+	if _, err := os.Stat(first.dir); !os.IsNotExist(err) {
+		t.Fatalf("failed chase session directory still exists, stat err = %v", err)
+	}
+
+	second := start()
+	if second == first {
+		t.Fatal("restart reused the failed chase session")
+	}
+}
+
+func TestEvictingCompletedChaseCleansRetainedFiles(t *testing.T) {
+	setShortLiveMirakcReleaseWait(t, 0)
+	cfg := LiveConfig{
+		Enabled:     true,
+		FFmpeg:      installCompletedChaseFFmpeg(t),
+		SegmentDir:  t.TempDir(),
+		MaxSessions: 1,
+		IdleTimeout: time.Minute,
+		Profiles: []LiveProfile{{
+			Name:           "h264",
+			VideoCodec:     "libx264",
+			AudioCodec:     "aac",
+			SegmentSeconds: 2,
+			PlaylistSize:   6,
+		}},
+	}
+	ls := newLiveStreamer(chaseTestLiveClient{}, "default", cfg)
+	t.Cleanup(ls.shutdown)
+
+	chase, err := ls.getOrCreateSessionFor(context.Background(), sessionKey{
+		kind: chaseSessionKind,
+		id:   44,
+	}, func(context.Context) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader("input")), nil
+	})
+	if err != nil {
+		t.Fatalf("starting completed chase session: %v", err)
+	}
+	select {
+	case <-chase.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("completed chase ffmpeg did not exit")
+	}
+	if _, err := os.Stat(chase.dir); err != nil {
+		t.Fatalf("retained chase directory before eviction: %v", err)
+	}
+
+	chase.mu.Lock()
+	chase.lastAccess = time.Now().Add(-cfg.idleEvictionThreshold() - time.Second)
+	chase.mu.Unlock()
+
+	live, err := ls.getOrCreateSessionFor(context.Background(), sessionKey{
+		kind: liveSessionKind,
+		id:   99,
+	}, func(context.Context) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader("input")), nil
+	})
+	if err != nil {
+		t.Fatalf("starting live session after chase eviction: %v", err)
+	}
+	select {
+	case <-live.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement live ffmpeg did not exit")
+	}
+
+	if _, err := os.Stat(chase.dir); !os.IsNotExist(err) {
+		t.Errorf("evicted completed chase directory still exists, stat err = %v", err)
 	}
 }
