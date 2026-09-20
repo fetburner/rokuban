@@ -738,7 +738,11 @@ type ChaseTarget struct {
 	RecordingStatus string
 }
 
-// LookupChaseTarget resolves a recording id without starting a session.
+// LookupChaseTarget resolves a recording id without starting a session. It
+// deliberately returns finished recordings too: a completed chase session
+// keeps its EVENT playlist until idle GC, and the browser still needs to fetch
+// that playlist after the recording status changes. ChasePlaylistForTarget
+// decides whether a missing session may be started from the returned statuses.
 func (ls *LiveStreamer) LookupChaseTarget(ctx context.Context, recordingID int64) (ChaseTarget, error) {
 	if ls.pool == nil {
 		return ChaseTarget{}, errors.New("chase target database is unavailable")
@@ -747,8 +751,7 @@ func (ls *LiveStreamer) LookupChaseTarget(ctx context.Context, recordingID int64
 	if err != nil {
 		return ChaseTarget{}, err
 	}
-	if row.Status != "recording" || row.RecordingStatus != "recording" || row.DeletedAt != nil ||
-		row.Site == "" || row.RecordID == "" {
+	if row.DeletedAt != nil || row.Site == "" || row.RecordID == "" {
 		return ChaseTarget{}, pgx.ErrNoRows
 	}
 	return ChaseTarget{
@@ -758,6 +761,13 @@ func (ls *LiveStreamer) LookupChaseTarget(ctx context.Context, recordingID int64
 		Status:          row.Status,
 		RecordingStatus: row.RecordingStatus,
 	}, nil
+}
+
+// canStartChaseSession reports whether the recording is still being written.
+// Once it has finished, an existing session may still serve its retained EVENT
+// files, but a new session must not ask mirakc to follow the record again.
+func (target ChaseTarget) canStartChaseSession() bool {
+	return target.Status == "recording" && target.RecordingStatus == "recording"
 }
 
 // ChasePlaylist handles the site-local form of the chase route. Only the
@@ -797,21 +807,46 @@ func (ls *LiveStreamer) ChasePlaylistForTarget(w http.ResponseWriter, r *http.Re
 		http.Error(w, "unknown chase profile", http.StatusBadRequest)
 		return
 	}
-	client, ok := ls.mirakc.(mirakcRecordClient)
-	if !ok {
-		http.Error(w, "chase stream unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	source := func(ctx context.Context) (io.ReadCloser, error) {
-		return waitForChaseRecord(ctx, client, target.RecordID)
-	}
-	s, err := ls.getOrCreateSessionFor(r.Context(), sessionKey{
-		kind: chaseSessionKind,
-		id:   target.RecordingID,
-	}, source)
-	if err != nil {
-		writeSessionError(w, err)
-		return
+	var s *liveSession
+	if target.canStartChaseSession() {
+		client, ok := ls.mirakc.(mirakcRecordClient)
+		if !ok {
+			http.Error(w, "chase stream unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		source := func(ctx context.Context) (io.ReadCloser, error) {
+			return waitForChaseRecord(ctx, client, target.RecordID)
+		}
+		var err error
+		s, err = ls.getOrCreateSessionFor(r.Context(), sessionKey{
+			kind: chaseSessionKind,
+			id:   target.RecordingID,
+		}, source)
+		if err != nil {
+			writeSessionError(w, err)
+			return
+		}
+	} else {
+		// The recording finished after the session was created. Keep serving the
+		// retained EVENT playlist, but never start a second mirakc follow session.
+		ls.mu.Lock()
+		var ok bool
+		s, ok = ls.chaseSessions[target.RecordingID]
+		ls.mu.Unlock()
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if err := waitReadyTouching(r.Context(), s, playlistStartupTimeout); err != nil {
+			if errors.Is(err, errStartupTimeout) {
+				http.Error(w, "chase stream did not start in time", http.StatusGatewayTimeout)
+			}
+			return
+		}
+		if s.startErr != nil {
+			http.NotFound(w, r)
+			return
+		}
 	}
 	s.touch()
 

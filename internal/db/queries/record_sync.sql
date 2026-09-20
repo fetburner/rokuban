@@ -4,7 +4,8 @@ WHERE site = $1 AND record_id = $2;
 
 -- name: GetChaseTarget :one
 -- recordings.id は URL の正準な資源 id。record_sync から mirakc の site / record_id
--- を逆引きし、recording と観測の両方がまだ録画中であることを呼び出し側が確認する。
+-- を逆引きし、録画状態も返す。完了済みの追っかけセッションが保持する EVENT
+-- プレイリストを、録画終了後も配信するために状態の絞り込みは呼び出し側で行う。
 -- deleted_at はごみ箱の録画を追っかけ再生へ流さないために必要。
 SELECT rs.site,
        rs.record_id,

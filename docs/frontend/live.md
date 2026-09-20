@@ -21,7 +21,8 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 録画一覧・録画詳細では、`status = recording` かつライブ能力が有効なときだけ
 「追っかけ」導線を出す。一覧は `/recordings/{recordings.id}#chase` へリンクし、詳細の
 録画中パネルは `LivePlayer mode="chase"` を再利用する。録画が終了・削除された再取得後は
-追っかけプレイヤーを閉じ、終了済み録画の VOD 表示へ戻る。
+追っかけプレイヤーを閉じ、終了済み録画の VOD 表示へ戻る。ただし、再生中に録画が終了
+しても、既に開始済みの EVENT playlist は idle GC まで末尾を取得できる。
 
 追っかけの URL は次の固定深さで、mirakc の record id をブラウザ側に持たない。`site` は
 前段が site ごとの streamer Service を選ぶために含め、DB 上の録画の site と一致しない
@@ -41,8 +42,9 @@ buffered の末尾）へ移動して再生を試みる。
 再生位置は既存の VOD と同じ localStorage のキー
 `rokuban:playback:{recordingId}:{profile}` を共有する。live の配信プロファイルと encode の
 VOD プロファイルは別設定なので、追っかけは VOD 側の既定プロファイル名を再生位置のキー
-として使い、録画 ID とその名前が同じなら完了後の VOD と「続きから」が一致する。先頭付近と
-終端 5 秒以内は保存しない。
+として使い、録画 ID とその名前が同じなら完了後の VOD と「続きから」が一致する。
+追っかけ中はプレイリストが伸び続けるため、現在の duration を終端とみなさず、先頭付近
+だけを保存しない。VOD へ移行した後は通常どおり終端 5 秒以内を保存しない。
 画面遷移・`pagehide`・visibility hidden では `POST .../chase/leave` を sendBeacon 優先で
 送るが、これは共有セッションを即時停止する命令ではなく idle GC を早めるヒントである。
 

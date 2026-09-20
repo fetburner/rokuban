@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -169,6 +171,69 @@ func TestBuildChaseFFmpegArgsUsesGrowingEventPlaylist(t *testing.T) {
 	liveJoined := strings.Join(liveArgs, " ")
 	if strings.Contains(liveJoined, "-hls_playlist_type event") || !strings.Contains(liveJoined, "delete_segments") {
 		t.Fatalf("live args = %q, want the existing sliding live playlist", liveJoined)
+	}
+}
+
+func TestFinishedChaseServesRetainedPlaylistWithoutRestarting(t *testing.T) {
+	dir := t.TempDir()
+	playlist := filepath.Join(dir, "h264.m3u8")
+	if err := os.WriteFile(playlist, []byte("#EXTM3U\n#EXTINF:2.0,\nsegments/00001.ts\n#EXT-X-ENDLIST\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ready := make(chan struct{})
+	close(ready)
+	done := make(chan struct{})
+	close(done)
+	ls := &LiveStreamer{
+		mirakc: chaseTestLiveClient{},
+		site:   "default",
+		cfg: LiveConfig{Profiles: []LiveProfile{{
+			Name:           "h264",
+			VideoCodec:     "libx264",
+			AudioCodec:     "aac",
+			SegmentSeconds: 2,
+			PlaylistSize:   6,
+		}}},
+		chaseSessions: map[int64]*liveSession{
+			42: {
+				key:    sessionKey{kind: chaseSessionKind, id: 42},
+				dir:    dir,
+				ready:  ready,
+				done:   done,
+				cancel: func() {},
+			},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sites/default/recordings/42/chase/playlist.m3u8?profile=h264", nil)
+	resp := httptest.NewRecorder()
+	ls.ChasePlaylistForTarget(resp, req, ChaseTarget{
+		RecordingID:     42,
+		Site:            "default",
+		RecordID:        "record-42",
+		Status:          "finished",
+		RecordingStatus: "finished",
+	})
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("finished chase playlist status = %d, want 200", resp.Code)
+	}
+	if got := resp.Body.String(); !strings.Contains(got, "#EXT-X-ENDLIST") {
+		t.Fatalf("finished chase playlist = %q, want retained ENDLIST", got)
+	}
+
+	delete(ls.chaseSessions, 42)
+	resp = httptest.NewRecorder()
+	ls.ChasePlaylistForTarget(resp, req, ChaseTarget{
+		RecordingID:     42,
+		Site:            "default",
+		RecordID:        "record-42",
+		Status:          "finished",
+		RecordingStatus: "finished",
+	})
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("finished chase without retained session status = %d, want 404", resp.Code)
 	}
 }
 

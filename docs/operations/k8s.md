@@ -164,7 +164,8 @@ process-local な `live.max_sessions` を共有する。メトリクスは
 scratch の容量は合算する。
 
 追っかけは録画中の先頭から EOF までの EVENT playlist を `delete_segments` 無しで保持し、
-ffmpeg 終了後も idle GC まで全セグメントを残す。したがって「数本のライブセグメント
+ffmpeg 終了後も idle GC まで全セグメントを残す。録画状態が終了へ変わった後も、既存の
+セッションはこの保持ファイルを配信する。したがって「数本のライブセグメント
 ぶんの tmpfs」で足りるとは限らない。**同時に追っかけする録画の時間・本数・プロファイルの
 ビットレートを掛け合わせて `live.segment_dir` の memory limit を決める**。tmpfs の容量不足は
 録画バッファへ逃がさず、追っかけセッションの HLS 生成失敗として観測する。recording.basedir

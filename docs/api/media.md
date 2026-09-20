@@ -339,10 +339,11 @@ POST /api/sites/{site}/recordings/{id}/chase/leave
 
 これらは録画ファイル配信と同じく `openapi.yaml` には載せない。`{id}` は
 `recordings.id` の十進正準形で、DB の `record_sync` から `(site, record_id, status)`
-を逆引きする。録画行と同期行がどちらも `recording` で、論理削除されていないものだけを
-受け付ける。ごみ箱・終了済み・失敗・未束縛・存在しない id は 404 である。URL の
-`site` は `cmd/rokuban` の site 束縛へルーティングするための値で、DB の録画 site と
-一致しない要求は 404 にする。
+を逆引きする。録画行と同期行がどちらも `recording` のときは新しいセッションを開始
+できる。正常終了した録画は、既に開始済みのセッションが保持する EVENT playlist と
+セグメントを idle GC まで取得できる。ごみ箱・終了済みで保持セッションの無いもの・
+失敗・未束縛・存在しない id は 404 である。URL の `site` は `cmd/rokuban` の site
+束縛へルーティングするための値で、DB の録画 site と一致しない要求は 404 にする。
 
 mirakc へは `GET /api/recording/records/{record_id}/stream` を Range なし・優先度
 ヘッダーなしで要求する。録画ファイルがまだ 0 バイトなら 204 を一定時間再試行し、

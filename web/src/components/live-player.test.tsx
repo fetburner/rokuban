@@ -493,6 +493,65 @@ describe('LivePlayer の状態遷移', () => {
       expect(play).toHaveBeenCalledTimes(1)
     })
 
+    it('成長中の追っかけプレイリストでは最新付近の再生位置を完了扱いで消さない', async () => {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      render(
+        <LivePlayer
+          mode="chase"
+          site="default"
+          recordingId={70}
+          profile="live-720p"
+          playbackProfile="vod-h264"
+        />,
+      )
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const video = document.querySelector('video')!
+      Object.defineProperty(video, 'duration', { value: 120, configurable: true })
+      Object.defineProperty(video, 'currentTime', { value: 119.9, writable: true, configurable: true })
+
+      fireEvent.timeUpdate(video)
+      expect(localStorage.getItem('rokuban:playback:70:vod-h264')).toBe('119')
+
+      localStorage.clear()
+      fireEvent.pause(video)
+      expect(localStorage.getItem('rokuban:playback:70:vod-h264')).toBe('119')
+    })
+
+    it('fatal エラー後の再読み込みでも追っかけの再生位置を復元する', async () => {
+      const user = userEvent.setup()
+      savePlaybackPosition(71, 'vod-h264', 12)
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      render(
+        <LivePlayer
+          mode="chase"
+          site="default"
+          recordingId={71}
+          profile="live-720p"
+          playbackProfile="vod-h264"
+        />,
+      )
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const video = document.querySelector('video')!
+      Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+      fireEvent.loadedMetadata(video)
+      expect(video.currentTime).toBe(12)
+
+      const firstHls = hlsMockState.instances[0]!
+      const errorCall = firstHls.on.mock.calls.find(([event]) => event === 'hlsError')
+      const errorHandler = errorCall![1] as (event: string, data: { fatal: boolean }) => void
+      await act(async () => {
+        errorHandler('hlsError', { fatal: true })
+      })
+
+      await user.click(await screen.findByRole('button', { name: '再読み込み' }))
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+      video.currentTime = 0
+      fireEvent.loadedMetadata(video)
+      expect(video.currentTime).toBe(12)
+    })
+
     it('fatal エラーで hls インスタンスを破棄し、エラー文言を出す', async () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
       render(<LivePlayer site="default" networkId={0} serviceId={1024} />)

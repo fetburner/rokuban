@@ -157,7 +157,7 @@ export function LivePlayer({
   useEffect(() => {
     restorePending.current = true
     lastSavedSecond.current = null
-  }, [mode, recordingId, profile, playbackProfile, site, networkId, serviceId])
+  }, [mode, recordingId, profile, playbackProfile, site, networkId, serviceId, retryNonce])
 
   useEffect(() => {
     onDiagnosticsRef.current = onDiagnostics
@@ -591,12 +591,19 @@ export function LivePlayer({
           const video = event.currentTarget
           if (!shouldSavePlaybackPosition(lastSavedSecond.current, video.currentTime)) return
           lastSavedSecond.current = Math.floor(video.currentTime)
-          savePlaybackPosition(recordingId, chasePlaybackProfile, video.currentTime, video.duration)
+          // The chase playlist is an expanding EVENT playlist, so its current
+          // duration is only the current live edge, not the recording's final
+          // duration. Passing it here would erase a position near "最新" as if
+          // playback had completed. RecordingPlayer keeps the VOD duration
+          // based completion behavior after the recording is finalized.
+          savePlaybackPosition(recordingId, chasePlaybackProfile, video.currentTime)
         }}
         onPause={(event) => {
           if (!isChase || recordingId === undefined) return
           const video = event.currentTarget
-          savePlaybackPosition(recordingId, chasePlaybackProfile, video.currentTime, video.duration)
+          // See the timeupdate handler: a growing chase duration is not a
+          // completion signal.
+          savePlaybackPosition(recordingId, chasePlaybackProfile, video.currentTime)
         }}
       />
 
