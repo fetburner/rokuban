@@ -305,7 +305,7 @@ func newTestLiveStreamer(t *testing.T, mirakcURL string, cfg LiveConfig) (*LiveS
 
 func newTestLiveStreamerWithClient(t *testing.T, client mirakcLiveClient, cfg LiveConfig) (*LiveStreamer, *httptest.Server) {
 	t.Helper()
-	ls := newLiveStreamer(client, testLiveSite, cfg)
+	ls := newLiveStreamer(client, cfg)
 	r := chi.NewRouter()
 	ls.Mount(r)
 	srv := httptest.NewServer(r)
@@ -1681,11 +1681,15 @@ func TestLiveStreamer_URLPathFixedDepth(t *testing.T) {
 		// 離脱ヒント（issue #191）。セッション ID を持たない = 宛先はプレイリスト /
 		// セグメントと同じ (site, networkId, serviceId) のまま、固定深さも保つ。
 		"/api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave",
+		"/api/sites/{site}/recordings/{id}/chase/playlist.m3u8",
+		"/api/sites/{site}/recordings/{id}/chase/segments/{name}",
+		"/api/sites/{site}/recordings/{id}/chase/{name}",
+		"/api/sites/{site}/recordings/{id}/chase/leave",
 	}
 	slices.Sort(routes)
 	slices.Sort(want)
 	if !slices.Equal(routes, want) {
-		t.Fatalf("mounted live routes = %v, want exactly %v", routes, want)
+		t.Fatalf("mounted live/chase routes = %v, want exactly %v", routes, want)
 	}
 
 	// 実際に 200 が返る要求の URL にも、docs/operations.md §5 の nginx map と同じ
@@ -3134,12 +3138,12 @@ func TestLiveStreamer_ActiveSessionsGauge(t *testing.T) {
 	if got := ls.sessionCount(); got != 1 {
 		t.Fatalf("sessionCount = %d, want 1", got)
 	}
-	if got := gaugeValue(t, metrics.LiveActiveSessions); got != 1 {
+	if got := gaugeValue(t, metrics.LiveActiveSessions.WithLabelValues("live")); got != 1 {
 		t.Errorf("rokuban_live_active_sessions = %v, want 1", got)
 	}
 
 	ls.shutdown()
-	if got := gaugeValue(t, metrics.LiveActiveSessions); got != 0 {
+	if got := gaugeValue(t, metrics.LiveActiveSessions.WithLabelValues("live")); got != 0 {
 		t.Errorf("rokuban_live_active_sessions after shutdown = %v, want 0", got)
 	}
 }

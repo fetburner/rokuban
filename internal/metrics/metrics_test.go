@@ -55,8 +55,8 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	TunersProjected.WithLabelValues(testSite).Set(2)
 	TunerSyncLastSuccess.WithLabelValues(testSite).SetToCurrentTime()
 	CapacityOverages.WithLabelValues(testSite).Set(0)
-	LiveActiveSessions.Set(0)
 	LiveSessionStartFailures.WithLabelValues("session_limit").Inc()
+	LiveSessionStartFailures.WithLabelValues("record_not_ready_timeout").Inc()
 	LiveSessionEvictions.WithLabelValues("upstream", "retry_succeeded").Inc()
 	LiveIdleGCReclaimed.Add(1)
 	LiveLeaveHints.WithLabelValues("deadline_shortened").Inc()
@@ -143,6 +143,36 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	for _, name := range []string{"go_goroutines", "process_open_fds"} {
 		if !got[name] {
 			t.Errorf("runtime metric %q is not registered", name)
+		}
+	}
+}
+
+func TestLiveActiveSessionsInitializesKinds(t *testing.T) {
+	families, err := NewRegistry(nil).Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+
+	got := make(map[string]float64)
+	for _, family := range families {
+		if family.GetName() != "rokuban_live_active_sessions" {
+			continue
+		}
+		for _, metric := range family.Metric {
+			for _, label := range metric.Label {
+				if label.GetName() == "kind" {
+					got[label.GetValue()] = metric.GetGauge().GetValue()
+				}
+			}
+		}
+	}
+
+	for _, kind := range []string{"live", "chase"} {
+		value, ok := got[kind]
+		if !ok {
+			t.Errorf("active session metric is missing kind=%q at startup", kind)
+		} else if value != 0 {
+			t.Errorf("active session metric kind=%q = %v at startup, want 0", kind, value)
 		}
 	}
 }

@@ -564,33 +564,44 @@ var (
 )
 
 // ライブ視聴（HLS streamer、issue #91）のメトリクス。
+func newLiveActiveSessions() *prometheus.GaugeVec {
+	g := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rokuban_live_active_sessions",
+		Help: "Live-viewing and chase-playback sessions (ffmpeg processes) currently held by this process. Per-process; sum across replicas in Prometheus for the whole picture.",
+	}, []string{"kind"})
+	// GaugeVec は WithLabelValues が呼ばれるまで系列を exposition しない。live
+	// streamer を持たない api / worker ロールでも、起動直後の 0 を観測できるよう
+	// 固定ラベルの系列をここで作っておく。
+	g.WithLabelValues("live").Set(0)
+	g.WithLabelValues("chase").Set(0)
+	return g
+}
+
 var (
-	// LiveActiveSessions はこのプロセスが現在持っているライブセッション（≒ ffmpeg
-	// プロセス）数。
+	// LiveActiveSessions はこのプロセスが現在持っているライブ/追っかけセッション
+	// （≒ ffmpeg プロセス）数。
 	//
 	// **per-process gauge。** グローバルな天井はチューナー数で裁定者は mirakc
 	// であり、この値を全体像として読む UI を作らない（docs/operations.md §5
 	// 「既定を 1 にする根拠と、増やす判定基準」）。全体を見たいときは Prometheus 側で
 	// sum する。
-	LiveActiveSessions = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "rokuban_live_active_sessions",
-		Help: "Live-viewing sessions (ffmpeg processes) currently held by this process. Per-process; sum across replicas in Prometheus for the whole picture.",
-	})
+	LiveActiveSessions = newLiveActiveSessions()
 
-	// LiveSessionStartFailures はライブセッションの開始に失敗した回数の理由別件数。
+	// LiveSessionStartFailures はライブ/追っかけセッションの開始に失敗した回数の理由別件数。
 	//
 	// reason:
 	//   - "session_limit": このプロセスの同時セッション上限（live.max_sessions、
 	//     プロセスローカル）に達していた
 	//   - "upstream_error": mirakc への stream 要求が失敗した（チューナー枯渇を含む）
 	//   - "ffmpeg_error": ffmpeg の起動に失敗した
+	//   - "record_not_ready_timeout": 追っかけ対象の録画が起動待ち時間内に読めなかった
 	LiveSessionStartFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_live_session_start_failures_total",
-		Help: "Live-viewing session start failures by reason (session_limit, upstream_error, ffmpeg_error).",
+		Help: "Live-viewing and chase-playback session start failures by reason (session_limit, upstream_error, ffmpeg_error, record_not_ready_timeout).",
 	}, []string{"reason"})
 
-	// LiveSessionEvictions は、起動失敗からの再試行のために idle セッションを
-	// 退避した回数。reason は再試行のトリガー、result は退避後の再試行結果。
+	// LiveSessionEvictions は、起動失敗からの再試行のためにライブ / 追っかけ
+	// セッションを退避した回数。reason は再試行のトリガー、result は退避後の再試行結果。
 	//
 	// reason:
 	//   - "upstream": mirakc への stream 要求が拒否された
@@ -606,17 +617,17 @@ var (
 	//     いる」と誤診断する
 	LiveSessionEvictions = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_live_session_evictions_total",
-		Help: "Live-viewing sessions evicted to retry a failed start, by trigger reason and retry result.",
+		Help: "Live-viewing and chase-playback sessions evicted to retry a failed start, by trigger reason and retry result.",
 	}, []string{"reason", "result"})
 
 	// LiveIdleGCReclaimed は idle GC が回収した（クライアントが離れて ffmpeg を
-	// 止めた）ライブセッションの累計件数。
+	// 止めた）ライブ / 追っかけセッションの累計件数。
 	LiveIdleGCReclaimed = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "rokuban_live_idle_gc_reclaimed_total",
-		Help: "Live-viewing sessions stopped by the idle GC because no segment request arrived within the idle timeout.",
+		Help: "Live-viewing and chase-playback sessions stopped by the idle GC because no segment request arrived within the idle timeout.",
 	})
 
-	// LiveLeaveHints は離脱ヒント（POST .../live/leave）の受信数。
+	// LiveLeaveHints は離脱ヒント（POST .../live/leave または .../chase/leave）の受信数。
 	//
 	// **LiveIdleGCReclaimed と対で読む。** ヒントは停止命令ではなく idle 期限を
 	// 詰めるだけなので、「ヒントを受けた数」と「実際に回収した数」は一致しない
@@ -633,7 +644,7 @@ var (
 	//     前者が定常的に出ているなら「離脱ヒントが効かない設定」を意味する
 	LiveLeaveHints = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_live_leave_hints_total",
-		Help: "Live-viewing leave hints received, by result (deadline_shortened, no_session, no_effect). A hint shortens the idle deadline; it never stops a session directly.",
+		Help: "Live-viewing and chase-playback leave hints received, by result (deadline_shortened, no_session, no_effect). A hint shortens the idle deadline; it never stops a session directly.",
 	}, []string{"result"})
 
 	// LiveIdleGCLastPass は最後に完走した idle GC パスの時刻（UNIX 秒）。

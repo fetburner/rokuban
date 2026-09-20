@@ -321,6 +321,48 @@ POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
   （ffmpeg 無し）で streamer ロールを起動する構成（録画配信 / サムネイルのみ）を
   壊さない
 
+### 録画中の追っかけ再生
+
+録画中の `recordings` を、録画開始位置から現在の録画末尾まで HLS で追従再生する。
+ライブ視聴と同じ `LiveStreamer` のセッション管理・`live.max_sessions`・idle GC・離脱
+ヒントを共有するが、資源の同定子は録画の durable id である。
+
+```
+GET  /api/sites/{site}/recordings/{id}/chase/playlist.m3u8[?profile=<name>]
+       → application/vnd.apple.mpegurl
+GET  /api/sites/{site}/recordings/{id}/chase/segments/{name}
+GET  /api/sites/{site}/recordings/{id}/chase/{name}       （字幕付き master の variant / subtitle playlist）
+       → video/mp2t / text/vtt / application/vnd.apple.mpegurl
+POST /api/sites/{site}/recordings/{id}/chase/leave
+       → 204（離脱のヒント）
+```
+
+これらは録画ファイル配信と同じく `openapi.yaml` には載せない。`{id}` は
+`recordings.id` の十進正準形で、DB の `record_sync` から `(site, record_id, status)`
+を逆引きする。録画行と同期行がどちらも `recording` のときは新しいセッションを開始
+できる。正常終了した録画は、既に開始済みのセッションが保持する EVENT playlist と
+セグメントを idle GC まで取得できる。ごみ箱・終了済みで保持セッションの無いもの・
+失敗・未束縛・存在しない id は 404 である。URL の `site` は `cmd/rokuban` の site
+束縛へルーティングするための値で、DB の録画 site と一致しない要求は 404 にする。
+
+mirakc へは `GET /api/recording/records/{record_id}/stream` を Range なし・優先度
+ヘッダーなしで要求する。録画ファイルがまだ 0 バイトなら 204 を一定時間再試行し、
+起動待ちの上限（既存の playlist 起動上限 15 秒）を超えたときだけ 503/504 とする。
+204 の待機は上流接続失敗として数えない。
+
+追っかけの ffmpeg は通常ライブの「直近だけを残す」HLS と異なり、`EVENT` playlist、
+`hls_list_size=0`、`temp_file` を使い、`delete_segments` を使わない。mirakc の入力が
+EOF になれば `ENDLIST` を出し、ffmpeg が**正常終了した場合**は idle GC が回収するまで
+playlist と全セグメントを保持する。これにより、録画完了直後にブラウザが最後の playlist /
+segment を取りに来る窓を失わない。ffmpeg が異常終了した場合は壊れたセッションを保持せず、
+map とファイルを直ちに解放して次の playlist 要求で再起動できるようにする。
+
+ライブと追っかけのセッション数は合算し、Prometheus の
+`rokuban_live_active_sessions{kind="live"|"chase"}` で内訳を見る。セグメントの保存先は
+どちらも `live.segment_dir` 配下で、録画バッファとは別の tmpfs / scratch に置く。追っかけ
+は録画時間ぶんのセグメントを idle GC まで保持するため、同時視聴数と録画時間に応じた
+容量を見積もる。詳細は [operations.md](../operations.md) §5 を参照する。
+
 ### SPA アセット配信
 
 go:embed 配信でハッシュ付きアセット immutable + それ以外 no-cache のヘッダーを正しく付ければ十分（参照: [frontend.md](../frontend.md)）。本気の配信最適化は S3+CDN 経路の仕事。ここに nginx キャッシュを挟むと配信経路が 3 つになり、テストマトリクスが増える割に得るものがない。

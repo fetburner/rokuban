@@ -164,14 +164,24 @@ patches:
         path: /spec/resources/requests/storage
         value: 2Gi
 
-  # 2 サイトぶんのライブ経路。site overlay の nameSuffix 後の Service 名を
-  # 明示する。メソッド・クエリ・ヘッダー・正規表現には依存しない。
+  # 2 サイトぶんのライブ / 追っかけ経路。site overlay の nameSuffix 後の
+  # Service 名を明示する。メソッド・クエリ・ヘッダー・正規表現には依存しない。
   - target:
       kind: Ingress
       name: rokuban-ingress
     patch: |-
       - op: add
         path: /spec/rules/0/http/paths/2
+        value:
+          path: /api/sites/sitea/recordings
+          pathType: Prefix
+          backend:
+            service:
+              name: rokuban-live-streamer-sitea
+              port:
+                name: http
+      - op: add
+        path: /spec/rules/0/http/paths/3
         value:
           path: /api/sites/sitea/networks
           pathType: Prefix
@@ -181,7 +191,17 @@ patches:
               port:
                 name: http
       - op: add
-        path: /spec/rules/0/http/paths/3
+        path: /spec/rules/0/http/paths/4
+        value:
+          path: /api/sites/siteb/recordings
+          pathType: Prefix
+          backend:
+            service:
+              name: rokuban-live-streamer-siteb
+              port:
+                name: http
+      - op: add
+        path: /spec/rules/0/http/paths/5
         value:
           path: /api/sites/siteb/networks
           pathType: Prefix

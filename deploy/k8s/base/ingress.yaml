@@ -1,6 +1,6 @@
 # 単一ホスト名の共通入口。
 #
-# site 名を持つライブ経路は base に書かない。base は site 非依存であり、具体的な
+# site 名を持つライブ / 追っかけ経路は base に書かない。base は site 非依存であり、具体的な
 # site の Service は deploy/k8s/site を overlay で生やすためである。overlays/kind
 # と overlays/e2e が、この Ingress に site ごとの Prefix を追加する。
 apiVersion: networking.k8s.io/v1

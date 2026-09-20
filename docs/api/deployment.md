@@ -29,7 +29,7 @@
 
 ### 要件一覧
 
-単一ホスト名で api / notifier / streamer を分けるときは、標準 Ingress の `Exact` またはパス要素単位の `Prefix` だけを入力にする。メソッド・クエリ・ヘッダー・正規表現に依存せず、すべての経路の backend が一意に決まることを判定基準とする。`/api/events` は Exact で notifier へ振れる。site を具体化できるライブ配信は `/api/sites/<site>/networks` の Prefix で streamer へ振れる。だが録画 VOD は `{id}` の後ろで api と streamer が分かれるため、現行の `/api/recordings/{id}/...` では不足する。そこで応答の性質を表す固定接頭辞 `/api/media/recordings` へ移設した。
+単一ホスト名で api / notifier / streamer を分けるときは、標準 Ingress の `Exact` またはパス要素単位の `Prefix` だけを入力にする。メソッド・クエリ・ヘッダー・正規表現に依存せず、すべての経路の backend が一意に決まることを判定基準とする。`/api/events` は Exact で notifier へ振れる。site を具体化できるライブ配信と追っかけ再生は、それぞれ `/api/sites/<site>/networks` と `/api/sites/<site>/recordings` の Prefix で site streamer へ振れる。録画 VOD は `{id}` の後ろで api と streamer が分かれるため、現行の `/api/recordings/{id}/...` では不足する。そこで応答の性質を表す固定接頭辞 `/api/media/recordings` へ移設した。
 
 | 要件 | 詳細 |
 |---|---|

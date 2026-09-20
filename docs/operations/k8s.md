@@ -153,6 +153,24 @@ consistent hash によって振る**。この鍵は既に資源同定の中に�
 （k8s なら `emptyDir: {medium: Memory}`）で足りる。Postgres datadir とエンコード
 scratch を分ける指針（[§3](database.md)）と同じ系列の規則。
 
+**録画中の追っかけ再生も同じ `live.segment_dir` の scratch を使う。** URL は
+`/api/sites/{site}/recordings/{recordings.id}/chase/...` の固定深さである。site を
+前段のルーティングキーにして、録画を担当する site の streamer へ送る。標準の
+Ingress では各 site overlay が `/api/sites/<site>/recordings` をその Service へ追加する。
+録画 id は DB 内の mirakc record id を隠すための公開キーで、同じ streamer 内のセッションを
+共有する。ライブと追っかけは同じ
+process-local な `live.max_sessions` を共有する。メトリクスは
+`rokuban_live_active_sessions{kind="live"}` / `{kind="chase"}` に分かれるが、
+scratch の容量は合算する。
+
+追っかけは録画中の先頭から EOF までの EVENT playlist を `delete_segments` 無しで保持し、
+ffmpeg 終了後も idle GC まで全セグメントを残す。録画状態が終了へ変わった後も、既存の
+セッションはこの保持ファイルを配信する。したがって「数本のライブセグメント
+ぶんの tmpfs」で足りるとは限らない。**同時に追っかけする録画の時間・本数・プロファイルの
+ビットレートを掛け合わせて `live.segment_dir` の memory limit を決める**。tmpfs の容量不足は
+録画バッファへ逃がさず、追っかけセッションの HLS 生成失敗として観測する。recording.basedir
+または archive PVC と同じ mount / volume に置かない。
+
 ### マニフェストの配布形式: 素の kustomize
 
 参照実装は `deploy/k8s/` に置く。**中身の索引はそちらの [README](../../deploy/k8s/README.md)** で、ここには判断だけを置く。分け方は次の 2 つ:

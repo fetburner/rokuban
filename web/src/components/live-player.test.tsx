@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { LivePlayer, nativeStallTimeoutMs } from '@/components/live-player'
 import type { LiveDiagnostics } from '@/lib/live'
+import { savePlaybackPosition } from '@/lib/playback-position'
 
 /**
  * hls.js 経路（Safari 以外のネイティブ HLS 非対応ブラウザ）の内部呼び出しを
@@ -21,6 +22,7 @@ import type { LiveDiagnostics } from '@/lib/live'
  */
 const hlsMockState = vi.hoisted(() => ({
   instances: [] as FakeHls[],
+  constructorArgs: [] as unknown[][],
   // supported はフェイクの `Hls.isSupported()` の戻り値。false にすると
   // 「MSE も ManagedMediaSource も無いブラウザ」（iOS 17.1 未満の iPhone Safari）を
   // 模擬できる。実 hls.js は jsdom でも常に false を返すが、それだと hls.js 経路
@@ -77,8 +79,9 @@ vi.mock('hls.js', () => {
     set mainForwardBufferInfo(value: { len: number } | null) {
       this.#mainForwardBufferInfo = value
     }
-    constructor() {
+    constructor(...args: unknown[]) {
       hlsMockState.instances.push(this as unknown as FakeHls)
+      hlsMockState.constructorArgs.push(args)
     }
   }
   return { default: FakeHlsImpl }
@@ -105,6 +108,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
   hlsMockState.instances.length = 0
+  hlsMockState.constructorArgs.length = 0
   hlsMockState.supported = true
 })
 
@@ -455,6 +459,97 @@ describe('LivePlayer の状態遷移', () => {
       )
       expect(hls.attachMedia).toHaveBeenCalledTimes(1)
       await waitFor(() => expect(screen.queryByText('読み込み中…')).not.toBeInTheDocument())
+    })
+
+    it('追っかけは配信プロファイルと別のVODプロファイルで位置を復元する', async () => {
+      savePlaybackPosition(7, 'vod-h264', 12)
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      render(
+        <LivePlayer
+          mode="chase"
+          site="default"
+          recordingId={7}
+          profile="live-720p"
+          playbackProfile="vod-h264"
+        />,
+      )
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition: 0 }])
+      expect(hlsMockState.instances[0]!.loadSource).toHaveBeenCalledWith(
+        '/api/sites/default/recordings/7/chase/playlist.m3u8?profile=live-720p',
+      )
+      const latest = screen.getByRole('button', { name: '最新' })
+      const video = document.querySelector('video')!
+      Object.defineProperty(video, 'duration', { value: 120, configurable: true })
+      Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+
+      fireEvent.loadedMetadata(video)
+      expect(video.currentTime).toBe(12)
+
+      const play = vi.spyOn(video, 'play').mockResolvedValue(undefined)
+      await userEvent.click(latest)
+      expect(video.currentTime).toBeCloseTo(119.9, 5)
+      expect(play).toHaveBeenCalledTimes(1)
+    })
+
+    it('成長中の追っかけプレイリストでは最新付近の再生位置を完了扱いで消さない', async () => {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      render(
+        <LivePlayer
+          mode="chase"
+          site="default"
+          recordingId={70}
+          profile="live-720p"
+          playbackProfile="vod-h264"
+        />,
+      )
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const video = document.querySelector('video')!
+      Object.defineProperty(video, 'duration', { value: 120, configurable: true })
+      Object.defineProperty(video, 'currentTime', { value: 119.9, writable: true, configurable: true })
+
+      fireEvent.timeUpdate(video)
+      expect(localStorage.getItem('rokuban:playback:70:vod-h264')).toBe('119')
+
+      localStorage.clear()
+      fireEvent.pause(video)
+      expect(localStorage.getItem('rokuban:playback:70:vod-h264')).toBe('119')
+    })
+
+    it('fatal エラー後の再読み込みでも追っかけの再生位置を復元する', async () => {
+      const user = userEvent.setup()
+      savePlaybackPosition(71, 'vod-h264', 12)
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      render(
+        <LivePlayer
+          mode="chase"
+          site="default"
+          recordingId={71}
+          profile="live-720p"
+          playbackProfile="vod-h264"
+        />,
+      )
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const video = document.querySelector('video')!
+      Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+      fireEvent.loadedMetadata(video)
+      expect(video.currentTime).toBe(12)
+
+      const firstHls = hlsMockState.instances[0]!
+      const errorCall = firstHls.on.mock.calls.find(([event]) => event === 'hlsError')
+      const errorHandler = errorCall![1] as (event: string, data: { fatal: boolean }) => void
+      await act(async () => {
+        errorHandler('hlsError', { fatal: true })
+      })
+
+      await user.click(await screen.findByRole('button', { name: '再読み込み' }))
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+      video.currentTime = 0
+      fireEvent.loadedMetadata(video)
+      expect(video.currentTime).toBe(12)
     })
 
     it('fatal エラーで hls インスタンスを破棄し、エラー文言を出す', async () => {
@@ -845,6 +940,17 @@ describe('LivePlayer の状態遷移', () => {
       unmount()
 
       expect(sent).toEqual(['/api/sites/default/networks/0/services/1024/live/leave'])
+    })
+
+    it('追っかけのアンマウントでは recording id の leave ヒントを送る', async () => {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      const sent = stubBeacon()
+      const { unmount } = render(<LivePlayer mode="chase" site="default" recordingId={42} />)
+      await waitForPlaying()
+
+      unmount()
+
+      expect(sent).toEqual(['/api/sites/default/recordings/42/chase/leave'])
     })
 
     it('チャンネル切り替えでは「離れた側」の serviceId にヒントを送る', async () => {

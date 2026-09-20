@@ -185,6 +185,24 @@ jsdom では判定できないため、ここが唯一の判定手段になる�
 
 詳細は [docs/runbook/live.md](../../docs/runbook/live.md)（実機確認の判定項目と回帰の記録）。
 
+### 録画中の追っかけ再生（`chase.mjs`）
+
+録画詳細を `#chase` で開き、実 H.264/AAC セグメントを返す成長中の EVENT
+playlist を Chromium の hls.js で再生する。録画 API・追っかけ HLS・離脱 API は
+`page.route` で差し替えるため mirakc と実録画は要らない。次を実ブラウザで見る。
+
+- 録画中の詳細ページから追っかけプレイヤーが開く
+- EVENT playlist がセグメントを増やしても再生位置は録画先頭から始まる
+- `最新` が現在の playlist の末尾へ移動する
+- 成長後の playlist が `ENDLIST` になり、完了した録画を追える
+
+フィクスチャ生成に `ffmpeg` を使う。無い環境ではこの判定だけを skip として終了し、
+他の CI 判定を失敗扱いにしない。
+
+```sh
+E2E_URL=http://localhost:4173 pnpm e2e:chase
+```
+
 ### デザイン（`design.mjs`）
 
 **色は jsdom では測れない。** Tailwind のクラスは解決されず、oklch も計算されない。

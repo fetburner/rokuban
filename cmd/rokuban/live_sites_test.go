@@ -94,6 +94,17 @@ func TestLiveSites_DispatchesByURLSite(t *testing.T) {
 		t.Errorf("tokyo mirakc stub received %d requests after the takamatsu call, want 1 (unchanged)", got)
 	}
 
+	for _, site := range []string{"tokyo", "takamatsu"} {
+		resp, err := http.Post(ts.URL+"/api/sites/"+site+"/recordings/1/chase/leave", "", nil)
+		if err != nil {
+			t.Fatalf("POST chase leave (site=%s): %v", site, err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Errorf("chase leave (site=%s) status = %d, want 204", site, resp.StatusCode)
+		}
+	}
+
 	if status := get(t, "osaka"); status != http.StatusNotFound {
 		t.Errorf("unbound site status = %d, want 404", status)
 	}

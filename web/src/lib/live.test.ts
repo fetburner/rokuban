@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Service } from '@/api/generated'
 import {
+  chaseLeaveURL,
+  chasePlaylistURL,
   claimsHlsPlaylistSupport,
   classifyLiveLoadError,
   currentProgramWindow,
@@ -44,6 +46,21 @@ describe('livePlaylistURL', () => {
     const url = livePlaylistURL('default', 31920, 53248)
     expect(url).toBe('/api/sites/default/networks/31920/services/53248/live/playlist.m3u8')
     expect(url).not.toContain('3192053248')
+  })
+})
+
+describe('chasePlaylistURL', () => {
+  it('recordings.id を固定深さの追っかけ URL に載せる', () => {
+    expect(chasePlaylistURL('default', 42)).toBe(
+      '/api/sites/default/recordings/42/chase/playlist.m3u8',
+    )
+  })
+
+  it('profile をエスケープし、leave は同じ recording id を使う', () => {
+    expect(chasePlaylistURL('a b', 42, 'h264 720p')).toBe(
+      '/api/sites/a%20b/recordings/42/chase/playlist.m3u8?profile=h264%20720p',
+    )
+    expect(chaseLeaveURL('a b', 42)).toBe('/api/sites/a%20b/recordings/42/chase/leave')
   })
 })
 

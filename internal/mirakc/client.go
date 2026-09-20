@@ -236,6 +236,38 @@ func (c *Client) StreamRecord(ctx context.Context, id string, offset int64) (io.
 	return resp.Body, resp.ContentLength, nil
 }
 
+// StreamRecordFollow は GET /api/recording/records/{id}/stream を Range なしで
+// 呼び、録画中の content file を先頭から追従する body を返す。
+//
+// StreamRecord は ingest の差分転送用であり、Range を付けると mirakc は「要求時点
+// までの有限な差分」を返す。一方この経路は streamer の追っかけ再生用なので、
+// mirakc の `(None, RecordingStatus::Recording)` 分岐（tail -f -c +0）を明示的に選ぶ。
+// このメソッドへ Range や X-Mirakurun-Priority を足してはいけない。
+//
+// 204 は録画開始直後の content file 0 バイトを表す正常状態であり、呼び出し側が
+// 予算を消費せずに待つため ErrRecordNotReady として返す。
+func (c *Client) StreamRecordFollow(ctx context.Context, id string) (io.ReadCloser, error) {
+	path := fmt.Sprintf("/api/recording/records/%s/stream", url.PathEscape(id))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("building request: %w", err)
+	}
+
+	resp, err := c.streamClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("sending request: %w", err)
+	}
+	if resp.StatusCode == http.StatusNoContent {
+		_ = resp.Body.Close()
+		return nil, ErrRecordNotReady
+	}
+	if err := checkStatus(resp, http.StatusOK); err != nil {
+		_ = resp.Body.Close()
+		return nil, err
+	}
+	return resp.Body, nil
+}
+
 // HeadRecordStream は HEAD /api/recording/records/{id}/stream を呼ぶ。
 // Content-Length を返す。
 func (c *Client) HeadRecordStream(ctx context.Context, id string) (int64, error) {

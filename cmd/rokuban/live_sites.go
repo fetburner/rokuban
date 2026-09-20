@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/fetburner/rokuban/internal/config"
@@ -17,16 +18,20 @@ import (
 // {site} で選ぶ）。それぞれ自分の site の mirakc.Client を持つ。bound が空
 // （0 サイト束縛）なら空の liveSites を返し、Mount/Run は何もしない。
 func newLiveStreamersBySite(bound []config.MirakcSite, cfg streamer.LiveConfig) liveSites {
+	return newLiveStreamersBySiteWithPool(nil, bound, cfg)
+}
+
+func newLiveStreamersBySiteWithPool(pool *pgxpool.Pool, bound []config.MirakcSite, cfg streamer.LiveConfig) liveSites {
 	sites := make(liveSites, len(bound))
 	for _, s := range bound {
 		mc := mirakc.NewClient(s.URL, nil)
-		sites[s.Site] = streamer.NewLive(mc, s.Site, cfg)
+		sites[s.Site] = streamer.NewLiveWithPool(pool, mc, s.Site, cfg)
 	}
 	return sites
 }
 
 // liveSites は site 名 → streamer.LiveStreamer の map で、api.Mounter を
-// 実装する。ライブ視聴のリクエストを URL の `{site}` セグメントで選んだ
+// 実装する。ライブ視聴と追っかけ再生のリクエストを URL の `{site}` セグメントで選んだ
 // LiveStreamer へ委譲する（issue #532 の「含むもの」4「URL の {site} で選ぶ
 // （URL は既に site を運ぶ）」）。
 //
@@ -42,7 +47,7 @@ func newLiveStreamersBySite(bound []config.MirakcSite, cfg streamer.LiveConfig) 
 // LiveStreamer に委譲する。
 type liveSites map[string]*streamer.LiveStreamer
 
-// Mount はライブ視聴のルートを登録する。bound sites が 0 なら何も登録しない
+// Mount はライブ視聴と追っかけ再生のルートを登録する。bound sites が 0 なら何も登録しない
 // （live.enabled かつ 0 サイト束縛の組み合わせは検査で弾いていないが、
 // 中央プロセスに「このサイト」は無いので登録するルートも無い）。
 func (ls liveSites) Mount(r chi.Router) {
@@ -63,6 +68,14 @@ func (ls liveSites) Mount(r chi.Router) {
 	// 構成を覗く必要が無い。
 	r.Get(base+"/{name}", ls.dispatch((*streamer.LiveStreamer).Segment))
 	r.Post(base+"/leave", ls.dispatch((*streamer.LiveStreamer).Leave))
+
+	// Chase URLs carry the recording site so the same site-local Service can
+	// select the correct mirakc client for playlist, segment, and leave requests.
+	const chaseBase = streamer.ChaseRoutePattern
+	r.Get(chaseBase+"/playlist.m3u8", ls.dispatch((*streamer.LiveStreamer).ChasePlaylist))
+	r.Get(chaseBase+"/segments/{name}", ls.dispatch((*streamer.LiveStreamer).ChaseSegment))
+	r.Get(chaseBase+"/{name}", ls.dispatch((*streamer.LiveStreamer).ChaseSegment))
+	r.Post(chaseBase+"/leave", ls.dispatch((*streamer.LiveStreamer).ChaseLeave))
 }
 
 // dispatch は method（LiveStreamer.Playlist/Segment/Leave のいずれか）を、

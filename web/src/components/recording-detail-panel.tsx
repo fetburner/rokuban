@@ -1,12 +1,15 @@
 import { Link } from '@tanstack/react-router'
+import { useState } from 'react'
 
 import { useListRules, useListSites, type Recording } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { DropStatsTable } from '@/components/drop-stats-table'
 import { RecordingActions } from '@/components/recording-actions'
 import { RecordingPlayer } from '@/components/recording-player'
+import { LivePlayer } from '@/components/live-player'
 import { formatBytes, formatDateTime } from '@/lib/format'
 import { ingestDisplay, type IngestDisplay } from '@/lib/ingest'
+import { useLiveEnabled } from '@/lib/capabilities'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { shouldShowRecordingSite, sourceLabels } from '@/lib/recording-search'
 
@@ -62,8 +65,24 @@ function ingestDetailText(display: IngestDisplay): string {
  * ここに mutater を足す側は「単体ページへ配線したか」を気にせず、狭いキーを
  * invalidate しない限り自動で巻き込まれる。
  */
-export function RecordingDetail({ recording, trash }: { recording: Recording; trash: boolean }) {
+export function RecordingDetail({
+  recording,
+  trash,
+  chase = false,
+}: {
+  recording: Recording
+  trash: boolean
+  chase?: boolean
+}) {
+  const liveEnabled = useLiveEnabled()
+  const [chasing, setChasing] = useState(chase)
+  const showChase = !trash && recording.status === 'recording' && liveEnabled && chasing
   const encodedAssets = recording.encodedAssets ?? []
+  // 追っかけの配信プロファイル（live.profiles）と、完了後のVODプロファイル
+  // （encode.profiles）は別設定なので、URL用の profile を共有しない。再生位置だけ
+  // VODの既定プロファイル名に寄せる。active asset が既にあればその実在する先頭を
+  // 優先し、録画中でまだ無ければ凍結済み desired の先頭を使う。
+  const preferredPlaybackProfile = encodedAssets[0]?.profile ?? recording.encodeProfiles?.[0]
   const hasOriginal = recording.sizeBytes !== undefined
   // 詳細データの再取得ごとに取り込み状態を現在時刻で再評価する。mount 時に固定
   // すると、停滞表示が更新されなくなるため state 初期値には移せない。
@@ -82,9 +101,41 @@ export function RecordingDetail({ recording, trash }: { recording: Recording; tr
         ListTrashRecordings が available_encoded_assets を射影しないままなのも
         この理由による（プレイヤーを出さないので揃える必要がない）。
       */}
-      {!trash && (encodedAssets.length > 0 || hasOriginal) && (
+      {showChase && (
+        <section className="flex flex-col gap-2" aria-label="追っかけ再生">
+          <div className="flex items-center justify-between gap-2">
+            <h4 className="font-medium">追っかけ再生</h4>
+            <button
+              type="button"
+              onClick={() => setChasing(false)}
+              className="rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
+            >
+              閉じる
+            </button>
+          </div>
+          <LivePlayer
+            mode="chase"
+            site={recording.site}
+            recordingId={recording.id}
+            playbackProfile={preferredPlaybackProfile}
+          />
+        </section>
+      )}
+
+      {!trash && recording.status === 'recording' && liveEnabled && !chasing && (
+        <button
+          type="button"
+          onClick={() => setChasing(true)}
+          className="self-start rounded border border-border px-3 py-1.5 text-sm text-primary hover:bg-muted"
+        >
+          追っかけ再生
+        </button>
+      )}
+
+      {!trash && !showChase && (encodedAssets.length > 0 || hasOriginal) && (
         <RecordingPlayer
           recordingId={recording.id}
+          preferredProfile={preferredPlaybackProfile}
           encodedAssets={encodedAssets}
           hasOriginal={hasOriginal}
           originalSizeBytes={recording.sizeBytes}

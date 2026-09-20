@@ -8,6 +8,7 @@ package sqlcgen
 import (
 	"context"
 	"encoding/json"
+	"time"
 )
 
 const acquireRecordSync = `-- name: AcquireRecordSync :one
@@ -71,6 +72,42 @@ func (q *Queries) DeleteStaleRecordSyncs(ctx context.Context, arg DeleteStaleRec
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const getChaseTarget = `-- name: GetChaseTarget :one
+SELECT rs.site,
+       rs.record_id,
+       rs.status,
+       r.status AS recording_status,
+       r.deleted_at
+FROM recordings AS r
+JOIN record_sync AS rs ON rs.recording_id = r.id
+WHERE r.id = $1
+`
+
+type GetChaseTargetRow struct {
+	Site            string
+	RecordID        string
+	Status          string
+	RecordingStatus string
+	DeletedAt       *time.Time
+}
+
+// recordings.id は URL の正準な資源 id。record_sync から mirakc の site / record_id
+// を逆引きし、録画状態も返す。完了済みの追っかけセッションが保持する EVENT
+// プレイリストを、録画終了後も配信するために状態の絞り込みは呼び出し側で行う。
+// deleted_at はごみ箱の録画を追っかけ再生へ流さないために必要。
+func (q *Queries) GetChaseTarget(ctx context.Context, id int64) (GetChaseTargetRow, error) {
+	row := q.db.QueryRow(ctx, getChaseTarget, id)
+	var i GetChaseTargetRow
+	err := row.Scan(
+		&i.Site,
+		&i.RecordID,
+		&i.Status,
+		&i.RecordingStatus,
+		&i.DeletedAt,
+	)
+	return i, err
 }
 
 const getRecordSyncRecordingID = `-- name: GetRecordSyncRecordingID :one

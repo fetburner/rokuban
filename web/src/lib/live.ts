@@ -47,6 +47,17 @@ export function liveLeaveURL(site: string, networkId: number, serviceId: number)
   )
 }
 
+/** chasePlaylistURL は録画中の追っかけ再生 EVENT playlist の URL を組み立てる。 */
+export function chasePlaylistURL(site: string, recordingId: number, profile?: string): string {
+  const base = `/api/sites/${encodeURIComponent(site)}/recordings/${recordingId}/chase/playlist.m3u8`
+  return profile ? `${base}?profile=${encodeURIComponent(profile)}` : base
+}
+
+/** chaseLeaveURL は追っかけ再生セッションへの離脱ヒントの宛先。 */
+export function chaseLeaveURL(site: string, recordingId: number): string {
+  return `/api/sites/${encodeURIComponent(site)}/recordings/${recordingId}/chase/leave`
+}
+
 /**
  * sendLiveLeaveHint は離脱のヒントを 1 回送る（失敗は無視する）。
  *
@@ -72,6 +83,18 @@ export function sendLiveLeaveHint(site: string, networkId: number, serviceId: nu
   }
   void fetch(url, { method: 'POST', keepalive: true }).catch(() => {
     // 離脱時の失敗はユーザーに見せる意味がない（見せる画面がもう無い）
+  })
+}
+
+/** sendChaseLeaveHint は sendLiveLeaveHint と同じ fire-and-forget 契約で追っかけを離れる。 */
+export function sendChaseLeaveHint(site: string, recordingId: number): void {
+  const url = chaseLeaveURL(site, recordingId)
+  if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+    navigator.sendBeacon(url)
+    return
+  }
+  void fetch(url, { method: 'POST', keepalive: true }).catch(() => {
+    // 離脱時の失敗は idle GC に任せる
   })
 }
 
