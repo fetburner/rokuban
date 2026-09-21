@@ -82,6 +82,7 @@ func (h *Server) ListPrograms(ctx context.Context, req ListProgramsRequestObject
 			NetworkId:   int(p.NetworkID),
 			ServiceId:   int(p.ServiceID),
 			EventId:     int(p.EventID),
+			RecordingId: p.RecordingID,
 			StartAt:     p.StartAt,
 			EndAt:       p.EndAt,
 			DurationMs:  p.DurationMs,

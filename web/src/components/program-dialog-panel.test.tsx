@@ -105,6 +105,36 @@ describe('ProgramDialogPanel', () => {
     )
   })
 
+  it('追っかけリンクは番組 id ではなく対応する録画 id を使う', async () => {
+    stubFetch(true)
+    const airingProgram = {
+      ...program,
+      startAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+      endAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+    }
+    renderInRouter(
+      <Dialog open>
+        <DialogContent>
+          <ProgramDialogPanel
+            program={{ ...airingProgram, programId: 17, recordingId: 42 }}
+            reserved={false}
+            pending={false}
+            reservationStateUnknown={false}
+            onReserve={vi.fn()}
+            onCancel={vi.fn()}
+          />
+        </DialogContent>
+      </Dialog>,
+    )
+
+    const dialog = await screen.findByRole('dialog', { name: airingProgram.name })
+    const link = await within(dialog).findByRole('link', {
+      name: `${airingProgram.name}を追っかけ再生`,
+    })
+    expect(link).toHaveAttribute('href', '/recordings/42#chase')
+    expect(within(dialog).getByTestId('program-dialog-actions')).toHaveClass('w-[7.75rem]')
+  })
+
   it('未予約の skip 意図を表示し、ダイアログの「解除」で意図を消せる', async () => {
     stubFetch()
     const onClearIntent = vi.fn()

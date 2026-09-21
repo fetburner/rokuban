@@ -4,7 +4,12 @@ import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { CapacityOverage, ProgramListItem, Reservation, Service } from '@/api/generated'
+import type {
+  CapacityOverage,
+  ProgramListItem,
+  Reservation,
+  Service,
+} from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { dayOrigin } from '@/lib/day-offset'
 import { programsQueryKeyPrefix } from '@/lib/events'
@@ -122,6 +127,13 @@ function program(
 
 /** 1 時間後の番組。リストの最初の窓（6 時間）にもグリッドの窓にも入る。 */
 const soon = program(1, 1024, 1, 'ニュース7')
+/** 現在放送中の番組。既存の再生ボタンを追っかけへ置き換えるテストに使う。 */
+const airingSoon: ProgramListItem = {
+  ...soon,
+  startAt: new Date(origin - 30 * 60_000).toISOString(),
+  endAt: new Date(origin + 30 * 60_000).toISOString(),
+  recordingId: 42,
+}
 /** 同時刻・別サービスの番組。グリッドでは横に並ぶ。 */
 const alsoSoon = program(2, 1032, 1, '手話ニュース', 32737)
 /** 8 時間後の番組。リストの最初の窓には入らず、グリッド（24 時間）には入る。 */
@@ -251,6 +263,7 @@ const encodeProfiles = [{ name: 'h264', container: 'mp4' as const }]
  * `fetchMock` に `mockImplementation` で `/api/reservations` だけを差し替える
  * イディオムを使う（「/api/sites の失敗を…」テスト等と同じ形。位置引数を
  * 増やすより、必要なテストだけがその場で差し替える方が読める）。
+ *
  */
 function stubApi(
   reservations: Reservation[] = [],
@@ -436,6 +449,34 @@ async function reservationsSettled(queryClient: QueryClient): Promise<void> {
 }
 
 describe('ProgramsPage の表示形式', () => {
+  it('番組リストの録画中番組に対応する録画の追っかけリンクを出す', async () => {
+    const fetchMock = stubApi([], [], [airingSoon])
+    renderPage()
+
+    const row = await screen.findByTestId('program-row')
+    const link = await within(row).findByRole('link', { name: 'ニュース7を追っかけ再生' })
+    expect(link).toHaveAttribute('href', '/recordings/42#chase')
+    expect(
+      fetchMock.mock.calls.some(
+        (call) => new URL(String(call[0]), 'http://localhost').pathname === '/api/recordings',
+      ),
+    ).toBe(false)
+  })
+
+  it('番組表の番組ダイアログにも対応する録画の追っかけリンクを出す', async () => {
+    stubApi([], [], [airingSoon])
+    stubMatchMedia(true)
+    renderPage('/programs?view=grid')
+
+    await screen.findByTestId('program-grid')
+    const cell = document.querySelector(`[data-program-id="${airingSoon.programId}"]`)
+    await userEvent.click(cell as HTMLElement)
+
+    const dialog = await screen.findByRole('dialog', { name: airingSoon.name })
+    const link = await within(dialog).findByRole('link', { name: 'ニュース7を追っかけ再生' })
+    expect(link).toHaveAttribute('href', '/recordings/42#chase')
+  })
+
   it('予約一覧から重なり警告を導出し、番組別 overlaps API を取得しない', async () => {
     const fetchMock = stubApi([
       reservation(soon.programId, 'ニュース7'),

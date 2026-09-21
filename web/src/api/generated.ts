@@ -198,6 +198,11 @@ export interface ProgramListItem {
   networkId: number;
   serviceId: number;
   eventId: number;
+  /**
+     * 現在録画中で、この番組に対応する `recordings.id`。
+     * `GET /api/sites/{site}/programs` の一覧で対応する録画がある場合だけ返す。
+     */
+  recordingId?: number;
   startAt: string;
   endAt: string;
   durationMs: number;
