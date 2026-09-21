@@ -81,6 +81,7 @@ export function ProgramDialogPanel({
             reserveBlocked={draft.reserveBlocked}
             skipIntent={skipIntent}
             showLiveLink={draft.showLiveLink}
+            showChaseLink={draft.showChaseLink}
             onReserve={draft.handleReserve}
             onCancel={onCancel}
             onClearIntent={() => onClearIntent?.()}

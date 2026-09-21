@@ -139,6 +139,38 @@ describe('ProgramRow の外向き導線（issue #229 / #755）', () => {
     expect(params.get('site')).toBe(testSite)
   })
 
+  it('対応する録画中録画がある行では既存の再生ボタンを録画 id の追っかけリンクにする', async () => {
+    const fetchMock = stubFetch()
+    renderInRouter(
+      <ProgramRow
+        program={airingProgram({ programId: 7, eventId: 700, recordingId: 42 })}
+        reserved={false}
+        pending={false}
+        reservationStateUnknown={false}
+        onReserve={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    await screen.findByText('対象番組')
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/api/capabilities'),
+        expect.anything(),
+      ),
+    )
+
+    const link = await within(screen.getByTestId('program-row-reserve')).findByRole('link', {
+      name: '対象番組を追っかけ再生',
+    })
+    expect(link).toHaveAttribute('href', '/recordings/42#chase')
+    expect(
+      within(screen.getByTestId('program-row-reserve')).queryByRole('link', {
+        name: 'ライブで見る',
+      }),
+    ).not.toBeInTheDocument()
+  })
+
   it('endAt を持たない検索結果の射影でも startAt + durationMs から放送中を判定する', async () => {
     stubFetch()
     const airingSearchProgram = {
@@ -222,6 +254,33 @@ describe('ProgramRow の外向き導線（issue #229 / #755）', () => {
     expect(
       within(screen.getByTestId('program-row-reserve')).queryByRole('link', {
         name: 'ライブで見る',
+      }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('live.enabled=false（能力 API が disabled）では追っかけリンクも出さない', async () => {
+    const fetchMock = stubFetch({ live: false })
+    renderInRouter(
+      <ProgramRow
+        program={airingProgram({ eventId: 700, recordingId: 42 })}
+        reserved={false}
+        pending={false}
+        reservationStateUnknown={false}
+        onReserve={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    await screen.findByText('対象番組')
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/api/capabilities'),
+        expect.anything(),
+      ),
+    )
+    expect(
+      within(screen.getByTestId('program-row-reserve')).queryByRole('link', {
+        name: '対象番組を追っかけ再生',
       }),
     ).not.toBeInTheDocument()
   })

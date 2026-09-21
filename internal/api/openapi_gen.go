@@ -1141,9 +1141,13 @@ type Program struct {
 	Name      string         `json:"name"`
 	NetworkId int            `json:"networkId"`
 	ProgramId int64          `json:"programId"`
-	ServiceId int            `json:"serviceId"`
-	StartAt   time.Time      `json:"startAt"`
-	Video     *VideoInfo     `json:"video,omitempty"`
+
+	// RecordingId 現在録画中で、この番組に対応する `recordings.id`。
+	// `GET /api/sites/{site}/programs` の一覧で対応する録画がある場合だけ返す。
+	RecordingId *int64     `json:"recordingId,omitempty"`
+	ServiceId   int        `json:"serviceId"`
+	StartAt     time.Time  `json:"startAt"`
+	Video       *VideoInfo `json:"video,omitempty"`
 }
 
 // ProgramIntent この番組に対するユーザー操作の意図。`program_intents.action` に対応する。
@@ -1174,8 +1178,12 @@ type ProgramListItem struct {
 	Name      string         `json:"name"`
 	NetworkId int            `json:"networkId"`
 	ProgramId int64          `json:"programId"`
-	ServiceId int            `json:"serviceId"`
-	StartAt   time.Time      `json:"startAt"`
+
+	// RecordingId 現在録画中で、この番組に対応する `recordings.id`。
+	// `GET /api/sites/{site}/programs` の一覧で対応する録画がある場合だけ返す。
+	RecordingId *int64    `json:"recordingId,omitempty"`
+	ServiceId   int       `json:"serviceId"`
+	StartAt     time.Time `json:"startAt"`
 }
 
 // ProgramOverlaps defines model for ProgramOverlaps.

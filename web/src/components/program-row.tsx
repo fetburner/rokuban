@@ -54,8 +54,9 @@ export function ProgramRow({
 
   const detailId = `program-row-detail-${program.site}-${program.programId}`
   const skipIntent = program.intent === 'skip' && !reserved
-  // リストの操作列は、予約ボタン 80px と放送中のライブボタン 44px を
-  // まとめて開く。これはリストだけの幅アニメーションで、共有操作側へ渡さない。
+  // リストの操作列は、既存の再生ボタン（ライブまたは追っかけ）44px と
+  // 予約ボタン 80px をまとめて開く。これはリストだけの幅アニメーションで、
+  // 共有操作側へ渡さない。
   const reserveColumnOpenClasses = cn(
     'pointer-fine:group-hover:border-l group-has-[:focus-visible]:border-l peer-aria-expanded:border-l',
     draft.showLiveLink
@@ -111,6 +112,7 @@ export function ProgramRow({
             reserveBlocked={draft.reserveBlocked}
             skipIntent={skipIntent}
             showLiveLink={draft.showLiveLink}
+            showChaseLink={draft.showChaseLink}
             onReserve={draft.handleReserve}
             onCancel={onCancel}
             onClearIntent={() => onClearIntent?.()}

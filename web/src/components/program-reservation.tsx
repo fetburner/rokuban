@@ -37,6 +37,7 @@ export type ProgramReservationProgram = Pick<
   | 'name'
   | 'isFree'
   | 'intent'
+  | 'recordingId'
 > & {
   endAt?: string
   description?: string
@@ -46,8 +47,8 @@ export type ProgramReservationProgram = Pick<
  * 番組予約 UI の下書きと導出状態。
  *
  * リスト行とグリッドのダイアログは表示 chrome だけが異なる。同じ下書きと
- * `reserveBlocked` / `showLiveLink` を使うことで、encode 既定値・予約状態不明・
- * 放送中判定の片側だけがずれる経路を作らない。
+ * `reserveBlocked` / `showLiveLink` / `showChaseLink` を使うことで、encode 既定値・
+ * 予約状態不明・放送中判定・録画対応付けの片側だけがずれる経路を作らない。
  */
 export type ProgramReservationDraft = {
   encodeValue: EncodeSettingsValue
@@ -55,6 +56,7 @@ export type ProgramReservationDraft = {
   reserveBlocked: boolean
   handleReserve: () => void
   showLiveLink: boolean
+  showChaseLink: boolean
 }
 
 /**
@@ -93,6 +95,7 @@ export function useProgramReservation({
 
   const endAt =
     program.endAt ?? new Date(Date.parse(program.startAt) + program.durationMs).toISOString()
+  const airing = isAiring(program.startAt, endAt)
 
   return {
     encodeValue,
@@ -103,7 +106,10 @@ export function useProgramReservation({
     // それでも遷移先を誤らないのは、ライブ導線が programId を運ばずチャンネル
     // （networkId + serviceId）だけを渡すため --- /live が「いま何が流れているか」を
     // 自前で再取得する側に真実がある。
-    showLiveLink: liveEnabled && isAiring(program.startAt, endAt),
+    showLiveLink: liveEnabled && airing,
+    // 追っかけは現在放送中の番組に対応する録画へ入る既存の再生ボタンを
+    // 置き換える。番組一覧 API の recordingId が無い場合は従来のライブリンクへ戻る。
+    showChaseLink: liveEnabled && airing && program.recordingId !== undefined,
   }
 }
 
@@ -164,8 +170,9 @@ export function ProgramReservationSummary({
 }
 
 /**
- * 予約 / 取消 / ライブのボタンそのもの。配置と幅のアニメーションは親の chrome に
- * 任せるため、ここではボタンの意味と最小タップ領域だけを共有する。
+ * 予約 / 取消 / ライブ / 追っかけのボタンそのもの。ライブと追っかけは同じ
+ * 44px の既存再生枠を共有し、対応する録画中録画があればリンク先だけを置き換える。
+ * 配置と幅のアニメーションは親の chrome に任せる。
  */
 export function ProgramReservationActions({
   program,
@@ -174,6 +181,7 @@ export function ProgramReservationActions({
   reserveBlocked,
   skipIntent,
   showLiveLink,
+  showChaseLink,
   onReserve,
   onCancel,
   onClearIntent,
@@ -184,6 +192,7 @@ export function ProgramReservationActions({
   reserveBlocked: boolean
   skipIntent: boolean
   showLiveLink: boolean
+  showChaseLink: boolean
   onReserve: () => void
   onCancel: () => void
   onClearIntent: () => void
@@ -191,19 +200,27 @@ export function ProgramReservationActions({
   return (
     <>
       {showLiveLink && (
-        <div data-program-action="live" className="shrink-0">
+        <div data-program-action={showChaseLink ? 'chase' : 'live'} className="shrink-0">
           <Button
             variant="default"
             size="icon"
-            aria-label="ライブで見る"
+            aria-label={showChaseLink ? `${program.name}を追っかけ再生` : 'ライブで見る'}
             render={
-              <Link
-                to="/live"
-                search={{
-                  service: composeServiceId(program.networkId, program.serviceId),
-                  site: program.site,
-                }}
-              />
+              showChaseLink && program.recordingId !== undefined ? (
+                <Link
+                  to="/recordings/$id"
+                  params={{ id: String(program.recordingId) }}
+                  hash="chase"
+                />
+              ) : (
+                <Link
+                  to="/live"
+                  search={{
+                    service: composeServiceId(program.networkId, program.serviceId),
+                    site: program.site,
+                  }}
+                />
+              )
             }
             className="min-h-11 min-w-11 w-full rounded-none"
           >

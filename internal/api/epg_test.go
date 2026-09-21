@@ -180,6 +180,11 @@ func TestListPrograms_Window(t *testing.T) {
 	seedEpgProgram(t, pool, 1, 32678, 5168, 1, "A-1", base, true)
 	seedEpgProgram(t, pool, 2, 32678, 5168, 2, "A-2", base.Add(time.Hour), false)
 	seedEpgProgram(t, pool, 3, 32676, 5152, 1, "B-1", base.Add(30*time.Minute), false)
+	recordingID := seedRecording(t, pool, "A-1", base, "recording", 1)
+	// event_id は site / service 内で再利用されるため、開始時刻が違う録画は
+	// 対応付けないことも確認する。
+	seedRecording(t, pool, "古いA-1", base.Add(-time.Hour), "recording", 1)
+	seedRecording(t, pool, "A-2", base.Add(time.Hour), "finished", 2)
 	seedProgramIntent(t, pool, 2, base.Add(time.Hour), 32678, 5168, 2, "skip")
 
 	// 窓に一部でも重なる番組が入る（開区間）
@@ -211,20 +216,35 @@ func TestListPrograms_Window(t *testing.T) {
 	if got[2].Intent == nil || *got[2].Intent != "skip" {
 		t.Errorf("A-2 intent = %v, want skip", got[2].Intent)
 	}
+	if got[0].RecordingId == nil || *got[0].RecordingId != recordingID {
+		t.Errorf("A-1 recordingId = %v, want %d", got[0].RecordingId, recordingID)
+	}
+	if got[1].RecordingId != nil || got[2].RecordingId != nil {
+		t.Errorf("non-matching recordings should be omitted: B-1=%v A-2=%v", got[1].RecordingId, got[2].RecordingId)
+	}
 	var wire []struct {
-		ProgramID int64           `json:"programId"`
-		Intent    json.RawMessage `json:"intent"`
+		ProgramID   int64           `json:"programId"`
+		RecordingID *int64          `json:"recordingId"`
+		Intent      json.RawMessage `json:"intent"`
 	}
 	getJSON(t, programsURL(srv.URL, base.Add(45*time.Minute), base.Add(75*time.Minute)), &wire)
 	byID := make(map[int64]json.RawMessage, len(wire))
+	recordingByID := make(map[int64]*int64, len(wire))
 	for _, item := range wire {
 		byID[item.ProgramID] = item.Intent
+		recordingByID[item.ProgramID] = item.RecordingID
 	}
 	if len(byID[1]) != 0 || len(byID[3]) != 0 {
 		t.Errorf("programs without intent should omit the JSON field: %+v", byID)
 	}
 	if string(byID[2]) != `"skip"` {
 		t.Errorf("A-2 wire intent = %s, want %q", byID[2], "skip")
+	}
+	if recordingByID[1] == nil || *recordingByID[1] != recordingID {
+		t.Errorf("A-1 wire recordingId = %v, want %d", recordingByID[1], recordingID)
+	}
+	if recordingByID[2] != nil || recordingByID[3] != nil {
+		t.Errorf("non-matching recordingId fields should be omitted: %+v", recordingByID)
 	}
 
 	// 窓にちょうど接するだけの番組は入らない（A-1 は end == window_start）

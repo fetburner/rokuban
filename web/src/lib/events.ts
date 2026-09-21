@@ -172,7 +172,11 @@ const queryGroups: QueryGroup[] = [
   },
   {
     topic: 'recordings',
-    prefixes: [recordingsQueryKeyPrefix, encodeQueueQueryKeyPrefix],
+    // 番組一覧の recordingId も録画状態から導出される。録画の開始・終了時は
+    // 同じ SSE で即時に取り直すが、番組表は大きいので 60 秒周期の定期取得には
+    // 含めず、SSE を取り逃した場合は EPG の 10 分周期で収束させる。
+    prefixes: [recordingsQueryKeyPrefix, encodeQueueQueryKeyPrefix, programsQueryKeyPrefix],
+    refreshPrefixes: [recordingsQueryKeyPrefix, encodeQueueQueryKeyPrefix],
     refreshIntervalMs: operationalRefreshIntervalMs,
   },
   {

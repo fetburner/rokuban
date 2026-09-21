@@ -24,6 +24,14 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 追っかけプレイヤーを閉じ、終了済み録画の VOD 表示へ戻る。ただし、再生中に録画が終了
 しても、既に開始済みの EVENT playlist は idle GC まで末尾を取得できる。
 
+番組リストと番組表グリッドのダイアログにも同じ着地先への入口を置く。番組画面は
+番組一覧 API が番組と同じ放送イベントに対応する録画中録画の `recordings.id` を
+`recordingId` として任意で返す。サーバーは `site`・`networkId`・`serviceId`・`eventId`・
+`startAt` を使って `recordings` を照合する。`programId` と `recordings.id` は別の
+identity なので、リンク先には API が返した `recordingId` を使う。対応する録画が無い場合は、
+既存の再生ボタンを従来どおりライブへ向ける。録画が終了・失敗・キャンセル・ごみ箱の
+場合も追っかけへは切り替えない。録画状態の SSE 通知を受けた番組表は一覧 API を取り直す。
+
 追っかけの URL は次の固定深さで、mirakc の record id をブラウザ側に持たない。`site` は
 前段が site ごとの streamer Service を選ぶために含め、DB 上の録画の site と一致しない
 要求は streamer が 404 にする。
@@ -75,13 +83,13 @@ site も運ぶ**（`?service=` の値域も `/programs` と同じ生成スキー
 初期選択は「site と `Service.id` が一致すればそれ、無ければ番組を持つ先頭」だけで
 決まる。関数は `pickInitialService(services, requestedId, requestedSite)`
 （`lib/live.ts`）である。
-番組リスト（`components/program-row.tsx`）の放送中行には、予約ボタンの左に
-`aria-label="ライブで見る"` の 44px アイコンボタン「ライブ」を置く。これは行に
-対する動作なので展開領域のテキストリンクにはしない。アイコンはライブ画面
-（`pages/live.tsx`）と同じ `Play` を使う。遷移先は
-`/live?service=<Service.id>&site=<site>`。`ProgramListItem` が SI の `networkId` /
-`serviceId` しか持たないため、`composeServiceId`（`lib/service-id.ts`）で合成してから
-渡す。
+番組リスト（`components/program-row.tsx`）の放送中行には、予約ボタンの左に 44px の
+`Play` アイコンボタンを置く。これは行に対する動作なので展開領域のテキストリンクには
+しない。対応する録画中録画が無いときは「ライブで見る」とし、
+`/live?service=<Service.id>&site=<site>` へ遷移する。対応する録画があるときだけ
+「追っかけ再生」とし、`/recordings/{recordingId}#chase` へ切り替える。
+`ProgramListItem` が SI の `networkId` / `serviceId` を持つため、ライブの遷移先は
+`composeServiceId`（`lib/service-id.ts`）で合成してから渡す。
 
 **番組表と録画の絞り込みも network を含む厳密形式を持つ。** 高松の地上波だけを
 受信する実運用 mirakc では 19 サービス中の重複は 0 件だったが、この測定は GR の

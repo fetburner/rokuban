@@ -105,9 +105,18 @@ ORDER BY start_at, network_id, service_id;
 -- name: ListEpgProgramsForList :many
 SELECT p.site, p.program_id, p.network_id, p.service_id, p.event_id,
        p.start_at, p.duration_ms, p.end_at, p.is_free, p.name, p.description,
-       p.genre_lv1, i.action AS intent_action
+       p.genre_lv1, i.action AS intent_action, r.id AS recording_id
 FROM epg_programs p
 LEFT JOIN program_intents i ON i.site = p.site AND i.program_id = p.program_id
+LEFT JOIN recordings r
+  ON r.site = p.site
+ AND r.network_id = p.network_id
+ AND r.service_id = p.service_id
+ AND r.event_id = p.event_id
+ AND r.program_start_at = p.start_at
+ AND r.status = 'recording'
+ AND r.deleted_at IS NULL
+ AND r.superseded_at IS NULL
 WHERE p.site = $1
   AND p.start_at < sqlc.arg(window_end)::timestamptz
   AND p.end_at   > sqlc.arg(window_start)::timestamptz
