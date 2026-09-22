@@ -1,4 +1,4 @@
-// 録画中の追っかけ再生（issue #579）の実ブラウザ判定。
+// 録画中の追っかけ再生の実ブラウザ判定。
 //
 // jsdom では測れないものだけを見る。録画中の録画詳細へ `#chase` で入り、
 // EVENT playlist が成長する間も hls.js が先頭から再生を始め、`最新` で末尾へ
@@ -129,10 +129,13 @@ function eventPlaylists(fixtureDir) {
     if (!lines[i].startsWith('#EXTINF:')) continue
     entries.push([lines[i], lines[i + 1]])
   }
-  const playlist = (count, end) =>
-    [...header, '#EXT-X-PLAYLIST-TYPE:EVENT', ...entries.slice(0, count).flat(), ...(end ? ['#EXT-X-ENDLIST'] : [])].join(
-      '\n',
-    ) + '\n'
+  const playlist = (count, end, sourceEntries = entries) =>
+    [
+      ...header,
+      '#EXT-X-PLAYLIST-TYPE:EVENT',
+      ...sourceEntries.slice(0, count).flat(),
+      ...(end ? ['#EXT-X-ENDLIST'] : []),
+    ].join('\n') + '\n'
   return { entries, playlist }
 }
 
@@ -154,6 +157,10 @@ if (entries.length < 3) {
   ng.push(`フィクスチャのセグメント数が少なすぎる（${entries.length}）`)
   await finish(ng)
 }
+// The fixture has 2-second segments. The offset route deliberately serves a
+// different playlist so this browser test verifies actual media selection, not
+// only the URL shape. Two positions also catch a hard-coded first offset.
+const offsetScenarios = [3, 5]
 
 const browser = await launchBrowser('chromium')
 const context = await browser.newContext({
@@ -176,7 +183,7 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
   }
   if (requestPath === '/api/recordings' && method === 'GET') return json([recording])
   if (requestPath === '/api/recordings/1' && method === 'GET') return json(recording)
-  if (requestPath === '/api/sites/default/recordings/1/chase/leave' && method === 'POST') {
+  if (/^\/api\/sites\/default\/recordings\/1\/chase(?:\/offset\/\d+)?\/leave$/.test(requestPath) && method === 'POST') {
     return route.fulfill({ status: 204 })
   }
   // `url` is intentionally read here so the handler remains total if a future
@@ -189,6 +196,20 @@ const chaseBase = '/api/sites/default/recordings/1/chase'
 let playlistRequests = 0
 const playlistSizes = []
 let playlistEnded = false
+let offsetPlaylistRequests = 0
+const offsetObservations = new Map()
+
+function observationForOffset(offsetSeconds) {
+  let observation = offsetObservations.get(offsetSeconds)
+  if (observation === undefined) {
+    observation = {
+      playlistRequestedAt: undefined,
+      segmentNames: [],
+    }
+    offsetObservations.set(offsetSeconds, observation)
+  }
+  return observation
+}
 
 await page.route(`**${chaseBase}/playlist.m3u8*`, async (route) => {
   playlistRequests += 1
@@ -203,8 +224,37 @@ await page.route(`**${chaseBase}/playlist.m3u8*`, async (route) => {
   })
 })
 
+await page.route(`**${chaseBase}/offset/*/playlist.m3u8*`, async (route) => {
+  offsetPlaylistRequests += 1
+  const match = new URL(route.request().url()).pathname.match(/\/offset\/(\d+)\/playlist\.m3u8$/)
+  const offsetSeconds = match === null ? Number.NaN : Number(match[1])
+  const observation = observationForOffset(offsetSeconds)
+  observation.playlistRequestedAt ??= Date.now()
+  const sourceEntries = entries.slice(Math.floor(offsetSeconds / 2))
+  await route.fulfill({
+    status: 200,
+    contentType: 'application/vnd.apple.mpegurl',
+    body: playlist(sourceEntries.length, true, sourceEntries),
+  })
+})
+
 await page.route(`**${chaseBase}/segments/*`, async (route) => {
   const name = new URL(route.request().url()).pathname.split('/').pop()
+  const file = path.join(fixtureDir, 'segments', name)
+  if (!existsSync(file)) {
+    await route.fulfill({ status: 404, body: 'not found' })
+    return
+  }
+  await route.fulfill({ status: 200, contentType: 'video/mp2t', body: readFileSync(file) })
+})
+
+await page.route(`**${chaseBase}/offset/*/segments/*`, async (route) => {
+  const pathname = new URL(route.request().url()).pathname
+  const match = pathname.match(/\/offset\/(\d+)\/segments\/([^/]+)$/)
+  const offsetSeconds = match === null ? Number.NaN : Number(match[1])
+  const name = match === null ? pathname.split('/').pop() : match[2]
+  const observation = observationForOffset(offsetSeconds)
+  observation.segmentNames.push(name)
   const file = path.join(fixtureDir, 'segments', name)
   if (!existsSync(file)) {
     await route.fulfill({ status: 404, body: 'not found' })
@@ -262,6 +312,84 @@ if ((await latest.count()) !== 1) {
 
 if (!playlistEnded) {
   ng.push('② 成長後の playlist が ENDLIST にならない')
+}
+
+log('\n=== ③ 任意オフセットからの開始 ===')
+const offsetInput = page.getByLabel('追っかけ再生の開始位置（秒）')
+for (const offsetSeconds of offsetScenarios) {
+  await offsetInput.fill(String(offsetSeconds))
+  const offsetClickAt = Date.now()
+  await page.getByRole('button', { name: 'この位置から再生' }).click()
+  const observation = observationForOffset(offsetSeconds)
+  const offsetDeadline = Date.now() + 5_000
+  while (
+    Date.now() < offsetDeadline &&
+    (observation.playlistRequestedAt === undefined || observation.segmentNames.length === 0)
+  ) {
+    await page.waitForTimeout(100)
+  }
+  if (observation.playlistRequestedAt === undefined) {
+    ng.push(`③ ${offsetSeconds}秒のオフセット playlist が要求されない`)
+  }
+  const offsetStartIndex = Math.floor(offsetSeconds / 2)
+  const expectedSegment = `segment_${String(offsetStartIndex).padStart(3, '0')}.ts`
+  if (observation.segmentNames[0] !== expectedSegment) {
+    ng.push(
+      `③ ${offsetSeconds}秒の最初のセグメントが不正（got=${observation.segmentNames[0] ?? 'none'}, want=${expectedSegment}）`,
+    )
+  }
+  const selectedSegmentSeconds = offsetStartIndex * 2
+  const playback = await page.locator('video').evaluate(async (video) => {
+    video.muted = true
+    video.pause()
+    const startedAt = performance.now()
+    return new Promise((resolve) => {
+      let timer
+      const finish = (result) => {
+        window.clearTimeout(timer)
+        video.removeEventListener('playing', onPlaying)
+        resolve(result)
+      }
+      const onPlaying = () =>
+        finish({
+          playing: true,
+          elapsedMs: performance.now() - startedAt,
+          currentTime: video.currentTime,
+        })
+      video.addEventListener('playing', onPlaying, { once: true })
+      timer = window.setTimeout(
+        () =>
+          finish({
+            playing: false,
+            elapsedMs: performance.now() - startedAt,
+            currentTime: video.currentTime,
+          }),
+        5_000,
+      )
+      void video.play().catch(() =>
+        finish({
+          playing: false,
+          elapsedMs: performance.now() - startedAt,
+          currentTime: video.currentTime,
+        }),
+      )
+    })
+  })
+  if (!playback.playing) {
+    ng.push(`③ ${offsetSeconds}秒の映像が playing まで到達しない`)
+  }
+  const observedRecordingSeconds = selectedSegmentSeconds + playback.currentTime
+  if (!Number.isFinite(playback.currentTime) || Math.abs(observedRecordingSeconds - offsetSeconds) > 2) {
+    ng.push(
+      `③ 実再生位置の誤差が大きい（requested=${offsetSeconds}s, observed=${observedRecordingSeconds.toFixed(2)}s）`,
+    )
+  }
+  if (Date.now() - offsetClickAt > 5_000 || playback.elapsedMs > 5_000) {
+    ng.push(`③ ${offsetSeconds}秒の選択から playing までに5秒以上かかる`)
+  }
+}
+if (offsetPlaylistRequests < offsetScenarios.length) {
+  ng.push(`③ オフセット playlist の要求数が不足（${offsetPlaylistRequests}）`)
 }
 
 await finish(ng, browser)

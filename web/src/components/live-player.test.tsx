@@ -381,6 +381,34 @@ describe('LivePlayer の状態遷移', () => {
     })
   })
 
+  it('ネイティブHLSでも明示した追っかけ開始位置から再生する', async () => {
+    savePlaybackPosition(10, 'vod-h264', 42)
+    const { resolve } = deferredFetch()
+    render(
+      <LivePlayer
+        mode="chase"
+        site="default"
+        recordingId={10}
+        startOffsetSeconds={30}
+        playbackProfile="vod-h264"
+      />,
+    )
+    const video = document.querySelector('video')!
+    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
+      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
+    )
+    resolve(new Response('', { status: 200 }))
+
+    await waitFor(() => expect(video.src).toContain('/chase/offset/30/playlist.m3u8'))
+    Object.defineProperty(video, 'currentTime', { value: 7, writable: true, configurable: true })
+    fireEvent.loadedMetadata(video)
+    expect(video.currentTime).toBe(0)
+
+    Object.defineProperty(video, 'currentTime', { value: 7, writable: true, configurable: true })
+    fireEvent.canPlay(video)
+    expect(video.currentTime).toBe(0)
+  })
+
   it('serviceId が変わると新しい URL で probe をやり直す', async () => {
     const fetchMock = vi.fn((_url: string) => Promise.resolve(new Response('', { status: 200 })))
     vi.stubGlobal('fetch', fetchMock)
@@ -491,6 +519,56 @@ describe('LivePlayer の状態遷移', () => {
       await userEvent.click(latest)
       expect(video.currentTime).toBeCloseTo(119.9, 5)
       expect(play).toHaveBeenCalledTimes(1)
+    })
+
+    it('指定した開始オフセットから読み、保存位置を上書きせず録画全体の秒数で扱う', async () => {
+      savePlaybackPosition(8, 'vod-h264', 42)
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      render(
+        <LivePlayer
+          mode="chase"
+          site="default"
+          recordingId={8}
+          startOffsetSeconds={30}
+          playbackProfile="vod-h264"
+        />,
+      )
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      expect(hlsMockState.instances[0]!.loadSource).toHaveBeenCalledWith(
+        '/api/sites/default/recordings/8/chase/offset/30/playlist.m3u8',
+      )
+      const video = document.querySelector('video')!
+      Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+      fireEvent.loadedMetadata(video)
+      expect(video.currentTime).toBe(0)
+
+      video.currentTime = 13
+      fireEvent.timeUpdate(video)
+      expect(localStorage.getItem('rokuban:playback:8:vod-h264')).toBe('43')
+    })
+
+    it('録画先頭を明示したときも保存位置を復元しない', async () => {
+      savePlaybackPosition(9, 'vod-h264', 42)
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      render(
+        <LivePlayer
+          mode="chase"
+          site="default"
+          recordingId={9}
+          startOffsetSeconds={0}
+          playbackProfile="vod-h264"
+        />,
+      )
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      expect(hlsMockState.instances[0]!.loadSource).toHaveBeenCalledWith(
+        '/api/sites/default/recordings/9/chase/playlist.m3u8',
+      )
+      const video = document.querySelector('video')!
+      Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+      fireEvent.loadedMetadata(video)
+      expect(video.currentTime).toBe(0)
     })
 
     it('成長中の追っかけプレイリストでは最新付近の再生位置を完了扱いで消さない', async () => {
@@ -951,6 +1029,19 @@ describe('LivePlayer の状態遷移', () => {
       unmount()
 
       expect(sent).toEqual(['/api/sites/default/recordings/42/chase/leave'])
+    })
+
+    it('オフセット付き追っかけのアンマウントでは同じセッションへ leave する', async () => {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      const sent = stubBeacon()
+      const { unmount } = render(
+        <LivePlayer mode="chase" site="default" recordingId={42} startOffsetSeconds={90} />,
+      )
+      await waitForPlaying()
+
+      unmount()
+
+      expect(sent).toEqual(['/api/sites/default/recordings/42/chase/offset/90/leave'])
     })
 
     it('チャンネル切り替えでは「離れた側」の serviceId にヒントを送る', async () => {

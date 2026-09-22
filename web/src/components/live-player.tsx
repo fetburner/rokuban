@@ -87,6 +87,12 @@ type LivePlayerProps = {
   recordingId?: number
   /** chase playlist のプロファイル。省略時は streamer の先頭プロファイル。 */
   profile?: string
+  /**
+   * 明示的に選んだ録画開始からの秒数。省略時は録画先頭のセッションを
+   * 起動して保存済みの再生位置を復元し、0 を含む指定時はセッション先頭から
+   * 再生する。
+   */
+  startOffsetSeconds?: number
   /** 追っかけとVODで共有する再生位置のキー。liveの配信プロファイルとは別に持つ。 */
   playbackProfile?: string
   className?: string
@@ -135,11 +141,21 @@ export function LivePlayer({
   serviceId,
   recordingId,
   profile,
+  startOffsetSeconds,
   playbackProfile,
   className,
   onDiagnostics,
 }: LivePlayerProps) {
   const isChase = mode === 'chase'
+  const explicitChaseStartOffset =
+    isChase &&
+    startOffsetSeconds !== undefined &&
+    Number.isSafeInteger(startOffsetSeconds) &&
+    startOffsetSeconds >= 0
+      ? startOffsetSeconds
+      : undefined
+  const hasExplicitChaseStart = explicitChaseStartOffset !== undefined
+  const chaseStartOffset = explicitChaseStartOffset ?? 0
   const videoRef = useRef<HTMLVideoElement>(null)
   const hlsRef = useRef<HlsLike | null>(null)
   const [loading, setLoading] = useState(true)
@@ -147,6 +163,7 @@ export function LivePlayer({
   // retryNonce を変えると effect が再実行される（依存配列に入れる）
   const [retryNonce, setRetryNonce] = useState(0)
   const restorePending = useRef(true)
+  const explicitStartSeekPending = useRef(false)
   const lastSavedSecond = useRef<number | null>(null)
   // onDiagnostics は ref 越しに読む。probe / hls.js のセットアップを担う
   // メイン effect の依存配列に関数 prop をそのまま入れると、呼び出し側が
@@ -156,8 +173,20 @@ export function LivePlayer({
   const onDiagnosticsRef = useRef(onDiagnostics)
   useEffect(() => {
     restorePending.current = true
+    explicitStartSeekPending.current = hasExplicitChaseStart
     lastSavedSecond.current = null
-  }, [mode, recordingId, profile, playbackProfile, site, networkId, serviceId, retryNonce])
+  }, [
+    mode,
+    recordingId,
+    profile,
+    playbackProfile,
+    site,
+    networkId,
+    serviceId,
+    retryNonce,
+    chaseStartOffset,
+    hasExplicitChaseStart,
+  ])
 
   useEffect(() => {
     onDiagnosticsRef.current = onDiagnostics
@@ -210,7 +239,7 @@ export function LivePlayer({
     onDiagnosticsRef.current?.(null)
 
     const url = isChase
-      ? chasePlaylistURL(site ?? '', recordingId ?? 0, profile)
+      ? chasePlaylistURL(site ?? '', recordingId ?? 0, profile, chaseStartOffset)
       : livePlaylistURL(site ?? '', networkId ?? 0, serviceId ?? 0)
 
     // teardown はこの effect が張ったものを外す手続き（メディアイベントの
@@ -445,8 +474,8 @@ export function LivePlayer({
         // 実際に map できたときだけ rendition が master に載るので、この問題が無い
         // --- 既定 ON にできるのはライブ側だけ、という非対称である。
         // hls.js otherwise chooses the live edge for an EVENT playlist. Chase
-        // playback must begin at the recording head; the user can then seek
-        // forward with the native controls or the 最新 button below.
+        // playback must begin at the first segment of the selected session;
+        // the streamer has already applied any recording-relative offset.
         const hls = new Hls(isChase ? { startPosition: 0 } : undefined) as unknown as HlsLike
         hls.subtitleDisplay = true
         hlsRef.current = hls
@@ -494,7 +523,18 @@ export function LivePlayer({
         video.load()
       }
     }
-  }, [isChase, mode, profile, recordingId, site, networkId, serviceId, retryNonce])
+  }, [
+    isChase,
+    mode,
+    profile,
+    recordingId,
+    site,
+    networkId,
+    serviceId,
+    retryNonce,
+    chaseStartOffset,
+    hasExplicitChaseStart,
+  ])
 
   // 離脱のヒント（issue #191）。**再生を担っているのはこのコンポーネントだけ**
   // なので、その生存（= このチャンネルを見ている間）にヒントの送信を紐づける。
@@ -520,7 +560,7 @@ export function LivePlayer({
   useEffect(() => {
     const leave = () => {
       if (isChase && site !== undefined && recordingId !== undefined) {
-        sendChaseLeaveHint(site, recordingId)
+        sendChaseLeaveHint(site, recordingId, chaseStartOffset)
       } else if (!isChase && site !== undefined && networkId !== undefined && serviceId !== undefined) {
         sendLiveLeaveHint(site, networkId, serviceId)
       }
@@ -535,7 +575,7 @@ export function LivePlayer({
       document.removeEventListener('visibilitychange', onVisibilityChange)
       leave()
     }
-  }, [isChase, recordingId, site, networkId, serviceId])
+  }, [isChase, recordingId, site, networkId, serviceId, chaseStartOffset])
 
   const chasePlaybackProfile = playbackProfile ?? profile ?? ''
 
@@ -583,27 +623,48 @@ export function LivePlayer({
         onLoadedMetadata={(event) => {
           if (!isChase || recordingId === undefined || !restorePending.current) return
           restorePending.current = false
+          if (hasExplicitChaseStart) {
+            // The streamer has already applied the recording-relative offset.
+            // Native HLS may otherwise choose the current EVENT edge, because
+            // hls.js's startPosition option is not involved on this path.
+            event.currentTarget.currentTime = 0
+            return
+          }
           const saved = loadPlaybackPosition(recordingId, chasePlaybackProfile)
-          event.currentTarget.currentTime = saved !== null && saved > 0 ? saved : 0
+          const localPosition =
+            saved !== null && saved > chaseStartOffset ? saved - chaseStartOffset : 0
+          event.currentTarget.currentTime = localPosition
+        }}
+        onCanPlay={(event) => {
+          if (!isChase || !hasExplicitChaseStart || !explicitStartSeekPending.current) return
+          explicitStartSeekPending.current = false
+          // Reassert once after metadata. WebKit can select the live edge while
+          // attaching an EVENT playlist even if loadedmetadata accepted 0.
+          event.currentTarget.currentTime = 0
         }}
         onTimeUpdate={(event) => {
           if (!isChase || recordingId === undefined) return
           const video = event.currentTarget
-          if (!shouldSavePlaybackPosition(lastSavedSecond.current, video.currentTime)) return
-          lastSavedSecond.current = Math.floor(video.currentTime)
+          const globalPosition = video.currentTime + chaseStartOffset
+          if (!shouldSavePlaybackPosition(lastSavedSecond.current, globalPosition)) return
+          lastSavedSecond.current = Math.floor(globalPosition)
           // The chase playlist is an expanding EVENT playlist, so its current
           // duration is only the current live edge, not the recording's final
           // duration. Passing it here would erase a position near "最新" as if
           // playback had completed. RecordingPlayer keeps the VOD duration
           // based completion behavior after the recording is finalized.
-          savePlaybackPosition(recordingId, chasePlaybackProfile, video.currentTime)
+          savePlaybackPosition(recordingId, chasePlaybackProfile, globalPosition)
         }}
         onPause={(event) => {
           if (!isChase || recordingId === undefined) return
           const video = event.currentTarget
           // See the timeupdate handler: a growing chase duration is not a
           // completion signal.
-          savePlaybackPosition(recordingId, chasePlaybackProfile, video.currentTime)
+          savePlaybackPosition(
+            recordingId,
+            chasePlaybackProfile,
+            video.currentTime + chaseStartOffset,
+          )
         }}
       />
 

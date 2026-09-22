@@ -329,12 +329,18 @@ POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
 
 ```
 GET  /api/sites/{site}/recordings/{id}/chase/playlist.m3u8[?profile=<name>]
-       → application/vnd.apple.mpegurl
+	       → application/vnd.apple.mpegurl
+GET  /api/sites/{site}/recordings/{id}/chase/offset/{offset}/playlist.m3u8[?profile=<name>]
+	       → application/vnd.apple.mpegurl
 GET  /api/sites/{site}/recordings/{id}/chase/segments/{name}
 GET  /api/sites/{site}/recordings/{id}/chase/{name}       （字幕付き master の variant / subtitle playlist）
-       → video/mp2t / text/vtt / application/vnd.apple.mpegurl
+	       → video/mp2t / text/vtt / application/vnd.apple.mpegurl
+GET  /api/sites/{site}/recordings/{id}/chase/offset/{offset}/segments/{name}
+GET  /api/sites/{site}/recordings/{id}/chase/offset/{offset}/{name}
+	       → video/mp2t / text/vtt / application/vnd.apple.mpegurl
 POST /api/sites/{site}/recordings/{id}/chase/leave
-       → 204（離脱のヒント）
+POST /api/sites/{site}/recordings/{id}/chase/offset/{offset}/leave
+	       → 204（離脱のヒント）
 ```
 
 これらは録画ファイル配信と同じく `openapi.yaml` には載せない。`{id}` は
@@ -346,9 +352,30 @@ POST /api/sites/{site}/recordings/{id}/chase/leave
 束縛へルーティングするための値で、DB の録画 site と一致しない要求は 404 にする。
 
 mirakc へは `GET /api/recording/records/{record_id}/stream` を Range なし・優先度
-ヘッダーなしで要求する。録画ファイルがまだ 0 バイトなら 204 を一定時間再試行し、
-起動待ちの上限（既存の playlist 起動上限 15 秒）を超えたときだけ 503/504 とする。
-204 の待機は上流接続失敗として数えない。
+ヘッダーなしで要求する（オフセット省略時、従来どおり録画先頭から追従する経路）。
+`{offset}` は録画開始からの 0 以上の整数秒である。省略は `0` と同じである。
+オフセット付きでは
+`GET /api/recording/records/{record_id}` の `recording.startTime` と `content.length` から
+概算バイト位置を求める。TS パケット境界に合わせて `Range: bytes=<position>-` で要求する。
+mirakc の Range 応答は要求時点までの有限のスナップショットである。
+streamer は本文を読み切るたびに消費済みバイト位置から次の Range を要求して録画末尾へ追従する。
+録画先頭からの読み捨ては行わない。録画終了との競合で 416/空の 206 と終了状態を
+同時に観測した場合は、同じ位置を一度だけ再確認してから EOF とするため、終了直前に
+追記された最終差分を読み残さない。
+
+Range を無視してオフセット付き要求に 200（先頭からの本文）を返す mirakc は安全のため
+受け付けず、オフセット再生を 503 にする。Range 対応は mirakc の録画配信 API における
+seek + finite response の契約が必要である。現在の運用対象はこの契約を含む
+`mirakc 4.0.0-dev.0` 系（実際に配備するイメージは同じ API 契約を満たす版に固定する）で、
+古い版では `{offset}` を使わず従来の URL を使う。録画ファイルがまだ 0 バイトなら 204、
+追従中に現在位置が末尾へ到達したら 416/空の 206 を返し得るため、いずれも録画終了まで
+一定時間待って再試行する。起動待ちの上限（既存の playlist 起動上限 15 秒）を超えたとき
+だけ 503/504 とする。204/416 の待機は上流接続失敗として数えない。
+
+オフセットが現在の録画可能範囲以上なら新しいセッションを作らず 416 を返す。録画開始時刻・
+コンテンツ長からの初期位置は可変ビットレート等の影響を受ける概算であり、開始後は通常の
+HLS シークで補正できる。許容誤差は放送・エンコーダーごとに異なるため、固定値を API 契約
+として保証しない。
 
 追っかけの ffmpeg は通常ライブの「直近だけを残す」HLS と異なり、`EVENT` playlist、
 `hls_list_size=0`、`temp_file` を使い、`delete_segments` を使わない。mirakc の入力が

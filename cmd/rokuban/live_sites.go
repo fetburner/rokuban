@@ -73,9 +73,13 @@ func (ls liveSites) Mount(r chi.Router) {
 	// select the correct mirakc client for playlist, segment, and leave requests.
 	const chaseBase = streamer.ChaseRoutePattern
 	r.Get(chaseBase+"/playlist.m3u8", ls.dispatch((*streamer.LiveStreamer).ChasePlaylist))
+	r.Get(chaseBase+"/offset/{offset}/playlist.m3u8", ls.dispatch((*streamer.LiveStreamer).ChasePlaylist))
 	r.Get(chaseBase+"/segments/{name}", ls.dispatch((*streamer.LiveStreamer).ChaseSegment))
+	r.Get(chaseBase+"/offset/{offset}/segments/{name}", ls.dispatch((*streamer.LiveStreamer).ChaseSegment))
 	r.Get(chaseBase+"/{name}", ls.dispatch((*streamer.LiveStreamer).ChaseSegment))
+	r.Get(chaseBase+"/offset/{offset}/{name}", ls.dispatch((*streamer.LiveStreamer).ChaseSegment))
 	r.Post(chaseBase+"/leave", ls.dispatch((*streamer.LiveStreamer).ChaseLeave))
+	r.Post(chaseBase+"/offset/{offset}/leave", ls.dispatch((*streamer.LiveStreamer).ChaseLeave))
 }
 
 // dispatch は method（LiveStreamer.Playlist/Segment/Leave のいずれか）を、

@@ -38,23 +38,32 @@ identity なので、リンク先には API が返した `recordingId` を使う
 
 ```
 /api/sites/{site}/recordings/{recordings.id}/chase/playlist.m3u8[?profile=<name>]
+/api/sites/{site}/recordings/{recordings.id}/chase/offset/{offset}/playlist.m3u8[?profile=<name>]
 /api/sites/{site}/recordings/{recordings.id}/chase/segments/{name}
+/api/sites/{site}/recordings/{recordings.id}/chase/offset/{offset}/segments/{name}
 /api/sites/{site}/recordings/{recordings.id}/chase/leave
+/api/sites/{site}/recordings/{recordings.id}/chase/offset/{offset}/leave
 ```
 
 ブラウザの再生経路はライブと同じ HLS の梯子（Safari の native HLS / hls.js）を通るが、
-hls.js には `startPosition: 0` を渡して録画先頭から始める。EVENT playlist が伸びている間の
-現在位置は通常の video controls でシークでき、`最新` は playlist の現在の duration（または
-buffered の末尾）へ移動して再生を試みる。
+hls.js には `startPosition: 0` を渡す。開始位置の入力欄で録画開始からの秒数を指定すると
+`/chase/offset/{offset}/...` を使い、その位置から streamer が即時に配信を開始する。
+入力を省略した従来の URL は録画先頭から始め、保存済みの再生位置を復元する。入力欄で
+「この位置から再生」を押した場合は、0 秒を含め、保存済みの位置を復元せず指定位置から
+始める。EVENT playlist が伸びている間の現在位置は通常の video controls でシークでき、
+`最新` は playlist の現在の duration（または buffered の末尾）へ移動して再生を試みる。
 
 再生位置は既存の VOD と同じ localStorage のキー
 `rokuban:playback:{recordingId}:{profile}` を共有する。live の配信プロファイルと encode の
 VOD プロファイルは別設定なので、追っかけは VOD 側の既定プロファイル名を再生位置のキー
 として使い、録画 ID とその名前が同じなら完了後の VOD と「続きから」が一致する。
 追っかけ中はプレイリストが伸び続けるため、現在の duration を終端とみなさず、先頭付近
-だけを保存しない。VOD へ移行した後は通常どおり終端 5 秒以内を保存しない。
-画面遷移・`pagehide`・visibility hidden では `POST .../chase/leave` を sendBeacon 優先で
-送るが、これは共有セッションを即時停止する命令ではなく idle GC を早めるヒントである。
+だけを保存しない。オフセット付き再生では、プレイヤー内部の相対秒に開始オフセットを足した
+録画全体の秒数を保存するので、VOD と同じ「続きから」を維持できる。VOD へ移行した後は
+通常どおり終端 5 秒以内を保存しない。
+画面遷移・`pagehide`・visibility hidden では `POST .../chase/leave` を送る。
+オフセット付きなら同じ `/offset/{offset}` を含め、sendBeacon を優先する。
+これは共有セッションを即時停止する命令ではなく idle GC を早めるヒントである。
 
 ## フロントエンド実装
 
