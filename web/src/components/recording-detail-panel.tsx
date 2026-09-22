@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { useListRules, useListSites, type Recording } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
@@ -43,6 +43,12 @@ function ingestDetailText(display: IngestDisplay): string {
   }
 }
 
+function formatChaseOffset(seconds: number): string {
+  const minutes = Math.floor(seconds / 60)
+  const remainder = seconds % 60
+  return `${minutes}分${remainder.toString().padStart(2, '0')}秒`
+}
+
 /**
  * RecordingDetail は録画 1 件の詳細本体（プレイヤー・メタデータ・操作）。
  * 単体ページ（`pages/recording-detail.tsx`）が使う。一覧はインライン展開せず、
@@ -76,7 +82,28 @@ export function RecordingDetail({
 }) {
   const liveEnabled = useLiveEnabled()
   const [chasing, setChasing] = useState(chase)
+  // undefined means the user has not chosen a start position yet: the default
+  // chase session may restore the saved VOD position. Once the button is
+  // clicked, even an explicit 0 must be distinguishable so it can reset to the
+  // recording head instead of restoring that saved position.
+  const [chaseOffsetSeconds, setChaseOffsetSeconds] = useState<number | undefined>(undefined)
+  const [selectedChaseOffsetSeconds, setSelectedChaseOffsetSeconds] = useState(0)
   const showChase = !trash && recording.status === 'recording' && liveEnabled && chasing
+  // oxlint-disable-next-line react/purity -- the live recording edge needs a clock snapshot
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!showChase) return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [showChase])
+  const recordingStartMs = recording.startedAt === undefined ? Number.NaN : Date.parse(recording.startedAt)
+  const availableChaseSeconds = Number.isFinite(recordingStartMs)
+    ? Math.max(0, Math.floor((now - recordingStartMs) / 1000))
+    : 0
+  // The current edge is still moving while the recording is active. Leave one
+  // second of headroom so the initial Range is not exactly at a moving EOF.
+  const maxChaseOffsetSeconds = Math.max(0, availableChaseSeconds - 1)
+  const selectedOffset = Math.min(selectedChaseOffsetSeconds, maxChaseOffsetSeconds)
   const encodedAssets = recording.encodedAssets ?? []
   // 追っかけの配信プロファイル（live.profiles）と、完了後のVODプロファイル
   // （encode.profiles）は別設定なので、URL用の profile を共有しない。再生位置だけ
@@ -113,10 +140,50 @@ export function RecordingDetail({
               閉じる
             </button>
           </div>
+          <div className="flex flex-wrap items-center gap-2 rounded border border-border/60 px-2 py-2">
+            <label htmlFor={`chase-offset-${recording.id}`} className="text-muted-foreground">
+              録画開始から
+            </label>
+            <input
+              id={`chase-offset-${recording.id}`}
+              type="number"
+              min={0}
+              max={maxChaseOffsetSeconds}
+              step={1}
+              value={selectedOffset}
+              disabled={!Number.isFinite(recordingStartMs)}
+              onChange={(event) => {
+                const value = Number.parseInt(event.target.value, 10)
+                setSelectedChaseOffsetSeconds(
+                  Number.isFinite(value)
+                    ? Math.min(Math.max(0, value), maxChaseOffsetSeconds)
+                    : 0,
+                )
+              }}
+              className="w-24 rounded border border-border bg-background px-2 py-1 text-right"
+              aria-label="追っかけ再生の開始位置（秒）"
+            />
+            <span>秒後</span>
+            <span className="text-muted-foreground">（{formatChaseOffset(selectedOffset)}）</span>
+            <button
+              type="button"
+              disabled={
+                chaseOffsetSeconds !== undefined && selectedOffset === chaseOffsetSeconds
+              }
+              onClick={() => setChaseOffsetSeconds(selectedOffset)}
+              className="rounded border border-border px-2 py-1 text-xs text-primary hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              この位置から再生
+            </button>
+            <span className="text-muted-foreground">
+              録画済み {formatChaseOffset(availableChaseSeconds)}
+            </span>
+          </div>
           <LivePlayer
             mode="chase"
             site={recording.site}
             recordingId={recording.id}
+            startOffsetSeconds={chaseOffsetSeconds}
             playbackProfile={preferredPlaybackProfile}
           />
         </section>

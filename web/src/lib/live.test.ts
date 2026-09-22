@@ -62,6 +62,15 @@ describe('chasePlaylistURL', () => {
     )
     expect(chaseLeaveURL('a b', 42)).toBe('/api/sites/a%20b/recordings/42/chase/leave')
   })
+
+  it('開始オフセットを playlist / leave の同じパスに載せる', () => {
+    expect(chasePlaylistURL('default', 42, 'h264', 90)).toBe(
+      '/api/sites/default/recordings/42/chase/offset/90/playlist.m3u8?profile=h264',
+    )
+    expect(chaseLeaveURL('default', 42, 90)).toBe(
+      '/api/sites/default/recordings/42/chase/offset/90/leave',
+    )
+  })
 })
 
 /**

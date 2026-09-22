@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -74,6 +73,159 @@ func TestParseCanonicalRecordingID(t *testing.T) {
 				t.Fatalf("parseCanonicalRecordingID(%q) = (%d, %v), want (%d, %v)", tt.raw, got, ok, tt.want, tt.ok)
 			}
 		})
+	}
+}
+
+func TestParseCanonicalChaseOffset(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want int64
+		ok   bool
+	}{
+		{raw: "", want: 0, ok: true},
+		{raw: "0", want: 0, ok: true},
+		{raw: "90", want: 90, ok: true},
+		{raw: "090"},
+		{raw: "-1"},
+		{raw: "+1"},
+		{raw: "9223372036854775808"},
+	}
+	for _, tt := range tests {
+		got, ok := parseCanonicalChaseOffset(tt.raw)
+		if got != tt.want || ok != tt.ok {
+			t.Errorf("parseCanonicalChaseOffset(%q) = (%d, %v), want (%d, %v)", tt.raw, got, ok, tt.want, tt.ok)
+		}
+	}
+}
+
+func TestChaseStartByteOffsetUsesRecordingMetadata(t *testing.T) {
+	length := uint64(188 * 1200)
+	duration := int64(120_000)
+	record := &mirakc.Record{
+		Recording: mirakc.RecordInfo{
+			Status:   "finished",
+			Duration: &duration,
+		},
+		Content: mirakc.ContentInfo{Length: &length},
+	}
+
+	got, err := chaseStartByteOffset(record, 30)
+	if err != nil {
+		t.Fatalf("chaseStartByteOffset() = %v, want success", err)
+	}
+	if want := int64(188 * 300); got != want {
+		t.Fatalf("chaseStartByteOffset() = %d, want %d", got, want)
+	}
+	if _, err := chaseStartByteOffset(record, 120); !errors.Is(err, errChaseOffsetUnavailable) {
+		t.Fatalf("out-of-range offset error = %v, want errChaseOffsetUnavailable", err)
+	}
+}
+
+type fakeSeekChaseRecordClient struct {
+	mu      sync.Mutex
+	offsets []int64
+	chunks  []string
+}
+
+func (c *fakeSeekChaseRecordClient) StreamRecord(_ context.Context, recordID string, offset int64) (io.ReadCloser, int64, error) {
+	if recordID != "opaque-record-id" {
+		return nil, 0, errors.New("unexpected record id")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.offsets = append(c.offsets, offset)
+	if len(c.chunks) == 0 {
+		return nil, 0, mirakc.ErrRangeNotSatisfiable
+	}
+	chunk := c.chunks[0]
+	c.chunks = c.chunks[1:]
+	return io.NopCloser(strings.NewReader(chunk)), int64(len(chunk)), nil
+}
+
+func (c *fakeSeekChaseRecordClient) StreamRecordFollow(context.Context, string) (io.ReadCloser, error) {
+	return nil, errors.New("follow endpoint must not be used for a seek")
+}
+
+func (c *fakeSeekChaseRecordClient) GetRecord(context.Context, string) (*mirakc.Record, error) {
+	return &mirakc.Record{Recording: mirakc.RecordInfo{Status: "finished"}}, nil
+}
+
+func TestWaitForChaseRecordAtOffsetDoesNotReadAndDiscardHead(t *testing.T) {
+	client := &fakeSeekChaseRecordClient{chunks: []string{"abc", "def"}}
+	body, err := waitForChaseRecordAtOffset(context.Background(), client, "opaque-record-id", 188)
+	if err != nil {
+		t.Fatalf("waitForChaseRecordAtOffset() = %v, want success", err)
+	}
+	data, err := io.ReadAll(body)
+	_ = body.Close()
+	if err != nil {
+		t.Fatalf("reading resumed chase body: %v", err)
+	}
+	if string(data) != "abcdef" {
+		t.Fatalf("resumed chase body = %q, want %q", data, "abcdef")
+	}
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.offsets) < 2 || client.offsets[0] != 188 || client.offsets[1] != 191 {
+		t.Fatalf("Range offsets = %v, want first 188 then 191", client.offsets)
+	}
+}
+
+type finalizingSeekChaseRecordClient struct {
+	mu      sync.Mutex
+	offsets []int64
+	chunks  []string
+}
+
+func (c *finalizingSeekChaseRecordClient) StreamRecord(_ context.Context, recordID string, offset int64) (io.ReadCloser, int64, error) {
+	if recordID != "opaque-record-id" {
+		return nil, 0, errors.New("unexpected record id")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.offsets = append(c.offsets, offset)
+	if len(c.offsets) == 1 {
+		return nil, 0, mirakc.ErrRangeNotSatisfiable
+	}
+	if len(c.chunks) == 0 {
+		return nil, 0, mirakc.ErrRangeNotSatisfiable
+	}
+	chunk := c.chunks[0]
+	c.chunks = c.chunks[1:]
+	return io.NopCloser(strings.NewReader(chunk)), int64(len(chunk)), nil
+}
+
+func (c *finalizingSeekChaseRecordClient) StreamRecordFollow(context.Context, string) (io.ReadCloser, error) {
+	return nil, errors.New("follow endpoint must not be used for a seek")
+}
+
+func (c *finalizingSeekChaseRecordClient) GetRecord(context.Context, string) (*mirakc.Record, error) {
+	return &mirakc.Record{Recording: mirakc.RecordInfo{Status: "finished"}}, nil
+}
+
+func TestChaseRangeFollowReaderDrainsDataAppendedBeforeRecordingFinished(t *testing.T) {
+	client := &finalizingSeekChaseRecordClient{chunks: []string{"tail"}}
+	reader := &chaseRangeFollowReader{
+		ctx:        context.Background(),
+		client:     client,
+		recordID:   "opaque-record-id",
+		nextOffset: 188,
+	}
+
+	data, err := io.ReadAll(reader)
+	_ = reader.Close()
+	if err != nil {
+		t.Fatalf("reading final chase data: %v", err)
+	}
+	if string(data) != "tail" {
+		t.Fatalf("final chase data = %q, want %q", data, "tail")
+	}
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.offsets) < 2 || client.offsets[0] != 188 || client.offsets[1] != 188 {
+		t.Fatalf("final Range offsets = %v, want two attempts at 188", client.offsets)
 	}
 }
 
@@ -195,8 +347,8 @@ func TestFinishedChaseServesRetainedPlaylistWithoutRestarting(t *testing.T) {
 			SegmentSeconds: 2,
 			PlaylistSize:   6,
 		}}},
-		chaseSessions: map[int64]*liveSession{
-			42: {
+		chaseSessions: map[sessionKey]*liveSession{
+			{kind: chaseSessionKind, id: 42}: {
 				key:    sessionKey{kind: chaseSessionKind, id: 42},
 				dir:    dir,
 				ready:  ready,
@@ -223,7 +375,7 @@ func TestFinishedChaseServesRetainedPlaylistWithoutRestarting(t *testing.T) {
 		t.Fatalf("finished chase playlist = %q, want retained ENDLIST", got)
 	}
 
-	delete(ls.chaseSessions, 42)
+	delete(ls.chaseSessions, chaseSessionKeyFor(42, 0))
 	resp = httptest.NewRecorder()
 	ls.ChasePlaylistForTarget(resp, req, ChaseTarget{
 		RecordingID:     42,
@@ -247,8 +399,8 @@ func TestLiveAndChaseShareMaxSessions(t *testing.T) {
 		sessions: map[int64]*liveSession{
 			1: {key: sessionKey{kind: liveSessionKind, id: 1}, serviceID: 1, ready: readyLive},
 		},
-		chaseSessions: map[int64]*liveSession{
-			42: {key: sessionKey{kind: chaseSessionKind, id: 42}, ready: readyChase},
+		chaseSessions: map[sessionKey]*liveSession{
+			{kind: chaseSessionKind, id: 42}: {key: sessionKey{kind: chaseSessionKind, id: 42}, ready: readyChase},
 		},
 	}
 
@@ -345,7 +497,7 @@ func TestCompletedChaseRetainsEventFilesUntilIdleGC(t *testing.T) {
 		t.Fatal("completed chase ffmpeg did not exit")
 	}
 
-	playlist := filepath.Join(cfg.SegmentDir, "default", "chase", strconv.FormatInt(targetID, 10), "h264.m3u8")
+	playlist := filepath.Join(chaseSessionDir(cfg.SegmentDir, "default", targetID, 0), "h264.m3u8")
 	data, err := os.ReadFile(playlist)
 	if err != nil {
 		t.Fatalf("reading retained EVENT playlist: %v", err)
@@ -358,7 +510,7 @@ func TestCompletedChaseRetainsEventFilesUntilIdleGC(t *testing.T) {
 	}
 
 	ls.mu.Lock()
-	_, present := ls.chaseSessions[targetID]
+	_, present := ls.chaseSessions[chaseSessionKeyFor(targetID, 0)]
 	ls.mu.Unlock()
 	if !present {
 		t.Fatal("completed chase session was removed before idle GC")
@@ -373,6 +525,37 @@ func TestCompletedChaseRetainsEventFilesUntilIdleGC(t *testing.T) {
 	}
 	if ls.sessionCount() != 0 {
 		t.Errorf("sessionCount after idle GC = %d, want 0", ls.sessionCount())
+	}
+}
+
+func TestChaseSessionCleanupDoesNotRemoveSiblingOffsets(t *testing.T) {
+	segmentDir := t.TempDir()
+	zeroDir := chaseSessionDir(segmentDir, "default", 42, 0)
+	offsetDir := chaseSessionDir(segmentDir, "default", 42, 30)
+	if filepath.Dir(zeroDir) != filepath.Dir(offsetDir) {
+		t.Fatalf("chase session directories are not siblings: %q vs %q", zeroDir, offsetDir)
+	}
+	if err := os.MkdirAll(filepath.Join(zeroDir, "segments"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(offsetDir, "segments", "keep.ts")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanupSessionDir(&liveSession{
+		key: sessionKey{kind: chaseSessionKind, id: 42, offsetSeconds: 0},
+		dir: zeroDir,
+	})
+
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("sibling offset files were removed: %v", err)
+	}
+	if _, err := os.Stat(zeroDir); !os.IsNotExist(err) {
+		t.Fatalf("offset 0 directory still exists after cleanup, stat err = %v", err)
 	}
 }
 
@@ -414,7 +597,7 @@ func TestFailedChaseIsRemovedAndCanRestart(t *testing.T) {
 
 	first := start()
 	ls.mu.Lock()
-	_, present := ls.chaseSessions[first.key.id]
+	_, present := ls.chaseSessions[first.key]
 	ls.mu.Unlock()
 	if present {
 		t.Fatal("failed chase session remained in the session map")

@@ -1682,9 +1682,13 @@ func TestLiveStreamer_URLPathFixedDepth(t *testing.T) {
 		// セグメントと同じ (site, networkId, serviceId) のまま、固定深さも保つ。
 		"/api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave",
 		"/api/sites/{site}/recordings/{id}/chase/playlist.m3u8",
+		"/api/sites/{site}/recordings/{id}/chase/offset/{offset}/playlist.m3u8",
 		"/api/sites/{site}/recordings/{id}/chase/segments/{name}",
+		"/api/sites/{site}/recordings/{id}/chase/offset/{offset}/segments/{name}",
 		"/api/sites/{site}/recordings/{id}/chase/{name}",
+		"/api/sites/{site}/recordings/{id}/chase/offset/{offset}/{name}",
 		"/api/sites/{site}/recordings/{id}/chase/leave",
+		"/api/sites/{site}/recordings/{id}/chase/offset/{offset}/leave",
 	}
 	slices.Sort(routes)
 	slices.Sort(want)
