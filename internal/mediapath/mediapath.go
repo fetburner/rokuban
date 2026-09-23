@@ -16,15 +16,25 @@ import (
 // ErrEscapesMediaDir は相対パスがメディアディレクトリの外を指す場合のエラー。
 var ErrEscapesMediaDir = errors.New("path escapes the media directory")
 
-// IngestTempFilePrefix は ingest が canonical file と同じディレクトリに作る、試行
+// IngestTempFilePrefix は ingest が canonical file と同じディレクトリに作る、record
 // 固有一時ファイルの予約接頭辞。孤児回収はこのファイルを通常ファイルとして拾い、
 // rescue の catalog 無し走査だけが原本へ昇格させない。
 const IngestTempFilePrefix = ".rokuban-ingest-"
 
-// IsIngestTempFile はファイル名が ingest の試行固有一時ファイルかを返す。
+// MediaRelPathLockFilePrefix は canonical file と同じディレクトリに作る、rel_path
+// 固有のファイル排他用 lock file の予約接頭辞。lock file はデータではないため、
+// メディア走査と catalog rescue の対象にしない。
+const MediaRelPathLockFilePrefix = ".rokuban-rel-path-lock-"
+
+// IsIngestTempFile はファイル名が ingest の record 固有一時ファイルかを返す。
 // パス全体ではなく basename だけを見るため、走査側と ingest 側で同じ判定を使える。
 func IsIngestTempFile(name string) bool {
 	return strings.HasPrefix(filepath.Base(name), IngestTempFilePrefix)
+}
+
+// IsMediaRelPathLockFile は rel_path 固有のファイル排他用 lock file かを返す。
+func IsMediaRelPathLockFile(name string) bool {
+	return strings.HasPrefix(filepath.Base(name), MediaRelPathLockFilePrefix)
 }
 
 // Resolve は mediaDir と relPath を結合した絶対パスを返す。

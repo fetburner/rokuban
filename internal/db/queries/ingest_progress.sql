@@ -15,9 +15,10 @@ WHERE site = $1 AND record_id = $2;
 -- （不変条件 10）、written_bytes = 0 の初回書き込みにも意味がある
 -- （「転送を開始した」）。
 --
--- written_bytes は GREATEST を取らない --- ジョブ再試行（層 2）は部分ファイルを
--- truncate してゼロから作り直すため、戻りが事実である（written_bytes は
--- 単調増加しない。docs/schema/recordings.md「recording_ingest_progress」参照）。
+-- written_bytes は GREATEST を取らない --- ジョブ再試行（層 2）は temp replay 後の
+-- 実ファイル末尾から続くため、通常は戻らない。サイズ / ハッシュ不一致や record の
+-- cancel / fail で temp を捨てた次の試行は 0 から始まる（written_bytes は単調増加を
+-- 保証しない。docs/schema/recordings.md「recording_ingest_progress」参照）。
 INSERT INTO recording_ingest_progress (
     recording_id, written_bytes, expected_bytes, observed_at
 ) VALUES ($1, $2, $3, now())

@@ -15,12 +15,13 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
-	"github.com/google/uuid"
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
+	"golang.org/x/sys/unix"
 
 	"github.com/fetburner/rokuban/internal/catalog"
 	"github.com/fetburner/rokuban/internal/db"
@@ -48,10 +49,10 @@ const (
 // canceled / failed で終わったことを表す sentinel（afterPollStatus が wrap し、
 // Work が errors.Is で拾う）。
 //
-// **これを River の再試行に戻してはならない。** transferIngestRecord は offset を
-// ジョブのメモリにしか持たないので、再試行のたびに先頭から引き直す。River の
-// MaxAttempts は既定のまま（25）で、エッジの record は commit 成功時にしか
-// 消えないため、取り消した長時間録画が全量再取得を繰り返す形になる。
+// **これを River の再試行に戻してはならない。** cancel / fail は中身が不採用と
+// 確定した終端なので、Work は temp を破棄して再試行を止める。River の MaxAttempts
+// は既定のまま（25）で、エッジの record は commit 成功時にしか消えないため、
+// 取り消した長時間録画が全量再取得を繰り返す形にしてはいけない。
 //
 // 部分ファイルを資産として commit するかどうかは別の設計判断で、ここでは決めない。
 // いまの挙動は「canceled / failed の record は取り込まない」で、録画中も ingest を
@@ -62,8 +63,8 @@ var errIngestRecordEndedAbnormally = errors.New("mirakc record ended abnormally"
 //
 // recording のあいだは差分の有無に関わらず必ず待つ。待たないと ingest が
 // 放送より速いとき 1 秒に数十〜百リクエストを mirakc に送り、DoS になる。
-// 待ちはジョブ内（River には出さない）—— Work を終わらせると temp / offset /
-// tsstat が消え、再開可能 ingest が要る。
+// 待ちはジョブ内（River には出さない）—— Work を終わらせると offset / tsstat は
+// 消えるが、temp は残るため、次の試行が replay して再開できる。
 //
 // 1 秒は commit 遅延の下限（平均 0.5s）を小さく取る側。設定キーにはしない。
 // # ponytail: 固定 1s。実機の追い付き遅れがこれを否定したら ingest.follow_poll_interval にする。
@@ -71,7 +72,9 @@ var followPollInterval = time.Second
 
 // ingestFile は ingest の出力ファイルを抽象化する。os.File の全 API は
 // 必要ない。テストでは Sync / Close の失敗を注入して、失敗時に DB 登録と
-// エッジ原本削除へ進まないことを確認する。
+// エッジ原本削除へ進まないことを確認する。実装側の openIngestFile は
+// lockIngestTempFile が開いた fd を dup するため、ロック対象と追記先が別 inode
+// になることはない。
 type ingestFile interface {
 	io.Writer
 	Sync() error
@@ -100,11 +103,149 @@ func (w *hashingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// openIngestFile は試行固有の一時ファイルを O_EXCL で作る。ファイル名は呼び出し
-// 側で毎回生成するため、River の再試行や別プロセスの同時実行が同じファイルを
-// 共有しない。
-var openIngestFile = func(path string) (ingestFile, error) {
-	return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
+// openIngestFile は flock 済みの temp fd を dup して ingestFile として返す。
+// 同じ record の別試行は既存のファイルを共有して続きから書くので、元 fd も複製
+// fd も O_APPEND で開かれている。dup は同じ inode / open file description を
+// 共有するため、writer の Close で flock を先に解放せず、tempLock が commit
+// 終了まで排他を保持できる。path はテストのログやエラーメッセージに使えるよう
+// 引数に残しているが、ここで別のパスを開いてはならない。
+var openIngestFile = func(_ string, locked *os.File) (ingestFile, error) {
+	return duplicateIngestFile(locked)
+}
+
+func duplicateIngestFile(locked *os.File) (*os.File, error) {
+	// F_DUPFD_CLOEXEC で複製と close-on-exec を原子的に行う。Dup の後に
+	// CloseOnExec を呼ぶだけでは、その間の exec に fd が継承されうる。
+	fd, err := unix.FcntlInt(locked.Fd(), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	dup := os.NewFile(uintptr(fd), locked.Name())
+	if dup == nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("creating duplicate ingest fd")
+	}
+	return dup, nil
+}
+
+// lockIngestTempFile は temp を作成し、同時に 1 つの ingest だけが掴めるように
+// 排他 flock を取る。LOCK_NB にするのは、同じ record の別ジョブが live な転送を
+// 壊さず River の再試行へ戻るためである。
+//
+// 返した fd は writer の元 fd として使い、openIngestFile はこれを dup する。
+// lock fd と writer fd を別々に path open すると、ロック取得後の unlink / rename
+// と writer の open の順序次第で、ロックした古い inode と別名の新しい inode に
+// 同時追記できるためである。
+//
+// open 直後に別プロセスが同名 temp を unlink / rename する競合もある。flock を
+// 取得した後で fd とパスの inode が同じかを確認し、見えない inode を返さない。
+func lockIngestTempFile(path string) (*os.File, error) {
+	return lockIngestTempFileWithFlags(path, os.O_CREATE)
+}
+
+// lockExistingIngestTempFile は既存 temp だけをロックする。orphan 回収が
+// O_CREATE で新しい空ファイルを作ると、別の ingest が同名 temp を作る直前の
+// 瞬間に回収側が作った空ファイルを「新しい temp」と誤認してしまうため、回収側
+// ではこちらを使う。
+func lockExistingIngestTempFile(path string) (*os.File, error) {
+	return lockIngestTempFileWithFlags(path, 0)
+}
+
+func lockIngestTempFileWithFlags(path string, createFlag int) (*os.File, error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		lock, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND|createFlag, 0o666)
+		if err != nil {
+			return nil, err
+		}
+		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			_ = lock.Close()
+			return nil, err
+		}
+
+		lockedInfo, err := lock.Stat()
+		pathInfo, pathErr := os.Stat(path)
+		if err == nil && pathErr == nil && os.SameFile(lockedInfo, pathInfo) {
+			return lock, nil
+		}
+
+		// パスが別 inode になったか、unlink された。ロックした fd は
+		// visible temp ではないので、解放して現在のパスを取り直す。
+		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		_ = lock.Close()
+		if pathErr != nil && !errors.Is(pathErr, os.ErrNotExist) {
+			return nil, pathErr
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("ingest temporary file %q was replaced while acquiring its lock", path)
+}
+
+func ingestTempLockBusy(err error) bool {
+	return errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)
+}
+
+// ingestTempFilePath は同じ site / record_id の River 再試行が同じ temp を開くための
+// パスを返す。record_id は通常 mirakc の hex ID だが、念のためファイル名に使えない
+// 区切りを含む値が media_dir の外へ出ないようにする。site も map から直接渡るため
+// 同じ防御を適用する。
+func ingestTempFilePath(dir, site, recordID string) string {
+	escape := strings.NewReplacer(
+		"%", "%25",
+		"/", "%2F",
+		"\\", "%5C",
+	)
+	return filepath.Join(dir, mediapath.IngestTempFilePrefix+escape.Replace(site)+"-"+escape.Replace(recordID))
+}
+
+// ingestReplayReader は read の境界で context cancellation を確認する。
+// io.Copy に *os.File を直接渡すと File.WriteTo が選ばれて context を確認できない
+// ため、Read だけを公開するラッパーにして chunk 単位で再生を止める。
+type ingestReplayReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r *ingestReplayReader) Read(p []byte) (int, error) {
+	select {
+	case <-r.ctx.Done():
+		return 0, r.ctx.Err()
+	default:
+	}
+	return r.r.Read(p)
+}
+
+// replayIngestTempFile は既存 temp の全バイトを新しい hasher / tsstat.Counter に
+// 通し、再開後にもファイル全体のハッシュ・ドロップ統計・PCR 基準が残るようにする。
+// sink は replay 中だけ io.Discard を向き、呼び出し元が replay 後に実ファイルへ
+// 切り替える。読み出しは context のキャンセルを chunk 境界で検知し、temp は残す。
+func replayIngestTempFile(ctx context.Context, path string, counter *tsstat.Counter) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, fmt.Errorf("replaying ingest temporary file: %w", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, fmt.Errorf("stating ingest temporary file: %w", err)
+	}
+	want := info.Size()
+
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, fmt.Errorf("opening ingest temporary file for replay: %w", err)
+	}
+	n, copyErr := io.Copy(counter, &ingestReplayReader{ctx: ctx, r: f})
+	closeErr := f.Close()
+	if copyErr != nil {
+		return n, fmt.Errorf("replaying ingest temporary file: %w", copyErr)
+	}
+	if closeErr != nil {
+		return n, fmt.Errorf("closing ingest temporary file after replay: %w", closeErr)
+	}
+	if n != want {
+		return n, fmt.Errorf("ingest temporary file changed during replay: read=%d size=%d", n, want)
+	}
+	return n, nil
 }
 
 // renameIngestFile / syncIngestParentDir は確定プロトコルの OS 操作をテストから
@@ -112,6 +253,12 @@ var openIngestFile = func(path string) (ingestFile, error) {
 // → DB commit）を、ファイルシステムの実体に依存せず検証するためのフックである。
 var renameIngestFile = os.Rename
 var syncIngestParentDir = syncIngestDirectory
+
+// beforeIngestFilePublication は DB の予約を終え、canonical file の公開を
+// 始める直前に呼ぶテスト用フック。通常実行時は何もしない。DB セッションが
+// 失われても、この直後の rename / fsync を rel_path filesystem lock が守る
+// ことを、実際の transaction を使って検証するために置いている。
+var beforeIngestFilePublication = func(context.Context, pgx5.Tx) error { return nil }
 var commitIngestTransaction = func(ctx context.Context, tx pgx5.Tx) error {
 	return tx.Commit(ctx)
 }
@@ -124,21 +271,6 @@ var commitIngestTransaction = func(ctx context.Context, tx pgx5.Tx) error {
 // sent at all.
 var newIngestCommitQueries = func(tx pgx5.Tx) *sqlcgen.Queries {
 	return sqlcgen.New(tx)
-}
-
-func createIngestTempFile(dir string) (string, ingestFile, error) {
-	for attempt := 0; attempt < 10; attempt++ {
-		path := filepath.Join(dir, mediapath.IngestTempFilePrefix+uuid.NewString())
-		file, err := openIngestFile(path)
-		if errors.Is(err, os.ErrExist) {
-			continue
-		}
-		if err != nil {
-			return "", nil, err
-		}
-		return path, file, nil
-	}
-	return "", nil, fmt.Errorf("could not create unique ingest temporary file in %s", dir)
 }
 
 func syncIngestDirectory(path string) error {
@@ -265,6 +397,13 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 		return nil
 	}
 
+	if err := w.ingestResolvedRecord(ctx, client, args, recordingID, expectedBytes, log, &result); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.Client, args jobs.IngestJobArgs, recordingID int64, expectedBytes *int64, log *slog.Logger, result *string) error {
 	relPath, fullPath, err := w.determineRelPath(ctx, args, client)
 	if err != nil {
 		return fmt.Errorf("determining rel_path: %w", err)
@@ -285,27 +424,50 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 		return fmt.Errorf("creating directory %s: %w", filepath.Dir(fullPath), err)
 	}
 
-	tempPath, f, err := createIngestTempFile(filepath.Dir(fullPath))
+	tempPath := ingestTempFilePath(filepath.Dir(fullPath), args.Site, args.RecordID)
+	tempLock, err := lockIngestTempFile(tempPath)
 	if err != nil {
-		return fmt.Errorf("creating ingest temporary file in %s: %w", filepath.Dir(fullPath), err)
+		return fmt.Errorf("locking ingest temporary file %s: %w", tempPath, err)
 	}
-	// rename 前の全失敗経路では試行固有の一時ファイルを消す。rename 後に DB
-	// commit が失敗した場合は tempPath が既に無いので、canonical file は孤児回収
-	// に委ねられる（mirakc record は削除しない）。
-	defer func() { _ = os.Remove(tempPath) }()
-	// 正常系では下で明示的に Close する。ここでの defer はエラーで早期
-	// return した経路の後始末専用で、正常系の二重 Close は *os.File なら
-	// ErrClosed を返すだけで無害なので捨てる。
-	defer func() { _ = f.Close() }()
+	f, err := openIngestFile(tempPath, tempLock)
+	if err != nil {
+		_ = tempLock.Close()
+		return fmt.Errorf("opening ingest temporary file %s: %w", tempPath, err)
+	}
+	// temp はプロセス死・ctx キャンセル・一時的な I/O / DB 失敗では残す。次の
+	// River 試行が同じファイルを replay して続けるためである。中身が悪いと確定
+	// した場合だけ下の removeTemp を立てる。rename 後は tempPath が存在しないので
+	// cleanup の Remove は no-op になり、canonical file は孤児回収に委ねられる。
+	removeTemp := false
+	defer func() {
+		if removeTemp {
+			// tempLock は f の dup 元 fd で、commit 終了まで flock を保持する。
+			// 別の試行が同名パスを作ってから古い cleanup がそれを消すことが
+			// ないよう、ロックを保持したまま unlink してから lock fd を閉じる。
+			_ = os.Remove(tempPath)
+		}
+		_ = f.Close()
+		// openIngestFile のテスト差し替えが underlying fd を閉じずに失敗
+		// する場合にもロックを残さない。
+		_ = tempLock.Close()
+	}()
 
 	// 一時ファイル方式では canonical path を転送中に一度も触らない。したがって
 	// job lock の heartbeat がセッション喪失を検知しても、古い転送を context
-	// cancel する必要はない。古い試行は自分の temp file に閉じ込められ、DB の
-	// unique reservation が採用を一つに決める。
+	// cancel する必要はない。同じ record の別試行は temp の flock で直列化され、
+	// 異なる record の競合は DB の unique reservation が採用を一つに決める。
 	ingestCtx := ctx
 
 	hasher := sha256.New()
-	counter := tsstat.NewCounter(&hashingWriter{w: f, h: hasher})
+	// Counter は replay と新規転送で同じインスタンスを使う。replay 中はファイルへ
+	// 書き戻さず、既存バイトを hash / 統計へだけ通してから sink を f に切り替える。
+	sink := &hashingWriter{w: io.Discard, h: hasher}
+	counter := tsstat.NewCounter(sink)
+	offset, err := replayIngestTempFile(ingestCtx, tempPath, counter)
+	if err != nil {
+		return err
+	}
+	sink.w = f
 
 	progress := &ingestProgressReporter{
 		pool:          w.Pool,
@@ -318,18 +480,21 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	// そのものが「転送中」の主張なので（不変条件 10）、1 バイトも流れる前に
 	// 1 行書いてから始める --- 遅い回線で最初の 1 バイトが来るまで数十秒かかる
 	// ことがあり、そこが「何も起きていないように見える」時間帯そのものだから。
-	progress.start(ingestCtx)
+	progress.start(ingestCtx, offset)
 	// progressWriter は counter の外側に置く（io.Copy → progressWriter →
 	// counter → hashingWriter → f）。TS 統計は counter が数え、SHA-256 は
 	// hashingWriter がファイルに受理された同じ転送バイト列を 1 パスで受け取る。
 	dst := &progressWriter{
 		w:       counter,
+		written: offset,
 		onWrite: func(written int64) { progress.report(ingestCtx, written) },
 	}
 
-	offset, expectedSHA256, err := w.transferIngestRecord(ingestCtx, client, args.RecordID, dst, progress, log)
+	var expectedSHA256 *string
+	offset, expectedSHA256, err = w.transferIngestRecord(ingestCtx, client, args.RecordID, dst, progress, log, offset)
 	if err != nil {
 		if errors.Is(err, errIngestRecordEndedAbnormally) {
+			removeTemp = true
 			// 再試行に戻さない（errIngestRecordEndedAbnormally の doc コメント
 			// 参照）。進捗行は他の削除経路（commit /
 			// handleAlreadyCommittedIngest）と揃え、失敗してもジョブは落とさない。
@@ -339,7 +504,7 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 			// 取り消し・失敗は「転送が壊れた」ではないので、失敗として数えない。
 			// 同じ result="failure" に混ぜると、利用者が止めた録画が失敗率に
 			// 積まれて本物の失敗が埋もれる。
-			result = "canceled"
+			*result = "canceled"
 			return river.JobCancel(err)
 		}
 		return err
@@ -349,6 +514,7 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 		return fmt.Errorf("HEAD record stream: %w", err)
 	}
 	if expectedLen >= 0 && offset != expectedLen {
+		removeTemp = true
 		return fmt.Errorf("size mismatch: written=%d expected=%d", offset, expectedLen)
 	}
 	sha256Verification := "skipped"
@@ -361,6 +527,7 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 		sha256Verification = "verified"
 		actualSHA256 := hex.EncodeToString(hasher.Sum(nil))
 		if actualSHA256 != expectedHash {
+			removeTemp = true
 			metrics.IngestHashMismatches.Inc()
 			log.Warn("ingest: content sha256 mismatch", "actual", actualSHA256, "expected", expectedHash, "bytes", offset)
 			return fmt.Errorf("hash mismatch: actual=%s expected=%s bytes=%d", actualSHA256, expectedHash, offset)
@@ -398,7 +565,7 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	}
 
 	// エッジ record の削除は失敗しても ingest は成功（コミット済み）。
-	result = "success"
+	*result = "success"
 
 	w.enqueueIngestFollowups(ctx, client, args.RecordID, recordingID, log)
 
@@ -430,14 +597,19 @@ func (w *IngestWorker) handleAlreadyCommittedIngest(ctx context.Context, client 
 }
 
 // transferIngestRecord は mirakc のストリームを Range ポーリングしながら
-// 試行固有の一時ファイルへ転送する。
+// record 固有の一時ファイルへ転送する。
+// initialOffset は既存 temp を replay したバイト数で、プロセス再試行時の最初の
+// Range 開始点になる。省略時は新規 temp の 0 バイトから始める。
 //
 // Range の本文はリクエスト時点で有限なので、本文を読み切っただけでは record の
 // 終了を意味しない。GetRecord の recording.status を真実として読む。recording 中
 // は差分の有無に関わらず followPollInterval 待って次を取り、finished を観測して
 // から最後の差分を drain して戻る。
-func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.Client, recordID string, dst io.Writer, progress *ingestProgressReporter, log *slog.Logger) (int64, *string, error) {
-	var offset int64
+func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.Client, recordID string, dst io.Writer, progress *ingestProgressReporter, log *slog.Logger, initialOffset ...int64) (int64, *string, error) {
+	offset := int64(0)
+	if len(initialOffset) > 0 {
+		offset = initialOffset[0]
+	}
 	var consecutiveFailures int
 	finishedObserved := false
 	var expectedSHA256 *string
@@ -540,8 +712,8 @@ type recordPoll struct {
 // **終わったと確定した record を River の再試行に戻さない**
 // （errIngestRecordEndedAbnormally の doc コメント参照）。一方、**未知の status は
 // ジョブ内で再試行する** --- 一過性（status が欠落した応答など）かもしれず、
-// ここで River に戻すと次の試行が先頭から引き直す。連続回数は retryPoll が数える
-// ので、恒久的に未知ならジョブは River へ戻る。
+// ここで Work を終えると次の試行が temp の replay から再開する余計な境界になる。
+// 連続回数は retryPoll が数えるので、恒久的に未知ならジョブは River へ戻る。
 func (w *IngestWorker) followAfterStatusPoll(ctx context.Context, poll recordPoll, finishedObserved *bool, expectedSHA256 **string, consecutiveFailures *int, offset int64, progress *ingestProgressReporter, log *slog.Logger) error {
 	if statusErr := w.afterPollStatus(poll.Status, finishedObserved); statusErr != nil {
 		if errors.Is(statusErr, errIngestRecordEndedAbnormally) {
@@ -738,15 +910,11 @@ func (w *IngestWorker) hasOriginalMediaAsset(ctx context.Context, recordingID in
 // 転送前の安価なヒントであり、同時 ingest の決着ではない。採用の根拠は commit
 // 内の media_assets INSERT と部分一意索引である。
 //
-// **ただし delete_reconcile の状態遷移に対しては、従来どおりヒントのまま
-// である。** この SELECT と実際の CreateMediaAsset の INSERT の間に
-// delete_reconcile が 'deleting' → 'deleted' の遷移を進める TOCTOU の窓は残る
-// （先読みはヒントであり、正しさは一意索引と適用時の状態遷移に残る）。正しさの
-// 根拠は常に media_assets の一意索引（CREATE UNIQUE INDEX ON media_assets
-// (rel_path) WHERE state <> 'deleted'）であり、
-// レベルトリガー（CLAUDE.md 不変条件 5）の原則どおり、この関数を「一意索引を
-// 通す前の安価なゲート」以上の役割にしない。一意索引を緩めたり INSERT の
-// エラー処理を弱めたりする理由には使わない。
+// delete_reconcile も canonical orphan の unlink 前に同じ rel_path の filesystem
+// lock と transaction-level advisory lock を取得するため、公開・回収の確定区間は
+// この SELECT と独立に直列化される。ただしこの関数自体は転送前の安価な
+// ヒントであり、ingest 同士の決着は commit 内の lock と media_assets の一意索引に
+// 任せる。ここを一意性の最終判定に使わない。
 //
 // WHERE state <> 'deleted' はその一意索引の述語と同じにする。削除済み
 // （state='deleted'）の行が使っていた rel_path は正当に再利用できるので、
@@ -832,6 +1000,9 @@ func (w *IngestWorker) determineRelPath(ctx context.Context, args jobs.IngestJob
 	if relPath == "." || relPath == "/" {
 		return "", "", fmt.Errorf("mirakc record %s has no usable content path (contentPath and Content.Path both empty)", args.RecordID)
 	}
+	if mediapath.IsIngestTempFile(filepath.Base(relPath)) || mediapath.IsMediaRelPathLockFile(filepath.Base(relPath)) {
+		return "", "", fmt.Errorf("mirakc record %s uses a reserved storage filename %q", args.RecordID, filepath.Base(relPath))
+	}
 	// rel_path のパス区切りは DB 上で '/' 規約（internal/worker/encode.go の
 	// EncodedRelPath 参照）。args.Site は site 名の構文制約で '/' を含み得ない
 	// ので単純な文字列結合で足りる。catalog.SiteRelPathPrefix は rescue の
@@ -848,19 +1019,33 @@ func (w *IngestWorker) determineRelPath(ctx context.Context, args jobs.IngestJob
 // commit は原本の公開プロトコルを 1 回実行する。
 //
 // DB transaction 内で media_assets の INSERT を先に行うことで、rel_path の unique
-// index が同じ宛先への競合を予約する。INSERT はまだ他セッションから見えないため、
-// その transaction を保持したまま temp -> canonical の atomic rename と親ディレクトリ
-// fsync を行い、最後にだけ transaction を commit する。
+// index が同じ宛先への競合を予約する。さらに canonical と同じディレクトリの
+// rel_path 固有 filesystem lock を DB transaction より先に取得する。これを先に
+// 持つことで、DB セッションが失われても、そのセッション lock の解放後に古い
+// goroutine が rename / fsync を続けて orphan cleanup と競合することがない。
+// INSERT はまだ他セッションから見えないため、その transaction と filesystem lock
+// を保持したまま temp -> canonical の atomic rename と親ディレクトリ fsync を行い、
+// 最後にだけ transaction を commit する。
 //
 // rename 後の fsync / DB commit が失敗した場合は canonical file を消さない。tempPath
 // は既に消えているので呼び出し側の cleanup は no-op になり、ファイルは orphan として
-// aging 回収される。一方 rename 前に失敗した場合は呼び出し側が tempPath を消す。
+// aging 回収される。一方 rename 前の失敗では、呼び出し側が中身の不一致や record の
+// cancel / fail と確定した場合だけ tempPath を消し、それ以外は次の試行へ残す。
 func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, tempPath, fullPath string, size int64, counter *tsstat.Counter) error {
+	fileLock, err := lockMediaRelPathFile(ctx, fullPath, relPath)
+	if err != nil {
+		return fmt.Errorf("locking canonical file protocol: %w", err)
+	}
+	defer func() { _ = fileLock.Close() }()
+
 	tx, err := w.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockMediaRelPathInTransaction(ctx, tx, relPath); err != nil {
+		return err
+	}
 
 	q := newIngestCommitQueries(tx)
 
@@ -958,6 +1143,9 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, t
 
 	// INSERT は一意性の予約であり、公開点ではない。canonical path を作るのは
 	// ここからで、失敗時に DB transaction を rollback できる順序を保つ。
+	if err := beforeIngestFilePublication(ctx, tx); err != nil {
+		return fmt.Errorf("preparing canonical file publication: %w", err)
+	}
 	if err := renameIngestFile(tempPath, fullPath); err != nil {
 		return fmt.Errorf("renaming ingest temporary file into canonical path: %w", err)
 	}

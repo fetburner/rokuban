@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
@@ -238,7 +239,7 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.Dele
 		metrics.DeleteReconcileLastPass.SetToCurrentTime()
 		return nil
 	}
-	w.deleteCandidates(ctx, q, trashRows, untilEncodedRows, agedOrphans)
+	w.deleteCandidates(ctx, q, trashRows, untilEncodedRows, agedOrphans, orphanMTimeGrace)
 
 	// パスの末尾で「完全削除が完了した」という不可逆な事実を確定する
 	// （issue #135、MarkPurgedRecordings のコメント参照）。ここより前の
@@ -385,7 +386,7 @@ func (w *DeleteReconcileWorker) applyDeleteCircuitBreaker(ctx context.Context, q
 }
 
 // deleteCandidates はごみ箱・until_encoded・孤児の候補を物理削除する。
-func (w *DeleteReconcileWorker) deleteCandidates(ctx context.Context, q *sqlcgen.Queries, trashRows []sqlcgen.ListTrashMediaAssetsToDeleteRow, untilEncodedRows []sqlcgen.ListUntilEncodedOriginalsToDeleteRow, agedOrphans []string) {
+func (w *DeleteReconcileWorker) deleteCandidates(ctx context.Context, q *sqlcgen.Queries, trashRows []sqlcgen.ListTrashMediaAssetsToDeleteRow, untilEncodedRows []sqlcgen.ListUntilEncodedOriginalsToDeleteRow, agedOrphans []string, orphanMTimeGrace time.Duration) {
 	for _, a := range trashRows {
 		w.deleteMediaAsset(ctx, q, deleteTarget{ID: a.ID, RecordingID: a.RecordingID, RelPath: a.RelPath, SizeBytes: a.SizeBytes, Kind: a.Kind}, "trash")
 	}
@@ -400,7 +401,7 @@ func (w *DeleteReconcileWorker) deleteCandidates(ctx context.Context, q *sqlcgen
 		if ctx.Err() != nil {
 			return
 		}
-		w.deleteOrphanFile(q, relPath)
+		w.deleteOrphanFile(q, relPath, orphanMTimeGrace)
 	}
 }
 
@@ -416,16 +417,30 @@ func (w *DeleteReconcileWorker) deleteCandidates(ctx context.Context, q *sqlcgen
 func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, q *sqlcgen.Queries, t deleteTarget, source string) {
 	log := slog.With("media_asset_id", t.ID, "rel_path", t.RelPath, "source", source)
 
+	path, err := mediapath.Resolve(w.MediaDir, t.RelPath)
+	if err != nil {
+		log.Error("delete_reconcile: rejecting rel_path outside the media directory", "err", err)
+		return
+	}
+
+	// ingest commit / canonical orphan cleanup と同じ filesystem lock を、DB の
+	// deleting 遷移より前に取る。通常削除が canonical を unlink している間に
+	// ingest が同じ rel_path を公開すると、DB 行と実体の組が入れ替わる窓ができる。
+	// 親ディレクトリが既に無い場合は消せる実体も無いので、既存の ENOENT 経路へ
+	// 進めるが、その他の lock エラーでは安全側で何もしない。
+	fileLock, lockErr := lockMediaRelPathFile(ctx, path, t.RelPath)
+	if lockErr != nil && !errors.Is(lockErr, os.ErrNotExist) {
+		log.Error("delete_reconcile: acquiring filesystem lock before asset removal", "err", lockErr)
+		return
+	}
+	if fileLock != nil {
+		defer func() { _ = fileLock.Close() }()
+	}
+
 	// 既に deleting なら 0 行更新（それでよい。pending 経路はこの UPDATE を
 	// スキップしても問題ない冪等な no-op）。active からの遷移だけを記録する。
 	if _, err := q.MarkMediaAssetDeleting(ctx, t.ID); err != nil {
 		log.Error("delete_reconcile: marking asset deleting", "err", err)
-		return
-	}
-
-	path, err := mediapath.Resolve(w.MediaDir, t.RelPath)
-	if err != nil {
-		log.Error("delete_reconcile: rejecting rel_path outside the media directory", "err", err)
 		return
 	}
 
@@ -574,7 +589,7 @@ func (w *DeleteReconcileWorker) notifyPurgedRecordings(ctx context.Context, purg
 // 逆方向（active なのに実体が無い行）を検出するため（issue #343。2 回目の
 // 全量ディレクトリ走査を避ける）。
 //
-// **この mtime 猶予は、追従 ingest が番組長のあいだ書き続ける試行固有 temp を
+// **この mtime 猶予は、追従 ingest が番組長のあいだ書き続ける record 固有 temp を
 // 回収しないことの根拠でもある。** 録画中の temp は書き込みのたびに mtime が
 // 新しくなるので候補にならない。猶予を「正常系の ingest が数時間で完結する」
 // 前提から短くすると、録画中の書きかけ temp が孤児として aging され、生きて
@@ -842,7 +857,12 @@ func (w *DeleteReconcileWorker) verifiedAgedOrphans(ctx context.Context, q *sqlc
 
 // deleteOrphanFile は孤児ファイルを物理削除し orphan_files 行を消す。
 // media_assets に対応する行はそもそも無いので deleting → deleted の遷移はない。
-func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath string) {
+// ingest temp の場合は ingest と同じ flock に参加する。canonical の場合は ingest
+// commit と同じ rel_path filesystem lock を先に保持し、DB の transaction-level
+// advisory lock と live 行の再確認を経て stat / unlink / orphan_files 行の削除までを
+// 直列化する。filesystem lock は DB セッションの切断後も、処理中の goroutine が
+// fd を閉じるまで有効である。
+func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath string, mtimeGrace time.Duration) {
 	log := slog.With("rel_path", relPath, "source", "orphan")
 
 	path, err := mediapath.Resolve(w.MediaDir, relPath)
@@ -851,16 +871,172 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath str
 		return
 	}
 
-	var size int64
-	if info, statErr := os.Stat(path); statErr == nil {
-		size = info.Size()
+	isTemp := mediapath.IsIngestTempFile(filepath.Base(relPath))
+	var tempLock *os.File
+	if isTemp {
+		tempLock, err = lockExistingIngestTempFile(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				// 物理削除へ進むと、ここから os.Remove までの間に ingest が
+				// 同名 temp を再作成した場合、その新しいファイルをロックなしで
+				// 消す race になる。temp が見つからない場合は orphan_files 行
+				// だけを消し、物理削除は次回の aging pass に任せる。
+				w.clearOrphanFileRecord(q, relPath, 0, false, log)
+				return
+			} else if ingestTempLockBusy(err) {
+				log.Debug("delete_reconcile: ingest temp is locked; deferring orphan removal")
+				return
+			} else {
+				log.Warn("delete_reconcile: locking ingest temp before orphan removal", "err", err)
+				return
+			}
+		}
+		if tempLock != nil {
+			defer func() {
+				if err := tempLock.Close(); err != nil {
+					log.Warn("delete_reconcile: closing locked ingest temp", "err", err)
+				}
+			}()
+		}
 	}
 
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		log.Error("delete_reconcile: removing orphan file", "err", err)
+	// canonical の公開（ingest commit）と orphan の unlink が同時に進まないよう、
+	// DB transaction より前に DB セッションから独立した filesystem lock を取る。
+	// lock file 自体は canonical と別名なので、canonical の rename / unlink で消えない。
+	var cleanupCtx context.Context
+	var cleanupCancel context.CancelFunc
+	var tx pgx5.Tx
+	var txQ *sqlcgen.Queries
+	if !isTemp {
+		fileLock, acquired, lockErr := tryLockMediaRelPathFile(path, relPath)
+		if lockErr != nil {
+			if errors.Is(lockErr, os.ErrNotExist) {
+				// canonical とその親ディレクトリが既に無ければ、消せる実体は
+				// ない。ingest は親ディレクトリを作ってから commit lock を取る
+				// ため、ここで行だけを整理しても新しい canonical を消さない。
+				w.clearOrphanFileRecord(q, relPath, 0, false, log)
+				return
+			}
+			log.Error("delete_reconcile: acquiring filesystem lock before orphan removal", "err", lockErr)
+			return
+		}
+		if !acquired {
+			log.Debug("delete_reconcile: rel_path filesystem lock is held; deferring orphan removal")
+			return
+		}
+		defer func() { _ = fileLock.Close() }()
+
+		cleanupCtx, cleanupCancel = context.WithTimeout(context.Background(), deleteOrphanCleanupTimeout)
+		defer cleanupCancel()
+
+		tx, err = w.Pool.Begin(cleanupCtx)
+		if err != nil {
+			log.Error("delete_reconcile: beginning orphan cleanup transaction", "err", err)
+			return
+		}
+		defer func() { _ = tx.Rollback(cleanupCtx) }()
+
+		acquired, lockErr = tryLockMediaRelPathInTransaction(cleanupCtx, tx, relPath)
+		if lockErr != nil {
+			log.Error("delete_reconcile: acquiring rel_path lock before orphan removal", "err", lockErr)
+			return
+		}
+		if !acquired {
+			log.Debug("delete_reconcile: rel_path is locked by ingest; deferring orphan removal")
+			return
+		}
+
+		txQ = sqlcgen.New(tx)
+		if _, liveErr := txQ.GetLiveMediaAssetByRelPath(cleanupCtx, relPath); liveErr == nil {
+			// verifiedAgedOrphans の後に ingest が commit された。DB 行が公開済み
+			// なら canonical は消さず、古い orphan_files 行だけを同じ tx で整理する。
+			if err := txQ.DeleteOrphanFile(cleanupCtx, relPath); err != nil {
+				log.Error("delete_reconcile: clearing reclaimed orphan record", "err", err)
+				return
+			}
+			if err := tx.Commit(cleanupCtx); err != nil {
+				log.Error("delete_reconcile: committing reclaimed orphan record cleanup", "err", err)
+				return
+			}
+			recordOrphanCleanup(log, 0, false)
+			return
+		} else if !errors.Is(liveErr, pgx5.ErrNoRows) {
+			log.Error("delete_reconcile: checking live media asset before orphan removal", "err", liveErr)
+			return
+		}
+	}
+
+	finishCanonicalCleanup := func(size int64, physicallyDeleted bool) {
+		if txQ == nil {
+			return
+		}
+		if err := txQ.DeleteOrphanFile(cleanupCtx, relPath); err != nil {
+			log.Error("delete_reconcile: clearing orphan record after delete", "err", err)
+			return
+		}
+		if err := tx.Commit(cleanupCtx); err != nil {
+			log.Error("delete_reconcile: committing orphan cleanup", "err", err)
+			return
+		}
+		recordOrphanCleanup(log, size, physicallyDeleted)
+	}
+
+	var size int64
+	info, statErr := os.Stat(path)
+	if statErr == nil {
+		if isTemp && tempLock != nil {
+			lockedInfo, lockStatErr := tempLock.Stat()
+			if lockStatErr != nil || !os.SameFile(lockedInfo, info) {
+				// パスがロック取得後に差し替わった。別 inode をロックなしで
+				// 消さず、次の pass で現在の temp を取り直す。
+				log.Debug("delete_reconcile: ingest temp inode changed while locking; deferring orphan removal")
+				return
+			}
+		}
+		if info.ModTime().After(time.Now().Add(-mtimeGrace)) {
+			// verifiedAgedOrphans の確認後に ingest が replay / append した、または
+			// canonical が別経路で更新された。ロックを保持したまま見送り、次パス
+			// で再確認する。
+			log.Debug("delete_reconcile: orphan became too new; deferring orphan removal")
+			return
+		}
+		size = info.Size()
+	} else if isTemp && errors.Is(statErr, os.ErrNotExist) {
+		// ロック取得後にパスが消えた場合も、ここから os.Remove へ進むと
+		// 同名で再作成された新しい temp をロックなしで消しうる。物理削除は
+		// 行わず、見えている orphan の記録だけを整理する。
+		w.clearOrphanFileRecord(q, relPath, 0, false, log)
+		return
+	} else if !isTemp && errors.Is(statErr, os.ErrNotExist) {
+		// canonical が既に無ければ物理削除は発生していないが、rel_path lock
+		// の下で orphan_files 行だけを整理する。
+		finishCanonicalCleanup(0, false)
+		return
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		log.Error("delete_reconcile: stating orphan file", "err", statErr)
 		return
 	}
 
+	physicallyDeleted := true
+	if err := os.Remove(path); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			log.Error("delete_reconcile: removing orphan file", "err", err)
+			return
+		}
+		physicallyDeleted = false
+	}
+
+	if isTemp {
+		w.clearOrphanFileRecord(q, relPath, size, physicallyDeleted, log)
+		return
+	}
+	finishCanonicalCleanup(size, physicallyDeleted)
+}
+
+// clearOrphanFileRecord は orphan_files の物理削除後（または対象が既に消えて
+// いた場合）に DB の記録を整理する。ctx 取消後も削除の事実を記録するため
+// Background 由来にするが、DB 詰まりで worker の終了を無期限に待たない。
+func (w *DeleteReconcileWorker) clearOrphanFileRecord(q *sqlcgen.Queries, relPath string, size int64, physicallyDeleted bool, log *slog.Logger) {
 	// ctx 取消後も削除の事実を記録するため Background 由来にするが、DB 詰まりで worker の終了を無期限に待たない。
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), deleteOrphanCleanupTimeout)
 	defer cancel()
@@ -868,10 +1044,17 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath str
 		log.Error("delete_reconcile: clearing orphan record after delete", "err", err)
 		return
 	}
+	recordOrphanCleanup(log, size, physicallyDeleted)
+}
 
-	metrics.DeleteReconcileDeleted.WithLabelValues("orphan").Inc()
-	metrics.DeleteReconcileBytes.WithLabelValues("orphan").Add(float64(size))
-	log.Info("delete_reconcile: deleted orphan file")
+func recordOrphanCleanup(log *slog.Logger, size int64, physicallyDeleted bool) {
+	if physicallyDeleted {
+		metrics.DeleteReconcileDeleted.WithLabelValues("orphan").Inc()
+		metrics.DeleteReconcileBytes.WithLabelValues("orphan").Add(float64(size))
+		log.Info("delete_reconcile: deleted orphan file")
+		return
+	}
+	log.Info("delete_reconcile: cleared orphan record; file was already absent")
 }
 
 // walkMediaFiles は mediaDir 配下の通常ファイルを列挙する。catalog.Subdir
@@ -930,6 +1113,9 @@ func walkMediaFiles(mediaDir string, fn func(relPath string, info fs.FileInfo)) 
 			if path == catalogDir {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if mediapath.IsMediaRelPathLockFile(info.Name()) {
 			return nil
 		}
 		relPath, err := filepath.Rel(resolvedMediaDir, path)

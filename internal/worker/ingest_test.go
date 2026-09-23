@@ -729,8 +729,8 @@ func TestIngestWorker_CatchUpWhileRecordingDoesNotCommit(t *testing.T) {
 
 // TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry は、録画中に
 // observe した mirakc record が canceled / failed へ遷移したとき、Work が
-// River のジョブを終端（cancel）し、offset を持たない全量再ダウンロードを
-// 二度と走らせないことを固定する。
+// River のジョブを終端（cancel）し、temp を破棄して再試行へ戻さないことを
+// 固定する。
 //
 // river.JobCancelError を返すこと・進捗行が消えること・原本 media_asset が
 // 作られていない（部分ファイルを commit していない）ことの 3 点を固定する。
@@ -816,6 +816,10 @@ func TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry(t *testing.T)
 			}
 			if assetRows != 0 {
 				t.Errorf("media_assets rows = %d, want 0 (must not commit a partial recording)", assetRows)
+			}
+			tempPath := ingestTempFilePath(filepath.Join(w.MediaDir, "sites", "default", "test"), "default", tt.recordID)
+			if _, err := os.Stat(tempPath); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("ingest temp after %s record termination: err=%v, want os.ErrNotExist", tt.name, err)
 			}
 		})
 	}
@@ -1018,9 +1022,8 @@ func TestIngestWorker_FollowingCaughtUpKeepsProgressFresh(t *testing.T) {
 // 観測したときに **River へ戻さずジョブ内で再試行し、offset を捨てない**ことを
 // 固定する。
 //
-// transferIngestRecord は offset をジョブのメモリにしか持たないので、ここで
-// error を返すと次の試行が先頭から引き直す（errIngestRecordEndedAbnormally の
-// doc コメントと同じ理由）。未知の status は一過性かもしれない --- 実機では
+// transferIngestRecord の offset は同じ Work のメモリに持つので、ジョブ内で
+// 再試行すれば Range の位置を維持できる。未知の status は一過性かもしれない --- 実機では
 // mirakc が一時的に応答を欠いたとき status が空になりうる。
 //
 // 変異「未知の status で即 error を返す」は Work() が非 nil になって落ちる。
@@ -1085,7 +1088,7 @@ func TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart(t *testing.T) {
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-unknown")
 	if err := w.Work(context.Background(), &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{ID: 425020}, Args: IngestJobArgs{Site: "default", RecordID: "rec-unknown"}}); err != nil {
-		t.Fatalf("Work() = %v, want nil（未知の status はジョブ内で再試行する。River に戻すと先頭から引き直す）", err)
+		t.Fatalf("Work() = %v, want nil（未知の status はジョブ内で再試行する）", err)
 	}
 	got, err := os.ReadFile(filepath.Join(w.MediaDir, "sites", "default", "test", "unknown.m2ts"))
 	if err != nil {
@@ -1095,7 +1098,7 @@ func TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart(t *testing.T) {
 		t.Fatalf("committed bytes = %d, want %d", len(got), len(full))
 	}
 	if got := zeroOffsetRequests.Load(); got != 1 {
-		t.Errorf("offset 0 の Range 要求 = %d, want 1（未知の status で先頭から引き直している）", got)
+		t.Errorf("offset 0 の Range 要求 = %d, want 1（未知の status で再起動相当の再転送をしている）", got)
 	}
 }
 
@@ -1216,6 +1219,10 @@ func TestIngestWorker_SizeMismatch(t *testing.T) {
 	if !strings.Contains(err.Error(), "size mismatch") {
 		t.Errorf("expected 'size mismatch' error, got: %v", err)
 	}
+	tempPath := ingestTempFilePath(filepath.Join(mediaDir, "sites", "default", "test"), "default", "rec-mismatch")
+	if _, err := os.Stat(tempPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("ingest temp after size mismatch: stat error = %v, want not exist", err)
+	}
 }
 
 func TestIngestWorker_HashMismatch(t *testing.T) {
@@ -1270,6 +1277,10 @@ func TestIngestWorker_HashMismatch(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(mediaDir, "sites", "default", "test", "hash-mismatch.m2ts")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("canonical file after hash mismatch: stat error = %v, want not exist", err)
+	}
+	tempPath := ingestTempFilePath(filepath.Join(mediaDir, "sites", "default", "test"), "default", "rec-hash-mismatch")
+	if _, err := os.Stat(tempPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("ingest temp after hash mismatch: stat error = %v, want not exist", err)
 	}
 }
 
@@ -1481,8 +1492,8 @@ func TestIngestWorker_PersistsBeforeCommitAndDelete(t *testing.T) {
 	originalOpenFile := openIngestFile
 	t.Cleanup(func() { openIngestFile = originalOpenFile })
 
-	openIngestFile = func(path string) (ingestFile, error) {
-		file, err := os.Create(path)
+	openIngestFile = func(_ string, locked *os.File) (ingestFile, error) {
+		file, err := duplicateIngestFile(locked)
 		if err != nil {
 			return nil, err
 		}
@@ -1555,8 +1566,8 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 			originalOpenFile := openIngestFile
 			t.Cleanup(func() { openIngestFile = originalOpenFile })
 
-			openIngestFile = func(path string) (ingestFile, error) {
-				file, err := os.Create(path)
+			openIngestFile = func(_ string, locked *os.File) (ingestFile, error) {
+				file, err := duplicateIngestFile(locked)
 				if err != nil {
 					return nil, err
 				}
@@ -1597,8 +1608,8 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 				t.Errorf("DeleteRecord attempts after failed Work() = %d, want 0", got)
 			}
 
-			// 再試行では実装本来の opener に戻す。失敗した試行固有 temp は削除され、
-			// 正しい原本を最初から公開できることを確認する。
+			// 再試行では実装本来の opener に戻す。失敗した試行の temp を replay して、
+			// 正しい原本を続きから公開できることを確認する。
 			openIngestFile = originalOpenFile
 			if err := w.Work(context.Background(), job); err != nil {
 				t.Fatalf("retry Work() error: %v", err)
@@ -2049,10 +2060,10 @@ func TestIngestWorker_JobReexecution(t *testing.T) {
 		t.Fatalf("reading output file: %v", err)
 	}
 	if len(data) != len(tsData) {
-		t.Errorf("file size = %d, want %d (should truncate previous attempt)", len(data), len(tsData))
+		t.Errorf("file size = %d, want %d (stale canonical data must not survive commit)", len(data), len(tsData))
 	}
 	if string(data[:4]) != string(tsData[:4]) {
-		t.Error("file content does not match expected TS data (truncate may have failed)")
+		t.Error("file content does not match expected TS data (atomic rename may have failed)")
 	}
 }
 
@@ -3332,6 +3343,28 @@ func TestIngestWorker_DegenerateContentPath_Rejected(t *testing.T) {
 		}
 	} else if !os.IsNotExist(statErr) {
 		t.Fatalf("reading %s: %v", sitesDir, statErr)
+	}
+}
+
+func TestIngestWorker_ReservedStorageBasenameRejected(t *testing.T) {
+	for _, contentPath := range []string{
+		".rokuban-ingest-user.m2ts",
+		".rokuban-rel-path-lock-user.m2ts",
+	} {
+		t.Run(contentPath, func(t *testing.T) {
+			srv := mirakcRecordServer(t, nil, strPtr(contentPath), "/recording/"+contentPath)
+			w := &IngestWorker{MediaDir: t.TempDir()}
+			client := mirakc.NewClient(srv.URL, nil)
+			_, _, err := w.determineRelPath(context.Background(), IngestJobArgs{
+				Site: "default", RecordID: "reserved-basename",
+			}, client)
+			if err == nil {
+				t.Fatal("determineRelPath returned nil for a reserved storage basename")
+			}
+			if !strings.Contains(err.Error(), "reserved storage filename") {
+				t.Fatalf("determineRelPath error = %v, want reserved storage filename", err)
+			}
+		})
 	}
 }
 

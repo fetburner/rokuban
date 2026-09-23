@@ -1659,7 +1659,7 @@ func TestDeleteReconcileWorker_Orphan_RecentMTime_NotRegistered(t *testing.T) {
 	}
 }
 
-// ingest の試行固有 temp は canonical file と同じ走査対象に残し、プロセス死後に
+// ingest の record 固有 temp は canonical file と同じ走査対象に残し、プロセス死後に
 // orphan_files へ記録して aging 回収する。ここで walk から除外すると、壊れた試行の
 // 部分ファイルが永久に残る。
 func TestDeleteReconcileWorker_Orphan_IngestTempIsAgedAndDeleted(t *testing.T) {
@@ -1716,6 +1716,63 @@ func TestDeleteReconcileWorker_Orphan_IngestTempIsAgedAndDeleted(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("orphan_files count after ingest temp deletion = %d, want 0", count)
+	}
+}
+
+// canonical orphan の回収は ingest commit と同じ rel_path filesystem lock を使う。
+// DB advisory lock を保持していなくても、filesystem lock 保持中は回収を延期し、
+// 解放後にだけ unlink できることを固定する。
+func TestDeleteReconcileWorker_CanonicalOrphanDefersWhileRelPathLocked(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	ctx := context.Background()
+	relPath := "orphan/rel-path-lock-" + filepath.Base(mediaDir) + ".m2ts"
+	orphanPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(orphanPath), 0o755); err != nil {
+		t.Fatalf("creating orphan parent directory: %v", err)
+	}
+	if err := os.WriteFile(orphanPath, []byte("orphan"), 0o644); err != nil {
+		t.Fatalf("writing orphan file: %v", err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(orphanPath, old, old); err != nil {
+		t.Fatalf("making orphan old: %v", err)
+	}
+
+	q := sqlcgen.New(pool)
+	if err := q.UpsertOrphanFile(ctx, relPath); err != nil {
+		t.Fatalf("seeding orphan record: %v", err)
+	}
+	t.Cleanup(func() { _ = q.DeleteOrphanFile(context.Background(), relPath) })
+
+	fileLock, acquired, err := tryLockMediaRelPathFile(orphanPath, relPath)
+	if err != nil {
+		t.Fatalf("locking rel_path file: %v", err)
+	}
+	if !acquired {
+		t.Fatal("could not acquire rel_path file lock for test")
+	}
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w.deleteOrphanFile(q, relPath, time.Hour)
+	if !fileExists(orphanPath) {
+		t.Fatal("canonical orphan was removed while rel_path lock was held")
+	}
+	if err := fileLock.Close(); err != nil {
+		t.Fatalf("releasing rel_path file lock: %v", err)
+	}
+
+	w.deleteOrphanFile(q, relPath, time.Hour)
+	if fileExists(orphanPath) {
+		t.Fatal("canonical orphan still exists after rel_path lock was released")
+	}
+	var count int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&count); err != nil {
+		t.Fatalf("querying orphan_files after deletion: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("orphan_files count after canonical deletion = %d, want 0", count)
 	}
 }
 
@@ -1789,7 +1846,7 @@ func TestDeleteReconcileWorker_DeleteCandidates_CanceledCtx_SkipsOrphans(t *test
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	w.deleteCandidates(ctx, q, nil, nil, []string{relPath})
+	w.deleteCandidates(ctx, q, nil, nil, []string{relPath}, defaultOrphanMTimeGrace)
 
 	if !fileExists(orphanPath) {
 		t.Error("orphan file was removed despite a canceled ctx, want kept (next pass retries)")

@@ -105,10 +105,15 @@ GC 済みのスナップショットの上で ingest が走った場合に何が
 | 原本の保持ポリシー（`until_encoded`） | なし（派生物完備が条件） | 設計されたポリシー削除。**ごみ箱は経由しない**（原本はサイズが支配的で、経由させるとストレージ節約が猶予期間ぶん遅延する。安全条件は派生物完備で既に担保） |
 | 孤児ファイル | mtime 猶予 + エイジング | DB 喪失・残骸への防御 |
 
-ingest は canonical file と同じディレクトリに試行固有の `.rokuban-ingest-*` temp を作る。
-失敗した試行は自分の temp を消すが、プロセス死や rename 後の DB 失敗で残った temp / canonical
-file は DB に対応行が無い孤児候補として通常の mtime 猶予 + aging に入る。catalog 無しの
+ingest は canonical file と同じディレクトリに record 固有の
+`.rokuban-ingest-{site}-{record_id}` temp を作る。同じ record の再試行はその temp を
+replay して末尾から続ける。中身の不一致または record の cancel / fail だけで temp を消す。
+プロセス死や rename 後の DB 失敗で残った temp / canonical file は孤児候補である。
+通常の mtime 猶予 + aging に入る。catalog 無しの
 rescue 走査はこの temp 接頭辞を明示的に除外するので、一時バイトを original として登録しない。
+temp の物理削除時は ingest と同じ flock を非 blocking で取得し、replay や追記中の temp は
+次の reconcile pass へ延期する。ロック取得後に inode と mtime を再確認してから unlink
+するので、同名パスの差し替えで別の temp を削除しない。
 NFS で open 中 unlink による `.nfsXXXX` が見えても、同じ孤児回収の猶予があるため即時削除や
 rescue の昇格には進まない。
 
