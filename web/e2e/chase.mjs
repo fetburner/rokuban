@@ -39,6 +39,7 @@ const recording = {
   serviceId: 5168,
   eventId: 1,
   title: '録画中の番組',
+  description: '追っかけ再生の最新ボタンと重ならないことを確認する番組説明です。',
   startAt: '2026-01-01T12:00:00Z',
   durationMs: 1_800_000,
   status: 'recording',
@@ -305,6 +306,43 @@ const latest = page.getByRole('button', { name: '最新' })
 if ((await latest.count()) !== 1) {
   ng.push('② 「最新」ボタンが表示されない')
 } else {
+  const description = page.getByText(recording.description, { exact: true })
+  await description.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {
+    ng.push('② 番組説明が表示されないため、重なりを測れない')
+  })
+  if (await description.isVisible()) {
+    const buttonRect = await latest.evaluate((button) => {
+      const rect = button.getBoundingClientRect()
+      const player = button.parentElement?.parentElement?.getBoundingClientRect()
+      return {
+        top: rect.top,
+        bottom: rect.bottom,
+        playerTop: player?.top ?? Number.NaN,
+        playerBottom: player?.bottom ?? Number.NaN,
+      }
+    })
+    const descriptionTop = await description.evaluate((element) => element.getBoundingClientRect().top)
+    if (!Number.isFinite(buttonRect.playerTop) || !Number.isFinite(buttonRect.playerBottom)) {
+      ng.push('② 「最新」ボタンを含むプレイヤー領域を特定できない')
+    } else if (
+      buttonRect.top < buttonRect.playerTop ||
+      buttonRect.bottom > buttonRect.playerBottom
+    ) {
+      ng.push(
+        `② 「最新」ボタンがプレイヤー全体の枠内に収まらない（button=${buttonRect.top}..${buttonRect.bottom}, player=${buttonRect.playerTop}..${buttonRect.playerBottom}）`,
+      )
+    }
+    if (buttonRect.bottom > descriptionTop) {
+      ng.push(
+        `② 「最新」ボタンが番組説明に重なる（button.bottom=${buttonRect.bottom}, description.top=${descriptionTop}）`,
+      )
+    }
+    if (descriptionTop < buttonRect.playerBottom) {
+      ng.push(
+        `② 番組説明がプレイヤー全体の下に押し下げられない（player.bottom=${buttonRect.playerBottom}, description.top=${descriptionTop}）`,
+      )
+    }
+  }
   await latest.click()
   await page.waitForTimeout(250)
   const position = await page.locator('video').evaluate((video) => ({
