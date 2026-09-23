@@ -11,8 +11,11 @@ import {
   supportsNativeHls,
 } from '@/lib/live'
 import {
+  applyPlaybackRate,
   loadPlaybackPosition,
+  loadPlaybackRate,
   savePlaybackPosition,
+  savePlaybackRate,
   shouldSavePlaybackPosition,
 } from '@/lib/playback-position'
 import { cn } from '@/lib/utils'
@@ -160,6 +163,7 @@ export function LivePlayer({
   const hlsRef = useRef<HlsLike | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<LiveLoadError | null>(null)
+  const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
   // retryNonce を変えると effect が再実行される（依存配列に入れる）
   const [retryNonce, setRetryNonce] = useState(0)
   const restorePending = useRef(true)
@@ -191,6 +195,15 @@ export function LivePlayer({
   useEffect(() => {
     onDiagnosticsRef.current = onDiagnostics
   }, [onDiagnostics])
+
+  // VOD と追っかけ再生は端末共通の速度設定を使う。通常のライブ配信には適用しない。
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+    const rate = isChase ? playbackRate : 1
+    const appliedRate = applyPlaybackRate(video, rate)
+    if (isChase && appliedRate !== playbackRate) setPlaybackRate(appliedRate)
+  }, [isChase, playbackRate])
 
   // ライブのページキー操作は M / F だけ。録画向けの速度変更は出さない。
   // ネイティブ HLS の playbackRate が実 Safari で有効かは未検証。
@@ -665,6 +678,12 @@ export function LivePlayer({
             chasePlaybackProfile,
             video.currentTime + chaseStartOffset,
           )
+        }}
+        onRateChange={(event) => {
+          if (!isChase) return
+          const rate = event.currentTarget.playbackRate
+          setPlaybackRate(rate)
+          savePlaybackRate(rate)
         }}
       />
 

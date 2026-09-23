@@ -3,9 +3,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { EncodedAsset } from '@/api/generated'
 import { formatBytes } from '@/lib/format'
 import {
+  applyPlaybackRate,
   loadPlaybackPosition,
   loadPlaybackRate,
-  playbackRates,
   recordingFileURL,
   recordingSubtitleURL,
   savePlaybackPosition,
@@ -74,18 +74,17 @@ export function RecordingPlayer({
   //
   // **`recordingId` を依存に含める。** `<video>` は `key={`${recordingId}:${profile}`}`
   // なので、別の録画に移ると DOM 要素ごと作り直される。`recordingId` が依存に無いと
-  // 「`profile` は変わらず `playbackRate` も既に 1.5 のまま」という場合に依存配列が
-  // 前回と同じと判定されて effect が再実行されず、新しい要素の既定値（1 倍）の
-  // ままになる --- select の表示は 1.5× でも実際の再生は 1 倍に戻る、という
-  // 見た目と実体のずれ（レビュー指摘）。**`defaultPlaybackRate` にも同じ値を
+  // 「`profile` は変わらず `playbackRate` state も既に 1.5 のまま」という場合に
+  // 依存配列が前回と同じと判定されて effect が再実行されず、新しい要素の既定値
+  // （1 倍）のままになる、という退行（レビュー指摘）。**`defaultPlaybackRate` にも同じ値を
   // 入れる。** `src` を差し替える media element load algorithm は `playbackRate` を
   // `defaultPlaybackRate` へ戻すため、`playbackRate` だけ設定しても再生が始まった
   // 瞬間に 1 倍へ巻き戻りうる。
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
-    video.defaultPlaybackRate = playbackRate
-    video.playbackRate = playbackRate
+    const appliedRate = applyPlaybackRate(video, playbackRate)
+    if (appliedRate !== playbackRate) setPlaybackRate(appliedRate)
   }, [recordingId, selectedProfile, playbackRate])
 
   useEffect(() => {
@@ -215,41 +214,6 @@ export function RecordingPlayer({
         </div>
       )}
 
-      <div className="flex flex-wrap items-center gap-2">
-        <label htmlFor={`playback-rate-${recordingId}`} className="text-muted-foreground">
-          再生速度
-        </label>
-        <select
-          id={`playback-rate-${recordingId}`}
-          value={playbackRate}
-          onChange={(event) => {
-            const rate = Number(event.target.value)
-            setPlaybackRate(rate)
-            savePlaybackRate(rate)
-          }}
-          className="rounded border border-border bg-background px-2 py-1 text-xs"
-        >
-          {playbackRates.map((rate) => (
-            <option key={rate} value={rate}>
-              {Number.isInteger(rate) ? rate.toFixed(1) : rate}×
-            </option>
-          ))}
-        </select>
-        {document.pictureInPictureEnabled === true && (
-          <button
-            type="button"
-            onClick={() => {
-              const video = videoRef.current
-              if (!video) return
-              void video.requestPictureInPicture()
-            }}
-            className="rounded border border-border px-2 py-1 text-xs hover:bg-muted"
-          >
-            ピクチャーインピクチャー
-          </button>
-        )}
-      </div>
-
       <video
         ref={videoRef}
         key={`${recordingId}:${selectedProfile}`}
@@ -286,6 +250,11 @@ export function RecordingPlayer({
         onPause={(e) => {
           const v = e.currentTarget
           savePlaybackPosition(recordingId, selectedProfile, v.currentTime, v.duration)
+        }}
+        onRateChange={(e) => {
+          const rate = e.currentTarget.playbackRate
+          setPlaybackRate(rate)
+          savePlaybackRate(rate)
         }}
       >
         <track

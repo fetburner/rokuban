@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { LivePlayer, nativeStallTimeoutMs } from '@/components/live-player'
 import type { LiveDiagnostics } from '@/lib/live'
-import { savePlaybackPosition } from '@/lib/playback-position'
+import { savePlaybackPosition, savePlaybackRate } from '@/lib/playback-position'
 
 /**
  * hls.js 経路（Safari 以外のネイティブ HLS 非対応ブラウザ）の内部呼び出しを
@@ -107,6 +107,7 @@ afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
+  localStorage.removeItem('rokuban:playback-rate')
   hlsMockState.instances.length = 0
   hlsMockState.constructorArgs.length = 0
   hlsMockState.supported = true
@@ -487,6 +488,23 @@ describe('LivePlayer の状態遷移', () => {
       )
       expect(hls.attachMedia).toHaveBeenCalledTimes(1)
       await waitFor(() => expect(screen.queryByText('読み込み中…')).not.toBeInTheDocument())
+    })
+
+    it('追っかけは VOD と端末共通の速度を読み書きする', async () => {
+      savePlaybackRate(1.5)
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      render(<LivePlayer mode="chase" site="default" recordingId={7} />)
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const video = document.querySelector('video')!
+      expect(video.defaultPlaybackRate).toBe(1.5)
+      expect(video.playbackRate).toBe(1.5)
+
+      video.playbackRate = 1.25
+      fireEvent.rateChange(video)
+
+      expect(localStorage.getItem('rokuban:playback-rate')).toBe('1.25')
+      expect(video.defaultPlaybackRate).toBe(1.25)
     })
 
     it('追っかけは配信プロファイルと別のVODプロファイルで位置を復元する', async () => {

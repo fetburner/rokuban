@@ -62,9 +62,6 @@ export function savePlaybackPosition(
   }
 }
 
-/** playbackRates は再生速度セレクタの選択肢。保存値の検証もこの配列で行う。 */
-export const playbackRates = [1, 1.25, 1.5, 1.75, 2] as const
-
 const RATE_KEY = 'rokuban:playback-rate'
 
 /**
@@ -73,28 +70,52 @@ const RATE_KEY = 'rokuban:playback-rate'
  * **録画ごとではなく端末ごとに 1 つ**（キーに録画 ID を含めない）。速度は
  * 「この録画をどう見るか」ではなく「自分がどう見るか」の好みなので、録画を
  * 変えるたびに 1 倍へ戻ると毎回選び直しになる（docs/frontend/design.md §個人化）。
+ * 値はブラウザ標準 controls が提供するので固定の選択肢一覧ではなく、正の有限値を
+ * 有効とする。
  */
 export function loadPlaybackRate(): number {
   try {
     const raw = localStorage.getItem(RATE_KEY)
     if (raw === null) return 1
     const n = Number(raw)
-    // 選択肢に無い値（手で書き換えた・選択肢を減らした後の古い値）は既定へ落とす。
-    // <select> に無い値を渡すと、どの option も選ばれていない空の見た目になる。
-    return (playbackRates as readonly number[]).includes(n) ? n : 1
+    return Number.isFinite(n) && n > 0 ? n : 1
   } catch {
     // private mode 等で localStorage が使えない場合は既定
     return 1
   }
 }
 
-/** savePlaybackRate は再生速度を保存する。既定（1 倍）はキーごと消す。 */
+/** savePlaybackRate は正の有限な再生速度を保存する。既定（1 倍）はキーごと消す。 */
 export function savePlaybackRate(rate: number): void {
   try {
+    if (!Number.isFinite(rate) || rate <= 0) return
     if (rate === 1) localStorage.removeItem(RATE_KEY)
     else localStorage.setItem(RATE_KEY, String(rate))
   } catch {
     // ignore
+  }
+}
+
+/**
+ * applyPlaybackRate は速度を video に設定し、ブラウザが拒否した場合は 1 倍へ戻す。
+ * 対応する速度の範囲はブラウザごとに異なるため、保存時の数値検証だけでは
+ * playbackRate の代入で NotSupportedError が起きる場合がある。その値は共通設定からも消す。
+ */
+export function applyPlaybackRate(video: HTMLVideoElement, rate: number): number {
+  try {
+    video.defaultPlaybackRate = rate
+    video.playbackRate = rate
+    return rate
+  } catch {
+    // 保存済みの速度をブラウザが受け付けない場合は、標準の 1 倍へ復旧する。
+    try {
+      video.defaultPlaybackRate = 1
+      video.playbackRate = 1
+    } catch {
+      // 1 倍も設定できない環境でも React effect から例外を漏らさない。
+    }
+    savePlaybackRate(1)
+    return 1
   }
 }
 

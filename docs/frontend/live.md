@@ -53,6 +53,19 @@ hls.js には `startPosition: 0` を渡す。開始位置の入力欄で録画�
 始める。EVENT playlist が伸びている間の現在位置は通常の video controls でシークでき、
 `最新` は playlist の現在の duration（または buffered の末尾）へ移動して再生を試みる。
 
+`最新` は現時点では残す。2026-09-23 の Chromium 151 実測では、育成中の EVENT playlist
+を標準スクラバーの右端へ移動すると、そのときの `seekable.end(0)` まで到達できたため、
+Chromium では専用ボタンと標準操作が重なる。ENDLIST 後は右端ちょうどから `play()` すると
+先頭へ戻る挙動も確認されており、ボタンが使う 0.1 秒の余白には根拠がある。一方、WebKit
+のネイティブ HLS ではこの harness で再生を開始できず、標準バーやライブ端への移動方法を
+測れていない。Safari を含む対象ブラウザで標準スクラバーが同じ役割を果たすか確認してから
+ボタンの要否を決める。
+
+追っかけは録画再生なので、VOD と共通の `rokuban:playback-rate` を使う。標準 controls の
+`ratechange` を保存し、開始時に `defaultPlaybackRate` と `playbackRate` へ設定する。通常の
+ライブ視聴にはこの設定を適用しない。ネイティブ HLS での速度変更が実 Safari で有効かは
+未検証で、放送に対する速度変更として採用する判断材料が無いためである。
+
 再生位置は既存の VOD と同じ localStorage のキー
 `rokuban:playback:{recordingId}:{profile}` を共有する。live の配信プロファイルと encode の
 VOD プロファイルは別設定なので、追っかけは VOD 側の既定プロファイル名を再生位置のキー
@@ -206,10 +219,11 @@ JSON 404 にしてある（`internal/api/spa.go` の `spaOrAPINotFound`）。**�
 固定し、画質切り替えは将来 `live.profiles` の一覧 API ができてから足す。
 
 **ライブのページキー操作は M（ミュート）と F（フルスクリーン）だけにする。**
-録画向けの速度変更とシークは出さない。入力欄・選択欄・リンク・ボタン・編集可能領域と
-`<video>` にフォーカスがあるときは処理せず、ネイティブ controls と二重に効かせない。
-ネイティブ HLS の `playbackRate` が実 Safari で有効かは未検証なので、速度変更を
-ライブへ広げる根拠にはしない。
+録画向けの速度変更とシークのページショートカットは出さない。入力欄・選択欄・リンク・
+ボタン・編集可能領域と `<video>` にフォーカスがあるときは処理せず、ネイティブ controls と
+二重に効かせない。
+端末共通の速度設定も通常のライブには適用しない。ネイティブ HLS の `playbackRate` が
+実 Safari で有効かは未検証なので、速度変更をライブへ広げる根拠にはしない。
 
 **hls.js はライブ視聴画面だけ動的 import する（`components/live-player.tsx`）**。
 `pnpm build` の出力で hls.js が `assets/hls-*.js`（約 520 KB）として独立チャンクに

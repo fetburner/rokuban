@@ -41,11 +41,21 @@ describe('load/savePlaybackRate', () => {
     expect(loadPlaybackRate()).toBe(1)
   })
 
-  it('選択肢に無い値・壊れた値は 1 倍に落とす', () => {
-    for (const raw of ['3', '1.1', '0', '-1', 'fast', '']) {
+  it('ブラウザ controls が保存した正の速度を復元する', () => {
+    localStorage.setItem('rokuban:playback-rate', '0.75')
+    expect(loadPlaybackRate()).toBe(0.75)
+  })
+
+  it('0 以下・壊れた値は 1 倍に落とす', () => {
+    for (const raw of ['0', '-1', 'fast', '', 'Infinity', 'NaN']) {
       localStorage.setItem('rokuban:playback-rate', raw)
       expect(loadPlaybackRate()).toBe(1)
     }
+  })
+
+  it('無効な速度を保存しない', () => {
+    savePlaybackRate(-1)
+    expect(localStorage.getItem('rokuban:playback-rate')).toBeNull()
   })
 })
 

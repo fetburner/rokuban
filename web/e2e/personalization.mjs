@@ -5,7 +5,8 @@
 //     リロードではない）
 //   - カード表示が本当に段組みになり、サムネイルが行表示より大きいこと（レイアウト）
 //   - 検索条件が URL を往復すること（TanStack の stringify + validateSearch の実経路）
-//   - 再生速度が録画をまたいでも実際の <video>.playbackRate に効くこと
+//   - ブラウザ controls の ratechange で保存した再生速度が録画をまたいでも
+//     実際の <video>.playbackRate に効くこと
 //     （jsdom の <video> は currentTime/duration 同様 playbackRate も実再生の
 //     連動を持たないので、実 <video> でしか確かめられない）
 //
@@ -263,27 +264,30 @@ if (searchBodies.length !== searchesBeforePlain) {
   ng.push(`④ 開いただけで検索を送っている（${searchBodies.length - searchesBeforePlain} 回）`)
 }
 
-log('\n=== ⑤ 録画詳細: 再生速度が別の録画でも <video>.playbackRate に効く ===')
+log('\n=== ⑤ 録画詳細: native ratechange の速度が別の録画でも <video>.playbackRate に効く ===')
 // 今の UI で「別の録画に移る」を実際に起こせるのは一覧を経由する経路だけ
 // （`RecordingDetailPage` は `/recordings` と別コンポーネントなので、一覧を
 // 挟むと `RecordingPlayer` は毎回新規マウントし直される）。速度は
 // localStorage（端末ごとに 1 つ）から新規マウント時に復元されるので、
-// select・<video> のどちらも 1.5 のまま録画をまたぐことを実ブラウザで確かめる。
+// 標準 controls のメニュー自体はブラウザ UI で DOM にないため、同じ ratechange
+// 経路を通るよう実 <video> の playbackRate を変更する。録画をまたいだ後の値は
+// localStorage と新しい実 <video> の両方で確かめる。
 await page.goto(URL_BASE + '/recordings/1', { waitUntil: 'domcontentloaded' })
 await page.locator('video').waitFor({ timeout: 15000 })
-await page.getByLabel('再生速度').selectOption('1.5')
+await page.locator('video').evaluate((video) => {
+  video.playbackRate = 1.5
+})
+await page.waitForFunction(() => localStorage.getItem('rokuban:playback-rate') === '1.5')
 const rateOnFirst = await page.locator('video').evaluate((v) => v.playbackRate)
 if (rateOnFirst !== 1.5) {
-  ng.push(`⑤ 速度を選んでも <video>.playbackRate に反映されない（${rateOnFirst}）`)
+  ng.push(`⑤ ratechange 後の速度が <video>.playbackRate に反映されない（${rateOnFirst}）`)
 }
 
 await page.getByRole('link', { name: '戻る' }).click()
 await page.getByRole('link', { name: '録画 2' }).waitFor({ timeout: 15000 })
 await page.getByRole('link', { name: '録画 2' }).click()
 await page.locator('video').waitFor({ timeout: 15000 })
-if ((await page.getByLabel('再生速度').inputValue()) !== '1.5') {
-  ng.push('⑤ 別の録画に移ると再生速度セレクトが 1 倍に戻る（端末ごとの好みとして保たれていない）')
-}
+await page.waitForFunction(() => document.querySelector('video')?.playbackRate === 1.5)
 const rateOnSecond = await page.locator('video').evaluate((v) => v.playbackRate)
 if (rateOnSecond !== 1.5) {
   ng.push(`⑤ 別の録画に移ると <video>.playbackRate が 1 倍に戻る（${rateOnSecond}）`)
