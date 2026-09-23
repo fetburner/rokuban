@@ -2,8 +2,9 @@
 //
 // jsdom では測れないものだけを見る。録画中の録画詳細へ `#chase` で入り、
 // EVENT playlist が成長する間も hls.js が先頭から再生を始め、`最新` で末尾へ
-// 移動できることを、Chromium + 実 HLS セグメントで確認する。mirakc / DB の
-// 録画ファイルは使わず、録画 API と HLS は page.route で差し替える。
+// 移動できること、VOD と共通の再生速度を適用・保存することを、Chromium + 実 HLS
+// セグメントで確認する。mirakc / DB の録画ファイルは使わず、録画 API と HLS は
+// page.route で差し替える。
 //
 //   cd web && pnpm build
 //   pnpm preview --port 4173 --strictPort &
@@ -167,7 +168,12 @@ const context = await browser.newContext({
   viewport: { width: 1280, height: 900 },
   locale: 'ja-JP',
 })
-await context.addInitScript(() => localStorage.clear())
+await context.addInitScript(() => {
+  const initializedKey = 'rokuban-e2e-chase-initialized'
+  if (sessionStorage.getItem(initializedKey) === 'true') return
+  localStorage.clear()
+  sessionStorage.setItem(initializedKey, 'true')
+})
 const page = await context.newPage()
 
 await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
@@ -391,5 +397,25 @@ for (const offsetSeconds of offsetScenarios) {
 if (offsetPlaylistRequests < offsetScenarios.length) {
   ng.push(`③ オフセット playlist の要求数が不足（${offsetPlaylistRequests}）`)
 }
+
+log('\n=== ④ VOD と共通の再生速度 ===')
+await page.evaluate(() => localStorage.setItem('rokuban:playback-rate', '1.5'))
+await page.reload({ waitUntil: 'domcontentloaded' })
+await page.locator('video').waitFor({ timeout: 15000 })
+await page.waitForFunction(
+  () => {
+    const video = document.querySelector('video')
+    return video?.playbackRate === 1.5 && video.defaultPlaybackRate === 1.5
+  },
+  { timeout: 5000 },
+).catch(() => ng.push('④ 保存済みの VOD 共通速度が追っかけ video に適用されない'))
+
+await page.locator('video').evaluate((video) => {
+  video.playbackRate = 1.25
+})
+await page.waitForFunction(
+  () => localStorage.getItem('rokuban:playback-rate') === '1.25',
+  { timeout: 5000 },
+).catch(() => ng.push('④ 追っかけの ratechange が VOD 共通設定に保存されない'))
 
 await finish(ng, browser)

@@ -194,6 +194,8 @@ playlist を Chromium の hls.js で再生する。録画 API・追っかけ HLS
 - 録画中の詳細ページから追っかけプレイヤーが開く
 - EVENT playlist がセグメントを増やしても再生位置は録画先頭から始まる
 - `最新` が現在の playlist の末尾へ移動する
+- 保存済みの VOD 共通速度が追っかけの `<video>` に適用され、標準 controls の
+  `ratechange` が同じ `localStorage` キーへ保存される
 - 成長後の playlist が `ENDLIST` になり、完了した録画を追える
 - 3 秒・5 秒の指定で、対応する先頭セグメント（2 秒単位）を使った映像が `playing` まで
   到達し、実際の video 時刻から求めた録画位置の誤差が 2 秒以内になる
@@ -857,10 +859,12 @@ E2E_URL=http://localhost:4173 pnpm e2e:chip-overflow
   フォームの初期化で二重に叩く退行の検出）
 - ④ 条件なしで `/search` を開くと、前回の条件はフォームに戻るが**検索は
   走らない**（未検索の案内が出たまま）
-- ⑤ 録画詳細で再生速度を 1.5× にし、一覧を経由して別の録画の詳細へ移っても、
-  select と実 `<video>.playbackRate` の両方が 1.5 のまま。**測っているのは
-  「選んだ速度が実 `<video>` に載り、録画をまたいで端末に残る」こと**で、
-  `savePlaybackRate` を no-op にする変異で 2 行とも落ちることを確認してある。
+- ⑤ 録画詳細で実 `<video>.playbackRate` を 1.5 に変え、標準 controls と同じ
+  `ratechange` 経路で保存されること、一覧を経由して別の録画の詳細へ移っても
+  実 `<video>.playbackRate` が 1.5 のままなこと。**測っているのは
+  「速度変更イベントが端末に保存され、録画をまたいで実 `<video>` に載る」こと**で、
+  `savePlaybackRate` を no-op にする変異では保存待ちが失敗し、保存値の適用を外す変異では
+  次の録画の `<video>.playbackRate` 判定が失敗する。
   **同一インスタンスのまま録画だけ差し替わる経路（`playbackRate` を当てる
   effect の依存漏れ）はここでは踏めない** --- 現在の UI では必ず一覧を経由し、
   `RecordingPlayer` が新規マウントして localStorage から読み直すため。その

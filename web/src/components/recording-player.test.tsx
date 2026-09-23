@@ -6,7 +6,6 @@ import { RecordingPlayer } from '@/components/recording-player'
 afterEach(() => {
   localStorage.clear()
   vi.restoreAllMocks()
-  Reflect.deleteProperty(document, 'pictureInPictureEnabled')
 })
 
 /** jsdom の video 要素は currentTime/duration の実再生をしないので、テスト側から直接設定する。 */
@@ -247,45 +246,45 @@ describe('RecordingPlayer の encoded ダウンロード', () => {
 describe('RecordingPlayer の再生操作', () => {
   const asset = [{ profile: 'h264', sizeBytes: 123 }]
 
-  it('速度セレクトを video.playbackRate に反映する', () => {
-    const { container, getByLabelText } = render(
+  it('再生速度と PiP はブラウザ controls に任せ、自前の重複操作を出さない', () => {
+    const { container, queryByLabelText, queryByRole } = render(
       <RecordingPlayer recordingId={30} encodedAssets={asset} />,
     )
-    const video = container.querySelector('video')!
 
-    fireEvent.change(getByLabelText('再生速度'), { target: { value: '1.5' } })
-
-    expect(video.playbackRate).toBe(1.5)
+    expect(container.querySelector('video')).toHaveProperty('controls', true)
+    expect(queryByLabelText('再生速度')).not.toBeInTheDocument()
+    expect(queryByRole('button', { name: 'ピクチャーインピクチャー' })).not.toBeInTheDocument()
   })
 
   // 速度は「この録画をどう見るか」ではなく「自分がどう見るか」の好みなので、
-  // 録画をまたいでも保つ（docs/frontend/design.md §個人化）。
-  it('別の録画に移っても再生速度を保ち、localStorage に残す', () => {
-    const { container, getByLabelText, rerender } = render(
+  // ブラウザ controls の ratechange から保存し、録画をまたいでも保つ
+  // （docs/frontend/design.md §個人化）。
+  it('ブラウザ controls で選んだ速度を保存し、別の録画でも video に適用する', () => {
+    const { container, rerender } = render(
       <RecordingPlayer recordingId={30} encodedAssets={asset} />,
     )
-    const select = getByLabelText('再生速度') as HTMLSelectElement
-    fireEvent.change(select, { target: { value: '1.5' } })
+    let video = container.querySelector('video')!
+    video.playbackRate = 1.5
+    fireEvent.rateChange(video)
+
+    expect(localStorage.getItem('rokuban:playback-rate')).toBe('1.5')
+    expect(video.defaultPlaybackRate).toBe(1.5)
 
     rerender(<RecordingPlayer recordingId={31} encodedAssets={asset} />)
 
-    expect(select.value).toBe('1.5')
-    expect(localStorage.getItem('rokuban:playback-rate')).toBe('1.5')
-    // select の表示だけでなく実際の <video> を見る（レビュー指摘: `<video>` は
-    // key={`${recordingId}:${profile}`} で作り直されるため、select の値が
-    // 1.5× のままでも新しい要素の実 playbackRate が 1 に戻る退行が select の
-    // 値だけを見るアサーションでは検出できなかった）。
-    expect(container.querySelector('video')!.playbackRate).toBe(1.5)
+    video = container.querySelector('video')!
+    expect(video.playbackRate).toBe(1.5)
+    expect(video.defaultPlaybackRate).toBe(1.5)
   })
 
   it('保存済みの速度は開いた直後から video に効く', () => {
     localStorage.setItem('rokuban:playback-rate', '2')
-    const { container, getByLabelText } = render(
+    const { container } = render(
       <RecordingPlayer recordingId={32} encodedAssets={asset} />,
     )
 
-    expect((getByLabelText('再生速度') as HTMLSelectElement).value).toBe('2')
     expect(container.querySelector('video')!.playbackRate).toBe(2)
+    expect(container.querySelector('video')!.defaultPlaybackRate).toBe(2)
   })
 
   it('矢印キーで 10 秒、J/L で 30 秒移動する', () => {
@@ -372,29 +371,6 @@ describe('RecordingPlayer の再生操作', () => {
     expect(requestFullscreen).not.toHaveBeenCalled()
     expect(video.currentTime).toBe(50)
     expect(video.muted).toBe(false)
-  })
-
-  it('PiP 非対応ならボタンを出さない', () => {
-    const { queryByRole } = render(<RecordingPlayer recordingId={35} encodedAssets={asset} />)
-
-    expect(queryByRole('button', { name: 'ピクチャーインピクチャー' })).not.toBeInTheDocument()
-  })
-
-  it('PiP 対応ならボタンから開始する', () => {
-    Object.defineProperty(document, 'pictureInPictureEnabled', {
-      value: true,
-      configurable: true,
-    })
-    const { container, getByRole } = render(
-      <RecordingPlayer recordingId={36} encodedAssets={asset} />,
-    )
-    const video = container.querySelector('video')!
-    const requestPictureInPicture = vi.fn(() => Promise.resolve())
-    Object.defineProperty(video, 'requestPictureInPicture', { value: requestPictureInPicture })
-
-    fireEvent.click(getByRole('button', { name: 'ピクチャーインピクチャー' }))
-
-    expect(requestPictureInPicture).toHaveBeenCalledOnce()
   })
 })
 
