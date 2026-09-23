@@ -160,3 +160,23 @@ func TestIsIngestTempFile(t *testing.T) {
 		})
 	}
 }
+
+func TestIsMediaRelPathLockFile(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "reserved basename", path: ".rokuban-rel-path-lock-deadbeef.lock", want: true},
+		{name: "nested path", path: "sites/default/archive/.rokuban-rel-path-lock-deadbeef.lock", want: true},
+		{name: "canonical media file", path: "sites/default/recording.m2ts", want: false},
+		{name: "similar but different prefix", path: ".rokuban-rel-path-lock", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsMediaRelPathLockFile(tt.path); got != tt.want {
+				t.Errorf("IsMediaRelPathLockFile(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}

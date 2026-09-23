@@ -103,14 +103,14 @@ func TestIngestJobLock_TimeoutDoesNotHang(t *testing.T) {
 }
 
 // TestIngestJobLock_TransientHeartbeatFailuresNeverStop は、一過性の DB エラーでは
-// heartbeat が止まらないことを固定する。旧設計（rel_path advisory lock）では
+// heartbeat が止まらないことを固定する。旧設計（rel_path の DB advisory lock）では
 // 「heartbeat 停止 = markLost = 転送キャンセル」という終端判断だったので閾値で
 // 止める理由があったが、新設計の heartbeat の唯一の仕事は job lock 用セッションを
 // idle 切断から守る keepalive である（型の doc コメント参照）。一過性失敗で
 // keepalive 自身を止めると、唯一の保護を自分から捨てることになる
 // （セッションが idle のまま放置 → pgbouncer 等の idle timeout で切断 →
 // advisory lock 解放 → record_sweep が生存中の running 行を discard → 重複
-// ジョブ投入 → 全量再ダウンロード）。
+// ジョブ投入 → temp replay を迂回した不要な再転送）。
 func TestIngestJobLock_TransientHeartbeatFailuresNeverStop(t *testing.T) {
 	transientErr := errors.New("simulated transient db latency")
 	l := newJobLock(nil, 1, "test")

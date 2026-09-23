@@ -82,8 +82,14 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 
 `observed_at` が現在時刻から離れていくなら転送は止まっている（進捗の書き直しは
 **最短** 2 秒間隔 --- バイトが流れたときにしか書かないので、極端に遅い回線では
-これより粗くなる）。`written_bytes` が 0 に戻るのは異常ではない —— ジョブ再試行は部分
-ファイルを truncate してゼロから作り直す（[recording/ingest.md](../recording/ingest.md) §5.3）
+これより粗くなる）。`written_bytes` は temp replay で再開した試行なら末尾から続く。
+サイズ / ハッシュ不一致や record の cancel / fail で temp を捨てた次の試行だけは 0 に戻る
+（[recording/ingest.md](../recording/ingest.md) §5.3）。rename 後の親ディレクトリ fsync または
+DB commit の失敗では temp が canonical へ移動済みだが、次の ingest は orphan 回収を待たず
+全量 pull を開始する。残った canonical orphan は再試行の rename で置き換わるか、後続の
+aging 回収で削除される。DB commit が成立して応答だけ失われた場合は、冪等性チェックで
+転送を省略する。replay 中は進捗行がまだ更新されないので、古い `observed_at` だけで
+worker 停止とは断定しない。
 
 ### エンコードが失敗している（理由を知りたい）
 

@@ -139,7 +139,7 @@ WHERE rel_path = $1 AND state <> 'deleted'
 `
 
 // ingest の転送前ヒント用（issue #197）。worker/ingest.go の Work が
-// 試行固有の一時ファイルを作る前に、別のまだ削除されていない
+// record 固有の一時ファイルを開く前に、別のまだ削除されていない
 // （state <> 'deleted'。'active' に限らず、delete_reconcile の unlink 前後の
 // 中間状態である 'deleting' も含む）media_asset が同じ rel_path を既に使って
 // いないかを確認する。名前を
@@ -152,17 +152,14 @@ WHERE rel_path = $1 AND state <> 'deleted'
 // 試行が一時ファイルへ並行転送でき、commit 内の media_assets INSERT と
 // 部分一意索引が採用を一つに決める。ここで拾うのは転送を始める価値が無い
 // 「別の recording が既にコミットした」という恒久的な衝突である。
-// **ただし delete_reconcile の状態遷移に対しては、従来どおりヒントのまま**
-// --- delete_reconcile は advisory lock を取らないので、この SELECT と
-// 実際の CreateMediaAsset の INSERT の間に 'deleting' → 'deleted' の遷移が
-// 進む TOCTOU の窓は残る。正しさの根拠は常に
-// CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted'
-// であり、ここが競合を見逃しても最終的な INSERT が
-// 23505 で media_assets の行の一意性だけは確実に守る。ここでの
-// WHERE state <> 'deleted' はその一意索引の述語と同じにする ---
-// 削除済みの行が使っていた rel_path は正当に再利用できるので、削除済み行と
-// 衝突させてはいけない。呼び出し側は recording_id しか使わないので id は
-// 選択しない。該当行が無ければ pgx.ErrNoRows を返す。
+// delete_reconcile は canonical orphan の unlink 前に ingest commit と同じ
+// rel_path transaction-level advisory lock を取得するため、公開・回収の確定区間は
+// この SELECT と独立に直列化される。ただしこの関数自体は転送前の安価なヒントで、
+// ingest 同士の決着は commit 内の lock と media_assets の一意索引に任せる。
+// ここを一意性の最終判定に使わない。WHERE state <> 'deleted' はその一意索引の
+// 述語と同じにする --- 削除済みの行が使っていた rel_path は正当に再利用できるので、
+// 削除済み行と衝突させてはいけない。呼び出し側は recording_id しか使わないので
+// id は選択しない。該当行が無ければ pgx.ErrNoRows を返す。
 func (q *Queries) GetLiveMediaAssetByRelPath(ctx context.Context, relPath string) (int64, error) {
 	row := q.db.QueryRow(ctx, getLiveMediaAssetByRelPath, relPath)
 	var recording_id int64

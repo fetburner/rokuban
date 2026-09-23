@@ -54,10 +54,15 @@ type ingestProgressReporter struct {
 	lastAt time.Time
 }
 
-// start は written_bytes=0 の行を作り、転送開始を記録する。
+// start は転送開始を記録する。再開時は既存 temp の replay 済みバイト数を渡す。
 // これは進捗の観測ではないため、report の間引き時計を進めない。
-func (r *ingestProgressReporter) start(ctx context.Context) {
-	r.write(ctx, 0)
+// 引数を省略した場合は新規 temp の 0 バイトとして扱う。
+func (r *ingestProgressReporter) start(ctx context.Context, initial ...int64) {
+	written := int64(0)
+	if len(initial) > 0 {
+		written = initial[0]
+	}
+	r.write(ctx, written)
 }
 
 // report は written バイト書けたことを記録する。前回の進捗書き込みから interval
@@ -101,10 +106,10 @@ func (r *ingestProgressReporter) write(ctx context.Context, written int64) {
 // progressWriter は下位 Writer への書き込みバイト数を数え、書けたぶんだけ
 // onWrite に通知する io.Writer。
 //
-// written は**このジョブがファイルに書けた累計**で、ジョブ内リトライ（層 1、
-// Range 再開）を跨いで積み上がる。ジョブ再試行（層 2）は部分ファイルを
-// truncate してゼロから作り直すので、そちらでは新しい progressWriter が
-// 0 から数え直す（docs/recording/ingest.md §5.3）。
+// written は**このジョブが扱う temp の先頭からの累計**で、ジョブ内リトライ
+// （層 1、Range 再開）だけでなくプロセス死後の replay（層 2）も跨いで積み上がる。
+// 中身が悪いと確定して temp を消した次の試行だけは 0 から始まる
+// （docs/recording/ingest.md §5.3）。
 type progressWriter struct {
 	w       io.Writer
 	written int64

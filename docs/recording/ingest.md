@@ -106,11 +106,13 @@ clean なファイルでは「誤検知がないこと」しか確かめられ�
 
 切断時は書き込み済みオフセットから `Range: bytes=N-` で再接続して追記。ドロップスキャンのカウンタはメモリ上に生きているので継続できる。タイムアウトは総時間ではなく**ストール検知**（`ingest.stall_timeout`、既定 30 秒間無進捗で切断扱い）--- 総時間タイムアウトは遅い回線の正常な転送を殺す。
 
-**この層は追従の通常経路でもある。** 録画中はループが `Range → status → 待つ` を回し続けるので、層 1 の再開は切断時だけでなく毎ポーリングで使われる。待ちはジョブ内（River にジョブを戻さない）ので、temp file・offset・スキャナ状態が同じ Work の中で生き続ける。`Work` を終わらせて別のジョブに続きを書かせるには、temp パス・offset・PID ごとのスキャナ状態を永続化する必要があり、それは「チャンクごとに進捗をコミットして続きを追記する」案そのもの（層 2 の却下理由を参照）。
+**この層は追従の通常経路でもある。** 録画中はループが `Range → status → 待つ` を回し続けるので、層 1 の再開は切断時だけでなく毎ポーリングで使われる。待ちはジョブ内（River にジョブを戻さない）なので、temp file・offset・スキャナ状態が同じ Work の中で生き続ける。Work がプロセス死で途切れた場合は、層 2 が temp の全バイトを replay してこの状態を復元する。
 
 **層 1 のリトライ上限は「連続した一時障害」の数である。** 累積にすると、数時間の録画中に散散した偶発的な失敗が上限に達して正常な録画を失敗させる。`204` / `416` / `206` の 0 バイト / status の取得成功はいずれも連続カウンタをリセットし、mirakc が落ち続けたときだけジョブを River へ戻す。
 
-**録画中の worker 再起動は番組頭からの全速再 pull を生む。** 追従では録画中は常に ingest ジョブが走っているので、`SoftStopTimeout` を超える SIGTERM は必ず層 2 のゼロからの再開になる。作り直しの単位は「番組頭から現在まで」で、再開可能 ingest（チャンクごとに進捗をコミットして続きを追記）は契約 §3 ルール 1 が塞いでいる。
+**録画中の worker 再起動は temp の末尾から再開する。** 追従では録画中も ingest ジョブが走る。
+`SoftStopTimeout` を超える SIGTERM でも、次のジョブは DB の進捗値を使わない。
+同じ temp のサイズを Range の開始点にする。
 
 #### 層 2: ジョブ再試行（プロセス死）
 
@@ -118,7 +120,8 @@ ingest の転送中にプロセスが死ぬと River の行は `running` のま�
 ingest は River の通常の stuck-job rescue 対象にならない。そこで `record_sweep` は watcher の
 全量突き合わせより前に、最後の活動が 1 分以上古い `running` ingest を候補として調べる。
 最後の活動とは `recording_ingest_progress.observed_at` であり、行がまだ無ければ
-`river_job.attempted_at` である。
+`river_job.attempted_at` である。`recording_ingest_progress` は UI 用の停滞観測であり、
+再開点の根拠にはしない。
 
 候補を時刻だけで死亡と判定してはいけない。ingest は Work の開始時に
 `rokuban:ingest:job:<river_job.id>` の PostgreSQL セッションレベル advisory lock を取得し、
@@ -129,15 +132,33 @@ commit 中の古い進捗を時間だけで打ち切らない。rel_path の排�
 
 job lock の heartbeat は lock 用セッションを idle 切断から守る keepalive だけを担う。
 lock 喪失を検知しても転送をキャンセルしない。一時ファイル方式では古い実行が残っても
-canonical file を壊せず、DB の一意 reservation が採用を決めるためである。
+canonical file を壊せず、DB の一意 reservation が採用を決めるためである。canonical の
+公開と孤児回収の短い確定区間だけは、同じ `rel_path` の filesystem lock と
+transaction-level advisory lock で直列化する。filesystem lock は canonical と同じ
+ディレクトリの予約 lock file に対する POSIX `flock` で、DB セッションが切れても
+ファイル操作を続ける goroutine が保持する。転送全体はこの lock を保持しない。
 
 死亡と確定した場合は、古い `running` 行に回収理由と `finalized_at` を記録して `discarded` に
 終端化し、同じトランザクションで別 ID の ingest ジョブを投入する。古い行を `running` のまま
 再投入すると、UniqueOpts の `pendingJobStates` に `running` が含まれるため新しい試行が古い行へ
 合流し、回収できない状態が続く。進捗行が作られる前に死んだケースも、`attempted_at` fallback
-で同じ経路に乗る。新しい試行は canonical とは別の一意な temp にゼロから転送する。プロセス死で
-temp が残った場合は既存の orphan 回収（mtime 猶予 + aging）が拾う。中途再開はスキャナ状態の
-永続化と追記が必要になり、層 1 で大半が救われる以上、複雑さに見合わない。
+で同じ経路に乗る。新しい試行は `.rokuban-ingest-{site}-{record_id}` を `O_CREATE` で開き、
+既存サイズまで replay してからその末尾へ Range 転送を続ける。replay は hasher と
+`tsstat.Counter` にも同じバイト列を通すので、SHA-256、drop 統計、drop 位置、PCR 基準を
+別途 DB に持たない。temp には `flock(LOCK_EX|LOCK_NB)` を保持し、同じ record の別試行が
+同時に書かないようにする。flock はプロセス死で自動的に解放される。
+
+temp を消すのは、サイズまたは SHA-256 の不一致が分かった場合と、record が `canceled` /
+`failed` で終わった場合だけである。ctx キャンセル、プロセス死、転送・fsync・DB の一時的な
+失敗では残し、次の試行へ渡す。未登録の temp は既存の orphan 回収（mtime 猶予 + aging）が
+拾う。orphan 回収も同じ temp の flock を非 blocking で取得し、実行中の ingest が保持して
+いれば削除を次のパスへ延期する。ロック取得後に inode と mtime を再確認してから unlink
+するため、replay 中の temp や再作成された同名 temp を誤って消さない。
+
+この方式には 2 つの未測定点がある。電源断では delayed allocation によりサイズだけが進んだ
+領域を replay する可能性がある。`content.sha256` が返る record なら commit 前に検出できるが、
+旧 mirakc の hash 無し経路では未検証である。replay のローカルディスク I/O は、低速な
+アップリンクより十分短い見込みだが、長時間録画での実測値はまだない。
 
 回収は既定 5 分周期（起動時に 1 回実行）で走る `record_sweep` に組み込んでいるため、通常は
 候補になってから最大で約 6 分以内に再投入される。総時間 timeout を有限値にする案は、録画
@@ -159,13 +180,27 @@ River のバックオフと `attempt` カウンタは失われる。この窓を
 
 pull 完了後に書き込みバイト数を HEAD の Content-Length と照合する。finished を観測した record のメタデータに `content.sha256` が存在する場合は、Range 再開を含む同じ転送バイト列から 1 パスで計算した SHA-256（小文字 hex）とも照合する。これは stream レスポンスの Digest / ETag ヘッダーではない。`content.sha256` が `null` または欠落している場合は旧 mirakc やハッシュ計算不能の record として照合をスキップする。空文字・空白付きの値は正規化し、64 文字の hex でない値は警告を出してスキップする。Content-Length が不明（`HeadRecordStream` が `-1`）なら長さの照合だけをスキップする（`ingest.go` の `expectedLen >= 0` ガード）。長さまたは SHA-256 が不一致なら `hash mismatch` / `size mismatch` で失敗し、commit と edge record の削除へ進まない。不一致は通常の River 再試行に戻し、専用メトリクス `rokuban_ingest_hash_mismatches_total` で観測する。
 
-長さと（存在する場合の）SHA-256 の照合を通ったら、canonical rel_path と同じディレクトリに作った試行固有 temp の `fsync` → `Close` を行う。
+長さと（存在する場合の）SHA-256 の照合を通ったら、canonical rel_path と同じディレクトリに
+作った record 固有 temp の `fsync` → `Close` を行う。再開時も途中の fsync はせず、replay
+した既存部分を含めて完了時に 1 回だけ行う。
 
-その後の短い DB transaction で original の `media_assets` 行を INSERT し、rel_path の一意性を予約する。INSERT は transaction が commit するまで他セッションから見えない。この transaction を保持したまま temp → canonical の atomic rename と親ディレクトリ `fsync` を行い、最後に DB transaction を commit する。**DB commit が公開点であり、mirakc 側の record 削除は commit 後だけ**である。
+その後の短い確定区間で、canonical と同じディレクトリの `rel_path` 固有 filesystem lock を取得する。
+次に DB transaction と同じ `rel_path` の transaction-level advisory lock を取得する。original の
+`media_assets` 行を INSERT して rel_path の一意性を予約する。INSERT は
+transaction が commit するまで他セッションから見えない。この transaction と両方の lock を
+保持したまま temp
+→ canonical の atomic rename と親ディレクトリ `fsync` を行い、最後に DB transaction を
+commit する。**DB commit が公開点であり、mirakc 側の record 削除は commit 後だけ**である。
 
-rename 前に失敗した試行は自分の temp を消す。rename 後の親ディレクトリ `fsync` または DB commit が失敗した場合は transaction を rollback し、canonical file は orphan として aging 回収に委ねる。mirakc record は削除しない。rename と DB commit の順序を反転させて、DB が指す実体を先に公開してはならない。
+rename 前の失敗では temp を残して次の試行へ渡す。ただし長さ / SHA-256 の不一致と
+`canceled` / `failed` は中身が不採用と確定しているので temp を消す。rename 後の親ディレクトリ
+`fsync` または DB commit が失敗した場合は transaction を rollback し、canonical file は orphan
+として aging 回収に委ねる。mirakc record は削除しない。rename と DB commit の順序を反転させて、
+DB が指す実体を先に公開してはならない。
 
-fsync を入れる理由は電源断だけではなく、Linux では遅延した書き込みエラー（ENOSPC / I/O エラー）が `Close` では報告されず `fsync` でしか上がらないためである。rename 後の親ディレクトリ `fsync` は新しい directory entry の永続化を確定する。ファイル `fsync` / `Close` / rename / 親ディレクトリ `fsync` のいずれかが失敗した場合は DB 登録も record 削除も行わず、ジョブを失敗させる。どこで落ちても最悪「もう一度 pull」で、データ喪失は構造的に起きない。
+fsync を入れる理由は電源断だけではなく、Linux では遅延した書き込みエラー（ENOSPC / I/O エラー）が `Close` では報告されず `fsync` でしか上がらないためである。rename 後の親ディレクトリ `fsync` は新しい directory entry の永続化を確定する。ファイル `fsync` / `Close` / rename / 親ディレクトリ `fsync` のいずれかが失敗した場合は DB 登録も record 削除も行わず、ジョブを失敗させる。
+
+rename 前の失敗なら、残った temp を replay して pull を続けられる。rename 後の親ディレクトリ `fsync` または DB commit の失敗では、temp はすでに canonical へ移動済みである。DB commit が成立しなかった場合、次の ingest は orphan 回収を待たずに全量 pull を開始し、同じ rel_path へ再度 rename する。残った canonical orphan はその rename で置き換わるか、後続の aging 回収で削除される。DB commit が成立して応答だけ失われた場合は、次の冪等性チェックで転送を省略する。いずれも mirakc record は削除せず、データ喪失は構造的に起きない。
 
 運用上の主なリスクは**長時間の転送失敗でエッジのリングバッファが溜まり続ける**こと。`IngestWorker` 自体は River の既定の試行上限のままで、上限に達すると discard（dead-letter）されうる。それでも record が宙に浮かないのは、mirakc 側の record が DB commit 成功後にしか削除されないためである。discard された後も record_sweep（5 分周期の定期全量突き合わせ。[watcher.md](watcher.md) §3.3 の (c)）が同じ finished record を見つける。そして `processRecord` が同一トランザクションで ingest ジョブを再投入し続ける。「未 ingest の record 総量」をメトリクス化してエッジのディスク残量と突き合わせてアラートする（[storage.md](../storage.md) のサイジング指針参照）。
 
@@ -177,13 +212,18 @@ fsync を入れる理由は電源断だけではなく、Linux では遅延し�
 
 #### 同じ rel_path の競合: 一意 reservation で採用を決める
 
-canonical path へ転送中のバイトが存在しないため、同じ `rel_path` を算出した複数の ingest は、それぞれ自分の一意な temp へ並行して pull できる。`checkRelPathConflict` / `GetLiveMediaAssetByRelPath` は転送前の安価なヒントであり、同時 ingest の決着には使わない。
+canonical path へ転送中のバイトが存在しないため、異なる record の ingest は、それぞれの
+record 固有 temp へ並行して pull できる。同じ record は temp の flock で直列化する。
+公開時は rel_path filesystem lock と transaction-level advisory lock を使う。DB の一意 reservation
+も使い、ingest と orphan 回収を含む同じ canonical path の競合を直列化する。
+`checkRelPathConflict` / `GetLiveMediaAssetByRelPath`
+は転送前の安価なヒントであり、転送中は lock を保持しない。
 
-各 transaction の original INSERT が部分一意索引を予約する。先に INSERT した transaction が rename・親 directory `fsync`・DB commit を完了すれば、その内容が canonical file の勝者になる。後発 transaction の INSERT は先発の commit / rollback を待ち、先発が commit した場合は unique violation で失敗する。後発の temp は自分で消えるので canonical file は勝者の内容のまま保たれる。delete_reconcile の `deleting` 行との TOCTOU は閉じない: 先読みはヒントであり、正しさは一意索引と適用時の状態遷移に残る。
+各 transaction の original INSERT が部分一意索引を予約する。先に INSERT した transaction が rename・親 directory `fsync`・DB commit を完了すれば、その内容が canonical file の勝者になる。後発 transaction の INSERT は先発の commit / rollback を待ち、先発が commit した場合は unique violation で失敗する。後発の temp は失敗時の規約に従って残るので、canonical file は勝者の内容のまま保たれ、残った temp は orphan 回収に委ねられる。delete_reconcile の `deleting` 行との TOCTOU は閉じない: 先読みはヒントであり、正しさは一意索引と適用時の状態遷移に残る。
 
-- **rel_path advisory lock は削除した。** canonical path に直接書かないので、ロック喪失から検知までの窓と heartbeat による転送 cancel は不要である。残る job-id advisory lock は record_sweep が live job と死亡 job を区別するためだけに使い、heartbeat はそのセッションの keepalive だけを担う
-- **同一録画の再試行**: 現行の `IngestWorker.Timeout() = -1` と、River の running を含む一意投入がある。これによりプロセス内の通常の River 経路では、古い ingest と新しい ingest が同時に走らない。プロセス死で running 行だけが残った場合も、上記のジョブ lock 確認と旧行の終端化を経て新しい試行へ進む。temp は試行ごとに新しい名前になる
-- **孤児と追加 I/O**: 失敗試行の temp は自分で消し、プロセス死や rename 後の DB 失敗で残るファイルは既存の `orphan_files` の mtime 猶予（既定 7 日）とエイジング（既定 14 日）が回収する。正常な転送に scratch 経由の全長コピーは追加せず、追加コストは temp の作成・rename・親 directory `fsync` である
+- **rel_path の filesystem lock は公開・回収の区間だけに残した。** canonical path に直接転送しないので、転送全体の lock heartbeat や lock 喪失による転送 cancel は不要である。ingest commit と canonical orphan 回収は同じ `rel_path` の予約 lock file に対する POSIX `flock` を保持する。対象区間は rename / unlink から DB commit または orphan 行の整理までである。DB セッションが切れても古いファイル操作が続いて公開済み canonical を回収側が消すことはない。transaction-level advisory lock は DB の一意性と live 行確認を補助する。残る job-id advisory lock は record_sweep が live job と死亡 job を区別するためだけに使い、heartbeat はそのセッションの keepalive だけを担う
+- **同一録画の再試行**: 現行の `IngestWorker.Timeout() = -1` と、River の running を含む一意投入がある。これによりプロセス内の通常の River 経路では、古い ingest と新しい ingest が同時に走らない。プロセス死で running 行だけが残った場合も、上記のジョブ lock 確認と旧行の終端化を経て新しい試行へ進む。temp は record ごとに決まった名前で、flock が世代の競合を防ぐ
+- **孤児と追加 I/O**: 中身の不一致または record の cancel / fail では temp を消し、それ以外の失敗では次の試行へ残す。プロセス死や回収不能な temp は既存の `orphan_files` の mtime 猶予（既定 7 日）とエイジング（既定 14 日）が回収する。temp の回収は同じ flock に参加し、実行中の ingest と競合した場合は次の pass へ延期する。replay は同じ temp のローカル読み直しなので、scratch 経由の全長コピーは追加せず、追加コストは replay・temp の rename・親 directory `fsync` である
 
 **弱い FS へ原本を直接書く設計は、FUSE の rename 非対応や fsync/Close の不確かな意味論に合わせるための将来課題へ戻した**。本 issue では `storage.media_dir` を強い FS に限定し、FUSE S3 は派生物専用の領域に限る。
 

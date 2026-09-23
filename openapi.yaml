@@ -1887,13 +1887,13 @@ components:
           enum: [committed, transferring, pending, unknown]
         writtenBytes:
           description: |
-            転送先ファイルに書けたバイト数。`state = transferring` のときだけ付く。
+            ingest temp に書けたバイト数。`state = transferring` のときだけ付く。
 
-            **これは「いまファイルに書けているバイト数」であって累積の転送実績
-            ではない。** ジョブ再試行（部分ファイルを truncate してゼロから
-            作り直す。docs/recording/ingest.md §5.3 の層 2）で 0 に戻ることが
-            ある。戻りを隠さないのは、隠すと「進んでいるのに終わらない」に見えて
-            実際に起きているやり直しが観測できなくなるため。
+            **これは「いま temp に書けているバイト数」であって累積の転送実績
+            ではない。** プロセス死後のジョブ再試行は同じ temp を replay して
+            末尾から続く。サイズ / ハッシュ不一致や record の cancel / fail で temp を
+            捨てた次の試行だけ 0 に戻る。戻りを隠さないのは、隠すと「進んでいるのに
+            終わらない」に見えて実際に起きているやり直しが観測できなくなるため。
 
             **`sizeBytes`（原本の実サイズ）とは別のフィールドである。** コミット =
             DB 行（不変条件 3）なので、コミット前の途中ファイルのサイズを

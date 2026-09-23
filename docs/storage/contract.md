@@ -28,11 +28,17 @@ rename 後の親ディレクトリ `fsync` を信頼できる通常の POSIX FS 
 FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest の対象外である。
 以下のルールは、原本 root とローカル `scratch_dir` の組み合わせに適用する:
 
-1. **書き込みは常にシーケンシャル・一発書き**。追記もランダムライトもしない
+1. **書き込みは常にシーケンシャル**。初回は一発書き、プロセス再起動後は同じ
+   temp の EOF へ追記する。ランダムライトはしない
 2. **「作業はローカル、置くのは一回」**: ffmpeg の出力は必ずワーカーのローカルスクラッチ（k8s では emptyDir）に書き、完成したファイルをストレージへストリームコピーして fsync。MP4 のシーク問題と書きかけファイル問題が同時に消える。
-   **ingest は同じ root・同じディレクトリの試行固有 temp へ書く**。scratch から
-   rename すると `EXDEV` になり、コピーへの劣化を許すため確定操作には使わない。
-   canonical path は転送中に触らず、HEAD の長さ照合と、存在する場合の
+	**ingest は同じ root・同じディレクトリの record 固有 temp へ書く**。temp 名は
+	`.rokuban-ingest-{site}-{record_id}` と決め、プロセス再起動後も同じファイルを
+	開く。scratch から rename すると `EXDEV` になり、コピーへの劣化を許すため
+	確定操作には使わない。
+	`.rokuban-ingest-` と `.rokuban-rel-path-lock-` で始まる basename は予約名であり、
+	mirakc の contentPath には使わない。前者は ingest temp、後者は canonical と同じ
+	ディレクトリに置く rel_path 固有 lock file である。
+	canonical path は転送中に触らず、HEAD の長さ照合と、存在する場合の
    `content.sha256` 照合 → temp の `fsync` → `Close`
    → DB transaction 内の original 行 INSERT（rel_path の一意 reservation）→ temp
    を canonical へ atomic rename → 親ディレクトリ `fsync`、の順で進める。
@@ -41,14 +47,23 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
    から transaction を commit し、commit が成功した時点で `media_assets` 行と
    canonical file の組を公開する。rename 後に fsync または DB commit が失敗した
    場合は transaction を rollback し、canonical file は orphan として aging 回収
-   に委ねる。mirakc record は削除しない。rename 前の失敗では試行固有 temp だけを
-   消す。**この順序を反転させない**: DB commit 後に rename すると、行が指す実体の
+   に委ねる。mirakc record は削除しない。中身の不一致または record の cancel / fail
+   が分かった場合だけ temp を消し、それ以外の失敗では次の試行へ残す。
+   **この順序を反転させない**: DB commit 後に rename すると、行が指す実体の
    欠落を作る。
    **ingest のコピー完了には fsync と Close のエラー確認まで含める**。転送途中に fsync して進捗を確定してはならない。追従 ingest は番組長のあいだ fd を開くが、途中 fsync は部分オブジェクトの実体化やサイズ比例の再コピーを起こし、S3 系 FUSE では以後その fd に書けない実装もある。fsync はストリームコピー完了後の 1 回だけにする。Linux では
    遅延した書き込みエラー（ENOSPC / I/O エラー）が `Close` では報告されず `fsync`
    でしか上がらない。rename 後の親ディレクトリ `fsync` は新しい directory entry
    の永続化を確定する。いずれかが失敗したら DB 登録と record 削除をせず再試行する。
-4. **DB には相対パスのみ保存**。ルートは設定で与える。ロック・xattr・パーミッションに依存しない
+   orphan 回収が record 固有 temp を削除するときも同じ `flock` に参加し、ロック取得後に
+   inode と mtime を再確認する。canonical orphan の回収は ingest commit と共有する
+   `rel_path` 固有の filesystem lock file に対する POSIX `flock` を rename / unlink から
+   DB commit または orphan 行の整理まで保持する。DB の transaction-level advisory lock
+   は一意性と live 行の再確認に使う。filesystem lock は DB セッションの切断後も
+   ファイル操作中の fd が保持するため、古い cleanup が公開済み canonical を消すことはない。
+   実行中の ingest や公開済み canonical は削除せず、次の回収 pass に延期する。
+4. **DB には相対パスのみ保存**。ルートは設定で与える。DB にロック・xattr・パーミッション
+   の状態は保存しない。temp の同時実行排他は、対象 FS 上の協調的な POSIX `flock` に依存する
 
 ポイントはルール 3。DB commit を公開点にしつつ、公開前のファイル操作は強い FS
 契約で確定させる。起動時 probe はこの操作列が実行できることだけを確認し、FS の
