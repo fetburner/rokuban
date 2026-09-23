@@ -47,45 +47,8 @@ func TestIngestWorker_ConcurrentSameRelPathUsesTempFiles(t *testing.T) {
 	started := make(chan struct{}, 2)
 	release := make(chan struct{})
 	var deleteCalls atomic.Int32
-	newBlockedServer := func(tsData []byte) *httptest.Server {
-		// 追従ループは 1 回の Work で /stream を複数回叩く（差分 + finished 後の
-		// drain）。ゲートは**最初の 1 回だけ**に掛ける --- 毎回掛けると 2 回目で
-		// 再びブロックし、release 前に自分自身を待ってデッドロックする。
-		var gate sync.Once
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch {
-			case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-				gate.Do(func() {
-					started <- struct{}{}
-					<-release
-				})
-				writeRecordStream(w, r, tsData)
-			case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
-				w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-				w.WriteHeader(http.StatusOK)
-			case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
-				record := mirakc.Record{
-					Recording: mirakc.RecordInfo{Status: "finished", Options: mirakc.Options{ContentPath: strPtr(contentPath)}},
-					Content:   mirakc.ContentInfo{Path: "/recording/" + contentPath},
-				}
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusOK)
-				_ = json.NewEncoder(w).Encode(record)
-			case r.Method == http.MethodDelete:
-				deleteCalls.Add(1)
-				result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusOK)
-				_ = json.NewEncoder(w).Encode(result)
-			default:
-				http.NotFound(w, r)
-			}
-		}))
-		t.Cleanup(srv.Close)
-		return srv
-	}
-	srvA := newBlockedServer(tsDataA)
-	srvB := newBlockedServer(tsDataB)
+	srvA := newConcurrentIngestServer(t, tsDataA, contentPath, started, release, &deleteCalls)
+	srvB := newConcurrentIngestServer(t, tsDataB, contentPath, started, release, &deleteCalls)
 
 	wA := &IngestWorker{
 		MirakcClients: singleSiteClients("default", mirakc.NewClient(srvA.URL, nil)),
@@ -197,6 +160,45 @@ func TestIngestWorker_ConcurrentSameRelPathUsesTempFiles(t *testing.T) {
 	if liveAssets != 1 {
 		t.Errorf("live assets for concurrent rel_path = %d, want 1", liveAssets)
 	}
+}
+
+func newConcurrentIngestServer(t *testing.T, tsData []byte, contentPath string, started chan<- struct{}, release <-chan struct{}, deleteCalls *atomic.Int32) *httptest.Server {
+	t.Helper()
+	// 追従ループは 1 回の Work で /stream を複数回叩く（差分 + finished 後の
+	// drain）。ゲートは最初の 1 回だけに掛ける --- 毎回掛けると release 前に
+	// 2 回目の要求が自身を待ってデッドロックする。
+	var gate sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			gate.Do(func() {
+				started <- struct{}{}
+				<-release
+			})
+			writeRecordStream(w, r, tsData)
+		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{Status: "finished", Options: mirakc.Options{ContentPath: strPtr(contentPath)}},
+				Content:   mirakc.ContentInfo{Path: "/recording/" + contentPath},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+		case r.Method == http.MethodDelete:
+			deleteCalls.Add(1)
+			result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(result)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
 }
 
 // TestIngestWorker_CommitHoldsRelPathFileLockThroughRename は実際の commit 経路が

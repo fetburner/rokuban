@@ -397,6 +397,13 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 		return nil
 	}
 
+	if err := w.ingestResolvedRecord(ctx, client, args, recordingID, expectedBytes, log, &result); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.Client, args jobs.IngestJobArgs, recordingID int64, expectedBytes *int64, log *slog.Logger, result *string) error {
 	relPath, fullPath, err := w.determineRelPath(ctx, args, client)
 	if err != nil {
 		return fmt.Errorf("determining rel_path: %w", err)
@@ -497,7 +504,7 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 			// 取り消し・失敗は「転送が壊れた」ではないので、失敗として数えない。
 			// 同じ result="failure" に混ぜると、利用者が止めた録画が失敗率に
 			// 積まれて本物の失敗が埋もれる。
-			result = "canceled"
+			*result = "canceled"
 			return river.JobCancel(err)
 		}
 		return err
@@ -558,7 +565,7 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	}
 
 	// エッジ record の削除は失敗しても ingest は成功（コミット済み）。
-	result = "success"
+	*result = "success"
 
 	w.enqueueIngestFollowups(ctx, client, args.RecordID, recordingID, log)
 

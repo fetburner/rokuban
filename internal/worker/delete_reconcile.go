@@ -892,7 +892,11 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath str
 			}
 		}
 		if tempLock != nil {
-			defer tempLock.Close()
+			defer func() {
+				if err := tempLock.Close(); err != nil {
+					log.Warn("delete_reconcile: closing locked ingest temp", "err", err)
+				}
+			}()
 		}
 	}
 
