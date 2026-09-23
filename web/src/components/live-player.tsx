@@ -627,65 +627,89 @@ export function LivePlayer({
   }
 
   return (
-    <div className={cn('relative aspect-video w-full max-w-3xl rounded bg-black', className)}>
-      <video
-        ref={videoRef}
-        controls
-        playsInline
-        className={cn('size-full rounded', (loading || error) && 'invisible')}
-        onLoadedMetadata={(event) => {
-          if (!isChase || recordingId === undefined || !restorePending.current) return
-          restorePending.current = false
-          if (hasExplicitChaseStart) {
-            // The streamer has already applied the recording-relative offset.
-            // Native HLS may otherwise choose the current EVENT edge, because
-            // hls.js's startPosition option is not involved on this path.
+    <div className={cn('flex w-full max-w-3xl flex-col', className)}>
+      <div className="relative aspect-video w-full rounded bg-black">
+        <video
+          ref={videoRef}
+          controls
+          playsInline
+          className={cn('size-full rounded', (loading || error) && 'invisible')}
+          onLoadedMetadata={(event) => {
+            if (!isChase || recordingId === undefined || !restorePending.current) return
+            restorePending.current = false
+            if (hasExplicitChaseStart) {
+              // The streamer has already applied the recording-relative offset.
+              // Native HLS may otherwise choose the current EVENT edge, because
+              // hls.js's startPosition option is not involved on this path.
+              event.currentTarget.currentTime = 0
+              return
+            }
+            const saved = loadPlaybackPosition(recordingId, chasePlaybackProfile)
+            const localPosition =
+              saved !== null && saved > chaseStartOffset ? saved - chaseStartOffset : 0
+            event.currentTarget.currentTime = localPosition
+          }}
+          onCanPlay={(event) => {
+            if (!isChase || !hasExplicitChaseStart || !explicitStartSeekPending.current) return
+            explicitStartSeekPending.current = false
+            // Reassert once after metadata. WebKit can select the live edge while
+            // attaching an EVENT playlist even if loadedmetadata accepted 0.
             event.currentTarget.currentTime = 0
-            return
-          }
-          const saved = loadPlaybackPosition(recordingId, chasePlaybackProfile)
-          const localPosition =
-            saved !== null && saved > chaseStartOffset ? saved - chaseStartOffset : 0
-          event.currentTarget.currentTime = localPosition
-        }}
-        onCanPlay={(event) => {
-          if (!isChase || !hasExplicitChaseStart || !explicitStartSeekPending.current) return
-          explicitStartSeekPending.current = false
-          // Reassert once after metadata. WebKit can select the live edge while
-          // attaching an EVENT playlist even if loadedmetadata accepted 0.
-          event.currentTarget.currentTime = 0
-        }}
-        onTimeUpdate={(event) => {
-          if (!isChase || recordingId === undefined) return
-          const video = event.currentTarget
-          const globalPosition = video.currentTime + chaseStartOffset
-          if (!shouldSavePlaybackPosition(lastSavedSecond.current, globalPosition)) return
-          lastSavedSecond.current = Math.floor(globalPosition)
-          // The chase playlist is an expanding EVENT playlist, so its current
-          // duration is only the current live edge, not the recording's final
-          // duration. Passing it here would erase a position near "最新" as if
-          // playback had completed. RecordingPlayer keeps the VOD duration
-          // based completion behavior after the recording is finalized.
-          savePlaybackPosition(recordingId, chasePlaybackProfile, globalPosition)
-        }}
-        onPause={(event) => {
-          if (!isChase || recordingId === undefined) return
-          const video = event.currentTarget
-          // See the timeupdate handler: a growing chase duration is not a
-          // completion signal.
-          savePlaybackPosition(
-            recordingId,
-            chasePlaybackProfile,
-            video.currentTime + chaseStartOffset,
-          )
-        }}
-        onRateChange={(event) => {
-          if (!isChase) return
-          const rate = event.currentTarget.playbackRate
-          setPlaybackRate(rate)
-          savePlaybackRate(rate)
-        }}
-      />
+          }}
+          onTimeUpdate={(event) => {
+            if (!isChase || recordingId === undefined) return
+            const video = event.currentTarget
+            const globalPosition = video.currentTime + chaseStartOffset
+            if (!shouldSavePlaybackPosition(lastSavedSecond.current, globalPosition)) return
+            lastSavedSecond.current = Math.floor(globalPosition)
+            // The chase playlist is an expanding EVENT playlist, so its current
+            // duration is only the current live edge, not the recording's final
+            // duration. Passing it here would erase a position near "最新" as if
+            // playback had completed. RecordingPlayer keeps the VOD duration
+            // based completion behavior after the recording is finalized.
+            savePlaybackPosition(recordingId, chasePlaybackProfile, globalPosition)
+          }}
+          onPause={(event) => {
+            if (!isChase || recordingId === undefined) return
+            const video = event.currentTarget
+            // See the timeupdate handler: a growing chase duration is not a
+            // completion signal.
+            savePlaybackPosition(
+              recordingId,
+              chasePlaybackProfile,
+              video.currentTime + chaseStartOffset,
+            )
+          }}
+          onRateChange={(event) => {
+            if (!isChase) return
+            const rate = event.currentTarget.playbackRate
+            setPlaybackRate(rate)
+            savePlaybackRate(rate)
+          }}
+        />
+
+        {loading && !error && (
+          <div
+            role="status"
+            className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground"
+          >
+            読み込み中…
+          </div>
+        )}
+
+        {error && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-4 text-center">
+            <LiveErrorMessage error={error} chase={isChase} />
+            <button
+              type="button"
+              onClick={() => setRetryNonce((n) => n + 1)}
+              className="rounded-md border border-border px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-muted"
+            >
+              再読み込み
+            </button>
+          </div>
+        )}
+      </div>
 
       {isChase && !error && (
         <div className="flex justify-end px-1 py-1">
@@ -695,28 +719,6 @@ export function LivePlayer({
             className="rounded border border-border px-2 py-1 text-xs text-foreground hover:bg-muted"
           >
             最新
-          </button>
-        </div>
-      )}
-
-      {loading && !error && (
-        <div
-          role="status"
-          className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground"
-        >
-          読み込み中…
-        </div>
-      )}
-
-      {error && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-4 text-center">
-          <LiveErrorMessage error={error} chase={isChase} />
-          <button
-            type="button"
-            onClick={() => setRetryNonce((n) => n + 1)}
-            className="rounded-md border border-border px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-muted"
-          >
-            再読み込み
           </button>
         </div>
       )}
