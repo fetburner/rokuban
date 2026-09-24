@@ -525,18 +525,11 @@ describe('LivePlayer の状態遷移', () => {
       expect(hlsMockState.instances[0]!.loadSource).toHaveBeenCalledWith(
         '/api/sites/default/recordings/7/chase/playlist.m3u8?profile=live-720p',
       )
-      const latest = screen.getByRole('button', { name: '最新' })
       const video = document.querySelector('video')!
-      Object.defineProperty(video, 'duration', { value: 120, configurable: true })
       Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
 
       fireEvent.loadedMetadata(video)
       expect(video.currentTime).toBe(12)
-
-      const play = vi.spyOn(video, 'play').mockResolvedValue(undefined)
-      await userEvent.click(latest)
-      expect(video.currentTime).toBeCloseTo(119.9, 5)
-      expect(play).toHaveBeenCalledTimes(1)
     })
 
     it('指定した開始オフセットから読み、保存位置を上書きせず録画全体の秒数で扱う', async () => {

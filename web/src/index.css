@@ -13,6 +13,53 @@
  */
 @import "@fontsource-variable/noto-sans-jp";
 
+.chase-timeline-slider {
+    appearance: none;
+    -webkit-appearance: none;
+    margin: 0;
+    padding: 0;
+}
+
+.chase-timeline-slider::-webkit-slider-runnable-track {
+    height: 2.75rem;
+    background: transparent;
+}
+
+.chase-timeline-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 1rem;
+    height: 1rem;
+    margin-top: 0.875rem;
+    border: 2px solid var(--background);
+    border-radius: 9999px;
+    background: var(--primary);
+    box-shadow: 0 0 0 1px var(--primary);
+}
+
+.chase-timeline-slider::-moz-range-track {
+    height: 2.75rem;
+    background: transparent;
+}
+
+.chase-timeline-slider::-moz-range-progress {
+    background: transparent;
+}
+
+.chase-timeline-slider::-moz-range-thumb {
+    width: 1rem;
+    height: 1rem;
+    border: 2px solid var(--background);
+    border-radius: 9999px;
+    background: var(--primary);
+    box-shadow: 0 0 0 1px var(--primary);
+}
+
+.chase-timeline-slider:disabled::-webkit-slider-thumb,
+.chase-timeline-slider:disabled::-moz-range-thumb {
+    background: var(--muted-foreground);
+    box-shadow: none;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {

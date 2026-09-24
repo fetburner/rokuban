@@ -1,11 +1,12 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { EncodeProfileSummary, Recording, Rule } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
+import { formatTime } from '@/lib/format'
 import { routeTree } from '@/routes'
 
 function sampleRecording(overrides: Partial<Recording> = {}): Recording {
@@ -90,6 +91,7 @@ function createFakeServer(options: {
     const method = init?.method ?? 'GET'
 
     if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
+    if (url.pathname === '/api/capabilities') return Promise.resolve(jsonResponse({ live: true }))
     // サイトレジストリを先に解決する。
     if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(sites))
     if (url.pathname === '/api/encode-profiles') return Promise.resolve(jsonResponse(encodeProfiles))
@@ -174,6 +176,19 @@ function createFakeServer(options: {
 
     if (/^\/api\/recordings\/\d+\/drop-stats$/.test(url.pathname)) {
       return Promise.resolve(jsonResponse([]))
+    }
+    if (
+      /^\/api\/sites\/[^/]+\/recordings\/\d+\/chase(?:\/offset\/\d+)?\/playlist\.m3u8$/.test(
+        url.pathname,
+      )
+    ) {
+      return Promise.resolve(new Response('#EXTM3U\n', { status: 200 }))
+    }
+    if (
+      /^\/api\/sites\/[^/]+\/recordings\/\d+\/chase(?:\/offset\/\d+)?\/leave$/.test(url.pathname) &&
+      method === 'POST'
+    ) {
+      return Promise.resolve(new Response(null, { status: 204 }))
     }
 
     throw new Error(`unexpected fetch: ${method} ${url.pathname}`)
@@ -286,6 +301,41 @@ describe('RecordingDetailPage', () => {
     renderAt('/recordings/999999')
 
     expect(await screen.findByText('録画が見つかりません')).toBeInTheDocument()
+  })
+
+  it('追っかけタイムラインは番組時刻を表示し、録画開始からの範囲でキー確定する', async () => {
+    const now = Date.now()
+    const startAt = new Date(now - 60 * 60_000).toISOString()
+    const startedAt = new Date(now - 2 * 60_000).toISOString()
+    const { fetchMock } = createFakeServer({
+      recording: sampleRecording({
+        startAt,
+        durationMs: 2 * 60 * 60_000,
+        status: 'recording',
+        startedAt,
+      }),
+    })
+
+    renderAt('/recordings/3#chase')
+
+    const slider = await screen.findByRole('slider', { name: '追っかけ再生の位置' })
+    expect(slider).toHaveAttribute('max', '7200')
+    expect(Number(slider.getAttribute('aria-valuemax'))).toBeLessThan(300)
+    expect(slider).toHaveAttribute('aria-valuetext', `${formatTime(startAt)}（開始から0秒）`)
+    expect(screen.queryByRole('button', { name: '最新' })).not.toBeInTheDocument()
+
+    fireEvent.change(slider, { target: { value: '30' } })
+    expect(slider).toHaveAttribute('aria-valuenow', '30')
+    const offsetPlaylistRequested = () =>
+      fetchMock.mock.calls.some(([input]) =>
+        new URL(String(input), 'http://localhost').pathname.endsWith(
+          '/chase/offset/30/playlist.m3u8',
+        ),
+      )
+    expect(offsetPlaylistRequested()).toBe(false)
+
+    fireEvent.keyUp(slider, { key: 'ArrowRight' })
+    await waitFor(() => expect(offsetPlaylistRequested()).toBe(true))
   })
 
   // ごみ箱の録画も 200 で返る（getRecording の openapi.yaml description の決定）
