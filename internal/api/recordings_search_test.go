@@ -155,6 +155,20 @@ func TestListRecordings_KeywordSearch(t *testing.T) {
 	}
 }
 
+func TestListRecordings_KeywordSearchTreatsLikeMetacharactersLiterally(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+	base := time.Now().Truncate(time.Second)
+
+	seedRecordingFull(t, pool, seedRecordingOpts{title: "ニュース 100%", start: base, status: "finished", eventID: 1})
+	seedRecordingFull(t, pool, seedRecordingOpts{title: "ニュース 100x", start: base.Add(time.Minute), status: "finished", eventID: 2})
+
+	titles := getRecordingsTitles(t, srv.URL, url.Values{"q": {"100%"}, "qTarget": {"title"}})
+	if len(titles) != 1 || titles[0] != "ニュース 100%" {
+		t.Fatalf("literal q=100%% got %v, want [ニュース 100%%]", titles)
+	}
+}
+
 // genre（genre_lv1 の重なり）で絞り込める。recordings.genre_lv1 は生成列。
 func TestListRecordings_GenreFilter(t *testing.T) {
 	pool := testutil.SetupDB(t)

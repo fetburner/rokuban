@@ -183,6 +183,102 @@ ON CONFLICT (site, program_id) DO NOTHING`, start.Add(3*time.Hour), start.Add(3*
 	}
 }
 
+func TestMatchPrograms_KeywordLikeSpecialCharactersAreLiteral(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	start := time.Date(2026, 8, 20, 12, 0, 0, 0, time.FixedZone("JST", 9*3600))
+	allIDs := make([]int64, 0, 15)
+	idsByName := make(map[string]int64)
+	seed := func(name string) int64 {
+		id := int64(8200 + len(allIDs))
+		insertProgramFixture(t, pool, ctx, "default", id, start)
+		if _, err := pool.Exec(ctx, `UPDATE epg_programs SET name = $1 WHERE site = 'default' AND program_id = $2`, name, id); err != nil {
+			t.Fatal(err)
+		}
+		allIDs = append(allIDs, id)
+		idsByName[name] = id
+		return id
+	}
+
+	cases := []struct {
+		name  string
+		value string
+		match string
+		decoy string
+	}{
+		{name: "percent", value: "100%", match: "番組100%編", decoy: "番組100x編"},
+		{name: "underscore", value: "NHK_100", match: "番組NHK_100編", decoy: "番組NHKX100編"},
+		{name: "backslash", value: `A\B`, match: `番組A\B編`, decoy: "番組AB編"},
+		{name: "trailing backslash", value: `Q\`, match: `番組Q\編`, decoy: "番組Q%編"},
+		{name: "backslash percent", value: `\%`, match: `番組\%編`, decoy: "番組%編"},
+		{name: "backslash underscore", value: `\_`, match: `番組\_編`, decoy: "番組_編"},
+	}
+	for _, tc := range cases {
+		seed(tc.match)
+		seed(tc.decoy)
+	}
+	normalizedMatch := seed("番組NHK_200%編")
+	seed("番組NHKX200a編")
+
+	for _, tc := range cases {
+		for _, caseSensitive := range []bool{false, true} {
+			matches, err := MatchPrograms(ctx, pool, Conditions{
+				Sites: []string{"default"},
+				TextMatches: []TextMatch{{
+					Target: "name", Mode: "keyword", Value: tc.value, CaseSensitive: caseSensitive,
+				}},
+			})
+			if err != nil {
+				t.Fatalf("%s caseSensitive=%t: %v", tc.name, caseSensitive, err)
+			}
+			got := idsOf(matches)
+			want := idsByName[tc.match]
+			if len(got) != 1 || got[0] != want {
+				t.Errorf("%s caseSensitive=%t matched ids %v, want only %d (%q)", tc.name, caseSensitive, got, want, tc.match)
+			}
+		}
+	}
+
+	// 正規化と LIKE エスケープを組み合わせても、全角英字と記号は意図した文字列に一致する。
+	normalized, err := MatchPrograms(ctx, pool, Conditions{
+		Sites:       []string{"default"},
+		TextMatches: []TextMatch{{Target: "name", Mode: "keyword", Value: "ＮＨＫ_200%"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := idsOf(normalized); len(got) != 1 || got[0] != normalizedMatch {
+		t.Fatalf("normalized special-character match = %v, want only %d", got, normalizedMatch)
+	}
+
+	// Negate はエスケープ後の述語を反転し、対象だけを除外する。
+	negated, err := MatchPrograms(ctx, pool, Conditions{
+		Sites:       []string{"default"},
+		TextMatches: []TextMatch{{Target: "name", Mode: "keyword", Value: `A\B`, Negate: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantNegated := make(map[int64]bool, len(allIDs)-1)
+	for _, id := range allIDs {
+		if id != idsByName[`番組A\B編`] {
+			wantNegated[id] = true
+		}
+	}
+	gotNegated := make(map[int64]bool, len(negated))
+	for _, match := range negated {
+		gotNegated[match.ProgramID] = true
+	}
+	if len(gotNegated) != len(wantNegated) {
+		t.Fatalf("negated match ids = %v, want %d rows", idsOf(negated), len(wantNegated))
+	}
+	for id := range wantNegated {
+		if !gotNegated[id] {
+			t.Errorf("negated match ids %v missing %d", idsOf(negated), id)
+		}
+	}
+}
+
 // TestMatchProgramIDsForRule_RuleSitesGatesEvaluationSite は rule_sites が非空のとき、
 // 対象外の site を評価すると（Compile まで進まず）クエリを投げずに空を返すことを
 // 確認する。ruler は site ごとのループで MatchProgramIDsForRule を呼ぶため

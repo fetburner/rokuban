@@ -62,6 +62,13 @@ describe('ProgramDialogPanel', () => {
       'min-h-11',
       'w-full',
     )
+    const searchLink = await within(dialog).findByRole('link', { name: 'この番組名で検索' })
+    const href = new URL(searchLink.getAttribute('href') ?? '', 'http://localhost')
+    expect(href.pathname).toBe('/search')
+    expect([...href.searchParams.keys()]).toEqual(['cond'])
+    expect(JSON.parse(href.searchParams.get('cond') ?? 'null')).toEqual({
+      textMatches: [{ target: 'name', mode: 'keyword', value: '番組パネルのテスト' }],
+    })
     expect(await within(dialog).findByText('エンコードプロファイル')).toBeInTheDocument()
   })
 

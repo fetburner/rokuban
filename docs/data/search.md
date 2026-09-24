@@ -38,7 +38,7 @@ pg_trgm（標準 contrib、運用コストゼロ）で始め、形態素解析�
 2. **列の形が違う**。`title` vs `name`、`genres jsonb`（`recordings`）vs `genre_lv1 smallint[]`（両方とも生成列）、`channel_type` は `recordings` が直持ちで JOIN が要らない。1 つのコンパイラに 2 つのテーブルを食わせると、列名マップの分だけ「片方でしか通らない条件」が生まれる
 3. **問いが違う。** 録画検索の主役は EPG に存在しない軸（`status` / `source` / `rule_id` / ごみ箱）で、逆にルール条件が持つ曜日ビットマスクや negate 付き正規表現の複数 AND は録画検索には過剰
 
-共有するのは**キーワードの正規化方言だけ**（`internal/rulequery.KeywordClause`。`compileTextMatch` と録画検索の両方が呼ぶ）。同じ語で `/search` と録画一覧の当たり方が変わるとユーザーに説明できないため、`normalize_search_text` を通す・通さないの判定はここだけ揃える。テーブルや列名のマッピングは持たない --- 呼び出し側が列名（`p.name` / `r.title` 等）を渡す。
+共有するのは**キーワードの正規化方言だけ**（`internal/rulequery.KeywordClause`。`compileTextMatch` と録画検索の両方が呼ぶ）。同じ語で `/search` と録画一覧の当たり方が変わるとユーザーに説明できないため、`normalize_search_text` を通す・通さないの判定はここだけ揃える。キーワード検索の `\`・`%`・`_` は LIKE の構文ではなく文字として照合し、正規表現モードは入力したパターンとして扱う。テーブルや列名のマッピングは持たない --- 呼び出し側が列名（`p.name` / `r.title` 等）を渡す。
 
 ### 性能上の実注意点（検索ではない）
 
