@@ -185,6 +185,7 @@ func compileTextMatch(m TextMatch, arg func(any) string) (string, error) {
 }
 
 // KeywordClause は列 col への部分一致（LIKE '%value%'）を組む。
+// キーワード中の LIKE 特殊文字（\、%、_）は文字どおり検索する。
 //
 // ruler の compileTextMatch と録画検索（internal/api の recordings_query.go、
 // issue #136）が共有する。共有するのはこの正規化方言だけで、テーブルや列名マップは
@@ -200,7 +201,7 @@ func KeywordClause(col string, value string, caseSensitive bool, arg func(any) s
 		return col + " LIKE " + arg(pat) + " ESCAPE '\\'"
 	}
 	normCol := "normalize_search_text(" + col + ")"
-	return normCol + " LIKE ('%' || normalize_search_text(" + arg(value) + ") || '%')"
+	return normCol + " LIKE ('%' || normalize_search_text(" + arg(escapeLike(value)) + ") || '%') ESCAPE '\\'"
 }
 
 func textTargetColumn(target string) (string, error) {

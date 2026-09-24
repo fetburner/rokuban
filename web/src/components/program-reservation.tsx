@@ -245,9 +245,11 @@ export function ProgramReservationActions({
 }
 
 /**
- * 詳細本文と、未予約時の encode 下書き / 予約済み時の設定リンク。
+ * 詳細本文と、番組名検索リンク / 未予約時の encode 下書き / 予約済み時の設定リンク。
  * リストの行区切りやダイアログの余白は持たず、両方の chrome から同じ意味の中身を
  * 使えるようにする。
+ * 検索結果の行にも番組名検索リンクを出す。検索から検索へ戻る循環は、結果を見て
+ * 条件を絞り直す操作として許容する。
  */
 export function ProgramReservationBody({
   program,
@@ -260,19 +262,40 @@ export function ProgramReservationBody({
   pending: boolean
   draft: ProgramReservationDraft
 }) {
+  const canSearchByName = program.name.trim().length > 0
+  const linkClassName =
+    'inline-flex min-h-6 items-center text-primary underline-offset-2 hover:underline'
+
   return (
     <>
       <ProgramReservationDetails program={program} />
 
-      {reserved && (
+      {(canSearchByName || reserved) && (
         <div className="mt-3 flex flex-wrap gap-4 text-xs">
-          <Link
-            to="/reservations/$site/$programId"
-            params={{ site: program.site, programId: String(program.programId) }}
-            className="inline-flex min-h-6 items-center text-primary underline-offset-2 hover:underline"
-          >
-            予約の設定
-          </Link>
+          {canSearchByName && (
+            <Link
+              to="/search"
+              search={{
+                cond: {
+                  textMatches: [
+                    { target: 'name', mode: 'keyword', value: program.name },
+                  ],
+                },
+              }}
+              className={linkClassName}
+            >
+              この番組名で検索
+            </Link>
+          )}
+          {reserved && (
+            <Link
+              to="/reservations/$site/$programId"
+              params={{ site: program.site, programId: String(program.programId) }}
+              className={linkClassName}
+            >
+              予約の設定
+            </Link>
+          )}
         </div>
       )}
 

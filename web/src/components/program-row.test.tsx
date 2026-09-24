@@ -302,6 +302,52 @@ describe('ProgramRow の外向き導線（issue #229 / #755）', () => {
 
     const link = await screen.findByRole('link', { name: '予約の設定' })
     expect(link).toHaveAttribute('href', `/reservations/${testSite}/42`)
+    const searchLink = screen.getByRole('link', { name: 'この番組名で検索' })
+    expect(searchLink).toBeInTheDocument()
+    expect(searchLink.parentElement).toBe(link.parentElement)
+  })
+
+  it('未予約の番組を展開すると番組名だけを条件にした検索リンクが出る', async () => {
+    stubFetch()
+    renderInRouter(
+      <ProgramRow
+        program={program()}
+        reserved={false}
+        pending={false}
+        reservationStateUnknown={false}
+        onReserve={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    await expandRow()
+
+    const link = await screen.findByRole('link', { name: 'この番組名で検索' })
+    const href = new URL(link.getAttribute('href') ?? '', 'http://localhost')
+    expect(href.pathname).toBe('/search')
+    expect([...href.searchParams.keys()]).toEqual(['cond'])
+    expect(JSON.parse(href.searchParams.get('cond') ?? 'null')).toEqual({
+      textMatches: [{ target: 'name', mode: 'keyword', value: '対象番組' }],
+    })
+  })
+
+  it('番組名が空なら検索条件を作れないためリンクを出さない', async () => {
+    stubFetch()
+    const user = userEvent.setup()
+    renderInRouter(
+      <ProgramRow
+        program={program({ name: '' })}
+        reserved={false}
+        pending={false}
+        reservationStateUnknown={false}
+        onReserve={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    const row = await screen.findByTestId('program-row')
+    await user.click(within(row).getByRole('button', { expanded: false }))
+    expect(within(row).queryByRole('link', { name: 'この番組名で検索' })).not.toBeInTheDocument()
   })
 
   it('予約済みの行でも重なり警告を表示する', async () => {
