@@ -61,16 +61,9 @@ hls.js には `startPosition: 0` を渡す。録画詳細には番組開始か�
 つまみを離すと別の offset URL へ切り替わり、古いセッションへ leave ヒントを送り、
 新しい playlist を要求する。つまみを動かさない場合は従来の URL で録画先頭から始め、保存済みの
 再生位置を復元する。つまみを動かして 0 秒を選ぶ場合は、保存済みの位置を復元せず先頭から
-始める。EVENT playlist が伸びている間の現在位置は通常の video controls でもシークでき、
-`最新` は playlist の現在の duration（または buffered の末尾）へ移動して再生を試みる。
-
-`最新` は現時点では残す。2026-09-23 の Chromium 151 実測では、育成中の EVENT playlist
-で標準スクラバーを右端へ動かすと、`seekable.end(0)` まで到達できた。Chromium では専用
-ボタンと標準操作が重なる。ENDLIST 後は右端ちょうどから `play()` すると
-先頭へ戻る挙動も確認されており、ボタンが使う 0.1 秒の余白には根拠がある。一方、WebKit
-のネイティブ HLS ではこの harness で再生を開始できず、標準バーやライブ端への移動方法を
-測れていない。Safari を含む対象ブラウザで標準スクラバーが同じ役割を果たすか確認してから
-ボタンの要否を決める。
+始める。EVENT playlist が伸びている間の現在位置は通常の video controls でシークできる。
+Chromium 151 では標準スクラバーの右端から playlist の seekable end まで移動できることを
+確認している。末尾から 1 秒程度遅れることを許容し、専用の「最新」ボタンは置かない。
 
 追っかけは録画再生なので、VOD と共通の `rokuban:playback-rate` を使う。標準 controls の
 `ratechange` を保存し、開始時に `defaultPlaybackRate` と `playbackRate` へ設定する。通常の

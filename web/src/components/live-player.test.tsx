@@ -525,22 +525,14 @@ describe('LivePlayer の状態遷移', () => {
       expect(hlsMockState.instances[0]!.loadSource).toHaveBeenCalledWith(
         '/api/sites/default/recordings/7/chase/playlist.m3u8?profile=live-720p',
       )
-      const latest = screen.getByRole('button', { name: '最新' })
       const video = document.querySelector('video')!
-      Object.defineProperty(video, 'duration', { value: 120, configurable: true })
       Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
 
       fireEvent.loadedMetadata(video)
       expect(video.currentTime).toBe(12)
-
-      const play = vi.spyOn(video, 'play').mockResolvedValue(undefined)
-      await userEvent.click(latest)
-      expect(video.currentTime).toBeCloseTo(119.9, 5)
-      expect(play).toHaveBeenCalledTimes(1)
     })
 
     it('指定した開始オフセットから読み、保存位置を上書きせず録画全体の秒数で扱う', async () => {
-      const user = userEvent.setup()
       savePlaybackPosition(8, 'vod-h264', 42)
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
       render(
@@ -565,15 +557,6 @@ describe('LivePlayer の状態遷移', () => {
       video.currentTime = 13
       fireEvent.timeUpdate(video)
       expect(localStorage.getItem('rokuban:playback:8:vod-h264')).toBe('43')
-
-      Object.defineProperty(video, 'duration', { value: 120, configurable: true })
-      const play = vi.spyOn(video, 'play').mockResolvedValue(undefined)
-      await user.click(screen.getByRole('button', { name: '最新' }))
-      expect(video.currentTime).toBeCloseTo(119.9, 5)
-      expect(play).toHaveBeenCalledTimes(1)
-
-      fireEvent.timeUpdate(video)
-      expect(localStorage.getItem('rokuban:playback:8:vod-h264')).toBe('149')
     })
 
     it('録画先頭を明示したときも保存位置を復元しない', async () => {

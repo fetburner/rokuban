@@ -592,40 +592,6 @@ export function LivePlayer({
 
   const chasePlaybackProfile = playbackProfile ?? profile ?? ''
 
-  const seekLatest = () => {
-    const video = videoRef.current
-    if (!video) return
-    const bufferedEnd =
-      video.buffered.length > 0 ? video.buffered.end(video.buffered.length - 1) : Number.NaN
-    const target = Number.isFinite(video.duration) ? video.duration : bufferedEnd
-    if (!Number.isFinite(target) || target <= 0) return
-    // VOD-like EVENT playlists can report their current end as `duration`. Seeking
-    // to that exact end and then calling play() makes Chromium treat the media as
-    // ended and restart from 0. Stay just inside the available edge; for very short
-    // media there is no useful margin to subtract.
-    const latest = target > 0.25 ? target - 0.1 : target
-    // Start playback first, then seek. hls.js may apply its configured
-    // startPosition while play() is being scheduled; seeking before play can
-    // therefore be overwritten back to 0 in a growing EVENT playlist.
-    const playPromise = video.play()
-    video.currentTime = latest
-    const reassertLatest = () => {
-      if (Math.abs(video.currentTime - latest) > 0.5) video.currentTime = latest
-    }
-    // Some browsers leave the play() promise pending while MediaSource is
-    // attaching, so the promise callback alone is not sufficient.
-    window.setTimeout(reassertLatest, 100)
-    void playPromise
-      .then(() => {
-        // hls.js can apply `startPosition` after play() resolves. Re-assert the
-        // requested live edge once playback has actually started.
-        reassertLatest()
-      })
-      .catch(() => {
-        // Autoplay policy may require the user's existing play gesture.
-      })
-  }
-
   return (
     <div className={cn('flex w-full max-w-3xl flex-col', className)}>
       <div className="relative aspect-video w-full rounded bg-black">
@@ -664,8 +630,8 @@ export function LivePlayer({
             lastSavedSecond.current = Math.floor(globalPosition)
             // The chase playlist is an expanding EVENT playlist, so its current
             // duration is only the current live edge, not the recording's final
-            // duration. Passing it here would erase a position near "最新" as if
-            // playback had completed. RecordingPlayer keeps the VOD duration
+            // duration. Passing it here would erase a position near the live edge
+            // as if playback had completed. RecordingPlayer keeps the VOD duration
             // based completion behavior after the recording is finalized.
             savePlaybackPosition(recordingId, chasePlaybackProfile, globalPosition)
           }}
@@ -710,18 +676,6 @@ export function LivePlayer({
           </div>
         )}
       </div>
-
-      {isChase && !error && (
-        <div className="flex justify-end px-1 py-1">
-          <button
-            type="button"
-            onClick={seekLatest}
-            className="rounded border border-border px-2 py-1 text-xs text-foreground hover:bg-muted"
-          >
-            最新
-          </button>
-        </div>
-      )}
     </div>
   )
 }

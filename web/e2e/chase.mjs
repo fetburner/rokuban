@@ -3,9 +3,9 @@
 // jsdom では測れないものだけを見る。録画中の録画詳細へ `#chase` で入り、
 // 追っかけ位置のタイムラインを実際にドラッグし、pointer up まで stream を
 // 張り直さないこと、選んだ offset の HLS セグメントから再生することを測る。
-// あわせて EVENT playlist の成長、`最新`、VOD と共通の再生速度を Chromium +
-// 実 HLS セグメントで確認する。mirakc / DB の録画ファイルは使わず、録画 API と
-// HLS は page.route で差し替える。
+// あわせて EVENT playlist の成長と VOD と共通の再生速度を Chromium + 実 HLS
+// セグメントで確認する。mirakc / DB の録画ファイルは使わず、録画 API と HLS は
+// page.route で差し替える。
 //
 //   cd web && pnpm build
 //   pnpm preview --port 4173 --strictPort &
@@ -41,7 +41,7 @@ const recording = {
   serviceId: 5168,
   eventId: 1,
   title: '録画中の番組',
-  description: '追っかけ再生の最新ボタンと重ならないことを確認する番組説明です。',
+  description: '追っかけ再生の位置タイムラインと映像の領域を確認する番組説明です。',
   startAt: recordingStartAt,
   durationMs: 60_000,
   status: 'recording',
@@ -373,65 +373,13 @@ if (startTime > 2) {
   ng.push(`① 追っかけの開始位置が先頭でない（currentTime=${startTime}）`)
 }
 
-log('\n=== ② EVENT playlist の成長と「最新」 ===')
+log('\n=== ② EVENT playlist の成長 ===')
 const growthDeadline = Date.now() + 12_000
 while (Date.now() < growthDeadline && new Set(playlistSizes).size < 2) {
   await page.waitForTimeout(250)
 }
 if (new Set(playlistSizes).size < 2) {
   ng.push(`② EVENT playlist が成長しない（sizes=${playlistSizes.join(',') || 'none'}）`)
-}
-
-const latest = page.getByRole('button', { name: '最新' })
-if ((await latest.count()) !== 1) {
-  ng.push('② 「最新」ボタンが表示されない')
-} else {
-  const description = page.getByText(recording.description, { exact: true })
-  await description.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {
-    ng.push('② 番組説明が表示されないため、重なりを測れない')
-  })
-  if (await description.isVisible()) {
-    const buttonRect = await latest.evaluate((button) => {
-      const rect = button.getBoundingClientRect()
-      const player = button.parentElement?.parentElement?.getBoundingClientRect()
-      return {
-        top: rect.top,
-        bottom: rect.bottom,
-        playerTop: player?.top ?? Number.NaN,
-        playerBottom: player?.bottom ?? Number.NaN,
-      }
-    })
-    const descriptionTop = await description.evaluate((element) => element.getBoundingClientRect().top)
-    if (!Number.isFinite(buttonRect.playerTop) || !Number.isFinite(buttonRect.playerBottom)) {
-      ng.push('② 「最新」ボタンを含むプレイヤー領域を特定できない')
-    } else if (
-      buttonRect.top < buttonRect.playerTop ||
-      buttonRect.bottom > buttonRect.playerBottom
-    ) {
-      ng.push(
-        `② 「最新」ボタンがプレイヤー全体の枠内に収まらない（button=${buttonRect.top}..${buttonRect.bottom}, player=${buttonRect.playerTop}..${buttonRect.playerBottom}）`,
-      )
-    }
-    if (buttonRect.bottom > descriptionTop) {
-      ng.push(
-        `② 「最新」ボタンが番組説明に重なる（button.bottom=${buttonRect.bottom}, description.top=${descriptionTop}）`,
-      )
-    }
-    if (descriptionTop < buttonRect.playerBottom) {
-      ng.push(
-        `② 番組説明がプレイヤー全体の下に押し下げられない（player.bottom=${buttonRect.playerBottom}, description.top=${descriptionTop}）`,
-      )
-    }
-  }
-  await latest.click()
-  await page.waitForTimeout(250)
-  const position = await page.locator('video').evaluate((video) => ({
-    currentTime: video.currentTime,
-    duration: video.duration,
-  }))
-  if (Number.isFinite(position.duration) && position.duration > 0 && position.currentTime < position.duration - 1) {
-    ng.push(`② 「最新」が EVENT の末尾へ移動しない（${position.currentTime}/${position.duration}）`)
-  }
 }
 
 if (!playlistEnded) {
@@ -561,27 +509,6 @@ for (const offsetSeconds of offsetScenarios) {
       { timeout: 5000 },
     )
     .catch(() => ng.push(`③ ${offsetSeconds}秒の追っかけ位置が録画全体の秒数で保存されない`))
-
-  if (offsetSeconds === offsetScenarios[0]) {
-    const latestDuration = await page.locator('video').evaluate((video) => video.duration)
-    await page.getByRole('button', { name: '最新' }).click()
-    await page
-      .waitForFunction((duration) => {
-        const video = document.querySelector('video')
-        return video !== null && video.currentTime >= duration - 1
-      }, latestDuration, { timeout: 3000 })
-      .catch(() => ng.push('③ offset 付き playlist で「最新」が末尾へ移動しない'))
-    await page
-      .waitForFunction(
-        ({ key, offset, duration }) => {
-          const saved = Number(localStorage.getItem(key))
-          return Number.isFinite(saved) && saved >= offset + duration - 2
-        },
-        { key: savedPositionKey, offset: offsetSeconds, duration: latestDuration },
-        { timeout: 3000 },
-      )
-      .catch(() => ng.push('③ offset 付き playlist の「最新」位置を録画全体の秒数で保存しない'))
-  }
 
   const previousOffset = offsetSeconds === offsetScenarios[0] ? undefined : offsetScenarios[0]
   if (previousOffset !== undefined) {
