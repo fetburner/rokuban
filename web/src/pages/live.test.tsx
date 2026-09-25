@@ -1502,7 +1502,7 @@ describe('LivePage / 画質（プロファイル）切替（issue #869）', () =
  * 無い。ここで見るのは配線だけである。
  */
 describe('LivePage / 音声（issue #870）', () => {
-  it('標準を既定として主音声・副音声の 2 択を出す', async () => {
+  it('標準を既定として主音声・副音声を出す', async () => {
     stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })] })
     renderLive()
 
@@ -1558,14 +1558,29 @@ describe('LivePage / 音声（issue #870）', () => {
     stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })] })
     renderLive('/live?service=1&audio=sub')
 
-    expect(await screen.findByLabelText('音声')).toHaveValue('sub')
+    const select = await screen.findByLabelText('音声')
+    expect(select).toHaveValue('sub')
+    expect(screen.getByRole('option', { name: '標準' })).toBeDisabled()
   })
 
-  /** 未知の値は streamer が 400 を返すので、フロントが先に落として標準へ倒す。 */
-  it('未知の ?audio= は標準に落ちる', async () => {
+  /**
+   * 未知の値は streamer が 400 を返すので、フロントが先に落として既定へ倒す。
+   *
+   * **セレクタの value だけを見てはならない。** 一致する option が無い値では
+   * `<select>` は先頭の option を表示するので、`?audio=both` が素通りしても
+   * `toHaveValue('main')` になってしまう（route の `validateSearch` を素通しに
+   * 変えても緑のままだった）。**実際に probe の URL に載らないこと**を見る ---
+   * 載れば streamer は 400 を返し、再生はエラー画面になる。
+   */
+  it('未知の ?audio= は落ちて probe の URL に載らない', async () => {
+    const user = userEvent.setup()
     stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })] })
     renderLive('/live?service=1&audio=both')
 
     expect(await screen.findByLabelText('音声')).toHaveValue('')
+
+    await user.click(screen.getByRole('button', { name: /再生/ }))
+    await waitFor(() => expect(playlistFetchCallCount()).toBe(1))
+    expect(playlistFetchURLs()[0]).not.toContain('audio=')
   })
 })

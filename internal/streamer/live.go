@@ -110,14 +110,22 @@ type LiveProfile struct {
 //
 // **既定（LiveAudioDefault）は `-dual_mono_mode` を付けない。** 引数が音声を
 // 選ばない要求で現行と完全に同一でなければ、音声を選んでいない利用者の再生結果が
-// 黙って変わる。二重音声では既定が「主音声が左・副音声が右のステレオ」であり、
-// main / sub を明示したときだけ ffmpeg が片方を両チャンネルへ写す（下記 Args）。
+// 黙って変わる。
 //
-// **二重音声でない通常のステレオでは main / sub のどちらも無効である**（実測:
-// ffmpeg 9.0.2。L=440Hz / R=880Hz のステレオ AAC を既定/main/sub/both の 4 通りで
-// デコードして出力がバイト一致、チャンネル分離も保持）。意味の無い番組で副音声を
-// 選んでも何も起きない --- UI に「副音声がありません」を出す必要が無いのはこの
-// 性質による。
+// **二重音声の放送で何がどう聞こえるかは実放送では未検証である**（このリポジトリの
+// 確認環境に実チューナーが無く、ffmpeg の aac エンコーダは 2 SCE のビットストリームを
+// 作れないので手元に二重音声の TS を用意できない）。分かっているのは ffmpeg 9.0.2 の
+// 実装を読んだ範囲で、aac デコーダは `dmono_mode` が非 0 かつ 1 フレームの SCE が 2 つ
+// かつ出力レイアウトがステレオのときだけ `frame->data[0] = frame->data[1]`（sub）/
+// `frame->data[1] = frame->data[0]`（main）で片方を両チャンネルへ写し、既定
+// （`dmono_mode == 0`）では写さない、というものである。**この写し方の帰結
+// （`main` で主音声が両チャンネルに出る等）は実放送で確かめていない。**
+//
+// **二重音声でない通常のステレオでは main / sub のどちらも無効である**（こちらは
+// 実測: ffmpeg 9.0.2。L=440Hz / R=880Hz のステレオ AAC を既定/main/sub/both の
+// 4 通りでデコードして出力がバイト一致、チャンネル分離も保持）。意味の無い番組で
+// 副音声を選んでも何も起きない --- UI に「副音声がありません」を出す必要が無いのは
+// この性質による。
 type LiveAudio string
 
 const (
@@ -1826,35 +1834,80 @@ func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64,
 	}
 
 	// **音声は `sessionKey` に入れない（1 サービス 1 セッションを保つ）。** 要求された
-	// 音声が既存セッションと違うときは、そのセッションを止めて（`stop()` が戻った
-	// 時点で runSession の defer が map からも消している）新しい音声で作り直す。
+	// 音声が既存セッションと違うときは、そのセッションを止めて新しい音声で作り直す。
+	//
+	// **止めた直後に mirakc へ投げ直してはならない。** mirakc は HTTP body の Close と
+	// tuner プロセスの解放を同期していない（実測: 2.35〜4.18 秒。liveMirakcReleaseWait）。
+	// 待たずに投げると、チューナーが埋まっている箱では容量エラーになり、
+	// getOrCreateSessionFor の退避経路に落ちて**無関係なサービスの idle セッションを
+	// 巻き添えにする**（退避対象が無ければ 503）。退避経路と同じ解放待ちを 1 回入れる。
+	// **この待ちは切替のたびに払う**（チューナーが空いていても待つ）--- 「空いているか」を
+	// 先に知る手段が無く、知らずに投げると上の巻き添えが起きる。
 	//
 	// **既定（LiveAudioDefault）の要求では止めない。** 音声を選んでいない利用者の
-	// 要求が、他の視聴者が選んだ音声を巻き戻してしまう --- クライアントの identity を
-	// 持たないので「誰が何を選んだか」は区別できない。フロントは音声を選んだときだけ
-	// `?audio=` を載せ、その後は載せない（docs/frontend/live.md
+	// プレイリスト要求が、他の視聴者が選んだ音声を巻き戻してしまう --- クライアントの
+	// identity を持たないので「誰が何を選んだか」は区別できない。フロントは音声を
+	// 選んだときだけ `?audio=` を載せ、その後は載せない（docs/frontend/live.md
 	// §フロントエンド実装）。
 	//
-	// 2 周で足りる: 1 周目は「既存が別の音声だった」場合の作り直し、2 周目はその
-	// 途中で別の要求が既定の音声で作り直した場合。**2 周しても食い違ったままなら
-	// そのまま返す**（消えたセッションを待たせない）--- 起こりうるのは自分が
-	// 止めてから作り直すまでの数 ms に、別の視聴者のプレイリスト要求が既定の音声で
-	// セッションを作った場合だけで、利用者は音声をもう一度選び直せば直る。
-	for attempt := 0; ; attempt++ {
+	// **返すセッションが「生きていて要求した音声である」ことを確かめる。** 自分が
+	// 作り直した直後に、別の視聴者の要求（違う音声）が同じセッションを stop する
+	// ことがある。止められたセッションを返すと、呼び出し側は消えたディレクトリを
+	// playlistStartupTimeout（既定 15s）待って 504 になる。
+	//
+	// 3 周で足りる（1 周ごとに 1 回作り直す）。**3 周しても決まらない場合は、生きて
+	// いるセッションを返す** --- 音声が要求と違っても、消えたセッションを返すよりは
+	// 視聴を続けられる。ここに来るのは、別の視聴者が同時に違う音声を選び続けた場合
+	// だけである。
+	const audioAttempts = 3
+	for attempt := 1; ; attempt++ {
 		if audio != LiveAudioDefault {
 			if cur, ok := ls.liveSession(serviceID); ok && cur.audio != audio {
 				cur.stop()
+				if err := waitMirakcRelease(ctx); err != nil {
+					return nil, err
+				}
 			}
 		}
 		s, err := ls.getOrCreateSessionFor(ctx, key, source, audio)
-		if err != nil || audio == LiveAudioDefault || s.audio == audio {
+		if err != nil || audio == LiveAudioDefault || (sessionAlive(s) && s.audio == audio) {
 			return s, err
 		}
-		if attempt >= 1 {
+		if attempt >= audioAttempts {
 			slog.Warn("streamer: live audio request lost a race with another request",
 				"service_id", serviceID, "want", string(audio), "got", string(s.audio))
+			if cur, ok := ls.liveSession(serviceID); ok && sessionAlive(cur) {
+				return cur, nil
+			}
 			return s, nil
 		}
+	}
+}
+
+// waitMirakcRelease は mirakc がチューナーを解放するのを待つ（liveMirakcReleaseWait）。
+// ctx が先に終われば ctx.Err() を返す。
+//
+// 退避経路（takeIdleSessionForRetry → stop）の待ちと同じ理由・同じ値である。あちらは
+// ctx が切れたときに専用のメトリクスを計上するため select を自前で持っているので、
+// ここへは寄せていない。
+func waitMirakcRelease(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(liveMirakcReleaseWait):
+		return nil
+	}
+}
+
+// sessionAlive は s の runSession がまだ終わっていない（= 別の要求の stop で殺されて
+// いない）ことを返す。done は runSession の defer の最後（map からの削除と
+// ディレクトリの掃除の後）に閉じるので、閉じていれば s はもう使えない。
+func sessionAlive(s *liveSession) bool {
+	select {
+	case <-s.done:
+		return false
+	default:
+		return true
 	}
 }
 

@@ -45,11 +45,13 @@ export function livePlaylistURL(
  * `GET /api/live-profiles` から来るので形しか見られない、という分担の違いである。
  *
  * **既定（`undefined`）は「音声を選んでいない」** で、streamer は
- * `-dual_mono_mode` を付けない = 現行と同じ引数になる。二重音声では主音声が左・
- * 副音声が右のステレオとして出る。`main` を選ぶと ffmpeg が主音声を両チャンネルへ
- * 写す（`internal/streamer/live.go` の `LiveAudio`）。
+ * `-dual_mono_mode` を付けない = 現行と同じ引数になる。`main` / `sub` を選ぶと
+ * ffmpeg が aac デコーダの `dual_mono_mode` を設定する
+ * （`internal/streamer/live.go` の `LiveAudio`）。
  *
- * 二重音声でない番組では `main` / `sub` のどちらも無効で、選んでも音は変わらない
+ * **二重音声の放送で実際に何が聞こえるかは未検証である**（この環境に実チューナーが
+ * 無く、二重音声の TS を用意できない）。分かっているのは ffmpeg の実装を読んだ範囲と、
+ * **二重音声でない番組では `main` / `sub` のどちらも無効**ということだけである
  * （実測: ffmpeg 9.0.2。通常のステレオ AAC では 4 通りで出力がバイト一致）。
  */
 export type LiveAudioChoice = 'main' | 'sub'

@@ -154,15 +154,15 @@ export function LivePage() {
     })
   }
 
-  // 音声は放送ごとの一覧を持たない（記述子を読むのは不変条件 6 に反する）。
-  // ffmpeg の dual_mono_mode は通常のステレオでは無効なので、主/副を固定の 2 択で
-  // 出す。`標準`（未指定）は現行どおり `-dual_mono_mode` を付けず、二重音声では
-  // 主=左・副=右をそのまま出す。音声を選んだときだけ probe の 1 回に `?audio=` を
-  // 載せ、その後の HLS URL には載せない（LivePlayer / streamer のコメント参照）。
+  // 音声は放送ごとの一覧を持たない（記述子を読むのは不変条件 6 に反する）。ffmpeg の
+  // `-dual_mono_mode` は通常のステレオでは無効（実測）なので、主/副の 2 択で出す。
+  // 選んだときだけ probe の 1 回に `?audio=` を載せ、その後の HLS URL には載せない
+  // （LivePlayer / streamer のコメント参照）。
+  //
+  // **一度主/副を選んだ後の標準は disabled にする。** 既定へ戻すにはセッションの
+  // 作り直しが要り、同じセッションを見ている他の視聴者の音声を巻き戻すためである。
   const selectAudio = (value: string) => {
-    // 共有セッションに既定音声への「戻し」を送ると、別の視聴者の音声を巻き戻す。
-    // 標準へ戻す場合は停止してページを再読み込みする（docs/frontend/live.md）。
-    if (value === '' && routeSearch.audio !== undefined) return
+    if (value === '') return
     const audio: LiveAudioChoice | undefined =
       value === 'main' || value === 'sub' ? value : undefined
     void navigate({
@@ -405,7 +405,9 @@ export function LivePage() {
                   onChange={(e) => selectAudio(e.target.value)}
                   className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none"
                 >
-                  <option value="">標準</option>
+                  <option value="" disabled={routeSearch.audio !== undefined}>
+                    標準
+                  </option>
                   <option value="main">主音声</option>
                   <option value="sub">副音声</option>
                 </select>

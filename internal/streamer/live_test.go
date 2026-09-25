@@ -572,7 +572,10 @@ func playlistAudioURL(base string, networkID, serviceID int, audio string) strin
 // `-dual_mono_mode` は入力（aac デコーダ）側のオプションなので `?profile=` のようには
 // 扱えない（1 回の起動で主音声と副音声の両方は出せない。実測: ffmpeg 9.0.2 では
 // 出力側に置くと `not a encoding option` で起動に失敗する）。したがって音声の切替は
-// セッションの作り直しであり、チューナーは一瞬 2 本になる（docs/api/media.md §実装）。
+// セッションの作り直しになる。**旧セッションは stop で完全に終わらせてから作り直す**
+// （`stop` は `<-s.done` を待つので、チューナーを 2 本同時に掴む形にはならない）。
+// mirakc 側の解放は非同期なので、止めた直後に投げ直さないよう解放待ちを挟む
+// （下の所要時間の判定がそれを見る。docs/api/media.md §実装）。
 //
 // **既定（`?audio=` 無し）の要求で作り直さないことが本質。** 音声を選んでいない
 // 利用者のプレイリスト要求（2 秒ごとに来る）が、他の視聴者の選んだ音声を巻き戻すと、
@@ -584,37 +587,81 @@ func TestLiveStreamer_AudioSwitchRebuildsSession(t *testing.T) {
 	argsLog := filepath.Join(t.TempDir(), "ffmpeg-args.log")
 	t.Setenv(fakeFFmpegArgsEnv, argsLog)
 
+	// チューナー解放待ち（既定 5s）は 2 回踏むので、テストでは縮める。
+	// **値そのものを 0 にしてはならない** --- 下で「切替が待ちを払っていること」を
+	// 測っている。
+	releaseWait := liveMirakcReleaseWait
+	liveMirakcReleaseWait = 2 * time.Second
+	t.Cleanup(func() { liveMirakcReleaseWait = releaseWait })
+
 	mirakcSrv, state := newFakeMirakcLiveServer(t)
 	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
 
 	const serviceID = 1024
-	get := func(audio string) string {
+	// get は 1 要求を投げ、(プレイリスト本文, 所要時間) を返す。
+	get := func(audio string) (string, time.Duration) {
 		t.Helper()
+		started := time.Now()
 		resp, err := http.Get(playlistAudioURL(srv.URL, 0, serviceID, audio))
 		if err != nil {
 			t.Fatalf("GET playlist (audio=%q): %v", audio, err)
 		}
 		body, readErr := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
+		elapsed := time.Since(started)
 		if readErr != nil {
 			t.Fatalf("reading playlist (audio=%q): %v", audio, readErr)
 		}
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("status (audio=%q) = %d, want 200", audio, resp.StatusCode)
 		}
-		return string(body)
+		return string(body), elapsed
+	}
+	// getAbsent は `?audio=` を**そもそも付けない**要求（既定）。
+	getAbsent := func() {
+		t.Helper()
+		resp, err := http.Get(playlistURL(srv.URL, 0, serviceID, ""))
+		if err != nil {
+			t.Fatalf("GET playlist (no audio query): %v", err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status (no audio query) = %d, want 200", resp.StatusCode)
+		}
 	}
 
-	if body := get(""); !strings.Contains(body, "h264_seg00001.ts") {
+	if body, _ := get(""); !strings.Contains(body, "h264_seg00001.ts") {
 		t.Errorf("既定のプレイリスト = %q, want it to point at h264_seg00001.ts", body)
 	}
-	get("")    // `?audio=` が空 = 既定。作り直さない
-	get("sub") // 作り直す
+	getAbsent() // `?audio=` を付けない = 既定。作り直さない
+	get("")     // `?audio=` が空 = 既定。作り直さない
+	switchElapsed := func() time.Duration {
+		_, elapsed := get("sub")
+		return elapsed
+	}()
 	get("sub") // 同じ音声。作り直さない
 	// **既定に戻す要求では作り直さない。** これを崩すと、音声を選んでいない
 	// 視聴者の 2 秒ごとの要求が、副音声を選んだ視聴者の音声を巻き戻し続ける。
+	getAbsent()
 	get("")
-	get("main") // 作り直す
+	mainElapsed := func() time.Duration {
+		_, elapsed := get("main")
+		return elapsed
+	}()
+
+	// **切替はチューナーの解放待ちを払う。** 待たずに mirakc へ投げ直すと、
+	// チューナーが埋まっている箱では容量エラーになり、退避経路が無関係な
+	// サービスの idle セッションを巻き添えにする（解放までの実測は 2.35〜4.18 秒）。
+	// 実装から待ちを外すと、所要時間は起動ぶん（数十 ms）になってこの判定が落ちる。
+	for _, c := range []struct {
+		name    string
+		elapsed time.Duration
+	}{{"sub", switchElapsed}, {"main", mainElapsed}} {
+		if c.elapsed < liveMirakcReleaseWait-200*time.Millisecond {
+			t.Errorf("?audio=%s の所要時間 = %v, want >= %v "+
+				"(止めた直後に mirakc へ投げ直している)", c.name, c.elapsed, liveMirakcReleaseWait-200*time.Millisecond)
+		}
+	}
 
 	if got := state.requestCount(); got != 3 {
 		t.Errorf("mirakc stream requests = %d, want 3 "+
