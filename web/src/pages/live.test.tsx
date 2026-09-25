@@ -1508,7 +1508,9 @@ describe('LivePage / 音声（issue #870）', () => {
 
     const select = await screen.findByLabelText('音声')
     expect(select).toHaveValue('')
-    expect(screen.getByRole('option', { name: '標準' })).toBeInTheDocument()
+    // 未選択のときは選べる（`disabled` の両方向を固定する。片方だけだと
+    // 「常に disabled」の変異が緑のまま通る）。
+    expect(screen.getByRole('option', { name: '標準' })).toBeEnabled()
     expect(screen.getByRole('option', { name: '主音声' })).toBeInTheDocument()
     expect(screen.getByRole('option', { name: '副音声' })).toBeInTheDocument()
   })
@@ -1567,8 +1569,8 @@ describe('LivePage / 音声（issue #870）', () => {
    * 未知の値は streamer が 400 を返すので、フロントが先に落として既定へ倒す。
    *
    * **セレクタの value だけを見てはならない。** 一致する option が無い値では
-   * `<select>` は先頭の option を表示するので、`?audio=both` が素通りしても
-   * `toHaveValue('main')` になってしまう（route の `validateSearch` を素通しに
+   * `<select>` の `value` が `''` になるので、`?audio=both` が素通りしても
+   * `toHaveValue('')` が空虚に通ってしまう（route の `validateSearch` を素通しに
    * 変えても緑のままだった）。**実際に probe の URL に載らないこと**を見る ---
    * 載れば streamer は 400 を返し、再生はエラー画面になる。
    */

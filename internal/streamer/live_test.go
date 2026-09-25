@@ -587,7 +587,7 @@ func TestLiveStreamer_AudioSwitchRebuildsSession(t *testing.T) {
 	argsLog := filepath.Join(t.TempDir(), "ffmpeg-args.log")
 	t.Setenv(fakeFFmpegArgsEnv, argsLog)
 
-	// チューナー解放待ち（既定 5s）は 2 回踏むので、テストでは縮める。
+	// 解放待ち（既定 5s）は切替のたびに踏むので、テストでは縮める。
 	// **値そのものを 0 にしてはならない** --- 下で「切替が待ちを払っていること」を
 	// 測っている。
 	releaseWait := liveMirakcReleaseWait
@@ -630,7 +630,8 @@ func TestLiveStreamer_AudioSwitchRebuildsSession(t *testing.T) {
 		}
 	}
 
-	if body, _ := get(""); !strings.Contains(body, "h264_seg00001.ts") {
+	body, baseElapsed := get("")
+	if !strings.Contains(body, "h264_seg00001.ts") {
 		t.Errorf("既定のプレイリスト = %q, want it to point at h264_seg00001.ts", body)
 	}
 	getAbsent() // `?audio=` を付けない = 既定。作り直さない
@@ -652,14 +653,19 @@ func TestLiveStreamer_AudioSwitchRebuildsSession(t *testing.T) {
 	// **切替はチューナーの解放待ちを払う。** 待たずに mirakc へ投げ直すと、
 	// チューナーが埋まっている箱では容量エラーになり、退避経路が無関係な
 	// サービスの idle セッションを巻き添えにする（解放までの実測は 2.35〜4.18 秒）。
-	// 実装から待ちを外すと、所要時間は起動ぶん（数十 ms）になってこの判定が落ちる。
+	//
+	// **判定は絶対時間ではなく、起動ぶんを相殺した差で見る。** 起動と停止は待ちと
+	// 無関係に 1 秒前後掛かる（実測 1.0〜1.1 秒）ので、絶対値で閾値を置くと遅い機械で
+	// 待ちを外した変異が通ってしまう。切替の所要は「起動ぶん + 解放待ち」なので、
+	// 待ちを外すと起動ぶんまで落ちる。
 	for _, c := range []struct {
 		name    string
 		elapsed time.Duration
 	}{{"sub", switchElapsed}, {"main", mainElapsed}} {
-		if c.elapsed < liveMirakcReleaseWait-200*time.Millisecond {
-			t.Errorf("?audio=%s の所要時間 = %v, want >= %v "+
-				"(止めた直後に mirakc へ投げ直している)", c.name, c.elapsed, liveMirakcReleaseWait-200*time.Millisecond)
+		want := baseElapsed + liveMirakcReleaseWait - 200*time.Millisecond
+		if c.elapsed < want {
+			t.Errorf("?audio=%s の所要時間 = %v, want >= %v (起動ぶん %v + 解放待ち %v)。"+
+				"止めた直後に mirakc へ投げ直している", c.name, c.elapsed, want, baseElapsed, liveMirakcReleaseWait)
 		}
 	}
 
@@ -2956,8 +2962,10 @@ func TestLiveStreamer_LeaveHint_SiteMismatch(t *testing.T) {
 // 固定する 2 点:
 //
 //   - **既定は `-dual_mono_mode` を一切足さない。** 引数が現行と同一でなければ、
-//     音声を選んでいない利用者の再生結果が黙って変わる（二重音声では左=主/右=副の
-//     ステレオとして出ており、main/sub を明示したときだけ片方が両チャンネルへ写る）。
+//     音声を選んでいない利用者の再生結果が黙って変わる。二重音声の放送で既定 / main /
+//     sub がそれぞれ何を出すかは実放送では未検証（ffmpeg の実装を読んだ範囲では、
+//     aac デコーダは `dmono_mode` が非 0 かつ SCE が 2 つかつステレオのときだけ
+//     片方を両チャンネルへ写す。live.go の LiveAudio 参照）。
 //   - **main / sub は `-i` より前に入る。** 入力（aac デコーダ）側のオプションで、
 //     出力側に置くと ffmpeg は `not a encoding option` で起動に失敗する
 //     （実測: ffmpeg 9.0.2）。
@@ -3648,5 +3656,90 @@ func TestBuildLiveFFmpegArgs_CaptionsFixSubDuration(t *testing.T) {
 	off := strings.Join(BuildLiveFFmpegArgs(cfg, "/tmp/live/1", LiveAudioDefault, false), " ")
 	if strings.Contains(off, "-fix_sub_duration") {
 		t.Errorf("captionless args must not carry -fix_sub_duration: %s", off)
+	}
+}
+
+// TestLiveStreamer_AudioSwitchKeepsTheSharedSession は、**音声を切り替えている間も
+// 同じサービスのセッションが map に居続ける**ことを固定する（issue #870 のレビュー）。
+//
+// 旧セッションを止めてから後任を作る順だと、その間（mirakc の解放待ち＝実測で
+// 2.35〜4.18 秒に加えて ffmpeg の停止）はサービスにセッションが無い。**その窓に
+// 届いた既定音声のプレイリスト要求は別セッションを作ってしまう。** 後任の要求から
+// 見ると「音声が違う」ので、そのセッションはまた止められる --- 音声に触っていない
+// 視聴者が巻き添えで何度も切り替わり、最後には要求した音声が反映されないこともある。
+//
+// 見るのは「切替の間ずっと既定音声で取り続けた視聴者が、新しいセッションを 1 本も
+// 作らないこと」である。
+//
+// 壊し方: 後任の予約より先に旧セッションを止める（この順にすると偽 mirakc の stream
+// 要求が 3 件以上になる）。
+func TestLiveStreamer_AudioSwitchKeepsTheSharedSession(t *testing.T) {
+	argsLog := filepath.Join(t.TempDir(), "ffmpeg-args.log")
+	t.Setenv(fakeFFmpegArgsEnv, argsLog)
+
+	releaseWait := liveMirakcReleaseWait
+	liveMirakcReleaseWait = 500 * time.Millisecond
+	t.Cleanup(func() { liveMirakcReleaseWait = releaseWait })
+
+	mirakcSrv, state := newFakeMirakcLiveServer(t)
+	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
+	const serviceID = 1024
+
+	// getDefault は既定音声（`?audio=` 無し）のプレイリストを 1 回取る。poller から
+	// 呼ぶので t.Fatal を呼ばない（呼ぶとテスト goroutine 以外からの失敗になる）。
+	getDefault := func() {
+		resp, err := http.Get(playlistURL(srv.URL, 0, serviceID, ""))
+		if err != nil {
+			return
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}
+
+	getDefault()
+	if got := state.requestCount(); got != 1 {
+		t.Fatalf("最初の mirakc stream requests = %d, want 1", got)
+	}
+
+	// 切替の間、既定音声の視聴者がプレイリストを取り続ける。
+	stopPoller := make(chan struct{})
+	var poller sync.WaitGroup
+	poller.Add(1)
+	go func() {
+		defer poller.Done()
+		for {
+			select {
+			case <-stopPoller:
+				return
+			default:
+			}
+			getDefault()
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+
+	resp, err := http.Get(playlistAudioURL(srv.URL, 0, serviceID, "sub"))
+	if err != nil {
+		t.Fatalf("GET playlist (audio=sub): %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	close(stopPoller)
+	poller.Wait()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("audio=sub status = %d, want 200", resp.StatusCode)
+	}
+	if got := state.requestCount(); got != 2 {
+		t.Errorf("mirakc stream requests = %d, want 2 "+
+			"(切替の間に既定音声の要求が別セッションを作っている。そのセッションは "+
+			"音声違いとして更に止められる)", got)
+	}
+	lines := readFFmpegArgsLog(t, argsLog)
+	if len(lines) != 2 {
+		t.Fatalf("ffmpeg 起動回数 = %d, want 2:\n%s", len(lines), strings.Join(lines, "\n"))
+	}
+	if !strings.Contains(lines[1], "-dual_mono_mode sub") {
+		t.Errorf("切替後の起動に `-dual_mono_mode sub` が無い: %q", lines[1])
 	}
 }

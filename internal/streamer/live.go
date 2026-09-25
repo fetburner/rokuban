@@ -300,6 +300,18 @@ type LiveStreamer struct {
 	// の起動待ち）を含めない** --- 含めると別サービスの無関係な起動待ちまでこの
 	// ロックで直列化されてしまう。
 	evictMu sync.Mutex
+
+	// audioSwitchMu は音声切替（`?audio=` の置き換え）をこの site の中で直列化する。
+	// **無いと、主/副を連続して要求されたときに後任が後任を殺し合う。** 切替は
+	// 「後任を予約 → 旧を stop → 後任の起動待ち」の順で走るので、2 本が重なると
+	// 後から来た方が先発の後任を「旧」として stop する。先発の要求は起動待ちの
+	// 途中で自分のセッションを失い、`startErr` で失敗するか、消えたディレクトリを
+	// 待って 504 になる（実測: 変異版でテストが 600 秒ハングした）。
+	//
+	// **保持区間は「後任の起動待ち」まで**（上限 playlistStartupTimeout + 解放待ち）で、
+	// 同じ site の別サービスの切替もその間待つ。既定音声の要求（切替を起こさない
+	// 側）はこのロックを取らないので、通常の視聴は影響を受けない。
+	audioSwitchMu sync.Mutex
 }
 
 // NewLive は LiveStreamer を生成する。cfg.Enabled が false なら Mount は
@@ -571,6 +583,14 @@ func (c LiveConfig) idleEvictionThreshold() time.Duration {
 // 15s×3 + 5s = 50s）になる。Segment は getOrCreateSession を経由しない
 // （getOrCreateSessionOnce を直接呼ばず、既存セッションの `<-s.ready` だけを
 // 待つ）分、通常経路はこの値 1 回分（既定 15s）で済む。
+//
+// **音声の切替（`?audio=`）も同じ枠の中に居る。** 旧セッションの stop（ffmpeg の
+// 終了待ち）→ 後任の起動待ち（前任の終了 + liveMirakcReleaseWait + 起動。上限は
+// この値）→ waitForPlaylist（最大この値）が直列に並ぶ。stop はこの値で上限が
+// 付いていない（ffmpeg の WaitDelay と SIGKILL で現実には数秒）ので、切替 1 本の
+// 最悪は概ね `stop + この値 × 2 + liveMirakcReleaseWait` になる。**この枠は
+// 反復しない** --- 置き換えは 1 回で、音声が食い違ったまま残る経路は無い
+// （getOrCreateSession の doc コメント参照）。
 //
 // var にしてあるのはテストからの上書き用（15 秒の実待ちはテストを不必要に
 // 遅くする）。運用者向けの設定キーではない。
@@ -1628,6 +1648,12 @@ type liveSession struct {
 	// getOrCreateSession）。
 	audio LiveAudio
 
+	// predecessor は音声切替で置き換えた旧セッション。非 nil なら runSession は
+	// **旧セッションの runSession が終わるまで**（= ffmpeg の終了とディレクトリの
+	// 掃除まで）起動しない。同じ serviceID は同じディレクトリを使うので、旧セッションの
+	// cleanupSessionDir が後任の出力を消さない順序にするためのものである。
+	predecessor *liveSession
+
 	ready chan struct{} // startSession が終わったら閉じる（成功でも失敗でも）
 	done  chan struct{} // ffmpeg プロセスが完全に終了したら閉じる
 
@@ -1832,94 +1858,54 @@ func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64,
 	source := func(ctx context.Context) (io.ReadCloser, error) {
 		return ls.mirakc.StreamService(ctx, serviceID, ls.cfg.TunerPriority)
 	}
+	if audio == LiveAudioDefault {
+		return ls.getOrCreateSessionFor(ctx, key, source, audio)
+	}
+
+	ls.audioSwitchMu.Lock()
+	defer ls.audioSwitchMu.Unlock()
 
 	// **音声は `sessionKey` に入れない（1 サービス 1 セッションを保つ）。** 要求された
-	// 音声が既存セッションと違うときは、そのセッションを止めて新しい音声で作り直す。
+	// 音声が既存セッションと違うときは、セッションを置き換える。
 	//
-	// **止めた直後に mirakc へ投げ直してはならない。** mirakc は HTTP body の Close と
-	// tuner プロセスの解放を同期していない（実測: 2.35〜4.18 秒。liveMirakcReleaseWait）。
-	// 待たずに投げると、チューナーが埋まっている箱では容量エラーになり、
-	// getOrCreateSessionFor の退避経路に落ちて**無関係なサービスの idle セッションを
-	// 巻き添えにする**（退避対象が無ければ 503）。退避経路と同じ解放待ちを 1 回入れる。
-	// **この待ちは切替のたびに払う**（チューナーが空いていても待つ）--- 「空いているか」を
-	// 先に知る手段が無く、知らずに投げると上の巻き添えが起きる。
+	// **置き換えは「予約してから止める」順で行う。** 先に後任を map に載せるので、
+	// 旧セッションの後片付けと mirakc の解放を待っている間も map は空にならない。
+	// 逆順（止めてから作る）にすると、その待ちの間（実測で数秒）に届いた既定音声の
+	// プレイリスト要求が**別セッションを作ってしまい**、それが音声違いとして
+	// もう一度止められる --- 音声に触っていない視聴者が巻き添えで何度も切り替わる。
 	//
-	// **既定（LiveAudioDefault）の要求では止めない。** 音声を選んでいない利用者の
+	// **既定（LiveAudioDefault）の要求では置き換えない。** 音声を選んでいない利用者の
 	// プレイリスト要求が、他の視聴者が選んだ音声を巻き戻してしまう --- クライアントの
 	// identity を持たないので「誰が何を選んだか」は区別できない。フロントは音声を
 	// 選んだときだけ `?audio=` を載せ、その後は載せない（docs/frontend/live.md
 	// §フロントエンド実装）。
-	//
-	// **返すセッションが「生きていて要求した音声である」ことを確かめる。** 自分が
-	// 作り直した直後に、別の視聴者の要求（違う音声）が同じセッションを stop する
-	// ことがある。止められたセッションを返すと、呼び出し側は消えたディレクトリを
-	// playlistStartupTimeout（既定 15s）待って 504 になる。
-	//
-	// 3 周で足りる（1 周ごとに 1 回作り直す）。**3 周しても決まらない場合は、生きて
-	// いるセッションを返す** --- 音声が要求と違っても、消えたセッションを返すよりは
-	// 視聴を続けられる。ここに来るのは、別の視聴者が同時に違う音声を選び続けた場合
-	// だけである。
-	const audioAttempts = 3
-	for attempt := 1; ; attempt++ {
-		if audio != LiveAudioDefault {
-			if cur, ok := ls.liveSession(serviceID); ok && cur.audio != audio {
-				cur.stop()
-				if err := waitMirakcRelease(ctx); err != nil {
-					return nil, err
-				}
-			}
-		}
-		s, err := ls.getOrCreateSessionFor(ctx, key, source, audio)
-		if err != nil || audio == LiveAudioDefault || (sessionAlive(s) && s.audio == audio) {
-			return s, err
-		}
-		if attempt >= audioAttempts {
-			slog.Warn("streamer: live audio request lost a race with another request",
-				"service_id", serviceID, "want", string(audio), "got", string(s.audio))
-			if cur, ok := ls.liveSession(serviceID); ok && sessionAlive(cur) {
-				return cur, nil
-			}
-			return s, nil
-		}
-	}
-}
-
-// waitMirakcRelease は mirakc がチューナーを解放するのを待つ（liveMirakcReleaseWait）。
-// ctx が先に終われば ctx.Err() を返す。
-//
-// 退避経路（takeIdleSessionForRetry → stop）の待ちと同じ理由・同じ値である。あちらは
-// ctx が切れたときに専用のメトリクスを計上するため select を自前で持っているので、
-// ここへは寄せていない。
-func waitMirakcRelease(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(liveMirakcReleaseWait):
-		return nil
-	}
-}
-
-// sessionAlive は s の runSession がまだ終わっていない（= 別の要求の stop で殺されて
-// いない）ことを返す。done は runSession の defer の最後（map からの削除と
-// ディレクトリの掃除の後）に閉じるので、閉じていれば s はもう使えない。
-func sessionAlive(s *liveSession) bool {
-	select {
-	case <-s.done:
-		return false
-	default:
-		return true
-	}
-}
-
-// liveSession は serviceID のライブセッションを 1 つ返す（無ければ false）。
-func (ls *LiveStreamer) liveSession(serviceID int64) (*liveSession, bool) {
 	ls.mu.Lock()
-	defer ls.mu.Unlock()
-	if ls.sessions == nil {
-		return nil, false
+	old, exists := ls.sessions[serviceID]
+	if !exists || old.audio == audio {
+		ls.mu.Unlock()
+		return ls.getOrCreateSessionFor(ctx, key, source, audio)
 	}
-	s, ok := ls.sessions[serviceID]
-	return s, ok
+	sessionCtx, s, err := ls.reserveSessionLocked(key, source, audio, old)
+	if err != nil {
+		ls.mu.Unlock()
+		return nil, err
+	}
+	ls.mu.Unlock()
+	ls.setActiveSessionMetrics()
+	go ls.runSession(sessionCtx, s)
+
+	// stop は runSession の後片付け（ディレクトリの掃除）まで待ってから戻るので、
+	// 旧セッションと後任が同じディレクトリを同時に触ることはない。後任は
+	// `s.predecessor` 越しにこの完了を待ってから起動する。
+	old.stop()
+
+	if err := waitReadyTouching(ctx, s, playlistStartupTimeout); err != nil {
+		return nil, err
+	}
+	if s.startErr != nil {
+		return s, s.startErr
+	}
+	return s, nil
 }
 
 func (ls *LiveStreamer) getOrCreateSessionFor(ctx context.Context, key sessionKey, source sessionSource, audio LiveAudio) (*liveSession, error) {
@@ -2013,6 +1999,41 @@ func liveEvictionReason(err error) (string, bool) {
 	return "", false
 }
 
+// reserveSessionLocked は map に新しいセッションを予約し、起動コンテキストを返す。
+// 呼び出し側は ls.mu を保持し、戻ったセッションを go runSession へ渡す。
+//
+// predecessor が非 nil なら音声切替の置き換えである。**プロセス上限を見ない** ---
+// 同じ map slot を置き換えるので同時数は増えない（後任は前任の終了まで tuner を
+// 取らないので、チューナーの同時押さえも増えない）。
+func (ls *LiveStreamer) reserveSessionLocked(key sessionKey, source sessionSource, audio LiveAudio, predecessor *liveSession) (context.Context, *liveSession, error) {
+	if ls.closed {
+		return nil, nil, errShuttingDown
+	}
+	if predecessor == nil && len(ls.sessions)+len(ls.chaseSessions) >= ls.cfg.MaxSessions {
+		return nil, nil, errSessionLimit
+	}
+	sessionCtx, cancel := context.WithCancel(context.Background())
+	s := &liveSession{
+		serviceID:  key.id,
+		key:        key,
+		source:     source,
+		audio:      audio,
+		ready:      make(chan struct{}),
+		done:       make(chan struct{}),
+		lastAccess: time.Now(),
+		cancel:     cancel,
+
+		predecessor: predecessor,
+	}
+	if key.kind == chaseSessionKind {
+		// Chase sessions use recordings.id + offset as the key, while serviceID
+		// remains populated for the live-only tests and logs that predate this shared map.
+		s.serviceID = 0
+	}
+	ls.putSessionLocked(s)
+	return sessionCtx, s, nil
+}
+
 func (ls *LiveStreamer) getOrCreateSessionOnceFor(ctx context.Context, key sessionKey, source sessionSource, audio LiveAudio) (*liveSession, error) {
 	ls.mu.Lock()
 	if s, ok := ls.getSessionLocked(key); ok {
@@ -2025,33 +2046,14 @@ func (ls *LiveStreamer) getOrCreateSessionOnceFor(ctx context.Context, key sessi
 		}
 		return s, nil
 	}
-	if ls.closed {
+	sessionCtx, s, err := ls.reserveSessionLocked(key, source, audio, nil)
+	if err != nil {
 		ls.mu.Unlock()
-		return nil, errShuttingDown
+		if errors.Is(err, errSessionLimit) {
+			metrics.LiveSessionStartFailures.WithLabelValues("session_limit").Inc()
+		}
+		return nil, err
 	}
-	if len(ls.sessions)+len(ls.chaseSessions) >= ls.cfg.MaxSessions {
-		ls.mu.Unlock()
-		metrics.LiveSessionStartFailures.WithLabelValues("session_limit").Inc()
-		return nil, errSessionLimit
-	}
-
-	sessionCtx, cancel := context.WithCancel(context.Background())
-	s := &liveSession{
-		serviceID:  key.id,
-		key:        key,
-		source:     source,
-		audio:      audio,
-		ready:      make(chan struct{}),
-		done:       make(chan struct{}),
-		lastAccess: time.Now(),
-		cancel:     cancel,
-	}
-	if key.kind == chaseSessionKind {
-		// Chase sessions use recordings.id + offset as the key, while serviceID
-		// remains populated for the live-only tests and logs that predate this shared map.
-		s.serviceID = 0
-	}
-	ls.putSessionLocked(s)
 	ls.mu.Unlock()
 	ls.setActiveSessionMetrics()
 
@@ -2167,6 +2169,33 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 		}
 		ls.setActiveSessionMetrics()
 	}()
+
+	// 音声切替で置き換えたセッションは、**旧セッションの後片付けが終わってから**
+	// ディレクトリを作り upstream を取りに行く。同じ serviceID は同じディレクトリを
+	// 使うので、旧セッションの cleanupSessionDir より先に mkdir してはならない。
+	// 続けて mirakc の tuner 解放を待つ（実測 2.35〜4.18 秒。liveMirakcReleaseWait）---
+	// 待たずに投げると、チューナーが埋まっている箱では容量エラーになり、退避経路が
+	// 無関係なサービスの idle セッションを巻き添えにする。
+	if s.predecessor != nil {
+		select {
+		case <-s.predecessor.done:
+		case <-ctx.Done():
+			s.startErr = ctx.Err()
+			close(s.ready)
+			return
+		}
+		// mirakc は HTTP body の Close と tuner プロセスの解放を同期していない
+		// （実測 2.35〜4.18 秒）。待たずに投げると、チューナーが埋まっている箱では
+		// 容量エラーになり、退避経路が無関係なサービスの idle セッションを巻き添えに
+		// する（退避経路と同じ値・同じ理由）。
+		select {
+		case <-time.After(liveMirakcReleaseWait):
+		case <-ctx.Done():
+			s.startErr = ctx.Err()
+			close(s.ready)
+			return
+		}
+	}
 
 	dir := filepath.Join(ls.cfg.SegmentDir, ls.site, strconv.FormatInt(sessionIDOf(s), 10))
 	if kind == chaseSessionKind {
