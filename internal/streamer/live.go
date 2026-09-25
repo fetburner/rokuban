@@ -1906,6 +1906,15 @@ func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64,
 		return nil, err
 	}
 	if s.startErr != nil {
+		// **後片付けが終わるまで待ってから返す。** `ready` は「起動の結果が判明した」
+		// ことしか表さず、map からの削除とディレクトリの掃除は `done` でしか分からない
+		// （`runSession` は `defer close(s.done)` を最初に登録する = 最後に実行する）。
+		// 待たずに返すと、**次の要求が map に残った失敗済みセッションを拾い、同じ
+		// startErr を返す** --- 下の「次のポーリングが作り直す」が成り立たない
+		// （実測: この待ちを入れない版で `-count=20` のうち 2 回、続く既定要求が 503）。
+		// 退避経路が同じ理由で `<-retry.done` している（getOrCreateSessionFor）。
+		<-s.done
+
 		// **退避・再試行はしない（既定の要求と扱いが違うことを認める）。** 置き換えは
 		// 自分で止めた分の解放を待ってから投げているので、それでも上流に拒否されたなら
 		// チューナーは本当に埋まっている。ここで takeIdleSessionForRetry に委ねると、
