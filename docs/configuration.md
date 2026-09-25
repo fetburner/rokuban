@@ -158,7 +158,7 @@ argv の順序（VOD）:
 -f CONTAINER -progress pipe:1 -loglevel error OUTPUT           # アプリ所有の末尾
 ```
 
-argv の順序（live）は同じ規則を入力 1 本・出力 N 本の形に展開したものである。入力側は `live.hwaccel` → `-probesize`/`-analyzeduration` → `live.input_extra_args` → `-f mpegts -i pipe:0`。そのあと、プロファイルごとに `-map` `-c:v`/`-c:a` → `[-vf]`（captions 有効時は `-filter:v:N`）→ `[-crf|-qp]` → `[-preset]`。filter は `deinterlace` が true なら解除を先頭に置き、height があれば scale をその後ろに 1 個だけ連結する。続けて `-force_key_frames` → `profile.extra_args` → `-f hls ...`。
+argv の順序（live）は同じ規則を入力 1 本・出力 N 本の形に展開したものである。入力側は `live.hwaccel` → `-probesize`/`-analyzeduration` → `live.input_extra_args` → `[-dual_mono_mode]` → `-f mpegts -i pipe:0`。そのあと、プロファイルごとに `-map` `-c:v`/`-c:a` → `[-vf]`（captions 有効時は `-filter:v:N`）→ `[-crf|-qp]` → `[-preset]`。filter は `deinterlace` が true なら解除を先頭に置き、height があれば scale をその後ろに 1 個だけ連結する。続けて `-force_key_frames` → `profile.extra_args` → `-f hls ...`。
 
 `deinterlace` は bool とし、filter の実体を `scaler` から導出する。`scaler: software` なのに `deinterlace_vaapi` を書くような矛盾した設定や、`-vf` を別名で自由に書く設定を表現できないようにするためである。`deinterlace: false`（省略）のときは、生成する argv を従来から変えない。
 

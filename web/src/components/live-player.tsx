@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
-import type { LiveDiagnostics, LiveLoadError } from '@/lib/live'
+import type { LiveAudioChoice, LiveDiagnostics, LiveLoadError } from '@/lib/live'
 import {
   claimsHlsPlaylistSupport,
   chasePlaylistURL,
@@ -106,6 +106,15 @@ type LivePlayerProps = {
   /** chase playlist のプロファイル。省略時は streamer の先頭プロファイル。 */
   profile?: string
   /**
+   * ライブの音声（二重音声の主/副。issue #870）。省略時は ffmpeg の既定で、
+   * これは現行と同じ引数（`-dual_mono_mode` を付けない）である。
+   *
+   * **`profile` と違い、これは再生の URL には載らない。** probe の 1 回だけが
+   * `?audio=` を載せ、プレイヤーは `?audio=` 無しの URL を取り直し続ける
+   * （下の effect のコメント参照）。追っかけ再生（`mode="chase"`）では無視する。
+   */
+  audio?: LiveAudioChoice
+  /**
    * 明示的に選んだ録画開始からの秒数。省略時は録画先頭のセッションを
    * 起動して保存済みの再生位置を復元し、0 を含む指定時はセッション先頭から
    * 再生する。
@@ -159,6 +168,7 @@ export function LivePlayer({
   serviceId,
   recordingId,
   profile,
+  audio,
   startOffsetSeconds,
   playbackProfile,
   className,
@@ -291,6 +301,27 @@ export function LivePlayer({
     const url = isChase
       ? chasePlaylistURL(site ?? '', recordingId ?? 0, profile, chaseStartOffset)
       : livePlaylistURL(site ?? '', networkId ?? 0, serviceId ?? 0, profile)
+
+    // 音声（issue #870、二重音声の主/副）。**probe だけが `?audio=` を載せる。**
+    //
+    // `-dual_mono_mode` は ffmpeg の入力（aac デコーダ）側のオプションなので、
+    // `?profile=` のように 1 回の起動で両方の音声を出すことができない。要求された
+    // 音声が今のセッションと違えば、streamer はそのセッションを止めて作り直す
+    // （`internal/streamer/live.go` の `getOrCreateSession`）。
+    //
+    // **だから `?audio=` をプレイヤーの URL に載せ続けてはならない。** hls.js と
+    // ネイティブ `<video>` は同じ URL を数秒ごとに取り直すので、載せ続けると
+    // そのたびに「作り直し」を要求することになり、同じチャンネルを別の音声で
+    // 見ている 2 人が互いの音声を作り直し合って両方止まる（サーバー側では
+    // 区別できない --- クライアントの identity を持たない）。
+    //
+    // probe は再生開始と切替のときにしか走らないので、**1 回だけ適用する**口として
+    // ちょうどよい（probe 自体がセッションを起こす既存の要求であり、要求を
+    // 増やさない）。切替のあとはプレイヤーの URL が `?audio=` を持たないため、
+    // 以降の再取得は音声に触れない。
+    const probeURL = isChase
+      ? url
+      : livePlaylistURL(site ?? '', networkId ?? 0, serviceId ?? 0, profile, audio)
 
     // teardown はこの effect が張ったものを外す手続き（メディアイベントの
     // リスナと stall 監視のタイマー）。cleanup から呼ぶ
@@ -445,7 +476,7 @@ export function LivePlayer({
     async function start() {
       let probe: Awaited<ReturnType<typeof probeLivePlaylist>>
       try {
-        probe = await probeLivePlaylist(url, controller.signal)
+        probe = await probeLivePlaylist(probeURL, controller.signal)
       } catch (err) {
         // 中断（チャンネル切り替え・破棄）は無視する。エラー表示にはしない ---
         // 単に「もう見たいものが変わった」だけで、失敗ではない
@@ -632,6 +663,7 @@ export function LivePlayer({
     isChase,
     mode,
     profile,
+    audio,
     recordingId,
     site,
     networkId,

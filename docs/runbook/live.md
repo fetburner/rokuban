@@ -120,6 +120,52 @@ curl -s "$B?profile=sd" | tail -1            # 別プロファイル（同じセ
 curl -s http://localhost:40773/metrics | grep 'rokuban_live_active_sessions{kind="live"}'
 ```
 
+#### 音声（二重音声の主/副）の切替の確認（偽 mirakc + 偽 ffmpeg で足りる）
+
+**実チューナーは要らない。** 見るのは「`?audio=` が ffmpeg の引数まで届くこと」と
+「別の音声を要求したときだけセッションが作り直されること」の 2 点である。どちらも
+mirakc に何も要求しない偽 mirakc で確かめられる。実測は実ハンドラ（`internal/streamer`
+の HTTP ルーター）+ 偽 mirakc + 偽 ffmpeg で行った。`internal/streamer/live_test.go` の
+`TestLiveStreamer_AudioSwitchRebuildsSession` が同じことを固定している。
+**実バイナリ（`rokuban server --roles streamer`）では未実施** --- 下の手順で確かめる:
+
+- `?audio=` 無し → プレイリストは `h264_seg00001.ts`。ffmpeg の引数に
+  `-dual_mono_mode` は**入らない**。偽 mirakc の stream 要求は 1 件
+- `?audio=`（空文字）→ 作り直さない（stream 要求は 1 件のまま）
+- `?audio=sub` → **セッションを作り直す**（stream 要求が 2 件目）。ffmpeg の引数は
+  `-i` より前に `-dual_mono_mode sub` を持つ
+- `?audio=sub`（繰り返し）→ 作り直さない
+- `?audio=` 無し（既定へ戻す要求）→ **作り直さない**。ここが作り直す実装だと、
+  音声を選んでいない視聴者の数秒ごとの要求が、副音声を選んだ視聴者の音声を
+  巻き戻し続ける
+- `?audio=main` → 作り直す（`-dual_mono_mode main`）
+- `?audio=does-not-exist` → **400**（セッションを起こす前に拒否する）
+
+```sh
+# 偽 mirakc + 偽 ffmpeg（ROKUBAN_TEST_FFMPEG_ARGS_LOG を設定すると
+# installFakeLiveFFmpeg が起動ごとの引数を 1 行ずつ追記する）
+B=http://localhost:40773/api/sites/default/networks/{networkId}/services/{serviceId}/live/playlist.m3u8
+curl -s "$B" | tail -1                        # 既定（引数に -dual_mono_mode は無い）
+curl -s "$B?audio=sub" | tail -1              # 作り直す
+curl -s "$B?audio=sub" | tail -1              # 作り直さない
+curl -s "$B" | tail -1                        # 既定に戻す要求。作り直さない
+cat "$ROKUBAN_TEST_FFMPEG_ARGS_LOG"           # 起動回数と -dual_mono_mode を見る
+curl -s http://localhost:40773/metrics | grep 'rokuban_live_active_sessions{kind="live"}'
+```
+
+**実チューナー・実放送では未実施。** 受け入れのうち「副音声を選んで実際に副音声が
+聞こえること」は、**実チューナーのある環境でしか確かめられない**（このリポジトリの
+確認環境は偽 mirakc のみ）。次の手順で確かめる。
+
+1. BS / 地上波の二重音声の番組（解説放送・二ヶ国語など）を `/live` で再生する
+2. 「音声」セレクタで「副音声」を選ぶ。数秒途切れてから副音声になる
+   （`-dual_mono_mode` は入力側のオプションなので、セッションごと作り直す）
+3. 「標準」に戻すと主音声が左・副音声が右のステレオに戻る
+4. **通常のステレオ番組（二重音声でない）で「副音声」を選んでも音が変わらないこと**を
+   見る。`-dual_mono_mode` は二重音声でない入力では無効である
+5. 番組名・放送局・日時・手順を issue にコメントで残す
+
+
 ### ② ブラウザ側の配線（mirakc 不要）
 
 `web/e2e/live.mjs`。HLS プレイリスト/セグメントは Playwright の `page.route`

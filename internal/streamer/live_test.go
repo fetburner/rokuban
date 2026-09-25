@@ -250,6 +250,12 @@ func installFakeLiveFFmpeg(t *testing.T) string {
 # 標準入力（mirakc からのライブ TS）を消費してパイプを埋めない。
 cat >/dev/null &
 
+# ROKUBAN_TEST_FFMPEG_ARGS_LOG があれば、起動ごとに引数 1 行を追記する
+# （?audio= が実際に ffmpeg まで届いたかを見るテスト用。既定では何もしない）。
+if [ -n "$ROKUBAN_TEST_FFMPEG_ARGS_LOG" ]; then
+  printf '%s\n' "$*" >> "$ROKUBAN_TEST_FFMPEG_ARGS_LOG"
+fi
+
 baseurl=""
 segfile=""
 prev=""
@@ -532,6 +538,125 @@ func TestLiveStreamer_ProfileSwitchKeepsOneSession(t *testing.T) {
 	if got := state.requestCount(); got != 1 {
 		t.Fatalf("mirakc stream requests = %d, want 1 "+
 			"(画質の切替は同じセッションの別プレイリストであり、ffmpeg もチューナーも増えない)", got)
+	}
+}
+
+// fakeFFmpegArgsEnv は installFakeLiveFFmpeg に起動ごとの引数を記録させる環境変数。
+const fakeFFmpegArgsEnv = "ROKUBAN_TEST_FFMPEG_ARGS_LOG"
+
+// readFFmpegArgsLog は偽 ffmpeg が書いた引数ログを 1 起動 1 行で返す。
+func readFFmpegArgsLog(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the fake ffmpeg args log: %v", err)
+	}
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// playlistAudioURL は `?audio=` 付きのプレイリスト URL を組み立てる（プロファイルは
+// 既定を使う。`audio` が空文字なら `?audio=` を明示的に空で送る）。
+func playlistAudioURL(base string, networkID, serviceID int, audio string) string {
+	return playlistURL(base, networkID, serviceID, "") + "?audio=" + audio
+}
+
+// TestLiveStreamer_AudioSwitchRebuildsSession は、`?audio=` が ffmpeg の引数まで
+// 届き、**別の音声を要求したときだけセッションが作り直される**ことを固定する。
+//
+// `-dual_mono_mode` は入力（aac デコーダ）側のオプションなので `?profile=` のようには
+// 扱えない（1 回の起動で主音声と副音声の両方は出せない。実測: ffmpeg 9.0.2 では
+// 出力側に置くと `not a encoding option` で起動に失敗する）。したがって音声の切替は
+// セッションの作り直しであり、チューナーは一瞬 2 本になる（docs/api/media.md §実装）。
+//
+// **既定（`?audio=` 無し）の要求で作り直さないことが本質。** 音声を選んでいない
+// 利用者のプレイリスト要求（2 秒ごとに来る）が、他の視聴者の選んだ音声を巻き戻すと、
+// 2 人が別々の音声を選んだときに作り直しが止まらなくなる。
+//
+// 壊し方: `Playlist` が `?audio=` を無視する / 既定の要求でも作り直す /
+// 音声を `sessionKey` に入れて同じサービスのセッションを 2 本持つ。
+func TestLiveStreamer_AudioSwitchRebuildsSession(t *testing.T) {
+	argsLog := filepath.Join(t.TempDir(), "ffmpeg-args.log")
+	t.Setenv(fakeFFmpegArgsEnv, argsLog)
+
+	mirakcSrv, state := newFakeMirakcLiveServer(t)
+	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
+
+	const serviceID = 1024
+	get := func(audio string) string {
+		t.Helper()
+		resp, err := http.Get(playlistAudioURL(srv.URL, 0, serviceID, audio))
+		if err != nil {
+			t.Fatalf("GET playlist (audio=%q): %v", audio, err)
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			t.Fatalf("reading playlist (audio=%q): %v", audio, readErr)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status (audio=%q) = %d, want 200", audio, resp.StatusCode)
+		}
+		return string(body)
+	}
+
+	if body := get(""); !strings.Contains(body, "h264_seg00001.ts") {
+		t.Errorf("既定のプレイリスト = %q, want it to point at h264_seg00001.ts", body)
+	}
+	get("")    // `?audio=` が空 = 既定。作り直さない
+	get("sub") // 作り直す
+	get("sub") // 同じ音声。作り直さない
+	// **既定に戻す要求では作り直さない。** これを崩すと、音声を選んでいない
+	// 視聴者の 2 秒ごとの要求が、副音声を選んだ視聴者の音声を巻き戻し続ける。
+	get("")
+	get("main") // 作り直す
+
+	if got := state.requestCount(); got != 3 {
+		t.Errorf("mirakc stream requests = %d, want 3 "+
+			"(既定 / sub / main の 3 回だけ ffmpeg を起動し直す。同じ音声と既定の要求では作り直さない)", got)
+	}
+
+	lines := readFFmpegArgsLog(t, argsLog)
+	if len(lines) != 3 {
+		t.Fatalf("ffmpeg 起動回数 = %d, want 3:\n%s", len(lines), strings.Join(lines, "\n"))
+	}
+	if strings.Contains(lines[0], "-dual_mono_mode") {
+		t.Errorf("既定の起動に -dual_mono_mode が入っている: %q", lines[0])
+	}
+	for i, want := range []string{"sub", "main"} {
+		line := lines[i+1]
+		if !strings.Contains(line, "-dual_mono_mode "+want) {
+			t.Errorf("%s の起動に `-dual_mono_mode %s` が無い: %q", want, want, line)
+		}
+	}
+	// **入力オプションなので `-i` より前でなければ効かない**（出力側に置くと
+	// ffmpeg が起動に失敗する。args_test と同じ不変条件だが、実際に起動した
+	// ffmpeg の引数でも固定する）。
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		dual := slices.Index(fields, "-dual_mono_mode")
+		input := slices.Index(fields, "-i")
+		if dual < 0 || input < 0 || dual > input {
+			t.Errorf("-dual_mono_mode が -i より後にある: %q", line)
+		}
+	}
+
+	// 未知の値は 400（セッションを起こす前に拒否する）。
+	resp, err := http.Get(playlistAudioURL(srv.URL, 0, serviceID, "does-not-exist"))
+	if err != nil {
+		t.Fatalf("GET playlist (unknown audio): %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("unknown audio status = %d, want 400", resp.StatusCode)
+	}
+	if got := state.requestCount(); got != 3 {
+		t.Errorf("mirakc requests = %d, want 3 (unknown audio must be rejected before a session starts)", got)
 	}
 }
 
@@ -931,7 +1056,7 @@ func TestLiveStreamer_SessionLimit_DoesNotEvictWhenCallerContextAlreadyCanceled(
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := ls.getOrCreateSession(ctx, 2)
+	_, err := ls.getOrCreateSession(ctx, 2, LiveAudioDefault)
 	if !errors.Is(err, errSessionLimit) {
 		t.Fatalf("err = %v, want errSessionLimit (an already-canceled ctx must skip eviction and surface the original error)", err)
 	}
@@ -970,7 +1095,7 @@ func TestLiveStreamer_UpstreamFailure_AbandonsRetryWhenCallerContextCancelsDurin
 	t.Cleanup(cancel)
 	time.AfterFunc(300*time.Millisecond, cancel)
 
-	_, err := ls.getOrCreateSession(ctx, targetServiceID)
+	_, err := ls.getOrCreateSession(ctx, targetServiceID, LiveAudioDefault)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
@@ -2777,12 +2902,127 @@ func TestLiveStreamer_LeaveHint_SiteMismatch(t *testing.T) {
 	}
 }
 
+// TestBuildLiveFFmpegArgs_Audio は音声の 3 通り（既定 / 主音声 / 副音声）の引数を
+// **リテラルで**固定する（issue #870 の受け入れ。実装の定数と比較しても、定数を
+// 変えたときに黙って通る）。
+//
+// 固定する 2 点:
+//
+//   - **既定は `-dual_mono_mode` を一切足さない。** 引数が現行と同一でなければ、
+//     音声を選んでいない利用者の再生結果が黙って変わる（二重音声では左=主/右=副の
+//     ステレオとして出ており、main/sub を明示したときだけ片方が両チャンネルへ写る）。
+//   - **main / sub は `-i` より前に入る。** 入力（aac デコーダ）側のオプションで、
+//     出力側に置くと ffmpeg は `not a encoding option` で起動に失敗する
+//     （実測: ffmpeg 9.0.2）。
+//
+// 壊し方: `Args()` の返り値を `-i` の後ろに足す / 既定でも `-dual_mono_mode` を
+// 足す / `?profile=` と同じく出力側へ回す。
+func TestBuildLiveFFmpegArgs_Audio(t *testing.T) {
+	cfg := LiveConfig{Profiles: []LiveProfile{
+		{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
+	}}
+	// 入力ブロックの末尾と出力の先頭が分かる最小構成をリテラルで書く。
+	inputBlock := []string{
+		"-hide_banner", "-nostats", "-loglevel", "error",
+		"-probesize", "5M", "-analyzeduration", "3M",
+	}
+	outputBlock := []string{
+		"-map", "0:v:0", "-map", "0:a:0",
+		"-c:v", "libx264", "-c:a", "aac",
+		"-force_key_frames", "expr:gte(t,n_forced*2)",
+		"-f", "hls",
+		"-hls_time", "2",
+		"-hls_list_size", "6",
+		"-hls_flags", "delete_segments+temp_file",
+		"-hls_segment_filename", "/tmp/live/1/segments/h264_seg%05d.ts",
+		"-hls_base_url", "segments/",
+		"/tmp/live/1/h264.m3u8",
+	}
+
+	cases := []struct {
+		name  string
+		audio LiveAudio
+		want  []string
+	}{
+		{
+			name:  "既定（音声を選んでいない）",
+			audio: LiveAudioDefault,
+			want:  append(append(append([]string{}, inputBlock...), "-f", "mpegts", "-i", "pipe:0"), outputBlock...),
+		},
+		{
+			name:  "主音声",
+			audio: LiveAudioMain,
+			want: append(append(append([]string{}, inputBlock...),
+				"-dual_mono_mode", "main", "-f", "mpegts", "-i", "pipe:0"), outputBlock...),
+		},
+		{
+			name:  "副音声",
+			audio: LiveAudioSub,
+			want: append(append(append([]string{}, inputBlock...),
+				"-dual_mono_mode", "sub", "-f", "mpegts", "-i", "pipe:0"), outputBlock...),
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := BuildLiveFFmpegArgs(cfg, "/tmp/live/1", c.audio, false)
+			if !slices.Equal(got, c.want) {
+				t.Errorf("BuildLiveFFmpegArgs(audio=%q)\n got = %v\nwant = %v", c.audio, got, c.want)
+			}
+		})
+	}
+}
+
+// TestBuildLiveFFmpegArgs_CaptionsAudio は字幕付きの経路でも音声が同じ位置に入り、
+// 字幕の組み立て（`-fix_sub_duration` / master playlist / var_stream_map）が
+// 変わらないことを固定する。
+//
+// 壊し方: captions 経路に `audio.Args()` を足し忘れる / 足す位置を `-i` の後ろに
+// する / 字幕のオプションを音声の追加で壊す。
+func TestBuildLiveFFmpegArgs_CaptionsAudio(t *testing.T) {
+	cfg := LiveConfig{
+		Captions: true,
+		Profiles: []LiveProfile{
+			{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
+		},
+	}
+	base := BuildLiveFFmpegArgs(cfg, "/tmp/live/1", LiveAudioDefault, true)
+	sub := BuildLiveFFmpegArgs(cfg, "/tmp/live/1", LiveAudioSub, true)
+
+	if slices.Contains(base, "-dual_mono_mode") {
+		t.Fatalf("既定の字幕付き起動に -dual_mono_mode が入っている: %v", base)
+	}
+	i := slices.Index(sub, "-dual_mono_mode")
+	if i < 0 || i+1 >= len(sub) || sub[i+1] != "sub" {
+		t.Fatalf("字幕付き経路に `-dual_mono_mode sub` が無い: %v", sub)
+	}
+	if input := slices.Index(sub, "-i"); i > input {
+		t.Errorf("-dual_mono_mode が -i より後にある: %v", sub)
+	}
+	// 音声の追加で字幕側が動いていない（音声の 1 組だけが差分である）。
+	withoutAudio := slices.Delete(slices.Clone(sub), i, i+2)
+	if !slices.Equal(withoutAudio, base) {
+		t.Errorf("字幕付き経路の差分が -dual_mono_mode だけではない\n got = %v\nwant = %v", withoutAudio, base)
+	}
+}
+
+// TestBuildChaseFFmpegArgs_IgnoresAudio は追っかけ再生が音声を選ばないことを固定する
+// （録画再生の音声切替は別の判断が要る。docs/api/media.md §録画中の追っかけ再生）。
+func TestBuildChaseFFmpegArgs_IgnoresAudio(t *testing.T) {
+	cfg := LiveConfig{Profiles: []LiveProfile{
+		{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
+	}}
+	args := BuildChaseFFmpegArgs(cfg, "/tmp/chase/1", false)
+	if slices.Contains(args, "-dual_mono_mode") {
+		t.Errorf("追っかけ再生の引数に -dual_mono_mode が入っている: %v", args)
+	}
+}
+
 func TestBuildLiveFFmpegArgs(t *testing.T) {
 	profiles := []LiveProfile{
 		{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", Height: 720, Preset: "veryfast", SegmentSeconds: 2, PlaylistSize: 6, ExtraArgs: []string{"-b:v", "2M"}},
 		{Name: "h264low", VideoCodec: "libx264", AudioCodec: "aac", Height: 360, SegmentSeconds: 4, PlaylistSize: 3},
 	}
-	args := BuildLiveFFmpegArgs(LiveConfig{Profiles: profiles}, "/tmp/live/1", false)
+	args := BuildLiveFFmpegArgs(LiveConfig{Profiles: profiles}, "/tmp/live/1", LiveAudioDefault, false)
 
 	if !slices.Contains(args, "-i") {
 		t.Fatal("missing -i")
@@ -2890,7 +3130,7 @@ func TestBuildLiveFFmpegArgs_Deinterlace(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			args := BuildLiveFFmpegArgs(c.cfg, "/tmp/live/1", false)
+			args := BuildLiveFFmpegArgs(c.cfg, "/tmp/live/1", LiveAudioDefault, false)
 			filterIdx := slices.Index(args, c.flag)
 			if filterIdx < 0 || filterIdx+1 >= len(args) {
 				t.Fatalf("missing %s and filter value: %v", c.flag, args)
@@ -2918,7 +3158,7 @@ func TestBuildLiveFFmpegArgs_CaptionsUsesMasterAndWebVTT(t *testing.T) {
 			{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
 			{Name: "low", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 4, PlaylistSize: 3},
 		},
-	}, "/tmp/live/1", true)
+	}, "/tmp/live/1", LiveAudioDefault, true)
 	joined := strings.Join(args, " ")
 	for _, want := range []string{
 		"-map 0:s:0?", "-c:s webvtt", "-var_stream_map v:0,a:0,s:0,sgroup:subs v:1,a:1",
@@ -2953,7 +3193,7 @@ func TestBuildLiveFFmpegArgs_CaptionsPerStreamSpecifiersAreTyped(t *testing.T) {
 			{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", Height: 720, Preset: "veryfast", SegmentSeconds: 2, PlaylistSize: 6},
 			{Name: "low", VideoCodec: "libx264", AudioCodec: "aac", Height: 360, Preset: "faster", SegmentSeconds: 2, PlaylistSize: 6},
 		},
-	}, "/tmp/live/1", false)
+	}, "/tmp/live/1", LiveAudioDefault, false)
 	joined := strings.Join(args, " ")
 
 	for _, want := range []string{
@@ -2977,7 +3217,7 @@ func TestBuildLiveFFmpegArgs_CaptionsWithoutSubtitleStream(t *testing.T) {
 	args := BuildLiveFFmpegArgs(LiveConfig{
 		Captions: true,
 		Profiles: []LiveProfile{{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 3, PlaylistSize: 7}},
-	}, "/tmp/live/1", false)
+	}, "/tmp/live/1", LiveAudioDefault, false)
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "0:s:0") || strings.Contains(joined, "s:0,sgroup:subs") || strings.Contains(joined, "-c:s webvtt") {
 		t.Fatalf("subtitle mapping must be omitted when input has no subtitle stream: %v", args)
@@ -3062,7 +3302,7 @@ func TestBuildLiveFFmpegArgs_HWAccelBeforeInput(t *testing.T) {
 			{Name: "h264", VideoCodec: "h264_vaapi", AudioCodec: "aac", Height: 720, Scaler: ffargs.ScalerVAAPI, SegmentSeconds: 2, PlaylistSize: 6},
 		},
 	}
-	args := BuildLiveFFmpegArgs(cfg, "/tmp/live/1", false)
+	args := BuildLiveFFmpegArgs(cfg, "/tmp/live/1", LiveAudioDefault, false)
 
 	hwIdx := slices.Index(args, "-hwaccel")
 	deviceIdx := slices.Index(args, "-hwaccel_device")
@@ -3104,7 +3344,7 @@ func TestBuildLiveFFmpegArgs_PerProfileScalerAndQuality(t *testing.T) {
 			{Name: "sw", VideoCodec: "libx264", AudioCodec: "aac", Height: 360, Scaler: ffargs.ScalerSoftware, CRF: &crf, SegmentSeconds: 2, PlaylistSize: 6},
 		},
 	}
-	args := BuildLiveFFmpegArgs(cfg, "/tmp/live/1", false)
+	args := BuildLiveFFmpegArgs(cfg, "/tmp/live/1", LiveAudioDefault, false)
 
 	if !slices.Contains(args, "scale_vaapi=w=-2:h=720") {
 		t.Errorf("missing hw scale filter: %v", args)
@@ -3145,7 +3385,7 @@ func TestBuildLiveFFmpegArgs_InputAndOutputExtraArgsPositions(t *testing.T) {
 			{Name: "h264", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6, ExtraArgs: []string{"-b:v", "2M"}},
 		},
 	}
-	args := BuildLiveFFmpegArgs(cfg, "/tmp/live/1", false)
+	args := BuildLiveFFmpegArgs(cfg, "/tmp/live/1", LiveAudioDefault, false)
 
 	reIdx := slices.Index(args, "-re")
 	iIdx := slices.Index(args, "-i")
@@ -3331,7 +3571,7 @@ func TestBuildLiveFFmpegArgs_CaptionsFixSubDuration(t *testing.T) {
 		},
 	}
 
-	args := BuildLiveFFmpegArgs(cfg, "/tmp/live/1", true)
+	args := BuildLiveFFmpegArgs(cfg, "/tmp/live/1", LiveAudioDefault, true)
 	fixIdx, inputIdx, beats := -1, -1, 0
 	for i, a := range args {
 		switch a {
@@ -3358,7 +3598,7 @@ func TestBuildLiveFFmpegArgs_CaptionsFixSubDuration(t *testing.T) {
 	}
 
 	// 字幕ストリームが無いと判定された経路では、どちらも付けない。
-	off := strings.Join(BuildLiveFFmpegArgs(cfg, "/tmp/live/1", false), " ")
+	off := strings.Join(BuildLiveFFmpegArgs(cfg, "/tmp/live/1", LiveAudioDefault, false), " ")
 	if strings.Contains(off, "-fix_sub_duration") {
 		t.Errorf("captionless args must not carry -fix_sub_duration: %s", off)
 	}

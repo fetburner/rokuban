@@ -1490,3 +1490,82 @@ describe('LivePage / 画質（プロファイル）切替（issue #869）', () =
     expect(await screen.findByLabelText('画質')).toHaveValue('sd')
   })
 })
+
+/**
+ * 音声（二重音声の主/副。issue #870 M4-22）。
+ *
+ * **画質と違って選択肢は常に 2 択**である --- どの番組が副音声を持つかを Rokuban 側で
+ * 知る手段が無い（音声 ES の情報を持たず、二重音声は 1 本の AAC ES の L/R なので
+ * ffprobe では通常のステレオと区別できない）。二重音声でない番組で副音声を選んでも
+ * 音は変わらない（ffmpeg 側で無効。実測: ffmpeg 9.0.2 では通常のステレオ AAC で
+ * 既定/main/sub/both の出力がバイト一致）ので、「副音声がありません」を出す必要が
+ * 無い。ここで見るのは配線だけである。
+ */
+describe('LivePage / 音声（issue #870）', () => {
+  it('標準を既定として主音声・副音声の 2 択を出す', async () => {
+    stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })] })
+    renderLive()
+
+    const select = await screen.findByLabelText('音声')
+    expect(select).toHaveValue('')
+    expect(screen.getByRole('option', { name: '標準' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: '主音声' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: '副音声' })).toBeInTheDocument()
+  })
+
+  /**
+   * **選ぶだけでは probe を起こさない**（「選ぶ」と「流す」の分離。issue #234）。
+   * 再生を始めると、選んだ音声が probe の URL に載る --- `-dual_mono_mode` は
+   * ffmpeg の入力側オプションなので、streamer はこの要求でセッションを作り直す
+   * （`internal/streamer/live.go`）。
+   */
+  it('選択は probe を起こさず、再生時に選んだ音声で probe する', async () => {
+    const user = userEvent.setup()
+    stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })] })
+    renderLive()
+
+    const select = await screen.findByLabelText('音声')
+    await user.selectOptions(select, 'sub')
+    expect(playlistFetchCallCount()).toBe(0)
+
+    await user.click(screen.getByRole('button', { name: /再生/ }))
+    await waitFor(() => expect(playlistFetchCallCount()).toBe(1))
+    expect(playlistFetchURLs()[0]).toContain('audio=sub')
+  })
+
+  /**
+   * **再生中の切替は probe をやり直して新しい音声を適用させるが、離脱ヒントは
+   * 送らない。** ヒントは「このチャンネルを見るのをやめた」の合図なので、音声の
+   * 切替で送ると idle GC の回収数と対で読めなくなる。
+   */
+  it('再生中に音声を切り替えると新しい音声で probe し直し、離脱ヒントは送らない', async () => {
+    const user = userEvent.setup()
+    stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })] })
+    renderLive()
+
+    await user.click(await screen.findByRole('button', { name: /再生/ }))
+    await waitFor(() => expect(playlistFetchCallCount()).toBe(1))
+    expect(playlistFetchURLs()[0]).not.toContain('audio=')
+
+    await user.selectOptions(screen.getByLabelText('音声'), 'main')
+    await waitFor(() => expect(playlistFetchCallCount()).toBe(2))
+    expect(playlistFetchURLs()[1]).toContain('audio=main')
+    expect(leaveHintURLs()).toEqual([])
+  })
+
+  /** 直リンク（受け入れ: 両方向）。有効な `?audio=` は選択状態として復元される。 */
+  it('直リンクの ?audio= が選択状態として復元される', async () => {
+    stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })] })
+    renderLive('/live?service=1&audio=sub')
+
+    expect(await screen.findByLabelText('音声')).toHaveValue('sub')
+  })
+
+  /** 未知の値は streamer が 400 を返すので、フロントが先に落として標準へ倒す。 */
+  it('未知の ?audio= は標準に落ちる', async () => {
+    stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })] })
+    renderLive('/live?service=1&audio=both')
+
+    expect(await screen.findByLabelText('音声')).toHaveValue('')
+  })
+})

@@ -26,11 +26,46 @@ export function livePlaylistURL(
   networkId: number,
   serviceId: number,
   profile?: string,
+  audio?: LiveAudioChoice,
 ): string {
   const base =
     `/api/sites/${encodeURIComponent(site)}` +
     `/networks/${networkId}/services/${serviceId}/live/playlist.m3u8`
-  return profile ? `${base}?profile=${encodeURIComponent(profile)}` : base
+  const query =
+    (profile ? `profile=${encodeURIComponent(profile)}` : '') +
+    (audio ? `${profile ? '&' : ''}audio=${audio}` : '')
+  return query ? `${base}?${query}` : base
+}
+
+/**
+ * LiveAudioChoice はライブの音声（ISDB の二重音声の主/副。issue #870）。
+ *
+ * **`?profile=` と違って値域が閉じている**（2 択）ので、`routes.tsx` の
+ * `validateSearch` が全部検査できる --- プロファイルの一覧は実行時に
+ * `GET /api/live-profiles` から来るので形しか見られない、という分担の違いである。
+ *
+ * **既定（`undefined`）は「音声を選んでいない」** で、streamer は
+ * `-dual_mono_mode` を付けない = 現行と同じ引数になる。二重音声では主音声が左・
+ * 副音声が右のステレオとして出る。`main` を選ぶと ffmpeg が主音声を両チャンネルへ
+ * 写す（`internal/streamer/live.go` の `LiveAudio`）。
+ *
+ * 二重音声でない番組では `main` / `sub` のどちらも無効で、選んでも音は変わらない
+ * （実測: ffmpeg 9.0.2。通常のステレオ AAC では 4 通りで出力がバイト一致）。
+ */
+export type LiveAudioChoice = 'main' | 'sub'
+
+/**
+ * validLiveAudio は `?audio=` の要求値を検査する。未知の値は `undefined`（既定）に
+ * 落ちる。
+ *
+ * **streamer は未知の値を 400 で返す**（`unknown live audio`。
+ * `internal/streamer/live.go` の `Playlist`）ので、旧ブックマーク・綴り違いの
+ * 共有リンクをエラー画面にしないためにフロントが先に落とす（`validLiveProfile`
+ * と同じ規律）。値域が閉じているぶん、こちらは `validateSearch` でも書けるが、
+ * 落とし方（`undefined` の明示代入）と理由を 1 箇所に揃えるためここに置く。
+ */
+export function validLiveAudio(requested: unknown): LiveAudioChoice | undefined {
+  return requested === 'main' || requested === 'sub' ? requested : undefined
 }
 
 /**

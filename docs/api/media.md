@@ -257,7 +257,7 @@ config から作り、実際に配るのは streamer である。したがって
 #### 実装（`internal/streamer`）
 
 ```
-GET  /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/playlist.m3u8[?profile=<name>]
+GET  /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/playlist.m3u8[?profile=<name>][&audio=main|sub]
        → application/vnd.apple.mpegurl
 GET  /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/segments/{name}
        → video/mp2t
@@ -305,6 +305,41 @@ POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
 - **1 サービス = 1 ffmpeg プロセス = mirakc の 1 チューナー。**設定済みの全プロファイルを
   1 回の ffmpeg 起動で同時に出す（見られていないプロファイルの CPU も使うトレードオフ
   はあるが、プロファイルを跨いだ ffmpeg の使い分けを実装しない分シンプルになる）
+- **`audio` クエリはライブの音声（二重音声の主/副）を選ぶ。**`-dual_mono_mode` は
+  ffmpeg の**入力（aac デコーダ）側**のオプションであり、出力側には置けない（置くと
+  `not a encoding option` で起動に失敗する）。そのため `?profile=` と違って 1 回の
+  起動で主音声と副音声の両方を出すことができない。**要求された音声が今のセッションと
+  違えば、streamer はそのセッションを止めて作り直す。**`sessionKey` には音声を入れない
+  = 1 サービス 1 セッションのままで、パス（前段のハッシュ鍵）も変わらない。要求が
+  食い違ったときのチューナーは一瞬 2 本になる
+- **音声は `main` / `sub` の 2 択に固定する。放送にある音声を列挙しない。**
+  Rokuban は音声 ES の情報を持たない。`GET /api/sites/{site}/services` は SI の
+  サービス情報だけを返す。二重音声は**1 本の AAC ES の 2 つの SCE** なので、
+  ffprobe では通常のステレオと区別できない。区別できるのは記述子だけで、それは
+  不変条件 6 の境界である。列挙するなら「その放送に副音声があるか」を配る API と
+  その置き場所が要る。2 択なら UI は番組を知らないまま出せる
+- **既定（`?audio=` 無し）は `-dual_mono_mode` を付けない。**二重音声では主音声が左・
+  副音声が右のステレオとして出る（従来どおり）。`main` / `sub` を明示したときだけ
+  ffmpeg が片方を両チャンネルへ写す。**引数が既定で現行と 1 ビットでも違うと、
+  音声を選んでいない利用者の再生結果が黙って変わる**
+- **二重音声でない通常のステレオでは `main` / `sub` はどちらも無効である。**
+  ffmpeg 9.0.2 で実測した。L=440Hz / R=880Hz のステレオ AAC を `live` と同じ引数形
+  （`-f mpegts -i pipe:0`）で 4 通り（既定 / `main` / `sub` / `both`）にデコードすると、
+  出力はバイト一致する。チャンネル分離も保持される。**意味の無い番組で副音声を
+  選んでも何も起きない**ので、UI に「副音声がありません」を出す必要が無い
+- **`?audio=` は「1 回だけ適用する」口である。**プレイリスト要求のうち probe の 1 回
+  だけが `?audio=` を載せ、hls.js / ネイティブ `<video>` が取り直し続ける URL には
+  載せない（[frontend/live.md](../frontend/live.md) §フロントエンド実装）。載せ続けると
+  数秒ごとの再取得が毎回セッションの作り直しを要求し、**同じチャンネルを別の音声で
+  見ている 2 人が互いの音声を作り直し合って両方止まる**（クライアントの identity を
+  持たないのでサーバー側では区別できない）
+- **複数の音声 ES がある放送では先頭の ES だけを選ぶ。**`-map 0:a:1` による 2 本目の
+  ES の選択は未対応である。どの放送が 2 本目を持つかは記述子を読むか ffprobe を
+  起動ごとに走らせないと分からず、どちらも今の前提を動かす
+- **録画再生（VOD）と追っかけ再生の音声切替は範囲外。**追っかけは `?audio=` を
+  無視して既定の引数で起動する。切替には別の判断が要る（エンコード時に複数音声を
+  入れるのか、配信時に抜くのか。後者は不変条件 4 の exec 境界と Range 配信の前提を
+  動かす）
 - **チューナー調停は mirakc のリクエスト優先度に一元化する**。ライブの GET には
   `live.tuner_priority`（既定 1）を `X-Mirakurun-Priority` に載せる。ruler が生成する
   schedule の既定 priority（10）より低く保つことで、チューナー枯渇時に mirakc が

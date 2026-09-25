@@ -319,7 +319,7 @@ func TestBuildChaseFFmpegArgsUsesGrowingEventPlaylist(t *testing.T) {
 		t.Fatalf("args = %q, chase output must retain all segments", joined)
 	}
 
-	liveArgs := BuildLiveFFmpegArgs(cfg, "/tmp/segments/default/1", false)
+	liveArgs := BuildLiveFFmpegArgs(cfg, "/tmp/segments/default/1", LiveAudioDefault, false)
 	liveJoined := strings.Join(liveArgs, " ")
 	if strings.Contains(liveJoined, "-hls_playlist_type event") || !strings.Contains(liveJoined, "delete_segments") {
 		t.Fatalf("live args = %q, want the existing sliding live playlist", liveJoined)
@@ -410,7 +410,7 @@ func TestLiveAndChaseShareMaxSessions(t *testing.T) {
 	}, func(context.Context) (io.ReadCloser, error) {
 		t.Fatal("session source called despite the combined session limit")
 		return nil, nil
-	})
+	}, LiveAudioDefault)
 	if !errors.Is(err, errSessionLimit) {
 		t.Fatalf("getOrCreateSessionOnceFor() = %v, want errSessionLimit", err)
 	}
@@ -487,7 +487,7 @@ func TestCompletedChaseRetainsEventFilesUntilIdleGC(t *testing.T) {
 		id:   targetID,
 	}, func(context.Context) (io.ReadCloser, error) {
 		return io.NopCloser(strings.NewReader("input")), nil
-	})
+	}, LiveAudioDefault)
 	if err != nil {
 		t.Fatalf("starting chase session: %v", err)
 	}
@@ -583,7 +583,7 @@ func TestFailedChaseIsRemovedAndCanRestart(t *testing.T) {
 			id:   43,
 		}, func(context.Context) (io.ReadCloser, error) {
 			return io.NopCloser(strings.NewReader("input")), nil
-		})
+		}, LiveAudioDefault)
 		if err != nil {
 			t.Fatalf("starting chase session: %v", err)
 		}
@@ -636,7 +636,7 @@ func TestEvictingCompletedChaseCleansRetainedFiles(t *testing.T) {
 		id:   44,
 	}, func(context.Context) (io.ReadCloser, error) {
 		return io.NopCloser(strings.NewReader("input")), nil
-	})
+	}, LiveAudioDefault)
 	if err != nil {
 		t.Fatalf("starting completed chase session: %v", err)
 	}
@@ -658,7 +658,7 @@ func TestEvictingCompletedChaseCleansRetainedFiles(t *testing.T) {
 		id:   99,
 	}, func(context.Context) (io.ReadCloser, error) {
 		return io.NopCloser(strings.NewReader("input")), nil
-	})
+	}, LiveAudioDefault)
 	if err != nil {
 		t.Fatalf("starting live session after chase eviction: %v", err)
 	}

@@ -10,6 +10,7 @@ import {
   formatLiveDiagnostics,
   liveLeaveURL,
   livePlaylistURL,
+  validLiveAudio,
   pickInitialService,
   probeLivePlaylist,
   liveProfileLabel,
@@ -57,6 +58,27 @@ describe('livePlaylistURL', () => {
     )
     expect(path(livePlaylistURL('default', 0, 1024, 'sd'))).toBe(
       path(livePlaylistURL('default', 0, 1024, 'hd')),
+    )
+  })
+
+  it('audio を渡すと ?audio= が付き、profile と共存する', () => {
+    expect(livePlaylistURL('default', 0, 1024, undefined, 'sub')).toBe(
+      '/api/sites/default/networks/0/services/1024/live/playlist.m3u8?audio=sub',
+    )
+    expect(livePlaylistURL('default', 0, 1024, 'hd', 'main')).toBe(
+      '/api/sites/default/networks/0/services/1024/live/playlist.m3u8?profile=hd&audio=main',
+    )
+  })
+
+  /**
+   * **音声もパスに入れない。** `?profile=` と同じ理由で、パスに混ざると同じ
+   * チャンネルの視聴者が別の Pod に割れ、チューナーを 2 本掴む
+   * （`docs/api/media.md` §資源同定）。
+   */
+  it('audio を変えてもパス（ハッシュ鍵）は変わらない', () => {
+    const path = (url: string) => url.split('?')[0]
+    expect(path(livePlaylistURL('default', 0, 1024, undefined, 'sub'))).toBe(
+      path(livePlaylistURL('default', 0, 1024)),
     )
   })
 
@@ -498,5 +520,22 @@ describe('readSubtitleVisibility', () => {
    */
   it('トラックが無ければ null（不明）', () => {
     expect(readSubtitleVisibility([])).toBeNull()
+  })
+})
+
+/**
+ * 音声の値域（issue #870）。**`?profile=` と違って閉じている**（2 択）ので、ここで
+ * 全部検査できる。streamer は未知の値を 400（`unknown live audio`）で返すため、
+ * フロントが先に落として既定（`undefined` = 現行と同じ引数）へ倒す。
+ */
+describe('validLiveAudio', () => {
+  it('main / sub だけを通し、それ以外は undefined に落とす', () => {
+    expect(validLiveAudio('main')).toBe('main')
+    expect(validLiveAudio('sub')).toBe('sub')
+    expect(validLiveAudio('both')).toBeUndefined()
+    expect(validLiveAudio('')).toBeUndefined()
+    expect(validLiveAudio(undefined)).toBeUndefined()
+    expect(validLiveAudio(1)).toBeUndefined()
+    expect(validLiveAudio(['main'])).toBeUndefined()
   })
 })

@@ -21,6 +21,7 @@ import {
   liveProfileLabel,
   pickInitialService,
   validLiveProfile,
+  type LiveAudioChoice,
   type LiveDiagnostics,
 } from '@/lib/live'
 import { upcomingInterruptingReservation } from '@/lib/live-interruption'
@@ -143,7 +144,34 @@ export function LivePage() {
   const navigate = useNavigate({ from: '/live' })
   const selectProfile = (name: string) => {
     void navigate({
-      search: { service: routeSearch.service, site: routeSearch.site, profile: name },
+      search: {
+        service: routeSearch.service,
+        site: routeSearch.site,
+        profile: name,
+        audio: routeSearch.audio,
+      },
+      replace: true,
+    })
+  }
+
+  // 音声は放送ごとの一覧を持たない（記述子を読むのは不変条件 6 に反する）。
+  // ffmpeg の dual_mono_mode は通常のステレオでは無効なので、主/副を固定の 2 択で
+  // 出す。`標準`（未指定）は現行どおり `-dual_mono_mode` を付けず、二重音声では
+  // 主=左・副=右をそのまま出す。音声を選んだときだけ probe の 1 回に `?audio=` を
+  // 載せ、その後の HLS URL には載せない（LivePlayer / streamer のコメント参照）。
+  const selectAudio = (value: string) => {
+    // 共有セッションに既定音声への「戻し」を送ると、別の視聴者の音声を巻き戻す。
+    // 標準へ戻す場合は停止してページを再読み込みする（docs/frontend/live.md）。
+    if (value === '' && routeSearch.audio !== undefined) return
+    const audio: LiveAudioChoice | undefined =
+      value === 'main' || value === 'sub' ? value : undefined
+    void navigate({
+      search: {
+        service: routeSearch.service,
+        site: routeSearch.site,
+        profile: routeSearch.profile,
+        audio,
+      },
       replace: true,
     })
   }
@@ -289,6 +317,7 @@ export function LivePage() {
                 networkId={selectedService.networkId}
                 serviceId={selectedService.serviceId}
                 profile={explicitProfile}
+                audio={routeSearch.audio}
                 onDiagnostics={setDiagnostics}
               />
             ) : (
@@ -368,6 +397,19 @@ export function LivePage() {
                   </select>
                 </label>
               )}
+              <label className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
+                <span>音声</span>
+                <select
+                  aria-label="音声"
+                  value={routeSearch.audio ?? ''}
+                  onChange={(e) => selectAudio(e.target.value)}
+                  className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none"
+                >
+                  <option value="">標準</option>
+                  <option value="main">主音声</option>
+                  <option value="sub">副音声</option>
+                </select>
+              </label>
               {/* 録画予約による中断予測（issue #235 M7-2）。選択状態（値札）・
                   視聴中のどちらの画面でもこの情報欄は共通なので、1 箇所に置くだけで
                   両方の受け入れ条件（値札 / 視聴中画面への表示）を満たす。 */}
@@ -400,7 +442,12 @@ export function LivePage() {
                             ようにするため。 */}
                         <Link
                           to="/live"
-                          search={{ service: s.id, site: s.site, profile: explicitProfile }}
+                          search={{
+                            service: s.id,
+                            site: s.site,
+                            profile: explicitProfile,
+                            audio: routeSearch.audio,
+                          }}
                           replace
                           // ハイライト・aria-current の同定も `Service.id`（合成
                           // id）で行う --- SI の `serviceId` 単独では、同じ id を

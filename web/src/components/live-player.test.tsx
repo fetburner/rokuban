@@ -94,6 +94,13 @@ vi.mock('hls.js', () => {
  * 継続処理で読むより前」でなければならない --- コンポーネントは probe 成功後に
  * `canPlayType` を読むので、fetch を deferred にして制御する。
  */
+/** probedURLs は現在の fetch スタブが受けたプレイリスト要求の URL を順に返す。 */
+function probedURLs(): string[] {
+  return (vi.mocked(globalThis.fetch).mock.calls as unknown as [string][])
+    .map(([url]) => String(url))
+    .filter((url) => url.includes('playlist.m3u8'))
+}
+
 function deferredFetch() {
   let resolve!: (response: Response) => void
   const promise = new Promise<Response>((r) => {
@@ -1228,5 +1235,83 @@ describe('LivePlayer / 画質（プロファイル）切替（issue #869）', ()
       .map(([u]) => String(u))
       .find((u) => u.includes('playlist.m3u8'))!
     expect(url).not.toContain('profile=')
+  })
+})
+
+/**
+ * 音声（二重音声の主/副。issue #870 M4-22）。
+ *
+ * **`?audio=` を載せるのは probe の 1 回だけ**で、プレイヤーが取り直し続ける URL には
+ * 載せない。`-dual_mono_mode` は ffmpeg の入力側オプションなので、1 回の起動で
+ * 主音声と副音声の両方は出せない（`internal/streamer/live.go`）。要求された音声が
+ * 今のセッションと違えば streamer はセッションを作り直すので、**URL に載せ続けると
+ * 数秒ごとの再取得がそのたびに作り直しを要求することになり、同じチャンネルを別の
+ * 音声で見ている 2 人が互いの音声を作り直し合って両方止まる**。probe は再生開始と
+ * 切替のときにしか走らないので、1 回だけ適用する口としてちょうどよい。
+ */
+describe('LivePlayer / 音声（issue #870）', () => {
+  it('probe だけが ?audio= を載せ、プレイヤーに渡す URL には載せない', async () => {
+    const { resolve } = deferredFetch()
+    render(<LivePlayer site="default" networkId={0} serviceId={1024} audio="sub" />)
+
+    const video = document.querySelector('video')!
+    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
+      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
+    )
+    resolve(new Response('', { status: 200 }))
+
+    await waitFor(() => expect(screen.queryByText('読み込み中…')).not.toBeInTheDocument())
+
+    const probed = probedURLs()
+    expect(probed).toHaveLength(1)
+    expect(probed[0]).toContain('audio=sub')
+    // **プレイヤー本体は ?audio= を持たない。** ここが同じだと、hls.js / ネイティブ
+    // 経路の数秒ごとの再取得が毎回セッションの作り直しを要求する。
+    expect(video.src).toContain('/live/playlist.m3u8')
+    expect(video.src).not.toContain('audio=')
+  })
+
+  it('audio を省略すると ?audio= を付けない（既定 = 現行と同じ引数）', async () => {
+    const { resolve } = deferredFetch()
+    render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
+
+    const video = document.querySelector('video')!
+    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
+      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
+    )
+    resolve(new Response('', { status: 200 }))
+    await waitFor(() => expect(screen.queryByText('読み込み中…')).not.toBeInTheDocument())
+
+    expect(probedURLs()[0]).not.toContain('audio=')
+  })
+
+  it('audio が変わると新しい音声で probe をやり直す（セッションを作り直させる）', async () => {
+    const { resolve } = deferredFetch()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response('', { status: 200 }))),
+    )
+    const { rerender } = render(
+      <LivePlayer site="default" networkId={0} serviceId={1024} audio="sub" />,
+    )
+    await waitFor(() => expect(probedURLs()).toHaveLength(1))
+    expect(probedURLs()[0]).toContain('audio=sub')
+
+    rerender(<LivePlayer site="default" networkId={0} serviceId={1024} audio="main" />)
+    await waitFor(() => expect(probedURLs()).toHaveLength(2))
+    expect(probedURLs()[1]).toContain('audio=main')
+    resolve(new Response('', { status: 200 }))
+  })
+
+  it('追っかけ再生では ?audio= を付けない（録画再生の音声切替は範囲外）', async () => {
+    const fetchMock = vi.fn((_url: string) => Promise.resolve(new Response('', { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(
+      <LivePlayer mode="chase" site="default" recordingId={7} audio="sub" />,
+    )
+    await waitFor(() => expect(probedURLs()).toHaveLength(1))
+    expect(probedURLs()[0]).toContain('/chase/playlist.m3u8')
+    expect(probedURLs()[0]).not.toContain('audio=')
   })
 })

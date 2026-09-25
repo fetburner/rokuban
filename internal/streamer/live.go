@@ -106,6 +106,50 @@ type LiveProfile struct {
 	ExtraArgs      []string
 }
 
+// LiveAudio はライブセッションが ffmpeg に選ばせる音声（ISDB の二重音声の主/副）。
+//
+// **既定（LiveAudioDefault）は `-dual_mono_mode` を付けない。** 引数が音声を
+// 選ばない要求で現行と完全に同一でなければ、音声を選んでいない利用者の再生結果が
+// 黙って変わる。二重音声では既定が「主音声が左・副音声が右のステレオ」であり、
+// main / sub を明示したときだけ ffmpeg が片方を両チャンネルへ写す（下記 Args）。
+//
+// **二重音声でない通常のステレオでは main / sub のどちらも無効である**（実測:
+// ffmpeg 9.0.2。L=440Hz / R=880Hz のステレオ AAC を既定/main/sub/both の 4 通りで
+// デコードして出力がバイト一致、チャンネル分離も保持）。意味の無い番組で副音声を
+// 選んでも何も起きない --- UI に「副音声がありません」を出す必要が無いのはこの
+// 性質による。
+type LiveAudio string
+
+const (
+	LiveAudioDefault LiveAudio = ""
+	LiveAudioMain    LiveAudio = "main"
+	LiveAudioSub     LiveAudio = "sub"
+)
+
+// parseLiveAudio は `?audio=` の値を解釈する。空は既定、main/sub 以外は false。
+func parseLiveAudio(v string) (LiveAudio, bool) {
+	switch a := LiveAudio(v); a {
+	case LiveAudioDefault, LiveAudioMain, LiveAudioSub:
+		return a, true
+	default:
+		return LiveAudioDefault, false
+	}
+}
+
+// Args は `-i` より前に置く入力オプションを返す（既定なら空）。
+//
+// **入力（aac デコーダ）側のオプションであり、出力側には置けない。** 出力側に
+// 置くと ffmpeg は `Codec AVOption dual_mono_mode ... is not a encoding option` で
+// 起動に失敗する（実測: ffmpeg 9.0.2）。そのため `?profile=` のように 1 回の
+// ffmpeg 起動で主音声と副音声の両方を出すことはできず、音声はセッションの起動時に
+// 固定される（切替はセッションの作り直し。docs/api/media.md §実装）。
+func (a LiveAudio) Args() []string {
+	if a == LiveAudioDefault {
+		return nil
+	}
+	return []string{"-dual_mono_mode", string(a)}
+}
+
 // profile は name に一致するプロファイルを返す。name が空文字なら先頭のプロファイル
 // （既定プロファイル）を返す。
 func (c LiveConfig) profile(name string) (LiveProfile, bool) {
@@ -541,7 +585,13 @@ func (ls *LiveStreamer) Playlist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s, err := ls.getOrCreateSession(r.Context(), serviceID)
+	audio, ok := parseLiveAudio(r.URL.Query().Get("audio"))
+	if !ok {
+		http.Error(w, "unknown live audio", http.StatusBadRequest)
+		return
+	}
+
+	s, err := ls.getOrCreateSession(r.Context(), serviceID, audio)
 	if err != nil {
 		if errors.Is(err, errStartupTimeout) {
 			slog.Error("streamer: live playlist session did not become ready in time",
@@ -899,7 +949,7 @@ func (ls *LiveStreamer) ChasePlaylistForTarget(w http.ResponseWriter, r *http.Re
 			}
 		}
 		var err error
-		s, err = ls.getOrCreateSessionFor(r.Context(), key, source)
+		s, err = ls.getOrCreateSessionFor(r.Context(), key, source, LiveAudioDefault)
 		if err != nil {
 			writeSessionError(w, err)
 			return
@@ -1564,6 +1614,12 @@ type liveSession struct {
 	source    sessionSource
 	dir       string // SegmentDir/site/{serviceID|chase/recordingID/offset/seconds}
 
+	// audio はこのセッションの ffmpeg が `-dual_mono_mode` に載せる値。起動時に
+	// 固定される（入力側のオプションなので後から変えられない）。切替はセッションの
+	// 作り直しで、`sessionKey` には入れない（1 サービス 1 セッションを保つ。
+	// getOrCreateSession）。
+	audio LiveAudio
+
 	ready chan struct{} // startSession が終わったら閉じる（成功でも失敗でも）
 	done  chan struct{} // ffmpeg プロセスが完全に終了したら閉じる
 
@@ -1763,14 +1819,58 @@ func (ls *LiveStreamer) setActiveSessionMetrics() {
 // **evictMu の保持区間に getOrCreateSessionOnce（最大 playlistStartupTimeout の
 // 起動待ち）を含めない** --- 含めると、無関係な別サービスへの要求まで他サービスの
 // 起動待ちで足止めされる。実際の起動 I/O はロックの外で行う。
-func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64) (*liveSession, error) {
-	return ls.getOrCreateSessionFor(ctx, sessionKey{kind: liveSessionKind, id: serviceID}, func(ctx context.Context) (io.ReadCloser, error) {
+func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64, audio LiveAudio) (*liveSession, error) {
+	key := sessionKey{kind: liveSessionKind, id: serviceID}
+	source := func(ctx context.Context) (io.ReadCloser, error) {
 		return ls.mirakc.StreamService(ctx, serviceID, ls.cfg.TunerPriority)
-	})
+	}
+
+	// **音声は `sessionKey` に入れない（1 サービス 1 セッションを保つ）。** 要求された
+	// 音声が既存セッションと違うときは、そのセッションを止めて（`stop()` が戻った
+	// 時点で runSession の defer が map からも消している）新しい音声で作り直す。
+	//
+	// **既定（LiveAudioDefault）の要求では止めない。** 音声を選んでいない利用者の
+	// 要求が、他の視聴者が選んだ音声を巻き戻してしまう --- クライアントの identity を
+	// 持たないので「誰が何を選んだか」は区別できない。フロントは音声を選んだときだけ
+	// `?audio=` を載せ、その後は載せない（docs/frontend/live.md
+	// §フロントエンド実装）。
+	//
+	// 2 周で足りる: 1 周目は「既存が別の音声だった」場合の作り直し、2 周目はその
+	// 途中で別の要求が既定の音声で作り直した場合。**2 周しても食い違ったままなら
+	// そのまま返す**（消えたセッションを待たせない）--- 起こりうるのは自分が
+	// 止めてから作り直すまでの数 ms に、別の視聴者のプレイリスト要求が既定の音声で
+	// セッションを作った場合だけで、利用者は音声をもう一度選び直せば直る。
+	for attempt := 0; ; attempt++ {
+		if audio != LiveAudioDefault {
+			if cur, ok := ls.liveSession(serviceID); ok && cur.audio != audio {
+				cur.stop()
+			}
+		}
+		s, err := ls.getOrCreateSessionFor(ctx, key, source, audio)
+		if err != nil || audio == LiveAudioDefault || s.audio == audio {
+			return s, err
+		}
+		if attempt >= 1 {
+			slog.Warn("streamer: live audio request lost a race with another request",
+				"service_id", serviceID, "want", string(audio), "got", string(s.audio))
+			return s, nil
+		}
+	}
 }
 
-func (ls *LiveStreamer) getOrCreateSessionFor(ctx context.Context, key sessionKey, source sessionSource) (*liveSession, error) {
-	s, err := ls.getOrCreateSessionOnceFor(ctx, key, source)
+// liveSession は serviceID のライブセッションを 1 つ返す（無ければ false）。
+func (ls *LiveStreamer) liveSession(serviceID int64) (*liveSession, bool) {
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	if ls.sessions == nil {
+		return nil, false
+	}
+	s, ok := ls.sessions[serviceID]
+	return s, ok
+}
+
+func (ls *LiveStreamer) getOrCreateSessionFor(ctx context.Context, key sessionKey, source sessionSource, audio LiveAudio) (*liveSession, error) {
+	s, err := ls.getOrCreateSessionOnceFor(ctx, key, source, audio)
 	if err == nil {
 		return s, nil
 	}
@@ -1804,7 +1904,7 @@ func (ls *LiveStreamer) getOrCreateSessionFor(ctx context.Context, key sessionKe
 	ls.mu.Unlock()
 	if alreadyRecovered {
 		ls.evictMu.Unlock()
-		return ls.getOrCreateSessionOnceFor(ctx, key, source)
+		return ls.getOrCreateSessionOnceFor(ctx, key, source, audio)
 	}
 
 	victim := ls.takeIdleSessionForRetry(time.Now())
@@ -1835,7 +1935,7 @@ func (ls *LiveStreamer) getOrCreateSessionFor(ctx context.Context, key sessionKe
 	}
 	ls.evictMu.Unlock()
 
-	retry, retryErr := ls.getOrCreateSessionOnceFor(ctx, key, source)
+	retry, retryErr := ls.getOrCreateSessionOnceFor(ctx, key, source, audio)
 	if retryErr != nil && retry != nil {
 		// 再試行自身が ready 後に失敗した場合も、次の要求が同じ startErr を
 		// 拾わないように、そのセッションの後片付けを待ってから返す。
@@ -1860,7 +1960,7 @@ func liveEvictionReason(err error) (string, bool) {
 	return "", false
 }
 
-func (ls *LiveStreamer) getOrCreateSessionOnceFor(ctx context.Context, key sessionKey, source sessionSource) (*liveSession, error) {
+func (ls *LiveStreamer) getOrCreateSessionOnceFor(ctx context.Context, key sessionKey, source sessionSource, audio LiveAudio) (*liveSession, error) {
 	ls.mu.Lock()
 	if s, ok := ls.getSessionLocked(key); ok {
 		ls.mu.Unlock()
@@ -1887,6 +1987,7 @@ func (ls *LiveStreamer) getOrCreateSessionOnceFor(ctx context.Context, key sessi
 		serviceID:  key.id,
 		key:        key,
 		source:     source,
+		audio:      audio,
 		ready:      make(chan struct{}),
 		done:       make(chan struct{}),
 		lastAccess: time.Now(),
@@ -2081,7 +2182,7 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 			captionInput = false
 		}
 	}
-	args := BuildLiveFFmpegArgs(ls.cfg, dir, captionInput)
+	args := BuildLiveFFmpegArgs(ls.cfg, dir, s.audio, captionInput)
 	if kind == chaseSessionKind {
 		args = BuildChaseFFmpegArgs(ls.cfg, dir, captionInput)
 	}
@@ -2282,8 +2383,11 @@ func (w *cappedWriter) String() string {
 // 出す引数を組み立てる（issue #91 の決定 1: 1 チューナーから複数プロファイル）。
 //
 // 自由形式の cmd 文字列は受け取らない（encode.BuildFFmpegArgs と同じ方針）。
-// ストリームは先頭の映像・先頭の音声だけを map する（単一映像・単一音声の放送
-// サービス前提の MVP。複数音声・データ放送は特別扱いしない）。
+// ストリームは先頭の映像・先頭の音声だけを map する（データ放送は特別扱いしない）。
+// **複数の音声 ES があっても先頭だけを map する**ので、二重音声は `audio` の
+// `-dual_mono_mode` で選ぶ（`-map 0:a:1` による 2 本目の ES の選択は未対応。
+// どの放送が 2 本目を持つかは記述子を読むか ffprobe を起動ごとに走らせないと
+// 分からず、どちらも今の前提を動かす。docs/api/media.md §実装）。
 // 字幕は通常は map しない。Captions=true の専用経路だけ optional に ARIB caption
 // を map し、libaribcaption で WebVTT にする。既定経路は Debian 系の ffmpeg が
 // arib_caption デコーダを持たない構成でも従来どおり動く。
@@ -2294,6 +2398,7 @@ func (w *cappedWriter) String() string {
 //	[cfg.HWAccel ブロック]                          # 入力 1 本ぶん、1 回だけ
 //	-probesize 5M -analyzeduration 3M
 //	[cfg.InputExtraArgs…]
+//	[-dual_mono_mode <main|sub>]                    # 音声を選んだときだけ（Args）
 //	-f mpegts -i pipe:0
 //	  ── プロファイルごとに繰り返し ──
 //	  -map 0:v:0 -map 0:a:0  -c:v  -c:a
@@ -2307,20 +2412,23 @@ func (w *cappedWriter) String() string {
 // withSubtitles は Captions=true のときだけ効き、起動前の ffprobe 判定結果を渡す
 // （false なら字幕 map / rendition を完全に省き、字幕の無い番組でも映像・音声の
 // HLS を継続できる）。Captions=false のときは無視される。
-func BuildLiveFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []string {
-	return buildHLSFFmpegArgs(cfg, dir, withSubtitles, false)
+func BuildLiveFFmpegArgs(cfg LiveConfig, dir string, audio LiveAudio, withSubtitles bool) []string {
+	return buildHLSFFmpegArgs(cfg, dir, audio, withSubtitles, false)
 }
 
 // BuildChaseFFmpegArgs builds the same multi-profile HLS graph as live, but as
 // an EVENT playlist. Event output keeps the whole recording history and must
 // never use delete_segments.
+//
+// 音声は既定のまま（録画再生の音声切替は別の判断が要る。docs/api/media.md
+// §録画中の追っかけ再生）。
 func BuildChaseFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []string {
-	return buildHLSFFmpegArgs(cfg, dir, withSubtitles, true)
+	return buildHLSFFmpegArgs(cfg, dir, LiveAudioDefault, withSubtitles, true)
 }
 
-func buildHLSFFmpegArgs(cfg LiveConfig, dir string, withSubtitles, eventPlaylist bool) []string {
+func buildHLSFFmpegArgs(cfg LiveConfig, dir string, audio LiveAudio, withSubtitles, eventPlaylist bool) []string {
 	if cfg.Captions {
-		return buildLiveCaptionFFmpegArgs(cfg, dir, withSubtitles, eventPlaylist)
+		return buildLiveCaptionFFmpegArgs(cfg, dir, audio, withSubtitles, eventPlaylist)
 	}
 	args := []string{
 		"-hide_banner", "-nostats", "-loglevel", "error",
@@ -2334,6 +2442,7 @@ func buildHLSFFmpegArgs(cfg LiveConfig, dir string, withSubtitles, eventPlaylist
 		"-analyzeduration", "3M",
 	)
 	args = append(args, cfg.InputExtraArgs...)
+	args = append(args, audio.Args()...)
 	args = append(args, "-f", "mpegts", "-i", "pipe:0")
 	for _, p := range cfg.Profiles {
 		// 映像・音声だけ。字幕 / データ放送は捨てる（上記 arib_caption）。
@@ -2409,7 +2518,7 @@ func buildHLSFFmpegArgs(cfg LiveConfig, dir string, withSubtitles, eventPlaylist
 // フィルタが両方の video ストリームに適用されて警告が出ることを実測で確認。
 // `-c:v:N` や `-preset:v:N` のような型を伴わない他オプションでの `:v:N` 付与は
 // 問題なく機能する --- `-vf`/`-filter:v` だけの挙動）。
-func buildLiveCaptionFFmpegArgs(cfg LiveConfig, dir string, withSubtitles, eventPlaylist bool) []string {
+func buildLiveCaptionFFmpegArgs(cfg LiveConfig, dir string, audio LiveAudio, withSubtitles, eventPlaylist bool) []string {
 	args := []string{"-hide_banner", "-nostats", "-loglevel", "error"}
 	args = append(args, cfg.HWAccel.Args()...)
 	args = append(args, "-probesize", "5M", "-analyzeduration", "3M")
@@ -2421,6 +2530,7 @@ func buildLiveCaptionFFmpegArgs(cfg LiveConfig, dir string, withSubtitles, event
 		// 入力側オプションなので -i より前に置く。
 		args = append(args, "-fix_sub_duration")
 	}
+	args = append(args, audio.Args()...)
 	args = append(args, "-f", "mpegts", "-i", "pipe:0")
 
 	var variants []string
