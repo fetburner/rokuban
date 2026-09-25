@@ -420,6 +420,34 @@ func installSignalHandler(parent context.Context) (context.Context, context.Canc
 	return ctx, stop
 }
 
+// liveProfileSummaries は config のプロファイル定義を公開用の一覧へ写す
+// （GET /api/live-profiles）。
+//
+// **写すのは name と height だけ。** video_codec / crf / qp / preset / extra_args /
+// ffmpeg パスは公開面に載せない --- 載せるとフロントがそれを再現する形に育つ
+// （`EncodeProfileSummary` と同じ規律。issue #869 の決定コメント）。
+//
+// **height は 0 なら省略する。** 0 は「スケールしない」の表現で、省略と 0 を
+// 潰すと「height が設定されていない」という事実が公開面から消える
+// （`json:"height,omitempty"` はポインタでは **nil のときだけ** 省略するので、
+// `&0` を詰めれば `"height":0` が出る）。フロントは 0 を「0p」とは表示しない
+// （`web/src/lib/live.ts` の `liveProfileLabel` は 0 なら名前だけを返す）ので、
+// 表示のためではなく**値の意味を保つため**のガードである。
+//
+// 順序は config の定義順のまま保つ（先頭が `?profile=` 省略時の既定）。
+func liveProfileSummaries(profiles []config.LiveProfile) []api.LiveProfileSummary {
+	out := make([]api.LiveProfileSummary, 0, len(profiles))
+	for _, p := range profiles {
+		summary := api.LiveProfileSummary{Name: p.Name}
+		if p.Height > 0 {
+			height := p.Height
+			summary.Height = &height
+		}
+		out = append(out, summary)
+	}
+	return out
+}
+
 // buildHTTPServer は HTTP ルーターとサーバーを構築する。
 //
 // HTTP リスナーはロールに関わらず 1 本立てる。ヘルスチェックと /metrics は
@@ -453,6 +481,17 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 		// 答えがプロセスの役割で変わる。Sites / MetricsRegistry を無条件に
 		// 渡しているのと同じ理由でここに置く。
 		LiveEnabled: cfg.Live.Enabled,
+		// GET /api/live-profiles に出す一覧（issue #869）。順序が既定の根拠に
+		// なるので、config の定義順をそのまま保つ。ffmpeg のパス・extra_args・
+		// 品質指定は載せない（name と表示用の height だけ）。
+		//
+		// **ロールで囲わない。** 理由は上の LiveEnabled と同じ ---
+		// config → 公開面の値なのに、答えがプロセスの役割で変わってはならない
+		// （`TestServerLiveProfiles_RoleIndependent` が api 以外のロールでも回す）。
+		//
+		// **`live.enabled` で絞らない。** 返すのは定義の写しそのもので、
+		// 無効でも profiles が書かれていれば返る（有効かどうかは capabilities）。
+		LiveProfiles: liveProfileSummaries(cfg.Live.Profiles),
 	}
 
 	if slices.Contains(roles, "api") {

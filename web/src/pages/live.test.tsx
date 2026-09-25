@@ -1,10 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ProgramListItem, Reservation, Service, Tuner } from '@/api/generated'
+import type { LiveProfileSummary, ProgramListItem, Reservation, Service, Tuner } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { routeTree } from '@/routes'
 
@@ -96,7 +96,7 @@ function renderLive(initialEntry = '/live') {
       </ToastProvider>
     </QueryClientProvider>,
   )
-  return { ...result, queryClient }
+  return { ...result, queryClient, router }
 }
 
 /**
@@ -142,6 +142,12 @@ async function tunerStatusSettled(queryClient: QueryClient): Promise<void> {
   })
 }
 
+/**
+ * releaseLiveProfiles は `stubFetch({ pendingLiveProfiles: true })` で保留した
+ * `GET /api/live-profiles` を解放する（解放するまで一覧が届かない状況を作る）。
+ */
+let releaseLiveProfiles: (() => void) | null = null
+
 /** stubFetch は pathname ごとに応答を振り分ける（routes.test.tsx と同じ形）。 */
 function stubFetch(options: {
   services?: Service[]
@@ -154,10 +160,20 @@ function stubFetch(options: {
   reservations?: Reservation[]
   /** サイト名一覧（`GET /api/sites`）。既定は `['default']` の単一サイト。 */
   sites?: string[]
+  /**
+   * `GET /api/live-profiles`（issue #869）。**既定は空配列** --- 既存のテストは
+   * 「一覧が無いデプロイ」の挙動（セレクタを出さない）をそのまま見る。
+   */
+  liveProfiles?: LiveProfileSummary[]
   /** `GET /api/sites/{site}/tuners`。site ごとに指定しない限り空配列（issue #474）。 */
   tunersBySite?: Record<string, Tuner[]>
   tunerStatusBySite?: Record<string, number>
   pendingTunerSites?: string[]
+  /**
+   * `GET /api/live-profiles` を未解決のまま保持する（レビュー指摘の再演用）。
+   * 解放するまで一覧が届かない状況を作る。
+   */
+  pendingLiveProfiles?: boolean
 }) {
   const {
     services = [],
@@ -166,12 +182,25 @@ function stubFetch(options: {
     capabilitiesStatus = 200,
     reservations = [],
     sites = ['default'],
+    liveProfiles = [],
     tunersBySite = {},
     tunerStatusBySite = {},
     pendingTunerSites = [],
+    pendingLiveProfiles = false,
   } = options
   globalThis.fetch = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
+
+    if (url.pathname === '/api/live-profiles') {
+      const body = JSON.stringify(liveProfiles)
+      if (pendingLiveProfiles) {
+        return new Promise<Response>((resolve) => {
+          releaseLiveProfiles = () =>
+            resolve(new Response(body, { status: 200 }))
+        })
+      }
+      return Promise.resolve(new Response(body, { status: 200 }))
+    }
 
     if (url.pathname === '/api/reservations') {
       return Promise.resolve(new Response(JSON.stringify(reservations), { status: 200 }))
@@ -255,6 +284,12 @@ function playlistFetchCallCount(): number {
   return calls.filter(([url]) => String(url).includes('/live/playlist.m3u8')).length
 }
 
+/** playlistFetchURLs は `/live/playlist.m3u8` への要求 URL（呼ばれた順）。 */
+function playlistFetchURLs(): string[] {
+  const calls = (globalThis.fetch as unknown as { mock: { calls: [string][] } }).mock.calls
+  return calls.map(([url]) => String(url)).filter((url) => url.includes('/live/playlist.m3u8'))
+}
+
 /**
  * leaveHintURLs は離脱ヒント（issue #191）が飛んだ宛先の一覧。
  *
@@ -270,6 +305,7 @@ function leaveHintURLs(): string[] {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  releaseLiveProfiles = null
 })
 
 describe('LivePage / live.enabled が false のとき（issue #209）', () => {
@@ -1240,5 +1276,217 @@ describe('チューナー状態（issue #474）', () => {
     const tokyo = await screen.findByTestId('tuner-status-tokyo')
     expect(within(tokyo).getByText('（故障1）')).toBeInTheDocument()
     expect(screen.queryByTestId('tuner-status-takamatsu')).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * 画質（プロファイル）切替（issue #869）。
+ *
+ * 一覧 API は `GET /api/live-profiles`。**選択肢が 2 件以上のときだけ**セレクタを
+ * 出し、切替は `?profile=` の更新だけにする（`LivePlayer` を作り直さない = 再生の
+ * 同意を取り直さない）。ここで見るのは配線だけである --- 実再生そのものは
+ * `components/live-player.test.tsx` と `web/e2e/live.mjs` の担い。
+ */
+describe('LivePage / 画質（プロファイル）切替（issue #869）', () => {
+  const PROFILES: LiveProfileSummary[] = [
+    { name: 'hd', height: 720 },
+    { name: 'sd', height: 480 },
+  ]
+
+  it('一覧が 2 件以上ならセレクタを出し、既定は先頭（サーバー側と同じ）', async () => {
+    stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })], liveProfiles: PROFILES })
+    renderLive()
+
+    const select = await screen.findByLabelText('画質')
+    expect(select).toHaveValue('hd')
+    // 表示名は height を添える（名前だけでは画質として読めない）
+    expect(screen.getByRole('option', { name: 'hd（720p）' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'sd（480p）' })).toBeInTheDocument()
+  })
+
+  /** 選ぶ余地が無いのに出すと「機能しないコントロール」に戻る（issue #209 の規律）。 */
+  it('一覧が 1 件ならセレクタを出さない', async () => {
+    stubFetch({
+      services: [service({ serviceId: 1, name: 'チャンネル A' })],
+      liveProfiles: [{ name: 'hd', height: 720 }],
+    })
+    renderLive()
+
+    await screen.findByRole('navigation', { name: 'チャンネル一覧' })
+    expect(screen.queryByLabelText('画質')).not.toBeInTheDocument()
+  })
+
+  it('一覧が 0 件ならセレクタを出さない', async () => {
+    stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })], liveProfiles: [] })
+    renderLive()
+
+    await screen.findByRole('navigation', { name: 'チャンネル一覧' })
+    expect(screen.queryByLabelText('画質')).not.toBeInTheDocument()
+  })
+
+  /**
+   * **切替はセッションを作り直さない。** 選ぶだけでは probe もセッションも
+   * 起こさず（「選ぶ」と「流す」の分離。issue #234）、再生中に切り替えた場合は
+   * 同じセッションの別プレイリストを取るだけである --- 離脱ヒント（= セッションを
+   * 手放す合図）を送らないことでそれを固定する。1 サービスの ffmpeg 1 本が
+   * 全プロファイルを同時に出力している（docs/api/media.md §資源同定）。
+   */
+  it('選択は probe を起こさず、再生中の切替は離脱ヒントを送らない', async () => {
+    const user = userEvent.setup()
+    stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })], liveProfiles: PROFILES })
+    renderLive()
+
+    const select = await screen.findByLabelText('画質')
+    // 選ぶだけ（まだ再生していない）--- probe は 0 件のまま
+    await user.selectOptions(select, 'sd')
+    expect(playlistFetchCallCount()).toBe(0)
+    expect(select).toHaveValue('sd')
+
+    await user.click(screen.getByRole('button', { name: /再生/ }))
+    await waitFor(() => expect(playlistFetchCallCount()).toBe(1))
+    // 既定ではなく選んだ方が要求に載る
+    expect(playlistFetchURLs()[0]).toContain('profile=sd')
+
+    await user.selectOptions(screen.getByLabelText('画質'), 'hd')
+    await waitFor(() => expect(playlistFetchCallCount()).toBe(2))
+    expect(playlistFetchURLs()[1]).toContain('profile=hd')
+    // セッションを手放す合図は送らない（同じセッションの別プレイリストを取るだけ）
+    expect(leaveHintURLs()).toEqual([])
+  })
+
+  /** 直リンク（受け入れ: 両方向）。有効な `?profile=` は選択状態として復元される。 */
+  it('直リンクの ?profile= が選択状態として復元される', async () => {
+    const user = userEvent.setup()
+    stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })], liveProfiles: PROFILES })
+    renderLive('/live?service=100001&site=default&profile=sd')
+
+    expect(await screen.findByLabelText('画質')).toHaveValue('sd')
+    // **要求に実際に載ることまで見る。** セレクタの表示だけだと、URL の値を
+    // そのまま握って選択肢に無い値でも「先頭が選ばれて見える」状態と区別できない
+    // （React の controlled `<select>` は一致しない値で先頭に落ちるだけ）。
+    await user.click(screen.getByRole('button', { name: /再生/ }))
+    await waitFor(() => expect(playlistFetchCallCount()).toBe(1))
+    expect(playlistFetchURLs()[0]).toContain('profile=sd')
+  })
+
+  /**
+   * **未知の名前は落ちて既定（先頭）になる。** streamer は未知の `?profile=` を
+   * 400 で返すので、落とさないと綴り違いの共有リンク・古いブックマークが
+   * エラー画面になる（`lib/live.ts` の `validLiveProfile`）。
+   */
+  it('未知の ?profile= は既定に落ちる（400 を踏まない）', async () => {
+    const user = userEvent.setup()
+    stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })], liveProfiles: PROFILES })
+    renderLive('/live?service=100001&site=default&profile=does-not-exist')
+
+    expect(await screen.findByLabelText('画質')).toHaveValue('hd')
+    await user.click(screen.getByRole('button', { name: /再生/ }))
+    await waitFor(() => expect(playlistFetchCallCount()).toBe(1))
+    // 不正な名前を streamer に送っていない（送れば 400 になる）。既定は
+    // 「`?profile=` を付けない」で表す（サーバー側の先頭に解決される）
+    expect(playlistFetchURLs()[0]).not.toContain('profile=')
+    expect(playlistFetchURLs()[0]).not.toContain('does-not-exist')
+  })
+
+  /** 空文字の `?profile=` も落ちる（サーバー側の「空 = 既定」と同じ結果になる）。 */
+  it('空の ?profile= は既定に落ちる', async () => {
+    const user = userEvent.setup()
+    stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })], liveProfiles: PROFILES })
+    renderLive('/live?service=100001&site=default&profile=')
+
+    expect(await screen.findByLabelText('画質')).toHaveValue('hd')
+    await user.click(screen.getByRole('button', { name: /再生/ }))
+    await waitFor(() => expect(playlistFetchCallCount()).toBe(1))
+    expect(playlistFetchURLs()[0]).not.toContain('profile=')
+  })
+
+  /**
+   * **一覧が遅れて届いても再生をやり直さない（レビュー指摘）。** 「再生」を押した
+   * 後に `GET /api/live-profiles` が解決すると、`LivePlayer` の `profile` が
+   * `undefined → 'hd'` に変わって probe の effect が再実行され、`<video>` が
+   * 作り直されて**先頭から再生し直し**になる（実測: playlist 要求が 2 件飛ぶ）。
+   *
+   * 既定のプロファイルは URL が名指ししていない限り渡さない（サーバー側の既定と
+   * 同じ先頭に解決するので、渡す意味が無い）ことでこの窓を塞ぐ。
+   *
+   * 壊し方: `LivePlayer` へ `activeProfile`（一覧から導出した既定）を渡す。
+   */
+  it('一覧が「再生」の後に届いてもプレイリストを取り直さない', async () => {
+    const user = userEvent.setup()
+    stubFetch({
+      services: [service({ serviceId: 1, name: 'チャンネル A' })],
+      liveProfiles: PROFILES,
+      pendingLiveProfiles: true,
+    })
+    renderLive()
+
+    // 一覧が未解決のまま「再生」を押す（既定のプロファイルで始まる）
+    await user.click(await screen.findByRole('button', { name: /再生/ }))
+    await waitFor(() => expect(playlistFetchCallCount()).toBe(1))
+    expect(playlistFetchURLs()[0]).not.toContain('profile=')
+
+    // 一覧を届かせる（`profile` が変わってはいけない）
+    expect(releaseLiveProfiles).not.toBeNull()
+    await act(async () => {
+      releaseLiveProfiles?.()
+    })
+    await waitFor(() => expect(screen.getByLabelText('画質')).toHaveValue('hd'))
+
+    expect(playlistFetchCallCount()).toBe(1)
+    expect(leaveHintURLs()).toEqual([])
+  })
+
+  /**
+   * **URL が画質を名指ししているときは、一覧の到着を待ってから再生させる。**
+   * 待たずに始めると `undefined → 'sd'` の変化で再生がやり直しになる。
+   * 名指しが無いときは待たない（一覧は再生の前提条件ではない）。
+   */
+  it('URL が画質を名指ししているときは一覧の到着まで再生ボタンを出さない', async () => {
+    stubFetch({
+      services: [service({ serviceId: 1, name: 'チャンネル A' })],
+      liveProfiles: PROFILES,
+      pendingLiveProfiles: true,
+    })
+    const { queryClient } = renderLive('/live?service=100001&site=default&profile=sd')
+    await screen.findByRole('heading', { name: 'ライブ' })
+
+    // **「出ていない」を空虚に成立させない。** チャンネル一覧のクエリが解決して
+    // いる（= 画面がここまで描画し終えている）ことを先に確かめる。これが無いと、
+    // まだ何も描画されていない瞬間に否定形の assertion が当たって通る
+    // （CLAUDE.md「非同期の空虚な成功」。ゲートを外した変異がこのテストを
+    // 素通りした実例がある）。
+    await waitFor(() => {
+      const statuses = queryClient
+        .getQueryCache()
+        .findAll({ queryKey: ['/api/sites/default/services'] })
+        .map((q) => q.state.status)
+      expect(statuses).toContain('success')
+    })
+
+    expect(screen.queryByRole('button', { name: /再生/ })).not.toBeInTheDocument()
+    expect(playlistFetchCallCount()).toBe(0)
+
+    // 一覧が届けば待ちは解ける（待ちっぱなしにしない）
+    await act(async () => {
+      releaseLiveProfiles?.()
+    })
+    expect(await screen.findByRole('button', { name: /再生/ })).toBeInTheDocument()
+  })
+
+  it('チャンネルを切り替えても選んだ画質を保つ', async () => {
+    const user = userEvent.setup()
+    stubFetch({
+      services: [
+        service({ serviceId: 1, name: 'チャンネル A' }),
+        service({ serviceId: 2, name: 'チャンネル B' }),
+      ],
+      liveProfiles: PROFILES,
+    })
+    renderLive()
+
+    await user.selectOptions(await screen.findByLabelText('画質'), 'sd')
+    await user.click(screen.getByRole('link', { name: /チャンネル B/ }))
+
+    expect(await screen.findByLabelText('画質')).toHaveValue('sd')
   })
 })

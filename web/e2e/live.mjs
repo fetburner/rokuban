@@ -21,7 +21,7 @@
 // 詳しい手順・準備の SQL 例は docs/runbook/live.md §②。使い方だけ：
 //   E2E_LIVE_NETWORK_ID=1 E2E_LIVE_SERVICE_A=9001 E2E_LIVE_SERVICE_B=9002 pnpm e2e:live
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'
@@ -96,6 +96,60 @@ const PLAYLIST_PATH = path.join(FIXTURE_DIR, 'playlist.m3u8')
  * ここで一覧 API から networkId を引いて合成し直す必要があった --- その必要が
  * 無くなったので、環境変数の SERVICE_A / _B をそのまま照合に使える。
  */
+const MASTER_PATH = path.join(FIXTURE_DIR, 'master.m3u8')
+
+/**
+ * ensureCaptionFixture は字幕つき master playlist のフィクスチャを書く（⑩）。
+ *
+ * **streamer が captions 有効時に配る形を写す。** master は
+ * `EXT-X-MEDIA:TYPE=SUBTITLES` のレンディションを持ち、variant playlist と
+ * 字幕 playlist はどちらも `.../live/segments/{name}.m3u8` の下に来る
+ * （`internal/streamer` の Segment が captions 有効時だけ `.m3u8` / `.vtt` を
+ * 受け付けるのはこのため）。
+ *
+ * **セグメント URI を `segments/` 無しの裸名にするのが要点。** variant / 字幕
+ * playlist は `.../live/segments/` の下に置かれるので、ffmpeg が書く
+ * `segments/segment_000.ts` をそのまま入れると
+ * `.../live/segments/segments/segment_000.ts` に解決されて 404 になる。
+ *
+ * 毎回上書きする（ffmpeg のフィクスチャと違い生成コストが無い）。
+ */
+function ensureCaptionFixture() {
+  const mediaPlaylist = readFileSync(PLAYLIST_PATH, 'utf8').replaceAll('segments/', '')
+  writeFileSync(path.join(SEGMENTS_DIR, 'hd.m3u8'), mediaPlaylist)
+
+  writeFileSync(
+    path.join(SEGMENTS_DIR, 'sub.m3u8'),
+    [
+      '#EXTM3U',
+      '#EXT-X-VERSION:3',
+      '#EXT-X-TARGETDURATION:40',
+      '#EXT-X-MEDIA-SEQUENCE:0',
+      '#EXTINF:40.0,',
+      'sub_00001.vtt',
+      '#EXT-X-ENDLIST',
+      '',
+    ].join('\n'),
+  )
+  writeFileSync(
+    path.join(SEGMENTS_DIR, 'sub_00001.vtt'),
+    ['WEBVTT', '', '00:00:00.000 --> 00:00:40.000', '字幕のフィクスチャ', ''].join('\n'),
+  )
+
+  writeFileSync(
+    MASTER_PATH,
+    [
+      '#EXTM3U',
+      '#EXT-X-VERSION:3',
+      '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="日本語",LANGUAGE="ja",' +
+        'DEFAULT=YES,AUTOSELECT=YES,URI="segments/sub.m3u8"',
+      '#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=640x360,SUBTITLES="subs"',
+      'segments/hd.m3u8',
+      '',
+    ].join('\n'),
+  )
+}
+
 const liveSegmentsPathOf = (serviceId) => `/services/${serviceId}/live/segments/`
 
 /**
@@ -172,6 +226,18 @@ function ensureFixture() {
 }
 
 /** segmentDelayMs はセグメント応答に足す遅延。 */
+/**
+ * E2E_LIVE_PROFILES は ⑨ が差し替える画質の一覧（issue #869）。
+ *
+ * **2 件にするのは意図的である。** `pages/live.tsx` は 1 件以下ならセレクタを
+ * 出さないので、1 件だとそもそも切替操作ができない。順序はサーバー側の
+ * `live.profiles` と同じ「設定順 = 先頭が既定」の意味を持つ。
+ */
+const E2E_LIVE_PROFILES = [
+  { name: 'hd', height: 720 },
+  { name: 'sd', height: 480 },
+]
+
 const segmentDelayMs = 400
 
 /**
@@ -253,6 +319,16 @@ async function mockLiveRoutes(page, mode) {
     })
   })
 
+  // 画質の一覧（issue #869）。実サーバーは config の `live.profiles` を返すが、
+  // この e2e は「2 件以上あるデプロイ」を前提にする判定（⑨）を含むので固定する。
+  await page.route('**/api/live-profiles', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(E2E_LIVE_PROFILES),
+    })
+  })
+
   await page.route('**/live/playlist.m3u8*', async (route) => {
     if (mode.playlist === 'error') {
       await route.fulfill({
@@ -265,7 +341,8 @@ async function mockLiveRoutes(page, mode) {
     await route.fulfill({
       status: 200,
       contentType: 'application/vnd.apple.mpegurl',
-      body: readFileSync(PLAYLIST_PATH),
+      // captions モードは字幕レンディションを持つ master を返す（⑩）
+      body: readFileSync(mode.playlist === 'captions' ? MASTER_PATH : PLAYLIST_PATH),
     })
   })
 
@@ -515,6 +592,7 @@ try {
 }
 
 const hasFixture = ensureFixture()
+if (hasFixture) ensureCaptionFixture()
 if (!hasFixture) {
   log('ffmpeg が見つからないため、フィクスチャを生成できない。①②③④⑤⑧ をすべて測れないとして報告する')
   skipped.push('ffmpeg が無いため①②③④⑤⑧すべて未測定')
@@ -726,6 +804,269 @@ async function runChromiumChecks(browser) {
     }
     log(`  再読み込みで復帰した: ${recovered ? 'YES' : 'NO'}`)
     if (!recovered) ng.push('⑤ 再読み込みを押しても復帰しない（MSE がアタッチされない）')
+  }
+
+  // --- ⑨ 画質（プロファイル）切替（M4-21 / issue #869） ---
+  //
+  // **jsdom では原理的に測れない 2 点をここで見る。**
+  //
+  //   1. 一覧が遅れて届いてもプレイリストを取り直さないこと（`LivePlayer` に
+  //      導出した既定を渡す実装だと、一覧の到着で `profile` が変わって probe の
+  //      effect が再実行され、`<video>` が作り直されて先頭から再生し直しになる）
+  //   2. 切替を跨いで音量・ミュートが保たれること（jsdom の `HTMLMediaElement.load`
+  //      は no-op なので、ユニットテストでは復元しなくても通ってしまう）
+  //
+  // あわせて **切替が離脱ヒントを送らない**ことも見る（送れば「セッションを
+  // 手放した」ことになり、同じチャンネルの他視聴者の再生を縮める側に倒れる）。
+  log('\n=== ⑨ 画質（プロファイル）切替 ===')
+  try {
+    const profilePage = await browser.newPage({ viewport: { width: 960, height: 640 } })
+    const playlistLog = []
+    const profileLeaveLog = []
+    profilePage.on('request', (req) => {
+      if (req.url().includes('/live/playlist.m3u8')) playlistLog.push(req.url())
+      if (req.url().includes('/live/leave')) profileLeaveLog.push(req.url())
+    })
+    // 一覧を**わざと遅らせる**（判定 1 の窓を作る）。`pendingProfiles` が真の間は
+    // 応答せず、「再生」を押した後に解放する。
+    let releaseProfiles = null
+    let holdProfiles = true
+    await mockLiveRoutes(profilePage, { playlist: 'ok' })
+    await profilePage.unroute('**/api/live-profiles')
+    await profilePage.route('**/api/live-profiles', async (route) => {
+      if (holdProfiles) {
+        await new Promise((resolve) => {
+          releaseProfiles = resolve
+        })
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(E2E_LIVE_PROFILES),
+      })
+    })
+
+    // **`networkidle` で待てない。** 一覧をわざと保留しているので、この
+    // ページは永久に idle にならない（`waitUntil: 'networkidle'` で実測 30 秒
+    // タイムアウトした）。DOM の構築だけを待ち、以降はセレクタで待つ。
+    await profilePage.goto(`${BASE_URL}/live?service=${SERVICE_ID_A}`, {
+      waitUntil: 'domcontentloaded',
+    })
+    await profilePage.getByRole('button', { name: /再生/ }).waitFor({ timeout: 15000 })
+    await clickPlay(profilePage)
+    await profilePage.waitForFunction(mseAttached, undefined, { timeout: 15000 })
+    const probesBeforeRelease = playlistLog.length
+    log(`  一覧が未解決のまま再生を開始した（プレイリスト要求 ${probesBeforeRelease} 件）`)
+
+    // 一覧を届かせる。`profile` が変わらない実装なら、ここで要求は増えない
+    holdProfiles = false
+    releaseProfiles?.()
+    await profilePage.waitForSelector('select[aria-label="画質"]', { timeout: 15000 })
+    await profilePage.waitForTimeout(500)
+    const probesAfterRelease = playlistLog.length
+    log(`  一覧の到着後のプレイリスト要求: ${probesAfterRelease} 件（増分 ${probesAfterRelease - probesBeforeRelease}）`)
+    if (probesAfterRelease !== probesBeforeRelease) {
+      ng.push(
+        '⑨ 一覧が遅れて届いただけでプレイリストを取り直している' +
+          `（${probesBeforeRelease} → ${probesAfterRelease} 件。再生が先頭からやり直しになる）`,
+      )
+    }
+
+    // 視聴者が音量とミュートを変える
+    await profilePage.evaluate(() => {
+      const v = document.querySelector('video')
+      v.volume = 0.3
+      v.muted = true
+    })
+
+    // 再生中の切替
+    const leavesBeforeSwitch = profileLeaveLog.length
+    await profilePage.selectOption('select[aria-label="画質"]', 'sd')
+    const switchDeadline = Date.now() + 15000
+    while (
+      !playlistLog.some((u) => u.includes('profile=sd')) &&
+      Date.now() < switchDeadline
+    ) {
+      await profilePage.waitForTimeout(100)
+    }
+    const switched = playlistLog.filter((u) => u.includes('profile=sd')).length
+    log(`  切替後に profile=sd で飛んだプレイリスト要求: ${switched} 件`)
+    if (switched === 0) {
+      ng.push('⑨ 画質を切り替えても ?profile=sd のプレイリスト要求が飛ばない')
+    }
+    if (profileLeaveLog.length !== leavesBeforeSwitch) {
+      ng.push(
+        '⑨ 画質の切替で離脱ヒントが飛んだ（セッションを手放す合図であってはならない。' +
+          ' 同じチャンネルの他視聴者の再生を縮める側に倒れる）',
+      )
+    }
+
+    const media = await profilePage.evaluate(() => {
+      const v = document.querySelector('video')
+      return { volume: v.volume, muted: v.muted }
+    })
+    log(`  切替後の video.volume = ${media.volume}, video.muted = ${media.muted}`)
+    if (Math.abs(media.volume - 0.3) > 0.001) {
+      ng.push(`⑨ 画質の切替で音量が失われた（${media.volume}、期待 0.3）`)
+    }
+    if (media.muted !== true) {
+      ng.push('⑨ 画質の切替でミュートが失われた')
+    }
+  } catch (err) {
+    ng.push(`⑨ 画質切替の検証中に例外が発生した: ${err.message}`)
+  }
+
+  // --- ⑩ 画質を切り替えても字幕の表示状態が保たれる（M4-21 / issue #869） ---
+  //
+  // **⑨ と同じ「切替で作り直さない」性質の、字幕側の面である。** hls.js は
+  // 新しいマニフェストを読むと字幕トラックの選択を既定に戻す
+  // （`SubtitleTrackController.onManifestLoading` が `trackId` を `-1` に戻す。
+  // `node_modules/hls.js` 1.7.1 で確認済み）ので、素朴に作り直すと
+  // **視聴者がネイティブコントロールで「切り」にした字幕が「入」に戻る**。
+  // `LivePlayer` は `MANIFEST_PARSED` で `subtitleDisplay` を設定し直しており、
+  // ここはその経路が実ブラウザで効くかを見る唯一の判定である。
+  log('\n=== ⑩ 画質切替と字幕の表示状態 ===')
+  try {
+    const captionPage = await browser.newPage({ viewport: { width: 960, height: 640 } })
+    const captionPlaylists = []
+    captionPage.on('request', (req) => {
+      if (req.url().includes('/live/playlist.m3u8')) captionPlaylists.push(req.url())
+    })
+    await mockLiveRoutes(captionPage, { playlist: 'captions' })
+
+    await captionPage.goto(`${BASE_URL}/live?service=${SERVICE_ID_A}`, { waitUntil: 'networkidle' })
+    await clickPlay(captionPage)
+    await captionPage.waitForFunction(mseAttached, undefined, { timeout: 15000 })
+
+    /** subtitleModes は `<video>` の字幕トラックの mode 一覧。 */
+    const subtitleModes = () =>
+      captionPage.evaluate(() =>
+        Array.from(document.querySelector('video')?.textTracks ?? []).map((t) => t.mode),
+      )
+
+    // **トラックが出来るまで待つ（空虚な成功を防ぐ）。** トラックが 1 本も無い
+    // 状態で「showing が無い」を見ても、字幕の配線が丸ごと壊れていて通ってしまう。
+    let captionTracksAppeared = false
+    const appearDeadline = Date.now() + 15000
+    while (Date.now() < appearDeadline) {
+      if ((await subtitleModes()).length > 0) {
+        captionTracksAppeared = true
+        break
+      }
+      await captionPage.waitForTimeout(200)
+    }
+    const initialModes = await subtitleModes()
+    log(`  字幕トラックの数: ${initialModes.length}, mode: ${JSON.stringify(initialModes)}`)
+    if (!captionTracksAppeared) {
+      ng.push(
+        '⑩ 字幕トラックが 1 本も現れない（master playlist の SUBTITLES レンディションを ' +
+          'hls.js が読めていない。フィクスチャか master のパスを疑う）',
+      )
+    } else if (!initialModes.includes('showing')) {
+      // 既定は表示（`hls.subtitleDisplay = true`）。ここが既に違うなら、
+      // 以降の「切っても入に戻らない」判定が何を測っているか分からなくなる
+      ng.push(`⑩ 既定で字幕が表示されていない（mode: ${JSON.stringify(initialModes)}）`)
+    }
+
+    // 視聴者がネイティブコントロールの Captions で「切り」にする
+    await captionPage.evaluate(() => {
+      for (const t of Array.from(document.querySelector('video').textTracks)) t.mode = 'disabled'
+    })
+    log(`  視聴者が切った直後: ${JSON.stringify(await subtitleModes())}`)
+
+    const before = captionPlaylists.length
+    await captionPage.selectOption('select[aria-label="画質"]', 'sd')
+    const switchDeadline = Date.now() + 15000
+    while (captionPlaylists.length === before && Date.now() < switchDeadline) {
+      await captionPage.waitForTimeout(100)
+    }
+
+    // **切替後にもう一度トラックが現れるのを待ってから** mode を見る
+    // （現れる前に見ると、上の空虚な成功と同じ穴になる）。
+    let reappeared = false
+    const reappearDeadline = Date.now() + 15000
+    while (Date.now() < reappearDeadline) {
+      if ((await subtitleModes()).length > 0) {
+        reappeared = true
+        break
+      }
+      await captionPage.waitForTimeout(200)
+    }
+    const afterModes = await subtitleModes()
+    log(`  切替後の mode: ${JSON.stringify(afterModes)}`)
+    if (!reappeared) {
+      ng.push('⑩ 切替後に字幕トラックが現れない（新しいマニフェストのレンディションを読めていない）')
+    } else if (afterModes.includes('showing')) {
+      ng.push(
+        '⑩ 画質の切替で、視聴者が切った字幕が再び表示された' +
+          `（mode: ${JSON.stringify(afterModes)}。MANIFEST_PARSED で subtitleDisplay を` +
+          ' 設定し直していない）',
+      )
+    }
+  } catch (err) {
+    ng.push(`⑩ 字幕の検証中に例外が発生した: ${err.message}`)
+  }
+
+  // --- ⑩-WebKit ネイティブ経路（Safari 相当）の字幕 ---
+  //
+  // **向きが逆である。** WebKit は字幕を**既定で表示しない**（レンディションに
+  // `DEFAULT=YES` を書いても、Safari の字幕は利用者が有効にするまで出ない。
+  // 実測）。したがってここで見るのは「利用者が入にしてから切り替えても入の
+  // まま」の側で、hls.js 経路（⑩）の「切ったまま」と対になる。
+  //
+  // **`loadedmetadata` で揃えるだけでは足りない**（実測: 入にしてから切り替えると
+  // `disabled` に戻った）。WebKit は `loadedmetadata` の時点でまだトラックを
+  // 作っていないためで、`LivePlayer` は `TextTrackList` の `addtrack` でも
+  // 適用する。ここはその経路が実ブラウザで効くかを見る唯一の判定である。
+  log('\n=== ⑩-WebKit 画質切替と字幕（ネイティブ経路） ===')
+  let webkitCaptionBrowser = null
+  try {
+    webkitCaptionBrowser = await launchBrowser('webkit')
+  } catch {
+    webkitCaptionBrowser = null
+  }
+  if (!webkitCaptionBrowser) {
+    log('  WebKit が無いため測れない')
+    skipped.push('⑩-WebKit の字幕は WebKit が無いため未測定')
+  } else {
+    try {
+      const page = await webkitCaptionBrowser.newPage({ viewport: { width: 960, height: 640 } })
+      await mockLiveRoutes(page, { playlist: 'captions' })
+      await page.goto(`${BASE_URL}/live?service=${SERVICE_ID_A}`, { waitUntil: 'networkidle' })
+      await clickPlay(page)
+      await page.waitForFunction(nativeSrcAssigned, undefined, { timeout: 15000 })
+      await page.waitForFunction(
+        () => (document.querySelector('video')?.textTracks?.length ?? 0) > 0,
+        undefined,
+        { timeout: 20000 },
+      )
+      /** subtitleModes は `<video>` の字幕トラックの mode 一覧。 */
+      const modes = () =>
+        page.evaluate(() =>
+          Array.from(document.querySelector('video')?.textTracks ?? []).map((t) => t.mode),
+        )
+      // 利用者がネイティブコントロールの CC で「入」にする
+      await page.evaluate(() => {
+        for (const t of Array.from(document.querySelector('video').textTracks)) t.mode = 'showing'
+      })
+      log(`  入にした直後: ${JSON.stringify(await modes())}`)
+
+      await page.selectOption('select[aria-label="画質"]', 'sd')
+      await page.waitForTimeout(3000)
+      const after = await modes()
+      log(`  切替後の mode: ${JSON.stringify(after)}`)
+      if (!after.includes('showing')) {
+        ng.push(
+          '⑩-WebKit 画質の切替で、利用者が入にした字幕が消えた' +
+            `（mode: ${JSON.stringify(after)}。ネイティブ経路は TextTrackList の` +
+            ' addtrack で適用していない）',
+        )
+      }
+    } catch (err) {
+      ng.push(`⑩-WebKit 字幕の検証中に例外が発生した: ${err.message}`)
+    } finally {
+      await webkitCaptionBrowser.close()
+    }
   }
 }
 

@@ -1181,3 +1181,52 @@ describe('LivePlayer のキー操作', () => {
     expect(video.currentTime).toBe(50)
   })
 })
+
+/**
+ * 画質（プロファイル）切替（issue #869 M4-21）。
+ *
+ * **切替はセッションを作り直さない。** 1 サービスの ffmpeg 1 本が全プロファイルを
+ * 同時に出力しており、替わるのはプレイリストの URL だけである（docs/api/media.md
+ * §資源同定）。したがって `profile` が変わっても離脱ヒントを送らない ---
+ * ヒントは「このチャンネルを見るのをやめた」の合図で、画質の切替ではない。
+ */
+describe('LivePlayer / 画質（プロファイル）切替（issue #869）', () => {
+  it('profile が変わると新しい URL で probe をやり直し、離脱ヒントは送らない', async () => {
+    const fetchMock = vi.fn((_url: string) => Promise.resolve(new Response('', { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+    const probeURLs = () =>
+      fetchMock.mock.calls.map(([url]) => String(url)).filter((u) => u.includes('playlist.m3u8'))
+    const leavePosts = () =>
+      fetchMock.mock.calls
+        .map(([url]) => String(url))
+        .filter((u) => u.includes('/live/leave'))
+
+    const { rerender } = render(
+      <LivePlayer site="default" networkId={0} serviceId={1024} profile="hd" />,
+    )
+    await waitFor(() => expect(probeURLs()).toHaveLength(1))
+    expect(probeURLs()[0]).toContain('profile=hd')
+
+    rerender(<LivePlayer site="default" networkId={0} serviceId={1024} profile="sd" />)
+    await waitFor(() => expect(probeURLs()).toHaveLength(2))
+    expect(probeURLs()[1]).toContain('profile=sd')
+    // 同じセッションの別プレイリストを取るだけ --- 手放す合図は送らない
+    expect(leavePosts()).toEqual([])
+  })
+
+  it('profile を省略すると ?profile を付けない（サーバー側の既定に任せる）', async () => {
+    const fetchMock = vi.fn((_url: string) => Promise.resolve(new Response('', { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.map(([url]) => String(url)).filter((u) => u.includes('playlist.m3u8')),
+      ).toHaveLength(1),
+    )
+    const url = fetchMock.mock.calls
+      .map(([u]) => String(u))
+      .find((u) => u.includes('playlist.m3u8'))!
+    expect(url).not.toContain('profile=')
+  })
+})

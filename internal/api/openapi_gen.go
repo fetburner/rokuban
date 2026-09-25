@@ -1111,6 +1111,18 @@ type IngestProgress struct {
 // 必要があり、どちらも取らなかった。停滞は `observedAt` の古さで読む。
 type IngestProgressState string
 
+// LiveProfileSummary defines model for LiveProfileSummary.
+type LiveProfileSummary struct {
+	// Height スケール先の高さ（表示用。0 または省略ならスケールしない = 元の解像度）。
+	// **設定の再現に使う値ではない** --- セレクタの表示だけに使う。
+	Height *int `json:"height,omitempty"`
+
+	// Name `?profile=` が参照する名前。config.live.profiles[].name と一致する。
+	// **並びは設定順で、先頭が既定**（`?profile=` を省略したときの
+	// プロファイル）。フロントは並びを変えない。
+	Name string `json:"name"`
+}
+
 // OverlappingReservation defines model for OverlappingReservation.
 type OverlappingReservation struct {
 	DurationMs int64     `json:"durationMs"`
@@ -1890,6 +1902,9 @@ type ServerInterface interface {
 	// GetEncodeQueue Get active encode job counts
 	// (GET /api/encode-queue)
 	GetEncodeQueue(w http.ResponseWriter, r *http.Request)
+	// ListLiveProfiles List configured live (HLS) profile names
+	// (GET /api/live-profiles)
+	ListLiveProfiles(w http.ResponseWriter, r *http.Request)
 	// SearchPrograms Search EPG programs by rule-style conditions
 	// (POST /api/programs/search)
 	SearchPrograms(w http.ResponseWriter, r *http.Request)
@@ -2022,6 +2037,12 @@ func (_ Unimplemented) ListEncodeProfiles(w http.ResponseWriter, r *http.Request
 // GetEncodeQueue Get active encode job counts
 // (GET /api/encode-queue)
 func (_ Unimplemented) GetEncodeQueue(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListLiveProfiles List configured live (HLS) profile names
+// (GET /api/live-profiles)
+func (_ Unimplemented) ListLiveProfiles(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2339,6 +2360,20 @@ func (siw *ServerInterfaceWrapper) GetEncodeQueue(w http.ResponseWriter, r *http
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetEncodeQueue(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListLiveProfiles operation middleware
+func (siw *ServerInterfaceWrapper) ListLiveProfiles(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListLiveProfiles(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3507,6 +3542,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/api/encode-profiles", wrapper.ListEncodeProfiles)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/live-profiles", wrapper.ListLiveProfiles)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/rules", wrapper.ListRules)
 	})
 	r.Group(func(r chi.Router) {
@@ -3756,6 +3794,27 @@ type GetEncodeQueueResponseObject interface {
 type GetEncodeQueue200JSONResponse EncodeQueueSummary
 
 func (response GetEncodeQueue200JSONResponse) VisitGetEncodeQueueResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListLiveProfilesRequestObject struct {
+}
+
+type ListLiveProfilesResponseObject interface {
+	VisitListLiveProfilesResponse(w http.ResponseWriter) error
+}
+
+type ListLiveProfiles200JSONResponse []LiveProfileSummary
+
+func (response ListLiveProfiles200JSONResponse) VisitListLiveProfilesResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -4864,6 +4923,9 @@ type StrictServerInterface interface {
 	// GetEncodeQueue Get active encode job counts
 	// (GET /api/encode-queue)
 	GetEncodeQueue(ctx context.Context, request GetEncodeQueueRequestObject) (GetEncodeQueueResponseObject, error)
+	// ListLiveProfiles List configured live (HLS) profile names
+	// (GET /api/live-profiles)
+	ListLiveProfiles(ctx context.Context, request ListLiveProfilesRequestObject) (ListLiveProfilesResponseObject, error)
 	// SearchPrograms Search EPG programs by rule-style conditions
 	// (POST /api/programs/search)
 	SearchPrograms(ctx context.Context, request SearchProgramsRequestObject) (SearchProgramsResponseObject, error)
@@ -5139,6 +5201,30 @@ func (sh *strictHandler) GetEncodeQueue(w http.ResponseWriter, r *http.Request) 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetEncodeQueueResponseObject); ok {
 		if err := validResponse.VisitGetEncodeQueueResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListLiveProfiles operation middleware
+func (sh *strictHandler) ListLiveProfiles(w http.ResponseWriter, r *http.Request) {
+	var request ListLiveProfilesRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListLiveProfiles(ctx, request.(ListLiveProfilesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListLiveProfiles")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListLiveProfilesResponseObject); ok {
+		if err := validResponse.VisitListLiveProfilesResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

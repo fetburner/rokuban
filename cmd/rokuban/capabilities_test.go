@@ -26,9 +26,48 @@ func freePort(t *testing.T) int {
 	return port
 }
 
-// runServerForCapabilities は `rokuban server --roles <roles>` を実プロセスと同じ
-// 経路（root コマンド → newServerCmd の RunE）で起動し、GET /api/capabilities の
-// 応答を返す。
+// テスト用の `live:` 節。**一覧 API（issue #869）と能力 API（issue #209）が同じ
+// config の別の面を写す**ので、どちらのテストからも同じ定義を使う。
+const (
+	// liveAbsentYAML は `live:` 節そのものが無い config（既定の出荷形）。
+	liveAbsentYAML = ""
+
+	// liveEnabledYAML は有効 + 3 プロファイル。**height を書かない 1 件を混ぜる**
+	// のは、一覧が「未設定」を省略する（0 を詰めない）ことを通すため。
+	liveEnabledYAML = `
+live:
+  enabled: true
+  segment_dir: /tmp/rokuban-capabilities-test
+  profiles:
+    - name: hd
+      video_codec: libx264
+      audio_codec: aac
+      height: 720
+    - name: sd
+      video_codec: libx264
+      audio_codec: aac
+      height: 480
+    - name: original
+      video_codec: libx264
+      audio_codec: aac
+`
+
+	// liveDisabledWithProfilesYAML は `config.compose.yml` と同じ形
+	// （`enabled: false` と profiles が同居する）。**`enabled: false` でも一覧は
+	// 空にならない**ことを固定するために要る（`TestServerLiveProfiles_*`）。
+	liveDisabledWithProfilesYAML = `
+live:
+  enabled: false
+  profiles:
+    - name: hd
+      video_codec: libx264
+      audio_codec: aac
+      height: 720
+`
+)
+
+// startTestServer は `rokuban server --roles <roles>` を実プロセスと同じ経路
+// （root コマンド → newServerCmd の RunE）で起動し、応答を待って base URL を返す。
 //
 // **ルーターの組み立てを直接呼ばずにコマンドを起動するのが要点。** 検証したいのは
 // 「どのロールで起動しても同じ答えを返す」という配線であり、api.RouterConfig の
@@ -37,7 +76,7 @@ func freePort(t *testing.T) int {
 // 生成ルート自体はロールに関わらず生えるため、notifier 単独のプロセスに聞くと
 // live:false が返っていた）。config → 公開面の写しを部分的に再現するテストでは
 // この配線ミスを一度も通らない。
-func runServerForCapabilities(t *testing.T, roles string, liveEnabled bool) map[string]any {
+func startTestServer(t *testing.T, roles string, liveYAML string) string {
 	t.Helper()
 
 	// パッケージ専用のテスト DB を用意し、その接続情報で config を書く。
@@ -54,18 +93,6 @@ func runServerForCapabilities(t *testing.T, roles string, liveEnabled bool) map[
 		password = "unused-under-trust-auth"
 	}
 
-	live := ""
-	if liveEnabled {
-		live = `
-live:
-  enabled: true
-  segment_dir: /tmp/rokuban-capabilities-test
-  profiles:
-    - name: hd
-      video_codec: libx264
-      audio_codec: aac
-`
-	}
 	path := writeServerTestConfig(t, fmt.Sprintf(`
 server:
   listen: "127.0.0.1:%d"
@@ -81,7 +108,7 @@ mirakcs:
     url: http://mirakc.invalid:40772
 storage:
   media_dir: /tmp/rokuban-capabilities-test-media
-%s`, port, connCfg.Host, connCfg.Port, connCfg.User, password, connCfg.Database, live))
+%s`, port, connCfg.Host, connCfg.Port, connCfg.User, password, connCfg.Database, liveYAML))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	// exited は「コマンドが返った」ことを表す（close するので何度でも読める。
@@ -109,15 +136,8 @@ storage:
 	for {
 		resp, err := http.Get(url)
 		if err == nil {
-			defer func() { _ = resp.Body.Close() }()
-			if resp.StatusCode != http.StatusOK {
-				t.Fatalf("GET /api/capabilities (roles=%s) = %d, want 200", roles, resp.StatusCode)
-			}
-			var body map[string]any
-			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-				t.Fatalf("decoding response: %v", err)
-			}
-			return body
+			_ = resp.Body.Close()
+			return fmt.Sprintf("http://127.0.0.1:%d", port)
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("server never answered on %s: %v", url, err)
@@ -130,13 +150,33 @@ storage:
 	}
 }
 
+// runServerForCapabilities は起動したサーバーの GET /api/capabilities の応答を返す。
+func runServerForCapabilities(t *testing.T, roles string, liveYAML string) map[string]any {
+	t.Helper()
+	base := startTestServer(t, roles, liveYAML)
+
+	resp, err := http.Get(base + "/api/capabilities")
+	if err != nil {
+		t.Fatalf("GET /api/capabilities (roles=%s): %v", roles, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/capabilities (roles=%s) = %d, want 200", roles, resp.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	return body
+}
+
 // live.enabled は config の値であって「このプロセスの役割」ではない。
 // **api ロールを持たないプロセスに聞いても同じ答えを返す**（生成ルートは
 // ロールで絞られないので、答えがロールで変わると同一デプロイの中で矛盾する）。
 func TestServerCapabilities_LiveIsRoleIndependent(t *testing.T) {
 	for _, roles := range []string{"api", "notifier"} {
 		t.Run(roles, func(t *testing.T) {
-			body := runServerForCapabilities(t, roles, true)
+			body := runServerForCapabilities(t, roles, liveEnabledYAML)
 			if body["live"] != true {
 				t.Errorf(`roles=%s: "live" = %#v, want true（config は live.enabled: true）`,
 					roles, body["live"])
@@ -148,7 +188,7 @@ func TestServerCapabilities_LiveIsRoleIndependent(t *testing.T) {
 // 逆方向: config が無効なら（どのロールでも）false。両方向を見ないと、
 // 常に true を返す実装が上のテストを通してしまう。
 func TestServerCapabilities_LiveFalseWhenConfigDisabled(t *testing.T) {
-	body := runServerForCapabilities(t, "api", false)
+	body := runServerForCapabilities(t, "api", liveAbsentYAML)
 	if body["live"] != false {
 		t.Errorf(`"live" = %#v, want false（config に live: 節が無い）`, body["live"])
 	}

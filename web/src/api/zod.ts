@@ -102,6 +102,34 @@ export const ListEncodeProfilesResponse = zod.array(ListEncodeProfilesResponseIt
 
 
 /**
+ * `config.live.profiles` に定義されたプロファイルの公開面。`/live` の
+ * 画質セレクタが選べる名前を出すために使う（M4-21 / issue #869）。
+ *
+ * **機微情報は載せない。** ffmpeg のパス・extra_args・品質指定は出さない。
+ * 名前と表示用の `height` だけを返す（`GET /api/encode-profiles` と同じ規律）。
+ *
+ * **順序が既定の根拠である。** 先頭が `?profile=` を省略したときの既定で、
+ * サーバー側の `live.profiles` の並びがそのまま順序になる。フロントは並びを
+ * 変えない。
+ *
+ * **`live.enabled` は見ない。** 返すのは `config.live.profiles` の写しそのもので、
+ * **無効なデプロイでも profiles が書かれていれば返る**。有効かどうかは
+ * `GET /api/capabilities` の `live` の側の問いである（2 箇所で判定しない）。
+ * 未定義なら空配列。
+ *
+ * **ロール分割で api と streamer に別の config を配る構成では、この一覧と
+ * 実際に配られるプロファイルはずれる。** ずれを検出する手段は無い ---
+ * 一覧にあるから見られる、とは言えない（下界主義。docs/api/media.md）。
+ * @summary List configured live (HLS) profile names
+ */
+export const ListLiveProfilesResponseItem = zod.object({
+  "name": zod.string().describe('`?profile=` が参照する名前。config.live.profiles[].name と一致する。\n\*\*並びは設定順で、先頭が既定\*\*（`?profile=` を省略したときの\nプロファイル）。フロントは並びを変えない。\n'),
+  "height": zod.int().optional().describe('スケール先の高さ（表示用。0 または省略ならスケールしない = 元の解像度）。\n\*\*設定の再現に使う値ではない\*\* --- セレクタの表示だけに使う。\n')
+})
+export const ListLiveProfilesResponse = zod.array(ListLiveProfilesResponseItem)
+
+
+/**
  * @summary List recording rules
  */
 export const listRulesResponseOneEnabledDefault = true;
