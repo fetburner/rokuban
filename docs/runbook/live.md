@@ -221,6 +221,13 @@ pnpm exec playwright install chromium webkit
    probe は HTTP 層しか見ないので、ここを `<video>` のイベントで拾えていないと
    **永久に止まった黒いプレイヤー**になる。壊れ方で出るイベントが違う
    （404 は `error`、無応答は `stalled` のみ）ので 2 通りとも見る
+10. **字幕の表示が画質の切替で失われないか**（⑩。issue #869）。フィクスチャに
+   字幕レンディション（master playlist + WebVTT）を持たせ、**2 方向**を見る。
+   hls.js 経路（Chromium）は利用者が切ってから切り替えても `hidden` のままである
+   こと。ネイティブ経路（WebKit）は利用者が入にしてから切り替えても `showing` の
+   ままであること。**後者は `loadedmetadata` で揃えるだけでは落ちる**（WebKit は
+   その時点でまだトラックを作っていない。実測で `disabled` に戻った）。
+   `LivePlayer` が `TextTrackList` の `addtrack` でも適用している理由である
 9. **画質（プロファイル）の切替**（issue #869 / M4-21）。一覧（`GET /api/live-profiles`）を
    **わざと保留したまま**「再生」を押し、後から届かせても**プレイリストを取り直さない**
    ことを見る（`LivePlayer` に導出した既定を渡す実装だと、一覧の到着で `profile` が

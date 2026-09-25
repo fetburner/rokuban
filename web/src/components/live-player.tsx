@@ -193,8 +193,12 @@ export function LivePlayer({
   // 何も変わらないコードは置かない。
   //
   // **字幕は違う。** hls.js は新しいマニフェストを読むと字幕トラックの選択を
-  // 既定に戻す（下の effect のコメント参照）。effect の cleanup（= 切替の直前）で
-  // 読み、次の setup で戻す。
+  // 既定に戻す（下の effect のコメント参照）。WebKit のネイティブ経路も、src を
+  // 差し替えるとトラックを作り直して既定（非表示）に戻す。effect の cleanup
+  // （= 切替の直前）で読み、次の setup で戻す。
+  //
+  // **両経路とも実ブラウザで実測済みである**（`web/e2e/live.mjs` の ⑩ は
+  // hls.js 経路の「切ったまま」、⑩-WebKit はネイティブ経路の「入にしたまま」を見る）。
   const preservedState = useRef<{ subtitles: boolean | null } | null>(null)
   const explicitStartSeekPending = useRef(false)
   const lastSavedSecond = useRef<number | null>(null)
@@ -479,13 +483,23 @@ export function LivePlayer({
         // 既定（表示）に戻るだけで、配信そのものには影響しない。
         if (preserved?.subtitles != null) {
           const visible = preserved.subtitles
-          video.addEventListener(
-            'loadedmetadata',
-            () => {
-              if (!cancelled) applySubtitleVisibility(video, visible)
-            },
-            { once: true },
-          )
+          // **`loadedmetadata` だけでは足りない（実測）。** WebKit は
+          // `loadedmetadata` の時点でまだ字幕トラックを作っていないので、
+          // ここで一度揃えても何も無い（実測: 入にしてから切り替えると
+          // `disabled` に戻った）。`TextTrackList` の `addtrack` で
+          // **トラックが増えるたびに**適用する。
+          const apply = () => {
+            if (!cancelled) applySubtitleVisibility(video, visible)
+          }
+          // jsdom の `video.textTracks` は空配列で `addEventListener` を持たない
+          const trackList = video.textTracks as unknown as {
+            addEventListener?: (type: string, listener: () => void) => void
+            removeEventListener?: (type: string, listener: () => void) => void
+          }
+          trackList.addEventListener?.('addtrack', apply)
+          teardown.push(() => trackList.removeEventListener?.('addtrack', apply))
+          apply()
+          video.addEventListener('loadedmetadata', apply, { once: true })
         }
       } else {
         const { default: Hls } = await import('hls.js')
@@ -552,8 +566,10 @@ export function LivePlayer({
         // `if (this.trackId > -1) this.toggleTrackModes()` はここでは発火しない）。
         // それでもここで `_subtitleDisplay` を書くのは、**後の選択のときに
         // `toggleTrackModes` がその値を読む**ためである。
-        // **実ブラウザでのこの順序は未検証。** jsdom で測れるのは呼び出しの配線だけで、
-        // 外れた場合の帰結は字幕が既定（表示）に戻ることで、配信は壊れない。
+        // **この経路が効くことは実ブラウザで実測済みである。** 利用者が字幕を切ってから
+        // 画質を切り替えると `mode` は `hidden` のまま（= 再表示されない）。
+        // この 1 行を外すと `showing` に戻ることを `web/e2e/live.mjs` の ⑩ が
+        // 実 Chromium で捕まえる。
         if (preserved?.subtitles != null) {
           const visible = preserved.subtitles
           hls.on(Hls.Events.MANIFEST_PARSED, () => {
