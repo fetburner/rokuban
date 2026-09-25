@@ -474,6 +474,67 @@ func TestLiveStreamer_SharedSession(t *testing.T) {
 	}
 }
 
+// TestLiveStreamer_ProfileSwitchKeepsOneSession は、**同じサービスの画質
+// （`?profile=`）を切り替えてもセッションが増えない**ことを固定する（issue #869 の
+// 受け入れ「切り替えてもチューナーが 1 本のまま」の、機械で測れる部分）。
+//
+// 1 サービス = 1 ffmpeg = mirakc の 1 チューナーで、**設定済みの全プロファイルを
+// 1 回の起動で同時に出す**（docs/api/media.md §実装）。したがって画質の切替は
+// 同じセッションの別プレイリストを取るだけである。セッションの鍵は
+// `getOrCreateSession(serviceID)` の serviceID だけで、`profile` はクエリにしか
+// 現れない（前段の consistent hash 鍵にも入らない）。
+//
+// 壊し方: `Playlist` が `profile` をセッションの鍵に混ぜる / プロファイルごとに
+// ffmpeg を起動する。
+func TestLiveStreamer_ProfileSwitchKeepsOneSession(t *testing.T) {
+	mirakcSrv, state := newFakeMirakcLiveServer(t)
+	cfg := baseLiveConfig(t)
+	// 2 プロファイルを 1 本の ffmpeg で出す（`BuildLiveFFmpegArgs` が出力を N 本にする）。
+	cfg.Profiles = append(cfg.Profiles, LiveProfile{
+		Name: "h264_vaapi", VideoCodec: "h264_vaapi", AudioCodec: "aac",
+		SegmentSeconds: 2, PlaylistSize: 6,
+	})
+	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
+
+	const serviceID = 1024
+	bodies := map[string]string{}
+	for _, profile := range []string{"h264", "h264_vaapi", "h264"} {
+		resp, err := http.Get(playlistURL(srv.URL, 0, serviceID, profile))
+		if err != nil {
+			t.Fatalf("GET playlist (profile=%s): %v", profile, err)
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			t.Fatalf("reading playlist (profile=%s): %v", profile, readErr)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status (profile=%s) = %d, want 200", profile, resp.StatusCode)
+		}
+		bodies[profile] = string(body)
+	}
+
+	// **返るのは要求したプロファイルのプレイリストである。** ffmpeg は 1 回の
+	// 起動で出力ごとに別のプレイリストを書き、セグメント名にはプロファイル名が
+	// 接頭辞として焼かれる（`BuildLiveFFmpegArgs`）。ここを見ないと
+	// 「`?profile=` を無視して常に先頭を返す」変異が緑のまま通る。
+	if !strings.Contains(bodies["h264"], "h264_seg00001.ts") {
+		t.Errorf("h264 playlist = %q, want it to point at h264_seg00001.ts", bodies["h264"])
+	}
+	if !strings.Contains(bodies["h264_vaapi"], "h264_vaapi_seg00001.ts") {
+		t.Errorf("h264_vaapi playlist = %q, want it to point at h264_vaapi_seg00001.ts",
+			bodies["h264_vaapi"])
+	}
+	if bodies["h264"] == bodies["h264_vaapi"] {
+		t.Errorf("both profiles returned the same playlist: %q", bodies["h264"])
+	}
+
+	if got := state.requestCount(); got != 1 {
+		t.Fatalf("mirakc stream requests = %d, want 1 "+
+			"(画質の切替は同じセッションの別プレイリストであり、ffmpeg もチューナーも増えない)", got)
+	}
+}
+
 // X-Mirakurun-Priority に live.tuner_priority がそのまま載ること
 // （チューナー調停の実装、issue #91 の決定 4）。
 func TestLiveStreamer_UsesConfiguredTunerPriority(t *testing.T) {

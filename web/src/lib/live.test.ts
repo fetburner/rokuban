@@ -12,8 +12,11 @@ import {
   livePlaylistURL,
   pickInitialService,
   probeLivePlaylist,
+  liveProfileLabel,
+  readSubtitleVisibility,
   sendLiveLeaveHint,
   supportsNativeHls,
+  validLiveProfile,
 } from '@/lib/live'
 
 afterEach(() => {
@@ -36,6 +39,24 @@ describe('livePlaylistURL', () => {
   it('site をエスケープする', () => {
     expect(livePlaylistURL('a b', 0, 1)).toBe(
       '/api/sites/a%20b/networks/0/services/1/live/playlist.m3u8',
+    )
+  })
+
+  /**
+   * **画質はパスに入れない（クエリだけ）。** 前段の consistent hash は
+   * `map $uri $live_key`（パスのみ。`docs/operations.md` §5）で
+   * `(site, networkId, serviceId)` を取り出す。パスにプロファイルが混ざると、
+   * 同じサービスを別プロファイルで見た視聴者が別の Pod に割れ、**チューナーを
+   * 2 本掴む**（`docs/api/media.md` §資源同定）。前段の設定をテストで読む手段は
+   * 無いので、こちらが作る URL の側でパスが変わらないことを固定する。
+   */
+  it('profile を変えてもパス（ハッシュ鍵）は変わらない', () => {
+    const path = (url: string) => url.split('?')[0]
+    expect(path(livePlaylistURL('default', 0, 1024, 'hd'))).toBe(
+      path(livePlaylistURL('default', 0, 1024)),
+    )
+    expect(path(livePlaylistURL('default', 0, 1024, 'sd'))).toBe(
+      path(livePlaylistURL('default', 0, 1024, 'hd')),
     )
   })
 
@@ -419,5 +440,63 @@ describe('formatLiveDiagnostics', () => {
     const label = formatLiveDiagnostics({ source: 'native', latencySec: null, bufferSec: null })
     expect(label).toBe('先読み—')
     expect(label).not.toMatch(/\bNaN\b/)
+  })
+})
+
+describe('validLiveProfile', () => {
+  const profiles = [{ name: 'hd' }, { name: 'sd' }]
+
+  it('一覧にある名前はそのまま返す', () => {
+    expect(validLiveProfile(profiles, 'sd')).toBe('sd')
+  })
+
+  /**
+   * **未知の名前は落ちる。** streamer は空の `?profile=` を既定（先頭）に落とすが、
+   * 未知の名前は 400（`unknown live profile`）を返す。綴り違いの共有リンク・
+   * 古いブックマークをエラー画面にしないため、フロントが先に落とす。
+   */
+  it('一覧に無い名前は落ちる', () => {
+    expect(validLiveProfile(profiles, 'does-not-exist')).toBeUndefined()
+  })
+
+  it('要求が無ければ undefined（既定はサーバー側の先頭に任せる）', () => {
+    expect(validLiveProfile(profiles, undefined)).toBeUndefined()
+  })
+
+  it('一覧が空なら落ちる', () => {
+    expect(validLiveProfile([], 'hd')).toBeUndefined()
+  })
+})
+
+describe('liveProfileLabel', () => {
+  it('height があれば画質として読める形にする', () => {
+    expect(liveProfileLabel({ name: 'hd', height: 720 })).toBe('hd（720p）')
+  })
+
+  it('height が無ければ名前だけ', () => {
+    expect(liveProfileLabel({ name: 'original' })).toBe('original')
+  })
+
+  it('height 0（スケールなし）は名前だけ', () => {
+    expect(liveProfileLabel({ name: 'original', height: 0 })).toBe('original')
+  })
+})
+
+describe('readSubtitleVisibility', () => {
+  it('showing のトラックがあれば true', () => {
+    expect(readSubtitleVisibility([{ mode: 'disabled' }, { mode: 'showing' }])).toBe(true)
+  })
+
+  it('トラックはあるが全て切っていれば false', () => {
+    expect(readSubtitleVisibility([{ mode: 'disabled' }])).toBe(false)
+  })
+
+  /**
+   * **トラックが 1 本も無いときは null（不明）。** まだ再生していない・字幕を
+   * 配っていない状態で `false` を返すと、切替時に「字幕は切ってあった」と誤読して
+   * 既定（表示）を勝手に切ってしまう。
+   */
+  it('トラックが無ければ null（不明）', () => {
+    expect(readSubtitleVisibility([])).toBeNull()
   })
 })

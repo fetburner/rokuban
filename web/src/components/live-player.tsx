@@ -6,6 +6,7 @@ import {
   chasePlaylistURL,
   livePlaylistURL,
   probeLivePlaylist,
+  readSubtitleVisibility,
   sendChaseLeaveHint,
   sendLiveLeaveHint,
   supportsNativeHls,
@@ -75,6 +76,20 @@ function readNativeDiagnostics(media: HTMLVideoElement): LiveDiagnostics {
     latencySec: null,
     bufferSec:
       buffered.length > 0 ? Math.max(0, buffered.end(buffered.length - 1) - media.currentTime) : null,
+  }
+}
+
+/**
+ * applySubtitleVisibility は既にある字幕トラックの表示状態を揃える
+ * （ネイティブ HLS 経路。issue #869 の画質切替）。
+ *
+ * hls.js 経路は `hls.subtitleDisplay` を使う（下の effect）。ネイティブ経路には
+ * それに相当するつまみが無いので、`<video>` のトラックを直接触る。
+ * `video.textTracks` が空（まだトラックが無い・配っていない）なら何もしない。
+ */
+function applySubtitleVisibility(media: HTMLVideoElement, visible: boolean): void {
+  for (const track of Array.from(media.textTracks)) {
+    track.mode = visible ? 'showing' : 'disabled'
   }
 }
 
@@ -167,6 +182,15 @@ export function LivePlayer({
   // retryNonce を変えると effect が再実行される（依存配列に入れる）
   const [retryNonce, setRetryNonce] = useState(0)
   const restorePending = useRef(true)
+  // preservedState は画質（プロファイル）の切替・再読み込みを跨いで持ち越す
+  // 視聴者の表示状態（issue #869）。音量・ミュート・字幕の表示はいずれも
+  // **プレイリストの差し替えではなく視聴者が決めた設定**なので、切替で失っては
+  // ならない。effect の cleanup（= 切替の直前）で読み、次の setup で戻す。
+  const preservedState = useRef<{
+    muted: boolean
+    volume: number
+    subtitles: boolean | null
+  } | null>(null)
   const explicitStartSeekPending = useRef(false)
   const lastSavedSecond = useRef<number | null>(null)
   // onDiagnostics は ref 越しに読む。probe / hls.js のセットアップを担う
@@ -244,6 +268,14 @@ export function LivePlayer({
     // 保証できない（react-hooks/exhaustive-deps が指摘する形）ため、同じ
     // effect の中で捕まえた変数を setup・cleanup の両方から使う。
     const video = videoRef.current
+    // 前回の切替で持ち越した表示状態を戻す（issue #869）。`<video>` 要素自体は
+    // 作り直さない（このコンポーネントは unmount しない）が、`load()` を挟む以上
+    // 要素の状態に頼らず明示的に戻す。
+    const preserved = preservedState.current
+    if (preserved !== null && video) {
+      video.muted = preserved.muted
+      video.volume = preserved.volume
+    }
     // video / hls の外部再生状態と UI の loading/error 表示を同期する effect。
     // render 中に導出すると、再生開始・失敗イベントの境界を表現できない。
     // oxlint-disable-next-line react/set-state-in-effect -- 外部メディア状態との同期
@@ -253,7 +285,7 @@ export function LivePlayer({
 
     const url = isChase
       ? chasePlaylistURL(site ?? '', recordingId ?? 0, profile, chaseStartOffset)
-      : livePlaylistURL(site ?? '', networkId ?? 0, serviceId ?? 0)
+      : livePlaylistURL(site ?? '', networkId ?? 0, serviceId ?? 0, profile)
 
     // teardown はこの effect が張ったものを外す手続き（メディアイベントの
     // リスナと stall 監視のタイマー）。cleanup から呼ぶ
@@ -440,6 +472,20 @@ export function LivePlayer({
         const stopDiagnostics = watchLiveDiagnostics(() => readNativeDiagnostics(video))
         watchNativeMedia(video, stopDiagnostics)
         video.src = url
+        // 字幕の表示状態を持ち越す（issue #869）。ネイティブ経路はトラックを
+        // 自前で作り直すので、出来上がった頃（`loadedmetadata`）に揃え直す。
+        // **Safari がトラックをいつ作るかの順序は未検証** --- ここで揃わなければ
+        // 既定（表示）に戻るだけで、配信そのものには影響しない。
+        if (preserved?.subtitles != null) {
+          const visible = preserved.subtitles
+          video.addEventListener(
+            'loadedmetadata',
+            () => {
+              if (!cancelled) applySubtitleVisibility(video, visible)
+            },
+            { once: true },
+          )
+        }
       } else {
         const { default: Hls } = await import('hls.js')
         if (cancelled) return
@@ -491,6 +537,28 @@ export function LivePlayer({
         // the streamer has already applied any recording-relative offset.
         const hls = new Hls(isChase ? { startPosition: 0 } : undefined) as unknown as HlsLike
         hls.subtitleDisplay = true
+        // 字幕の表示状態を持ち越す（issue #869）。**hls.js は新しいマニフェストを
+        // 読むと字幕トラックの選択を既定に戻す** --- `SubtitleTrackController` の
+        // `onManifestLoading` が `tracks = []` / `trackId = -1` /
+        // `selectDefaultTrack = true` にする（`node_modules/hls.js` 1.7.1 で確認済み）。
+        // そのため素朴に作り直すと、ネイティブコントロールの `⋮` → Captions で
+        // 「切り」にした字幕が「入」に戻る。
+        //
+        // **`MANIFEST_PARSED` の時点では既定トラックはまだ選ばれていない**
+        // （同コントローラの `onManifestParsed` は `tracks` を代入するだけで、
+        // 既定トラックの選択はその後の level 更新経路の `setSubtitleTrack` →
+        // `toggleTrackModes`。だから `subtitleDisplay` セッターの
+        // `if (this.trackId > -1) this.toggleTrackModes()` はここでは発火しない）。
+        // それでもここで `_subtitleDisplay` を書くのは、**後の選択のときに
+        // `toggleTrackModes` がその値を読む**ためである。
+        // **実ブラウザでのこの順序は未検証。** jsdom で測れるのは呼び出しの配線だけで、
+        // 外れた場合の帰結は字幕が既定（表示）に戻ることで、配信は壊れない。
+        if (preserved?.subtitles != null) {
+          const visible = preserved.subtitles
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            if (!cancelled) hls.subtitleDisplay = visible
+          })
+        }
         hlsRef.current = hls
         const stopDiagnostics = watchLiveDiagnostics(() => readHlsDiagnostics(hls))
         hls.on(Hls.Events.ERROR, (_event, data) => {
@@ -520,6 +588,15 @@ export function LivePlayer({
     return () => {
       cancelled = true
       controller.abort()
+      // 画質切替・再読み込みを跨いで持ち越す表示状態を、壊す前の要素から読む
+      // （issue #869）。unmount のときも走るが、ref ごと捨てられるので無害。
+      if (video) {
+        preservedState.current = {
+          muted: video.muted,
+          volume: video.volume,
+          subtitles: readSubtitleVisibility(Array.from(video.textTracks)),
+        }
+      }
       // メディアイベントのリスナと stall タイマーを外す。
       //
       // **実際に効いている防御は `failed()` の `cancelled` チェックの方である。**

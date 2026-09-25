@@ -8,7 +8,7 @@
  * ここでは判定できる部分とできない部分を先に切り分けている）。
  */
 
-import type { Service } from '@/api/generated'
+import type { LiveProfileSummary, Service } from '@/api/generated'
 
 /**
  * livePlaylistURL はストリーマーが配るプレイリスト URL を組み立てる（OpenAPI 外。
@@ -31,6 +31,58 @@ export function livePlaylistURL(
     `/api/sites/${encodeURIComponent(site)}` +
     `/networks/${networkId}/services/${serviceId}/live/playlist.m3u8`
   return profile ? `${base}?profile=${encodeURIComponent(profile)}` : base
+}
+
+/**
+ * validLiveProfile は `?profile=` の要求値を一覧に照らして検証し、使える名前だけを返す。
+ *
+ * **未知の名前をそのまま流してはならない。** streamer は `?profile=` が空なら既定
+ * （`live.profiles` の先頭）に落とすが、**未知の名前は 400**（`unknown live profile`。
+ * `internal/streamer/live.go` の `Playlist`）を返す。綴り違いの共有リンク・古い
+ * ブックマークをエラー画面にしないため、フロントが先に落として既定へ倒す。
+ *
+ * 一覧は実行時に来るデータなので、この検査は `validateSearch` では書けない
+ * （あちらは同期・クエリ文字列だけを見る）。`?site=` と同じ分担である ---
+ * 形は `validateSearch`、実在の判定は一覧を読める場所。
+ */
+export function validLiveProfile(
+  profiles: readonly LiveProfileSummary[],
+  requested: string | undefined,
+): string | undefined {
+  if (requested === undefined) return undefined
+  return profiles.some((p) => p.name === requested) ? requested : undefined
+}
+
+/**
+ * liveProfileLabel は画質セレクタに出す 1 件分の表示名。
+ *
+ * 名前は設定者が付けた文字列（`h264` 等）で、それだけでは画質として読めないことが
+ * あるため、`height`（= 実際の出力高）を添える。**0 を「0p」と書かない** ---
+ * 0 は「スケールしない」（元の解像度）の表現である。
+ */
+export function liveProfileLabel(profile: LiveProfileSummary): string {
+  return profile.height !== undefined && profile.height > 0
+    ? `${profile.name}（${profile.height}p）`
+    : profile.name
+}
+
+/**
+ * readSubtitleVisibility は字幕トラックの表示状態を読む（issue #869 の画質切替）。
+ *
+ * **トラックが 1 本も無いときは `null`（不明）を返す。** 「トラックはあるが全て
+ * 切ってある」（`false`）と「まだトラックが無い」を潰すと、切替時に
+ * 「字幕は切ってあった」と誤読して、既定（表示）を勝手に切ってしまう ---
+ * 再生前の切替（probe 失敗からの再試行など）でこれが起きる。
+ *
+ * 引数を `HTMLMediaElement` ではなくトラックの配列にするのは、jsdom が
+ * `TextTrackList` を実装しておらず（`video.textTracks` は常に空）、
+ * 判定を純関数としてテストできるようにするため。
+ */
+export function readSubtitleVisibility(
+  tracks: readonly { mode: string }[],
+): boolean | null {
+  if (tracks.length === 0) return null
+  return tracks.some((t) => t.mode === 'showing')
 }
 
 /**

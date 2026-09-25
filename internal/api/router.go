@@ -62,6 +62,10 @@ type RouterConfig struct {
 	// （issue #64）。空/nil なら名前検証をスキップする（テストの部分構成を許す）。
 	EncodeProfileNames []string
 
+	// LiveProfiles は config.live.profiles の表示用一覧。GET /api/live-profiles に出す
+	// （issue #869）。順序は設定順で、ffmpeg のパス・extra_args・品質指定は含めない。
+	LiveProfiles []LiveProfileSummary
+
 	// LiveEnabled は config.live.enabled。GET /api/capabilities の live に出す
 	// （issue #209）。フロントはこれを見てライブへの導線（主ナビ・番組行のリンク）
 	// を出すかどうかを決める。
@@ -128,7 +132,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	}
 
 	handler := NewServer(cfg.Pool, cfg.RiverClient, cfg.Sites, cfg.EncodeProfileNames,
-		Capabilities{Live: cfg.LiveEnabled})
+		cfg.LiveProfiles, Capabilities{Live: cfg.LiveEnabled})
 	strict := NewStrictHandler(handler, nil)
 	HandlerWithOptions(strict, ChiServerOptions{
 		BaseRouter: r,

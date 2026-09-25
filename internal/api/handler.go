@@ -42,6 +42,9 @@ type Server struct {
 	// encodeProfileNames は定義順の名前一覧（GET /api/encode-profiles 用。issue #68）。
 	encodeProfileNames []string
 
+	// liveProfiles は定義順のライブプロファイル一覧（GET /api/live-profiles 用。issue #869）。
+	liveProfiles []LiveProfileSummary
+
 	// capabilities はこのデプロイで有効なオプション機能（GET /api/capabilities 用。
 	// issue #209）。ゼロ値は「すべて無効」で、config の既定（live.enabled: false）と
 	// 一致する --- テストの部分構成で注入を省いたときに、無効な機能の導線が出る側に
@@ -56,9 +59,10 @@ type Server struct {
 // 「site が空なら db.DefaultSite」規約を集合に持ち上げただけで新しい規約ではない）。
 // encodeProfileNames は config.encode.profiles の名前一覧（未知名の 400 判定用。
 // nil/空なら検証をスキップする）。一覧 API にも同じ順序で載せる。
+// liveProfiles は config.live.profiles の公開用一覧。設定順を保持する。
 // caps はこのデプロイで有効なオプション機能（GET /api/capabilities）。ゼロ値
 // （すべて無効）は config の既定と一致する。
-func NewServer(pool *pgxpool.Pool, riverClient *river.Client[pgx.Tx], sites []string, encodeProfileNames []string, caps Capabilities) *Server {
+func NewServer(pool *pgxpool.Pool, riverClient *river.Client[pgx.Tx], sites []string, encodeProfileNames []string, liveProfiles []LiveProfileSummary, caps Capabilities) *Server {
 	siteNames := sites
 	if len(siteNames) == 0 {
 		siteNames = []string{db.DefaultSite}
@@ -83,6 +87,7 @@ func NewServer(pool *pgxpool.Pool, riverClient *river.Client[pgx.Tx], sites []st
 		pool: pool, river: riverClient,
 		sites: siteSet, siteNames: siteNames,
 		encodeProfiles: profiles, encodeProfileNames: names,
+		liveProfiles: append([]LiveProfileSummary(nil), liveProfiles...),
 		capabilities: caps,
 	}
 }

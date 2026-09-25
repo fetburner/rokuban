@@ -224,6 +224,36 @@ POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
 同じサービスを別プロファイルで見たときに 2 つの Pod に割れ、チューナーを 2 本掴む。
 1 つの Pod の中で 1 チューナーから複数プロファイルを出す。
 
+#### 一覧の契約（`GET /api/live-profiles`）
+
+画質セレクタが出すのは `config.live.profiles` の名前である。その公開面は
+**`GET /api/live-profiles`** に置く（`LiveProfileSummary { name, height? }`。M4-21）。
+
+- **`GET /api/capabilities` の `live` を object にしない。** あちらの規律は
+  「返すのは真偽値だけで、config のキー名・値は載せない」（`ListEncodeProfiles` /
+  `ListSites` と同じ）であり、一覧は「何が選べるか」、`live` は「導線を出して
+  よいか」という別の問いである。畳むと `lib/capabilities.ts` の 4 値判定
+  （`pending` / `unknown` / `enabled` / `disabled`）の派生が濁る
+- **載せるのは `name` と表示用の `height` だけ。** `video_codec` / `crf` / `qp` /
+  `preset` / `extra_args` / ffmpeg パスは出さない --- 出すとフロントがそれを再現する
+  形に育つ（`EncodeProfileSummary` と同じ規律）。`height` は実際の出力高で、
+  0 または省略は「スケールしない」
+- **順序が既定の根拠である。** 先頭が `?profile=` を省略したときの既定
+  （`LiveConfig.profile` と同じ決め方）で、フロントは並びを変えない
+- **`live.enabled` は見ない。** 返るのは `config.live.profiles` の写しで、**無効な
+  デプロイでも profiles が書かれていれば返る**（`config.compose.yml` は
+  `enabled: false` と `profiles` を並べて出荷している）。有効かどうかは
+  `GET /api/capabilities` の `live` の問いである --- ここで無効を空配列に潰すと、
+  同じ config の状態を 2 箇所で判定することになる。未定義なら空配列（`null` ではない）
+- **未知の名前は 400。** `?profile=` が空なら既定（先頭）に落ちるが、一覧に無い名前は
+  `unknown live profile` を返す（セッションを起こす前に拒否する）。フロントは
+  一覧に照らして先に落とすので、この 400 は直リンク・手書き URL の受け皿になる
+
+**ロール分割で api と streamer に別の config を配る構成では、この一覧と実際に
+配られるプロファイルがずれる。** ずれを検出する手段は無い。一覧は api が読む
+config から作り、実際に配るのは streamer である。したがって**「一覧にあるから
+見られる」とは言えない**（下界主義。[data.md](../data.md) §6.5 と同じ規律）。
+
 #### 実装（`internal/streamer`）
 
 ```

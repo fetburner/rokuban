@@ -253,6 +253,16 @@ export type LivePageSearch = {
   service?: number
   /** service と組になる site。異なる site の同じ Service.id を区別する。 */
   site?: string
+  /**
+   * 画質（`live.profiles` の名前。issue #869）。省略時・未定義のときは既定
+   * （サーバー側の先頭プロファイル）に落ちる。
+   *
+   * **値域の検査はここでは書けない。** 選べる名前の一覧は実行時に
+   * `GET /api/live-profiles` から来るので、ここでできるのは「非空の文字列か」
+   * までである（`?site=` と同じ分担）。実在の判定は一覧を読める
+   * `pages/live.tsx` 側で `validLiveProfile`（`lib/live.ts`）が行う。
+   */
+  profile?: string
 }
 
 /**
@@ -288,6 +298,11 @@ const liveRoute = createRoute({
   validateSearch: (search: Record<string, unknown>): LivePageSearch => ({
     service: validValue(serviceIdSchema, search.service, { coerce: asInteger }),
     site: typeof search.site === 'string' && search.site !== '' ? search.site : undefined,
+    // 形だけをここで見る（非空の文字列か）。一覧との突き合わせは
+    // `pages/live.tsx` の `validLiveProfile`。**落とすときは `undefined` を
+    // 明示代入する** --- 省略すると生の値が残る（上のコメントと同じ理由）。
+    profile:
+      typeof search.profile === 'string' && search.profile !== '' ? search.profile : undefined,
   }),
   // `pages/live.tsx` の `<PageHeader title="ライブ">` と同じ表記。issue #304 は
   // Playwright で確認した 6 ルートを挙げているが、`/live` だけ `head` を

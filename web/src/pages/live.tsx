@@ -1,8 +1,9 @@
-import { Link, useSearch as useRouteSearch } from '@tanstack/react-router'
+import { Link, useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
 import { Play } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
 import {
+  useListLiveProfiles,
   useListPrograms,
   useListReservations,
   type ProgramListItem,
@@ -17,7 +18,9 @@ import { useLiveCapability } from '@/lib/capabilities'
 import {
   currentProgramWindow,
   formatLiveDiagnostics,
+  liveProfileLabel,
   pickInitialService,
+  validLiveProfile,
   type LiveDiagnostics,
 } from '@/lib/live'
 import { upcomingInterruptingReservation } from '@/lib/live-interruption'
@@ -48,11 +51,10 @@ const nowPlayingRefetchMs = 30_000
  * 中断予測は M7-2）。
  *
  * 「チャンネル一覧から選んでブラウザ再生、画質切り替え程度で良い」
- * （docs/frontend.md §ライブ視聴）という方針どおり、機能は絞る。プロファイル
- * （画質）を選ぶ UI は持たない --- `live.profiles` を列挙する API が無く
- * （M4-3 は OpenAPI 対象外。issue #92 着手前のコメント参照）、選択肢を UI に
- * 出すと「機能しないコントロール」になるため、既定プロファイル（先頭）に
- * 固定する。
+ * （docs/frontend.md §ライブ視聴）という方針どおり、機能は絞る。画質（プロファイル）
+ * は `GET /api/live-profiles` の一覧から選ぶ（issue #869）。一覧が 0 件・1 件の
+ * ときはセレクタを出さない --- 選ぶ余地が無いコントロールは「機能しない
+ * コントロール」である（issue #209 と同じ規律）。
  *
  * 選択中のチャンネルは `?service=<Service.id>` に持つ（`/programs` /
  * `/recordings` の絞り込みと同じ id 空間。issue #438）。一覧に無い id は
@@ -83,6 +85,7 @@ export function LivePage() {
     isError: servicesError,
   } = useAllSitesServices()
   const routeSearch = useRouteSearch({ from: '/live' })
+  const liveProfilesQuery = useListLiveProfiles()
 
   const orderedServices = useMemo(() => orderServices(siteServices), [siteServices])
   const groups = useMemo(() => groupByChannelType(orderedServices), [orderedServices])
@@ -98,6 +101,52 @@ export function LivePage() {
     selectedService === undefined
       ? undefined
       : siteServiceKey(selectedService.site, selectedService.networkId, selectedService.serviceId)
+
+  // 画質（プロファイル）の一覧（issue #869）。**一覧は実行時に来るデータ**なので、
+  // `?profile=` の実在判定はここでしかできない（`routes.tsx` の `validateSearch` は
+  // 形だけを見る）。`explicitProfile` は URL が明示的に持っている「有効な」値で、
+  // 未知の名前は `undefined` に落ちる --- streamer は未知の名前を 400 で返すので
+  // （`internal/streamer/live.go` の `Playlist`）、旧ブックマーク・綴り違いの
+  // 共有リンクをエラー画面にしない。
+  //
+  // **既定（`activeProfile`）はサーバー側の先頭**で、フロントで並びを変えない。
+  // URL には明示的に選んだ値だけを載せる（既定を URL に書き戻さない）。
+  //
+  // **`LivePlayer` に渡すのは `explicitProfile` であって `activeProfile` ではない
+  // （レビュー指摘）。** `activeProfile` は一覧から導出した既定なので、一覧が
+  // 「再生」を押した後に届くと `undefined → 'hd'` に変わり、probe の effect が
+  // 再実行されて `<video>` が作り直される = **先頭から再生し直し**になる
+  // （実測: `/api/live-profiles` を保留したまま再生を押すと playlist 要求が
+  // 2 件飛ぶ）。`?profile=` を省略したときのサーバー側の既定も同じ先頭
+  // プロファイルなので、`explicitProfile` で挙動は変わらない
+  // （`docs/frontend/live.md`「既定は URL に書き戻さない」と同じ理由）。
+  const liveProfiles = useMemo(() => unwrap(liveProfilesQuery.data) ?? [], [liveProfilesQuery.data])
+  const explicitProfile = useMemo(
+    () => validLiveProfile(liveProfiles, routeSearch.profile),
+    [liveProfiles, routeSearch.profile],
+  )
+  const activeProfile = explicitProfile ?? liveProfiles[0]?.name
+
+  // **URL が画質を名指ししているときだけ、一覧の到着を待ってから再生させる。**
+  // 上の理由と同じ窓を塞ぐためである --- 名指しされた値の実在は一覧が無いと
+  // 確かめられないので、待たずに再生を始めると `undefined → 'sd'` の変化で
+  // 再生がやり直しになる。**名指しが無いときは待たない** --- 一覧は再生の前提
+  // 条件ではない（取得に失敗しても既定のプロファイルで再生できる）。
+  const waitingForProfileList =
+    routeSearch.profile !== undefined && liveProfilesQuery.isPending
+
+  // 画質を変えるのは URL の更新だけにする（`LivePlayer` は key で作り直さない）。
+  // **切替はセッションを作り直さない** --- 1 サービスの ffmpeg 1 本が全プロファイルを
+  // 同時に出力しており、同じセッションの別プレイリストを取るだけである
+  // （docs/api/media.md §資源同定）。`playingKey` を触らないので、再生の同意を
+  // 取り直す操作にはならない（`replace` は画質を変えるたびに履歴を積まないため）。
+  const navigate = useNavigate({ from: '/live' })
+  const selectProfile = (name: string) => {
+    void navigate({
+      search: { service: routeSearch.service, site: routeSearch.site, profile: name },
+      replace: true,
+    })
+  }
 
   // playingKey は「再生」ボタンで明示的に視聴を始めたチャンネルの `Service.id`
   // （`serviceId` 単独では不足 --- 同じ
@@ -220,6 +269,11 @@ export function LivePage() {
         <ErrorState>チャンネル一覧の取得に失敗しました</ErrorState>
       ) : servicesPending ? (
         <ListSkeleton />
+      ) : waitingForProfileList ? (
+        // URL が画質を名指ししているときだけ、一覧の到着を待つ（上の
+        // `waitingForProfileList`）。ここで再生を許すと、一覧の到着で
+        // `LivePlayer` の `profile` が変わって再生が先頭からやり直しになる。
+        <ListSkeleton />
       ) : orderedServices.length === 0 ? (
         <EmptyState>チャンネルがありません</EmptyState>
       ) : selectedService === undefined ? (
@@ -234,6 +288,7 @@ export function LivePage() {
                 site={selectedService.site}
                 networkId={selectedService.networkId}
                 serviceId={selectedService.serviceId}
+                profile={explicitProfile}
                 onDiagnostics={setDiagnostics}
               />
             ) : (
@@ -289,6 +344,30 @@ export function LivePage() {
               >
                 この局の番組表
               </Link>
+              {/* 画質（issue #869）。**選択肢が 2 件以上のときだけ出す** ---
+                  1 件しか無いのに出すと、選んでも何も変わらない「機能しない
+                  コントロール」に戻る（issue #209 と同じ規律）。一覧が空に
+                  なるのは `live.profiles` が未定義のときだけである
+                  （`live.enabled: false` でも定義があれば返る）。
+                  `selected` は controlled なので、URL が未知の名前を運んで
+                  いても `activeProfile`（= 既定の先頭）に一致して表示される。 */}
+              {liveProfiles.length > 1 && (
+                <label className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
+                  <span>画質</span>
+                  <select
+                    aria-label="画質"
+                    value={activeProfile}
+                    onChange={(e) => selectProfile(e.target.value)}
+                    className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none"
+                  >
+                    {liveProfiles.map((p) => (
+                      <option key={p.name} value={p.name}>
+                        {liveProfileLabel(p)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               {/* 録画予約による中断予測（issue #235 M7-2）。選択状態（値札）・
                   視聴中のどちらの画面でもこの情報欄は共通なので、1 箇所に置くだけで
                   両方の受け入れ条件（値札 / 視聴中画面への表示）を満たす。 */}
@@ -321,7 +400,7 @@ export function LivePage() {
                             ようにするため。 */}
                         <Link
                           to="/live"
-                          search={{ service: s.id, site: s.site }}
+                          search={{ service: s.id, site: s.site, profile: explicitProfile }}
                           replace
                           // ハイライト・aria-current の同定も `Service.id`（合成
                           // id）で行う --- SI の `serviceId` 単独では、同じ id を

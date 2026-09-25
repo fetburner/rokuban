@@ -68,6 +68,20 @@ export interface EncodeProfileSummary {
   container?: EncodeProfileSummaryContainer;
 }
 
+export interface LiveProfileSummary {
+  /**
+     * `?profile=` が参照する名前。config.live.profiles[].name と一致する。
+     * **並びは設定順で、先頭が既定**（`?profile=` を省略したときの
+     * プロファイル）。フロントは並びを変えない。
+     */
+  name: string;
+  /**
+     * スケール先の高さ（表示用。0 または省略ならスケールしない = 元の解像度）。
+     * **設定の再現に使う値ではない** --- セレクタの表示だけに使う。
+     */
+  height?: number;
+}
+
 export interface AddEncodeProfilesInput {
   /**
      * 追加したいエンコードプロファイル名（config.encode.profiles に定義された
@@ -2151,6 +2165,137 @@ export function useListEncodeProfiles<TData = Awaited<ReturnType<typeof listEnco
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
   const queryOptions = getListEncodeProfilesQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type listLiveProfilesResponse200 = {
+  data: LiveProfileSummary[]
+  status: 200
+}
+
+export type listLiveProfilesResponseSuccess = (listLiveProfilesResponse200) & {
+  headers: Headers;
+};
+;
+
+export type listLiveProfilesResponse = (listLiveProfilesResponseSuccess)
+
+export const getListLiveProfilesUrl = () => {
+
+
+
+
+  return `/api/live-profiles`
+}
+
+/**
+ * `config.live.profiles` に定義されたプロファイルの公開面。`/live` の
+ * 画質セレクタが選べる名前を出すために使う（M4-21 / issue #869）。
+ *
+ * **機微情報は載せない。** ffmpeg のパス・extra_args・品質指定は出さない。
+ * 名前と表示用の `height` だけを返す（`GET /api/encode-profiles` と同じ規律）。
+ *
+ * **順序が既定の根拠である。** 先頭が `?profile=` を省略したときの既定で、
+ * サーバー側の `live.profiles` の並びがそのまま順序になる。フロントは並びを
+ * 変えない。
+ *
+ * **`live.enabled` は見ない。** 返すのは `config.live.profiles` の写しそのもので、
+ * **無効なデプロイでも profiles が書かれていれば返る**。有効かどうかは
+ * `GET /api/capabilities` の `live` の側の問いである（2 箇所で判定しない）。
+ * 未定義なら空配列。
+ *
+ * **ロール分割で api と streamer に別の config を配る構成では、この一覧と
+ * 実際に配られるプロファイルはずれる。** ずれを検出する手段は無い ---
+ * 一覧にあるから見られる、とは言えない（下界主義。docs/api/media.md）。
+ * @summary List configured live (HLS) profile names
+ */
+export const listLiveProfiles = async ( options?: Parameters<typeof customInstance>[1]): Promise<listLiveProfilesResponse> => {
+
+  return customInstance<listLiveProfilesResponse>(getListLiveProfilesUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListLiveProfilesQueryKey = () => {
+    return [
+    `/api/live-profiles`
+    ] as const;
+    }
+
+
+export const getListLiveProfilesQueryOptions = <TData = Awaited<ReturnType<typeof listLiveProfiles>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listLiveProfiles>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListLiveProfilesQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listLiveProfiles>>> = ({ signal }) => listLiveProfiles({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listLiveProfiles>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type ListLiveProfilesQueryResult = NonNullable<Awaited<ReturnType<typeof listLiveProfiles>>>
+export type ListLiveProfilesQueryError = unknown
+
+
+export function useListLiveProfiles<TData = Awaited<ReturnType<typeof listLiveProfiles>>, TError = unknown>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listLiveProfiles>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listLiveProfiles>>,
+          TError,
+          Awaited<ReturnType<typeof listLiveProfiles>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListLiveProfiles<TData = Awaited<ReturnType<typeof listLiveProfiles>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listLiveProfiles>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listLiveProfiles>>,
+          TError,
+          Awaited<ReturnType<typeof listLiveProfiles>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListLiveProfiles<TData = Awaited<ReturnType<typeof listLiveProfiles>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listLiveProfiles>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List configured live (HLS) profile names
+ */
+
+export function useListLiveProfiles<TData = Awaited<ReturnType<typeof listLiveProfiles>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listLiveProfiles>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getListLiveProfilesQueryOptions(options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 
