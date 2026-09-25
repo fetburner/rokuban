@@ -302,15 +302,17 @@ type LiveStreamer struct {
 	evictMu sync.Mutex
 
 	// audioSwitchMu は音声切替（`?audio=` の置き換え）をこの site の中で直列化する。
-	// **無いと、主/副を連続して要求されたときに後任が後任を殺し合う。** 切替は
+	// **無いと、主/副を続けて要求されたときに後任が後任を殺し合う。** 切替は
 	// 「後任を予約 → 旧を stop → 後任の起動待ち」の順で走るので、2 本が重なると
 	// 後から来た方が先発の後任を「旧」として stop する。先発の要求は起動待ちの
-	// 途中で自分のセッションを失い、`startErr` で失敗するか、消えたディレクトリを
-	// 待って 504 になる（実測: 変異版でテストが 600 秒ハングした）。
+	// 途中で自分のセッションを失い、`startErr`（context.Canceled）で失敗する
+	// （`TestLiveStreamer_ConcurrentAudioSwitches` が両方 200 と 1 サービス 1
+	// セッションを固定する）。
 	//
 	// **保持区間は「後任の起動待ち」まで**（上限 playlistStartupTimeout + 解放待ち）で、
 	// 同じ site の別サービスの切替もその間待つ。既定音声の要求（切替を起こさない
-	// 側）はこのロックを取らないので、通常の視聴は影響を受けない。
+	// 側）はこのロックを取らないので**ロック待ちにはならない**が、切替中は
+	// 後任（未 ready）に join して `ready` を待つ（上限 playlistStartupTimeout）。
 	audioSwitchMu sync.Mutex
 }
 
@@ -1903,6 +1905,15 @@ func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64,
 		return nil, err
 	}
 	if s.startErr != nil {
+		// **上流が拒否したら既定の経路に委ねる。** 置き換えは
+		// takeIdleSessionForRetry（idle なセッションを 1 本退避して 1 回だけ再試行する）
+		// を通らない --- 自分で止めた分の解放を待つだけなので、他のサービスを巻き添えに
+		// する理由が無いためである。ここまで来て失敗したのは解放待ちを払っても
+		// チューナーが空かなかった場合なので、あとは既定の要求と同じ裁定に任せる
+		// （この経路だけ 503 で終わると、失敗の扱いが音声を選んだかどうかで変わる）。
+		if _, retryable := liveEvictionReason(s.startErr); retryable && ctx.Err() == nil {
+			return ls.getOrCreateSessionFor(ctx, key, source, audio)
+		}
 		return s, s.startErr
 	}
 	return s, nil

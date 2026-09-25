@@ -560,10 +560,14 @@ func readFFmpegArgsLog(t *testing.T, path string) []string {
 	return lines
 }
 
+// testLiveAudioService は `?audio=` のテストが使うサービス id。live のテストは
+// 1 サービスしか使わないので、URL 組み立てのヘルパはここを固定する。
+const testLiveAudioService = 1024
+
 // playlistAudioURL は `?audio=` 付きのプレイリスト URL を組み立てる（プロファイルは
 // 既定を使う。`audio` が空文字なら `?audio=` を明示的に空で送る）。
-func playlistAudioURL(base string, networkID, serviceID int, audio string) string {
-	return playlistURL(base, networkID, serviceID, "") + "?audio=" + audio
+func playlistAudioURL(base string, audio string) string {
+	return playlistURL(base, 0, testLiveAudioService, "") + "?audio=" + audio
 }
 
 // TestLiveStreamer_AudioSwitchRebuildsSession は、`?audio=` が ffmpeg の引数まで
@@ -602,7 +606,7 @@ func TestLiveStreamer_AudioSwitchRebuildsSession(t *testing.T) {
 	get := func(audio string) (string, time.Duration) {
 		t.Helper()
 		started := time.Now()
-		resp, err := http.Get(playlistAudioURL(srv.URL, 0, serviceID, audio))
+		resp, err := http.Get(playlistAudioURL(srv.URL, audio))
 		if err != nil {
 			t.Fatalf("GET playlist (audio=%q): %v", audio, err)
 		}
@@ -700,7 +704,7 @@ func TestLiveStreamer_AudioSwitchRebuildsSession(t *testing.T) {
 	}
 
 	// 未知の値は 400（セッションを起こす前に拒否する）。
-	resp, err := http.Get(playlistAudioURL(srv.URL, 0, serviceID, "does-not-exist"))
+	resp, err := http.Get(playlistAudioURL(srv.URL, "does-not-exist"))
 	if err != nil {
 		t.Fatalf("GET playlist (unknown audio): %v", err)
 	}
@@ -3671,8 +3675,13 @@ func TestBuildLiveFFmpegArgs_CaptionsFixSubDuration(t *testing.T) {
 // 見るのは「切替の間ずっと既定音声で取り続けた視聴者が、新しいセッションを 1 本も
 // 作らないこと」である。
 //
-// 壊し方: 後任の予約より先に旧セッションを止める（この順にすると偽 mirakc の stream
-// 要求が 3 件以上になる）。
+// 壊し方: **解放待ちを後任の起動前ではなく「旧を止めた直後」に置く**（前の版の形。
+// 止めてから解放待ち → 作る、の順）。窓が解放待ちのぶん（このテストでは 500ms）に
+// 広がるので、poller が確実にその窓を踏み、stream 要求が 3 件以上になる。
+// **単に `old.stop()` を予約の前に動かすだけでは足りない** --- 現行の構造では
+// 解放待ちが後任の runSession 側にあるので窓は stop の数 ms しか開かず、20ms 間隔の
+// poller がそこに落ちるかは確率的である（検出できても、この形は「確実に落ちる」
+// 検出器ではない）。
 func TestLiveStreamer_AudioSwitchKeepsTheSharedSession(t *testing.T) {
 	argsLog := filepath.Join(t.TempDir(), "ffmpeg-args.log")
 	t.Setenv(fakeFFmpegArgsEnv, argsLog)
@@ -3704,28 +3713,33 @@ func TestLiveStreamer_AudioSwitchKeepsTheSharedSession(t *testing.T) {
 	// 切替の間、既定音声の視聴者がプレイリストを取り続ける。
 	stopPoller := make(chan struct{})
 	var poller sync.WaitGroup
-	poller.Add(1)
-	go func() {
-		defer poller.Done()
-		for {
-			select {
-			case <-stopPoller:
-				return
-			default:
+	// 途中で t.Fatalf で抜けても poller を止める（止めないとテストバイナリの終了まで
+	// 20ms 間隔で要求を投げ続ける）。**defer は LIFO なので、close を後に登録して
+	// 先に走らせる** --- 順序を逆にすると Wait が永久に待つ（実際に 600 秒ハングした）。
+	defer poller.Wait()
+	defer close(stopPoller)
+	for range 2 {
+		poller.Add(1)
+		go func() {
+			defer poller.Done()
+			for {
+				select {
+				case <-stopPoller:
+					return
+				default:
+				}
+				getDefault()
+				time.Sleep(20 * time.Millisecond)
 			}
-			getDefault()
-			time.Sleep(20 * time.Millisecond)
-		}
-	}()
+		}()
+	}
 
-	resp, err := http.Get(playlistAudioURL(srv.URL, 0, serviceID, "sub"))
+	resp, err := http.Get(playlistAudioURL(srv.URL, "sub"))
 	if err != nil {
 		t.Fatalf("GET playlist (audio=sub): %v", err)
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
-	close(stopPoller)
-	poller.Wait()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("audio=sub status = %d, want 200", resp.StatusCode)
@@ -3741,5 +3755,66 @@ func TestLiveStreamer_AudioSwitchKeepsTheSharedSession(t *testing.T) {
 	}
 	if !strings.Contains(lines[1], "-dual_mono_mode sub") {
 		t.Errorf("切替後の起動に `-dual_mono_mode sub` が無い: %q", lines[1])
+	}
+}
+
+// TestLiveStreamer_ConcurrentAudioSwitches は、**主/副を同時に要求されても両方の要求が
+// 成功し、サービスにセッションが 1 本だけ残る**ことを固定する（issue #870 のレビュー）。
+//
+// 切替は「後任を予約 → 旧を stop → 後任の起動待ち」の順で走るので、2 本が重なると
+// 後から来た方が先発の後任を「旧」として stop する。先発の要求は起動待ちの途中で
+// 自分のセッションを失い、`startErr`（context.Canceled）で 503 になる。
+// audioSwitchMu がこの重なりを防ぐ（後勝ちで音声は巻き戻るが、それは共有セッションの
+// 帰結として受け入れている）。
+//
+// 壊し方: audioSwitchMu を外す（この機械で 5/5 回、片方が 503 になることを確認した）。
+func TestLiveStreamer_ConcurrentAudioSwitches(t *testing.T) {
+	releaseWait := liveMirakcReleaseWait
+	liveMirakcReleaseWait = 200 * time.Millisecond
+	t.Cleanup(func() { liveMirakcReleaseWait = releaseWait })
+
+	mirakcSrv, state := newFakeMirakcLiveServer(t)
+	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
+	const serviceID = 1024
+
+	get := func(rawURL string) int {
+		resp, err := http.Get(rawURL)
+		if err != nil {
+			return 0
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	if got := get(playlistURL(srv.URL, 0, serviceID, "")); got != http.StatusOK {
+		t.Fatalf("既定のプレイリスト status = %d, want 200", got)
+	}
+
+	// 主音声と副音声を同時に要求する（どちらが先に処理されるかは問わない）。
+	codes := make([]int, 2)
+	var wg sync.WaitGroup
+	for i, audio := range []string{"sub", "main"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			codes[i] = get(playlistAudioURL(srv.URL, audio))
+		}()
+	}
+	wg.Wait()
+
+	for i, audio := range []string{"sub", "main"} {
+		if codes[i] != http.StatusOK {
+			t.Errorf("?audio=%s の status = %d, want 200 "+
+				"(重なった切替が互いのセッションを stop している)", audio, codes[i])
+		}
+	}
+	if got := state.requestCount(); got != 3 {
+		t.Errorf("mirakc stream requests = %d, want 3 (既定 1 本 + 切替 2 本)", got)
+	}
+	ls.mu.Lock()
+	sessions := len(ls.sessions)
+	ls.mu.Unlock()
+	if sessions != 1 {
+		t.Errorf("sessions = %d, want 1 (1 サービス 1 セッション)", sessions)
 	}
 }
