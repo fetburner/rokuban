@@ -172,6 +172,18 @@ function ensureFixture() {
 }
 
 /** segmentDelayMs はセグメント応答に足す遅延。 */
+/**
+ * E2E_LIVE_PROFILES は ⑨ が差し替える画質の一覧（issue #869）。
+ *
+ * **2 件にするのは意図的である。** `pages/live.tsx` は 1 件以下ならセレクタを
+ * 出さないので、1 件だとそもそも切替操作ができない。順序はサーバー側の
+ * `live.profiles` と同じ「設定順 = 先頭が既定」の意味を持つ。
+ */
+const E2E_LIVE_PROFILES = [
+  { name: 'hd', height: 720 },
+  { name: 'sd', height: 480 },
+]
+
 const segmentDelayMs = 400
 
 /**
@@ -250,6 +262,16 @@ async function mockLiveRoutes(page, mode) {
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({ live: true }),
+    })
+  })
+
+  // 画質の一覧（issue #869）。実サーバーは config の `live.profiles` を返すが、
+  // この e2e は「2 件以上あるデプロイ」を前提にする判定（⑨）を含むので固定する。
+  await page.route('**/api/live-profiles', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(E2E_LIVE_PROFILES),
     })
   })
 
@@ -726,6 +748,116 @@ async function runChromiumChecks(browser) {
     }
     log(`  再読み込みで復帰した: ${recovered ? 'YES' : 'NO'}`)
     if (!recovered) ng.push('⑤ 再読み込みを押しても復帰しない（MSE がアタッチされない）')
+  }
+
+  // --- ⑨ 画質（プロファイル）切替（M4-21 / issue #869） ---
+  //
+  // **jsdom では原理的に測れない 2 点をここで見る。**
+  //
+  //   1. 一覧が遅れて届いてもプレイリストを取り直さないこと（`LivePlayer` に
+  //      導出した既定を渡す実装だと、一覧の到着で `profile` が変わって probe の
+  //      effect が再実行され、`<video>` が作り直されて先頭から再生し直しになる）
+  //   2. 切替を跨いで音量・ミュートが保たれること（jsdom の `HTMLMediaElement.load`
+  //      は no-op なので、ユニットテストでは復元しなくても通ってしまう）
+  //
+  // あわせて **切替が離脱ヒントを送らない**ことも見る（送れば「セッションを
+  // 手放した」ことになり、同じチャンネルの他視聴者の再生を縮める側に倒れる）。
+  log('\n=== ⑨ 画質（プロファイル）切替 ===')
+  try {
+    const profilePage = await browser.newPage({ viewport: { width: 960, height: 640 } })
+    const playlistLog = []
+    const profileLeaveLog = []
+    profilePage.on('request', (req) => {
+      if (req.url().includes('/live/playlist.m3u8')) playlistLog.push(req.url())
+      if (req.url().includes('/live/leave')) profileLeaveLog.push(req.url())
+    })
+    // 一覧を**わざと遅らせる**（判定 1 の窓を作る）。`pendingProfiles` が真の間は
+    // 応答せず、「再生」を押した後に解放する。
+    let releaseProfiles = null
+    let holdProfiles = true
+    await mockLiveRoutes(profilePage, { playlist: 'ok' })
+    await profilePage.unroute('**/api/live-profiles')
+    await profilePage.route('**/api/live-profiles', async (route) => {
+      if (holdProfiles) {
+        await new Promise((resolve) => {
+          releaseProfiles = resolve
+        })
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(E2E_LIVE_PROFILES),
+      })
+    })
+
+    // **`networkidle` で待てない。** 一覧をわざと保留しているので、この
+    // ページは永久に idle にならない（`waitUntil: 'networkidle'` で実測 30 秒
+    // タイムアウトした）。DOM の構築だけを待ち、以降はセレクタで待つ。
+    await profilePage.goto(`${BASE_URL}/live?service=${SERVICE_ID_A}`, {
+      waitUntil: 'domcontentloaded',
+    })
+    await profilePage.getByRole('button', { name: /再生/ }).waitFor({ timeout: 15000 })
+    await clickPlay(profilePage)
+    await profilePage.waitForFunction(mseAttached, undefined, { timeout: 15000 })
+    const probesBeforeRelease = playlistLog.length
+    log(`  一覧が未解決のまま再生を開始した（プレイリスト要求 ${probesBeforeRelease} 件）`)
+
+    // 一覧を届かせる。`profile` が変わらない実装なら、ここで要求は増えない
+    holdProfiles = false
+    releaseProfiles?.()
+    await profilePage.waitForSelector('select[aria-label="画質"]', { timeout: 15000 })
+    await profilePage.waitForTimeout(500)
+    const probesAfterRelease = playlistLog.length
+    log(`  一覧の到着後のプレイリスト要求: ${probesAfterRelease} 件（増分 ${probesAfterRelease - probesBeforeRelease}）`)
+    if (probesAfterRelease !== probesBeforeRelease) {
+      ng.push(
+        '⑨ 一覧が遅れて届いただけでプレイリストを取り直している' +
+          `（${probesBeforeRelease} → ${probesAfterRelease} 件。再生が先頭からやり直しになる）`,
+      )
+    }
+
+    // 視聴者が音量とミュートを変える
+    await profilePage.evaluate(() => {
+      const v = document.querySelector('video')
+      v.volume = 0.3
+      v.muted = true
+    })
+
+    // 再生中の切替
+    const leavesBeforeSwitch = profileLeaveLog.length
+    await profilePage.selectOption('select[aria-label="画質"]', 'sd')
+    const switchDeadline = Date.now() + 15000
+    while (
+      !playlistLog.some((u) => u.includes('profile=sd')) &&
+      Date.now() < switchDeadline
+    ) {
+      await profilePage.waitForTimeout(100)
+    }
+    const switched = playlistLog.filter((u) => u.includes('profile=sd')).length
+    log(`  切替後に profile=sd で飛んだプレイリスト要求: ${switched} 件`)
+    if (switched === 0) {
+      ng.push('⑨ 画質を切り替えても ?profile=sd のプレイリスト要求が飛ばない')
+    }
+    if (profileLeaveLog.length !== leavesBeforeSwitch) {
+      ng.push(
+        '⑨ 画質の切替で離脱ヒントが飛んだ（セッションを手放す合図であってはならない。' +
+          ' 同じチャンネルの他視聴者の再生を縮める側に倒れる）',
+      )
+    }
+
+    const media = await profilePage.evaluate(() => {
+      const v = document.querySelector('video')
+      return { volume: v.volume, muted: v.muted }
+    })
+    log(`  切替後の video.volume = ${media.volume}, video.muted = ${media.muted}`)
+    if (Math.abs(media.volume - 0.3) > 0.001) {
+      ng.push(`⑨ 画質の切替で音量が失われた（${media.volume}、期待 0.3）`)
+    }
+    if (media.muted !== true) {
+      ng.push('⑨ 画質の切替でミュートが失われた')
+    }
+  } catch (err) {
+    ng.push(`⑨ 画質切替の検証中に例外が発生した: ${err.message}`)
   }
 }
 

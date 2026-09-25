@@ -183,14 +183,19 @@ export function LivePlayer({
   const [retryNonce, setRetryNonce] = useState(0)
   const restorePending = useRef(true)
   // preservedState は画質（プロファイル）の切替・再読み込みを跨いで持ち越す
-  // 視聴者の表示状態（issue #869）。音量・ミュート・字幕の表示はいずれも
-  // **プレイリストの差し替えではなく視聴者が決めた設定**なので、切替で失っては
-  // ならない。effect の cleanup（= 切替の直前）で読み、次の setup で戻す。
-  const preservedState = useRef<{
-    muted: boolean
-    volume: number
-    subtitles: boolean | null
-  } | null>(null)
+  // 視聴者の表示状態（issue #869）。**字幕の表示だけを持つ。**
+  //
+  // **音量とミュートは持ち越す必要が無い（実測）。** effect の cleanup は
+  // `removeAttribute('src')` + `load()` を行うが、`load()` は音量・ミュートを
+  // 既定に戻さない（HTML 仕様の media load algorithm はそのどちらも触らない）。
+  // Chromium と WebKit の両方で実測した（`web/e2e/live.mjs` の ⑨。復元の
+  // コードを外したビルドでも 0.3 / muted: true が切替後に残る）。復元しても
+  // 何も変わらないコードは置かない。
+  //
+  // **字幕は違う。** hls.js は新しいマニフェストを読むと字幕トラックの選択を
+  // 既定に戻す（下の effect のコメント参照）。effect の cleanup（= 切替の直前）で
+  // 読み、次の setup で戻す。
+  const preservedState = useRef<{ subtitles: boolean | null } | null>(null)
   const explicitStartSeekPending = useRef(false)
   const lastSavedSecond = useRef<number | null>(null)
   // onDiagnostics は ref 越しに読む。probe / hls.js のセットアップを担う
@@ -272,10 +277,6 @@ export function LivePlayer({
     // 作り直さない（このコンポーネントは unmount しない）が、`load()` を挟む以上
     // 要素の状態に頼らず明示的に戻す。
     const preserved = preservedState.current
-    if (preserved !== null && video) {
-      video.muted = preserved.muted
-      video.volume = preserved.volume
-    }
     // video / hls の外部再生状態と UI の loading/error 表示を同期する effect。
     // render 中に導出すると、再生開始・失敗イベントの境界を表現できない。
     // oxlint-disable-next-line react/set-state-in-effect -- 外部メディア状態との同期
@@ -592,8 +593,6 @@ export function LivePlayer({
       // （issue #869）。unmount のときも走るが、ref ごと捨てられるので無害。
       if (video) {
         preservedState.current = {
-          muted: video.muted,
-          volume: video.volume,
           subtitles: readSubtitleVisibility(Array.from(video.textTracks)),
         }
       }

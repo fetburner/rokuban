@@ -93,13 +93,42 @@ docker compose exec rokuban rokuban server --all --config /config.yml
    実配信のローリングウィンドウとは挙動が違いうる）。実機で再生 →
    一時停止 → 30 秒放置 → エラー画面が出ないこと、再開して再生が続くことを見る
 
+#### 画質の切替でチューナーが増えないことの確認（偽 mirakc + 偽 ffmpeg で足りる）
+
+**実チューナーは要らない。** 見るのは「1 サービス = 1 ffmpeg = mirakc の 1 チューナー」が
+画質の切替で崩れないことだけなので、mirakc に何も要求しない偽 mirakc で確かめられる。
+`live.profiles` を 2 つ以上書いた config で `--roles streamer` を起動し、同じ
+`(networkId, serviceId)` に対して違う `?profile=` を順に取る。実測（実バイナリ +
+偽 mirakc + 偽 ffmpeg）:
+
+- `?profile=hd` → プレイリストは `hd_seg00001.ts` を指す。偽 mirakc の stream 要求は 1 件、
+  `rokuban_live_active_sessions{kind="live"}` は `1`
+- `?profile=sd`（切替）→ **同じセッションの別プレイリスト** `sd_seg00001.ts` が返る。
+  stream 要求も gauge も **1 のまま**
+- `?profile=hd`（戻す）→ `hd_seg00001.ts`。ここでも 1 のまま
+- `?profile=does-not-exist` → **400**（セッションを起こす前に拒否する）
+
+**実チューナー・実 ffmpeg では未測定。** ffmpeg の起動・停止に掛かる時間のぶんだけ
+ずれうる。以下の手順で確かめる。
+
+```sh
+# 偽 mirakc（`GET /api/services/{id}/stream` だけ実装し、要求数を数える）
+# 偽 ffmpeg（`internal/streamer/live_test.go` の installFakeLiveFFmpeg と同じ脚本）
+B=http://localhost:40773/api/sites/default/networks/{networkId}/services/{serviceId}/live/playlist.m3u8
+curl -s "$B?profile=hd" | tail -1            # 先頭のプロファイル
+curl -s "$B?profile=sd" | tail -1            # 別プロファイル（同じセッション）
+curl -s http://localhost:40773/metrics | grep 'rokuban_live_active_sessions{kind="live"}'
+```
+
 ### ② ブラウザ側の配線（mirakc 不要）
 
 `web/e2e/live.mjs`。HLS プレイリスト/セグメントは Playwright の `page.route`
 でブラウザ側から丸ごと差し替える。streamer 側は `live.enabled` を立てる
 必要すら無い（サーバーは「サービス一覧を返す」以外の実仕事をしない）。
 `GET /api/capabilities` も同じく差し替えている --- 立てていないサーバーだと
-画面が「無効です」になって①〜⑦が全滅するため。
+画面が「無効です」になって①〜⑦が全滅するため。**`GET /api/live-profiles` も
+差し替えている**（実サーバーは config の `live.profiles` を返すが、⑨ は
+「2 件以上あるデプロイ」を前提にするので固定する）。
 
 **jsdom で測れない領域は、実装より先に判定手段を作る。** この ② はその教訓の実例である
 （CLAUDE.md「テスト規律」）。
@@ -192,6 +221,15 @@ pnpm exec playwright install chromium webkit
    probe は HTTP 層しか見ないので、ここを `<video>` のイベントで拾えていないと
    **永久に止まった黒いプレイヤー**になる。壊れ方で出るイベントが違う
    （404 は `error`、無応答は `stalled` のみ）ので 2 通りとも見る
+9. **画質（プロファイル）の切替**（issue #869 / M4-21）。一覧（`GET /api/live-profiles`）を
+   **わざと保留したまま**「再生」を押し、後から届かせても**プレイリストを取り直さない**
+   ことを見る（`LivePlayer` に導出した既定を渡す実装だと、一覧の到着で `profile` が
+   変わって `<video>` が作り直され、先頭から再生し直しになる）。あわせて、選択中の
+   画質で `?profile=` が実際に要求に載ること・切替で離脱ヒントを送らないこと・
+   切替を跨いで音量とミュートが保たれることを見る。**この 4 点は
+   `key={activeProfile}` を足す変異で 4 件とも落ちることを確認してある**（音量・
+   ミュートは「復元しなくても通る」ので、この 2 件が守っているのは切替で
+   `<video>` を作り直さないことの側である。`docs/frontend/live.md`）
 8. **チャンネル切り替えで離脱ヒントが実際に飛ぶ**（`POST .../live/leave`。④ と
    同じ切り替え操作を観測する）。**jsdom では原理的に測れない** ---
    `navigator.sendBeacon` が jsdom に無いため、ユニットテストが見ているのは
