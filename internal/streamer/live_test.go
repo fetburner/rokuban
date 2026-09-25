@@ -660,8 +660,10 @@ func TestLiveStreamer_AudioSwitchRebuildsSession(t *testing.T) {
 	//
 	// **判定は絶対時間ではなく、起動ぶんを相殺した差で見る。** 起動と停止は待ちと
 	// 無関係に 1 秒前後掛かる（実測 1.0〜1.1 秒）ので、絶対値で閾値を置くと遅い機械で
-	// 待ちを外した変異が通ってしまう。切替の所要は「起動ぶん + 解放待ち」なので、
-	// 待ちを外すと起動ぶんまで落ちる。
+	// 待ちを外した変異が通ってしまう。切替の所要は「起動ぶん + stop ぶん + 解放待ち」
+	// なので、待ちを外すと「起動ぶん + stop ぶん」まで落ちる。**残差: `stop` が
+	// 1.8 秒を超える機械では、待ちを外した変異がこの判定を通る**（下限判定なので、
+	// 正しい実装が落ちる方向の偽陽性は起きない）。
 	for _, c := range []struct {
 		name    string
 		elapsed time.Duration
@@ -3816,5 +3818,68 @@ func TestLiveStreamer_ConcurrentAudioSwitches(t *testing.T) {
 	ls.mu.Unlock()
 	if sessions != 1 {
 		t.Errorf("sessions = %d, want 1 (1 サービス 1 セッション)", sessions)
+	}
+}
+
+// TestLiveStreamer_AudioSwitchUpstreamFailureIsNotRetried は、**切替が上流に拒否された
+// ときに退避・再試行をしないこと**を固定する（issue #870 のレビュー）。
+//
+// 置き換えは自分で止めた分の解放を待ってから投げているので、それでも拒否されたなら
+// チューナーは本当に埋まっている。ここで既定の要求と同じ退避
+// （takeIdleSessionForRetry。idle なセッションを 1 本殺して 5 秒待つ）に委ねると、
+// **無関係なサービスを巻き添えにする**うえ、その待ちの間に既定音声の要求が作った
+// セッションを拾って**要求と違う音声を 200 で返しうる**（無言で音声が効かない）。
+// 失敗は 503 で終わり、次のプレイリスト要求が既定音声で作り直す
+// （docs/api/media.md §実装）。
+//
+// 壊し方: 失敗時に `getOrCreateSessionFor` へ委ねる（upstream の要求が 1 回増え、
+// このテストの要求数と 503 が変わる）。
+func TestLiveStreamer_AudioSwitchUpstreamFailureIsNotRetried(t *testing.T) {
+	releaseWait := liveMirakcReleaseWait
+	liveMirakcReleaseWait = 100 * time.Millisecond
+	t.Cleanup(func() { liveMirakcReleaseWait = releaseWait })
+
+	const serviceID = testLiveAudioService
+	client := &scriptedMirakcLiveClient{failServiceID: serviceID}
+	ls, srv := newTestLiveStreamerWithClient(t, client, baseLiveConfig(t))
+	_ = ls
+
+	get := func(rawURL string) int {
+		resp, err := http.Get(rawURL)
+		if err != nil {
+			t.Fatalf("GET %s: %v", rawURL, err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// 既定音声で 1 本目を立てる（この時点の upstream は成功する）。
+	if got := get(playlistURL(srv.URL, 0, serviceID, "")); got != http.StatusOK {
+		t.Fatalf("既定のプレイリスト status = %d, want 200", got)
+	}
+
+	// ここから切替の upstream だけを失敗させる。
+	client.mu.Lock()
+	client.failuresLeft = 1
+	client.mu.Unlock()
+
+	if got := get(playlistAudioURL(srv.URL, "sub")); got != http.StatusServiceUnavailable {
+		t.Errorf("切替の status = %d, want 503（上流拒否。退避・再試行はしない）", got)
+	}
+	// **upstream への要求は切替の 1 回だけ。** 2 回目があれば退避・再試行に落ちている。
+	requests := 0
+	for _, e := range client.eventList() {
+		if strings.HasPrefix(e, "request:") {
+			requests++
+		}
+	}
+	if requests != 2 {
+		t.Errorf("upstream 要求 = %d 件, want 2 (既定 1 + 切替 1。再試行していない)", requests)
+	}
+
+	// 失敗した後任は map から消えているので、次の要求が既定音声で作り直す。
+	if got := get(playlistURL(srv.URL, 0, serviceID, "")); got != http.StatusOK {
+		t.Errorf("失敗後の既定要求 status = %d, want 200（セッションが残っていない）", got)
 	}
 }

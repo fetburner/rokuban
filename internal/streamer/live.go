@@ -305,9 +305,10 @@ type LiveStreamer struct {
 	// **無いと、主/副を続けて要求されたときに後任が後任を殺し合う。** 切替は
 	// 「後任を予約 → 旧を stop → 後任の起動待ち」の順で走るので、2 本が重なると
 	// 後から来た方が先発の後任を「旧」として stop する。先発の要求は起動待ちの
-	// 途中で自分のセッションを失い、`startErr`（context.Canceled）で失敗する
-	// （`TestLiveStreamer_ConcurrentAudioSwitches` が両方 200 と 1 サービス 1
-	// セッションを固定する）。
+	// 途中で自分のセッションを失い、`startErr`（context.Canceled）で失敗する。
+	// `TestLiveStreamer_ConcurrentAudioSwitches` が**両方 200** と 1 サービス 1
+	// セッションを固定する。**ミューテックスを外した変異を検出するのは前者** ---
+	// 後者（`ls.sessions == 1`）は変異でも通る（スロットが上書きされるため）。
 	//
 	// **保持区間は「後任の起動待ち」まで**（上限 playlistStartupTimeout + 解放待ち）で、
 	// 同じ site の別サービスの切替もその間待つ。既定音声の要求（切替を起こさない
@@ -1905,15 +1906,21 @@ func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64,
 		return nil, err
 	}
 	if s.startErr != nil {
-		// **上流が拒否したら既定の経路に委ねる。** 置き換えは
-		// takeIdleSessionForRetry（idle なセッションを 1 本退避して 1 回だけ再試行する）
-		// を通らない --- 自分で止めた分の解放を待つだけなので、他のサービスを巻き添えに
-		// する理由が無いためである。ここまで来て失敗したのは解放待ちを払っても
-		// チューナーが空かなかった場合なので、あとは既定の要求と同じ裁定に任せる
-		// （この経路だけ 503 で終わると、失敗の扱いが音声を選んだかどうかで変わる）。
-		if _, retryable := liveEvictionReason(s.startErr); retryable && ctx.Err() == nil {
-			return ls.getOrCreateSessionFor(ctx, key, source, audio)
-		}
+		// **退避・再試行はしない（既定の要求と扱いが違うことを認める）。** 置き換えは
+		// 自分で止めた分の解放を待ってから投げているので、それでも上流に拒否されたなら
+		// チューナーは本当に埋まっている。ここで takeIdleSessionForRetry に委ねると、
+		// **無関係なサービスの idle セッションを 1 本巻き添えにする**（解放待ちを
+		// 入れた理由そのものを打ち消す）。
+		//
+		// **代わりに、失敗は次のポーリングが拾う。** 後任は自分の defer で map から
+		// 消えるので、そのサービスへの次のプレイリスト要求が既定音声でセッションを
+		// 作り直す（レベルトリガー。docs/api/media.md §資源同定）。音声は既定に戻るが、
+		// 視聴は数秒で再開する。
+		//
+		// **ここで既定の経路に委ねる形（getOrCreateSessionFor）は採らない。** 退避の
+		// 解放待ちの 5 秒は map を空にするので、その窓に既定音声の要求がセッションを
+		// 作ると再試行がそれを拾い、**要求と違う音声のセッションを 200 で返す**
+		// （無言で音声が効かない。getOrCreateSessionOnceFor は音声を検査しない）。
 		return s, s.startErr
 	}
 	return s, nil
