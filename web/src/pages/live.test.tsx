@@ -1492,97 +1492,56 @@ describe('LivePage / 画質（プロファイル）切替（issue #869）', () =
 })
 
 /**
- * 音声（二重音声の主/副。issue #870 M4-22）。
+ * 音声（二重音声の主 / 副。issue #870）。
  *
- * **画質と違って選択肢は常に 2 択**である --- どの番組が副音声を持つかを Rokuban 側で
- * 知る手段が無い（音声 ES の情報を持たず、二重音声は 1 本の AAC ES の L/R なので
- * ffprobe では通常のステレオと区別できない）。二重音声でない番組で副音声を選んでも
- * 音は変わらない（ffmpeg 側で無効。実測: ffmpeg 9.0.2 では通常のステレオ AAC で
- * 既定/main/sub/both の出力がバイト一致）ので、「副音声がありません」を出す必要が
- * 無い。ここで見るのは配線だけである。
+ * **選択はプレイヤーの中だけで効く**（streamer は標準 / 主 / 副の 3 本を常に出す）。
+ * ここで見るのは配線だけ --- `?audio=` に持つこと、選んでも probe をやり直さず
+ * プレイリストの URL にも載せないこと。トラックの切替そのものは
+ * `components/live-player.test.tsx`。
  */
 describe('LivePage / 音声（issue #870）', () => {
-  it('標準を既定として主音声・副音声を出す', async () => {
+  it('セレクタは常に出て既定は標準。再生中に選んでも probe をやり直さない', async () => {
+    const user = userEvent.setup()
     stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })] })
-    renderLive()
+    const { router } = renderLive()
 
     const select = await screen.findByLabelText('音声')
     expect(select).toHaveValue('')
-    // 未選択のときは選べる（`disabled` の両方向を固定する。片方だけだと
-    // 「常に disabled」の変異が緑のまま通る）。
-    expect(screen.getByRole('option', { name: '標準' })).toBeEnabled()
-    expect(screen.getByRole('option', { name: '主音声' })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: '副音声' })).toBeInTheDocument()
-  })
-
-  /**
-   * **選ぶだけでは probe を起こさない**（「選ぶ」と「流す」の分離。issue #234）。
-   * 再生を始めると、選んだ音声が probe の URL に載る --- `-dual_mono_mode` は
-   * ffmpeg の入力側オプションなので、streamer はこの要求でセッションを作り直す
-   * （`internal/streamer/live.go`）。
-   */
-  it('選択は probe を起こさず、再生時に選んだ音声で probe する', async () => {
-    const user = userEvent.setup()
-    stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })] })
-    renderLive()
-
-    const select = await screen.findByLabelText('音声')
-    await user.selectOptions(select, 'sub')
-    expect(playlistFetchCallCount()).toBe(0)
-
     await user.click(screen.getByRole('button', { name: /再生/ }))
     await waitFor(() => expect(playlistFetchCallCount()).toBe(1))
-    expect(playlistFetchURLs()[0]).toContain('audio=sub')
-  })
 
-  /**
-   * **再生中の切替は probe をやり直して新しい音声を適用させるが、離脱ヒントは
-   * 送らない。** ヒントは「このチャンネルを見るのをやめた」の合図なので、音声の
-   * 切替で送ると idle GC の回収数と対で読めなくなる。
-   */
-  it('再生中に音声を切り替えると新しい音声で probe し直し、離脱ヒントは送らない', async () => {
-    const user = userEvent.setup()
-    stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })] })
-    renderLive()
+    await user.selectOptions(screen.getByLabelText('音声'), '副音声')
+    expect(screen.getByLabelText('音声')).toHaveValue('sub')
+    expect(router.state.location.search).toMatchObject({ audio: 'sub' })
+    await user.selectOptions(screen.getByLabelText('音声'), '標準')
+    expect(router.state.location.search).not.toHaveProperty('audio')
 
-    await user.click(await screen.findByRole('button', { name: /再生/ }))
-    await waitFor(() => expect(playlistFetchCallCount()).toBe(1))
-    expect(playlistFetchURLs()[0]).not.toContain('audio=')
-
-    await user.selectOptions(screen.getByLabelText('音声'), 'main')
-    await waitFor(() => expect(playlistFetchCallCount()).toBe(2))
-    expect(playlistFetchURLs()[1]).toContain('audio=main')
+    expect(playlistFetchCallCount()).toBe(1)
+    expect(playlistFetchURLs()[0]).not.toContain('audio')
     expect(leaveHintURLs()).toEqual([])
   })
 
-  /** 直リンク（受け入れ: 両方向）。有効な `?audio=` は選択状態として復元される。 */
-  it('直リンクの ?audio= が選択状態として復元される', async () => {
+  it('直リンクの ?audio= が復元される', async () => {
     stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })] })
-    renderLive('/live?service=1&audio=sub')
-
-    const select = await screen.findByLabelText('音声')
-    expect(select).toHaveValue('sub')
-    expect(screen.getByRole('option', { name: '標準' })).toBeDisabled()
+    renderLive('/live?service=100001&site=default&audio=sub')
+    expect(await screen.findByLabelText('音声')).toHaveValue('sub')
   })
 
-  /**
-   * 未知の値は streamer が 400 を返すので、フロントが先に落として既定へ倒す。
-   *
-   * **セレクタの value だけを見てはならない。** 一致する option が無い値では
-   * `<select>` の `value` が `''` になるので、`?audio=both` が素通りしても
-   * `toHaveValue('')` が空虚に通ってしまう（route の `validateSearch` を素通しに
-   * 変えても緑のままだった）。**実際に probe の URL に載らないこと**を見る ---
-   * 載れば streamer は 400 を返し、再生はエラー画面になる。
-   */
-  it('未知の ?audio= は落ちて probe の URL に載らない', async () => {
-    const user = userEvent.setup()
+  it('未知の ?audio= は標準に落ちる', async () => {
     stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })] })
-    renderLive('/live?service=1&audio=both')
-
+    renderLive('/live?service=100001&site=default&audio=both')
     expect(await screen.findByLabelText('音声')).toHaveValue('')
+  })
 
-    await user.click(screen.getByRole('button', { name: /再生/ }))
-    await waitFor(() => expect(playlistFetchCallCount()).toBe(1))
-    expect(playlistFetchURLs()[0]).not.toContain('audio=')
+  it('チャンネルを切り替えても音声を保つ（一覧のリンクが ?audio= を運ぶ）', async () => {
+    stubFetch({
+      services: [
+        service({ serviceId: 1, name: 'チャンネル A' }),
+        service({ serviceId: 2, name: 'チャンネル B' }),
+      ],
+    })
+    renderLive('/live?service=100001&site=default&audio=main')
+    const link = await screen.findByRole('link', { name: /チャンネル B/ })
+    expect(link.getAttribute('href')).toContain('audio=main')
   })
 })

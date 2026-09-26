@@ -26,48 +26,40 @@ export function livePlaylistURL(
   networkId: number,
   serviceId: number,
   profile?: string,
-  audio?: LiveAudioChoice,
 ): string {
   const base =
     `/api/sites/${encodeURIComponent(site)}` +
     `/networks/${networkId}/services/${serviceId}/live/playlist.m3u8`
-  const query =
-    (profile ? `profile=${encodeURIComponent(profile)}` : '') +
-    (audio ? `${profile ? '&' : ''}audio=${audio}` : '')
-  return query ? `${base}?${query}` : base
+  return profile ? `${base}?profile=${encodeURIComponent(profile)}` : base
 }
 
 /**
- * LiveAudioChoice はライブの音声（ISDB の二重音声の主/副。issue #870）。
+ * LiveAudioChoice はライブの音声（ISDB の二重音声の主 / 副）。`undefined` は標準
+ * （二重音声なら主と副が左右に分かれて聞こえる、今までと同じ音声）。
  *
- * **`?profile=` と違って値域が閉じている**（2 択）ので、`routes.tsx` の
- * `validateSearch` が全部検査できる --- プロファイルの一覧は実行時に
- * `GET /api/live-profiles` から来るので形しか見られない、という分担の違いである。
- *
- * **既定（`undefined`）は「音声を選んでいない」** で、streamer は
- * `-dual_mono_mode` を付けない = 現行と同じ引数になる。`main` / `sub` を選ぶと
- * ffmpeg が aac デコーダの `dual_mono_mode` を設定する
- * （`internal/streamer/live.go` の `LiveAudio`）。
- *
- * **二重音声の放送で実際に何が聞こえるかは未検証である**（この環境に実チューナーが
- * 無く、二重音声の TS を用意できない）。分かっているのは ffmpeg の実装を読んだ範囲と、
- * **二重音声でない番組では `main` / `sub` のどちらも無効**ということだけである
- * （実測: ffmpeg 9.0.2。通常のステレオ AAC では 4 通りで出力がバイト一致）。
+ * **選択はプレイヤーの中だけで効き、サーバーには送らない。** streamer は標準 / 主 /
+ * 副の 3 本を HLS の代替音声レンディションとして常に出しており、プレイヤーが
+ * そのどれを取るかを選ぶ（docs/api/media.md §音声）。二重音声でない番組で主 / 副を
+ * 選ぶと片側のチャンネルだけになる。
  */
 export type LiveAudioChoice = 'main' | 'sub'
 
-/**
- * validLiveAudio は `?audio=` の要求値を検査する。未知の値は `undefined`（既定）に
- * 落ちる。
- *
- * **streamer は未知の値を 400 で返す**（`unknown live audio`。
- * `internal/streamer/live.go` の `Playlist`）ので、旧ブックマーク・綴り違いの
- * 共有リンクをエラー画面にしないためにフロントが先に落とす（`validLiveProfile`
- * と同じ規律）。値域が閉じているぶん、こちらは `validateSearch` でも書けるが、
- * 落とし方（`undefined` の明示代入）と理由を 1 箇所に揃えるためここに置く。
- */
+/** validLiveAudio は `?audio=` の値を検査する。未知の値は `undefined`（標準）に落とす。 */
 export function validLiveAudio(requested: unknown): LiveAudioChoice | undefined {
   return requested === 'main' || requested === 'sub' ? requested : undefined
+}
+
+/**
+ * liveAudioTrackIndex は選択に対応する音声トラックの位置を返す。
+ *
+ * **音声グループ内の並び順（0 = 標準 / 1 = 主 / 2 = 副）が streamer との契約である**
+ * （`internal/streamer/live.go` の `audioRenditionEntries`）。トラック名（master の
+ * `NAME`）は ffmpeg が `audio_<n>` で固定し、n はプロファイル数でずれるので使えない。
+ * hls.js の `audioTracks` も WebKit の `video.audioTracks` も master の順に並ぶ
+ * （Playwright の Chromium / WebKit で実測）。
+ */
+export function liveAudioTrackIndex(choice: LiveAudioChoice | undefined): number {
+  return choice === 'main' ? 1 : choice === 'sub' ? 2 : 0
 }
 
 /**

@@ -106,58 +106,6 @@ type LiveProfile struct {
 	ExtraArgs      []string
 }
 
-// LiveAudio はライブセッションが ffmpeg に選ばせる音声（ISDB の二重音声の主/副）。
-//
-// **既定（LiveAudioDefault）は `-dual_mono_mode` を付けない。** 引数が音声を
-// 選ばない要求で現行と完全に同一でなければ、音声を選んでいない利用者の再生結果が
-// 黙って変わる。
-//
-// **二重音声の放送で何がどう聞こえるかは実放送では未検証である**（このリポジトリの
-// 確認環境に実チューナーが無く、ffmpeg の aac エンコーダは 2 SCE のビットストリームを
-// 作れないので手元に二重音声の TS を用意できない）。分かっているのは ffmpeg 9.0.2 の
-// 実装を読んだ範囲で、aac デコーダは `dmono_mode` が非 0 かつ 1 フレームの SCE が 2 つ
-// かつ出力レイアウトがステレオのときだけ `frame->data[0] = frame->data[1]`（sub）/
-// `frame->data[1] = frame->data[0]`（main）で片方を両チャンネルへ写し、既定
-// （`dmono_mode == 0`）では写さない、というものである。**この写し方の帰結
-// （`main` で主音声が両チャンネルに出る等）は実放送で確かめていない。**
-//
-// **二重音声でない通常のステレオでは main / sub のどちらも無効である**（こちらは
-// 実測: ffmpeg 9.0.2。L=440Hz / R=880Hz のステレオ AAC を既定/main/sub/both の
-// 4 通りでデコードして出力がバイト一致、チャンネル分離も保持）。意味の無い番組で
-// 副音声を選んでも何も起きない --- UI に「副音声がありません」を出す必要が無いのは
-// この性質による。
-type LiveAudio string
-
-const (
-	LiveAudioDefault LiveAudio = ""
-	LiveAudioMain    LiveAudio = "main"
-	LiveAudioSub     LiveAudio = "sub"
-)
-
-// parseLiveAudio は `?audio=` の値を解釈する。空は既定、main/sub 以外は false。
-func parseLiveAudio(v string) (LiveAudio, bool) {
-	switch a := LiveAudio(v); a {
-	case LiveAudioDefault, LiveAudioMain, LiveAudioSub:
-		return a, true
-	default:
-		return LiveAudioDefault, false
-	}
-}
-
-// Args は `-i` より前に置く入力オプションを返す（既定なら空）。
-//
-// **入力（aac デコーダ）側のオプションであり、出力側には置けない。** 出力側に
-// 置くと ffmpeg は `Codec AVOption dual_mono_mode ... is not a encoding option` で
-// 起動に失敗する（実測: ffmpeg 9.0.2）。そのため `?profile=` のように 1 回の
-// ffmpeg 起動で主音声と副音声の両方を出すことはできず、音声はセッションの起動時に
-// 固定される（切替はセッションの作り直し。docs/api/media.md §実装）。
-func (a LiveAudio) Args() []string {
-	if a == LiveAudioDefault {
-		return nil
-	}
-	return []string{"-dual_mono_mode", string(a)}
-}
-
 // profile は name に一致するプロファイルを返す。name が空文字なら先頭のプロファイル
 // （既定プロファイル）を返す。
 func (c LiveConfig) profile(name string) (LiveProfile, bool) {
@@ -300,21 +248,6 @@ type LiveStreamer struct {
 	// の起動待ち）を含めない** --- 含めると別サービスの無関係な起動待ちまでこの
 	// ロックで直列化されてしまう。
 	evictMu sync.Mutex
-
-	// audioSwitchMu は音声切替（`?audio=` の置き換え）をこの site の中で直列化する。
-	// **無いと、主/副を続けて要求されたときに後任が後任を殺し合う。** 切替は
-	// 「後任を予約 → 旧を stop → 後任の起動待ち」の順で走るので、2 本が重なると
-	// 後から来た方が先発の後任を「旧」として stop する。先発の要求は起動待ちの
-	// 途中で自分のセッションを失い、`startErr`（context.Canceled）で失敗する。
-	// `TestLiveStreamer_ConcurrentAudioSwitches` が**両方 200** と 1 サービス 1
-	// セッションを固定する。**ミューテックスを外した変異を検出するのは前者** ---
-	// 後者（`ls.sessions == 1`）は変異でも通る（スロットが上書きされるため）。
-	//
-	// **保持区間は「後任の起動待ち」まで**（上限 playlistStartupTimeout + 解放待ち）で、
-	// 同じ site の別サービスの切替もその間待つ。既定音声の要求（切替を起こさない
-	// 側）はこのロックを取らないので**ロック待ちにはならない**が、切替中は
-	// 後任（未 ready）に join して `ready` を待つ（上限 playlistStartupTimeout）。
-	audioSwitchMu sync.Mutex
 }
 
 // NewLive は LiveStreamer を生成する。cfg.Enabled が false なら Mount は
@@ -430,11 +363,9 @@ func (ls *LiveStreamer) Mount(r chi.Router) {
 	}
 	r.Get(LiveRoutePattern+"/playlist.m3u8", ls.Playlist)
 	r.Get(LiveRoutePattern+"/segments/{name}", ls.Segment)
-	if ls.cfg.Captions {
-		// ffmpeg の variant playlist は master と同じディレクトリに置かれる。
-		// master の相対 URI（playlist_0.m3u8）をそのまま解決できるようにする。
-		r.Get(LiveRoutePattern+"/{name}", ls.Segment)
-	}
+	// ffmpeg の variant playlist は master と同じディレクトリに置かれる。
+	// master の相対 URI（`h264.0.m3u8` / `playlist_0.m3u8`）をそのまま解決できるようにする。
+	r.Get(LiveRoutePattern+"/{name}", ls.Segment)
 	r.Post(LiveRoutePattern+"/leave", ls.Leave)
 
 	// 追っかけ再生も同じ LiveStreamer のセッションプールを使う。captions の
@@ -587,14 +518,6 @@ func (c LiveConfig) idleEvictionThreshold() time.Duration {
 // （getOrCreateSessionOnce を直接呼ばず、既存セッションの `<-s.ready` だけを
 // 待つ）分、通常経路はこの値 1 回分（既定 15s）で済む。
 //
-// **音声の切替（`?audio=`）も同じ枠の中に居る。** 旧セッションの stop（ffmpeg の
-// 終了待ち）→ 後任の起動待ち（前任の終了 + liveMirakcReleaseWait + 起動。上限は
-// この値）→ waitForPlaylist（最大この値）が直列に並ぶ。stop はこの値で上限が
-// 付いていない（ffmpeg の WaitDelay と SIGKILL で現実には数秒）ので、切替 1 本の
-// 最悪は概ね `stop + この値 × 2 + liveMirakcReleaseWait` になる。**この枠は
-// 反復しない** --- 置き換えは 1 回で、音声が食い違ったまま残る経路は無い
-// （getOrCreateSession の doc コメント参照）。
-//
 // var にしてあるのはテストからの上書き用（15 秒の実待ちはテストを不必要に
 // 遅くする）。運用者向けの設定キーではない。
 var playlistStartupTimeout = 15 * time.Second
@@ -616,13 +539,7 @@ func (ls *LiveStreamer) Playlist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	audio, ok := parseLiveAudio(r.URL.Query().Get("audio"))
-	if !ok {
-		http.Error(w, "unknown live audio", http.StatusBadRequest)
-		return
-	}
-
-	s, err := ls.getOrCreateSession(r.Context(), serviceID, audio)
+	s, err := ls.getOrCreateSession(r.Context(), serviceID)
 	if err != nil {
 		if errors.Is(err, errStartupTimeout) {
 			slog.Error("streamer: live playlist session did not become ready in time",
@@ -633,16 +550,14 @@ func (ls *LiveStreamer) Playlist(w http.ResponseWriter, r *http.Request) {
 	}
 	s.touch()
 
+	// どちらの経路でも master playlist を返す（音声レンディションを載せるため。
+	// buildHLSFFmpegArgs）。
 	playlistName := profile.Name + ".m3u8"
 	if ls.cfg.Captions {
 		playlistName = "playlist.m3u8"
 	}
 	playlistPath := filepath.Join(s.dir, playlistName)
-	readyMarker := "#EXTINF"
-	if ls.cfg.Captions {
-		readyMarker = "#EXT-X-STREAM-INF"
-	}
-	content, ok := waitForPlaylist(r.Context(), s, playlistPath, playlistStartupTimeout, readyMarker)
+	content, ok := waitForPlaylist(r.Context(), s, playlistPath, playlistStartupTimeout, "#EXT-X-STREAM-INF")
 	if !ok {
 		slog.Error("streamer: live playlist did not appear in time",
 			"service_id", serviceID, "profile", profile.Name, "dir", s.dir)
@@ -664,6 +579,20 @@ func (ls *LiveStreamer) Playlist(w http.ResponseWriter, r *http.Request) {
 // 常に 1 階層のファイル名になる）。
 var segmentNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+\.(?:ts|vtt|m3u8)$`)
 
+// servesFile は name が配信対象の形かを返す。`.vtt` は字幕を出す構成だけが書く。
+func (c LiveConfig) servesFile(name string) bool {
+	return segmentNamePattern.MatchString(name) && (c.Captions || filepath.Ext(name) != ".vtt")
+}
+
+// sessionFilePath は name の実体の場所を返す。`.ts` は segments/ に、variant /
+// 字幕 playlist と `.vtt` は master と同じ s.dir 直下に置かれる（buildHLSFFmpegArgs）。
+func sessionFilePath(dir, name string) string {
+	if filepath.Ext(name) == ".ts" {
+		return filepath.Join(dir, "segments", name)
+	}
+	return filepath.Join(dir, name)
+}
+
 // Segment は GET /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/segments/{name}
 // を処理する。
 //
@@ -677,7 +606,7 @@ func (ls *LiveStreamer) Segment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	name := chi.URLParam(r, "name")
-	if !segmentNamePattern.MatchString(name) || (!ls.cfg.Captions && !strings.HasSuffix(name, ".ts")) {
+	if !ls.cfg.servesFile(name) {
 		http.Error(w, "invalid segment name", http.StatusBadRequest)
 		return
 	}
@@ -726,12 +655,9 @@ func (ls *LiveStreamer) Segment(w http.ResponseWriter, r *http.Request) {
 	}
 	s.touch()
 
-	path := filepath.Join(s.dir, "segments", name)
-	if ls.cfg.Captions && (strings.HasSuffix(name, ".m3u8") || strings.HasSuffix(name, ".vtt")) {
-		path = filepath.Join(s.dir, name)
-	}
+	path := sessionFilePath(s.dir, name)
 
-	if ls.cfg.Captions && strings.HasSuffix(name, ".m3u8") {
+	if strings.HasSuffix(name, ".m3u8") {
 		// **master と同じ readiness 待ちを、1 段下の variant / 字幕 playlist にも
 		// 掛ける。** waitForPlaylist の doc コメント（「書き込み途中の空/不完全な
 		// 内容を配らない」「CI が確率的に flaky になった原因」）は master
@@ -980,7 +906,7 @@ func (ls *LiveStreamer) ChasePlaylistForTarget(w http.ResponseWriter, r *http.Re
 			}
 		}
 		var err error
-		s, err = ls.getOrCreateSessionFor(r.Context(), key, source, LiveAudioDefault)
+		s, err = ls.getOrCreateSessionFor(r.Context(), key, source)
 		if err != nil {
 			writeSessionError(w, err)
 			return
@@ -1010,13 +936,11 @@ func (ls *LiveStreamer) ChasePlaylistForTarget(w http.ResponseWriter, r *http.Re
 	s.touch()
 
 	playlistName := profile.Name + ".m3u8"
-	readyMarker := "#EXTINF"
 	if ls.cfg.Captions {
 		playlistName = "playlist.m3u8"
-		readyMarker = "#EXT-X-STREAM-INF"
 	}
 	playlistPath := filepath.Join(s.dir, playlistName)
-	content, ok := waitForPlaylist(r.Context(), s, playlistPath, playlistStartupTimeout, readyMarker)
+	content, ok := waitForPlaylist(r.Context(), s, playlistPath, playlistStartupTimeout, "#EXT-X-STREAM-INF")
 	if !ok {
 		slog.Error("streamer: chase playlist did not appear in time",
 			"recording_id", target.RecordingID, "profile", profile.Name, "dir", s.dir)
@@ -1044,7 +968,7 @@ func (ls *LiveStreamer) ChaseSegment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := chi.URLParam(r, "name")
-	if !segmentNamePattern.MatchString(name) || (!ls.cfg.Captions && !strings.HasSuffix(name, ".ts")) {
+	if !ls.cfg.servesFile(name) {
 		http.Error(w, "invalid segment name", http.StatusBadRequest)
 		return
 	}
@@ -1073,11 +997,8 @@ func (ls *LiveStreamer) ChaseSegment(w http.ResponseWriter, r *http.Request) {
 	}
 	s.touch()
 
-	path := filepath.Join(s.dir, "segments", name)
-	if ls.cfg.Captions && (strings.HasSuffix(name, ".m3u8") || strings.HasSuffix(name, ".vtt")) {
-		path = filepath.Join(s.dir, name)
-	}
-	if ls.cfg.Captions && strings.HasSuffix(name, ".m3u8") {
+	path := sessionFilePath(s.dir, name)
+	if strings.HasSuffix(name, ".m3u8") {
 		content, ok := waitForPlaylist(r.Context(), s, path, playlistStartupTimeout, "#EXTINF")
 		if !ok {
 			http.Error(w, "chase stream did not start in time", http.StatusGatewayTimeout)
@@ -1645,18 +1566,6 @@ type liveSession struct {
 	source    sessionSource
 	dir       string // SegmentDir/site/{serviceID|chase/recordingID/offset/seconds}
 
-	// audio はこのセッションの ffmpeg が `-dual_mono_mode` に載せる値。起動時に
-	// 固定される（入力側のオプションなので後から変えられない）。切替はセッションの
-	// 作り直しで、`sessionKey` には入れない（1 サービス 1 セッションを保つ。
-	// getOrCreateSession）。
-	audio LiveAudio
-
-	// predecessor は音声切替で置き換えた旧セッション。非 nil なら runSession は
-	// **旧セッションの runSession が終わるまで**（= ffmpeg の終了とディレクトリの
-	// 掃除まで）起動しない。同じ serviceID は同じディレクトリを使うので、旧セッションの
-	// cleanupSessionDir が後任の出力を消さない順序にするためのものである。
-	predecessor *liveSession
-
 	ready chan struct{} // startSession が終わったら閉じる（成功でも失敗でも）
 	done  chan struct{} // ffmpeg プロセスが完全に終了したら閉じる
 
@@ -1856,87 +1765,14 @@ func (ls *LiveStreamer) setActiveSessionMetrics() {
 // **evictMu の保持区間に getOrCreateSessionOnce（最大 playlistStartupTimeout の
 // 起動待ち）を含めない** --- 含めると、無関係な別サービスへの要求まで他サービスの
 // 起動待ちで足止めされる。実際の起動 I/O はロックの外で行う。
-func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64, audio LiveAudio) (*liveSession, error) {
-	key := sessionKey{kind: liveSessionKind, id: serviceID}
-	source := func(ctx context.Context) (io.ReadCloser, error) {
+func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64) (*liveSession, error) {
+	return ls.getOrCreateSessionFor(ctx, sessionKey{kind: liveSessionKind, id: serviceID}, func(ctx context.Context) (io.ReadCloser, error) {
 		return ls.mirakc.StreamService(ctx, serviceID, ls.cfg.TunerPriority)
-	}
-	if audio == LiveAudioDefault {
-		return ls.getOrCreateSessionFor(ctx, key, source, audio)
-	}
-
-	ls.audioSwitchMu.Lock()
-	defer ls.audioSwitchMu.Unlock()
-
-	// **音声は `sessionKey` に入れない（1 サービス 1 セッションを保つ）。** 要求された
-	// 音声が既存セッションと違うときは、セッションを置き換える。
-	//
-	// **置き換えは「予約してから止める」順で行う。** 先に後任を map に載せるので、
-	// 旧セッションの後片付けと mirakc の解放を待っている間も map は空にならない。
-	// 逆順（止めてから作る）にすると、その待ちの間（実測で数秒）に届いた既定音声の
-	// プレイリスト要求が**別セッションを作ってしまい**、それが音声違いとして
-	// もう一度止められる --- 音声に触っていない視聴者が巻き添えで何度も切り替わる。
-	//
-	// **既定（LiveAudioDefault）の要求では置き換えない。** 音声を選んでいない利用者の
-	// プレイリスト要求が、他の視聴者が選んだ音声を巻き戻してしまう --- クライアントの
-	// identity を持たないので「誰が何を選んだか」は区別できない。フロントは音声を
-	// 選んだときだけ `?audio=` を載せ、その後は載せない（docs/frontend/live.md
-	// §フロントエンド実装）。
-	ls.mu.Lock()
-	old, exists := ls.sessions[serviceID]
-	if !exists || old.audio == audio {
-		ls.mu.Unlock()
-		return ls.getOrCreateSessionFor(ctx, key, source, audio)
-	}
-	sessionCtx, s, err := ls.reserveSessionLocked(key, source, audio, old)
-	if err != nil {
-		ls.mu.Unlock()
-		return nil, err
-	}
-	ls.mu.Unlock()
-	ls.setActiveSessionMetrics()
-	go ls.runSession(sessionCtx, s)
-
-	// stop は runSession の後片付け（ディレクトリの掃除）まで待ってから戻るので、
-	// 旧セッションと後任が同じディレクトリを同時に触ることはない。後任は
-	// `s.predecessor` 越しにこの完了を待ってから起動する。
-	old.stop()
-
-	if err := waitReadyTouching(ctx, s, playlistStartupTimeout); err != nil {
-		return nil, err
-	}
-	if s.startErr != nil {
-		// **後片付けが終わるまで待ってから返す。** `ready` は「起動の結果が判明した」
-		// ことしか表さず、map からの削除とディレクトリの掃除は `done` でしか分からない
-		// （`runSession` は `defer close(s.done)` を最初に登録する = 最後に実行する）。
-		// 待たずに返すと、**次の要求が map に残った失敗済みセッションを拾い、同じ
-		// startErr を返す** --- 下の「次のポーリングが作り直す」が成り立たない
-		// （実測: この待ちを入れない版で `-count=20` のうち 2 回、続く既定要求が 503）。
-		// 退避経路が同じ理由で `<-retry.done` している（getOrCreateSessionFor）。
-		<-s.done
-
-		// **退避・再試行はしない（既定の要求と扱いが違うことを認める）。** 置き換えは
-		// 自分で止めた分の解放を待ってから投げているので、それでも上流に拒否されたなら
-		// チューナーは本当に埋まっている。ここで takeIdleSessionForRetry に委ねると、
-		// **無関係なサービスの idle セッションを 1 本巻き添えにする**（解放待ちを
-		// 入れた理由そのものを打ち消す）。
-		//
-		// **代わりに、失敗は次のポーリングが拾う。** 後任は自分の defer で map から
-		// 消えるので、そのサービスへの次のプレイリスト要求が既定音声でセッションを
-		// 作り直す（レベルトリガー。docs/api/media.md §資源同定）。音声は既定に戻るが、
-		// 視聴は数秒で再開する。
-		//
-		// **ここで既定の経路に委ねる形（getOrCreateSessionFor）は採らない。** 退避の
-		// 解放待ちの 5 秒は map を空にするので、その窓に既定音声の要求がセッションを
-		// 作ると再試行がそれを拾い、**要求と違う音声のセッションを 200 で返す**
-		// （無言で音声が効かない。getOrCreateSessionOnceFor は音声を検査しない）。
-		return s, s.startErr
-	}
-	return s, nil
+	})
 }
 
-func (ls *LiveStreamer) getOrCreateSessionFor(ctx context.Context, key sessionKey, source sessionSource, audio LiveAudio) (*liveSession, error) {
-	s, err := ls.getOrCreateSessionOnceFor(ctx, key, source, audio)
+func (ls *LiveStreamer) getOrCreateSessionFor(ctx context.Context, key sessionKey, source sessionSource) (*liveSession, error) {
+	s, err := ls.getOrCreateSessionOnceFor(ctx, key, source)
 	if err == nil {
 		return s, nil
 	}
@@ -1970,7 +1806,7 @@ func (ls *LiveStreamer) getOrCreateSessionFor(ctx context.Context, key sessionKe
 	ls.mu.Unlock()
 	if alreadyRecovered {
 		ls.evictMu.Unlock()
-		return ls.getOrCreateSessionOnceFor(ctx, key, source, audio)
+		return ls.getOrCreateSessionOnceFor(ctx, key, source)
 	}
 
 	victim := ls.takeIdleSessionForRetry(time.Now())
@@ -2001,7 +1837,7 @@ func (ls *LiveStreamer) getOrCreateSessionFor(ctx context.Context, key sessionKe
 	}
 	ls.evictMu.Unlock()
 
-	retry, retryErr := ls.getOrCreateSessionOnceFor(ctx, key, source, audio)
+	retry, retryErr := ls.getOrCreateSessionOnceFor(ctx, key, source)
 	if retryErr != nil && retry != nil {
 		// 再試行自身が ready 後に失敗した場合も、次の要求が同じ startErr を
 		// 拾わないように、そのセッションの後片付けを待ってから返す。
@@ -2026,42 +1862,7 @@ func liveEvictionReason(err error) (string, bool) {
 	return "", false
 }
 
-// reserveSessionLocked は map に新しいセッションを予約し、起動コンテキストを返す。
-// 呼び出し側は ls.mu を保持し、戻ったセッションを go runSession へ渡す。
-//
-// predecessor が非 nil なら音声切替の置き換えである。**プロセス上限を見ない** ---
-// 同じ map slot を置き換えるので同時数は増えない（後任は前任の終了まで tuner を
-// 取らないので、チューナーの同時押さえも増えない）。
-func (ls *LiveStreamer) reserveSessionLocked(key sessionKey, source sessionSource, audio LiveAudio, predecessor *liveSession) (context.Context, *liveSession, error) {
-	if ls.closed {
-		return nil, nil, errShuttingDown
-	}
-	if predecessor == nil && len(ls.sessions)+len(ls.chaseSessions) >= ls.cfg.MaxSessions {
-		return nil, nil, errSessionLimit
-	}
-	sessionCtx, cancel := context.WithCancel(context.Background())
-	s := &liveSession{
-		serviceID:  key.id,
-		key:        key,
-		source:     source,
-		audio:      audio,
-		ready:      make(chan struct{}),
-		done:       make(chan struct{}),
-		lastAccess: time.Now(),
-		cancel:     cancel,
-
-		predecessor: predecessor,
-	}
-	if key.kind == chaseSessionKind {
-		// Chase sessions use recordings.id + offset as the key, while serviceID
-		// remains populated for the live-only tests and logs that predate this shared map.
-		s.serviceID = 0
-	}
-	ls.putSessionLocked(s)
-	return sessionCtx, s, nil
-}
-
-func (ls *LiveStreamer) getOrCreateSessionOnceFor(ctx context.Context, key sessionKey, source sessionSource, audio LiveAudio) (*liveSession, error) {
+func (ls *LiveStreamer) getOrCreateSessionOnceFor(ctx context.Context, key sessionKey, source sessionSource) (*liveSession, error) {
 	ls.mu.Lock()
 	if s, ok := ls.getSessionLocked(key); ok {
 		ls.mu.Unlock()
@@ -2073,14 +1874,32 @@ func (ls *LiveStreamer) getOrCreateSessionOnceFor(ctx context.Context, key sessi
 		}
 		return s, nil
 	}
-	sessionCtx, s, err := ls.reserveSessionLocked(key, source, audio, nil)
-	if err != nil {
+	if ls.closed {
 		ls.mu.Unlock()
-		if errors.Is(err, errSessionLimit) {
-			metrics.LiveSessionStartFailures.WithLabelValues("session_limit").Inc()
-		}
-		return nil, err
+		return nil, errShuttingDown
 	}
+	if len(ls.sessions)+len(ls.chaseSessions) >= ls.cfg.MaxSessions {
+		ls.mu.Unlock()
+		metrics.LiveSessionStartFailures.WithLabelValues("session_limit").Inc()
+		return nil, errSessionLimit
+	}
+
+	sessionCtx, cancel := context.WithCancel(context.Background())
+	s := &liveSession{
+		serviceID:  key.id,
+		key:        key,
+		source:     source,
+		ready:      make(chan struct{}),
+		done:       make(chan struct{}),
+		lastAccess: time.Now(),
+		cancel:     cancel,
+	}
+	if key.kind == chaseSessionKind {
+		// Chase sessions use recordings.id + offset as the key, while serviceID
+		// remains populated for the live-only tests and logs that predate this shared map.
+		s.serviceID = 0
+	}
+	ls.putSessionLocked(s)
 	ls.mu.Unlock()
 	ls.setActiveSessionMetrics()
 
@@ -2197,33 +2016,6 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 		ls.setActiveSessionMetrics()
 	}()
 
-	// 音声切替で置き換えたセッションは、**旧セッションの後片付けが終わってから**
-	// ディレクトリを作り upstream を取りに行く。同じ serviceID は同じディレクトリを
-	// 使うので、旧セッションの cleanupSessionDir より先に mkdir してはならない。
-	// 続けて mirakc の tuner 解放を待つ（実測 2.35〜4.18 秒。liveMirakcReleaseWait）---
-	// 待たずに投げると、チューナーが埋まっている箱では容量エラーになり、退避経路が
-	// 無関係なサービスの idle セッションを巻き添えにする。
-	if s.predecessor != nil {
-		select {
-		case <-s.predecessor.done:
-		case <-ctx.Done():
-			s.startErr = ctx.Err()
-			close(s.ready)
-			return
-		}
-		// mirakc は HTTP body の Close と tuner プロセスの解放を同期していない
-		// （実測 2.35〜4.18 秒）。待たずに投げると、チューナーが埋まっている箱では
-		// 容量エラーになり、退避経路が無関係なサービスの idle セッションを巻き添えに
-		// する（退避経路と同じ値・同じ理由）。
-		select {
-		case <-time.After(liveMirakcReleaseWait):
-		case <-ctx.Done():
-			s.startErr = ctx.Err()
-			close(s.ready)
-			return
-		}
-	}
-
 	dir := filepath.Join(ls.cfg.SegmentDir, ls.site, strconv.FormatInt(sessionIDOf(s), 10))
 	if kind == chaseSessionKind {
 		dir = chaseSessionDir(ls.cfg.SegmentDir, ls.site, sessionIDOf(s), s.key.offsetSeconds)
@@ -2291,7 +2083,7 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 			captionInput = false
 		}
 	}
-	args := BuildLiveFFmpegArgs(ls.cfg, dir, s.audio, captionInput)
+	args := BuildLiveFFmpegArgs(ls.cfg, dir, captionInput)
 	if kind == chaseSessionKind {
 		args = BuildChaseFFmpegArgs(ls.cfg, dir, captionInput)
 	}
@@ -2492,14 +2284,15 @@ func (w *cappedWriter) String() string {
 // 出す引数を組み立てる（issue #91 の決定 1: 1 チューナーから複数プロファイル）。
 //
 // 自由形式の cmd 文字列は受け取らない（encode.BuildFFmpegArgs と同じ方針）。
-// ストリームは先頭の映像・先頭の音声だけを map する（データ放送は特別扱いしない）。
-// **複数の音声 ES があっても先頭だけを map する**ので、二重音声は `audio` の
-// `-dual_mono_mode` で選ぶ（`-map 0:a:1` による 2 本目の ES の選択は未対応。
-// どの放送が 2 本目を持つかは記述子を読むか ffprobe を起動ごとに走らせないと
-// 分からず、どちらも今の前提を動かす。docs/api/media.md §実装）。
-// 字幕は通常は map しない。Captions=true の専用経路だけ optional に ARIB caption
-// を map し、libaribcaption で WebVTT にする。既定経路は Debian 系の ffmpeg が
-// arib_caption デコーダを持たない構成でも従来どおり動く。
+// ストリームは先頭の映像・先頭の音声だけを map する（データ放送は特別扱いしない。
+// 2 本目の音声 ES は選べない）。字幕は通常は map しない。Captions=true の専用経路
+// だけ optional に ARIB caption を map し、libaribcaption で WebVTT にする。既定経路は
+// Debian 系の ffmpeg が arib_caption デコーダを持たない構成でも従来どおり動く。
+//
+// **音声はプロファイルごとに 3 本の代替音声レンディション（標準 / 主 / 副）で出す。**
+// 標準はフィルタ無し（現行と同じエンコード、`DEFAULT=YES`）。主 / 副は二重音声の
+// L / R を両耳へ写す出力側の `pan`（dualMonoPans）。選ぶのはプレイヤーで、
+// サーバーは選択を知らない（docs/api/media.md §音声）。
 //
 // argv の順序（issue #321 決定コメント §3）:
 //
@@ -2507,37 +2300,39 @@ func (w *cappedWriter) String() string {
 //	[cfg.HWAccel ブロック]                          # 入力 1 本ぶん、1 回だけ
 //	-probesize 5M -analyzeduration 3M
 //	[cfg.InputExtraArgs…]
-//	[-dual_mono_mode <main|sub>]                    # 音声を選んだときだけ（Args）
 //	-f mpegts -i pipe:0
 //	  ── プロファイルごとに繰り返し ──
-//	  -map 0:v:0 -map 0:a:0  -c:v  -c:a
+//	  -map 0:v:0 -map 0:a:0 ×3  -c:v  -c:a  -filter:a:1 <主> -filter:a:2 <副>
 //	  [-vf <deinterlace[, scaler が決めた scale]>]  [-crf|-qp]  [-preset]
-//	  （captions 経路では `-filter:v:N` を使う）
+//	  （captions 経路では `-c:a:N` / `-filter:v:N` / `-filter:a:N` を使う）
 //	  -force_key_frames expr:…
 //	  [profile.extra_args…]                         # ユーザー（出力側）
-//	  -f hls ... OUT.m3u8                            # アプリ所有の末尾
+//	  -var_stream_map … -master_pl_name NAME.m3u8 -f hls ... NAME.%v.m3u8  # アプリ所有の末尾
+//
+// **既定経路はプロファイルごとの出力のまま、各出力が自分の master（`NAME.m3u8`）を
+// 持つ。** 1 つの master にまとめると `hls_time` が 1 つになり、プロファイルごとの
+// `segment_seconds` が表現できなくなる（captions 経路はそのため検証で揃えさせている）。
+// variant のファイル名は `NAME.<n>.m3u8` で、プロファイル名に `.` は使えないので
+// 別プロファイルの master と衝突しない。
 //
 // **Captions=true のときは 1 つの master playlist（%v 展開）を出す形に分岐する。**
 // withSubtitles は Captions=true のときだけ効き、起動前の ffprobe 判定結果を渡す
 // （false なら字幕 map / rendition を完全に省き、字幕の無い番組でも映像・音声の
 // HLS を継続できる）。Captions=false のときは無視される。
-func BuildLiveFFmpegArgs(cfg LiveConfig, dir string, audio LiveAudio, withSubtitles bool) []string {
-	return buildHLSFFmpegArgs(cfg, dir, audio, withSubtitles, false)
+func BuildLiveFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []string {
+	return buildHLSFFmpegArgs(cfg, dir, withSubtitles, false)
 }
 
 // BuildChaseFFmpegArgs builds the same multi-profile HLS graph as live, but as
 // an EVENT playlist. Event output keeps the whole recording history and must
 // never use delete_segments.
-//
-// 音声は既定のまま（録画再生の音声切替は別の判断が要る。docs/api/media.md
-// §録画中の追っかけ再生）。
 func BuildChaseFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []string {
-	return buildHLSFFmpegArgs(cfg, dir, LiveAudioDefault, withSubtitles, true)
+	return buildHLSFFmpegArgs(cfg, dir, withSubtitles, true)
 }
 
-func buildHLSFFmpegArgs(cfg LiveConfig, dir string, audio LiveAudio, withSubtitles, eventPlaylist bool) []string {
+func buildHLSFFmpegArgs(cfg LiveConfig, dir string, withSubtitles, eventPlaylist bool) []string {
 	if cfg.Captions {
-		return buildLiveCaptionFFmpegArgs(cfg, dir, audio, withSubtitles, eventPlaylist)
+		return buildLiveCaptionFFmpegArgs(cfg, dir, withSubtitles, eventPlaylist)
 	}
 	args := []string{
 		"-hide_banner", "-nostats", "-loglevel", "error",
@@ -2551,14 +2346,15 @@ func buildHLSFFmpegArgs(cfg LiveConfig, dir string, audio LiveAudio, withSubtitl
 		"-analyzeduration", "3M",
 	)
 	args = append(args, cfg.InputExtraArgs...)
-	args = append(args, audio.Args()...)
 	args = append(args, "-f", "mpegts", "-i", "pipe:0")
 	for _, p := range cfg.Profiles {
 		// 映像・音声だけ。字幕 / データ放送は捨てる（上記 arib_caption）。
 		// -map は output 単位のオプションなので、ループの前に 1 組だけ置くと
 		// 最初の .m3u8 にしか適用されず、2 本目以降は自動ストリーム選択に戻る。
-		args = append(args, "-map", "0:v:0", "-map", "0:a:0")
-		args = append(args, "-c:v", p.VideoCodec, "-c:a", p.AudioCodec)
+		// 音声は同じ入力を 3 回 map し、2 本目 / 3 本目に主 / 副の pan を掛ける。
+		args = append(args, "-map", "0:v:0", "-map", "0:a:0", "-map", "0:a:0", "-map", "0:a:0")
+		args = append(args, "-c:v", p.VideoCodec, "-c:a", p.AudioCodec,
+			"-filter:a:1", dualMonoPans[0], "-filter:a:2", dualMonoPans[1])
 		if filter, ok := ffargs.VideoFilterArgs(p.Scaler, p.Height, p.Deinterlace); ok {
 			args = append(args, "-vf", filter)
 		}
@@ -2572,17 +2368,18 @@ func buildHLSFFmpegArgs(cfg LiveConfig, dir string, audio LiveAudio, withSubtitl
 		if len(p.ExtraArgs) > 0 {
 			args = append(args, p.ExtraArgs...)
 		}
-		hlsFlags := "delete_segments+temp_file"
 		playlistSize := strconv.Itoa(p.PlaylistSize)
 		playlistOptions := []string{}
 		if eventPlaylist {
 			// EVENT playlists grow from the head until ffmpeg sees EOF. list_size 0
 			// and the absence of delete_segments retain every segment for seeking.
 			playlistSize = "0"
-			hlsFlags = "temp_file"
 			playlistOptions = []string{"-hls_playlist_type", "event"}
 		}
+		variants := append([]string{"v:0,agroup:aud"}, audioRenditionEntries(0, "aud")...)
 		args = append(args,
+			"-var_stream_map", strings.Join(variants, " "),
+			"-master_pl_name", p.Name+".m3u8",
 			"-f", "hls",
 			"-hls_time", strconv.Itoa(p.SegmentSeconds),
 			"-hls_list_size", playlistSize,
@@ -2594,8 +2391,8 @@ func buildHLSFFmpegArgs(cfg LiveConfig, dir string, audio LiveAudio, withSubtitl
 			// temp_file: 一時ファイルに書いてから rename するので、配信側が
 			// 書き込み途中のファイルを読むことがない。追っかけ再生は
 			// delete_segments を使わない（BuildChaseFFmpegArgs）。
-			"-hls_flags", hlsFlags,
-			"-hls_segment_filename", filepath.Join(dir, "segments", p.Name+"_seg%05d.ts"),
+			"-hls_flags", hlsFlags(eventPlaylist),
+			"-hls_segment_filename", filepath.Join(dir, "segments", p.Name+".%v_seg%05d.ts"),
 			// hls_base_url: プレイリストの各セグメント行に付ける接頭辞。
 			// **これが無いと ffmpeg は basename だけを書く**（実機で確認済み）。
 			// HLS クライアントはプレイリスト自身の URL 基準で相対解決するため、
@@ -2605,10 +2402,51 @@ func buildHLSFFmpegArgs(cfg LiveConfig, dir string, audio LiveAudio, withSubtitl
 			// （`segments/` サブディレクトリ）と、プレイリストが指す論理 URI を
 			// 一致させるための必須フラグ（issue #91 のレビューで発見）。
 			"-hls_base_url", "segments/",
-			filepath.Join(dir, p.Name+".m3u8"),
+			filepath.Join(dir, p.Name+".%v.m3u8"),
 		)
 	}
 	return args
+}
+
+// dualMonoPans は二重音声の主（L）/ 副（R）を両耳へ写す出力側のフィルタ。
+//
+// 既定のデコード（`-dual_mono_mode` 無し）は二重音声を L = 主 / R = 副のステレオで
+// 出すので、出力側で片側を両耳へ写せば主 / 副になる。**`-dual_mono_mode` は入力
+// （デコーダ）側のオプションなので 1 回の起動で両方を出せないが、これなら出せる。**
+// 実測（ffmpeg 9.0.2）: モノラル AAC 2 本の SCE を 1 フレームに継いだ二重音声で、
+// この pan の出力は `-dual_mono_mode main|sub` の出力とバイト一致した。二重音声で
+// ない通常のステレオに当てると片側のチャンネルだけになる（利用者が選んだときだけ）。
+var dualMonoPans = [2]string{"pan=stereo|c0=c0|c1=c0", "pan=stereo|c0=c1|c1=c1"}
+
+// audioRenditionEntries は 1 プロファイルぶんの音声レンディション（標準 / 主 / 副）の
+// `-var_stream_map` 項目を返す。first はその最初の音声出力ストリームの index。
+//
+// **並び順が UI との契約である。** master の `NAME` は ffmpeg が `audio_<n>` で固定し、
+// n はプロファイル数でずれる（`name:` で変わるのは URI だけ。実測）。フロントは
+// グループ内の順序（0 = 標準 / 1 = 主 / 2 = 副）で選ぶ（web/src/lib/live.ts
+// liveAudioTrackIndex）。
+func audioRenditionEntries(first int, group string) []string {
+	return []string{
+		fmt.Sprintf("a:%d,agroup:%s,default:yes", first, group),
+		fmt.Sprintf("a:%d,agroup:%s", first+1, group),
+		fmt.Sprintf("a:%d,agroup:%s", first+2, group),
+	}
+}
+
+// hlsFlags は `-hls_flags` の値を返す。
+//
+// **ライブは program_date_time が要る。** 無いと hls.js（1.7.1 / 1.7.3 / canary）は、
+// 前に聴いた音声レンディションへ**ライブの窓（list_size × hls_time）より後で**戻ると
+// 再生が止まる（バッファが空になり、音声は前のトラックのまま。手元に残った古い
+// playlist が今の窓と重ならず、PDT 無しでは揃えられない）。窓の内側ですぐ戻る分には
+// 止まらない。判定は `web/e2e/live-audio.mjs` の ①（各トラックを 15 秒聴いてから
+// 戻る。PDT を外すと標準へ戻る所で落ち、付けると通る。WebAudio で左右の周波数を
+// 測る）。追っかけ（EVENT）には音声の選択を出していないので付けない。
+func hlsFlags(eventPlaylist bool) string {
+	if eventPlaylist {
+		return "temp_file"
+	}
+	return "delete_segments+temp_file+program_date_time"
 }
 
 // buildLiveCaptionFFmpegArgs は HLS を 1 つの master playlist として出力する。
@@ -2616,8 +2454,13 @@ func buildHLSFFmpegArgs(cfg LiveConfig, dir string, audio LiveAudio, withSubtitl
 // ffprobe 判定結果で、false の場合は字幕 map / rendition を完全に省き、字幕なし
 // 番組でも映像・音声の HLS を継続できる。
 //
+// **音声レンディションはプロファイルごとのグループ（`agroup:a<N>`）に入れる。**
+// プロファイルごとに `audio_codec` / `extra_args` が違いうるので、1 グループに
+// まとめるとそれが表現できない。プロファイル N の音声は a:3N（標準）/ a:3N+1（主）/
+// a:3N+2（副）。video variant が先に並ぶので字幕 playlist は `subtitles_0.m3u8` のまま。
+//
 // **per-stream 指定子は必ず型付き（`:v:N` / `:a:N`）にする。** この経路の出力
-// ストリーム順は v0, a0, [s0,] v1, a1 で、`-preset:N` / `-vf:N`（型無しの
+// ストリーム順は v0, a0..a2, [s0,] v1, a3..a5 で、`-preset:N` / `-vf:N`（型無しの
 // グローバル出力ストリーム index）は 2 本目以降のプロファイルでは音声側を指して
 // しまい、preset もフィルタも掛からない（実 ffmpeg で測定・固定: レビュー指摘）。
 //
@@ -2627,7 +2470,7 @@ func buildHLSFFmpegArgs(cfg LiveConfig, dir string, audio LiveAudio, withSubtitl
 // フィルタが両方の video ストリームに適用されて警告が出ることを実測で確認。
 // `-c:v:N` や `-preset:v:N` のような型を伴わない他オプションでの `:v:N` 付与は
 // 問題なく機能する --- `-vf`/`-filter:v` だけの挙動）。
-func buildLiveCaptionFFmpegArgs(cfg LiveConfig, dir string, audio LiveAudio, withSubtitles, eventPlaylist bool) []string {
+func buildLiveCaptionFFmpegArgs(cfg LiveConfig, dir string, withSubtitles, eventPlaylist bool) []string {
 	args := []string{"-hide_banner", "-nostats", "-loglevel", "error"}
 	args = append(args, cfg.HWAccel.Args()...)
 	args = append(args, "-probesize", "5M", "-analyzeduration", "3M")
@@ -2639,16 +2482,19 @@ func buildLiveCaptionFFmpegArgs(cfg LiveConfig, dir string, audio LiveAudio, wit
 		// 入力側オプションなので -i より前に置く。
 		args = append(args, "-fix_sub_duration")
 	}
-	args = append(args, audio.Args()...)
 	args = append(args, "-f", "mpegts", "-i", "pipe:0")
 
-	var variants []string
+	var variants, audioVariants []string
 	for i, p := range cfg.Profiles {
-		args = append(args, "-map", "0:v:0", "-map", "0:a:0")
+		args = append(args, "-map", "0:v:0", "-map", "0:a:0", "-map", "0:a:0", "-map", "0:a:0")
 		if i == 0 && withSubtitles {
 			args = append(args, "-map", "0:s:0?")
 		}
-		args = append(args, "-c:v:"+strconv.Itoa(i), p.VideoCodec, "-c:a:"+strconv.Itoa(i), p.AudioCodec)
+		a := 3 * i
+		args = append(args, "-c:v:"+strconv.Itoa(i), p.VideoCodec,
+			"-c:a:"+strconv.Itoa(a), p.AudioCodec,
+			"-c:a:"+strconv.Itoa(a+1), p.AudioCodec, "-filter:a:"+strconv.Itoa(a+1), dualMonoPans[0],
+			"-c:a:"+strconv.Itoa(a+2), p.AudioCodec, "-filter:a:"+strconv.Itoa(a+2), dualMonoPans[1])
 		if filter, ok := ffargs.VideoFilterArgs(p.Scaler, p.Height, p.Deinterlace); ok {
 			args = append(args, "-filter:v:"+strconv.Itoa(i), filter)
 		}
@@ -2667,22 +2513,22 @@ func buildLiveCaptionFFmpegArgs(cfg LiveConfig, dir string, audio LiveAudio, wit
 			args = append(args, "-fix_sub_duration_heartbeat:v:0")
 		}
 		args = append(args, p.ExtraArgs...)
-		mapping := fmt.Sprintf("v:%d,a:%d", i, i)
+		group := "a" + strconv.Itoa(i)
+		mapping := fmt.Sprintf("v:%d,agroup:%s", i, group)
 		if i == 0 && withSubtitles {
 			mapping += ",s:0,sgroup:subs"
 		}
 		variants = append(variants, mapping)
+		audioVariants = append(audioVariants, audioRenditionEntries(a, group)...)
 	}
-	hlsFlags := "delete_segments+temp_file"
 	playlistSize := strconv.Itoa(cfg.Profiles[0].PlaylistSize)
 	playlistOptions := []string{}
 	if eventPlaylist {
 		playlistSize = "0"
-		hlsFlags = "temp_file"
 		playlistOptions = []string{"-hls_playlist_type", "event"}
 	}
 	args = append(args,
-		"-var_stream_map", strings.Join(variants, " "),
+		"-var_stream_map", strings.Join(append(variants, audioVariants...), " "),
 		"-master_pl_name", "playlist.m3u8",
 		"-f", "hls",
 		"-hls_time", strconv.Itoa(cfg.Profiles[0].SegmentSeconds),
@@ -2690,7 +2536,7 @@ func buildLiveCaptionFFmpegArgs(cfg LiveConfig, dir string, audio LiveAudio, wit
 	)
 	args = append(args, playlistOptions...)
 	args = append(args,
-		"-hls_flags", hlsFlags,
+		"-hls_flags", hlsFlags(eventPlaylist),
 		"-hls_base_url", "segments/",
 		"-hls_segment_filename", filepath.Join(dir, "segments", "%v_seg%05d.ts"),
 	)

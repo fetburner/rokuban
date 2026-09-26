@@ -4,7 +4,7 @@ import type { ProgramSearchRequest } from './api/generated'
 import { SearchProgramsBody } from './api/zod'
 import { AppShell } from './components/app-shell'
 import { pageTitle } from './lib/document-title'
-import { validLiveAudio } from './lib/live'
+import { type LiveAudioChoice, validLiveAudio } from './lib/live'
 import { canonicalSearchConditions } from './lib/program-search'
 import {
   parseProgramsSearch,
@@ -264,15 +264,8 @@ export type LivePageSearch = {
    * `pages/live.tsx` 側で `validLiveProfile`（`lib/live.ts`）が行う。
    */
   profile?: string
-  /**
-   * ライブの音声（二重音声の主/副。issue #870）。省略時は「選んでいない」=
-   * ffmpeg の既定引数（現行と同じ）。
-   *
-   * **`?profile=` と違って値域が閉じている**ので、ここで全部検査できる。
-   * 未知の値は `undefined` を**明示代入**して落とす（`?service=` と同じ理由 ---
-   * 省略すると生の値が残る）。
-   */
-  audio?: 'main' | 'sub'
+  /** 音声（二重音声の主 / 副。issue #870）。省略時は標準。 */
+  audio?: LiveAudioChoice
 }
 
 /**
@@ -313,6 +306,7 @@ const liveRoute = createRoute({
     // 明示代入する** --- 省略すると生の値が残る（上のコメントと同じ理由）。
     profile:
       typeof search.profile === 'string' && search.profile !== '' ? search.profile : undefined,
+    // 値域が閉じている（主 / 副）ので、ここで全部検査できる。
     audio: validLiveAudio(search.audio),
   }),
   // `pages/live.tsx` の `<PageHeader title="ライブ">` と同じ表記。issue #304 は

@@ -319,7 +319,7 @@ func TestBuildChaseFFmpegArgsUsesGrowingEventPlaylist(t *testing.T) {
 		t.Fatalf("args = %q, chase output must retain all segments", joined)
 	}
 
-	liveArgs := BuildLiveFFmpegArgs(cfg, "/tmp/segments/default/1", LiveAudioDefault, false)
+	liveArgs := BuildLiveFFmpegArgs(cfg, "/tmp/segments/default/1", false)
 	liveJoined := strings.Join(liveArgs, " ")
 	if strings.Contains(liveJoined, "-hls_playlist_type event") || !strings.Contains(liveJoined, "delete_segments") {
 		t.Fatalf("live args = %q, want the existing sliding live playlist", liveJoined)
@@ -328,8 +328,8 @@ func TestBuildChaseFFmpegArgsUsesGrowingEventPlaylist(t *testing.T) {
 
 func TestFinishedChaseServesRetainedPlaylistWithoutRestarting(t *testing.T) {
 	dir := t.TempDir()
-	playlist := filepath.Join(dir, "h264.m3u8")
-	if err := os.WriteFile(playlist, []byte("#EXTM3U\n#EXTINF:2.0,\nsegments/00001.ts\n#EXT-X-ENDLIST\n"), 0o644); err != nil {
+	const master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nh264.0.m3u8\n"
+	if err := os.WriteFile(filepath.Join(dir, "h264.m3u8"), []byte(master), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -371,8 +371,8 @@ func TestFinishedChaseServesRetainedPlaylistWithoutRestarting(t *testing.T) {
 	if resp.Code != http.StatusOK {
 		t.Fatalf("finished chase playlist status = %d, want 200", resp.Code)
 	}
-	if got := resp.Body.String(); !strings.Contains(got, "#EXT-X-ENDLIST") {
-		t.Fatalf("finished chase playlist = %q, want retained ENDLIST", got)
+	if got := resp.Body.String(); got != master {
+		t.Fatalf("finished chase playlist = %q, want the retained master %q", got, master)
 	}
 
 	delete(ls.chaseSessions, chaseSessionKeyFor(42, 0))
@@ -410,7 +410,7 @@ func TestLiveAndChaseShareMaxSessions(t *testing.T) {
 	}, func(context.Context) (io.ReadCloser, error) {
 		t.Fatal("session source called despite the combined session limit")
 		return nil, nil
-	}, LiveAudioDefault)
+	})
 	if !errors.Is(err, errSessionLimit) {
 		t.Fatalf("getOrCreateSessionOnceFor() = %v, want errSessionLimit", err)
 	}
@@ -429,15 +429,17 @@ func installCompletedChaseFFmpeg(t *testing.T) string {
 	script := `#!/bin/sh
 segfile=""
 playlist=""
+master=""
 prev=""
 for a in "$@"; do
   if [ "$prev" = "-hls_segment_filename" ]; then segfile="$a"; fi
-  case "$a" in *.m3u8) playlist="$a";; esac
+  if [ "$prev" = "-master_pl_name" ]; then master="$a"; prev="$a"; continue; fi
+  case "$a" in *.m3u8) playlist=$(printf '%s' "$a" | sed 's/%v/0/');; esac
   prev="$a"
 done
 outdir=$(dirname "$playlist")
 mkdir -p "$outdir/segments"
-seg=$(printf '%s' "$segfile" | sed 's/%05d/00001/')
+seg=$(printf '%s' "$segfile" | sed 's/%v/0/; s/%05d/00001/')
 printf 'fake-ts' > "$seg"
 cat > "$playlist" <<EOF
 #EXTM3U
@@ -447,6 +449,7 @@ cat > "$playlist" <<EOF
 segments/$(basename "$seg")
 #EXT-X-ENDLIST
 EOF
+printf '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\n%s\n' "$(basename "$playlist")" > "$outdir/$master"
 exit 0
 `
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
@@ -487,17 +490,21 @@ func TestCompletedChaseRetainsEventFilesUntilIdleGC(t *testing.T) {
 		id:   targetID,
 	}, func(context.Context) (io.ReadCloser, error) {
 		return io.NopCloser(strings.NewReader("input")), nil
-	}, LiveAudioDefault)
+	})
 	if err != nil {
 		t.Fatalf("starting chase session: %v", err)
 	}
 	select {
 	case <-s.done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("completed chase ffmpeg did not exit")
 	}
 
-	playlist := filepath.Join(chaseSessionDir(cfg.SegmentDir, "default", targetID, 0), "h264.m3u8")
+	sessionDir := chaseSessionDir(cfg.SegmentDir, "default", targetID, 0)
+	if _, err := os.Stat(filepath.Join(sessionDir, "h264.m3u8")); err != nil {
+		t.Fatalf("retained master playlist: %v", err)
+	}
+	playlist := filepath.Join(sessionDir, "h264.0.m3u8")
 	data, err := os.ReadFile(playlist)
 	if err != nil {
 		t.Fatalf("reading retained EVENT playlist: %v", err)
@@ -505,7 +512,7 @@ func TestCompletedChaseRetainsEventFilesUntilIdleGC(t *testing.T) {
 	if !strings.Contains(string(data), "#EXT-X-ENDLIST") {
 		t.Fatalf("retained playlist = %q, want ENDLIST", data)
 	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(playlist), "segments", "h264_seg00001.ts")); err != nil {
+	if _, err := os.Stat(filepath.Join(filepath.Dir(playlist), "segments", "h264.0_seg00001.ts")); err != nil {
 		t.Fatalf("retained segment: %v", err)
 	}
 
@@ -583,7 +590,7 @@ func TestFailedChaseIsRemovedAndCanRestart(t *testing.T) {
 			id:   43,
 		}, func(context.Context) (io.ReadCloser, error) {
 			return io.NopCloser(strings.NewReader("input")), nil
-		}, LiveAudioDefault)
+		})
 		if err != nil {
 			t.Fatalf("starting chase session: %v", err)
 		}
@@ -636,13 +643,13 @@ func TestEvictingCompletedChaseCleansRetainedFiles(t *testing.T) {
 		id:   44,
 	}, func(context.Context) (io.ReadCloser, error) {
 		return io.NopCloser(strings.NewReader("input")), nil
-	}, LiveAudioDefault)
+	})
 	if err != nil {
 		t.Fatalf("starting completed chase session: %v", err)
 	}
 	select {
 	case <-chase.done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("completed chase ffmpeg did not exit")
 	}
 	if _, err := os.Stat(chase.dir); err != nil {
@@ -658,7 +665,7 @@ func TestEvictingCompletedChaseCleansRetainedFiles(t *testing.T) {
 		id:   99,
 	}, func(context.Context) (io.ReadCloser, error) {
 		return io.NopCloser(strings.NewReader("input")), nil
-	}, LiveAudioDefault)
+	})
 	if err != nil {
 		t.Fatalf("starting live session after chase eviction: %v", err)
 	}

@@ -142,7 +142,7 @@ config の読み込みより前に出るログだけは既定（text 形式・In
 | `encode.profiles[].input_extra_args` / `live.input_extra_args` | `-i`（VOD）/ `-f mpegts -i pipe:0`（live）の直前に追加する引数 |
 | `encode.profiles[].extra_args` / `live.profiles[].extra_args` | 既存キー。改名していない --- ただし VOD 側は位置が 1 点だけ動く（下記） |
 | `encode.profiles[].subtitles` | `webvtt` のみ。原本の ARIB 字幕を encoded ファイル隣の `.vtt` サイドカーに出力する。libaribcaption 入り ffmpeg が必要 |
-| `live.captions` | 既定 `false`。`true` で master playlist と WebVTT 字幕 rendition を出力する。字幕なし番組では映像・音声のみの master を出力する。libaribcaption 入り ffmpeg が無ければ起動エラー。複数プロファイルの `segment_seconds` / `playlist_size` は同一値が必要 |
+| `live.captions` | 既定 `false`。`true` で全プロファイルを 1 つの master playlist にまとめ、WebVTT 字幕 rendition を出力する。字幕なし番組では映像・音声のみの master を出力する。libaribcaption 入り ffmpeg が無ければ起動エラー。複数プロファイルの `segment_seconds` / `playlist_size` は同一値が必要 |
 
 argv の順序（VOD）:
 
@@ -158,7 +158,7 @@ argv の順序（VOD）:
 -f CONTAINER -progress pipe:1 -loglevel error OUTPUT           # アプリ所有の末尾
 ```
 
-argv の順序（live）は同じ規則を入力 1 本・出力 N 本の形に展開したものである。入力側は `live.hwaccel` → `-probesize`/`-analyzeduration` → `live.input_extra_args` → `[-dual_mono_mode]` → `-f mpegts -i pipe:0`。そのあと、プロファイルごとに `-map` `-c:v`/`-c:a` → `[-vf]`（captions 有効時は `-filter:v:N`）→ `[-crf|-qp]` → `[-preset]`。filter は `deinterlace` が true なら解除を先頭に置き、height があれば scale をその後ろに 1 個だけ連結する。続けて `-force_key_frames` → `profile.extra_args` → `-f hls ...`。
+argv の順序（live）は同じ規則を入力 1 本・出力 N 本の形に展開したものである。入力側は `live.hwaccel` → `-probesize`/`-analyzeduration` → `live.input_extra_args` → `-f mpegts -i pipe:0`。そのあと、プロファイルごとに `-map`（映像 1 本と音声 3 本）→ `-c:v`/`-c:a` → 主 / 副の `-filter:a:N` と並ぶ。その後ろに `[-vf]`（captions 有効時は `-filter:v:N`）→ `[-crf|-qp]` → `[-preset]` が続く。filter は `deinterlace` が true なら解除を先頭に置き、height があれば scale をその後ろに 1 個だけ連結する。続けて `-force_key_frames` → `profile.extra_args` → `-var_stream_map` / `-master_pl_name` → `-f hls ...`。音声 3 本の意味は [api/media.md](api/media.md) §音声。
 
 `deinterlace` は bool とし、filter の実体を `scaler` から導出する。`scaler: software` なのに `deinterlace_vaapi` を書くような矛盾した設定や、`-vf` を別名で自由に書く設定を表現できないようにするためである。`deinterlace: false`（省略）のときは、生成する argv を従来から変えない。
 

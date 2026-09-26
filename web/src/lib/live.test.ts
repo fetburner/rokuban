@@ -8,15 +8,16 @@ import {
   classifyLiveLoadError,
   currentProgramWindow,
   formatLiveDiagnostics,
+  liveAudioTrackIndex,
   liveLeaveURL,
   livePlaylistURL,
-  validLiveAudio,
   pickInitialService,
   probeLivePlaylist,
   liveProfileLabel,
   readSubtitleVisibility,
   sendLiveLeaveHint,
   supportsNativeHls,
+  validLiveAudio,
   validLiveProfile,
 } from '@/lib/live'
 
@@ -58,27 +59,6 @@ describe('livePlaylistURL', () => {
     )
     expect(path(livePlaylistURL('default', 0, 1024, 'sd'))).toBe(
       path(livePlaylistURL('default', 0, 1024, 'hd')),
-    )
-  })
-
-  it('audio を渡すと ?audio= が付き、profile と共存する', () => {
-    expect(livePlaylistURL('default', 0, 1024, undefined, 'sub')).toBe(
-      '/api/sites/default/networks/0/services/1024/live/playlist.m3u8?audio=sub',
-    )
-    expect(livePlaylistURL('default', 0, 1024, 'hd', 'main')).toBe(
-      '/api/sites/default/networks/0/services/1024/live/playlist.m3u8?profile=hd&audio=main',
-    )
-  })
-
-  /**
-   * **音声もパスに入れない。** `?profile=` と同じ理由で、パスに混ざると同じ
-   * チャンネルの視聴者が別の Pod に割れ、チューナーを 2 本掴む
-   * （`docs/api/media.md` §資源同定）。
-   */
-  it('audio を変えてもパス（ハッシュ鍵）は変わらない', () => {
-    const path = (url: string) => url.split('?')[0]
-    expect(path(livePlaylistURL('default', 0, 1024, undefined, 'sub'))).toBe(
-      path(livePlaylistURL('default', 0, 1024)),
     )
   })
 
@@ -523,19 +503,17 @@ describe('readSubtitleVisibility', () => {
   })
 })
 
-/**
- * 音声の値域（issue #870）。**`?profile=` と違って閉じている**（2 択）ので、ここで
- * 全部検査できる。streamer は未知の値を 400（`unknown live audio`）で返すため、
- * フロントが先に落として既定（`undefined` = 現行と同じ引数）へ倒す。
- */
-describe('validLiveAudio', () => {
-  it('main / sub だけを通し、それ以外は undefined に落とす', () => {
+describe('validLiveAudio / liveAudioTrackIndex（issue #870）', () => {
+  it('主 / 副だけを通し、それ以外は標準（undefined）に落とす', () => {
     expect(validLiveAudio('main')).toBe('main')
     expect(validLiveAudio('sub')).toBe('sub')
-    expect(validLiveAudio('both')).toBeUndefined()
-    expect(validLiveAudio('')).toBeUndefined()
-    expect(validLiveAudio(undefined)).toBeUndefined()
-    expect(validLiveAudio(1)).toBeUndefined()
-    expect(validLiveAudio(['main'])).toBeUndefined()
+    for (const v of ['', 'MAIN', 'both', 1, undefined, null]) expect(validLiveAudio(v)).toBeUndefined()
+  })
+
+  // streamer の音声レンディションの並び（標準 / 主 / 副）との契約。リテラルで固定する
+  it('音声グループ内の位置は 標準 = 0 / 主 = 1 / 副 = 2', () => {
+    expect(liveAudioTrackIndex(undefined)).toBe(0)
+    expect(liveAudioTrackIndex('main')).toBe(1)
+    expect(liveAudioTrackIndex('sub')).toBe(2)
   })
 })

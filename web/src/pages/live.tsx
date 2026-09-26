@@ -20,8 +20,8 @@ import {
   formatLiveDiagnostics,
   liveProfileLabel,
   pickInitialService,
+  validLiveAudio,
   validLiveProfile,
-  type LiveAudioChoice,
   type LiveDiagnostics,
 } from '@/lib/live'
 import { upcomingInterruptingReservation } from '@/lib/live-interruption'
@@ -144,34 +144,17 @@ export function LivePage() {
   const navigate = useNavigate({ from: '/live' })
   const selectProfile = (name: string) => {
     void navigate({
-      search: {
-        service: routeSearch.service,
-        site: routeSearch.site,
-        profile: name,
-        audio: routeSearch.audio,
-      },
+      search: { ...routeSearch, profile: name },
       replace: true,
     })
   }
 
-  // 音声は放送ごとの一覧を持たない（記述子を読むのは不変条件 6 に反する）。ffmpeg の
-  // `-dual_mono_mode` は通常のステレオでは無効（実測）なので、主/副の 2 択で出す。
-  // 選んだときだけ probe の 1 回に `?audio=` を載せ、その後の HLS URL には載せない
-  // （LivePlayer / streamer のコメント参照）。
-  //
-  // **一度主/副を選んだ後の標準は disabled にする。** 既定へ戻すにはセッションの
-  // 作り直しが要り、同じセッションを見ている他の視聴者の音声を巻き戻すためである。
+  // 音声（issue #870）。**選択はプレイヤーの中だけで効く** --- streamer は標準 /
+  // 主 / 副の 3 本を常に出しているので、選んでもプレイリストの取り直しも
+  // セッションの作り直しも起きず、同じチャンネルを見ている他の視聴者にも影響しない。
   const selectAudio = (value: string) => {
-    if (value === '') return
-    const audio: LiveAudioChoice | undefined =
-      value === 'main' || value === 'sub' ? value : undefined
     void navigate({
-      search: {
-        service: routeSearch.service,
-        site: routeSearch.site,
-        profile: routeSearch.profile,
-        audio,
-      },
+      search: { ...routeSearch, audio: validLiveAudio(value) },
       replace: true,
     })
   }
@@ -397,6 +380,10 @@ export function LivePage() {
                   </select>
                 </label>
               )}
+              {/* 音声（issue #870）。**常に 3 択で出す** --- どの番組が二重音声かを
+                  知る手段が無い（音声 ES の情報を持たず、二重音声は ffprobe では
+                  通常のステレオと区別できない。記述子を読むのは不変条件 6 の外）。
+                  二重音声でない番組で主 / 副を選ぶと片側のチャンネルだけになる。 */}
               <label className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
                 <span>音声</span>
                 <select
@@ -405,9 +392,7 @@ export function LivePage() {
                   onChange={(e) => selectAudio(e.target.value)}
                   className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none"
                 >
-                  <option value="" disabled={routeSearch.audio !== undefined}>
-                    標準
-                  </option>
+                  <option value="">標準</option>
                   <option value="main">主音声</option>
                   <option value="sub">副音声</option>
                 </select>

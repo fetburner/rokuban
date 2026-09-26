@@ -41,13 +41,18 @@ type FakeHls = {
   // 指摘）。mainForwardBufferInfo はアタッチ直後は null
   latency: number
   mainForwardBufferInfo: { len: number } | null
+  audioTrack: number
+  audioTracks: unknown[]
 }
 
 vi.mock('hls.js', () => {
   class FakeHlsImpl {
-    static Events = { ERROR: 'hlsError' }
+    static Events = { ERROR: 'hlsError', AUDIO_TRACKS_UPDATED: 'hlsAudioTracksUpdated' }
     static isSupported = () => hlsMockState.supported
     on = vi.fn()
+    // 音声トラック（issue #870）。実 hls.js は master の音声グループを読むまで空
+    audioTrack = 0
+    audioTracks: unknown[] = []
     loadSource = vi.fn()
     attachMedia = vi.fn()
     // 破棄後は `latency` / `mainForwardBufferInfo` を読むと例外にする ---
@@ -94,13 +99,6 @@ vi.mock('hls.js', () => {
  * 継続処理で読むより前」でなければならない --- コンポーネントは probe 成功後に
  * `canPlayType` を読むので、fetch を deferred にして制御する。
  */
-/** probedURLs は現在の fetch スタブが受けたプレイリスト要求の URL を順に返す。 */
-function probedURLs(): string[] {
-  return (vi.mocked(globalThis.fetch).mock.calls as unknown as [string][])
-    .map(([url]) => String(url))
-    .filter((url) => url.includes('playlist.m3u8'))
-}
-
 function deferredFetch() {
   let resolve!: (response: Response) => void
   const promise = new Promise<Response>((r) => {
@@ -1239,79 +1237,89 @@ describe('LivePlayer / 画質（プロファイル）切替（issue #869）', ()
 })
 
 /**
- * 音声（二重音声の主/副。issue #870 M4-22）。
+ * 音声（二重音声の主 / 副。issue #870）。
  *
- * **`?audio=` を載せるのは probe の 1 回だけ**で、プレイヤーが取り直し続ける URL には
- * 載せない。`-dual_mono_mode` は ffmpeg の入力側オプションなので、1 回の起動で
- * 主音声と副音声の両方は出せない（`internal/streamer/live.go`）。要求された音声が
- * 今のセッションと違えば streamer はセッションを作り直すので、**URL に載せ続けると
- * 数秒ごとの再取得がそのたびに作り直しを要求することになり、同じチャンネルを別の
- * 音声で見ている 2 人が互いの音声を作り直し合って両方止まる**。probe は再生開始と
- * 切替のときにしか走らないので、1 回だけ適用する口としてちょうどよい。
+ * **切替はプレイヤーが取るトラックを替えるだけ**で、プレイリストの取り直しも
+ * hls.js の作り直しも起こさない（streamer が標準 / 主 / 副の 3 本を常に出している）。
+ * トラックの位置（0 = 標準 / 1 = 主 / 2 = 副）が streamer との契約で、期待値は
+ * リテラルで書く。実ブラウザで音が替わることは jsdom では測れない
+ * （`internal/streamer/live.go` の hlsFlags に書いた Playwright の実測が担う）。
  */
 describe('LivePlayer / 音声（issue #870）', () => {
-  it('probe だけが ?audio= を載せ、プレイヤーに渡す URL には載せない', async () => {
-    const { resolve } = deferredFetch()
-    render(<LivePlayer site="default" networkId={0} serviceId={1024} audio="sub" />)
+  const playlistFetches = (fetchMock: ReturnType<typeof vi.fn>) =>
+    fetchMock.mock.calls.map(([url]) => String(url)).filter((u) => u.includes('playlist.m3u8'))
 
-    const video = document.querySelector('video')!
-    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
-      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
+  it('hls.js: トラック一覧が届くと選択を適用し、切替はプレイリストを取り直さない', async () => {
+    const fetchMock = vi.fn((_url: string) => Promise.resolve(new Response('', { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+    const { rerender } = render(
+      <LivePlayer site="default" networkId={0} serviceId={1024} audio="sub" />,
     )
-    resolve(new Response('', { status: 200 }))
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const hls = hlsMockState.instances[0]!
+    const onTracks = hls.on.mock.calls.find(([event]) => event === 'hlsAudioTracksUpdated')
+    expect(onTracks).toBeDefined()
 
-    await waitFor(() => expect(screen.queryByText('読み込み中…')).not.toBeInTheDocument())
+    hls.audioTracks = [{}, {}, {}]
+    act(() => onTracks![1]('hlsAudioTracksUpdated', { fatal: false }))
+    expect(hls.audioTrack).toBe(2)
 
-    const probed = probedURLs()
-    expect(probed).toHaveLength(1)
-    expect(probed[0]).toContain('audio=sub')
-    // **プレイヤー本体は ?audio= を持たない。** ここが同じだと、hls.js / ネイティブ
-    // 経路の数秒ごとの再取得が毎回セッションの作り直しを要求する。
-    expect(video.src).toContain('/live/playlist.m3u8')
-    expect(video.src).not.toContain('audio=')
+    rerender(<LivePlayer site="default" networkId={0} serviceId={1024} audio="main" />)
+    expect(hls.audioTrack).toBe(1)
+    rerender(<LivePlayer site="default" networkId={0} serviceId={1024} />)
+    expect(hls.audioTrack).toBe(0)
+
+    // 作り直さない・取り直さない・URL に音声を載せない（サーバーは選択を知らない）
+    expect(hlsMockState.instances).toHaveLength(1)
+    expect(playlistFetches(fetchMock)).toHaveLength(1)
+    expect(playlistFetches(fetchMock)[0]).not.toContain('audio')
+    expect(hls.loadSource).toHaveBeenCalledTimes(1)
   })
 
-  it('audio を省略すると ?audio= を付けない（既定 = 現行と同じ引数）', async () => {
-    const { resolve } = deferredFetch()
-    render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
-
-    const video = document.querySelector('video')!
-    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
-      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
-    )
-    resolve(new Response('', { status: 200 }))
-    await waitFor(() => expect(screen.queryByText('読み込み中…')).not.toBeInTheDocument())
-
-    expect(probedURLs()[0]).not.toContain('audio=')
-  })
-
-  it('audio が変わると新しい音声で probe をやり直す（セッションを作り直させる）', async () => {
-    const { resolve } = deferredFetch()
+  it('hls.js: 音声レンディションを持たない master（トラック 0 本）では触らない', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(() => Promise.resolve(new Response('', { status: 200 }))),
     )
+    render(<LivePlayer site="default" networkId={0} serviceId={1024} audio="sub" />)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const hls = hlsMockState.instances[0]!
+    const onTracks = hls.on.mock.calls.find(([event]) => event === 'hlsAudioTracksUpdated')!
+    act(() => onTracks[1]('hlsAudioTracksUpdated', { fatal: false }))
+    expect(hls.audioTrack).toBe(0)
+  })
+
+  it('ネイティブ（WebKit）: トラックが出来たら選択を適用し、切替で src を差し替えない', async () => {
+    const { resolve } = deferredFetch()
     const { rerender } = render(
       <LivePlayer site="default" networkId={0} serviceId={1024} audio="sub" />,
     )
-    await waitFor(() => expect(probedURLs()).toHaveLength(1))
-    expect(probedURLs()[0]).toContain('audio=sub')
+    const video = document.querySelector('video')!
+    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
+      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
+    )
+    // jsdom の <video> は audioTracks を持たない。WebKit と同じく後から作られる形にする
+    const list: Array<{ enabled: boolean }> = []
+    const tracks = Object.assign(list, {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })
+    Object.defineProperty(video, 'audioTracks', { value: tracks, configurable: true })
+
+    resolve(new Response('', { status: 200 }))
+    await waitFor(() => expect(screen.queryByText('読み込み中…')).not.toBeInTheDocument())
+    const src = video.src
+
+    // トラックが 1 本ずつ届く（addtrack）。揃った時点で副だけが有効になる
+    const onAddTrack = tracks.addEventListener.mock.calls.find(([type]) => type === 'addtrack')![1]
+    list.push({ enabled: true }, { enabled: false }, { enabled: false })
+    act(() => onAddTrack())
+    expect(list.map((t) => t.enabled)).toEqual([false, false, true])
 
     rerender(<LivePlayer site="default" networkId={0} serviceId={1024} audio="main" />)
-    await waitFor(() => expect(probedURLs()).toHaveLength(2))
-    expect(probedURLs()[1]).toContain('audio=main')
-    resolve(new Response('', { status: 200 }))
-  })
-
-  it('追っかけ再生では ?audio= を付けない（録画再生の音声切替は範囲外）', async () => {
-    const fetchMock = vi.fn((_url: string) => Promise.resolve(new Response('', { status: 200 })))
-    vi.stubGlobal('fetch', fetchMock)
-
-    render(
-      <LivePlayer mode="chase" site="default" recordingId={7} audio="sub" />,
-    )
-    await waitFor(() => expect(probedURLs()).toHaveLength(1))
-    expect(probedURLs()[0]).toContain('/chase/playlist.m3u8')
-    expect(probedURLs()[0]).not.toContain('audio=')
+    expect(list.map((t) => t.enabled)).toEqual([false, true, false])
+    rerender(<LivePlayer site="default" networkId={0} serviceId={1024} />)
+    expect(list.map((t) => t.enabled)).toEqual([true, false, false])
+    expect(video.src).toBe(src)
   })
 })

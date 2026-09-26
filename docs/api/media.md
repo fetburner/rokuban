@@ -110,10 +110,11 @@ storage:
 
 ### ライブ視聴の HLS --- アプリ配信を維持
 
-`live.captions: true` のとき、`playlist.m3u8` は master playlist になり、ffmpeg の
-`libaribcaption` で変換した WebVTT 字幕 rendition を含む。映像 variant、字幕
-playlist、`.ts` / `.vtt` セグメントは従来と同じサービス URL の下で配信する。
-`false`（既定）では従来のプロファイル別 playlist を返す。hls.js は字幕 rendition
+`playlist.m3u8` は常に master playlist で、音声 rendition 3 本（下記 §音声）を含む。
+`live.captions: false`（既定）では `?profile=` のプロファイルだけの master を返す。
+`true` のときは全プロファイルを 1 つの master にまとめ、ffmpeg の
+`libaribcaption` で変換した WebVTT 字幕 rendition も含む。variant / 字幕 playlist、
+`.ts` / `.vtt` セグメントは同じサービス URL の下で配信する。hls.js は字幕 rendition
 を字幕トグルとして表示する。VOD とライブのどちらも TS/PES を Rokuban が読むことはない。
 
 ライブセッションはインメモリの使い捨て状態（全体アーキテクチャの crash-only 例外）で、「クライアントがいなくなったら ffmpeg を止める」idle GC が要る。セグメント要求がアプリを通れば last-access の更新がタダで手に入るが、nginx が scratch から直接配るとアプリはクライアントの生存を見失う。`auth_request` やログ監視で回収はできるが、セグメントは数 MB で転送負荷が軽く、複雑さに見合わない。**streamer ロールのアプリ配信のまま**とする。
@@ -257,7 +258,7 @@ config から作り、実際に配るのは streamer である。したがって
 #### 実装（`internal/streamer`）
 
 ```
-GET  /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/playlist.m3u8[?profile=<name>][&audio=main|sub]
+GET  /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/playlist.m3u8[?profile=<name>]
        → application/vnd.apple.mpegurl
 GET  /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/segments/{name}
        → video/mp2t
@@ -265,9 +266,8 @@ POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
        → 204（離脱のヒント。上記「離脱は『ヒント』であって停止命令ではない」）
 ```
 
-字幕付きライブでは master から参照される variant playlist と字幕 playlist も
-`.../live/{name}.m3u8` で配信する。`segments/{name}` は `.ts` に加えて `.vtt` を
-受け付けるが、字幕無効時に `.vtt` や playlist 拡張子を受け付けることはない。
+master から参照される variant playlist（映像・音声）と字幕 playlist は
+`.../live/{name}.m3u8` で配信する。`.vtt` は字幕有効時だけ受け付ける。
 
 - **DB を引かない。**パスの `(networkId, serviceId)` から mirakc の
   `GET /api/services/{id}/stream?decode=1` の `{id}` を合成するだけ
@@ -305,80 +305,6 @@ POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
 - **1 サービス = 1 ffmpeg プロセス = mirakc の 1 チューナー。**設定済みの全プロファイルを
   1 回の ffmpeg 起動で同時に出す（見られていないプロファイルの CPU も使うトレードオフ
   はあるが、プロファイルを跨いだ ffmpeg の使い分けを実装しない分シンプルになる）
-- **`audio` クエリはライブの音声（二重音声の主/副）を選ぶ。**`-dual_mono_mode` は
-  ffmpeg の**入力（aac デコーダ）側**のオプションであり、出力側には置けない（置くと
-  `not a encoding option` で起動に失敗する）。そのため `?profile=` と違って 1 回の
-  起動で主音声と副音声の両方を出すことができない。**要求された音声が今のセッションと
-  違えば、streamer はそのセッションを止めて作り直す。**`sessionKey` には音声を入れない
-  = 1 サービス 1 セッションのままで、パス（前段のハッシュ鍵）も変わらない
-- **作り直しは「後任を先に予約してから旧を止める」順で行う。** 旧セッションを
-  止めてから作ると、その後始末と解放を待つ間だけサービスにセッションが居なくなる。
-  **その窓に届いた既定音声のプレイリスト要求は別セッションを作ってしまい**、
-  後任から見て「音声が違う」のでもう一度止められる --- 音声に触っていない視聴者が
-  巻き添えで何度も切り替わる。先に後任を予約しておけば、その要求は後任に join して
-  `ready` を待つだけになる
-- **切替が上流に拒否されたら 503 で終わり、退避・再試行はしない。** 解放待ちを
-  払ってもチューナーが空かなかった場合である。ここで既定の要求と同じ退避（idle な
-  セッションを 1 本殺して 5 秒待つ）に委ねると、無関係なサービスを巻き添えにする
-  うえ、その待ちの間に既定音声の要求が作ったセッションを拾って**要求と違う音声を
-  200 で返しうる**。失敗は次のプレイリスト要求が既定音声で作り直す（数秒で視聴は
-  再開し、音声は既定に戻る）
-- **後任は旧セッションの終了と mirakc の解放を待ってから upstream を取る。**
-  `stop()` は ffmpeg の終了（`<-s.done`）とディレクトリの掃除まで待つので、
-  **チューナーを 2 本同時に掴む形にはならない**。一方 mirakc は HTTP body の Close と
-  tuner プロセスの解放を同期していない（実測 2.35〜4.18 秒）。待たずに投げると、
-  チューナーが埋まっている箱では容量エラーになり、退避経路が**無関係なサービスの
-  idle セッションを巻き添えにする**。そのため退避経路と同じ解放待ち
-  （`liveMirakcReleaseWait`）を 1 回入れる。**代償として切替は待ち時間ぶん遅くなる**
-  （実チューナーでの体感は未測定）。**この待ちの根拠は「別のサービス」への次の要求が
-  通るまでの実測（2.35〜4.18 秒）であり、同じサービスの再取得に必要かは未検証** ---
-  安全側に倒している
-- **既知の残差（この変更で消えていない 2 つ）。** 切替の直前にセッションを掴んだ
-  要求は、そのセッションが止められると**後任が同じパスに書くプレイリストを配る**
-  （後任は同じサービスなのでディレクトリもファイル名も同じ）。これは「その視聴者の
-  音声が後任の音声に揃う」という共有セッションの帰結である。後任が書けなかった
-  場合だけ、消えたディレクトリを `playlistStartupTimeout`（既定 15s）ポーリングして
-  504 になる。**この窓の広さは測っていない**（掴む側の観測と書き手の交代が重なる
-  必要があり、決定的な作り方が無い）。
-  **切替の時点で map にセッションが無い**場合も残差になる。直前に自然死・idle GC
-  回収されていれば前任が居ないので、解放待ちもディレクトリの順序保証も無い経路で
-  作られる（idle GC の直後に同じサービスへ再要求が来る形として元から在る）
-- **音声は `main` / `sub` の 2 択に固定する。放送にある音声を列挙しない。**
-  Rokuban は音声 ES の情報を持たない。`GET /api/sites/{site}/services` は SI の
-  サービス情報だけを返す。二重音声は**1 本の AAC ES の 2 つの SCE** なので、
-  ffprobe では通常のステレオと区別できない。区別できるのは記述子だけで、それは
-  不変条件 6 の境界である。列挙するなら「その放送に副音声があるか」を配る API と
-  その置き場所が要る。2 択なら UI は番組を知らないまま出せる
-- **既定（`?audio=` 無し）は `-dual_mono_mode` を付けない。**すなわち引数は現行と
-  完全に同一である。**引数が既定で 1 ビットでも違うと、音声を選んでいない利用者の
-  再生結果が黙って変わる。**
-  **二重音声の放送で `main` / `sub` / 既定がそれぞれ何を出すかは実放送では未検証**
-  である（このリポジトリの確認環境に実チューナーが無く、ffmpeg の aac エンコーダは
-  2 SCE のビットストリームを作れないので二重音声の TS を用意できない）。ffmpeg 9.0.2
-  の実装を読む限り、aac デコーダは `dmono_mode` が非 0 かつ 1 フレームの SCE が 2 つ
-  かつ出力レイアウトがステレオのときだけ片方を両チャンネルへ写し、既定
-  （`dmono_mode == 0`）では写さない
-- **二重音声でない通常のステレオでは `main` / `sub` はどちらも無効である。**
-  ffmpeg 9.0.2 で実測した。L=440Hz / R=880Hz のステレオ AAC を `live` と同じ引数形
-  （`-f mpegts -i pipe:0`）で 4 通り（既定 / `main` / `sub` / `both`）にデコードすると、
-  出力はバイト一致する。チャンネル分離も保持される。**意味の無い番組で副音声を
-  選んでも何も起きない**ので、UI に「副音声がありません」を出す必要が無い
-- **`?audio=` は「1 回だけ適用する」口である。**プレイリスト要求のうち probe の 1 回
-  だけが `?audio=` を載せ、hls.js / ネイティブ `<video>` が取り直し続ける URL には
-  載せない（[frontend/live.md](../frontend/live.md) §フロントエンド実装）。載せ続けると
-  数秒ごとの再取得が毎回セッションの作り直しを要求することになる。**同じチャンネルを
-  別の音声で見ている 2 人が同時に要求した場合の帰結は未測定**である。クライアントの
-  identity を持たないのでサーバー側では区別できない、という機構からの推論にすぎない。
-  逐次の要求しか投げない `TestLiveStreamer_AudioSwitchRebuildsSession` では測れない。
-  既定（`?audio=` 無し）の要求ではセッションに触らないので、音声を選んでいない
-  視聴者の数秒ごとの要求が音声を巻き戻すことはない
-- **複数の音声 ES がある放送では先頭の ES だけを選ぶ。**`-map 0:a:1` による 2 本目の
-  ES の選択は未対応である。どの放送が 2 本目を持つかは記述子を読むか ffprobe を
-  起動ごとに走らせないと分からず、どちらも今の前提を動かす
-- **録画再生（VOD）と追っかけ再生の音声切替は範囲外。**追っかけは `?audio=` を
-  無視して既定の引数で起動する。切替には別の判断が要る（エンコード時に複数音声を
-  入れるのか、配信時に抜くのか。後者は不変条件 4 の exec 境界と Range 配信の前提を
-  動かす）
 - **チューナー調停は mirakc のリクエスト優先度に一元化する**。ライブの GET には
   `live.tuner_priority`（既定 1）を `X-Mirakurun-Priority` に載せる。ruler が生成する
   schedule の既定 priority（10）より低く保つことで、チューナー枯渇時に mirakc が
@@ -424,6 +350,39 @@ POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
 - **ffmpeg の LookPath 検査は `live.enabled: true` のときだけ行う。**公式イメージ
   （ffmpeg 無し）で streamer ロールを起動する構成（録画配信 / サムネイルのみ）を
   壊さない
+
+#### 音声（二重音声の主 / 副）
+
+**音声はプロファイルごとに 3 本の代替音声 rendition（標準 / 主 / 副）で出し、
+選ぶのはプレイヤーである。** サーバーは選択を知らず、セッションも作り直さない。
+選択は視聴者ごとの状態で、共有セッションの寿命に載せると作り直しのたびに黙って
+既定へ戻る（idle GC の後に既定の要求が作り直す等）。
+
+- **主 / 副は出力側の `pan` で作る。** 二重音声の既定デコード（`-dual_mono_mode`
+  無し）は L = 主 / R = 副のステレオである。片側を両耳へ写せば主 / 副になる
+  （`pan=stereo|c0=c0|c1=c0` / `pan=stereo|c0=c1|c1=c1`）。`-dual_mono_mode` は
+  デコーダ側のオプションで 1 回の起動に 1 つしか選べないので使わない。
+  実測（ffmpeg 9.0.2）: モノラル AAC 2 本を 1 フレームに継いだ二重音声
+  （SCE 2 つ、`channel_configuration=2`）で、`pan` の出力は
+  `-dual_mono_mode main|sub` の出力とバイト一致した
+- **標準はフィルタ無しで `DEFAULT=YES`。** 今までと同じエンコードなので、
+  音声を選ばない視聴者の音は変わらない
+- **放送にある音声を列挙しない。** 二重音声は 1 本の AAC ES の中の 2 つの SCE で、
+  ffprobe では通常のステレオと区別できない。区別できるのは記述子だけで、
+  それは不変条件 6 の外である。そこで選択肢は常に 3 つで、二重音声でない番組で
+  主 / 副を選ぶと片側のチャンネルだけになる
+- **並び順が UI との契約である。** グループ内の 0 = 標準 / 1 = 主 / 2 = 副で選ぶ。
+  master の `NAME` は ffmpeg が `audio_<n>` で固定し、n はプロファイル数でずれる
+- **ライブの playlist には `EXT-X-PROGRAM-DATE-TIME` を付ける。** 無いと hls.js は、
+  前に聴いた音声へ戻ったときに止まる。止まるのは、ライブの窓
+  （`playlist_size` × `segment_seconds`）より後で戻った場合である。判定は `web/e2e/live-audio.mjs`（PDT を外すと落ちる）
+- **captions 無効時はプロファイル別の出力のまま、各出力が自分の master を持つ。**
+  1 つの master にまとめると `hls_time` が 1 つになり、プロファイルごとの
+  `segment_seconds` が書けなくなる（captions 有効時はそのため同一値を要求している）
+- **2 本目の音声 ES（`-map 0:a:1`）は選べない。** 追っかけ再生にも rendition は出るが、
+  選択 UI は出さない（PDT も付けていない）
+- 未検証: 実放送の二重音声が `channel_configuration=2` + SCE 2 つの形か /
+  実 Safari・iOS での切替（WebKit では取得する rendition が替わることまで確認）
 
 ### 録画中の追っかけ再生
 
