@@ -254,8 +254,8 @@ function stubFetch(options: {
     // ---「再生」ボタンを押すまで一度も呼ばれないことを見る
     if (url.pathname.includes('/live/playlist.m3u8')) {
       if (playlist === 'ok') {
-        // variant playlist（`#EXT-X-STREAM-INF` を持たない）。master にすると
-        // `LivePlayer` が自動降格を止める（issue #871）
+        // media playlist。全プロファイルを束ねた master（`#EXT-X-STREAM-INF` が
+        // 2 行以上）にすると `LivePlayer` が自動降格を止める（issue #871）
         return Promise.resolve(new Response('#EXTM3U\n#EXTINF:2,\nsegments/0.ts', { status: 200 }))
       }
       return Promise.reject(new TypeError('Failed to fetch'))
@@ -1658,6 +1658,82 @@ describe('LivePage / 停滞したときの画質の自動降格（issue #871）'
     // 明示選択なので下げない（要求は増えず、従来どおりエラー表示に落ちる）
     await screen.findByText(/映像データが途絶えました/)
     expect(playlistFetchCallCount()).toBe(callsAfterManual)
+  })
+
+  /**
+   * **一覧の再取得が失敗しても、手元の一覧で下げる。** TanStack Query v5 は再取得に
+   * 失敗しても前回の `data` を保ったまま `isError` を立てる。`isError` を見て
+   * 「判断保留（`'wait'`）」にすると、ネイティブ経路では降格せずにエラー表示へ落ちる。
+   * 回線が不安定なままタブに戻ったとき（= 停滞が起きる状況）に起きる形である。
+   */
+  it('一覧の再取得が失敗しても、手元の一覧で 1 段下げる', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    forceNativePath()
+    stubFetch({
+      services: [service({ serviceId: 1, name: 'チャンネル A' })],
+      liveProfiles: PROFILES,
+      playlist: 'ok',
+    })
+    const { queryClient } = renderLive()
+    // 一覧が届いてから、以後の一覧要求だけを失敗させて再取得する
+    await waitFor(() => expect(screen.getByLabelText('画質')).toHaveValue('hd'))
+    const fetchMock = vi.mocked(globalThis.fetch)
+    const base = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation((input) =>
+      String(input).includes('/api/live-profiles')
+        ? Promise.reject(new TypeError('Failed to fetch'))
+        : base(input),
+    )
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['/api/live-profiles'] })
+    })
+    // 前提: クエリは error で、一覧は残っている（ここが崩れると判定が空虚になる）
+    expect(queryClient.getQueryState(['/api/live-profiles'])?.status).toBe('error')
+    expect(screen.getByLabelText('画質')).toHaveValue('hd')
+
+    await stallOnce()
+
+    await waitFor(() => expect(playlistFetchCallCount()).toBe(2))
+    expect(playlistFetchURLs()[1]).toContain('profile=sd')
+    expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
+  })
+
+  /**
+   * **通知は「その再生で下げた」ときだけ出す。** 画質（sd）はチャンネルを跨いで
+   * 保つが、A で下げた通知を、B を経由して A に戻った別の再生で出すのは事実と
+   * 食い違う（下げた再生の同定 = `playingKey` を一緒に持つ理由）。
+   *
+   * 変異: チャンネル切替時の同定のリセット、または表示条件の `key === playingKey`
+   * を外すと、A に戻った後の「通知が無い」が落ちる。
+   */
+  it('A で下げた通知は、B を経由して A に戻った再生では出さない（画質は保つ）', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    forceNativePath()
+    stubFetch({
+      services: [
+        service({ serviceId: 1, name: 'チャンネル A' }),
+        service({ serviceId: 2, name: 'チャンネル B' }),
+      ],
+      liveProfiles: PROFILES,
+      playlist: 'ok',
+    })
+    renderLive()
+
+    await stallOnce()
+    await screen.findByTestId('live-quality-downgraded')
+
+    await user.click(screen.getByRole('link', { name: /チャンネル B/ }))
+    await user.click(screen.getByRole('link', { name: /チャンネル A/ }))
+    const before = playlistFetchCallCount()
+    await user.click(await screen.findByRole('button', { name: /再生/ }))
+    await waitFor(() => expect(playlistFetchCallCount()).toBe(before + 1))
+
+    // 画質は保つ（「この端末の回線」の性質）
+    expect(playlistFetchURLs().at(-1)).toContain('profile=sd')
+    expect(screen.getByLabelText('画質')).toHaveValue('sd')
+    // 通知は出さない（この再生では下げていない）
+    expect(screen.queryByTestId('live-quality-downgraded')).not.toBeInTheDocument()
   })
 })
 

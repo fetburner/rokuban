@@ -1688,6 +1688,8 @@ describe('LivePlayer / 画質（プロファイル）切替（issue #869）', ()
    * 時点の `paused` を読むだけで、切替の理由（自動降格 / 手動の画質選択 / 再読み込み）を
    * 区別しない。ネイティブ経路の停滞は `waiting` のまま `paused=false` なので、
    * 利用者がボタンを押したら再生に戻る --- 押し直しを 2 回求めない。
+   * **hls.js 経路では起きない**（fatal エラーで `hls.destroy()` が `load()` を呼び
+   * `paused=true` にするので、cleanup が読む時点で再生中ではない）。
    */
   it('ネイティブ経路: エラー後の再読み込みでも canplay で再生を再開する', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })

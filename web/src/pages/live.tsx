@@ -250,19 +250,15 @@ export function LivePage() {
   // 判定すると止まる）。ここで区別して返すと、一覧の到着後の次の刻みで再判定される。
   const handleStalled = (): StallHandling => {
     if (explicitProfile !== undefined) return false
-    // **未着だけでなく「一時的な取得失敗」も `'wait'` にする。** 失敗すると
-    // `isPending` は false に戻り一覧は空のままなので、ここで `false` を返すと
-    // 観測が `done` になり、その再生では以後の停滞で二度と試さない
-    // （再取得が成功しても復旧しない）。判断材料が「空の一覧」なのか
-    // 「まだ来ていない」のかを区別する。
-    //
-    // **`isError` の 1 分岐だけはユニットテストで固定されていない。** これが変える
-    // 観測は hls.js 経路（次段を試し続けるかどうか）にしか現れず、
-    // `pages/live.test.tsx` は hls.js 経路を駆動できない（jsdom に MediaSource が
-    // 無く `Hls.isSupported()` が false になる）。ネイティブ経路では `'wait'` と
-    // `false` の観測が同じ（どちらも現行のエラー文言）。分岐を消すよりは、
-    // 再取得で回復しうることを優先する
-    if (liveProfilesQuery.isPending || liveProfilesQuery.isError) return 'wait'
+    // **判断材料は「成功した一覧を持っているか」であって、クエリの状態ではない。**
+    // 未着（`isPending`）と初回の取得失敗（ネットワーク断・5xx。`api/client.ts` の
+    // `customInstance` は非 2xx を throw する）はどちらも一覧を持っていないので
+    // `'wait'` にする --- `false` を返すと観測が `done` になり、その再生では以後の
+    // 停滞で二度と試さない。**逆に、再取得が失敗しても前回の一覧は残る**
+    // （TanStack Query v5 は `data` を保ったまま `isError` を立てる）ので、
+    // `isError` を見て `'wait'` にすると、手元に一覧があるのに降格しなくなる
+    // （回線が不安定なままタブに戻ったとき = まさに停滞が起きる状況で起きる）。
+    if (unwrap(liveProfilesQuery.data) === undefined) return 'wait'
     const next = nextLowerProfile(liveProfiles, effectiveProfile)
     if (next === undefined) return false
     setAutoQuality({ name: next, key: playingKey })
