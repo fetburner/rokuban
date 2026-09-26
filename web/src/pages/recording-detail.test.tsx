@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { EncodeProfileSummary, Recording, Rule } from '@/api/generated'
+import type { EncodeProfileSummary, LiveProfileSummary, Recording, Rule } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { formatTime } from '@/lib/format'
 import { routeTree } from '@/routes'
@@ -61,6 +61,9 @@ function createFakeServer(options: {
   recording: Recording | null
   sites?: string[]
   encodeProfiles?: EncodeProfileSummary[]
+  liveProfiles?: LiveProfileSummary[]
+  /** liveProfilesResponse は画質一覧の解決を遅延させるテスト用（issue #874）。 */
+  liveProfilesResponse?: () => Promise<Response>
   rules?: Rule[]
   /** rulesResponse はルール一覧の解決を遅延させるテスト用。 */
   rulesResponse?: () => Promise<Response>
@@ -78,6 +81,8 @@ function createFakeServer(options: {
   let recording = options.recording
   const sites = options.sites ?? ['default']
   const encodeProfiles = options.encodeProfiles ?? []
+  const liveProfiles = options.liveProfiles ?? []
+  const liveProfilesResponse = options.liveProfilesResponse
   const rules = options.rules ?? []
   const rulesResponse = options.rulesResponse
   const deleteResponse = options.deleteResponse
@@ -95,6 +100,9 @@ function createFakeServer(options: {
     // サイトレジストリを先に解決する。
     if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(sites))
     if (url.pathname === '/api/encode-profiles') return Promise.resolve(jsonResponse(encodeProfiles))
+    if (url.pathname === '/api/live-profiles') {
+      return liveProfilesResponse ? liveProfilesResponse() : Promise.resolve(jsonResponse(liveProfiles))
+    }
     if (url.pathname === '/api/rules' && method === 'GET') {
       return rulesResponse ? rulesResponse() : Promise.resolve(jsonResponse(rules))
     }
@@ -908,5 +916,198 @@ describe('RecordingDetailPage ルール導線 (issue #230)', () => {
       '/search?ruleId=5',
     )
     expect(screen.queryByRole('link', { name: '#5' })).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * 追っかけ再生の画質（プロファイル）切替（issue #874）。
+ *
+ * **置き場所は `/recordings/$id` の search（`?liveProfile=`）である。**
+ * 追っかけは `/recordings/{id}#chase` にあり、`#chase` 側（ハッシュ）に持たせると
+ * `pages/recording-detail.tsx` の `key={`${recording.id}:${location.hash}`}` が
+ * 変わり、`RecordingDetail` ごと作り直されて再生位置が先頭に戻る。`profile` という
+ * 名前を使わないのは、この画面に `encode.profiles`（VOD）と `live.profiles`
+ * （追っかけ）の 2 軸が同居していて、素の `profile` ではどちらか読めないためである。
+ *
+ * ここで見るのは配線だけである --- 実再生と「切替で位置が巻き戻らないこと」は
+ * `components/live-player.test.tsx` と `web/e2e/chase.mjs` の担い。
+ */
+describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
+  const LIVE_PROFILES: LiveProfileSummary[] = [
+    { name: 'hd', height: 720 },
+    { name: 'sd', height: 480 },
+  ]
+
+  /** chasePlaylistURLs は追っかけのプレイリスト要求 URL（呼ばれた順）。 */
+  type FetchMock = { mock: { calls: [string | URL | Request, RequestInit?][] } }
+
+  function chasePlaylistURLs(fetchMock: FetchMock): string[] {
+    return fetchMock.mock.calls
+      .map(([url]) => String(url))
+      .filter((url) => url.includes('/chase') && url.includes('playlist.m3u8'))
+  }
+
+  /**
+   * chaseLeaveURLs は離脱ヒント（`POST .../chase/leave`）の宛先。jsdom には
+   * `navigator.sendBeacon` が無いので、`keepalive` つきの POST にフォールバックする。
+   */
+  function chaseLeaveURLs(fetchMock: FetchMock): string[] {
+    return fetchMock.mock.calls
+      .filter(([, init]) => init?.method === 'POST')
+      .map(([url]) => String(url))
+      .filter((url) => url.endsWith('/leave'))
+  }
+
+  /** chaseRecording は追っかけを出せる録画（録画中 + 追っかけの VOD プロファイル）。 */
+  function chaseRecording(): Recording {
+    const now = Date.now()
+    return sampleRecording({
+      startAt: new Date(now - 60 * 60_000).toISOString(),
+      startedAt: new Date(now - 2 * 60_000).toISOString(),
+      durationMs: 2 * 60 * 60_000,
+      status: 'recording',
+      // VOD 側のプロファイル。再生位置のキーはこちらで作る（画質とは別の軸）
+      encodeProfiles: ['vod-h264'],
+    })
+  }
+
+  /**
+   * 切替の配線（受け入れ 6）。`?profile=` の値が `chasePlaylistURL` に届くこと、
+   * 切替で離脱ヒントが飛ばないこと、`playbackProfile`（位置のキー）が変わらないことを見る。
+   *
+   * **`profile` と `playbackProfile` を混ぜると位置が画質ごとに分かれる**ので、
+   * 位置のキーは実際に localStorage へ書かれる宛先で確かめる
+   * （`chasePlaybackProfile` は内部の値なので表示からは見えない）。
+   */
+  it('画質を切り替えると ?profile= が要求に載り、離脱ヒントも位置のキーも変えない', async () => {
+    const user = userEvent.setup()
+    const { fetchMock } = createFakeServer({
+      recording: chaseRecording(),
+      liveProfiles: LIVE_PROFILES,
+    })
+
+    renderAt('/recordings/3#chase')
+
+    const select = await screen.findByLabelText('画質')
+    // 既定はサーバー側と同じ先頭。表示名は height を添える
+    expect(select).toHaveValue('hd')
+    expect(screen.getByRole('option', { name: 'hd（720p）' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'sd（480p）' })).toBeInTheDocument()
+
+    // 既定は URL に書き戻さない（`?profile=` を付けずサーバー側の先頭に任せる）
+    await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
+    expect(chasePlaylistURLs(fetchMock)[0]).not.toContain('profile=')
+
+    await user.selectOptions(select, 'sd')
+
+    await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(2))
+    expect(chasePlaylistURLs(fetchMock)[1]).toContain('profile=sd')
+    // **切替はセッションを手放す合図ではない** --- 追っかけのセッション鍵は
+    // `(recordingID, offset)` でプロファイルを含まない（同じセッションの
+    // 別プレイリストを取るだけ）。
+    expect(chaseLeaveURLs(fetchMock)).toEqual([])
+
+    // 再生位置のキーは VOD 側のプロファイルのまま（画質ごとに分かれない）
+    const video = document.querySelector('video')!
+    video.currentTime = 12
+    fireEvent.timeUpdate(video)
+    expect(localStorage.getItem('rokuban:playback:3:vod-h264')).toBe('12')
+    expect(localStorage.getItem('rokuban:playback:3:sd')).toBeNull()
+  })
+
+  /** 選ぶ余地が無いのに出すと「機能しないコントロール」に戻る（issue #209 の規律）。 */
+  it('一覧が 1 件ならセレクタを出さず、既定のプロファイルで再生する', async () => {
+    const { fetchMock } = createFakeServer({
+      recording: chaseRecording(),
+      liveProfiles: [{ name: 'hd', height: 720 }],
+    })
+
+    renderAt('/recordings/3#chase')
+
+    await screen.findByRole('region', { name: '追っかけ再生' })
+    await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
+    expect(screen.queryByLabelText('画質')).not.toBeInTheDocument()
+    expect(chasePlaylistURLs(fetchMock)[0]).not.toContain('profile=')
+  })
+
+  /**
+   * **一覧は選択肢を出すためだけのもので、再生の前提条件ではない。** 取得失敗
+   * （0 件）でも追っかけは既定のプロファイルで動き続ける。
+   */
+  it('一覧が 0 件でもセレクタを出さず、既定のプロファイルで再生する', async () => {
+    const { fetchMock } = createFakeServer({ recording: chaseRecording(), liveProfiles: [] })
+
+    renderAt('/recordings/3#chase')
+
+    await screen.findByRole('region', { name: '追っかけ再生' })
+    await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
+    expect(screen.queryByLabelText('画質')).not.toBeInTheDocument()
+  })
+
+  /** 直リンク（受け入れ: 復元の両方向）。有効な `?liveProfile=` は選択状態として復元される。 */
+  it('直リンクの ?liveProfile= が選択状態として復元される', async () => {
+    const { fetchMock } = createFakeServer({
+      recording: chaseRecording(),
+      liveProfiles: LIVE_PROFILES,
+    })
+
+    renderAt('/recordings/3?liveProfile=sd#chase')
+
+    expect(await screen.findByLabelText('画質')).toHaveValue('sd')
+    // **要求に実際に載ることまで見る。** セレクタの表示だけだと、URL の値を
+    // そのまま握って選択肢に無い値でも「先頭が選ばれて見える」状態と区別できない
+    // （React の controlled `<select>` は一致しない値で先頭に落ちるだけ）。
+    await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
+    expect(chasePlaylistURLs(fetchMock)[0]).toContain('profile=sd')
+  })
+
+  /**
+   * **未知の名前は落ちて既定（先頭）になる。** streamer は一覧に無い名前を
+   * 400（`unknown chase profile`）で返すので、落とさないと綴り違いの共有リンク・
+   * 古いブックマークがエラー画面になる（`lib/live.ts` の `validLiveProfile`）。
+   */
+  it('未知の ?liveProfile= は既定に落ちる（400 を踏まない）', async () => {
+    const { fetchMock } = createFakeServer({
+      recording: chaseRecording(),
+      liveProfiles: LIVE_PROFILES,
+    })
+
+    renderAt('/recordings/3?liveProfile=does-not-exist#chase')
+
+    expect(await screen.findByLabelText('画質')).toHaveValue('hd')
+    await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
+    expect(chasePlaylistURLs(fetchMock)[0]).not.toContain('profile=')
+    expect(chasePlaylistURLs(fetchMock)[0]).not.toContain('does-not-exist')
+  })
+
+  /**
+   * **URL が画質を名指ししているときは、一覧の到着を待ってから再生させる。**
+   * 名指しされた値の実在は一覧が無いと確かめられないので、待たずに再生を始めると
+   * `undefined → 'sd'` の変化で `LivePlayer` の effect が再実行され、追っかけが
+   * 先頭からやり直しになる（`pages/live.tsx` の `waitingForProfileList` と同じ窓）。
+   */
+  it('URL が画質を名指ししているときは一覧の到着を待ち、届いても取り直さない', async () => {
+    let releaseLiveProfiles!: (response: Response) => void
+    const pending = new Promise<Response>((resolve) => {
+      releaseLiveProfiles = resolve
+    })
+    const { fetchMock } = createFakeServer({
+      recording: chaseRecording(),
+      liveProfilesResponse: () => pending,
+    })
+
+    renderAt('/recordings/3?liveProfile=sd#chase')
+
+    // 一覧が未解決の間はプレイリストを要求しない
+    await screen.findByRole('slider', { name: '追っかけ再生の位置' })
+    expect(chasePlaylistURLs(fetchMock)).toEqual([])
+
+    await act(async () => {
+      releaseLiveProfiles(jsonResponse(LIVE_PROFILES))
+    })
+
+    await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
+    expect(chasePlaylistURLs(fetchMock)[0]).toContain('profile=sd')
+    expect(chaseLeaveURLs(fetchMock)).toEqual([])
   })
 })

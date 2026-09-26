@@ -941,6 +941,60 @@ describe('LivePlayer の状態遷移', () => {
       expect(video.currentTime).toBe(12)
     })
 
+    it('画質を切り替えても追っかけの再生位置を持ち越す（offset 付き）', async () => {
+      // offset 付きで見るのは、**復元 effect が profile で立ち直る変異が
+      // 決定的に落ちる**ようにするためである。offset 付きの追っかけは先頭が
+      // 「録画の 30 秒」なので、復元がやり直されると `onCanPlay` の 0 秒への
+      // 再表明（`explicitStartSeekPending`）が走って位置が巻き戻る。
+      //
+      // 録画 id は他のテストと共有しない（id を借りると保存位置が残っていて
+      // 偽陽性で通る）。
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      const { rerender } = render(
+        <LivePlayer
+          mode="chase"
+          site="default"
+          recordingId={81}
+          startOffsetSeconds={30}
+          profile="live-720p"
+          playbackProfile="vod-h264"
+        />,
+      )
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const video = document.querySelector('video')!
+      Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+      // 初回の読み込みで 1 度は canplay が来る（その 1 回で 0 秒への再表明は
+      // 使い切られる）。以降は画質の切替で復元が立ち直ったときだけ再び走る。
+      fireEvent.canPlay(video)
+      video.currentTime = 12
+
+      rerender(
+        <LivePlayer
+          mode="chase"
+          site="default"
+          recordingId={81}
+          startOffsetSeconds={30}
+          profile="live-480p"
+          playbackProfile="vod-h264"
+        />,
+      )
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+      expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: 12 }])
+      expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+        '/api/sites/default/recordings/81/chase/offset/30/playlist.m3u8?profile=live-480p',
+      )
+      // 切替の前後で再生位置が連続する（先頭へ巻き戻らない）
+      fireEvent.canPlay(video)
+      expect(video.currentTime).toBe(12)
+      // 位置のキーは VOD 側のプロファイルのまま（画質ごとに分かれない）。
+      // offset 付きは録画全体の秒数（12 + 30）で保存する
+      fireEvent.timeUpdate(video)
+      expect(localStorage.getItem('rokuban:playback:81:vod-h264')).toBe('42')
+      expect(localStorage.getItem('rokuban:playback:81:live-480p')).toBeNull()
+    })
+
     it('指定した開始オフセットから読み、保存位置を上書きせず録画全体の秒数で扱う', async () => {
       savePlaybackPosition(8, 'vod-h264', 42)
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))

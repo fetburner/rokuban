@@ -118,6 +118,27 @@ curl -s "$B?profile=sd" | tail -1            # 別プロファイル（同じセ
 curl -s http://localhost:40773/metrics | grep 'rokuban_live_active_sessions{kind="live"}'
 ```
 
+#### 追っかけの画質切替でセッションが増えないことの確認（偽 mirakc + 偽 ffmpeg で足りる）
+
+**実チューナーは要らない。** 同じ録画・同じ offset のセッションから
+別プロファイルの playlist を取るだけで、`rokuban_live_active_sessions{kind="chase"}`
+が増えないことを見る。`live.profiles` を 2 つ以上書いた config で
+`--roles streamer` を起動し、偽 mirakc と偽 ffmpeg を用意する。
+
+```sh
+B=http://localhost:40773/api/sites/default/recordings/1/chase/playlist.m3u8
+curl -s "$B" | tail -1                 # 先頭のプロファイル
+curl -s "$B?profile=sd" | tail -1     # 同じ録画の別プロファイル
+curl -s http://localhost:40773/metrics | grep 'rokuban_live_active_sessions{kind="chase"}'
+```
+
+実バイナリ（`rokuban server --roles streamer`）+ 偽 mirakc + 偽 ffmpeg で測定した。
+結果は `?profile=hd` / `?profile=sd` とも 200、active sessions は 1 だった。
+偽 mirakc の録画 stream 要求は 1 件、`?profile=does-not-exist` は 400
+`unknown chase profile` だった。オフセット付きでも同じ
+`/chase/offset/{offset}/playlist.m3u8` を 2 プロファイルで取り、offset を跨いでいない
+ことを確認する。実チューナー・実 ffmpeg での追っかけ画質切替は未測定である。
+
 #### 音声（二重音声の主 / 副）の確認（実放送が必要）
 
 **二重音声の放送でしか確かめられない**（実放送が SCE 2 つ + `channel_configuration=2`

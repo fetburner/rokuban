@@ -385,9 +385,14 @@ master から参照される variant playlist（映像・音声）と字幕 play
   1 つの master にまとめると `hls_time` が 1 つになり、プロファイルごとの
   `segment_seconds` が書けなくなる（captions 有効時はそのため同一値を要求している）
 - **2 本目の音声 ES（`-map 0:a:1`）は選べない**
-- **追っかけ再生には rendition を出さない。** 選択 UI が無く、出すと配信の形
-  （master + 映像だけのセグメント + 別の音声）が変わる。その形で追っかけの seek や
-  再生位置の復元を確かめる判定が無いので、追っかけは従来の形のままにする
+- **追っかけ再生は画質を `?profile=` で選べる。** 追っかけのセレクタは
+  `/recordings/$id?liveProfile=<name>#chase` に置き、一覧 API の名前を streamer へ
+  渡す。画質の切替は `(recordingID, offset)` で同定された既存セッションの別
+  プレイリストを取るだけで、セッションを作り直さない。`playbackProfile` は VOD 側の
+  再生位置キーとして別に保ち、画質の切替で位置を分けない。**追っかけには rendition
+  を出さない。** 音声を別 rendition に分けると配信の形（master + 映像だけの
+  セグメント + 別の音声）が変わり、追っかけの seek や再生位置の復元を確かめる
+  判定が無いので、音声は従来の形のままにする
 - **ライブの `extra_args` / `input_extra_args` では `-an` `-vn` `-sn` `-map` を拒否する。**
   ストリームの並びは `-var_stream_map` が持つ。並びを変えると ffmpeg が起動時に落ちる
 - 未検証: 実放送の二重音声が `channel_configuration=2` + SCE 2 つの形か /

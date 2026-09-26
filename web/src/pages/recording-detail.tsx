@@ -1,4 +1,4 @@
-import { Link, useLocation, useParams } from '@tanstack/react-router'
+import { Link, useLocation, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { ArrowLeft } from 'lucide-react'
 import { useState } from 'react'
 
@@ -61,8 +61,23 @@ function recordingDetailQueryKey(id: number) {
 export function RecordingDetailPage() {
   const { id } = useParams({ from: '/recordings/$id' })
   const location = useLocation()
+  const search = useSearch({ from: '/recordings/$id' })
+  const navigate = useNavigate({ from: '/recordings/$id' })
   const idNum = Number(id)
   const [thumbFailed, setThumbFailed] = useState(false)
+
+  // 追っかけ再生の画質は `?liveProfile=` に持つ（issue #874）。**既定は URL に
+  // 書き戻さない** --- 明示的に選んだ値だけを載せる（`/live` の `?profile=` と
+  // 同じ規律。`docs/frontend/live.md`）。`replace` にするのは、切替のたびに
+  // ブラウザ履歴が積み上がらないようにするためである。
+  //
+  // **`hash` を明示的に渡す。** `navigate` は指定しなかった部分を現在の
+  // location から引き継がない（実測: `#chase` を渡さないと href が
+  // `/recordings/3?liveProfile=sd` になり、下の `key` が変わって
+  // `RecordingDetail` ごと作り直される = 追っかけが先頭から再生し直しになる）。
+  const selectLiveProfile = (name: string) => {
+    void navigate({ search: { ...search, liveProfile: name }, hash: location.hash, replace: true })
+  }
 
   // 進捗の数字が動いている間だけ定期再取得する（issue #212。一覧側の
   // useInfiniteQuery と同じ判定・同じ間隔）。SSE はヒントなので、進捗は REST の
@@ -148,6 +163,8 @@ export function RecordingDetailPage() {
             recording={recording}
             trash={trash}
             chase={location.hash === 'chase'}
+            liveProfile={search.liveProfile}
+            onSelectLiveProfile={selectLiveProfile}
           />
         </div>
       )}

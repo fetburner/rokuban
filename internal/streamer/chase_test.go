@@ -38,6 +38,12 @@ func (c *fakeChaseRecordClient) StreamRecordFollow(_ context.Context, recordID s
 	return io.NopCloser(strings.NewReader("fake-record")), nil
 }
 
+// StreamService は使われない（このクライアントは追っかけ専用）。newLiveStreamer が
+// 要求する mirakcLiveClient を満たすためだけにある。
+func (c *fakeChaseRecordClient) StreamService(context.Context, int64, int) (io.ReadCloser, error) {
+	return nil, errors.New("not used")
+}
+
 func (c *fakeChaseRecordClient) callCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -453,6 +459,124 @@ exit 0
 		t.Fatal(err)
 	}
 	return path
+}
+
+// installMultiProfileChaseFFmpeg は渡された出力パス（プロファイルごとの
+// `NAME.m3u8`）のそれぞれへ EVENT playlist を書く偽 ffmpeg。**1 本の ffmpeg が
+// 全プロファイルを同時に出力する**形（buildHLSFFmpegArgs の追っかけ経路）を模す。
+// installCompletedChaseFFmpeg は 1 本の playlist しか書かないので、画質の切替を
+// 見るにはこちらが要る。
+func installMultiProfileChaseFFmpeg(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fake-ffmpeg-chase-profiles")
+	script := `#!/bin/sh
+for a in "$@"; do
+  case "$a" in
+    *.m3u8)
+      base=$(basename "$a" .m3u8)
+      outdir=$(dirname "$a")
+      mkdir -p "$outdir/segments"
+      printf 'fake-ts' > "$outdir/segments/${base}_seg00001.ts"
+      {
+        echo '#EXTM3U'
+        echo '#EXT-X-PLAYLIST-TYPE:EVENT'
+        echo '#EXT-X-TARGETDURATION:2'
+        echo '#EXTINF:2.0,'
+        echo "segments/${base}_seg00001.ts"
+        echo '#EXT-X-ENDLIST'
+      } > "$a"
+      ;;
+  esac
+done
+exit 0
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestChaseProfileSwitchReusesOneSession は画質（プロファイル）の切替が
+// 追っかけのセッションを作り直さないことを固定する（issue #874）。
+//
+// セッション鍵は `(recordingID, offset)` でプロファイルを含まないので、同じ録画・
+// 同じ offset の別プロファイルは同じセッションの別プレイリストになる。ここが
+// 崩れると、フロントが `LivePlayer` を作り直さない以上、画質の切替のたびに
+// チューナー + ffmpeg がサーバー側だけで 1 本ずつ増える。
+//
+// **壊し方**: `chaseSessionKeyFor` の鍵に profile を混ぜる（2 本目の要求で
+// セッションが増え、mirakc への録画 stream 要求も 2 件になる）。
+func TestChaseProfileSwitchReusesOneSession(t *testing.T) {
+	cfg := LiveConfig{
+		Enabled:     true,
+		FFmpeg:      installMultiProfileChaseFFmpeg(t),
+		SegmentDir:  t.TempDir(),
+		MaxSessions: 4,
+		IdleTimeout: time.Minute,
+		Profiles: []LiveProfile{
+			{Name: "hd", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
+			{Name: "sd", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
+		},
+	}
+	client := &fakeChaseRecordClient{}
+	ls := newLiveStreamer(client, cfg)
+	target := ChaseTarget{
+		RecordingID:     42,
+		Site:            "default",
+		RecordID:        "record-42",
+		Status:          "recording",
+		RecordingStatus: "recording",
+	}
+	fetch := func(profile string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet,
+			"/api/sites/default/recordings/42/chase/playlist.m3u8?profile="+profile, nil)
+		resp := httptest.NewRecorder()
+		ls.ChasePlaylistForTarget(resp, req, target)
+		return resp
+	}
+
+	if resp := fetch("hd"); resp.Code != http.StatusOK {
+		t.Fatalf("hd playlist status = %d, want 200 (%s)", resp.Code, resp.Body.String())
+	}
+	key := chaseSessionKeyFor(42, 0)
+	ls.mu.Lock()
+	first := ls.chaseSessions[key]
+	ls.mu.Unlock()
+	if first == nil {
+		t.Fatal("chase session was not created")
+	}
+
+	if resp := fetch("sd"); resp.Code != http.StatusOK {
+		t.Fatalf("sd playlist status = %d, want 200 (%s)", resp.Code, resp.Body.String())
+	}
+	ls.mu.Lock()
+	after := ls.chaseSessions[key]
+	sessions := len(ls.chaseSessions)
+	ls.mu.Unlock()
+	if after != first {
+		t.Fatal("画質の切替で追っかけのセッションが作り直された")
+	}
+	if sessions != 1 {
+		t.Fatalf("chase sessions after the profile switch = %d, want 1", sessions)
+	}
+	// セッションが作り直されていなければ、mirakc への録画 stream 要求も 1 件のまま
+	if got := client.callCount(); got != 1 {
+		t.Fatalf("mirakc record stream calls = %d, want 1", got)
+	}
+
+	// 一覧に無い名前はセッションを起こす前に 400（フロントは先に落とすが、
+	// 直リンク・手書き URL の受け皿として要る）。
+	if resp := fetch("does-not-exist"); resp.Code != http.StatusBadRequest {
+		t.Fatalf("unknown profile status = %d, want 400", resp.Code)
+	}
+	ls.mu.Lock()
+	sessions = len(ls.chaseSessions)
+	ls.mu.Unlock()
+	if sessions != 1 {
+		t.Fatalf("unknown profile created a session (sessions = %d)", sessions)
+	}
 }
 
 func installFailedChaseFFmpeg(t *testing.T) string {

@@ -1,7 +1,7 @@
 import { Link } from '@tanstack/react-router'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { useListRules, useListSites, type Recording } from '@/api/generated'
+import { useListLiveProfiles, useListRules, useListSites, type Recording } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { DropStatsTable } from '@/components/drop-stats-table'
 import { RecordingActions } from '@/components/recording-actions'
@@ -10,6 +10,7 @@ import { LivePlayer } from '@/components/live-player'
 import { formatBytes, formatDateTime, formatTime } from '@/lib/format'
 import { ingestDisplay, type IngestDisplay } from '@/lib/ingest'
 import { useLiveEnabled } from '@/lib/capabilities'
+import { liveProfileLabel, validLiveProfile } from '@/lib/live'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { shouldShowRecordingSite, sourceLabels } from '@/lib/recording-search'
 
@@ -87,10 +88,15 @@ export function RecordingDetail({
   recording,
   trash,
   chase = false,
+  liveProfile,
+  onSelectLiveProfile,
 }: {
   recording: Recording
   trash: boolean
   chase?: boolean
+  /** 追っかけ再生の画質（`?liveProfile=`。issue #874）。未検証の生の値。 */
+  liveProfile?: string
+  onSelectLiveProfile: (name: string) => void
 }) {
   const liveEnabled = useLiveEnabled()
   const [chasing, setChasing] = useState(chase)
@@ -102,6 +108,27 @@ export function RecordingDetail({
   const [selectedChaseOffsetSeconds, setSelectedChaseOffsetSeconds] = useState(0)
   const selectedChaseOffsetRef = useRef(0)
   const showChase = !trash && recording.status === 'recording' && liveEnabled && chasing
+  // 追っかけの画質（プロファイル）の一覧（issue #874）。**追っかけを出している
+  // ときだけ引く** --- この画面の主目的は録画の VOD 再生であり、追っかけを
+  // 開いていない利用者に一覧を取らせる理由が無い。取得できなくても追っかけは
+  // 既定のプロファイルで動き続ける（一覧は選択肢を出すためだけのもので、
+  // 再生の前提条件ではない）。
+  const liveProfilesQuery = useListLiveProfiles({ query: { enabled: showChase } })
+  const liveProfiles = useMemo(
+    () => unwrap(liveProfilesQuery.data) ?? [],
+    [liveProfilesQuery.data],
+  )
+  // 未知の名前は落として既定（サーバー側の先頭）に倒す。streamer は未知の
+  // 名前を 400 で返すので（`internal/streamer/live.go` の Chase）、旧ブックマーク・
+  // 綴り違いの共有リンクをエラー画面にしない（`lib/live.ts` の `validLiveProfile`）。
+  //
+  // **既定は URL に書き戻さない。** 明示的に選んだ値だけを載せる --- 既定は
+  // 両側で同じ先頭プロファイルに解決するので、URL に書く意味が無い
+  // （`pages/live.tsx` と同じ規律）。
+  const explicitLiveProfile = useMemo(
+    () => validLiveProfile(liveProfiles, liveProfile),
+    [liveProfiles, liveProfile],
+  )
   // oxlint-disable-next-line react/purity -- the live recording edge needs a clock snapshot
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
@@ -233,13 +260,43 @@ export function RecordingDetail({
               </span>
             </div>
           </div>
-          <LivePlayer
-            mode="chase"
-            site={recording.site}
-            recordingId={recording.id}
-            startOffsetSeconds={chaseOffsetSeconds}
-            playbackProfile={preferredPlaybackProfile}
-          />
+          {/* 画質（issue #874）。**選択肢が 2 件以上のときだけ出す** ---
+              1 件しか無いのに出すと、選んでも何も変わらない「機能しない
+              コントロール」に戻る（issue #209 / `pages/live.tsx` と同じ規律）。
+              **切替はセッションを作り直さない** --- 追っかけのセッション鍵は
+              `(recordingID, offset)` でプロファイルを含まないので、同じセッションの
+              別プレイリストを取るだけである（`internal/streamer/live.go`。
+              `docs/api/media.md` §録画中の追っかけ再生）。`LivePlayer` は
+              key で作り直さない --- 作り直すと再生位置が先頭に戻る。
+              `selected` は controlled なので、URL が未知の名前を運んでいても
+              `activeLiveProfile`（= 既定の先頭）に一致して表示される。 */}
+          {liveProfiles.length > 1 && (
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span>画質</span>
+              <select
+                aria-label="画質"
+                value={explicitLiveProfile ?? liveProfiles[0]?.name}
+                onChange={(e) => onSelectLiveProfile(e.target.value)}
+                className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none"
+              >
+                {liveProfiles.map((p) => (
+                  <option key={p.name} value={p.name}>
+                    {liveProfileLabel(p)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {!(liveProfile !== undefined && liveProfilesQuery.isPending) && (
+            <LivePlayer
+              mode="chase"
+              site={recording.site}
+              recordingId={recording.id}
+              startOffsetSeconds={chaseOffsetSeconds}
+              profile={explicitLiveProfile}
+              playbackProfile={preferredPlaybackProfile ?? ''}
+            />
+          )}
         </section>
       )}
 
