@@ -58,13 +58,14 @@ func TestSeekTilesRelPath(t *testing.T) {
 // の測定で全デコード方式の約 9 倍）。
 func TestSeekTilesWorker_ExtractTileArgs(t *testing.T) {
 	var gotArgs []string
+	out := filepath.Join(t.TempDir(), "out.jpg")
 	w := &SeekTilesWorker{
 		runCmd: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			gotArgs = args
-			return nil, nil
+			return nil, os.WriteFile(out, tinyJPEG, 0o644)
 		},
 	}
-	if err := w.extractTile(context.Background(), "in.m2ts", "out.jpg", 30*time.Second); err != nil {
+	if err := w.extractTile(context.Background(), "in.m2ts", out, 30*time.Second); err != nil {
 		t.Fatalf("extractTile: %v", err)
 	}
 
@@ -117,11 +118,16 @@ type countingRunCmd struct {
 	calls    int
 	outputs  []string
 	failOn   string // この出力パスへの書き出しで失敗させる（空なら常に成功）
+	silentOn string // この出力パスでは何も書かずに成功を返す（ffmpeg が 0 フレームで終わる形）
+	probeErr bool   // ffprobe を失敗させる
 	duration string
 }
 
 func (c *countingRunCmd) run(_ context.Context, name string, args ...string) ([]byte, error) {
 	if strings.Contains(name, "ffprobe") || containsArg(args, "format=duration") {
+		if c.probeErr {
+			return nil, fmt.Errorf("ffprobe: injected failure")
+		}
 		return []byte(c.duration + "\n"), nil
 	}
 	c.calls++
@@ -133,13 +139,17 @@ func (c *countingRunCmd) run(_ context.Context, name string, args ...string) ([]
 	if c.failOn != "" && out == c.failOn {
 		return nil, fmt.Errorf("ffmpeg: injected failure for %s", out)
 	}
+	if c.silentOn != "" && out == c.silentOn {
+		return nil, nil
+	}
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return nil, err
 	}
 	return nil, os.WriteFile(out, tinyJPEG, 0o644)
 }
 
-func seedOriginalForSeekTiles(t *testing.T, pool *sqlcgen.Queries, mediaDir string, recordingID int64, rel, content string) {
+func seedOriginalForSeekTiles(t *testing.T, pool *sqlcgen.Queries, mediaDir string, recordingID int64, rel string) {
+	const content = "fake-ts"
 	t.Helper()
 	full := filepath.Join(mediaDir, filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
@@ -172,7 +182,7 @@ func TestSeekTilesWorker_CreatesAsset(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := insertTestRecording(t, pool)
-	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/tiles.m2ts", "fake-ts")
+	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/tiles.m2ts")
 
 	cmd := &countingRunCmd{duration: "100"}
 	w := &SeekTilesWorker{
@@ -218,7 +228,7 @@ func TestSeekTilesWorker_IdempotentRerun(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	recordingID := insertTestRecording(t, pool)
-	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/idem.m2ts", "fake-ts")
+	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/idem.m2ts")
 
 	cmd := &countingRunCmd{duration: "30"}
 	w := &SeekTilesWorker{Pool: pool, MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
@@ -265,7 +275,7 @@ func TestSeekTilesWorker_PartialFailureCommitsNothing(t *testing.T) {
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
 	recordingID := insertTestRecording(t, pool)
-	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/partial.m2ts", "fake-ts")
+	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/partial.m2ts")
 
 	// 3 枚目（000002.jpg）の抽出で落とす。
 	cmd := &countingRunCmd{
@@ -285,5 +295,49 @@ func TestSeekTilesWorker_PartialFailureCommitsNothing(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(scratchDir, "seek_tiles", fmt.Sprintf("%d", recordingID), "000000.jpg")); err == nil {
 		t.Error("scratch frames were left behind after a failed run")
+	}
+}
+
+// 長さが取れないときは 1 枚だけの格子をコミットせずに失敗する。コミットすると
+// 行が「全部そろっている」を主張し、定期パスが作り直さず、until_encoded の
+// 原本削除の条件も満たしてしまう。
+func TestSeekTilesWorker_ProbeFailureCommitsNothing(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/noprobe.m2ts")
+
+	cmd := &countingRunCmd{probeErr: true}
+	w := &SeekTilesWorker{Pool: pool, MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
+	if err := runSeekTilesJob(t, w, recordingID); err == nil {
+		t.Fatal("Work() succeeded, want an error when ffprobe fails")
+	}
+	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), recordingID); err == nil {
+		t.Error("seek_tiles row was committed even though the duration was unknown")
+	}
+	if cmd.calls != 0 {
+		t.Errorf("ffmpeg calls after a probe failure = %d, want 0", cmd.calls)
+	}
+}
+
+// ffmpeg が 0 フレームで終了コード 0 を返しても、穴の空いた格子をコミットしない
+// （image2 は連番の穴で読むのをやめ、以降が黒のまま合成される）。
+func TestSeekTilesWorker_MissingTileCommitsNothing(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	scratchDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/hole.m2ts")
+
+	cmd := &countingRunCmd{
+		duration: "30",
+		silentOn: filepath.Join(scratchDir, "seek_tiles", fmt.Sprintf("%d", recordingID), "000001.jpg"),
+	}
+	w := &SeekTilesWorker{Pool: pool, MediaDir: mediaDir, ScratchDir: scratchDir, runCmd: cmd.run}
+	if err := runSeekTilesJob(t, w, recordingID); err == nil {
+		t.Fatal("Work() succeeded, want an error when a tile was not written")
+	}
+	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), recordingID); err == nil {
+		t.Error("seek_tiles row was committed with a missing tile")
 	}
 }

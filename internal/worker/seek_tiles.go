@@ -38,9 +38,9 @@ const (
 	seekTilesHeight   = 90
 	seekTilesColumns  = 10
 	seekTilesMaxTiles = 1080
-	// seekTilesTimeout はタイル 1 件の上限。1080 枚の入力シーク抽出（実測
-	// 45 ms/枚で約 49 秒）に、合成とコピーを足しても十分な余裕がある。
-	// 実録画での生成時間はこの値の根拠にはしていない（合成 TS での実測）。
+	// seekTilesTimeout はタイル 1 件の上限。合成 TS で測った 45 ms/枚を
+	// 1080 枚へ外挿すると約 49 秒で、合成とコピーを足しても十分な余裕がある。
+	// 外挿も実録画・J4125 での生成時間も未検証（測定は 10 分・60 枚）。
 	seekTilesTimeout = 15 * time.Minute
 )
 
@@ -49,7 +49,7 @@ const (
 //
 // 生成方式は「タイルごとに入力シーク（-ss を -i の前）で 1 枚ずつ取り、
 // 最後に tile フィルタで 1 枚に並べる」。読む量が枚数にだけ比例し、番組長に
-// 比例しない（合成 TS の実測で 1080 枚 2.7 秒。全デコード方式の 23.6 秒に対して）。
+// 比例しない（合成 TS 10 分・60 枚の実測で 2.7 秒。全デコード方式の 23.6 秒に対して）。
 // そのため「先頭 N 分に限る」ような打ち切りは要らず、上限は枚数だけで決まる。
 //
 // **投入は `ThumbnailReconcileWorker` の定期パスだけである**（ingest 直後の
@@ -125,11 +125,12 @@ func (w *SeekTilesWorker) Work(ctx context.Context, job *river.Job[jobs.SeekTile
 		return fmt.Errorf("resolving original path: %w", err)
 	}
 
+	// poster と違い、長さが取れないまま続行しない。1 枚だけの格子をコミットすると
+	// 行の存在が「全部そろっている」を主張し、定期パスが二度と作り直さず、
+	// until_encoded の原本削除の条件まで満たしてしまう。River の再試行に任せる。
 	duration, err := probeDuration(ctx, w.FFprobe, inputPath, w.commandOutput)
 	if err != nil {
-		// 長さが取れなくても 1 枚だけ作って続行する（壊れたメタデータへの保険）。
-		log.Warn("seek_tiles: ffprobe duration failed, keeping a single tile at 0", "err", err)
-		duration = 0
+		return fmt.Errorf("probing duration: %w", err)
 	}
 	tiles := seekTileCount(duration)
 	rows := (tiles + seekTilesColumns - 1) / seekTilesColumns
@@ -254,8 +255,19 @@ func (w *SeekTilesWorker) extractTile(ctx context.Context, inputPath, outputPath
 		"-q:v", "2",
 		outputPath,
 	}
-	_, err := w.commandOutput(ctx, ffmpeg, args...)
-	return err
+	if _, err := w.commandOutput(ctx, ffmpeg, args...); err != nil {
+		return err
+	}
+	// ffmpeg は 1 フレームも出せなくても終了コード 0 で終わることがある。連番に
+	// 穴があると image2 はそこで読むのをやめ、以降のタイルが黒のままコミットされる。
+	info, err := os.Stat(outputPath)
+	if err != nil {
+		return fmt.Errorf("tile not written: %w", err)
+	}
+	if info.Size() == 0 {
+		return fmt.Errorf("tile is empty")
+	}
+	return nil
 }
 
 // composeSheet はタイルを 1 枚の格子画像に並べる。枚数が列数の倍数でないとき、

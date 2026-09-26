@@ -66,9 +66,12 @@ export function RecordingPlayer({
   const selectedProfile = profiles.includes(profile) ? profile : (profiles[0] ?? '')
   const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
   const videoRef = useRef<HTMLVideoElement>(null)
-  const [tilesRequestedFor, setTilesRequestedFor] = useState<string | null>(null)
-  const [tilesAvailableFor, setTilesAvailableFor] = useState<string | null>(null)
+  // タイルは録画ごとに 1 枚で profile に依存しないので、キーは recordingId だけ。
+  const [tilesRequestedFor, setTilesRequestedFor] = useState<number | null>(null)
+  const [tilesAvailableFor, setTilesAvailableFor] = useState<number | null>(null)
   const [tilePreview, setTilePreview] = useState<{ x: number; y: number; left: number } | null>(null)
+  // スクラブ帯の再生済み割合（0..1）。timeupdate / seeked / loadedmetadata で更新する。
+  const [playedFraction, setPlayedFraction] = useState(0)
   // プロファイル切替時に load したあとだけ currentTime を復元する
   const restorePending = useRef(true)
   // timeupdate 間引き用: 直近に保存した Math.floor(currentTime)。null は未保存
@@ -189,28 +192,49 @@ export function RecordingPlayer({
       ダウンロード
     </a>
   )
-  const tilesKey = `${recordingId}:${selectedProfile}`
-  const handlePreviewMove = (event: ReactMouseEvent<HTMLDivElement>) => {
+  const updatePlayedFraction = (video: HTMLVideoElement) => {
+    setPlayedFraction(
+      Number.isFinite(video.duration) && video.duration > 0
+        ? Math.max(0, Math.min(1, video.currentTime / video.duration))
+        : 0,
+    )
+  }
+  // スクラブ帯の上のポインタ位置 → 再生位置（秒）。duration 未確定なら null。
+  // **プレビューはネイティブ controls のシークバーに重ねない。** ネイティブの
+  // シークバーは位置も幅もブラウザごとに違い（Firefox は再生ボタンと音量の間、
+  // Chrome も左右に余白がある）、外から測れないので、重ねると「見えたタイル」と
+  // 「クリックで飛ぶ先」がずれる。座標を自分で持つ帯なら両者は同じ式から出る。
+  const scrubSeconds = (event: ReactMouseEvent<HTMLDivElement>): number | null => {
+    const video = videoRef.current
+    if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return null
+    const rect = event.currentTarget.getBoundingClientRect()
+    if (rect.width <= 0) return null
+    const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
+    return fraction * video.duration
+  }
+  const handleScrubMove = (event: ReactMouseEvent<HTMLDivElement>) => {
     // タイルは**最初に触れたときだけ**取りに行く。マウント時に先読みすると、
     // 3 時間の録画で 2 MB 程度を、一度もホバーしない利用者にも払わせることになる。
     // 同じキーを再設定しても React は再描画しないので、毎回呼んでよい。
-    setTilesRequestedFor(tilesKey)
+    setTilesRequestedFor(recordingId)
 
-    const video = videoRef.current
-    if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return
-    const rect = event.currentTarget.getBoundingClientRect()
-    if (rect.width <= 0) return
-
-    const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
-    const seconds = fraction * video.duration
-    const tile = seekTileAt(seconds)
-    if (tile === null || tilesAvailableFor !== tilesKey) {
+    const seconds = scrubSeconds(event)
+    const tile = seconds === null ? null : seekTileAt(seconds)
+    if (tile === null || tilesAvailableFor !== recordingId) {
       setTilePreview(null)
       return
     }
+    const rect = event.currentTarget.getBoundingClientRect()
     const half = SEEK_TILES_DISPLAY_WIDTH / 2
     const left = Math.max(0, Math.min(rect.width - SEEK_TILES_DISPLAY_WIDTH, event.clientX - rect.left - half))
     setTilePreview({ ...tile, left })
+  }
+  const handleScrubClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const video = videoRef.current
+    const seconds = scrubSeconds(event)
+    if (!video || seconds === null) return
+    video.currentTime = seconds
+    updatePlayedFraction(video)
   }
 
   return (
@@ -247,46 +271,7 @@ export function RecordingPlayer({
         </div>
       )}
 
-      <div
-        className="relative max-w-3xl"
-        data-testid="recording-video-preview"
-        onMouseMove={handlePreviewMove}
-        onMouseLeave={() => setTilePreview(null)}
-      >
-        {tilesRequestedFor === tilesKey && (
-          <img
-            src={seekTilesURL(recordingId)}
-            alt=""
-            aria-hidden="true"
-            className="pointer-events-none absolute size-px opacity-0"
-            onLoad={() => setTilesAvailableFor(tilesKey)}
-            onError={() => {
-              setTilesAvailableFor((current) => (current === tilesKey ? null : current))
-              setTilePreview(null)
-            }}
-          />
-        )}
-        {tilePreview && (
-          <div
-            aria-hidden="true"
-            data-testid="seek-tile-preview"
-            className="pointer-events-none absolute bottom-12 z-10 overflow-hidden rounded border border-border bg-black shadow-lg"
-            style={{
-              left: tilePreview.left,
-              width: SEEK_TILES_DISPLAY_WIDTH,
-              height: SEEK_TILES_DISPLAY_HEIGHT,
-            }}
-          >
-            <div
-              className="h-full w-full bg-no-repeat"
-              style={{
-                backgroundImage: `url(${seekTilesURL(recordingId)})`,
-                backgroundPosition: `${tilePreview.x}px ${tilePreview.y}px`,
-                backgroundSize: seekTileBackgroundSize(),
-              }}
-            />
-          </div>
-        )}
+      <div className="flex max-w-3xl flex-col gap-1">
         <video
           ref={videoRef}
           key={`${recordingId}:${selectedProfile}`}
@@ -306,6 +291,7 @@ export function RecordingPlayer({
         // 測らずに書いた誤りだった（CLAUDE.md「測っていない挙動を断言しない」）。
         className="aspect-video w-full max-w-3xl rounded bg-black"
         onLoadedMetadata={(e) => {
+          updatePlayedFraction(e.currentTarget)
           if (!restorePending.current) return
           restorePending.current = false
           const pos = loadPlaybackPosition(recordingId, selectedProfile)
@@ -313,8 +299,10 @@ export function RecordingPlayer({
             e.currentTarget.currentTime = pos
           }
         }}
+        onSeeked={(e) => updatePlayedFraction(e.currentTarget)}
         onTimeUpdate={(e) => {
           const v = e.currentTarget
+          updatePlayedFraction(v)
           // timeupdate は約 4Hz で発火するが保存値は秒単位なので、秒が変わったときだけ書く
           if (!shouldSavePlaybackPosition(lastSavedSecond.current, v.currentTime)) return
           lastSavedSecond.current = Math.floor(v.currentTime)
@@ -337,6 +325,55 @@ export function RecordingPlayer({
           src={recordingSubtitleURL(recordingId, selectedProfile)}
         />
         </video>
+
+        {/*
+          シークプレビュー用のスクラブ帯。マウス専用の補助なので aria-hidden にする
+          （キーボード・支援技術の経路はネイティブ controls のシークバーが持つ）。
+        */}
+        <div
+          aria-hidden="true"
+          data-testid="seek-scrub"
+          className="relative h-4 cursor-pointer"
+          onMouseMove={handleScrubMove}
+          onMouseLeave={() => setTilePreview(null)}
+          onClick={handleScrubClick}
+        >
+          <div className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 overflow-hidden rounded-full bg-muted">
+            <div className="h-full bg-primary" style={{ width: `${playedFraction * 100}%` }} />
+          </div>
+          {tilesRequestedFor === recordingId && (
+            <img
+              src={seekTilesURL(recordingId)}
+              alt=""
+              className="pointer-events-none absolute size-px opacity-0"
+              onLoad={() => setTilesAvailableFor(recordingId)}
+              onError={() => {
+                setTilesAvailableFor((current) => (current === recordingId ? null : current))
+                setTilePreview(null)
+              }}
+            />
+          )}
+          {tilePreview && (
+            <div
+              data-testid="seek-tile-preview"
+              className="pointer-events-none absolute bottom-full z-10 mb-1 overflow-hidden rounded border border-border bg-black shadow-lg"
+              style={{
+                left: tilePreview.left,
+                width: SEEK_TILES_DISPLAY_WIDTH,
+                height: SEEK_TILES_DISPLAY_HEIGHT,
+              }}
+            >
+              <div
+                className="h-full w-full bg-no-repeat"
+                style={{
+                  backgroundImage: `url(${seekTilesURL(recordingId)})`,
+                  backgroundPosition: `${tilePreview.x}px ${tilePreview.y}px`,
+                  backgroundSize: seekTileBackgroundSize(),
+                }}
+              />
+            </div>
+          )}
+        </div>
       </div>
 
       {hasOriginal && (

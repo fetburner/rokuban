@@ -7,11 +7,16 @@
 // 「問い合わせが始まること」だけ）。CLAUDE.md §テスト規律のとおり、
 // 実装より先にここで判定手段を作る。
 //
-// 見るのは 4 点:
-//   ① ホバー位置に対応するタイルが出る（列の折り返しと行送りを別々の位置で固定）
-//   ② プレビューが動画の矩形の中に収まる（はみ出さない）
-//   ③ ポインタが離れると消える（両方向）
+// プレビューは動画の下のスクラブ帯（`seek-scrub`）の上でだけ出す。ネイティブ
+// controls のシークバーは位置も幅も外から測れないので、そこに重ねると「見えた
+// タイル」と「クリックで飛ぶ先」がずれる。
+//
+// 見るのは 5 点:
+//   ① 帯の上のホバー位置に対応するタイルが出る（列の折り返しと行送りを別々の位置で固定）
+//   ② プレビューが帯の幅に収まり、帯そのものを覆わない
+//   ③ ポインタが帯から離れると消え、動画の映像の上では出ない（両方向）
 //   ④ タイルが無い録画（404）ではプレビューが出ず、再生面は従来のまま
+//   ⑤ 帯をクリックすると、その位置でプレビューに出ていたタイルの時刻へ飛ぶ
 //
 // フィクスチャは ffmpeg で作る（動画の長さが判定に要る）。無い環境では
 // この判定だけを skip として終了する。
@@ -135,7 +140,18 @@ async function apiHandler({ path: apiPath, url, json, route }) {
   }
   if (/^\/api\/recordings\/1$/.test(apiPath) && method === 'GET') return json(recording)
   if (/^\/api\/media\/recordings\/1\/file$/.test(apiPath)) {
-    return route.fulfill({ status: 200, contentType: 'video/webm', body: videoBytes })
+    // Range に応じる（実物の streamer と同じ）。応じないと Chromium は動画を
+    // seekable にせず、⑤のクリックが 0 秒から動かない。
+    const range = /bytes=(\d+)-(\d*)/.exec(route.request().headers().range ?? '')
+    if (!range) return route.fulfill({ status: 200, contentType: 'video/webm', body: videoBytes, headers: { 'Accept-Ranges': 'bytes' } })
+    const start = Number(range[1])
+    const end = range[2] ? Number(range[2]) : videoBytes.length - 1
+    return route.fulfill({
+      status: 206,
+      contentType: 'video/webm',
+      body: videoBytes.subarray(start, end + 1),
+      headers: { 'Accept-Ranges': 'bytes', 'Content-Range': `bytes ${start}-${end}/${videoBytes.length}` },
+    })
   }
   if (/^\/api\/media\/recordings\/\d+\/thumbnail$/.test(apiPath)) {
     return route.fulfill({ status: 404 })
@@ -147,12 +163,15 @@ async function apiHandler({ path: apiPath, url, json, route }) {
   return json([])
 }
 
-/** moveToTile は「対応するタイルが出るはずの位置」へポインタを動かす。 */
-async function moveToSeconds(page, videoBox, duration, seconds) {
-  await page.mouse.move(
-    videoBox.x + videoBox.width * (seconds / duration),
-    videoBox.y + videoBox.height / 2,
-  )
+/** scrubPoint は帯の上で seconds に対応する座標を返す。 */
+function scrubPoint(scrubBox, duration, seconds) {
+  return { x: scrubBox.x + scrubBox.width * (seconds / duration), y: scrubBox.y + scrubBox.height / 2 }
+}
+
+/** moveToSeconds は「対応するタイルが出るはずの位置」へポインタを動かす。 */
+async function moveToSeconds(page, scrubBox, duration, seconds) {
+  const p = scrubPoint(scrubBox, duration, seconds)
+  await page.mouse.move(p.x, p.y)
 }
 
 /** expectedTile は位置から期待する格子オフセットを独立に計算する。 */
@@ -206,10 +225,12 @@ const openPlayer = async () => {
 
 log('\n=== ④ タイルが無い録画ではプレビューを出さず、再生面は従来のまま ===')
 const noTilesVideo = await openPlayer()
-const noTilesBox = await noTilesVideo.boundingBox()
+const noTilesBox = await page.locator('[data-testid="seek-scrub"]').boundingBox()
 // タイルは 404 なので読み込まれない。duration は分かっているので、実装が
 // 「タイルの有無を見ずに出す」ならここで出てしまう。
 await moveToSeconds(page, noTilesBox, 120, 35)
+await page.waitForTimeout(200)
+await moveToSeconds(page, noTilesBox, 120, 36)
 await page.waitForTimeout(500)
 if ((await page.locator('[data-testid="seek-tile-preview"]').count()) !== 0) {
   ng.push('④ タイルが 404 なのにプレビューが出ている')
@@ -230,8 +251,9 @@ if (Math.abs(duration - 120) > 5) {
   ng.push(`フィクスチャの長さが想定と違う（duration=${duration}）--- 判定の前提が崩れている`)
 }
 const videoBox = await video.boundingBox()
-if (!videoBox || videoBox.width <= 0) {
-  ng.push('動画の矩形が取れない（レイアウトが想定と違う）')
+const scrubBox = await page.locator('[data-testid="seek-scrub"]').boundingBox()
+if (!videoBox || videoBox.width <= 0 || !scrubBox || scrubBox.width <= 0) {
+  ng.push('動画かスクラブ帯の矩形が取れない（レイアウトが想定と違う）')
   await finish(ng, browser)
 }
 
@@ -240,14 +262,14 @@ async function hoverTile(seconds) {
   const want = expectedTile(seconds)
   // タイルの中ほどを狙う（端に寄せると duration の丸めで隣のタイルになる）。
   const target = want.index * TILE_INTERVAL_SECONDS + 5
-  await moveToSeconds(page, videoBox, duration, target)
+  await moveToSeconds(page, scrubBox, duration, target)
   // 1 度目はタイルの取得が始まるだけなので、届くまで待ってからもう一度動かす。
   await page
     .waitForFunction(() => (document.querySelector('img[src*="/seek-tiles"]')?.naturalWidth ?? 0) > 0, undefined, {
       timeout: 15000,
     })
     .catch(() => {})
-  await moveToSeconds(page, videoBox, duration, target)
+  await moveToSeconds(page, scrubBox, duration, target)
   return want
 }
 
@@ -274,22 +296,21 @@ for (const seconds of [35, 95, 105]) {
     ng.push(`① プレビューの背景がタイル配信を指していない（${image}）`)
   }
 
-  // ② 動画の矩形の中に収まる（はみ出さない）。
+  // ② 帯の幅に収まり、帯そのものを覆わない（覆うとクリック先が見えない）。
   const previewBox = await preview.boundingBox()
   if (!previewBox) {
     ng.push(`② タイル #${want.index} のプレビューに実寸が無い`)
     continue
   }
-  const videoRight = videoBox.x + videoBox.width
-  const videoBottom = videoBox.y + videoBox.height
-  if (previewBox.x < videoBox.x - 1 || previewBox.x + previewBox.width > videoRight + 1) {
+  const scrubRight = scrubBox.x + scrubBox.width
+  if (previewBox.x < scrubBox.x - 1 || previewBox.x + previewBox.width > scrubRight + 1) {
     ng.push(
       `② タイル #${want.index} のプレビューが横にはみ出している` +
-        `（preview ${previewBox.x}..${previewBox.x + previewBox.width} / video ${videoBox.x}..${videoRight}）`,
+        `（preview ${previewBox.x}..${previewBox.x + previewBox.width} / scrub ${scrubBox.x}..${scrubRight}）`,
     )
   }
-  if (previewBox.y < videoBox.y - 1 || previewBox.y + previewBox.height > videoBottom + 1) {
-    ng.push(`② タイル #${want.index} のプレビューが縦にはみ出している`)
+  if (previewBox.y + previewBox.height > scrubBox.y + 1) {
+    ng.push(`② タイル #${want.index} のプレビューが帯に重なっている`)
   }
 }
 
@@ -301,13 +322,32 @@ const backOnVideo = await page
   .then(() => true)
   .catch(() => false)
 if (!backOnVideo) {
-  ng.push('③ 動画の上に戻してもプレビューが出ない（①②の待ちが失敗している疑い）')
+  ng.push('③ 帯の上に戻してもプレビューが出ない（①②の待ちが失敗している疑い）')
 }
-// 動画の外（上のヘッダー側）へ逃がす。
-await page.mouse.move(videoBox.x + videoBox.width / 2, Math.max(2, videoBox.y - 60))
+// 映像の上（帯の外）へ動かす。映像を見ている間にプレビューが居座らないこと。
+await page.mouse.move(videoBox.x + videoBox.width * 0.3, videoBox.y + videoBox.height / 2)
+await page.waitForTimeout(100)
+await page.mouse.move(videoBox.x + videoBox.width * 0.4, videoBox.y + videoBox.height / 2)
 await page.waitForTimeout(300)
 if ((await page.locator('[data-testid="seek-tile-preview"]').count()) !== 0) {
-  ng.push('③ ポインタが動画から離れてもプレビューが残っている')
+  ng.push('③ ポインタが映像の上にあるのにプレビューが出ている')
+}
+
+log('\n=== ⑤ クリック先 = プレビューに出ていたタイル ===')
+for (const seconds of [35, 95]) {
+  const want = await hoverTile(seconds)
+  const shown = await page
+    .locator('[data-testid="seek-tile-preview"] > div')
+    .evaluate((el) => getComputedStyle(el).backgroundPosition)
+    .catch(() => null)
+  const p = scrubPoint(scrubBox, duration, want.index * TILE_INTERVAL_SECONDS + 5)
+  await page.mouse.click(p.x, p.y)
+  await page.waitForFunction(() => !document.querySelector('video')?.seeking, undefined, { timeout: 5000 }).catch(() => {})
+  const currentTime = await video.evaluate((v) => v.currentTime)
+  const landed = expectedTile(currentTime)
+  if (landed.index !== want.index) {
+    ng.push(`⑤ タイル #${want.index}（${shown}）を見てクリックしたが ${currentTime.toFixed(1)}s（タイル #${landed.index}）へ飛んだ`)
+  }
 }
 
 await finish(ng, browser)

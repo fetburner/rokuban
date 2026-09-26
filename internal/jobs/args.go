@@ -202,13 +202,19 @@ func (SeekTilesJobArgs) Kind() string { return "seek_tiles" }
 
 // InsertOpts は thumbnail キューへ投入するための River 挿入オプションを返す。
 //
-// **poster（thumbnail）と同じキューに載せるが、ジョブ種は分ける。** poster は
-// 一覧に出るのでタイル生成に待たせたくないし、タイル側の失敗で poster まで
-// 作り直させたくない（docs/storage/contract.md §5.1）。CPU を食う仕事である
-// 点は同じなので、キューを分けて並列度の勘定を 2 つに割る理由は無い。
+// **poster（thumbnail）と同じキューに載せるが、ジョブ種は分ける。** タイル側の
+// 失敗で poster まで作り直させたくない（docs/storage/contract.md §5.1）。CPU を
+// 食う仕事である点は同じなので、キューを分けて並列度の勘定を 2 つに割る理由は無い。
+//
+// **priority を poster より下げる。** River は priority → scheduled_at の順に
+// 取り出し、thumbnail キューの既定の同時実行数は 1 である。同じ priority だと、
+// 導入直後に定期パスが積む既存録画ぶん（最大 RowLimit 件）のタイルが片付くまで、
+// 後から ingest された録画の poster が一覧に出ない。下げても、いま走っている
+// 1 件ぶんの待ちは残る。
 func (SeekTilesJobArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
-		Queue: ThumbnailQueue,
+		Queue:    ThumbnailQueue,
+		Priority: 4,
 		UniqueOpts: river.UniqueOpts{
 			ByArgs:  true,
 			ByState: pendingJobStates,

@@ -426,7 +426,7 @@ describe('RecordingPlayer の selectedProfile 導出', () => {
 
 describe('RecordingPlayer のシークプレビュー', () => {
   it('タイルが無い録画ではプレビューを出さず、従来の再生面のまま', () => {
-    const { container, queryByTestId } = render(
+    const { container, getByTestId, queryByTestId } = render(
       <RecordingPlayer recordingId={91} encodedAssets={[{ profile: 'h264', sizeBytes: 123 }]} />,
     )
     const video = container.querySelector('video')!
@@ -434,8 +434,8 @@ describe('RecordingPlayer のシークプレビュー', () => {
     setMediaProps(video, { duration: 1800 })
     // ホバーしても（jsdom は矩形を持たないのでそもそも何も起きないが）、
     // タイル画像の読み込みが成功していない以上プレビューは存在しない。
-    fireEvent.mouseMove(video.parentElement!, { clientX: 100 })
-    fireEvent.mouseMove(video.parentElement!, { clientX: 200 })
+    fireEvent.mouseMove(getByTestId('seek-scrub'), { clientX: 100 })
+    fireEvent.mouseMove(getByTestId('seek-scrub'), { clientX: 200 })
 
     expect(queryByTestId('seek-tile-preview')).toBeNull()
     // プレイヤー自体は壊れない。
@@ -446,13 +446,17 @@ describe('RecordingPlayer のシークプレビュー', () => {
     // この 1 本は「問い合わせ経路が生えている」ことだけを見る。**位置の正しさは
     // jsdom では原理的に測れない**（getBoundingClientRect が 0 を返す）ので、
     // web/e2e/seek-tiles.mjs が実ブラウザで判定する。
-    const { container } = render(
+    const { container, getByTestId } = render(
       <RecordingPlayer recordingId={92} encodedAssets={[{ profile: 'h264', sizeBytes: 123 }]} />,
     )
     const video = container.querySelector('video')!
     setMediaProps(video, { duration: 1800 })
 
-    fireEvent.mouseMove(video.parentElement!, { clientX: 100 })
+    // 動画そのものの上ではタイルを取りに行かない（プレビューはスクラブ帯だけに出す）。
+    fireEvent.mouseMove(video, { clientX: 100 })
+    expect(container.querySelector('img[src*="/seek-tiles"]')).toBeNull()
+
+    fireEvent.mouseMove(getByTestId('seek-scrub'), { clientX: 100 })
 
     const probe = container.querySelector('img[src*="/seek-tiles"]')
     expect(probe).not.toBeNull()
