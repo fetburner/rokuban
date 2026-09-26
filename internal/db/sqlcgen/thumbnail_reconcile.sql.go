@@ -9,6 +9,56 @@ import (
 	"context"
 )
 
+const listMissingSeekTilesRecordings = `-- name: ListMissingSeekTilesRecordings :many
+SELECT o.recording_id
+FROM media_assets o
+JOIN recordings r ON r.id = o.recording_id
+WHERE o.recording_id > $1::bigint
+  AND o.kind = 'original'
+  AND o.state = 'active'
+  AND r.deleted_at IS NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM media_assets s
+    WHERE s.recording_id = o.recording_id
+      AND s.kind = 'seek_tiles'
+      AND s.state = 'active'
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM missing_media_assets m
+    WHERE m.media_asset_id = o.id
+  )
+ORDER BY o.recording_id
+LIMIT $2
+`
+
+type ListMissingSeekTilesRecordingsParams struct {
+	AfterRecordingID int64
+	RowLimit         int32
+}
+
+// seek_tiles の desired（active original）− observed（active seek_tiles）を
+// 定期的に埋めるための候補。poster と同じ形（同じ窓・同じ missing_media_assets の
+// 除外）だが、再開位置は呼び出し側が種類ごとに別に持つ。
+func (q *Queries) ListMissingSeekTilesRecordings(ctx context.Context, arg ListMissingSeekTilesRecordingsParams) ([]int64, error) {
+	rows, err := q.db.Query(ctx, listMissingSeekTilesRecordings, arg.AfterRecordingID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []int64
+	for rows.Next() {
+		var recording_id int64
+		if err := rows.Scan(&recording_id); err != nil {
+			return nil, err
+		}
+		items = append(items, recording_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMissingThumbnailRecordings = `-- name: ListMissingThumbnailRecordings :many
 SELECT o.recording_id
 FROM media_assets o

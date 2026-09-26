@@ -78,6 +78,21 @@ func (q *Queries) GetActiveOriginalMediaAsset(ctx context.Context, recordingID i
 	return i, err
 }
 
+const getActiveSeekTilesMediaAssetID = `-- name: GetActiveSeekTilesMediaAssetID :one
+SELECT id FROM media_assets
+WHERE recording_id = $1
+  AND kind = 'seek_tiles'
+  AND state = 'active'
+`
+
+// seek_tiles の冪等性チェック用。active な seek_tiles 行があれば id を返す。
+func (q *Queries) GetActiveSeekTilesMediaAssetID(ctx context.Context, recordingID int64) (int64, error) {
+	row := q.db.QueryRow(ctx, getActiveSeekTilesMediaAssetID, recordingID)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
 const getActiveThumbnailMediaAssetID = `-- name: GetActiveThumbnailMediaAssetID :one
 SELECT id FROM media_assets
 WHERE recording_id = $1
@@ -254,6 +269,38 @@ func (q *Queries) GetRecordingByID(ctx context.Context, id int64) (Recording, er
 	return i, err
 }
 
+const getSeekTilesMediaAssetForServing = `-- name: GetSeekTilesMediaAssetForServing :one
+SELECT a.id, a.rel_path, a.size_bytes, a.updated_at, r.title
+FROM media_assets a
+JOIN recordings r ON r.id = a.recording_id
+WHERE a.recording_id = $1
+  AND a.kind = 'seek_tiles'
+  AND a.state = 'active'
+  AND r.deleted_at IS NULL
+`
+
+type GetSeekTilesMediaAssetForServingRow struct {
+	ID        int64
+	RelPath   string
+	SizeBytes int64
+	UpdatedAt time.Time
+	Title     string
+}
+
+// 配信対象のシークタイルを引く。ごみ箱・削除済みは配らない。
+func (q *Queries) GetSeekTilesMediaAssetForServing(ctx context.Context, recordingID int64) (GetSeekTilesMediaAssetForServingRow, error) {
+	row := q.db.QueryRow(ctx, getSeekTilesMediaAssetForServing, recordingID)
+	var i GetSeekTilesMediaAssetForServingRow
+	err := row.Scan(
+		&i.ID,
+		&i.RelPath,
+		&i.SizeBytes,
+		&i.UpdatedAt,
+		&i.Title,
+	)
+	return i, err
+}
+
 const getThumbnailMediaAssetForServing = `-- name: GetThumbnailMediaAssetForServing :one
 SELECT a.id, a.rel_path, a.size_bytes, a.updated_at, r.title
 FROM media_assets a
@@ -355,6 +402,31 @@ func (q *Queries) UpsertEncodedMediaAsset(ctx context.Context, arg UpsertEncoded
 		arg.RelPath,
 		arg.SizeBytes,
 	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const upsertSeekTilesMediaAsset = `-- name: UpsertSeekTilesMediaAsset :one
+INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes)
+VALUES ($1, 'seek_tiles', $2, $3)
+ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
+    rel_path   = EXCLUDED.rel_path,
+    size_bytes = EXCLUDED.size_bytes,
+    state      = 'active',
+    deleted_at = NULL,
+    updated_at = now()
+RETURNING id
+`
+
+type UpsertSeekTilesMediaAssetParams struct {
+	RecordingID int64
+	RelPath     string
+	SizeBytes   int64
+}
+
+func (q *Queries) UpsertSeekTilesMediaAsset(ctx context.Context, arg UpsertSeekTilesMediaAssetParams) (int64, error) {
+	row := q.db.QueryRow(ctx, upsertSeekTilesMediaAsset, arg.RecordingID, arg.RelPath, arg.SizeBytes)
 	var id int64
 	err := row.Scan(&id)
 	return id, err

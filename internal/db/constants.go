@@ -31,4 +31,5 @@ const (
 	AssetKindOriginal  = "original"
 	AssetKindEncoded   = "encoded"
 	AssetKindThumbnail = "thumbnail"
+	AssetKindSeekTiles = "seek_tiles"
 )

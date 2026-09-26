@@ -418,8 +418,18 @@ func TestSetRecordingEncodePolicy_UntilEncoded_DeletesOnReconcile(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("seeding thumbnail asset: %v", err)
 	}
+	// シークプレビュー用タイルも「再生に必要な派生物」なので、無い間は原本が残る。
+	if _, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: id,
+		Kind:        db.AssetKindSeekTiles,
+		RelPath:     fmt.Sprintf("thumbnail/%d_tiles.jpg", id),
+		SizeBytes:   60,
+	}); err != nil {
+		t.Fatalf("seeding seek_tiles asset: %v", err)
+	}
 	writePolicyTestFile(t, mediaDir, fmt.Sprintf("encoded/%d.mp4", id))
 	writePolicyTestFile(t, mediaDir, fmt.Sprintf("thumbnail/%d.jpg", id))
+	writePolicyTestFile(t, mediaDir, fmt.Sprintf("thumbnail/%d_tiles.jpg", id))
 
 	resp := patchRecordingEncodePolicy(t, encodePolicyURL(srv.URL, id), "until_encoded")
 	if resp.StatusCode != http.StatusNoContent {

@@ -31,7 +31,7 @@ const (
 )
 
 // ThumbnailReconcileWorker は desired（active な original）− observed（active な
-// thumbnail）の差分を定期的に埋める River ワーカー。
+// thumbnail / seek_tiles）の差分を定期的に埋める River ワーカー。
 //
 // ingest 完了後の thumbnail ヒント投入と、明示的な EnqueueMissingThumbnails は
 // どちらもベストエフォートの経路である。ヒント投入が失敗した後に mirakc 側の
@@ -44,9 +44,16 @@ const (
 // DB だけでは恒久性を判定できない失敗は、level-triggered な再投入と候補窓の
 // 回転で扱う。
 //
-// thumbnail_reconcile は ThumbnailWorker と同じ thumbnail キューを使う。River の
-// キュー単位 MaxWorkers はジョブ種を区別しないため、thumbnail の抽出中はこの
-// パスも待つが、次の周期に同じ desired−observed を再確認すればよい。
+// thumbnail_reconcile は ThumbnailWorker / SeekTilesWorker と同じ thumbnail
+// キューを使う。River のキュー単位 MaxWorkers はジョブ種を区別しないため、
+// thumbnail の抽出中はこのパスも待つが、次の周期に同じ desired−observed を
+// 再確認すればよい。
+//
+// **seek_tiles も同じパスが埋める。** どちらも「active な original に対する
+// 派生物で、種類ごとに独立に完備を判定する」という同じ形なので、ループを
+// 分けるとキュー・プローブ・resume の勘定が二重になる。ただし**再開位置は
+// 種類ごとに別に持つ** --- 片方の候補集合だけが上限に張り付いたときに、
+// 共通のカーソルを進めるともう片方の窓の外を飛ばしてしまう。
 type ThumbnailReconcileWorker struct {
 	river.WorkerDefaults[jobs.ThumbnailReconcileArgs]
 	Pool     *pgxpool.Pool
@@ -55,7 +62,8 @@ type ThumbnailReconcileWorker struct {
 	// resumeAfter は次のパスが候補を探し始める位置（この recording_id より
 	// 大きい候補から見る）。候補が RowLimit 件以上あるときだけ使い、末尾まで
 	// 到達したパスで 0 に戻す。プロセスローカルで永続化しない。
-	resumeAfter atomic.Int64
+	resumeAfter          atomic.Int64
+	seekTilesResumeAfter atomic.Int64
 }
 
 // Timeout は River の既定（1 分）より長い上限を与える。thumbnail の生成時間は
@@ -100,6 +108,9 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.T
 		}
 	}
 
+	seekTilesFailed := w.enqueueMissingSeekTiles(ctx, client, rowLimit)
+	failed += seekTilesFailed
+
 	metrics.ThumbnailReconcileCandidates.Set(float64(len(rows)))
 	metrics.ThumbnailReconcileLastPass.SetToCurrentTime()
 
@@ -116,4 +127,43 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.T
 			"candidates", len(rows), "failed", failed, "row_limit", rowLimit, "resume_after", resumeAfter)
 	}
 	return nil
+}
+
+// enqueueMissingSeekTiles は seek_tiles の desired−observed ギャップを 1 パス分
+// 埋める。thumbnail と同じ窓の形（keyset pagination）だが、再開位置は独立に持つ。
+// 戻り値は投入に失敗した件数。
+func (w *ThumbnailReconcileWorker) enqueueMissingSeekTiles(ctx context.Context, client *river.Client[pgx5.Tx], rowLimit int32) int {
+	after := w.seekTilesResumeAfter.Load()
+	rows, err := sqlcgen.New(w.Pool).ListMissingSeekTilesRecordings(ctx, sqlcgen.ListMissingSeekTilesRecordingsParams{
+		AfterRecordingID: after,
+		RowLimit:         rowLimit,
+	})
+	if err != nil {
+		// DB 取得に失敗したパスは完走していないので、再開位置を変えない。
+		slog.Error("thumbnail_reconcile: listing missing seek tiles failed", "err", err)
+		return 1
+	}
+
+	failed := 0
+	for _, recordingID := range rows {
+		if _, err := client.Insert(ctx, jobs.SeekTilesJobArgs{RecordingID: recordingID}, nil); err != nil {
+			failed++
+			slog.Error("thumbnail_reconcile: failed to enqueue missing seek tiles",
+				"recording_id", recordingID, "err", err)
+		}
+	}
+
+	var resumeAfter int64
+	if int32(len(rows)) >= rowLimit {
+		resumeAfter = rows[len(rows)-1]
+		slog.Warn("thumbnail_reconcile: seek tiles candidate window is full; the next pass resumes from resume_after",
+			"row_limit", rowLimit, "last_recording_id", resumeAfter)
+	}
+	w.seekTilesResumeAfter.Store(resumeAfter)
+
+	if len(rows) > 0 || failed > 0 {
+		slog.Info("thumbnail_reconcile: seek tiles pass complete",
+			"candidates", len(rows), "failed", failed, "row_limit", rowLimit, "resume_after", resumeAfter)
+	}
+	return failed
 }

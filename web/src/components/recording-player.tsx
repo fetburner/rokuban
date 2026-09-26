@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 
 import type { EncodedAsset } from '@/api/generated'
 import { formatBytes } from '@/lib/format'
@@ -13,6 +13,13 @@ import {
   shouldSavePlaybackPosition,
 } from '@/lib/playback-position'
 import { cn } from '@/lib/utils'
+import {
+  SEEK_TILES_DISPLAY_HEIGHT,
+  SEEK_TILES_DISPLAY_WIDTH,
+  seekTileAt,
+  seekTileBackgroundSize,
+  seekTilesURL,
+} from '@/lib/seek-tiles'
 
 type RecordingPlayerProps = {
   recordingId: number
@@ -59,6 +66,9 @@ export function RecordingPlayer({
   const selectedProfile = profiles.includes(profile) ? profile : (profiles[0] ?? '')
   const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
   const videoRef = useRef<HTMLVideoElement>(null)
+  const [tilesRequestedFor, setTilesRequestedFor] = useState<string | null>(null)
+  const [tilesAvailableFor, setTilesAvailableFor] = useState<string | null>(null)
+  const [tilePreview, setTilePreview] = useState<{ x: number; y: number; left: number } | null>(null)
   // プロファイル切替時に load したあとだけ currentTime を復元する
   const restorePending = useRef(true)
   // timeupdate 間引き用: 直近に保存した Math.floor(currentTime)。null は未保存
@@ -179,6 +189,29 @@ export function RecordingPlayer({
       ダウンロード
     </a>
   )
+  const tilesKey = `${recordingId}:${selectedProfile}`
+  const handlePreviewMove = (event: ReactMouseEvent<HTMLDivElement>) => {
+    // タイルは**最初に触れたときだけ**取りに行く。マウント時に先読みすると、
+    // 3 時間の録画で 2 MB 程度を、一度もホバーしない利用者にも払わせることになる。
+    // 同じキーを再設定しても React は再描画しないので、毎回呼んでよい。
+    setTilesRequestedFor(tilesKey)
+
+    const video = videoRef.current
+    if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return
+    const rect = event.currentTarget.getBoundingClientRect()
+    if (rect.width <= 0) return
+
+    const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
+    const seconds = fraction * video.duration
+    const tile = seekTileAt(seconds)
+    if (tile === null || tilesAvailableFor !== tilesKey) {
+      setTilePreview(null)
+      return
+    }
+    const half = SEEK_TILES_DISPLAY_WIDTH / 2
+    const left = Math.max(0, Math.min(rect.width - SEEK_TILES_DISPLAY_WIDTH, event.clientX - rect.left - half))
+    setTilePreview({ ...tile, left })
+  }
 
   return (
     <section className={cn('flex flex-col gap-2', className)} aria-label="再生">
@@ -214,13 +247,53 @@ export function RecordingPlayer({
         </div>
       )}
 
-      <video
-        ref={videoRef}
-        key={`${recordingId}:${selectedProfile}`}
-        controls
-        playsInline
-        preload="metadata"
-        src={src}
+      <div
+        className="relative max-w-3xl"
+        data-testid="recording-video-preview"
+        onMouseMove={handlePreviewMove}
+        onMouseLeave={() => setTilePreview(null)}
+      >
+        {tilesRequestedFor === tilesKey && (
+          <img
+            src={seekTilesURL(recordingId)}
+            alt=""
+            aria-hidden="true"
+            className="pointer-events-none absolute size-px opacity-0"
+            onLoad={() => setTilesAvailableFor(tilesKey)}
+            onError={() => {
+              setTilesAvailableFor((current) => (current === tilesKey ? null : current))
+              setTilePreview(null)
+            }}
+          />
+        )}
+        {tilePreview && (
+          <div
+            aria-hidden="true"
+            data-testid="seek-tile-preview"
+            className="pointer-events-none absolute bottom-12 z-10 overflow-hidden rounded border border-border bg-black shadow-lg"
+            style={{
+              left: tilePreview.left,
+              width: SEEK_TILES_DISPLAY_WIDTH,
+              height: SEEK_TILES_DISPLAY_HEIGHT,
+            }}
+          >
+            <div
+              className="h-full w-full bg-no-repeat"
+              style={{
+                backgroundImage: `url(${seekTilesURL(recordingId)})`,
+                backgroundPosition: `${tilePreview.x}px ${tilePreview.y}px`,
+                backgroundSize: seekTileBackgroundSize(),
+              }}
+            />
+          </div>
+        )}
+        <video
+          ref={videoRef}
+          key={`${recordingId}:${selectedProfile}`}
+          controls
+          playsInline
+          preload="metadata"
+          src={src}
         // tabIndex は明示しない。実 Chromium で測ったところ `<video controls>` は
         // tabindex 無しでもそれ自体が唯一の Tab stop になっており（native controls
         // の個々のボタンは Tab stop ではない）、`tabIndex={-1}` を付けると逆に
@@ -263,7 +336,8 @@ export function RecordingPlayer({
           label="日本語"
           src={recordingSubtitleURL(recordingId, selectedProfile)}
         />
-      </video>
+        </video>
+      </div>
 
       {hasOriginal && (
         <p className="text-muted-foreground">

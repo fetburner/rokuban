@@ -18,6 +18,8 @@ GET  /api/media/recordings/{id}/file?profile=h264&track=subtitles → text/vtt�
 HEAD /api/media/recordings/{id}/file?profile=h264 →  ヘッダーのみ
 GET  /api/media/recordings/{id}/thumbnail         →  image/jpeg
 HEAD /api/media/recordings/{id}/thumbnail         →  ヘッダーのみ
+GET  /api/media/recordings/{id}/seek-tiles        →  image/jpeg（シークプレビュー用の格子画像）
+HEAD /api/media/recordings/{id}/seek-tiles        →  ヘッダーのみ
 ```
 
 録画配信は一覧・詳細 API と `/api/recordings/{id}` の部分木を共有する。`{id}` は要求時まで列挙できないので、その後ろで api と streamer が分かれる。そのため標準 Ingress の `Exact` / `Prefix` だけでは、単一ホスト名から一意に振り分けられない。分割可能な外向きの形として、応答の性質を表す固定接頭辞 `/api/media/recordings/{id}/...` に移設した。メソッド（`GET` / `HEAD`）とクエリは変えない。
@@ -66,6 +68,17 @@ HEAD /api/media/recordings/{id}/thumbnail         →  ヘッダーのみ
 ingest と共有し、メディアディレクトリの外を指す `rel_path` は 404 にする。
 書き込み時に検証済みでも、DB に不正な行が入った場合に任意ファイルを
 読み出させないため片側だけでは足りない。
+
+**`/seek-tiles` はシークプレビュー用のタイル画像（`kind = 'seek_tiles'`）を返す。**
+1 枚の JPEG で、10 秒間隔のタイルが 10 列の格子に並んでいる（枚数が列数の倍数でない
+ときの余りは黒）。間隔・1 枚の大きさ・列数・上限は worker の固定値である。
+クライアントは同じ値を `web/src/lib/seek-tiles.ts` に持つ ——
+メディア配信は `openapi.yaml` の対象外なので値の伝達経路が無い。
+**値を変えたら既存のタイルの再生成が要る。**
+**未生成なら 404 を返し、クライアントは poster だけの従来の見た目に戻る** ——
+要求の経路で生成を待たせない（生成は `thumbnail_reconcile` の定期パスが行う）。
+寿命は poster と同じである（原本が消えても派生物として残り、ごみ箱で 404、完全削除で
+アセットグループごと消える）。
 
 **配らないもの:** ごみ箱に入った録画（`recordings.deleted_at IS NOT NULL`）、
 削除済みアセット（`media_assets.state <> 'active'`）。未 ingest の録画

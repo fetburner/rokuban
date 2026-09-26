@@ -25,3 +25,27 @@ WHERE o.recording_id > sqlc.arg('after_recording_id')::bigint
   )
 ORDER BY o.recording_id
 LIMIT sqlc.arg('row_limit');
+
+-- seek_tiles の desired（active original）− observed（active seek_tiles）を
+-- 定期的に埋めるための候補。poster と同じ形（同じ窓・同じ missing_media_assets の
+-- 除外）だが、再開位置は呼び出し側が種類ごとに別に持つ。
+-- name: ListMissingSeekTilesRecordings :many
+SELECT o.recording_id
+FROM media_assets o
+JOIN recordings r ON r.id = o.recording_id
+WHERE o.recording_id > sqlc.arg('after_recording_id')::bigint
+  AND o.kind = 'original'
+  AND o.state = 'active'
+  AND r.deleted_at IS NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM media_assets s
+    WHERE s.recording_id = o.recording_id
+      AND s.kind = 'seek_tiles'
+      AND s.state = 'active'
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM missing_media_assets m
+    WHERE m.media_asset_id = o.id
+  )
+ORDER BY o.recording_id
+LIMIT sqlc.arg('row_limit');

@@ -73,6 +73,14 @@ func seedEncodedOrThumbnailAsset(t *testing.T, pool *pgxpool.Pool, mediaDir stri
 	return id
 }
 
+// seedSeekTilesAsset は seek_tiles の active media_assets 行 + ファイルを用意する。
+// 原本の until_encoded 削除は thumbnail と同じく seek_tiles の完備も要求するので、
+// 「派生物が揃っている」ことを作るテストはこれを必ず呼ぶ。
+func seedSeekTilesAsset(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64, relPath string) {
+	t.Helper()
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindSeekTiles, nil, relPath, []byte("tiles"))
+}
+
 // webhookRecorder は webhook 先の httptest サーバが受け取ったイベントを記録する。
 // ハンドラは別 goroutine で走るので internal/webhook のテストと同じく同期して持つ。
 // encode_test.go からも使う。
@@ -656,6 +664,7 @@ func TestDeleteReconcileWorker_UntilEncodedOriginalPurge_DoesNotFireRecordingDel
 	profile := "h264"
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "webhook/ue-encoded.mp4", []byte("mp4"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "webhook/ue-thumb.jpg", []byte("jpg"))
+	seedSeekTilesAsset(t, pool, mediaDir, recordingID, "webhook/ue-tiles.jpg")
 	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
 
 	rec, client := newWebhookRecorder(t)
@@ -912,6 +921,7 @@ func TestDeleteReconcileWorker_UntilEncoded_Complete_Deletes(t *testing.T) {
 	profile := "h264"
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/complete.mp4", []byte("mp4"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/complete.jpg", []byte("jpg"))
+	seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/complete-tiles.jpg")
 
 	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
 
@@ -1062,6 +1072,31 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingThumbnail_NotDeleted(t *testi
 	}
 }
 
+// シークタイルも thumbnail と同じ「再生に必要な派生物」なので、欠けている間は
+// 原本を消さない。消すとタイルを二度と作れない（原本が唯一の入力である）。
+func TestDeleteReconcileWorker_UntilEncoded_MissingSeekTiles_NotDeleted(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/missing-tiles.m2ts", []byte("data"))
+	profile := "h264"
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/missing-tiles.mp4", []byte("mp4"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/missing-tiles.jpg", []byte("jpg"))
+	// seek_tiles は未生成のまま。
+
+	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, assetID); got != "active" {
+		t.Errorf("original state = %q, want active (seek_tiles missing)", got)
+	}
+}
+
 // until_encoded 候補が複数（別々の録画）ある場合、条件 2（desired な派生物の
 // 完備）を満たさない録画だけを除外し、満たす録画はすべて正しく削除すること。
 //
@@ -1105,12 +1140,14 @@ func TestDeleteReconcileWorker_UntilEncoded_PartialCandidates_OnlyDeletesComplet
 	assetB := seedOriginalAsset(t, pool, mediaDir, recordingB, "orig/partial-b.m2ts", []byte("data"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingB, db.AssetKindEncoded, &profile, "enc/partial-b.mp4", []byte("mp4"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingB, db.AssetKindThumbnail, nil, "thumb/partial-b.jpg", []byte("jpg"))
+	seedSeekTilesAsset(t, pool, mediaDir, recordingB, "thumb/partial-b-tiles.jpg")
 	markRecordingUntilEncoded(t, pool, recordingB, []string{profile})
 
 	recordingC := insertTestRecordingWithEventID(t, pool, 3)
 	assetC := seedOriginalAsset(t, pool, mediaDir, recordingC, "orig/partial-c.m2ts", []byte("data"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingC, db.AssetKindEncoded, &profile, "enc/partial-c.mp4", []byte("mp4"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingC, db.AssetKindThumbnail, nil, "thumb/partial-c.jpg", []byte("jpg"))
+	seedSeekTilesAsset(t, pool, mediaDir, recordingC, "thumb/partial-c-tiles.jpg")
 	markRecordingUntilEncoded(t, pool, recordingC, []string{profile})
 
 	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
@@ -1153,6 +1190,7 @@ func TestDeleteReconcileWorker_UntilEncodedDeletingInterrupted_ResumesOnNextPass
 	profile := "h264"
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/interrupted.mp4", []byte("mp4"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/interrupted.jpg", []byte("jpg"))
+	seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/interrupted-tiles.jpg")
 
 	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
 

@@ -165,3 +165,32 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
 - **相対パス**: `thumbnails/{recording_id}.jpg`（原本の contentPath に依存しない。
   原本削除後もパスが安定する）
 - **配信**: streamer の `GET /api/media/recordings/{id}/thumbnail`（openapi 外。api はファイルを開かない）
+
+## 5.2 シークプレビュー用タイル
+
+録画 1 本につき `kind = 'seek_tiles'` の media_asset を 1 つ作る（`UNIQUE (recording_id, kind, profile)`）。
+中身は 1 枚の JPEG で、`thumbnails/{recording_id}_tiles.jpg` に置く。poster（§5.1）と同じ
+`thumbnails/` の名前空間なので、`rel_path` の名前空間の検査は増えない。
+
+**形は固定値である**（設定キーは設けない。poster と同じ流儀）。間隔 10 秒・1 枚 160x90・
+10 列・上限 1080 枚（3 時間）。3 時間を超える部分にはタイルが無く、クライアントは
+プレビューを出さない。尺に応じて間隔を変える方式は採らない —— ffprobe の長さと
+`<video>` の長さのずれが境界でタイル位置を狂わせる。
+
+- **投入**: `thumbnail_reconcile` の定期パスが、poster と同じ窓（`RowLimit` と
+  `missing_media_assets` の除外）で desired − observed の差分を埋める。**ingest 直後の
+  ヒントは積まない** —— タイルは一覧の表示に関わらないので、poster のような即時性が要らない
+- **生成方式**: タイルごとに入力シーク（`-ss` を `-i` の前）で 1 枚ずつ取り、最後に
+  `tile` フィルタで 1 枚に並べる。**読む量が枚数にだけ比例し、番組長に比例しない**
+  （合成 TS の実測で、全デコード方式の 23.6 秒に対し 2.7 秒）。
+  そのため「先頭 N 分に限る」打ち切りは要らず、上限は枚数だけで決まる。
+  **実放送・J4125 での生成時間とサイズは未検証**。合成 TS・M3 Max の実装 PR 測定では、10 分・60 枚で生成 1.865 秒、成果物 221.8 KB（3.70 KB/枚）だった。
+- **失敗したら scratch を捨ててやり直す。** 部分成果はコミットしない（行の存在 = 全部そろっている）
+- **画素縦横比**: poster と同じく SAR を正方形ピクセルへ焼き込んでから 16:9 の枠へ収め、
+  余白は pad で埋める（4:3 の映像は左右が黒帯になる）
+- **列数は固定で 10。** 枚数が列数の倍数でないときの余りは黒で埋まる。クライアントは
+  列数と 1 枚の大きさだけを知っていれば位置を計算できる（行数を知らなくてよい）
+- **`internal/worker/seek_tiles.go` と `web/src/lib/seek-tiles.ts` に同じ値が 2 つある。**
+  メディア配信は `openapi.yaml` の対象外なので値の伝達経路が無い。**値を変えたら
+  既存のタイルは位置がずれるので再生成が要る**（`rel_path` も行も同じまま中身だけが変わる）
+- **配信**: streamer の `GET /api/media/recordings/{id}/seek-tiles`（openapi 外。api はファイルを開かない）

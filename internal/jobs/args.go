@@ -191,9 +191,35 @@ func (ThumbnailJobArgs) InsertOpts() river.InsertOpts {
 	}
 }
 
+// SeekTilesJobArgs はシークプレビュー用タイル画像（kind = 'seek_tiles'）ジョブの
+// 引数。
+type SeekTilesJobArgs struct {
+	RecordingID int64 `json:"recording_id"`
+}
+
+// Kind は River ジョブの種別名を返す。
+func (SeekTilesJobArgs) Kind() string { return "seek_tiles" }
+
+// InsertOpts は thumbnail キューへ投入するための River 挿入オプションを返す。
+//
+// **poster（thumbnail）と同じキューに載せるが、ジョブ種は分ける。** poster は
+// 一覧に出るのでタイル生成に待たせたくないし、タイル側の失敗で poster まで
+// 作り直させたくない（docs/storage/contract.md §5.1）。CPU を食う仕事である
+// 点は同じなので、キューを分けて並列度の勘定を 2 つに割る理由は無い。
+func (SeekTilesJobArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue: ThumbnailQueue,
+		UniqueOpts: river.UniqueOpts{
+			ByArgs:  true,
+			ByState: pendingJobStates,
+		},
+	}
+}
+
 // ThumbnailReconcileArgs は thumbnail の desired−observed 定期 reconcile ジョブの
 // 引数。thumbnail キューは実ジョブと共有するが、River の pending 一意性で定期
-// パス同士が重ならないようにする。
+// パス同士が重ならないようにする。seek_tiles のギャップもこのパスが埋める
+// （poster と違って一覧の表示を待たせる仕事ではないので、投入口を分けない）。
 type ThumbnailReconcileArgs struct{}
 
 // Kind は River ジョブの種別名を返す。
@@ -309,6 +335,7 @@ var (
 	_ river.JobArgsWithInsertOpts = EncodeJobArgs{}
 	_ river.JobArgsWithInsertOpts = EncodeEnqueueHintArgs{}
 	_ river.JobArgsWithInsertOpts = ThumbnailJobArgs{}
+	_ river.JobArgsWithInsertOpts = SeekTilesJobArgs{}
 	_ river.JobArgsWithInsertOpts = ThumbnailReconcileArgs{}
 	_ river.JobArgsWithInsertOpts = EncodeReconcileArgs{}
 	_ river.JobArgsWithInsertOpts = DeleteReconcileArgs{}

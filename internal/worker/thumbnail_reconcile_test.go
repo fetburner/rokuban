@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -282,5 +283,102 @@ func TestBuildRiverConfig_RegistersThumbnailReconcilePeriodicJob(t *testing.T) {
 	}
 	if len(disabled.PeriodicJobs) != 0 {
 		t.Errorf("PeriodicJobs with periodic_jobs=false = %d, want 0", len(disabled.PeriodicJobs))
+	}
+}
+
+func countSeekTilesJobs(t *testing.T, pool *pgxpool.Pool, recordingID int64) int {
+	t.Helper()
+	var count int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM river_job
+		 WHERE kind = 'seek_tiles'
+		   AND (args->>'recording_id')::bigint = $1`, recordingID,
+	).Scan(&count); err != nil {
+		t.Fatalf("counting seek_tiles jobs: %v", err)
+	}
+	return count
+}
+
+// 定期パスは thumbnail だけでなく seek_tiles のギャップも埋める。
+func TestThumbnailReconcile_EnqueuesMissingSeekTiles(t *testing.T) {
+	pool := setupTestPool(t)
+	recordingID := insertTestRecording(t, pool)
+	seedOriginalAsset(t, pool, t.TempDir(), recordingID, "seek-tiles/original.m2ts", []byte("fake-ts"))
+
+	runThumbnailReconcilePass(t, pool, &ThumbnailReconcileWorker{Pool: pool})
+
+	if got := countSeekTilesJobs(t, pool, recordingID); got != 1 {
+		t.Errorf("seek_tiles jobs after the periodic pass = %d, want 1", got)
+	}
+	// 同じパスが thumbnail も積む（どちらも desired − observed の差分）。
+	if got := countThumbnailJobs(t, pool, recordingID); got != 1 {
+		t.Errorf("thumbnail jobs after the periodic pass = %d, want 1", got)
+	}
+}
+
+// 実体無しと確認済みの原本は seek_tiles の候補からも除外する（poster と同じ扱い）。
+func TestThumbnailReconcile_SeekTilesSkipsKnownMissingOriginal(t *testing.T) {
+	pool := setupTestPool(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, "seek-missing/original.m2ts", []byte("fake-ts"))
+	if err := os.Remove(filepath.Join(mediaDir, "seek-missing", "original.m2ts")); err != nil {
+		t.Fatalf("removing original fixture: %v", err)
+	}
+	if err := sqlcgen.New(pool).UpsertMissingMediaAsset(ctx, originalID); err != nil {
+		t.Fatalf("marking original missing: %v", err)
+	}
+
+	runThumbnailReconcilePass(t, pool, &ThumbnailReconcileWorker{Pool: pool})
+	if got := countSeekTilesJobs(t, pool, recordingID); got != 0 {
+		t.Errorf("seek_tiles jobs for known-missing original = %d, want 0", got)
+	}
+}
+
+// **再開位置は派生物の種類ごとに別に持つ。** 共通のカーソルにすると、thumbnail の
+// 候補が常に上限に張り付いているとき（恒久失敗が先頭に居座る等）、そのカーソルが
+// 進み続けて seek_tiles 側の候補を窓の外へ飛ばす。
+//
+// ここでは thumbnail の候補を録画 1・2 に、seek_tiles の候補を録画 3・4・5 に
+// 分けてある。RowLimit=2 で 2 パス回すと、独立したカーソルなら 3・4・5 の
+// 3 件すべてにジョブが積まれる。共通のカーソルだと 2 パス目が
+// 「thumbnail が尽きたので 0 に戻る」→ seek_tiles の窓が 0 に戻り、5 が永久に
+// 届かない（2 件のまま）ので落ちる。
+func TestThumbnailReconcile_SeekTilesCursorIsIndependent(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+
+	// 録画 1..5（event_id を 1..5 にずらす。同一キーのアクティブ行は一意制約に当たる）。
+	ids := make([]int64, 0, 5)
+	for i := int32(1); i <= 5; i++ {
+		ids = append(ids, insertTestRecordingWithEventID(t, pool, i))
+	}
+	for i, id := range ids {
+		seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("cursor/%d.m2ts", i+1), []byte("fake-ts"))
+	}
+	// thumbnail があるのは録画 3・4・5 → thumbnail の候補は 1・2。
+	for _, id := range ids[2:] {
+		seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, db.AssetKindThumbnail, nil, fmt.Sprintf("cursor/t%d.jpg", id), []byte("jpg"))
+	}
+	// seek_tiles があるのは録画 1・2 → seek_tiles の候補は 3・4・5。
+	for _, id := range ids[:2] {
+		seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, db.AssetKindSeekTiles, nil, fmt.Sprintf("cursor/s%d.jpg", id), []byte("jpg"))
+	}
+
+	w := &ThumbnailReconcileWorker{Pool: pool, RowLimit: 2}
+	runThumbnailReconcilePass(t, pool, w)
+	runThumbnailReconcilePass(t, pool, w)
+
+	for _, id := range ids[:2] {
+		if got := countThumbnailJobs(t, pool, id); got != 1 {
+			t.Errorf("thumbnail jobs for recording %d = %d, want 1", id, got)
+		}
+	}
+	for _, id := range ids[2:] {
+		if got := countSeekTilesJobs(t, pool, id); got != 1 {
+			t.Errorf("seek_tiles jobs for recording %d = %d, want 1 "+
+				"(the seek_tiles cursor must not be dragged along by the thumbnail window)", id, got)
+		}
 	}
 }

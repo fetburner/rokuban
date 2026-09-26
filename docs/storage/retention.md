@@ -19,7 +19,7 @@
 **retention reconcile ループ**（worker の cleanup 系ジョブ）が定期的に走り、次を**すべて**満たす原本アセットを削除する:
 
 1. ポリシーが `until_encoded`
-2. desired な派生物（ルールで指定した全エンコードプロファイル + サムネイル）がすべて `media_assets` にコミット済み
+2. desired な派生物（ルールで指定した全エンコードプロファイル + サムネイル + シークプレビュー用タイル）がすべて `media_assets` にコミット済み
 
 「原本を入力とする実行中・再試行中のジョブがない」という条件は持たない。encode ジョブは凍結済み `encode_profiles` に含まれるプロファイルにしか積まれず、サムネイルは常に desired なので、出力未コミットの間は上記 2 が原本を守る。出力コミット後のジョブは各ワーカー冒頭の冪等チェックが打ち切る（`TestEncodeWorker_SuccessAndIdempotent` / `TestThumbnailWorker_IdempotentRerun`）。ただし両テストは原本を残したまま再実行するだけで、チェックが原本を開く前に走ることそのものは未検証。この同値性は `encode_profiles` が追加専用であることに依っている --- desired を縮める経路ができれば、既に積まれたジョブが条件 2 の外に出てこの整理は崩れる。
 
@@ -125,7 +125,7 @@ rescue の昇格には進まない。
 
 いずれの腕もスキーマ側に名前を与え、5 クエリはそこへの参照にする:
 
-- **until_encoded 腕**: パラメータを取らないので view `until_encoded_deletable_originals` にする
+- **until_encoded 腕**: パラメータを取らないので view `until_encoded_deletable_originals` にする。条件 2 の「派生物」にシークプレビュー用タイル（`kind = 'seek_tiles'`）を含める。**含めないとタイルを作る前に原本が消え、タイルを二度と作れない**（原本が唯一の入力である）。タイル生成が恒久的に失敗し続ける録画は、poster と同じ性質として原本が保持され続ける
 - **ごみ箱腕**: `grace_cutoff` がパラメータなので view には畳めず、set-returning SQL 関数 `trash_deletable_recordings(grace_cutoff)` にする
 - 否定形（`ListUnqualifiedDeletingAssets` / `RevertMediaAssetToActive`）は、この 2 つの述語への `NOT EXISTS` で書く。手で「同条件を再掲」するコメントを揃える義務が無くなる
 

@@ -880,6 +880,42 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:personalization
 ```
 
+### シークバーのプレビュー（`seek-tiles.mjs`）
+
+録画の再生面でポインタを動かしたとき、その位置に対応するタイル画像が出ることを実
+ブラウザで見る。位置は「ポインタの x → 動画内の割合 → 再生位置 → タイルの格子位置」で
+決まるが、**jsdom の `getBoundingClientRect()` は常に 0 を返すので、この経路は単体テスト
+では 1 歩も進まない**。`recording-player.test.tsx` が見るのは「タイルの問い合わせが
+始まること」だけで、位置の正しさはここが唯一の判定手段になる。
+
+見るのは 4 点:
+
+- ① ホバー位置に対応するタイルが出る。**列の折り返し（タイル 3 → 9）と行送り
+  （タイル 10）を別々の位置で固定する** --- 3 だけだと列数を 10 から 5 にしても
+  同じ答えになる（実測で確認済み）
+- ② プレビューが動画の矩形の中に収まる（はみ出さない）
+- ③ ポインタが動画から離れると消える（両方向を見る）
+- ④ タイルが 404 の録画ではプレビューが出ず、再生面（`src` と `duration`）は従来のまま
+
+判定用の動画は ffmpeg で作る（動画の長さが要る）。**VP8/WebM を使う** ---
+Playwright の Chromium は H.264 を持たない構成があり、コーデックの有無で落ちると
+「実装が壊れている」と区別できない。ffmpeg が無い環境ではこの判定だけを skip する。
+
+**変異で落ちることを確認済み**: プレビューを `hidden` にする（①②③が落ちる）。
+`SEEK_TILES_COLUMNS` を 5 にする変異も、①の位置判定で落ちる。
+実測の文言は「タイル #9 の background-position が -1280px -180px（期待 -2880px 0px）」である。
+
+**Go 側と TS 側の定数が揃っていること自体は、ここでは測れない。**
+`internal/worker/seek_tiles.go` と `src/lib/seek-tiles.ts` に同じ値が 2 つある。
+この判定のフィクスチャは手書きで、Go が作る格子を再現していない。
+揃っていることは両側の単体テスト（`TestSeekTileCount` /
+`TestSeekTilesWorker_ComposeSheetArgs` と `seek-tiles.test.ts`）がリテラルで固定している。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:seek-tiles
+```
+
 ### 番組表の表示形式（`programs-view.mjs`）
 
 番組表で選んだ表示形式が端末に保存され、URL に `view` が無いリロードでも復元されることを
