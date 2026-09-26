@@ -1,11 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
 
-import type { LiveAudioChoice, LiveDiagnostics, LiveLoadError } from '@/lib/live'
+import type {
+  LiveAudioChoice,
+  LiveDiagnostics,
+  LiveLoadError,
+  StallHandling,
+  StallTracker,
+} from '@/lib/live'
 import {
   claimsHlsPlaylistSupport,
   chasePlaylistURL,
+  createStallTracker,
   liveAudioTrackIndex,
   livePlaylistURL,
+  liveStallTimeoutMs,
+  observeStall,
   probeLivePlaylist,
   readSubtitleVisibility,
   sendChaseLeaveHint,
@@ -164,22 +173,55 @@ type LivePlayerProps = {
    * なので、値そのものは `LivePlayer` の内部に閉じず親へ渡す。
    */
   onDiagnostics?: (diagnostics: LiveDiagnostics | null) => void
+  /**
+   * onStalled は「このプロファイルでは映像が `liveStallTimeoutMs` 進まなかった」を
+   * 呼び出し側へ伝える（issue #871 の自動降格）。**`true` を返したら「呼び出し側が
+   * 引き取った」**と見なし、`LivePlayer` はエラー表示に落ちない。
+   *
+   * **下げるかどうかを決めるのは呼び出し側である**（`pages/live.tsx`）。画質の
+   * 一覧と明示選択（`?profile=`）を持っているのがあちらで、こちらは
+   * 「進んでいない」という観測しか持たない --- ここでプロファイルを選ぶと、
+   * `LivePlayer` が URL の意味（明示選択かどうか）を知ることになる。
+   *
+   * `onDiagnostics` と同じく ref 越しに読む（依存配列に入れると、呼び出し側が
+   * 毎レンダー新しい関数を渡したときにプレイリストの再取得が起きる）。
+   *
+   * **`live.captions: true` のデプロイでは呼ばない**（probe が読んだ本文が
+   * 全プロファイルを束ねた master かどうかで判断する。`lib/live.ts` の `bundlesProfiles`）。
+   * そのとき `?profile=` は何も選ばないので、呼んでも嘘の「下げました」になる。
+   *
+   * **`'wait'` は「今は判断できない」**（呼び出し側の画質一覧がまだ届いていない）。
+   * この再生では下げない、という `false` と同じ扱いにすると、一覧が遅れて届いた
+   * 場合に**その再生では二度と試さない**（hls.js 経路の観測は一度判定すると
+   * 止まる）ので、`'wait'` のときだけ観測を初期化して次の刻みで再判定する。
+   */
+  onStalled?: () => StallHandling
 }
 
 /**
- * nativeStallTimeoutMs はネイティブ HLS 経路で「止まったまま」と見なすまでの猶予
- * （テストから参照するので export する）。
- *
- * `stalled` / `waiting` が来ただけでは失敗ではない --- ライブ配信は正常時にも
- * バッファ枯れで一時的に止まる。この猶予の間に `playing` / `canplay` /
- * `timeupdate` のいずれかが来れば回復と見なしてタイマーを捨てる。
- *
- * 12 秒にしたのは、WebKit が `stalled` を出すのがデータ途絶から 3 秒後
- * （HTML 仕様の「3 秒以上データが来ない」規定。実測でも 3.6 秒）で、
- * streamer 側のセグメント長が 2 秒（`internal/streamer/live.go` の
- * `-hls_time 2`）だから --- 正常なら 3 セグメント以上落ちないと到達しない。
+ * observeMediaStall は `lib/live.ts` の `observeStall` に **DOM の観測を渡す**
+ * 薄い層である（issue #871）。判定の本体（閾値との比較・`paused` / 非表示タブの
+ * 抑止）は純関数側にあり、ここがやるのは 4 つの値の読み取りだけである。
  */
-export const nativeStallTimeoutMs = 12_000
+function observeMediaStall(
+  tracker: StallTracker,
+  media: HTMLVideoElement,
+  nowMs: number,
+  resumePending: boolean,
+): boolean {
+  return observeStall(
+    tracker,
+    {
+      // **自動再開を待っている間の `paused` は「利用者が止めた」ではない**
+      // （切替の cleanup が `load()` で止めた）。待っている間は数えないと、
+      // 降格先も死んでいる場合に検出ごと止まる
+      paused: media.paused && !resumePending,
+      hidden: document.hidden,
+      currentTime: media.currentTime,
+    },
+    nowMs,
+  )
+}
 
 /**
  * LivePlayer はライブ視聴の HLS プレイリストを再生する（M4-4）。
@@ -208,6 +250,7 @@ export function LivePlayer({
   playbackProfile,
   className,
   onDiagnostics,
+  onStalled,
 }: LivePlayerProps) {
   const isChase = mode === 'chase'
   const explicitChaseStartOffset =
@@ -228,23 +271,28 @@ export function LivePlayer({
   const [retryNonce, setRetryNonce] = useState(0)
   const restorePending = useRef(true)
   // preservedState は画質（プロファイル）の切替・再読み込みを跨いで持ち越す
-  // 視聴者の表示状態（issue #869）。**字幕の表示だけを持つ。**
+  // 視聴者の表示状態（issue #869 / #871）。字幕の表示と、切替前に再生中だったかを持つ。
+  // 再生中に profile を切り替えると cleanup の `video.load()` が paused に戻すため、
+  // 新しい playlist を張ったあとに再生を再開する必要がある。
   //
-  // **音量とミュートは持ち越す必要が無い（実測）。** effect の cleanup は
-  // `removeAttribute('src')` + `load()` を行うが、`load()` は音量・ミュートを
-  // 既定に戻さない（HTML 仕様の media load algorithm はそのどちらも触らない）。
-  // Chromium と WebKit の両方で実測した（`web/e2e/live.mjs` の ⑨。復元の
-  // コードを外したビルドでも 0.3 / muted: true が切替後に残る）。復元しても
-  // 何も変わらないコードは置かない。
+  // **字幕と再生状態は違う。** 字幕は利用者が切った/入れたという表示状態だが、
+  // `playing` は不可逆な事実ではなく、毎回 cleanup の瞬間に読み直せる外部状態である。
+  // 再生位置や音量を保存する永続状態にはしない。
+  //
+  // **音量とミュートは持ち越す必要が無い（実測）。** cleanup は `load()` を行うが、
+  // Chromium と WebKit の両方で音量・ミュートは既定に戻らない。
   //
   // **字幕は違う。** hls.js は新しいマニフェストを読むと字幕トラックの選択を
   // 既定に戻す（下の effect のコメント参照）。WebKit のネイティブ経路も、src を
   // 差し替えるとトラックを作り直して既定（非表示）に戻す。effect の cleanup
   // （= 切替の直前）で読み、次の setup で戻す。
-  //
   // **両経路とも実ブラウザで実測済みである**（`web/e2e/live.mjs` の ⑩ は
   // hls.js 経路の「切ったまま」、⑩-WebKit はネイティブ経路の「入にしたまま」を見る）。
-  const preservedState = useRef<{ subtitles: boolean | null } | null>(null)
+  const preservedState = useRef<{ subtitles: boolean | null; playing: boolean } | null>(null)
+  // 一度でもこの LivePlayer で再生が始まったか。画質切替後の新しい watcher が
+  // `paused` に戻った video を「利用者が一時停止した」と誤読しないため、effect を
+  // 跨いで持つ（自動降格は cleanup → setup を起こす）。
+  const startedOnceRef = useRef(false)
   const explicitStartSeekPending = useRef(false)
   const lastSavedSecond = useRef<number | null>(null)
   // onDiagnostics は ref 越しに読む。probe / hls.js のセットアップを担う
@@ -253,6 +301,10 @@ export function LivePlayer({
   // 再生成が起きてしまう --- ref なら常に最新の関数を呼びつつ、メイン effect の
   // 再実行条件からは切り離せる。
   const onDiagnosticsRef = useRef(onDiagnostics)
+  // onStalled も同じ理由で ref 越しに読む（issue #871）。加えて、こちらは
+  // **依存配列に置くと意味が壊れる** --- 呼び出し側は下げた後 `autoProfile` を
+  // 変えるので、依存させると「下げた結果」が effect を張り直す経路が 2 本になる
+  const onStalledRef = useRef(onStalled)
   useEffect(() => {
     restorePending.current = true
     explicitStartSeekPending.current = hasExplicitChaseStart
@@ -273,6 +325,10 @@ export function LivePlayer({
   useEffect(() => {
     onDiagnosticsRef.current = onDiagnostics
   }, [onDiagnostics])
+
+  useEffect(() => {
+    onStalledRef.current = onStalled
+  }, [onStalled])
 
   // 音声トラックの選択（issue #870）。**メイン effect の依存に入れない** ---
   // 入れると切替のたびにプレイリストを取り直し、hls.js を作り直す。ここは今ある
@@ -375,23 +431,23 @@ export function LivePlayer({
      * **`error` だけでは足りない**（下 2 つは error を出さない）し、`stalled` /
      * `waiting` を即座に失敗と見なすのも誤り（正常なライブでも一時的に出る）。
      * だから `error` は即時、`stalled` / `waiting` は
-     * `nativeStallTimeoutMs` の猶予つきにする。
+     * `liveStallTimeoutMs` の猶予つきにする。
+     *
+     * **猶予が満了したときは、まず画質の自動降格を試す**（`canDowngrade`。
+     * issue #871）。下げられるときは「このプロファイルが間に合っていない」ので
+     * 別のプロファイルで張り直し、下げられないときだけ今のエラー文言に落ちる。
      *
      * hls.js 経路には張らない --- あちらは `Hls.Events.ERROR` が同じ役目を持ち、
      * MSE のバッファ制御で `waiting` が正常に何度も出るので、ここで拾うと
      * 誤検知になる。
      */
-    function watchNativeMedia(media: HTMLVideoElement, stopDiagnostics: () => void) {
+    function watchNativeMedia(
+      media: HTMLVideoElement,
+      stopDiagnostics: () => void,
+      canDowngrade: boolean,
+      isResumePending: () => boolean,
+    ) {
       let stallTimer: ReturnType<typeof setTimeout> | null = null
-      // 一度でも再生が始まったか。**`paused` だけを抑止条件にすると「まだ再生を
-      // 押していない」状態まで飲み込む** --- `<video>` に `autoPlay` は無いので
-      // 読み込み直後は常に `paused === true` であり、そこで配信が死んでいると
-      // （プレイリストは 200 だがセグメントが無応答）唯一届くイベントが
-      // `paused=true` の `stalled` なので、猶予が一度も張られず**永久に黒いまま
-      // 何も出ない**（レビュー #190 の 5 回目の指摘。実 WebKit で
-      // loadstart→progress→stalled のあと 20 秒待っても他のイベントは来ない）。
-      // 抑止したいのは「再生していたユーザーが自分で止めた」場合だけである。
-      let hasStarted = false
       const clearStallTimer = () => {
         if (stallTimer !== null) {
           clearTimeout(stallTimer)
@@ -422,11 +478,28 @@ export function LivePlayer({
         //
         // hls.js 経路にこの watcher を張らない理由（MSE は正常時にも `waiting` を
         // 頻繁に出す）と同じ危険が、ネイティブ経路の `stalled` で現実化したもの。
-        if (cancelled || (hasStarted && media.paused) || stallTimer !== null) return
-        stallTimer = setTimeout(
-          () => failed('ライブ映像が届いていません（映像データが途絶えました）'),
-          nativeStallTimeoutMs,
-        )
+        // `isResumePending()` の間は抑止しない（上の `resumePending` の説明）。
+        // これが無いと、降格先も死んでいる場合に `stalled` を無視し続けて
+        // **黒いまま永久に何も出ない**
+        if (cancelled || (startedOnceRef.current && media.paused && !isResumePending()) || stallTimer !== null)
+          return
+        stallTimer = setTimeout(() => {
+          stallTimer = null
+          // **まず画質を下げることを試す（issue #871）。** 下げられたなら
+          // 「止まったまま」ではない（呼び出し側が別のプロファイルで張り直す。
+          // この effect の cleanup がこのタイマーごと捨てる）。下げられなければ
+          // 従来どおりエラーにする --- **段が尽きたときの挙動を現行と同一に
+          // 保つ**のがこの順序の理由である
+          // **`'wait'`（一覧が未着）はここでは「下げられない」と同じ扱いにする。**
+          // このタイマーは `stalled` / `waiting` でしか張り直せず、実 WebKit では
+          // 無応答の配信でそのイベントが再発火しない（実測: loadstart → progress →
+          // stalled のあと 20 秒待っても来ない）。`'wait'` で `return` すると
+          // **その再生では降格もエラー表示も起きず黒いまま何も出ない**ので、
+          // 現行どおりのエラー文言に落とす（一覧が届いていれば後述の降格を試す）。
+          // hls.js 経路は 1 秒ごとの刻みがあるので `'wait'` で待ち続けられる
+          if (canDowngrade && onStalledRef.current?.() === true) return
+          failed('ライブ映像が届いていません（映像データが途絶えました）')
+        }, liveStallTimeoutMs)
       }
       // `pause` も回復扱いにする（猶予の途中で一時停止された場合）。再開後に配信が
       // 本当に死んでいれば `waiting` が再び出て、そこで張り直される --- 実 WebKit で
@@ -434,7 +507,7 @@ export function LivePlayer({
       // 「張り直す」側は `再開後に配信が復帰していなければ再びエラーになる` が守る
       const onProgress = () => clearStallTimer()
       const onPlaying = () => {
-        hasStarted = true
+        startedOnceRef.current = true
         clearStallTimer()
       }
 
@@ -485,13 +558,20 @@ export function LivePlayer({
      * 「エラーが発生しました」を出している間も「放送から約5秒」等の偽の
      * 値が居座る（レビュー指摘。表示位置を `pages/live.tsx` へ戻した際に
      * 入り込んだ回帰）。
+     *
+     * `onTick` は同じ 1 秒の刻みで呼ばれる（issue #871 の停滞の観測）。
+     * **停滞の観測のために別のタイマーを作らない** --- 同じ「いまどうなっているか」
+     * を 2 つの周期で見ても精度は上がらず、止め忘れの経路だけが増える。
+     * ネイティブ経路は `stalled` / `waiting` の側で見るので渡さない。
      */
-    function watchLiveDiagnostics(read: () => LiveDiagnostics): () => void {
-      onDiagnosticsRef.current?.(read())
-      const timer = setInterval(() => {
+    function watchLiveDiagnostics(read: () => LiveDiagnostics, onTick?: () => void): () => void {
+      const tick = () => {
         if (cancelled) return
         onDiagnosticsRef.current?.(read())
-      }, 1000)
+        onTick?.()
+      }
+      tick()
+      const timer = setInterval(tick, 1000)
       const stop = () => {
         clearInterval(timer)
         onDiagnosticsRef.current?.(null)
@@ -537,6 +617,51 @@ export function LivePlayer({
 
       if (!video) return
 
+      // **自動再開を待っている間は「利用者が一時停止した」抑止を外す。**
+      // これが無いと、降格先の配信も死んでいて `canplay` が来ない場合に
+      // `paused` の抑止が効いたままになり、**停滞の検出ごと止まって黒いまま
+      // 永久に何も出ない**（`startedOnceRef` を effect を跨いで持つようにした
+      // ことと、この再開を足したことが組み合わせて作る穴）。
+      // ここでの `paused` は「利用者が自分で止めた」ではなく「こちらが
+      // `load()` で止めた」なので、停滞として見てよい。
+      let resumePending = !isChase && preserved?.playing === true
+
+      // **切替前に再生中だったなら、新しいソースが再生可能になってから再開する。**
+      // 画質切替の cleanup は `video.load()` を呼ぶので、そのままでは paused に
+      // 戻ったまま誰も再開しない（実測: 自動降格の直後は paused=true で、
+      // セグメントを復旧させても `currentTime` は 0 のまま）。
+      //
+      // **`play()` を `src` の代入や `attachMedia` の直後に呼んではならない。**
+      // その後に行われる load algorithm（`src` の代入・hls.js の MediaSource
+      // アタッチ）が `paused` を true に戻すので競争に負ける（実測: hls.js 経路で
+      // `play()` は呼ばれたのに `paused=true` のままだった）。`canplay` は
+      // 「再生できるだけのデータが載った」ことを表すので、ここなら上書きされない。
+      //
+      // **初回のマウント（`preserved` が `null`）では呼ばない** --- 「再生」ボタンで
+      // マウントしただけで再生を始めると、同意の分離（issue #234）が壊れる。
+      // 拒否（自動再生のポリシー）は握り潰す --- 利用者は既存の controls から
+      // 再生できる。
+      if (!isChase && preserved?.playing) {
+        const resume = () => {
+          resumePending = false
+          if (!cancelled) void video.play().catch(() => {})
+        }
+        video.addEventListener('canplay', resume, { once: true })
+        teardown.push(() => video.removeEventListener('canplay', resume))
+      }
+
+      // 自動降格を試してよいか（issue #871）。**全プロファイルを束ねた master では
+      // 試さない。** そのとき streamer は `?profile=` に関わらず同じ master を返すので
+      // （`live.captions: true`）、下げても何も変わらないのに「下げました」と
+      // 表示することになる。判定は probe が読んだ本文に基づく
+      //（`lib/live.ts` の `bundlesProfiles` --- API の一覧ではなく本文が権威）。
+      // プロファイルごとの master（音声レンディション入り）では試す。
+      //
+      // **追っかけ再生（`isChase`）でも試さない。** 追っかけの画面には画質
+      // セレクタが無く（`docs/frontend/live.md` §フロントエンド実装の決定）、
+      // 下げ先を置く場所が無い。呼び出し側が `onStalled` を渡さないことでも
+      // 止まるが、判断を 1 箇所にまとめておく。
+      const canDowngrade = !probe.bundlesProfiles && !isChase
       const canPlayType = video.canPlayType.bind(video)
 
       // 再生経路は 3 段の梯子で選ぶ。**各段は「実際に確かめた能力」で選ばれる**
@@ -551,7 +676,7 @@ export function LivePlayer({
       if (supportsNativeHls(canPlayType)) {
         // src を入れる前に張る（入れた後だと、失敗が速いときに取り逃がす）
         const stopDiagnostics = watchLiveDiagnostics(() => readNativeDiagnostics(video))
-        watchNativeMedia(video, stopDiagnostics)
+        watchNativeMedia(video, stopDiagnostics, canDowngrade, () => resumePending)
         followNativeAudio(video)
         video.src = url
         // 字幕の表示状態を持ち越す（issue #869）。ネイティブ経路はトラックを
@@ -591,7 +716,7 @@ export function LivePlayer({
           // `web/e2e/live.mjs` ⑦）--- ここは 1 段目と同じ表面を持つ
           if (claimsHlsPlaylistSupport(canPlayType)) {
             const stopDiagnostics = watchLiveDiagnostics(() => readNativeDiagnostics(video))
-            watchNativeMedia(video, stopDiagnostics)
+            watchNativeMedia(video, stopDiagnostics, canDowngrade, () => resumePending)
             followNativeAudio(video)
             video.src = url
             setLoading(false)
@@ -663,7 +788,28 @@ export function LivePlayer({
           if (!cancelled) applyHlsAudioTrack(hls, liveAudioTrackIndex(audioRef.current))
         })
         hlsRef.current = hls
-        const stopDiagnostics = watchLiveDiagnostics(() => readHlsDiagnostics(hls))
+        // 停滞の観測（issue #871）は**計器と同じ 1 秒の刻みに相乗りする**。
+        // hls.js 経路には `stalled` / `waiting` を聴く watcher を張れない
+        // （MSE は正常時にも `waiting` を何度も出す。`watchNativeMedia` の
+        // コメント参照）ので、代わりに `currentTime` が進んだかを見る。
+        // **MSE でも観測できる唯一の信号がこれである** --- hls.js の
+        // 非 fatal `bufferStalledError` は使わない（正常時にも出るうえ、
+        // 頻度を測っていない）。
+        let tracker = createStallTracker()
+        const stopDiagnostics = watchLiveDiagnostics(
+          () => readHlsDiagnostics(hls),
+          () => {
+            if (!canDowngrade || !observeMediaStall(tracker, video, Date.now(), resumePending)) return
+            // 下げられたら、この effect ごと張り直されて計測も 0 に戻る。
+            // 下げられない（段が尽きた / 明示選択）ときは**何もしない** ---
+            // 現行の hls.js 経路は停滞を失敗として扱っていないので、ここで
+            // エラーを新設すると**プロファイルが 1 件しかないデプロイの挙動まで
+            // 変わる**（`docs/frontend/live.md` §フロントエンド実装）。
+            // 一覧がまだ届いていないときだけ `wait` で観測を初期化し、一覧到着後の
+            // 次の刻みで再判定できるようにする。
+            if (onStalledRef.current?.() === 'wait') tracker = createStallTracker()
+          },
+        )
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (!data.fatal || cancelled) return
           // fatal のまま放置すると hls.js が内部でリトライを続け、エラー画面の
@@ -696,6 +842,9 @@ export function LivePlayer({
       if (video) {
         preservedState.current = {
           subtitles: readSubtitleVisibility(Array.from(video.textTracks)),
+          // 切替の直前（= cleanup の時点）の再生状態。`load()` は paused を
+          // true に戻すので、これを見ないと切替のたびに利用者が押し直すことになる
+          playing: !video.paused,
         }
       }
       // メディアイベントのリスナと stall タイマーを外す。
