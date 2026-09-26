@@ -1008,6 +1008,9 @@ describe('LivePlayer の状態遷移', () => {
       Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
       // 初回の読み込みで 1 度は canplay が来る（その 1 回で 0 秒への再表明は
       // 使い切られる）。以降は画質の切替で復元が立ち直ったときだけ再び走る。
+      // 実ブラウザと同じく loadedmetadata が先に来る（来ていない読み込みの位置は
+      // 持ち越さない）。
+      fireEvent.loadedMetadata(video)
       fireEvent.canPlay(video)
       video.currentTime = 12
 
@@ -1117,9 +1120,8 @@ describe('LivePlayer の状態遷移', () => {
       rerender(<LivePlayer {...props} profile="live-480p" playbackProfile="vod-h265" />)
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
       expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: 12 }])
-      // 最終値だけでなく、途中で保存位置（40）へ seek しないことも見る。
-      // 実ブラウザでは余計な seek が 1 回走る（最後に 12 へ戻るのはリスナの
-      // 登録順に依存しているだけ）。
+      // 最終値だけでなく、途中で保存位置（40）へ seek しないことも見る
+      // （最後に 12 へ戻るのはリスナの登録順に依存しているだけ）。
       let position = 0
       const assigned: number[] = []
       Object.defineProperty(video, 'currentTime', {
@@ -1134,6 +1136,29 @@ describe('LivePlayer の状態遷移', () => {
       fireEvent.canPlay(video)
       expect(video.currentTime).toBe(12)
       expect(assigned).not.toContain(40)
+    })
+
+    it('最初の読み込みが終わる前に画質を切り替えても、保存位置から再生する', async () => {
+      // probe 中（ffmpeg の起動待ち）の切替。読み込まれていない要素の位置 0 を
+      // 持ち越すと、復元が潰れて保存位置が消える。
+      savePlaybackPosition(85, 'vod-h264', 40)
+      const { resolve } = deferredFetch()
+      const props = { mode: 'chase', site: 'default', recordingId: 85 } as const
+      const { rerender } = render(
+        <LivePlayer {...props} profile="live-720p" playbackProfile="vod-h264" />,
+      )
+      const video = document.querySelector('video')!
+      Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+      rerender(<LivePlayer {...props} profile="live-480p" playbackProfile="vod-h264" />)
+      resolve(new Response('', { status: 200 }))
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition: 0 }])
+      fireEvent.loadedMetadata(video)
+      fireEvent.canPlay(video)
+      expect(video.currentTime).toBe(40)
+      fireEvent.timeUpdate(video)
+      expect(localStorage.getItem('rokuban:playback:85:vod-h264')).toBe('40')
     })
 
     it('指定した開始オフセットから読み、保存位置を上書きせず録画全体の秒数で扱う', async () => {

@@ -220,8 +220,9 @@ playlist を Chromium の hls.js（`E2E_BROWSER=webkit` ならネイティブ HL
   載ることも見る
 - **画質の切替の途中で「続きから」を別の位置で上書きしない**。途中で書かれた値を
   すべて記録して見る（最終値は切替後の seek で正しい値に戻るため）。
-  持ち越し中の保存ガードを外すと、WebKit では offset 4 秒の切替で `4` が書かれて
-  落ちる。Chromium + hls.js では `timeupdate` が来ないので落ちない
+  2 秒未満は `removeItem` になるので、それも 0 として記録する。
+  持ち越し中の保存ガードを外すと、WebKit では先頭再生で `0`、offset 4 秒の切替で
+  `4` が書かれて落ちる。Chromium + hls.js では `timeupdate` が来ないので落ちない
 
 `E2E_BROWSER=webkit` で同じ判定を Safari 相当のネイティブ HLS 経路で回す。
 画質切替の位置の持ち越しは hls.js（`startPosition`）とネイティブ（要素への代入）で

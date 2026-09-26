@@ -327,6 +327,11 @@ export function LivePlayer({
   // 切替で `4` が書かれた。Chromium + hls.js では `emptied` だけで
   // `timeupdate` は来なかった）。
   const chaseResumePending = useRef<number | null>(null)
+  // 今の読み込みが `loadedmetadata` に届いたか。**届く前の要素の位置（0）は
+  // 持ち越さない** --- probe 中（ffmpeg の起動待ちで最長 15 秒）に切り替えると、
+  // 0 を持ち越して既存の復元を潰し、保存位置が消える。jsdom の `readyState`
+  // は動かないので、要素の状態ではなく自前で持つ。
+  const chaseMetadataLoaded = useRef(false)
   const explicitStartSeekPending = useRef(false)
   const lastSavedSecond = useRef<number | null>(null)
   // onDiagnostics は ref 越しに読む。probe / hls.js のセットアップを担う
@@ -462,6 +467,15 @@ export function LivePlayer({
     // リスナと stall 監視のタイマー）。cleanup から呼ぶ
     const teardown: Array<() => void> = []
 
+    chaseMetadataLoaded.current = false
+    const markLoaded = () => {
+      chaseMetadataLoaded.current = true
+    }
+    if (video && isChase) {
+      video.addEventListener('loadedmetadata', markLoaded, { once: true })
+      teardown.push(() => video.removeEventListener('loadedmetadata', markLoaded))
+    }
+
     // 画質の切替で持ち越した位置へ戻す（issue #874）。**両経路とも `src` の
     // 差し替えで位置が 0 に戻る**ので、`loadedmetadata` の時点で戻す。
     // **`canplay` でもう一度戻す** --- WebKit のネイティブ経路は EVENT
@@ -469,7 +483,10 @@ export function LivePlayer({
     // 選ぶことがある（`onCanPlay` の 0 秒への再表明と同じ理由）。**画質切替の
     // 経路でこの飛びが起きるかは未検証である** --- `chase.mjs` ⑦ の fixture は
     // 切替の時点で ENDLIST 済みなので、WebKit で再表明を外しても落ちなかった。
-    // 既存の再表明と同じ防御として置いている。hls.js 経路は
+    // 既存の再表明と同じ防御として置いている。`loadedmetadata` と `canplay` の
+    // 間に利用者が動かした位置も、この再表明で戻る（0 秒への再表明と同じ）。
+    // iOS Safari は再生を始めるまで `canplay` を出さないことがあり、その間は
+    // 保存が止まる（止まっている間は位置も動かない。未検証）。hls.js 経路は
     // `startPosition` で既に同じ位置にいるので、ずれていなければ触らない
     // （同じ値の代入でも seek が走る）。戻し終えたら保存を再開する。
     if (video && resumePosition !== null) {
@@ -932,7 +949,8 @@ export function LivePlayer({
         // 前の持ち越しを戻し終える前にもう一度切り替えたときは、要素の位置
         // （まだ 0）ではなく持ち越し中の位置を引き継ぐ。
         lastChasePositionRef.current = isChase
-          ? (chaseResumePending.current ?? video.currentTime)
+          ? (chaseResumePending.current ??
+            (chaseMetadataLoaded.current ? video.currentTime : null))
           : null
       }
       // メディアイベントのリスナと stall タイマーを外す。

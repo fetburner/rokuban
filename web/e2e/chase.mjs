@@ -681,10 +681,17 @@ const recordSavedPositions = () =>
     window.__e2eSavedPositions = []
     if (window.__e2eSetItemHooked) return
     window.__e2eSetItemHooked = true
-    const original = Storage.prototype.setItem
+    const originalSet = Storage.prototype.setItem
     Storage.prototype.setItem = function (k, v) {
       if (k === key) window.__e2eSavedPositions.push(Number(v))
-      return original.call(this, k, v)
+      return originalSet.call(this, k, v)
+    }
+    // 2 秒未満の位置は setItem ではなく removeItem になる（savePlaybackPosition）。
+    // 先頭再生で 0 が書かれる回帰はこちらにしか現れないので、0 として記録する。
+    const originalRemove = Storage.prototype.removeItem
+    Storage.prototype.removeItem = function (k) {
+      if (k === key) window.__e2eSavedPositions.push(0)
+      return originalRemove.call(this, k)
     }
   }, savedPositionKey)
 const savedPositions = () => page.evaluate(() => window.__e2eSavedPositions)
