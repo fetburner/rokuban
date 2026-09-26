@@ -11,12 +11,14 @@
 // controls のシークバーは位置も幅も外から測れないので、そこに重ねると「見えた
 // タイル」と「クリックで飛ぶ先」がずれる。
 //
-// 見るのは 5 点:
+// 見るのは 7 点:
 //   ① 帯の上のホバー位置に対応するタイルが出る（列の折り返しと行送りを別々の位置で固定）
 //   ② プレビューが帯の幅に収まり、帯そのものを覆わない
 //   ③ ポインタが帯から離れると消え、動画の映像の上では出ない（両方向）
 //   ④ タイルが無い録画（404）ではプレビューが出ず、再生面は従来のまま
 //   ⑤ 帯をクリックすると、その位置でプレビューに出ていたタイルの時刻へ飛ぶ
+//   ⑥ 帯が 1 枚ぶん（320px）より狭い画面でも、プレビューが帯の幅に収まる
+//   ⑦ タッチではタップで飛ぶだけで、プレビューは出ない（pointerleave が来ないので居座る）
 //
 // フィクスチャは ffmpeg で作る（動画の長さが判定に要る）。無い環境では
 // この判定だけを skip として終了する。
@@ -251,7 +253,7 @@ if (Math.abs(duration - 120) > 5) {
   ng.push(`フィクスチャの長さが想定と違う（duration=${duration}）--- 判定の前提が崩れている`)
 }
 const videoBox = await video.boundingBox()
-const scrubBox = await page.locator('[data-testid="seek-scrub"]').boundingBox()
+let scrubBox = await page.locator('[data-testid="seek-scrub"]').boundingBox()
 if (!videoBox || videoBox.width <= 0 || !scrubBox || scrubBox.width <= 0) {
   ng.push('動画かスクラブ帯の矩形が取れない（レイアウトが想定と違う）')
   await finish(ng, browser)
@@ -336,18 +338,80 @@ if ((await page.locator('[data-testid="seek-tile-preview"]').count()) !== 0) {
 log('\n=== ⑤ クリック先 = プレビューに出ていたタイル ===')
 for (const seconds of [35, 95]) {
   const want = await hoverTile(seconds)
-  const shown = await page
-    .locator('[data-testid="seek-tile-preview"] > div')
-    .evaluate((el) => getComputedStyle(el).backgroundPosition)
+  const previewTile = page.locator('[data-testid="seek-tile-preview"] > div')
+  const shown = await previewTile
+    .waitFor({ timeout: 5000 })
+    .then(() => previewTile.evaluate((el) => getComputedStyle(el).backgroundPosition))
     .catch(() => null)
   const p = scrubPoint(scrubBox, duration, want.index * TILE_INTERVAL_SECONDS + 5)
   await page.mouse.click(p.x, p.y)
   await page.waitForFunction(() => !document.querySelector('video')?.seeking, undefined, { timeout: 5000 }).catch(() => {})
   const currentTime = await video.evaluate((v) => v.currentTime)
   const landed = expectedTile(currentTime)
-  if (landed.index !== want.index) {
-    ng.push(`⑤ タイル #${want.index}（${shown}）を見てクリックしたが ${currentTime.toFixed(1)}s（タイル #${landed.index}）へ飛んだ`)
+  // 見えていたタイルそのものと、飛んだ先のタイルを比べる。
+  if (shown !== `${landed.x}px ${landed.y}px`) {
+    ng.push(`⑤ ${shown ?? 'プレビュー無し'} を見てクリックしたが ${currentTime.toFixed(1)}s（タイル #${landed.index}）へ飛んだ`)
   }
 }
+
+log('\n=== ⑥ 帯が 1 枚ぶんより狭い画面でも、プレビューが帯に収まる ===')
+await page.setViewportSize({ width: 340, height: 800 })
+await page.waitForTimeout(200)
+scrubBox = await page.locator('[data-testid="seek-scrub"]').boundingBox()
+if (!scrubBox || scrubBox.width >= TILE_DISPLAY_WIDTH) {
+  ng.push(`⑥ 帯が狭くなっていない（width=${scrubBox?.width}）--- 判定の前提が崩れている`)
+} else {
+  for (const seconds of [5, 55, 115]) {
+    await hoverTile(seconds)
+    const preview = page.locator('[data-testid="seek-tile-preview"]')
+    const box = await preview
+      .waitFor({ timeout: 5000 })
+      .then(() => preview.boundingBox())
+      .catch(() => null)
+    if (!box) {
+      ng.push(`⑥ ${seconds}s の位置でプレビューが出ない`)
+    } else if (box.x < scrubBox.x - 1 || box.x + box.width > scrubBox.x + scrubBox.width + 1) {
+      ng.push(
+        `⑥ ${seconds}s のプレビューが帯からはみ出している` +
+          `（preview ${box.x.toFixed(0)}..${(box.x + box.width).toFixed(0)} / scrub ${scrubBox.x.toFixed(0)}..${(scrubBox.x + scrubBox.width).toFixed(0)}）`,
+      )
+    }
+  }
+}
+
+log('\n=== ⑦ タッチではプレビューを出さない ===')
+const touchContext = await browser.newContext({
+  viewport: { width: 390, height: 844 },
+  hasTouch: true,
+  isMobile: true,
+  locale: 'ja-JP',
+  timezoneId: 'Asia/Tokyo',
+})
+const touchPage = await touchContext.newPage()
+await installApiStubs(touchPage, apiHandler)
+await touchPage.goto(URL_BASE + '/recordings/1', { waitUntil: 'domcontentloaded' })
+await touchPage.waitForFunction(
+  () => {
+    const el = document.querySelector('video')
+    return Number.isFinite(el?.duration) && el.duration > 0
+  },
+  undefined,
+  { timeout: 15000 },
+)
+const touchScrub = await touchPage.locator('[data-testid="seek-scrub"]').boundingBox()
+for (const seconds of [35, 95, 65]) {
+  const p = scrubPoint(touchScrub, duration, seconds)
+  await touchPage.touchscreen.tap(p.x, p.y)
+  await touchPage.waitForTimeout(300)
+}
+// タップが帯に届いていること（届いていなければ「出ない」は空虚に通る）。
+const touchTime = await touchPage.locator('video').evaluate((v) => v.currentTime)
+if (Math.abs(touchTime - 65) > 5) {
+  ng.push(`⑦ タップで帯の位置へ飛んでいない（currentTime=${touchTime.toFixed(1)}、期待 65 付近）`)
+}
+if ((await touchPage.locator('[data-testid="seek-tile-preview"]').count()) !== 0) {
+  ng.push('⑦ タップの後にプレビューが残っている')
+}
+await touchContext.close()
 
 await finish(ng, browser)

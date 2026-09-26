@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	pgx5 "github.com/jackc/pgx/v5"
@@ -125,12 +126,15 @@ func (w *SeekTilesWorker) Work(ctx context.Context, job *river.Job[jobs.SeekTile
 		return fmt.Errorf("resolving original path: %w", err)
 	}
 
-	// poster と違い、長さが取れないまま続行しない。1 枚だけの格子をコミットすると
-	// 行の存在が「全部そろっている」を主張し、定期パスが二度と作り直さず、
-	// until_encoded の原本削除の条件まで満たしてしまう。River の再試行に任せる。
-	duration, err := probeDuration(ctx, w.FFprobe, inputPath, w.commandOutput)
+	// poster と違い、長さが取れないまま続行しない（0 秒も含む）。1 枚だけの格子を
+	// コミットすると行の存在が「全部そろっている」を主張し、定期パスが二度と作り
+	// 直さず、until_encoded の原本削除の条件まで満たしてしまう。River の再試行に任せる。
+	duration, err := w.probeVideoDuration(ctx, inputPath)
 	if err != nil {
-		return fmt.Errorf("probing duration: %w", err)
+		return fmt.Errorf("probing video duration: %w", err)
+	}
+	if duration <= 0 {
+		return fmt.Errorf("video duration is %s", duration)
 	}
 	tiles := seekTileCount(duration)
 	rows := (tiles + seekTilesColumns - 1) / seekTilesColumns
@@ -151,7 +155,7 @@ func (w *SeekTilesWorker) Work(ctx context.Context, job *river.Job[jobs.SeekTile
 
 	for i := range tiles {
 		framePath := filepath.Join(framesDir, fmt.Sprintf("%06d.jpg", i))
-		at := time.Duration(i) * seekTilesInterval
+		at := seekTileAt(i, duration)
 		if err := w.extractTile(ctx, inputPath, framePath, at); err != nil {
 			return fmt.Errorf("extracting tile %d at %s: %w", i, formatSeekSeconds(at), err)
 		}
@@ -216,7 +220,8 @@ func seekTilesRelPath(recordingID int64) string {
 	return fmt.Sprintf("thumbnails/%d_tiles.jpg", recordingID)
 }
 
-// seekTileCount は生成するタイル枚数を返す。0 秒（尺不明）でも 1 枚は作る。
+// seekTileCount は生成するタイル枚数を返す。Work は 0 秒以下を渡さない
+// （長さが取れないときは失敗させる）。
 func seekTileCount(duration time.Duration) int {
 	if duration <= 0 {
 		return 1
@@ -229,6 +234,49 @@ func seekTileCount(duration time.Duration) int {
 		return seekTilesMaxTiles
 	}
 	return n
+}
+
+// seekTileTailMargin は抜き出し位置を映像の終端から離す幅。映像ストリームの
+// 長さちょうど（合成 TS 30 秒で 29.9966 秒）を指す入力シークは 1 フレームも
+// 出せずに失敗し、1 秒手前なら成功した（ffmpeg 9.0.2 で測定）。枚数を切り上げで
+// 決めるので、長さが 10 秒の倍数をわずかに超える録画では最後のタイルが必ずここに当たる。
+const seekTileTailMargin = time.Second
+
+// seekTileAt は i 枚目のタイルを抜き出す位置を返す。原則 i×間隔だが、映像の
+// 終端から seekTileTailMargin より後ろには置かない（下限は 0）。
+func seekTileAt(i int, videoDuration time.Duration) time.Duration {
+	at := time.Duration(i) * seekTilesInterval
+	return max(0, min(at, videoDuration-seekTileTailMargin))
+}
+
+// probeVideoDuration は最初の映像ストリームの長さを返す。format の長さは最も長い
+// ストリーム（音声など）で決まり映像の終端より後ろになるので、抜き出し位置の
+// 上限には使えない。
+func (w *SeekTilesWorker) probeVideoDuration(ctx context.Context, inputPath string) (time.Duration, error) {
+	ffprobe := w.FFprobe
+	if ffprobe == "" {
+		ffprobe = "ffprobe"
+	}
+	out, err := w.commandOutput(ctx, ffprobe,
+		"-v", "error",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=duration",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		inputPath,
+	)
+	if err != nil {
+		return 0, err
+	}
+	s, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+	s = strings.TrimSpace(s)
+	if s == "" || s == "N/A" {
+		return 0, fmt.Errorf("ffprobe returned empty video duration")
+	}
+	sec, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parsing video duration %q: %w", s, err)
+	}
+	return time.Duration(sec * float64(time.Second)), nil
 }
 
 // extractTile は 1 枚のタイルを scratch へ書き出す。
@@ -258,8 +306,10 @@ func (w *SeekTilesWorker) extractTile(ctx context.Context, inputPath, outputPath
 	if _, err := w.commandOutput(ctx, ffmpeg, args...); err != nil {
 		return err
 	}
-	// ffmpeg は 1 フレームも出せなくても終了コード 0 で終わることがある。連番に
-	// 穴があると image2 はそこで読むのをやめ、以降のタイルが黒のままコミットされる。
+	// 版によっては ffmpeg が 1 フレームも出せずに終了コード 0 で終わるかもしれない
+	// （未検証。ffmpeg 9.0.2 は非 0 で終わった）。ffmpeg は運用者が用意するので版は
+	// 決まらない。連番に穴があると image2 はそこで読むのをやめ、以降のタイルが黒の
+	// ままコミットされる。
 	info, err := os.Stat(outputPath)
 	if err != nil {
 		return fmt.Errorf("tile not written: %w", err)
