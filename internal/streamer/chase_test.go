@@ -467,11 +467,12 @@ exit 0
 // installCompletedChaseFFmpeg は 1 本の playlist しか書かないので、画質の切替を
 // 見るにはこちらが要る。
 //
-// **ENDLIST を書かず、書いた後も生き続ける。** 録画中の追っかけ（ffmpeg が
-// 走っている間）のセッション再利用を見るためである。exit 0 で終わると
+// finished=false は **ENDLIST を書かず、書いた後も生き続ける。** 録画中の追っかけ
+// （ffmpeg が走っている間）のセッション再利用を見るためである。exit 0 で終わると
 // 2 本目の要求は終了後の保持経路（keepCompletedChase）に当たり、本題の
 // 経路を通らない。`exec` にするのは shutdown の kill を sleep へ直接届けるため。
-func installMultiProfileChaseFFmpeg(t *testing.T) string {
+// finished=true は全プレイリストに ENDLIST を書いて exit 0 する（録画終了後の経路）。
+func installMultiProfileChaseFFmpeg(t *testing.T, finished bool) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fake-ffmpeg-chase-profiles")
@@ -489,12 +490,17 @@ for a in "$@"; do
         echo '#EXT-X-TARGETDURATION:2'
         echo '#EXTINF:2.0,'
         echo "segments/${base}_seg00001.ts"
+        if [ -n "$FAKE_ENDLIST" ]; then echo '#EXT-X-ENDLIST'; fi
       } > "$a"
       ;;
   esac
 done
+if [ -n "$FAKE_ENDLIST" ]; then exit 0; fi
 exec sleep 30
 `
+	if finished {
+		script = strings.Replace(script, "#!/bin/sh\n", "#!/bin/sh\nFAKE_ENDLIST=1\n", 1)
+	}
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -514,7 +520,7 @@ exec sleep 30
 func TestChaseProfileSwitchReusesOneSession(t *testing.T) {
 	cfg := LiveConfig{
 		Enabled:     true,
-		FFmpeg:      installMultiProfileChaseFFmpeg(t),
+		FFmpeg:      installMultiProfileChaseFFmpeg(t, false),
 		SegmentDir:  t.TempDir(),
 		MaxSessions: 4,
 		IdleTimeout: time.Minute,
@@ -581,6 +587,80 @@ func TestChaseProfileSwitchReusesOneSession(t *testing.T) {
 	ls.mu.Unlock()
 	if sessions != 1 {
 		t.Fatalf("unknown profile created a session (sessions = %d)", sessions)
+	}
+}
+
+// TestFinishedChaseProfileSwitchServesRetainedPlaylists は録画終了後（ENDLIST 済み・
+// ffmpeg 終了済み）の追っかけでも、idle GC までは画質を切り替えられることを固定する
+// （issue #874 の罠「確かめずに『切り替えられます』と書かない」）。保持ディレクトリには
+// 全プロファイルのプレイリストが残るので、別プロファイルは再起動なしで 200 になる。
+// GC 後は現行の追っかけと同じ 404 である。
+//
+// **壊し方**: 偽 ffmpeg が先頭プロファイルのプレイリストしか書かない（= 保持が
+// 1 プロファイル分だけ）と sd の要求が 504 で落ちる（実測）。
+func TestFinishedChaseProfileSwitchServesRetainedPlaylists(t *testing.T) {
+	cfg := LiveConfig{
+		Enabled:     true,
+		FFmpeg:      installMultiProfileChaseFFmpeg(t, true),
+		SegmentDir:  t.TempDir(),
+		MaxSessions: 4,
+		IdleTimeout: time.Minute,
+		Profiles: []LiveProfile{
+			{Name: "hd", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
+			{Name: "sd", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
+		},
+	}
+	client := &fakeChaseRecordClient{}
+	ls := newLiveStreamer(client, cfg)
+	t.Cleanup(ls.shutdown)
+	fetch := func(profile, status string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet,
+			"/api/sites/default/recordings/42/chase/playlist.m3u8?profile="+profile, nil)
+		resp := httptest.NewRecorder()
+		ls.ChasePlaylistForTarget(resp, req, ChaseTarget{
+			RecordingID:     42,
+			Site:            "default",
+			RecordID:        "record-42",
+			Status:          status,
+			RecordingStatus: status,
+		})
+		return resp
+	}
+
+	if resp := fetch("hd", "recording"); resp.Code != http.StatusOK {
+		t.Fatalf("hd playlist status = %d, want 200 (%s)", resp.Code, resp.Body.String())
+	}
+	key := chaseSessionKeyFor(42, 0)
+	ls.mu.Lock()
+	s := ls.chaseSessions[key]
+	ls.mu.Unlock()
+	if s == nil {
+		t.Fatal("chase session was not created")
+	}
+	select {
+	case <-s.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("finished chase ffmpeg did not exit")
+	}
+
+	resp := fetch("sd", "finished")
+	if resp.Code != http.StatusOK {
+		t.Fatalf("sd playlist after ENDLIST status = %d, want 200 (%s)", resp.Code, resp.Body.String())
+	}
+	if got := resp.Body.String(); !strings.Contains(got, "sd_seg00001.ts") || !strings.Contains(got, "#EXT-X-ENDLIST") {
+		t.Fatalf("sd playlist after ENDLIST = %q, want retained sd playlist with ENDLIST", got)
+	}
+	if got := client.callCount(); got != 1 {
+		t.Fatalf("mirakc record stream calls = %d, want 1 (switch must not restart)", got)
+	}
+
+	s.mu.Lock()
+	s.lastAccess = time.Now().Add(-2 * time.Minute)
+	s.mu.Unlock()
+	ls.reapIdleAt(time.Now())
+	if resp := fetch("hd", "finished"); resp.Code != http.StatusNotFound {
+		t.Fatalf("playlist after idle GC status = %d, want 404", resp.Code)
 	}
 }
 

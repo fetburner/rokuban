@@ -471,7 +471,9 @@ HLS シークで補正できる。許容誤差は放送・エンコーダーご�
 `hls_list_size=0`、`temp_file` を使い、`delete_segments` を使わない。mirakc の入力が
 EOF になれば `ENDLIST` を出し、ffmpeg が**正常終了した場合**は idle GC が回収するまで
 playlist と全セグメントを保持する。これにより、録画完了直後にブラウザが最後の playlist /
-segment を取りに来る窓を失わない。ffmpeg が異常終了した場合は壊れたセッションを保持せず、
+segment を取りに来る窓を失わない。保持中は全プロファイルのプレイリストが残るので、
+終了後でも再起動なしに `?profile=` を切り替えられる
+（`TestFinishedChaseProfileSwitchServesRetainedPlaylists`）。ffmpeg が異常終了した場合は壊れたセッションを保持せず、
 map とファイルを直ちに解放して次の playlist 要求で再起動できるようにする。
 
 ライブと追っかけのセッション数は合算し、Prometheus の
