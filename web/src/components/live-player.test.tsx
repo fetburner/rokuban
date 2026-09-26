@@ -1684,6 +1684,82 @@ describe('LivePlayer / 画質（プロファイル）切替（issue #869）', ()
   })
 
   /**
+   * **再読み込み（エラー表示のボタン）でも同じく再開する。** 持ち越しは cleanup の
+   * 時点の `paused` を読むだけで、切替の理由（自動降格 / 手動の画質選択 / 再読み込み）を
+   * 区別しない。ネイティブ経路の停滞は `waiting` のまま `paused=false` なので、
+   * 利用者がボタンを押したら再生に戻る --- 押し直しを 2 回求めない。
+   */
+  it('ネイティブ経路: エラー後の再読み込みでも canplay で再生を再開する', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const { resolve } = deferredFetch()
+    render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
+    const video = document.querySelector('video')!
+    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
+      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
+    )
+    resolve(new Response('', { status: 200 }))
+    await waitFor(() => expect(video.src).toContain('playlist.m3u8'))
+    Object.defineProperty(video, 'paused', { value: false, configurable: true })
+    const play = vi.spyOn(video, 'play').mockResolvedValue(undefined)
+
+    await act(async () => {
+      video.dispatchEvent(new Event('playing'))
+      video.dispatchEvent(new Event('stalled'))
+      vi.advanceTimersByTime(liveStallTimeoutMs)
+    })
+    fireEvent.click(await screen.findByRole('button', { name: '再読み込み' }))
+    await waitFor(() => expect(video.src).toContain('playlist.m3u8'))
+    expect(play).not.toHaveBeenCalled()
+
+    fireEvent(video, new Event('canplay'))
+
+    expect(play).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * **「一度でも再生が始まったか」は切替を跨いで持つ**（`startedOnceRef`）ので、
+   * 利用者が一時停止したまま画質を切り替えた先の `stalled` はエラーにしない
+   * （一時停止中の抑止と同じ扱い）。**再生を押した後の `waiting` では出す** ---
+   * 抑止が「以後ずっと検出しない」に化けていないことを同じテストで見る。
+   *
+   * 変異: effect の先頭で `startedOnceRef.current = false` に戻すと、前半の
+   * 「エラーにしない」が落ちる。
+   */
+  it('ネイティブ経路: 一時停止中に切り替えた先の stalled ではエラーにせず、再生後の waiting で出す', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const { resolve } = deferredFetch()
+    const { rerender } = render(
+      <LivePlayer site="default" networkId={0} serviceId={1024} profile="hd" />,
+    )
+    const video = document.querySelector('video')!
+    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
+      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
+    )
+    resolve(new Response('', { status: 200 }))
+    await waitFor(() => expect(video.src).toContain('profile=hd'))
+    video.dispatchEvent(new Event('playing'))
+    // 利用者が一時停止してから画質を切り替える
+    Object.defineProperty(video, 'paused', { value: true, configurable: true })
+    video.dispatchEvent(new Event('pause'))
+
+    rerender(<LivePlayer site="default" networkId={0} serviceId={1024} profile="sd" />)
+    await waitFor(() => expect(video.src).toContain('profile=sd'))
+    await act(async () => {
+      video.dispatchEvent(new Event('stalled'))
+      vi.advanceTimersByTime(liveStallTimeoutMs * 2)
+    })
+    expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
+
+    await act(async () => {
+      Object.defineProperty(video, 'paused', { value: false, configurable: true })
+      video.dispatchEvent(new Event('play'))
+      video.dispatchEvent(new Event('waiting'))
+      vi.advanceTimersByTime(liveStallTimeoutMs)
+    })
+    expect(screen.getByText(/映像データが途絶えました/)).toBeInTheDocument()
+  })
+
+  /**
    * 逆向き: **初回のマウントでは `canplay` でも再生しない。** 「再生」ボタンで
    * マウントしただけで再生を始めると、同意の分離（issue #234）が壊れる。
    */

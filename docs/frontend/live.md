@@ -281,6 +281,9 @@ JSON 404 にしてある（`internal/api/spa.go` の `spaOrAPINotFound`）。**�
   「まだ再生していない」と誤読する**。自動降格の直後に WebKit が出す `stalled` を
   停滞と読み、健全な配信でもエラーや次の降格に進む（実測: 一時停止した要素は
   `readyState=4` でも 3.7 秒後に `stalled` を出す）
+  帰結として、**一時停止したまま切り替えた先が無応答でも、再生を押すまでエラーは
+  出ない**（一時停止中の抑止と同じ扱い）。再生を押すと `waiting` で猶予が張り直される
+  （`live-player.test.tsx` の「一時停止中に切り替えた先の stalled」で両方向を固定）
 - 「進んだ」は `!==` で見る。ライブ同期の補正で `currentTime` は後退しうる
 - **`waiting` の回数とバッファ長は使わない。** `currentTime` が 12 秒進まないなら
   どちらも結論を変えない（同じ事象の別の代理変数）
@@ -316,8 +319,9 @@ JSON 404 にしてある（`internal/api/spa.go` の `spaOrAPINotFound`）。**�
   下げ先を置く場所が無い。**再生再開もライブだけ**にする --- 追っかけは位置指定
   （`startOffsetSeconds`）や保存位置の復元が `canplay` と競合しうるため、今回の
   自動降格の再開経路を広げない
-- **降格のあとは再生を再開する。** 切替の cleanup は `video.load()` を呼ぶので、
-  再生中だった `<video>` は `paused` に戻る。**`src` の代入や `attachMedia` の
+- **降格のあとは再生を再開する**（手動の画質選択と再読み込みでも同じ。持ち越しは
+  cleanup の時点の `paused` だけを読み、切替の理由を区別しない）。切替の cleanup は
+  `video.load()` を呼ぶので、再生中だった `<video>` は `paused` に戻る。**`src` の代入や `attachMedia` の
   直後に `play()` を呼んでも間に合わない**（その後に行われる load algorithm が
   `paused` を true に戻すので競争に負ける。実測: hls.js 経路で `play()` は呼ばれた
   のに `paused=true` のままだった）。**`canplay` で再開する。** 切替前に再生中

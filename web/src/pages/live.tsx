@@ -220,7 +220,7 @@ export function LivePage() {
     // 画質（autoQuality.name）は回線の性質として保つが、通知の同定だけは
     // チャンネル切替で切る。元のチャンネルへ戻って再生したときに、過去の通知を
     // 「この再生で下げた」と誤表示しないためである。
-    if (autoQuality?.key !== null && autoQuality !== null) {
+    if (autoQuality !== null && autoQuality.key !== null) {
       setAutoQuality({ name: autoQuality.name, key: null })
     }
   }
