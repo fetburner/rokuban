@@ -42,7 +42,9 @@ type Recording struct {
 }
 
 // Asset は既存の 1 ファイルを表す。RelPath は mediaDir からの相対パスである。
-// Profile は Kind が encoded のときに限り必須である。
+// Profile は Kind が encoded のときに限り必須である（original / thumbnail /
+// seek_tiles は profile を持たない = media_assets_check の
+// (kind = 'encoded') = (profile IS NOT NULL) を満たす）。
 type Asset struct {
 	Kind    string
 	Profile *string
@@ -190,7 +192,7 @@ func checkAsset(mediaDir, realMediaDir string, asset Asset) (checkedAsset, error
 		if asset.Profile == nil || strings.TrimSpace(*asset.Profile) == "" {
 			return checkedAsset{}, fmt.Errorf("encoded asset %q requires a profile", relPath)
 		}
-	case db.AssetKindOriginal, db.AssetKindThumbnail:
+	case db.AssetKindOriginal, db.AssetKindThumbnail, db.AssetKindSeekTiles:
 		if asset.Profile != nil {
 			return checkedAsset{}, fmt.Errorf("%s asset %q must not have a profile", asset.Kind, relPath)
 		}

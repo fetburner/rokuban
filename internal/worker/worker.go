@@ -276,6 +276,13 @@ func NewWorkers(deps *Deps) *river.Workers {
 		FFmpeg:     deps.Encode.FFmpeg,
 		FFprobe:    deps.Encode.FFprobe,
 	})
+	river.AddWorker(workers, &SeekTilesWorker{
+		Pool:       deps.Pool,
+		MediaDir:   deps.MediaDir,
+		ScratchDir: deps.ScratchDir,
+		FFmpeg:     deps.Encode.FFmpeg,
+		FFprobe:    deps.Encode.FFprobe,
+	})
 	river.AddWorker(workers, &ThumbnailReconcileWorker{
 		Pool: deps.Pool,
 	})

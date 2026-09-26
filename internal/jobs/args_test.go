@@ -86,3 +86,25 @@ func TestInsertOpts_ByQueueForRenamedQueues(t *testing.T) {
 		})
 	}
 }
+
+// seek_tiles は poster と同じ thumbnail キュー（既定の同時実行数 1）に載るので、
+// poster より後ろに取り出されなければならない。River は priority の小さい方から
+// 取り出し、0 は既定の 1 として扱う。同じ priority だと、既存録画ぶんのタイルが
+// 片付くまで新しい録画の poster が一覧に出ない。
+func TestInsertOpts_SeekTilesYieldToThumbnail(t *testing.T) {
+	effective := func(p int) int {
+		if p == 0 {
+			return 1
+		}
+		return p
+	}
+	thumb := ThumbnailJobArgs{}.InsertOpts()
+	tiles := SeekTilesJobArgs{}.InsertOpts()
+	if tiles.Queue != "thumbnail" {
+		t.Fatalf("seek_tiles queue = %q, want %q", tiles.Queue, "thumbnail")
+	}
+	if effective(tiles.Priority) <= effective(thumb.Priority) {
+		t.Errorf("seek_tiles priority = %d, thumbnail = %d; seek_tiles must be fetched after thumbnail",
+			effective(tiles.Priority), effective(thumb.Priority))
+	}
+}

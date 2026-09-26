@@ -88,7 +88,8 @@ var enqueueJobs = map[string]enqueueJob{
 	"thumbnail-reconcile": {
 		// thumbnail は encode と同じく site 非依存の共有ストレージ上の仕事。
 		// `worker.periodic_jobs: false` の構成でも CronJob からこの定期パスを
-		// 起動できるようにする。
+		// 起動できるようにする。**シークプレビュー用タイル（seek_tiles）の
+		// ギャップもこのパスが埋める**ので、投入口を分けていない。
 		RequiresSite: false,
 		NewArgs:      func(string) river.JobArgs { return jobs.ThumbnailReconcileArgs{} },
 	},

@@ -34,8 +34,8 @@ LIMIT 1
 // 読むと、ingest・encode・rescue・delete_reconcile の各処理が同じ storage 契約を
 // 共有できない。worker はファイルを書き / 移動する唯一のロールなので、最初の
 // 仕事を始める前に拒否して、移行漏れをその場で発見できるようにする（streamer は
-// `media_assets.rel_path` を読んで配信するが、書きはしない）。thumbnail は
-// `thumbnails/{recording_id}.jpg` という別の名前空間なので検査対象にしない。
+// `media_assets.rel_path` を読んで配信するが、書きはしない）。thumbnail と seek_tiles は
+// `thumbnails/` 配下の別の名前空間なので検査対象にしない。
 func ValidateMediaAssetRelPathNamespace(ctx context.Context, pool *pgxpool.Pool) error {
 	var id int64
 	var kind, relPath string

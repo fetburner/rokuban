@@ -72,6 +72,11 @@ func (s *Streamer) Mount(r chi.Router) {
 	const thumbPath = "/api/media/recordings/{id}/thumbnail"
 	r.Get(thumbPath, s.RecordingThumbnail)
 	r.Head(thumbPath, s.RecordingThumbnail)
+
+	// シークプレビュー用のタイル画像。poster と同じく openapi には載せない。
+	const seekTilesPath = "/api/media/recordings/{id}/seek-tiles"
+	r.Get(seekTilesPath, s.RecordingSeekTiles)
+	r.Head(seekTilesPath, s.RecordingSeekTiles)
 }
 
 // serveAsset は DB から解決した 1 アセットをディスクから（または X-Accel で）配信する。
@@ -151,6 +156,36 @@ func (s *Streamer) RecordingThumbnail(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		slog.Error("streamer: looking up thumbnail asset", "recording_id", id, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	s.serveAsset(w, r, id, serveAsset{
+		relPath:     row.RelPath,
+		sizeBytes:   row.SizeBytes,
+		contentType: thumbnailContentType,
+	})
+}
+
+// RecordingSeekTiles は GET /api/media/recordings/{id}/seek-tiles を処理する。
+//
+// kind = 'seek_tiles' の active アセットを 1 枚の JPEG（10 列の格子）で返す。
+// **未生成・ごみ箱・存在しない録画はすべて 404**（poster と同じ契約）。
+// クライアントは 404 なら今までどおり poster だけの見た目に戻る。
+func (s *Streamer) RecordingSeekTiles(w http.ResponseWriter, r *http.Request) {
+	id, err := parseRecordingID(r)
+	if err != nil {
+		http.Error(w, "invalid recording id", http.StatusBadRequest)
+		return
+	}
+
+	row, err := sqlcgen.New(s.pool).GetSeekTilesMediaAssetForServing(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		slog.Error("streamer: looking up seek tiles asset", "recording_id", id, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

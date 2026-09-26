@@ -40,8 +40,10 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_encode_jobs_total{result}` | Counter | encode の成功/失敗件数 |
 | `rokuban_thumbnail_duration_seconds` | Histogram | thumbnail 1 件の所要時間 |
 | `rokuban_thumbnail_jobs_total{result}` | Counter | thumbnail の成功/失敗件数 |
-| `rokuban_thumbnail_reconcile_last_pass_timestamp_seconds` | Gauge | thumbnail reconcile の最終完走時刻。投入停止は `time() -` で検出 |
-| `rokuban_thumbnail_reconcile_candidates` | Gauge | 直近の thumbnail reconcile が見た不足録画数。行上限に張り付く場合はバックログが上限以上 |
+| `rokuban_seek_tiles_duration_seconds` | Histogram | シークプレビュー用タイル 1 件の所要時間 |
+| `rokuban_seek_tiles_jobs_total{result}` | Counter | シークタイルの成功/失敗件数 |
+| `rokuban_thumbnail_reconcile_last_pass_timestamp_seconds` | Gauge | thumbnail / シークタイルの reconcile の最終完走時刻。投入停止は `time() -` で検出 |
+| `rokuban_thumbnail_reconcile_candidates` | Gauge | 直近の thumbnail reconcile が見た不足録画数（**poster のぶんだけ**。シークタイルは別の窓で数えるが、同じパスが埋めるので鮮度はこの 1 本で足りる）。行上限に張り付く場合はバックログが上限以上 |
 | `rokuban_reconcile_pending_diff{action}` | Gauge | reconcile 差分数（**収束すればゼロ**。アラートはこちら） |
 | `rokuban_reconcile_schedules_total{action}` | Counter | 実際に差分を消した量 |
 | `rokuban_reconcile_schedule_lost_total` | Counter | 再作成で DELETE 成功 → POST 失敗（下記 reconcile。**0 以外はアラート対象**） |
@@ -186,7 +188,7 @@ snapshot からの経過時間として見える。
 **`encode-reconcile` / `thumbnail-reconcile` を忘れた場合の症状は静かである。**
 ヒントを落とした録画だけが派生物を持たないまま残る（[ingest](../recording/ingest.md) §5.5）。
 検出は `rokuban_encode_reconcile_last_pass_timestamp_seconds` の鮮度で行う。
-thumbnail は `rokuban_thumbnail_reconcile_last_pass_timestamp_seconds` を見る。投入を忘れれば値が進まない。
+thumbnail とシークプレビュー用タイルは同じパスが埋めるので `rokuban_thumbnail_reconcile_last_pass_timestamp_seconds` を見る。投入を忘れれば値が進まない。
 
 thumbnail reconcile の候補から除外される既知の原本欠落は `rokuban_media_assets_missing{kind="original"}` で確認する。これはファイルが復旧して delete reconcile がマーカーを消すまで、定期パスが同じ失敗を作り続けないためのガードである。
 

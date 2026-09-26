@@ -91,11 +91,29 @@ ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     updated_at = now()
 RETURNING id;
 
+-- name: UpsertSeekTilesMediaAsset :one
+INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes)
+VALUES ($1, 'seek_tiles', $2, $3)
+ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
+    rel_path   = EXCLUDED.rel_path,
+    size_bytes = EXCLUDED.size_bytes,
+    state      = 'active',
+    deleted_at = NULL,
+    updated_at = now()
+RETURNING id;
+
 -- thumbnail の冪等性チェック用。active な thumbnail 行があれば id を返す。
 -- name: GetActiveThumbnailMediaAssetID :one
 SELECT id FROM media_assets
 WHERE recording_id = $1
   AND kind = 'thumbnail'
+  AND state = 'active';
+
+-- seek_tiles の冪等性チェック用。active な seek_tiles 行があれば id を返す。
+-- name: GetActiveSeekTilesMediaAssetID :one
+SELECT id FROM media_assets
+WHERE recording_id = $1
+  AND kind = 'seek_tiles'
   AND state = 'active';
 
 -- レベルトリガー投入: original があり active thumbnail が無い recording_id。
@@ -149,6 +167,16 @@ FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
 WHERE a.recording_id = $1
   AND a.kind = 'thumbnail'
+  AND a.state = 'active'
+  AND r.deleted_at IS NULL;
+
+-- 配信対象のシークタイルを引く。ごみ箱・削除済みは配らない。
+-- name: GetSeekTilesMediaAssetForServing :one
+SELECT a.id, a.rel_path, a.size_bytes, a.updated_at, r.title
+FROM media_assets a
+JOIN recordings r ON r.id = a.recording_id
+WHERE a.recording_id = $1
+  AND a.kind = 'seek_tiles'
   AND a.state = 'active'
   AND r.deleted_at IS NULL;
 

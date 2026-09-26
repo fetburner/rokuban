@@ -31,7 +31,7 @@ const (
 	RecordSweepQueue = "watcher"
 	// EncodeQueue はエンコード関連ジョブのキュー名。
 	EncodeQueue = "encode"
-	// ThumbnailQueue はサムネイルジョブのキュー名。
+	// ThumbnailQueue はサムネイル / シークタイルジョブのキュー名。
 	ThumbnailQueue = "thumbnail"
 	// CleanupQueue は物理削除・カタログ出力ジョブのキュー名。
 	//

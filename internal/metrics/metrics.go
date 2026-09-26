@@ -108,6 +108,19 @@ var (
 		Name: "rokuban_thumbnail_jobs_total",
 		Help: "Thumbnail jobs by result.",
 	}, []string{"result"})
+
+	// SeekTilesDuration は seek_tiles 1 件の所要（抽出 + 合成 + コピー + DB コミット）。
+	SeekTilesDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "rokuban_seek_tiles_duration_seconds",
+		Help:    "Duration of seek tile jobs.",
+		Buckets: []float64{1, 5, 15, 30, 60, 120, 300, 900},
+	})
+
+	// SeekTilesJobs は seek_tiles ジョブの結果別の件数。
+	SeekTilesJobs = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "rokuban_seek_tiles_jobs_total",
+		Help: "Seek tile jobs by result.",
+	}, []string{"result"})
 )
 
 // 大量削除サーキットブレーカー（M2-5）のメトリクス。
@@ -696,6 +709,8 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 
 		ThumbnailDuration,
 		ThumbnailJobs,
+		SeekTilesDuration,
+		SeekTilesJobs,
 
 		CircuitBreakerTripped,
 

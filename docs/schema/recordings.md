@@ -241,7 +241,7 @@ CREATE TABLE recording_encode_attempts (
 CREATE TABLE media_assets (
     id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     recording_id bigint NOT NULL REFERENCES recordings (id),
-    kind         text   NOT NULL CHECK (kind IN ('original', 'encoded', 'thumbnail')),
+    kind         text   NOT NULL CHECK (kind IN ('original', 'encoded', 'thumbnail', 'seek_tiles')),
     profile      text,                -- kind = 'encoded' のみ: エンコードプロファイル名
     CHECK ((kind = 'encoded') = (profile IS NOT NULL)),
     rel_path     text   NOT NULL,     -- ストレージルートからの相対パス（不変条件: 絶対パス禁止）
@@ -255,7 +255,7 @@ CREATE TABLE media_assets (
     created_at   timestamptz NOT NULL DEFAULT now(),
     updated_at   timestamptz NOT NULL DEFAULT now(),
 
-    -- 1 録画につき original / thumbnail は 1 つ、encoded はプロファイルごとに 1 つ
+    -- 1 録画につき original / thumbnail / seek_tiles は 1 つ、encoded はプロファイルごとに 1 つ
     UNIQUE NULLS NOT DISTINCT (recording_id, kind, profile)
 );
 

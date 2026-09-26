@@ -423,3 +423,49 @@ describe('RecordingPlayer の selectedProfile 導出', () => {
     expect(container.querySelector('video')?.src).toContain('profile=h264')
   })
 })
+
+describe('RecordingPlayer のシークプレビュー', () => {
+  // タイルが 404 の録画でプレビューが出ないこと・ホバー位置の正しさは jsdom では
+  // 測れない（getBoundingClientRect が 0 を返し、位置の計算まで進まない）。
+  // web/e2e/seek-tiles.mjs の ①〜⑦ が実ブラウザで判定する。
+  it('帯の上のマウス移動でタイル画像の問い合わせを始める（映像の上では始めない）', () => {
+    const { container, getByTestId } = render(
+      <RecordingPlayer recordingId={92} encodedAssets={[{ profile: 'h264', sizeBytes: 123 }]} />,
+    )
+    const video = container.querySelector('video')!
+    setMediaProps(video, { duration: 1800 })
+
+    fireEvent.pointerMove(video, { pointerType: 'mouse', clientX: 100 })
+    expect(container.querySelector('img[src*="/seek-tiles"]')).toBeNull()
+
+    fireEvent.pointerMove(getByTestId('seek-scrub'), { pointerType: 'mouse', clientX: 100 })
+    const probe = container.querySelector('img[src*="/seek-tiles"]')
+    expect(probe?.getAttribute('src')).toBe('/api/media/recordings/92/seek-tiles')
+  })
+
+  it('録画を切り替えると帯の再生済み割合を前の録画から持ち越さない', () => {
+    const asset = [{ profile: 'h264', sizeBytes: 123 }]
+    const { container, getByTestId, rerender } = render(
+      <RecordingPlayer recordingId={94} encodedAssets={asset} />,
+    )
+    const fill = () => (getByTestId('seek-scrub').firstElementChild!.firstElementChild as HTMLElement).style.width
+    const video = container.querySelector('video')!
+    setMediaProps(video, { duration: 100, currentTime: 40 })
+    fireEvent.timeUpdate(video)
+    expect(fill()).toBe('40%')
+
+    // 親は key を付けないので同じインスタンスのまま録画だけが変わる。
+    rerender(<RecordingPlayer recordingId={95} encodedAssets={asset} />)
+    expect(fill()).toBe('0%')
+  })
+
+  it('タッチではタイルを取りに行かない（プレビューはマウスだけ）', () => {
+    const { container, getByTestId } = render(
+      <RecordingPlayer recordingId={93} encodedAssets={[{ profile: 'h264', sizeBytes: 123 }]} />,
+    )
+    setMediaProps(container.querySelector('video')!, { duration: 1800 })
+
+    fireEvent.pointerMove(getByTestId('seek-scrub'), { pointerType: 'touch', clientX: 100 })
+    expect(container.querySelector('img[src*="/seek-tiles"]')).toBeNull()
+  })
+})

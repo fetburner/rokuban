@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react'
 
 import type { EncodedAsset } from '@/api/generated'
 import { formatBytes } from '@/lib/format'
@@ -13,6 +20,13 @@ import {
   shouldSavePlaybackPosition,
 } from '@/lib/playback-position'
 import { cn } from '@/lib/utils'
+import {
+  SEEK_TILES_DISPLAY_HEIGHT,
+  SEEK_TILES_DISPLAY_WIDTH,
+  seekTileAt,
+  seekTileBackgroundSize,
+  seekTilesURL,
+} from '@/lib/seek-tiles'
 
 type RecordingPlayerProps = {
   recordingId: number
@@ -59,6 +73,23 @@ export function RecordingPlayer({
   const selectedProfile = profiles.includes(profile) ? profile : (profiles[0] ?? '')
   const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
   const videoRef = useRef<HTMLVideoElement>(null)
+  // タイルは録画ごとに 1 枚で profile に依存しないので、キーは recordingId だけ。
+  const [tilesRequestedFor, setTilesRequestedFor] = useState<number | null>(null)
+  const [tilesAvailableFor, setTilesAvailableFor] = useState<number | null>(null)
+  // 親は録画を切り替えてもこのコンポーネントを作り直さない（key が無い）。そのため
+  // 帯の状態は recordingId と組で持ち、描くときに今の録画のものだけを使う。
+  const [tilePreview, setTilePreview] = useState<{
+    recordingId: number
+    x: number
+    y: number
+    left: number
+    scale: number
+  } | null>(null)
+  // スクラブ帯の再生済み割合（0..1）。timeupdate / seeked / loadedmetadata で更新する。
+  const [played, setPlayed] = useState<{ recordingId: number; fraction: number } | null>(null)
+  const playedFraction = played?.recordingId === recordingId ? played.fraction : 0
+  const shownPreview =
+    tilePreview?.recordingId === recordingId && tilesAvailableFor === recordingId ? tilePreview : null
   // プロファイル切替時に load したあとだけ currentTime を復元する
   const restorePending = useRef(true)
   // timeupdate 間引き用: 直近に保存した Math.floor(currentTime)。null は未保存
@@ -179,6 +210,60 @@ export function RecordingPlayer({
       ダウンロード
     </a>
   )
+  const updatePlayedFraction = (video: HTMLVideoElement) => {
+    setPlayed({
+      recordingId,
+      fraction:
+        Number.isFinite(video.duration) && video.duration > 0
+          ? Math.max(0, Math.min(1, video.currentTime / video.duration))
+          : 0,
+    })
+  }
+  // スクラブ帯の上のポインタ位置 → 再生位置（秒）。duration 未確定なら null。
+  // **プレビューはネイティブ controls のシークバーに重ねない。** ネイティブの
+  // シークバーは位置も幅もブラウザごとに違い（Firefox は再生ボタンと音量の間、
+  // Chrome も左右に余白がある）、外から測れないので、重ねると「見えたタイル」と
+  // 「クリックで飛ぶ先」がずれる。座標を自分で持つ帯なら両者は同じ式から出る。
+  const scrubSeconds = (event: ReactMouseEvent<HTMLDivElement>): number | null => {
+    const video = videoRef.current
+    if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return null
+    const rect = event.currentTarget.getBoundingClientRect()
+    if (rect.width <= 0) return null
+    const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
+    return fraction * video.duration
+  }
+  const handleScrubMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    // プレビューはマウスだけに出す。タッチは pointerleave が来ないので、タップの
+    // 後にプレビューが映像を覆ったまま残る。タップは帯のクリック（シーク）だけに効く。
+    if (event.pointerType !== 'mouse') {
+      setTilePreview(null)
+      return
+    }
+    // タイルは**最初に触れたときだけ**取りに行く。マウント時に先読みすると、
+    // 3 時間の録画で 2 MB 程度を、一度もホバーしない利用者にも払わせることになる。
+    // 同じキーを再設定しても React は再描画しないので、毎回呼んでよい。
+    setTilesRequestedFor(recordingId)
+
+    const seconds = scrubSeconds(event)
+    const tile = seconds === null ? null : seekTileAt(seconds)
+    if (tile === null || tilesAvailableFor !== recordingId) {
+      setTilePreview(null)
+      return
+    }
+    const rect = event.currentTarget.getBoundingClientRect()
+    // 帯が 1 枚ぶんより狭い（狭い画面）ときは、はみ出さないよう縮めて出す。
+    const scale = Math.min(1, rect.width / SEEK_TILES_DISPLAY_WIDTH)
+    const width = SEEK_TILES_DISPLAY_WIDTH * scale
+    const left = Math.max(0, Math.min(rect.width - width, event.clientX - rect.left - width / 2))
+    setTilePreview({ recordingId, ...tile, left, scale })
+  }
+  const handleScrubClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const video = videoRef.current
+    const seconds = scrubSeconds(event)
+    if (!video || seconds === null) return
+    video.currentTime = seconds
+    updatePlayedFraction(video)
+  }
 
   return (
     <section className={cn('flex flex-col gap-2', className)} aria-label="再生">
@@ -214,13 +299,14 @@ export function RecordingPlayer({
         </div>
       )}
 
-      <video
-        ref={videoRef}
-        key={`${recordingId}:${selectedProfile}`}
-        controls
-        playsInline
-        preload="metadata"
-        src={src}
+      <div className="flex max-w-3xl flex-col gap-1">
+        <video
+          ref={videoRef}
+          key={`${recordingId}:${selectedProfile}`}
+          controls
+          playsInline
+          preload="metadata"
+          src={src}
         // tabIndex は明示しない。実 Chromium で測ったところ `<video controls>` は
         // tabindex 無しでもそれ自体が唯一の Tab stop になっており（native controls
         // の個々のボタンは Tab stop ではない）、`tabIndex={-1}` を付けると逆に
@@ -233,6 +319,7 @@ export function RecordingPlayer({
         // 測らずに書いた誤りだった（CLAUDE.md「測っていない挙動を断言しない」）。
         className="aspect-video w-full max-w-3xl rounded bg-black"
         onLoadedMetadata={(e) => {
+          updatePlayedFraction(e.currentTarget)
           if (!restorePending.current) return
           restorePending.current = false
           const pos = loadPlaybackPosition(recordingId, selectedProfile)
@@ -240,8 +327,10 @@ export function RecordingPlayer({
             e.currentTarget.currentTime = pos
           }
         }}
+        onSeeked={(e) => updatePlayedFraction(e.currentTarget)}
         onTimeUpdate={(e) => {
           const v = e.currentTarget
+          updatePlayedFraction(v)
           // timeupdate は約 4Hz で発火するが保存値は秒単位なので、秒が変わったときだけ書く
           if (!shouldSavePlaybackPosition(lastSavedSecond.current, v.currentTime)) return
           lastSavedSecond.current = Math.floor(v.currentTime)
@@ -263,7 +352,58 @@ export function RecordingPlayer({
           label="日本語"
           src={recordingSubtitleURL(recordingId, selectedProfile)}
         />
-      </video>
+        </video>
+
+        {/*
+          シークプレビュー用のスクラブ帯。ポインタ操作の補助なので aria-hidden にする
+          （キーボード・支援技術の経路はネイティブ controls のシークバーが持つ）。
+        */}
+        <div
+          aria-hidden="true"
+          data-testid="seek-scrub"
+          className="relative h-4 cursor-pointer"
+          onPointerMove={handleScrubMove}
+          onPointerLeave={() => setTilePreview(null)}
+          onClick={handleScrubClick}
+        >
+          <div className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 overflow-hidden rounded-full bg-muted">
+            <div className="h-full bg-primary" style={{ width: `${playedFraction * 100}%` }} />
+          </div>
+          {tilesRequestedFor === recordingId && (
+            <img
+              src={seekTilesURL(recordingId)}
+              alt=""
+              className="pointer-events-none absolute size-px opacity-0"
+              onLoad={() => setTilesAvailableFor(recordingId)}
+              onError={() => {
+                setTilesAvailableFor((current) => (current === recordingId ? null : current))
+                setTilePreview(null)
+              }}
+            />
+          )}
+          {shownPreview && (
+            <div
+              data-testid="seek-tile-preview"
+              className="pointer-events-none absolute bottom-full z-10 mb-1 origin-bottom-left overflow-hidden rounded border border-border bg-black shadow-lg"
+              style={{
+                left: shownPreview.left,
+                width: SEEK_TILES_DISPLAY_WIDTH,
+                height: SEEK_TILES_DISPLAY_HEIGHT,
+                transform: shownPreview.scale < 1 ? `scale(${shownPreview.scale})` : undefined,
+              }}
+            >
+              <div
+                className="h-full w-full bg-no-repeat"
+                style={{
+                  backgroundImage: `url(${seekTilesURL(recordingId)})`,
+                  backgroundPosition: `${shownPreview.x}px ${shownPreview.y}px`,
+                  backgroundSize: seekTileBackgroundSize(),
+                }}
+              />
+            </div>
+          )}
+        </div>
+      </div>
 
       {hasOriginal && (
         <p className="text-muted-foreground">

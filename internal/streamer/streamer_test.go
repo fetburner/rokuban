@@ -811,3 +811,123 @@ func TestMount_CoexistsWithGeneratedRoutes(t *testing.T) {
 		}
 	}
 }
+
+func TestRecordingSeekTiles_ServesJPEG(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xD9}
+
+	recordingID := seedRecording(t, pool)
+	rel := fmt.Sprintf("thumbnails/%d_tiles.jpg", recordingID)
+	full := filepath.Join(mediaDir, rel)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, jpeg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: recordingID,
+		Kind:        db.AssetKindSeekTiles,
+		RelPath:     rel,
+		SizeBytes:   int64(len(jpeg)),
+	}); err != nil {
+		t.Fatalf("seed seek_tiles: %v", err)
+	}
+
+	r := chi.NewRouter()
+	New(pool, Config{MediaDir: mediaDir}).Mount(r)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	resp, body := get(t, fmt.Sprintf("%s/api/media/recordings/%d/seek-tiles", srv.URL, recordingID), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if !bytes.Equal(body, jpeg) {
+		t.Errorf("body = %v, want jpeg", body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != thumbnailContentType {
+		t.Errorf("Content-Type = %q, want %q", ct, thumbnailContentType)
+	}
+}
+
+// seedRecordingWithEvent は recordings_unique_active_event（(site, network_id,
+// service_id, event_id, program_start_at) のアクティブ行に対する一意制約）に
+// 当たらないよう event_id をずらして 2 本目以降を作る。
+func seedRecordingWithEvent(t *testing.T, pool *pgxpool.Pool, eventID int32) int64 {
+	t.Helper()
+	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
+		Source:            "manual",
+		Site:              testSite,
+		NetworkID:         32678,
+		ServiceID:         5168,
+		EventID:           eventID,
+		ServiceName:       "テストチャンネル",
+		ChannelType:       "GR",
+		Channel:           "27",
+		Title:             "テスト番組",
+		ProgramStartAt:    time.Now().Truncate(time.Second),
+		ProgramDurationMs: 1800000,
+		Status:            "finished",
+	})
+	if err != nil {
+		t.Fatalf("seeding recording: %v", err)
+	}
+	return id
+}
+
+// 未生成・存在しない録画・ごみ箱はいずれも 404（poster と同じ契約）。
+// クライアントはこの 404 で従来の見た目に戻る。
+func TestRecordingSeekTiles_NotFound(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xD9}
+
+	// 未生成（アセット行が無い）。
+	bare := seedRecording(t, pool)
+
+	// ごみ箱に入れた録画（アセット行は active のまま）。
+	trashed := seedRecordingWithEvent(t, pool, 2)
+	trashRel := fmt.Sprintf("thumbnails/%d_tiles.jpg", trashed)
+	full := filepath.Join(mediaDir, trashRel)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, jpeg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: trashed,
+		Kind:        db.AssetKindSeekTiles,
+		RelPath:     trashRel,
+		SizeBytes:   int64(len(jpeg)),
+	}); err != nil {
+		t.Fatalf("seed trashed seek_tiles: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE recordings SET deleted_at = now() WHERE id = $1", trashed); err != nil {
+		t.Fatalf("trashing recording: %v", err)
+	}
+
+	r := chi.NewRouter()
+	New(pool, Config{MediaDir: mediaDir}).Mount(r)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	for _, tc := range []struct {
+		name string
+		id   int64
+	}{
+		{"not generated", bare},
+		{"trashed", trashed},
+		{"missing recording", 999999},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, _ := get(t, fmt.Sprintf("%s/api/media/recordings/%d/seek-tiles", srv.URL, tc.id), nil)
+			if resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404", resp.StatusCode)
+			}
+		})
+	}
+}
