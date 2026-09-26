@@ -202,7 +202,7 @@ jsdom では判定できないため、ここが唯一の判定手段になる�
 ### 録画中の追っかけ再生（`chase.mjs`）
 
 録画詳細を `#chase` で開き、実 H.264/AAC セグメントを返す成長中の EVENT
-playlist を Chromium の hls.js で再生する。録画 API・追っかけ HLS・離脱 API は
+playlist を Chromium の hls.js（`E2E_BROWSER=webkit` ならネイティブ HLS）で再生する。録画 API・追っかけ HLS・離脱 API は
 `page.route` で差し替えるため mirakc と実録画は要らない。次を実ブラウザで見る。
 
 - 録画中の詳細ページから追っかけプレイヤーが開く
@@ -213,12 +213,27 @@ playlist を Chromium の hls.js で再生する。録画 API・追っかけ HLS
 - 成長後の playlist が `ENDLIST` になり、完了した録画を追える
 - 3 秒・5 秒の指定で、対応する先頭セグメント（2 秒単位）を使った映像が `playing` まで
   到達し、実際の video 時刻から求めた録画位置の誤差が 2 秒以内になる
+- **画質（プロファイル）の切替で再生位置が続く**（issue #874）。先頭再生と
+  offset 付き再生の 2 通りを見る。**`LivePlayer` を `key={profile}` で作り直す変異で
+  offset 付きが 1.5 秒 → 0 秒に巻き戻って落ちる**（先頭再生は保存位置が近いので
+  差が出にくい）。あわせて切替が離脱ヒントを送らないこと・`?profile=` が要求に
+  載ることも見る
+- **画質の切替の途中で「続きから」を別の位置で上書きしない**。途中で書かれた値を
+  すべて記録して見る（最終値は切替後の seek で正しい値に戻るため）。
+  2 秒未満は `removeItem` になるので、それも 0 として記録する。
+  持ち越し中の保存ガードを外すと、WebKit では先頭再生で `0`、offset 4 秒の切替で
+  `4` が書かれて落ちる。Chromium + hls.js では `timeupdate` が来ないので落ちない
+
+`E2E_BROWSER=webkit` で同じ判定を Safari 相当のネイティブ HLS 経路で回す。
+画質切替の位置の持ち越しは hls.js（`startPosition`）とネイティブ（要素への代入）で
+経路が別なので、両方で回す。
 
 フィクスチャ生成に `ffmpeg` を使う。無い環境ではこの判定だけを skip として終了し、
 他の CI 判定を失敗扱いにしない。
 
 ```sh
 E2E_URL=http://localhost:4173 pnpm e2e:chase
+E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:chase
 ```
 
 ### デザイン（`design.mjs`）

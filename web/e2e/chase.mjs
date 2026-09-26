@@ -3,13 +3,14 @@
 // jsdom では測れないものだけを見る。録画中の録画詳細へ `#chase` で入り、
 // 追っかけ位置のタイムラインを実際にドラッグし、pointer up まで stream を
 // 張り直さないこと、選んだ offset の HLS セグメントから再生することを測る。
-// あわせて EVENT playlist の成長と VOD と共通の再生速度を Chromium + 実 HLS
-// セグメントで確認する。mirakc / DB の録画ファイルは使わず、録画 API と HLS は
-// page.route で差し替える。
+// あわせて EVENT playlist の成長・VOD と共通の再生速度・画質（プロファイル）の
+// 切替（issue #874）を Chromium + 実 HLS セグメントで確認する。mirakc / DB の
+// 録画ファイルは使わず、録画 API と HLS は page.route で差し替える。
 //
 //   cd web && pnpm build
 //   pnpm preview --port 4173 --strictPort &
 //   E2E_URL=http://localhost:4173 pnpm e2e:chase
+//   E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:chase   # ネイティブ HLS 経路
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import os from 'node:os'
@@ -167,7 +168,12 @@ if (entries.length < 3) {
 // only the URL shape. Two positions also catch a hard-coded first offset.
 const offsetScenarios = [3, 5]
 
-const browser = await launchBrowser('chromium')
+// `E2E_BROWSER=webkit` で Safari 相当のネイティブ HLS 経路を通す。⑦ の位置の
+// 持ち越しは hls.js（`startPosition`）とネイティブ（`loadedmetadata` / `canplay`
+// での代入）で経路が別なので、両方で回す。
+const engine = process.env.E2E_BROWSER ?? 'chromium'
+log(`engine: ${engine}`)
+const browser = await launchBrowser(engine)
 const context = await browser.newContext({
   viewport: { width: 1280, height: 900 },
   locale: 'ja-JP',
@@ -188,6 +194,10 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
   if (requestPath === '/api/breakers') return json([])
   if (requestPath === '/api/events') return sseKeepAlive(route)
   if (requestPath === '/api/rules' || requestPath === '/api/encode-profiles') return json([])
+  if (requestPath === '/api/live-profiles') return json([
+    { name: 'hd', height: 720 },
+    { name: 'sd', height: 480 },
+  ])
   if (requestPath === '/api/encode-queue') return json({ queued: 0, running: 0 })
   if (/^\/api\/media\/recordings\/\d+\/thumbnail$/.test(requestPath)) {
     return route.fulfill({ status: 404 })
@@ -206,6 +216,7 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
 
 const chaseBase = '/api/sites/default/recordings/1/chase'
 let playlistRequests = 0
+const profilePlaylistURLs = []
 const playlistSizes = []
 let playlistEnded = false
 let offsetPlaylistRequests = 0
@@ -224,6 +235,11 @@ function observationForOffset(offsetSeconds) {
 }
 
 await page.route(`**${chaseBase}/playlist.m3u8*`, async (route) => {
+  // The growing EVENT playlist keys off the number of requests, not the profile.
+  // A profile switch is expected to add a request (the URL changes) without
+  // resetting the position, so the fixture deliberately serves the same body.
+  const requestedURL = new URL(route.request().url())
+  if (requestedURL.searchParams.has('profile')) profilePlaylistURLs.push(requestedURL.href)
   playlistRequests += 1
   const count = playlistRequests < 2 ? 1 : entries.length
   const end = playlistRequests >= 2
@@ -612,5 +628,146 @@ await page.waitForFunction(
   () => localStorage.getItem('rokuban:playback-rate') === '1.25',
   { timeout: 5000 },
 ).catch(() => ng.push('④ 追っかけの ratechange が VOD 共通設定に保存されない'))
+
+// --- ⑦ 画質（プロファイル）の切替（issue #874） ---
+//
+// 追っかけのセレクタは `/recordings/$id?liveProfile=<name>#chase` に置く。
+// ここで測るのは jsdom では原理的に測れない 2 点である。
+//
+//   - 切替の前後で**再生位置が連続する**（`<video>` が作り直されると先頭に戻る）
+//   - 切替で**離脱ヒントが飛ばない**（セッションを手放す合図であってはならない）
+//
+// 壊し方: `LivePlayer` を `key={profile}` で作り直す（位置が 0 に戻る）。
+// あるいは `playbackProfile` に live の画質名を流す（位置のキーが画質ごとに分かれる）。
+log('\n=== ⑦ 画質（プロファイル）の切替 ===')
+await page.reload({ waitUntil: 'domcontentloaded' })
+await page.getByRole('region', { name: '追っかけ再生' }).waitFor({ timeout: 15000 })
+const profileSelect = page.locator('select[aria-label="画質"]')
+await profileSelect.waitFor({ timeout: 15000 })
+const defaultProfile = await profileSelect.inputValue()
+if (defaultProfile !== 'hd') {
+  ng.push(`⑦ 既定の画質が一覧の先頭でない（${defaultProfile}）`)
+}
+if (profilePlaylistURLs.length !== 0) {
+  ng.push(`⑦ 既定のままで ?profile= を要求する（${profilePlaylistURLs.join(' / ')}）`)
+}
+
+const chaseVideo = page.locator('video')
+await chaseVideo.waitFor({ timeout: 15000 })
+await chaseVideo.evaluate(async (element) => {
+  element.muted = true
+  await element.play().catch(() => {})
+})
+await page
+  .waitForFunction(
+    () => {
+      const element = document.querySelector('video')
+      return element !== null && element.currentTime > 2
+    },
+    { timeout: 10000 },
+  )
+  .catch(() => ng.push('⑦ 実再生が 2 秒まで進まない'))
+
+const leaveHintsBeforeSwitch = chaseLeaveHints.length
+const positionBeforeSwitch = await chaseVideo.evaluate((element) => {
+  element.pause()
+  return element.currentTime
+})
+// 切替の途中で「続きから」が上書きされないことを見る。最終値は切替後の seek で
+// 正しい値に戻ってしまうので、**書かれた値をすべて記録する**。壊し方:
+// `onTimeUpdate` の持ち越し中ガードを外す（`load()` の位置 0 が一度書かれる）。
+const recordSavedPositions = () =>
+  page.evaluate((key) => {
+    window.__e2eSavedPositions = []
+    if (window.__e2eSetItemHooked) return
+    window.__e2eSetItemHooked = true
+    const originalSet = Storage.prototype.setItem
+    Storage.prototype.setItem = function (k, v) {
+      if (k === key) window.__e2eSavedPositions.push(Number(v))
+      return originalSet.call(this, k, v)
+    }
+    // 2 秒未満の位置は setItem ではなく removeItem になる（savePlaybackPosition）。
+    // 先頭再生で 0 が書かれる回帰はこちらにしか現れないので、0 として記録する。
+    const originalRemove = Storage.prototype.removeItem
+    Storage.prototype.removeItem = function (k) {
+      if (k === key) window.__e2eSavedPositions.push(0)
+      return originalRemove.call(this, k)
+    }
+  }, savedPositionKey)
+const savedPositions = () => page.evaluate(() => window.__e2eSavedPositions)
+await recordSavedPositions()
+log(`  切替前の再生位置: ${positionBeforeSwitch.toFixed(2)} 秒`)
+
+await profileSelect.selectOption('sd')
+const switchDeadline = Date.now() + 10_000
+while (
+  !profilePlaylistURLs.some((u) => u.includes('profile=sd')) &&
+  Date.now() < switchDeadline
+) {
+  await page.waitForTimeout(100)
+}
+if (!profilePlaylistURLs.some((u) => u.includes('profile=sd'))) {
+  ng.push('⑦ 画質を切り替えても ?profile=sd のプレイリスト要求が飛ばない')
+}
+if (chaseLeaveHints.length !== leaveHintsBeforeSwitch) {
+  ng.push('⑦ 画質の切替で離脱ヒントが飛んだ（セッションを手放す合図であってはならない）')
+}
+await page.waitForTimeout(1500)
+const positionAfterSwitch = await chaseVideo.evaluate((element) => element.currentTime)
+log(`  切替後の再生位置: ${positionAfterSwitch.toFixed(2)} 秒`)
+if (Math.abs(positionAfterSwitch - positionBeforeSwitch) > 1.5) {
+  ng.push(
+    `⑦ 画質の切替で再生位置が巻き戻った（${positionBeforeSwitch.toFixed(2)} → ${positionAfterSwitch.toFixed(2)} 秒）`,
+  )
+}
+{
+  const written = await savedPositions()
+  log(`  切替中に保存された位置: [${written.join(', ')}]`)
+  if (written.some((v) => Math.abs(v - positionBeforeSwitch) > 1.5)) {
+    ng.push(`⑦ 画質の切替の途中で「続きから」が別の位置で上書きされた（[${written.join(', ')}]）`)
+  }
+}
+
+// オフセット付きでも同じである。**こちらは巻き戻りが大きく出る** --- 追っかけの
+// offset 付きはプレイヤー内部の 0 秒が「録画の N 秒」なので、`LivePlayer` の
+// 復元が立ち直ると（= key で作り直す / 復元 effect が profile に依存する）
+// 位置が offset の先頭へ戻る。先頭再生では保存位置が近く、この差が出にくい。
+const { selected: offsetSeconds } = await dragTimelineTo(4)
+// 直前で一時停止しているので明示的に再生する（offset playlist は自動再生しない）
+await chaseVideo.evaluate(async (element) => {
+  element.muted = true
+  await element.play().catch(() => {})
+})
+await page
+  .waitForFunction(
+    () => {
+      const element = document.querySelector('video')
+      return element !== null && element.currentTime > 1.5
+    },
+    { timeout: 10000 },
+  )
+  .catch(() => ng.push('⑦ offset 付きの実再生が 1.5 秒まで進まない'))
+const offsetPositionBefore = await chaseVideo.evaluate((element) => {
+  element.pause()
+  return element.currentTime
+})
+await recordSavedPositions()
+await profileSelect.selectOption('hd')
+await page.waitForTimeout(1500)
+const offsetPositionAfter = await chaseVideo.evaluate((element) => element.currentTime)
+log(`  offset 付き: 切替前 ${offsetPositionBefore.toFixed(2)} 秒 → 切替後 ${offsetPositionAfter.toFixed(2)} 秒`)
+if (offsetPositionAfter < 1 || Math.abs(offsetPositionAfter - offsetPositionBefore) > 1.5) {
+  ng.push(
+    `⑦ offset 付きの画質切替で再生位置が連続しない（${offsetPositionBefore.toFixed(2)} → ${offsetPositionAfter.toFixed(2)} 秒）`,
+  )
+}
+{
+  // 保存値は録画全体の秒数（offset + プレイヤー内の位置）。
+  const written = await savedPositions()
+  log(`  offset 付き: 切替中に保存された位置: [${written.join(', ')}]（offset ${offsetSeconds}）`)
+  if (written.some((v) => Math.abs(v - (offsetSeconds + offsetPositionBefore)) > 1.5)) {
+    ng.push(`⑦ offset 付きの画質切替の途中で「続きから」が別の位置で上書きされた（[${written.join(', ')}]）`)
+  }
+}
 
 await finish(ng, browser)

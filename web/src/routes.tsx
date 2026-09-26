@@ -227,6 +227,31 @@ const recordingsRoute = createRoute({
   component: RecordingsPage,
 })
 
+/** RecordingDetailSearch は `/recordings/$id` のクエリパラメータ。 */
+export type RecordingDetailSearch = {
+  /**
+   * 追っかけ再生の画質（`live.profiles` の名前。issue #874）。省略時・未知の
+   * 名前のときは既定（サーバー側の先頭プロファイル）に落ちる。
+   *
+   * **`profile` という名前にしない。** この画面には `encode.profiles`（完了後の
+   * VOD）と `live.profiles`（追っかけ）の 2 軸が同居し、素の `profile` では
+   * どちらを読むのかが決まらない。`liveProfile` は設定キー（`live.profiles`）と
+   * 一覧 API（`GET /api/live-profiles`）の名前に一致する。
+   *
+   * **`#chase` 側（ハッシュ）には持たせない。** `pages/recording-detail.tsx` は
+   * `key={`${recording.id}:${location.hash}`}` でマウントしているので、ハッシュを
+   * 変えると `RecordingDetail` ごと作り直され、追っかけの再生位置が先頭に戻る。
+   * search はその key に入らないので作り直しが起きない。
+   *
+   * **値域の検査はここでは書けない**（`?site=` と同じ分担）。選べる名前の一覧は
+   * 実行時に `GET /api/live-profiles` から来るので、ここでできるのは「非空の
+   * 文字列か」までである。実在の判定は一覧を読める
+   * `components/recording-detail-panel.tsx` が `validLiveProfile`（`lib/live.ts`）
+   * で行う。
+   */
+  liveProfile?: string
+}
+
 /**
  * 録画単体の着地先（issue #232 M6-4）。`recordings.id` は ingest（watcher）が
  * 一度作ったら変わらない不可逆な事実の id なので、`/reservations/$site/$programId`
@@ -236,6 +261,17 @@ const recordingsRoute = createRoute({
 const recordingDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/recordings/$id',
+  // 追っかけ再生の画質（issue #874）。**落とすときは `undefined` を明示代入する**
+  // （`parseRecordingsSearch` / `/live` と同じ形。issue #194）。TanStack Router は
+  // 非 strict モードで `{ ...生の location.search, ...validateSearch の戻り値 }` の
+  // 順に合成するので、キーを省略すると生の値（`/recordings/1?liveProfile=` なら
+  // 空文字）がそのまま残り、`RecordingDetailSearch` の型が実行時に嘘になる。
+  validateSearch: (search: Record<string, unknown>): RecordingDetailSearch => ({
+    liveProfile:
+      typeof search.liveProfile === 'string' && search.liveProfile !== ''
+        ? search.liveProfile
+        : undefined,
+  }),
   // 録画名は `useGetRecording`（react-query。コンポーネント側で取得する）が
   // 持っていて、`loader` を持たないこのルートの `head` からは見えない
   // （`reservationDetailRoute` と同じ理由。詳細はそちらのコメント）。`pages/

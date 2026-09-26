@@ -819,6 +819,48 @@ describe('LivePlayer の状態遷移', () => {
     expect(video.currentTime).toBe(0)
   })
 
+  it('ネイティブHLSでも画質の切替で位置を持ち越し、canplay で最新端への飛びを戻す', async () => {
+    // WebKit は EVENT playlist を付けるとき、loadedmetadata で受け付けた位置を
+    // 捨てて最新端を選ぶことがある。canplay での再表明が無いとここで落ちる。
+    const { resolve } = deferredFetch()
+    const { rerender } = render(
+      <LivePlayer
+        mode="chase"
+        site="default"
+        recordingId={83}
+        profile="live-720p"
+        playbackProfile="vod-h264"
+      />,
+    )
+    const video = document.querySelector('video')!
+    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
+      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
+    )
+    resolve(new Response('', { status: 200 }))
+    await waitFor(() => expect(video.src).toContain('profile=live-720p'))
+    Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+    fireEvent.loadedMetadata(video)
+    fireEvent.canPlay(video)
+    video.currentTime = 12
+
+    rerender(
+      <LivePlayer
+        mode="chase"
+        site="default"
+        recordingId={83}
+        profile="live-480p"
+        playbackProfile="vod-h264"
+      />,
+    )
+    await waitFor(() => expect(video.src).toContain('profile=live-480p'))
+    video.currentTime = 0
+    fireEvent.loadedMetadata(video)
+    expect(video.currentTime).toBe(12)
+    video.currentTime = 95
+    fireEvent.canPlay(video)
+    expect(video.currentTime).toBe(12)
+  })
+
   it('serviceId が変わると新しい URL で probe をやり直す', async () => {
     const fetchMock = vi.fn((_url: string) => Promise.resolve(new Response('', { status: 200 })))
     vi.stubGlobal('fetch', fetchMock)
@@ -939,6 +981,184 @@ describe('LivePlayer の状態遷移', () => {
 
       fireEvent.loadedMetadata(video)
       expect(video.currentTime).toBe(12)
+    })
+
+    it('画質を切り替えても追っかけの再生位置を持ち越す（offset 付き）', async () => {
+      // offset 付きで見るのは、**復元 effect が profile で立ち直る変異が
+      // 決定的に落ちる**ようにするためである。offset 付きの追っかけは先頭が
+      // 「録画の 30 秒」なので、復元がやり直されると `onCanPlay` の 0 秒への
+      // 再表明（`explicitStartSeekPending`）が走って位置が巻き戻る。
+      //
+      // 録画 id は他のテストと共有しない（id を借りると保存位置が残っていて
+      // 偽陽性で通る）。
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      const { rerender } = render(
+        <LivePlayer
+          mode="chase"
+          site="default"
+          recordingId={81}
+          startOffsetSeconds={30}
+          profile="live-720p"
+          playbackProfile="vod-h264"
+        />,
+      )
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const video = document.querySelector('video')!
+      Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+      // 初回の読み込みで 1 度は canplay が来る（その 1 回で 0 秒への再表明は
+      // 使い切られる）。以降は画質の切替で復元が立ち直ったときだけ再び走る。
+      // 実ブラウザと同じく loadedmetadata が先に来る（来ていない読み込みの位置は
+      // 持ち越さない）。
+      fireEvent.loadedMetadata(video)
+      fireEvent.canPlay(video)
+      video.currentTime = 12
+
+      rerender(
+        <LivePlayer
+          mode="chase"
+          site="default"
+          recordingId={81}
+          startOffsetSeconds={30}
+          profile="live-480p"
+          playbackProfile="vod-h264"
+        />,
+      )
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+      expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: 12 }])
+      expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+        '/api/sites/default/recordings/81/chase/offset/30/playlist.m3u8?profile=live-480p',
+      )
+      // 切替の前後で再生位置が連続する（先頭へ巻き戻らない）
+      fireEvent.canPlay(video)
+      expect(video.currentTime).toBe(12)
+      // 位置のキーは VOD 側のプロファイルのまま（画質ごとに分かれない）。
+      // offset 付きは録画全体の秒数（12 + 30）で保存する
+      fireEvent.timeUpdate(video)
+      expect(localStorage.getItem('rokuban:playback:81:vod-h264')).toBe('42')
+      expect(localStorage.getItem('rokuban:playback:81:live-480p')).toBeNull()
+    })
+
+    it('画質の切替で位置を戻し終えるまで「続きから」を上書きしない', async () => {
+      // cleanup の load() で位置が 0 に戻り、その timeupdate が新しい
+      // プレイリストの loadedmetadata より先に届く。ここで保存すると、切替の
+      // 直後に離れたとき「続きから」が先頭になる。
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      const { rerender } = render(
+        <LivePlayer
+          mode="chase"
+          site="default"
+          recordingId={82}
+          profile="live-720p"
+          playbackProfile="vod-h264"
+        />,
+      )
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const video = document.querySelector('video')!
+      Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+      fireEvent.loadedMetadata(video)
+      fireEvent.canPlay(video)
+      video.currentTime = 12
+      fireEvent.timeUpdate(video)
+      expect(localStorage.getItem('rokuban:playback:82:vod-h264')).toBe('12')
+
+      rerender(
+        <LivePlayer
+          mode="chase"
+          site="default"
+          recordingId={82}
+          profile="live-480p"
+          playbackProfile="vod-h264"
+        />,
+      )
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+      video.currentTime = 0
+      fireEvent.timeUpdate(video)
+      fireEvent.pause(video)
+      expect(localStorage.getItem('rokuban:playback:82:vod-h264')).toBe('12')
+
+      // 戻し終える前にもう一度切り替えても、要素の位置（0）ではなく持ち越し中の
+      // 位置を引き継ぐ
+      rerender(
+        <LivePlayer
+          mode="chase"
+          site="default"
+          recordingId={82}
+          profile="live-360p"
+          playbackProfile="vod-h264"
+        />,
+      )
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(3))
+      expect(hlsMockState.constructorArgs[2]).toEqual([{ startPosition: 12 }])
+
+      // 戻し終えたら保存を再開する
+      fireEvent.canPlay(video)
+      expect(video.currentTime).toBe(12)
+      video.currentTime = 14
+      fireEvent.timeUpdate(video)
+      expect(localStorage.getItem('rokuban:playback:82:vod-h264')).toBe('14')
+    })
+
+    it('位置のキーが変わった後の画質切替でも、保存位置ではなく切替直前の位置に戻す', async () => {
+      // playbackProfile の変化は復元を立ち直らせるが、メイン effect は再実行
+      // しない。続く画質切替で持ち越しが復元に負けると、別キーの保存位置へ飛ぶ。
+      savePlaybackPosition(84, 'vod-h265', 40)
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      const props = { mode: 'chase', site: 'default', recordingId: 84 } as const
+      const { rerender } = render(
+        <LivePlayer {...props} profile="live-720p" playbackProfile="vod-h264" />,
+      )
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const video = document.querySelector('video')!
+      Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+      fireEvent.loadedMetadata(video)
+      fireEvent.canPlay(video)
+      video.currentTime = 12
+
+      rerender(<LivePlayer {...props} profile="live-720p" playbackProfile="vod-h265" />)
+      rerender(<LivePlayer {...props} profile="live-480p" playbackProfile="vod-h265" />)
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+      expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: 12 }])
+      // 最終値だけでなく、途中で保存位置（40）へ seek しないことも見る
+      // （最後に 12 へ戻るのはリスナの登録順に依存しているだけ）。
+      let position = 0
+      const assigned: number[] = []
+      Object.defineProperty(video, 'currentTime', {
+        configurable: true,
+        get: () => position,
+        set: (value: number) => {
+          position = value
+          assigned.push(value)
+        },
+      })
+      fireEvent.loadedMetadata(video)
+      fireEvent.canPlay(video)
+      expect(video.currentTime).toBe(12)
+      expect(assigned).not.toContain(40)
+    })
+
+    it('最初の読み込みが終わる前に画質を切り替えても、保存位置から再生する', async () => {
+      // probe 中（ffmpeg の起動待ち）の切替。読み込まれていない要素の位置 0 を
+      // 持ち越すと、復元が潰れて保存位置が消える。
+      savePlaybackPosition(85, 'vod-h264', 40)
+      const { resolve } = deferredFetch()
+      const props = { mode: 'chase', site: 'default', recordingId: 85 } as const
+      const { rerender } = render(
+        <LivePlayer {...props} profile="live-720p" playbackProfile="vod-h264" />,
+      )
+      const video = document.querySelector('video')!
+      Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+      rerender(<LivePlayer {...props} profile="live-480p" playbackProfile="vod-h264" />)
+      resolve(new Response('', { status: 200 }))
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition: 0 }])
+      fireEvent.loadedMetadata(video)
+      fireEvent.canPlay(video)
+      expect(video.currentTime).toBe(40)
+      fireEvent.timeUpdate(video)
+      expect(localStorage.getItem('rokuban:playback:85:vod-h264')).toBe('40')
     })
 
     it('指定した開始オフセットから読み、保存位置を上書きせず録画全体の秒数で扱う', async () => {
