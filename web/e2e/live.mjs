@@ -21,7 +21,7 @@
 // 詳しい手順・準備の SQL 例は docs/runbook/live.md §②。使い方だけ：
 //   E2E_LIVE_NETWORK_ID=1 E2E_LIVE_SERVICE_A=9001 E2E_LIVE_SERVICE_B=9002 pnpm e2e:live
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { launchBrowser, log, verifyBundleMatchesOrExit } from './lib.mjs'
@@ -148,6 +148,74 @@ function ensureCaptionFixture() {
       '',
     ].join('\n'),
   )
+}
+
+/**
+ * livePlaylistWith は「ライブ形」のプレイリストを組み立てる（⑪ 専用）。
+ *
+ * **⑪ は停滞を作るので、フィクスチャ（VOD 形 = `#EXT-X-ENDLIST` 付き）では
+ * 判定にならない。** hls.js は VOD では 30 秒ぶん先読みするので、セグメントの応答を
+ * 止めても**バッファを食い切るまで再生が進み続ける**（実測: 25 秒待っても
+ * `currentTime` が 20 秒まで進み、停滞と見なされなかった）。
+ *
+ * ライブ形（`#EXT-X-ENDLIST` を付けず、載せるセグメントを絞る）にすると
+ * **先読みできるのは窓のぶんだけ**になり、載せた本数を増やさなければ再生は
+ * 数秒で止まる（= 「配信が止まった」）。復旧は本数を増やすことで表せる。
+ *
+ * **セグメントの長さと URI はフィクスチャのプレイリストから写す。**
+ * `#EXTINF` を 2 秒と書いても実体は 10 秒なので、値が食い違うと
+ * 「3 本 = 6 秒」のつもりが 30 秒になり、停滞が起きない（実際に踏んだ）。
+ * URI に `segments/` を付けるのも必須である --- プレイリスト自身の URL は
+ * `.../live/playlist.m3u8` なので、裸名だと `.../live/segment_000.ts` に解決され、
+ * 配信側のルート（`.../live/segments/{name}`）と食い違って 404 になる
+ * （streamer が `-hls_base_url segments/` を書いている理由そのもの。
+ * `internal/streamer/live.go`）。裸名で組んだ版は**1 本もロードされず**
+ * `readyState=0` のまま何も再生されなかった。
+ *
+ * 入力は `[duration, uri]` の配列（フィクスチャの VOD プレイリストから読む）。
+ */
+function livePlaylistWith(segments, count) {
+  const targetDuration = Math.max(...segments.map(([duration]) => duration))
+  const lines = [
+    '#EXTM3U',
+    '#EXT-X-VERSION:6',
+    `#EXT-X-TARGETDURATION:${targetDuration}`,
+    '#EXT-X-MEDIA-SEQUENCE:0',
+    '#EXT-X-INDEPENDENT-SEGMENTS',
+  ]
+  for (const [duration, uri] of segments.slice(0, count)) {
+    lines.push(`#EXTINF:${duration.toFixed(6)},`, uri)
+  }
+  return lines.join('\n') + '\n'
+}
+
+/**
+ * readFixtureSegments はフィクスチャの VOD プレイリストから `[duration, uri]` を
+ * 読む（長さと URI を写すため。上記参照）。
+ */
+function readFixtureSegments() {
+  const lines = readFileSync(PLAYLIST_PATH, 'utf8').split('\n')
+  const segments = []
+  for (let i = 0; i < lines.length; i++) {
+    const match = /^#EXTINF:([\d.]+),/.exec(lines[i].trim())
+    if (match) segments.push([Number(match[1]), lines[i + 1].trim()])
+  }
+  return segments
+}
+
+/**
+ * fixtureSegments はフィクスチャのセグメント（長さと URI）を返す。
+ *
+ * **モジュールの読み込み時に読んではならない。** フィクスチャは `ensureFixture` が
+ * ffmpeg で作る（初回は存在しない）ので、読み込み時に読むと **`ENOENT` で
+ * スクリプトごと落ちる** --- ffmpeg が無い環境で「未測定としてスキップ」も
+ * 自動生成もできなくなる。使うのは ⑪ の中（`hasFixture` の内側）だけなので、
+ * そこまで遅らせて 1 回だけ読む。
+ */
+let cachedFixtureSegments = null
+function fixtureSegments() {
+  if (cachedFixtureSegments === null) cachedFixtureSegments = readFixtureSegments()
+  return cachedFixtureSegments
 }
 
 const liveSegmentsPathOf = (serviceId) => `/services/${serviceId}/live/segments/`
@@ -330,6 +398,16 @@ async function mockLiveRoutes(page, mode) {
   })
 
   await page.route('**/live/playlist.m3u8*', async (route) => {
+    // ライブ形（⑪）。**毎回読むので、`mode.liveSegmentCount` を増やすと
+    // 次の再取得から新しいセグメントが載る**（= 配信の復旧を表せる）
+    if (mode.liveSegmentCount !== undefined) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/vnd.apple.mpegurl',
+        body: livePlaylistWith(fixtureSegments(), mode.liveSegmentCount),
+      })
+      return
+    }
     if (mode.playlist === 'error') {
       await route.fulfill({
         status: 503,
@@ -365,6 +443,9 @@ async function mockLiveRoutes(page, mode) {
       return
     }
     await new Promise((r) => setTimeout(r, segmentDelayMs))
+    // **実際に配った本数を数える**（⑪ が「配信が戻った」ことを配信側でも
+    // 確かめるため。応答を止める `hang` では数えない）
+    mode.servedSegments = (mode.servedSegments ?? 0) + 1
     // この `video/mp2t` は streamer の実装値の写し（`internal/streamer/live.go`）。
     // フロントの再生経路判定（`lib/live.ts` の `supportsNativeHls`）がこの値に
     // 依存しているが、**ここでモックしている以上、この e2e は Go 側が別の
@@ -594,8 +675,13 @@ try {
 const hasFixture = ensureFixture()
 if (hasFixture) ensureCaptionFixture()
 if (!hasFixture) {
-  log('ffmpeg が見つからないため、フィクスチャを生成できない。①②③④⑤⑧ をすべて測れないとして報告する')
-  skipped.push('ffmpeg が無いため①②③④⑤⑧すべて未測定')
+  log(
+    'ffmpeg が見つからないため、フィクスチャを生成できない。' +
+      '①②③④⑤⑧（フィクスチャを使う判定）③⑥⑦⑨⑩⑪ をすべて測れないとして報告する',
+  )
+  // **未測定を「すべて期待どおり」に混ぜない。** フィクスチャが無いと ⑦⑨⑩⑪ も
+  // 一度も走らないので、数え漏らすと何も測っていない緑になる
+  skipped.push('ffmpeg が無いため ①②③④⑤⑧（と ⑥⑦⑨⑩⑪）すべて未測定')
 }
 
 if (hasFixture) {
@@ -1242,10 +1328,20 @@ if (hasFixture) {
   //   404  → `error` が出る（`video.error` は code 3）
   //   応答なし → `error` は出ず `stalled` だけが出る（3.6 秒後）
   // 片方だけ見ると、もう片方を落とす実装変更を通してしまう
+  //
+  // **応答なしの窓は 30 秒では足りない（実測 31.5 秒）。** 自動降格（issue #871）が
+  // 猶予の満了で 1 回挟まるためで、そこから更に 1 窓ぶん待って初めてエラー表示に
+  // 落ちる（降格先が無ければそこでエラーになる）。降格の導入前は 30 秒で
+  // 足りていた。**窓そのものが「黒いままにならない」の上限である** --- 判定は
+  // 「窓の中でエラー表示と再読み込みが出るか」しか見ないので、窓を広げすぎると
+  // 遅延の退行（例: 閾値を 25 秒にすると約 57 秒）を黙って通す。実測 31.5 秒に
+  // 対して余裕を残した 40 秒にする（この e2e のフィクスチャはプロファイル 2 件
+  // なので降格は高々 1 回。3 件以上ある実運用では、段が尽きるまで降格を試すので
+  // この待ち時間はプロファイル数に比例して伸びる）
   log('\n=== ⑦ ネイティブ経路のメディア失敗（WebKit） ===')
   for (const [label, segments, timeout] of [
     ['セグメントが 404', '404', 20000],
-    ['セグメントが応答しない', 'hang', 30000],
+    ['セグメントが応答しない', 'hang', 40000],
   ]) {
     const browser = await launchBrowser('webkit')
     try {
@@ -1255,6 +1351,7 @@ if (hasFixture) {
       await clickPlay(page)
 
       let shown = false
+      const shownStartedAt = Date.now()
       try {
         await page.getByText('ライブ視聴でエラーが発生しました。').waitFor({ timeout })
         await page.getByRole('button', { name: '再読み込み' }).waitFor({ timeout: 5000 })
@@ -1262,6 +1359,7 @@ if (hasFixture) {
       } catch {
         shown = false
       }
+      const shownAfterMs = Date.now() - shownStartedAt
       const detail = await page.evaluate(() => {
         const v = document.querySelector('video')
         return {
@@ -1270,7 +1368,7 @@ if (hasFixture) {
           err: v?.error ? v.error.code : null,
         }
       })
-      log(`  ${label}: エラー表示 + 再読み込み = ${shown ? 'YES' : 'NO'}`)
+      log(`  ${label}: エラー表示 + 再読み込み = ${shown ? 'YES' : 'NO'}（${shownAfterMs} ms）`)
       log(`    readyState=${detail.readyState} video.error=${detail.err}`)
       if (!shown) {
         ng.push(
@@ -1283,6 +1381,325 @@ if (hasFixture) {
     } finally {
       await browser.close()
     }
+  }
+}
+
+if (hasFixture) {
+  // --- ⑪ 停滞したときに画質が 1 段下がる（M4-23 / issue #871） ---
+  //
+  // **jsdom では原理的に作れない状況である。** 実際に映像が止まる（`currentTime` が
+  // 進まない）状態は、実ブラウザでセグメントの応答を止めないと現れない。判定の
+  // 純関数（`lib/live.ts`）と配線（`live-player.test.tsx`）はユニットテストが
+  // 見ているが、「実ブラウザで停滞させると実際に 1 段下がる」ことはここでしか
+  // 出ない。
+  //
+  // **両方向を見る。** 自動（`?profile=` なし）では下がり、利用者が明示的に
+  // 選んだ画質（`?profile=hd`）では下がらない。後者を「下がらない」だけで
+  // 確かめると空虚な成功になる（そもそも判定が一度も走っていなくても動く）ので、
+  // **同じ壊し方・同じ待ち時間で自動側が実際に下がることを前者が示している**
+  // ことを前提に、同じ窓だけ待って下がらないことを見る。
+  //
+  // **どの assert がどの回帰を捕まえるか**（実測で確認した。再現するときは
+  // 実装を一時的に壊し、`cd web && npm run build` してからこのスクリプトを
+  // 走らせる。**壊すのはコンパイルが通る形にすること** --- 型エラーでビルドが
+  // 落ちると、前のバンドルを測ったまま「緑」になる）:
+  //
+  // | 壊し方 | 落ちる assert |
+  // |---|---|
+  // | 降格を止める（`onStalled` を渡さない） | 自動の要求・通知・セレクタの 3 件 |
+  // | 再開を止める（`preserved.playing` を常に false に固定） | 自動の「復旧後に進んだ」 |
+  // | 実再生の前提を壊す（`play()` を `pause()` に） | 前提 + 上記 4 件 |
+  // | 復旧させない（プレイリストを伸ばさない） | 自動の再開と、明示側の対照 |
+  //
+  // 離脱ヒント 0 件の判定は、**現在の配線では原理的に落ちない**（ヒントの effect
+  // の依存に `profile` が無い）。依存に足す・`key` で作り直す回帰が来たときの
+  // ための位置づけである。
+  //
+  // **停滞は「ライブの窓が伸びない」ことで作る。** 窓に載るセグメントを 1 本に
+  // 絞って配り（`livePlaylistWith`）、再取得しても本数を増やさないと、hls.js は
+  // そのぶんを再生し切ったところで進まなくなる。**セグメントの応答を止める
+  // （`hang`）のは効かない** --- 窓を絞ると停滞の窓の中では新しいセグメントを
+  // 取りに行かないので、止めても止めなくても降格は同じ時刻（実測 22,184 ms /
+  // 22,188 ms）で起きる（フィクスチャ全体は 4 本 × 10 秒 = 40 秒。`-hls_time 2`
+  // は `-g` を指定していないので効いておらず、`#EXT-X-TARGETDURATION:10` である）。
+  log('\n=== ⑪ 停滞したときの画質の自動降格（issue #871） ===')
+  const downgraded = E2E_LIVE_PROFILES[1]
+  // 停滞の閾値（`liveStallTimeoutMs` = 12 秒）+ 窓 1 本ぶん（セグメント長 10 秒）
+  // + hls.js のポーリング 1 秒 + probe / アタッチの時間。**判定の窓と同じ長さを
+  // 両方向に使う**（片方だけ長くすると「下がらない」の側が空虚になる）。
+  // 実測の降格は 22,184〜23,263 ms（5 回）なので、30 秒で 7〜8 秒の余裕を取る
+  // （25 秒だと余裕が 1.7〜2.8 秒しかなく、実行間の振れが 1.1 秒あった）
+  const stallWaitMs = 30_000
+  // 復旧を待つ窓。**hls.js のプレイリスト再取得間隔は target duration（10 秒）
+  // なので、位相が最悪だと復旧の反映に 10 秒以上かかる**（実測の復帰は 4 回とも
+  // 500 ms 以内だったが、それは再取得がたまたま直後に来たため）
+  const recoverWaitMs = 2 * Math.max(...fixtureSegments().map(([duration]) => duration)) * 1000 + 5000
+
+  /** readCurrentTime は `<video>` の現在位置（秒。無ければ null）。 */
+  async function readCurrentTime(page) {
+    return page.evaluate(() => {
+      const v = document.querySelector('video')
+      return v ? v.currentTime : null
+    })
+  }
+
+  /**
+   * waitForProgress は配信の復旧後に `currentTime` が進むのを待つ。
+   *
+   * **`paused` も返す** --- 「進まなかった」の原因が一時停止なのか、データが
+   * 来ていないのかを報告で区別できるようにする。
+   *
+   * **限界**: フィクスチャのセグメントが 10 秒なので、「1 本だけ配って止まる」
+   * 状態までは区別できない（0.2 秒進んだところで合格する）。そこは配った
+   * セグメント数（呼び出し側が `mode.servedSegments` で数える）と組み合わせて
+   * 見る。厳密に見るなら 2 秒セグメントのフィクスチャが要る（`ensureFixture` の
+   * `-g` を指定していないため今は 10 秒になっている）。
+   */
+  async function waitForProgress(page, timeoutMs = 12000) {
+    let previous = await readCurrentTime(page)
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      await page.waitForTimeout(500)
+      const sample = await page.evaluate(() => {
+        const v = document.querySelector('video')
+        return { currentTime: v?.currentTime ?? 0, paused: v?.paused ?? true }
+      })
+      // **`paused` も要求する。** `load()` の直後は一時停止したままでも
+      // `currentTime` が少し進むことがあり、「進んだ」だけでは
+      // 「利用者がもう一度再生を押す必要がある」状態を見逃す（実測: 再開の
+      // コードを外した版で `advanced=true, paused=true` になった）
+      if (sample.currentTime > (previous ?? 0) + 0.2 && !sample.paused) {
+        return { advanced: true, currentTime: sample.currentTime, paused: sample.paused }
+      }
+      previous = Math.max(previous ?? 0, sample.currentTime)
+    }
+    const last = await page.evaluate(() => {
+      const v = document.querySelector('video')
+      return { currentTime: v?.currentTime ?? 0, paused: v?.paused ?? true }
+    })
+    return { advanced: false, currentTime: last.currentTime, paused: last.paused }
+  }
+
+  /**
+   * stallCheck は 1 方向ぶんを実行し、観測したものを返す。
+   *
+   * **手順が要点である。** まずセグメントを配って**実再生させる**（`currentTime` が
+   * 進むことを確かめる）。そのうえで配信を止め、停滞の判定を待つ。最後に配信を
+   * 復旧させ、**再生が続くか**を見る。
+   *
+   * 最初に実再生させないと 2 つの意味が壊れる。(1) 「停滞」が回線の停滞ではなく
+   * 「そもそも一度も再生できなかった」ことになる。(2) 切替の cleanup が読む
+   * `paused` が true のままになり、利用者が再生していた場合の経路（切替の後に
+   * 再生を再開する）を一度も通らない。実際、実再生を挟まない版では
+   * `preserved.playing` が false になり、降格後も `paused=true` のままで
+   * 何も検証できていなかった。
+   *
+   * **復旧のあとに再生が進むことは両方向で見る。** 切替を挟まない側（明示選択）
+   * が自動で復帰するので、切替を挟んだ側が復帰しなければ差分は切替に帰せる。
+   */
+  async function stallCheck(browser, path) {
+    const page = await browser.newPage({ viewport: { width: 960, height: 640 } })
+    const playlists = []
+    const leaves = []
+    page.on('request', (req) => {
+      if (req.url().includes('/live/playlist.m3u8')) playlists.push(req.url())
+      if (req.url().includes('/live/leave')) leaves.push(req.url())
+    })
+    /**
+     * mode は書き換えると以降の応答が変わる（`mockLiveRoutes` が毎回読む）。
+     * **ライブ形で始める**（先読みを窓のぶんに限る。`livePlaylistWith` の説明）。
+     */
+    const mode = { playlist: 'ok', segments: 'ok', liveSegmentCount: 1 }
+    await mockLiveRoutes(page, mode)
+    await page.goto(`${BASE_URL}${path}`, { waitUntil: 'domcontentloaded' })
+    await clickPlay(page)
+    await page.waitForFunction(mseAttached, undefined, { timeout: 15000 })
+    // **再生を押す（`paused` を false にする）。** `<video>` に `autoPlay` は
+    // 無く、`paused` の間は `currentTime` が進まないのが正常なので、押さないと
+    // 判定は一度も走らない
+    await page.evaluate(() => {
+      document.querySelector('video').play()?.catch(() => {})
+    })
+    // 実際に映像が進んだことを確かめてから止める（上のコメント参照）
+    let playedTo = null
+    try {
+      await page.waitForFunction(
+        () => (document.querySelector('video')?.currentTime ?? 0) > 0.2,
+        undefined,
+        { timeout: 15000 },
+      )
+      playedTo = await readCurrentTime(page)
+    } catch {
+      playedTo = null
+    }
+    // 配信を止める（プレイリストを伸ばさない = 新しいセグメントを配らない）
+
+    const startedAt = Date.now()
+    const wanted = `profile=${downgraded.name}`
+    while (Date.now() - startedAt < stallWaitMs) {
+      if (playlists.some((u) => u.includes(wanted))) break
+      await page.waitForTimeout(200)
+    }
+    const elapsedMs = Date.now() - startedAt
+    const notice = await page
+      .getByTestId('live-quality-downgraded')
+      .textContent({ timeout: 2000 })
+      .catch(() => null)
+    const selected = await page.evaluate(() => {
+      const el = document.querySelector('select[aria-label="画質"]')
+      return el instanceof HTMLSelectElement ? el.value : null
+    })
+    const crossed = playlists.some((u) => u.includes(wanted))
+
+    // 配信を復旧させる（プレイリストを伸ばす = 新しいセグメントを配る）
+    mode.liveSegmentCount = segmentCount
+    const servedBefore = mode.servedSegments
+    const resumed = await waitForProgress(page, recoverWaitMs)
+    // **「復旧した」ことを配信側でも確かめる。** `currentTime` が進んだだけでは
+    // 「切替で 0 秒から読み直して、その 1 本を再生した」場合と区別できない
+    // （新しいデータが届いていなければ、そもそも resume の `canplay` も来ない）
+    const served = (mode.servedSegments ?? 0) - servedBefore
+    log(
+      `  ${path} → 実再生 t=${playedTo === null ? 'なし' : playedTo.toFixed(2)}` +
+        ` / ${elapsedMs} ms で ${wanted} の要求: ${crossed ? 'あり' : 'なし'}` +
+        ` / 通知: ${notice === null ? 'なし' : JSON.stringify(notice)}` +
+        ` / 画質セレクタ: ${JSON.stringify(selected)}` +
+        ` / 離脱ヒント: ${leaves.length} 件` +
+        ` / 復旧後: 進んだ=${resumed.advanced}（t=${resumed.currentTime?.toFixed(2)},` +
+        ` paused=${resumed.paused}, 配ったセグメント=${served} 本）`,
+    )
+    await page.close()
+    return { playlists, leaves, notice, selected, crossed, elapsedMs, playedTo, resumed, served }
+  }
+
+  /**
+   * segmentCount はフィクスチャに実在するセグメントの本数。
+   *
+   * **窓の大きさをここから導く。** 実在しない本数を載せたプレイリストを配ると
+   * そのセグメントは 404 になり、hls.js は致命的なエラーで停止して
+   * `readyState=0` に戻る（実際に 10 本を載せた版で踏んだ）。
+   *
+   * フィクスチャは 4 本 × 10 秒 = 40 秒である（`-t 40` / `-hls_time 2` だが
+   * `-g` を指定していないのでキーフレームは 10 秒間隔になり、セグメントも
+   * 10 秒になる。`#EXT-X-TARGETDURATION:10`）。
+   */
+  const segmentCount = existsSync(SEGMENTS_DIR)
+    ? readdirSync(SEGMENTS_DIR).filter((f) => /^segment_\d+\.ts$/.test(f)).length
+    : 0
+  const segmentDurationMs = fixtureSegments()[0][0] * 1000
+  log(`  フィクスチャのセグメント: ${segmentCount} 本 × ${segmentDurationMs / 1000} 秒`)
+
+  const stallBrowser = await launchBrowser()
+  try {
+    // 方向 1: 自動（`?profile=` がない）→ 1 段下がり、そのまま再生が続く
+    const auto = await stallCheck(stallBrowser, `/live?service=${SERVICE_ID_A}`)
+    // 停滞を作る前提（実再生していたこと）が崩れていないかを見る。崩れていると
+    // 以下の「再開しない」の判定が別の理由（元から止まっていた）で通ってしまう
+    if (segmentCount < 4) {
+      ng.push(
+        `⑪ フィクスチャのセグメントが足りない（${segmentCount} 本）。` +
+          ' `E2E_LIVE_REBUILD_FIXTURE=1` で作り直す（判定の前提）',
+      )
+    }
+    if (auto.playedTo === null) {
+      ng.push(
+        '⑪ 停滞を作る前に実再生できていない（currentTime が 0.2 を超えない。' +
+          ' フィクスチャか経路を疑う。判定の前提が崩れている）',
+      )
+    }
+    if (auto.playlists[0]?.includes('profile=')) {
+      ng.push(
+        `⑪ 自動の判定になっていない（最初の要求に ?profile= が載っている: ` +
+          `${JSON.stringify(auto.playlists[0] ?? null)}）`,
+      )
+    }
+    if (!auto.crossed) {
+      ng.push(
+        `⑪ 停滞させても ${downgraded.name} のプレイリストを取りに行かない` +
+          `（${stallWaitMs} ms 待った。最初の要求: ${JSON.stringify(auto.playlists[0] ?? null)}）`,
+      )
+    }
+    if (auto.notice === null || !auto.notice.includes(downgraded.name)) {
+      ng.push(
+        '⑪ 自動で画質を下げたことが画面に出ない' +
+          `（黙って画質が落ちると「汚くなった」と読める。通知: ${JSON.stringify(auto.notice)}）`,
+      )
+    }
+    if (auto.selected !== downgraded.name) {
+      ng.push(
+        `⑪ 下げた後も画質セレクタの表示が下げた先と違う（${JSON.stringify(auto.selected)}、` +
+          `期待 ${downgraded.name}）`,
+      )
+    }
+    // **降格の目的は「見え続けられること」である。** セグメントを復旧させた後に
+    // 映像が進んでいなければ、画質だけ下げて黒いままという状態になる
+    if (auto.crossed && !auto.resumed.advanced) {
+      ng.push(
+        '⑪ 画質を下げた後に再生が続かない' +
+          `（配信を復旧させても currentTime が ${auto.resumed.currentTime?.toFixed(2)} で` +
+          ` 止まったまま。paused=${auto.resumed.paused}。切替の cleanup が load() で` +
+          ' paused に戻し、誰も再生を再開していない）',
+      )
+    }
+    // **配信側でも確かめる。** `currentTime` が 0.2 秒進んだだけでは「切替で 0 秒から
+    // 読み直して 1 本を再生した」場合と区別できない（再開の `canplay` 自体は
+    // 新しいデータが届かないと来ないので、両方見る）
+    if (auto.resumed.advanced && auto.served === 0) {
+      ng.push(
+        '⑪ 画質を下げた後に再生は進んだが、配信側は 1 本も新しいセグメントを' +
+          ' 配っていない（切替前のバッファを再生しただけの可能性がある）',
+      )
+    }
+    // 離脱ヒント（= セッションを手放す合図）は送らない。画質の切替は同じ
+    // セッションの別プレイリストを取るだけである（docs/frontend/live.md）。
+    // **現在の配線では原理的に落ちない**（ヒントの effect の依存に `profile` が
+    // 無いので、降格では再実行されない）が、依存に足す・`key` で作り直すといった
+    // 回帰が来たら落ちる位置に置いておく
+    if (auto.leaves.length > 0) {
+      ng.push(`⑪ 画質の自動降格で離脱ヒントが飛んだ（${auto.leaves.length} 件）`)
+    }
+
+    // 方向 2: 明示選択（`?profile=hd`）→ 下げない。**要求が 1 件のままであること
+    // まで見る**（`profile=sd` を探すだけでは、別の再取得が起きたことを見逃す）
+    const explicit = await stallCheck(stallBrowser, `/live?service=${SERVICE_ID_A}&profile=hd`)
+    if (!explicit.playlists.some((u) => u.includes('profile=hd'))) {
+      ng.push(
+        `⑪ 明示選択の判定になっていない（最初の要求に profile=hd が無い: ` +
+          `${JSON.stringify(explicit.playlists[0] ?? null)}）`,
+      )
+    }
+    if (explicit.crossed) {
+      ng.push(
+        `⑪ 利用者が明示的に選んだ画質を自動が上書きした（${downgraded.name} の` +
+          ' プレイリストを取りに行った）',
+      )
+    }
+    // **同じ URL の再取得は数えない**（hls.js は target duration ごとにプレイリストを
+    // 取り直す。実測 6〜7 件）。見るのは「**他の**プロファイルを取りに行かないこと」
+    if (explicit.playlists.some((u) => !u.includes('profile=hd'))) {
+      ng.push(
+        `⑪ 明示選択のときに別プロファイルのプレイリストを要求した（` +
+          `${JSON.stringify(explicit.playlists)}）`,
+      )
+    }
+    if (explicit.notice !== null) {
+      ng.push('⑪ 明示選択のときに自動降格の通知が出た')
+    }
+    // 対照: 切替を挟まない側は、配信が戻れば自動で再生が続く。これが成立して
+    // いなければ「復旧後の再生」の判定自体が成立していない（自動側の NG を
+    // 切替のせいにできない）
+    if (!explicit.resumed.advanced || explicit.served === 0) {
+      ng.push(
+        '⑪ 明示選択の側でも配信の復旧後に再生が続かない' +
+          `（currentTime ${explicit.resumed.currentTime?.toFixed(2)}、` +
+          `paused=${explicit.resumed.paused}。切替を挟まないので、これは降格とは` +
+          ' 別の要因。⑪ の「復旧後の再生」の判定が成立していない）',
+      )
+    }
+  } catch (err) {
+    ng.push(`⑪ 自動降格の検証中に例外が発生した: ${err.message}`)
+  } finally {
+    await stallBrowser.close()
   }
 }
 

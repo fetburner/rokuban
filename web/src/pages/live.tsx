@@ -19,9 +19,11 @@ import {
   currentProgramWindow,
   formatLiveDiagnostics,
   liveProfileLabel,
+  nextLowerProfile,
   pickInitialService,
   validLiveProfile,
   type LiveDiagnostics,
+  type StallHandling,
 } from '@/lib/live'
 import { upcomingInterruptingReservation } from '@/lib/live-interruption'
 import { channelTypeLabel, groupByChannelType, orderServices } from '@/lib/epg-grid'
@@ -109,23 +111,47 @@ export function LivePage() {
   // （`internal/streamer/live.go` の `Playlist`）、旧ブックマーク・綴り違いの
   // 共有リンクをエラー画面にしない。
   //
-  // **既定（`activeProfile`）はサーバー側の先頭**で、フロントで並びを変えない。
+  // **既定はサーバー側の先頭**で、フロントで並びを変えない。
   // URL には明示的に選んだ値だけを載せる（既定を URL に書き戻さない）。
   //
-  // **`LivePlayer` に渡すのは `explicitProfile` であって `activeProfile` ではない
-  // （レビュー指摘）。** `activeProfile` は一覧から導出した既定なので、一覧が
-  // 「再生」を押した後に届くと `undefined → 'hd'` に変わり、probe の effect が
-  // 再実行されて `<video>` が作り直される = **先頭から再生し直し**になる
-  // （実測: `/api/live-profiles` を保留したまま再生を押すと playlist 要求が
-  // 2 件飛ぶ）。`?profile=` を省略したときのサーバー側の既定も同じ先頭
-  // プロファイルなので、`explicitProfile` で挙動は変わらない
-  // （`docs/frontend/live.md`「既定は URL に書き戻さない」と同じ理由）。
+  // **`LivePlayer` に渡すのは `explicitProfile` であって、ここで導出した既定ではない
+  // （レビュー指摘）。** 既定を渡すと、一覧が「再生」を押した後に届いたときに
+  // `undefined → 'hd'` に変わって probe の effect が再実行され、`<video>` が
+  // 作り直される = **先頭から再生し直し**になる（実測: `/api/live-profiles` を
+  // 保留したまま再生を押すと playlist 要求が 2 件飛ぶ）。`?profile=` を省略した
+  // ときのサーバー側の既定も同じ先頭プロファイルなので、`undefined` のままで
+  // 挙動は変わらない（`docs/frontend/live.md`「既定は URL に書き戻さない」と同じ理由）。
   const liveProfiles = useMemo(() => unwrap(liveProfilesQuery.data) ?? [], [liveProfilesQuery.data])
   const explicitProfile = useMemo(
     () => validLiveProfile(liveProfiles, routeSearch.profile),
     [liveProfiles, routeSearch.profile],
   )
-  const activeProfile = explicitProfile ?? liveProfiles[0]?.name
+  // autoQuality は停滞時に自動で下げた先（issue #871）と、**それを下げた再生の
+  // 同定**（`playingKey`）である。**URL には書かない。** 書き戻すと「利用者が
+  // 明示的に選んだ」のと同じ形になり、その場の回線事情が共有リンクに焼き付く。
+  // さらに **`?profile=` の有無がそのまま「明示選択かどうか」の状態**になるので、
+  // 手で選び直したら自動が止まる、が追加コードなしで成立する（選び直すと
+  // `?profile=` が付く）。
+  //
+  // **画質そのものはチャンネルを切り替えても保つ**（既存の決定。画質は「この局」
+  // ではなく「この端末の回線」の性質である）。**通知は保たない** --- 再生の同定を
+  // 持つのはそのためで、切り替えた先のチャンネルで「映像が止まったため下げました」
+  // と言うのは事実と食い違う。
+  //
+  // **一覧に照合する**（`validLiveProfile`）。`GET /api/live-profiles` は実行時に
+  // 入れ替わりうるので、消えたプロファイルを `LivePlayer` に渡すと
+  // streamer が 400（`unknown live profile`）を返す。
+  const [autoQuality, setAutoQuality] = useState<{ name: string; key: string | null } | null>(null)
+  const autoProfile = validLiveProfile(liveProfiles, autoQuality?.name)
+  // **`LivePlayer` に渡すのは `explicitProfile ?? autoProfile`** である。どちらも
+  // `undefined` のときは `undefined` を渡す（= `?profile=` を付けない = サーバー側の
+  // 既定）。**導出した既定（先頭）をここで渡してはならない** --- 一覧が遅れて
+  // 届くと `undefined → 'hd'` に変わって probe の effect が再実行され、
+  // 再生が先頭からやり直しになる（`web/e2e/live.mjs` ⑨ が実ブラウザで見ている）。
+  const effectiveProfile = explicitProfile ?? autoProfile
+  // セレクタの表示は実効プロファイル。一覧が 1 件以下のときはセレクタ自体を
+  // 出さないので、ここが `undefined` でも表示には現れない
+  const selectedProfile = effectiveProfile ?? liveProfiles[0]?.name
 
   // **URL が画質を名指ししているときだけ、一覧の到着を待ってから再生させる。**
   // 上の理由と同じ窓を塞ぐためである --- 名指しされた値の実在は一覧が無いと
@@ -180,8 +206,57 @@ export function LivePage() {
   const [playingKey, setPlayingKey] = useState<string | null>(null)
   if (playingKey !== null && playingKey !== selectedKey) {
     setPlayingKey(null)
+    // 画質（autoQuality.name）は回線の性質として保つが、通知の同定だけは
+    // チャンネル切替で切る。元のチャンネルへ戻って再生したときに、過去の通知を
+    // 「この再生で下げた」と誤表示しないためである。
+    if (autoQuality?.key !== null && autoQuality !== null) {
+      setAutoQuality({ name: autoQuality.name, key: null })
+    }
   }
   const isPlaying = playingKey !== null && playingKey === selectedKey
+
+  // 自動で下げた先の 1 件（**この再生で下げたときだけ**。下げた後で一覧から
+  // 消えていれば `undefined`）。通知に出す表示名（`sd（480p）`）のために高さも
+  // 要るので、名前ではなく一覧の 1 件を持つ。
+  const autoDowngradedProfile =
+    explicitProfile === undefined &&
+    autoQuality !== null &&
+    autoQuality.key === playingKey &&
+    autoProfile !== undefined
+      ? liveProfiles.find((p) => p.name === autoProfile)
+      : undefined
+
+  // 停滞したときに 1 段下げる（issue #871）。`LivePlayer` から呼ばれ、
+  // `true` を返すと「引き取った」= エラー表示に落ちない。
+  //
+  // **明示選択のときは下げない。** 利用者が選んだ画質を勝手に変えない
+  // （`onStalled` はまだ渡す --- エラー表示に落ちるかどうかは `LivePlayer` 側の
+  // 「下げられたか」で決まる）。
+  //
+  // **一覧がまだ届いていないときは `'wait'`。** `liveProfiles` が空だと
+  // `nextLowerProfile` は「下げ先が無い」と同じ `undefined` を返すので、そのまま
+  // `false` にすると**その再生では二度と試さない**（hls.js 経路の観測は一度
+  // 判定すると止まる）。ここで区別して返すと、一覧の到着後の次の刻みで再判定される。
+  const handleStalled = (): StallHandling => {
+    if (explicitProfile !== undefined) return false
+    // **未着だけでなく「一時的な取得失敗」も `'wait'` にする。** 失敗すると
+    // `isPending` は false に戻り一覧は空のままなので、ここで `false` を返すと
+    // 観測が `done` になり、その再生では以後の停滞で二度と試さない
+    // （再取得が成功しても復旧しない）。判断材料が「空の一覧」なのか
+    // 「まだ来ていない」のかを区別する。
+    //
+    // **`isError` の 1 分岐だけはユニットテストで固定されていない。** これが変える
+    // 観測は hls.js 経路（次段を試し続けるかどうか）にしか現れず、
+    // `pages/live.test.tsx` は hls.js 経路を駆動できない（jsdom に MediaSource が
+    // 無く `Hls.isSupported()` が false になる）。ネイティブ経路では `'wait'` と
+    // `false` の観測が同じ（どちらも現行のエラー文言）。分岐を消すよりは、
+    // 再取得で回復しうることを優先する
+    if (liveProfilesQuery.isPending || liveProfilesQuery.isError) return 'wait'
+    const next = nextLowerProfile(liveProfiles, effectiveProfile)
+    if (next === undefined) return false
+    setAutoQuality({ name: next, key: playingKey })
+    return true
+  }
 
   // diagnostics は遅延・バッファの計器（issue #476）。値の取得は `LivePlayer`
   // が担うが、表示は ON AIR バッジと同じ情報欄に置くのでこちらで持つ
@@ -288,7 +363,8 @@ export function LivePage() {
                 site={selectedService.site}
                 networkId={selectedService.networkId}
                 serviceId={selectedService.serviceId}
-                profile={explicitProfile}
+                profile={effectiveProfile}
+                onStalled={handleStalled}
                 onDiagnostics={setDiagnostics}
               />
             ) : (
@@ -325,6 +401,22 @@ export function LivePage() {
                   </span>
                 )}
               </div>
+              {/* 自動で下げたことの通知（issue #871）。**トーストにしない** ---
+                  消えた後に「なぜ汚いのか」を知る手段が無くなる。ON AIR バッジ・
+                  計器と同じ情報欄に残す。**原因を断定しない**（「回線が細い」とは
+                  書かない。測っていない）し、帯域の推定値も出さない。
+                  この 1 行だけ `aria-live` を持つ --- 計器が持たないのは毎秒
+                  変わるからで、こちらは 1 回の出来事である。 */}
+              {isPlaying && autoDowngradedProfile && (
+                <p
+                  data-testid="live-quality-downgraded"
+                  aria-live="polite"
+                  className="mt-1 text-sm text-muted-foreground"
+                >
+                  映像が止まったため、画質を{' '}
+                  {liveProfileLabel(autoDowngradedProfile)}に下げました
+                </p>
+              )}
               {nowPlaying ? (
                 <p className="text-sm text-muted-foreground">
                   <span>
@@ -349,14 +441,19 @@ export function LivePage() {
                   コントロール」に戻る（issue #209 と同じ規律）。一覧が空に
                   なるのは `live.profiles` が未定義のときだけである
                   （`live.enabled: false` でも定義があれば返る）。
-                  `selected` は controlled なので、URL が未知の名前を運んで
-                  いても `activeProfile`（= 既定の先頭）に一致して表示される。 */}
+                  表示は実効プロファイル（`selectedProfile`）に一致させるので、
+                  URL が未知の名前を運んでいても既定の先頭に一致し、**自動で
+                  下げた後は下げた先が選ばれて見える**（issue #871）。
+                  **その副作用として「自動で下がった段と同じ値を選んで自動を
+                  止める」ことはできない**（`change` が発火しない）。別の段を
+                  選べば止まる。セレクタに「自動」を常設しない判断の帰結である
+                  （`docs/frontend/live.md` §フロントエンド実装）。 */}
               {liveProfiles.length > 1 && (
                 <label className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
                   <span>画質</span>
                   <select
                     aria-label="画質"
-                    value={activeProfile}
+                    value={selectedProfile}
                     onChange={(e) => selectProfile(e.target.value)}
                     className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none"
                   >

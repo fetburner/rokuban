@@ -8,13 +8,19 @@ import {
   classifyLiveLoadError,
   currentProgramWindow,
   formatLiveDiagnostics,
+  isMasterPlaylist,
   liveLeaveURL,
   livePlaylistURL,
+  createStallTracker,
+  nextLowerProfile,
+  nextProgressWatch,
+  observeStall,
   pickInitialService,
   probeLivePlaylist,
   liveProfileLabel,
   readSubtitleVisibility,
   sendLiveLeaveHint,
+  stalledForMs,
   supportsNativeHls,
   validLiveProfile,
 } from '@/lib/live'
@@ -346,12 +352,31 @@ describe('classifyLiveLoadError', () => {
 })
 
 describe('probeLivePlaylist', () => {
-  it('200 なら ok', async () => {
+  it('200 なら ok（本文が variant playlist なら master ではない）', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(() => Promise.resolve(new Response('', { status: 200 }))),
+      vi.fn(() => Promise.resolve(new Response('#EXTM3U\n#EXTINF:2,\nsegments/0.ts', { status: 200 }))),
     )
-    expect(await probeLivePlaylist('/x')).toEqual({ ok: true })
+    expect(await probeLivePlaylist('/x')).toEqual({ ok: true, masterPlaylist: false })
+  })
+
+  /**
+   * **`live.captions: true` のデプロイを自動降格から守る判定**（issue #871）。
+   * そのとき streamer は `?profile=` に関わらず master playlist を返すので、
+   * 気付かないと「下げました」と嘘を表示することになる。
+   */
+  it('本文が master playlist なら masterPlaylist を立てる', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          new Response('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\nplaylist_0.m3u8', {
+            status: 200,
+          }),
+        ),
+      ),
+    )
+    expect(await probeLivePlaylist('/x')).toEqual({ ok: true, masterPlaylist: true })
   })
 
   it('503 なら capacity エラーとして本文を運ぶ', async () => {
@@ -440,6 +465,64 @@ describe('formatLiveDiagnostics', () => {
     const label = formatLiveDiagnostics({ source: 'native', latencySec: null, bufferSec: null })
     expect(label).toBe('先読み—')
     expect(label).not.toMatch(/\bNaN\b/)
+  })
+})
+
+describe('live auto downgrade', () => {
+  const profiles = [
+    { name: 'hd', height: 720 },
+    { name: 'same', height: 720 },
+    { name: 'sd', height: 480 },
+    { name: 'original' },
+  ]
+
+  it('設定順で現在より低い最初の段を選ぶ', () => {
+    expect(nextLowerProfile(profiles, undefined)).toBe('sd')
+    expect(nextLowerProfile(profiles, 'same')).toBe('sd')
+    expect(nextLowerProfile(profiles, 'sd')).toBeUndefined()
+  })
+
+  it('一覧が軽い順でも重い段へ上げない', () => {
+    expect(nextLowerProfile([{ name: 'sd', height: 480 }, { name: 'hd', height: 720 }], undefined)).toBeUndefined()
+  })
+
+  it('height 0/省略は最重として扱う', () => {
+    expect(nextLowerProfile([{ name: 'original' }, { name: 'sd', height: 480 }], undefined)).toBe('sd')
+  })
+
+  it('未知の現在プロファイルからは下げない', () => {
+    expect(nextLowerProfile(profiles, 'missing')).toBeUndefined()
+  })
+
+  it('停滞の閾値は 12 秒で、境界の直前では発火しない', () => {
+    const tracker = createStallTracker()
+    const sample = { paused: false, hidden: false, currentTime: 5 }
+    expect(observeStall(tracker, sample, 0)).toBe(false)
+    expect(observeStall(tracker, sample, 11_999)).toBe(false)
+    expect(observeStall(tracker, sample, 12_000)).toBe(true)
+    // 一度だけ判定する（同じ停滞で毎秒呼び出し側を再実行しない）
+    expect(observeStall(tracker, sample, 24_000)).toBe(false)
+  })
+
+  it('paused / hidden では基準を捨て、復帰後に新しく数え直す', () => {
+    const tracker = createStallTracker()
+    expect(observeStall(tracker, { paused: false, hidden: false, currentTime: 5 }, 0)).toBe(false)
+    expect(observeStall(tracker, { paused: true, hidden: false, currentTime: 5 }, 20_000)).toBe(false)
+    expect(observeStall(tracker, { paused: false, hidden: true, currentTime: 5 }, 40_000)).toBe(false)
+    expect(observeStall(tracker, { paused: false, hidden: false, currentTime: 5 }, 40_001)).toBe(false)
+    expect(observeStall(tracker, { paused: false, hidden: false, currentTime: 5 }, 52_001)).toBe(true)
+  })
+
+  it('currentTime が変われば観測基準を更新し、変わらなければ保持する', () => {
+    const first = nextProgressWatch(null, 1000, 5)
+    expect(nextProgressWatch(first, 2000, 5)).toEqual(first)
+    expect(nextProgressWatch(first, 3000, 4)).toEqual({ progressedAtMs: 3000, currentTime: 4 })
+    expect(stalledForMs(first, 7000)).toBe(6000)
+  })
+
+  it('master playlist は variant 行で判定する', () => {
+    expect(isMasterPlaylist('#EXTM3U\\n#EXT-X-STREAM-INF:BANDWIDTH=1000')).toBe(true)
+    expect(isMasterPlaylist('#EXTM3U\\n#EXTINF:2,\\nsegments/0.ts')).toBe(false)
   })
 })
 

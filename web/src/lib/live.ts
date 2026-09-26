@@ -86,6 +86,191 @@ export function readSubtitleVisibility(
 }
 
 /**
+ * liveStallTimeoutMs は「映像が進んでいない」と見なすまでの猶予（ミリ秒。
+ * 停滞時の自動降格。issue #871。テストから参照するので export する）。
+ *
+ * **ネイティブ HLS 経路の `stalled` / `waiting` の猶予と、hls.js 経路の
+ * 「`currentTime` が進まない」の猶予で同じ値を使う。** どちらも同じ事象
+ * （この回線でこのプロファイルのセグメントが間に合っていない）を別の信号で
+ * 見ているだけなので、別々の値を置くと片方だけ調整されて食い違う。
+ *
+ * 12 秒にしたのは、WebKit が `stalled` を出すのがデータ途絶から 3 秒後
+ * （HTML 仕様の「3 秒以上データが来ない」規定。実測でも 3.6 秒）で、
+ * streamer 側のセグメント長が 2 秒（`internal/streamer/live.go` の
+ * `-hls_time 2`）だから --- 正常なら 3 セグメント以上落ちないと到達しない。
+ */
+export const liveStallTimeoutMs = 12_000
+
+/**
+ * ProgressWatch は「映像が進んでいるか」の観測状態（issue #871）。
+ *
+ * `progressedAtMs` は最後に `currentTime` が動いたと判定した時刻で、
+ * `currentTime` はそのときの値である。**「進んでいない時間」は持たない** ---
+ * 毎回 `nowMs - progressedAtMs` で作り直せるので `stalledForMs` が導出する。
+ */
+export type ProgressWatch = {
+  progressedAtMs: number
+  currentTime: number
+}
+
+/**
+ * nextProgressWatch は観測を 1 回反映した次の状態を返す。
+ *
+ * **`currentTime` が違えば進んだと見なす（`!==`。大小は見ない）。** ライブ同期点の
+ * 補正で `currentTime` は後退しうるし、「進んだ」の判定に `>` を使うと後退の後に
+ * 通常どおり再生が続いても無進捗の時計が止まらない（誤って停滞と読む）。
+ *
+ * `watch` が `null`（観測の基準が無い）なら、この観測を基準にして返す。
+ */
+export function nextProgressWatch(
+  watch: ProgressWatch | null,
+  nowMs: number,
+  currentTime: number,
+): ProgressWatch {
+  if (watch === null || currentTime !== watch.currentTime) {
+    return { progressedAtMs: nowMs, currentTime }
+  }
+  return watch
+}
+
+/**
+ * stalledForMs は最後に映像が進んでからの経過（ミリ秒）。基準が無ければ 0。
+ *
+ * 判定する側が `liveStallTimeoutMs` と比べる（この関数は閾値を持たない）。
+ */
+export function stalledForMs(watch: ProgressWatch | null, nowMs: number): number {
+  return watch === null ? 0 : nowMs - watch.progressedAtMs
+}
+
+/**
+ * StallTracker は停滞の観測状態（issue #871）。
+ *
+ * `done` は「一度停滞と判定して、呼び出し側が下げられなかった」ことを表す ---
+ * 現行の hls.js 経路に停滞の失敗経路は無いので、下げられないと分かった後に
+ * 同じ判定を毎秒繰り返しても何も変わらない。
+ */
+export type StallTracker = { watch: ProgressWatch | null; done: boolean }
+
+/**
+ * StallHandling は停滞の後に呼び出し側が返す扱い。
+ *
+ * `true` は降格を引き取った、`false` はこの再生では下げない、`'wait'` は
+ * 実行時のプロファイル一覧がまだ無く判断材料が足りない、を表す。
+ */
+export type StallHandling = boolean | 'wait'
+
+/** createStallTracker は観測の初期状態を返す（`observeStall` の入力）。 */
+export function createStallTracker(): StallTracker {
+  return { watch: null, done: false }
+}
+
+/**
+ * observeStall は観測を 1 回反映し、**停滞と見なすかどうか**を返す。
+ * `true` を返したら呼び出し側が下げるかどうかを決める（この関数は下げない）。
+ *
+ * **DOM を読まない。** 判定に要るのは「一時停止しているか」「タブが見えているか」
+ * 「いまの再生位置」「いまの時刻」だけなので、呼び出し側（`components/live-player.tsx`）
+ * が読んで `sample` として渡す。こうすると閾値（`liveStallTimeoutMs`）を含む
+ * 判定の本体がここに来て、実時間を使わずにテストできる
+ * （jsdom のタイマーで 12 秒を作る必要が無い）。
+ *
+ * **`paused` の間と非表示タブでは数えず、基準を捨てる（`watch = null`）。**
+ * `<video>` に `autoPlay` は無いので、再生を押す前は `currentTime` が進まないのが
+ * 正常である。非表示タブでは `setInterval` が間引かれるので、捨てないと復帰した
+ * 瞬間の巨大な差分で誤発火する。
+ */
+export function observeStall(
+  tracker: StallTracker,
+  sample: { paused: boolean; hidden: boolean; currentTime: number },
+  nowMs: number,
+): boolean {
+  if (tracker.done) return false
+  if (sample.paused || sample.hidden) {
+    tracker.watch = null
+    return false
+  }
+  tracker.watch = nextProgressWatch(tracker.watch, nowMs, sample.currentTime)
+  if (stalledForMs(tracker.watch, nowMs) < liveStallTimeoutMs) return false
+  tracker.done = true
+  return true
+}
+
+/**
+ * effectiveProfileHeight は帯域の重さを比べるための高さを返す。
+ *
+ * **`height` が 0（または省略）なら `Infinity`** --- 0 は「スケールしない」
+ * = 元の解像度 = **最も重い**段である（`liveProfileLabel` が 0 に「0p」を
+ * 書かないのと同じ意味の読み替え）。
+ */
+function effectiveProfileHeight(profile: LiveProfileSummary): number {
+  return profile.height !== undefined && profile.height > 0
+    ? profile.height
+    : Number.POSITIVE_INFINITY
+}
+
+/**
+ * nextLowerProfile は停滞時に自動で下げる次の 1 段を選ぶ（issue #871）。
+ * 下げ先が無ければ `undefined`。
+ *
+ * **設定順（一覧 API の配列順）で前方へ走査し、実効高さが現在より小さい最初の段を
+ * 返す。** 「配列は後ろほど軽い」という新しい契約は置かない --- 置くと
+ * `[sd 480, hd 720]` の構成（先頭が既定で最も軽い）で停滞時に**重い方へ上げて**
+ * しまう。`height` は「上がってしまう段」への拒否権としてだけ使う。
+ *
+ * 帰結（`config.example.yml` の形を含む）:
+ *
+ * | 一覧 | 選択 |
+ * |---|---|
+ * | `[hd 720, sd 480]`（`current` 未指定 = 先頭） | `sd` |
+ * | `[sd 480, hd 720]` | 下げない（軽い段が後ろに無い） |
+ * | `[h264 0, h264_720 720]` | `h264_720` |
+ * | `[h264 720, h264_vaapi 720]` | 下げない（同高さを飛ばして後ろにも無い） |
+ *
+ * **`height` は帯域の完全な代理ではない**（同じ高さでも crf / codec で重さが違う）。
+ * それでも拒否権としてなら誤りが「下げない」側に倒れるので、測っていない数値を
+ * 装飾として出すより安全である。
+ *
+ * `current` が一覧に無いときは `undefined`（判断材料が無いので下げない）。
+ * `current` を省略したときは先頭（= サーバー側の既定。`?profile=` を省略したときの
+ * 意味。`pages/live.tsx` の既定（一覧の先頭）と同じ解決）。
+ */
+export function nextLowerProfile(
+  profiles: readonly LiveProfileSummary[],
+  current: string | undefined,
+): string | undefined {
+  const index = current === undefined ? 0 : profiles.findIndex((p) => p.name === current)
+  if (index < 0 || profiles[index] === undefined) return undefined
+  const currentHeight = effectiveProfileHeight(profiles[index])
+  for (let i = index + 1; i < profiles.length; i++) {
+    const candidate = profiles[i]
+    if (candidate !== undefined && effectiveProfileHeight(candidate) < currentHeight) {
+      return candidate.name
+    }
+  }
+  return undefined
+}
+
+/**
+ * isMasterPlaylist は probe が読んだプレイリスト本文が **master playlist か**を判定する
+ * （issue #871）。
+ *
+ * **`live.captions: true` のデプロイでは自動降格を動かしてはならない。** そのとき
+ * `Playlist` ハンドラは `?profile=` に関わらず master playlist（`playlist.m3u8`）を
+ * 返すので（`internal/streamer/live.go`）、降格は**何も下げないのに「下げました」と
+ * 表示する**ことになる。master の中では hls.js / ネイティブが自前で variant を選ぶ。
+ *
+ * 判定材料を **API ではなく本文**にするのは、本文が権威だからである ---
+ * api ロールと streamer ロールに別の config を配る構成では、`GET /api/live-profiles`
+ * の一覧（api の config の写し）が streamer の実際の出力と食い違いうる。
+ *
+ * 見るのは `#EXT-X-STREAM-INF` の有無だけである（master は variant ごとに 1 行持ち、
+ * variant playlist 自身は持たない）。
+ */
+export function isMasterPlaylist(body: string): boolean {
+  return body.includes('#EXT-X-STREAM-INF')
+}
+
+/**
  * liveLeaveURL は「このチャンネルを見るのをやめた」というヒントの宛先。
  *
  * プレイリスト / セグメントと同じ `(site, networkId, serviceId)` の固定深さ
@@ -349,8 +534,16 @@ export function formatLiveDiagnostics(diagnostics: LiveDiagnostics): string {
   return `${latency} / ${buffer}`
 }
 
-/** LivePlaylistProbeResult は probeLivePlaylist の結果。 */
-export type LivePlaylistProbeResult = { ok: true } | { ok: false; error: LiveLoadError }
+/**
+ * LivePlaylistProbeResult は probeLivePlaylist の結果。
+ *
+ * 成功時は `masterPlaylist` も返す（issue #871）。`live.captions: true` の
+ * デプロイでは `?profile=` が何も選ばないので、自動降格を止める判断が要る
+ * （`isMasterPlaylist`）。
+ */
+export type LivePlaylistProbeResult =
+  | { ok: true; masterPlaylist: boolean }
+  | { ok: false; error: LiveLoadError }
 
 /**
  * probeLivePlaylist はプレイリスト URL への GET を 1 回行い、実際に再生を試す前に
@@ -362,6 +555,17 @@ export type LivePlaylistProbeResult = { ok: true } | { ok: false; error: LiveLoa
  * 実際の再生前に `fetch` で 1 回取得し、成功したときだけ `<video>` / hls.js に URL を
  * 渡す。この GET 自体もセグメント要求と同じ経路（`internal/streamer` のアプリ配信）を
  * 通るので、idle GC の last-access 更新にも自然に乗る。
+ *
+ * **成功時は本文も読む**（issue #871）。読むのは master playlist かどうかの判定だけで
+ * （`isMasterPlaylist`）、そのために要求を増やしはしない（同じ 1 回の GET の本文を
+ * 読む）。プレイリストは数 KB なので、`response.ok` のときだけ読む費用は無視できる。
+ *
+ * **代償として、200 を返したまま本文が終わらない応答では probe が返らない**
+ * （base はヘッダの時点で再生層へ進んでいた）。probe が返らないと `<video>` /
+ * hls.js のセットアップに入らず、`stalled` の検出も再読み込み表示も働かないので、
+ * 「読み込み中…」のまま止まる。**実配線では起きない** --- streamer は
+ * `Content-Length` を付けて有限長を書き切る（`internal/streamer/live.go` の
+ * `Playlist`）。ここを塞ぐなら本文の読み取りに上限（時間かバイト数）を設けることになる。
  */
 export async function probeLivePlaylist(
   url: string,
@@ -379,7 +583,14 @@ export async function probeLivePlaylist(
     if (err instanceof DOMException && err.name === 'AbortError') throw err
     return { ok: false, error: classifyLiveLoadError({ kind: 'network' }) }
   }
-  if (response.ok) return { ok: true }
+  if (response.ok) {
+    // 本文が読めなくても成功として扱う（既定 = master ではない）。読めない理由が
+    // 転送中の切断なら、メディア層の失敗として `watchNativeMedia` /
+    // hls.js の ERROR が拾う --- ここで probe を失敗にすると、両経路に共通の
+    // エラー表示が「本文が読めなかった」という別の原因を語ることになる
+    const body = await response.text().catch(() => '')
+    return { ok: true, masterPlaylist: isMasterPlaylist(body) }
+  }
   const body = await response.text().catch(() => '')
   return {
     ok: false,
