@@ -8,6 +8,7 @@ import {
   classifyLiveLoadError,
   currentProgramWindow,
   formatLiveDiagnostics,
+  liveAudioTrackIndex,
   liveLeaveURL,
   livePlaylistURL,
   pickInitialService,
@@ -16,6 +17,7 @@ import {
   readSubtitleVisibility,
   sendLiveLeaveHint,
   supportsNativeHls,
+  validLiveAudio,
   validLiveProfile,
 } from '@/lib/live'
 
@@ -498,5 +500,20 @@ describe('readSubtitleVisibility', () => {
    */
   it('トラックが無ければ null（不明）', () => {
     expect(readSubtitleVisibility([])).toBeNull()
+  })
+})
+
+describe('validLiveAudio / liveAudioTrackIndex（issue #870）', () => {
+  it('主 / 副だけを通し、それ以外は標準（undefined）に落とす', () => {
+    expect(validLiveAudio('main')).toBe('main')
+    expect(validLiveAudio('sub')).toBe('sub')
+    for (const v of ['', 'MAIN', 'both', 1, undefined, null]) expect(validLiveAudio(v)).toBeUndefined()
+  })
+
+  // streamer の音声レンディションの並び（標準 / 主 / 副）との契約。リテラルで固定する
+  it('音声グループ内の位置は 標準 = 0 / 主 = 1 / 副 = 2', () => {
+    expect(liveAudioTrackIndex(undefined)).toBe(0)
+    expect(liveAudioTrackIndex('main')).toBe(1)
+    expect(liveAudioTrackIndex('sub')).toBe(2)
   })
 })

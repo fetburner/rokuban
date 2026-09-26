@@ -99,17 +99,15 @@ docker compose exec rokuban rokuban server --all --config /config.yml
 画質の切替で崩れないことだけなので、mirakc に何も要求しない偽 mirakc で確かめられる。
 `live.profiles` を 2 つ以上書いた config で `--roles streamer` を起動し、同じ
 `(networkId, serviceId)` に対して違う `?profile=` を順に取る。実測（実バイナリ +
-偽 mirakc + 偽 ffmpeg）:
+偽 mirakc + 実 ffmpeg 9.0.2。偽 mirakc は 90 秒の TS を実時間で流す）:
 
-- `?profile=hd` → プレイリストは `hd_seg00001.ts` を指す。偽 mirakc の stream 要求は 1 件、
-  `rokuban_live_active_sessions{kind="live"}` は `1`
-- `?profile=sd`（切替）→ **同じセッションの別プレイリスト** `sd_seg00001.ts` が返る。
+- `?profile=hd` → master は `hd.0.m3u8`（映像）と音声 `hd.1`〜`hd.3.m3u8` を指す。
+  偽 mirakc の stream 要求は 1 件、`rokuban_live_active_sessions{kind="live"}` は `1`
+- `?profile=sd`（切替）→ **同じセッションの別 master**（`sd.0.m3u8` …）が返る。
   stream 要求も gauge も **1 のまま**
-- `?profile=hd`（戻す）→ `hd_seg00001.ts`。ここでも 1 のまま
 - `?profile=does-not-exist` → **400**（セッションを起こす前に拒否する）
 
-**実チューナー・実 ffmpeg では未測定。** ffmpeg の起動・停止に掛かる時間のぶんだけ
-ずれうる。以下の手順で確かめる。
+**実チューナーでは未測定。** 以下の手順で確かめる。
 
 ```sh
 # 偽 mirakc（`GET /api/services/{id}/stream` だけ実装し、要求数を数える）
@@ -119,6 +117,26 @@ curl -s "$B?profile=hd" | tail -1            # 先頭のプロファイル
 curl -s "$B?profile=sd" | tail -1            # 別プロファイル（同じセッション）
 curl -s http://localhost:40773/metrics | grep 'rokuban_live_active_sessions{kind="live"}'
 ```
+
+#### 音声（二重音声の主 / 副）の確認（実放送が必要）
+
+**二重音声の放送でしか確かめられない**（実放送が SCE 2 つ + `channel_configuration=2`
+の形かは未検証。[api/media.md](../api/media.md) §音声）。手元で測ったのは次の 2 つである。
+
+- 実バイナリ + 偽 mirakc + 実 ffmpeg で、合成した二重音声（440Hz / 880Hz のモノラル
+  AAC 2 本を 1 フレームに継いだ TS）を流した。`hd.1`（標準）は L 440 / R 880、
+  `hd.2`（主）は 440 / 440、`hd.3`（副）は 880 / 880 だった（HTTP 越しにデコードして
+  左右の周波数を測った）
+- ブラウザ側の切替は `pnpm e2e:live-audio`（下記 ②）
+
+実放送では、番組表で「二か国語」「副音声」の番組を選んで次を確かめる。
+
+1. 標準で、主と副が左右に分かれて聞こえる
+2. 主音声で、主だけが両耳から聞こえる
+3. 副音声で、副だけが両耳から聞こえる
+4. 副音声を 15 秒以上聴いてから標準へ戻しても止まらない（ライブの窓より後で戻る切替）
+
+番組名・放送局・手順を issue に残す。BS と地上波の両方があれば両方を見る。
 
 ### ② ブラウザ側の配線（mirakc 不要）
 
@@ -266,6 +284,22 @@ pnpm exec playwright install chromium webkit
    機械判定できるようになった。判定は「プレイリストとセグメントの両方の
    Content-Type を `<video>` が再生できるか」（`video/mp2t` を demux できるのは
    WebKit だけ）に置き換えてある
+
+#### 音声の切替（`web/e2e/live-audio.mjs`。サーバーも DB も不要）
+
+`pnpm preview` だけで回る（`/api/**` とライブの HLS を `page.route` で差し替える）。
+ライブの HLS は ffmpeg が L 440Hz / R 880Hz のステレオから実時間で書き続ける。
+
+```sh
+cd web && pnpm build
+pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:live-audio
+```
+
+変異で落ちることを確かめてある。ffmpeg の引数から `program_date_time` を外すと
+① の「標準へ戻る」で落ちる。`LivePlayer` の hls.js への適用を外すと主 / 副で落ちる。
+② は 11 回中 1 回、副を選んでも `audioTracks` が揃わず落ちた（原因は未特定。PDT の
+有無とは無関係だった）。落ちたら 10 秒後の `enabled` の並びが出る。
 
 ### CI では回さない
 

@@ -20,6 +20,7 @@ import {
   formatLiveDiagnostics,
   liveProfileLabel,
   pickInitialService,
+  validLiveAudio,
   validLiveProfile,
   type LiveDiagnostics,
 } from '@/lib/live'
@@ -143,7 +144,17 @@ export function LivePage() {
   const navigate = useNavigate({ from: '/live' })
   const selectProfile = (name: string) => {
     void navigate({
-      search: { service: routeSearch.service, site: routeSearch.site, profile: name },
+      search: { ...routeSearch, profile: name },
+      replace: true,
+    })
+  }
+
+  // 音声（issue #870）。**選択はプレイヤーの中だけで効く** --- streamer は標準 /
+  // 主 / 副の 3 本を常に出しているので、選んでもプレイリストの取り直しも
+  // セッションの作り直しも起きず、同じチャンネルを見ている他の視聴者にも影響しない。
+  const selectAudio = (value: string) => {
+    void navigate({
+      search: { ...routeSearch, audio: validLiveAudio(value) },
       replace: true,
     })
   }
@@ -289,6 +300,7 @@ export function LivePage() {
                 networkId={selectedService.networkId}
                 serviceId={selectedService.serviceId}
                 profile={explicitProfile}
+                audio={routeSearch.audio}
                 onDiagnostics={setDiagnostics}
               />
             ) : (
@@ -368,6 +380,23 @@ export function LivePage() {
                   </select>
                 </label>
               )}
+              {/* 音声（issue #870）。**常に 3 択で出す** --- どの番組が二重音声かを
+                  知る手段が無い（音声 ES の情報を持たず、二重音声は ffprobe では
+                  通常のステレオと区別できない。記述子を読むのは不変条件 6 の外）。
+                  二重音声でない番組で主 / 副を選ぶと片側のチャンネルだけになる。 */}
+              <label className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
+                <span>音声</span>
+                <select
+                  aria-label="音声"
+                  value={routeSearch.audio ?? ''}
+                  onChange={(e) => selectAudio(e.target.value)}
+                  className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none"
+                >
+                  <option value="">標準</option>
+                  <option value="main">主音声</option>
+                  <option value="sub">副音声</option>
+                </select>
+              </label>
               {/* 録画予約による中断予測（issue #235 M7-2）。選択状態（値札）・
                   視聴中のどちらの画面でもこの情報欄は共通なので、1 箇所に置くだけで
                   両方の受け入れ条件（値札 / 視聴中画面への表示）を満たす。 */}
@@ -400,7 +429,12 @@ export function LivePage() {
                             ようにするため。 */}
                         <Link
                           to="/live"
-                          search={{ service: s.id, site: s.site, profile: explicitProfile }}
+                          search={{
+                            service: s.id,
+                            site: s.site,
+                            profile: explicitProfile,
+                            audio: routeSearch.audio,
+                          }}
                           replace
                           // ハイライト・aria-current の同定も `Service.id`（合成
                           // id）で行う --- SI の `serviceId` 単独では、同じ id を

@@ -110,10 +110,11 @@ storage:
 
 ### ライブ視聴の HLS --- アプリ配信を維持
 
-`live.captions: true` のとき、`playlist.m3u8` は master playlist になり、ffmpeg の
-`libaribcaption` で変換した WebVTT 字幕 rendition を含む。映像 variant、字幕
-playlist、`.ts` / `.vtt` セグメントは従来と同じサービス URL の下で配信する。
-`false`（既定）では従来のプロファイル別 playlist を返す。hls.js は字幕 rendition
+`playlist.m3u8` は常に master playlist で、音声 rendition 3 本（下記 §音声）を含む。
+`live.captions: false`（既定）では `?profile=` のプロファイルだけの master を返す。
+`true` のときは全プロファイルを 1 つの master にまとめ、ffmpeg の
+`libaribcaption` で変換した WebVTT 字幕 rendition も含む。variant / 字幕 playlist、
+`.ts` / `.vtt` セグメントは同じサービス URL の下で配信する。hls.js は字幕 rendition
 を字幕トグルとして表示する。VOD とライブのどちらも TS/PES を Rokuban が読むことはない。
 
 ライブセッションはインメモリの使い捨て状態（全体アーキテクチャの crash-only 例外）で、「クライアントがいなくなったら ffmpeg を止める」idle GC が要る。セグメント要求がアプリを通れば last-access の更新がタダで手に入るが、nginx が scratch から直接配るとアプリはクライアントの生存を見失う。`auth_request` やログ監視で回収はできるが、セグメントは数 MB で転送負荷が軽く、複雑さに見合わない。**streamer ロールのアプリ配信のまま**とする。
@@ -139,7 +140,10 @@ SPA フォールバックには落とさない（[rest.md](rest.md)「機能の�
   「streamer のスケール」。URL を固定深さにする制約もそこに書いてある）
 - **セッションが消えても URL が死なない。**Pod 死・ハッシュの担当移動・idle GC の
   後でも、同じ URL への再要求が新しいセッションを起こす。「セッション ID を握った
-  クライアントが 404 で詰む」経路が存在しない
+  クライアントが 404 で詰む」経路が存在しない。**セッションを起こすのは master だけ
+  ではない。** hls.js が取り直し続けるのは variant playlist の方なので、variant の
+  要求もセッションを作り直す。master だけにすると、セッションが消えた後の variant
+  要求が 404 になり、hls.js は 4xx を再試行せずに止まる
 
 セッション ID を持つ設計（`POST` でセッションを作って ID 付きの URL を配る）は、
 **導出物の identity を宛先にする**形になる（不変条件 9 の identity 系）。ライブ
@@ -265,9 +269,10 @@ POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
        → 204（離脱のヒント。上記「離脱は『ヒント』であって停止命令ではない」）
 ```
 
-字幕付きライブでは master から参照される variant playlist と字幕 playlist も
-`.../live/{name}.m3u8` で配信する。`segments/{name}` は `.ts` に加えて `.vtt` を
-受け付けるが、字幕無効時に `.vtt` や playlist 拡張子を受け付けることはない。
+master から参照される variant playlist（映像・音声）と字幕 playlist は
+`.../live/{name}.m3u8` で配信する。受け付けるのは ffmpeg が書く variant の名前だけで
+（master の名前や未知のプロファイルは 404）、セッションが無ければ作る
+（上記「セッションが消えても URL が死なない」）。`.vtt` は字幕有効時だけ受け付ける。
 
 - **DB を引かない。**パスの `(networkId, serviceId)` から mirakc の
   `GET /api/services/{id}/stream?decode=1` の `{id}` を合成するだけ
@@ -350,6 +355,43 @@ POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
 - **ffmpeg の LookPath 検査は `live.enabled: true` のときだけ行う。**公式イメージ
   （ffmpeg 無し）で streamer ロールを起動する構成（録画配信 / サムネイルのみ）を
   壊さない
+
+#### 音声（二重音声の主 / 副）
+
+**音声はプロファイルごとに 3 本の代替音声 rendition（標準 / 主 / 副）で出し、
+選ぶのはプレイヤーである。** サーバーは選択を知らず、セッションも作り直さない。
+選択は視聴者ごとの状態で、共有セッションの寿命に載せると作り直しのたびに黙って
+既定へ戻る（idle GC の後に既定の要求が作り直す等）。
+
+- **主 / 副は出力側の `pan` で作る。** 二重音声の既定デコード（`-dual_mono_mode`
+  無し）は L = 主 / R = 副のステレオである。片側を両耳へ写せば主 / 副になる
+  （`pan=stereo|c0=c0|c1=c0` / `pan=stereo|c0=c1|c1=c1`）。`-dual_mono_mode` は
+  デコーダ側のオプションで 1 回の起動に 1 つしか選べないので使わない。
+  実測（ffmpeg 9.0.2）: モノラル AAC 2 本を 1 フレームに継いだ二重音声
+  （SCE 2 つ、`channel_configuration=2`）で、`pan` の出力は
+  `-dual_mono_mode main|sub` の出力とバイト一致した
+- **標準はフィルタ無しで `DEFAULT=YES`。** 今までと同じエンコードなので、
+  音声を選ばない視聴者の音は変わらない
+- **放送にある音声を列挙しない。** 二重音声は 1 本の AAC ES の中の 2 つの SCE で、
+  ffprobe では通常のステレオと区別できない。区別できるのは記述子だけで、
+  それは不変条件 6 の外である。そこで選択肢は常に 3 つで、二重音声でない番組で
+  主 / 副を選ぶと片側のチャンネルだけになる
+- **並び順が UI との契約である。** グループ内の 0 = 標準 / 1 = 主 / 2 = 副で選ぶ。
+  master の `NAME` は ffmpeg が `audio_<n>` で固定し、n はプロファイル数でずれる
+- **ライブの playlist には `EXT-X-PROGRAM-DATE-TIME` を付ける。** 無いと hls.js は、
+  前に聴いた音声へ戻ったときに止まる。止まるのは、ライブの窓
+  （`playlist_size` × `segment_seconds`）より後で戻った場合である。判定は `web/e2e/live-audio.mjs`（PDT を外すと落ちる）
+- **captions 無効時はプロファイル別の出力のまま、各出力が自分の master を持つ。**
+  1 つの master にまとめると `hls_time` が 1 つになり、プロファイルごとの
+  `segment_seconds` が書けなくなる（captions 有効時はそのため同一値を要求している）
+- **2 本目の音声 ES（`-map 0:a:1`）は選べない**
+- **追っかけ再生には rendition を出さない。** 選択 UI が無く、出すと配信の形
+  （master + 映像だけのセグメント + 別の音声）が変わる。その形で追っかけの seek や
+  再生位置の復元を確かめる判定が無いので、追っかけは従来の形のままにする
+- **ライブの `extra_args` / `input_extra_args` では `-an` `-vn` `-sn` `-map` を拒否する。**
+  ストリームの並びは `-var_stream_map` が持つ。並びを変えると ffmpeg が起動時に落ちる
+- 未検証: 実放送の二重音声が `channel_configuration=2` + SCE 2 つの形か /
+  実 Safari・iOS での切替（WebKit では取得する rendition が替わることまで確認）
 
 ### 録画中の追っかけ再生
 

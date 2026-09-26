@@ -821,6 +821,9 @@ func (c LiveConfig) validate() error {
 	if err := ffargs.ValidateExtraArgs("live.input_extra_args", c.InputExtraArgs); err != nil {
 		return err
 	}
+	if err := rejectLiveStreamSelection("live.input_extra_args", c.InputExtraArgs); err != nil {
+		return err
+	}
 
 	seen := make(map[string]struct{}, len(c.Profiles))
 	for i, p := range c.Profiles {
@@ -859,6 +862,9 @@ func (c LiveConfig) validate() error {
 		if err := ffargs.ValidateExtraArgs("extra_args", p.ExtraArgs); err != nil {
 			return fmt.Errorf("live.profiles[%d] (%s): %w", i, p.Name, err)
 		}
+		if err := rejectLiveStreamSelection("extra_args", p.ExtraArgs); err != nil {
+			return fmt.Errorf("live.profiles[%d] (%s): %w", i, p.Name, err)
+		}
 	}
 	if c.Captions {
 		first := c.Profiles[0]
@@ -867,6 +873,31 @@ func (c LiveConfig) validate() error {
 				return fmt.Errorf("live.profiles[%d] (%s): segment_seconds and playlist_size must match the first profile when live.captions is enabled", i+1, p.Name)
 			}
 		}
+	}
+	return nil
+}
+
+// liveStreamSelectionArgs は live の extra_args / input_extra_args で拒否する
+// ストリーム選択のオプション（allowlist には VOD のために入っている）。
+//
+// **live はストリームの並びをアプリが `-var_stream_map` で持つ**（映像 1 本 + 音声
+// rendition 3 本 + 字幕。internal/streamer の buildHLSFFmpegArgs）。並びを変えると
+// ffmpeg が起動時に落ち、利用者には 504 しか見えない（実測 ffmpeg 9.0.2: `-an` で
+// `Unable to map stream at a:0`、`-map` の追加で `Unable to find mapping variant
+// stream`）。`-vn` / `-sn` は映像 / 字幕の map を同じ形で壊す。
+var liveStreamSelectionArgs = map[string]bool{"-an": true, "-vn": true, "-sn": true, "-map": true}
+
+// rejectLiveStreamSelection は args に liveStreamSelectionArgs が含まれていればエラーを返す。
+// ValidateExtraArgs を通った後に呼ぶ（値のトークンがオプション名と一致することは無い）。
+func rejectLiveStreamSelection(label string, args []string) error {
+	var errs []string
+	for i, a := range args {
+		if liveStreamSelectionArgs[a] {
+			errs = append(errs, fmt.Sprintf("%s[%d]: %q changes the stream layout the live HLS output depends on", label, i, a))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
 	return nil
 }

@@ -34,6 +34,35 @@ export function livePlaylistURL(
 }
 
 /**
+ * LiveAudioChoice はライブの音声（ISDB の二重音声の主 / 副）。`undefined` は標準
+ * （二重音声なら主と副が左右に分かれて聞こえる、今までと同じ音声）。
+ *
+ * **選択はプレイヤーの中だけで効き、サーバーには送らない。** streamer は標準 / 主 /
+ * 副の 3 本を HLS の代替音声レンディションとして常に出しており、プレイヤーが
+ * そのどれを取るかを選ぶ（docs/api/media.md §音声）。二重音声でない番組で主 / 副を
+ * 選ぶと片側のチャンネルだけになる。
+ */
+export type LiveAudioChoice = 'main' | 'sub'
+
+/** validLiveAudio は `?audio=` の値を検査する。未知の値は `undefined`（標準）に落とす。 */
+export function validLiveAudio(requested: unknown): LiveAudioChoice | undefined {
+  return requested === 'main' || requested === 'sub' ? requested : undefined
+}
+
+/**
+ * liveAudioTrackIndex は選択に対応する音声トラックの位置を返す。
+ *
+ * **音声グループ内の並び順（0 = 標準 / 1 = 主 / 2 = 副）が streamer との契約である**
+ * （`internal/streamer/live.go` の `audioRenditionEntries`）。トラック名（master の
+ * `NAME`）は ffmpeg が `audio_<n>` で固定し、n はプロファイル数でずれるので使えない。
+ * hls.js の `audioTracks` も WebKit の `video.audioTracks` も master の順に並ぶ
+ * （Playwright の Chromium / WebKit で実測）。
+ */
+export function liveAudioTrackIndex(choice: LiveAudioChoice | undefined): number {
+  return choice === 'main' ? 1 : choice === 'sub' ? 2 : 0
+}
+
+/**
  * validLiveProfile は `?profile=` の要求値を一覧に照らして検証し、使える名前だけを返す。
  *
  * **未知の名前をそのまま流してはならない。** streamer は `?profile=` が空なら既定

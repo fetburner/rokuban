@@ -256,6 +256,28 @@ JSON 404 にしてある（`internal/api/spa.go` の `spaOrAPINotFound`）。**�
   （`?profile=` を追っかけの URL に既に持たせてあるのは、その判断が来たときに
   streamer 側の変更が要らないようにするためである）
 
+**音声（二重音声の主 / 副）を選ぶ UI を持つ**（issue #870）。`標準` / `主音声` /
+`副音声` の 3 択で、選択は `?audio=main|sub` に持つ（標準は書かない）。
+streamer は 3 本の音声 rendition を常に出しているので
+（[api.md](../api.md) §音声）、**切替は `LivePlayer` が取るトラックを替えるだけ**で
+ある。プレイリストの取り直しもセッションの作り直しも無く、同じチャンネルを見ている
+他の視聴者にも影響しない。
+
+- **常に 3 択で出す。** どの番組が二重音声かを知る手段が無い（音声 ES の情報を
+  持たず、記述子は読まない）。二重音声でない番組で主 / 副を選ぶと片側の
+  チャンネルだけになる
+- **トラックは位置で選ぶ**（0 = 標準 / 1 = 主 / 2 = 副。`liveAudioTrackIndex`）。
+  hls.js は `audioTrack`、WebKit のネイティブ経路は `video.audioTracks` の
+  `enabled` を使う
+- **メイン effect の依存に `audio` を入れない。** 入れると切替のたびに hls.js を
+  作り直す。画質の切替などで作り直されたときは、トラック一覧が届いた時点
+  （`AUDIO_TRACKS_UPDATED` / `addtrack`）で URL の選択に揃え直す
+- **チャンネルを切り替えても音声を保つ**（一覧のリンクが `?audio=` を運ぶ）
+- **判定は `web/e2e/live-audio.mjs`**（実ブラウザ + ffmpeg が書き続ける実ライブ HLS）。
+  Chromium は WebAudio で左右の周波数を測る。主 → 副 → 標準 → 主と各 15 秒
+  聴いてから切り替える。WebKit は `audioTracks` と取得する rendition を見る
+  （ネイティブ HLS の音は WebAudio に来ないので、鳴っている音は測れない）
+
 **切替を跨いで持ち越すのは字幕の表示だけである。** `LivePlayer` が effect の
 cleanup で `<video>` のトラックから読み、次の setup で戻す。hls.js は新しい
 マニフェストを読むと字幕トラックの選択を既定に戻すためである。

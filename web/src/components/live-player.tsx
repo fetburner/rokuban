@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 
-import type { LiveDiagnostics, LiveLoadError } from '@/lib/live'
+import type { LiveAudioChoice, LiveDiagnostics, LiveLoadError } from '@/lib/live'
 import {
   claimsHlsPlaylistSupport,
   chasePlaylistURL,
+  liveAudioTrackIndex,
   livePlaylistURL,
   probeLivePlaylist,
   readSubtitleVisibility,
@@ -27,6 +28,10 @@ type HlsLike = {
   loadSource(url: string): void
   attachMedia(media: HTMLMediaElement): void
   subtitleDisplay: boolean
+  /** 選択中の音声トラック（`audioTracks` 内の位置）。代入で切り替わる。 */
+  audioTrack: number
+  /** 選択中の variant の音声グループに属するトラック（master の順）。 */
+  audioTracks: readonly unknown[]
   on(event: string, callback: (event: string, data: { fatal: boolean }) => void): void
   /**
    * hls.latency（秒）。`LatencyController.get latency()` の実装
@@ -93,6 +98,37 @@ function applySubtitleVisibility(media: HTMLVideoElement, visible: boolean): voi
   }
 }
 
+/**
+ * NativeAudioTrackList は `video.audioTracks`（WebKit）の最小限の形。TS の lib.dom は
+ * `AudioTrackList` を持たず、jsdom の `<video>` には属性自体が無い。
+ */
+type NativeAudioTrackList = ArrayLike<{ enabled: boolean }> & {
+  addEventListener?: (type: string, listener: () => void) => void
+  removeEventListener?: (type: string, listener: () => void) => void
+}
+
+function nativeAudioTracks(media: HTMLVideoElement): NativeAudioTrackList | undefined {
+  return (media as unknown as { audioTracks?: NativeAudioTrackList }).audioTracks
+}
+
+/**
+ * applyHlsAudioTrack / applyNativeAudioTrack は音声トラックを index に揃える
+ * （issue #870）。トラックがまだ無い・足りない（音声レンディションを持たない
+ * master）なら何もしない。**今と同じなら触らない** --- 切替をやり直させない。
+ */
+function applyHlsAudioTrack(hls: HlsLike, index: number): void {
+  if (index < hls.audioTracks.length && hls.audioTrack !== index) hls.audioTrack = index
+}
+
+function applyNativeAudioTrack(media: HTMLVideoElement, index: number): void {
+  const tracks = nativeAudioTracks(media)
+  if (!tracks || index >= tracks.length) return
+  for (let i = 0; i < tracks.length; i++) {
+    const enabled = i === index
+    if (tracks[i].enabled !== enabled) tracks[i].enabled = enabled
+  }
+}
+
 type LivePlayerProps = {
   /** live は site/network/service、chase は site/recordingId を使う。 */
   mode?: 'live' | 'chase'
@@ -105,6 +141,14 @@ type LivePlayerProps = {
   recordingId?: number
   /** chase playlist のプロファイル。省略時は streamer の先頭プロファイル。 */
   profile?: string
+  /**
+   * 音声（二重音声の主 / 副。issue #870）。省略時は標準トラック。
+   *
+   * **`profile` と違って URL を変えない。** streamer が 3 本の音声レンディションを
+   * 常に出しているので、切替はプレイヤーが取るトラックを替えるだけで、プレイリストの
+   * 取り直しもセッションの作り直しも起きない（下の effect）。
+   */
+  audio?: LiveAudioChoice
   /**
    * 明示的に選んだ録画開始からの秒数。省略時は録画先頭のセッションを
    * 起動して保存済みの再生位置を復元し、0 を含む指定時はセッション先頭から
@@ -159,6 +203,7 @@ export function LivePlayer({
   serviceId,
   recordingId,
   profile,
+  audio,
   startOffsetSeconds,
   playbackProfile,
   className,
@@ -228,6 +273,19 @@ export function LivePlayer({
   useEffect(() => {
     onDiagnosticsRef.current = onDiagnostics
   }, [onDiagnostics])
+
+  // 音声トラックの選択（issue #870）。**メイン effect の依存に入れない** ---
+  // 入れると切替のたびにプレイリストを取り直し、hls.js を作り直す。ここは今ある
+  // 再生器のトラックを替えるだけで、トラックが後から届く分（読み込み直後・画質の
+  // 切替後）はメイン effect が audioRef を読んで揃える。メイン effect より先に
+  // 宣言して、初回の読み込みが最新の値を読むようにする。
+  const audioRef = useRef(audio)
+  useEffect(() => {
+    audioRef.current = audio
+    const index = liveAudioTrackIndex(audio)
+    if (hlsRef.current) applyHlsAudioTrack(hlsRef.current, index)
+    else if (videoRef.current) applyNativeAudioTrack(videoRef.current, index)
+  }, [audio])
 
   // VOD と追っかけ再生は端末共通の速度設定を使う。通常のライブ配信には適用しない。
   useEffect(() => {
@@ -442,6 +500,24 @@ export function LivePlayer({
       return stop
     }
 
+    /**
+     * followNativeAudio はネイティブ経路で、トラックが出来たら音声の選択を揃える
+     * （issue #870）。字幕と同じく WebKit はトラックを後から作るので、`addtrack`
+     * で増えるたびに適用する。
+     */
+    function followNativeAudio(media: HTMLVideoElement) {
+      const apply = () => {
+        if (!cancelled) applyNativeAudioTrack(media, liveAudioTrackIndex(audioRef.current))
+      }
+      const tracks = nativeAudioTracks(media)
+      tracks?.addEventListener?.('addtrack', apply)
+      media.addEventListener('loadedmetadata', apply, { once: true })
+      teardown.push(() => {
+        tracks?.removeEventListener?.('addtrack', apply)
+        media.removeEventListener('loadedmetadata', apply)
+      })
+    }
+
     async function start() {
       let probe: Awaited<ReturnType<typeof probeLivePlaylist>>
       try {
@@ -476,6 +552,7 @@ export function LivePlayer({
         // src を入れる前に張る（入れた後だと、失敗が速いときに取り逃がす）
         const stopDiagnostics = watchLiveDiagnostics(() => readNativeDiagnostics(video))
         watchNativeMedia(video, stopDiagnostics)
+        followNativeAudio(video)
         video.src = url
         // 字幕の表示状態を持ち越す（issue #869）。ネイティブ経路はトラックを
         // 自前で作り直すので、出来上がった頃（`loadedmetadata`）に揃え直す。
@@ -515,6 +592,7 @@ export function LivePlayer({
           if (claimsHlsPlaylistSupport(canPlayType)) {
             const stopDiagnostics = watchLiveDiagnostics(() => readNativeDiagnostics(video))
             watchNativeMedia(video, stopDiagnostics)
+            followNativeAudio(video)
             video.src = url
             setLoading(false)
             return
@@ -576,6 +654,14 @@ export function LivePlayer({
             if (!cancelled) hls.subtitleDisplay = visible
           })
         }
+        // 音声の選択を揃える（issue #870）。この effect は画質の切替・再読み込みの
+        // たびに hls.js を作り直し、新しいインスタンスは master の既定（標準）から
+        // 始まるので、トラック一覧が届いたら選択を適用する。前に聴いたトラックへ
+        // 戻る切替は、ライブの playlist に EXT-X-PROGRAM-DATE-TIME が無いと止まる
+        // （streamer の hlsFlags。`web/e2e/live-audio.mjs` の ①）。
+        hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
+          if (!cancelled) applyHlsAudioTrack(hls, liveAudioTrackIndex(audioRef.current))
+        })
         hlsRef.current = hls
         const stopDiagnostics = watchLiveDiagnostics(() => readHlsDiagnostics(hls))
         hls.on(Hls.Events.ERROR, (_event, data) => {

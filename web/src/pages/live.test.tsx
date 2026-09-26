@@ -1490,3 +1490,61 @@ describe('LivePage / 画質（プロファイル）切替（issue #869）', () =
     expect(await screen.findByLabelText('画質')).toHaveValue('sd')
   })
 })
+
+/**
+ * 音声（二重音声の主 / 副。issue #870）。
+ *
+ * **選択はプレイヤーの中だけで効く**（streamer は標準 / 主 / 副の 3 本を常に出す）。
+ * ここで見るのは配線だけ --- `?audio=` に持つこと、選んでも probe をやり直さず
+ * プレイリストの URL にも載せないこと。トラックの切替そのものは
+ * `components/live-player.test.tsx`。
+ */
+describe('LivePage / 音声（issue #870）', () => {
+  it('セレクタは常に出て既定は標準。再生中に選んでも probe をやり直さない', async () => {
+    const user = userEvent.setup()
+    stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })] })
+    const { router } = renderLive()
+
+    const select = await screen.findByLabelText('音声')
+    expect(select).toHaveValue('')
+    await user.click(screen.getByRole('button', { name: /再生/ }))
+    await waitFor(() => expect(playlistFetchCallCount()).toBe(1))
+
+    await user.selectOptions(screen.getByLabelText('音声'), '副音声')
+    expect(screen.getByLabelText('音声')).toHaveValue('sub')
+    expect(router.state.location.search).toMatchObject({ audio: 'sub' })
+    await user.selectOptions(screen.getByLabelText('音声'), '標準')
+    expect(router.state.location.search).not.toHaveProperty('audio')
+
+    expect(playlistFetchCallCount()).toBe(1)
+    expect(playlistFetchURLs()[0]).not.toContain('audio')
+    expect(leaveHintURLs()).toEqual([])
+  })
+
+  it('直リンクの ?audio= が復元される', async () => {
+    stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })] })
+    renderLive('/live?service=100001&site=default&audio=sub')
+    expect(await screen.findByLabelText('音声')).toHaveValue('sub')
+  })
+
+  it('未知の ?audio= は標準に落ちる', async () => {
+    stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })] })
+    const { router } = renderLive('/live?service=100001&site=default&audio=both')
+    await screen.findByLabelText('音声')
+    // **セレクタの値では判定しない。** jsdom の controlled <select> は一致する option が
+    // 無いと '' を返すので、生の値が残っていても標準に見える（落とし損ねても緑になる）
+    expect(router.state.location.search).not.toHaveProperty('audio')
+  })
+
+  it('チャンネルを切り替えても音声を保つ（一覧のリンクが ?audio= を運ぶ）', async () => {
+    stubFetch({
+      services: [
+        service({ serviceId: 1, name: 'チャンネル A' }),
+        service({ serviceId: 2, name: 'チャンネル B' }),
+      ],
+    })
+    renderLive('/live?service=100001&site=default&audio=main')
+    const link = await screen.findByRole('link', { name: /チャンネル B/ })
+    expect(link.getAttribute('href')).toContain('audio=main')
+  })
+})
