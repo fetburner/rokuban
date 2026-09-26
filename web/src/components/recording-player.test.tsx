@@ -448,7 +448,7 @@ describe('RecordingPlayer のシークプレビュー', () => {
     const { container, getByTestId, rerender } = render(
       <RecordingPlayer recordingId={94} encodedAssets={asset} />,
     )
-    const fill = () => (getByTestId('seek-scrub').firstElementChild?.firstElementChild as HTMLElement).style.width
+    const fill = () => (getByTestId('seek-scrub').firstElementChild!.firstElementChild as HTMLElement).style.width
     const video = container.querySelector('video')!
     setMediaProps(video, { duration: 100, currentTime: 40 })
     fireEvent.timeUpdate(video)
