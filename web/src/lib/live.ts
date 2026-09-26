@@ -34,6 +34,35 @@ export function livePlaylistURL(
 }
 
 /**
+ * LiveAudioChoice はライブの音声（ISDB の二重音声の主 / 副）。`undefined` は標準
+ * （二重音声なら主と副が左右に分かれて聞こえる、今までと同じ音声）。
+ *
+ * **選択はプレイヤーの中だけで効き、サーバーには送らない。** streamer は標準 / 主 /
+ * 副の 3 本を HLS の代替音声レンディションとして常に出しており、プレイヤーが
+ * そのどれを取るかを選ぶ（docs/api/media.md §音声）。二重音声でない番組で主 / 副を
+ * 選ぶと片側のチャンネルだけになる。
+ */
+export type LiveAudioChoice = 'main' | 'sub'
+
+/** validLiveAudio は `?audio=` の値を検査する。未知の値は `undefined`（標準）に落とす。 */
+export function validLiveAudio(requested: unknown): LiveAudioChoice | undefined {
+  return requested === 'main' || requested === 'sub' ? requested : undefined
+}
+
+/**
+ * liveAudioTrackIndex は選択に対応する音声トラックの位置を返す。
+ *
+ * **音声グループ内の並び順（0 = 標準 / 1 = 主 / 2 = 副）が streamer との契約である**
+ * （`internal/streamer/live.go` の `audioRenditionEntries`）。トラック名（master の
+ * `NAME`）は ffmpeg が `audio_<n>` で固定し、n はプロファイル数でずれるので使えない。
+ * hls.js の `audioTracks` も WebKit の `video.audioTracks` も master の順に並ぶ
+ * （Playwright の Chromium / WebKit で実測）。
+ */
+export function liveAudioTrackIndex(choice: LiveAudioChoice | undefined): number {
+  return choice === 'main' ? 1 : choice === 'sub' ? 2 : 0
+}
+
+/**
  * validLiveProfile は `?profile=` の要求値を一覧に照らして検証し、使える名前だけを返す。
  *
  * **未知の名前をそのまま流してはならない。** streamer は `?profile=` が空なら既定
@@ -251,23 +280,28 @@ export function nextLowerProfile(
 }
 
 /**
- * isMasterPlaylist は probe が読んだプレイリスト本文が **master playlist か**を判定する
- * （issue #871）。
+ * bundlesProfiles は probe が読んだプレイリスト本文が **全プロファイルを束ねた
+ * master playlist か**を判定する（issue #871）。
  *
  * **`live.captions: true` のデプロイでは自動降格を動かしてはならない。** そのとき
- * `Playlist` ハンドラは `?profile=` に関わらず master playlist（`playlist.m3u8`）を
- * 返すので（`internal/streamer/live.go`）、降格は**何も下げないのに「下げました」と
- * 表示する**ことになる。master の中では hls.js / ネイティブが自前で variant を選ぶ。
+ * `Playlist` ハンドラは `?profile=` に関わらず全プロファイルの variant を並べた
+ * master（`playlist.m3u8`）を返すので（`internal/streamer/live.go`）、降格は
+ * **何も下げないのに「下げました」と表示する**ことになる。その master の中では
+ * hls.js / ネイティブが自前で variant を選ぶ。
+ *
+ * **master かどうかでは判定できない。** captions 無効時も、`Playlist` は音声
+ * レンディションを載せるためにプロファイルごとの master（`<profile>.m3u8`）を返す。
+ * 違いは video variant の本数で、プロファイルごとの master は 1 本
+ * （`#EXT-X-STREAM-INF` が 1 行。ffmpeg 9.0 の `-var_stream_map` で実測。
+ * 音声は `#EXT-X-MEDIA` になる）、束ねた master はプロファイルの数だけ持つ。
+ * だから 2 行以上で判定する（プロファイルが 1 件なら下げ先がそもそも無い）。
  *
  * 判定材料を **API ではなく本文**にするのは、本文が権威だからである ---
  * api ロールと streamer ロールに別の config を配る構成では、`GET /api/live-profiles`
  * の一覧（api の config の写し）が streamer の実際の出力と食い違いうる。
- *
- * 見るのは `#EXT-X-STREAM-INF` の有無だけである（master は variant ごとに 1 行持ち、
- * variant playlist 自身は持たない）。
  */
-export function isMasterPlaylist(body: string): boolean {
-  return body.includes('#EXT-X-STREAM-INF')
+export function bundlesProfiles(body: string): boolean {
+  return body.split('#EXT-X-STREAM-INF').length > 2
 }
 
 /**
@@ -537,12 +571,11 @@ export function formatLiveDiagnostics(diagnostics: LiveDiagnostics): string {
 /**
  * LivePlaylistProbeResult は probeLivePlaylist の結果。
  *
- * 成功時は `masterPlaylist` も返す（issue #871）。`live.captions: true` の
- * デプロイでは `?profile=` が何も選ばないので、自動降格を止める判断が要る
- * （`isMasterPlaylist`）。
+ * 成功時は `bundlesProfiles` も返す（issue #871）。`live.captions: true` の
+ * デプロイでは `?profile=` が何も選ばないので、自動降格を止める判断が要る。
  */
 export type LivePlaylistProbeResult =
-  | { ok: true; masterPlaylist: boolean }
+  | { ok: true; bundlesProfiles: boolean }
   | { ok: false; error: LiveLoadError }
 
 /**
@@ -556,8 +589,8 @@ export type LivePlaylistProbeResult =
  * 渡す。この GET 自体もセグメント要求と同じ経路（`internal/streamer` のアプリ配信）を
  * 通るので、idle GC の last-access 更新にも自然に乗る。
  *
- * **成功時は本文も読む**（issue #871）。読むのは master playlist かどうかの判定だけで
- * （`isMasterPlaylist`）、そのために要求を増やしはしない（同じ 1 回の GET の本文を
+ * **成功時は本文も読む**（issue #871）。読むのは全プロファイルを束ねた master かどうかの
+ * 判定だけで（`bundlesProfiles`）、そのために要求を増やしはしない（同じ 1 回の GET の本文を
  * 読む）。プレイリストは数 KB なので、`response.ok` のときだけ読む費用は無視できる。
  *
  * **代償として、200 を返したまま本文が終わらない応答では probe が返らない**
@@ -584,12 +617,12 @@ export async function probeLivePlaylist(
     return { ok: false, error: classifyLiveLoadError({ kind: 'network' }) }
   }
   if (response.ok) {
-    // 本文が読めなくても成功として扱う（既定 = master ではない）。読めない理由が
+    // 本文が読めなくても成功として扱う（既定 = 束ねていない）。読めない理由が
     // 転送中の切断なら、メディア層の失敗として `watchNativeMedia` /
     // hls.js の ERROR が拾う --- ここで probe を失敗にすると、両経路に共通の
     // エラー表示が「本文が読めなかった」という別の原因を語ることになる
     const body = await response.text().catch(() => '')
-    return { ok: true, masterPlaylist: isMasterPlaylist(body) }
+    return { ok: true, bundlesProfiles: bundlesProfiles(body) }
   }
   const body = await response.text().catch(() => '')
   return {

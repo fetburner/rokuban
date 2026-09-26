@@ -190,6 +190,24 @@ function livePlaylistWith(segments, count) {
 }
 
 /**
+ * profileMasterFor は captions 無効時に streamer が返すプロファイルごとの master を
+ * 組み立てる（⑪ 専用）。ffmpeg 9.0 の `-var_stream_map "v:0,agroup:aud a:0,..."`
+ * が書く master は video variant の `#EXT-X-STREAM-INF` を 1 行だけ持つ。降格の
+ * 判定（`bundlesProfiles`）を分けるのはこの性質なので、そこだけ写す。音声の
+ * `#EXT-X-MEDIA` は載せない --- フィクスチャのセグメントは音声を多重化済みで、
+ * 別レンディションを指すと hls.js の代替音声の処理が停滞の観測に混ざる。
+ */
+function profileMasterFor(profile) {
+  return [
+    '#EXTM3U',
+    '#EXT-X-VERSION:6',
+    '#EXT-X-STREAM-INF:BANDWIDTH=2000000',
+    `${profile}.0.m3u8`,
+    '',
+  ].join('\n')
+}
+
+/**
  * readFixtureSegments はフィクスチャの VOD プレイリストから `[duration, uri]` を
  * 読む（長さと URI を写すため。上記参照）。
  */
@@ -397,14 +415,33 @@ async function mockLiveRoutes(page, mode) {
     })
   })
 
+  // ⑪ のライブ形 variant（`<profile>.0.m3u8`）。**毎回読むので、`mode.liveSegmentCount`
+  // を増やすと次の再取得から新しいセグメントが載る**（= 配信の復旧を表せる）。
+  // hls.js が取り直し続けるのは master ではなくこちらである
+  await page.route(/\/live\/[A-Za-z0-9_-]+\.0\.m3u8$/, async (route) => {
+    if (mode.liveSegmentCount === undefined) {
+      await route.fulfill({ status: 404, contentType: 'text/plain', body: 'not found' })
+      return
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/vnd.apple.mpegurl',
+      body: livePlaylistWith(fixtureSegments(), mode.liveSegmentCount),
+    })
+  })
+
   await page.route('**/live/playlist.m3u8*', async (route) => {
-    // ライブ形（⑪）。**毎回読むので、`mode.liveSegmentCount` を増やすと
-    // 次の再取得から新しいセグメントが載る**（= 配信の復旧を表せる）
+    // ⑪ は**実サーバーと同じ形**（プロファイルごとの master。video variant 1 本）
+    // を返す。captions 無効時も streamer は音声レンディションの
+    // ために master を返すので、media playlist を返すと「master なら降格しない」
+    // 判定の回帰を通してしまう（実際に通していた）
     if (mode.liveSegmentCount !== undefined) {
+      const profile =
+        new URL(route.request().url()).searchParams.get('profile') ?? E2E_LIVE_PROFILES[0].name
       await route.fulfill({
         status: 200,
         contentType: 'application/vnd.apple.mpegurl',
-        body: livePlaylistWith(fixtureSegments(), mode.liveSegmentCount),
+        body: profileMasterFor(profile),
       })
       return
     }
@@ -1407,6 +1444,7 @@ if (hasFixture) {
   // | 壊し方 | 落ちる assert |
   // |---|---|
   // | 降格を止める（`onStalled` を渡さない） | 自動の要求・通知・セレクタの 3 件 |
+  // | 抑止を「master かどうか」で判定する（`bundlesProfiles` を `#EXT-X-STREAM-INF` の有無に） | 同じ 3 件 |
   // | 再開を止める（`preserved.playing` を常に false に固定） | 自動の「復旧後に進んだ」 |
   // | 実再生の前提を壊す（`play()` を `pause()` に） | 前提 + 上記 4 件 |
   // | 復旧させない（プレイリストを伸ばさない） | 自動の再開と、明示側の対照 |

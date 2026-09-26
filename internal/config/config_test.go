@@ -742,6 +742,8 @@ func intPtr(v int) *int { return &v }
 // durPtr はテスト用に *time.Duration リテラルを組み立てる。
 func durPtr(v time.Duration) *time.Duration { return &v }
 
+func boolPtr(v bool) *bool { return &v }
+
 // allFieldsOverriddenConfig は Config の yaml タグをほぼ全部非既定値で上書きした
 // 設定。
 //
@@ -1481,6 +1483,9 @@ func TestLoad_BarePositionalArgs_EncodeAndLive(t *testing.T) {
 		name    string
 		extra   string
 		wantErr bool
+		// liveWantErr は live だけ結果が違うとき（ストリーム選択。live は
+		// -var_stream_map で並びを持つので拒否する。rejectLiveStreamSelection）。
+		liveWantErr *bool
 	}{
 		{
 			name:    "single bare positional argument",
@@ -1499,13 +1504,20 @@ func TestLoad_BarePositionalArgs_EncodeAndLive(t *testing.T) {
 		},
 		{
 			name:    "bare boolean flag is allowed",
-			extra:   "      extra_args: [\"-an\"]\n",
+			extra:   "      extra_args: [\"-shortest\"]\n",
 			wantErr: false,
 		},
 		{
-			name:    "stream selector value is allowed",
-			extra:   "      extra_args: [\"-map\", \"0:a:1\"]\n",
-			wantErr: false,
+			name:        "stream selector value is allowed for encode, rejected for live",
+			extra:       "      extra_args: [\"-map\", \"0:a:1\"]\n",
+			wantErr:     false,
+			liveWantErr: boolPtr(true),
+		},
+		{
+			name:        "-an is allowed for encode, rejected for live",
+			extra:       "      extra_args: [\"-an\"]\n",
+			wantErr:     false,
+			liveWantErr: boolPtr(true),
 		},
 	}
 
@@ -1520,13 +1532,42 @@ func TestLoad_BarePositionalArgs_EncodeAndLive(t *testing.T) {
 			t.Run(b.name+"/"+c.name, func(t *testing.T) {
 				path := writeConfig(t, b.build(c.extra))
 				_, err := Load(path)
-				if c.wantErr && err == nil {
+				wantErr := c.wantErr
+				if b.name == "live" && c.liveWantErr != nil {
+					wantErr = *c.liveWantErr
+				}
+				if wantErr && err == nil {
 					t.Fatal("expected error, got nil")
 				}
-				if !c.wantErr && err != nil {
+				if !wantErr && err != nil {
 					t.Fatalf("unexpected error: %v", err)
 				}
 			})
+		}
+	}
+}
+
+// TestLoad_LiveRejectsStreamSelectionInInputExtraArgs は live.input_extra_args でも
+// ストリーム選択（-an / -vn / -sn / -map）を拒否することを固定する。live は
+// -var_stream_map でストリームの並びを持つので、入力側で音声や映像を落とすと
+// ffmpeg が起動時に落ちる（rejectLiveStreamSelection）。許可された他の
+// オプション（-probesize）は通る。
+func TestLoad_LiveRejectsStreamSelectionInInputExtraArgs(t *testing.T) {
+	for _, tc := range []struct {
+		extra   string
+		wantErr bool
+	}{
+		{"  input_extra_args: [\"-an\"]\n", true},
+		{"  input_extra_args: [\"-vn\"]\n", true},
+		{"  input_extra_args: [\"-sn\"]\n", true},
+		{"  input_extra_args: [\"-probesize\", \"10M\"]\n", false},
+	} {
+		_, err := Load(writeConfig(t, buildLiveHWConfig(tc.extra)))
+		if tc.wantErr && (err == nil || !strings.Contains(err.Error(), "live.input_extra_args[0]")) {
+			t.Errorf("%q: err = %v, want a live.input_extra_args[0] error", tc.extra, err)
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("%q: unexpected error: %v", tc.extra, err)
 		}
 	}
 }

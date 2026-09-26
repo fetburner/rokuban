@@ -222,10 +222,12 @@ func bytes188Packet() []byte {
 // installFakeLiveFFmpeg は実際の ffmpeg に依存しない偽 ffmpeg を置く（CI に ffmpeg
 // が無い可能性があるため。encode_test.go の installFakeFFmpeg と同じ方針）。
 //
-// 引数から `-hls_segment_filename <pattern>` / `-hls_base_url <prefix>` と直後の
-// `*.m3u8` の組をプロファイルごとに読み取り、最小限の有効な HLS プレイリスト +
-// セグメント 1 本を書き出してから、ctx キャンセル（exec.CommandContext の既定動作で
-// SIGKILL）まで走り続ける。
+// 引数から `-hls_segment_filename <pattern>` / `-hls_base_url <prefix>` /
+// `-master_pl_name <name>` と直後の出力 `*.m3u8` の組をプロファイルごとに読み取り、
+// セグメント 1 本・variant playlist（`%v` を 0 に展開）・それを指す master を
+// 書き出してから、ctx キャンセル（exec.CommandContext の既定動作で SIGKILL）まで
+// 走り続ける。音声レンディションの中身は模さない（本物の ffmpeg で測る
+// TestBuildLiveFFmpegArgs_RealFFmpegAudioRenditions の担当）。
 //
 // **`-hls_base_url` を実際に反映する。** BuildLiveFFmpegArgs が渡す値をそのまま
 // プレイリストの行に付けることで、本物の ffmpeg（8.1.2 で確認済み）と同じ
@@ -238,20 +240,27 @@ func bytes188Packet() []byte {
 // 配信側が書き込み途中の内容を読むことはない。偽 ffmpeg が `>` で直接上書きすると
 // この保証が失われ、`waitForPlaylist` が「存在する」だけを見て途中の内容を配って
 // しまう（実際に flaky の原因になった。#EXTINF より前で読まれると
-// `firstSegmentName` が空を返す）。
+// `firstSegmentName` が空を返す）。master は variant の後に書く（master を待てば
+// variant も在る）。
 func installFakeLiveFFmpeg(t *testing.T) string {
+	return writeFakeLiveFFmpeg(t, "fake-ffmpeg-live", "")
+}
+
+// writeFakeLiveFFmpeg は installFakeLiveFFmpeg の本体。prelude は書き出しの前に
+// 実行するシェル（installSlowStartFakeLiveFFmpeg の sleep）。
+func writeFakeLiveFFmpeg(t *testing.T, name, prelude string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("fake ffmpeg script assumes a POSIX shell")
 	}
-	dir := t.TempDir()
-	path := filepath.Join(dir, "fake-ffmpeg-live")
+	path := filepath.Join(t.TempDir(), name)
 	script := `#!/bin/sh
 # 標準入力（mirakc からのライブ TS）を消費してパイプを埋めない。
 cat >/dev/null &
-
+` + prelude + `
 baseurl=""
 segfile=""
+master=""
 prev=""
 for a in "$@"; do
   if [ "$prev" = "-hls_segment_filename" ]; then
@@ -260,11 +269,17 @@ for a in "$@"; do
   if [ "$prev" = "-hls_base_url" ]; then
     baseurl="$a"
   fi
+  if [ "$prev" = "-master_pl_name" ]; then
+    # 値は相対名（出力の *.m3u8 ではない）。
+    master="$a"
+    prev="$a"
+    continue
+  fi
   case "$a" in
     *.m3u8)
-      playlist="$a"
+      playlist=$(printf '%s' "$a" | sed 's/%v/0/')
       mkdir -p "$(dirname "$playlist")" 2>/dev/null
-      seg=$(printf '%s' "$segfile" | sed 's/%05d/00001/')
+      seg=$(printf '%s' "$segfile" | sed 's/%v/0/; s/%05d/00001/')
       mkdir -p "$(dirname "$seg")" 2>/dev/null
       segname="${baseurl}$(basename "$seg")"
 
@@ -282,6 +297,13 @@ for a in "$@"; do
         printf '%s\n' "$segname"
       } > "$playlist.tmp"
       mv "$playlist.tmp" "$playlist"
+
+      if [ -n "$master" ]; then
+        masterpath="$(dirname "$playlist")/$master"
+        printf '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\n%s\n' "$(basename "$playlist")" > "$masterpath.tmp"
+        mv "$masterpath.tmp" "$masterpath"
+        master=""
+      fi
       ;;
   esac
   prev="$a"
@@ -398,7 +420,8 @@ func resolveRelative(t *testing.T, baseURL, ref string) string {
 }
 
 // firstSegmentURL は plURL からプレイリストを取得し、最初のセグメント URI を
-// **プレイリスト自身の URL を基準に相対解決した絶対 URL** として返す。
+// **プレイリスト自身の URL を基準に相対解決した絶対 URL** として返す。master なら
+// 最初の variant playlist を辿ってから同じことをする。
 //
 // 以前のテストは `/live/segments/{name}` という文字列を自前で組み立てて GET して
 // いたため、実装側の `-hls_base_url` 欠落（プレイリストが basename しか書かない
@@ -416,8 +439,13 @@ func firstSegmentURL(t *testing.T, plURL string) string {
 		t.Fatalf("playlist %q status = %d, want 200", plURL, resp.StatusCode)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	uri := firstSegmentName(t, string(body))
-	return resolveRelative(t, plURL, uri)
+	uri := resolveRelative(t, plURL, firstSegmentName(t, string(body)))
+	if !strings.Contains(string(body), "#EXT-X-STREAM-INF") {
+		return uri
+	}
+	// master なら hls.js と同じく variant playlist を 1 段辿る（variant の URI も
+	// master の URL 基準で解決できて初めて配信経路が通っている）。
+	return firstSegmentURL(t, uri)
 }
 
 // 同じサービスへの同時リクエストは 1 本の ffmpeg（= mirakc への 1 リクエスト）に
@@ -514,15 +542,15 @@ func TestLiveStreamer_ProfileSwitchKeepsOneSession(t *testing.T) {
 		bodies[profile] = string(body)
 	}
 
-	// **返るのは要求したプロファイルのプレイリストである。** ffmpeg は 1 回の
-	// 起動で出力ごとに別のプレイリストを書き、セグメント名にはプロファイル名が
+	// **返るのは要求したプロファイルの master である。** ffmpeg は 1 回の
+	// 起動で出力ごとに別の master を書き、variant 名にはプロファイル名が
 	// 接頭辞として焼かれる（`BuildLiveFFmpegArgs`）。ここを見ないと
 	// 「`?profile=` を無視して常に先頭を返す」変異が緑のまま通る。
-	if !strings.Contains(bodies["h264"], "h264_seg00001.ts") {
-		t.Errorf("h264 playlist = %q, want it to point at h264_seg00001.ts", bodies["h264"])
+	if !strings.Contains(bodies["h264"], "\nh264.0.m3u8\n") {
+		t.Errorf("h264 playlist = %q, want it to point at h264.0.m3u8", bodies["h264"])
 	}
-	if !strings.Contains(bodies["h264_vaapi"], "h264_vaapi_seg00001.ts") {
-		t.Errorf("h264_vaapi playlist = %q, want it to point at h264_vaapi_seg00001.ts",
+	if !strings.Contains(bodies["h264_vaapi"], "\nh264_vaapi.0.m3u8\n") {
+		t.Errorf("h264_vaapi playlist = %q, want it to point at h264_vaapi.0.m3u8",
 			bodies["h264_vaapi"])
 	}
 	if bodies["h264"] == bodies["h264_vaapi"] {
@@ -1334,15 +1362,15 @@ func TestLiveStreamer_Segment_WaitsForVariantPlaylistContent(t *testing.T) {
 	}
 }
 
-// TestLiveStreamer_Segment_CaptionsDisabled_RejectsVTTAndM3U8 は captions 無効
-// （既定）のとき、Segment が .vtt / .m3u8 を 400 で拒否し、.ts は従来どおり
-// 200 を返すことを固定する。壊し方: Segment の
-// `!ls.cfg.Captions && !strings.HasSuffix(name, ".ts")` ガードを消す。
-func TestLiveStreamer_Segment_CaptionsDisabled_RejectsVTTAndM3U8(t *testing.T) {
+// TestLiveStreamer_Segment_CaptionsDisabled_RejectsVTT は captions 無効
+// （既定）のとき、Segment が .vtt を 400 で拒否し、master が指す variant
+// playlist と .ts は 200 を返すことを固定する。壊し方: LiveConfig.servesFile の
+// `c.Captions ||` を消す / `.m3u8` を拒否する。
+func TestLiveStreamer_Segment_CaptionsDisabled_RejectsVTT(t *testing.T) {
 	mirakcSrv, _ := newFakeMirakcLiveServer(t)
 	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
 
-	for _, name := range []string{"foo.vtt", "foo.m3u8"} {
+	for _, name := range []string{"foo.vtt"} {
 		t.Run(name, func(t *testing.T) {
 			url := fmt.Sprintf("%s/api/sites/%s/networks/0/services/1/live/segments/%s", srv.URL, testLiveSite, name)
 			resp, err := http.Get(url)
@@ -1351,12 +1379,12 @@ func TestLiveStreamer_Segment_CaptionsDisabled_RejectsVTTAndM3U8(t *testing.T) {
 			}
 			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != http.StatusBadRequest {
-				t.Errorf("status = %d, want 400 (captions disabled must reject non-.ts segment names)", resp.StatusCode)
+				t.Errorf("status = %d, want 400 (captions disabled must reject .vtt names)", resp.StatusCode)
 			}
 		})
 	}
 
-	// .ts は captions の有無に関わらず従来どおり 200。
+	// .ts と variant playlist（master が指す）は captions の有無に関わらず 200。
 	segURL := firstSegmentURL(t, playlistURL(srv.URL, 0, 1, "h264"))
 	resp, err := http.Get(segURL)
 	if err != nil {
@@ -1739,6 +1767,8 @@ func TestLiveStreamer_URLPathFixedDepth(t *testing.T) {
 	want := []string{
 		"/api/sites/{site}/networks/{networkId}/services/{serviceId}/live/playlist.m3u8",
 		"/api/sites/{site}/networks/{networkId}/services/{serviceId}/live/segments/{name}",
+		// master が相対 URI で指す variant playlist（どの構成でも master を返す）。
+		"/api/sites/{site}/networks/{networkId}/services/{serviceId}/live/{name}",
 		// 離脱ヒント（issue #191）。セッション ID を持たない = 宛先はプレイリスト /
 		// セグメントと同じ (site, networkId, serviceId) のまま、固定深さも保つ。
 		"/api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave",
@@ -2254,44 +2284,7 @@ func TestWaitReadyTouching_TimesOut(t *testing.T) {
 // プレイリストはまだ無い**という状態が delay のあいだ続く --- ここが
 // issue #191 のレビューで指摘された無音区間である。
 func installSlowStartFakeLiveFFmpeg(t *testing.T, delay time.Duration) string {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("fake ffmpeg script assumes a POSIX shell")
-	}
-	dir := t.TempDir()
-	path := filepath.Join(dir, "slow-fake-ffmpeg-live")
-	script := fmt.Sprintf(`#!/bin/sh
-cat >/dev/null &
-sleep %.2f
-baseurl=""
-segfile=""
-prev=""
-for a in "$@"; do
-  if [ "$prev" = "-hls_segment_filename" ]; then segfile="$a"; fi
-  if [ "$prev" = "-hls_base_url" ]; then baseurl="$a"; fi
-  case "$a" in
-    *.m3u8)
-      playlist="$a"
-      mkdir -p "$(dirname "$playlist")" 2>/dev/null
-      seg=$(printf '%%s' "$segfile" | sed 's/%%05d/00001/')
-      mkdir -p "$(dirname "$seg")" 2>/dev/null
-      printf 'fake-ts-segment-data' > "$seg.tmp"
-      mv "$seg.tmp" "$seg"
-      {
-        printf '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:2.0,\n'
-        printf '%%s\n' "${baseurl}$(basename "$seg")"
-      } > "$playlist.tmp"
-      mv "$playlist.tmp" "$playlist"
-      ;;
-  esac
-  prev="$a"
-done
-while true; do sleep 1; done
-`, delay.Seconds())
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	return writeFakeLiveFFmpeg(t, "slow-fake-ffmpeg-live", fmt.Sprintf("sleep %.2f\n", delay.Seconds()))
 }
 
 // **離脱ヒントは「起動を待っている視聴者」のセッションを殺してはならない**
@@ -2809,29 +2802,34 @@ func TestBuildLiveFFmpegArgs(t *testing.T) {
 			t.Errorf("must not map subtitle/data streams: %v", args)
 		}
 	}
-	if mapV != len(profiles) || mapA != len(profiles) {
-		t.Errorf("-map 0:v:0 / 0:a:0 counts = %d/%d, want %d each (per output): %v",
-			mapV, mapA, len(profiles), args)
+	// 音声は標準 / 主 / 副の 3 レンディションぶん、同じ 0:a:0 を 3 回 map する。
+	if mapV != len(profiles) || mapA != 3*len(profiles) {
+		t.Errorf("-map 0:v:0 / 0:a:0 counts = %d/%d, want %d/%d (per output): %v",
+			mapV, mapA, len(profiles), 3*len(profiles), args)
 	}
 
-	// 2 プロファイルぶんの出力（.m3u8）が両方含まれる = 1 回の起動で両方出す。
-	m3u8Count := 0
-	for _, a := range args {
-		if strings.HasSuffix(a, ".m3u8") {
-			m3u8Count++
+	// 2 プロファイルぶんの出力が両方含まれる = 1 回の起動で両方出す。各出力が
+	// 自分の master（`NAME.m3u8`）と variant（`NAME.%v.m3u8`）を持つ。
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"-master_pl_name h264.m3u8 ", "-master_pl_name h264low.m3u8 ",
+		" /tmp/live/1/h264.%v.m3u8 ", " /tmp/live/1/h264low.%v.m3u8",
+		"-hls_segment_filename /tmp/live/1/segments/h264.%v_seg%05d.ts ",
+		"-hls_segment_filename /tmp/live/1/segments/h264low.%v_seg%05d.ts ",
+		// 音声レンディション: 標準（フィルタ無し、DEFAULT）/ 主 / 副。並びが UI との契約。
+		"-var_stream_map v:0,agroup:aud a:0,agroup:aud,default:yes a:1,agroup:aud a:2,agroup:aud -master_pl_name h264.m3u8 ",
+		"-var_stream_map v:0,agroup:aud a:0,agroup:aud,default:yes a:1,agroup:aud a:2,agroup:aud -master_pl_name h264low.m3u8 ",
+		"-c:a aac -filter:a:1 pan=stereo|c0=c0|c1=c0 -filter:a:2 pan=stereo|c0=c1|c1=c1 ",
+		// ライブは PDT が要る（無いと hls.js が戻る音声切替で止まる。hlsFlags）。
+		"-hls_flags delete_segments+temp_file+program_date_time ",
+		"-hls_time 2 -hls_list_size 6 ", "-hls_time 4 -hls_list_size 3 ",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("live args missing %q: %v", want, args)
 		}
 	}
-	if m3u8Count != 2 {
-		t.Errorf("m3u8 outputs = %d, want 2 (one ffmpeg, all profiles)", m3u8Count)
-	}
-	if !slices.Contains(args, "/tmp/live/1/h264.m3u8") {
-		t.Errorf("missing h264 playlist path: %v", args)
-	}
-	if !slices.Contains(args, "/tmp/live/1/h264low.m3u8") {
-		t.Errorf("missing h264low playlist path: %v", args)
-	}
-	if !slices.Contains(args, "/tmp/live/1/segments/h264_seg%05d.ts") {
-		t.Errorf("missing h264 segment pattern: %v", args)
+	if strings.Contains(joined, "-filter:a:0") || strings.Contains(joined, "-af ") {
+		t.Errorf("the default audio rendition must stay unfiltered (same encode as before): %v", args)
 	}
 	// -hls_base_url が無いと ffmpeg はプレイリストに basename しか書かず、実 HLS
 	// クライアントの相対解決が `-hls_segment_filename` の物理パス（segments/ 配下）
@@ -2852,9 +2850,12 @@ func TestBuildLiveFFmpegArgs(t *testing.T) {
 		t.Errorf("missing extra_args: %v", args)
 	}
 
-	joined := strings.Join(args, " ")
-	if strings.Contains(joined, "&&") || strings.Contains(joined, "|") {
-		t.Errorf("args look like a shell pipeline: %v", args)
+	// argv は exec に直接渡る（シェルを通らない）。pan の値に含まれる `|` は
+	// フィルタの区切りなので、単独のトークンだけを見る。
+	for _, a := range args {
+		if a == "&&" || a == "|" {
+			t.Errorf("args look like a shell pipeline: %v", args)
+		}
 	}
 }
 
@@ -2921,7 +2922,15 @@ func TestBuildLiveFFmpegArgs_CaptionsUsesMasterAndWebVTT(t *testing.T) {
 	}, "/tmp/live/1", true)
 	joined := strings.Join(args, " ")
 	for _, want := range []string{
-		"-map 0:s:0?", "-c:s webvtt", "-var_stream_map v:0,a:0,s:0,sgroup:subs v:1,a:1",
+		"-map 0:s:0?", "-c:s webvtt",
+		// 音声はプロファイルごとのグループ（a0 / a1）に 3 本ずつ。video variant が
+		// 先に並ぶので字幕 playlist は subtitles_0.m3u8 のまま。
+		"-var_stream_map v:0,agroup:a0,s:0,sgroup:subs v:1,agroup:a1 " +
+			"a:0,agroup:a0,default:yes a:1,agroup:a0 a:2,agroup:a0 " +
+			"a:3,agroup:a1,default:yes a:4,agroup:a1 a:5,agroup:a1 ",
+		"-c:a:0 aac -c:a:1 aac -filter:a:1 pan=stereo|c0=c0|c1=c0 -c:a:2 aac -filter:a:2 pan=stereo|c0=c1|c1=c1 ",
+		"-c:a:3 aac -c:a:4 aac -filter:a:4 pan=stereo|c0=c0|c1=c0 -c:a:5 aac -filter:a:5 pan=stereo|c0=c1|c1=c1 ",
+		"-hls_flags delete_segments+temp_file+program_date_time ",
 		"-master_pl_name playlist.m3u8", "-hls_time 2", "-hls_list_size 6", "-force_key_frames:v:0",
 		"-hls_subtitle_path /tmp/live/1/subtitles_%v.m3u8", "playlist_%v.m3u8", "/tmp/live/1/segments/%v_seg%05d.ts",
 	} {
@@ -2935,7 +2944,7 @@ func TestBuildLiveFFmpegArgs_CaptionsUsesMasterAndWebVTT(t *testing.T) {
 // per-stream 指定子（フィルタ・preset）が型付き（`:v:N`）で、2 本目以降の
 // プロファイルにも正しく別々に当たることを固定する。
 //
-// captions 経路の出力ストリーム順は v0, a0, s0, v1, a1。型無しの `-vf:1` /
+// captions 経路の出力ストリーム順は v0, a0..a2, s0, v1, a3..a5。型無しの `-vf:1` /
 // `-preset:1` は variant 1 の映像ではなく variant 0 の音声（出力ストリーム
 // index 1）を指してしまう（レビュー指摘、実 ffmpeg 9.0.1 で測定して固定）。
 //
@@ -2982,7 +2991,10 @@ func TestBuildLiveFFmpegArgs_CaptionsWithoutSubtitleStream(t *testing.T) {
 	if strings.Contains(joined, "0:s:0") || strings.Contains(joined, "s:0,sgroup:subs") || strings.Contains(joined, "-c:s webvtt") {
 		t.Fatalf("subtitle mapping must be omitted when input has no subtitle stream: %v", args)
 	}
-	for _, want := range []string{"-var_stream_map v:0,a:0", "-master_pl_name playlist.m3u8", "-hls_time 3", "-hls_list_size 7"} {
+	for _, want := range []string{
+		"-var_stream_map v:0,agroup:a0 a:0,agroup:a0,default:yes a:1,agroup:a0 a:2,agroup:a0 ",
+		"-master_pl_name playlist.m3u8", "-hls_time 3", "-hls_list_size 7",
+	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("captionless live args missing %q: %v", want, args)
 		}

@@ -363,11 +363,9 @@ func (ls *LiveStreamer) Mount(r chi.Router) {
 	}
 	r.Get(LiveRoutePattern+"/playlist.m3u8", ls.Playlist)
 	r.Get(LiveRoutePattern+"/segments/{name}", ls.Segment)
-	if ls.cfg.Captions {
-		// ffmpeg の variant playlist は master と同じディレクトリに置かれる。
-		// master の相対 URI（playlist_0.m3u8）をそのまま解決できるようにする。
-		r.Get(LiveRoutePattern+"/{name}", ls.Segment)
-	}
+	// ffmpeg の variant playlist は master と同じディレクトリに置かれる。
+	// master の相対 URI（`h264.0.m3u8` / `playlist_0.m3u8`）をそのまま解決できるようにする。
+	r.Get(LiveRoutePattern+"/{name}", ls.Segment)
 	r.Post(LiveRoutePattern+"/leave", ls.Leave)
 
 	// 追っかけ再生も同じ LiveStreamer のセッションプールを使う。captions の
@@ -552,16 +550,14 @@ func (ls *LiveStreamer) Playlist(w http.ResponseWriter, r *http.Request) {
 	}
 	s.touch()
 
+	// どちらの経路でも master playlist を返す（音声レンディションを載せるため。
+	// buildHLSFFmpegArgs）。
 	playlistName := profile.Name + ".m3u8"
 	if ls.cfg.Captions {
 		playlistName = "playlist.m3u8"
 	}
 	playlistPath := filepath.Join(s.dir, playlistName)
-	readyMarker := "#EXTINF"
-	if ls.cfg.Captions {
-		readyMarker = "#EXT-X-STREAM-INF"
-	}
-	content, ok := waitForPlaylist(r.Context(), s, playlistPath, playlistStartupTimeout, readyMarker)
+	content, ok := waitForPlaylist(r.Context(), s, playlistPath, playlistStartupTimeout, "#EXT-X-STREAM-INF")
 	if !ok {
 		slog.Error("streamer: live playlist did not appear in time",
 			"service_id", serviceID, "profile", profile.Name, "dir", s.dir)
@@ -583,8 +579,90 @@ func (ls *LiveStreamer) Playlist(w http.ResponseWriter, r *http.Request) {
 // 常に 1 階層のファイル名になる）。
 var segmentNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+\.(?:ts|vtt|m3u8)$`)
 
+// servesFile は name が配信対象の形かを返す。`.vtt` は字幕を出す構成だけが書く。
+func (c LiveConfig) servesFile(name string) bool {
+	return segmentNamePattern.MatchString(name) && (c.Captions || filepath.Ext(name) != ".vtt")
+}
+
+// sessionFilePath は name の実体の場所を返す。`.ts` は segments/ に、variant /
+// 字幕 playlist と `.vtt` は master と同じ s.dir 直下に置かれる（buildHLSFFmpegArgs）。
+func sessionFilePath(dir, name string) string {
+	if filepath.Ext(name) == ".ts" {
+		return filepath.Join(dir, "segments", name)
+	}
+	return filepath.Join(dir, name)
+}
+
+// captionVariantPattern は captions 経路の variant / 字幕 playlist の名前
+// （buildLiveCaptionFFmpegArgs の `playlist_%v.m3u8` / `subtitles_%v.m3u8`）。
+var captionVariantPattern = regexp.MustCompile(`^(?:playlist|subtitles)_[0-9]+\.m3u8$`)
+
+// isVariantPlaylist は name がこの構成の ffmpeg が書く variant playlist の名前かを返す。
+// captions 無効時は `NAME.<n>.m3u8`（NAME は設定済みのプロファイル名）。master
+// （`NAME.m3u8` / `playlist.m3u8`）は含まない --- master は Playlist の担当である。
+func (c LiveConfig) isVariantPlaylist(name string) bool {
+	if c.Captions {
+		return captionVariantPattern.MatchString(name)
+	}
+	base, ok := strings.CutSuffix(name, ".m3u8")
+	if !ok {
+		return false
+	}
+	profile, index, ok := strings.Cut(base, ".")
+	if !ok || index == "" || strings.Trim(index, "0123456789") != "" {
+		return false
+	}
+	for _, p := range c.Profiles {
+		if p.Name == profile {
+			return true
+		}
+	}
+	return false
+}
+
+// serveVariantPlaylist は master が指す variant / 字幕 playlist を返す。
+//
+// **セッションが無ければ作る（Playlist と同じ getOrCreateSession）。** hls.js が
+// 取り直し続けるのは master ではなく variant である（master は最初の 1 回だけ）。
+// ここで 404 を返すと、idle GC・ffmpeg の異常終了・Pod の入れ替えの後、
+// hls.js は 4xx を再試行しないので fatal になり止まる --- 自己修復は「クライアントが
+// ポーリングする URL がセッションを作る入口でもある」ことに依存している
+// （docs/api/media.md §資源同定）。variant 名にセッション ID は無いので、宛先は
+// サービスのままである。知らない名前は 404 で、セッションを起こさない。
+//
+// **master と同じ readiness 待ちを variant にも掛ける。** master に
+// EXT-X-STREAM-INF があることは、variant にセグメントが書かれていることを
+// 保証しない。クライアントは master を受け取った直後に variant を取りに来る。
+func (ls *LiveStreamer) serveVariantPlaylist(w http.ResponseWriter, r *http.Request, serviceID int64, name string) {
+	if !ls.cfg.isVariantPlaylist(name) {
+		http.NotFound(w, r)
+		return
+	}
+	s, err := ls.getOrCreateSession(r.Context(), serviceID)
+	if err != nil {
+		if errors.Is(err, errStartupTimeout) {
+			slog.Error("streamer: live variant playlist session did not become ready in time",
+				"service_id", serviceID)
+		}
+		writeSessionError(w, err)
+		return
+	}
+	s.touch()
+	content, ok := waitForPlaylist(r.Context(), s, sessionFilePath(s.dir, name), playlistStartupTimeout, "#EXTINF")
+	if !ok {
+		slog.Error("streamer: live variant playlist did not appear in time",
+			"service_id", serviceID, "name", name, "dir", s.dir)
+		http.Error(w, "live stream did not start in time", http.StatusGatewayTimeout)
+		return
+	}
+	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(content)
+}
+
 // Segment は GET /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/segments/{name}
-// を処理する。
+// を処理する（variant playlist は serveVariantPlaylist へ渡す）。
 //
 // name にプロファイルは含まれない代わりに、ffmpeg が書き出すファイル名自体に
 // プロファイル名を接頭辞として焼く（BuildLiveFFmpegArgs）。セグメント URL に
@@ -596,8 +674,12 @@ func (ls *LiveStreamer) Segment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	name := chi.URLParam(r, "name")
-	if !segmentNamePattern.MatchString(name) || (!ls.cfg.Captions && !strings.HasSuffix(name, ".ts")) {
+	if !ls.cfg.servesFile(name) {
 		http.Error(w, "invalid segment name", http.StatusBadRequest)
+		return
+	}
+	if strings.HasSuffix(name, ".m3u8") {
+		ls.serveVariantPlaylist(w, r, serviceID, name)
 		return
 	}
 
@@ -605,9 +687,9 @@ func (ls *LiveStreamer) Segment(w http.ResponseWriter, r *http.Request) {
 	s, ok := ls.sessions[serviceID]
 	ls.mu.Unlock()
 	if !ok {
-		// idle GC で回収済み、または未開始。hls.js はプレイリストを再取得しにいき、
-		// そこで新しいセッションが起きる（レベルトリガーと同じ形。セッション ID を
-		// 持たないので「詰む」経路が無い。docs/api.md §ライブ視聴の HLS）。
+		// idle GC で回収済み、または未開始。hls.js は variant playlist を再取得しにいき、
+		// そこで新しいセッションが起きる（serveVariantPlaylist。レベルトリガーと同じ形。
+		// セッション ID を持たないので「詰む」経路が無い。docs/api.md §ライブ視聴の HLS）。
 		http.NotFound(w, r)
 		return
 	}
@@ -645,34 +727,7 @@ func (ls *LiveStreamer) Segment(w http.ResponseWriter, r *http.Request) {
 	}
 	s.touch()
 
-	path := filepath.Join(s.dir, "segments", name)
-	if ls.cfg.Captions && (strings.HasSuffix(name, ".m3u8") || strings.HasSuffix(name, ".vtt")) {
-		path = filepath.Join(s.dir, name)
-	}
-
-	if ls.cfg.Captions && strings.HasSuffix(name, ".m3u8") {
-		// **master と同じ readiness 待ちを、1 段下の variant / 字幕 playlist にも
-		// 掛ける。** waitForPlaylist の doc コメント（「書き込み途中の空/不完全な
-		// 内容を配らない」「CI が確率的に flaky になった原因」）は master
-		// （Playlist ハンドラ）にしか効いていなかった --- master に
-		// EXT-X-STREAM-INF があることは、そこが指す variant playlist に
-		// セグメントが書かれていることを保証しない。クライアントは master を
-		// 受け取った直後にこの playlist_0.m3u8 等を取りに来るので、同じ窓が
-		// 1 段下で復活する。既存のヘルパをそのまま再利用する（新しい待機機構は
-		// 作らない）。
-		content, ok := waitForPlaylist(r.Context(), s, path, playlistStartupTimeout, "#EXTINF")
-		if !ok {
-			slog.Error("streamer: live variant playlist did not appear in time",
-				"service_id", serviceID, "name", name, "dir", s.dir)
-			http.Error(w, "live stream did not start in time", http.StatusGatewayTimeout)
-			return
-		}
-		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-		w.Header().Set("Content-Length", strconv.Itoa(len(content)))
-		w.Header().Set("Cache-Control", "no-store")
-		_, _ = w.Write(content)
-		return
-	}
+	path := sessionFilePath(s.dir, name)
 
 	// **この Content-Type にフロントの再生経路判定が依存している。変えるなら
 	// `web/src/lib/live.ts` の `supportsNativeHls` も同時に変える。** あちらは
@@ -928,6 +983,8 @@ func (ls *LiveStreamer) ChasePlaylistForTarget(w http.ResponseWriter, r *http.Re
 	}
 	s.touch()
 
+	// 追っかけは音声レンディションを出さないので、captions 無効時は media playlist
+	// そのもの（audioRenditionsFor）。
 	playlistName := profile.Name + ".m3u8"
 	readyMarker := "#EXTINF"
 	if ls.cfg.Captions {
@@ -963,7 +1020,7 @@ func (ls *LiveStreamer) ChaseSegment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := chi.URLParam(r, "name")
-	if !segmentNamePattern.MatchString(name) || (!ls.cfg.Captions && !strings.HasSuffix(name, ".ts")) {
+	if !ls.cfg.servesFile(name) {
 		http.Error(w, "invalid segment name", http.StatusBadRequest)
 		return
 	}
@@ -992,11 +1049,8 @@ func (ls *LiveStreamer) ChaseSegment(w http.ResponseWriter, r *http.Request) {
 	}
 	s.touch()
 
-	path := filepath.Join(s.dir, "segments", name)
-	if ls.cfg.Captions && (strings.HasSuffix(name, ".m3u8") || strings.HasSuffix(name, ".vtt")) {
-		path = filepath.Join(s.dir, name)
-	}
-	if ls.cfg.Captions && strings.HasSuffix(name, ".m3u8") {
+	path := sessionFilePath(s.dir, name)
+	if strings.HasSuffix(name, ".m3u8") {
 		content, ok := waitForPlaylist(r.Context(), s, path, playlistStartupTimeout, "#EXTINF")
 		if !ok {
 			http.Error(w, "chase stream did not start in time", http.StatusGatewayTimeout)
@@ -2282,11 +2336,15 @@ func (w *cappedWriter) String() string {
 // 出す引数を組み立てる（issue #91 の決定 1: 1 チューナーから複数プロファイル）。
 //
 // 自由形式の cmd 文字列は受け取らない（encode.BuildFFmpegArgs と同じ方針）。
-// ストリームは先頭の映像・先頭の音声だけを map する（単一映像・単一音声の放送
-// サービス前提の MVP。複数音声・データ放送は特別扱いしない）。
-// 字幕は通常は map しない。Captions=true の専用経路だけ optional に ARIB caption
-// を map し、libaribcaption で WebVTT にする。既定経路は Debian 系の ffmpeg が
-// arib_caption デコーダを持たない構成でも従来どおり動く。
+// ストリームは先頭の映像・先頭の音声だけを map する（データ放送は特別扱いしない。
+// 2 本目の音声 ES は選べない）。字幕は通常は map しない。Captions=true の専用経路
+// だけ optional に ARIB caption を map し、libaribcaption で WebVTT にする。既定経路は
+// Debian 系の ffmpeg が arib_caption デコーダを持たない構成でも従来どおり動く。
+//
+// **音声はプロファイルごとに 3 本の代替音声レンディション（標準 / 主 / 副）で出す。**
+// 標準はフィルタ無し（現行と同じエンコード、`DEFAULT=YES`）。主 / 副は二重音声の
+// L / R を両耳へ写す出力側の `pan`（dualMonoPans）。選ぶのはプレイヤーで、
+// サーバーは選択を知らない（docs/api/media.md §音声）。
 //
 // argv の順序（issue #321 決定コメント §3）:
 //
@@ -2296,12 +2354,18 @@ func (w *cappedWriter) String() string {
 //	[cfg.InputExtraArgs…]
 //	-f mpegts -i pipe:0
 //	  ── プロファイルごとに繰り返し ──
-//	  -map 0:v:0 -map 0:a:0  -c:v  -c:a
+//	  -map 0:v:0 -map 0:a:0 ×3  -c:v  -c:a  -filter:a:1 <主> -filter:a:2 <副>
 //	  [-vf <deinterlace[, scaler が決めた scale]>]  [-crf|-qp]  [-preset]
-//	  （captions 経路では `-filter:v:N` を使う）
+//	  （captions 経路では `-c:a:N` / `-filter:v:N` / `-filter:a:N` を使う）
 //	  -force_key_frames expr:…
 //	  [profile.extra_args…]                         # ユーザー（出力側）
-//	  -f hls ... OUT.m3u8                            # アプリ所有の末尾
+//	  -var_stream_map … -master_pl_name NAME.m3u8 -f hls ... NAME.%v.m3u8  # アプリ所有の末尾
+//
+// **既定経路はプロファイルごとの出力のまま、各出力が自分の master（`NAME.m3u8`）を
+// 持つ。** 1 つの master にまとめると `hls_time` が 1 つになり、プロファイルごとの
+// `segment_seconds` が表現できなくなる（captions 経路はそのため検証で揃えさせている）。
+// variant のファイル名は `NAME.<n>.m3u8` で、プロファイル名に `.` は使えないので
+// 別プロファイルの master と衝突しない。
 //
 // **Captions=true のときは 1 つの master playlist（%v 展開）を出す形に分岐する。**
 // withSubtitles は Captions=true のときだけ効き、起動前の ffprobe 判定結果を渡す
@@ -2312,8 +2376,9 @@ func BuildLiveFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []strin
 }
 
 // BuildChaseFFmpegArgs builds the same multi-profile HLS graph as live, but as
-// an EVENT playlist. Event output keeps the whole recording history and must
-// never use delete_segments.
+// an EVENT playlist and without the audio renditions (audioRenditionsFor).
+// Event output keeps the whole recording history and must never use
+// delete_segments.
 func BuildChaseFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []string {
 	return buildHLSFFmpegArgs(cfg, dir, withSubtitles, true)
 }
@@ -2335,12 +2400,20 @@ func buildHLSFFmpegArgs(cfg LiveConfig, dir string, withSubtitles, eventPlaylist
 	)
 	args = append(args, cfg.InputExtraArgs...)
 	args = append(args, "-f", "mpegts", "-i", "pipe:0")
+	renditions := audioRenditionsFor(eventPlaylist)
 	for _, p := range cfg.Profiles {
 		// 映像・音声だけ。字幕 / データ放送は捨てる（上記 arib_caption）。
 		// -map は output 単位のオプションなので、ループの前に 1 組だけ置くと
 		// 最初の .m3u8 にしか適用されず、2 本目以降は自動ストリーム選択に戻る。
-		args = append(args, "-map", "0:v:0", "-map", "0:a:0")
-		args = append(args, "-c:v", p.VideoCodec, "-c:a", p.AudioCodec)
+		// ライブの音声は同じ入力を 3 回 map し、2 本目 / 3 本目に主 / 副の pan を掛ける。
+		if renditions {
+			args = append(args, "-map", "0:v:0", "-map", "0:a:0", "-map", "0:a:0", "-map", "0:a:0")
+			args = append(args, "-c:v", p.VideoCodec, "-c:a", p.AudioCodec,
+				"-filter:a:1", dualMonoPans[0], "-filter:a:2", dualMonoPans[1])
+		} else {
+			args = append(args, "-map", "0:v:0", "-map", "0:a:0")
+			args = append(args, "-c:v", p.VideoCodec, "-c:a", p.AudioCodec)
+		}
 		if filter, ok := ffargs.VideoFilterArgs(p.Scaler, p.Height, p.Deinterlace); ok {
 			args = append(args, "-vf", filter)
 		}
@@ -2354,15 +2427,21 @@ func buildHLSFFmpegArgs(cfg LiveConfig, dir string, withSubtitles, eventPlaylist
 		if len(p.ExtraArgs) > 0 {
 			args = append(args, p.ExtraArgs...)
 		}
-		hlsFlags := "delete_segments+temp_file"
 		playlistSize := strconv.Itoa(p.PlaylistSize)
 		playlistOptions := []string{}
 		if eventPlaylist {
 			// EVENT playlists grow from the head until ffmpeg sees EOF. list_size 0
 			// and the absence of delete_segments retain every segment for seeking.
 			playlistSize = "0"
-			hlsFlags = "temp_file"
 			playlistOptions = []string{"-hls_playlist_type", "event"}
+		}
+		// 出力ファイル名。ライブは master（NAME.m3u8）と variant（NAME.<n>.m3u8）、
+		// 追っかけは従来どおりの media playlist 1 本（NAME.m3u8）。
+		segmentFile, playlistFile := p.Name+"_seg%05d.ts", p.Name+".m3u8"
+		if renditions {
+			variants := append([]string{"v:0,agroup:aud"}, audioRenditionEntries(0, "aud")...)
+			args = append(args, "-var_stream_map", strings.Join(variants, " "), "-master_pl_name", p.Name+".m3u8")
+			segmentFile, playlistFile = p.Name+".%v_seg%05d.ts", p.Name+".%v.m3u8"
 		}
 		args = append(args,
 			"-f", "hls",
@@ -2376,8 +2455,8 @@ func buildHLSFFmpegArgs(cfg LiveConfig, dir string, withSubtitles, eventPlaylist
 			// temp_file: 一時ファイルに書いてから rename するので、配信側が
 			// 書き込み途中のファイルを読むことがない。追っかけ再生は
 			// delete_segments を使わない（BuildChaseFFmpegArgs）。
-			"-hls_flags", hlsFlags,
-			"-hls_segment_filename", filepath.Join(dir, "segments", p.Name+"_seg%05d.ts"),
+			"-hls_flags", hlsFlags(eventPlaylist),
+			"-hls_segment_filename", filepath.Join(dir, "segments", segmentFile),
 			// hls_base_url: プレイリストの各セグメント行に付ける接頭辞。
 			// **これが無いと ffmpeg は basename だけを書く**（実機で確認済み）。
 			// HLS クライアントはプレイリスト自身の URL 基準で相対解決するため、
@@ -2387,10 +2466,59 @@ func buildHLSFFmpegArgs(cfg LiveConfig, dir string, withSubtitles, eventPlaylist
 			// （`segments/` サブディレクトリ）と、プレイリストが指す論理 URI を
 			// 一致させるための必須フラグ（issue #91 のレビューで発見）。
 			"-hls_base_url", "segments/",
-			filepath.Join(dir, p.Name+".m3u8"),
+			filepath.Join(dir, playlistFile),
 		)
 	}
 	return args
+}
+
+// dualMonoPans は二重音声の主（L）/ 副（R）を両耳へ写す出力側のフィルタ。
+//
+// 既定のデコード（`-dual_mono_mode` 無し）は二重音声を L = 主 / R = 副のステレオで
+// 出すので、出力側で片側を両耳へ写せば主 / 副になる。**`-dual_mono_mode` は入力
+// （デコーダ）側のオプションなので 1 回の起動で両方を出せないが、これなら出せる。**
+// 実測（ffmpeg 9.0.2）: モノラル AAC 2 本の SCE を 1 フレームに継いだ二重音声で、
+// この pan の出力は `-dual_mono_mode main|sub` の出力とバイト一致した。二重音声で
+// ない通常のステレオに当てると片側のチャンネルだけになる（利用者が選んだときだけ）。
+var dualMonoPans = [2]string{"pan=stereo|c0=c0|c1=c0", "pan=stereo|c0=c1|c1=c1"}
+
+// audioRenditionEntries は 1 プロファイルぶんの音声レンディション（標準 / 主 / 副）の
+// `-var_stream_map` 項目を返す。first はその最初の音声出力ストリームの index。
+//
+// **並び順が UI との契約である。** master の `NAME` は ffmpeg が `audio_<n>` で固定し、
+// n はプロファイル数でずれる（`name:` で変わるのは URI だけ。実測）。フロントは
+// グループ内の順序（0 = 標準 / 1 = 主 / 2 = 副）で選ぶ（web/src/lib/live.ts
+// liveAudioTrackIndex）。
+func audioRenditionEntries(first int, group string) []string {
+	return []string{
+		fmt.Sprintf("a:%d,agroup:%s,default:yes", first, group),
+		fmt.Sprintf("a:%d,agroup:%s", first+1, group),
+		fmt.Sprintf("a:%d,agroup:%s", first+2, group),
+	}
+}
+
+// audioRenditionsFor は音声レンディション（標準 / 主 / 副）を出すかを返す。
+//
+// **追っかけ（EVENT）には出さない。** 選択 UI が無く（docs/frontend/live.md）、出すと
+// 配信の形（master + 映像だけのセグメント + 別の音声）が変わるのに、その形で
+// 追っかけの seek・再生位置の復元を実ブラウザで確かめる判定が無い。音声の
+// エンコードも 3 倍になる。追っかけに音声の選択を足すときに、その判定と一緒に出す。
+func audioRenditionsFor(eventPlaylist bool) bool { return !eventPlaylist }
+
+// hlsFlags は `-hls_flags` の値を返す。
+//
+// **ライブは program_date_time が要る。** 無いと hls.js（1.7.1 / 1.7.3 / canary）は、
+// 前に聴いた音声レンディションへ**ライブの窓（list_size × hls_time）より後で**戻ると
+// 再生が止まる（バッファが空になり、音声は前のトラックのまま。手元に残った古い
+// playlist が今の窓と重ならず、PDT 無しでは揃えられない）。窓の内側ですぐ戻る分には
+// 止まらない。判定は `web/e2e/live-audio.mjs` の ①（各トラックを 15 秒聴いてから
+// 戻る。PDT を外すと標準へ戻る所で落ち、付けると通る。WebAudio で左右の周波数を
+// 測る）。追っかけ（EVENT）には音声の選択を出していないので付けない。
+func hlsFlags(eventPlaylist bool) string {
+	if eventPlaylist {
+		return "temp_file"
+	}
+	return "delete_segments+temp_file+program_date_time"
 }
 
 // buildLiveCaptionFFmpegArgs は HLS を 1 つの master playlist として出力する。
@@ -2398,8 +2526,13 @@ func buildHLSFFmpegArgs(cfg LiveConfig, dir string, withSubtitles, eventPlaylist
 // ffprobe 判定結果で、false の場合は字幕 map / rendition を完全に省き、字幕なし
 // 番組でも映像・音声の HLS を継続できる。
 //
+// **音声レンディションはプロファイルごとのグループ（`agroup:a<N>`）に入れる。**
+// プロファイルごとに `audio_codec` / `extra_args` が違いうるので、1 グループに
+// まとめるとそれが表現できない。プロファイル N の音声は a:3N（標準）/ a:3N+1（主）/
+// a:3N+2（副）。video variant が先に並ぶので字幕 playlist は `subtitles_0.m3u8` のまま。
+//
 // **per-stream 指定子は必ず型付き（`:v:N` / `:a:N`）にする。** この経路の出力
-// ストリーム順は v0, a0, [s0,] v1, a1 で、`-preset:N` / `-vf:N`（型無しの
+// ストリーム順は v0, a0..a2, [s0,] v1, a3..a5 で、`-preset:N` / `-vf:N`（型無しの
 // グローバル出力ストリーム index）は 2 本目以降のプロファイルでは音声側を指して
 // しまい、preset もフィルタも掛からない（実 ffmpeg で測定・固定: レビュー指摘）。
 //
@@ -2423,13 +2556,27 @@ func buildLiveCaptionFFmpegArgs(cfg LiveConfig, dir string, withSubtitles, event
 	}
 	args = append(args, "-f", "mpegts", "-i", "pipe:0")
 
-	var variants []string
+	var variants, audioVariants []string
+	renditions := audioRenditionsFor(eventPlaylist)
 	for i, p := range cfg.Profiles {
 		args = append(args, "-map", "0:v:0", "-map", "0:a:0")
+		if renditions {
+			args = append(args, "-map", "0:a:0", "-map", "0:a:0")
+		}
 		if i == 0 && withSubtitles {
 			args = append(args, "-map", "0:s:0?")
 		}
-		args = append(args, "-c:v:"+strconv.Itoa(i), p.VideoCodec, "-c:a:"+strconv.Itoa(i), p.AudioCodec)
+		a := i
+		args = append(args, "-c:v:"+strconv.Itoa(i), p.VideoCodec)
+		if renditions {
+			a = 3 * i
+			args = append(args,
+				"-c:a:"+strconv.Itoa(a), p.AudioCodec,
+				"-c:a:"+strconv.Itoa(a+1), p.AudioCodec, "-filter:a:"+strconv.Itoa(a+1), dualMonoPans[0],
+				"-c:a:"+strconv.Itoa(a+2), p.AudioCodec, "-filter:a:"+strconv.Itoa(a+2), dualMonoPans[1])
+		} else {
+			args = append(args, "-c:a:"+strconv.Itoa(a), p.AudioCodec)
+		}
 		if filter, ok := ffargs.VideoFilterArgs(p.Scaler, p.Height, p.Deinterlace); ok {
 			args = append(args, "-filter:v:"+strconv.Itoa(i), filter)
 		}
@@ -2449,21 +2596,24 @@ func buildLiveCaptionFFmpegArgs(cfg LiveConfig, dir string, withSubtitles, event
 		}
 		args = append(args, p.ExtraArgs...)
 		mapping := fmt.Sprintf("v:%d,a:%d", i, i)
+		if renditions {
+			group := "a" + strconv.Itoa(i)
+			mapping = fmt.Sprintf("v:%d,agroup:%s", i, group)
+			audioVariants = append(audioVariants, audioRenditionEntries(a, group)...)
+		}
 		if i == 0 && withSubtitles {
 			mapping += ",s:0,sgroup:subs"
 		}
 		variants = append(variants, mapping)
 	}
-	hlsFlags := "delete_segments+temp_file"
 	playlistSize := strconv.Itoa(cfg.Profiles[0].PlaylistSize)
 	playlistOptions := []string{}
 	if eventPlaylist {
 		playlistSize = "0"
-		hlsFlags = "temp_file"
 		playlistOptions = []string{"-hls_playlist_type", "event"}
 	}
 	args = append(args,
-		"-var_stream_map", strings.Join(variants, " "),
+		"-var_stream_map", strings.Join(append(variants, audioVariants...), " "),
 		"-master_pl_name", "playlist.m3u8",
 		"-f", "hls",
 		"-hls_time", strconv.Itoa(cfg.Profiles[0].SegmentSeconds),
@@ -2471,7 +2621,7 @@ func buildLiveCaptionFFmpegArgs(cfg LiveConfig, dir string, withSubtitles, event
 	)
 	args = append(args, playlistOptions...)
 	args = append(args,
-		"-hls_flags", hlsFlags,
+		"-hls_flags", hlsFlags(eventPlaylist),
 		"-hls_base_url", "segments/",
 		"-hls_segment_filename", filepath.Join(dir, "segments", "%v_seg%05d.ts"),
 	)

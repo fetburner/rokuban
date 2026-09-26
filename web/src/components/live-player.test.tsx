@@ -42,13 +42,18 @@ type FakeHls = {
   // 指摘）。mainForwardBufferInfo はアタッチ直後は null
   latency: number
   mainForwardBufferInfo: { len: number } | null
+  audioTrack: number
+  audioTracks: unknown[]
 }
 
 vi.mock('hls.js', () => {
   class FakeHlsImpl {
-    static Events = { ERROR: 'hlsError' }
+    static Events = { ERROR: 'hlsError', AUDIO_TRACKS_UPDATED: 'hlsAudioTracksUpdated' }
     static isSupported = () => hlsMockState.supported
     on = vi.fn()
+    // 音声トラック（issue #870）。実 hls.js は master の音声グループを読むまで空
+    audioTrack = 0
+    audioTracks: unknown[] = []
     loadSource = vi.fn()
     attachMedia = vi.fn()
     // 破棄後は `latency` / `mainForwardBufferInfo` を読むと例外にする ---
@@ -87,6 +92,21 @@ vi.mock('hls.js', () => {
   }
   return { default: FakeHlsImpl }
 })
+
+/**
+ * PROFILE_MASTER は captions 無効時に streamer が返すプロファイルごとの master
+ * （音声レンディション入り。issue #870）の形で、video variant は 1 本だけ。
+ * ffmpeg 9.0 の `-var_stream_map "v:0,agroup:aud a:0,agroup:aud ..."` の出力を写した。
+ * BUNDLED_MASTER は `live.captions: true` の全プロファイルを束ねた master。
+ */
+const PROFILE_MASTER =
+  '#EXTM3U\n#EXT-X-VERSION:3\n' +
+  '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="group_aud",NAME="audio_1",DEFAULT=YES,URI="hd.1.m3u8"\n' +
+  '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="group_aud",NAME="audio_2",DEFAULT=NO,URI="hd.2.m3u8"\n' +
+  '#EXT-X-STREAM-INF:BANDWIDTH=2000000,AUDIO="group_aud"\nhd.0.m3u8\n'
+const BUNDLED_MASTER =
+  '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\nplaylist_0.m3u8\n' +
+  '#EXT-X-STREAM-INF:BANDWIDTH=800000\nplaylist_1.m3u8\n'
 
 /**
  * jsdom は `HTMLMediaElement.canPlayType` を実装していない（常に `''`）ため、
@@ -510,19 +530,19 @@ describe('LivePlayer の状態遷移', () => {
     })
 
     /**
-     * **master playlist（`live.captions: true`）では降格を試しません。** そのとき
-     * streamer は `?profile=` に関わらず同じ master を返すので、下げても何も
-     * 変わらないのに「下げました」と表示することになる。
+     * **全プロファイルを束ねた master（`live.captions: true`）では降格を試さない。**
+     * そのとき streamer は `?profile=` に関わらず同じ master を返すので、下げても
+     * 何も変わらないのに「下げました」と表示することになる。
      *
-     * 変異: `canDowngrade` の `!probe.masterPlaylist` を外すと、このテストの
+     * 変異: `canDowngrade` の `!probe.bundlesProfiles` を外すと、このテストの
      * 「呼ばれない」が落ちる。
      */
-    it('ネイティブ経路: master playlist では降格を試さず、従来どおりエラーにする', async () => {
+    it('ネイティブ経路: 全プロファイルを束ねた master では降格を試さず、従来どおりエラーにする', async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true })
       const onStalled = vi.fn(() => true)
       const video = await renderNativePath({
         onStalled,
-        body: '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\nplaylist_0.m3u8\n',
+        body: BUNDLED_MASTER,
       })
 
       await act(async () => {
@@ -693,13 +713,32 @@ describe('LivePlayer の状態遷移', () => {
       expect(onStalled).not.toHaveBeenCalled()
     })
 
-    /** master playlist では、hls.js 経路でも降格を試さない。 */
-    it('hls.js 経路: master playlist では降格を試さない', async () => {
+    /**
+     * **プロファイルごとの master（captions 無効時の実際の応答）では降格を試す。**
+     * 音声レンディションを載せるため、captions に関わらず master が返る。
+     * 「master なら止める」と判定すると、全デプロイで自動降格が一度も動かない。
+     *
+     * 変異: `bundlesProfiles` を `#EXT-X-STREAM-INF` の有無で判定すると落ちる。
+     */
+    it('hls.js 経路: プロファイルごとの master（video variant 1 本）では降格を試す', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const onStalled = vi.fn(() => true)
+      await renderHlsPath({ onStalled, body: PROFILE_MASTER })
+
+      await act(async () => {
+        vi.advanceTimersByTime(liveStallTimeoutMs + 1000)
+      })
+
+      expect(onStalled).toHaveBeenCalledTimes(1)
+    })
+
+    /** 全プロファイルを束ねた master では、hls.js 経路でも降格を試さない。 */
+    it('hls.js 経路: 全プロファイルを束ねた master では降格を試さない', async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true })
       const onStalled = vi.fn(() => true)
       await renderHlsPath({
         onStalled,
-        body: '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\nplaylist_0.m3u8\n',
+        body: BUNDLED_MASTER,
       })
 
       await act(async () => {
@@ -1676,5 +1715,93 @@ describe('LivePlayer / 画質（プロファイル）切替（issue #869）', ()
       .map(([u]) => String(u))
       .find((u) => u.includes('playlist.m3u8'))!
     expect(url).not.toContain('profile=')
+  })
+})
+
+/**
+ * 音声（二重音声の主 / 副。issue #870）。
+ *
+ * **切替はプレイヤーが取るトラックを替えるだけ**で、プレイリストの取り直しも
+ * hls.js の作り直しも起こさない（streamer が標準 / 主 / 副の 3 本を常に出している）。
+ * トラックの位置（0 = 標準 / 1 = 主 / 2 = 副）が streamer との契約で、期待値は
+ * リテラルで書く。実ブラウザで音が替わることは jsdom では測れない
+ * （`internal/streamer/live.go` の hlsFlags に書いた Playwright の実測が担う）。
+ */
+describe('LivePlayer / 音声（issue #870）', () => {
+  const playlistFetches = (fetchMock: ReturnType<typeof vi.fn>) =>
+    fetchMock.mock.calls.map(([url]) => String(url)).filter((u) => u.includes('playlist.m3u8'))
+
+  it('hls.js: トラック一覧が届くと選択を適用し、切替はプレイリストを取り直さない', async () => {
+    const fetchMock = vi.fn((_url: string) => Promise.resolve(new Response('', { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+    const { rerender } = render(
+      <LivePlayer site="default" networkId={0} serviceId={1024} audio="sub" />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const hls = hlsMockState.instances[0]!
+    const onTracks = hls.on.mock.calls.find(([event]) => event === 'hlsAudioTracksUpdated')
+    expect(onTracks).toBeDefined()
+
+    hls.audioTracks = [{}, {}, {}]
+    act(() => onTracks![1]('hlsAudioTracksUpdated', { fatal: false }))
+    expect(hls.audioTrack).toBe(2)
+
+    rerender(<LivePlayer site="default" networkId={0} serviceId={1024} audio="main" />)
+    expect(hls.audioTrack).toBe(1)
+    rerender(<LivePlayer site="default" networkId={0} serviceId={1024} />)
+    expect(hls.audioTrack).toBe(0)
+
+    // 作り直さない・取り直さない・URL に音声を載せない（サーバーは選択を知らない）
+    expect(hlsMockState.instances).toHaveLength(1)
+    expect(playlistFetches(fetchMock)).toHaveLength(1)
+    expect(playlistFetches(fetchMock)[0]).not.toContain('audio')
+    expect(hls.loadSource).toHaveBeenCalledTimes(1)
+  })
+
+  it('hls.js: 音声レンディションを持たない master（トラック 0 本）では触らない', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response('', { status: 200 }))),
+    )
+    render(<LivePlayer site="default" networkId={0} serviceId={1024} audio="sub" />)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const hls = hlsMockState.instances[0]!
+    const onTracks = hls.on.mock.calls.find(([event]) => event === 'hlsAudioTracksUpdated')!
+    act(() => onTracks[1]('hlsAudioTracksUpdated', { fatal: false }))
+    expect(hls.audioTrack).toBe(0)
+  })
+
+  it('ネイティブ（WebKit）: トラックが出来たら選択を適用し、切替で src を差し替えない', async () => {
+    const { resolve } = deferredFetch()
+    const { rerender } = render(
+      <LivePlayer site="default" networkId={0} serviceId={1024} audio="sub" />,
+    )
+    const video = document.querySelector('video')!
+    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
+      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
+    )
+    // jsdom の <video> は audioTracks を持たない。WebKit と同じく後から作られる形にする
+    const list: Array<{ enabled: boolean }> = []
+    const tracks = Object.assign(list, {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })
+    Object.defineProperty(video, 'audioTracks', { value: tracks, configurable: true })
+
+    resolve(new Response('', { status: 200 }))
+    await waitFor(() => expect(screen.queryByText('読み込み中…')).not.toBeInTheDocument())
+    const src = video.src
+
+    // トラックが 1 本ずつ届く（addtrack）。揃った時点で副だけが有効になる
+    const onAddTrack = tracks.addEventListener.mock.calls.find(([type]) => type === 'addtrack')![1]
+    list.push({ enabled: true }, { enabled: false }, { enabled: false })
+    act(() => onAddTrack())
+    expect(list.map((t) => t.enabled)).toEqual([false, false, true])
+
+    rerender(<LivePlayer site="default" networkId={0} serviceId={1024} audio="main" />)
+    expect(list.map((t) => t.enabled)).toEqual([false, true, false])
+    rerender(<LivePlayer site="default" networkId={0} serviceId={1024} />)
+    expect(list.map((t) => t.enabled)).toEqual([true, false, false])
+    expect(video.src).toBe(src)
   })
 })

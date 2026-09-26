@@ -142,7 +142,7 @@ config の読み込みより前に出るログだけは既定（text 形式・In
 | `encode.profiles[].input_extra_args` / `live.input_extra_args` | `-i`（VOD）/ `-f mpegts -i pipe:0`（live）の直前に追加する引数 |
 | `encode.profiles[].extra_args` / `live.profiles[].extra_args` | 既存キー。改名していない --- ただし VOD 側は位置が 1 点だけ動く（下記） |
 | `encode.profiles[].subtitles` | `webvtt` のみ。原本の ARIB 字幕を encoded ファイル隣の `.vtt` サイドカーに出力する。libaribcaption 入り ffmpeg が必要 |
-| `live.captions` | 既定 `false`。`true` で master playlist と WebVTT 字幕 rendition を出力する。字幕なし番組では映像・音声のみの master を出力する。libaribcaption 入り ffmpeg が無ければ起動エラー。複数プロファイルの `segment_seconds` / `playlist_size` は同一値が必要 |
+| `live.captions` | 既定 `false`。`true` で全プロファイルを 1 つの master playlist にまとめ、WebVTT 字幕 rendition を出力する。字幕なし番組では映像・音声のみの master を出力する。libaribcaption 入り ffmpeg が無ければ起動エラー。複数プロファイルの `segment_seconds` / `playlist_size` は同一値が必要 |
 
 argv の順序（VOD）:
 
@@ -158,7 +158,7 @@ argv の順序（VOD）:
 -f CONTAINER -progress pipe:1 -loglevel error OUTPUT           # アプリ所有の末尾
 ```
 
-argv の順序（live）は同じ規則を入力 1 本・出力 N 本の形に展開したものである。入力側は `live.hwaccel` → `-probesize`/`-analyzeduration` → `live.input_extra_args` → `-f mpegts -i pipe:0`。そのあと、プロファイルごとに `-map` `-c:v`/`-c:a` → `[-vf]`（captions 有効時は `-filter:v:N`）→ `[-crf|-qp]` → `[-preset]`。filter は `deinterlace` が true なら解除を先頭に置き、height があれば scale をその後ろに 1 個だけ連結する。続けて `-force_key_frames` → `profile.extra_args` → `-f hls ...`。
+argv の順序（live）は同じ規則を入力 1 本・出力 N 本の形に展開したものである。入力側は `live.hwaccel` → `-probesize`/`-analyzeduration` → `live.input_extra_args` → `-f mpegts -i pipe:0`。そのあと、プロファイルごとに `-map`（映像 1 本と音声 3 本）→ `-c:v`/`-c:a` → 主 / 副の `-filter:a:N` と並ぶ。その後ろに `[-vf]`（captions 有効時は `-filter:v:N`）→ `[-crf|-qp]` → `[-preset]` が続く。filter は `deinterlace` が true なら解除を先頭に置き、height があれば scale をその後ろに 1 個だけ連結する。続けて `-force_key_frames` → `profile.extra_args` → `-var_stream_map` / `-master_pl_name` → `-f hls ...`。音声 3 本の意味は [api/media.md](api/media.md) §音声。
 
 `deinterlace` は bool とし、filter の実体を `scaler` から導出する。`scaler: software` なのに `deinterlace_vaapi` を書くような矛盾した設定や、`-vf` を別名で自由に書く設定を表現できないようにするためである。`deinterlace: false`（省略）のときは、生成する argv を従来から変えない。
 
@@ -166,7 +166,7 @@ argv の順序（live）は同じ規則を入力 1 本・出力 N 本の形に�
 
 **起動エラーになる組み合わせ**: `crf` と `qp` の同時指定 / 未知の `scaler` / `height` が 0 なのに `scaler` を書く / `hwaccel` ブロックがあるのに `kind` が空 / `crf`・`qp` の負値。
 
-**`extra_args` / `input_extra_args` は値の個数まで既知の allowlist だけを受け付ける**。値を取らないのは `-an` `-vn` `-sn` `-dn` `-shortest` `-nostdin` `-re`。直後の 1 トークンを値として取るのは `-movflags` `-map` `-global_quality` `-cq` `-q:v` `-b:v` `-b:a`。`-probesize` `-analyzeduration` `-extra_hw_frames` も 1 トークンを取る。それ以外と裸の位置引数は起動エラーになる。値を取らないフラグも明示しているため、`["-an", "/tmp/evil.mp4"]` のように 2 本目の出力パスをフラグの値に見せかけることはできない。`-filter:v:0` / `-lavfi` のような filtergraph の別名・ストリーム指定子付き表記も allowlist 外であり、完全一致の denylist が別名を取りこぼす形は採らない。
+**`extra_args` / `input_extra_args` は値の個数まで既知の allowlist だけを受け付ける**。値を取らないのは `-an` `-vn` `-sn` `-dn` `-shortest` `-nostdin` `-re`。直後の 1 トークンを値として取るのは `-movflags` `-map` `-global_quality` `-cq` `-q:v` `-b:v` `-b:a`。`-probesize` `-analyzeduration` `-extra_hw_frames` も 1 トークンを取る。それ以外と裸の位置引数は起動エラーになる。値を取らないフラグも明示しているため、`["-an", "/tmp/evil.mp4"]` のように 2 本目の出力パスをフラグの値に見せかけることはできない。`-filter:v:0` / `-lavfi` のような filtergraph の別名・ストリーム指定子付き表記も allowlist 外であり、完全一致の denylist が別名を取りこぼす形は採らない。 **live ではさらに `-an` `-vn` `-sn` `-map` を拒否する**。live はストリームの並び（映像・音声 rendition 3 本・字幕）を `-var_stream_map` で持つので、並びを変えると ffmpeg が起動時に落ち、利用者には 504 しか見えない（[api/media.md](api/media.md) §音声）。
 
 **範囲外**: device ノードのマウントはデプロイ側（k8s `resources.limits` / Docker `--device`）。**`hwaccel.device` の存在は起動時に検査しない** --- 公式イメージや device の無い CI を壊す。無い device を書いたプロファイルはジョブ / セッションの失敗として現れる。`-global_quality` / `-cq` / `-q:v` のような、コーデック指定より後ろに出せる（= `extra_args` で届く）品質オプションはキー化しない。
 

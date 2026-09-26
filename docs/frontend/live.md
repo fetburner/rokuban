@@ -304,11 +304,14 @@ JSON 404 にしてある（`internal/api/spa.go` の `spaOrAPINotFound`）。**�
   自動で下げても URL は書き換えないので、**手で選び直すと自動が止まる**が
   追加コードなしで成立する。チャンネルを切り替えても下げた先を保つ（既存の
   「画質は『この局』ではなく『この端末の回線』の性質である」と同じ）
-- **`live.captions: true`（master playlist）では下げない。** そのとき `Playlist` は
-  `?profile=` に関わらず master を返すので、下げても何も変わらないのに
-  「下げました」と表示することになる。判定は probe が読んだ**本文**の
-  `#EXT-X-STREAM-INF` で行う（`isMasterPlaylist`）--- api と streamer に別の
-  config を配る構成では一覧 API の方が嘘をつきうる
+- **`live.captions: true`（全プロファイルを束ねた master）では下げない。** そのとき
+  `Playlist` は `?profile=` に関わらず同じ master を返すので、下げても何も変わらない
+  のに「下げました」と表示することになる。判定は probe が読んだ**本文**で行う
+  （`bundlesProfiles`）--- api と streamer に別の config を配る構成では一覧 API の方が
+  嘘をつきうる。**「master かどうか」では判定しない。** captions 無効時も音声
+  レンディションのためにプロファイルごとの master が返るので、それで止めると自動降格が
+  一度も動かない。違いは `#EXT-X-STREAM-INF` の本数である（プロファイルごとの master
+  は 1 本。ffmpeg 9.0 で実測）
 - **追っかけ再生（`mode="chase"`）では下げない。** 画質セレクタを出していない以上、
   下げ先を置く場所が無い。**再生再開もライブだけ**にする --- 追っかけは位置指定
   （`startOffsetSeconds`）や保存位置の復元が `canplay` と競合しうるため、今回の
@@ -370,6 +373,28 @@ sd のプレイリストを取りに行き（12 秒の閾値 + 停止までの�
 プロファイルが N 件あるデプロイではエラー到達が約 N × 12 秒に伸びる
 （e2e のフィクスチャは 2 件なので ⑦ は 1 回だけ降格する。実運用の見積もりは
 この比例を掛ける）。
+
+**音声（二重音声の主 / 副）を選ぶ UI を持つ**（issue #870）。`標準` / `主音声` /
+`副音声` の 3 択で、選択は `?audio=main|sub` に持つ（標準は書かない）。
+streamer は 3 本の音声 rendition を常に出しているので
+（[api.md](../api.md) §音声）、**切替は `LivePlayer` が取るトラックを替えるだけ**で
+ある。プレイリストの取り直しもセッションの作り直しも無く、同じチャンネルを見ている
+他の視聴者にも影響しない。
+
+- **常に 3 択で出す。** どの番組が二重音声かを知る手段が無い（音声 ES の情報を
+  持たず、記述子は読まない）。二重音声でない番組で主 / 副を選ぶと片側の
+  チャンネルだけになる
+- **トラックは位置で選ぶ**（0 = 標準 / 1 = 主 / 2 = 副。`liveAudioTrackIndex`）。
+  hls.js は `audioTrack`、WebKit のネイティブ経路は `video.audioTracks` の
+  `enabled` を使う
+- **メイン effect の依存に `audio` を入れない。** 入れると切替のたびに hls.js を
+  作り直す。画質の切替などで作り直されたときは、トラック一覧が届いた時点
+  （`AUDIO_TRACKS_UPDATED` / `addtrack`）で URL の選択に揃え直す
+- **チャンネルを切り替えても音声を保つ**（一覧のリンクが `?audio=` を運ぶ）
+- **判定は `web/e2e/live-audio.mjs`**（実ブラウザ + ffmpeg が書き続ける実ライブ HLS）。
+  Chromium は WebAudio で左右の周波数を測る。主 → 副 → 標準 → 主と各 15 秒
+  聴いてから切り替える。WebKit は `audioTracks` と取得する rendition を見る
+  （ネイティブ HLS の音は WebAudio に来ないので、鳴っている音は測れない）
 
 **切替を跨いで持ち越すのは字幕の表示と「再生中だったか」である。**
 `LivePlayer` が effect の cleanup で `<video>` のトラックと `paused` から読む。

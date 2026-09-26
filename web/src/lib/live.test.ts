@@ -8,7 +8,8 @@ import {
   classifyLiveLoadError,
   currentProgramWindow,
   formatLiveDiagnostics,
-  isMasterPlaylist,
+  bundlesProfiles,
+  liveAudioTrackIndex,
   liveLeaveURL,
   livePlaylistURL,
   createStallTracker,
@@ -22,6 +23,7 @@ import {
   sendLiveLeaveHint,
   stalledForMs,
   supportsNativeHls,
+  validLiveAudio,
   validLiveProfile,
 } from '@/lib/live'
 
@@ -352,31 +354,33 @@ describe('classifyLiveLoadError', () => {
 })
 
 describe('probeLivePlaylist', () => {
-  it('200 なら ok（本文が variant playlist なら master ではない）', async () => {
+  it('200 なら ok（本文が media playlist なら束ねていない）', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(() => Promise.resolve(new Response('#EXTM3U\n#EXTINF:2,\nsegments/0.ts', { status: 200 }))),
     )
-    expect(await probeLivePlaylist('/x')).toEqual({ ok: true, masterPlaylist: false })
+    expect(await probeLivePlaylist('/x')).toEqual({ ok: true, bundlesProfiles: false })
   })
 
   /**
    * **`live.captions: true` のデプロイを自動降格から守る判定**（issue #871）。
-   * そのとき streamer は `?profile=` に関わらず master playlist を返すので、
-   * 気付かないと「下げました」と嘘を表示することになる。
+   * そのとき streamer は `?profile=` に関わらず全プロファイルを束ねた master を
+   * 返すので、気付かないと「下げました」と嘘を表示することになる。
    */
-  it('本文が master playlist なら masterPlaylist を立てる', async () => {
+  it('本文が全プロファイルを束ねた master なら bundlesProfiles を立てる', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(() =>
         Promise.resolve(
-          new Response('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\nplaylist_0.m3u8', {
-            status: 200,
-          }),
+          new Response(
+            '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\nplaylist_0.m3u8\n' +
+              '#EXT-X-STREAM-INF:BANDWIDTH=800000\nplaylist_1.m3u8\n',
+            { status: 200 },
+          ),
         ),
       ),
     )
-    expect(await probeLivePlaylist('/x')).toEqual({ ok: true, masterPlaylist: true })
+    expect(await probeLivePlaylist('/x')).toEqual({ ok: true, bundlesProfiles: true })
   })
 
   it('503 なら capacity エラーとして本文を運ぶ', async () => {
@@ -520,9 +524,18 @@ describe('live auto downgrade', () => {
     expect(stalledForMs(first, 7000)).toBe(6000)
   })
 
-  it('master playlist は variant 行で判定する', () => {
-    expect(isMasterPlaylist('#EXTM3U\\n#EXT-X-STREAM-INF:BANDWIDTH=1000')).toBe(true)
-    expect(isMasterPlaylist('#EXTM3U\\n#EXTINF:2,\\nsegments/0.ts')).toBe(false)
+  it('束ねた master は video variant が 2 本以上かで判定する', () => {
+    const inf = '#EXT-X-STREAM-INF:BANDWIDTH=1000\n'
+    // 束ねた master（captions: true）
+    expect(bundlesProfiles(`#EXTM3U\n${inf}p0.m3u8\n${inf}p1.m3u8\n`)).toBe(true)
+    // プロファイルごとの master（音声レンディション入り。variant は 1 本）
+    expect(
+      bundlesProfiles(
+        `#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",URI="hd.1.m3u8"\n${inf}hd.0.m3u8\n`,
+      ),
+    ).toBe(false)
+    // media playlist（追っかけ）
+    expect(bundlesProfiles('#EXTM3U\n#EXTINF:2,\nsegments/0.ts')).toBe(false)
   })
 })
 
@@ -581,5 +594,20 @@ describe('readSubtitleVisibility', () => {
    */
   it('トラックが無ければ null（不明）', () => {
     expect(readSubtitleVisibility([])).toBeNull()
+  })
+})
+
+describe('validLiveAudio / liveAudioTrackIndex（issue #870）', () => {
+  it('主 / 副だけを通し、それ以外は標準（undefined）に落とす', () => {
+    expect(validLiveAudio('main')).toBe('main')
+    expect(validLiveAudio('sub')).toBe('sub')
+    for (const v of ['', 'MAIN', 'both', 1, undefined, null]) expect(validLiveAudio(v)).toBeUndefined()
+  })
+
+  // streamer の音声レンディションの並び（標準 / 主 / 副）との契約。リテラルで固定する
+  it('音声グループ内の位置は 標準 = 0 / 主 = 1 / 副 = 2', () => {
+    expect(liveAudioTrackIndex(undefined)).toBe(0)
+    expect(liveAudioTrackIndex('main')).toBe(1)
+    expect(liveAudioTrackIndex('sub')).toBe(2)
   })
 })
