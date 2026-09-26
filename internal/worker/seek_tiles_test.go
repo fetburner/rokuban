@@ -126,8 +126,15 @@ type countingRunCmd struct {
 	// （映像の終端より後ろへの入力シーク。実 ffmpeg 9 は非 0 で終わるが、
 	// 終了コードに頼らない形で再現する）。
 	videoEnd float64
-	seeks    []string
-	duration string
+	// lastKeyframe が正なら、-ss がそれより 0.5 秒以上後ろの抽出は失敗する
+	// （GOP の長い H.264 で、最後のキーフレームより後ろが取れない形。ffmpeg 9 の
+	// 実挙動に合わせて非 0 で返す）。
+	lastKeyframe float64
+	// formatDuration が空でなければ format=duration にはこの値を返す（映像より
+	// 音声が長い TS の形）。空なら duration を返す。
+	formatDuration string
+	seeks          []string
+	duration       string
 }
 
 func (c *countingRunCmd) run(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -135,7 +142,14 @@ func (c *countingRunCmd) run(_ context.Context, name string, args ...string) ([]
 		if c.probeErr {
 			return nil, fmt.Errorf("ffprobe: injected failure")
 		}
-		return []byte(c.duration + "\n"), nil
+		if containsArg(args, "format=duration") {
+			if c.formatDuration != "" {
+				return []byte(c.formatDuration + "\n"), nil
+			}
+			return []byte(c.duration + "\n"), nil
+		}
+		// 実 ffprobe は TS に対して programs 節と streams 節の 2 行を返す。
+		return []byte(c.duration + "\n" + c.duration + "\n"), nil
 	}
 	c.calls++
 	if len(args) == 0 {
@@ -151,8 +165,12 @@ func (c *countingRunCmd) run(_ context.Context, name string, args ...string) ([]
 	}
 	if ss := indexOfArg(args, "-ss"); ss >= 0 {
 		c.seeks = append(c.seeks, args[ss+1])
-		if at, _ := strconv.ParseFloat(args[ss+1], 64); c.videoEnd > 0 && at >= c.videoEnd {
+		at, _ := strconv.ParseFloat(args[ss+1], 64)
+		if c.videoEnd > 0 && at >= c.videoEnd {
 			return nil, nil
+		}
+		if c.lastKeyframe > 0 && at > c.lastKeyframe+0.5 {
+			return nil, fmt.Errorf("ffmpeg: nothing was written (ss=%s)", args[ss+1])
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
@@ -290,10 +308,11 @@ func TestSeekTilesWorker_PartialFailureCommitsNothing(t *testing.T) {
 	recordingID := insertTestRecording(t, pool)
 	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/partial.m2ts")
 
-	// 3 枚目（000002.jpg）の抽出で落とす。
+	// 3 枚中 2 枚目（000001.jpg）の抽出で落とす。最後の 1 枚は直前のタイルで
+	// 埋めるので、途中の失敗で見る。
 	cmd := &countingRunCmd{
 		duration: "30",
-		failOn:   filepath.Join(scratchDir, "seek_tiles", fmt.Sprintf("%d", recordingID), "000002.jpg"),
+		failOn:   filepath.Join(scratchDir, "seek_tiles", fmt.Sprintf("%d", recordingID), "000001.jpg"),
 	}
 	w := &SeekTilesWorker{Pool: pool, MediaDir: mediaDir, ScratchDir: scratchDir, runCmd: cmd.run}
 	if err := runSeekTilesJob(t, w, recordingID); err == nil {
@@ -410,5 +429,68 @@ func TestSeekTilesWorker_ZeroDurationCommitsNothing(t *testing.T) {
 	}
 	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), recordingID); err == nil {
 		t.Error("seek_tiles row was committed for a zero duration")
+	}
+}
+
+// GOP の長い H.264 では最後のキーフレームより後ろが取れない（x264 GOP 5 秒で、
+// 終端の 2 秒手前でも失敗した）。最後の 1 枚だけは直前のタイルで埋めてコミットまで
+// 進む。埋めないと毎回同じ枚で落ち、until_encoded の原本が消えなくなる。
+func TestSeekTilesWorker_LastTileFallsBackToPrevious(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/longgop.m2ts")
+
+	// 40.007 秒 → 5 枚、最後は 39.007 秒。最後のキーフレームは 35 秒。
+	cmd := &countingRunCmd{duration: "40.007", lastKeyframe: 35}
+	w := &SeekTilesWorker{Pool: pool, MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
+	if err := runSeekTilesJob(t, w, recordingID); err != nil {
+		t.Fatalf("Work() = %v, want success", err)
+	}
+	if want := []string{"0.000", "10.000", "20.000", "30.000", "39.007"}; !slices.Equal(cmd.seeks, want) {
+		t.Errorf("seeks = %v, want %v", cmd.seeks, want)
+	}
+	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), recordingID); err != nil {
+		t.Errorf("seek_tiles row was not committed: %v", err)
+	}
+}
+
+// 1 枚しか無いときは埋める元が無いので失敗する。
+func TestSeekTilesWorker_SingleTileFailureCommitsNothing(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	scratchDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/single.m2ts")
+
+	cmd := &countingRunCmd{
+		duration: "5",
+		failOn:   filepath.Join(scratchDir, "seek_tiles", fmt.Sprintf("%d", recordingID), "000000.jpg"),
+	}
+	w := &SeekTilesWorker{Pool: pool, MediaDir: mediaDir, ScratchDir: scratchDir, runCmd: cmd.run}
+	if err := runSeekTilesJob(t, w, recordingID); err == nil {
+		t.Fatal("Work() succeeded, want an error when the only tile fails")
+	}
+	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), recordingID); err == nil {
+		t.Error("seek_tiles row was committed without any extracted tile")
+	}
+}
+
+// 長さは format ではなく映像ストリームから取る。映像が音声より早く終わる TS
+// （映像 19.5 秒・format 22 秒）で format を使うと 3 枚になり、最後の 20 秒は
+// 映像の終端を越える。
+func TestSeekTilesWorker_UsesVideoStreamDuration(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/shortvideo.m2ts")
+
+	cmd := &countingRunCmd{duration: "19.5", formatDuration: "22"}
+	w := &SeekTilesWorker{Pool: pool, MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
+	if err := runSeekTilesJob(t, w, recordingID); err != nil {
+		t.Fatalf("Work() = %v, want success", err)
+	}
+	if want := []string{"0.000", "10.000"}; !slices.Equal(cmd.seeks, want) {
+		t.Errorf("seeks = %v, want %v", cmd.seeks, want)
 	}
 }

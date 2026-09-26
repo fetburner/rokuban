@@ -156,7 +156,21 @@ func (w *SeekTilesWorker) Work(ctx context.Context, job *river.Job[jobs.SeekTile
 	for i := range tiles {
 		framePath := filepath.Join(framesDir, fmt.Sprintf("%06d.jpg", i))
 		at := seekTileAt(i, duration)
-		if err := w.extractTile(ctx, inputPath, framePath, at); err != nil {
+		err := w.extractTile(ctx, inputPath, framePath, at)
+		if err != nil && i > 0 && i == tiles-1 {
+			// 最後のタイルだけは、取れなければ直前のタイルで埋める。H.264 でキー
+			// フレームの間隔が長いと、最後のキーフレームより後ろへの入力シークは
+			// 終端の 2 秒手前でも 1 フレームも出せない（x264 GOP 5 秒で測定）。
+			// 何秒戻れば足りるかは GOP で決まり、定数の余白では塞げない。直前の
+			// タイルは同じ最後の区間の少し前なので、見た目の誤差は小さい。
+			log.Warn("seek_tiles: last tile not extractable, reusing the previous tile",
+				"tile", i, "at", formatSeekSeconds(at), "err", err)
+			prev := filepath.Join(framesDir, fmt.Sprintf("%06d.jpg", i-1))
+			if _, err = copyFileFsync(prev, framePath); err != nil {
+				return fmt.Errorf("reusing tile %d for the last tile: %w", i-1, err)
+			}
+		}
+		if err != nil {
 			return fmt.Errorf("extracting tile %d at %s: %w", i, formatSeekSeconds(at), err)
 		}
 	}
@@ -240,6 +254,8 @@ func seekTileCount(duration time.Duration) int {
 // 長さちょうど（合成 TS 30 秒で 29.9966 秒）を指す入力シークは 1 フレームも
 // 出せずに失敗し、1 秒手前なら成功した（ffmpeg 9.0.2 で測定）。枚数を切り上げで
 // 決めるので、長さが 10 秒の倍数をわずかに超える録画では最後のタイルが必ずここに当たる。
+// この余白で足りるのは MPEG-2 と GOP 1 秒程度の H.264 までで、GOP の長い H.264 は
+// Work が最後のタイルを直前のタイルで埋めて扱う。
 const seekTileTailMargin = time.Second
 
 // seekTileAt は i 枚目のタイルを抜き出す位置を返す。原則 i×間隔だが、映像の
