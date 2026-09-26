@@ -320,6 +320,13 @@ export function LivePlayer({
   // setup で行う --- cleanup の時点では次に何が変わるかが分からない。
   const lastChasePositionRef = useRef<number | null>(null)
   const lastChaseInputsRef = useRef<string | null>(null)
+  // 持ち越した位置へまだ戻し終えていない間の、その位置。**この間は位置を保存
+  // しない** --- WebKit（ネイティブ経路）では切替の途中に位置 0 の `timeupdate`
+  // が届き、保存すると「続きから」が 0（offset 付きなら offset）で上書きされる
+  // （`web/e2e/chase.mjs` ⑦ を WebKit で回し、ガードを外すと offset 4 秒の
+  // 切替で `4` が書かれた。Chromium + hls.js では `emptied` だけで
+  // `timeupdate` は来なかった）。
+  const chaseResumePending = useRef<number | null>(null)
   const explicitStartSeekPending = useRef(false)
   const lastSavedSecond = useRef<number | null>(null)
   // onDiagnostics は ref 越しに読む。probe / hls.js のセットアップを担う
@@ -332,15 +339,6 @@ export function LivePlayer({
   // **依存配列に置くと意味が壊れる** --- 呼び出し側は下げた後 `autoProfile` を
   // 変えるので、依存させると「下げた結果」が effect を張り直す経路が 2 本になる
   const onStalledRef = useRef(onStalled)
-  // playbackProfile も ref 越しに読む（issue #874）。メイン effect の依存には
-  // 入れない --- URL を変えない入力（再生位置のキー）なので、追っかけ中に VOD 側の
-  // プロファイルが変わる（事後エンコードの完了など）だけでプレイリストを
-  // 取り直すことになる。宣言順でメイン effect より先に更新するので、同じコミットで
-  // 両方が変わった場合も最新の値を読める。
-  const playbackProfileRef = useRef(playbackProfile)
-  useEffect(() => {
-    playbackProfileRef.current = playbackProfile
-  }, [playbackProfile])
 
   useEffect(() => {
     restorePending.current = true
@@ -353,6 +351,7 @@ export function LivePlayer({
     // 復元が立ち直り、切替が「保存位置まで巻き戻る」操作になる（`offset` 付きなら
     // 先頭へ戻る）。位置の持ち越しは下の effect が `lastChasePositionRef` で行う。
     // 画質の切替は再生位置の基準を変えないので、復元をやり直す理由が無い。
+    playbackProfile,
     site,
     networkId,
     serviceId,
@@ -436,10 +435,18 @@ export function LivePlayer({
     const preserved = preservedState.current
     // 画質（プロファイル）だけが変わった再実行か（`lastChasePositionRef` の
     // コメント参照）。プロファイルを含めない入力の同一性で判定する。
-    const chaseInputs = `${site}|${recordingId}|${playbackProfileRef.current ?? ''}|${chaseStartOffset}|${hasExplicitChaseStart}|${retryNonce}`
+    const chaseInputs = `${site}|${recordingId}|${chaseStartOffset}|${hasExplicitChaseStart}|${retryNonce}`
     const resumePosition =
       isChase && lastChaseInputsRef.current === chaseInputs ? lastChasePositionRef.current : null
     lastChaseInputsRef.current = chaseInputs
+    chaseResumePending.current = resumePosition
+    if (resumePosition !== null) {
+      // 持ち越しは既存の復元より優先する。`playbackProfile` の変化で復元が
+      // 立ち直っていると、`onLoadedMetadata` が保存位置へ、offset 付きなら
+      // `onCanPlay` が 0 秒へ戻してしまう。
+      restorePending.current = false
+      explicitStartSeekPending.current = false
+    }
     // video / hls の外部再生状態と UI の loading/error 表示を同期する effect。
     // render 中に導出すると、再生開始・失敗イベントの境界を表現できない。
     // oxlint-disable-next-line react/set-state-in-effect -- 外部メディア状態との同期
@@ -456,17 +463,31 @@ export function LivePlayer({
     const teardown: Array<() => void> = []
 
     // 画質の切替で持ち越した位置へ戻す（issue #874）。**両経路とも `src` の
-    // 差し替えで位置が 0 に戻る**ので、`loadedmetadata` の時点で戻す。この
-    // リスナは要素に直接張るので、React の `onLoadedMetadata`（root への委譲）
-    // より先に走る --- あちらは `restorePending` が false なので何もしない。
-    // hls.js 経路は `startPosition` でも同じ位置を指すので、二重に戻しても
-    // 同じ値になる。
+    // 差し替えで位置が 0 に戻る**ので、`loadedmetadata` の時点で戻す。
+    // **`canplay` でもう一度戻す** --- WebKit のネイティブ経路は EVENT
+    // playlist を付けるとき、`loadedmetadata` で受け付けた位置を捨てて最新端を
+    // 選ぶことがある（`onCanPlay` の 0 秒への再表明と同じ理由）。**画質切替の
+    // 経路でこの飛びが起きるかは未検証である** --- `chase.mjs` ⑦ の fixture は
+    // 切替の時点で ENDLIST 済みなので、WebKit で再表明を外しても落ちなかった。
+    // 既存の再表明と同じ防御として置いている。hls.js 経路は
+    // `startPosition` で既に同じ位置にいるので、ずれていなければ触らない
+    // （同じ値の代入でも seek が走る）。戻し終えたら保存を再開する。
     if (video && resumePosition !== null) {
       const apply = () => {
-        if (!cancelled) video.currentTime = resumePosition
+        if (!cancelled && Math.abs(video.currentTime - resumePosition) > 0.5) {
+          video.currentTime = resumePosition
+        }
+      }
+      const settle = () => {
+        apply()
+        if (!cancelled) chaseResumePending.current = null
       }
       video.addEventListener('loadedmetadata', apply, { once: true })
-      teardown.push(() => video.removeEventListener('loadedmetadata', apply))
+      video.addEventListener('canplay', settle, { once: true })
+      teardown.push(() => {
+        video.removeEventListener('loadedmetadata', apply)
+        video.removeEventListener('canplay', settle)
+      })
     }
 
     /**
@@ -908,7 +929,11 @@ export function LivePlayer({
           playing: !video.paused,
         }
         // 画質の切替で持ち越す再生位置（issue #874）。**`src` を外す前に読む。**
-        lastChasePositionRef.current = isChase ? video.currentTime : null
+        // 前の持ち越しを戻し終える前にもう一度切り替えたときは、要素の位置
+        // （まだ 0）ではなく持ち越し中の位置を引き継ぐ。
+        lastChasePositionRef.current = isChase
+          ? (chaseResumePending.current ?? video.currentTime)
+          : null
       }
       // メディアイベントのリスナと stall タイマーを外す。
       //
@@ -1016,7 +1041,7 @@ export function LivePlayer({
             event.currentTarget.currentTime = 0
           }}
           onTimeUpdate={(event) => {
-            if (!isChase || recordingId === undefined) return
+            if (!isChase || recordingId === undefined || chaseResumePending.current !== null) return
             const video = event.currentTarget
             const globalPosition = video.currentTime + chaseStartOffset
             if (!shouldSavePlaybackPosition(lastSavedSecond.current, globalPosition)) return
@@ -1029,7 +1054,7 @@ export function LivePlayer({
             savePlaybackPosition(recordingId, chasePlaybackProfile, globalPosition)
           }}
           onPause={(event) => {
-            if (!isChase || recordingId === undefined) return
+            if (!isChase || recordingId === undefined || chaseResumePending.current !== null) return
             const video = event.currentTarget
             // See the timeupdate handler: a growing chase duration is not a
             // completion signal.

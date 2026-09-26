@@ -10,6 +10,7 @@
 //   cd web && pnpm build
 //   pnpm preview --port 4173 --strictPort &
 //   E2E_URL=http://localhost:4173 pnpm e2e:chase
+//   E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:chase   # ネイティブ HLS 経路
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import os from 'node:os'
@@ -167,7 +168,12 @@ if (entries.length < 3) {
 // only the URL shape. Two positions also catch a hard-coded first offset.
 const offsetScenarios = [3, 5]
 
-const browser = await launchBrowser('chromium')
+// `E2E_BROWSER=webkit` で Safari 相当のネイティブ HLS 経路を通す。⑦ の位置の
+// 持ち越しは hls.js（`startPosition`）とネイティブ（`loadedmetadata` / `canplay`
+// での代入）で経路が別なので、両方で回す。
+const engine = process.env.E2E_BROWSER ?? 'chromium'
+log(`engine: ${engine}`)
+const browser = await launchBrowser(engine)
 const context = await browser.newContext({
   viewport: { width: 1280, height: 900 },
   locale: 'ja-JP',
@@ -667,6 +673,22 @@ const positionBeforeSwitch = await chaseVideo.evaluate((element) => {
   element.pause()
   return element.currentTime
 })
+// 切替の途中で「続きから」が上書きされないことを見る。最終値は切替後の seek で
+// 正しい値に戻ってしまうので、**書かれた値をすべて記録する**。壊し方:
+// `onTimeUpdate` の持ち越し中ガードを外す（`load()` の位置 0 が一度書かれる）。
+const recordSavedPositions = () =>
+  page.evaluate((key) => {
+    window.__e2eSavedPositions = []
+    if (window.__e2eSetItemHooked) return
+    window.__e2eSetItemHooked = true
+    const original = Storage.prototype.setItem
+    Storage.prototype.setItem = function (k, v) {
+      if (k === key) window.__e2eSavedPositions.push(Number(v))
+      return original.call(this, k, v)
+    }
+  }, savedPositionKey)
+const savedPositions = () => page.evaluate(() => window.__e2eSavedPositions)
+await recordSavedPositions()
 log(`  切替前の再生位置: ${positionBeforeSwitch.toFixed(2)} 秒`)
 
 await profileSelect.selectOption('sd')
@@ -691,12 +713,19 @@ if (Math.abs(positionAfterSwitch - positionBeforeSwitch) > 1.5) {
     `⑦ 画質の切替で再生位置が巻き戻った（${positionBeforeSwitch.toFixed(2)} → ${positionAfterSwitch.toFixed(2)} 秒）`,
   )
 }
+{
+  const written = await savedPositions()
+  log(`  切替中に保存された位置: [${written.join(', ')}]`)
+  if (written.some((v) => Math.abs(v - positionBeforeSwitch) > 1.5)) {
+    ng.push(`⑦ 画質の切替の途中で「続きから」が別の位置で上書きされた（[${written.join(', ')}]）`)
+  }
+}
 
 // オフセット付きでも同じである。**こちらは巻き戻りが大きく出る** --- 追っかけの
 // offset 付きはプレイヤー内部の 0 秒が「録画の N 秒」なので、`LivePlayer` の
 // 復元が立ち直ると（= key で作り直す / 復元 effect が profile に依存する）
 // 位置が offset の先頭へ戻る。先頭再生では保存位置が近く、この差が出にくい。
-await dragTimelineTo(4)
+const { selected: offsetSeconds } = await dragTimelineTo(4)
 // 直前で一時停止しているので明示的に再生する（offset playlist は自動再生しない）
 await chaseVideo.evaluate(async (element) => {
   element.muted = true
@@ -711,15 +740,27 @@ await page
     { timeout: 10000 },
   )
   .catch(() => ng.push('⑦ offset 付きの実再生が 1.5 秒まで進まない'))
-const offsetPositionBefore = await chaseVideo.evaluate((element) => element.currentTime)
+const offsetPositionBefore = await chaseVideo.evaluate((element) => {
+  element.pause()
+  return element.currentTime
+})
+await recordSavedPositions()
 await profileSelect.selectOption('hd')
 await page.waitForTimeout(1500)
 const offsetPositionAfter = await chaseVideo.evaluate((element) => element.currentTime)
 log(`  offset 付き: 切替前 ${offsetPositionBefore.toFixed(2)} 秒 → 切替後 ${offsetPositionAfter.toFixed(2)} 秒`)
-if (offsetPositionAfter < 1 || offsetPositionBefore - offsetPositionAfter > 1.5) {
+if (offsetPositionAfter < 1 || Math.abs(offsetPositionAfter - offsetPositionBefore) > 1.5) {
   ng.push(
-    `⑦ offset 付きの画質切替で再生位置が offset の先頭へ巻き戻った（${offsetPositionBefore.toFixed(2)} → ${offsetPositionAfter.toFixed(2)} 秒）`,
+    `⑦ offset 付きの画質切替で再生位置が連続しない（${offsetPositionBefore.toFixed(2)} → ${offsetPositionAfter.toFixed(2)} 秒）`,
   )
+}
+{
+  // 保存値は録画全体の秒数（offset + プレイヤー内の位置）。
+  const written = await savedPositions()
+  log(`  offset 付き: 切替中に保存された位置: [${written.join(', ')}]（offset ${offsetSeconds}）`)
+  if (written.some((v) => Math.abs(v - (offsetSeconds + offsetPositionBefore)) > 1.5)) {
+    ng.push(`⑦ offset 付きの画質切替の途中で「続きから」が別の位置で上書きされた（[${written.join(', ')}]）`)
+  }
 }
 
 await finish(ng, browser)

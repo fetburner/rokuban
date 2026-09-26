@@ -268,8 +268,8 @@ export function RecordingDetail({
               別プレイリストを取るだけである（`internal/streamer/live.go`。
               `docs/api/media.md` §録画中の追っかけ再生）。`LivePlayer` は
               key で作り直さない --- 作り直すと再生位置が先頭に戻る。
-              `selected` は controlled なので、URL が未知の名前を運んでいても
-              `activeLiveProfile`（= 既定の先頭）に一致して表示される。 */}
+              `value` は controlled なので、URL が未知の名前を運んでいても
+              既定の先頭に一致して表示される。 */}
           {liveProfiles.length > 1 && (
             <label className="flex items-center gap-2 text-xs text-muted-foreground">
               <span>画質</span>
@@ -294,7 +294,7 @@ export function RecordingDetail({
               recordingId={recording.id}
               startOffsetSeconds={chaseOffsetSeconds}
               profile={explicitLiveProfile}
-              playbackProfile={preferredPlaybackProfile ?? ''}
+              playbackProfile={preferredPlaybackProfile}
             />
           )}
         </section>

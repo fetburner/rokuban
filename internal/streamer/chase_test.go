@@ -466,6 +466,11 @@ exit 0
 // 全プロファイルを同時に出力する**形（buildHLSFFmpegArgs の追っかけ経路）を模す。
 // installCompletedChaseFFmpeg は 1 本の playlist しか書かないので、画質の切替を
 // 見るにはこちらが要る。
+//
+// **ENDLIST を書かず、書いた後も生き続ける。** 録画中の追っかけ（ffmpeg が
+// 走っている間）のセッション再利用を見るためである。exit 0 で終わると
+// 2 本目の要求は終了後の保持経路（keepCompletedChase）に当たり、本題の
+// 経路を通らない。`exec` にするのは shutdown の kill を sleep へ直接届けるため。
 func installMultiProfileChaseFFmpeg(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -484,12 +489,11 @@ for a in "$@"; do
         echo '#EXT-X-TARGETDURATION:2'
         echo '#EXTINF:2.0,'
         echo "segments/${base}_seg00001.ts"
-        echo '#EXT-X-ENDLIST'
       } > "$a"
       ;;
   esac
 done
-exit 0
+exec sleep 30
 `
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -521,6 +525,7 @@ func TestChaseProfileSwitchReusesOneSession(t *testing.T) {
 	}
 	client := &fakeChaseRecordClient{}
 	ls := newLiveStreamer(client, cfg)
+	t.Cleanup(ls.shutdown)
 	target := ChaseTarget{
 		RecordingID:     42,
 		Site:            "default",

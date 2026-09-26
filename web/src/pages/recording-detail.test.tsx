@@ -1007,8 +1007,10 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
     // 別プレイリストを取るだけ）。
     expect(chaseLeaveURLs(fetchMock)).toEqual([])
 
-    // 再生位置のキーは VOD 側のプロファイルのまま（画質ごとに分かれない）
+    // 再生位置のキーは VOD 側のプロファイルのまま（画質ごとに分かれない）。
+    // 保存は持ち越した位置へ戻し終えた（canplay）後に再開する
     const video = document.querySelector('video')!
+    fireEvent.canPlay(video)
     video.currentTime = 12
     fireEvent.timeUpdate(video)
     expect(localStorage.getItem('rokuban:playback:3:vod-h264')).toBe('12')
