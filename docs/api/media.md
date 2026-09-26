@@ -140,7 +140,10 @@ SPA フォールバックには落とさない（[rest.md](rest.md)「機能の�
   「streamer のスケール」。URL を固定深さにする制約もそこに書いてある）
 - **セッションが消えても URL が死なない。**Pod 死・ハッシュの担当移動・idle GC の
   後でも、同じ URL への再要求が新しいセッションを起こす。「セッション ID を握った
-  クライアントが 404 で詰む」経路が存在しない
+  クライアントが 404 で詰む」経路が存在しない。**セッションを起こすのは master だけ
+  ではない。** hls.js が取り直し続けるのは variant playlist の方なので、variant の
+  要求もセッションを作り直す。master だけにすると、セッションが消えた後の variant
+  要求が 404 になり、hls.js は 4xx を再試行せずに止まる
 
 セッション ID を持つ設計（`POST` でセッションを作って ID 付きの URL を配る）は、
 **導出物の identity を宛先にする**形になる（不変条件 9 の identity 系）。ライブ
@@ -267,7 +270,9 @@ POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
 ```
 
 master から参照される variant playlist（映像・音声）と字幕 playlist は
-`.../live/{name}.m3u8` で配信する。`.vtt` は字幕有効時だけ受け付ける。
+`.../live/{name}.m3u8` で配信する。受け付けるのは ffmpeg が書く variant の名前だけで
+（master の名前や未知のプロファイルは 404）、セッションが無ければ作る
+（上記「セッションが消えても URL が死なない」）。`.vtt` は字幕有効時だけ受け付ける。
 
 - **DB を引かない。**パスの `(networkId, serviceId)` から mirakc の
   `GET /api/services/{id}/stream?decode=1` の `{id}` を合成するだけ
@@ -379,8 +384,12 @@ master から参照される variant playlist（映像・音声）と字幕 play
 - **captions 無効時はプロファイル別の出力のまま、各出力が自分の master を持つ。**
   1 つの master にまとめると `hls_time` が 1 つになり、プロファイルごとの
   `segment_seconds` が書けなくなる（captions 有効時はそのため同一値を要求している）
-- **2 本目の音声 ES（`-map 0:a:1`）は選べない。** 追っかけ再生にも rendition は出るが、
-  選択 UI は出さない（PDT も付けていない）
+- **2 本目の音声 ES（`-map 0:a:1`）は選べない**
+- **追っかけ再生には rendition を出さない。** 選択 UI が無く、出すと配信の形
+  （master + 映像だけのセグメント + 別の音声）が変わる。その形で追っかけの seek や
+  再生位置の復元を確かめる判定が無いので、追っかけは従来の形のままにする
+- **ライブの `extra_args` / `input_extra_args` では `-an` `-vn` `-sn` `-map` を拒否する。**
+  ストリームの並びは `-var_stream_map` が持つ。並びを変えると ffmpeg が起動時に落ちる
 - 未検証: 実放送の二重音声が `channel_configuration=2` + SCE 2 つの形か /
   実 Safari・iOS での切替（WebKit では取得する rendition が替わることまで確認）
 

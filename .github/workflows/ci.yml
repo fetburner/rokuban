@@ -53,11 +53,15 @@ jobs:
           --health-retries 5
     env:
       ROKUBAN_TEST_DATABASE_URL: postgres://rokuban:rokuban@localhost:5432/rokuban_test?sslmode=disable
+      # 実 ffmpeg で live の argv を回すテスト（internal/streamer の RealFFmpeg 系）を
+      # skip させない。ライブの音声 rendition の並びと PDT を実経路で見ているのはそれだけ。
+      ROKUBAN_REQUIRE_FFMPEG: "1"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: web/package.json

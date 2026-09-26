@@ -4,13 +4,17 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
+	"fmt"
+	"io"
 	"math"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestBuildLiveFFmpegArgs_RealFFmpegAudioRenditions は BuildLiveFFmpegArgs の argv を
@@ -24,12 +28,10 @@ import (
 // pan が `-dual_mono_mode` とバイト一致することは dualMonoPans の doc コメントの実測。
 //
 // ffmpeg が PATH に無ければ skip する（偽 ffmpeg を使う他のテストと違い、ここは
-// 実物でしか意味が無い）。
+// 実物でしか意味が無い）。CI は ROKUBAN_REQUIRE_FFMPEG で skip を禁じる
+// （lookPathFFmpeg）。
 func TestBuildLiveFFmpegArgs_RealFFmpegAudioRenditions(t *testing.T) {
-	ffmpeg, err := exec.LookPath("ffmpeg")
-	if err != nil {
-		t.Skip("ffmpeg not in PATH")
-	}
+	ffmpeg := lookPathFFmpeg(t)
 	in := filepath.Join(t.TempDir(), "in.ts")
 	runFFmpeg(t, ffmpeg, nil,
 		"-hide_banner", "-loglevel", "error",
@@ -100,6 +102,21 @@ func TestBuildLiveFFmpegArgs_RealFFmpegAudioRenditions(t *testing.T) {
 			}
 		})
 	}
+}
+
+// lookPathFFmpeg は ffmpeg のパスを返す。無ければ skip するが、ROKUBAN_REQUIRE_FFMPEG
+// が設定されていれば落とす --- CI で ffmpeg の導入が壊れたときに、実経路の判定が
+// 黙って skip に戻らないようにする。
+func lookPathFFmpeg(t *testing.T) string {
+	t.Helper()
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		if os.Getenv("ROKUBAN_REQUIRE_FFMPEG") != "" {
+			t.Fatalf("ffmpeg not in PATH but ROKUBAN_REQUIRE_FFMPEG is set: %v", err)
+		}
+		t.Skip("ffmpeg not in PATH")
+	}
+	return ffmpeg
 }
 
 type masterVariant struct {
@@ -191,5 +208,117 @@ func runFFmpeg(t *testing.T, ffmpeg string, stdin *os.File, args ...string) {
 	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("ffmpeg %v: %v\n%s", args, err, out)
+	}
+}
+
+// TestBuildChaseFFmpegArgs_NoAudioRenditions は追っかけ（EVENT）に音声レンディションを
+// 出さないことを両経路で固定する（audioRenditionsFor）。出すと配信の形が変わり、
+// その形で追っかけの seek・再生位置の復元を確かめる判定が無い。captions 無効時は
+// 従来どおりプロファイル別の media playlist（`NAME.m3u8` / `NAME_seg%05d.ts`）。
+func TestBuildChaseFFmpegArgs_NoAudioRenditions(t *testing.T) {
+	profiles := []LiveProfile{
+		{Name: "hd", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
+		{Name: "sd", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
+	}
+	for _, captions := range []bool{false, true} {
+		args := BuildChaseFFmpegArgs(LiveConfig{Captions: captions, Profiles: profiles}, "/tmp/chase", false)
+		joined := strings.Join(args, " ")
+		if strings.Contains(joined, "agroup") || strings.Contains(joined, "pan=") {
+			t.Errorf("captions=%v: chase args carry audio renditions: %v", captions, args)
+		}
+		if n := strings.Count(joined, "-map 0:a:0"); n != len(profiles) {
+			t.Errorf("captions=%v: -map 0:a:0 count = %d, want %d: %v", captions, n, len(profiles), args)
+		}
+		if !captions {
+			for _, want := range []string{
+				"-hls_segment_filename /tmp/chase/segments/hd_seg%05d.ts -hls_base_url segments/ /tmp/chase/hd.m3u8",
+				"-hls_segment_filename /tmp/chase/segments/sd_seg%05d.ts -hls_base_url segments/ /tmp/chase/sd.m3u8",
+			} {
+				if !strings.Contains(joined, want) {
+					t.Errorf("chase args missing %q: %v", want, args)
+				}
+			}
+			if strings.Contains(joined, "-master_pl_name") {
+				t.Errorf("chase without captions must stay a media playlist: %v", args)
+			}
+		} else if !strings.Contains(joined, "-var_stream_map v:0,a:0 v:1,a:1 ") {
+			t.Errorf("captions chase var_stream_map changed: %v", args)
+		}
+	}
+}
+
+// TestLiveStreamer_VariantPlaylistRecreatesSession は、セッションが消えた後の
+// variant playlist 要求がセッションを作り直して 200 を返すことを固定する
+// （serveVariantPlaylist）。hls.js は master を最初の 1 回しか取らず、以後は variant
+// だけを取り直す。ここで 404 を返すと、idle GC・ffmpeg の異常終了の後に hls.js が
+// fatal で止まる（4xx は再試行しない）。
+func TestLiveStreamer_VariantPlaylistRecreatesSession(t *testing.T) {
+	mirakcSrv, state := newFakeMirakcLiveServer(t)
+	ls, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
+
+	const serviceID = 1024
+	master := playlistURL(srv.URL, 0, serviceID, "h264")
+	resp, err := http.Get(master)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	variant := resolveRelative(t, master, firstSegmentName(t, string(body)))
+
+	// idle GC と同じくセッションを止める（map から消え、ディレクトリも消える）。
+	ls.mu.Lock()
+	s := ls.sessions[serviceID]
+	ls.mu.Unlock()
+	s.stop()
+	ls.mu.Lock()
+	_, stillThere := ls.sessions[serviceID]
+	ls.mu.Unlock()
+	if stillThere {
+		t.Fatal("session is still registered after stop")
+	}
+
+	resp, err = http.Get(variant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vbody, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("variant %s after the session was gone: status = %d, want 200 (a fresh session)", variant, resp.StatusCode)
+	}
+	if !strings.Contains(string(vbody), "#EXTINF") {
+		t.Errorf("variant body = %q, want a media playlist", vbody)
+	}
+	if got := state.requestCount(); got != 2 {
+		t.Errorf("mirakc stream requests = %d, want 2 (the original and the recreated session)", got)
+	}
+}
+
+// TestLiveStreamer_UnknownPlaylistNameDoesNotStartSession は、variant の形でない
+// `.m3u8`（master の名前・存在しないプロファイル・番号の無い名前）が 404 で、
+// セッション（= mirakc のチューナー）を起こさないことを固定する。master を
+// `/{name}` で取る要求が 15 秒待って 504 になることもない。
+func TestLiveStreamer_UnknownPlaylistNameDoesNotStartSession(t *testing.T) {
+	mirakcSrv, state := newFakeMirakcLiveServer(t)
+	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, baseLiveConfig(t))
+
+	for _, name := range []string{"h264.m3u8", "other.0.m3u8", "h264.x.m3u8", "h264..m3u8", "playlist_0.m3u8"} {
+		url := fmt.Sprintf("%s/api/sites/%s/networks/0/services/1024/live/%s", srv.URL, testLiveSite, name)
+		start := time.Now()
+		resp, err := http.Get(url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s: status = %d, want 404", name, resp.StatusCode)
+		}
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Errorf("%s: took %v, want an immediate 404", name, elapsed)
+		}
+	}
+	if got := state.requestCount(); got != 0 {
+		t.Errorf("mirakc stream requests = %d, want 0 (unknown names must not start a session)", got)
 	}
 }

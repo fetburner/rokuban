@@ -166,7 +166,7 @@ argv の順序（live）は同じ規則を入力 1 本・出力 N 本の形に�
 
 **起動エラーになる組み合わせ**: `crf` と `qp` の同時指定 / 未知の `scaler` / `height` が 0 なのに `scaler` を書く / `hwaccel` ブロックがあるのに `kind` が空 / `crf`・`qp` の負値。
 
-**`extra_args` / `input_extra_args` は値の個数まで既知の allowlist だけを受け付ける**。値を取らないのは `-an` `-vn` `-sn` `-dn` `-shortest` `-nostdin` `-re`。直後の 1 トークンを値として取るのは `-movflags` `-map` `-global_quality` `-cq` `-q:v` `-b:v` `-b:a`。`-probesize` `-analyzeduration` `-extra_hw_frames` も 1 トークンを取る。それ以外と裸の位置引数は起動エラーになる。値を取らないフラグも明示しているため、`["-an", "/tmp/evil.mp4"]` のように 2 本目の出力パスをフラグの値に見せかけることはできない。`-filter:v:0` / `-lavfi` のような filtergraph の別名・ストリーム指定子付き表記も allowlist 外であり、完全一致の denylist が別名を取りこぼす形は採らない。
+**`extra_args` / `input_extra_args` は値の個数まで既知の allowlist だけを受け付ける**。値を取らないのは `-an` `-vn` `-sn` `-dn` `-shortest` `-nostdin` `-re`。直後の 1 トークンを値として取るのは `-movflags` `-map` `-global_quality` `-cq` `-q:v` `-b:v` `-b:a`。`-probesize` `-analyzeduration` `-extra_hw_frames` も 1 トークンを取る。それ以外と裸の位置引数は起動エラーになる。値を取らないフラグも明示しているため、`["-an", "/tmp/evil.mp4"]` のように 2 本目の出力パスをフラグの値に見せかけることはできない。`-filter:v:0` / `-lavfi` のような filtergraph の別名・ストリーム指定子付き表記も allowlist 外であり、完全一致の denylist が別名を取りこぼす形は採らない。 **live ではさらに `-an` `-vn` `-sn` `-map` を拒否する**。live はストリームの並び（映像・音声 rendition 3 本・字幕）を `-var_stream_map` で持つので、並びを変えると ffmpeg が起動時に落ち、利用者には 504 しか見えない（[api/media.md](api/media.md) §音声）。
 
 **範囲外**: device ノードのマウントはデプロイ側（k8s `resources.limits` / Docker `--device`）。**`hwaccel.device` の存在は起動時に検査しない** --- 公式イメージや device の無い CI を壊す。無い device を書いたプロファイルはジョブ / セッションの失敗として現れる。`-global_quality` / `-cq` / `-q:v` のような、コーデック指定より後ろに出せる（= `extra_args` で届く）品質オプションはキー化しない。
 

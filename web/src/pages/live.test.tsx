@@ -1529,8 +1529,11 @@ describe('LivePage / 音声（issue #870）', () => {
 
   it('未知の ?audio= は標準に落ちる', async () => {
     stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })] })
-    renderLive('/live?service=100001&site=default&audio=both')
-    expect(await screen.findByLabelText('音声')).toHaveValue('')
+    const { router } = renderLive('/live?service=100001&site=default&audio=both')
+    await screen.findByLabelText('音声')
+    // **セレクタの値では判定しない。** jsdom の controlled <select> は一致する option が
+    // 無いと '' を返すので、生の値が残っていても標準に見える（落とし損ねても緑になる）
+    expect(router.state.location.search).not.toHaveProperty('audio')
   })
 
   it('チャンネルを切り替えても音声を保つ（一覧のリンクが ?audio= を運ぶ）', async () => {
