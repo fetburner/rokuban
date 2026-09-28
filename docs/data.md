@@ -10,6 +10,7 @@
 | §4 §6 | スキーマ設計: desired / observed の分離 / **EPG プロジェクション**（UI 完全 / ローリングウィンドウ / 非正規化スナップショット / サービスロゴ） | [data/projections.md](data/projections.md) |
 | §5 | **検索とルール評価の統一**（POSIX ARE / pg_trgm / 全角半角正規化 / 録画検索と rulequery の境界） | [data/search.md](data/search.md) |
 | §6.5 | **チューナー射影と容量超過の判定**（Hall 条件 / twin vertices / 累積和 / 下界に限る原則） | [data/capacity.md](data/capacity.md) |
+| §8 | **シリーズ同一性**（タイトル導出が正本 / 分類ルール → 自動キー / 焼かない / ハブの起点は録画 id） | [data/series.md](data/series.md) |
 
 読む順の目安:
 
@@ -17,6 +18,7 @@
 - **検索 / ルール評価 / 録画一覧の絞り込みを触る** → §5
 - **EPG 射影・スキーマの分離原則を触る** → §4 §6
 - **容量判定・チューナー射影を触る** → §6.5（前提として §6 の非正規化スナップショット）
+- **シリーズ棚・番組ハブ・分類ルールを触る** → §8
 - **DB 輻輳・プール設定を触る** → §7 と [operations.md](operations.md) §3
 
 > 関連ドキュメント: [overview.md](overview.md)（全体アーキテクチャ）/ [schema.md](schema.md)（スキーマ DDL）/ [recording.md](recording.md)（録画エンジン）/ [storage.md](storage.md)（メディアストレージ）/ [operations.md](operations.md)（運用）
