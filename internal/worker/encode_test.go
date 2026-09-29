@@ -564,26 +564,14 @@ func TestEncodeWorker_SuccessAndIdempotent(t *testing.T) {
 		t.Errorf("after second run encoded assets = %d, want 1", count)
 	}
 
-	// scratch が掃除されていること。**排他 lock file だけは残る**（消すと、まだ
-	// 生きている実行が掴んでいる inode と別のファイルを次の実行がロックできる）。
+	// scratch が掃除されていること。
 	entries, _ := os.ReadDir(scratchDir)
 	if len(entries) != 0 {
 		// encode/ 配下も空なら OK。親に encode が残っていても中身が空なら良い。
 		for _, e := range entries {
 			sub := filepath.Join(scratchDir, e.Name())
-			infos, err := os.ReadDir(sub)
-			if err != nil {
-				continue
-			}
-			left := make([]string, 0, len(infos))
-			for _, info := range infos {
-				if strings.HasSuffix(info.Name(), ".lock") {
-					continue
-				}
-				left = append(left, info.Name())
-			}
-			if len(left) > 0 {
-				t.Errorf("scratch not cleaned: %s still has %v", sub, left)
+			if infos, err := os.ReadDir(sub); err == nil && len(infos) > 0 {
+				t.Errorf("scratch not cleaned: %s still has %d entries", sub, len(infos))
 			}
 		}
 	}

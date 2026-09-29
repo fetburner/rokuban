@@ -3,11 +3,11 @@ package worker
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,78 +15,110 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mediapath"
 )
 
-// newPublishTestWorker は encode の公開プロトコルだけを試すための worker を組む。
-// ffmpeg は呼ばない（scratch 出力はテストが直接置く）。
-func newPublishTestWorker(pool *pgxpool.Pool, mediaDir, scratchDir string) *EncodeWorker {
-	return &EncodeWorker{
-		Pool:       pool,
-		MediaDir:   mediaDir,
-		ScratchDir: scratchDir,
-		Profiles: config.EncodeConfig{
-			Profiles: []config.EncodeProfile{{Name: "h264", Container: "mp4"}},
-		},
+// installCountingFFmpeg は「入力のコピーに、試行ごとに違うバイト列（長さも違う）を
+// 足して出力する」偽 ffmpeg を PATH に置く。installFakeFFmpeg の cp だと 2 本の
+// 試行が同一バイトになり、「どちらの中身が canonical か」の断言が空虚になる。
+// 試行番号は ffmpeg の起動順（テストは起動を直列に進める）。
+func installCountingFFmpeg(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ffmpeg")
+	script := `#!/bin/sh
+set -e
+input=""
+output=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-i" ]; then input="$a"; fi
+  prev="$a"
+  output="$a"
+done
+counter="` + filepath.Join(dir, "counter") + `"
+n=$(cat "$counter" 2>/dev/null || echo 0)
+n=$((n+1))
+echo "$n" > "$counter"
+printf 'out_time_ms=1000\nprogress=end\n'
+cp "$input" "$output"
+printf 'attempt-%s:' "$n" >> "$output"
+yes | head -c $((n*10)) >> "$output"
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := os.Getenv("PATH")
+	if err := os.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Setenv("PATH", oldPath) })
+	return path
+}
+
+// pauseBeforeEncodeLock は match した試行を、stage 完了後・rel_path lock 取得前で
+// 止める。reached にはその試行の scratch 出力パスが届く。
+func pauseBeforeEncodeLock(t *testing.T, match func(scratchOut string) bool) (reached <-chan string, release func()) {
+	t.Helper()
+	ch := make(chan string, 4)
+	gate := make(chan struct{})
+	var once sync.Once
+	release = func() { once.Do(func() { close(gate) }) }
+	orig := beforeEncodeLock
+	t.Cleanup(func() {
+		release()
+		beforeEncodeLock = orig
+	})
+	beforeEncodeLock = func(scratchOut string) {
+		if !match(scratchOut) {
+			return
+		}
+		ch <- scratchOut
+		<-gate
+	}
+	return ch, release
+}
+
+func waitReached(t *testing.T, reached <-chan string, done <-chan error) {
+	t.Helper()
+	select {
+	case <-reached:
+	case err := <-done:
+		t.Fatalf("returned before reaching the pre-lock hook: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("never reached the pre-lock hook")
 	}
 }
 
-// TestEncodeWorker_PublishDoesNotTouchCanonicalBeforeRename は、公開が
-// 「同じディレクトリの temp へ stage → rename」で行われ、rename の直前まで
-// canonical が一切触られないことを固定する。
-//
-// 直接 `O_TRUNC` で canonical を開くと、この観測点で前の公開内容が既に消えている
-// （切り詰められた状態か、コピー途中の内容が見える）。
-func TestEncodeWorker_PublishDoesNotTouchCanonicalBeforeRename(t *testing.T) {
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
+func waitDone(t *testing.T, done <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(30 * time.Second):
+		t.Fatal("Work did not finish")
+		return nil
 	}
-	ffmpegPath := installFakeFFmpeg(t)
+}
 
-	mediaDir := t.TempDir()
-	scratchDir := t.TempDir()
-	rel := "20240101/publish.m2ts"
-	content := []byte("original payload for the atomic publish test")
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, rel, []string{"h264"}, content)
-
-	// 前の公開の残骸（DB 行を持たないファイル）。この上へ置き直すときも、rename の
-	// 直前までは中身が変わってはならない。
-	encRel := "20240101/publish_h264.mp4"
-	finalPath := filepath.Join(mediaDir, filepath.FromSlash(encRel))
-	previous := bytes.Repeat([]byte("PREVIOUS-CONTENT"), 1024)
-	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
-		t.Fatal(err)
+func jobWithID(id, recordingID int64) *river.Job[EncodeJobArgs] {
+	return &river.Job[EncodeJobArgs]{
+		JobRow: &rivertype.JobRow{ID: id, Attempt: 1, MaxAttempts: 25},
+		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "h264"},
 	}
-	if err := os.WriteFile(finalPath, previous, 0o644); err != nil {
-		t.Fatal(err)
-	}
+}
 
-	renameReached := make(chan struct{})
-	releaseRename := make(chan struct{})
-	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(releaseRename) }) }
-	observed := make(chan []byte, 1)
-	originalRename := renameEncodedFile
-	t.Cleanup(func() {
-		release()
-		renameEncodedFile = originalRename
-	})
-	renameEncodedFile = func(src, dst string) error {
-		// rename の直前の canonical。まだ前の内容のままのはず。
-		got, err := os.ReadFile(dst)
-		if err != nil {
-			observed <- []byte(fmt.Sprintf("<read error: %v>", err))
-		} else {
-			observed <- got
-		}
-		close(renameReached)
-		<-releaseRename
-		return originalRename(src, dst)
+func inScratch(jobID string) func(string) bool {
+	return func(scratchOut string) bool {
+		return strings.Contains(filepath.ToSlash(scratchOut), "/encode/"+jobID+"/")
 	}
+}
 
-	w := &EncodeWorker{
+func newH264Worker(pool *pgxpool.Pool, mediaDir, scratchDir, ffmpegPath string) *EncodeWorker {
+	return &EncodeWorker{
 		Pool:       pool,
 		MediaDir:   mediaDir,
 		ScratchDir: scratchDir,
@@ -94,54 +126,15 @@ func TestEncodeWorker_PublishDoesNotTouchCanonicalBeforeRename(t *testing.T) {
 		Profiles: config.EncodeConfig{
 			FFmpeg: ffmpegPath,
 			Profiles: []config.EncodeProfile{{
-				Name:       "h264",
-				Container:  "mp4",
-				VideoCodec: "libx264",
-				AudioCodec: "aac",
+				Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 			}},
 		},
 	}
-	job := &river.Job[EncodeJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "h264"},
-	}
+}
 
-	done := make(chan error, 1)
-	go func() { done <- w.Work(context.Background(), job) }()
-
-	select {
-	case <-renameReached:
-	case err := <-done:
-		t.Fatalf("encode returned before publishing: %v (canonical was overwritten in place?)", err)
-	case <-time.After(30 * time.Second):
-		t.Fatal("encode never reached the publish rename (canonical was overwritten in place?)")
-	}
-
-	before := <-observed
-	if !bytes.Equal(before, previous) {
-		t.Errorf("canonical before the rename = %d bytes, want the previous %d bytes untouched",
-			len(before), len(previous))
-	}
-
-	release()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Work() error: %v", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("Work() did not finish after the rename gate was released")
-	}
-
-	got, err := os.ReadFile(finalPath)
-	if err != nil {
-		t.Fatalf("reading published canonical: %v", err)
-	}
-	if !bytes.Equal(got, content) {
-		t.Errorf("published canonical = %q, want the encoded content", got)
-	}
-	// stage した一時ファイルを置き忘れないこと。
-	entries, err := os.ReadDir(filepath.Dir(finalPath))
+func assertNoEncodeTemp(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,125 +145,239 @@ func TestEncodeWorker_PublishDoesNotTouchCanonicalBeforeRename(t *testing.T) {
 	}
 }
 
-// TestEncodeWorker_ConcurrentPublishNeverShowsPartialCanonical は同じ canonical を
-// 2 本の公開が奪い合っても、読者が観測するのは常にどちらかの完全な内容であることを
-// 固定する。`O_TRUNC` で canonical を直接開く実装では、コピー中の中途半端な内容が
-// この読み取りで観測される（payload を MB 単位にして窓を広げている）。
-func TestEncodeWorker_ConcurrentPublishNeverShowsPartialCanonical(t *testing.T) {
+// T1: stage はコピー完了まで canonical に触らない。lock 取得前の観測点で、事前に
+// 置いた canonical（active 行なし）が変わっていない。canonical を直接 O_TRUNC で
+// 開く実装では、この時点で中身が切り詰められている。
+func TestEncodeWorker_StagingDoesNotTouchCanonical(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
 	}
-	mediaDir := t.TempDir()
-	scratchDir := t.TempDir()
-	rel := "20240101/race.m2ts"
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, rel, []string{"h264"}, []byte("seed"))
+	ffmpegPath := installCountingFFmpeg(t)
+	mediaDir, scratchDir := t.TempDir(), t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/t1.m2ts", []string{"h264"}, []byte("original payload t1"))
 
-	w := newPublishTestWorker(pool, mediaDir, scratchDir)
-	encRel := "20240101/race_h264.mp4"
+	finalPath := filepath.Join(mediaDir, "20240101", "t1_h264.mp4")
+	previous := bytes.Repeat([]byte("PREVIOUS-CONTENT"), 1024)
+	if err := os.WriteFile(finalPath, previous, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reached, release := pauseBeforeEncodeLock(t, func(string) bool { return true })
+	w := newH264Worker(pool, mediaDir, scratchDir, ffmpegPath)
+	done := make(chan error, 1)
+	go func() { done <- w.Work(context.Background(), jobWithID(1, recordingID)) }()
+
+	waitReached(t, reached, done)
+	got, err := os.ReadFile(finalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, previous) {
+		t.Errorf("canonical before the lock = %d bytes, want the previous %d bytes untouched", len(got), len(previous))
+	}
+	release()
+	if err := waitDone(t, done); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	got, _ = os.ReadFile(finalPath)
+	if !bytes.HasPrefix(got, []byte("original payload t1attempt-1:")) {
+		t.Errorf("published canonical = %q, want the encoded content", got)
+	}
+	assertNoEncodeTemp(t, filepath.Dir(finalPath))
+}
+
+// T2: A が commit した後に、古い観測（行は deleted で rel_path は target と同じ）の
+// B が公開へ進み、commit に失敗する順序。判定 (b) が無いと B が A のファイルを
+// rename で上書きし、canonical は B の中身、行は A の size_bytes になる。
+func TestEncodeWorker_CommittedByAnotherAttemptIsNotOverwritten(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	ffmpegPath := installCountingFFmpeg(t)
+	mediaDir, scratchDir := t.TempDir(), t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/t2.m2ts", []string{"h264"}, []byte("original payload t2"))
+
+	// 削除済みの行（rel_path = target）から始める。行なしだと B は (a) で止まる。
+	encRel := "20240101/t2_h264.mp4"
+	seedEncodedAsset(t, pool, recordingID, "h264", encRel)
+	if _, err := pool.Exec(ctx, `UPDATE media_assets SET state = 'deleted', deleted_at = now()
+		WHERE recording_id = $1 AND kind = 'encoded'`, recordingID); err != nil {
+		t.Fatalf("marking the seeded row deleted: %v", err)
+	}
 	finalPath := filepath.Join(mediaDir, filepath.FromSlash(encRel))
 
-	payloadA := bytes.Repeat([]byte("A"), 4<<20)
-	payloadB := bytes.Repeat([]byte("B"), 2<<20)
+	reached, release := pauseBeforeEncodeLock(t, inScratch("2"))
+	origCommit := beforeEncodeCommit
+	t.Cleanup(func() { beforeEncodeCommit = origCommit })
 
-	publish := func(payload []byte, scratchName string) error {
-		scratchOut := filepath.Join(scratchDir, scratchName)
-		if err := os.WriteFile(scratchOut, payload, 0o644); err != nil {
-			return err
-		}
-		_, err := w.publishEncoded(context.Background(), encodePublishInput{
-			recordingID: recordingID,
-			profile:     "h264",
-			relPath:     encRel,
-			finalPath:   finalPath,
-			scratchOut:  scratchOut,
-		})
-		return err
-	}
+	w := newH264Worker(pool, mediaDir, scratchDir, ffmpegPath)
+	doneB := make(chan error, 1)
+	go func() { doneB <- w.Work(ctx, jobWithID(2, recordingID)) }()
+	waitReached(t, reached, doneB)
 
-	stop := make(chan struct{})
-	partial := make(chan string, 1)
-	var reads int
-	var readerWG sync.WaitGroup
-	readerWG.Add(1)
-	go func() {
-		defer readerWG.Done()
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			got, err := os.ReadFile(finalPath)
-			if err != nil {
-				continue // まだ公開されていない
-			}
-			reads++
-			if !bytes.Equal(got, payloadA) && !bytes.Equal(got, payloadB) {
-				select {
-				case partial <- fmt.Sprintf("%d bytes (neither payload: A=%d, B=%d)",
-					len(got), len(payloadA), len(payloadB)):
-				default:
-				}
-				return
-			}
-		}
-	}()
-
-	errA := make(chan error, 1)
-	errB := make(chan error, 1)
-	go func() { errA <- publish(payloadA, "a.out.mp4") }()
-	go func() { errB <- publish(payloadB, "b.out.mp4") }()
-	if err := <-errA; err != nil {
-		t.Errorf("publish A: %v", err)
+	if err := w.Work(ctx, jobWithID(1, recordingID)); err != nil {
+		t.Fatalf("Work A: %v", err)
 	}
-	if err := <-errB; err != nil {
-		t.Errorf("publish B: %v", err)
-	}
-	close(stop)
-	readerWG.Wait()
-
-	select {
-	case bad := <-partial:
-		t.Fatalf("reader observed a partially written canonical: %s", bad)
-	default:
-	}
-	if reads == 0 {
-		t.Fatal("reader never observed the canonical; the assertion above proved nothing")
-	}
-
-	// 最後に commit した行が、最後に置いたファイルを指していること。
-	info, err := os.Stat(finalPath)
+	contentA, err := os.ReadFile(finalPath)
 	if err != nil {
-		t.Fatalf("statting canonical: %v", err)
+		t.Fatal(err)
 	}
-	var sizeBytes int64
-	if err := pool.QueryRow(context.Background(),
-		`SELECT size_bytes FROM media_assets
-		 WHERE recording_id = $1 AND kind = 'encoded' AND profile = 'h264' AND state = 'active'`,
-		recordingID,
-	).Scan(&sizeBytes); err != nil {
-		t.Fatalf("reading media_assets row: %v", err)
+	if !bytes.Contains(contentA, []byte("attempt-2:")) {
+		t.Fatalf("A's canonical = %q, want attempt-2 content", contentA)
 	}
-	if sizeBytes != info.Size() {
-		t.Errorf("media_assets.size_bytes = %d, but the canonical is %d bytes", sizeBytes, info.Size())
+
+	beforeEncodeCommit = func(scratchOut string) error {
+		if inScratch("2")(scratchOut) {
+			return context.DeadlineExceeded
+		}
+		return nil
+	}
+	release()
+	if err := waitDone(t, doneB); err != nil {
+		t.Fatalf("Work B: %v (want skip because A already committed)", err)
+	}
+
+	got, _ := os.ReadFile(finalPath)
+	if !bytes.Equal(got, contentA) {
+		t.Errorf("canonical = %d bytes, want A's %d bytes", len(got), len(contentA))
+	}
+	var size int64
+	if err := pool.QueryRow(ctx, `SELECT size_bytes FROM media_assets
+		WHERE recording_id = $1 AND kind = 'encoded' AND profile = 'h264' AND state = 'active'`, recordingID).Scan(&size); err != nil {
+		t.Fatal(err)
+	}
+	if size != int64(len(contentA)) {
+		t.Errorf("size_bytes = %d, want A's %d", size, len(contentA))
+	}
+	assertNoEncodeTemp(t, filepath.Dir(finalPath))
+}
+
+// T3: cut。古い計画（g1 → g2）の X が止まっている間に、行が g3 へ進む。判定 (a) が
+// 無いと、区間が違うので (b) では止まらず、X が行を g2 へ巻き戻す。
+func TestEncodeWorker_StaleCutPlanDoesNotRewindRow(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir, scratchDir := t.TempDir(), t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/t3.m2ts", []string{"h264"}, []byte("original payload t3"))
+
+	g1, g2, g3 := "20240101/t3_h264.g1.mp4", "20240101/t3_h264.g2.mp4", "20240101/t3_h264.g3.mp4"
+	abs := func(rel string) string { return filepath.Join(mediaDir, filepath.FromSlash(rel)) }
+	assetID := seedEncodedAsset(t, pool, recordingID, "h264", g1)
+	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 2000}}); err != nil {
+		t.Fatal(err)
+	}
+
+	cut := &cutContext{keep: []chapters.Range{{StartMs: 0, EndMs: 1000}}}
+	observed, err := planEncodePublish(ctx, sqlcgen.New(pool), recordingID, "h264", cut, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.skip || observed.generation != 2 || observed.replaced != g1 {
+		t.Fatalf("plan = %+v, want generation 2 replacing %s and no skip", observed, g1)
+	}
+
+	scratchOut := filepath.Join(scratchDir, "out.mp4")
+	if err := os.WriteFile(scratchOut, []byte("X output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reached, release := pauseBeforeEncodeLock(t, func(string) bool { return true })
+	w := newH264Worker(pool, mediaDir, scratchDir, "")
+	type result struct {
+		published bool
+		err       error
+	}
+	res := make(chan result, 1)
+	never := make(chan error)
+	go func() {
+		_, published, err := w.publishEncoded(ctx, encodePublishInput{
+			recordingID: recordingID, profile: "h264", relPath: g2, finalPath: abs(g2),
+			scratchOut: scratchOut, observed: observed, cut: cut,
+		})
+		res <- result{published, err}
+	}()
+	waitReached(t, reached, never)
+
+	// 別の実行が g3 へ進めた状態（区間も X と違う）。
+	if err := os.WriteFile(abs(g3), []byte("g3 output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE media_assets SET rel_path = $2 WHERE id = $1`, assetID, g3); err != nil {
+		t.Fatal(err)
+	}
+	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 500}}); err != nil {
+		t.Fatal(err)
+	}
+
+	release()
+	r := <-res
+	if r.err != nil || r.published {
+		t.Fatalf("publishEncoded = published %v, err %v; want a skip", r.published, r.err)
+	}
+	var rel string
+	if err := pool.QueryRow(ctx, `SELECT rel_path FROM media_assets WHERE id = $1`, assetID).Scan(&rel); err != nil {
+		t.Fatal(err)
+	}
+	if rel != g3 {
+		t.Errorf("row rel_path = %s, want %s (the row must not be rewound)", rel, g3)
+	}
+	if _, err := os.Stat(abs(g3)); err != nil {
+		t.Errorf("g3 file is missing: %v", err)
+	}
+	if _, err := os.Stat(abs(g2)); !os.IsNotExist(err) {
+		t.Errorf("g2 file exists (err=%v), want it never published", err)
+	}
+	assertNoEncodeTemp(t, filepath.Dir(abs(g2)))
+}
+
+// T4: scratch はジョブ ID ごと。別ジョブ A が終わった後も、B の scratch が残る。
+// 固定パスだと A の開始時・終了時の RemoveAll が B の出力を消す。
+func TestEncodeWorker_ScratchIsPerJob(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	ffmpegPath := installCountingFFmpeg(t)
+	mediaDir, scratchDir := t.TempDir(), t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/t4.m2ts", []string{"h264"}, []byte("original payload t4"))
+
+	var first atomic.Bool
+	reached, release := pauseBeforeEncodeLock(t, func(string) bool { return first.CompareAndSwap(false, true) })
+	w := newH264Worker(pool, mediaDir, scratchDir, ffmpegPath)
+	doneB := make(chan error, 1)
+	go func() { doneB <- w.Work(ctx, jobWithID(2, recordingID)) }()
+	waitReached(t, reached, doneB)
+
+	if err := w.Work(ctx, jobWithID(1, recordingID)); err != nil {
+		t.Fatalf("Work A: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(scratchDir, "encode", "2", "out.mp4")); err != nil {
+		t.Errorf("B's scratch output is gone after A finished: %v", err)
+	}
+	release()
+	if err := waitDone(t, doneB); err != nil {
+		t.Fatalf("Work B: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(scratchDir, "encode", "2")); !os.IsNotExist(err) {
+		t.Errorf("B's scratch was not cleaned up (err=%v)", err)
 	}
 }
 
-// TestEncodeWorker_PublishHoldsRelPathFileLockThroughCommit は、公開（rename）から
-// DB commit までのあいだ rel_path filesystem lock を保持することを固定する。
-// 孤児回収は同じ lock を非 blocking で取ってから canonical を unlink するので、
-// 公開と commit の間で lock を離すと、commit 前の行と消えた実体が組み合わせになりうる。
+// commit の直前まで rel_path filesystem lock を保持する（孤児回収は同じ lock を
+// 非 blocking で取ってから unlink する）。
 func TestEncodeWorker_PublishHoldsRelPathFileLockThroughCommit(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
 	}
-	mediaDir := t.TempDir()
-	scratchDir := t.TempDir()
-	rel := "20240101/lock.m2ts"
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, rel, []string{"h264"}, []byte("seed"))
-	w := newPublishTestWorker(pool, mediaDir, scratchDir)
+	mediaDir, scratchDir := t.TempDir(), t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/lock.m2ts", []string{"h264"}, []byte("seed"))
 	encRel := "20240101/lock_h264.mp4"
 	finalPath := filepath.Join(mediaDir, filepath.FromSlash(encRel))
 	scratchOut := filepath.Join(scratchDir, "out.mp4")
@@ -278,134 +385,61 @@ func TestEncodeWorker_PublishHoldsRelPathFileLockThroughCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	renameReached := make(chan struct{})
-	releaseRename := make(chan struct{})
-	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(releaseRename) }) }
-	originalRename := renameEncodedFile
-	t.Cleanup(func() {
-		release()
-		renameEncodedFile = originalRename
-	})
-	renameEncodedFile = func(src, dst string) error {
-		close(renameReached)
-		<-releaseRename
-		return originalRename(src, dst)
+	var acquiredDuringCommit bool
+	orig := beforeEncodeCommit
+	t.Cleanup(func() { beforeEncodeCommit = orig })
+	beforeEncodeCommit = func(string) error {
+		l, ok, err := tryLockMediaRelPathFile(finalPath, encRel)
+		if err != nil {
+			return err
+		}
+		if ok {
+			acquiredDuringCommit = true
+			_ = l.Close()
+		}
+		return nil
 	}
-
-	published := make(chan error, 1)
-	go func() {
-		_, err := w.publishEncoded(context.Background(), encodePublishInput{
-			recordingID: recordingID,
-			profile:     "h264",
-			relPath:     encRel,
-			finalPath:   finalPath,
-			scratchOut:  scratchOut,
-		})
-		published <- err
-	}()
-
-	select {
-	case <-renameReached:
-	case err := <-published:
-		release()
-		t.Fatalf("publish returned before the rename: %v", err)
-	case <-time.After(30 * time.Second):
-		release()
-		t.Fatal("publish never reached the rename hook")
+	w := newH264Worker(pool, mediaDir, scratchDir, "")
+	if _, published, err := w.publishEncoded(context.Background(), encodePublishInput{
+		recordingID: recordingID, profile: "h264", relPath: encRel, finalPath: finalPath, scratchOut: scratchOut,
+	}); err != nil || !published {
+		t.Fatalf("publishEncoded = published %v, err %v", published, err)
 	}
-	fileLock, acquired, err := tryLockMediaRelPathFile(finalPath, encRel)
-	if err != nil {
-		release()
-		<-published
-		t.Fatalf("trying the rel_path file lock during publish: %v", err)
-	}
-	if acquired {
-		_ = fileLock.Close()
-		release()
-		<-published
-		t.Fatal("rel_path file lock was available while publish was renaming into the canonical")
-	}
-	release()
-	if err := <-published; err != nil {
-		t.Fatalf("publishEncoded() error: %v", err)
+	if acquiredDuringCommit {
+		t.Fatal("rel_path file lock was free right before the commit")
 	}
 }
 
-// TestEncodeWorker_ScratchIsExclusivePerRecordingProfile は、同じ (recording, profile)
-// の別実行が scratch を掴んでいる間、この実行が待たずに戻り、相手の途中出力を
-// 消さないことを固定する。固定パスの scratch を排他無しで使うと、先に終わった側の
-// RemoveAll が相手の出力を消す。
-func TestEncodeWorker_ScratchIsExclusivePerRecordingProfile(t *testing.T) {
+// lock 待ちで ctx が切れたら、stage 済みの temp は消える。
+func TestEncodeWorker_PublishCancelledWhileWaitingForLockRemovesTemp(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
 	}
-	ffmpegPath := installFakeFFmpeg(t)
-
-	mediaDir := t.TempDir()
-	scratchDir := t.TempDir()
-	rel := "20240101/exclusive.m2ts"
-	content := []byte("original payload for the scratch exclusion test")
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, rel, []string{"h264"}, content)
-
-	profile := config.EncodeProfile{Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"}
-	w := &EncodeWorker{
-		Pool:       pool,
-		MediaDir:   mediaDir,
-		ScratchDir: scratchDir,
-		FFmpeg:     ffmpegPath,
-		Profiles:   config.EncodeConfig{FFmpeg: ffmpegPath, Profiles: []config.EncodeProfile{profile}},
-	}
-	job := &river.Job[EncodeJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "h264"},
-	}
-
-	scratchPath, _, err := w.scratchPaths(recordingID, profile)
-	if err != nil {
+	mediaDir, scratchDir := t.TempDir(), t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/cancel.m2ts", []string{"h264"}, []byte("seed"))
+	encRel := "20240101/cancel_h264.mp4"
+	finalPath := filepath.Join(mediaDir, filepath.FromSlash(encRel))
+	scratchOut := filepath.Join(scratchDir, "out.mp4")
+	if err := os.WriteFile(scratchOut, []byte("encoded bytes"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// 別の実行を模す: 実際に使う lock を取り、scratch に途中出力を置く。
-	// 別の fd なので同じプロセスでも flock は衝突する。
-	holder, acquired, err := lockEncodeScratch(scratchPath)
-	if err != nil {
-		t.Fatalf("locking scratch for the simulated other attempt: %v", err)
-	}
-	if !acquired {
-		t.Fatal("scratch lock was already held")
-	}
-	defer func() { _ = holder.Close() }()
-	if err := os.MkdirAll(scratchPath, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	inFlight := filepath.Join(scratchPath, "out.mp4")
-	if err := os.WriteFile(inFlight, []byte("in-flight output of the other attempt"), 0o644); err != nil {
-		t.Fatal(err)
+	held, ok, err := tryLockMediaRelPathFile(finalPath, encRel)
+	if err != nil || !ok {
+		t.Fatalf("holding the lock: ok=%v err=%v", ok, err)
 	}
+	defer func() { _ = held.Close() }()
 
-	if err := w.Work(context.Background(), job); err == nil {
-		t.Fatal("encode ran while another attempt held the scratch")
-	} else if !strings.Contains(err.Error(), "in use by another attempt") {
-		t.Errorf("error = %v, want the scratch-in-use deferral", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	w := newH264Worker(pool, mediaDir, scratchDir, "")
+	if _, _, err := w.publishEncoded(ctx, encodePublishInput{
+		recordingID: recordingID, profile: "h264", relPath: encRel, finalPath: finalPath, scratchOut: scratchOut,
+	}); err == nil {
+		t.Fatal("publishEncoded succeeded while the lock was held")
 	}
-	if _, err := os.Stat(inFlight); err != nil {
-		t.Errorf("the other attempt's in-flight output was removed: %v", err)
-	}
-
-	// lock を離せば同じジョブが通る（延期が恒久的な停止になっていない）。
-	if err := holder.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Work(context.Background(), job); err != nil {
-		t.Fatalf("Work() after the other attempt released the scratch: %v", err)
-	}
-	encRel := "20240101/exclusive_h264.mp4"
-	got, err := os.ReadFile(filepath.Join(mediaDir, filepath.FromSlash(encRel)))
-	if err != nil {
-		t.Fatalf("reading published canonical: %v", err)
-	}
-	if !bytes.Equal(got, content) {
-		t.Errorf("published canonical = %q, want the encoded content", got)
-	}
+	assertNoEncodeTemp(t, filepath.Dir(finalPath))
 }

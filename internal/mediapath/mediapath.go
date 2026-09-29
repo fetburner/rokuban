@@ -28,8 +28,8 @@ const MediaRelPathLockFilePrefix = ".rokuban-rel-path-lock-"
 
 // EncodeTempFilePrefix は encode が canonical file と同じディレクトリに作る、
 // 公開前の一時ファイル（scratch からストリームコピーした staged 出力）の予約接頭辞。
-// ingest temp と同じく孤児回収には拾わせる（mtime 猶予で守られる）が、catalog 無し
-// rescue では原本へ昇格させない。
+// catalog 無し rescue では原本へ昇格させない。プロセス死で残った temp を孤児回収が
+// 拾うかは未検証（拡張子を付けないので rescue の対象にはならない）。
 const EncodeTempFilePrefix = ".rokuban-encode-"
 
 // IsIngestTempFile はファイル名が ingest の record 固有一時ファイルかを返す。

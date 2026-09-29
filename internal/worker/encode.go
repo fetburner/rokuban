@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	pgx5 "github.com/jackc/pgx/v5"
@@ -46,25 +45,38 @@ import (
 //
 // job lock（advisory lock + heartbeat）は ffmpeg の排他ではなく、lock を失っても
 // 実行中の encode を cancel しない（[ingest_job_lock.go] の jobLockIdleSessionTimeout
-// 参照）。そのため同じ (recording, profile) の encode が 2 本並走しうる。排他は
-// 2 段で持つ:
+// 参照）。そのため同じ (recording, profile) の encode が 2 本並走しうる。
 //
-//   - **scratch は (recording, profile) ごとの flock で直列化する**（lockEncodeScratch）。
-//     試行ごとに scratch を分ける案は採らない --- プロセス死で残った scratch を
-//     回収する仕組みが無く、試行ごとの一意名にすると途中死のたびにディスクを食う。
-//     固定パスなら次の試行が同じディレクトリを作り直して最後に消す。取れなかった
-//     実行は待たずに失敗させて River に戻す（保持側は数十分動きうるので blocking は
-//     枠を無駄に捨てる。戻したジョブは冪等判定で短絡するか、保持側の終了後に走る）。
-//   - **canonical は同じディレクトリの temp へ書いて rename で公開する**（publishEncoded）。
-//     `O_TRUNC` で canonical を直接開くと、並走側がコピー中の canonical を切り詰め、
-//     `size_bytes` と中身が食い違うファイルを commit しうる。rename は同じ FS 内で
-//     原子的なので、読者は常に完全なファイルを見る。rel_path filesystem lock を
-//     公開から DB commit まで保持し、孤児回収の unlink と直列化する。
+//   - **scratch はジョブ ID ごと**（encode/<jobID>。開始時に RemoveAll → Mkdir）。
+//     代替ジョブは別 ID なので衝突しない。同じ ID が並走する経路は無い（River の
+//     rescuer は Timeout() < 0 を無視し、encode_recovery は旧行を discarded にした
+//     tx で別 ID を投入し、River の再試行は前の Work が返った後）。
+//     **flock で (recording, profile) を直列化しない**: scratch は pod ローカルなので
+//     同じ pod 内しか直列化できず、LOCK_NB で River の再試行へ戻すと SIGSTOP 中の
+//     旧実行が lock を握る間ずっと失敗が積み、encode.failed 通知が試行ごとに飛ぶ
+//     （scratch の獲得は runEncode の中なので shouldNotifyEncodeFailure が true になり、
+//     markEncodeAttemptFailed が保持側の running 行まで failed で上書きする）。
+//     代償: 並走した 2 本がどちらも ffmpeg を完走する（lock を失っても cancel しない
+//     方針の範囲内）。
+//   - **canonical の公開は ingest の確定手順に乗せる**（publishEncoded）。同じ
+//     ディレクトリの temp へ lock の外で stage し、lock（rel_path の filesystem lock
+//     → tx → advisory xact lock）の中で判定 → rename（サイドカー → 本体）→ 親 dir
+//     fsync → Upsert → commit する。判定（planEncodePublish）は rename の前に、tx 内で
+//     行を読み直して行う。次のどちらかなら公開を飛ばす（temp を消して成功扱いで戻り、
+//     旧ファイルの unlink も encode.finished も出さない）:
+//     (a) rel_path が冒頭で観測した値と違う（state は問わない。行なしも値の 1 つ）。
+//     encoded 行の rel_path を書くのは UpsertEncodedMediaAsset だけで、行は DELETE
+//     されず tombstone で残るので、rel_path は世代順に前へしか進まない。古い計画の
+//     実行が行を巻き戻すのをこれが止める。
+//     (b) 行が active で（cut なら）凍結区間がこの試行の keep と一致する（誰かが
+//     既に commit した）。A が commit → B が rename で A のファイルを上書き → B の
+//     commit が失敗、と進むと、canonical は B の中身で行は A の size になる。
+//     これが止める。
 //
-// **前提は ingest と同じ**: この排他は対象 FS 上の協調的な POSIX flock に依存する
-// （RWX のメディア越しに効くかは未検証。docs/storage/contract.md §3 ルール 4）。
-// flock が効かない構成でも rename 自体は原子的なので、途中の内容が観測されることは
-// 無い（残るのは「最後に commit した行が最後に置いたファイルを指すか」の順序だけ）。
+// **flock の前提は ingest と同じ**: RWX のメディア越しに効くかは未検証
+// （docs/storage/contract.md §3 ルール 4）。advisory xact lock は DB セッションが
+// 生きていれば、ingest commit と孤児回収に対してだけ公開を排他する。通常削除
+// （deleteMediaAsset）とは flock でしか排他されない。
 //
 // # site 照合ガード（issue #139）は不要と判断
 //
@@ -208,11 +220,11 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 	if err != nil {
 		return err
 	}
-	already, err := w.hasActiveEncoded(ctx, args.RecordingID, args.Profile, cut)
+	observed, err := planEncodePublish(ctx, sqlcgen.New(w.Pool), args.RecordingID, args.Profile, cut, nil)
 	if err != nil {
 		return fmt.Errorf("checking existing encoded asset: %w", err)
 	}
-	if already {
+	if observed.skip {
 		log.Info("encode: encoded asset already committed, skipping")
 		result = "success"
 		w.clearEncodeAttempt(ctx, args.RecordingID, args.Profile)
@@ -242,23 +254,9 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 		defer stopProgress()
 	}
 
-	// 置き換えでは新しい世代のパスに置いてから旧パスを消す。旧パス（生きている行）
-	// は同じ tx より前の観測なので、ここで読んでおく。
-	var prevRelPath string
-	generation := 0
-	if cut != nil {
-		var prevState string
-		prevRelPath, prevState, err = w.loadEncodedRelPath(ctx, args.RecordingID, profile.Name)
-		if err != nil {
-			return err
-		}
-		generation = nextCutGeneration(prevRelPath, profile.Name)
-		if prevState != "active" {
-			// tombstone / deleting のファイルは自分のものではない（消えているか、
-			// 削除 reconcile が処理中）。unlink の対象から外す。
-			prevRelPath = ""
-		}
-	}
+	// 置き換えでは新しい世代のパスに置いてから旧パスを消す（世代と旧パスは
+	// planEncodePublish が冒頭の観測から導く）。
+	prevRelPath, generation := observed.replaced, observed.generation
 	relPath, err := EncodedRelPath(originalRelPath, profile.Name, profile.Container, generation)
 	if err != nil {
 		return fmt.Errorf("building encoded rel_path: %w", err)
@@ -268,15 +266,23 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 		return fmt.Errorf("resolving encoded path: %w", err)
 	}
 
-	scratchDir, scratchOut, err := w.scratchPaths(args.RecordingID, profile)
-	if err != nil {
-		return err
+	scratchDir, scratchOut := w.scratchPaths(job.ID, profile)
+	if err := os.MkdirAll(filepath.Dir(scratchDir), 0o755); err != nil {
+		return fmt.Errorf("creating scratch root: %w", err)
 	}
-	releaseScratch, err := reserveEncodeScratch(scratchDir, log)
-	if err != nil {
-		return err
+	if err := os.RemoveAll(scratchDir); err != nil {
+		return fmt.Errorf("cleaning previous scratch directory: %w", err)
 	}
-	defer releaseScratch()
+	if err := os.Mkdir(scratchDir, 0o755); err != nil {
+		return fmt.Errorf("creating scratch dir: %w", err)
+	}
+	defer func() {
+		// 成功・失敗を問わず scratch を best-effort で掃除（途中成果物は cleanup が
+		// 回収する想定だが、正常系では残さない）。
+		if rmErr := os.RemoveAll(scratchDir); rmErr != nil {
+			log.Warn("encode: scratch cleanup failed", "dir", scratchDir, "err", rmErr)
+		}
+	}()
 
 	withSubtitles, subtitleOut, err := w.prepareEncodeSubtitles(ctx, profile, inputPath, scratchOut, log)
 	if err != nil {
@@ -309,7 +315,8 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 			return err
 		}
 	}
-	size, err := w.publishEncoded(ctx, encodePublishInput{
+	size, published, err := w.publishEncoded(ctx, encodePublishInput{
+		observed:      observed,
 		recordingID:   args.RecordingID,
 		profile:       profile.Name,
 		relPath:       relPath,
@@ -321,6 +328,14 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 	})
 	if err != nil {
 		return err
+	}
+	if !published {
+		// 別の実行が先に公開した（または行が先へ進んだ）。自分の temp は消してあり、
+		// 旧ファイルの unlink も完了通知も、公開した側の仕事である。
+		log.Info("encode: skipped publishing, another attempt already advanced the row")
+		result = "success"
+		w.clearEncodeAttempt(ctx, args.RecordingID, args.Profile)
+		return nil
 	}
 
 	// 旧パスの unlink は commit の後。**失敗しても孤児回収に任せる**（旧行はもう
@@ -669,11 +684,16 @@ func encodeCommandError(ctx context.Context, cmd *exec.Cmd, waitErr error, stder
 	return fmt.Errorf("ffmpeg failed: %w", waitErr)
 }
 
-// renameEncodedFile は公開プロトコルの rename をテストから観測・失敗注入できるように
-// するフックである。stage → rename → 親 dir fsync → DB コミット の順序と、
-// 「rename まで canonical に触らない」ことを、ファイルシステムの実体に依存せず
-// 検証するために置いている（ingest の renameIngestFile と同じ理由）。
-var renameEncodedFile = os.Rename
+// beforeEncodeLock / beforeEncodeCommit はテストが公開手順の途中で実行を止め、
+// あるいは commit の失敗を注入するためのフックである（本番では何もしない）。
+// 引数は試行の scratch 出力パス（どの試行かをテストが見分けるため）。
+var (
+	// beforeEncodeLock は stage（コピーと fsync）の後、rel_path lock を取る前に呼ぶ。
+	beforeEncodeLock = func(scratchOut string) {}
+	// beforeEncodeCommit は rename 済み・Upsert 済みの tx.Commit の直前に呼ぶ。
+	// エラーを返すと commit せずに失敗させる。
+	beforeEncodeCommit = func(scratchOut string) error { return nil }
+)
 
 // stagedEncodedFile は media ディレクトリへ置く前の一時ファイル。finalPath と同じ
 // ディレクトリに置くので rename は同一 FS 内で完結する（scratch からの rename は
@@ -685,9 +705,9 @@ type stagedEncodedFile struct {
 }
 
 // stageEncodedFile は src（scratch）を finalPath と同じディレクトリの一時ファイルへ
-// ストリームコピー + fsync する。名前は公開前の一時ファイルと分かる予約接頭辞を
-// 付け、後発の孤児回収が「途中死で残った置き忘れ」として mtime 猶予つきで拾える
-// ようにする（公開前なので canonical の名前は使わない）。
+// ストリームコピー + fsync する。名前は予約接頭辞を付け、拡張子は付けない
+// （rescueAssetKind は媒体拡張子でしか ok を返さないので、孤児 rescue には拾われない）。
+// プロセス死で残ると、孤児回収が作る lock file が 1 個残るだけである。
 func stageEncodedFile(src, finalPath string) (stagedEncodedFile, error) {
 	dir := filepath.Dir(finalPath)
 	// CreateTemp は 0600 で作る。公開後のファイルは canonical なので、コピー元の
@@ -704,8 +724,6 @@ func stageEncodedFile(src, finalPath string) (stagedEncodedFile, error) {
 	}
 	size, err := streamCopyFile(src, tempPath)
 	if err != nil {
-		// コピーに失敗した一時ファイルは公開しない。残ると mtime 猶予の後に孤児
-		// 回収が拾うだけなので、ここで消す。
 		_ = os.Remove(tempPath)
 		return stagedEncodedFile{}, fmt.Errorf("staging output in media dir: %w", err)
 	}
@@ -714,7 +732,7 @@ func stageEncodedFile(src, finalPath string) (stagedEncodedFile, error) {
 
 // publish は staged 出力を canonical へ rename で公開し、親ディレクトリを fsync する。
 func (s stagedEncodedFile) publish() error {
-	if err := renameEncodedFile(s.tempPath, s.finalPath); err != nil {
+	if err := os.Rename(s.tempPath, s.finalPath); err != nil {
 		return fmt.Errorf("publishing staged output to canonical path: %w", err)
 	}
 	if err := syncIngestDirectory(s.finalPath); err != nil {
@@ -723,15 +741,14 @@ func (s stagedEncodedFile) publish() error {
 	return nil
 }
 
+// discard は未公開の temp を消す。rename 済みなら temp は無いので何もしない。
 func (s stagedEncodedFile) discard() {
-	if s.tempPath == "" {
-		return
+	if s.tempPath != "" {
+		_ = os.Remove(s.tempPath)
 	}
-	_ = os.Remove(s.tempPath)
 }
 
-// encodePublishInput は publishEncoded の入力。引数が 4 つを超え、順序を間違えても
-// 型が同じで気付けない組み合わせがあるのでまとめた。
+// encodePublishInput は publishEncoded の入力。
 type encodePublishInput struct {
 	recordingID   int64
 	profile       string
@@ -740,80 +757,118 @@ type encodePublishInput struct {
 	scratchOut    string
 	subtitleOut   string
 	withSubtitles bool
+	// observed は runEncode 冒頭の観測（tx 内の判定 (a) の比較元）。
+	observed encodePlan
 	// cut はカット版のときだけ非 nil。commit で凍結した keep 区間を同じ tx で
-	// 差し替える（commitEncoded 参照）。
+	// 差し替える。
 	cut *cutContext
 }
 
 // publishEncoded は検証済みの scratch 出力を canonical へ公開し、media_assets を
-// commit する。**stage → rename → 親 dir fsync → DB commit** を、canonical の
-// rel_path filesystem lock の下で 1 続きに行う（ingest の commit と同じ確定
-// プロトコル。順序を逆にしない --- DB commit を先にすると、行が指す実体の欠落を
-// 作る）。
+// commit する。ingest の確定手順と同じ順序で、**lock の外で stage → lock（filesystem
+// lock → tx → advisory xact lock）→ 判定 → rename（サイドカー → 本体）→ 親 dir
+// fsync → Upsert → commit** と進む。順序を逆にしない --- DB commit を先にすると、
+// 行が指す実体の欠落を作る。サイドカーを先に置くのは、本体を置いた後にサイドカーの
+// rename が失敗して、既存の active 行とファイルが食い違うのを避けるため。
 //
-// lock の範囲を rename だけにしない理由は、孤児回収が同じ lock を非 blocking で
-// 取ってから canonical を unlink するためである。公開と commit の間で切ると、
-// コミット前の行（まだ誰からも見えない）と消えた実体の組み合わせが残りうる。
+// lock を commit まで保持するのは、孤児回収が同じ lock を非 blocking で取って
+// から canonical を unlink するためである。
 //
-// 戻り値の size は置いたファイルのバイト数（media_assets.size_bytes）。
-func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput) (int64, error) {
-	// 親ディレクトリが無いと rel_path lock file を開けない（lock file は canonical と
-	// 同じディレクトリに置く）。ingest はストレージ層が commit 前に作るが、encode は
-	// ここが最初の書き込みなので、lock の前に作る。
+// 戻り値の published が false のときは判定 (a)/(b) で公開を飛ばした（temp は消して
+// あり、DB にも canonical にも触っていない）。size は置いたファイルのバイト数。
+// temp を作った後の失敗経路はすべて temp を消す。rename 済みで commit に失敗した
+// canonical は消さない（commit が実は成功していた場合に、生きている行が指す実体を
+// 失う）。孤児回収か次の試行の rename に任せる。
+func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput) (size int64, published bool, err error) {
+	// 親ディレクトリが無いと temp も lock file も作れない。ingest はストレージ層が
+	// commit 前に作るが、encode はここが最初の書き込みなので stage の前に作る。
 	if err := os.MkdirAll(filepath.Dir(in.finalPath), 0o755); err != nil {
-		return 0, fmt.Errorf("mkdir %s: %w", filepath.Dir(in.finalPath), err)
+		return 0, false, fmt.Errorf("mkdir %s: %w", filepath.Dir(in.finalPath), err)
 	}
-	fileLock, err := lockMediaRelPathFile(ctx, in.finalPath, in.relPath)
-	if err != nil {
-		return 0, fmt.Errorf("locking canonical file protocol: %w", err)
-	}
-	defer func() { _ = fileLock.Close() }()
 
 	staged, err := stageEncodedFile(in.scratchOut, in.finalPath)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
-
+	defer staged.discard()
 	var stagedSubtitle stagedEncodedFile
 	if in.withSubtitles {
 		subtitleRelPath, err := mediapath.SubtitleSibling(in.relPath)
 		if err != nil {
-			staged.discard()
-			return 0, fmt.Errorf("building subtitle rel_path: %w", err)
+			return 0, false, fmt.Errorf("building subtitle rel_path: %w", err)
 		}
 		subtitleFinalPath, err := mediapath.Resolve(w.MediaDir, subtitleRelPath)
 		if err != nil {
-			staged.discard()
-			return 0, fmt.Errorf("resolving subtitle path: %w", err)
+			return 0, false, fmt.Errorf("resolving subtitle path: %w", err)
 		}
-		// サイドカーは本体と同じ lock の下で置く（1 つの行 = 1 つの組として
-		// 公開する。別 lock を取るとロック順序が増えるだけで得るものが無い）。
 		stagedSubtitle, err = stageEncodedFile(in.subtitleOut, subtitleFinalPath)
 		if err != nil {
-			staged.discard()
-			return 0, fmt.Errorf("staging subtitle sidecar: %w", err)
+			return 0, false, fmt.Errorf("staging subtitle sidecar: %w", err)
 		}
+		defer stagedSubtitle.discard()
 	}
 
-	if err := staged.publish(); err != nil {
-		staged.discard()
-		stagedSubtitle.discard()
-		return 0, err
+	beforeEncodeLock(in.scratchOut)
+	fileLock, err := lockMediaRelPathFile(ctx, in.finalPath, in.relPath)
+	if err != nil {
+		return 0, false, fmt.Errorf("locking canonical file protocol: %w", err)
 	}
+	defer func() { _ = fileLock.Close() }()
+
+	var ranges pgtype.Multirange[pgtype.Range[pgtype.Int8]]
+	if in.cut != nil {
+		if ranges, err = keepRangesParam(in.cut.keep); err != nil {
+			return 0, false, err
+		}
+	}
+	tx, err := w.Pool.Begin(ctx)
+	if err != nil {
+		return 0, false, fmt.Errorf("beginning encoded asset commit: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockMediaRelPathInTransaction(ctx, tx, in.relPath); err != nil {
+		return 0, false, err
+	}
+	q := sqlcgen.New(tx)
+	plan, err := planEncodePublish(ctx, q, in.recordingID, in.profile, in.cut, &in.observed)
+	if err != nil {
+		return 0, false, err
+	}
+	if plan.skip {
+		return 0, false, nil
+	}
+
 	if in.withSubtitles {
 		if err := stagedSubtitle.publish(); err != nil {
-			stagedSubtitle.discard()
-			return 0, err
+			return 0, false, err
 		}
 	}
-
-	if err := w.commitEncoded(ctx, in.recordingID, in.profile, in.relPath, staged.size, in.cut); err != nil {
-		// DB コミット失敗: media 上のファイルは DB に載らないので孤児。cleanup が
-		// 回収する（rename 済みのファイルをここで消すと、commit が実は成功していた
-		// 場合に生きている行が指す実体を失う）。
-		return 0, fmt.Errorf("committing encoded asset: %w", err)
+	if err := staged.publish(); err != nil {
+		return 0, false, err
 	}
-	return staged.size, nil
+
+	profileName := in.profile
+	assetID, err := q.UpsertEncodedMediaAsset(ctx, sqlcgen.UpsertEncodedMediaAssetParams{
+		RecordingID: in.recordingID,
+		Profile:     &profileName,
+		RelPath:     in.relPath,
+		SizeBytes:   staged.size,
+	})
+	if err != nil {
+		return 0, false, fmt.Errorf("committing encoded asset: upserting media_asset: %w", err)
+	}
+	if in.cut != nil {
+		if err := replaceMediaAssetCuts(ctx, q, assetID, ranges); err != nil {
+			return 0, false, fmt.Errorf("committing encoded asset: %w", err)
+		}
+	}
+	if err := beforeEncodeCommit(in.scratchOut); err != nil {
+		return 0, false, fmt.Errorf("committing encoded asset: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, false, fmt.Errorf("committing encoded asset: %w", err)
+	}
+	return staged.size, true, nil
 }
 
 // shouldNotifyEncodeFailure は encode.failed を発火すべきかを返す。ctxErr は
@@ -953,69 +1008,60 @@ func (w *EncodeWorker) clearEncodeAttempt(ctx context.Context, recordingID int64
 	}
 }
 
-// hasActiveEncoded は冪等スキップの判定。cut が nil（cut でないプロファイル）なら
-// 「active な encoded があるか」だけを見る。cut が非 nil なら、それに加えて
-// **凍結した区間が現在の量子化 keep と一致すること**を要求する（一致しなければ
-// 作り直す。encode の doc コメント参照）。
-//
-// 比較は量子化後の値どうしで行う。keep は chapters.Derive を通った時点で量子化
-// 済み、凍結側は書き込み時に量子化して入れてある（media_asset_cuts の
-// コメント参照）。
-func (w *EncodeWorker) hasActiveEncoded(ctx context.Context, recordingID int64, profile string, cut *cutContext) (bool, error) {
-	q := sqlcgen.New(w.Pool)
-	if cut == nil {
-		_, err := q.GetActiveEncodedMediaAssetID(ctx, sqlcgen.GetActiveEncodedMediaAssetIDParams{
-			RecordingID: recordingID,
-			Profile:     &profile,
-		})
-		if err == nil {
-			return true, nil
-		}
-		if errors.Is(err, pgx5.ErrNoRows) {
-			return false, nil
-		}
-		return false, err
-	}
-	row, err := q.GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
-		RecordingID: recordingID,
-		Profile:     &profile,
-	})
-	if errors.Is(err, pgx5.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if row.State != "active" {
-		return false, nil
-	}
-	frozen, err := assetKeepRanges(ctx, q, row.ID)
-	if err != nil {
-		return false, err
-	}
-	return chapters.SameRanges(frozen, cut.keep), nil
+// encodePlan は encoded 行の 1 回の観測から導いた、公開の判断材料。
+type encodePlan struct {
+	// observedRelPath は行の rel_path（state は問わない）。行が無ければ ""。
+	observedRelPath string
+	// generation は cut のときにこの試行が使う世代（cut でなければ 0）。
+	generation int
+	// replaced は commit の後に unlink する旧パス。cut で旧行が active のときだけ
+	// 非空（tombstone / deleting のファイルは自分のものではない）。
+	replaced string
+	// skip は公開を飛ばす判定。冒頭では (b) だけ、tx 内では (a) か (b)。
+	skip bool
 }
 
-// loadEncodedRelPath は (recording_id, profile) の encoded 行の rel_path と state
-// を返す。**state を問わない**: 世代番号は tombstone からも導出する（次のカット版が
-// 同じパスを再利用しないため）。行が無ければ空文字。
+// planEncodePublish は公開の判定をまとめた唯一の関数で、runEncode の冒頭
+// （observed == nil）と publishEncoded の tx 内（q は tx、observed は冒頭の値）の
+// 両方から呼ぶ。行（cut なら凍結区間も）を 1 回だけ読んで導く。
 //
-// state も返すのは、**unlink してよいのは active な行だけ**だからである。
-// tombstone のファイルは既に消えており、`deleting` のものは削除 reconcile が
-// 処理中で、先回りして消すと相手に偽のエラーログを出させる。
-func (w *EncodeWorker) loadEncodedRelPath(ctx context.Context, recordingID int64, profile string) (relPath, state string, err error) {
-	q := sqlcgen.New(w.Pool)
+// skip になるのは次のどちらか（encode の doc コメント参照）:
+//   - (a) observed が非 nil で、行の rel_path が観測時と違う（rel_path の
+//     compare-and-swap）
+//   - (b) 行が active で、cut なら凍結区間が keep と一致する
+//
+// 区間の比較は量子化後の値どうしで行う。keep は chapters.Derive を通った時点で
+// 量子化済み、凍結側は書き込み時に量子化して入れてある（media_asset_cuts の
+// コメント参照）。
+func planEncodePublish(ctx context.Context, q *sqlcgen.Queries, recordingID int64, profile string, cut *cutContext, observed *encodePlan) (encodePlan, error) {
+	var p encodePlan
 	row, err := q.GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
 		RecordingID: recordingID,
 		Profile:     &profile,
 	})
-	if errors.Is(err, pgx5.ErrNoRows) {
-		return "", "", nil
+	if err != nil && !errors.Is(err, pgx5.ErrNoRows) {
+		return p, fmt.Errorf("loading existing encoded asset: %w", err)
 	}
-	if err != nil {
-		return "", "", fmt.Errorf("loading existing encoded asset: %w", err)
+	exists := err == nil
+	if exists {
+		p.observedRelPath = row.RelPath
 	}
-	return row.RelPath, row.State, nil
+	if cut != nil {
+		p.generation = nextCutGeneration(p.observedRelPath, profile)
+		if exists && row.State == "active" {
+			p.replaced = row.RelPath
+		}
+	}
+	committed := exists && row.State == "active"
+	if committed && cut != nil {
+		frozen, err := assetKeepRanges(ctx, q, row.ID)
+		if err != nil {
+			return p, err
+		}
+		committed = chapters.SameRanges(frozen, cut.keep)
+	}
+	p.skip = committed || (observed != nil && observed.observedRelPath != p.observedRelPath)
+	return p, nil
 }
 
 // nextCutGeneration は旧 rel_path の世代番号 +1 を返す（無ければ 1）。
@@ -1083,81 +1129,14 @@ func (w *EncodeWorker) loadOriginal(ctx context.Context, recordingID int64) (sql
 	return row, nil
 }
 
-func (w *EncodeWorker) scratchPaths(recordingID int64, profile config.EncodeProfile) (dir, out string, err error) {
+func (w *EncodeWorker) scratchPaths(jobID int64, profile config.EncodeProfile) (dir, out string) {
 	base := w.ScratchDir
 	if base == "" {
 		base = os.TempDir()
 	}
-	safeProfile, err := sanitizeProfileForPath(profile.Name)
-	if err != nil {
-		return "", "", err
-	}
-	dir = filepath.Join(base, "encode", fmt.Sprintf("%d_%s", recordingID, safeProfile))
+	dir = filepath.Join(base, "encode", strconv.FormatInt(jobID, 10))
 	out = filepath.Join(dir, "out."+profile.Container)
-	return dir, out, nil
-}
-
-// encodeScratchLockPath は scratch ディレクトリの隣に置く lock file のパスを返す。
-// **scratch の中に置かない**: 終了時の RemoveAll が lock file ごと消すと、次の実行が
-// 新しい inode を作って、まだ生きている実行の lock と別物になる。
-func encodeScratchLockPath(scratchDir string) string {
-	return scratchDir + ".lock"
-}
-
-// lockEncodeScratch は (recording, profile) の encode を直列化する filesystem lock を
-// 取る。取れなければ (nil, false, nil) を返し、呼び出し元は待たずにジョブを戻す。
-func lockEncodeScratch(scratchDir string) (*os.File, bool, error) {
-	if err := os.MkdirAll(filepath.Dir(scratchDir), 0o755); err != nil {
-		return nil, false, fmt.Errorf("creating scratch root: %w", err)
-	}
-	lock, err := os.OpenFile(encodeScratchLockPath(scratchDir), os.O_RDWR|os.O_CREATE, 0o644)
-	if err != nil {
-		return nil, false, fmt.Errorf("opening encode scratch lock: %w", err)
-	}
-	for {
-		err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-		if err == nil {
-			return lock, true, nil
-		}
-		if errors.Is(err, syscall.EINTR) {
-			continue
-		}
-		_ = lock.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
-			return nil, false, nil
-		}
-		return nil, false, fmt.Errorf("locking encode scratch: %w", err)
-	}
-}
-
-// reserveEncodeScratch は (recording, profile) の scratch を占有して作り、解放関数を
-// 返す。
-//
-// 同じ (recording, profile) の別実行が掴んでいたら待たずにエラーを返す --- 保持側は
-// 数十分動きうるので、待つと River の実行枠を捨てるだけである（戻したジョブは冪等
-// 判定で短絡するか、保持側の終了後に走る）。解放は RemoveAll の後で lock を離す ---
-// 掃除のあいだに次の実行が同じディレクトリを掴むと、消し合う。
-func reserveEncodeScratch(scratchDir string, log *slog.Logger) (release func(), err error) {
-	lock, acquired, err := lockEncodeScratch(scratchDir)
-	if err != nil {
-		return nil, fmt.Errorf("locking encode scratch: %w", err)
-	}
-	if !acquired {
-		log.Warn("encode: scratch is held by another attempt of the same (recording, profile)", "dir", scratchDir)
-		return nil, fmt.Errorf("encode: scratch %q is in use by another attempt of the same (recording, profile); deferring", scratchDir)
-	}
-	if err := os.MkdirAll(scratchDir, 0o755); err != nil {
-		_ = lock.Close()
-		return nil, fmt.Errorf("creating scratch dir: %w", err)
-	}
-	return func() {
-		// 成功・失敗を問わず scratch を best-effort で掃除（途中成果物は cleanup が
-		// 回収する想定だが、正常系では残さない）。
-		if rmErr := os.RemoveAll(scratchDir); rmErr != nil {
-			log.Warn("encode: scratch cleanup failed", "dir", scratchDir, "err", rmErr)
-		}
-		_ = lock.Close()
-	}, nil
+	return dir, out
 }
 
 func probeHasSubtitles(ctx context.Context, ffprobe, input string, run func(context.Context, string, ...string) ([]byte, error)) (bool, error) {
@@ -1178,62 +1157,6 @@ func probeHasSubtitlesWithTimeout(ctx context.Context, ffprobe, input string, ru
 	probeCtx, cancel := context.WithTimeout(ctx, subtitleProbeTimeout)
 	defer cancel()
 	return probeHasSubtitles(probeCtx, ffprobe, input, run)
-}
-
-// commitEncoded は置いた canonical file を media_assets の行として公開する。
-// cut が非 nil（カット版）なら、**行の差し替えと凍結した区間の差し替えを 1 つの tx
-// で行う** --- 別々に commit すると、間に落ちたときに「新しいパスを指す行 + 古い
-// 区間」という、実在しないファイルの説明が残る。
-//
-// 行は消さずに UpsertEncodedMediaAsset で rel_path / size_bytes を書き換える
-// （消して作り直すと、rel_path の部分一意索引から一瞬外れてその隙間に別の行が
-// 同じパスを取れる）。カット版は世代番号で必ず新しいパスになるので衝突しない。
-//
-// **transaction-level advisory lock を ingest commit と同じキーで取る**。同じ
-// rel_path の公開と孤児回収の unlink を DB 側でも直列化するためで、呼び出し元が
-// 保持する filesystem lock が効かない構成（RWX 越しの flock は未検証）でも、
-// cleanup が公開直後の canonical を消せない。
-//
-// 旧パスの unlink は**呼び出し元が commit の後で**行う（ここで消すと、commit が
-// 失敗したときに生きている行が指すファイルを失う）。
-func (w *EncodeWorker) commitEncoded(ctx context.Context, recordingID int64, profile, relPath string, size int64, cut *cutContext) error {
-	var ranges pgtype.Multirange[pgtype.Range[pgtype.Int8]]
-	if cut != nil {
-		var err error
-		if ranges, err = keepRangesParam(cut.keep); err != nil {
-			return err
-		}
-	}
-
-	tx, err := w.Pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("beginning encoded asset commit: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := lockMediaRelPathInTransaction(ctx, tx, relPath); err != nil {
-		return err
-	}
-	q := sqlcgen.New(tx)
-
-	profileName := profile
-	assetID, err := q.UpsertEncodedMediaAsset(ctx, sqlcgen.UpsertEncodedMediaAssetParams{
-		RecordingID: recordingID,
-		Profile:     &profileName,
-		RelPath:     relPath,
-		SizeBytes:   size,
-	})
-	if err != nil {
-		return fmt.Errorf("upserting media_asset: %w", err)
-	}
-	if cut != nil {
-		if err := replaceMediaAssetCuts(ctx, q, assetID, ranges); err != nil {
-			return err
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("committing encoded asset: %w", err)
-	}
-	return nil
 }
 
 // replaceMediaAssetCuts は 1 つの media_asset の凍結区間を差し替える

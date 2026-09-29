@@ -74,19 +74,28 @@ encode の出力は原本と違って**既にある行の `rel_path` を指す**
 2 本並走しうる（job lock は ffmpeg の排他ではなく、失っても実行中の encode を
 cancel しない）。そのため:
 
-- 公開は **canonical と同じディレクトリの staging file（`.rokuban-encode-`）へ
-  ストリームコピー + `fsync` → atomic rename → 親ディレクトリ `fsync`** の順で行う。
-  canonical を `O_TRUNC` で直接開くと、読者が切り詰められた内容を観測しうる
-- staging と rename と `media_assets` の commit は、**同じ canonical の rel_path
-  filesystem lock を保持したまま 1 続きに行う**。孤児回収は同じ lock を非 blocking で
-  取ってから unlink するので、公開と commit の間で切ると、commit 前の行と消えた実体が
-  組み合わせになりうる（ルール 3 と同じ理由）
-- 置き忘れた staging file は mtime 猶予つきの孤児回収が拾う（ingest temp と同じ）。
-  catalog 無し rescue は原本へ昇格させない
-- **scratch 側も `(recording, profile)` ごとの `flock` で直列化する**。試行ごとに
-  一意な scratch にすると、プロセス死で残ったディレクトリを回収する仕組みが無いまま
-  ディスクに溜まる。lock を取れなかった実行は待たずにジョブを戻す（保持側は数十分
-  動きうるので、待つと River の実行枠を捨てるだけである）
+- scratch は**ジョブ ID ごと**にする。代替ジョブは別 ID なので衝突しない。scratch は
+  pod ローカルなので `flock` では同じ pod 内しか直列化できず、取れなかった実行を River の
+  再試行へ戻すと、停止中の旧実行が握る間ずっと失敗通知が積む。代償は、並走した 2 本が
+  どちらも ffmpeg を完走すること
+- staging は **canonical と同じディレクトリの staging file（`.rokuban-encode-`）へ、
+  rel_path lock の外でストリームコピー + `fsync`** する。
+  公開は lock（filesystem lock → tx → advisory xact lock）の中で、次の順に行う。
+  **判定 → rename（サイドカー → 本体）→ 親ディレクトリ `fsync` → `media_assets` の
+  Upsert → commit**。
+  canonical を `O_TRUNC` で直接開くと、読者が切り詰められた内容を観測しうる。
+  孤児回収は同じ lock を非 blocking で取ってから unlink するので、公開と commit の間で
+  lock を離すと、commit 前の行と消えた実体が組み合わせになりうる（ルール 3 と同じ理由）
+- 判定は tx 内で行を読み直し、**(a) `rel_path` が計画時と違う、(b) 既に active で
+  （カット版は凍結区間も）この試行と一致する、のどちらかなら公開を飛ばす**。
+  (b) が無いと、先発の commit の後に後発が rename で上書きする。後発の commit が
+  失敗すると、ファイルは後発の中身で行は先発のサイズになる。
+  (a) が無いと、行が先の世代へ進んだ後に古い計画の実行が行を巻き戻す
+- advisory xact lock が排他するのは ingest commit と孤児回収に対してだけである。
+  通常削除（`deleteMediaAsset`）とは filesystem lock でしか排他されない。RWX 越しに
+  `flock` が効くかは未検証（ルール 4 と同じ前提）
+- 置き忘れた staging file を孤児回収が拾うかは未検証。拡張子が無いので catalog 無し
+  rescue の対象にはならず、原本へ昇格しない
 
 ### カット版の置き換え（「置くのは一回」の 1 つの例外）
 
