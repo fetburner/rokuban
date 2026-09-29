@@ -46,7 +46,7 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 | `storage.media_dir` | —（必須） | 原本 ingest 先。fsync・close・同一 FS rename・親ディレクトリ fsync を保証するローカル FS / JuiceFS / NFS。FUSE S3 は原本 ingest 先にしない |
 | `storage.scratch_dir` | `/var/tmp/rokuban` | ローカルスクラッチ |
 | `storage.accel_location` | `""`（Go が直接配る） | X-Accel-Redirect の internal location |
-| `ingest.concurrency` | `2` | mirakc サイトあたりの同時転送数 |
+| `ingest.concurrency` | `3` | mirakc サイトあたりの同時転送数。`チューナー数 + 全速 pull の許容本数（1〜2）` で、既定 3 は 2 チューナー機の下端（[録画](recording.md) §5.4）。4 チューナー機では 5〜6。**接続プールの予算はこの値に追随する**（[DB 運用](operations/database.md)） |
 | `ingest.stall_timeout` | `30s` | 転送の無進捗検知（下記「ingest.stall_timeout」） |
 | `epg.sync_interval` | `10m` | mirakc から EPG を全量取得する間隔 |
 | `epg.retention_grace` | `24h` | 放送終了から番組を刈り取るまでの猶予。ruler の GC（予約と番組単位の意図）も同じ猶予を使う。**エッジの滞留を N 日許すなら N 以上が要る**（[ストレージ](storage.md) §6「凍結が依存する寿命と、エッジの滞留の交点」） |

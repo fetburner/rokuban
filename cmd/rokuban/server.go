@@ -309,10 +309,24 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
+	// River クライアントの設定は DB プールより先に確定させる。**プールのサイジングが
+	// この設定から導出される** --- worker の予算は「同時に走りうる job advisory lock
+	// 保持ジョブの本数」ぶん必要で、その本数はキュー設定と束縛サイト数から決まる
+	// （internal/worker.LockSlots）。同じ値を NewPool の前後で 2 回組み立てると、
+	// 引くつもりの本数とプールの予算が黙ってずれる。
+	workerCfg := newWorkerClientConfig(cfg, bound, queues, onceGate, softStopTimeout)
+	var lockSlots int
+	if resolveRiverClientKind(roles) == riverClientFull {
+		lockSlots, err = worker.LockSlots(workerCfg)
+		if err != nil {
+			return err
+		}
+	}
+
 	ctx, stop := installSignalHandler(cmd.Context())
 	defer stop()
 
-	pool, err := db.NewPool(ctx, cfg.DB, roles, len(bound))
+	pool, err := db.NewPool(ctx, cfg.DB, roles, len(bound), lockSlots)
 	if err != nil {
 		return err
 	}
@@ -357,7 +371,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// watcher の両方から同じ Client を使う。
 	webhookClient := webhook.New(cfg.Webhook)
 
-	riverClient, err := buildRiverClient(cfg, roles, bound, queues, onceGate, softStopTimeout, pool, webhookClient)
+	riverClient, err := buildRiverClient(cfg, roles, bound, workerCfg, pool, webhookClient)
 	if err != nil {
 		return err
 	}
@@ -550,10 +564,10 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 // buildRiverClient は roles に応じた River クライアントを構築する。
 // worker が無いプロセスにはフルのワーカー群を登録しない。worker がある場合だけ
 // encode / thumbnail のツール検査とフルのワーカー群の登録を行う。
-func buildRiverClient(cfg *config.Config, roles []string, bound []config.MirakcSite, queues []string, onceGate *worker.OnceGate, softStopTimeout time.Duration, pool *pgxpool.Pool, webhookClient *webhook.Client) (*river.Client[pgx5.Tx], error) {
+func buildRiverClient(cfg *config.Config, roles []string, bound []config.MirakcSite, clientCfg worker.ClientConfig, pool *pgxpool.Pool, webhookClient *webhook.Client) (*river.Client[pgx5.Tx], error) {
 	switch resolveRiverClientKind(roles) {
 	case riverClientFull:
-		return buildFullRiverClient(cfg, bound, queues, onceGate, softStopTimeout, pool, webhookClient)
+		return buildFullRiverClient(cfg, bound, clientCfg, pool, webhookClient)
 	case riverClientInsertOnly:
 		return worker.NewInsertOnlyClient(pool)
 	default:
@@ -561,15 +575,48 @@ func buildRiverClient(cfg *config.Config, roles []string, bound []config.MirakcS
 	}
 }
 
+// newWorkerClientConfig は worker ロールの River 設定を組み立てる。
+//
+// **pool に依存しない。** 同じ値が 2 か所で使われる --- NewPool へ渡す
+// job lock 枠の計算（worker.LockSlots）と worker.NewClient である。ここで 1 回
+// 組み立てて両方に渡すことで、プールの予算が「実際に引くキュー」からずれる経路を
+// 作らない。worker ロールが無いプロセスでは使われないが、組み立て自体は無害。
+func newWorkerClientConfig(cfg *config.Config, bound []config.MirakcSite, queues []string, onceGate *worker.OnceGate, softStopTimeout time.Duration) worker.ClientConfig {
+	return worker.ClientConfig{
+		// BoundSites は site 単位のキュー（ingest/epg/reconciler/watcher）を
+		// 物理名（`<base>_<site>`）に展開するのに使う。空スライス（0 サイト
+		// 束縛）では jobs.PhysicalQueueName が db.DefaultSite に解決する ---
+		// 0 サイト束縛の worker がこれらのキューを要求しないことは
+		// validateSiteBinding が起動時に強制している。
+		BoundSites:           registryNames(bound),
+		IngestConcurrency:    cfg.Ingest.Concurrency,
+		EncodeConcurrency:    cfg.Encode.Concurrency,
+		ThumbnailConcurrency: cfg.Encode.ThumbnailConcurrency,
+		EpgSyncInterval:      cfg.Epg.SyncInterval,
+		PeriodicJobs:         cfg.Worker.PeriodicJobs,
+		Queues:               queues,
+		Once:                 onceGate,
+		SoftStopTimeout:      softStopTimeout,
+		CatalogExport:        true,
+		DeleteReconcile:      true,
+		LabelRuleReconcile:   true,
+		EncodeReconcile:      true,
+		ThumbnailReconcile:   true,
+		CMDetectReconcile:    cfg.CMDetect.Enabled,
+		StorageSync:          true,
+	}
+}
+
 // buildFullRiverClient は worker ロール用のワーカー群と River クライアントを構築する。
-// サイトごとの mirakc クライアントとキュー設定は、runServer で解決済みの値を使う。
-func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, queues []string, onceGate *worker.OnceGate, softStopTimeout time.Duration, pool *pgxpool.Pool, webhookClient *webhook.Client) (*river.Client[pgx5.Tx], error) {
-	if jobs.RequiresEncodeTools(queues) {
+// サイトごとの mirakc クライアントをここで作り、キュー設定は runServer で解決済みの
+// ものを使う。
+func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, clientCfg worker.ClientConfig, pool *pgxpool.Pool, webhookClient *webhook.Client) (*river.Client[pgx5.Tx], error) {
+	if jobs.RequiresEncodeTools(clientCfg.Queues) {
 		if err := cfg.Encode.ValidateTools(); err != nil {
 			return nil, err
 		}
 	}
-	if cfg.CMDetect.Enabled && jobs.RequiresCMDetectTools(queues) {
+	if cfg.CMDetect.Enabled && jobs.RequiresCMDetectTools(clientCfg.Queues) {
 		if err := cfg.CMDetect.ValidateTools(cfg.Encode.FFprobe); err != nil {
 			return nil, err
 		}
@@ -605,29 +652,6 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, queues 
 		Webhook:                  webhookClient,
 		Cleanup:                  cfg.Cleanup,
 	})
-	clientCfg := worker.ClientConfig{
-		// BoundSites は site 単位のキュー（ingest/epg/reconciler/watcher）を
-		// 物理名（`<base>_<site>`）に展開するのに使う。空スライス（0 サイト
-		// 束縛）では jobs.PhysicalQueueName が db.DefaultSite に解決する ---
-		// 0 サイト束縛の worker がこれらのキューを要求しないことは
-		// validateSiteBinding が起動時に強制している。
-		BoundSites:           registryNames(bound),
-		IngestConcurrency:    cfg.Ingest.Concurrency,
-		EncodeConcurrency:    cfg.Encode.Concurrency,
-		ThumbnailConcurrency: cfg.Encode.ThumbnailConcurrency,
-		EpgSyncInterval:      cfg.Epg.SyncInterval,
-		PeriodicJobs:         cfg.Worker.PeriodicJobs,
-		Queues:               queues,
-		Once:                 onceGate,
-		SoftStopTimeout:      softStopTimeout,
-		CatalogExport:        true,
-		DeleteReconcile:      true,
-		LabelRuleReconcile:   true,
-		EncodeReconcile:      true,
-		ThumbnailReconcile:   true,
-		CMDetectReconcile:    cfg.CMDetect.Enabled,
-		StorageSync:          true,
-	}
 	return worker.NewClient(pool, workers, clientCfg)
 }
 

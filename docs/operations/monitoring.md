@@ -144,6 +144,7 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 | `rokuban_*_last_pass_timestamp_seconds`（`reconcile` / `ruler` / `sweep`） | `time() - この値` が周期を大きく超えたら止まっている。**KEDA ScaledJob の構成では使えない**（下記） |
 | `rokuban_ruler_last_success_timestamp_seconds{site}` / `rokuban_sweep_last_success_timestamp_seconds{site}` | DB に確定した site 単位の成功時刻。`time() - この値` が周期を大きく超えたら、ScaledJob でも止まっている |
 | `river_job` の `state='available'` が滞留 | 投入はされているが誰も引いていない（worker が 0 か、キューを引いていない） |
+| `river_job` の ingest キューで `state='running'` が上限に張り付き、`available` が滞留している | **ingest の枠不足**（`ingest.concurrency` が録画数に対して小さい）。UI では取り込み待ちが続く |
 | `river_job` が増えない | **投入自体が止まっている**。`worker.periodic_jobs: false` なのに CronJob が動いていない、あるいはリーダーが不在 |
 
 3 番目が k8s 特有の落とし穴。`PeriodicJobs` はリーダーだけが投入するので、worker が 0 にスケールすると誰も投入しない（[データ層](../data.md) §2）。`rokuban enqueue` を叩く CronJob が設定されているかを最初に疑う。

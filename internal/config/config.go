@@ -250,6 +250,27 @@ type StorageConfig struct {
 
 // IngestConfig は ingest ジョブの設定。
 type IngestConfig struct {
+	// Concurrency は mirakc サイトあたりの ingest 同時実行数（ingest キューの
+	// MaxWorkers）。**既定値の権威はここ（defaults() の 3）である**
+	// （internal/worker.defaultIngestConcurrency は config.Load を経由しない
+	// 呼び出し元のための二重既定）。
+	//
+	// 3 は docs/recording/ingest.md §5.4 の式（`チューナー数 + 全速 pull の
+	// 許容本数（1〜2）`）の下端で、2 チューナー機の「2 本同時録画 + 全速 pull 1 本」
+	// にあたる。§5.4 の窓（録画数ちょうどだと全速 pull が詰まる / 広げすぎると
+	// 復旧中の全速 pull がエッジの録画書き込みと競合する）の中に収まっている。
+	//
+	// **足りないと追従が枠待ちになる。** 枠が録画数を下回ると、録画中の追従が
+	// MaxWorkers の待ち行列に入り、UI には `pending`（取り込み待ち）が続く。
+	// 4 チューナー機では 5〜6 に上げる（docs/recording/ingest.md §5.4 の式のまま）。
+	// **接続プールの予算はこれに自動で追随する** --- job lock の本数は
+	// internal/worker.LockSlots が設定から数え、internal/db がそこから worker の
+	// 予算を導出する。
+	//
+	// 枠待ちの間に録画が終わったジョブは、録画終了後に始まる pull（finished を観測したら
+	// 最後まで全速で読む）として走る（ingest は追従と完了後 pull を同じ
+	// ループで処理する。finished の record を最初から pull して commit する
+	// TestIngestWorker_FullTransfer が根拠）。
 	Concurrency int `yaml:"concurrency"`
 
 	// StallTimeout は転送中の無進捗検知タイムアウト。進捗がこの時間止まると
@@ -262,6 +283,11 @@ type IngestConfig struct {
 
 // validate は ingest 設定のうち、値の範囲で決まるものを検査する（Load 時）。
 //
+// Concurrency < 1 を弾くのは encode と同形である（EncodeConfig.validate）。
+// 0 を「既定に寄せる」のは defaults() の役目で、defaults() を通っていない値
+// （明示された 0 や負値）がここへ来る。0 を worker 側で既定に読み替えると、
+// 「設定したのに効かない」と「設定を消した」が同じ結果になる。
+//
 // StallTimeout <= 0 を通すと、worker 側は素通りでそのまま
 // time.AfterFunc(0 または負, stallCancel) に渡す（IngestWorker.Work の
 // StallTimeout 参照）。time.AfterFunc は d <= 0 を「即時実行」として扱う
@@ -270,6 +296,9 @@ type IngestConfig struct {
 // 打ち切られて再試行し続ける。worker 側が 0 を既定に読み替えていた（旧
 // resolveStallTimeout）のをやめた分、その検証をここに移す。
 func (c IngestConfig) validate() error {
+	if c.Concurrency < 1 {
+		return fmt.Errorf("ingest.concurrency must be >= 1, got %d", c.Concurrency)
+	}
 	if c.StallTimeout <= 0 {
 		return fmt.Errorf("ingest.stall_timeout must be > 0, got %s", c.StallTimeout)
 	}
@@ -1149,7 +1178,7 @@ func defaults() Config {
 			ScratchDir: "/var/tmp/rokuban",
 		},
 		Ingest: IngestConfig{
-			Concurrency:  2,
+			Concurrency:  3,
 			StallTimeout: 30 * time.Second,
 		},
 		Epg: EpgConfig{

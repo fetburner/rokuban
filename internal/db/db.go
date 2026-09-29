@@ -27,24 +27,10 @@ const defaultAPIStatementTimeout = 30 * time.Second
 // 根拠（世帯スケール。数値は保守的な上限であり、実測に基づくチューニングは運用開始後に行う）:
 //   - api (10): HTTP リクエストの同時実行に応じる。SSE 配送は notifier が別に持つため
 //     api 自身が保持し続める接続はなく、ブラウザの複数タブ・同時操作を吸収する余裕を見た値
-//   - worker (8): River の内部機構が LISTEN 用に 1 本を長時間保持する（`river.Client` は
-//     `notifier.New` で 1 個の Listener だけを作り、leadership の elector もそれを
-//     共有する。`river@v0.47.0 client.go` の `notifier.New` と
-//     `leadership.NewElector` で確認済み。elector と
-//     notifier がそれぞれ別に 1 本ずつではない）。これに加え、設定されたキューの
-//     MaxWorkers（ingest/encode/thumbnail の合計は通常数本、ruler/reconciler/epg_sync/
-//     record_sweep 等の定期ジョブ専用キューは MaxWorkers 1）を合わせても世帯スケールでは
-//     十分な余裕がある。**加えて、実行中の ingest / encode 1 本ごとに job advisory lock
-//     用のコネクションを 1 本、Work の冒頭から commit まで長期保持する**
-//     （internal/worker/ingest_job_lock.go、docs/recording/ingest.md §5.3）。
-//     rel_path の排他は DB の一意 reservation と一時ファイルで行う。本数は
-//     変わらない --- job lock は同一セッション（同じコネクション）
-//     に相乗りする。ただし保持の開始が転送前の `lookupIngestTarget` /
-//     `hasOriginalMediaAsset` / `determineRelPath`（mirakc への HTTP を含む）まで前倒しに
-//     なっている（プロセス死からの回収がこのジョブ ID lock を見るため。層 2 参照）。
-//     ingest の同時実行は site あたり 1〜2 にキャップされており、この 8 は 1 site ぶんを
-//     見込んだ値。encode は site 非依存なので、この既定値の中で見込む。2 site 目以降は
-//     perSiteConnBudget が worker あたり workerPerSiteConns を上乗せする
+//   - worker (8): **床（下限）であって合計ではない。** 実際の予算は workerConnBudget が
+//     lockSlots（同時に走りうる job advisory lock 保持ジョブの本数）から導出する。
+//     値そのものは、lockSlots が小さい構成でも lock 枠から導出した小さい値まで
+//     上限を下げないための床として置いてある
 //   - watcher (3): 1 site ぶんのリーダー選出の advisory lock 用に 1 本を保持し
 //     続け、record 処理の短いクエリが散発する。2 site 目以降は site ごとに
 //     goroutine + advisory lock を持つため（cmd/rokuban/server.go の watcher
@@ -54,30 +40,63 @@ const defaultAPIStatementTimeout = 30 * time.Second
 //     Go のファイル配信）。リクエストごとのメタデータ照会だけで足りる（site 数に依存しない）
 var roleConnBudget = map[string]int32{
 	"api":      10,
-	"worker":   8,
+	"worker":   workerConnFloor,
 	"watcher":  3,
 	"notifier": 3,
 	"streamer": 4,
 }
 
-// watcherPerSiteConns / workerPerSiteConns は、2 site 目以降の束縛サイトごとに
-// watcher / worker ロールへ追加で見込むコネクション数（perSiteConnBudget /
-// minRequiredConns が使う。roleConnBudget の doc コメント参照）。
 const (
-	// watcherPerSiteConns: 2 site 目以降、site ごとに 1 つの advisory lock 用
-	// コネクションが追加で専有される（cmd/rokuban/server.go の watcher ループが
-	// site ごとに role.RunSingleton を呼ぶ。issue #532）。
+	// workerConnFloor は worker ロールの予算の床（roleConnBudget の worker の値）。
+	//
+	// 床が効くのは lockSlots が 4 以下のとき（1 + lockSlots + workerConnSlack <= 8）。
+	// 既定構成の lockSlots は 5（ingest 3 + encode 1 + cm_detect 1、1 site）なので、
+	// 既定の予算は床ではなく式の側（9）で決まる。**ingest を引かないデプロイ
+	// （`--queues=ruler` 等）の上限を、lock 枠から導出した小さい値まで
+	// 下げないために置いてある。**
+	workerConnFloor = 8
+
+	// workerConnSlack は worker の予算のうち、LISTEN でも job lock でもない仕事
+	// （ジョブ claim、進捗書き込み、`/metrics` のバックログクエリ等）に残す本数。
+	//
+	// **未測定である。** 値は「ingest 2 / encode 1 / cm_detect 1 の構成で
+	// 固定予算 8 から長期保持分 5（1(LISTEN) + 4(job lock)）を引いた残り」を
+	// 据え置いたもので、実測に基づかない。
+	workerConnSlack = 3
+
+	// workerListenConns は River の内部機構が LISTEN 用に長時間保持する本数。
+	// `river.Client` は `notifier.New` で 1 個の Listener だけを作り、leadership の
+	// elector もそれを共有する（`river@v0.47.0 client.go` の `notifier.New` と
+	// `leadership.NewElector` で確認済み。elector と notifier がそれぞれ別に
+	// 1 本ずつではない）。site 数に依存しないプロセス単位の資源。
+	workerListenConns = 1
+
+	// watcherPerSiteConns は、2 site 目以降の束縛サイトごとに watcher ロールへ
+	// 追加で見込むコネクション数（perSiteConnBudget / minRequiredConns が使う）。
+	// site ごとに 1 つの advisory lock 用コネクションが追加で専有される
+	// （cmd/rokuban/server.go の watcher ループが site ごとに role.RunSingleton を
+	// 呼ぶ。issue #532）。
 	watcherPerSiteConns = 1
-	// workerPerSiteConns: 2 site 目以降、site ごとの ingest 同時実行キャップ（既定 2、
-	// internal/worker.defaultIngestConcurrency）ぶんの job advisory lock 用
-	// コネクションが site ごとに追加で乗りうる（roleConnBudget の worker 8 が
-	// 見込んでいるのは 1 site ぶんだけ）。
-	workerPerSiteConns = 2
 )
+
+// workerConnBudget は worker ロールの予算を lockSlots から導出する。
+//
+// 構成（workerListenConns + lockSlots + workerConnSlack）を、上限を lock 枠から導出した
+// 小さい値まで下げないための床 workerConnFloor で下支えする。
+//
+// **lockSlots は呼び出し元が数える**（internal/worker.LockSlots）。同時実行数は
+// 設定（ingest.concurrency / encode.concurrency）と束縛サイト数から決まるので、
+// db 側に既定値を焼き込むと運用者が設定を変えたときに予算が追随しない。
+func workerConnBudget(lockSlots int) int32 {
+	return max(workerConnFloor, int32(workerListenConns+lockSlots+workerConnSlack))
+}
 
 // perSiteConnBudget は、束縛サイトが 2 つ以上のとき roleConnBudget に上乗せする
 // コネクション数を返す（1 site 以下は roleConnBudget の値がそのまま 1 site 分の
 // 見込みなので上乗せ 0）。
+//
+// **worker はここに含まれない。** job advisory lock の本数は site 数に比例するが、
+// それは lockSlots として呼び出し元から渡ってくる（workerConnBudget）。
 func perSiteConnBudget(roles []string, numSites int) int32 {
 	if numSites <= 1 {
 		return 0
@@ -86,9 +105,6 @@ func perSiteConnBudget(roles []string, numSites int) int32 {
 	var per int32
 	if slices.Contains(roles, "watcher") {
 		per += watcherPerSiteConns
-	}
-	if slices.Contains(roles, "worker") {
-		per += workerPerSiteConns
 	}
 	return per * extraSites
 }
@@ -133,14 +149,17 @@ func KnownRoles() []string {
 //
 // numSites はこのプロセスが束縛している mirakc サイト数（cmd/rokuban が --sites
 // から解決した `bound` の長さ。issue #532）。watcher は site ごとに advisory lock
-// 用のコネクションを 1 本専有し続け、worker も site ごとの ingest キューが
-// job advisory lock 用のコネクションを追加で必要としうるため、2 サイト以上の
-// 束縛ではこの数を pool サイジングに反映する（roleConnBudget / minRequiredConns の
+// 用のコネクションを 1 本専有し続けるため、2 サイト以上の束縛ではこの数を
+// pool サイジングに反映する（roleConnBudget / minRequiredConns の
 // doc コメント参照）。site 束縛の概念が無い呼び出し元（rescue/enqueue/shadow-diff
 // 等の単発 CLI コマンド、testutil）は 0 を渡す --- roles が空ならどのみち
 // site 数は判定に使われない。
-func NewPool(ctx context.Context, cfg config.DBConfig, roles []string, numSites int) (*pgxpool.Pool, error) {
-	poolCfg, err := buildPoolConfig(cfg, roles, numSites)
+//
+// lockSlots はこのプロセスで同時に走りうる job advisory lock 保持ジョブの本数
+// （internal/worker.LockSlots が設定と束縛サイト数から数える）。**db は worker を
+// import しない**ので値そのものを受け取る。worker ロールが無ければ 0。
+func NewPool(ctx context.Context, cfg config.DBConfig, roles []string, numSites, lockSlots int) (*pgxpool.Pool, error) {
+	poolCfg, err := buildPoolConfig(cfg, roles, numSites, lockSlots)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +179,7 @@ func NewPool(ctx context.Context, cfg config.DBConfig, roles []string, numSites 
 
 // buildPoolConfig は NewPool のロジック本体（MaxConns の算出と
 // statement_timeout の設定）を、実接続を伴わずにテストできる形で切り出す。
-func buildPoolConfig(cfg config.DBConfig, roles []string, numSites int) (*pgxpool.Config, error) {
+func buildPoolConfig(cfg config.DBConfig, roles []string, numSites, lockSlots int) (*pgxpool.Config, error) {
 	poolCfg, err := pgxpool.ParseConfig(cfg.DSN())
 	if err != nil {
 		return nil, fmt.Errorf("parsing connection string: %w", err)
@@ -168,18 +187,21 @@ func buildPoolConfig(cfg config.DBConfig, roles []string, numSites int) (*pgxpoo
 
 	switch {
 	case cfg.MaxConns > 0:
-		if min := minRequiredConns(roles, numSites); int32(cfg.MaxConns) < min {
+		if min := minRequiredConns(roles, numSites, lockSlots); int32(cfg.MaxConns) < min {
 			return nil, fmt.Errorf(
-				"db.max_conns=%d is too small for roles %v bound to %d site(s): at least %d "+
-					"connections are required so that roles holding a connection for their "+
-					"entire lifetime (watcher's advisory lock -- one per bound site, "+
-					"worker's/notifier's LISTEN) don't starve the rest of the process's work "+
-					"out of the single shared pool (docs/operations.md §3)",
-				cfg.MaxConns, roles, numSites, min)
+				"db.max_conns=%d is too small for roles %v bound to %d site(s) with %d job "+
+					"lock slot(s): at least %d connections are required so that roles holding a "+
+					"connection whose release depends on acquiring another one don't starve the "+
+					"rest of the process's work out of the single shared pool -- watcher's "+
+					"advisory lock (one per bound site), worker's/notifier's LISTEN, and one "+
+					"connection per running ingest/encode/cm_detect job (those jobs write "+
+					"progress on a second connection before releasing the first) "+
+					"(docs/operations.md §3)",
+				cfg.MaxConns, roles, numSites, lockSlots, min)
 		}
 		poolCfg.MaxConns = int32(cfg.MaxConns)
 	case len(roles) > 0:
-		poolCfg.MaxConns = maxConnsForRoles(roles, numSites)
+		poolCfg.MaxConns = maxConnsForRoles(roles, numSites, lockSlots)
 	}
 
 	if slices.Contains(roles, "api") {
@@ -196,23 +218,34 @@ func buildPoolConfig(cfg config.DBConfig, roles []string, numSites int) (*pgxpoo
 	return poolCfg, nil
 }
 
-// maxConnsForRoles は roles から roleConnBudget の合計（+ 2 サイト目以降の
+// maxConnsForRoles は roles から予算の合計（+ 2 サイト目以降の
 // perSiteConnBudget の上乗せ）を算出する。
 //
 // roles は重複除去してから合算する。重複除去しないと同じロールの budget を
 // 二重に数えてプール上限が過大になる（issue #90 レビュー）。resolveRoles
 // （cmd/rokuban/server.go）が `--roles api,api` を畳むようになった後も、
 // ここは多重防御として残す --- db.NewPool の呼び出し元は server だけではない。
-func maxConnsForRoles(roles []string, numSites int) int32 {
+//
+// worker だけは roleConnBudget の表を使わず、lockSlots から導出する
+// （connBudgetForRole / workerConnBudget）。
+func maxConnsForRoles(roles []string, numSites, lockSlots int) int32 {
 	var total int32
 	for r := range uniqueRoles(roles) {
-		total += roleConnBudget[r]
+		total += connBudgetForRole(r, lockSlots)
 	}
 	total += perSiteConnBudget(roles, numSites)
 	if total < minAutoMaxConns {
 		total = minAutoMaxConns
 	}
 	return total
+}
+
+// connBudgetForRole はロール 1 つぶんの予算を返す。
+func connBudgetForRole(role string, lockSlots int) int32 {
+	if role == "worker" {
+		return workerConnBudget(lockSlots)
+	}
+	return roleConnBudget[role]
 }
 
 // uniqueRoles は roles の重複を除いた集合を返す。
@@ -235,12 +268,8 @@ func uniqueRoles(roles []string) map[string]struct{} {
 //   - worker: River の内部機構の LISTEN（elector と notifier で共有される 1 本。
 //     `river@v0.47.0 client.go` の `notifier.New` と `leadership.NewElector` で確認済み）。これは site 数に依存
 //     しないプロセス単位の資源なので、site が増えても専有本数は変わらない
-//     ---ingest の job advisory lock は転送中だけの一時専有であり、
-//     watcher の advisory lock のように「プロセスが生きている間ずっと」では
-//     ないため、この恒久専有のカウントには含めない（roleConnBudget /
-//     perSiteConnBudget の workerPerSiteConns はソフトな見込みとして別に
-//     加算している。無症状デッドロックの検査は「絶対に戻ってこないコネクション」
-//     だけを対象にする）
+//     ---job advisory lock のぶんはここに入らない（本数が設定から決まるので
+//     lockSlots として別に数える。minRequiredConns 参照）
 //   - notifier: ブラウザへの SSE 配送のための LISTEN
 //     （internal/notifier.EventHub.Run が保持し続ける。site 数に依存しない）
 var dedicatedConnRoles = []string{"watcher", "worker", "notifier"}
@@ -249,14 +278,27 @@ var dedicatedConnRoles = []string{"watcher", "worker", "notifier"}
 // とって小さすぎないかを検査するための下限を返す（issue #90 レビュー指摘。
 // issue #532 で numSites を追加）。
 //
-// watcher / worker / notifier はいずれもプロセスの生存期間中コネクションを
-// 専有し続ける（dedicatedConnRoles）。watcher は束縛サイトごとに 1 本
-// （2 site 目以降 watcherPerSiteConns ずつ追加）。専有分だけでプールが埋まると、
-// 同じプロセスが行う他の仕事（watcher の record 処理クエリ、worker のジョブ
-// claim、/metrics のバックログクエリ等）が「二度と解放されないコネクション」を
-// 待ち続けて無症状にデッドロックする。そのため専有分の合計に加えて、他の仕事の
-// ための余地を最低 1 本要求する。
-func minRequiredConns(roles []string, numSites int) int32 {
+// 数え上げるのは「**解放が別の接続取得に依存する**専有」である:
+//
+//   - watcher / worker / notifier の恒久専有（dedicatedConnRoles）。watcher は
+//     束縛サイトごとに 1 本（2 site 目以降 watcherPerSiteConns ずつ追加）
+//   - 実行中の ingest / encode / cm_detect 1 本ごとの job advisory lock
+//     （lockSlots）。**これを「転送中だけの一時専有」として除外しては
+//     ならない。** lock を持つジョブは、解放する前に同じプールからもう 1 本取る
+//     （進捗書き込み・commit。internal/worker/ingest_progress.go）。
+//     LISTEN と lock でプールが埋まると、ジョブ同士が互いの接続を待つ循環になる
+//     --- heartbeat は lock セッション自身の上で動くので lock は生き続け、
+//     record_sweep も回収しない。**構造から確定した結論で、実測はしていない。**
+//
+// 専有分だけでプールが埋まると、同じプロセスが行う他の仕事（watcher の record 処理
+// クエリ、worker のジョブ claim、/metrics のバックログクエリ等）が「二度と解放
+// されないコネクション」を待ち続けて無症状にデッドロックする。そのため専有分の
+// 合計に加えて、他の仕事のための余地を最低 1 本要求する。
+//
+// **lock をプール外の接続で張る案は採らない。** db.max_conns がプロセスの接続
+// 上限だという契約を破ることになる（監視・サーバー側の max_connections の見積もりが
+// 両方とも成り立たなくなる）。
+func minRequiredConns(roles []string, numSites, lockSlots int) int32 {
 	var dedicated int32
 	for _, r := range dedicatedConnRoles {
 		if slices.Contains(roles, r) {
@@ -266,8 +308,5 @@ func minRequiredConns(roles []string, numSites int) int32 {
 	if slices.Contains(roles, "watcher") && numSites > 1 {
 		dedicated += watcherPerSiteConns * int32(numSites-1)
 	}
-	if dedicated == 0 {
-		return 1
-	}
-	return dedicated + 1
+	return dedicated + int32(lockSlots) + 1
 }

@@ -30,8 +30,13 @@ metadata:
 spec:
   pollingInterval: 30
   # 同時録画数ぶんの取り込みが並びうる。チューナー数の上限は mirakc 側にあるので、
-  # ここは「同時に走ってよい取り込みの本数」（`ingest.concurrency` の既定は 2）に
-  # 合わせた控えめな値にしておく。
+  # ここは控えめな値にしておく。
+  #
+  # **実効の同時数はこの maxReplicaCount であって `ingest.concurrency` ではない。**
+  # Job は `--once` なので引くキューはちょうど 1 つ・MaxWorkers は 1 で、
+  # `ingest.concurrency` はここでは効かない（`configureOnceQueues`）。**接続プールの
+  # 予算も 1 Job = 1 job lock 枠として数えられる**（`worker.LockSlots`）。詰まっている
+  # ように見えたら、`ingest.concurrency` ではなくここと KEDA のトリガを見る。
   maxReplicaCount: 4
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
