@@ -1147,3 +1147,76 @@ func TestWatcherLockName_MultiSiteIndependence(t *testing.T) {
 		t.Fatal("expected the second tokyo watcher to NOT acquire the lock (already held)")
 	}
 }
+
+// poolSizingTestConfig は worker の予算が lock 枠から導出されることを RunE の配線で
+// 確かめるための config。DB は到達不能で、encode.concurrency を 4 に
+// してあるので `--queues=encode` の lock 枠は 4、`--queues=ruler` は 0 になる。
+func poolSizingTestConfig(maxConns int) string {
+	return fmt.Sprintf(`
+db:
+  host: 127.0.0.1
+  port: 1
+  user: rokuban
+  password: secret
+  database: rokuban
+  max_conns: %d
+mirakcs:
+  - site: tokyo
+    url: http://mirakc-tokyo:40772
+storage:
+  media_dir: /mnt/media
+encode:
+  concurrency: 4
+worker:
+  periodic_jobs: false
+`, maxConns)
+}
+
+// **db.max_conns の下限が「実際に引くキューの lock 枠」を見ていること。**
+//
+// 引くキューは argv（`--queues`）で決まるので、ClientConfig の組み立てを pool の
+// 前に置いて同じ値を両方へ渡していないと、ここが「全部引く worker」として
+// サイジングされる（= 小さすぎる max_conns が素通りする）。
+//
+// 両方向を見る: encode（lock 4）なら落ち、ruler（lock 0）なら DB まで進む。
+func TestServerCmd_PoolSizingFollowsQueueSelection(t *testing.T) {
+	t.Run("encode worker with 4 lock slots needs more than max_conns=4", func(t *testing.T) {
+		path := writeServerTestConfig(t, poolSizingTestConfig(4))
+		err := runServerCmdForTest(t, path, "--roles", "worker", "--queues=encode")
+		if err == nil {
+			t.Fatal("expected the pool sizing check to fail, got nil")
+		}
+		if !strings.Contains(err.Error(), "too small") {
+			t.Errorf("err = %v, want the db.max_conns fail-fast (DB に触る前に落ちること)", err)
+		}
+		if strings.Contains(err.Error(), "connecting to database") {
+			t.Errorf("err = %v: DB まで進んでいる（lock 枠が 0 と数えられている）", err)
+		}
+	})
+
+	t.Run("ruler worker holds no job lock, so max_conns=4 is enough", func(t *testing.T) {
+		path := writeServerTestConfig(t, poolSizingTestConfig(4))
+		err := runServerCmdForTest(t, path, "--roles", "worker", "--queues=ruler")
+		if err == nil {
+			t.Fatal("到達不能な DB を指しているので error を期待したが nil だった")
+		}
+		if !strings.Contains(err.Error(), "connecting to database") {
+			t.Errorf("err = %v, want to fail at the DB (= 下限の検査を通ったこと)", err)
+		}
+	})
+
+	// once モードは `--queues` が 1 つでも MaxWorkers 1 なので、lock 枠も 1 になる。
+	// ここで concurrency をそのまま数えると（encode.concurrency の 4）、
+	// ScaledJob が「4 枠ぶんの接続が要る」と誤って主張して起動できなくなる。
+	t.Run("once mode counts a single lock slot regardless of encode.concurrency", func(t *testing.T) {
+		path := writeServerTestConfig(t, poolSizingTestConfig(3))
+		err := runServerCmdForTest(t, path,
+			"--roles", "worker", "--once", "--queues=encode", "--sites", "tokyo")
+		if err == nil {
+			t.Fatal("到達不能な DB を指しているので error を期待したが nil だった")
+		}
+		if !strings.Contains(err.Error(), "connecting to database") {
+			t.Errorf("err = %v, want to fail at the DB (下限は 1(LISTEN)+1(lock)+1 = 3)", err)
+		}
+	})
+}

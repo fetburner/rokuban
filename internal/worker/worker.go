@@ -26,6 +26,9 @@ const (
 	// パッケージの多数のテストが `ClientConfig{...}` を直接組み立てて渡す
 	// ライブラリ境界でもある（config.Load を経由しない）。
 	//
+	// **既定値の権威は config 側にあり、ingest.concurrency を 3 にした根拠も
+	// そちら（config.IngestConfig.Concurrency の doc コメント）に書いてある。**
+	//
 	// IngestConcurrency=0 を渡すと allQueues の
 	// `river.QueueConfig{MaxWorkers: 0}` になり、river.NewClient がこれを
 	// 明示的な起動時エラーで拒否する（river@v0.47.0 client.go の
@@ -44,7 +47,7 @@ const (
 	// 呼び出し元（このパッケージのテスト）まで持つ ClientConfig の 0-fallback を
 	// 消す話ではない（issue #445 のファイル列挙が ingest.go/epg.go/storage.go に
 	// 留めていたのもこの境界の違いから）。
-	defaultIngestConcurrency = 2
+	defaultIngestConcurrency = 3
 	defaultEpgSyncInterval   = 10 * time.Minute
 
 	// defaultTunerSyncInterval はチューナー射影の既定間隔。
@@ -533,14 +536,10 @@ type ClientConfig struct {
 // river.NewClient を呼ぶ NewClient から分離してあるのは、DB 接続なしで
 // queues 検証や PeriodicJobs の有無を単体テストできるようにするため。
 func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, error) {
-	queues, err := selectRiverQueues(cfg)
+	physicalQueues, err := resolveQueues(cfg)
 	if err != nil {
 		return nil, err
 	}
-	if err := configureOnceQueues(cfg, queues); err != nil {
-		return nil, err
-	}
-	physicalQueues := qualifyRiverQueues(queues, cfg.BoundSites)
 	if err := validateOncePhysicalQueues(cfg, physicalQueues); err != nil {
 		return nil, err
 	}
@@ -565,6 +564,76 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 	configureOnceRiver(riverCfg, cfg.Once, physicalQueues)
 	configurePeriodicJobs(riverCfg, cfg)
 	return riverCfg, nil
+}
+
+// resolveQueues はこの設定が実際に引く**物理**キュー（`<base>_<site>`）を、
+// 並列度の解決と once モードの上書きまで済ませた形で返す
+// （選択 → once の上書き → site 別物理キューへの展開）。
+//
+// buildRiverConfig の前半と LockSlots の本数計算が同じ規則を見るように切り出して
+// ある。別々に組み立てると「引くつもりの本数」と「プールの予算」が黙ってずれる。
+func resolveQueues(cfg ClientConfig) (map[string]river.QueueConfig, error) {
+	queues, err := selectRiverQueues(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := configureOnceQueues(cfg, queues); err != nil {
+		return nil, err
+	}
+	return qualifyRiverQueues(queues, cfg.BoundSites), nil
+}
+
+// lockHoldingQueues は、Work の冒頭から commit まで job advisory lock 用の
+// コネクションを 1 本保持し続けるジョブを持つ論理キュー
+// （internal/worker/ingest_job_lock.go。ingest / encode / cm_detect の
+// ワーカーがそれぞれ acquireIngestJobLock / acquireEncodeJobLock を呼ぶ）。
+//
+// thumbnail 等のキューは job lock を取らないので pool の予算に入れない。
+var lockHoldingQueues = []string{
+	jobs.IngestQueue,
+	jobs.EncodeQueue,
+	jobs.CMDetectQueue,
+}
+
+// LockSlots は、この設定で同時に走りうる job advisory lock 保持ジョブの本数を
+// 返す（= その本数ぶんのコネクションが、保持したジョブが commit するまで
+// 解放されない）。
+//
+// プールの予算と fail-fast の下限を決めるのは internal/db だが、本数はキュー設定と
+// 束縛サイト数から決まるので worker 側で数える（db は worker を import しない）。
+//
+// **物理名から論理名を逆引きしない。** site 名には `_` が入りうるので、物理名
+// `ingest_tokyo_2` から論理名と site 名を復元できない。論理キューから
+// jobs.PhysicalQueueName を束縛サイトごとに**引き当てて**、相異なる物理名ごとに
+// MaxWorkers を合計する（site 非依存キューは物理名が 1 つに畳まれる）。
+//
+// once モードでは 1 キュー・MaxWorkers 1 になる（configureOnceQueues）ので、
+// 引くキューが lock を持てば 1、持たなければ 0 になる。
+func LockSlots(cfg ClientConfig) (int, error) {
+	physical, err := resolveQueues(cfg)
+	if err != nil {
+		return 0, err
+	}
+	sites := cfg.BoundSites
+	if len(sites) == 0 {
+		// BoundSites 未設定（テストの部分構成）は qualifyRiverQueues と同じ
+		// フォールバックで 1 要素として数える。
+		sites = []string{""}
+	}
+	var slots int
+	for _, name := range lockHoldingQueues {
+		workers := make(map[string]int, len(sites))
+		for _, site := range sites {
+			physicalName := jobs.PhysicalQueueName(name, site)
+			if qc, ok := physical[physicalName]; ok {
+				workers[physicalName] = qc.MaxWorkers
+			}
+		}
+		for _, maxWorkers := range workers {
+			slots += maxWorkers
+		}
+	}
+	return slots, nil
 }
 
 // selectRiverQueues は設定された並列度を解決し、論理キューの集合を返す。

@@ -66,8 +66,10 @@ func TestLoad_Minimal(t *testing.T) {
 	if cfg.Storage.AccelLocation != "" {
 		t.Errorf("storage.accel_location = %q, want empty", cfg.Storage.AccelLocation)
 	}
-	if cfg.Ingest.Concurrency != 2 {
-		t.Errorf("ingest.concurrency = %d, want %d", cfg.Ingest.Concurrency, 2)
+	// 2 チューナー機の「2 本同時録画 + 全速 pull 1 本」（docs/recording/ingest.md §5.4
+	// の式の下端）。IngestConfig.Concurrency の doc コメント参照。
+	if cfg.Ingest.Concurrency != 3 {
+		t.Errorf("ingest.concurrency = %d, want %d", cfg.Ingest.Concurrency, 3)
 	}
 	if cfg.Ingest.StallTimeout != 30*time.Second {
 		t.Errorf("ingest.stall_timeout = %v, want %v", cfg.Ingest.StallTimeout, 30*time.Second)
@@ -607,6 +609,34 @@ ingest:
 `, v))
 		if _, err := Load(path); err == nil {
 			t.Errorf("ingest.stall_timeout: %s: expected error, got nil", v)
+		}
+	}
+}
+
+// ingest.concurrency を明示的に 0 / 負にすると起動時エラーになることを確認する。
+//
+// **0 を「既定に寄せる」のは defaults() の役目であって validate ではない。**
+// キーを書かなければ 3 が入り（TestLoad_Minimal が見ている）、書いて 0 にした
+// 場合は「設定したのに効かない」ではなく起動エラーにする（encode.concurrency と
+// 同形）。
+func TestLoad_IngestConcurrencyNotPositive(t *testing.T) {
+	for _, v := range []string{"0", "-1"} {
+		path := writeConfig(t, fmt.Sprintf(`
+db:
+  host: localhost
+  user: rokuban
+  password: secret
+  database: rokuban
+mirakcs:
+  - site: default
+    url: http://mirakc.local:40772
+storage:
+  media_dir: /mnt/media
+ingest:
+  concurrency: %s
+`, v))
+		if _, err := Load(path); err == nil {
+			t.Errorf("ingest.concurrency: %s: expected error, got nil", v)
 		}
 	}
 }
