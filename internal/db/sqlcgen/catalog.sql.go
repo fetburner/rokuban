@@ -257,6 +257,50 @@ func (q *Queries) CatalogListDropStats(ctx context.Context) ([]DropStat, error) 
 	return items, nil
 }
 
+const catalogListLabelRules = `-- name: CatalogListLabelRules :many
+SELECT id, key, value, keyword, priority, created_at, updated_at
+FROM label_rules ORDER BY id
+`
+
+type CatalogListLabelRulesRow struct {
+	ID        int64
+	Key       string
+	Value     string
+	Keyword   string
+	Priority  int32
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// 生成列（value_key / keyword_key）は含めない。復元先で value / keyword から作り直される。
+func (q *Queries) CatalogListLabelRules(ctx context.Context) ([]CatalogListLabelRulesRow, error) {
+	rows, err := q.db.Query(ctx, catalogListLabelRules)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CatalogListLabelRulesRow
+	for rows.Next() {
+		var i CatalogListLabelRulesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Key,
+			&i.Value,
+			&i.Keyword,
+			&i.Priority,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const catalogListMediaAssets = `-- name: CatalogListMediaAssets :many
 SELECT id, recording_id, kind, profile, rel_path, size_bytes, state, deleted_at, created_at, updated_at FROM media_assets ORDER BY id
 `
@@ -680,7 +724,7 @@ SELECT id, name, description, enabled, priority, is_free, duration_min_ms, durat
 `
 
 // catalog エクスポート / rescue 用（M3-9 / issue #71）。
-// 保護対象はルール・録画・media_assets・drop_stats・drop_positions・意図・上書き（と意図の FK 先
+// 保護対象はルール・分類ルール・録画・media_assets・drop_stats・drop_positions・意図・上書き（と意図の FK 先
 // program_snapshots）。EPG 射影と schedule/record/tuner_sync は再構築可能なので
 // 含めない（docs/storage.md §8）。
 // ---------------------------------------------------------------------------
@@ -724,6 +768,18 @@ func (q *Queries) CatalogListRules(ctx context.Context) ([]Rule, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const catalogResetLabelRulesIDSeq = `-- name: CatalogResetLabelRulesIDSeq :exec
+SELECT setval(
+    pg_get_serial_sequence('label_rules', 'id'),
+    GREATEST(COALESCE((SELECT MAX(id) FROM label_rules), 1), 1)
+)
+`
+
+func (q *Queries) CatalogResetLabelRulesIDSeq(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, catalogResetLabelRulesIDSeq)
+	return err
 }
 
 const catalogResetMediaAssetsIDSeq = `-- name: CatalogResetMediaAssetsIDSeq :exec
@@ -820,6 +876,44 @@ func (q *Queries) CatalogUpsertDropStat(ctx context.Context, arg CatalogUpsertDr
 		arg.Errors,
 		arg.Scrambled,
 		arg.PidType,
+	)
+	return err
+}
+
+const catalogUpsertLabelRule = `-- name: CatalogUpsertLabelRule :exec
+INSERT INTO label_rules (id, key, value, keyword, priority, created_at, updated_at)
+OVERRIDING SYSTEM VALUE
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (id) DO UPDATE SET
+    key        = EXCLUDED.key,
+    value      = EXCLUDED.value,
+    keyword    = EXCLUDED.keyword,
+    priority   = EXCLUDED.priority,
+    created_at = EXCLUDED.created_at,
+    updated_at = EXCLUDED.updated_at
+`
+
+type CatalogUpsertLabelRuleParams struct {
+	ID        int64
+	Key       string
+	Value     string
+	Keyword   string
+	Priority  int32
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// id を保持する（label_rule_hits は id を指すので、rescue 後の再評価と同じ id で
+// 揃える）。value_key / keyword_key は生成列なので INSERT に含めない。
+func (q *Queries) CatalogUpsertLabelRule(ctx context.Context, arg CatalogUpsertLabelRuleParams) error {
+	_, err := q.db.Exec(ctx, catalogUpsertLabelRule,
+		arg.ID,
+		arg.Key,
+		arg.Value,
+		arg.Keyword,
+		arg.Priority,
+		arg.CreatedAt,
+		arg.UpdatedAt,
 	)
 	return err
 }

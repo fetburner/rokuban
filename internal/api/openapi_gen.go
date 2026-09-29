@@ -1335,13 +1335,19 @@ type LabelRule struct {
 	Keyword string `json:"keyword"`
 
 	// Priority 大きいほど先に当たる。同じなら id の小さい方が勝つ。
-	Priority  *int      `json:"priority,omitempty"`
+	Priority  *int32    `json:"priority,omitempty"`
 	UpdatedAt time.Time `json:"updatedAt"`
 
 	// Value 棚のキー（表示名ではない）。自動キーと同じ正規化を通した結果が空に
 	// なる値（記号のみなど）は 400 にする --- 何も主張しないルールを
 	// 作らせない。
 	Value string `json:"value"`
+
+	// ValueKey 実効の棚キー = 自動キーと同じ正規化を `value` に通した結果。
+	// **`value` と食い違いうる**（最初の空白で切れる。`NHK高校講座 数学I`
+	// の棚キーは `NHK高校講座`）。棚を割るつもりのルールが同じ棚に
+	// 落ちていないかは、この値で見る。
+	ValueKey string `json:"valueKey"`
 }
 
 // LabelRuleKey 棚の軸。M8 は series だけ（他の値は 400）。
@@ -1357,7 +1363,7 @@ type LabelRuleInput struct {
 	Keyword string `json:"keyword"`
 
 	// Priority 大きいほど先に当たる。同じなら id の小さい方が勝つ。
-	Priority *int `json:"priority,omitempty"`
+	Priority *int32 `json:"priority,omitempty"`
 
 	// Value 棚のキー（表示名ではない）。自動キーと同じ正規化を通した結果が空に
 	// なる値（記号のみなど）は 400 にする --- 何も主張しないルールを
@@ -2082,6 +2088,11 @@ type ListCapacityOveragesParams struct {
 	End time.Time `form:"end" json:"end"`
 }
 
+// GetLabelRuleValueKeyParams defines parameters for GetLabelRuleValueKey.
+type GetLabelRuleValueKeyParams struct {
+	Value string `form:"value" json:"value"`
+}
+
 // ListRecordingShelvesParams defines parameters for ListRecordingShelves.
 type ListRecordingShelvesParams struct {
 	// Key 棚の軸。M8 は series だけ。
@@ -2237,6 +2248,9 @@ type ServerInterface interface {
 	// GetEncodeQueue Get active encode job counts
 	// (GET /api/encode-queue)
 	GetEncodeQueue(w http.ResponseWriter, r *http.Request)
+	// GetLabelRuleValueKey Normalize a label rule value into its shelf key
+	// (GET /api/label-rule-value-key)
+	GetLabelRuleValueKey(w http.ResponseWriter, r *http.Request, params GetLabelRuleValueKeyParams)
 	// ListLabelRules List series label rules
 	// (GET /api/label-rules)
 	ListLabelRules(w http.ResponseWriter, r *http.Request)
@@ -2417,6 +2431,12 @@ func (_ Unimplemented) ListEncodeProfiles(w http.ResponseWriter, r *http.Request
 // GetEncodeQueue Get active encode job counts
 // (GET /api/encode-queue)
 func (_ Unimplemented) GetEncodeQueue(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetLabelRuleValueKey Normalize a label rule value into its shelf key
+// (GET /api/label-rule-value-key)
+func (_ Unimplemented) GetLabelRuleValueKey(w http.ResponseWriter, r *http.Request, params GetLabelRuleValueKeyParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2855,6 +2875,39 @@ func (siw *ServerInterfaceWrapper) GetEncodeQueue(w http.ResponseWriter, r *http
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetEncodeQueue(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetLabelRuleValueKey operation middleware
+func (siw *ServerInterfaceWrapper) GetLabelRuleValueKey(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetLabelRuleValueKeyParams
+
+	// ------------- Required query parameter "value" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "value", r.URL.Query(), &params.Value, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "value"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "value", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetLabelRuleValueKey(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4339,6 +4392,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/api/label-rules", wrapper.CreateLabelRule)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/label-rule-value-key", wrapper.GetLabelRuleValueKey)
+	})
+	r.Group(func(r chi.Router) {
 		r.Delete(options.BaseURL+"/api/label-rules/{id}", wrapper.DeleteLabelRule)
 	})
 	r.Group(func(r chi.Router) {
@@ -4644,6 +4700,31 @@ type GetEncodeQueueResponseObject interface {
 type GetEncodeQueue200JSONResponse EncodeQueueSummary
 
 func (response GetEncodeQueue200JSONResponse) VisitGetEncodeQueueResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetLabelRuleValueKeyRequestObject struct {
+	Params GetLabelRuleValueKeyParams
+}
+
+type GetLabelRuleValueKeyResponseObject interface {
+	VisitGetLabelRuleValueKeyResponse(w http.ResponseWriter) error
+}
+
+type GetLabelRuleValueKey200JSONResponse struct {
+	// ValueKey 正規化で空になる値（記号のみなど）は空文字。その値ではルールを作れない。
+	ValueKey string `json:"valueKey"`
+}
+
+func (response GetLabelRuleValueKey200JSONResponse) VisitGetLabelRuleValueKeyResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -6217,6 +6298,9 @@ type StrictServerInterface interface {
 	// GetEncodeQueue Get active encode job counts
 	// (GET /api/encode-queue)
 	GetEncodeQueue(ctx context.Context, request GetEncodeQueueRequestObject) (GetEncodeQueueResponseObject, error)
+	// GetLabelRuleValueKey Normalize a label rule value into its shelf key
+	// (GET /api/label-rule-value-key)
+	GetLabelRuleValueKey(ctx context.Context, request GetLabelRuleValueKeyRequestObject) (GetLabelRuleValueKeyResponseObject, error)
 	// ListLabelRules List series label rules
 	// (GET /api/label-rules)
 	ListLabelRules(ctx context.Context, request ListLabelRulesRequestObject) (ListLabelRulesResponseObject, error)
@@ -6579,6 +6663,32 @@ func (sh *strictHandler) GetEncodeQueue(w http.ResponseWriter, r *http.Request) 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetEncodeQueueResponseObject); ok {
 		if err := validResponse.VisitGetEncodeQueueResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetLabelRuleValueKey operation middleware
+func (sh *strictHandler) GetLabelRuleValueKey(w http.ResponseWriter, r *http.Request, params GetLabelRuleValueKeyParams) {
+	var request GetLabelRuleValueKeyRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetLabelRuleValueKey(ctx, request.(GetLabelRuleValueKeyRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetLabelRuleValueKey")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetLabelRuleValueKeyResponseObject); ok {
+		if err := validResponse.VisitGetLabelRuleValueKeyResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

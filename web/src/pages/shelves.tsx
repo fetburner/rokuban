@@ -227,6 +227,11 @@ function LabelRuleRow({
           「{rule.keyword}」→ {rule.value}
         </span>
         <span className="text-xs text-muted-foreground">優先度 {rule.priority ?? 0}</span>
+        {rule.valueKey !== rule.value && (
+          <span className="text-xs text-muted-foreground">
+            この値は棚キー {rule.valueKey} として扱われます
+          </span>
+        )}
       </div>
       <div className="flex shrink-0 items-center gap-1">
         <Button size="icon-sm" variant="ghost" aria-label="編集" onClick={onEdit}>

@@ -559,14 +559,19 @@ export const DeleteRuleResponse = zod.object({
  */
 export const listLabelRulesResponseOneKeyDefault = `series`;
 export const listLabelRulesResponseOnePriorityDefault = 0;
+export const listLabelRulesResponseOnePriorityMin = -2147483648;
+export const listLabelRulesResponseOnePriorityMax = 2147483647;
+
+
 
 export const ListLabelRulesResponseItem = zod.object({
   "key": zod.enum(['series']).default(listLabelRulesResponseOneKeyDefault).describe('棚の軸。M8 は series だけ（他の値は 400）。'),
   "value": zod.string().describe('棚のキー（表示名ではない）。自動キーと同じ正規化を通した結果が空に\nなる値（記号のみなど）は 400 にする --- 何も主張しないルールを\n作らせない。\n'),
   "keyword": zod.string().describe('録画タイトルと EPG の番組名への部分一致。LIKE の特殊文字（\\ % _）は\n文字として照合する（`\/search` と録画一覧と同じ方言）。\n'),
-  "priority": zod.int().default(listLabelRulesResponseOnePriorityDefault).describe('大きいほど先に当たる。同じなら id の小さい方が勝つ。')
+  "priority": zod.int().min(listLabelRulesResponseOnePriorityMin).max(listLabelRulesResponseOnePriorityMax).default(listLabelRulesResponseOnePriorityDefault).describe('大きいほど先に当たる。同じなら id の小さい方が勝つ。')
 }).and(zod.object({
   "id": zod.int(),
+  "valueKey": zod.string().describe('実効の棚キー = 自動キーと同じ正規化を `value` に通した結果。\n\*\*`value` と食い違いうる\*\*（最初の空白で切れる。`NHK高校講座 数学I`\nの棚キーは `NHK高校講座`）。棚を割るつもりのルールが同じ棚に\n落ちていないかは、この値で見る。\n'),
   "createdAt": zod.iso.datetime({"offset":true}),
   "updatedAt": zod.iso.datetime({"offset":true})
 }))
@@ -581,27 +586,50 @@ export const ListLabelRulesResponse = zod.array(ListLabelRulesResponseItem)
  */
 export const createLabelRuleBodyKeyDefault = `series`;
 export const createLabelRuleBodyPriorityDefault = 0;
+export const createLabelRuleBodyPriorityMin = -2147483648;
+export const createLabelRuleBodyPriorityMax = 2147483647;
+
+
 
 export const CreateLabelRuleBody = zod.object({
   "key": zod.enum(['series']).default(createLabelRuleBodyKeyDefault).describe('棚の軸。M8 は series だけ（他の値は 400）。'),
   "value": zod.string().describe('棚のキー（表示名ではない）。自動キーと同じ正規化を通した結果が空に\nなる値（記号のみなど）は 400 にする --- 何も主張しないルールを\n作らせない。\n'),
   "keyword": zod.string().describe('録画タイトルと EPG の番組名への部分一致。LIKE の特殊文字（\\ % _）は\n文字として照合する（`\/search` と録画一覧と同じ方言）。\n'),
-  "priority": zod.int().default(createLabelRuleBodyPriorityDefault).describe('大きいほど先に当たる。同じなら id の小さい方が勝つ。')
+  "priority": zod.int().min(createLabelRuleBodyPriorityMin).max(createLabelRuleBodyPriorityMax).default(createLabelRuleBodyPriorityDefault).describe('大きいほど先に当たる。同じなら id の小さい方が勝つ。')
 })
 
 export const createLabelRuleResponseOneKeyDefault = `series`;
 export const createLabelRuleResponseOnePriorityDefault = 0;
+export const createLabelRuleResponseOnePriorityMin = -2147483648;
+export const createLabelRuleResponseOnePriorityMax = 2147483647;
+
+
 
 export const CreateLabelRuleResponse = zod.object({
   "key": zod.enum(['series']).default(createLabelRuleResponseOneKeyDefault).describe('棚の軸。M8 は series だけ（他の値は 400）。'),
   "value": zod.string().describe('棚のキー（表示名ではない）。自動キーと同じ正規化を通した結果が空に\nなる値（記号のみなど）は 400 にする --- 何も主張しないルールを\n作らせない。\n'),
   "keyword": zod.string().describe('録画タイトルと EPG の番組名への部分一致。LIKE の特殊文字（\\ % _）は\n文字として照合する（`\/search` と録画一覧と同じ方言）。\n'),
-  "priority": zod.int().default(createLabelRuleResponseOnePriorityDefault).describe('大きいほど先に当たる。同じなら id の小さい方が勝つ。')
+  "priority": zod.int().min(createLabelRuleResponseOnePriorityMin).max(createLabelRuleResponseOnePriorityMax).default(createLabelRuleResponseOnePriorityDefault).describe('大きいほど先に当たる。同じなら id の小さい方が勝つ。')
 }).and(zod.object({
   "id": zod.int(),
+  "valueKey": zod.string().describe('実効の棚キー = 自動キーと同じ正規化を `value` に通した結果。\n\*\*`value` と食い違いうる\*\*（最初の空白で切れる。`NHK高校講座 数学I`\nの棚キーは `NHK高校講座`）。棚を割るつもりのルールが同じ棚に\n落ちていないかは、この値で見る。\n'),
   "createdAt": zod.iso.datetime({"offset":true}),
   "updatedAt": zod.iso.datetime({"offset":true})
 }))
+
+
+/**
+ * 入力中の値が棚のキーとして何になるかを返す（フォームのプレビュー用）。
+ * 正規化は SQL 関数 `series_key` の 1 箇所にあり、クライアントへ複製しない。
+ * @summary Normalize a label rule value into its shelf key
+ */
+export const GetLabelRuleValueKeyQueryParams = zod.object({
+  "value": zod.string()
+})
+
+export const GetLabelRuleValueKeyResponse = zod.object({
+  "valueKey": zod.string().describe('正規化で空になる値（記号のみなど）は空文字。その値ではルールを作れない。')
+})
 
 
 /**
@@ -613,14 +641,19 @@ export const GetLabelRuleParams = zod.object({
 
 export const getLabelRuleResponseOneKeyDefault = `series`;
 export const getLabelRuleResponseOnePriorityDefault = 0;
+export const getLabelRuleResponseOnePriorityMin = -2147483648;
+export const getLabelRuleResponseOnePriorityMax = 2147483647;
+
+
 
 export const GetLabelRuleResponse = zod.object({
   "key": zod.enum(['series']).default(getLabelRuleResponseOneKeyDefault).describe('棚の軸。M8 は series だけ（他の値は 400）。'),
   "value": zod.string().describe('棚のキー（表示名ではない）。自動キーと同じ正規化を通した結果が空に\nなる値（記号のみなど）は 400 にする --- 何も主張しないルールを\n作らせない。\n'),
   "keyword": zod.string().describe('録画タイトルと EPG の番組名への部分一致。LIKE の特殊文字（\\ % _）は\n文字として照合する（`\/search` と録画一覧と同じ方言）。\n'),
-  "priority": zod.int().default(getLabelRuleResponseOnePriorityDefault).describe('大きいほど先に当たる。同じなら id の小さい方が勝つ。')
+  "priority": zod.int().min(getLabelRuleResponseOnePriorityMin).max(getLabelRuleResponseOnePriorityMax).default(getLabelRuleResponseOnePriorityDefault).describe('大きいほど先に当たる。同じなら id の小さい方が勝つ。')
 }).and(zod.object({
   "id": zod.int(),
+  "valueKey": zod.string().describe('実効の棚キー = 自動キーと同じ正規化を `value` に通した結果。\n\*\*`value` と食い違いうる\*\*（最初の空白で切れる。`NHK高校講座 数学I`\nの棚キーは `NHK高校講座`）。棚を割るつもりのルールが同じ棚に\n落ちていないかは、この値で見る。\n'),
   "createdAt": zod.iso.datetime({"offset":true}),
   "updatedAt": zod.iso.datetime({"offset":true})
 }))
@@ -637,24 +670,33 @@ export const UpdateLabelRuleParams = zod.object({
 
 export const updateLabelRuleBodyKeyDefault = `series`;
 export const updateLabelRuleBodyPriorityDefault = 0;
+export const updateLabelRuleBodyPriorityMin = -2147483648;
+export const updateLabelRuleBodyPriorityMax = 2147483647;
+
+
 
 export const UpdateLabelRuleBody = zod.object({
   "key": zod.enum(['series']).default(updateLabelRuleBodyKeyDefault).describe('棚の軸。M8 は series だけ（他の値は 400）。'),
   "value": zod.string().describe('棚のキー（表示名ではない）。自動キーと同じ正規化を通した結果が空に\nなる値（記号のみなど）は 400 にする --- 何も主張しないルールを\n作らせない。\n'),
   "keyword": zod.string().describe('録画タイトルと EPG の番組名への部分一致。LIKE の特殊文字（\\ % _）は\n文字として照合する（`\/search` と録画一覧と同じ方言）。\n'),
-  "priority": zod.int().default(updateLabelRuleBodyPriorityDefault).describe('大きいほど先に当たる。同じなら id の小さい方が勝つ。')
+  "priority": zod.int().min(updateLabelRuleBodyPriorityMin).max(updateLabelRuleBodyPriorityMax).default(updateLabelRuleBodyPriorityDefault).describe('大きいほど先に当たる。同じなら id の小さい方が勝つ。')
 })
 
 export const updateLabelRuleResponseOneKeyDefault = `series`;
 export const updateLabelRuleResponseOnePriorityDefault = 0;
+export const updateLabelRuleResponseOnePriorityMin = -2147483648;
+export const updateLabelRuleResponseOnePriorityMax = 2147483647;
+
+
 
 export const UpdateLabelRuleResponse = zod.object({
   "key": zod.enum(['series']).default(updateLabelRuleResponseOneKeyDefault).describe('棚の軸。M8 は series だけ（他の値は 400）。'),
   "value": zod.string().describe('棚のキー（表示名ではない）。自動キーと同じ正規化を通した結果が空に\nなる値（記号のみなど）は 400 にする --- 何も主張しないルールを\n作らせない。\n'),
   "keyword": zod.string().describe('録画タイトルと EPG の番組名への部分一致。LIKE の特殊文字（\\ % _）は\n文字として照合する（`\/search` と録画一覧と同じ方言）。\n'),
-  "priority": zod.int().default(updateLabelRuleResponseOnePriorityDefault).describe('大きいほど先に当たる。同じなら id の小さい方が勝つ。')
+  "priority": zod.int().min(updateLabelRuleResponseOnePriorityMin).max(updateLabelRuleResponseOnePriorityMax).default(updateLabelRuleResponseOnePriorityDefault).describe('大きいほど先に当たる。同じなら id の小さい方が勝つ。')
 }).and(zod.object({
   "id": zod.int(),
+  "valueKey": zod.string().describe('実効の棚キー = 自動キーと同じ正規化を `value` に通した結果。\n\*\*`value` と食い違いうる\*\*（最初の空白で切れる。`NHK高校講座 数学I`\nの棚キーは `NHK高校講座`）。棚を割るつもりのルールが同じ棚に\n落ちていないかは、この値で見る。\n'),
   "createdAt": zod.iso.datetime({"offset":true}),
   "updatedAt": zod.iso.datetime({"offset":true})
 }))

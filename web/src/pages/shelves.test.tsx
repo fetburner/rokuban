@@ -26,6 +26,13 @@ function stubApi(shelves: RecordingShelf[], rules: LabelRule[] = []) {
     if (url.pathname === '/api/label-rules' && method === 'GET') {
       return Promise.resolve(jsonResponse(rules))
     }
+    if (url.pathname === '/api/label-rule-value-key' && method === 'GET') {
+      // サーバーの series_key の代役: 最初の空白で切る（実 DB では
+      // internal/api の TestLabelRule_ValueKeyIsTheTruncatedShelfKey が測る）。
+      return Promise.resolve(
+        jsonResponse({ valueKey: (url.searchParams.get('value') ?? '').split(' ')[0] }),
+      )
+    }
     if (url.pathname === '/api/label-rules' && method === 'POST') {
       const body = JSON.parse(String(init?.body)) as LabelRuleInput
       posted.push(body)
@@ -125,6 +132,7 @@ describe('ShelvesPage', () => {
         keyword: '日本史',
         value: '日本史',
         priority: 5,
+        valueKey: '日本史',
         createdAt: '2026-09-29T00:00:00Z',
         updatedAt: '2026-09-29T00:00:00Z',
       },
@@ -132,5 +140,46 @@ describe('ShelvesPage', () => {
     renderInRouter(<ShelvesPage />, { path: '/shelves' })
 
     expect(await screen.findByText('「日本史」→ 日本史')).toBeInTheDocument()
+  })
+
+  it('値と実効の棚キーが食い違う分類ルールを一覧で明示する', async () => {
+    stubApi(shelves, [
+      {
+        id: 2,
+        key: 'series',
+        keyword: '数学',
+        value: 'NHK高校講座 数学I',
+        priority: 0,
+        valueKey: 'NHK高校講座',
+        createdAt: '2026-09-29T00:00:00Z',
+        updatedAt: '2026-09-29T00:00:00Z',
+      },
+    ])
+    renderInRouter(<ShelvesPage />, { path: '/shelves' })
+
+    expect(await screen.findByText('この値は棚キー NHK高校講座 として扱われます')).toBeInTheDocument()
+  })
+
+  it('フォームは入力中の値から得られる棚キーを、食い違うときだけ示す', async () => {
+    const user = userEvent.setup()
+    stubApi(shelves)
+    renderInRouter(<ShelvesPage />, { path: '/shelves' })
+
+    await screen.findByTestId('bounded-page-content')
+    await user.click(await screen.findByRole('button', { name: '分類ルールを作成' }))
+    const dialog = await screen.findByRole('dialog')
+
+    await user.type(within(dialog).getByLabelText('棚のキー'), '作品X')
+    // 一致しているうちは何も言わない（サーバー応答を待ってから否定を確かめる）。
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/label-rule-value-key?value=%E4%BD%9C%E5%93%81X'),
+      expect.anything(),
+    ))
+    expect(within(dialog).queryByRole('status')).not.toBeInTheDocument()
+
+    await user.type(within(dialog).getByLabelText('棚のキー'), ' 第2期')
+    expect(await within(dialog).findByRole('status')).toHaveTextContent(
+      'この値は棚キー 作品X として扱われます',
+    )
   })
 })

@@ -353,7 +353,7 @@ func allQueues(ingestConcurrency, encodeConcurrency, thumbnailConcurrency int) m
 		jobs.EncodeQueue:    {MaxWorkers: encodeConcurrency},
 		jobs.ThumbnailQueue: {MaxWorkers: thumbnailConcurrency},
 		jobs.CMDetectQueue:  {MaxWorkers: 1},
-		// delete_reconcile / catalog_export 用（issue #185 M4-13。internal/jobs/queue.go の
+		// delete_reconcile / catalog_export / label_rule_reconcile 用（issue #185 M4-13。internal/jobs/queue.go の
 		// CleanupQueue のコメント参照）。
 		jobs.CleanupQueue: {MaxWorkers: defaultCleanupConcurrency},
 		// storage_sync 用（issue #238 M7-5）。UniqueOpts{ByArgs} が重複実行を防ぐので

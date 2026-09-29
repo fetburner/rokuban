@@ -1120,16 +1120,34 @@ export interface LabelRuleInput {
      * 文字として照合する（`/search` と録画一覧と同じ方言）。
      */
   keyword: string;
-  /** 大きいほど先に当たる。同じなら id の小さい方が勝つ。 */
+  /**
+     * 大きいほど先に当たる。同じなら id の小さい方が勝つ。
+     * @minimum -2147483648
+     * @maximum 2147483647
+     */
   priority?: number;
 }
 
 export type LabelRule = LabelRuleInput & {
   id: number;
+  /**
+     * 実効の棚キー = 自動キーと同じ正規化を `value` に通した結果。
+     * **`value` と食い違いうる**（最初の空白で切れる。`NHK高校講座 数学I`
+     * の棚キーは `NHK高校講座`）。棚を割るつもりのルールが同じ棚に
+     * 落ちていないかは、この値で見る。
+     */
+  valueKey: string;
   createdAt: string;
   updatedAt: string;
 } & Required<Pick<LabelRuleInput & {
   id: number;
+  /**
+     * 実効の棚キー = 自動キーと同じ正規化を `value` に通した結果。
+     * **`value` と食い違いうる**（最初の空白で切れる。`NHK高校講座 数学I`
+     * の棚キーは `NHK高校講座`）。棚を割るつもりのルールが同じ棚に
+     * 落ちていないかは、この値で見る。
+     */
+  valueKey: string;
   createdAt: string;
   updatedAt: string;
 }, 'key'>>;
@@ -1486,6 +1504,15 @@ export interface StorageRoot {
      */
   observedAt: string;
 }
+
+export type GetLabelRuleValueKeyParams = {
+value: string;
+};
+
+export type GetLabelRuleValueKey200 = {
+  /** 正規化で空になる値（記号のみなど）は空文字。その値ではルールを作れない。 */
+  valueKey: string;
+};
 
 export type ListProgramsParams = {
 /**
@@ -3290,6 +3317,128 @@ export const useCreateLabelRule = <TError = ErrorResponse,
       > => {
       return useMutation(getCreateLabelRuleMutationOptions(options), queryClient);
     }
+
+export type getLabelRuleValueKeyResponse200 = {
+  data: GetLabelRuleValueKey200
+  status: 200
+}
+
+export type getLabelRuleValueKeyResponseSuccess = (getLabelRuleValueKeyResponse200) & {
+  headers: Headers;
+};
+;
+
+export type getLabelRuleValueKeyResponse = (getLabelRuleValueKeyResponseSuccess)
+
+export const getGetLabelRuleValueKeyUrl = (params: GetLabelRuleValueKeyParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/label-rule-value-key?${stringifiedParams}` : `/api/label-rule-value-key`
+}
+
+/**
+ * 入力中の値が棚のキーとして何になるかを返す（フォームのプレビュー用）。
+ * 正規化は SQL 関数 `series_key` の 1 箇所にあり、クライアントへ複製しない。
+ * @summary Normalize a label rule value into its shelf key
+ */
+export const getLabelRuleValueKey = async (params: GetLabelRuleValueKeyParams, options?: Parameters<typeof customInstance>[1]): Promise<getLabelRuleValueKeyResponse> => {
+
+  return customInstance<getLabelRuleValueKeyResponse>(getGetLabelRuleValueKeyUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetLabelRuleValueKeyQueryKey = (params?: GetLabelRuleValueKeyParams,) => {
+    return [
+    `/api/label-rule-value-key`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getGetLabelRuleValueKeyQueryOptions = <TData = Awaited<ReturnType<typeof getLabelRuleValueKey>>, TError = unknown>(params: GetLabelRuleValueKeyParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getLabelRuleValueKey>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetLabelRuleValueKeyQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getLabelRuleValueKey>>> = ({ signal }) => getLabelRuleValueKey(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getLabelRuleValueKey>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetLabelRuleValueKeyQueryResult = NonNullable<Awaited<ReturnType<typeof getLabelRuleValueKey>>>
+export type GetLabelRuleValueKeyQueryError = unknown
+
+
+export function useGetLabelRuleValueKey<TData = Awaited<ReturnType<typeof getLabelRuleValueKey>>, TError = unknown>(
+ params: GetLabelRuleValueKeyParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getLabelRuleValueKey>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getLabelRuleValueKey>>,
+          TError,
+          Awaited<ReturnType<typeof getLabelRuleValueKey>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetLabelRuleValueKey<TData = Awaited<ReturnType<typeof getLabelRuleValueKey>>, TError = unknown>(
+ params: GetLabelRuleValueKeyParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getLabelRuleValueKey>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getLabelRuleValueKey>>,
+          TError,
+          Awaited<ReturnType<typeof getLabelRuleValueKey>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetLabelRuleValueKey<TData = Awaited<ReturnType<typeof getLabelRuleValueKey>>, TError = unknown>(
+ params: GetLabelRuleValueKeyParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getLabelRuleValueKey>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Normalize a label rule value into its shelf key
+ */
+
+export function useGetLabelRuleValueKey<TData = Awaited<ReturnType<typeof getLabelRuleValueKey>>, TError = unknown>(
+ params: GetLabelRuleValueKeyParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getLabelRuleValueKey>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetLabelRuleValueKeyQueryOptions(params,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
 
 export type getLabelRuleResponse200 = {
   data: LabelRule

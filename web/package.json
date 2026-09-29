@@ -39,6 +39,7 @@
     "e2e:chapters": "node e2e/chapters.mjs",
     "e2e:programs-view": "node e2e/programs-view.mjs",
     "e2e:subtitles": "node e2e/subtitles.mjs",
+    "e2e:shelves-split": "node e2e/shelves-split.mjs",
     "e2e:fixtures": "node e2e/validate-fixtures.mjs"
   },
   "dependencies": {

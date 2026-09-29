@@ -88,3 +88,18 @@ export function shelfInputError(keyword: string, value: string): string | undefi
   if (value.trim() === '') return '棚のキーを入力してください'
   return undefined
 }
+
+/**
+ * valueKeyMismatch は入力した値と実効の棚キーが食い違うときの説明を返す
+ * （一致・未取得なら undefined）。
+ *
+ * 値にも自動キーの正規化がかかり、最初の空白などで切れる。`NHK高校講座 数学I` と
+ * `NHK高校講座 化学` は同じ棚キー `NHK高校講座` になり、割るつもりのルールが
+ * 同じ棚に落ちる。空文字は「正規化で空になる」（ルールは作れない）。
+ */
+export function valueKeyMismatch(value: string, valueKey: string | undefined): string | undefined {
+  if (valueKey === undefined || value.trim() === '') return undefined
+  if (valueKey === '') return 'この値は棚キーになりません（記号のみなど）'
+  if (valueKey === value) return undefined
+  return `この値は棚キー ${valueKey} として扱われます`
+}

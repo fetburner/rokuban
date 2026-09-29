@@ -49,7 +49,14 @@ type Document struct {
 	Version    int       `json:"version"`
 	ExportedAt time.Time `json:"exportedAt"`
 
-	Rules                   []Rule                  `json:"rules"`
+	Rules []Rule `json:"rules"`
+	// LabelRules はシリーズ分類ルール（ユーザーが書いた、作り直せない設定）。
+	// **この配列を増やしても Version は上げない** —— 古いバイナリが新ダンプを読むと
+	// 黙って無視され、分類ルールは失われるが、録画本体・アセットは残り、
+	// ルールは作り直せる（版を上げると、そのバイナリではダンプごと読めなくなる）。
+	// label_rule_hits（当たりの表）は入れない: 作り直せる導出値で、rescue が
+	// 全件再評価で戻す。
+	LabelRules              []LabelRule             `json:"labelRules"`
 	Recordings              []Recording             `json:"recordings"`
 	RecordingEncodePolicies []RecordingEncodePolicy `json:"recordingEncodePolicies"`
 	RecordingPurgeRequests  []RecordingPurgeRequest `json:"recordingPurgeRequests"`
@@ -63,6 +70,18 @@ type Document struct {
 	// 指すので、rescue はこの順に書く）。
 	RecordingChapterOwnerships []RecordingChapterOwnership `json:"recordingChapterOwnerships"`
 	RecordingChapterSpans      []RecordingChapterSpan      `json:"recordingChapterSpans"`
+}
+
+// LabelRule は label_rules の 1 行。生成列（value_key / keyword_key）は
+// 復元先で value / keyword から作り直されるので持たない。id は保つ。
+type LabelRule struct {
+	ID        int64     `json:"id"`
+	Key       string    `json:"key"`
+	Value     string    `json:"value"`
+	Keyword   string    `json:"keyword"`
+	Priority  int32     `json:"priority"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // Rule は rules 本体と子テーブルをまとめた 1 ルール分。

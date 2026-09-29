@@ -64,7 +64,6 @@ type EpgProgram struct {
 	Audios      json.RawMessage
 	ObservedAt  time.Time
 	GenreLv1    []int16
-	SeriesKey   *string
 }
 
 type EpgService struct {

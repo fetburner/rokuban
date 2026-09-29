@@ -35,7 +35,7 @@ const (
 	ThumbnailQueue = "thumbnail"
 	// CMDetectQueue は CM 区間の検出・検出候補 reconcile 用キュー名。
 	CMDetectQueue = "cm_detect"
-	// CleanupQueue は物理削除・カタログ出力ジョブのキュー名。
+	// CleanupQueue は物理削除・カタログ出力・分類ルール全件再評価（site 非依存の DB ジョブ）のキュー名。
 	//
 	// 未解決: 既定（`worker.queues` 未指定 = 全キュー購読）のサイト束縛 worker は
 	// このキューも掴む。`worker.queues` を明示すれば除外できるが、単一サイト

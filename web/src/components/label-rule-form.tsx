@@ -4,10 +4,11 @@ import { useState } from 'react'
 import {
   createLabelRule,
   getListLabelRulesQueryKey,
+  useGetLabelRuleValueKey,
   updateLabelRule,
   type LabelRule,
 } from '@/api/generated'
-import { apiErrorMessage } from '@/api/unwrap'
+import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -20,7 +21,7 @@ import {
 import { Field, Input } from '@/components/ui/field'
 import { useToast } from '@/components/toaster'
 import { labelRulesQueryKeyPrefix } from '@/lib/events'
-import { shelfInputError } from '@/lib/shelves'
+import { shelfInputError, valueKeyMismatch } from '@/lib/shelves'
 
 /**
  * LabelRuleForm は分類ルール 1 本を作る / 上書きするダイアログ。
@@ -60,6 +61,16 @@ export function LabelRuleForm({
   const [pending, setPending] = useState(false)
 
   const error = shelfInputError(keyword, value)
+
+  // 値にも自動キーと同じ正規化がかかり、最初の空白で切れる。実効の棚キーは
+  // サーバーの series_key だけが知っている（UI に複製しない）ので、入力中の値を
+  // 問い合わせて見せる。
+  const valueKeyQuery = useGetLabelRuleValueKey(
+    { value },
+    { query: { enabled: open && value.trim() !== '' } },
+  )
+  const previewKey = unwrap(valueKeyQuery.data)?.valueKey
+  const valueKeyNote = valueKeyMismatch(value, previewKey)
 
   const close = () => {
     onOpenChange(false)
@@ -137,6 +148,11 @@ export function LabelRuleForm({
               onChange={(e) => setPriority(e.target.value)}
             />
           </Field>
+          {valueKeyNote !== undefined && (
+            <p className="text-xs text-muted-foreground" role="status">
+              {valueKeyNote}
+            </p>
+          )}
           {error !== undefined && <p className="text-xs text-destructive">{error}</p>}
         </div>
 

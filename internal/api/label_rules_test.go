@@ -413,3 +413,71 @@ func newAPIServerWithRiver(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
 	t.Cleanup(srv.Close)
 	return srv
 }
+
+// value は自動キーと同じ正規化を通るので、最初の空白で切れる。API は実効の棚キー
+// （valueKey）を返し、食い違いが UI に見えるようにする。`NHK高校講座 数学I` と
+// `NHK高校講座 化学` は同じ棚キーになる（割るつもりのルールが同じ棚に落ちる）。
+func TestLabelRule_ValueKeyIsTheTruncatedShelfKey(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServerWithRiver(t, pool)
+
+	resp, created := postLabelRule(t, srv.URL, map[string]any{"value": "NHK高校講座 数学I", "keyword": "数学"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", resp.StatusCode)
+	}
+	if created.Value != "NHK高校講座 数学I" || created.ValueKey != "NHK高校講座" {
+		t.Errorf("created value/valueKey = %q / %q, want %q / %q",
+			created.Value, created.ValueKey, "NHK高校講座 数学I", "NHK高校講座")
+	}
+	var list []LabelRule
+	if r := getJSON(t, srv.URL+"/api/label-rules", &list); r.StatusCode != http.StatusOK {
+		t.Fatalf("list status = %d", r.StatusCode)
+	}
+	if len(list) != 1 || list[0].ValueKey != "NHK高校講座" {
+		t.Errorf("listed valueKey = %+v, want NHK高校講座", list)
+	}
+
+	var preview struct {
+		ValueKey string `json:"valueKey"`
+	}
+	q := url.Values{"value": {"ドラマ「半沢直樹」"}}
+	if r := getJSON(t, srv.URL+"/api/label-rule-value-key?"+q.Encode(), &preview); r.StatusCode != http.StatusOK {
+		t.Fatalf("value-key status = %d", r.StatusCode)
+	}
+	if preview.ValueKey != "ドラマ" {
+		t.Errorf("preview valueKey = %q, want %q", preview.ValueKey, "ドラマ")
+	}
+	q = url.Values{"value": {"【】"}}
+	getJSON(t, srv.URL+"/api/label-rule-value-key?"+q.Encode(), &preview)
+	if preview.ValueKey != "" {
+		t.Errorf("preview valueKey for symbols only = %q, want empty", preview.ValueKey)
+	}
+}
+
+// DB の CHECK は btrim(keyword) <> ”。空白だけのキーワードは 500 ではなく 400。
+// priority が int32 を外れる値も黙って折り返さず 400。
+func TestCreateLabelRule_RejectsBlankKeywordAndOutOfRangePriority(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServerWithRiver(t, pool)
+
+	cases := []struct {
+		name string
+		body map[string]any
+	}{
+		{"空白だけのキーワード", map[string]any{"value": "作品X", "keyword": "   "}},
+		{"int32 を超える priority", map[string]any{"value": "作品X", "keyword": "kw", "priority": 4294967296}},
+		{"int32 を下回る priority", map[string]any{"value": "作品X", "keyword": "kw", "priority": -2147483649}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, _ := postLabelRule(t, srv.URL, tc.body)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", resp.StatusCode)
+			}
+		})
+	}
+	resp, ok := postLabelRule(t, srv.URL, map[string]any{"value": "作品X", "keyword": "kw", "priority": 2147483647})
+	if resp.StatusCode != http.StatusCreated || ok.Priority == nil || *ok.Priority != 2147483647 {
+		t.Fatalf("max int32 priority: status = %d, priority = %v, want 201 / 2147483647", resp.StatusCode, ok.Priority)
+	}
+}

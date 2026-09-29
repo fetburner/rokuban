@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
@@ -128,6 +129,19 @@ func (h *Server) DeleteLabelRule(ctx context.Context, req DeleteLabelRuleRequest
 	return DeleteLabelRule204Response{}, nil
 }
 
+// GetLabelRuleValueKey は入力中の値が棚のキーとして何になるかを返す。
+// 正規化は SQL 関数 series_key の 1 箇所にあり、UI に複製させない。
+func (h *Server) GetLabelRuleValueKey(ctx context.Context, req GetLabelRuleValueKeyRequestObject) (GetLabelRuleValueKeyResponseObject, error) {
+	var key *string
+	if err := h.pool.QueryRow(ctx, "SELECT public.series_key($1)", req.Params.Value).Scan(&key); err != nil {
+		return nil, fmt.Errorf("normalizing label rule value %q: %w", req.Params.Value, err)
+	}
+	if key == nil {
+		return GetLabelRuleValueKey200JSONResponse{}, nil
+	}
+	return GetLabelRuleValueKey200JSONResponse{ValueKey: *key}, nil
+}
+
 // ListRecordingShelves は再生可能な録画を実効シリーズごとに集計する。
 func (h *Server) ListRecordingShelves(ctx context.Context, req ListRecordingShelvesRequestObject) (ListRecordingShelvesResponseObject, error) {
 	if req.Params.Key != nil && !req.Params.Key.Valid() {
@@ -164,14 +178,16 @@ func labelRuleInput(in LabelRuleInput) (labelRuleInputValues, error) {
 		}
 		key = string(*in.Key)
 	}
-	if in.Keyword == "" {
+	// DB の CHECK (btrim(keyword) <> '') と同じ判定。btrim は ASCII の空白（U+0020）
+	// だけを落とすので、strings.TrimSpace ではなく Trim(" ") で揃える。
+	if strings.Trim(in.Keyword, " ") == "" {
 		return labelRuleInputValues{}, fmt.Errorf("keyword must not be empty")
 	}
-	priority := defaultLabelRulePriority
+	priority := int32(defaultLabelRulePriority)
 	if in.Priority != nil {
 		priority = *in.Priority
 	}
-	return labelRuleInputValues{key: key, value: in.Value, keyword: in.Keyword, priority: int32(priority)}, nil
+	return labelRuleInputValues{key: key, value: in.Value, keyword: in.Keyword, priority: priority}, nil
 }
 
 // labelRuleValueMessage は値が棚のキーとして意味を持つかを検査し、400 の本文を返す
@@ -224,9 +240,15 @@ func insertLabelRuleReconcile(ctx context.Context, tx pgx.Tx, riverClient *river
 }
 
 func labelRuleFromRow(row sqlcgen.LabelRule) LabelRule {
-	priority := int(row.Priority)
+	priority := row.Priority
+	// value_key は CHECK (value_key IS NOT NULL) で非 null（生成列なので sqlc は
+	// ポインタにする）。
+	valueKey := ""
+	if row.ValueKey != nil {
+		valueKey = *row.ValueKey
+	}
 	return LabelRule{
-		Id: row.ID, Key: LabelRuleKey(row.Key), Value: row.Value, Keyword: row.Keyword,
+		Id: row.ID, Key: LabelRuleKey(row.Key), Value: row.Value, ValueKey: valueKey, Keyword: row.Keyword,
 		Priority: &priority, CreatedAt: row.CreatedAt.UTC(), UpdatedAt: row.UpdatedAt.UTC(),
 	}
 }

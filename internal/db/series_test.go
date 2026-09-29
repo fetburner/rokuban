@@ -577,3 +577,42 @@ func labelRuleHits(t *testing.T, pool *pgxpool.Pool, recordingID int64) []int64 
 	}
 	return out
 }
+
+// title が変わらない UPDATE（UpsertInPlaceRecording と catalog rescue は title を
+// 無条件に書く）では、当たりの行を書き直さない。`UPDATE OF title` は SET 句に
+// title があれば値が同じでも発火するので、トリガーの WHEN で止める。
+// 行が書き直されたかは xmin（DELETE → INSERT なら新しい tx の xid になる）で見る。
+func TestRecordingsLabelRuleTrigger_SkipsUpdatesThatKeepTheTitle(t *testing.T) {
+	pool := setupTestDB(t)
+	ctx := context.Background()
+
+	createLabelRule(t, pool, "日本史", "日本史", 0)
+	id := createSeriesRecording(t, pool, "NHK高校講座　日本史　第1回", 1, time.Now())
+
+	hitXmin := func() string {
+		t.Helper()
+		var x string
+		if err := pool.QueryRow(ctx,
+			"SELECT xmin::text FROM label_rule_hits WHERE recording_id = $1", id).Scan(&x); err != nil {
+			t.Fatalf("reading the hit row's xmin: %v", err)
+		}
+		return x
+	}
+
+	before := hitXmin()
+	if _, err := pool.Exec(ctx, "UPDATE recordings SET title = title WHERE id = $1", id); err != nil {
+		t.Fatalf("updating with the same title: %v", err)
+	}
+	if after := hitXmin(); after != before {
+		t.Errorf("hit row xmin %s -> %s: an UPDATE that kept the title rewrote the hit", before, after)
+	}
+
+	// 逆方向: title が変われば（当たるままでも）従来どおり再評価する。
+	if _, err := pool.Exec(ctx,
+		"UPDATE recordings SET title = 'NHK高校講座　日本史　第2回' WHERE id = $1", id); err != nil {
+		t.Fatalf("updating with a new title: %v", err)
+	}
+	if after := hitXmin(); after == before {
+		t.Errorf("hit row xmin stayed %s: a changed title was not re-evaluated", before)
+	}
+}

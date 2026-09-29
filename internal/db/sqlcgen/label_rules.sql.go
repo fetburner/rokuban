@@ -170,11 +170,10 @@ playable AS MATERIALIZED (
     SELECT r.id,
            r.title,
            r.program_start_at,
-           COALESCE(lr.value_key, r.series_key) AS value
+           rs.value
     FROM recordings r
     JOIN playable_assets pa ON pa.recording_id = r.id
-    LEFT JOIN label_rule_hits h ON h.recording_id = r.id
-    LEFT JOIN label_rules lr ON lr.id = h.label_rule_id
+    JOIN recording_series rs ON rs.recording_id = r.id
     WHERE r.deleted_at IS NULL
       AND r.superseded_at IS NULL
 )
@@ -218,6 +217,13 @@ type ListRecordingShelvesRow struct {
 // 代表を求めるソートが外側の行数ぶん繰り返される。**psql で単発実行すると
 // prepared statement ではないのでこの計画を踏まず、146 ms に見える**（アプリは
 // 必ず踏む）。docs/data/series.md §8 の予算はこの経路の値である。
+//
+// 実効シリーズは recording_series ビューが唯一の定義で、ここでも JOIN で読む
+// （COALESCE(lr.value_key, r.series_key) を書き下すと定義が 2 箇所になる）。
+// ビュー経由の追加コストは、合成データ（73,000 行・すべて再生可能・141 棚・
+// 分類ルール 50 本、prepared statement 経由 10 回）でこの環境の書き下し 約 206 ms
+// に対し約 223 ms（+8%）。**この環境は書き下しの側が元の測定（141 ms）より遅く、
+// 絶対値の 200 ms 予算はここでは確認できていない**（未測定: 元の測定環境・実データ）。
 func (q *Queries) ListRecordingShelves(ctx context.Context) ([]ListRecordingShelvesRow, error) {
 	rows, err := q.db.Query(ctx, listRecordingShelves)
 	if err != nil {

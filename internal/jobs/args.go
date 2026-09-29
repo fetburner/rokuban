@@ -279,7 +279,9 @@ type LabelRuleReconcileArgs struct{}
 // Kind は River ジョブの種別名を返す。
 func (LabelRuleReconcileArgs) Kind() string { return "label_rule_reconcile" }
 
-// InsertOpts は分類ルール再評価を DB 専用の ruler キューへ投入する。
+// InsertOpts は分類ルール再評価を cleanup キュー（site 非依存の DB ジョブ用。
+// delete_reconcile / catalog_export と同じ）へ投入する。ruler キューは
+// MaxWorkers 1 でサイトごとの ruler パスが並ぶので、全件再評価で塞がない。
 //
 // キューは site 非依存（再評価は site の属性を持たない全件の仕事で、site 単位に
 // 回すと同じ評価を N 回走らせることになる）。
@@ -293,11 +295,11 @@ func (LabelRuleReconcileArgs) Kind() string { return "label_rule_reconcile" }
 // （river@v0.47.0 insert_opts.go の requiredV3states。この検査を外すと
 // `rokuban enqueue label-rule-reconcile` とルール編集の両方が 500 になる）。
 //
-// 代償は、素早く N 回編集すると N 回の全件評価が直列に走ること（1 回 ~1.6 s /
+// 代償は、素早く N 回編集すると N 回の全件評価が直列に走ること（1 回 0.86 s /
 // 73,000 行）。編集はまれな操作なので許容する。advisory lock が直列化するので、
 // 最後に走る 1 本は必ず最新のルール集合で評価する。
 func (LabelRuleReconcileArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{Queue: RulerQueue}
+	return river.InsertOpts{Queue: CleanupQueue}
 }
 
 // EncodeReconcileArgs は encode の desired−observed 定期 reconcile ジョブの引数。

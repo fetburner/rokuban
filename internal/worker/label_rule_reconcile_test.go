@@ -129,8 +129,8 @@ VALUES ('manual', 'default', 1, 1, 1, 'test', 'GR', '1',
 // requiredV3states）。docs/data/series.md §8。
 func TestLabelRuleReconcileArgs_NotUnique(t *testing.T) {
 	opts := jobs.LabelRuleReconcileArgs{}.InsertOpts()
-	if opts.Queue != jobs.RulerQueue {
-		t.Errorf("queue = %q, want %q", opts.Queue, jobs.RulerQueue)
+	if opts.Queue != "cleanup" {
+		t.Errorf("queue = %q, want %q", opts.Queue, "cleanup")
 	}
 	if opts.UniqueOpts.ByArgs || len(opts.UniqueOpts.ByState) != 0 {
 		t.Errorf("UniqueOpts = %+v, want the zero value (a second edit must not be dropped)",

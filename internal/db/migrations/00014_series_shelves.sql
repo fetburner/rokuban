@@ -148,12 +148,6 @@ ALTER TABLE public.recordings
 
 CREATE INDEX recordings_series_key_idx ON public.recordings (series_key);
 
--- EPG 側も同じ式を当てる。ハブの「次回」はこの列と label_rules から引く。
-ALTER TABLE public.epg_programs
-    ADD COLUMN series_key text GENERATED ALWAYS AS (public.series_key(name)) STORED;
-
-CREATE INDEX epg_programs_series_key_idx ON public.epg_programs (series_key);
-
 -- 録画 1 行の評価。録画を作る経路は複数あるので Go 側で呼ぶと 1 つ漏れる。
 -- 「既存の当たりを消す → 勝者がいれば入れる」の 2 段にする。upsert だけだと、
 -- 当たらなくなった録画に古い当たりが残る。
@@ -176,9 +170,18 @@ END;
 $$;
 -- +goose StatementEnd
 
-CREATE TRIGGER recordings_label_rule_sync
-    AFTER INSERT OR UPDATE OF title ON public.recordings
+-- UPDATE 側は title が変わったときだけ当てる。UPDATE OF title は SET 句に title が
+-- あれば値が同じでも発火する（UpsertInPlaceRecording と catalog rescue は title を
+-- 無条件に書く）。同じ title の書き直しで当たりの行を DELETE → INSERT すると、
+-- 変化が無くても行が毎回書き直される。
+CREATE TRIGGER recordings_label_rule_sync_insert
+    AFTER INSERT ON public.recordings
     FOR EACH ROW EXECUTE FUNCTION public.recordings_label_rule_sync();
+
+CREATE TRIGGER recordings_label_rule_sync_update
+    AFTER UPDATE OF title ON public.recordings
+    FOR EACH ROW WHEN (OLD.title IS DISTINCT FROM NEW.title)
+    EXECUTE FUNCTION public.recordings_label_rule_sync();
 
 -- recording_series は実効シリーズ（分類ルールが当たればその値、当たらなければ
 -- 自動キー）。棚とハブの読み手はここだけを見る。
@@ -203,10 +206,9 @@ CREATE TRIGGER label_rules_notify
 
 DROP TRIGGER label_rules_notify ON public.label_rules;
 DROP VIEW public.recording_series;
-DROP TRIGGER recordings_label_rule_sync ON public.recordings;
+DROP TRIGGER recordings_label_rule_sync_update ON public.recordings;
+DROP TRIGGER recordings_label_rule_sync_insert ON public.recordings;
 DROP FUNCTION public.recordings_label_rule_sync();
-DROP INDEX public.epg_programs_series_key_idx;
-ALTER TABLE public.epg_programs DROP COLUMN series_key;
 DROP INDEX public.recordings_series_key_idx;
 ALTER TABLE public.recordings DROP COLUMN series_key;
 DROP FUNCTION public.label_rule_winner(text);
