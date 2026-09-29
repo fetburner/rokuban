@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
+	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -173,6 +174,14 @@ func TestReencodeRecordingProfile_StatusCodes(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	id := insertIngestedRecordingFixture(t, pool, ctx)
+	// 確認済みで一部だけ切る録画（作り直せる状態）。
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, id); err != nil {
+		t.Fatal(err)
+	}
 
 	post := func(profile string) int {
 		resp, err := http.Post(srv.URL+"/api/recordings/"+itoa(id)+"/encoded/"+profile+"/reencode", "application/json", nil)
@@ -190,5 +199,55 @@ func TestReencodeRecordingProfile_StatusCodes(t *testing.T) {
 	}
 	if got := post("h264"); got != http.StatusBadRequest {
 		t.Errorf("reencode non-cut status = %d, want 400", got)
+	}
+}
+
+// TestReencodeRecordingProfile_NeedsKeepRanges は作り直しが「確認済みで keep が空でない」
+// 録画にしか 204 を返さないことを固定する。未確認・全区間カットで 204 を返すと、worker が
+// 投入しないのでボタンが黙って効かず cutStale も残る。
+func TestReencodeRecordingProfile_NeedsKeepRanges(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
+		Pool:               pool,
+		EncodeProfileNames: []string{"h264", "cut"},
+		CutProfileNames:    []string{"cut"},
+	}))
+	t.Cleanup(srv.Close)
+
+	seed := func(owned bool, cutFrom, cutTo int64) int64 {
+		id := insertIngestedRecordingFixture(t, pool, ctx)
+		if owned {
+			if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if cutTo > 0 {
+			if _, err := pool.Exec(ctx,
+				`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range($2, $3), 'CM', true)`,
+				id, cutFrom, cutTo); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return id
+	}
+	post := func(id int64) int {
+		resp, err := http.Post(srv.URL+"/api/recordings/"+itoa(id)+"/encoded/cut/reencode", "application/json", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		return resp.StatusCode
+	}
+	// fixture の番組長は 1800000ms。全区間カットは番組長を越えるフレーム境界まで切る
+	// （境界が番組長の手前に量子化されると 1ms の本編が残り、keep が空にならない）。
+	if got := post(seed(false, 0, 0)); got != http.StatusConflict {
+		t.Errorf("unconfirmed status = %d, want 409", got)
+	}
+	if got := post(seed(true, 0, chapters.QuantizeMs(1810000))); got != http.StatusConflict {
+		t.Errorf("all-cut status = %d, want 409", got)
+	}
+	if got := post(seed(true, 600000, 900000)); got != http.StatusNoContent {
+		t.Errorf("partially cut status = %d, want 204", got)
 	}
 }

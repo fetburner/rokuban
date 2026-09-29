@@ -5280,7 +5280,9 @@ export const getReencodeRecordingProfileUrl = (id: number,
  *
  * 原本の media_assets 行が `state = 'active'` でない録画には 409 を返す
  * （カット版は原本から作り直すしかない。`POST
- * /api/recordings/{id}/encode-profiles` と同じ判定）。
+ * /api/recordings/{id}/encode-profiles` と同じ判定）。チャプターが未確認、
+ * または全区間がカットで keep が空のときも 409 を返す（worker が投入しないので、
+ * 204 を返すと作り直しが黙って起きない）。
  * @summary Rebuild the cut version of a recording with the current chapters
  */
 export const reencodeRecordingProfile = async (id: number,

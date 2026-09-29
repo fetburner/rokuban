@@ -759,6 +759,27 @@ func (h *Server) ReencodeRecordingProfile(ctx context.Context, req ReencodeRecor
 		}
 		return nil, fmt.Errorf("loading original media asset for recording %d: %w", req.Id, err)
 	}
+	// 投入側（worker）は未確認・keep 空の cut を投入しない。ここで 204 を返すと
+	// ボタンが黙って効かず cutStale も残るので、同じ導出（currentKeepRanges =
+	// cutStale と同じ chapters.Derive）で先に 409 にする。
+	state, err := q.GetRecordingChapterState(ctx, req.Id)
+	if err != nil {
+		return nil, fmt.Errorf("loading chapter state for recording %d: %w", req.Id, err)
+	}
+	if !state.Owned {
+		return ReencodeRecordingProfile409JSONResponse{Error: "chapters not yet confirmed; nothing to encode"}, nil
+	}
+	spans, err := q.GetRecordingChapterSpansJSON(ctx, req.Id)
+	if err != nil {
+		return nil, fmt.Errorf("loading chapter spans for recording %d: %w", req.Id, err)
+	}
+	keep, err := currentKeepRanges(recordingListFields{ChapterSpans: spans, ProgramDurationMs: state.ProgramDurationMs})
+	if err != nil {
+		return nil, fmt.Errorf("deriving current chapter timeline for recording %d: %w", req.Id, err)
+	}
+	if len(keep) == 0 {
+		return ReencodeRecordingProfile409JSONResponse{Error: "timeline has no keep ranges; nothing to encode"}, nil
+	}
 	// 冪等判定を「古い」と読ませるための 1 手: 何もしないヒントジョブを積む。
 	// EncodeWorker は active な encoded の凍結区間が現在の keep と一致すれば
 	// スキップし、違えば作り直す。api は判定を持たない（不変条件 5: 真実は
