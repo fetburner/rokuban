@@ -64,7 +64,7 @@ LIKE のエスケープは SQL 関数に一本化する。分類ルールは DB 
   in-place 登録と rescue は title を無条件に書く。
   `WHEN (OLD.title IS DISTINCT FROM NEW.title)` で止める（`TestRecordingsLabelRuleTrigger_SkipsUpdatesThatKeepTheTitle`）
 - **全件の再評価**は River のジョブが 1 トランザクションで差分だけ適用する。全件を消して入れ直すと、変化が無くてもデッドタプルと通知が毎回出る
-- ジョブは advisory lock で直列化する。並行した 2 本の古い方が後から上書きしうる
+- ジョブは advisory lock で直列化する。並行した 2 本の古い方が後から上書きしうる。rescue の再評価も同じロックを取る（キーは `LockLabelRuleReevaluation` の 1 箇所。`TestRescue_WaitsForLabelRuleReevaluationLock`）
 - ジョブは**一意化しない**。実行中に来た 2 本目の編集を捨てないためである。捨てると、1 本目が古いルール集合で評価し終えた時点で打ち止めになり、2 本目の編集が次の定期再評価（15 分）まで反映されない
 - 再評価ジョブは cleanup キュー（delete_reconcile / catalog_export と同じ、site 非依存の DB ジョブ用）で走らせる。ruler キューは `MaxWorkers: 1` でサイトごとの ruler パスが並ぶので、全件評価（0.86 s）で塞がない
 - 「実行中を除いた状態集合」では代用できない。River が `UniqueOpts.ByState` から `running` を外した集合を挿入時にエラーにするからである（`requiredV3states`）

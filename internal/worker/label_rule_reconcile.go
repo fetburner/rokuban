@@ -13,10 +13,6 @@ import (
 )
 
 const (
-	// labelRuleReconcileLockPrefix は全件再評価を直列化する advisory lock の
-	// 名前空間。値は 1 つしかない（評価は「今のルール集合」に対する全件の仕事）。
-	labelRuleReconcileLockPrefix = "rokuban:label-rule-reconcile:"
-
 	// recordingsNotifyTopic は録画の一覧・棚を購読する SSE クライアントへ配る
 	// トピック名（recordings_notify / media_assets_notify トリガーと同じ）。
 	recordingsNotifyTopic = "recordings"
@@ -66,12 +62,10 @@ func (w *LabelRuleReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.L
 
 	// 直列化する。並行した 2 本が同じ録画の当たりを同時に更新すると、
 	// 古いルール集合で評価した方が後から勝ちうる。
-	key := advisoryLockKey(labelRuleReconcileLockPrefix, "")
-	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", key); err != nil {
+	q := sqlcgen.New(tx)
+	if err := q.LockLabelRuleReevaluation(ctx); err != nil {
 		return fmt.Errorf("acquiring label rule re-evaluation advisory lock: %w", err)
 	}
-
-	q := sqlcgen.New(tx)
 	changed, err := q.ApplyLabelRuleReevaluation(ctx)
 	if err != nil {
 		return fmt.Errorf("re-evaluating label rules: %w", err)

@@ -25,6 +25,12 @@ RETURNING *;
 -- name: DeleteLabelRule :execrows
 DELETE FROM label_rules WHERE id = $1;
 
+-- name: LockLabelRuleReevaluation :exec
+-- 全件再評価（worker のジョブと catalog rescue）を直列化する tx スコープの
+-- advisory lock。キーはここ 1 箇所で定義し、両方がこのクエリを呼ぶ。並行した 2 本の
+-- 古い方が後から新しい方の結果を上書きしうるので、評価する tx の先頭で取る。
+SELECT pg_advisory_xact_lock(hashtextextended('rokuban:label-rule-reconcile', 0));
+
 -- name: ApplyLabelRuleReevaluation :one
 -- label_rules の変更後に、全録画の当たりを差分だけ適用する。全件を DELETE
 -- してから INSERT し直すと、変化が無くてもデッドタプルが全行ぶん出る。

@@ -121,3 +121,51 @@ func TestExportRescue_RoundTripsLabelRules(t *testing.T) {
 		t.Errorf("next id = %d, want greater than %d and %d", next.ID, high.ID, low.ID)
 	}
 }
+
+// rescue の再評価は worker のジョブと同じ advisory lock で直列化する。別の tx が
+// ロックを持っている間は rescue が完了せず、手放すと完了する。ロック取得を外すと
+// 保持中でも rescue が完了してこのテストが落ちる。
+func TestRescue_WaitsForLabelRuleReevaluationLock(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+
+	doc, err := Export(ctx, pool)
+	if err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	if _, err := Write(mediaDir, doc, DefaultKeep); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	holder, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	defer func() { _ = holder.Rollback(ctx) }()
+	if err := sqlcgen.New(holder).LockLabelRuleReevaluation(ctx); err != nil {
+		t.Fatalf("holding the lock: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := RescueLatest(ctx, pool, mediaDir, []string{"default"})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("rescue finished (err=%v) while the re-evaluation lock was held", err)
+	case <-time.After(1500 * time.Millisecond):
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatalf("releasing the lock: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("rescue after the lock was released: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("rescue did not finish after the lock was released")
+	}
+}

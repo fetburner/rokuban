@@ -80,6 +80,16 @@ const before = await pollUntil('作成前の棚', async () => {
 })
 log('  作成前の棚:', JSON.stringify(before?.value))
 
+// 2 枚目のページ（同じ /shelves。以後は一切操作しない）。作成したタブ自身は作成成功時の
+// invalidate で更新されるので、SSE を経由した保証にならない。操作しないタブが割れるのは
+// recordings トピックの SSE（notifier）か 60 秒周期の取得だけで、待ち時間は 60 秒より短い。
+const page2 = await browser.newPage({ viewport: { width: 1280, height: 900 } })
+await page2.goto(`${URL_BASE}/shelves`)
+await pollUntil('2 枚目の作成前の棚', async () => {
+  const lines = await shelfLines(page2)
+  return { ok: lines.length === 1 && lines[0] === 'NHK高校講座 · 12 件', value: lines }
+})
+
 await page.getByRole('button', { name: '分類ルールを作成' }).click()
 const dialog = page.getByRole('dialog')
 await dialog.getByLabel('キーワード').fill('化学')
@@ -101,14 +111,21 @@ await pollUntil('注記の消滅', async () => {
 await dialog.getByRole('button', { name: '作成' }).click()
 
 // 再評価（worker）の後に棚が割れる。作成の直後は古い棚のまま。
-const after = await pollUntil('棚が割れる', async () => {
-  const lines = await shelfLines(page)
+// 2 枚目（操作していない）も同時に待つ。直列に待つと、1 枚目の待ちの間に 60 秒周期の
+// 定期取得が届いて、SSE を経由しなくても 2 枚目が通ってしまう。
+const isSplit = async (pg) => {
+  const lines = await shelfLines(pg)
   const sorted = [...lines].sort()
   return {
     ok: sorted.length === 2 && sorted[0] === 'NHK高校講座 · 6 件' && sorted[1] === '化学 · 6 件',
     value: lines,
   }
-})
+}
+const [after, after2] = await Promise.all([
+  pollUntil('棚が割れる', () => isSplit(page)),
+  pollUntil('2 枚目（SSE 経由）の棚が割れる', () => isSplit(page2)),
+])
 log('  作成後の棚:', JSON.stringify(after?.value))
+log('  2 枚目の棚:', JSON.stringify(after2?.value))
 
 await finish(ng, browser)

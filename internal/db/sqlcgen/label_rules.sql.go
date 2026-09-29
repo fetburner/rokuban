@@ -249,6 +249,18 @@ func (q *Queries) ListRecordingShelves(ctx context.Context) ([]ListRecordingShel
 	return items, nil
 }
 
+const lockLabelRuleReevaluation = `-- name: LockLabelRuleReevaluation :exec
+SELECT pg_advisory_xact_lock(hashtextextended('rokuban:label-rule-reconcile', 0))
+`
+
+// 全件再評価（worker のジョブと catalog rescue）を直列化する tx スコープの
+// advisory lock。キーはここ 1 箇所で定義し、両方がこのクエリを呼ぶ。並行した 2 本の
+// 古い方が後から新しい方の結果を上書きしうるので、評価する tx の先頭で取る。
+func (q *Queries) LockLabelRuleReevaluation(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, lockLabelRuleReevaluation)
+	return err
+}
+
 const updateLabelRule = `-- name: UpdateLabelRule :one
 UPDATE label_rules SET
     value      = $1,
