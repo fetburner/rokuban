@@ -269,11 +269,16 @@ func seekTileAt(i int, videoDuration time.Duration) time.Duration {
 // ストリーム（音声など）で決まり映像の終端より後ろになるので、抜き出し位置の
 // 上限には使えない。
 func (w *SeekTilesWorker) probeVideoDuration(ctx context.Context, inputPath string) (time.Duration, error) {
-	ffprobe := w.FFprobe
+	return probeVideoDuration(ctx, w.commandOutput, w.FFprobe, inputPath)
+}
+
+// probeVideoDuration は run 経由で ffprobe を呼び、最初の映像ストリームの長さを返す。
+// SeekTilesWorker と CMDetectWorker が共有する。
+func probeVideoDuration(ctx context.Context, run func(context.Context, string, ...string) ([]byte, error), ffprobe, inputPath string) (time.Duration, error) {
 	if ffprobe == "" {
 		ffprobe = "ffprobe"
 	}
-	out, err := w.commandOutput(ctx, ffprobe,
+	out, err := run(ctx, ffprobe,
 		"-v", "error",
 		"-select_streams", "v:0",
 		"-show_entries", "stream=duration",

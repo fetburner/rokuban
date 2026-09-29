@@ -91,3 +91,12 @@ func TestGetCapabilities_IndependentOfSPAServing(t *testing.T) {
 		t.Errorf("live = false, want true")
 	}
 }
+
+func TestGetCapabilities_CMDetectFollowsConfig(t *testing.T) {
+	if got := getCapabilities(t, RouterConfig{CMDetectEnabled: true}); !got.CmDetect {
+		t.Errorf("cmDetect = false, want true (CMDetectEnabled: true)")
+	}
+	if got := getCapabilities(t, RouterConfig{}); got.CmDetect {
+		t.Errorf("cmDetect = true, want false (未注入の既定)")
+	}
+}

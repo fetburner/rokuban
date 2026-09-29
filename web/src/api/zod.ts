@@ -68,7 +68,8 @@ export const GetVersionResponse = zod.object({
  * @summary Report which optional features this deployment has enabled
  */
 export const GetCapabilitiesResponse = zod.object({
-  "live": zod.boolean().describe('ライブ視聴（`live.enabled`）が有効か。false のときフロントは\nライブへの導線（主ナビ・番組行のリンク等）を出さない。\n')
+  "live": zod.boolean().describe('ライブ視聴（`live.enabled`）が有効か。false のときフロントは\nライブへの導線（主ナビ・番組行のリンク等）を出さない。\n'),
+  "cmDetect": zod.boolean().describe('CM 自動検出（`cm_detect.enabled`）が有効か。false のとき\n`PATCH \/api\/recordings\/{id}\/encode-policy` の `cmDetect: true` と\n`POST \/api\/recordings\/{id}\/cm-detection\/retry` は 409 になり、\nフロントは検出の有効化導線を出さない。\n')
 }).describe('オプション機能のフラグ集合。\*\*すべてのフィールドを required にする\*\* ---\n欠けた項目を「未対応の古いサーバー」として扱うか「無効」として扱うかを\nフロント側で判断させると、判断が導線ごとにばらける。足すときは既定値を\nサーバー側で必ず埋める。\n')
 
 
@@ -1275,6 +1276,7 @@ export const AddRecordingEncodeProfilesResponse = zod.void()
  * `keepOriginal` を指定した場合は従来の保持ポリシー変更を行う。
  * `cmDetect: true` は active な原本を適用時に確認し、未凍結録画なら
  * `always` / 空の encode profiles と共に policy 行を作る。原本が無ければ 409。
+ * `cm_detect.enabled` が false のデプロイでは `cmDetect: true` も 409 にする。
  * `cmDetect: false` は未凍結録画では no-op。`until_encoded` は desired なエンコード
  * プロファイルが 1 つ以上ある録画だけ指定でき、プロファイルが空、または
  * `recording_encode_policy` 行が無い場合は 409 を返すので、先に事後エンコード

@@ -19,7 +19,7 @@ import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
 import { formatBytes, formatDateTime, formatTime } from '@/lib/format'
 import { ingestDisplay, type IngestDisplay } from '@/lib/ingest'
-import { useLiveEnabled } from '@/lib/capabilities'
+import { useCMDetectEnabled, useLiveEnabled } from '@/lib/capabilities'
 import { liveProfileLabel, validLiveProfile } from '@/lib/live'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { shouldShowRecordingSite, sourceLabels } from '@/lib/recording-search'
@@ -118,6 +118,7 @@ export function RecordingDetail({
   onSelectLiveProfile: (name: string) => void
 }) {
   const liveEnabled = useLiveEnabled()
+  const cmDetectEnabled = useCMDetectEnabled()
   const queryClient = useQueryClient()
   const toast = useToast()
   const setEncodePolicy = useSetRecordingEncodePolicy()
@@ -387,7 +388,7 @@ export function RecordingDetail({
       <section className="flex flex-col gap-2 border-t border-border/60 pt-3" aria-label="CM 検出">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h4 className="font-medium">CM 検出</h4>
-          {!trash && (
+          {!trash && (cmDetectEnabled || recording.cmDetection.state !== 'disabled') && (
             <Button
               type="button"
               size="sm"
@@ -444,7 +445,7 @@ export function RecordingDetail({
               type="button"
               size="sm"
               variant="secondary"
-              disabled={retryCMDetection.isPending || !hasOriginal}
+              disabled={retryCMDetection.isPending || !hasOriginal || !cmDetectEnabled}
               onClick={() => {
                 retryCMDetection.mutate(
                   { id: recording.id },

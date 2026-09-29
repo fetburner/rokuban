@@ -43,6 +43,8 @@ type CMDetectWorker struct {
 	MediaDir   string
 	ScratchDir string
 	CMDetect   config.CMDetectConfig
+	// FFprobe は原本の実尺を読む ffprobe のパス（空なら PATH の ffprobe）。
+	FFprobe string
 }
 
 // Timeout disables River's fixed timeout; Work applies a timeout from program duration.
@@ -176,11 +178,18 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 	if err != nil {
 		return fmt.Errorf("reading obs_cut.avs: %w", err)
 	}
-	ranges, err := cmRangesFromCutAVS(string(cutText), item.ProgramDurationMs)
+	// 総尺は EPG の尺ではなく原本の実尺から取る。録画は EIT 追従で延長されうるので、
+	// program_duration_ms で打ち切ると延長分の本編と CM を捨てる。
+	videoDuration, err := probeVideoDuration(ctx, commandOutput, w.FFprobe, inputPath)
+	if err != nil {
+		return fmt.Errorf("probing original duration: %w", err)
+	}
+	totalMs := videoDuration.Milliseconds()
+	ranges, err := cmRangesFromCutAVS(string(cutText), totalMs)
 	if err != nil {
 		return fmt.Errorf("parsing obs_cut.avs: %w", err)
 	}
-	multirange := encodeInt8Multirange(ranges, item.ProgramDurationMs)
+	multirange := encodeInt8Multirange(ranges, totalMs)
 	tx, err := w.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("beginning CM result transaction: %w", err)
@@ -225,9 +234,15 @@ func (w *CMDetectWorker) persistNewStationLogo(ctx context.Context, item sqlcgen
 	if err != nil {
 		return fmt.Errorf("reading newly learned station logo: %w", err)
 	}
+	// プレビューは見た目の確認用。作れなくてもロゴ自体は保存する（preview_png は nullable）。
+	preview, previewErr := lgdPreviewPNG(logo)
+	if previewErr != nil {
+		slog.Warn("cm_detect: failed to render logo preview", "recording_id", item.ID, "err", previewErr)
+		preview = nil
+	}
 	if err := q.UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
 		NetworkID: item.NetworkID, ServiceID: item.ServiceID, Lgd: logo,
-		PreviewPng: nil, LearnedFrom: &item.ID,
+		PreviewPng: preview, LearnedFrom: &item.ID,
 	}); err != nil {
 		return fmt.Errorf("saving learned station logo: %w", err)
 	}
@@ -294,10 +309,12 @@ func cmDetectionTimeout(durationMs int64) time.Duration {
 	return d
 }
 
+// cmRangesFromCutAVS は obs_cut.avs の Trim() を本編区間とみなし、その補集合を CM として返す。
+// durationMs は原本の実尺。
 func cmRangesFromCutAVS(avs string, durationMs int64) ([]frameRange, error) {
 	total := millisToFrame(durationMs)
 	if total <= 0 {
-		return nil, fmt.Errorf("program duration must be positive")
+		return nil, fmt.Errorf("video duration must be positive")
 	}
 	matches := trimCall.FindAllStringSubmatch(avs, -1)
 	if len(matches) == 0 {
@@ -314,7 +331,18 @@ func cmRangesFromCutAVS(avs string, durationMs int64) ([]frameRange, error) {
 			return nil, fmt.Errorf("parsing Trim end frame: %w", err)
 		}
 		start = max(0, min(start, total))
-		end := max(start, min(inclusiveEnd+1, total))
+		// AviSynth: Trim(a, 0) は終端まで、Trim(a, -n) は a から n フレーム、
+		// それ以外は終端フレームを含む区間。
+		var end int64
+		switch {
+		case inclusiveEnd == 0:
+			end = total
+		case inclusiveEnd < 0:
+			end = start - inclusiveEnd
+		default:
+			end = inclusiveEnd + 1
+		}
+		end = max(start, min(end, total))
 		if end > start {
 			main = append(main, frameRange{start: start, end: end})
 		}

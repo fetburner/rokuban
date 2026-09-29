@@ -38,7 +38,7 @@ func patchCMDetection(t *testing.T, url string, enabled bool) *http.Response {
 
 func TestSetRecordingEncodePolicy_CMDetectionFreezesOnlyWithActiveOriginal(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMDetectEnabled: true}))
 	defer srv.Close()
 
 	activeID := seedRecording(t, pool, "復旧原本", time.Now().Truncate(time.Second), "finished", 980)
@@ -98,7 +98,7 @@ func TestRetryRecordingCMDetectionClearsFailureAndEnqueues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, RiverClient: riverClient}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMDetectEnabled: true, RiverClient: riverClient}))
 	defer srv.Close()
 
 	id := seedRecording(t, pool, "再試行", time.Now().Truncate(time.Second), "finished", 982)
@@ -206,5 +206,52 @@ func TestCMLogoAPIListsFailuresAndForgetsLogo(t *testing.T) {
 	}
 	if _, err := q.GetCMLogo(context.Background(), sqlcgen.GetCMLogoParams{NetworkID: 32678, ServiceID: 5168}); err == nil {
 		t.Fatal("logo still exists after DELETE")
+	}
+}
+
+func TestCMDetectionRejectedWhenDeploymentDisablesIt(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	riverClient, err := worker.NewInsertOnlyClient(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, RiverClient: riverClient}))
+	defer srv.Close()
+
+	id := seedRecording(t, pool, "無効構成", time.Now().Truncate(time.Second), "finished", 984)
+	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: id, Kind: db.AssetKindOriginal, RelPath: fmt.Sprintf("test/%d.ts", id), SizeBytes: 1000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if resp := patchCMDetection(t, encodePolicyURL(srv.URL, id), true); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("cmDetect=true status = %d, want 409", resp.StatusCode)
+	}
+	var policies int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM recording_encode_policy WHERE recording_id = $1`, id).Scan(&policies); err != nil {
+		t.Fatal(err)
+	}
+	if policies != 0 {
+		t.Fatalf("policy rows after rejected enable = %d, want 0", policies)
+	}
+	if resp := patchCMDetection(t, encodePolicyURL(srv.URL, id), false); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("cmDetect=false status = %d, want 204", resp.StatusCode)
+	}
+
+	resp, err := http.Post(fmt.Sprintf("%s/api/recordings/%d/cm-detection/retry", srv.URL, id), "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("retry status = %d, want 409", resp.StatusCode)
+	}
+	var jobsCount int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM river_job WHERE kind = 'cm_detect'`).Scan(&jobsCount); err != nil {
+		t.Fatal(err)
+	}
+	if jobsCount != 0 {
+		t.Fatalf("cm_detect jobs after rejected retry = %d, want 0", jobsCount)
 	}
 }

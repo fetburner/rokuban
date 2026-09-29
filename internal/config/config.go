@@ -395,7 +395,11 @@ type CMDetectConfig struct {
 const CMDetectRulePath = "/usr/local/share/rokuban/cm_detect/JL_標準.txt"
 
 // ValidateTools checks the CM analysis executables required by enabled workers.
-func (c CMDetectConfig) ValidateTools() error {
+// ffprobe is the encode.ffprobe path; the worker reads the original's real duration with it.
+func (c CMDetectConfig) ValidateTools(ffprobe string) error {
+	if _, err := exec.LookPath(ffprobe); err != nil {
+		return fmt.Errorf("cm_detect needs ffprobe %q; build the self-contained image with Dockerfile.full: %w", ffprobe, err)
+	}
 	for _, name := range []string{"logoframe", "chapter_exe", "join_logo_scp"} {
 		path := name
 		if c.BinaryDir != "" {

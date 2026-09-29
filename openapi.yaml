@@ -1093,6 +1093,7 @@ paths:
         `keepOriginal` を指定した場合は従来の保持ポリシー変更を行う。
         `cmDetect: true` は active な原本を適用時に確認し、未凍結録画なら
         `always` / 空の encode profiles と共に policy 行を作る。原本が無ければ 409。
+        `cm_detect.enabled` が false のデプロイでは `cmDetect: true` も 409 にする。
         `cmDetect: false` は未凍結録画では no-op。`until_encoded` は desired なエンコード
         プロファイルが 1 つ以上ある録画だけ指定でき、プロファイルが空、または
         `recording_encode_policy` 行が無い場合は 409 を返すので、先に事後エンコード
@@ -1127,7 +1128,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
-          description: Cannot set until_encoded without desired profiles, or enable CM detection without an active original
+          description: |
+            Cannot set until_encoded without desired profiles, or enable CM detection without an
+            active original, or enable CM detection while `cm_detect.enabled` is false
           content:
             application/json:
               schema:
@@ -1154,7 +1157,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
-          description: Recording has no active original
+          description: |
+            Recording has no active original, or `cm_detect.enabled` is false
+            (CM detection needs the Dockerfile.full image)
           content:
             application/json:
               schema:
@@ -1490,12 +1495,20 @@ components:
       type: object
       required:
         - live
+        - cmDetect
       properties:
         live:
           type: boolean
           description: |
             ライブ視聴（`live.enabled`）が有効か。false のときフロントは
             ライブへの導線（主ナビ・番組行のリンク等）を出さない。
+        cmDetect:
+          type: boolean
+          description: |
+            CM 自動検出（`cm_detect.enabled`）が有効か。false のとき
+            `PATCH /api/recordings/{id}/encode-policy` の `cmDetect: true` と
+            `POST /api/recordings/{id}/cm-detection/retry` は 409 になり、
+            フロントは検出の有効化導線を出さない。
       description: |
         オプション機能のフラグ集合。**すべてのフィールドを required にする** ---
         欠けた項目を「未対応の古いサーバー」として扱うか「無効」として扱うかを

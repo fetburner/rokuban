@@ -646,6 +646,12 @@ func (h *Server) SetRecordingEncodePolicy(ctx context.Context, req SetRecordingE
 		}, nil
 	}
 
+	// 無効なデプロイでは誰もジョブを積まないので、until_encoded の原本が
+	// 検出結果を待って永久に残る。受け付けない。
+	if req.Body.CmDetect != nil && *req.Body.CmDetect && !h.capabilities.CmDetect {
+		return SetRecordingEncodePolicy409JSONResponse{Error: cmDetectDisabledMessage}, nil
+	}
+
 	tx, err := h.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("beginning transaction to set recording %d encode policy: %w", req.Id, err)

@@ -481,6 +481,8 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 		// 答えがプロセスの役割で変わる。Sites / MetricsRegistry を無条件に
 		// 渡しているのと同じ理由でここに置く。
 		LiveEnabled: cfg.Live.Enabled,
+		// CM 検出の有効/無効も config の値をそのまま出す（LiveEnabled と同じ理由でロールで囲わない）。
+		CMDetectEnabled: cfg.CMDetect.Enabled,
 		// GET /api/live-profiles に出す一覧（issue #869）。順序が既定の根拠に
 		// なるので、config の定義順をそのまま保つ。ffmpeg のパス・extra_args・
 		// 品質指定は載せない（name と表示用の height だけ）。
@@ -567,7 +569,7 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, queues 
 		}
 	}
 	if cfg.CMDetect.Enabled && jobs.RequiresCMDetectTools(queues) {
-		if err := cfg.CMDetect.ValidateTools(); err != nil {
+		if err := cfg.CMDetect.ValidateTools(cfg.Encode.FFprobe); err != nil {
 			return nil, err
 		}
 	}

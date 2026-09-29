@@ -83,16 +83,26 @@ WHERE kind = 'cm_detect'
 ORDER BY id
 LIMIT $2`
 
-const discardStaleCMDetectJobQuery = `
+// 試行回数が残っていれば River 自身の再試行(retryable)に戻し、使い切っていれば discarded にする。
+// discarded にしたまま reconcile が新しいジョブを積み直すと attempt が 1 に戻り、OOM で
+// 落ち続ける録画が failed に届かない。
+const recoverStaleCMDetectJobQuery = `
 UPDATE river_job
-SET state = 'discarded',
-    finalized_at = now(),
+SET state = CASE WHEN attempt < max_attempts THEN 'retryable'::river_job_state ELSE 'discarded'::river_job_state END,
+    scheduled_at = CASE WHEN attempt < max_attempts THEN now() ELSE scheduled_at END,
+    finalized_at = CASE WHEN attempt < max_attempts THEN NULL ELSE now() END,
     errors = array_append(COALESCE(errors, '{}'::jsonb[]),
       jsonb_build_object('at', now(), 'attempt', attempt,
         'error', 'CM detection process stopped while job was running')::jsonb),
     metadata = COALESCE(metadata, '{}'::jsonb) ||
       jsonb_build_object('cm_detect_recovery', jsonb_build_object('recovered_at', now()))
-WHERE id = $1 AND kind = 'cm_detect' AND state = 'running'`
+WHERE id = $1 AND kind = 'cm_detect' AND state = 'running'
+RETURNING attempt < max_attempts`
+
+const markStaleCMDetectAttemptQuery = `
+UPDATE recording_cm_attempts
+SET state = $2, error = 'CM detection process stopped while job was running', attempted_at = now()
+WHERE recording_id = $1 AND state = 'running'`
 
 type staleCMDetectJob struct {
 	id          int64
@@ -131,19 +141,46 @@ func recoverStaleCMDetectJobs(ctx context.Context, pool *pgxpool.Pool) error {
 			continue
 		}
 		lock.stopHeartbeatLoop()
-		_, err = lock.conn.Exec(ctx, discardStaleCMDetectJobQuery, candidate.id)
+		retry, err := recoverStaleCMDetectJob(ctx, lock.conn, candidate)
 		lock.release()
 		if err != nil {
-			errs = append(errs, fmt.Errorf("discarding stale job %d: %w", candidate.id, err))
+			errs = append(errs, fmt.Errorf("recovering stale job %d: %w", candidate.id, err))
 			continue
 		}
 		slog.Info("cm_detect_reconcile: recovered stale running job",
-			"job_id", candidate.id, "recording_id", candidate.recordingID, "attempted_at", candidate.attemptedAt)
+			"job_id", candidate.id, "recording_id", candidate.recordingID, "attempted_at", candidate.attemptedAt, "retry", retry)
 	}
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}
 	return nil
+}
+
+// recoverStaleCMDetectJob は river_job と試行行を同じ tx で更新し、再試行に戻したかを返す。
+func recoverStaleCMDetectJob(ctx context.Context, conn *pgxpool.Conn, candidate staleCMDetectJob) (bool, error) {
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("beginning recovery transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	var retry bool
+	if err := tx.QueryRow(ctx, recoverStaleCMDetectJobQuery, candidate.id).Scan(&retry); err != nil {
+		if errors.Is(err, pgx5.ErrNoRows) {
+			return false, nil // 別経路で状態が変わった。何もしない
+		}
+		return false, fmt.Errorf("updating river job: %w", err)
+	}
+	state := "failed"
+	if retry {
+		state = "retrying"
+	}
+	if _, err := tx.Exec(ctx, markStaleCMDetectAttemptQuery, candidate.recordingID, state); err != nil {
+		return false, fmt.Errorf("updating attempt state: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("committing recovery: %w", err)
+	}
+	return retry, nil
 }
 
 // EnqueueCMDetectionIfNeeded shares the periodic pass predicate for ingest's immediate hint.

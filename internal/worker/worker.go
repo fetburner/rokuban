@@ -293,6 +293,7 @@ func NewWorkers(deps *Deps) *river.Workers {
 		MediaDir:   deps.MediaDir,
 		ScratchDir: deps.ScratchDir,
 		CMDetect:   deps.CMDetect,
+		FFprobe:    deps.Encode.FFprobe,
 	})
 	river.AddWorker(workers, &CMDetectReconcileWorker{Pool: deps.Pool})
 	river.AddWorker(workers, &DeleteReconcileWorker{

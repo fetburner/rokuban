@@ -129,7 +129,7 @@ rescue の昇格には進まない。
 - **ごみ箱腕**: `grace_cutoff` がパラメータなので view には畳めず、set-returning SQL 関数 `trash_deletable_recordings(grace_cutoff)` にする
 - 否定形（`ListUnqualifiedDeletingAssets` / `RevertMediaAssetToActive`）は、この 2 つの述語への `NOT EXISTS` で書く。手で「同条件を再掲」するコメントを揃える義務が無くなる
 
-この view は `recording_encode_policy.cm_detect` が true の録画について、CM 検出結果または最終失敗の記録も要求する。結果表の行が存在すれば CM が0区間でも検出完了であり、試行表が `failed` なら3回の自動試行を終えたことを示す。`running` / `retrying` は削除を許可しない。失敗後に局ロゴが新しく学習された場合は再検出が投入され、成功まで原本を保持する。API の再試行操作は結果と試行行を消し、active な原本があれば再び desired にする。
+この view は `recording_encode_policy.cm_detect` が true の録画について、CM 検出結果または最終失敗の記録も要求する。結果表の行が存在すれば CM が0区間でも検出完了であり、試行表が `failed` なら3回の自動試行を終えたことを示す。`running` / `retrying` は削除を許可しない。`failed` になると view は削除を許すので、その後に同じ局のロゴが新しく学習されて再検出が desired に戻っても、原本が既に削除されていれば再検出はできない。この学習による再検出が効くのは、原本が残っている場合（`keep_original=always` や削除 reconcile の前）に限る。API の再試行操作は結果と試行行を消し、active な原本があれば再び desired にする。
 
 ### 不変条件の修正
 

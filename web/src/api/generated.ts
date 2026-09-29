@@ -45,6 +45,13 @@ export interface Capabilities {
      * ライブへの導線（主ナビ・番組行のリンク等）を出さない。
      */
   live: boolean;
+  /**
+     * CM 自動検出（`cm_detect.enabled`）が有効か。false のとき
+     * `PATCH /api/recordings/{id}/encode-policy` の `cmDetect: true` と
+     * `POST /api/recordings/{id}/cm-detection/retry` は 409 になり、
+     * フロントは検出の有効化導線を出さない。
+     */
+  cmDetect: boolean;
 }
 
 /**
@@ -5161,6 +5168,7 @@ export const getSetRecordingEncodePolicyUrl = (id: number,) => {
  * `keepOriginal` を指定した場合は従来の保持ポリシー変更を行う。
  * `cmDetect: true` は active な原本を適用時に確認し、未凍結録画なら
  * `always` / 空の encode profiles と共に policy 行を作る。原本が無ければ 409。
+ * `cm_detect.enabled` が false のデプロイでは `cmDetect: true` も 409 にする。
  * `cmDetect: false` は未凍結録画では no-op。`until_encoded` は desired なエンコード
  * プロファイルが 1 つ以上ある録画だけ指定でき、プロファイルが空、または
  * `recording_encode_policy` 行が無い場合は 409 を返すので、先に事後エンコード

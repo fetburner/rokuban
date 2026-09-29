@@ -66,6 +66,8 @@ function createFakeServer(options: {
   /** liveProfilesResponse は画質一覧の解決を遅延させるテスト用（issue #874）。 */
   liveProfilesResponse?: () => Promise<Response>
   rules?: Rule[]
+  /** cmDetectCapability は `GET /api/capabilities` の cmDetect（cm_detect.enabled）。既定は無効。 */
+  cmDetectCapability?: boolean
   /** rulesResponse はルール一覧の解決を遅延させるテスト用。 */
   rulesResponse?: () => Promise<Response>
   // deleteResponse / restoreResponse / purgeResponse / encodePostResponse は
@@ -97,7 +99,7 @@ function createFakeServer(options: {
     const method = init?.method ?? 'GET'
 
     if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
-    if (url.pathname === '/api/capabilities') return Promise.resolve(jsonResponse({ live: true }))
+    if (url.pathname === '/api/capabilities') return Promise.resolve(jsonResponse({ live: true, cmDetect: options.cmDetectCapability ?? false }))
     // サイトレジストリを先に解決する。
     if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(sites))
     if (url.pathname === '/api/encode-profiles') return Promise.resolve(jsonResponse(encodeProfiles))
@@ -536,6 +538,28 @@ describe('RecordingDetailPage 原本保持ポリシー (issue #697)', () => {
       await screen.findByText('この録画には再生可能な原本がありません。追加のエンコードは依頼できません。'),
     ).toBeInTheDocument()
     expect(screen.queryByLabelText('原本の保持')).not.toBeInTheDocument()
+  })
+})
+
+describe('RecordingDetailPage CM 検出の有効化導線', () => {
+  it('cm_detect.enabled が false のデプロイでは、無効な録画に「検出を有効化」を出さない', async () => {
+    const { fetchMock } = createFakeServer({ recording: sampleRecording({ sizeBytes: 1_000_000 }) })
+
+    renderAt('/recordings/3')
+
+    expect(await screen.findByRole('region', { name: 'CM 検出' })).toBeInTheDocument()
+    // 能力 API の応答が反映されるまで待つ（解決前の「まだ無い」で空虚に通さない）
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/api/capabilities'), expect.anything()))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(screen.queryByRole('button', { name: '検出を有効化' })).not.toBeInTheDocument()
+  })
+
+  it('cm_detect.enabled が true なら「検出を有効化」が出る', async () => {
+    createFakeServer({ recording: sampleRecording({ sizeBytes: 1_000_000 }), cmDetectCapability: true })
+
+    renderAt('/recordings/3')
+
+    expect(await screen.findByRole('button', { name: '検出を有効化' })).toBeInTheDocument()
   })
 })
 

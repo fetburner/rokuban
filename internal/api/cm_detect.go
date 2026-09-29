@@ -11,8 +11,14 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 )
 
+// cmDetectDisabledMessage は cm_detect.enabled=false のデプロイで検出を要求されたときの 409 本文。
+const cmDetectDisabledMessage = "CM detection is disabled: set cm_detect.enabled: true and run the Dockerfile.full image"
+
 // RetryRecordingCMDetection clears a previous attempt so an active recording can be analyzed again.
 func (h *Server) RetryRecordingCMDetection(ctx context.Context, req RetryRecordingCMDetectionRequestObject) (RetryRecordingCMDetectionResponseObject, error) {
+	if !h.capabilities.CmDetect {
+		return RetryRecordingCMDetection409JSONResponse{Error: cmDetectDisabledMessage}, nil
+	}
 	tx, err := h.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("beginning CM detection retry for recording %d: %w", req.Id, err)
@@ -76,7 +82,7 @@ func (h *Server) ListCMLogos(ctx context.Context, _ ListCMLogosRequestObject) (L
 		item := CMLogoState{
 			NetworkId:      int(row.NetworkID),
 			ServiceId:      int(row.ServiceID),
-			ServiceName:    fmt.Sprint(row.ServiceName),
+			ServiceName:    row.ServiceName,
 			State:          state,
 			RecordingCount: row.RecordingCount,
 			FailedCount:    row.FailedCount,

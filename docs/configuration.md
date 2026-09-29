@@ -118,7 +118,7 @@ config の読み込みより前に出るログだけは既定（text 形式・In
 
 ### CM 区間の検出
 
-`cm_detect.enabled` は既定で `false`。有効にすると、ingest がこの値を録画単位の `recording_encode_policy.cm_detect` に凍結し、worker が15分ごとに必要な検出を投入する。録画詳細の PATCH で個別に有効化できる。`cm_detect.binary_dir` の3コマンドと固定ルール `/usr/local/share/rokuban/cm_detect/JL_標準.txt` は worker 起動時に検査する。これらは `Dockerfile.full` にだけ含まれ、公式イメージには含まれないため、JLSE 対応には full イメージを使う。`cm_detect` キューは同時実行数1で動く。検出が完了するか3回失敗するまで、`until_encoded` の原本は削除対象にしない。
+`cm_detect.enabled` は既定で `false`。有効にすると、ingest がこの値を録画単位の `recording_encode_policy.cm_detect` に凍結し、worker が15分ごとに必要な検出を投入する。録画詳細の PATCH で個別に有効化できるが、`enabled: false` のデプロイでは API が `cmDetect: true` と再検出を 409 で断る。誰もジョブを積まず、`until_encoded` の原本が結果を待って残り続けるためである。`cm_detect.binary_dir` の3コマンドと ffprobe（原本の実尺を読む）と固定ルール `/usr/local/share/rokuban/cm_detect/JL_標準.txt` は worker 起動時に検査する。これらは `Dockerfile.full` にだけ含まれ、公式イメージには含まれないため、JLSE 対応には full イメージを使う。`cm_detect` キューは同時実行数1で動く。検出が完了するか3回失敗するまで、`until_encoded` の原本は削除対象にしない。
 
 ### live
 
