@@ -35,7 +35,7 @@ await verifyBundleMatchesOrExit(BASE, ng)
 
 /**
  * 同じ長い名前を持つ 2 件。名前が重複するので `serviceDisambiguator` が補助ラベル
- * （`地上波 5 ・ 27` / `地上波 5 ・ 95`）を付ける = 判定したい「名前 + ラベル」の状態。
+ * （`地上波 051 ・ 27` / `地上波 051 ・ 95`）を付ける = 判定したい「名前 + ラベル」の状態。
  */
 const longName = '瀬戸内海放送デジタルテレビジョン臨時サブチャンネル'
 
@@ -60,9 +60,9 @@ const services = [
     hasPrograms: true,
   },
   {
-    id: 3273601025,
+    id: 3273601032,
     networkId: 32736,
-    serviceId: 1025,
+    serviceId: 1032,
     name: longName,
     channelType: 'GR',
     channel: '95',
@@ -112,6 +112,9 @@ const documentScroll = (p) =>
 //    横スクロールしない。`Chip` から `max-w-full` を外すと落ちる（測定値は README）。
 log(`\n=== ① /search（${width}px・長い局名 + 補助ラベル）===`)
 const searchPage = await openStubbed('/search', '検索')
+// issue #685 で検索画面の詳細条件は初期状態が閉じている。チャンネルとサイトの
+// チップはその中にあるため、測定対象を表示してから待つ。
+await searchPage.getByRole('button', { name: '詳細条件を表示', exact: true }).click()
 const chips = searchPage.locator('div[role="group"][aria-label="チャンネル"] button')
 await chips.first().waitFor()
 const chipCount = await chips.count()
@@ -120,7 +123,7 @@ ok('① チップが 2 件描かれている', chipCount === 2, `${chipCount} �
 const chipText = await chips.first().textContent()
 ok(
   '① 補助ラベルが付いている（測る対象が「名前 + ラベル」であること）',
-  chipText === `${longName}（地上波 5 ・ 27）`,
+  chipText === `${longName}（地上波 051 ・ 27）`,
   JSON.stringify(chipText),
 )
 
