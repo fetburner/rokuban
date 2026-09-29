@@ -121,7 +121,7 @@ storage:
   ファイル名には空白・括弧・日本語が入る
 - Range の扱いは nginx 側に移る（`Accept-Ranges` も nginx が付ける）
 
-### ライブ視聴の HLS --- アプリ配信を維持
+### ライブ視聴の HLS --- 既定はアプリ配信
 
 `playlist.m3u8` は常に master playlist で、音声 rendition 3 本（下記 §音声）を含む。
 `live.captions: false`（既定）では `?profile=` のプロファイルだけの master を返す。
@@ -130,7 +130,7 @@ storage:
 `.ts` / `.vtt` セグメントは同じサービス URL の下で配信する。hls.js は字幕 rendition
 を字幕トグルとして表示する。VOD とライブのどちらも TS/PES を Rokuban が読むことはない。
 
-ライブセッションはインメモリの使い捨て状態（全体アーキテクチャの crash-only 例外）で、「クライアントがいなくなったら ffmpeg を止める」idle GC が要る。セグメント要求がアプリを通れば last-access の更新がタダで手に入るが、nginx が scratch から直接配るとアプリはクライアントの生存を見失う。`auth_request` やログ監視で回収はできるが、セグメントは数 MB で転送負荷が軽く、複雑さに見合わない。**streamer ロールのアプリ配信のまま**とする。
+ライブセッションはインメモリの使い捨て状態（全体アーキテクチャの crash-only 例外）で、「クライアントがいなくなったら ffmpeg を止める」idle GC が要る。セグメント要求がアプリを通れば last-access の更新がタダで手に入るが、nginx が scratch から直接配るとアプリはクライアントの生存を見失う。`auth_request` やログ監視で回収はできるが、セグメントは数 MB で転送負荷が軽く、複雑さに見合わない。**既定は streamer ロールのアプリ配信のまま**とする。遅延を目標にする構成では、パッケージングと生存判定をまとめて外の packager に移す（下記「パッケージャは MediaMTX の LL-HLS を選べる形にする」）。
 
 **`live.enabled: false` ならこれらのルートは登録されず、404（JSON）になる**。
 SPA フォールバックには落とさない（[rest.md](rest.md)「機能の有効/無効は能力 API で
@@ -139,8 +139,8 @@ SPA フォールバックには落とさない（[rest.md](rest.md)「機能の�
 
 #### 遅延の目標は置かない --- `segment_seconds` を短くしても縮まない
 
-**ライブの glass-to-glass 遅延を目標値にしない。** 実クラスタ・実チューナー・実ブラウザで
-2 秒と 1 秒のセグメント長を比べても、遅延の改善は 6.2 秒 → 5.0 秒どまりである。
+**アプリ配信の経路では、ライブの glass-to-glass 遅延を目標値にしない。**
+実クラスタ・実チューナー・実ブラウザで 2 秒と 1 秒のセグメント長を比べても、遅延の改善は 6.2 秒 → 5.0 秒どまりである。
 4 秒には届かない。代わりに 30 分あたりの stall は 3 回 → 454 回、dropped frames は
 0.006% → 2.1% になった。
 
@@ -149,9 +149,10 @@ SPA フォールバックには落とさない（[rest.md](rest.md)「機能の�
 ライブ端より数本後ろから開始するので、公開の揺らぎはそのまま再生の飢えになる。
 **短くするほど遅延が縮むという関係は、ここには無い。**
 
-1 秒級を狙うなら、セグメントをさらに短くするのではなくパッケージャを替える判断が要る
-（MediaMTX の LL-HLS、MSE への直載せ）。また `live.profiles[].segment_seconds` は
-ライブと追っかけ再生で共有しているので、ライブだけ短くするには値の分離も要る。
+1 秒級を狙うなら、セグメントをさらに短くするのではなくパッケージャを替える（下記
+「パッケージャは MediaMTX の LL-HLS を選べる形にする」）。また
+`live.profiles[].segment_seconds` はライブと追っかけ再生で共有しているので、
+ライブだけ短くするには値の分離も要る。
 
 **この値はセグメントの公開端とプレイヤーの latency からの導出値である。** 放送時刻を
 映像に焼き込んだ比較ではない（ffmpeg の再 mux で TDT/TOT が落ちるため）。したがって
@@ -160,12 +161,22 @@ SPA フォールバックには落とさない（[rest.md](rest.md)「機能の�
 
 #### パッケージャは MediaMTX の LL-HLS を選べる形にする
 
-**パッケージングをアプリが持つ根拠は「遅延を目標にしない」ことで成立していた。**
-遅延を目標にするなら外に出す。実測（同一局・720p・視聴者 1・30 分）では、現行の
-アプリ配信（`segment_seconds: 2`）が `hls.latency` 中央値 5.68 秒だった。
-MediaMTX v1.21.1 の LL-HLS（part 200ms / segment 1s）は 0.92 秒（p95 2.15 秒）である。
-セグメント長を詰めても 5.0 秒どまりで秒台には入らない（上記のとおり）。パッケージャを
-替える以外に手段が無く、実測で 4.7 秒の差が付いたので採る。
+**遅延を目標にする構成では、パッケージングと生存判定をまとめて MediaMTX に移す。**
+アプリ配信の根拠は、セグメント要求がアプリを通れば生存判定がタダで手に入ることだった
+（上記）。この形では生存判定も MediaMTX の HLS セッションの inactive 判定に移るので、
+その根拠とは衝突しない。代わりに離脱ヒントが効かなくなる（下記）。
+
+実測（同一局・720p・視聴者 1・30 分・実 Chrome + hls.js）では、アプリ配信
+（`segment_seconds: 2`）の `hls.latency` 中央値は 5.68 秒だった（上記の 6.2 秒とは
+別の測定）。MediaMTX v1.21.1 の LL-HLS（part 200ms / segment 1s）は 0.92 秒
+（p95 2.15 秒）である。セグメント長を詰めても 1 秒台には入らない（上記）ので、
+パッケージャを替える以外に手段が無い。試作は `-tune zerolatency` を含むが、その寄与は
+高々 0.1〜0.3 秒で、差の大半は part による部分公開に由来する。
+
+**代わりに stall と dropped frames が増える。** 同じ 30 分で stall は 1 回 → 15 回、
+dropped frames は 0 → 0.14% だった。試作側は WAN 越しの port-forward・ソフトウェア
+エンコード・part 単位の取得（24 req/s）という条件の差を含む。差のどこまでが
+MediaMTX に由来するかは未検証である。
 
 - **必須にはしない。** MediaMTX の設定テンプレートに mirakc の知識（合成 service id・
   URL 組み立て）は置かない。`runOnDemand` が rokuban のコマンドを起動する形にすれば、
@@ -173,22 +184,36 @@ MediaMTX v1.21.1 の LL-HLS（part 200ms / segment 1s）は 0.92 秒（p95 2.15 
 - **idle GC は packager 側に移り、下限は約 30 秒になる。** 最後の要求から publisher が
   止まるまで、既定では約 60 秒かかる。`hlsMuxerCloseAfter` と `runOnDemandCloseAfter` を
   1 秒に詰めても約 32 秒である（HLS セッションの inactive 判定が支配的）。現行の
-  `idle_timeout`（既定 30 秒）と同等だが、
-  **離脱ヒントの猶予（`3 × segment_seconds + 2s` = 8 秒）に相当するものが MediaMTX に
-  無い**。チューナーが 1 本のサイトでは、切り替えのたびの解放が 8 秒から 30 秒へ伸びる
+  `idle_timeout`（既定 30 秒）と同等である
+- **未解決: 離脱ヒントの猶予（`3 × segment_seconds + 2s` = 8 秒）に相当するものが
+  MediaMTX に無い。** ヒントを受けた rokuban が publisher を止める経路を作れるかは
+  未検証である。作れなければ、チューナーが 1 本のサイトでは切り替えのたびの解放が
+  8 秒から約 30 秒へ伸びる
 - **`/live/segments/` の実パスは契約ではない。** hls.js も VLC もプレイリスト URL からの
   相対解決しかしないので、外から見える契約はプレイリスト URL だけである。現行の
   `segments/<name>` は ffmpeg の `-hls_base_url` が書く値で、クライアントは組み立てない。
   MediaMTX の LL-HLS も `init.mp4` / `*_partN.mp4` / `*_segN.mp4` をプレイリストと
-  同じディレクトリの相対 URI で書く。前段が写すのはプレイリスト URL
-  （`.../live/playlist.m3u8` → MediaMTX の `index.m3u8` の 1 行）だけでよい
+  同じディレクトリの相対 URI で書く
+- **前段はプレイリストだけでなく全要求の接頭辞を写す。** 相対 URI は、クライアントが
+  要求した `.../live/` の下で解決される。そのため前段は全要求の接頭辞
+  `/api/sites/{site}/networks/{networkId}/services/{serviceId}/live/` を、
+  MediaMTX のパス `live/{site}/{networkId}/{serviceId}/` へ書き換える。加えて `playlist.m3u8` を
+  `index.m3u8` へ写す。試作では計器自身が立てた同一オリジンのリバースプロキシが
+  この写しを担い、実 Chrome + hls.js が 30 分再生できた
 - **プロファイルはパスを分ける。** 1 パスに映像 2 本を publish しても、MediaMTX は
   2 本目を `skipping track 3 (H264)` として捨て、ABR の master を書かない（実測）。
   `?profile=` の選択を保つには、プロファイルごとのパスと、それを束ねる master の
   書き手が要る
-- **未解決: MediaMTX の LL-HLS はメディア URI のクエリに自分のセッションを載せる**
-  （`?session=<uuid>`。クライアントは本文から写すだけで自分では組み立てない）。
-  下記「資源同定: セッション ID を持たない」の例外になる
+- **未解決: 音声レンディションと字幕。** 試作では音声 2 本が rendition として master に
+  載った。上記の契約（標準 / 主 / 副の 3 本、`captions: true` の WebVTT 字幕）を
+  MediaMTX の経路でどう満たすかは未測定である
+- **未解決: MediaMTX の LL-HLS はセッション ID を URI のクエリに載せる**
+  （`?session=<uuid>`）。master が書く variant の URI（`video1_stream.m3u8?session=…`）
+  にも載る。つまり hls.js が取り直し続ける variant の URL が session を握る。
+  MediaMTX の再起動・ハッシュの担当移動・idle GC の後に、未知の session を持つ
+  variant 要求へ MediaMTX が何を返すかは未検証である。404 なら下記「資源同定」が
+  塞いでいる「セッション ID を握ったクライアントが 404 で詰む」経路そのものになり、
+  この形は採れない
 
 #### 資源同定: セッション ID を持たない
 
