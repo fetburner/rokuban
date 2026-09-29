@@ -32,8 +32,8 @@ type HubPageParam = { before?: string; beforeId?: number }
  *
  * **起点は録画 id**（正規化キーではない）。正規化キーを URL に置くと、規則を
  * 変えた時点で 404 ではなく 0 件で黙って壊れる（docs/data/series.md §8
- * 「資源同定: 起点は録画 id」）。録画行は purge 後も tombstone とタイトルの
- * スナップショットが残るので、起点の URL は腐らない。
+ * 「資源同定: 起点は録画 id」）。API は purge 済みの tombstone を起点にしても
+ * シリーズを返すが、画面は起点の単体 GET が purged を除くので開けない（既知の限界）。
  *
  * 見出しは**起点の録画の生のタイトル**（正規化キーではない）。値は正規化の
  * 産物なので表示名にならない（棚の見出しと同じ規律）。
@@ -111,16 +111,22 @@ export function SeriesHubPage() {
         <PageContent className="flex flex-col gap-4 px-4 py-4">
           <h2 className="text-lg font-medium">{programTitle(origin.title)}</h2>
 
-          {upcoming.length > 0 && (
+          {(upcomingQuery.isError || upcoming.length > 0) && (
             <section className="flex flex-col gap-2" aria-label="次回">
               <h3 className="text-sm font-medium text-muted-foreground">次回</h3>
-              <ul className="flex flex-col gap-2">
-                {upcoming.map((row) => (
-                  <li key={`${row.networkId}:${row.serviceId}:${row.startAt}`}>
-                    <UpcomingRowItem row={row} />
-                  </li>
-                ))}
-              </ul>
+              {upcomingQuery.isError ? (
+                <ErrorState onRetry={() => void upcomingQuery.refetch()}>
+                  次回の取得に失敗しました
+                </ErrorState>
+              ) : (
+                <ul className="flex flex-col gap-2">
+                  {upcoming.map((row) => (
+                    <li key={`${row.networkId}:${row.serviceId}:${row.startAt}`}>
+                      <UpcomingRowItem row={row} />
+                    </li>
+                  ))}
+                </ul>
+              )}
             </section>
           )}
 

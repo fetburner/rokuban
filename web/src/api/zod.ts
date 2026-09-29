@@ -1209,7 +1209,7 @@ export const ListRecordingsQueryParams = zod.object({
   "encodeState": zod.enum(['queued', 'running']).optional().describe('active な River encode ジョブの状態。`queued` は `available` \/\n`pending` \/ `scheduled` \/ `retryable`、`running` は実行中を表す。\n件数は録画数ではなく録画 × プロファイルのジョブ数になる。\n'),
   "source": zod.enum(['rule', 'manual', 'unattributed']).optional(),
   "ruleId": zod.int().optional().describe('特定ルール由来の録画に絞る'),
-  "seriesOf": zod.int().optional().describe('番組ハブ（`\/recordings\/$id\/series`）の一覧。指定した録画 id の\*\*実効\nシリーズ\*\*と同じ実効シリーズの録画だけを返す（実効シリーズは分類\nルールが当たればその値、当たらなければ自動キー）。\n\n\*\*行の同一性（1 行 = 1 録画）は変えない。\*\* N 予約で同じ放送が 2 拠点\nから録れていれば 2 行並ぶ。同じ放送を 1 行にまとめるのは視聴画面の\n「次のエピソード」の表示だけである。\n\n起点の実効シリーズが NULL（自動キーを導出できず、どのルールも\n当たらない録画）なら 0 件を 200 で返す。存在しない id、完全削除\n（purge）済みの tombstone の id も同じく 0 件になる --- 起点は\n録画の行そのもので、行が無ければ値も無い。そのため UI は\n`Recording.series` が null の録画にハブの導線を出さない。\n\n`superseded_at` が立った行は外れる（本物の record に枠を譲った\n擬似 failed 行）。他の絞り込み軸とは AND で、`trash` とは直交する。\n\nキーセットページングは他の場合と同じ `(program_start_at, id)` の\n複合キーで動く（カーソル軸は `seriesOf` の有無で変わらない）。\nシリーズ内の並びは放送日時順で、話数は持たない。\n'),
+  "seriesOf": zod.int().optional().describe('番組ハブ（`\/recordings\/$id\/series`）の一覧。指定した録画 id の\*\*実効\nシリーズ\*\*と同じ実効シリーズの録画だけを返す（実効シリーズは分類\nルールが当たればその値、当たらなければ自動キー）。\n\n\*\*行の同一性（1 行 = 1 録画）は変えない。\*\* N 予約で同じ放送が 2 拠点\nから録れていれば 2 行並ぶ。同じ放送を 1 行にまとめるのは視聴画面の\n「次のエピソード」の表示だけである。\n\n起点の実効シリーズが NULL（自動キーを導出できず、どのルールも\n当たらない録画）なら 0 件を 200 で返す。存在しない id も\n0 件になる（起点は録画の行そのもので、行が無ければ値も無い）。\n完全削除（purge）済みの tombstone は行が残るので、そのシリーズを\n返す（`recording_series` は `purged_at` で絞らない）。そのため UI は\n`Recording.series` が null の録画にハブの導線を出さない。\n\n`superseded_at` が立った行は外れる（本物の record に枠を譲った\n擬似 failed 行）。他の絞り込み軸とは AND で、`trash` とは直交する。\n\nキーセットページングは他の場合と同じ `(program_start_at, id)` の\n複合キーで動く（カーソル軸は `seriesOf` の有無で変わらない）。\nシリーズ内の並びは放送日時順で、話数は持たない。\n'),
   "from": zod.iso.datetime({"offset":true}).optional().describe('program_start_at がこの時刻以上'),
   "to": zod.iso.datetime({"offset":true}).optional().describe('program_start_at がこの時刻未満'),
   "order": zod.enum(['desc', 'asc']).default(listRecordingsQueryOrderDefault),
@@ -1421,6 +1421,7 @@ export const DeleteRecordingResponse = zod.void()
  * ので、UI は `GET /api/reservations` を別に引いて突き合わせる。
  *
  * 起点の実効シリーズが NULL、または行が無ければ空配列を 200 で返す。
+ * purge 済みの tombstone は行が残るので、そのシリーズの番組を返す。
  * ページネーションは持たない（同じシリーズの未来の回は EPG のローリング
  * ウィンドウで有界）。`seriesOf`（`GET /api/recordings`）と同じく、
  * 起点は録画の id そのものである --- 正規化キーを宛先にすると、規則を

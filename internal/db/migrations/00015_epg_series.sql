@@ -3,14 +3,9 @@
 -- epg_programs 側の自動キー（series_key）は生成列にする。recordings と同じ形で、
 -- 書くループが無いので導出が事実を上書きする経路が無い（不変条件 9）。
 --
--- **読み手（ハブの「次回」）ができたので、ここで足す。** 読み手が無いうちに
--- 形を決めないのは M8-5 で決めたとおりである（docs/data/series.md §8
--- 「評価結果の持ち方」）。
---
--- series_key の本体を変えるマイグレーションでは、この列も
--- DROP VIEW epg_program_series → DROP COLUMN → ADD COLUMN → CREATE INDEX →
--- CREATE VIEW の順で作り直す（生成列は INSERT のときにだけ書かれるので、
--- 関数を差し替えても既存行は古い値のまま残る。REINDEX では直らない）。
+-- series_key の本体を差し替えても、列を作り直す手順は要らない。STORED 生成列は
+-- UPDATE でも再計算され、EPG 同期は UpsertEpgProgram の ON CONFLICT DO UPDATE で
+-- 全行を書き直すので、次の同期で値が入れ替わる。
 ALTER TABLE public.epg_programs
     ADD COLUMN series_key text GENERATED ALWAYS AS (public.series_key(name)) STORED;
 

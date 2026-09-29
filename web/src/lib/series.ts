@@ -29,7 +29,8 @@ export function isPlayableRecording(recording: Recording): boolean {
  *
  * **`recordings` は起点の時刻以降を昇順で引いたページ**を渡す
  * （`order=asc&from=<起点の startAt>`）。カーソルが起点の時刻から始まるので、
- * 「起点より後の最初の行」は必ずその先頭のページに入る。
+ * 「起点より後の最初の行」は通常その先頭のページに入る。再生できない行が起点の後に
+ * ページサイズ以上続くとページからはみ出し、その場合は「次のエピソード」が出ない（既知の限界）。
  */
 export function nextEpisode(
   recordings: readonly Recording[],

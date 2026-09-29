@@ -1594,9 +1594,10 @@ ruleId?: number;
  * 「次のエピソード」の表示だけである。
  *
  * 起点の実効シリーズが NULL（自動キーを導出できず、どのルールも
- * 当たらない録画）なら 0 件を 200 で返す。存在しない id、完全削除
- * （purge）済みの tombstone の id も同じく 0 件になる --- 起点は
- * 録画の行そのもので、行が無ければ値も無い。そのため UI は
+ * 当たらない録画）なら 0 件を 200 で返す。存在しない id も
+ * 0 件になる（起点は録画の行そのもので、行が無ければ値も無い）。
+ * 完全削除（purge）済みの tombstone は行が残るので、そのシリーズを
+ * 返す（`recording_series` は `purged_at` で絞らない）。そのため UI は
  * `Recording.series` が null の録画にハブの導線を出さない。
  *
  * `superseded_at` が立った行は外れる（本物の record に枠を譲った
@@ -5864,6 +5865,7 @@ export const getListRecordingUpcomingUrl = (id: number,) => {
  * ので、UI は `GET /api/reservations` を別に引いて突き合わせる。
  *
  * 起点の実効シリーズが NULL、または行が無ければ空配列を 200 で返す。
+ * purge 済みの tombstone は行が残るので、そのシリーズの番組を返す。
  * ページネーションは持たない（同じシリーズの未来の回は EPG のローリング
  * ウィンドウで有界）。`seriesOf`（`GET /api/recordings`）と同じく、
  * 起点は録画の id そのものである --- 正規化キーを宛先にすると、規則を

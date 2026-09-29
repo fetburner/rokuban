@@ -100,7 +100,7 @@ func TestEpgProgramSeries_LikeCoversEveryMatchTheWinnerFunctionFinds(t *testing.
 		{5, "アニメ　進捗レポート　第1回", "進捗レポート"},
 		// 番組名は全角、キーワードは半角。正規化を通さない照合では当たらない。
 		{6, "ＡＢＣ特集", "英字"},
-		// 逆に、正規化した後にだけ当たる組（キーワード側の全角）。
+		// キーワード ABC は半角で、番組名は小文字。大文字小文字の畳み込みで当たる。
 		{7, "abc特集", "英字"},
 	}
 	for _, tc := range cases {

@@ -135,6 +135,26 @@ describe('SeriesHubPage', () => {
     expect(screen.queryByRole('region', { name: '次回' })).not.toBeInTheDocument()
   })
 
+  it('upcoming が 500 なら次回の節にエラーが出る', async () => {
+    const origin = recording({ id: 5, series: '作品X' })
+    globalThis.fetch = vi.fn((input: string | URL | Request) => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.pathname === '/api/recordings/5/upcoming') {
+        return Promise.resolve(jsonResponse({ error: 'boom' }, 500))
+      }
+      if (url.pathname === '/api/recordings/5') return Promise.resolve(jsonResponse(origin))
+      return Promise.resolve(jsonResponse([]))
+    }) as unknown as typeof fetch
+
+    renderInRouter(<SeriesHubPage />, {
+      path: '/recordings/$id/series',
+      initialEntries: ['/recordings/5/series'],
+    })
+
+    const section = await screen.findByRole('region', { name: '次回' })
+    expect(await within(section).findByText('次回の取得に失敗しました')).toBeInTheDocument()
+  })
+
   it('起点の録画が無ければエラーを出す', async () => {
     const origin = recording({ id: 5, series: '作品X' })
     stubApi(origin, [], [])

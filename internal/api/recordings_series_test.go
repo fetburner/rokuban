@@ -65,7 +65,7 @@ func TestListRecordings_SeriesOfReturnsTheSameSeries(t *testing.T) {
 	// **failed も履歴として出る。**
 	failed := seedRecording(t, pool, "アニメ　作品X　第3話", base, "failed", 3)
 	// 別の棚。
-	other := seedRecording(t, pool, "アニメ　作品Y　第1話", base.Add(time.Hour), "finished", 4)
+	seedRecording(t, pool, "アニメ　作品Y　第1話", base.Add(time.Hour), "finished", 4)
 
 	got := listRecordingsForSeries(t, srv.URL, fmt.Sprintf("seriesOf=%d", first))
 	want := map[int64]bool{first: true, second: true, failed: true}
@@ -77,11 +77,18 @@ func TestListRecordings_SeriesOfReturnsTheSameSeries(t *testing.T) {
 			t.Errorf("seriesOf=%d returned %d, which is not in the series", first, id)
 		}
 	}
-	_ = other
 
 	// 起点が誰でも同じ集合になる（起点は行ではなくシリーズの同定に使う）。
 	fromSecond := listRecordingsForSeries(t, srv.URL, fmt.Sprintf("seriesOf=%d", second))
-	if len(fromSecond) != len(got) {
+	gotSet := map[int64]bool{}
+	for _, id := range got {
+		gotSet[id] = true
+	}
+	same := len(fromSecond) == len(got)
+	for _, id := range fromSecond {
+		same = same && gotSet[id]
+	}
+	if !same {
 		t.Errorf("seriesOf=%d returned %v, want the same series as seriesOf=%d (%v)", second, fromSecond, first, got)
 	}
 }
@@ -118,6 +125,26 @@ func TestListRecordings_SeriesOfExcludesSuperseded(t *testing.T) {
 	}
 }
 
+// purge 済みの tombstone を起点にしても、`recording_series` は `purged_at` で
+// 絞らないので、そのシリーズの生きている行を返す（openapi.yaml の `seriesOf`）。
+func TestListRecordings_SeriesOfFromPurgedTombstoneReturnsTheSeries(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+
+	base := time.Now().Truncate(time.Second)
+	origin := seedRecording(t, pool, "アニメ　作品X　第1話", base, "finished", 1)
+	alive := seedRecording(t, pool, "アニメ　作品X　第2話", base.Add(time.Hour), "finished", 2)
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE recordings SET deleted_at = now(), purged_at = now() WHERE id = $1", origin); err != nil {
+		t.Fatalf("purging: %v", err)
+	}
+
+	got := listRecordingsForSeries(t, srv.URL, fmt.Sprintf("seriesOf=%d", origin))
+	if len(got) != 1 || got[0] != alive {
+		t.Errorf("seriesOf=%d (purged) returned %v, want only %d", origin, got, alive)
+	}
+}
+
 // 起点の実効シリーズが NULL（自動キーを導出できず、どのルールも当たらない録画）なら
 // 0 件。**NULL 同士を等しいと見なしてはならない** --- 見なすと「棚の無い録画を
 // 全部集めたハブ」が返る。存在しない id も同じく 0 件。
@@ -127,9 +154,8 @@ func TestListRecordings_SeriesOfWithNoSeriesIsEmpty(t *testing.T) {
 
 	base := time.Now().Truncate(time.Second)
 	nullSeries := seedRecording(t, pool, "【特集】", base, "finished", 1)
-	otherNull := seedRecording(t, pool, "【再】", base.Add(time.Hour), "finished", 2)
+	seedRecording(t, pool, "【再】", base.Add(time.Hour), "finished", 2)
 	seedRecording(t, pool, "アニメ　作品X　第1話", base.Add(2*time.Hour), "finished", 3)
-	_ = otherNull
 
 	got := listRecordingsForSeries(t, srv.URL, fmt.Sprintf("seriesOf=%d", nullSeries))
 	if len(got) != 0 {
