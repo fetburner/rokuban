@@ -512,6 +512,21 @@ var (
 		Name: "rokuban_encode_reconcile_unsatisfiable",
 		Help: "Recordings whose frozen encode profile no longer exists in encode.profiles, by profile name. Non-zero means a rename/removal left past recordings unencodable.",
 	}, []string{"profile"})
+
+	// CutAwaitingReview は「`cut: true` のプロファイルを凍結しているのに、まだ
+	// チャプターを確認していない」録画数（プロファイル名別）。
+	//
+	// **これは失敗ではない。** cut 版は確認済みのタイムラインを切るので、確認の
+	// 行ができるまで投入しないのが正しい（誤検出のまま本編が削られ、原本が
+	// ごみ箱を経由せずに消えるのを防ぐ）。ユーザーが確認すれば次のパスが拾う。
+	// 出している理由は、cut プロファイルを選んだのに確認の導線に気付かず
+	// 「エンコードされない録画」が静かに溜まる形を見えるようにするため
+	// （EncodeReconcileUnsatisfiable が数えるのは設定から消えたプロファイルで、
+	// こちらは別の集合）。
+	CutAwaitingReview = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rokuban_cut_awaiting_review",
+		Help: "Recordings frozen with a cut: true profile whose chapters have not been adopted yet, by profile name. Not a failure: the user must review the detected timeline before the cut version is built.",
+	}, []string{"profile"})
 )
 
 // thumbnail の desired−observed 定期 reconcile（internal/worker/thumbnail_reconcile.go）
@@ -757,6 +772,7 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		EncodeReconcileLastPass,
 		EncodeReconcileCandidates,
 		EncodeReconcileUnsatisfiable,
+		CutAwaitingReview,
 		ThumbnailReconcileLastPass,
 		ThumbnailReconcileCandidates,
 

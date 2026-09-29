@@ -188,6 +188,9 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.Enco
 		rowLimit = encodeReconcileRowLimit
 	}
 	known := w.Profiles.ProfileNames()
+	// cut: true のプロファイルは所有（= ユーザーが確認済み）の行がある録画にしか
+	// 投入しない（SQL 側の同じ述語。encode_reconcile.sql のコメント参照）。
+	cut := w.Profiles.CutProfileNames()
 
 	// after は今パスが窓を開く位置（この recording_id より大きい候補から見る）。
 	// resumeAfter はプロセスローカルなので、このワーカーインスタンスが前パスも
@@ -199,6 +202,7 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.Enco
 	missing, err := q.ListMissingEncodeProfiles(ctx, sqlcgen.ListMissingEncodeProfilesParams{
 		AfterRecordingID: after,
 		KnownProfiles:    known,
+		CutProfiles:      cut,
 		RowLimit:         rowLimit,
 	})
 	if err != nil {
@@ -211,9 +215,24 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.Enco
 	// この録画数に適用され、window の再開位置も録画単位で進む。
 	candidates := make([]int64, 0, len(missing))
 	failed := 0
+	cutSet := w.Profiles.CutProfileSet()
 	for _, row := range missing {
 		if len(candidates) == 0 || candidates[len(candidates)-1] != row.RecordingID {
 			candidates = append(candidates, row.RecordingID)
+		}
+		// 全区間カットの cut は投入しても loadCutContext が必ず失敗する。SQL は
+		// keep の導出（Derive）を持てないので候補は広めに出し、ここで落とす。
+		// 窓の回転は candidates（落とす前）で数えるので進み続ける。
+		if _, isCut := cutSet[row.Profile]; isCut {
+			keep, _, err := currentCutKeep(ctx, q, row.RecordingID)
+			if err != nil {
+				failed++
+				slog.Error("encode_reconcile: loading cut keep", "recording_id", row.RecordingID, "err", err)
+				continue
+			}
+			if len(keep) == 0 {
+				continue
+			}
 		}
 		if _, err := client.Insert(ctx, jobs.EncodeJobArgs{
 			RecordingID: row.RecordingID,
@@ -251,6 +270,7 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.Enco
 	}
 
 	w.reportUnsatisfiable(ctx, q, known)
+	w.reportAwaitingReview(ctx, q)
 
 	if len(candidates) > 0 || failed > 0 {
 		slog.Info("encode_reconcile: pass complete",
@@ -265,7 +285,10 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.Enco
 // パスの本体（投入）とは独立した観測なので、失敗してもパスは成功のまま終える
 // （ここで error を返すと、投入は済んでいるのにジョブが再試行される）。
 func (w *EncodeReconcileWorker) reportUnsatisfiable(ctx context.Context, q *sqlcgen.Queries, known []string) {
-	rows, err := q.ListUnsatisfiableEncodeProfiles(ctx, known)
+	rows, err := q.ListUnsatisfiableEncodeProfiles(ctx, sqlcgen.ListUnsatisfiableEncodeProfilesParams{
+		KnownProfiles: known,
+		CutProfiles:   w.Profiles.CutProfileNames(),
+	})
 	if err != nil {
 		slog.Error("encode_reconcile: listing unsatisfiable encode profiles", "err", err)
 		return
@@ -276,6 +299,32 @@ func (w *EncodeReconcileWorker) reportUnsatisfiable(ctx context.Context, q *sqlc
 	for _, r := range rows {
 		metrics.EncodeReconcileUnsatisfiable.WithLabelValues(r.Profile).Set(float64(r.Recordings))
 		slog.Warn("encode_reconcile: frozen encode profile is not in the current configuration; these recordings will never be encoded",
+			"profile", r.Profile, "recordings", r.Recordings)
+	}
+}
+
+// reportAwaitingReview は「cut プロファイルを凍結しているのに、まだチャプターを
+// 確認していない」録画数をゲージに出す。
+//
+// **これは失敗ではないので Warn にしない**（ユーザーが確認すれば次のパスが拾う
+// 正常な待ち状態）。ログは出すが、数が減らないこと自体は異常ではない。
+// EncodeReconcileUnsatisfiable と同じく、解消したプロファイルの系列が
+// 張り付かないよう毎回作り直す。
+func (w *EncodeReconcileWorker) reportAwaitingReview(ctx context.Context, q *sqlcgen.Queries) {
+	cut := w.Profiles.CutProfileNames()
+	if len(cut) == 0 {
+		metrics.CutAwaitingReview.Reset()
+		return
+	}
+	rows, err := q.ListCutAwaitingReview(ctx, cut)
+	if err != nil {
+		slog.Error("encode_reconcile: listing cut profiles awaiting review", "err", err)
+		return
+	}
+	metrics.CutAwaitingReview.Reset()
+	for _, r := range rows {
+		metrics.CutAwaitingReview.WithLabelValues(r.Profile).Set(float64(r.Recordings))
+		slog.Info("encode_reconcile: cut profile is waiting for the user to review the detected chapters",
 			"profile", r.Profile, "recordings", r.Recordings)
 	}
 }

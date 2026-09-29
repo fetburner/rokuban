@@ -2223,3 +2223,135 @@ log:
 		t.Fatalf("empty log values should load, got %v", err)
 	}
 }
+
+// TestLoad_EncodeProfileCut は `cut: true` のプロファイルにだけ掛かる起動時検査を
+// 固定する。**表現できない組み合わせを落とす**のが目的なので、ここが緩むと
+// 「壊れた filtergraph を出す設定が保存できる」状態に戻る。
+func TestLoad_EncodeProfileCut(t *testing.T) {
+	cases := []struct {
+		name    string
+		extra   string
+		wantErr bool
+		wantMsg string
+	}{
+		{
+			name:    "cut with software scaler and no hwaccel is accepted",
+			extra:   "      cut: true\n      height: 720\n",
+			wantErr: false,
+		},
+		{
+			name:    "cut with vaapi hwaccel and device is accepted",
+			extra:   "      cut: true\n      hwaccel:\n        kind: vaapi\n        device: /dev/dri/renderD128\n",
+			wantErr: false,
+		},
+		{
+			// HW デコードしたフレームは trim に通せない。
+			name:    "cut with scaler vaapi is an error",
+			extra:   "      cut: true\n      height: 720\n      scaler: vaapi\n",
+			wantErr: true,
+			wantMsg: "scaler",
+		},
+		{
+			name:    "cut with hwaccel output_format is an error",
+			extra:   "      cut: true\n      hwaccel:\n        kind: vaapi\n        device: /dev/dri/renderD128\n        output_format: vaapi\n",
+			wantErr: true,
+			wantMsg: "output_format",
+		},
+		{
+			// 救済（-vaapi_device + hwupload）が VAAPI にしか無い。
+			name:    "cut with a non-vaapi hwaccel is an error",
+			extra:   "      cut: true\n      hwaccel:\n        kind: cuda\n",
+			wantErr: true,
+			wantMsg: "vaapi",
+		},
+		{
+			name:    "cut with vaapi hwaccel without device is an error",
+			extra:   "      cut: true\n      hwaccel:\n        kind: vaapi\n",
+			wantErr: true,
+			wantMsg: "device",
+		},
+		{
+			// ストリームの並びはアプリが握る（live と同じ理由）。
+			name:    "cut with -map in extra_args is an error",
+			extra:   "      cut: true\n      extra_args: [\"-map\", \"0:a:0\"]\n",
+			wantErr: true,
+			wantMsg: "-map",
+		},
+		{
+			// cut でないプロファイルでは同じ指定が通る（規則が cut にだけ掛かること）。
+			name:    "the same -map is accepted without cut",
+			extra:   "      extra_args: [\"-map\", \"0:a:0\"]\n",
+			wantErr: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := writeConfig(t, buildEncodeHWConfig(c.extra))
+			_, err := Load(path)
+			if c.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !c.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if c.wantErr && c.wantMsg != "" && !strings.Contains(err.Error(), c.wantMsg) {
+				t.Errorf("error = %v, want mention of %q", err, c.wantMsg)
+			}
+		})
+	}
+}
+
+// TestValidateCutSelection は「cut を選ぶなら cut でないプロファイルを 1 つ以上」
+// の判定を固定する。4 経路（ルール / override / 事後追加 / ingest の凍結）が
+// この 1 つを共有するので、ここが緩むと 4 経路すべてが同時に緩む。
+func TestValidateCutSelection(t *testing.T) {
+	cut := map[string]struct{}{"cut": {}}
+	cases := []struct {
+		name  string
+		names []string
+		cut   map[string]struct{}
+		want  bool
+	}{
+		{"cut only is rejected", []string{"cut"}, cut, true},
+		{"two cut profiles only are rejected", []string{"cut", "cut2"}, map[string]struct{}{"cut": {}, "cut2": {}}, true},
+		{"cut plus a normal profile is accepted", []string{"cut", "h264"}, cut, false},
+		{"normal profile first is accepted", []string{"h264", "cut"}, cut, false},
+		{"normal only is accepted", []string{"h264"}, cut, false},
+		{"empty selection is accepted", nil, cut, false},
+		// cut プロファイルが 1 つも定義されていない構成では何も主張しない。
+		{"no cut profiles configured", []string{"h264"}, map[string]struct{}{}, false},
+		{"nil cut set", []string{"cut"}, nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateCutSelection(tc.names, tc.cut)
+			if (err != nil) != tc.want {
+				t.Errorf("ValidateCutSelection(%v) error = %v, want error %v", tc.names, err, tc.want)
+			}
+		})
+	}
+}
+
+// TestEncodeConfig_CutProfileSet は cut の集合が空設定でも non-nil であることを
+// 固定する（ProfileNames と同じ規約。nil を「cut が無い」と「設定を知らない」の
+// 両方に使うと、api の nil=検証オフ規約と衝突する）。
+func TestEncodeConfig_CutProfileSet(t *testing.T) {
+	var c EncodeConfig
+	if c.CutProfileSet() == nil {
+		t.Error("CutProfileSet on an empty config must be non-nil")
+	}
+	c.Profiles = []EncodeProfile{{Name: "a", Cut: true}, {Name: "b"}, {Name: "c", Cut: true}}
+	got := c.CutProfileSet()
+	if len(got) != 2 {
+		t.Fatalf("CutProfileSet = %v, want 2 entries", got)
+	}
+	if _, ok := got["a"]; !ok {
+		t.Error("a is missing from CutProfileSet")
+	}
+	if _, ok := got["b"]; ok {
+		t.Error("b is not a cut profile and must be absent")
+	}
+	if names := c.CutProfileNames(); len(names) != 2 || names[0] != "a" || names[1] != "c" {
+		t.Errorf("CutProfileNames = %v, want [a c]", names)
+	}
+}

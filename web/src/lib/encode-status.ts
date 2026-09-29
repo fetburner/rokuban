@@ -33,6 +33,11 @@ export function encodeJobStatusLabel(
       return progress === undefined
         ? 'エンコード中'
         : `エンコード中 ${Math.floor(Math.max(0, Math.min(progress, 1)) * 100)}%`
+    case 'awaiting_review':
+      // `cut: true` のプロファイルで、まだチャプターを確認していない。**待ちでは
+      // なく「ユーザーの操作待ち」**なので、キュー画面の文言と混ぜない
+      // （openapi.yaml の EncodeJobStatus.state 参照）。
+      return 'チャプターの確認待ち'
     case 'failed':
       return 'エンコード失敗'
   }

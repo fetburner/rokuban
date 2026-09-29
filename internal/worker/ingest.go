@@ -302,6 +302,11 @@ type IngestWorker struct {
 	MediaDir      string
 	CMDetect      config.CMDetectConfig
 
+	// CutProfiles は cut: true のプロファイル名（config から注入）。凍結時の
+	// クランプ（resolveAndSnapshotEncodePolicy）と、完了後のヒント投入
+	// （enqueueMissingEncodesFromContext）が使う。
+	CutProfiles map[string]struct{}
+
 	// StallTimeout は転送中の無進捗検知タイムアウト（config.ingest.stall_timeout。
 	// config.defaults() が既定値 30 秒を埋めるので、ここでは常に config が
 	// 渡した値をそのまま使う）。
@@ -592,7 +597,7 @@ func (w *IngestWorker) handleAlreadyCommittedIngest(ctx context.Context, client 
 	}
 	// 原本があるなら encode の desired−observed も埋める（ヒント。真実は
 	// EnqueueMissingEncodes のレベルトリガー判定。issue #65）。
-	enqueueMissingEncodesFromContext(ctx, w.Pool, recordingID)
+	enqueueMissingEncodesFromContext(ctx, w.Pool, recordingID, w.CutProfiles)
 	if _, err := client.DeleteRecord(ctx, args.RecordID, true); err != nil {
 		log.Error("ingest: failed to delete edge record (already committed)", "err", err)
 	}
@@ -871,7 +876,7 @@ func recordIngestMetrics(offset int64, counter *tsstat.Counter) {
 // 判定する（レベルトリガー。命令的チェーンではない。issue #66）。
 // River クライアントが無いテスト経路では黙ってスキップする。
 func (w *IngestWorker) enqueueIngestFollowups(ctx context.Context, client *mirakc.Client, recordID string, recordingID int64, log *slog.Logger) {
-	enqueueMissingEncodesFromContext(ctx, w.Pool, recordingID)
+	enqueueMissingEncodesFromContext(ctx, w.Pool, recordingID, w.CutProfiles)
 	if riverClient, clientErr := river.ClientFromContextSafely[pgx5.Tx](ctx); clientErr == nil {
 		if enqueueErr := EnqueueCMDetectionIfNeeded(ctx, w.Pool, riverClient, recordingID); enqueueErr != nil {
 			log.Error("ingest: failed to enqueue CM detection job", "recording_id", recordingID, "err", enqueueErr)
@@ -1239,6 +1244,29 @@ func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sq
 	// を要求する CHECK（issue #104）とここで矛盾すると、このメソッドを呼ぶ tx
 	// （原本 media_asset の INSERT と同一）ごとロールバックし録画が消える
 	// （不変条件 3）ため、書く前に安全側へ倒す。
+	// cut だけになったときのクランプ。ルール単独・override 単独ではそれぞれ
+	// 「cut でないプロファイルを 1 つ以上含む」を満たしていても、マージ結果として
+	// cut だけが生成されうる。cut だけの録画は確認に再生が要り、再生に encode が
+	// 要り、encode に確認が要る循環になるので、**cut のプロファイルを落とす**
+	// （意図は overrides に残るので、ユーザーが cut でないプロファイルを足せば
+	// 戻る）。下のクランプと同じ向き（書く前に安全側へ倒す）。
+	//
+	// **このクランプを下の until_encoded クランプより先に置く。** 落とした結果
+	// desired が空になった場合（cut だけのルール）は、下のクランプが同じ
+	// tx の中で keepOriginal を安全側へ倒す --- ここで別の分岐を書くと、
+	// 「cut を落とした後だけ効く規則」がもう 1 つ増える。
+	if err := config.ValidateCutSelection(encodeProfiles, w.CutProfiles); err != nil {
+		slog.Warn("encode policy: frozen profile selection is cut-only; dropping cut profiles",
+			"recording_id", recordingID, "encode_profiles", encodeProfiles)
+		kept := make([]string, 0, len(encodeProfiles))
+		for _, name := range encodeProfiles {
+			if _, isCut := w.CutProfiles[name]; !isCut {
+				kept = append(kept, name)
+			}
+		}
+		encodeProfiles = kept
+	}
+
 	if keepOriginal == "until_encoded" && len(encodeProfiles) == 0 {
 		keepOriginal = "always"
 	}

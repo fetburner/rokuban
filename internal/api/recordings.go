@@ -12,6 +12,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/fetburner/rokuban/internal/chapters"
+	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 )
@@ -63,6 +65,11 @@ type recordingListFields struct {
 	// nil を区別しない --- どちらも encodeJobStatusesFromFields で「完了して
 	// いないプロファイルはすべて queued」という結果になる。
 	EncodeAttempts json.RawMessage
+	// ChaptersOwned は recording_chapter_ownership に行があるか（= ユーザーが
+	// 確認済み。不変条件 10）。ChapterSpans はユーザー層の jsonb_agg
+	// （label は null を保つ）。
+	ChaptersOwned bool
+	ChapterSpans  json.RawMessage
 
 	// HasOriginalAsset は kind='original' の media_assets 行が **state を問わず**
 	// 存在するか（issue #212）。OriginalSizeBytes（state <> 'deleted' の行だけを
@@ -175,11 +182,27 @@ func ingestProgressFromFields(r recordingListFields) IngestProgress {
 	}
 }
 
+// profileSets は api が config から注入するプロファイル名の集合。
+//
+//   - known が nil なら「設定を知らない」（テストの部分構成）ので、
+//     設定から消えたプロファイルの判定をスキップする。
+//   - cut は `cut: true` のプロファイル名。`awaiting_review` の導出に使う。
+//     nil でも空 map でも「cut のプロファイルは無い」で同じ結果になる。
+//
+// **known と cut を別々の引数で渡さない。** 常に一緒に持ち回る 2 つで、
+// 片方だけ渡し忘れると呼び出し側が増えるたびに静かに判定が落ちる。
+type profileSets struct {
+	known map[string]struct{}
+	cut   map[string]struct{}
+}
+
 // encodedAssetRow は available_encoded_assets（jsonb_agg）1 要素の JSON 形。
 // jsonb_build_object のキー（'profile' / 'sizeBytes'）と一致させる。
 type encodedAssetRow struct {
 	Profile   string `json:"profile"`
 	SizeBytes int64  `json:"sizeBytes"`
+	// KeepRanges は media_asset_cuts.keep_ranges（null = cut でない版）。
+	KeepRanges json.RawMessage `json:"keepRanges"`
 }
 
 // encodeAttemptRow は encode_attempts（jsonb_agg）1 要素の JSON 形。
@@ -229,10 +252,17 @@ type encodeAttemptRow struct {
 //     knownProfiles が nil（テストの部分構成などで注入が無い）ときはこの判定を
 //     スキップする（既存の「nil = 検証オフ」規約と揃える）。
 //
+// cutProfiles は `cut: true` のプロファイル名の集合（nil なら判定しない）。
+// **cut プロファイルで所有の行が無いものは `awaiting_review`** にする ---
+// `queued`（ジョブが来る）とは別の主張で、投入側が実際に候補から外している
+// （internal/worker/encode.go の enqueueMissingEncodes と
+// encode_reconcile.sql の同じ述語）。試行行が既にあればそちらを優先する ---
+// 過去の観測（running/failed）は確認の有無に関わらず事実である。
+//
 // 戻り値は desired の並び順を保つ（TestEncodeJobStatusesFromFields_PreservesDesiredOrder。
 // 試行行の map を回して組み立てると順序が非決定になるので、EncodeProfiles を
 // 回す実装であることをテストが押さえている）。
-func encodeJobStatusesFromFields(r recordingListFields, done []string, knownProfiles map[string]struct{}) ([]EncodeJobStatus, error) {
+func encodeJobStatusesFromFields(r recordingListFields, done []string, profiles profileSets) ([]EncodeJobStatus, error) {
 	if len(r.EncodeProfiles) == 0 {
 		return nil, nil
 	}
@@ -277,21 +307,41 @@ func encodeJobStatusesFromFields(r recordingListFields, done []string, knownProf
 			}
 			continue
 		}
-		if knownProfiles != nil {
-			if _, known := knownProfiles[profile]; !known {
+		if profiles.known != nil {
+			if _, known := profiles.known[profile]; !known {
 				continue
 			}
+		}
+		if _, isCut := profiles.cut[profile]; isCut && !r.ChaptersOwned {
+			statuses = append(statuses, EncodeJobStatus{Profile: profile, State: EncodeJobStatusStateAwaitingReview})
+			continue
 		}
 		statuses = append(statuses, EncodeJobStatus{Profile: profile, State: EncodeJobStatusStateQueued})
 	}
 	return statuses, nil
 }
 
+// currentKeepRanges は一覧行の素の事実から、現在のタイムラインの keep 区間を
+// 導出する。**chapters.Derive 1 か所を通る**（worker のカット版 encode・
+// GET chapters と同じ関数）。
+//
+// 所有済みの行だけが対象（呼び出し側が ChaptersOwned を見る）。所有の行が無ければ
+// 有効なタイムラインは自動層だが、cut 版は所有を前提にしか作られないので、
+// そのときの比較相手は存在しない。
+func currentKeepRanges(r recordingListFields) ([]chapters.Range, error) {
+	var spans []chapters.Span
+	if err := json.Unmarshal(r.ChapterSpans, &spans); err != nil {
+		return nil, err
+	}
+	timeline := chapters.Derive(true, spans, nil, r.ProgramDurationMs)
+	return chapters.KeepRanges(timeline), nil
+}
+
 // recordingFromListFields は一覧行を API の Recording に写す。
 // includeDeletedAt が true のときだけ deletedAt を載せる（ごみ箱一覧向け）。
 // knownProfiles は encodeJobStatusesFromFields に渡す（doc コメント参照。
 // nil なら「設定から消えたプロファイル」の判定をスキップする）。
-func recordingFromListFields(r recordingListFields, includeDeletedAt bool, knownProfiles map[string]struct{}) (Recording, error) {
+func recordingFromListFields(r recordingListFields, includeDeletedAt bool, profiles profileSets) (Recording, error) {
 	rec := Recording{
 		Id:           r.ID,
 		Site:         r.Site,
@@ -369,11 +419,42 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool, known
 			return Recording{}, fmt.Errorf("decoding available_encoded_assets for recording %d: %w", r.ID, err)
 		}
 		if len(rows) > 0 {
+			// 「編集前の内容です」の判定に使う現在の keep 区間。チャプターが
+			// 1 つも無い録画（大半）では導出しない --- 所有の行が無ければ
+			// cut 版は存在しえない（投入側が所有を要求する）。
+			var currentKeep []chapters.Range
+			cutsPresent := false
+			for _, row := range rows {
+				if len(row.KeepRanges) > 0 && string(row.KeepRanges) != "null" {
+					cutsPresent = true
+					break
+				}
+			}
+			if cutsPresent && r.ChaptersOwned {
+				var err error
+				currentKeep, err = currentKeepRanges(r)
+				if err != nil {
+					return Recording{}, fmt.Errorf("deriving current chapter timeline for recording %d: %w", r.ID, err)
+				}
+			}
 			assets := make([]EncodedAsset, len(rows))
 			encodedProfileNames = make([]string, len(rows))
 			for i, row := range rows {
 				assets[i] = EncodedAsset{Profile: row.Profile, SizeBytes: &row.SizeBytes}
 				encodedProfileNames[i] = row.Profile
+				if len(row.KeepRanges) == 0 || string(row.KeepRanges) == "null" {
+					continue
+				}
+				// 凍結した区間がある = cut 版。値そのものは API に出さず、
+				// 「現在のタイムラインと一致するか」だけを出す。
+				isCut := true
+				assets[i].Cut = &isCut
+				var frozenRanges []chapters.Range
+				if err := json.Unmarshal(row.KeepRanges, &frozenRanges); err != nil {
+					return Recording{}, fmt.Errorf("decoding frozen cut ranges for recording %d: %w", r.ID, err)
+				}
+				stale := r.ChaptersOwned && len(currentKeep) > 0 && !chapters.SameRanges(frozenRanges, currentKeep)
+				assets[i].CutStale = &stale
 			}
 			rec.EncodedAssets = &assets
 		}
@@ -386,7 +467,7 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool, known
 	}
 	// 完了していないエンコードプロファイルの試行状態（issue #316）。空なら
 	// 省略（プロファイル未設定・全プロファイル完了済みのどちらでも省略）。
-	statuses, err := encodeJobStatusesFromFields(r, encodedProfileNames, knownProfiles)
+	statuses, err := encodeJobStatusesFromFields(r, encodedProfileNames, profiles)
 	if err != nil {
 		return Recording{}, err
 	}
@@ -433,7 +514,7 @@ func (h *Server) ListRecordings(ctx context.Context, req ListRecordingsRequestOb
 		f.EncodeRecordingIDs = &ids
 	}
 
-	result, err := queryRecordings(ctx, h.pool, f, h.encodeProfiles)
+	result, err := queryRecordings(ctx, h.pool, f, h.profileSets())
 	if err != nil {
 		return nil, fmt.Errorf("listing recordings: %w", err)
 	}
@@ -448,7 +529,7 @@ func (h *Server) ListRecordings(ctx context.Context, req ListRecordingsRequestOb
 // description 参照）。purged_at が立った tombstone（issue #135）は 404
 // （queryRecordingByID 参照）。
 func (h *Server) GetRecording(ctx context.Context, req GetRecordingRequestObject) (GetRecordingResponseObject, error) {
-	rec, ok, err := queryRecordingByID(ctx, h.pool, req.Id, h.encodeProfiles)
+	rec, ok, err := queryRecordingByID(ctx, h.pool, req.Id, h.profileSets())
 	if err != nil {
 		return nil, fmt.Errorf("getting recording %d: %w", req.Id, err)
 	}
@@ -561,7 +642,8 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 	if req.Body == nil || len(req.Body.Profiles) == 0 {
 		return AddRecordingEncodeProfiles400JSONResponse{Error: "profiles must not be empty"}, nil
 	}
-	if err := h.validateEncodeProfiles(req.Body.Profiles); err != nil {
+	// 名前は追加分だけ、cut の選択規則はマージ後（下、tx 内）に当てる。
+	if err := h.validateEncodeProfileNames(req.Body.Profiles); err != nil {
 		return AddRecordingEncodeProfiles400JSONResponse{Error: err.Error()}, nil
 	}
 
@@ -597,6 +679,20 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 		return nil, fmt.Errorf("loading original media asset for recording %d: %w", req.Id, err)
 	}
 
+	// cut の規則は「既存 ∪ 追加分」に当てる（[h264] に cut だけを足すのは
+	// 結果が [h264, cut] なので正当）。policy 行が無ければ追加分のみ。
+	if h.cutProfiles != nil {
+		merged := req.Body.Profiles
+		if policy, err := q.GetRecordingEncodePolicy(ctx, req.Id); err == nil {
+			merged = append(slices.Clone(policy.EncodeProfiles), merged...)
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("loading encode policy for recording %d: %w", req.Id, err)
+		}
+		if err := config.ValidateCutSelection(merged, h.cutProfiles); err != nil {
+			return AddRecordingEncodeProfiles400JSONResponse{Error: err.Error()}, nil
+		}
+	}
+
 	// recording_encode_policy（issue #159）に行が無い（未凍結）録画への事後
 	// 追加は、AppendRecordingEncodeProfiles 自体が「原本が active = 凍結済みと
 	// みなす」既定値 'always' で行を作る（internal/inplace.Register 経由の原本は
@@ -614,6 +710,87 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 		return nil, err
 	}
 	return AddRecordingEncodeProfiles204Response{}, nil
+}
+
+// ReencodeRecordingProfile は cut 版を作り直す（`encodedAssets[].cutStale` が真の
+// ときのユーザーの明示的な操作）。
+//
+// **自動では作り直さない。** チャプターを直した瞬間に再エンコードすると、
+// ユーザーが確認していない区間が黙って本編から消える。api は「今のタイムラインは
+// 凍結した区間と違う」ことを導出して見せるだけで、作り直しはユーザーの操作で行う。
+//
+// 投入は `encode_enqueue_hint` ジョブ経由（AddRecordingEncodeProfiles と同じ
+// パターン。api → worker の結合をヒントジョブに揃える）。通常の投入経路は
+// 「active な encoded がある」ことを理由に候補から外すので、ここは
+// EncodeWorker 自身の冪等判定（凍結した区間が現在の keep と一致するか）が
+// 効いて作り直しになる。
+//
+// 原本が active でないなら 409（カット版は原本から作り直すしかない）。
+func (h *Server) ReencodeRecordingProfile(ctx context.Context, req ReencodeRecordingProfileRequestObject) (ReencodeRecordingProfileResponseObject, error) {
+	// cut 専用の作り直し。cut の選択規則（cut だけの選択の拒否）は選択の集合に
+	// 対する規則でここには当てはまらないので、名前と「cut か」だけを見る。
+	if err := h.validateEncodeProfileNames([]string{req.Profile}); err != nil {
+		return ReencodeRecordingProfile400JSONResponse{Error: err.Error()}, nil
+	}
+	if h.cutProfiles != nil {
+		if _, ok := h.cutProfiles[req.Profile]; !ok {
+			return ReencodeRecordingProfile400JSONResponse{Error: fmt.Sprintf("profile %q is not a cut profile", req.Profile)}, nil
+		}
+	}
+
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := sqlcgen.New(tx)
+	if _, err := q.GetRecordingByID(ctx, req.Id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ReencodeRecordingProfile404JSONResponse{Error: "recording not found"}, nil
+		}
+		return nil, fmt.Errorf("loading recording %d: %w", req.Id, err)
+	}
+	if _, err := q.GetActiveOriginalMediaAsset(ctx, req.Id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ReencodeRecordingProfile409JSONResponse{
+				Error: "original media asset not active (deleted, deleting, or not yet ingested); cannot rebuild the cut version",
+			}, nil
+		}
+		return nil, fmt.Errorf("loading original media asset for recording %d: %w", req.Id, err)
+	}
+	// 投入側（worker）は未確認・keep 空の cut を投入しない。ここで 204 を返すと
+	// ボタンが黙って効かず cutStale も残るので、同じ導出（currentKeepRanges =
+	// cutStale と同じ chapters.Derive）で先に 409 にする。
+	state, err := q.GetRecordingChapterState(ctx, req.Id)
+	if err != nil {
+		return nil, fmt.Errorf("loading chapter state for recording %d: %w", req.Id, err)
+	}
+	if !state.Owned {
+		return ReencodeRecordingProfile409JSONResponse{Error: "chapters not yet confirmed; nothing to encode"}, nil
+	}
+	spans, err := q.GetRecordingChapterSpansJSON(ctx, req.Id)
+	if err != nil {
+		return nil, fmt.Errorf("loading chapter spans for recording %d: %w", req.Id, err)
+	}
+	keep, err := currentKeepRanges(recordingListFields{ChapterSpans: spans, ProgramDurationMs: state.ProgramDurationMs})
+	if err != nil {
+		return nil, fmt.Errorf("deriving current chapter timeline for recording %d: %w", req.Id, err)
+	}
+	if len(keep) == 0 {
+		return ReencodeRecordingProfile409JSONResponse{Error: "timeline has no keep ranges; nothing to encode"}, nil
+	}
+	// 冪等判定を「古い」と読ませるための 1 手: 何もしないヒントジョブを積む。
+	// EncodeWorker は active な encoded の凍結区間が現在の keep と一致すれば
+	// スキップし、違えば作り直す。api は判定を持たない（不変条件 5: 真実は
+	// 定期 reconcile が再取得する）。
+	if err := h.insertEncodeEnqueueHint(ctx, tx, req.Id); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return ReencodeRecordingProfile204Response{}, nil
 }
 
 // wantKeepOriginalUntilEncodedMessage は encode_profiles が空/未凍結のときの

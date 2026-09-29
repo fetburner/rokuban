@@ -568,3 +568,77 @@ describe('RecordingPlayer のチャプター', () => {
     expect(marker.style.width).toBe('25%')
   })
 })
+
+describe('RecordingPlayer のカット版', () => {
+  const chapters = [
+    { startMs: 0, endMs: 15000, cut: true },
+    { startMs: 60000, endMs: 75000, cut: true },
+  ]
+
+  it('cut の encoded を再生しているあいだは、チャプターの目盛り・一覧・編集 UI を出さない', () => {
+    const { container, queryByText } = render(
+      <RecordingPlayer
+        recordingId={11}
+        encodedAssets={[{ profile: 'cut', sizeBytes: 1, cut: true }]}
+        chapters={chapters}
+        chapterVersion="v1"
+        onSaveChapters={async () => undefined}
+        onResetChapters={() => undefined}
+      />,
+    )
+    // duration を確定させても目盛りは出ない（「duration が来ていないだけ」と
+    // 区別できるよう、対照のテストと同じ手順を踏む）。
+    const video = container.querySelector('video')!
+    setMediaProps(video, { duration: 1800, currentTime: 0 })
+    fireEvent.loadedMetadata(video)
+    expect(container.querySelectorAll('[data-testid="chapter-marker"]')).toHaveLength(0)
+    expect(container.querySelector('[aria-label="チャプター"]')).toBeNull()
+    // 編集 UI も出さない（境界は原本の ms で、カット版の軸には当てられない）。
+    expect(queryByText('前のチャプター')).toBeNull()
+    expect(container.querySelector('[data-testid="chapter-source"]')).toBeNull()
+  })
+
+  it('cut でない encoded では同じ props でも チャプターを出す（対照）', () => {
+    const { container, queryByText } = render(
+      <RecordingPlayer
+        recordingId={12}
+        encodedAssets={[{ profile: 'h264', sizeBytes: 1 }]}
+        chapters={chapters}
+        chapterVersion="v1"
+        onSaveChapters={async () => undefined}
+        onResetChapters={() => undefined}
+      />,
+    )
+    const video = container.querySelector('video')!
+    setMediaProps(video, { duration: 1800, currentTime: 0 })
+    fireEvent.loadedMetadata(video)
+    expect(container.querySelectorAll('[data-testid="chapter-marker"]')).toHaveLength(2)
+    expect(queryByText('前のチャプター')).not.toBeNull()
+  })
+
+  it('cutStale のカット版にだけ「編集前の内容です」と作り直しを出す', () => {
+    const onReencode = vi.fn()
+    const { queryByText, rerender } = render(
+      <RecordingPlayer
+        recordingId={13}
+        encodedAssets={[{ profile: 'cut', sizeBytes: 1, cut: true, cutStale: true }]}
+        chapters={chapters}
+        onReencode={onReencode}
+      />,
+    )
+    expect(queryByText(/編集前の内容です/)).not.toBeNull()
+    fireEvent.click(queryByText('作り直す')!)
+    expect(onReencode).toHaveBeenCalledWith('cut')
+
+    // 一致していれば（cutStale が偽なら）バナーを出さない。
+    rerender(
+      <RecordingPlayer
+        recordingId={13}
+        encodedAssets={[{ profile: 'cut', sizeBytes: 1, cut: true, cutStale: false }]}
+        chapters={chapters}
+        onReencode={onReencode}
+      />,
+    )
+    expect(queryByText(/編集前の内容です/)).toBeNull()
+  })
+})

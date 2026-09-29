@@ -36,7 +36,7 @@ func TestBuildFFmpegArgs(t *testing.T) {
 		Preset:     "medium",
 		ExtraArgs:  []string{"-movflags", "+faststart"},
 	}
-	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4", false)
+	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4", false, nil)
 
 	// 必須フラグと入出力の位置。
 	if !slices.Contains(args, "-i") {
@@ -101,7 +101,7 @@ func TestBuildFFmpegArgs_Deinterlace(t *testing.T) {
 		Height:      720,
 		Deinterlace: true,
 	}
-	args := BuildFFmpegArgs(profile, "/in.m2ts", "/out.mp4", false)
+	args := BuildFFmpegArgs(profile, "/in.m2ts", "/out.mp4", false, nil)
 
 	filterIdx := slices.Index(args, "-vf")
 	if filterIdx < 0 || filterIdx+1 >= len(args) {
@@ -125,7 +125,7 @@ func TestBuildFFmpegArgs_WebVTTSubtitleSidecar(t *testing.T) {
 	p := config.EncodeProfile{
 		Name: "web", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac", Subtitles: "webvtt",
 	}
-	args := BuildFFmpegArgs(p, "/in.ts", "/out.mp4", true)
+	args := BuildFFmpegArgs(p, "/in.ts", "/out.mp4", true, nil)
 	joined := strings.Join(args, " ")
 	for _, want := range []string{"-map 0:s?", "-c:s webvtt", "-f webvtt", "/out.vtt"} {
 		if !strings.Contains(joined, want) {
@@ -150,7 +150,7 @@ func TestBuildFFmpegArgs_HWAccelBeforeInput(t *testing.T) {
 			OutputFormat: "vaapi",
 		},
 	}
-	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4", false)
+	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4", false, nil)
 
 	hwIdx := slices.Index(args, "-hwaccel")
 	deviceIdx := slices.Index(args, "-hwaccel_device")
@@ -200,7 +200,7 @@ func TestBuildFFmpegArgs_QP(t *testing.T) {
 		AudioCodec: "aac",
 		QP:         &qp,
 	}
-	args := BuildFFmpegArgs(p, "in", "out", false)
+	args := BuildFFmpegArgs(p, "in", "out", false, nil)
 	if slices.Contains(args, "-crf") {
 		t.Errorf("-crf must not be emitted when only qp is set: %v", args)
 	}
@@ -225,7 +225,7 @@ func TestBuildFFmpegArgs_InputAndOutputExtraArgsPositions(t *testing.T) {
 		InputExtraArgs: []string{"-re"},
 		ExtraArgs:      []string{"-movflags", "+faststart"},
 	}
-	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4", false)
+	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4", false, nil)
 
 	reIdx := slices.Index(args, "-re")
 	iIdx := slices.Index(args, "-i")
@@ -266,7 +266,7 @@ func TestBuildFFmpegArgs_AppOwnedTail(t *testing.T) {
 		InputExtraArgs: []string{"-re"},
 		ExtraArgs:      []string{"-movflags", "+faststart", "-an"},
 	}
-	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4", false)
+	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4", false, nil)
 
 	if args[len(args)-1] != "/out.mp4" {
 		t.Errorf("last arg = %q, want output path", args[len(args)-1])
@@ -302,7 +302,7 @@ func TestBuildFFmpegArgs_NoOptional(t *testing.T) {
 		VideoCodec: "libx265",
 		AudioCodec: "copy",
 	}
-	args := BuildFFmpegArgs(p, "in", "out", false)
+	args := BuildFFmpegArgs(p, "in", "out", false, nil)
 	if slices.Contains(args, "-crf") {
 		t.Error("crf should be omitted when nil")
 	}
@@ -318,7 +318,7 @@ func TestBuildFFmpegArgs_NoOptional(t *testing.T) {
 }
 
 func TestEncodedRelPath(t *testing.T) {
-	got, err := EncodedRelPath("20240101/120000_title_1024.m2ts", "h264", "mp4")
+	got, err := EncodedRelPath("20240101/120000_title_1024.m2ts", "h264", "mp4", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +331,7 @@ func TestEncodedRelPath(t *testing.T) {
 	// sites/{site}/ を引き継ぐ」を固定する。EncodedRelPath 自身には変更を入れて
 	// いない（pathDirSlash/pathBaseSlash が最後の "/" だけで dir/base を切るので、
 	// dir が何階層でも同じロジックで前置が引き継がれる）。
-	got, err = EncodedRelPath("sites/tokyo/20240101/120000_title_1024.m2ts", "h264", "mp4")
+	got, err = EncodedRelPath("sites/tokyo/20240101/120000_title_1024.m2ts", "h264", "mp4", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +341,7 @@ func TestEncodedRelPath(t *testing.T) {
 	}
 
 	// プロファイル名の ".." や "/" はパスに持ち込まない。
-	got, err = EncodedRelPath("a.m2ts", "foo/../bar", "mkv")
+	got, err = EncodedRelPath("a.m2ts", "foo/../bar", "mkv", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -794,7 +794,7 @@ func TestEnqueueMissingEncodes_LevelTrigger(t *testing.T) {
 		t.Fatalf("NewClient: %v", err)
 	}
 
-	if err := EnqueueMissingEncodes(context.Background(), client, pool, recordingID); err != nil {
+	if err := EnqueueMissingEncodes(context.Background(), client, pool, recordingID, nil); err != nil {
 		t.Fatalf("EnqueueMissingEncodes: %v", err)
 	}
 
@@ -830,7 +830,7 @@ func TestEnqueueMissingEncodes_LevelTrigger(t *testing.T) {
 	}
 
 	// 再呼び出しは UniqueOpts で重複スキップ（エラーにならない）。
-	if err := EnqueueMissingEncodes(context.Background(), client, pool, recordingID); err != nil {
+	if err := EnqueueMissingEncodes(context.Background(), client, pool, recordingID, nil); err != nil {
 		t.Fatalf("second EnqueueMissingEncodes: %v", err)
 	}
 }
@@ -981,7 +981,7 @@ func TestBuildFFmpegArgs_SubtitleFixSubDuration(t *testing.T) {
 		Name: "web", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac", Subtitles: "webvtt",
 	}
 
-	args := BuildFFmpegArgs(p, "/in.ts", "/out.mp4", true)
+	args := BuildFFmpegArgs(p, "/in.ts", "/out.mp4", true, nil)
 	fixIdx, inputIdx := -1, -1
 	for i, a := range args {
 		switch a {
@@ -1002,7 +1002,7 @@ func TestBuildFFmpegArgs_SubtitleFixSubDuration(t *testing.T) {
 
 	// ffprobe が字幕なしと判定した録画では付けない（VOD 側は heartbeat も使わない
 	// --- セグメントが無いので分割する意味がない）。
-	off := strings.Join(BuildFFmpegArgs(p, "/in.ts", "/out.mp4", false), " ")
+	off := strings.Join(BuildFFmpegArgs(p, "/in.ts", "/out.mp4", false, nil), " ")
 	if strings.Contains(off, "-fix_sub_duration") {
 		t.Errorf("captionless args must not carry -fix_sub_duration: %s", off)
 	}

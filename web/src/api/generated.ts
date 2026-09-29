@@ -441,6 +441,29 @@ export type RecordingQualityEventsItem = { [key: string]: unknown };
 export interface EncodedAsset {
   profile: string;
   /**
+     * `encode.profiles[].cut: true` のプロファイルで作られたカット版
+     * （確認済みチャプターの `cut=true` 区間を除いた本編だけ）か。
+     * **クライアントはカット版を再生しているあいだ、シークプレビューと
+     * チャプターを出さない** --- タイルもチャプターも原本の時間軸で
+     * 作られており、本編に残した OP などをカット版の軸へ写像する処理を
+     * 初版では持たない（docs/frontend/recordings.md）。
+     */
+  cut?: boolean;
+  /**
+     * 凍結した keep 区間（`media_asset_cuts.keep_ranges`）が現在の量子化
+     * 済みタイムラインと一致しない = 「編集前の内容です」。
+     *
+     * チャプターを直すと、その録画のカット版は**自動では作り直さない**。
+     * 作り直しは `POST /api/recordings/{id}/encoded/{profile}/reencode`
+     * というユーザーの明示的な操作で行う（自動で作り直すと、ユーザーが
+     * 確認していない区間が黙って本編から消える）。
+     *
+     * `cut` が真のときだけ意味を持つ。判定は保存値ではなく毎回の導出
+     * （api が `chapters.Derive` を通した keep 区間と突き合わせる。
+     * 不変条件 9）。
+     */
+  cutStale?: boolean;
+  /**
      * encoded 派生物の実サイズ。`media_assets.size_bytes` は NOT NULL
      * なので active な行が存在する限り常に付く（未検証の断言にしないため:
      * `media_assets.size_bytes` 列の `NOT NULL` 制約が根拠、実行時計測
@@ -469,6 +492,13 @@ export interface EncodedAsset {
  *   と、api が現在の設定にあるプロファイル一覧を知っていて、かつ
  *   そのプロファイルが設定から消えていて試行行も無い場合は、この
  *   プロファイルの要素自体が省略される
+ * - `awaiting_review`: `cut: true` のプロファイルで、まだチャプターを
+ *   確認していない（`recording_chapter_ownership` の行が無い）。
+ *   **`queued` とは別の状態**である --- `queued` は「ジョブが来る」、
+ *   `awaiting_review` は「ユーザーが確認するまでジョブは来ない」を
+ *   表す。投入側（`EnqueueMissingEncodes` /
+ *   `ListMissingEncodeProfiles`）がこの条件で候補から外しているので、
+ *   確認するまでこの状態のままになる。確認後に次の投入パスが拾う
  * - `running`: いま ffmpeg が走っている
  * - `failed`: 直前の試行が失敗した。**`failed` は「二度と来ない」の
  *   断定ではない** --- 失敗したジョブはジョブキューの既定のリトライ
@@ -487,6 +517,7 @@ export const EncodeJobStatusState = {
   queued: 'queued',
   running: 'running',
   failed: 'failed',
+  awaiting_review: 'awaiting_review',
 } as const;
 
 export interface EncodeJobStatus {
@@ -506,6 +537,13 @@ export interface EncodeJobStatus {
      *   と、api が現在の設定にあるプロファイル一覧を知っていて、かつ
      *   そのプロファイルが設定から消えていて試行行も無い場合は、この
      *   プロファイルの要素自体が省略される
+     * - `awaiting_review`: `cut: true` のプロファイルで、まだチャプターを
+     *   確認していない（`recording_chapter_ownership` の行が無い）。
+     *   **`queued` とは別の状態**である --- `queued` は「ジョブが来る」、
+     *   `awaiting_review` は「ユーザーが確認するまでジョブは来ない」を
+     *   表す。投入側（`EnqueueMissingEncodes` /
+     *   `ListMissingEncodeProfiles`）がこの条件で候補から外しているので、
+     *   確認するまでこの状態のままになる。確認後に次の投入パスが拾う
      * - `running`: いま ffmpeg が走っている
      * - `failed`: 直前の試行が失敗した。**`failed` は「二度と来ない」の
      *   断定ではない** --- 失敗したジョブはジョブキューの既定のリトライ
@@ -5188,6 +5226,127 @@ export const useAddRecordingEncodeProfiles = <TError = ErrorResponse,
         TContext
       > => {
       return useMutation(getAddRecordingEncodeProfilesMutationOptions(options), queryClient);
+    }
+
+export type reencodeRecordingProfileResponse204 = {
+  data: void
+  status: 204
+}
+
+export type reencodeRecordingProfileResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
+export type reencodeRecordingProfileResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type reencodeRecordingProfileResponse409 = {
+  data: ErrorResponse
+  status: 409
+}
+
+export type reencodeRecordingProfileResponseSuccess = (reencodeRecordingProfileResponse204) & {
+  headers: Headers;
+};
+export type reencodeRecordingProfileResponseError = (reencodeRecordingProfileResponse400 | reencodeRecordingProfileResponse404 | reencodeRecordingProfileResponse409) & {
+  headers: Headers;
+};
+
+export type reencodeRecordingProfileResponse = (reencodeRecordingProfileResponseSuccess | reencodeRecordingProfileResponseError)
+
+export const getReencodeRecordingProfileUrl = (id: number,
+    profile: string,) => {
+
+
+
+
+  return `/api/recordings/${id}/encoded/${profile}/reencode`
+}
+
+/**
+ * cut 版を作り直す（`encodedAssets[].cutStale` が真のときのユーザーの
+ * 明示的な操作）。チャプターを直しても**自動では作り直さない** ---
+ * 自動で作り直すと、ユーザーが確認していない区間が黙って本編から消える。
+ *
+ * 新しい世代のパス（`…_{profile}.g{n+1}.{container}`）に置いてから、同じ
+ * トランザクションで `media_assets.rel_path` / `size_bytes` と
+ * `media_asset_cuts.keep_ranges` を差し替え、commit 後に旧パスを unlink
+ * する。URL は `?profile=` のままで世代を含めない（資源同定は変えない）ので、
+ * **置き換えた瞬間に視聴中のクライアントの再生は壊れる**（受け入れ済み。
+ * 再読み込みで直る）。
+ *
+ * 原本の media_assets 行が `state = 'active'` でない録画には 409 を返す
+ * （カット版は原本から作り直すしかない。`POST
+ * /api/recordings/{id}/encode-profiles` と同じ判定）。チャプターが未確認、
+ * または全区間がカットで keep が空のときも 409 を返す（worker が投入しないので、
+ * 204 を返すと作り直しが黙って起きない）。
+ * @summary Rebuild the cut version of a recording with the current chapters
+ */
+export const reencodeRecordingProfile = async (id: number,
+    profile: string, options?: Parameters<typeof customInstance>[1]): Promise<reencodeRecordingProfileResponse> => {
+
+  return customInstance<reencodeRecordingProfileResponse>(getReencodeRecordingProfileUrl(id,profile),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+
+export const getReencodeRecordingProfileMutationKey = () => ['reencodeRecordingProfile'] as const;
+
+export const getReencodeRecordingProfileMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof reencodeRecordingProfile>>, TError,ReencodeRecordingProfileMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof reencodeRecordingProfile>>, TError,ReencodeRecordingProfileMutationVariables, TContext> => {
+
+const mutationKey = getReencodeRecordingProfileMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof reencodeRecordingProfile>>, ReencodeRecordingProfileMutationVariables> = (props) => {
+          const {id,profile} = props ?? {};
+
+          return  reencodeRecordingProfile(id,profile,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ReencodeRecordingProfileMutationResult = NonNullable<Awaited<ReturnType<typeof reencodeRecordingProfile>>>
+
+    export type ReencodeRecordingProfileMutationError = ErrorResponse
+    export type ReencodeRecordingProfileMutationVariables = {id: number;profile: string}
+
+    /**
+ * @summary Rebuild the cut version of a recording with the current chapters
+ */
+export const useReencodeRecordingProfile = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof reencodeRecordingProfile>>, TError,ReencodeRecordingProfileMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof reencodeRecordingProfile>>,
+        TError,
+        ReencodeRecordingProfileMutationVariables,
+        TContext
+      > => {
+      return useMutation(getReencodeRecordingProfileMutationOptions(options), queryClient);
     }
 
 export type setRecordingEncodePolicyResponse204 = {

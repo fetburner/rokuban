@@ -148,6 +148,7 @@ config の読み込みより前に出るログだけは既定（text 形式・In
 | `encode.profiles[].input_extra_args` / `live.input_extra_args` | `-i`（VOD）/ `-f mpegts -i pipe:0`（live）の直前に追加する引数 |
 | `encode.profiles[].extra_args` / `live.profiles[].extra_args` | 既存キー。改名していない --- ただし VOD 側は位置が 1 点だけ動く（下記） |
 | `encode.profiles[].subtitles` | `webvtt` のみ。原本の ARIB 字幕を encoded ファイル隣の `.vtt` サイドカーに出力する。libaribcaption 入り ffmpeg が必要 |
+| `encode.profiles[].cut` | 既定 `false`。`true` なら確認済みチャプターの `cut=true` 区間を除いたカット版を出力する（下記「カット版」） |
 | `live.captions` | 既定 `false`。`true` で全プロファイルを 1 つの master playlist にまとめ、WebVTT 字幕 rendition を出力する。字幕なし番組では映像・音声のみの master を出力する。libaribcaption 入り ffmpeg が無ければ起動エラー。複数プロファイルの `segment_seconds` / `playlist_size` は同一値が必要 |
 
 argv の順序（VOD）:
@@ -171,6 +172,43 @@ argv の順序（live）は同じ規則を入力 1 本・出力 N 本の形に�
 **`extra_args` の位置が 1 点だけ動いた**。VOD 側は以前 `-f`（コンテナ）の後ろだったが、今は前に移った --- 「ユーザーのオプションはコーデック/品質/スケール指定の後・アプリ所有の末尾の前」という規則を VOD と live で 1 つにするため。`-f` は下記の allowlist に含まれないので、この移動でユーザーが相対順序に依存していた挙動が変わることはない。
 
 **起動エラーになる組み合わせ**: `crf` と `qp` の同時指定 / 未知の `scaler` / `height` が 0 なのに `scaler` を書く / `hwaccel` ブロックがあるのに `kind` が空 / `crf`・`qp` の負値。
+
+### カット版（`encode.profiles[].cut`）
+
+**切る対象は録画側の事実でチャプターが持ち、その出力に切り取りを適用するかは出力の性質でプロファイルが持つ**。
+チャプターは自動検出（`cm_detect`）の結果をユーザーが確認したもの（`recording_chapter_ownership` の行がある状態）で、その `cut=true` 区間が落ちる。
+自動検出のままでは作らない --- 誤検出のまま本編が削られ、原本がごみ箱を経由せずに消えると取り返せない。
+
+**`cut: true` を選ぶなら、`cut` でないプロファイルを 1 つ以上含めること。**
+原本 TS はブラウザで再生できないので、確認に再生が要り、再生に encode が要り、encode に確認が要る循環になる。
+ルール保存・予約 overrides・事後追加 API・ingest の凍結の 4 経路が同じ判定を共有し、マージ結果が `cut` だけになった場合は凍結時に `cut` を落とす。
+意図は overrides に残るので、`cut` でないプロファイルを足せば戻る。
+
+argv は `cut` のときだけ filtergraph になる:
+
+```
+-hide_banner -nostats -y
+[-vaapi_device D] [input_extra_args…]                          # hwaccel ブロックは出さない（下記）
+-i INPUT
+-filter_complex <trim/atrim → concat → deinterlace → scale>    # アプリが組む
+-map [vout] -map [aout]
+-c:v VC -c:a AC …
+```
+
+filtergraph は区間ごとに映像を `trim=start=…:end=…`、音声を `atrim=start=…:end=…` で切り、それぞれ `concat` したあとに 1 本の連鎖へ通す。**映像も音声も時刻（入力の最早 start_time が原点。チャプターの原点と同じ）で切る**。映像を「最初の映像フレームから数えたフレーム番号」で切ると、放送 TS のように音声が先に始まる入力で映像だけがずれる。境界はどちらも同じフレーム番号から秒へ換算する（`frame / fps`）ので、区間ごとの A/V のずれが蓄積しない。trim の後で PTS から区間の開始時刻を引くのは `concat` が各区間の先頭を 0 とみなすため。`PTS-STARTPTS` にしないのは、映像の最初のフレームが区間の頭より遅れる入力でその遅れを区間の長さに残すため。
+
+**出力側に `-map` を書けないので、アプリがストリームを選ぶ。** ffmpeg の既定の選択（映像は最大解像度、音声は最大チャンネル数、同点は若い番号）を ffprobe で再現する。再現しないとカット版だけ別のストリームが選ばれ、カットしない版と音声が食い違う。
+
+`cut` にだけ掛かる起動エラー:
+
+- `scaler: vaapi` / `hwaccel.output_format` --- HW デコードしたフレームは `trim` に通せない
+- `hwaccel.kind` が `vaapi` 以外 --- 救済（`-hwaccel` の代わりに `-vaapi_device` を出し、連鎖の最後に `format=nv12,hwupload` を足す）が VAAPI にしかない
+- `hwaccel.kind: vaapi` なのに `device` が無い --- `-vaapi_device` に渡すものが無い
+- `extra_args` の `-map` --- ストリームの並びはアプリが握る（live と同じ理由）
+
+**字幕サイドカーは同じ ffmpeg 起動の別出力なので `trim` が効かない。** 書き出した後に同じ keep 区間の写像で時刻を付け替える。CM 区間の中に収まるキューは捨て、境界をまたぐキューは keep 側でクリップする。
+
+カット版の `rel_path` には世代番号が入る（`…_{profile}.g{n}.{container}`。1 世代目から付ける）。チャプターを直しても自動では作り直さず、UI の「編集前の内容です」から `POST /api/recordings/{id}/encoded/{profile}/reencode` で作り直す（[storage/contract.md](storage/contract.md) §3）。
 
 **`extra_args` / `input_extra_args` は値の個数まで既知の allowlist だけを受け付ける**。値を取らないのは `-an` `-vn` `-sn` `-dn` `-shortest` `-nostdin` `-re`。直後の 1 トークンを値として取るのは `-movflags` `-map` `-global_quality` `-cq` `-q:v` `-b:v` `-b:a`。`-probesize` `-analyzeduration` `-extra_hw_frames` も 1 トークンを取る。それ以外と裸の位置引数は起動エラーになる。値を取らないフラグも明示しているため、`["-an", "/tmp/evil.mp4"]` のように 2 本目の出力パスをフラグの値に見せかけることはできない。`-filter:v:0` / `-lavfi` のような filtergraph の別名・ストリーム指定子付き表記も allowlist 外であり、完全一致の denylist が別名を取りこぼす形は採らない。 **live ではさらに `-an` `-vn` `-sn` `-map` を拒否する**。live はストリームの並び（映像・音声 rendition 3 本・字幕）を `-var_stream_map` で持つので、並びを変えると ffmpeg が起動時に落ち、利用者には 504 しか見えない（[api/media.md](api/media.md) §音声）。
 

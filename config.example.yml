@@ -165,6 +165,28 @@ encode:
   #       device: /dev/dri/renderD128   # -hwaccel_device（例示）
   #       output_format: vaapi   # -hwaccel_output_format（scale_vaapi へ HW フレームで渡す）
   #     input_extra_args: []     # -i の直前に足す許可済み引数（自由形式 cmd 全体は禁止）
+  #   # カット版。**確認済み（adopted）チャプターの cut=true 区間を除いた本編だけ**を
+  #   # 出力する。cut: true のプロファイルを選ぶなら、cut でないプロファイルを 1 つ以上
+  #   # 含めること（原本 TS はブラウザで再生できないので、確認に再生が要り、再生に
+  #   # encode が要り、encode に確認が要る循環になる。ルール / override / 事後追加 /
+  #   # 凍結の 4 経路が拒否する）
+  #   - name: cut
+  #     cut: true
+  #     container: mp4
+  #     video_codec: libx264
+  #     audio_codec: aac
+  #     subtitles: webvtt        # 書き出した後に keep 区間の写像で時刻を付け替える
+  #     height: 720
+  #     deinterlace: true
+  #     crf: 23
+  #     # VAAPI でエンコードする場合も **デコードはソフトウェア**（HW でデコードした
+  #     # フレームは trim に通せない）。-hwaccel の代わりに -vaapi_device を出し、
+  #     # 連鎖の最後に format=nv12,hwupload を足す。scaler: vaapi と
+  #     # hwaccel.output_format は cut では起動エラー
+  #     # hwaccel:
+  #     #   kind: vaapi
+  #     #   device: /dev/dri/renderD128
+  #     # extra_args の -map は cut では起動エラー（ストリームの並びはアプリが握る）
 
 # JLSE による CM 検出（Dockerfile.full の worker でのみ利用可能）
 cm_detect:

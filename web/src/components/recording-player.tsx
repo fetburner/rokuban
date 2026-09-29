@@ -74,6 +74,13 @@ type RecordingPlayerProps = {
   onResetChapters?: () => void
   /** 保存 / 取り消しの実行中。 */
   chapterSavePending?: boolean
+  /**
+   * カット版を作り直す（`encodedAssets[].cutStale` が真のときだけ出す）。
+   * undefined ならボタンを出さない。
+   */
+  onReencode?: (profile: string) => void
+  /** 作り直しの投入中。 */
+  reencodePending?: boolean
   className?: string
 }
 
@@ -94,6 +101,8 @@ export function RecordingPlayer({
   onSaveChapters,
   onResetChapters,
   chapterSavePending = false,
+  onReencode,
+  reencodePending = false,
   className,
 }: RecordingPlayerProps) {
   // `encodedAssets` の参照が変わらない限り再計算しない --- 素の `.map()` だと
@@ -109,6 +118,12 @@ export function RecordingPlayer({
   // props の資産一覧が更新されて選択中プロファイルが消えた場合は、effect で一度
   // 無効な値を描いてから直すのではなく、表示値をその場で先頭へ導出する。
   const selectedProfile = profiles.includes(profile) ? profile : (profiles[0] ?? '')
+  const selectedAsset = encodedAssets.find((a) => a.profile === selectedProfile)
+  // カット版を再生しているあいだは、原本の時間軸で作られたものを一切出さない。
+  // シークタイルは原本の時間軸で作られており、本編に残した OP などをカット版の
+  // 軸へ写像する処理を初版では持たない。チャプターの目盛り・一覧・スキップも
+  // 同じ理由で出さない（境界は原本の ms で、その動画には当てられない）。
+  const playingCut = selectedAsset?.cut === true
   const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
   const videoRef = useRef<HTMLVideoElement>(null)
   // タイルは録画ごとに 1 枚で profile に依存しないので、キーは recordingId だけ。
@@ -154,7 +169,10 @@ export function RecordingPlayer({
   // `chapters ?? []` を毎レンダー評価すると、未取得の間だけ配列の参照が毎回変わる。
   // 編集 UI は「参照が変わった = サーバーの値が変わった」と見なしてドラフトを
   // 追随させるので、参照はここで安定させておく。
-  const chapterSpans = useMemo(() => chapters ?? [], [chapters])
+  const chapterSpans = useMemo(
+    () => (playingCut ? [] : (chapters ?? [])),
+    [chapters, playingCut],
+  )
   const shownPreview =
     tilePreview?.recordingId === recordingId && tilesAvailableFor === recordingId ? tilePreview : null
   // プロファイル切替時に load したあとだけ currentTime を復元する
@@ -269,7 +287,6 @@ export function RecordingPlayer({
   }
 
   const src = recordingFileURL(recordingId, selectedProfile)
-  const selectedAsset = encodedAssets.find((a) => a.profile === selectedProfile)
   // EncodedAsset に container 列がないため、プロファイルから拡張子を推測せず、
   // ダウンロード名は提案どおり .mp4 に固定する。保存されるデータ自体には影響しない。
   const downloadFilename = `recording-${recordingId}-${selectedProfile}.mp4`
@@ -344,6 +361,12 @@ export function RecordingPlayer({
     return fraction * video.duration
   }
   const handleScrubMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    // カット版ではタイルを出さない（原本の時間軸で作られており、カット版の軸へ
+    // 写像していない。上の playingCut のコメント参照）。取りに行きもしない。
+    if (playingCut) {
+      setTilePreview(null)
+      return
+    }
     // プレビューはマウスだけに出す。タッチは pointerleave が来ないので、タップの
     // 後にプレビューが映像を覆ったまま残る。タップは帯のクリック（シーク）だけに効く。
     if (event.pointerType !== 'mouse') {
@@ -531,7 +554,7 @@ export function RecordingPlayer({
           <div className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 overflow-hidden rounded-full bg-muted">
             <div className="h-full bg-primary" style={{ width: `${playedFraction * 100}%` }} />
           </div>
-          {tilesRequestedFor === recordingId && (
+          {!playingCut && tilesRequestedFor === recordingId && (
             <img
               src={seekTilesURL(recordingId)}
               alt=""
@@ -610,7 +633,32 @@ export function RecordingPlayer({
         </div>
       )}
 
-      {onSaveChapters && onResetChapters && chapterVersion !== undefined && (
+      {/* カット版を再生しているあいだは編集 UI を出さない。境界は原本の ms で
+          置かれており、カット版の動画には当てられない（上の playingCut の
+          コメント参照）。 */}
+      {/* 「編集前の内容です」。凍結した keep 区間が現在のタイムラインと一致しない
+          カット版にだけ出す。**自動では作り直さない**ので、押すまでこの状態が
+          続く（自動で作り直すとユーザーが確認していない区間が黙って消える）。 */}
+      {playingCut && selectedAsset?.cutStale === true && (
+        <div className="flex max-w-3xl flex-wrap items-center gap-2 rounded border border-warning/50 bg-warning/10 px-3 py-2">
+          <p className="text-warning">
+            このカット版は編集前の内容です。現在のチャプターに合わせて作り直せます。
+          </p>
+          {onReencode !== undefined && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={reencodePending}
+              onClick={() => onReencode(selectedProfile)}
+            >
+              作り直す
+            </Button>
+          )}
+        </div>
+      )}
+
+      {!playingCut && onSaveChapters && onResetChapters && chapterVersion !== undefined && (
         <div className="max-w-3xl">
           <RecordingChapterEditor
             spans={chapterSpans}

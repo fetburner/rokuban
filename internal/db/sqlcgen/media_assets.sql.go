@@ -7,7 +7,10 @@ package sqlcgen
 
 import (
 	"context"
+	"encoding/json"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const createMediaAsset = `-- name: CreateMediaAsset :one
@@ -35,6 +38,16 @@ func (q *Queries) CreateMediaAsset(ctx context.Context, arg CreateMediaAssetPara
 	var id int64
 	err := row.Scan(&id)
 	return id, err
+}
+
+const deleteMediaAssetCuts = `-- name: DeleteMediaAssetCuts :exec
+DELETE FROM media_asset_cuts WHERE media_asset_id = $1
+`
+
+// 凍結した区間の差し替え（DELETE → InsertMediaAssetCuts の順に同一 tx で呼ぶ）。
+func (q *Queries) DeleteMediaAssetCuts(ctx context.Context, mediaAssetID int64) error {
+	_, err := q.db.Exec(ctx, deleteMediaAssetCuts, mediaAssetID)
+	return err
 }
 
 const getActiveEncodedMediaAssetID = `-- name: GetActiveEncodedMediaAssetID :one
@@ -106,6 +119,36 @@ func (q *Queries) GetActiveThumbnailMediaAssetID(ctx context.Context, recordingI
 	var id int64
 	err := row.Scan(&id)
 	return id, err
+}
+
+const getEncodedMediaAssetForProfile = `-- name: GetEncodedMediaAssetForProfile :one
+SELECT id, rel_path, state
+FROM media_assets
+WHERE recording_id = $1
+  AND kind = 'encoded'
+  AND profile = $2
+`
+
+type GetEncodedMediaAssetForProfileParams struct {
+	RecordingID int64
+	Profile     *string
+}
+
+type GetEncodedMediaAssetForProfileRow struct {
+	ID      int64
+	RelPath string
+	State   string
+}
+
+// 置き換え（cut プロファイルの作り直し）で、旧パスの unlink と世代番号の導出に
+// 要る行。**state を問わない**: tombstone（state='deleted'）の rel_path からも
+// 世代番号を読む（次のカット版が同じパスを再利用しないため）。UNIQUE
+// (recording_id, kind, profile) があるので高々 1 行。
+func (q *Queries) GetEncodedMediaAssetForProfile(ctx context.Context, arg GetEncodedMediaAssetForProfileParams) (GetEncodedMediaAssetForProfileRow, error) {
+	row := q.db.QueryRow(ctx, getEncodedMediaAssetForProfile, arg.RecordingID, arg.Profile)
+	var i GetEncodedMediaAssetForProfileRow
+	err := row.Scan(&i.ID, &i.RelPath, &i.State)
+	return i, err
 }
 
 const getEncodedMediaAssetForServing = `-- name: GetEncodedMediaAssetForServing :one
@@ -180,6 +223,28 @@ func (q *Queries) GetLiveMediaAssetByRelPath(ctx context.Context, relPath string
 	var recording_id int64
 	err := row.Scan(&recording_id)
 	return recording_id, err
+}
+
+const getMediaAssetKeepRangesJSON = `-- name: GetMediaAssetKeepRangesJSON :one
+SELECT COALESCE(
+    jsonb_agg(
+        jsonb_build_object('startMs', lower(k), 'endMs', upper(k))
+        ORDER BY lower(k)
+    ),
+    '[]'::jsonb
+)::jsonb AS ranges
+FROM media_asset_cuts c
+CROSS JOIN LATERAL unnest(c.keep_ranges) AS k
+WHERE c.media_asset_id = $1
+`
+
+// 凍結した区間（ms の半開区間）。行が無ければ空配列 --- COALESCE が要る
+// （集約は行が無いと NULL になる。GetRecordingCMRangesJSON と同じ形）。
+func (q *Queries) GetMediaAssetKeepRangesJSON(ctx context.Context, mediaAssetID int64) (json.RawMessage, error) {
+	row := q.db.QueryRow(ctx, getMediaAssetKeepRangesJSON, mediaAssetID)
+	var ranges json.RawMessage
+	err := row.Scan(&ranges)
+	return ranges, err
 }
 
 const getOriginalMediaAssetForServing = `-- name: GetOriginalMediaAssetForServing :one
@@ -333,6 +398,24 @@ func (q *Queries) GetThumbnailMediaAssetForServing(ctx context.Context, recordin
 	return i, err
 }
 
+const insertMediaAssetCuts = `-- name: InsertMediaAssetCuts :exec
+INSERT INTO media_asset_cuts (media_asset_id, keep_ranges)
+VALUES ($1, $2::int8multirange)
+`
+
+type InsertMediaAssetCutsParams struct {
+	MediaAssetID int64
+	KeepRanges   pgtype.Multirange[pgtype.Range[pgtype.Int8]]
+}
+
+// keep_ranges は ms の半開区間の列。境界はフレーム境界へ量子化済みで、昇順・
+// 非交差・非隣接に正規化して渡す（値どうしの一致比較をするため）。`isempty` を
+// CHECK が拒否するので、空の multirange は渡さない（呼び出し側が先に落とす）。
+func (q *Queries) InsertMediaAssetCuts(ctx context.Context, arg InsertMediaAssetCutsParams) error {
+	_, err := q.db.Exec(ctx, insertMediaAssetCuts, arg.MediaAssetID, arg.KeepRanges)
+	return err
+}
+
 const listRecordingIDsMissingThumbnail = `-- name: ListRecordingIDsMissingThumbnail :many
 SELECT o.recording_id
 FROM media_assets o
@@ -371,6 +454,28 @@ func (q *Queries) ListRecordingIDsMissingThumbnail(ctx context.Context) ([]int64
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateEncodedMediaAssetPath = `-- name: UpdateEncodedMediaAssetPath :exec
+UPDATE media_assets
+SET rel_path   = $1,
+    size_bytes = $2,
+    updated_at = now()
+WHERE id = $3
+`
+
+type UpdateEncodedMediaAssetPathParams struct {
+	RelPath   string
+	SizeBytes int64
+	ID        int64
+}
+
+// 置き換えの同一 tx 内でパスとサイズを差し替える。**行は消さない** --- 消して
+// 作り直すと rel_path の部分一意索引から一瞬外れ、その隙間に別の行が同じパスを
+// 取れてしまう。世代番号で必ず新しいパスになるので、UPDATE で足りる。
+func (q *Queries) UpdateEncodedMediaAssetPath(ctx context.Context, arg UpdateEncodedMediaAssetPathParams) error {
+	_, err := q.db.Exec(ctx, updateEncodedMediaAssetPath, arg.RelPath, arg.SizeBytes, arg.ID)
+	return err
 }
 
 const upsertEncodedMediaAsset = `-- name: UpsertEncodedMediaAsset :one

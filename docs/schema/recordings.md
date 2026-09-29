@@ -273,6 +273,7 @@ CREATE TABLE recording_encode_attempts (
 - **API は `river_job` を読まない**。内部の `EncodeReconcileWorker` は例外として、プロセス死回収のため `kind='encode'` かつ `state='running'` の古い行を読む。job-id advisory lock を取得できたときだけ、旧行を `discarded` にして代替ジョブを投入する。これは River の状態を API に露出するためではない。`recording_encode_attempts` は引き続き `EncodeWorker` が試行の開始・成功・失敗のタイミングで明示的に書き、River のリトライ回数やバックオフを API 契約に載せない。設定から消えたプロファイルは `known_profiles` で投入対象から外す。入力ファイルの破損など録画単位の恒久失敗は、desired が残る限り 15 分ごとに再投入される（`internal/worker/encode_reconcile.go`）
 - 消えるのは 2 経路だけである。1 つは `EncodeWorker.runEncode` の defer が成功時に試行行を消す経路である。DELETE は派生物 INSERT の直後ではなく、間に webhook 通知が入り同一トランザクションでもない。「完了しているのに失敗中」が読者から見えないのは、API 側が encoded 資産のあるプロファイルを試行状態の対象から先に除外しているためである。もう 1 つは `recordings` 行の削除（`ON DELETE CASCADE`）である。
 - PK が `(recording_id, profile)` の複合なのは、1 録画に複数プロファイルを事後追加できるため
+- **`awaiting_review` はこの表ではなく所有の行から導出する**（`cut: true` のプロファイルで `recording_chapter_ownership` が無い）。`queued`（ジョブが来る）とは別の主張で、投入側も実際に候補から外している（[storage/retention.md](../storage/retention.md) §7）。行が無いことと「来ない」ことは別なので、`queued` と混ぜない
 - `error` / `attempted_at` の読み手は **API ではなく運用者の SELECT** である（[runbook/troubleshooting.md](../runbook/troubleshooting.md)「エンコードが失敗している」）。これは `recording_ingest_progress` を運用者が読むのと同じ立場である。`EncodeJobStatus` は `profile` / `state` だけを配る ―― 失敗理由は ffmpeg の内部情報で、クライアントに配る契約に載せると切り詰め方や書式が API 互換の対象になる。`recording_ingest_progress` の `observed_at` のような停滞判定をこの表に持たせるなら、それを使う API/フロントと同じ PR で決める（不変条件 11）。プロセス死で `state='running'` のまま残った encode は、`attempted_at` が 1 分以上古く、かつ job-id advisory lock を取得できた場合だけ `encode_reconcile` が回収する。ライブの長時間 encode は回収せず、`recording_encode_attempts` は代替ジョブの開始まで `running` を保つ
 
 ## 6. media_assets — メディアアセット（永続資産）
@@ -311,3 +312,18 @@ CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted';
 - **deleted への遷移後も行は消さない**（tombstone）。`drop_stats` と元サイズは原本削除後も UI で見られる
 - 物理削除に至る 3 ソース（ごみ箱の猶予超過 / `until_encoded` の派生物完備 / 孤児回収）はすべて 1 本の削除 reconcile ループに集約し、一括削除サーキットブレーカーをループ全体に 1 つかける
 - **`missing_media_assets` は `media_assets` を指す衛星表**（`media_asset_id` を PK かつ FK に取り、`ON DELETE CASCADE`）。行の存在 = 直前の走査で `state = 'active'` なのに実体ファイルを観測できなかったという主張で、「観測できた」を表す行は作らない（不変条件 10）。書き手は削除 reconcile であって台帳を書く worker ではないので本体の列にしない（不変条件 13）。`rel_path` / `kind` は複製せず読み出しで JOIN する（不変条件 9）。**この表を根拠に `media_assets` を自動で消す経路は無い** —— 判定基準と 2 つの安全弁（エイジング / 全損シグネチャ）は [storage/retention.md](../storage/retention.md) §7「孤児回収の逆」が権威
+
+### media_asset_cuts — カット版が実際に適用した区間
+
+`cut: true` のプロファイルで作った派生物が、原本のどの区間を残したか。**導出値ではなく二度と再取得できない事実**である（不変条件 9）—— チャプターはユーザーが後から直せるので、現在のタイムラインから再計算すると「そのファイルがどう作られたか」を復元できない。この表があることで、現在のタイムラインと突き合わせて「編集前の内容です」を判定できる。
+
+```sql
+CREATE TABLE media_asset_cuts (
+    media_asset_id bigint PRIMARY KEY REFERENCES media_assets (id) ON DELETE CASCADE,
+    keep_ranges    int8multirange NOT NULL CHECK (NOT isempty(keep_ranges))
+);
+```
+
+- 主キーが `media_asset_id` なのは、行の寿命が派生物の行と同時だから（不変条件 12）。録画の行と同時に生まれて同時に死ぬのは `media_assets` の側である。書き手も `EncodeWorker` 1 人（同じ tx で行の `rel_path` と一緒に書く）なので本体の列にしない（不変条件 13）
+- `keep_ranges` は原本の最初の映像フレームを 0 とする ms の半開区間（`recording_chapter_spans` と同じ単位）。境界はフレーム境界へ量子化済み。**空はカット版を作れないことを意味するので CHECK で表現不可能にする**（不変条件 10）
+- **行の不在は「カット版ではない」**（cut でない encoded。不変条件 10）。API はこの不在を `encodedAssets[].cut` の偽に写す —— 「cut = false」を表す列を `media_assets` に足すと、2 つの主張が片方だけ古くなる

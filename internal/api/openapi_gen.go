@@ -108,14 +108,17 @@ func (e CircuitBreakerName) Valid() bool {
 
 // Defines values for EncodeJobStatusState.
 const (
-	EncodeJobStatusStateFailed  EncodeJobStatusState = "failed"
-	EncodeJobStatusStateQueued  EncodeJobStatusState = "queued"
-	EncodeJobStatusStateRunning EncodeJobStatusState = "running"
+	EncodeJobStatusStateAwaitingReview EncodeJobStatusState = "awaiting_review"
+	EncodeJobStatusStateFailed         EncodeJobStatusState = "failed"
+	EncodeJobStatusStateQueued         EncodeJobStatusState = "queued"
+	EncodeJobStatusStateRunning        EncodeJobStatusState = "running"
 )
 
 // Valid indicates whether the value is a known member of the EncodeJobStatusState enum.
 func (e EncodeJobStatusState) Valid() bool {
 	switch e {
+	case EncodeJobStatusStateAwaitingReview:
+		return true
 	case EncodeJobStatusStateFailed:
 		return true
 	case EncodeJobStatusStateQueued:
@@ -1023,6 +1026,13 @@ type EncodeJobStatus struct {
 	//   と、api が現在の設定にあるプロファイル一覧を知っていて、かつ
 	//   そのプロファイルが設定から消えていて試行行も無い場合は、この
 	//   プロファイルの要素自体が省略される
+	// - `awaiting_review`: `cut: true` のプロファイルで、まだチャプターを
+	//   確認していない（`recording_chapter_ownership` の行が無い）。
+	//   **`queued` とは別の状態**である --- `queued` は「ジョブが来る」、
+	//   `awaiting_review` は「ユーザーが確認するまでジョブは来ない」を
+	//   表す。投入側（`EnqueueMissingEncodes` /
+	//   `ListMissingEncodeProfiles`）がこの条件で候補から外しているので、
+	//   確認するまでこの状態のままになる。確認後に次の投入パスが拾う
 	// - `running`: いま ffmpeg が走っている
 	// - `failed`: 直前の試行が失敗した。**`failed` は「二度と来ない」の
 	//   断定ではない** --- 失敗したジョブはジョブキューの既定のリトライ
@@ -1050,6 +1060,13 @@ type EncodeJobStatus struct {
 //     と、api が現在の設定にあるプロファイル一覧を知っていて、かつ
 //     そのプロファイルが設定から消えていて試行行も無い場合は、この
 //     プロファイルの要素自体が省略される
+//   - `awaiting_review`: `cut: true` のプロファイルで、まだチャプターを
+//     確認していない（`recording_chapter_ownership` の行が無い）。
+//     **`queued` とは別の状態**である --- `queued` は「ジョブが来る」、
+//     `awaiting_review` は「ユーザーが確認するまでジョブは来ない」を
+//     表す。投入側（`EnqueueMissingEncodes` /
+//     `ListMissingEncodeProfiles`）がこの条件で候補から外しているので、
+//     確認するまでこの状態のままになる。確認後に次の投入パスが拾う
 //   - `running`: いま ffmpeg が走っている
 //   - `failed`: 直前の試行が失敗した。**`failed` は「二度と来ない」の
 //     断定ではない** --- 失敗したジョブはジョブキューの既定のリトライ
@@ -1086,7 +1103,27 @@ type EncodeQueueSummary struct {
 
 // EncodedAsset defines model for EncodedAsset.
 type EncodedAsset struct {
-	Profile string `json:"profile"`
+	// Cut `encode.profiles[].cut: true` のプロファイルで作られたカット版
+	// （確認済みチャプターの `cut=true` 区間を除いた本編だけ）か。
+	// **クライアントはカット版を再生しているあいだ、シークプレビューと
+	// チャプターを出さない** --- タイルもチャプターも原本の時間軸で
+	// 作られており、本編に残した OP などをカット版の軸へ写像する処理を
+	// 初版では持たない（docs/frontend/recordings.md）。
+	Cut *bool `json:"cut,omitempty"`
+
+	// CutStale 凍結した keep 区間（`media_asset_cuts.keep_ranges`）が現在の量子化
+	// 済みタイムラインと一致しない = 「編集前の内容です」。
+	//
+	// チャプターを直すと、その録画のカット版は**自動では作り直さない**。
+	// 作り直しは `POST /api/recordings/{id}/encoded/{profile}/reencode`
+	// というユーザーの明示的な操作で行う（自動で作り直すと、ユーザーが
+	// 確認していない区間が黙って本編から消える）。
+	//
+	// `cut` が真のときだけ意味を持つ。判定は保存値ではなく毎回の導出
+	// （api が `chapters.Derive` を通した keep 区間と突き合わせる。
+	// 不変条件 9）。
+	CutStale *bool  `json:"cutStale,omitempty"`
+	Profile  string `json:"profile"`
 
 	// SizeBytes encoded 派生物の実サイズ。`media_assets.size_bytes` は NOT NULL
 	// なので active な行が存在する限り常に付く（未検証の断言にしないため:
@@ -2105,6 +2142,9 @@ type ServerInterface interface {
 	// AddRecordingEncodeProfiles Request additional encode profiles for an already-ingested recording
 	// (POST /api/recordings/{id}/encode-profiles)
 	AddRecordingEncodeProfiles(w http.ResponseWriter, r *http.Request, id int64)
+	// ReencodeRecordingProfile Rebuild the cut version of a recording with the current chapters
+	// (POST /api/recordings/{id}/encoded/{profile}/reencode)
+	ReencodeRecordingProfile(w http.ResponseWriter, r *http.Request, id int64, profile string)
 	// PurgeRecording Mark a recording for immediate physical purge
 	// (POST /api/recordings/{id}/purge)
 	PurgeRecording(w http.ResponseWriter, r *http.Request, id int64)
@@ -2300,6 +2340,12 @@ func (_ Unimplemented) SetRecordingEncodePolicy(w http.ResponseWriter, r *http.R
 // AddRecordingEncodeProfiles Request additional encode profiles for an already-ingested recording
 // (POST /api/recordings/{id}/encode-profiles)
 func (_ Unimplemented) AddRecordingEncodeProfiles(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ReencodeRecordingProfile Rebuild the cut version of a recording with the current chapters
+// (POST /api/recordings/{id}/encoded/{profile}/reencode)
+func (_ Unimplemented) ReencodeRecordingProfile(w http.ResponseWriter, r *http.Request, id int64, profile string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -3127,6 +3173,41 @@ func (siw *ServerInterfaceWrapper) AddRecordingEncodeProfiles(w http.ResponseWri
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.AddRecordingEncodeProfiles(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ReencodeRecordingProfile operation middleware
+func (siw *ServerInterfaceWrapper) ReencodeRecordingProfile(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "profile" -------------
+	var profile string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "profile", chi.URLParam(r, "profile"), &profile, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "profile", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ReencodeRecordingProfile(w, r, id, profile)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3982,6 +4063,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/api/recordings/{id}/encode-profiles", wrapper.AddRecordingEncodeProfiles)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/recordings/{id}/encoded/{profile}/reencode", wrapper.ReencodeRecordingProfile)
+	})
+	r.Group(func(r chi.Router) {
 		r.Patch(options.BaseURL+"/api/recordings/{id}/encode-policy", wrapper.SetRecordingEncodePolicy)
 	})
 	r.Group(func(r chi.Router) {
@@ -4686,6 +4770,65 @@ func (response AddRecordingEncodeProfiles404JSONResponse) VisitAddRecordingEncod
 type AddRecordingEncodeProfiles409JSONResponse ErrorResponse
 
 func (response AddRecordingEncodeProfiles409JSONResponse) VisitAddRecordingEncodeProfilesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReencodeRecordingProfileRequestObject struct {
+	Id      int64  `json:"id"`
+	Profile string `json:"profile"`
+}
+
+type ReencodeRecordingProfileResponseObject interface {
+	VisitReencodeRecordingProfileResponse(w http.ResponseWriter) error
+}
+
+type ReencodeRecordingProfile204Response struct {
+}
+
+func (response ReencodeRecordingProfile204Response) VisitReencodeRecordingProfileResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type ReencodeRecordingProfile400JSONResponse ErrorResponse
+
+func (response ReencodeRecordingProfile400JSONResponse) VisitReencodeRecordingProfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReencodeRecordingProfile404JSONResponse ErrorResponse
+
+func (response ReencodeRecordingProfile404JSONResponse) VisitReencodeRecordingProfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReencodeRecordingProfile409JSONResponse ErrorResponse
+
+func (response ReencodeRecordingProfile409JSONResponse) VisitReencodeRecordingProfileResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -5558,6 +5701,9 @@ type StrictServerInterface interface {
 	// AddRecordingEncodeProfiles Request additional encode profiles for an already-ingested recording
 	// (POST /api/recordings/{id}/encode-profiles)
 	AddRecordingEncodeProfiles(ctx context.Context, request AddRecordingEncodeProfilesRequestObject) (AddRecordingEncodeProfilesResponseObject, error)
+	// ReencodeRecordingProfile Rebuild the cut version of a recording with the current chapters
+	// (POST /api/recordings/{id}/encoded/{profile}/reencode)
+	ReencodeRecordingProfile(ctx context.Context, request ReencodeRecordingProfileRequestObject) (ReencodeRecordingProfileResponseObject, error)
 	// PurgeRecording Mark a recording for immediate physical purge
 	// (POST /api/recordings/{id}/purge)
 	PurgeRecording(ctx context.Context, request PurgeRecordingRequestObject) (PurgeRecordingResponseObject, error)
@@ -6199,6 +6345,33 @@ func (sh *strictHandler) AddRecordingEncodeProfiles(w http.ResponseWriter, r *ht
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(AddRecordingEncodeProfilesResponseObject); ok {
 		if err := validResponse.VisitAddRecordingEncodeProfilesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ReencodeRecordingProfile operation middleware
+func (sh *strictHandler) ReencodeRecordingProfile(w http.ResponseWriter, r *http.Request, id int64, profile string) {
+	var request ReencodeRecordingProfileRequestObject
+
+	request.Id = id
+	request.Profile = profile
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ReencodeRecordingProfile(ctx, request.(ReencodeRecordingProfileRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ReencodeRecordingProfile")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ReencodeRecordingProfileResponseObject); ok {
+		if err := validResponse.VisitReencodeRecordingProfileResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
