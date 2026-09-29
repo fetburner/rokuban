@@ -332,16 +332,14 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 		withSubtitles: withSubtitles,
 		cut:           cut,
 	})
-	if errors.Is(err, errEncodePlanStale) {
-		// 別の実行が先に行を進め、区間が自分の keep と違う。skip して成功にすると、
-		// 新しい chapters の編集が黙って消える（再投入されない）ので、snooze で
-		// 戻して loadCutContext から現在の keep を読み直す。River の snooze は
-		// attempt を消費しない。
-		log.Info("encode: publish plan is stale, snoozing to replan")
-		result = "replan"
-		return river.JobSnooze(encodeReplanDelay)
-	}
 	if err != nil {
+		var snooze *rivertype.JobSnoozeError
+		if errors.As(err, &snooze) {
+			// 計画が古い。成功で skip すると新しい chapters の編集が消えるので、
+			// snooze のまま返して現在の keep から計画をやり直させる（attempt は消費しない）。
+			log.Info("encode: publish plan is stale, snoozing to replan")
+			result = "replan"
+		}
 		return err
 	}
 	if !published {
@@ -699,12 +697,8 @@ func encodeCommandError(ctx context.Context, cmd *exec.Cmd, waitErr error, stder
 	return fmt.Errorf("ffmpeg failed: %w", waitErr)
 }
 
-// errEncodePlanStale は publishEncoded が、tx 内の判定で計画が古いと分かったときに
-// 返す（temp は消してあり、DB にも canonical にも触っていない）。runEncode が
-// River の snooze に変えて、現在の keep から計画をやり直させる。
-var errEncodePlanStale = errors.New("encode: publish plan is stale")
-
-// encodeReplanDelay は計画が古かった実行を再実行するまでの待ち。
+// encodeReplanDelay は、publishEncoded が tx 内の判定で計画が古いと分かったとき
+// （temp は消してあり、DB にも canonical にも触っていない）に返す snooze の待ち。
 const encodeReplanDelay = 10 * time.Second
 
 // beforeEncodeLock / beforeEncodeCommit はテストが公開手順の途中で実行を止め、
@@ -858,7 +852,7 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		return 0, false, err
 	}
 	if plan.stale {
-		return 0, false, errEncodePlanStale
+		return 0, false, river.JobSnooze(encodeReplanDelay)
 	}
 	if plan.skip {
 		return 0, false, nil

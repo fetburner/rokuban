@@ -339,8 +339,9 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 		t.Fatalf("publishEncoded published over a newer row")
 	}
 	if rowState == "active" {
-		if !errors.Is(r.err, errEncodePlanStale) {
-			t.Fatalf("publishEncoded err = %v, want errEncodePlanStale (replan via snooze, not success)", r.err)
+		var snooze *rivertype.JobSnoozeError
+		if !errors.As(r.err, &snooze) {
+			t.Fatalf("publishEncoded err = %v, want *rivertype.JobSnoozeError (replan via snooze, not success)", r.err)
 		}
 	} else if r.err != nil {
 		t.Fatalf("publishEncoded err = %v, want a successful skip", r.err)
