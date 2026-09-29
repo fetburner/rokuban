@@ -85,7 +85,7 @@ jobs:
             sed \
               -e 's/^  host: postgres$/  host: localhost/' \
               -e 's/^  database: rokuban$/  database: rokuban_test/' \
-              -e "s#^  media_dir: /mnt/media$#  media_dir: ${RUNNER_TEMP}/rokuban-e2e-media#" \
+              -e "s#^  media_dir: /mnt/media\$#  media_dir: ${RUNNER_TEMP}/rokuban-e2e-media#" \
               config.ci.yml
           } > "${RUNNER_TEMP}/rokuban-e2e.yml"
           mkdir -p "${RUNNER_TEMP}/rokuban-e2e-media"
