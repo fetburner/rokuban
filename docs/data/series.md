@@ -78,12 +78,13 @@ LIKE のエスケープは SQL 関数に一本化する。分類ルールは DB 
 `label_rules` の変更も通知するので、キーワードを変えた直後は古い棚が一度返り、再評価の完了後に割れる。
 
 `series_key` の本体を変えるマイグレーションでは、`recordings` の既存行の生成列は再計算されない
-（title を書き換えない限り UPDATE で再計算されず、`REINDEX` でも直らない）。
+（SET 句に title を含まない UPDATE では再計算されず、`REINDEX` でも直らない）。
 列を作り直す順序は次のとおりである。
 `DROP VIEW recording_series` → `DROP COLUMN` → `ADD COLUMN` → `CREATE INDEX` → `CREATE VIEW`。
-（ビューが列を参照しているので、列だけは落とせない）。関数を変えたら列も変わることを、
+ビューが列を参照しているので、列だけは落とせない。関数を変えたら列も変わることを、
 マイグレーションのテストで確かめる。
-`epg_programs.series_key` は同期が `ON CONFLICT DO UPDATE` で全行を書き直すので、この手順は要らず、次の同期で値が入れ替わる。
+`epg_programs.series_key` は同期の `ON CONFLICT DO UPDATE` が `name` を毎回 SET するので、
+この手順は要らず、次の同期で値が入れ替わる。
 
 ### 実装で決めたこと
 

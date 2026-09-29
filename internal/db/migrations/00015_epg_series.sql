@@ -4,8 +4,8 @@
 -- 書くループが無いので導出が事実を上書きする経路が無い（不変条件 9）。
 --
 -- series_key の本体を差し替えても、列を作り直す手順は要らない。STORED 生成列は
--- UPDATE でも再計算され、EPG 同期は UpsertEpgProgram の ON CONFLICT DO UPDATE で
--- 全行を書き直すので、次の同期で値が入れ替わる。
+-- 依存する列（name）を SET 句に含む UPDATE で再計算される。UpsertEpgProgram の
+-- ON CONFLICT DO UPDATE は name を毎回書くので、次の同期で値が入れ替わる。
 ALTER TABLE public.epg_programs
     ADD COLUMN series_key text GENERATED ALWAYS AS (public.series_key(name)) STORED;
 

@@ -607,8 +607,8 @@ export function RecordingDetail({
  *
  * 引き方は `?seriesOf=<id>&order=asc&from=<起点の startAt>` で、返るページは
  * **起点の時刻から始まる昇順の窓**である。起点より後の回は通常このページの
- * 先頭側に入るので、1 ページで足りる（再生できない行が 49 件以上続くとはみ出し、
- * その場合は「次のエピソード」が出ない）（`lib/series.ts` の `nextEpisode` 参照）。
+ * 先頭側に入るので、通常は 1 ページで足りる。再生できない行が 49 件以上続くと
+ * はみ出し、その場合は「次のエピソード」が出ない（`lib/series.ts` の `nextEpisode`）。
  */
 const seriesNextPageSize = 50
 
