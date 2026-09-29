@@ -269,6 +269,30 @@ func TestListRecordingUpcoming_ReturnsFutureProgramsOfTheSeries(t *testing.T) {
 	}
 }
 
+// purge 済みの tombstone を起点にしても、`recording_series` は `purged_at` で
+// 絞らないので、そのシリーズの未来の番組を 200 で返す（ハブは purged の起点でも開く）。
+func TestListRecordingUpcoming_FromPurgedTombstoneReturnsTheSeries(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+
+	base := time.Now().Truncate(time.Second)
+	origin := seedRecording(t, pool, "アニメ　作品X　第1話", base.Add(-24*time.Hour), "finished", 1)
+	seedEpgProgramAt(t, pool, db.DefaultSite, 1, "アニメ　作品X　第2話", base.Add(24*time.Hour))
+	if _, err := pool.Exec(context.Background(),
+		"UPDATE recordings SET deleted_at = now(), purged_at = now() WHERE id = $1", origin); err != nil {
+		t.Fatalf("purging: %v", err)
+	}
+
+	var got []ProgramSearchMatch
+	resp := getJSON(t, srv.URL+fmt.Sprintf("/api/recordings/%d/upcoming", origin), &got)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if len(got) != 1 || got[0].ProgramId != 1 {
+		t.Errorf("upcoming from a purged origin = %+v, want the one future program of the series", got)
+	}
+}
+
 // 起点の実効シリーズが NULL、または行が無ければ空配列（null ではなく `[]`）。
 func TestListRecordingUpcoming_EmptySeriesIsAnEmptyArray(t *testing.T) {
 	pool := testutil.SetupDB(t)
