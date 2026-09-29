@@ -81,8 +81,13 @@ function stubApi(
   return { requested }
 }
 
+/** originFetches は起点の単体 GET（`/api/recordings/5`）の呼び出し回数。 */
+const originFetches = (requested: string[]) =>
+  requested.filter((r) => r.startsWith('/api/recordings/5?')).length
+
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.useRealTimers()
 })
 
 describe('SeriesHubPage', () => {
@@ -188,8 +193,9 @@ describe('SeriesHubPage', () => {
   // 一覧（`?seriesOf=`）と次回は行が残るのでシリーズを返す。この差で purged を
   // 見分ける。**このテストは、404 で画面全体をエラーにしていた実装で落ちる。**
   it('起点が purge 済み（単体 GET が 404）でも、一覧と次回を出す', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
     const origin = recording({ id: 5, title: 'アニメ　作品X　第1話', series: '作品X' })
-    stubApi(
+    const { requested } = stubApi(
       origin,
       [program({ programId: 11, name: 'アニメ　作品X　第3話' })],
       [
@@ -202,6 +208,9 @@ describe('SeriesHubPage', () => {
       path: '/recordings/$id/series',
       initialEntries: ['/recordings/5/series'],
     })
+    // 404 は再試行しない（既定なら backoff 1+2+4 秒で計 4 回になる）。
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(originFetches(requested)).toBe(1)
 
     // 見出しは起点ではなく、一覧の先頭（最も新しい回）の生のタイトル。
     const heading = await screen.findByRole('heading', { level: 2 })
@@ -272,17 +281,24 @@ describe('SeriesHubPage', () => {
   // 404 以外のエラーは purged と見なさない。一覧が返っていても開かない。
   it('起点の取得が 500 なら purged と見なさずエラーを出す', async () => {
     const origin = recording({ id: 5, title: 'アニメ　作品X　第1話', series: '作品X' })
-    stubApi(origin, [], [recording({ id: 6, title: 'アニメ　作品X　第2話', series: '作品X' })], 500)
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const { requested } = stubApi(
+      origin,
+      [],
+      [recording({ id: 6, title: 'アニメ　作品X　第2話', series: '作品X' })],
+      500,
+    )
     renderInRouter(<SeriesHubPage />, {
       path: '/recordings/$id/series',
       initialEntries: ['/recordings/5/series'],
     })
 
     // 404 以外は起点クエリの再試行（3 回。テストの QueryClient の retry: false より
-    // クエリ側の設定が勝つ）を経てから出るので長めに待つ。
-    await waitFor(() => expect(screen.getByText('録画が見つかりません')).toBeInTheDocument(), {
-      timeout: 15000,
-    })
+    // クエリ側の設定が勝つ）を経てから出る。backoff（1+2+4 秒）は偽の時計で進める。
+    await vi.advanceTimersByTimeAsync(10_000)
+    await waitFor(() => expect(screen.getByText('録画が見つかりません')).toBeInTheDocument())
     expect(screen.queryByRole('region', { name: 'このシリーズの録画' })).not.toBeInTheDocument()
-  }, 20000)
+    // 初回 + 再試行 3 回。retry の行を消すと 1 回になる。
+    expect(originFetches(requested)).toBe(4)
+  })
 })
