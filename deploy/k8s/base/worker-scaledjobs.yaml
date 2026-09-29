@@ -4,7 +4,7 @@
 #
 #   - **ScaledJob はロールではなくキュー単位に作る**（docs/operations.md §5
 #     「worker: KEDA ScaledJob」）。切る軸は「寿命 × site 束縛」の 2 つで、
-#     長時間ジョブ（`encode`）と短いジョブ（`ruler` / `storage`）を混ぜない ---
+#     長時間ジョブ（`encode` / `cm_detect`）と短いジョブ（`ruler` / `storage`）を混ぜない ---
 #     `terminationGracePeriodSeconds` が桁で違うので、混ぜると短い側に合わせて
 #     長いジョブが殺されるか、長い側に合わせて全体のスケールインが遅くなる
 #   - **site 束縛キューはここに無い**（`ingest` / `epg` / `reconciler` /
@@ -377,6 +377,104 @@ spec:
       metadata:
         query: >-
           SELECT count(*) FROM river_job WHERE queue = 'thumbnail' AND state IN ('available','retryable')
+        targetQueryValue: "1"
+        connectionFromEnv: POSTGRES_CONNECTION_STRING
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: rokuban-worker-cm-detect
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: worker
+    rokuban.fetburner.net/queue: cm_detect
+spec:
+  pollingInterval: 30
+  # JLSE の TS 解析は CPU を使うため、録画 1 件ずつ処理する。
+  maxReplicaCount: 1
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  scalingStrategy:
+    strategy: accurate
+  rollout:
+    strategy: gradual
+  jobTargetRef:
+    backoffLimit: 0
+    template:
+      metadata:
+        labels:
+          app.kubernetes.io/name: rokuban
+          app.kubernetes.io/component: worker
+      spec:
+        restartPolicy: Never
+        enableServiceLinks: false
+        automountServiceAccountToken: false
+        terminationGracePeriodSeconds: 90
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
+          runAsGroup: 65534
+          fsGroup: 65534
+          fsGroupChangePolicy: OnRootMismatch
+          seccompProfile:
+            type: RuntimeDefault
+        containers:
+          - name: worker
+            image: ghcr.io/fetburner/rokuban-full:latest
+            args:
+              - server
+              - --roles
+              - worker
+              - --once
+              - --queues
+              - cm_detect
+              - --sites=
+              - --soft-stop-timeout
+              - 60s
+              - --config
+              - /etc/rokuban/config.yml
+            env:
+              - name: POSTGRES_CONNECTION_STRING
+                valueFrom:
+                  secretKeyRef:
+                    name: rokuban-secrets
+                    key: POSTGRES_CONNECTION_STRING
+            envFrom:
+              - secretRef:
+                  name: rokuban-secrets
+            volumeMounts:
+              - name: config
+                mountPath: /etc/rokuban
+                readOnly: true
+              - name: media
+                mountPath: /mnt/media
+              - name: scratch
+                mountPath: /var/tmp/rokuban
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 250m
+                memory: 256Mi
+              limits:
+                memory: 1Gi
+        volumes:
+          - name: config
+            configMap:
+              name: rokuban-config
+          - name: media
+            persistentVolumeClaim:
+              claimName: rokuban-media
+          - name: scratch
+            emptyDir: {}
+  triggers:
+    - type: postgresql
+      metadata:
+        query: >-
+          SELECT count(*) FROM river_job WHERE queue = 'cm_detect' AND state IN ('available','retryable')
         targetQueryValue: "1"
         connectionFromEnv: POSTGRES_CONNECTION_STRING
 ---

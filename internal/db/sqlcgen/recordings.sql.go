@@ -60,11 +60,12 @@ func (q *Queries) AppendQualityEventsIfMissing(ctx context.Context, arg AppendQu
 }
 
 const appendRecordingEncodeProfiles = `-- name: AppendRecordingEncodeProfiles :exec
-INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
+INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
 VALUES (
     $1,
     'always',
-    (SELECT coalesce(array_agg(DISTINCT p ORDER BY p), '{}') FROM unnest($2::text[]) AS p)
+    (SELECT coalesce(array_agg(DISTINCT p ORDER BY p), '{}') FROM unnest($2::text[]) AS p),
+    false
 )
 ON CONFLICT (recording_id) DO UPDATE SET
     encode_profiles = (
@@ -100,6 +101,18 @@ type AppendRecordingEncodeProfilesParams struct {
 // union + dedup で追記し、keep_original は変更しない。
 func (q *Queries) AppendRecordingEncodeProfiles(ctx context.Context, arg AppendRecordingEncodeProfilesParams) error {
 	_, err := q.db.Exec(ctx, appendRecordingEncodeProfiles, arg.ID, arg.Profiles)
+	return err
+}
+
+const clearRecordingCMDetection = `-- name: ClearRecordingCMDetection :exec
+UPDATE recording_encode_policy
+SET cm_detect = false, updated_at = now()
+WHERE recording_id = $1
+`
+
+// 未凍結録画で false は既定値との同値なので no-op。凍結済み policy だけ更新する。
+func (q *Queries) ClearRecordingCMDetection(ctx context.Context, recordingID int64) error {
+	_, err := q.db.Exec(ctx, clearRecordingCMDetection, recordingID)
 	return err
 }
 
@@ -333,14 +346,15 @@ func (q *Queries) CreateRecording(ctx context.Context, arg CreateRecordingParams
 }
 
 const freezeRecordingEncodePolicy = `-- name: FreezeRecordingEncodePolicy :exec
-INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
-VALUES ($1, $2, $3::text[])
+INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+VALUES ($1, $2, $3::text[], $4)
 `
 
 type FreezeRecordingEncodePolicyParams struct {
 	RecordingID    int64
 	KeepOriginal   string
 	EncodeProfiles []string
+	CmDetect       bool
 }
 
 // ingest が原本 media_asset のコミットと同じ tx で焼く「この録画の望ましい
@@ -361,17 +375,23 @@ type FreezeRecordingEncodePolicyParams struct {
 // 「解決に失敗しても凍結する」参照）。行が無いのは原本がまだコミットされて
 // いない（ingest 未完了）ときだけ。
 func (q *Queries) FreezeRecordingEncodePolicy(ctx context.Context, arg FreezeRecordingEncodePolicyParams) error {
-	_, err := q.db.Exec(ctx, freezeRecordingEncodePolicy, arg.RecordingID, arg.KeepOriginal, arg.EncodeProfiles)
+	_, err := q.db.Exec(ctx, freezeRecordingEncodePolicy,
+		arg.RecordingID,
+		arg.KeepOriginal,
+		arg.EncodeProfiles,
+		arg.CmDetect,
+	)
 	return err
 }
 
 const getRecordingEncodePolicy = `-- name: GetRecordingEncodePolicy :one
-SELECT keep_original, encode_profiles FROM recording_encode_policy WHERE recording_id = $1
+SELECT keep_original, encode_profiles, cm_detect FROM recording_encode_policy WHERE recording_id = $1
 `
 
 type GetRecordingEncodePolicyRow struct {
 	KeepOriginal   string
 	EncodeProfiles []string
+	CmDetect       bool
 }
 
 // EnqueueMissingEncodes（internal/worker/encode.go）が desired
@@ -382,7 +402,7 @@ type GetRecordingEncodePolicyRow struct {
 func (q *Queries) GetRecordingEncodePolicy(ctx context.Context, recordingID int64) (GetRecordingEncodePolicyRow, error) {
 	row := q.db.QueryRow(ctx, getRecordingEncodePolicy, recordingID)
 	var i GetRecordingEncodePolicyRow
-	err := row.Scan(&i.KeepOriginal, &i.EncodeProfiles)
+	err := row.Scan(&i.KeepOriginal, &i.EncodeProfiles, &i.CmDetect)
 	return i, err
 }
 
@@ -613,6 +633,40 @@ func (q *Queries) ListRecordings(ctx context.Context, site string) ([]ListRecord
 		return nil, err
 	}
 	return items, nil
+}
+
+const setRecordingCMDetection = `-- name: SetRecordingCMDetection :execrows
+INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+SELECT r.id, 'always', '{}', true
+FROM recordings r
+JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original' AND o.state = 'active'
+WHERE r.id = $1
+  AND r.deleted_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = o.id)
+ON CONFLICT (recording_id) DO UPDATE
+SET cm_detect = true,
+    updated_at = now()
+WHERE EXISTS (
+    SELECT 1 FROM media_assets o
+    WHERE o.recording_id = recording_encode_policy.recording_id
+      AND o.kind = 'original' AND o.state = 'active'
+      AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = o.id)
+)
+  AND EXISTS (
+    SELECT 1 FROM recordings r
+    WHERE r.id = recording_encode_policy.recording_id AND r.deleted_at IS NULL
+)
+`
+
+// cm_detect の切り替えは凍結済み policy の更新、または active な原本を持つ
+// 未凍結録画の初回凍結として適用する。原本の状態はこの INSERT/UPDATE の瞬間に
+// 再評価し、読み取りと書き込みの間に原本が消える窓を作らない。
+func (q *Queries) SetRecordingCMDetection(ctx context.Context, recordingID int64) (int64, error) {
+	result, err := q.db.Exec(ctx, setRecordingCMDetection, recordingID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setRecordingKeepOriginal = `-- name: SetRecordingKeepOriginal :execrows

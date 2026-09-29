@@ -274,13 +274,14 @@ ON CONFLICT (id) DO UPDATE SET
 -- いう意味論のまま復元される）。
 -- name: CatalogUpsertRecordingEncodePolicy :exec
 INSERT INTO recording_encode_policy (
-    recording_id, keep_original, encode_profiles, created_at, updated_at
-) VALUES ($1, $2, $3, $4, $5)
+    recording_id, keep_original, encode_profiles, created_at, updated_at, cm_detect
+) VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (recording_id) DO UPDATE SET
     keep_original   = EXCLUDED.keep_original,
     encode_profiles = EXCLUDED.encode_profiles,
     created_at      = EXCLUDED.created_at,
-    updated_at      = EXCLUDED.updated_at;
+    updated_at      = EXCLUDED.updated_at,
+    cm_detect       = EXCLUDED.cm_detect;
 
 -- recording_purge_requests 衛星表の rescue。要求 = 行の存在という意味論を
 -- rescue でも保つ --- doc.RecordingPurgeRequests に載っている録画だけ INSERT し、

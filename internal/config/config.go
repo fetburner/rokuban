@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -28,6 +29,7 @@ type Config struct {
 	Reconciler ReconcilerConfig `yaml:"reconciler"`
 	Worker     WorkerConfig     `yaml:"worker"`
 	Encode     EncodeConfig     `yaml:"encode"`
+	CMDetect   CMDetectConfig   `yaml:"cm_detect"`
 	Live       LiveConfig       `yaml:"live"`
 	Webhook    WebhookConfig    `yaml:"webhook"`
 	Cleanup    CleanupConfig    `yaml:"cleanup"`
@@ -377,6 +379,36 @@ type EncodeConfig struct {
 	ThumbnailConcurrency int `yaml:"thumbnail_concurrency"`
 
 	Profiles []EncodeProfile `yaml:"profiles"`
+}
+
+// CMDetectConfig configures optional CM section detection. JLSE executables are
+// installed only in the self-built full image.
+type CMDetectConfig struct {
+	// Enabled snapshots this setting into each recording policy at ingest time.
+	Enabled bool `yaml:"enabled"`
+
+	// BinaryDir contains logoframe, chapter_exe, and join_logo_scp.
+	BinaryDir string `yaml:"binary_dir"`
+}
+
+// CMDetectRulePath is the fixed JL standard rule set included in Dockerfile.full.
+const CMDetectRulePath = "/usr/local/share/rokuban/cm_detect/JL_標準.txt"
+
+// ValidateTools checks the CM analysis executables required by enabled workers.
+func (c CMDetectConfig) ValidateTools() error {
+	for _, name := range []string{"logoframe", "chapter_exe", "join_logo_scp"} {
+		path := name
+		if c.BinaryDir != "" {
+			path = filepath.Join(c.BinaryDir, name)
+		}
+		if _, err := exec.LookPath(path); err != nil {
+			return fmt.Errorf("cm_detect binary %q not found; build the self-contained image with Dockerfile.full: %w", path, err)
+		}
+	}
+	if _, err := os.Stat(CMDetectRulePath); err != nil {
+		return fmt.Errorf("cm_detect rule file %q not found; build the self-contained image with Dockerfile.full: %w", CMDetectRulePath, err)
+	}
+	return nil
 }
 
 // EncodeProfile は構造化エンコードプロファイルの定義。
@@ -1021,6 +1053,9 @@ func defaults() Config {
 			FFprobe:              "ffprobe",
 			Concurrency:          1,
 			ThumbnailConcurrency: 1,
+		},
+		CMDetect: CMDetectConfig{
+			BinaryDir: "/usr/local/bin",
 		},
 		Live: LiveConfig{
 			FFmpeg:  "ffmpeg",

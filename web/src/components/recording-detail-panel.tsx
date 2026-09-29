@@ -1,18 +1,29 @@
 import { Link } from '@tanstack/react-router'
+import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { useListLiveProfiles, useListRules, useListSites, type Recording } from '@/api/generated'
-import { unwrap } from '@/api/unwrap'
+import {
+  useListLiveProfiles,
+  useListRules,
+  useListSites,
+  useRetryRecordingCMDetection,
+  useSetRecordingEncodePolicy,
+  type Recording,
+} from '@/api/generated'
+import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { DropStatsTable } from '@/components/drop-stats-table'
 import { RecordingActions } from '@/components/recording-actions'
 import { RecordingPlayer } from '@/components/recording-player'
 import { LivePlayer } from '@/components/live-player'
+import { useToast } from '@/components/toaster'
+import { Button } from '@/components/ui/button'
 import { formatBytes, formatDateTime, formatTime } from '@/lib/format'
 import { ingestDisplay, type IngestDisplay } from '@/lib/ingest'
 import { useLiveEnabled } from '@/lib/capabilities'
 import { liveProfileLabel, validLiveProfile } from '@/lib/live'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { shouldShowRecordingSite, sourceLabels } from '@/lib/recording-search'
+import { recordingsQueryKeyPrefix } from '@/lib/events'
 
 /**
  * ingestDetailText は詳細ページの「取り込み」欄の文言（issue #212）。
@@ -62,6 +73,14 @@ function formatChasePosition(startAt: string, offsetSeconds: number): string {
   return `${formatTime(positionAt)}（開始から${formatChaseElapsed(offsetSeconds)}）`
 }
 
+function formatCMOffset(ms: number): string {
+  const seconds = Math.floor(ms / 1000)
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const remainder = seconds % 60
+  return [hours, minutes, remainder].map((n) => String(n).padStart(2, '0')).join(':')
+}
+
 /**
  * RecordingDetail は録画 1 件の詳細本体（プレイヤー・メタデータ・操作）。
  * 単体ページ（`pages/recording-detail.tsx`）が使う。一覧はインライン展開せず、
@@ -99,6 +118,10 @@ export function RecordingDetail({
   onSelectLiveProfile: (name: string) => void
 }) {
   const liveEnabled = useLiveEnabled()
+  const queryClient = useQueryClient()
+  const toast = useToast()
+  const setEncodePolicy = useSetRecordingEncodePolicy()
+  const retryCMDetection = useRetryRecordingCMDetection()
   const [chasing, setChasing] = useState(chase)
   // undefined means the user has not chosen a start position yet: the default
   // chase session may restore the saved VOD position. Once the button is
@@ -360,6 +383,93 @@ export function RecordingDetail({
           </>
         )}
       </dl>
+
+      <section className="flex flex-col gap-2 border-t border-border/60 pt-3" aria-label="CM 検出">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h4 className="font-medium">CM 検出</h4>
+          {!trash && (
+            <Button
+              type="button"
+              size="sm"
+              variant={recording.cmDetection.state === 'disabled' ? 'secondary' : 'outline'}
+              disabled={setEncodePolicy.isPending || (recording.cmDetection.state === 'disabled' && !hasOriginal)}
+              onClick={() => {
+                const enable = recording.cmDetection.state === 'disabled'
+                setEncodePolicy.mutate(
+                  { id: recording.id, data: { cmDetect: enable } },
+                  {
+                    onSuccess: () => {
+                      void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
+                      toast({ message: enable ? 'CM 検出を有効にしました' : 'CM 検出を停止しました' })
+                    },
+                    onError: (error) =>
+                      toast({
+                        message:
+                          apiErrorMessage(error) ??
+                          (enable ? 'CM 検出の有効化に失敗しました' : 'CM 検出の停止に失敗しました'),
+                        kind: 'error',
+                      }),
+                  },
+                )
+              }}
+            >
+              {recording.cmDetection.state === 'disabled' ? '検出を有効化' : '検出を停止'}
+            </Button>
+          )}
+        </div>
+        <p className="text-muted-foreground">
+          {recording.cmDetection.state === 'disabled' && '無効'}
+          {recording.cmDetection.state === 'detecting' && '検出中、または再試行待ち'}
+          {recording.cmDetection.state === 'detected' && '検出済み'}
+          {recording.cmDetection.state === 'failed' && '3 回の試行に失敗しました'}
+          {recording.cmDetection.state === 'disabled' && !hasOriginal && !trash &&
+            '（原本の取り込み後に有効化できます）'}
+        </p>
+        {recording.cmDetection.state === 'detected' && (
+          recording.cmDetection.ranges && recording.cmDetection.ranges.length > 0 ? (
+            <ul className="flex flex-col gap-1 text-muted-foreground">
+              {recording.cmDetection.ranges.map((range) => (
+                <li key={`${range.startMs}-${range.endMs}`}>
+                  {formatCMOffset(range.startMs)} – {formatCMOffset(range.endMs)}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-muted-foreground">CM 区間はありません</p>
+          )
+        )}
+        {recording.cmDetection.state === 'failed' && !trash && (
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              disabled={retryCMDetection.isPending || !hasOriginal}
+              onClick={() => {
+                retryCMDetection.mutate(
+                  { id: recording.id },
+                  {
+                    onSuccess: () => {
+                      void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
+                      toast({ message: 'CM 検出を再試行します' })
+                    },
+                    onError: (error) =>
+                      toast({
+                        message: apiErrorMessage(error) ?? 'CM 検出の再試行に失敗しました',
+                        kind: 'error',
+                      }),
+                  },
+                )
+              }}
+            >
+              再試行
+            </Button>
+            <Link to="/cm-logos" className="text-primary underline underline-offset-4">
+              CM ロゴを管理
+            </Link>
+          </div>
+        )}
+      </section>
 
       {/* 手動予約由来の録画には ruleId が無い。「機能しないコントロールは
           置かない」の既存規律に従い、セクションごと出さない（issue #230）。 */}

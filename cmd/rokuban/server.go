@@ -566,6 +566,11 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, queues 
 			return nil, err
 		}
 	}
+	if cfg.CMDetect.Enabled && jobs.RequiresCMDetectTools(queues) {
+		if err := cfg.CMDetect.ValidateTools(); err != nil {
+			return nil, err
+		}
+	}
 
 	mirakcClients := make(map[string]*mirakc.Client, len(bound))
 	for _, site := range bound {
@@ -587,6 +592,7 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, queues 
 		MediaDir:                 cfg.Storage.MediaDir,
 		ScratchDir:               cfg.Storage.ScratchDir,
 		Encode:                   cfg.Encode,
+		CMDetect:                 cfg.CMDetect,
 		EpgRetentionGrace:        cfg.Epg.RetentionGrace,
 		RulerRetentionGrace:      cfg.Epg.RetentionGrace,
 		RulerMaxDeletesPerPass:   cfg.Ruler.MaxDeletesPerPass,
@@ -615,6 +621,7 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, queues 
 		DeleteReconcile:      true,
 		EncodeReconcile:      true,
 		ThumbnailReconcile:   true,
+		CMDetectReconcile:    cfg.CMDetect.Enabled,
 		StorageSync:          true,
 	}
 	return worker.NewClient(pool, workers, clientCfg)

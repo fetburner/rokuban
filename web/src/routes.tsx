@@ -19,6 +19,7 @@ import {
 } from './lib/recording-search'
 import { asInteger, validValue } from './lib/url-search'
 import { HomePage } from './pages/home'
+import { CMLogosPage } from './pages/cm-logos'
 import { LivePage } from './pages/live'
 import { ProgramsPage } from './pages/programs'
 import { RecordingDetailPage } from './pages/recording-detail'
@@ -171,6 +172,13 @@ const rulesRoute = createRoute({
   // `pages/rules.tsx` の `<PageHeader title="ルール">` と同じ表記。
   head: () => ({ meta: [{ title: pageTitle('ルール') }] }),
   component: RulesPage,
+})
+
+const cmLogosRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/cm-logos',
+  head: () => ({ meta: [{ title: pageTitle('CM ロゴ') }] }),
+  component: CMLogosPage,
 })
 
 const reservationsRoute = createRoute({
@@ -362,6 +370,7 @@ export const routeTree = rootRoute.addChildren([
   programsRoute,
   searchRoute,
   rulesRoute,
+  cmLogosRoute,
   reservationsRoute,
   reservationDetailRoute,
   recordingsRoute,

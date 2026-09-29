@@ -242,6 +242,37 @@ func (ThumbnailReconcileArgs) InsertOpts() river.InsertOpts {
 	}
 }
 
+// CMDetectJobArgs identifies a recording whose CM ranges should be detected.
+type CMDetectJobArgs struct {
+	RecordingID int64 `json:"recording_id"`
+}
+
+// Kind returns the River job kind.
+func (CMDetectJobArgs) Kind() string { return "cm_detect" }
+
+// InsertOpts routes CM detection to its dedicated queue with a short retry budget.
+func (CMDetectJobArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue:       CMDetectQueue,
+		MaxAttempts: 3,
+		UniqueOpts:  river.UniqueOpts{ByArgs: true, ByState: pendingJobStates},
+	}
+}
+
+// CMDetectReconcileArgs requests one desired-minus-observed CM detection pass.
+type CMDetectReconcileArgs struct{}
+
+// Kind returns the River job kind.
+func (CMDetectReconcileArgs) Kind() string { return "cm_detect_reconcile" }
+
+// InsertOpts routes reconciliation to the CM detection queue.
+func (CMDetectReconcileArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue:      CMDetectQueue,
+		UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: pendingJobStates},
+	}
+}
+
 // EncodeReconcileArgs は encode の desired−observed 定期 reconcile ジョブの引数。
 type EncodeReconcileArgs struct{}
 
@@ -343,6 +374,8 @@ var (
 	_ river.JobArgsWithInsertOpts = ThumbnailJobArgs{}
 	_ river.JobArgsWithInsertOpts = SeekTilesJobArgs{}
 	_ river.JobArgsWithInsertOpts = ThumbnailReconcileArgs{}
+	_ river.JobArgsWithInsertOpts = CMDetectJobArgs{}
+	_ river.JobArgsWithInsertOpts = CMDetectReconcileArgs{}
 	_ river.JobArgsWithInsertOpts = EncodeReconcileArgs{}
 	_ river.JobArgsWithInsertOpts = DeleteReconcileArgs{}
 	_ river.JobArgsWithInsertOpts = CatalogExportArgs{}

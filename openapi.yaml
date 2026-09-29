@@ -1086,20 +1086,21 @@ paths:
       operationId: setRecordingEncodePolicy
       summary: Change the original retention policy for a recording
       description: |
-        録画ごとに凍結された `recording_encode_policy.keep_original` を上書きする。
-        変更できるのは保持ポリシーだけで、`encode_profiles` はこの API では変更しない。
-        `encode_profiles` の事後追加は POST `/api/recordings/{id}/encode-profiles` を使う。
+        録画ごとの原本保持ポリシーと CM 検出設定を変更する。
+        `encode_profiles` はこの API では変更しない。事後追加は POST
+        `/api/recordings/{id}/encode-profiles` を使う。
 
-        このエンドポイントは新しい `recording_encode_policy` 行を凍結しない。行が
-        無い（未凍結）録画は既に `always` と同じ扱いなので、`always` への変更は
-        204 で no-op、`until_encoded` への変更は（desired なプロファイルが 1 つも
-        無いのと同じ理由で）409 になる。`until_encoded` は desired なエンコード
+        `keepOriginal` を指定した場合は従来の保持ポリシー変更を行う。
+        `cmDetect: true` は active な原本を適用時に確認し、未凍結録画なら
+        `always` / 空の encode profiles と共に policy 行を作る。原本が無ければ 409。
+        `cmDetect: false` は未凍結録画では no-op。`until_encoded` は desired なエンコード
         プロファイルが 1 つ以上ある録画だけ指定でき、プロファイルが空、または
         `recording_encode_policy` 行が無い場合は 409 を返すので、先に事後エンコード
         追加を依頼すること。`always` への変更は原本の状態を検査せず、削除
         reconcile が保持ポリシーを適用の瞬間に再評価する。
 
-        この API はファイルを削除せず、River ジョブも投入しない。削除 reconcile の
+        この API はファイルを削除せず、River ジョブも投入しない。CM 検出の投入は
+        定期 reconcile が行う。削除 reconcile の
         定期パス（既定 15 分）が desired を再評価するため、`until_encoded` への変更は
         条件を満たせば最大 15 分後に原本削除へ反映される。レベルトリガーの定期評価が
         真実なので、ヒントジョブを追加する必要はなく、encode-profiles の事後追加と
@@ -1114,7 +1115,7 @@ paths:
         "204":
           description: Retention policy updated, or a no-op for a recording with no frozen policy row (already always-equivalent)
         "400":
-          description: Missing or invalid keepOriginal
+          description: Empty or invalid policy update
           content:
             application/json:
               schema:
@@ -1126,11 +1127,71 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
-          description: Cannot set until_encoded without at least one desired encode profile
+          description: Cannot set until_encoded without desired profiles, or enable CM detection without an active original
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+
+  /api/recordings/{id}/cm-detection/retry:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    post:
+      operationId: retryRecordingCMDetection
+      summary: Retry CM detection for a recording
+      responses:
+        "204":
+          description: Detection result and attempt state were cleared
+        "404":
+          description: Recording not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Recording has no active original
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/cm-logos:
+    get:
+      operationId: listCMLogos
+      summary: List learned CM logos and station detection failures
+      responses:
+        "200":
+          description: Stations with at least one recording
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CMLogoState"
+
+  /api/cm-logos/{networkId}/{serviceId}:
+    parameters:
+      - name: networkId
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: serviceId
+        in: path
+        required: true
+        schema:
+          type: integer
+    delete:
+      operationId: deleteCMLogo
+      summary: Forget a station logo so the next CM job learns it again
+      responses:
+        "204":
+          description: Logo forgotten
 
   /api/recordings/{id}/drop-stats:
     parameters:
@@ -1500,13 +1561,10 @@ components:
             **追加専用**（union + dedup）で書かれ、全置換にはならない --- 既存の
             指定を消す事故を避けるため。空配列は 400。
 
-    # --- 録画後の原本保持ポリシー変更（issue #697） ---
-    #
-    # 凍結された keep_original だけを上書きする。encode_profiles は変更しない。
+    # --- 録画後のエンコードポリシー変更 ---
     SetRecordingEncodePolicyInput:
       type: object
-      required:
-        - keepOriginal
+      minProperties: 1
       properties:
         keepOriginal:
           type: string
@@ -1515,6 +1573,61 @@ components:
             原本を常に保持するか、desired なエンコードとサムネイルが揃った後に
             削除可能にするか。`until_encoded` を指定するには desired なエンコード
             プロファイルが 1 つ以上必要。
+        cmDetect:
+          type: boolean
+          description: |
+            この録画の CM 区間を検出するか。true にするには active な原本が必要。
+            検出結果か最終失敗が記録されるまで until_encoded の原本を保持する。
+
+    CMDetection:
+      type: object
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [disabled, detecting, detected, failed]
+        ranges:
+          type: array
+          description: CM ranges in milliseconds from the first original frame.
+          items:
+            $ref: "#/components/schemas/CMRange"
+
+    CMRange:
+      type: object
+      required: [startMs, endMs]
+      properties:
+        startMs:
+          type: integer
+          format: int64
+        endMs:
+          type: integer
+          format: int64
+
+    CMLogoState:
+      type: object
+      required: [networkId, serviceId, serviceName, state, recordingCount, failedCount]
+      properties:
+        networkId:
+          type: integer
+        serviceId:
+          type: integer
+        serviceName:
+          type: string
+        state:
+          type: string
+          enum: [learned, unlearned, failed]
+        recordingCount:
+          type: integer
+          format: int64
+        failedCount:
+          type: integer
+          format: int64
+        learnedAt:
+          type: string
+          format: date-time
+        previewPng:
+          type: string
+          format: byte
 
     ErrorResponse:
       type: object
@@ -1746,6 +1859,7 @@ components:
         - durationMs
         - status
         - keepOriginal
+        - cmDetection
         - createdAt
       properties:
         id:
@@ -1804,6 +1918,8 @@ components:
             `PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。
             `until_encoded` でも、desired な全エンコードプロファイルとサムネイルが
             揃うまでは原本を削除しない。
+        cmDetection:
+          $ref: "#/components/schemas/CMDetection"
         startedAt:
           description: 録画の実開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。
           type: string

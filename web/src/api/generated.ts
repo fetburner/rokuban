@@ -112,7 +112,53 @@ export interface SetRecordingEncodePolicyInput {
      * 削除可能にするか。`until_encoded` を指定するには desired なエンコード
      * プロファイルが 1 つ以上必要。
      */
-  keepOriginal: SetRecordingEncodePolicyInputKeepOriginal;
+  keepOriginal?: SetRecordingEncodePolicyInputKeepOriginal;
+  /**
+     * この録画の CM 区間を検出するか。true にするには active な原本が必要。
+     * 検出結果か最終失敗が記録されるまで until_encoded の原本を保持する。
+     */
+  cmDetect?: boolean;
+}
+
+export type CMDetectionState = typeof CMDetectionState[keyof typeof CMDetectionState];
+
+
+export const CMDetectionState = {
+  disabled: 'disabled',
+  detecting: 'detecting',
+  detected: 'detected',
+  failed: 'failed',
+} as const;
+
+export interface CMRange {
+  startMs: number;
+  endMs: number;
+}
+
+export interface CMDetection {
+  state: CMDetectionState;
+  /** CM ranges in milliseconds from the first original frame. */
+  ranges?: CMRange[];
+}
+
+export type CMLogoStateState = typeof CMLogoStateState[keyof typeof CMLogoStateState];
+
+
+export const CMLogoStateState = {
+  learned: 'learned',
+  unlearned: 'unlearned',
+  failed: 'failed',
+} as const;
+
+export interface CMLogoState {
+  networkId: number;
+  serviceId: number;
+  serviceName: string;
+  state: CMLogoStateState;
+  recordingCount: number;
+  failedCount: number;
+  learnedAt?: string;
+  previewPng?: string;
 }
 
 export interface ErrorResponse {
@@ -579,6 +625,7 @@ export interface Recording {
      * 揃うまでは原本を削除しない。
      */
   keepOriginal: RecordingKeepOriginal;
+  cmDetection: CMDetection;
   /** 録画の実開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。 */
   startedAt?: string;
   /** 録画の実終了時刻。常に UTC（"Z" 終端の RFC3339）で返す。 */
@@ -5107,20 +5154,21 @@ export const getSetRecordingEncodePolicyUrl = (id: number,) => {
 }
 
 /**
- * 録画ごとに凍結された `recording_encode_policy.keep_original` を上書きする。
- * 変更できるのは保持ポリシーだけで、`encode_profiles` はこの API では変更しない。
- * `encode_profiles` の事後追加は POST `/api/recordings/{id}/encode-profiles` を使う。
+ * 録画ごとの原本保持ポリシーと CM 検出設定を変更する。
+ * `encode_profiles` はこの API では変更しない。事後追加は POST
+ * `/api/recordings/{id}/encode-profiles` を使う。
  *
- * このエンドポイントは新しい `recording_encode_policy` 行を凍結しない。行が
- * 無い（未凍結）録画は既に `always` と同じ扱いなので、`always` への変更は
- * 204 で no-op、`until_encoded` への変更は（desired なプロファイルが 1 つも
- * 無いのと同じ理由で）409 になる。`until_encoded` は desired なエンコード
+ * `keepOriginal` を指定した場合は従来の保持ポリシー変更を行う。
+ * `cmDetect: true` は active な原本を適用時に確認し、未凍結録画なら
+ * `always` / 空の encode profiles と共に policy 行を作る。原本が無ければ 409。
+ * `cmDetect: false` は未凍結録画では no-op。`until_encoded` は desired なエンコード
  * プロファイルが 1 つ以上ある録画だけ指定でき、プロファイルが空、または
  * `recording_encode_policy` 行が無い場合は 409 を返すので、先に事後エンコード
  * 追加を依頼すること。`always` への変更は原本の状態を検査せず、削除
  * reconcile が保持ポリシーを適用の瞬間に再評価する。
  *
- * この API はファイルを削除せず、River ジョブも投入しない。削除 reconcile の
+ * この API はファイルを削除せず、River ジョブも投入しない。CM 検出の投入は
+ * 定期 reconcile が行う。削除 reconcile の
  * 定期パス（既定 15 分）が desired を再評価するため、`until_encoded` への変更は
  * 条件を満たせば最大 15 分後に原本削除へ反映される。レベルトリガーの定期評価が
  * 真実なので、ヒントジョブを追加する必要はなく、encode-profiles の事後追加と
@@ -5195,6 +5243,305 @@ export const useSetRecordingEncodePolicy = <TError = ErrorResponse,
         TContext
       > => {
       return useMutation(getSetRecordingEncodePolicyMutationOptions(options), queryClient);
+    }
+
+export type retryRecordingCMDetectionResponse204 = {
+  data: void
+  status: 204
+}
+
+export type retryRecordingCMDetectionResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type retryRecordingCMDetectionResponse409 = {
+  data: ErrorResponse
+  status: 409
+}
+
+export type retryRecordingCMDetectionResponseSuccess = (retryRecordingCMDetectionResponse204) & {
+  headers: Headers;
+};
+export type retryRecordingCMDetectionResponseError = (retryRecordingCMDetectionResponse404 | retryRecordingCMDetectionResponse409) & {
+  headers: Headers;
+};
+
+export type retryRecordingCMDetectionResponse = (retryRecordingCMDetectionResponseSuccess | retryRecordingCMDetectionResponseError)
+
+export const getRetryRecordingCMDetectionUrl = (id: number,) => {
+
+
+
+
+  return `/api/recordings/${id}/cm-detection/retry`
+}
+
+/**
+ * @summary Retry CM detection for a recording
+ */
+export const retryRecordingCMDetection = async (id: number, options?: Parameters<typeof customInstance>[1]): Promise<retryRecordingCMDetectionResponse> => {
+
+  return customInstance<retryRecordingCMDetectionResponse>(getRetryRecordingCMDetectionUrl(id),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+
+export const getRetryRecordingCMDetectionMutationKey = () => ['retryRecordingCMDetection'] as const;
+
+export const getRetryRecordingCMDetectionMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof retryRecordingCMDetection>>, TError,RetryRecordingCMDetectionMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof retryRecordingCMDetection>>, TError,RetryRecordingCMDetectionMutationVariables, TContext> => {
+
+const mutationKey = getRetryRecordingCMDetectionMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof retryRecordingCMDetection>>, RetryRecordingCMDetectionMutationVariables> = (props) => {
+          const {id} = props ?? {};
+
+          return  retryRecordingCMDetection(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type RetryRecordingCMDetectionMutationResult = NonNullable<Awaited<ReturnType<typeof retryRecordingCMDetection>>>
+
+    export type RetryRecordingCMDetectionMutationError = ErrorResponse
+    export type RetryRecordingCMDetectionMutationVariables = {id: number}
+
+    /**
+ * @summary Retry CM detection for a recording
+ */
+export const useRetryRecordingCMDetection = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof retryRecordingCMDetection>>, TError,RetryRecordingCMDetectionMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof retryRecordingCMDetection>>,
+        TError,
+        RetryRecordingCMDetectionMutationVariables,
+        TContext
+      > => {
+      return useMutation(getRetryRecordingCMDetectionMutationOptions(options), queryClient);
+    }
+
+export type listCMLogosResponse200 = {
+  data: CMLogoState[]
+  status: 200
+}
+
+export type listCMLogosResponseSuccess = (listCMLogosResponse200) & {
+  headers: Headers;
+};
+;
+
+export type listCMLogosResponse = (listCMLogosResponseSuccess)
+
+export const getListCMLogosUrl = () => {
+
+
+
+
+  return `/api/cm-logos`
+}
+
+/**
+ * @summary List learned CM logos and station detection failures
+ */
+export const listCMLogos = async ( options?: Parameters<typeof customInstance>[1]): Promise<listCMLogosResponse> => {
+
+  return customInstance<listCMLogosResponse>(getListCMLogosUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListCMLogosQueryKey = () => {
+    return [
+    `/api/cm-logos`
+    ] as const;
+    }
+
+
+export const getListCMLogosQueryOptions = <TData = Awaited<ReturnType<typeof listCMLogos>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCMLogos>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListCMLogosQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listCMLogos>>> = ({ signal }) => listCMLogos({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listCMLogos>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type ListCMLogosQueryResult = NonNullable<Awaited<ReturnType<typeof listCMLogos>>>
+export type ListCMLogosQueryError = unknown
+
+
+export function useListCMLogos<TData = Awaited<ReturnType<typeof listCMLogos>>, TError = unknown>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCMLogos>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listCMLogos>>,
+          TError,
+          Awaited<ReturnType<typeof listCMLogos>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListCMLogos<TData = Awaited<ReturnType<typeof listCMLogos>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCMLogos>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listCMLogos>>,
+          TError,
+          Awaited<ReturnType<typeof listCMLogos>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListCMLogos<TData = Awaited<ReturnType<typeof listCMLogos>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCMLogos>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List learned CM logos and station detection failures
+ */
+
+export function useListCMLogos<TData = Awaited<ReturnType<typeof listCMLogos>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCMLogos>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getListCMLogosQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type deleteCMLogoResponse204 = {
+  data: void
+  status: 204
+}
+
+export type deleteCMLogoResponseSuccess = (deleteCMLogoResponse204) & {
+  headers: Headers;
+};
+;
+
+export type deleteCMLogoResponse = (deleteCMLogoResponseSuccess)
+
+export const getDeleteCMLogoUrl = (networkId: number,
+    serviceId: number,) => {
+
+
+
+
+  return `/api/cm-logos/${networkId}/${serviceId}`
+}
+
+/**
+ * @summary Forget a station logo so the next CM job learns it again
+ */
+export const deleteCMLogo = async (networkId: number,
+    serviceId: number, options?: Parameters<typeof customInstance>[1]): Promise<deleteCMLogoResponse> => {
+
+  return customInstance<deleteCMLogoResponse>(getDeleteCMLogoUrl(networkId,serviceId),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+
+export const getDeleteCMLogoMutationKey = () => ['deleteCMLogo'] as const;
+
+export const getDeleteCMLogoMutationOptions = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteCMLogo>>, TError,DeleteCMLogoMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteCMLogo>>, TError,DeleteCMLogoMutationVariables, TContext> => {
+
+const mutationKey = getDeleteCMLogoMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteCMLogo>>, DeleteCMLogoMutationVariables> = (props) => {
+          const {networkId,serviceId} = props ?? {};
+
+          return  deleteCMLogo(networkId,serviceId,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteCMLogoMutationResult = NonNullable<Awaited<ReturnType<typeof deleteCMLogo>>>
+
+    export type DeleteCMLogoMutationError = unknown
+    export type DeleteCMLogoMutationVariables = {networkId: number;serviceId: number}
+
+    /**
+ * @summary Forget a station logo so the next CM job learns it again
+ */
+export const useDeleteCMLogo = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteCMLogo>>, TError,DeleteCMLogoMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteCMLogo>>,
+        TError,
+        DeleteCMLogoMutationVariables,
+        TContext
+      > => {
+      return useMutation(getDeleteCMLogoMutationOptions(options), queryClient);
     }
 
 export type listRecordingDropStatsResponse200 = {

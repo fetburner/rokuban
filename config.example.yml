@@ -166,6 +166,11 @@ encode:
   #       output_format: vaapi   # -hwaccel_output_format（scale_vaapi へ HW フレームで渡す）
   #     input_extra_args: []     # -i の直前に足す許可済み引数（自由形式 cmd 全体は禁止）
 
+# JLSE による CM 検出（Dockerfile.full の worker でのみ利用可能）
+cm_detect:
+  enabled: false                 # ingest 時に対象録画へ設定を凍結し、15 分ごとに未完了分を投入
+  binary_dir: /usr/local/bin     # logoframe / chapter_exe / join_logo_scp の配置先
+
 # ライブ視聴（streamer ロールのみ使う）
 live:
   enabled: false                 # true のときだけライブのルートを登録し、ffmpeg の

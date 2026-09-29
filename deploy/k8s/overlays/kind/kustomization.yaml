@@ -24,8 +24,8 @@ images:
   - name: ghcr.io/fetburner/rokuban
     newName: rokuban
     newTag: kind-test
-  # ffmpeg 入り（`Dockerfile.full`）。**同じイメージに寄せない** --- 寄せると
-  # 「ffmpeg を要る役だけ別イメージ」という決定が overlay 側で消える。
+  # ffmpeg / JLSE 入り（`Dockerfile.full`）。**同じイメージに寄せない** --- 寄せると
+  # 「追加ツールを要る役だけ別イメージ」という決定が overlay 側で消える。
   # ビルド手順は docs/runbook/k8s.md。
   - name: ghcr.io/fetburner/rokuban-full
     newName: rokuban-full

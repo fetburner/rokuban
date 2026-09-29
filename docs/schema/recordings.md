@@ -177,6 +177,7 @@ CREATE TABLE recording_encode_policy (
     recording_id    bigint PRIMARY KEY REFERENCES recordings (id) ON DELETE CASCADE,
     keep_original   text   NOT NULL CHECK (keep_original IN ('always', 'until_encoded')),
     encode_profiles text[] NOT NULL,
+    cm_detect       boolean NOT NULL DEFAULT false,
     CHECK (keep_original <> 'until_encoded' OR cardinality(encode_profiles) > 0),
     created_at      timestamptz NOT NULL DEFAULT now(),
     updated_at      timestamptz NOT NULL DEFAULT now()
@@ -187,6 +188,17 @@ CREATE TABLE recording_encode_policy (
 - **書き手は脊椎（watcher / reconciler）ではない**。ingest worker（`internal/worker/ingest.go` の `resolveAndSnapshotEncodePolicy`）が、原本 media_asset をコミットする tx の中で凍結する。api（`POST /api/recordings/{id}/encode-profiles`）は追記方向にのみ書き換える。詳細は [storage.md](../storage.md) §6「原本 TS の保持ポリシー」参照
 - **`recording_id` は `recordings.id`（脊椎の PK）への FK で、`recordings` と同時に生まれて同時に死ぬ**（不変条件 12）。until_encoded の CHECK は空プロファイルの until_encoded を表現不可能にする
 - 既存録画への backfill は、原本 media_asset（`kind = 'original'`）の**有無**で「凍結済みかどうか」を判定して行を作る。列の値そのものは判定に使わない（不変条件 9）
+- `cm_detect` は ingest 時のデプロイ設定または録画単位 API が宣言した CM 検出要求。保持ポリシーと同じく録画ごとに凍結し、worker はこの値と active original の両方を満たす行だけを処理する
+
+### recording_cm_detections / recording_cm_attempts — CM 区間と試行状態
+
+`recording_cm_detections` の1行は検出処理全体の完了を表す。`cm_ranges` は原本の先頭を0としたミリ秒の `int8multirange` で、空 multirange は広告区間が無かった結果である。処理に失敗した間は結果行を作らない。
+
+`recording_cm_attempts` は直近の試行だけを持つ。`running` は処理中、`retrying` は失敗後に River の自動再試行を待っている状態、`failed` は最大3回の試行後も失敗した状態である。定期 reconcile は `running` のみを advisory lock で確認してプロセス停止を回収し、`retrying` を重複投入しない。結果の保存と試行行の削除は同一トランザクションで確定する。
+
+### cm_logos — 放送局ごとの学習済みロゴ
+
+局ロゴは `(network_id, service_id)` で一意に保持する。LGD は次回以降の検出に使うバイナリで、PNG preview は任意の表示用データ。`learned_from` は最初にロゴを学習した録画を指し、録画削除後も局ロゴは残る。管理画面から削除すると次の検出で再学習される。ロゴが失敗した録画より後に学習された場合、その失敗は再投入可能になる。
 
 ### recording_ingest_progress — 転送の途中経過（衛星表）
 

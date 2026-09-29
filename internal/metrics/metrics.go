@@ -79,6 +79,13 @@ var (
 
 // encode（M3-3）のメトリクス。
 var (
+	// CMDetectDuration records the elapsed time of a CM analysis attempt.
+	CMDetectDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "rokuban_cm_detect_duration_seconds",
+		Help:    "Duration of CM detection attempts.",
+		Buckets: []float64{30, 60, 120, 300, 600, 1800, 3600, 7200},
+	})
+
 	// EncodeDuration は encode 1 件の所要。録画長とコーデックで決まるため
 	// バケットは秒〜数時間をカバーする。
 	EncodeDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
@@ -704,6 +711,7 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		IngestErrorPackets,
 		IngestScrambledPackets,
 
+		CMDetectDuration,
 		EncodeDuration,
 		EncodeJobs,
 

@@ -217,6 +217,7 @@ func exportRecordingEncodePolicies(ctx context.Context, q *sqlcgen.Queries) ([]R
 			RecordingID:    p.RecordingID,
 			KeepOriginal:   p.KeepOriginal,
 			EncodeProfiles: nonNilStrings(p.EncodeProfiles),
+			CMDetect:       p.CmDetect,
 			CreatedAt:      p.CreatedAt,
 			UpdatedAt:      p.UpdatedAt,
 		})

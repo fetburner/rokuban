@@ -33,6 +33,8 @@ const (
 	EncodeQueue = "encode"
 	// ThumbnailQueue はサムネイル / シークタイルジョブのキュー名。
 	ThumbnailQueue = "thumbnail"
+	// CMDetectQueue は CM 区間の検出・検出候補 reconcile 用キュー名。
+	CMDetectQueue = "cm_detect"
 	// CleanupQueue は物理削除・カタログ出力ジョブのキュー名。
 	//
 	// 未解決: 既定（`worker.queues` 未指定 = 全キュー購読）のサイト束縛 worker は
@@ -138,6 +140,7 @@ func AllQueueNames() []string {
 		RecordSweepQueue,
 		EncodeQueue,
 		ThumbnailQueue,
+		CMDetectQueue,
 		CleanupQueue,
 		StorageQueue,
 	}
@@ -152,6 +155,11 @@ func RequiresEncodeTools(queues []string) bool {
 		return true
 	}
 	return slices.Contains(queues, EncodeQueue) || slices.Contains(queues, ThumbnailQueue)
+}
+
+// RequiresCMDetectTools reports whether the selected queues may execute CM jobs.
+func RequiresCMDetectTools(queues []string) bool {
+	return len(queues) == 0 || slices.Contains(queues, CMDetectQueue)
 }
 
 // RequiresSiteBinding は、指定した論理キュー集合が site 単位のキューを含むかを

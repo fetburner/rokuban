@@ -20,6 +20,15 @@ type CircuitBreaker struct {
 	Detail    json.RawMessage
 }
 
+type CmLogo struct {
+	NetworkID   int32
+	ServiceID   int32
+	Lgd         []byte
+	PreviewPng  []byte
+	LearnedAt   time.Time
+	LearnedFrom *int64
+}
+
 type DropPosition struct {
 	MediaAssetID int64
 	ByteOffset   int64
@@ -186,6 +195,19 @@ type Recording struct {
 	GenreLv1          []int16
 }
 
+type RecordingCmAttempt struct {
+	RecordingID int64
+	State       string
+	Error       *string
+	AttemptedAt time.Time
+}
+
+type RecordingCmDetection struct {
+	RecordingID int64
+	CmRanges    pgtype.Multirange[pgtype.Range[pgtype.Int8]]
+	DetectedAt  time.Time
+}
+
 type RecordingEncodeAttempt struct {
 	RecordingID int64
 	Profile     string
@@ -200,6 +222,7 @@ type RecordingEncodePolicy struct {
 	EncodeProfiles []string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	CmDetect       bool
 }
 
 type RecordingIngestProgress struct {

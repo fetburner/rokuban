@@ -282,7 +282,19 @@ const (
     ) AS has_abnormally_ended_record,
     ip.written_bytes  AS ingest_written_bytes,
     ip.expected_bytes AS ingest_expected_bytes,
-    ip.observed_at    AS ingest_observed_at`
+    ip.observed_at    AS ingest_observed_at,
+    COALESCE(p.cm_detect, false)::boolean AS cm_detect,
+    EXISTS (SELECT 1 FROM recording_cm_detections d WHERE d.recording_id = r.id) AS cm_detected,
+    (
+        SELECT COALESCE(
+            jsonb_agg(jsonb_build_object('startMs', lower(cr.cm_range), 'endMs', upper(cr.cm_range)) ORDER BY lower(cr.cm_range)),
+            '[]'::jsonb
+        )
+        FROM recording_cm_detections d
+        CROSS JOIN LATERAL unnest(d.cm_ranges) AS cr(cm_range)
+        WHERE d.recording_id = r.id
+    ) AS cm_ranges,
+    (SELECT ca.state FROM recording_cm_attempts ca WHERE ca.recording_id = r.id) AS cm_attempt_state`
 
 	// recordingsAvailableEncodedAssetsSelect はブラウザ再生用の観測列（active な
 	// encoded のみ）。先頭にカンマを持つので recordingsSelectColumns の直後に
@@ -533,6 +545,7 @@ WHERE r.id = $1 AND r.purged_at IS NULL`
 		&fields.EncodeAttempts,
 		&fields.HasOriginalAsset, &fields.HasIngestableRecord, &fields.HasAbnormallyEndedRecord,
 		&fields.IngestWrittenBytes, &fields.IngestExpectedBytes, &fields.IngestObservedAt,
+		&fields.CMDetect, &fields.CMDetected, &fields.CMRanges, &fields.CMAttemptState,
 		&fields.AvailableEncodedAssets,
 	)
 	if err != nil {
@@ -576,6 +589,7 @@ func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter
 			&fields.EncodeAttempts,
 			&fields.HasOriginalAsset, &fields.HasIngestableRecord, &fields.HasAbnormallyEndedRecord,
 			&fields.IngestWrittenBytes, &fields.IngestExpectedBytes, &fields.IngestObservedAt,
+			&fields.CMDetect, &fields.CMDetected, &fields.CMRanges, &fields.CMAttemptState,
 			&fields.AvailableEncodedAssets,
 		); err != nil {
 			return nil, fmt.Errorf("scanning recording row: %w", err)

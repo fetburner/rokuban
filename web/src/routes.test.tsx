@@ -65,6 +65,7 @@ function stubDetailFetch() {
     durationMs: 1_800_000,
     status: 'finished',
     keepOriginal: 'always',
+    cmDetection: { state: 'disabled' },
     createdAt: '2026-01-01T00:30:00Z',
   }
   const reservation: Reservation = {
@@ -113,6 +114,7 @@ describe('routeTree', () => {
       '/programs',
       '/search',
       '/rules',
+      '/cm-logos',
       '/reservations',
       '/reservations/$site/$programId',
       '/recordings',

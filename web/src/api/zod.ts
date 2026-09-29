@@ -1073,6 +1073,13 @@ export const ListRecordingsResponseItem = zod.object({
   "durationMs": zod.int(),
   "status": zod.enum(['recording', 'finished', 'canceled', 'failed']),
   "keepOriginal": zod.enum(['always', 'until_encoded']).describe('`recording_encode_policy.keep_original` に凍結された、この録画の原本保持\nポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の\n`PATCH \/api\/recordings\/{id}\/encode-policy` で明示的に上書きできる。\n`until_encoded` でも、desired な全エンコードプロファイルとサムネイルが\n揃うまでは原本を削除しない。\n'),
+  "cmDetection": zod.object({
+  "state": zod.enum(['disabled', 'detecting', 'detected', 'failed']),
+  "ranges": zod.array(zod.object({
+  "startMs": zod.int(),
+  "endMs": zod.int()
+})).optional().describe('CM ranges in milliseconds from the first original frame.')
+}),
   "startedAt": zod.iso.datetime({"offset":true}).optional().describe('録画の実開始時刻。常に UTC（\"Z\" 終端の RFC3339）で返す。'),
   "endedAt": zod.iso.datetime({"offset":true}).optional().describe('録画の実終了時刻。常に UTC（\"Z\" 終端の RFC3339）で返す。'),
   "sizeBytes": zod.int().optional().describe('原本の実サイズ。ingest 済み（media_assets 行あり）の場合のみ。\n省略は「まだ取り込めていない」と「取り込んだ後に削除した」の両方を\n含むので、区別が要るときは `ingest.state` を見る（issue #211 \/\n#212）。\*\*転送中の途中ファイルのサイズはここに混ぜない\*\*（コミット =\nDB 行。不変条件 3）--- 途中経過は `ingest.writtenBytes`。\n'),
@@ -1148,6 +1155,13 @@ export const GetRecordingResponse = zod.object({
   "durationMs": zod.int(),
   "status": zod.enum(['recording', 'finished', 'canceled', 'failed']),
   "keepOriginal": zod.enum(['always', 'until_encoded']).describe('`recording_encode_policy.keep_original` に凍結された、この録画の原本保持\nポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の\n`PATCH \/api\/recordings\/{id}\/encode-policy` で明示的に上書きできる。\n`until_encoded` でも、desired な全エンコードプロファイルとサムネイルが\n揃うまでは原本を削除しない。\n'),
+  "cmDetection": zod.object({
+  "state": zod.enum(['disabled', 'detecting', 'detected', 'failed']),
+  "ranges": zod.array(zod.object({
+  "startMs": zod.int(),
+  "endMs": zod.int()
+})).optional().describe('CM ranges in milliseconds from the first original frame.')
+}),
   "startedAt": zod.iso.datetime({"offset":true}).optional().describe('録画の実開始時刻。常に UTC（\"Z\" 終端の RFC3339）で返す。'),
   "endedAt": zod.iso.datetime({"offset":true}).optional().describe('録画の実終了時刻。常に UTC（\"Z\" 終端の RFC3339）で返す。'),
   "sizeBytes": zod.int().optional().describe('原本の実サイズ。ingest 済み（media_assets 行あり）の場合のみ。\n省略は「まだ取り込めていない」と「取り込んだ後に削除した」の両方を\n含むので、区別が要るときは `ingest.state` を見る（issue #211 \/\n#212）。\*\*転送中の途中ファイルのサイズはここに混ぜない\*\*（コミット =\nDB 行。不変条件 3）--- 途中経過は `ingest.writtenBytes`。\n'),
@@ -1254,20 +1268,21 @@ export const AddRecordingEncodeProfilesResponse = zod.void()
 
 
 /**
- * 録画ごとに凍結された `recording_encode_policy.keep_original` を上書きする。
- * 変更できるのは保持ポリシーだけで、`encode_profiles` はこの API では変更しない。
- * `encode_profiles` の事後追加は POST `/api/recordings/{id}/encode-profiles` を使う。
+ * 録画ごとの原本保持ポリシーと CM 検出設定を変更する。
+ * `encode_profiles` はこの API では変更しない。事後追加は POST
+ * `/api/recordings/{id}/encode-profiles` を使う。
  *
- * このエンドポイントは新しい `recording_encode_policy` 行を凍結しない。行が
- * 無い（未凍結）録画は既に `always` と同じ扱いなので、`always` への変更は
- * 204 で no-op、`until_encoded` への変更は（desired なプロファイルが 1 つも
- * 無いのと同じ理由で）409 になる。`until_encoded` は desired なエンコード
+ * `keepOriginal` を指定した場合は従来の保持ポリシー変更を行う。
+ * `cmDetect: true` は active な原本を適用時に確認し、未凍結録画なら
+ * `always` / 空の encode profiles と共に policy 行を作る。原本が無ければ 409。
+ * `cmDetect: false` は未凍結録画では no-op。`until_encoded` は desired なエンコード
  * プロファイルが 1 つ以上ある録画だけ指定でき、プロファイルが空、または
  * `recording_encode_policy` 行が無い場合は 409 を返すので、先に事後エンコード
  * 追加を依頼すること。`always` への変更は原本の状態を検査せず、削除
  * reconcile が保持ポリシーを適用の瞬間に再評価する。
  *
- * この API はファイルを削除せず、River ジョブも投入しない。削除 reconcile の
+ * この API はファイルを削除せず、River ジョブも投入しない。CM 検出の投入は
+ * 定期 reconcile が行う。削除 reconcile の
  * 定期パス（既定 15 分）が desired を再評価するため、`until_encoded` への変更は
  * 条件を満たせば最大 15 分後に原本削除へ反映される。レベルトリガーの定期評価が
  * 真実なので、ヒントジョブを追加する必要はなく、encode-profiles の事後追加と
@@ -1279,10 +1294,48 @@ export const SetRecordingEncodePolicyParams = zod.object({
 })
 
 export const SetRecordingEncodePolicyBody = zod.object({
-  "keepOriginal": zod.enum(['always', 'until_encoded']).describe('原本を常に保持するか、desired なエンコードとサムネイルが揃った後に\n削除可能にするか。`until_encoded` を指定するには desired なエンコード\nプロファイルが 1 つ以上必要。\n')
+  "keepOriginal": zod.enum(['always', 'until_encoded']).optional().describe('原本を常に保持するか、desired なエンコードとサムネイルが揃った後に\n削除可能にするか。`until_encoded` を指定するには desired なエンコード\nプロファイルが 1 つ以上必要。\n'),
+  "cmDetect": zod.boolean().optional().describe('この録画の CM 区間を検出するか。true にするには active な原本が必要。\n検出結果か最終失敗が記録されるまで until_encoded の原本を保持する。\n')
 })
 
 export const SetRecordingEncodePolicyResponse = zod.void()
+
+
+/**
+ * @summary Retry CM detection for a recording
+ */
+export const RetryRecordingCMDetectionParams = zod.object({
+  "id": zod.int()
+})
+
+export const RetryRecordingCMDetectionResponse = zod.void()
+
+
+/**
+ * @summary List learned CM logos and station detection failures
+ */
+export const ListCMLogosResponseItem = zod.object({
+  "networkId": zod.int(),
+  "serviceId": zod.int(),
+  "serviceName": zod.string(),
+  "state": zod.enum(['learned', 'unlearned', 'failed']),
+  "recordingCount": zod.int(),
+  "failedCount": zod.int(),
+  "learnedAt": zod.iso.datetime({"offset":true}).optional(),
+  "previewPng": zod.string().optional()
+})
+export const ListCMLogosResponse = zod.array(ListCMLogosResponseItem)
+
+
+/**
+ * @summary Forget a station logo so the next CM job learns it again
+ */
+export const DeleteCMLogoParams = zod.object({
+  "networkId": zod.int(),
+  "serviceId": zod.int()
+})
+
+export const DeleteCMLogoResponse = zod.void()
 
 
 /**

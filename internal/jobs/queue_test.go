@@ -13,6 +13,7 @@ import (
 func TestAllQueueNames(t *testing.T) {
 	if got, want := AllQueueNames(), []string{
 		"cleanup",
+		"cm_detect",
 		"default",
 		"encode",
 		"epg",
@@ -24,6 +25,25 @@ func TestAllQueueNames(t *testing.T) {
 		"watcher",
 	}; !reflect.DeepEqual(got, want) {
 		t.Errorf("AllQueueNames() = %#v, want %#v", got, want)
+	}
+}
+
+func TestRequiresCMDetectTools(t *testing.T) {
+	tests := []struct {
+		name   string
+		queues []string
+		want   bool
+	}{
+		{"empty means all queues, including CM detection", nil, true},
+		{"explicit CM detection", []string{CMDetectQueue}, true},
+		{"explicit non-CM queue", []string{ThumbnailQueue}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RequiresCMDetectTools(tt.queues); got != tt.want {
+				t.Errorf("RequiresCMDetectTools(%v) = %v, want %v", tt.queues, got, tt.want)
+			}
+		})
 	}
 }
 

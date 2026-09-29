@@ -28,7 +28,7 @@ images:
   - name: ghcr.io/fetburner/rokuban
     newName: rokuban
     newTag: e2e
-  # ffmpeg 入り（`Dockerfile.full`）。encode / thumbnail の ScaledJob だけが使う。
+  # ffmpeg / JLSE 入り（`Dockerfile.full`）。encode / thumbnail / cm_detect の ScaledJob が使う。
   # **ハーネスが焼いて `kind load` する**（deploy/k8s/e2e/lib/cluster.sh）。
   - name: ghcr.io/fetburner/rokuban-full
     newName: rokuban-full

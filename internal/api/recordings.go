@@ -89,6 +89,10 @@ type recordingListFields struct {
 	IngestWrittenBytes  *int64
 	IngestExpectedBytes *int64
 	IngestObservedAt    *time.Time
+	CMDetect            bool
+	CMDetected          bool
+	CMRanges            json.RawMessage
+	CMAttemptState      *string
 }
 
 // utcTimePtr は timestamptz の scan 結果を UTC の Location に正規化する。
@@ -310,6 +314,25 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool, known
 		SizeBytes:    r.OriginalSizeBytes,
 		CreatedAt:    r.CreatedAt.UTC(),
 	}
+	cmState := CMDetectionStateDisabled
+	if r.CMDetect {
+		cmState = CMDetectionStateDetecting
+		if r.CMAttemptState != nil && *r.CMAttemptState == "failed" {
+			cmState = CMDetectionStateFailed
+		}
+		if r.CMDetected {
+			cmState = CMDetectionStateDetected
+		}
+	}
+	cmDetection := CMDetection{State: cmState}
+	if r.CMDetected {
+		var ranges []CMRange
+		if err := json.Unmarshal(r.CMRanges, &ranges); err != nil {
+			return Recording{}, fmt.Errorf("decoding CM ranges for recording %d: %w", r.ID, err)
+		}
+		cmDetection.Ranges = &ranges
+	}
+	rec.CmDetection = cmDetection
 	if includeDeletedAt {
 		rec.DeletedAt = utcTimePtr(r.DeletedAt)
 	}
@@ -599,29 +622,27 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 // コメント参照）。
 const wantKeepOriginalUntilEncodedMessage = "cannot set keepOriginal=until_encoded without desired encode profiles; add encode profiles first"
 
-// SetRecordingEncodePolicy は録画後に原本の保持ポリシーを上書きする（issue #697）。
+// SetRecordingEncodePolicy は録画後の原本保持・CM 検出方針を上書きする。
 //
-// `keepOriginal` だけを書き、凍結済みの encode_profiles は変更しない。この
-// エンドポイントは新しい recording_encode_policy 行を凍結しない ---
-// SetRecordingKeepOriginal は UPDATE のみ（INSERT アームを持たない）で、行が
-// 無い（未凍結）録画は既に 'always' と同じ扱いなので、`always` への変更は
-// 0 行のまま 204（no-op）、`until_encoded` への変更は 0 行のまま 409（recordings.sql
-// の SetRecordingKeepOriginal doc コメント参照）。`until_encoded` の
-// 「desired なプロファイルが空/未凍結なら 409」の判定は UPDATE 自身の WHERE
-// （cardinality(encode_profiles) > 0）が適用の瞬間に再評価するので、ここで
-// 事前読み取りは行わない（読み取り→書き込みの窓を作らない）。`always` への
-// 変更は原本の状態を検査しないため、削除 reconcile が unlink 前の deleting 行を
-// 次回パスで再評価して active に戻せる（issue #105）。
+// 各フィールドは独立した任意指定。keepOriginal の変更は凍結済み
+// recording_encode_policy のみを更新し、未凍結の録画では always が既定のため
+// no-op、until_encoded は desired な encode_profiles が無ければ 409 になる。
+// cmDetect=true は active な原本を適用時に再確認し、未凍結なら既定の保持方針と
+// 空の encode_profiles で policy を作る。false は未凍結 policy を作らない。
+// CM 検出ジョブはここでは投入せず、worker の定期 reconcile に任せる。
 //
-// 物理削除もヒントジョブの投入も行わない。削除 reconcile のレベル検知に任せることで、
-// encode_profiles の事後追加 API と違って River への二重書き込みを作らない。
+// 物理削除もヒントジョブの投入も行わない。原本保持の変更は削除 reconcile が、
+// CM 検出の変更は CM 定期 reconcile が DB の現在値から検出する。
 func (h *Server) SetRecordingEncodePolicy(ctx context.Context, req SetRecordingEncodePolicyRequestObject) (SetRecordingEncodePolicyResponseObject, error) {
 	if req.Body == nil {
-		return SetRecordingEncodePolicy400JSONResponse{Error: "keepOriginal is required"}, nil
+		return SetRecordingEncodePolicy400JSONResponse{Error: "at least one policy field is required"}, nil
 	}
-	if !req.Body.KeepOriginal.Valid() {
+	if req.Body.KeepOriginal == nil && req.Body.CmDetect == nil {
+		return SetRecordingEncodePolicy400JSONResponse{Error: "at least one of keepOriginal or cmDetect is required"}, nil
+	}
+	if req.Body.KeepOriginal != nil && !req.Body.KeepOriginal.Valid() {
 		return SetRecordingEncodePolicy400JSONResponse{
-			Error: fmt.Sprintf("invalid keepOriginal %q (want always or until_encoded)", req.Body.KeepOriginal),
+			Error: fmt.Sprintf("invalid keepOriginal %q (want always or until_encoded)", *req.Body.KeepOriginal),
 		}, nil
 	}
 
@@ -647,23 +668,35 @@ func (h *Server) SetRecordingEncodePolicy(ctx context.Context, req SetRecordingE
 		return SetRecordingEncodePolicy404JSONResponse{Error: "recording not found"}, nil
 	}
 
-	keepOriginal := string(req.Body.KeepOriginal)
-	rows, err := q.SetRecordingKeepOriginal(ctx, sqlcgen.SetRecordingKeepOriginalParams{
-		RecordingID:  req.Id,
-		KeepOriginal: keepOriginal,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("setting recording %d keep_original: %w", req.Id, err)
-	}
-	if rows == 0 {
-		// 0 行の理由は 2 通り: (1) until_encoded で WHERE の cardinality 述語が
-		// 落ちた（desired なプロファイルが空/未凍結）、(2) 行自体が無い（未凍結の
-		// 録画）。(2) は always なら no-op（未凍結 = 既に always 相当）として
-		// 204 で成功、until_encoded なら (1) と区別せず同じ 409 にする ---
-		// どちらも「until_encoded にする根拠となる desired プロファイルが無い」
-		// という同じ事実だから。
-		if req.Body.KeepOriginal == SetRecordingEncodePolicyInputKeepOriginalUntilEncoded {
+	if req.Body.KeepOriginal != nil {
+		keepOriginal := string(*req.Body.KeepOriginal)
+		rows, err := q.SetRecordingKeepOriginal(ctx, sqlcgen.SetRecordingKeepOriginalParams{
+			RecordingID:  req.Id,
+			KeepOriginal: keepOriginal,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("setting recording %d keep_original: %w", req.Id, err)
+		}
+		if rows == 0 && *req.Body.KeepOriginal == SetRecordingEncodePolicyInputKeepOriginalUntilEncoded {
 			return SetRecordingEncodePolicy409JSONResponse{Error: wantKeepOriginalUntilEncodedMessage}, nil
+		}
+	}
+	if req.Body.CmDetect != nil {
+		if *req.Body.CmDetect {
+			rows, err := q.SetRecordingCMDetection(ctx, req.Id)
+			if err != nil {
+				return nil, fmt.Errorf("enabling CM detection for recording %d: %w", req.Id, err)
+			}
+			if rows == 0 {
+				return SetRecordingEncodePolicy409JSONResponse{Error: "active original media asset required to enable CM detection"}, nil
+			}
+		} else {
+			if err := q.ClearRecordingCMDetection(ctx, req.Id); err != nil {
+				return nil, fmt.Errorf("disabling CM detection for recording %d: %w", req.Id, err)
+			}
+			if err := q.DeleteCMDetectionAttempt(ctx, req.Id); err != nil {
+				return nil, fmt.Errorf("clearing CM detection attempt for recording %d: %w", req.Id, err)
+			}
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {

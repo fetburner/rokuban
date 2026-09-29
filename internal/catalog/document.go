@@ -172,6 +172,7 @@ type RecordingEncodePolicy struct {
 	RecordingID    int64     `json:"recordingId"`
 	KeepOriginal   string    `json:"keepOriginal"`
 	EncodeProfiles []string  `json:"encodeProfiles"`
+	CMDetect       bool      `json:"cmDetect"`
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
 }

@@ -58,6 +58,8 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 | `encode.concurrency` | `1` | encode キューの MaxWorkers（ingest とは独立） |
 | `encode.thumbnail_concurrency` | `1` | thumbnail キューの MaxWorkers |
 | `encode.profiles` | `[]` | 構造化エンコードプロファイル（形は `config.example.yml`。下記「config と DB の境界」「encode/live の HW エンコード」） |
+| `cm_detect.enabled` | `false` | ingest 時に CM 検出を録画へ凍結し、worker の定期投入を有効にする |
+| `cm_detect.binary_dir` | `/usr/local/bin` | JLSE の `logoframe` / `chapter_exe` / `join_logo_scp` 配置先 |
 | `live.enabled` | `false` | ライブ視聴のルートを登録するか（下記「live」） |
 | `live.ffmpeg` | `ffmpeg` | PATH 検索 |
 | `live.ffprobe` | `ffprobe` | `live.captions` 有効時の字幕ストリーム判定。PATH 検索 |
@@ -107,12 +109,16 @@ config の読み込みより前に出るログだけは既定（text 形式・In
 
 ### worker.periodic_jobs と worker.queues
 
-- `worker.periodic_jobs`: プロセス内で定期ジョブを投入するか。対象は epg_sync / tuner_sync / ruler_pass / reconcile_pass / record_sweep。catalog_export / delete_reconcile / encode_reconcile / thumbnail_reconcile / storage_sync も対象。k8s では false にし、CronJob から `rokuban enqueue` で投入する（River の PeriodicJobs はリーダーだけが投入するため、KEDA で 0 にスケールすると誰も投入しなくなる。[data.md](data.md) §2）
-- `worker.queues`: worker ロールが引くキューを絞る。空なら全部。ロールを増やさずに「ruler / reconciler だけ別 Pod」を実現するための knob。**同じものを `--queues` で argv からも指定でき、両方指定は起動エラー**（k8s では ConfigMap 1 個を全 Pod で共有し Pod ごとの差分を argv に寄せるため。[operations.md](operations.md) §5）。書くのは物理名ではなく**論理名**。使えるのは `ingest` / `epg` / `ruler` / `reconciler` / `watcher` / `encode`。`thumbnail` / `cleanup` / `storage` / `default` も使える。site 単位のキューの物理名への展開・ロールとの関係（worker ロールが無いプロセスはこの設定に関わらずキューを引かない）は [operations.md](operations.md) §5 を参照
+- `worker.periodic_jobs`: プロセス内で定期ジョブを投入するか。対象は epg_sync / tuner_sync / ruler_pass / reconcile_pass / record_sweep。catalog_export、delete_reconcile、encode_reconcile、thumbnail_reconcile、cm_detect_reconcile、storage_sync も対象（CM 検出有効時）。k8s では false にし、CronJob から `rokuban enqueue` で投入する。River の PeriodicJobs はリーダーだけが投入するため、KEDA で 0 にスケールすると誰も投入しなくなる（[data.md](data.md) §2）。
+- `worker.queues`: worker ロールが引くキューを絞る。空なら全部。ロールを増やさずに「ruler / reconciler だけ別 Pod」を実現するための knob。**同じものを `--queues` で argv からも指定でき、両方指定は起動エラー**（k8s では ConfigMap 1 個を全 Pod で共有し Pod ごとの差分を argv に寄せるため。[operations.md](operations.md) §5）。書くのは物理名ではなく**論理名**。使えるのは `ingest` / `epg` / `ruler` / `reconciler` / `watcher` / `encode`。`thumbnail` / `cleanup` / `storage` / `cm_detect` / `default` も使える。site 単位のキューの物理名への展開・ロールとの関係（worker ロールが無いプロセスはこの設定に関わらずキューを引かない）は [operations.md](operations.md) §5 を参照
 
 ### ffmpeg の存在検査
 
 `encode.ffmpeg` / `encode.ffprobe` は、worker ロールが encode/thumbnail キューを購読するときだけ LookPath で存在検査する。購読するのは、絞り込みが無い（`worker.queues` が空で `--queues` も無い）か、encode/thumbnail を含むときである。api ロールは呼ばない（不変条件 4）。`live.ffmpeg` は `live.enabled: true` の streamer 起動時だけ検査する。
+
+### CM 区間の検出
+
+`cm_detect.enabled` は既定で `false`。有効にすると、ingest がこの値を録画単位の `recording_encode_policy.cm_detect` に凍結し、worker が15分ごとに必要な検出を投入する。録画詳細の PATCH で個別に有効化できる。`cm_detect.binary_dir` の3コマンドと固定ルール `/usr/local/share/rokuban/cm_detect/JL_標準.txt` は worker 起動時に検査する。これらは `Dockerfile.full` にだけ含まれ、公式イメージには含まれないため、JLSE 対応には full イメージを使う。`cm_detect` キューは同時実行数1で動く。検出が完了するか3回失敗するまで、`until_encoded` の原本は削除対象にしない。
 
 ### live
 
