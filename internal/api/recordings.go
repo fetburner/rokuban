@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/fetburner/rokuban/internal/chapters"
+	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 )
@@ -641,7 +642,8 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 	if req.Body == nil || len(req.Body.Profiles) == 0 {
 		return AddRecordingEncodeProfiles400JSONResponse{Error: "profiles must not be empty"}, nil
 	}
-	if err := h.validateEncodeProfiles(req.Body.Profiles); err != nil {
+	// 名前は追加分だけ、cut の選択規則はマージ後（下、tx 内）に当てる。
+	if err := h.validateEncodeProfileNames(req.Body.Profiles); err != nil {
 		return AddRecordingEncodeProfiles400JSONResponse{Error: err.Error()}, nil
 	}
 
@@ -675,6 +677,20 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 			}, nil
 		}
 		return nil, fmt.Errorf("loading original media asset for recording %d: %w", req.Id, err)
+	}
+
+	// cut の規則は「既存 ∪ 追加分」に当てる（[h264] に cut だけを足すのは
+	// 結果が [h264, cut] なので正当）。policy 行が無ければ追加分のみ。
+	if h.cutProfiles != nil {
+		merged := req.Body.Profiles
+		if policy, err := q.GetRecordingEncodePolicy(ctx, req.Id); err == nil {
+			merged = append(slices.Clone(policy.EncodeProfiles), merged...)
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("loading encode policy for recording %d: %w", req.Id, err)
+		}
+		if err := config.ValidateCutSelection(merged, h.cutProfiles); err != nil {
+			return AddRecordingEncodeProfiles400JSONResponse{Error: err.Error()}, nil
+		}
 	}
 
 	// recording_encode_policy（issue #159）に行が無い（未凍結）録画への事後
@@ -711,8 +727,15 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 //
 // 原本が active でないなら 409（カット版は原本から作り直すしかない）。
 func (h *Server) ReencodeRecordingProfile(ctx context.Context, req ReencodeRecordingProfileRequestObject) (ReencodeRecordingProfileResponseObject, error) {
-	if err := h.validateEncodeProfiles([]string{req.Profile}); err != nil {
+	// cut 専用の作り直し。cut の選択規則（cut だけの選択の拒否）は選択の集合に
+	// 対する規則でここには当てはまらないので、名前と「cut か」だけを見る。
+	if err := h.validateEncodeProfileNames([]string{req.Profile}); err != nil {
 		return ReencodeRecordingProfile400JSONResponse{Error: err.Error()}, nil
+	}
+	if h.cutProfiles != nil {
+		if _, ok := h.cutProfiles[req.Profile]; !ok {
+			return ReencodeRecordingProfile400JSONResponse{Error: fmt.Sprintf("profile %q is not a cut profile", req.Profile)}, nil
+		}
 	}
 
 	tx, err := h.pool.Begin(ctx)

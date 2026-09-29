@@ -298,6 +298,18 @@ func (h *Server) insertRulerPassHintsForRuleSites(ctx context.Context, tx pgx.Tx
 // cut の規則も同じ規約で、h.cutProfiles が nil なら検査しない。cut プロファイルが
 // 1 つも定義されていない構成では config.ValidateCutSelection 自体が何も主張しない。
 func (h *Server) validateEncodeProfiles(names []string) error {
+	if err := h.validateEncodeProfileNames(names); err != nil {
+		return err
+	}
+	if h.cutProfiles != nil {
+		return config.ValidateCutSelection(names, h.cutProfiles)
+	}
+	return nil
+}
+
+// validateEncodeProfileNames は名前だけの検査（空名・未知名）。cut の選択規則は見ない。
+// 「既存 ∪ 追加分」に規則を当てる事後追加と、cut 専用の作り直しがこちらを直接使う。
+func (h *Server) validateEncodeProfileNames(names []string) error {
 	for _, name := range names {
 		if name == "" {
 			return errors.New("encodeProfiles must not contain empty names")
@@ -306,11 +318,6 @@ func (h *Server) validateEncodeProfiles(names []string) error {
 			if _, ok := h.encodeProfiles[name]; !ok {
 				return fmt.Errorf("unknown encode profile %q", name)
 			}
-		}
-	}
-	if h.cutProfiles != nil {
-		if err := config.ValidateCutSelection(names, h.cutProfiles); err != nil {
-			return err
 		}
 	}
 	return nil

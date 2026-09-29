@@ -104,15 +104,91 @@ INSERT INTO recordings (
   source, site, network_id, service_id, event_id,
   service_name, channel_type, channel, title,
   program_start_at, program_duration_ms, status
-) VALUES ('manual', 'default', 21000, 2100, 99, 'テスト局', 'GR', '27',
+) VALUES ('manual', 'default', 21000, 2100, (SELECT COALESCE(max(event_id), 99) + 1 FROM recordings), 'テスト局', 'GR', '27',
           'カット検証', now() - interval '1 day', 1800000, 'finished')
 RETURNING id`).Scan(&id); err != nil {
 		t.Fatalf("inserting recording fixture: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
 INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes)
-VALUES ($1, 'original', 'cut-validation/original.m2ts', 1024)`, id); err != nil {
+VALUES ($1::bigint, 'original', 'cut-validation/original-' || $1::bigint::text || '.m2ts', 1024)`, id); err != nil {
 		t.Fatalf("inserting original media_asset: %v", err)
 	}
 	return id
+}
+
+// TestAddEncodeProfiles_CutRuleAppliesToMergedSelection は事後追加の cut 規則が
+// 「追加分だけ」ではなく「既存 ∪ 追加分」に当たることを両方向で固定する。
+func TestAddEncodeProfiles_CutRuleAppliesToMergedSelection(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
+		Pool:               pool,
+		EncodeProfileNames: []string{"h264", "cut"},
+		CutProfileNames:    []string{"cut"},
+	}))
+	t.Cleanup(srv.Close)
+
+	add := func(id int64, profile string) int {
+		raw, _ := json.Marshal(map[string]any{"profiles": []string{profile}})
+		resp, err := http.Post(srv.URL+"/api/recordings/"+itoa(id)+"/encode-profiles",
+			"application/json", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		return resp.StatusCode
+	}
+	withPolicy := func(profiles string) int64 {
+		id := insertIngestedRecordingFixture(t, pool, ctx)
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles) VALUES ($1, 'always', $2::text[])`,
+			id, profiles); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+
+	if got := add(withPolicy(`{h264}`), "cut"); got != http.StatusNoContent {
+		t.Errorf("[h264] + cut status = %d, want 204", got)
+	}
+	if got := add(withPolicy(`{cut}`), "cut"); got != http.StatusBadRequest {
+		t.Errorf("[cut] + cut status = %d, want 400", got)
+	}
+	if got := add(withPolicy(`{}`), "cut"); got != http.StatusBadRequest {
+		t.Errorf("[] + cut status = %d, want 400", got)
+	}
+}
+
+// TestReencodeRecordingProfile_StatusCodes は cut の作り直し endpoint が本番構成
+// （CutProfileNames あり）で 204 になり、未知名・cut でない名前は 400 になることを固定する。
+// cut 1 つのリストを「cut だけの選択」として弾く実装だと常に 400 になる。
+func TestReencodeRecordingProfile_StatusCodes(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
+		Pool:               pool,
+		EncodeProfileNames: []string{"h264", "cut"},
+		CutProfileNames:    []string{"cut"},
+	}))
+	t.Cleanup(srv.Close)
+	id := insertIngestedRecordingFixture(t, pool, ctx)
+
+	post := func(profile string) int {
+		resp, err := http.Post(srv.URL+"/api/recordings/"+itoa(id)+"/encoded/"+profile+"/reencode", "application/json", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		return resp.StatusCode
+	}
+	if got := post("cut"); got != http.StatusNoContent {
+		t.Errorf("reencode cut status = %d, want 204", got)
+	}
+	if got := post("nosuch"); got != http.StatusBadRequest {
+		t.Errorf("reencode unknown status = %d, want 400", got)
+	}
+	if got := post("h264"); got != http.StatusBadRequest {
+		t.Errorf("reencode non-cut status = %d, want 400", got)
+	}
 }
