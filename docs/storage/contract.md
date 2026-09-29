@@ -87,15 +87,23 @@ cancel しない）。そのため:
   孤児回収は同じ lock を非 blocking で取ってから unlink するので、公開と commit の間で
   lock を離すと、commit 前の行と消えた実体が組み合わせになりうる（ルール 3 と同じ理由）
 - 判定は tx 内で行を読み直し、**(a) `rel_path` が計画時と違う、(b) 既に active で
-  （カット版は凍結区間も）この試行と一致する、のどちらかなら公開を飛ばす**。
+  （カット版は凍結区間も）この試行と一致する、のどちらかなら公開しない**。
   (b) が無いと、先発の commit の後に後発が rename で上書きする。後発の commit が
   失敗すると、ファイルは後発の中身で行は先発のサイズになる。
-  (a) が無いと、行が先の世代へ進んだ後に古い計画の実行が行を巻き戻す
+  (a) が無いと、行が先の世代へ進んだ後に古い計画の実行が行を巻き戻す。
+  (b) は成功で飛ばす。(a) は「誰かが済ませた」ではなく「自分の計画が古い」を意味する。
+  行が active のまま (a) だけが立つ（カット版で区間が違う）ときは、成功で飛ばすと新しい
+  チャプター編集が黙って消える。公開せずに River の snooze で戻し、現在の keep で
+  計画をやり直す。snooze は attempt を消費せず、失敗通知も出さない。
+  行が active でない（ごみ箱など）ときは成功で飛ばす
 - advisory xact lock が排他するのは ingest commit と孤児回収に対してだけである。
   通常削除（`deleteMediaAsset`）とは filesystem lock でしか排他されない。RWX 越しに
   `flock` が効くかは未検証（ルール 4 と同じ前提）
-- 置き忘れた staging file を孤児回収が拾うかは未検証。拡張子が無いので catalog 無し
-  rescue の対象にはならず、原本へ昇格しない
+- 置き忘れた staging file は孤児候補になる。`walkMediaFiles` が飛ばすのは
+  rel_path lock file と catalog ディレクトリだけである。
+  7 日の mtime 猶予（`defaultOrphanMTimeGrace`）の後に、`deleteOrphanFile` が
+  canonical と同じ手順で消す（rel_path lock file が 1 個残る）。
+  拡張子が無いので catalog 無し rescue の対象にはならず、原本へ昇格しない
 
 ### カット版の置き換え（「置くのは一回」の 1 つの例外）
 

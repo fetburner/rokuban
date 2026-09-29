@@ -62,12 +62,18 @@ import (
 //     ディレクトリの temp へ lock の外で stage し、lock（rel_path の filesystem lock
 //     → tx → advisory xact lock）の中で判定 → rename（サイドカー → 本体）→ 親 dir
 //     fsync → Upsert → commit する。判定（planEncodePublish）は rename の前に、tx 内で
-//     行を読み直して行う。次のどちらかなら公開を飛ばす（temp を消して成功扱いで戻り、
+//     行を読み直して行う。次のどちらかなら公開を飛ばす（temp を消して戻り、
 //     旧ファイルの unlink も encode.finished も出さない）:
 //     (a) rel_path が冒頭で観測した値と違う（state は問わない。行なしも値の 1 つ）。
 //     encoded 行の rel_path を書くのは UpsertEncodedMediaAsset だけで、行は DELETE
 //     されず tombstone で残るので、rel_path は世代順に前へしか進まない。古い計画の
-//     実行が行を巻き戻すのをこれが止める。
+//     実行が行を巻き戻すのをこれが止める。(a) は「誰かが済ませた」ではなく
+//     「自分の計画が古い」を意味する。(a) だけが立ち行が active なら（区間が違う
+//     cut のときだけ）成功で飛ばさず、公開せずに River の snooze で戻して計画を
+//     やり直す（現在の keep を読み直して、一致すれば冒頭の (b) で skip、違えば次の
+//     世代で作り直す。skip すると新しいチャプター編集が黙って消える）。行が active
+//     でない（ごみ箱など）ときは成功で飛ばす。snooze は attempt を消費せず、
+//     encode.failed も試行の failed 行も出さない（shouldNotifyEncodeFailure）。
 //     (b) 行が active で（cut なら）凍結区間がこの試行の keep と一致する（誰かが
 //     既に commit した）。A が commit → B が rename で A のファイルを上書き → B の
 //     commit が失敗、と進むと、canonical は B の中身で行は A の size になる。
@@ -326,6 +332,15 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 		withSubtitles: withSubtitles,
 		cut:           cut,
 	})
+	if errors.Is(err, errEncodePlanStale) {
+		// 別の実行が先に行を進め、区間が自分の keep と違う。skip して成功にすると、
+		// 新しい chapters の編集が黙って消える（再投入されない）ので、snooze で
+		// 戻して loadCutContext から現在の keep を読み直す。River の snooze は
+		// attempt を消費しない。
+		log.Info("encode: publish plan is stale, snoozing to replan")
+		result = "replan"
+		return river.JobSnooze(encodeReplanDelay)
+	}
 	if err != nil {
 		return err
 	}
@@ -684,6 +699,14 @@ func encodeCommandError(ctx context.Context, cmd *exec.Cmd, waitErr error, stder
 	return fmt.Errorf("ffmpeg failed: %w", waitErr)
 }
 
+// errEncodePlanStale は publishEncoded が、tx 内の判定で計画が古いと分かったときに
+// 返す（temp は消してあり、DB にも canonical にも触っていない）。runEncode が
+// River の snooze に変えて、現在の keep から計画をやり直させる。
+var errEncodePlanStale = errors.New("encode: publish plan is stale")
+
+// encodeReplanDelay は計画が古かった実行を再実行するまでの待ち。
+const encodeReplanDelay = 10 * time.Second
+
 // beforeEncodeLock / beforeEncodeCommit はテストが公開手順の途中で実行を止め、
 // あるいは commit の失敗を注入するためのフックである（本番では何もしない）。
 // 引数は試行の scratch 出力パス（どの試行かをテストが見分けるため）。
@@ -834,6 +857,9 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 	if err != nil {
 		return 0, false, err
 	}
+	if plan.stale {
+		return 0, false, errEncodePlanStale
+	}
 	if plan.skip {
 		return 0, false, nil
 	}
@@ -877,8 +903,11 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 // ctx キャンセル（River の停止・ジョブタイムアウト）はジョブの失敗ではないので
 // 発火しない。この経路で落とした通知は失われない — ジョブは available に戻り、
 // 次に実行されたときに成功か失敗のどちらかを発火する。
+//
+// River の snooze（計画のやり直し）は失敗ではないので発火しない。
 func shouldNotifyEncodeFailure(err, ctxErr error) bool {
-	return err != nil && ctxErr == nil
+	var snooze *rivertype.JobSnoozeError
+	return err != nil && ctxErr == nil && !errors.As(err, &snooze)
 }
 
 // notify は ev に録画のスナップショット（site / title）を足して webhook を送る。
@@ -1017,15 +1046,21 @@ type encodePlan struct {
 	// replaced は commit の後に unlink する旧パス。cut で旧行が active のときだけ
 	// 非空（tombstone / deleting のファイルは自分のものではない）。
 	replaced string
-	// skip は公開を飛ばす判定。冒頭では (b) だけ、tx 内では (a) か (b)。
+	// skip は公開を飛ばして成功扱いにする判定。冒頭では (b) だけ、tx 内では (b) か、
+	// 行が active でない (a)。
 	skip bool
+	// stale は「自分の計画が古い」ことを表す: 行が active のまま rel_path だけが
+	// 観測時から進み、区間が自分の keep と違う ((a) だけが立つ。cut でだけ起きる)。
+	// 成功扱いで飛ばすと新しい keep が黙って消えるので、公開せずに計画をやり直す。
+	stale bool
 }
 
 // planEncodePublish は公開の判定をまとめた唯一の関数で、runEncode の冒頭
 // （observed == nil）と publishEncoded の tx 内（q は tx、observed は冒頭の値）の
 // 両方から呼ぶ。行（cut なら凍結区間も）を 1 回だけ読んで導く。
 //
-// skip になるのは次のどちらか（encode の doc コメント参照）:
+// skip（成功扱いで飛ばす）になるのは次のどちらか（encode の doc コメント参照）。
+// (a) だけが立ち、行が active なら skip でなく stale（計画のやり直し）になる:
 //   - (a) observed が非 nil で、行の rel_path が観測時と違う（rel_path の
 //     compare-and-swap）
 //   - (b) 行が active で、cut なら凍結区間が keep と一致する
@@ -1060,7 +1095,9 @@ func planEncodePublish(ctx context.Context, q *sqlcgen.Queries, recordingID int6
 		}
 		committed = chapters.SameRanges(frozen, cut.keep)
 	}
-	p.skip = committed || (observed != nil && observed.observedRelPath != p.observedRelPath)
+	moved := observed != nil && observed.observedRelPath != p.observedRelPath
+	p.stale = moved && !committed && exists && row.State == "active"
+	p.skip = committed || (moved && !p.stale)
 	return p, nil
 }
 

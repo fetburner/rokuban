@@ -3,6 +3,8 @@ package worker
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -237,7 +239,7 @@ func TestEncodeWorker_CommittedByAnotherAttemptIsNotOverwritten(t *testing.T) {
 	}
 	release()
 	if err := waitDone(t, doneB); err != nil {
-		t.Fatalf("Work B: %v (want skip because A already committed)", err)
+		t.Errorf("Work B: %v (want skip because A already committed)", err)
 	}
 
 	got, _ := os.ReadFile(finalPath)
@@ -255,9 +257,21 @@ func TestEncodeWorker_CommittedByAnotherAttemptIsNotOverwritten(t *testing.T) {
 	assertNoEncodeTemp(t, filepath.Dir(finalPath))
 }
 
-// T3: cut。古い計画（g1 → g2）の X が止まっている間に、行が g3 へ進む。判定 (a) が
-// 無いと、区間が違うので (b) では止まらず、X が行を g2 へ巻き戻す。
+// T3: cut。古い計画（g1 → g2）の X が止まっている間に、行が active のまま g3 へ進み、
+// 区間も X と違う。X は公開せず「計画が古い」で戻る（Work では snooze になる。
+// 成功で skip すると X の新しい keep が消える）。(a) が無いと、区間が違うので (b) では
+// 止まらず、X が行を g2 へ巻き戻す。
 func TestEncodeWorker_StaleCutPlanDoesNotRewindRow(t *testing.T) {
+	testStaleCutPlan(t, "active")
+}
+
+// T3b: 同じ順序でも、行が active でない（ごみ箱など）なら (a) は成功で飛ばす。
+func TestEncodeWorker_StaleCutPlanOnInactiveRowSkipsWithSuccess(t *testing.T) {
+	testStaleCutPlan(t, "deleted")
+}
+
+func testStaleCutPlan(t *testing.T, rowState string) {
+	t.Helper()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -313,11 +327,23 @@ func TestEncodeWorker_StaleCutPlanDoesNotRewindRow(t *testing.T) {
 	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 500}}); err != nil {
 		t.Fatal(err)
 	}
+	if rowState != "active" {
+		if _, err := pool.Exec(ctx, `UPDATE media_assets SET state = $2, deleted_at = now() WHERE id = $1`, assetID, rowState); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	release()
 	r := <-res
-	if r.err != nil || r.published {
-		t.Fatalf("publishEncoded = published %v, err %v; want a skip", r.published, r.err)
+	if r.published {
+		t.Fatalf("publishEncoded published over a newer row")
+	}
+	if rowState == "active" {
+		if !errors.Is(r.err, errEncodePlanStale) {
+			t.Fatalf("publishEncoded err = %v, want errEncodePlanStale (replan via snooze, not success)", r.err)
+		}
+	} else if r.err != nil {
+		t.Fatalf("publishEncoded err = %v, want a successful skip", r.err)
 	}
 	var rel string
 	if err := pool.QueryRow(ctx, `SELECT rel_path FROM media_assets WHERE id = $1`, assetID).Scan(&rel); err != nil {
@@ -333,6 +359,16 @@ func TestEncodeWorker_StaleCutPlanDoesNotRewindRow(t *testing.T) {
 		t.Errorf("g2 file exists (err=%v), want it never published", err)
 	}
 	assertNoEncodeTemp(t, filepath.Dir(abs(g2)))
+}
+
+// snooze（計画のやり直し）は失敗ではないので、encode.failed も failed 行も出さない。
+func TestShouldNotifyEncodeFailure_SnoozeIsNotAFailure(t *testing.T) {
+	if shouldNotifyEncodeFailure(fmt.Errorf("wrapped: %w", river.JobSnooze(time.Second)), nil) {
+		t.Error("a snooze must not notify encode.failed")
+	}
+	if !shouldNotifyEncodeFailure(errors.New("boom"), nil) {
+		t.Error("a real failure must notify encode.failed")
+	}
 }
 
 // T4: scratch はジョブ ID ごと。別ジョブ A が終わった後も、B の scratch が残る。
