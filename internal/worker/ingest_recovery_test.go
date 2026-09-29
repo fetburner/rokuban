@@ -275,6 +275,68 @@ func TestRecordSweepRecovery_DoesNotTakeLiveJobWhenProgressIsStale(t *testing.T)
 	assertIngestJobCount(t, pool, testSite, recordID, 1)
 }
 
+// TestRecordSweepRecovery_TakesJobAfterLeaseExpires は、heartbeat が止まった
+// （ノード死・SIGSTOP・分断で起きる）ingest の lock が idle_session_timeout で
+// 外れ、record_sweep が旧 running 行を回収することを固定する。lease が無いと
+// lock 用セッションが残り続け、回収は !acquired に落ち続ける。
+func TestRecordSweepRecovery_TakesJobAfterLeaseExpires(t *testing.T) {
+	useShortJobLockTimings(t)
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	recordingID := insertTestRecording(t, pool)
+	const recordID = "rec-expired-ingest-lease"
+	insertTestRecordSync(t, pool, recordingID, recordID)
+	oldJobID, attemptedAt := insertStaleRunningIngestJob(t, pool, recordID)
+	setIngestProgressObservedAt(t, pool, recordingID, attemptedAt)
+
+	lock, acquired, err := acquireIngestJobLock(ctx, pool, oldJobID, time.Second)
+	if err != nil {
+		t.Fatalf("acquiring ingest job lock: %v", err)
+	}
+	if !acquired {
+		t.Fatal("ingest job lock was not acquired")
+	}
+	t.Cleanup(lock.release)
+
+	// heartbeat を止めてから（同じ conn を並行に使わないため）pid を読む。
+	lock.stopHeartbeatLoop()
+	var backendPID int
+	if err := lock.conn.QueryRow(ctx, "SELECT pg_backend_pid()").Scan(&backendPID); err != nil {
+		t.Fatalf("reading lock backend pid: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var alive bool
+		if err := pool.QueryRow(ctx,
+			"SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1)", backendPID,
+		).Scan(&alive); err != nil {
+			t.Fatalf("checking lock backend liveness: %v", err)
+		}
+		if !alive {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("heartbeat 停止から 5 秒経っても lock 用バックエンドが終了しない（idle_session_timeout が効いていない）")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	w := newEmptyRecordSweepWorker(t, pool)
+	job := &river.Job[jobs.RecordSweepArgs]{
+		JobRow: &rivertype.JobRow{ID: 904},
+		Args:   jobs.RecordSweepArgs{Site: testSite},
+	}
+	if err := w.Work(riverWorkContext(t, pool), job); err != nil {
+		t.Fatalf("RecordSweepWorker.Work: %v", err)
+	}
+
+	state, finalizedAt := ingestJobStateAndFinalizedAt(t, pool, oldJobID)
+	if state != string(rivertype.JobStateDiscarded) || finalizedAt == nil {
+		t.Fatalf("ingest with an expired lease = state %q finalized_at=%v, want discarded/non-NULL", state, finalizedAt)
+	}
+}
+
 // insertStaleRunningIngestJob は常に testSite の下でフィクスチャを作る
 // （呼び出し側は全てそうしている。golangci-lint の unparam 参照）。
 func insertStaleRunningIngestJob(t *testing.T, pool *pgxpool.Pool, recordID string) (int64, time.Time) {

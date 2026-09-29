@@ -132,12 +132,16 @@ commit 中の古い進捗を時間だけで打ち切らない。rel_path の排�
 
 job lock の heartbeat は**このセッションの lease を更新する**ために撃つ。lock 用セッション
 には `idle_session_timeout`（`jobLockIdleSessionTimeout`、30 秒）が付いており、heartbeat が
-1 秒周期でクエリを撃ち続ける限り切れない。逆に heartbeat が止まれば（ノード死・ネットワーク
-分断・SIGSTOP）、Postgres 側のタイマーがバックエンドを終了させて advisory lock も外れる。
-これが 2 段目の回収が成立する根拠である。**TCP の keepalive ではこの役を担えない**。
-プロセスの停止・hang では対向のカーネルが ACK を返し続けるので、keepalive は永久に失敗しない。
-ノード消失なら失敗はするが、OS 既定（Linux で 7200 秒 + プローブ 9 回 × 75 秒）の間 lock が残り、
-その録画は回収されないまま滞留する。`tcp_keepalives_idle` を縮めれば後者は直るが、前者は直らない。
+1 秒周期でクエリを撃ち続ける限り切れない。逆に heartbeat が止まれば、Postgres 側のタイマーが
+バックエンドを終了させて advisory lock も外れる。これが 2 段目の回収が成立する根拠である。
+実測したのは、接続を開いたままプロセス内で heartbeat を止めた場合だけである（PostgreSQL 17.10
+で 30.08 秒）。未検証: ノード死・ネットワーク分断・SIGSTOP を実際に起こした測定。サーバーから
+見ればどれも「接続は開いたまま受信が止まる」ので等価だ、という推論に留まる。
+
+**TCP の keepalive ではこの役を担えない**。プロセスの停止・hang では対向のカーネルが ACK を
+返し続けるので、keepalive は永久に失敗しない。ノード消失なら失敗はするが、OS 既定の間は lock が
+残り、その録画は回収されないまま滞留する。この待ちは Linux の既定値（7200 秒 + プローブ 9 回 ×
+75 秒）からの見積もりで、実測ではない。`tcp_keepalives_idle` を縮めれば後者は直るが、前者は直らない。
 
 lock 喪失を検知しても転送をキャンセルしない。一時ファイル方式では古い実行が残っても
 canonical file を壊せず、DB の一意 reservation が採用を決めるためである。canonical の
@@ -230,7 +234,7 @@ record 固有 temp へ並行して pull できる。同じ record は temp の f
 各 transaction の original INSERT が部分一意索引を予約する。先に INSERT した transaction が rename・親 directory `fsync`・DB commit を完了すれば、その内容が canonical file の勝者になる。後発 transaction の INSERT は先発の commit / rollback を待ち、先発が commit した場合は unique violation で失敗する。後発の temp は失敗時の規約に従って残るので、canonical file は勝者の内容のまま保たれ、残った temp は orphan 回収に委ねられる。delete_reconcile の `deleting` 行との TOCTOU は閉じない: 先読みはヒントであり、正しさは一意索引と適用時の状態遷移に残る。
 
 - **rel_path の filesystem lock は公開・回収の区間だけに残した。** canonical path に直接転送しないので、転送全体の lock heartbeat や lock 喪失による転送 cancel は不要である。ingest commit と canonical orphan 回収は同じ `rel_path` の予約 lock file に対する POSIX `flock` を保持する。対象区間は rename / unlink から DB commit または orphan 行の整理までである。DB セッションが切れても古いファイル操作が続いて公開済み canonical を回収側が消すことはない。transaction-level advisory lock は DB の一意性と live 行確認を補助する。残る job-id advisory lock は record_sweep が live job と死亡 job を区別するためだけに使い、heartbeat はそのセッションの lease を更新するだけを担う
-- **未検証: RWX の media 越しの `flock`。** 別ノードの 2 レプリカ構成（`maxReplicaCount: 2` + RWX の media PVC）で、RWX 越しの `flock` 排他が効くかを確かめていない。効かなければ旧実行と代替実行が同じ temp へ書く。これは旧実行が生きたまま lock だけを失ったときに起きる（SIGKILL では旧実行が死んでいるので起きない）。heartbeat が応答待ち上限を超えて接続が閉じられる既存の窓に加え、lease 方式では DB から分断されたが生きている worker でも lease 切れ後に代替実行が走るので、当たる確率が上がる
+- **未検証: RWX の media 越しの `flock`。** 別ノードの 2 レプリカ構成（`maxReplicaCount: 2` + RWX の media PVC）で、RWX 越しの `flock` 排他が効くかを確かめていない。効かなければ旧実行と代替実行が同じ temp へ書く。これは旧実行が生きたまま lock だけを失ったときに起きる。SIGKILL されたプロセス自身はもう書かないが、RWX ではカーネルが未書き込みのページを後から書き戻しうる（未検証）。heartbeat が応答待ち上限を超えて接続が閉じられる既存の窓に加え、lease 方式では 30 秒以上止まったプロセスと、DB から分断されたが生きている worker でも代替実行が走る。そのぶん当たる確率が上がる
 - **同一録画の再試行**: 現行の `IngestWorker.Timeout() = -1` と、River の running を含む一意投入がある。これによりプロセス内の通常の River 経路では、古い ingest と新しい ingest が同時に走らない。プロセス死で running 行だけが残った場合も、上記のジョブ lock 確認と旧行の終端化を経て新しい試行へ進む。temp は record ごとに決まった名前で、flock が世代の競合を防ぐ
 - **孤児と追加 I/O**: 中身の不一致または record の cancel / fail では temp を消し、それ以外の失敗では次の試行へ残す。プロセス死や回収不能な temp は既存の `orphan_files` の mtime 猶予（既定 7 日）とエイジング（既定 14 日）が回収する。temp の回収は同じ flock に参加し、実行中の ingest と競合した場合は次の pass へ延期する。replay は同じ temp のローカル読み直しなので、scratch 経由の全長コピーは追加せず、追加コストは replay・temp の rename・親 directory `fsync` である
 

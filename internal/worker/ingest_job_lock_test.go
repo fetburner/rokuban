@@ -11,13 +11,13 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// useJobLockTimings は heartbeat 間隔と idle_session_timeout をテスト用の短い値に
+// useShortJobLockTimings は heartbeat 間隔と idle_session_timeout を 100ms / 1 秒に
 // 差し替える。本番の 1 秒 / 30 秒と同じ順序（間隔 ≪ timeout）を保ったまま、実時間の
-// 待ちを秒未満に縮める。並列実行はしない（パッケージ変数を書き換えるため）。
-func useJobLockTimings(t *testing.T, interval, idleTimeout time.Duration) {
+// 待ちを秒単位に縮める。並列実行はしない（パッケージ変数を書き換えるため）。
+func useShortJobLockTimings(t *testing.T) {
 	t.Helper()
 	previousInterval, previousIdleTimeout := jobLockHeartbeatInterval, jobLockIdleSessionTimeout
-	jobLockHeartbeatInterval, jobLockIdleSessionTimeout = interval, idleTimeout
+	jobLockHeartbeatInterval, jobLockIdleSessionTimeout = 100*time.Millisecond, time.Second
 	t.Cleanup(func() {
 		jobLockHeartbeatInterval, jobLockIdleSessionTimeout = previousInterval, previousIdleTimeout
 	})
@@ -43,7 +43,7 @@ func newTestPool(t *testing.T, dbURL string) *pgxpool.Pool {
 // これが無いと、回収の 2 段目（recoverStaleIngestJobs の pg_try_advisory_lock）が
 // !acquired に落ち続け、running 行が誰にも回収されないまま滞留する。
 func TestIngestJobLock_IdleSessionTimeoutReleasesLockAfterHeartbeatStops(t *testing.T) {
-	useJobLockTimings(t, 100*time.Millisecond, time.Second)
+	useShortJobLockTimings(t)
 
 	dbURL := testutil.DatabaseURL(t)
 	ctx := context.Background()
@@ -60,15 +60,18 @@ func TestIngestJobLock_IdleSessionTimeoutReleasesLockAfterHeartbeatStops(t *test
 	}
 	t.Cleanup(lock1.release)
 
-	var backendPID int
-	if err := lock1.conn.QueryRow(ctx, "SELECT pg_backend_pid()").Scan(&backendPID); err != nil {
-		t.Fatalf("reading lock backend pid: %v", err)
-	}
-
 	// heartbeat を止める。ノード死・SIGSTOP・分断ではこれが起きる。コネクションは
 	// 開いたままにする（TCP keepalive はカーネルが撃つだけで、バックエンドの
 	// idle タイマーは更新しない）。
 	lock1.stopHeartbeatLoop()
+
+	// pid は heartbeat を止めてから読む（同じ conn を並行に使わない）。このクエリが
+	// このセッションの最後のクエリになるので、idle タイマーの起点は stoppedAt の直前
+	// に固定され、下の下限チェックがスケジューラの遅れに左右されない。
+	var backendPID int
+	if err := lock1.conn.QueryRow(ctx, "SELECT pg_backend_pid()").Scan(&backendPID); err != nil {
+		t.Fatalf("reading lock backend pid: %v", err)
+	}
 	stoppedAt := time.Now()
 
 	// 別セッションが lock を取れるようになるまでの実時間を測る。取れなければ
@@ -113,7 +116,7 @@ func TestIngestJobLock_IdleSessionTimeoutReleasesLockAfterHeartbeatStops(t *test
 // timeout の 3 倍の間、別セッションは一度も lock を取得できない。heartbeat を
 // 止めると同じテストが落ちる（lease の両方向）。
 func TestIngestJobLock_HeartbeatKeepsSessionAlive(t *testing.T) {
-	useJobLockTimings(t, 100*time.Millisecond, time.Second)
+	useShortJobLockTimings(t)
 
 	dbURL := testutil.DatabaseURL(t)
 	ctx := context.Background()
@@ -167,7 +170,7 @@ func idleSessionTimeoutOnPooledConn(t *testing.T, pool *pgxpool.Pool) string {
 // 2 経路を見る: (1) lock を取れなかった経路（pg_try_advisory_lock と SET を同じ
 // 往復にすると、ここで設定が付いたままプールに戻る）、(2) release した経路。
 func TestIngestJobLock_SessionTimeoutNeverLeaksToAPooledConnection(t *testing.T) {
-	useJobLockTimings(t, 100*time.Millisecond, time.Second)
+	useShortJobLockTimings(t)
 
 	ctx := context.Background()
 	holder := newTestPool(t, testutil.DatabaseURL(t))

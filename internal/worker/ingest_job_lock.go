@@ -42,21 +42,33 @@ var (
 	// jobLockIdleSessionTimeout は lock 用セッションにだけ設定する
 	// idle_session_timeout。heartbeat が止まってから Postgres がこのセッションを
 	// 終了するまでの猶予である。猶予が切れると advisory lock も解放され、回収側
-	// （recoverStaleIngestJobs）が旧 running 行を回収できるようになる。
+	// （ingest の recoverStaleIngestJobs、encode / cm_detect の reconcile）が旧
+	// running 行を回収できるようになる。
 	//
 	// 30 秒の根拠:
-	//   - heartbeat 間隔（1 秒）の 30 倍、heartbeat 1 回の応答待ち上限（2 秒）の
-	//     15 倍なので、正常に動いているセッションがこのタイマーで終了することはない
+	//   - 生きているクライアントでは、サーバーから見たクエリ間隔の上限はおおよそ
+	//     heartbeat 間隔（1 秒）+ 応答待ち上限（2 秒）の約 3 秒である（応答待ちが
+	//     上限を超えれば pgx が接続を閉じる）。30 秒はその約 10 倍なので、正常に
+	//     動いているセッションがこのタイマーで終了することはない
 	//     （TestIngestJobLock_HeartbeatKeepsSessionAlive が timeout の 3 倍の間、
 	//     切断を観測しないことを固定している）。
-	//   - 短すぎる側の壊れ方: 生きたセッションを誤って終了させても壊れない
-	//     （temp の flock と DB の一意 reservation が採用を決め、lock 喪失でも転送を
-	//     cancel しない）が、二重 pull の無駄が出る。heartbeat がクエリを送って
-	//     いる時間は周期のごく一部なので、クライアント側の停止（k8s の CPU limit による
-	//     throttling・GC・VM の一時停止）はほぼ必ずクエリを送っていない間に起き、
-	//     その耐性はこの値だけで決まる。縮めるとその分だけ短い停止で lease が切れる。
+	//   - 短すぎる側の壊れ方: 生きたセッションを誤って終了させると、代替実行が旧実行と
+	//     並走する。heartbeat がクエリを送っている時間は周期のごく一部なので、
+	//     クライアント側の停止（k8s の CPU limit による throttling・GC・VM の一時停止）は
+	//     ほぼ必ずクエリを送っていない間に起き、その耐性はこの値だけで決まる。縮めると
+	//     その分だけ短い停止で lease が切れる。並走の帰結は利用者ごとに違う:
+	//       - ingest: 壊れない。temp の flock と DB の一意 reservation が採用を決め、
+	//         lock 喪失でも転送を cancel しないので、二重 pull の無駄が出るだけである。
+	//       - 未解決: encode にはファイル単位の排他が無い。scratch は
+	//         (recording, profile) ごとの固定パスで、canonical へ O_TRUNC で直接コピー
+	//         するので、並走すると canonical が切り詰められうる。この穴は heartbeat の
+	//         応答待ちが上限を超えて接続が閉じられる経路で既にあり、lease はそこに
+	//         「30 秒以上のプロセス停止」と「DB から分断されたが生きている worker」を足す。
+	//       - cm_detect: scratch はジョブ ID ごとで、代替（別 ID）とは衝突しない。
+	//         結果は DB の Upsert である。
 	//   - 長すぎる側の壊れ方: プロセス死の回収が遅れる。ただし回収の tail は
-	//     record_sweep の周期（5 分）で決まるので、5 分より十分短ければ差は出ない。
+	//     record_sweep（既定 5 分）/ encode・cm_detect の reconcile（既定 15 分）の
+	//     周期で決まるので、それより十分短ければ差は出ない。
 	//   - 実測（PostgreSQL 17.10）: この値のまま heartbeat を止めると 30.08 秒で
 	//     バックエンドが pg_stat_activity から消え、別セッションが同じジョブの
 	//     advisory lock を取得できた。SET を外すと同じ状態で 40 秒放置しても
