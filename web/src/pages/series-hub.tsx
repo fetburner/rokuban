@@ -62,7 +62,13 @@ export function SeriesHubPage() {
   // で前方一致するので、削除・エンコード追加などの mutate が自動で巻き込む。
   // pages/recording-detail.tsx と同じ理由）。
   const originQuery = useGetRecording(idNum, {
-    query: { queryKey: [recordingsQueryKeyPrefix, 'detail', idNum] as const },
+    query: {
+      queryKey: [recordingsQueryKeyPrefix, 'detail', idNum] as const,
+      // この画面では 404 は終わりではなく「purged の起点でハブを出す」への分岐。
+      // 既定の 3 回再試行だと、一覧と次回が取得済みでも約 7 秒スケルトンのままになる。
+      retry: (failureCount, error) =>
+        !(error instanceof ApiError && error.status === 404) && failureCount < 3,
+    },
   })
   const origin = unwrap(originQuery.data)
 
@@ -145,9 +151,7 @@ export function SeriesHubPage() {
         }
       />
 
-      {originQuery.isError && !originPurged ? (
-        <ErrorState>録画が見つかりません</ErrorState>
-      ) : nothingToShow ? (
+      {(originQuery.isError && !originPurged) || nothingToShow ? (
         <ErrorState>録画が見つかりません</ErrorState>
       ) : !showHub ? (
         <ListSkeleton rows={4} />

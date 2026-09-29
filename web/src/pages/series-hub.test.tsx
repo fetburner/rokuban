@@ -247,6 +247,28 @@ describe('SeriesHubPage', () => {
     expect(screen.queryByRole('region', { name: 'このシリーズの録画' })).not.toBeInTheDocument()
   })
 
+  // 一覧が 500 のとき「0 件」は判断材料にならない（行が残っているかもしれない）。
+  // `nothingToShow` の `!isError` を外すと「見つかりません」に落ちる。
+  it('起点が purge 済みで一覧が 500・次回が空なら、一覧の節にエラーを出す', async () => {
+    const origin = recording({ id: 5, series: '作品X' })
+    globalThis.fetch = vi.fn((input: string | URL | Request) => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.pathname === '/api/recordings/5/upcoming') return Promise.resolve(jsonResponse([]))
+      if (url.pathname === '/api/recordings/5') return Promise.resolve(jsonResponse(origin, 404))
+      if (url.pathname === '/api/recordings') return Promise.resolve(jsonResponse({}, 500))
+      throw new Error(`unexpected fetch: ${url.pathname}`)
+    }) as unknown as typeof fetch
+    renderInRouter(<SeriesHubPage />, {
+      path: '/recordings/$id/series',
+      initialEntries: ['/recordings/5/series'],
+    })
+
+    const list = await screen.findByRole('region', { name: 'このシリーズの録画' })
+    expect(await within(list).findByText('録画の取得に失敗しました')).toBeInTheDocument()
+    expect(within(list).getByRole('button', { name: /再試行/ })).toBeInTheDocument()
+    expect(screen.queryByText('録画が見つかりません')).not.toBeInTheDocument()
+  })
+
   // 404 以外のエラーは purged と見なさない。一覧が返っていても開かない。
   it('起点の取得が 500 なら purged と見なさずエラーを出す', async () => {
     const origin = recording({ id: 5, title: 'アニメ　作品X　第1話', series: '作品X' })
@@ -256,7 +278,11 @@ describe('SeriesHubPage', () => {
       initialEntries: ['/recordings/5/series'],
     })
 
-    await waitFor(() => expect(screen.getByText('録画が見つかりません')).toBeInTheDocument())
+    // 404 以外は起点クエリの再試行（3 回。テストの QueryClient の retry: false より
+    // クエリ側の設定が勝つ）を経てから出るので長めに待つ。
+    await waitFor(() => expect(screen.getByText('録画が見つかりません')).toBeInTheDocument(), {
+      timeout: 15000,
+    })
     expect(screen.queryByRole('region', { name: 'このシリーズの録画' })).not.toBeInTheDocument()
-  })
+  }, 20000)
 })
