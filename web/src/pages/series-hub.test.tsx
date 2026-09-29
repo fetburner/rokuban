@@ -49,8 +49,18 @@ function program(over: Partial<ProgramSearchMatch>): ProgramSearchMatch {
   }
 }
 
-/** stubApi は起点の録画・次回・シリーズの一覧を返す。 */
-function stubApi(origin: Recording, upcoming: ProgramSearchMatch[], series: Recording[]) {
+/**
+ * stubApi は起点の録画・次回・シリーズの一覧を返す。
+ *
+ * `originStatus` は起点の単体 GET の状態。purge 済みの tombstone を表す 404 も、
+ * 5xx も、同じ「単体 GET が返らない」形になるので、ここで切り替える。
+ */
+function stubApi(
+  origin: Recording,
+  upcoming: ProgramSearchMatch[],
+  series: Recording[],
+  originStatus = 200,
+) {
   const requested: string[] = []
   globalThis.fetch = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
@@ -59,7 +69,7 @@ function stubApi(origin: Recording, upcoming: ProgramSearchMatch[], series: Reco
       return Promise.resolve(jsonResponse(upcoming))
     }
     if (url.pathname === `/api/recordings/${origin.id}`) {
-      return Promise.resolve(jsonResponse(origin))
+      return Promise.resolve(jsonResponse(origin, originStatus))
     }
     if (url.pathname === '/api/recordings') {
       // ハブの一覧は `?seriesOf=` が付いている。
@@ -172,5 +182,81 @@ describe('SeriesHubPage', () => {
     })
 
     await waitFor(() => expect(screen.getByText('録画が見つかりません')).toBeInTheDocument())
+  })
+
+  // 起点の単体 GET は purged の tombstone を除く（`queryRecordingByID` の契約）が、
+  // 一覧（`?seriesOf=`）と次回は行が残るのでシリーズを返す。この差で purged を
+  // 見分ける。**このテストは、404 で画面全体をエラーにしていた実装で落ちる。**
+  it('起点が purge 済み（単体 GET が 404）でも、一覧と次回を出す', async () => {
+    const origin = recording({ id: 5, title: 'アニメ　作品X　第1話', series: '作品X' })
+    stubApi(
+      origin,
+      [program({ programId: 11, name: 'アニメ　作品X　第3話' })],
+      [
+        recording({ id: 6, title: 'アニメ　作品X　第2話', series: '作品X' }),
+        recording({ id: 4, title: 'アニメ　作品X　第1話', series: '作品X' }),
+      ],
+      404,
+    )
+    renderInRouter(<SeriesHubPage />, {
+      path: '/recordings/$id/series',
+      initialEntries: ['/recordings/5/series'],
+    })
+
+    // 見出しは起点ではなく、一覧の先頭（最も新しい回）の生のタイトル。
+    const heading = await screen.findByRole('heading', { level: 2 })
+    expect(heading.textContent).toBe('アニメ　作品X　第2話')
+
+    const list = await screen.findByRole('region', { name: 'このシリーズの録画' })
+    expect(await within(list).findByRole('link', { name: 'アニメ　作品X　第1話' })).toHaveAttribute(
+      'href',
+      '/recordings/4',
+    )
+    expect(
+      await screen.findByRole('region', { name: '次回' }),
+    ).toBeInTheDocument()
+    // 戻る先は起点の詳細ではない（そちらも 404 になる）。
+    expect(screen.getByRole('link', { name: '戻る' })).toHaveAttribute('href', '/recordings')
+  })
+
+  // 一覧が空でも次回があれば、ハブは開く（見出しは次回の生のタイトル）。
+  it('起点が purge 済みで一覧が空でも、次回があれば見出しを次回で出す', async () => {
+    const origin = recording({ id: 5, title: 'アニメ　作品X　第1話', series: '作品X' })
+    stubApi(origin, [program({ programId: 11, name: 'アニメ　作品X　第2話' })], [], 404)
+    renderInRouter(<SeriesHubPage />, {
+      path: '/recordings/$id/series',
+      initialEntries: ['/recordings/5/series'],
+    })
+
+    const heading = await screen.findByRole('heading', { level: 2 })
+    expect(heading.textContent).toBe('アニメ　作品X　第2話')
+    await screen.findByRole('region', { name: '次回' })
+  })
+
+  // 一覧も次回も 0 件なら、purged の起点と存在しない id を区別できない。
+  // このときだけ「見つかりません」に落とす（受け入れた限界）。
+  it('起点が purge 済みで一覧も次回も空ならエラーを出す', async () => {
+    const origin = recording({ id: 5, series: '作品X' })
+    stubApi(origin, [], [], 404)
+    renderInRouter(<SeriesHubPage />, {
+      path: '/recordings/$id/series',
+      initialEntries: ['/recordings/5/series'],
+    })
+
+    await waitFor(() => expect(screen.getByText('録画が見つかりません')).toBeInTheDocument())
+    expect(screen.queryByRole('region', { name: 'このシリーズの録画' })).not.toBeInTheDocument()
+  })
+
+  // 404 以外のエラーは purged と見なさない。一覧が返っていても開かない。
+  it('起点の取得が 500 なら purged と見なさずエラーを出す', async () => {
+    const origin = recording({ id: 5, title: 'アニメ　作品X　第1話', series: '作品X' })
+    stubApi(origin, [], [recording({ id: 6, title: 'アニメ　作品X　第2話', series: '作品X' })], 500)
+    renderInRouter(<SeriesHubPage />, {
+      path: '/recordings/$id/series',
+      initialEntries: ['/recordings/5/series'],
+    })
+
+    await waitFor(() => expect(screen.getByText('録画が見つかりません')).toBeInTheDocument())
+    expect(screen.queryByRole('region', { name: 'このシリーズの録画' })).not.toBeInTheDocument()
   })
 })

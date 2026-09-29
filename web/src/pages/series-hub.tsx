@@ -3,6 +3,7 @@ import { Link, useParams } from '@tanstack/react-router'
 import { ArrowLeft } from 'lucide-react'
 import { useMemo } from 'react'
 
+import { ApiError } from '@/api/client'
 import {
   listRecordings,
   useGetRecording,
@@ -32,11 +33,22 @@ type HubPageParam = { before?: string; beforeId?: number }
  *
  * **起点は録画 id**（正規化キーではない）。正規化キーを URL に置くと、規則を
  * 変えた時点で 404 ではなく 0 件で黙って壊れる（docs/data/series.md §8
- * 「資源同定: 起点は録画 id」）。API は purge 済みの tombstone を起点にしても
- * シリーズを返すが、画面は起点の単体 GET が purged を除くので開けない（既知の限界）。
+ * 「資源同定: 起点は録画 id」）。
+ *
+ * **起点の単体 GET が 404 でも、ハブは開く。** 単体 GET は purged の tombstone を
+ * 除く契約なので（`queryRecordingByID`）、ハブを開いたブックマークの起点が後から
+ * purge されると 404 になる。この場合も一覧（`?seriesOf=`）と次回は tombstone の
+ * 行からシリーズを返すので、404 を「シリーズが無い」と読まずに一覧と次回を出す。
+ * **存在しない id との区別は API が返す情報だけで付く** --- 行が無ければ一覧も
+ * 次回も 0 件になる（openapi.yaml の `seriesOf` / `upcoming` 参照）。404 以外の
+ * エラー（5xx など）は purged と見なさない。
  *
  * 見出しは**起点の録画の生のタイトル**（正規化キーではない）。値は正規化の
- * 産物なので表示名にならない（棚の見出しと同じ規律）。
+ * 産物なので表示名にならない（棚の見出しと同じ規律）。起点が purged なら一覧の
+ * 先頭（最も新しい回）、一覧も空なら次回の先頭の生のタイトルで代用する。
+ * 起点を purge した後にシリーズの他の回が 1 つも無い場合（その回しか録っていない
+ * シリーズ）は、出せる一覧も次回も無いので見出しを諦めて「録画が見つかりません」
+ * を出す（受け入れた限界）。
  *
  * **シリーズが無い録画（`series` が null）では導線を出さない**ので、この画面は
  * そこからは到達しない。直接 URL を叩かれた場合は「0 件」の画面になる
@@ -87,6 +99,29 @@ export function SeriesHubPage() {
     [listQuery.data],
   )
 
+  // 起点が purged の tombstone（単体 GET が 404）。存在しない id とは分けて扱う。
+  const originPurged = originQuery.error instanceof ApiError && originQuery.error.status === 404
+  // 一覧と次回が確定するまで「0 件」を判断しない（pending は空配列と同じ形）。
+  const seriesSettled = !listQuery.isPending && !upcomingQuery.isPending
+  // 起点が purged で、行が残っている証拠がどこにも無い場合だけ「見つかりません」。
+  // どちらかがエラーなら 0 件は判断材料にならないので、節ごとのエラー表示に委ねる。
+  const nothingToShow =
+    originPurged &&
+    seriesSettled &&
+    !listQuery.isError &&
+    !upcomingQuery.isError &&
+    recordings.length === 0 &&
+    upcoming.length === 0
+  const showHub = origin !== undefined || (originPurged && seriesSettled)
+  const heading =
+    origin !== undefined
+      ? programTitle(origin.title)
+      : recordings.length > 0
+        ? programTitle(recordings[0].title)
+        : upcoming.length > 0
+          ? programTitle(upcoming[0].name)
+          : undefined
+
   return (
     <>
       <PageHeader
@@ -96,20 +131,29 @@ export function SeriesHubPage() {
             variant="ghost"
             size="icon"
             aria-label="戻る"
-            render={<Link to="/recordings/$id" params={{ id: String(idNum) }} />}
+            // 起点が purged なら戻り先の詳細も 404 になるので、一覧へ向ける。
+            render={
+              originPurged ? (
+                <Link to="/recordings" />
+              ) : (
+                <Link to="/recordings/$id" params={{ id: String(idNum) }} />
+              )
+            }
           >
             <ArrowLeft />
           </Button>
         }
       />
 
-      {originQuery.isError ? (
+      {originQuery.isError && !originPurged ? (
         <ErrorState>録画が見つかりません</ErrorState>
-      ) : originQuery.isPending || origin === undefined ? (
+      ) : nothingToShow ? (
+        <ErrorState>録画が見つかりません</ErrorState>
+      ) : !showHub ? (
         <ListSkeleton rows={4} />
       ) : (
         <PageContent className="flex flex-col gap-4 px-4 py-4">
-          <h2 className="text-lg font-medium">{programTitle(origin.title)}</h2>
+          {heading !== undefined && <h2 className="text-lg font-medium">{heading}</h2>}
 
           {(upcomingQuery.isError || upcoming.length > 0) && (
             <section className="flex flex-col gap-2" aria-label="次回">
