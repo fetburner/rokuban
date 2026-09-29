@@ -183,6 +183,76 @@ func TestCMDetectionDesiredPredicateAndFreshLogoReset(t *testing.T) {
 	}
 }
 
+// 教えた枠は、その局で失敗していた録画を再検出の候補に戻す（新しいロゴを学習した
+// ときと同じ規則）。教えた直後に落ちた試行は候補に戻らない（同じ枠で同じ失敗を
+// 繰り返さない）。
+func TestCMDetectionDesiredAfterTaughtLogoArea(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+	mediaDir := t.TempDir()
+	id := insertTestRecordingWithEventID(t, pool, 830)
+	seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d.ts", id), []byte("ts"))
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+		VALUES ($1, 'always', '{}', true)`, id); err != nil {
+		t.Fatal(err)
+	}
+	message := "failed before the area was taught"
+	fail := func(t *testing.T) {
+		t.Helper()
+		if err := q.MarkCMDetectionRunning(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+		if err := q.MarkCMDetectionFailure(ctx, sqlcgen.MarkCMDetectionFailureParams{
+			RecordingID: id, State: "failed", Error: &message,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fail(t)
+	if _, err := pool.Exec(ctx, `UPDATE recording_cm_attempts SET attempted_at = now() - interval '1 hour' WHERE recording_id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	wantDesired := func(t *testing.T, want bool) {
+		t.Helper()
+		desired, err := q.IsCMDetectionDesired(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if desired != want {
+			t.Fatalf("IsCMDetectionDesired = %v, want %v", desired, want)
+		}
+		ids, err := q.ListMissingCMDetections(ctx, sqlcgen.ListMissingCMDetectionsParams{AfterRecordingID: 0, RowLimit: 100})
+		if err != nil {
+			t.Fatal(err)
+		}
+		listed := len(ids) == 1 && ids[0] == id
+		if listed != want {
+			t.Fatalf("ListMissingCMDetections = %v, want the recording listed = %v", ids, want)
+		}
+	}
+	wantDesired(t, false)
+
+	if err := q.UpsertCMLogoArea(ctx, sqlcgen.UpsertCMLogoAreaParams{
+		NetworkID: 32736, ServiceID: 1024, X: 1180, Y: 24, W: 240, H: 96,
+		CodedWidth: 1440, CodedHeight: 1080,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wantDesired(t, true)
+
+	// 教えた後にまた同じ枠で失敗したら、候補には戻らない。
+	fail(t)
+	wantDesired(t, false)
+
+	// 枠を自動に戻しても、失敗した試行は候補に戻らない（学習済みロゴも無い）。
+	if _, err := q.DeleteCMLogoArea(ctx, sqlcgen.DeleteCMLogoAreaParams{NetworkID: 32736, ServiceID: 1024}); err != nil {
+		t.Fatal(err)
+	}
+	wantDesired(t, false)
+}
+
 func TestUntilEncodedViewWaitsForCMDetectionOrFinalFailure(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()

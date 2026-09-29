@@ -230,6 +230,30 @@ CREATE TABLE recording_chapter_spans (
 
 局ロゴは `(network_id, service_id)` で一意に保持する。LGD は次回以降の検出に使うバイナリで、PNG preview は任意の表示用データ。`learned_from` は最初にロゴを学習した録画を指し、録画削除後も局ロゴは残る。管理画面から削除すると次の検出で再学習される。ロゴが失敗した録画より後に学習された場合、その失敗は再投入可能になる。
 
+### cm_logo_areas — 局ごとの手動ロゴ枠
+
+CM 検出器が自動でロゴを見つけられない局だけ、ユーザーが映像上で枠を指定する。行の存在が手動枠の設定を表し、自動推定の値はこの表へ書かない。座標は SAR を適用する前の記録上の画素で、`coded_width` と `coded_height` はその座標系の解像度である。
+
+```sql
+CREATE TABLE cm_logo_areas (
+    network_id   integer NOT NULL,
+    service_id   integer NOT NULL,
+    x            integer NOT NULL,
+    y            integer NOT NULL,
+    w            integer NOT NULL,
+    h            integer NOT NULL,
+    coded_width  integer NOT NULL,
+    coded_height integer NOT NULL,
+    updated_at   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (network_id, service_id),
+    CHECK (coded_width > 0 AND coded_height > 0
+       AND x >= 0 AND y >= 0 AND w > 0 AND h > 0
+       AND x + w <= coded_width AND y + h <= coded_height)
+);
+```
+
+枠を保存すると局の学習済みロゴを消し、`updated_at` より前に失敗した検出を再投入可能にする。検出時の原本の解像度と枠の `coded_width` / `coded_height` が違うときは枠を使わず失敗として残す。枠を削除すると自動探索へ戻る。
+
 ### recording_ingest_progress — 転送の途中経過（衛星表）
 
 原本の取り込み（ingest）が「どこまで書けたか」を持つ。書き手は ingest worker

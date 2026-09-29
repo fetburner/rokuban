@@ -1642,6 +1642,45 @@ paths:
         "204":
           description: Logo forgotten
 
+  # The taught area is a separate resource from the learned logo. DELETE returns to
+  # automatic detection; it does not restore a logo that PUT deliberately forgot.
+  /api/cm-logos/{networkId}/{serviceId}/area:
+    parameters:
+      - name: networkId
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: serviceId
+        in: path
+        required: true
+        schema:
+          type: integer
+    put:
+      operationId: putCMLogoArea
+      summary: Teach the station's CM logo area
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CMLogoAreaInput"
+      responses:
+        "204":
+          description: Logo area saved and the learned logo forgotten
+        "400":
+          description: Invalid rectangle or recorded resolution
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteCMLogoArea
+      summary: Return a station's logo area to automatic detection
+      responses:
+        "204":
+          description: Logo area removed
+
   /api/recordings/{id}/drop-stats:
     parameters:
       - name: id
@@ -2132,7 +2171,7 @@ components:
 
     CMLogoState:
       type: object
-      required: [networkId, serviceId, serviceName, state, recordingCount, failedCount]
+      required: [networkId, serviceId, serviceName, state, recordingCount, failedCount, frameRecordingId]
       properties:
         networkId:
           type: integer
@@ -2155,6 +2194,64 @@ components:
         previewPng:
           type: string
           format: byte
+        lastError:
+          type: string
+          description: The most recent failed CM detection reason, if any.
+        frameRecordingId:
+          type: integer
+          format: int64
+          description: Recording with an active original for frame selection, or 0.
+        logoArea:
+          $ref: "#/components/schemas/CMLogoArea"
+
+    CMLogoArea:
+      type: object
+      required: [x, y, w, h, codedWidth, codedHeight, updatedAt]
+      properties:
+        x:
+          type: integer
+          minimum: 0
+        y:
+          type: integer
+          minimum: 0
+        w:
+          type: integer
+          minimum: 1
+        h:
+          type: integer
+          minimum: 1
+        codedWidth:
+          type: integer
+          minimum: 1
+        codedHeight:
+          type: integer
+          minimum: 1
+        updatedAt:
+          type: string
+          format: date-time
+
+    CMLogoAreaInput:
+      type: object
+      required: [x, y, w, h, codedWidth, codedHeight]
+      properties:
+        x:
+          type: integer
+          minimum: 0
+        y:
+          type: integer
+          minimum: 0
+        w:
+          type: integer
+          minimum: 1
+        h:
+          type: integer
+          minimum: 1
+        codedWidth:
+          type: integer
+          minimum: 1
+        codedHeight:
+          type: integer
+          minimum: 1
 
     ErrorResponse:
       type: object
