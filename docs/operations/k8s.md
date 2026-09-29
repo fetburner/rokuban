@@ -86,6 +86,22 @@ site 単位のキューを一切購読できない（`jobs.RequiresSiteBinding` 
 
 素の TS の帯域目安は地上波 約 17 Mbps / BS 約 24 Mbps（1 セッションあたり、規格値）。streamer は 1 プロセスが N サイトを束縛できる（`cmd/rokuban/server.go`）。`live.enabled: true` に束縛サイト数の制約は無く、0 サイト束縛（中央の録画配信 Deployment）はライブのルートを持たないだけで他のロールは通常どおり動く。`deploy/k8s/` では中央 streamer と site ごとのライブ streamer を別 Pod として出荷し、overlay が単一 Ingress に site 名を具体化した Prefix を追加する。
 
+**ライブのパッケージングを MediaMTX に委ねる形（opt-in）では、MediaMTX と publisher を
+同じコンテナに置く**。publisher は `runOnDemand` が子プロセスとして起動する rokuban の
+コマンドである。したがって MediaMTX のコンテナに rokuban・ffmpeg（VAAPI ならデバイスも）が
+要り、そこから mirakc に到達できる必要がある。前段の `(site, networkId, serviceId)` の
+consistent hash と既定 replicas=1 の可逆性は変わらない。
+
+- **未解決: 前段の書き換えを上記の入口の判定基準で表せない。** 前段は全要求の接頭辞を
+  MediaMTX のパスへ書き換える（[api/media.md](../api/media.md) §「パッケージャは
+  MediaMTX の LL-HLS を選べる形にする」）。標準 Ingress の `Exact` / `Prefix` は
+  書き換えを持たないので、書き換えを担う前段をどこに置くかを決める必要がある
+- **MediaMTX の HTTP を前段の外へ直接公開しない。** アプリに残る唯一のセキュリティ要件
+  である Host ヘッダー検証（[overview.md](../overview.md) §認証）を通らない
+- **配信を外に出す利益は負荷ではない。** 現行経路の streamer Pod の CPU は、視聴者 1 人
+  （30 分）で中央値 353m、3 人（60 秒）で 374.5m だった（+6%）。配信負荷ではなく
+  エンコードが支配的である
+
 #### 録画配信はセッション親和性を必要としない
 
 録画配信は完全にステートレスで（DB からアセットを解決して `http.ServeContent` で

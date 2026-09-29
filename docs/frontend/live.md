@@ -874,7 +874,7 @@ hls.js 経路で `hls.latency` の中央値 5.0 秒・先読みの中央値 4.1 
 経路で測れるのは `buffered` の近似だけで、それも live 端近傍が安定せず、同じ条件の 30 分で
 53 回の止まりが出た。**計器に出る値は「低遅延である」ことの証拠にはならない。**
 低遅延を目標にしない判断と、`segment_seconds` を短くしても遅延が縮まない理由は
-[api/media.md](../api/media.md) §「遅延の目標は置かない」が持つ。
+[api/media.md](../api/media.md) §「遅延の目標は置かない」が持つ（アプリ配信の経路の判断）。
 
 **`hls.latency` は同期点が決まる前も `NaN` ではなく `0` を返す**。
 `node_modules/hls.js`（1.6.17）の `LatencyController.get latency()` は
