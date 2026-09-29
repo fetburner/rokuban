@@ -61,6 +61,72 @@ worker は River の LISTEN を使い、`notifier.New` の 1 個の Listener を
 watcher は advisory lock、notifier は SSE 用の LISTEN を使うため、transaction pooling で接続が要求ごとに入れ替わると壊れる（[data.md](../data.md) §2 / §3）。
 将来ハイブリッド構成を実装するときは、必要な pooler 対応の形をその PR で改めて決める。
 
+### managed PostgreSQL の `btree_gist`
+
+`00012_recording_chapters.sql` は区間の `EXCLUDE` 制約を作る前に、
+`btree_gist` を `public` へ追加する。この文が失敗すると `migrate up` は停止し、
+後続の migration に進まない。k8s では
+[`migrate-job.yaml`](../../deploy/k8s/base/migrate-job.yaml) の Job が同じコマンドを実行する。
+
+PostgreSQL 標準の `btree_gist` は trusted extension である。
+対象 DB に `CREATE` 権限を持つロールで作成できる。
+managed provider の提供状況とアプリの migration role の権限は接続先ごとに確認する
+([btree_gist](https://www.postgresql.org/docs/current/btree-gist.html)、
+[`CREATE EXTENSION`](https://www.postgresql.org/docs/current/sql-createextension.html))。
+`IF NOT EXISTS` は既存 extension があれば作成せず notice を返す。
+その場合、この文の成功だけでは新規作成権限の証明にならない。
+
+#### 確認手順
+
+provider の公式コンソールで、本番相当の project、branch、read-write endpoint と
+migration Job が使う `db.user` を特定する。pooler を避けて direct endpoint に接続し、
+password は `psql -W` の prompt で入力する。接続 URI や password をコマンド引数、
+shell history、ログ、issue に貼らない。
+
+```sh
+psql -W "host=ENDPOINT_HOST port=5432 dbname=DATABASE_NAME user=MIGRATION_ROLE sslmode=require"
+```
+
+まず接続ロール、拡張の状態、`00012` の適用状態を読み取りだけで確認する。
+`goose_db_version` に `version_id = 12` の行が無ければ未適用である。
+行が複数ある場合は `id` が最大の行の `is_applied` を見る。
+
+```sql
+SELECT current_user,
+       current_database(),
+       has_database_privilege(current_user, current_database(), 'CREATE') AS can_create;
+
+SELECT e.extversion, n.nspname AS schema_name
+FROM pg_extension AS e
+JOIN pg_namespace AS n ON n.oid = e.extnamespace
+WHERE e.extname = 'btree_gist';
+
+SELECT id, is_applied, tstamp
+FROM public.goose_db_version
+WHERE version_id = 12
+ORDER BY id DESC
+LIMIT 1;
+```
+
+次に、同じ migration role で migration と同じ文を実行する。
+拡張が未導入ならこの操作で追加される。既に導入済みなら何も変更しない。
+`00012` の Down は既存方針どおり拡張を削除しない。
+
+```sql
+CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public;
+```
+
+既に拡張がある状態で新規作成権限まで確かめる必要があるときは、拡張を DROP せず、
+同じ role の権限を用意した使い捨ての managed database で試す。
+拡張が `public` 以外にある場合も `IF NOT EXISTS` は移動しないため、migration 前に管理者へ確認する。
+
+role の実行が権限エラーになった場合は、DB 管理者が対象 DB で上記と同じ文を
+事前に実行し、その後アプリの migration role で `migrate up` を再実行する。
+権限エラーを握りつぶす変更や migration の書き換えはしない。
+k8s では migration Job の失敗を解消してから API を更新する。
+結果を共有するときは provider と project / branch / endpoint の識別子、role での成否、
+`00012` の適用状態だけを記録し、接続情報や password は含めない。
+
 ### EPG churn / autovacuum
 
 EPG テーブルは 1 日に何度も大量 upsert されるため、遅くなるとしたら検索ではなく書き込みと autovacuum の追従。対策:
