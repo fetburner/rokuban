@@ -33,6 +33,10 @@ type RescueResult struct {
 	ProgramSnapshots        int
 	ProgramIntents          int
 	ProgramOverrides        int
+	// チャプターの所有 2 表（ユーザーの手作業）。ここが 0 でも rescue は成功する
+	// （所有していない録画が大半なので、件数だけでは復元漏れを判定できない）。
+	RecordingChapterOwnerships int
+	RecordingChapterSpans      int
 
 	// SkippedProgramSnapshots は識別子が壊れていて復元できなかった
 	// program_snapshots の件数。0 でなければ依存する program_intents /
@@ -192,6 +196,17 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 	}
 
 	if err := applyMediaAssets(ctx, q, doc.MediaAssets, res); err != nil {
+		return nil, err
+	}
+
+	// チャプターの所有 2 表は media_assets の後（区間が所有の行を FK で指すので
+	// この順）。doc.RecordingChapterOwnerships に載っていない録画には何も書かない
+	// --- 「自動層のまま」は行の不在そのものが意味を持つ（不変条件 10）。
+	// ユーザーの手作業なので、落とすと取り返しがつかない。
+	if err := applyRecordingChapterOwnerships(ctx, q, doc.RecordingChapterOwnerships, res); err != nil {
+		return nil, err
+	}
+	if err := applyRecordingChapterSpans(ctx, q, doc.RecordingChapterSpans, res); err != nil {
 		return nil, err
 	}
 
@@ -419,6 +434,44 @@ func applyMediaAssets(ctx context.Context, q *sqlcgen.Queries, assets []MediaAss
 		}
 	}
 	res.MediaAssets = len(assets)
+	return nil
+}
+
+// applyRecordingChapterOwnerships は recording_chapter_ownership を復元し、件数を
+// res.RecordingChapterOwnerships に書く。
+func applyRecordingChapterOwnerships(ctx context.Context, q *sqlcgen.Queries, rows []RecordingChapterOwnership, res *RescueResult) error {
+	for _, o := range rows {
+		if err := q.CatalogUpsertRecordingChapterOwnership(ctx, sqlcgen.CatalogUpsertRecordingChapterOwnershipParams{
+			RecordingID: o.RecordingID,
+			AdoptedAt:   o.AdoptedAt,
+		}); err != nil {
+			return fmt.Errorf("upserting recording_chapter_ownership %d: %w", o.RecordingID, err)
+		}
+	}
+	res.RecordingChapterOwnerships = len(rows)
+	return nil
+}
+
+// applyRecordingChapterSpans は recording_chapter_spans を復元し、件数を
+// res.RecordingChapterSpans に書く。
+//
+// **足すだけで、消さない。** この表は主キーを持たず、区間の重なりを EXCLUDE が
+// 禁じているので、同じ世代を 2 回当てると同じ区間が自分自身と衝突する。DO NOTHING
+// で受けるので 2 回目以降は 0 件になり、rescue 全体の冪等性が保たれる（既存の
+// 衛星表と同じく、dump に無い行は消さない）。
+func applyRecordingChapterSpans(ctx context.Context, q *sqlcgen.Queries, rows []RecordingChapterSpan, res *RescueResult) error {
+	for _, s := range rows {
+		if err := q.CatalogInsertRecordingChapterSpan(ctx, sqlcgen.CatalogInsertRecordingChapterSpanParams{
+			RecordingID: s.RecordingID,
+			StartMs:     s.StartMs,
+			EndMs:       s.EndMs,
+			Label:       s.Label,
+			Cut:         s.Cut,
+		}); err != nil {
+			return fmt.Errorf("inserting recording_chapter_span [%d,%d) of %d: %w", s.StartMs, s.EndMs, s.RecordingID, err)
+		}
+	}
+	res.RecordingChapterSpans = len(rows)
 	return nil
 }
 

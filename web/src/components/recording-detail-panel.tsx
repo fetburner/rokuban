@@ -3,11 +3,16 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import {
+  getGetRecordingChaptersQueryKey,
+  useDeleteRecordingChapterEdits,
+  useGetRecordingChapters,
   useListLiveProfiles,
   useListRules,
   useListSites,
+  usePutRecordingChapterEdits,
   useRetryRecordingCMDetection,
   useSetRecordingEncodePolicy,
+  type ChapterSpan,
   type Recording,
 } from '@/api/generated'
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
@@ -179,6 +184,53 @@ export function RecordingDetail({
   const plannedEndAt = new Date(programStartMs + recording.durationMs).toISOString()
   const timelineEndAt = new Date(programStartMs + timelineChaseSeconds * 1000).toISOString()
   const encodedAssets = recording.encodedAssets ?? []
+
+  // チャプター（CM とユーザー区間）。**ごみ箱では取らない** --- ごみ箱では
+  // プレイヤーを出さず、配信経路も 404 になる（配信 3 クエリと同じ契約）。
+  //
+  // 編集 UI は「ブラウザ再生できる encoded があるときだけ」出す。原本 TS しか
+  // 無い録画ではタイムラインを見ながら直せないので、押しても何もできない
+  // コントロールを置かない（issue #209 と同じ規律）。**カット版を再生しているときは
+  // 編集できない** --- カット版は時間軸から cut 区間を取り除いた別の動画で、
+  // 原本の ms で置かれた境界をその動画に当てられない。どの encoded がカット版かは
+  // `EncodedAsset` が `cut` を持つようになった時点でこの条件に足す。
+  const canEditChapters = !trash && encodedAssets.length > 0
+  const chaptersQuery = useGetRecordingChapters(recording.id, {
+    query: { enabled: canEditChapters },
+  })
+  const chapters = unwrap(chaptersQuery.data)
+  const putChapters = usePutRecordingChapterEdits()
+  const deleteChapters = useDeleteRecordingChapterEdits()
+  const invalidateChapters = () => {
+    void queryClient.invalidateQueries({ queryKey: getGetRecordingChaptersQueryKey(recording.id) })
+    void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
+  }
+  const saveChapters = (spans: ChapterSpan[]) => {
+    putChapters.mutate(
+      { id: recording.id, data: { spans } },
+      {
+        onSuccess: () => {
+          invalidateChapters()
+          toast({ message: 'チャプターを保存しました' })
+        },
+        onError: (error) =>
+          toast({ message: apiErrorMessage(error) ?? 'チャプターの保存に失敗しました', kind: 'error' }),
+      },
+    )
+  }
+  const resetChapters = () => {
+    deleteChapters.mutate(
+      { id: recording.id },
+      {
+        onSuccess: () => {
+          invalidateChapters()
+          toast({ message: '自動検出の結果に戻しました' })
+        },
+        onError: (error) =>
+          toast({ message: apiErrorMessage(error) ?? '自動に戻せませんでした', kind: 'error' }),
+      },
+    )
+  }
   // 追っかけの配信プロファイル（live.profiles）と、完了後のVODプロファイル
   // （encode.profiles）は別設定なので、URL用の profile を共有しない。再生位置だけ
   // VODの既定プロファイル名に寄せる。active asset が既にあればその実在する先頭を
@@ -341,6 +393,11 @@ export function RecordingDetail({
           encodedAssets={encodedAssets}
           hasOriginal={hasOriginal}
           originalSizeBytes={recording.sizeBytes}
+          chapters={chapters?.spans}
+          chapterSource={chapters?.source}
+          onSaveChapters={canEditChapters ? saveChapters : undefined}
+          onResetChapters={canEditChapters ? resetChapters : undefined}
+          chapterSavePending={putChapters.isPending || deleteChapters.isPending}
         />
       )}
 

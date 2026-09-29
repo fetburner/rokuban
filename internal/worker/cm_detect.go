@@ -196,6 +196,18 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	q := sqlcgen.New(tx)
+	// **結果を書く前に recordings の行をロックする。** チャプターの引き取り
+	// （PUT /api/recordings/{id}/chapter-edits）も同じ行を先頭でロックしてから
+	// 「検出が終端に達しているか」を評価するので、両者は直列化される。ロックが
+	// 無いと READ COMMITTED で条件が文の開始時点のスナップショットから評価され、
+	// この commit が見えないまま空の自動層で引き取られる窓が開く
+	// （docs/storage/retention.md §7「復元と即時削除要求の競合」と同じ形）。
+	if _, err := q.LockRecording(ctx, item.ID); err != nil {
+		if errors.Is(err, pgx5.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("locking recording for CM result: %w", err)
+	}
 	desired, err := q.IsCMDetectionDesired(ctx, item.ID)
 	if err != nil {
 		return fmt.Errorf("rechecking CM detection policy: %w", err)

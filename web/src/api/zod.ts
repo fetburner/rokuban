@@ -1314,6 +1314,94 @@ export const RetryRecordingCMDetectionResponse = zod.void()
 
 
 /**
+ * この録画の有効なタイムラインのうち、CM とユーザーが置いた区間だけを返す。
+ * **隙間の本編は返さない。** DB が持つ長さは EPG 上の番組長
+ * （`recordings.program_duration_ms`）だけで、ファイルの実際の長さを api は
+ * 知らない（原本は録画後に削除されうるし、EIT 追従で延長もされる）。隙間を
+ * 本編として扱うのはクライアントで、再生中の `<video>.duration` で閉じる。
+ *
+ * `source` はどの層を読んだかを表す。`user` は
+ * `recording_chapter_ownership` に行がある録画（= ユーザーが確認済み）で、
+ * 自動層は読まない。`auto` は検出結果（`recording_cm_detections`）。
+ *
+ * **CM 率が 50% を超える自動層は CM 無しとして返す**（本編の半分以上を CM と
+ * 主張する検出は壊れているとみなす安全弁）。判定は Go の純関数 1 か所にあり、
+ * 引き取りでユーザー層へ複製されるときも同じ扱いになる。
+ * @summary Get the effective chapter timeline of a recording
+ */
+export const GetRecordingChaptersParams = zod.object({
+  "id": zod.int()
+})
+
+export const GetRecordingChaptersResponse = zod.object({
+  "source": zod.enum(['auto', 'user']).describe('この録画が使っている層。`user` はユーザーが確認済み（所有している）で、\n自動層は読まれない。`auto` は自動検出の結果。\n'),
+  "spans": zod.array(zod.object({
+  "startMs": zod.int().describe('原本の最初の映像フレームを 0 とする ms。最も近いフレーム境界へ丸めて\nある（30000\/1001 fps 固定）。\n'),
+  "endMs": zod.int().describe('半開区間の終端。区間は [startMs, endMs)。'),
+  "label": zod.string().optional().describe('チャプターのラベル（`OP` \/ `ED` \/ `CM` など）。省略はラベル無しで、\nそのときは `cut` が真でなければならない（本編は行を持たない）。\n'),
+  "cut": zod.boolean().describe('真なら「本編ではない」区間として自動スキップの対象になり、カット版の\nencode が取り除く。偽でもラベルがあれば目盛りには出る（OP \/ ED を\n切らずに印だけ付ける）。\n')
+})).describe('有効なタイムラインのうち、CM とラベルのある区間だけ。\*\*本編は載らない\*\*\n（区間の隙間が本編）。昇順で、重なりは無い。空配列は省略しない。\n')
+})
+
+
+/**
+ * タイムライン全体を置き換える。部分更新は無い（境界の修正は「その時点の
+ * 検出結果に対する差分」なので、差分だけを送る形にすると再検出で境界が動いた
+ * 瞬間に意味を失う）。
+ *
+ * 最初の PUT が `recording_chapter_ownership` の行を作り、以後この録画では
+ * 自動層を読まない（引き取り）。ユーザーの修正は二度と再取得できない事実
+ * なので、再検出が上書きすることはない。
+ *
+ * 送る区間は **cut する区間とラベルのある区間だけ**で、本編は送らない
+ * （隙間 = 本編）。そのためラベルも無く `cut: false` の区間は 400、空の区間と
+ * 重なる区間も 400 になる。境界はサーバー側で最も近いフレーム境界へ丸める
+ * （30000/1001 fps 固定）ので、クライアントが量子化する必要はない。
+ *
+ * 検出が終端に達していない間は 409。この tx は先頭で `recordings` の行を
+ * `FOR UPDATE` でロックしてから条件を評価し、CM 検出の結果を書く tx も同じ
+ * 行をロックする。ロックが無いと READ COMMITTED で条件が文の開始時点の
+ * スナップショットから評価され、commit 済みの検出結果が見えないまま
+ * **空の自動層で引き取る**窓が開く（docs/storage/retention.md §7「復元と
+ * 即時削除要求の競合」と同じ形）。
+ *
+ * `cm_detect.enabled` が false のデプロイでは検出ジョブが積まれないので、
+ * 409 にはならない（永久に終端へ達しない録画を編集できなくしないため）。
+ * @summary Replace the whole chapter timeline with a user-owned one
+ */
+export const PutRecordingChapterEditsParams = zod.object({
+  "id": zod.int()
+})
+
+export const PutRecordingChapterEditsBody = zod.object({
+  "spans": zod.array(zod.object({
+  "startMs": zod.int().describe('原本の最初の映像フレームを 0 とする ms。最も近いフレーム境界へ丸めて\nある（30000\/1001 fps 固定）。\n'),
+  "endMs": zod.int().describe('半開区間の終端。区間は [startMs, endMs)。'),
+  "label": zod.string().optional().describe('チャプターのラベル（`OP` \/ `ED` \/ `CM` など）。省略はラベル無しで、\nそのときは `cut` が真でなければならない（本編は行を持たない）。\n'),
+  "cut": zod.boolean().describe('真なら「本編ではない」区間として自動スキップの対象になり、カット版の\nencode が取り除く。偽でもラベルがあれば目盛りには出る（OP \/ ED を\n切らずに印だけ付ける）。\n')
+})).describe('タイムライン全体（置き換え）。本編の区間は送らない --- 区間の隙間が\n本編である。空配列は「CM もチャプターも無い」という有効な主張。\n')
+})
+
+export const PutRecordingChapterEditsResponse = zod.void()
+
+
+/**
+ * `recording_chapter_ownership` の行を消す（区間は CASCADE で落ちる）。以後は
+ * 自動層に戻る。冪等（所有していなくても 204）。
+ *
+ * **取り込み直しは作らない。** 出自（自動 / 手動）と意図（切るかどうか）を
+ * 1 つの列に載せると、手で直した CM 境界が「取り込み直す」で上書きされる。
+ * やり直しはこの「自動に戻す」だけである。
+ * @summary Discard the user timeline and go back to the automatic layer
+ */
+export const DeleteRecordingChapterEditsParams = zod.object({
+  "id": zod.int()
+})
+
+export const DeleteRecordingChapterEditsResponse = zod.void()
+
+
+/**
  * @summary List learned CM logos and station detection failures
  */
 export const ListCMLogosResponseItem = zod.object({

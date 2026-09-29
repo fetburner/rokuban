@@ -59,6 +59,10 @@ type Document struct {
 	ProgramSnapshots        []ProgramSnapshot       `json:"programSnapshots"`
 	ProgramIntents          []ProgramIntent         `json:"programIntents"`
 	ProgramOverrides        []ProgramOverride       `json:"programOverrides"`
+	// チャプターの所有 2 表は mediaAssets の後に載る（区間は所有の行を FK で
+	// 指すので、rescue はこの順に書く）。
+	RecordingChapterOwnerships []RecordingChapterOwnership `json:"recordingChapterOwnerships"`
+	RecordingChapterSpans      []RecordingChapterSpan      `json:"recordingChapterSpans"`
 }
 
 // Rule は rules 本体と子テーブルをまとめた 1 ルール分。
@@ -187,6 +191,34 @@ type RecordingEncodePolicy struct {
 type RecordingPurgeRequest struct {
 	RecordingID int64     `json:"recordingId"`
 	RequestedAt time.Time `json:"requestedAt"`
+}
+
+// RecordingChapterOwnership は recording_chapter_ownership の 1 行（ユーザーが
+// この録画のチャプターを所有している = 確認済みという不可逆な事実）。
+//
+// **行の有無そのものが意味を持つ**（不変条件 10）。この録画の RecordingID が
+// Document.RecordingChapterOwnerships に載っていなければ「自動層のまま」であり、
+// rescue は所有の行で埋めない（Recording と違い、載っていない録画には何も
+// upsert しない）。
+type RecordingChapterOwnership struct {
+	RecordingID int64     `json:"recordingId"`
+	AdoptedAt   time.Time `json:"adoptedAt"`
+}
+
+// RecordingChapterSpan は recording_chapter_spans の 1 行（ユーザーが置いた区間）。
+// 自動検出で作り直せる値ではないが、**この配列を増やしても Version は上げない** ——
+// 古いバイナリが新ダンプを読むとこの 2 配列は黙って無視され、その録画は自動層に
+// 戻る。手作業は失われるが、録画本体・アセット・tombstone は残り、編集はやり直せる
+// （版を上げると、そのバイナリではダンプごと読めなくなる）。
+//
+// StartMs / EndMs は原本の最初の映像フレームを 0 とする ms の半開区間。DB の
+// `span int8range` と同じ値を 2 列に開いて持つ（JSON に range 型は無い）。
+type RecordingChapterSpan struct {
+	RecordingID int64   `json:"recordingId"`
+	StartMs     int64   `json:"startMs"`
+	EndMs       int64   `json:"endMs"`
+	Label       *string `json:"label,omitempty"`
+	Cut         bool    `json:"cut"`
 }
 
 // MediaAsset は media_assets の 1 行。

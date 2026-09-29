@@ -9,7 +9,19 @@ afterEach(() => {
 })
 
 /** jsdom の video 要素は currentTime/duration の実再生をしないので、テスト側から直接設定する。 */
-function setMediaProps(video: HTMLVideoElement, props: { currentTime?: number; duration?: number }) {
+function setMediaProps(
+  video: HTMLVideoElement,
+  props: { currentTime?: number; duration?: number; paused?: boolean },
+) {
+  if (props.paused !== undefined) {
+    // jsdom の video は常に paused なので、再生中の経路（自動スキップ）を通すには
+    // ここを偽にする必要がある。
+    Object.defineProperty(video, 'paused', {
+      value: props.paused,
+      writable: true,
+      configurable: true,
+    })
+  }
   if (props.currentTime !== undefined) {
     Object.defineProperty(video, 'currentTime', {
       value: props.currentTime,
@@ -467,5 +479,79 @@ describe('RecordingPlayer のシークプレビュー', () => {
 
     fireEvent.pointerMove(getByTestId('seek-scrub'), { pointerType: 'touch', clientX: 100 })
     expect(container.querySelector('img[src*="/seek-tiles"]')).toBeNull()
+  })
+})
+
+describe('RecordingPlayer のチャプター', () => {
+  const asset = [{ profile: 'h264', sizeBytes: 123 }]
+  const cmSpan = { startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }
+
+  it('未取得の間は目盛りもチャプター一覧も出さず、編集 UI だけを出す', () => {
+    // 目盛りと一覧は区間が要る（帯の位置は実寸に対する割合で決まる）。取得前の
+    // 1 フレームに空の一覧を出さない。
+    const { container, getByTestId } = render(
+      <RecordingPlayer
+        recordingId={96}
+        encodedAssets={asset}
+        onSaveChapters={() => {}}
+        onResetChapters={() => {}}
+      />,
+    )
+    expect(getByTestId('chapter-source')).not.toBeNull()
+    expect(container.querySelectorAll('[data-testid="chapter-marker"]')).toHaveLength(0)
+    expect(container.querySelector('[aria-label="チャプター"]')).toBeNull()
+  })
+
+  it('チャプターがあるときは一覧と切る区間の印を出す', () => {
+    const { container } = render(
+      <RecordingPlayer recordingId={100} encodedAssets={asset} chapters={[cmSpan]} />,
+    )
+    // **目盛りの位置は `<video>.duration` を分母にする。** 確定する前に描くと
+    // 割合が 0 除算になるので、duration が来るまで目盛りは出さない。
+    expect(container.querySelector('[data-testid="chapter-marker"]')).toBeNull()
+    const video = container.querySelector('video')!
+    setMediaProps(video, { duration: 60, currentTime: 0 })
+    fireEvent.loadedMetadata(video)
+    const list = container.querySelector('[aria-label="チャプター"]')
+    expect(list?.textContent).toContain('CM')
+    expect(list?.textContent).toContain('切る')
+    expect(container.querySelector('[data-testid="chapter-marker"]')).not.toBeNull()
+  })
+
+  it('自動スキップは直前位置が区間の手前のときだけ飛ばす', () => {
+    const { container } = render(
+      <RecordingPlayer recordingId={97} encodedAssets={asset} chapters={[cmSpan]} />,
+    )
+    const video = container.querySelector('video')!
+    setMediaProps(video, { duration: 60, currentTime: 9.8, paused: false })
+    fireEvent.timeUpdate(video)
+    setMediaProps(video, { currentTime: 10.1, paused: false })
+    fireEvent.timeUpdate(video)
+    expect(video.currentTime).toBe(20)
+  })
+
+  it('シークで区間の中に入ったときは飛ばさない', () => {
+    const { container } = render(
+      <RecordingPlayer recordingId={98} encodedAssets={asset} chapters={[cmSpan]} />,
+    )
+    const video = container.querySelector('video')!
+    setMediaProps(video, { duration: 60, currentTime: 15, paused: false })
+    fireEvent.seeked(video)
+    setMediaProps(video, { currentTime: 15.1, paused: false })
+    fireEvent.timeUpdate(video)
+    expect(video.currentTime).toBe(15.1)
+  })
+
+  it('目盛りを区間の割合で描き、cut を testid の属性に出す', () => {
+    const { container } = render(
+      <RecordingPlayer recordingId={99} encodedAssets={asset} chapters={[cmSpan]} />,
+    )
+    const video = container.querySelector('video')!
+    setMediaProps(video, { duration: 40, currentTime: 0 })
+    fireEvent.loadedMetadata(video)
+    const marker = container.querySelector('[data-testid="chapter-marker"]') as HTMLElement
+    expect(marker.getAttribute('data-cut')).toBe('true')
+    expect(marker.style.left).toBe('25%')
+    expect(marker.style.width).toBe('25%')
   })
 })

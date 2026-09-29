@@ -72,6 +72,12 @@ func Export(ctx context.Context, pool *pgxpool.Pool) (*Document, error) {
 	if doc.DropPositions, err = exportDropPositions(ctx, q); err != nil {
 		return nil, err
 	}
+	if doc.RecordingChapterOwnerships, err = exportRecordingChapterOwnerships(ctx, q); err != nil {
+		return nil, err
+	}
+	if doc.RecordingChapterSpans, err = exportRecordingChapterSpans(ctx, q); err != nil {
+		return nil, err
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("committing export tx: %w", err)
@@ -272,6 +278,41 @@ func exportDropPositions(ctx context.Context, q *sqlcgen.Queries) ([]DropPositio
 			ByteOffset:   p.ByteOffset,
 			Pid:          p.Pid,
 			ElapsedMs:    p.ElapsedMs,
+		})
+	}
+	return out, nil
+}
+
+// exportRecordingChapterOwnerships は recording_chapter_ownership を文書の型付き行に変換する。
+func exportRecordingChapterOwnerships(ctx context.Context, q *sqlcgen.Queries) ([]RecordingChapterOwnership, error) {
+	rows, err := q.CatalogListRecordingChapterOwnerships(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing recording_chapter_ownership: %w", err)
+	}
+	out := make([]RecordingChapterOwnership, 0, len(rows))
+	for _, o := range rows {
+		out = append(out, RecordingChapterOwnership{
+			RecordingID: o.RecordingID,
+			AdoptedAt:   o.AdoptedAt,
+		})
+	}
+	return out, nil
+}
+
+// exportRecordingChapterSpans は recording_chapter_spans を文書の型付き行に変換する。
+func exportRecordingChapterSpans(ctx context.Context, q *sqlcgen.Queries) ([]RecordingChapterSpan, error) {
+	rows, err := q.CatalogListRecordingChapterSpans(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing recording_chapter_spans: %w", err)
+	}
+	out := make([]RecordingChapterSpan, 0, len(rows))
+	for _, s := range rows {
+		out = append(out, RecordingChapterSpan{
+			RecordingID: s.RecordingID,
+			StartMs:     s.StartMs,
+			EndMs:       s.EndMs,
+			Label:       s.Label,
+			Cut:         s.Cut,
 		})
 	}
 	return out, nil

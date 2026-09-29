@@ -195,6 +195,18 @@ type Recording struct {
 	GenreLv1          []int16
 }
 
+type RecordingChapterOwnership struct {
+	RecordingID int64
+	AdoptedAt   time.Time
+}
+
+type RecordingChapterSpan struct {
+	RecordingID int64
+	Span        pgtype.Range[pgtype.Int8]
+	Label       *string
+	Cut         bool
+}
+
 type RecordingCmAttempt struct {
 	RecordingID int64
 	State       string

@@ -148,6 +148,60 @@ export interface CMDetection {
   ranges?: CMRange[];
 }
 
+/**
+ * この録画が使っている層。`user` はユーザーが確認済み（所有している）で、
+ * 自動層は読まれない。`auto` は自動検出の結果。
+ */
+export type RecordingChaptersSource = typeof RecordingChaptersSource[keyof typeof RecordingChaptersSource];
+
+
+export const RecordingChaptersSource = {
+  auto: 'auto',
+  user: 'user',
+} as const;
+
+export interface ChapterSpan {
+  /**
+     * 原本の最初の映像フレームを 0 とする ms。最も近いフレーム境界へ丸めて
+     * ある（30000/1001 fps 固定）。
+     */
+  startMs: number;
+  /** 半開区間の終端。区間は [startMs, endMs)。 */
+  endMs: number;
+  /**
+     * チャプターのラベル（`OP` / `ED` / `CM` など）。省略はラベル無しで、
+     * そのときは `cut` が真でなければならない（本編は行を持たない）。
+     */
+  label?: string;
+  /**
+     * 真なら「本編ではない」区間として自動スキップの対象になり、カット版の
+     * encode が取り除く。偽でもラベルがあれば目盛りには出る（OP / ED を
+     * 切らずに印だけ付ける）。
+     */
+  cut: boolean;
+}
+
+export interface RecordingChapters {
+  /**
+     * この録画が使っている層。`user` はユーザーが確認済み（所有している）で、
+     * 自動層は読まれない。`auto` は自動検出の結果。
+     */
+  source: RecordingChaptersSource;
+  /**
+     * 有効なタイムラインのうち、CM とラベルのある区間だけ。**本編は載らない**
+     * （区間の隙間が本編）。昇順で、重なりは無い。空配列は省略しない。
+     */
+  spans: ChapterSpan[];
+}
+
+export interface ChapterEditsInput {
+  /**
+     * タイムライン全体（置き換え）。本編の区間は送らない --- 区間の隙間が
+     * 本編である。空配列は「CM もチャプターも無い」という有効な主張。
+     */
+  spans: ChapterSpan[];
+}
+
 export type CMLogoStateState = typeof CMLogoStateState[keyof typeof CMLogoStateState];
 
 
@@ -5349,6 +5403,370 @@ export const useRetryRecordingCMDetection = <TError = ErrorResponse,
         TContext
       > => {
       return useMutation(getRetryRecordingCMDetectionMutationOptions(options), queryClient);
+    }
+
+export type getRecordingChaptersResponse200 = {
+  data: RecordingChapters
+  status: 200
+}
+
+export type getRecordingChaptersResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type getRecordingChaptersResponseSuccess = (getRecordingChaptersResponse200) & {
+  headers: Headers;
+};
+export type getRecordingChaptersResponseError = (getRecordingChaptersResponse404) & {
+  headers: Headers;
+};
+
+export type getRecordingChaptersResponse = (getRecordingChaptersResponseSuccess | getRecordingChaptersResponseError)
+
+export const getGetRecordingChaptersUrl = (id: number,) => {
+
+
+
+
+  return `/api/recordings/${id}/chapters`
+}
+
+/**
+ * この録画の有効なタイムラインのうち、CM とユーザーが置いた区間だけを返す。
+ * **隙間の本編は返さない。** DB が持つ長さは EPG 上の番組長
+ * （`recordings.program_duration_ms`）だけで、ファイルの実際の長さを api は
+ * 知らない（原本は録画後に削除されうるし、EIT 追従で延長もされる）。隙間を
+ * 本編として扱うのはクライアントで、再生中の `<video>.duration` で閉じる。
+ *
+ * `source` はどの層を読んだかを表す。`user` は
+ * `recording_chapter_ownership` に行がある録画（= ユーザーが確認済み）で、
+ * 自動層は読まない。`auto` は検出結果（`recording_cm_detections`）。
+ *
+ * **CM 率が 50% を超える自動層は CM 無しとして返す**（本編の半分以上を CM と
+ * 主張する検出は壊れているとみなす安全弁）。判定は Go の純関数 1 か所にあり、
+ * 引き取りでユーザー層へ複製されるときも同じ扱いになる。
+ * @summary Get the effective chapter timeline of a recording
+ */
+export const getRecordingChapters = async (id: number, options?: Parameters<typeof customInstance>[1]): Promise<getRecordingChaptersResponse> => {
+
+  return customInstance<getRecordingChaptersResponse>(getGetRecordingChaptersUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetRecordingChaptersQueryKey = (id: number,) => {
+    return [
+    `/api/recordings/${id}/chapters`
+    ] as const;
+    }
+
+
+export const getGetRecordingChaptersQueryOptions = <TData = Awaited<ReturnType<typeof getRecordingChapters>>, TError = ErrorResponse>(id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRecordingChapters>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetRecordingChaptersQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getRecordingChapters>>> = ({ signal }) => getRecordingChapters(id, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: id !== null && id !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getRecordingChapters>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetRecordingChaptersQueryResult = NonNullable<Awaited<ReturnType<typeof getRecordingChapters>>>
+export type GetRecordingChaptersQueryError = ErrorResponse
+
+
+export function useGetRecordingChapters<TData = Awaited<ReturnType<typeof getRecordingChapters>>, TError = ErrorResponse>(
+ id: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRecordingChapters>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getRecordingChapters>>,
+          TError,
+          Awaited<ReturnType<typeof getRecordingChapters>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetRecordingChapters<TData = Awaited<ReturnType<typeof getRecordingChapters>>, TError = ErrorResponse>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRecordingChapters>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getRecordingChapters>>,
+          TError,
+          Awaited<ReturnType<typeof getRecordingChapters>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetRecordingChapters<TData = Awaited<ReturnType<typeof getRecordingChapters>>, TError = ErrorResponse>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRecordingChapters>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Get the effective chapter timeline of a recording
+ */
+
+export function useGetRecordingChapters<TData = Awaited<ReturnType<typeof getRecordingChapters>>, TError = ErrorResponse>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRecordingChapters>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetRecordingChaptersQueryOptions(id,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type putRecordingChapterEditsResponse204 = {
+  data: void
+  status: 204
+}
+
+export type putRecordingChapterEditsResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
+export type putRecordingChapterEditsResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type putRecordingChapterEditsResponse409 = {
+  data: ErrorResponse
+  status: 409
+}
+
+export type putRecordingChapterEditsResponseSuccess = (putRecordingChapterEditsResponse204) & {
+  headers: Headers;
+};
+export type putRecordingChapterEditsResponseError = (putRecordingChapterEditsResponse400 | putRecordingChapterEditsResponse404 | putRecordingChapterEditsResponse409) & {
+  headers: Headers;
+};
+
+export type putRecordingChapterEditsResponse = (putRecordingChapterEditsResponseSuccess | putRecordingChapterEditsResponseError)
+
+export const getPutRecordingChapterEditsUrl = (id: number,) => {
+
+
+
+
+  return `/api/recordings/${id}/chapters`
+}
+
+/**
+ * タイムライン全体を置き換える。部分更新は無い（境界の修正は「その時点の
+ * 検出結果に対する差分」なので、差分だけを送る形にすると再検出で境界が動いた
+ * 瞬間に意味を失う）。
+ *
+ * 最初の PUT が `recording_chapter_ownership` の行を作り、以後この録画では
+ * 自動層を読まない（引き取り）。ユーザーの修正は二度と再取得できない事実
+ * なので、再検出が上書きすることはない。
+ *
+ * 送る区間は **cut する区間とラベルのある区間だけ**で、本編は送らない
+ * （隙間 = 本編）。そのためラベルも無く `cut: false` の区間は 400、空の区間と
+ * 重なる区間も 400 になる。境界はサーバー側で最も近いフレーム境界へ丸める
+ * （30000/1001 fps 固定）ので、クライアントが量子化する必要はない。
+ *
+ * 検出が終端に達していない間は 409。この tx は先頭で `recordings` の行を
+ * `FOR UPDATE` でロックしてから条件を評価し、CM 検出の結果を書く tx も同じ
+ * 行をロックする。ロックが無いと READ COMMITTED で条件が文の開始時点の
+ * スナップショットから評価され、commit 済みの検出結果が見えないまま
+ * **空の自動層で引き取る**窓が開く（docs/storage/retention.md §7「復元と
+ * 即時削除要求の競合」と同じ形）。
+ *
+ * `cm_detect.enabled` が false のデプロイでは検出ジョブが積まれないので、
+ * 409 にはならない（永久に終端へ達しない録画を編集できなくしないため）。
+ * @summary Replace the whole chapter timeline with a user-owned one
+ */
+export const putRecordingChapterEdits = async (id: number,
+    chapterEditsInput: ChapterEditsInput, options?: Parameters<typeof customInstance>[1]): Promise<putRecordingChapterEditsResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Array.isArray(h)) return Object.fromEntries(h);
+    return h;
+  };
+return customInstance<putRecordingChapterEditsResponse>(getPutRecordingChapterEditsUrl(id),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(chapterEditsInput)
+  }
+);}
+
+
+
+
+
+export const getPutRecordingChapterEditsMutationKey = () => ['putRecordingChapterEdits'] as const;
+
+export const getPutRecordingChapterEditsMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof putRecordingChapterEdits>>, TError,PutRecordingChapterEditsMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof putRecordingChapterEdits>>, TError,PutRecordingChapterEditsMutationVariables, TContext> => {
+
+const mutationKey = getPutRecordingChapterEditsMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof putRecordingChapterEdits>>, PutRecordingChapterEditsMutationVariables> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  putRecordingChapterEdits(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PutRecordingChapterEditsMutationResult = NonNullable<Awaited<ReturnType<typeof putRecordingChapterEdits>>>
+    export type PutRecordingChapterEditsMutationBody = ChapterEditsInput
+    export type PutRecordingChapterEditsMutationError = ErrorResponse
+    export type PutRecordingChapterEditsMutationVariables = {id: number;data: ChapterEditsInput}
+
+    /**
+ * @summary Replace the whole chapter timeline with a user-owned one
+ */
+export const usePutRecordingChapterEdits = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof putRecordingChapterEdits>>, TError,PutRecordingChapterEditsMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof putRecordingChapterEdits>>,
+        TError,
+        PutRecordingChapterEditsMutationVariables,
+        TContext
+      > => {
+      return useMutation(getPutRecordingChapterEditsMutationOptions(options), queryClient);
+    }
+
+export type deleteRecordingChapterEditsResponse204 = {
+  data: void
+  status: 204
+}
+
+export type deleteRecordingChapterEditsResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type deleteRecordingChapterEditsResponseSuccess = (deleteRecordingChapterEditsResponse204) & {
+  headers: Headers;
+};
+export type deleteRecordingChapterEditsResponseError = (deleteRecordingChapterEditsResponse404) & {
+  headers: Headers;
+};
+
+export type deleteRecordingChapterEditsResponse = (deleteRecordingChapterEditsResponseSuccess | deleteRecordingChapterEditsResponseError)
+
+export const getDeleteRecordingChapterEditsUrl = (id: number,) => {
+
+
+
+
+  return `/api/recordings/${id}/chapters`
+}
+
+/**
+ * `recording_chapter_ownership` の行を消す（区間は CASCADE で落ちる）。以後は
+ * 自動層に戻る。冪等（所有していなくても 204）。
+ *
+ * **取り込み直しは作らない。** 出自（自動 / 手動）と意図（切るかどうか）を
+ * 1 つの列に載せると、手で直した CM 境界が「取り込み直す」で上書きされる。
+ * やり直しはこの「自動に戻す」だけである。
+ * @summary Discard the user timeline and go back to the automatic layer
+ */
+export const deleteRecordingChapterEdits = async (id: number, options?: Parameters<typeof customInstance>[1]): Promise<deleteRecordingChapterEditsResponse> => {
+
+  return customInstance<deleteRecordingChapterEditsResponse>(getDeleteRecordingChapterEditsUrl(id),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+
+export const getDeleteRecordingChapterEditsMutationKey = () => ['deleteRecordingChapterEdits'] as const;
+
+export const getDeleteRecordingChapterEditsMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteRecordingChapterEdits>>, TError,DeleteRecordingChapterEditsMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteRecordingChapterEdits>>, TError,DeleteRecordingChapterEditsMutationVariables, TContext> => {
+
+const mutationKey = getDeleteRecordingChapterEditsMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteRecordingChapterEdits>>, DeleteRecordingChapterEditsMutationVariables> = (props) => {
+          const {id} = props ?? {};
+
+          return  deleteRecordingChapterEdits(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteRecordingChapterEditsMutationResult = NonNullable<Awaited<ReturnType<typeof deleteRecordingChapterEdits>>>
+
+    export type DeleteRecordingChapterEditsMutationError = ErrorResponse
+    export type DeleteRecordingChapterEditsMutationVariables = {id: number}
+
+    /**
+ * @summary Discard the user timeline and go back to the automatic layer
+ */
+export const useDeleteRecordingChapterEdits = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteRecordingChapterEdits>>, TError,DeleteRecordingChapterEditsMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteRecordingChapterEdits>>,
+        TError,
+        DeleteRecordingChapterEditsMutationVariables,
+        TContext
+      > => {
+      return useMutation(getDeleteRecordingChapterEditsMutationOptions(options), queryClient);
     }
 
 export type listCMLogosResponse200 = {

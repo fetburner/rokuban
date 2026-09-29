@@ -4,7 +4,16 @@
 
 ### 保護対象の仕分け
 
-失うと痛いデータを仕分けすると、EPG プロジェクションは mirakc から再構築可能で、ジョブキューは一時的である。**保護対象は「ルール・録画履歴・media_assets・ドロップ統計・ドロップ位置・tombstone・手動オーバーライド」のみ（数 MB）**。
+失うと痛いデータを仕分けすると、EPG プロジェクションは mirakc から再構築可能で、ジョブキューは一時的である。**保護対象は「ルール・録画履歴・media_assets・ドロップ統計・ドロップ位置・tombstone・手動オーバーライド・ユーザーが置いたチャプター」のみ（数 MB）**。
+
+チャプターの所有 2 表（`recording_chapter_ownership` / `recording_chapter_spans`）も保護対象である。
+ユーザーの修正は二度と再取得できない事実だからである（[スキーマ](../schema/recordings.md) §recording_chapter_ownership）。
+自動検出の結果（`recording_cm_detections`）は導出値なので含めない。
+所有の行が無い録画は自動層のままなので何も復元しない（行の不在そのものが意味を持つ。不変条件 10）。
+
+書き込み順は `recordings → media_assets → チャプターの所有 2 表` である（区間が所有の行を FK で指すため）。
+区間の表は主キーを持たず、重なりを EXCLUDE が禁じている。
+そのため rescue の 2 回目は `ON CONFLICT DO NOTHING` で受ける —— 素の INSERT だと同じ区間が自分自身と衝突し、1 世代まるごと復元できなくなる。
 
 ### catalog エクスポート
 
