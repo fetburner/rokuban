@@ -158,6 +158,38 @@ SPA フォールバックには落とさない（[rest.md](rest.md)「機能の�
 「放送から 6.2 秒」と断言はしない。測定の条件と経路ごとの内訳は
 [frontend/live.md](../frontend/live.md) §「遅延・バッファの計器」に置く。
 
+#### パッケージャは MediaMTX の LL-HLS を選べる形にする
+
+**パッケージングをアプリが持つ根拠は「遅延を目標にしない」ことで成立していた。**
+遅延を目標にするなら外に出す。実測（同一局・720p・視聴者 1・30 分）では、現行の
+アプリ配信（`segment_seconds: 2`）が `hls.latency` 中央値 5.68 秒だった。
+MediaMTX v1.21.1 の LL-HLS（part 200ms / segment 1s）は 0.92 秒（p95 2.15 秒）である。
+セグメント長を詰めても 5.0 秒どまりで秒台には入らない（上記のとおり）。パッケージャを
+替える以外に手段が無く、実測で 4.7 秒の差が付いたので採る。
+
+- **必須にはしない。** MediaMTX の設定テンプレートに mirakc の知識（合成 service id・
+  URL 組み立て）は置かない。`runOnDemand` が rokuban のコマンドを起動する形にすれば、
+  `live.enabled` と同じ位置づけ（無くても現行のアプリ配信で動く）にできる
+- **idle GC は packager 側に移り、下限は約 30 秒になる。** 最後の要求から publisher が
+  止まるまで、既定では約 60 秒かかる。`hlsMuxerCloseAfter` と `runOnDemandCloseAfter` を
+  1 秒に詰めても約 32 秒である（HLS セッションの inactive 判定が支配的）。現行の
+  `idle_timeout`（既定 30 秒）と同等だが、
+  **離脱ヒントの猶予（`3 × segment_seconds + 2s` = 8 秒）に相当するものが MediaMTX に
+  無い**。チューナーが 1 本のサイトでは、切り替えのたびの解放が 8 秒から 30 秒へ伸びる
+- **`/live/segments/` の実パスは契約ではない。** hls.js も VLC もプレイリスト URL からの
+  相対解決しかしないので、外から見える契約はプレイリスト URL だけである。現行の
+  `segments/<name>` は ffmpeg の `-hls_base_url` が書く値で、クライアントは組み立てない。
+  MediaMTX の LL-HLS も `init.mp4` / `*_partN.mp4` / `*_segN.mp4` をプレイリストと
+  同じディレクトリの相対 URI で書く。前段が写すのはプレイリスト URL
+  （`.../live/playlist.m3u8` → MediaMTX の `index.m3u8` の 1 行）だけでよい
+- **プロファイルはパスを分ける。** 1 パスに映像 2 本を publish しても、MediaMTX は
+  2 本目を `skipping track 3 (H264)` として捨て、ABR の master を書かない（実測）。
+  `?profile=` の選択を保つには、プロファイルごとのパスと、それを束ねる master の
+  書き手が要る
+- **未解決: MediaMTX の LL-HLS はメディア URI のクエリに自分のセッションを載せる**
+  （`?session=<uuid>`。クライアントは本文から写すだけで自分では組み立てない）。
+  下記「資源同定: セッション ID を持たない」の例外になる
+
 #### 資源同定: セッション ID を持たない
 
 プレイリストとセグメントの URL は

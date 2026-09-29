@@ -86,6 +86,13 @@ site 単位のキューを一切購読できない（`jobs.RequiresSiteBinding` 
 
 素の TS の帯域目安は地上波 約 17 Mbps / BS 約 24 Mbps（1 セッションあたり、規格値）。streamer は 1 プロセスが N サイトを束縛できる（`cmd/rokuban/server.go`）。`live.enabled: true` に束縛サイト数の制約は無く、0 サイト束縛（中央の録画配信 Deployment）はライブのルートを持たないだけで他のロールは通常どおり動く。`deploy/k8s/` では中央 streamer と site ごとのライブ streamer を別 Pod として出荷し、overlay が単一 Ingress に site 名を具体化した Prefix を追加する。
 
+**ライブのパッケージングを MediaMTX に委ねる形（opt-in）では、MediaMTX は publisher と
+同じサイトに置く**。publisher は `runOnDemand` から起動される rokuban のコマンドであり、
+mirakc に到達できる必要がある。前段の `(site, networkId, serviceId)` の consistent hash
+と既定 replicas=1 の可逆性は変わらない。ライブのセグメント配信そのものは MediaMTX の
+HTTP が担うので、配信のバイト転送は streamer の外に出る。実測では視聴者 1 → 3 の増分が
+Pod の CPU で中央値 351m → 374.5m であり、配信負荷ではなくエンコードが支配的だった。
+
 #### 録画配信はセッション親和性を必要としない
 
 録画配信は完全にステートレスで（DB からアセットを解決して `http.ServeContent` で
