@@ -622,6 +622,7 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, queues 
 		SoftStopTimeout:      softStopTimeout,
 		CatalogExport:        true,
 		DeleteReconcile:      true,
+		LabelRuleReconcile:   true,
 		EncodeReconcile:      true,
 		ThumbnailReconcile:   true,
 		CMDetectReconcile:    cfg.CMDetect.Enabled,

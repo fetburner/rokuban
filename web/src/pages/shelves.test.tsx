@@ -1,0 +1,136 @@
+import { screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import type { LabelRule, LabelRuleInput, RecordingShelf } from '@/api/generated'
+import { ShelvesPage } from '@/pages/shelves'
+import { minShelfSize } from '@/lib/shelves'
+import { renderInRouter } from '@/test/router'
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+/** stubApi は棚と分類ルールの GET/POST を返す。 */
+function stubApi(shelves: RecordingShelf[], rules: LabelRule[] = []) {
+  const posted: LabelRuleInput[] = []
+  globalThis.fetch = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input), 'http://localhost')
+    const method = init?.method ?? 'GET'
+    if (url.pathname === '/api/recording-shelves' && method === 'GET') {
+      return Promise.resolve(jsonResponse(shelves))
+    }
+    if (url.pathname === '/api/label-rules' && method === 'GET') {
+      return Promise.resolve(jsonResponse(rules))
+    }
+    if (url.pathname === '/api/label-rules' && method === 'POST') {
+      const body = JSON.parse(String(init?.body)) as LabelRuleInput
+      posted.push(body)
+      return Promise.resolve(
+        jsonResponse(
+          {
+            ...body,
+            id: 99,
+            key: 'series',
+            createdAt: '2026-09-29T00:00:00Z',
+            updatedAt: '2026-09-29T00:00:00Z',
+          },
+          201,
+        ),
+      )
+    }
+    throw new Error(`unexpected fetch: ${method} ${url.pathname}`)
+  }) as unknown as typeof fetch
+  return { posted }
+}
+
+const shelves: RecordingShelf[] = [
+  { value: 'NHK高校講座', title: 'NHK高校講座　日本史　第1回', count: 120, representativeId: 11 },
+  { value: '作品X', title: 'アニメ　作品X　第2話', count: minShelfSize, representativeId: 12 },
+  { value: '単発', title: '単発の特番', count: 1, representativeId: 13 },
+  { title: '【特集】', count: 2, representativeId: 14 },
+]
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+describe('ShelvesPage', () => {
+  it('大きい棚を並べ、小さい棚と値の無い棚をその他にまとめる', async () => {
+    stubApi(shelves)
+    renderInRouter(<ShelvesPage />, { path: '/shelves' })
+
+    const content = await screen.findByTestId('bounded-page-content')
+    // 過剰併合の棚が見出し（代表の生タイトル）で見える。
+    // 全角空白を含むので、testing-library の空白正規化に頼らず生の文字列で引く。
+    expect(
+      await within(content).findByText((_, el) => el?.textContent === 'NHK高校講座　日本史　第1回'),
+    ).toBeInTheDocument()
+    // 閾値未満の棚は行にならない。
+    await waitFor(() => {
+      expect(within(content).queryByText('単発の特番')).not.toBeInTheDocument()
+    })
+    // 代わりに「その他」の件数（1 + 2 = 3）が 1 行に出る。
+    expect(within(content).getByText(/その他（2 棚）/)).toBeInTheDocument()
+    expect(within(content).getByText(/3 件/)).toBeInTheDocument()
+  })
+
+  it('「この棚を割る・指定する」で棚のキーがフォームに入る', async () => {
+    const user = userEvent.setup()
+    stubApi(shelves)
+    renderInRouter(<ShelvesPage />, { path: '/shelves' })
+
+    const content = await screen.findByTestId('bounded-page-content')
+    const row = (
+      await within(content).findByText(
+        (_, el) => el?.textContent === 'NHK高校講座　日本史　第1回',
+      )
+    ).closest('li')
+    expect(row).not.toBeNull()
+    await user.click(
+      within(row as HTMLElement).getByRole('button', { name: 'この棚を割る・指定する' }),
+    )
+
+    const dialog = await screen.findByRole('dialog')
+    // value は見出し（生タイトル）ではなく棚のキー。
+    expect(within(dialog).getByLabelText('棚のキー')).toHaveValue('NHK高校講座')
+    expect(within(dialog).getByLabelText('キーワード')).toHaveValue('')
+  })
+
+  it('キーワードを入力すると棚のキーが追従し、POST に両方が載る', async () => {
+    const user = userEvent.setup()
+    const { posted } = stubApi(shelves)
+    renderInRouter(<ShelvesPage />, { path: '/shelves' })
+
+    await screen.findByTestId('bounded-page-content')
+    await user.click(await screen.findByRole('button', { name: '分類ルールを作成' }))
+
+    const dialog = await screen.findByRole('dialog')
+    await user.type(within(dialog).getByLabelText('キーワード'), '烏は主を選ばない')
+    expect(within(dialog).getByLabelText('棚のキー')).toHaveValue('烏は主を選ばない')
+    await user.click(within(dialog).getByRole('button', { name: '作成' }))
+
+    await waitFor(() => expect(posted).toHaveLength(1))
+    expect(posted[0]).toEqual({ keyword: '烏は主を選ばない', value: '烏は主を選ばない', priority: 0 })
+  })
+
+  it('分類ルールの一覧を勝者順に出す', async () => {
+    stubApi(shelves, [
+      {
+        id: 1,
+        key: 'series',
+        keyword: '日本史',
+        value: '日本史',
+        priority: 5,
+        createdAt: '2026-09-29T00:00:00Z',
+        updatedAt: '2026-09-29T00:00:00Z',
+      },
+    ])
+    renderInRouter(<ShelvesPage />, { path: '/shelves' })
+
+    expect(await screen.findByText('「日本史」→ 日本史')).toBeInTheDocument()
+  })
+})

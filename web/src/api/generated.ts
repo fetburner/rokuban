@@ -725,6 +725,16 @@ export interface Recording {
   eventId: number;
   title: string;
   description?: string;
+  /**
+     * 実効シリーズ = 分類ルールが当たればその値、当たらなければ自動キー
+     * （`series_key(title)`）。`GET /api/recording-shelves` の `value` と
+     * 同じ空間の値なので、棚から録画一覧へ渡すときはこれをそのまま使える。
+     *
+     * **導出値であって録画の属性ではない。** 分類ルールを変えると値が変わる
+     * （全件再評価のジョブが追従する）。null は自動キーを導出できず、
+     * どのルールも当たらない録画。
+     */
+  series?: string | null;
   /** 番組の放送開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。 */
   startAt: string;
   durationMs: number;
@@ -1084,6 +1094,58 @@ export interface ProgramSearchMatch {
   name: string;
   /** マッチした放送が無料かどうか */
   isFree: boolean;
+}
+
+/**
+ * 棚の軸。M8 は series だけ（他の値は 400）。
+ */
+export type LabelRuleInputKey = typeof LabelRuleInputKey[keyof typeof LabelRuleInputKey];
+
+
+export const LabelRuleInputKey = {
+  series: 'series',
+} as const;
+
+export interface LabelRuleInput {
+  /** 棚の軸。M8 は series だけ（他の値は 400）。 */
+  key?: LabelRuleInputKey;
+  /**
+     * 棚のキー（表示名ではない）。自動キーと同じ正規化を通した結果が空に
+     * なる値（記号のみなど）は 400 にする --- 何も主張しないルールを
+     * 作らせない。
+     */
+  value: string;
+  /**
+     * 録画タイトルと EPG の番組名への部分一致。LIKE の特殊文字（\ % _）は
+     * 文字として照合する（`/search` と録画一覧と同じ方言）。
+     */
+  keyword: string;
+  /** 大きいほど先に当たる。同じなら id の小さい方が勝つ。 */
+  priority?: number;
+}
+
+export type LabelRule = LabelRuleInput & {
+  id: number;
+  createdAt: string;
+  updatedAt: string;
+} & Required<Pick<LabelRuleInput & {
+  id: number;
+  createdAt: string;
+  updatedAt: string;
+}, 'key'>>;
+
+export interface RecordingShelf {
+  /**
+     * 棚のキー。null は実効シリーズを導出できなかった録画（UI は「その他」に
+     * まとめる）。
+     */
+  value?: string | null;
+  /** 代表の録画の生のタイトル（見出しに使う）。 */
+  title: string;
+  /** この棚に入る録画の件数。 */
+  count: number;
+  /** 代表の録画の id。棚から録画一覧・番組ハブへ渡す起点。 */
+  representativeId: number;
 }
 
 export type RuleInputChannelTypesItem = typeof RuleInputChannelTypesItem[keyof typeof RuleInputChannelTypesItem];
@@ -1574,6 +1636,20 @@ export type ListRecordingsOrder = typeof ListRecordingsOrder[keyof typeof ListRe
 export const ListRecordingsOrder = {
   desc: 'desc',
   asc: 'asc',
+} as const;
+
+export type ListRecordingShelvesParams = {
+/**
+ * 棚の軸。M8 は series だけ。
+ */
+key?: ListRecordingShelvesKey;
+};
+
+export type ListRecordingShelvesKey = typeof ListRecordingShelvesKey[keyof typeof ListRecordingShelvesKey];
+
+
+export const ListRecordingShelvesKey = {
+  series: 'series',
 } as const;
 
 export type ListCapacityOveragesParams = {
@@ -2998,6 +3074,544 @@ export const useDeleteRule = <TError = ErrorResponse,
         TContext
       > => {
       return useMutation(getDeleteRuleMutationOptions(options), queryClient);
+    }
+
+export type listLabelRulesResponse200 = {
+  data: LabelRule[]
+  status: 200
+}
+
+export type listLabelRulesResponseSuccess = (listLabelRulesResponse200) & {
+  headers: Headers;
+};
+;
+
+export type listLabelRulesResponse = (listLabelRulesResponseSuccess)
+
+export const getListLabelRulesUrl = () => {
+
+
+
+
+  return `/api/label-rules`
+}
+
+/**
+ * @summary List series label rules
+ */
+export const listLabelRules = async ( options?: Parameters<typeof customInstance>[1]): Promise<listLabelRulesResponse> => {
+
+  return customInstance<listLabelRulesResponse>(getListLabelRulesUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListLabelRulesQueryKey = () => {
+    return [
+    `/api/label-rules`
+    ] as const;
+    }
+
+
+export const getListLabelRulesQueryOptions = <TData = Awaited<ReturnType<typeof listLabelRules>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listLabelRules>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListLabelRulesQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listLabelRules>>> = ({ signal }) => listLabelRules({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listLabelRules>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type ListLabelRulesQueryResult = NonNullable<Awaited<ReturnType<typeof listLabelRules>>>
+export type ListLabelRulesQueryError = unknown
+
+
+export function useListLabelRules<TData = Awaited<ReturnType<typeof listLabelRules>>, TError = unknown>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listLabelRules>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listLabelRules>>,
+          TError,
+          Awaited<ReturnType<typeof listLabelRules>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListLabelRules<TData = Awaited<ReturnType<typeof listLabelRules>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listLabelRules>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listLabelRules>>,
+          TError,
+          Awaited<ReturnType<typeof listLabelRules>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListLabelRules<TData = Awaited<ReturnType<typeof listLabelRules>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listLabelRules>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List series label rules
+ */
+
+export function useListLabelRules<TData = Awaited<ReturnType<typeof listLabelRules>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listLabelRules>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getListLabelRulesQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type createLabelRuleResponse201 = {
+  data: LabelRule
+  status: 201
+}
+
+export type createLabelRuleResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
+export type createLabelRuleResponseSuccess = (createLabelRuleResponse201) & {
+  headers: Headers;
+};
+export type createLabelRuleResponseError = (createLabelRuleResponse400) & {
+  headers: Headers;
+};
+
+export type createLabelRuleResponse = (createLabelRuleResponseSuccess | createLabelRuleResponseError)
+
+export const getCreateLabelRuleUrl = () => {
+
+
+
+
+  return `/api/label-rules`
+}
+
+/**
+ * 作成は録画全件の再評価を同じトランザクションで投入する
+ * （`label_rule_reconcile`）。トリガーは自分の行しか見ないので、既に
+ * コミット済みの録画はこのジョブでしか新しいルールに追従しない。
+ * @summary Create a series label rule
+ */
+export const createLabelRule = async (labelRuleInput: LabelRuleInput, options?: Parameters<typeof customInstance>[1]): Promise<createLabelRuleResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Array.isArray(h)) return Object.fromEntries(h);
+    return h;
+  };
+return customInstance<createLabelRuleResponse>(getCreateLabelRuleUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(labelRuleInput)
+  }
+);}
+
+
+
+
+
+export const getCreateLabelRuleMutationKey = () => ['createLabelRule'] as const;
+
+export const getCreateLabelRuleMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createLabelRule>>, TError,CreateLabelRuleMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof createLabelRule>>, TError,CreateLabelRuleMutationVariables, TContext> => {
+
+const mutationKey = getCreateLabelRuleMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createLabelRule>>, CreateLabelRuleMutationVariables> = (props) => {
+          const {data} = props ?? {};
+
+          return  createLabelRule(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateLabelRuleMutationResult = NonNullable<Awaited<ReturnType<typeof createLabelRule>>>
+    export type CreateLabelRuleMutationBody = LabelRuleInput
+    export type CreateLabelRuleMutationError = ErrorResponse
+    export type CreateLabelRuleMutationVariables = {data: LabelRuleInput}
+
+    /**
+ * @summary Create a series label rule
+ */
+export const useCreateLabelRule = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createLabelRule>>, TError,CreateLabelRuleMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof createLabelRule>>,
+        TError,
+        CreateLabelRuleMutationVariables,
+        TContext
+      > => {
+      return useMutation(getCreateLabelRuleMutationOptions(options), queryClient);
+    }
+
+export type getLabelRuleResponse200 = {
+  data: LabelRule
+  status: 200
+}
+
+export type getLabelRuleResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type getLabelRuleResponseSuccess = (getLabelRuleResponse200) & {
+  headers: Headers;
+};
+export type getLabelRuleResponseError = (getLabelRuleResponse404) & {
+  headers: Headers;
+};
+
+export type getLabelRuleResponse = (getLabelRuleResponseSuccess | getLabelRuleResponseError)
+
+export const getGetLabelRuleUrl = (id: number,) => {
+
+
+
+
+  return `/api/label-rules/${id}`
+}
+
+/**
+ * @summary Get a series label rule
+ */
+export const getLabelRule = async (id: number, options?: Parameters<typeof customInstance>[1]): Promise<getLabelRuleResponse> => {
+
+  return customInstance<getLabelRuleResponse>(getGetLabelRuleUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetLabelRuleQueryKey = (id: number,) => {
+    return [
+    `/api/label-rules/${id}`
+    ] as const;
+    }
+
+
+export const getGetLabelRuleQueryOptions = <TData = Awaited<ReturnType<typeof getLabelRule>>, TError = ErrorResponse>(id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getLabelRule>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetLabelRuleQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getLabelRule>>> = ({ signal }) => getLabelRule(id, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: id !== null && id !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getLabelRule>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetLabelRuleQueryResult = NonNullable<Awaited<ReturnType<typeof getLabelRule>>>
+export type GetLabelRuleQueryError = ErrorResponse
+
+
+export function useGetLabelRule<TData = Awaited<ReturnType<typeof getLabelRule>>, TError = ErrorResponse>(
+ id: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getLabelRule>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getLabelRule>>,
+          TError,
+          Awaited<ReturnType<typeof getLabelRule>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetLabelRule<TData = Awaited<ReturnType<typeof getLabelRule>>, TError = ErrorResponse>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getLabelRule>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getLabelRule>>,
+          TError,
+          Awaited<ReturnType<typeof getLabelRule>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetLabelRule<TData = Awaited<ReturnType<typeof getLabelRule>>, TError = ErrorResponse>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getLabelRule>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Get a series label rule
+ */
+
+export function useGetLabelRule<TData = Awaited<ReturnType<typeof getLabelRule>>, TError = ErrorResponse>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getLabelRule>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetLabelRuleQueryOptions(id,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type updateLabelRuleResponse200 = {
+  data: LabelRule
+  status: 200
+}
+
+export type updateLabelRuleResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
+export type updateLabelRuleResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type updateLabelRuleResponseSuccess = (updateLabelRuleResponse200) & {
+  headers: Headers;
+};
+export type updateLabelRuleResponseError = (updateLabelRuleResponse400 | updateLabelRuleResponse404) & {
+  headers: Headers;
+};
+
+export type updateLabelRuleResponse = (updateLabelRuleResponseSuccess | updateLabelRuleResponseError)
+
+export const getUpdateLabelRuleUrl = (id: number,) => {
+
+
+
+
+  return `/api/label-rules/${id}`
+}
+
+/**
+ * 上書き更新（部分更新ではない）。keyword・priority・value のどれを変えても
+ * 録画全件の再評価になるので、同じトランザクションで投入する。
+ * @summary Update a series label rule
+ */
+export const updateLabelRule = async (id: number,
+    labelRuleInput: LabelRuleInput, options?: Parameters<typeof customInstance>[1]): Promise<updateLabelRuleResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Array.isArray(h)) return Object.fromEntries(h);
+    return h;
+  };
+return customInstance<updateLabelRuleResponse>(getUpdateLabelRuleUrl(id),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(labelRuleInput)
+  }
+);}
+
+
+
+
+
+export const getUpdateLabelRuleMutationKey = () => ['updateLabelRule'] as const;
+
+export const getUpdateLabelRuleMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateLabelRule>>, TError,UpdateLabelRuleMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateLabelRule>>, TError,UpdateLabelRuleMutationVariables, TContext> => {
+
+const mutationKey = getUpdateLabelRuleMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateLabelRule>>, UpdateLabelRuleMutationVariables> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  updateLabelRule(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateLabelRuleMutationResult = NonNullable<Awaited<ReturnType<typeof updateLabelRule>>>
+    export type UpdateLabelRuleMutationBody = LabelRuleInput
+    export type UpdateLabelRuleMutationError = ErrorResponse
+    export type UpdateLabelRuleMutationVariables = {id: number;data: LabelRuleInput}
+
+    /**
+ * @summary Update a series label rule
+ */
+export const useUpdateLabelRule = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateLabelRule>>, TError,UpdateLabelRuleMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof updateLabelRule>>,
+        TError,
+        UpdateLabelRuleMutationVariables,
+        TContext
+      > => {
+      return useMutation(getUpdateLabelRuleMutationOptions(options), queryClient);
+    }
+
+export type deleteLabelRuleResponse204 = {
+  data: void
+  status: 204
+}
+
+export type deleteLabelRuleResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type deleteLabelRuleResponseSuccess = (deleteLabelRuleResponse204) & {
+  headers: Headers;
+};
+export type deleteLabelRuleResponseError = (deleteLabelRuleResponse404) & {
+  headers: Headers;
+};
+
+export type deleteLabelRuleResponse = (deleteLabelRuleResponseSuccess | deleteLabelRuleResponseError)
+
+export const getDeleteLabelRuleUrl = (id: number,) => {
+
+
+
+
+  return `/api/label-rules/${id}`
+}
+
+/**
+ * **削除も録画全件の再評価が要る。** 当たりの表は勝者しか持たないので、
+ * 勝者が消えた録画の次点はその表から分からない（外部キーの CASCADE は
+ * 安全網で、次点には移らない）。同じトランザクションで再評価を投入する。
+ * @summary Delete a series label rule
+ */
+export const deleteLabelRule = async (id: number, options?: Parameters<typeof customInstance>[1]): Promise<deleteLabelRuleResponse> => {
+
+  return customInstance<deleteLabelRuleResponse>(getDeleteLabelRuleUrl(id),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+
+export const getDeleteLabelRuleMutationKey = () => ['deleteLabelRule'] as const;
+
+export const getDeleteLabelRuleMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteLabelRule>>, TError,DeleteLabelRuleMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteLabelRule>>, TError,DeleteLabelRuleMutationVariables, TContext> => {
+
+const mutationKey = getDeleteLabelRuleMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteLabelRule>>, DeleteLabelRuleMutationVariables> = (props) => {
+          const {id} = props ?? {};
+
+          return  deleteLabelRule(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteLabelRuleMutationResult = NonNullable<Awaited<ReturnType<typeof deleteLabelRule>>>
+
+    export type DeleteLabelRuleMutationError = ErrorResponse
+    export type DeleteLabelRuleMutationVariables = {id: number}
+
+    /**
+ * @summary Delete a series label rule
+ */
+export const useDeleteLabelRule = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteLabelRule>>, TError,DeleteLabelRuleMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteLabelRule>>,
+        TError,
+        DeleteLabelRuleMutationVariables,
+        TContext
+      > => {
+      return useMutation(getDeleteLabelRuleMutationOptions(options), queryClient);
     }
 
 export type listReservationsResponse200 = {
@@ -4658,6 +5272,147 @@ export function useListRecordings<TData = Awaited<ReturnType<typeof listRecordin
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
   const queryOptions = getListRecordingsQueryOptions(params,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type listRecordingShelvesResponse200 = {
+  data: RecordingShelf[]
+  status: 200
+}
+
+export type listRecordingShelvesResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
+export type listRecordingShelvesResponseSuccess = (listRecordingShelvesResponse200) & {
+  headers: Headers;
+};
+export type listRecordingShelvesResponseError = (listRecordingShelvesResponse400) & {
+  headers: Headers;
+};
+
+export type listRecordingShelvesResponse = (listRecordingShelvesResponseSuccess | listRecordingShelvesResponseError)
+
+export const getListRecordingShelvesUrl = (params?: ListRecordingShelvesParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/recording-shelves?${stringifiedParams}` : `/api/recording-shelves`
+}
+
+/**
+ * 実効シリーズ（分類ルールが当たればその値、当たらなければ自動キー）ごとの
+ * 棚。1 要素 = 1 棚で、`value` は棚のキー、`title` は代表の録画の生の
+ * タイトル（値は正規化の産物なので表示名にならない）。
+ *
+ * 母集団は生きていて（`deleted_at IS NULL AND superseded_at IS NULL`）
+ * 再生できる録画（原本の media_asset がある、または encoded の派生物が
+ * ある）だけ。ごみ箱・superseded・取り込めていない録画は数えない。
+ *
+ * 代表は `ORDER BY program_start_at DESC, id DESC LIMIT 1`。
+ * `value` が null の棚（自動キーを導出できず、どのルールも当たらない
+ * 録画）も返す --- UI が「その他」にまとめる件数の材料にするため。
+ *
+ * **パスを `/api/recordings/shelves` にしない。** `/api/recordings/{id}`
+ * と id=`shelves` で曖昧になる。
+ * @summary List series shelves
+ */
+export const listRecordingShelves = async (params?: ListRecordingShelvesParams, options?: Parameters<typeof customInstance>[1]): Promise<listRecordingShelvesResponse> => {
+
+  return customInstance<listRecordingShelvesResponse>(getListRecordingShelvesUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListRecordingShelvesQueryKey = (params?: ListRecordingShelvesParams,) => {
+    return [
+    `/api/recording-shelves`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getListRecordingShelvesQueryOptions = <TData = Awaited<ReturnType<typeof listRecordingShelves>>, TError = ErrorResponse>(params?: ListRecordingShelvesParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingShelves>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListRecordingShelvesQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listRecordingShelves>>> = ({ signal }) => listRecordingShelves(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listRecordingShelves>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type ListRecordingShelvesQueryResult = NonNullable<Awaited<ReturnType<typeof listRecordingShelves>>>
+export type ListRecordingShelvesQueryError = ErrorResponse
+
+
+export function useListRecordingShelves<TData = Awaited<ReturnType<typeof listRecordingShelves>>, TError = ErrorResponse>(
+ params: undefined |  ListRecordingShelvesParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingShelves>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listRecordingShelves>>,
+          TError,
+          Awaited<ReturnType<typeof listRecordingShelves>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListRecordingShelves<TData = Awaited<ReturnType<typeof listRecordingShelves>>, TError = ErrorResponse>(
+ params?: ListRecordingShelvesParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingShelves>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listRecordingShelves>>,
+          TError,
+          Awaited<ReturnType<typeof listRecordingShelves>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListRecordingShelves<TData = Awaited<ReturnType<typeof listRecordingShelves>>, TError = ErrorResponse>(
+ params?: ListRecordingShelvesParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingShelves>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List series shelves
+ */
+
+export function useListRecordingShelves<TData = Awaited<ReturnType<typeof listRecordingShelves>>, TError = ErrorResponse>(
+ params?: ListRecordingShelvesParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingShelves>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getListRecordingShelvesQueryOptions(params,options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 

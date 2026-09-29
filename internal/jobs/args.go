@@ -273,6 +273,33 @@ func (CMDetectReconcileArgs) InsertOpts() river.InsertOpts {
 	}
 }
 
+// LabelRuleReconcileArgs は分類ルールの変更を録画全件へ再評価するジョブの引数。
+type LabelRuleReconcileArgs struct{}
+
+// Kind は River ジョブの種別名を返す。
+func (LabelRuleReconcileArgs) Kind() string { return "label_rule_reconcile" }
+
+// InsertOpts は分類ルール再評価を DB 専用の ruler キューへ投入する。
+//
+// キューは site 非依存（再評価は site の属性を持たない全件の仕事で、site 単位に
+// 回すと同じ評価を N 回走らせることになる）。
+//
+// **一意化しない（ByArgs / ByState を使わない）。** 実行中に来た 2 本目の
+// ルール編集を捨てないためで、捨てると 1 本目が古いルール集合で評価し終えた
+// 時点で打ち止めになり、2 本目の編集が次の定期再評価（15 分）まで反映されない。
+//
+// 「実行中を除いた状態集合」で代用できないのは River がそれを拒否するからで、
+// UniqueOpts.ByState は running を含まない集合を挿入時にエラーにする
+// （river@v0.47.0 insert_opts.go の requiredV3states。この検査を外すと
+// `rokuban enqueue label-rule-reconcile` とルール編集の両方が 500 になる）。
+//
+// 代償は、素早く N 回編集すると N 回の全件評価が直列に走ること（1 回 ~1.6 s /
+// 73,000 行）。編集はまれな操作なので許容する。advisory lock が直列化するので、
+// 最後に走る 1 本は必ず最新のルール集合で評価する。
+func (LabelRuleReconcileArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{Queue: RulerQueue}
+}
+
 // EncodeReconcileArgs は encode の desired−observed 定期 reconcile ジョブの引数。
 type EncodeReconcileArgs struct{}
 
@@ -377,6 +404,7 @@ var (
 	_ river.JobArgsWithInsertOpts = CMDetectJobArgs{}
 	_ river.JobArgsWithInsertOpts = CMDetectReconcileArgs{}
 	_ river.JobArgsWithInsertOpts = EncodeReconcileArgs{}
+	_ river.JobArgsWithInsertOpts = LabelRuleReconcileArgs{}
 	_ river.JobArgsWithInsertOpts = DeleteReconcileArgs{}
 	_ river.JobArgsWithInsertOpts = CatalogExportArgs{}
 	_ river.JobArgsWithInsertOpts = StorageSyncArgs{}

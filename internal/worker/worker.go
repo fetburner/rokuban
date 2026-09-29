@@ -259,6 +259,7 @@ func NewWorkers(deps *Deps) *river.Workers {
 		MaxDeletesPerPass: deps.RulerMaxDeletesPerPass,
 		RetractGrace:      deps.RulerRetractGrace,
 	})
+	river.AddWorker(workers, &LabelRuleReconcileWorker{Pool: deps.Pool})
 	river.AddWorker(workers, &ReconcilePassWorker{
 		MirakcClients:   deps.MirakcClients,
 		Pool:            deps.Pool,
@@ -437,6 +438,14 @@ type ClientConfig struct {
 
 	// DeleteReconcileInterval は削除 reconcile の間隔。0 なら既定値（15 分）。
 	DeleteReconcileInterval time.Duration
+
+	// LabelRuleReconcile が true なら分類ルールの全件再評価を定期ジョブとして
+	// 登録する（PeriodicJobs が true のときのみ）。サイト非依存の全件評価なので、
+	// BoundSites の要素数には影響されない。
+	LabelRuleReconcile bool
+
+	// LabelRuleReconcileInterval は分類ルール再評価の間隔。0 なら既定値（15 分）。
+	LabelRuleReconcileInterval time.Duration
 
 	// EncodeReconcile が true なら encode の desired−observed 定期パス
 	// （issue #163）を定期ジョブとして登録する（PeriodicJobs が true のときのみ）。
@@ -780,6 +789,7 @@ func configureGlobalPeriodicJobs(riverCfg *river.Config, cfg ClientConfig) {
 	}
 	appendPeriodic(cfg.CatalogExport, cfg.CatalogExportInterval, defaultCatalogExportInterval, jobs.CatalogExportArgs{})
 	appendPeriodic(cfg.DeleteReconcile, cfg.DeleteReconcileInterval, defaultDeleteReconcileInterval, jobs.DeleteReconcileArgs{})
+	appendPeriodic(cfg.LabelRuleReconcile, cfg.LabelRuleReconcileInterval, defaultLabelRuleReconcileInterval, jobs.LabelRuleReconcileArgs{})
 	appendPeriodic(cfg.EncodeReconcile, cfg.EncodeReconcileInterval, defaultEncodeReconcileInterval, jobs.EncodeReconcileArgs{})
 	appendPeriodic(cfg.ThumbnailReconcile, cfg.ThumbnailReconcileInterval, defaultThumbnailReconcileInterval, jobs.ThumbnailReconcileArgs{})
 	appendPeriodic(cfg.CMDetectReconcile, 0, defaultCMDetectReconcileInterval, jobs.CMDetectReconcileArgs{})

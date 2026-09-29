@@ -278,6 +278,120 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/label-rules:
+    get:
+      operationId: listLabelRules
+      summary: List series label rules
+      responses:
+        "200":
+          description: OK（priority の降順、同じなら id の昇順 = 勝者を決める順）
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LabelRule"
+    post:
+      operationId: createLabelRule
+      summary: Create a series label rule
+      description: |
+        作成は録画全件の再評価を同じトランザクションで投入する
+        （`label_rule_reconcile`）。トリガーは自分の行しか見ないので、既に
+        コミット済みの録画はこのジョブでしか新しいルールに追従しない。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LabelRuleInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LabelRule"
+        "400":
+          description: |
+            不正な入力。値が正規化で空になる（記号のみ）、キーワードが空、
+            key が未知、のいずれか。
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/label-rules/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    get:
+      operationId: getLabelRule
+      summary: Get a series label rule
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LabelRule"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: updateLabelRule
+      summary: Update a series label rule
+      description: |
+        上書き更新（部分更新ではない）。keyword・priority・value のどれを変えても
+        録画全件の再評価になるので、同じトランザクションで投入する。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LabelRuleInput"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LabelRule"
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteLabelRule
+      summary: Delete a series label rule
+      description: |
+        **削除も録画全件の再評価が要る。** 当たりの表は勝者しか持たないので、
+        勝者が消えた録画の次点はその表から分からない（外部キーの CASCADE は
+        安全網で、次点には移らない）。同じトランザクションで再評価を投入する。
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /api/reservations:
     get:
       operationId: listReservations
@@ -896,6 +1010,50 @@ paths:
           description: |
             before / beforeId が片方だけ指定された、limit が範囲外、または
             time window 系の入力が不正
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/recording-shelves:
+    get:
+      operationId: listRecordingShelves
+      summary: List series shelves
+      description: |
+        実効シリーズ（分類ルールが当たればその値、当たらなければ自動キー）ごとの
+        棚。1 要素 = 1 棚で、`value` は棚のキー、`title` は代表の録画の生の
+        タイトル（値は正規化の産物なので表示名にならない）。
+
+        母集団は生きていて（`deleted_at IS NULL AND superseded_at IS NULL`）
+        再生できる録画（原本の media_asset がある、または encoded の派生物が
+        ある）だけ。ごみ箱・superseded・取り込めていない録画は数えない。
+
+        代表は `ORDER BY program_start_at DESC, id DESC LIMIT 1`。
+        `value` が null の棚（自動キーを導出できず、どのルールも当たらない
+        録画）も返す --- UI が「その他」にまとめる件数の材料にするため。
+
+        **パスを `/api/recordings/shelves` にしない。** `/api/recordings/{id}`
+        と id=`shelves` で曖昧になる。
+      parameters:
+        - name: key
+          in: query
+          required: false
+          description: 棚の軸。M8 は series だけ。
+          schema:
+            type: string
+            enum: [series]
+            default: series
+      responses:
+        "200":
+          description: OK（件数の降順、同じなら値の昇順）
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RecordingShelf"
+        "400":
+          description: Invalid key
           content:
             application/json:
               schema:
@@ -2174,6 +2332,17 @@ components:
           type: string
         description:
           type: string
+        series:
+          description: |
+            実効シリーズ = 分類ルールが当たればその値、当たらなければ自動キー
+            （`series_key(title)`）。`GET /api/recording-shelves` の `value` と
+            同じ空間の値なので、棚から録画一覧へ渡すときはこれをそのまま使える。
+
+            **導出値であって録画の属性ではない。** 分類ルールを変えると値が変わる
+            （全件再評価のジョブが追従する）。null は自動キーを導出できず、
+            どのルールも当たらない録画。
+          type: string
+          nullable: true
         startAt:
           description: 番組の放送開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。
           type: string
@@ -2819,6 +2988,68 @@ components:
           minimum: 0
           maximum: 86400
           description: start より小さい場合は翌日跨ぎ
+
+    LabelRuleInput:
+      type: object
+      required: [value, keyword]
+      properties:
+        key:
+          type: string
+          enum: [series]
+          default: series
+          description: 棚の軸。M8 は series だけ（他の値は 400）。
+        value:
+          type: string
+          description: |
+            棚のキー（表示名ではない）。自動キーと同じ正規化を通した結果が空に
+            なる値（記号のみなど）は 400 にする --- 何も主張しないルールを
+            作らせない。
+        keyword:
+          type: string
+          description: |
+            録画タイトルと EPG の番組名への部分一致。LIKE の特殊文字（\ % _）は
+            文字として照合する（`/search` と録画一覧と同じ方言）。
+        priority:
+          type: integer
+          default: 0
+          description: 大きいほど先に当たる。同じなら id の小さい方が勝つ。
+
+    LabelRule:
+      allOf:
+        - $ref: "#/components/schemas/LabelRuleInput"
+        - type: object
+          required: [id, key, createdAt, updatedAt]
+          properties:
+            id:
+              type: integer
+              format: int64
+            createdAt:
+              type: string
+              format: date-time
+            updatedAt:
+              type: string
+              format: date-time
+
+    RecordingShelf:
+      type: object
+      required: [title, count, representativeId]
+      properties:
+        value:
+          type: string
+          nullable: true
+          description: |
+            棚のキー。null は実効シリーズを導出できなかった録画（UI は「その他」に
+            まとめる）。
+        title:
+          type: string
+          description: 代表の録画の生のタイトル（見出しに使う）。
+        count:
+          type: integer
+          description: この棚に入る録画の件数。
+        representativeId:
+          type: integer
+          format: int64
+          description: 代表の録画の id。棚から録画一覧・番組ハブへ渡す起点。
 
     RuleInput:
       type: object

@@ -6,6 +6,8 @@ import {
   getGetStorageQueryKey,
   getListCapacityOveragesQueryKey,
   getListCircuitBreakersQueryKey,
+  getListLabelRulesQueryKey,
+  getListRecordingShelvesQueryKey,
   getListRecordingsQueryKey,
   getListReservationsQueryKey,
   getListSitesQueryKey,
@@ -89,6 +91,20 @@ export const breakersQueryKeyPrefix = getListCircuitBreakersQueryKey()[0]
 export const encodeQueueQueryKeyPrefix = getGetEncodeQueueQueryKey()[0]
 export const storageQueryKeyPrefix = getGetStorageQueryKey()[0]
 export const sitesQueryKeyPrefix = `${getListSitesQueryKey()[0]}/`
+
+/**
+ * labelRulesQueryKeyPrefix / shelvesQueryKeyPrefix は分類ルールとシリーズ棚の
+ * クエリキー接頭辞。**recordings グループに入れる** --- 分類ルールの変更は
+ * `label_rules_notify` トリガーが recordings トピックへ流す（意図的にそうして
+ * ある。docs/data/series.md §8「評価結果の持ち方」）。棚は録画の射影なので、
+ * 録画が変わったときに一緒に取り直すのが正しい。
+ *
+ * 代償: 番組表の無限クエリ（`programsQueryKeyPrefix`）も recordings トピックで
+ * 取り直されるので、分類ルールの編集 1 回で番組表まで取り直される。編集はまれな
+ * 操作なので許容する。
+ */
+export const labelRulesQueryKeyPrefix = getListLabelRulesQueryKey()[0]
+export const shelvesQueryKeyPrefix = getListRecordingShelvesQueryKey()[0]
 
 /**
  * programsQueryKeyPrefix は番組リスト（`pages/programs.tsx` の
@@ -175,8 +191,19 @@ const queryGroups: QueryGroup[] = [
     // 番組一覧の recordingId も録画状態から導出される。録画の開始・終了時は
     // 同じ SSE で即時に取り直すが、番組表は大きいので 60 秒周期の定期取得には
     // 含めず、SSE を取り逃した場合は EPG の 10 分周期で収束させる。
-    prefixes: [recordingsQueryKeyPrefix, encodeQueueQueryKeyPrefix, programsQueryKeyPrefix],
-    refreshPrefixes: [recordingsQueryKeyPrefix, encodeQueueQueryKeyPrefix],
+    prefixes: [
+      recordingsQueryKeyPrefix,
+      encodeQueueQueryKeyPrefix,
+      labelRulesQueryKeyPrefix,
+      shelvesQueryKeyPrefix,
+      programsQueryKeyPrefix,
+    ],
+    refreshPrefixes: [
+      recordingsQueryKeyPrefix,
+      encodeQueueQueryKeyPrefix,
+      labelRulesQueryKeyPrefix,
+      shelvesQueryKeyPrefix,
+    ],
     refreshIntervalMs: operationalRefreshIntervalMs,
   },
   {

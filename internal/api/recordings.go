@@ -70,6 +70,10 @@ type recordingListFields struct {
 	// （label は null を保つ）。
 	ChaptersOwned bool
 	ChapterSpans  json.RawMessage
+	// Series は実効シリーズ（recording_series.value）。分類ルールが当たればその
+	// 値、当たらなければ自動キー。**導出値であって録画の属性ではない**ので、
+	// recording_series ビューから読む（recordings_query.go の SELECT 参照）。
+	Series *string
 
 	// HasOriginalAsset は kind='original' の media_assets 行が **state を問わず**
 	// 存在するか（issue #212）。OriginalSizeBytes（state <> 'deleted' の行だけを
@@ -362,6 +366,7 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool, profi
 		StartedAt:    utcTimePtr(r.StartedAt),
 		EndedAt:      utcTimePtr(r.EndedAt),
 		SizeBytes:    r.OriginalSizeBytes,
+		Series:       r.Series,
 		CreatedAt:    r.CreatedAt.UTC(),
 	}
 	cmState := CMDetectionStateDisabled

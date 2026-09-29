@@ -172,6 +172,36 @@ func (e IngestProgressState) Valid() bool {
 	}
 }
 
+// Defines values for LabelRuleKey.
+const (
+	LabelRuleKeySeries LabelRuleKey = "series"
+)
+
+// Valid indicates whether the value is a known member of the LabelRuleKey enum.
+func (e LabelRuleKey) Valid() bool {
+	switch e {
+	case LabelRuleKeySeries:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for LabelRuleInputKey.
+const (
+	LabelRuleInputKeySeries LabelRuleInputKey = "series"
+)
+
+// Valid indicates whether the value is a known member of the LabelRuleInputKey enum.
+func (e LabelRuleInputKey) Valid() bool {
+	switch e {
+	case LabelRuleInputKeySeries:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ProgramIntent.
 const (
 	Record ProgramIntent = "record"
@@ -628,6 +658,21 @@ func (e TunerTypes) Valid() bool {
 	case TunerTypesGR:
 		return true
 	case TunerTypesSKY:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListRecordingShelvesParamsKey.
+const (
+	ListRecordingShelvesParamsKeySeries ListRecordingShelvesParamsKey = "series"
+)
+
+// Valid indicates whether the value is a known member of the ListRecordingShelvesParamsKey enum.
+func (e ListRecordingShelvesParamsKey) Valid() bool {
+	switch e {
+	case ListRecordingShelvesParamsKeySeries:
 		return true
 	default:
 		return false
@@ -1277,6 +1322,52 @@ type IngestProgress struct {
 // 必要があり、どちらも取らなかった。停滞は `observedAt` の古さで読む。
 type IngestProgressState string
 
+// LabelRule defines model for LabelRule.
+type LabelRule struct {
+	CreatedAt time.Time `json:"createdAt"`
+	Id        int64     `json:"id"`
+
+	// Key 棚の軸。M8 は series だけ（他の値は 400）。
+	Key LabelRuleKey `json:"key"`
+
+	// Keyword 録画タイトルと EPG の番組名への部分一致。LIKE の特殊文字（\ % _）は
+	// 文字として照合する（`/search` と録画一覧と同じ方言）。
+	Keyword string `json:"keyword"`
+
+	// Priority 大きいほど先に当たる。同じなら id の小さい方が勝つ。
+	Priority  *int      `json:"priority,omitempty"`
+	UpdatedAt time.Time `json:"updatedAt"`
+
+	// Value 棚のキー（表示名ではない）。自動キーと同じ正規化を通した結果が空に
+	// なる値（記号のみなど）は 400 にする --- 何も主張しないルールを
+	// 作らせない。
+	Value string `json:"value"`
+}
+
+// LabelRuleKey 棚の軸。M8 は series だけ（他の値は 400）。
+type LabelRuleKey string
+
+// LabelRuleInput defines model for LabelRuleInput.
+type LabelRuleInput struct {
+	// Key 棚の軸。M8 は series だけ（他の値は 400）。
+	Key *LabelRuleInputKey `json:"key,omitempty"`
+
+	// Keyword 録画タイトルと EPG の番組名への部分一致。LIKE の特殊文字（\ % _）は
+	// 文字として照合する（`/search` と録画一覧と同じ方言）。
+	Keyword string `json:"keyword"`
+
+	// Priority 大きいほど先に当たる。同じなら id の小さい方が勝つ。
+	Priority *int `json:"priority,omitempty"`
+
+	// Value 棚のキー（表示名ではない）。自動キーと同じ正規化を通した結果が空に
+	// なる値（記号のみなど）は 400 にする --- 何も主張しないルールを
+	// 作らせない。
+	Value string `json:"value"`
+}
+
+// LabelRuleInputKey 棚の軸。M8 は series だけ（他の値は 400）。
+type LabelRuleInputKey string
+
 // LiveProfileSummary defines model for LiveProfileSummary.
 type LiveProfileSummary struct {
 	// Height スケール先の高さ（表示用。0 または省略ならスケールしない = 元の解像度）。
@@ -1561,8 +1652,17 @@ type Recording struct {
 	// QualityEvents recording.failed / record-broken / bcas_anomaly の履歴
 	QualityEvents *[]map[string]interface{} `json:"qualityEvents,omitempty"`
 	RuleId        *int64                    `json:"ruleId,omitempty"`
-	ServiceId     int                       `json:"serviceId"`
-	ServiceName   string                    `json:"serviceName"`
+
+	// Series 実効シリーズ = 分類ルールが当たればその値、当たらなければ自動キー
+	// （`series_key(title)`）。`GET /api/recording-shelves` の `value` と
+	// 同じ空間の値なので、棚から録画一覧へ渡すときはこれをそのまま使える。
+	//
+	// **導出値であって録画の属性ではない。** 分類ルールを変えると値が変わる
+	// （全件再評価のジョブが追従する）。null は自動キーを導出できず、
+	// どのルールも当たらない録画。
+	Series      *string `json:"series,omitempty"`
+	ServiceId   int     `json:"serviceId"`
+	ServiceName string  `json:"serviceName"`
 
 	// Site この録画がどのサイト（mirakc インスタンス）のものか。`recordings.site`
 	// そのまま。`GET /api/recordings` は全サイトの録画を返すため
@@ -1633,6 +1733,22 @@ type RecordingChapters struct {
 // RecordingChaptersSource この録画が使っている層。`user` はユーザーが確認済み（所有している）で、
 // 自動層は読まれない。`auto` は自動検出の結果。
 type RecordingChaptersSource string
+
+// RecordingShelf defines model for RecordingShelf.
+type RecordingShelf struct {
+	// Count この棚に入る録画の件数。
+	Count int `json:"count"`
+
+	// RepresentativeId 代表の録画の id。棚から録画一覧・番組ハブへ渡す起点。
+	RepresentativeId int64 `json:"representativeId"`
+
+	// Title 代表の録画の生のタイトル（見出しに使う）。
+	Title string `json:"title"`
+
+	// Value 棚のキー。null は実効シリーズを導出できなかった録画（UI は「その他」に
+	// まとめる）。
+	Value *string `json:"value,omitempty"`
+}
 
 // Reservation defines model for Reservation.
 type Reservation struct {
@@ -1966,6 +2082,15 @@ type ListCapacityOveragesParams struct {
 	End time.Time `form:"end" json:"end"`
 }
 
+// ListRecordingShelvesParams defines parameters for ListRecordingShelves.
+type ListRecordingShelvesParams struct {
+	// Key 棚の軸。M8 は series だけ。
+	Key *ListRecordingShelvesParamsKey `form:"key,omitempty" json:"key,omitempty"`
+}
+
+// ListRecordingShelvesParamsKey defines parameters for ListRecordingShelves.
+type ListRecordingShelvesParamsKey string
+
 // ListRecordingsParams defines parameters for ListRecordings.
 type ListRecordingsParams struct {
 	// Q キーワード（部分一致）。qTarget が対象列を決める
@@ -2056,6 +2181,12 @@ type ListProgramsParams struct {
 	Service *[]int64 `form:"service,omitempty" json:"service,omitempty"`
 }
 
+// CreateLabelRuleJSONRequestBody defines body for CreateLabelRule for application/json ContentType.
+type CreateLabelRuleJSONRequestBody = LabelRuleInput
+
+// UpdateLabelRuleJSONRequestBody defines body for UpdateLabelRule for application/json ContentType.
+type UpdateLabelRuleJSONRequestBody = LabelRuleInput
+
 // SearchProgramsJSONRequestBody defines body for SearchPrograms for application/json ContentType.
 type SearchProgramsJSONRequestBody = ProgramSearchRequest
 
@@ -2106,12 +2237,30 @@ type ServerInterface interface {
 	// GetEncodeQueue Get active encode job counts
 	// (GET /api/encode-queue)
 	GetEncodeQueue(w http.ResponseWriter, r *http.Request)
+	// ListLabelRules List series label rules
+	// (GET /api/label-rules)
+	ListLabelRules(w http.ResponseWriter, r *http.Request)
+	// CreateLabelRule Create a series label rule
+	// (POST /api/label-rules)
+	CreateLabelRule(w http.ResponseWriter, r *http.Request)
+	// DeleteLabelRule Delete a series label rule
+	// (DELETE /api/label-rules/{id})
+	DeleteLabelRule(w http.ResponseWriter, r *http.Request, id int64)
+	// GetLabelRule Get a series label rule
+	// (GET /api/label-rules/{id})
+	GetLabelRule(w http.ResponseWriter, r *http.Request, id int64)
+	// UpdateLabelRule Update a series label rule
+	// (PATCH /api/label-rules/{id})
+	UpdateLabelRule(w http.ResponseWriter, r *http.Request, id int64)
 	// ListLiveProfiles List configured live (HLS) profile names
 	// (GET /api/live-profiles)
 	ListLiveProfiles(w http.ResponseWriter, r *http.Request)
 	// SearchPrograms Search EPG programs by rule-style conditions
 	// (POST /api/programs/search)
 	SearchPrograms(w http.ResponseWriter, r *http.Request)
+	// ListRecordingShelves List series shelves
+	// (GET /api/recording-shelves)
+	ListRecordingShelves(w http.ResponseWriter, r *http.Request, params ListRecordingShelvesParams)
 	// ListRecordings List recordings
 	// (GET /api/recordings)
 	ListRecordings(w http.ResponseWriter, r *http.Request, params ListRecordingsParams)
@@ -2271,6 +2420,36 @@ func (_ Unimplemented) GetEncodeQueue(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// ListLabelRules List series label rules
+// (GET /api/label-rules)
+func (_ Unimplemented) ListLabelRules(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// CreateLabelRule Create a series label rule
+// (POST /api/label-rules)
+func (_ Unimplemented) CreateLabelRule(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// DeleteLabelRule Delete a series label rule
+// (DELETE /api/label-rules/{id})
+func (_ Unimplemented) DeleteLabelRule(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetLabelRule Get a series label rule
+// (GET /api/label-rules/{id})
+func (_ Unimplemented) GetLabelRule(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// UpdateLabelRule Update a series label rule
+// (PATCH /api/label-rules/{id})
+func (_ Unimplemented) UpdateLabelRule(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // ListLiveProfiles List configured live (HLS) profile names
 // (GET /api/live-profiles)
 func (_ Unimplemented) ListLiveProfiles(w http.ResponseWriter, r *http.Request) {
@@ -2280,6 +2459,12 @@ func (_ Unimplemented) ListLiveProfiles(w http.ResponseWriter, r *http.Request) 
 // SearchPrograms Search EPG programs by rule-style conditions
 // (POST /api/programs/search)
 func (_ Unimplemented) SearchPrograms(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListRecordingShelves List series shelves
+// (GET /api/recording-shelves)
+func (_ Unimplemented) ListRecordingShelves(w http.ResponseWriter, r *http.Request, params ListRecordingShelvesParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2679,6 +2864,112 @@ func (siw *ServerInterfaceWrapper) GetEncodeQueue(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// ListLabelRules operation middleware
+func (siw *ServerInterfaceWrapper) ListLabelRules(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListLabelRules(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateLabelRule operation middleware
+func (siw *ServerInterfaceWrapper) CreateLabelRule(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateLabelRule(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteLabelRule operation middleware
+func (siw *ServerInterfaceWrapper) DeleteLabelRule(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteLabelRule(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetLabelRule operation middleware
+func (siw *ServerInterfaceWrapper) GetLabelRule(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetLabelRule(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateLabelRule operation middleware
+func (siw *ServerInterfaceWrapper) UpdateLabelRule(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateLabelRule(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListLiveProfiles operation middleware
 func (siw *ServerInterfaceWrapper) ListLiveProfiles(w http.ResponseWriter, r *http.Request) {
 
@@ -2698,6 +2989,39 @@ func (siw *ServerInterfaceWrapper) SearchPrograms(w http.ResponseWriter, r *http
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.SearchPrograms(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListRecordingShelves operation middleware
+func (siw *ServerInterfaceWrapper) ListRecordingShelves(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListRecordingShelvesParams
+
+	// ------------- Optional query parameter "key" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "key", r.URL.Query(), &params.Key, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "key"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "key", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListRecordingShelves(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4009,6 +4333,21 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Patch(options.BaseURL+"/api/rules/{id}", wrapper.UpdateRule)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/label-rules", wrapper.ListLabelRules)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/label-rules", wrapper.CreateLabelRule)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/label-rules/{id}", wrapper.DeleteLabelRule)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/label-rules/{id}", wrapper.GetLabelRule)
+	})
+	r.Group(func(r chi.Router) {
+		r.Patch(options.BaseURL+"/api/label-rules/{id}", wrapper.UpdateLabelRule)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/reservations", wrapper.ListReservations)
 	})
 	r.Group(func(r chi.Router) {
@@ -4046,6 +4385,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/recordings", wrapper.ListRecordings)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/recording-shelves", wrapper.ListRecordingShelves)
 	})
 	r.Group(func(r chi.Router) {
 		r.Delete(options.BaseURL+"/api/recordings/{id}", wrapper.DeleteRecording)
@@ -4313,6 +4655,180 @@ func (response GetEncodeQueue200JSONResponse) VisitGetEncodeQueueResponse(w http
 	return err
 }
 
+type ListLabelRulesRequestObject struct {
+}
+
+type ListLabelRulesResponseObject interface {
+	VisitListLabelRulesResponse(w http.ResponseWriter) error
+}
+
+type ListLabelRules200JSONResponse []LabelRule
+
+func (response ListLabelRules200JSONResponse) VisitListLabelRulesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateLabelRuleRequestObject struct {
+	Body *CreateLabelRuleJSONRequestBody
+}
+
+type CreateLabelRuleResponseObject interface {
+	VisitCreateLabelRuleResponse(w http.ResponseWriter) error
+}
+
+type CreateLabelRule201JSONResponse LabelRule
+
+func (response CreateLabelRule201JSONResponse) VisitCreateLabelRuleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateLabelRule400JSONResponse ErrorResponse
+
+func (response CreateLabelRule400JSONResponse) VisitCreateLabelRuleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteLabelRuleRequestObject struct {
+	Id int64 `json:"id"`
+}
+
+type DeleteLabelRuleResponseObject interface {
+	VisitDeleteLabelRuleResponse(w http.ResponseWriter) error
+}
+
+type DeleteLabelRule204Response struct {
+}
+
+func (response DeleteLabelRule204Response) VisitDeleteLabelRuleResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type DeleteLabelRule404JSONResponse ErrorResponse
+
+func (response DeleteLabelRule404JSONResponse) VisitDeleteLabelRuleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetLabelRuleRequestObject struct {
+	Id int64 `json:"id"`
+}
+
+type GetLabelRuleResponseObject interface {
+	VisitGetLabelRuleResponse(w http.ResponseWriter) error
+}
+
+type GetLabelRule200JSONResponse LabelRule
+
+func (response GetLabelRule200JSONResponse) VisitGetLabelRuleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetLabelRule404JSONResponse ErrorResponse
+
+func (response GetLabelRule404JSONResponse) VisitGetLabelRuleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateLabelRuleRequestObject struct {
+	Id   int64 `json:"id"`
+	Body *UpdateLabelRuleJSONRequestBody
+}
+
+type UpdateLabelRuleResponseObject interface {
+	VisitUpdateLabelRuleResponse(w http.ResponseWriter) error
+}
+
+type UpdateLabelRule200JSONResponse LabelRule
+
+func (response UpdateLabelRule200JSONResponse) VisitUpdateLabelRuleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateLabelRule400JSONResponse ErrorResponse
+
+func (response UpdateLabelRule400JSONResponse) VisitUpdateLabelRuleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateLabelRule404JSONResponse ErrorResponse
+
+func (response UpdateLabelRule404JSONResponse) VisitUpdateLabelRuleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ListLiveProfilesRequestObject struct {
 }
 
@@ -4359,6 +4875,42 @@ func (response SearchPrograms200JSONResponse) VisitSearchProgramsResponse(w http
 type SearchPrograms400JSONResponse ErrorResponse
 
 func (response SearchPrograms400JSONResponse) VisitSearchProgramsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListRecordingShelvesRequestObject struct {
+	Params ListRecordingShelvesParams
+}
+
+type ListRecordingShelvesResponseObject interface {
+	VisitListRecordingShelvesResponse(w http.ResponseWriter) error
+}
+
+type ListRecordingShelves200JSONResponse []RecordingShelf
+
+func (response ListRecordingShelves200JSONResponse) VisitListRecordingShelvesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListRecordingShelves400JSONResponse ErrorResponse
+
+func (response ListRecordingShelves400JSONResponse) VisitListRecordingShelvesResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -5665,12 +6217,30 @@ type StrictServerInterface interface {
 	// GetEncodeQueue Get active encode job counts
 	// (GET /api/encode-queue)
 	GetEncodeQueue(ctx context.Context, request GetEncodeQueueRequestObject) (GetEncodeQueueResponseObject, error)
+	// ListLabelRules List series label rules
+	// (GET /api/label-rules)
+	ListLabelRules(ctx context.Context, request ListLabelRulesRequestObject) (ListLabelRulesResponseObject, error)
+	// CreateLabelRule Create a series label rule
+	// (POST /api/label-rules)
+	CreateLabelRule(ctx context.Context, request CreateLabelRuleRequestObject) (CreateLabelRuleResponseObject, error)
+	// DeleteLabelRule Delete a series label rule
+	// (DELETE /api/label-rules/{id})
+	DeleteLabelRule(ctx context.Context, request DeleteLabelRuleRequestObject) (DeleteLabelRuleResponseObject, error)
+	// GetLabelRule Get a series label rule
+	// (GET /api/label-rules/{id})
+	GetLabelRule(ctx context.Context, request GetLabelRuleRequestObject) (GetLabelRuleResponseObject, error)
+	// UpdateLabelRule Update a series label rule
+	// (PATCH /api/label-rules/{id})
+	UpdateLabelRule(ctx context.Context, request UpdateLabelRuleRequestObject) (UpdateLabelRuleResponseObject, error)
 	// ListLiveProfiles List configured live (HLS) profile names
 	// (GET /api/live-profiles)
 	ListLiveProfiles(ctx context.Context, request ListLiveProfilesRequestObject) (ListLiveProfilesResponseObject, error)
 	// SearchPrograms Search EPG programs by rule-style conditions
 	// (POST /api/programs/search)
 	SearchPrograms(ctx context.Context, request SearchProgramsRequestObject) (SearchProgramsResponseObject, error)
+	// ListRecordingShelves List series shelves
+	// (GET /api/recording-shelves)
+	ListRecordingShelves(ctx context.Context, request ListRecordingShelvesRequestObject) (ListRecordingShelvesResponseObject, error)
 	// ListRecordings List recordings
 	// (GET /api/recordings)
 	ListRecordings(ctx context.Context, request ListRecordingsRequestObject) (ListRecordingsResponseObject, error)
@@ -6016,6 +6586,146 @@ func (sh *strictHandler) GetEncodeQueue(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+// ListLabelRules operation middleware
+func (sh *strictHandler) ListLabelRules(w http.ResponseWriter, r *http.Request) {
+	var request ListLabelRulesRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListLabelRules(ctx, request.(ListLabelRulesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListLabelRules")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListLabelRulesResponseObject); ok {
+		if err := validResponse.VisitListLabelRulesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateLabelRule operation middleware
+func (sh *strictHandler) CreateLabelRule(w http.ResponseWriter, r *http.Request) {
+	var request CreateLabelRuleRequestObject
+
+	var body CreateLabelRuleJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateLabelRule(ctx, request.(CreateLabelRuleRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateLabelRule")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateLabelRuleResponseObject); ok {
+		if err := validResponse.VisitCreateLabelRuleResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteLabelRule operation middleware
+func (sh *strictHandler) DeleteLabelRule(w http.ResponseWriter, r *http.Request, id int64) {
+	var request DeleteLabelRuleRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteLabelRule(ctx, request.(DeleteLabelRuleRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteLabelRule")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteLabelRuleResponseObject); ok {
+		if err := validResponse.VisitDeleteLabelRuleResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetLabelRule operation middleware
+func (sh *strictHandler) GetLabelRule(w http.ResponseWriter, r *http.Request, id int64) {
+	var request GetLabelRuleRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetLabelRule(ctx, request.(GetLabelRuleRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetLabelRule")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetLabelRuleResponseObject); ok {
+		if err := validResponse.VisitGetLabelRuleResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateLabelRule operation middleware
+func (sh *strictHandler) UpdateLabelRule(w http.ResponseWriter, r *http.Request, id int64) {
+	var request UpdateLabelRuleRequestObject
+
+	request.Id = id
+
+	var body UpdateLabelRuleJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateLabelRule(ctx, request.(UpdateLabelRuleRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateLabelRule")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateLabelRuleResponseObject); ok {
+		if err := validResponse.VisitUpdateLabelRuleResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // ListLiveProfiles operation middleware
 func (sh *strictHandler) ListLiveProfiles(w http.ResponseWriter, r *http.Request) {
 	var request ListLiveProfilesRequestObject
@@ -6064,6 +6774,32 @@ func (sh *strictHandler) SearchPrograms(w http.ResponseWriter, r *http.Request) 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(SearchProgramsResponseObject); ok {
 		if err := validResponse.VisitSearchProgramsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListRecordingShelves operation middleware
+func (sh *strictHandler) ListRecordingShelves(w http.ResponseWriter, r *http.Request, params ListRecordingShelvesParams) {
+	var request ListRecordingShelvesRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListRecordingShelves(ctx, request.(ListRecordingShelvesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListRecordingShelves")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListRecordingShelvesResponseObject); ok {
+		if err := validResponse.VisitListRecordingShelvesResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

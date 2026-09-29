@@ -462,7 +462,7 @@ func (q *Queries) CatalogListRecordingPurgeRequests(ctx context.Context) ([]Reco
 }
 
 const catalogListRecordings = `-- name: CatalogListRecordings :many
-SELECT id, rule_id, source, site, network_id, service_id, event_id, service_name, channel_type, channel, title, description, extended, genres, is_free, program_start_at, program_duration_ms, status, started_at, ended_at, quality_events, deleted_at, created_at, updated_at, superseded_at, purged_at, genre_lv1 FROM recordings ORDER BY id
+SELECT id, rule_id, source, site, network_id, service_id, event_id, service_name, channel_type, channel, title, description, extended, genres, is_free, program_start_at, program_duration_ms, status, started_at, ended_at, quality_events, deleted_at, created_at, updated_at, superseded_at, purged_at, genre_lv1, series_key FROM recordings ORDER BY id
 `
 
 // 全件。tombstone（deleted_at IS NOT NULL）も含む。
@@ -503,6 +503,7 @@ func (q *Queries) CatalogListRecordings(ctx context.Context) ([]Recording, error
 			&i.SupersededAt,
 			&i.PurgedAt,
 			&i.GenreLv1,
+			&i.SeriesKey,
 		); err != nil {
 			return nil, err
 		}

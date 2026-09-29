@@ -28,6 +28,7 @@ import { ReservationDetailPage } from './pages/reservation-detail'
 import { ReservationsPage } from './pages/reservations'
 import { RulesPage } from './pages/rules'
 import { SearchPage } from './pages/search'
+import { ShelvesPage } from './pages/shelves'
 
 const rootRoute = createRootRoute({
   // 各ルートが `head` で自分の画面名を積むので、ここは「積み忘れ」への保険
@@ -172,6 +173,43 @@ const rulesRoute = createRoute({
   // `pages/rules.tsx` の `<PageHeader title="ルール">` と同じ表記。
   head: () => ({ meta: [{ title: pageTitle('ルール') }] }),
   component: RulesPage,
+})
+
+/**
+ * ShelvesPageSearch は `/shelves` のクエリパラメータ。
+ *
+ * 録画ルール画面の「このルールのキーワードで分類ルールを作る」導線が
+ * `?keyword=<ルールのキーワード>` で渡し、棚画面が作成フォームの初期値に使う。
+ * **画面を跨いだ下書きを URL に載せる**のは、`/search` の `cond` と同じ判断で、
+ * 導線が「どこから来たか」の状態をグローバルに持たずに済む。
+ *
+ * `value` は棚の行から「この棚を割る・指定する」で入るときに載る棚のキー。
+ */
+export type ShelvesPageSearch = {
+  keyword?: string
+  value?: string
+}
+
+/** parseShelvesSearch は壊れた値（文字列でない・空）を落として undefined にする。 */
+function parseShelvesSearch(search: Record<string, unknown>): ShelvesPageSearch {
+  const text = (v: unknown): string | undefined =>
+    typeof v === 'string' && v !== '' ? v : undefined
+  return { keyword: text(search.keyword), value: text(search.value) }
+}
+
+/**
+ * シリーズ棚はルール（`/rules`）の隣に置く。棚は自動キーの結果で、分類ルールは
+ * その上に重ねる上書きなので、間違った棚を見つける場所と直す場所を 1 画面にする
+ * （docs/data/series.md §8「2 層: 分類ルール → 自動キー」）。
+ */
+const shelvesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/shelves',
+  validateSearch: (search: Record<string, unknown>): ShelvesPageSearch =>
+    parseShelvesSearch(search),
+  // `pages/shelves.tsx` の `<PageHeader title="シリーズ棚">` と同じ表記。
+  head: () => ({ meta: [{ title: pageTitle('シリーズ棚') }] }),
+  component: ShelvesPage,
 })
 
 const cmLogosRoute = createRoute({
@@ -370,6 +408,7 @@ export const routeTree = rootRoute.addChildren([
   programsRoute,
   searchRoute,
   rulesRoute,
+  shelvesRoute,
   cmLogosRoute,
   reservationsRoute,
   reservationDetailRoute,
