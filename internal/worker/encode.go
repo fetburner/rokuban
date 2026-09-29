@@ -1410,15 +1410,11 @@ func enqueueMissingEncodes(ctx context.Context, inserter JobInserter, pool *pgxp
 			}
 			return fmt.Errorf("loading chapter state for recording %d: %w", recordingID, err)
 		}
-		if !owned {
-			currentKeep = nil
-		} else {
-			// owned=true と keep が空（全部カット）を区別する必要があるので、
-			// 空でも「確認済み」の印として非 nil の空スライスにする。
+		// 未確認（owned=false）も全区間カット（keep 空）も投入しない。後者は
+		// loadCutContext が "has no keep ranges" で必ず失敗するので、投入すると
+		// reconcile のたびに失敗ジョブが積まれる。
+		if owned {
 			currentKeep = keep
-			if currentKeep == nil {
-				currentKeep = []chapters.Range{}
-			}
 		}
 	}
 
@@ -1432,8 +1428,8 @@ func enqueueMissingEncodes(ctx context.Context, inserter JobInserter, pool *pgxp
 			}
 		}
 		_, isCut := cutProfiles[name]
-		if isCut && currentKeep == nil {
-			continue // 未確認（所有の行が無い）。ユーザーが確認するまで投入しない
+		if isCut && len(currentKeep) == 0 {
+			continue // 未確認 or 全区間カット。確認するまで / keep が出来るまで投入しない
 		}
 		assetID, err := q.GetActiveEncodedMediaAssetID(ctx, sqlcgen.GetActiveEncodedMediaAssetIDParams{
 			RecordingID: recordingID,

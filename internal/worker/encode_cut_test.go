@@ -638,3 +638,67 @@ func TestIngestWorker_ClampsCutOnlyProfileSelection(t *testing.T) {
 		}
 	}
 }
+
+// TestEnqueueCut_AllCutRecordingEnqueuesNothing は「全区間カットの録画は、確認済みでも
+// cut のジョブを投入しない」を、ヒント経路（EnqueueMissingEncodes）と定期 reconcile の
+// 両方で固定する。投入しても loadCutContext が "has no keep ranges" で必ず失敗し、
+// reconcile のたびに失敗ジョブが積まれる。一部だけ切る録画（partial）は両経路で投入される。
+func TestEnqueueCut_AllCutRecordingEnqueuesNothing(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	seed := func(rel string, spans ...chapters.Span) int64 {
+		id := seedRecordingWithOriginal(t, pool, mediaDir, rel, []string{"cut"}, []byte("x"))
+		if _, err := pool.Exec(ctx, `UPDATE recordings SET program_duration_ms = 2000 WHERE id = $1`, id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range spans {
+			if _, err := pool.Exec(ctx,
+				`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range($2, $3), $4, true)`,
+				id, s.StartMs, s.EndMs, "CM"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return id
+	}
+	allCut := seed("cut/allcut.m2ts", chapters.Span{StartMs: 0, EndMs: 2000})
+	partial := seed("cut/partial.m2ts", chapters.Span{StartMs: 500, EndMs: 1000})
+
+	client, err := NewClient(pool, NewWorkers(&Deps{Pool: pool}), ClientConfig{})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	cut := map[string]struct{}{"cut": {}}
+
+	// ヒント経路。
+	for _, id := range []int64{allCut, partial} {
+		if err := EnqueueMissingEncodes(ctx, client, pool, id, cut); err != nil {
+			t.Fatalf("EnqueueMissingEncodes(%d): %v", id, err)
+		}
+	}
+	if got := pendingEncodeProfiles(t, pool, allCut); len(got) != 0 {
+		t.Errorf("hint path: all-cut recording pending = %v, want none", got)
+	}
+	if got := pendingEncodeProfiles(t, pool, partial); !slices.Equal(got, []string{"cut"}) {
+		t.Errorf("hint path: partial recording pending = %v, want [cut]", got)
+	}
+
+	// 定期 reconcile 経路（ジョブを消してから回す）。
+	if _, err := pool.Exec(ctx, `DELETE FROM river_job WHERE kind = 'encode'`); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}}
+	runEncodeReconcilePass(t, pool, &EncodeReconcileWorker{Pool: pool, Profiles: cfg})
+	if got := pendingEncodeProfiles(t, pool, allCut); len(got) != 0 {
+		t.Errorf("reconcile path: all-cut recording pending = %v, want none", got)
+	}
+	if got := pendingEncodeProfiles(t, pool, partial); !slices.Equal(got, []string{"cut"}) {
+		t.Errorf("reconcile path: partial recording pending = %v, want [cut]", got)
+	}
+}

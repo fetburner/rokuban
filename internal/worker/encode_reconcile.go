@@ -215,9 +215,24 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.Enco
 	// この録画数に適用され、window の再開位置も録画単位で進む。
 	candidates := make([]int64, 0, len(missing))
 	failed := 0
+	cutSet := w.Profiles.CutProfileSet()
 	for _, row := range missing {
 		if len(candidates) == 0 || candidates[len(candidates)-1] != row.RecordingID {
 			candidates = append(candidates, row.RecordingID)
+		}
+		// 全区間カットの cut は投入しても loadCutContext が必ず失敗する。SQL は
+		// keep の導出（Derive）を持てないので候補は広めに出し、ここで落とす。
+		// 窓の回転は candidates（落とす前）で数えるので進み続ける。
+		if _, isCut := cutSet[row.Profile]; isCut {
+			keep, _, err := currentCutKeep(ctx, q, row.RecordingID)
+			if err != nil {
+				failed++
+				slog.Error("encode_reconcile: loading cut keep", "recording_id", row.RecordingID, "err", err)
+				continue
+			}
+			if len(keep) == 0 {
+				continue
+			}
 		}
 		if _, err := client.Insert(ctx, jobs.EncodeJobArgs{
 			RecordingID: row.RecordingID,
