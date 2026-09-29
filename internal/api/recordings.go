@@ -18,8 +18,8 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 )
 
-// recordingListFields は ListRecordings / ListTrashRecordings が共有する射影。
-// sqlc はクエリごとに別 struct を生成するので、ここで共通化してマッピングする。
+// recordingListFields は録画一覧と詳細取得が共有する射影。
+// 一覧・詳細のクエリ結果をここで共通化してマッピングする。
 type recordingListFields struct {
 	ID                int64
 	Site              string
