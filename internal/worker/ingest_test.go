@@ -795,10 +795,14 @@ func TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry(t *testing.T)
 			recordingID := insertTestRecording(t, pool)
 			insertTestRecordSync(t, pool, recordingID, tt.recordID)
 
+			before := ingestJobResults()
 			err := w.Work(context.Background(), &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{ID: tt.jobID}, Args: IngestJobArgs{Site: "default", RecordID: tt.recordID}})
 			if err == nil {
 				t.Fatal("Work() = nil, want a river.JobCancelError")
 			}
+			// 取り消された録画は canceled にだけ乗る。failure に混ぜると、利用者が
+			// 止めた録画が失敗率に積まれて本物の失敗が埋もれる。
+			assertIngestResultDeltas(t, before, map[string]float64{"canceled": 1}, tt.name)
 			// river 自身の sentinel に対して判定する（JobCancelError.Is は型だけを見る）。
 			var cancelErr *river.JobCancelError
 			if !errors.As(err, &cancelErr) {
@@ -1222,10 +1226,14 @@ func TestIngestWorker_SizeMismatch(t *testing.T) {
 		Args:   IngestJobArgs{Site: "default", RecordID: "rec-mismatch"},
 	}
 
+	// 即座に失敗で終わる経路（再試行の予算を使い切るまで 500 を返す経路は約 6 秒
+	// かかるので使わない）で、本当の失敗が failure として数えられることを固定する。
+	before := ingestJobResults()
 	err := w.Work(context.Background(), job)
 	if err == nil {
 		t.Fatal("expected error for size mismatch, got nil")
 	}
+	assertIngestResultDeltas(t, before, map[string]float64{"failure": 1}, "size mismatch")
 	if !strings.Contains(err.Error(), "size mismatch") {
 		t.Errorf("expected 'size mismatch' error, got: %v", err)
 	}
