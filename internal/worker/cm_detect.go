@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
+	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -26,8 +27,6 @@ import (
 )
 
 const (
-	cmFPSNumerator     int64 = 30000
-	cmFPSDenominator   int64 = 1001
 	cmDetectMaxTries         = 3
 	cmDetectStaleAfter       = time.Minute
 	cmDetectRowLimit   int32 = 1000
@@ -324,7 +323,7 @@ func cmDetectionTimeout(durationMs int64) time.Duration {
 // cmRangesFromCutAVS は obs_cut.avs の Trim() を本編区間とみなし、その補集合を CM として返す。
 // durationMs は原本の実尺。
 func cmRangesFromCutAVS(avs string, durationMs int64) ([]frameRange, error) {
-	total := millisToFrame(durationMs)
+	total := chapters.MsToFrame(durationMs)
 	if total <= 0 {
 		return nil, fmt.Errorf("video duration must be positive")
 	}
@@ -396,28 +395,14 @@ func mergeFrameRanges(ranges []frameRange) []frameRange {
 	return merged
 }
 
-func millisToFrame(ms int64) int64 {
-	if ms <= 0 {
-		return 0
-	}
-	return (ms*(cmFPSNumerator/1000) + (cmFPSDenominator / 2)) / cmFPSDenominator
-}
-
-func frameToMillis(frame int64) int64 {
-	if frame <= 0 {
-		return 0
-	}
-	return (frame*cmFPSDenominator + (cmFPSNumerator / 2000)) / (cmFPSNumerator / 1000)
-}
-
 func encodeInt8Multirange(ranges []frameRange, durationMs int64) string {
 	if len(ranges) == 0 {
 		return "{}"
 	}
 	parts := make([]string, 0, len(ranges))
 	for _, r := range ranges {
-		start := min(frameToMillis(r.start), durationMs)
-		end := min(frameToMillis(r.end), durationMs)
+		start := min(chapters.FrameToMs(r.start), durationMs)
+		end := min(chapters.FrameToMs(r.end), durationMs)
 		if end <= start {
 			continue
 		}

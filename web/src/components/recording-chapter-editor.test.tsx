@@ -15,6 +15,8 @@ function renderEditor(
   const view = render(
     <RecordingChapterEditor
       spans={spans}
+      version="v1"
+      detectionPending={false}
       source="auto"
       currentSeconds={0}
       playAround={vi.fn()}
@@ -59,6 +61,8 @@ describe('RecordingChapterEditor', () => {
     const onSave = vi.fn()
     const props = {
       spans: [] as ChapterSpan[],
+      version: 'v1',
+      detectionPending: false,
       source: 'auto' as const,
       playAround: vi.fn(),
       onSave,
@@ -83,6 +87,8 @@ describe('RecordingChapterEditor', () => {
     rerender(
       <RecordingChapterEditor
         spans={next}
+        version="v2"
+        detectionPending={false}
         source="user"
         currentSeconds={0}
         playAround={vi.fn()}
@@ -94,6 +100,51 @@ describe('RecordingChapterEditor', () => {
     // 前の録画の境界が残らない（残ると、保存で前の値を送ってしまう）。
     expect(container.textContent).toContain('0:00:50')
     expect(container.textContent).not.toContain('0:00:10')
+  })
+
+  it('下書きがあるときサーバーの値が変わっても黙って捨てず、知らせて保存を止める', () => {
+    const { rerender, container, getByRole, getByTestId, queryByTestId, onSave } = renderEditor([cm])
+    // 下書きを作る（境界を 1 秒戻す）。
+    fireEvent.click(
+      container.querySelectorAll('[data-testid="chapter-boundary"]')[0].querySelector('[aria-label$="を -1秒"]')!,
+    )
+    const next: ChapterSpan[] = [{ startMs: 50_000, endMs: 60_000, label: 'ED', cut: true }]
+    rerender(
+      <RecordingChapterEditor
+        spans={next}
+        version="v2"
+        detectionPending={false}
+        source="auto"
+        currentSeconds={0}
+        playAround={vi.fn()}
+        onSave={onSave}
+        onReset={vi.fn()}
+        pending={false}
+      />,
+    )
+    expect(getByTestId('chapter-stale').textContent).toContain('サーバー側の内容が変わりました')
+    // 下書き（9 秒）が残っている。
+    expect(container.textContent).toContain('0:00:09')
+    expect(getByRole('button', { name: '保存' })).toHaveProperty('disabled', true)
+    // 破棄するとサーバーの新しい内容になる。
+    fireEvent.click(getByRole('button', { name: '変更を破棄' }))
+    expect(queryByTestId('chapter-stale')).toBeNull()
+    expect(container.textContent).toContain('0:00:50')
+  })
+
+  it('保存には下書きの基にした版を渡す', () => {
+    const { container, getByRole, onSave } = renderEditor([cm])
+    fireEvent.click(
+      container.querySelectorAll('[data-testid="chapter-boundary"]')[0].querySelector('[aria-label$="を -1秒"]')!,
+    )
+    fireEvent.click(getByRole('button', { name: '保存' }))
+    expect(onSave.mock.calls[0][1]).toBe('v1')
+  })
+
+  it('検出中は編集 UI を出さず理由を表示する', () => {
+    const { getByTestId, queryByRole } = renderEditor([], { detectionPending: true })
+    expect(getByTestId('chapter-detecting')).toBeTruthy()
+    expect(queryByRole('button', { name: '保存' })).toBeNull()
   })
 
   it('「自動に戻す」は所有していないときは押せない', () => {

@@ -5,12 +5,13 @@
 // 前後再生は `<video>` の実再生と `currentTime` の推移でしか観測できない。
 // CLAUDE.md §テスト規律のとおり、実装より先にここで判定手段を作る。
 //
-// 見るのは 4 点:
+// 見るのは 5 点:
 //   ① 目盛りの位置が区間の割合と一致し、cut と ラベル付きが別の見た目で出る
 //   ② 通常の再生で cut 区間の先頭に差し掛かると、その終端へ飛ぶ
 //   ③ 手動のシークで区間の中に入ったときは飛ばない（cut / ラベル付きの両方）
 //   ④ 境界の「前後 3 秒」が境界の手前から始まり、境界を跨いでも飛ばされない
 //      （前後再生の間は自動スキップを止める）
+//   ⑤ 2 倍速でも前後 3 秒が境界の 3 秒後で止まる（実時間ではなく再生位置で止める）
 //
 // フィクスチャは ffmpeg で作る（再生位置の推移が判定に要る）。無い環境では
 // この判定だけを skip として終了する。
@@ -42,7 +43,7 @@ const ng = []
 //   [30, 40) 切る CM、[60, 70) 切らない OP（目盛りには出るが飛ばさない）
 const CM_SPAN = { startMs: 30_000, endMs: 40_000, label: 'CM', cut: true }
 const OP_SPAN = { startMs: 60_000, endMs: 70_000, label: 'OP', cut: false }
-const CHAPTERS = { source: 'auto', spans: [CM_SPAN, OP_SPAN] }
+const CHAPTERS = { source: 'auto', version: 'auto:detected:1', detectionPending: false, spans: [CM_SPAN, OP_SPAN] }
 
 const recording = {
   id: 1,
@@ -251,6 +252,32 @@ if (insideCut >= 39.5) {
 } else if (insideCut < 36) {
   ng.push(`③ シーク後に再生が進んでいない（位置 ${insideCut.toFixed(1)} 秒）--- 判定が空虚に通っている`)
 }
+// **再生したまま**（pause しない）区間の手前から中へシークしても追い出されない。
+// シークの処理順は seeking → timeupdate → seeked なので、seeked で直前位置を更新する
+// 実装だと、最初の timeupdate がシーク前の位置（25 秒付近）のまま「30 秒を跨いだ」と
+// 判定して 40 秒へ飛ばす。
+await video.evaluate((v) => {
+  v.muted = true
+  return v.play()
+})
+await video.evaluate((v) => {
+  v.currentTime = 25
+})
+await page.waitForTimeout(1500)
+const beforeLiveSeek = await video.evaluate((v) => v.currentTime)
+await video.evaluate((v) => {
+  v.currentTime = 35
+})
+await page.waitForTimeout(3000)
+const afterLiveSeek = await video.evaluate((v) => ({ t: v.currentTime, paused: v.paused }))
+await video.evaluate((v) => v.pause())
+if (beforeLiveSeek < 25 || beforeLiveSeek >= 30) {
+  ng.push(`③ 再生中シークの前提が崩れている（シーク前の位置 ${beforeLiveSeek.toFixed(1)} 秒。期待 25〜30 秒）`)
+} else if (afterLiveSeek.t >= 40) {
+  ng.push(`③ 再生したままのシークで cut 区間から追い出された（3 秒後の位置 ${afterLiveSeek.t.toFixed(1)} 秒。期待 40 秒未満）`)
+} else if (afterLiveSeek.t < 36 || afterLiveSeek.paused) {
+  ng.push(`③ 再生したままのシーク後に再生が進んでいない（位置 ${afterLiveSeek.t.toFixed(1)} 秒）--- 判定が空虚に通っている`)
+}
 // ラベル付き（cut でない）区間は、通常の再生で入っても飛ばない。
 await seek(58)
 const throughOp = await playFor(4000)
@@ -281,6 +308,26 @@ if (afterBoundary >= 35) {
   ng.push(`④ 前後 3 秒の再生中に境界で自動スキップが働いた（位置 ${afterBoundary.toFixed(2)} 秒）`)
 } else if (afterBoundary < 29) {
   ng.push(`④ 前後 3 秒の再生が進んでいない（位置 ${afterBoundary.toFixed(2)} 秒）--- 判定が空虚に通っている`)
+}
+
+log('\n=== ⑤ 前後 3 秒は再生速度に追従して境界の 3 秒後で止まる ===')
+// 2 倍速では境界の 3 秒後（33 秒）まで実時間 3 秒で届く。実時間 6 秒のタイマーで
+// 止める実装だと 4.5 秒後もまだ再生中で 36 秒付近まで進む。
+await video.evaluate((v) => {
+  v.playbackRate = 2
+})
+await seek(100)
+await firstBoundary.getByRole('button', { name: '前後3秒' }).click()
+await page.waitForTimeout(4500)
+const fast = await video.evaluate((v) => ({ t: v.currentTime, paused: v.paused }))
+await video.evaluate((v) => {
+  v.pause()
+  v.playbackRate = 1
+})
+if (!fast.paused || fast.t < 32 || fast.t > 34.5) {
+  ng.push(
+    `⑤ 2 倍速の前後 3 秒が境界の 3 秒後（33 秒）で止まっていない（位置 ${fast.t.toFixed(2)} 秒 paused=${fast.paused}）`,
+  )
 }
 
 await finish(ng, browser)

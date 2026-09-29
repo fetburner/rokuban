@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -28,11 +29,11 @@ func TestCMFrameTimeConversionsUse30000Over1001(t *testing.T) {
 		{name: "second frame", ms: 2002, frame: 60, wantMillis: 2002},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := millisToFrame(tt.ms); got != tt.frame {
-				t.Errorf("millisToFrame(%d) = %d, want %d", tt.ms, got, tt.frame)
+			if got := chapters.MsToFrame(tt.ms); got != tt.frame {
+				t.Errorf("chapters.MsToFrame(%d) = %d, want %d", tt.ms, got, tt.frame)
 			}
-			if got := frameToMillis(tt.frame); got != tt.wantMillis {
-				t.Errorf("frameToMillis(%d) = %d, want %d", tt.frame, got, tt.wantMillis)
+			if got := chapters.FrameToMs(tt.frame); got != tt.wantMillis {
+				t.Errorf("chapters.FrameToMs(%d) = %d, want %d", tt.frame, got, tt.wantMillis)
 			}
 		})
 	}

@@ -13,13 +13,17 @@ import {
 type RecordingChapterEditorProps = {
   /** サーバーが持っているタイムライン。ドラフトの初期値。 */
   spans: ChapterSpan[]
+  /** `spans` の版（GET が返す）。保存時にそのまま返し、下書きの基が変わっていないかをサーバーが確かめる。 */
+  version: string
+  /** 検出が終端に達していない。空の `spans` は「CM 無し」ではないので編集させない。 */
+  detectionPending: boolean
   /** どの層を編集しているか（表示だけに使う）。 */
   source: RecordingChaptersSource
   /** 再生位置（秒）。「現在位置を境界にする」と「ここから / ここまで」に使う。 */
   currentSeconds: number
   /** 境界の前後 3 秒を再生する。自動スキップを一時的に止めるのは呼び出し側の責務。 */
   playAround: (seconds: number) => void
-  onSave: (spans: ChapterSpan[]) => void
+  onSave: (spans: ChapterSpan[], version: string) => void
   onReset: () => void
   pending: boolean
 }
@@ -38,8 +42,25 @@ const nudgeLabel = (seconds: number) => (seconds > 0 ? `+${seconds}秒` : `${sec
  *
  * 境界は前後の区間で共有されうるので、同じ値の境界はまとめて 1 行に出す。
  */
-export function RecordingChapterEditor({
+export function RecordingChapterEditor(props: RecordingChapterEditorProps) {
+  // 検出中は編集 UI を出さない。検出中の空の層を基に下書きを作ると、検出が commit
+  // された後に「CM 無し」で引き取ってしまう（サーバーも版と 409 で拒否する）。
+  if (props.detectionPending) {
+    return (
+      <section className="flex flex-col gap-2 border-t border-border/60 pt-3" aria-label="チャプターの編集">
+        <h4 className="font-medium">チャプター</h4>
+        <p className="text-muted-foreground" data-testid="chapter-detecting">
+          CM を検出しています。終わるまでチャプターは編集できません
+        </p>
+      </section>
+    )
+  }
+  return <ChapterDraftEditor {...props} />
+}
+
+function ChapterDraftEditor({
   spans,
+  version,
   source,
   currentSeconds,
   playAround,
@@ -48,19 +69,28 @@ export function RecordingChapterEditor({
   pending,
 }: RecordingChapterEditorProps) {
   const [draft, setDraft] = useState<ChapterSpan[]>(spans)
-  // サーバーの値が変わったら（保存後の再取得など）ドラフトを追随させる。effect では
+  // 下書きの基にしたサーバーの値と版。サーバーの値が変わったら（保存後の再取得・
+  // 再検出・他タブの編集）、下書きが基と同じか、新しい値と同じ（自分の保存が
+  // 反映された）ときだけ追随する。**それ以外は黙って捨てず** stale として
+  // 知らせる（下書きは残し、保存は止める。保存は版で 409 になる）。effect では
   // なく**レンダー中の調整**にする（React の "storing information from previous
-  // renders" の形。effect だと古いドラフトが 1 レンダーぶん見える）。親が
-  // `unwrap(query.data)` の配列をそのまま渡すので、参照が変わるのは新しい
-  // データが来たときだけである。
-  const [sourceSpans, setSourceSpans] = useState(spans)
-  if (sourceSpans !== spans) {
-    setSourceSpans(spans)
+  // renders" の形）。親が `unwrap(query.data)` の配列をそのまま渡すので、参照が
+  // 変わるのは新しいデータが来たときだけである。
+  const [base, setBase] = useState({ spans, version })
+  if (base.spans !== spans || base.version !== version) {
+    if (sameSpans(draft, base.spans) || sameSpans(draft, spans)) {
+      setBase({ spans, version })
+      setDraft(spans)
+    }
+  }
+  const stale = base.spans !== spans || base.version !== version
+  const discardDraft = () => {
+    setBase({ spans, version })
     setDraft(spans)
   }
   const [pendingStartMs, setPendingStartMs] = useState<number | null>(null)
   const boundaries = useMemo(() => chapterBoundaries(draft), [draft])
-  const dirty = useMemo(() => !sameSpans(draft, spans), [draft, spans])
+  const dirty = useMemo(() => !sameSpans(draft, base.spans), [draft, base.spans])
 
   const startNewSpan = () => {
     setPendingStartMs(Math.round(currentSeconds * 1000))
@@ -86,8 +116,8 @@ export function RecordingChapterEditor({
             type="button"
             size="sm"
             variant="outline"
-            disabled={pending || !dirty}
-            onClick={() => onSave(draft)}
+            disabled={pending || !dirty || stale}
+            onClick={() => onSave(draft, base.version)}
           >
             保存
           </Button>
@@ -96,7 +126,7 @@ export function RecordingChapterEditor({
             size="sm"
             variant="ghost"
             disabled={!dirty}
-            onClick={() => setDraft(spans)}
+            onClick={discardDraft}
           >
             変更を破棄
           </Button>
@@ -117,6 +147,11 @@ export function RecordingChapterEditor({
         {source === 'user' ? '確認済み（手で直した内容を使っています）' : '自動検出（未確認）'}
         {dirty && ' · 未保存の変更があります'}
       </p>
+      {stale && (
+        <p className="text-destructive" role="alert" data-testid="chapter-stale">
+          サーバー側の内容が変わりました。下書きを破棄して最新の内容から編集し直してください
+        </p>
+      )}
 
       {boundaries.length === 0 ? (
         <p className="text-muted-foreground">チャプターはありません</p>

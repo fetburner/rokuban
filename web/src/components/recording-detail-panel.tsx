@@ -205,16 +205,20 @@ export function RecordingDetail({
     void queryClient.invalidateQueries({ queryKey: getGetRecordingChaptersQueryKey(recording.id) })
     void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
   }
-  const saveChapters = (spans: ChapterSpan[]) => {
+  const saveChapters = (spans: ChapterSpan[], version: string) => {
     putChapters.mutate(
-      { id: recording.id, data: { spans } },
+      { id: recording.id, data: { version, spans } },
       {
         onSuccess: () => {
           invalidateChapters()
           toast({ message: 'チャプターを保存しました' })
         },
-        onError: (error) =>
-          toast({ message: apiErrorMessage(error) ?? 'チャプターの保存に失敗しました', kind: 'error' }),
+        onError: (error) => {
+          // 409（版不一致）はサーバー側の層が変わった合図。再取得して、エディタに
+          // 「サーバー側の内容が変わりました」を出させる。
+          invalidateChapters()
+          toast({ message: apiErrorMessage(error) ?? 'チャプターの保存に失敗しました', kind: 'error' })
+        },
       },
     )
   }
@@ -395,6 +399,8 @@ export function RecordingDetail({
           originalSizeBytes={recording.sizeBytes}
           chapters={chapters?.spans}
           chapterSource={chapters?.source}
+          chapterVersion={chapters?.version}
+          chapterDetectionPending={chapters?.detectionPending}
           onSaveChapters={canEditChapters ? saveChapters : undefined}
           onResetChapters={canEditChapters ? resetChapters : undefined}
           chapterSavePending={putChapters.isPending || deleteChapters.isPending}

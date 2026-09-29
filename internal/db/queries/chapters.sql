@@ -22,6 +22,11 @@ FOR UPDATE;
 SELECT COALESCE(p.cm_detect, false)::boolean AS cm_detect,
        r.program_duration_ms,
        EXISTS (SELECT 1 FROM recording_cm_detections d WHERE d.recording_id = r.id) AS detected,
+       -- 版の材料。行が無ければ 0（マイクロ秒の epoch）。
+       COALESCE((SELECT (extract(epoch FROM d.detected_at) * 1000000)::bigint
+                 FROM recording_cm_detections d WHERE d.recording_id = r.id), 0)::bigint AS detected_at_us,
+       COALESCE((SELECT (extract(epoch FROM o.adopted_at) * 1000000)::bigint
+                 FROM recording_chapter_ownership o WHERE o.recording_id = r.id), 0)::bigint AS adopted_at_us,
        EXISTS (
            SELECT 1 FROM recording_cm_attempts ca
            WHERE ca.recording_id = r.id AND ca.state = 'failed'

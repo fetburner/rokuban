@@ -61,11 +61,15 @@ type RecordingPlayerProps = {
   chapters?: ChapterSpan[]
   /** どの層を読んだか。編集 UI の「確認済み / 未確認」表示に使う。 */
   chapterSource?: RecordingChaptersSource
+  /** `chapters` の版。保存時にそのまま返す。 */
+  chapterVersion?: string
+  /** 検出中。編集 UI を出さずに理由を表示する。 */
+  chapterDetectionPending?: boolean
   /**
    * タイムライン全体の保存。undefined なら編集 UI を出さない（エンコードが無い
    * 録画・ごみ箱など。呼び出し側が判断して渡す）。
    */
-  onSaveChapters?: (spans: ChapterSpan[]) => void
+  onSaveChapters?: (spans: ChapterSpan[], version: string) => void
   /** 所有を捨てて自動層へ戻す。 */
   onResetChapters?: () => void
   /** 保存 / 取り消しの実行中。 */
@@ -85,6 +89,8 @@ export function RecordingPlayer({
   originalSizeBytes,
   chapters,
   chapterSource = 'auto',
+  chapterVersion,
+  chapterDetectionPending = false,
   onSaveChapters,
   onResetChapters,
   chapterSavePending = false,
@@ -142,6 +148,9 @@ export function RecordingPlayer({
   // 飛ばすと「その境界を見る」操作そのものが成立しない。
   const skipSuppressedRef = useRef(false)
   const playAroundTimerRef = useRef<number | undefined>(undefined)
+  // 前後再生の停止位置（秒）。null は前後再生中でない。停止は再生位置で判定する
+  // （実時間のタイマーだと再生速度が 1 倍でないとき止まる位置がずれる）。
+  const playAroundStopRef = useRef<number | null>(null)
   // `chapters ?? []` を毎レンダー評価すると、未取得の間だけ配列の参照が毎回変わる。
   // 編集 UI は「参照が変わった = サーバーの値が変わった」と見なしてドラフトを
   // 追随させるので、参照はここで安定させておく。
@@ -158,6 +167,7 @@ export function RecordingPlayer({
     lastSavedSecond.current = null
     previousSecondsRef.current = 0
     skipSuppressedRef.current = false
+    playAroundStopRef.current = null
   }, [recordingId, selectedProfile])
 
   // 境界の前後再生のタイマーを残さない（再生中に別の録画へ移っても止まる）。
@@ -304,15 +314,21 @@ export function RecordingPlayer({
     const stop = seconds + PLAY_AROUND_SECONDS
     window.clearTimeout(playAroundTimerRef.current)
     skipSuppressedRef.current = true
+    playAroundStopRef.current = stop
     jumpTo(start)
     void video.play()
+    // 本来の停止は timeupdate の `currentTime >= stop`。これは再生が進まない場合
+    // （バッファ待ちなど）に抑制が残り続けないための保険で、再生速度ぶん余裕を持たせる。
     playAroundTimerRef.current = window.setTimeout(
-      () => {
-        skipSuppressedRef.current = false
-        video.pause()
-      },
-      (stop - start) * 1000,
+      () => finishPlayAround(video),
+      ((stop - start) * 1000) / Math.max(video.playbackRate, 0.1) + 2000,
     )
+  }
+  const finishPlayAround = (video: HTMLVideoElement) => {
+    window.clearTimeout(playAroundTimerRef.current)
+    playAroundStopRef.current = null
+    skipSuppressedRef.current = false
+    video.pause()
   }
   // スクラブ帯の上のポインタ位置 → 再生位置（秒）。duration 未確定なら null。
   // **プレビューはネイティブ controls のシークバーに重ねない。** ネイティブの
@@ -422,6 +438,13 @@ export function RecordingPlayer({
             e.currentTarget.currentTime = pos
           }
         }}
+        onSeeking={(e) => {
+          // シークの処理順は seeking → timeupdate → seeked（HTML spec）なので、
+          // seeked で直前位置を更新しても最初の timeupdate には間に合わない。再生中に
+          // 区間の手前から中へシークすると、シーク前の位置が直前位置のまま残って
+          // 「先頭を跨いだ」と誤認し追い出す。seeking の時点で currentTime はシーク先。
+          previousSecondsRef.current = e.currentTarget.currentTime
+        }}
         onSeeked={(e) => {
           // 手動シーク（ネイティブ controls のシークバー・キー操作）でも直前位置を
           // 更新する。区間の中へシークした場合に「先頭を跨いだ」と誤認して
@@ -434,6 +457,8 @@ export function RecordingPlayer({
           updatePlayedFraction(v)
           const previous = previousSecondsRef.current
           previousSecondsRef.current = v.currentTime
+          const stopAt = playAroundStopRef.current
+          if (stopAt !== null && v.currentTime >= stopAt) finishPlayAround(v)
           // 自動スキップ。**通常の再生で区間の先頭に差し掛かったときだけ**飛ばす。
           if (skipEnabled && !skipSuppressedRef.current && !v.paused) {
             const target = skipTarget(chapterSpans, previous, v.currentTime, v.duration)
@@ -585,10 +610,12 @@ export function RecordingPlayer({
         </div>
       )}
 
-      {onSaveChapters && onResetChapters && (
+      {onSaveChapters && onResetChapters && chapterVersion !== undefined && (
         <div className="max-w-3xl">
           <RecordingChapterEditor
             spans={chapterSpans}
+            version={chapterVersion}
+            detectionPending={chapterDetectionPending}
             source={chapterSource}
             currentSeconds={currentSeconds}
             playAround={playAround}

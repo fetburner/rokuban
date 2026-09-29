@@ -15,6 +15,34 @@ import (
 // chapterDetectionPendingMessage は検出が終端に達していないときの 409 本文。
 const chapterDetectionPendingMessage = "CM detection has not finished for this recording yet; retry after it reaches a terminal state"
 
+// chapterStaleVersionMessage は下書きの基になった層が変わっているときの 409 本文。
+// 検出中の 409 と区別できるよう文言を分ける。
+const chapterStaleVersionMessage = "the chapter layer changed since it was fetched (re-detected, adopted, or reset); reload and edit again"
+
+// chapterVersion は GET が返し PUT が突き合わせる版を導出する（列は持たない）。
+//
+// 所有済みなら所有の開始時刻、所有前なら検出の終端（結果 / 失敗 / まだ）と検出時刻。
+// 再検出・引き取り・自動に戻す のどれでも値が変わる。
+func chapterVersion(s sqlcgen.GetRecordingChapterStateRow) string {
+	switch {
+	case s.Owned:
+		return fmt.Sprintf("user:%d", s.AdoptedAtUs)
+	case s.Detected:
+		return fmt.Sprintf("auto:detected:%d", s.DetectedAtUs)
+	case s.Failed:
+		return "auto:failed"
+	default:
+		return "auto:none"
+	}
+}
+
+// chapterDetectionPending は所有前で検出が終端に達していないかを返す。
+// **デプロイ側で CM 検出が無効なら偽** --- その構成では検出ジョブが積まれず、
+// 終端に永久に達しないので、編集を封じると機能ごと使えなくなる。
+func (h *Server) chapterDetectionPending(s sqlcgen.GetRecordingChapterStateRow) bool {
+	return !s.Owned && h.capabilities.CmDetect && s.CmDetect && !s.Detected && !s.Failed
+}
+
 // GetRecordingChapters は録画の有効なチャプターを返す。
 //
 // 返すのは CM とユーザーが置いた区間だけで、隙間の本編は返さない。DB が持つ長さは
@@ -47,8 +75,10 @@ func (h *Server) GetRecordingChapters(ctx context.Context, req GetRecordingChapt
 		// 保存時に量子化済みだが、GET の契約（境界はフレーム境界）は DB の状態に
 		// 依存させない。直接 INSERT された行でも同じ形で返す。
 		return GetRecordingChapters200JSONResponse{
-			Source: User,
-			Spans:  chapterSpansToAPI(chapters.Quantized(spans)),
+			Source:           User,
+			Version:          chapterVersion(state),
+			DetectionPending: false,
+			Spans:            chapterSpansToAPI(chapters.Quantized(spans)),
 		}, nil
 	}
 
@@ -61,8 +91,10 @@ func (h *Server) GetRecordingChapters(ctx context.Context, req GetRecordingChapt
 		return nil, fmt.Errorf("decoding CM ranges for recording %d: %w", req.Id, err)
 	}
 	return GetRecordingChapters200JSONResponse{
-		Source: Auto,
-		Spans:  chapterSpansToAPI(chapters.AutoSpans(ranges, state.ProgramDurationMs)),
+		Source:           Auto,
+		Version:          chapterVersion(state),
+		DetectionPending: h.chapterDetectionPending(state),
+		Spans:            chapterSpansToAPI(chapters.AutoSpans(ranges, state.ProgramDurationMs)),
 	}, nil
 }
 
@@ -105,15 +137,23 @@ func (h *Server) PutRecordingChapterEdits(ctx context.Context, req PutRecordingC
 	if lock.IsPurged {
 		return PutRecordingChapterEdits404JSONResponse{Error: "recording not found"}, nil
 	}
+	if lock.IsTrashed {
+		return PutRecordingChapterEdits404JSONResponse{Error: "recording is in the trash"}, nil
+	}
 
 	state, err := q.GetRecordingChapterState(ctx, req.Id)
 	if err != nil {
 		return nil, fmt.Errorf("loading chapter state for recording %d: %w", req.Id, err)
 	}
+	// 下書きの基になった層の版。クライアントは GET の結果から下書きを作るので、
+	// GET と PUT の間に層が変わっていれば（検出 commit・再検出・引き取り・自動に
+	// 戻す）、行ロックでは防げない。所有済みでも比べる。
+	if req.Body.Version != chapterVersion(state) {
+		return PutRecordingChapterEdits409JSONResponse{Error: chapterStaleVersionMessage}, nil
+	}
 	// 検出中（cm_detect が真で、結果行も終端の失敗行も無い）は引き取らせない。
-	// **デプロイ側で CM 検出が無効なら 409 にしない** --- その構成では検出ジョブが
-	// 積まれず、終端に永久に達しないので、編集を封じると機能ごと使えなくなる。
-	if h.capabilities.CmDetect && state.CmDetect && !state.Detected && !state.Failed {
+	// 所有済みなら自動層を読まないので検出状態は無関係（再検出中でも編集できる）。
+	if h.chapterDetectionPending(state) {
 		return PutRecordingChapterEdits409JSONResponse{Error: chapterDetectionPendingMessage}, nil
 	}
 
@@ -165,6 +205,9 @@ func (h *Server) DeleteRecordingChapterEdits(ctx context.Context, req DeleteReco
 	}
 	if lock.IsPurged {
 		return DeleteRecordingChapterEdits404JSONResponse{Error: "recording not found"}, nil
+	}
+	if lock.IsTrashed {
+		return DeleteRecordingChapterEdits404JSONResponse{Error: "recording is in the trash"}, nil
 	}
 	if err := q.DeleteRecordingChapterOwnership(ctx, req.Id); err != nil {
 		return nil, fmt.Errorf("resetting chapters for recording %d: %w", req.Id, err)

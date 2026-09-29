@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,10 +46,21 @@ func doChapters(method, url string, body any) (*http.Response, error) {
 	return http.DefaultClient.Do(req)
 }
 
-// putChapters はタイムライン全体を PUT する。
+// editsURL は GET 用の URL から PUT / DELETE 用（chapter-edits）の URL を作る。
+func editsURL(url string) string {
+	return strings.TrimSuffix(url, "/chapters") + "/chapter-edits"
+}
+
+// putChapters はクライアントと同じく GET で版を取ってからタイムライン全体を PUT する。
 func putChapters(t *testing.T, url string, spans []ChapterSpan) *http.Response {
 	t.Helper()
-	resp, err := doChapters(http.MethodPut, url, ChapterEditsInput{Spans: spans})
+	return putChaptersWithVersion(t, url, getChapters(t, url).Version, spans)
+}
+
+// putChaptersWithVersion は版を指定して PUT する（古い版の再現に使う）。
+func putChaptersWithVersion(t *testing.T, url, version string, spans []ChapterSpan) *http.Response {
+	t.Helper()
+	resp, err := doChapters(http.MethodPut, editsURL(url), ChapterEditsInput{Version: version, Spans: spans})
 	if err != nil {
 		t.Fatalf("PUT %s: %v", url, err)
 	}
@@ -245,6 +257,9 @@ func TestPutRecordingChapterEdits_WaitsForDetectionResultTransaction(t *testing.
 		t.Fatalf("writing CM result: %v", err)
 	}
 
+	// クライアントは検出中（結果 tx が commit される前）の版を持っている。
+	pendingVersion := getChapters(t, chaptersURL(srv.URL, id)).Version
+
 	started := make(chan struct{})
 	done := make(chan struct {
 		status int
@@ -252,8 +267,9 @@ func TestPutRecordingChapterEdits_WaitsForDetectionResultTransaction(t *testing.
 	}, 1)
 	go func() {
 		close(started)
-		resp, err := doChapters(http.MethodPut, chaptersURL(srv.URL, id), ChapterEditsInput{
-			Spans: []ChapterSpan{{StartMs: 1001, EndMs: 2002, Label: strPtr("CM"), Cut: true}},
+		resp, err := doChapters(http.MethodPut, editsURL(chaptersURL(srv.URL, id)), ChapterEditsInput{
+			Version: pendingVersion,
+			Spans:   []ChapterSpan{{StartMs: 1001, EndMs: 2002, Label: strPtr("CM"), Cut: true}},
 		})
 		if err != nil {
 			done <- struct {
@@ -285,17 +301,128 @@ func TestPutRecordingChapterEdits_WaitsForDetectionResultTransaction(t *testing.
 		if got.err != nil {
 			t.Fatalf("PUT: %v", got.err)
 		}
-		if got.status != http.StatusNoContent {
-			t.Fatalf("PUT status after the detection commit = %d, want 204", got.status)
+		// 待った後は commit された結果を見る --- 検出中の版のままなので版不一致の 409。
+		if got.status != http.StatusConflict {
+			t.Fatalf("PUT status after the detection commit = %d, want 409 (stale version)", got.status)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("PUT did not return after the detection result committed")
 	}
 
-	// 引き取ったのは空の自動層ではない --- クライアントが送った区間がそのまま残る。
+	// 空の自動層で引き取られていない。検出結果がそのまま自動層として見える。
 	got := getChapters(t, chaptersURL(srv.URL, id))
-	if got.Source != User || len(got.Spans) != 1 || got.Spans[0].StartMs != 1001 {
-		t.Fatalf("chapters = %+v, want the user spans", got)
+	if got.Source != Auto || got.DetectionPending || len(got.Spans) != 1 || got.Spans[0].StartMs != 1001 {
+		t.Fatalf("chapters = %+v, want the detected automatic layer", got)
+	}
+}
+
+// TestPutRecordingChapterEdits_RejectsVersionFromBeforeDetectionCommit は、検出中に
+// GET した空の層を基にした下書きが、検出 commit 後には引き取れないことを確かめる。
+// 版の比較を外すと、検出が commit された後の PUT が 204 になり、検出された CM を
+// 空の層で消す（このテストが落ちる形）。
+func TestPutRecordingChapterEdits_RejectsVersionFromBeforeDetectionCommit(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMDetectEnabled: true}))
+	defer srv.Close()
+
+	id := seedRecording(t, pool, "古い版", time.Now().Truncate(time.Second), "finished", 990)
+	enableCMDetect(t, pool, id)
+	url := chaptersURL(srv.URL, id)
+
+	pending := getChapters(t, url)
+	if !pending.DetectionPending || len(pending.Spans) != 0 {
+		t.Fatalf("GET while detecting = %+v, want detectionPending with no spans", pending)
+	}
+	draft := []ChapterSpan{{StartMs: 0, EndMs: 1001, Label: strPtr("OP"), Cut: false}}
+	if resp := putChaptersWithVersion(t, url, pending.Version, draft); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("PUT while detecting status = %d, want 409", resp.StatusCode)
+	}
+
+	saveCMDetection(t, pool, id, "{[1000,2000)}")
+
+	resp := putChaptersWithVersion(t, url, pending.Version, draft)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("PUT with the pre-detection version status = %d, want 409", resp.StatusCode)
+	}
+	var body ErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decoding 409 body: %v", err)
+	}
+	if body.Error != chapterStaleVersionMessage {
+		t.Fatalf("409 message = %q, want the stale-version message", body.Error)
+	}
+	if got := getChapters(t, url); got.Source != Auto || len(got.Spans) != 1 {
+		t.Fatalf("chapters = %+v, want the detected automatic layer untouched", got)
+	}
+
+	// 再取得した版なら通る。
+	if resp := putChapters(t, url, draft); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT with the fresh version status = %d, want 204", resp.StatusCode)
+	}
+}
+
+// TestPutRecordingChapterEdits_OwnedRecordingIgnoresRedetection は、所有後は再検出中
+// （検出結果が消えて cm_detect が真の状態）でも PUT が通ることを確かめる。所有済みは
+// 自動層を読まないので検出状態は無関係。`!Owned` を条件から外すと 409 になる。
+// ただし版の比較は所有済みでも効く。
+func TestPutRecordingChapterEdits_OwnedRecordingIgnoresRedetection(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMDetectEnabled: true}))
+	defer srv.Close()
+
+	id := seedRecording(t, pool, "再検出中の所有", time.Now().Truncate(time.Second), "finished", 991)
+	enableCMDetect(t, pool, id)
+	saveCMDetection(t, pool, id, "{[1000,2000)}")
+	url := chaptersURL(srv.URL, id)
+
+	if resp := putChapters(t, url, []ChapterSpan{{StartMs: 5005, EndMs: 6006, Cut: true}}); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("first PUT status = %d, want 204", resp.StatusCode)
+	}
+	// 再検出の開始 = 結果行が消えて検出が未終端に戻る。
+	if _, err := pool.Exec(context.Background(), `DELETE FROM recording_cm_detections WHERE recording_id = $1`, id); err != nil {
+		t.Fatalf("clearing detection: %v", err)
+	}
+	got := getChapters(t, url)
+	if got.Source != User || got.DetectionPending {
+		t.Fatalf("GET = %+v, want source=user and no pending", got)
+	}
+	if resp := putChapters(t, url, []ChapterSpan{{StartMs: 7007, EndMs: 8008, Cut: true}}); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT on owned recording during re-detection status = %d, want 204", resp.StatusCode)
+	}
+
+	// 自動に戻して再取得するまで、古い版では通らない（版比較は所有済みでも効く）。
+	stale := got.Version
+	if resp, err := doChapters(http.MethodDelete, editsURL(url), nil); err != nil || resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE: err=%v", err)
+	}
+	if resp := putChaptersWithVersion(t, url, stale, []ChapterSpan{{StartMs: 1001, EndMs: 2002, Cut: true}}); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("PUT with a version from before the reset status = %d, want 409", resp.StatusCode)
+	}
+}
+
+// TestChapterEdits_RejectTrashedRecording はごみ箱の録画が編集できないことを確かめる。
+func TestChapterEdits_RejectTrashedRecording(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	defer srv.Close()
+
+	id := seedRecording(t, pool, "ごみ箱", time.Now().Truncate(time.Second), "finished", 992)
+	url := chaptersURL(srv.URL, id)
+	version := getChapters(t, url).Version
+	if _, err := pool.Exec(context.Background(), `UPDATE recordings SET deleted_at = now() WHERE id = $1`, id); err != nil {
+		t.Fatalf("trashing: %v", err)
+	}
+
+	if resp := putChaptersWithVersion(t, url, version, []ChapterSpan{{StartMs: 0, EndMs: 1001, Cut: true}}); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("PUT on trashed recording status = %d, want 404", resp.StatusCode)
+	}
+	del, err := doChapters(http.MethodDelete, editsURL(url), nil)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	defer func() { _ = del.Body.Close() }()
+	if del.StatusCode != http.StatusNotFound {
+		t.Fatalf("DELETE on trashed recording status = %d, want 404", del.StatusCode)
 	}
 }
 
@@ -313,7 +440,7 @@ func TestDeleteRecordingChapterEdits_ReturnsToAutoLayer(t *testing.T) {
 		t.Fatalf("PUT status = %d, want 204", resp.StatusCode)
 	}
 
-	del, err := doChapters(http.MethodDelete, chaptersURL(srv.URL, id), nil)
+	del, err := doChapters(http.MethodDelete, editsURL(chaptersURL(srv.URL, id)), nil)
 	if err != nil {
 		t.Fatalf("DELETE: %v", err)
 	}
@@ -331,7 +458,7 @@ func TestDeleteRecordingChapterEdits_ReturnsToAutoLayer(t *testing.T) {
 	}
 
 	// 冪等（既に所有していなくても 204）。
-	again, err := doChapters(http.MethodDelete, chaptersURL(srv.URL, id), nil)
+	again, err := doChapters(http.MethodDelete, editsURL(chaptersURL(srv.URL, id)), nil)
 	if err != nil {
 		t.Fatalf("DELETE again: %v", err)
 	}

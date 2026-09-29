@@ -183,6 +183,17 @@ export interface ChapterSpan {
 
 export interface RecordingChapters {
   /**
+     * 返した層の版（不透明な文字列）。PUT へそのまま返す。ユーザー層は所有の
+     * 開始時刻、自動層は検出の終端の有無と検出時刻から導出するので、再検出・
+     * 引き取り・自動に戻す のどれでも変わる。
+     */
+  version: string;
+  /**
+     * 真なら自動層の検出が終端に達していない（所有前だけ。所有後は常に偽）。
+     * 空の `spans` は「CM 無し」ではなく「まだ分からない」。編集 UI を出さない。
+     */
+  detectionPending: boolean;
+  /**
      * この録画が使っている層。`user` はユーザーが確認済み（所有している）で、
      * 自動層は読まれない。`auto` は自動検出の結果。
      */
@@ -195,6 +206,8 @@ export interface RecordingChapters {
 }
 
 export interface ChapterEditsInput {
+  /** GET が返した `version`。行ロックの後で現在の版と比べる。 */
+  version: string;
   /**
      * タイムライン全体（置き換え）。本編の区間は送らない --- 区間の隙間が
      * 本編である。空配列は「CM もチャプターも無い」という有効な主張。
@@ -5446,6 +5459,13 @@ export const getGetRecordingChaptersUrl = (id: number,) => {
  * **CM 率が 50% を超える自動層は CM 無しとして返す**（本編の半分以上を CM と
  * 主張する検出は壊れているとみなす安全弁）。判定は Go の純関数 1 か所にあり、
  * 引き取りでユーザー層へ複製されるときも同じ扱いになる。
+ *
+ * `version` は返した層の版で、PUT（`/chapter-edits`）へそのまま返す。
+ * `detectionPending` が真の間、自動層の空は「CM 無し」ではなく「まだ検出中」
+ * で、編集の基にしてはならない。この 2 つを返すのは、サーバー側の 409 だけでは
+ * 窓が閉じないため（検出中に GET した空の層を基に下書きを作り、409 の後で検出が
+ * commit されてから同じ下書きで再 PUT すると、行ロックは通ってしまい検出された
+ * CM が消える）。どちらも毎回導出する（列は持たない）。
  * @summary Get the effective chapter timeline of a recording
  */
 export const getRecordingChapters = async (id: number, options?: Parameters<typeof customInstance>[1]): Promise<getRecordingChaptersResponse> => {
@@ -5572,7 +5592,7 @@ export const getPutRecordingChapterEditsUrl = (id: number,) => {
 
 
 
-  return `/api/recordings/${id}/chapters`
+  return `/api/recordings/${id}/chapter-edits`
 }
 
 /**
@@ -5589,7 +5609,15 @@ export const getPutRecordingChapterEditsUrl = (id: number,) => {
  * 重なる区間も 400 になる。境界はサーバー側で最も近いフレーム境界へ丸める
  * （30000/1001 fps 固定）ので、クライアントが量子化する必要はない。
  *
- * 検出が終端に達していない間は 409。この tx は先頭で `recordings` の行を
+ * **`version` は必須**（GET が返した値）。行ロックの後で現在の版と比べ、
+ * 違えば 409（下書きの基になった層がその後に変わった。再取得を促す）。所有
+ * 済みでも比べる。所有前は、検出の終端（結果行か失敗行）と検出時刻を版に
+ * 含めるので、検出中の空の層を基にした下書きは検出 commit 後に必ず弾かれる。
+ *
+ * 所有前で検出が終端に達していない間も 409（版が一致していても、検出中の
+ * 空の層を「CM 無し」として引き取らせない）。所有後は自動層を読まないので
+ * 検出状態は無関係で、再検出中でも 409 にならない。ごみ箱の録画は 404。
+ * この tx は先頭で `recordings` の行を
  * `FOR UPDATE` でロックしてから条件を評価し、CM 検出の結果を書く tx も同じ
  * 行をロックする。ロックが無いと READ COMMITTED で条件が文の開始時点の
  * スナップショットから評価され、commit 済みの検出結果が見えないまま
@@ -5694,7 +5722,7 @@ export const getDeleteRecordingChapterEditsUrl = (id: number,) => {
 
 
 
-  return `/api/recordings/${id}/chapters`
+  return `/api/recordings/${id}/chapter-edits`
 }
 
 /**

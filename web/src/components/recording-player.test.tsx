@@ -493,6 +493,7 @@ describe('RecordingPlayer のチャプター', () => {
       <RecordingPlayer
         recordingId={96}
         encodedAssets={asset}
+        chapterVersion="v1"
         onSaveChapters={() => {}}
         onResetChapters={() => {}}
       />,
@@ -500,6 +501,18 @@ describe('RecordingPlayer のチャプター', () => {
     expect(getByTestId('chapter-source')).not.toBeNull()
     expect(container.querySelectorAll('[data-testid="chapter-marker"]')).toHaveLength(0)
     expect(container.querySelector('[aria-label="チャプター"]')).toBeNull()
+  })
+
+  it('版が未取得の間は編集 UI を出さない（下書きの基にする版が無い）', () => {
+    const { queryByTestId } = render(
+      <RecordingPlayer
+        recordingId={95}
+        encodedAssets={asset}
+        onSaveChapters={() => {}}
+        onResetChapters={() => {}}
+      />,
+    )
+    expect(queryByTestId('chapter-source')).toBeNull()
   })
 
   it('チャプターがあるときは一覧と切る区間の印を出す', () => {
