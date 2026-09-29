@@ -301,10 +301,10 @@ func lockMediaRelPathFile(ctx context.Context, mediaDir, relPath string) (*media
 // rel_path lock が競合中なら false を返し、次の reconcile pass に委ねる。
 func tryLockMediaRelPathFile(mediaDir, relPath string) (*mediaRelPathFileLock, bool, error) {
 	for {
-		if _, err := gcMediaRelPathLockFiles(nil, mediaDir, false); err != nil {
+		if _, err := gcMediaRelPathLockFiles(context.Background(), mediaDir, false); err != nil {
 			return nil, false, err
 		}
-		gate, err := acquireMediaRelPathLockGate(nil, mediaDir, false, false)
+		gate, err := acquireMediaRelPathLockGate(context.Background(), mediaDir, false, false)
 		if err != nil {
 			if errors.Is(err, errMediaRelPathLockGateBusy) {
 				return nil, false, nil
