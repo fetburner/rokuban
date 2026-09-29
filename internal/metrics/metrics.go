@@ -28,7 +28,8 @@ var (
 	})
 
 	// IngestDuration は ingest 1 件の所要。転送は録画長と回線速度で決まるため
-	// バケットは秒〜十数分をカバーする。
+	// バケットは秒〜十数分をカバーする。**中断（River の soft stop）は含まない**
+	// --- 中断した試行はジョブの結末ではなく、再開したプロセスが改めて 1 回観測する。
 	IngestDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "rokuban_ingest_duration_seconds",
 		Help:    "Duration of ingest jobs.",
@@ -36,9 +37,22 @@ var (
 	})
 
 	// IngestJobs は ingest ジョブの結果別の件数。result は success / failure /
-	// canceled。**取り消し・失敗した録画を failure に混ぜない** --- 利用者が止めた
-	// 録画が失敗率に積まれると本物の失敗が埋もれる（追従 ingest では録画中の
-	// 取消が ingest ジョブに初めて到達する。internal/worker/ingest.go の Work）。
+	// canceled の 3 値で、**増やさない**（低カーディナリティが前提。record id や
+	// 理由文字列を入れない）。
+	//
+	//   - success: 転送して commit した、または原本が既にコミット済みだった。
+	//   - failure: attempt を消費した試行。River の再試行で毎回 +1 されるので、
+	//     success / canceled（ジョブごとに 1 回）とは分母が違う。
+	//   - canceled: 取り消し・失敗した録画。**failure に混ぜない** --- 利用者が
+	//     止めた録画が失敗率に積まれると本物の失敗が埋もれる（追従 ingest では
+	//     録画中の取消が ingest ジョブに初めて到達する）。
+	//
+	// **River の soft stop（graceful stop）はどれにも数えない。** 中断はジョブの
+	// 結末ではない --- River は attempt を消費せず行を available に戻し、次の
+	// プロセスが再開して、そこで結末を 1 回だけ数える。中断が繰り返されているかは
+	// rokuban_uningested_records / _bytes で見る。そのため failure の意味は
+	// 中断を含まない分だけ狭い。判定と既知の窓は
+	// internal/worker/ingest.go の Work、説明は docs/operations/monitoring.md。
 	IngestJobs = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_ingest_jobs_total",
 		Help: "Ingest jobs by result.",

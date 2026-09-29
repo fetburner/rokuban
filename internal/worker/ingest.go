@@ -342,13 +342,57 @@ func (w *IngestWorker) resolveProgressInterval() time.Duration {
 }
 
 // Work は ingest ジョブを実行する。ストリーム取得・TS 統計収集・DB コミット・エッジ削除を行う。
-func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobArgs]) error {
+//
+// 戻り値は名前付きなのは、defer が「この試行の結末」を分類して
+// metrics.IngestJobs / IngestDuration へ記録するためである（記録の値域と
+// 中断を数えない理由は下の defer のコメントと
+// docs/operations/monitoring.md の rokuban_ingest_jobs_total）。
+func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobArgs]) (err error) {
 	args := job.Args
 	log := slog.With("site", args.Site, "record_id", args.RecordID)
 
 	started := time.Now()
 	result := "failure"
 	defer func() {
+		// result は success / failure / canceled の 3 値。**この 3 値の外に増やさない**
+		// （低カーディナリティが前提。record id や理由は入れない）。
+		//
+		// **River の soft stop（graceful stop）は数えない。** 中断はジョブの結末では
+		// ない --- River は attempt を消費せず行を available に戻し、次のプロセスが
+		// 再開して、そこで結末を 1 回だけ数える。ここで数えると 1 ジョブが「中断 +
+		// 再開後の結末」の 2 回で数えられる。中断が繰り返されているかは
+		// rokuban_uningested_records / _bytes に積まれる。
+		//
+		// 判定は River の isSoftStopCancelError（internal/jobexecutor。internal
+		// パッケージなので import できない）と同じ材料で行う。条件は work ctx の cause が
+		// セットされていて、かつ戻り値が context.Canceled か cause そのものを包むこと。
+		// cause は 2 つある:
+		//
+		//   - Stop / StopAndCancel / soft stop timer が撃つ ErrStop
+		//   - Client.JobCancel の rivertype.ErrJobCancelledRemotely（rokuban に
+		//     呼び出し元は無いが、区別しないと下の err == nil の判断が崩れる）
+		//
+		// **errors.Is(err, cause) の項が要る。** Go の net/http は ctx が取り消されると
+		// ctx.Err() ではなく context.Cause(ctx) を返す（transport.go）。Stop の瞬間に
+		// mirakc への HTTP 要求が飛んでいると、返る err は ErrStop を包むが
+		// context.Canceled を包まない。
+		//
+		// 未解決（未測定の窓）: ctx 由来でない context.Canceled を err が包む場合、
+		// defer の評価と River の評価の間（μs 単位）に soft stop が重なると failure が
+		// 1 回余分に乗りうる（実例: stall 検知の cancel が再試行予算の超過で返るとき）。
+		// Work 側では塞げず、River も同じ後読みをしている。
+		cause := context.Cause(ctx)
+		remote := errors.Is(cause, river.ErrJobCancelledRemotely)
+		if cause != nil && !remote &&
+			(errors.Is(err, context.Canceled) || errors.Is(err, cause)) {
+			return
+		}
+		// リモート取消は canceled に倒す。ただし **err == nil のときは倒さない** ---
+		// River は res.Err != nil のときだけ cause で置き換えて cancelled にするので
+		// （job_executor.go）、nil は completed（= その時点の result）のままにする。
+		if err != nil && remote {
+			result = "canceled"
+		}
 		metrics.IngestDuration.Observe(time.Since(started).Seconds())
 		metrics.IngestJobs.WithLabelValues(result).Inc()
 	}()
