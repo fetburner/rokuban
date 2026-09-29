@@ -29,8 +29,8 @@ const defaultAPIStatementTimeout = 30 * time.Second
 //     api 自身が保持し続める接続はなく、ブラウザの複数タブ・同時操作を吸収する余裕を見た値
 //   - worker (8): **床（下限）であって合計ではない。** 実際の予算は workerConnBudget が
 //     lockSlots（同時に走りうる job advisory lock 保持ジョブの本数）から導出する。
-//     値そのものは「lockSlots が小さい構成で、上限を下げない」ための床
-//     として残っている
+//     値そのものは、lockSlots が小さい構成でも lock 枠から導出した小さい値まで
+//     上限を下げないための床として置いてある
 //   - watcher (3): 1 site ぶんのリーダー選出の advisory lock 用に 1 本を保持し
 //     続け、record 処理の短いクエリが散発する。2 site 目以降は site ごとに
 //     goroutine + advisory lock を持つため（cmd/rokuban/server.go の watcher
@@ -52,14 +52,16 @@ const (
 	// 床が効くのは lockSlots が 4 以下のとき（1 + lockSlots + workerConnSlack <= 8）。
 	// 既定構成の lockSlots は 5（ingest 3 + encode 1 + cm_detect 1、1 site）なので、
 	// 既定の予算は床ではなく式の側（9）で決まる。**ingest を引かないデプロイ
-	// （`--queues=ruler` 等）の上限を、lock 枠から導出した小さい値まで下げないために置いてある。**
+	// （`--queues=ruler` 等）の上限を、lock 枠から導出した小さい値まで
+	// 下げないために置いてある。**
 	workerConnFloor = 8
 
 	// workerConnSlack は worker の予算のうち、LISTEN でも job lock でもない仕事
 	// （ジョブ claim、進捗書き込み、`/metrics` のバックログクエリ等）に残す本数。
 	//
-	// **未測定である。** 値は「ingest 2 / encode 1 / cm_detect 1 の構成で固定予算 8 から
-	// 長期保持分 5（1(LISTEN) + 4(job lock)）を引いた残り」を据え置いたもので、実測に基づかない。
+	// **未測定である。** 値は「ingest 2 / encode 1 / cm_detect 1 の構成で
+	// 固定予算 8 から長期保持分 5（1(LISTEN) + 4(job lock)）を引いた残り」を
+	// 据え置いたもので、実測に基づかない。
 	workerConnSlack = 3
 
 	// workerListenConns は River の内部機構が LISTEN 用に長時間保持する本数。
@@ -281,8 +283,9 @@ var dedicatedConnRoles = []string{"watcher", "worker", "notifier"}
 //   - watcher / worker / notifier の恒久専有（dedicatedConnRoles）。watcher は
 //     束縛サイトごとに 1 本（2 site 目以降 watcherPerSiteConns ずつ追加）
 //   - 実行中の ingest / encode / cm_detect 1 本ごとの job advisory lock
-//     （lockSlots）。**これを「転送中だけの一時専有」として除外してはならない。** lock を持つジョブは、解放する前に同じプールからもう 1 本
-//     取る（進捗書き込み・commit。internal/worker/ingest_progress.go）。
+//     （lockSlots）。**これを「転送中だけの一時専有」として除外しては
+//     ならない。** lock を持つジョブは、解放する前に同じプールからもう 1 本取る
+//     （進捗書き込み・commit。internal/worker/ingest_progress.go）。
 //     LISTEN と lock でプールが埋まると、ジョブ同士が互いの接続を待つ循環になる
 //     --- heartbeat は lock セッション自身の上で動くので lock は生き続け、
 //     record_sweep も回収しない。**構造から確定した結論で、実測はしていない。**
