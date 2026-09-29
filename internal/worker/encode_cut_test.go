@@ -702,3 +702,123 @@ func TestEnqueueCut_AllCutRecordingEnqueuesNothing(t *testing.T) {
 		t.Errorf("reconcile path: partial recording pending = %v, want [cut]", got)
 	}
 }
+
+// TestCutEncode_RealFFmpeg_AudioLeadsVideo は「音声が映像より 300ms 早く始まる TS でも、
+// 映像と音声が同じ時間軸（チャプターの原点 = 入力の最早 start_time）で切られる」を測る。
+//
+// 放送 TS は音声が映像より先に始まることが多い。映像を「最初の映像フレームから数えた
+// フレーム番号」で切ると、音声（入力の最早 start_time 基準の秒）との間に開始差ぶんの
+// ずれが全区間で出る。source では PTS = 3.0s で映像がフラッシュし、同じ PTS で音声が
+// ビープする。keep（[0,1s) と [2s,4s)）で切った出力では、両方が 2.0s に出るはず。
+func TestCutEncode_RealFFmpeg_AudioLeadsVideo(t *testing.T) {
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	ffprobe, err := exec.LookPath("ffprobe")
+	if err != nil {
+		t.Skip("ffprobe not installed")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.ts")
+	out := filepath.Join(dir, "out.mp4")
+
+	// 映像は 0.3s 遅れて始まる（-itsoffset で PTS をずらす）。フラッシュは映像自身の
+	// 時刻 2.7-2.9s = PTS 3.0-3.2s。ビープは音声の PTS 3.0-3.2s。
+	gen := exec.Command(ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+		"-itsoffset", "0.3", "-f", "lavfi", "-i", "color=c=black:s=64x64:r=30000/1001,drawbox=x=0:y=0:w=64:h=64:c=white:t=fill:enable='between(t,2.7,2.9)'",
+		"-f", "lavfi", "-i", "aevalsrc='0.8*sin(2*PI*1000*t)*between(t,3.0,3.2)':s=48000:c=mono",
+		"-t", "5", "-c:v", "libx264", "-preset", "ultrafast", "-bf", "0", "-c:a", "aac",
+		"-f", "mpegts", src)
+	if b, err := gen.CombinedOutput(); err != nil {
+		t.Fatalf("generating source: %v (%s)", err, b)
+	}
+	// 前提の確認: 音声が映像より 0.25s 以上早く始まっている。
+	starts := map[string]float64{}
+	pout, err := exec.Command(ffprobe, "-v", "error", "-show_entries", "stream=index,codec_type,start_time", "-of", "csv=p=0", src).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ffprobe: %v (%s)", err, pout)
+	}
+	var vIdx, aIdx int
+	for _, line := range strings.Split(strings.TrimSpace(string(pout)), "\n") {
+		f := strings.Split(strings.TrimSpace(line), ",")
+		if len(f) < 3 {
+			continue
+		}
+		idx, _ := strconv.Atoi(f[0])
+		st, _ := strconv.ParseFloat(f[2], 64)
+		starts[f[1]] = st
+		switch f[1] {
+		case "video":
+			vIdx = idx
+		case "audio":
+			aIdx = idx
+		}
+	}
+	if lead := starts["video"] - starts["audio"]; lead < 0.25 {
+		t.Fatalf("source audio leads video by %.3fs, want >= 0.25s (start_time %v)", lead, starts)
+	}
+
+	keep := []chapters.Range{{StartMs: 0, EndMs: 1000}, {StartMs: 2000, EndMs: 4000}}
+	for i := range keep {
+		keep[i].StartMs = chapters.QuantizeMs(keep[i].StartMs)
+		keep[i].EndMs = chapters.QuantizeMs(keep[i].EndMs)
+	}
+	filter, err := ffargs.CutFilterComplex(keep, vIdx, aIdx, ffargs.ScalerSoftware, 0, false, false)
+	if err != nil {
+		t.Fatalf("CutFilterComplex: %v", err)
+	}
+	args := BuildFFmpegArgs(cutFFmpegProfile(), src, out, false, &filter)
+	enc := exec.Command(ffmpeg, args...)
+	enc.Env = append(os.Environ(), "PATH="+filepath.Dir(ffmpeg)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if b, err := enc.CombinedOutput(); err != nil {
+		t.Fatalf("cut encode failed: %v (%s)\nargs: %v", err, b, args)
+	}
+
+	// 出力の映像: 最初に明るくなるフレームの表示時刻（showinfo の pts_time。映像が
+	// 音声より遅れて始まる出力ではフレーム番号から時刻を逆算できない）。
+	vinfo, err := exec.Command(ffmpeg, "-hide_banner", "-i", out, "-map", "0:v:0",
+		"-vf", "showinfo", "-f", "null", "-").CombinedOutput()
+	if err != nil {
+		t.Fatalf("decoding video: %v (%s)", err, vinfo)
+	}
+	flash := -1.0
+	for _, line := range strings.Split(string(vinfo), "\n") {
+		i := strings.Index(line, "pts_time:")
+		j := strings.Index(line, "mean:[")
+		if i < 0 || j < 0 {
+			continue
+		}
+		pts, _ := strconv.ParseFloat(strings.Fields(line[i+len("pts_time:"):])[0], 64)
+		y, _ := strconv.Atoi(strings.Fields(strings.NewReplacer("[", " ", "]", " ").Replace(line[j+len("mean:"):]))[0])
+		if y > 128 {
+			flash = pts
+			break
+		}
+	}
+	// 出力の音声: 最初に振幅が立つサンプルの時刻。
+	araw, err := exec.Command(ffmpeg, "-v", "error", "-i", out, "-map", "0:a:0",
+		"-ac", "1", "-ar", "48000", "-f", "s16le", "-").Output()
+	if err != nil {
+		t.Fatalf("decoding audio: %v", err)
+	}
+	beep := -1.0
+	for i := 0; i+2 <= len(araw); i += 2 {
+		v := int16(uint16(araw[i]) | uint16(araw[i+1])<<8)
+		if v > 8000 || v < -8000 {
+			beep = float64(i/2) / 48000
+			break
+		}
+	}
+	if flash < 0 || beep < 0 {
+		t.Fatalf("marker not found in output: flash=%.3f beep=%.3f", flash, beep)
+	}
+	t.Logf("flash=%.3fs beep=%.3fs skew=%.0fms (want both ~2.0s)", flash, beep, (flash-beep)*1000)
+	tolerance := 2 * float64(chapters.FrameDenominator) / float64(chapters.FrameNumerator)
+	if d := flash - beep; d > tolerance || d < -tolerance {
+		t.Errorf("video flash at %.3fs and audio beep at %.3fs differ by %.0fms (> two frames %.0fms)", flash, beep, d*1000, tolerance*1000)
+	}
+	if d := beep - 2.0; d > tolerance || d < -tolerance {
+		t.Errorf("beep at %.3fs, want 2.0s (chapter axis)", beep)
+	}
+}

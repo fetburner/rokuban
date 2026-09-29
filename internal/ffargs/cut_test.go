@@ -22,9 +22,16 @@ func TestCutFilterComplex_OrderAndBoundaries(t *testing.T) {
 
 	start1 := chapters.MsToFrame(2000)
 	end1 := chapters.MsToFrame(3000)
-	// 映像は frames、音声は同じフレーム番号から換算した秒。
-	if !strings.Contains(graph, "[0:0]trim=start_frame=0:end_frame=") {
-		t.Errorf("first video segment is not a frame trim: %s", graph)
+	// 映像も音声も時刻（秒）で切る。映像を start_frame（最初の映像フレームからの
+	// 番号）で切ると、音声が先に始まる入力で映像だけがずれる。映像の窓は半フレーム
+	// 手前へずれる。
+	wantVideo := "[0:0]trim=start=" + frameSecondsHalfEarlier(start1) + ":end=" + frameSecondsHalfEarlier(end1) +
+		",setpts=PTS-" + frameSeconds(start1) + "/TB"
+	if !strings.Contains(graph, wantVideo) {
+		t.Errorf("video segment is not a time trim (%q missing): %s", wantVideo, graph)
+	}
+	if strings.Contains(graph, "start_frame") {
+		t.Errorf("video must not be cut by frame number: %s", graph)
 	}
 	wantAudio := "atrim=start=" + frameSeconds(start1) + ":end=" + frameSeconds(end1)
 	if !strings.Contains(graph, wantAudio) {

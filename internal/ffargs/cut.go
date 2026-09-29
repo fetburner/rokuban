@@ -39,11 +39,20 @@ type CutFilterResult struct {
 // format=nv12,hwupload。**連結した後に 1 本の連鎖へ通す**ので、区間ごとに
 // フィルタが重複しない。
 //
-// 映像は trim=start_frame:end_frame（フレーム番号）、音声は atrim=start:end
-// （秒）で切る。**音声の境界も同じフレーム番号から秒へ換算する**（frame / fps）ので、
-// 区間ごとの A/V のずれが蓄積しない。trim の後に setpts / asetpts で PTS を 0 へ
-// 戻すのは concat が各区間の先頭を 0 とみなすため（戻さないと 2 区間目以降が
-// 元の PTS のぶん後ろへずれる）。
+// 映像・音声とも**時刻（秒）で切る**。時刻の原点は入力の最早 start_time
+// （ffmpeg が入力の先頭を 0 に揃える。チャプターの原点 = プレイヤーの currentTime と
+// 同じ）。映像を trim=start_frame（最初の映像フレームから数えた番号）で切ると、
+// 放送 TS のように音声が映像より先に始まる入力で、開始差ぶんだけ映像だけがずれる。
+// 境界はどちらも同じフレーム番号から秒へ換算する（frame / fps）ので、区間ごとの
+// A/V のずれが蓄積しない。映像の窓は半フレーム手前へずらす（[f-0.5, g-0.5) フレーム）。
+// フレームがちょうど境界に載る入力（開始差が 0）でも浮動小数の丸めで 1 枚
+// 出入りしないよう、窓の中に必ずフレームの中心が来る形にするため。trim の後に setpts / asetpts で
+// PTS から**区間の開始時刻**を引くのは concat が各区間の先頭を 0 とみなすため
+// （引かないと 2 区間目以降が元の PTS のぶん後ろへずれる）。PTS-STARTPTS（区間内の
+// 最初のフレームを 0 にする）ではなく開始時刻を引くのは、音声が映像より先に
+// 始まる入力で映像の最初のフレームが区間の頭より遅れているとき、その遅れを
+// 区間の長さに残すため（STARTPTS だと映像の区間だけ短くなり、後続の区間が
+// 音声より早く始まる）。
 //
 // videoStream / audioStream は入力 0 の**絶対ストリーム番号**（SelectDefaultStreams
 // が返すもの）。区間は chapters.Range（原本時間軸の ms 半開区間）で、空なら nil を
@@ -62,10 +71,10 @@ func CutFilterComplex(keep []chapters.Range, videoStream, audioStream int, scale
 		}
 		v := fmt.Sprintf("v%d", i)
 		a := fmt.Sprintf("a%d", i)
-		fmt.Fprintf(&graph, "[0:%d]trim=start_frame=%d:end_frame=%d,setpts=PTS-STARTPTS[%s];",
-			videoStream, startFrame, endFrame, v)
-		fmt.Fprintf(&graph, "[0:%d]atrim=start=%s:end=%s,asetpts=PTS-STARTPTS[%s];",
-			audioStream, frameSeconds(startFrame), frameSeconds(endFrame), a)
+		fmt.Fprintf(&graph, "[0:%d]trim=start=%s:end=%s,setpts=PTS-%s/TB[%s];",
+			videoStream, frameSecondsHalfEarlier(startFrame), frameSecondsHalfEarlier(endFrame), frameSeconds(startFrame), v)
+		fmt.Fprintf(&graph, "[0:%d]atrim=start=%s:end=%s,asetpts=PTS-%s/TB[%s];",
+			audioStream, frameSeconds(startFrame), frameSeconds(endFrame), frameSeconds(startFrame), a)
 		vLabels = append(vLabels, "["+v+"]")
 		aLabels = append(aLabels, "["+a+"]")
 	}
@@ -137,4 +146,10 @@ func SelectDefaultStreams(streams []StreamInfo) (video, audio int, ok bool) {
 		}
 	}
 	return video, audio, video >= 0 && audio >= 0
+}
+
+// frameSecondsHalfEarlier はフレーム番号の半フレーム手前の時刻（秒）。負にはしない。
+func frameSecondsHalfEarlier(frame int64) string {
+	sec := (float64(frame) - 0.5) * float64(chapters.FrameDenominator) / float64(chapters.FrameNumerator)
+	return strconv.FormatFloat(max(sec, 0), 'f', 6, 64)
 }
