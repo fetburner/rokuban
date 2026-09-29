@@ -84,8 +84,8 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	// recording_encode_policy 衛星表（issue #159）。凍結済み（ingest が INSERT
 	// した状態を模す。resolveAndSnapshotEncodePolicy 相当）。
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
-		VALUES ($1, 'until_encoded', ARRAY['h265'])
+		INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+		VALUES ($1, 'until_encoded', ARRAY['h265'], true)
 	`, recID); err != nil {
 		t.Fatalf("seeding recording_encode_policy: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}
 	p := doc.RecordingEncodePolicies[0]
 	if p.RecordingID != recID || p.KeepOriginal != "until_encoded" ||
-		len(p.EncodeProfiles) != 1 || p.EncodeProfiles[0] != "h265" {
+		len(p.EncodeProfiles) != 1 || p.EncodeProfiles[0] != "h265" || !p.CMDetect {
 		t.Fatalf("exported recording_encode_policy = %+v, want recordingId=%d keepOriginal=until_encoded profiles=[h265]",
 			p, recID)
 	}
@@ -293,13 +293,17 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	// 作られていないこと。
 	var gotKeepOriginal string
 	var gotProfiles []string
+	var gotCMDetect bool
 	if err := pool.QueryRow(ctx,
-		`SELECT keep_original, encode_profiles FROM recording_encode_policy WHERE recording_id = $1`, recID,
-	).Scan(&gotKeepOriginal, &gotProfiles); err != nil {
+		`SELECT keep_original, encode_profiles, cm_detect FROM recording_encode_policy WHERE recording_id = $1`, recID,
+	).Scan(&gotKeepOriginal, &gotProfiles, &gotCMDetect); err != nil {
 		t.Fatalf("query recording_encode_policy: %v", err)
 	}
 	if gotKeepOriginal != "until_encoded" || len(gotProfiles) != 1 || gotProfiles[0] != "h265" {
 		t.Errorf("rescued recording_encode_policy = %q/%v, want until_encoded/[h265]", gotKeepOriginal, gotProfiles)
+	}
+	if !gotCMDetect {
+		t.Errorf("rescued recording_encode_policy.cm_detect = false, want true (exported as true)")
 	}
 	var unfrozenPolicyCount int
 	if err := pool.QueryRow(ctx,

@@ -50,15 +50,15 @@ configMapGenerator:
 
 # overlay からロールごとに image を差し替えられるようにするための宣言。
 #
-# **ffmpeg を要する役（worker / ライブ視聴を使う streamer）は、この名前ではなく
-# 別の image 名を書く**（公式イメージは ffmpeg を含まない。Dockerfile.full で
+# **ffmpeg または JLSE を要する役（worker / ライブ視聴を使う streamer）は、この名前ではなく
+# 別の image 名を書く**（公式イメージはこれらの実行ファイルを含まない。Dockerfile.full で
 # セルフビルドしたものを指す）。kustomize の `images:` は image 名ごとの置換なので、
 # 名前を分けておかないと「ffmpeg 入りに差し替えたら api も一緒に変わる」になる。
 images:
   - name: ghcr.io/fetburner/rokuban
     newTag: latest
-  # ffmpeg を要する役（encode / thumbnail の worker、ライブ視聴を使う streamer）が
-  # 使う image 名。**公式イメージは ffmpeg を同梱しない**ので、この名前は
+  # ffmpeg / JLSE を要する役（encode / thumbnail / cm_detect の worker、ライブ視聴を使う streamer）が
+  # 使う image 名。**公式イメージはこれらを同梱しない**ので、この名前は
   # `Dockerfile.full` でセルフビルドしたものを指す（`ghcr.io` に同名の公開
   # イメージがあるわけではない --- overlay で必ず差し替える）。
   - name: ghcr.io/fetburner/rokuban-full

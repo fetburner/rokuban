@@ -274,8 +274,8 @@ WHERE id = sqlc.arg('id');
 -- 「解決に失敗しても凍結する」参照）。行が無いのは原本がまだコミットされて
 -- いない（ingest 未完了）ときだけ。
 -- name: FreezeRecordingEncodePolicy :exec
-INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
-VALUES (sqlc.arg('recording_id'), sqlc.arg('keep_original'), sqlc.arg('encode_profiles')::text[]);
+INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+VALUES (sqlc.arg('recording_id'), sqlc.arg('keep_original'), sqlc.arg('encode_profiles')::text[], sqlc.arg('cm_detect'));
 
 -- EnqueueMissingEncodes（internal/worker/encode.go）が desired
 -- （recording_encode_policy.encode_profiles）を読むためのクエリ。行が無い
@@ -283,7 +283,7 @@ VALUES (sqlc.arg('recording_id'), sqlc.arg('keep_original'), sqlc.arg('encode_pr
 -- プロファイルが無い」と同じに扱う（keep_original='always' と同じ扱い。
 -- docs/storage.md §6）。
 -- name: GetRecordingEncodePolicy :one
-SELECT keep_original, encode_profiles FROM recording_encode_policy WHERE recording_id = $1;
+SELECT keep_original, encode_profiles, cm_detect FROM recording_encode_policy WHERE recording_id = $1;
 
 -- 凍結の例外としての事後追加（issue #133、docs/storage.md §6「原本 TS の
 -- 保持ポリシー」・docs/recording/reservation-model.md §4.5「録画開始後の編集」）。
@@ -305,11 +305,12 @@ SELECT keep_original, encode_profiles FROM recording_encode_policy WHERE recordi
 -- 安全側）で新規に凍結する。既存行がある場合は encode_profiles だけ
 -- union + dedup で追記し、keep_original は変更しない。
 -- name: AppendRecordingEncodeProfiles :exec
-INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
+INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
 VALUES (
     sqlc.arg('id'),
     'always',
-    (SELECT coalesce(array_agg(DISTINCT p ORDER BY p), '{}') FROM unnest(sqlc.arg('profiles')::text[]) AS p)
+    (SELECT coalesce(array_agg(DISTINCT p ORDER BY p), '{}') FROM unnest(sqlc.arg('profiles')::text[]) AS p),
+    false
 )
 ON CONFLICT (recording_id) DO UPDATE SET
     encode_profiles = (
@@ -333,3 +334,34 @@ SET keep_original = sqlc.arg('keep_original'),
     updated_at = now()
 WHERE recording_id = sqlc.arg('recording_id')
   AND (sqlc.arg('keep_original') <> 'until_encoded' OR cardinality(encode_profiles) > 0);
+
+-- cm_detect の切り替えは凍結済み policy の更新、または active な原本を持つ
+-- 未凍結録画の初回凍結として適用する。原本の状態はこの INSERT/UPDATE の瞬間に
+-- 再評価し、読み取りと書き込みの間に原本が消える窓を作らない。
+-- name: SetRecordingCMDetection :execrows
+INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+SELECT r.id, 'always', '{}', true
+FROM recordings r
+JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original' AND o.state = 'active'
+WHERE r.id = sqlc.arg('recording_id')
+  AND r.deleted_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = o.id)
+ON CONFLICT (recording_id) DO UPDATE
+SET cm_detect = true,
+    updated_at = now()
+WHERE EXISTS (
+    SELECT 1 FROM media_assets o
+    WHERE o.recording_id = recording_encode_policy.recording_id
+      AND o.kind = 'original' AND o.state = 'active'
+      AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = o.id)
+)
+  AND EXISTS (
+    SELECT 1 FROM recordings r
+    WHERE r.id = recording_encode_policy.recording_id AND r.deleted_at IS NULL
+);
+
+-- 未凍結録画で false は既定値との同値なので no-op。凍結済み policy だけ更新する。
+-- name: ClearRecordingCMDetection :exec
+UPDATE recording_encode_policy
+SET cm_detect = false, updated_at = now()
+WHERE recording_id = sqlc.arg('recording_id');

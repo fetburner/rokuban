@@ -7,7 +7,7 @@
 //   - ScaledJob のトリガのクエリが、その Job が実際に購読するキューと違う
 //     （症状は「いつまでもスケールしない」か「起きた Job が何もせず終わる」）
 //   - site 束縛キューを引く worker に `--sites` が無い（起動時エラー）
-//   - encode / thumbnail の worker が ffmpeg 非同梱のイメージを指している
+//   - encode / thumbnail / cm_detect の worker が必要な tool 非同梱のイメージを指している
 //     （起動時 fail-fast。**キューを増やしたときに写し忘れる**）
 //   - `rokuban enqueue` にあるジョブの CronJob が無い（`worker.periodic_jobs:
 //     false` の下では、そのパスが一度も走らない構成が黙って出来上がる）
@@ -39,9 +39,9 @@ import (
 
 const (
 	// officialImage / fullImage は base/kustomization.yaml の `images:` が
-	// 置換の対象として宣言している 2 つの名前。**ffmpeg を要る役だけが
-	// fullImage を指す**（公式イメージは ffmpeg を同梱しないので、encode /
-	// thumbnail キューを購読する worker は起動時に fail-fast する）。
+	// 置換の対象として宣言している 2 つの名前。**ffmpeg または JLSE を要る役だけが
+	// fullImage を指す**（公式イメージはこれらを同梱しないので、encode /
+	// thumbnail / cm_detect キューを購読する worker は起動時に fail-fast する）。
 	officialImage = "ghcr.io/fetburner/rokuban"
 	fullImage     = "ghcr.io/fetburner/rokuban-full"
 
@@ -216,15 +216,15 @@ func TestScaledJobsCoverEveryQueue(t *testing.T) {
 			}
 		}
 
-		// ffmpeg を要るキューだけが `Dockerfile.full` のイメージを指すこと。
+		// ffmpeg または JLSE を要るキューだけが `Dockerfile.full` のイメージを指すこと。
 		wantImage := officialImage
-		if jobs.RequiresEncodeTools([]string{q}) {
+		if jobs.RequiresEncodeTools([]string{q}) || jobs.RequiresCMDetectTools([]string{q}) {
 			wantImage = fullImage
 		}
 		image := strAt(soleContainer(t, w), "image")
 		if name, _, _ := strings.Cut(image, ":"); name != wantImage {
 			t.Errorf("%s (queue %q) uses image %q, want %q "+
-				"(jobs.RequiresEncodeTools decides; the official image has no ffmpeg and fail-fasts)",
+				"(tool requirement decides; the official image has no ffmpeg or JLSE and fail-fasts)",
 				w.id(), q, image, wantImage)
 		}
 	}
@@ -697,6 +697,7 @@ var productionSchedules = map[string]string{
 	"rokuban-enqueue-delete-reconcile":    "*/15 * * * *",
 	"rokuban-enqueue-encode-reconcile":    "*/15 * * * *",
 	"rokuban-enqueue-thumbnail-reconcile": "*/15 * * * *",
+	"rokuban-enqueue-cm-detect-reconcile": "*/15 * * * *",
 	"rokuban-enqueue-storage-sync":        "*/5 * * * *",
 }
 

@@ -391,6 +391,7 @@ func applyRecordingEncodePolicies(ctx context.Context, q *sqlcgen.Queries, polic
 			EncodeProfiles: profiles,
 			CreatedAt:      p.CreatedAt,
 			UpdatedAt:      p.UpdatedAt,
+			CmDetect:       p.CMDetect,
 		}); err != nil {
 			return fmt.Errorf("upserting recording_encode_policy %d: %w", p.RecordingID, err)
 		}

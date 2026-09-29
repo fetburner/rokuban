@@ -332,14 +332,14 @@ const searchNoteOverage = {
 // 下の `validateFixturesOrExit` が落ちる。issue #686 とは無関係の既存の穴
 // （フィクスチャがそちらの必須化に追従していなかった）で、ここで揃える。
 const recordings = [
-  { id: 11, site: SITE, source: 'rule', serviceName: 'NHK総合', channelType: 'GR', channel: '27', networkId: 32736, serviceId: 1024, eventId: 11, title: 'ニュース７', startAt: iso(nowMs - 600_000), durationMs: 1_800_000, status: 'recording', keepOriginal: 'always', createdAt: iso(nowMs - 600_000), startedAt: iso(nowMs - 600_000) },
+  { id: 11, site: SITE, source: 'rule', serviceName: 'NHK総合', channelType: 'GR', channel: '27', networkId: 32736, serviceId: 1024, eventId: 11, title: 'ニュース７', startAt: iso(nowMs - 600_000), durationMs: 1_800_000, status: 'recording', keepOriginal: 'always', cmDetection: { state: 'disabled' }, createdAt: iso(nowMs - 600_000), startedAt: iso(nowMs - 600_000) },
   // encodedAssets を持たせて詳細ページ（/recordings/$id）で <video> が実ブラウザで
   // 出ることを撮る（キーボード到達性の判定 ⑤）。`encodedProfiles`（非推奨の後方
   // 互換フィールド）だけでは `RecordingPlayer` が <video> を出さない
   // （`encodedAssets` を見るため）ので両方持たせる。
-  { id: 12, site: SITE, source: 'manual', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', channel: 'BS15_0', networkId: 4, serviceId: 101, eventId: 12, title: 'クラシック音楽館', startAt: iso(nowMs - 26 * HOUR), durationMs: 5_400_000, status: 'finished', keepOriginal: 'always', sizeBytes: 8_123_456_789, createdAt: iso(nowMs - 26 * HOUR), dropSummary: { packets: 1_500_000, drops: 12, errors: 0, scrambled: 3 }, encodedAssets: [{ profile: 'hevc-1080p', sizeBytes: 2_345_678_901 }] },
-  { id: 13, site: SITE, source: 'rule', serviceName: 'テレビ大阪', channelType: 'GR', channel: '18', networkId: 32738, serviceId: 1040, eventId: 13, title: 'アニメ劇場', startAt: iso(nowMs - 50 * HOUR), durationMs: 1_800_000, status: 'failed', keepOriginal: 'always', createdAt: iso(nowMs - 50 * HOUR) },
-  { id: 14, site: SITE, source: 'rule', serviceName: 'NHKEテレ', channelType: 'GR', channel: '26', networkId: 32737, serviceId: 1032, eventId: 14, title: '連続テレビ小説', startAt: iso(nowMs - 74 * HOUR), durationMs: 900_000, status: 'finished', keepOriginal: 'always', sizeBytes: 1_234_567_890, createdAt: iso(nowMs - 74 * HOUR) },
+  { id: 12, site: SITE, source: 'manual', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', channel: 'BS15_0', networkId: 4, serviceId: 101, eventId: 12, title: 'クラシック音楽館', startAt: iso(nowMs - 26 * HOUR), durationMs: 5_400_000, status: 'finished', keepOriginal: 'always', cmDetection: { state: 'disabled' }, sizeBytes: 8_123_456_789, createdAt: iso(nowMs - 26 * HOUR), dropSummary: { packets: 1_500_000, drops: 12, errors: 0, scrambled: 3 }, encodedAssets: [{ profile: 'hevc-1080p', sizeBytes: 2_345_678_901 }] },
+  { id: 13, site: SITE, source: 'rule', serviceName: 'テレビ大阪', channelType: 'GR', channel: '18', networkId: 32738, serviceId: 1040, eventId: 13, title: 'アニメ劇場', startAt: iso(nowMs - 50 * HOUR), durationMs: 1_800_000, status: 'failed', keepOriginal: 'always', cmDetection: { state: 'disabled' }, createdAt: iso(nowMs - 50 * HOUR) },
+  { id: 14, site: SITE, source: 'rule', serviceName: 'NHKEテレ', channelType: 'GR', channel: '26', networkId: 32737, serviceId: 1032, eventId: 14, title: '連続テレビ小説', startAt: iso(nowMs - 74 * HOUR), durationMs: 900_000, status: 'finished', keepOriginal: 'always', cmDetection: { state: 'disabled' }, sizeBytes: 1_234_567_890, createdAt: iso(nowMs - 74 * HOUR) },
 ]
 
 /**
@@ -364,7 +364,7 @@ const transferringRecording = {
   startAt: iso(nowMs - 10 * HOUR),
   durationMs: 1_800_000,
   status: 'finished',
-  keepOriginal: 'always',
+  keepOriginal: 'always', cmDetection: { state: 'disabled' },
   createdAt: iso(nowMs - 10 * HOUR),
   ingest: {
     state: 'transferring',
@@ -375,7 +375,7 @@ const transferringRecording = {
 }
 
 const rules = [
-  { id: 1, name: '朝ドラ', enabled: true, priority: 10, keepOriginal: 'always', textMatches: [{ target: 'name', mode: 'keyword', value: '連続テレビ小説' }], createdAt: iso(nowMs - 100 * HOUR), updatedAt: iso(nowMs - 100 * HOUR) },
+  { id: 1, name: '朝ドラ', enabled: true, priority: 10, keepOriginal: 'always', cmDetection: { state: 'disabled' }, textMatches: [{ target: 'name', mode: 'keyword', value: '連続テレビ小説' }], createdAt: iso(nowMs - 100 * HOUR), updatedAt: iso(nowMs - 100 * HOUR) },
   { id: 2, name: '（条件なし）', enabled: false, priority: 20, keepOriginal: 'until_encoded', createdAt: iso(nowMs - 100 * HOUR), updatedAt: iso(nowMs - 100 * HOUR) },
 ]
 
@@ -481,7 +481,7 @@ function apiHandler({
     // 連動する（issue #209）。ここは「有効なデプロイ」の見た目を撮るための判定なので
     // true を返す --- 返さないと主ナビが 5 項目になり、/live はチャンネル一覧ではなく
     // 「無効です」の空状態になる
-    if (p === '/api/capabilities') return json({ live: true })
+    if (p === '/api/capabilities') return json({ live: true, cmDetect: false })
     if (p === '/api/breakers') {
       return json(withBreaker || layoutScenario === 'many-warnings' ? breakers : [])
     }
@@ -1854,7 +1854,7 @@ log("\n=== ①'''' search: 容量ノートの安定性（窓の点滅・退化�
   await installApiStubs(page, async ({ path: p, url, json, route }) => {
     const method = route.request().method()
     if (p === '/api/sites') return json([SITE])
-    if (p === '/api/capabilities') return json({ live: false })
+    if (p === '/api/capabilities') return json({ live: false, cmDetect: false })
     if (p === '/api/breakers') return json([])
     if (p === `/api/sites/${SITE}/services`) return json(services)
     if (p === '/api/encode-profiles') return json([])

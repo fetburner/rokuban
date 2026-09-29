@@ -24,6 +24,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/fetburner/rokuban/internal/catalog"
+	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -299,6 +300,7 @@ type IngestWorker struct {
 	MirakcClients map[string]*mirakc.Client
 	Pool          *pgxpool.Pool
 	MediaDir      string
+	CMDetect      config.CMDetectConfig
 
 	// StallTimeout は転送中の無進捗検知タイムアウト（config.ingest.stall_timeout。
 	// config.defaults() が既定値 30 秒を埋めるので、ここでは常に config が
@@ -871,6 +873,9 @@ func recordIngestMetrics(offset int64, counter *tsstat.Counter) {
 func (w *IngestWorker) enqueueIngestFollowups(ctx context.Context, client *mirakc.Client, recordID string, recordingID int64, log *slog.Logger) {
 	enqueueMissingEncodesFromContext(ctx, w.Pool, recordingID)
 	if riverClient, clientErr := river.ClientFromContextSafely[pgx5.Tx](ctx); clientErr == nil {
+		if enqueueErr := EnqueueCMDetectionIfNeeded(ctx, w.Pool, riverClient, recordingID); enqueueErr != nil {
+			log.Error("ingest: failed to enqueue CM detection job", "recording_id", recordingID, "err", enqueueErr)
+		}
 		if enqueueErr := EnqueueThumbnailIfNeeded(ctx, w.Pool, riverClient, recordingID); enqueueErr != nil {
 			log.Error("ingest: failed to enqueue thumbnail job", "recording_id", recordingID, "err", enqueueErr)
 		}
@@ -1242,6 +1247,7 @@ func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sq
 		RecordingID:    recordingID,
 		KeepOriginal:   keepOriginal,
 		EncodeProfiles: encodeProfiles,
+		CmDetect:       w.CMDetect.Enabled,
 	})
 }
 

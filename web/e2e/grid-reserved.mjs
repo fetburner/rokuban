@@ -152,7 +152,7 @@ const reservation = (program) => ({
 /** apiHandler は /programs の描画に要る `/api/**` の応答を作る。 */
 async function apiHandler({ path: p, json }) {
   if (p === '/api/sites') return json([SITE])
-  if (p === '/api/capabilities') return json({ live: false })
+  if (p === '/api/capabilities') return json({ live: false, cmDetect: false })
   if (p === '/api/reservations') return json([reservation(reserved), reservation(shortReserved)])
   if (p === '/api/capacity/overages') return json([])
   if (p === '/api/encode-profiles') return json([])

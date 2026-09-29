@@ -72,7 +72,7 @@ await verifyBundleMatchesOrExit(URL_BASE, ng)
 function installReservationsStubs(page, mode) {
   return installApiStubs(page, async ({ path: p, json, route }) => {
     if (p === '/api/sites') return json([SITE])
-    if (p === '/api/capabilities') return json({ live: true })
+    if (p === '/api/capabilities') return json({ live: true, cmDetect: false })
     if (p === '/api/breakers') return json([])
     if (p === '/api/reservations') return json(reservations)
     if (p === '/api/capacity/overages') {

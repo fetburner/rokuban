@@ -86,7 +86,7 @@ async function openStubbed(pathname, label) {
     if (requested === '/api/events') return sseKeepAlive(route)
     const body =
       requested === '/api/capabilities'
-        ? '{"encode":false,"live":false,"storage":false}'
+        ? '{"encode":false,"live":false,"cmDetect":false,"storage":false}'
         : requested === '/api/version'
           ? '{"version":"e2e"}'
           : requested === '/api/sites'

@@ -79,6 +79,11 @@ type RouterConfig struct {
 	// 持たないプロセスでも /api/capabilities は生える）ので、api ロールのときだけ
 	// 代入すると同じ config の別プロセスが違う答えを返す（cmd/rokuban/server.go）。
 	LiveEnabled bool
+
+	// CMDetectEnabled は config.cm_detect.enabled。GET /api/capabilities の cmDetect に出し、
+	// false のとき encode-policy の cmDetect=true と検出の再試行を 409 にする。
+	// LiveEnabled と同じくロールに関係なく config の値を渡す。
+	CMDetectEnabled bool
 }
 
 // Mounter はルーターへ追加のルートを登録する。
@@ -132,7 +137,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	}
 
 	handler := NewServer(cfg.Pool, cfg.RiverClient, cfg.Sites, cfg.EncodeProfileNames,
-		cfg.LiveProfiles, Capabilities{Live: cfg.LiveEnabled})
+		cfg.LiveProfiles, Capabilities{Live: cfg.LiveEnabled, CmDetect: cfg.CMDetectEnabled})
 	strict := NewStrictHandler(handler, nil)
 	HandlerWithOptions(strict, ChiServerOptions{
 		BaseRouter: r,

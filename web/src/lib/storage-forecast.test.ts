@@ -28,6 +28,7 @@ function recording(overrides: Partial<Recording> = {}): Recording {
     durationMs: 1_800_000,
     status: 'finished',
     keepOriginal: 'always',
+    cmDetection: { state: 'disabled' },
     createdAt: '2026-08-01T00:00:00Z',
     sizeBytes: 900_000_000,
     ...overrides,

@@ -43,7 +43,7 @@ const recordings = Array.from({ length: 6 }, (_, i) => {
     startAt: new Date(Date.parse('2026-01-01T12:00:00Z') + id * 60_000).toISOString(),
     durationMs: 1_800_000,
     status: 'finished',
-    keepOriginal: 'always',
+    keepOriginal: 'always', cmDetection: { state: 'disabled' },
     // ⑤ の再生速度判定は録画詳細（RecordingPlayer）を出すため、原本 + encoded
     // 派生物を持たせる（他の判定は list 応答しか見ないので影響しない）。
     sizeBytes: 500_000_000,
@@ -86,7 +86,7 @@ const searchBodies = []
 async function apiHandler({ path, url, json, route }) {
   const method = route.request().method()
   if (path === '/api/sites') return json(['default'])
-  if (path === '/api/capabilities') return json({ live: true })
+  if (path === '/api/capabilities') return json({ live: true, cmDetect: false })
   if (path === '/api/breakers') return json([])
   if (path === '/api/encode-profiles' || path === '/api/rules') return json([])
   if (path === '/api/encode-queue') return json({ queued: 0, running: 0 })

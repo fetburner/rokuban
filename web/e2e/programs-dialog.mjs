@@ -91,7 +91,7 @@ function boxesOverlap(a, b) {
 /** apiHandler は番組表モーダルの描画と予約操作に必要な応答を作る。 */
 async function apiHandler({ path: p, json, route }) {
   if (p === '/api/sites') return json([SITE])
-  if (p === '/api/capabilities') return json({ live: true })
+  if (p === '/api/capabilities') return json({ live: true, cmDetect: false })
   if (p === '/api/reservations') return json([])
   if (p === '/api/capacity/overages') return json([])
   if (p === '/api/encode-profiles') return json([])

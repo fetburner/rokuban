@@ -183,7 +183,7 @@ async function openLivePage(browser) {
   const page = await browser.newPage()
   await installApiStubs(page, async ({ path: p, json }) => {
     if (p === '/api/sites') return json([SITE])
-    if (p === '/api/capabilities') return json({ live: true })
+    if (p === '/api/capabilities') return json({ live: true, cmDetect: false })
     if (p === '/api/breakers') return json([])
     if (p === '/api/events') return json([])
     if (p === `/api/sites/${SITE}/services`) return json([liveService])

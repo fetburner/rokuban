@@ -66,7 +66,7 @@ const programs = [shortProgram, tenMinuteProgram, longProgram]
 
 async function apiHandler({ path: p, json }) {
   if (p === '/api/sites') return json([SITE])
-  if (p === '/api/capabilities') return json({ live: false })
+  if (p === '/api/capabilities') return json({ live: false, cmDetect: false })
   if (p === '/api/breakers') return json([])
   if (p === '/api/reservations') return json([])
   if (p === '/api/capacity/overages') return json([])

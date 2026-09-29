@@ -60,3 +60,13 @@ export function useLiveCapability(): LiveCapability {
 export function useLiveEnabled(): boolean {
   return useLiveCapability() === 'enabled'
 }
+
+/**
+ * useCMDetectEnabled は CM 検出の有効化導線を出してよいかを返す
+ * （`cm_detect.enabled`）。`useLiveEnabled` と同じく未確定は出さない側に倒す。
+ * 無効なデプロイでは API が 409 を返すので、押せる導線を出さない。
+ */
+export function useCMDetectEnabled(): boolean {
+  const capabilities = unwrap(useGetCapabilities().data)
+  return capabilities?.cmDetect === true
+}

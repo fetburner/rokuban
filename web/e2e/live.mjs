@@ -401,7 +401,7 @@ async function mockLiveRoutes(page, mode) {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ live: true }),
+      body: JSON.stringify({ live: true, cmDetect: false }),
     })
   })
 
@@ -544,7 +544,7 @@ async function runConsentCheck() {
       route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ live: true }),
+        body: JSON.stringify({ live: true, cmDetect: false }),
       }),
     )
     // 実データは要らない --- 要求そのものの有無だけを見る（decode まではしない）

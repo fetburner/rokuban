@@ -481,6 +481,8 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 		// 答えがプロセスの役割で変わる。Sites / MetricsRegistry を無条件に
 		// 渡しているのと同じ理由でここに置く。
 		LiveEnabled: cfg.Live.Enabled,
+		// CM 検出の有効/無効も config の値をそのまま出す（LiveEnabled と同じ理由でロールで囲わない）。
+		CMDetectEnabled: cfg.CMDetect.Enabled,
 		// GET /api/live-profiles に出す一覧（issue #869）。順序が既定の根拠に
 		// なるので、config の定義順をそのまま保つ。ffmpeg のパス・extra_args・
 		// 品質指定は載せない（name と表示用の height だけ）。
@@ -566,6 +568,11 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, queues 
 			return nil, err
 		}
 	}
+	if cfg.CMDetect.Enabled && jobs.RequiresCMDetectTools(queues) {
+		if err := cfg.CMDetect.ValidateTools(cfg.Encode.FFprobe); err != nil {
+			return nil, err
+		}
+	}
 
 	mirakcClients := make(map[string]*mirakc.Client, len(bound))
 	for _, site := range bound {
@@ -587,6 +594,7 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, queues 
 		MediaDir:                 cfg.Storage.MediaDir,
 		ScratchDir:               cfg.Storage.ScratchDir,
 		Encode:                   cfg.Encode,
+		CMDetect:                 cfg.CMDetect,
 		EpgRetentionGrace:        cfg.Epg.RetentionGrace,
 		RulerRetentionGrace:      cfg.Epg.RetentionGrace,
 		RulerMaxDeletesPerPass:   cfg.Ruler.MaxDeletesPerPass,
@@ -615,6 +623,7 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, queues 
 		DeleteReconcile:      true,
 		EncodeReconcile:      true,
 		ThumbnailReconcile:   true,
+		CMDetectReconcile:    cfg.CMDetect.Enabled,
 		StorageSync:          true,
 	}
 	return worker.NewClient(pool, workers, clientCfg)

@@ -169,7 +169,8 @@ type Deps struct {
 
 	// Encode は構造化エンコードプロファイルと ffmpeg パス（issue #64 / #65）。
 	// worker ロール起動時に ValidateTools 済み（不変条件 4）。
-	Encode config.EncodeConfig
+	Encode   config.EncodeConfig
+	CMDetect config.CMDetectConfig
 
 	// EpgRetentionGrace は放送済み番組を刈り取るまでの猶予
 	// （config.epg.retention_grace。config.defaults() が既定値 24 時間を埋める）。
@@ -221,6 +222,7 @@ func NewWorkers(deps *Deps) *river.Workers {
 		Pool:          deps.Pool,
 		MediaDir:      deps.MediaDir,
 		StallTimeout:  deps.IngestStallTimeout,
+		CMDetect:      deps.CMDetect,
 	})
 	river.AddWorker(workers, &EncodeWorker{
 		Pool:       deps.Pool,
@@ -286,6 +288,14 @@ func NewWorkers(deps *Deps) *river.Workers {
 	river.AddWorker(workers, &ThumbnailReconcileWorker{
 		Pool: deps.Pool,
 	})
+	river.AddWorker(workers, &CMDetectWorker{
+		Pool:       deps.Pool,
+		MediaDir:   deps.MediaDir,
+		ScratchDir: deps.ScratchDir,
+		CMDetect:   deps.CMDetect,
+		FFprobe:    deps.Encode.FFprobe,
+	})
+	river.AddWorker(workers, &CMDetectReconcileWorker{Pool: deps.Pool})
 	river.AddWorker(workers, &DeleteReconcileWorker{
 		Pool:              deps.Pool,
 		MediaDir:          deps.MediaDir,
@@ -339,6 +349,7 @@ func allQueues(ingestConcurrency, encodeConcurrency, thumbnailConcurrency int) m
 		// issue #64）。thumbnail ワーカーは M3-4、encode ワーカーは M3-3。
 		jobs.EncodeQueue:    {MaxWorkers: encodeConcurrency},
 		jobs.ThumbnailQueue: {MaxWorkers: thumbnailConcurrency},
+		jobs.CMDetectQueue:  {MaxWorkers: 1},
 		// delete_reconcile / catalog_export 用（issue #185 M4-13。internal/jobs/queue.go の
 		// CleanupQueue のコメント参照）。
 		jobs.CleanupQueue: {MaxWorkers: defaultCleanupConcurrency},
@@ -442,6 +453,9 @@ type ClientConfig struct {
 	// ThumbnailReconcileInterval は thumbnail reconcile の間隔。0 なら既定値（15 分）。
 	ThumbnailReconcileInterval time.Duration
 
+	// CMDetectReconcile registers the CM detection desired-state periodic pass.
+	CMDetectReconcile bool
+
 	// StorageSync が true ならストレージ観測（issue #238 M7-5）を定期ジョブとして
 	// 登録する（PeriodicJobs が true のときのみ）。CatalogExport / DeleteReconcile と
 	// 同じくサイト非依存（観測対象は単一の MediaDir / ScratchDir）。
@@ -451,7 +465,7 @@ type ClientConfig struct {
 	StorageSyncInterval time.Duration
 
 	// PeriodicJobs が false なら、BoundSites / CatalogExport / DeleteReconcile /
-	// EncodeReconcile / ThumbnailReconcile / StorageSync が設定されていても River の PeriodicJobs を
+	// EncodeReconcile / ThumbnailReconcile / CMDetectReconcile / StorageSync が設定されていても River の PeriodicJobs を
 	// 一切登録しない。
 	// k8s では false にして、CronJob が
 	// `rokuban enqueue` を叩く形に委ねる（docs/data.md §2「定期実行の契機は
@@ -766,6 +780,7 @@ func configureGlobalPeriodicJobs(riverCfg *river.Config, cfg ClientConfig) {
 	appendPeriodic(cfg.DeleteReconcile, cfg.DeleteReconcileInterval, defaultDeleteReconcileInterval, jobs.DeleteReconcileArgs{})
 	appendPeriodic(cfg.EncodeReconcile, cfg.EncodeReconcileInterval, defaultEncodeReconcileInterval, jobs.EncodeReconcileArgs{})
 	appendPeriodic(cfg.ThumbnailReconcile, cfg.ThumbnailReconcileInterval, defaultThumbnailReconcileInterval, jobs.ThumbnailReconcileArgs{})
+	appendPeriodic(cfg.CMDetectReconcile, 0, defaultCMDetectReconcileInterval, jobs.CMDetectReconcileArgs{})
 	appendPeriodic(cfg.StorageSync, cfg.StorageSyncInterval, defaultStorageSyncInterval, jobs.StorageSyncArgs{})
 }
 

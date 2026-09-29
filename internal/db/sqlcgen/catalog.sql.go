@@ -401,7 +401,7 @@ func (q *Queries) CatalogListProgramSnapshots(ctx context.Context) ([]ProgramSna
 }
 
 const catalogListRecordingEncodePolicies = `-- name: CatalogListRecordingEncodePolicies :many
-SELECT recording_id, keep_original, encode_profiles, created_at, updated_at FROM recording_encode_policy ORDER BY recording_id
+SELECT recording_id, keep_original, encode_profiles, created_at, updated_at, cm_detect FROM recording_encode_policy ORDER BY recording_id
 `
 
 // recording_encode_policy 衛星表（issue #159）。行が無い録画は未凍結（省略）で
@@ -422,6 +422,7 @@ func (q *Queries) CatalogListRecordingEncodePolicies(ctx context.Context) ([]Rec
 			&i.EncodeProfiles,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.CmDetect,
 		); err != nil {
 			return nil, err
 		}
@@ -1107,13 +1108,14 @@ func (q *Queries) CatalogUpsertRecording(ctx context.Context, arg CatalogUpsertR
 
 const catalogUpsertRecordingEncodePolicy = `-- name: CatalogUpsertRecordingEncodePolicy :exec
 INSERT INTO recording_encode_policy (
-    recording_id, keep_original, encode_profiles, created_at, updated_at
-) VALUES ($1, $2, $3, $4, $5)
+    recording_id, keep_original, encode_profiles, created_at, updated_at, cm_detect
+) VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (recording_id) DO UPDATE SET
     keep_original   = EXCLUDED.keep_original,
     encode_profiles = EXCLUDED.encode_profiles,
     created_at      = EXCLUDED.created_at,
-    updated_at      = EXCLUDED.updated_at
+    updated_at      = EXCLUDED.updated_at,
+    cm_detect       = EXCLUDED.cm_detect
 `
 
 type CatalogUpsertRecordingEncodePolicyParams struct {
@@ -1122,6 +1124,7 @@ type CatalogUpsertRecordingEncodePolicyParams struct {
 	EncodeProfiles []string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	CmDetect       bool
 }
 
 // recording_encode_policy 衛星表の rescue（issue #159）。凍結 = 行の INSERT
@@ -1136,6 +1139,7 @@ func (q *Queries) CatalogUpsertRecordingEncodePolicy(ctx context.Context, arg Ca
 		arg.EncodeProfiles,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.CmDetect,
 	)
 	return err
 }
