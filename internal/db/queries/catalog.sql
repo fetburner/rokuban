@@ -1,5 +1,5 @@
 -- catalog エクスポート / rescue 用（M3-9 / issue #71）。
--- 保護対象はルール・録画・media_assets・drop_stats・drop_positions・意図・上書き（と意図の FK 先
+-- 保護対象はルール・分類ルール・録画・media_assets・drop_stats・drop_positions・意図・上書き（と意図の FK 先
 -- program_snapshots）。EPG 射影と schedule/record/tuner_sync は再構築可能なので
 -- 含めない（docs/storage.md §8）。
 
@@ -9,6 +9,11 @@
 
 -- name: CatalogListRules :many
 SELECT * FROM rules ORDER BY id;
+
+-- name: CatalogListLabelRules :many
+-- 生成列（value_key / keyword_key）は含めない。復元先で value / keyword から作り直される。
+SELECT id, key, value, keyword, priority, created_at, updated_at
+FROM label_rules ORDER BY id;
 
 -- name: CatalogListRuleTextMatches :many
 SELECT * FROM rule_text_matches ORDER BY rule_id, seq;
@@ -113,6 +118,20 @@ ON CONFLICT (id) DO UPDATE SET
     metadata          = EXCLUDED.metadata,
     created_at        = EXCLUDED.created_at,
     updated_at        = EXCLUDED.updated_at;
+
+-- name: CatalogUpsertLabelRule :exec
+-- id を保持する（label_rule_hits は id を指すので、rescue 後の再評価と同じ id で
+-- 揃える）。value_key / keyword_key は生成列なので INSERT に含めない。
+INSERT INTO label_rules (id, key, value, keyword, priority, created_at, updated_at)
+OVERRIDING SYSTEM VALUE
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (id) DO UPDATE SET
+    key        = EXCLUDED.key,
+    value      = EXCLUDED.value,
+    keyword    = EXCLUDED.keyword,
+    priority   = EXCLUDED.priority,
+    created_at = EXCLUDED.created_at,
+    updated_at = EXCLUDED.updated_at;
 
 -- name: CatalogDeleteRuleTextMatches :exec
 DELETE FROM rule_text_matches WHERE rule_id = $1;
@@ -340,6 +359,12 @@ ON CONFLICT (media_asset_id, byte_offset) DO UPDATE SET
 SELECT setval(
     pg_get_serial_sequence('rules', 'id'),
     GREATEST(COALESCE((SELECT MAX(id) FROM rules), 1), 1)
+);
+
+-- name: CatalogResetLabelRulesIDSeq :exec
+SELECT setval(
+    pg_get_serial_sequence('label_rules', 'id'),
+    GREATEST(COALESCE((SELECT MAX(id) FROM label_rules), 1), 1)
 );
 
 -- name: CatalogResetRecordingsIDSeq :exec

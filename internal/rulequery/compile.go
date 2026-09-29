@@ -195,13 +195,17 @@ func compileTextMatch(m TextMatch, arg func(any) string) (string, error) {
 // caseSensitive が false なら normalize_search_text（全角→半角 + lower）を
 // 両辺にかけて全角/半角の揺れを吸収する。pg_trgm の式 GIN が
 // normalize_search_text(col) に乗っていれば、この形のまま加速される。
+//
+// エスケープは SQL 側の like_escape に一本化する。分類ルールの当たりは DB の
+// トリガーと全件再評価のジョブが評価するので、Go 側でエスケープする経路を通らない。
+// 4 経路（ruler・EPG 検索・録画一覧・分類ルール）が同じ関数を通ることで、
+// 「検索では出るのに分類ルールが当たらない」を構造的に防ぐ（docs/data/series.md §8）。
 func KeywordClause(col string, value string, caseSensitive bool, arg func(any) string) string {
 	if caseSensitive {
-		pat := "%" + escapeLike(value) + "%"
-		return col + " LIKE " + arg(pat) + " ESCAPE '\\'"
+		return col + " LIKE ('%' || like_escape(" + arg(value) + ") || '%') ESCAPE '\\'"
 	}
 	normCol := "normalize_search_text(" + col + ")"
-	return normCol + " LIKE ('%' || normalize_search_text(" + arg(escapeLike(value)) + ") || '%') ESCAPE '\\'"
+	return normCol + " LIKE ('%' || normalize_search_text(like_escape(" + arg(value) + ")) || '%') ESCAPE '\\'"
 }
 
 func textTargetColumn(target string) (string, error) {
@@ -216,13 +220,6 @@ func textTargetColumn(target string) (string, error) {
 	default:
 		return "", fmt.Errorf("unknown target %q", target)
 	}
-}
-
-func escapeLike(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `%`, `\%`)
-	s = strings.ReplaceAll(s, `_`, `\_`)
-	return s
 }
 
 // startAtJST は番組開始時刻を JST の壁時計（timestamp）に落とす式。

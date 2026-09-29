@@ -75,6 +75,11 @@ var enqueueJobs = map[string]enqueueJob{
 		RequiresSite: false,
 		NewArgs:      func(string) river.JobArgs { return jobs.DeleteReconcileArgs{} },
 	},
+	"label-rule-reconcile": {
+		// 分類ルールの再評価は全録画を 1 回見る site 非依存の DB ジョブ。
+		RequiresSite: false,
+		NewArgs:      func(string) river.JobArgs { return jobs.LabelRuleReconcileArgs{} },
+	},
 	"encode-reconcile": {
 		// エンコードは site の属性を持たない（アーカイブもプロファイルも単一。
 		// jobs.EncodeReconcileArgs のコメント）。delete_reconcile と違って

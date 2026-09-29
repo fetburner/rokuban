@@ -466,10 +466,11 @@ func TestResolveEnqueueJobSite(t *testing.T) {
 // enqueueJobs の分類が一貫していること。RequiresSite の集合が「次にジョブを
 // 足す人がどちらかを更新し忘れる」経路にならないよう、現状の契約を固定する
 // （issue #200）。catalog-export と storage-sync（issue #238 M7-5）、
-// encode-reconcile（issue #163）、thumbnail-reconcile、cm-detect-reconcile、delete-reconcile が site 非依存。
+// encode-reconcile（issue #163）、thumbnail-reconcile、cm-detect-reconcile、
+// delete-reconcile、label-rule-reconcile が site 非依存。
 func TestEnqueueJobs_SiteClassification(t *testing.T) {
 	independent := sortedJobNamesBySite(false)
-	wantIndependent := []string{"catalog-export", "cm-detect-reconcile", "delete-reconcile", "encode-reconcile", "storage-sync", "thumbnail-reconcile"}
+	wantIndependent := []string{"catalog-export", "cm-detect-reconcile", "delete-reconcile", "encode-reconcile", "label-rule-reconcile", "storage-sync", "thumbnail-reconcile"}
 	if strings.Join(independent, ",") != strings.Join(wantIndependent, ",") {
 		t.Errorf("site-independent jobs = %v, want %v", independent, wantIndependent)
 	}

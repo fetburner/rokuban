@@ -45,6 +45,9 @@ func Export(ctx context.Context, pool *pgxpool.Pool) (*Document, error) {
 	if doc.Rules, err = exportRules(ctx, q); err != nil {
 		return nil, err
 	}
+	if doc.LabelRules, err = exportLabelRules(ctx, q); err != nil {
+		return nil, err
+	}
 	if doc.ProgramSnapshots, err = exportProgramSnapshots(ctx, q); err != nil {
 		return nil, err
 	}
@@ -83,6 +86,22 @@ func Export(ctx context.Context, pool *pgxpool.Pool) (*Document, error) {
 		return nil, fmt.Errorf("committing export tx: %w", err)
 	}
 	return doc, nil
+}
+
+// exportLabelRules は label_rules を文書の型付き行に変換する。
+func exportLabelRules(ctx context.Context, q *sqlcgen.Queries) ([]LabelRule, error) {
+	rows, err := q.CatalogListLabelRules(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing label_rules: %w", err)
+	}
+	out := make([]LabelRule, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, LabelRule{
+			ID: r.ID, Key: r.Key, Value: r.Value, Keyword: r.Keyword,
+			Priority: r.Priority, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
+		})
+	}
+	return out, nil
 }
 
 // exportRules は rules とその従属表を読み取り、文書の Rule に組み立てる。

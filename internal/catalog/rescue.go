@@ -24,6 +24,7 @@ type RescueResult struct {
 	RejectedSnapshots []RejectedSnapshot
 
 	Rules                   int
+	LabelRules              int
 	Recordings              int
 	RecordingEncodePolicies int
 	RecordingPurgeRequests  int
@@ -158,7 +159,22 @@ func insertableSnapshot(s ProgramSnapshot) bool {
 func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult, error) {
 	q := sqlcgen.New(tx)
 	res := &RescueResult{}
+
+	// worker のジョブと同じロックで直列化する（古いスナップショットで評価した
+	// ジョブが、この結果を後から上書きしないように）。**最初の書き込みより前**に取る。
+	// 途中で取ると、recordings の upsert のトリガーが label_rule_hits の行ロックを
+	// 持ったまま advisory lock を待ち、ジョブ（advisory lock 保持 → その行を待つ）と
+	// デッドロックして、rescue が犠牲になれば 1 世代の復元が丸ごと失敗する。
+	if err := q.LockLabelRuleReevaluation(ctx); err != nil {
+		return nil, fmt.Errorf("locking label rule re-evaluation: %w", err)
+	}
 	if err := applyRules(ctx, q, doc.Rules, res); err != nil {
+		return nil, err
+	}
+	// 分類ルールは recordings より前に書く。recordings の INSERT トリガーが
+	// その時点のルール集合で当たりを評価するので、後に書くと新規行の当たりが
+	// 全件再評価（下）まで空になる。
+	if err := applyLabelRules(ctx, q, doc.LabelRules, res); err != nil {
 		return nil, err
 	}
 
@@ -217,8 +233,19 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 		return nil, err
 	}
 
+	// label_rule_hits は catalog に入れない導出値なので、ここで全件を再評価して
+	// 閉じる。トリガーは title が変わった行と新規行しか見ないので、DB に残っていた
+	// 既存録画の当たりは、復元したルール集合に対して古いままになりうる。
+	// worker の定期再評価（15 分）に任せず同じ tx で閉じる。
+	if _, err := q.ApplyLabelRuleReevaluation(ctx); err != nil {
+		return nil, fmt.Errorf("re-evaluating label rules after rescue: %w", err)
+	}
+
 	if err := q.CatalogResetRulesIDSeq(ctx); err != nil {
 		return nil, fmt.Errorf("resetting rules id seq: %w", err)
+	}
+	if err := q.CatalogResetLabelRulesIDSeq(ctx); err != nil {
+		return nil, fmt.Errorf("resetting label_rules id seq: %w", err)
 	}
 	if err := q.CatalogResetRecordingsIDSeq(ctx); err != nil {
 		return nil, fmt.Errorf("resetting recordings id seq: %w", err)
@@ -228,6 +255,21 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 	}
 
 	return res, nil
+}
+
+// applyLabelRules は label_rules を id 保持の upsert で復元し、件数を
+// res.LabelRules に書く。
+func applyLabelRules(ctx context.Context, q *sqlcgen.Queries, rules []LabelRule, res *RescueResult) error {
+	for _, r := range rules {
+		if err := q.CatalogUpsertLabelRule(ctx, sqlcgen.CatalogUpsertLabelRuleParams{
+			ID: r.ID, Key: r.Key, Value: r.Value, Keyword: r.Keyword,
+			Priority: r.Priority, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
+		}); err != nil {
+			return fmt.Errorf("upserting label_rule %d: %w", r.ID, err)
+		}
+	}
+	res.LabelRules = len(rules)
+	return nil
 }
 
 // applyRules は rules とその従属表を復元し、件数を res.Rules に書く。

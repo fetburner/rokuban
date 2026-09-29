@@ -449,6 +449,22 @@ function RuleRow({
             >
               このルールの録画
             </Button>
+            {/* 録画ルールのキーワードを分類ルール（シリーズ棚）へ写す導線。
+                録画ルールから分類ルールを**継承はさせない**（勝者ルールだけを
+                継承すると広いルールに黙って負ける。docs/data/series.md §8
+                「評価結果を宛先にしない」）。写すのはユーザーが押したときだけで、
+                値は棚画面で入れる。 */}
+            {firstKeyword(rule) !== undefined && (
+              <Button
+                variant="ghost"
+                size="sm"
+                render={
+                  <Link to="/shelves" search={{ keyword: firstKeyword(rule) }} />
+                }
+              >
+                このキーワードで分類ルールを作る
+              </Button>
+            )}
           </div>
           {/* 破壊的・稀な操作（削除）は overflow に寄せる（issue #227）。 */}
           <DropdownMenu>
@@ -686,4 +702,19 @@ function RuleForm({ onCancel, onSaved }: { onCancel: () => void; onSaved: () => 
       </AlertDialog>
     </form>
   )
+}
+
+/**
+ * firstKeyword はルールの最初のキーワード条件の値を返す（無ければ undefined）。
+ *
+ * 分類ルールが持てる条件はキーワード 1 つだけなので、複数のキーワードを持つ
+ * ルールでも写せるのは 1 つである。**最初の 1 つを選ぶのは任意**で、正規表現
+ * モードの条件は写さない（分類ルールの方言は LIKE の部分一致だけで、正規表現を
+ * 渡すと「検索では出るのに分類ルールが当たらない」になる）。
+ */
+function firstKeyword(rule: Rule): string | undefined {
+  for (const match of rule.textMatches ?? []) {
+    if (match.mode === 'keyword' && match.value !== '') return match.value
+  }
+  return undefined
 }

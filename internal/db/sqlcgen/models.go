@@ -80,6 +80,23 @@ type EpgService struct {
 	ObservedAt         time.Time
 }
 
+type LabelRule struct {
+	ID         int64
+	Key        string
+	Value      string
+	Keyword    string
+	Priority   int32
+	ValueKey   *string
+	KeywordKey *string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+type LabelRuleHit struct {
+	RecordingID int64
+	LabelRuleID int64
+}
+
 type MediaAsset struct {
 	ID          int64
 	RecordingID int64
@@ -198,6 +215,7 @@ type Recording struct {
 	SupersededAt      *time.Time
 	PurgedAt          *time.Time
 	GenreLv1          []int16
+	SeriesKey         *string
 }
 
 type RecordingChapterOwnership struct {
@@ -252,6 +270,11 @@ type RecordingIngestProgress struct {
 type RecordingPurgeRequest struct {
 	RecordingID int64
 	RequestedAt time.Time
+}
+
+type RecordingSeries struct {
+	RecordingID int64
+	Value       *string
 }
 
 type Reservation struct {

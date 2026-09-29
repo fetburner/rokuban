@@ -2,6 +2,7 @@ import { Link, useRouterState } from '@tanstack/react-router'
 import {
   CalendarClock,
   Home,
+  Layers,
   ListVideo,
   Menu,
   MoreHorizontal,
@@ -79,6 +80,7 @@ const navItems: NavItem[] = [
   { to: '/live', label: 'ライブ', icon: Radio, requires: 'live' },
   { to: '/search', label: '検索', icon: Search },
   { to: '/rules', label: 'ルール', icon: Settings2 },
+  { to: '/shelves', label: 'シリーズ棚', icon: Layers },
   { to: '/cm-logos', label: 'CM ロゴ', icon: ScanLine },
 ]
 

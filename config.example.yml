@@ -122,7 +122,8 @@ reconciler:
 worker:
   periodic_jobs: true            # プロセス内で定期ジョブ（epg_sync / tuner_sync / ruler_pass /
                                  # reconcile_pass / record_sweep / catalog_export /
-                                 # delete_reconcile / storage_sync）を投入するか。
+                                 # delete_reconcile / label_rule_reconcile /
+                                 # storage_sync）を投入するか。
                                  # k8s では false にし、CronJob から rokuban enqueue で投入する
                                  # （River の PeriodicJobs はリーダーだけが投入するため、
                                  #  KEDA で 0 にスケールすると誰も投入しなくなる。docs/data.md §2）
