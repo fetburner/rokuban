@@ -26,10 +26,21 @@ const IngestTempFilePrefix = ".rokuban-ingest-"
 // メディア走査と catalog rescue の対象にしない。
 const MediaRelPathLockFilePrefix = ".rokuban-rel-path-lock-"
 
+// EncodeTempFilePrefix は encode が canonical file と同じディレクトリに作る、
+// 公開前の一時ファイル（scratch からストリームコピーした staged 出力）の予約接頭辞。
+// ingest temp と同じく孤児回収には拾わせる（mtime 猶予で守られる）が、catalog 無し
+// rescue では原本へ昇格させない。
+const EncodeTempFilePrefix = ".rokuban-encode-"
+
 // IsIngestTempFile はファイル名が ingest の record 固有一時ファイルかを返す。
 // パス全体ではなく basename だけを見るため、走査側と ingest 側で同じ判定を使える。
 func IsIngestTempFile(name string) bool {
 	return strings.HasPrefix(filepath.Base(name), IngestTempFilePrefix)
+}
+
+// IsEncodeTempFile はファイル名が encode の公開前一時ファイルかを返す。
+func IsEncodeTempFile(name string) bool {
+	return strings.HasPrefix(filepath.Base(name), EncodeTempFilePrefix)
 }
 
 // IsMediaRelPathLockFile は rel_path 固有のファイル排他用 lock file かを返す。

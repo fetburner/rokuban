@@ -35,9 +35,11 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
 	`.rokuban-ingest-{site}-{record_id}` と決め、プロセス再起動後も同じファイルを
 	開く。scratch から rename すると `EXDEV` になり、コピーへの劣化を許すため
 	確定操作には使わない。
-	`.rokuban-ingest-` と `.rokuban-rel-path-lock-` で始まる basename は予約名であり、
-	mirakc の contentPath には使わない。前者は ingest temp、後者は canonical と同じ
-	ディレクトリに置く rel_path 固有 lock file である。
+	`.rokuban-ingest-` / `.rokuban-rel-path-lock-` / `.rokuban-encode-` で始まる
+	basename は予約名であり、mirakc の contentPath には使わない。1 つ目は ingest
+	temp、2 つ目は canonical と同じディレクトリに置く rel_path 固有 lock file、
+	3 つ目は encode の公開前 staging file（後述）である。encode の staged 出力も
+	同じディレクトリに置く --- scratch から rename すると `EXDEV` になる。
 	canonical path は転送中に触らず、HEAD の長さ照合と、存在する場合の
    `content.sha256` 照合 → temp の `fsync` → `Close`
    → DB transaction 内の original 行 INSERT（rel_path の一意 reservation）→ temp
@@ -64,6 +66,27 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
    実行中の ingest や公開済み canonical は削除せず、次の回収 pass に延期する。
 4. **DB には相対パスのみ保存**。ルートは設定で与える。DB にロック・xattr・パーミッション
    の状態は保存しない。temp の同時実行排他は、対象 FS 上の協調的な POSIX `flock` に依存する
+
+### 派生物の公開（encode）は既存の canonical を上書きする
+
+encode の出力は原本と違って**既にある行の `rel_path` を指す**（プロファイルごとに
+1 つ。カット版は世代番号で新しいパスになる）。同じ `(recording, profile)` の encode が
+2 本並走しうる（job lock は ffmpeg の排他ではなく、失っても実行中の encode を
+cancel しない）。そのため:
+
+- 公開は **canonical と同じディレクトリの staging file（`.rokuban-encode-`）へ
+  ストリームコピー + `fsync` → atomic rename → 親ディレクトリ `fsync`** の順で行う。
+  canonical を `O_TRUNC` で直接開くと、読者が切り詰められた内容を観測しうる
+- staging と rename と `media_assets` の commit は、**同じ canonical の rel_path
+  filesystem lock を保持したまま 1 続きに行う**。孤児回収は同じ lock を非 blocking で
+  取ってから unlink するので、公開と commit の間で切ると、commit 前の行と消えた実体が
+  組み合わせになりうる（ルール 3 と同じ理由）
+- 置き忘れた staging file は mtime 猶予つきの孤児回収が拾う（ingest temp と同じ）。
+  catalog 無し rescue は原本へ昇格させない
+- **scratch 側も `(recording, profile)` ごとの `flock` で直列化する**。試行ごとに
+  一意な scratch にすると、プロセス死で残ったディレクトリを回収する仕組みが無いまま
+  ディスクに溜まる。lock を取れなかった実行は待たずにジョブを戻す（保持側は数十分
+  動きうるので、待つと River の実行枠を捨てるだけである）
 
 ### カット版の置き換え（「置くのは一回」の 1 つの例外）
 

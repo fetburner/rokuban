@@ -59,13 +59,15 @@ var (
 	//     その分だけ短い停止で lease が切れる。並走の帰結は利用者ごとに違う:
 	//       - ingest: 壊れない。temp の flock と DB の一意 reservation が採用を決め、
 	//         lock 喪失でも転送を cancel しないので、二重 pull の無駄が出るだけである。
-	//       - 未解決: encode にはファイル単位の排他が無い。scratch は
-	//         (recording, profile) ごとの固定パスで、canonical へ O_TRUNC で直接コピー
-	//         するので、並走すると canonical が切り詰められうる。この穴は heartbeat の
-	//         応答待ちが上限を超えて接続が閉じられる経路で既にあり、lease はそこに
-	//         「30 秒以上のプロセス停止」と「DB から分断されたが生きている worker」を足す。
+	//       - encode: 壊れない。scratch は (recording, profile) ごとの flock で直列化し
+	//         （lockEncodeScratch。取れなかった実行は待たずにジョブを戻す）、canonical へは
+	//         同じディレクトリの temp から rename で公開する（publishEncoded）ので、
+	//         並走しても切り詰められた内容は観測されない。lock 喪失で実行中の encode を
+	//         cancel しないぶん、二重 encode の無駄は出る（詳しくは EncodeWorker の
+	//         doc コメント）。
 	//       - cm_detect: scratch はジョブ ID ごとで、代替（別 ID）とは衝突しない。
-	//         結果は DB の Upsert である。
+	//         結果は DB の Upsert である。局ロゴの上書きもその job 固有 scratch の
+	//         中だけ（writeStationLogo 参照）。
 	//   - 長すぎる側の壊れ方: プロセス死の回収が遅れる。ただし回収の tail は
 	//     record_sweep（既定 5 分）/ encode・cm_detect の reconcile（既定 15 分）の
 	//     周期で決まるので、それより十分短ければ差は出ない。
