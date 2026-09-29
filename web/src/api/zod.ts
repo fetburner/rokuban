@@ -1209,6 +1209,7 @@ export const ListRecordingsQueryParams = zod.object({
   "encodeState": zod.enum(['queued', 'running']).optional().describe('active な River encode ジョブの状態。`queued` は `available` \/\n`pending` \/ `scheduled` \/ `retryable`、`running` は実行中を表す。\n件数は録画数ではなく録画 × プロファイルのジョブ数になる。\n'),
   "source": zod.enum(['rule', 'manual', 'unattributed']).optional(),
   "ruleId": zod.int().optional().describe('特定ルール由来の録画に絞る'),
+  "seriesOf": zod.int().optional().describe('番組ハブ（`\/recordings\/$id\/series`）の一覧。指定した録画 id の\*\*実効\nシリーズ\*\*と同じ実効シリーズの録画だけを返す（実効シリーズは分類\nルールが当たればその値、当たらなければ自動キー）。\n\n\*\*行の同一性（1 行 = 1 録画）は変えない。\*\* N 予約で同じ放送が 2 拠点\nから録れていれば 2 行並ぶ。同じ放送を 1 行にまとめるのは視聴画面の\n「次のエピソード」の表示だけである。\n\n起点の実効シリーズが NULL（自動キーを導出できず、どのルールも\n当たらない録画）なら 0 件を 200 で返す。存在しない id、完全削除\n（purge）済みの tombstone の id も同じく 0 件になる --- 起点は\n録画の行そのもので、行が無ければ値も無い。そのため UI は\n`Recording.series` が null の録画にハブの導線を出さない。\n\n`superseded_at` が立った行は外れる（本物の record に枠を譲った\n擬似 failed 行）。他の絞り込み軸とは AND で、`trash` とは直交する。\n\nキーセットページングは他の場合と同じ `(program_start_at, id)` の\n複合キーで動く（カーソル軸は `seriesOf` の有無で変わらない）。\nシリーズ内の並びは放送日時順で、話数は持たない。\n'),
   "from": zod.iso.datetime({"offset":true}).optional().describe('program_start_at がこの時刻以上'),
   "to": zod.iso.datetime({"offset":true}).optional().describe('program_start_at がこの時刻未満'),
   "order": zod.enum(['desc', 'asc']).default(listRecordingsQueryOrderDefault),
@@ -1405,6 +1406,43 @@ export const DeleteRecordingParams = zod.object({
 })
 
 export const DeleteRecordingResponse = zod.void()
+
+
+/**
+ * 番組ハブの「次回」。起点の録画の**実効シリーズ**と同じ実効シリーズを持ち、
+ * まだ始まっていない（`start_at > now()`）EPG の番組を放送順に返す。
+ *
+ * **形は `POST /api/programs/search` の結果（`ProgramSearchMatch`）と同じ。**
+ * site を運び、畳まない --- 同じ放送が 2 拠点の EPG にあれば 2 行出る。
+ * 番組は site ごとの射影なので、まとめるのは表示側の仕事である。
+ *
+ * **予約状態は結合しない。** 予約は頻繁に変わり番組はほとんど変わらない
+ * （キャッシュの寿命が違う。docs/api/rest.md「予約状態は番組と結合しない」）
+ * ので、UI は `GET /api/reservations` を別に引いて突き合わせる。
+ *
+ * 起点の実効シリーズが NULL、または行が無ければ空配列を 200 で返す。
+ * ページネーションは持たない（同じシリーズの未来の回は EPG のローリング
+ * ウィンドウで有界）。`seriesOf`（`GET /api/recordings`）と同じく、
+ * 起点は録画の id そのものである --- 正規化キーを宛先にすると、規則を
+ * 変えた時点で 404 ではなく 0 件で黙って壊れる（docs/data/series.md §8
+ * 「資源同定: 起点は録画 id」）。
+ * @summary List upcoming programs in the recording's series
+ */
+export const ListRecordingUpcomingParams = zod.object({
+  "id": zod.int()
+})
+
+export const ListRecordingUpcomingResponseItem = zod.object({
+  "site": zod.string().describe('マッチした放送のサイト'),
+  "programId": zod.int().describe('マッチした放送の programId（`GET \/api\/sites\/{site}\/programs\/{programId}` などで使う ID）。同一放送は全サイトで同じ値を持つ（Mirakurun の ID 合成）'),
+  "networkId": zod.int().describe('マッチした放送のネットワーク識別子'),
+  "serviceId": zod.int().describe('マッチした放送のサービス識別子'),
+  "startAt": zod.iso.datetime({"offset":true}).describe('マッチした放送の開始時刻'),
+  "durationMs": zod.int().describe('マッチした放送の長さ（ミリ秒）'),
+  "name": zod.string().describe('マッチした放送の番組名'),
+  "isFree": zod.boolean().describe('マッチした放送が無料かどうか')
+}).describe('検索がマッチした 1 件（1 サイトの 1 放送）')
+export const ListRecordingUpcomingResponse = zod.array(ListRecordingUpcomingResponseItem)
 
 
 /**

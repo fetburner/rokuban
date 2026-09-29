@@ -80,6 +80,11 @@ function createFakeServer(options: {
   // （保存中…の表示）を確認するテストが、呼び出し側で自分の Promise を渡して
   // 解決タイミングを制御できるようにするため。
   encodePolicyResponse?: () => Response | Promise<Response>
+  /**
+   * seriesRecordings は `GET /api/recordings?seriesOf=` に返す行（「次の
+   * エピソード」の探索。M8-6）。既定は空。
+   */
+  seriesRecordings?: Recording[]
 }) {
   let recording = options.recording
   const sites = options.sites ?? ['default']
@@ -108,6 +113,12 @@ function createFakeServer(options: {
     }
     if (url.pathname === '/api/rules' && method === 'GET') {
       return rulesResponse ? rulesResponse() : Promise.resolve(jsonResponse(rules))
+    }
+
+    // 「次のエピソード」の探索（`?seriesOf=`）。他の経路がこの一覧を叩かないので、
+    // ハンドラを足しても既存のテストの「unexpected fetch」は変わらない。
+    if (url.pathname === '/api/recordings' && method === 'GET') {
+      return Promise.resolve(jsonResponse(options.seriesRecordings ?? []))
     }
 
     const getMatch = /^\/api\/recordings\/(\d+)$/.exec(url.pathname)
@@ -248,6 +259,69 @@ describe('RecordingDetailPage', () => {
     const trashButton = screen.getByRole('button', { name: 'ごみ箱へ' })
     expect(trashButton).toBeInTheDocument()
     expect(trashButton).not.toHaveClass('text-destructive')
+  })
+
+  // M8-6: シリーズの導線。起点の実効シリーズが null の録画には出さない
+  // （ハブも「次回」も 0 件になるので、押した先が無い導線を置かない）。
+  it('実効シリーズが無い録画にはシリーズの導線を出さない', async () => {
+    createFakeServer({ recording: sampleRecording() })
+
+    renderAt('/recordings/3')
+
+    expect(await screen.findByText('単体ページの録画')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'このシリーズへ' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /次のエピソード/ })).not.toBeInTheDocument()
+  })
+
+  // M8-6: 「次のエピソード」は再生できる行に限る。開始時刻がずれて supersede
+  // されなかった failed 行（原本も encoded も無い）を指すと、押した先の再生が
+  // 404 になる（メディア配信の契約）。
+  it('「次のエピソード」は再生できない failed 行を飛ばし、起点の後を昇順で引く', async () => {
+    const origin = sampleRecording({
+      id: 3,
+      title: 'アニメ　作品X　第1話',
+      series: '作品X',
+      sizeBytes: 1000,
+    })
+    const { fetchMock } = createFakeServer({
+      recording: origin,
+      seriesRecordings: [
+        origin,
+        sampleRecording({
+          id: 4,
+          title: 'アニメ　作品X　第2話',
+          series: '作品X',
+          startAt: '2026-01-08T12:00:00Z',
+          status: 'failed',
+        }),
+        sampleRecording({
+          id: 5,
+          title: 'アニメ　作品X　第3話',
+          series: '作品X',
+          startAt: '2026-01-15T12:00:00Z',
+          sizeBytes: 2000,
+        }),
+      ],
+    })
+
+    renderAt('/recordings/3')
+
+    expect(await screen.findByRole('link', { name: 'このシリーズへ' })).toHaveAttribute(
+      'href',
+      '/recordings/3/series',
+    )
+    expect(
+      await screen.findByRole('link', { name: '次のエピソード: アニメ　作品X　第3話' }),
+    ).toHaveAttribute('href', '/recordings/5')
+
+    // 探索は `?seriesOf=` + 昇順 + 起点の時刻から。降順で引くと「次の回」が
+    // 最初のページに入らない（記録として URL を固定する）。
+    const listURL = fetchMock.mock.calls
+      .map(([input]) => String(input))
+      .find((target) => target.startsWith('/api/recordings?'))
+    expect(listURL).toContain('seriesOf=3')
+    expect(listURL).toContain('order=asc')
+    expect(listURL).toContain('from=2026-01-01T12%3A00%3A00Z')
   })
 
   // issue #467: PageHeader の leading スロットに乗せても「戻る」は

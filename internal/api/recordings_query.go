@@ -41,6 +41,9 @@ type recordingsFilter struct {
 	EncodeRecordingIDs *[]int64
 	Source             ListRecordingsParamsSource
 	RuleID             *int64
+	// SeriesOf は番組ハブの起点になった録画の id。指定すると、その録画の実効
+	// シリーズと同じ実効シリーズの録画だけに絞る（buildRecordingsQuery 参照）。
+	SeriesOf *int64
 
 	From *time.Time
 	To   *time.Time
@@ -89,6 +92,7 @@ func recordingsFilterFromParams(p ListRecordingsParams) (recordingsFilter, strin
 		SortDesc: true, // 既定 desc。p.Order を検証した後に確定する
 		Limit:    defaultRecordingsLimit,
 		RuleID:   p.RuleId,
+		SeriesOf: p.SeriesOf,
 		From:     p.From,
 		To:       p.To,
 		Before:   p.Before,
@@ -490,6 +494,23 @@ func buildRecordingsQuery(f recordingsFilter) (string, []any, error) {
 	}
 	if f.RuleID != nil {
 		and("r.rule_id = " + arg(*f.RuleID))
+	}
+	// 番組ハブ（`?seriesOf=`）。述語は 1 文で
+	// `E(r) = (SELECT E(o) FROM recordings o WHERE o.id = $n)`。起点の E を先に
+	// 読んでからその値で絞る 2 文にしない --- 間に分類ルールの commit が挟まると、
+	// 起点が自分のハブから消える（docs/data/series.md §8「資源同定: 起点は録画 id」）。
+	//
+	// **`IS NOT DISTINCT FROM` にしない。** 起点の実効シリーズが NULL（自動キーを
+	// 導出できず、どのルールも当たらない録画）のとき、NULL 同士を等しいと見なすと
+	// 「棚の無い録画を全部集めたハブ」が返る。openapi.yaml が約束しているのは
+	// 0 件である。
+	//
+	// 射影は recording_series ビューを唯一の定義として読む（書き下すと棚・一覧・
+	// ハブで実効シリーズの規則が 3 箇所に分かれる）。
+	if f.SeriesOf != nil {
+		and("(SELECT s.value FROM recording_series s WHERE s.recording_id = r.id) = " +
+			"(SELECT s.value FROM recording_series s WHERE s.recording_id = " + arg(*f.SeriesOf) + ")")
+		and("r.superseded_at IS NULL")
 	}
 	if f.From != nil {
 		and("r.program_start_at >= " + arg(*f.From))

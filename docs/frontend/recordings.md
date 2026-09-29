@@ -596,6 +596,40 @@ limit)`（カーソル `before` / `beforeId` を含めない）にする。同�
   `parseRecordingsSearch`（`lib/recording-search.ts`）を通るので条件チップにも
   そのまま出る
 
+## シリーズの導線（番組ハブと次のエピソード）
+
+録画から同じシリーズの他の回へ辿る手段が無かったので、番組ハブ
+（`/recordings/$id/series`）と「次のエピソード」を置く。シリーズの同一性は
+[docs/data/series.md](../data/series.md) §8 が持つ。
+
+- **ハブの宛先は録画 id**。`/series/<正規化キー>` や `?series=<値>` にしない ---
+  規則を変えた時点で 404 ではなく 0 件で黙って壊れる。見出しは起点の録画の
+  **生のタイトル**（正規化キーは表示名にならない）
+- **`Recording.series` が null の録画には導線を出さない**（ハブも「次回」も
+  0 件になる）。`RecordingDetail` はこの 1 条件だけを見る
+- ハブは上に「次回」（`GET /api/recordings/{id}/upcoming`）、下に録画の一覧
+  （`GET /api/recordings?seriesOf=`、既定の降順 = 放送日時の新しい順）を出す。
+  降順なのは録画一覧の既定と同じにするためで、次回の直下が最も新しい回になる
+- **「次回」は `(networkId, serviceId, startAt)` で 1 行にまとめ、site を
+  チップで出す（表示だけ）**。EPG は site ごとの射影なので、N 拠点の同じ放送が
+  N 行で返る。**録画の一覧では畳まない**（1 行 = 1 録画が契約で、ドロップ統計で
+  選び分ける運用では 2 行並ぶのが正しい）
+- 「次回」の予約状態は**結合しない**。予約一覧を別に引いて突き合わせるのは
+  番組リストと同じ判断（[api/rest.md](../api/rest.md)「予約状態は番組と結合しない」）
+- クエリキーの先頭は「次回」が `programsQueryKeyPrefix`、一覧が
+  `recordingsQueryKeyPrefix`。**分類ルールを足した直後に開いているハブが
+  SSE で更新される**のは、`recordings` トピックが両方の接頭辞を invalidate
+  するためである（`lib/events.ts`）
+- **「次のエピソード」は再生できる行に限る**（`sizeBytes` があるか
+  `encodedAssets` が空でない）。同じシリーズの中で起点より後、`program_start_at`
+  が最も早い回で、同じ時刻の候補が複数あれば起点と同じ site を優先し、次に
+  id の小さい方（`lib/series.ts` の `nextEpisode`）。開始時刻がずれて supersede
+  されなかった failed 行を指すと、押した先の再生が 404 になる
+- 探索は `?seriesOf=<id>&order=asc&from=<起点の startAt>`。カーソルが起点の
+  時刻から始まるので、起点より後の回は必ず 1 ページ目に入る
+- 話数は持たないので、重複排除を切ったルールでは再放送が「次」になりうる
+  （既知の限界）
+
 ## ストレージ残高と満杯見込み
 
 `/recordings` のヘッダー領域（`RecordingFilters` の下）に、ストレージ残高と

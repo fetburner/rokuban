@@ -544,6 +544,43 @@ func (h *Server) GetRecording(ctx context.Context, req GetRecordingRequestObject
 	return GetRecording200JSONResponse(rec), nil
 }
 
+// ListRecordingUpcoming は番組ハブの「次回」を返す（起点の録画と同じ実効
+// シリーズで、まだ始まっていない EPG の番組）。
+//
+// 形は `POST /api/programs/search` の結果と同じ（ProgramSearchMatch）で、site を
+// 運び畳まない。**予約状態は結合しない** --- 予約は頻繁に変わり番組はほとんど
+// 変わらないので、UI が `GET /api/reservations` を別に引いて突き合わせる
+// （docs/api/rest.md「予約状態は番組と結合しない」）。
+//
+// 起点の録画が無い・実効シリーズが NULL なら空配列を 200 で返す。EPG は射影で、
+// 番組が 1 件も無いこともあるので、区別する材料が無いものを 404 にしない
+// （`GET /api/recordings` の `seriesOf` と同じ扱い。openapi.yaml の
+// listRecordingUpcoming description）。
+//
+// 実効シリーズの比較は SQL 側のビュー 2 つ（recording_series /
+// epg_program_series）が持つ。Go 側に正規化を複製しない
+// （internal/db/queries/epg_series.sql）。
+func (h *Server) ListRecordingUpcoming(ctx context.Context, req ListRecordingUpcomingRequestObject) (ListRecordingUpcomingResponseObject, error) {
+	rows, err := sqlcgen.New(h.pool).ListUpcomingProgramsBySeries(ctx, req.Id)
+	if err != nil {
+		return nil, fmt.Errorf("listing upcoming programs for recording %d: %w", req.Id, err)
+	}
+	matches := make([]ProgramSearchMatch, len(rows))
+	for i, row := range rows {
+		matches[i] = ProgramSearchMatch{
+			Site:       row.Site,
+			ProgramId:  row.ProgramID,
+			NetworkId:  int(row.NetworkID),
+			ServiceId:  int(row.ServiceID),
+			StartAt:    row.StartAt,
+			DurationMs: row.DurationMs,
+			Name:       row.Name,
+			IsFree:     row.IsFree,
+		}
+	}
+	return ListRecordingUpcoming200JSONResponse(matches), nil
+}
+
 // DeleteRecording は録画を論理削除する（ごみ箱へ）。
 // deleted_at を立てるだけでファイルには触れない。既に削除済みでも冪等に 204。
 func (h *Server) DeleteRecording(ctx context.Context, req DeleteRecordingRequestObject) (DeleteRecordingResponseObject, error) {
