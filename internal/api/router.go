@@ -62,6 +62,12 @@ type RouterConfig struct {
 	// （issue #64）。空/nil なら名前検証をスキップする（テストの部分構成を許す）。
 	EncodeProfileNames []string
 
+	// CutProfileNames は config.encode.profiles のうち `cut: true` の名前一覧。
+	// cut だけの選択を 400 で拒否し（config.ValidateCutSelection）、
+	// `EncodeJobStatus.state = awaiting_review` の導出にも使う。
+	// 空/nil なら cut の規則を検査しない（テストの部分構成を許す）。
+	CutProfileNames []string
+
 	// LiveProfiles は config.live.profiles の表示用一覧。GET /api/live-profiles に出す
 	// （issue #869）。順序は設定順で、ffmpeg のパス・extra_args・品質指定は含めない。
 	LiveProfiles []LiveProfileSummary
@@ -137,7 +143,8 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	}
 
 	handler := NewServer(cfg.Pool, cfg.RiverClient, cfg.Sites, cfg.EncodeProfileNames,
-		cfg.LiveProfiles, Capabilities{Live: cfg.LiveEnabled, CmDetect: cfg.CMDetectEnabled})
+		cfg.CutProfileNames, cfg.LiveProfiles,
+		Capabilities{Live: cfg.LiveEnabled, CmDetect: cfg.CMDetectEnabled})
 	strict := NewStrictHandler(handler, nil)
 	HandlerWithOptions(strict, ChiServerOptions{
 		BaseRouter: r,

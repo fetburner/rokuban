@@ -39,6 +39,11 @@ type Server struct {
 	// 空（未注入）なら名前検証をスキップする（テストの部分構成を許す）。
 	encodeProfiles map[string]struct{}
 
+	// cutProfiles は `cut: true` のプロファイル名の集合。encodeProfiles と同じ
+	// く空（未注入）なら「cut の規則を検査しない」。cut だけの選択を拒否する
+	// 判定（config.ValidateCutSelection）と、`awaiting_review` の導出に使う。
+	cutProfiles map[string]struct{}
+
 	// encodeProfileNames は定義順の名前一覧（GET /api/encode-profiles 用。issue #68）。
 	encodeProfileNames []string
 
@@ -62,7 +67,9 @@ type Server struct {
 // liveProfiles は config.live.profiles の公開用一覧。設定順を保持する。
 // caps はこのデプロイで有効なオプション機能（GET /api/capabilities）。ゼロ値
 // （すべて無効）は config の既定と一致する。
-func NewServer(pool *pgxpool.Pool, riverClient *river.Client[pgx.Tx], sites []string, encodeProfileNames []string, liveProfiles []LiveProfileSummary, caps Capabilities) *Server {
+// cutProfileNames は config.encode.profiles のうち `cut: true` の名前一覧。
+// encodeProfileNames と同じく nil なら cut の規則を検査しない（テストの部分構成）。
+func NewServer(pool *pgxpool.Pool, riverClient *river.Client[pgx.Tx], sites []string, encodeProfileNames []string, cutProfileNames []string, liveProfiles []LiveProfileSummary, caps Capabilities) *Server {
 	siteNames := sites
 	if len(siteNames) == 0 {
 		siteNames = []string{db.DefaultSite}
@@ -83,13 +90,27 @@ func NewServer(pool *pgxpool.Pool, riverClient *river.Client[pgx.Tx], sites []st
 			names = append(names, n)
 		}
 	}
+	var cut map[string]struct{}
+	if cutProfileNames != nil {
+		cut = make(map[string]struct{}, len(cutProfileNames))
+		for _, n := range cutProfileNames {
+			cut[n] = struct{}{}
+		}
+	}
 	return &Server{
 		pool: pool, river: riverClient,
 		sites: siteSet, siteNames: siteNames,
 		encodeProfiles: profiles, encodeProfileNames: names,
+		cutProfiles:  cut,
 		liveProfiles: append([]LiveProfileSummary(nil), liveProfiles...),
 		capabilities: caps,
 	}
+}
+
+// profileSets はこの Server が持つプロファイル名の集合を、一覧の導出に渡す形で
+// 返す（profileSets 型の doc コメント参照）。
+func (h *Server) profileSets() profileSets {
+	return profileSets{known: h.encodeProfiles, cut: h.cutProfiles}
 }
 
 // knownSite は site がこのプロセスの応答対象レジストリに存在するかを返す。

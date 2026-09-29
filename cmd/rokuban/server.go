@@ -508,6 +508,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 		}
 		routerCfg.RiverClient = apiRiverClient
 		routerCfg.EncodeProfileNames = cfg.Encode.ProfileNames()
+		routerCfg.CutProfileNames = cfg.Encode.CutProfileNames()
 	}
 
 	var mounters api.Mounters

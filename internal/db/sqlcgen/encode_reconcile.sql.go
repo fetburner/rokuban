@@ -9,13 +9,71 @@ import (
 	"context"
 )
 
+const listCutAwaitingReview = `-- name: ListCutAwaitingReview :many
+SELECT want.profile::text AS profile, count(*)::bigint AS recordings
+FROM recording_encode_policy p
+JOIN recordings r ON r.id = p.recording_id
+CROSS JOIN LATERAL unnest(p.encode_profiles) AS want(profile)
+WHERE r.deleted_at IS NULL
+  AND want.profile = ANY($1::text[])
+  AND NOT EXISTS (
+      SELECT 1 FROM recording_chapter_ownership o WHERE o.recording_id = p.recording_id
+  )
+  AND EXISTS (
+      SELECT 1 FROM media_assets o
+      WHERE o.recording_id = p.recording_id
+        AND o.kind = 'original'
+        AND o.state = 'active'
+  )
+GROUP BY want.profile
+ORDER BY want.profile
+`
+
+type ListCutAwaitingReviewRow struct {
+	Profile    string
+	Recordings int64
+}
+
+// ListCutAwaitingReview は「cut プロファイルを凍結しているのに、まだチャプターを
+// 確認していない」録画数をプロファイル名別に返す（メトリクス
+// rokuban_cut_awaiting_review）。
+//
+// **これは失敗ではない。** ユーザーが確認すれば次のパスが拾う正常な待ち状態で、
+// 数が減らないこと自体は異常ではない。出している理由は、cut プロファイルを
+// 選んだのに確認の導線に気付かず「エンコードされない録画」が静かに溜まる形を
+// 見えるようにするためである（ListUnsatisfiableEncodeProfiles が拾うのは設定から
+// 消えたプロファイルで、こちらは別の集合）。
+//
+// 原本が active のものだけ数える（原本が無ければ確認しても投入できないので、
+// 削除済み・未取り込みの録画を「待ち」に混ぜない。ListMissingEncodeProfiles と
+// 同じ述語）。
+func (q *Queries) ListCutAwaitingReview(ctx context.Context, cutProfiles []string) ([]ListCutAwaitingReviewRow, error) {
+	rows, err := q.db.Query(ctx, listCutAwaitingReview, cutProfiles)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCutAwaitingReviewRow
+	for rows.Next() {
+		var i ListCutAwaitingReviewRow
+		if err := rows.Scan(&i.Profile, &i.Recordings); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMissingEncodeProfiles = `-- name: ListMissingEncodeProfiles :many
 
 WITH candidate_recordings AS (
   SELECT p.recording_id, p.encode_profiles
   FROM recording_encode_policy p
   JOIN recordings r ON r.id = p.recording_id
-  WHERE p.recording_id > $2::bigint
+  WHERE p.recording_id > $3::bigint
     AND cardinality(p.encode_profiles) > 0
     AND r.deleted_at IS NULL
     AND EXISTS (
@@ -28,6 +86,13 @@ WITH candidate_recordings AS (
       SELECT 1 FROM unnest(p.encode_profiles) AS want(profile)
       WHERE want.profile <> ''
         AND want.profile = ANY($1::text[])
+        AND (
+          NOT (want.profile = ANY($2::text[]))
+          OR EXISTS (
+            SELECT 1 FROM recording_chapter_ownership o
+            WHERE o.recording_id = p.recording_id
+          )
+        )
         AND NOT EXISTS (
           SELECT 1 FROM media_assets e
           WHERE e.recording_id = p.recording_id
@@ -37,13 +102,20 @@ WITH candidate_recordings AS (
         )
     )
   ORDER BY recording_id
-  LIMIT $3
+  LIMIT $4
 )
 SELECT c.recording_id, want.profile::text AS profile
 FROM candidate_recordings c
 CROSS JOIN LATERAL unnest(c.encode_profiles) WITH ORDINALITY AS want(profile, ordinality)
 WHERE want.profile <> ''
   AND want.profile = ANY($1::text[])
+  AND (
+    NOT (want.profile = ANY($2::text[]))
+    OR EXISTS (
+      SELECT 1 FROM recording_chapter_ownership o
+      WHERE o.recording_id = c.recording_id
+    )
+  )
   AND NOT EXISTS (
     SELECT 1 FROM media_assets e
     WHERE e.recording_id = c.recording_id
@@ -57,6 +129,7 @@ ORDER BY c.recording_id, min(want.ordinality)
 
 type ListMissingEncodeProfilesParams struct {
 	KnownProfiles    []string
+	CutProfiles      []string
 	AfterRecordingID int64
 	RowLimit         int32
 }
@@ -132,6 +205,12 @@ type ListMissingEncodeProfilesRow struct {
 //     EncodeWorker が `unknown encode profile` で弾く（encode.go）録画が窓を
 //     恒久的に占有し続ける（他の候補が減らない限り）。空文字列のプロファイル名も
 //     ここで明示的に落とす（単発 hint 経路の `name == ""` スキップと揃える）
+//   - want.profile が cut_profiles に含まれるなら recording_chapter_ownership の
+//     行が要る（不変条件 10: 行の存在 = ユーザーが確認済み）。cut: true の
+//     プロファイルは確認済みのタイムラインを切るので、確認前に投入すると誤検出の
+//     まま本編が削られ、原本がごみ箱を経由せずに消えて取り返せなくなる。
+//     確認 UI は cut でないプロファイルの encoded で再生するので、原本 TS を
+//     ブラウザで再生できないという循環もここで断つ
 //   - p.recording_id > after_recording_id = 呼び出し側（EncodeReconcileWorker）が
 //     持つ、プロセスローカルな再開位置。前パスが LIMIT ちょうどまで埋まったなら
 //     続きから、そうでなければ 0（先頭）から見る。窓が「毎パス先頭から」ではなく
@@ -154,7 +233,12 @@ type ListMissingEncodeProfilesRow struct {
 // これは意図的な非対称（安全側の仕様。上の「名前付き述語」節と
 // docs/storage/retention.md §保持ポリシー）であって揃え忘れではない。
 func (q *Queries) ListMissingEncodeProfiles(ctx context.Context, arg ListMissingEncodeProfilesParams) ([]ListMissingEncodeProfilesRow, error) {
-	rows, err := q.db.Query(ctx, listMissingEncodeProfiles, arg.KnownProfiles, arg.AfterRecordingID, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listMissingEncodeProfiles,
+		arg.KnownProfiles,
+		arg.CutProfiles,
+		arg.AfterRecordingID,
+		arg.RowLimit,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -180,6 +264,13 @@ JOIN recordings r ON r.id = p.recording_id
 CROSS JOIN LATERAL unnest(p.encode_profiles) AS want(profile)
 WHERE r.deleted_at IS NULL
   AND NOT (want.profile = ANY($1::text[]))
+  AND (
+    NOT (want.profile = ANY($2::text[]))
+    OR EXISTS (
+      SELECT 1 FROM recording_chapter_ownership o
+      WHERE o.recording_id = p.recording_id
+    )
+  )
   AND EXISTS (
     SELECT 1 FROM media_assets o
     WHERE o.recording_id = p.recording_id
@@ -196,6 +287,11 @@ WHERE r.deleted_at IS NULL
 GROUP BY want.profile
 ORDER BY want.profile
 `
+
+type ListUnsatisfiableEncodeProfilesParams struct {
+	KnownProfiles []string
+	CutProfiles   []string
+}
 
 type ListUnsatisfiableEncodeProfilesRow struct {
 	Profile    string
@@ -221,8 +317,8 @@ type ListUnsatisfiableEncodeProfilesRow struct {
 //
 // `want.profile::text` の明示キャストは必須（sqlc は unnest 由来の列型を
 // 推論できず interface{} で生成する。CLAUDE.md「sqlc は式の型を推論しきれない」）。
-func (q *Queries) ListUnsatisfiableEncodeProfiles(ctx context.Context, knownProfiles []string) ([]ListUnsatisfiableEncodeProfilesRow, error) {
-	rows, err := q.db.Query(ctx, listUnsatisfiableEncodeProfiles, knownProfiles)
+func (q *Queries) ListUnsatisfiableEncodeProfiles(ctx context.Context, arg ListUnsatisfiableEncodeProfilesParams) ([]ListUnsatisfiableEncodeProfilesRow, error) {
+	rows, err := q.db.Query(ctx, listUnsatisfiableEncodeProfiles, arg.KnownProfiles, arg.CutProfiles)
 	if err != nil {
 		return nil, err
 	}

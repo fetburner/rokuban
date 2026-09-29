@@ -149,6 +149,63 @@ func Derive(owned bool, user, auto []Span, programDurationMs int64) Timeline {
 	return out
 }
 
+// KeepRanges はタイムラインのうち cut でない区間を、隣接するものを結合して返す。
+//
+// カット版が残す区間そのもの。タイムラインは隙間なく覆っている（Derive）ので、
+// 結合しないと本編が 1 フレームごとに分かれた区間列になりうる。
+//
+// 戻り値は昇順で重ならない半開区間（原本時間軸の ms）。空なら「全部カット」で、
+// カット版は作れない（呼び出し側が先に落とす）。
+func KeepRanges(t Timeline) []Range {
+	var out []Range
+	for _, s := range t {
+		if s.Cut || s.EndMs <= s.StartMs {
+			continue
+		}
+		if n := len(out); n > 0 && out[n-1].EndMs == s.StartMs {
+			out[n-1].EndMs = s.EndMs
+			continue
+		}
+		out = append(out, Range{StartMs: s.StartMs, EndMs: s.EndMs})
+	}
+	return out
+}
+
+// SameRanges は 2 つの区間列が同じ時間軸の被覆を表すかを返す（量子化後の値
+// どうしで比べる前提。丸めは呼び出し側の責任）。
+//
+// 「編集前の内容です」の判定がこれを使う。凍結した keep_ranges と現在の
+// タイムラインから導出した keep を比べるので、**判定は保存値ではなく毎回の
+// 導出になる**（不変条件 9）。
+func SameRanges(a, b []Range) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// MapMs は原本時間軸の時刻 t を、keep 区間を残したカット後の時間軸へ写す。
+// keep の外側の時刻は直後の keep 区間の先頭（末尾より後ろなら末尾）へ丸める。
+func MapMs(keep []Range, t int64) int64 {
+	var out int64
+	for _, r := range keep {
+		if t < r.StartMs {
+			return out
+		}
+		if t >= r.EndMs {
+			out += r.EndMs - r.StartMs
+			continue
+		}
+		return out + (t - r.StartMs)
+	}
+	return out
+}
+
 // quantizeSpan は 1 つのスパンの境界をフレーム境界へ丸める。
 func quantizeSpan(s Span) Span {
 	return Span{

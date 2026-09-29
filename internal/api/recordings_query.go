@@ -294,7 +294,28 @@ const (
         CROSS JOIN LATERAL unnest(d.cm_ranges) AS cr(cm_range)
         WHERE d.recording_id = r.id
     ) AS cm_ranges,
-    (SELECT ca.state FROM recording_cm_attempts ca WHERE ca.recording_id = r.id) AS cm_attempt_state`
+    (SELECT ca.state FROM recording_cm_attempts ca WHERE ca.recording_id = r.id) AS cm_attempt_state,
+    -- チャプターの所有とユーザー層（encodedAssets[].cutStale の判定材料）。
+    -- **導出（chapters.Derive）は Go 側のまま**で、ここは素の事実だけを射影する
+    -- （state そのものを SQL で CASE に潰さない既存の規律と同じ。SQL に
+    -- タイムラインの導出を複製すると、チャプターの規則が 2 か所に分かれる）。
+    EXISTS (
+        SELECT 1 FROM recording_chapter_ownership o WHERE o.recording_id = r.id
+    ) AS chapters_owned,
+    COALESCE(
+        (
+            SELECT jsonb_agg(
+                jsonb_build_object(
+                    'startMs', lower(s.span), 'endMs', upper(s.span),
+                    'label', s.label, 'cut', s.cut
+                )
+                ORDER BY lower(s.span)
+            )
+            FROM recording_chapter_spans s
+            WHERE s.recording_id = r.id
+        ),
+        '[]'::jsonb
+    ) AS chapter_spans`
 
 	// recordingsAvailableEncodedAssetsSelect はブラウザ再生用の観測列（active な
 	// encoded のみ）。先頭にカンマを持つので recordingsSelectColumns の直後に
@@ -304,6 +325,12 @@ const (
 	// 「ごみ箱では出さない」（プレイヤーを出さないので値を揃えても使われない。
 	// 3d56f92 の理由。性能実測は無い）は Go 側 1 か所（recordingFromListFields が
 	// r.DeletedAt != nil だけを見て AvailableEncodedAssets を落とす）だけで決める。
+	//
+	// keepRanges は media_asset_cuts.keep_ranges を配列にしたもの（null = cut で
+	// ない版）。**`cut` の真偽を別に持たない** --- 凍結した区間の有無がそのまま
+	// 「カット版か」であり、2 つの主張を並べると片方だけ古くなる（不変条件 9）。
+	// Go 側は api.cutStale の判定にも同じ値を使う（現在のタイムラインから
+	// chapters.Derive で導出した keep と突き合わせる）。
 	//
 	// jsonb_agg で profile と size_bytes を同じ行に載せる（issue #236 M7-3。
 	// プロファイル名の配列 + サイズの並行配列という 2 本の index 揺れやすい
@@ -315,7 +342,19 @@ const (
     (
         SELECT coalesce(
             jsonb_agg(
-                jsonb_build_object('profile', e.profile, 'sizeBytes', e.size_bytes)
+                jsonb_build_object(
+                    'profile', e.profile,
+                    'sizeBytes', e.size_bytes,
+                    'keepRanges', (
+                        SELECT jsonb_agg(
+                            jsonb_build_object('startMs', lower(k), 'endMs', upper(k))
+                            ORDER BY lower(k)
+                        )
+                        FROM media_asset_cuts c
+                        CROSS JOIN LATERAL unnest(c.keep_ranges) AS k
+                        WHERE c.media_asset_id = e.id
+                    )
+                )
                 ORDER BY e.profile
             ),
             '[]'::jsonb
@@ -527,7 +566,7 @@ LIMIT ` + limitPlaceholder
 // ごみ箱一覧のどちらにも現れない行なので、単体 GET だけ見える形にしない。
 //
 // 見つからなければ (Recording{}, false, nil) を返す。
-func queryRecordingByID(ctx context.Context, pool *pgxpool.Pool, id int64, knownProfiles map[string]struct{}) (Recording, bool, error) {
+func queryRecordingByID(ctx context.Context, pool *pgxpool.Pool, id int64, profiles profileSets) (Recording, bool, error) {
 	const sql = `
 SELECT` + recordingsSelectColumns + recordingsAvailableEncodedAssetsSelect + recordingsFromJoins + `
 WHERE r.id = $1 AND r.purged_at IS NULL`
@@ -546,6 +585,7 @@ WHERE r.id = $1 AND r.purged_at IS NULL`
 		&fields.HasOriginalAsset, &fields.HasIngestableRecord, &fields.HasAbnormallyEndedRecord,
 		&fields.IngestWrittenBytes, &fields.IngestExpectedBytes, &fields.IngestObservedAt,
 		&fields.CMDetect, &fields.CMDetected, &fields.CMRanges, &fields.CMAttemptState,
+		&fields.ChaptersOwned, &fields.ChapterSpans,
 		&fields.AvailableEncodedAssets,
 	)
 	if err != nil {
@@ -555,14 +595,14 @@ WHERE r.id = $1 AND r.purged_at IS NULL`
 		return Recording{}, false, fmt.Errorf("querying recording %d: %w", id, err)
 	}
 
-	rec, err := recordingFromListFields(fields, true, knownProfiles)
+	rec, err := recordingFromListFields(fields, true, profiles)
 	if err != nil {
 		return Recording{}, false, err
 	}
 	return rec, true, nil
 }
 
-func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter, knownProfiles map[string]struct{}) ([]Recording, error) {
+func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter, profiles profileSets) ([]Recording, error) {
 	sql, args, err := buildRecordingsQuery(f)
 	if err != nil {
 		return nil, err
@@ -590,11 +630,12 @@ func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter
 			&fields.HasOriginalAsset, &fields.HasIngestableRecord, &fields.HasAbnormallyEndedRecord,
 			&fields.IngestWrittenBytes, &fields.IngestExpectedBytes, &fields.IngestObservedAt,
 			&fields.CMDetect, &fields.CMDetected, &fields.CMRanges, &fields.CMAttemptState,
+			&fields.ChaptersOwned, &fields.ChapterSpans,
 			&fields.AvailableEncodedAssets,
 		); err != nil {
 			return nil, fmt.Errorf("scanning recording row: %w", err)
 		}
-		rec, err := recordingFromListFields(fields, f.Trash, knownProfiles)
+		rec, err := recordingFromListFields(fields, f.Trash, profiles)
 		if err != nil {
 			return nil, err
 		}

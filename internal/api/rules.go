@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/contentpath"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -285,13 +286,17 @@ func (h *Server) insertRulerPassHintsForRuleSites(ctx context.Context, tx pgx.Tx
 	return nil
 }
 
-// validateEncodeProfiles は encodeProfiles の各名前が config 定義に存在することを
-// 検査する。ルール保存と予約 overrides の両方で使う（issue #64「ルール / overrides
-// 保存時に未知プロファイル名を拒否」）。
+// validateEncodeProfiles は encodeProfiles の各名前が config 定義に存在すること、
+// および「cut のプロファイルを選ぶなら cut でないプロファイルを 1 つ以上含む」ことを
+// 検査する。ルール保存・予約 overrides・事後追加 API の 3 経路がここを通る
+// （4 経路目は ingest の凍結で、同じ config.ValidateCutSelection を直接呼ぶ）。
 //
 // h.encodeProfiles が nil のとき（RouterConfig.EncodeProfileNames 未設定 = テストの
 // 部分構成）は名前検証をスキップする。空 map（len=0 だが non-nil）は「プロファイルが
 // 1 つも無い」とみなし、どんな名前も未知として弾く。
+//
+// cut の規則も同じ規約で、h.cutProfiles が nil なら検査しない。cut プロファイルが
+// 1 つも定義されていない構成では config.ValidateCutSelection 自体が何も主張しない。
 func (h *Server) validateEncodeProfiles(names []string) error {
 	for _, name := range names {
 		if name == "" {
@@ -301,6 +306,11 @@ func (h *Server) validateEncodeProfiles(names []string) error {
 			if _, ok := h.encodeProfiles[name]; !ok {
 				return fmt.Errorf("unknown encode profile %q", name)
 			}
+		}
+	}
+	if h.cutProfiles != nil {
+		if err := config.ValidateCutSelection(names, h.cutProfiles); err != nil {
+			return err
 		}
 	}
 	return nil

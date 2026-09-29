@@ -223,6 +223,7 @@ func NewWorkers(deps *Deps) *river.Workers {
 		MediaDir:      deps.MediaDir,
 		StallTimeout:  deps.IngestStallTimeout,
 		CMDetect:      deps.CMDetect,
+		CutProfiles:   deps.Encode.CutProfileSet(),
 	})
 	river.AddWorker(workers, &EncodeWorker{
 		Pool:       deps.Pool,
@@ -234,7 +235,8 @@ func NewWorkers(deps *Deps) *river.Workers {
 		Webhook:    deps.Webhook,
 	})
 	river.AddWorker(workers, &EncodeEnqueueHintWorker{
-		Pool: deps.Pool,
+		Pool:        deps.Pool,
+		CutProfiles: deps.Encode.CutProfileSet(),
 	})
 	river.AddWorker(workers, &EncodeReconcileWorker{
 		Pool: deps.Pool,

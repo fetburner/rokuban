@@ -297,6 +297,7 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 
 	got, err := q.ListMissingEncodeProfiles(ctx, sqlcgen.ListMissingEncodeProfilesParams{
 		KnownProfiles: []string{"h264", "h265"},
+		CutProfiles:   []string{},
 		RowLimit:      encodeReconcileRowLimit,
 	})
 	if err != nil {
@@ -319,6 +320,7 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 	gotAfter, err := q.ListMissingEncodeProfiles(ctx, sqlcgen.ListMissingEncodeProfilesParams{
 		AfterRecordingID: missing,
 		KnownProfiles:    []string{"h264", "h265"},
+		CutProfiles:      []string{},
 		RowLimit:         encodeReconcileRowLimit,
 	})
 	if err != nil {
@@ -331,7 +333,10 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 
 	// 落とした側（(h)/(i)）は数えて見せる --- 黙って落とすと「エンコードされない
 	// 録画」が静かに増える。
-	unsat, err := q.ListUnsatisfiableEncodeProfiles(ctx, []string{"h264", "h265"})
+	unsat, err := q.ListUnsatisfiableEncodeProfiles(ctx, sqlcgen.ListUnsatisfiableEncodeProfilesParams{
+		KnownProfiles: []string{"h264", "h265"},
+		CutProfiles:   []string{},
+	})
 	if err != nil {
 		t.Fatalf("ListUnsatisfiableEncodeProfiles: %v", err)
 	}

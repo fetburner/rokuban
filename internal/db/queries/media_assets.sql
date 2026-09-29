@@ -51,6 +51,52 @@ WHERE recording_id = $1
   AND profile = $2
   AND state = 'active';
 
+-- 置き換え（cut プロファイルの作り直し）で、旧パスの unlink と世代番号の導出に
+-- 要る行。**state を問わない**: tombstone（state='deleted'）の rel_path からも
+-- 世代番号を読む（次のカット版が同じパスを再利用しないため）。UNIQUE
+-- (recording_id, kind, profile) があるので高々 1 行。
+-- name: GetEncodedMediaAssetForProfile :one
+SELECT id, rel_path, state
+FROM media_assets
+WHERE recording_id = $1
+  AND kind = 'encoded'
+  AND profile = $2;
+
+-- 置き換えの同一 tx 内でパスとサイズを差し替える。**行は消さない** --- 消して
+-- 作り直すと rel_path の部分一意索引から一瞬外れ、その隙間に別の行が同じパスを
+-- 取れてしまう。世代番号で必ず新しいパスになるので、UPDATE で足りる。
+-- name: UpdateEncodedMediaAssetPath :exec
+UPDATE media_assets
+SET rel_path   = sqlc.arg('rel_path'),
+    size_bytes = sqlc.arg('size_bytes'),
+    updated_at = now()
+WHERE id = sqlc.arg('id');
+
+-- 凍結した区間の差し替え（DELETE → InsertMediaAssetCuts の順に同一 tx で呼ぶ）。
+-- name: DeleteMediaAssetCuts :exec
+DELETE FROM media_asset_cuts WHERE media_asset_id = sqlc.arg('media_asset_id');
+
+-- keep_ranges は ms の半開区間の列。境界はフレーム境界へ量子化済みで、昇順・
+-- 非交差・非隣接に正規化して渡す（値どうしの一致比較をするため）。`isempty` を
+-- CHECK が拒否するので、空の multirange は渡さない（呼び出し側が先に落とす）。
+-- name: InsertMediaAssetCuts :exec
+INSERT INTO media_asset_cuts (media_asset_id, keep_ranges)
+VALUES (sqlc.arg('media_asset_id'), sqlc.arg('keep_ranges')::int8multirange);
+
+-- 凍結した区間（ms の半開区間）。行が無ければ空配列 --- COALESCE が要る
+-- （集約は行が無いと NULL になる。GetRecordingCMRangesJSON と同じ形）。
+-- name: GetMediaAssetKeepRangesJSON :one
+SELECT COALESCE(
+    jsonb_agg(
+        jsonb_build_object('startMs', lower(k), 'endMs', upper(k))
+        ORDER BY lower(k)
+    ),
+    '[]'::jsonb
+)::jsonb AS ranges
+FROM media_asset_cuts c
+CROSS JOIN LATERAL unnest(c.keep_ranges) AS k
+WHERE c.media_asset_id = sqlc.arg('media_asset_id');
+
 -- encode コミット。UNIQUE (recording_id, kind, profile) で冪等。
 -- tombstone（state='deleted'）がある場合は active に戻してパスとサイズを更新する。
 -- 既に active な行がある場合の上書きは worker 側の事前チェックで避ける。

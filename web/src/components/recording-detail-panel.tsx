@@ -10,6 +10,7 @@ import {
   useListRules,
   useListSites,
   usePutRecordingChapterEdits,
+  useReencodeRecordingProfile,
   useRetryRecordingCMDetection,
   useSetRecordingEncodePolicy,
   type ChapterSpan,
@@ -192,9 +193,15 @@ export function RecordingDetail({
   // 無い録画ではタイムラインを見ながら直せないので、押しても何もできない
   // コントロールを置かない（issue #209 と同じ規律）。**カット版を再生しているときは
   // 編集できない** --- カット版は時間軸から cut 区間を取り除いた別の動画で、
-  // 原本の ms で置かれた境界をその動画に当てられない。どの encoded がカット版かは
-  // `EncodedAsset` が `cut` を持つようになった時点でこの条件に足す。
-  const canEditChapters = !trash && encodedAssets.length > 0
+  // 原本の ms で置かれた境界をその動画に当てられない。
+  //
+  // 「今どの encoded を再生しているか」はプレイヤーが持つので、ここでは
+  // 「確認に使える（cut でない）encoded が 1 つ以上あるか」で判定する。実際に
+  // カット版へ切り替えたときの編集 UI の抑止はプレイヤー側が `playingCut` で行う。
+  // ここでカット版しか無い録画に対してチャプターを取りに行かないのは、その
+  // 構成では編集も確認再生もできないためである（cut だけの録画をそもそも
+  // 凍結できないのは config 検証の仕事）。
+  const canEditChapters = !trash && encodedAssets.some((a) => a.cut !== true)
   const chaptersQuery = useGetRecordingChapters(recording.id, {
     query: { enabled: canEditChapters },
   })
@@ -235,11 +242,35 @@ export function RecordingDetail({
       },
     )
   }
+  // カット版の作り直し（`encodedAssets[].cutStale`）。**自動では起きない**ので、
+  // ユーザーが押したときだけジョブを積む。新しい世代のパスに置き換わるので、
+  // 一覧を invalidate して新しい rel_path / cutStale を取り直す。
+  const reencode = useReencodeRecordingProfile()
+  const reencodeCut = (profile: string) => {
+    reencode.mutate(
+      { id: recording.id, profile },
+      {
+        onSuccess: () => {
+          invalidateChapters()
+          toast({ message: 'カット版の作り直しを依頼しました' })
+        },
+        onError: (error) =>
+          toast({ message: apiErrorMessage(error) ?? '作り直しを依頼できませんでした', kind: 'error' }),
+      },
+    )
+  }
+
   // 追っかけの配信プロファイル（live.profiles）と、完了後のVODプロファイル
   // （encode.profiles）は別設定なので、URL用の profile を共有しない。再生位置だけ
   // VODの既定プロファイル名に寄せる。active asset が既にあればその実在する先頭を
   // 優先し、録画中でまだ無ければ凍結済み desired の先頭を使う。
-  const preferredPlaybackProfile = encodedAssets[0]?.profile ?? recording.encodeProfiles?.[0]
+  // **cut でない版を優先する。** 確認（チャプターの修正）はカット版ではできない
+  // （境界は原本の ms で、カット版の軸には当てられない）ので、既定でカット版を
+  // 開くと「再生できるのに編集できない」画面になる。cut のプロファイルだけの
+  // 録画は凍結できない（config 検証）ので、ここで cut だけになることはない。
+  const preferredPlaybackProfile =
+    (encodedAssets.find((a) => a.cut !== true) ?? encodedAssets[0])?.profile ??
+    recording.encodeProfiles?.[0]
   const hasOriginal = recording.sizeBytes !== undefined
   // 詳細データの再取得ごとに取り込み状態を現在時刻で再評価する。mount 時に固定
   // すると、停滞表示が更新されなくなるため state 初期値には移せない。
@@ -404,6 +435,8 @@ export function RecordingDetail({
           onSaveChapters={canEditChapters ? saveChapters : undefined}
           onResetChapters={canEditChapters ? resetChapters : undefined}
           chapterSavePending={putChapters.isPending || deleteChapters.isPending}
+          onReencode={trash ? undefined : reencodeCut}
+          reencodePending={reencode.isPending}
         />
       )}
 

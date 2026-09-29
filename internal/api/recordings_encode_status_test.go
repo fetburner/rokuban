@@ -283,6 +283,8 @@ func TestEncodeJobStatusesFromFields(t *testing.T) {
 		attempt       map[string]string // profile -> state ("running"/"failed")
 		deleted       bool
 		knownProfiles map[string]struct{} // nil = 検証オフ（既存の規約と揃える）
+		cutProfiles   map[string]struct{}
+		chaptersOwned bool
 		want          map[string]EncodeJobStatusState
 	}{
 		{
@@ -360,9 +362,39 @@ func TestEncodeJobStatusesFromFields(t *testing.T) {
 			attempt: map[string]string{"h264": "bogus"},
 			want:    map[string]EncodeJobStatusState{},
 		},
+		{
+			// cut プロファイルは「ユーザーが確認するまでジョブが来ない」。
+			// **queued（ジョブが来る）と混ぜない** --- 投入側が実際に候補から
+			// 外しているので、queued と名乗らせると嘘になる。
+			name:          "未確認の cut プロファイルは awaiting_review",
+			desired:       []string{"cut", "h264"},
+			knownProfiles: map[string]struct{}{"cut": {}, "h264": {}},
+			cutProfiles:   map[string]struct{}{"cut": {}},
+			want: map[string]EncodeJobStatusState{
+				"cut":  EncodeJobStatusStateAwaitingReview,
+				"h264": EncodeJobStatusStateQueued,
+			},
+		},
+		{
+			// 確認済みなら cut も queued（ジョブが来る）。
+			name:          "確認済みの cut プロファイルは queued",
+			desired:       []string{"cut"},
+			knownProfiles: map[string]struct{}{"cut": {}},
+			cutProfiles:   map[string]struct{}{"cut": {}},
+			chaptersOwned: true,
+			want:          map[string]EncodeJobStatusState{"cut": EncodeJobStatusStateQueued},
+		},
+		{
+			// cut でないプロファイルは所有と無関係に queued。
+			name:          "cut でないプロファイルは所有していなくても queued",
+			desired:       []string{"h264"},
+			knownProfiles: map[string]struct{}{"h264": {}},
+			cutProfiles:   map[string]struct{}{"cut": {}},
+			want:          map[string]EncodeJobStatusState{"h264": EncodeJobStatusStateQueued},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fields := recordingListFields{ID: 1, EncodeProfiles: tc.desired}
+			fields := recordingListFields{ID: 1, EncodeProfiles: tc.desired, ChaptersOwned: tc.chaptersOwned}
 			if tc.deleted {
 				now := time.Now()
 				fields.DeletedAt = &now
@@ -379,7 +411,7 @@ func TestEncodeJobStatusesFromFields(t *testing.T) {
 				fields.EncodeAttempts = b
 			}
 
-			got, err := encodeJobStatusesFromFields(fields, tc.done, tc.knownProfiles)
+			got, err := encodeJobStatusesFromFields(fields, tc.done, profileSets{known: tc.knownProfiles, cut: tc.cutProfiles})
 			if err != nil {
 				t.Fatalf("encodeJobStatusesFromFields: %v", err)
 			}
@@ -424,7 +456,7 @@ func TestEncodeJobStatusesFromFields_PreservesDesiredOrder(t *testing.T) {
 
 	got, err := encodeJobStatusesFromFields(
 		recordingListFields{ID: 1, EncodeProfiles: desired, EncodeAttempts: b},
-		[]string{"done"}, nil)
+		[]string{"done"}, profileSets{})
 	if err != nil {
 		t.Fatalf("encodeJobStatusesFromFields: %v", err)
 	}

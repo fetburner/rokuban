@@ -3,6 +3,7 @@ package worker
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,10 +16,12 @@ import (
 	"time"
 
 	pgx5 "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/contentpath"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -144,19 +147,6 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 	}()
 
 	// 冪等: 既に active な encoded があれば何もしない。リークした古い試行行
-	// （不変条件 10: 完了しているのに failed/running を名乗る行を残さない）が
-	// あれば掃除する。
-	already, err := w.hasActiveEncoded(ctx, args.RecordingID, args.Profile)
-	if err != nil {
-		return fmt.Errorf("checking existing encoded asset: %w", err)
-	}
-	if already {
-		log.Info("encode: encoded asset already committed, skipping")
-		result = "success"
-		w.clearEncodeAttempt(ctx, args.RecordingID, args.Profile)
-		return nil
-	}
-
 	// この試行の観測（issue #316）。running を書き、この呼び出しが返るときに
 	// 成功（media_asset 行を作った）か失敗かで消す/failed に上書きする。
 	// shouldNotifyEncodeFailure と**同じ判定関数**を使う（bespoke な条件を
@@ -176,6 +166,33 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 		}
 		w.markEncodeAttemptFailed(ctx, args.RecordingID, args.Profile, err)
 	}()
+
+	// 冪等: 既に active な encoded があれば何もしない。リークした古い試行行
+	// （不変条件 10: 完了しているのに failed/running を名乗る行を残さない）が
+	// あれば掃除する。
+	//
+	// cut プロファイルの冪等は「active で、かつ凍結した区間が現在の量子化 keep と
+	// 一致する」である。**区間がずれていれば active でも作り直す** ---
+	// ユーザーがチャプターを直した後に再エンコードのジョブが来たときに、
+	// 古いカット版を「完了済み」と読むと編集が反映されない。
+	//
+	// 試行の観測（上の markEncodeAttemptRunning）より後に置く: ここの失敗も
+	// ジョブの失敗として recording_encode_attempts に残す（未定義プロファイルを
+	// ここで先に弾くと、観測が始まる前に return して failed 行が残らない）。
+	cut, err := w.loadCutContext(ctx, args.RecordingID, args.Profile)
+	if err != nil {
+		return err
+	}
+	already, err := w.hasActiveEncoded(ctx, args.RecordingID, args.Profile, cut)
+	if err != nil {
+		return fmt.Errorf("checking existing encoded asset: %w", err)
+	}
+	if already {
+		log.Info("encode: encoded asset already committed, skipping")
+		result = "success"
+		w.clearEncodeAttempt(ctx, args.RecordingID, args.Profile)
+		return nil
+	}
 
 	profile, originalRelPath, inputPath, duration, err := w.prepareEncodeInput(ctx, args, log)
 	if err != nil {
@@ -200,7 +217,24 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 		defer stopProgress()
 	}
 
-	relPath, err := EncodedRelPath(originalRelPath, profile.Name, profile.Container)
+	// 置き換えでは新しい世代のパスに置いてから旧パスを消す。旧パス（生きている行）
+	// は同じ tx より前の観測なので、ここで読んでおく。
+	var prevRelPath string
+	generation := 0
+	if cut != nil {
+		var prevState string
+		prevRelPath, prevState, err = w.loadEncodedRelPath(ctx, args.RecordingID, profile.Name)
+		if err != nil {
+			return err
+		}
+		generation = nextCutGeneration(prevRelPath, profile.Name)
+		if prevState != "active" {
+			// tombstone / deleting のファイルは自分のものではない（消えているか、
+			// 削除 reconcile が処理中）。unlink の対象から外す。
+			prevRelPath = ""
+		}
+	}
+	relPath, err := EncodedRelPath(originalRelPath, profile.Name, profile.Container, generation)
 	if err != nil {
 		return fmt.Errorf("building encoded rel_path: %w", err)
 	}
@@ -229,17 +263,54 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 	if err != nil {
 		return err
 	}
-	if err := w.runEncodeCommand(ctx, profile, inputPath, scratchOut, subtitleOut, withSubtitles, reportProgress, log); err != nil {
+	// cut プロファイルはストリームとフィルタグラフをアプリが握る（出力側に -map を
+	// 書けないので ffmpeg の既定の選択を再現する。ffargs.SelectDefaultStreams）。
+	var filterArgs *ffargs.CutFilterResult
+	if cut != nil {
+		filterArgs, err = w.buildCutFilter(ctx, profile, inputPath, cut.keep)
+		if err != nil {
+			return err
+		}
+	}
+	argsIn := encodeCommandInput{
+		profile:       profile,
+		inputPath:     inputPath,
+		scratchOut:    scratchOut,
+		subtitleOut:   subtitleOut,
+		withSubtitles: withSubtitles,
+		filter:        filterArgs,
+	}
+	if err := w.runEncodeCommand(ctx, argsIn, reportProgress, log); err != nil {
 		return err
+	}
+	// 字幕は同じ ffmpeg 起動の別出力なので filtergraph の trim が効かない。
+	// 書き出した後に同じ keep 区間の写像で時刻を付け替える。
+	if withSubtitles && cut != nil {
+		if err := retimeSubtitleSidecar(subtitleOut, cut.keep); err != nil {
+			return err
+		}
 	}
 	size, err := w.copyEncodeOutputs(scratchOut, finalPath, relPath, subtitleOut, withSubtitles)
 	if err != nil {
 		return err
 	}
 
-	if err := w.commitEncoded(ctx, args.RecordingID, profile.Name, relPath, size); err != nil {
+	if cut != nil {
+		err = w.commitCutEncoded(ctx, args.RecordingID, profile.Name, relPath, size, cut.keep)
+	} else {
+		err = w.commitEncoded(ctx, args.RecordingID, profile.Name, relPath, size)
+	}
+	if err != nil {
 		// DB コミット失敗: media 上のファイルは DB に載らないので孤児。cleanup が回収。
 		return fmt.Errorf("committing encoded asset: %w", err)
+	}
+
+	// 旧パスの unlink は commit の後。**失敗しても孤児回収に任せる**（旧行はもう
+	// 存在しないので、cleanup が「メディア上にあるが DB に載っていないファイル」
+	// として拾う）。commit の前に消すと、commit が失敗したときに生きている行が
+	// 指すファイルを失う。
+	if prevRelPath != "" && prevRelPath != relPath {
+		w.removeReplacedEncoded(prevRelPath, log)
 	}
 
 	log.Info("encode: committed", "rel_path", relPath, "bytes", size)
@@ -250,6 +321,182 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 		Status:      "finished",
 		Profile:     args.Profile,
 	})
+	return nil
+}
+
+// cutContext は cut プロファイルの encode に要る、録画側の事実から導出した
+// keep 区間。cut でないプロファイルでは nil。
+type cutContext struct {
+	keep []chapters.Range
+}
+
+// loadCutContext は profile が cut のとき、有効なタイムラインから keep 区間を
+// 導出する。cut でなければ (nil, nil)。
+//
+// **所有の行があることを前提にする。** 確認前にカット版をコミットすると、誤検出の
+// まま本編が削られ、原本がごみ箱を経由せずに消えて取り返せなくなる。ジョブの投入側
+// （enqueueMissingEncodes / ListMissingEncodeProfiles）が所有していない録画を除外
+// しているので、ここに来る cut ジョブは所有済みのはずである。来なければジョブの
+// 失敗として現れる（黙って切らない）。
+//
+// keep が空（全部カット）も同じく失敗させる。keep_ranges の CHECK が空を拒否する
+// ので、先に落とさないと tx ごとロールバックする。
+func (w *EncodeWorker) loadCutContext(ctx context.Context, recordingID int64, profileName string) (*cutContext, error) {
+	profile, ok := w.Profiles.Profile(profileName)
+	if !ok {
+		// 未知のプロファイルは prepareEncodeInput が同じ文言で落とす（ここは
+		// cut かどうかだけを決められればよい）。
+		return nil, fmt.Errorf("unknown encode profile %q", profileName)
+	}
+	if !profile.Cut {
+		return nil, nil
+	}
+	q := sqlcgen.New(w.Pool)
+	keep, owned, err := currentCutKeep(ctx, q, recordingID)
+	if err != nil {
+		return nil, err
+	}
+	if !owned {
+		return nil, fmt.Errorf("cut profile %q requires adopted chapters for recording %d", profileName, recordingID)
+	}
+	if len(keep) == 0 {
+		return nil, fmt.Errorf("recording %d has no keep ranges (every span is cut)", recordingID)
+	}
+	return &cutContext{keep: keep}, nil
+}
+
+// currentCutKeep は録画の有効なタイムラインから keep 区間を導出する。owned は
+// ユーザーが確認済みか（所有の行の有無）。
+//
+// **導出は chapters.Derive 1 か所を通る**（api の GET chapters・カット版の
+// encode・「編集前の内容です」の判定が同じ関数を使う）。所有済みなので自動層は
+// 読まない。
+func currentCutKeep(ctx context.Context, q *sqlcgen.Queries, recordingID int64) (keep []chapters.Range, owned bool, err error) {
+	state, err := q.GetRecordingChapterState(ctx, recordingID)
+	if err != nil {
+		return nil, false, fmt.Errorf("loading chapter state for recording %d: %w", recordingID, err)
+	}
+	if !state.Owned {
+		return nil, false, nil
+	}
+	raw, err := q.GetRecordingChapterSpansJSON(ctx, recordingID)
+	if err != nil {
+		return nil, false, fmt.Errorf("loading chapter spans for recording %d: %w", recordingID, err)
+	}
+	var spans []chapters.Span
+	if err := json.Unmarshal(raw, &spans); err != nil {
+		return nil, false, fmt.Errorf("decoding chapter spans for recording %d: %w", recordingID, err)
+	}
+	return chapters.KeepRanges(chapters.Derive(true, spans, nil, state.ProgramDurationMs)), true, nil
+}
+
+// assetKeepRanges は media_asset に凍結された keep 区間を読む。凍結していない
+// （cut でない版）なら空。
+func assetKeepRanges(ctx context.Context, q *sqlcgen.Queries, assetID int64) ([]chapters.Range, error) {
+	raw, err := q.GetMediaAssetKeepRangesJSON(ctx, assetID)
+	if err != nil {
+		return nil, fmt.Errorf("loading frozen cut ranges: %w", err)
+	}
+	var ranges []chapters.Range
+	if err := json.Unmarshal(raw, &ranges); err != nil {
+		return nil, fmt.Errorf("decoding frozen cut ranges: %w", err)
+	}
+	return ranges, nil
+}
+
+// buildCutFilter は入力のストリームを選び、keep 区間で切る filtergraph を組む。
+func (w *EncodeWorker) buildCutFilter(ctx context.Context, profile config.EncodeProfile, inputPath string, keep []chapters.Range) (*ffargs.CutFilterResult, error) {
+	video, audio, err := w.selectStreams(ctx, inputPath)
+	if err != nil {
+		return nil, err
+	}
+	hwUpload := profile.HWAccel != nil && profile.HWAccel.Kind == "vaapi"
+	result, err := ffargs.CutFilterComplex(keep, video, audio, profile.Scaler, profile.Height, profile.Deinterlace, hwUpload)
+	if err != nil {
+		return nil, fmt.Errorf("building cut filtergraph: %w", err)
+	}
+	return &result, nil
+}
+
+// selectStreams は ffprobe で入力のストリームを列挙し、ffmpeg の既定の選択と
+// 同じ規則で映像 1 本・音声 1 本を選ぶ（絶対ストリーム番号を返す）。
+//
+// **既定を再現する理由**: cut でない版は出力側に -map を指定せず ffmpeg の既定に
+// 任せている。cut 版だけ別のストリームが選ばれると、同じ録画の 2 つの版で
+// 音声が食い違う。
+func (w *EncodeWorker) selectStreams(ctx context.Context, inputPath string) (video, audio int, err error) {
+	ffprobe := w.FFprobe
+	if ffprobe == "" {
+		ffprobe = "ffprobe"
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, streamProbeTimeout)
+	defer cancel()
+	out, err := commandOutput(probeCtx, ffprobe,
+		"-v", "error",
+		"-show_entries", "stream=index,codec_type,width,height,channels",
+		"-of", "csv=p=0", inputPath,
+	)
+	if err != nil {
+		return 0, 0, fmt.Errorf("probing streams of %s: %w", inputPath, err)
+	}
+	streams, err := parseStreamCSV(string(out))
+	if err != nil {
+		return 0, 0, err
+	}
+	video, audio, ok := ffargs.SelectDefaultStreams(streams)
+	if !ok {
+		return 0, 0, fmt.Errorf("input %s has no video or no audio stream", inputPath)
+	}
+	return video, audio, nil
+}
+
+// parseStreamCSV は `-of csv=p=0` の `index,codec_type,width,height,channels`
+// 行を読む。値が無い列は空文字（映像に channels は無い）。
+func parseStreamCSV(out string) ([]ffargs.StreamInfo, error) {
+	var streams []ffargs.StreamInfo
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Split(line, ",")
+		if len(fields) < 2 {
+			return nil, fmt.Errorf("unexpected ffprobe stream line %q", line)
+		}
+		index, err := strconv.Atoi(fields[0])
+		if err != nil {
+			return nil, fmt.Errorf("unexpected ffprobe stream index %q: %w", fields[0], err)
+		}
+		s := ffargs.StreamInfo{Index: index, CodecType: fields[1]}
+		if len(fields) > 2 {
+			s.Width, _ = strconv.Atoi(fields[2])
+		}
+		if len(fields) > 3 {
+			s.Height, _ = strconv.Atoi(fields[3])
+		}
+		if len(fields) > 4 {
+			s.Channels, _ = strconv.Atoi(fields[4])
+		}
+		streams = append(streams, s)
+	}
+	return streams, nil
+}
+
+// retimeSubtitleSidecar は書き出した WebVTT の時刻をカット後の時間軸へ付け替える。
+// 空になった結果（全キューが CM の中）はそのまま置く --- 元のファイルを消すと
+// copyEncodeOutputs のサイズ検査が落ちる。
+func retimeSubtitleSidecar(path string, keep []chapters.Range) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading subtitle sidecar: %w", err)
+	}
+	out, err := chapters.RetimeVTT(data, keep)
+	if err != nil {
+		return fmt.Errorf("retiming subtitle sidecar: %w", err)
+	}
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		return fmt.Errorf("writing retimed subtitle sidecar: %w", err)
+	}
 	return nil
 }
 
@@ -311,13 +558,30 @@ func (w *EncodeWorker) prepareEncodeSubtitles(ctx context.Context, profile confi
 	return withSubtitles, subtitleOut, nil
 }
 
+// encodeCommandInput は ffmpeg 起動 1 回ぶんの入力（runEncodeCommand の引数）。
+// 引数が 6 個を超えたのでまとめた（順序を間違えても型が同じで気付けない
+// 組み合わせが 3 つ以上ある）。
+type encodeCommandInput struct {
+	profile       config.EncodeProfile
+	inputPath     string
+	scratchOut    string
+	subtitleOut   string
+	withSubtitles bool
+
+	// filter は cut プロファイルの filtergraph と -map（cut でなければ nil）。
+	// ストリームの選択は ffprobe の結果に依存するので、BuildFFmpegArgs の外で
+	// 決めて渡す。
+	filter *ffargs.CutFilterResult
+}
+
 // runEncodeCommand は ffmpeg を実行し、進捗を読み取り、scratch 出力を検証する。
-func (w *EncodeWorker) runEncodeCommand(ctx context.Context, profile config.EncodeProfile, inputPath, scratchOut, subtitleOut string, withSubtitles bool, reportProgress func(time.Duration), log *slog.Logger) error {
+func (w *EncodeWorker) runEncodeCommand(ctx context.Context, in encodeCommandInput, reportProgress func(time.Duration), log *slog.Logger) error {
+	profile, inputPath, scratchOut, subtitleOut, withSubtitles := in.profile, in.inputPath, in.scratchOut, in.subtitleOut, in.withSubtitles
 	ffmpeg := w.FFmpeg
 	if ffmpeg == "" {
 		ffmpeg = "ffmpeg"
 	}
-	cmd := exec.CommandContext(ctx, ffmpeg, BuildFFmpegArgs(profile, inputPath, scratchOut, withSubtitles)...)
+	cmd := exec.CommandContext(ctx, ffmpeg, BuildFFmpegArgs(profile, inputPath, scratchOut, withSubtitles, in.filter)...)
 	setWorkerExecWaitDelay(cmd)
 	// 進捗は stdout（-progress pipe:1）。stderr はエラー診断のみ（進捗に使わない）。
 	stdout, err := cmd.StdoutPipe()
@@ -454,6 +718,10 @@ const encodeAttemptErrorMaxLen = 2000
 // （attemptWriteContext）理由を参照。
 const encodeAttemptWriteTimeout = 5 * time.Second
 
+// streamProbeTimeout は cut プロファイルで選ぶストリームを調べる ffprobe の上限。
+// 入力ファイルは既にローカルにある（原本）ので、字幕 probe と同じ 30 秒で足りる。
+const streamProbeTimeout = 30 * time.Second
+
 // subtitleProbeTimeout は字幕サイドカーの有無を調べる ffprobe の上限。
 // 進捗分母の probe と同じく best-effort だが、字幕機能を有効にしたことで
 // エンコード全体が無期限に止まることは許さない。
@@ -543,19 +811,122 @@ func (w *EncodeWorker) clearEncodeAttempt(ctx context.Context, recordingID int64
 	}
 }
 
-func (w *EncodeWorker) hasActiveEncoded(ctx context.Context, recordingID int64, profile string) (bool, error) {
+// hasActiveEncoded は冪等スキップの判定。cut が nil（cut でないプロファイル）なら
+// 「active な encoded があるか」だけを見る。cut が非 nil なら、それに加えて
+// **凍結した区間が現在の量子化 keep と一致すること**を要求する（一致しなければ
+// 作り直す。encode の doc コメント参照）。
+//
+// 比較は量子化後の値どうしで行う。keep は chapters.Derive を通った時点で量子化
+// 済み、凍結側は書き込み時に量子化して入れてある（media_asset_cuts の
+// コメント参照）。
+func (w *EncodeWorker) hasActiveEncoded(ctx context.Context, recordingID int64, profile string, cut *cutContext) (bool, error) {
 	q := sqlcgen.New(w.Pool)
-	_, err := q.GetActiveEncodedMediaAssetID(ctx, sqlcgen.GetActiveEncodedMediaAssetIDParams{
+	if cut == nil {
+		_, err := q.GetActiveEncodedMediaAssetID(ctx, sqlcgen.GetActiveEncodedMediaAssetIDParams{
+			RecordingID: recordingID,
+			Profile:     &profile,
+		})
+		if err == nil {
+			return true, nil
+		}
+		if errors.Is(err, pgx5.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	row, err := q.GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
 		RecordingID: recordingID,
 		Profile:     &profile,
 	})
-	if err == nil {
-		return true, nil
-	}
 	if errors.Is(err, pgx5.ErrNoRows) {
 		return false, nil
 	}
-	return false, err
+	if err != nil {
+		return false, err
+	}
+	if row.State != "active" {
+		return false, nil
+	}
+	frozen, err := assetKeepRanges(ctx, q, row.ID)
+	if err != nil {
+		return false, err
+	}
+	return chapters.SameRanges(frozen, cut.keep), nil
+}
+
+// loadEncodedRelPath は (recording_id, profile) の encoded 行の rel_path と state
+// を返す。**state を問わない**: 世代番号は tombstone からも導出する（次のカット版が
+// 同じパスを再利用しないため）。行が無ければ空文字。
+//
+// state も返すのは、**unlink してよいのは active な行だけ**だからである。
+// tombstone のファイルは既に消えており、`deleting` のものは削除 reconcile が
+// 処理中で、先回りして消すと相手に偽のエラーログを出させる。
+func (w *EncodeWorker) loadEncodedRelPath(ctx context.Context, recordingID int64, profile string) (relPath, state string, err error) {
+	q := sqlcgen.New(w.Pool)
+	row, err := q.GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
+		RecordingID: recordingID,
+		Profile:     &profile,
+	})
+	if errors.Is(err, pgx5.ErrNoRows) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("loading existing encoded asset: %w", err)
+	}
+	return row.RelPath, row.State, nil
+}
+
+// nextCutGeneration は旧 rel_path の世代番号 +1 を返す（無ければ 1）。
+//
+// **1 世代目から `.g1` を付ける。** 「世代番号の無いパス」という例外を作ると、
+// 置き換えのたびに「旧パスに世代が付いているか」を分岐で扱うことになる。
+// 番号が読めないパス（手で置かれた行など）は 1 に戻す --- 衝突したら部分一意索引が
+// 弾くので、黙って他人のファイルを上書きすることはない。
+func nextCutGeneration(prevRelPath, profileName string) int {
+	if prevRelPath == "" {
+		return 1
+	}
+	stem := strings.TrimSuffix(prevRelPath, filepath.Ext(prevRelPath))
+	// `..._{profile}.g{n}` の n を読む。プロファイル名に `.g<数字>` が含まれても
+	// 末尾だけを見るので取り違えない。
+	safeProfile, err := sanitizeProfileForPath(profileName)
+	if err != nil {
+		return 1
+	}
+	prefix := safeProfile + ".g"
+	i := strings.LastIndex(stem, prefix)
+	if i < 0 {
+		return 1
+	}
+	n, err := strconv.Atoi(stem[i+len(prefix):])
+	if err != nil || n < 1 {
+		return 1
+	}
+	return n + 1
+}
+
+// removeReplacedEncoded は置き換えで不要になった旧ファイルを消す。
+//
+// **失敗はログのみ。** 旧パスはもう media_assets のどの行からも指されていないので、
+// 既存の孤児回収（cleanup）が「メディア上にあるが DB に載っていないファイル」と
+// して拾う。ここでエラーを返すと、置き換え自体は成功しているのにジョブが失敗し、
+// 再試行が新しい世代をさらに作る。
+func (w *EncodeWorker) removeReplacedEncoded(relPath string, log *slog.Logger) {
+	path, err := mediapath.Resolve(w.MediaDir, relPath)
+	if err != nil {
+		log.Warn("encode: could not resolve replaced path", "rel_path", relPath, "err", err)
+		return
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Warn("encode: removing replaced encoded file failed; orphan collection will pick it up",
+			"rel_path", relPath, "err", err)
+	}
+	// サイドカーも同じ世代で置き換わる。
+	if sidecarRel, err := mediapath.SubtitleSibling(relPath); err == nil {
+		if sidecar, err := mediapath.Resolve(w.MediaDir, sidecarRel); err == nil {
+			_ = os.Remove(sidecar)
+		}
+	}
 }
 
 func (w *EncodeWorker) loadOriginal(ctx context.Context, recordingID int64) (sqlcgen.GetActiveOriginalMediaAssetRow, error) {
@@ -619,6 +990,87 @@ func (w *EncodeWorker) commitEncoded(ctx context.Context, recordingID int64, pro
 	return nil
 }
 
+// commitCutEncoded はカット版のコミット。**行の差し替えと凍結した区間の差し替えを
+// 1 つの tx で行う** --- 別々に commit すると、間に落ちたときに「新しいパスを指す
+// 行 + 古い区間」という、実在しないファイルの説明が残る。
+//
+// 行は消さずに UpsertEncodedMediaAsset で rel_path / size_bytes を書き換える
+// （消して作り直すと、rel_path の部分一意索引から一瞬外れてその隙間に別の行が
+// 同じパスを取れる）。世代番号で必ず新しいパスになるので衝突しない。
+//
+// 旧パスの unlink は**呼び出し元が commit の後で**行う（ここで消すと、commit が
+// 失敗したときに生きている行が指すファイルを失う）。
+func (w *EncodeWorker) commitCutEncoded(ctx context.Context, recordingID int64, profile, relPath string, size int64, keep []chapters.Range) error {
+	ranges, err := keepRangesParam(keep)
+	if err != nil {
+		return err
+	}
+	tx, err := w.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning cut commit: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := sqlcgen.New(tx)
+
+	profileName := profile
+	assetID, err := q.UpsertEncodedMediaAsset(ctx, sqlcgen.UpsertEncodedMediaAssetParams{
+		RecordingID: recordingID,
+		Profile:     &profileName,
+		RelPath:     relPath,
+		SizeBytes:   size,
+	})
+	if err != nil {
+		return fmt.Errorf("upserting media_asset: %w", err)
+	}
+	if err := replaceMediaAssetCuts(ctx, q, assetID, ranges); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing cut encoded asset: %w", err)
+	}
+	return nil
+}
+
+// replaceMediaAssetCuts は 1 つの media_asset の凍結区間を差し替える
+// （DELETE → INSERT）。呼び出し側の tx の中で使う。
+func replaceMediaAssetCuts(ctx context.Context, q *sqlcgen.Queries, assetID int64, ranges pgtype.Multirange[pgtype.Range[pgtype.Int8]]) error {
+	if err := q.DeleteMediaAssetCuts(ctx, assetID); err != nil {
+		return fmt.Errorf("clearing media_asset_cuts: %w", err)
+	}
+	if err := q.InsertMediaAssetCuts(ctx, sqlcgen.InsertMediaAssetCutsParams{
+		MediaAssetID: assetID,
+		KeepRanges:   ranges,
+	}); err != nil {
+		return fmt.Errorf("writing media_asset_cuts: %w", err)
+	}
+	return nil
+}
+
+// keepRangesParam は ms の半開区間列を int8multirange の param へ写す。
+// 昇順・非交差へ正規化してから渡す（値どうしの一致比較をするため）。
+func keepRangesParam(keep []chapters.Range) (pgtype.Multirange[pgtype.Range[pgtype.Int8]], error) {
+	out := make(pgtype.Multirange[pgtype.Range[pgtype.Int8]], 0, len(keep))
+	for _, r := range keep {
+		if r.EndMs <= r.StartMs {
+			continue
+		}
+		out = append(out, pgtype.Range[pgtype.Int8]{
+			Lower:     pgtype.Int8{Int64: r.StartMs, Valid: true},
+			Upper:     pgtype.Int8{Int64: r.EndMs, Valid: true},
+			LowerType: pgtype.Inclusive,
+			UpperType: pgtype.Exclusive,
+			// Valid を立てないと pgx が「NULL の要素」として符号化を拒否する
+			// （multirange cannot contain NULL element）。
+			Valid: true,
+		})
+	}
+	if len(out) == 0 {
+		// CHECK (NOT isempty(keep_ranges)) が拒否する。先に落とす。
+		return nil, errors.New("keep ranges are empty")
+	}
+	return out, nil
+}
+
 // BuildFFmpegArgs は構造化 EncodeProfile から ffmpeg 引数を組み立てる。
 //
 // 自由形式の cmd 文字列は受け取らない（issue #64 / #65）。input / output は
@@ -649,13 +1101,25 @@ func (w *EncodeWorker) commitEncoded(ctx context.Context, recordingID int64, pro
 // （issue #430 の optional map の罠）。サイドカーの出力パスは output と同じ
 // ディレクトリ・basename に .vtt を付けたもの（mediapath.SubtitleSibling）で
 // 固定する --- 呼び出し側が任意のパスを選べる余地は無い。
-func BuildFFmpegArgs(profile config.EncodeProfile, input, output string, withSubtitles bool) []string {
+//
+// cut は cut プロファイルの filtergraph と -map（cut でなければ nil）。**cut では
+// `-vf` を出さない** --- filtergraph はアプリが 1 本だけ組み、deinterlace / scale /
+// hwupload を連結の後ろに置く（ffargs.CutFilterComplex）。`-vf` と
+// `-filter_complex` の併用は、同じ入力を 2 回フィルタする意図の無い形になる。
+// cut の入力側は `-hwaccel` の代わりに `-vaapi_device` を出す（HW デコードした
+// フレームは trim に通せない。ffargs.VAAPIDeviceArgs）。
+func BuildFFmpegArgs(profile config.EncodeProfile, input, output string, withSubtitles bool, cut *ffargs.CutFilterResult) []string {
 	args := []string{
 		"-hide_banner",
 		"-nostats",
 		"-y",
 	}
-	args = append(args, ffargs.PreInput(profile.HWAccel, profile.InputExtraArgs)...)
+	if profile.Cut {
+		args = append(args, ffargs.VAAPIDeviceArgs(profile.HWAccel)...)
+		args = append(args, profile.InputExtraArgs...)
+	} else {
+		args = append(args, ffargs.PreInput(profile.HWAccel, profile.InputExtraArgs)...)
+	}
 	if profile.Subtitles == "webvtt" && withSubtitles {
 		// **ARIB 字幕は duration を持たない。** これが無いと WebVTT の終了時刻が
 		// 全 cue で約 1193 時間になり、字幕が一度出たら消えず積み重なる（実測:
@@ -664,12 +1128,17 @@ func BuildFFmpegArgs(profile config.EncodeProfile, input, output string, withSub
 		args = append(args, "-fix_sub_duration")
 	}
 	args = append(args, "-i", input)
+	if cut != nil {
+		args = append(args, "-filter_complex", cut.FilterComplex, "-map", cut.VideoMap, "-map", cut.AudioMap)
+	}
 	args = append(args,
 		"-c:v", profile.VideoCodec,
 		"-c:a", profile.AudioCodec,
 	)
-	if filter, ok := ffargs.VideoFilterArgs(profile.Scaler, profile.Height, profile.Deinterlace); ok {
-		args = append(args, "-vf", filter)
+	if cut == nil {
+		if filter, ok := ffargs.VideoFilterArgs(profile.Scaler, profile.Height, profile.Deinterlace); ok {
+			args = append(args, "-vf", filter)
+		}
 	}
 	args = append(args, ffargs.QualityArgs(profile.CRF, profile.QP)...)
 	if profile.Preset != "" {
@@ -705,8 +1174,13 @@ func BuildFFmpegArgs(profile config.EncodeProfile, input, output string, withSub
 //
 //	→ "20240101/120000_title_1024_h264.mp4"
 //
+// generation が正なら `_{profile}.g{n}.{container}` になる（cut プロファイルの
+// 世代。1 世代目から必ず付く）。置き換えは「新しいパスに置いてから旧パスを消す」
+// ので、同じパスへ上書きしてはならない（ストレージ契約の「置くのは一回」。
+// 生きている行の rel_path 部分一意索引とも衝突する）。
+//
 // profile 名はパス成分としてサニタイズする（contentpath）。階層は原本の dir のみ。
-func EncodedRelPath(originalRel, profileName, container string) (string, error) {
+func EncodedRelPath(originalRel, profileName, container string, generation int) (string, error) {
 	if originalRel == "" {
 		return "", fmt.Errorf("empty original rel_path")
 	}
@@ -717,6 +1191,10 @@ func EncodedRelPath(originalRel, profileName, container string) (string, error) 
 	if err != nil {
 		return "", err
 	}
+	suffix := ""
+	if generation > 0 {
+		suffix = fmt.Sprintf(".g%d", generation)
+	}
 
 	// パス区切りは DB 上で '/' 規約。filepath は OS 依存なので ToSlash で揃える。
 	originalRel = filepath.ToSlash(originalRel)
@@ -726,7 +1204,7 @@ func EncodedRelPath(originalRel, profileName, container string) (string, error) 
 	if stem == "" {
 		stem = "encoded"
 	}
-	name := stem + "_" + safeProfile + "." + container
+	name := stem + "_" + safeProfile + suffix + "." + container
 	if dir == "" || dir == "." {
 		return contentpath.SanitizeContentPath(name), nil
 	}
@@ -860,8 +1338,8 @@ type JobInserter interface {
 // `unknown encode profile` で失敗させ、その失敗が運用者への通知になる。
 // 15 分ごとに繰り返す定期パスが同じことをすると失敗を無限に作り続けるので、
 // そちらは EnqueueMissingEncodesForKnownProfiles を使う。
-func EnqueueMissingEncodes(ctx context.Context, inserter JobInserter, pool *pgxpool.Pool, recordingID int64) error {
-	return enqueueMissingEncodes(ctx, inserter, pool, recordingID, nil)
+func EnqueueMissingEncodes(ctx context.Context, inserter JobInserter, pool *pgxpool.Pool, recordingID int64, cutProfiles map[string]struct{}) error {
+	return enqueueMissingEncodes(ctx, inserter, pool, recordingID, nil, cutProfiles)
 }
 
 // EnqueueMissingEncodesForKnownProfiles は EnqueueMissingEncodes と同じ判定を
@@ -873,18 +1351,25 @@ func EnqueueMissingEncodes(ctx context.Context, inserter JobInserter, pool *pgxp
 // 投入しても EncodeWorker が全部弾く）。判定を 2 か所に分けないため、絞り込み
 // 以外のロジック（原本の有無・ポリシー行の有無・observed の確認）は
 // EnqueueMissingEncodes と同じ 1 つの実装を通る。
-func EnqueueMissingEncodesForKnownProfiles(ctx context.Context, inserter JobInserter, pool *pgxpool.Pool, recordingID int64, known []string) error {
+func EnqueueMissingEncodesForKnownProfiles(ctx context.Context, inserter JobInserter, pool *pgxpool.Pool, recordingID int64, known []string, cutProfiles map[string]struct{}) error {
 	set := make(map[string]struct{}, len(known))
 	for _, name := range known {
 		set[name] = struct{}{}
 	}
-	return enqueueMissingEncodes(ctx, inserter, pool, recordingID, set)
+	return enqueueMissingEncodes(ctx, inserter, pool, recordingID, set, cutProfiles)
 }
 
 // enqueueMissingEncodes は上 2 つの実装本体。known が nil なら desired を絞らない
 // （nil と空マップは意味が違う: 空マップは「投入してよいプロファイルが 1 つも
 // 無い」）。
-func enqueueMissingEncodes(ctx context.Context, inserter JobInserter, pool *pgxpool.Pool, recordingID int64, known map[string]struct{}) error {
+//
+// cutProfiles は cut: true のプロファイル名（config.EncodeConfig.CutProfileSet）。
+// **cut プロファイルは所有（= ユーザーが確認済み）の行がある録画にしか投入しない。**
+// 確認前にカット版がコミットされると、誤検出のまま本編が削られ、原本がごみ箱を
+// 経由せずに消えて取り返せなくなる。所有していない録画の cut プロファイルは
+// 「投入しない」ではなく「まだ投入しない」で、ユーザーが確認した次のパスが拾う
+// （api 側はそれを awaiting_review として見せる）。
+func enqueueMissingEncodes(ctx context.Context, inserter JobInserter, pool *pgxpool.Pool, recordingID int64, known, cutProfiles map[string]struct{}) error {
 	if inserter == nil {
 		return fmt.Errorf("encode enqueue: inserter is nil")
 	}
@@ -915,6 +1400,28 @@ func enqueueMissingEncodes(ctx context.Context, inserter JobInserter, pool *pgxp
 		return nil
 	}
 
+	// 所有の行の有無は 1 回だけ引く（cut プロファイルが 1 つも無ければ引かない）。
+	var currentKeep []chapters.Range
+	if len(cutProfiles) > 0 {
+		keep, owned, err := currentCutKeep(ctx, q, recordingID)
+		if err != nil {
+			if errors.Is(err, pgx5.ErrNoRows) {
+				return nil
+			}
+			return fmt.Errorf("loading chapter state for recording %d: %w", recordingID, err)
+		}
+		if !owned {
+			currentKeep = nil
+		} else {
+			// owned=true と keep が空（全部カット）を区別する必要があるので、
+			// 空でも「確認済み」の印として非 nil の空スライスにする。
+			currentKeep = keep
+			if currentKeep == nil {
+				currentKeep = []chapters.Range{}
+			}
+		}
+	}
+
 	for _, name := range policy.EncodeProfiles {
 		if name == "" {
 			continue
@@ -924,14 +1431,29 @@ func enqueueMissingEncodes(ctx context.Context, inserter JobInserter, pool *pgxp
 				continue
 			}
 		}
-		_, err := q.GetActiveEncodedMediaAssetID(ctx, sqlcgen.GetActiveEncodedMediaAssetIDParams{
+		_, isCut := cutProfiles[name]
+		if isCut && currentKeep == nil {
+			continue // 未確認（所有の行が無い）。ユーザーが確認するまで投入しない
+		}
+		assetID, err := q.GetActiveEncodedMediaAssetID(ctx, sqlcgen.GetActiveEncodedMediaAssetIDParams{
 			RecordingID: recordingID,
 			Profile:     &name,
 		})
 		if err == nil {
-			continue // 既に active encoded あり
-		}
-		if !errors.Is(err, pgx5.ErrNoRows) {
+			if !isCut {
+				continue // 既に active encoded あり
+			}
+			// cut は「active で、かつ凍結した区間が現在の keep と一致する」が
+			// 完了。**一致しなければ作り直す** --- チャプターを直した後の
+			// 再エンコード（POST …/reencode）がこの経路でジョブになる。
+			fresh, err := cutIsCurrent(ctx, q, assetID, currentKeep)
+			if err != nil {
+				return err
+			}
+			if fresh {
+				continue
+			}
+		} else if !errors.Is(err, pgx5.ErrNoRows) {
 			return fmt.Errorf("checking encoded asset %q: %w", name, err)
 		}
 
@@ -945,15 +1467,29 @@ func enqueueMissingEncodes(ctx context.Context, inserter JobInserter, pool *pgxp
 	return nil
 }
 
+// cutIsCurrent は active な cut 版の凍結区間が現在の量子化 keep と一致するかを
+// 返す。keep が空（全部カット）なら false（作り直しても作れないので、呼び出し側は
+// 投入しない判断に使える）。
+func cutIsCurrent(ctx context.Context, q *sqlcgen.Queries, assetID int64, keep []chapters.Range) (bool, error) {
+	if len(keep) == 0 {
+		return false, nil
+	}
+	frozen, err := assetKeepRanges(ctx, q, assetID)
+	if err != nil {
+		return false, err
+	}
+	return chapters.SameRanges(frozen, keep), nil
+}
+
 // enqueueMissingEncodesFromContext は River ワーカーの ctx から client を取り、
 // 欠けている encode ジョブを投入する。client が無い（単体で Work を呼んだ）場合は
 // 何もしない。失敗はログのみ（ingest 本体の成功を巻き戻さない）。
-func enqueueMissingEncodesFromContext(ctx context.Context, pool *pgxpool.Pool, recordingID int64) {
+func enqueueMissingEncodesFromContext(ctx context.Context, pool *pgxpool.Pool, recordingID int64, cutProfiles map[string]struct{}) {
 	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
 	if err != nil {
 		return
 	}
-	if err := EnqueueMissingEncodes(ctx, client, pool, recordingID); err != nil {
+	if err := EnqueueMissingEncodes(ctx, client, pool, recordingID, cutProfiles); err != nil {
 		slog.Error("encode: failed to enqueue missing encodes",
 			"recording_id", recordingID, "err", err)
 	}
@@ -965,6 +1501,10 @@ func enqueueMissingEncodesFromContext(ctx context.Context, pool *pgxpool.Pool, r
 type EncodeEnqueueHintWorker struct {
 	river.WorkerDefaults[jobs.EncodeEnqueueHintArgs]
 	Pool *pgxpool.Pool
+
+	// CutProfiles は cut: true のプロファイル名（config から注入）。所有して
+	// いない録画への投入を止めるのに使う（enqueueMissingEncodes 参照）。
+	CutProfiles map[string]struct{}
 }
 
 // Work は EnqueueMissingEncodes を呼び、recording_encode_policy.encode_profiles（desired）と
@@ -980,5 +1520,5 @@ func (w *EncodeEnqueueHintWorker) Work(ctx context.Context, job *river.Job[jobs.
 	if err != nil {
 		return fmt.Errorf("encode enqueue hint: getting river client: %w", err)
 	}
-	return EnqueueMissingEncodes(ctx, client, w.Pool, job.Args.RecordingID)
+	return EnqueueMissingEncodes(ctx, client, w.Pool, job.Args.RecordingID, w.CutProfiles)
 }

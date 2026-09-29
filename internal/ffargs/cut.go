@@ -1,0 +1,140 @@
+package ffargs
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/fetburner/rokuban/internal/chapters"
+)
+
+// VAAPIDeviceArgs は cut プロファイルの VAAPI 用の入力側引数を返す。
+//
+// **`-hwaccel vaapi` の代わりに `-vaapi_device` を出す。** HW でデコードした
+// フレームは trim に通せないのでデコードはソフトウェアで行い、`-vaapi_device` で
+// デバイスだけを用意して、連鎖の最後の `format=nv12,hwupload` で初めて HW へ上げる。
+//
+// h が nil または kind が vaapi でなければ nil（kind の制約は config の起動時検査が
+// 持つ。ここは「vaapi ならどう出すか」だけを決める）。
+func VAAPIDeviceArgs(h *HWAccel) []string {
+	if h == nil || h.Kind != "vaapi" {
+		return nil
+	}
+	return []string{"-vaapi_device", h.Device}
+}
+
+// CutFilterResult は cut プロファイルの filter_complex と、その出力を選ぶ -map 値。
+type CutFilterResult struct {
+	// FilterComplex は `-filter_complex` に渡す 1 本の filtergraph。
+	FilterComplex string
+
+	// VideoMap / AudioMap は `-map` に渡す出力ラベル（例: "[vout]"）。
+	VideoMap string
+	AudioMap string
+}
+
+// CutFilterComplex は確認済みの keep 区間でカットする filtergraph を組み立てる。
+//
+// 順序は trim / atrim → concat → deinterlace → scale →（VAAPI なら）
+// format=nv12,hwupload。**連結した後に 1 本の連鎖へ通す**ので、区間ごとに
+// フィルタが重複しない。
+//
+// 映像は trim=start_frame:end_frame（フレーム番号）、音声は atrim=start:end
+// （秒）で切る。**音声の境界も同じフレーム番号から秒へ換算する**（frame / fps）ので、
+// 区間ごとの A/V のずれが蓄積しない。trim の後に setpts / asetpts で PTS を 0 へ
+// 戻すのは concat が各区間の先頭を 0 とみなすため（戻さないと 2 区間目以降が
+// 元の PTS のぶん後ろへずれる）。
+//
+// videoStream / audioStream は入力 0 の**絶対ストリーム番号**（SelectDefaultStreams
+// が返すもの）。区間は chapters.Range（原本時間軸の ms 半開区間）で、空なら nil を
+// 返す（keep が空 = 全部カットは表現できない。呼び出し側が先に落とす）。
+func CutFilterComplex(keep []chapters.Range, videoStream, audioStream int, scaler Scaler, height int, deinterlace, hwUpload bool) (CutFilterResult, error) {
+	if len(keep) == 0 {
+		return CutFilterResult{}, fmt.Errorf("cut filtergraph needs at least one keep range")
+	}
+	var graph strings.Builder
+	var vLabels, aLabels []string
+	for i, r := range keep {
+		startFrame := chapters.MsToFrame(r.StartMs)
+		endFrame := chapters.MsToFrame(r.EndMs)
+		if endFrame <= startFrame {
+			return CutFilterResult{}, fmt.Errorf("keep range [%d,%d) is shorter than one frame", r.StartMs, r.EndMs)
+		}
+		v := fmt.Sprintf("v%d", i)
+		a := fmt.Sprintf("a%d", i)
+		fmt.Fprintf(&graph, "[0:%d]trim=start_frame=%d:end_frame=%d,setpts=PTS-STARTPTS[%s];",
+			videoStream, startFrame, endFrame, v)
+		fmt.Fprintf(&graph, "[0:%d]atrim=start=%s:end=%s,asetpts=PTS-STARTPTS[%s];",
+			audioStream, frameSeconds(startFrame), frameSeconds(endFrame), a)
+		vLabels = append(vLabels, "["+v+"]")
+		aLabels = append(aLabels, "["+a+"]")
+	}
+	n := strconv.Itoa(len(keep))
+	fmt.Fprintf(&graph, "%sconcat=n=%s:v=1:a=0[vcat];", strings.Join(vLabels, ""), n)
+	fmt.Fprintf(&graph, "%sconcat=n=%s:v=0:a=1[acat];", strings.Join(aLabels, ""), n)
+
+	var post []string
+	if filter, ok := VideoFilterArgs(scaler, height, deinterlace); ok {
+		post = append(post, filter)
+	}
+	if hwUpload {
+		post = append(post, "format=nv12", "hwupload")
+	}
+	if len(post) > 0 {
+		fmt.Fprintf(&graph, "[vcat]%s[vout];", strings.Join(post, ","))
+	} else {
+		graph.WriteString("[vcat]null[vout];")
+	}
+	graph.WriteString("[acat]anull[aout]")
+
+	return CutFilterResult{FilterComplex: graph.String(), VideoMap: "[vout]", AudioMap: "[aout]"}, nil
+}
+
+// frameSeconds はフレーム番号を秒へ換算する（frame / fps、fps は 30000/1001）。
+// 6 桁あれば 1 フレーム（約 0.0334s）より十分細かい。
+func frameSeconds(frame int64) string {
+	return strconv.FormatFloat(float64(frame)*float64(chapters.FrameDenominator)/float64(chapters.FrameNumerator), 'f', 6, 64)
+}
+
+// StreamInfo はストリーム選択に要る属性だけを持つ ffprobe の観測結果。
+type StreamInfo struct {
+	// Index は入力 0 の中での絶対ストリーム番号。
+	Index int
+	// CodecType は "video" / "audio" など（ffprobe の codec_type）。
+	CodecType string
+	// Width / Height は映像の解像度（映像以外では 0）。
+	Width, Height int
+	// Channels は音声のチャンネル数（音声以外では 0）。
+	Channels int
+}
+
+// SelectDefaultStreams は ffmpeg の既定のストリーム選択と同じ規則で映像 1 本・
+// 音声 1 本を選ぶ。
+//
+// 規則（ffmpeg のドキュメントの既定）: 映像は解像度（幅×高さ）が最大のもの、
+// 音声はチャンネル数が最大のもの。同点なら最も若い番号。
+//
+// **これを書く理由**: cut プロファイルは `-filter_complex` を使うため `-map` を
+// 明示するしかない。今の encode は出力側に `-map` を指定しておらず ffmpeg の既定に
+// 任せているので、同じ規則をここで再現しないとカット版だけ別のストリームが選ばれる。
+// 二重音声は 1 本の音声ストリームの中にあるので、音声は 1 本で足りる。
+//
+// どちらかが 1 本も無ければ ok=false。
+func SelectDefaultStreams(streams []StreamInfo) (video, audio int, ok bool) {
+	video, audio = -1, -1
+	bestPixels, bestChannels := -1, -1
+	for _, s := range streams {
+		switch s.CodecType {
+		case "video":
+			pixels := s.Width * s.Height
+			if video < 0 || pixels > bestPixels {
+				video, bestPixels = s.Index, pixels
+			}
+		case "audio":
+			if audio < 0 || s.Channels > bestChannels {
+				audio, bestChannels = s.Index, s.Channels
+			}
+		}
+	}
+	return video, audio, video >= 0 && audio >= 0
+}

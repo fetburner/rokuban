@@ -93,6 +93,11 @@ type MediaAsset struct {
 	UpdatedAt   time.Time
 }
 
+type MediaAssetCut struct {
+	MediaAssetID int64
+	KeepRanges   pgtype.Multirange[pgtype.Range[pgtype.Int8]]
+}
+
 type MissingMediaAsset struct {
 	MediaAssetID int64
 	FirstSeen    time.Time

@@ -485,6 +485,15 @@ type EncodeProfile struct {
 	// MP4 に内蔵せず、エンコード成果物の隣に .vtt を置く。
 	Subtitles string `yaml:"subtitles"`
 
+	// Cut は確認済みチャプターの cut=true 区間を除いたカット版を作る。
+	//
+	// 切る対象（どの区間か）は録画側の事実でチャプターが持ち、この出力に
+	// 切り取りを適用するかは出力の性質でプロファイルが持つ。cut プロファイルを
+	// 選ぶなら cut でないプロファイルを 1 つ以上含めること
+	// （ValidateCutSelection。原本 TS はブラウザで再生できないので、確認に
+	// 再生が要り、再生に encode が要り、encode に確認が要る循環になる）。
+	Cut bool `yaml:"cut"`
+
 	// Height はスケール先の高さ。0 または省略ならスケールしない。
 	Height int `yaml:"height"`
 
@@ -538,6 +547,56 @@ func (c EncodeConfig) ProfileNames() []string {
 		names = append(names, p.Name)
 	}
 	return names
+}
+
+// CutProfileNames は cut: true のプロファイル名を定義順で返す。
+func (c EncodeConfig) CutProfileNames() []string {
+	names := make([]string, 0, len(c.Profiles))
+	for _, p := range c.Profiles {
+		if p.Cut {
+			names = append(names, p.Name)
+		}
+	}
+	return names
+}
+
+// CutProfileSet は cut: true のプロファイル名の集合を返す。常に non-nil
+// （空設定でも non-nil を返す ProfileNames と同じ規約）。
+func (c EncodeConfig) CutProfileSet() map[string]struct{} {
+	set := make(map[string]struct{}, len(c.Profiles))
+	for _, p := range c.Profiles {
+		if p.Cut {
+			set[p.Name] = struct{}{}
+		}
+	}
+	return set
+}
+
+// ValidateCutSelection は「cut のプロファイルを選ぶなら cut でないプロファイルを
+// 1 つ以上含む」ことを検査する。ルール検証・override 検証・ingest の凍結・
+// POST /api/recordings/{id}/encode-profiles の 4 経路が共有する唯一の実装。
+//
+// cut だけの録画を許さない理由: 原本 TS はブラウザで再生できないので、確認には
+// 再生が要り、再生には encode が要り、encode には確認が要る、という循環になる。
+//
+// cut が空の集合なら常に nil（cut プロファイルが 1 つも定義されていない構成では
+// この規則は何も主張しない）。names が空でも nil。
+func ValidateCutSelection(names []string, cut map[string]struct{}) error {
+	if len(cut) == 0 {
+		return nil
+	}
+	sawCut := false
+	for _, name := range names {
+		if _, ok := cut[name]; ok {
+			sawCut = true
+			continue
+		}
+		return nil
+	}
+	if !sawCut {
+		return nil
+	}
+	return fmt.Errorf("encodeProfiles contains only cut profiles; a profile with cut unset is required so the recording can be reviewed before trimming")
 }
 
 // ValidateTools は ffmpeg / ffprobe が PATH（または絶対パス）で解決できることを
@@ -628,6 +687,9 @@ func validateEncodeProfileFFArgs(p EncodeProfile) error {
 	if err := p.HWAccel.Validate(); err != nil {
 		errs = append(errs, err.Error())
 	}
+	if err := validateCutProfile(p); err != nil {
+		errs = append(errs, err.Error())
+	}
 	// extra_args と input_extra_args の両方を検査し、1 回のエラーに全件出す
 	// （どちらか片方だけを検査する実装ミスをテストで検出できるように）。
 	if err := ffargs.ValidateExtraArgs("extra_args", p.ExtraArgs); err != nil {
@@ -635,6 +697,51 @@ func validateEncodeProfileFFArgs(p EncodeProfile) error {
 	}
 	if err := ffargs.ValidateExtraArgs("input_extra_args", p.InputExtraArgs); err != nil {
 		errs = append(errs, err.Error())
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// validateCutProfile は cut: true のプロファイルだけに掛かる制約を検査する。
+//
+// cut プロファイルでは映像を `-filter_complex` の trim に通すため、HW デコードした
+// フレームをそのまま渡せない。デコードとフィルタはソフトウェアで行い、VAAPI を
+// 使う場合は連鎖の最後に `format=nv12,hwupload` を置いてエンコードだけを HW に
+// 任せる。したがって表現できない組み合わせを起動時に落とす:
+//
+//   - `scaler: vaapi` — HW デコードしたフレーム前提のスケール。trim の後ろに置けない
+//   - `hwaccel.output_format` — HW サーフェスのまま後段へ渡す指示。同上
+//   - `hwaccel.kind` が vaapi 以外 — 上記の救済（-vaapi_device + hwupload）が
+//     VAAPI にしか無い。黙って `-hwaccel <kind>` を出すと trim が壊れる
+//   - `hwaccel.kind: vaapi` で device が無い — `-vaapi_device` に渡すものが無い
+//   - `extra_args` の `-map` — ストリームの並びはアプリが握る（live と同じ理由）
+func validateCutProfile(p EncodeProfile) error {
+	if !p.Cut {
+		return nil
+	}
+	var errs []string
+	if p.Scaler == ffargs.ScalerVAAPI {
+		errs = append(errs, "cut profiles must not use scaler \"vaapi\" (hardware-decoded frames cannot pass through trim)")
+	}
+	if p.HWAccel != nil {
+		if p.HWAccel.OutputFormat != "" {
+			errs = append(errs, "cut profiles must not set hwaccel.output_format (hardware frames cannot pass through trim)")
+		}
+		switch p.HWAccel.Kind {
+		case "vaapi":
+			if p.HWAccel.Device == "" {
+				errs = append(errs, "cut profiles with hwaccel.kind \"vaapi\" require hwaccel.device (it becomes -vaapi_device)")
+			}
+		default:
+			errs = append(errs, fmt.Sprintf("cut profiles support only hwaccel.kind \"vaapi\", got %q", p.HWAccel.Kind))
+		}
+	}
+	for i, a := range p.ExtraArgs {
+		if a == "-map" {
+			errs = append(errs, fmt.Sprintf("extra_args[%d]: \"-map\" is not allowed in cut profiles (the application owns stream selection)", i))
+		}
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("%s", strings.Join(errs, "; "))

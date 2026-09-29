@@ -1074,6 +1074,59 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/recordings/{id}/encoded/{profile}/reencode:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+      - name: profile
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: reencodeRecordingProfile
+      summary: Rebuild the cut version of a recording with the current chapters
+      description: |
+        cut 版を作り直す（`encodedAssets[].cutStale` が真のときのユーザーの
+        明示的な操作）。チャプターを直しても**自動では作り直さない** ---
+        自動で作り直すと、ユーザーが確認していない区間が黙って本編から消える。
+
+        新しい世代のパス（`…_{profile}.g{n+1}.{container}`）に置いてから、同じ
+        トランザクションで `media_assets.rel_path` / `size_bytes` と
+        `media_asset_cuts.keep_ranges` を差し替え、commit 後に旧パスを unlink
+        する。URL は `?profile=` のままで世代を含めない（資源同定は変えない）ので、
+        **置き換えた瞬間に視聴中のクライアントの再生は壊れる**（受け入れ済み。
+        再読み込みで直る）。
+
+        原本の media_assets 行が `state = 'active'` でない録画には 409 を返す
+        （カット版は原本から作り直すしかない。`POST
+        /api/recordings/{id}/encode-profiles` と同じ判定）。
+      responses:
+        "204":
+          description: Re-encode job enqueued
+        "400":
+          description: Unknown profile name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Recording not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: No active original media asset (deleted, deleting, or not yet ingested); cannot rebuild
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /api/recordings/{id}/encode-policy:
     parameters:
       - name: id
@@ -2323,6 +2376,29 @@ components:
       properties:
         profile:
           type: string
+        cut:
+          description: |
+            `encode.profiles[].cut: true` のプロファイルで作られたカット版
+            （確認済みチャプターの `cut=true` 区間を除いた本編だけ）か。
+            **クライアントはカット版を再生しているあいだ、シークプレビューと
+            チャプターを出さない** --- タイルもチャプターも原本の時間軸で
+            作られており、本編に残した OP などをカット版の軸へ写像する処理を
+            初版では持たない（docs/frontend/recordings.md）。
+          type: boolean
+        cutStale:
+          description: |
+            凍結した keep 区間（`media_asset_cuts.keep_ranges`）が現在の量子化
+            済みタイムラインと一致しない = 「編集前の内容です」。
+
+            チャプターを直すと、その録画のカット版は**自動では作り直さない**。
+            作り直しは `POST /api/recordings/{id}/encoded/{profile}/reencode`
+            というユーザーの明示的な操作で行う（自動で作り直すと、ユーザーが
+            確認していない区間が黙って本編から消える）。
+
+            `cut` が真のときだけ意味を持つ。判定は保存値ではなく毎回の導出
+            （api が `chapters.Derive` を通した keep 区間と突き合わせる。
+            不変条件 9）。
+          type: boolean
         sizeBytes:
           description: |
             encoded 派生物の実サイズ。`media_assets.size_bytes` は NOT NULL
@@ -2360,6 +2436,13 @@ components:
               と、api が現在の設定にあるプロファイル一覧を知っていて、かつ
               そのプロファイルが設定から消えていて試行行も無い場合は、この
               プロファイルの要素自体が省略される
+            - `awaiting_review`: `cut: true` のプロファイルで、まだチャプターを
+              確認していない（`recording_chapter_ownership` の行が無い）。
+              **`queued` とは別の状態**である --- `queued` は「ジョブが来る」、
+              `awaiting_review` は「ユーザーが確認するまでジョブは来ない」を
+              表す。投入側（`EnqueueMissingEncodes` /
+              `ListMissingEncodeProfiles`）がこの条件で候補から外しているので、
+              確認するまでこの状態のままになる。確認後に次の投入パスが拾う
             - `running`: いま ffmpeg が走っている
             - `failed`: 直前の試行が失敗した。**`failed` は「二度と来ない」の
               断定ではない** --- 失敗したジョブはジョブキューの既定のリトライ
@@ -2371,7 +2454,7 @@ components:
               ところで `failed` に留まる（**`failed` に固定されるのはリトライを
               使い切った後で、最初の失敗の時点ではない**）
           type: string
-          enum: [queued, running, failed]
+          enum: [queued, running, failed, awaiting_review]
 
     # PID 別 drop_stats の合計。内訳は /api/recordings/{id}/drop-stats。
     DropSummary:
