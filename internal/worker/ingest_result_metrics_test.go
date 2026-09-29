@@ -25,8 +25,8 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 )
 
-// このファイルは IngestWorker.Work が result をどう決めるか（不変条件 5 の
-// レベルトリガーではなく、ジョブの結末の分類）を固定する。
+// このファイルは IngestWorker.Work が result をどう決めるか（ジョブの結末の
+// 分類）を固定する。
 //
 // 3 つの経路を分けて数えるのが目的である。
 //

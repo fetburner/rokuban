@@ -327,6 +327,9 @@ type IngestWorker struct {
 // 総時間で切らない代わりに、進捗が止まったことを stallReader が検知して打ち切る
 // （StallTimeout）。「タイムアウトは総時間でなくストール検知」という M1-5-2 の
 // 設計はこれが揃って初めて成立する。
+//
+// -1 は Work の defer が中断を判定する前提でもある（正にするとタイムアウトが
+// 中断と見分けられず、結果メトリクスから落ちる）。
 func (w *IngestWorker) Timeout(*river.Job[jobs.IngestJobArgs]) time.Duration {
 	return -1
 }
@@ -343,7 +346,7 @@ func (w *IngestWorker) resolveProgressInterval() time.Duration {
 
 // Work は ingest ジョブを実行する。ストリーム取得・TS 統計収集・DB コミット・エッジ削除を行う。
 //
-// 戻り値は名前付きなのは、defer が「この試行の結末」を分類して
+// 戻り値を名前付きにするのは、defer が「この試行の結末」を分類して
 // metrics.IngestJobs / IngestDuration へ記録するためである（記録の値域と
 // 中断を数えない理由は下の defer のコメントと
 // docs/operations/monitoring.md の rokuban_ingest_jobs_total）。
@@ -371,6 +374,12 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 		//   - Stop / StopAndCancel / soft stop timer が撃つ ErrStop
 		//   - Client.JobCancel の rivertype.ErrJobCancelledRemotely（rokuban に
 		//     呼び出し元は無いが、区別しないと下の err == nil の判断が崩れる）
+		//
+		// **2 つに限られるのは 2 つの前提による。** SoftStopTimeout > 0
+		// （resolveSoftStopTimeout が強制）なので work ctx は start ctx の Canceled を
+		// 継がず、Timeout が -1 なので DeadlineExceeded も来ない。Timeout を正にすると
+		// タイムアウトが errors.Is(err, cause) に掛かって数えられなくなる（River は
+		// attempt を消費するのに failure に乗らない）。
 		//
 		// **errors.Is(err, cause) の項が要る。** Go の net/http は ctx が取り消されると
 		// ctx.Err() ではなく context.Cause(ctx) を返す（transport.go）。Stop の瞬間に
