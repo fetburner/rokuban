@@ -1016,7 +1016,7 @@ func TestLockSlots(t *testing.T) {
 		},
 		{
 			// ingest だけが site ごとに増える。encode / cm_detect は site 非依存
-			// なので 1 のまま（9 + 1 + 1）。
+			// なので 1 のまま（6 + 1 + 1）。
 			name: "two bound sites multiply only the site-bound ingest queue",
 			cfg:  ClientConfig{BoundSites: []string{"tokyo", "takamatsu"}},
 			want: 8, // ingest 3 x 2 sites + encode 1 + cm_detect 1

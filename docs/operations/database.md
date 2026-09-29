@@ -17,9 +17,9 @@
 - **ロール別コネクションプール上限を分ける**。api が全コネクションを食い潰して worker / reconciler が待つ事態を防ぐ。
   ただしプロセスは常に 1 個のコネクションプールしか持たない（`cmd/rokuban/server.go` が起動時に 1 回だけ作り、
   そのプロセスが担う全ロールが共有する）。したがって「ロール別」とは複数プールを作ることではなく、
-  **そのプロセスが担う roles 集合と束縛サイト数から、そのプロセスが持つ唯一のプールの `MaxConns` を決める**
+  **そのプロセスが担う roles 集合と束縛サイト数（worker は引くキューと concurrency から数えた lock 枠も）から、そのプロセスが持つ唯一のプールの `MaxConns` を決める**
   ことを指す（`internal/db.NewPool`）。`db.max_conns` を明示すればそれを使い、未指定ならロールごとの
-  budget（1 サイト束縛時: api: 10 / worker: 8 / watcher: 3 / notifier: 3 / streamer: 4。根拠は
+  budget（1 サイト束縛時: api: 10 / worker: 床 8（下記）/ watcher: 3 / notifier: 3 / streamer: 4。根拠は
   `internal/db.roleConnBudget` の doc コメント）を roles の分だけ合計する。monolith（`--all`）は
   全ロール分の合計になる。**1 プロセスが N サイトを束縛できるため（`--sites`）、watcher は
   束縛サイトごとに advisory lock 用コネクションを 1 本専有し続ける**（site ごとに
@@ -37,7 +37,7 @@
   数える対象は **「解放が別の接続取得に依存する専有」** である。内訳は watcher の advisory lock
   （1 サイトあたり 1 本）と、worker / notifier の LISTEN である。加えて実行中の ingest / encode /
   cm_detect が job advisory lock を 1 つずつ持つ。合計に余地 1 本を足した値が下限になる。
-  **job advisory lock を「転送中だけの一時専有」として除外していたのは誤りだった。** lock を
+  **job advisory lock を「転送中だけの一時専有」として下限から外してはならない。** lock を
   持つジョブは解放する前に同じプールからもう 1 本取る（進捗書き込み・commit）ので、LISTEN と
   lock でプールが埋まるとジョブ同士が循環待ちになり、heartbeat は lock セッション自身の上で
   動くため lock は生き続ける（構造から確定した結論で、実測はしていない）。

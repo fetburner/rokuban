@@ -267,8 +267,10 @@ type IngestConfig struct {
 	// internal/worker.LockSlots が設定から数え、internal/db がそこから worker の
 	// 予算を導出する。
 	//
-	// **未検証:** 「枠待ちの間に録画が終わったジョブが全速 pull として完走する」は
-	// テストで固定していない（枠の待ち行列の先頭がどのジョブかは River が決める）。
+	// 枠待ちの間に録画が終わったジョブは、録画終了後に始まる pull（finished を観測したら
+	// 最後まで全速で読む）として走る（ingest は追従と完了後 pull を同じ
+	// ループで処理する。finished の record を最初から pull して commit する
+	// TestIngestWorker_FullTransfer が根拠）。
 	Concurrency int `yaml:"concurrency"`
 
 	// StallTimeout は転送中の無進捗検知タイムアウト。進捗がこの時間止まると
