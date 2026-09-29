@@ -86,7 +86,7 @@ func (q *Queries) EpgSweepMark(ctx context.Context) (time.Time, error) {
 }
 
 const getEpgProgram = `-- name: GetEpgProgram :one
-SELECT p.site, p.program_id, p.network_id, p.service_id, p.event_id, p.start_at, p.duration_ms, p.end_at, p.is_free, p.name, p.description, p.extended, p.genres, p.video, p.audios, p.observed_at, p.genre_lv1, i.action AS intent_action
+SELECT p.site, p.program_id, p.network_id, p.service_id, p.event_id, p.start_at, p.duration_ms, p.end_at, p.is_free, p.name, p.description, p.extended, p.genres, p.video, p.audios, p.observed_at, p.genre_lv1, p.series_key, i.action AS intent_action
 FROM epg_programs p
 LEFT JOIN program_intents i ON i.site = p.site AND i.program_id = p.program_id
 WHERE p.site = $1 AND p.program_id = $2
@@ -123,6 +123,7 @@ func (q *Queries) GetEpgProgram(ctx context.Context, arg GetEpgProgramParams) (G
 		&i.EpgProgram.Audios,
 		&i.EpgProgram.ObservedAt,
 		&i.EpgProgram.GenreLv1,
+		&i.EpgProgram.SeriesKey,
 		&i.IntentAction,
 	)
 	return i, err
@@ -184,7 +185,7 @@ func (q *Queries) GetProgramSnapshotSource(ctx context.Context, arg GetProgramSn
 }
 
 const listEpgPrograms = `-- name: ListEpgPrograms :many
-SELECT site, program_id, network_id, service_id, event_id, start_at, duration_ms, end_at, is_free, name, description, extended, genres, video, audios, observed_at, genre_lv1 FROM epg_programs
+SELECT site, program_id, network_id, service_id, event_id, start_at, duration_ms, end_at, is_free, name, description, extended, genres, video, audios, observed_at, genre_lv1, series_key FROM epg_programs
 WHERE site = $1
   AND start_at < $2::timestamptz
   AND end_at   > $3::timestamptz
@@ -234,6 +235,7 @@ func (q *Queries) ListEpgPrograms(ctx context.Context, arg ListEpgProgramsParams
 			&i.Audios,
 			&i.ObservedAt,
 			&i.GenreLv1,
+			&i.SeriesKey,
 		); err != nil {
 			return nil, err
 		}

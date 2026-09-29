@@ -2144,6 +2144,29 @@ type ListRecordingsParams struct {
 	// RuleId 特定ルール由来の録画に絞る
 	RuleId *int64 `form:"ruleId,omitempty" json:"ruleId,omitempty"`
 
+	// SeriesOf 番組ハブ（`/recordings/$id/series`）の一覧。指定した録画 id の**実効
+	// シリーズ**と同じ実効シリーズの録画だけを返す（実効シリーズは分類
+	// ルールが当たればその値、当たらなければ自動キー）。
+	//
+	// **行の同一性（1 行 = 1 録画）は変えない。** N 予約で同じ放送が 2 拠点
+	// から録れていれば 2 行並ぶ。同じ放送を 1 行にまとめるのは視聴画面の
+	// 「次のエピソード」の表示だけである。
+	//
+	// 起点の実効シリーズが NULL（自動キーを導出できず、どのルールも
+	// 当たらない録画）なら 0 件を 200 で返す。そのため UI は
+	// `Recording.series` が null の録画にハブの導線を出さない。存在しない
+	// id も 0 件になる（起点は録画の行そのもので、行が無ければ値も無い）。
+	// 完全削除（purge）済みの tombstone は行が残るので、そのシリーズを
+	// 返す（`recording_series` は `purged_at` で絞らない）。
+	//
+	// `superseded_at` が立った行は外れる（本物の record に枠を譲った
+	// 擬似 failed 行）。他の絞り込み軸とは AND で、`trash` とは直交する。
+	//
+	// キーセットページングは他の場合と同じ `(program_start_at, id)` の
+	// 複合キーで動く（カーソル軸は `seriesOf` の有無で変わらない）。
+	// シリーズ内の並びは放送日時順で、話数は持たない。
+	SeriesOf *int64 `form:"seriesOf,omitempty" json:"seriesOf,omitempty"`
+
 	// From program_start_at がこの時刻以上
 	From *time.Time `form:"from,omitempty" json:"from,omitempty"`
 
@@ -2314,6 +2337,9 @@ type ServerInterface interface {
 	// RestoreRecording Restore a soft-deleted recording from trash
 	// (POST /api/recordings/{id}/restore)
 	RestoreRecording(w http.ResponseWriter, r *http.Request, id int64)
+	// ListRecordingUpcoming List upcoming programs in the recording's series
+	// (GET /api/recordings/{id}/upcoming)
+	ListRecordingUpcoming(w http.ResponseWriter, r *http.Request, id int64)
 	// ListReservations List reservations
 	// (GET /api/reservations)
 	ListReservations(w http.ResponseWriter, r *http.Request)
@@ -2563,6 +2589,12 @@ func (_ Unimplemented) PurgeRecording(w http.ResponseWriter, r *http.Request, id
 // RestoreRecording Restore a soft-deleted recording from trash
 // (POST /api/recordings/{id}/restore)
 func (_ Unimplemented) RestoreRecording(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListRecordingUpcoming List upcoming programs in the recording's series
+// (GET /api/recordings/{id}/upcoming)
+func (_ Unimplemented) ListRecordingUpcoming(w http.ResponseWriter, r *http.Request, id int64) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -3223,6 +3255,19 @@ func (siw *ServerInterfaceWrapper) ListRecordings(w http.ResponseWriter, r *http
 		return
 	}
 
+	// ------------- Optional query parameter "seriesOf" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "seriesOf", r.URL.Query(), &params.SeriesOf, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "seriesOf"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "seriesOf", Err: err})
+		}
+		return
+	}
+
 	// ------------- Optional query parameter "from" -------------
 
 	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", r.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
@@ -3637,6 +3682,32 @@ func (siw *ServerInterfaceWrapper) RestoreRecording(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.RestoreRecording(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListRecordingUpcoming operation middleware
+func (siw *ServerInterfaceWrapper) ListRecordingUpcoming(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListRecordingUpcoming(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4450,6 +4521,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/recordings/{id}", wrapper.GetRecording)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/recordings/{id}/upcoming", wrapper.ListRecordingUpcoming)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/api/recordings/{id}/restore", wrapper.RestoreRecording)
@@ -5547,6 +5621,28 @@ func (response RestoreRecording409JSONResponse) VisitRestoreRecordingResponse(w 
 	return err
 }
 
+type ListRecordingUpcomingRequestObject struct {
+	Id int64 `json:"id"`
+}
+
+type ListRecordingUpcomingResponseObject interface {
+	VisitListRecordingUpcomingResponse(w http.ResponseWriter) error
+}
+
+type ListRecordingUpcoming200JSONResponse []ProgramSearchMatch
+
+func (response ListRecordingUpcoming200JSONResponse) VisitListRecordingUpcomingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ListReservationsRequestObject struct {
 }
 
@@ -6364,6 +6460,9 @@ type StrictServerInterface interface {
 	// RestoreRecording Restore a soft-deleted recording from trash
 	// (POST /api/recordings/{id}/restore)
 	RestoreRecording(ctx context.Context, request RestoreRecordingRequestObject) (RestoreRecordingResponseObject, error)
+	// ListRecordingUpcoming List upcoming programs in the recording's series
+	// (GET /api/recordings/{id}/upcoming)
+	ListRecordingUpcoming(ctx context.Context, request ListRecordingUpcomingRequestObject) (ListRecordingUpcomingResponseObject, error)
 	// ListReservations List reservations
 	// (GET /api/reservations)
 	ListReservations(ctx context.Context, request ListReservationsRequestObject) (ListReservationsResponseObject, error)
@@ -7270,6 +7369,32 @@ func (sh *strictHandler) RestoreRecording(w http.ResponseWriter, r *http.Request
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(RestoreRecordingResponseObject); ok {
 		if err := validResponse.VisitRestoreRecordingResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListRecordingUpcoming operation middleware
+func (sh *strictHandler) ListRecordingUpcoming(w http.ResponseWriter, r *http.Request, id int64) {
+	var request ListRecordingUpcomingRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListRecordingUpcoming(ctx, request.(ListRecordingUpcomingRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListRecordingUpcoming")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListRecordingUpcomingResponseObject); ok {
+		if err := validResponse.VisitListRecordingUpcomingResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

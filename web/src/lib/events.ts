@@ -115,6 +115,12 @@ export const shelvesQueryKeyPrefix = getListRecordingShelvesQueryKey()[0]
  * まま使えない（`docs` 化していない、pages/programs.tsx 側の doc コメント
  * 参照）。導出元が無いのでリテラルのまま残すが、events.ts と
  * pages/programs.tsx の複製をこの 1 箇所に集約する。
+ *
+ * **番組ハブの「次回」（`pages/series-hub.tsx` の `useListRecordingUpcoming`）も
+ * この接頭辞でキーを組む。** 次回は EPG の射影だが、分類ルールを変えたときに
+ * 開いているハブを取り直したい --- その通知は `label_rules_notify` が
+ * `recordings` トピックへ流す（docs/data/series.md §8）ので、`recordings`
+ * グループがこの接頭辞も invalidate する側に乗っている必要がある。
  */
 export const programsQueryKeyPrefix = '/api/programs'
 

@@ -1,9 +1,10 @@
 import { Link } from '@tanstack/react-router'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   getGetRecordingChaptersQueryKey,
+  listRecordings,
   useDeleteRecordingChapterEdits,
   useGetRecordingChapters,
   useListLiveProfiles,
@@ -30,6 +31,8 @@ import { liveProfileLabel, validLiveProfile } from '@/lib/live'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { shouldShowRecordingSite, sourceLabels } from '@/lib/recording-search'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
+import { programTitle } from '@/lib/program-labels'
+import { nextEpisode } from '@/lib/series'
 
 /**
  * ingestDetailText は詳細ページの「取り込み」欄の文言（issue #212）。
@@ -440,6 +443,11 @@ export function RecordingDetail({
         />
       )}
 
+      {/* シリーズの導線（M8-6）。**`series` が null の録画には出さない** ---
+          実効シリーズを導出できず、どのルールも当たらない録画で、ハブも
+          「次回」も 0 件になる（openapi.yaml の `seriesOf` description）。 */}
+      {!trash && recording.series != null && <SeriesLinks recording={recording} />}
+
       {recording.description && (
         <p className="whitespace-pre-wrap text-muted-foreground">{recording.description}</p>
       )}
@@ -591,6 +599,63 @@ export function RecordingDetail({
 
       <RecordingActions recording={recording} trash={trash} />
     </div>
+  )
+}
+
+/**
+ * seriesNextPageSize は「次のエピソード」を探すときに引く件数（API の既定と同じ）。
+ *
+ * 引き方は `?seriesOf=<id>&order=asc&from=<起点の startAt>` で、返るページは
+ * **起点の時刻から始まる昇順の窓**である。起点より後の回はこのページの
+ * 先頭側に入るので、通常は 1 ページで足りる。再生できない行が 49 件以上続くと
+ * はみ出し、その場合は「次のエピソード」が出ない（`lib/series.ts` の `nextEpisode`）。
+ */
+const seriesNextPageSize = 50
+
+/**
+ * SeriesLinks は「このシリーズへ」（番組ハブ）と「次のエピソード」。
+ *
+ * `RecordingDetail` は単体ページだけが使うので、ここに置いても一覧へは漏れない。
+ * 削除・追加エンコードなどの mutate は `recordingsQueryKeyPrefix` を invalidate
+ * するので、このクエリも自動で巻き込まれる（`recordingDetailQueryKey` と同じ規律）。
+ */
+function SeriesLinks({ recording }: { recording: Recording }) {
+  const query = useQuery({
+    queryKey: [recordingsQueryKeyPrefix, 'series-next', recording.id] as const,
+    queryFn: () =>
+      listRecordings({
+        seriesOf: recording.id,
+        order: 'asc',
+        from: recording.startAt,
+        limit: seriesNextPageSize,
+      }),
+  })
+  const next = useMemo(
+    () => nextEpisode(unwrap(query.data) ?? [], recording),
+    [query.data, recording],
+  )
+
+  return (
+    <section className="flex flex-wrap items-center gap-x-4 gap-y-2" aria-label="シリーズ">
+      <Link
+        to="/recordings/$id/series"
+        params={{ id: String(recording.id) }}
+        className="text-primary underline-offset-2 hover:underline"
+      >
+        このシリーズへ
+      </Link>
+      {/* **再生できる行だけを「次」にする。** 開始時刻がずれて supersede されなかった
+          failed 行を指すと、押した先の再生が 404 になる（`lib/series.ts`）。 */}
+      {next !== undefined && (
+        <Link
+          to="/recordings/$id"
+          params={{ id: String(next.id) }}
+          className="text-muted-foreground underline-offset-2 hover:underline"
+        >
+          次のエピソード: {programTitle(next.title)}
+        </Link>
+      )}
+    </section>
   )
 }
 

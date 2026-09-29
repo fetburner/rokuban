@@ -1585,6 +1585,30 @@ source?: ListRecordingsSource;
  */
 ruleId?: number;
 /**
+ * 番組ハブ（`/recordings/$id/series`）の一覧。指定した録画 id の**実効
+ * シリーズ**と同じ実効シリーズの録画だけを返す（実効シリーズは分類
+ * ルールが当たればその値、当たらなければ自動キー）。
+ *
+ * **行の同一性（1 行 = 1 録画）は変えない。** N 予約で同じ放送が 2 拠点
+ * から録れていれば 2 行並ぶ。同じ放送を 1 行にまとめるのは視聴画面の
+ * 「次のエピソード」の表示だけである。
+ *
+ * 起点の実効シリーズが NULL（自動キーを導出できず、どのルールも
+ * 当たらない録画）なら 0 件を 200 で返す。そのため UI は
+ * `Recording.series` が null の録画にハブの導線を出さない。存在しない
+ * id も 0 件になる（起点は録画の行そのもので、行が無ければ値も無い）。
+ * 完全削除（purge）済みの tombstone は行が残るので、そのシリーズを
+ * 返す（`recording_series` は `purged_at` で絞らない）。
+ *
+ * `superseded_at` が立った行は外れる（本物の record に枠を譲った
+ * 擬似 failed 行）。他の絞り込み軸とは AND で、`trash` とは直交する。
+ *
+ * キーセットページングは他の場合と同じ `(program_start_at, id)` の
+ * 複合キーで動く（カーソル軸は `seriesOf` の有無で変わらない）。
+ * シリーズ内の並びは放送日時順で、話数は持たない。
+ */
+seriesOf?: number;
+/**
  * program_start_at がこの時刻以上
  */
 from?: string;
@@ -5807,6 +5831,137 @@ export const useDeleteRecording = <TError = ErrorResponse,
       > => {
       return useMutation(getDeleteRecordingMutationOptions(options), queryClient);
     }
+
+export type listRecordingUpcomingResponse200 = {
+  data: ProgramSearchMatch[]
+  status: 200
+}
+
+export type listRecordingUpcomingResponseSuccess = (listRecordingUpcomingResponse200) & {
+  headers: Headers;
+};
+;
+
+export type listRecordingUpcomingResponse = (listRecordingUpcomingResponseSuccess)
+
+export const getListRecordingUpcomingUrl = (id: number,) => {
+
+
+
+
+  return `/api/recordings/${id}/upcoming`
+}
+
+/**
+ * 番組ハブの「次回」。起点の録画の**実効シリーズ**と同じ実効シリーズを持ち、
+ * まだ始まっていない（`start_at > now()`）EPG の番組を放送順に返す。
+ *
+ * **形は `POST /api/programs/search` の結果（`ProgramSearchMatch`）と同じ。**
+ * site を運び、畳まない --- 同じ放送が 2 拠点の EPG にあれば 2 行出る。
+ * 番組は site ごとの射影なので、まとめるのは表示側の仕事である。
+ *
+ * **予約状態は結合しない。** 予約は頻繁に変わり番組はほとんど変わらない
+ * （キャッシュの寿命が違う。docs/api/rest.md「予約状態は番組と結合しない」）
+ * ので、UI は `GET /api/reservations` を別に引いて突き合わせる。
+ *
+ * 起点の実効シリーズが NULL、または行が無ければ空配列を 200 で返す。
+ * purge 済みの tombstone は行が残るので、そのシリーズの番組を返す。
+ * ページネーションは持たない（同じシリーズの未来の回は EPG のローリング
+ * ウィンドウで有界）。`seriesOf`（`GET /api/recordings`）と同じく、
+ * 起点は録画の id そのものである --- 正規化キーを宛先にすると、規則を
+ * 変えた時点で 404 ではなく 0 件で黙って壊れる（docs/data/series.md §8
+ * 「資源同定: 起点は録画 id」）。
+ * @summary List upcoming programs in the recording's series
+ */
+export const listRecordingUpcoming = async (id: number, options?: Parameters<typeof customInstance>[1]): Promise<listRecordingUpcomingResponse> => {
+
+  return customInstance<listRecordingUpcomingResponse>(getListRecordingUpcomingUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListRecordingUpcomingQueryKey = (id: number,) => {
+    return [
+    `/api/recordings/${id}/upcoming`
+    ] as const;
+    }
+
+
+export const getListRecordingUpcomingQueryOptions = <TData = Awaited<ReturnType<typeof listRecordingUpcoming>>, TError = unknown>(id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingUpcoming>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListRecordingUpcomingQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listRecordingUpcoming>>> = ({ signal }) => listRecordingUpcoming(id, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: id !== null && id !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listRecordingUpcoming>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type ListRecordingUpcomingQueryResult = NonNullable<Awaited<ReturnType<typeof listRecordingUpcoming>>>
+export type ListRecordingUpcomingQueryError = unknown
+
+
+export function useListRecordingUpcoming<TData = Awaited<ReturnType<typeof listRecordingUpcoming>>, TError = unknown>(
+ id: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingUpcoming>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listRecordingUpcoming>>,
+          TError,
+          Awaited<ReturnType<typeof listRecordingUpcoming>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListRecordingUpcoming<TData = Awaited<ReturnType<typeof listRecordingUpcoming>>, TError = unknown>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingUpcoming>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listRecordingUpcoming>>,
+          TError,
+          Awaited<ReturnType<typeof listRecordingUpcoming>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListRecordingUpcoming<TData = Awaited<ReturnType<typeof listRecordingUpcoming>>, TError = unknown>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingUpcoming>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List upcoming programs in the recording's series
+ */
+
+export function useListRecordingUpcoming<TData = Awaited<ReturnType<typeof listRecordingUpcoming>>, TError = unknown>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listRecordingUpcoming>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getListRecordingUpcomingQueryOptions(id,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
 
 export type restoreRecordingResponse204 = {
   data: void

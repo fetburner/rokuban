@@ -28,6 +28,7 @@ import { ReservationDetailPage } from './pages/reservation-detail'
 import { ReservationsPage } from './pages/reservations'
 import { RulesPage } from './pages/rules'
 import { SearchPage } from './pages/search'
+import { SeriesHubPage } from './pages/series-hub'
 import { ShelvesPage } from './pages/shelves'
 
 const rootRoute = createRootRoute({
@@ -326,6 +327,22 @@ const recordingDetailRoute = createRoute({
   component: RecordingDetailPage,
 })
 
+/**
+ * 番組ハブ（`/recordings/$id/series`）。シリーズの棚（`/shelves`）の代表から
+ * 開く着地先で、1 つのシリーズの「次回」と録画の一覧を持つ。
+ *
+ * **`/series/$key` のような正規化キーの URL にしない。** 規則を変えた時点で
+ * 404 ではなく 0 件で黙って壊れる。起点は録画 id（watcher が作る不可逆な事実の
+ * id。purge 後も tombstone が残る）。docs/data/series.md §8「資源同定: 起点は録画 id」。
+ */
+const seriesHubRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/recordings/$id/series',
+  // `pages/series-hub.tsx` の `<PageHeader title="シリーズ">` と同じ表記。
+  head: () => ({ meta: [{ title: pageTitle('シリーズ') }] }),
+  component: SeriesHubPage,
+})
+
 /** LivePageSearch は `/live` のクエリパラメータ。 */
 export type LivePageSearch = {
   /**
@@ -414,5 +431,6 @@ export const routeTree = rootRoute.addChildren([
   reservationDetailRoute,
   recordingsRoute,
   recordingDetailRoute,
+  seriesHubRoute,
   liveRoute,
 ])

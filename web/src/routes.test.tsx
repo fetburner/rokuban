@@ -120,6 +120,7 @@ describe('routeTree', () => {
       '/reservations/$site/$programId',
       '/recordings',
       '/recordings/$id',
+      '/recordings/$id/series',
       '/live',
     ])
   })
