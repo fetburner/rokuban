@@ -364,8 +364,9 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 
 	// Work の開始から commit まで、ジョブ ID 固有の advisory lock を保持する。
 	// record_sweep の回収側が同じキーを pg_try できた場合だけ、元プロセスが死んで
-	// セッションが解放されたと確定できる。heartbeat はこのセッションの keepalive
-	// だけを担い、canonical file の排他には使わない。
+	// セッションが解放されたと確定できる。セッションには idle_session_timeout が
+	// 付いており、heartbeat が lease を更新し続ける限り切れない。heartbeat は
+	// canonical file の排他には使わない。
 	jobLock, acquired, err := acquireIngestJobLock(ctx, w.Pool, job.ID, defaultJobLockTimeout)
 	if err != nil {
 		return fmt.Errorf("acquiring ingest job lock: %w", err)

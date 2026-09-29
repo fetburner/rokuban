@@ -23,13 +23,43 @@ const (
 	// pg_try_advisory_lock の両方に与える既定の上限。
 	defaultJobLockTimeout = 10 * time.Second
 
-	// jobLockHeartbeatInterval は、長時間のジョブ中も lock 用セッションを idle に
-	// しないための疎通間隔。これは zombie job を止めるためではなく、回収側が
-	// 生存中のジョブをプロセス死と誤判定しないための keepalive である。
+	// jobLockHeartbeatTimeout は heartbeat のクエリ 1 回あたりの応答待ち上限。
+	// これを超えると pgx が接続を閉じるので、CPU 飽和・GC に対する実際の境界は
+	// jobLockIdleSessionTimeout ではなくこの値である。
+	jobLockHeartbeatTimeout = 2 * time.Second
+)
+
+// jobLockHeartbeatInterval と jobLockIdleSessionTimeout は DB テストが差し替える
+// （実時間の待ちを秒未満に縮めるため）ので const ではない。
+var (
+	// jobLockHeartbeatInterval は lease を更新する間隔。interval ≪
+	// jobLockIdleSessionTimeout であることが前提で、この 2 つが「生きているジョブの
+	// セッションは切れない / 止まったジョブのセッションは切れる」を決める。
 	jobLockHeartbeatInterval = time.Second
 
-	// jobLockHeartbeatTimeout は heartbeat のクエリ 1 回あたりの応答待ち上限。
-	jobLockHeartbeatTimeout = 2 * time.Second
+	// jobLockIdleSessionTimeout は lock 用セッションにだけ設定する
+	// idle_session_timeout。heartbeat が止まってから Postgres がこのセッションを
+	// 終了するまでの猶予である。猶予が切れると advisory lock も解放され、回収側
+	// （recoverStaleIngestJobs）が旧 running 行を回収できるようになる。
+	//
+	// 30 秒の根拠:
+	//   - heartbeat 間隔（1 秒）の 30 倍、heartbeat 1 回の応答待ち上限（2 秒）の
+	//     15 倍なので、正常に動いているセッションがこのタイマーで終了することはない
+	//     （TestIngestJobLock_HeartbeatKeepsSessionAlive が timeout の 3 倍の間、
+	//     切断を観測しないことを固定している）。
+	//   - 短すぎる側の壊れ方: 生きたセッションを誤って終了させても壊れない
+	//     （temp の flock と DB の一意 reservation が採用を決め、lock 喪失でも転送を
+	//     cancel しない）が、二重 pull の無駄が出る。飽和への耐性の実効値は
+	//     jobLockHeartbeatTimeout（2 秒）で決まるので、ここを縮めても飽和耐性は
+	//     変わらない。
+	//   - 長すぎる側の壊れ方: プロセス死の回収が遅れる。ただし回収の tail は
+	//     record_sweep の周期（5 分）で決まるので、5 分より十分短ければ差は出ない。
+	//   - 実測（PostgreSQL 17.10）: この値のまま heartbeat を止めると 30.08 秒で
+	//     バックエンドが pg_stat_activity から消え、別セッションが同じジョブの
+	//     advisory lock を取得できた。SET を外すと同じ状態で 40 秒放置しても
+	//     バックエンドは残り、lock は解放されない（クライアントは生きたまま無言なので
+	//     TCP keepalive は失敗を報告しない）。pg 側のタイマーだけが根拠である。
+	jobLockIdleSessionTimeout = 30 * time.Second
 )
 
 const jobLockHeldQuery = `
@@ -58,8 +88,12 @@ func jobLockKey(prefix string, jobID int64) int64 {
 	return advisoryLockKey(prefix, strconv.FormatInt(jobID, 10))
 }
 
-// jobLock はジョブの process-death 検出用セッション lock と、そのセッションを
-// idle 切断から守る keepalive を所有する。
+// jobLock はジョブの process-death 検出用セッション lock と、そのセッションの
+// lease を更新する heartbeat を所有する。
+//
+// 生存の表現は「最後のクエリから jobLockIdleSessionTimeout 以内」である。heartbeat
+// が止まったセッションは Postgres が終了させ、advisory lock も外れる。回収側
+// （jobLock の取得に失敗した側）はこれをプロセス死の根拠にする。
 //
 // lock の利用目的（転送先や出力の排他など）は各ワーカー側で定義する。heartbeat
 // が lock 喪失を検知しても、長時間処理の context をキャンセルする責務は持たない。
@@ -112,12 +146,11 @@ func (l *jobLock) heartbeatLoop() {
 // heartbeat を止める。ただし長時間処理や recovery の transaction をキャンセルする
 // 責務は持たない。
 //
-// このループの唯一の仕事は job lock 用セッションを idle 切断から守る keepalive
-// である（型の doc コメント、docs/recording/ingest.md 参照）。一過性の DB
-// エラーではループを止めない --- 止めると keepalive が失われてセッションが idle
-// のまま放置され、pgbouncer 等の server_idle_timeout で切断されて advisory lock
-// が解放される。生存中のジョブをプロセス死と誤認すると、回収側が古い running 行を
-// discard して代替ジョブを投入し、処理を二重実行することになる。止めるのは
+// このループの唯一の仕事は job lock の lease を更新することである（型の doc
+// コメント、docs/recording/ingest.md 参照）。一過性の DB エラーではループを
+// 止めない --- 止めると lease が切れ、セッションが Postgres に終了されて advisory
+// lock が解放される。生存中のジョブをプロセス死と誤認すると、回収側が古い running
+// 行を discard して代替ジョブを投入し、処理を二重実行することになる。止めるのは
 // permanent（コネクション切断）と !held（lock 喪失の確定）のときだけ。
 func (l *jobLock) heartbeatTick() bool {
 	check := l.checkHeldFunc
@@ -192,16 +225,18 @@ func (l *jobLock) release() {
 		if err := l.conn.QueryRow(unlockCtx, "SELECT pg_advisory_unlock($1)", l.key).Scan(&stillHeld); err != nil {
 			slog.Warn("failed to release job advisory lock", "job", l.label, "err", err)
 		} else if !stillHeld {
-			// pgxpool の Release がセッション状態を暗黙にリセットすると仮定せず、
-			// 明示 unlock の結果を確認する。
+			// 明示 unlock の結果を確認する（ここまでのどこかで lock を失っている）。
 			slog.Warn("job advisory lock was already lost before release", "job", l.label)
 		}
-		l.conn.Release()
+		// プールへ返さずに捨てる。このセッションには idle_session_timeout が付いて
+		// いて、unlock に失敗した場合の状態も信用できないため、他ジョブへ再利用させ
+		// ない。puddle は枠（MaxConns）と統計を戻すのでリークはしない。
+		_ = l.conn.Hijack().Close(context.Background())
 	})
 }
 
 // acquireJobLock は Work の開始時にジョブ ID のセッションレベル advisory lock を
-// 取得し、取得したセッションを keepalive 付きで返す。回収側も同じ prefix のキーを
+// 取得し、取得したセッションを lease 付きで返す。回収側も同じ prefix のキーを
 // pg_try_advisory_lock で試し、取得できた場合に限って元プロセスが死んでセッション
 // が切れたと確定する。
 func acquireJobLock(ctx context.Context, pool *pgxpool.Pool, jobID int64, timeout time.Duration, prefix, label string) (*jobLock, bool, error) {
@@ -225,6 +260,17 @@ func acquireJobLock(ctx context.Context, pool *pgxpool.Pool, jobID int64, timeou
 	if !acquired {
 		conn.Release()
 		return nil, false, nil
+	}
+
+	// lock を取れたセッションにだけ lease の期限を設定する。pg_try_advisory_lock と
+	// 同じ往復にはしない: !acquired / エラーの経路でも設定が付き、そのままプールへ
+	// 戻ったコネクションが無関係のクエリを切られてしまう。SET は変数を取れないので
+	// 値を埋め込む（値はこのパッケージの変数で、外から来ない）。
+	if _, err := conn.Exec(acquireCtx, fmt.Sprintf("SET idle_session_timeout = '%dms'", jobLockIdleSessionTimeout.Milliseconds())); err != nil {
+		// 設定できなかったセッションの状態は信用せず、lock を保持したままプールへ
+		// 戻さずに捨てる。
+		_ = conn.Hijack().Close(context.Background())
+		return nil, false, fmt.Errorf("setting idle_session_timeout for %s advisory lock: %w", label, err)
 	}
 
 	lock := newJobLock(conn, key, label)
