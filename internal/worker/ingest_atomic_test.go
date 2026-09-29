@@ -233,7 +233,7 @@ func TestIngestWorker_CommitHoldsRelPathFileLockThroughRename(t *testing.T) {
 		return originalRename(src, dst)
 	}
 
-	w := &IngestWorker{Pool: pool}
+	w := &IngestWorker{Pool: pool, MediaDir: mediaDir}
 	commitDone := make(chan error, 1)
 	go func() {
 		counter := tsstat.NewCounter(io.Discard)
@@ -288,7 +288,7 @@ func TestIngestWorker_CompletedCommitsLeaveNoPerRelPathLockFiles(t *testing.T) {
 		return
 	}
 	mediaDir := t.TempDir()
-	w := &IngestWorker{Pool: pool}
+	w := &IngestWorker{Pool: pool, MediaDir: mediaDir}
 	const commits = 5
 	for i := 0; i < commits; i++ {
 		recordingID := insertTestRecording(t, pool)
@@ -377,7 +377,7 @@ func TestIngestWorker_CommitAndCanonicalOrphanCleanupStayLockedAfterDBDisconnect
 		return nil
 	}
 
-	w := &IngestWorker{Pool: pool}
+	w := &IngestWorker{Pool: pool, MediaDir: mediaDir}
 	commitDone := make(chan error, 1)
 	go func() {
 		counter := tsstat.NewCounter(io.Discard)
