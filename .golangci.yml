@@ -13,6 +13,7 @@ linters:
     - nilerr
     - errorlint
     - funlen
+    - gocognit
     - depguard
 
   settings:
@@ -57,6 +58,14 @@ linters:
     funlen:
       lines: 150
       statements: -1
+    gocognit:
+      min-complexity: 27
+
+  exclusions:
+    rules:
+      - path: "_test\\.go$"
+        linters:
+          - gocognit
 
 issues:
   new-from-rev: origin/main
