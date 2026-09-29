@@ -55,9 +55,9 @@ const (
 // は既定のまま（25）で、エッジの record は commit 成功時にしか消えないため、
 // 取り消した長時間録画が全量再取得を繰り返す形にしてはいけない。
 //
-// 部分ファイルを資産として commit するかどうかは別の設計判断で、ここでは決めない。
-// いまの挙動は「canceled / failed の record は取り込まない」で、録画中も ingest を
-// 投入するようになる前と揃っている。
+// 部分ファイルは資産として commit せず、エッジの record も消さない（purge すると
+// content path を共有する後継録画のファイルまで消える）。理由は
+// docs/recording/ingest.md §5.3 層 3。
 var errIngestRecordEndedAbnormally = errors.New("mirakc record ended abnormally")
 
 // followPollInterval は録画中の Range ポーリング間隔。

@@ -210,6 +210,12 @@ rename 前の失敗では temp を残して次の試行へ渡す。ただし長�
 として aging 回収に委ねる。mirakc record は削除しない。rename と DB commit の順序を反転させて、
 DB が指す実体を先に公開してはならない。
 
+**`canceled` / `failed` で終わった record の途中までのバイトは資産にしない。** 理由は 3 つある。
+
+- **original 行の存在は「その放送イベントは録れた」と読まれる。** ruler（`ListFulfilledProgramIDsBySite`）は status を見ずに original の有無で予約を外す。取消した番組を録画中に再予約した場合、前の試行の部分を commit すると、予約が外れて後継の録画が取り消される
+- **エッジの部分ファイルは安定した事実ではない。** content path は番組ごとに決まり、mirakc は同じ番組の次の試行で同じファイルを切り詰めて書く。終端を観測した後の最後の drain は、後継のバイトを読みうる
+- **後継の無い `failed` でも、完結していない原本の行は何も主張できない**（不変条件 10）。取消は予約を手放した結果であり、部分を残す意図を表す書き込みは存在しない
+
 fsync を入れる理由は電源断だけではなく、Linux では遅延した書き込みエラー（ENOSPC / I/O エラー）が `Close` では報告されず `fsync` でしか上がらないためである。rename 後の親ディレクトリ `fsync` は新しい directory entry の永続化を確定する。ファイル `fsync` / `Close` / rename / 親ディレクトリ `fsync` のいずれかが失敗した場合は DB 登録も record 削除も行わず、ジョブを失敗させる。
 
 rename 前の失敗なら、残った temp を replay して pull を続けられる。rename 後の親ディレクトリ `fsync` または DB commit の失敗では、temp はすでに canonical へ移動済みである。DB commit が成立しなかった場合、次の ingest は orphan 回収を待たずに全量 pull を開始し、同じ rel_path へ再度 rename する。残った canonical orphan はその rename で置き換わるか、後続の aging 回収で削除される。DB commit が成立して応答だけ失われた場合は、次の冪等性チェックで転送を省略する。いずれも mirakc record は削除せず、データ喪失は構造的に起きない。
@@ -217,6 +223,10 @@ rename 前の失敗なら、残った temp を replay して pull を続けら�
 運用上の主なリスクは**長時間の転送失敗でエッジのリングバッファが溜まり続ける**こと。`IngestWorker` 自体は River の既定の試行上限のままで、上限に達すると discard（dead-letter）されうる。それでも record が宙に浮かないのは、mirakc 側の record が DB commit 成功後にしか削除されないためである。discard された後も record_sweep（5 分周期の定期全量突き合わせ。[watcher.md](watcher.md) §3.3 の (c)）が同じ finished record を見つける。そして `processRecord` が同一トランザクションで ingest ジョブを再投入し続ける。「未 ingest の record 総量」をメトリクス化してエッジのディスク残量と突き合わせてアラートする（[storage.md](../storage.md) のサイジング指針参照）。
 
 **帰結はディスクだけではない。** 滞留が `epg.retention_grace`（既定 24h）を跨ぐと、その録画の encode policy は予約から解決できず既定値で凍結される（エンコードが投入されない）。原本は残るのでデータは失われない。`recordings.source` と `rule_id` がどうなるかは、その録画の `recordings` 行が作られたのが GC より前か後かで分かれる。作成時にまだ予約が引ければどちらも通常どおり書かれ、影響は encode policy の凍結だけにとどまる。作成が GC 後にずれ込んだ場合は `rule_id` が NULL になり `source` も `unattributed` に落ちる。**このケースは下記 §5.5 の `encode_reconcile` でも回復しない**（desired が空になるので候補に入らない）。詳細と、滞留の型ごとに見るメトリクスが分かれること（**未 ingest 総量は回線断の滞留を数えない**）は [storage.md](../storage.md) §6「凍結が依存する寿命と、エッジの滞留の交点」と [operations.md](../operations.md) §4。
+
+**`canceled` / `failed` の record は誰も回収しない。** ingest は commit しないのでエッジの record を消さず、mirakc にも record の保持期限は無い。後継の試行が同じ content path を上書きした場合、中身は後継の commit 時の purge で消え、record の JSON だけが残る。中身が残り続けるのは後継が無い場合（番組途中の失敗、再予約されない取消）だけである。このときエッジの部分ファイルは唯一のデータなので、消さないことを許容する。
+
+**この record を `purge=true` で素直に回収してはならない。** mirakc の `remove_record` は content path を共有する別の record を見ずにファイルを消す。後継の録画のファイルまで消える。未解決: 同じ content path を持つ生きた record が無いものだけを回収する経路と、残った部分を手動で原本に採用する経路。どちらもまだ書き手が無い。
 
 #### 冪等性: コミット済みなら転送をやり直さない
 

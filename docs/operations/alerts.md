@@ -12,6 +12,8 @@
 
 **このアラートは回線断を検知できない**。未 ingest 総量が数えるのは `record_sync` に `status='finished'` として観測済みの record だけである。その行は watcher が mirakc を観測して初めて作られる。**エッジ↔クラウドの回線が切れている間に始まった録画はここに現れないので、断のあいだこの値は平らなまま**（録画中に断が始まったぶんも、`finished` への更新が復帰後になるので同じ）。回線断は `rokuban_sweep_last_success_timestamp_seconds{site}` / `rokuban_epg_sync_last_success_timestamp_seconds` の**停滞**で別に見張る。断が `epg.retention_grace` を超えると encode 意図が落ちる（[ストレージ運用](storage.md)「N 日は容量だけでは決まらない」）。
 
+**`canceled` / `failed` の record の滞留も数えない。** これらは取り込まれず、エッジから回収もされない（[ingest](../recording/ingest.md) §5.3 層 3）。後継の無い途中終了の中身はエッジのディスクに残り続けるが、このアラートには現れない。
+
 ### 大量削除サーキットブレーカー発動
 
 EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）で素朴な ruler は予約を大量に「不要」と判定する。reconciler がそれを mirakc へ忠実に反映（= 一斉 DELETE）してしまう（EPGStation#692 の障害クラス）。
