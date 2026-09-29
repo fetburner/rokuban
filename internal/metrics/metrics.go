@@ -28,7 +28,7 @@ var (
 	})
 
 	// IngestDuration は ingest 1 件の所要。転送は録画長と回線速度で決まるため
-	// バケットは秒〜十数分をカバーする。
+	// バケットは秒〜十数分をカバーする。中断（River の soft stop）は含まない。
 	IngestDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "rokuban_ingest_duration_seconds",
 		Help:    "Duration of ingest jobs.",
@@ -36,9 +36,9 @@ var (
 	})
 
 	// IngestJobs は ingest ジョブの結果別の件数。result は success / failure /
-	// canceled。**取り消し・失敗した録画を failure に混ぜない** --- 利用者が止めた
-	// 録画が失敗率に積まれると本物の失敗が埋もれる（追従 ingest では録画中の
-	// 取消が ingest ジョブに初めて到達する。internal/worker/ingest.go の Work）。
+	// canceled の 3 値で、増やさない。River の soft stop はどれにも数えない。
+	// 各値の意味と分母の違いは docs/operations/monitoring.md、判定と既知の窓は
+	// internal/worker/ingest.go の Work。
 	IngestJobs = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_ingest_jobs_total",
 		Help: "Ingest jobs by result.",
