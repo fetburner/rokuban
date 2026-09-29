@@ -569,8 +569,16 @@ export function RecordingDetail({
             >
               再試行
             </Button>
-            <Link to="/cm-logos" className="text-primary underline underline-offset-4">
-              CM ロゴを管理
+            <Link
+              to="/cm-logos"
+              search={{
+                network: recording.networkId,
+                service: recording.serviceId,
+                recording: recording.id,
+              }}
+              className="text-primary underline underline-offset-4"
+            >
+              CM 検出のロゴを教える
             </Link>
           </div>
         )}

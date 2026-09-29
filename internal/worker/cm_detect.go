@@ -139,6 +139,16 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 	if err := os.Symlink(original, inputPath); err != nil {
 		return fmt.Errorf("linking original into scratch: %w", err)
 	}
+	// 人が教えた枠は記録上の解像度の座標なので、まず原本の実際の大きさを取る。
+	// poster やシークタイルの座標は使えない（あちらは SAR を焼き込んでいる）。
+	geometry, err := probeVideoGeometry(ctx, commandOutput, w.FFprobe, inputPath)
+	if err != nil {
+		return fmt.Errorf("probing original size: %w", err)
+	}
+	area, err := taughtLogoArea(ctx, sqlcgen.New(w.Pool), item.NetworkID, item.ServiceID, geometry)
+	if err != nil {
+		return err
+	}
 	channel := fmt.Sprintf("n%d-s%d", item.NetworkID, item.ServiceID)
 	logoDir := filepath.Join(jobDir, "logos")
 	if err := os.Mkdir(logoDir, 0o700); err != nil {
@@ -159,8 +169,13 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 	chapters := filepath.Join(jobDir, "chapter_exe.txt")
 	cutAvs := filepath.Join(jobDir, "obs_cut.avs")
 	tools := func(name string) string { return filepath.Join(w.CMDetect.BinaryDir, name) }
-	if err := runCMTool(ctx, jobDir, tools("logoframe"), inputPath,
-		"-channel", channel, "-logo-dir", logoDir, "-logo-match", "0", "-oa", logoFrames); err != nil {
+	logoArgs := []string{inputPath, "-channel", channel, "-logo-dir", logoDir,
+		"-logo-match", "0", "-oa", logoFrames}
+	if area != nil {
+		logoArgs = append(logoArgs,
+			"-logo-area", fmt.Sprintf("%d,%d,%d,%d", area.X, area.Y, area.W, area.H))
+	}
+	if err := runCMTool(ctx, jobDir, tools("logoframe"), logoArgs...); err != nil {
 		return fmt.Errorf("running logoframe: %w", err)
 	}
 	if err := w.persistNewStationLogo(ctx, item, channel, logoDir); err != nil {
@@ -258,6 +273,80 @@ func (w *CMDetectWorker) persistNewStationLogo(ctx context.Context, item sqlcgen
 		return fmt.Errorf("saving learned station logo: %w", err)
 	}
 	return nil
+}
+
+// videoGeometry は映像ストリームの記録上の大きさ（SAR を掛ける前の画素数）。
+type videoGeometry struct{ width, height int }
+
+// probeVideoGeometry は最初の映像ストリームの大きさを返す。run は commandOutput か、
+// テストで差し替えた実行フック。
+//
+// **stream=width,height は SAR を掛けない。** 1440x1080 の地上波 HD は SAR 4:3 でも
+// width=1440 を返す（SAR は stream=sample_aspect_ratio 側）。人が教える枠も
+// logoframe が見るのもこの座標なので、ここが基準になる。
+func probeVideoGeometry(
+	ctx context.Context,
+	run func(context.Context, string, ...string) ([]byte, error),
+	ffprobe, inputPath string,
+) (videoGeometry, error) {
+	if ffprobe == "" {
+		ffprobe = "ffprobe"
+	}
+	out, err := run(ctx, ffprobe,
+		"-v", "error",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=width,height",
+		"-of", "csv=p=0:s=x",
+		inputPath,
+	)
+	if err != nil {
+		return videoGeometry{}, err
+	}
+	value := strings.TrimSpace(string(out))
+	widthText, heightText, ok := strings.Cut(value, "x")
+	if !ok {
+		return videoGeometry{}, fmt.Errorf("ffprobe returned an unexpected video size %q", value)
+	}
+	width, err := strconv.Atoi(strings.TrimSpace(widthText))
+	if err != nil {
+		return videoGeometry{}, fmt.Errorf("parsing video width %q: %w", widthText, err)
+	}
+	height, err := strconv.Atoi(strings.TrimSpace(heightText))
+	if err != nil {
+		return videoGeometry{}, fmt.Errorf("parsing video height %q: %w", heightText, err)
+	}
+	if width <= 0 || height <= 0 {
+		return videoGeometry{}, fmt.Errorf("ffprobe returned a non-positive video size %dx%d", width, height)
+	}
+	return videoGeometry{width: width, height: height}, nil
+}
+
+// taughtLogoArea は人が教えた枠を返す。行が無ければ nil（自動推定に任せる）。
+//
+// **解像度が違えばエラーにする。** 教えた枠は記録上の解像度の座標なので、違う
+// 大きさの映像に当てると logoframe は枠の外（または違う位置）の .lgd を学習し、
+// それが局全体に配られる。黙って自動推定へ落とすと、その失敗が成功に見える。
+func taughtLogoArea(
+	ctx context.Context,
+	q *sqlcgen.Queries,
+	networkID, serviceID int32,
+	geometry videoGeometry,
+) (*sqlcgen.GetCMLogoAreaRow, error) {
+	area, err := q.GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{
+		NetworkID: networkID,
+		ServiceID: serviceID,
+	})
+	if errors.Is(err, pgx5.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("loading taught logo area: %w", err)
+	}
+	if area.CodedWidth != int32(geometry.width) || area.CodedHeight != int32(geometry.height) {
+		return nil, fmt.Errorf("the taught logo area is for %dx%d but this recording is %dx%d",
+			area.CodedWidth, area.CodedHeight, geometry.width, geometry.height)
+	}
+	return &area, nil
 }
 
 func cmDetectRuleFile() string { return cmDetectRulePath }

@@ -199,6 +199,33 @@ function parseShelvesSearch(search: Record<string, unknown>): ShelvesPageSearch 
 }
 
 /**
+ * CMLogoPageSearch は `/cm-logos` のクエリパラメータ。
+ *
+ * 録画詳細の「CM 検出に失敗」の導線が `(networkId, serviceId, recordingId)` を
+ * 載せ、その局を開いた状態・その録画のコマで開く。**どの局かは一覧から引けない**
+ * ので、局の id を URL に載せる（`/shelves` の `value` と同じ判断）。
+ */
+export type CMLogoPageSearch = {
+  network?: number
+  service?: number
+  /** コマを取り寄せる録画。局の録画と別人なら無視する（壊れたリンクでも開く）。 */
+  recording?: number
+}
+
+/** parseCMLogoSearch は正の整数だけを通し、他は落として undefined にする。 */
+function parseCMLogoSearch(search: Record<string, unknown>): CMLogoPageSearch {
+  const positive = (v: unknown): number | undefined => {
+    const n = asInteger(v)
+    return typeof n === 'number' && n > 0 ? n : undefined
+  }
+  return {
+    network: positive(search.network),
+    service: positive(search.service),
+    recording: positive(search.recording),
+  }
+}
+
+/**
  * シリーズ棚はルール（`/rules`）の隣に置く。棚は自動キーの結果で、分類ルールは
  * その上に重ねる上書きなので、間違った棚を見つける場所と直す場所を 1 画面にする
  * （docs/data/series.md §8「2 層: 分類ルール → 自動キー」）。
@@ -216,7 +243,10 @@ const shelvesRoute = createRoute({
 const cmLogosRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/cm-logos',
-  head: () => ({ meta: [{ title: pageTitle('CM ロゴ') }] }),
+  validateSearch: (search: Record<string, unknown>): CMLogoPageSearch => parseCMLogoSearch(search),
+  // 「CM ロゴ」だと番組表の局ロゴと読める。この画面が扱うのは CM 検出器が映像から
+  // 探すロゴである（`pages/cm-logos.tsx` の `<PageHeader>` と同じ表記）。
+  head: () => ({ meta: [{ title: pageTitle('CM 検出のロゴ') }] }),
   component: CMLogosPage,
 })
 

@@ -7,6 +7,7 @@
 package streamer
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -45,12 +46,21 @@ type Config struct {
 	// ヘッダー 1 個。値は nginx の internal location（例: /_media/）で、
 	// MediaDir 配下の相対パスを連結した URI を返す。
 	AccelLocation string
+
+	// FFmpeg / FFprobe はコマの切り出し（/frame）で使う。空なら PATH の
+	// ffmpeg / ffprobe。**ライブ視聴の LiveConfig とは別に持つ** --- ライブを
+	// 切った構成（録画配信とコマの切り出しだけ）でもコマは要る。
+	FFmpeg  string
+	FFprobe string
 }
 
 // Streamer は録画ファイルを配信する。
 type Streamer struct {
 	pool *pgxpool.Pool
 	cfg  Config
+
+	// runCmd はテストで差し替える実行フック。nil なら exec.CommandContext。
+	runCmd func(ctx context.Context, name string, args ...string) ([]byte, error)
 }
 
 // New は Streamer を生成する。
@@ -77,6 +87,11 @@ func (s *Streamer) Mount(r chi.Router) {
 	const seekTilesPath = "/api/media/recordings/{id}/seek-tiles"
 	r.Get(seekTilesPath, s.RecordingSeekTiles)
 	r.Head(seekTilesPath, s.RecordingSeekTiles)
+
+	// CM の枠を教えるための 1 コマ（原本からのみ。issue #886）。バイナリ配信なので
+	// openapi には載せない。HEAD は登録しない --- コマを作るために ffmpeg を
+	// 回すことになり、存在確認の手段としては高すぎる。
+	r.Get("/api/media/recordings/{id}/frame", s.RecordingFrame)
 }
 
 // serveAsset は DB から解決した 1 アセットをディスクから（または X-Accel で）配信する。
