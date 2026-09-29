@@ -24,8 +24,10 @@ const (
 	defaultJobLockTimeout = 10 * time.Second
 
 	// jobLockHeartbeatTimeout は heartbeat のクエリ 1 回あたりの応答待ち上限。
-	// これを超えると pgx が接続を閉じるので、CPU 飽和・GC に対する実際の境界は
-	// jobLockIdleSessionTimeout ではなくこの値である。
+	// これを超えると pgx が接続を閉じるので、クエリを送った後の DB 側・経路の遅延に
+	// 対する境界はこの値である。クエリを送っていない間のクライアント側の停止
+	// （CPU throttling・GC・SIGSTOP）には効かず、そちらの境界は
+	// jobLockIdleSessionTimeout である。
 	jobLockHeartbeatTimeout = 2 * time.Second
 )
 
@@ -49,9 +51,10 @@ var (
 	//     切断を観測しないことを固定している）。
 	//   - 短すぎる側の壊れ方: 生きたセッションを誤って終了させても壊れない
 	//     （temp の flock と DB の一意 reservation が採用を決め、lock 喪失でも転送を
-	//     cancel しない）が、二重 pull の無駄が出る。飽和への耐性の実効値は
-	//     jobLockHeartbeatTimeout（2 秒）で決まるので、ここを縮めても飽和耐性は
-	//     変わらない。
+	//     cancel しない）が、二重 pull の無駄が出る。heartbeat がクエリを送って
+	//     いる時間は周期のごく一部なので、クライアント側の停止（k8s の CPU limit による
+	//     throttling・GC・VM の一時停止）はほぼ必ずクエリを送っていない間に起き、
+	//     その耐性はこの値だけで決まる。縮めるとその分だけ短い停止で lease が切れる。
 	//   - 長すぎる側の壊れ方: プロセス死の回収が遅れる。ただし回収の tail は
 	//     record_sweep の周期（5 分）で決まるので、5 分より十分短ければ差は出ない。
 	//   - 実測（PostgreSQL 17.10）: この値のまま heartbeat を止めると 30.08 秒で

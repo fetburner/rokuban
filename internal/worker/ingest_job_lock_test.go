@@ -91,6 +91,11 @@ func TestIngestJobLock_IdleSessionTimeoutReleasesLockAfterHeartbeatStops(t *test
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Logf("idle_session_timeout=1s: heartbeat 停止から %v で別セッションが lock を取得した", elapsed.Round(time.Millisecond))
+	// タイマー以外の理由（heartbeat の停止がセッションを閉じた等）で即座に外れたの
+	// ではないことを確かめる。
+	if elapsed < 800*time.Millisecond {
+		t.Fatalf("lock was released %v after the heartbeat stopped, before idle_session_timeout (1s) could fire", elapsed)
+	}
 
 	var backendAlive bool
 	if err := pool1.QueryRow(ctx,
