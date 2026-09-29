@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -11,8 +12,117 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
 )
+
+type testMounter func(chi.Router)
+
+func (m testMounter) Mount(r chi.Router) {
+	m(r)
+}
+
+func TestRouterRecoversPanicAsJSONError(t *testing.T) {
+	var logs strings.Builder
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	router := NewRouter(RouterConfig{Mounter: testMounter(func(r chi.Router) {
+		r.Get("/api/test-panic", func(http.ResponseWriter, *http.Request) {
+			panic("test panic")
+		})
+	})})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/test-panic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	}
+	var body ErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decoding panic response: %v", err)
+	}
+	if body.Error != "internal server error" {
+		t.Errorf("error = %q, want generic internal error", body.Error)
+	}
+	if !strings.Contains(logs.String(), "test panic") || !strings.Contains(logs.String(), "stack=") {
+		t.Errorf("panic log should contain value and stack, got %q", logs.String())
+	}
+}
+
+func TestJSONBodyLimitAndExcludedRoutes(t *testing.T) {
+	largeBody := io.MultiReader(strings.NewReader(`{"name":"`), strings.NewReader(strings.Repeat("x", int(maxJSONBodyBytes))), strings.NewReader(`"}`))
+	router := NewRouter(RouterConfig{
+		MetricsRegistry: prometheus.NewRegistry(),
+		Mounter: testMounter(func(r chi.Router) {
+			r.Post("/api/media/test", func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.WriteHeader(http.StatusNoContent)
+			})
+			r.Get("/api/events", func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+			})
+		}),
+	})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/rules", largeBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized JSON status = %d, want %d", resp.StatusCode, http.StatusRequestEntityTooLarge)
+	}
+	var body ErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decoding oversized JSON response: %v", err)
+	}
+	if body.Error != "request body too large" {
+		t.Errorf("oversized JSON error = %q, want body-too-large message", body.Error)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		path   string
+		method string
+		want   int
+	}{
+		{name: "media", path: "/api/media/test", method: http.MethodPost, want: http.StatusNoContent},
+		{name: "events", path: "/api/events", method: http.MethodGet, want: http.StatusOK},
+		{name: "healthz", path: "/healthz", method: http.MethodGet, want: http.StatusOK},
+		{name: "readyz", path: "/readyz", method: http.MethodGet, want: http.StatusServiceUnavailable},
+		{name: "metrics", path: "/metrics", method: http.MethodGet, want: http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(tc.method, srv.URL+tc.path, strings.NewReader(strings.Repeat("b", int(maxJSONBodyBytes)+1)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != tc.want {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tc.want)
+			}
+		})
+	}
+}
 
 func TestHealthz(t *testing.T) {
 	router := NewRouter(RouterConfig{})

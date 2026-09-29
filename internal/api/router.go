@@ -123,6 +123,7 @@ func (ms Mounters) Mount(r chi.Router) {
 func NewRouter(cfg RouterConfig) http.Handler {
 	r := chi.NewRouter()
 
+	r.Use(recoverPanic)
 	r.Use(AllowedHosts(cfg.AllowedHosts, cfg.TrustForwardedHost))
 
 	// SSE (/api/events) やバイト配信は OpenAPI に載せない（生成クライアントは
@@ -145,16 +146,21 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	handler := NewServer(cfg.Pool, cfg.RiverClient, cfg.Sites, cfg.EncodeProfileNames,
 		cfg.CutProfileNames, cfg.LiveProfiles,
 		Capabilities{Live: cfg.LiveEnabled, CmDetect: cfg.CMDetectEnabled})
-	strict := NewStrictHandler(handler, nil)
-	HandlerWithOptions(strict, ChiServerOptions{
-		BaseRouter: r,
-		// 生成ハンドラのパラメータ束縛が失敗したとき（`?limit=abc` のように
-		// 型が合わない、必須パラメータが無い）の応答。**既定は http.Error
-		// なので text/plain になる** --- ハンドラ側の 400 はすべて
-		// ErrorResponse（`{"error": ...}`）なのに、束縛失敗だけ形が違うと
-		// フロントの apiErrorMessage が本文を読めず「不明なエラー」に落ちる。
-		// 400 の本文を捨てない規約（docs/api/rest.md）は束縛層にも及ぶ。
-		ErrorHandlerFunc: writeBindError,
+	strict := NewStrictHandlerWithOptions(handler, nil, StrictHTTPServerOptions{
+		RequestErrorHandlerFunc: writeRequestError,
+	})
+	r.Group(func(api chi.Router) {
+		api.Use(limitJSONBody)
+		HandlerWithOptions(strict, ChiServerOptions{
+			BaseRouter: api,
+			// 生成ハンドラのパラメータ束縛が失敗したとき（`?limit=abc` のように
+			// 型が合わない、必須パラメータが無い）の応答。**既定は http.Error
+			// なので text/plain になる** --- ハンドラ側の 400 はすべて
+			// ErrorResponse（`{"error": ...}`）なのに、束縛失敗だけ形が違うと
+			// フロントの apiErrorMessage が本文を読めず「不明なエラー」に落ちる。
+			// 400 の本文を捨てない規約（docs/api/rest.md）は束縛層にも及ぶ。
+			ErrorHandlerFunc: writeBindError,
+		})
 	})
 
 	// API の未マッチは SPA の有無に関わらず JSON 404 にする。SPA を配らない

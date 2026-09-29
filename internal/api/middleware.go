@@ -1,11 +1,92 @@
 package api
 
 import (
+	"encoding/json"
+	"errors"
+	"log/slog"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"slices"
 	"strings"
 )
+
+const maxJSONBodyBytes int64 = 1 << 20
+
+// recoverPanic は HTTP handler の panic を境界で回収する。
+// panic の値と stack trace は運用ログへ残すが、クライアントへは内部情報を
+// 出さず、他の API エラーと同じ ErrorResponse だけを返す。
+func recoverPanic(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				slog.Error("api handler panic recovered",
+					"panic", recovered,
+					"stack", string(debug.Stack()),
+					"method", r.Method,
+					"path", r.URL.Path,
+				)
+				writeErrorResponse(w, http.StatusInternalServerError, "internal server error")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// limitJSONBody は JSON API の body だけを上限付き reader へ差し替える。
+// RuleInput が現在の最大の構造化 JSON 入力で、metadata や正規表現を含む余地を
+// 残しつつ、JSON を無制限にメモリへ読み込まない 1 MiB を上限にする。
+// media の binary、SSE、監視用 endpoint はこの middleware の対象外である。
+func limitJSONBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isJSONBodyRequest(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.ContentLength > maxJSONBodyBytes {
+			writeErrorResponse(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+		next.ServeHTTP(w, r)
+	})
+}
+
+// isJSONBodyRequest は生成 REST API の JSON body を受け取る HTTP method だけを
+// 選ぶ。ルートの登録場所だけに依存せず、binary/SSE/infra の除外条件もここで
+// 明示して、将来 middleware の適用範囲を広げても契約を保てるようにする。
+func isJSONBodyRequest(r *http.Request) bool {
+	path := r.URL.Path
+	if infraPaths[path] || path == "/api/events" || strings.HasPrefix(path, "/api/media/") {
+		return false
+	}
+	if !strings.HasPrefix(path, "/api/") {
+		return false
+	}
+	switch r.Method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch:
+		return true
+	default:
+		return false
+	}
+}
+
+// writeRequestError は JSON decoder の body 上限超過を frontend が扱える JSON
+// エラーへ変換する。その他の decode error も既存の ErrorResponse 形式に揃える。
+func writeRequestError(w http.ResponseWriter, _ *http.Request, err error) {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		writeErrorResponse(w, http.StatusRequestEntityTooLarge, "request body too large")
+		return
+	}
+	writeErrorResponse(w, http.StatusBadRequest, err.Error())
+}
+
+func writeErrorResponse(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(ErrorResponse{Error: message})
+}
 
 // alwaysAllowedHosts は allowlist の設定に関わらず許可する Host。
 // ローカルからのアクセスは DNS rebinding の経路にならない
