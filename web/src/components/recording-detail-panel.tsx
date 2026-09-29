@@ -606,7 +606,7 @@ export function RecordingDetail({
  * seriesNextPageSize は「次のエピソード」を探すときに引く件数（API の既定と同じ）。
  *
  * 引き方は `?seriesOf=<id>&order=asc&from=<起点の startAt>` で、返るページは
- * **起点の時刻から始まる昇順の窓**である。起点より後の回は通常このページの
+ * **起点の時刻から始まる昇順の窓**である。起点より後の回はこのページの
  * 先頭側に入るので、通常は 1 ページで足りる。再生できない行が 49 件以上続くと
  * はみ出し、その場合は「次のエピソード」が出ない（`lib/series.ts` の `nextEpisode`）。
  */
