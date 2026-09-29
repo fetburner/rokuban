@@ -733,7 +733,8 @@ func TestIngestWorker_CatchUpWhileRecordingDoesNotCommit(t *testing.T) {
 // 固定する。
 //
 // river.JobCancelError を返すこと・進捗行が消えること・原本 media_asset が
-// 作られていない（部分ファイルを commit していない）ことの 3 点を固定する。
+// 作られていない（部分ファイルを commit していない）こと・エッジの record を
+// 削除しないことの 4 点を固定する。
 // 単に「error が非 nil」だけを見るテストにはしない --- それでは
 // river.JobCancel を外して素の error を返すだけの変異も通ってしまう。
 func TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry(t *testing.T) {
@@ -750,9 +751,15 @@ func TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry(t *testing.T)
 		t.Run(tt.name, func(t *testing.T) {
 			setFollowPollInterval(t, time.Millisecond)
 
-			var recordGets atomic.Int32
+			var recordGets, deletes atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
+				case r.Method == http.MethodDelete:
+					// 成功を返す。404 だと DeleteRecord の失敗がログに落ちるだけで、
+					// 呼んだこと自体が観測できない。
+					deletes.Add(1)
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"recordRemoved":true,"contentRemoved":true}`))
 				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
 					// 追い付いた状態のまま：このテストは status 遷移だけを見る。
 					w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
@@ -816,6 +823,9 @@ func TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry(t *testing.T)
 			}
 			if assetRows != 0 {
 				t.Errorf("media_assets rows = %d, want 0 (must not commit a partial recording)", assetRows)
+			}
+			if n := deletes.Load(); n != 0 {
+				t.Errorf("DELETE requests = %d, want 0 (edge record must be kept: purging it can remove a successor's content file)", n)
 			}
 			tempPath := ingestTempFilePath(filepath.Join(w.MediaDir, "sites", "default", "test"), "default", tt.recordID)
 			if _, err := os.Stat(tempPath); !errors.Is(err, os.ErrNotExist) {
