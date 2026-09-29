@@ -46,7 +46,7 @@ const recording = {
   startAt: recordingStartAt,
   durationMs: 60_000,
   status: 'recording',
-  keepOriginal: 'always',
+  keepOriginal: 'always', cmDetection: { state: 'disabled' },
   startedAt: recordingStartAt,
   createdAt: '2026-01-01T12:00:00Z',
   encodeProfiles: ['vod-h264'],
@@ -190,7 +190,7 @@ const chaseLeaveHints = []
 await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
   const method = route.request().method()
   if (requestPath === '/api/sites') return json(['default'])
-  if (requestPath === '/api/capabilities') return json({ live: true })
+  if (requestPath === '/api/capabilities') return json({ live: true, cmDetect: false })
   if (requestPath === '/api/breakers') return json([])
   if (requestPath === '/api/events') return sseKeepAlive(route)
   if (requestPath === '/api/rules' || requestPath === '/api/encode-profiles') return json([])

@@ -35,7 +35,7 @@ const rules = [
     name: '平日夜のニュースを録る',
     enabled: true,
     priority: 20,
-    keepOriginal: 'always',
+    keepOriginal: 'always', cmDetection: { state: 'disabled' },
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
   },
@@ -44,7 +44,7 @@ const rules = [
     name: '朝の連続ドラマを録る',
     enabled: true,
     priority: 10,
-    keepOriginal: 'always',
+    keepOriginal: 'always', cmDetection: { state: 'disabled' },
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
   },
@@ -65,7 +65,7 @@ const recording = {
   startAt: '2026-01-01T12:00:00Z',
   durationMs: 1_800_000,
   status: 'finished',
-  keepOriginal: 'always',
+  keepOriginal: 'always', cmDetection: { state: 'disabled' },
   createdAt: '2026-01-02T12:30:00Z',
 }
 

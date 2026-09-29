@@ -67,7 +67,7 @@ const recording = {
   startAt: '2026-01-01T12:00:00.000Z',
   durationMs: 120_000,
   status: 'finished',
-  keepOriginal: 'always',
+  keepOriginal: 'always', cmDetection: { state: 'disabled' },
   sizeBytes: 500_000_000,
   encodedAssets: [{ profile: 'h264', sizeBytes: 400_000_000 }],
   createdAt: '2026-01-02T12:30:00Z',

@@ -35,7 +35,7 @@ const recordings = Array.from({ length: 20 }, (_, i) => {
     startAt: new Date(Date.parse('2026-01-01T12:00:00Z') + id * 60_000).toISOString(),
     durationMs: 1_800_000,
     status: 'finished',
-    keepOriginal: 'always',
+    keepOriginal: 'always', cmDetection: { state: 'disabled' },
     createdAt: '2026-01-02T12:30:00Z',
   }
 })
@@ -47,7 +47,7 @@ const restoredIds = []
 async function apiHandler({ path, url, json, route }) {
   const method = route.request().method()
   if (path === '/api/sites') return json(['default'])
-  if (path === '/api/capabilities') return json({ live: true })
+  if (path === '/api/capabilities') return json({ live: true, cmDetect: false })
   if (path === '/api/breakers') return json([])
   if (path === '/api/encode-profiles' || path === '/api/rules') return json([])
   if (path === '/api/events') return sseKeepAlive(route)

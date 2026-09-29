@@ -108,7 +108,7 @@ const program2 = {
 /** apiHandler は /programs の描画に要る `/api/**` の応答を作る。 */
 async function apiHandler({ path: p, json, route }) {
   if (p === '/api/sites') return json([SITE])
-  if (p === '/api/capabilities') return json({ live: false })
+  if (p === '/api/capabilities') return json({ live: false, cmDetect: false })
   if (p === '/api/encode-profiles') return json([])
   if (p === '/api/capacity/overages') return json([])
   // ここが本題: 予約一覧は毎回失敗させる（react-query のリトライぶんも含めて

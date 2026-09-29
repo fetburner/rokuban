@@ -92,7 +92,7 @@ function programsFor(startISO, endISO) {
 /** apiHandler は `/api/**` の応答を作る（design.mjs と同じ手）。 */
 async function apiHandler({ path: p, url, json }) {
   if (p === '/api/sites') return json([SITE])
-  if (p === '/api/capabilities') return json({ live: true })
+  if (p === '/api/capabilities') return json({ live: true, cmDetect: false })
   if (p === '/api/breakers') return json([])
   if (p === '/api/reservations') return json([])
   if (p === '/api/capacity/overages') return json([])

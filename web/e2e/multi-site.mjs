@@ -163,7 +163,7 @@ async function apiHandler({ path: pathname, json }) {
       })),
     )
   }
-  if (pathname === '/api/capabilities') return json({ live: false })
+  if (pathname === '/api/capabilities') return json({ live: false, cmDetect: false })
   for (const site of sites) {
     if (pathname === `/api/sites/${site}/services`) {
       return json([services[site], ...grServices[site]])

@@ -118,7 +118,7 @@ function programDetail(id, index) {
 /** apiHandler は /search の描画に要る `/api/**` の応答を作る。 */
 async function apiHandler({ path: p, json, route }) {
   if (p === '/api/sites') return json([SITE])
-  if (p === '/api/capabilities') return json({ live: false })
+  if (p === '/api/capabilities') return json({ live: false, cmDetect: false })
   if (p === `/api/sites/${SITE}/services`) return json(services)
   if (p === '/api/reservations') return json([])
   const intent = /^\/api\/sites\/([^/]+)\/programs\/(\d+)\/intent$/.exec(p)

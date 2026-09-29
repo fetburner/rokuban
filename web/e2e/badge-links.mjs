@@ -147,7 +147,7 @@ function programsFor(startISO, endISO) {
 /** apiHandler は `/api/**` の応答を作る（installApiStubs 経由でブラウザ側から差し替える）。 */
 async function apiHandler({ path: p, url, json, route }) {
     if (p === '/api/sites') return json([SITE])
-    if (p === '/api/capabilities') return json({ live: true })
+    if (p === '/api/capabilities') return json({ live: true, cmDetect: false })
     if (p === '/api/breakers') return json([])
     if (p === '/api/reservations') return json([reservation])
     if (p === '/api/capacity/overages') return json([overage])

@@ -106,7 +106,7 @@ const programs = [nearA, nearB, farA, tallA]
 
 async function apiHandler({ path: p, json }) {
   if (p === '/api/sites') return json([SITE])
-  if (p === '/api/capabilities') return json({ live: false })
+  if (p === '/api/capabilities') return json({ live: false, cmDetect: false })
   if (p === '/api/reservations') return json([])
   if (p === '/api/capacity/overages') return json([])
   if (p === '/api/encode-profiles') return json([])

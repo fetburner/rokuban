@@ -134,7 +134,7 @@ async function measureSearch(viewport) {
   await installApiStubs(page, async ({ path: p, json, route }) => {
     if (p === '/api/events') return route.fulfill({ status: 204 })
     if (p === '/api/sites') return json([SITE])
-    if (p === '/api/capabilities') return json({ live: false })
+    if (p === '/api/capabilities') return json({ live: false, cmDetect: false })
     if (p === `/api/sites/${SITE}/services`) {
       await delay(NETWORK_DELAY_MS)
       return json(services)

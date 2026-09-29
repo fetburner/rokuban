@@ -92,7 +92,7 @@ const manyRecordings = Array.from({ length: 60 }, (_, i) => ({
   startAt: new Date(Date.now() - (i + 1) * 3_600_000).toISOString(),
   durationMs: 1_800_000,
   status: 'finished',
-  keepOriginal: 'always',
+  keepOriginal: 'always', cmDetection: { state: 'disabled' },
   createdAt: new Date(Date.now() - (i + 1) * 3_600_000).toISOString(),
 }))
 // observedAt は実行時刻から 1 分前にする。`page.clock.install()` は実時刻を初期値に
