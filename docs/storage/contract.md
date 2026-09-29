@@ -35,9 +35,11 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
 	`.rokuban-ingest-{site}-{record_id}` と決め、プロセス再起動後も同じファイルを
 	開く。scratch から rename すると `EXDEV` になり、コピーへの劣化を許すため
 	確定操作には使わない。
-	`.rokuban-ingest-` と `.rokuban-rel-path-lock-` で始まる basename は予約名であり、
-	mirakc の contentPath には使わない。前者は ingest temp、後者は canonical と同じ
-	ディレクトリに置く rel_path 固有 lock file である。
+	`.rokuban-ingest-` / `.rokuban-rel-path-lock-` / `.rokuban-encode-` で始まる
+	basename は予約名であり、mirakc の contentPath には使わない。1 つ目は ingest
+	temp、2 つ目は canonical と同じディレクトリに置く rel_path 固有 lock file、
+	3 つ目は encode の公開前 staging file（後述）である。encode の staged 出力も
+	同じディレクトリに置く --- scratch から rename すると `EXDEV` になる。
 	canonical path は転送中に触らず、HEAD の長さ照合と、存在する場合の
    `content.sha256` 照合 → temp の `fsync` → `Close`
    → DB transaction 内の original 行 INSERT（rel_path の一意 reservation）→ temp
@@ -64,6 +66,44 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
    実行中の ingest や公開済み canonical は削除せず、次の回収 pass に延期する。
 4. **DB には相対パスのみ保存**。ルートは設定で与える。DB にロック・xattr・パーミッション
    の状態は保存しない。temp の同時実行排他は、対象 FS 上の協調的な POSIX `flock` に依存する
+
+### 派生物の公開（encode）は既存の canonical を上書きする
+
+encode の出力は原本と違って**既にある行の `rel_path` を指す**（プロファイルごとに
+1 つ。カット版は世代番号で新しいパスになる）。同じ `(recording, profile)` の encode が
+2 本並走しうる（job lock は ffmpeg の排他ではなく、失っても実行中の encode を
+cancel しない）。そのため:
+
+- scratch は**ジョブ ID ごと**にする。代替ジョブは別 ID なので衝突しない。scratch は
+  pod ローカルなので `flock` では同じ pod 内しか直列化できず、取れなかった実行を River の
+  再試行へ戻すと、停止中の旧実行が握る間ずっと失敗通知が積む。代償は、並走した 2 本が
+  どちらも ffmpeg を完走すること
+- staging は **canonical と同じディレクトリの staging file（`.rokuban-encode-`）へ、
+  rel_path lock の外でストリームコピー + `fsync`** する。
+  公開は lock（filesystem lock → tx → advisory xact lock）の中で、次の順に行う。
+  **判定 → rename（サイドカー → 本体）→ 親ディレクトリ `fsync` → `media_assets` の
+  Upsert → commit**。
+  canonical を `O_TRUNC` で直接開くと、読者が切り詰められた内容を観測しうる。
+  孤児回収は同じ lock を非 blocking で取ってから unlink するので、公開と commit の間で
+  lock を離すと、commit 前の行と消えた実体が組み合わせになりうる（ルール 3 と同じ理由）
+- 判定は tx 内で行を読み直し、**(a) `rel_path` が計画時と違う、(b) 既に active で
+  （カット版は凍結区間も）この試行と一致する、のどちらかなら公開しない**。
+  (b) が無いと、先発の commit の後に後発が rename で上書きする。後発の commit が
+  失敗すると、ファイルは後発の中身で行は先発のサイズになる。
+  (a) が無いと、行が先の世代へ進んだ後に古い計画の実行が行を巻き戻す。
+  (b) は成功で飛ばす。(a) は「誰かが済ませた」ではなく「自分の計画が古い」を意味する。
+  行が active のまま (a) だけが立つ（カット版で区間が違う）ときは、成功で飛ばすと新しい
+  チャプター編集が黙って消える。公開せずに River の snooze で戻し、現在の keep で
+  計画をやり直す。snooze は attempt を消費せず、失敗通知も出さない。
+  行が active でない（ごみ箱など）ときは成功で飛ばす
+- advisory xact lock が排他するのは ingest commit と孤児回収に対してだけである。
+  通常削除（`deleteMediaAsset`）とは filesystem lock でしか排他されない。RWX 越しに
+  `flock` が効くかは未検証（ルール 4 と同じ前提）
+- 置き忘れた staging file は孤児候補になる。`walkMediaFiles` が飛ばすのは
+  rel_path lock file と catalog ディレクトリだけである。
+  7 日の mtime 猶予（`defaultOrphanMTimeGrace`）の後に、`deleteOrphanFile` が
+  canonical と同じ手順で消す（rel_path lock file が 1 個残る）。
+  拡張子が無いので catalog 無し rescue の対象にはならず、原本へ昇格しない
 
 ### カット版の置き換え（「置くのは一回」の 1 つの例外）
 

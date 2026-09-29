@@ -283,6 +283,15 @@ func runCMTool(ctx context.Context, dir, binary string, args ...string) error {
 	return nil
 }
 
+// writeStationLogo は学習済みの局ロゴを dir へ書く。
+//
+// **上書きが原子的でないことは問題にならない。** dir は呼び出し元が作る job ID
+// ごとの scratch（`{scratch}/cm-detect/{job_id}/logos`）で、同じ (recording) の
+// 並走実行も別ジョブ ID なので別ディレクトリになる（job lock を失った実行と
+// reconcile の代替実行が並走しうるのは encode と同じだが、衝突するのは scratch の
+// 中身だけである）。読み手も同じ実行の readStationLogo だけで、書いた内容は
+// そのまま DB の Upsert へ渡す。encode の公開のように共有の canonical へ書く経路が
+// 無いので、ここへ temp + rename は持ち込まない。
 func writeStationLogo(dir, channel string, data []byte) error {
 	if len(data) == 0 {
 		return fmt.Errorf("empty LGD")

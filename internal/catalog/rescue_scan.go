@@ -66,6 +66,9 @@ func rescueStorage(ctx context.Context, pool *pgxpool.Pool, mediaDir string, reg
 		if mediapath.IsMediaRelPathLockFile(entry.Name()) {
 			return nil
 		}
+		if mediapath.IsEncodeTempFile(entry.Name()) {
+			return nil
+		}
 
 		kind, profile, ok := rescueAssetKind(entry.Name())
 		if !ok {

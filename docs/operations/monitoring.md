@@ -37,7 +37,7 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_uningested_record_bytes{site}` | Gauge（DB） | 未 ingest record 総量（バイト）。同上 |
 | `rokuban_uningested_backlog_scrape_errors_total{site}` | Counter | 上記の取得失敗 |
 | `rokuban_encode_duration_seconds` | Histogram | encode 1 件の所要時間 |
-| `rokuban_encode_jobs_total{result}` | Counter | encode の成功/失敗件数 |
+| `rokuban_encode_jobs_total{result}` | Counter | encode の成功/失敗件数。`replan` は計画が古く snooze で再計画した件数で、失敗ではない |
 | `rokuban_thumbnail_duration_seconds` | Histogram | thumbnail 1 件の所要時間 |
 | `rokuban_thumbnail_jobs_total{result}` | Counter | thumbnail の成功/失敗件数 |
 | `rokuban_seek_tiles_duration_seconds` | Histogram | シークプレビュー用タイル 1 件の所要時間 |
