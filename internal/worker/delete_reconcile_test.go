@@ -1783,7 +1783,7 @@ func TestDeleteReconcileWorker_CanonicalOrphanDefersWhileRelPathLocked(t *testin
 	}
 	t.Cleanup(func() { _ = q.DeleteOrphanFile(context.Background(), relPath) })
 
-	fileLock, acquired, err := tryLockMediaRelPathFile(orphanPath, relPath)
+	fileLock, acquired, err := tryLockMediaRelPathFile(mediaDir, relPath)
 	if err != nil {
 		t.Fatalf("locking rel_path file: %v", err)
 	}

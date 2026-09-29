@@ -261,7 +261,7 @@ func TestIngestWorker_CommitHoldsRelPathFileLockThroughRename(t *testing.T) {
 		err := waitCommit()
 		t.Fatalf("commit did not reach the rename hook (result: %v)", err)
 	}
-	fileLock, acquired, err := tryLockMediaRelPathFile(fullPath, relPath)
+	fileLock, acquired, err := tryLockMediaRelPathFile(mediaDir, relPath)
 	if err != nil {
 		release()
 		_ = waitCommit()
@@ -279,6 +279,48 @@ func TestIngestWorker_CommitHoldsRelPathFileLockThroughRename(t *testing.T) {
 	}
 	if got, err := os.ReadFile(fullPath); err != nil || string(got) != "committed bytes" {
 		t.Fatalf("committed canonical = %q, %v; want committed bytes", got, err)
+	}
+}
+
+func TestIngestWorker_CompletedCommitsLeaveNoPerRelPathLockFiles(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	mediaDir := t.TempDir()
+	w := &IngestWorker{Pool: pool}
+	const commits = 5
+	for i := 0; i < commits; i++ {
+		recordingID := insertTestRecording(t, pool)
+		relPath := fmt.Sprintf("sites/default/lock-lifecycle/commit-%d.m2ts", i)
+		fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+		tempPath := filepath.Join(filepath.Dir(fullPath), fmt.Sprintf(".rokuban-ingest-lock-lifecycle-%d", i))
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			t.Fatalf("creating commit directory: %v", err)
+		}
+		content := []byte(fmt.Sprintf("committed payload %d", i))
+		if err := os.WriteFile(tempPath, content, 0o644); err != nil {
+			t.Fatalf("writing commit temp: %v", err)
+		}
+		if err := w.commit(context.Background(), recordingID, relPath, tempPath, fullPath,
+			int64(len(content)), tsstat.NewCounter(io.Discard)); err != nil {
+			t.Fatalf("commit %d: %v", i, err)
+		}
+		if _, err := os.Stat(fullPath); err != nil {
+			t.Fatalf("canonical file after commit %d: %v", i, err)
+		}
+		lockPath := mediaRelPathLockPath(mediaDir, relPath)
+		if _, err := os.Stat(lockPath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("per-rel_path lock after commit %d: stat error = %v, want not exist", i, err)
+		}
+	}
+
+	entries, err := os.ReadDir(filepath.Join(mediaDir, ".rokuban-locks"))
+	if err != nil {
+		t.Fatalf("reading lock directory after %d commits: %v", commits, err)
+	}
+	if len(entries) != 1 || entries[0].Name() != mediaRelPathLockGateFile {
+		t.Errorf("lock directory entries after %d successful commits = %v, want only persistent gate %q", commits, entryNames(entries), mediaRelPathLockGateFile)
 	}
 }
 

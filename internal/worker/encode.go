@@ -724,7 +724,7 @@ type stagedEncodedFile struct {
 // stageEncodedFile は src（scratch）を finalPath と同じディレクトリの一時ファイルへ
 // ストリームコピー + fsync する。名前は予約接頭辞を付け、拡張子は付けない
 // （rescueAssetKind は媒体拡張子でしか ok を返さないので、孤児 rescue には拾われない）。
-// プロセス死で残ると、孤児回収が作る lock file が 1 個残るだけである。
+// プロセス死で rel_path lock が残っても、次の lock 取得時の GC が回収する。
 func stageEncodedFile(src, finalPath string) (stagedEncodedFile, error) {
 	dir := filepath.Dir(finalPath)
 	// CreateTemp は 0600 で作る。公開後のファイルは canonical なので、コピー元の
@@ -826,7 +826,7 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 	}
 
 	beforeEncodeLock(in.scratchOut)
-	fileLock, err := lockMediaRelPathFile(ctx, in.finalPath, in.relPath)
+	fileLock, err := lockMediaRelPathFile(ctx, w.MediaDir, in.relPath)
 	if err != nil {
 		return 0, false, fmt.Errorf("locking canonical file protocol: %w", err)
 	}
