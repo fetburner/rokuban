@@ -66,7 +66,7 @@ func CutFilterComplex(keep []chapters.Range, videoStream, audioStream int, scale
 	for i, r := range keep {
 		startFrame := chapters.MsToFrame(r.StartMs)
 		endFrame := chapters.MsToFrame(r.EndMs)
-		if endFrame <= startFrame {
+		if r.SubFrame() {
 			return CutFilterResult{}, fmt.Errorf("keep range [%d,%d) is shorter than one frame", r.StartMs, r.EndMs)
 		}
 		v := fmt.Sprintf("v%d", i)

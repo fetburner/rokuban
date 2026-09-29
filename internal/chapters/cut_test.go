@@ -169,3 +169,30 @@ func TestRetimeVTT_AllCuesCutKeepsHeader(t *testing.T) {
 		t.Errorf("cue survived although it is outside every keep range: %q", got)
 	}
 }
+
+// TestKeepRanges_DropsSubFrameRanges は結合後に 1 フレーム未満の区間を、先頭・中間・
+// 末尾のどこでも落とし、ちょうど 1 フレームの区間は残すことを固定する。
+// 番組長ちょうどまで cut すると末尾に 1ms の本編が残り、これを落とさないと
+// keep が空にならない。
+func TestKeepRanges_DropsSubFrameRanges(t *testing.T) {
+	oneFrame := Range{StartMs: FrameToMs(60), EndMs: FrameToMs(61)}
+	cut := func(a, b int64) Span { return Span{StartMs: a, EndMs: b, Label: LabelCM, Cut: true} }
+	body := func(a, b int64) Span { return Span{StartMs: a, EndMs: b} }
+	tests := []struct {
+		name string
+		in   Timeline
+		want []Range
+	}{
+		{"tail sliver", Timeline{cut(0, 1800000-1), body(1799999, 1800000)}, nil},
+		{"leading sliver", Timeline{body(0, 1), cut(1, 1000), body(1000, 2000)}, []Range{{StartMs: 1000, EndMs: 2000}}},
+		{"middle sliver", Timeline{body(0, 1000), cut(1000, 2000), body(2000, 2001), cut(2001, 3000), body(3000, 4000)},
+			[]Range{{StartMs: 0, EndMs: 1000}, {StartMs: 3000, EndMs: 4000}}},
+		{"exactly one frame is kept", Timeline{cut(0, oneFrame.StartMs), body(oneFrame.StartMs, oneFrame.EndMs), cut(oneFrame.EndMs, 5000)}, []Range{oneFrame}},
+	}
+	for _, tc := range tests {
+		got := KeepRanges(tc.in)
+		if !SameRanges(got, tc.want) {
+			t.Errorf("%s: KeepRanges = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

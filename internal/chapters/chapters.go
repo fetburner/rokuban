@@ -154,6 +154,11 @@ func Derive(owned bool, user, auto []Span, programDurationMs int64) Timeline {
 // カット版が残す区間そのもの。タイムラインは隙間なく覆っている（Derive）ので、
 // 結合しないと本編が 1 フレームごとに分かれた区間列になりうる。
 //
+// **結合した後で 1 フレーム未満の区間（Range.SubFrame）を落とす**（先頭・中間・
+// 末尾のどこでも）。番組長ちょうどまで cut すると、終端が手前のフレーム境界へ
+// 丸まって末尾に 1ms の本編が残る。落とさないと keep が空にならず、cut 版の
+// ジョブが投入されたうえで「shorter than one frame」で必ず失敗する。
+//
 // 戻り値は昇順で重ならない半開区間（原本時間軸の ms）。空なら「全部カット」で、
 // カット版は作れない（呼び出し側が先に落とす）。
 func KeepRanges(t Timeline) []Range {
@@ -168,7 +173,23 @@ func KeepRanges(t Timeline) []Range {
 		}
 		out = append(out, Range{StartMs: s.StartMs, EndMs: s.EndMs})
 	}
-	return out
+	kept := out[:0]
+	for _, r := range out {
+		if !r.SubFrame() {
+			kept = append(kept, r)
+		}
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return kept
+}
+
+// SubFrame は区間がフレーム番号に換算して 1 フレームに満たないか（start と end が
+// 同じフレームになるか）を返す。KeepRanges の除外と、CutFilterComplex の
+// 「shorter than one frame」検査の共通の基準（1 か所）。
+func (r Range) SubFrame() bool {
+	return MsToFrame(r.EndMs) <= MsToFrame(r.StartMs)
 }
 
 // SameRanges は 2 つの区間列が同じ時間軸の被覆を表すかを返す（量子化後の値

@@ -239,10 +239,13 @@ func TestReencodeRecordingProfile_NeedsKeepRanges(t *testing.T) {
 		defer func() { _ = resp.Body.Close() }()
 		return resp.StatusCode
 	}
-	// fixture の番組長は 1800000ms。全区間カットは番組長を越えるフレーム境界まで切る
-	// （境界が番組長の手前に量子化されると 1ms の本編が残り、keep が空にならない）。
+	// fixture の番組長は 1800000ms。ちょうどまで cut すると終端が手前のフレーム境界へ
+	// 丸まって 1ms の本編が残る（KeepRanges が落とす）。番組長を越える終端も見る。
 	if got := post(seed(false, 0, 0)); got != http.StatusConflict {
 		t.Errorf("unconfirmed status = %d, want 409", got)
+	}
+	if got := post(seed(true, 0, 1800000)); got != http.StatusConflict {
+		t.Errorf("cut to exactly the program length status = %d, want 409", got)
 	}
 	if got := post(seed(true, 0, chapters.QuantizeMs(1810000))); got != http.StatusConflict {
 		t.Errorf("all-cut status = %d, want 409", got)

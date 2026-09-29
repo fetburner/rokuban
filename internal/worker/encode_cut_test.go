@@ -652,7 +652,7 @@ func TestEnqueueCut_AllCutRecordingEnqueuesNothing(t *testing.T) {
 	mediaDir := t.TempDir()
 	seed := func(rel string, spans ...chapters.Span) int64 {
 		id := seedRecordingWithOriginal(t, pool, mediaDir, rel, []string{"cut"}, []byte("x"))
-		if _, err := pool.Exec(ctx, `UPDATE recordings SET program_duration_ms = 2000 WHERE id = $1`, id); err != nil {
+		if _, err := pool.Exec(ctx, `UPDATE recordings SET program_duration_ms = 1800000 WHERE id = $1`, id); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
@@ -667,7 +667,7 @@ func TestEnqueueCut_AllCutRecordingEnqueuesNothing(t *testing.T) {
 		}
 		return id
 	}
-	allCut := seed("cut/allcut.m2ts", chapters.Span{StartMs: 0, EndMs: 2000})
+	allCut := seed("cut/allcut.m2ts", chapters.Span{StartMs: 0, EndMs: 1800000})
 	partial := seed("cut/partial.m2ts", chapters.Span{StartMs: 500, EndMs: 1000})
 
 	client, err := NewClient(pool, NewWorkers(&Deps{Pool: pool}), ClientConfig{})
