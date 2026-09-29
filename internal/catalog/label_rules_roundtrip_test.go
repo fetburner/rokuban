@@ -130,6 +130,19 @@ func TestRescue_WaitsForLabelRuleReevaluationLock(t *testing.T) {
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 
+	// rescue が実際に書く行（分類ルールと録画）を用意する。空の文書だと、ロックを
+	// どこで取っても書き込み前に待つので、位置の検査にならない。
+	if _, err := sqlcgen.New(pool).CreateRecording(ctx, sqlcgen.CreateRecordingParams{
+		Source: "manual", Site: "default", NetworkID: 32736, ServiceID: 1024, EventID: 600,
+		ServiceName: "NHK総合", ChannelType: "GR", Channel: "27", Title: "ロック位置",
+		ProgramStartAt: time.Now().UTC().Truncate(time.Second), ProgramDurationMs: 60000, Status: "finished",
+	}); err != nil {
+		t.Fatalf("CreateRecording: %v", err)
+	}
+	createRule := sqlcgen.CreateLabelRuleParams{Key: "series", Value: "ロック", Keyword: "ロック"}
+	if _, err := sqlcgen.New(pool).CreateLabelRule(ctx, createRule); err != nil {
+		t.Fatalf("CreateLabelRule: %v", err)
+	}
 	doc, err := Export(ctx, pool)
 	if err != nil {
 		t.Fatalf("Export: %v", err)
@@ -156,6 +169,24 @@ func TestRescue_WaitsForLabelRuleReevaluationLock(t *testing.T) {
 	case err := <-done:
 		t.Fatalf("rescue finished (err=%v) while the re-evaluation lock was held", err)
 	case <-time.After(1500 * time.Millisecond):
+	}
+	// ロック待ちの時点で、rescue の backend は label_rules / recordings に何も
+	// 触れていない（リレーションロックを持たない）。途中で取ると、upsert のトリガーが
+	// label_rule_hits の行ロックを持ったまま待ち、ジョブとデッドロックしうる。
+	var waiterPID int
+	if err := pool.QueryRow(ctx,
+		`SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`).Scan(&waiterPID); err != nil {
+		t.Fatalf("finding the backend waiting for the advisory lock: %v", err)
+	}
+	var held int
+	if err := pool.QueryRow(ctx, `
+SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
+WHERE l.pid = $1 AND l.granted AND c.relname IN ('label_rules', 'recordings', 'label_rule_hits')`,
+		waiterPID).Scan(&held); err != nil {
+		t.Fatalf("reading the waiter's relation locks: %v", err)
+	}
+	if held != 0 {
+		t.Errorf("the waiting rescue already holds %d relation locks on label_rules/recordings/label_rule_hits; take the lock before the first write", held)
 	}
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("releasing the lock: %v", err)

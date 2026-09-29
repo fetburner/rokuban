@@ -159,6 +159,15 @@ func insertableSnapshot(s ProgramSnapshot) bool {
 func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult, error) {
 	q := sqlcgen.New(tx)
 	res := &RescueResult{}
+
+	// worker のジョブと同じロックで直列化する（古いスナップショットで評価した
+	// ジョブが、この結果を後から上書きしないように）。**最初の書き込みより前**に取る。
+	// 途中で取ると、recordings の upsert のトリガーが label_rule_hits の行ロックを
+	// 持ったまま advisory lock を待ち、ジョブ（advisory lock 保持 → その行を待つ）と
+	// デッドロックして、rescue が犠牲になれば 1 世代の復元が丸ごと失敗する。
+	if err := q.LockLabelRuleReevaluation(ctx); err != nil {
+		return nil, fmt.Errorf("locking label rule re-evaluation: %w", err)
+	}
 	if err := applyRules(ctx, q, doc.Rules, res); err != nil {
 		return nil, err
 	}
@@ -228,11 +237,6 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 	// 閉じる。トリガーは title が変わった行と新規行しか見ないので、DB に残っていた
 	// 既存録画の当たりは、復元したルール集合に対して古いままになりうる。
 	// worker の定期再評価（15 分）に任せず同じ tx で閉じる。
-	// worker のジョブと同じロックで直列化する（古いスナップショットで評価した
-	// ジョブが、この結果を後から上書きしないように）。
-	if err := q.LockLabelRuleReevaluation(ctx); err != nil {
-		return nil, fmt.Errorf("locking label rule re-evaluation: %w", err)
-	}
 	if _, err := q.ApplyLabelRuleReevaluation(ctx); err != nil {
 		return nil, fmt.Errorf("re-evaluating label rules after rescue: %w", err)
 	}
