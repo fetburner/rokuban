@@ -500,3 +500,29 @@ func TestPutRecordingChapterEdits_RejectsInvalidSpans(t *testing.T) {
 		t.Fatalf("PUT empty timeline status = %d, want 204", resp.StatusCode)
 	}
 }
+
+// TestPutRecordingChapterEdits_OwnedVersionChangesWithEachEdit は、所有済みの録画で
+// 同じ版による 2 回目の PUT が弾かれることを確かめる（2 タブの後勝ちで前の編集が
+// 黙って消えない）。版のハッシュから spans を外すと 2 回目も 204 になり落ちる。
+func TestPutRecordingChapterEdits_OwnedVersionChangesWithEachEdit(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	defer srv.Close()
+
+	id := seedRecording(t, pool, "2タブ", time.Now().Truncate(time.Second), "finished", 993)
+	url := chaptersURL(srv.URL, id)
+	if resp := putChapters(t, url, []ChapterSpan{{StartMs: 1001, EndMs: 2002, Cut: true}}); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("adopting PUT status = %d, want 204", resp.StatusCode)
+	}
+
+	v := getChapters(t, url).Version
+	if resp := putChaptersWithVersion(t, url, v, []ChapterSpan{{StartMs: 3003, EndMs: 4004, Cut: true}}); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT with the current version status = %d, want 204", resp.StatusCode)
+	}
+	if resp := putChaptersWithVersion(t, url, v, []ChapterSpan{{StartMs: 5005, EndMs: 6006, Cut: true}}); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("second PUT with the same version status = %d, want 409", resp.StatusCode)
+	}
+	if got := getChapters(t, url); len(got.Spans) != 1 || got.Spans[0].StartMs != 3003 {
+		t.Fatalf("spans = %+v, want the first editor's spans kept", got.Spans)
+	}
+}

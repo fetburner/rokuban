@@ -1,4 +1,4 @@
-import { fireEvent, render } from '@testing-library/react'
+import { act, fireEvent, render } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { ChapterSpan } from '@/api/generated'
@@ -10,7 +10,7 @@ function renderEditor(
   spans: ChapterSpan[],
   overrides: Partial<Parameters<typeof RecordingChapterEditor>[0]> = {},
 ) {
-  const onSave = vi.fn()
+  const onSave = vi.fn((_spans: ChapterSpan[], _version: string) => Promise.resolve())
   const onReset = vi.fn()
   const view = render(
     <RecordingChapterEditor
@@ -58,7 +58,7 @@ describe('RecordingChapterEditor', () => {
   })
 
   it('「ここから / ここまで」で現在位置の区間を足す', () => {
-    const onSave = vi.fn()
+    const onSave = vi.fn((_spans: ChapterSpan[], _version: string) => Promise.resolve())
     const props = {
       spans: [] as ChapterSpan[],
       version: 'v1',
@@ -130,6 +130,35 @@ describe('RecordingChapterEditor', () => {
     fireEvent.click(getByRole('button', { name: '変更を破棄' }))
     expect(queryByTestId('chapter-stale')).toBeNull()
     expect(container.textContent).toContain('0:00:50')
+  })
+
+  it('自分の保存が成功したら、丸められたサーバーの値を採用して stale にならない', async () => {
+    // サーバーは境界をフレーム境界へ丸めて保存する（9000 → 9009）ので、届く値は
+    // 下書きと一致しない。クライアントで丸めを複製せず、保存成功後の次の値を採用する。
+    const { rerender, container, getByRole, queryByTestId, onSave } = renderEditor([cm])
+    fireEvent.click(
+      container.querySelectorAll('[data-testid="chapter-boundary"]')[0].querySelector('[aria-label$="を -1秒"]')!,
+    )
+    await act(async () => {
+      fireEvent.click(getByRole('button', { name: '保存' }))
+    })
+    const saved: ChapterSpan[] = [{ startMs: 9009, endMs: 20_020, label: 'CM', cut: true }]
+    rerender(
+      <RecordingChapterEditor
+        spans={saved}
+        version="v2"
+        detectionPending={false}
+        source="user"
+        currentSeconds={0}
+        playAround={vi.fn()}
+        onSave={onSave}
+        onReset={vi.fn()}
+        pending={false}
+      />,
+    )
+    expect(queryByTestId('chapter-stale')).toBeNull()
+    expect(container.textContent).toContain('0:00:09')
+    expect(getByRole('button', { name: '保存' })).toHaveProperty('disabled', true) // dirty でない
   })
 
   it('保存には下書きの基にした版を渡す', () => {

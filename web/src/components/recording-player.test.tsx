@@ -494,7 +494,7 @@ describe('RecordingPlayer のチャプター', () => {
         recordingId={96}
         encodedAssets={asset}
         chapterVersion="v1"
-        onSaveChapters={() => {}}
+        onSaveChapters={() => Promise.resolve()}
         onResetChapters={() => {}}
       />,
     )
@@ -508,7 +508,7 @@ describe('RecordingPlayer のチャプター', () => {
       <RecordingPlayer
         recordingId={95}
         encodedAssets={asset}
-        onSaveChapters={() => {}}
+        onSaveChapters={() => Promise.resolve()}
         onResetChapters={() => {}}
       />,
     )

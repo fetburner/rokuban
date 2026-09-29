@@ -23,7 +23,12 @@ type RecordingChapterEditorProps = {
   currentSeconds: number
   /** 境界の前後 3 秒を再生する。自動スキップを一時的に止めるのは呼び出し側の責務。 */
   playAround: (seconds: number) => void
-  onSave: (spans: ChapterSpan[], version: string) => void
+  /**
+   * 保存する。成功で resolve、失敗で reject する。成功したら、次に届くサーバーの値を
+   * 無条件で下書きの基として採用する（サーバーは境界をフレーム境界へ丸めて保存する
+   * ので、届く値は下書きと一致しない。クライアントで丸めを複製しない）。
+   */
+  onSave: (spans: ChapterSpan[], version: string) => Promise<unknown>
   onReset: () => void
   pending: boolean
 }
@@ -77,10 +82,13 @@ function ChapterDraftEditor({
   // renders" の形）。親が `unwrap(query.data)` の配列をそのまま渡すので、参照が
   // 変わるのは新しいデータが来たときだけである。
   const [base, setBase] = useState({ spans, version })
+  // 自分の保存が成功した後、次に届くサーバーの値を採用する印。
+  const [adoptNext, setAdoptNext] = useState(false)
   if (base.spans !== spans || base.version !== version) {
-    if (sameSpans(draft, base.spans) || sameSpans(draft, spans)) {
+    if (adoptNext || sameSpans(draft, base.spans) || sameSpans(draft, spans)) {
       setBase({ spans, version })
       setDraft(spans)
+      setAdoptNext(false)
     }
   }
   const stale = base.spans !== spans || base.version !== version
@@ -117,7 +125,12 @@ function ChapterDraftEditor({
             size="sm"
             variant="outline"
             disabled={pending || !dirty || stale}
-            onClick={() => onSave(draft, base.version)}
+            onClick={() => {
+              onSave(draft, base.version).then(
+                () => setAdoptNext(true),
+                () => {},
+              )
+            }}
           >
             保存
           </Button>

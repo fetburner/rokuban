@@ -69,7 +69,7 @@ type RecordingPlayerProps = {
    * タイムライン全体の保存。undefined なら編集 UI を出さない（エンコードが無い
    * 録画・ごみ箱など。呼び出し側が判断して渡す）。
    */
-  onSaveChapters?: (spans: ChapterSpan[], version: string) => void
+  onSaveChapters?: (spans: ChapterSpan[], version: string) => Promise<unknown>
   /** 所有を捨てて自動層へ戻す。 */
   onResetChapters?: () => void
   /** 保存 / 取り消しの実行中。 */

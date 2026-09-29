@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,12 +23,15 @@ const chapterStaleVersionMessage = "the chapter layer changed since it was fetch
 
 // chapterVersion は GET が返し PUT が突き合わせる版を導出する（列は持たない）。
 //
-// 所有済みなら所有の開始時刻、所有前なら検出の終端（結果 / 失敗 / まだ）と検出時刻。
+// 所有済みなら所有の開始時刻とユーザー層の内容（呼び出し側が実際に読んだ spans の JSON）、所有前なら検出の終端（結果 / 失敗 / まだ）と検出時刻。
 // 再検出・引き取り・自動に戻す のどれでも値が変わる。
-func chapterVersion(s sqlcgen.GetRecordingChapterStateRow) string {
+func chapterVersion(s sqlcgen.GetRecordingChapterStateRow, userSpans json.RawMessage) string {
 	switch {
 	case s.Owned:
-		return fmt.Sprintf("user:%d", s.AdoptedAtUs)
+		// 所有済みは内容から導出する。adopted_at だけだと 2 回目以降の PUT で版が
+		// 変わらず、2 タブの後勝ちで前の編集が黙って消える。
+		sum := sha256.Sum256(userSpans)
+		return fmt.Sprintf("user:%d:%s", s.AdoptedAtUs, hex.EncodeToString(sum[:8]))
 	case s.Detected:
 		return fmt.Sprintf("auto:detected:%d", s.DetectedAtUs)
 	case s.Failed:
@@ -76,7 +81,7 @@ func (h *Server) GetRecordingChapters(ctx context.Context, req GetRecordingChapt
 		// 依存させない。直接 INSERT された行でも同じ形で返す。
 		return GetRecordingChapters200JSONResponse{
 			Source:           User,
-			Version:          chapterVersion(state),
+			Version:          chapterVersion(state, raw),
 			DetectionPending: false,
 			Spans:            chapterSpansToAPI(chapters.Quantized(spans)),
 		}, nil
@@ -92,7 +97,7 @@ func (h *Server) GetRecordingChapters(ctx context.Context, req GetRecordingChapt
 	}
 	return GetRecordingChapters200JSONResponse{
 		Source:           Auto,
-		Version:          chapterVersion(state),
+		Version:          chapterVersion(state, nil),
 		DetectionPending: h.chapterDetectionPending(state),
 		Spans:            chapterSpansToAPI(chapters.AutoSpans(ranges, state.ProgramDurationMs)),
 	}, nil
@@ -148,7 +153,14 @@ func (h *Server) PutRecordingChapterEdits(ctx context.Context, req PutRecordingC
 	// 下書きの基になった層の版。クライアントは GET の結果から下書きを作るので、
 	// GET と PUT の間に層が変わっていれば（検出 commit・再検出・引き取り・自動に
 	// 戻す）、行ロックでは防げない。所有済みでも比べる。
-	if req.Body.Version != chapterVersion(state) {
+	var userSpansRaw json.RawMessage
+	if state.Owned {
+		userSpansRaw, err = q.GetRecordingChapterSpansJSON(ctx, req.Id)
+		if err != nil {
+			return nil, fmt.Errorf("loading chapter spans for recording %d: %w", req.Id, err)
+		}
+	}
+	if req.Body.Version != chapterVersion(state, userSpansRaw) {
 		return PutRecordingChapterEdits409JSONResponse{Error: chapterStaleVersionMessage}, nil
 	}
 	// 検出中（cm_detect が真で、結果行も終端の失敗行も無い）は引き取らせない。
