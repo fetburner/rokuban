@@ -196,6 +196,36 @@ CREATE TABLE recording_encode_policy (
 
 `recording_cm_attempts` は直近の試行だけを持つ。`running` は処理中、`retrying` は失敗後に River の自動再試行を待っている状態、`failed` は最大3回の試行後も失敗した状態である。定期 reconcile は `running` のみを advisory lock で確認してプロセス停止を回収し、`retrying` を重複投入しない。回収は試行回数を消費させる。River ジョブの試行回数が残っていれば `retryable` に戻して River 自身の再試行に乗せ、試行行を `retrying` にする。使い切っていれば `discarded` にして試行行を `failed`（error は「process stopped」）にする。新しいジョブを積み直すと試行回数が 1 に戻り、OOM で落ち続ける録画が `failed` に届かない。結果の保存と試行行の削除は同一トランザクションで確定する。
 
+### recording_chapter_ownership / recording_chapter_spans — ユーザーのチャプター（衛星表）
+
+```sql
+CREATE EXTENSION IF NOT EXISTS btree_gist;  -- bigint の = を GiST に載せるため
+
+CREATE TABLE recording_chapter_ownership (   -- 行があること = ユーザーが所有（= 確認済み）
+    recording_id bigint PRIMARY KEY REFERENCES recordings (id) ON DELETE CASCADE,
+    adopted_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE recording_chapter_spans (
+    recording_id bigint NOT NULL REFERENCES recording_chapter_ownership (recording_id) ON DELETE CASCADE,
+    span         int8range NOT NULL CHECK (NOT isempty(span)),   -- 原本の先頭フレームを 0 とする ms
+    label        text,
+    cut          boolean NOT NULL,
+    CHECK (label IS NOT NULL OR cut),
+    EXCLUDE USING gist (recording_id WITH =, span WITH &&)
+);
+```
+
+**自動の検出結果は毎パス作り直せる導出値、ユーザーの修正は二度と再取得できない事実である**（不変条件 9）。1 つの表に置くと再検出が修正を上書きするので、2 表に割る。所有の行がある録画では `recording_cm_detections` を読まない。
+
+- **主キーは無い**。区間の同一性は区間そのものである。自動チャプターの id のような、再検出で動くキーを宛先にしない（不変条件 9 の identity）。API はタイムライン全体を置き換える
+- **本編は行を持たない**。区間の隙間が本編である。API も本編の区間を返さず、クライアントが再生中の `<video>.duration` で閉じる
+  - DB が持つ長さは EPG 上の番組長だけで、ファイルの実際の長さを api は知らない（原本は録画後に削除されうるし、EIT 追従で延長もされる）
+  - そのため「ラベルも無く `cut` でもない行」は意味を持たないので CHECK で表現不可能にする（不変条件 10）
+- **出自と意図を 1 つの列に載せない**。かつての案では `kind='cm'` に両方を持たせており、手で直した CM 境界が「取り込み直す」で上書きされた。取り込み直しの操作は作らず、やり直しは「自動に戻す」（所有の行を DELETE）だけである
+- 自動層をユーザー層へ写す道は「PUT がタイムライン全体を置き換える」1 本だけである。最初の PUT が所有の行を作り、以後その録画では自動層を読まない
+- **PUT は、下書きの基にした層の版を必須で受け取る**。版は列に持たず毎回導出する。所有済みなら `adopted_at` とユーザー層の内容のハッシュにする。`adopted_at` だけだと 2 回目以降の PUT で変わらず、2 端末の後勝ちで前の編集が消える。所有前なら検出の終端の有無と `detected_at` にする。行ロックが直列化するのはサーバー内の判定だけで、クライアントが検出中の空の層から作った下書きを、検出 commit の後に再 PUT する道は塞げない。ロックの後で版を比べて塞ぐ。所有済みでも比べる
+- 所有済みの録画は再検出中でも PUT できる（自動層を読まないので検出状態は無関係）。ごみ箱の録画は PUT / DELETE とも 404 にする
+
 ### cm_logos — 放送局ごとの学習済みロゴ
 
 局ロゴは `(network_id, service_id)` で一意に保持する。LGD は次回以降の検出に使うバイナリで、PNG preview は任意の表示用データ。`learned_from` は最初にロゴを学習した録画を指し、録画削除後も局ロゴは残る。管理画面から削除すると次の検出で再学習される。ロゴが失敗した録画より後に学習された場合、その失敗は再投入可能になる。

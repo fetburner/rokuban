@@ -7,7 +7,17 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 
-import type { EncodedAsset } from '@/api/generated'
+import type { ChapterSpan, EncodedAsset, RecordingChaptersSource } from '@/api/generated'
+import { RecordingChapterEditor } from '@/components/recording-chapter-editor'
+import { Button } from '@/components/ui/button'
+import {
+  PLAY_AROUND_SECONDS,
+  chapterJumpTarget,
+  formatChaptersTime,
+  loadChapterSkip,
+  saveChapterSkip,
+  skipTarget,
+} from '@/lib/chapters'
 import { formatBytes } from '@/lib/format'
 import {
   applyPlaybackRate,
@@ -43,6 +53,27 @@ type RecordingPlayerProps = {
   hasOriginal?: boolean
   /** 原本 TS の実サイズ。`hasOriginal` のときだけ渡され、ダウンロード / VLC リンクに常置する。 */
   originalSizeBytes?: number
+  /**
+   * 有効なチャプターの区間（`GET /api/recordings/{id}/chapters` の結果そのまま）。
+   * **本編の区間は含まれない** --- 区間の隙間が本編で、終端は `<video>.duration`
+   * で閉じる。undefined は未取得（目盛りも一覧も出さない）。
+   */
+  chapters?: ChapterSpan[]
+  /** どの層を読んだか。編集 UI の「確認済み / 未確認」表示に使う。 */
+  chapterSource?: RecordingChaptersSource
+  /** `chapters` の版。保存時にそのまま返す。 */
+  chapterVersion?: string
+  /** 検出中。編集 UI を出さずに理由を表示する。 */
+  chapterDetectionPending?: boolean
+  /**
+   * タイムライン全体の保存。undefined なら編集 UI を出さない（エンコードが無い
+   * 録画・ごみ箱など。呼び出し側が判断して渡す）。
+   */
+  onSaveChapters?: (spans: ChapterSpan[], version: string) => Promise<unknown>
+  /** 所有を捨てて自動層へ戻す。 */
+  onResetChapters?: () => void
+  /** 保存 / 取り消しの実行中。 */
+  chapterSavePending?: boolean
   className?: string
 }
 
@@ -56,6 +87,13 @@ export function RecordingPlayer({
   encodedAssets,
   hasOriginal = false,
   originalSizeBytes,
+  chapters,
+  chapterSource = 'auto',
+  chapterVersion,
+  chapterDetectionPending = false,
+  onSaveChapters,
+  onResetChapters,
+  chapterSavePending = false,
   className,
 }: RecordingPlayerProps) {
   // `encodedAssets` の参照が変わらない限り再計算しない --- 素の `.map()` だと
@@ -85,9 +123,38 @@ export function RecordingPlayer({
     left: number
     scale: number
   } | null>(null)
-  // スクラブ帯の再生済み割合（0..1）。timeupdate / seeked / loadedmetadata で更新する。
-  const [played, setPlayed] = useState<{ recordingId: number; fraction: number } | null>(null)
+  // スクラブ帯の再生済み割合（0..1）・現在位置（秒）・タイムラインの終端
+  // （`<video>.duration`）。timeupdate / seeked / loadedmetadata で更新する。
+  // **編集 UI が現在位置を要る**ので同じ state に載せる（4Hz の再描画はこの
+  // 1 か所に集約する）。録画を切り替えた直後に前の録画の値を描かないよう、
+  // 録画 ID と組で持ち、描くときに今の録画のものだけを使う（`tilePreview` と
+  // 同じ規律。effect で 0 に戻すとその 1 レンダーぶん古い値が見える）。
+  const [played, setPlayed] = useState<{
+    recordingId: number
+    fraction: number
+    seconds: number
+    duration: number
+  } | null>(null)
   const playedFraction = played?.recordingId === recordingId ? played.fraction : 0
+  const currentSeconds = played?.recordingId === recordingId ? played.seconds : 0
+  // チャプターの目盛りを割合に直す分母。未確定の間は 0（目盛りを出さない）。
+  const durationSeconds = played?.recordingId === recordingId ? played.duration : 0
+  // CM 自動スキップ（端末ごとの好み。`rokuban:playback-rate` と同じ扱い）。
+  const [skipEnabled, setSkipEnabled] = useState(loadChapterSkip)
+  // 直前の観測位置。通常の再生で区間の先頭を跨いだかだけを見る（手動シークで
+  // 区間の中に入ったときに飛ばさないため。`lib/chapters.ts` の skipTarget）。
+  const previousSecondsRef = useRef(0)
+  // 境界の前後再生の間は自動スキップを止める。境界が cut 区間の先頭のとき、
+  // 飛ばすと「その境界を見る」操作そのものが成立しない。
+  const skipSuppressedRef = useRef(false)
+  const playAroundTimerRef = useRef<number | undefined>(undefined)
+  // 前後再生の停止位置（秒）。null は前後再生中でない。停止は再生位置で判定する
+  // （実時間のタイマーだと再生速度が 1 倍でないとき止まる位置がずれる）。
+  const playAroundStopRef = useRef<number | null>(null)
+  // `chapters ?? []` を毎レンダー評価すると、未取得の間だけ配列の参照が毎回変わる。
+  // 編集 UI は「参照が変わった = サーバーの値が変わった」と見なしてドラフトを
+  // 追随させるので、参照はここで安定させておく。
+  const chapterSpans = useMemo(() => chapters ?? [], [chapters])
   const shownPreview =
     tilePreview?.recordingId === recordingId && tilesAvailableFor === recordingId ? tilePreview : null
   // プロファイル切替時に load したあとだけ currentTime を復元する
@@ -98,7 +165,13 @@ export function RecordingPlayer({
   useEffect(() => {
     restorePending.current = true
     lastSavedSecond.current = null
+    previousSecondsRef.current = 0
+    skipSuppressedRef.current = false
+    playAroundStopRef.current = null
   }, [recordingId, selectedProfile])
+
+  // 境界の前後再生のタイマーを残さない（再生中に別の録画へ移っても止まる）。
+  useEffect(() => () => window.clearTimeout(playAroundTimerRef.current), [])
 
   // 録画を変えても速度は保つ（以前はここで 1 倍に戻していた）。速度は端末ごとの
   // 好みであって録画ごとの状態ではない（`lib/playback-position.ts`）。
@@ -211,13 +284,51 @@ export function RecordingPlayer({
     </a>
   )
   const updatePlayedFraction = (video: HTMLVideoElement) => {
-    setPlayed({
+    const known = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0
+    setPlayed((previous) => ({
       recordingId,
-      fraction:
-        Number.isFinite(video.duration) && video.duration > 0
-          ? Math.max(0, Math.min(1, video.currentTime / video.duration))
-          : 0,
-    })
+      seconds: video.currentTime,
+      fraction: known > 0 ? Math.max(0, Math.min(1, video.currentTime / known)) : 0,
+      // duration が読めない瞬間（load 直後）に前回の値を捨てない。
+      duration: known > 0 ? known : previous?.recordingId === recordingId ? previous.duration : 0,
+    }))
+  }
+  // jumpTo は区間の境界・一覧から飛ぶ。飛んだ先を直前位置として記録する
+  // （飛んだ直後の timeupdate を「区間の先頭を跨いだ」と誤認しないため）。
+  const jumpTo = (seconds: number) => {
+    const video = videoRef.current
+    if (!video) return
+    video.currentTime = seconds
+    previousSecondsRef.current = seconds
+    updatePlayedFraction(video)
+  }
+  const jumpChapter = (direction: 'next' | 'prev') => {
+    const target = chapterJumpTarget(chapterSpans, currentSeconds, direction)
+    if (target !== undefined) jumpTo(target)
+  }
+  // playAround は境界の前後 3 秒を再生して止める（修正 UI の「前後 3 秒」）。
+  const playAround = (seconds: number) => {
+    const video = videoRef.current
+    if (!video) return
+    const start = Math.max(0, seconds - PLAY_AROUND_SECONDS)
+    const stop = seconds + PLAY_AROUND_SECONDS
+    window.clearTimeout(playAroundTimerRef.current)
+    skipSuppressedRef.current = true
+    playAroundStopRef.current = stop
+    jumpTo(start)
+    void video.play()
+    // 本来の停止は timeupdate の `currentTime >= stop`。これは再生が進まない場合
+    // （バッファ待ちなど）に抑制が残り続けないための保険で、再生速度ぶん余裕を持たせる。
+    playAroundTimerRef.current = window.setTimeout(
+      () => finishPlayAround(video),
+      ((stop - start) * 1000) / Math.max(video.playbackRate, 0.1) + 2000,
+    )
+  }
+  const finishPlayAround = (video: HTMLVideoElement) => {
+    window.clearTimeout(playAroundTimerRef.current)
+    playAroundStopRef.current = null
+    skipSuppressedRef.current = false
+    video.pause()
   }
   // スクラブ帯の上のポインタ位置 → 再生位置（秒）。duration 未確定なら null。
   // **プレビューはネイティブ controls のシークバーに重ねない。** ネイティブの
@@ -327,10 +438,35 @@ export function RecordingPlayer({
             e.currentTarget.currentTime = pos
           }
         }}
-        onSeeked={(e) => updatePlayedFraction(e.currentTarget)}
+        onSeeking={(e) => {
+          // シークの処理順は seeking → timeupdate → seeked（HTML spec）なので、
+          // seeked で直前位置を更新しても最初の timeupdate には間に合わない。再生中に
+          // 区間の手前から中へシークすると、シーク前の位置が直前位置のまま残って
+          // 「先頭を跨いだ」と誤認し追い出す。seeking の時点で currentTime はシーク先。
+          previousSecondsRef.current = e.currentTarget.currentTime
+        }}
+        onSeeked={(e) => {
+          // 手動シーク（ネイティブ controls のシークバー・キー操作）でも直前位置を
+          // 更新する。区間の中へシークした場合に「先頭を跨いだ」と誤認して
+          // 追い出さないため（`lib/chapters.ts` の skipTarget）。
+          previousSecondsRef.current = e.currentTarget.currentTime
+          updatePlayedFraction(e.currentTarget)
+        }}
         onTimeUpdate={(e) => {
           const v = e.currentTarget
           updatePlayedFraction(v)
+          const previous = previousSecondsRef.current
+          previousSecondsRef.current = v.currentTime
+          const stopAt = playAroundStopRef.current
+          if (stopAt !== null && v.currentTime >= stopAt) finishPlayAround(v)
+          // 自動スキップ。**通常の再生で区間の先頭に差し掛かったときだけ**飛ばす。
+          if (skipEnabled && !skipSuppressedRef.current && !v.paused) {
+            const target = skipTarget(chapterSpans, previous, v.currentTime, v.duration)
+            if (target !== undefined) {
+              v.currentTime = target
+              previousSecondsRef.current = target
+            }
+          }
           // timeupdate は約 4Hz で発火するが保存値は秒単位なので、秒が変わったときだけ書く
           if (!shouldSavePlaybackPosition(lastSavedSecond.current, v.currentTime)) return
           lastSavedSecond.current = Math.floor(v.currentTime)
@@ -366,6 +502,32 @@ export function RecordingPlayer({
           onPointerLeave={() => setTilePreview(null)}
           onClick={handleScrubClick}
         >
+          {/*
+            チャプターの目盛り。**座標はこの帯が自分で持つ**（ネイティブ controls の
+            シークバーには重ねない。docs/frontend/recordings.md）。位置の割合は
+            `<video>.duration` を分母にする --- 区間の隙間は本編で、その終端が
+            動画の終端だからである。
+          */}
+          {chapterSpans.length > 0 && durationSeconds > 0 && (
+            <div className="pointer-events-none absolute inset-x-0 top-0 h-1">
+              {chapterSpans.map((span) => {
+                const left = (span.startMs / 1000 / durationSeconds) * 100
+                const width = ((span.endMs - span.startMs) / 1000 / durationSeconds) * 100
+                return (
+                  <div
+                    key={`${span.startMs}-${span.endMs}`}
+                    data-testid="chapter-marker"
+                    data-cut={span.cut ? 'true' : 'false'}
+                    title={`${span.label ?? (span.cut ? 'CM' : 'チャプター')} ${formatChaptersTime(
+                      span.startMs / 1000,
+                    )}–${formatChaptersTime(span.endMs / 1000)}`}
+                    className={`absolute inset-y-0 rounded-full ${span.cut ? 'bg-warning' : 'bg-primary/60'}`}
+                    style={{ left: `${left}%`, width: `${width}%` }}
+                  />
+                )
+              })}
+            </div>
+          )}
           <div className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 overflow-hidden rounded-full bg-muted">
             <div className="h-full bg-primary" style={{ width: `${playedFraction * 100}%` }} />
           </div>
@@ -404,6 +566,65 @@ export function RecordingPlayer({
           )}
         </div>
       </div>
+
+      {/* チャプター一覧と移動。区間が 1 つも無ければ「機能しないコントロールは
+          置かない」の規律でセクションごと出さない（CM 無しの録画がこれに当たる）。 */}
+      {chapterSpans.length > 0 && (
+        <div className="flex max-w-3xl flex-col gap-2" aria-label="チャプター">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" size="sm" variant="outline" onClick={() => jumpChapter('prev')}>
+              前のチャプター
+            </Button>
+            <Button type="button" size="sm" variant="outline" onClick={() => jumpChapter('next')}>
+              次のチャプター
+            </Button>
+            <label className="flex items-center gap-1 text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={skipEnabled}
+                onChange={(event) => {
+                  setSkipEnabled(event.target.checked)
+                  saveChapterSkip(event.target.checked)
+                }}
+              />
+              CM を飛ばす
+            </label>
+          </div>
+          <ul className="flex flex-col gap-1 text-muted-foreground">
+            {chapterSpans.map((span) => (
+              <li key={`${span.startMs}-${span.endMs}`}>
+                <button
+                  type="button"
+                  onClick={() => jumpTo(span.startMs / 1000)}
+                  className="text-left text-primary underline-offset-2 hover:underline"
+                >
+                  <span>
+                    {formatChaptersTime(span.startMs / 1000)}–{formatChaptersTime(span.endMs / 1000)}
+                  </span>{' '}
+                  {span.label ?? (span.cut ? 'CM' : 'チャプター')}
+                </button>
+                {span.cut && <span className="ml-2">切る</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {onSaveChapters && onResetChapters && chapterVersion !== undefined && (
+        <div className="max-w-3xl">
+          <RecordingChapterEditor
+            spans={chapterSpans}
+            version={chapterVersion}
+            detectionPending={chapterDetectionPending}
+            source={chapterSource}
+            currentSeconds={currentSeconds}
+            playAround={playAround}
+            onSave={onSaveChapters}
+            onReset={onResetChapters}
+            pending={chapterSavePending}
+          />
+        </div>
+      )}
 
       {hasOriginal && (
         <p className="text-muted-foreground">

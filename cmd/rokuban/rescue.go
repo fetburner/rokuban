@@ -84,6 +84,9 @@ func runRescue(ctx context.Context, pool *pgxpool.Pool, mediaDir string, registr
 	_, _ = fmt.Fprintf(out, "  program_snapshots:  %d\n", result.ProgramSnapshots)
 	_, _ = fmt.Fprintf(out, "  program_intents:    %d\n", result.ProgramIntents)
 	_, _ = fmt.Fprintf(out, "  program_overrides:  %d\n", result.ProgramOverrides)
+	// ユーザーが手で置いたチャプターは自動検出で作り直せない。目に触れる位置に出す。
+	_, _ = fmt.Fprintf(out, "  chapter_ownerships: %d\n", result.RecordingChapterOwnerships)
+	_, _ = fmt.Fprintf(out, "  chapter_spans:      %d\n", result.RecordingChapterSpans)
 	// 落とした行は黙って切り捨てない。永続資産は復元できているので rescue 自体は
 	// 成功だが、ダンプが壊れている事実は運用者に伝える。
 	if result.SkippedProgramSnapshots > 0 {

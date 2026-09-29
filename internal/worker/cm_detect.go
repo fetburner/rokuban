@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
+	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -26,8 +27,6 @@ import (
 )
 
 const (
-	cmFPSNumerator     int64 = 30000
-	cmFPSDenominator   int64 = 1001
 	cmDetectMaxTries         = 3
 	cmDetectStaleAfter       = time.Minute
 	cmDetectRowLimit   int32 = 1000
@@ -196,6 +195,18 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	q := sqlcgen.New(tx)
+	// **結果を書く前に recordings の行をロックする。** チャプターの引き取り
+	// （PUT /api/recordings/{id}/chapter-edits）も同じ行を先頭でロックしてから
+	// 「検出が終端に達しているか」を評価するので、両者は直列化される。ロックが
+	// 無いと READ COMMITTED で条件が文の開始時点のスナップショットから評価され、
+	// この commit が見えないまま空の自動層で引き取られる窓が開く
+	// （docs/storage/retention.md §7「復元と即時削除要求の競合」と同じ形）。
+	if _, err := q.LockRecording(ctx, item.ID); err != nil {
+		if errors.Is(err, pgx5.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("locking recording for CM result: %w", err)
+	}
 	desired, err := q.IsCMDetectionDesired(ctx, item.ID)
 	if err != nil {
 		return fmt.Errorf("rechecking CM detection policy: %w", err)
@@ -312,7 +323,7 @@ func cmDetectionTimeout(durationMs int64) time.Duration {
 // cmRangesFromCutAVS は obs_cut.avs の Trim() を本編区間とみなし、その補集合を CM として返す。
 // durationMs は原本の実尺。
 func cmRangesFromCutAVS(avs string, durationMs int64) ([]frameRange, error) {
-	total := millisToFrame(durationMs)
+	total := chapters.MsToFrame(durationMs)
 	if total <= 0 {
 		return nil, fmt.Errorf("video duration must be positive")
 	}
@@ -384,28 +395,14 @@ func mergeFrameRanges(ranges []frameRange) []frameRange {
 	return merged
 }
 
-func millisToFrame(ms int64) int64 {
-	if ms <= 0 {
-		return 0
-	}
-	return (ms*(cmFPSNumerator/1000) + (cmFPSDenominator / 2)) / cmFPSDenominator
-}
-
-func frameToMillis(frame int64) int64 {
-	if frame <= 0 {
-		return 0
-	}
-	return (frame*cmFPSDenominator + (cmFPSNumerator / 2000)) / (cmFPSNumerator / 1000)
-}
-
 func encodeInt8Multirange(ranges []frameRange, durationMs int64) string {
 	if len(ranges) == 0 {
 		return "{}"
 	}
 	parts := make([]string, 0, len(ranges))
 	for _, r := range ranges {
-		start := min(frameToMillis(r.start), durationMs)
-		end := min(frameToMillis(r.end), durationMs)
+		start := min(chapters.FrameToMs(r.start), durationMs)
+		end := min(chapters.FrameToMs(r.end), durationMs)
 		if end <= start {
 			continue
 		}

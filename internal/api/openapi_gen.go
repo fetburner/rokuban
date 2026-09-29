@@ -343,6 +343,24 @@ func (e RecordingStatus) Valid() bool {
 	}
 }
 
+// Defines values for RecordingChaptersSource.
+const (
+	Auto RecordingChaptersSource = "auto"
+	User RecordingChaptersSource = "user"
+)
+
+// Valid indicates whether the value is a known member of the RecordingChaptersSource enum.
+func (e RecordingChaptersSource) Valid() bool {
+	switch e {
+	case Auto:
+		return true
+	case User:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ReservationChannelType.
 const (
 	ReservationChannelTypeBS  ReservationChannelType = "BS"
@@ -820,6 +838,35 @@ type CapacityOverage struct {
 
 // CapacityOverageJammedTypes defines model for CapacityOverage.JammedTypes.
 type CapacityOverageJammedTypes string
+
+// ChapterEditsInput defines model for ChapterEditsInput.
+type ChapterEditsInput struct {
+	// Spans タイムライン全体（置き換え）。本編の区間は送らない --- 区間の隙間が
+	// 本編である。空配列は「CM もチャプターも無い」という有効な主張。
+	Spans []ChapterSpan `json:"spans"`
+
+	// Version GET が返した `version`。行ロックの後で現在の版と比べる。
+	Version string `json:"version"`
+}
+
+// ChapterSpan defines model for ChapterSpan.
+type ChapterSpan struct {
+	// Cut 真なら「本編ではない」区間として自動スキップの対象になり、カット版の
+	// encode が取り除く。偽でもラベルがあれば目盛りには出る（OP / ED を
+	// 切らずに印だけ付ける）。
+	Cut bool `json:"cut"`
+
+	// EndMs 半開区間の終端。区間は [startMs, endMs)。
+	EndMs int64 `json:"endMs"`
+
+	// Label チャプターのラベル（`OP` / `ED` / `CM` など）。省略はラベル無しで、
+	// そのときは `cut` が真でなければならない（本編は行を持たない）。
+	Label *string `json:"label,omitempty"`
+
+	// StartMs 原本の最初の映像フレームを 0 とする ms。最も近いフレーム境界へ丸めて
+	// ある（30000/1001 fps 固定）。
+	StartMs int64 `json:"startMs"`
+}
 
 // CircuitBreaker 発動中の大量削除サーキットブレーカー 1 件（`circuit_breakers` 行 = 発動中。
 // docs/recording.md §3.2）。
@@ -1526,6 +1573,30 @@ type RecordingSource string
 // RecordingStatus defines model for Recording.Status.
 type RecordingStatus string
 
+// RecordingChapters defines model for RecordingChapters.
+type RecordingChapters struct {
+	// DetectionPending 真なら自動層の検出が終端に達していない（所有前だけ。所有後は常に偽）。
+	// 空の `spans` は「CM 無し」ではなく「まだ分からない」。編集 UI を出さない。
+	DetectionPending bool `json:"detectionPending"`
+
+	// Source この録画が使っている層。`user` はユーザーが確認済み（所有している）で、
+	// 自動層は読まれない。`auto` は自動検出の結果。
+	Source RecordingChaptersSource `json:"source"`
+
+	// Spans 有効なタイムラインのうち、CM とラベルのある区間だけ。**本編は載らない**
+	// （区間の隙間が本編）。昇順で、重なりは無い。空配列は省略しない。
+	Spans []ChapterSpan `json:"spans"`
+
+	// Version 返した層の版（不透明な文字列）。PUT へそのまま返す。ユーザー層は所有の
+	// 開始時刻、自動層は検出の終端の有無と検出時刻から導出するので、再検出・
+	// 引き取り・自動に戻す のどれでも変わる。
+	Version string `json:"version"`
+}
+
+// RecordingChaptersSource この録画が使っている層。`user` はユーザーが確認済み（所有している）で、
+// 自動層は読まれない。`auto` は自動検出の結果。
+type RecordingChaptersSource string
+
 // Reservation defines model for Reservation.
 type Reservation struct {
 	// ChannelType 予約時点のスナップショット（program_snapshots 由来）。
@@ -1951,6 +2022,9 @@ type ListProgramsParams struct {
 // SearchProgramsJSONRequestBody defines body for SearchPrograms for application/json ContentType.
 type SearchProgramsJSONRequestBody = ProgramSearchRequest
 
+// PutRecordingChapterEditsJSONRequestBody defines body for PutRecordingChapterEdits for application/json ContentType.
+type PutRecordingChapterEditsJSONRequestBody = ChapterEditsInput
+
 // SetRecordingEncodePolicyJSONRequestBody defines body for SetRecordingEncodePolicy for application/json ContentType.
 type SetRecordingEncodePolicyJSONRequestBody = SetRecordingEncodePolicyInput
 
@@ -2010,6 +2084,15 @@ type ServerInterface interface {
 	// GetRecording Get a single recording by id
 	// (GET /api/recordings/{id})
 	GetRecording(w http.ResponseWriter, r *http.Request, id int64)
+	// DeleteRecordingChapterEdits Discard the user timeline and go back to the automatic layer
+	// (DELETE /api/recordings/{id}/chapter-edits)
+	DeleteRecordingChapterEdits(w http.ResponseWriter, r *http.Request, id int64)
+	// PutRecordingChapterEdits Replace the whole chapter timeline with a user-owned one
+	// (PUT /api/recordings/{id}/chapter-edits)
+	PutRecordingChapterEdits(w http.ResponseWriter, r *http.Request, id int64)
+	// GetRecordingChapters Get the effective chapter timeline of a recording
+	// (GET /api/recordings/{id}/chapters)
+	GetRecordingChapters(w http.ResponseWriter, r *http.Request, id int64)
 	// RetryRecordingCMDetection Retry CM detection for a recording
 	// (POST /api/recordings/{id}/cm-detection/retry)
 	RetryRecordingCMDetection(w http.ResponseWriter, r *http.Request, id int64)
@@ -2175,6 +2258,24 @@ func (_ Unimplemented) DeleteRecording(w http.ResponseWriter, r *http.Request, i
 // GetRecording Get a single recording by id
 // (GET /api/recordings/{id})
 func (_ Unimplemented) GetRecording(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// DeleteRecordingChapterEdits Discard the user timeline and go back to the automatic layer
+// (DELETE /api/recordings/{id}/chapter-edits)
+func (_ Unimplemented) DeleteRecordingChapterEdits(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// PutRecordingChapterEdits Replace the whole chapter timeline with a user-owned one
+// (PUT /api/recordings/{id}/chapter-edits)
+func (_ Unimplemented) PutRecordingChapterEdits(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetRecordingChapters Get the effective chapter timeline of a recording
+// (GET /api/recordings/{id}/chapters)
+func (_ Unimplemented) GetRecordingChapters(w http.ResponseWriter, r *http.Request, id int64) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2844,6 +2945,84 @@ func (siw *ServerInterfaceWrapper) GetRecording(w http.ResponseWriter, r *http.R
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetRecording(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteRecordingChapterEdits operation middleware
+func (siw *ServerInterfaceWrapper) DeleteRecordingChapterEdits(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteRecordingChapterEdits(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PutRecordingChapterEdits operation middleware
+func (siw *ServerInterfaceWrapper) PutRecordingChapterEdits(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutRecordingChapterEdits(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetRecordingChapters operation middleware
+func (siw *ServerInterfaceWrapper) GetRecordingChapters(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetRecordingChapters(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3809,6 +3988,15 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/api/recordings/{id}/cm-detection/retry", wrapper.RetryRecordingCMDetection)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/recordings/{id}/chapters", wrapper.GetRecordingChapters)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/recordings/{id}/chapter-edits", wrapper.DeleteRecordingChapterEdits)
+	})
+	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/api/recordings/{id}/chapter-edits", wrapper.PutRecordingChapterEdits)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/cm-logos", wrapper.ListCMLogos)
 	})
 	r.Group(func(r chi.Router) {
@@ -4189,6 +4377,131 @@ func (response GetRecording200JSONResponse) VisitGetRecordingResponse(w http.Res
 type GetRecording404JSONResponse ErrorResponse
 
 func (response GetRecording404JSONResponse) VisitGetRecordingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteRecordingChapterEditsRequestObject struct {
+	Id int64 `json:"id"`
+}
+
+type DeleteRecordingChapterEditsResponseObject interface {
+	VisitDeleteRecordingChapterEditsResponse(w http.ResponseWriter) error
+}
+
+type DeleteRecordingChapterEdits204Response struct {
+}
+
+func (response DeleteRecordingChapterEdits204Response) VisitDeleteRecordingChapterEditsResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type DeleteRecordingChapterEdits404JSONResponse ErrorResponse
+
+func (response DeleteRecordingChapterEdits404JSONResponse) VisitDeleteRecordingChapterEditsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutRecordingChapterEditsRequestObject struct {
+	Id   int64 `json:"id"`
+	Body *PutRecordingChapterEditsJSONRequestBody
+}
+
+type PutRecordingChapterEditsResponseObject interface {
+	VisitPutRecordingChapterEditsResponse(w http.ResponseWriter) error
+}
+
+type PutRecordingChapterEdits204Response struct {
+}
+
+func (response PutRecordingChapterEdits204Response) VisitPutRecordingChapterEditsResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type PutRecordingChapterEdits400JSONResponse ErrorResponse
+
+func (response PutRecordingChapterEdits400JSONResponse) VisitPutRecordingChapterEditsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutRecordingChapterEdits404JSONResponse ErrorResponse
+
+func (response PutRecordingChapterEdits404JSONResponse) VisitPutRecordingChapterEditsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutRecordingChapterEdits409JSONResponse ErrorResponse
+
+func (response PutRecordingChapterEdits409JSONResponse) VisitPutRecordingChapterEditsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetRecordingChaptersRequestObject struct {
+	Id int64 `json:"id"`
+}
+
+type GetRecordingChaptersResponseObject interface {
+	VisitGetRecordingChaptersResponse(w http.ResponseWriter) error
+}
+
+type GetRecordingChapters200JSONResponse RecordingChapters
+
+func (response GetRecordingChapters200JSONResponse) VisitGetRecordingChaptersResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetRecordingChapters404JSONResponse ErrorResponse
+
+func (response GetRecordingChapters404JSONResponse) VisitGetRecordingChaptersResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -5224,6 +5537,15 @@ type StrictServerInterface interface {
 	// GetRecording Get a single recording by id
 	// (GET /api/recordings/{id})
 	GetRecording(ctx context.Context, request GetRecordingRequestObject) (GetRecordingResponseObject, error)
+	// DeleteRecordingChapterEdits Discard the user timeline and go back to the automatic layer
+	// (DELETE /api/recordings/{id}/chapter-edits)
+	DeleteRecordingChapterEdits(ctx context.Context, request DeleteRecordingChapterEditsRequestObject) (DeleteRecordingChapterEditsResponseObject, error)
+	// PutRecordingChapterEdits Replace the whole chapter timeline with a user-owned one
+	// (PUT /api/recordings/{id}/chapter-edits)
+	PutRecordingChapterEdits(ctx context.Context, request PutRecordingChapterEditsRequestObject) (PutRecordingChapterEditsResponseObject, error)
+	// GetRecordingChapters Get the effective chapter timeline of a recording
+	// (GET /api/recordings/{id}/chapters)
+	GetRecordingChapters(ctx context.Context, request GetRecordingChaptersRequestObject) (GetRecordingChaptersResponseObject, error)
 	// RetryRecordingCMDetection Retry CM detection for a recording
 	// (POST /api/recordings/{id}/cm-detection/retry)
 	RetryRecordingCMDetection(ctx context.Context, request RetryRecordingCMDetectionRequestObject) (RetryRecordingCMDetectionResponseObject, error)
@@ -5674,6 +5996,91 @@ func (sh *strictHandler) GetRecording(w http.ResponseWriter, r *http.Request, id
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetRecordingResponseObject); ok {
 		if err := validResponse.VisitGetRecordingResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteRecordingChapterEdits operation middleware
+func (sh *strictHandler) DeleteRecordingChapterEdits(w http.ResponseWriter, r *http.Request, id int64) {
+	var request DeleteRecordingChapterEditsRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteRecordingChapterEdits(ctx, request.(DeleteRecordingChapterEditsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteRecordingChapterEdits")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteRecordingChapterEditsResponseObject); ok {
+		if err := validResponse.VisitDeleteRecordingChapterEditsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PutRecordingChapterEdits operation middleware
+func (sh *strictHandler) PutRecordingChapterEdits(w http.ResponseWriter, r *http.Request, id int64) {
+	var request PutRecordingChapterEditsRequestObject
+
+	request.Id = id
+
+	var body PutRecordingChapterEditsJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PutRecordingChapterEdits(ctx, request.(PutRecordingChapterEditsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PutRecordingChapterEdits")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PutRecordingChapterEditsResponseObject); ok {
+		if err := validResponse.VisitPutRecordingChapterEditsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetRecordingChapters operation middleware
+func (sh *strictHandler) GetRecordingChapters(w http.ResponseWriter, r *http.Request, id int64) {
+	var request GetRecordingChaptersRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetRecordingChapters(ctx, request.(GetRecordingChaptersRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetRecordingChapters")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetRecordingChaptersResponseObject); ok {
+		if err := validResponse.VisitGetRecordingChaptersResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
