@@ -16,23 +16,30 @@ import (
 // ErrEscapesMediaDir は相対パスがメディアディレクトリの外を指す場合のエラー。
 var ErrEscapesMediaDir = errors.New("path escapes the media directory")
 
+// ErrReservedMediaPath は rel_path がアプリ内部の予約領域を指す場合のエラー。
+var ErrReservedMediaPath = errors.New("path uses a reserved media namespace")
+
 // IngestTempFilePrefix は ingest が canonical file と同じディレクトリに作る、record
 // 固有一時ファイルの予約接頭辞。孤児回収はこのファイルを通常ファイルとして拾い、
 // rescue の catalog 無し走査だけが原本へ昇格させない。
 const IngestTempFilePrefix = ".rokuban-ingest-"
 
-// MediaRelPathLockFilePrefix は canonical file と同じディレクトリに作る、rel_path
-// 固有のファイル排他用 lock file の予約接頭辞。lock file はデータではないため、
-// メディア走査と catalog rescue の対象にしない。
+// MediaRelPathLockDirName は media root 内の rel_path lock 専用ディレクトリ。
+// canonical media と同じディレクトリ entry を共有せず、orphan walker は配下全体を飛ばす。
+const MediaRelPathLockDirName = ".rokuban-locks"
+
+// MediaRelPathLockFilePrefix は rel_path 固有のファイル排他用 lock file の予約接頭辞。
+// 新しい lock file は MediaRelPathLockDirName に置く。旧バージョンの canonical 隣接
+// lock file を contentPath として採用しないため、接頭辞は予約し続ける。
 const MediaRelPathLockFilePrefix = ".rokuban-rel-path-lock-"
 
 // EncodeTempFilePrefix は encode が canonical file と同じディレクトリに作る、
 // 公開前の一時ファイル（scratch からストリームコピーした staged 出力）の予約接頭辞。
 // catalog 無し rescue では原本へ昇格させない（拡張子を付けないので rescue の対象に
-// ならない）。プロセス死で残った temp は、walkMediaFiles が rel_path lock file と
-// catalog ディレクトリしか飛ばさないので孤児候補になり、defaultOrphanMTimeGrace
-// （7 日）の後に deleteOrphanFile が canonical と同じ手順で消す（rel_path lock file が
-// 1 個残る）。
+// ならない）。プロセス死で残った temp は、walkMediaFiles が lock directory、旧形式の
+// rel_path lock file、catalog ディレクトリを除いて走査するため孤児候補になり、
+// defaultOrphanMTimeGrace
+// （7 日）の後に deleteOrphanFile が canonical と同じ手順で消す。
 const EncodeTempFilePrefix = ".rokuban-encode-"
 
 // IsIngestTempFile はファイル名が ingest の record 固有一時ファイルかを返す。
@@ -59,7 +66,11 @@ func Resolve(mediaDir, relPath string) (string, error) {
 	}
 
 	base := filepath.Clean(mediaDir)
-	target := filepath.Clean(filepath.Join(base, relPath))
+	cleanRelPath := filepath.Clean(relPath)
+	if cleanRelPath == MediaRelPathLockDirName || strings.HasPrefix(cleanRelPath, MediaRelPathLockDirName+string(filepath.Separator)) {
+		return "", fmt.Errorf("%w: %q", ErrReservedMediaPath, relPath)
+	}
+	target := filepath.Clean(filepath.Join(base, cleanRelPath))
 
 	// mediaDir 自身を指すのも不可（ファイルでなくディレクトリなので）。
 	// 接尾にセパレータを付けて比較することで、

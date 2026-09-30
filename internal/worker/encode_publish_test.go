@@ -426,7 +426,7 @@ func TestEncodeWorker_PublishHoldsRelPathFileLockThroughCommit(t *testing.T) {
 	orig := beforeEncodeCommit
 	t.Cleanup(func() { beforeEncodeCommit = orig })
 	beforeEncodeCommit = func(string) error {
-		l, ok, err := tryLockMediaRelPathFile(finalPath, encRel)
+		l, ok, err := tryLockMediaRelPathFile(mediaDir, encRel)
 		if err != nil {
 			return err
 		}
@@ -464,7 +464,7 @@ func TestEncodeWorker_PublishCancelledWhileWaitingForLockRemovesTemp(t *testing.
 	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	held, ok, err := tryLockMediaRelPathFile(finalPath, encRel)
+	held, ok, err := tryLockMediaRelPathFile(mediaDir, encRel)
 	if err != nil || !ok {
 		t.Fatalf("holding the lock: ok=%v err=%v", ok, err)
 	}

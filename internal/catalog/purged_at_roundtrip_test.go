@@ -14,7 +14,7 @@ import (
 //
 // purged_at を運ばないと、rescue で復元された tombstone は purged_at IS NULL
 // に戻ってしまい、完全削除が完了して二度とファイルが戻らない録画がごみ箱
-// 一覧（ListTrashRecordings は purged_at IS NULL を要求する）に再び現れる。
+// 一覧（GET /api/recordings?trash=true は purged_at IS NULL を要求する）に再び現れる。
 func TestExportRescue_PreservesPurgedAt(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()

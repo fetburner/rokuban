@@ -29,6 +29,18 @@ type CmLogo struct {
 	LearnedFrom *int64
 }
 
+type CmLogoArea struct {
+	NetworkID   int32
+	ServiceID   int32
+	X           int32
+	Y           int32
+	W           int32
+	H           int32
+	CodedWidth  int32
+	CodedHeight int32
+	UpdatedAt   time.Time
+}
+
 type DropPosition struct {
 	MediaAssetID int64
 	ByteOffset   int64

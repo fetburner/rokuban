@@ -28,12 +28,12 @@ const SIDEBAR_LABELS = [
   '検索',
   'ルール',
   'シリーズ棚',
-  'CM ロゴ',
+  'CM 検出のロゴ',
 ]
 /** モバイルのボトムタブに常時出る項目（「その他」を除く）。 */
 const MOBILE_PRIMARY_LABELS = ['ホーム', '番組', '録画']
 /** モバイルで「その他」ポップオーバーに畳まれる項目。 */
-const MOBILE_MORE_LABELS = ['予約', 'ライブ', '検索', 'ルール', 'シリーズ棚', 'CM ロゴ']
+const MOBILE_MORE_LABELS = ['予約', 'ライブ', '検索', 'ルール', 'シリーズ棚', 'CM 検出のロゴ']
 const STORAGE_KEY = 'rokuban:sidebar:collapsed'
 
 /**
@@ -449,7 +449,7 @@ describe('ナビの出し分け（live.enabled）', () => {
     const labels = within(sidebarNav as HTMLElement)
       .getAllByRole('link')
       .map((el) => el.textContent)
-    expect(labels).toEqual(['ホーム', '番組', '録画', '予約', '検索', 'ルール', 'シリーズ棚', 'CM ロゴ'])
+    expect(labels).toEqual(['ホーム', '番組', '録画', '予約', '検索', 'ルール', 'シリーズ棚', 'CM 検出のロゴ'])
   })
 
   it('live.enabled が false でも「その他」の中身からライブだけが消える', async () => {
@@ -462,7 +462,7 @@ describe('ナビの出し分け（live.enabled）', () => {
     const labels = within(menu)
       .getAllByRole('link')
       .map((el) => el.textContent)
-    expect(labels).toEqual(['予約', '検索', 'ルール', 'シリーズ棚', 'CM ロゴ'])
+    expect(labels).toEqual(['予約', '検索', 'ルール', 'シリーズ棚', 'CM 検出のロゴ'])
   })
 
   it('live.enabled が false でもボトムタブは 4 個（常時 3 個 + その他）のまま', async () => {

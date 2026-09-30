@@ -1687,6 +1687,16 @@ export const DeleteRecordingChapterEditsResponse = zod.void()
 /**
  * @summary List learned CM logos and station detection failures
  */
+export const listCMLogosResponseLogoAreaXMin = 0;
+
+export const listCMLogosResponseLogoAreaYMin = 0;
+
+
+
+
+
+
+
 export const ListCMLogosResponseItem = zod.object({
   "networkId": zod.int(),
   "serviceId": zod.int(),
@@ -1695,7 +1705,18 @@ export const ListCMLogosResponseItem = zod.object({
   "recordingCount": zod.int(),
   "failedCount": zod.int(),
   "learnedAt": zod.iso.datetime({"offset":true}).optional(),
-  "previewPng": zod.string().optional()
+  "previewPng": zod.string().optional(),
+  "lastError": zod.string().optional().describe('The most recent failed CM detection reason, if any.'),
+  "frameRecordingId": zod.int().describe('Recording with an active original for frame selection, or 0.'),
+  "logoArea": zod.object({
+  "x": zod.int().min(listCMLogosResponseLogoAreaXMin),
+  "y": zod.int().min(listCMLogosResponseLogoAreaYMin),
+  "w": zod.int().min(1),
+  "h": zod.int().min(1),
+  "codedWidth": zod.int().min(1),
+  "codedHeight": zod.int().min(1),
+  "updatedAt": zod.iso.datetime({"offset":true})
+}).optional()
 })
 export const ListCMLogosResponse = zod.array(ListCMLogosResponseItem)
 
@@ -1709,6 +1730,47 @@ export const DeleteCMLogoParams = zod.object({
 })
 
 export const DeleteCMLogoResponse = zod.void()
+
+
+/**
+ * @summary Teach the station's CM logo area
+ */
+export const PutCMLogoAreaParams = zod.object({
+  "networkId": zod.int(),
+  "serviceId": zod.int()
+})
+
+export const putCMLogoAreaBodyXMin = 0;
+
+export const putCMLogoAreaBodyYMin = 0;
+
+
+
+
+
+
+
+export const PutCMLogoAreaBody = zod.object({
+  "x": zod.int().min(putCMLogoAreaBodyXMin),
+  "y": zod.int().min(putCMLogoAreaBodyYMin),
+  "w": zod.int().min(1),
+  "h": zod.int().min(1),
+  "codedWidth": zod.int().min(1),
+  "codedHeight": zod.int().min(1)
+})
+
+export const PutCMLogoAreaResponse = zod.void()
+
+
+/**
+ * @summary Return a station's logo area to automatic detection
+ */
+export const DeleteCMLogoAreaParams = zod.object({
+  "networkId": zod.int(),
+  "serviceId": zod.int()
+})
+
+export const DeleteCMLogoAreaResponse = zod.void()
 
 
 /**

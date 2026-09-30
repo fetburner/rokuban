@@ -64,7 +64,8 @@ preview サーバー、`dist/`、Playwright のブラウザ本体は必要ない
 （`validateFixturesOrExit` の呼び出しの有無）から導出する。手書きだと、並行して
 増えたスクリプトの契約検証が一覧への追加漏れで静かに検査対象から外れる。各スクリプトは
 このモードで全フィクスチャを検証してから `launchBrowser` や bundle 検証へ進まない。
-実ブラウザを使う判定は従来どおりこのコマンドの対象外で、ローカルの個別 E2E で行う。
+実ブラウザを使う判定はこのコマンドの対象外である。
+CI では browser-e2e ジョブが 3 本だけ回し、残りはローカルの個別 E2E で行う（下記 §CI で回す 3 本とそれ以外）。
 子プロセスは順番にすべて実行するので、先のスクリプトが失敗しても後続のフィクスチャ検証を
 省略しない。
 
@@ -864,7 +865,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:cls
 
 - ① `/search` の条件フォームに長い局名 + 補助ラベルのチップを流し込んでも
   `document.documentElement` が横スクロールしない。**`Chip` から `max-w-full`
-  を外すと落ちる**（実測: 有り 320 / 320、無し 448 / 320）
+  を外すと落ちる**（実測: 有り 320 / 320、無し 462 / 320）
 - ② 解き方が「チップの中で折り返す」であること（切り落としでも隠しでもない）。
   チップの箱がビューポートに収まり、箱の中で内容があふれておらず、実際に 2 行に
   なっている。`max-w-full` を外すと①と一緒に落ちる
@@ -981,6 +982,27 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:seek-tiles
 ```
 
+### CM 検出のロゴ位置（`cm-logo-area.mjs`）
+
+CM 検出のロゴ画面で、局を開いてタイルからコマを選び、拡大表示のまま描いた枠が
+記録上の解像度の座標で保存されることを実ブラウザで見る。表示枠の寸法とポインタ座標は
+jsdom では測れないため、この判定を単体テストで置き換えない。
+
+API はブラウザ側で差し替える。1x1 PNG と `X-Coded-Width: 1920`、
+`X-Coded-Height: 1080` を返すので、画像の画素数と記録上の座標を混同しない。
+
+- ① 局の行を開いてタイルを押すと、原寸コマが表示される
+- ② 初期の右上拡大表示で 160×120 CSS px の枠を描くと、1920×1080 の座標へ変換されて PUT される
+- ③ 行に直近の CM 検出失敗理由が表示される
+
+判定側は表示枠を実測し、右上合わせと 2.5 倍の計算をリテラルで行う。
+実装の純関数を import して比較すると、同じ実装を二度呼ぶだけになる。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:cm-logo-area
+```
+
 ### チャプターの目盛りと自動スキップ（`chapters.mjs`）
 
 録画の詳細で、CM の目盛りが帯の正しい位置に出ること・通常の再生で `cut` 区間の先頭に
@@ -1073,15 +1095,32 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:recordings-rule-filter
 ```
 
-## CI では回さない
+## CI で回す 3 本とそれ以外
 
-実サーバーと実 mirakc のデータに依存するため、CI には載せない。**ローカルでの受け入れ確認**の
-位置づけ（[docs/frontend.md](../../docs/frontend.md) の「受け入れは実機で行う」に実行可能な形を
-与えるもの）。
+CI の `browser-e2e` ジョブは、実バイナリが `go:embed` した `dist/` を配るサーバーへ Chromium を向ける。
+回すのは `cls` / `chip-overflow` / `recordings-selection` の 3 本だけである。3 本は 1 本が落ちても残りを走らせる。
+選定基準は次の 3 つを全部満たすことである。
 
-`design.mjs` だけは実データに依存しない（API を丸ごと差し替える）ので技術的には
-CI に載せられるが、いまは他と同じくローカル実行のままにしてある。実ブラウザの
-取得と 40 枚のショットぶんの時間を毎 PR に払う価値があるかを、まだ測っていない。
+- jsdom が原理的に測れない（レイアウトシフト・幅の溢れ・スクロール余白）
+- `/api/**` を Playwright 内でスタブし、mirakc・チューナー・実データに依存しない
+- ffmpeg・webkit・DB への直接書き込みを要らず、Chromium だけで軽く終わる
+
+それ以外の 28 ファイル（判定スクリプトは 26 本。`lib.mjs` と `validate-fixtures.mjs` は共有部品）は
+**ローカルでの受け入れ確認**の位置づけである。
+[docs/frontend.md](../../docs/frontend.md) の「受け入れは実機で行う」に実行可能な形を与えるものだ。
+回さない理由は 3 類型ある。
+
+- 実メディアが要る: `chapters` / `seek-tiles` / `subtitles` / `chase` / `live` / `live-audio` は
+  ffmpeg でフィクスチャを作る。`live` と `live-audio` は webkit も要る
+- 実 DB の状態が要る: `checks`（既定の `pnpm e2e`）は API をスタブせず実 EPG の番組行の描画を待つ。
+  `live` は `epg_services` に実サービスの行が要り、`shelves-split` は `E2E_DATABASE_URL` の DB を TRUNCATE する
+- 残りの画面別判定（番組表・予約・検索など）は API スタブで技術的には載せられる。ただし
+  全体の所要時間を測っておらず、毎 PR に払う価値をまだ判断していない。`design.mjs` は
+  40 枚のショットを撮るぶん重い
+
+判定スクリプト全 29 本を回す定期ジョブは作らない。回す主体と失敗の受け手が決まっておらず、誰も見ない
+赤い定期ジョブは PR ごとに回す 3 本より信号として弱いためである。対象を増やすときは
+`.github/workflows/ci.yml` のコメントとこの節の本数・類型を同じ PR で直す。
 実ブラウザ不要の `pnpm check:colors` は lint job に入っている。
 
 ## 判定を足すときの規律

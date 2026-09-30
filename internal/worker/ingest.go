@@ -1084,7 +1084,7 @@ func (w *IngestWorker) determineRelPath(ctx context.Context, args jobs.IngestJob
 // commit は原本の公開プロトコルを 1 回実行する。
 //
 // DB transaction 内で media_assets の INSERT を先に行うことで、rel_path の unique
-// index が同じ宛先への競合を予約する。さらに canonical と同じディレクトリの
+// index が同じ宛先への競合を予約する。さらに media root の専用 lock directory にある
 // rel_path 固有 filesystem lock を DB transaction より先に取得する。これを先に
 // 持つことで、DB セッションが失われても、そのセッション lock の解放後に古い
 // goroutine が rename / fsync を続けて orphan cleanup と競合することがない。
@@ -1097,7 +1097,7 @@ func (w *IngestWorker) determineRelPath(ctx context.Context, args jobs.IngestJob
 // aging 回収される。一方 rename 前の失敗では、呼び出し側が中身の不一致や record の
 // cancel / fail と確定した場合だけ tempPath を消し、それ以外は次の試行へ残す。
 func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, tempPath, fullPath string, size int64, counter *tsstat.Counter) error {
-	fileLock, err := lockMediaRelPathFile(ctx, fullPath, relPath)
+	fileLock, err := lockMediaRelPathFile(ctx, w.MediaDir, relPath)
 	if err != nil {
 		return fmt.Errorf("locking canonical file protocol: %w", err)
 	}

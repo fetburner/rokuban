@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -207,6 +208,174 @@ func TestCMLogoAPIListsFailuresAndForgetsLogo(t *testing.T) {
 	if _, err := q.GetCMLogo(context.Background(), sqlcgen.GetCMLogoParams{NetworkID: 32678, ServiceID: 5168}); err == nil {
 		t.Fatal("logo still exists after DELETE")
 	}
+}
+
+// 枠を教えると、その局の学習済みロゴが消え、失敗していた録画が再検出の候補に戻る。
+// 一覧は教えた枠と直近の失敗理由を返す（録画の解像度が枠と違うときの警告はこの
+// 失敗理由に出る --- 文言は worker 側のテストが固定する）。
+func TestCMLogoAreaAPIForgetsLogoAndRequeuesFailures(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	defer srv.Close()
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	id := seedRecording(t, pool, "枠を教える", time.Now().Truncate(time.Second), "finished", 984)
+	if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+		RecordingID: id, Kind: db.AssetKindOriginal,
+		RelPath: fmt.Sprintf("test/%d.ts", id), SizeBytes: 1000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+		VALUES ($1, 'always', '{}', true)`, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
+		NetworkID: 32678, ServiceID: 5168, Lgd: []byte("learned outside the area"), LearnedFrom: &id,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.MarkCMDetectionRunning(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	message := "CM detection for recording 1: logoframe: no logo found"
+	if err := q.MarkCMDetectionFailure(ctx, sqlcgen.MarkCMDetectionFailureParams{
+		RecordingID: id, State: "failed", Error: &message,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 失敗した試行は、枠を教える前は候補ではない（前回の枠で既に試している）。
+	desired, err := q.IsCMDetectionDesired(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if desired {
+		t.Fatal("the recording is already a candidate before the area is taught")
+	}
+
+	// 枠の外を通す保存は 400。
+	for _, body := range []string{
+		`{"x":1300,"y":24,"w":240,"h":96,"codedWidth":1440,"codedHeight":1080}`,
+		`{"x":0,"y":0,"w":0,"h":96,"codedWidth":1440,"codedHeight":1080}`,
+	} {
+		req, err := http.NewRequest(http.MethodPut, srv.URL+"/api/cm-logos/32678/5168/area",
+			strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("PUT %s: status = %d, want 400", body, resp.StatusCode)
+		}
+	}
+
+	req, err := http.NewRequest(http.MethodPut, srv.URL+"/api/cm-logos/32678/5168/area",
+		strings.NewReader(`{"x":1180,"y":24,"w":240,"h":96,"codedWidth":1440,"codedHeight":1080}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT status = %d, want 204", resp.StatusCode)
+	}
+	if _, err := q.GetCMLogo(ctx, sqlcgen.GetCMLogoParams{NetworkID: 32678, ServiceID: 5168}); err == nil {
+		t.Error("the learned logo still exists after the area was saved")
+	}
+	area, err := q.GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{NetworkID: 32678, ServiceID: 5168})
+	if err != nil {
+		t.Fatalf("taught area: %v", err)
+	}
+	if area.X != 1180 || area.Y != 24 || area.W != 240 || area.H != 96 ||
+		area.CodedWidth != 1440 || area.CodedHeight != 1080 {
+		t.Errorf("stored area = %#v, want 1180,24 240x96 at 1440x1080", area)
+	}
+	desired, err = q.IsCMDetectionDesired(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !desired {
+		t.Error("the failed recording is not a candidate after the area was taught")
+	}
+	missing, err := q.ListMissingCMDetections(ctx, sqlcgen.ListMissingCMDetectionsParams{AfterRecordingID: 0, RowLimit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(missing) != 1 || missing[0] != id {
+		t.Errorf("missing CM detections = %v, want [%d]", missing, id)
+	}
+
+	// 一覧は枠と直近の失敗理由と、コマを取り寄せる録画を返す。
+	logos := fetchCMLogos(t, srv.URL)
+	if len(logos) != 1 {
+		t.Fatalf("logo list rows = %d, want 1", len(logos))
+	}
+	logo := logos[0]
+	if logo.LogoArea == nil || logo.LogoArea.X != 1180 || logo.LogoArea.CodedWidth != 1440 {
+		t.Errorf("logoArea = %#v, want the taught 1180 / 1440x1080", logo.LogoArea)
+	}
+	if logo.LastError == nil || *logo.LastError != message {
+		t.Errorf("lastError = %v, want %q (this is the list's warning)", logo.LastError, message)
+	}
+	if logo.FrameRecordingId != id {
+		t.Errorf("frameRecordingId = %d, want the recording with an original (%d)", logo.FrameRecordingId, id)
+	}
+
+	// DELETE で自動に戻る。枠が消え、コマを取り寄せる録画も消える（原本が無い局）。
+	req, err = http.NewRequest(http.MethodDelete, srv.URL+"/api/cm-logos/32678/5168/area", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE status = %d, want 204", resp.StatusCode)
+	}
+	if _, err := q.GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{NetworkID: 32678, ServiceID: 5168}); err == nil {
+		t.Error("the taught area still exists after DELETE")
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM media_assets WHERE recording_id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	logos = fetchCMLogos(t, srv.URL)
+	if len(logos) != 1 {
+		t.Fatalf("logo list rows = %d, want 1", len(logos))
+	}
+	if logos[0].LogoArea != nil {
+		t.Errorf("logoArea = %#v, want none after DELETE", logos[0].LogoArea)
+	}
+	if logos[0].FrameRecordingId != 0 {
+		t.Errorf("frameRecordingId = %d, want 0 when no original is left", logos[0].FrameRecordingId)
+	}
+}
+
+func fetchCMLogos(t *testing.T, baseURL string) []CMLogoState {
+	t.Helper()
+	resp, err := http.Get(baseURL + "/api/cm-logos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("logo list status = %d, want 200", resp.StatusCode)
+	}
+	var logos []CMLogoState
+	if err := json.NewDecoder(resp.Body).Decode(&logos); err != nil {
+		t.Fatal(err)
+	}
+	return logos
 }
 
 func TestCMDetectionRejectedWhenDeploymentDisablesIt(t *testing.T) {

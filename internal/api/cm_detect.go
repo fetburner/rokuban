@@ -80,21 +80,100 @@ func (h *Server) ListCMLogos(ctx context.Context, _ ListCMLogosRequestObject) (L
 			state = CMLogoStateStateFailed
 		}
 		item := CMLogoState{
-			NetworkId:      int(row.NetworkID),
-			ServiceId:      int(row.ServiceID),
-			ServiceName:    row.ServiceName,
-			State:          state,
-			RecordingCount: row.RecordingCount,
-			FailedCount:    row.FailedCount,
-			LearnedAt:      utcTimePtr(row.LearnedAt),
+			NetworkId:        int(row.NetworkID),
+			ServiceId:        int(row.ServiceID),
+			ServiceName:      row.ServiceName,
+			State:            state,
+			RecordingCount:   row.RecordingCount,
+			FailedCount:      row.FailedCount,
+			FrameRecordingId: row.FrameRecordingID,
+			LearnedAt:        utcTimePtr(row.LearnedAt),
 		}
 		if row.PreviewPng != nil {
 			preview := row.PreviewPng
 			item.PreviewPng = &preview
 		}
+		if row.LastError != "" {
+			message := row.LastError
+			item.LastError = &message
+		}
+		// 枠は x が非 NULL のときだけある（主キーが同じなので a の列は揃って出る）。
+		if row.X != nil {
+			item.LogoArea = &CMLogoArea{
+				X:           int(*row.X),
+				Y:           int(*row.Y),
+				W:           int(*row.W),
+				H:           int(*row.H),
+				CodedWidth:  int(*row.CodedWidth),
+				CodedHeight: int(*row.CodedHeight),
+				UpdatedAt:   *row.AreaUpdatedAt,
+			}
+		}
 		items = append(items, item)
 	}
 	return ListCMLogos200JSONResponse(items), nil
+}
+
+// PutCMLogoArea teaches the logo area for a station and forgets its learned logo.
+//
+// **枠を保存する同じ tx で `cm_logos` を消す。** 学習済みロゴは教えた枠の外で
+// 学習されたものなので、残すと次の検出が枠ではなくその古いロゴを使う。
+// 消せば次の検出が枠の中で学習し直す（「覚えたロゴを捨てる」と同じ経路）。
+func (h *Server) PutCMLogoArea(ctx context.Context, req PutCMLogoAreaRequestObject) (PutCMLogoAreaResponseObject, error) {
+	if req.Body == nil {
+		return PutCMLogoArea400JSONResponse{Error: "logo area is required"}, nil
+	}
+	body := *req.Body
+	// 枠は記録上の画素の矩形。表現できないものは DB の CHECK でも止まるが、
+	// 400 で理由を返せるようにここでも判定する（不変条件 10）。
+	if body.X < 0 || body.Y < 0 || body.W <= 0 || body.H <= 0 ||
+		body.CodedWidth <= 0 || body.CodedHeight <= 0 ||
+		body.X+body.W > body.CodedWidth || body.Y+body.H > body.CodedHeight {
+		return PutCMLogoArea400JSONResponse{Error: "logo area must be a rectangle inside the recorded frame"}, nil
+	}
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("beginning logo area save for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := sqlcgen.New(tx)
+	// 検出ジョブの学習結果の保存と直列化する（worker の persistNewStationLogo と同じ鍵）。
+	if err := q.LockCMStation(ctx, sqlcgen.LockCMStationParams{NetworkID: int32(req.NetworkId), ServiceID: int32(req.ServiceId)}); err != nil {
+		return nil, fmt.Errorf("locking logo state for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
+	}
+	if err := q.UpsertCMLogoArea(ctx, sqlcgen.UpsertCMLogoAreaParams{
+		NetworkID:   int32(req.NetworkId),
+		ServiceID:   int32(req.ServiceId),
+		X:           int32(body.X),
+		Y:           int32(body.Y),
+		W:           int32(body.W),
+		H:           int32(body.H),
+		CodedWidth:  int32(body.CodedWidth),
+		CodedHeight: int32(body.CodedHeight),
+	}); err != nil {
+		return nil, fmt.Errorf("saving logo area for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
+	}
+	if _, err := q.DeleteCMLogo(ctx, sqlcgen.DeleteCMLogoParams{
+		NetworkID: int32(req.NetworkId),
+		ServiceID: int32(req.ServiceId),
+	}); err != nil {
+		return nil, fmt.Errorf("forgetting CM logo for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("committing logo area for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
+	}
+	return PutCMLogoArea204Response{}, nil
+}
+
+// DeleteCMLogoArea returns a station to the automatic logo-area search.
+func (h *Server) DeleteCMLogoArea(ctx context.Context, req DeleteCMLogoAreaRequestObject) (DeleteCMLogoAreaResponseObject, error) {
+	if _, err := sqlcgen.New(h.pool).DeleteCMLogoArea(ctx, sqlcgen.DeleteCMLogoAreaParams{
+		NetworkID: int32(req.NetworkId),
+		ServiceID: int32(req.ServiceId),
+	}); err != nil {
+		return nil, fmt.Errorf("deleting logo area for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
+	}
+	return DeleteCMLogoArea204Response{}, nil
 }
 
 // DeleteCMLogo forgets a station logo; the next eligible detection will learn it again.
