@@ -1,8 +1,8 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { EncodeProfileSummary, LiveProfileSummary, Recording, Rule } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
@@ -1123,7 +1123,7 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
     fireEvent.canPlay(video)
     video.currentTime = 12
     fireEvent.timeUpdate(video)
-    expect(localStorage.getItem('rokuban:playback:3:vod-h264')).toBe('12')
+    expect(localStorage.getItem('rokuban:playback:3:original')).toBe('12')
     expect(localStorage.getItem('rokuban:playback:3:sd')).toBeNull()
   })
 
@@ -1225,6 +1225,11 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
 })
 
 describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
+  // アサーションが落ちても保存位置を次のテストへ持ち越さない
+  afterEach(() => {
+    localStorage.clear()
+  })
+
   const LIVE_PROFILES: LiveProfileSummary[] = [
     { name: 'hd', height: 720 },
     { name: 'sd', height: 480 },
@@ -1290,6 +1295,41 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
     const keys = Object.keys(localStorage).filter((k) => k.startsWith('rokuban:playback:3:'))
     expect(keys).toEqual(['rokuban:playback:3:original'])
     expect(localStorage.getItem('rokuban:playback:3:original')).toBe('40')
+  })
+
+  /**
+   * 受け入れ「追っかけ / 原本 VOD の切替で録画 ID と再生位置の対応が壊れない」。
+   * encode profile が無い録画でも、録画中に追っかけで保存した位置を録画終了後の
+   * 原本 VOD が読む。キーの文字列ではなく、保存と復元が噛み合うことを見る。
+   */
+  it('encode profile の構成に依らず、追っかけで保存した位置を原本 VOD が復元する', async () => {
+    localStorage.clear()
+    const now = Date.now()
+    const recording = sampleRecording({
+      startAt: new Date(now - 60 * 60_000).toISOString(),
+      startedAt: new Date(now - 2 * 60_000).toISOString(),
+      durationMs: 2 * 60 * 60_000,
+      sizeBytes: 1_000_000,
+      encodedAssets: [],
+      encodeProfiles: ['cut', 'h264'],
+    })
+    createFakeServer({ recording: { ...recording, status: 'recording' }, liveProfiles: LIVE_PROFILES })
+    renderAt('/recordings/3#chase')
+    await screen.findByRole('region', { name: '追っかけ再生' })
+    await waitFor(() => expect(document.querySelector('video')).toBeInTheDocument())
+    const chaseVideo = document.querySelector('video')!
+    Object.defineProperty(chaseVideo, 'currentTime', { value: 42, writable: true, configurable: true })
+    fireEvent.timeUpdate(chaseVideo)
+    cleanup()
+
+    createFakeServer({ recording: { ...recording, status: 'finished' }, liveProfiles: LIVE_PROFILES })
+    renderAt('/recordings/3')
+    await screen.findByRole('region', { name: '原本 TS をブラウザ再生' })
+    await waitFor(() => expect(document.querySelector('video')).toBeInTheDocument())
+    const vodVideo = document.querySelector('video')!
+    Object.defineProperty(vodVideo, 'currentTime', { value: 0, writable: true, configurable: true })
+    fireEvent.loadedMetadata(vodVideo)
+    expect(vodVideo.currentTime).toBe(42)
   })
 
   it('live profile が無い場合は HLS player を作らず、VLC リンクを残す', async () => {

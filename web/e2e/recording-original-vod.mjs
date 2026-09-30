@@ -299,7 +299,7 @@ await page.waitForFunction(() => {
   const element = document.querySelector('video')
   return element !== null && Math.abs(element.currentTime - 7.25) < 1.25
 }, undefined, { timeout: 10000 }).catch(() => ng.push('② currentTime を指定位置へ seek できない'))
-const playbackKey = `rokuban:playback:${RECORDING_ID}:${PLAYBACK_PROFILE}`
+const playbackKey = `rokuban:playback:${RECORDING_ID}:original`
 await video.evaluate((element) => element.pause())
 await page.waitForFunction((key) => {
   const saved = Number(localStorage.getItem(key))

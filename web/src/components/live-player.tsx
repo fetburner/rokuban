@@ -180,7 +180,7 @@ type LivePlayerProps = {
    * 再生する。
    */
   startOffsetSeconds?: number
-  /** 追っかけとVODで共有する再生位置のキー。liveの配信プロファイルとは別に持つ。 */
+  /** 追っかけと原本 VOD で共有する再生位置の時間軸名（保存キー）。live の配信プロファイルとは別に持つ。 */
   playbackProfile?: string
   className?: string
   /**
@@ -1067,8 +1067,8 @@ export function LivePlayer({
     }
   }, [isChase, isOriginalVOD, isRecordingPlayback, recordingId, site, networkId, serviceId, chaseStartOffset])
 
-  // 再生位置のキーは **VOD 側のプロファイル名だけ**（`playbackProfile`）。
-  // `profile`（追っかけの画質）を落とさない --- 画質ごとに位置が分かれると、
+  // 再生位置のキーは呼び出し側が渡す時間軸名（`playbackProfile`。録画詳細は ORIGINAL_AXIS）。
+  // `profile`（追っかけの画質）をキーに含めない --- 画質ごとに位置が分かれると、
   // 画質を切り替えただけで「続きから」が別の場所になる（issue #874）。
   return (
     <div className={cn('flex w-full max-w-3xl flex-col', className)}>

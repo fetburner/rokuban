@@ -27,7 +27,7 @@ import { Button } from '@/components/ui/button'
 import { formatBytes, formatDateTime, formatTime } from '@/lib/format'
 import { ingestDisplay, type IngestDisplay } from '@/lib/ingest'
 import { useCMDetectEnabled, useLiveEnabled } from '@/lib/capabilities'
-import { recordingFileURL } from '@/lib/playback-position'
+import { ORIGINAL_AXIS, recordingFileURL } from '@/lib/playback-position'
 import { liveProfileLabel, validLiveProfile } from '@/lib/live'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { shouldShowRecordingSite, sourceLabels } from '@/lib/recording-search'
@@ -407,7 +407,7 @@ export function RecordingDetail({
               recordingId={recording.id}
               startOffsetSeconds={chaseOffsetSeconds}
               profile={explicitLiveProfile}
-              playbackProfile={preferredPlaybackProfile}
+              playbackProfile={ORIGINAL_AXIS}
             />
           )}
         </section>
@@ -463,7 +463,7 @@ export function RecordingDetail({
                 site={recording.site}
                 recordingId={recording.id}
                 profile={explicitLiveProfile}
-                playbackProfile={preferredPlaybackProfile ?? ORIGINAL_PLAYBACK_PROFILE}
+                playbackProfile={ORIGINAL_AXIS}
               />
               <p className="text-muted-foreground">
                 原本 TS:{' '}
@@ -662,12 +662,6 @@ export function RecordingDetail({
     </div>
   )
 }
-
-/**
- * encode profile が無い録画（原本だけの構成で最も多い）の再生位置キー。live の画質
- * （選択で変わる）に依存させない --- 画質切替で保存キーが変わると「続きから」が別の場所になる。
- */
-const ORIGINAL_PLAYBACK_PROFILE = 'original'
 
 /**
  * seriesNextPageSize は「次のエピソード」を探すときに引く件数（API の既定と同じ）。
