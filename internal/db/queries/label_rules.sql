@@ -94,7 +94,7 @@ SELECT (SELECT count(*) FROM upserted) + (SELECT count(*) FROM removed);
 -- 73,000 行・141 棚・50 ルール・混在ステータスを、pgx の prepared statement で
 -- 各形 10 回実行した中央値を基準にする（専用 DB URL が無い環境では skip）。
 --
--- `playable` の MATERIALIZED を外す候補も測定する。prepared statement と単発の
+-- `playable_assets` の MATERIALIZED を外す候補も測定する。prepared statement と単発の
 -- psql ではプランが変わるため、アプリと同じ pgx 経路の中央値を基準にする。
 --
 -- 実効シリーズは recording_series ビューが唯一の定義で、ここでも JOIN で読む

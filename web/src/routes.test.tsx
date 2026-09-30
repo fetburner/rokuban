@@ -126,6 +126,15 @@ describe('routeTree', () => {
     ])
   })
 
+  it('/shelves は /series へリダイレクトする', async () => {
+    const router = createRouter({
+      routeTree,
+      history: createMemoryHistory({ initialEntries: ['/shelves'] }),
+    })
+    await router.load()
+    expect(router.state.location.pathname).toBe('/series')
+  })
+
   it('検索は番組表とは別のルートに置く', () => {
     // 番組表（/）は EPG を時間軸で眺める画面、検索は ruler と同じ条件
     // コンパイラを叩く「ルールの条件を試す」画面なので関心事が違う

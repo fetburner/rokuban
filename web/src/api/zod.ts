@@ -1281,8 +1281,9 @@ export const ListRecordingsResponse = zod.array(ListRecordingsResponseItem)
 
 /**
  * 実効シリーズ（分類ルールが当たればその値、当たらなければ自動キー）ごとの
- * 棚。1 要素 = 1 棚で、`value` は棚のキー、`title` は代表の録画の生の
- * タイトル（値は正規化の産物なので表示名にならない）。
+ * 棚。1 要素 = 1 棚で、`value` は棚のキー（画面はこれをシリーズ名として
+ * 出す。キーを名前にすると `ドラマ` のような過剰併合が一目で分かる）、
+ * `title` は代表の録画の生のタイトル（副見出し。枠のキーでも中身が分かる）。
  *
  * 母集団は生きていて（`deleted_at IS NULL AND superseded_at IS NULL`）
  * 録画中・取り込み待ち・失敗を含むすべての録画。ごみ箱・superseded は
@@ -1304,8 +1305,8 @@ export const ListRecordingShelvesQueryParams = zod.object({
 })
 
 export const ListRecordingShelvesResponseItem = zod.object({
-  "value": zod.string().nullish().describe('棚のキー。null は実効シリーズを導出できなかった録画（UI は表示しない）。\n'),
-  "title": zod.string().describe('代表の録画の生のタイトル（見出しに使う）。'),
+  "value": zod.string().nullish().describe('棚のキー（画面のシリーズ名）。null は実効シリーズを導出できなかった録画\n（番組ハブを開けないので UI は表示しない）。\n'),
+  "title": zod.string().describe('代表の録画の生のタイトル（シリーズ名の下の副見出しに使う）。'),
   "count": zod.int().describe('生きている録画の件数（録画中・取り込み待ち・失敗を含む）。'),
   "playableCount": zod.int().describe('この棚のうち、再生できる録画の件数。'),
   "latestStartAt": zod.iso.datetime({"offset":true}).describe('シリーズ内で最も新しい録画の番組開始時刻。常に UTC。'),

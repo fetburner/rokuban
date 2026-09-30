@@ -1782,10 +1782,11 @@ type RecordingShelf struct {
 	// RepresentativeId 代表の録画の id。棚から録画一覧・番組ハブへ渡す起点。
 	RepresentativeId int64 `json:"representativeId"`
 
-	// Title 代表の録画の生のタイトル（見出しに使う）。
+	// Title 代表の録画の生のタイトル（シリーズ名の下の副見出しに使う）。
 	Title string `json:"title"`
 
-	// Value 棚のキー。null は実効シリーズを導出できなかった録画（UI は表示しない）。
+	// Value 棚のキー（画面のシリーズ名）。null は実効シリーズを導出できなかった録画
+	// （番組ハブを開けないので UI は表示しない）。
 	Value *string `json:"value,omitempty"`
 }
 

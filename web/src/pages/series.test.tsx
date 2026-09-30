@@ -1,4 +1,4 @@
-import { screen, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -94,29 +94,29 @@ describe('SeriesPage', () => {
     )
   })
 
-  it('既定は新着順で、件数順・名前順へ切り替えられる', async () => {
+  it('既定は新着順で、件数順・名前順へ切り替えられる（先頭が 3 通りとも異なる）', async () => {
     const user = userEvent.setup()
-    stubApi(shelves)
+    // 名前順の先頭 = アニメA、件数順の先頭 = ドラマB、新着順の先頭 = バラエティC。
+    stubApi([
+      shelf('ドラマB', 'ドラマ　B　第1話', 50, 50, '2026-01-02T00:00:00Z', 21),
+      shelf('バラエティC', 'バラエティ　C', 10, 10, '2026-01-09T00:00:00Z', 22),
+      shelf('アニメA', 'アニメ　A　第1話', 3, 3, '2026-01-01T00:00:00Z', 23),
+    ])
     renderInRouter(<SeriesPage />, { path: '/series' })
 
     const content = await screen.findByTestId('bounded-page-content')
-    await within(content).findByRole('link', { name: '単発のシリーズ' })
-    expect(within(content).getAllByRole('link', { name: /のシリーズ$/ })[0]).toHaveAttribute(
-      'href',
-      '/recordings/13/series',
-    )
+    await within(content).findByRole('link', { name: 'アニメAのシリーズ' })
+    const order = () =>
+      within(content)
+        .getAllByRole('link', { name: /のシリーズ$/ })
+        .map((link) => link.getAttribute('href'))
+    expect(order()).toEqual(['/recordings/22/series', '/recordings/21/series', '/recordings/23/series'])
 
     await user.selectOptions(screen.getByLabelText('シリーズの並び順'), 'count')
-    expect(within(content).getAllByRole('link', { name: /のシリーズ$/ })[0]).toHaveAttribute(
-      'href',
-      '/recordings/11/series',
-    )
+    expect(order()).toEqual(['/recordings/21/series', '/recordings/22/series', '/recordings/23/series'])
 
     await user.selectOptions(screen.getByLabelText('シリーズの並び順'), 'name')
-    expect(within(content).getAllByRole('link', { name: /のシリーズ$/ })[0]).toHaveAttribute(
-      'href',
-      '/recordings/11/series',
-    )
+    expect(order()).toEqual(['/recordings/23/series', '/recordings/21/series', '/recordings/22/series'])
   })
 
   it('分類ルールの valueKey と一致する棚にだけ手動の札を付ける', async () => {
@@ -127,6 +127,34 @@ describe('SeriesPage', () => {
     const manual = await within(content).findByRole('link', { name: 'NHK高校講座のシリーズ' })
     expect(within(manual).getByText('手動')).toBeInTheDocument()
     expect(within(content).getByRole('link', { name: '作品Xのシリーズ' })).not.toHaveTextContent('手動')
+  })
+
+  it('valueKey が一致する棚に札を付け、名前に分類ルールの生の値を出さない', async () => {
+    // 値 `NHK高校講座 数学I` は正規化で棚 `NHK高校講座` に落ちる（value !== valueKey）。
+    stubApi(shelves, [{ ...rule, value: 'NHK高校講座 数学I', valueKey: 'NHK高校講座' }])
+    renderInRouter(<SeriesPage />, { path: '/series' })
+
+    const content = await screen.findByTestId('bounded-page-content')
+    const manual = await within(content).findByRole('link', { name: 'NHK高校講座のシリーズ' })
+    expect(within(manual).getByText('手動')).toBeInTheDocument()
+    expect(within(content).queryByText(/数学I/)).not.toBeInTheDocument()
+    expect(within(content).getByRole('link', { name: '作品Xのシリーズ' })).not.toHaveTextContent('手動')
+  })
+
+  it('棚の value と等しいだけで valueKey が違うルールには札を付けない', async () => {
+    stubApi(shelves, [{ ...rule, value: 'NHK高校講座', valueKey: '別のキー' }])
+    renderInRouter(<SeriesPage />, { path: '/series' })
+
+    const content = await screen.findByTestId('bounded-page-content')
+    const link = await within(content).findByRole('link', { name: 'NHK高校講座のシリーズ' })
+    // ルールの取得が終わってから否定を確かめる。
+    await waitFor(() =>
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        expect.stringContaining('/api/label-rules'),
+        expect.anything(),
+      ),
+    )
+    expect(link).not.toHaveTextContent('手動')
   })
 
   it('録画一覧と同じ localStorage キーでカード表示を保存する', async () => {

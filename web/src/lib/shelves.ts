@@ -43,7 +43,8 @@ export type ShelfSort = 'latest' | 'count' | 'name'
 export function sortShelfRows(rows: readonly ShelfRow[], sort: ShelfSort): ShelfRow[] {
   return [...rows].sort((a, b) => {
     if (sort === 'latest') {
-      const byLatest = b.latestStartAt.localeCompare(a.latestStartAt)
+      // 文字列比較にしない。小数秒の有無やオフセットが混ざると時刻順と食い違う。
+      const byLatest = Date.parse(b.latestStartAt) - Date.parse(a.latestStartAt)
       if (byLatest !== 0) return byLatest
     } else if (sort === 'count') {
       const byCount = b.count - a.count
