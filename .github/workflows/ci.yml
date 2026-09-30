@@ -76,9 +76,12 @@ jobs:
       - run: pnpm build
         working-directory: web
       # DB を使うテストはパッケージごとに専用データベースを作るため（internal/testutil.SetupDB）、
-      # 待ち合わせも踏み合いもなく並行実行できる。-timeout はハングを早期検知するため既定の 10m より短くする。
+      # 待ち合わせも踏み合いもなく並行実行できる。
       # POSTGRES_USER はこのインスタンスの initdb 時に作られる初期ロールなので CREATE DATABASE 権限を持つ。
-      - run: go test ./... -timeout 5m
+      # 全パッケージに -race を掛ける。goroutine を持つパッケージは worker / streamer に限らず
+      # 散らばっていて、並行性で選別すると漏れる（選び漏らした側の data race は通常実行では通ってしまう）。
+      # -timeout は各テストバイナリごとの制限。最長パッケージ（race 付きで 1 分台）に対して数倍の余裕を取る。
+      - run: go test -race ./... -count=1 -timeout 10m
 
   # rokuban が mirakc に期待する挙動（`internal/mirakc.Client` が叩く API の形）を、
   # 実物の mirakc コンテナに対して機械判定する（internal/mirakc/conformance）。
