@@ -183,7 +183,7 @@ WHERE site = 'default' AND program_id = $1`, zeroDurationID); err != nil {
 	if err != nil {
 		t.Fatalf("GET XMLTV: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
