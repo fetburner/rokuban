@@ -1091,13 +1091,14 @@ CI の `browser-e2e` ジョブは、実バイナリが `go:embed` した `dist/`
 
 - 実メディアが要る: `chapters` / `seek-tiles` / `subtitles` / `chase` / `live` / `live-audio` は
   ffmpeg でフィクスチャを作る。`live` と `live-audio` は webkit も要る
-- 実 DB の状態が要る: `live` は `epg_services` に実サービスの行が要り、`shelves-split` は `E2E_DATABASE_URL` の DB を TRUNCATE する
+- 実 DB の状態が要る: `checks`（既定の `pnpm e2e`）は API をスタブせず実 EPG の番組行の描画を待つ。
+  `live` は `epg_services` に実サービスの行が要り、`shelves-split` は `E2E_DATABASE_URL` の DB を TRUNCATE する
 - 残りの画面別判定（番組表・予約・検索など）は API スタブで技術的には載せられる。ただし
   全体の所要時間を測っておらず、毎 PR に払う価値をまだ判断していない。`design.mjs` は
   40 枚のショットを撮るぶん重い
 
-全 31 本を回す定期ジョブは作らない。回す主体と失敗の受け手が決まっておらず、誰も見ない
-赤い定期ジョブは 3 本の PR ブロッキングより信号として弱いためである。対象を増やすときは
+判定スクリプト全 29 本を回す定期ジョブは作らない。回す主体と失敗の受け手が決まっておらず、誰も見ない
+赤い定期ジョブは PR ごとに回す 3 本より信号として弱いためである。対象を増やすときは
 `.github/workflows/ci.yml` のコメントとこの節の本数・類型を同じ PR で直す。
 実ブラウザ不要の `pnpm check:colors` は lint job に入っている。
 

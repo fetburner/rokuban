@@ -46,12 +46,12 @@ jobs:
   # 回さない 28 ファイル（判定スクリプトは 26 本）の理由は 3 類型。
   #   - 実メディアが要る: chapters / seek-tiles / subtitles / chase / live / live-audio は
   #     ffmpeg でフィクスチャを作る。live / live-audio は webkit も要る
-  #   - 実 DB の状態が要る: live は epg_services に実サービスの行が要り、
-  #     shelves-split は E2E_DATABASE_URL の DB を TRUNCATE する
+  #   - 実 DB の状態が要る: checks（既定の pnpm e2e）は API をスタブせず実 EPG の番組行を待ち、
+  #     live は epg_services に実サービスの行が要り、shelves-split は E2E_DATABASE_URL の DB を TRUNCATE する
   #   - 残り（番組表・予約・検索などの画面別判定）は API スタブで技術的には載せられるが、
   #     全体の所要時間を測っておらず、PR ごとに払う価値をまだ判断していない
-  # 全 31 本を回す定期ジョブは作らない。回す主体と失敗の受け手が決まっておらず、
-  # 誰も見ない赤い定期ジョブは 3 本の PR ブロッキングより信号として弱いため。
+  # 判定スクリプト全 29 本を回す定期ジョブは作らない。回す主体と失敗の受け手が決まっておらず、
+  # 誰も見ない赤い定期ジョブは PR ごとに回す 3 本より信号として弱いため。
   # 対象を増やすときはこのコメントの数と類型も同じ PR で直す。
   browser-e2e:
     runs-on: ubuntu-latest
