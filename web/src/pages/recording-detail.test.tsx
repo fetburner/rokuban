@@ -1313,7 +1313,6 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
     await screen.findByRole('region', { name: '追っかけ再生' })
     await waitFor(() => expect(document.querySelector('video')).toBeInTheDocument())
     const chaseVideo = document.querySelector('video')!
-    fireEvent.canPlay(chaseVideo)
     Object.defineProperty(chaseVideo, 'currentTime', { value: 42, writable: true, configurable: true })
     fireEvent.timeUpdate(chaseVideo)
     cleanup()
@@ -1326,6 +1325,7 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
     Object.defineProperty(vodVideo, 'currentTime', { value: 0, writable: true, configurable: true })
     fireEvent.loadedMetadata(vodVideo)
     expect(vodVideo.currentTime).toBe(42)
+    localStorage.clear()
   })
 
   it('live profile が無い場合は HLS player を作らず、VLC リンクを残す', async () => {
