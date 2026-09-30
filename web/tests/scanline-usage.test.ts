@@ -62,7 +62,11 @@ describe('走査線クラスの使用箇所', () => {
     //      期待値の一覧から漏れて落ちる
     //   2. どこか（例: pages/programs.tsx）に `scanlines` を新しく足す →
     //      一覧に無いファイルが増えて落ちる
-    expect(findUsers('scanlines')).toEqual(['src/components/page.tsx', 'src/index.css'])
+    expect(findUsers('scanlines')).toEqual([
+      'src/components/page.tsx',
+      'src/index.css',
+      'src/pages/series.tsx',
+    ])
   })
 
   it('tally-scanlines は index.css（定義）と pages/live.tsx（ON AIR）だけ', () => {

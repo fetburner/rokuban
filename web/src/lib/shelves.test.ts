@@ -3,10 +3,17 @@ import { describe, expect, it } from 'vitest'
 import type { RecordingShelf } from '@/api/generated'
 import { buildShelfRows, shelfInputError } from './shelves'
 
-function shelf(value: string | null, title: string, count: number, id = 1): RecordingShelf {
+function shelf(
+  value: string | null,
+  title: string,
+  count: number,
+  id = 1,
+  playableCount = count,
+  latestStartAt = '2026-01-01T00:00:00Z',
+): RecordingShelf {
   return value === null
-    ? { title, count, representativeId: id }
-    : { value, title, count, representativeId: id }
+    ? { title, count, playableCount, latestStartAt, representativeId: id }
+    : { value, title, count, playableCount, latestStartAt, representativeId: id }
 }
 
 describe('buildShelfRows', () => {

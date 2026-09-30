@@ -7,6 +7,7 @@ package sqlcgen
 
 import (
 	"context"
+	"time"
 )
 
 const applyLabelRuleReevaluation = `-- name: ApplyLabelRuleReevaluation :one
@@ -166,35 +167,40 @@ WITH playable_assets AS MATERIALIZED (
     WHERE (ma.kind = 'original' AND ma.state <> 'deleted')
        OR (ma.kind = 'encoded' AND ma.state = 'active')
 ),
-playable AS MATERIALIZED (
+live AS MATERIALIZED (
     SELECT r.id,
            r.title,
            r.program_start_at,
-           rs.value
+           rs.value,
+           pa.recording_id AS playable_recording_id
     FROM recordings r
-    JOIN playable_assets pa ON pa.recording_id = r.id
+    LEFT JOIN playable_assets pa ON pa.recording_id = r.id
     JOIN recording_series rs ON rs.recording_id = r.id
     WHERE r.deleted_at IS NULL
       AND r.superseded_at IS NULL
 )
-SELECT p.value,
-       (array_agg(p.title ORDER BY p.program_start_at DESC, p.id DESC))[1]::text AS title,
+SELECT l.value,
+       (array_agg(l.title ORDER BY l.program_start_at DESC, l.id DESC))[1]::text AS title,
        count(*) AS recording_count,
-       (array_agg(p.id ORDER BY p.program_start_at DESC, p.id DESC))[1]::bigint AS representative_id
-FROM playable p
-GROUP BY p.value
-ORDER BY recording_count DESC, p.value ASC NULLS LAST
+       count(*) FILTER (WHERE l.playable_recording_id IS NOT NULL) AS playable_count,
+       max(l.program_start_at)::timestamptz AS latest_start_at,
+       (array_agg(l.id ORDER BY l.program_start_at DESC, l.id DESC))[1]::bigint AS representative_id
+FROM live l
+GROUP BY l.value
+ORDER BY recording_count DESC, l.value ASC NULLS LAST
 `
 
 type ListRecordingShelvesRow struct {
 	Value            *string
 	Title            string
 	RecordingCount   int64
+	PlayableCount    int64
+	LatestStartAt    time.Time
 	RepresentativeID int64
 }
 
-// 棚 1 件 = 実効シリーズの値 1 つ。現行の母集団は生きていて再生できる録画
-// （原本の media_asset がある、または encoded の派生物がある）。
+// 棚 1 件 = 実効シリーズの値 1 つ。母集団は生きている録画
+// （`deleted_at IS NULL AND superseded_at IS NULL`）で、録画中・取り込み待ち・失敗も含む。
 //
 // 代表は program_start_at の新しい順で先頭の 1 件。title は代表の生のタイトルで、
 // 値（棚のキー）そのものではない --- 値は正規化の産物なので表示名にならない。
@@ -212,10 +218,11 @@ type ListRecordingShelvesRow struct {
 // finished / recording / failed、再生可能な行、再生資産の無い行、deleted / superseded
 // 行を混ぜ、分類ルールを 50 本置く。
 //
-// 候補の形は、生きている録画を母集団にして `playable_assets` を LEFT JOIN し、
+// 採用形は、生きている録画を母集団にして `playable_assets` を LEFT JOIN し、
 // `FILTER` で再生可能件数、`max(program_start_at)` で最新開始時刻を同じ集計から返す。
-// `live` CTE を MATERIALIZED にした候補も同じテストで測る。候補が予算内に収まるかは
-// 実行ログで確認する。現行 SQL の形はこの測定のために変更しない。
+// `live` を MATERIALIZED にする。測定は `internal/api/shelves_bench_test.go` の
+// 73,000 行・141 棚・50 ルール・混在ステータスを、pgx の prepared statement で
+// 各形 10 回実行した中央値を基準にする（専用 DB URL が無い環境では skip）。
 //
 // `playable` の MATERIALIZED を外す候補も測定する。prepared statement と単発の
 // psql ではプランが変わるため、アプリと同じ pgx 経路の中央値を基準にする。
@@ -238,6 +245,8 @@ func (q *Queries) ListRecordingShelves(ctx context.Context) ([]ListRecordingShel
 			&i.Value,
 			&i.Title,
 			&i.RecordingCount,
+			&i.PlayableCount,
+			&i.LatestStartAt,
 			&i.RepresentativeID,
 		); err != nil {
 			return nil, err
