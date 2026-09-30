@@ -88,9 +88,13 @@ export function ShelvesPage() {
         ) : shelvesQuery.isPending ? (
           <ListSkeleton />
         ) : rows.length === 0 ? (
-          <EmptyState>再生できる録画がまだありません</EmptyState>
+          <EmptyState>
+            {shelves.length === 0
+              ? '再生できる録画がまだありません'
+              : 'シリーズを開ける棚がまだありません'}
+          </EmptyState>
         ) : (
-          <ShelfList rows={rows} onSplit={(row) => openCreate({ value: row.value ?? undefined })} />
+          <ShelfList rows={rows} onSplit={(row) => openCreate({ value: row.value })} />
         )}
 
         <section className="flex flex-col gap-3">
@@ -158,7 +162,7 @@ function ShelfList({ rows, onSplit }: { rows: ShelfRow[]; onSplit: (row: ShelfRo
       {rows.map((row) => (
         <li
           key={row.value}
-          className="relative flex items-center justify-between gap-3 rounded-lg border border-border p-3"
+          className="relative flex items-center justify-between gap-3 rounded-lg border border-border p-3 hover:bg-muted/40"
         >
           <Link
             to="/recordings/$id/series"
@@ -178,6 +182,7 @@ function ShelfList({ rows, onSplit }: { rows: ShelfRow[]; onSplit: (row: ShelfRo
               size="icon"
               variant="outline"
               aria-label="この棚を割る・指定する"
+              title="この棚を割る・指定する"
               onClick={() => onSplit(row)}
             >
               <Tags />
