@@ -67,7 +67,7 @@ func TestExportRescue_PreservesPurgedAt(t *testing.T) {
 		t.Fatalf("truncate: %v", err)
 	}
 
-	if _, err := RescueFile(ctx, pool, path); err != nil {
+	if _, err := RescueFile(ctx, pool, mediaDir, path); err != nil {
 		t.Fatalf("RescueFile: %v", err)
 	}
 
