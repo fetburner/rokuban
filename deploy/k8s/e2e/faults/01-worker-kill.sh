@@ -10,7 +10,7 @@ log_section "故障注入 1: 実行中 worker の強制終了"
 plan "F1.1" "F1.2" "F1.3" "F1.4"
 
 title="e2e fault worker kill ${E2E_FAULT_RUN_ID:-manual}"
-E2E_ENCODE_REL_PATH="e2e/fault-worker-${E2E_FAULT_RUN_ID:-manual}.m2ts"
+E2E_ENCODE_REL_PATH="sites/${E2E_SITE_A}/e2e/fault-worker-${E2E_FAULT_RUN_ID:-manual}.m2ts"
 encoded_rel_path="${E2E_ENCODE_REL_PATH%.m2ts}_e2e-slow.mp4"
 profile="e2e-slow"
 scaledjob="$(scaledjob_for_queue encode)"
@@ -57,8 +57,8 @@ esac
 if ! psql_q "INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, state)
               VALUES (${recording_id}, 'original', '${E2E_ENCODE_REL_PATH}', ${size}, 'active')" >/dev/null ||
    ! psql_q "INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, state)
-              VALUES (${recording_id}, 'thumbnail', '${E2E_ENCODE_REL_PATH%.m2ts}_thumb.jpg', 1, 'active'),
-                     (${recording_id}, 'seek_tiles', '${E2E_ENCODE_REL_PATH%.m2ts}_tiles.jpg', 1, 'active')" >/dev/null ||
+              VALUES (${recording_id}, 'thumbnail', 'thumbnails/e2e-fault-${E2E_FAULT_RUN_ID:-manual}_thumb.jpg', 1, 'active'),
+                     (${recording_id}, 'seek_tiles', 'thumbnails/e2e-fault-${E2E_FAULT_RUN_ID:-manual}_tiles.jpg', 1, 'active')" >/dev/null ||
    ! psql_q "INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
               VALUES (${recording_id}, 'until_encoded', ARRAY['${profile}'])" >/dev/null ||
    ! psql_q "INSERT INTO river_job (state, queue, kind, args, max_attempts, priority, scheduled_at)
