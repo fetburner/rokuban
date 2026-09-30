@@ -11,22 +11,48 @@ source "$E2E_DIR/lib/log.sh"
 source "$E2E_DIR/lib/kube.sh"
 
 # fault_enqueue <CLI name> <River kind> [site]
-# 新しく投入された行 id を返す。既存の完了行は履歴として残し、投入時刻より
-# 前にあった行を今回の成功扱いにしない。
+# CLI が出す `inserted job "..." (id=N)` から今回投入した行 id を返す。UniqueOpts で
+# 合流したとき（`already pending`）は、待機中の既存行（kind と site で絞る）の
+# id を返し、その行の完了を今回の判定に使う。
 fault_enqueue() {
-  local cli_name="$1" kind="$2" site="${3:-}" before after
-  before="$(psql_q "SELECT COALESCE(max(id), 0) FROM river_job WHERE kind = '${kind}'")" || return 1
+  local cli_name="$1" kind="$2" site="${3:-}" out id
   if [ -n "$site" ]; then
-    tb_rokuban enqueue "$cli_name" --site "$site" >/dev/null || return 1
+    out="$(tb_rokuban enqueue "$cli_name" --site "$site" 2>&1)" || return 1
   else
-    tb_rokuban enqueue "$cli_name" >/dev/null || return 1
+    out="$(tb_rokuban enqueue "$cli_name" 2>&1)" || return 1
   fi
-  after="$(psql_q "SELECT COALESCE(max(id), 0) FROM river_job WHERE kind = '${kind}'")" || return 1
-  case "$after" in
+  id="$(printf '%s\n' "$out" | sed -n 's/^inserted job .*(id=\([0-9][0-9]*\)).*$/\1/p' | head -1)"
+  if [ -z "$id" ] && printf '%s\n' "$out" | grep -q 'already pending'; then
+    id="$(psql_q "SELECT COALESCE(max(id)::text, '') FROM river_job
+                   WHERE kind = '${kind}'
+                     AND ('${site}' = '' OR args->>'site' = '${site}')
+                     AND state IN ('available','pending','retryable','running','scheduled')" \
+          | head -1 | tr -d '[:space:]')" || return 1
+  fi
+  case "$id" in
     ''|*[!0-9]*) return 1 ;;
   esac
-  [ "$after" -gt "$before" ] || return 1
-  printf '%s' "$after"
+  printf '%s' "$id"
+}
+
+# fail_from <id> <reason>
+# plan に宣言された id のうち、<id> 以降でまだ結果が無いものをすべて FAIL にする。
+# <id> には reason、後続には「<id> で中断した」を書く。
+fail_from() {
+  local from="$1" reason="$2" id started=0
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    [ "$id" = "$from" ] && started=1
+    [ "$started" = 1 ] || continue
+    if awk -F'\t' -v id="$id" '$1 != "PLAN" && $2 == id {found=1} END {exit !found}' "$E2E_RESULTS"; then
+      continue
+    fi
+    if [ "$id" = "$from" ]; then
+      fail "$id" "$reason"
+    else
+      fail "$id" "${from} で中断したため観測していない"
+    fi
+  done < <(awk -F'\t' '$1 == "PLAN" {print $2}' "$E2E_RESULTS")
 }
 
 fault_job_has_state() {
@@ -103,24 +129,19 @@ fault_check_media_file() {
   k logs job/e2e-media-check 2>/dev/null | grep -q '^SIZE=[1-9][0-9]*$'
 }
 
-# fault_insert_recording <title> <status>
-# outage 中も残る録画状態を DB に作る。CI 用 mirakc mock は record stream を
-# 生成しないため、このテスト fixture は watcher の結果列だけを作る。
+# fault_insert_recording <title> <status> [duration_ms] [ended_at SQL 式]
+# 録画状態を DB に作る。CI 用 mirakc mock は record stream を生成しないため、
+# このテスト fixture は watcher の結果列だけを作る。
 fault_insert_recording() {
-  local title="$1" recording_status="$2"
+  local title="$1" recording_status="$2" duration_ms="${3:-1800000}" ended_at="${4:-NULL}"
   psql_q "INSERT INTO recordings (
       source, site, network_id, service_id, event_id, service_name,
       channel_type, channel, title, program_start_at, program_duration_ms,
-      status, started_at
+      status, started_at, ended_at
     ) VALUES (
       'manual', '${E2E_SITE_A}', 32736, 1024, 1, 'e2e fault fixture',
-      'GR', '13', '${title}', now(), 1800000, '${recording_status}', now()
+      'GR', '13', '${title}', now(), ${duration_ms}, '${recording_status}', now(), ${ended_at}
     ) RETURNING id" | head -1 | tr -d '[:space:]'
-}
-
-fault_recording_status() {
-  local id="$1"
-  psql_q "SELECT status FROM recordings WHERE id = ${id}"
 }
 
 # fault_seed_reservation は既存の mirakc mock の EPG から今後の番組を選び、
