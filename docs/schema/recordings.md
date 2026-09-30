@@ -352,4 +352,5 @@ CREATE TABLE media_asset_cuts (
 
 - 主キーが `media_asset_id` なのは、行の寿命が派生物の行と同時だから（不変条件 12）。録画の行と同時に生まれて同時に死ぬのは `media_assets` の側である。書き手も `EncodeWorker` 1 人（同じ tx で行の `rel_path` と一緒に書く）なので本体の列にしない（不変条件 13）
 - `keep_ranges` は原本の最初の映像フレームを 0 とする ms の半開区間（`recording_chapter_spans` と同じ単位）。境界はフレーム境界へ量子化済み。**空はカット版を作れないことを意味するので CHECK で表現不可能にする**（不変条件 10）
+- 値は JLSE のフレーム番号（最初の映像フレームが 0）から作る。ただし当てる側は、入力の最早 start_time を 0 とする秒として使う。カット版の切り出し（`internal/ffargs/cut.go`）とプレイヤーの `currentTime` がそうである。放送 TS は音声が映像より先に始まるので、2 つの原点はその開始差だけずれる（大きさは未測定）
 - **行の不在は「カット版ではない」**（cut でない encoded。不変条件 10）。API はこの不在を `encodedAssets[].cut` の偽に写す —— 「cut = false」を表す列を `media_assets` に足すと、2 つの主張が片方だけ古くなる
