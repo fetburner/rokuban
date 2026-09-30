@@ -129,17 +129,20 @@ fault_check_media_file() {
   k logs job/e2e-media-check 2>/dev/null | grep -q '^SIZE=[1-9][0-9]*$'
 }
 
-# fault_insert_recording <title> <status> [duration_ms] [ended_at SQL 式]
+# fault_insert_recording <title> <status> <duration_ms> <ended_at SQL 式>
 # 録画状態を DB に作る。CI 用 mirakc mock は record stream を生成しないため、
 # このテスト fixture は watcher の結果列だけを作る。
+# **放送イベントは mock の EPG（service 1024）と重ならない値にする。** 同じ
+# (site, network, service, event) に原本 media_asset があると ruler はその番組を
+# fulfilled として desired から外し、F2 の予約 seed が届かない。
 fault_insert_recording() {
-  local title="$1" recording_status="$2" duration_ms="${3:-1800000}" ended_at="${4:-NULL}"
+  local title="$1" recording_status="$2" duration_ms="$3" ended_at="$4"
   psql_q "INSERT INTO recordings (
       source, site, network_id, service_id, event_id, service_name,
       channel_type, channel, title, program_start_at, program_duration_ms,
       status, started_at, ended_at
     ) VALUES (
-      'manual', '${E2E_SITE_A}', 32736, 1024, 1, 'e2e fault fixture',
+      'manual', '${E2E_SITE_A}', 32736, 4001, 1, 'e2e fault fixture',
       'GR', '13', '${title}', now(), ${duration_ms}, '${recording_status}', now(), ${ended_at}
     ) RETURNING id" | head -1 | tr -d '[:space:]'
 }

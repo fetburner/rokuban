@@ -208,11 +208,10 @@ fixture に有効な thumbnail と seek_tiles を入れてあるので、origina
 F2.2 は期待した `program_id` の mirakc schedule を照合するため、単に worker が起きたことでは PASS しない。
 
 kind での実測は次のとおり（arm64 の Docker で 1 回）。
-F1.1 から F1.4 は PASS した。
-F2.1 の前提になる予約 seed は、通常判定 1.7 と同じ理由で届かず FAIL した。
-この環境では ruler の pass が `desired=0` を返しており、原因は未調査である。
-そのため F2.2（DB 断中に失った schedule の復元）は kind で未検証である。
-F2 の切断と復元だけを別に実行すると、`readyz` は 503 から 200 へ戻った。
+F1.1 から F2.2 の 6 判定がすべて PASS し、`run.sh --faults` は exit 0 を返した。
+fixture の録画の放送イベントが mock の EPG と同じだと、ruler はその番組を fulfilled として desired から外す。
+その場合は F2 の予約 seed が mirakc に届かない。
+F1 の録画は service_id を EPG と重ならない値にしてあるので、この衝突は起きない。
 
 API restart、NOTIFY/SSE 欠落、media mount 遅延、mirakc 再起動はこの suite では注入しない。
 どれも「fixture を作って故障を起こし、durable な状態の収束を DB と API で判定する」形に収まらない。
