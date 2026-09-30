@@ -664,6 +664,12 @@ export function RecordingDetail({
 }
 
 /**
+ * encode profile が無い録画（原本だけの構成で最も多い）の再生位置キー。live の画質
+ * （選択で変わる）に依存させない --- 画質切替で保存キーが変わると「続きから」が別の場所になる。
+ */
+const ORIGINAL_PLAYBACK_PROFILE = 'original'
+
+/**
  * seriesNextPageSize は「次のエピソード」を探すときに引く件数（API の既定と同じ）。
  *
  * 引き方は `?seriesOf=<id>&order=asc&from=<起点の startAt>` で、返るページは
@@ -671,12 +677,6 @@ export function RecordingDetail({
  * 先頭側に入るので、通常は 1 ページで足りる。再生できない行が 49 件以上続くと
  * はみ出し、その場合は「次のエピソード」が出ない（`lib/series.ts` の `nextEpisode`）。
  */
-/**
- * encode profile が無い録画（原本だけの構成で最も多い）の再生位置キー。live の画質
- * （選択で変わる）に依存させない --- 画質切替で保存キーが変わると「続きから」が別の場所になる。
- */
-const ORIGINAL_PLAYBACK_PROFILE = 'original'
-
 const seriesNextPageSize = 50
 
 /**

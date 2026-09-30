@@ -1130,7 +1130,10 @@ export function LivePlayer({
             )
           }}
           onEnded={(event) => {
-            // ended は ENDLIST 済みの終端でしか発火しない（変換の先端では stall するだけ）。
+            // ended は ENDLIST 済みの終端でだけ発火する前提で保存位置を消す。hls.js 経路では
+            // ENDLIST の無い先端で発火しないことを web/e2e/recording-original-vod.mjs の
+            // ④ で実 Chrome で測っている。ネイティブ HLS は未検証で、先端で発火すると
+            // 保存位置が消える（続きから再生できなくなる）。
             if (!isOriginalVOD || recordingId === undefined) return
             originalVODFinalized.current = true
             const video = event.currentTarget

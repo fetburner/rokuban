@@ -185,6 +185,21 @@ const playlistRequests = []
 const segmentRequests = []
 const subtitleRequests = []
 const encodedRequests = []
+// ④ で true にする。variant / 字幕 playlist を先頭 4 segment で切り、ENDLIST を外して返す
+// （変換中の EVENT playlist の先端を再現する）。
+let growingEdge = false
+
+function growingEdgePlaylist(text) {
+  const out = []
+  let extinf = 0
+  for (const line of text.split('\n')) {
+    if (line.startsWith('#EXT-X-ENDLIST')) continue
+    if (line.startsWith('#EXTINF')) extinf += 1
+    if (extinf > 4) break
+    out.push(line)
+  }
+  return out.join('\n') + '\n'
+}
 
 await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
   const method = route.request().method()
@@ -216,7 +231,11 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
     const name = relative.split('/').pop()
     const file = path.join(fixtureDir, name)
     if (!existsSync(file)) return route.fulfill({ status: 404, body: 'fixture missing' })
-    return route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body: readFileSync(file) })
+    let body = readFileSync(file)
+    if (growingEdge && /^(playlist|subtitles)_\d+\.m3u8$/.test(name)) {
+      body = growingEdgePlaylist(body.toString('utf8'))
+    }
+    return route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body })
   }
   if (/^\/api\/media\/recordings\/\d+\/file$/.test(requestPath)) {
     encodedRequests.push(url.href)
@@ -309,5 +328,31 @@ if (finalSavedPosition !== null) ng.push(`③ 終端付近の保存位置が残�
 if (segmentRequests.length === 0) ng.push('③ HLS segment を要求していない')
 if (subtitleRequests.length === 0) ng.push('③ WebVTT segment を要求していない')
 log(`  variant playlists=${playlistRequests.length}, video segments=${segmentRequests.length}, subtitle segments=${subtitleRequests.length}`)
+
+log('\n=== ④ ENDLIST の無い変換中 playlist の先端で ended が発火しない ===')
+// live-player.tsx の onEnded は「ended は ENDLIST 済みの終端でしか発火しない」ことに依存する。
+// 先頭 4 segment（約 8 秒）で切った ENDLIST 無しの playlist を先端まで再生して確かめる。
+growingEdge = true
+await page.evaluate((key) => localStorage.removeItem(key), playbackKey)
+await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
+await page.locator('video').waitFor({ timeout: 15000 })
+await page.waitForFunction(() => {
+  const element = document.querySelector('video')
+  return element !== null && element.duration > 0
+}, undefined, { timeout: 20000 })
+await page.locator('video').evaluate(async (element) => {
+  element.muted = true
+  await element.play()
+})
+await page.waitForFunction(() => (document.querySelector('video')?.currentTime ?? 0) > 2, undefined, { timeout: 15000 })
+  .catch(() => ng.push('④ 切った playlist の再生が始まらない'))
+const edge = await page.locator('video').evaluate(async (element) => {
+  element.currentTime = Math.max(0, element.duration - 0.8)
+  await new Promise((resolve) => setTimeout(resolve, 8000))
+  return { ended: element.ended, time: element.currentTime, duration: element.duration }
+})
+log(`  先端到達後 8 秒: ${JSON.stringify(edge)}`)
+if (edge.ended) ng.push(`④ ENDLIST の無い先端で ended が発火した (${JSON.stringify(edge)})`)
+if (edge.duration > 12) ng.push(`④ playlist が切れていない (duration=${edge.duration})`)
 
 await finish(ng, browser)
