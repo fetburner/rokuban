@@ -61,10 +61,11 @@ linters:
     gocognit:
       # whole-files: true は触れたファイルの既存関数まで検査するので、閾値が
       # 既存の最大値を下回ると無関係な PR が落ちる。既存の関数を全部直す義務は
-      # 作らず、リポジトリ全体（テスト・生成物を除く）の最大値 59（build tag
-      # conformance の fixture 生成器。既定ビルドの最大は 54）に余裕を足した値で
-      # 「これ以上は増やさない」天井だけを守る。
-      min-complexity: 60
+      # 作らず、lint が見る既定ビルド（テスト・生成物を除く）の現在の最大値を
+      # 閾値にして「今より悪くしない」天井だけを守る。gocognit は閾値を超えた
+      # 関数だけを報告する。build tag conformance のファイルは lint 対象外なので
+      # 基準に含めない。
+      min-complexity: 54
 
   exclusions:
     rules:
