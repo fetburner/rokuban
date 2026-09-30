@@ -1,9 +1,9 @@
 // CM 検出のロゴ画面を実ブラウザで判定する。
 //
 // 旧 URL から局別 URL へ移動できること、EPG の duration の中央から始まる
-// スライダー、SAR 4:3 の 1440x1080 コマ、数値入力で記録上の枠を保存することを
-// 見る。jsdom では実際の表示枠と画像の SAR を測れないため、座標の最後の判定は
-// 実ブラウザで行う。
+// スライダー、SAR 4:3 の 1440x1080 コマ、数値入力で解析を依頼し、候補の
+// running / failed / ready、候補比較、採用 body を見る。jsdom では実際の表示枠と
+// 画像の SAR を測れないため、座標と候補画像の最後の判定は実ブラウザで行う。
 //
 //   cd web && corepack pnpm build
 //   corepack pnpm preview --port 4173 --strictPort &
@@ -65,6 +65,9 @@ const FRAME_PNG = Buffer.from(
 )
 
 let savedArea
+let candidate
+let adopted = false
+let adoptBody
 const frameRequests = []
 
 async function apiHandler({ path, json, route }) {
@@ -74,7 +77,15 @@ async function apiHandler({ path, json, route }) {
   if (path === '/api/breakers') return json([])
   if (path === '/api/events') return sseKeepAlive(route)
   if (path === '/api/cm-logos' && method === 'GET') {
-    return json([{ ...logo, ...(savedArea === undefined ? {} : { logoArea: savedArea }) }])
+    return json([{
+      ...logo,
+      pendingCount: adopted ? 2 : logo.pendingCount,
+      ...(savedArea === undefined ? {} : { logoArea: savedArea }),
+      ...(candidate === undefined ? {} : { candidate }),
+      ...(candidate?.state === 'ready'
+        ? { previewPng: FRAME_PNG.toString('base64'), codedWidth: 1440, codedHeight: 1080, learnedAt: '2026-01-01T00:00:00Z' }
+        : {}),
+    }])
   }
   if (path === '/api/recordings' && method === 'GET') return json([recording])
   if (path === '/api/media/recordings/7/frame' && method === 'GET') {
@@ -92,10 +103,32 @@ async function apiHandler({ path, json, route }) {
   }
   if (path === '/api/cm-logos/32678/5168/area' && method === 'PUT') {
     savedArea = JSON.parse(route.request().postData() ?? '{}')
+    candidate = {
+      state: 'running',
+      x: savedArea.x,
+      y: savedArea.y,
+      w: savedArea.w,
+      h: savedArea.h,
+      codedWidth: savedArea.codedWidth,
+      codedHeight: savedArea.codedHeight,
+      recordingId: savedArea.recordingId,
+      attemptedAt: '2026-01-02T00:00:00Z',
+    }
     return route.fulfill({ status: 204 })
   }
   if (path === '/api/cm-logos/32678/5168/area' && method === 'DELETE') {
     savedArea = undefined
+    candidate = undefined
+    return route.fulfill({ status: 204 })
+  }
+  if (path === '/api/cm-logos/32678/5168/candidate/adopt' && method === 'POST') {
+    adoptBody = JSON.parse(route.request().postData() ?? '{}')
+    adopted = true
+    candidate = undefined
+    return route.fulfill({ status: 204 })
+  }
+  if (path === '/api/cm-logos/32678/5168/candidate' && method === 'DELETE') {
+    candidate = undefined
     return route.fulfill({ status: 204 })
   }
   return json([])
@@ -165,16 +198,71 @@ for (const [field, value] of [['x', '400'], ['y', '300'], ['w', '400'], ['h', '3
 await page.getByTestId(`cm-logo-field-${field}`).fill(value)
 }
 await page.getByRole('button', { name: '枠に寄る' }).click()
-await page.getByRole('button', { name: '枠を保存' }).click()
-await page.getByTestId('cm-logo-save-message').waitFor({ state: 'visible', timeout: 5000 })
-const expected = { x: 400, y: 300, w: 400, h: 300, codedWidth: 1440, codedHeight: 1080 }
+await page.getByRole('button', { name: 'ロゴを解析' }).click()
+await page.getByTestId('cm-logo-candidate-running').waitFor({ state: 'visible', timeout: 5000 })
+const expected = { recordingId: 7, x: 400, y: 300, w: 400, h: 300, codedWidth: 1440, codedHeight: 1080 }
 if (savedArea === undefined || JSON.stringify(savedArea) !== JSON.stringify(expected)) {
   ng.push(`③ 保存された枠が違う（実際 ${JSON.stringify(savedArea)} / 期待 ${JSON.stringify(expected)}）`)
 } else {
   log(`  記録上の枠: ${JSON.stringify(savedArea)}`)
 }
-if (!(await page.getByTestId('cm-logo-save-message').textContent()).includes('数分〜数十分かかります')) {
-  ng.push('③ 保存後の検出待ちメッセージが表示されない')
+if ('atMs' in (savedArea ?? {})) {
+  ng.push('③ 全編解析なのに atMs を送っている')
+}
+
+log('\n=== ④ 画面を離れても候補の running が残る ===')
+await page.goto(`${URL_BASE}/cm-logos`, { waitUntil: 'domcontentloaded' })
+await page.goto(`${URL_BASE}/cm-logos/32678/5168?recording=7`, { waitUntil: 'domcontentloaded' })
+await page.getByTestId('cm-logo-candidate-running').waitFor({ timeout: 5000 })
+
+log('\n=== ⑤ 候補の failed / ready と原寸 SAR 表示 ===')
+candidate = {
+  state: 'failed',
+  stage: 'area',
+  error: 'raw error must not be shown',
+  x: 400,
+  y: 300,
+  w: 400,
+  h: 300,
+  codedWidth: 1440,
+  codedHeight: 1080,
+  recordingId: 7,
+  attemptedAt: '2026-01-02T00:00:00Z',
+}
+await page.reload({ waitUntil: 'domcontentloaded' })
+await page.getByTestId('cm-logo-candidate-failed').waitFor({ timeout: 5000 })
+if (!(await page.getByTestId('cm-logo-candidate-failure-message').textContent()).includes('教えた枠が録画の解像度と合わない')) {
+  ng.push('⑤ 候補 failed の工程文が表示されない')
+}
+
+candidate = {
+  state: 'ready',
+  previewPng: FRAME_PNG.toString('base64'),
+  x: 400,
+  y: 300,
+  w: 400,
+  h: 300,
+  codedWidth: 1440,
+  codedHeight: 1080,
+  recordingId: 7,
+  attemptedAt: '2026-01-02T00:00:00Z',
+}
+await page.reload({ waitUntil: 'domcontentloaded' })
+await page.getByTestId('cm-logo-candidate-ready').waitFor({ timeout: 5000 })
+const candidateImage = await page.getByTestId('cm-logo-candidate-preview').locator('img').boundingBox()
+if (candidateImage === null || Math.abs(candidateImage.width / candidateImage.height - 4 / 3) > 0.02) {
+  ng.push(`⑤ 候補プレビューに SAR 4:3 が適用されない（${JSON.stringify(candidateImage)}）`)
+}
+
+log('\n=== ⑥ ready 候補を redetect=false で採用する ===')
+await page.getByTestId('cm-logo-candidate-redetect').uncheck()
+await page.getByTestId('cm-logo-candidate-adopt').click()
+await page.getByTestId('cm-logo-candidate-adopted').waitFor({ timeout: 5000 })
+if (JSON.stringify(adoptBody) !== JSON.stringify({ redetect: false })) {
+  ng.push(`⑥ 採用 body が違う（実際 ${JSON.stringify(adoptBody)}）`)
+}
+if (!(await page.getByTestId('cm-logo-candidate-adopted').textContent()).includes('検出待ち 2 件')) {
+  ng.push('⑥ 採用後の検出待ちメッセージが表示されない')
 }
 
 await finish(ng, browser)
