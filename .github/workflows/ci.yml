@@ -78,13 +78,10 @@ jobs:
       # DB を使うテストはパッケージごとに専用データベースを作るため（internal/testutil.SetupDB）、
       # 待ち合わせも踏み合いもなく並行実行できる。-timeout はハングを早期検知するため既定の 10m より短くする。
       # POSTGRES_USER はこのインスタンスの initdb 時に作られる初期ロールなので CREATE DATABASE 権限を持つ。
-      - run: go test ./... -timeout 5m
-      # 2026-09-30 のローカル実測では全て通過し、最長の worker は 91.181 秒（streamer 50.548 秒、
-      # notifier 5.240 秒、role 1.469 秒）。#908 の全パッケージ計測は DB 競合で 114 / 123 秒に失敗し、
-      # 成功時の所要時間の下限にすぎないため根拠にせず、並行処理を含む測定済みの4パッケージに絞る。
-      # -timeout は各テストバイナリごとの制限。10m は最長実測の6倍超で、race と CI の揺れに余裕を持つ。
-      - name: Run race detector
-        run: go test -race ./internal/worker/ ./internal/streamer/ ./internal/notifier/ ./internal/role/ -count=1 -timeout 10m
+      # 全パッケージに -race を掛ける。goroutine を持つパッケージは worker / streamer に限らず
+      # 散らばっていて、並行性で選別すると漏れる（選び漏らした側の data race は通常実行では通ってしまう）。
+      # -timeout は各テストバイナリごとの制限。最長パッケージ（race 付きで 1 分台）に対して数倍の余裕を取る。
+      - run: go test -race ./... -count=1 -timeout 10m
 
   # rokuban が mirakc に期待する挙動（`internal/mirakc.Client` が叩く API の形）を、
   # 実物の mirakc コンテナに対して機械判定する（internal/mirakc/conformance）。
