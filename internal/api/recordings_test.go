@@ -350,6 +350,54 @@ func TestRecordingDropHistorySurvivesOriginalDeletion(t *testing.T) {
 	}
 }
 
+// ごみ箱 API は動的 SQL の queryRecordings/buildRecordingsQuery を通り、原本の
+// media_asset が deleted になった後も dropSummary を保つ（issue #737）。
+func TestListTrashRecordings_DropSummarySurvivesOriginalDeletion(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+	ctx := context.Background()
+
+	id := seedRecording(t, pool, "原本削除後も drop 履歴を表示", time.Now().Truncate(time.Second), "finished", 404)
+	assetID := seedIngested(t, pool, id, 500, map[int32][4]int64{
+		0x100: {500, 2, 1, 0},
+	})
+	if _, err := pool.Exec(ctx, "UPDATE recordings SET deleted_at = now() WHERE id = $1", id); err != nil {
+		t.Fatalf("soft-deleting recording: %v", err)
+	}
+
+	fetchTrash := func() Recording {
+		t.Helper()
+		var recordings []Recording
+		resp := getJSON(t, srv.URL+"/api/recordings?trash=true", &recordings)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("trash list status = %d, want 200", resp.StatusCode)
+		}
+		if len(recordings) != 1 || recordings[0].Id != id {
+			t.Fatalf("trash recordings = %+v, want recording %d", recordings, id)
+		}
+		return recordings[0]
+	}
+
+	before := fetchTrash()
+	want := DropSummary{Packets: 500, Drops: 2, Errors: 1}
+	if before.DropSummary == nil || *before.DropSummary != want {
+		t.Fatalf("dropSummary before original deletion = %+v, want %+v", before.DropSummary, want)
+	}
+
+	if _, err := pool.Exec(ctx,
+		"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1", assetID); err != nil {
+		t.Fatalf("tombstoning original media asset: %v", err)
+	}
+
+	after := fetchTrash()
+	if after.DropSummary == nil || *after.DropSummary != want {
+		t.Errorf("dropSummary after original deletion = %+v, want unchanged %+v", after.DropSummary, want)
+	}
+	if after.SizeBytes != nil {
+		t.Errorf("sizeBytes after original deletion = %v, want omitted", after.SizeBytes)
+	}
+}
+
 // ListRecordings は active な encoded 派生物（プロファイル名 + サイズ）を返すこと
 // （ブラウザ再生用。issue #236 M7-3 で単なる名前の配列からサイズ付きに変わった）。
 func TestListRecordings_EncodedProfiles(t *testing.T) {
@@ -1180,7 +1228,7 @@ func TestRestoreRecording_ConflictWhenActiveExists(t *testing.T) {
 // restore できない。ファイルが二度と戻らない録画をライブラリに戻すと
 // 「再生できない録画」が並んでしまうため。RestoreRecording クエリの
 // WHERE に purged_at IS NULL を足して 0 行にし、既存の 404 経路に落とす。
-// また、GET /api/recordings?trash=true にも出ない（ListTrashRecordings も
+// また、GET /api/recordings?trash=true にも出ない（trash 一覧も
 // purged_at IS NULL を要求する）。
 func TestRestoreRecording_PurgedNotFound(t *testing.T) {
 	pool := testutil.SetupDB(t)

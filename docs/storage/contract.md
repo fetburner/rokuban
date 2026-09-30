@@ -37,8 +37,10 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
 	確定操作には使わない。
 	`.rokuban-ingest-` / `.rokuban-rel-path-lock-` / `.rokuban-encode-` で始まる
 	basename は予約名であり、mirakc の contentPath には使わない。1 つ目は ingest
-	temp、2 つ目は canonical と同じディレクトリに置く rel_path 固有 lock file、
-	3 つ目は encode の公開前 staging file（後述）である。encode の staged 出力も
+	temp、2 つ目は旧形式 lock file の予約名、3 つ目は encode の公開前 staging file
+	（後述）である。rel_path lock は media root の `.rokuban-locks/` に置く。
+	この directory 名も予約し、`mediapath.Resolve` は DB の `rel_path` として拒否する。
+	encode の staged 出力も
 	同じディレクトリに置く --- scratch から rename すると `EXDEV` になる。
 	canonical path は転送中に触らず、HEAD の長さ照合と、存在する場合の
    `content.sha256` 照合 → temp の `fsync` → `Close`
@@ -59,13 +61,63 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
    の永続化を確定する。いずれかが失敗したら DB 登録と record 削除をせず再試行する。
    orphan 回収が record 固有 temp を削除するときも同じ `flock` に参加し、ロック取得後に
    inode と mtime を再確認する。canonical orphan の回収は ingest commit と共有する
-   `rel_path` 固有の filesystem lock file に対する POSIX `flock` を rename / unlink から
-   DB commit または orphan 行の整理まで保持する。DB の transaction-level advisory lock
-   は一意性と live 行の再確認に使う。filesystem lock は DB セッションの切断後も
-   ファイル操作中の fd が保持するため、古い cleanup が公開済み canonical を消すことはない。
+   `rel_path` lock を rename / unlink から DB commit または orphan 行の整理まで保持する。
+   DB の transaction-level advisory lock は一意性と live 行の再確認に使う。filesystem lock は
+   DB セッションの切断後も fd が保持するため、古い cleanup が公開済み canonical を消さない。
    実行中の ingest や公開済み canonical は削除せず、次の回収 pass に延期する。
 4. **DB には相対パスのみ保存**。ルートは設定で与える。DB にロック・xattr・パーミッション
    の状態は保存しない。temp の同時実行排他は、対象 FS 上の協調的な POSIX `flock` に依存する
+
+### rel_path lock file の寿命
+
+rel_path lock は `.rokuban-locks/<prefix><sha256(rel_path)>.lock` に置く。
+canonical file と同じ directory entry ではないため、canonical の rename / unlink で
+lock 対象が置き換わらない。通常終了時は per-rel_path lock を保持したまま gate を排他し、
+lock file を unlink してから flock と fd を解放する。したがって複数回の ingest / encode /
+delete の後も per-rel_path file は残らない。`.gate.lock` は lock directory の調停に使う
+固定 file として残る。
+
+取得側は gate を共有して lock file を開き、`LOCK_NB` で試す。busy ならその fd を閉じて
+gate を解放してから待ち、再度 path を開く。release と GC は gate を排他するため、unlink と
+同時に古い inode を待つ fd は作られない。これが「A が unlink、B が古い inode を取得、C が
+新 inode を取得」という二重 lock を防ぐ規則である。canonical orphan の GC も同じ gate を
+排他し、per-rel_path flock を取得できた file だけを unlink する。active lock は残して次回に
+回す。lock 取得や cleanup に失敗したときはファイル操作を進めず、安全側に倒す。
+
+プロセスが異常終了すると kernel が gate と per-rel_path flock を解放する。unlink 前なら
+lock file の directory entry は残るが、次の lock 取得時の GC が gate 排他下で stale file を
+回収する。GC 中に active owner がいる file は flock が取れず削除されない。複数プロセスは
+同じ media root とこの gate protocol を使う必要がある。POSIX `flock` の前提はこの文書の
+ルール 4 と同じで、JuiceFS / NFS 越しの実効性は未検証。
+
+lock directory は mode `0777`、gate / per-rel_path file は `0666` で作り、通常どおり umask
+を適用する。異なる uid の worker を同じ media root で動かす場合は、共有 group / ACL が
+directory の作成・削除と lock file の read-write を許すことを先に確認する。
+
+旧形式（canonical と同じ directory の `.rokuban-rel-path-lock-*.lock`）は移行時に自動削除
+しない。旧 worker は gate に参加しないため、旧形式 file を unlink すると旧プロセスの waiter
+が古い inode を握る可能性がある。
+
+新形式も同じ接頭辞を `.rokuban-locks/` の下で使う。そのため接頭辞だけで消す
+`find -name '.rokuban-rel-path-lock-*' -delete` は、稼働中の新形式 lock まで消す。
+旧形式だけを消すときは `.rokuban-locks/` を除外する。`-delete` は `-prune` と併用できない
+（`-depth` を暗黙に有効にする）ので `-exec rm` を使う。
+
+```bash
+find "$MEDIA_ROOT" -type d -name .rokuban-locks -prune -o \
+  -type f -name '.rokuban-rel-path-lock-*.lock' -exec rm -- {} +
+```
+
+旧 worker と新 worker が同じ media root に並走している間は、この削除も実行しない。
+k8s の `worker-scaledjobs.yaml` は全 ScaledJob が `rollout.strategy: gradual` なので、更新中は
+旧イメージの実行中 Job が完走するまで新しい Job と並走する。この窓では旧 worker が
+新 worker の gate を知らないまま同じ rel_path を別の inode で lock しうる。
+並走を避けるには、更新の前に media を mount する ScaledJob の新規起動を止め、
+`kubectl get jobs` で旧 Job が全て終わったことを確認してから新しいイメージを適用する。
+新規起動を止める具体的な操作（KEDA の pause 等）と、その間に積む queue の扱いは未検証。
+止められない場合は、この並走窓で同じ rel_path を触る ingest / encode / 削除が二重に
+lock を取りうるリスクを受け入れる。旧形式の残置 file は、全旧 worker の停止後に上の
+コマンドで消す。
 
 ### 派生物の公開（encode）は既存の canonical を上書きする
 
@@ -99,10 +151,10 @@ cancel しない）。そのため:
 - advisory xact lock が排他するのは ingest commit と孤児回収に対してだけである。
   通常削除（`deleteMediaAsset`）とは filesystem lock でしか排他されない。RWX 越しに
   `flock` が効くかは未検証（ルール 4 と同じ前提）
-- 置き忘れた staging file は孤児候補になる。`walkMediaFiles` が飛ばすのは
-  rel_path lock file と catalog ディレクトリだけである。
+- 置き忘れた staging file は孤児候補になる。`walkMediaFiles` は `.rokuban-locks/`
+  と catalog directory を飛ばし、旧形式 lock filename も候補にしない。
   7 日の mtime 猶予（`defaultOrphanMTimeGrace`）の後に、`deleteOrphanFile` が
-  canonical と同じ手順で消す（rel_path lock file が 1 個残る）。
+  canonical と同じ手順で消す。rel_path lock file は Close または次回 GC で消える。
   拡張子が無いので catalog 無し rescue の対象にはならず、原本へ昇格しない
 
 ### カット版の置き換え（「置くのは一回」の 1 つの例外）

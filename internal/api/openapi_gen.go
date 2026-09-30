@@ -829,10 +829,38 @@ type CMDetection struct {
 // CMDetectionState defines model for CMDetection.State.
 type CMDetectionState string
 
+// CMLogoArea defines model for CMLogoArea.
+type CMLogoArea struct {
+	CodedHeight int       `json:"codedHeight"`
+	CodedWidth  int       `json:"codedWidth"`
+	H           int       `json:"h"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+	W           int       `json:"w"`
+	X           int       `json:"x"`
+	Y           int       `json:"y"`
+}
+
+// CMLogoAreaInput defines model for CMLogoAreaInput.
+type CMLogoAreaInput struct {
+	CodedHeight int `json:"codedHeight"`
+	CodedWidth  int `json:"codedWidth"`
+	H           int `json:"h"`
+	W           int `json:"w"`
+	X           int `json:"x"`
+	Y           int `json:"y"`
+}
+
 // CMLogoState defines model for CMLogoState.
 type CMLogoState struct {
-	FailedCount    int64            `json:"failedCount"`
+	FailedCount int64 `json:"failedCount"`
+
+	// FrameRecordingId Recording with an active original for frame selection, or 0.
+	FrameRecordingId int64 `json:"frameRecordingId"`
+
+	// LastError The most recent failed CM detection reason, if any.
+	LastError      *string          `json:"lastError,omitempty"`
 	LearnedAt      *time.Time       `json:"learnedAt,omitempty"`
+	LogoArea       *CMLogoArea      `json:"logoArea,omitempty"`
 	NetworkId      int              `json:"networkId"`
 	PreviewPng     *[]byte          `json:"previewPng,omitempty"`
 	RecordingCount int64            `json:"recordingCount"`
@@ -2215,6 +2243,9 @@ type ListProgramsParams struct {
 	Service *[]int64 `form:"service,omitempty" json:"service,omitempty"`
 }
 
+// PutCMLogoAreaJSONRequestBody defines body for PutCMLogoArea for application/json ContentType.
+type PutCMLogoAreaJSONRequestBody = CMLogoAreaInput
+
 // CreateLabelRuleJSONRequestBody defines body for CreateLabelRule for application/json ContentType.
 type CreateLabelRuleJSONRequestBody = LabelRuleInput
 
@@ -2265,6 +2296,12 @@ type ServerInterface interface {
 	// DeleteCMLogo Forget a station logo so the next CM job learns it again
 	// (DELETE /api/cm-logos/{networkId}/{serviceId})
 	DeleteCMLogo(w http.ResponseWriter, r *http.Request, networkId int, serviceId int)
+	// DeleteCMLogoArea Return a station's logo area to automatic detection
+	// (DELETE /api/cm-logos/{networkId}/{serviceId}/area)
+	DeleteCMLogoArea(w http.ResponseWriter, r *http.Request, networkId int, serviceId int)
+	// PutCMLogoArea Teach the station's CM logo area
+	// (PUT /api/cm-logos/{networkId}/{serviceId}/area)
+	PutCMLogoArea(w http.ResponseWriter, r *http.Request, networkId int, serviceId int)
 	// ListEncodeProfiles List configured encode profile names
 	// (GET /api/encode-profiles)
 	ListEncodeProfiles(w http.ResponseWriter, r *http.Request)
@@ -2445,6 +2482,18 @@ func (_ Unimplemented) ListCMLogos(w http.ResponseWriter, r *http.Request) {
 // DeleteCMLogo Forget a station logo so the next CM job learns it again
 // (DELETE /api/cm-logos/{networkId}/{serviceId})
 func (_ Unimplemented) DeleteCMLogo(w http.ResponseWriter, r *http.Request, networkId int, serviceId int) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// DeleteCMLogoArea Return a station's logo area to automatic detection
+// (DELETE /api/cm-logos/{networkId}/{serviceId}/area)
+func (_ Unimplemented) DeleteCMLogoArea(w http.ResponseWriter, r *http.Request, networkId int, serviceId int) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// PutCMLogoArea Teach the station's CM logo area
+// (PUT /api/cm-logos/{networkId}/{serviceId}/area)
+func (_ Unimplemented) PutCMLogoArea(w http.ResponseWriter, r *http.Request, networkId int, serviceId int) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2879,6 +2928,76 @@ func (siw *ServerInterfaceWrapper) DeleteCMLogo(w http.ResponseWriter, r *http.R
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.DeleteCMLogo(w, r, networkId, serviceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteCMLogoArea operation middleware
+func (siw *ServerInterfaceWrapper) DeleteCMLogoArea(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "networkId" -------------
+	var networkId int
+
+	err = runtime.BindStyledParameterWithOptions("simple", "networkId", chi.URLParam(r, "networkId"), &networkId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "networkId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "serviceId" -------------
+	var serviceId int
+
+	err = runtime.BindStyledParameterWithOptions("simple", "serviceId", chi.URLParam(r, "serviceId"), &serviceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "serviceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteCMLogoArea(w, r, networkId, serviceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PutCMLogoArea operation middleware
+func (siw *ServerInterfaceWrapper) PutCMLogoArea(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "networkId" -------------
+	var networkId int
+
+	err = runtime.BindStyledParameterWithOptions("simple", "networkId", chi.URLParam(r, "networkId"), &networkId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "networkId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "serviceId" -------------
+	var serviceId int
+
+	err = runtime.BindStyledParameterWithOptions("simple", "serviceId", chi.URLParam(r, "serviceId"), &serviceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "serviceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutCMLogoArea(w, r, networkId, serviceId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4559,6 +4678,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Delete(options.BaseURL+"/api/cm-logos/{networkId}/{serviceId}", wrapper.DeleteCMLogo)
 	})
 	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/cm-logos/{networkId}/{serviceId}/area", wrapper.DeleteCMLogoArea)
+	})
+	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/api/cm-logos/{networkId}/{serviceId}/area", wrapper.PutCMLogoArea)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/recordings/{id}/drop-stats", wrapper.ListRecordingDropStats)
 	})
 	r.Group(func(r chi.Router) {
@@ -4741,6 +4866,55 @@ type DeleteCMLogo204Response struct {
 func (response DeleteCMLogo204Response) VisitDeleteCMLogoResponse(w http.ResponseWriter) error {
 	w.WriteHeader(204)
 	return nil
+}
+
+type DeleteCMLogoAreaRequestObject struct {
+	NetworkId int `json:"networkId"`
+	ServiceId int `json:"serviceId"`
+}
+
+type DeleteCMLogoAreaResponseObject interface {
+	VisitDeleteCMLogoAreaResponse(w http.ResponseWriter) error
+}
+
+type DeleteCMLogoArea204Response struct {
+}
+
+func (response DeleteCMLogoArea204Response) VisitDeleteCMLogoAreaResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type PutCMLogoAreaRequestObject struct {
+	NetworkId int `json:"networkId"`
+	ServiceId int `json:"serviceId"`
+	Body      *PutCMLogoAreaJSONRequestBody
+}
+
+type PutCMLogoAreaResponseObject interface {
+	VisitPutCMLogoAreaResponse(w http.ResponseWriter) error
+}
+
+type PutCMLogoArea204Response struct {
+}
+
+func (response PutCMLogoArea204Response) VisitPutCMLogoAreaResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type PutCMLogoArea400JSONResponse ErrorResponse
+
+func (response PutCMLogoArea400JSONResponse) VisitPutCMLogoAreaResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type ListEncodeProfilesRequestObject struct {
@@ -6388,6 +6562,12 @@ type StrictServerInterface interface {
 	// DeleteCMLogo Forget a station logo so the next CM job learns it again
 	// (DELETE /api/cm-logos/{networkId}/{serviceId})
 	DeleteCMLogo(ctx context.Context, request DeleteCMLogoRequestObject) (DeleteCMLogoResponseObject, error)
+	// DeleteCMLogoArea Return a station's logo area to automatic detection
+	// (DELETE /api/cm-logos/{networkId}/{serviceId}/area)
+	DeleteCMLogoArea(ctx context.Context, request DeleteCMLogoAreaRequestObject) (DeleteCMLogoAreaResponseObject, error)
+	// PutCMLogoArea Teach the station's CM logo area
+	// (PUT /api/cm-logos/{networkId}/{serviceId}/area)
+	PutCMLogoArea(ctx context.Context, request PutCMLogoAreaRequestObject) (PutCMLogoAreaResponseObject, error)
 	// ListEncodeProfiles List configured encode profile names
 	// (GET /api/encode-profiles)
 	ListEncodeProfiles(ctx context.Context, request ListEncodeProfilesRequestObject) (ListEncodeProfilesResponseObject, error)
@@ -6714,6 +6894,67 @@ func (sh *strictHandler) DeleteCMLogo(w http.ResponseWriter, r *http.Request, ne
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(DeleteCMLogoResponseObject); ok {
 		if err := validResponse.VisitDeleteCMLogoResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteCMLogoArea operation middleware
+func (sh *strictHandler) DeleteCMLogoArea(w http.ResponseWriter, r *http.Request, networkId int, serviceId int) {
+	var request DeleteCMLogoAreaRequestObject
+
+	request.NetworkId = networkId
+	request.ServiceId = serviceId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteCMLogoArea(ctx, request.(DeleteCMLogoAreaRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteCMLogoArea")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteCMLogoAreaResponseObject); ok {
+		if err := validResponse.VisitDeleteCMLogoAreaResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PutCMLogoArea operation middleware
+func (sh *strictHandler) PutCMLogoArea(w http.ResponseWriter, r *http.Request, networkId int, serviceId int) {
+	var request PutCMLogoAreaRequestObject
+
+	request.NetworkId = networkId
+	request.ServiceId = serviceId
+
+	var body PutCMLogoAreaJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PutCMLogoArea(ctx, request.(PutCMLogoAreaRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PutCMLogoArea")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PutCMLogoAreaResponseObject); ok {
+		if err := validResponse.VisitPutCMLogoAreaResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

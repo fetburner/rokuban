@@ -280,8 +280,8 @@ ON CONFLICT (id) DO UPDATE SET
     -- recordings_unique_active_event に衝突する（issue #129 症状 2）。
     superseded_at       = EXCLUDED.superseded_at,
     -- purged_at を落とすと、purge 済みの tombstone がごみ箱ビューに再び
-    -- 出てしまう（issue #135。ListTrashRecordings は purged_at IS NULL を
-    -- 要求する）。
+    -- 出てしまう（issue #135。ごみ箱一覧（GET /api/recordings?trash=true）は
+    -- purged_at IS NULL を要求する）。
     purged_at           = EXCLUDED.purged_at,
     created_at          = EXCLUDED.created_at,
     updated_at          = EXCLUDED.updated_at;

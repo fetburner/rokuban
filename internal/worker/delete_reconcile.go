@@ -426,10 +426,10 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, q *sqlcgen
 	// ingest commit / canonical orphan cleanup と同じ filesystem lock を、DB の
 	// deleting 遷移より前に取る。通常削除が canonical を unlink している間に
 	// ingest が同じ rel_path を公開すると、DB 行と実体の組が入れ替わる窓ができる。
-	// 親ディレクトリが既に無い場合は消せる実体も無いので、既存の ENOENT 経路へ
-	// 進めるが、その他の lock エラーでは安全側で何もしない。
-	fileLock, lockErr := lockMediaRelPathFile(ctx, path, t.RelPath)
-	if lockErr != nil && !errors.Is(lockErr, os.ErrNotExist) {
+	// lock は canonical の親ではなく media root に置くため、canonical の親が無くても
+	// 排他できる。media root / lock directory にアクセスできない場合は安全側で何もしない。
+	fileLock, lockErr := lockMediaRelPathFile(ctx, w.MediaDir, t.RelPath)
+	if lockErr != nil {
 		log.Error("delete_reconcile: acquiring filesystem lock before asset removal", "err", lockErr)
 		return
 	}
@@ -888,8 +888,8 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath str
 	var txQ *sqlcgen.Queries
 	if !isTemp {
 		var ok bool
-		var fileLock *os.File
-		cleanupCtx, cleanupCancel, tx, txQ, fileLock, ok = w.beginCanonicalOrphanCleanup(q, path, relPath, log)
+		var fileLock *mediaRelPathFileLock
+		cleanupCtx, cleanupCancel, tx, txQ, fileLock, ok = w.beginCanonicalOrphanCleanup(q, relPath, log)
 		if !ok {
 			return
 		}
@@ -958,13 +958,12 @@ func closeOrphanTempLock(tempLock *os.File, log *slog.Logger) {
 // filesystem lock、transaction-level advisory lock、live 行の再確認を完了した
 // cleanup transaction と filesystem lock を返し、途中で安全に削除できない場合は
 // false を返す。返した lock は caller が canonical の stat/unlink/commit 完了まで保持する。
-func (w *DeleteReconcileWorker) beginCanonicalOrphanCleanup(q *sqlcgen.Queries, path, relPath string, log *slog.Logger) (context.Context, context.CancelFunc, pgx5.Tx, *sqlcgen.Queries, *os.File, bool) {
-	fileLock, acquired, lockErr := tryLockMediaRelPathFile(path, relPath)
+func (w *DeleteReconcileWorker) beginCanonicalOrphanCleanup(q *sqlcgen.Queries, relPath string, log *slog.Logger) (context.Context, context.CancelFunc, pgx5.Tx, *sqlcgen.Queries, *mediaRelPathFileLock, bool) {
+	fileLock, acquired, lockErr := tryLockMediaRelPathFile(w.MediaDir, relPath)
 	if lockErr != nil {
 		if errors.Is(lockErr, os.ErrNotExist) {
-			// canonical とその親ディレクトリが既に無ければ、消せる実体は
-			// ない。ingest は親ディレクトリを作ってから commit lock を取る
-			// ため、ここで行だけを整理しても新しい canonical を消さない。
+			// media root が無ければ lock namespace も作れず、削除対象の実体も
+			// ない。orphan row だけを整理し、物理削除は次回の aging pass に任せる。
 			w.clearOrphanFileRecord(q, relPath, 0, false, log)
 			return nil, nil, nil, nil, nil, false
 		}
@@ -1115,7 +1114,7 @@ func recordOrphanCleanup(log *slog.Logger, size int64, physicallyDeleted bool) {
 }
 
 // walkMediaFiles は mediaDir 配下の通常ファイルを列挙する。catalog.Subdir
-// （災害復旧用メタデータ）はメディアアセットではないので走査から除く。
+// （災害復旧用メタデータ）と .rokuban-locks（調停用 metadata）は走査から除く。
 // mediaDir 自体が symlink の場合は、走査 root・catalogDir・rel_path の基準を
 // 同じ実体パスに揃えるため、走査前に解決する。
 //
@@ -1159,6 +1158,7 @@ func walkMediaFiles(mediaDir string, fn func(relPath string, info fs.FileInfo)) 
 	}
 
 	catalogDir := filepath.Join(resolvedMediaDir, catalog.Subdir)
+	lockDir := filepath.Join(resolvedMediaDir, mediapath.MediaRelPathLockDirName)
 	return filepath.Walk(resolvedMediaDir, func(path string, info fs.FileInfo, err error) error {
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
@@ -1166,12 +1166,20 @@ func walkMediaFiles(mediaDir string, fn func(relPath string, info fs.FileInfo)) 
 			}
 			return err
 		}
+		if path == lockDir {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if info.IsDir() {
 			if path == catalogDir {
 				return filepath.SkipDir
 			}
 			return nil
 		}
+		// 旧形式は rolling upgrade 中の旧 worker と共有する可能性があるため、
+		// orphan として unlink しない。新形式は root の lock directory ごと上で除外する。
 		if mediapath.IsMediaRelPathLockFile(info.Name()) {
 			return nil
 		}

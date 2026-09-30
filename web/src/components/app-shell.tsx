@@ -81,7 +81,7 @@ const navItems: NavItem[] = [
   { to: '/search', label: '検索', icon: Search },
   { to: '/rules', label: 'ルール', icon: Settings2 },
   { to: '/shelves', label: 'シリーズ棚', icon: Layers },
-  { to: '/cm-logos', label: 'CM ロゴ', icon: ScanLine },
+  { to: '/cm-logos', label: 'CM 検出のロゴ', icon: ScanLine },
 ]
 
 /**

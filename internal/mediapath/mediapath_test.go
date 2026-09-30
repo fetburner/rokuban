@@ -104,6 +104,14 @@ func TestResolve_MediaDirNormalization(t *testing.T) {
 	}
 }
 
+func TestResolve_RejectsReservedLockDirectory(t *testing.T) {
+	for _, relPath := range []string{MediaRelPathLockDirName, MediaRelPathLockDirName + "/recording.m2ts", "./" + MediaRelPathLockDirName + "/.gate.lock"} {
+		if got, err := Resolve("/storage/media", relPath); !errors.Is(err, ErrReservedMediaPath) {
+			t.Errorf("Resolve(%q) = %q, %v; want ErrReservedMediaPath", relPath, got, err)
+		}
+	}
+}
+
 // TestSubtitleSibling は encoded アセット隣の .vtt サイドカーのパス規則を固定する。
 // この規則は worker（生成・削除）と streamer（配信）が共有するので、片方だけ
 // 変えると「作ったファイルを誰も配れない / 消せない」形でずれる。

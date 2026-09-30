@@ -91,7 +91,7 @@ func TestIngestWorker_CommitDropPositions(t *testing.T) {
 		t.Fatalf("creating ingest temporary file: %v", err)
 	}
 
-	if err := (&IngestWorker{Pool: pool}).commit(
+	if err := (&IngestWorker{Pool: pool, MediaDir: mediaDir}).commit(
 		context.Background(), recordingID, relPath, tempPath, fullPath, int64(len(data)), counter,
 	); err != nil {
 		t.Fatalf("commit() error: %v", err)
@@ -161,7 +161,7 @@ func TestIngestWorker_CommitDropStatsAndPositionsUsesTwoBatches(t *testing.T) {
 		t.Fatalf("creating ingest temporary file: %v", err)
 	}
 
-	if err := (&IngestWorker{Pool: pool}).commit(
+	if err := (&IngestWorker{Pool: pool, MediaDir: mediaDir}).commit(
 		context.Background(), recordingID, "test/drop-batch.m2ts", tempPath, fullPath, int64(len(data)), counter,
 	); err != nil {
 		t.Fatalf("commit() error: %v", err)
@@ -198,7 +198,7 @@ func TestIngestWorker_CommitSkipsEmptyDropBatches(t *testing.T) {
 		t.Fatalf("counter.Write() = %d, %v; want %d, nil", n, err, len(data))
 	}
 
-	if err := (&IngestWorker{Pool: pool}).commit(
+	if err := (&IngestWorker{Pool: pool, MediaDir: mediaDir}).commit(
 		context.Background(), recordingID, "test/stats-only-drop-batch.m2ts", tempPath, fullPath,
 		int64(len(data)), counter,
 	); err != nil {
@@ -216,7 +216,7 @@ func TestIngestWorker_CommitSkipsEmptyDropBatches(t *testing.T) {
 	if err := os.WriteFile(emptyTempPath, nil, 0o600); err != nil {
 		t.Fatalf("creating empty ingest temporary file: %v", err)
 	}
-	if err := (&IngestWorker{Pool: pool}).commit(
+	if err := (&IngestWorker{Pool: pool, MediaDir: mediaDir}).commit(
 		context.Background(), emptyRecordingID, "test/empty-drop-batch.m2ts", emptyTempPath, emptyFullPath, 0,
 		tsstat.NewCounter(&bytes.Buffer{}),
 	); err != nil {
@@ -290,7 +290,7 @@ func TestIngestWorker_CommitDropBatchFailureRollsBack(t *testing.T) {
 		t.Fatalf("creating ingest temporary file: %v", err)
 	}
 
-	err = (&IngestWorker{Pool: pool}).commit(
+	err = (&IngestWorker{Pool: pool, MediaDir: mediaDir}).commit(
 		context.Background(), recordingID, "test/drop-batch-failure.m2ts", tempPath, fullPath,
 		int64(len(data)), counter,
 	)
