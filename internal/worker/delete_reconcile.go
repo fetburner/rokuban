@@ -962,6 +962,9 @@ func (w *DeleteReconcileWorker) beginCanonicalOrphanCleanup(q *sqlcgen.Queries, 
 	fileLock, acquired, lockErr := tryLockMediaRelPathFile(path, relPath)
 	if lockErr != nil {
 		if errors.Is(lockErr, os.ErrNotExist) {
+			// canonical とその親ディレクトリが既に無ければ、消せる実体は
+			// ない。ingest は親ディレクトリを作ってから commit lock を取る
+			// ため、ここで行だけを整理しても新しい canonical を消さない。
 			w.clearOrphanFileRecord(q, relPath, 0, false, log)
 			return nil, nil, nil, nil, nil, false
 		}
@@ -1002,6 +1005,8 @@ func (w *DeleteReconcileWorker) beginCanonicalOrphanCleanup(q *sqlcgen.Queries, 
 
 	txQ := sqlcgen.New(tx)
 	if _, liveErr := txQ.GetLiveMediaAssetByRelPath(cleanupCtx, relPath); liveErr == nil {
+		// verifiedAgedOrphans の後に ingest が commit された。DB 行が公開済み
+		// なら canonical は消さず、古い orphan_files 行だけを同じ tx で整理する。
 		if err := txQ.DeleteOrphanFile(cleanupCtx, relPath); err != nil {
 			_ = tx.Rollback(cleanupCtx)
 			cleanupCancel()
@@ -1042,11 +1047,16 @@ func inspectAgedOrphan(path string, tempLock *os.File, isTemp bool, mtimeGrace t
 	if isTemp && tempLock != nil {
 		lockedInfo, lockStatErr := tempLock.Stat()
 		if lockStatErr != nil || !os.SameFile(lockedInfo, info) {
+			// パスがロック取得後に差し替わった。別 inode をロックなしで
+			// 消さず、次の pass で現在の temp を取り直す。
 			log.Debug("delete_reconcile: ingest temp inode changed while locking; deferring orphan removal")
 			return 0, false, false
 		}
 	}
 	if info.ModTime().After(time.Now().Add(-mtimeGrace)) {
+		// verifiedAgedOrphans の確認後に ingest が replay / append した、または
+		// canonical が別経路で更新された。ロックを保持したまま見送り、次パス
+		// で再確認する。
 		log.Debug("delete_reconcile: orphan became too new; deferring orphan removal")
 		return 0, false, false
 	}

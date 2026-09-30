@@ -59,7 +59,12 @@ linters:
       lines: 150
       statements: -1
     gocognit:
-      min-complexity: 27
+      # whole-files: true は触れたファイルの既存関数まで検査するので、閾値が
+      # 既存の最大値を下回ると無関係な PR が落ちる。既存の関数を全部直す義務は
+      # 作らず、リポジトリ全体（テスト・生成物を除く）の最大値 59（build tag
+      # conformance の fixture 生成器。既定ビルドの最大は 54）に余裕を足した値で
+      # 「これ以上は増やさない」天井だけを守る。
+      min-complexity: 60
 
   exclusions:
     rules:
