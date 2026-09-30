@@ -1,10 +1,17 @@
 // 原本 MPEG-2 TS の一時 HLS を実ブラウザで確認する。
 //
-// original-only の完了録画を開き、FFmpeg が生成した VOD playlist / TS segments を
-// HLS player が再生すること、実 seek、字幕 cue、保存位置の復元、終端到達を測る。
-// 元 TS には MPEG-2 video / MP2 audio を含め、FFmpeg で H.264/AAC の VOD HLS に
-// 変換する。字幕レンディションは同じ fixture の SRT から WebVTT に変換する。
-// API と streamer の URL だけを page.route で差し替えるので、録画 DB やチューナーは要らない。
+// original-only の完了録画を開き、HLS player が H.264/AAC の HLS を再生すること、
+// 実 seek、HLS の WebVTT 字幕レンディション、保存位置の復元、終端到達を測る。
+//
+// **この E2E は streamer を起動しない。** API と streamer の URL を page.route で差し替え、
+// fixture を自前の ffmpeg 引数で作って配るだけである。製品の ffmpeg 引数（event playlist /
+// `hls_list_size 0` / `temp_file` / `segments/` base URL）そのものは Go のテスト
+// （internal/streamer の BuildOriginalVODFFmpegArgs と偽 ffmpeg のテスト）が見ており、
+// ここの手書き引数はそれと同じ形に揃えてあるだけで、同一であることは保証しない。
+// 元 TS は MPEG-2 video / MP2 audio だけを持つ。字幕は SRT から直接 WebVTT にしており、
+// **原本（ARIB / DVB 字幕ストリーム）由来の字幕は未検証**（ffmpeg はテキスト字幕から
+// ビットマップ字幕を作れない）。配る playlist は最初から ENDLIST 済みなので、
+// 変換中に伸びる playlist を追う挙動も未検証（それは live-player のユニットテストが信号だけ見る）。
 //
 //   cd web && pnpm build
 //   pnpm preview --port 4173 --strictPort &
@@ -60,7 +67,7 @@ function runFFmpeg(args, cwd) {
   execFileSync('ffmpeg', args, { cwd, stdio: 'pipe' })
 }
 
-/** MPEG-2 source TS と、その実変換結果となる VOD HLS を用意する。 */
+/** MPEG-2 source TS と、それを変換した HLS（EVENT playlist + ENDLIST）を用意する。 */
 function ensureFixture() {
   const fixtureDir = path.join(os.tmpdir(), 'rokuban-e2e-original-vod-fixture')
   const sourcePath = path.join(fixtureDir, 'original.ts')
@@ -74,7 +81,12 @@ function ensureFixture() {
     )
     const playlist = readFileSync(videoPlaylistPath, 'utf8')
     const master = readFileSync(masterPath, 'utf8')
-    if (sourceInfo.includes('mpeg2video') && playlist.includes('#EXT-X-ENDLIST') && master.includes('TYPE=SUBTITLES')) return fixtureDir
+    if (
+      sourceInfo.includes('mpeg2video') &&
+      playlist.includes('#EXT-X-ENDLIST') &&
+      playlist.includes('#EXT-X-PLAYLIST-TYPE:EVENT') &&
+      master.includes('TYPE=SUBTITLES')
+    ) return fixtureDir
   }
 
   try {
@@ -91,15 +103,14 @@ function ensureFixture() {
     '1\n00:00:02,000 --> 00:00:06,000\nMPEG-2 original subtitle\n\n' +
       '2\n00:00:08,000 --> 00:00:12,000\nSeeked subtitle\n',
   )
-  log(`MPEG-2 原本と VOD HLS を生成中... (${fixtureDir})`)
+  log(`MPEG-2 原本と HLS を生成中... (${fixtureDir})`)
 
-  // SRT を MPEG-TS の DVB subtitle stream として原本へ mux する。
+  // 原本は映像（MPEG-2）と音声（MP2）だけ。字幕は原本へ mux しない。
   runFFmpeg(
     [
       '-hide_banner', '-nostats', '-loglevel', 'error', '-y',
       '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=25',
       '-f', 'lavfi', '-i', 'sine=frequency=440',
-      '-i', captionPath,
       '-t', '16',
       '-map', '0:v:0', '-map', '1:a:0',
       '-c:v', 'mpeg2video', '-b:v', '1400k', '-g', '50', '-sc_threshold', '0',
@@ -119,8 +130,9 @@ function ensureFixture() {
     throw new Error(`fixture must contain MPEG-2 video (streams=${sourceStreams.trim()})`)
   }
 
-  // VOD conversion uses the same shape as the captions-enabled streamer: one video
-  // variant, separate standard/main/sub audio renditions, and an optional WebVTT track.
+  // 製品（captions 有効の streamer）と同じ形: video variant 1 本、標準 / 主 / 副の音声
+  // rendition、WebVTT 字幕（ここでは SRT から直接作る）。playlist は EVENT で、ffmpeg の
+  // 終了時に ENDLIST が付く。`vod` は終了時まで playlist を書かないので使わない。
   runFFmpeg(
     [
       '-hide_banner', '-nostats', '-loglevel', 'error', '-y',
@@ -135,7 +147,7 @@ function ensureFixture() {
       '-c:s', 'webvtt',
       '-var_stream_map', 'v:0,agroup:a0,s:0,sgroup:subs a:0,agroup:a0,default:yes a:1,agroup:a0 a:2,agroup:a0',
       '-master_pl_name', 'playlist.m3u8',
-      '-f', 'hls', '-hls_time', '2', '-hls_list_size', '0', '-hls_playlist_type', 'vod',
+      '-f', 'hls', '-hls_time', '2', '-hls_list_size', '0', '-hls_playlist_type', 'event',
       '-hls_flags', 'temp_file', '-hls_base_url', 'segments/',
       '-hls_segment_filename', path.join(fixtureDir, 'segments', '%v_seg%05d.ts'),
       '-hls_subtitle_path', path.join(fixtureDir, 'subtitles_%v.m3u8'),
@@ -154,11 +166,11 @@ let fixtureDir
 try {
   fixtureDir = ensureFixture()
 } catch (err) {
-  ng.push(`MPEG-2 / DVB subtitle の FFmpeg fixture を生成できない: ${err.message}`)
+  ng.push(`MPEG-2 原本と HLS の FFmpeg fixture を生成できない: ${err.message}`)
   await finish(ng)
 }
 if (fixtureDir === undefined) {
-  ng.push('ffmpeg / ffprobe が無いため MPEG-2 HLS の実ブラウザ判定を実行できない')
+  ng.push('ffmpeg / ffprobe が無いため原本 HLS の実ブラウザ判定を実行できない')
   await finish(ng)
 }
 
@@ -232,7 +244,7 @@ if (!playlistRequests.some((name) => name === 'playlist.m3u8')) {
   ng.push(`① 原本 VOD の master playlist が要求されない (${playlistRequests.join(', ') || 'none'})`)
 }
 if (!readFileSync(path.join(fixtureDir, 'playlist_0.m3u8'), 'utf8').includes('#EXT-X-ENDLIST')) {
-  ng.push('① VOD variant に #EXT-X-ENDLIST がない')
+  ng.push('① variant に #EXT-X-ENDLIST がない')
 }
 
 await video.evaluate(async (element) => {
@@ -248,7 +260,7 @@ log('\n=== ② 実 seek・字幕 cue・保存位置の復元 ===')
 await page.waitForFunction(() => {
   const tracks = Array.from(document.querySelector('video')?.textTracks ?? [])
   return tracks.some((track) => track.kind === 'subtitles')
-}, undefined, { timeout: 10000 }).catch(() => ng.push('② MPEG-2 原本の DVB subtitle が HLS text track にならない'))
+}, undefined, { timeout: 10000 }).catch(() => ng.push('② HLS の WebVTT 字幕レンディションが text track にならない'))
 const cueResult = await video.evaluate(async (element) => {
   const track = Array.from(element.textTracks).find((candidate) => candidate.kind === 'subtitles')
   if (!track) return { trackFound: false, cueCount: 0 }
@@ -260,7 +272,7 @@ const cueResult = await video.evaluate(async (element) => {
   return { trackFound: true, cueCount: track.cues?.length ?? 0 }
 })
 if (!cueResult.trackFound || cueResult.cueCount === 0) {
-  ng.push(`② 原本由来の字幕 cue を読み込めない (${JSON.stringify(cueResult)})`)
+  ng.push(`② WebVTT 字幕の cue を読み込めない (${JSON.stringify(cueResult)})`)
 }
 
 await video.evaluate((element) => { element.currentTime = 7.25 })
@@ -295,7 +307,7 @@ await page.waitForFunction(() => document.querySelector('video')?.ended === true
 const finalSavedPosition = await page.evaluate((key) => localStorage.getItem(key), playbackKey)
 if (finalSavedPosition !== null) ng.push(`③ 終端付近の保存位置が残る (${finalSavedPosition})`)
 if (segmentRequests.length === 0) ng.push('③ HLS segment を要求していない')
-if (subtitleRequests.length === 0) ng.push('③ 原本由来の WebVTT segment を要求していない')
+if (subtitleRequests.length === 0) ng.push('③ WebVTT segment を要求していない')
 log(`  variant playlists=${playlistRequests.length}, video segments=${segmentRequests.length}, subtitle segments=${subtitleRequests.length}`)
 
 await finish(ng, browser)
