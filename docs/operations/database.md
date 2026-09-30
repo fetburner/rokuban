@@ -63,69 +63,15 @@ watcher は advisory lock、notifier は SSE 用の LISTEN を使うため、tra
 
 ### managed PostgreSQL の `btree_gist`
 
-`00012_recording_chapters.sql` は区間の `EXCLUDE` 制約を作る前に、
-`btree_gist` を `public` へ追加する。この文が失敗すると `migrate up` は停止し、
-後続の migration に進まない。k8s では
-[`migrate-job.yaml`](../../deploy/k8s/base/migrate-job.yaml) の Job が同じコマンドを実行する。
+チャプター区間の `EXCLUDE` 制約を作る migration は、先に `btree_gist` を `public` へ追加する。
+この文が失敗すると `migrate up` はそこで止まり、後続の migration に進まない。
+k8s では [`migrate-job.yaml`](../../deploy/k8s/base/migrate-job.yaml) の Job が止まるので、API は更新されない。
 
-PostgreSQL 標準の `btree_gist` は trusted extension である。
-対象 DB に `CREATE` 権限を持つロールで作成できる。
-managed provider の提供状況とアプリの migration role の権限は接続先ごとに確認する
-([btree_gist](https://www.postgresql.org/docs/current/btree-gist.html)、
-[`CREATE EXTENSION`](https://www.postgresql.org/docs/current/sql-createextension.html))。
-`IF NOT EXISTS` は既存 extension があれば作成せず notice を返す。
-その場合、この文の成功だけでは新規作成権限の証明にならない。
+- PostgreSQL 標準の `btree_gist` は trusted extension なので、対象 DB の `CREATE` 権限があれば作れる（[btree_gist](https://www.postgresql.org/docs/current/btree-gist.html)）。ただし managed provider がこの拡張を許可するかは接続先ごとに違う
+- `IF NOT EXISTS` は既存の拡張があると作らずに notice を返す。成功しても新規作成権限の証明にはならない
+- 権限エラーになったら、DB 管理者が同じ文を事前に実行してから migration を再実行する。エラーを握りつぶす変更や migration の書き換えはしない
 
-#### 確認手順
-
-provider の公式コンソールで、本番相当の project、branch、read-write endpoint と
-migration Job が使う `db.user` を特定する。pooler を避けて direct endpoint に接続し、
-password は `psql -W` の prompt で入力する。接続 URI や password をコマンド引数、
-shell history、ログ、issue に貼らない。
-
-```sh
-psql -W "host=ENDPOINT_HOST port=5432 dbname=DATABASE_NAME user=MIGRATION_ROLE sslmode=require"
-```
-
-まず接続ロール、拡張の状態、`00012` の適用状態を読み取りだけで確認する。
-`goose_db_version` に `version_id = 12` の行が無ければ未適用である。
-行が複数ある場合は `id` が最大の行の `is_applied` を見る。
-
-```sql
-SELECT current_user,
-       current_database(),
-       has_database_privilege(current_user, current_database(), 'CREATE') AS can_create;
-
-SELECT e.extversion, n.nspname AS schema_name
-FROM pg_extension AS e
-JOIN pg_namespace AS n ON n.oid = e.extnamespace
-WHERE e.extname = 'btree_gist';
-
-SELECT id, is_applied, tstamp
-FROM public.goose_db_version
-WHERE version_id = 12
-ORDER BY id DESC
-LIMIT 1;
-```
-
-次に、同じ migration role で migration と同じ文を実行する。
-拡張が未導入ならこの操作で追加される。既に導入済みなら何も変更しない。
-`00012` の Down は既存方針どおり拡張を削除しない。
-
-```sql
-CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public;
-```
-
-既に拡張がある状態で新規作成権限まで確かめる必要があるときは、拡張を DROP せず、
-同じ role の権限を用意した使い捨ての managed database で試す。
-拡張が `public` 以外にある場合も `IF NOT EXISTS` は移動しないため、migration 前に管理者へ確認する。
-
-role の実行が権限エラーになった場合は、DB 管理者が対象 DB で上記と同じ文を
-事前に実行し、その後アプリの migration role で `migrate up` を再実行する。
-権限エラーを握りつぶす変更や migration の書き換えはしない。
-k8s では migration Job の失敗を解消してから API を更新する。
-結果を共有するときは provider と project / branch / endpoint の識別子、role での成否、
-`00012` の適用状態だけを記録し、接続情報や password は含めない。
+本番相当の managed 環境での実測は未実施である。確認の手順は [runbook/managed-postgres.md](../runbook/managed-postgres.md)。
 
 ### EPG churn / autovacuum
 
