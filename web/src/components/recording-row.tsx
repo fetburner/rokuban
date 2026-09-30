@@ -9,7 +9,7 @@ import { programTitle } from '@/lib/program-labels'
 import { sourceLabels } from '@/lib/recording-search'
 import { cn } from '@/lib/utils'
 
-/** 表示形式は録画一覧とシリーズページで共有する。`card` はサムネイルを大きく並べる。 */
+/** RecordingRowView は録画一覧とシリーズページで共有する表示形式。`card` はサムネイルを大きく並べる。 */
 export type RecordingRowView = 'list' | 'card'
 
 /**
