@@ -1,10 +1,17 @@
 /**
  * ブラウザ再生の再開位置を localStorage に保存する（#14 7c / M3-5）。
- * サーバー側視聴履歴は持たない。キーは録画 ID + プロファイル。
+ * サーバー側視聴履歴は持たない。キーは録画 ID + 時間軸（下記 ORIGINAL_AXIS。cut 版だけはプロファイル名）。
  * 再生速度（端末ごとに 1 つ、録画をまたいで保つ）も同じく localStorage に持つ。
  */
 
 const PREFIX = 'rokuban:playback:'
+
+/**
+ * ORIGINAL_AXIS は「cut 前の軸」（録画開始からの秒数）の保存キー名。追っかけ・原本 HLS・
+ * cut でない encoded MP4 が共有する。キーを表示中の資産名で決めると、録画中に追っかけで
+ * 保存した位置を、録画終了後の別プロファイルが読めなくなる。
+ */
+export const ORIGINAL_AXIS = 'original'
 
 /** playbackStorageKey は recording id と profile から localStorage キーを作る。 */
 export function playbackStorageKey(recordingId: number, profile: string): string {

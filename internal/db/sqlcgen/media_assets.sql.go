@@ -295,6 +295,47 @@ func (q *Queries) GetOriginalMediaAssetID(ctx context.Context, recordingID int64
 	return id, err
 }
 
+const getOriginalVODTarget = `-- name: GetOriginalVODTarget :one
+SELECT a.id, a.rel_path, a.size_bytes, r.site
+FROM media_assets a
+JOIN recordings r ON r.id = a.recording_id
+WHERE a.recording_id = $1
+  AND a.kind = 'original'
+  AND a.state = 'active'
+  AND r.site = $2
+  AND r.status = 'finished'
+  AND r.deleted_at IS NULL
+  AND r.superseded_at IS NULL
+  AND r.purged_at IS NULL
+`
+
+type GetOriginalVODTargetParams struct {
+	RecordingID int64
+	Site        string
+}
+
+type GetOriginalVODTargetRow struct {
+	ID        int64
+	RelPath   string
+	SizeBytes int64
+	Site      string
+}
+
+// 原本 MPEG-2 を HLS に変換する対象を引く。録画完了済み・ごみ箱/ purge 前・
+// active original のみを開始可能とし、site は URL の site-scoped streamer と照合する。
+// 既存セッションの再取得では使わず、セッション開始前と rel_path lock 取得後に呼ぶ。
+func (q *Queries) GetOriginalVODTarget(ctx context.Context, arg GetOriginalVODTargetParams) (GetOriginalVODTargetRow, error) {
+	row := q.db.QueryRow(ctx, getOriginalVODTarget, arg.RecordingID, arg.Site)
+	var i GetOriginalVODTargetRow
+	err := row.Scan(
+		&i.ID,
+		&i.RelPath,
+		&i.SizeBytes,
+		&i.Site,
+	)
+	return i, err
+}
+
 const getRecordingByID = `-- name: GetRecordingByID :one
 SELECT id, rule_id, source, site, network_id, service_id, event_id, service_name, channel_type, channel, title, description, extended, genres, is_free, program_start_at, program_duration_ms, status, started_at, ended_at, quality_events, deleted_at, created_at, updated_at, superseded_at, purged_at, genre_lv1, series_key FROM recordings WHERE id = $1
 `

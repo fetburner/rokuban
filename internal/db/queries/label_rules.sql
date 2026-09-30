@@ -81,34 +81,50 @@ SELECT (SELECT count(*) FROM upserted) + (SELECT count(*) FROM removed);
 -- 値が NULL の棚の行は `GROUP BY value` が 1 つのグループにまとめる（SQL の
 -- GROUP BY は NULL を等しいものとして扱う）。
 --
--- **この形はプランの形に依存する。** 73,000 行を 141 棚に分けた測定は、
--- `internal/api/shelves_bench_test.go` が専用 DB 上で再現する。テストは
--- `ROKUBAN_BENCH_DATABASE_URL` が無い環境ではスキップし、同じ接続の pgx
--- prepared statement 経由で各形を 10 回実行して中央値を出す。データには
--- finished / recording / failed、再生可能な行、再生資産の無い行、deleted / superseded
--- 行を混ぜ、分類ルールを 50 本置く。
+-- **この形はプランの形に依存する。** 旧母集団（再生できる録画だけ。73,000 行がすべて
+-- 再生可能）での過去の実測（別の環境、sqlc / pgx の prepared statement 経由）:
 --
--- 採用形は、生きている録画を母集団にして `playable_assets` を LEFT JOIN し、
--- `FILTER` で再生可能件数、`max(program_start_at)` で最新開始時刻を同じ集計から返す。
--- `live` を MATERIALIZED にする。測定は `internal/api/shelves_bench_test.go` の
--- 73,000 行・141 棚・50 ルール・混在ステータスを、pgx の prepared statement で
--- 各形 10 回実行した中央値を基準にする（専用 DB URL が無い環境では skip）。
+--   - その形: 141 ms
+--   - 代表と件数を別々の CTE に割る: 231 ms（playable をもう 1 度走査する）
+--   - playable を MATERIALIZED にしない: 617 ms
 --
--- `playable_assets` の MATERIALIZED を外す候補も測定する。prepared statement と単発の
--- psql ではプランが変わるため、アプリと同じ pgx 経路の中央値を基準にする。
+-- 617 ms の仕組みは、MATERIALIZED を外すと部分一意索引 recordings_unique_active_event
+-- が選ばれ、その行数見積もりが 1 になって下流が全部 1 行の計画になり、代表を求める
+-- ソートが外側の行数ぶん繰り返されること、だった。**現スキーマ・合成 seed（下記）では
+-- この 617 ms は再現しない**（MATERIALIZED を外した旧形は旧形の 0.92〜0.96 倍で、EXPLAIN でも
+-- recordings は Seq Scan のまま部分一意索引を使わない）。再現条件は未検証なので、
+-- playable_assets の MATERIALIZED は外さない。
 --
 -- 実効シリーズは recording_series ビューが唯一の定義で、ここでも JOIN で読む
 -- （COALESCE(lr.value_key, r.series_key) を書き下すと定義が 2 箇所になる）。
--- `recording_series` ビュー経由の定義は維持する。測定値は環境依存なので、過去の
--- all-playable データの値を受け入れ条件に固定せず、ハーネスの混在データと実行ログを
--- 変更判断の根拠にする。
+-- ビュー経由は書き下しより約 8% 遅かった（旧母集団の形、合成データ 73,000 行・141 棚・
+-- 分類ルール 50 本で約 223 ms 対 約 206 ms）。
+--
+-- 現在の形（生きている録画 + playable_assets の LEFT JOIN + count FILTER +
+-- max(program_start_at) を同じ集計から返す）の測定は
+-- `internal/api/shelves_bench_test.go`（`ROKUBAN_BENCH_DATABASE_URL` が無ければ
+-- スキップ）が専用 DB で再現する。録画 73,000 行（再生可能 65,000・録画中 3,000・
+-- ingest 待ち 2,000・failed 1,000・ごみ箱 1,000・superseded 1,000）・141 棚・分類ルール
+-- 50 本で、各形を交互に 10 ラウンド回した中央値（Apple M3 Max・PostgreSQL 16.2。
+-- 同じハーネスの 3 回実行）:
+--
+--   - 本番（この形）: 254〜257 ms
+--   - 旧母集団の形（再生できる録画だけを INNER JOIN、playable は MATERIALIZED）:
+--     240〜241 ms（本番の 0.94〜0.95 倍）
+--   - 旧母集団の形から playable の MATERIALIZED を外す: 227〜228 ms（本番の 0.89 倍）
+--   - この形の live を MATERIALIZED にする: 272 ms（本番の 1.06〜1.07 倍。改善にならない）
+--
+-- 結論: live は MATERIALIZED にしない。母集団を広げた費用は旧形の約 1.06 倍である。
+-- 本番の playable_count は旧形の recording_count と全棚で一致する（ハーネスが検査する）。
+-- **絶対値の 200 ms 予算の確認は未測定**（元の測定環境・実データ。この環境は旧形でも
+-- 予算を越える）。
 WITH playable_assets AS MATERIALIZED (
     SELECT DISTINCT ma.recording_id
     FROM media_assets ma
     WHERE (ma.kind = 'original' AND ma.state <> 'deleted')
        OR (ma.kind = 'encoded' AND ma.state = 'active')
 ),
-live AS MATERIALIZED (
+live AS (
     SELECT r.id,
            r.title,
            r.program_start_at,

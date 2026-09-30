@@ -167,7 +167,7 @@ func TestLiveActiveSessionsInitializesKinds(t *testing.T) {
 		}
 	}
 
-	for _, kind := range []string{"live", "chase"} {
+	for _, kind := range []string{"live", "chase", "original_vod"} {
 		value, ok := got[kind]
 		if !ok {
 			t.Errorf("active session metric is missing kind=%q at startup", kind)
