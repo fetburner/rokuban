@@ -91,6 +91,14 @@ describe('ShelvesPage', () => {
     expect(screen.queryByText('再生できる録画がまだありません')).not.toBeInTheDocument()
   })
 
+  it('棚が 0 件のときは録画が無いと言う', async () => {
+    stubApi([])
+    renderInRouter(<ShelvesPage />, { path: '/shelves' })
+
+    expect(await screen.findByText('再生できる録画がまだありません')).toBeInTheDocument()
+    expect(screen.queryByText('シリーズを開ける棚がまだありません')).not.toBeInTheDocument()
+  })
+
   it('「この棚を割る・指定する」で棚のキーがフォームに入る', async () => {
     const user = userEvent.setup()
     stubApi(shelves)
