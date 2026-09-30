@@ -401,10 +401,9 @@ LEFT JOIN LATERAL (
 // 動的 WHERE として組む（internal/rulequery.Compile の arg クロージャ方式に倣う。
 // sqlc の静的クエリにしない理由は queryRecordings のコメント参照）。
 //
-// 射影は ListRecordings / ListTrashRecordings（internal/db/queries/recordings.sql・
-// recordings_trash.sql）と同じ列を明示的に並べる（r.* ではなく列名を書くのは、
-// この SELECT リストが queryRecordings の Scan 呼び出しの順序をそのまま決める
-// ため）。available_encoded_assets は trash かどうかによらず常に射影する ---
+// 列名を明示する（r.* ではなく列名を書くのは、この SELECT リストが
+// queryRecordings の Scan 呼び出しの順序をそのまま決めるため）。
+// available_encoded_assets は trash かどうかによらず常に射影する ---
 // 「ごみ箱では出さない」という規則は recordingFromListFields（Go 側 1 か所）が
 // r.DeletedAt で判定する（recordingsAvailableEncodedAssetsSelect のコメント参照）。
 //
@@ -434,9 +433,8 @@ func buildRecordingsQuery(f recordingsFilter) (string, []any, error) {
 		where.WriteString(clause)
 	}
 
-	// 基底述語は現行 ListRecordings / ListTrashRecordings と揺れさせない
-	// （trash=false: r.deleted_at IS NULL、superseded_at は現行も絞っていないので
-	// 新たに絞らない）。
+	// trash の有無で基底述語を切り替える。通常一覧では deleted_at だけを絞り、
+	// superseded_at は履歴を保つため絞らない。
 	if f.Trash {
 		and("r.deleted_at IS NOT NULL")
 		and("r.purged_at IS NULL")
@@ -550,7 +548,7 @@ LIMIT ` + limitPlaceholder
 // queryRecordings は buildRecordingsQuery が組んだ SQL を実行し、
 // recordingFromListFields で Recording に写す。
 //
-// sqlc の静的クエリ（Queries.ListRecordings 等）にしないのは、絞り込み軸ごとに
+// sqlc の静的クエリにしないのは、絞り込み軸ごとに
 // `($n IS NULL OR ...)` 形で条件を足すと汎用プランになり、trgm 式 GIN
 // （recordings_title_trgm 等）を使わないことがあるため（issue #136 の
 // 「罠」）。buildRecordingsQuery は条件が実際にあるときだけ節を足すので、そもそも
