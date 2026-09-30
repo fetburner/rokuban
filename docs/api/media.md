@@ -24,10 +24,10 @@ HEAD /api/media/recordings/{id}/seek-tiles        →  ヘッダーのみ
 
 録画配信は一覧・詳細 API と `/api/recordings/{id}` の部分木を共有する。`{id}` は要求時まで列挙できないので、その後ろで api と streamer が分かれる。そのため標準 Ingress の `Exact` / `Prefix` だけでは、単一ホスト名から一意に振り分けられない。分割可能な外向きの形として、応答の性質を表す固定接頭辞 `/api/media/recordings/{id}/...` に移設した。メソッド（`GET` / `HEAD`）とクエリは変えない。
 
-**ブラウザ VOD は MP4 progressive + Range とする（HLS ではない）**。家庭 LAN の
-オンデマンド再生では、単一ファイル + `http.ServeContent` の Range が十分である。
-セグメント化・プレイリスト・hls.js のコストに見合わない。ライブ視聴の HLS は
-別経路（下記「ライブ視聴の HLS」）のまま。
+**active な encoded のブラウザ VOD は MP4 progressive + Range を使う。**
+家庭 LAN のオンデマンド再生では、単一ファイル + `http.ServeContent` の Range が十分である。
+原本だけが残る完了録画は一時 HLS でブラウザ再生する（下記「録画原本のブラウザ再生」）。
+ライブ視聴の HLS は別経路（下記「ライブ視聴の HLS」）のまま。
 
 **HEAD も登録する。** VLC やブラウザはシーク前に HEAD で `Content-Length` と
 `Accept-Ranges` を取るため、405 を返すとシーク再生に失敗しうる。
@@ -575,6 +575,68 @@ map とファイルを直ちに解放して次の playlist 要求で再起動で
 どちらも `live.segment_dir` 配下で、録画バッファとは別の tmpfs / scratch に置く。追っかけ
 は録画時間ぶんのセグメントを idle GC まで保持するため、同時視聴数と録画時間に応じた
 容量を見積もる。詳細は [operations.md](../operations.md) §5 を参照する。
+
+### 録画原本のブラウザ再生
+
+完了済みで active な原本 MPEG-2 TS を、site streamer が FFmpeg → HLS の一時セッションとして
+変換する。これは `media_assets` に保存する派生物ではない。資源同定は `recordings.id` で、
+profile は出力 playlist の選択にだけ使うため、同じ録画の視聴者と profile 切替は 1 本の
+FFmpeg セッションを共有する。live / chase と同じ `live.max_sessions`、idle GC、離脱ヒントを
+使う。Prometheus は `rokuban_live_active_sessions{kind="original_vod"}` に内訳を出す。
+
+```
+GET  /api/sites/{site}/recordings/{id}/original-vod/playlist.m3u8[?profile=<name>]
+         → application/vnd.apple.mpegurl
+GET  /api/sites/{site}/recordings/{id}/original-vod/segments/{name}
+GET  /api/sites/{site}/recordings/{id}/original-vod/{name}
+         → video/mp2t / text/vtt / application/vnd.apple.mpegurl
+POST /api/sites/{site}/recordings/{id}/original-vod/leave
+         → 204（離脱のヒント）
+```
+
+これらのバイナリ配信ルートは `openapi.yaml` に載せない。開始時に DB から同じ site の
+`finished` 録画と `state='active'` の original を引く。原本を read-only で open してから、
+同じ asset ID がまだ active で `rel_path` も一致することを DB で再確認する（open-then-verify）。
+一致しなければ 404 にする。`rel_path` lock は取らず、streamer は media に何も書かない。
+
+lock が要らない根拠は 3 つある。original の canonical は行の commit より前に rename で置かれる。
+unlink は `MarkMediaAssetDeleting` の commit より後にしか起きない。live な行がある `rel_path` へは
+別の書き手が公開できない（`media_assets_rel_path_idx`）。したがって再確認で active なら、
+open した inode はその行の原本である（`TestOriginalVODVerifiesDBTargetAfterOpen`）。
+trash・purge・supersede・失敗・原本不在・別 site / 未束縛 site は 404 にする。
+その場合、セッションや DB 行を作らない。
+
+開始後のセグメント要求は asset の状態を見ない。見るのは利用者の操作である録画のごみ箱・purge・
+supersede だけで、該当すれば 404 にしてセッションと scratch を回収する。
+FFmpeg は開いた inode を読み続ける。
+エンコード完了直後の `until_encoded` 削除で canonical path が unlink されても、
+視聴中の再生は止まらない。
+テストは `TestOriginalVODRetainedSessionSurvivesOriginalDeletion` である。
+この確認で DB が `ErrNoRows` 以外のエラーを返したときは、警告を出して配信を続ける。
+再生を DB の可用性に依存させないためである。
+
+FFmpeg は既存の live profile、音声 rendition、任意の WebVTT 字幕設定を使う。
+**playlist は `-hls_playlist_type event` にする。** `vod` は playlist を FFmpeg の終了時にしか書かない。
+ffmpeg 9.0.2 で 20 秒の MPEG-2 TS を実時間で流すと、vod は変換中 `.m3u8` が 0 個で終了後に初めて出た。
+この形だと、15 秒で変換が終わらない録画はすべて playlist 待ちの 504 になる。
+event は変換の先頭から playlist が書かれ、終了時に `#EXT-X-ENDLIST` が付く。
+`-hls_list_size 0` と `temp_file` を使い、`delete_segments` は付けない。
+変換中のシーク可能範囲は変換の先端まで伸びていき、末尾まで届くのは変換の終了後になる。
+正常終了後も、`#EXT-X-ENDLIST` と全 segment を idle GC まで保持する。
+シークや遅れて届く segment 要求には、この保持したファイルで応える。
+異常終了時は scratch とセッションを回収する。
+原本が引き続き active なら次の要求で作り直せる
+（`TestOriginalVODServesPlaylistWhileFFmpegIsStillConverting`）。
+
+原本だけの完了録画はこの経路をブラウザ再生の既定にする。active な録画は既存の chase、
+active な encoded がある完了録画は MP4 progressive + Range を使う。原本 MPEG-2 decoder を
+持たない FFmpeg build は `live.enabled` の streamer 起動前に拒否し、再生要求後に空の HLS
+player だけが出る状態を避ける。
+
+原本 VOD の HLS scratch も `live.segment_dir` に置き、録画バッファ / archive から分離する。
+正常終了後も idle GC まで録画全体の変換済み segment が残るため、録画時間、全 live profile の
+出力 bitrate、同時セッション数を掛けて tmpfs 容量を見積もる（[operations.md](../operations.md)
+§5）。
 
 ### SPA アセット配信
 

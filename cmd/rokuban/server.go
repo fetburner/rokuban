@@ -542,7 +542,9 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 			if err := cfg.Live.ValidateTools(); err != nil {
 				return nil, err
 			}
-			liveStreamers := newLiveStreamersBySiteWithPool(pool, bound, convertLiveConfig(cfg.Live))
+			liveConfig := convertLiveConfig(cfg.Live)
+			liveConfig.MediaDir = cfg.Storage.MediaDir
+			liveStreamers := newLiveStreamersBySiteWithPool(pool, bound, liveConfig)
 			mounters = append(mounters, liveStreamers)
 			// idle GC ループ。egCtx が終わったら全セッションを止めて mirakc の
 			// 接続を閉じる（チューナー解放。crash-only の唯一の例外の後始末）。

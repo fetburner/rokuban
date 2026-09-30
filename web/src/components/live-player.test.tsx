@@ -48,7 +48,11 @@ type FakeHls = {
 
 vi.mock('hls.js', () => {
   class FakeHlsImpl {
-    static Events = { ERROR: 'hlsError', AUDIO_TRACKS_UPDATED: 'hlsAudioTracksUpdated' }
+    static Events = {
+      ERROR: 'hlsError',
+      AUDIO_TRACKS_UPDATED: 'hlsAudioTracksUpdated',
+      LEVEL_LOADED: 'hlsLevelLoaded',
+    }
     static isSupported = () => hlsMockState.supported
     on = vi.fn()
     // 音声トラック（issue #870）。実 hls.js は master の音声グループを読むまで空
@@ -939,6 +943,93 @@ describe('LivePlayer の状態遷移', () => {
       )
       expect(hls.attachMedia).toHaveBeenCalledTimes(1)
       await waitFor(() => expect(screen.queryByText('読み込み中…')).not.toBeInTheDocument())
+    })
+
+    it('原本 VOD を HLS で開き、保存位置を復元する', async () => {
+      savePlaybackPosition(42, 'vod-h264', 23)
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+      render(
+        <LivePlayer
+          mode="original-vod"
+          site="default"
+          recordingId={42}
+          profile="hd"
+          playbackProfile="vod-h264"
+        />,
+      )
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      expect(hlsMockState.instances[0]!.loadSource).toHaveBeenCalledWith(
+        '/api/sites/default/recordings/42/original-vod/playlist.m3u8?profile=hd',
+      )
+      expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition: 23 }])
+
+      const video = document.querySelector('video')!
+      Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+      fireEvent.loadedMetadata(video)
+      expect(video.currentTime).toBe(23)
+    })
+
+    it('原本 VOD は ENDLIST を見るまで duration を完了判定に使わない', async () => {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+      render(<LivePlayer mode="original-vod" site="default" recordingId={44} profile="hd" playbackProfile="vod-h264" />)
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const video = document.querySelector('video')!
+      Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+      // 変換中の EVENT playlist: duration は変換の先端（120 秒）でしかない
+      Object.defineProperty(video, 'duration', { value: 120, configurable: true })
+      fireEvent.loadedMetadata(video)
+
+      video.currentTime = 118
+      fireEvent.timeUpdate(video)
+      expect(localStorage.getItem('rokuban:playback:44:vod-h264')).toBe('118')
+
+      // ENDLIST を読んだ（live === false）後は、終端 5 秒以内の位置を残さない
+      const levelLoaded = hlsMockState.instances[0]!.on.mock.calls.find((c) => c[0] === 'hlsLevelLoaded')![1]
+      levelLoaded('hlsLevelLoaded', { fatal: false, details: { live: true } })
+      video.currentTime = 119
+      fireEvent.timeUpdate(video)
+      expect(localStorage.getItem('rokuban:playback:44:vod-h264')).toBe('119')
+      levelLoaded('hlsLevelLoaded', { fatal: false, details: { live: false } })
+      video.currentTime = 120
+      fireEvent.timeUpdate(video)
+      expect(localStorage.getItem('rokuban:playback:44:vod-h264')).toBeNull()
+    })
+
+    it('原本 VOD の ended で保存位置を消す（ネイティブ経路も同じイベント）', async () => {
+      savePlaybackPosition(45, 'vod-h264', 50)
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+      render(<LivePlayer mode="original-vod" site="default" recordingId={45} profile="hd" playbackProfile="vod-h264" />)
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const video = document.querySelector('video')!
+      Object.defineProperty(video, 'duration', { value: 120, configurable: true })
+      fireEvent.ended(video)
+      expect(localStorage.getItem('rokuban:playback:45:vod-h264')).toBeNull()
+    })
+
+    it('原本 VOD の profile 切替で再生位置を持ち越す', async () => {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+      const props = {
+        mode: 'original-vod',
+        site: 'default',
+        recordingId: 43,
+        playbackProfile: 'vod-h264',
+      } as const
+      const { rerender } = render(<LivePlayer {...props} profile="hd" />)
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const video = document.querySelector('video')!
+      Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+      fireEvent.loadedMetadata(video)
+      video.currentTime = 37
+
+      rerender(<LivePlayer {...props} profile="sd" />)
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+      video.currentTime = 0
+      fireEvent.loadedMetadata(video)
+      expect(video.currentTime).toBe(37)
+      expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+        '/api/sites/default/recordings/43/original-vod/playlist.m3u8?profile=sd',
+      )
     })
 
     it('追っかけは VOD と端末共通の速度を読み書きする', async () => {

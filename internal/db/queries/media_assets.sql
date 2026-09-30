@@ -206,6 +206,22 @@ WHERE a.recording_id = $1
   AND a.state = 'active'
   AND r.deleted_at IS NULL;
 
+-- 原本 MPEG-2 を HLS に変換する対象を引く。録画完了済み・ごみ箱/ purge 前・
+-- active original のみを開始可能とし、site は URL の site-scoped streamer と照合する。
+-- 既存セッションの再取得では使わず、セッション開始前と rel_path lock 取得後に呼ぶ。
+-- name: GetOriginalVODTarget :one
+SELECT a.id, a.rel_path, a.size_bytes, r.site
+FROM media_assets a
+JOIN recordings r ON r.id = a.recording_id
+WHERE a.recording_id = $1
+  AND a.kind = 'original'
+  AND a.state = 'active'
+  AND r.site = $2
+  AND r.status = 'finished'
+  AND r.deleted_at IS NULL
+  AND r.superseded_at IS NULL
+  AND r.purged_at IS NULL;
+
 -- 配信対象のサムネイルを引く。ごみ箱・削除済みは配らない（原本と同じ契約）。
 -- name: GetThumbnailMediaAssetForServing :one
 SELECT a.id, a.rel_path, a.size_bytes, a.updated_at, r.title
