@@ -166,6 +166,7 @@ describe('CMLogosPage', () => {
 
     await waitFor(() => expect(requests.some((request) => request.method === 'PUT')).toBe(true))
     expect(requests.find((request) => request.method === 'PUT')?.body).toEqual({
+      recordingId: 7,
       x: 1272,
       y: 96,
       w: 180,

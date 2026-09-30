@@ -1691,9 +1691,19 @@ export const DeleteRecordingChapterEditsResponse = zod.void()
 /**
  * @summary List learned CM logos and station detection failures
  */
+
+
 export const listCMLogosResponseLogoAreaXMin = 0;
 
 export const listCMLogosResponseLogoAreaYMin = 0;
+
+
+
+
+
+export const listCMLogosResponseCandidateXMin = 0;
+
+export const listCMLogosResponseCandidateYMin = 0;
 
 
 
@@ -1712,6 +1722,8 @@ export const ListCMLogosResponseItem = zod.object({
   "pendingCount": zod.int().describe('Number of recordings that still need CM detection.'),
   "detectedCount": zod.int().describe('Number of recordings with a CM detection result.'),
   "redetectableCount": zod.int().describe('Detected recordings whose original media is still active.'),
+  "codedWidth": zod.int().min(1).optional().describe('Coded width of the learned logo, if one is present.'),
+  "codedHeight": zod.int().min(1).optional().describe('Coded height of the learned logo, if one is present.'),
   "learnedAt": zod.iso.datetime({"offset":true}).optional(),
   "previewPng": zod.string().optional(),
   "lastFailureStage": zod.string().nullish().describe('The stage of the most recent failure that still needs attention, if known.'),
@@ -1724,6 +1736,20 @@ export const ListCMLogosResponseItem = zod.object({
   "codedWidth": zod.int().min(1),
   "codedHeight": zod.int().min(1),
   "updatedAt": zod.iso.datetime({"offset":true})
+}).optional(),
+  "candidate": zod.object({
+  "state": zod.enum(['running', 'failed', 'ready']),
+  "stage": zod.enum(['setup', 'probe', 'area', 'logo', 'match', 'stopped']).nullish(),
+  "error": zod.string().nullish(),
+  "previewPng": zod.string().optional(),
+  "x": zod.int().min(listCMLogosResponseCandidateXMin),
+  "y": zod.int().min(listCMLogosResponseCandidateYMin),
+  "w": zod.int().min(1),
+  "h": zod.int().min(1),
+  "codedWidth": zod.int().min(1),
+  "codedHeight": zod.int().min(1),
+  "recordingId": zod.int().nullish(),
+  "attemptedAt": zod.iso.datetime({"offset":true})
 }).optional()
 })
 export const ListCMLogosResponse = zod.array(ListCMLogosResponseItem)
@@ -1741,7 +1767,7 @@ export const DeleteCMLogoResponse = zod.void()
 
 
 /**
- * @summary Teach the station's CM logo area
+ * @summary Save a station's CM logo area and start candidate analysis
  */
 export const PutCMLogoAreaParams = zod.object({
   "networkId": zod.int(),
@@ -1758,13 +1784,15 @@ export const putCMLogoAreaBodyYMin = 0;
 
 
 
+
 export const PutCMLogoAreaBody = zod.object({
   "x": zod.int().min(putCMLogoAreaBodyXMin),
   "y": zod.int().min(putCMLogoAreaBodyYMin),
   "w": zod.int().min(1),
   "h": zod.int().min(1),
   "codedWidth": zod.int().min(1),
-  "codedHeight": zod.int().min(1)
+  "codedHeight": zod.int().min(1),
+  "recordingId": zod.int().min(1)
 })
 
 export const PutCMLogoAreaResponse = zod.void()
@@ -1779,6 +1807,34 @@ export const DeleteCMLogoAreaParams = zod.object({
 })
 
 export const DeleteCMLogoAreaResponse = zod.void()
+
+
+/**
+ * @summary Adopt the ready CM logo candidate
+ */
+export const AdoptCMLogoCandidateParams = zod.object({
+  "networkId": zod.int(),
+  "serviceId": zod.int()
+})
+
+export const adoptCMLogoCandidateBodyRedetectDefault = true;
+
+export const AdoptCMLogoCandidateBody = zod.object({
+  "redetect": zod.boolean().default(adoptCMLogoCandidateBodyRedetectDefault)
+})
+
+export const AdoptCMLogoCandidateResponse = zod.void()
+
+
+/**
+ * @summary Discard the CM logo candidate
+ */
+export const DeleteCMLogoCandidateParams = zod.object({
+  "networkId": zod.int(),
+  "serviceId": zod.int()
+})
+
+export const DeleteCMLogoCandidateResponse = zod.void()
 
 
 /**

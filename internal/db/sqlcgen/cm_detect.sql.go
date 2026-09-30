@@ -10,6 +10,25 @@ import (
 	"time"
 )
 
+const deleteCMAdoptAttemptsForStation = `-- name: DeleteCMAdoptAttemptsForStation :exec
+DELETE FROM recording_cm_attempts ca
+USING recordings r
+WHERE ca.recording_id = r.id
+  AND r.network_id = $1
+  AND r.service_id = $2
+  AND ca.stage = 'adopt'
+`
+
+type DeleteCMAdoptAttemptsForStationParams struct {
+	NetworkID int32
+	ServiceID int32
+}
+
+func (q *Queries) DeleteCMAdoptAttemptsForStation(ctx context.Context, arg DeleteCMAdoptAttemptsForStationParams) error {
+	_, err := q.db.Exec(ctx, deleteCMAdoptAttemptsForStation, arg.NetworkID, arg.ServiceID)
+	return err
+}
+
 const deleteCMDetection = `-- name: DeleteCMDetection :exec
 DELETE FROM recording_cm_detections WHERE recording_id = $1
 `
@@ -25,6 +44,31 @@ DELETE FROM recording_cm_attempts WHERE recording_id = $1
 
 func (q *Queries) DeleteCMDetectionAttempt(ctx context.Context, recordingID int64) error {
 	_, err := q.db.Exec(ctx, deleteCMDetectionAttempt, recordingID)
+	return err
+}
+
+const deleteCMDetectionsForStationWithActiveOriginal = `-- name: DeleteCMDetectionsForStationWithActiveOriginal :exec
+DELETE FROM recording_cm_detections d
+USING recordings r
+JOIN media_assets o ON o.recording_id = r.id
+    AND o.kind = 'original' AND o.state = 'active'
+WHERE d.recording_id = r.id
+  AND r.network_id = $1
+  AND r.service_id = $2
+  AND r.deleted_at IS NULL
+  AND r.purged_at IS NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = o.id
+  )
+`
+
+type DeleteCMDetectionsForStationWithActiveOriginalParams struct {
+	NetworkID int32
+	ServiceID int32
+}
+
+func (q *Queries) DeleteCMDetectionsForStationWithActiveOriginal(ctx context.Context, arg DeleteCMDetectionsForStationWithActiveOriginalParams) error {
+	_, err := q.db.Exec(ctx, deleteCMDetectionsForStationWithActiveOriginal, arg.NetworkID, arg.ServiceID)
 	return err
 }
 
@@ -58,6 +102,45 @@ type DeleteCMLogoAreaParams struct {
 
 func (q *Queries) DeleteCMLogoArea(ctx context.Context, arg DeleteCMLogoAreaParams) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteCMLogoArea, arg.NetworkID, arg.ServiceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteCMLogoCandidate = `-- name: DeleteCMLogoCandidate :execrows
+DELETE FROM cm_logo_candidates
+WHERE network_id = $1 AND service_id = $2
+`
+
+type DeleteCMLogoCandidateParams struct {
+	NetworkID int32
+	ServiceID int32
+}
+
+func (q *Queries) DeleteCMLogoCandidate(ctx context.Context, arg DeleteCMLogoCandidateParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteCMLogoCandidate, arg.NetworkID, arg.ServiceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteCMLogoCandidateForAreaVersion = `-- name: DeleteCMLogoCandidateForAreaVersion :execrows
+DELETE FROM cm_logo_candidates
+WHERE network_id = $1
+  AND service_id = $2
+  AND observed_area_updated_at = $3::timestamptz
+`
+
+type DeleteCMLogoCandidateForAreaVersionParams struct {
+	NetworkID     int32
+	ServiceID     int32
+	AreaUpdatedAt time.Time
+}
+
+func (q *Queries) DeleteCMLogoCandidateForAreaVersion(ctx context.Context, arg DeleteCMLogoCandidateForAreaVersionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteCMLogoCandidateForAreaVersion, arg.NetworkID, arg.ServiceID, arg.AreaUpdatedAt)
 	if err != nil {
 		return 0, err
 	}
@@ -128,7 +211,7 @@ func (q *Queries) GetCMDetectionWorkItem(ctx context.Context, recordingID int64)
 }
 
 const getCMLogo = `-- name: GetCMLogo :one
-SELECT lgd, coded_width, coded_height
+SELECT lgd, coded_width, coded_height, learned_at
 FROM cm_logos
 WHERE network_id = $1 AND service_id = $2
 `
@@ -142,12 +225,53 @@ type GetCMLogoRow struct {
 	Lgd         []byte
 	CodedWidth  int32
 	CodedHeight int32
+	LearnedAt   time.Time
 }
 
 func (q *Queries) GetCMLogo(ctx context.Context, arg GetCMLogoParams) (GetCMLogoRow, error) {
 	row := q.db.QueryRow(ctx, getCMLogo, arg.NetworkID, arg.ServiceID)
 	var i GetCMLogoRow
-	err := row.Scan(&i.Lgd, &i.CodedWidth, &i.CodedHeight)
+	err := row.Scan(
+		&i.Lgd,
+		&i.CodedWidth,
+		&i.CodedHeight,
+		&i.LearnedAt,
+	)
+	return i, err
+}
+
+const getCMLogoAnalysisRecording = `-- name: GetCMLogoAnalysisRecording :one
+SELECT r.id, a.updated_at
+FROM cm_logo_areas a
+JOIN recordings r
+  ON r.network_id = a.network_id AND r.service_id = a.service_id
+JOIN media_assets o ON o.recording_id = r.id
+    AND o.kind = 'original' AND o.state = 'active'
+WHERE a.network_id = $1
+  AND a.service_id = $2
+  AND r.deleted_at IS NULL
+  AND r.purged_at IS NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = o.id
+  )
+ORDER BY r.id DESC
+LIMIT 1
+`
+
+type GetCMLogoAnalysisRecordingParams struct {
+	NetworkID int32
+	ServiceID int32
+}
+
+type GetCMLogoAnalysisRecordingRow struct {
+	ID        int64
+	UpdatedAt time.Time
+}
+
+func (q *Queries) GetCMLogoAnalysisRecording(ctx context.Context, arg GetCMLogoAnalysisRecordingParams) (GetCMLogoAnalysisRecordingRow, error) {
+	row := q.db.QueryRow(ctx, getCMLogoAnalysisRecording, arg.NetworkID, arg.ServiceID)
+	var i GetCMLogoAnalysisRecordingRow
+	err := row.Scan(&i.ID, &i.UpdatedAt)
 	return i, err
 }
 
@@ -187,6 +311,57 @@ func (q *Queries) GetCMLogoArea(ctx context.Context, arg GetCMLogoAreaParams) (G
 	return i, err
 }
 
+const getCMLogoCandidate = `-- name: GetCMLogoCandidate :one
+SELECT state, stage, error, x, y, w, h, coded_width, coded_height,
+       recording_id, observed_area_updated_at, lgd, preview_png, attempted_at
+FROM cm_logo_candidates
+WHERE network_id = $1 AND service_id = $2
+`
+
+type GetCMLogoCandidateParams struct {
+	NetworkID int32
+	ServiceID int32
+}
+
+type GetCMLogoCandidateRow struct {
+	State                 string
+	Stage                 *string
+	Error                 *string
+	X                     int32
+	Y                     int32
+	W                     int32
+	H                     int32
+	CodedWidth            int32
+	CodedHeight           int32
+	RecordingID           *int64
+	ObservedAreaUpdatedAt time.Time
+	Lgd                   []byte
+	PreviewPng            []byte
+	AttemptedAt           time.Time
+}
+
+func (q *Queries) GetCMLogoCandidate(ctx context.Context, arg GetCMLogoCandidateParams) (GetCMLogoCandidateRow, error) {
+	row := q.db.QueryRow(ctx, getCMLogoCandidate, arg.NetworkID, arg.ServiceID)
+	var i GetCMLogoCandidateRow
+	err := row.Scan(
+		&i.State,
+		&i.Stage,
+		&i.Error,
+		&i.X,
+		&i.Y,
+		&i.W,
+		&i.H,
+		&i.CodedWidth,
+		&i.CodedHeight,
+		&i.RecordingID,
+		&i.ObservedAreaUpdatedAt,
+		&i.Lgd,
+		&i.PreviewPng,
+		&i.AttemptedAt,
+	)
+	return i, err
+}
+
 const getCMRetryOriginal = `-- name: GetCMRetryOriginal :one
 SELECT EXISTS (
     SELECT 1 FROM recordings r
@@ -202,6 +377,79 @@ func (q *Queries) GetCMRetryOriginal(ctx context.Context, recordingID int64) (bo
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const hasCMRecordingOriginal = `-- name: HasCMRecordingOriginal :one
+SELECT EXISTS (
+    SELECT 1
+    FROM recordings r
+    JOIN media_assets o ON o.recording_id = r.id
+        AND o.kind = 'original' AND o.state = 'active'
+    WHERE r.id = $1
+      AND r.network_id = $2
+      AND r.service_id = $3
+      AND r.deleted_at IS NULL
+      AND r.purged_at IS NULL
+      AND NOT EXISTS (
+          SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = o.id
+      )
+)
+`
+
+type HasCMRecordingOriginalParams struct {
+	RecordingID int64
+	NetworkID   int32
+	ServiceID   int32
+}
+
+func (q *Queries) HasCMRecordingOriginal(ctx context.Context, arg HasCMRecordingOriginalParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasCMRecordingOriginal, arg.RecordingID, arg.NetworkID, arg.ServiceID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const insertCMLogoCandidateRunning = `-- name: InsertCMLogoCandidateRunning :execrows
+INSERT INTO cm_logo_candidates (
+    network_id, service_id, state, stage, error,
+    x, y, w, h, coded_width, coded_height,
+    recording_id, observed_area_updated_at, attempted_at
+)
+SELECT a.network_id, a.service_id, 'running', NULL, NULL,
+       a.x, a.y, a.w, a.h, a.coded_width, a.coded_height,
+       $1::bigint, a.updated_at, now()
+FROM cm_logo_areas a
+LEFT JOIN cm_logos l
+  ON l.network_id = a.network_id AND l.service_id = a.service_id
+WHERE a.network_id = $2
+  AND a.service_id = $3
+  AND a.updated_at = $4::timestamptz
+  AND NOT EXISTS (
+      SELECT 1 FROM cm_logo_candidates c
+      WHERE c.network_id = a.network_id AND c.service_id = a.service_id
+  )
+  AND (l.network_id IS NULL OR l.learned_at < a.updated_at)
+ON CONFLICT (network_id, service_id) DO NOTHING
+`
+
+type InsertCMLogoCandidateRunningParams struct {
+	RecordingID   int64
+	NetworkID     int32
+	ServiceID     int32
+	AreaUpdatedAt time.Time
+}
+
+func (q *Queries) InsertCMLogoCandidateRunning(ctx context.Context, arg InsertCMLogoCandidateRunningParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertCMLogoCandidateRunning,
+		arg.RecordingID,
+		arg.NetworkID,
+		arg.ServiceID,
+		arg.AreaUpdatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const insertLearnedCMLogo = `-- name: InsertLearnedCMLogo :execrows
@@ -265,6 +513,29 @@ func (q *Queries) IsCMDetectionDesired(ctx context.Context, recordingID int64) (
 	return exists, err
 }
 
+const isCMLogoCandidateDesired = `-- name: IsCMLogoCandidateDesired :one
+SELECT EXISTS (
+    SELECT 1
+    FROM cm_logo_candidate_desired
+    WHERE network_id = $1
+      AND service_id = $2
+      AND area_updated_at = $3::timestamptz
+)
+`
+
+type IsCMLogoCandidateDesiredParams struct {
+	NetworkID     int32
+	ServiceID     int32
+	AreaUpdatedAt time.Time
+}
+
+func (q *Queries) IsCMLogoCandidateDesired(ctx context.Context, arg IsCMLogoCandidateDesiredParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isCMLogoCandidateDesired, arg.NetworkID, arg.ServiceID, arg.AreaUpdatedAt)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const listCMLogoStates = `-- name: ListCMLogoStates :many
 SELECT r.network_id, r.service_id,
        ((array_agg(r.service_name ORDER BY r.id DESC))[1])::text AS service_name,
@@ -273,11 +544,15 @@ SELECT r.network_id, r.service_id,
        l.learned_at,
        l.preview_png,
        count(DISTINCT ca.recording_id) FILTER (
-           WHERE ca.state = 'failed' AND desired.recording_id IS NULL
+           WHERE ca.state = 'failed'
+             AND ca.stage IS DISTINCT FROM 'adopt'
+             AND desired.recording_id IS NULL
        )::bigint AS failed_count,
        count(DISTINCT desired.recording_id)::bigint AS pending_count,
        COALESCE(((array_agg(ca.stage ORDER BY ca.attempted_at DESC) FILTER (
-           WHERE ca.state = 'failed' AND desired.recording_id IS NULL
+           WHERE ca.state = 'failed'
+             AND ca.stage IS DISTINCT FROM 'adopt'
+             AND desired.recording_id IS NULL
        ))[1])::text, '')::text AS last_failure_stage,
        count(DISTINCT d.recording_id)::bigint AS detected_count,
        count(DISTINCT d.recording_id) FILTER (
@@ -292,7 +567,21 @@ SELECT r.network_id, r.service_id,
                  )
            )
        )::bigint AS redetectable_count,
+       l.coded_width AS learned_coded_width,
+       l.coded_height AS learned_coded_height,
        a.x, a.y, a.w, a.h, a.coded_width, a.coded_height, a.updated_at AS area_updated_at,
+       c.state AS candidate_state,
+       c.stage AS candidate_stage,
+       c.error AS candidate_error,
+       c.preview_png AS candidate_preview_png,
+       c.x AS candidate_x,
+       c.y AS candidate_y,
+       c.w AS candidate_w,
+       c.h AS candidate_h,
+       c.coded_width AS candidate_coded_width,
+       c.coded_height AS candidate_coded_height,
+       c.recording_id AS candidate_recording_id,
+       c.attempted_at AS candidate_attempted_at,
        -- コマとタイルを取り寄せる録画（原本があり、実体の無いマーカーが付いていない
        -- 最新のもの）。**0 = 無し**（recordings.id は 1 から始まる）で、
        -- 「原本のある録画がありません」を表す。
@@ -310,35 +599,52 @@ SELECT r.network_id, r.service_id,
 FROM recordings r
 LEFT JOIN cm_logos l ON l.network_id = r.network_id AND l.service_id = r.service_id
 LEFT JOIN cm_logo_areas a ON a.network_id = r.network_id AND a.service_id = r.service_id
+LEFT JOIN cm_logo_candidates c ON c.network_id = r.network_id AND c.service_id = r.service_id
 LEFT JOIN recording_cm_attempts ca ON ca.recording_id = r.id
 LEFT JOIN recording_cm_detections d ON d.recording_id = r.id
 LEFT JOIN cm_detection_desired desired ON desired.recording_id = r.id
 WHERE r.deleted_at IS NULL
-GROUP BY r.network_id, r.service_id, l.learned_at, l.preview_png, a.network_id, a.service_id
+GROUP BY r.network_id, r.service_id, l.learned_at, l.preview_png,
+         l.coded_width, l.coded_height, a.network_id, a.service_id,
+         c.network_id, c.service_id
 ORDER BY r.network_id, r.service_id
 `
 
 type ListCMLogoStatesRow struct {
-	NetworkID         int32
-	ServiceID         int32
-	ServiceName       string
-	Site              string
-	RecordingCount    int64
-	LearnedAt         *time.Time
-	PreviewPng        []byte
-	FailedCount       int64
-	PendingCount      int64
-	LastFailureStage  string
-	DetectedCount     int64
-	RedetectableCount int64
-	X                 *int32
-	Y                 *int32
-	W                 *int32
-	H                 *int32
-	CodedWidth        *int32
-	CodedHeight       *int32
-	AreaUpdatedAt     *time.Time
-	FrameRecordingID  int64
+	NetworkID            int32
+	ServiceID            int32
+	ServiceName          string
+	Site                 string
+	RecordingCount       int64
+	LearnedAt            *time.Time
+	PreviewPng           []byte
+	FailedCount          int64
+	PendingCount         int64
+	LastFailureStage     string
+	DetectedCount        int64
+	RedetectableCount    int64
+	LearnedCodedWidth    *int32
+	LearnedCodedHeight   *int32
+	X                    *int32
+	Y                    *int32
+	W                    *int32
+	H                    *int32
+	CodedWidth           *int32
+	CodedHeight          *int32
+	AreaUpdatedAt        *time.Time
+	CandidateState       *string
+	CandidateStage       *string
+	CandidateError       *string
+	CandidatePreviewPng  []byte
+	CandidateX           *int32
+	CandidateY           *int32
+	CandidateW           *int32
+	CandidateH           *int32
+	CandidateCodedWidth  *int32
+	CandidateCodedHeight *int32
+	CandidateRecordingID *int64
+	CandidateAttemptedAt *time.Time
+	FrameRecordingID     int64
 }
 
 // a の列は主キー (network_id, service_id) の関数従属なので、この 2 列だけで足りる。
@@ -364,6 +670,8 @@ func (q *Queries) ListCMLogoStates(ctx context.Context) ([]ListCMLogoStatesRow, 
 			&i.LastFailureStage,
 			&i.DetectedCount,
 			&i.RedetectableCount,
+			&i.LearnedCodedWidth,
+			&i.LearnedCodedHeight,
 			&i.X,
 			&i.Y,
 			&i.W,
@@ -371,6 +679,18 @@ func (q *Queries) ListCMLogoStates(ctx context.Context) ([]ListCMLogoStatesRow, 
 			&i.CodedWidth,
 			&i.CodedHeight,
 			&i.AreaUpdatedAt,
+			&i.CandidateState,
+			&i.CandidateStage,
+			&i.CandidateError,
+			&i.CandidatePreviewPng,
+			&i.CandidateX,
+			&i.CandidateY,
+			&i.CandidateW,
+			&i.CandidateH,
+			&i.CandidateCodedWidth,
+			&i.CandidateCodedHeight,
+			&i.CandidateRecordingID,
+			&i.CandidateAttemptedAt,
 			&i.FrameRecordingID,
 		); err != nil {
 			return nil, err
@@ -419,6 +739,55 @@ func (q *Queries) ListMissingCMDetections(ctx context.Context, arg ListMissingCM
 	return items, nil
 }
 
+const listMissingCMLogoCandidates = `-- name: ListMissingCMLogoCandidates :many
+SELECT network_id, service_id, recording_id, area_updated_at
+FROM cm_logo_candidate_desired
+WHERE (network_id, service_id) > (
+    $1::int,
+    $2::int
+)
+ORDER BY network_id, service_id
+LIMIT $3
+`
+
+type ListMissingCMLogoCandidatesParams struct {
+	AfterNetworkID int32
+	AfterServiceID int32
+	RowLimit       int32
+}
+
+type ListMissingCMLogoCandidatesRow struct {
+	NetworkID     int32
+	ServiceID     int32
+	RecordingID   int64
+	AreaUpdatedAt time.Time
+}
+
+func (q *Queries) ListMissingCMLogoCandidates(ctx context.Context, arg ListMissingCMLogoCandidatesParams) ([]ListMissingCMLogoCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listMissingCMLogoCandidates, arg.AfterNetworkID, arg.AfterServiceID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListMissingCMLogoCandidatesRow
+	for rows.Next() {
+		var i ListMissingCMLogoCandidatesRow
+		if err := rows.Scan(
+			&i.NetworkID,
+			&i.ServiceID,
+			&i.RecordingID,
+			&i.AreaUpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockCMStation = `-- name: LockCMStation :exec
 SELECT pg_advisory_xact_lock($1::int, $2::int)
 `
@@ -449,9 +818,7 @@ type MarkCMDetectionFailureParams struct {
 }
 
 // **attempted_at は書き換えない**（ジョブ開始時刻のまま）。再投入の判定は
-// `attempted_at < a.updated_at` で「枠を教えた後に試したか」を見るので、枠なしで
-// 始まったジョブが PUT の後に失敗して終了時刻で上書きすると、その失敗が
-// 新しい枠での試行に見え、枠に合わせた再検出が二度と投入されない。
+// 学習済みロゴの `learned_at` と比べるので、失敗終了時刻で上書きしない。
 func (q *Queries) MarkCMDetectionFailure(ctx context.Context, arg MarkCMDetectionFailureParams) error {
 	_, err := q.db.Exec(ctx, markCMDetectionFailure,
 		arg.State,
@@ -472,6 +839,73 @@ SET state = 'running', stage = NULL, error = NULL, attempted_at = now()
 func (q *Queries) MarkCMDetectionRunning(ctx context.Context, recordingID int64) error {
 	_, err := q.db.Exec(ctx, markCMDetectionRunning, recordingID)
 	return err
+}
+
+const markCMLogoCandidateFailure = `-- name: MarkCMLogoCandidateFailure :exec
+UPDATE cm_logo_candidates
+SET state = 'failed', stage = $1, error = $2
+WHERE network_id = $3
+  AND service_id = $4
+  AND state = 'running'
+  AND observed_area_updated_at = $5::timestamptz
+`
+
+type MarkCMLogoCandidateFailureParams struct {
+	Stage         *string
+	Error         *string
+	NetworkID     int32
+	ServiceID     int32
+	AreaUpdatedAt time.Time
+}
+
+func (q *Queries) MarkCMLogoCandidateFailure(ctx context.Context, arg MarkCMLogoCandidateFailureParams) error {
+	_, err := q.db.Exec(ctx, markCMLogoCandidateFailure,
+		arg.Stage,
+		arg.Error,
+		arg.NetworkID,
+		arg.ServiceID,
+		arg.AreaUpdatedAt,
+	)
+	return err
+}
+
+const markCMLogoCandidateReady = `-- name: MarkCMLogoCandidateReady :execrows
+UPDATE cm_logo_candidates c
+SET state = 'ready', stage = NULL, error = NULL,
+    lgd = $1::bytea,
+    preview_png = $2::bytea
+WHERE c.network_id = $3
+  AND c.service_id = $4
+  AND c.state = 'running'
+  AND c.observed_area_updated_at = $5::timestamptz
+  AND EXISTS (
+      SELECT 1 FROM cm_logo_areas a
+      WHERE a.network_id = c.network_id
+        AND a.service_id = c.service_id
+        AND a.updated_at = $5::timestamptz
+  )
+`
+
+type MarkCMLogoCandidateReadyParams struct {
+	Lgd           []byte
+	PreviewPng    []byte
+	NetworkID     int32
+	ServiceID     int32
+	AreaUpdatedAt time.Time
+}
+
+func (q *Queries) MarkCMLogoCandidateReady(ctx context.Context, arg MarkCMLogoCandidateReadyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markCMLogoCandidateReady,
+		arg.Lgd,
+		arg.PreviewPng,
+		arg.NetworkID,
+		arg.ServiceID,
+		arg.AreaUpdatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const saveCMDetection = `-- name: SaveCMDetection :exec

@@ -1658,7 +1658,7 @@ paths:
           type: integer
     put:
       operationId: putCMLogoArea
-      summary: Teach the station's CM logo area
+      summary: Save a station's CM logo area and start candidate analysis
       requestBody:
         required: true
         content:
@@ -1667,9 +1667,15 @@ paths:
               $ref: "#/components/schemas/CMLogoAreaInput"
       responses:
         "204":
-          description: Logo area saved and the learned logo forgotten
+          description: Logo area saved and candidate analysis queued
         "400":
-          description: Invalid rectangle or recorded resolution
+          description: Invalid rectangle, recording, or recorded resolution
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: The selected recording has no active original
           content:
             application/json:
               schema:
@@ -1680,6 +1686,56 @@ paths:
       responses:
         "204":
           description: Logo area removed
+
+  /api/cm-logos/{networkId}/{serviceId}/candidate/adopt:
+    parameters:
+      - name: networkId
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: serviceId
+        in: path
+        required: true
+        schema:
+          type: integer
+    post:
+      operationId: adoptCMLogoCandidate
+      summary: Adopt the ready CM logo candidate
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CMLogoCandidateAdoptInput"
+      responses:
+        "204":
+          description: Candidate adopted
+        "409":
+          description: Candidate is not ready or no longer matches the taught area
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/cm-logos/{networkId}/{serviceId}/candidate:
+    parameters:
+      - name: networkId
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: serviceId
+        in: path
+        required: true
+        schema:
+          type: integer
+    delete:
+      operationId: deleteCMLogoCandidate
+      summary: Discard the CM logo candidate
+      responses:
+        "204":
+          description: Candidate discarded
 
   /api/recordings/{id}/drop-stats:
     parameters:
@@ -2212,6 +2268,14 @@ components:
           type: integer
           format: int64
           description: Detected recordings whose original media is still active.
+        codedWidth:
+          type: integer
+          minimum: 1
+          description: Coded width of the learned logo, if one is present.
+        codedHeight:
+          type: integer
+          minimum: 1
+          description: Coded height of the learned logo, if one is present.
         learnedAt:
           type: string
           format: date-time
@@ -2228,6 +2292,60 @@ components:
           description: Recording with an active original for frame selection, or 0.
         logoArea:
           $ref: "#/components/schemas/CMLogoArea"
+
+        candidate:
+          $ref: "#/components/schemas/CMLogoCandidate"
+
+    CMLogoCandidate:
+      type: object
+      required:
+        [state, x, y, w, h, codedWidth, codedHeight, attemptedAt]
+      properties:
+        state:
+          type: string
+          enum: [running, failed, ready]
+        stage:
+          type: string
+          enum: [setup, probe, area, logo, match, stopped]
+          nullable: true
+        error:
+          type: string
+          nullable: true
+        previewPng:
+          type: string
+          format: byte
+        x:
+          type: integer
+          minimum: 0
+        y:
+          type: integer
+          minimum: 0
+        w:
+          type: integer
+          minimum: 1
+        h:
+          type: integer
+          minimum: 1
+        codedWidth:
+          type: integer
+          minimum: 1
+        codedHeight:
+          type: integer
+          minimum: 1
+        recordingId:
+          type: integer
+          format: int64
+          nullable: true
+        attemptedAt:
+          type: string
+          format: date-time
+
+    CMLogoCandidateAdoptInput:
+      type: object
+      properties:
+        redetect:
+          type: boolean
+          default: true
 
     CMLogoArea:
       type: object
@@ -2257,7 +2375,7 @@ components:
 
     CMLogoAreaInput:
       type: object
-      required: [x, y, w, h, codedWidth, codedHeight]
+      required: [x, y, w, h, codedWidth, codedHeight, recordingId]
       properties:
         x:
           type: integer
@@ -2276,6 +2394,10 @@ components:
           minimum: 1
         codedHeight:
           type: integer
+          minimum: 1
+        recordingId:
+          type: integer
+          format: int64
           minimum: 1
 
     ErrorResponse:

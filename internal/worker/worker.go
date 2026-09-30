@@ -301,6 +301,13 @@ func NewWorkers(deps *Deps) *river.Workers {
 		CMDetect:   deps.CMDetect,
 		FFprobe:    deps.Encode.FFprobe,
 	})
+	river.AddWorker(workers, &CMLogoCandidateWorker{
+		Pool:       deps.Pool,
+		MediaDir:   deps.MediaDir,
+		ScratchDir: deps.ScratchDir,
+		CMDetect:   deps.CMDetect,
+		FFprobe:    deps.Encode.FFprobe,
+	})
 	river.AddWorker(workers, &CMDetectReconcileWorker{Pool: deps.Pool})
 	river.AddWorker(workers, &DeleteReconcileWorker{
 		Pool:              deps.Pool,

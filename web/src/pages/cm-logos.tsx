@@ -230,6 +230,7 @@ function LogoTutor({
         networkId: logo.networkId,
         serviceId: logo.serviceId,
         data: {
+          recordingId: frameRecordingId,
           x: clamped.x,
           y: clamped.y,
           w: clamped.w,

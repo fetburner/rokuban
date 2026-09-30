@@ -287,9 +287,9 @@ func TestCMDetectionDesiredAfterTaughtLogoArea(t *testing.T) {
 	}
 	wantDesired(t, true)
 
-	// 教えた後にまた同じ枠で失敗したら、候補には戻らない。
+	// 候補行がまだ無い間は、検出側も採用待ち attempt を作れるよう desired のまま。
 	fail(t)
-	wantDesired(t, false)
+	wantDesired(t, true)
 
 	// 枠を自動に戻しても、失敗した試行は候補に戻らない（学習済みロゴも無い）。
 	if _, err := q.DeleteCMLogoArea(ctx, sqlcgen.DeleteCMLogoAreaParams{NetworkID: 32736, ServiceID: 1024}); err != nil {
@@ -348,5 +348,51 @@ func TestUntilEncodedViewWaitsForCMDetectionOrFinalFailure(t *testing.T) {
 	}
 	if got := count(); got != 1 {
 		t.Fatalf("eligible originals after zero-CM successful result = %d, want 1", got)
+	}
+}
+
+func TestUntilEncodedViewKeepsOriginalWhileLogoAdoptionIsPending(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+	mediaDir := t.TempDir()
+	id := insertTestRecordingWithEventID(t, pool, 902)
+	seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d.ts", id), []byte("ts"))
+	profile := "h264"
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, db.AssetKindEncoded, &profile, fmt.Sprintf("cm/%d-h264.mp4", id), []byte("encoded"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, db.AssetKindThumbnail, nil, fmt.Sprintf("cm/%d.jpg", id), []byte("thumbnail"))
+	seedSeekTilesAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d-tiles", id))
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+		VALUES ($1, 'until_encoded', ARRAY['h264'], true)`, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.MarkCMDetectionRunning(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	stage := "adopt"
+	if err := q.MarkCMDetectionFailure(ctx, sqlcgen.MarkCMDetectionFailureParams{
+		RecordingID: id, State: "failed", Stage: &stage,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var eligible int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals WHERE recording_id = $1`, id).Scan(&eligible); err != nil {
+		t.Fatal(err)
+	}
+	if eligible != 0 {
+		t.Fatalf("adoption-waiting original is eligible = %d, want 0", eligible)
+	}
+	stage = "logo"
+	if err := q.MarkCMDetectionFailure(ctx, sqlcgen.MarkCMDetectionFailureParams{
+		RecordingID: id, State: "failed", Stage: &stage,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals WHERE recording_id = $1`, id).Scan(&eligible); err != nil {
+		t.Fatal(err)
+	}
+	if eligible != 1 {
+		t.Fatalf("ordinary failed original is eligible = %d, want 1", eligible)
 	}
 }

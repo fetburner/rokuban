@@ -1,6 +1,8 @@
 package jobs
 
 import (
+	"time"
+
 	"github.com/riverqueue/river"
 )
 
@@ -273,6 +275,29 @@ func (CMDetectReconcileArgs) InsertOpts() river.InsertOpts {
 	}
 }
 
+// CMLogoCandidateJobArgs identifies one station-area analysis. The area version
+// prevents an older hint from analyzing a recording after the user has saved a
+// newer area.
+type CMLogoCandidateJobArgs struct {
+	NetworkID     int32     `json:"network_id"`
+	ServiceID     int32     `json:"service_id"`
+	RecordingID   int64     `json:"recording_id"`
+	AreaUpdatedAt time.Time `json:"area_updated_at"`
+}
+
+// Kind returns the River job kind.
+func (CMLogoCandidateJobArgs) Kind() string { return "cm_logo_candidate" }
+
+// InsertOpts routes candidate analysis to the CM detection queue with no retry:
+// the user can save the area again to request a fresh analysis.
+func (CMLogoCandidateJobArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue:       CMDetectQueue,
+		MaxAttempts: 1,
+		UniqueOpts:  river.UniqueOpts{ByArgs: true, ByState: pendingJobStates},
+	}
+}
+
 // LabelRuleReconcileArgs は分類ルールの変更を録画全件へ再評価するジョブの引数。
 type LabelRuleReconcileArgs struct{}
 
@@ -405,6 +430,7 @@ var (
 	_ river.JobArgsWithInsertOpts = ThumbnailReconcileArgs{}
 	_ river.JobArgsWithInsertOpts = CMDetectJobArgs{}
 	_ river.JobArgsWithInsertOpts = CMDetectReconcileArgs{}
+	_ river.JobArgsWithInsertOpts = CMLogoCandidateJobArgs{}
 	_ river.JobArgsWithInsertOpts = EncodeReconcileArgs{}
 	_ river.JobArgsWithInsertOpts = LabelRuleReconcileArgs{}
 	_ river.JobArgsWithInsertOpts = DeleteReconcileArgs{}

@@ -262,6 +262,48 @@ export interface CMLogoArea {
   updatedAt: string;
 }
 
+export type CMLogoCandidateState = typeof CMLogoCandidateState[keyof typeof CMLogoCandidateState];
+
+
+export const CMLogoCandidateState = {
+  running: 'running',
+  failed: 'failed',
+  ready: 'ready',
+} as const;
+
+export type CMLogoCandidateStage = typeof CMLogoCandidateStage[keyof typeof CMLogoCandidateStage] | null;
+
+
+export const CMLogoCandidateStage = {
+  setup: 'setup',
+  probe: 'probe',
+  area: 'area',
+  logo: 'logo',
+  match: 'match',
+  stopped: 'stopped',
+} as const;
+
+export interface CMLogoCandidate {
+  state: CMLogoCandidateState;
+  stage?: CMLogoCandidateStage;
+  error?: string | null;
+  previewPng?: string;
+  /** @minimum 0 */
+  x: number;
+  /** @minimum 0 */
+  y: number;
+  /** @minimum 1 */
+  w: number;
+  /** @minimum 1 */
+  h: number;
+  /** @minimum 1 */
+  codedWidth: number;
+  /** @minimum 1 */
+  codedHeight: number;
+  recordingId?: number | null;
+  attemptedAt: string;
+}
+
 export interface CMLogoState {
   networkId: number;
   serviceId: number;
@@ -276,6 +318,16 @@ export interface CMLogoState {
   detectedCount: number;
   /** Detected recordings whose original media is still active. */
   redetectableCount: number;
+  /**
+     * Coded width of the learned logo, if one is present.
+     * @minimum 1
+     */
+  codedWidth?: number;
+  /**
+     * Coded height of the learned logo, if one is present.
+     * @minimum 1
+     */
+  codedHeight?: number;
   learnedAt?: string;
   previewPng?: string;
   /** The stage of the most recent failure that still needs attention, if known. */
@@ -283,6 +335,11 @@ export interface CMLogoState {
   /** Recording with an active original for frame selection, or 0. */
   frameRecordingId: number;
   logoArea?: CMLogoArea;
+  candidate?: CMLogoCandidate;
+}
+
+export interface CMLogoCandidateAdoptInput {
+  redetect?: boolean;
 }
 
 export interface CMLogoAreaInput {
@@ -298,6 +355,8 @@ export interface CMLogoAreaInput {
   codedWidth: number;
   /** @minimum 1 */
   codedHeight: number;
+  /** @minimum 1 */
+  recordingId: number;
 }
 
 export interface ErrorResponse {
@@ -7291,10 +7350,15 @@ export type putCMLogoAreaResponse400 = {
   status: 400
 }
 
+export type putCMLogoAreaResponse409 = {
+  data: ErrorResponse
+  status: 409
+}
+
 export type putCMLogoAreaResponseSuccess = (putCMLogoAreaResponse204) & {
   headers: Headers;
 };
-export type putCMLogoAreaResponseError = (putCMLogoAreaResponse400) & {
+export type putCMLogoAreaResponseError = (putCMLogoAreaResponse400 | putCMLogoAreaResponse409) & {
   headers: Headers;
 };
 
@@ -7310,7 +7374,7 @@ export const getPutCMLogoAreaUrl = (networkId: number,
 }
 
 /**
- * @summary Teach the station's CM logo area
+ * @summary Save a station's CM logo area and start candidate analysis
  */
 export const putCMLogoArea = async (networkId: number,
     serviceId: number,
@@ -7370,7 +7434,7 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type PutCMLogoAreaMutationVariables = {networkId: number;serviceId: number;data: CMLogoAreaInput}
 
     /**
- * @summary Teach the station's CM logo area
+ * @summary Save a station's CM logo area and start candidate analysis
  */
 export const usePutCMLogoArea = <TError = ErrorResponse,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof putCMLogoArea>>, TError,PutCMLogoAreaMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
@@ -7469,6 +7533,196 @@ export const useDeleteCMLogoArea = <TError = unknown,
         TContext
       > => {
       return useMutation(getDeleteCMLogoAreaMutationOptions(options), queryClient);
+    }
+
+export type adoptCMLogoCandidateResponse204 = {
+  data: void
+  status: 204
+}
+
+export type adoptCMLogoCandidateResponse409 = {
+  data: ErrorResponse
+  status: 409
+}
+
+export type adoptCMLogoCandidateResponseSuccess = (adoptCMLogoCandidateResponse204) & {
+  headers: Headers;
+};
+export type adoptCMLogoCandidateResponseError = (adoptCMLogoCandidateResponse409) & {
+  headers: Headers;
+};
+
+export type adoptCMLogoCandidateResponse = (adoptCMLogoCandidateResponseSuccess | adoptCMLogoCandidateResponseError)
+
+export const getAdoptCMLogoCandidateUrl = (networkId: number,
+    serviceId: number,) => {
+
+
+
+
+  return `/api/cm-logos/${networkId}/${serviceId}/candidate/adopt`
+}
+
+/**
+ * @summary Adopt the ready CM logo candidate
+ */
+export const adoptCMLogoCandidate = async (networkId: number,
+    serviceId: number,
+    cMLogoCandidateAdoptInput?: CMLogoCandidateAdoptInput, options?: Parameters<typeof customInstance>[1]): Promise<adoptCMLogoCandidateResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Array.isArray(h)) return Object.fromEntries(h);
+    return h;
+  };
+return customInstance<adoptCMLogoCandidateResponse>(getAdoptCMLogoCandidateUrl(networkId,serviceId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(cMLogoCandidateAdoptInput)
+  }
+);}
+
+
+
+
+
+export const getAdoptCMLogoCandidateMutationKey = () => ['adoptCMLogoCandidate'] as const;
+
+export const getAdoptCMLogoCandidateMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof adoptCMLogoCandidate>>, TError,AdoptCMLogoCandidateMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof adoptCMLogoCandidate>>, TError,AdoptCMLogoCandidateMutationVariables, TContext> => {
+
+const mutationKey = getAdoptCMLogoCandidateMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof adoptCMLogoCandidate>>, AdoptCMLogoCandidateMutationVariables> = (props) => {
+          const {networkId,serviceId,data} = props ?? {};
+
+          return  adoptCMLogoCandidate(networkId,serviceId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type AdoptCMLogoCandidateMutationResult = NonNullable<Awaited<ReturnType<typeof adoptCMLogoCandidate>>>
+    export type AdoptCMLogoCandidateMutationBody = CMLogoCandidateAdoptInput | undefined
+    export type AdoptCMLogoCandidateMutationError = ErrorResponse
+    export type AdoptCMLogoCandidateMutationVariables = {networkId: number;serviceId: number;data?: CMLogoCandidateAdoptInput}
+
+    /**
+ * @summary Adopt the ready CM logo candidate
+ */
+export const useAdoptCMLogoCandidate = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof adoptCMLogoCandidate>>, TError,AdoptCMLogoCandidateMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof adoptCMLogoCandidate>>,
+        TError,
+        AdoptCMLogoCandidateMutationVariables,
+        TContext
+      > => {
+      return useMutation(getAdoptCMLogoCandidateMutationOptions(options), queryClient);
+    }
+
+export type deleteCMLogoCandidateResponse204 = {
+  data: void
+  status: 204
+}
+
+export type deleteCMLogoCandidateResponseSuccess = (deleteCMLogoCandidateResponse204) & {
+  headers: Headers;
+};
+;
+
+export type deleteCMLogoCandidateResponse = (deleteCMLogoCandidateResponseSuccess)
+
+export const getDeleteCMLogoCandidateUrl = (networkId: number,
+    serviceId: number,) => {
+
+
+
+
+  return `/api/cm-logos/${networkId}/${serviceId}/candidate`
+}
+
+/**
+ * @summary Discard the CM logo candidate
+ */
+export const deleteCMLogoCandidate = async (networkId: number,
+    serviceId: number, options?: Parameters<typeof customInstance>[1]): Promise<deleteCMLogoCandidateResponse> => {
+
+  return customInstance<deleteCMLogoCandidateResponse>(getDeleteCMLogoCandidateUrl(networkId,serviceId),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+
+export const getDeleteCMLogoCandidateMutationKey = () => ['deleteCMLogoCandidate'] as const;
+
+export const getDeleteCMLogoCandidateMutationOptions = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteCMLogoCandidate>>, TError,DeleteCMLogoCandidateMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteCMLogoCandidate>>, TError,DeleteCMLogoCandidateMutationVariables, TContext> => {
+
+const mutationKey = getDeleteCMLogoCandidateMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteCMLogoCandidate>>, DeleteCMLogoCandidateMutationVariables> = (props) => {
+          const {networkId,serviceId} = props ?? {};
+
+          return  deleteCMLogoCandidate(networkId,serviceId,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteCMLogoCandidateMutationResult = NonNullable<Awaited<ReturnType<typeof deleteCMLogoCandidate>>>
+
+    export type DeleteCMLogoCandidateMutationError = unknown
+    export type DeleteCMLogoCandidateMutationVariables = {networkId: number;serviceId: number}
+
+    /**
+ * @summary Discard the CM logo candidate
+ */
+export const useDeleteCMLogoCandidate = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteCMLogoCandidate>>, TError,DeleteCMLogoCandidateMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteCMLogoCandidate>>,
+        TError,
+        DeleteCMLogoCandidateMutationVariables,
+        TContext
+      > => {
+      return useMutation(getDeleteCMLogoCandidateMutationOptions(options), queryClient);
     }
 
 export type listRecordingDropStatsResponse200 = {
