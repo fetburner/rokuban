@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -524,15 +526,27 @@ func ptrStr(p *string) string {
 	return *p
 }
 
-// latestStartAt は openapi の「常に UTC」どおり、サーバーのローカルタイムゾーンに
-// よらず `Z` で返す。pgx は timestamptz を time.Local で返すので、ローカルを JST に
-// して測る（UTC() を外すと +09:00 で返って落ちる）。
+// latestStartAt は openapi の「常に UTC」どおり、pgx が返す Location によらず `Z` で返す。
+// time.Local を書き換えると同じパッケージで並行する goroutine と data race になるので、
+// この pool だけ timestamptz を JST で decode させる（UTC() を外すと +09:00 で返って落ちる）。
 func TestListRecordingShelves_LatestStartAtIsUTC(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServer(t, pool)
-	prev := time.Local
-	time.Local = time.FixedZone("JST", 9*60*60)
-	t.Cleanup(func() { time.Local = prev })
+	jst := time.FixedZone("JST", 9*60*60)
+	cfg := pool.Config().Copy()
+	cfg.AfterConnect = func(_ context.Context, conn *pgx.Conn) error {
+		conn.TypeMap().RegisterType(&pgtype.Type{
+			Name:  "timestamptz",
+			OID:   pgtype.TimestamptzOID,
+			Codec: &pgtype.TimestamptzCodec{ScanLocation: jst},
+		})
+		return nil
+	}
+	jstPool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("creating JST-scanning pool: %v", err)
+	}
+	t.Cleanup(jstPool.Close)
+	srv := newAPIServer(t, jstPool)
 
 	seedPlayableRecording(t, pool, "アニメ　作品X　第1話", 1, time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
 
