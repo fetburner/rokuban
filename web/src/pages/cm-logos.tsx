@@ -272,7 +272,11 @@ function FrameOutsideDim({
   const top = offset.y + rect.y * scale.y
   const right = left + rect.w * scale.x
   const bottom = top + rect.h * scale.y
-  const common = { position: 'absolute' as const, background: 'rgb(0 0 0 / 0.38)', pointerEvents: 'none' as const }
+  const common = {
+    position: 'absolute' as const,
+    background: 'color-mix(in oklch, var(--foreground) 38%, transparent)',
+    pointerEvents: 'none' as const,
+  }
   return (
     <>
       <div style={{ ...common, left: 0, top: 0, width: Math.max(0, left), bottom: 0 }} />
@@ -298,7 +302,7 @@ function FrameHandle({
       className="pointer-events-auto absolute z-20 flex size-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center"
       style={{ left: point.x, top: point.y, cursor }}
     >
-      <span className="size-3 border-2 border-white bg-black" />
+      <span className="size-3 border-2 border-background bg-foreground" />
     </span>
   )
 }
@@ -545,13 +549,13 @@ function CMLogoFrameEditor({
               <>
                 <div
                   data-testid="cm-logo-rect"
-                  className="pointer-events-none absolute z-10 border-2 border-white"
+                  className="pointer-events-none absolute z-10 border-2 border-background"
                   style={{
                     left: rectOnScreen.x,
                     top: rectOnScreen.y,
                     width: rect.w * scale.x,
                     height: rect.h * scale.y,
-                    boxShadow: '0 0 0 1px #000',
+                    boxShadow: '0 0 0 1px var(--foreground)',
                   }}
                 />
                 {(['nw', 'ne', 'sw', 'se'] as const).map((handle) => (
