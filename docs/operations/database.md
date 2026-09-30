@@ -61,6 +61,20 @@ worker は River の LISTEN を使い、`notifier.New` の 1 個の Listener を
 watcher は advisory lock、notifier は SSE 用の LISTEN を使うため、transaction pooling で接続が要求ごとに入れ替わると壊れる（[data.md](../data.md) §2 / §3）。
 将来ハイブリッド構成を実装するときは、必要な pooler 対応の形をその PR で改めて決める。
 
+### managed PostgreSQL の `btree_gist`
+
+チャプター区間の `EXCLUDE` 制約を作る migration は、先に `btree_gist` を `public` へ追加する。
+この文が失敗すると `migrate up` はそこで止まり、後続の migration に進まない。
+k8s では [`migrate-job.yaml`](../../deploy/k8s/base/migrate-job.yaml) の Job が失敗し、手順は `kubectl wait` で止まる。
+api の Deployment は同じ `kubectl apply` で新しい版へ更新されており、migration 未完了のスキーマに乗る。
+Job の失敗を解消してから、Job を delete して手順を再実行する（順序と理由は [deploy/k8s/README.md](../../deploy/k8s/README.md) §使い方）。
+
+- PostgreSQL 標準の `btree_gist` は trusted extension なので、対象 DB の `CREATE` 権限があれば作れる（[btree_gist](https://www.postgresql.org/docs/current/btree-gist.html)）。ただし managed provider がこの拡張を許可するかは接続先ごとに違う
+- `IF NOT EXISTS` は既存の拡張があると作らずに notice を返す。成功しても新規作成権限の証明にはならない
+- 権限エラーになったら、DB 管理者が同じ文を事前に実行してから migration を再実行する。エラーを握りつぶす変更や migration の書き換えはしない
+
+本番相当の managed 環境での実測は未実施である。確認の手順は [runbook/managed-postgres.md](../runbook/managed-postgres.md)。
+
 ### EPG churn / autovacuum
 
 EPG テーブルは 1 日に何度も大量 upsert されるため、遅くなるとしたら検索ではなく書き込みと autovacuum の追従。対策:
