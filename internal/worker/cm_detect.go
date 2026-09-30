@@ -293,6 +293,16 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 		return cmFailure("parse", fmt.Errorf("parsing obs_cut.avs: %w", err))
 	}
 	multirange := encodeInt8Multirange(ranges, totalMs)
+	return w.saveCMDetectionResult(ctx, item, hadLogo, startedLogoLearnedAt, multirange)
+}
+
+func (w *CMDetectWorker) saveCMDetectionResult(
+	ctx context.Context,
+	item sqlcgen.GetCMDetectionWorkItemRow,
+	hadLogo bool,
+	startedLogoLearnedAt *time.Time,
+	multirange string,
+) error {
 	tx, err := w.Pool.Begin(ctx)
 	if err != nil {
 		return cmFailure("save", fmt.Errorf("beginning CM result transaction: %w", err))
@@ -432,34 +442,6 @@ func probeVideoGeometry(
 		return videoGeometry{}, err
 	}
 	return videoGeometry{width: width, height: height}, nil
-}
-
-// taughtLogoArea は人が教えた枠を返す。行が無ければ nil（自動推定に任せる）。
-//
-// **解像度が違えばエラーにする。** 教えた枠は記録上の解像度の座標なので、違う
-// 大きさの映像に当てると logoframe は枠の外（または違う位置）の .lgd を学習し、
-// それが局全体に配られる。黙って自動推定へ落とすと、その失敗が成功に見える。
-func taughtLogoArea(
-	ctx context.Context,
-	q *sqlcgen.Queries,
-	networkID, serviceID int32,
-	geometry videoGeometry,
-) (*sqlcgen.GetCMLogoAreaRow, error) {
-	area, err := q.GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{
-		NetworkID: networkID,
-		ServiceID: serviceID,
-	})
-	if errors.Is(err, pgx5.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("loading taught logo area: %w", err)
-	}
-	if area.CodedWidth != int32(geometry.width) || area.CodedHeight != int32(geometry.height) {
-		return nil, fmt.Errorf("the taught logo area is for %dx%d but this recording is %dx%d",
-			area.CodedWidth, area.CodedHeight, geometry.width, geometry.height)
-	}
-	return &area, nil
 }
 
 func cmDetectRuleFile() string { return cmDetectRulePath }
