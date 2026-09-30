@@ -595,17 +595,38 @@ POST /api/sites/{site}/recordings/{id}/original-vod/leave
 ```
 
 これらのバイナリ配信ルートは `openapi.yaml` に載せない。開始時に DB から同じ site の
-`finished` 録画と `state='active'` の original を引く。既存の media `rel_path` lock 内で
-DB 状態を再確認し、原本を read-only で open してから lock を解放する。
+`finished` 録画と `state='active'` の original を引く。原本を read-only で open してから、
+同じ asset ID がまだ active で `rel_path` も一致することを DB で再確認する（open-then-verify）。
+一致しなければ 404 にする。`rel_path` lock は取らず、streamer は media に何も書かない。
+
+lock が要らない根拠は 3 つある。original の canonical は行の commit より前に rename で置かれる。
+unlink は `MarkMediaAssetDeleting` の commit より後にしか起きない。live な行がある `rel_path` へは
+別の書き手が公開できない（`media_assets_rel_path_idx`）。したがって再確認で active なら、
+open した inode はその行の原本である（`TestOriginalVODVerifiesDBTargetAfterOpen`）。
 trash・purge・supersede・失敗・原本不在・別 site / 未束縛 site は 404 にする。
-その場合、セッションや DB 行を作らない。以降 FFmpeg は開いた inode を読むため、
-`until_encoded` の削除が競合して canonical path が unlink されても原本を変更せず読み切れる。
+その場合、セッションや DB 行を作らない。
+
+開始後のセグメント要求は asset の状態を見ない。見るのは利用者の操作である録画のごみ箱・purge・
+supersede だけで、該当すれば 404 にしてセッションと scratch を回収する。
+FFmpeg は開いた inode を読み続ける。
+エンコード完了直後の `until_encoded` 削除で canonical path が unlink されても、
+視聴中の再生は止まらない。
+テストは `TestOriginalVODRetainedSessionSurvivesOriginalDeletion` である。
+この確認で DB が `ErrNoRows` 以外のエラーを返したときは、警告を出して配信を続ける。
+再生を DB の可用性に依存させないためである。
 
 FFmpeg は既存の live profile、音声 rendition、任意の WebVTT 字幕設定を使う。
-`-hls_playlist_type vod` / `-hls_list_size 0` / `temp_file` で全体の playlist と segment を作る。
-`delete_segments` は付けない。正常終了時は `#EXT-X-ENDLIST` と全 segment を idle GC まで保持し、
-シークや遅れて届く segment 要求を受ける。異常終了時は scratch とセッションを回収する。
-原本が引き続き active なら次の要求で作り直せる。
+**playlist は `-hls_playlist_type event` にする。** `vod` は playlist を FFmpeg の終了時にしか書かない。
+ffmpeg 9.0.2 で 20 秒の MPEG-2 TS を実時間で流すと、vod は変換中 `.m3u8` が 0 個で終了後に初めて出た。
+この形だと、15 秒で変換が終わらない録画はすべて playlist 待ちの 504 になる。
+event は変換の先頭から playlist が書かれ、終了時に `#EXT-X-ENDLIST` が付く。
+`-hls_list_size 0` と `temp_file` を使い、`delete_segments` は付けない。
+変換中のシーク可能範囲は変換の先端まで伸びていき、末尾まで届くのは変換の終了後になる。
+正常終了後も、`#EXT-X-ENDLIST` と全 segment を idle GC まで保持する。
+シークや遅れて届く segment 要求には、この保持したファイルで応える。
+異常終了時は scratch とセッションを回収する。
+原本が引き続き active なら次の要求で作り直せる
+（`TestOriginalVODServesPlaylistWhileFFmpegIsStillConverting`）。
 
 原本だけの完了録画はこの経路をブラウザ再生の既定にする。active な録画は既存の chase、
 active な encoded がある完了録画は MP4 progressive + Range を使う。原本 MPEG-2 decoder を

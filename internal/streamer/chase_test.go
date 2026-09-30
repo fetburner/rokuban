@@ -348,10 +348,13 @@ func TestBuildOriginalVODFFmpegArgsRetainsSeekableVODOutput(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			args := BuildOriginalVODFFmpegArgs(LiveConfig{Captions: tc.captions, Profiles: profiles}, "/tmp/original-vod", tc.withSubs)
 			joined := strings.Join(args, " ")
-			for _, want := range []string{"-hls_playlist_type vod", "-hls_list_size 0", "-hls_flags temp_file", "-hls_base_url segments/"} {
+			for _, want := range []string{"-hls_playlist_type event", "-hls_list_size 0", "-hls_flags temp_file", "-hls_base_url segments/"} {
 				if !strings.Contains(joined, want) {
 					t.Errorf("args = %q, want %q", joined, want)
 				}
+			}
+			if strings.Contains(joined, "-hls_playlist_type vod") {
+				t.Errorf("args = %q, vod writes no playlist until ffmpeg exits", joined)
 			}
 			if strings.Contains(joined, "delete_segments") {
 				t.Errorf("args = %q, VOD segments must be retained until idle GC", joined)

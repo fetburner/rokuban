@@ -83,8 +83,7 @@ spec:
               readOnly: true
             - name: media
               mountPath: /mnt/media
-              # 原本 TS は read-only で開く。ingest / 削除処理と共有する
-              # .rokuban-locks の lock metadata 作成に media root の書き込み権限が要る。
+              readOnly: true
             # live.segment_dir は録画バッファと共有しない Pod 内 tmpfs。
             - name: live-segments
               mountPath: /dev/shm/rokuban-live

@@ -43,7 +43,10 @@ type HlsLike = {
   audioTrack: number
   /** 選択中の variant の音声グループに属するトラック（master の順）。 */
   audioTracks: readonly unknown[]
-  on(event: string, callback: (event: string, data: { fatal: boolean }) => void): void
+  on(
+    event: string,
+    callback: (event: string, data: { fatal: boolean; details?: { live: boolean } }) => void,
+  ): void
   /**
    * hls.latency（秒）。`LatencyController.get latency()` の実装
    * （`node_modules/hls.js` 1.7.1）は `this._latency || 0` を返すため、
@@ -339,6 +342,14 @@ export function LivePlayer({
   const chaseMetadataLoaded = useRef(false)
   const explicitStartSeekPending = useRef(false)
   const lastSavedSecond = useRef<number | null>(null)
+  /**
+   * 原本 VOD の playlist が ENDLIST まで書かれたか。変換中の EVENT playlist の
+   * `video.duration` は変換の先端でしかないので、これが true になるまで
+   * 「終端付近」の判定に duration を渡さない（渡すと先端付近で位置が消える）。
+   * 信号は hls.js の LEVEL_LOADED の `details.live === false`（ENDLIST あり）と、
+   * ネイティブ HLS を含む `ended` イベント。ネイティブ経路は ENDLIST を直接見られない。
+   */
+  const originalVODFinalized = useRef(false)
   // onDiagnostics は ref 越しに読む。probe / hls.js のセットアップを担う
   // メイン effect の依存配列に関数 prop をそのまま入れると、呼び出し側が
   // 毎レンダー新しい関数を渡した場合にプレイリストの再取得・hls インスタンスの
@@ -451,6 +462,7 @@ export function LivePlayer({
         ? lastChasePositionRef.current
         : null
     lastChaseInputsRef.current = chaseInputs
+    originalVODFinalized.current = false
     chaseResumePending.current = resumePosition
     if (resumePosition !== null) {
       // 持ち越しは既存の復元より優先する。`playbackProfile` の変化で復元が
@@ -927,6 +939,11 @@ export function LivePlayer({
             if (onStalledRef.current?.() === 'wait') tracker = createStallTracker()
           },
         )
+        if (isOriginalVOD) {
+          hls.on(Hls.Events.LEVEL_LOADED, (_event, data) => {
+            if (data.details?.live === false) originalVODFinalized.current = true
+          })
+        }
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (!data.fatal || cancelled) return
           // fatal のまま放置すると hls.js が内部でリトライを続け、エラー画面の
@@ -1093,13 +1110,13 @@ export function LivePlayer({
             const globalPosition = video.currentTime + chaseStartOffset
             if (!shouldSavePlaybackPosition(lastSavedSecond.current, globalPosition)) return
             lastSavedSecond.current = Math.floor(globalPosition)
-            // EVENT duration is only the current recording edge; only a finalized
-            // original VOD has a stable duration for clearing a completed position.
+            // EVENT duration is only the current conversion edge; only after ENDLIST
+            // (originalVODFinalized) does it mean the recording's end.
             savePlaybackPosition(
               recordingId,
               recordingPlaybackProfile,
               globalPosition,
-              isOriginalVOD ? video.duration : undefined,
+              originalVODFinalized.current ? video.duration : undefined,
             )
           }}
           onPause={(event) => {
@@ -1109,8 +1126,15 @@ export function LivePlayer({
               recordingId,
               recordingPlaybackProfile,
               video.currentTime + chaseStartOffset,
-              isOriginalVOD ? video.duration : undefined,
+              originalVODFinalized.current ? video.duration : undefined,
             )
+          }}
+          onEnded={(event) => {
+            // ended は ENDLIST 済みの終端でしか発火しない（変換の先端では stall するだけ）。
+            if (!isOriginalVOD || recordingId === undefined) return
+            originalVODFinalized.current = true
+            const video = event.currentTarget
+            savePlaybackPosition(recordingId, recordingPlaybackProfile, video.duration, video.duration)
           }}
           onRateChange={(event) => {
             if (!isRecordingPlayback) return

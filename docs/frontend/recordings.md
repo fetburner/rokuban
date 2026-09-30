@@ -57,7 +57,14 @@ HLS / hls.js を使わない。原本 HLS の詳細は [api.md](../api.md)
   開けるリンクも残す
 - **再生位置は localStorage**（キー: 録画 ID + VOD プロファイル）。サーバー側視聴履歴は作らない。
   原本 HLS・encoded MP4・録画中の追っかけは同じ再生位置の基準を使い、録画開始からの秒数を
-  保存する。原本 HLS の画質切替は保存キーを変えず、再生位置も引き継ぐ
+  保存する。原本 HLS の画質切替は保存キーを変えず、再生位置も引き継ぐ。
+  原本 HLS は変換中の EVENT playlist なので、シークできる範囲は変換の先端まで伸びていく。
+  末尾まで届くのは変換の終了後である。`video.duration` は先端でしかないため、
+  終端付近の位置を消す判定に duration を使うのは ENDLIST を見てからにする。
+  信号は hls.js の level details が `live === false` になることと、`ended` イベントである。
+  ネイティブ HLS は ENDLIST を直接見られず、`ended` だけを信号にする。
+  jsdom で測れるのは信号と保存位置の関係までで、実ブラウザでは hls.js 経路の `ended` だけを
+  `web/e2e/recording-original-vod.mjs` で測っている。ネイティブ HLS は未検証である
 - 再生・一時停止、シーク、音量、再生速度、PiP はネイティブ controls を使い、重複する
   自前の再生速度セレクトと PiP ボタンは置かない。2026-09-23 の Chromium 151 実測では
   標準 controls の `⋮` メニューに再生速度と PiP があった

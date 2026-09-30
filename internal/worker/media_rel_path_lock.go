@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -301,14 +300,6 @@ func lockMediaRelPathFile(ctx context.Context, mediaDir, relPath string) (*media
 			return nil, fmt.Errorf("waiting for media rel_path lock: %w", err)
 		}
 	}
-}
-
-// AcquireMediaRelPathFileLock lets a reader pin a canonical inode while it
-// checks the live DB row and opens the file. The lock shares the same gate and
-// flock namespace as ingest and delete_reconcile; callers should release it
-// immediately after opening the file rather than holding it for a long stream.
-func AcquireMediaRelPathFileLock(ctx context.Context, mediaDir, relPath string) (io.Closer, error) {
-	return lockMediaRelPathFile(ctx, mediaDir, relPath)
 }
 
 // tryLockMediaRelPathFile は canonical orphan 回収用の non-blocking 版。GC gate または

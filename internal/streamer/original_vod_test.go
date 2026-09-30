@@ -22,45 +22,53 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-func installCompletedOriginalVODFFmpeg(t *testing.T) string {
+// installOriginalVODFFmpeg is a fake ffmpeg that reproduces the measured hls muxer
+// behavior (ffmpeg 9.0.2): with `-hls_playlist_type vod` no .m3u8 exists until the
+// process exits, while `event` writes the playlists up front and appends ENDLIST
+// at exit. runSeconds is how long it stays alive between the two writes.
+func installOriginalVODFFmpeg(t *testing.T, runSeconds int) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("fake ffmpeg script assumes a POSIX shell")
 	}
 	path := filepath.Join(t.TempDir(), "fake-ffmpeg-original-vod")
-	script := `#!/bin/sh
+	script := fmt.Sprintf(`#!/bin/sh
+ptype=""
+prev=""
+outputs=""
 for a in "$@"; do
-  case "$a" in
-    *.%v.m3u8)
-      outdir=$(dirname "$a")
-      output=$(basename "$a")
-      profile=${output%%.%v.m3u8}
-      mkdir -p "$outdir/segments"
-      segment="${profile}.0_seg00001.ts"
-      printf 'fake-ts-%s' "$profile" > "$outdir/segments/$segment"
-      cat > "$outdir/$profile.m3u8" <<EOF
-#EXTM3U
-#EXT-X-STREAM-INF:BANDWIDTH=2000000
-${profile}.0.m3u8
-EOF
-      cat > "$outdir/${profile}.0.m3u8" <<EOF
-#EXTM3U
-#EXT-X-PLAYLIST-TYPE:VOD
-#EXT-X-TARGETDURATION:2
-#EXTINF:2.0,
-segments/$segment
-#EXT-X-ENDLIST
-EOF
-      ;;
-  esac
+  if [ "$prev" = "-hls_playlist_type" ]; then ptype="$a"; fi
+  case "$a" in *.%%v.m3u8) outputs="$outputs $a" ;; esac
+  prev="$a"
 done
-sleep 1
+write() {
+  endlist="$1"
+  for a in $outputs; do
+    outdir=$(dirname "$a")
+    output=$(basename "$a")
+    profile=${output%%%%.%%v.m3u8}
+    mkdir -p "$outdir/segments"
+    segment="${profile}.0_seg00001.ts"
+    printf 'fake-ts-%%s' "$profile" > "$outdir/segments/$segment"
+    printf '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\n%%s.0.m3u8\n' "$profile" > "$outdir/$profile.m3u8"
+    printf '#EXTM3U\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nsegments/%%s\n%%s' "$segment" "$endlist" > "$outdir/${profile}.0.m3u8"
+  done
+}
+if [ "$ptype" = "event" ]; then write ""; fi
+sleep %d
+write "#EXT-X-ENDLIST
+"
 exit 0
-`
+`, runSeconds)
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("writing fake ffmpeg: %v", err)
 	}
 	return path
+}
+
+func installCompletedOriginalVODFFmpeg(t *testing.T) string {
+	t.Helper()
+	return installOriginalVODFFmpeg(t, 1)
 }
 
 func installFailedOriginalVODFFmpeg(t *testing.T) string {
@@ -72,16 +80,15 @@ func installFailedOriginalVODFFmpeg(t *testing.T) string {
 	return path
 }
 
-func originalVODConfig(t *testing.T, mediaDir, ffmpeg string, locker func(context.Context, string, string) (io.Closer, error)) LiveConfig {
+func originalVODConfig(t *testing.T, mediaDir, ffmpeg string) LiveConfig {
 	t.Helper()
 	return LiveConfig{
-		Enabled:              true,
-		FFmpeg:               ffmpeg,
-		MediaDir:             mediaDir,
-		SegmentDir:           t.TempDir(),
-		MaxSessions:          4,
-		IdleTimeout:          time.Minute,
-		LockMediaRelPathFile: locker,
+		Enabled:     true,
+		FFmpeg:      ffmpeg,
+		MediaDir:    mediaDir,
+		SegmentDir:  t.TempDir(),
+		MaxSessions: 4,
+		IdleTimeout: time.Minute,
 		Profiles: []LiveProfile{
 			{Name: "hd", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
 			{Name: "sd", VideoCodec: "libx264", AudioCodec: "aac", Height: 480, SegmentSeconds: 2, PlaylistSize: 6},
@@ -148,13 +155,16 @@ func waitForOriginalVODScratchCleanup(t *testing.T, dir string) {
 func TestOriginalVODSharesOneFFmpegAndRetainsFilesUntilIdleGC(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	recordingID, mediaDir, original := originalVODTargetFixture(t, pool)
-	var lockCalls atomic.Int32
-	locker := func(context.Context, string, string) (io.Closer, error) {
-		lockCalls.Add(1)
-		return io.NopCloser(strings.NewReader("")), nil
+	// k8s mounts media read-only for the site streamer: nothing under the media
+	// root may be created (no lock directory either).
+	if err := os.Chmod(mediaDir, 0o555); err != nil {
+		t.Fatalf("making media root read-only: %v", err)
 	}
-	cfg := originalVODConfig(t, mediaDir, installCompletedOriginalVODFFmpeg(t), locker)
+	t.Cleanup(func() { _ = os.Chmod(mediaDir, 0o755) })
+	cfg := originalVODConfig(t, mediaDir, installCompletedOriginalVODFFmpeg(t))
 	ls, srv := newOriginalVODTestServer(t, pool, cfg)
+	var opens atomic.Int32
+	ls.afterOriginalVODOpen = func() { opens.Add(1) }
 
 	start := make(chan struct{})
 	type result struct {
@@ -190,8 +200,8 @@ func TestOriginalVODSharesOneFFmpegAndRetainsFilesUntilIdleGC(t *testing.T) {
 			t.Fatalf("concurrent original VOD playlist status = %d, want 200 (%s)", resp.status, resp.body)
 		}
 	}
-	if got := lockCalls.Load(); got != 1 {
-		t.Fatalf("original source lock calls = %d, want 1 shared FFmpeg session", got)
+	if got := opens.Load(); got != 1 {
+		t.Fatalf("original source opens = %d, want 1 shared FFmpeg session", got)
 	}
 	if got := ls.sessionCount(); got != 1 {
 		t.Fatalf("session count after concurrent requests = %d, want 1", got)
@@ -216,8 +226,11 @@ func TestOriginalVODSharesOneFFmpegAndRetainsFilesUntilIdleGC(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "sd.0.m3u8") {
 		t.Fatalf("sd playlist status/body = %d %q, want retained sd master", resp.StatusCode, body)
 	}
-	if got := lockCalls.Load(); got != 1 {
+	if got := opens.Load(); got != 1 {
 		t.Fatalf("profile switch reopened original source %d times, want 1", got)
+	}
+	if entries, err := os.ReadDir(mediaDir); err != nil || len(entries) != 1 || entries[0].Name() != "recordings" {
+		t.Fatalf("media root entries = %v (err %v), want only recordings/ (streamer must not write to media)", entries, err)
 	}
 
 	base := fmt.Sprintf("%s/api/sites/default/recordings/%d/original-vod", srv.URL, recordingID)
@@ -256,12 +269,9 @@ func TestOriginalVODSharesOneFFmpegAndRetainsFilesUntilIdleGC(t *testing.T) {
 func TestOriginalVODUnavailableTargetsReturn404WithoutSession(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	recordingID, mediaDir, _ := originalVODTargetFixture(t, pool)
-	var lockCalls atomic.Int32
-	locker := func(context.Context, string, string) (io.Closer, error) {
-		lockCalls.Add(1)
-		return io.NopCloser(strings.NewReader("")), nil
-	}
-	ls, srv := newOriginalVODTestServer(t, pool, originalVODConfig(t, mediaDir, "unused-ffmpeg", locker))
+	ls, srv := newOriginalVODTestServer(t, pool, originalVODConfig(t, mediaDir, "unused-ffmpeg"))
+	var opens atomic.Int32
+	ls.afterOriginalVODOpen = func() { opens.Add(1) }
 	fullURL := originalVODPlaylistURL(srv.URL, recordingID, "hd")
 
 	checks := []struct {
@@ -303,18 +313,15 @@ func TestOriginalVODUnavailableTargetsReturn404WithoutSession(t *testing.T) {
 	if got := ls.sessionCount(); got != 0 {
 		t.Fatalf("unbound site left %d sessions", got)
 	}
-	if got := lockCalls.Load(); got != 0 {
-		t.Fatalf("invalid targets acquired the source lock %d times", got)
+	if got := opens.Load(); got != 0 {
+		t.Fatalf("invalid targets opened the original %d times", got)
 	}
 }
 
 func TestOriginalVODTrashInvalidatesRetainedSessionAndScratch(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	recordingID, mediaDir, _ := originalVODTargetFixture(t, pool)
-	locker := func(context.Context, string, string) (io.Closer, error) {
-		return io.NopCloser(strings.NewReader("")), nil
-	}
-	ls, srv := newOriginalVODTestServer(t, pool, originalVODConfig(t, mediaDir, installCompletedOriginalVODFFmpeg(t), locker))
+	ls, srv := newOriginalVODTestServer(t, pool, originalVODConfig(t, mediaDir, installCompletedOriginalVODFFmpeg(t)))
 
 	resp, body := get(t, originalVODPlaylistURL(srv.URL, recordingID, "hd"), nil)
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "hd.0.m3u8") {
@@ -348,41 +355,84 @@ func TestOriginalVODTrashInvalidatesRetainedSessionAndScratch(t *testing.T) {
 	}
 }
 
-func TestOriginalVODRechecksDBTargetUnderMediaLock(t *testing.T) {
+// open-then-verify: a state change that lands after the original was opened but
+// before the DB recheck must still end in 404 (delete_reconcile marks deleting
+// before it unlinks; trash hides the recording).
+func TestOriginalVODVerifiesDBTargetAfterOpen(t *testing.T) {
+	for _, tc := range []struct{ name, update string }{
+		{name: "asset deleting", update: "UPDATE media_assets SET state = 'deleting' WHERE recording_id = $1"},
+		{name: "trash", update: "UPDATE recordings SET deleted_at = now() WHERE id = $1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := testutil.SetupDB(t)
+			recordingID, mediaDir, _ := originalVODTargetFixture(t, pool)
+			ls, srv := newOriginalVODTestServer(t, pool, originalVODConfig(t, mediaDir, "unused-ffmpeg"))
+			var opens atomic.Int32
+			ls.afterOriginalVODOpen = func() {
+				opens.Add(1)
+				if _, err := pool.Exec(context.Background(), tc.update, recordingID); err != nil {
+					t.Errorf("changing target after open: %v", err)
+				}
+			}
+
+			resp, _ := get(t, originalVODPlaylistURL(srv.URL, recordingID, "hd"), nil)
+			if resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("target changed after open status = %d, want 404", resp.StatusCode)
+			}
+			if got := opens.Load(); got != 1 {
+				t.Fatalf("opens = %d, want 1 (the change must land after open)", got)
+			}
+			waitForOriginalVODSessionCleanup(t, ls)
+			waitForOriginalVODScratchCleanup(t, originalVODSessionDir(ls.cfg.SegmentDir, testSite, recordingID))
+		})
+	}
+}
+
+// until_encoded deletes the original (DB state + unlink) often right after encode
+// finishes; a playback in progress must keep getting segments.
+func TestOriginalVODRetainedSessionSurvivesOriginalDeletion(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	recordingID, mediaDir, _ := originalVODTargetFixture(t, pool)
-	var lockCalls atomic.Int32
-	locker := func(_ context.Context, _ string, relPath string) (io.Closer, error) {
-		lockCalls.Add(1)
-		if relPath != "recordings/original-vod.ts" {
-			t.Errorf("locked rel_path = %q, want original rel_path", relPath)
-		}
-		if _, err := pool.Exec(context.Background(), "UPDATE recordings SET deleted_at = now() WHERE id = $1", recordingID); err != nil {
-			return nil, err
-		}
-		return io.NopCloser(strings.NewReader("")), nil
-	}
-	ls, srv := newOriginalVODTestServer(t, pool, originalVODConfig(t, mediaDir, "unused-ffmpeg", locker))
+	ls, srv := newOriginalVODTestServer(t, pool, originalVODConfig(t, mediaDir, installCompletedOriginalVODFFmpeg(t)))
 
-	resp, _ := get(t, originalVODPlaylistURL(srv.URL, recordingID, "hd"), nil)
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("target deleted while acquiring lock status = %d, want 404", resp.StatusCode)
+	resp, body := get(t, originalVODPlaylistURL(srv.URL, recordingID, "hd"), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("initial playlist status/body = %d %q", resp.StatusCode, body)
 	}
-	if got := lockCalls.Load(); got != 1 {
-		t.Fatalf("media lock calls = %d, want 1", got)
+	if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE recording_id = $1", recordingID); err != nil {
+		t.Fatalf("deleting original asset: %v", err)
 	}
-	waitForOriginalVODSessionCleanup(t, ls)
-	waitForOriginalVODScratchCleanup(t, originalVODSessionDir(ls.cfg.SegmentDir, testSite, recordingID))
+	if err := os.Remove(filepath.Join(mediaDir, "recordings/original-vod.ts")); err != nil {
+		t.Fatalf("unlinking original: %v", err)
+	}
+
+	base := fmt.Sprintf("%s/api/sites/default/recordings/%d/original-vod", srv.URL, recordingID)
+	resp, body = get(t, base+"/segments/hd.0_seg00001.ts", nil)
+	if resp.StatusCode != http.StatusOK || string(body) != "fake-ts-hd" {
+		t.Fatalf("segment after original deletion = %d %q, want 200 retained segment", resp.StatusCode, body)
+	}
+	if got := ls.sessionCount(); got != 1 {
+		t.Fatalf("original deletion dropped the session, count = %d, want 1", got)
+	}
+
+	// A DB outage must not stop serving files that are already on scratch.
+	broken, err := pgxpool.New(context.Background(), "postgres://127.0.0.1:1/none?connect_timeout=1")
+	if err != nil {
+		t.Fatalf("creating unreachable pool: %v", err)
+	}
+	t.Cleanup(broken.Close)
+	ls.pool = broken
+	resp, body = get(t, base+"/segments/hd.0_seg00001.ts", nil)
+	if resp.StatusCode != http.StatusOK || string(body) != "fake-ts-hd" {
+		t.Fatalf("segment during DB outage = %d %q, want 200", resp.StatusCode, body)
+	}
 }
 
 func TestOriginalVODFailedFFmpegReleasesSessionAndScratch(t *testing.T) {
 	withPlaylistStartupTimeout(t, 100*time.Millisecond)
 	pool := testutil.SetupDB(t)
 	recordingID, mediaDir, _ := originalVODTargetFixture(t, pool)
-	locker := func(context.Context, string, string) (io.Closer, error) {
-		return io.NopCloser(strings.NewReader("")), nil
-	}
-	ls, srv := newOriginalVODTestServer(t, pool, originalVODConfig(t, mediaDir, installFailedOriginalVODFFmpeg(t), locker))
+	ls, srv := newOriginalVODTestServer(t, pool, originalVODConfig(t, mediaDir, installFailedOriginalVODFFmpeg(t)))
 
 	resp, _ := get(t, originalVODPlaylistURL(srv.URL, recordingID, "hd"), nil)
 	if resp.StatusCode != http.StatusGatewayTimeout {
@@ -390,4 +440,29 @@ func TestOriginalVODFailedFFmpegReleasesSessionAndScratch(t *testing.T) {
 	}
 	waitForOriginalVODSessionCleanup(t, ls)
 	waitForOriginalVODScratchCleanup(t, originalVODSessionDir(ls.cfg.SegmentDir, testSite, recordingID))
+}
+
+func TestOriginalVODServesPlaylistWhileFFmpegIsStillConverting(t *testing.T) {
+	withPlaylistStartupTimeout(t, 3*time.Second)
+	pool := testutil.SetupDB(t)
+	recordingID, mediaDir, _ := originalVODTargetFixture(t, pool)
+	ls, srv := newOriginalVODTestServer(t, pool, originalVODConfig(t, mediaDir, installOriginalVODFFmpeg(t, 30)))
+
+	resp, body := get(t, originalVODPlaylistURL(srv.URL, recordingID, "hd"), nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "hd.0.m3u8") {
+		t.Fatalf("master status/body = %d %q, want 200 while ffmpeg is still running", resp.StatusCode, body)
+	}
+	ls.mu.Lock()
+	s := ls.chaseSessions[originalVODSessionKeyFor(recordingID)]
+	ls.mu.Unlock()
+	select {
+	case <-s.done:
+		t.Fatal("fake ffmpeg exited; the test no longer measures an in-progress conversion")
+	default:
+	}
+	base := fmt.Sprintf("%s/api/sites/default/recordings/%d/original-vod", srv.URL, recordingID)
+	resp, body = get(t, base+"/hd.0.m3u8", nil)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "#EXTINF") || strings.Contains(string(body), "#EXT-X-ENDLIST") {
+		t.Fatalf("in-progress variant status/body = %d %q, want EXTINF without ENDLIST", resp.StatusCode, body)
+	}
 }

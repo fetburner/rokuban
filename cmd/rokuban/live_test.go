@@ -55,10 +55,10 @@ func TestConvertLiveConfig_NoFieldLeftBehind(t *testing.T) {
 
 	got := convertLiveConfig(src)
 
-	// These two runtime dependencies come from storage and worker wiring in
-	// server.go, not from config.LiveConfig, so they are intentionally outside
+	// This runtime dependency comes from storage wiring in
+	// server.go, not from config.LiveConfig, so it is intentionally outside
 	// convertLiveConfig's mapping responsibility.
-	assertNoZeroFields(t, "streamer.LiveConfig", reflect.ValueOf(got), "MediaDir", "LockMediaRelPathFile")
+	assertNoZeroFields(t, "streamer.LiveConfig", reflect.ValueOf(got), "MediaDir")
 	if len(got.Profiles) != 1 {
 		t.Fatalf("Profiles len = %d, want 1", len(got.Profiles))
 	}

@@ -178,8 +178,8 @@ scratch を分ける指針（[§3](database.md)）と同じ系列の規則。
 **原本だけの完了録画も `live.segment_dir` を使う。**
 原本 MPEG-2 TS は site streamer が media PVC から read-only で開く。変換済み HLS は
 scratch に書き、録画バッファや archive PVC は使わない。site streamer の media mount は
-read-write にする。ingest / 削除処理と共有する `.rokuban-locks` の lock metadata を
-作成するためである。録画本体は read-only で開き、更新しない。
+read-only のままでよい。`rel_path` lock は取らず、開いてから DB で再確認するので、
+media root に `.rokuban-locks` を作らない（根拠は [api.md](../api.md) 「録画原本のブラウザ再生」）。
 
 **録画中の追っかけ再生も同じ `live.segment_dir` の scratch を使う。**
 URL は固定深さである。開始位置を指定する場合は `/offset/{offset}` を含む。
@@ -200,7 +200,7 @@ ffmpeg 終了後も idle GC まで全セグメントを残す。録画状態が�
 録画バッファへ逃がさず、追っかけセッションの HLS 生成失敗として観測する。recording.basedir
 または archive PVC と同じ mount / volume に置かない。
 
-原本 VOD は chase と同じく録画全体の VOD playlist と全 segment を idle GC まで保持する。
+原本 VOD は chase と同じく録画全体の EVENT playlist と全 segment を idle GC まで保持する。
 見積もりには、同時に再生する原本録画の時間、全 live profile の出力 bitrate、同時セッション数を
 掛け合わせる。字幕 rendition を有効にする構成では WebVTT の scratch も加算する。
 tmpfs の容量不足は原本 VOD の HLS 生成失敗になり、原本や録画バッファへは書き込まない。

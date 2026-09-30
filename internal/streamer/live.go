@@ -64,13 +64,8 @@ type LiveConfig struct {
 	SegmentDir string
 
 	// MediaDir は site streamer が参照する録画原本の root。原本 VOD はここから
-	// read-only で開き、HLS 出力は SegmentDir にだけ書く。
+	// read-only で開き、HLS 出力は SegmentDir にだけ書く（マウントも read-only でよい）。
 	MediaDir string
-
-	// LockMediaRelPathFile は canonical の削除と原本 open を直列化する共有 lock。
-	// 呼び出し側は open と DB の live 再確認を終えた直後に Close し、FFmpeg は
-	// 開いた fd を読み続ける。nil は原本 VOD を無効として扱う。
-	LockMediaRelPathFile func(context.Context, string, string) (io.Closer, error)
 
 	// MaxSessions はこのプロセスが同時に持てるライブセッション数（プロセスローカル）。
 	MaxSessions int
@@ -249,7 +244,10 @@ type LiveStreamer struct {
 	mu            sync.Mutex
 	sessions      map[int64]*liveSession
 	chaseSessions map[sessionKey]*liveSession
-	closed        bool
+
+	// afterOriginalVODOpen はテスト専用: 原本を open した直後、DB を再確認する前に呼ぶ。
+	afterOriginalVODOpen func()
+	closed               bool
 
 	// evictMu は退避（takeIdleSessionForRetry → stop → 解放待ち）を直列化する。
 	// getOrCreateSession の doc コメント参照 --- 「1 つの圧力イベントに対して退避は
@@ -877,36 +875,28 @@ func (ls *LiveStreamer) lookupOriginalVODTarget(ctx context.Context, recordingID
 	})
 }
 
-// originalVODSource pins the canonical inode under the same rel_path lock used
-// by delete_reconcile, rechecks the DB row after taking the lock, and opens the
-// source read-only. The lock is released after open: unlinking the path later
-// cannot change the inode already held by FFmpeg.
+// originalVODSource opens the original read-only and only then rechecks the DB
+// row (open-then-verify), without the rel_path lock.
+//
+// Why this holds the right inode without a lock: target was read as active, so its
+// canonical file was renamed into place before its row committed, and the path
+// keeps that inode until delete_reconcile unlinks it, which happens only after
+// MarkMediaAssetDeleting has committed (deleteMediaAsset). media_assets_rel_path_idx
+// forbids another live row at the same rel_path, so nobody else publishes there
+// while target is live. If the row is still active after open, the path cannot have
+// been unlinked before the open; if it is not, we return pgx.ErrNoRows. A later
+// unlink cannot change the descriptor FFmpeg already holds.
 func (ls *LiveStreamer) originalVODSource(recordingID int64, target sqlcgen.GetOriginalVODTargetRow) sessionSource {
 	return func(ctx context.Context) (io.ReadCloser, error) {
-		if ls.cfg.MediaDir == "" || ls.cfg.LockMediaRelPathFile == nil {
-			return nil, errors.New("original VOD media locking is unavailable")
+		if ls.cfg.MediaDir == "" {
+			return nil, errors.New("original VOD media directory is unavailable")
 		}
-		lock, err := ls.cfg.LockMediaRelPathFile(ctx, ls.cfg.MediaDir, target.RelPath)
+		path, err := mediapath.Resolve(ls.cfg.MediaDir, target.RelPath)
 		if err != nil {
-			return nil, fmt.Errorf("locking original media path: %w", err)
-		}
-		current, err := ls.lookupOriginalVODTarget(ctx, recordingID)
-		if err != nil {
-			_ = lock.Close()
-			return nil, err
-		}
-		if current.ID != target.ID || current.RelPath != target.RelPath {
-			_ = lock.Close()
-			return nil, pgx.ErrNoRows
-		}
-		path, err := mediapath.Resolve(ls.cfg.MediaDir, current.RelPath)
-		if err != nil {
-			_ = lock.Close()
 			return nil, fmt.Errorf("resolving original media path: %w", err)
 		}
 		file, err := os.Open(path)
 		if err != nil {
-			_ = lock.Close()
 			if errors.Is(err, os.ErrNotExist) {
 				return nil, pgx.ErrNoRows
 			}
@@ -915,18 +905,46 @@ func (ls *LiveStreamer) originalVODSource(recordingID int64, target sqlcgen.GetO
 		info, err := file.Stat()
 		if err != nil || !info.Mode().IsRegular() {
 			_ = file.Close()
-			_ = lock.Close()
 			if err != nil {
 				return nil, fmt.Errorf("stating original media: %w", err)
 			}
 			return nil, pgx.ErrNoRows
 		}
-		if err := lock.Close(); err != nil {
+		if ls.afterOriginalVODOpen != nil {
+			ls.afterOriginalVODOpen()
+		}
+		current, err := ls.lookupOriginalVODTarget(ctx, recordingID)
+		if err != nil {
 			_ = file.Close()
-			return nil, fmt.Errorf("releasing original media path lock: %w", err)
+			return nil, err
+		}
+		if current.ID != target.ID || current.RelPath != target.RelPath {
+			_ = file.Close()
+			return nil, pgx.ErrNoRows
 		}
 		return file, nil
 	}
+}
+
+// originalVODRecordingRemoved reports whether a user action (trash, purge,
+// supersede) has removed the recording. Segment requests use only this: the
+// retained session reads a held descriptor and scratch files, so an asset that
+// became deleted (for example until_encoded) must not stop a playback in
+// progress. A DB error other than ErrNoRows keeps serving the files.
+func (ls *LiveStreamer) originalVODRecordingRemoved(ctx context.Context, recordingID int64) bool {
+	if ls.pool == nil {
+		return false
+	}
+	rec, err := sqlcgen.New(ls.pool).GetRecordingByID(ctx, recordingID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true
+	}
+	if err != nil {
+		slog.Warn("streamer: original VOD recording check failed; serving retained files",
+			"recording_id", recordingID, "err", err)
+		return false
+	}
+	return rec.DeletedAt != nil || rec.PurgedAt != nil || rec.SupersededAt != nil
 }
 
 func chaseSessionKeyFor(recordingID, offsetSeconds int64) sessionKey {
@@ -1256,7 +1274,7 @@ func (ls *LiveStreamer) OriginalVODPlaylist(w http.ResponseWriter, r *http.Reque
 	writeHLSPlaylist(w, content)
 }
 
-// OriginalVODSegment serves a completed VOD playlist, variant playlist, subtitle
+// OriginalVODSegment serves the (possibly still growing) EVENT variant playlist, subtitle
 // playlist, or segment from the retained original VOD session.
 func (ls *LiveStreamer) OriginalVODSegment(w http.ResponseWriter, r *http.Request) {
 	if chi.URLParam(r, "site") != ls.site {
@@ -1273,11 +1291,9 @@ func (ls *LiveStreamer) OriginalVODSegment(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "invalid segment name", http.StatusBadRequest)
 		return
 	}
-	if _, err := ls.lookupOriginalVODTarget(r.Context(), recordingID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			ls.invalidateOriginalVODSession(recordingID)
-		}
-		writeOriginalVODError(w, r, err)
+	if ls.originalVODRecordingRemoved(r.Context(), recordingID) {
+		ls.invalidateOriginalVODSession(recordingID)
+		http.NotFound(w, r)
 		return
 	}
 	ls.mu.Lock()
@@ -2689,11 +2705,14 @@ func BuildChaseFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []stri
 	return buildHLSFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, hlsEventPlaylist)
 }
 
-// BuildOriginalVODFFmpegArgs converts the original MPEG-2 TS into a seekable
-// HLS VOD playlist. The output keeps every segment until shared idle GC and
-// includes the same profile, audio rendition, and optional subtitle graph as live.
+// BuildOriginalVODFFmpegArgs converts the original MPEG-2 TS into an EVENT HLS
+// playlist that grows while ffmpeg converts and gains ENDLIST at EOF. It is not
+// `-hls_playlist_type vod`: ffmpeg 9.0.2 writes no .m3u8 until it exits in that
+// mode (measured), so a recording longer than playlistStartupTimeout would never
+// become playable. Every segment is kept until shared idle GC, and the output
+// has the same profile, audio rendition, and optional subtitle graph as live.
 func BuildOriginalVODFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []string {
-	return buildHLSFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, hlsVODPlaylist)
+	return buildHLSFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, hlsOriginalEventPlaylist)
 }
 
 type hlsPlaylistType uint8
@@ -2701,7 +2720,8 @@ type hlsPlaylistType uint8
 const (
 	hlsLivePlaylist hlsPlaylistType = iota
 	hlsEventPlaylist
-	hlsVODPlaylist
+	// hlsOriginalEventPlaylist is an EVENT playlist like chase, but keeps the audio renditions.
+	hlsOriginalEventPlaylist
 )
 
 func buildHLSFFmpegArgsForPlaylistType(cfg LiveConfig, dir string, withSubtitles bool, playlistType hlsPlaylistType) []string {
@@ -2755,11 +2775,7 @@ func buildHLSFFmpegArgsForPlaylistType(cfg LiveConfig, dir string, withSubtitles
 			// EVENT playlists grow from the head until ffmpeg sees EOF. list_size 0
 			// and the absence of delete_segments retain every segment for seeking.
 			playlistSize = "0"
-			playlistKind := "event"
-			if playlistType == hlsVODPlaylist {
-				playlistKind = "vod"
-			}
-			playlistOptions = []string{"-hls_playlist_type", playlistKind}
+			playlistOptions = []string{"-hls_playlist_type", "event"}
 		}
 		// 出力ファイル名。ライブは master（NAME.m3u8）と variant（NAME.<n>.m3u8）、
 		// 追っかけは従来どおりの media playlist 1 本（NAME.m3u8）。
@@ -2941,11 +2957,7 @@ func buildLiveCaptionFFmpegArgsForPlaylistType(cfg LiveConfig, dir string, withS
 	playlistOptions := []string{}
 	if playlistType != hlsLivePlaylist {
 		playlistSize = "0"
-		playlistKind := "event"
-		if playlistType == hlsVODPlaylist {
-			playlistKind = "vod"
-		}
-		playlistOptions = []string{"-hls_playlist_type", playlistKind}
+		playlistOptions = []string{"-hls_playlist_type", "event"}
 	}
 	args = append(args,
 		"-var_stream_map", strings.Join(append(variants, audioVariants...), " "),
