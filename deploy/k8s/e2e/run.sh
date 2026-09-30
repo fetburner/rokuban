@@ -4,6 +4,7 @@
 #   ./deploy/k8s/e2e/run.sh              5 項目を判定する
 #   ./deploy/k8s/e2e/run.sh --only 2,4   一部だけ
 #   ./deploy/k8s/e2e/run.sh --oracles    判定そのものを検査する（変異注入）
+#   ./deploy/k8s/e2e/run.sh --faults    worker kill / PostgreSQL outage からの収束を判定する
 #   ./deploy/k8s/e2e/run.sh --down       クラスタを消す
 #
 # その他:
@@ -64,11 +65,17 @@ while [ $# -gt 0 ]; do
     --no-build) do_build=0; shift ;;
     --fresh) do_fresh=1; shift ;;
     --oracles) mode="oracles"; shift ;;
+    --faults) mode="faults"; shift ;;
     --down) mode="down"; shift ;;
     -h|--help) sed -n '2,25p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) printf 'unknown option: %s\n' "$1" >&2; exit 64 ;;
   esac
 done
+
+if [ -n "$only" ] && [ "$mode" != "checks" ]; then
+  printf -- '--only applies to the default acceptance checks, not --%s\n' "$mode" >&2
+  exit 64
+fi
 
 require_tools || exit 70
 validate_site_names || exit 70
@@ -114,6 +121,17 @@ if ! preflight; then
   printf '\n前提が満たされていないので判定を走らせていない。\n'
   summary
   exit $?
+fi
+
+if [ "$mode" = "faults" ]; then
+  # run.sh ごとに固有の印を付け、再実行で前周回の media file / recording を
+  # 誤って成功の根拠にしない。値は SQL と media path に使うので文字種を絞る。
+  E2E_FAULT_RUN_ID="$(date -u +%Y%m%dT%H%M%S)-$$-${RANDOM}"
+  export E2E_FAULT_RUN_ID
+  bash "$E2E_DIR_SELF/faults/run.sh"
+  status=$?
+  printf '\nクラスタは残してある。消すには: %s --down\n' "${BASH_SOURCE[0]}"
+  exit "$status"
 fi
 
 if [ -n "$only" ]; then

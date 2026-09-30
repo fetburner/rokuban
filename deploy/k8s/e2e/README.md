@@ -10,9 +10,22 @@
 ./deploy/k8s/e2e/run.sh                      # 5 項目を判定する
 ./deploy/k8s/e2e/run.sh --only 2,4           # 一部だけ（0 は返さない）
 ./deploy/k8s/e2e/run.sh --oracles            # 判定そのものを検査する（変異注入）
+./deploy/k8s/e2e/run.sh --faults             # worker kill / PostgreSQL 接続断後の収束を判定する
 E2E_ORACLES_ONLY=3 ./deploy/k8s/e2e/run.sh --oracles   # オラクルも一部だけ
 ./deploy/k8s/e2e/run.sh --down               # クラスタを消す
 ```
+
+`--faults` は通常の 5 項目と別に走る。**同じ使い捨て kind + KEDA クラスタを使い、
+PostgreSQL・worker・media volume・mirakc mock を含む実デプロイの状態遷移を測る。**
+Compose の smoke test はコンテナ起動と catalog 書き込みを検査する目的のままとし、
+故障後の収束の正本はこの kind suite にする。役割分割のキュー、DB 接続、永続 volume
+をまとめて扱えるためである。
+
+この suite はデータを持たない `rokuban-e2e` 名前空間に限る。worker kill は実行中
+encode Pod だけに `--force --grace-period=0` を送り、PostgreSQL outage は DB Pod や
+`emptyDir` を消さず Service selector を一時的に空振りさせたうえで既存 app connection
+を切る。後者は `readyz=503` を観測してから Service を戻す。中断時も selector と
+CronJob は trap で戻し、次回実行前の preflight が状態を検査する。
 
 ## 出力は 3 値である
 
@@ -32,7 +45,7 @@ E2E_ORACLES_ONLY=3 ./deploy/k8s/e2e/run.sh --oracles   # オラクルも一部�
 **`2` を `0` に丸めない。** TODO が 1 つでも残っている限りこのハーネスは成功を
 返してはならない。同じ理由で、`--only` で一部だけ回したときも 0 は返さない。
 
-**ただし `0` は「受け入れ 5 項目を判定できた」であって「ワークロードが揃った」
+**ただし `0` は「選んだ suite の判定を完了した」であって「ワークロードが揃った」
 ではない。** `0` が保証**しない**もの:
 
 - **CronJob は `epg-sync --site <A>` の 1 本しか見ていない。** `rokuban enqueue`
@@ -165,6 +178,40 @@ watcher の singleton 性が主張しているのは「mirakc に N 本の SSE �
 `worker.periodic_jobs` は **false** で出荷している（`overlays/e2e/config.yml`）。
 true のままだと、判定 2 が「worker が自分で投入して自分で消化した」でも緑に
 なりうる。
+
+## 故障注入 suite（`--faults`）
+
+通常の 5 項目は「健全なクラスタで各ロールが動くか」を見る。`--faults` はそれと
+別の suite で、故障を実際に起こしてから durable な状態が収束することを判定する。
+この suite の正本は kind + KEDA にする。worker Pod の kill、River queue、PostgreSQL
+接続、media PVC を同じデプロイ上で検査でき、Compose の monolith smoke test では
+確認できないからである。
+
+| 判定 | 注入 | 機械判定する収束 |
+|---|---|---|
+| F1 | 240 秒の実 encode が claim された worker Pod を force-delete | River の stuck job を `encode_reconcile` が終端化して代替 job を投入し、replacement が encoded file と active `media_assets` を公開する。途中で `delete_reconcile` を走らせても `until_encoded` の原本は残り、recording の状態も保たれる |
+| F2 | PostgreSQL Service selector を一時的に空振りさせ、既存 app connection を切断 | `/readyz` が 503 になり、Service 復帰後に 200 へ戻る。DB outage 中に失った mirakc mock の schedule が `reconcile-pass` で戻り、既存 recording の状態が保たれる |
+
+F2 は postgres Pod / `emptyDir` を削除しない。Service endpoint の切り離しにより API・
+worker・KEDA operator からの新規接続を失わせ、既存の pool connection も
+`pg_terminate_backend` で切る。`readyz=503` を確認できなければ outage と見なさず FAIL
+にする。中断時は EXIT trap が Service selector と CronJob を復元する。
+
+worker kill の判定は次の 2 つを直接固定する。`encode_reconcile` の回収を外すと F1.4
+の River 置換または encoded asset 公開が成立せず、`until_encoded` の未完了プロファイル
+保護を外すと F1.3 で original が残らない。F2.3 は期待した `program_id` の mirakc
+schedule を照合するため、単に worker が起きたことでは PASS しない。
+
+候補のうち API restart、NOTIFY/SSE 欠落、media mount 遅延、mirakc 再起動はこの suite
+では注入しない。どれも本 issue の最低受け入れである worker kill / PostgreSQL 一時断
+とは故障の判定条件が異なるため、実装対象が決まったときに別の状態遷移判定を足す。
+
+`--faults` は 240 秒の media fixture と stale recovery の 1 分閾値、実 encode の完了
+を待つので数分以上かかる。クラスタを起動する動的判定は CI では回さない。CI は
+shellcheck・YAML schema・既存のクラスタ不要 selftest を回し、k8s / recovery / storage
+の変更を出す人が PR 前に `run.sh --faults` を実行する（詳細は
+[docs/runbook/k8s.md](../../../docs/runbook/k8s.md) と
+[docs/runbook/testing.md](../../../docs/runbook/testing.md)）。
 
 ## オラクルの自己検査（`--oracles`）
 
@@ -344,11 +391,16 @@ ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切�
 ```
 run.sh                 入口。クラスタの用意 → 判定 → 集計
 oracles.sh             --oracles の中身（fixture と変異）
+faults/run.sh          --faults の入口。故障シナリオ 1 / 2 を実行
+faults/lib.sh          Fault suite 共通の状態・asset 判定
+faults/0*.sh           worker kill / PostgreSQL outage 注入と収束判定
 lib/env.sh             名前・版・パスワードの唯一の出どころ
 lib/log.sh             PASS / FAIL / TODO と終了コード
 lib/kube.sh            クラスタを触る共通関数（**時間で待たない**）
 lib/cluster.sh         kind / イメージ / KEDA / 足場の用意
 cluster/scaffold.yaml  postgres / mirakc モック / ツールボックス
+cluster/media-check-job.yaml
+                       media volume に公開済み asset があるか検査する one-shot Pod
 checks/0*.sh           判定 1〜5
 lib/selftest.sh        lib の純粋な部分のユニットテスト（クラスタ不要。CI で回す）
 fixtures/              オラクル自己検査用の身代わり（製品ではない）

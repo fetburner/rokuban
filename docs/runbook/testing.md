@@ -30,6 +30,28 @@ psql -h localhost -d postgres -tAc \
 ホストで既に PostgreSQL が 5432 を使っている場合は `.env` の `POSTGRES_PORT` を
 変えて、URL 側も合わせる。
 
+### k8s の故障注入
+
+worker process を強制終了した後の encode job recovery と、PostgreSQL 接続断の間に失った
+mirakc schedule の再照合は、単体テストや Compose smoke test だけでは実デプロイの
+キュー・Pod・media volume を通らない。専用の使い捨て kind + KEDA suite を実行する。
+
+```sh
+./deploy/k8s/e2e/run.sh --faults
+```
+
+`run.sh` は `kind-rokuban-e2e` / `rokuban-e2e` を固定して使い、Docker daemon と kind /
+kubectl / kustomize 等を要求する。故障注入先はこの名前空間に限られ、本番 context
+や任意の既存クラスタは対象にしない。PostgreSQL test outage は DB Pod / data dir を
+削除せず Service endpoint を外して起こす。中断時は trap が selector と CronJob を戻す。
+
+この動的 suite は encode source 作成・worker kill・stale recovery の待ちがあるため CI
+では回さない。CI は fault scripts の shellcheck と Kubernetes manifest schema を検査し、
+`internal/worker` の recovery / deletion、DB 接続復旧、media asset 公開、または
+`deploy/k8s/e2e/faults/` を変える PR の作者が PR 前に `run.sh --faults` を回す。
+判定内容と注入の仕組みは
+[kind + KEDA harness](../../deploy/k8s/e2e/README.md) を参照。
+
 実機（mirakc）や実録画データに依存するテストは `test/integration/` に置く。
 環境依存性が大きいため **追跡対象外**（`.gitignore`）で、各自のローカルにだけ置く。
 
