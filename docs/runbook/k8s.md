@@ -164,6 +164,7 @@ kubectl get pod -l app.kubernetes.io/component=api -o name   # Pod 名が入れ�
 ./deploy/k8s/e2e/run.sh              # 5 項目を判定する（クラスタごと用意する）
 ./deploy/k8s/e2e/run.sh --only 2,4   # 一部だけ
 ./deploy/k8s/e2e/run.sh --oracles    # 判定そのものを検査する（変異注入）
+./deploy/k8s/e2e/run.sh --faults     # worker kill / PostgreSQL 一時断からの収束
 ./deploy/k8s/e2e/run.sh --down       # クラスタを消す
 ```
 
@@ -180,10 +181,10 @@ kubectl get pod -l app.kubernetes.io/component=api -o name   # Pod 名が入れ�
 `64` と `70` は判定を 1 つも記録せずに落ちる。「終了コードが上がっていないこと」
 で見るときは、この 2 つを「1 より悪い」と読まないこと。
 
-**0 は「受け入れ 5 項目を判定できた」であって「ワークロードが網羅されている」
-ではない**（0 が保証しないものは
+**通常の `run.sh` の 0 は「受け入れ 5 項目を判定できた」であって「ワークロードが
+網羅されている」ではない**（0 が保証しないものは
 [deploy/k8s/e2e/README.md](../../deploy/k8s/e2e/README.md) に列挙してある）。
-項目ごとの対象は
+`--faults` の 0 は F1 / F2 の両シナリオが PASS したことを意味する。suite ごとの対象は
 [deploy/k8s/e2e/README.md](../../deploy/k8s/e2e/README.md) の表が持つ
 （ここには書かない --- 判定を足す人が触るのはあちらなので、ここに写すと
 黙って古くなる）。
@@ -232,8 +233,12 @@ TODO で抜けていた）。一部だけ見たいときは `E2E_ORACLES_ONLY=3`
 |---|---|---|
 | `deploy/k8s/` 配下を触る PR を出す前 | その PR の作者 | `run.sh` が **0** を返すこと（5 項目が緑のまま） |
 | 判定・身代わり（`fixtures/`）を足す / 変えるとき | 変更した人 | `run.sh --oracles` が全部緑（判定が効いていること） |
+| River recovery / `delete_reconcile` / `encode_reconcile` / DB 接続復旧 / media asset 公開、または `deploy/k8s/e2e/faults/` を変える PR を出す前 | その PR の作者 | `run.sh --faults` が **0** を返し、worker kill と PostgreSQL 接続断の両シナリオが PASS |
 
-CI が見るのはクラスタが要らない範囲の 3 つ。
+CI が見るのはクラスタが要らない範囲の 3 つ。`--faults` を含む kind 上の動的 suite は
+CI では回さない。240 秒 fixture の encode と KEDA recovery の待ちがあり、kind / KEDA /
+Postgres を追加するためである。CI では故障シナリオの shellcheck と media-check Job
+の YAML schema を検査し、実クラスタでの実行責任は上表の PR 作者に置く。
 
 - `manifests`: マニフェストが `kustomize build` + kubeconform（KEDA の CRD を
   含む。スキーマは `deploy/k8s/schemas/`）を通る

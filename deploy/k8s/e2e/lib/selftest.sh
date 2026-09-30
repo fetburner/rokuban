@@ -302,6 +302,19 @@ summary_case "TODO があれば 2" 2 "" with_todo
 summary_case "宣言したのに記録が無ければ FAIL を書き足して 1" 1 "記録しなかった" missing_one
 E2E_PARTIAL_RUN_CASE="--only 4" summary_case "一部だけ走らせたなら 0 を返さない" 2 "" all_pass
 
+# fail_from は指定 id 以降の未記録の planned id だけを FAIL にする。記録済みの
+# id と、指定 id より前の id は触らない。
+# shellcheck source=../faults/lib.sh
+source "$E2E_LIB/../faults/lib.sh"
+: >"$selftest_results"
+plan 9.1 9.2 9.3 9.4
+pass 9.3 ok
+fail_from 9.2 "boom" >/dev/null
+check "fail_from: 指定 id に reason を書く" "FAIL	9.2	boom" "$(awk -F'\t' '$2=="9.2" && $1!="PLAN"' "$selftest_results")"
+check "fail_from: 記録済みの後続は上書きしない" "1" "$(awk -F'\t' '$2=="9.3" && $1!="PLAN"' "$selftest_results" | wc -l | tr -d ' ')"
+check "fail_from: 未記録の後続を FAIL にする" "FAIL" "$(awk -F'\t' '$2=="9.4" && $1!="PLAN" {print $1}' "$selftest_results")"
+check "fail_from: 指定 id より前は触らない" "0" "$(awk -F'\t' '$2=="9.1" && $1!="PLAN"' "$selftest_results" | wc -l | tr -d ' ')"
+
 rm -f "$selftest_results" "$K_ARGS_LOG"
 
 if [ "$failures" -gt 0 ]; then

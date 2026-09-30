@@ -1,0 +1,47 @@
+# media volume を直接参照する fault suite の検査 Job。**製品のマニフェストではない。**
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: e2e-media-check
+  labels:
+    app.kubernetes.io/name: rokuban-e2e
+    app.kubernetes.io/component: media-check
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rokuban-e2e
+        app.kubernetes.io/component: media-check
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: check
+          image: __FULL_IMAGE__
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              file="/mnt/media/__MEDIA_CHECK_PATH__"
+              test -s "$file"
+              printf 'SIZE=%s\n' "$(wc -c < "$file" | tr -d '[:space:]')"
+          volumeMounts:
+            - name: media
+              mountPath: /mnt/media
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+      volumes:
+        - name: media
+          persistentVolumeClaim:
+            claimName: rokuban-media
