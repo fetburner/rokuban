@@ -1073,7 +1073,7 @@ func (c LiveConfig) validate() error {
 // ストリーム選択のオプション（allowlist には VOD のために入っている）。
 //
 // **live はストリームの並びをアプリが `-var_stream_map` で持つ**（映像 1 本 + 音声
-// rendition 3 本 + 字幕。internal/streamer の buildHLSFFmpegArgs）。並びを変えると
+// rendition 3 本 + 字幕。internal/streamer の BuildLiveFFmpegArgs）。並びを変えると
 // ffmpeg が起動時に落ち、利用者には 504 しか見えない（実測 ffmpeg 9.0.2: `-an` で
 // `Unable to map stream at a:0`、`-map` の追加で `Unable to find mapping variant
 // stream`）。`-vn` / `-sn` は映像 / 字幕の map を同じ形で壊す。

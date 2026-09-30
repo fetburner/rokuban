@@ -572,7 +572,7 @@ func (ls *LiveStreamer) Playlist(w http.ResponseWriter, r *http.Request) {
 	s.touch()
 
 	// どちらの経路でも master playlist を返す（音声レンディションを載せるため。
-	// buildHLSFFmpegArgs）。
+	// BuildLiveFFmpegArgs）。
 	playlistName := profile.Name + ".m3u8"
 	if ls.cfg.Captions {
 		playlistName = "playlist.m3u8"
@@ -606,7 +606,7 @@ func (c LiveConfig) servesFile(name string) bool {
 }
 
 // sessionFilePath は name の実体の場所を返す。`.ts` は segments/ に、variant /
-// 字幕 playlist と `.vtt` は master と同じ s.dir 直下に置かれる（buildHLSFFmpegArgs）。
+// 字幕 playlist と `.vtt` は master と同じ s.dir 直下に置かれる（BuildLiveFFmpegArgs）。
 func sessionFilePath(dir, name string) string {
 	if filepath.Ext(name) == ".ts" {
 		return filepath.Join(dir, "segments", name)
@@ -615,7 +615,7 @@ func sessionFilePath(dir, name string) string {
 }
 
 // captionVariantPattern は captions 経路の variant / 字幕 playlist の名前
-// （buildLiveCaptionFFmpegArgs の `playlist_%v.m3u8` / `subtitles_%v.m3u8`）。
+// （buildLiveCaptionFFmpegArgsForPlaylistType の `playlist_%v.m3u8` / `subtitles_%v.m3u8`）。
 var captionVariantPattern = regexp.MustCompile(`^(?:playlist|subtitles)_[0-9]+\.m3u8$`)
 
 // isVariantPlaylist は name がこの構成の ffmpeg が書く variant playlist の名前かを返す。
@@ -2367,9 +2367,10 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 	}()
 
 	dir := filepath.Join(ls.cfg.SegmentDir, ls.site, strconv.FormatInt(sessionIDOf(s), 10))
-	if kind == chaseSessionKind {
+	switch kind {
+	case chaseSessionKind:
 		dir = chaseSessionDir(ls.cfg.SegmentDir, ls.site, sessionIDOf(s), s.key.offsetSeconds)
-	} else if kind == originalVODSessionKind {
+	case originalVODSessionKind:
 		dir = originalVODSessionDir(ls.cfg.SegmentDir, ls.site, sessionIDOf(s))
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "segments"), 0o755); err != nil {
@@ -2439,9 +2440,10 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 		}
 	}
 	args := BuildLiveFFmpegArgs(ls.cfg, dir, captionInput)
-	if kind == chaseSessionKind {
+	switch kind {
+	case chaseSessionKind:
 		args = BuildChaseFFmpegArgs(ls.cfg, dir, captionInput)
-	} else if kind == originalVODSessionKind {
+	case originalVODSessionKind:
 		args = BuildOriginalVODFFmpegArgs(ls.cfg, dir, captionInput)
 	}
 	cmd := exec.CommandContext(ctx, ls.cfg.FFmpeg, args...)
@@ -2702,14 +2704,6 @@ const (
 	hlsVODPlaylist
 )
 
-func buildHLSFFmpegArgs(cfg LiveConfig, dir string, withSubtitles, eventPlaylist bool) []string {
-	playlistType := hlsLivePlaylist
-	if eventPlaylist {
-		playlistType = hlsEventPlaylist
-	}
-	return buildHLSFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, playlistType)
-}
-
 func buildHLSFFmpegArgsForPlaylistType(cfg LiveConfig, dir string, withSubtitles bool, playlistType hlsPlaylistType) []string {
 	eventPlaylist := playlistType == hlsEventPlaylist
 	if cfg.Captions {
@@ -2857,7 +2851,7 @@ func hlsFlagsForPlaylistType(playlistType hlsPlaylistType) string {
 	return hlsFlags(playlistType != hlsLivePlaylist)
 }
 
-// buildLiveCaptionFFmpegArgs は HLS を 1 つの master playlist として出力する。
+// buildLiveCaptionFFmpegArgsForPlaylistType は HLS を 1 つの master playlist として出力する。
 // %v はプロファイルごとの video/audio variant を表す。withSubtitles は起動前の
 // ffprobe 判定結果で、false の場合は字幕 map / rendition を完全に省き、字幕なし
 // 番組でも映像・音声の HLS を継続できる。
@@ -2878,14 +2872,6 @@ func hlsFlagsForPlaylistType(playlistType hlsPlaylistType) string {
 // フィルタが両方の video ストリームに適用されて警告が出ることを実測で確認。
 // `-c:v:N` や `-preset:v:N` のような型を伴わない他オプションでの `:v:N` 付与は
 // 問題なく機能する --- `-vf`/`-filter:v` だけの挙動）。
-func buildLiveCaptionFFmpegArgs(cfg LiveConfig, dir string, withSubtitles, eventPlaylist bool) []string {
-	playlistType := hlsLivePlaylist
-	if eventPlaylist {
-		playlistType = hlsEventPlaylist
-	}
-	return buildLiveCaptionFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, playlistType)
-}
-
 func buildLiveCaptionFFmpegArgsForPlaylistType(cfg LiveConfig, dir string, withSubtitles bool, playlistType hlsPlaylistType) []string {
 	eventPlaylist := playlistType == hlsEventPlaylist
 	args := []string{"-hide_banner", "-nostats", "-loglevel", "error"}

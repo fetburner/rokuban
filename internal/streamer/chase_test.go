@@ -497,7 +497,7 @@ exit 0
 
 // installMultiProfileChaseFFmpeg は渡された出力パス（プロファイルごとの
 // `NAME.m3u8`）のそれぞれへ EVENT playlist を書く偽 ffmpeg。**1 本の ffmpeg が
-// 全プロファイルを同時に出力する**形（buildHLSFFmpegArgs の追っかけ経路）を模す。
+// 全プロファイルを同時に出力する**形（BuildChaseFFmpegArgs の追っかけ経路）を模す。
 // installCompletedChaseFFmpeg は 1 本の playlist しか書かないので、画質の切替を
 // 見るにはこちらが要る。
 //

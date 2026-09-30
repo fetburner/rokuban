@@ -279,6 +279,22 @@ func (q *Queries) GetOriginalMediaAssetForServing(ctx context.Context, recording
 	return i, err
 }
 
+const getOriginalMediaAssetID = `-- name: GetOriginalMediaAssetID :one
+SELECT id FROM media_assets
+WHERE recording_id = $1 AND kind = 'original'
+`
+
+// ingest の冪等性チェック用。worker/ingest.go の Work は転送を始める前にこれで
+// 「この recording_id の original はもうコミット済みか」を確認する
+// （不変条件 3「コミット = DB 行」。行が無ければまだコミットされていない）。
+// 該当行が無ければ pgx.ErrNoRows を返す。
+func (q *Queries) GetOriginalMediaAssetID(ctx context.Context, recordingID int64) (int64, error) {
+	row := q.db.QueryRow(ctx, getOriginalMediaAssetID, recordingID)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
 const getOriginalVODTarget = `-- name: GetOriginalVODTarget :one
 SELECT a.id, a.rel_path, a.size_bytes, r.site
 FROM media_assets a
@@ -307,27 +323,17 @@ type GetOriginalVODTargetRow struct {
 
 // 原本 MPEG-2 を HLS に変換する対象を引く。録画完了済み・ごみ箱/ purge 前・
 // active original のみを開始可能とし、site は URL の site-scoped streamer と照合する。
+// 既存セッションの再取得では使わず、セッション開始前と rel_path lock 取得後に呼ぶ。
 func (q *Queries) GetOriginalVODTarget(ctx context.Context, arg GetOriginalVODTargetParams) (GetOriginalVODTargetRow, error) {
 	row := q.db.QueryRow(ctx, getOriginalVODTarget, arg.RecordingID, arg.Site)
 	var i GetOriginalVODTargetRow
-	err := row.Scan(&i.ID, &i.RelPath, &i.SizeBytes, &i.Site)
+	err := row.Scan(
+		&i.ID,
+		&i.RelPath,
+		&i.SizeBytes,
+		&i.Site,
+	)
 	return i, err
-}
-
-const getOriginalMediaAssetID = `-- name: GetOriginalMediaAssetID :one
-SELECT id FROM media_assets
-WHERE recording_id = $1 AND kind = 'original'
-`
-
-// ingest の冪等性チェック用。worker/ingest.go の Work は転送を始める前にこれで
-// 「この recording_id の original はもうコミット済みか」を確認する
-// （不変条件 3「コミット = DB 行」。行が無ければまだコミットされていない）。
-// 該当行が無ければ pgx.ErrNoRows を返す。
-func (q *Queries) GetOriginalMediaAssetID(ctx context.Context, recordingID int64) (int64, error) {
-	row := q.db.QueryRow(ctx, getOriginalMediaAssetID, recordingID)
-	var id int64
-	err := row.Scan(&id)
-	return id, err
 }
 
 const getRecordingByID = `-- name: GetRecordingByID :one
