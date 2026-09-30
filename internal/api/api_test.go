@@ -4,15 +4,243 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
 )
+
+type testMounter func(chi.Router)
+
+func (m testMounter) Mount(r chi.Router) {
+	m(r)
+}
+
+func TestRouterRecoversPanicAsJSONError(t *testing.T) {
+	var logs strings.Builder
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	router := NewRouter(RouterConfig{Mounter: testMounter(func(r chi.Router) {
+		r.Get("/api/test-panic", func(http.ResponseWriter, *http.Request) {
+			panic("test panic")
+		})
+	})})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/test-panic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	}
+	var body ErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decoding panic response: %v", err)
+	}
+	if body.Error != "internal server error" {
+		t.Errorf("error = %q, want generic internal error", body.Error)
+	}
+	if !strings.Contains(logs.String(), "test panic") || !strings.Contains(logs.String(), "stack=") {
+		t.Errorf("panic log should contain value and stack, got %q", logs.String())
+	}
+}
+
+func TestRouterPanicNilReturnsJSONError(t *testing.T) {
+	router := NewRouter(RouterConfig{Mounter: testMounter(func(r chi.Router) {
+		r.Get("/api/test-panic-nil", func(http.ResponseWriter, *http.Request) {
+			panic(nil)
+		})
+	})})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/test-panic-nil")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", resp.StatusCode)
+	}
+	var body ErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error != "internal server error" {
+		t.Errorf("error = %q", body.Error)
+	}
+}
+
+// ヘッダー送信後の panic は 500 本文を足さず接続を中断する。足すと壊れた本体が
+// 正常完了に見える。Flush がラップ越しに届くことも、panic 前の部分本文が
+// クライアントへ届くことで確かめる。
+func TestRouterPanicAfterHeaderSentAbortsConnection(t *testing.T) {
+	release := make(chan struct{})
+	router := NewRouter(RouterConfig{Mounter: testMounter(func(r chi.Router) {
+		r.Get("/api/test-partial", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("PARTIAL"))
+			w.(http.Flusher).Flush()
+			panic("boom after header")
+		})
+		r.Get("/api/test-flush", func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("first"))
+			if err := http.NewResponseController(w).Flush(); err != nil {
+				panic(err)
+			}
+			<-release
+			_, _ = w.Write([]byte("second"))
+		})
+	})})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/test-partial")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	got, readErr := io.ReadAll(resp.Body)
+	if readErr == nil {
+		t.Errorf("ReadAll succeeded with body %q; want an aborted connection", got)
+	}
+	if strings.Contains(string(got), "internal server error") {
+		t.Errorf("error body appended after header sent: %q", got)
+	}
+	if !strings.HasPrefix(string(got), "PARTIAL") {
+		t.Errorf("body = %q, want flushed PARTIAL prefix", got)
+	}
+
+	// ハンドラは release まで終わらないので、first が読めるなら Flush が
+	// ラップ越しに届いている。
+	defer close(release)
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp2, err := client.Get(srv.URL + "/api/test-flush")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp2.Body.Close() }()
+	buf := make([]byte, 5)
+	if _, err := io.ReadFull(resp2.Body, buf); err != nil || string(buf) != "first" {
+		t.Fatalf("first chunk = %q, %v; want flushed \"first\"", buf, err)
+	}
+}
+
+// ヘッダー送信済みの判定は WriteHeader 以外の書き込み経路でも立つ。
+// 暗黙の 200 を送る Write と、sendfile を保つための ReadFrom が対象。
+func TestRouterPanicAfterImplicitHeaderAbortsConnection(t *testing.T) {
+	router := NewRouter(RouterConfig{Mounter: testMounter(func(r chi.Router) {
+		r.Get("/api/test-write", func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("PARTIAL"))
+			panic("boom after implicit header")
+		})
+		r.Get("/api/test-readfrom", func(w http.ResponseWriter, _ *http.Request) {
+			// http.ServeContent は io.Copy 経由でこのインタフェースを使う。
+			_, _ = w.(io.ReaderFrom).ReadFrom(strings.NewReader("PARTIAL"))
+			panic("boom after ReadFrom")
+		})
+	})})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	for _, path := range []string{"/api/test-write", "/api/test-readfrom"} {
+		t.Run(path, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + path)
+			if err != nil {
+				// Flush 前に中断されるとヘッダーごと届かない。これも中断の形。
+				return
+			}
+			defer func() { _ = resp.Body.Close() }()
+			got, readErr := io.ReadAll(resp.Body)
+			if readErr == nil {
+				t.Errorf("ReadAll succeeded with body %q; want an aborted connection", got)
+			}
+			if strings.Contains(string(got), "internal server error") {
+				t.Errorf("error body appended after header sent: %q", got)
+			}
+		})
+	}
+}
+
+func TestJSONBodyLimitAndExcludedRoutes(t *testing.T) {
+	largeBody := io.MultiReader(strings.NewReader(`{"name":"`), strings.NewReader(strings.Repeat("x", int(maxJSONBodyBytes))), strings.NewReader(`"}`))
+	router := NewRouter(RouterConfig{
+		MetricsRegistry: prometheus.NewRegistry(),
+		Mounter: testMounter(func(r chi.Router) {
+			r.Post("/api/media/test", func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.WriteHeader(http.StatusNoContent)
+			})
+			r.Get("/api/events", func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+			})
+		}),
+	})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/rules", largeBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized JSON status = %d, want %d", resp.StatusCode, http.StatusRequestEntityTooLarge)
+	}
+	var body ErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decoding oversized JSON response: %v", err)
+	}
+	if body.Error != "request body too large" {
+		t.Errorf("oversized JSON error = %q, want body-too-large message", body.Error)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		path   string
+		method string
+		want   int
+	}{
+		{name: "media", path: "/api/media/test", method: http.MethodPost, want: http.StatusNoContent},
+		{name: "events", path: "/api/events", method: http.MethodGet, want: http.StatusOK},
+		{name: "healthz", path: "/healthz", method: http.MethodGet, want: http.StatusOK},
+		{name: "readyz", path: "/readyz", method: http.MethodGet, want: http.StatusServiceUnavailable},
+		{name: "metrics", path: "/metrics", method: http.MethodGet, want: http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(tc.method, srv.URL+tc.path, strings.NewReader(strings.Repeat("b", int(maxJSONBodyBytes)+1)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != tc.want {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tc.want)
+			}
+		})
+	}
+}
 
 func TestHealthz(t *testing.T) {
 	router := NewRouter(RouterConfig{})

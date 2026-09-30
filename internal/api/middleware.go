@@ -1,11 +1,146 @@
 package api
 
 import (
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"slices"
 	"strings"
 )
+
+const maxJSONBodyBytes int64 = 1 << 20
+
+// headerTrackingWriter は ResponseWriter へのヘッダー書き込み済みを記録する。
+// Unwrap を持つので http.ResponseController 経由の Flush 等はそのまま届き、
+// Flush（暗黙の 200 送信）も書き込み済みとして数える。
+type headerTrackingWriter struct {
+	http.ResponseWriter
+	wroteHeader bool
+}
+
+func (w *headerTrackingWriter) WriteHeader(code int) {
+	// 1xx は最終ヘッダーではないので記録しない。
+	if code >= 200 || code == http.StatusSwitchingProtocols {
+		w.wroteHeader = true
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *headerTrackingWriter) Write(b []byte) (int, error) {
+	w.wroteHeader = true
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *headerTrackingWriter) Flush() {
+	w.wroteHeader = true
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+func (w *headerTrackingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// ReadFrom は下位の io.ReaderFrom へ委譲し、http.ServeContent の sendfile 経路を保つ。
+// これが無いと io.Copy が 32KB バッファのコピーに落ちる（Linux の実測で sendfile 0 回、
+// サーバー CPU が 1 GiB あたり約 5 倍）。
+func (w *headerTrackingWriter) ReadFrom(r io.Reader) (int64, error) {
+	w.wroteHeader = true
+	if rf, ok := w.ResponseWriter.(io.ReaderFrom); ok {
+		return rf.ReadFrom(r)
+	}
+	// struct で包んで ReadFrom を隠し、io.Copy がこのメソッドへ戻らないようにする。
+	return io.Copy(struct{ io.Writer }{w.ResponseWriter}, r)
+}
+
+// recoverPanic は HTTP handler の panic を境界で回収する。
+// panic の値と stack trace は運用ログへ残す。ヘッダー未送信ならクライアントへ
+// 内部情報を出さず、他の API エラーと同じ ErrorResponse の 500 だけを返す。
+// 送信済み（HLS セグメント・SSE・JSON の書き出し途中）に 500 の本文を足すと
+// 壊れた本体が正常完了に見えるので、http.ErrAbortHandler で再 panic して
+// net/http に接続を中断させる。
+func recoverPanic(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tw := &headerTrackingWriter{ResponseWriter: w}
+		defer func() {
+			recovered := recover()
+			if recovered == nil {
+				return
+			}
+			if err, ok := recovered.(error); ok && errors.Is(err, http.ErrAbortHandler) {
+				panic(recovered)
+			}
+			slog.Error("api handler panic recovered",
+				"panic", recovered,
+				"stack", string(debug.Stack()),
+				"method", r.Method,
+				"path", r.URL.Path,
+				"header_sent", tw.wroteHeader,
+			)
+			if tw.wroteHeader {
+				panic(http.ErrAbortHandler)
+			}
+			writeErrorResponse(tw, http.StatusInternalServerError, "internal server error")
+		}()
+		next.ServeHTTP(tw, r)
+	})
+}
+
+// limitJSONBody は JSON API の body だけを上限付き reader へ差し替える。
+// RuleInput が現在の最大の構造化 JSON 入力で、metadata や正規表現を含む余地を
+// 残しつつ、JSON を無制限にメモリへ読み込まない 1 MiB を上限にする。
+// media の binary、SSE、監視用 endpoint はこの middleware の対象外である。
+func limitJSONBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isJSONBodyRequest(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.ContentLength > maxJSONBodyBytes {
+			writeErrorResponse(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+		next.ServeHTTP(w, r)
+	})
+}
+
+// isJSONBodyRequest は生成 REST API の JSON body を受け取る HTTP method だけを
+// 選ぶ。ルートの登録場所だけに依存せず、binary/SSE/infra の除外条件もここで
+// 明示して、将来 middleware の適用範囲を広げても契約を保てるようにする。
+func isJSONBodyRequest(r *http.Request) bool {
+	path := r.URL.Path
+	if infraPaths[path] || path == "/api/events" || strings.HasPrefix(path, "/api/media/") {
+		return false
+	}
+	if !strings.HasPrefix(path, "/api/") {
+		return false
+	}
+	switch r.Method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch:
+		return true
+	default:
+		return false
+	}
+}
+
+// writeRequestError は JSON decoder の body 上限超過を frontend が扱える JSON
+// エラーへ変換する。その他の decode error も既存の ErrorResponse 形式に揃える。
+func writeRequestError(w http.ResponseWriter, _ *http.Request, err error) {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		writeErrorResponse(w, http.StatusRequestEntityTooLarge, "request body too large")
+		return
+	}
+	writeErrorResponse(w, http.StatusBadRequest, err.Error())
+}
+
+func writeErrorResponse(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(ErrorResponse{Error: message})
+}
 
 // alwaysAllowedHosts は allowlist の設定に関わらず許可する Host。
 // ローカルからのアクセスは DNS rebinding の経路にならない
