@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useSearch as useRouteSearch, useNavigate } from '@tanstack/react-router'
-import { ChevronRight, LayoutGrid, Trash2 } from 'lucide-react'
+import { useSearch as useRouteSearch, useNavigate } from '@tanstack/react-router'
+import { LayoutGrid, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   deleteRecording as deleteRecordingRequest,
@@ -11,11 +11,10 @@ import {
   restoreRecording as restoreRecordingRequest,
   useGetEncodeQueue,
   useListSites,
-  type Recording,
 } from '@/api/generated'
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
-import { DropBadges, EncodeStatusBadges, IngestBadge, StatusBadge } from '@/components/recording-badges'
 import { RecordingFilters } from '@/components/recording-filters'
+import { RecordingRow, type RecordingRowView } from '@/components/recording-row'
 import { StorageBalance } from '@/components/storage-balance'
 import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
 import { useToast } from '@/components/toaster'
@@ -34,26 +33,20 @@ import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
 import { shouldAutoLoadNextPage, shouldShowLoadMoreButton } from '@/lib/auto-load'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
-import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
 import { hasLiveIngestProgress, ingestRefetchIntervalMs } from '@/lib/ingest'
 import { useLiveEnabled } from '@/lib/capabilities'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
-import { programTitle } from '@/lib/program-labels'
 import {
   buildListRecordingsParams,
   clearRecordingsFilters,
   hasAnyRecordingsCondition,
   shouldShowRecordingSite,
-  sourceLabels,
   type RecordingsPageSearch,
 } from '@/lib/recording-search'
 import { cn } from '@/lib/utils'
 
 /** pageSize は 1 回のフェッチで取る件数（API の既定と同じ）。 */
 const pageSize = 50
-
-/** RecordingsView は一覧の表示形式。`card` はサムネイルを大きく並べる。 */
-type RecordingsView = 'list' | 'card'
 
 /**
  * VIEW_KEY は表示形式を持続させる localStorage キー。
@@ -65,7 +58,7 @@ type RecordingsView = 'list' | 'card'
  */
 const VIEW_KEY = 'rokuban:recordings:view'
 
-function loadRecordingsView(): RecordingsView {
+function loadRecordingsView(): RecordingRowView {
   try {
     return localStorage.getItem(VIEW_KEY) === 'card' ? 'card' : 'list'
   } catch {
@@ -177,7 +170,7 @@ export function RecordingsPage() {
   )
   const queryClient = useQueryClient()
   const toast = useToast()
-  const [view, setView] = useState<RecordingsView>(loadRecordingsView)
+  const [view, setView] = useState<RecordingRowView>(loadRecordingsView)
   const [selecting, setSelecting] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(() => new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -185,7 +178,7 @@ export function RecordingsPage() {
   const selectedIds = [...selected]
   const allLoadedSelected = recordings.length > 0 && recordings.every((r) => selected.has(r.id))
   const toggleView = () => {
-    const next: RecordingsView = view === 'card' ? 'list' : 'card'
+    const next: RecordingRowView = view === 'card' ? 'list' : 'card'
     setView(next)
     try {
       localStorage.setItem(VIEW_KEY, next)
@@ -652,154 +645,5 @@ function ViewTab({
     >
       {label}
     </button>
-  )
-}
-
-/**
- * RecordingRow は録画一覧の 1 行。
- *
- * 行本体は詳細（`/recordings/$id`）への全面カバーリンク（予約一覧
- * `reservations.tsx` と同じ配置文法）。視聴・削除・エンコードは詳細ページに
- * 寄せ、一覧はインライン展開も常時「再生」列も持たない（issue #311）--- 詳細と
- * 展開が同じ `RecordingDetail` を共有していたので、一覧に同じプレイヤーを二重に
- * 抱える理由が無くなった。ごみ箱・`encodedAssets` が空の行も同じく詳細へリンクし、
- * 再生系の出し分け（`deleted_at` / encoded の有無）は詳細側の規律に任せる。
- */
-function RecordingRow({
-  recording,
-  trash,
-  showSite,
-  view,
-  selecting,
-  selected,
-  onToggle,
-  liveEnabled,
-}: {
-  recording: Recording
-  trash: boolean
-  /** レジストリと読み込み済み録画の site の和集合が 2 件以上のときに出す。 */
-  showSite: boolean
-  /**
-   * `card` はサムネイルを大きく縦に積む。**出す情報は list と同じ**で、
-   * 変えるのは並べ方だけ --- 表示形式ごとに出す事実を変えると、切り替えた
-   * ときに「見えていたはずのもの」が黙って消える。
-   */
-  view: RecordingsView
-  selecting: boolean
-  selected: boolean
-  onToggle: () => void
-  liveEnabled: boolean
-}) {
-  const [thumbFailed, setThumbFailed] = useState(false)
-  const card = view === 'card'
-
-  return (
-    <div
-      role={selecting ? 'option' : undefined}
-      aria-selected={selecting ? selected : undefined}
-      onClick={selecting ? onToggle : undefined}
-      className={cn(
-        // base の gap は list 分岐に持たせる。card 分岐の gap-2 と両方 base に
-        // 置くと twMerge が常に後勝ち（gap-2）で解決し、base の gap-3 は
-        // list でも死にクラスになる（レビュー指摘）。
-        'relative hover:bg-muted/40',
-        card
-          ? 'flex h-full flex-col gap-2 rounded border border-border p-2'
-          : 'flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5',
-        selecting && 'cursor-pointer',
-        selected && 'bg-muted/40',
-      )}
-    >
-      {/* 編集モード中は全面リンクを外す。残すと checkbox と行クリックを奪う。 */}
-      {!selecting && (
-        <Link
-          to="/recordings/$id"
-          params={{ id: String(recording.id) }}
-          aria-label={programTitle(recording.title)}
-          className="absolute inset-0"
-        />
-      )}
-      {selecting && (
-        <input
-          type="checkbox"
-          aria-label={`${programTitle(recording.title)}を選択`}
-          className="size-4 shrink-0 accent-primary"
-          checked={selected}
-          onClick={(event) => event.stopPropagation()}
-          onChange={onToggle}
-        />
-      )}
-      {/*
-        サムネイルは openapi 外の streamer 経路（/api/media/recordings/{id}/thumbnail）。
-        未生成時は 404 → onError でプレースホルダ。hasThumbnail 列は持たない（M3-4）。
-        ごみ箱の録画は配信側が deleted_at IS NOT NULL を 404 にする契約（docs/api.md
-        §メディア配信）なので、そもそもリクエストを出さずプレースホルダ固定にする
-        （M3-18: 未生成と 404 で区別が付かない曖昧さもこれで消える）。
-      */}
-      <div
-        className={cn(
-          'aspect-video shrink-0 overflow-hidden rounded bg-muted',
-          card ? 'w-full' : 'h-12',
-        )}
-      >
-        {!trash && !thumbFailed ? (
-          <img
-            src={`/api/media/recordings/${recording.id}/thumbnail`}
-            alt=""
-            className="size-full object-cover"
-            loading="lazy"
-            onError={() => setThumbFailed(true)}
-          />
-        ) : (
-          <div className="size-full bg-muted" aria-hidden />
-        )}
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className={cn('text-base', card ? 'line-clamp-2' : 'truncate')}>
-          {programTitle(recording.title)}
-        </div>
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
-          <StatusBadge status={recording.status} />
-          <IngestBadge recording={recording} />
-          {/* エンコード失敗は StatusBadge / IngestBadge と同じ「この録画の
-              パイプラインがどこで止まっているか」なので隣に置く。メタデータ列の
-              末尾（DropBadges の後）に置くと、狭い端末で失敗バッジが 2 行目
-              以降に回る（親は flex-wrap なので隠れはしない）。単体ページの
-              ヘッダーも同じ並び。docs/frontend/recordings.md */}
-          <EncodeStatusBadges recording={recording} />
-          {showSite && (
-            /* 文字色は text-foreground を明示（bg-muted 小バッジの合成後コントラスト
-               対策。docs/frontend/design.md「コントラストは毎回測る」）。 */
-            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">
-              {recording.site}
-            </span>
-          )}
-          <span className="shrink-0">{sourceLabels[recording.source]}</span>
-          <span className="shrink-0">{recording.serviceName}</span>
-          <span className="shrink-0">{formatDateTime(recording.startAt)}</span>
-          <span className="shrink-0">{formatDuration(recording.durationMs)}</span>
-          {recording.sizeBytes !== undefined && (
-            <span className="shrink-0">{formatBytes(recording.sizeBytes)}</span>
-          )}
-          {trash && recording.deletedAt && (
-            <span className="shrink-0">削除 {formatDateTime(recording.deletedAt)}</span>
-          )}
-          {recording.dropSummary && <DropBadges summary={recording.dropSummary} />}
-        </div>
-      </div>
-      {!selecting && liveEnabled && recording.status === 'recording' && (
-        <Link
-          to="/recordings/$id"
-          params={{ id: String(recording.id) }}
-          hash="chase"
-          aria-label={`${programTitle(recording.title)}を追っかけ再生`}
-          className="relative z-10 shrink-0 rounded border border-border px-2 py-1 text-xs text-primary hover:bg-muted"
-        >
-          追っかけ
-        </Link>
-      )}
-      {/* カードは行ではないので、行末の「開く」記号は出さない（面全体がリンク）。 */}
-      {!selecting && !card && <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}
-    </div>
   )
 }
