@@ -90,8 +90,8 @@ LIKE のエスケープは SQL 関数に一本化する。分類ルールは DB 
 ### 実装で決めたこと
 
 - **値の正規化もキーワードの正規化も生成列で持つ。** `label_rule_winner` は録画 1 行ごとに呼ばれるので、キーワード側を毎回正規化すると (録画行 × ルール本) 回になる。73,000 行 × 50 本で 16.0 s → 0.95 s になった。**この 2 つは最適化ではなく前提**である
-- **棚のクエリはプランの形に依存する。** `playable` を `MATERIALIZED` にしないと、主テーブルの走査が部分一意索引（`recordings_unique_active_event`）に乗る。一意索引の行数を 1 と見積もるので下流が全部 1 行の計画になり、代表を求めるソートが外側の行数ぶん繰り返される（73,000 行で 141 ms → 617 ms）
-- **psql の単発実行はこの計画を踏まない**（146 ms に見える）。prepared statement 経由のアプリだけが踏むので、予算はアプリの経路で測る
+- **棚のクエリはプランの形に依存する。** `playable` を `MATERIALIZED` にしない候補も、`ROKUBAN_BENCH_DATABASE_URL` を使う `internal/api/shelves_bench_test.go` で prepared statement 経由の中央値を測る。73,000 行・141 棚に finished / recording / failed、再生資産の有無、deleted / superseded を混ぜ、現行形、母集団を広げた LEFT JOIN + `FILTER` 形、`live` CTE を MATERIALIZED にした形を各 10 回比較する。現行 SQL の形はこの測定では変えない
+- **psql の単発実行を基準にしない。** prepared statement 経由のアプリと同じ pgx 接続で測り、環境変数が無い場合はテストをスキップする。候補の採用判断は測定ログの中央値と、再生可能件数・最新開始時刻の結果が一致することに基づく
 - **実効シリーズの定義は `recording_series` ビューの 1 箇所**で、棚のクエリもこれを JOIN する（`COALESCE(lr.value_key, r.series_key)` を書き下さない）。ビュー経由は書き下しより約 8% 遅い（合成 73,000 行・141 棚・ルール 50 本で約 223 ms 対 約 206 ms、この環境）。絶対値の 200 ms 予算は、この環境が元の測定より遅くて確認できていない（未測定）
 - **代表と件数は 1 回の集計で出す**（`array_agg` + `GROUP BY`）。`DISTINCT ON` と件数の集計を別の CTE に割ると同じ行をもう 1 度走査する（141 ms → 231 ms）
 - 値が `NULL` の棚は実効シリーズを起点に番組ハブを開けないので画面に出さない。API は件数によらず全部の棚を返す

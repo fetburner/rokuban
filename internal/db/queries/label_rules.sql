@@ -69,37 +69,38 @@ removed AS (
 SELECT (SELECT count(*) FROM upserted) + (SELECT count(*) FROM removed);
 
 -- name: ListRecordingShelves :many
--- 棚 1 件 = 実効シリーズの値 1 つ。母集団は生きていて再生できる録画
+-- 棚 1 件 = 実効シリーズの値 1 つ。現行の母集団は生きていて再生できる録画
 -- （原本の media_asset がある、または encoded の派生物がある）。
 --
 -- 代表は program_start_at の新しい順で先頭の 1 件。title は代表の生のタイトルで、
 -- 値（棚のキー）そのものではない --- 値は正規化の産物なので表示名にならない。
 --
--- 値が NULL の棚も返す（UI が「その他」にまとめる材料にする）。値が NULL の行を
--- 落とすと、まとめ先の件数が API からは分からなくなる。
+-- 値が NULL の棚も返す。棚一覧の UI は NULL を表示対象から外すが、API では
+-- 欠落と「分類されていない」を区別できるように残す。
 --
 -- 値が NULL の棚の行は `GROUP BY value` が 1 つのグループにまとめる（SQL の
 -- GROUP BY は NULL を等しいものとして扱う）。
 --
--- **この形はプランの形に依存するので、崩すと 4 倍以上遅くなる。** 73,000 行が
--- すべて再生可能な状態での実測（sqlc / pgx の prepared statement 経由）:
+-- **この形はプランの形に依存する。** 73,000 行を 141 棚に分けた測定は、
+-- `internal/api/shelves_bench_test.go` が専用 DB 上で再現する。テストは
+-- `ROKUBAN_BENCH_DATABASE_URL` が無い環境ではスキップし、同じ接続の pgx
+-- prepared statement 経由で各形を 10 回実行して中央値を出す。データには
+-- finished / recording / failed、再生可能な行、再生資産の無い行、deleted / superseded
+-- 行を混ぜ、分類ルールを 50 本置く。
 --
---   - この形: 141 ms
---   - 代表と件数を別々の CTE に割る: 231 ms（playable をもう 1 度走査する）
---   - playable を MATERIALIZED にしない: 617 ms（下記）
+-- 候補の形は、生きている録画を母集団にして `playable_assets` を LEFT JOIN し、
+-- `FILTER` で再生可能件数、`max(program_start_at)` で最新開始時刻を同じ集計から返す。
+-- `live` CTE を MATERIALIZED にした候補も同じテストで測る。候補が予算内に収まるかは
+-- 実行ログで確認する。現行 SQL の形はこの測定のために変更しない。
 --
--- MATERIALIZED を外すと、プランナは recordings_unique_active_event（部分一意
--- 索引）を選ぶ。一意索引の行数を 1 と見積もるので下流が全部 1 行の計画になり、
--- 代表を求めるソートが外側の行数ぶん繰り返される。**psql で単発実行すると
--- prepared statement ではないのでこの計画を踏まず、146 ms に見える**（アプリは
--- 必ず踏む）。docs/data/series.md §8 の予算はこの経路の値である。
+-- `playable` の MATERIALIZED を外す候補も測定する。prepared statement と単発の
+-- psql ではプランが変わるため、アプリと同じ pgx 経路の中央値を基準にする。
 --
 -- 実効シリーズは recording_series ビューが唯一の定義で、ここでも JOIN で読む
 -- （COALESCE(lr.value_key, r.series_key) を書き下すと定義が 2 箇所になる）。
--- ビュー経由の追加コストは、合成データ（73,000 行・すべて再生可能・141 棚・
--- 分類ルール 50 本、prepared statement 経由 10 回）でこの環境の書き下し 約 206 ms
--- に対し約 223 ms（+8%）。**この環境は書き下しの側が元の測定（141 ms）より遅く、
--- 絶対値の 200 ms 予算はここでは確認できていない**（未測定: 元の測定環境・実データ）。
+-- `recording_series` ビュー経由の定義は維持する。測定値は環境依存なので、過去の
+-- all-playable データの値を受け入れ条件に固定せず、ハーネスの混在データと実行ログを
+-- 変更判断の根拠にする。
 WITH playable_assets AS MATERIALIZED (
     SELECT DISTINCT ma.recording_id
     FROM media_assets ma
