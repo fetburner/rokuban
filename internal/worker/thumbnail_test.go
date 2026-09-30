@@ -143,10 +143,13 @@ func TestThumbnailWorker_CreatesAsset(t *testing.T) {
 		t.Errorf("thumbnail content = %v, want tinyJPEG", data)
 	}
 
-	// scratch は掃除されている。
-	scratch := filepath.Join(scratchDir, "thumbnail", fmt.Sprintf("%d.jpg", recordingID))
-	if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("scratch file still exists: %v", err)
+	// ジョブ固有 scratch directory は掃除されている。
+	entries, err := os.ReadDir(filepath.Join(scratchDir, "thumbnail"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("reading thumbnail scratch dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("scratch dirs left behind: %v", entries)
 	}
 }
 
