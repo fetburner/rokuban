@@ -13,7 +13,7 @@ import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/field'
 import { formatDate } from '@/lib/format'
-import { loadRecordingView, saveRecordingView } from '@/lib/recording-view'
+import { loadRecordingView, saveRecordingView, type RecordingView } from '@/lib/recording-view'
 import { buildShelfRows, sortShelfRows, type ShelfRow, type ShelfSort } from '@/lib/shelves'
 import { cn } from '@/lib/utils'
 
@@ -154,7 +154,7 @@ function SeriesShelfLink({
 }: {
   row: ShelfRow
   manual: boolean
-  view: 'list' | 'card'
+  view: RecordingView
 }) {
   return (
     <Link
@@ -188,7 +188,7 @@ function SeriesShelfLink({
   )
 }
 
-function SeriesThumbnail({ row, view }: { row: ShelfRow; view: 'list' | 'card' }) {
+function SeriesThumbnail({ row, view }: { row: ShelfRow; view: RecordingView }) {
   const [failed, setFailed] = useState(false)
   return (
     <span

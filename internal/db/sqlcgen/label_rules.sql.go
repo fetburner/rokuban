@@ -216,14 +216,20 @@ type ListRecordingShelvesRow struct {
 //
 //   - その形: 141 ms
 //   - 代表と件数を別々の CTE に割る: 231 ms（playable をもう 1 度走査する）
-//   - playable を MATERIALIZED にしない: 617 ms
+//   - playable（recordings × playable_assets × recording_series の CTE）を
+//     MATERIALIZED にしない: 617 ms
 //
 // 617 ms の仕組みは、MATERIALIZED を外すと部分一意索引 recordings_unique_active_event
 // が選ばれ、その行数見積もりが 1 になって下流が全部 1 行の計画になり、代表を求める
-// ソートが外側の行数ぶん繰り返されること、だった。**現スキーマ・合成 seed（下記）では
-// この 617 ms は再現しない**（MATERIALIZED を外した旧形は旧形の 0.92〜0.96 倍で、EXPLAIN でも
-// recordings は Seq Scan のまま部分一意索引を使わない）。再現条件は未検証なので、
-// playable_assets の MATERIALIZED は外さない。
+// ソートが外側の行数ぶん繰り返されること、だった。
+//
+// 下の live は旧 playable に当たる（recordings を走査する CTE）が、MATERIALIZED にしない。
+// 現スキーマ・合成 seed（下記）では 617 ms は再現せず（旧形から MATERIALIZED を外した形は
+// 旧形の 0.94〜0.95 倍で、EXPLAIN でも recordings は Seq Scan のまま部分一意索引を使わない）、
+// live を MATERIALIZED にすると本番の 1.06〜1.07 倍遅い。617 ms の再現条件は未検証なので、
+// 再発したら live を MATERIALIZED に戻す。
+//
+// playable_assets の MATERIALIZED は旧形から引き継いだもので、外したときの計画と速さは未検証。
 //
 // 実効シリーズは recording_series ビューが唯一の定義で、ここでも JOIN で読む
 // （COALESCE(lr.value_key, r.series_key) を書き下すと定義が 2 箇所になる）。
@@ -244,7 +250,7 @@ type ListRecordingShelvesRow struct {
 //   - 旧母集団の形から playable の MATERIALIZED を外す: 227〜228 ms（本番の 0.89 倍）
 //   - この形の live を MATERIALIZED にする: 272 ms（本番の 1.06〜1.07 倍。改善にならない）
 //
-// 結論: live は MATERIALIZED にしない。母集団を広げた費用は旧形の約 1.06 倍である。
+// 結論: live は MATERIALIZED にしない。母集団を広げた費用は旧形の約 1.06 倍（本番 / 旧形）である。
 // 本番の playable_count は旧形の recording_count と全棚で一致する（ハーネスが検査する）。
 // **絶対値の 200 ms 予算の確認は未測定**（元の測定環境・実データ。この環境は旧形でも
 // 予算を越える）。

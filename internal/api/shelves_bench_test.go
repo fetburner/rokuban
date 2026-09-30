@@ -51,7 +51,7 @@ const shelfBenchmarkDatabaseURL = "ROKUBAN_BENCH_DATABASE_URL"
 // 一致する。(a) の本番 SQL の max や FILTER を壊すとここで落ちる。
 //
 // 既知の 617 ms（playable の MATERIALIZED を外すと数倍遅い）は、現スキーマ・この合成
-// seed では再現しない（Apple M3 Max・PostgreSQL 16.2 で (o') / (o) は 0.92〜0.96）。
+// seed では再現しない（Apple M3 Max・PostgreSQL 16.2 で (o') / (o) は 0.94〜0.95、(o') / (a) は 0.89）。
 // 棚サイズの偏り・複数の自動キーを 1 棚に併合する分類ルール・統計なしの状態でも再現せず、
 // 617 ms の再現条件は未検証である。したがって (o') が遅いことはアサートしない。
 //
