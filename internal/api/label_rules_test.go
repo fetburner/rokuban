@@ -354,15 +354,20 @@ func TestListRecordings_ExposesEffectiveSeries(t *testing.T) {
 	if len(titles) != 2 {
 		t.Fatalf("recordings = %d, want 2", len(titles))
 	}
-	byTitle := map[string]*string{}
+	byTitle := map[string]Recording{}
 	for _, r := range titles {
-		byTitle[r.Title] = r.Series
+		byTitle[r.Title] = r
 	}
-	if got := byTitle["NHK高校講座　日本史　第1回"]; got == nil || *got != "NHK高校講座" {
-		t.Errorf("series = %v, want the automatic key NHK高校講座", got)
+	automatic := byTitle["NHK高校講座　日本史　第1回"]
+	if automatic.Series == nil || *automatic.Series != "NHK高校講座" {
+		t.Errorf("series = %v, want the automatic key NHK高校講座", automatic.Series)
 	}
-	if got := byTitle["【特集】"]; got != nil {
-		t.Errorf("series = %q, want null for a title with no automatic key", *got)
+	if automatic.SeriesKey == nil || *automatic.SeriesKey != "NHK高校講座" {
+		t.Errorf("seriesKey = %v, want the automatic key NHK高校講座", automatic.SeriesKey)
+	}
+	nullAutomatic := byTitle["【特集】"]
+	if nullAutomatic.Series != nil || nullAutomatic.SeriesKey != nil {
+		t.Errorf("series/seriesKey = %v/%v, want null for a title with no automatic key", nullAutomatic.Series, nullAutomatic.SeriesKey)
 	}
 
 	// ルールが当たると実効シリーズがその値になる（ビュー経由。単体 GET も同形）。
@@ -378,6 +383,17 @@ func TestListRecordings_ExposesEffectiveSeries(t *testing.T) {
 		}
 		if r.Series == nil || *r.Series != "日本史" {
 			t.Errorf("series after adding a rule = %v, want 日本史", r.Series)
+		}
+		if r.SeriesKey == nil || *r.SeriesKey != "NHK高校講座" {
+			t.Errorf("seriesKey after adding a rule = %v, want NHK高校講座", r.SeriesKey)
+		}
+		var detail Recording
+		resp := getJSON(t, srv.URL+fmt.Sprintf("/api/recordings/%d", r.Id), &detail)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("detail status = %d, want 200", resp.StatusCode)
+		}
+		if detail.Series == nil || *detail.Series != "日本史" || detail.SeriesKey == nil || *detail.SeriesKey != "NHK高校講座" {
+			t.Errorf("detail series/seriesKey = %v/%v, want 日本史/NHK高校講座", detail.Series, detail.SeriesKey)
 		}
 	}
 }
