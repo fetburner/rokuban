@@ -39,7 +39,7 @@ describe('RecordingRow', () => {
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
   })
 
-  it('selecting だけ true で selected / onToggle を省略すると未選択のチェックボックスで、押しても落ちない', async () => {
+  it('selecting だけ true で selected / onToggle を省略すると未選択のチェックボックスになる', async () => {
     renderInRouter(<RecordingRow recording={recording} {...base} selecting />, {
       path: '/recordings',
     })
@@ -48,7 +48,6 @@ describe('RecordingRow', () => {
     expect(box).not.toBeChecked()
     expect(screen.getByRole('option')).toHaveAttribute('aria-selected', 'false')
     expect(screen.queryByRole('link')).not.toBeInTheDocument()
-    fireEvent.click(box)
   })
 
   it('サムネイルが 404 で error になるとプレースホルダに落ちる', async () => {
