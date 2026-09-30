@@ -138,6 +138,42 @@ func TestRouterPanicAfterHeaderSentAbortsConnection(t *testing.T) {
 	}
 }
 
+// ヘッダー送信済みの判定は WriteHeader 以外の書き込み経路でも立つ。
+// 暗黙の 200 を送る Write と、sendfile を保つための ReadFrom が対象。
+func TestRouterPanicAfterImplicitHeaderAbortsConnection(t *testing.T) {
+	router := NewRouter(RouterConfig{Mounter: testMounter(func(r chi.Router) {
+		r.Get("/api/test-write", func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("PARTIAL"))
+			panic("boom after implicit header")
+		})
+		r.Get("/api/test-readfrom", func(w http.ResponseWriter, _ *http.Request) {
+			// http.ServeContent は io.Copy 経由でこのインタフェースを使う。
+			_, _ = w.(io.ReaderFrom).ReadFrom(strings.NewReader("PARTIAL"))
+			panic("boom after ReadFrom")
+		})
+	})})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	for _, path := range []string{"/api/test-write", "/api/test-readfrom"} {
+		t.Run(path, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + path)
+			if err != nil {
+				// Flush 前に中断されるとヘッダーごと届かない。これも中断の形。
+				return
+			}
+			defer func() { _ = resp.Body.Close() }()
+			got, readErr := io.ReadAll(resp.Body)
+			if readErr == nil {
+				t.Errorf("ReadAll succeeded with body %q; want an aborted connection", got)
+			}
+			if strings.Contains(string(got), "internal server error") {
+				t.Errorf("error body appended after header sent: %q", got)
+			}
+		})
+	}
+}
+
 func TestJSONBodyLimitAndExcludedRoutes(t *testing.T) {
 	largeBody := io.MultiReader(strings.NewReader(`{"name":"`), strings.NewReader(strings.Repeat("x", int(maxJSONBodyBytes))), strings.NewReader(`"}`))
 	router := NewRouter(RouterConfig{

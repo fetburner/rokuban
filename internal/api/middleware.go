@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -40,6 +41,18 @@ func (w *headerTrackingWriter) Flush() {
 }
 
 func (w *headerTrackingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// ReadFrom は下位の io.ReaderFrom へ委譲し、http.ServeContent の sendfile 経路を保つ。
+// これが無いと io.Copy が 32KB バッファのコピーに落ちる（Linux の実測で sendfile 0 回、
+// サーバー CPU が 1 GiB あたり約 5 倍）。
+func (w *headerTrackingWriter) ReadFrom(r io.Reader) (int64, error) {
+	w.wroteHeader = true
+	if rf, ok := w.ResponseWriter.(io.ReaderFrom); ok {
+		return rf.ReadFrom(r)
+	}
+	// struct で包んで ReadFrom を隠し、io.Copy がこのメソッドへ戻らないようにする。
+	return io.Copy(struct{ io.Writer }{w.ResponseWriter}, r)
+}
 
 // recoverPanic は HTTP handler の panic を境界で回収する。
 // panic の値と stack trace は運用ログへ残す。ヘッダー未送信ならクライアントへ
