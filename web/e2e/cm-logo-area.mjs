@@ -1,13 +1,8 @@
 // CM 検出のロゴ位置を教える画面の実ブラウザ判定。
 //
-// jsdom では表示枠の実寸とポインタ座標を測れないため、拡大表示中のドラッグが
-// 記録上の解像度の座標で保存されることはここで確認する。API はブラウザ側で
-// 差し替えるので、mirakc・DB・原本は要らない。
-//
-// 見るもの:
-//   ① 局を開いてタイルを押すと、原寸コマが記録上の大きさ付きで表示される
-//   ② 右上の拡大表示のまま描いた枠が、CSS px ではなく 1920x1080 の座標で PUT される
-//   ③ 直近の失敗理由が局の行に残る
+// jsdom では表示比・ポインタ座標・カーソルを測れないため、CM ロゴ画面の契約を
+// 実ブラウザで判定する。API はブラウザ側で差し替えるので、mirakc・DB・原本は要らない。
+// 判定側は画面の実装を import せず、coded size と実測した表示寸法から期待値を計算する。
 //
 //   cd web && corepack pnpm build
 //   corepack pnpm preview --port 4173 --strictPort &
@@ -26,46 +21,56 @@ import {
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'
 const ng = []
+const longError = `raw-log-${'x'.repeat(4096)}`
 
 const logo = {
   networkId: 32678,
   serviceId: 5168,
   serviceName: 'e2e CM ロゴ局',
+  site: 'tokyo',
   state: 'failed',
   recordingCount: 2,
   failedCount: 1,
-  lastError: 'logoframe: no logo found',
+  pendingCount: 0,
+  lastFailureStage: 'logo',
+  detectedCount: 0,
+  redetectableCount: 0,
+  // L-4 前の zod 契約でも検証できるように残す。L-4 後は未知フィールドとして無視される。
+  lastError: longError,
   frameRecordingId: 7,
 }
 
-// ブラウザが画像として認識できればよい 1x1 PNG。枠の座標は応答ヘッダの
-// X-Coded-Width / X-Coded-Height から決めるため、画像の画素数とは分けている。
+// ブラウザが画像として認識できればよい 1x1 PNG。画像の画素数は coded size と分ける。
 const FRAME_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
   'base64',
 )
 
 let savedArea
+const frameRequests = []
 
-async function apiHandler({ path, json, route }) {
+async function apiHandler({ path, url, json, route }) {
   const method = route.request().method()
-  if (path === '/api/sites') return json(['default'])
+  if (path === '/api/sites') return json(['tokyo'])
   if (path === '/api/capabilities') return json({ live: false, cmDetect: true })
   if (path === '/api/breakers') return json([])
   if (path === '/api/events') return sseKeepAlive(route)
   if (path === '/api/cm-logos' && method === 'GET') {
     return json([{ ...logo, ...(savedArea === undefined ? {} : { logoArea: savedArea }) }])
   }
+  if (path === '/api/recordings' && method === 'GET') return json([])
   if (path === '/api/media/recordings/7/frame' && method === 'GET') {
+    frameRequests.push(Number(url.searchParams.get('at')))
     return route.fulfill({
       status: 200,
       contentType: 'image/png',
-      headers: { 'X-Coded-Width': '1920', 'X-Coded-Height': '1080' },
+      headers: {
+        'X-Coded-Width': '1440',
+        'X-Coded-Height': '1080',
+        'X-Sample-Aspect-Ratio': '4:3',
+      },
       body: FRAME_PNG,
     })
-  }
-  if (path === '/api/media/recordings/7/seek-tiles' && method === 'GET') {
-    return route.fulfill({ status: 200, contentType: 'image/png', body: FRAME_PNG })
   }
   if (path === '/api/cm-logos/32678/5168/area' && method === 'PUT') {
     savedArea = JSON.parse(route.request().postData() ?? '{}')
@@ -76,6 +81,22 @@ async function apiHandler({ path, json, route }) {
     return route.fulfill({ status: 204 })
   }
   return json([])
+}
+
+async function check(label, fn) {
+  try {
+    await fn()
+  } catch (error) {
+    ng.push(`${label}: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+function numberInput(page, label) {
+  return page.locator(`input[type="number"][aria-label="${label}"]`)
+}
+
+async function computedCursor(locator) {
+  return locator.evaluate((element) => getComputedStyle(element).cursor)
 }
 
 log(`URL: ${URL_BASE}`)
@@ -92,98 +113,123 @@ const context = await browser.newContext({
 })
 const page = await context.newPage()
 await installApiStubs(page, apiHandler)
-await page.goto(`${URL_BASE}/cm-logos?network=32678&service=5168&recording=7`, {
+await page.goto(`${URL_BASE}/cm-logos/32678/5168?recording=7`, {
   waitUntil: 'domcontentloaded',
 })
 
-log('\n=== ① 局を開き、タイルから原寸コマを表示する ===')
-const row = page.getByTestId('cm-logo-row')
-await row.waitFor({ timeout: 15000 })
-if (!(await row.getByTestId('cm-logo-warning').textContent()).includes('no logo found')) {
-  ng.push('③ 直近の失敗理由が局の行に表示されない')
-}
-await row.getByRole('button', { name: 'e2e CM ロゴ局' }).click()
-const frame = page.getByTestId('cm-logo-frame')
-await frame.waitFor({ timeout: 15000 })
-const tiles = page.getByTestId('cm-logo-tiles').locator('img')
-const tilesBox = await tiles.boundingBox()
-if (!tilesBox || tilesBox.width <= 0 || tilesBox.height <= 0) {
-  ng.push('① シークタイルの実寸が取れない')
-} else {
-  // 左端のタイルを選び、初期状態（frame=null）からコマの取得が始まることも見る。
-  await page.waitForFunction(
-    () => (document.querySelector('[data-testid="cm-logo-tiles"] img')?.naturalWidth ?? 0) > 0,
-    undefined,
-    { timeout: 15000 },
-  )
-  await tiles.click({ position: { x: 2, y: tilesBox.height / 2 } })
-}
-const frameImage = page.getByTestId('cm-logo-frame-image')
-try {
-  await frameImage.waitFor({ timeout: 15000 })
+log('\n=== ① SAR を掛けた表示比 ===')
+await check('①', async () => {
+  const image = page.getByTestId('cm-logo-frame-image')
+  await image.waitFor({ state: 'visible', timeout: 15000 })
   await page.waitForFunction(
     () => (document.querySelector('[data-testid="cm-logo-frame-image"]')?.naturalWidth ?? 0) > 0,
     undefined,
     { timeout: 15000 },
   )
-} catch {
-  ng.push('① タイルを押しても原寸コマが表示されない')
-}
-await frame.scrollIntoViewIfNeeded()
-log('\n=== ② 拡大表示中のドラッグを記録上の座標で保存する ===')
-const zoomButton = page.getByRole('button', { name: '全体表示' })
-if ((await zoomButton.count()) === 0) ng.push('② 初期表示が右上の拡大表示ではない')
-
-const geometry = await frame.evaluate((element) => {
-  const rect = element.getBoundingClientRect()
-  return { left: rect.left, top: rect.top, width: element.clientWidth, height: element.clientHeight }
-})
-if (geometry.width <= 0 || geometry.height <= 0) {
-  ng.push('② コマの表示枠に実寸が無い')
-} else {
-  // 画面上の 160x120px の枠は、拡大率 2.5 なら記録上は 192x144px になる。
-  // 1920x1080 / 右上合わせ / 2.5 倍を判定側にリテラルで置き、実装の変換関数を
-  // import しない（同じ関数を比較すると、実装を変えても同じ値を返すだけになる）。
-  const scale = Math.min(geometry.width / 1920, geometry.height / 1080) * 2.5
-  const start = { x: geometry.left + geometry.width - 220, y: geometry.top + 60 }
-  const end = { x: geometry.left + geometry.width - 60, y: geometry.top + 180 }
-  const coded = (point) => ({
-    x: 1920 - (geometry.width - (point.x - geometry.left)) / scale,
-    y: (point.y - geometry.top) / scale,
-  })
-  const a = coded(start)
-  const b = coded(end)
-  const expected = {
-    x: Math.round(Math.min(a.x, b.x)),
-    y: Math.round(Math.min(a.y, b.y)),
-    w: Math.round(Math.abs(a.x - b.x)),
-    h: Math.round(Math.abs(a.y - b.y)),
-    codedWidth: 1920,
-    codedHeight: 1080,
+  const box = await image.boundingBox()
+  if (!box || box.width <= 0 || box.height <= 0) throw new Error('コマの描画寸法が取れない')
+  const ratio = box.width / box.height
+  if (Math.abs(ratio / (16 / 9) - 1) > 0.01) {
+    throw new Error(`表示比 ${ratio.toFixed(4)}（期待 16:9）`)
   }
+})
 
+log('\n=== ② スライダーの時刻を /frame?at= に渡す ===')
+await check('②', async () => {
+  const slider = page.getByTestId('cm-logo-time')
+  await slider.waitFor({ state: 'visible', timeout: 5000 })
+  const min = Number(await slider.getAttribute('min') ?? 0)
+  const max = Number(await slider.getAttribute('max') ?? 0)
+  const target = Math.round(min + (max - min) * 0.37)
+  await slider.fill(String(target))
+  await page.waitForTimeout(200)
+  if (!frameRequests.includes(target)) {
+    throw new Error(`/frame?at=${target} が呼ばれない`)
+  }
+})
+
+log('\n=== ③ 4 隅の変形を coded size へ変換する ===')
+await check('③', async () => {
+  const frame = page.getByTestId('cm-logo-frame')
+  const frameBox = await frame.boundingBox()
+  if (!frameBox || frameBox.width <= 0 || frameBox.height <= 0) throw new Error('表示枠の寸法が取れない')
+
+  const start = { x: frameBox.x + frameBox.width * 0.2, y: frameBox.y + frameBox.height * 0.2 }
+  const end = { x: frameBox.x + frameBox.width * 0.55, y: frameBox.y + frameBox.height * 0.5 }
   await page.mouse.move(start.x, start.y)
   await page.mouse.down()
   await page.mouse.move(end.x, end.y)
   await page.mouse.up()
-  const save = page.getByRole('button', { name: '枠を保存' })
-  await save.waitFor({ state: 'visible', timeout: 5000 })
-  await page.waitForFunction(
-    () =>
-      Array.from(document.querySelectorAll('[aria-label="ロゴの枠"] button')).some(
-        (button) => button.textContent?.includes('枠を保存') && !button.hasAttribute('disabled'),
-      ),
-    undefined,
-    { timeout: 5000 },
-  )
-  await save.click()
-  await page.waitForTimeout(300)
 
-  if (savedArea === undefined || JSON.stringify(savedArea) !== JSON.stringify(expected)) {
-    ng.push(`② 保存された枠が違う（実際 ${JSON.stringify(savedArea)} / 期待 ${JSON.stringify(expected)}）`)
-  } else {
-    log(`  記録上の枠: ${JSON.stringify(savedArea)}`)
+  const rect = page.getByTestId('cm-logo-rect')
+  await rect.waitFor({ state: 'visible', timeout: 5000 })
+  const before = await rect.boundingBox()
+  const handle = page.getByTestId('cm-logo-handle-se')
+  const handleBox = await handle.boundingBox()
+  if (!before || !handleBox) throw new Error('枠または右下ハンドルが表示されない')
+
+  const dx = 23
+  const dy = 17
+  const finalRight = before.x + before.width + dx
+  const finalBottom = before.y + before.height + dy
+  const expected = {
+    w: Math.round((finalRight - before.x) * 1440 / frameBox.width),
+    h: Math.round((finalBottom - before.y) * 1080 / frameBox.height),
   }
-}
+  await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(handleBox.x + handleBox.width / 2 + dx, handleBox.y + handleBox.height / 2 + dy)
+  await page.mouse.up()
+
+  const save = page.getByRole('button', { name: '枠を保存' })
+  await save.click()
+  await page.waitForTimeout(150)
+  if (savedArea?.w !== expected.w || savedArea?.h !== expected.h) {
+    throw new Error(`保存 w/h が ${savedArea?.w}×${savedArea?.h}（期待 ${expected.w}×${expected.h}）`)
+  }
+})
+
+log('\n=== ④ 数値入力との往復 ===')
+await check('④', async () => {
+  const rect = page.getByTestId('cm-logo-rect')
+  const before = await rect.boundingBox()
+  const x = numberInput(page, 'X')
+  await x.fill('120')
+  await x.press('Tab')
+  await page.waitForTimeout(50)
+  const after = await rect.boundingBox()
+  if (!before || !after || before.x === after.x) throw new Error('X 入力で枠の位置が変わらない')
+
+  const currentX = await x.inputValue()
+  const rectBox = await rect.boundingBox()
+  if (!rectBox) throw new Error('枠の寸法が取れない')
+  await page.mouse.move(rectBox.x + rectBox.width / 2, rectBox.y + rectBox.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(rectBox.x + rectBox.width / 2 + 12, rectBox.y + rectBox.height / 2)
+  await page.mouse.up()
+  if ((await x.inputValue()) === currentX) throw new Error('枠のドラッグで X 入力が変わらない')
+})
+
+log('\n=== ⑤ カーソル ===')
+await check('⑤', async () => {
+  const sliderCursor = await computedCursor(page.getByTestId('cm-logo-time'))
+  const frameCursor = await computedCursor(page.getByTestId('cm-logo-frame-image'))
+  const rectCursor = await computedCursor(page.getByTestId('cm-logo-rect'))
+  const nwCursor = await computedCursor(page.getByTestId('cm-logo-handle-nw'))
+  const neCursor = await computedCursor(page.getByTestId('cm-logo-handle-ne'))
+  const swCursor = await computedCursor(page.getByTestId('cm-logo-handle-sw'))
+  const seCursor = await computedCursor(page.getByTestId('cm-logo-handle-se'))
+  const got = [sliderCursor, frameCursor, rectCursor, nwCursor, neCursor, swCursor, seCursor]
+  const want = ['pointer', 'crosshair', 'move', 'nwse-resize', 'nesw-resize', 'nesw-resize', 'nwse-resize']
+  if (got.some((value, index) => value !== want[index])) {
+    throw new Error(`cursor=${JSON.stringify(got)}（期待 ${JSON.stringify(want)}）`)
+  }
+})
+
+log('\n=== ⑥ 局の画面に生ログを出さない ===')
+await check('⑥', async () => {
+  const text = await page.locator('body').innerText()
+  if (text.includes(longError)) throw new Error('4KB の生ログが DOM に現れる')
+})
 
 await finish(ng, browser)
