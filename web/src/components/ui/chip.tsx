@@ -33,7 +33,7 @@ export function Chip({
         // 超えると（長い局名 + 補助ラベル。issue #306）shrink-0 の flex-basis が
         // 内容の最大幅を要求し、ページ全体が横に伸びる。実ブラウザ 320px での実測は
         // `e2e/chip-overflow.mjs` の①（max-w-full 有り: documentElement の
-        // scrollWidth 320 / clientWidth 320、外すと 448 / 320）。
+        // scrollWidth 320 / clientWidth 320、外すと 462 / 320）。
         // break-words は入れていない --- 同じ実測で有無の差が出なかった（和文は
         // 文字間で折り返せるため）。長い ASCII 1 語での挙動は未検証。
         'max-w-full shrink-0 rounded-full border px-3 py-1.5 text-xs transition-[color,background-color] outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50',

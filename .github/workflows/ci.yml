@@ -37,7 +37,22 @@ jobs:
   # 実バイナリが go:embed した web/dist を配り、DB readiness を通る実 HTTP サーバーに
   # Chromium からアクセスする。3 本とも Playwright 内で /api/** をスタブするため mirakc は不要。
   # recordings-selection は実ブラウザ判定の前に 20 件の録画 fixture を Zod 契約で検査する。
-  # 残りの browser E2E は当面ローカル専用（別の定期ジョブでは実行しない）。
+  #
+  # 回すのは web/e2e/*.mjs 31 ファイル（共有部品 lib.mjs / validate-fixtures.mjs を含む）のうち 3 本。
+  # 選定基準は次の 3 つを全部満たすこと。
+  #   - jsdom が原理的に測れない（レイアウトシフト・幅の溢れ・スクロール余白）
+  #   - /api/** を Playwright 内でスタブし、mirakc・チューナー・実データに依存しない
+  #   - ffmpeg・webkit・DB への直接書き込みを要らず、Chromium だけで軽く終わる
+  # 回さない 28 ファイル（判定スクリプトは 26 本）の理由は 3 類型。
+  #   - 実メディアが要る: chapters / seek-tiles / subtitles / chase / live / live-audio は
+  #     ffmpeg でフィクスチャを作る。live / live-audio は webkit も要る
+  #   - 実 DB の状態が要る: live は epg_services に実サービスの行が要り、
+  #     shelves-split は E2E_DATABASE_URL の DB を TRUNCATE する
+  #   - 残り（番組表・予約・検索などの画面別判定）は API スタブで技術的には載せられるが、
+  #     全体の所要時間を測っておらず、PR ごとに払う価値をまだ判断していない
+  # 全 31 本を回す定期ジョブは作らない。回す主体と失敗の受け手が決まっておらず、
+  # 誰も見ない赤い定期ジョブは 3 本の PR ブロッキングより信号として弱いため。
+  # 対象を増やすときはこのコメントの数と類型も同じ PR で直す。
   browser-e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -108,12 +123,19 @@ jobs:
           echo "::error::Rokuban did not become ready at ${E2E_URL}; server log follows"
           cat "${server_log}"
           exit 1
-      - run: pnpm e2e:cls
+      # 1 本が落ちても残りを走らせ、1 回の実行で全部の結果を見えるようにする。
+      - if: ${{ !cancelled() }}
+        run: pnpm e2e:cls
         working-directory: web
-      - run: pnpm e2e:chip-overflow
+      - if: ${{ !cancelled() }}
+        run: pnpm e2e:chip-overflow
         working-directory: web
-      - run: pnpm e2e:recordings-selection
+      - if: ${{ !cancelled() }}
+        run: pnpm e2e:recordings-selection
         working-directory: web
+      - name: Show API server log
+        if: failure()
+        run: cat "${RUNNER_TEMP}/rokuban-e2e-server.log"
 
   test:
     runs-on: ubuntu-latest
