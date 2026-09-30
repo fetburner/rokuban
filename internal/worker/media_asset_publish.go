@@ -14,14 +14,8 @@ import (
 	"github.com/fetburner/rokuban/internal/mediapath"
 )
 
-type activeMediaAssetCheck func(context.Context, *sqlcgen.Queries) (bool, error)
+type skipMediaAssetPublish func(context.Context, *sqlcgen.Queries) (bool, error)
 type mediaAssetUpsert func(context.Context, *sqlcgen.Queries, int64) error
-
-type stagedMediaAsset struct {
-	tempPath  string
-	finalPath string
-	size      int64
-}
 
 func newWorkerScratchDir(scratchRoot, kind string, jobID int64, attempt int) (string, error) {
 	if scratchRoot == "" {
@@ -34,42 +28,54 @@ func newWorkerScratchDir(scratchRoot, kind string, jobID int64, attempt int) (st
 	return os.MkdirTemp(root, fmt.Sprintf("%d-%d-", jobID, attempt))
 }
 
-func stageMediaAsset(src, finalPath string) (stagedMediaAsset, error) {
+// stagedMediaFile は media ディレクトリへ置く前の一時ファイル。finalPath と同じ
+// ディレクトリに置くので rename は同一 FS 内で完結する（scratch からの rename は
+// `EXDEV` になる。docs/storage/contract.md §3 ルール 2）。
+type stagedMediaFile struct {
+	tempPath  string
+	finalPath string
+	size      int64
+}
+
+// stageMediaFile は src（scratch）を finalPath と同じディレクトリの一時ファイルへ
+// ストリームコピー + fsync する。名前は予約接頭辞 prefix を付け、拡張子は付けない
+// （rescueAssetKind は媒体拡張子でしか ok を返さないので、孤児 rescue には拾われない）。
+// プロセス死で rel_path lock が残っても、次の lock 取得時の GC が回収する。
+func stageMediaFile(src, finalPath, prefix string) (stagedMediaFile, error) {
 	dir := filepath.Dir(finalPath)
-	temp, err := os.CreateTemp(dir, mediapath.GeneratedAssetTempFilePrefix+"*")
+	// CreateTemp は 0600 で作る。公開後のファイルは canonical なので、コピー元の
+	// streamCopyFile と同じ 0644 に揃える（別 UID の streamer が読む構成がある）。
+	temp, err := os.CreateTemp(dir, prefix+"*")
 	if err != nil {
-		return stagedMediaAsset{}, fmt.Errorf("creating staged media asset: %w", err)
+		return stagedMediaFile{}, fmt.Errorf("creating staged output in media dir: %w", err)
 	}
 	tempPath := temp.Name()
-	if err := temp.Close(); err != nil {
-		_ = os.Remove(tempPath)
-		return stagedMediaAsset{}, fmt.Errorf("closing staged media asset: %w", err)
-	}
-	// CreateTemp uses 0600; published media is readable by the streamer and other
-	// worker roles, so match the canonical asset mode before publication.
+	_ = temp.Close()
 	if err := os.Chmod(tempPath, 0o644); err != nil {
 		_ = os.Remove(tempPath)
-		return stagedMediaAsset{}, fmt.Errorf("chmod staged media asset: %w", err)
+		return stagedMediaFile{}, fmt.Errorf("chmod staged output: %w", err)
 	}
 	size, err := streamCopyFile(src, tempPath)
 	if err != nil {
 		_ = os.Remove(tempPath)
-		return stagedMediaAsset{}, fmt.Errorf("staging media asset: %w", err)
+		return stagedMediaFile{}, fmt.Errorf("staging output in media dir: %w", err)
 	}
-	return stagedMediaAsset{tempPath: tempPath, finalPath: finalPath, size: size}, nil
+	return stagedMediaFile{tempPath: tempPath, finalPath: finalPath, size: size}, nil
 }
 
-func (s stagedMediaAsset) publish() error {
+// publish は staged 出力を canonical へ rename で公開し、親ディレクトリを fsync する。
+func (s stagedMediaFile) publish() error {
 	if err := os.Rename(s.tempPath, s.finalPath); err != nil {
-		return fmt.Errorf("renaming staged media asset: %w", err)
+		return fmt.Errorf("publishing staged output to canonical path: %w", err)
 	}
 	if err := syncIngestDirectory(s.finalPath); err != nil {
-		return fmt.Errorf("syncing media asset parent directory: %w", err)
+		return fmt.Errorf("syncing canonical parent directory: %w", err)
 	}
 	return nil
 }
 
-func (s stagedMediaAsset) discard() {
+// discard は未公開の temp を消す。rename 済みなら temp は無いので何もしない。
+func (s stagedMediaFile) discard() {
 	if s.tempPath != "" {
 		_ = os.Remove(s.tempPath)
 	}
@@ -83,7 +89,7 @@ func publishGeneratedMediaAsset(
 	ctx context.Context,
 	pool *pgxpool.Pool,
 	mediaDir, relPath, scratchPath string,
-	isActive activeMediaAssetCheck,
+	shouldSkip skipMediaAssetPublish,
 	upsert mediaAssetUpsert,
 ) (size int64, published bool, err error) {
 	finalPath, err := mediapath.Resolve(mediaDir, relPath)
@@ -93,7 +99,7 @@ func publishGeneratedMediaAsset(
 	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
 		return 0, false, fmt.Errorf("creating media asset directory: %w", err)
 	}
-	staged, err := stageMediaAsset(scratchPath, finalPath)
+	staged, err := stageMediaFile(scratchPath, finalPath, mediapath.GeneratedAssetTempFilePrefix)
 	if err != nil {
 		return 0, false, err
 	}
@@ -114,11 +120,11 @@ func publishGeneratedMediaAsset(
 		return 0, false, err
 	}
 	q := sqlcgen.New(tx)
-	active, err := isActive(ctx, q)
+	skip, err := shouldSkip(ctx, q)
 	if err != nil {
-		return 0, false, fmt.Errorf("checking active generated media asset: %w", err)
+		return 0, false, fmt.Errorf("rechecking generated media asset publication: %w", err)
 	}
-	if active {
+	if skip {
 		return 0, false, nil
 	}
 	if err := upsert(ctx, q, staged.size); err != nil {
@@ -133,18 +139,31 @@ func publishGeneratedMediaAsset(
 	return staged.size, true, nil
 }
 
-func activeThumbnailExists(ctx context.Context, q *sqlcgen.Queries, recordingID int64) (bool, error) {
-	_, err := q.GetActiveThumbnailMediaAssetID(ctx, recordingID)
-	if errors.Is(err, pgx5.ErrNoRows) {
-		return false, nil
-	}
-	return err == nil, err
+// skipThumbnailPublish は commit tx 内で、公開を飛ばすべきかを返す。
+// active な thumbnail が既にある（別試行が commit 済み）か、ffmpeg 実行中に
+// 原本が active でなくなった（録画削除）場合に true。
+func skipThumbnailPublish(ctx context.Context, q *sqlcgen.Queries, recordingID int64) (bool, error) {
+	return skipGeneratedPublish(ctx, q, recordingID, q.GetActiveThumbnailMediaAssetID)
 }
 
-func activeSeekTilesExist(ctx context.Context, q *sqlcgen.Queries, recordingID int64) (bool, error) {
-	_, err := q.GetActiveSeekTilesMediaAssetID(ctx, recordingID)
-	if errors.Is(err, pgx5.ErrNoRows) {
-		return false, nil
+// skipSeekTilesPublish は skipThumbnailPublish の seek tiles 版。
+func skipSeekTilesPublish(ctx context.Context, q *sqlcgen.Queries, recordingID int64) (bool, error) {
+	return skipGeneratedPublish(ctx, q, recordingID, q.GetActiveSeekTilesMediaAssetID)
+}
+
+func skipGeneratedPublish(
+	ctx context.Context, q *sqlcgen.Queries, recordingID int64,
+	activeDerived func(context.Context, int64) (int64, error),
+) (bool, error) {
+	if _, err := activeDerived(ctx, recordingID); err == nil {
+		return true, nil
+	} else if !errors.Is(err, pgx5.ErrNoRows) {
+		return false, err
 	}
-	return err == nil, err
+	if _, err := q.GetActiveOriginalMediaAsset(ctx, recordingID); errors.Is(err, pgx5.ErrNoRows) {
+		return true, nil
+	} else if err != nil {
+		return false, err
+	}
+	return false, nil
 }

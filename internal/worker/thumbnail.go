@@ -140,7 +140,7 @@ func (w *ThumbnailWorker) Work(ctx context.Context, job *river.Job[jobs.Thumbnai
 	relPath := thumbnailRelPath(recordingID)
 	size, published, err := publishGeneratedMediaAsset(ctx, w.Pool, w.MediaDir, relPath, scratchPath,
 		func(ctx context.Context, q *sqlcgen.Queries) (bool, error) {
-			return activeThumbnailExists(ctx, q, recordingID)
+			return skipThumbnailPublish(ctx, q, recordingID)
 		},
 		func(ctx context.Context, q *sqlcgen.Queries, size int64) error {
 			_, err := q.UpsertThumbnailMediaAsset(ctx, sqlcgen.UpsertThumbnailMediaAssetParams{
@@ -152,7 +152,7 @@ func (w *ThumbnailWorker) Work(ctx context.Context, job *river.Job[jobs.Thumbnai
 		return fmt.Errorf("publishing thumbnail: %w", err)
 	}
 	if !published {
-		log.Info("thumbnail: another attempt committed, skipping")
+		log.Info("thumbnail: already committed or original no longer active, skipping")
 		result = "success"
 		return nil
 	}

@@ -165,9 +165,9 @@ thumbnail と seek tiles の ffmpeg 出力先はジョブごとに `MkdirTemp` �
 directory とする。同じ recording の River job が重なっても scratch file を共有しない。
 完成後は canonical と同じ directory の `.rokuban-media-asset-` staged file にコピーして
 file `fsync` する。次に rel_path filesystem lock → transaction → advisory xact lock の順に取る。
-transaction 内で active 行を再確認し、まだ無ければ media asset row を予約する。その後 staged
+transaction 内で active な派生行と原本の生存を再確認し、派生行がまだ無く原本も active なら media asset row を予約する。その後 staged
 file を canonical へ rename して親 directory を `fsync` し、最後に commit する。先行 job が
-すでに active row を commit していた場合、後続 job は公開を飛ばす。
+すでに active row を commit していた場合や、ffmpeg 実行中に録画が削除され原本が active でなくなった場合、後続 job は公開を飛ばして成功扱いにする。
 
 staged file は通常の orphan 候補として aging 回収に委ねる。拡張子によらず catalog 無し
 rescue から除外する。canonical を `O_TRUNC` で直接開かないため、処理中に配信・削除側が

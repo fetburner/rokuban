@@ -68,7 +68,7 @@ catalog/
 `rokuban rescue` は DB を catalog の内容で更新する。catalog が無い場合はストレージを走査して
 asset row を登録する。実行前に file や media asset を変更する worker を止める。
 対象は ingest / encode / thumbnail / seek tiles / delete_reconcile などである。rescue 終了後まで再開しない。
-現状は rescue と削除が共通の rel_path lock を使わないため、並行すると削除済み file の row を
+未解決: rescue と削除が共通の rel_path lock を使わないため、並行すると削除済み file の row を
 復元したり、走査後に消えた file を登録したりするおそれがある。
 
 `rokuban rescue` は次の順で入力を選ぶ:

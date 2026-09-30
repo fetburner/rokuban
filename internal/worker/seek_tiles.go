@@ -189,7 +189,7 @@ func (w *SeekTilesWorker) Work(ctx context.Context, job *river.Job[jobs.SeekTile
 	relPath := seekTilesRelPath(recordingID)
 	size, published, err := publishGeneratedMediaAsset(ctx, w.Pool, w.MediaDir, relPath, sheetPath,
 		func(ctx context.Context, q *sqlcgen.Queries) (bool, error) {
-			return activeSeekTilesExist(ctx, q, recordingID)
+			return skipSeekTilesPublish(ctx, q, recordingID)
 		},
 		func(ctx context.Context, q *sqlcgen.Queries, size int64) error {
 			_, err := q.UpsertSeekTilesMediaAsset(ctx, sqlcgen.UpsertSeekTilesMediaAssetParams{
@@ -201,7 +201,7 @@ func (w *SeekTilesWorker) Work(ctx context.Context, job *river.Job[jobs.SeekTile
 		return fmt.Errorf("publishing seek tiles: %w", err)
 	}
 	if !published {
-		log.Info("seek_tiles: another attempt committed, skipping")
+		log.Info("seek_tiles: already committed or original no longer active, skipping")
 		result = "success"
 		return nil
 	}

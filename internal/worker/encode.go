@@ -712,59 +712,6 @@ var (
 	beforeEncodeCommit = func(scratchOut string) error { return nil }
 )
 
-// stagedEncodedFile は media ディレクトリへ置く前の一時ファイル。finalPath と同じ
-// ディレクトリに置くので rename は同一 FS 内で完結する（scratch からの rename は
-// `EXDEV` になる。docs/storage/contract.md §3 ルール 2）。
-type stagedEncodedFile struct {
-	tempPath  string
-	finalPath string
-	size      int64
-}
-
-// stageEncodedFile は src（scratch）を finalPath と同じディレクトリの一時ファイルへ
-// ストリームコピー + fsync する。名前は予約接頭辞を付け、拡張子は付けない
-// （rescueAssetKind は媒体拡張子でしか ok を返さないので、孤児 rescue には拾われない）。
-// プロセス死で rel_path lock が残っても、次の lock 取得時の GC が回収する。
-func stageEncodedFile(src, finalPath string) (stagedEncodedFile, error) {
-	dir := filepath.Dir(finalPath)
-	// CreateTemp は 0600 で作る。公開後のファイルは canonical なので、コピー元の
-	// streamCopyFile と同じ 0644 に揃える（別 UID の streamer が読む構成がある）。
-	temp, err := os.CreateTemp(dir, mediapath.EncodeTempFilePrefix+"*")
-	if err != nil {
-		return stagedEncodedFile{}, fmt.Errorf("creating staged output in media dir: %w", err)
-	}
-	tempPath := temp.Name()
-	_ = temp.Close()
-	if err := os.Chmod(tempPath, 0o644); err != nil {
-		_ = os.Remove(tempPath)
-		return stagedEncodedFile{}, fmt.Errorf("chmod staged output: %w", err)
-	}
-	size, err := streamCopyFile(src, tempPath)
-	if err != nil {
-		_ = os.Remove(tempPath)
-		return stagedEncodedFile{}, fmt.Errorf("staging output in media dir: %w", err)
-	}
-	return stagedEncodedFile{tempPath: tempPath, finalPath: finalPath, size: size}, nil
-}
-
-// publish は staged 出力を canonical へ rename で公開し、親ディレクトリを fsync する。
-func (s stagedEncodedFile) publish() error {
-	if err := os.Rename(s.tempPath, s.finalPath); err != nil {
-		return fmt.Errorf("publishing staged output to canonical path: %w", err)
-	}
-	if err := syncIngestDirectory(s.finalPath); err != nil {
-		return fmt.Errorf("syncing canonical parent directory: %w", err)
-	}
-	return nil
-}
-
-// discard は未公開の temp を消す。rename 済みなら temp は無いので何もしない。
-func (s stagedEncodedFile) discard() {
-	if s.tempPath != "" {
-		_ = os.Remove(s.tempPath)
-	}
-}
-
 // encodePublishInput は publishEncoded の入力。
 type encodePublishInput struct {
 	recordingID   int64
@@ -803,12 +750,12 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		return 0, false, fmt.Errorf("mkdir %s: %w", filepath.Dir(in.finalPath), err)
 	}
 
-	staged, err := stageEncodedFile(in.scratchOut, in.finalPath)
+	staged, err := stageMediaFile(in.scratchOut, in.finalPath, mediapath.EncodeTempFilePrefix)
 	if err != nil {
 		return 0, false, err
 	}
 	defer staged.discard()
-	var stagedSubtitle stagedEncodedFile
+	var stagedSubtitle stagedMediaFile
 	if in.withSubtitles {
 		subtitleRelPath, err := mediapath.SubtitleSibling(in.relPath)
 		if err != nil {
@@ -818,7 +765,7 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		if err != nil {
 			return 0, false, fmt.Errorf("resolving subtitle path: %w", err)
 		}
-		stagedSubtitle, err = stageEncodedFile(in.subtitleOut, subtitleFinalPath)
+		stagedSubtitle, err = stageMediaFile(in.subtitleOut, subtitleFinalPath, mediapath.EncodeTempFilePrefix)
 		if err != nil {
 			return 0, false, fmt.Errorf("staging subtitle sidecar: %w", err)
 		}
