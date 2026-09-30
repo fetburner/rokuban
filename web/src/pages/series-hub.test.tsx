@@ -2,6 +2,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { LabelRule, ProgramSearchMatch, Recording, Rule } from '@/api/generated'
+import { formatDateTime } from '@/lib/format'
 import { SeriesHubPage } from '@/pages/series-hub'
 import { renderInRouter } from '@/test/router'
 
@@ -76,6 +77,24 @@ function rule(over: Partial<Rule> & { id: number }): Rule {
   } as Rule
 }
 
+/** pageOf は API と同じく order・カーソル（before/beforeId）・limit で行を切る。 */
+function pageOf(rows: Recording[], params: URLSearchParams): Recording[] {
+  const sign = params.get('order') === 'asc' ? 1 : -1
+  const sorted = [...rows].sort(
+    (a, b) => sign * (Date.parse(a.startAt) - Date.parse(b.startAt) || a.id - b.id),
+  )
+  const before = params.get('before')
+  const beforeId = Number(params.get('beforeId'))
+  const rest =
+    before === null
+      ? sorted
+      : sorted.filter(
+          (r) =>
+            sign * (Date.parse(r.startAt) - Date.parse(before) || r.id - beforeId) > 0,
+        )
+  return rest.slice(0, Number(params.get('limit') ?? 50))
+}
+
 /**
  * stubApi は起点の録画・次回・シリーズの一覧に加え、シリーズ identity と操作に
  * 必要な分類ルール・録画ルールも返す。
@@ -100,8 +119,9 @@ function stubApi(
     }
     if (url.pathname === '/api/recordings') {
       expect(url.searchParams.get('seriesOf')).toBe(String(origin.id))
-      return Promise.resolve(jsonResponse(series))
+      return Promise.resolve(jsonResponse(pageOf(series, url.searchParams)))
     }
+    if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(['default']))
     if (url.pathname === '/api/label-rules') return Promise.resolve(jsonResponse(labelRules))
     if (url.pathname === '/api/rules') return Promise.resolve(jsonResponse(rules))
     if (url.pathname === '/api/label-rule-value-key') {
@@ -438,5 +458,114 @@ describe('SeriesHubPage', () => {
     await screen.findByRole('heading', { level: 2, name: '作品X' })
     fireEvent.click(screen.getByRole('button', { name: '戻る' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/recordings/5'))
+  })
+  it('古い順にしても、最新話の主ボタン・サムネイル・最新日時は新しい順の 1 ページ目のまま', async () => {
+    // 60 話（id 100〜159）。古い順の 1 ページ目は最古 50 件（100〜149）になる。
+    const episodes = Array.from({ length: 60 }, (_, i) =>
+      recording({
+        id: 100 + i,
+        title: `作品X 第${i + 1}話`,
+        startAt: new Date(Date.UTC(2026, 0, 1 + i, 12)).toISOString(),
+        sizeBytes: 100,
+      }),
+    )
+    // 起点は途中の回（110）。起点が最新だと、一覧から導く実装でも主ボタンが最新に見えてしまう。
+    stubApi(episodes[10], [], episodes)
+    renderInRouter(<SeriesHubPage />, {
+      path: '/recordings/$id/series',
+      initialEntries: ['/recordings/110/series'],
+    })
+    const play = await screen.findByRole('link', { name: '最新話を再生' })
+    expect(play).toHaveAttribute('href', '/recordings/159')
+
+    fireEvent.click(screen.getByRole('button', { name: '古い順' }))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '古い順' })).toHaveAttribute('aria-pressed', 'true'),
+    )
+    // 古い順の一覧が届いた（最古の回が並ぶ）後も主ボタンは最新のまま。
+    const list = screen.getByRole('region', { name: 'このシリーズの録画' })
+    expect(await within(list).findByRole('link', { name: '作品X 第1話' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '最新話を再生' })).toHaveAttribute('href', '/recordings/159')
+    expect(screen.getByText(`最新 ${formatDateTime(episodes[59].startAt)}`)).toBeInTheDocument()
+  })
+
+  it('再生できる回が複数あれば、最新の再生可能回へリンクする', async () => {
+    const older = recording({ id: 4, startAt: '2026-09-01T12:00:00Z', sizeBytes: 100 })
+    const newer = recording({ id: 5, startAt: '2026-09-02T12:00:00Z', sizeBytes: 100 })
+    const newest = recording({ id: 6, startAt: '2026-09-03T12:00:00Z', status: 'recording' })
+    stubApi(newer, [], [older, newer, newest])
+    renderInRouter(<SeriesHubPage />, {
+      path: '/recordings/$id/series',
+      initialEntries: ['/recordings/5/series'],
+    })
+    expect(await screen.findByRole('link', { name: '最新話を再生' })).toHaveAttribute(
+      'href',
+      '/recordings/5',
+    )
+  })
+
+  it('自動棚には「手動」札も「自動: X」も出さない', async () => {
+    const origin = recording({ id: 5, series: '作品X', seriesKey: '作品X', sizeBytes: 100 })
+    stubApi(origin, [], [origin], 200, [labelRule({ id: 1, value: '別棚', valueKey: '別棚' })])
+    renderInRouter(<SeriesHubPage />, {
+      path: '/recordings/$id/series',
+      initialEntries: ['/recordings/5/series'],
+    })
+    await screen.findByRole('heading', { level: 2, name: '作品X' })
+    await screen.findByRole('link', { name: '毎回録画する' })
+    const info = screen.getByRole('region', { name: 'シリーズ情報' })
+    expect(within(info).queryByText('手動')).not.toBeInTheDocument()
+    expect(screen.queryByText(/自動:/)).not.toBeInTheDocument()
+  })
+
+  it('手動棚では分類ルールのキーワードを「毎回録画する」の検索語にする', async () => {
+    const origin = recording({ id: 5, series: '日本史', seriesKey: 'NHK高校講座', sizeBytes: 100 })
+    stubApi(origin, [], [origin], 200, [
+      labelRule({ id: 1, keyword: '日本史講座', value: '日本史', valueKey: '日本史' }),
+    ])
+    renderInRouter(<SeriesHubPage />, {
+      path: '/recordings/$id/series',
+      initialEntries: ['/recordings/5/series'],
+    })
+    const link = await screen.findByRole('link', { name: '毎回録画する' })
+    const url = new URL(link.getAttribute('href') ?? '', 'http://localhost')
+    const condition = JSON.parse(url.searchParams.get('cond') ?? '{}') as {
+      textMatches?: unknown[]
+    }
+    expect(condition.textMatches).toEqual([
+      { target: 'name', mode: 'keyword', value: '日本史講座' },
+    ])
+  })
+
+  it('同じ値の分類ルールが複数あれば評価順（priority 降順、id 昇順）の先頭のキーワードを使う', async () => {
+    const origin = recording({ id: 5, series: '日本史', seriesKey: 'NHK高校講座', sizeBytes: 100 })
+    stubApi(origin, [], [origin], 200, [
+      labelRule({ id: 1, keyword: '低優先', value: '日本史', valueKey: '日本史', priority: 0 }),
+      labelRule({ id: 3, keyword: '高優先B', value: '日本史', valueKey: '日本史', priority: 5 }),
+      labelRule({ id: 2, keyword: '高優先A', value: '日本史', valueKey: '日本史', priority: 5 }),
+    ])
+    renderInRouter(<SeriesHubPage />, {
+      path: '/recordings/$id/series',
+      initialEntries: ['/recordings/5/series'],
+    })
+    const link = await screen.findByRole('link', { name: '毎回録画する' })
+    const cond = new URL(link.getAttribute('href') ?? '', 'http://localhost').searchParams.get('cond')
+    expect(cond).toContain('高優先A')
+  })
+
+  it('分類ルールの取得に失敗したら「手動」の省略を知らせる', async () => {
+    const origin = recording({ id: 5, sizeBytes: 100 })
+    stubApi(origin, [], [origin])
+    const base = globalThis.fetch
+    globalThis.fetch = vi.fn((input: string | URL | Request) =>
+      String(input).includes('/api/label-rules')
+        ? Promise.resolve(jsonResponse({ error: 'boom' }, 500))
+        : (base as typeof fetch)(input),
+    ) as unknown as typeof fetch
+    renderInRouter(<SeriesHubPage />, {
+      path: '/recordings/$id/series',
+      initialEntries: ['/recordings/5/series'],
+    })
+    expect(await screen.findByText(/「手動」の表示を省略/)).toBeInTheDocument()
   })
 })

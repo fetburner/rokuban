@@ -5,7 +5,6 @@ import { useMemo, useState } from 'react'
 
 import { ApiError } from '@/api/client'
 import {
-  LabelRuleInputKey,
   ListRecordingsOrder,
   RuleTextMatchMode,
   RuleTextMatchTarget,
@@ -13,12 +12,14 @@ import {
   useGetRecording,
   useListLabelRules,
   useListRecordingUpcoming,
+  useListSites,
   useListRules,
   type ProgramSearchRequest,
   type Recording,
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { LabelRuleForm } from '@/components/label-rule-form'
+import { LabelRulesUnavailableNote, ManualSeriesBadge } from '@/components/manual-series'
 import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
 import { RecordingRow } from '@/components/recording-row'
 import { Button } from '@/components/ui/button'
@@ -28,17 +29,24 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { useLiveEnabled } from '@/lib/capabilities'
 import { programsQueryKeyPrefix, recordingsQueryKeyPrefix } from '@/lib/events'
 import { formatDateTime, formatDuration } from '@/lib/format'
 import { programTitle } from '@/lib/program-labels'
-import { collapseUpcoming, isPlayableRecording, type UpcomingRow } from '@/lib/series'
+import { shouldShowRecordingSite } from '@/lib/recording-search'
+import {
+  collapseUpcoming,
+  findManualSeriesRule,
+  isPlayableRecording,
+  type UpcomingRow,
+} from '@/lib/series'
 
 /** hubPageSize は 1 回のフェッチで取る件数（API の既定と同じ）。 */
 const hubPageSize = 50
 
 type HubPageParam = { before?: string; beforeId?: number }
 
-/** startAt が無い API 行を壊れた順序として扱わず、id の降順へ落とす。 */
+/** newestFirst は放送開始の新しい順。同時刻のときだけ id の降順で並べる。 */
 function newestFirst(a: Recording, b: Recording): number {
   const dateDiff = Date.parse(b.startAt) - Date.parse(a.startAt)
   return dateDiff !== 0 ? dateDiff : b.id - a.id
@@ -51,6 +59,17 @@ function newestFirst(a: Recording, b: Recording): number {
  * 下部は録画一覧の `RecordingRow` を使ったエピソード一覧という 3 ブロックに分ける。
  * 起点は導出キーではなく録画 id のままにし、分類ルールが変わっても URL の宛先を
  * 失わない。
+ *
+ * identity と操作（最新話・サムネイル・最新日時・毎回録画の判定・「自動: X」）は
+ * **並び順の切り替えに依存しない**新しい順の 1 ページ目（{@link hubPageSize} 件）から
+ * 導く。エピソード一覧は `order` で別に取るので、古い順にしても主ボタンは動かない。
+ * 新しい順を表示中は同じクエリキーなので取得も共有する。
+ *
+ * 限界（未検証。読み込み済みの範囲でしか判定しない）: 「ルール由来か」「自動: X」は
+ * 新しい順の 1 ページ目の行しか見ない。それより古い回だけがルール由来・別キーなら、
+ * 「毎回録画中」ではなく「毎回録画する」が出て、「自動: X」も出ない。
+ * 同じ値を指す分類ルールが複数あるときのキーワードは評価順の先頭で近似する
+ * （{@link findManualSeriesRule}）。
  */
 export function SeriesHubPage() {
   const { id } = useParams({ from: '/recordings/$id/series' })
@@ -79,22 +98,29 @@ export function SeriesHubPage() {
     [upcomingQuery.data],
   )
 
-  const listParams = useMemo(
-    () => ({ seriesOf: idNum, limit: hubPageSize, order }),
-    [idNum, order],
-  )
-  const listQuery = useInfiniteQuery({
-    queryKey: [recordingsQueryKeyPrefix, 'series', idNum, order] as const,
+  const sitesQuery = useListSites()
+  const registeredSites = useMemo(() => unwrap(sitesQuery.data) ?? [], [sitesQuery.data])
+  const liveEnabled = useLiveEnabled()
+
+  // 同じ order は同じキーなので、新しい順の表示中は latestQuery と一覧が取得を共有する。
+  const seriesListOptions = (listOrder: ListRecordingsOrder) => ({
+    queryKey: [recordingsQueryKeyPrefix, 'series', idNum, listOrder] as const,
     queryFn: ({ pageParam }: { pageParam: HubPageParam }) =>
-      listRecordings({ ...listParams, ...pageParam }),
+      listRecordings({ seriesOf: idNum, limit: hubPageSize, order: listOrder, ...pageParam }),
     initialPageParam: {} as HubPageParam,
-    getNextPageParam: (lastPage) => {
+    getNextPageParam: (lastPage: Awaited<ReturnType<typeof listRecordings>>) => {
       const data = unwrap(lastPage) ?? []
       if (data.length < hubPageSize) return undefined
       const last = data[data.length - 1]
       return { before: last.startAt, beforeId: last.id }
     },
   })
+  const latestQuery = useInfiniteQuery(seriesListOptions(ListRecordingsOrder.desc))
+  const latestPage = useMemo(
+    () => unwrap(latestQuery.data?.pages[0]) ?? [],
+    [latestQuery.data],
+  )
+  const listQuery = useInfiniteQuery(seriesListOptions(order))
   const recordings = useMemo(
     () => listQuery.data?.pages.flatMap((page) => unwrap(page) ?? []) ?? [],
     [listQuery.data],
@@ -105,14 +131,14 @@ export function SeriesHubPage() {
   const rulesQuery = useListRules()
   const rules = useMemo(() => unwrap(rulesQuery.data) ?? [], [rulesQuery.data])
 
-  // The origin may also appear in the first list page. De-duplicate it before using the
-  // loaded episodes for identity, the latest playable row, and automatic-key disclosure.
+  // 起点は新しい順の 1 ページ目にも現れうる。identity・最新の再生可能回・自動キーの
+  // 開示に使う前に重複を除く。
   const loadedRecordings = useMemo(() => {
     const byID = new Map<number, Recording>()
     if (origin !== undefined) byID.set(origin.id, origin)
-    for (const recording of recordings) byID.set(recording.id, recording)
+    for (const recording of latestPage) byID.set(recording.id, recording)
     return [...byID.values()]
-  }, [origin, recordings])
+  }, [origin, latestPage])
   const newestRecordings = useMemo(
     () => [...loadedRecordings].sort(newestFirst),
     [loadedRecordings],
@@ -124,11 +150,7 @@ export function SeriesHubPage() {
     identityRecording?.series ??
     newestRecordings.find((recording) => recording.series != null)?.series ??
     undefined
-  const manualRule = labelRules.find(
-    (rule) =>
-      (rule.key ?? LabelRuleInputKey.series) === LabelRuleInputKey.series &&
-      rule.valueKey === effectiveSeries,
-  )
+  const manualRule = findManualSeriesRule(labelRules, effectiveSeries)
   const automaticSeriesKeys = useMemo(() => {
     if (manualRule === undefined || effectiveSeries === undefined) return []
     return [
@@ -160,8 +182,8 @@ export function SeriesHubPage() {
           value: recurringKeyword,
         },
       ],
-      // The same name can be broadcast by different services. Keep the origin service
-      // in the search so the user creates a rule for this channel only.
+      // 同名の番組が別のサービスでも放送されうる。起点のサービスを検索に固定して、
+      // このチャンネルだけのルールを作らせる。
       services: [
         {
           networkId: identityRecording.networkId,
@@ -170,14 +192,21 @@ export function SeriesHubPage() {
       ],
     }
   }, [identityRecording, recurringKeyword])
-  const showSite = new Set(loadedRecordings.map((recording) => recording.site)).size > 1
+  const showSite = useMemo(
+    () =>
+      shouldShowRecordingSite(
+        registeredSites,
+        [...loadedRecordings, ...recordings].map((recording) => recording.site),
+      ),
+    [registeredSites, loadedRecordings, recordings],
+  )
 
   const originPurged = originQuery.error instanceof ApiError && originQuery.error.status === 404
-  const seriesSettled = !listQuery.isPending && !upcomingQuery.isPending
+  const seriesSettled = !latestQuery.isPending && !upcomingQuery.isPending
   const nothingToShow =
     originPurged &&
     seriesSettled &&
-    !listQuery.isError &&
+    !latestQuery.isError &&
     !upcomingQuery.isError &&
     loadedRecordings.length === 0 &&
     upcoming.length === 0
@@ -218,11 +247,7 @@ export function SeriesHubPage() {
               {effectiveSeries !== undefined && (
                 <div className="flex flex-wrap items-center gap-2">
                   <h2 className="truncate text-lg font-medium">{effectiveSeries}</h2>
-                  {manualRule !== undefined && (
-                    <span className="shrink-0 rounded border border-border px-1 text-xs text-muted-foreground">
-                      手動
-                    </span>
-                  )}
+                  {manualRule !== undefined && <ManualSeriesBadge />}
                 </div>
               )}
               {manualRule !== undefined && automaticSeriesKeys.length > 0 && (
@@ -235,6 +260,11 @@ export function SeriesHubPage() {
                 <p className="mt-1 text-xs text-muted-foreground">
                   最新 {formatDateTime(latestRecording.startAt)}
                 </p>
+              )}
+              {labelRulesQuery.isError && (
+                <div className="mt-1">
+                  <LabelRulesUnavailableNote />
+                </div>
               )}
             </div>
           </section>
@@ -352,7 +382,13 @@ export function SeriesHubPage() {
               <ul className="flex flex-col">
                 {recordings.map((recording) => (
                   <li key={recording.id}>
-                    <RecordingRow recording={recording} showSite={showSite} />
+                    <RecordingRow
+                      recording={recording}
+                      trash={false}
+                      showSite={showSite}
+                      view="list"
+                      liveEnabled={liveEnabled}
+                    />
                   </li>
                 ))}
               </ul>
@@ -377,7 +413,7 @@ export function SeriesHubPage() {
         <LabelRuleForm
           open={labelRuleFormOpen}
           onOpenChange={setLabelRuleFormOpen}
-          initial={{ key: LabelRuleInputKey.series, value: effectiveSeries ?? undefined }}
+          initial={{ value: effectiveSeries ?? undefined }}
         />
       )}
     </>

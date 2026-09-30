@@ -5,7 +5,6 @@ import {
   createLabelRule,
   getListLabelRulesQueryKey,
   getListRecordingShelvesQueryKey,
-  LabelRuleInputKey,
   useGetLabelRuleValueKey,
   updateLabelRule,
   type LabelRule,
@@ -49,7 +48,7 @@ export function LabelRuleForm({
   /** rule が非 nil なら上書き（PATCH）。nil なら新規（POST）。 */
   rule?: LabelRule
   /** initial は新規作成のときの初期値（棚や録画ルールからの導線が渡す）。 */
-  initial?: { keyword?: string; value?: string; key?: LabelRuleInputKey }
+  initial?: { keyword?: string; value?: string }
 }) {
   const toast = useToast()
   const queryClient = useQueryClient()
@@ -86,7 +85,6 @@ export function LabelRuleForm({
     if (error !== undefined) return
     setPending(true)
     const data = {
-      key: initial?.key ?? LabelRuleInputKey.series,
       keyword,
       value,
       priority: Number(priority) || 0,

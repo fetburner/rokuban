@@ -842,8 +842,10 @@ const mobile = viewports[1]
  * だけになる（レビュー指摘）。
  */
 const mobileWide = { name: 'mobile-wide', width: 390, height: 844 }
-/** #957 の番組ハブ配置判定専用。受け入れ条件の 400px 幅をそのまま測る。 */
+/** 番組ハブ配置判定専用。受け入れ条件の 400px 幅をそのまま測る。 */
 const seriesHubMobile = { name: 'series-hub-400', width: 400, height: 844 }
+/** 同じ判定をデスクトップ幅でも回す。 */
+const seriesHubDesktop = { ...desktop, name: 'series-hub-desktop' }
 
 const INTERACTIVE_TARGET_SELECTOR =
   'button, a[href], [role="button"], [role="switch"], input, select, summary'
@@ -1163,57 +1165,58 @@ for (const viewport of viewports) {
   }
 }
 
-// --- #957 番組ハブ: 400px / デスクトップの 3 塊と操作 -------------------------
+// --- 番組ハブ: 400px / デスクトップの 3 塊と操作 -------------------------
 //
-// 全画面ショットは 360px の共通モバイル幅で揃え、ここでは issue の受け入れ条件
-// どおり 400px 幅を別に測る。API は上の seriesHubRecordings を使うので、最新の
+// 全画面ショットは 360px の共通モバイル幅で揃え、ここでは受け入れ条件の 400px 幅と
+// デスクトップ幅の両方で同じ判定を回す。API は上の seriesHubRecordings を使うので、最新の
 // 失敗回を飛ばす主ボタン、自動キー、次回、分類メニューを実ブラウザで確認できる。
+for (const hubViewport of [seriesHubMobile, seriesHubDesktop])
 for (const theme of themes) {
-  const { context, page } = await open(seriesHubMobile, theme, screenOf('series-hub'))
+  const { context, page } = await open(hubViewport, theme, screenOf('series-hub'))
   const identity = page.getByRole('region', { name: 'シリーズ情報' })
   const actions = page.getByRole('region', { name: 'シリーズの操作' })
   const episodes = page.getByRole('region', { name: 'このシリーズの録画' })
   const blocks = await Promise.all([identity, actions, episodes].map((block) => block.boundingBox()))
   if (blocks.some((box) => box === null)) {
-    ng.push(`[${theme}/series-hub-400] 3 つの塊の矩形を取得できない`)
+    ng.push(`[${theme}/${hubViewport.name}] 3 つの塊の矩形を取得できない`)
   } else {
     const [identityBox, actionsBox, episodesBox] = blocks
     const identityBottom = identityBox.y + identityBox.height
     const actionsBottom = actionsBox.y + actionsBox.height
     if (!(identityBox.y < actionsBox.y && actionsBox.y < episodesBox.y)) {
-      ng.push(`[${theme}/series-hub-400] 3 つの塊が上から識別・行動・エピソードの順でない`)
+      ng.push(`[${theme}/${hubViewport.name}] 3 つの塊が上から識別・行動・エピソードの順でない`)
     }
     if (actionsBox.y - identityBottom < 24 || episodesBox.y - actionsBottom < 24) {
-      ng.push(`[${theme}/series-hub-400] 3 つの塊の間隔が 24px 未満`)
+      ng.push(`[${theme}/${hubViewport.name}] 3 つの塊の間隔が 24px 未満`)
     }
   }
   const primary = actions.locator('[class~="bg-primary"]')
   if (await primary.count() !== 1) {
-    ng.push(`[${theme}/series-hub-400] 塗りの主ボタンが 1 つでない（${await primary.count()} 件）`)
+    ng.push(`[${theme}/${hubViewport.name}] 塗りの主ボタンが 1 つでない（${await primary.count()} 件）`)
   }
-  const shot = path.join(OUT_DIR, `series-hub-400-${theme}.png`)
+  const shot = path.join(OUT_DIR, `${hubViewport.name}-${theme}.png`)
   await page.screenshot({ path: shot })
   log(`  ${path.basename(shot)}`)
-  await checkMissingStrings(page, `series-hub-400/${theme}`)
+  await checkMissingStrings(page, `${hubViewport.name}/${theme}`)
 
   const trigger = page.getByRole('button', { name: 'シリーズのその他の操作' })
   await trigger.click()
   const menu = page.getByRole('menuitem', { name: '分類を直す（割る・指定する）' })
   const menuVisible = await menu.waitFor({ timeout: 5000 }).then(() => true).catch(() => false)
   if (!menuVisible) {
-    ng.push(`[${theme}/series-hub-400] 分類を直すメニューが開かない`)
+    ng.push(`[${theme}/${hubViewport.name}] 分類を直すメニューが開かない`)
   } else {
     const menuBox = await menu.boundingBox()
     if (
       menuBox === null ||
       menuBox.x < 0 ||
-      menuBox.x + menuBox.width > seriesHubMobile.width ||
+      menuBox.x + menuBox.width > hubViewport.width ||
       menuBox.y < 0 ||
-      menuBox.y + menuBox.height > seriesHubMobile.height
+      menuBox.y + menuBox.height > hubViewport.height
     ) {
-      ng.push(`[${theme}/series-hub-400] 分類メニューがビューポートからはみ出す`)
+      ng.push(`[${theme}/${hubViewport.name}] 分類メニューがビューポートからはみ出す`)
     }
-    const menuShot = path.join(OUT_DIR, `series-hub-menu-400-${theme}.png`)
+    const menuShot = path.join(OUT_DIR, `series-hub-menu-${hubViewport.name.replace('series-hub-', '')}-${theme}.png`)
     await page.screenshot({ path: menuShot })
     log(`  ${path.basename(menuShot)}`)
   }
@@ -1221,10 +1224,10 @@ for (const theme of themes) {
 
   // 主ボタンの隣に置いた「毎回録画する」が、検索結果とルール作成節を持つ
   // `/search?cond=...` へ実際に着地することも同じ Chromium で確認する。
-  const searchContext = await open(seriesHubMobile, theme, screenOf('series-hub'))
+  const searchContext = await open(hubViewport, theme, screenOf('series-hub'))
   const recurring = searchContext.page.getByRole('link', { name: '毎回録画する' })
   if ((await recurring.count()) === 0) {
-    ng.push(`[${theme}/series-hub-400] 「毎回録画する」リンクが見つからない`)
+    ng.push(`[${theme}/${hubViewport.name}] 「毎回録画する」リンクが見つからない`)
   } else {
     await recurring.click()
     const searchLoaded = await searchContext.page
@@ -1232,12 +1235,12 @@ for (const theme of themes) {
       .then(() => true)
       .catch(() => false)
     if (!searchLoaded) {
-      ng.push(`[${theme}/series-hub-400] 「毎回録画する」の検索 URL に着地しない`)
+      ng.push(`[${theme}/${hubViewport.name}] 「毎回録画する」の検索 URL に着地しない`)
     } else {
       const results = searchContext.page.getByRole('region', { name: '検索結果' })
       const createRule = searchContext.page.getByText('この条件でルールを作成').first()
       if ((await results.count()) === 0 || (await createRule.count()) === 0) {
-        ng.push(`[${theme}/series-hub-400] 検索結果またはルール作成節が表示されない`)
+        ng.push(`[${theme}/${hubViewport.name}] 検索結果またはルール作成節が表示されない`)
       }
     }
   }
