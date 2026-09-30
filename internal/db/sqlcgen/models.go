@@ -31,6 +31,8 @@ type CmLogo struct {
 	PreviewPng  []byte
 	LearnedAt   time.Time
 	LearnedFrom *int64
+	CodedWidth  int32
+	CodedHeight int32
 }
 
 type CmLogoArea struct {

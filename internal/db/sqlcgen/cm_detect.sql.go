@@ -128,7 +128,7 @@ func (q *Queries) GetCMDetectionWorkItem(ctx context.Context, recordingID int64)
 }
 
 const getCMLogo = `-- name: GetCMLogo :one
-SELECT lgd
+SELECT lgd, coded_width, coded_height
 FROM cm_logos
 WHERE network_id = $1 AND service_id = $2
 `
@@ -138,11 +138,17 @@ type GetCMLogoParams struct {
 	ServiceID int32
 }
 
-func (q *Queries) GetCMLogo(ctx context.Context, arg GetCMLogoParams) ([]byte, error) {
+type GetCMLogoRow struct {
+	Lgd         []byte
+	CodedWidth  int32
+	CodedHeight int32
+}
+
+func (q *Queries) GetCMLogo(ctx context.Context, arg GetCMLogoParams) (GetCMLogoRow, error) {
 	row := q.db.QueryRow(ctx, getCMLogo, arg.NetworkID, arg.ServiceID)
-	var lgd []byte
-	err := row.Scan(&lgd)
-	return lgd, err
+	var i GetCMLogoRow
+	err := row.Scan(&i.Lgd, &i.CodedWidth, &i.CodedHeight)
+	return i, err
 }
 
 const getCMLogoArea = `-- name: GetCMLogoArea :one
@@ -199,9 +205,10 @@ func (q *Queries) GetCMRetryOriginal(ctx context.Context, recordingID int64) (bo
 }
 
 const insertLearnedCMLogo = `-- name: InsertLearnedCMLogo :execrows
-INSERT INTO cm_logos (network_id, service_id, lgd, preview_png, learned_from)
+INSERT INTO cm_logos (network_id, service_id, lgd, preview_png, learned_from, coded_width, coded_height)
 SELECT $1::int, $2::int, $3::bytea,
-       $4::bytea, $5::bigint
+       $4::bytea, $5::bigint,
+       $6::int, $7::int
 WHERE NOT EXISTS (
     SELECT 1 FROM cm_logos l
     WHERE l.network_id = $1::int AND l.service_id = $2::int
@@ -209,7 +216,7 @@ WHERE NOT EXISTS (
 AND (
     SELECT a.updated_at FROM cm_logo_areas a
     WHERE a.network_id = $1::int AND a.service_id = $2::int
-) IS NOT DISTINCT FROM $6::timestamptz
+) IS NOT DISTINCT FROM $8::timestamptz
 `
 
 type InsertLearnedCMLogoParams struct {
@@ -218,6 +225,8 @@ type InsertLearnedCMLogoParams struct {
 	Lgd                   []byte
 	PreviewPng            []byte
 	LearnedFrom           int64
+	CodedWidth            int32
+	CodedHeight           int32
 	ObservedAreaUpdatedAt *time.Time
 }
 
@@ -232,6 +241,8 @@ func (q *Queries) InsertLearnedCMLogo(ctx context.Context, arg InsertLearnedCMLo
 		arg.Lgd,
 		arg.PreviewPng,
 		arg.LearnedFrom,
+		arg.CodedWidth,
+		arg.CodedHeight,
 		arg.ObservedAreaUpdatedAt,
 	)
 	if err != nil {
@@ -481,13 +492,15 @@ func (q *Queries) SaveCMDetection(ctx context.Context, arg SaveCMDetectionParams
 }
 
 const upsertCMLogo = `-- name: UpsertCMLogo :exec
-INSERT INTO cm_logos (network_id, service_id, lgd, preview_png, learned_from)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO cm_logos (network_id, service_id, lgd, preview_png, learned_from, coded_width, coded_height)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (network_id, service_id) DO UPDATE
 SET lgd = EXCLUDED.lgd,
     preview_png = EXCLUDED.preview_png,
     learned_at = now(),
-    learned_from = EXCLUDED.learned_from
+    learned_from = EXCLUDED.learned_from,
+    coded_width = EXCLUDED.coded_width,
+    coded_height = EXCLUDED.coded_height
 `
 
 type UpsertCMLogoParams struct {
@@ -496,6 +509,8 @@ type UpsertCMLogoParams struct {
 	Lgd         []byte
 	PreviewPng  []byte
 	LearnedFrom *int64
+	CodedWidth  int32
+	CodedHeight int32
 }
 
 func (q *Queries) UpsertCMLogo(ctx context.Context, arg UpsertCMLogoParams) error {
@@ -505,6 +520,8 @@ func (q *Queries) UpsertCMLogo(ctx context.Context, arg UpsertCMLogoParams) erro
 		arg.Lgd,
 		arg.PreviewPng,
 		arg.LearnedFrom,
+		arg.CodedWidth,
+		arg.CodedHeight,
 	)
 	return err
 }

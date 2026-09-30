@@ -165,7 +165,7 @@ func TestCMLogoAPIListsFailuresAndForgetsLogo(t *testing.T) {
 	q := sqlcgen.New(pool)
 	if err := q.UpsertCMLogo(context.Background(), sqlcgen.UpsertCMLogoParams{
 		NetworkID: 32678, ServiceID: 5168, Lgd: []byte("learned logo"),
-		PreviewPng: []byte{1, 2, 3}, LearnedFrom: &id,
+		PreviewPng: []byte{1, 2, 3}, LearnedFrom: &id, CodedWidth: 1440, CodedHeight: 1080,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -241,6 +241,7 @@ func TestCMLogoAreaAPIForgetsLogoAndRequeuesFailures(t *testing.T) {
 	}
 	if err := q.UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
 		NetworkID: 32678, ServiceID: 5168, Lgd: []byte("learned outside the area"), LearnedFrom: &id,
+		CodedWidth: 1440, CodedHeight: 1080,
 	}); err != nil {
 		t.Fatal(err)
 	}

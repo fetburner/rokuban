@@ -36,6 +36,14 @@ const (
 
 var trimCall = regexp.MustCompile(`Trim\s*\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)`)
 
+var cmLogoMatchLine = regexp.MustCompile(`(?i)managed\s+logo:\s+v\d+\s+match=([0-9]+(?:\.[0-9]+)?)%`)
+
+// cmDetectMinLogoMatchPercent は logoframe の一致率がこれ未満なら、ロゴが
+// 録画にほとんど映っていないとみなす下限。正常な局ロゴを拾うケースと、別の
+// 解像度・意匠を当てたケースを分けるための保守的な値で、判定は logoframe の
+// -logo-match ではなく rokuban が成功出力を読んで行う。
+const cmDetectMinLogoMatchPercent = 10.0
+
 // cmDetectFailure keeps the worker-observed failure stage next to the error that
 // caused it. The stage is an observation, not a best-effort derivation from the
 // tool's free-form stderr.
@@ -195,7 +203,11 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 		ServiceID: item.ServiceID,
 	}); err == nil {
 		hadLogo = true
-		if err := writeStationLogo(logoDir, channel, logo); err != nil {
+		if logo.CodedWidth != int32(geometry.width) || logo.CodedHeight != int32(geometry.height) {
+			return cmFailure("resolution", fmt.Errorf("the station logo is for %dx%d but this recording is %dx%d",
+				logo.CodedWidth, logo.CodedHeight, geometry.width, geometry.height))
+		}
+		if err := writeStationLogo(logoDir, channel, logo.Lgd); err != nil {
 			return cmFailure("logo", fmt.Errorf("writing learned station logo: %w", err))
 		}
 	} else if !errors.Is(err, pgx5.ErrNoRows) {
@@ -216,18 +228,26 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 		logoArgs = append(logoArgs,
 			"-logo-area", fmt.Sprintf("%d,%d,%d,%d", area.X, area.Y, area.W, area.H))
 	}
-	if err := runCMTool(ctx, jobDir, tools("logoframe"), logoArgs...); err != nil {
+	logoframeOutput, err := runCMTool(ctx, jobDir, tools("logoframe"), logoArgs...)
+	if err != nil {
 		return cmFailure("logo", fmt.Errorf("running logoframe: %w", err))
 	}
+	matchPercent, err := cmLogoMatchPercent(logoframeOutput)
+	if err != nil {
+		return cmFailure("logo", err)
+	}
+	if matchPercent < cmDetectMinLogoMatchPercent {
+		return cmFailure("match", fmt.Errorf("station logo match %.2f%% is below %.2f%%", matchPercent, cmDetectMinLogoMatchPercent))
+	}
 	if !hadLogo {
-		if err := w.persistNewStationLogo(ctx, item, channel, logoDir, observedAreaUpdatedAt); err != nil {
+		if err := w.persistNewStationLogo(ctx, item, channel, logoDir, observedAreaUpdatedAt, geometry); err != nil {
 			return cmFailure("logo", err)
 		}
 	}
-	if err := runCMTool(ctx, jobDir, tools("chapter_exe"), "-v", inputPath, "-s", "8", "-e", "4", "-o", chapters); err != nil {
+	if _, err := runCMTool(ctx, jobDir, tools("chapter_exe"), "-v", inputPath, "-s", "8", "-e", "4", "-o", chapters); err != nil {
 		return cmFailure("chapter", fmt.Errorf("running chapter_exe: %w", err))
 	}
-	if err := runCMTool(ctx, jobDir, tools("join_logo_scp"), "-inlogo", logoFrames,
+	if _, err := runCMTool(ctx, jobDir, tools("join_logo_scp"), "-inlogo", logoFrames,
 		"-inscp", chapters, "-incmd", cmDetectRuleFile(), "-o", cutAvs); err != nil {
 		return cmFailure("join", fmt.Errorf("running join_logo_scp: %w", err))
 	}
@@ -299,6 +319,7 @@ func (w *CMDetectWorker) persistNewStationLogo(
 	item sqlcgen.GetCMDetectionWorkItemRow,
 	channel, dir string,
 	observedAreaUpdatedAt *time.Time,
+	geometry videoGeometry,
 ) error {
 	logo, err := readStationLogo(dir, channel)
 	if err != nil {
@@ -322,6 +343,7 @@ func (w *CMDetectWorker) persistNewStationLogo(
 	n, err := q.InsertLearnedCMLogo(ctx, sqlcgen.InsertLearnedCMLogoParams{
 		NetworkID: item.NetworkID, ServiceID: item.ServiceID, Lgd: logo,
 		PreviewPng: preview, LearnedFrom: item.ID, ObservedAreaUpdatedAt: observedAreaUpdatedAt,
+		CodedWidth: int32(geometry.width), CodedHeight: int32(geometry.height),
 	})
 	if err != nil {
 		return fmt.Errorf("saving learned station logo: %w", err)
@@ -395,7 +417,7 @@ func taughtLogoArea(
 
 func cmDetectRuleFile() string { return cmDetectRulePath }
 
-func runCMTool(ctx context.Context, dir, binary string, args ...string) error {
+func runCMTool(ctx context.Context, dir, binary string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Dir = dir
 	cmd.Env = make([]string, 0, len(os.Environ())+1)
@@ -411,9 +433,24 @@ func runCMTool(ctx context.Context, dir, binary string, args ...string) error {
 		if len(message) > 4096 {
 			message = message[len(message)-4096:]
 		}
-		return fmt.Errorf("%s: %w: %s", filepath.Base(binary), err, message)
+		return output, fmt.Errorf("%s: %w: %s", filepath.Base(binary), err, message)
 	}
-	return nil
+	return output, nil
+}
+
+func cmLogoMatchPercent(output []byte) (float64, error) {
+	match := cmLogoMatchLine.FindSubmatch(output)
+	if len(match) != 2 {
+		return 0, fmt.Errorf("logoframe output does not contain a managed logo match percentage")
+	}
+	percent, err := strconv.ParseFloat(string(match[1]), 64)
+	if err != nil || math.IsNaN(percent) || math.IsInf(percent, 0) || percent < 0 || percent > 100 {
+		if err == nil {
+			err = fmt.Errorf("match percentage is outside 0..100 or not finite")
+		}
+		return 0, fmt.Errorf("invalid logoframe match percentage %q: %w", match[1], err)
+	}
+	return percent, nil
 }
 
 // writeStationLogo は学習済みの局ロゴを dir へ書く。
