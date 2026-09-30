@@ -148,7 +148,7 @@ XMLTV は `epg_services` と `epg_programs` の現在の射影だけを出す。
 
 | 外部形式のキー | 対応する既存資源 |
 |---|---|
-| M3U `tvg-id` / XMLTV `channel id` と `programme channel` | `rokuban.<site>.<networkId>.<serviceId>`。サイトと放送サービスの組を表すエクスポート内の照合値 |
+| ライブ局の M3U `tvg-id` / XMLTV `channel id` と `programme channel` | `rokuban.<site>.<networkId>.<serviceId>`。サイトと放送サービスの組を表すエクスポート内の照合値。録画エントリには付けない（局の現在の番組に録画が紐付くため） |
 | XMLTV `programme/url`（system=`rokuban-api`） | `/api/sites/{site}/programs/{programId}`。番組 API の既存キー |
 | XMLTV `channel/url`（system=`rokuban-live`） | 既存のサービス単位ライブ HLS URL。ライブが無効なら省略 |
 

@@ -30,8 +30,9 @@ curl -fsS "$URL/api/iptv/xmltv.xml" -o /tmp/rokuban.xml
 xmllint --noout /tmp/rokuban.xml
 ```
 
-M3U には `#EXTM3U`、`tvg-id` と既存のライブ・録画 URL が含まれる。
-XMLTV の `channel id` は同じ `tvg-id` に一致する。
+M3U には `#EXTM3U` と既存のライブ・録画 URL が含まれる。ライブ局のエントリだけが `tvg-id` を持つ。
+XMLTV の `channel id` は局の `tvg-id` に一致する。録画のエントリに `tvg-id` は付かない。
+`url-tvg` は出さないので、XMLTV の URL は IPTV クライアント側に手で設定する。
 `programme/url` は `/api/sites/{site}/programs/{programId}` を指す。
 `live.enabled: false` の場合、M3U の `include=live` は 404 になり、
 `include=all` は録画だけを返す。

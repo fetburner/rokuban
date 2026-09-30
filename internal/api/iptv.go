@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
 
 const (
@@ -26,12 +28,9 @@ type iptvScope struct {
 }
 
 type iptvService struct {
-	site        string
-	networkID   int32
-	serviceID   int32
-	name        string
-	channel     string
-	channelType string
+	site      string
+	networkID int32
+	serviceID int32
 }
 
 // ExportIPTV は既存のライブ配信・録画配信 URL を含む M3U を返す。
@@ -81,7 +80,7 @@ func (h *Server) ExportIPTV(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var out bytes.Buffer
-	out.WriteString("#EXTM3U url-tvg=\"" + xmltvGuidePath + "\"\n")
+	out.WriteString("#EXTM3U\n")
 	if scope.live && h.capabilities.Live {
 		if err := h.writeIPTVServices(r.Context(), &out, liveProfile); err != nil {
 			slog.Error("api: exporting IPTV services", "err", err)
@@ -140,25 +139,17 @@ func (h *Server) hasLiveProfile(name string) bool {
 }
 
 func (h *Server) writeIPTVServices(ctx context.Context, out *bytes.Buffer, profile string) error {
-	rows, err := h.pool.Query(ctx, `
-SELECT site, network_id, service_id, name, channel, channel_type
-FROM epg_services
-WHERE site = ANY($1::text[])
-ORDER BY site, channel_type, remote_control_key_id, network_id, service_id`, h.siteNames)
+	rows, err := sqlcgen.New(h.pool).ListIPTVServices(ctx, h.siteNames)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var service iptvService
-		if err := rows.Scan(&service.site, &service.networkID, &service.serviceID, &service.name, &service.channel, &service.channelType); err != nil {
-			return err
-		}
+	for _, row := range rows {
+		service := iptvService{site: row.Site, networkID: row.NetworkID, serviceID: row.ServiceID}
 		id := exportChannelID(service.site, service.networkID, service.serviceID)
-		name := nonEmpty(service.name, "番組名なし")
+		name := nonEmpty(row.Name, "番組名なし")
 		group := "ライブ"
-		if service.channelType != "" {
-			group += " / " + service.channelType
+		if row.ChannelType != "" {
+			group += " / " + row.ChannelType
 		}
 		if len(h.siteNames) > 1 {
 			group += " / " + service.site
@@ -167,43 +158,25 @@ ORDER BY site, channel_type, remote_control_key_id, network_id, service_id`, h.s
 			id, m3uAttribute(name), m3uAttribute(group), m3uText(name))
 		fmt.Fprintln(out, livePlaylistURL(service, profile))
 	}
-	return rows.Err()
+	return nil
 }
 
+// writeIPTVRecordings は録画エントリを書く。tvg-id は XMLTV の局と対応付けるキーなので
+// 付けない（付けると局の「現在の番組」が録画に紐付く）。
 func (h *Server) writeIPTVRecordings(ctx context.Context, out *bytes.Buffer, profile string) error {
-	rows, err := h.pool.Query(ctx, `
-SELECT r.id, r.site, r.network_id, r.service_id, r.title
-FROM recordings r
-JOIN media_assets a ON a.recording_id = r.id
-WHERE r.site = ANY($1::text[])
-  AND r.status = 'finished'
-  AND r.deleted_at IS NULL
-  AND r.superseded_at IS NULL
-  AND a.state = 'active'
-  AND (
-    ($2::text IS NULL AND a.kind = 'original' AND a.profile IS NULL)
-    OR ($2::text IS NOT NULL AND a.kind = 'encoded' AND a.profile = $2::text)
-  )
-ORDER BY r.program_start_at DESC, r.id DESC`, h.siteNames, nullableText(profile))
+	rows, err := sqlcgen.New(h.pool).ListIPTVRecordings(ctx, sqlcgen.ListIPTVRecordingsParams{
+		Sites: h.siteNames, Profile: nullableText(profile),
+	})
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var id int64
-		var site string
-		var networkID, serviceID int32
-		var title string
-		if err := rows.Scan(&id, &site, &networkID, &serviceID, &title); err != nil {
-			return err
-		}
-		name := nonEmpty(title, "番組名なし")
-		channelID := exportChannelID(site, networkID, serviceID)
-		fmt.Fprintf(out, "#EXTINF:-1 tvg-id=\"%s\" tvg-name=\"%s\" group-title=\"録画 / %s\",%s\n",
-			channelID, m3uAttribute(name), m3uAttribute(site), m3uText(name))
-		fmt.Fprintln(out, recordingFileURL(id, profile))
+	for _, row := range rows {
+		name := nonEmpty(row.Title, "番組名なし")
+		fmt.Fprintf(out, "#EXTINF:-1 tvg-name=\"%s\" group-title=\"録画 / %s\",%s\n",
+			m3uAttribute(name), m3uAttribute(row.Site), m3uText(name))
+		fmt.Fprintln(out, recordingFileURL(row.ID, profile))
 	}
-	return rows.Err()
+	return nil
 }
 
 func nullableText(value string) *string {
@@ -247,9 +220,8 @@ func m3uText(value string) string {
 }
 
 func m3uAttribute(value string) string {
-	value = m3uText(value)
-	value = strings.ReplaceAll(value, "&", "&amp;")
-	return strings.ReplaceAll(value, `"`, "&quot;")
+	// M3U の属性にエスケープ構文は無く、次の `"` で値が終わる。EPGStation と同じく全角に置き換える。
+	return strings.ReplaceAll(m3uText(value), `"`, "”")
 }
 
 func nonEmpty(value, fallback string) string {
@@ -302,25 +274,14 @@ func (h *Server) ExportXMLTV(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	windowStart := now.Add(-defaultXMLTVPast)
 	windowEnd := windowStart.Add(defaultXMLTVSpan)
-	rows, err := h.pool.Query(r.Context(), `
-SELECT s.site, s.network_id, s.service_id, s.name, s.channel_type, s.channel,
-       p.program_id, p.start_at, p.end_at, p.name, p.description
-FROM epg_services s
-LEFT JOIN epg_programs p
-  ON p.site = s.site
- AND p.network_id = s.network_id
- AND p.service_id = s.service_id
- AND p.start_at < $3::timestamptz
- AND (p.end_at > $2::timestamptz OR p.start_at >= $2::timestamptz)
-WHERE s.site = ANY($1::text[])
-ORDER BY s.site, s.network_id, s.service_id, p.start_at, p.program_id`,
-		h.siteNames, windowStart, windowEnd)
+	rows, err := sqlcgen.New(h.pool).ListIPTVGuide(r.Context(), sqlcgen.ListIPTVGuideParams{
+		Sites: h.siteNames, WindowStart: windowStart, WindowEnd: windowEnd,
+	})
 	if err != nil {
 		slog.Error("api: exporting XMLTV guide", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	defer rows.Close()
 
 	doc := xmlTVDocument{
 		Date:          formatXMLTVTime(now),
@@ -329,18 +290,11 @@ ORDER BY s.site, s.network_id, s.service_id, p.start_at, p.program_id`,
 		Programmes:    make([]xmlTVProgramme, 0),
 	}
 	channelIDs := make(map[string]struct{})
-	for rows.Next() {
-		var site, serviceName, channelType, channel string
-		var networkID, serviceID int32
-		var programID *int64
-		var startAt, endAt *time.Time
-		var title, description *string
-		if err := rows.Scan(&site, &networkID, &serviceID, &serviceName, &channelType, &channel,
-			&programID, &startAt, &endAt, &title, &description); err != nil {
-			slog.Error("api: scanning XMLTV projection", "err", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
+	for _, row := range rows {
+		site, networkID, serviceID := row.Site, row.NetworkID, row.ServiceID
+		serviceName, channelType, channel := row.ServiceName, row.ChannelType, row.Channel
+		programID, startAt, endAt := row.ProgramID, row.StartAt, row.EndAt
+		title, description := row.ProgramName, row.Description
 		channelID := exportChannelID(site, networkID, serviceID)
 		if _, exists := channelIDs[channelID]; !exists {
 			channelIDs[channelID] = struct{}{}
@@ -384,12 +338,6 @@ ORDER BY s.site, s.network_id, s.service_id, p.start_at, p.program_id`,
 		}
 		doc.Programmes = append(doc.Programmes, programme)
 	}
-	if err := rows.Err(); err != nil {
-		slog.Error("api: iterating XMLTV projection", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
 	encoded, err := xml.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		slog.Error("api: encoding XMLTV guide", "err", err)

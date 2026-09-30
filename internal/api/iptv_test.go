@@ -66,7 +66,6 @@ VALUES ($1, 'encoded', 'h264', $2, 512)`, encoded, "test/encoded.mkv"); err != n
 		t.Errorf("Content-Type = %q", got)
 	}
 	for _, want := range []string{
-		"#EXTM3U url-tvg=\"/api/iptv/xmltv.xml\"",
 		"tvg-id=\"rokuban.default.1.2\"",
 		"tvg-id=\"rokuban.secondary.1.2\"",
 		"/api/sites/default/networks/1/services/2/live/playlist.m3u8?profile=hd",
@@ -75,6 +74,14 @@ VALUES ($1, 'encoded', 'h264', $2, 512)`, encoded, "test/encoded.mkv"); err != n
 	} {
 		if !strings.Contains(playlist, want) {
 			t.Errorf("playlist does not contain %q:\n%s", want, playlist)
+		}
+	}
+	if !strings.HasPrefix(playlist, "#EXTM3U\n") || strings.Contains(playlist, "url-tvg") {
+		t.Errorf("header must be a bare #EXTM3U without url-tvg:\n%s", playlist)
+	}
+	for _, line := range strings.Split(playlist, "\n") {
+		if strings.HasPrefix(line, "#EXTINF") && strings.Contains(line, "group-title=\"録画") && strings.Contains(line, "tvg-id") {
+			t.Errorf("recording entry must not carry tvg-id: %s", line)
 		}
 	}
 	if strings.Contains(playlist, "ごみ箱") || strings.Contains(playlist, "encoded のみ") {
@@ -115,6 +122,64 @@ WHERE recording_id = $1 AND kind = 'original'`, original); err != nil {
 	}
 	if strings.Contains(string(body), "/api/media/recordings/"+int64String(original)+"/file") {
 		t.Errorf("playlist still includes deleted original:\n%s", body)
+	}
+}
+
+func getPlaylist(t *testing.T, url string) string {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s: status %d, err %v, body %s", url, resp.StatusCode, err, body)
+	}
+	return string(body)
+}
+
+func TestExportIPTVEscapesAttributeQuotes(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	seedEpgService(t, pool, 1, 2, 1, `局 & "局"`, "27")
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, LiveEnabled: true}))
+	t.Cleanup(srv.Close)
+	playlist := getPlaylist(t, srv.URL+iptvPlaylistPath+"?include=live")
+	if want := `tvg-name="局 & ”局”"`; !strings.Contains(playlist, want) {
+		t.Errorf("playlist does not contain %q:\n%s", want, playlist)
+	}
+}
+
+func TestExportIPTVRecordingFilters(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	seedEpgService(t, pool, 1, 2, 1, "放送局", "27")
+	start := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	ok := seedRecording(t, pool, "完了", start, "finished", 1)
+	seedIngested(t, pool, ok, 1, nil)
+	failed := seedRecording(t, pool, "失敗", start.Add(-time.Hour), "failed", 2)
+	seedIngested(t, pool, failed, 1, nil)
+	recording := seedRecording(t, pool, "録画中", start.Add(-2*time.Hour), "recording", 3)
+	seedIngested(t, pool, recording, 1, nil)
+	superseded := seedRecording(t, pool, "置換済み", start.Add(-3*time.Hour), "finished", 4)
+	seedIngested(t, pool, superseded, 1, nil)
+	if _, err := pool.Exec(context.Background(), `UPDATE recordings SET superseded_at = now() WHERE id = $1`, superseded); err != nil {
+		t.Fatalf("superseding recording: %v", err)
+	}
+
+	// ライブ無効の include=all は局エントリを出さず録画だけを返す。
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	t.Cleanup(srv.Close)
+	playlist := getPlaylist(t, srv.URL+iptvPlaylistPath+"?include=all")
+	if strings.Contains(playlist, "/live/playlist.m3u8") {
+		t.Errorf("live entries must be omitted when live is disabled:\n%s", playlist)
+	}
+	if !strings.Contains(playlist, "/api/media/recordings/"+int64String(ok)+"/file") {
+		t.Errorf("finished recording is missing:\n%s", playlist)
+	}
+	for _, id := range []int64{failed, recording, superseded} {
+		if strings.Contains(playlist, "/api/media/recordings/"+int64String(id)+"/file") {
+			t.Errorf("recording %d must not be listed:\n%s", id, playlist)
+		}
 	}
 }
 
