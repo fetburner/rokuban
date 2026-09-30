@@ -468,8 +468,8 @@ func TestSelectLatest_FallsBackToPreviousComplete(t *testing.T) {
 }
 
 // 掃除の方針（docs/storage.md §8「不完全世代の保持と掃除」）:
-// 最新側の不完全世代は進行中かもしれないので残し、より新しい完成世代が
-// できたら消す。
+// 7 日以内の不完全世代は進行中かもしれないので残し、古い不完全世代は
+// より新しい完成世代ができたら消す。
 func TestPrune_IncompleteGenerationLifecycle(t *testing.T) {
 	dir := t.TempDir()
 	catalogDir := Dir(dir)
@@ -491,7 +491,11 @@ func TestPrune_IncompleteGenerationLifecycle(t *testing.T) {
 		t.Fatalf("in-flight generation was removed: %v", err)
 	}
 
-	// より新しい完成世代ができたら掃除される。
+	// 7 日を過ぎた不完全世代は、より新しい完成世代ができたら掃除される。
+	old := time.Now().Add(-incompleteGenerationGrace - time.Hour)
+	if err := os.Chtimes(inflight, old, old); err != nil {
+		t.Fatal(err)
+	}
 	writeCompleteGeneration(t, dir, time.Date(2026, 7, 3, 0, 0, 0, 0, time.UTC), "new")
 	if err := Prune(catalogDir, DefaultKeep); err != nil {
 		t.Fatalf("Prune: %v", err)
@@ -508,6 +512,27 @@ func TestPrune_IncompleteGenerationLifecycle(t *testing.T) {
 	}
 }
 
+func TestPrune_PreservesRecentIncompleteGenerationWithNewerComplete(t *testing.T) {
+	dir := t.TempDir()
+	catalogDir := Dir(dir)
+	writeCompleteGeneration(t, dir, time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), "old")
+
+	inflight := filepath.Join(catalogDir, "catalog-20260702T000000Z")
+	if err := os.MkdirAll(inflight, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(inflight, DocumentFilename), []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write runs Prune after completing this newer generation. A recent incomplete
+	// generation can belong to a concurrent export and must survive that pass.
+	writeCompleteGeneration(t, dir, time.Date(2026, 7, 3, 0, 0, 0, 0, time.UTC), "new")
+	if _, err := os.Stat(inflight); err != nil {
+		t.Fatalf("recent in-flight generation was removed by concurrent prune: %v", err)
+	}
+}
+
 // keep の勘定は完成世代だけで行い、不完全世代は枠を食わないこと。
 func TestPrune_IncompleteDoesNotConsumeKeepSlots(t *testing.T) {
 	dir := t.TempDir()
@@ -517,6 +542,10 @@ func TestPrune_IncompleteDoesNotConsumeKeepSlots(t *testing.T) {
 	// 2 つの完成世代の間に挟まる不完全世代。
 	broken := filepath.Join(catalogDir, "catalog-20260715T000000Z")
 	if err := os.MkdirAll(broken, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-incompleteGenerationGrace - time.Hour)
+	if err := os.Chtimes(broken, old, old); err != nil {
 		t.Fatal(err)
 	}
 	writeCompleteGeneration(t, dir, time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), "c")

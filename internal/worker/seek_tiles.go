@@ -60,8 +60,9 @@ const (
 // （既定 15 分）に任せる。**録画直後の 15 分はプレビューが出ない**という代償を
 // 受け入れる。待たせないことは要求の経路（配信）で担保している（404 → poster だけの見た目）。
 //
-// ストレージ契約: scratch に ffmpeg 出力 → メディアへストリームコピー + fsync →
-// DB 行 INSERT（公開の定義は rename ではなく DB。docs/storage/contract.md §3）。
+// ストレージ契約: ジョブ固有 scratch に ffmpeg 出力 → 同じディレクトリの staged file
+// へ fsync → rel_path lock と DB transaction の下で DB 行予約 → rename + 親 dir fsync
+// → commit（docs/storage/contract.md §3）。
 //
 // 失敗したら scratch を捨ててやり直す。部分成果はコミットしない ---
 // 行の存在 = タイルが全部そろっている（不変条件 10）。
@@ -140,18 +141,16 @@ func (w *SeekTilesWorker) Work(ctx context.Context, job *river.Job[jobs.SeekTile
 	rows := (tiles + seekTilesColumns - 1) / seekTilesColumns
 
 	// 前回の残骸ごと捨ててから作る。部分成果を残さない。
-	framesDir, sheetPath, err := w.scratchPaths(recordingID)
+	scratchDir, err := newWorkerScratchDir(w.ScratchDir, "seek_tiles", job.ID, job.Attempt)
 	if err != nil {
-		return err
+		return fmt.Errorf("creating scratch dir: %w", err)
 	}
-	if err := os.RemoveAll(framesDir); err != nil {
-		return fmt.Errorf("clearing scratch frames dir: %w", err)
-	}
+	defer func() { _ = os.RemoveAll(scratchDir) }()
+	framesDir := filepath.Join(scratchDir, "frames")
+	sheetPath := filepath.Join(scratchDir, "tiles.jpg")
 	if err := os.MkdirAll(framesDir, 0o755); err != nil {
 		return fmt.Errorf("creating scratch frames dir: %w", err)
 	}
-	defer func() { _ = os.RemoveAll(framesDir) }()
-	defer func() { _ = os.Remove(sheetPath) }()
 
 	for i := range tiles {
 		framePath := filepath.Join(framesDir, fmt.Sprintf("%06d.jpg", i))
@@ -166,7 +165,7 @@ func (w *SeekTilesWorker) Work(ctx context.Context, job *river.Job[jobs.SeekTile
 			log.Warn("seek_tiles: last tile not extractable, reusing the previous tile",
 				"tile", i, "at", formatSeekSeconds(at), "err", err)
 			prev := filepath.Join(framesDir, fmt.Sprintf("%06d.jpg", i-1))
-			if _, err = copyFileFsync(prev, framePath); err != nil {
+			if _, err = copyScratchFileFsync(prev, framePath); err != nil {
 				return fmt.Errorf("reusing tile %d for the last tile: %w", i-1, err)
 			}
 		}
@@ -188,42 +187,29 @@ func (w *SeekTilesWorker) Work(ctx context.Context, job *river.Job[jobs.SeekTile
 	}
 
 	relPath := seekTilesRelPath(recordingID)
-	destPath, err := mediapath.Resolve(w.MediaDir, relPath)
+	size, published, err := publishGeneratedMediaAsset(ctx, w.Pool, w.MediaDir, relPath, sheetPath,
+		func(ctx context.Context, q *sqlcgen.Queries) (bool, error) {
+			return skipSeekTilesPublish(ctx, q, recordingID)
+		},
+		func(ctx context.Context, q *sqlcgen.Queries, size int64) error {
+			_, err := q.UpsertSeekTilesMediaAsset(ctx, sqlcgen.UpsertSeekTilesMediaAssetParams{
+				RecordingID: recordingID, RelPath: relPath, SizeBytes: size,
+			})
+			return err
+		})
 	if err != nil {
-		return fmt.Errorf("resolving seek tiles dest: %w", err)
+		return fmt.Errorf("publishing seek tiles: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
-		return fmt.Errorf("creating media dir for seek tiles: %w", err)
-	}
-
-	size, err := copyFileFsync(sheetPath, destPath)
-	if err != nil {
-		return fmt.Errorf("copying seek tiles to media: %w", err)
-	}
-
-	if _, err := q.UpsertSeekTilesMediaAsset(ctx, sqlcgen.UpsertSeekTilesMediaAssetParams{
-		RecordingID: recordingID,
-		RelPath:     relPath,
-		SizeBytes:   size,
-	}); err != nil {
-		// DB コミット失敗時はメディア側のファイルを残す（cleanup が孤児回収）。
-		// ThumbnailWorker と同じ判断。
-		return fmt.Errorf("committing seek tiles: %w", err)
+	if !published {
+		log.Info("seek_tiles: already committed or original no longer active, skipping")
+		result = "success"
+		return nil
 	}
 
 	log.Info("seek_tiles: committed",
 		"rel_path", relPath, "size_bytes", size, "tiles", tiles, "rows", rows, "duration", duration)
 	result = "success"
 	return nil
-}
-
-func (w *SeekTilesWorker) scratchPaths(recordingID int64) (framesDir, sheetPath string, err error) {
-	if w.ScratchDir == "" {
-		return "", "", fmt.Errorf("scratch dir is empty")
-	}
-	base := filepath.Join(w.ScratchDir, "seek_tiles")
-	return filepath.Join(base, strconv.FormatInt(recordingID, 10)),
-		filepath.Join(base, fmt.Sprintf("%d-tiles.jpg", recordingID)), nil
 }
 
 // seekTilesRelPath はメディアストレージ上の相対パスを返す。poster と同じく

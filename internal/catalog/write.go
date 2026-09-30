@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+const incompleteGenerationGrace = 7 * 24 * time.Hour
+
 // catalogFile は catalog の書き込み先。os.File のうち Write が使う操作だけを
 // 切り出してある（テストが「書き込み途中で停止」と「書き込み順序の観測」を
 // 注入するための継ぎ目。generation_test.go の stoppingFile / recordingOpener
@@ -70,13 +72,9 @@ func Write(mediaDir string, doc *Document, keep int) (string, error) {
 		return "", fmt.Errorf("creating catalog dir: %w", err)
 	}
 
-	name, err := uniqueGenerationName(dir, GenerationName(doc.ExportedAt))
+	name, genDir, err := createUniqueGenerationDir(dir, GenerationName(doc.ExportedAt))
 	if err != nil {
 		return "", err
-	}
-	genDir := filepath.Join(dir, name)
-	if err := os.MkdirAll(genDir, 0o755); err != nil {
-		return "", fmt.Errorf("creating generation dir: %w", err)
 	}
 
 	docSize, docSHA256, err := writeGenerationFile(filepath.Join(genDir, DocumentFilename), DocumentFilename, doc)
@@ -134,27 +132,30 @@ func (w *countingWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// uniqueGenerationName は base から始めて、まだ存在しない世代名を返す。
-// 同じ秒に 2 回書くことになっても既存世代を上書きしない（連番を足す）。
+// createUniqueGenerationDir は未使用の世代 directory を原子的に予約する。
+// Stat で空きを確認してから mkdir すると、同時 export が同じ名前を選び
+// 既存世代を上書きするため、Mkdir の成功を予約点にする。
 //
 // 連番は**ゼロ詰め 2 桁**にする。辞書順が「新しい順」の唯一の根拠なので、
 // `-2` と `-10` を並べると 10 本目が 2 本目より古い側に落ちる（`-02` < `-10`）。
 // 99 本を超えたら名前を作らずエラーにする（黙って順序の壊れた名前を作らない）。
-func uniqueGenerationName(dir, base string) (string, error) {
+func createUniqueGenerationDir(dir, base string) (name, generationDir string, err error) {
 	for i := 1; i <= 99; i++ {
-		name := base
+		name = base
 		if i > 1 {
 			name = fmt.Sprintf("%s-%02d", base, i)
 		}
-		_, err := os.Stat(filepath.Join(dir, name))
-		if os.IsNotExist(err) {
-			return name, nil
+		generationDir = filepath.Join(dir, name)
+		err := os.Mkdir(generationDir, 0o755)
+		if err == nil {
+			return name, generationDir, nil
 		}
-		if err != nil {
-			return "", fmt.Errorf("checking generation %q: %w", name, err)
+		if os.IsExist(err) {
+			continue
 		}
+		return "", "", fmt.Errorf("reserving generation %q: %w", name, err)
 	}
-	return "", fmt.Errorf("too many generations named %q", base)
+	return "", "", fmt.Errorf("too many generations named %q", base)
 }
 
 // scanSnapshots は catalogDir の世代ディレクトリを新しい順（名前の辞書順降順 ---
@@ -213,8 +214,19 @@ func Prune(catalogDir string, keep int) error {
 	var doomed, complete []string
 	for _, name := range names {
 		if _, err := VerifyGeneration(filepath.Join(catalogDir, name)); err != nil {
-			// 不完全世代: 時刻順で新しい側に完成世代が 1 つでもあれば消す。
-			// 無ければ進行中のエクスポートかもしれないので残す。
+			// 書き込み中の世代を別 export の Prune が削除しないよう、最近更新された
+			// 不完全世代は保持する。古い不完全世代は時刻順で新しい側に完成世代が
+			// 1 つでもあれば消す。新しい完成世代が無ければ保持する。
+			info, statErr := os.Stat(filepath.Join(catalogDir, name))
+			if statErr != nil {
+				if os.IsNotExist(statErr) {
+					continue
+				}
+				return fmt.Errorf("stating incomplete catalog %q: %w", name, statErr)
+			}
+			if time.Since(info.ModTime()) < incompleteGenerationGrace {
+				continue
+			}
 			if len(complete) > 0 {
 				doomed = append(doomed, name)
 			}

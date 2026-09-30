@@ -35,10 +35,12 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
 	`.rokuban-ingest-{site}-{record_id}` と決め、プロセス再起動後も同じファイルを
 	開く。scratch から rename すると `EXDEV` になり、コピーへの劣化を許すため
 	確定操作には使わない。
-	`.rokuban-ingest-` / `.rokuban-rel-path-lock-` / `.rokuban-encode-` で始まる
+	`.rokuban-ingest-` / `.rokuban-rel-path-lock-` / `.rokuban-encode-` /
+	`.rokuban-media-asset-` で始まる
 	basename は予約名であり、mirakc の contentPath には使わない。1 つ目は ingest
-	temp、2 つ目は旧形式 lock file の予約名、3 つ目は encode の公開前 staging file
-	（後述）である。rel_path lock は media root の `.rokuban-locks/` に置く。
+	temp、2 つ目は旧形式 lock file の予約名、3 つ目は encode の公開前 staging file、
+	4 つ目は thumbnail / seek tiles の公開前 staging file（後述）である。rel_path lock
+	は media root の `.rokuban-locks/` に置く。
 	この directory 名も予約し、`mediapath.Resolve` は DB の `rel_path` として拒否する。
 	encode の staged 出力も
 	同じディレクトリに置く --- scratch から rename すると `EXDEV` になる。
@@ -156,6 +158,31 @@ cancel しない）。そのため:
   7 日の mtime 猶予（`defaultOrphanMTimeGrace`）の後に、`deleteOrphanFile` が
   canonical と同じ手順で消す。rel_path lock file は Close または次回 GC で消える。
   拡張子が無いので catalog 無し rescue の対象にはならず、原本へ昇格しない
+
+### thumbnail / seek tiles の公開
+
+thumbnail と seek tiles の ffmpeg 出力先はジョブごとに `MkdirTemp` で作る scratch
+directory とする。同じ recording の River job が重なっても scratch file を共有しない。
+完成後は canonical と同じ directory の `.rokuban-media-asset-` staged file にコピーして
+file `fsync` する。次に rel_path filesystem lock → transaction → advisory xact lock の順に取る。
+transaction 内で active な派生行と原本の生存を再確認し、派生行がまだ無く原本も active なら media asset row を予約する。その後 staged
+file を canonical へ rename して親 directory を `fsync` し、最後に commit する。先行 job が
+すでに active row を commit していた場合や、ffmpeg 実行中に録画が削除され原本が active でなくなった場合、後続 job は公開を飛ばして成功扱いにする。
+
+staged file は通常の orphan 候補として aging 回収に委ねる。拡張子によらず catalog 無し
+rescue から除外する。canonical を `O_TRUNC` で直接開かないため、処理中に配信・削除側が
+途中の画像を観測する窓を作らない。
+
+### catalog 世代の公開
+
+catalog export は `catalog/` の新しい世代 directory を `Mkdir` で原子的に予約する。
+同じ `ExportedAt` を持つ並列 export は `-02` 以降の別 directory を取得する。世代内では
+`catalog.json` を一度書いて file `fsync` し、sha256 とサイズを持つ `manifest.json` を最後に
+書いて `fsync` する。manifest が完成世代の判定点で、rename や DB row は使わない。
+
+別 export の prune が書き込み途中の世代を消さないよう、不完全世代は 7 日間保持する。
+7 日より古い不完全世代は、より新しい完成世代がある場合だけ prune する。catalog directory
+以外へは触れない。
 
 ### カット版の置き換え（「置くのは一回」の 1 つの例外）
 

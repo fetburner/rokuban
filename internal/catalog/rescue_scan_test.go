@@ -266,6 +266,9 @@ func TestRescueLatest_ScansMediaDirSymlinkAndSkipsCatalog(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(realMediaDir, "sites", "default", "archive", "show.m2ts"), []byte("original bytes"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(realMediaDir, "sites", "default", "archive", ".rokuban-media-asset-pending.m2ts"), []byte("staged derivative"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(realMediaDir, "catalog"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -293,6 +296,12 @@ func TestRescueLatest_ScansMediaDirSymlinkAndSkipsCatalog(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("catalog assets registered = %d, want 0", count)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets WHERE rel_path LIKE '%/.rokuban-media-asset-%'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("generated staging files rescued as assets = %d, want 0", count)
 	}
 }
 

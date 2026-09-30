@@ -169,6 +169,23 @@ func TestIsIngestTempFile(t *testing.T) {
 	}
 }
 
+func TestIsGeneratedAssetTempFile(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{path: ".rokuban-media-asset-deadbeef", want: true},
+		{path: "thumbnails/.rokuban-media-asset-deadbeef", want: true},
+		{path: "thumbnails/42.jpg", want: false},
+		{path: ".rokuban-media-asset", want: false},
+	}
+	for _, tt := range tests {
+		if got := IsGeneratedAssetTempFile(tt.path); got != tt.want {
+			t.Errorf("IsGeneratedAssetTempFile(%q) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
+}
+
 func TestIsMediaRelPathLockFile(t *testing.T) {
 	tests := []struct {
 		name string

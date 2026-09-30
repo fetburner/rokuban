@@ -143,10 +143,13 @@ func TestThumbnailWorker_CreatesAsset(t *testing.T) {
 		t.Errorf("thumbnail content = %v, want tinyJPEG", data)
 	}
 
-	// scratch は掃除されている。
-	scratch := filepath.Join(scratchDir, "thumbnail", fmt.Sprintf("%d.jpg", recordingID))
-	if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("scratch file still exists: %v", err)
+	// ジョブ固有 scratch directory は掃除されている。
+	entries, err := os.ReadDir(filepath.Join(scratchDir, "thumbnail"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("reading thumbnail scratch dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("scratch dirs left behind: %v", entries)
 	}
 }
 
@@ -251,17 +254,15 @@ func TestThumbnailWorker_SkipsWithoutOriginal(t *testing.T) {
 	}
 }
 
-func TestThumbnailWorker_CommitUpsertsExistingActiveRow(t *testing.T) {
-	// commit は ON CONFLICT DO UPDATE の UpsertThumbnailMediaAsset を使うため、
-	// 既に active な行がある recording に対して呼んでもエラーにならず
-	// 同じ行を更新する（行数は増えない）。
+func TestThumbnailUpsertDoesNotDuplicateExistingActiveRow(t *testing.T) {
+	// ON CONFLICT DO UPDATE の UpsertThumbnailMediaAsset は、既に active な行がある
+	// recording に対しても同じ行を更新する（行数は増えない）。
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
 	}
 
 	mediaDir := t.TempDir()
-	scratchDir := t.TempDir()
 	recordingID := insertTestRecording(t, pool)
 
 	origRel := "shows/race.m2ts"
@@ -292,10 +293,13 @@ func TestThumbnailWorker_CommitUpsertsExistingActiveRow(t *testing.T) {
 		t.Fatalf("seed existing thumbnail: %v", err)
 	}
 
-	// commit 経路も成功する（DO UPDATE なので ErrNoRows にならない）。
-	w := &ThumbnailWorker{Pool: pool, MediaDir: mediaDir, ScratchDir: scratchDir}
-	if err := w.commit(context.Background(), recordingID, rel, int64(len(tinyJPEG))); err != nil {
-		t.Fatalf("commit over existing active row: %v", err)
+	// 同じ値で再度 upsert しても既存行の conflict にならず成功する。
+	if _, err := sqlcgen.New(pool).UpsertThumbnailMediaAsset(context.Background(), sqlcgen.UpsertThumbnailMediaAssetParams{
+		RecordingID: recordingID,
+		RelPath:     rel,
+		SizeBytes:   int64(len(tinyJPEG)),
+	}); err != nil {
+		t.Fatalf("UpsertThumbnailMediaAsset over existing active row: %v", err)
 	}
 
 	var n int

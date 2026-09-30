@@ -3368,6 +3368,7 @@ func TestIngestWorker_ReservedStorageBasenameRejected(t *testing.T) {
 	for _, contentPath := range []string{
 		".rokuban-ingest-user.m2ts",
 		".rokuban-rel-path-lock-user.m2ts",
+		".rokuban-media-asset-user.m2ts",
 	} {
 		t.Run(contentPath, func(t *testing.T) {
 			srv := mirakcRecordServer(t, nil, strPtr(contentPath), "/recording/"+contentPath)

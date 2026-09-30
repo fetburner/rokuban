@@ -39,8 +39,9 @@ const (
 // ThumbnailWorker は原本から代表フレームを JPEG 抽出し、media_assets
 // （kind = 'thumbnail'）としてコミットする。
 //
-// ストレージ契約: scratch に ffmpeg 出力 → メディアへストリームコピー + fsync →
-// DB 行 INSERT（公開の定義は rename ではなく DB。docs/storage.md §3）。
+// ストレージ契約: ジョブ固有 scratch に ffmpeg 出力 → 同じディレクトリの staged file
+// へ fsync → rel_path lock と DB transaction の下で DB 行予約 → rename + 親 dir fsync
+// → commit（docs/storage/contract.md §3）。
 //
 // site 照合ガード（issue #139）は不要と判断: EncodeWorker と同じ理由
 // （ThumbnailJobArgs は recording_id のみで site を持たず、原本読み取りは
@@ -117,15 +118,12 @@ func (w *ThumbnailWorker) Work(ctx context.Context, job *river.Job[jobs.Thumbnai
 	}
 	seek := thumbnailSeek(duration)
 
-	scratchPath, err := w.scratchOutputPath(recordingID)
+	scratchDir, err := newWorkerScratchDir(w.ScratchDir, "thumbnail", job.ID, job.Attempt)
 	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(scratchPath), 0o755); err != nil {
 		return fmt.Errorf("creating scratch dir: %w", err)
 	}
-	// 前回残骸があっても ffmpeg -y で上書きする。完了後に消す。
-	defer func() { _ = os.Remove(scratchPath) }()
+	defer func() { _ = os.RemoveAll(scratchDir) }()
+	scratchPath := filepath.Join(scratchDir, "thumbnail.jpg")
 
 	if err := w.extractFrame(ctx, inputPath, scratchPath, seek); err != nil {
 		return fmt.Errorf("extracting frame: %w", err)
@@ -140,61 +138,28 @@ func (w *ThumbnailWorker) Work(ctx context.Context, job *river.Job[jobs.Thumbnai
 	}
 
 	relPath := thumbnailRelPath(recordingID)
-	destPath, err := mediapath.Resolve(w.MediaDir, relPath)
+	size, published, err := publishGeneratedMediaAsset(ctx, w.Pool, w.MediaDir, relPath, scratchPath,
+		func(ctx context.Context, q *sqlcgen.Queries) (bool, error) {
+			return skipThumbnailPublish(ctx, q, recordingID)
+		},
+		func(ctx context.Context, q *sqlcgen.Queries, size int64) error {
+			_, err := q.UpsertThumbnailMediaAsset(ctx, sqlcgen.UpsertThumbnailMediaAssetParams{
+				RecordingID: recordingID, RelPath: relPath, SizeBytes: size,
+			})
+			return err
+		})
 	if err != nil {
-		return fmt.Errorf("resolving thumbnail dest: %w", err)
+		return fmt.Errorf("publishing thumbnail: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
-		return fmt.Errorf("creating media dir for thumbnail: %w", err)
-	}
-
-	size, err := copyFileFsync(scratchPath, destPath)
-	if err != nil {
-		return fmt.Errorf("copying thumbnail to media: %w", err)
-	}
-
-	if err := w.commit(ctx, recordingID, relPath, size); err != nil {
-		// DB コミット失敗時はメディア側のファイルを残す（cleanup が孤児回収）。
-		// 消すと「再実行でファイルも DB も無い」窓が広がる。
-		return fmt.Errorf("committing thumbnail: %w", err)
+	if !published {
+		log.Info("thumbnail: already committed or original no longer active, skipping")
+		result = "success"
+		return nil
 	}
 
 	log.Info("thumbnail: committed", "rel_path", relPath, "size_bytes", size, "seek", seek)
 	result = "success"
 	return nil
-}
-
-// commit は抽出済みサムネイルを media_assets（kind='thumbnail'）にコミットする。
-//
-// ON CONFLICT DO NOTHING（id を返さず pgx.ErrNoRows で競合を伝える形）は使わない。
-// DO NOTHING が返す ErrNoRows は「既に active な行がある競合」と「tombstone
-// （state='deleted'、過去の完全削除の残骸）との競合」を区別できず、後者まで
-// 成功扱いにすると、ファイルは書き直され続けるのに DB 行は deleted のまま
-// 残り、GetActiveThumbnailMediaAssetID は空を返し続けてレベルトリガーが同じ
-// ジョブを積み直す孤児になる（issue #108）。ErrNoRows を無条件で成功にして
-// よいのは、競合相手の行が active であることが保証できるときだけである。
-//
-// UpsertThumbnailMediaAsset は ON CONFLICT DO UPDATE で tombstone を active に
-// 戻す（encode の UpsertEncodedMediaAsset と同じ形）ため常に行を返し、
-// ErrNoRows の分岐そのものが要らない。
-func (w *ThumbnailWorker) commit(ctx context.Context, recordingID int64, relPath string, size int64) error {
-	_, err := sqlcgen.New(w.Pool).UpsertThumbnailMediaAsset(ctx, sqlcgen.UpsertThumbnailMediaAssetParams{
-		RecordingID: recordingID,
-		RelPath:     relPath,
-		SizeBytes:   size,
-	})
-	if err != nil {
-		return fmt.Errorf("upserting media_asset: %w", err)
-	}
-	return nil
-}
-
-func (w *ThumbnailWorker) scratchOutputPath(recordingID int64) (string, error) {
-	if w.ScratchDir == "" {
-		return "", fmt.Errorf("scratch dir is empty")
-	}
-	// ジョブ単位で一意な名前。並列ジョブが同じ scratch を踏まないようにする。
-	return filepath.Join(w.ScratchDir, "thumbnail", fmt.Sprintf("%d.jpg", recordingID)), nil
 }
 
 // thumbnailRelPath はメディアストレージ上の相対パスを返す。
@@ -339,9 +304,9 @@ func truncateOutput(b []byte) string {
 	return string(b[:max]) + "...(truncated)"
 }
 
-// copyFileFsync は src を dst へシーケンシャルコピーし、dst を fsync する。
-// ストレージ契約ルール 1・2（書き込みは一発、置くのは一回）。
-func copyFileFsync(src, dst string) (int64, error) {
+// copyScratchFileFsync は scratch 上の src を scratch 上の dst へコピーし、dst を fsync する。
+// 公開アセットへのコピーは publishGeneratedMediaAsset の stage + rename 経路を使う。
+func copyScratchFileFsync(src, dst string) (int64, error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return 0, fmt.Errorf("open src: %w", err)

@@ -2,8 +2,10 @@ package catalog
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -147,6 +149,70 @@ func TestWrite_DoesNotReuseGenerationName(t *testing.T) {
 	}
 	if sel.Generation != filepath.Base(second) {
 		t.Errorf("selected %q, want %q", sel.Generation, filepath.Base(second))
+	}
+}
+
+// 同じ秒の export が並行しても directory reservation が衝突せず、各世代の
+// document と manifest がそれぞれ完成すること。
+func TestWrite_ConcurrentSameTimestampReservesDistinctGenerations(t *testing.T) {
+	const writers = 12
+	dir := t.TempDir()
+	at := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	start := make(chan struct{})
+	type result struct {
+		genDir string
+		err    error
+	}
+	results := make(chan result, writers)
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			genDir, err := Write(dir, testDoc(at, fmt.Sprintf("writer-%02d", i)), writers+1)
+			results <- result{genDir: genDir, err: err}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	seenDirs := map[string]bool{}
+	seenTitles := map[string]bool{}
+	for result := range results {
+		if result.err != nil {
+			t.Fatalf("concurrent Write: %v", result.err)
+		}
+		name := filepath.Base(result.genDir)
+		if seenDirs[name] {
+			t.Errorf("generation %q was reserved more than once", name)
+		}
+		seenDirs[name] = true
+		if _, err := VerifyGeneration(result.genDir); err != nil {
+			t.Errorf("VerifyGeneration(%q): %v", name, err)
+			continue
+		}
+		doc, err := Load(filepath.Join(result.genDir, DocumentFilename))
+		if err != nil {
+			t.Errorf("Load(%q): %v", name, err)
+			continue
+		}
+		if len(doc.Recordings) != 1 {
+			t.Errorf("%s has %d recordings, want 1", name, len(doc.Recordings))
+			continue
+		}
+		title := doc.Recordings[0].Title
+		if seenTitles[title] {
+			t.Errorf("document %q was written into multiple generations", title)
+		}
+		seenTitles[title] = true
+	}
+	if len(seenDirs) != writers {
+		t.Errorf("got %d generation dirs, want %d: %v", len(seenDirs), writers, seenDirs)
+	}
+	if len(seenTitles) != writers {
+		t.Errorf("got %d distinct documents, want %d: %v", len(seenTitles), writers, seenTitles)
 	}
 }
 

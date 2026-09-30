@@ -119,8 +119,8 @@ func TestSeekTilesWorker_ComposeSheetArgs(t *testing.T) {
 type countingRunCmd struct {
 	calls    int
 	outputs  []string
-	failOn   string // この出力パスへの書き出しで失敗させる（空なら常に成功）
-	silentOn string // この出力パスでは何も書かずに成功を返す（ffmpeg が 0 フレームで終わる形）
+	failOn   string // この basename への書き出しで失敗させる（空なら常に成功）
+	silentOn string // この basename では何も書かず成功する（ffmpeg が 0 フレームで終わる形）
 	probeErr bool   // ffprobe を失敗させる
 	// videoEnd が正なら、-ss がそれ以上の抽出は何も書かずに成功を返す
 	// （映像の終端より後ろへの入力シーク。実 ffmpeg 9 は非 0 で終わるが、
@@ -157,10 +157,10 @@ func (c *countingRunCmd) run(_ context.Context, name string, args ...string) ([]
 	}
 	out := args[len(args)-1]
 	c.outputs = append(c.outputs, out)
-	if c.failOn != "" && out == c.failOn {
+	if c.failOn != "" && filepath.Base(out) == c.failOn {
 		return nil, fmt.Errorf("ffmpeg: injected failure for %s", out)
 	}
-	if c.silentOn != "" && out == c.silentOn {
+	if c.silentOn != "" && filepath.Base(out) == c.silentOn {
 		return nil, nil
 	}
 	if ss := indexOfArg(args, "-ss"); ss >= 0 {
@@ -299,8 +299,8 @@ func TestSeekTilesWorker_NoOriginal_Skips(t *testing.T) {
 	}
 }
 
-// 途中で失敗したら部分成果をコミットしない（行の存在 = 全部そろっている）。
-// scratch の残骸も次回の実行で捨てる。
+// 途中で失敗したら部分成果をコミットせず、ジョブ固有 scratch も消す
+// （行の存在 = 全部そろっている）。
 func TestSeekTilesWorker_PartialFailureCommitsNothing(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
@@ -312,7 +312,7 @@ func TestSeekTilesWorker_PartialFailureCommitsNothing(t *testing.T) {
 	// 埋めるので、途中の失敗で見る。
 	cmd := &countingRunCmd{
 		duration: "30",
-		failOn:   filepath.Join(scratchDir, "seek_tiles", fmt.Sprintf("%d", recordingID), "000001.jpg"),
+		failOn:   "000001.jpg",
 	}
 	w := &SeekTilesWorker{Pool: pool, MediaDir: mediaDir, ScratchDir: scratchDir, runCmd: cmd.run}
 	if err := runSeekTilesJob(t, w, recordingID); err == nil {
@@ -325,8 +325,12 @@ func TestSeekTilesWorker_PartialFailureCommitsNothing(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(mediaDir, "thumbnails", fmt.Sprintf("%d_tiles.jpg", recordingID))); err == nil {
 		t.Error("tile sheet was written to media even though the extraction failed partway")
 	}
-	if _, err := os.Stat(filepath.Join(scratchDir, "seek_tiles", fmt.Sprintf("%d", recordingID), "000000.jpg")); err == nil {
-		t.Error("scratch frames were left behind after a failed run")
+	entries, err := os.ReadDir(filepath.Join(scratchDir, "seek_tiles"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("reading scratch dir after failure: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("scratch dirs left behind after a failed run: %v", entries)
 	}
 }
 
@@ -363,7 +367,7 @@ func TestSeekTilesWorker_MissingTileCommitsNothing(t *testing.T) {
 
 	cmd := &countingRunCmd{
 		duration: "30",
-		silentOn: filepath.Join(scratchDir, "seek_tiles", fmt.Sprintf("%d", recordingID), "000001.jpg"),
+		silentOn: "000001.jpg",
 	}
 	w := &SeekTilesWorker{Pool: pool, MediaDir: mediaDir, ScratchDir: scratchDir, runCmd: cmd.run}
 	if err := runSeekTilesJob(t, w, recordingID); err == nil {
@@ -465,7 +469,7 @@ func TestSeekTilesWorker_SingleTileFailureCommitsNothing(t *testing.T) {
 
 	cmd := &countingRunCmd{
 		duration: "5",
-		failOn:   filepath.Join(scratchDir, "seek_tiles", fmt.Sprintf("%d", recordingID), "000000.jpg"),
+		failOn:   "000000.jpg",
 	}
 	w := &SeekTilesWorker{Pool: pool, MediaDir: mediaDir, ScratchDir: scratchDir, runCmd: cmd.run}
 	if err := runSeekTilesJob(t, w, recordingID); err == nil {
