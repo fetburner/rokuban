@@ -350,7 +350,7 @@ func TestRecordingDropHistorySurvivesOriginalDeletion(t *testing.T) {
 	}
 }
 
-// ごみ箱 API は dynamic queryRecordings/buildRecordingsQuery を通り、原本の
+// ごみ箱 API は動的 SQL の queryRecordings/buildRecordingsQuery を通り、原本の
 // media_asset が deleted になった後も dropSummary を保つ（issue #737）。
 func TestListTrashRecordings_DropSummarySurvivesOriginalDeletion(t *testing.T) {
 	pool := testutil.SetupDB(t)
@@ -1228,7 +1228,7 @@ func TestRestoreRecording_ConflictWhenActiveExists(t *testing.T) {
 // restore できない。ファイルが二度と戻らない録画をライブラリに戻すと
 // 「再生できない録画」が並んでしまうため。RestoreRecording クエリの
 // WHERE に purged_at IS NULL を足して 0 行にし、既存の 404 経路に落とす。
-// また、GET /api/recordings?trash=true にも出ない（ListTrashRecordings も
+// また、GET /api/recordings?trash=true にも出ない（trash 一覧も
 // purged_at IS NULL を要求する）。
 func TestRestoreRecording_PurgedNotFound(t *testing.T) {
 	pool := testutil.SetupDB(t)

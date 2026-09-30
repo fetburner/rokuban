@@ -58,7 +58,7 @@ CREATE TABLE recordings (
 
     -- 「完全削除が完了した」不可逆な事実。削除 reconcile が
     -- パス末尾で、ごみ箱条件を満たしかつ物理削除待ちの media_assets が 1 行も
-    -- 残っていない録画に一度だけ立てる。ごみ箱ビュー（ListTrashRecordings）は
+    -- 残っていない録画に一度だけ立てる。ごみ箱一覧（GET /api/recordings?trash=true）は
     -- この列も IS NULL であることを要求するので、purge が完了した録画は
     -- ごみ箱一覧から外れる（[storage.md](../storage.md) §7）
     purged_at         timestamptz,
