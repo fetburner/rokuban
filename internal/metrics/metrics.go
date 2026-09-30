@@ -602,18 +602,19 @@ var (
 func newLiveActiveSessions() *prometheus.GaugeVec {
 	g := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rokuban_live_active_sessions",
-		Help: "Live-viewing and chase-playback sessions (ffmpeg processes) currently held by this process. Per-process; sum across replicas in Prometheus for the whole picture.",
+		Help: "Live-viewing, chase-playback, and original-VOD sessions (ffmpeg processes) currently held by this process. Per-process; sum across replicas in Prometheus for the whole picture.",
 	}, []string{"kind"})
 	// GaugeVec は WithLabelValues が呼ばれるまで系列を exposition しない。live
 	// streamer を持たない api / worker ロールでも、起動直後の 0 を観測できるよう
 	// 固定ラベルの系列をここで作っておく。
 	g.WithLabelValues("live").Set(0)
 	g.WithLabelValues("chase").Set(0)
+	g.WithLabelValues("original_vod").Set(0)
 	return g
 }
 
 var (
-	// LiveActiveSessions はこのプロセスが現在持っているライブ/追っかけセッション
+	// LiveActiveSessions はこのプロセスが現在持っているライブ/追っかけ/原本VODセッション
 	// （≒ ffmpeg プロセス）数。
 	//
 	// **per-process gauge。** グローバルな天井はチューナー数で裁定者は mirakc

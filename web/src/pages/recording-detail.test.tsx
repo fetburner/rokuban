@@ -212,6 +212,17 @@ function createFakeServer(options: {
     ) {
       return Promise.resolve(new Response(null, { status: 204 }))
     }
+    if (/^\/api\/sites\/[^/]+\/recordings\/\d+\/original-vod\/playlist\.m3u8$/.test(url.pathname)) {
+      return Promise.resolve(
+        new Response('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\nhd.0.m3u8\n', { status: 200 }),
+      )
+    }
+    if (
+      /^\/api\/sites\/[^/]+\/recordings\/\d+\/original-vod\/leave$/.test(url.pathname) &&
+      method === 'POST'
+    ) {
+      return Promise.resolve(new Response(null, { status: 204 }))
+    }
 
     throw new Error(`unexpected fetch: ${method} ${url.pathname}`)
   })
@@ -1210,5 +1221,65 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
     await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
     expect(chasePlaylistURLs(fetchMock)[0]).toContain('profile=sd')
     expect(chaseLeaveURLs(fetchMock)).toEqual([])
+  })
+})
+
+describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
+  const LIVE_PROFILES: LiveProfileSummary[] = [
+    { name: 'hd', height: 720 },
+    { name: 'sd', height: 480 },
+  ]
+
+  function originalVODURLs(fetchMock: { mock: { calls: [string | URL | Request, RequestInit?][] } }) {
+    return fetchMock.mock.calls
+      .map(([url]) => String(url))
+      .filter((url) => url.includes('/original-vod/playlist.m3u8'))
+  }
+
+  it('エンコードの無い完成録画は HLS で原本を再生し、プロファイルを同じ recording URL に渡す', async () => {
+    const user = userEvent.setup()
+    const { fetchMock } = createFakeServer({
+      recording: sampleRecording({
+        sizeBytes: 1_000_000,
+        encodeProfiles: ['vod-h264'],
+        encodedAssets: [],
+      }),
+      liveProfiles: LIVE_PROFILES,
+    })
+
+    renderAt('/recordings/3')
+
+    expect(await screen.findByRole('region', { name: '原本 TS をブラウザ再生' })).toBeInTheDocument()
+    expect(await screen.findByLabelText('画質')).toHaveValue('hd')
+    await waitFor(() => expect(originalVODURLs(fetchMock)).toHaveLength(1))
+    expect(originalVODURLs(fetchMock)[0]).toBe(
+      '/api/sites/default/recordings/3/original-vod/playlist.m3u8',
+    )
+    expect(screen.getByRole('link', { name: /ダウンロード \/ VLC/ })).toHaveAttribute(
+      'href',
+      '/api/media/recordings/3/file',
+    )
+    expect(screen.queryByText('ブラウザ再生用のエンコードがまだありません。')).not.toBeInTheDocument()
+
+    await user.selectOptions(screen.getByLabelText('画質'), 'sd')
+    await waitFor(() => expect(originalVODURLs(fetchMock)).toHaveLength(2))
+    expect(originalVODURLs(fetchMock)[1]).toContain('profile=sd')
+  })
+
+  it('live profile が無い場合は HLS player を作らず、VLC リンクを残す', async () => {
+    createFakeServer({
+      recording: sampleRecording({ sizeBytes: 1_000_000, encodedAssets: [] }),
+      liveProfiles: [],
+    })
+
+    renderAt('/recordings/3')
+
+    expect(await screen.findByText(/HLS 再生プロファイルを利用できません/)).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: '再生' })).not.toBeInTheDocument()
+    expect(document.querySelector('video')).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /VLC 等で開く/ })).toHaveAttribute(
+      'href',
+      '/api/media/recordings/3/file',
+    )
   })
 })

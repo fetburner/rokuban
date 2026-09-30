@@ -43,14 +43,21 @@ prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らな
 
 ## 録画のブラウザ再生
 
-**VOD は MP4 progressive + Range**。streamer の `GET /api/media/recordings/{id}/file?profile=<name>` を
-ネイティブ `<video controls>` の src に渡す。HLS / hls.js は使わない（家庭 LAN の
-オンデマンドではセグメント化のコストに見合わない。決定は [api.md](../api.md)）。
+active な encoded がある完了録画は **MP4 progressive + Range**。streamer の
+`GET /api/media/recordings/{id}/file?profile=<name>` をネイティブ `<video controls>` の
+src に渡す。原本だけが残る完了録画は streamer の一時 HLS 経路
+（`/api/sites/{site}/recordings/{id}/original-vod/playlist.m3u8`）でブラウザ再生する。
+原本自体は MPEG-2 TS のまま読み、変換したファイルは保存しない。encoded MP4 の経路では
+HLS / hls.js を使わない。原本 HLS の詳細は [api.md](../api.md)
+「録画原本のブラウザ再生」。
 
-- 利用可能なプロファイルは `Recording.encodedAssets`（active な encoded のみ。各要素は
-  `profile` + `sizeBytes`）。複数ならセレクタ。encoded が無ければプレイヤーは出さず、
-  原本があるときだけ VLC 向けリンクを出す
-- **再生位置は localStorage**（キー: 録画 ID + プロファイル）。サーバー側視聴履歴は作らない
+- 利用可能な MP4 プロファイルは `Recording.encodedAssets`（active な encoded のみ。各要素は
+  `profile` + `sizeBytes`）。複数ならセレクタ。原本だけの完了録画は live の HLS
+  プロファイルを使って一時変換し、複数なら同じ画面で画質を選べる。原本は VLC 等で
+  開けるリンクも残す
+- **再生位置は localStorage**（キー: 録画 ID + VOD プロファイル）。サーバー側視聴履歴は作らない。
+  原本 HLS・encoded MP4・録画中の追っかけは同じ再生位置の基準を使い、録画開始からの秒数を
+  保存する。原本 HLS の画質切替は保存キーを変えず、再生位置も引き継ぐ
 - 再生・一時停止、シーク、音量、再生速度、PiP はネイティブ controls を使い、重複する
   自前の再生速度セレクトと PiP ボタンは置かない。2026-09-23 の Chromium 151 実測では
   標準 controls の `⋮` メニューに再生速度と PiP があった
@@ -59,7 +66,8 @@ prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らな
   ブラウザ標準メニューの値を使うため、選択肢はブラウザに委ねる
 - ページのキー操作は入力欄・選択欄・リンク・ボタン・編集可能領域と `<video>` に
   フォーカスがあるときは働かない。ネイティブ controls や入力操作と二重に処理しない
-- 原本 TS はブラウザでは再生せず、ダウンロード / VLC リンクとして残す
+- 原本 TS 自体を `<video>` の src には渡さない。原本だけの完了録画は streamer が HLS に
+  一時変換し、VLC 等で開く原本リンクも残す
 - **シークプレビュー**: 動画の下のスクラブ帯でマウスを動かすと、その位置に対応する
   タイル画像（`/api/media/recordings/{id}/seek-tiles`）を帯の上に出す。帯をクリックすると
   その位置へ飛ぶ。タイルはサーバー側の固定値（10 秒間隔・10 列）で、`lib/seek-tiles.ts` の

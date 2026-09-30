@@ -1985,6 +1985,36 @@ func TestLiveConfig_ValidateTools(t *testing.T) {
 	}
 }
 
+func TestLiveConfig_ValidateTools_MPEG2Decoder(t *testing.T) {
+	writeFFmpeg := func(t *testing.T, hasMPEG2 bool) string {
+		t.Helper()
+		line := " V..... mpeg4                 MPEG-4 part 2"
+		if hasMPEG2 {
+			line = " V..... mpeg2video           MPEG-2 video"
+		}
+		path := filepath.Join(t.TempDir(), "fake-ffmpeg")
+		if err := os.WriteFile(path, []byte("#!/bin/sh\necho '"+line+"'\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	t.Run("errors before streaming when decoder is missing", func(t *testing.T) {
+		cfg := LiveConfig{Enabled: true, FFmpeg: writeFFmpeg(t, false)}
+		err := cfg.ValidateTools()
+		if err == nil || !strings.Contains(err.Error(), "mpeg2video") {
+			t.Fatalf("ValidateTools() error = %v, want missing mpeg2video decoder", err)
+		}
+	})
+
+	t.Run("accepts a build with the MPEG-2 source decoder", func(t *testing.T) {
+		cfg := LiveConfig{Enabled: true, FFmpeg: writeFFmpeg(t, true)}
+		if err := cfg.ValidateTools(); err != nil {
+			t.Fatalf("ValidateTools() = %v, want success", err)
+		}
+	})
+}
+
 // writeFakeFFmpegDecoders は `ffmpeg -hide_banner -decoders` の代わりに応答する
 // 偽 ffmpeg を用意する（validateLibARIBCaption はこの 1 コマンドの出力しか見ない）。
 // includeARIB が true なら出力に libaribcaption を含める。

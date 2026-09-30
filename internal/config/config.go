@@ -911,6 +911,11 @@ func (c LiveConfig) ValidateTools() error {
 	if _, err := exec.LookPath(c.FFmpeg); err != nil {
 		return fmt.Errorf("live.ffmpeg %q not found in PATH: %w", c.FFmpeg, err)
 	}
+	if c.Enabled {
+		if err := validateFFmpegDecoder(c.FFmpeg, "mpeg2video", "live source MPEG-2 TS"); err != nil {
+			return err
+		}
+	}
 	if c.Captions {
 		if _, err := exec.LookPath(c.FFprobe); err != nil {
 			return fmt.Errorf("live.ffprobe %q not found in PATH: %w", c.FFprobe, err)
@@ -918,6 +923,21 @@ func (c LiveConfig) ValidateTools() error {
 		if err := validateLibARIBCaption(c.FFmpeg, "live"); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// validateFFmpegDecoder checks a named input decoder before the live streamer
+// starts accepting requests. Live HLS consumes MPEG-2 TS originals; without
+// this decoder every generated HLS profile would fail only after a viewer asks
+// for playback and leave an empty player.
+func validateFFmpegDecoder(ffmpeg, decoder, scope string) error {
+	out, err := exec.Command(ffmpeg, "-hide_banner", "-decoders").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s requires ffmpeg decoder %q: checking %q failed: %w", scope, decoder, ffmpeg, err)
+	}
+	if !regexp.MustCompile(`(?m)^\s*V\S*\s+` + regexp.QuoteMeta(decoder) + `\s`).Match(out) {
+		return fmt.Errorf("%s requires an ffmpeg build with %q decoder", scope, decoder)
 	}
 	return nil
 }
