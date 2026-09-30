@@ -458,15 +458,13 @@ export function RecordingDetail({
                   </select>
                 </label>
               )}
-              {!(liveProfile !== undefined && liveProfilesQuery.isPending) && (
-                <LivePlayer
-                  mode="original-vod"
-                  site={recording.site}
-                  recordingId={recording.id}
-                  profile={explicitLiveProfile}
-                  playbackProfile={preferredPlaybackProfile ?? explicitLiveProfile ?? liveProfiles[0]?.name}
-                />
-              )}
+              <LivePlayer
+                mode="original-vod"
+                site={recording.site}
+                recordingId={recording.id}
+                profile={explicitLiveProfile}
+                playbackProfile={preferredPlaybackProfile ?? ORIGINAL_PLAYBACK_PROFILE}
+              />
               <p className="text-muted-foreground">
                 原本 TS:{' '}
                 <a href={recordingFileURL(recording.id)} className="text-primary underline-offset-2 hover:underline">
@@ -673,6 +671,12 @@ export function RecordingDetail({
  * 先頭側に入るので、通常は 1 ページで足りる。再生できない行が 49 件以上続くと
  * はみ出し、その場合は「次のエピソード」が出ない（`lib/series.ts` の `nextEpisode`）。
  */
+/**
+ * encode profile が無い録画（原本だけの構成で最も多い）の再生位置キー。live の画質
+ * （選択で変わる）に依存させない --- 画質切替で保存キーが変わると「続きから」が別の場所になる。
+ */
+const ORIGINAL_PLAYBACK_PROFILE = 'original'
+
 const seriesNextPageSize = 50
 
 /**

@@ -1266,6 +1266,32 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
     expect(originalVODURLs(fetchMock)[1]).toContain('profile=sd')
   })
 
+  it('encode profile が無い録画は画質を切り替えても再生位置の保存キーが変わらない', async () => {
+    const user = userEvent.setup()
+    localStorage.clear()
+    createFakeServer({
+      recording: sampleRecording({ sizeBytes: 1_000_000, encodedAssets: [] }),
+      liveProfiles: LIVE_PROFILES,
+    })
+    renderAt('/recordings/3')
+    await screen.findByLabelText('画質')
+    await waitFor(() => expect(document.querySelector('video')).toBeInTheDocument())
+
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'currentTime', { value: 30, writable: true, configurable: true })
+    fireEvent.timeUpdate(video)
+    expect(localStorage.getItem('rokuban:playback:3:original')).toBe('30')
+
+    await user.selectOptions(screen.getByLabelText('画質'), 'sd')
+    await waitFor(() => expect(screen.getByLabelText('画質')).toHaveValue('sd'))
+    const after = document.querySelector('video')!
+    Object.defineProperty(after, 'currentTime', { value: 40, writable: true, configurable: true })
+    fireEvent.timeUpdate(after)
+    const keys = Object.keys(localStorage).filter((k) => k.startsWith('rokuban:playback:3:'))
+    expect(keys).toEqual(['rokuban:playback:3:original'])
+    expect(localStorage.getItem('rokuban:playback:3:original')).toBe('40')
+  })
+
   it('live profile が無い場合は HLS player を作らず、VLC リンクを残す', async () => {
     createFakeServer({
       recording: sampleRecording({ sizeBytes: 1_000_000, encodedAssets: [] }),
