@@ -124,6 +124,9 @@ function stubApi(
     if (url.pathname === '/api/rules' && method === 'GET') {
       return Promise.resolve(jsonResponse(state.filter((r) => !deletedIds.includes(r.id))))
     }
+    if (url.pathname === '/api/label-rules' && method === 'GET') {
+      return Promise.resolve(jsonResponse([]))
+    }
     if (url.pathname === '/api/reservations' && method === 'GET') {
       if (failures.reservations !== undefined) {
         return Promise.resolve(
@@ -439,6 +442,22 @@ describe('RulesPage 新規作成', () => {
     await screen.findByText('平日ニュース')
     const link = screen.getByRole('link', { name: 'このルールの録画' })
     expect(link).toHaveAttribute('href', '/recordings?ruleId=2')
+  })
+})
+
+describe('RulesPage シリーズ分類', () => {
+  it('同じページのシリーズ分類フォームを開ける', async () => {
+    stubApi([])
+    const user = userEvent.setup()
+    renderPage()
+
+    await screen.findByText('シリーズ分類')
+    await user.click(screen.getByRole('button', { name: '分類ルールを作成' }))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByRole('heading', { name: '分類ルールを作成' })).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('キーワード')).toHaveValue('')
+    expect(within(dialog).getByLabelText('棚のキー')).toHaveValue('')
   })
 })
 

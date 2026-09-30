@@ -70,7 +70,8 @@ func getShelves(t *testing.T, srvURL string, query url.Values) []RecordingShelf 
 }
 
 // 棚は実効シリーズごとにまとまり、表示名には代表の生タイトルを使う。
-// value は正規化されたキーなので表示名にならない。
+// value は正規化されたキーなので表示名にならない。count は生きている録画全体、
+// playableCount はそのうち再生できる録画だけを数える。
 func TestListRecordingShelves_GroupsByEffectiveSeries(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newAPIServer(t, pool)
@@ -88,22 +89,29 @@ func TestListRecordingShelves_GroupsByEffectiveSeries(t *testing.T) {
 	if shelves[0].Value == nil || *shelves[0].Value != "作品X" || shelves[0].Count != 2 {
 		t.Fatalf("first shelf = %+v, want 作品X with count 2", shelves[0])
 	}
+	if shelves[0].PlayableCount != 2 {
+		t.Errorf("playable count = %d, want 2", shelves[0].PlayableCount)
+	}
 	if shelves[0].Title != "アニメ　作品X　第2話" {
 		t.Errorf("shelf title = %q, want the representative's raw title", shelves[0].Title)
 	}
 	if shelves[0].RepresentativeId != newest {
 		t.Errorf("representative = %d, want %d (newest program_start_at)", shelves[0].RepresentativeId, newest)
 	}
+	if !shelves[0].LatestStartAt.Equal(base) {
+		t.Errorf("latest start = %s, want %s", shelves[0].LatestStartAt, base)
+	}
 }
 
-// 棚の母集団から、ごみ箱・superseded・再生できない録画が外れる。
-func TestListRecordingShelves_ExcludesUnplayable(t *testing.T) {
+// 棚の母集団は生きている録画全体。ごみ箱・superseded は外し、再生できない録画も
+// 棚には残す。再生できる件数は別列で返す。
+func TestListRecordingShelves_IncludesLivePopulation(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newAPIServer(t, pool)
 	ctx := context.Background()
 	base := time.Now().Truncate(time.Second)
 
-	kept := seedPlayableRecording(t, pool, "アニメ　作品X　第1話", 1, base)
+	seedPlayableRecording(t, pool, "アニメ　作品X　第1話", 1, base)
 
 	trashed := seedPlayableRecording(t, pool, "アニメ　作品X　第2話", 2, base.Add(time.Minute))
 	if _, err := pool.Exec(ctx, "UPDATE recordings SET deleted_at = now() WHERE id = $1", trashed); err != nil {
@@ -113,17 +121,26 @@ func TestListRecordingShelves_ExcludesUnplayable(t *testing.T) {
 	if _, err := pool.Exec(ctx, "UPDATE recordings SET superseded_at = now() WHERE id = $1", superseded); err != nil {
 		t.Fatalf("superseding: %v", err)
 	}
-	// 再生できる資産が無い録画（ingest されていない）。
+	// 再生できる資産が無い録画も、録画中・取り込み待ち・失敗を含めて棚に残す。
 	seedRecordingFull(t, pool, seedRecordingOpts{
-		title: "アニメ　作品X　第4話", start: base.Add(3 * time.Minute), status: "finished", eventID: 4,
+		title: "アニメ　作品X　第4話", start: base.Add(3 * time.Minute), status: "recording", eventID: 4,
+	})
+	seedRecordingFull(t, pool, seedRecordingOpts{
+		title: "アニメ　作品X　第5話", start: base.Add(4 * time.Minute), status: "finished", eventID: 5,
+	})
+	failed := seedRecordingFull(t, pool, seedRecordingOpts{
+		title: "アニメ　作品X　第6話", start: base.Add(5 * time.Minute), status: "failed", eventID: 6,
 	})
 
 	shelves := getShelves(t, srv.URL, url.Values{})
 	if len(shelves) != 1 {
-		t.Fatalf("shelves = %+v, want only 作品X", shelves)
+		t.Fatalf("shelves = %+v, want one live 作品X shelf", shelves)
 	}
-	if shelves[0].Count != 1 || shelves[0].RepresentativeId != kept {
-		t.Errorf("shelf = %+v, want count 1 and the surviving recording %d", shelves[0], kept)
+	if shelves[0].Count != 4 || shelves[0].PlayableCount != 1 || shelves[0].RepresentativeId != failed {
+		t.Errorf("shelf = %+v, want count 4, playable count 1, representative %d", shelves[0], failed)
+	}
+	if !shelves[0].LatestStartAt.Equal(base.Add(5 * time.Minute)) {
+		t.Errorf("latest start = %s, want %s", shelves[0].LatestStartAt, base.Add(5*time.Minute))
 	}
 }
 

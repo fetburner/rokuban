@@ -114,6 +114,7 @@ describe('routeTree', () => {
       '/programs',
       '/search',
       '/rules',
+      '/series',
       '/shelves',
       '/cm-logos',
       '/reservations',

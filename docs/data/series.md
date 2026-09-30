@@ -23,7 +23,7 @@ BS は未測定だが、地上波で常に空になる以上、記述子を正�
 
 - **自動キー** `series_key(title)` は immutable な SQL 関数である。記号除去と NFKC の後、区切り記号・話数で切る。枠名を 1 語飛ばしてから、最初の空白で切る。空・記号のみのタイトルでは NULL を返す
 - **分類ルール** `label_rules` はキーワード 1 つと値の組で、`priority DESC, id ASC` の順で先に当たったものが勝つ。同順位で勝者が不定だと、評価のたびに棚が入れ替わる
-- 分類ルールの値も自動キーと同じ正規化を通して比較する。値は棚の表示名ではなく棚のキーで、見出しには代表の録画の生のタイトルを出す
+- 分類ルールの値も自動キーと同じ正規化を通して比較する。画面のシリーズ名は実効キーを表示し、代表録画の生タイトルを補助表示する。キーを `ドラマ` のような短い値にしても過剰併合が隠れず、ルールを直す場所が見える
 - **値にも自動キーの正規化がかかるので、最初の空白などで切れる。** `NHK高校講座 数学I` と `NHK高校講座 化学` はどちらも `NHK高校講座` の棚になり、割るつもりのルールが同じ棚に落ちる（`ドラマ「半沢直樹」` は `ドラマ`）。値を棚のキーとして切り直す案は採らず、API が実効の棚キー（`valueKey`）を返し、一覧とフォームで食い違いを見せる
 - 値が正規化で NULL になるルールは作らせない（CHECK）。何も主張しないルールになる（不変条件 10）
 
@@ -90,12 +90,15 @@ LIKE のエスケープは SQL 関数に一本化する。分類ルールは DB 
 ### 実装で決めたこと
 
 - **値の正規化もキーワードの正規化も生成列で持つ。** `label_rule_winner` は録画 1 行ごとに呼ばれるので、キーワード側を毎回正規化すると (録画行 × ルール本) 回になる。73,000 行 × 50 本で 16.0 s → 0.95 s になった。**この 2 つは最適化ではなく前提**である
-- **棚のクエリはプランの形に依存する。** 候補の中央値も測る。
-  `playable` を `MATERIALIZED` にしない形を、`ROKUBAN_BENCH_DATABASE_URL` を使う `internal/api/shelves_bench_test.go` で prepared statement 経由で測る。
-  対象は 73,000 行・141 棚で、finished / recording / failed、再生資産の有無、deleted / superseded を混ぜる。
-  現行形、母集団を広げた LEFT JOIN + `FILTER` 形、`live` CTE を MATERIALIZED にした形を各 10 回比較する。現行 SQL の形はこの測定では変えない
+- **棚のクエリはプランの形に依存する。**
+  `playable` を `MATERIALIZED` にしない候補も、`ROKUBAN_BENCH_DATABASE_URL` を使う
+  `internal/api/shelves_bench_test.go` で prepared statement 経由の中央値を測る。
+  73,000 行・141 棚に finished / recording / failed、再生資産の有無、deleted /
+  superseded を混ぜる。現行形、母集団を広げた LEFT JOIN + `FILTER` 形、`live` CTE を
+  MATERIALIZED にした形を各 10 回比較する。現行 SQL の形はこの測定では変えない
 - **psql の単発実行を基準にしない。** prepared statement 経由のアプリと同じ pgx 接続で測り、環境変数が無い場合はテストをスキップする。候補の採用判断は測定ログの中央値と、再生可能件数・最新開始時刻の結果が一致することに基づく
-- **実効シリーズの定義は `recording_series` ビューの 1 箇所**で、棚のクエリもこれを JOIN する（`COALESCE(lr.value_key, r.series_key)` を書き下さない）。ビュー経由は書き下しより約 8% 遅い（合成 73,000 行・141 棚・ルール 50 本で約 223 ms 対 約 206 ms、この環境）。絶対値の 200 ms 予算は、この環境が元の測定より遅くて確認できていない（未測定）
+- **実効シリーズの定義は `recording_series` ビューの 1 箇所**で、棚のクエリもこれを JOIN する（`COALESCE(lr.value_key, r.series_key)` を書き下さない）。
+- **棚の母集団は生きている録画全体**（`deleted_at IS NULL AND superseded_at IS NULL`）とし、再生可能件数を別に返す。画面は `value` をシリーズ名、代表録画の生タイトルを補助表示に使い、`NULL` の棚は表示しない。`latestStartAt` は同じ集計から返す
 - **代表と件数は 1 回の集計で出す**（`array_agg` + `GROUP BY`）。`DISTINCT ON` と件数の集計を別の CTE に割ると同じ行をもう 1 度走査する（141 ms → 231 ms）
 - 値が `NULL` の棚は実効シリーズを起点に番組ハブを開けないので画面に出さない。API は件数によらず全部の棚を返す
 - 測定値（73,000 行、すべて再生可能、sqlc / pgx 経由）: 棚 141 ms / 一覧 50 件の `series` 列 10 ms / 全件再評価 0.86 s

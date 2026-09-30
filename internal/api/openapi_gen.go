@@ -1770,8 +1770,14 @@ type RecordingChaptersSource string
 
 // RecordingShelf defines model for RecordingShelf.
 type RecordingShelf struct {
-	// Count この棚に入る録画の件数。
+	// Count 生きている録画の件数（録画中・取り込み待ち・失敗を含む）。
 	Count int `json:"count"`
+
+	// LatestStartAt シリーズ内で最も新しい録画の番組開始時刻。常に UTC。
+	LatestStartAt time.Time `json:"latestStartAt"`
+
+	// PlayableCount この棚のうち、再生できる録画の件数。
+	PlayableCount int `json:"playableCount"`
 
 	// RepresentativeId 代表の録画の id。棚から録画一覧・番組ハブへ渡す起点。
 	RepresentativeId int64 `json:"representativeId"`
@@ -1779,8 +1785,7 @@ type RecordingShelf struct {
 	// Title 代表の録画の生のタイトル（見出しに使う）。
 	Title string `json:"title"`
 
-	// Value 棚のキー。null は実効シリーズを導出できなかった録画（UI は「その他」に
-	// まとめる）。
+	// Value 棚のキー。null は実効シリーズを導出できなかった録画（UI は表示しない）。
 	Value *string `json:"value,omitempty"`
 }
 
