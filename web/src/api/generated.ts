@@ -771,6 +771,12 @@ export interface Recording {
      * どのルールも当たらない録画。
      */
   series?: string | null;
+  /**
+     * タイトルから導出した自動シリーズキー（`recordings.series_key`）。
+     * 分類ルールが当たっても変わらない表示用の補助情報で、URL や絞り込みの
+     * 宛先には使わない。自動キーを導出できないタイトルでは null。
+     */
+  seriesKey?: string | null;
   /** 番組の放送開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。 */
   startAt: string;
   durationMs: number;

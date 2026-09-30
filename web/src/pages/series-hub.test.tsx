@@ -1,7 +1,7 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ProgramSearchMatch, Recording } from '@/api/generated'
+import type { LabelRule, ProgramSearchMatch, Recording, Rule } from '@/api/generated'
 import { SeriesHubPage } from '@/pages/series-hub'
 import { renderInRouter } from '@/test/router'
 
@@ -16,6 +16,8 @@ function jsonResponse(body: unknown, status = 200): Response {
 function recording(over: Partial<Recording> & { id: number }): Recording {
   return {
     title: `番組${over.id}`,
+    series: '作品X',
+    seriesKey: '作品X',
     startAt: '2026-09-01T12:00:00Z',
     durationMs: 1_800_000,
     site: 'default',
@@ -49,17 +51,42 @@ function program(over: Partial<ProgramSearchMatch>): ProgramSearchMatch {
   }
 }
 
+function labelRule(over: Partial<LabelRule> & { id: number }): LabelRule {
+  return {
+    key: 'series',
+    keyword: '作品',
+    value: '作品X',
+    valueKey: '作品X',
+    priority: 0,
+    createdAt: '2026-09-01T00:00:00Z',
+    updatedAt: '2026-09-01T00:00:00Z',
+    ...over,
+  } as LabelRule
+}
+
+function rule(over: Partial<Rule> & { id: number }): Rule {
+  return {
+    name: '毎週録画',
+    enabled: true,
+    priority: 0,
+    keepOriginal: 'always',
+    createdAt: '2026-09-01T00:00:00Z',
+    updatedAt: '2026-09-01T00:00:00Z',
+    ...over,
+  } as Rule
+}
+
 /**
- * stubApi は起点の録画・次回・シリーズの一覧を返す。
- *
- * `originStatus` は起点の単体 GET の状態。purge 済みの tombstone を表す 404 も、
- * 5xx も、同じ「単体 GET が返らない」形になるので、ここで切り替える。
+ * stubApi は起点の録画・次回・シリーズの一覧に加え、シリーズ identity と操作に
+ * 必要な分類ルール・録画ルールも返す。
  */
 function stubApi(
   origin: Recording,
   upcoming: ProgramSearchMatch[],
   series: Recording[],
   originStatus = 200,
+  labelRules: LabelRule[] = [],
+  rules: Rule[] = [],
 ) {
   const requested: string[] = []
   globalThis.fetch = vi.fn((input: string | URL | Request) => {
@@ -72,9 +99,13 @@ function stubApi(
       return Promise.resolve(jsonResponse(origin, originStatus))
     }
     if (url.pathname === '/api/recordings') {
-      // ハブの一覧は `?seriesOf=` が付いている。
       expect(url.searchParams.get('seriesOf')).toBe(String(origin.id))
       return Promise.resolve(jsonResponse(series))
+    }
+    if (url.pathname === '/api/label-rules') return Promise.resolve(jsonResponse(labelRules))
+    if (url.pathname === '/api/rules') return Promise.resolve(jsonResponse(rules))
+    if (url.pathname === '/api/label-rule-value-key') {
+      return Promise.resolve(jsonResponse({ valueKey: url.searchParams.get('value') ?? '' }))
     }
     throw new Error(`unexpected fetch: ${url.pathname}`)
   }) as unknown as typeof fetch
@@ -91,8 +122,8 @@ afterEach(() => {
 })
 
 describe('SeriesHubPage', () => {
-  it('見出しに起点の生のタイトルを出し、次回を site ごとに畳んで 1 行にする', async () => {
-    const origin = recording({ id: 5, title: 'アニメ　作品X　第1話', series: '作品X' })
+  it('実効シリーズを見出しに出し、次回を site ごとに畳んで 1 行にする', async () => {
+    const origin = recording({ id: 5, title: 'アニメ　作品X　第1話' })
     stubApi(
       origin,
       [
@@ -101,19 +132,16 @@ describe('SeriesHubPage', () => {
         program({ site: 'other', programId: 11 }),
         program({ startAt: '2026-10-07T12:00:00Z', programId: 22, name: 'アニメ　作品X　第3話' }),
       ],
-      [origin, recording({ id: 6, title: 'アニメ　作品X　第2話', series: '作品X' })],
+      [origin, recording({ id: 6, title: 'アニメ　作品X　第2話' })],
     )
     renderInRouter(<SeriesHubPage />, {
       path: '/recordings/$id/series',
       initialEntries: ['/recordings/5/series'],
     })
 
-    // 見出しは正規化キー（作品X）ではなく、起点の録画の生のタイトル。
-    const heading = await screen.findByRole('heading', { level: 2 })
-    expect(heading.textContent).toBe('アニメ　作品X　第1話')
+    expect(await screen.findByRole('heading', { level: 2, name: '作品X' })).toBeInTheDocument()
 
     const upcoming = await screen.findByRole('region', { name: '次回' })
-    // 同じ放送の 2 行は 1 行にまとまり、site はチップで出る。
     const first = await within(upcoming).findByText(
       (_, el) => el?.textContent === 'アニメ　作品X　第2話',
     )
@@ -122,21 +150,17 @@ describe('SeriesHubPage', () => {
     expect(within(row as HTMLElement).getByText('default')).toBeInTheDocument()
     expect(within(row as HTMLElement).getByText('other')).toBeInTheDocument()
     expect(within(upcoming).getAllByRole('listitem')).toHaveLength(2)
-    // 別の時刻の回は別の行。
     expect(
       within(upcoming).getByText((_, el) => el?.textContent === 'アニメ　作品X　第3話'),
     ).toBeInTheDocument()
   })
 
-  it('シリーズの録画を並べ、行から詳細へ辿れる', async () => {
-    const origin = recording({ id: 5, title: 'アニメ　作品X　第1話', series: '作品X', sizeBytes: 100 })
+  it('シリーズの録画を共有 RecordingRow で並べ、行から詳細へ辿れる', async () => {
+    const origin = recording({ id: 5, title: 'アニメ　作品X　第1話', sizeBytes: 100 })
     stubApi(
       origin,
       [],
-      [
-        origin,
-        recording({ id: 6, title: 'アニメ　作品X　第2話', series: '作品X', sizeBytes: 200 }),
-      ],
+      [origin, recording({ id: 6, title: 'アニメ　作品X　第2話', sizeBytes: 200 })],
     )
     renderInRouter(<SeriesHubPage />, {
       path: '/recordings/$id/series',
@@ -146,12 +170,11 @@ describe('SeriesHubPage', () => {
     const list = await screen.findByRole('region', { name: 'このシリーズの録画' })
     const link = await within(list).findByRole('link', { name: 'アニメ　作品X　第2話' })
     expect(link).toHaveAttribute('href', '/recordings/6')
-    // 次回が空なら節ごと出さない（言うことが無い見出しを置かない）。
     expect(screen.queryByRole('region', { name: '次回' })).not.toBeInTheDocument()
   })
 
   it('upcoming が 500 なら次回の節にエラーが出る', async () => {
-    const origin = recording({ id: 5, series: '作品X' })
+    const origin = recording({ id: 5 })
     globalThis.fetch = vi.fn((input: string | URL | Request) => {
       const url = new URL(String(input), 'http://localhost')
       if (url.pathname === '/api/recordings/5/upcoming') {
@@ -171,7 +194,7 @@ describe('SeriesHubPage', () => {
   })
 
   it('起点の録画が無ければエラーを出す', async () => {
-    const origin = recording({ id: 5, series: '作品X' })
+    const origin = recording({ id: 5 })
     stubApi(origin, [], [])
     globalThis.fetch = vi.fn((input: string | URL | Request) => {
       const url = new URL(String(input), 'http://localhost')
@@ -189,63 +212,45 @@ describe('SeriesHubPage', () => {
     await waitFor(() => expect(screen.getByText('録画が見つかりません')).toBeInTheDocument())
   })
 
-  // 起点の単体 GET は purged の tombstone を除く（`queryRecordingByID` の契約）が、
-  // 一覧（`?seriesOf=`）と次回は行が残るのでシリーズを返す。この差で purged を
-  // 見分ける。**このテストは、404 で画面全体をエラーにしていた実装で落ちる。**
-  it('起点が purge 済み（単体 GET が 404）でも、一覧と次回を出す', async () => {
+  it('起点が purge 済みでも一覧と次回を出し、戻る先を一覧にする', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
-    const origin = recording({ id: 5, title: 'アニメ　作品X　第1話', series: '作品X' })
+    const origin = recording({ id: 5, title: 'アニメ　作品X　第1話' })
     const { requested } = stubApi(
       origin,
       [program({ programId: 11, name: 'アニメ　作品X　第3話' })],
       [
-        recording({ id: 6, title: 'アニメ　作品X　第2話', series: '作品X' }),
-        recording({ id: 4, title: 'アニメ　作品X　第1話', series: '作品X' }),
+        recording({ id: 6, title: 'アニメ　作品X　第2話' }),
+        recording({ id: 4, title: 'アニメ　作品X　第1話' }),
       ],
       404,
     )
-    renderInRouter(<SeriesHubPage />, {
+    const { router } = renderInRouter(<SeriesHubPage />, {
       path: '/recordings/$id/series',
       initialEntries: ['/recordings/5/series'],
     })
-    // 404 は再試行しない（既定なら backoff 1+2+4 秒で計 4 回になる）。
     await vi.advanceTimersByTimeAsync(10_000)
     expect(originFetches(requested)).toBe(1)
+    expect(await screen.findByRole('heading', { level: 2, name: '作品X' })).toBeInTheDocument()
+    expect(await screen.findByRole('region', { name: '次回' })).toBeInTheDocument()
 
-    // 見出しは起点ではなく、一覧の先頭（最も新しい回）の生のタイトル。
-    const heading = await screen.findByRole('heading', { level: 2 })
-    expect(heading.textContent).toBe('アニメ　作品X　第2話')
-
-    const list = await screen.findByRole('region', { name: 'このシリーズの録画' })
-    expect(await within(list).findByRole('link', { name: 'アニメ　作品X　第1話' })).toHaveAttribute(
-      'href',
-      '/recordings/4',
-    )
-    expect(
-      await screen.findByRole('region', { name: '次回' }),
-    ).toBeInTheDocument()
-    // 戻る先は起点の詳細ではない（そちらも 404 になる）。
-    expect(screen.getByRole('link', { name: '戻る' })).toHaveAttribute('href', '/recordings')
+    fireEvent.click(screen.getByRole('button', { name: '戻る' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/recordings'))
   })
 
-  // 一覧が空でも次回があれば、ハブは開く（見出しは次回の生のタイトル）。
-  it('起点が purge 済みで一覧が空でも、次回があれば見出しを次回で出す', async () => {
-    const origin = recording({ id: 5, title: 'アニメ　作品X　第1話', series: '作品X' })
+  it('起点が purge 済みで一覧が空でも、次回は表示する', async () => {
+    const origin = recording({ id: 5, title: 'アニメ　作品X　第1話' })
     stubApi(origin, [program({ programId: 11, name: 'アニメ　作品X　第2話' })], [], 404)
     renderInRouter(<SeriesHubPage />, {
       path: '/recordings/$id/series',
       initialEntries: ['/recordings/5/series'],
     })
 
-    const heading = await screen.findByRole('heading', { level: 2 })
-    expect(heading.textContent).toBe('アニメ　作品X　第2話')
-    await screen.findByRole('region', { name: '次回' })
+    expect(await screen.findByRole('region', { name: '次回' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { level: 2, name: 'アニメ　作品X　第2話' })).not.toBeInTheDocument()
   })
 
-  // 一覧も次回も 0 件なら、purged の起点と存在しない id を区別できない。
-  // このときだけ「見つかりません」に落とす（受け入れた限界）。
   it('起点が purge 済みで一覧も次回も空ならエラーを出す', async () => {
-    const origin = recording({ id: 5, series: '作品X' })
+    const origin = recording({ id: 5 })
     stubApi(origin, [], [], 404)
     renderInRouter(<SeriesHubPage />, {
       path: '/recordings/$id/series',
@@ -256,16 +261,14 @@ describe('SeriesHubPage', () => {
     expect(screen.queryByRole('region', { name: 'このシリーズの録画' })).not.toBeInTheDocument()
   })
 
-  // 一覧が 500 のとき「0 件」は判断材料にならない（行が残っているかもしれない）。
-  // `nothingToShow` の `!isError` を外すと「見つかりません」に落ちる。
-  it('起点が purge 済みで一覧が 500・次回が空なら、一覧の節にエラーを出す', async () => {
-    const origin = recording({ id: 5, series: '作品X' })
+  it('起点が purge 済みで一覧が 500 なら一覧の節にエラーを出す', async () => {
+    const origin = recording({ id: 5 })
     globalThis.fetch = vi.fn((input: string | URL | Request) => {
       const url = new URL(String(input), 'http://localhost')
       if (url.pathname === '/api/recordings/5/upcoming') return Promise.resolve(jsonResponse([]))
       if (url.pathname === '/api/recordings/5') return Promise.resolve(jsonResponse(origin, 404))
       if (url.pathname === '/api/recordings') return Promise.resolve(jsonResponse({}, 500))
-      throw new Error(`unexpected fetch: ${url.pathname}`)
+      return Promise.resolve(jsonResponse([]))
     }) as unknown as typeof fetch
     renderInRouter(<SeriesHubPage />, {
       path: '/recordings/$id/series',
@@ -278,14 +281,13 @@ describe('SeriesHubPage', () => {
     expect(screen.queryByText('録画が見つかりません')).not.toBeInTheDocument()
   })
 
-  // 404 以外のエラーは purged と見なさない。一覧が返っていても開かない。
   it('起点の取得が 500 なら purged と見なさずエラーを出す', async () => {
-    const origin = recording({ id: 5, title: 'アニメ　作品X　第1話', series: '作品X' })
+    const origin = recording({ id: 5, title: 'アニメ　作品X　第1話' })
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const { requested } = stubApi(
       origin,
       [],
-      [recording({ id: 6, title: 'アニメ　作品X　第2話', series: '作品X' })],
+      [recording({ id: 6, title: 'アニメ　作品X　第2話' })],
       500,
     )
     renderInRouter(<SeriesHubPage />, {
@@ -293,12 +295,148 @@ describe('SeriesHubPage', () => {
       initialEntries: ['/recordings/5/series'],
     })
 
-    // 404 以外は起点クエリの再試行（3 回。テストの QueryClient の retry: false より
-    // クエリ側の設定が勝つ）を経てから出る。backoff（1+2+4 秒）は偽の時計で進める。
     await vi.advanceTimersByTimeAsync(10_000)
     await waitFor(() => expect(screen.getByText('録画が見つかりません')).toBeInTheDocument())
     expect(screen.queryByRole('region', { name: 'このシリーズの録画' })).not.toBeInTheDocument()
-    // 初回 + 再試行 3 回。retry の行を消すと 1 回になる。
     expect(originFetches(requested)).toBe(4)
+  })
+
+  it('手動棚では実効シリーズと手動バッジ、自動キーの別名を表示する', async () => {
+    const origin = recording({ id: 5, series: '日本史', seriesKey: 'NHK高校講座' })
+    stubApi(
+      origin,
+      [],
+      [
+        origin,
+        recording({ id: 6, series: '日本史', seriesKey: 'NHK高校講座 数学I', startAt: '2026-09-02T12:00:00Z' }),
+      ],
+      200,
+      [labelRule({ id: 1, keyword: '日本史', value: '日本史', valueKey: '日本史' })],
+    )
+    renderInRouter(<SeriesHubPage />, {
+      path: '/recordings/$id/series',
+      initialEntries: ['/recordings/5/series'],
+    })
+
+    expect(await screen.findByRole('heading', { level: 2, name: '日本史' })).toBeInTheDocument()
+    expect(within(screen.getByRole('region', { name: 'シリーズ情報' })).getByText('手動')).toBeInTheDocument()
+    expect(screen.getByText('自動: NHK高校講座 数学I（ほか 1）')).toBeInTheDocument()
+  })
+
+  it('最新の録画が recording/failed でも、再生できる最新話へリンクする', async () => {
+    const oldPlayable = recording({
+      id: 4,
+      title: '作品X 第1話',
+      startAt: '2026-09-01T12:00:00Z',
+      sizeBytes: 100,
+    })
+    const latestRecording = recording({
+      id: 6,
+      title: '作品X 第3話',
+      startAt: '2026-09-03T12:00:00Z',
+      status: 'recording',
+    })
+    const failed = recording({
+      id: 5,
+      title: '作品X 第2話',
+      startAt: '2026-09-02T12:00:00Z',
+      status: 'failed',
+    })
+    stubApi(latestRecording, [], [latestRecording, failed, oldPlayable])
+    renderInRouter(<SeriesHubPage />, {
+      path: '/recordings/$id/series',
+      initialEntries: ['/recordings/6/series'],
+    })
+
+    const play = await screen.findByRole('link', { name: '最新話を再生' })
+    expect(play).toHaveAttribute('href', '/recordings/4')
+    expect(screen.queryByText('続きから')).not.toBeInTheDocument()
+  })
+
+  it('現行の録画ルールがあればルールへの導線を表示する', async () => {
+    const origin = recording({ id: 5, ruleId: 7, sizeBytes: 100 })
+    stubApi(origin, [], [origin], 200, [], [rule({ id: 7, name: '夜のニュース' })])
+    renderInRouter(<SeriesHubPage />, {
+      path: '/recordings/$id/series',
+      initialEntries: ['/recordings/5/series'],
+    })
+
+    const link = await screen.findByRole('link', { name: 'ルール「夜のニュース」で毎回録画中' })
+    expect(link).toHaveAttribute('href', '/search?ruleId=7')
+    expect(screen.queryByText('毎回録画する')).not.toBeInTheDocument()
+  })
+
+  it('現行ルールが無ければ番組名と起点サービスを検索条件へ渡す', async () => {
+    const origin = recording({ id: 5, series: '作品X', seriesKey: '作品X', sizeBytes: 100 })
+    stubApi(origin, [], [origin])
+    renderInRouter(<SeriesHubPage />, {
+      path: '/recordings/$id/series',
+      initialEntries: ['/recordings/5/series'],
+    })
+
+    const link = await screen.findByRole('link', { name: '毎回録画する' })
+    const url = new URL(link.getAttribute('href') ?? '', 'http://localhost')
+    const condition = JSON.parse(url.searchParams.get('cond') ?? '{}') as {
+      textMatches?: unknown[]
+      services?: unknown[]
+    }
+    expect(condition.textMatches).toEqual([
+      { target: 'name', mode: 'keyword', value: '作品X' },
+    ])
+    expect(condition.services).toEqual([{ networkId: 32678, serviceId: 5168 }])
+  })
+
+  it('新しい順と古い順の切り替えを API の order に反映する', async () => {
+    const origin = recording({ id: 5 })
+    const { requested } = stubApi(origin, [], [origin])
+    renderInRouter(<SeriesHubPage />, {
+      path: '/recordings/$id/series',
+      initialEntries: ['/recordings/5/series'],
+    })
+
+    await screen.findByRole('region', { name: 'このシリーズの録画' })
+    expect(requested.some((request) => request.includes('order=desc'))).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: '古い順' }))
+    await waitFor(() => expect(requested.some((request) => request.includes('order=asc'))).toBe(true))
+  })
+
+  it('overflow からシリーズ軸の分類フォームを開く', async () => {
+    const origin = recording({ id: 5, series: '作品X' })
+    stubApi(origin, [], [origin])
+    renderInRouter(<SeriesHubPage />, {
+      path: '/recordings/$id/series',
+      initialEntries: ['/recordings/5/series'],
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'シリーズのその他の操作' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: '分類を直す（割る・指定する）' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByRole('textbox', { name: '棚のキー' })).toHaveValue('作品X')
+  })
+
+  it('履歴があれば戻り、直接開いた場合は起点の詳細へ戻す', async () => {
+    const origin = recording({ id: 5 })
+    stubApi(origin, [], [origin])
+    const { router } = renderInRouter(<SeriesHubPage />, {
+      path: '/recordings/$id/series',
+      initialEntries: ['/recordings', '/recordings/5/series'],
+    })
+
+    await screen.findByRole('heading', { level: 2, name: '作品X' })
+    fireEvent.click(screen.getByRole('button', { name: '戻る' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/recordings'))
+  })
+
+  it('直接開いた purged でないハブは起点の詳細へ戻す', async () => {
+    const origin = recording({ id: 5 })
+    stubApi(origin, [], [origin])
+    const { router } = renderInRouter(<SeriesHubPage />, {
+      path: '/recordings/$id/series',
+      initialEntries: ['/recordings/5/series'],
+    })
+
+    await screen.findByRole('heading', { level: 2, name: '作品X' })
+    fireEvent.click(screen.getByRole('button', { name: '戻る' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/recordings/5'))
   })
 })
