@@ -100,24 +100,24 @@ func (w *CMLogoCandidateWorker) Work(ctx context.Context, job *river.Job[jobs.CM
 
 	item, err := q.GetCMDetectionWorkItem(ctx, args.RecordingID)
 	if err != nil {
-		return w.fail(ctx, args, cmFailure("setup", fmt.Errorf("loading analysis recording: %w", err)))
+		return w.fail(args, cmFailure("setup", fmt.Errorf("loading analysis recording: %w", err)))
 	}
 	if item.NetworkID != args.NetworkID || item.ServiceID != args.ServiceID {
-		return w.fail(ctx, args, cmFailure("setup", fmt.Errorf("analysis recording belongs to another station")))
+		return w.fail(args, cmFailure("setup", fmt.Errorf("analysis recording belongs to another station")))
 	}
 	if item.IsTrashed || item.OriginalMissing || item.RelPath == nil {
-		return w.fail(ctx, args, cmFailure("setup", fmt.Errorf("active original is missing")))
+		return w.fail(args, cmFailure("setup", fmt.Errorf("active original is missing")))
 	}
 
 	workCtx, cancel := context.WithTimeout(ctx, cmDetectionTimeout(item.ProgramDurationMs))
 	defer cancel()
 	if err := w.analyze(workCtx, job.ID, item, area, args); err != nil {
-		return w.fail(ctx, args, err)
+		return w.fail(args, err)
 	}
 	return nil
 }
 
-func (w *CMLogoCandidateWorker) fail(ctx context.Context, args jobs.CMLogoCandidateJobArgs, err error) error {
+func (w *CMLogoCandidateWorker) fail(args jobs.CMLogoCandidateJobArgs, err error) error {
 	message := err.Error()
 	stage := cmFailureStage(err)
 	failureCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

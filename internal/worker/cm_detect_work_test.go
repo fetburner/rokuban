@@ -131,9 +131,9 @@ func newFakeCMTools(t *testing.T, lgd []byte, chapterExit int, cutAVS, videoSeco
 
 // newFakeCMToolsWithSize は記録上の大きさ（ffprobe の stream=width,height の答え）を
 // 指定できる版。CMDetectWorker は logoframe の前に大きさを 1 回引く。
-func newFakeCMToolsWithSize(t *testing.T, lgd []byte, chapterExit int, cutAVS, videoSeconds, size string) cmToolset {
+func newFakeCMToolsWithSize(t *testing.T, lgd []byte, cutAVS, videoSeconds, size string) cmToolset {
 	t.Helper()
-	return newFakeCMToolsWithSizeAndReport(t, lgd, chapterExit, cutAVS, videoSeconds, size, "managed logo: v0001 match=90.00% threshold=0%")
+	return newFakeCMToolsWithSizeAndReport(t, lgd, 0, cutAVS, videoSeconds, size, "managed logo: v0001 match=90.00% threshold=0%")
 }
 
 // newFakeCMToolsWithSizeAndReport は logoframe の成功出力を差し替えられる版。
@@ -198,22 +198,6 @@ func ffprobeSizeJSON(size string) string {
 	w, h, _ := strings.Cut(size, "x")
 	stream := fmt.Sprintf(`{"width": %s, "height": %s}`, w, h)
 	return fmt.Sprintf(`{"programs": [{"streams": [%s]}], "stream_groups": [], "streams": [%s]}`, stream, stream)
-}
-
-// logoframeSawArea は logoframe に渡された -logo-area の値（無ければ空文字）を返す。
-func logoframeSawArea(t *testing.T, tools cmToolset) string {
-	t.Helper()
-	data, err := os.ReadFile(tools.logoframeArgs)
-	if err != nil {
-		t.Fatalf("reading logoframe arguments: %v", err)
-	}
-	args := strings.Split(strings.TrimSpace(string(data)), "\n")
-	for i, arg := range args {
-		if arg == "-logo-area" && i+1 < len(args) {
-			return args[i+1]
-		}
-	}
-	return ""
 }
 
 func newCMDetectTestWorker(pool *pgxpool.Pool, mediaDir string, tools cmToolset) *CMDetectWorker {
@@ -316,7 +300,7 @@ func TestCMDetectWorkPassesTaughtLogoAreaToLogoframe(t *testing.T) {
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	id := seedCMRecording(t, pool, mediaDir, 920)
-	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000", "1440x1080")
+	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "Trim(0,299)", "10.010000", "1440x1080")
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO cm_logo_areas (network_id, service_id, x, y, w, h, coded_width, coded_height)
 		VALUES (32736, 1024, 1180, 24, 240, 96, 1440, 1080)`); err != nil {
@@ -351,7 +335,7 @@ func TestCMDetectWorkRejectsTaughtAreaWithOtherResolution(t *testing.T) {
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	id := seedCMRecording(t, pool, mediaDir, 921)
-	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000", "1920x1080")
+	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "Trim(0,299)", "10.010000", "1920x1080")
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO cm_logo_areas (network_id, service_id, x, y, w, h, coded_width, coded_height)
 		VALUES (32736, 1024, 1180, 24, 240, 96, 1440, 1080)`); err != nil {
@@ -395,7 +379,7 @@ func TestCMLogoCandidateWorkerCreatesReadyCandidateFromEmptyLogoDir(t *testing.T
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	id := seedCMRecording(t, pool, mediaDir, 926)
-	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000", "1440x1080")
+	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "Trim(0,299)", "10.010000", "1440x1080")
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO cm_logo_areas (network_id, service_id, x, y, w, h, coded_width, coded_height)
 		VALUES (32736, 1024, 1180, 24, 240, 96, 1440, 1080)`); err != nil {
@@ -440,7 +424,7 @@ func TestCMLogoCandidateWorkerMarksResolutionMismatchFailed(t *testing.T) {
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	id := seedCMRecording(t, pool, mediaDir, 927)
-	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000", "1920x1080")
+	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "Trim(0,299)", "10.010000", "1920x1080")
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO cm_logo_areas (network_id, service_id, x, y, w, h, coded_width, coded_height)
 		VALUES (32736, 1024, 1180, 24, 240, 96, 1440, 1080)`); err != nil {
@@ -474,7 +458,7 @@ func TestCMDetectWorkRejectsLearnedLogoWithOtherResolution(t *testing.T) {
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	id := seedCMRecording(t, pool, mediaDir, 922)
-	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000", "1920x1080")
+	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "Trim(0,299)", "10.010000", "1920x1080")
 	if err := sqlcgen.New(pool).UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
 		NetworkID: 32736, ServiceID: 1024, Lgd: buildTestLGD(4, 3, 1000, 4080),
 		LearnedFrom: &id, CodedWidth: 1440, CodedHeight: 1080,
