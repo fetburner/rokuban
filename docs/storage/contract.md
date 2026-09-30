@@ -104,7 +104,7 @@ directory の作成・削除と lock file の read-write を許すことを先�
 （`-depth` を暗黙に有効にする）ので `-exec rm` を使う。
 
 ```bash
-find "$MEDIA_ROOT" -path "$MEDIA_ROOT/.rokuban-locks" -prune -o \
+find "$MEDIA_ROOT" -type d -name .rokuban-locks -prune -o \
   -type f -name '.rokuban-rel-path-lock-*.lock' -exec rm -- {} +
 ```
 
