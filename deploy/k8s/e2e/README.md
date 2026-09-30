@@ -207,6 +207,13 @@ F1.3 で original が削除されて FAIL になる。
 fixture に有効な thumbnail と seek_tiles を入れてあるので、original を守るのはこの条件だけである。
 F2.2 は期待した `program_id` の mirakc schedule を照合するため、単に worker が起きたことでは PASS しない。
 
+kind での実測は次のとおり（arm64 の Docker で 1 回）。
+F1.1 から F1.4 は PASS した。
+F2.1 の前提になる予約 seed は、通常判定 1.7 と同じ理由で届かず FAIL した。
+この環境では ruler の pass が `desired=0` を返しており、原因は未調査である。
+そのため F2.2（DB 断中に失った schedule の復元）は kind で未検証である。
+F2 の切断と復元だけを別に実行すると、`readyz` は 503 から 200 へ戻った。
+
 API restart、NOTIFY/SSE 欠落、media mount 遅延、mirakc 再起動はこの suite では注入しない。
 どれも「fixture を作って故障を起こし、durable な状態の収束を DB と API で判定する」形に収まらない。
 収束の判定基準が故障ごとに別で、状態遷移の期待値を先に決める必要があるためである。
