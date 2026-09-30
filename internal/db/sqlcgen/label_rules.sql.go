@@ -230,7 +230,7 @@ type ListRecordingShelvesRow struct {
 // 中央値（Apple M3 Max・PostgreSQL 16.2、3 回実行）:
 //
 //   - (a) この形: 269〜280 ms
-//   - (a') この形から playable の MATERIALIZED を外す: 248〜260 ms（(a) の 0.92〜0.93 倍。レビュー側の実行では 0.94〜0.96）
+//   - (a') この形から playable の MATERIALIZED を外す: 248〜260 ms（(a) の 0.92〜0.96 倍）
 //   - (b) 生きている録画 + playable_assets の LEFT JOIN + count FILTER + max(program_start_at):
 //     282〜289 ms（(a) の 1.03〜1.05 倍）
 //   - (b') (b) の live を MATERIALIZED にする: 294〜310 ms（(a) の 1.09〜1.12 倍。(b) より遅い）
