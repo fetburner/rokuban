@@ -9,7 +9,7 @@ import { programTitle } from '@/lib/program-labels'
 import { sourceLabels } from '@/lib/recording-search'
 import { cn } from '@/lib/utils'
 
-/** 表示形式は録画一覧とシリーズページで共有する。 */
+/** RecordingRowView は録画一覧とシリーズページで共有する表示形式。`card` はサムネイルを大きく並べる。 */
 export type RecordingRowView = 'list' | 'card'
 
 /**
@@ -22,32 +22,34 @@ export type RecordingRowView = 'list' | 'card'
  * 抱える理由が無くなった。ごみ箱・`encodedAssets` が空の行も同じく詳細へリンクし、
  * 再生系の出し分け（`deleted_at` / encoded の有無）は詳細側の規律に任せる。
  *
- * 選択関連の props は編集モードを持たないシリーズページから省略できる。
+ * 選択関連の props（selecting / selected / onToggle）だけは編集モードを持たない
+ * シリーズページから省略できる。他は権威（`useLiveEnabled` /
+ * `shouldShowRecordingSite` 等）が呼び出し側にあるので必須にする。
  */
 export function RecordingRow({
   recording,
-  trash = false,
-  showSite = false,
-  view = 'list',
+  trash,
+  showSite,
+  view,
   selecting = false,
   selected = false,
   onToggle = () => undefined,
-  liveEnabled = false,
+  liveEnabled,
 }: {
   recording: Recording
-  trash?: boolean
+  trash: boolean
   /** レジストリと読み込み済み録画の site の和集合が 2 件以上のときに出す。 */
-  showSite?: boolean
+  showSite: boolean
   /**
    * `card` はサムネイルを大きく縦に積む。**出す情報は list と同じ**で、
    * 変えるのは並べ方だけ --- 表示形式ごとに出す事実を変えると、切り替えた
    * ときに「見えていたはずのもの」が黙って消える。
    */
-  view?: RecordingRowView
+  view: RecordingRowView
   selecting?: boolean
   selected?: boolean
   onToggle?: () => void
-  liveEnabled?: boolean
+  liveEnabled: boolean
 }) {
   const [thumbFailed, setThumbFailed] = useState(false)
   const card = view === 'card'

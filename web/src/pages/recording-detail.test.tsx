@@ -1,8 +1,8 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { EncodeProfileSummary, LiveProfileSummary, Recording, Rule } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
@@ -208,6 +208,17 @@ function createFakeServer(options: {
     }
     if (
       /^\/api\/sites\/[^/]+\/recordings\/\d+\/chase(?:\/offset\/\d+)?\/leave$/.test(url.pathname) &&
+      method === 'POST'
+    ) {
+      return Promise.resolve(new Response(null, { status: 204 }))
+    }
+    if (/^\/api\/sites\/[^/]+\/recordings\/\d+\/original-vod\/playlist\.m3u8$/.test(url.pathname)) {
+      return Promise.resolve(
+        new Response('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\nhd.0.m3u8\n', { status: 200 }),
+      )
+    }
+    if (
+      /^\/api\/sites\/[^/]+\/recordings\/\d+\/original-vod\/leave$/.test(url.pathname) &&
       method === 'POST'
     ) {
       return Promise.resolve(new Response(null, { status: 204 }))
@@ -1112,7 +1123,7 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
     fireEvent.canPlay(video)
     video.currentTime = 12
     fireEvent.timeUpdate(video)
-    expect(localStorage.getItem('rokuban:playback:3:vod-h264')).toBe('12')
+    expect(localStorage.getItem('rokuban:playback:3:original')).toBe('12')
     expect(localStorage.getItem('rokuban:playback:3:sd')).toBeNull()
   })
 
@@ -1210,5 +1221,131 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
     await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
     expect(chasePlaylistURLs(fetchMock)[0]).toContain('profile=sd')
     expect(chaseLeaveURLs(fetchMock)).toEqual([])
+  })
+})
+
+describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
+  // アサーションが落ちても保存位置を次のテストへ持ち越さない
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  const LIVE_PROFILES: LiveProfileSummary[] = [
+    { name: 'hd', height: 720 },
+    { name: 'sd', height: 480 },
+  ]
+
+  function originalVODURLs(fetchMock: { mock: { calls: [string | URL | Request, RequestInit?][] } }) {
+    return fetchMock.mock.calls
+      .map(([url]) => String(url))
+      .filter((url) => url.includes('/original-vod/playlist.m3u8'))
+  }
+
+  it('エンコードの無い完成録画は HLS で原本を再生し、プロファイルを同じ recording URL に渡す', async () => {
+    const user = userEvent.setup()
+    const { fetchMock } = createFakeServer({
+      recording: sampleRecording({
+        sizeBytes: 1_000_000,
+        encodeProfiles: ['vod-h264'],
+        encodedAssets: [],
+      }),
+      liveProfiles: LIVE_PROFILES,
+    })
+
+    renderAt('/recordings/3')
+
+    expect(await screen.findByRole('region', { name: '原本 TS をブラウザ再生' })).toBeInTheDocument()
+    expect(await screen.findByLabelText('画質')).toHaveValue('hd')
+    await waitFor(() => expect(originalVODURLs(fetchMock)).toHaveLength(1))
+    expect(originalVODURLs(fetchMock)[0]).toBe(
+      '/api/sites/default/recordings/3/original-vod/playlist.m3u8',
+    )
+    expect(screen.getByRole('link', { name: /ダウンロード \/ VLC/ })).toHaveAttribute(
+      'href',
+      '/api/media/recordings/3/file',
+    )
+    expect(screen.queryByText('ブラウザ再生用のエンコードがまだありません。')).not.toBeInTheDocument()
+
+    await user.selectOptions(screen.getByLabelText('画質'), 'sd')
+    await waitFor(() => expect(originalVODURLs(fetchMock)).toHaveLength(2))
+    expect(originalVODURLs(fetchMock)[1]).toContain('profile=sd')
+  })
+
+  it('encode profile が無い録画は画質を切り替えても再生位置の保存キーが変わらない', async () => {
+    const user = userEvent.setup()
+    localStorage.clear()
+    createFakeServer({
+      recording: sampleRecording({ sizeBytes: 1_000_000, encodedAssets: [] }),
+      liveProfiles: LIVE_PROFILES,
+    })
+    renderAt('/recordings/3')
+    await screen.findByLabelText('画質')
+    await waitFor(() => expect(document.querySelector('video')).toBeInTheDocument())
+
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'currentTime', { value: 30, writable: true, configurable: true })
+    fireEvent.timeUpdate(video)
+    expect(localStorage.getItem('rokuban:playback:3:original')).toBe('30')
+
+    await user.selectOptions(screen.getByLabelText('画質'), 'sd')
+    await waitFor(() => expect(screen.getByLabelText('画質')).toHaveValue('sd'))
+    const after = document.querySelector('video')!
+    Object.defineProperty(after, 'currentTime', { value: 40, writable: true, configurable: true })
+    fireEvent.timeUpdate(after)
+    const keys = Object.keys(localStorage).filter((k) => k.startsWith('rokuban:playback:3:'))
+    expect(keys).toEqual(['rokuban:playback:3:original'])
+    expect(localStorage.getItem('rokuban:playback:3:original')).toBe('40')
+  })
+
+  /**
+   * 受け入れ「追っかけ / 原本 VOD の切替で録画 ID と再生位置の対応が壊れない」。
+   * encode profile が無い録画でも、録画中に追っかけで保存した位置を録画終了後の
+   * 原本 VOD が読む。キーの文字列ではなく、保存と復元が噛み合うことを見る。
+   */
+  it('encode profile の構成に依らず、追っかけで保存した位置を原本 VOD が復元する', async () => {
+    localStorage.clear()
+    const now = Date.now()
+    const recording = sampleRecording({
+      startAt: new Date(now - 60 * 60_000).toISOString(),
+      startedAt: new Date(now - 2 * 60_000).toISOString(),
+      durationMs: 2 * 60 * 60_000,
+      sizeBytes: 1_000_000,
+      encodedAssets: [],
+      encodeProfiles: ['cut', 'h264'],
+    })
+    createFakeServer({ recording: { ...recording, status: 'recording' }, liveProfiles: LIVE_PROFILES })
+    renderAt('/recordings/3#chase')
+    await screen.findByRole('region', { name: '追っかけ再生' })
+    await waitFor(() => expect(document.querySelector('video')).toBeInTheDocument())
+    const chaseVideo = document.querySelector('video')!
+    Object.defineProperty(chaseVideo, 'currentTime', { value: 42, writable: true, configurable: true })
+    fireEvent.timeUpdate(chaseVideo)
+    cleanup()
+
+    createFakeServer({ recording: { ...recording, status: 'finished' }, liveProfiles: LIVE_PROFILES })
+    renderAt('/recordings/3')
+    await screen.findByRole('region', { name: '原本 TS をブラウザ再生' })
+    await waitFor(() => expect(document.querySelector('video')).toBeInTheDocument())
+    const vodVideo = document.querySelector('video')!
+    Object.defineProperty(vodVideo, 'currentTime', { value: 0, writable: true, configurable: true })
+    fireEvent.loadedMetadata(vodVideo)
+    expect(vodVideo.currentTime).toBe(42)
+  })
+
+  it('live profile が無い場合は HLS player を作らず、VLC リンクを残す', async () => {
+    createFakeServer({
+      recording: sampleRecording({ sizeBytes: 1_000_000, encodedAssets: [] }),
+      liveProfiles: [],
+    })
+
+    renderAt('/recordings/3')
+
+    expect(await screen.findByText(/HLS 再生プロファイルを利用できません/)).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: '再生' })).not.toBeInTheDocument()
+    expect(document.querySelector('video')).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /VLC 等で開く/ })).toHaveAttribute(
+      'href',
+      '/api/media/recordings/3/file',
+    )
   })
 })

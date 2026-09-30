@@ -332,6 +332,43 @@ func TestBuildChaseFFmpegArgsUsesGrowingEventPlaylist(t *testing.T) {
 	}
 }
 
+func TestBuildOriginalVODFFmpegArgsRetainsSeekableVODOutput(t *testing.T) {
+	profiles := []LiveProfile{
+		{Name: "hd", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
+		{Name: "sd", VideoCodec: "libx264", AudioCodec: "aac", Height: 480, SegmentSeconds: 2, PlaylistSize: 6},
+	}
+	for _, tc := range []struct {
+		name     string
+		captions bool
+		withSubs bool
+	}{
+		{name: "audio renditions", captions: false},
+		{name: "captions and subtitles", captions: true, withSubs: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := BuildOriginalVODFFmpegArgs(LiveConfig{Captions: tc.captions, Profiles: profiles}, "/tmp/original-vod", tc.withSubs)
+			joined := strings.Join(args, " ")
+			for _, want := range []string{"-hls_playlist_type event", "-hls_list_size 0", "-hls_flags temp_file", "-hls_base_url segments/"} {
+				if !strings.Contains(joined, want) {
+					t.Errorf("args = %q, want %q", joined, want)
+				}
+			}
+			if strings.Contains(joined, "-hls_playlist_type vod") {
+				t.Errorf("args = %q, vod writes no playlist until ffmpeg exits", joined)
+			}
+			if strings.Contains(joined, "delete_segments") {
+				t.Errorf("args = %q, VOD segments must be retained until idle GC", joined)
+			}
+			if !tc.captions && !strings.Contains(joined, "a:0,agroup:aud") {
+				t.Errorf("args = %q, want the established audio rendition map", joined)
+			}
+			if tc.withSubs && !strings.Contains(joined, "-map 0:s:0?") {
+				t.Errorf("args = %q, want optional subtitle stream mapping", joined)
+			}
+		})
+	}
+}
+
 func TestFinishedChaseServesRetainedPlaylistWithoutRestarting(t *testing.T) {
 	dir := t.TempDir()
 	playlist := filepath.Join(dir, "h264.m3u8")
@@ -463,7 +500,7 @@ exit 0
 
 // installMultiProfileChaseFFmpeg は渡された出力パス（プロファイルごとの
 // `NAME.m3u8`）のそれぞれへ EVENT playlist を書く偽 ffmpeg。**1 本の ffmpeg が
-// 全プロファイルを同時に出力する**形（buildHLSFFmpegArgs の追っかけ経路）を模す。
+// 全プロファイルを同時に出力する**形（BuildChaseFFmpegArgs の追っかけ経路）を模す。
 // installCompletedChaseFFmpeg は 1 本の playlist しか書かないので、画質の切替を
 // 見るにはこちらが要る。
 //

@@ -55,7 +55,10 @@ func TestConvertLiveConfig_NoFieldLeftBehind(t *testing.T) {
 
 	got := convertLiveConfig(src)
 
-	assertNoZeroFields(t, "streamer.LiveConfig", reflect.ValueOf(got))
+	// This runtime dependency comes from storage wiring in
+	// server.go, not from config.LiveConfig, so it is intentionally outside
+	// convertLiveConfig's mapping responsibility.
+	assertNoZeroFields(t, "streamer.LiveConfig", reflect.ValueOf(got), "MediaDir")
 	if len(got.Profiles) != 1 {
 		t.Fatalf("Profiles len = %d, want 1", len(got.Profiles))
 	}
@@ -64,12 +67,19 @@ func TestConvertLiveConfig_NoFieldLeftBehind(t *testing.T) {
 
 // assertNoZeroFields はエクスポートされた struct フィールドをすべて走査し、
 // ゼロ値のままのフィールドがあれば t.Errorf で報告する。
-func assertNoZeroFields(t *testing.T, label string, v reflect.Value) {
+func assertNoZeroFields(t *testing.T, label string, v reflect.Value, externallyInjected ...string) {
 	t.Helper()
+	externallyInjectedFields := make(map[string]struct{}, len(externallyInjected))
+	for _, name := range externallyInjected {
+		externallyInjectedFields[name] = struct{}{}
+	}
 	typ := v.Type()
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
 		if !field.IsExported() {
+			continue
+		}
+		if _, ok := externallyInjectedFields[field.Name]; ok {
 			continue
 		}
 		fv := v.Field(i)

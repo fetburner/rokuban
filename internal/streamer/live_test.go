@@ -1113,7 +1113,7 @@ func TestLiveStreamer_EvictionCandidate_HintDoesNotQualifyBelowThreshold(t *test
 
 // 未知のプロファイルは 400 で、mirakc へは一切リクエストしない
 // （セッションを起こす前に検証する）。
-// installFakeLiveFFmpegCaptions は captions 経路（buildLiveCaptionFFmpegArgs）の
+// installFakeLiveFFmpegCaptions は captions 経路（buildLiveCaptionFFmpegArgsForPlaylistType）の
 // argv を読んで、master / variant / 字幕 playlist と .ts / .vtt セグメントを
 // 一式書き出す偽 ffmpeg。installFakeLiveFFmpeg（非 captions 用）と分けているのは、
 // captions の argv には `-master_pl_name playlist.m3u8`（相対名。ディレクトリを
@@ -1780,6 +1780,10 @@ func TestLiveStreamer_URLPathFixedDepth(t *testing.T) {
 		"/api/sites/{site}/recordings/{id}/chase/offset/{offset}/{name}",
 		"/api/sites/{site}/recordings/{id}/chase/leave",
 		"/api/sites/{site}/recordings/{id}/chase/offset/{offset}/leave",
+		"/api/sites/{site}/recordings/{id}/original-vod/playlist.m3u8",
+		"/api/sites/{site}/recordings/{id}/original-vod/segments/{name}",
+		"/api/sites/{site}/recordings/{id}/original-vod/{name}",
+		"/api/sites/{site}/recordings/{id}/original-vod/leave",
 	}
 	slices.Sort(routes)
 	slices.Sort(want)

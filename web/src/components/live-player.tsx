@@ -14,11 +14,13 @@ import {
   liveAudioTrackIndex,
   livePlaylistURL,
   liveStallTimeoutMs,
+  originalVODPlaylistURL,
   observeStall,
   probeLivePlaylist,
   readSubtitleVisibility,
   sendChaseLeaveHint,
   sendLiveLeaveHint,
+  sendOriginalVODLeaveHint,
   supportsNativeHls,
 } from '@/lib/live'
 import {
@@ -41,7 +43,10 @@ type HlsLike = {
   audioTrack: number
   /** 選択中の variant の音声グループに属するトラック（master の順）。 */
   audioTracks: readonly unknown[]
-  on(event: string, callback: (event: string, data: { fatal: boolean }) => void): void
+  on(
+    event: string,
+    callback: (event: string, data: { fatal: boolean; details?: { live: boolean } }) => void,
+  ): void
   /**
    * hls.latency（秒）。`LatencyController.get latency()` の実装
    * （`node_modules/hls.js` 1.7.1）は `this._latency || 0` を返すため、
@@ -139,14 +144,14 @@ function applyNativeAudioTrack(media: HTMLVideoElement, index: number): void {
 }
 
 type LivePlayerProps = {
-  /** live は site/network/service、chase は site/recordingId を使う。 */
-  mode?: 'live' | 'chase'
+  /** live は site/network/service、録画再生は site/recordingId を使う。 */
+  mode?: 'live' | 'chase' | 'original-vod'
   site?: string
   /** SI の networkId。mirakc 合成 service id の組み立てに使う（issue #208）。 */
   networkId?: number
   /** SI の serviceId。パスに載る前に networkId と合成する（issue #208）。 */
   serviceId?: number
-  /** recordings.id。mode="chase" のとき必須。 */
+  /** recordings.id。mode="chase" / "original-vod" のとき必須。 */
   recordingId?: number
   /**
    * chase playlist / live playlist の画質（`live.profiles` の名前）。省略時は
@@ -175,7 +180,7 @@ type LivePlayerProps = {
    * 再生する。
    */
   startOffsetSeconds?: number
-  /** 追っかけとVODで共有する再生位置のキー。liveの配信プロファイルとは別に持つ。 */
+  /** 追っかけと原本 VOD で共有する再生位置の時間軸名（保存キー）。live の配信プロファイルとは別に持つ。 */
   playbackProfile?: string
   className?: string
   /**
@@ -264,6 +269,9 @@ export function LivePlayer({
   onStalled,
 }: LivePlayerProps) {
   const isChase = mode === 'chase'
+  const isOriginalVOD = mode === 'original-vod'
+  const isRecordingPlayback = isChase || isOriginalVOD
+  const recordingPlaybackProfile = playbackProfile ?? ''
   const explicitChaseStartOffset =
     isChase &&
     startOffsetSeconds !== undefined &&
@@ -334,6 +342,14 @@ export function LivePlayer({
   const chaseMetadataLoaded = useRef(false)
   const explicitStartSeekPending = useRef(false)
   const lastSavedSecond = useRef<number | null>(null)
+  /**
+   * 原本 VOD の playlist が ENDLIST まで書かれたか。変換中の EVENT playlist の
+   * `video.duration` は変換の先端でしかないので、これが true になるまで
+   * 「終端付近」の判定に duration を渡さない（渡すと先端付近で位置が消える）。
+   * 信号は hls.js の LEVEL_LOADED の `details.live === false`（ENDLIST あり）と、
+   * ネイティブ HLS を含む `ended` イベント。ネイティブ経路は ENDLIST を直接見られない。
+   */
+  const originalVODFinalized = useRef(false)
   // onDiagnostics は ref 越しに読む。probe / hls.js のセットアップを担う
   // メイン effect の依存配列に関数 prop をそのまま入れると、呼び出し側が
   // 毎レンダー新しい関数を渡した場合にプレイリストの再取得・hls インスタンスの
@@ -390,10 +406,10 @@ export function LivePlayer({
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
-    const rate = isChase ? playbackRate : 1
+    const rate = isRecordingPlayback ? playbackRate : 1
     const appliedRate = applyPlaybackRate(video, rate)
-    if (isChase && appliedRate !== playbackRate) setPlaybackRate(appliedRate)
-  }, [isChase, playbackRate])
+    if (isRecordingPlayback && appliedRate !== playbackRate) setPlaybackRate(appliedRate)
+  }, [isRecordingPlayback, playbackRate])
 
   // ライブのページキー操作は M / F だけ。録画向けの速度変更は出さない。
   // ネイティブ HLS の playbackRate が実 Safari で有効かは未検証。
@@ -440,10 +456,13 @@ export function LivePlayer({
     const preserved = preservedState.current
     // 画質（プロファイル）だけが変わった再実行か（`lastChasePositionRef` の
     // コメント参照）。プロファイルを含めない入力の同一性で判定する。
-    const chaseInputs = `${site}|${recordingId}|${chaseStartOffset}|${hasExplicitChaseStart}|${retryNonce}`
+    const chaseInputs = `${mode}|${site}|${recordingId}|${chaseStartOffset}|${hasExplicitChaseStart}|${retryNonce}`
     const resumePosition =
-      isChase && lastChaseInputsRef.current === chaseInputs ? lastChasePositionRef.current : null
+      isRecordingPlayback && lastChaseInputsRef.current === chaseInputs
+        ? lastChasePositionRef.current
+        : null
     lastChaseInputsRef.current = chaseInputs
+    originalVODFinalized.current = false
     chaseResumePending.current = resumePosition
     if (resumePosition !== null) {
       // 持ち越しは既存の復元より優先する。`playbackProfile` の変化で復元が
@@ -461,7 +480,9 @@ export function LivePlayer({
 
     const url = isChase
       ? chasePlaylistURL(site ?? '', recordingId ?? 0, profile, chaseStartOffset)
-      : livePlaylistURL(site ?? '', networkId ?? 0, serviceId ?? 0, profile)
+      : isOriginalVOD
+        ? originalVODPlaylistURL(site ?? '', recordingId ?? 0, profile)
+        : livePlaylistURL(site ?? '', networkId ?? 0, serviceId ?? 0, profile)
 
     // teardown はこの effect が張ったものを外す手続き（メディアイベントの
     // リスナと stall 監視のタイマー）。cleanup から呼ぶ
@@ -471,7 +492,7 @@ export function LivePlayer({
     const markLoaded = () => {
       chaseMetadataLoaded.current = true
     }
-    if (video && isChase) {
+    if (video && isRecordingPlayback) {
       video.addEventListener('loadedmetadata', markLoaded, { once: true })
       teardown.push(() => video.removeEventListener('loadedmetadata', markLoaded))
     }
@@ -721,7 +742,7 @@ export function LivePlayer({
       // ことと、この再開を足したことが組み合わせて作る穴）。
       // ここでの `paused` は「利用者が自分で止めた」ではなく「こちらが
       // `load()` で止めた」なので、停滞として見てよい。
-      let resumePending = !isChase && preserved?.playing === true
+      let resumePending = !isRecordingPlayback && preserved?.playing === true
 
       // **切替前に再生中だったなら、新しいソースが再生可能になってから再開する。**
       // 画質切替の cleanup は `video.load()` を呼ぶので、そのままでは paused に
@@ -738,7 +759,7 @@ export function LivePlayer({
       // マウントしただけで再生を始めると、同意の分離（issue #234）が壊れる。
       // 拒否（自動再生のポリシー）は握り潰す --- 利用者は既存の controls から
       // 再生できる。
-      if (!isChase && preserved?.playing) {
+      if (!isRecordingPlayback && preserved?.playing) {
         const resume = () => {
           resumePending = false
           if (!cancelled) void video.play().catch(() => {})
@@ -758,7 +779,7 @@ export function LivePlayer({
       // 追っかけの画面にもあるが、この降格は `pages/live.tsx` の `autoProfile` に
       // 配線されており、追っかけのセレクタへ同じ下げ方を広げるのは別の判断である
       // （呼び出し側が `onStalled` を渡さないことでも止まる）。
-      const canDowngrade = !probe.bundlesProfiles && !isChase
+      const canDowngrade = !probe.bundlesProfiles && !isRecordingPlayback
       const canPlayType = video.canPlayType.bind(video)
 
       // 再生経路は 3 段の梯子で選ぶ。**各段は「実際に確かめた能力」で選ばれる**
@@ -851,7 +872,16 @@ export function LivePlayer({
         // playback must begin at the first segment of the selected session;
         // the streamer has already applied any recording-relative offset.
         const hls = new Hls(
-          isChase ? { startPosition: resumePosition ?? 0 } : undefined,
+          isChase
+            ? { startPosition: resumePosition ?? 0 }
+            : isOriginalVOD
+              ? {
+                  startPosition:
+                    resumePosition ??
+                    loadPlaybackPosition(recordingId ?? 0, recordingPlaybackProfile) ??
+                    0,
+                }
+              : undefined,
         ) as unknown as HlsLike
         hls.subtitleDisplay = true
         // 字幕の表示状態を持ち越す（issue #869）。**hls.js は新しいマニフェストを
@@ -909,6 +939,11 @@ export function LivePlayer({
             if (onStalledRef.current?.() === 'wait') tracker = createStallTracker()
           },
         )
+        if (isOriginalVOD) {
+          hls.on(Hls.Events.LEVEL_LOADED, (_event, data) => {
+            if (data.details?.live === false) originalVODFinalized.current = true
+          })
+        }
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (!data.fatal || cancelled) return
           // fatal のまま放置すると hls.js が内部でリトライを続け、エラー画面の
@@ -922,7 +957,11 @@ export function LivePlayer({
           setError({
             kind: 'other',
             status: 0,
-            message: isChase ? '追っかけ再生中にエラーが発生しました' : 'ライブ再生中にエラーが発生しました',
+            message: isChase
+              ? '追っかけ再生中にエラーが発生しました'
+              : isOriginalVOD
+                ? '原本 TS の再生中にエラーが発生しました'
+                : 'ライブ再生中にエラーが発生しました',
           })
         })
         hls.loadSource(url)
@@ -948,7 +987,7 @@ export function LivePlayer({
         // 画質の切替で持ち越す再生位置（issue #874）。**`src` を外す前に読む。**
         // 前の持ち越しを戻し終える前にもう一度切り替えたときは、要素の位置
         // （まだ 0）ではなく持ち越し中の位置を引き継ぐ。
-        lastChasePositionRef.current = isChase
+        lastChasePositionRef.current = isRecordingPlayback
           ? (chaseResumePending.current ??
             (chaseMetadataLoaded.current ? video.currentTime : null))
           : null
@@ -971,6 +1010,8 @@ export function LivePlayer({
     }
   }, [
     isChase,
+    isOriginalVOD,
+    isRecordingPlayback,
     mode,
     profile,
     recordingId,
@@ -980,6 +1021,7 @@ export function LivePlayer({
     retryNonce,
     chaseStartOffset,
     hasExplicitChaseStart,
+    recordingPlaybackProfile,
   ])
 
   // 離脱のヒント（issue #191）。**再生を担っているのはこのコンポーネントだけ**
@@ -1007,7 +1049,9 @@ export function LivePlayer({
     const leave = () => {
       if (isChase && site !== undefined && recordingId !== undefined) {
         sendChaseLeaveHint(site, recordingId, chaseStartOffset)
-      } else if (!isChase && site !== undefined && networkId !== undefined && serviceId !== undefined) {
+      } else if (isOriginalVOD && site !== undefined && recordingId !== undefined) {
+        sendOriginalVODLeaveHint(site, recordingId)
+      } else if (!isRecordingPlayback && site !== undefined && networkId !== undefined && serviceId !== undefined) {
         sendLiveLeaveHint(site, networkId, serviceId)
       }
     }
@@ -1021,13 +1065,11 @@ export function LivePlayer({
       document.removeEventListener('visibilitychange', onVisibilityChange)
       leave()
     }
-  }, [isChase, recordingId, site, networkId, serviceId, chaseStartOffset])
+  }, [isChase, isOriginalVOD, isRecordingPlayback, recordingId, site, networkId, serviceId, chaseStartOffset])
 
-  // 再生位置のキーは **VOD 側のプロファイル名だけ**（`playbackProfile`）。
-  // `profile`（追っかけの画質）を落とさない --- 画質ごとに位置が分かれると、
+  // 再生位置のキーは呼び出し側が渡す時間軸名（`playbackProfile`。録画詳細は ORIGINAL_AXIS）。
+  // `profile`（追っかけの画質）をキーに含めない --- 画質ごとに位置が分かれると、
   // 画質を切り替えただけで「続きから」が別の場所になる（issue #874）。
-  const chasePlaybackProfile = playbackProfile ?? ''
-
   return (
     <div className={cn('flex w-full max-w-3xl flex-col', className)}>
       <div className="relative aspect-video w-full rounded bg-black">
@@ -1037,19 +1079,23 @@ export function LivePlayer({
           playsInline
           className={cn('size-full rounded', (loading || error) && 'invisible')}
           onLoadedMetadata={(event) => {
-            if (!isChase || recordingId === undefined || !restorePending.current) return
+            if (!isRecordingPlayback || recordingId === undefined || !restorePending.current) return
             restorePending.current = false
-            if (hasExplicitChaseStart) {
+            if (isChase && hasExplicitChaseStart) {
               // The streamer has already applied the recording-relative offset.
               // Native HLS may otherwise choose the current EVENT edge, because
               // hls.js's startPosition option is not involved on this path.
               event.currentTarget.currentTime = 0
               return
             }
-            const saved = loadPlaybackPosition(recordingId, chasePlaybackProfile)
-            const localPosition =
-              saved !== null && saved > chaseStartOffset ? saved - chaseStartOffset : 0
-            event.currentTarget.currentTime = localPosition
+            const saved = loadPlaybackPosition(recordingId, recordingPlaybackProfile)
+            if (isChase) {
+              const localPosition =
+                saved !== null && saved > chaseStartOffset ? saved - chaseStartOffset : 0
+              event.currentTarget.currentTime = localPosition
+            } else if (saved !== null) {
+              event.currentTarget.currentTime = saved
+            }
           }}
           onCanPlay={(event) => {
             if (!isChase || !hasExplicitChaseStart || !explicitStartSeekPending.current) return
@@ -1059,31 +1105,42 @@ export function LivePlayer({
             event.currentTarget.currentTime = 0
           }}
           onTimeUpdate={(event) => {
-            if (!isChase || recordingId === undefined || chaseResumePending.current !== null) return
+            if (!isRecordingPlayback || recordingId === undefined || chaseResumePending.current !== null) return
             const video = event.currentTarget
             const globalPosition = video.currentTime + chaseStartOffset
             if (!shouldSavePlaybackPosition(lastSavedSecond.current, globalPosition)) return
             lastSavedSecond.current = Math.floor(globalPosition)
-            // The chase playlist is an expanding EVENT playlist, so its current
-            // duration is only the current live edge, not the recording's final
-            // duration. Passing it here would erase a position near the live edge
-            // as if playback had completed. RecordingPlayer keeps the VOD duration
-            // based completion behavior after the recording is finalized.
-            savePlaybackPosition(recordingId, chasePlaybackProfile, globalPosition)
-          }}
-          onPause={(event) => {
-            if (!isChase || recordingId === undefined || chaseResumePending.current !== null) return
-            const video = event.currentTarget
-            // See the timeupdate handler: a growing chase duration is not a
-            // completion signal.
+            // EVENT duration is only the current conversion edge; only after ENDLIST
+            // (originalVODFinalized) does it mean the recording's end.
             savePlaybackPosition(
               recordingId,
-              chasePlaybackProfile,
-              video.currentTime + chaseStartOffset,
+              recordingPlaybackProfile,
+              globalPosition,
+              originalVODFinalized.current ? video.duration : undefined,
             )
           }}
+          onPause={(event) => {
+            if (!isRecordingPlayback || recordingId === undefined || chaseResumePending.current !== null) return
+            const video = event.currentTarget
+            savePlaybackPosition(
+              recordingId,
+              recordingPlaybackProfile,
+              video.currentTime + chaseStartOffset,
+              originalVODFinalized.current ? video.duration : undefined,
+            )
+          }}
+          onEnded={(event) => {
+            // ended は ENDLIST 済みの終端でだけ発火する前提で保存位置を消す。hls.js 経路では
+            // ENDLIST の無い先端で発火しないことを web/e2e/recording-original-vod.mjs の
+            // ④ で実 Chrome で測っている。ネイティブ HLS は未検証で、先端で発火すると
+            // 保存位置が消える（続きから再生できなくなる）。
+            if (!isOriginalVOD || recordingId === undefined) return
+            originalVODFinalized.current = true
+            const video = event.currentTarget
+            savePlaybackPosition(recordingId, recordingPlaybackProfile, video.duration, video.duration)
+          }}
           onRateChange={(event) => {
-            if (!isChase) return
+            if (!isRecordingPlayback) return
             const rate = event.currentTarget.playbackRate
             setPlaybackRate(rate)
             savePlaybackRate(rate)
@@ -1101,7 +1158,7 @@ export function LivePlayer({
 
         {error && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-4 text-center">
-            <LiveErrorMessage error={error} chase={isChase} />
+            <LiveErrorMessage error={error} chase={isChase} originalVOD={isOriginalVOD} />
             <button
               type="button"
               onClick={() => setRetryNonce((n) => n + 1)}
@@ -1124,7 +1181,15 @@ export function LivePlayer({
  * §サーバーレスデプロイ）。`capacity` / `other` は本文をそのまま見せる
  * （docs/frontend.md「エラーの本文も UI まで運ぶ」。400 を黙って隠さない、と同じ規律）。
  */
-function LiveErrorMessage({ error, chase = false }: { error: LiveLoadError; chase?: boolean }) {
+function LiveErrorMessage({
+  error,
+  chase = false,
+  originalVOD = false,
+}: {
+  error: LiveLoadError
+  chase?: boolean
+  originalVOD?: boolean
+}) {
   if (error.kind === 'unreachable') {
     return (
       <p className="text-sm text-muted-foreground">
@@ -1154,7 +1219,13 @@ function LiveErrorMessage({ error, chase = false }: { error: LiveLoadError; chas
   }
   return (
     <div className="text-sm text-destructive">
-      <p>{chase ? '追っかけ再生でエラーが発生しました。' : 'ライブ視聴でエラーが発生しました。'}</p>
+      <p>
+        {chase
+          ? '追っかけ再生でエラーが発生しました。'
+          : originalVOD
+            ? '原本 TS の再生でエラーが発生しました。'
+            : 'ライブ視聴でエラーが発生しました。'}
+      </p>
       {error.message !== '' && <p className="text-muted-foreground">{error.message}</p>}
     </div>
   )
