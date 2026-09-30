@@ -1,10 +1,22 @@
 /**
  * ブラウザ再生の再開位置を localStorage に保存する（#14 7c / M3-5）。
- * サーバー側視聴履歴は持たない。キーは録画 ID + プロファイル。
+ * サーバー側視聴履歴は持たない。キーは録画 ID + 時間軸（下記 ORIGINAL_AXIS / cutAxis）。
  * 再生速度（端末ごとに 1 つ、録画をまたいで保つ）も同じく localStorage に持つ。
  */
 
 const PREFIX = 'rokuban:playback:'
+
+/**
+ * ORIGINAL_AXIS は「cut 前の軸」（録画開始からの秒数）の保存キー名。追っかけ・原本 HLS・
+ * cut でない encoded MP4 が共有する。キーを表示中の資産名で決めると、録画中に追っかけで
+ * 保存した位置を、録画終了後の別プロファイルが読めなくなる。
+ */
+export const ORIGINAL_AXIS = 'original'
+
+/** cutAxis は cut 済み資産の保存キー名。cut 版は自分の時間軸を持つので別キーにする。 */
+export function cutAxis(profile: string): string {
+  return `cut:${profile}`
+}
 
 /** playbackStorageKey は recording id と profile から localStorage キーを作る。 */
 export function playbackStorageKey(recordingId: number, profile: string): string {
@@ -14,7 +26,7 @@ export function playbackStorageKey(recordingId: number, profile: string): string
 /** loadPlaybackPosition は保存済みの秒位置を返す。無ければ null。 */
 export function loadPlaybackPosition(recordingId: number, profile: string): number | null {
   try {
-    const raw = localStorage.getItem(playbackStorageKey(recordingId, profile))
+    const raw = localStorage.getItem(playbackStorageKey(recordingId, profile)) ?? migrateLegacyKey(recordingId, profile)
     if (raw === null) return null
     const n = Number(raw)
     if (!Number.isFinite(n) || n < 0) return null
@@ -23,6 +35,35 @@ export function loadPlaybackPosition(recordingId: number, profile: string): numb
     // private mode 等で localStorage が使えない場合は無視
     return null
   }
+}
+
+/**
+ * migrateLegacyKey は、新キーが無いときだけ旧キー（プロファイル名・空文字で作っていた）を
+ * 1 回読み、新キーへ移して旧キーを消す。旧キーの値は cut 前の軸か cut 版の軸かを区別できない
+ * ので、cut 軸は旧 `:{profile}` だけ、ORIGINAL_AXIS は空 profile を優先して残りの旧キーから
+ * 1 つを移す（cut 版の旧キーを拾う可能性がある。その場合の位置ずれは未評価）。
+ * 移さなかった旧キーは消さない（cut 軸が後で自分の分を読むため）。
+ */
+function migrateLegacyKey(recordingId: number, axis: string): string | null {
+  const prefix = `${PREFIX}${recordingId}:`
+  let legacy: string | null = null
+  if (axis.startsWith('cut:')) {
+    legacy = prefix + axis.slice('cut:'.length)
+  } else if (axis === ORIGINAL_AXIS) {
+    const keys: string[] = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i)
+      if (k !== null && k.startsWith(prefix)) keys.push(k)
+    }
+    const isNew = (k: string) => k === prefix + ORIGINAL_AXIS || k.startsWith(prefix + 'cut:')
+    legacy = keys.find((k) => k === prefix) ?? keys.find((k) => !isNew(k)) ?? null
+  }
+  if (legacy === null) return null
+  const raw = localStorage.getItem(legacy)
+  if (raw === null) return null
+  localStorage.setItem(playbackStorageKey(recordingId, axis), raw)
+  localStorage.removeItem(legacy)
+  return raw
 }
 
 /**

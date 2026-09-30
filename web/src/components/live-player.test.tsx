@@ -132,7 +132,7 @@ afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
-  localStorage.removeItem('rokuban:playback-rate')
+  localStorage.clear()
   hlsMockState.instances.length = 0
   hlsMockState.constructorArgs.length = 0
   hlsMockState.supported = true
@@ -968,6 +968,23 @@ describe('LivePlayer の状態遷移', () => {
       Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
       fireEvent.loadedMetadata(video)
       expect(video.currentTime).toBe(23)
+    })
+
+    it('追っかけで保存した位置を原本 VOD の hls.js startPosition に渡す（同じ軸のキー）', async () => {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+      const chase = render(
+        <LivePlayer mode="chase" site="default" recordingId={90} profile="hd" playbackProfile="original" />,
+      )
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const chaseVideo = document.querySelector('video')!
+      Object.defineProperty(chaseVideo, 'currentTime', { value: 42, writable: true, configurable: true })
+      fireEvent.timeUpdate(chaseVideo)
+      expect(localStorage.getItem('rokuban:playback:90:original')).toBe('42')
+      chase.unmount()
+
+      render(<LivePlayer mode="original-vod" site="default" recordingId={90} profile="hd" playbackProfile="original" />)
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+      expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: 42 }])
     })
 
     it('原本 VOD は ENDLIST を見るまで duration を完了判定に使わない', async () => {

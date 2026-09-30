@@ -26,6 +26,7 @@ import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
 import { formatBytes, formatDateTime, formatTime } from '@/lib/format'
 import { ingestDisplay, type IngestDisplay } from '@/lib/ingest'
+import { ORIGINAL_AXIS } from '@/lib/playback-position'
 import { useCMDetectEnabled, useLiveEnabled } from '@/lib/capabilities'
 import { recordingFileURL } from '@/lib/playback-position'
 import { liveProfileLabel, validLiveProfile } from '@/lib/live'
@@ -274,9 +275,6 @@ export function RecordingDetail({
   const preferredPlaybackProfile =
     (encodedAssets.find((a) => a.cut !== true) ?? encodedAssets[0])?.profile ??
     recording.encodeProfiles?.[0]
-  // 追っかけと原本 VOD の再生位置キー。**同じ値を両方に渡す** --- 録画中に追っかけで
-  // 見た位置を、録画終了後の原本 VOD で「続きから」にするため。
-  const playbackPositionProfile = preferredPlaybackProfile ?? ORIGINAL_PLAYBACK_PROFILE
   // 詳細データの再取得ごとに取り込み状態を現在時刻で再評価する。mount 時に固定
   // すると、停滞表示が更新されなくなるため state 初期値には移せない。
   // oxlint-disable-next-line react/purity -- 再取得ごとの現在時刻スナップショットが必要
@@ -410,7 +408,7 @@ export function RecordingDetail({
               recordingId={recording.id}
               startOffsetSeconds={chaseOffsetSeconds}
               profile={explicitLiveProfile}
-              playbackProfile={playbackPositionProfile}
+              playbackProfile={ORIGINAL_AXIS}
             />
           )}
         </section>
@@ -466,7 +464,7 @@ export function RecordingDetail({
                 site={recording.site}
                 recordingId={recording.id}
                 profile={explicitLiveProfile}
-                playbackProfile={playbackPositionProfile}
+                playbackProfile={ORIGINAL_AXIS}
               />
               <p className="text-muted-foreground">
                 原本 TS:{' '}
@@ -665,13 +663,6 @@ export function RecordingDetail({
     </div>
   )
 }
-
-/**
- * encode profile が無い録画（原本だけの構成で最も多い）の再生位置キー。追っかけと
- * 原本 VOD が共有する。live の画質（選択で変わる）に依存させない --- 画質切替で保存キーが
- * 変わると「続きから」が別の場所になる。
- */
-const ORIGINAL_PLAYBACK_PROFILE = 'original'
 
 /**
  * seriesNextPageSize は「次のエピソード」を探すときに引く件数（API の既定と同じ）。

@@ -102,7 +102,7 @@ describe('RecordingPlayer の timeupdate 間引き', () => {
     setMediaProps(video, { currentTime: 296, duration: 300 })
     fireEvent.pause(video)
 
-    expect(removeItemSpy).toHaveBeenCalledWith('rokuban:playback:10:h264')
+    expect(removeItemSpy).toHaveBeenCalledWith('rokuban:playback:10:original')
   })
 
   it('プロファイル切替で間引き状態がリセットされる（旧プロファイルの秒を引きずらない）', () => {
@@ -131,6 +131,51 @@ describe('RecordingPlayer の timeupdate 間引き', () => {
     fireEvent.timeUpdate(video)
 
     expect(setItemSpy).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('RecordingPlayer の再生位置キー（時間軸）', () => {
+  it('cut でない資産は profile が違っても同じ cut 前の軸のキーを共有する', () => {
+    const { container } = render(
+      <RecordingPlayer
+        recordingId={12}
+        encodedAssets={[
+          { profile: 'h264', sizeBytes: 1 },
+          { profile: 'h265', sizeBytes: 2 },
+        ]}
+      />,
+    )
+    let video = container.querySelector('video')!
+    setMediaProps(video, { currentTime: 30, duration: 300 })
+    fireEvent.timeUpdate(video)
+    fireEvent.change(container.querySelector('select')!, { target: { value: 'h265' } })
+    video = container.querySelector('video')!
+    setMediaProps(video, { currentTime: 40, duration: 300 })
+    fireEvent.timeUpdate(video)
+    expect(Object.keys(localStorage)).toEqual(['rokuban:playback:12:original'])
+    expect(localStorage.getItem('rokuban:playback:12:original')).toBe('40')
+  })
+
+  it('cut 版は自分の時間軸のキーに保存し、cut 前の軸の位置を読まない', () => {
+    localStorage.setItem('rokuban:playback:13:original', '500')
+    const { container } = render(
+      <RecordingPlayer
+        recordingId={13}
+        preferredProfile="cut-h264"
+        encodedAssets={[
+          { profile: 'h264', sizeBytes: 1 },
+          { profile: 'cut-h264', sizeBytes: 2, cut: true },
+        ]}
+      />,
+    )
+    const video = container.querySelector('video')!
+    setMediaProps(video, { currentTime: 0, duration: 300 })
+    fireEvent.loadedMetadata(video)
+    expect(video.currentTime).toBe(0)
+    setMediaProps(video, { currentTime: 60, duration: 300 })
+    fireEvent.timeUpdate(video)
+    expect(localStorage.getItem('rokuban:playback:13:cut:cut-h264')).toBe('60')
+    expect(localStorage.getItem('rokuban:playback:13:original')).toBe('500')
   })
 })
 

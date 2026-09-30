@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  cutAxis,
   loadPlaybackPosition,
+  ORIGINAL_AXIS,
   loadPlaybackRate,
   playbackStorageKey,
   recordingFileURL,
@@ -144,5 +146,42 @@ describe('recordingFileURL', () => {
 
   it('プロファイル名を encode する', () => {
     expect(recordingFileURL(3, 'a b')).toBe('/api/media/recordings/3/file?profile=a%20b')
+  })
+})
+
+describe('旧キーからの移行', () => {
+  it('新キーが無いとき、空 profile の旧キーを新キーへ移して旧キーを消す', () => {
+    localStorage.setItem('rokuban:playback:5:', '70')
+    expect(loadPlaybackPosition(5, ORIGINAL_AXIS)).toBe(70)
+    expect(localStorage.getItem('rokuban:playback:5:original')).toBe('70')
+    expect(localStorage.getItem('rokuban:playback:5:')).toBeNull()
+  })
+
+  it('空 profile が無ければ profile 名の旧キーを移す', () => {
+    localStorage.setItem('rokuban:playback:5:h264', '33')
+    expect(loadPlaybackPosition(5, ORIGINAL_AXIS)).toBe(33)
+    expect(localStorage.getItem('rokuban:playback:5:h264')).toBeNull()
+  })
+
+  it('新キーがあれば旧キーを読まず、触らない', () => {
+    localStorage.setItem('rokuban:playback:5:original', '10')
+    localStorage.setItem('rokuban:playback:5:h264', '99')
+    expect(loadPlaybackPosition(5, ORIGINAL_AXIS)).toBe(10)
+    expect(localStorage.getItem('rokuban:playback:5:h264')).toBe('99')
+  })
+
+  it('別の録画の旧キーは移さない', () => {
+    localStorage.setItem('rokuban:playback:6:h264', '99')
+    expect(loadPlaybackPosition(5, ORIGINAL_AXIS)).toBeNull()
+    expect(localStorage.getItem('rokuban:playback:6:h264')).toBe('99')
+  })
+
+  it('cut 軸は自分の profile の旧キーだけを移す', () => {
+    localStorage.setItem('rokuban:playback:5:h264', '33')
+    localStorage.setItem('rokuban:playback:5:cut-h264', '44')
+    expect(loadPlaybackPosition(5, cutAxis('cut-h264'))).toBe(44)
+    expect(localStorage.getItem('rokuban:playback:5:cut:cut-h264')).toBe('44')
+    expect(localStorage.getItem('rokuban:playback:5:cut-h264')).toBeNull()
+    expect(localStorage.getItem('rokuban:playback:5:h264')).toBe('33')
   })
 })
