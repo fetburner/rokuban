@@ -66,7 +66,7 @@ func newFrameFixture(t *testing.T, size string, frame []byte) (*frameFixture, in
 // `-of json` で返す形（programs 側と streams 側の 2 回出る）にする。
 func probeJSON(size string) string {
 	w, h, _ := strings.Cut(size, "x")
-	stream := fmt.Sprintf(`{"width": %s, "height": %s}`, w, h)
+	stream := fmt.Sprintf(`{"width": %s, "height": %s, "sample_aspect_ratio": "4:3"}`, w, h)
 	return fmt.Sprintf(`{"programs": [{"streams": [%s]}], "stream_groups": [], "streams": [%s]}`, stream, stream)
 }
 
@@ -99,6 +99,9 @@ func TestRecordingFrameExtractsFromTheOriginalWithTheRecordedSize(t *testing.T) 
 	}
 	if got := res.Header.Get("X-Coded-Height"); got != "1080" {
 		t.Errorf("X-Coded-Height = %q, want 1080", got)
+	}
+	if got := res.Header.Get("X-Sample-Aspect-Ratio"); got != "4:3" {
+		t.Errorf("X-Sample-Aspect-Ratio = %q, want 4:3", got)
 	}
 	if string(body) != string(jpeg) {
 		t.Errorf("body = %v, want the extracted frame", body)
@@ -261,5 +264,8 @@ func TestRecordingFrameWithRealFFmpegOnAnamorphicMPEG2(t *testing.T) {
 	}
 	if got := res.Header.Get("X-Coded-Width") + "x" + res.Header.Get("X-Coded-Height"); got != "1440x1080" {
 		t.Errorf("coded size = %s, want 1440x1080", got)
+	}
+	if got := res.Header.Get("X-Sample-Aspect-Ratio"); got != "4:3" {
+		t.Errorf("sample aspect ratio = %q, want 4:3", got)
 	}
 }

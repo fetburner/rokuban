@@ -31,7 +31,7 @@ const frameTimeout = 30 * time.Second
 // `frameRecordingId` が無いことで「原本のある録画がありません」と出す）。
 // ごみ箱の録画・原本の無い録画・実体の無い原本は 404（配信の他の経路と同じ契約）。
 //
-// **応答は記録上の大きさ（X-Coded-Width / X-Coded-Height）をヘッダで返す。**
+// **応答は記録上の大きさ（X-Coded-Width / X-Coded-Height）と SAR をヘッダで返す。**
 // 映像は縮小も SAR の焼き込みもせずに出すので、返るコマは記録上の画素そのもの。
 // poster やシークタイルは SAR を正方形画素へ焼き込んでいるため、枠の座標には
 // 使えない（1440x1080 の地上波 HD で 4/3 倍ずれる）。
@@ -93,6 +93,7 @@ func (s *Streamer) RecordingFrame(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
 	w.Header().Set("X-Coded-Width", strconv.Itoa(geometry.width))
 	w.Header().Set("X-Coded-Height", strconv.Itoa(geometry.height))
+	w.Header().Set("X-Sample-Aspect-Ratio", geometry.sampleAspectRatio)
 	w.Header().Set("Content-Length", strconv.Itoa(len(frame)))
 	if _, err := w.Write(frame); err != nil {
 		slog.Warn("streamer: writing a frame to the client", "recording_id", id, "err", err)
@@ -130,15 +131,23 @@ func (s *Streamer) probeVideoGeometry(ctx context.Context, path string) (videoGe
 	if err != nil {
 		return videoGeometry{}, err
 	}
-	width, height, err := ffargs.ParseVideoGeometry(out)
+	geometry, err := ffargs.ParseVideoGeometryWithSAR(out)
 	if err != nil {
 		return videoGeometry{}, err
 	}
-	return videoGeometry{width: width, height: height}, nil
+	return videoGeometry{
+		width:             geometry.Width,
+		height:            geometry.Height,
+		sampleAspectRatio: geometry.SampleAspectRatio,
+	}, nil
 }
 
 // videoGeometry は映像ストリームの記録上の大きさ（SAR を掛ける前の画素数）。
-type videoGeometry struct{ width, height int }
+type videoGeometry struct {
+	width             int
+	height            int
+	sampleAspectRatio string
+}
 
 func (s *Streamer) ffmpegPath() string {
 	if s.cfg.FFmpeg == "" {

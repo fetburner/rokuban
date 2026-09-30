@@ -89,7 +89,8 @@ GET /api/media/recordings/{id}/frame?at=<milliseconds> → image/jpeg
 原本（`kind = 'original'`）だけを入力にする。画像の縮小や SAR の焼き込みはしない。
 応答には `X-Coded-Width` と `X-Coded-Height` を付ける。
 値は原本の映像ストリームの `width` と `height` である。
-画面が保存する枠はこの記録上の座標を使う。
+さらに `X-Sample-Aspect-Ratio` を付ける。画面はこの SAR で表示比を補正し、
+保存する枠は SAR 適用前の記録上の座標を使う。
 
 `at` が無い、負数、数値でない場合は 400 を返す。
 ごみ箱、原本の行が無い録画、原本の実体が無い録画は 404 を返す。
