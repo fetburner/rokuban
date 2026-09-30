@@ -51,6 +51,16 @@ linters:
           deny:
             - pkg: os/exec
               desc: os/exec is limited to worker, streamer, and config
+        ts-inspection:
+          # 不変条件 6: 放送 TS を読むのは ingest の読み取り専用統計（tsstat）だけ。
+          # テストは TS のフィクスチャを組み立てるのに gots を使うので対象外。
+          list-mode: lax
+          files:
+            - "!$test"
+            - "!${config-path}/internal/tsstat/**"
+          deny:
+            - pkg: github.com/Comcast/gots
+              desc: transport-stream parsing is limited to internal/tsstat (invariant 6)
     errorlint:
       errorf: true
       asserts: true
@@ -68,6 +78,10 @@ linters:
       min-complexity: 54
 
   exclusions:
+    # docs:lint のためにリポジトリ直下へ入る node_modules に Go のパッケージ
+    # （flatted）が同梱されていて、./... がそれを拾う。
+    paths:
+      - "(^|/)node_modules/"
     rules:
       - path: "_test\\.go$"
         linters:
