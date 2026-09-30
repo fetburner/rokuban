@@ -1257,7 +1257,7 @@ describe('RecordingsPage の表示形式', () => {
       createFakeRecordingsServer({ library: [sampleRecording()] })
       renderPage()
 
-      // loadRecordingsView（getItem 例外）は既定のリストへ落ちる
+      // loadRecordingView（getItem 例外）は既定のリストへ落ちる
       expect(await screen.findByText('ライブラリの録画')).toBeInTheDocument()
       const toggle = screen.getByRole('button', { name: 'カード表示' })
       expect(toggle).toHaveAttribute('aria-pressed', 'false')

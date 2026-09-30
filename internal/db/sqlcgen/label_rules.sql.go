@@ -246,7 +246,7 @@ type ListRecordingShelvesRow struct {
 //
 //   - 本番（この形）: 254〜257 ms
 //   - 旧母集団の形（再生できる録画だけを INNER JOIN、playable は MATERIALIZED）:
-//     240〜241 ms（本番の 0.94〜0.95 倍）
+//     240〜241 ms（本番の 0.93〜0.95 倍）
 //   - 旧母集団の形から playable の MATERIALIZED を外す: 227〜228 ms（本番の 0.89 倍）
 //   - この形の live を MATERIALIZED にする: 272 ms（本番の 1.06〜1.07 倍。改善にならない）
 //
