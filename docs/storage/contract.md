@@ -96,8 +96,28 @@ directory の作成・削除と lock file の read-write を許すことを先�
 
 旧形式（canonical と同じ directory の `.rokuban-rel-path-lock-*.lock`）は移行時に自動削除
 しない。旧 worker は gate に参加しないため、旧形式 file を unlink すると旧プロセスの waiter
-が古い inode を握る可能性がある。配置更新では旧 worker job を drain してから新しい worker を
-起動する。旧形式の残置 file は全旧 worker の停止後、保守時間中に別途削除する。
+が古い inode を握る可能性がある。
+
+新形式も同じ接頭辞を `.rokuban-locks/` の下で使う。そのため接頭辞だけで消す
+`find -name '.rokuban-rel-path-lock-*' -delete` は、稼働中の新形式 lock まで消す。
+旧形式だけを消すときは `.rokuban-locks/` を除外する。`-delete` は `-prune` と併用できない
+（`-depth` を暗黙に有効にする）ので `-exec rm` を使う。
+
+```bash
+find "$MEDIA_ROOT" -path "$MEDIA_ROOT/.rokuban-locks" -prune -o \
+  -type f -name '.rokuban-rel-path-lock-*.lock' -exec rm -- {} +
+```
+
+旧 worker と新 worker が同じ media root に並走している間は、この削除も実行しない。
+k8s の `worker-scaledjobs.yaml` は全 ScaledJob が `rollout.strategy: gradual` なので、更新中は
+旧イメージの実行中 Job が完走するまで新しい Job と並走する。この窓では旧 worker が
+新 worker の gate を知らないまま同じ rel_path を別の inode で lock しうる。
+並走を避けるには、更新の前に media を mount する ScaledJob の新規起動を止め、
+`kubectl get jobs` で旧 Job が全て終わったことを確認してから新しいイメージを適用する。
+新規起動を止める具体的な操作（KEDA の pause 等）と、その間に積む queue の扱いは未検証。
+止められない場合は、この並走窓で同じ rel_path を触る ingest / encode / 削除が二重に
+lock を取りうるリスクを受け入れる。旧形式の残置 file は、全旧 worker の停止後に上の
+コマンドで消す。
 
 ### 派生物の公開（encode）は既存の canonical を上書きする
 

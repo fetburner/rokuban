@@ -220,6 +220,10 @@ func gcMediaRelPathLockFiles(ctx context.Context, mediaDir string, wait bool) (c
 	return true, nil
 }
 
+// afterOpenMediaRelPathLock はテストが lock file の open から flock までの窓で
+// 実行を止めるためのフック。本番では何もしない。
+var afterOpenMediaRelPathLock = func(relPath string) {}
+
 func openMediaRelPathLock(mediaDir, relPath string) (*os.File, error) {
 	path := mediaRelPathLockPath(mediaDir, relPath)
 	lock, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0o666)
@@ -230,6 +234,7 @@ func openMediaRelPathLock(mediaDir, relPath string) (*os.File, error) {
 		_ = lock.Close()
 		return nil, err
 	}
+	afterOpenMediaRelPathLock(relPath)
 	return lock, nil
 }
 
