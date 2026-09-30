@@ -171,6 +171,9 @@ API 契約として破綻する。1 エンドポイントの前提が `trash` �
 条件が実際に指定されたときだけ節を足す形にすることで、Postgres が最初に立てる
 プランは常に具体的になる。
 
+通常一覧と `trash=true` はどちらも `buildRecordingsQuery` / `queryRecordings` を通る。
+sqlc の `ListTrashRecordings` は worker の DB テストが直接使い、HTTP API の一覧には使わない。
+
 **これだけでは片方の劣化しか塞げない**。pgx の既定 `QueryExecModeCacheStatement`
 は、SQL テキストごとに named prepared statement を作ってキャッシュする。
 Postgres 自身がその statement を 6 回目以降 custom plan から generic plan に

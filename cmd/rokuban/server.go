@@ -530,6 +530,10 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 		mounters = append(mounters, streamer.New(pool, streamer.Config{
 			MediaDir:      cfg.Storage.MediaDir,
 			AccelLocation: cfg.Storage.AccelLocation,
+			// コマの切り出し（/frame）は encode と同じ ffmpeg を使う。ライブを
+			// 切った構成でも要るので、live.ffmpeg ではなくここから渡す。
+			FFmpeg:  cfg.Encode.FFmpeg,
+			FFprobe: cfg.Encode.FFprobe,
 		}))
 		if cfg.Live.Enabled {
 			// live.enabled が true のときだけ ffmpeg の LookPath 検査を行う ---

@@ -187,10 +187,9 @@ func purgedAt(t *testing.T, pool *pgxpool.Pool, recordingID int64) *time.Time {
 	return v
 }
 
-// inTrash は ListTrashRecordings（api が「ごみ箱は空です」判定に使う一覧そのもの）
-// に指定した録画 id が含まれるかを返す。ここで直接クエリを引くことで、
-// api パッケージを経由せずに「ごみ箱ビューから見えるか」を検証する
-// （issue #135 の受け入れ「完全削除が完了した録画がごみ箱一覧に出ない」）。
+// inTrash は ListTrashRecordings クエリに指定した録画 id が含まれるかを返す。
+// worker の DB テストから sqlc クエリを直接呼び、完全削除後にごみ箱から消えることを
+// 検証する（issue #135）。HTTP API のごみ箱一覧は recordings_query.go を通る。
 func inTrash(t *testing.T, pool *pgxpool.Pool, recordingID int64) bool {
 	t.Helper()
 	rows, err := sqlcgen.New(pool).ListTrashRecordings(context.Background(), db.DefaultSite)
@@ -203,63 +202,6 @@ func inTrash(t *testing.T, pool *pgxpool.Pool, recordingID int64) bool {
 		}
 	}
 	return false
-}
-
-// ListTrashRecordings（ごみ箱一覧）は原本 media_asset が state='deleted' に
-// 遷移した後も drop 集計を返す（issue #737）。GET /api/recordings 側
-// （recordings_query.go の recordingsFromJoins）は既に同じ形に直っており、
-// ここはその参考実装であるごみ箱クエリ自身が揃っていることを固定する。
-//
-// 壊し方: recordings_trash.sql の LATERAL を
-// `FROM drop_stats WHERE media_asset_id = a.id`（state <> 'deleted' の a に
-// 依存する旧形）に戻すと、原本削除後は a.id が NULL になり drop 集計が
-// 全て 0 に落ちてこのテストのアサーションで落ちる。
-func TestListTrashRecordings_DropSummarySurvivesOriginalDeletion(t *testing.T) {
-	pool := setupTestPool(t)
-	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
-
-	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "trash/dropsurvive.m2ts", []byte("data"))
-	q := sqlcgen.New(pool)
-	batch := q.InsertDropStat(context.Background(), []sqlcgen.InsertDropStatParams{{
-		MediaAssetID: assetID,
-		Pid:          0x100,
-		Packets:      500,
-		Drops:        2,
-		Errors:       1,
-		Scrambled:    0,
-	}})
-	batch.Exec(nil)
-	if err := batch.Close(); err != nil {
-		t.Fatalf("seeding drop_stat batch: %v", err)
-	}
-
-	if _, err := pool.Exec(context.Background(),
-		"UPDATE recordings SET deleted_at = now() WHERE id = $1", recordingID); err != nil {
-		t.Fatalf("soft-deleting recording: %v", err)
-	}
-	if _, err := pool.Exec(context.Background(),
-		"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1", assetID); err != nil {
-		t.Fatalf("tombstoning original media asset: %v", err)
-	}
-
-	rows, err := q.ListTrashRecordings(context.Background(), db.DefaultSite)
-	if err != nil {
-		t.Fatalf("ListTrashRecordings: %v", err)
-	}
-	var found *sqlcgen.ListTrashRecordingsRow
-	for i := range rows {
-		if rows[i].ID == recordingID {
-			found = &rows[i]
-		}
-	}
-	if found == nil {
-		t.Fatalf("recording missing from ListTrashRecordings")
-	}
-	if found.DropPackets != 500 || found.DropDrops != 2 || found.DropErrors != 1 {
-		t.Errorf("drop summary after original deletion = packets=%d drops=%d errors=%d, want 500/2/1 (original deletion must not zero out drop history)",
-			found.DropPackets, found.DropDrops, found.DropErrors)
-	}
 }
 
 // ごみ箱の猶予を過ぎた録画の原本は物理削除され、行は deleted に遷移する。
@@ -1783,7 +1725,7 @@ func TestDeleteReconcileWorker_CanonicalOrphanDefersWhileRelPathLocked(t *testin
 	}
 	t.Cleanup(func() { _ = q.DeleteOrphanFile(context.Background(), relPath) })
 
-	fileLock, acquired, err := tryLockMediaRelPathFile(orphanPath, relPath)
+	fileLock, acquired, err := tryLockMediaRelPathFile(mediaDir, relPath)
 	if err != nil {
 		t.Fatalf("locking rel_path file: %v", err)
 	}

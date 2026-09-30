@@ -795,7 +795,7 @@ func TestAddRecordingEncodeProfiles_OriginalDeleted_Returns409(t *testing.T) {
 
 // 原本が deleting（unlink 待ち）の録画も 409。
 //
-// 一覧の射影（ListRecordings の LEFT JOIN）は `a.state <> 'deleted'` なので
+// 一覧の射影（recordings_query.go の recordingsFromJoins の LEFT JOIN）は `a.state <> 'deleted'` なので
 // deleting の原本でも sizeBytes が付き、UI は「原本あり」と見てボタンを出す。
 // 一方サーバーの判定は GetActiveOriginalMediaAsset（`state = 'active'`）なので
 // ここに落ちる。**この非対称を意図された振る舞いとして固定する** ---

@@ -59,12 +59,9 @@ linters:
       statements: -1
 
 issues:
-  new-from-rev: origin/main
-  # funlen は診断位置を func 宣言行に打つ。whole-files が無いと
-  # new-from-rev は「追加された行の上にある issue」しか報告しないため、宣言行に
-  # 触れずに既存関数の本体だけを太らせるケースを永久に見逃す（実例:
-  # runServer が分割前に 387 行まで育った経路）。whole-files: true にすると
-  # ファイルに 1 行でも触れば関数全体を検査するので、この抜け道を塞ぐ。
+  # 明示的に --new-from-rev 等で差分 lint する実行向け。
+  # funlen は issue 位置を func 宣言行に付けるため、本体だけの変更も検出できるよう
+  # 変更ファイル全体を対象にする。
   whole-files: true
 
 formatters:

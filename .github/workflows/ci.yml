@@ -25,15 +25,117 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
         working-directory: web
-      # コンポーネント／lib のロジック回帰は CI では Vitest でしか止まらない（build は型エラーしか
-      # 拾わない。ブラウザを使う web/e2e/ もロジック回帰を止めうるが、CI では回さずローカル専用）。
+      # コンポーネント／lib のロジック回帰は CI では Vitest で止める（build は型エラーしか拾わない）。
       # Go toolchain も postgres service も要らないので独立した job にして test job の信号と混ぜない。
       - run: pnpm test
         working-directory: web
       # E2E のフィクスチャ契約だけを検証する。E2E_VALIDATE_FIXTURES_ONLY=1 で各スクリプトは
-      # ブラウザを起動せず終了し、実ブラウザを使う E2E 判定は引き続きローカル専用とする。
+      # ブラウザを起動せず終了する。実ブラウザ判定の軽量セットは browser-e2e job で実行する。
       - run: pnpm e2e:fixtures
         working-directory: web
+
+  # 実バイナリが go:embed した web/dist を配り、DB readiness を通る実 HTTP サーバーに
+  # Chromium からアクセスする。3 本とも Playwright 内で /api/** をスタブするため mirakc は不要。
+  # recordings-selection は実ブラウザ判定の前に 20 件の録画 fixture を Zod 契約で検査する。
+  #
+  # 回すのは web/e2e/*.mjs 31 ファイル（共有部品 lib.mjs / validate-fixtures.mjs を含む）のうち 3 本。
+  # 選定基準は次の 3 つを全部満たすこと。
+  #   - jsdom が原理的に測れない（レイアウトシフト・幅の溢れ・スクロール余白）
+  #   - /api/** を Playwright 内でスタブし、mirakc・チューナー・実データに依存しない
+  #   - ffmpeg・webkit・DB への直接書き込みを要らず、Chromium だけで軽く終わる
+  # 回さない 28 ファイル（判定スクリプトは 26 本）の理由は 3 類型。
+  #   - 実メディアが要る: chapters / seek-tiles / subtitles / chase / live / live-audio は
+  #     ffmpeg でフィクスチャを作る。live / live-audio は webkit も要る
+  #   - 実 DB の状態が要る: checks（既定の pnpm e2e）は API をスタブせず実 EPG の番組行を待ち、
+  #     live は epg_services に実サービスの行が要り、shelves-split は E2E_DATABASE_URL の DB を TRUNCATE する
+  #   - 残り（番組表・予約・検索などの画面別判定）は API スタブで技術的には載せられるが、
+  #     全体の所要時間を測っておらず、PR ごとに払う価値をまだ判断していない
+  # 判定スクリプト全 29 本を回す定期ジョブは作らない。回す主体と失敗の受け手が決まっておらず、
+  # 誰も見ない赤い定期ジョブは PR ごとに回す 3 本より信号として弱いため。
+  # 対象を増やすときはこのコメントの数と類型も同じ PR で直す。
+  browser-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: rokuban
+          POSTGRES_PASSWORD: rokuban
+          POSTGRES_DB: rokuban_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rokuban"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      E2E_URL: http://localhost:40773
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: web
+      - run: pnpm exec playwright install --with-deps chromium
+        working-directory: web
+      - run: pnpm build
+        working-directory: web
+      # Build after web/dist exists: this is the actual static bundle embedded in the Go binary.
+      - run: go build -o /tmp/rokuban ./cmd/rokuban
+      - name: Prepare CI config and apply database migrations
+        run: |
+          {
+            printf '%s\n' 'server:' '  listen: "127.0.0.1:40773"' '  allowed_hosts: [localhost]'
+            sed \
+              -e 's/^  host: postgres$/  host: localhost/' \
+              -e 's/^  database: rokuban$/  database: rokuban_test/' \
+              -e "s#^  media_dir: /mnt/media\$#  media_dir: ${RUNNER_TEMP}/rokuban-e2e-media#" \
+              config.ci.yml
+          } > "${RUNNER_TEMP}/rokuban-e2e.yml"
+          mkdir -p "${RUNNER_TEMP}/rokuban-e2e-media"
+          /tmp/rokuban migrate up --config "${RUNNER_TEMP}/rokuban-e2e.yml"
+      - name: Start API server and wait for readiness
+        run: |
+          server_log="${RUNNER_TEMP}/rokuban-e2e-server.log"
+          /tmp/rokuban server --roles api --config "${RUNNER_TEMP}/rokuban-e2e.yml" >"${server_log}" 2>&1 &
+          server_pid=$!
+          for _ in $(seq 1 60); do
+            if curl --fail --silent --show-error "${E2E_URL}/readyz" >/dev/null; then
+              echo "Rokuban is ready at ${E2E_URL}"
+              exit 0
+            fi
+            if ! kill -0 "${server_pid}" 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          echo "::error::Rokuban did not become ready at ${E2E_URL}; server log follows"
+          cat "${server_log}"
+          exit 1
+      # 1 本が落ちても残りを走らせ、1 回の実行で全部の結果を見えるようにする。
+      - if: ${{ !cancelled() }}
+        run: pnpm e2e:cls
+        working-directory: web
+      - if: ${{ !cancelled() }}
+        run: pnpm e2e:chip-overflow
+        working-directory: web
+      - if: ${{ !cancelled() }}
+        run: pnpm e2e:recordings-selection
+        working-directory: web
+      - name: Show API server log
+        if: failure()
+        run: cat "${RUNNER_TEMP}/rokuban-e2e-server.log"
 
   test:
     runs-on: ubuntu-latest
@@ -76,9 +178,12 @@ jobs:
       - run: pnpm build
         working-directory: web
       # DB を使うテストはパッケージごとに専用データベースを作るため（internal/testutil.SetupDB）、
-      # 待ち合わせも踏み合いもなく並行実行できる。-timeout はハングを早期検知するため既定の 10m より短くする。
+      # 待ち合わせも踏み合いもなく並行実行できる。
       # POSTGRES_USER はこのインスタンスの initdb 時に作られる初期ロールなので CREATE DATABASE 権限を持つ。
-      - run: go test ./... -timeout 5m
+      # 全パッケージに -race を掛ける。goroutine を持つパッケージは worker / streamer に限らず
+      # 散らばっていて、並行性で選別すると漏れる（選び漏らした側の data race は通常実行では通ってしまう）。
+      # -timeout は各テストバイナリごとの制限。最長パッケージ（race 付きで 1 分台）に対して数倍の余裕を取る。
+      - run: go test -race ./... -count=1 -timeout 10m
 
   # rokuban が mirakc に期待する挙動（`internal/mirakc.Client` が叩く API の形）を、
   # 実物の mirakc コンテナに対して機械判定する（internal/mirakc/conformance）。
@@ -184,11 +289,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      # issues.new-from-rev（.golangci.yml）が origin/main との差分を取るので
-      # base ブランチの履歴が要る。
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
