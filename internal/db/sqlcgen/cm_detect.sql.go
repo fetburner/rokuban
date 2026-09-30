@@ -46,6 +46,24 @@ func (q *Queries) DeleteCMLogo(ctx context.Context, arg DeleteCMLogoParams) (int
 	return result.RowsAffected(), nil
 }
 
+const deleteCMLogoArea = `-- name: DeleteCMLogoArea :execrows
+DELETE FROM cm_logo_areas
+WHERE network_id = $1 AND service_id = $2
+`
+
+type DeleteCMLogoAreaParams struct {
+	NetworkID int32
+	ServiceID int32
+}
+
+func (q *Queries) DeleteCMLogoArea(ctx context.Context, arg DeleteCMLogoAreaParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteCMLogoArea, arg.NetworkID, arg.ServiceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getCMDetectionResult = `-- name: GetCMDetectionResult :one
 SELECT cm_ranges::text AS cm_ranges, detected_at
 FROM recording_cm_detections
@@ -127,6 +145,42 @@ func (q *Queries) GetCMLogo(ctx context.Context, arg GetCMLogoParams) ([]byte, e
 	return lgd, err
 }
 
+const getCMLogoArea = `-- name: GetCMLogoArea :one
+SELECT x, y, w, h, coded_width, coded_height, updated_at
+FROM cm_logo_areas
+WHERE network_id = $1 AND service_id = $2
+`
+
+type GetCMLogoAreaParams struct {
+	NetworkID int32
+	ServiceID int32
+}
+
+type GetCMLogoAreaRow struct {
+	X           int32
+	Y           int32
+	W           int32
+	H           int32
+	CodedWidth  int32
+	CodedHeight int32
+	UpdatedAt   time.Time
+}
+
+func (q *Queries) GetCMLogoArea(ctx context.Context, arg GetCMLogoAreaParams) (GetCMLogoAreaRow, error) {
+	row := q.db.QueryRow(ctx, getCMLogoArea, arg.NetworkID, arg.ServiceID)
+	var i GetCMLogoAreaRow
+	err := row.Scan(
+		&i.X,
+		&i.Y,
+		&i.W,
+		&i.H,
+		&i.CodedWidth,
+		&i.CodedHeight,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getCMRetryOriginal = `-- name: GetCMRetryOriginal :one
 SELECT EXISTS (
     SELECT 1 FROM recordings r
@@ -144,6 +198,48 @@ func (q *Queries) GetCMRetryOriginal(ctx context.Context, recordingID int64) (bo
 	return exists, err
 }
 
+const insertLearnedCMLogo = `-- name: InsertLearnedCMLogo :execrows
+INSERT INTO cm_logos (network_id, service_id, lgd, preview_png, learned_from)
+SELECT $1::int, $2::int, $3::bytea,
+       $4::bytea, $5::bigint
+WHERE NOT EXISTS (
+    SELECT 1 FROM cm_logos l
+    WHERE l.network_id = $1::int AND l.service_id = $2::int
+)
+AND (
+    SELECT a.updated_at FROM cm_logo_areas a
+    WHERE a.network_id = $1::int AND a.service_id = $2::int
+) IS NOT DISTINCT FROM $6::timestamptz
+`
+
+type InsertLearnedCMLogoParams struct {
+	NetworkID             int32
+	ServiceID             int32
+	Lgd                   []byte
+	PreviewPng            []byte
+	LearnedFrom           int64
+	ObservedAreaUpdatedAt *time.Time
+}
+
+// ジョブが学習したロゴを、**ロゴ不在かつ枠がジョブの読んだ時点のまま**のときだけ書く
+// （同じ文で再評価する）。枠が変わっていれば、そのロゴは古い枠で学習されたもので、
+// 書くと枠の保存が消したはずのロゴが復活する。observed_area_updated_at が NULL は
+// 「ジョブが読んだとき枠は無かった」で、いま枠があれば不一致になる。
+func (q *Queries) InsertLearnedCMLogo(ctx context.Context, arg InsertLearnedCMLogoParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertLearnedCMLogo,
+		arg.NetworkID,
+		arg.ServiceID,
+		arg.Lgd,
+		arg.PreviewPng,
+		arg.LearnedFrom,
+		arg.ObservedAreaUpdatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const isCMDetectionDesired = `-- name: IsCMDetectionDesired :one
 SELECT EXISTS (
     SELECT 1
@@ -152,6 +248,7 @@ SELECT EXISTS (
     JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original' AND o.state = 'active'
     LEFT JOIN recording_cm_attempts ca ON ca.recording_id = r.id
     LEFT JOIN cm_logos l ON l.network_id = r.network_id AND l.service_id = r.service_id
+    LEFT JOIN cm_logo_areas a ON a.network_id = r.network_id AND a.service_id = r.service_id
     WHERE r.id = $1
       AND r.deleted_at IS NULL
       AND NOT EXISTS (SELECT 1 FROM recording_cm_detections d WHERE d.recording_id = r.id)
@@ -160,6 +257,7 @@ SELECT EXISTS (
           ca.recording_id IS NULL
           OR ca.state <> 'failed'
           OR (l.learned_at IS NOT NULL AND ca.attempted_at < l.learned_at)
+          OR (a.updated_at IS NOT NULL AND ca.attempted_at < a.updated_at)
       )
 )
 `
@@ -179,25 +277,55 @@ SELECT r.network_id, r.service_id,
        l.preview_png,
        count(DISTINCT ca.recording_id) FILTER (
            WHERE ca.state = 'failed' AND (l.learned_at IS NULL OR ca.attempted_at >= l.learned_at)
-       )::bigint AS failed_count
+       )::bigint AS failed_count,
+       -- 直近の失敗理由。人が教えた枠と解像度が違う録画はここに出る（一覧の警告）。
+       COALESCE(((array_agg(ca.error ORDER BY ca.attempted_at DESC) FILTER (
+           WHERE ca.state = 'failed' AND ca.error IS NOT NULL
+       ))[1])::text, '')::text AS last_error,
+       a.x, a.y, a.w, a.h, a.coded_width, a.coded_height, a.updated_at AS area_updated_at,
+       -- コマとタイルを取り寄せる録画（原本があり、実体の無いマーカーが付いていない
+       -- 最新のもの）。**0 = 無し**（recordings.id は 1 から始まる）で、
+       -- 「原本のある録画がありません」を表す。
+       COALESCE((SELECT o2.recording_id
+          FROM media_assets o2
+          JOIN recordings r2 ON r2.id = o2.recording_id
+         WHERE r2.network_id = r.network_id
+           AND r2.service_id = r.service_id
+           AND o2.kind = 'original'
+           AND o2.state = 'active'
+           AND r2.deleted_at IS NULL
+           AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = o2.id)
+         ORDER BY r2.id DESC
+         LIMIT 1), 0)::bigint AS frame_recording_id
 FROM recordings r
 LEFT JOIN cm_logos l ON l.network_id = r.network_id AND l.service_id = r.service_id
+LEFT JOIN cm_logo_areas a ON a.network_id = r.network_id AND a.service_id = r.service_id
 LEFT JOIN recording_cm_attempts ca ON ca.recording_id = r.id
 WHERE r.deleted_at IS NULL
-GROUP BY r.network_id, r.service_id, l.learned_at, l.preview_png
+GROUP BY r.network_id, r.service_id, l.learned_at, l.preview_png, a.network_id, a.service_id
 ORDER BY r.network_id, r.service_id
 `
 
 type ListCMLogoStatesRow struct {
-	NetworkID      int32
-	ServiceID      int32
-	ServiceName    string
-	RecordingCount int64
-	LearnedAt      *time.Time
-	PreviewPng     []byte
-	FailedCount    int64
+	NetworkID        int32
+	ServiceID        int32
+	ServiceName      string
+	RecordingCount   int64
+	LearnedAt        *time.Time
+	PreviewPng       []byte
+	FailedCount      int64
+	LastError        string
+	X                *int32
+	Y                *int32
+	W                *int32
+	H                *int32
+	CodedWidth       *int32
+	CodedHeight      *int32
+	AreaUpdatedAt    *time.Time
+	FrameRecordingID int64
 }
 
+// a の列は主キー (network_id, service_id) の関数従属なので、この 2 列だけで足りる。
 func (q *Queries) ListCMLogoStates(ctx context.Context) ([]ListCMLogoStatesRow, error) {
 	rows, err := q.db.Query(ctx, listCMLogoStates)
 	if err != nil {
@@ -215,6 +343,15 @@ func (q *Queries) ListCMLogoStates(ctx context.Context) ([]ListCMLogoStatesRow, 
 			&i.LearnedAt,
 			&i.PreviewPng,
 			&i.FailedCount,
+			&i.LastError,
+			&i.X,
+			&i.Y,
+			&i.W,
+			&i.H,
+			&i.CodedWidth,
+			&i.CodedHeight,
+			&i.AreaUpdatedAt,
+			&i.FrameRecordingID,
 		); err != nil {
 			return nil, err
 		}
@@ -233,6 +370,7 @@ JOIN recording_encode_policy p ON p.recording_id = r.id AND p.cm_detect
 JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original' AND o.state = 'active'
 LEFT JOIN recording_cm_attempts ca ON ca.recording_id = r.id
 LEFT JOIN cm_logos l ON l.network_id = r.network_id AND l.service_id = r.service_id
+LEFT JOIN cm_logo_areas a ON a.network_id = r.network_id AND a.service_id = r.service_id
 WHERE r.id > $1::bigint
   AND r.deleted_at IS NULL
   AND NOT EXISTS (SELECT 1 FROM recording_cm_detections d WHERE d.recording_id = r.id)
@@ -241,6 +379,7 @@ WHERE r.id > $1::bigint
       ca.recording_id IS NULL
       OR ca.state <> 'failed'
       OR (l.learned_at IS NOT NULL AND ca.attempted_at < l.learned_at)
+      OR (a.updated_at IS NOT NULL AND ca.attempted_at < a.updated_at)
   )
 ORDER BY r.id
 LIMIT $2
@@ -252,7 +391,8 @@ type ListMissingCMDetectionsParams struct {
 }
 
 // CM detection jobs use the same desired predicate for the ingest hint and periodic pass.
-// A failed attempt becomes desired again after a newer logo for the station was learned.
+// A failed attempt becomes desired again after a newer logo for the station was learned,
+// or after the user taught the station a new logo area.
 func (q *Queries) ListMissingCMDetections(ctx context.Context, arg ListMissingCMDetectionsParams) ([]int64, error) {
 	rows, err := q.db.Query(ctx, listMissingCMDetections, arg.AfterRecordingID, arg.RowLimit)
 	if err != nil {
@@ -273,9 +413,25 @@ func (q *Queries) ListMissingCMDetections(ctx context.Context, arg ListMissingCM
 	return items, nil
 }
 
+const lockCMStation = `-- name: LockCMStation :exec
+SELECT pg_advisory_xact_lock($1::int, $2::int)
+`
+
+type LockCMStationParams struct {
+	NetworkID int32
+	ServiceID int32
+}
+
+// 局ごとのロゴ状態（cm_logos と cm_logo_areas）を書く tx の先頭で取る。
+// 枠の保存（PUT）と学習結果の保存が同じ局で並んだときに直列化する。
+func (q *Queries) LockCMStation(ctx context.Context, arg LockCMStationParams) error {
+	_, err := q.db.Exec(ctx, lockCMStation, arg.NetworkID, arg.ServiceID)
+	return err
+}
+
 const markCMDetectionFailure = `-- name: MarkCMDetectionFailure :exec
 UPDATE recording_cm_attempts
-SET state = $1, error = $2, attempted_at = now()
+SET state = $1, error = $2
 WHERE recording_id = $3
 `
 
@@ -285,6 +441,10 @@ type MarkCMDetectionFailureParams struct {
 	RecordingID int64
 }
 
+// **attempted_at は書き換えない**（ジョブ開始時刻のまま）。再投入の判定は
+// `attempted_at < a.updated_at` で「枠を教えた後に試したか」を見るので、枠なしで
+// 始まったジョブが PUT の後に失敗して終了時刻で上書きすると、その失敗が
+// 新しい枠での試行に見え、枠に合わせた再検出が二度と投入されない。
 func (q *Queries) MarkCMDetectionFailure(ctx context.Context, arg MarkCMDetectionFailureParams) error {
 	_, err := q.db.Exec(ctx, markCMDetectionFailure, arg.State, arg.Error, arg.RecordingID)
 	return err
@@ -344,6 +504,53 @@ func (q *Queries) UpsertCMLogo(ctx context.Context, arg UpsertCMLogoParams) erro
 		arg.Lgd,
 		arg.PreviewPng,
 		arg.LearnedFrom,
+	)
+	return err
+}
+
+const upsertCMLogoArea = `-- name: UpsertCMLogoArea :exec
+INSERT INTO cm_logo_areas (network_id, service_id, x, y, w, h, coded_width, coded_height)
+VALUES (
+    $1,
+    $2,
+    $3,
+    $4,
+    $5,
+    $6,
+    $7,
+    $8
+)
+ON CONFLICT (network_id, service_id) DO UPDATE
+SET x = EXCLUDED.x,
+    y = EXCLUDED.y,
+    w = EXCLUDED.w,
+    h = EXCLUDED.h,
+    coded_width = EXCLUDED.coded_width,
+    coded_height = EXCLUDED.coded_height,
+    updated_at = now()
+`
+
+type UpsertCMLogoAreaParams struct {
+	NetworkID   int32
+	ServiceID   int32
+	X           int32
+	Y           int32
+	W           int32
+	H           int32
+	CodedWidth  int32
+	CodedHeight int32
+}
+
+func (q *Queries) UpsertCMLogoArea(ctx context.Context, arg UpsertCMLogoAreaParams) error {
+	_, err := q.db.Exec(ctx, upsertCMLogoArea,
+		arg.NetworkID,
+		arg.ServiceID,
+		arg.X,
+		arg.Y,
+		arg.W,
+		arg.H,
+		arg.CodedWidth,
+		arg.CodedHeight,
 	)
 	return err
 }

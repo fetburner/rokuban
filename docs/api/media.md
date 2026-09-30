@@ -80,6 +80,22 @@ ingest と共有し、メディアディレクトリの外を指す `rel_path` �
 寿命は poster と同じである（原本が消えても派生物として残り、ごみ箱で 404、完全削除で
 アセットグループごと消える）。
 
+**`/frame` は CM 検出のロゴ位置を教えるためのコマを返す。**
+
+```
+GET /api/media/recordings/{id}/frame?at=<milliseconds> → image/jpeg
+```
+
+原本（`kind = 'original'`）だけを入力にする。画像の縮小や SAR の焼き込みはしない。
+応答には `X-Coded-Width` と `X-Coded-Height` を付ける。
+値は原本の映像ストリームの `width` と `height` である。
+画面が保存する枠はこの記録上の座標を使う。
+
+`at` が無い、負数、数値でない場合は 400 を返す。
+ごみ箱、原本の行が無い録画、原本の実体が無い録画は 404 を返す。
+これらの判定は ffmpeg を起動する前に行う。
+このルートは OpenAPI に載せず、HEAD も登録しない。
+
 **配らないもの:** ごみ箱に入った録画（`recordings.deleted_at IS NOT NULL`）、
 削除済みアセット（`media_assets.state <> 'active'`）。未 ingest の録画
 （指定 kind の `media_assets` 行なし）、存在しないプロファイルも配らない。いずれも 404。

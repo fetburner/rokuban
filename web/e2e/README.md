@@ -982,6 +982,27 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:seek-tiles
 ```
 
+### CM 検出のロゴ位置（`cm-logo-area.mjs`）
+
+CM 検出のロゴ画面で、局を開いてタイルからコマを選び、拡大表示のまま描いた枠が
+記録上の解像度の座標で保存されることを実ブラウザで見る。表示枠の寸法とポインタ座標は
+jsdom では測れないため、この判定を単体テストで置き換えない。
+
+API はブラウザ側で差し替える。1x1 PNG と `X-Coded-Width: 1920`、
+`X-Coded-Height: 1080` を返すので、画像の画素数と記録上の座標を混同しない。
+
+- ① 局の行を開いてタイルを押すと、原寸コマが表示される
+- ② 初期の右上拡大表示で 160×120 CSS px の枠を描くと、1920×1080 の座標へ変換されて PUT される
+- ③ 行に直近の CM 検出失敗理由が表示される
+
+判定側は表示枠を実測し、右上合わせと 2.5 倍の計算をリテラルで行う。
+実装の純関数を import して比較すると、同じ実装を二度呼ぶだけになる。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:cm-logo-area
+```
+
 ### チャプターの目盛りと自動スキップ（`chapters.mjs`）
 
 録画の詳細で、CM の目盛りが帯の正しい位置に出ること・通常の再生で `cut` 区間の先頭に
