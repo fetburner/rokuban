@@ -314,6 +314,9 @@ func TestCMDetectWorkPassesTaughtLogoAreaToLogoframe(t *testing.T) {
 	if detections != 1 {
 		t.Errorf("detections = %d, want 1 (the taught area must not stop the run)", detections)
 	}
+	if n := countLogos(t, pool); n != 1 {
+		t.Errorf("cm_logos rows = %d, want 1 (a logo learned under an unchanged taught area must be kept)", n)
+	}
 }
 
 // 教えた枠と記録の解像度が違えば、枠を使わず（logoframe を回さず）失敗として
