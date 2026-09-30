@@ -15,6 +15,7 @@ import {
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { RecordingFilters } from '@/components/recording-filters'
 import { RecordingRow, type RecordingRowView } from '@/components/recording-row'
+import { RecordingSeriesToggle } from '@/components/recording-series-toggle'
 import { StorageBalance } from '@/components/storage-balance'
 import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
 import { useToast } from '@/components/toaster'
@@ -43,29 +44,11 @@ import {
   shouldShowRecordingSite,
   type RecordingsPageSearch,
 } from '@/lib/recording-search'
+import { loadRecordingView, saveRecordingView } from '@/lib/recording-view'
 import { cn } from '@/lib/utils'
 
 /** pageSize は 1 回のフェッチで取る件数（API の既定と同じ）。 */
 const pageSize = 50
-
-/**
- * VIEW_KEY は表示形式を持続させる localStorage キー。
- *
- * **URL ではなく端末に持つ**（`tab` や絞り込みと違う扱い）。表示形式は共有
- * リンクの宛先ではなく、その端末で見やすい形の好みだから
- * （docs/frontend/design.md §個人化）。`components/app-shell.tsx` の
- * サイドバー畳みと同じ `rokuban:<関心事>:...` の命名。
- */
-const VIEW_KEY = 'rokuban:recordings:view'
-
-function loadRecordingsView(): RecordingRowView {
-  try {
-    return localStorage.getItem(VIEW_KEY) === 'card' ? 'card' : 'list'
-  } catch {
-    // private mode 等で localStorage が使えない場合はリスト
-    return 'list'
-  }
-}
 
 type RecordingsPageParam = { before?: string; beforeId?: number }
 
@@ -170,7 +153,7 @@ export function RecordingsPage() {
   )
   const queryClient = useQueryClient()
   const toast = useToast()
-  const [view, setView] = useState<RecordingRowView>(loadRecordingsView)
+  const [view, setView] = useState<RecordingRowView>(loadRecordingView)
   const [selecting, setSelecting] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(() => new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -180,11 +163,7 @@ export function RecordingsPage() {
   const toggleView = () => {
     const next: RecordingRowView = view === 'card' ? 'list' : 'card'
     setView(next)
-    try {
-      localStorage.setItem(VIEW_KEY, next)
-    } catch {
-      // 保存できなくても表示は切り替わる（次に開くとリストに戻るだけ）
-    }
+    saveRecordingView(next)
   }
   const toggleSelected = (id: number) => {
     setSelected((current) => {
@@ -344,7 +323,9 @@ export function RecordingsPage() {
           // カード表示のトグル自体は 0 件でも出す --- 出さないと、ごみ箱や
           // 絞り込みで 0 件になったタブではリスト表示に戻す手段が無くなる
           // （カード表示のまま次にヒットする画面までトグルへ到達できない）。
-          !selecting && (recordings.length > 0 || view === 'card') ? (
+          <div className="flex items-center gap-2">
+            <RecordingSeriesToggle active="recordings" />
+            {!selecting && (recordings.length > 0 || view === 'card') ? (
             <div className="flex items-center gap-1">
               {/* 状態を持つトグル。読み上げは aria-pressed が担う（ラベルを
                   「リスト表示」に付け替えると、読み上げでは今どちらなのかが
@@ -370,7 +351,8 @@ export function RecordingsPage() {
                 </Button>
               )}
             </div>
-          ) : undefined
+            ) : null}
+          </div>
         }
       >
         <div className="flex gap-1 border-t border-border px-4 py-2">

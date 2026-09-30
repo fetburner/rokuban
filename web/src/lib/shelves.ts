@@ -7,6 +7,8 @@ export type ShelfRow = {
   /** 見出しに出す代表の録画の生タイトル。 */
   title: string
   count: number
+  playableCount: number
+  latestStartAt: string
   /** 代表の録画の id。番組ハブの起点に使う。 */
   representativeId: number
 }
@@ -26,9 +28,32 @@ export function buildShelfRows(shelves: readonly RecordingShelf[]): ShelfRow[] {
         value: shelf.value,
         title: shelf.title,
         count: shelf.count,
+        playableCount: shelf.playableCount,
+        latestStartAt: shelf.latestStartAt,
         representativeId: shelf.representativeId,
       },
     ]
+  })
+}
+
+/** シリーズ一覧のクライアント側の並び。API の件数順は棚を受け取る初期順に使わない。 */
+export type ShelfSort = 'latest' | 'count' | 'name'
+
+/** sortShelfRows は入力を変更せず、同値時も表示が揺れない順序で棚を返す。 */
+export function sortShelfRows(rows: readonly ShelfRow[], sort: ShelfSort): ShelfRow[] {
+  return [...rows].sort((a, b) => {
+    if (sort === 'latest') {
+      // 文字列比較にしない。小数秒の有無やオフセットが混ざると時刻順と食い違う。
+      const byLatest = Date.parse(b.latestStartAt) - Date.parse(a.latestStartAt)
+      if (byLatest !== 0) return byLatest
+    } else if (sort === 'count') {
+      const byCount = b.count - a.count
+      if (byCount !== 0) return byCount
+    } else {
+      const byName = a.value.localeCompare(b.value, 'ja')
+      if (byName !== 0) return byName
+    }
+    return a.value.localeCompare(b.value, 'ja') || a.representativeId - b.representativeId
   })
 }
 

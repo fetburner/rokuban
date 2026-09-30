@@ -1,12 +1,19 @@
 import { describe, expect, it } from 'vitest'
 
 import type { RecordingShelf } from '@/api/generated'
-import { buildShelfRows, shelfInputError } from './shelves'
+import { buildShelfRows, shelfInputError, sortShelfRows } from './shelves'
 
-function shelf(value: string | null, title: string, count: number, id = 1): RecordingShelf {
+function shelf(
+  value: string | null,
+  title: string,
+  count: number,
+  id = 1,
+  playableCount = count,
+  latestStartAt = '2026-01-01T00:00:00Z',
+): RecordingShelf {
   return value === null
-    ? { title, count, representativeId: id }
-    : { value, title, count, representativeId: id }
+    ? { title, count, playableCount, latestStartAt, representativeId: id }
+    : { value, title, count, playableCount, latestStartAt, representativeId: id }
 }
 
 describe('buildShelfRows', () => {
@@ -32,6 +39,31 @@ describe('buildShelfRows', () => {
 
   it('棚が無ければ空を返す', () => {
     expect(buildShelfRows([])).toEqual([])
+  })
+})
+
+describe('sortShelfRows', () => {
+  const rows = (...latest: string[]) =>
+    buildShelfRows(latest.map((at, i) => shelf(`s${i}`, `t${i}`, 1, i + 1, 1, at)))
+
+  it('新着順は小数秒の有無・オフセットが混ざっても時刻の降順にする', () => {
+    // 文字列比較だと '.500Z' < 'Z'、'+09:00' の 10:00 > 05:00Z になり逆転する。
+    const sorted = sortShelfRows(
+      rows(
+        '2026-01-01T00:00:00Z', // s0: 00:00:00.000Z
+        '2026-01-01T00:00:00.500Z', // s1: 0.5 秒遅い
+        '2026-01-01T10:00:00+09:00', // s2: 01:00Z
+        '2025-12-31T23:59:59.999Z', // s3: 最古
+      ),
+      'latest',
+    )
+    expect(sorted.map((row) => row.value)).toEqual(['s2', 's1', 's0', 's3'])
+  })
+
+  it('入力を変更しない', () => {
+    const input = rows('2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z')
+    sortShelfRows(input, 'latest')
+    expect(input.map((row) => row.value)).toEqual(['s0', 's1'])
   })
 })
 

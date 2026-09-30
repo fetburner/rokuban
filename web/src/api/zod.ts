@@ -1281,16 +1281,18 @@ export const ListRecordingsResponse = zod.array(ListRecordingsResponseItem)
 
 /**
  * 実効シリーズ（分類ルールが当たればその値、当たらなければ自動キー）ごとの
- * 棚。1 要素 = 1 棚で、`value` は棚のキー、`title` は代表の録画の生の
- * タイトル（値は正規化の産物なので表示名にならない）。
+ * 棚。1 要素 = 1 棚で、`value` は棚のキー（画面はこれをシリーズ名として
+ * 出す。キーを名前にすると `ドラマ` のような過剰併合が一目で分かる）、
+ * `title` は代表の録画の生のタイトル（副見出し。枠のキーでも中身が分かる）。
  *
  * 母集団は生きていて（`deleted_at IS NULL AND superseded_at IS NULL`）
- * 再生できる録画（原本の media_asset がある、または encoded の派生物が
- * ある）だけ。ごみ箱・superseded・取り込めていない録画は数えない。
+ * 録画中・取り込み待ち・失敗を含むすべての録画。ごみ箱・superseded は
+ * 除外する。`playableCount` はこの母集団のうち、原本の media_asset がある
+ * か encoded の派生物がある録画の件数。
  *
  * 代表は `ORDER BY program_start_at DESC, id DESC LIMIT 1`。
  * `value` が null の棚（自動キーを導出できず、どのルールも当たらない
- * 録画）も返す --- UI が「その他」にまとめる件数の材料にするため。
+ * 録画）も返す --- UI は番組ハブを開けないので表示しない。
  *
  * **パスを `/api/recordings/shelves` にしない。** `/api/recordings/{id}`
  * と id=`shelves` で曖昧になる。
@@ -1303,9 +1305,11 @@ export const ListRecordingShelvesQueryParams = zod.object({
 })
 
 export const ListRecordingShelvesResponseItem = zod.object({
-  "value": zod.string().nullish().describe('棚のキー。null は実効シリーズを導出できなかった録画（UI は「その他」に\nまとめる）。\n'),
-  "title": zod.string().describe('代表の録画の生のタイトル（見出しに使う）。'),
-  "count": zod.int().describe('この棚に入る録画の件数。'),
+  "value": zod.string().nullish().describe('棚のキー（画面のシリーズ名）。null は実効シリーズを導出できなかった録画\n（番組ハブを開けないので UI は表示しない）。\n'),
+  "title": zod.string().describe('代表の録画の生のタイトル（シリーズ名の下の副見出しに使う）。'),
+  "count": zod.int().describe('生きている録画の件数（録画中・取り込み待ち・失敗を含む）。'),
+  "playableCount": zod.int().describe('この棚のうち、再生できる録画の件数。'),
+  "latestStartAt": zod.iso.datetime({"offset":true}).describe('シリーズ内で最も新しい録画の番組開始時刻。常に UTC。'),
   "representativeId": zod.int().describe('代表の録画の id。棚から録画一覧・番組ハブへ渡す起点。')
 })
 export const ListRecordingShelvesResponse = zod.array(ListRecordingShelvesResponseItem)

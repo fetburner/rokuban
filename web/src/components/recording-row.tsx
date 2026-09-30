@@ -7,10 +7,11 @@ import { DropBadges, EncodeStatusBadges, IngestBadge, StatusBadge } from '@/comp
 import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
 import { programTitle } from '@/lib/program-labels'
 import { sourceLabels } from '@/lib/recording-search'
+import type { RecordingView } from '@/lib/recording-view'
 import { cn } from '@/lib/utils'
 
 /** RecordingRowView は録画一覧とシリーズページで共有する表示形式。`card` はサムネイルを大きく並べる。 */
-export type RecordingRowView = 'list' | 'card'
+export type RecordingRowView = RecordingView
 
 /**
  * RecordingRow は録画一覧とシリーズページで共有する録画の 1 行。

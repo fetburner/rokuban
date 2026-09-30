@@ -254,10 +254,21 @@ tombstone（`purged_at` が立った行）だけは 404** にする --- ファ�
 
 ### シリーズの棚と分類ルール: `GET /api/recording-shelves` / `/api/label-rules`
 
-棚は録画の一覧の射影であって、行の同一性もキーセットの軸も変えない
+棚は録画の一覧を実効シリーズごとに集計した射影であって、行の同一性もキーセットの軸も変えない
 （`/api/recordings` に `series` という**絞り込み軸を足していない**）。
 `Recording.series` は実効シリーズ（分類ルールが当たればその値、当たらなければ
 自動キー）で、棚の `value` と同じ空間の値である。
+
+母集団は `deleted_at IS NULL AND superseded_at IS NULL` の録画全体である。
+録画中・取り込み待ち・失敗も含む。`count` はこの母集団の件数である。
+`playableCount` は原本または有効な encoded 資産がある録画の件数である。
+`latestStartAt` は棚内で最も新しい番組開始時刻、`representativeId` はその録画の id である。
+`title` は代表録画の生タイトルで、`value` を正規化前の表示名として置き換えるものではない。
+
+画面の `/series` は `value` をシリーズ名、`title` を補助表示に使い、`playableCount`
+と `latestStartAt` を添える。`value` が `NULL` の棚は番組ハブを開けないため画面には出さず、
+API は状態を失わないよう返す。棚全体を選ぶリンクは
+`/recordings/{representativeId}/series` に向く。
 
 **パスを `/api/recordings/shelves` にしない。** `/api/recordings/{id}` と
 id=`shelves` で曖昧になる。
@@ -271,5 +282,7 @@ id=`shelves` で曖昧になる。
 `LabelRule.valueKey` は実効の棚キー（`value` に自動キーと同じ正規化を通した結果）で、`value` と食い違いうる（最初の空白で切れる）。
 一覧はこれを見せ、フォームは入力中の値を `GET /api/label-rule-value-key` に問い合わせて見せる。正規化は SQL 関数の 1 箇所に置き、クライアントへ複製しない。
 
+分類ルールの画面は `/rules` に置く。シリーズ画面からルールを作る導線も同じ画面の
+フォームを開き、作成・更新・削除後は再評価ジョブの完了に合わせて棚を更新する。
 値が `NULL` の棚は番組ハブを開けないので画面に出さない。API は件数によらず
 全部の棚を返す。判断の根拠は [data/series.md](../data/series.md) §8。
