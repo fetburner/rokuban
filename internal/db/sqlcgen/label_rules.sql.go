@@ -205,26 +205,40 @@ type ListRecordingShelvesRow struct {
 // 値が NULL の棚の行は `GROUP BY value` が 1 つのグループにまとめる（SQL の
 // GROUP BY は NULL を等しいものとして扱う）。
 //
-// **この形はプランの形に依存する。** 73,000 行を 141 棚に分けた測定は、
-// `internal/api/shelves_bench_test.go` が専用 DB 上で再現する。テストは
-// `ROKUBAN_BENCH_DATABASE_URL` が無い環境ではスキップし、同じ接続の pgx
-// prepared statement 経由で各形を 10 回実行して中央値を出す。データには
-// finished / recording / failed、再生可能な行、再生資産の無い行、deleted / superseded
-// 行を混ぜ、分類ルールを 50 本置く。
+// **この形はプランの形に依存する。** 73,000 行がすべて再生可能な状態での過去の実測
+// （sqlc / pgx の prepared statement 経由）:
 //
-// 候補の形は、生きている録画を母集団にして `playable_assets` を LEFT JOIN し、
-// `FILTER` で再生可能件数、`max(program_start_at)` で最新開始時刻を同じ集計から返す。
-// `live` CTE を MATERIALIZED にした候補も同じテストで測る。候補が予算内に収まるかは
-// 実行ログで確認する。現行 SQL の形はこの測定のために変更しない。
+//   - この形: 141 ms
+//   - 代表と件数を別々の CTE に割る: 231 ms（playable をもう 1 度走査する）
+//   - playable を MATERIALIZED にしない: 617 ms
 //
-// `playable` の MATERIALIZED を外す候補も測定する。prepared statement と単発の
-// psql ではプランが変わるため、アプリと同じ pgx 経路の中央値を基準にする。
+// 617 ms の仕組みは、MATERIALIZED を外すと部分一意索引 recordings_unique_active_event
+// が選ばれ、その行数見積もりが 1 になって下流が全部 1 行の計画になり、代表を求める
+// ソートが外側の行数ぶん繰り返されること、だった。**現スキーマ・合成 seed（下記）では
+// この 617 ms は再現しない**（MATERIALIZED を外した形は現行形の 0.9〜1.02 倍で、索引も
+// 選ばれない）。再現条件は未検証なので、MATERIALIZED は外さない。
 //
 // 実効シリーズは recording_series ビューが唯一の定義で、ここでも JOIN で読む
 // （COALESCE(lr.value_key, r.series_key) を書き下すと定義が 2 箇所になる）。
-// `recording_series` ビュー経由の定義は維持する。測定値は環境依存なので、過去の
-// all-playable データの値を受け入れ条件に固定せず、ハーネスの混在データと実行ログを
-// 変更判断の根拠にする。
+// ビュー経由は書き下しより約 8% 遅かった（合成データ 73,000 行・141 棚・分類ルール
+// 50 本で約 223 ms 対 約 206 ms）。
+//
+// 母集団を「生きている録画」へ広げた形の測定は `internal/api/shelves_bench_test.go`
+// （`ROKUBAN_BENCH_DATABASE_URL` が無ければスキップ）が専用 DB で再現する。録画 73,000
+// 行（再生可能 65,000・録画中 3,000・ingest 待ち 2,000・failed 1,000・ごみ箱 1,000・
+// superseded 1,000）・141 棚・分類ルール 50 本で、各形を形ごとに交互に 10 ラウンド回した
+// 中央値（Apple M3 Max・PostgreSQL 16.2、3 回実行）:
+//
+//   - (a) この形: 269〜280 ms
+//   - (a') この形から playable の MATERIALIZED を外す: 248〜260 ms（(a) の 0.92〜0.93 倍）
+//   - (b) 生きている録画 + playable_assets の LEFT JOIN + count FILTER + max(program_start_at):
+//     282〜289 ms（(a) の 1.03〜1.05 倍）
+//   - (b') (b) の live を MATERIALIZED にする: 294〜310 ms（(a) の 1.09〜1.12 倍。(b) より遅い）
+//
+// 結論: 母集団を広げる形は (b) を採る。同じ環境で現行形の約 1.05 倍で、live の
+// MATERIALIZED は改善にならない。(a) と (b) は playable の件数と代表が全棚で一致する。
+// **絶対値の 200 ms 予算の確認は未測定**（元の測定環境・実データ。この環境は現行形が
+// 予算を越える）。このクエリ本体は変えていない。
 func (q *Queries) ListRecordingShelves(ctx context.Context) ([]ListRecordingShelvesRow, error) {
 	rows, err := q.db.Query(ctx, listRecordingShelves)
 	if err != nil {

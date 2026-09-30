@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"sort"
 	"testing"
@@ -33,10 +32,23 @@ const shelfBenchmarkDatabaseURL = "ROKUBAN_BENCH_DATABASE_URL"
 //
 // タイトルは 141 個の自動キーへ均等に分け、分類ルールを 50 本置く。ルールの値は
 // 自動キーと同じなので、recording_series の JOIN と評価結果を含むプランを測れる。
-// 現行形は sqlc の ListRecordingShelves、候補形は生きている録画を母集団にして
-// playable_assets を LEFT JOIN し、見られる件数と latestStartAt を別列で返す形である。
-// 各形を同じ接続で 10 回実行し、中央値を t.Logf に出す。pgx の prepared statement が
-// 6 回目以降に generic plan へ切り替わるため、単発 psql の値を使わない。
+// 現行形は sqlc の ListRecordingShelves、(a') は現行形から playable の MATERIALIZED
+// だけを外した形、(b) は生きている録画を母集団にして playable_assets を LEFT JOIN し、
+// 見られる件数と latestStartAt を別列で返す形、(b') は (b) の live を MATERIALIZED にした形
+// である。各形を同じ接続で、形を交互に回すラウンド 10 回ずつ実行し（実行順の偏りを消す）、
+// 中央値を t.Logf に出す。(a') / (a) の比も出すが、判定には使わない。
+//
+// 判定しているのは結果の一致だけである。棚ごとに (a) の recording_count と (b) の
+// playable_count、(a') と (a) の全列、(b) と (b') の全列（latest_start_at を含む）が一致する。
+//
+// 既知の 617 ms（playable の MATERIALIZED を外すと数倍遅い）は、現スキーマ・この合成
+// seed では再現しない（Apple M3 Max・PostgreSQL 16.2 で (a') / (a) は 0.9〜1.02）。
+// 棚サイズの偏り・複数の自動キーを 1 棚に併合する分類ルール・統計なしの状態でも再現せず、
+// 617 ms の再現条件は未検証である。したがって (a') が遅いことはアサートしない。
+//
+// 渡された DB はマイグレーション済みであることを前提とし、seed の冒頭で
+// recordings / media_assets / label_rules / label_rule_hits を無条件に TRUNCATE する
+// （空の DB では relation does not exist で落ちる）。必ず専用の DB を渡す。
 func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 	benchURL := os.Getenv(shelfBenchmarkDatabaseURL)
 	if benchURL == "" {
@@ -48,8 +60,8 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsing %s: %v", shelfBenchmarkDatabaseURL, err)
 	}
-	// 全 10 回を同じ backend connection に通し、pgx の prepared statement の
-	// custom → generic plan の切替を測定へ含める。
+	// 全ラウンドを同じ backend connection に通し、pgx の prepared statement の
+	// キャッシュを使う経路（アプリと同じ）で測る。
 	cfg.MinConns = 1
 	cfg.MaxConns = 1
 	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeCacheStatement
@@ -67,78 +79,135 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 	seedShelfBenchmark(t, conn.Conn())
 
 	queries := sqlcgen.New(conn.Conn())
-	currentMedian := measureShelfShape(t, "(a) current ListRecordingShelves", func() error {
-		rows, err := queries.ListRecordingShelves(ctx)
-		if err != nil {
-			return err
-		}
-		if len(rows) != 141 {
-			return fmt.Errorf("current shelf count = %d, want 141", len(rows))
-		}
-		return nil
-	})
+	shapes := []shelfShape{
+		{name: "(a) current ListRecordingShelves", run: func() (map[string]shelfResult, error) {
+			rows, err := queries.ListRecordingShelves(ctx)
+			if err != nil {
+				return nil, err
+			}
+			out := make(map[string]shelfResult, len(rows))
+			for _, r := range rows {
+				out[shelfKey(r.Value)] = shelfResult{title: r.Title, recording: r.RecordingCount, representative: r.RepresentativeID}
+			}
+			return out, nil
+		}},
+		{name: "(a') current shape without playable MATERIALIZED", run: func() (map[string]shelfResult, error) {
+			return queryShelves(ctx, conn.Conn(), currentUnmaterializedShelfQuery, false)
+		}},
+		{name: "(b) live recordings + playable count", run: func() (map[string]shelfResult, error) {
+			return queryShelves(ctx, conn.Conn(), expandedShelfQuery, true)
+		}},
+		// (b) が予算を越えた場合に選べる形も同じハーネスで測る。
+		{name: "(b') live CTE MATERIALIZED", run: func() (map[string]shelfResult, error) {
+			return queryShelves(ctx, conn.Conn(), expandedMaterializedShelfQuery, true)
+		}},
+	}
 
-	unmaterializedMedian := measureShelfShape(t, "(a') current shape without playable MATERIALIZED", func() error {
-		count, err := queryCurrentUnmaterialized(ctx, conn.Conn())
-		if err != nil {
-			return err
+	const rounds = 10
+	samples := make([][]time.Duration, len(shapes))
+	results := make([]map[string]shelfResult, len(shapes))
+	for round := 0; round < rounds; round++ {
+		for i, shape := range shapes {
+			started := time.Now()
+			got, err := shape.run()
+			if err != nil {
+				t.Fatalf("%s round %d: %v", shape.name, round+1, err)
+			}
+			samples[i] = append(samples[i], time.Since(started))
+			results[i] = got
 		}
-		if count != 141 {
-			return fmt.Errorf("unmaterialized shelf count = %d, want 141", count)
+	}
+	medians := make([]time.Duration, len(shapes))
+	for i, shape := range shapes {
+		if len(results[i]) != 141 {
+			t.Fatalf("%s shelf count = %d, want 141", shape.name, len(results[i]))
 		}
-		return nil
-	})
+		medians[i] = median(samples[i])
+		t.Logf("%s: median %s", shape.name, medians[i])
+	}
 
-	expandedMedian := measureShelfShape(t, "(b) live recordings + playable count", func() error {
-		count, _, _, err := queryExpanded(ctx, conn.Conn(), expandedShelfQuery)
-		if err != nil {
-			return err
+	current, unmaterialized, expanded, expandedMaterialized := results[0], results[1], results[2], results[3]
+	var playable, live int64
+	for key, cur := range current {
+		if unmaterialized[key] != cur {
+			t.Errorf("shelf %q: (a') %+v != (a) %+v", key, unmaterialized[key], cur)
 		}
-		if count != 141 {
-			return fmt.Errorf("expanded shelf count = %d, want 141", count)
+		exp := expanded[key]
+		if exp.playable != cur.recording {
+			t.Errorf("shelf %q: (b) playable_count %d != (a) recording_count %d", key, exp.playable, cur.recording)
 		}
-		return nil
-	})
-
-	// (b) が予算を越えた場合に選べる形も同じハーネスで測る。常に出しておくと、
-	// 測定者が結果を見てから SQL を書き換える必要がなく、形の比較を再現できる。
-	expandedMaterializedMedian := measureShelfShape(t, "(b') live CTE MATERIALIZED", func() error {
-		count, _, _, err := queryExpanded(ctx, conn.Conn(), expandedMaterializedShelfQuery)
-		if err != nil {
-			return err
+		if exp.latest.IsZero() {
+			t.Errorf("shelf %q: (b) latest_start_at is zero", key)
 		}
-		if count != 141 {
-			return fmt.Errorf("materialized expanded shelf count = %d, want 141", count)
+		if expandedMaterialized[key] != exp {
+			t.Errorf("shelf %q: (b') %+v != (b) %+v", key, expandedMaterialized[key], exp)
 		}
-		return nil
-	})
-
-	_, playable, live, err := queryExpanded(ctx, conn.Conn(), expandedMaterializedShelfQuery)
-	if err != nil {
-		t.Fatalf("checking expanded result: %v", err)
+		playable += exp.playable
+		live += exp.recording
 	}
 	if playable != 65_000 || live != 71_000 {
-		t.Fatalf("expanded totals = playable %d / live %d, want 65000 / 71000", playable, live)
+		t.Errorf("expanded totals = playable %d / live %d, want 65000 / 71000", playable, live)
 	}
 
-	t.Logf("shelf benchmark medians: current=%s, unmaterialized=%s, expanded=%s, expanded_materialized=%s; expanded budget=200ms; absolute comparison to the original 141ms environment is not established here", currentMedian, unmaterializedMedian, expandedMedian, expandedMaterializedMedian)
-	if unmaterializedMedian <= currentMedian {
-		t.Errorf("removing playable MATERIALIZED was not slower: current=%s, unmaterialized=%s", currentMedian, unmaterializedMedian)
-	}
+	t.Logf("ratios to (a): (a')=%.2f, (b)=%.2f, (b')=%.2f; expanded budget=200ms; absolute comparison to the original 141ms environment is not established here",
+		float64(medians[1])/float64(medians[0]), float64(medians[2])/float64(medians[0]), float64(medians[3])/float64(medians[0]))
 }
 
-func measureShelfShape(t *testing.T, label string, run func() error) time.Duration {
-	t.Helper()
-	samples := make([]time.Duration, 10)
-	for i := range samples {
-		started := time.Now()
-		if err := run(); err != nil {
-			t.Fatalf("%s run %d: %v", label, i+1, err)
-		}
-		samples[i] = time.Since(started)
+type shelfShape struct {
+	name string
+	run  func() (map[string]shelfResult, error)
+}
+
+// shelfResult は 1 棚ぶんの結果で、形の間で全列を比較する。現行形（playable のみ）は
+// recording だけを持ち、playable / latest は拡張形だけが埋める。
+type shelfResult struct {
+	title          string
+	recording      int64
+	playable       int64
+	latest         time.Time
+	representative int64
+}
+
+func shelfKey(v *string) string {
+	if v == nil {
+		return "<NULL>"
 	}
-	sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
-	return (samples[4] + samples[5]) / 2
+	return *v
+}
+
+func median(samples []time.Duration) time.Duration {
+	s := append([]time.Duration(nil), samples...)
+	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
+	return (s[len(s)/2-1] + s[len(s)/2]) / 2
+}
+
+// queryShelves は棚のクエリを実行して棚ごとの結果を返す。expanded は playable_count と
+// latest_start_at の列を持つ形（b / b'）を読む。
+func queryShelves(ctx context.Context, conn *pgx.Conn, query string, expanded bool) (map[string]shelfResult, error) {
+	rows, err := conn.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]shelfResult{}
+	for rows.Next() {
+		var value pgtype.Text
+		var r shelfResult
+		if expanded {
+			err = rows.Scan(&value, &r.title, &r.playable, &r.recording, &r.latest, &r.representative)
+		} else {
+			err = rows.Scan(&value, &r.title, &r.recording, &r.representative)
+		}
+		if err != nil {
+			return nil, err
+		}
+		var v *string
+		if value.Valid {
+			v = &value.String
+		}
+		out[shelfKey(v)] = r
+	}
+	return out, rows.Err()
 }
 
 func seedShelfBenchmark(t *testing.T, conn *pgx.Conn) {
@@ -191,59 +260,12 @@ FROM generate_series(0, 49) AS s(i);
 	if _, err := sqlcgen.New(conn).ApplyLabelRuleReevaluation(ctx); err != nil {
 		t.Fatalf("evaluating benchmark label rules: %v", err)
 	}
-	if _, err := conn.Exec(ctx, `
-ANALYZE recordings;
-ANALYZE media_assets;
-ANALYZE label_rules;
-ANALYZE label_rule_hits;
-	`, pgx.QueryExecModeSimpleProtocol); err != nil {
-		t.Fatalf("analyzing shelf benchmark tables: %v", err)
-	}
-}
-
-func queryCurrentUnmaterialized(ctx context.Context, conn *pgx.Conn) (int, error) {
-	rows, err := conn.Query(ctx, currentUnmaterializedShelfQuery)
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-	return scanCurrentShelfRows(rows)
-}
-
-func scanCurrentShelfRows(rows pgx.Rows) (int, error) {
-	count := 0
-	for rows.Next() {
-		var value pgtype.Text
-		var title string
-		var recordingCount, representativeID int64
-		if err := rows.Scan(&value, &title, &recordingCount, &representativeID); err != nil {
-			return 0, err
+	// VACUUM は暗黙のトランザクションになる複数文の送信では実行できないので 1 文ずつ送る。
+	for _, table := range []string{"recordings", "media_assets", "label_rules", "label_rule_hits"} {
+		if _, err := conn.Exec(ctx, "VACUUM ANALYZE "+table); err != nil {
+			t.Fatalf("vacuum-analyzing %s: %v", table, err)
 		}
-		count++
 	}
-	return count, rows.Err()
-}
-
-func queryExpanded(ctx context.Context, conn *pgx.Conn, query string) (shelves int, playable int64, live int64, err error) {
-	rows, err := conn.Query(ctx, query)
-	if err != nil {
-		return 0, 0, 0, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var value pgtype.Text
-		var title string
-		var playableCount, recordingCount int64
-		var latestStartAt time.Time
-		var representativeID int64
-		if err := rows.Scan(&value, &title, &playableCount, &recordingCount, &latestStartAt, &representativeID); err != nil {
-			return 0, 0, 0, err
-		}
-		shelves++
-		playable += playableCount
-		live += recordingCount
-	}
-	return shelves, playable, live, rows.Err()
 }
 
 const currentUnmaterializedShelfQuery = `
