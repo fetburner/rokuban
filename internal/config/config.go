@@ -640,7 +640,11 @@ func (c EncodeConfig) ValidateTools() error {
 	}
 	for _, p := range c.Profiles {
 		if p.Subtitles == "webvtt" {
-			if err := validateLibARIBCaption(c.FFmpeg, "encode"); err != nil {
+			decoders, err := ffmpegDecoders(c.FFmpeg)
+			if err != nil {
+				return err
+			}
+			if err := validateLibARIBCaption(decoders, "encode"); err != nil {
 				return err
 			}
 			break
@@ -915,23 +919,54 @@ func (c LiveConfig) ValidateTools() error {
 		if _, err := exec.LookPath(c.FFprobe); err != nil {
 			return fmt.Errorf("live.ffprobe %q not found in PATH: %w", c.FFprobe, err)
 		}
-		if err := validateLibARIBCaption(c.FFmpeg, "live"); err != nil {
+	}
+	if !c.Enabled && !c.Captions {
+		return nil
+	}
+	// 1 回の `ffmpeg -decoders` の出力を両方の判定に使う。
+	decoders, err := ffmpegDecoders(c.FFmpeg)
+	if err != nil {
+		return err
+	}
+	if c.Enabled {
+		if err := validateFFmpegDecoder(decoders, "mpeg2video", "live source MPEG-2 TS"); err != nil {
+			return err
+		}
+	}
+	if c.Captions {
+		if err := validateLibARIBCaption(decoders, "live"); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// validateLibARIBCaption は字幕を有効にした構成で、実際に使う ffmpeg が
-// libaribcaption デコーダを持つことを起動時に検査する。Debian bookworm の
-// apt 版 ffmpeg 5.1 には通常含まれないため、設定したのに字幕だけ黙って消える
-// 状態を許さない。
-func validateLibARIBCaption(ffmpeg, scope string) error {
+// ffmpegDecoders は `ffmpeg -decoders` の出力を返す。
+func ffmpegDecoders(ffmpeg string) ([]byte, error) {
 	out, err := exec.Command(ffmpeg, "-hide_banner", "-decoders").CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("%s subtitles require ffmpeg libaribcaption decoder: checking %q failed: %w", scope, ffmpeg, err)
+		return nil, fmt.Errorf("listing decoders of ffmpeg %q: %w", ffmpeg, err)
 	}
-	if !strings.Contains(string(out), "libaribcaption") {
+	return out, nil
+}
+
+// validateFFmpegDecoder checks a named input decoder in the `ffmpeg -decoders`
+// output before the live streamer starts accepting requests. Live HLS consumes
+// MPEG-2 TS originals; without this decoder every generated HLS profile would
+// fail only after a viewer asks for playback and leave an empty player.
+func validateFFmpegDecoder(decoders []byte, decoder, scope string) error {
+	if !regexp.MustCompile(`(?m)^\s*V\S*\s+` + regexp.QuoteMeta(decoder) + `\s`).Match(decoders) {
+		return fmt.Errorf("%s requires an ffmpeg build with %q decoder", scope, decoder)
+	}
+	return nil
+}
+
+// validateLibARIBCaption は字幕を有効にした構成で、実際に使う ffmpeg が
+// libaribcaption デコーダを持つこと（`ffmpeg -decoders` の出力 decoders）を起動時に
+// 検査する。Debian bookworm の apt 版 ffmpeg 5.1 には通常含まれないため、
+// 設定したのに字幕だけ黙って消える状態を許さない。
+func validateLibARIBCaption(decoders []byte, scope string) error {
+	if !strings.Contains(string(decoders), "libaribcaption") {
 		return fmt.Errorf("%s subtitles require an ffmpeg build with libaribcaption decoder", scope)
 	}
 	return nil
@@ -1053,7 +1088,7 @@ func (c LiveConfig) validate() error {
 // ストリーム選択のオプション（allowlist には VOD のために入っている）。
 //
 // **live はストリームの並びをアプリが `-var_stream_map` で持つ**（映像 1 本 + 音声
-// rendition 3 本 + 字幕。internal/streamer の buildHLSFFmpegArgs）。並びを変えると
+// rendition 3 本 + 字幕。internal/streamer の BuildLiveFFmpegArgs）。並びを変えると
 // ffmpeg が起動時に落ち、利用者には 504 しか見えない（実測 ffmpeg 9.0.2: `-an` で
 // `Unable to map stream at a:0`、`-map` の追加で `Unable to find mapping variant
 // stream`）。`-vn` / `-sn` は映像 / 字幕の map を同じ形で壊す。

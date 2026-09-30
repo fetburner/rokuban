@@ -15,6 +15,7 @@
     "e2e:live": "node e2e/live.mjs",
     "e2e:live-audio": "node e2e/live-audio.mjs",
     "e2e:chase": "node e2e/chase.mjs",
+    "e2e:recording-original-vod": "node e2e/recording-original-vod.mjs",
     "e2e:design": "node e2e/design.mjs",
     "e2e:badge-links": "node e2e/badge-links.mjs",
     "e2e:sse-refresh": "node e2e/sse-refresh.mjs",

@@ -27,6 +27,7 @@ import { Button } from '@/components/ui/button'
 import { formatBytes, formatDateTime, formatTime } from '@/lib/format'
 import { ingestDisplay, type IngestDisplay } from '@/lib/ingest'
 import { useCMDetectEnabled, useLiveEnabled } from '@/lib/capabilities'
+import { ORIGINAL_AXIS, recordingFileURL } from '@/lib/playback-position'
 import { liveProfileLabel, validLiveProfile } from '@/lib/live'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { shouldShowRecordingSite, sourceLabels } from '@/lib/recording-search'
@@ -141,12 +142,13 @@ export function RecordingDetail({
   const [selectedChaseOffsetSeconds, setSelectedChaseOffsetSeconds] = useState(0)
   const selectedChaseOffsetRef = useRef(0)
   const showChase = !trash && recording.status === 'recording' && liveEnabled && chasing
-  // 追っかけの画質（プロファイル）の一覧（issue #874）。**追っかけを出している
-  // ときだけ引く** --- この画面の主目的は録画の VOD 再生であり、追っかけを
-  // 開いていない利用者に一覧を取らせる理由が無い。取得できなくても追っかけは
-  // 既定のプロファイルで動き続ける（一覧は選択肢を出すためだけのもので、
-  // 再生の前提条件ではない）。
-  const liveProfilesQuery = useListLiveProfiles({ query: { enabled: showChase } })
+  const encodedAssets = recording.encodedAssets ?? []
+  const hasOriginal = recording.sizeBytes !== undefined
+  const showOriginalVOD =
+    !trash && recording.status === 'finished' && liveEnabled && hasOriginal && encodedAssets.length === 0
+  // 追っかけか原本 VOD を表示するときだけ live プロファイルを取る。一覧は
+  // セレクタ用で、取得できなくても先頭プロファイルで再生できる既存契約を保つ。
+  const liveProfilesQuery = useListLiveProfiles({ query: { enabled: showChase || showOriginalVOD } })
   const liveProfiles = useMemo(
     () => unwrap(liveProfilesQuery.data) ?? [],
     [liveProfilesQuery.data],
@@ -187,8 +189,6 @@ export function RecordingDetail({
   const recordedProgressPercent = Math.min(100, (availableChaseSeconds / timelineChaseSeconds) * 100)
   const plannedEndAt = new Date(programStartMs + recording.durationMs).toISOString()
   const timelineEndAt = new Date(programStartMs + timelineChaseSeconds * 1000).toISOString()
-  const encodedAssets = recording.encodedAssets ?? []
-
   // チャプター（CM とユーザー区間）。**ごみ箱では取らない** --- ごみ箱では
   // プレイヤーを出さず、配信経路も 404 になる（配信 3 クエリと同じ契約）。
   //
@@ -274,7 +274,6 @@ export function RecordingDetail({
   const preferredPlaybackProfile =
     (encodedAssets.find((a) => a.cut !== true) ?? encodedAssets[0])?.profile ??
     recording.encodeProfiles?.[0]
-  const hasOriginal = recording.sizeBytes !== undefined
   // 詳細データの再取得ごとに取り込み状態を現在時刻で再評価する。mount 時に固定
   // すると、停滞表示が更新されなくなるため state 初期値には移せない。
   // oxlint-disable-next-line react/purity -- 再取得ごとの現在時刻スナップショットが必要
@@ -408,7 +407,7 @@ export function RecordingDetail({
               recordingId={recording.id}
               startOffsetSeconds={chaseOffsetSeconds}
               profile={explicitLiveProfile}
-              playbackProfile={preferredPlaybackProfile}
+              playbackProfile={ORIGINAL_AXIS}
             />
           )}
         </section>
@@ -424,7 +423,61 @@ export function RecordingDetail({
         </button>
       )}
 
-      {!trash && !showChase && (encodedAssets.length > 0 || hasOriginal) && (
+      {showOriginalVOD && (
+        <section className="flex flex-col gap-2" aria-label="原本 TS をブラウザ再生">
+          <div>
+            <h4 className="font-medium">原本 TS をブラウザ再生</h4>
+            <p className="text-muted-foreground">
+              原本 MPEG-2 を一時的に HLS へ変換します。再生用ファイルは保存しません。
+            </p>
+          </div>
+          {liveProfilesQuery.isPending ? (
+            <p role="status" className="text-muted-foreground">再生設定を読み込み中…</p>
+          ) : liveProfiles.length === 0 ? (
+            <p className="text-muted-foreground">
+              HLS 再生プロファイルを利用できません。原本は{' '}
+              <a href={recordingFileURL(recording.id)} className="text-primary underline-offset-2 hover:underline">
+                VLC 等で開く{recording.sizeBytes !== undefined && ` (${formatBytes(recording.sizeBytes)})`}
+              </a>
+              ことができます。
+            </p>
+          ) : (
+            <>
+              {liveProfiles.length > 1 && (
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span>画質</span>
+                  <select
+                    aria-label="画質"
+                    value={explicitLiveProfile ?? liveProfiles[0]?.name}
+                    onChange={(e) => onSelectLiveProfile(e.target.value)}
+                    className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none"
+                  >
+                    {liveProfiles.map((p) => (
+                      <option key={p.name} value={p.name}>{liveProfileLabel(p)}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <LivePlayer
+                mode="original-vod"
+                site={recording.site}
+                recordingId={recording.id}
+                profile={explicitLiveProfile}
+                playbackProfile={ORIGINAL_AXIS}
+              />
+              <p className="text-muted-foreground">
+                原本 TS:{' '}
+                <a href={recordingFileURL(recording.id)} className="text-primary underline-offset-2 hover:underline">
+                  ダウンロード / VLC
+                  {recording.sizeBytes !== undefined && ` (${formatBytes(recording.sizeBytes)})`}
+                </a>
+              </p>
+            </>
+          )}
+        </section>
+      )}
+
+      {!trash && !showChase && (encodedAssets.length > 0 || (hasOriginal && !showOriginalVOD)) && (
         <RecordingPlayer
           recordingId={recording.id}
           preferredProfile={preferredPlaybackProfile}

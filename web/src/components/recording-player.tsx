@@ -22,6 +22,7 @@ import { formatBytes } from '@/lib/format'
 import {
   applyPlaybackRate,
   loadPlaybackPosition,
+  ORIGINAL_AXIS,
   loadPlaybackRate,
   recordingFileURL,
   recordingSubtitleURL,
@@ -124,6 +125,9 @@ export function RecordingPlayer({
   // 軸へ写像する処理を初版では持たない。チャプターの目盛り・一覧・スキップも
   // 同じ理由で出さない（境界は原本の ms で、その動画には当てられない）。
   const playingCut = selectedAsset?.cut === true
+  // 保存キーは時間軸で決める。cut 版だけが自分の軸を持ち（キーはプロファイル名のまま）、他は
+  // 追っかけ・原本 HLS と共有する。この player は currentTime を換算せずそのまま保存している。
+  const positionAxis = playingCut ? selectedProfile : ORIGINAL_AXIS
   const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
   const videoRef = useRef<HTMLVideoElement>(null)
   // タイルは録画ごとに 1 枚で profile に依存しないので、キーは recordingId だけ。
@@ -456,7 +460,7 @@ export function RecordingPlayer({
           updatePlayedFraction(e.currentTarget)
           if (!restorePending.current) return
           restorePending.current = false
-          const pos = loadPlaybackPosition(recordingId, selectedProfile)
+          const pos = loadPlaybackPosition(recordingId, positionAxis)
           if (pos !== null && pos > 0) {
             e.currentTarget.currentTime = pos
           }
@@ -493,11 +497,11 @@ export function RecordingPlayer({
           // timeupdate は約 4Hz で発火するが保存値は秒単位なので、秒が変わったときだけ書く
           if (!shouldSavePlaybackPosition(lastSavedSecond.current, v.currentTime)) return
           lastSavedSecond.current = Math.floor(v.currentTime)
-          savePlaybackPosition(recordingId, selectedProfile, v.currentTime, v.duration)
+          savePlaybackPosition(recordingId, positionAxis, v.currentTime, v.duration)
         }}
         onPause={(e) => {
           const v = e.currentTarget
-          savePlaybackPosition(recordingId, selectedProfile, v.currentTime, v.duration)
+          savePlaybackPosition(recordingId, positionAxis, v.currentTime, v.duration)
         }}
         onRateChange={(e) => {
           const rate = e.currentTarget.playbackRate
