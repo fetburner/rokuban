@@ -24,6 +24,11 @@ var ErrReservedMediaPath = errors.New("path uses a reserved media namespace")
 // rescue の catalog 無し走査だけが原本へ昇格させない。
 const IngestTempFilePrefix = ".rokuban-ingest-"
 
+// GeneratedAssetTempFilePrefix は生成アセットを公開する前に canonical と同じ
+// ディレクトリへ作る staged file の予約接頭辞。孤児回収の候補には残すが、
+// catalog 無し rescue では原本へ昇格させない。
+const GeneratedAssetTempFilePrefix = ".rokuban-media-asset-"
+
 // MediaRelPathLockDirName は media root 内の rel_path lock 専用ディレクトリ。
 // canonical media と同じディレクトリ entry を共有せず、orphan walker は配下全体を飛ばす。
 const MediaRelPathLockDirName = ".rokuban-locks"
@@ -46,6 +51,11 @@ const EncodeTempFilePrefix = ".rokuban-encode-"
 // パス全体ではなく basename だけを見るため、走査側と ingest 側で同じ判定を使える。
 func IsIngestTempFile(name string) bool {
 	return strings.HasPrefix(filepath.Base(name), IngestTempFilePrefix)
+}
+
+// IsGeneratedAssetTempFile は生成アセットの公開前 staged file かを返す。
+func IsGeneratedAssetTempFile(name string) bool {
+	return strings.HasPrefix(filepath.Base(name), GeneratedAssetTempFilePrefix)
 }
 
 // IsEncodeTempFile はファイル名が encode の公開前一時ファイルかを返す。

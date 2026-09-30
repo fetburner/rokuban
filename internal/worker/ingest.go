@@ -1065,7 +1065,7 @@ func (w *IngestWorker) determineRelPath(ctx context.Context, args jobs.IngestJob
 		return "", "", fmt.Errorf("mirakc record %s has no usable content path (contentPath and Content.Path both empty)", args.RecordID)
 	}
 	if mediapath.IsIngestTempFile(filepath.Base(relPath)) || mediapath.IsMediaRelPathLockFile(filepath.Base(relPath)) ||
-		mediapath.IsEncodeTempFile(filepath.Base(relPath)) {
+		mediapath.IsEncodeTempFile(filepath.Base(relPath)) || mediapath.IsGeneratedAssetTempFile(filepath.Base(relPath)) {
 		return "", "", fmt.Errorf("mirakc record %s uses a reserved storage filename %q", args.RecordID, filepath.Base(relPath))
 	}
 	// rel_path のパス区切りは DB 上で '/' 規約（internal/worker/encode.go の

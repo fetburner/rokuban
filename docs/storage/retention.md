@@ -117,6 +117,10 @@ temp の物理削除時は ingest と同じ flock を非 blocking で取得し�
 NFS で open 中 unlink による `.nfsXXXX` が見えても、同じ孤児回収の猶予があるため即時削除や
 rescue の昇格には進まない。
 
+thumbnail と seek tiles の公開前 staged file は `.rokuban-media-asset-` 接頭辞を持つ。
+active row が無い間は通常の孤児候補であり、mtime 猶予とエイジングの後に回収する。
+catalog 無し rescue は接頭辞で明示的に除外し、staged bytes を原本へ昇格させない。
+
 **一括削除サーキットブレーカーはループ全体に 1 つ**: ソースを問わず 1 パスの物理削除が閾値（件数 / ライブラリ比率 / 総バイト数、例: 5% or 100 GB）を超えたら停止してアラート。
 
 ### 削除可否の述語に名前を与える
