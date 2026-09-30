@@ -17,10 +17,14 @@ const logo: CMLogoState = {
   networkId: 32678,
   serviceId: 5168,
   serviceName: 'テスト放送局',
+  site: 'default',
   state: 'failed',
   recordingCount: 2,
   failedCount: 1,
-  lastError: 'ロゴが見つかりません',
+  pendingCount: 0,
+  detectedCount: 0,
+  redetectableCount: 0,
+  lastFailureStage: 'logo',
   frameRecordingId: 7,
 }
 
@@ -127,7 +131,7 @@ describe('CMLogosPage', () => {
     })
 
     expect(await screen.findByText('テスト放送局')).toBeInTheDocument()
-    expect(screen.getByTestId('cm-logo-warning')).toHaveTextContent('ロゴが見つかりません')
+    expect(screen.getByTestId('cm-logo-warning')).toHaveTextContent('ロゴを見つけられず、CM を検出できませんでした。')
     await user.click(screen.getByTestId('cm-logo-toggle'))
     expect(await screen.findByRole('region', { name: 'ロゴの枠' })).toBeInTheDocument()
 

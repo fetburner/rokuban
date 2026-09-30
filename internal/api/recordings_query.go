@@ -299,6 +299,8 @@ const (
         WHERE d.recording_id = r.id
     ) AS cm_ranges,
     (SELECT ca.state FROM recording_cm_attempts ca WHERE ca.recording_id = r.id) AS cm_attempt_state,
+    (SELECT ca.stage FROM recording_cm_attempts ca WHERE ca.recording_id = r.id) AS cm_attempt_stage,
+    (SELECT ca.error FROM recording_cm_attempts ca WHERE ca.recording_id = r.id) AS cm_attempt_error,
     -- チャプターの所有とユーザー層（encodedAssets[].cutStale の判定材料）。
     -- **導出（chapters.Derive）は Go 側のまま**で、ここは素の事実だけを射影する
     -- （state そのものを SQL で CASE に潰さない既存の規律と同じ。SQL に
@@ -611,6 +613,7 @@ WHERE r.id = $1 AND r.purged_at IS NULL`
 		&fields.HasOriginalAsset, &fields.HasIngestableRecord, &fields.HasAbnormallyEndedRecord,
 		&fields.IngestWrittenBytes, &fields.IngestExpectedBytes, &fields.IngestObservedAt,
 		&fields.CMDetect, &fields.CMDetected, &fields.CMRanges, &fields.CMAttemptState,
+		&fields.CMAttemptStage, &fields.CMAttemptError,
 		&fields.ChaptersOwned, &fields.ChapterSpans,
 		&fields.Series,
 		&fields.AvailableEncodedAssets,
@@ -657,6 +660,7 @@ func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter
 			&fields.HasOriginalAsset, &fields.HasIngestableRecord, &fields.HasAbnormallyEndedRecord,
 			&fields.IngestWrittenBytes, &fields.IngestExpectedBytes, &fields.IngestObservedAt,
 			&fields.CMDetect, &fields.CMDetected, &fields.CMRanges, &fields.CMAttemptState,
+			&fields.CMAttemptStage, &fields.CMAttemptError,
 			&fields.ChaptersOwned, &fields.ChapterSpans,
 			&fields.Series,
 			&fields.AvailableEncodedAssets,

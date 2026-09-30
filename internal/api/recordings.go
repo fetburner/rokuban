@@ -104,6 +104,8 @@ type recordingListFields struct {
 	CMDetected          bool
 	CMRanges            json.RawMessage
 	CMAttemptState      *string
+	CMAttemptStage      *string
+	CMAttemptError      *string
 }
 
 // utcTimePtr は timestamptz の scan 結果を UTC の Location に正規化する。
@@ -380,6 +382,14 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool, profi
 		}
 	}
 	cmDetection := CMDetection{State: cmState}
+	if r.CMAttemptStage != nil {
+		stage := CMDetectionStage(*r.CMAttemptStage)
+		cmDetection.Stage = &stage
+	}
+	if r.CMAttemptError != nil {
+		errorMessage := *r.CMAttemptError
+		cmDetection.Error = &errorMessage
+	}
 	if r.CMDetected {
 		var ranges []CMRange
 		if err := json.Unmarshal(r.CMRanges, &ranges); err != nil {

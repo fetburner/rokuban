@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -80,22 +81,26 @@ func (h *Server) ListCMLogos(ctx context.Context, _ ListCMLogosRequestObject) (L
 			state = CMLogoStateStateFailed
 		}
 		item := CMLogoState{
-			NetworkId:        int(row.NetworkID),
-			ServiceId:        int(row.ServiceID),
-			ServiceName:      row.ServiceName,
-			State:            state,
-			RecordingCount:   row.RecordingCount,
-			FailedCount:      row.FailedCount,
-			FrameRecordingId: row.FrameRecordingID,
-			LearnedAt:        utcTimePtr(row.LearnedAt),
+			NetworkId:         int(row.NetworkID),
+			ServiceId:         int(row.ServiceID),
+			ServiceName:       row.ServiceName,
+			Site:              row.Site,
+			State:             state,
+			RecordingCount:    row.RecordingCount,
+			FailedCount:       row.FailedCount,
+			PendingCount:      row.PendingCount,
+			DetectedCount:     row.DetectedCount,
+			RedetectableCount: row.RedetectableCount,
+			FrameRecordingId:  row.FrameRecordingID,
+			LearnedAt:         utcTimePtr(row.LearnedAt),
 		}
 		if row.PreviewPng != nil {
 			preview := row.PreviewPng
 			item.PreviewPng = &preview
 		}
-		if row.LastError != "" {
-			message := row.LastError
-			item.LastError = &message
+		if row.LastFailureStage != "" {
+			stage := row.LastFailureStage
+			item.LastFailureStage = &stage
 		}
 		// 枠は x が非 NULL のときだけある（主キーが同じなので a の列は揃って出る）。
 		if row.X != nil {
@@ -159,6 +164,9 @@ func (h *Server) PutCMLogoArea(ctx context.Context, req PutCMLogoAreaRequestObje
 	}); err != nil {
 		return nil, fmt.Errorf("forgetting CM logo for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
 	}
+	if err := insertCMDetectReconcile(ctx, tx, h.river); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("committing logo area for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
 	}
@@ -167,22 +175,54 @@ func (h *Server) PutCMLogoArea(ctx context.Context, req PutCMLogoAreaRequestObje
 
 // DeleteCMLogoArea returns a station to the automatic logo-area search.
 func (h *Server) DeleteCMLogoArea(ctx context.Context, req DeleteCMLogoAreaRequestObject) (DeleteCMLogoAreaResponseObject, error) {
-	if _, err := sqlcgen.New(h.pool).DeleteCMLogoArea(ctx, sqlcgen.DeleteCMLogoAreaParams{
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("beginning logo area deletion for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := sqlcgen.New(tx).DeleteCMLogoArea(ctx, sqlcgen.DeleteCMLogoAreaParams{
 		NetworkID: int32(req.NetworkId),
 		ServiceID: int32(req.ServiceId),
 	}); err != nil {
 		return nil, fmt.Errorf("deleting logo area for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
+	}
+	if err := insertCMDetectReconcile(ctx, tx, h.river); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("committing logo area deletion for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
 	}
 	return DeleteCMLogoArea204Response{}, nil
 }
 
 // DeleteCMLogo forgets a station logo; the next eligible detection will learn it again.
 func (h *Server) DeleteCMLogo(ctx context.Context, req DeleteCMLogoRequestObject) (DeleteCMLogoResponseObject, error) {
-	if _, err := sqlcgen.New(h.pool).DeleteCMLogo(ctx, sqlcgen.DeleteCMLogoParams{
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("beginning CM logo deletion for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := sqlcgen.New(tx).DeleteCMLogo(ctx, sqlcgen.DeleteCMLogoParams{
 		NetworkID: int32(req.NetworkId),
 		ServiceID: int32(req.ServiceId),
 	}); err != nil {
 		return nil, fmt.Errorf("deleting CM logo for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
 	}
+	if err := insertCMDetectReconcile(ctx, tx, h.river); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("committing CM logo deletion for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
+	}
 	return DeleteCMLogo204Response{}, nil
+}
+
+func insertCMDetectReconcile(ctx context.Context, tx pgx.Tx, riverClient *river.Client[pgx.Tx]) error {
+	if riverClient == nil {
+		return nil
+	}
+	if _, err := riverClient.InsertTx(ctx, tx, jobs.CMDetectReconcileArgs{}, nil); err != nil {
+		return fmt.Errorf("inserting CM detection reconcile: %w", err)
+	}
+	return nil
 }

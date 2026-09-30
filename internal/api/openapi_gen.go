@@ -16,6 +16,45 @@ import (
 	"github.com/oapi-codegen/runtime"
 )
 
+// Defines values for CMDetectionStage.
+const (
+	Area    CMDetectionStage = "area"
+	Chapter CMDetectionStage = "chapter"
+	Join    CMDetectionStage = "join"
+	Logo    CMDetectionStage = "logo"
+	Parse   CMDetectionStage = "parse"
+	Probe   CMDetectionStage = "probe"
+	Save    CMDetectionStage = "save"
+	Setup   CMDetectionStage = "setup"
+	Stopped CMDetectionStage = "stopped"
+)
+
+// Valid indicates whether the value is a known member of the CMDetectionStage enum.
+func (e CMDetectionStage) Valid() bool {
+	switch e {
+	case Area:
+		return true
+	case Chapter:
+		return true
+	case Join:
+		return true
+	case Logo:
+		return true
+	case Parse:
+		return true
+	case Probe:
+		return true
+	case Save:
+		return true
+	case Setup:
+		return true
+	case Stopped:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for CMDetectionState.
 const (
 	CMDetectionStateDetected  CMDetectionState = "detected"
@@ -821,10 +860,19 @@ type AudioInfo struct {
 
 // CMDetection defines model for CMDetection.
 type CMDetection struct {
+	// Error The unmodified technical detail of the latest attempt, if present.
+	Error *string `json:"error,omitempty"`
+
 	// Ranges CM ranges in milliseconds from the first original frame.
-	Ranges *[]CMRange       `json:"ranges,omitempty"`
-	State  CMDetectionState `json:"state"`
+	Ranges *[]CMRange `json:"ranges,omitempty"`
+
+	// Stage The worker stage that produced the latest failed attempt, if known.
+	Stage *CMDetectionStage `json:"stage,omitempty"`
+	State CMDetectionState  `json:"state"`
 }
+
+// CMDetectionStage The worker stage that produced the latest failed attempt, if known.
+type CMDetectionStage string
 
 // CMDetectionState defines model for CMDetection.State.
 type CMDetectionState string
@@ -852,21 +900,30 @@ type CMLogoAreaInput struct {
 
 // CMLogoState defines model for CMLogoState.
 type CMLogoState struct {
-	FailedCount int64 `json:"failedCount"`
+	// DetectedCount Number of recordings with a CM detection result.
+	DetectedCount int64 `json:"detectedCount"`
+	FailedCount   int64 `json:"failedCount"`
 
 	// FrameRecordingId Recording with an active original for frame selection, or 0.
 	FrameRecordingId int64 `json:"frameRecordingId"`
 
-	// LastError The most recent failed CM detection reason, if any.
-	LastError      *string          `json:"lastError,omitempty"`
-	LearnedAt      *time.Time       `json:"learnedAt,omitempty"`
-	LogoArea       *CMLogoArea      `json:"logoArea,omitempty"`
-	NetworkId      int              `json:"networkId"`
-	PreviewPng     *[]byte          `json:"previewPng,omitempty"`
-	RecordingCount int64            `json:"recordingCount"`
-	ServiceId      int              `json:"serviceId"`
-	ServiceName    string           `json:"serviceName"`
-	State          CMLogoStateState `json:"state"`
+	// LastFailureStage The stage of the most recent failure that still needs attention, if known.
+	LastFailureStage *string     `json:"lastFailureStage,omitempty"`
+	LearnedAt        *time.Time  `json:"learnedAt,omitempty"`
+	LogoArea         *CMLogoArea `json:"logoArea,omitempty"`
+	NetworkId        int         `json:"networkId"`
+
+	// PendingCount Number of recordings that still need CM detection.
+	PendingCount   int64   `json:"pendingCount"`
+	PreviewPng     *[]byte `json:"previewPng,omitempty"`
+	RecordingCount int64   `json:"recordingCount"`
+
+	// RedetectableCount Detected recordings whose original media is still active.
+	RedetectableCount int64            `json:"redetectableCount"`
+	ServiceId         int              `json:"serviceId"`
+	ServiceName       string           `json:"serviceName"`
+	Site              string           `json:"site"`
+	State             CMLogoStateState `json:"state"`
 }
 
 // CMLogoStateState defines model for CMLogoState.State.

@@ -31,10 +31,14 @@ const logo = {
   networkId: 32678,
   serviceId: 5168,
   serviceName: 'e2e CM ロゴ局',
+  site: 'default',
   state: 'failed',
   recordingCount: 2,
   failedCount: 1,
-  lastError: 'logoframe: no logo found',
+  pendingCount: 0,
+  detectedCount: 0,
+  redetectableCount: 0,
+  lastFailureStage: 'logo',
   frameRecordingId: 7,
 }
 
@@ -99,7 +103,7 @@ await page.goto(`${URL_BASE}/cm-logos?network=32678&service=5168&recording=7`, {
 log('\n=== ① 局を開き、タイルから原寸コマを表示する ===')
 const row = page.getByTestId('cm-logo-row')
 await row.waitFor({ timeout: 15000 })
-if (!(await row.getByTestId('cm-logo-warning').textContent()).includes('no logo found')) {
+if (!(await row.getByTestId('cm-logo-warning').textContent()).includes('ロゴを見つけられず、CM を検出できませんでした。')) {
   ng.push('③ 直近の失敗理由が局の行に表示されない')
 }
 await row.getByRole('button', { name: 'e2e CM ロゴ局' }).click()

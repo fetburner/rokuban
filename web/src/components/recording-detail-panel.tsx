@@ -25,6 +25,7 @@ import { LivePlayer } from '@/components/live-player'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
 import { formatBytes, formatDateTime, formatTime } from '@/lib/format'
+import { cmDetectStageMessage } from '@/lib/cm-detect-stage'
 import { ingestDisplay, type IngestDisplay } from '@/lib/ingest'
 import { useCMDetectEnabled, useLiveEnabled } from '@/lib/capabilities'
 import { ORIGINAL_AXIS, recordingFileURL } from '@/lib/playback-position'
@@ -583,6 +584,11 @@ export function RecordingDetail({
           {recording.cmDetection.state === 'disabled' && !hasOriginal && !trash &&
             '（原本の取り込み後に有効化できます）'}
         </p>
+        {recording.cmDetection.state === 'failed' && (
+          <p className="text-destructive" data-testid="cm-detection-failure-message">
+            {cmDetectStageMessage(recording.cmDetection.stage)}
+          </p>
+        )}
         {recording.cmDetection.state === 'detected' && (
           recording.cmDetection.ranges && recording.cmDetection.ranges.length > 0 ? (
             <ul className="flex flex-col gap-1 text-muted-foreground">

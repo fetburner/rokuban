@@ -84,6 +84,20 @@ func TestCMDetectionTimeoutUsesTwiceDurationWithThirtyMinuteMinimum(t *testing.T
 	}
 }
 
+func TestCMFailureStagePreservesWorkerObservation(t *testing.T) {
+	for _, stage := range []string{"setup", "probe", "area", "logo", "chapter", "join", "parse", "save", "stopped"} {
+		t.Run(stage, func(t *testing.T) {
+			got := cmFailureStage(fmt.Errorf("outer: %w", cmFailure(stage, fmt.Errorf("failure"))))
+			if got == nil || *got != stage {
+				t.Fatalf("cmFailureStage = %v, want %q", got, stage)
+			}
+		})
+	}
+	if got := cmFailureStage(fmt.Errorf("unclassified")); got != nil {
+		t.Fatalf("cmFailureStage(unclassified) = %q, want nil", *got)
+	}
+}
+
 func TestStationLogoFilesUseLogoframeLatestConvention(t *testing.T) {
 	dir := t.TempDir()
 	logo := []byte("LGD fixture")

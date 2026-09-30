@@ -346,12 +346,16 @@ func TestCMDetectWorkRejectsTaughtAreaWithOtherResolution(t *testing.T) {
 		t.Errorf("logoframe ran (stat %v); the mismatched area must not be used", statErr)
 	}
 	var state string
+	var stage *string
 	var message *string
-	if err := pool.QueryRow(ctx, `SELECT state, error FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &message); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT state, stage, error FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &stage, &message); err != nil {
 		t.Fatalf("attempt row: %v", err)
 	}
 	if state != "failed" || message == nil || !strings.Contains(*message, "1920x1080") {
 		t.Errorf("attempt = %q / %v, want failed with the resolution reason", state, message)
+	}
+	if stage == nil || *stage != "area" {
+		t.Errorf("attempt stage = %v, want area", stage)
 	}
 	for _, query := range []string{
 		`SELECT count(*) FROM recording_cm_detections`,
@@ -390,12 +394,16 @@ func TestCMDetectWorkFailureWritesNoResultAndMarksAttempt(t *testing.T) {
 			t.Fatalf("attempt %d: failure left %d result rows, want 0", tt.attempt, detections)
 		}
 		var state string
+		var stage *string
 		var message *string
-		if err := pool.QueryRow(ctx, `SELECT state, error FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &message); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT state, stage, error FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &stage, &message); err != nil {
 			t.Fatalf("attempt %d: attempt row: %v", tt.attempt, err)
 		}
 		if state != tt.wantState || message == nil || !strings.Contains(*message, "chapter_exe") {
 			t.Errorf("attempt %d: state = %q error = %v, want %q naming chapter_exe", tt.attempt, state, message, tt.wantState)
+		}
+		if stage == nil || *stage != "chapter" {
+			t.Errorf("attempt %d: stage = %v, want chapter", tt.attempt, stage)
 		}
 	}
 }
@@ -475,16 +483,22 @@ func TestRecoverStaleCMDetectJobs(t *testing.T) {
 		}
 		return s
 	}
-	attemptState := func(id int64) (string, string) {
+	attemptState := func(id int64) (string, string, string) {
 		var s string
+		var stage *string
 		var e *string
-		if err := pool.QueryRow(ctx, `SELECT state, error FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&s, &e); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT state, stage, error FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&s, &stage, &e); err != nil {
 			t.Fatal(err)
 		}
-		if e == nil {
-			return s, ""
+		stageValue := ""
+		if stage != nil {
+			stageValue = *stage
 		}
-		return s, *e
+		errorValue := ""
+		if e != nil {
+			errorValue = *e
+		}
+		return s, stageValue, errorValue
 	}
 
 	var recovered bool
@@ -494,20 +508,20 @@ func TestRecoverStaleCMDetectJobs(t *testing.T) {
 	if got := jobState(retryingJob); got != "retryable" || recovered {
 		t.Errorf("job in River backoff = %q (recovered=%v), want untouched retryable", got, recovered)
 	}
-	if s, _ := attemptState(retrying); s != "retrying" {
+	if s, stage, _ := attemptState(retrying); s != "retrying" || stage != "" {
 		t.Errorf("attempt of a backing-off job = %q, want retrying", s)
 	}
 	if got := jobState(midwayJob); got != "retryable" {
 		t.Errorf("dead job with attempts left = %q, want retryable", got)
 	}
-	if s, _ := attemptState(midway); s != "retrying" {
-		t.Errorf("attempt of a dead job with attempts left = %q, want retrying", s)
+	if s, stage, _ := attemptState(midway); s != "retrying" || stage != "stopped" {
+		t.Errorf("attempt of a dead job with attempts left = (%q, %q), want retrying / stopped", s, stage)
 	}
 	if got := jobState(exhaustedJob); got != "discarded" {
 		t.Errorf("dead job on its last attempt = %q, want discarded", got)
 	}
-	if s, e := attemptState(exhausted); s != "failed" || !strings.Contains(e, "process stopped") {
-		t.Errorf("attempt of a dead final job = (%q, %q), want failed / process stopped", s, e)
+	if s, stage, e := attemptState(exhausted); s != "failed" || stage != "stopped" || !strings.Contains(e, "process stopped") {
+		t.Errorf("attempt of a dead final job = (%q, %q, %q), want failed / stopped / process stopped", s, stage, e)
 	}
 	var total int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'cm_detect'`).Scan(&total); err != nil {
@@ -639,9 +653,12 @@ func TestCMDetectWorkFailureAfterAreaSaveStaysEligibleForRetry(t *testing.T) {
 	if err == nil {
 		t.Fatal("Work succeeded although chapter_exe failed")
 	}
-	var state string
-	if err := pool.QueryRow(ctx, `SELECT state FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state); err != nil || state != "failed" {
+	var state, stage string
+	if err := pool.QueryRow(ctx, `SELECT state, stage FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &stage); err != nil || state != "failed" {
 		t.Fatalf("attempt state = %q err = %v, want failed", state, err)
+	}
+	if stage != "chapter" {
+		t.Errorf("attempt stage = %q, want chapter", stage)
 	}
 	rows, err := sqlcgen.New(pool).ListMissingCMDetections(ctx, sqlcgen.ListMissingCMDetectionsParams{RowLimit: 100})
 	if err != nil {

@@ -242,23 +242,8 @@ func (q *Queries) InsertLearnedCMLogo(ctx context.Context, arg InsertLearnedCMLo
 
 const isCMDetectionDesired = `-- name: IsCMDetectionDesired :one
 SELECT EXISTS (
-    SELECT 1
-    FROM recordings r
-    JOIN recording_encode_policy p ON p.recording_id = r.id AND p.cm_detect
-    JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original' AND o.state = 'active'
-    LEFT JOIN recording_cm_attempts ca ON ca.recording_id = r.id
-    LEFT JOIN cm_logos l ON l.network_id = r.network_id AND l.service_id = r.service_id
-    LEFT JOIN cm_logo_areas a ON a.network_id = r.network_id AND a.service_id = r.service_id
-    WHERE r.id = $1
-      AND r.deleted_at IS NULL
-      AND NOT EXISTS (SELECT 1 FROM recording_cm_detections d WHERE d.recording_id = r.id)
-      AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = o.id)
-      AND (
-          ca.recording_id IS NULL
-          OR ca.state <> 'failed'
-          OR (l.learned_at IS NOT NULL AND ca.attempted_at < l.learned_at)
-          OR (a.updated_at IS NOT NULL AND ca.attempted_at < a.updated_at)
-      )
+    SELECT 1 FROM cm_detection_desired desired
+    WHERE desired.recording_id = $1
 )
 `
 
@@ -272,16 +257,30 @@ func (q *Queries) IsCMDetectionDesired(ctx context.Context, recordingID int64) (
 const listCMLogoStates = `-- name: ListCMLogoStates :many
 SELECT r.network_id, r.service_id,
        ((array_agg(r.service_name ORDER BY r.id DESC))[1])::text AS service_name,
+       ((array_agg(r.site ORDER BY r.id DESC))[1])::text AS site,
        count(DISTINCT r.id)::bigint AS recording_count,
        l.learned_at,
        l.preview_png,
        count(DISTINCT ca.recording_id) FILTER (
-           WHERE ca.state = 'failed' AND (l.learned_at IS NULL OR ca.attempted_at >= l.learned_at)
+           WHERE ca.state = 'failed' AND desired.recording_id IS NULL
        )::bigint AS failed_count,
-       -- 直近の失敗理由。人が教えた枠と解像度が違う録画はここに出る（一覧の警告）。
-       COALESCE(((array_agg(ca.error ORDER BY ca.attempted_at DESC) FILTER (
-           WHERE ca.state = 'failed' AND ca.error IS NOT NULL
-       ))[1])::text, '')::text AS last_error,
+       count(DISTINCT desired.recording_id)::bigint AS pending_count,
+       COALESCE(((array_agg(ca.stage ORDER BY ca.attempted_at DESC) FILTER (
+           WHERE ca.state = 'failed' AND desired.recording_id IS NULL
+       ))[1])::text, '')::text AS last_failure_stage,
+       count(DISTINCT d.recording_id)::bigint AS detected_count,
+       count(DISTINCT d.recording_id) FILTER (
+           WHERE EXISTS (
+               SELECT 1
+               FROM media_assets o2
+               WHERE o2.recording_id = r.id
+                 AND o2.kind = 'original'
+                 AND o2.state = 'active'
+                 AND NOT EXISTS (
+                     SELECT 1 FROM missing_media_assets m2 WHERE m2.media_asset_id = o2.id
+                 )
+           )
+       )::bigint AS redetectable_count,
        a.x, a.y, a.w, a.h, a.coded_width, a.coded_height, a.updated_at AS area_updated_at,
        -- コマとタイルを取り寄せる録画（原本があり、実体の無いマーカーが付いていない
        -- 最新のもの）。**0 = 無し**（recordings.id は 1 から始まる）で、
@@ -301,28 +300,34 @@ FROM recordings r
 LEFT JOIN cm_logos l ON l.network_id = r.network_id AND l.service_id = r.service_id
 LEFT JOIN cm_logo_areas a ON a.network_id = r.network_id AND a.service_id = r.service_id
 LEFT JOIN recording_cm_attempts ca ON ca.recording_id = r.id
+LEFT JOIN recording_cm_detections d ON d.recording_id = r.id
+LEFT JOIN cm_detection_desired desired ON desired.recording_id = r.id
 WHERE r.deleted_at IS NULL
 GROUP BY r.network_id, r.service_id, l.learned_at, l.preview_png, a.network_id, a.service_id
 ORDER BY r.network_id, r.service_id
 `
 
 type ListCMLogoStatesRow struct {
-	NetworkID        int32
-	ServiceID        int32
-	ServiceName      string
-	RecordingCount   int64
-	LearnedAt        *time.Time
-	PreviewPng       []byte
-	FailedCount      int64
-	LastError        string
-	X                *int32
-	Y                *int32
-	W                *int32
-	H                *int32
-	CodedWidth       *int32
-	CodedHeight      *int32
-	AreaUpdatedAt    *time.Time
-	FrameRecordingID int64
+	NetworkID         int32
+	ServiceID         int32
+	ServiceName       string
+	Site              string
+	RecordingCount    int64
+	LearnedAt         *time.Time
+	PreviewPng        []byte
+	FailedCount       int64
+	PendingCount      int64
+	LastFailureStage  string
+	DetectedCount     int64
+	RedetectableCount int64
+	X                 *int32
+	Y                 *int32
+	W                 *int32
+	H                 *int32
+	CodedWidth        *int32
+	CodedHeight       *int32
+	AreaUpdatedAt     *time.Time
+	FrameRecordingID  int64
 }
 
 // a の列は主キー (network_id, service_id) の関数従属なので、この 2 列だけで足りる。
@@ -339,11 +344,15 @@ func (q *Queries) ListCMLogoStates(ctx context.Context) ([]ListCMLogoStatesRow, 
 			&i.NetworkID,
 			&i.ServiceID,
 			&i.ServiceName,
+			&i.Site,
 			&i.RecordingCount,
 			&i.LearnedAt,
 			&i.PreviewPng,
 			&i.FailedCount,
-			&i.LastError,
+			&i.PendingCount,
+			&i.LastFailureStage,
+			&i.DetectedCount,
+			&i.RedetectableCount,
 			&i.X,
 			&i.Y,
 			&i.W,
@@ -364,24 +373,10 @@ func (q *Queries) ListCMLogoStates(ctx context.Context) ([]ListCMLogoStatesRow, 
 }
 
 const listMissingCMDetections = `-- name: ListMissingCMDetections :many
-SELECT r.id
-FROM recordings r
-JOIN recording_encode_policy p ON p.recording_id = r.id AND p.cm_detect
-JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original' AND o.state = 'active'
-LEFT JOIN recording_cm_attempts ca ON ca.recording_id = r.id
-LEFT JOIN cm_logos l ON l.network_id = r.network_id AND l.service_id = r.service_id
-LEFT JOIN cm_logo_areas a ON a.network_id = r.network_id AND a.service_id = r.service_id
-WHERE r.id > $1::bigint
-  AND r.deleted_at IS NULL
-  AND NOT EXISTS (SELECT 1 FROM recording_cm_detections d WHERE d.recording_id = r.id)
-  AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = o.id)
-  AND (
-      ca.recording_id IS NULL
-      OR ca.state <> 'failed'
-      OR (l.learned_at IS NOT NULL AND ca.attempted_at < l.learned_at)
-      OR (a.updated_at IS NOT NULL AND ca.attempted_at < a.updated_at)
-  )
-ORDER BY r.id
+SELECT r.recording_id
+FROM cm_detection_desired r
+WHERE r.recording_id > $1::bigint
+ORDER BY r.recording_id
 LIMIT $2
 `
 
@@ -391,8 +386,8 @@ type ListMissingCMDetectionsParams struct {
 }
 
 // CM detection jobs use the same desired predicate for the ingest hint and periodic pass.
-// A failed attempt becomes desired again after a newer logo for the station was learned,
-// or after the user taught the station a new logo area.
+// The predicate lives in the cm_detection_desired view so a new caller cannot drift from
+// the reconcile definition.
 func (q *Queries) ListMissingCMDetections(ctx context.Context, arg ListMissingCMDetectionsParams) ([]int64, error) {
 	rows, err := q.db.Query(ctx, listMissingCMDetections, arg.AfterRecordingID, arg.RowLimit)
 	if err != nil {
@@ -401,11 +396,11 @@ func (q *Queries) ListMissingCMDetections(ctx context.Context, arg ListMissingCM
 	defer rows.Close()
 	var items []int64
 	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
+		var recording_id int64
+		if err := rows.Scan(&recording_id); err != nil {
 			return nil, err
 		}
-		items = append(items, id)
+		items = append(items, recording_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -431,12 +426,13 @@ func (q *Queries) LockCMStation(ctx context.Context, arg LockCMStationParams) er
 
 const markCMDetectionFailure = `-- name: MarkCMDetectionFailure :exec
 UPDATE recording_cm_attempts
-SET state = $1, error = $2
-WHERE recording_id = $3
+SET state = $1, stage = $2, error = $3
+WHERE recording_id = $4
 `
 
 type MarkCMDetectionFailureParams struct {
 	State       string
+	Stage       *string
 	Error       *string
 	RecordingID int64
 }
@@ -446,7 +442,12 @@ type MarkCMDetectionFailureParams struct {
 // 始まったジョブが PUT の後に失敗して終了時刻で上書きすると、その失敗が
 // 新しい枠での試行に見え、枠に合わせた再検出が二度と投入されない。
 func (q *Queries) MarkCMDetectionFailure(ctx context.Context, arg MarkCMDetectionFailureParams) error {
-	_, err := q.db.Exec(ctx, markCMDetectionFailure, arg.State, arg.Error, arg.RecordingID)
+	_, err := q.db.Exec(ctx, markCMDetectionFailure,
+		arg.State,
+		arg.Stage,
+		arg.Error,
+		arg.RecordingID,
+	)
 	return err
 }
 
@@ -454,7 +455,7 @@ const markCMDetectionRunning = `-- name: MarkCMDetectionRunning :exec
 INSERT INTO recording_cm_attempts (recording_id, state, error, attempted_at)
 VALUES ($1, 'running', NULL, now())
 ON CONFLICT (recording_id) DO UPDATE
-SET state = 'running', error = NULL, attempted_at = now()
+SET state = 'running', stage = NULL, error = NULL, attempted_at = now()
 `
 
 func (q *Queries) MarkCMDetectionRunning(ctx context.Context, recordingID int64) error {

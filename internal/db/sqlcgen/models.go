@@ -20,6 +20,10 @@ type CircuitBreaker struct {
 	Detail    json.RawMessage
 }
 
+type CmDetectionDesired struct {
+	RecordingID int64
+}
+
 type CmLogo struct {
 	NetworkID   int32
 	ServiceID   int32
@@ -254,6 +258,7 @@ type RecordingCmAttempt struct {
 	State       string
 	Error       *string
 	AttemptedAt time.Time
+	Stage       *string
 }
 
 type RecordingCmDetection struct {
