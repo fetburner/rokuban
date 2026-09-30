@@ -202,8 +202,8 @@ type ListRecordingShelvesRow struct {
 // 棚 1 件 = 実効シリーズの値 1 つ。母集団は生きている録画
 // （`deleted_at IS NULL AND superseded_at IS NULL`）で、録画中・取り込み待ち・失敗も含む。
 //
-// 代表は program_start_at の新しい順で先頭の 1 件。title は代表の生のタイトルで、
-// 値（棚のキー）そのものではない --- 値は正規化の産物なので表示名にならない。
+// 代表は program_start_at の新しい順で先頭の 1 件。value は画面のシリーズ名に使い、
+// title は代表録画の生タイトルを補助表示する。キーが過剰併合を隠さないよう、両方返す。
 //
 // 値が NULL の棚も返す。棚一覧の UI は NULL を表示対象から外すが、API では
 // 欠落と「分類されていない」を区別できるように残す。
