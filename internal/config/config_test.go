@@ -2015,6 +2015,35 @@ func TestLiveConfig_ValidateTools_MPEG2Decoder(t *testing.T) {
 	})
 }
 
+// enabled + captions でも `ffmpeg -decoders` は 1 回しか exec しない。
+func TestLiveConfig_ValidateTools_ListsDecodersOnce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake ffmpeg script assumes a POSIX shell")
+	}
+	dir := t.TempDir()
+	calls := filepath.Join(dir, "calls")
+	script := "#!/bin/sh\necho x >> " + calls + "\necho ' V..... mpeg2video MPEG-2 video'\necho ' S..... libaribcaption ARIB'\n"
+	ffmpeg := filepath.Join(dir, "fake-ffmpeg")
+	if err := os.WriteFile(ffmpeg, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ffprobe := filepath.Join(dir, "fake-ffprobe")
+	if err := os.WriteFile(ffprobe, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := LiveConfig{Enabled: true, Captions: true, FFmpeg: ffmpeg, FFprobe: ffprobe}
+	if err := cfg.ValidateTools(); err != nil {
+		t.Fatalf("ValidateTools() = %v, want success", err)
+	}
+	got, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(got), "x"); n != 1 {
+		t.Fatalf("ffmpeg -decoders executed %d times, want 1", n)
+	}
+}
+
 // writeFakeFFmpegDecoders は `ffmpeg -hide_banner -decoders` の代わりに応答する
 // 偽 ffmpeg を用意する（validateLibARIBCaption はこの 1 コマンドの出力しか見ない）。
 // includeARIB が true なら出力に libaribcaption を含める。

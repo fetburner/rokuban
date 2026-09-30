@@ -640,7 +640,11 @@ func (c EncodeConfig) ValidateTools() error {
 	}
 	for _, p := range c.Profiles {
 		if p.Subtitles == "webvtt" {
-			if err := validateLibARIBCaption(c.FFmpeg, "encode"); err != nil {
+			decoders, err := ffmpegDecoders(c.FFmpeg)
+			if err != nil {
+				return err
+			}
+			if err := validateLibARIBCaption(decoders, "encode"); err != nil {
 				return err
 			}
 			break
@@ -911,47 +915,58 @@ func (c LiveConfig) ValidateTools() error {
 	if _, err := exec.LookPath(c.FFmpeg); err != nil {
 		return fmt.Errorf("live.ffmpeg %q not found in PATH: %w", c.FFmpeg, err)
 	}
-	if c.Enabled {
-		if err := validateFFmpegDecoder(c.FFmpeg, "mpeg2video", "live source MPEG-2 TS"); err != nil {
-			return err
-		}
-	}
 	if c.Captions {
 		if _, err := exec.LookPath(c.FFprobe); err != nil {
 			return fmt.Errorf("live.ffprobe %q not found in PATH: %w", c.FFprobe, err)
 		}
-		if err := validateLibARIBCaption(c.FFmpeg, "live"); err != nil {
+	}
+	if !c.Enabled && !c.Captions {
+		return nil
+	}
+	// 1 回の `ffmpeg -decoders` の出力を両方の判定に使う。
+	decoders, err := ffmpegDecoders(c.FFmpeg)
+	if err != nil {
+		return err
+	}
+	if c.Enabled {
+		if err := validateFFmpegDecoder(decoders, "mpeg2video", "live source MPEG-2 TS"); err != nil {
+			return err
+		}
+	}
+	if c.Captions {
+		if err := validateLibARIBCaption(decoders, "live"); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// validateFFmpegDecoder checks a named input decoder before the live streamer
-// starts accepting requests. Live HLS consumes MPEG-2 TS originals; without
-// this decoder every generated HLS profile would fail only after a viewer asks
-// for playback and leave an empty player.
-func validateFFmpegDecoder(ffmpeg, decoder, scope string) error {
+// ffmpegDecoders は `ffmpeg -decoders` の出力を返す。
+func ffmpegDecoders(ffmpeg string) ([]byte, error) {
 	out, err := exec.Command(ffmpeg, "-hide_banner", "-decoders").CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("%s requires ffmpeg decoder %q: checking %q failed: %w", scope, decoder, ffmpeg, err)
+		return nil, fmt.Errorf("listing decoders of ffmpeg %q: %w", ffmpeg, err)
 	}
-	if !regexp.MustCompile(`(?m)^\s*V\S*\s+` + regexp.QuoteMeta(decoder) + `\s`).Match(out) {
+	return out, nil
+}
+
+// validateFFmpegDecoder checks a named input decoder in the `ffmpeg -decoders`
+// output before the live streamer starts accepting requests. Live HLS consumes
+// MPEG-2 TS originals; without this decoder every generated HLS profile would
+// fail only after a viewer asks for playback and leave an empty player.
+func validateFFmpegDecoder(decoders []byte, decoder, scope string) error {
+	if !regexp.MustCompile(`(?m)^\s*V\S*\s+` + regexp.QuoteMeta(decoder) + `\s`).Match(decoders) {
 		return fmt.Errorf("%s requires an ffmpeg build with %q decoder", scope, decoder)
 	}
 	return nil
 }
 
 // validateLibARIBCaption は字幕を有効にした構成で、実際に使う ffmpeg が
-// libaribcaption デコーダを持つことを起動時に検査する。Debian bookworm の
-// apt 版 ffmpeg 5.1 には通常含まれないため、設定したのに字幕だけ黙って消える
-// 状態を許さない。
-func validateLibARIBCaption(ffmpeg, scope string) error {
-	out, err := exec.Command(ffmpeg, "-hide_banner", "-decoders").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s subtitles require ffmpeg libaribcaption decoder: checking %q failed: %w", scope, ffmpeg, err)
-	}
-	if !strings.Contains(string(out), "libaribcaption") {
+// libaribcaption デコーダを持つこと（`ffmpeg -decoders` の出力 decoders）を起動時に
+// 検査する。Debian bookworm の apt 版 ffmpeg 5.1 には通常含まれないため、
+// 設定したのに字幕だけ黙って消える状態を許さない。
+func validateLibARIBCaption(decoders []byte, scope string) error {
+	if !strings.Contains(string(decoders), "libaribcaption") {
 		return fmt.Errorf("%s subtitles require an ffmpeg build with libaribcaption decoder", scope)
 	}
 	return nil
