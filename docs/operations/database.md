@@ -65,7 +65,9 @@ watcher は advisory lock、notifier は SSE 用の LISTEN を使うため、tra
 
 チャプター区間の `EXCLUDE` 制約を作る migration は、先に `btree_gist` を `public` へ追加する。
 この文が失敗すると `migrate up` はそこで止まり、後続の migration に進まない。
-k8s では [`migrate-job.yaml`](../../deploy/k8s/base/migrate-job.yaml) の Job が止まるので、API は更新されない。
+k8s では [`migrate-job.yaml`](../../deploy/k8s/base/migrate-job.yaml) の Job が失敗し、手順は `kubectl wait` で止まる。
+api の Deployment は同じ `kubectl apply` で新しい版へ更新されており、migration 未完了のスキーマに乗る。
+Job の失敗を解消してから、Job を delete して手順を再実行する（順序と理由は [deploy/k8s/README.md](../../deploy/k8s/README.md) §使い方）。
 
 - PostgreSQL 標準の `btree_gist` は trusted extension なので、対象 DB の `CREATE` 権限があれば作れる（[btree_gist](https://www.postgresql.org/docs/current/btree-gist.html)）。ただし managed provider がこの拡張を許可するかは接続先ごとに違う
 - `IF NOT EXISTS` は既存の拡張があると作らずに notice を返す。成功しても新規作成権限の証明にはならない
