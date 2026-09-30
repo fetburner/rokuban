@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
@@ -108,6 +109,9 @@ type cmToolset struct {
 	ffprobe string
 	// logoframeArgs は logoframe のダミーが受け取った引数を 1 行ずつ書くファイル。
 	logoframeArgs string
+	// hold が存在する間、logoframe のダミーは started を作って止まる。実 logoframe が
+	// 長く走っている間に枠の保存が割り込む窓を、テストが作るための足場。
+	hold, started string
 }
 
 func writeExecutable(t *testing.T, path, body string) {
@@ -137,6 +141,8 @@ func newFakeCMToolsWithSize(t *testing.T, lgd []byte, chapterExit int, cutAVS, v
 	// logoframe は渡された引数を 1 行ずつ argsPath に残す（呼び出し側が何を渡したかを
 	// テストから読めるようにする）。作業ディレクトリは実行後に消えるので外に置く。
 	argsPath := filepath.Join(dir, "logoframe-args.txt")
+	holdPath := filepath.Join(dir, "hold")
+	startedPath := filepath.Join(dir, "started")
 	writeExecutable(t, filepath.Join(dir, "logoframe"), fmt.Sprintf(`
 : > %q
 while [ $# -gt 0 ]; do
@@ -144,12 +150,16 @@ while [ $# -gt 0 ]; do
   case "$1" in -channel) ch=$2;; -logo-dir) d=$2;; -oa) o=$2;; esac
   shift
 done
+if [ -f %q ]; then
+  : > %q
+  while [ -f %q ]; do sleep 0.05; done
+fi
 : > "$o"
 if [ ! -f "$d/$ch.latest" ]; then
   cp %q "$d/$ch-v0001.lgd"
   echo "$ch-v0001.lgd" > "$d/$ch.latest"
 fi
-`, argsPath, argsPath, lgdPath))
+`, argsPath, argsPath, holdPath, startedPath, holdPath, lgdPath))
 	writeExecutable(t, filepath.Join(dir, "chapter_exe"), fmt.Sprintf(`
 while [ $# -gt 0 ]; do
   case "$1" in -o) o=$2;; esac
@@ -167,11 +177,19 @@ echo %q > "$o"
 `, cutAVS))
 	writeExecutable(t, filepath.Join(dir, "ffprobe"), fmt.Sprintf(`
 case "$*" in
-  *width,height*) echo %s ;;
+  *width,height*) echo %q ;;
   *) echo %s ;;
 esac
-`, size, videoSeconds))
-	return cmToolset{binDir: dir, ffprobe: filepath.Join(dir, "ffprobe"), logoframeArgs: argsPath}
+`, ffprobeSizeJSON(size), videoSeconds))
+	return cmToolset{binDir: dir, ffprobe: filepath.Join(dir, "ffprobe"), logoframeArgs: argsPath, hold: holdPath, started: startedPath}
+}
+
+// ffprobeSizeJSON は size（"1440x1080"）を、実 ffprobe 9.0.2 が MPEG-TS に対して
+// `-of json` で返す形（programs 側と streams 側の 2 回出る）にする。
+func ffprobeSizeJSON(size string) string {
+	w, h, _ := strings.Cut(size, "x")
+	stream := fmt.Sprintf(`{"width": %s, "height": %s}`, w, h)
+	return fmt.Sprintf(`{"programs": [{"streams": [%s]}], "stream_groups": [], "streams": [%s]}`, stream, stream)
 }
 
 // logoframeSawArea は logoframe に渡された -logo-area の値（無ければ空文字）を返す。
@@ -494,5 +512,139 @@ func TestRecoverStaleCMDetectJobs(t *testing.T) {
 	}
 	if total != 3 {
 		t.Errorf("cm_detect job rows = %d, want 3 (recovery must not insert new jobs)", total)
+	}
+}
+
+// workHeld は logoframe のダミーが走っている間に during を実行してから Work を終わらせる。
+// 実 logoframe が長く走る間に API が割り込む窓の再現。
+func workHeld(t *testing.T, pool *pgxpool.Pool, mediaDir string, tools cmToolset, id int64, attempt int, during func()) error {
+	t.Helper()
+	if err := os.WriteFile(tools.hold, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- newCMDetectTestWorker(pool, mediaDir, tools).Work(context.Background(), cmJob(id, attempt))
+	}()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if _, err := os.Stat(tools.started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("logoframe did not start")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	during()
+	if err := os.Remove(tools.hold); err != nil {
+		t.Fatal(err)
+	}
+	return <-done
+}
+
+// putAreaLikeAPI は PutCMLogoArea と同じ書き込み（局の鍵 + 枠の upsert + ロゴの削除）。
+func putAreaLikeAPI(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := sqlcgen.New(tx)
+	if err := q.LockCMStation(ctx, sqlcgen.LockCMStationParams{NetworkID: 32736, ServiceID: 1024}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.UpsertCMLogoArea(ctx, sqlcgen.UpsertCMLogoAreaParams{
+		NetworkID: 32736, ServiceID: 1024, X: 1180, Y: 24, W: 240, H: 96, CodedWidth: 1440, CodedHeight: 1080,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.DeleteCMLogo(ctx, sqlcgen.DeleteCMLogoParams{NetworkID: 32736, ServiceID: 1024}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func countLogos(t *testing.T, pool *pgxpool.Pool) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM cm_logos`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// 枠なし・ロゴなしで始まったジョブの実行中に枠が保存されたら、そのジョブが学習した
+// ロゴ（枠の外で学習したもの）は保存しない。保存すると枠の保存が消したはずの
+// ロゴが復活し、以後の検出が枠ではなくそのロゴを使う。
+func TestCMDetectWorkDiscardsLogoLearnedWhileAreaWasSaved(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	id := seedCMRecording(t, pool, mediaDir, 930)
+	tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000")
+
+	if err := workHeld(t, pool, mediaDir, tools, id, 1, func() { putAreaLikeAPI(t, pool) }); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	if n := countLogos(t, pool); n != 0 {
+		t.Errorf("cm_logos rows = %d, want 0: the logo learned before the area was saved must be discarded", n)
+	}
+}
+
+// ロゴを持って始まったジョブの実行中にロゴが消されたら、logoDir の古いロゴを書き戻さない。
+// 枠の保存とは限らない（ロゴだけを消す操作でも同じ）ので、枠の更新時刻の比較では止まらない。
+func TestCMDetectWorkDoesNotWriteBackAnOldLogoDeletedDuringTheJob(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	id := seedCMRecording(t, pool, mediaDir, 931)
+	tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000")
+	if err := sqlcgen.New(pool).UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
+		NetworkID: 32736, ServiceID: 1024, Lgd: buildTestLGD(4, 3, 1000, 4080), LearnedFrom: &id,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := workHeld(t, pool, mediaDir, tools, id, 1, func() {
+		if _, err := pool.Exec(ctx, `DELETE FROM cm_logos`); err != nil {
+			t.Error(err)
+		}
+	})
+	if err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	if n := countLogos(t, pool); n != 0 {
+		t.Errorf("cm_logos rows = %d, want 0: the old logo read at job start must not be written back", n)
+	}
+}
+
+// 枠なしで始まったジョブが枠の保存の後に失敗しても、attempted_at はジョブ開始時刻のまま
+// 残る。終了時刻で上書きすると `attempted_at < a.updated_at` が偽になり、枠に合わせた
+// 再検出が二度と投入されない。
+func TestCMDetectWorkFailureAfterAreaSaveStaysEligibleForRetry(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	id := seedCMRecording(t, pool, mediaDir, 932)
+	tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 1, "Trim(0,149)", "10.010000") // chapter_exe が失敗
+
+	err := workHeld(t, pool, mediaDir, tools, id, 3, func() { putAreaLikeAPI(t, pool) })
+	if err == nil {
+		t.Fatal("Work succeeded although chapter_exe failed")
+	}
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT state FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state); err != nil || state != "failed" {
+		t.Fatalf("attempt state = %q err = %v, want failed", state, err)
+	}
+	rows, err := sqlcgen.New(pool).ListMissingCMDetections(ctx, sqlcgen.ListMissingCMDetectionsParams{RowLimit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0] != id {
+		t.Errorf("ListMissingCMDetections = %v, want [%d]: the area saved during the failed run must make it eligible again", rows, id)
 	}
 }

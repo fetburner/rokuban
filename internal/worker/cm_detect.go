@@ -21,6 +21,7 @@ import (
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
@@ -154,15 +155,25 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 	if err := os.Mkdir(logoDir, 0o700); err != nil {
 		return fmt.Errorf("creating temporary logo directory: %w", err)
 	}
+	// **ジョブ開始時にロゴを持っていたかを覚える。** 持っていたなら学習結果は書かない
+	// （logoDir の中身は読み込んだ古いロゴのままで、書き戻すと枠の保存が消した
+	// ロゴが復活する）。持っていなかったなら、読んだ時点の枠の更新時刻を
+	// persistNewStationLogo が同じ文で再評価する。
+	hadLogo := false
 	if logo, err := sqlcgen.New(w.Pool).GetCMLogo(ctx, sqlcgen.GetCMLogoParams{
 		NetworkID: item.NetworkID,
 		ServiceID: item.ServiceID,
 	}); err == nil {
+		hadLogo = true
 		if err := writeStationLogo(logoDir, channel, logo); err != nil {
 			return fmt.Errorf("writing learned station logo: %w", err)
 		}
 	} else if !errors.Is(err, pgx5.ErrNoRows) {
 		return fmt.Errorf("loading station logo: %w", err)
+	}
+	var observedAreaUpdatedAt *time.Time
+	if area != nil {
+		observedAreaUpdatedAt = &area.UpdatedAt
 	}
 
 	logoFrames := filepath.Join(jobDir, "logoframe.txt")
@@ -178,8 +189,10 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 	if err := runCMTool(ctx, jobDir, tools("logoframe"), logoArgs...); err != nil {
 		return fmt.Errorf("running logoframe: %w", err)
 	}
-	if err := w.persistNewStationLogo(ctx, item, channel, logoDir); err != nil {
-		return err
+	if !hadLogo {
+		if err := w.persistNewStationLogo(ctx, item, channel, logoDir, observedAreaUpdatedAt); err != nil {
+			return err
+		}
 	}
 	if err := runCMTool(ctx, jobDir, tools("chapter_exe"), "-v", inputPath, "-s", "8", "-e", "4", "-o", chapters); err != nil {
 		return fmt.Errorf("running chapter_exe: %w", err)
@@ -247,15 +260,16 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 	return nil
 }
 
-func (w *CMDetectWorker) persistNewStationLogo(ctx context.Context, item sqlcgen.GetCMDetectionWorkItemRow, channel, dir string) error {
-	q := sqlcgen.New(w.Pool)
-	_, err := q.GetCMLogo(ctx, sqlcgen.GetCMLogoParams{NetworkID: item.NetworkID, ServiceID: item.ServiceID})
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, pgx5.ErrNoRows) {
-		return fmt.Errorf("checking learned station logo: %w", err)
-	}
+// persistNewStationLogo は logoframe が学習したロゴを保存する。呼ぶのはジョブ開始時に
+// ロゴが無かったときだけ。**枠の保存（PUT）と直列化し、ロゴ不在と枠の更新時刻が
+// ジョブの読んだ値のままであることを INSERT の同じ文で再評価する。** 枠が変わって
+// いれば、このロゴは古い枠で学習されたものなので捨てる（次の検出が新しい枠で学習する）。
+func (w *CMDetectWorker) persistNewStationLogo(
+	ctx context.Context,
+	item sqlcgen.GetCMDetectionWorkItemRow,
+	channel, dir string,
+	observedAreaUpdatedAt *time.Time,
+) error {
 	logo, err := readStationLogo(dir, channel)
 	if err != nil {
 		return fmt.Errorf("reading newly learned station logo: %w", err)
@@ -266,11 +280,28 @@ func (w *CMDetectWorker) persistNewStationLogo(ctx context.Context, item sqlcgen
 		slog.Warn("cm_detect: failed to render logo preview", "recording_id", item.ID, "err", previewErr)
 		preview = nil
 	}
-	if err := q.UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
+	tx, err := w.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning learned station logo save: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	q := sqlcgen.New(tx)
+	if err := q.LockCMStation(ctx, sqlcgen.LockCMStationParams{NetworkID: item.NetworkID, ServiceID: item.ServiceID}); err != nil {
+		return fmt.Errorf("locking station logo state: %w", err)
+	}
+	n, err := q.InsertLearnedCMLogo(ctx, sqlcgen.InsertLearnedCMLogoParams{
 		NetworkID: item.NetworkID, ServiceID: item.ServiceID, Lgd: logo,
-		PreviewPng: preview, LearnedFrom: &item.ID,
-	}); err != nil {
+		PreviewPng: preview, LearnedFrom: item.ID, ObservedAreaUpdatedAt: observedAreaUpdatedAt,
+	})
+	if err != nil {
 		return fmt.Errorf("saving learned station logo: %w", err)
+	}
+	if n == 0 {
+		slog.Info("cm_detect: discarded a learned logo because the station logo state changed during the job",
+			"recording_id", item.ID, "network_id", item.NetworkID, "service_id", item.ServiceID)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing learned station logo: %w", err)
 	}
 	return nil
 }
@@ -279,7 +310,8 @@ func (w *CMDetectWorker) persistNewStationLogo(ctx context.Context, item sqlcgen
 type videoGeometry struct{ width, height int }
 
 // probeVideoGeometry は最初の映像ストリームの大きさを返す。run は commandOutput か、
-// テストで差し替えた実行フック。
+// テストで差し替えた実行フック。問い合わせと出力の読み方は ffargs にあり、
+// streamer の /frame と共有する。
 //
 // **stream=width,height は SAR を掛けない。** 1440x1080 の地上波 HD は SAR 4:3 でも
 // width=1440 を返す（SAR は stream=sample_aspect_ratio 側）。人が教える枠も
@@ -292,31 +324,13 @@ func probeVideoGeometry(
 	if ffprobe == "" {
 		ffprobe = "ffprobe"
 	}
-	out, err := run(ctx, ffprobe,
-		"-v", "error",
-		"-select_streams", "v:0",
-		"-show_entries", "stream=width,height",
-		"-of", "csv=p=0:s=x",
-		inputPath,
-	)
+	out, err := run(ctx, ffprobe, ffargs.VideoGeometryProbeArgs(inputPath)...)
 	if err != nil {
 		return videoGeometry{}, err
 	}
-	value := strings.TrimSpace(string(out))
-	widthText, heightText, ok := strings.Cut(value, "x")
-	if !ok {
-		return videoGeometry{}, fmt.Errorf("ffprobe returned an unexpected video size %q", value)
-	}
-	width, err := strconv.Atoi(strings.TrimSpace(widthText))
+	width, height, err := ffargs.ParseVideoGeometry(out)
 	if err != nil {
-		return videoGeometry{}, fmt.Errorf("parsing video width %q: %w", widthText, err)
-	}
-	height, err := strconv.Atoi(strings.TrimSpace(heightText))
-	if err != nil {
-		return videoGeometry{}, fmt.Errorf("parsing video height %q: %w", heightText, err)
-	}
-	if width <= 0 || height <= 0 {
-		return videoGeometry{}, fmt.Errorf("ffprobe returned a non-positive video size %dx%d", width, height)
+		return videoGeometry{}, err
 	}
 	return videoGeometry{width: width, height: height}, nil
 }

@@ -208,7 +208,7 @@ function parseShelvesSearch(search: Record<string, unknown>): ShelvesPageSearch 
 export type CMLogoPageSearch = {
   network?: number
   service?: number
-  /** コマを取り寄せる録画。局の録画と別人なら無視する（壊れたリンクでも開く）。 */
+  /** コマを取り寄せる録画。**その録画が指定の局のものかは確かめない**（別の局の録画を渡すとその録画のコマが出る）。 */
   recording?: number
 }
 

@@ -78,8 +78,12 @@ ON CONFLICT (recording_id) DO UPDATE
 SET state = 'running', error = NULL, attempted_at = now();
 
 -- name: MarkCMDetectionFailure :exec
+-- **attempted_at は書き換えない**（ジョブ開始時刻のまま）。再投入の判定は
+-- `attempted_at < a.updated_at` で「枠を教えた後に試したか」を見るので、枠なしで
+-- 始まったジョブが PUT の後に失敗して終了時刻で上書きすると、その失敗が
+-- 新しい枠での試行に見え、枠に合わせた再検出が二度と投入されない。
 UPDATE recording_cm_attempts
-SET state = sqlc.arg('state'), error = sqlc.arg('error'), attempted_at = now()
+SET state = sqlc.arg('state'), error = sqlc.arg('error')
 WHERE recording_id = sqlc.arg('recording_id');
 
 -- name: SaveCMDetection :exec
@@ -87,6 +91,28 @@ INSERT INTO recording_cm_detections (recording_id, cm_ranges)
 VALUES (sqlc.arg('recording_id'), sqlc.arg('cm_ranges')::text::int8multirange)
 ON CONFLICT (recording_id) DO UPDATE
 SET cm_ranges = EXCLUDED.cm_ranges, detected_at = now();
+
+-- name: LockCMStation :exec
+-- 局ごとのロゴ状態（cm_logos と cm_logo_areas）を書く tx の先頭で取る。
+-- 枠の保存（PUT）と学習結果の保存が同じ局で並んだときに直列化する。
+SELECT pg_advisory_xact_lock(sqlc.arg('network_id')::int, sqlc.arg('service_id')::int);
+
+-- name: InsertLearnedCMLogo :execrows
+-- ジョブが学習したロゴを、**ロゴ不在かつ枠がジョブの読んだ時点のまま**のときだけ書く
+-- （同じ文で再評価する）。枠が変わっていれば、そのロゴは古い枠で学習されたもので、
+-- 書くと枠の保存が消したはずのロゴが復活する。observed_area_updated_at が NULL は
+-- 「ジョブが読んだとき枠は無かった」で、いま枠があれば不一致になる。
+INSERT INTO cm_logos (network_id, service_id, lgd, preview_png, learned_from)
+SELECT sqlc.arg('network_id')::int, sqlc.arg('service_id')::int, sqlc.arg('lgd')::bytea,
+       sqlc.narg('preview_png')::bytea, sqlc.arg('learned_from')::bigint
+WHERE NOT EXISTS (
+    SELECT 1 FROM cm_logos l
+    WHERE l.network_id = sqlc.arg('network_id')::int AND l.service_id = sqlc.arg('service_id')::int
+)
+AND (
+    SELECT a.updated_at FROM cm_logo_areas a
+    WHERE a.network_id = sqlc.arg('network_id')::int AND a.service_id = sqlc.arg('service_id')::int
+) IS NOT DISTINCT FROM sqlc.narg('observed_area_updated_at')::timestamptz;
 
 -- name: UpsertCMLogo :exec
 INSERT INTO cm_logos (network_id, service_id, lgd, preview_png, learned_from)

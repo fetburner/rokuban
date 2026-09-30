@@ -198,6 +198,48 @@ func (q *Queries) GetCMRetryOriginal(ctx context.Context, recordingID int64) (bo
 	return exists, err
 }
 
+const insertLearnedCMLogo = `-- name: InsertLearnedCMLogo :execrows
+INSERT INTO cm_logos (network_id, service_id, lgd, preview_png, learned_from)
+SELECT $1::int, $2::int, $3::bytea,
+       $4::bytea, $5::bigint
+WHERE NOT EXISTS (
+    SELECT 1 FROM cm_logos l
+    WHERE l.network_id = $1::int AND l.service_id = $2::int
+)
+AND (
+    SELECT a.updated_at FROM cm_logo_areas a
+    WHERE a.network_id = $1::int AND a.service_id = $2::int
+) IS NOT DISTINCT FROM $6::timestamptz
+`
+
+type InsertLearnedCMLogoParams struct {
+	NetworkID             int32
+	ServiceID             int32
+	Lgd                   []byte
+	PreviewPng            []byte
+	LearnedFrom           int64
+	ObservedAreaUpdatedAt *time.Time
+}
+
+// ジョブが学習したロゴを、**ロゴ不在かつ枠がジョブの読んだ時点のまま**のときだけ書く
+// （同じ文で再評価する）。枠が変わっていれば、そのロゴは古い枠で学習されたもので、
+// 書くと枠の保存が消したはずのロゴが復活する。observed_area_updated_at が NULL は
+// 「ジョブが読んだとき枠は無かった」で、いま枠があれば不一致になる。
+func (q *Queries) InsertLearnedCMLogo(ctx context.Context, arg InsertLearnedCMLogoParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertLearnedCMLogo,
+		arg.NetworkID,
+		arg.ServiceID,
+		arg.Lgd,
+		arg.PreviewPng,
+		arg.LearnedFrom,
+		arg.ObservedAreaUpdatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const isCMDetectionDesired = `-- name: IsCMDetectionDesired :one
 SELECT EXISTS (
     SELECT 1
@@ -371,9 +413,25 @@ func (q *Queries) ListMissingCMDetections(ctx context.Context, arg ListMissingCM
 	return items, nil
 }
 
+const lockCMStation = `-- name: LockCMStation :exec
+SELECT pg_advisory_xact_lock($1::int, $2::int)
+`
+
+type LockCMStationParams struct {
+	NetworkID int32
+	ServiceID int32
+}
+
+// 局ごとのロゴ状態（cm_logos と cm_logo_areas）を書く tx の先頭で取る。
+// 枠の保存（PUT）と学習結果の保存が同じ局で並んだときに直列化する。
+func (q *Queries) LockCMStation(ctx context.Context, arg LockCMStationParams) error {
+	_, err := q.db.Exec(ctx, lockCMStation, arg.NetworkID, arg.ServiceID)
+	return err
+}
+
 const markCMDetectionFailure = `-- name: MarkCMDetectionFailure :exec
 UPDATE recording_cm_attempts
-SET state = $1, error = $2, attempted_at = now()
+SET state = $1, error = $2
 WHERE recording_id = $3
 `
 
@@ -383,6 +441,10 @@ type MarkCMDetectionFailureParams struct {
 	RecordingID int64
 }
 
+// **attempted_at は書き換えない**（ジョブ開始時刻のまま）。再投入の判定は
+// `attempted_at < a.updated_at` で「枠を教えた後に試したか」を見るので、枠なしで
+// 始まったジョブが PUT の後に失敗して終了時刻で上書きすると、その失敗が
+// 新しい枠での試行に見え、枠に合わせた再検出が二度と投入されない。
 func (q *Queries) MarkCMDetectionFailure(ctx context.Context, arg MarkCMDetectionFailureParams) error {
 	_, err := q.db.Exec(ctx, markCMDetectionFailure, arg.State, arg.Error, arg.RecordingID)
 	return err

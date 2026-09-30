@@ -33,6 +33,25 @@ describe('cm-logo-frame', () => {
     expect(frameToCoded(frame, zoomedView).y).toBeCloseTo(coded.y)
   })
 
+  it('1440x1080（表示は 16:9 の枠）では高さが縮尺を決める', () => {
+    // 地上波 HD は記録上 1440x1080。表示枠は 16:9 なので、幅ではなく高さが律速になる。
+    const view: FrameView = { codedWidth: 1440, codedHeight: 1080, boxWidth: 640, boxHeight: 360, zoom: 1 }
+    expect(frameScale(view)).toBeCloseTo(1 / 3)
+    expect(frameImageBox(view).width).toBeCloseTo(480)
+    expect(frameImageBox(view).height).toBeCloseTo(360)
+    // コマは右上合わせ。表示枠の右端は記録上の x = 1440、左に 480px 入った所が x = 0。
+    expect(frameToCoded({ x: 640, y: 0 }, view).x).toBeCloseTo(1440)
+    expect(frameToCoded({ x: 160, y: 360 }, view).x).toBeCloseTo(0)
+    expect(frameToCoded({ x: 160, y: 360 }, view).y).toBeCloseTo(1080)
+    expect(codedToFrame({ x: 1200, y: 540 }, view).x).toBeCloseTo(560)
+    expect(codedToFrame({ x: 1200, y: 540 }, view).y).toBeCloseTo(180)
+
+    const zoomed = { ...view, zoom: 2.5 }
+    expect(frameScale(zoomed)).toBeCloseTo(5 / 6)
+    expect(frameImageBox(zoomed).width).toBeCloseTo(1200)
+    expect(frameToCoded({ x: 640, y: 0 }, zoomed).x).toBeCloseTo(1440)
+  })
+
   it('無効な寸法では座標変換を 0 に倒す', () => {
     const invalid = { ...zoomedView, codedWidth: 0, boxWidth: 0 }
     expect(frameScale(invalid)).toBe(0)

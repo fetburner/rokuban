@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -48,7 +49,7 @@ func newFrameFixture(t *testing.T, size string, frame []byte) (*frameFixture, in
 		f.calls = append(f.calls, append([]string{filepath.Base(name)}, args...))
 		switch filepath.Base(name) {
 		case "ffprobe":
-			return []byte(size + "\n"), nil
+			return []byte(probeJSON(size)), nil
 		case "ffmpeg":
 			return frame, nil
 		}
@@ -59,6 +60,14 @@ func newFrameFixture(t *testing.T, size string, frame []byte) (*frameFixture, in
 	f.srv = httptest.NewServer(r)
 	t.Cleanup(f.srv.Close)
 	return f, id
+}
+
+// probeJSON は size（"1440x1080"）を、実 ffprobe 9.0.2 が MPEG-TS に対して
+// `-of json` で返す形（programs 側と streams 側の 2 回出る）にする。
+func probeJSON(size string) string {
+	w, h, _ := strings.Cut(size, "x")
+	stream := fmt.Sprintf(`{"width": %s, "height": %s}`, w, h)
+	return fmt.Sprintf(`{"programs": [{"streams": [%s]}], "stream_groups": [], "streams": [%s]}`, stream, stream)
 }
 
 func (f *frameFixture) url(id int64, query string) string {
@@ -201,7 +210,7 @@ func TestRecordingFrameReportsExtractionFailure(t *testing.T) {
 	s := New(pool, Config{MediaDir: mediaDir, FFmpeg: "ffmpeg", FFprobe: "ffprobe"})
 	s.runCmd = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		if filepath.Base(name) == "ffprobe" {
-			return []byte("1440x1080\n"), nil
+			return []byte(probeJSON("1440x1080")), nil
 		}
 		return nil, fmt.Errorf("ffmpeg: exit status 1: Output file #0 does not contain any stream")
 	}
@@ -213,5 +222,44 @@ func TestRecordingFrameReportsExtractionFailure(t *testing.T) {
 	res, _ := get(t, fmt.Sprintf("%s/api/media/recordings/%d/frame?at=900000", srv.URL, id), nil)
 	if res.StatusCode != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", res.StatusCode)
+	}
+}
+
+// 実物の ffprobe / ffmpeg で MPEG-2 1440x1080（SAR 4:3）の TS を配る。偽の runCmd では
+// ffprobe の実出力の形（programs 側と streams 側の 2 回出る）を読めることを測れない。
+func TestRecordingFrameWithRealFFmpegOnAnamorphicMPEG2(t *testing.T) {
+	ffmpeg := lookPathFFmpeg(t)
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	relPath := "gr/real.ts"
+	full := filepath.Join(mediaDir, relPath)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=1440x1080:rate=25",
+		"-t", "3", "-vf", "setsar=4/3", "-c:v", "mpeg2video", "-f", "mpegts", full).CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg: %v: %s", err, out)
+	}
+	info, err := os.Stat(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := seedRecording(t, pool)
+	seedAsset(t, pool, id, relPath, info.Size())
+	s := New(pool, Config{MediaDir: mediaDir, FFmpeg: ffmpeg, FFprobe: "ffprobe"})
+	r := chi.NewRouter()
+	s.Mount(r)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	res, body := get(t, fmt.Sprintf("%s/api/media/recordings/%d/frame?at=1000", srv.URL, id), nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", res.StatusCode, body)
+	}
+	if len(body) < 4 || body[0] != 0xFF || body[1] != 0xD8 {
+		t.Errorf("body is not a JPEG (%d bytes)", len(body))
+	}
+	if got := res.Header.Get("X-Coded-Width") + "x" + res.Header.Get("X-Coded-Height"); got != "1440x1080" {
+		t.Errorf("coded size = %s, want 1440x1080", got)
 	}
 }

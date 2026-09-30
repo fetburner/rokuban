@@ -14,7 +14,7 @@
 /** FRAME_ZOOM は既定の拡大率。右上のロゴを狙う（全体表示 = 1 へ戻せる）。 */
 export const FRAME_ZOOM = 2.5
 
-/** MIN_AREA_SIZE はこれより小さい枠を保存させない（不変条件 10 の CHECK に合わせる）。 */
+/** MIN_AREA_SIZE はこれより小さい枠を保存させない。UI 上の下限（誤クリックの点を枠にしない）で、DB の CHECK は w > 0 / h > 0 だけを課す。 */
 export const MIN_AREA_SIZE = 8
 
 /** CodedRect は記録上の画素で表した枠。 */

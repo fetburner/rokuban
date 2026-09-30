@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 )
 
@@ -125,31 +126,13 @@ func (s *Streamer) probeVideoGeometry(ctx context.Context, path string) (videoGe
 	if ffprobe == "" {
 		ffprobe = "ffprobe"
 	}
-	out, err := s.runCommand(ctx, ffprobe,
-		"-v", "error",
-		"-select_streams", "v:0",
-		"-show_entries", "stream=width,height",
-		"-of", "csv=p=0:s=x",
-		path,
-	)
+	out, err := s.runCommand(ctx, ffprobe, ffargs.VideoGeometryProbeArgs(path)...)
 	if err != nil {
 		return videoGeometry{}, err
 	}
-	value := strings.TrimSpace(string(out))
-	widthText, heightText, ok := strings.Cut(value, "x")
-	if !ok {
-		return videoGeometry{}, fmt.Errorf("ffprobe returned an unexpected video size %q", value)
-	}
-	width, err := strconv.Atoi(strings.TrimSpace(widthText))
+	width, height, err := ffargs.ParseVideoGeometry(out)
 	if err != nil {
-		return videoGeometry{}, fmt.Errorf("parsing video width %q: %w", widthText, err)
-	}
-	height, err := strconv.Atoi(strings.TrimSpace(heightText))
-	if err != nil {
-		return videoGeometry{}, fmt.Errorf("parsing video height %q: %w", heightText, err)
-	}
-	if width <= 0 || height <= 0 {
-		return videoGeometry{}, fmt.Errorf("ffprobe returned a non-positive video size %dx%d", width, height)
+		return videoGeometry{}, err
 	}
 	return videoGeometry{width: width, height: height}, nil
 }
