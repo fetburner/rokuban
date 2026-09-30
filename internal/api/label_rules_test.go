@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,8 +71,8 @@ func getShelves(t *testing.T, srvURL string, query url.Values) []RecordingShelf 
 }
 
 // 棚は実効シリーズごとにまとまり、表示名には代表の生タイトルを使う。
-// value は正規化されたキーなので表示名にならない。count は生きている録画全体、
-// playableCount はそのうち再生できる録画だけを数える。
+// value は画面のシリーズ名になる実効キーで、title は副見出しの生タイトル。
+// count は生きている録画全体、playableCount はそのうち再生できる録画だけを数える。
 func TestListRecordingShelves_GroupsByEffectiveSeries(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newAPIServer(t, pool)
@@ -521,4 +522,30 @@ func ptrStr(p *string) string {
 		return "<nil>"
 	}
 	return *p
+}
+
+// latestStartAt は openapi の「常に UTC」どおり、サーバーのローカルタイムゾーンに
+// よらず `Z` で返す。pgx は timestamptz を time.Local で返すので、ローカルを JST に
+// して測る（UTC() を外すと +09:00 で返って落ちる）。
+func TestListRecordingShelves_LatestStartAtIsUTC(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+	prev := time.Local
+	time.Local = time.FixedZone("JST", 9*60*60)
+	t.Cleanup(func() { time.Local = prev })
+
+	seedPlayableRecording(t, pool, "アニメ　作品X　第1話", 1, time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
+
+	resp, err := http.Get(srv.URL + "/api/recording-shelves")
+	if err != nil {
+		t.Fatalf("GET /api/recording-shelves: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+	if !strings.Contains(string(body), `"latestStartAt":"2026-01-02T03:04:05Z"`) {
+		t.Errorf("body = %s, want latestStartAt in UTC (…Z)", body)
+	}
 }

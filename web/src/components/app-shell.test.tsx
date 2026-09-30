@@ -345,6 +345,20 @@ describe('AppShell / Sidebar の畳み込み', () => {
       expect(link).not.toHaveAttribute('aria-current')
     }
   })
+
+  it('/series では「録画」が現在地になり、他の項目は現在地でない', async () => {
+    renderShell('/series')
+    await findToggle()
+
+    for (const link of screen.getAllByRole('link', { name: '録画' })) {
+      expect(link).toHaveAttribute('aria-current', 'page')
+    }
+    for (const label of ['ホーム', '番組']) {
+      for (const link of screen.getAllByRole('link', { name: label })) {
+        expect(link).not.toHaveAttribute('aria-current')
+      }
+    }
+  })
 })
 
 describe('モバイルの「その他」', () => {

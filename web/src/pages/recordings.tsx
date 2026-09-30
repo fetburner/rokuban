@@ -50,14 +50,6 @@ import { cn } from '@/lib/utils'
 /** pageSize は 1 回のフェッチで取る件数（API の既定と同じ）。 */
 const pageSize = 50
 
-/**
- * VIEW_KEY は表示形式を持続させる localStorage キー。
- *
- * **URL ではなく端末に持つ**（`tab` や絞り込みと違う扱い）。表示形式は共有
- * リンクの宛先ではなく、その端末で見やすい形の好みだから
- * （docs/frontend/design.md §個人化）。`components/app-shell.tsx` の
- * サイドバー畳みと同じ `rokuban:<関心事>:...` の命名。
- */
 type RecordingsPageParam = { before?: string; beforeId?: number }
 
 type BulkFailure = { id: number; error: unknown }

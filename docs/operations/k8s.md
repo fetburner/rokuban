@@ -175,6 +175,12 @@ playlist 0.5 req/s とセグメント 0.5 req/s である。`segment_seconds` �
 （k8s なら `emptyDir: {medium: Memory}`）で足りる。Postgres datadir とエンコード
 scratch を分ける指針（[§3](database.md)）と同じ系列の規則。
 
+**原本だけの完了録画も `live.segment_dir` を使う。**
+原本 MPEG-2 TS は site streamer が media PVC から read-only で開く。変換済み HLS は
+scratch に書き、録画バッファや archive PVC は使わない。site streamer の media mount は
+read-only のままでよい。`rel_path` lock は取らず、開いてから DB で再確認するので、
+media root に `.rokuban-locks` を作らない（根拠は [api.md](../api.md) 「録画原本のブラウザ再生」）。
+
 **録画中の追っかけ再生も同じ `live.segment_dir` の scratch を使う。**
 URL は固定深さである。開始位置を指定する場合は `/offset/{offset}` を含む。
 site を前段のルーティングキーにして、録画を担当する site の streamer へ送る。
@@ -182,9 +188,9 @@ site を前段のルーティングキーにして、録画を担当する site 
 録画 id は DB 内の mirakc record id を隠すための公開キーで、同じ streamer 内のセッションを
 共有する。同じ録画の異なる開始位置は別セッションになる。
 いずれも hash key は `(site, recordings.id)` でよい（同じ録画の全オフセットを同じ Pod に固定するため）。
-ライブと追っかけは同じ process-local な `live.max_sessions` を共有する。メトリクスは
-`rokuban_live_active_sessions{kind="live"}` / `{kind="chase"}` に分かれるが、
-scratch の容量は合算する。
+ライブ・追っかけ・原本 VOD は同じ process-local な `live.max_sessions` を共有する。
+メトリクスは `rokuban_live_active_sessions{kind="live"}` / `{kind="chase"}` /
+`{kind="original_vod"}` に分かれるが、scratch の容量は合算する。
 
 追っかけは録画中の先頭から EOF までの EVENT playlist を `delete_segments` 無しで保持し、
 ffmpeg 終了後も idle GC まで全セグメントを残す。録画状態が終了へ変わった後も、既存の
@@ -193,6 +199,11 @@ ffmpeg 終了後も idle GC まで全セグメントを残す。録画状態が�
 ビットレートを掛け合わせて `live.segment_dir` の memory limit を決める**。tmpfs の容量不足は
 録画バッファへ逃がさず、追っかけセッションの HLS 生成失敗として観測する。recording.basedir
 または archive PVC と同じ mount / volume に置かない。
+
+原本 VOD は chase と同じく録画全体の EVENT playlist と全 segment を idle GC まで保持する。
+見積もりには、同時に再生する原本録画の時間、全 live profile の出力 bitrate、同時セッション数を
+掛け合わせる。字幕 rendition を有効にする構成では WebVTT の scratch も加算する。
+tmpfs の容量不足は原本 VOD の HLS 生成失敗になり、原本や録画バッファへは書き込まない。
 
 ### マニフェストの配布形式: 素の kustomize
 

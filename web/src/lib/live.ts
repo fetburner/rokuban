@@ -344,6 +344,18 @@ export function chaseLeaveURL(site: string, recordingId: number, offsetSeconds?:
   return `/api/sites/${encodeURIComponent(site)}/recordings/${recordingId}/chase${offset}/leave`
 }
 
+/** originalVODPlaylistURL は完成済み録画の原本を HLS 化する URL を組み立てる。 */
+export function originalVODPlaylistURL(site: string, recordingId: number, profile?: string): string {
+  const base =
+    `/api/sites/${encodeURIComponent(site)}/recordings/${recordingId}/original-vod/playlist.m3u8`
+  return profile ? `${base}?profile=${encodeURIComponent(profile)}` : base
+}
+
+/** originalVODLeaveURL は原本 VOD HLS セッションへの離脱ヒントの宛先。 */
+export function originalVODLeaveURL(site: string, recordingId: number): string {
+  return `/api/sites/${encodeURIComponent(site)}/recordings/${recordingId}/original-vod/leave`
+}
+
 /**
  * sendLiveLeaveHint は離脱のヒントを 1 回送る（失敗は無視する）。
  *
@@ -375,6 +387,18 @@ export function sendLiveLeaveHint(site: string, networkId: number, serviceId: nu
 /** sendChaseLeaveHint は sendLiveLeaveHint と同じ fire-and-forget 契約で追っかけを離れる。 */
 export function sendChaseLeaveHint(site: string, recordingId: number, offsetSeconds?: number): void {
   const url = chaseLeaveURL(site, recordingId, offsetSeconds)
+  if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+    navigator.sendBeacon(url)
+    return
+  }
+  void fetch(url, { method: 'POST', keepalive: true }).catch(() => {
+    // 離脱時の失敗は idle GC に任せる
+  })
+}
+
+/** sendOriginalVODLeaveHint は原本 VOD の共有セッションに離脱を知らせる。 */
+export function sendOriginalVODLeaveHint(site: string, recordingId: number): void {
+  const url = originalVODLeaveURL(site, recordingId)
   if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
     navigator.sendBeacon(url)
     return

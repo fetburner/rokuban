@@ -159,7 +159,7 @@ func (h *Server) ListRecordingShelves(ctx context.Context, req ListRecordingShel
 			Title:            row.Title,
 			Count:            int(row.RecordingCount),
 			PlayableCount:    int(row.PlayableCount),
-			LatestStartAt:    row.LatestStartAt,
+			LatestStartAt:    row.LatestStartAt.UTC(),
 			RepresentativeId: row.RepresentativeID,
 		})
 	}

@@ -1,7 +1,14 @@
 /** 録画一覧とシリーズ一覧が共有する表示形式。 */
 export type RecordingView = 'list' | 'card'
 
-/** 録画・シリーズ一覧で共有する表示形式の localStorage キー。 */
+/**
+ * RECORDING_VIEW_KEY は録画・シリーズ一覧で共有する表示形式の localStorage キー。
+ *
+ * **URL ではなく端末に持つ**（`tab` や絞り込みと違う扱い）。表示形式は共有
+ * リンクの宛先ではなく、その端末で見やすい形の好みだから
+ * （docs/frontend/design.md §個人化）。`components/app-shell.tsx` の
+ * サイドバー畳みと同じ `rokuban:<関心事>:...` の命名。
+ */
 export const RECORDING_VIEW_KEY = 'rokuban:recordings:view'
 
 /** 保存済みの表示形式を読む。無い/読めない場合はリスト表示にする。 */

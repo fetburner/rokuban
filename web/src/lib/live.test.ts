@@ -16,11 +16,14 @@ import {
   nextLowerProfile,
   nextProgressWatch,
   observeStall,
+  originalVODLeaveURL,
+  originalVODPlaylistURL,
   pickInitialService,
   probeLivePlaylist,
   liveProfileLabel,
   readSubtitleVisibility,
   sendLiveLeaveHint,
+  sendOriginalVODLeaveHint,
   stalledForMs,
   supportsNativeHls,
   validLiveAudio,
@@ -98,6 +101,20 @@ describe('chasePlaylistURL', () => {
     )
     expect(chaseLeaveURL('default', 42, 90)).toBe(
       '/api/sites/default/recordings/42/chase/offset/90/leave',
+    )
+  })
+})
+
+describe('originalVODPlaylistURL', () => {
+  it('recording id と profile を原本 VOD HLS URL に載せる', () => {
+    expect(originalVODPlaylistURL('default', 42)).toBe(
+      '/api/sites/default/recordings/42/original-vod/playlist.m3u8',
+    )
+    expect(originalVODPlaylistURL('a b', 42, 'hd 720p')).toBe(
+      '/api/sites/a%20b/recordings/42/original-vod/playlist.m3u8?profile=hd%20720p',
+    )
+    expect(originalVODLeaveURL('a b', 42)).toBe(
+      '/api/sites/a%20b/recordings/42/original-vod/leave',
     )
   })
 })
@@ -187,6 +204,17 @@ describe('sendLiveLeaveHint', () => {
     expect(() => sendLiveLeaveHint('default', 1, 2)).not.toThrow()
     // 未処理の rejection にもしない（catch が付いていること）
     await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+})
+
+describe('sendOriginalVODLeaveHint', () => {
+  it('原本 VOD の離脱ヒントを beacon で送る', () => {
+    const beacon = vi.fn(() => true)
+    vi.stubGlobal('navigator', { sendBeacon: beacon })
+
+    sendOriginalVODLeaveHint('default', 42)
+
+    expect(beacon).toHaveBeenCalledWith('/api/sites/default/recordings/42/original-vod/leave')
   })
 })
 

@@ -14,7 +14,7 @@ import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/field'
 import { formatDate } from '@/lib/format'
-import { loadRecordingView, saveRecordingView } from '@/lib/recording-view'
+import { loadRecordingView, saveRecordingView, type RecordingView } from '@/lib/recording-view'
 import { buildShelfRows, sortShelfRows, type ShelfRow, type ShelfSort } from '@/lib/shelves'
 import { seriesLabelRules } from '@/lib/series'
 import { cn } from '@/lib/utils'
@@ -156,7 +156,7 @@ function SeriesShelfLink({
 }: {
   row: ShelfRow
   manual: boolean
-  view: 'list' | 'card'
+  view: RecordingView
 }) {
   return (
     <Link
@@ -177,7 +177,7 @@ function SeriesShelfLink({
         <span className="mt-1 block truncate text-sm text-muted-foreground">{row.title}</span>
         <span
           data-testid="series-shelf-meta"
-          className="mt-1 block text-xs text-muted-foreground"
+          className="mt-1 block text-sm text-muted-foreground"
         >
           見られる {row.playableCount.toLocaleString('ja-JP')} 件 · {formatDate(row.latestStartAt)}
         </span>
@@ -186,17 +186,17 @@ function SeriesShelfLink({
   )
 }
 
-function SeriesThumbnail({ row, view }: { row: ShelfRow; view: 'list' | 'card' }) {
+function SeriesThumbnail({ row, view }: { row: ShelfRow; view: RecordingView }) {
   const [failed, setFailed] = useState(false)
   return (
     <span
       className={cn(
         'aspect-video shrink-0 overflow-hidden rounded bg-muted',
-        view === 'card' ? 'w-full' : 'h-16 w-28',
+        view === 'card' ? 'w-full' : 'w-28',
       )}
     >
       {failed ? (
-        <span aria-hidden className="scanlines block size-full" />
+        <span aria-hidden className="block size-full bg-muted" />
       ) : (
         <img
           src={`/api/media/recordings/${row.representativeId}/thumbnail`}
