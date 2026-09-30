@@ -410,8 +410,9 @@ jobs:
           shellcheck --version
           shellcheck -x -e SC1091,SC2034,SC2317,SC2329 \
             deploy/k8s/e2e/run.sh deploy/k8s/e2e/oracles.sh \
+            deploy/k8s/e2e/faults/*.sh \
             deploy/k8s/e2e/lib/*.sh deploy/k8s/e2e/checks/*.sh
-      # **受け入れ判定ハーネス（deploy/k8s/e2e）そのものは CI で回さない。**
+      # **受け入れ判定・故障注入ハーネス（deploy/k8s/e2e）そのものは CI で回さない。**
       # 回すのは人間で、タイミングと理由は docs/runbook/k8s.md
       # §受け入れ判定ハーネス に書いてある。ここで見るのは、ハーネスが持つ
       # マニフェスト（overlays/e2e / 足場 / CRD を含まない fixture）が YAML と
