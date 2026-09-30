@@ -205,23 +205,6 @@ describe('LivePlayer の状態遷移', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
   })
 
-  it('ネイティブ HLS 経路の loadedmetadata でも空 profile の旧キーを復元する', async () => {
-    localStorage.setItem('rokuban:playback:92:', '44')
-    const { resolve } = deferredFetch()
-    render(<LivePlayer mode="original-vod" site="default" recordingId={92} profile="hd" playbackProfile="original" />)
-    const video = document.querySelector('video')!
-    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
-      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
-    )
-    resolve(new Response(PROFILE_MASTER, { status: 200 }))
-    await waitFor(() => expect(video.src).toContain('/original-vod/playlist.m3u8'))
-    expect(hlsMockState.instances).toHaveLength(0)
-    Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
-    fireEvent.loadedMetadata(video)
-    expect(video.currentTime).toBe(44)
-    expect(localStorage.getItem('rokuban:playback:92:')).toBeNull()
-  })
-
   it('WebKit（Safari 相当）の実測値なら video.src に直接プレイリスト URL を渡し、hls.js を import しない', async () => {
     const { resolve } = deferredFetch()
     render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
@@ -1002,18 +985,6 @@ describe('LivePlayer の状態遷移', () => {
       render(<LivePlayer mode="original-vod" site="default" recordingId={90} profile="hd" playbackProfile="original" />)
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
       expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: 42 }])
-    })
-
-    it('空 profile の旧キーを原本 VOD の startPosition に移す。encode profile 名の旧キーは拾わない', async () => {
-      localStorage.setItem('rokuban:playback:91:', '33')
-      localStorage.setItem('rokuban:playback:91:cut', '300')
-      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
-      render(<LivePlayer mode="original-vod" site="default" recordingId={91} profile="hd" playbackProfile="original" />)
-      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
-      expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition: 33 }])
-      expect(localStorage.getItem('rokuban:playback:91:original')).toBe('33')
-      expect(localStorage.getItem('rokuban:playback:91:')).toBeNull()
-      expect(localStorage.getItem('rokuban:playback:91:cut')).toBe('300')
     })
 
     it('原本 VOD は ENDLIST を見るまで duration を完了判定に使わない', async () => {

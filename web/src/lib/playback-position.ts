@@ -19,45 +19,17 @@ export function playbackStorageKey(recordingId: number, profile: string): string
 }
 
 /** loadPlaybackPosition は保存済みの秒位置を返す。無ければ null。 */
-export function loadPlaybackPosition(
-  recordingId: number,
-  profile: string,
-  legacyProfile?: string,
-): number | null {
+export function loadPlaybackPosition(recordingId: number, profile: string): number | null {
   try {
     const raw = localStorage.getItem(playbackStorageKey(recordingId, profile))
-    const migrated = migrateLegacyKey(recordingId, profile, legacyProfile, raw !== null)
-    const value = raw ?? migrated
-    if (value === null) return null
-    const n = Number(value)
+    if (raw === null) return null
+    const n = Number(raw)
     if (!Number.isFinite(n) || n < 0) return null
     return n
   } catch {
     // private mode 等で localStorage が使えない場合は無視
     return null
   }
-}
-
-/**
- * migrateLegacyKey は、呼び出し側が名指しした旧キー（その呼び出し元が以前書いていた 1 つ）を
- * 新キーへ移す。旧キーは列挙しない --- 軸の違うキー（cut 版の秒数など）を拾わないため。
- * **旧キーは読んだかどうかに関わらず毎回消す**（新キーがあっても消す）。残すと、見終わって
- * 消した新キーの後に旧キーの古い位置が生き返る。新キーが無く旧キーがあるときだけ値を返す。
- */
-function migrateLegacyKey(
-  recordingId: number,
-  profile: string,
-  legacyProfile: string | undefined,
-  newKeyExists: boolean,
-): string | null {
-  if (legacyProfile === undefined || legacyProfile === profile) return null
-  const legacy = playbackStorageKey(recordingId, legacyProfile)
-  const raw = localStorage.getItem(legacy)
-  if (raw === null) return null
-  localStorage.removeItem(legacy)
-  if (newKeyExists) return null
-  localStorage.setItem(playbackStorageKey(recordingId, profile), raw)
-  return raw
 }
 
 /**

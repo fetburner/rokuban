@@ -178,7 +178,7 @@ describe('RecordingPlayer の再生位置キー（時間軸）', () => {
     expect(localStorage.getItem('rokuban:playback:13:original')).toBe('500')
   })
 
-  it('cut 版だけの旧キー（プロファイル名）は、cut でない資産では読まず、cut 版では復元する', () => {
+  it('cut 版のキー（プロファイル名）は、cut でない資産では読まず、cut 版では復元する', () => {
     localStorage.setItem('rokuban:playback:14:cut', '300')
     const assets = [
       { profile: 'h264', sizeBytes: 1 },
@@ -197,19 +197,6 @@ describe('RecordingPlayer の再生位置キー（時間軸）', () => {
     setMediaProps(v2, { currentTime: 0, duration: 600 })
     fireEvent.loadedMetadata(v2)
     expect(v2.currentTime).toBe(300)
-  })
-
-  it('旧キー（自分のプロファイル名）の位置を cut でない資産が復元して新キーへ移す', () => {
-    localStorage.setItem('rokuban:playback:15:h264', '77')
-    const { container } = render(
-      <RecordingPlayer recordingId={15} encodedAssets={[{ profile: 'h264', sizeBytes: 1 }]} />,
-    )
-    const video = container.querySelector('video')!
-    setMediaProps(video, { currentTime: 0, duration: 600 })
-    fireEvent.loadedMetadata(video)
-    expect(video.currentTime).toBe(77)
-    expect(localStorage.getItem('rokuban:playback:15:original')).toBe('77')
-    expect(localStorage.getItem('rokuban:playback:15:h264')).toBeNull()
   })
 })
 

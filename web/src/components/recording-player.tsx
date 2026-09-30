@@ -127,9 +127,7 @@ export function RecordingPlayer({
   const playingCut = selectedAsset?.cut === true
   // 保存キーは時間軸で決める。cut 版だけが自分の軸を持ち（キーはプロファイル名のまま）、他は
   // 追っかけ・原本 HLS と共有する。この player は currentTime を換算せずそのまま保存している。
-  // 旧キーはその資産自身が以前書いていた `selectedProfile`。cut 版は軸もキーも変わらず移行不要。
   const positionAxis = playingCut ? selectedProfile : ORIGINAL_AXIS
-  const legacyPositionKey = playingCut ? undefined : selectedProfile
   const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
   const videoRef = useRef<HTMLVideoElement>(null)
   // タイルは録画ごとに 1 枚で profile に依存しないので、キーは recordingId だけ。
@@ -462,7 +460,7 @@ export function RecordingPlayer({
           updatePlayedFraction(e.currentTarget)
           if (!restorePending.current) return
           restorePending.current = false
-          const pos = loadPlaybackPosition(recordingId, positionAxis, legacyPositionKey)
+          const pos = loadPlaybackPosition(recordingId, positionAxis)
           if (pos !== null && pos > 0) {
             e.currentTarget.currentTime = pos
           }
