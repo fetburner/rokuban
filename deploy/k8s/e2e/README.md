@@ -15,17 +15,20 @@ E2E_ORACLES_ONLY=3 ./deploy/k8s/e2e/run.sh --oracles   # オラクルも一部�
 ./deploy/k8s/e2e/run.sh --down               # クラスタを消す
 ```
 
-`--faults` は通常の 5 項目と別に走る。**同じ使い捨て kind + KEDA クラスタを使い、
-PostgreSQL・worker・media volume・mirakc mock を含む実デプロイの状態遷移を測る。**
-Compose の smoke test はコンテナ起動と catalog 書き込みを検査する目的のままとし、
-故障後の収束の正本はこの kind suite にする。役割分割のキュー、DB 接続、永続 volume
-をまとめて扱えるためである。
+`--faults` は通常の 5 項目と別に走る。同じ使い捨て kind + KEDA クラスタを使う。
+**PostgreSQL・worker・media volume・mirakc mock を含む実デプロイの状態遷移を測る。**
+Compose の smoke test はコンテナ起動と catalog 書き込みを検査する目的のままにする。
+故障後の収束の正本はこの kind suite にする。
+役割分割のキュー、DB 接続、永続 volume をまとめて扱えるためである。
 
-この suite はデータを持たない `rokuban-e2e` 名前空間に限る。worker kill は実行中
-encode Pod だけに `--force --grace-period=0` を送り、PostgreSQL outage は DB Pod や
-`emptyDir` を消さず Service selector を一時的に空振りさせたうえで既存 app connection
-を切る。後者は `readyz=503` を観測してから Service を戻す。中断時も selector と
-CronJob は trap で戻し、次回実行前の preflight が状態を検査する。
+この suite はデータを持たない `rokuban-e2e` 名前空間に限る。
+worker kill は実行中 encode Pod だけに `--force --grace-period=0` を送る。
+PostgreSQL outage は DB Pod や `emptyDir` を消さず、Service selector を一時的に空振りさせる。
+そのうえで既存 app connection を切り、`readyz=503` を観測してから Service を戻す。
+中断時は EXIT trap が selector と CronJob を戻す。
+trap が走らなかった場合は、次回の `run.sh` が `deploy_scaffold` で `scaffold.yaml` を再適用して selector を戻す。
+CronJob は `restore_cronjobs` が戻す（この復元経路は未検証）。
+preflight は Service selector を見ない。
 
 ## 出力は 3 値である
 
@@ -189,27 +192,30 @@ true のままだと、判定 2 が「worker が自分で投入して自分で�
 
 | 判定 | 注入 | 機械判定する収束 |
 |---|---|---|
-| F1 | 240 秒の実 encode が claim された worker Pod を force-delete | River の stuck job を `encode_reconcile` が終端化して代替 job を投入し、replacement が encoded file と active `media_assets` を公開する。途中で `delete_reconcile` を走らせても `until_encoded` の原本は残り、recording の状態も保たれる |
-| F2 | PostgreSQL Service selector を一時的に空振りさせ、既存 app connection を切断 | `/readyz` が 503 になり、Service 復帰後に 200 へ戻る。DB outage 中に失った mirakc mock の schedule が `reconcile-pass` で戻り、既存 recording の状態が保たれる |
+| F1 | 240 秒の実 encode が claim された worker Pod を force-delete | worker のプロセス死亡を DB 接続の消滅で確認する。`encode_reconcile` が stuck job を終端化して代替 job を投入し、replacement が encoded file と active `media_assets` を公開する。途中で `delete_reconcile` を走らせても `until_encoded` の原本は残る |
+| F2 | PostgreSQL Service selector を一時的に空振りさせ、既存 app connection を切断 | `/readyz` が 503 になり、Service 復帰後に 200 へ戻る。DB outage 中に失った mirakc mock の schedule が `reconcile-pass` で戻る |
 
 F2 は postgres Pod / `emptyDir` を削除しない。Service endpoint の切り離しにより API・
 worker・KEDA operator からの新規接続を失わせ、既存の pool connection も
 `pg_terminate_backend` で切る。`readyz=503` を確認できなければ outage と見なさず FAIL
 にする。中断時は EXIT trap が Service selector と CronJob を復元する。
 
-worker kill の判定は次の 2 つを直接固定する。`encode_reconcile` の回収を外すと F1.4
-の River 置換または encoded asset 公開が成立せず、`until_encoded` の未完了プロファイル
-保護を外すと F1.3 で original が残らない。F2.3 は期待した `program_id` の mirakc
-schedule を照合するため、単に worker が起きたことでは PASS しない。
+worker kill の判定は次の 2 つを直接固定する。
+`encode_reconcile` の回収を外すと、F1.4 の River 置換または encoded asset 公開が成立しない。
+`until_encoded_deletable_originals` の「全プロファイルがエンコード済み」の条件を外すと、
+F1.3 で original が削除されて FAIL になる。
+fixture に有効な thumbnail と seek_tiles を入れてあるので、original を守るのはこの条件だけである。
+F2.2 は期待した `program_id` の mirakc schedule を照合するため、単に worker が起きたことでは PASS しない。
 
-候補のうち API restart、NOTIFY/SSE 欠落、media mount 遅延、mirakc 再起動はこの suite
-では注入しない。どれも本 issue の最低受け入れである worker kill / PostgreSQL 一時断
-とは故障の判定条件が異なるため、実装対象が決まったときに別の状態遷移判定を足す。
+API restart、NOTIFY/SSE 欠落、media mount 遅延、mirakc 再起動はこの suite では注入しない。
+どれも「fixture を作って故障を起こし、durable な状態の収束を DB と API で判定する」形に収まらない。
+収束の判定基準が故障ごとに別で、状態遷移の期待値を先に決める必要があるためである。
+基準が決まったときに、別の状態遷移判定として足す。
 
 `--faults` は 240 秒の media fixture と stale recovery の 1 分閾値、実 encode の完了
-を待つので数分以上かかる。クラスタを起動する動的判定は CI では回さない。CI は
-shellcheck・YAML schema・既存のクラスタ不要 selftest を回し、k8s / recovery / storage
-の変更を出す人が PR 前に `run.sh --faults` を実行する（詳細は
+を待つので数分以上かかる。クラスタを起動する動的判定は CI では回さない。
+CI は shellcheck・YAML schema・既存のクラスタ不要 selftest を回す。
+k8s / recovery / storage の変更を出す人は PR 前に `run.sh --faults` を実行する（詳細は
 [docs/runbook/k8s.md](../../../docs/runbook/k8s.md) と
 [docs/runbook/testing.md](../../../docs/runbook/testing.md)）。
 
