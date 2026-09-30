@@ -1,20 +1,16 @@
 /**
- * CM の枠を教える画面（`/cm-logos`）の、コマの表示と座標の純関数。
+ * CM の枠を教える画面の、コマ表示と座標変換の純関数。
  *
- * 教えた枠は**記録上の画素**（`codedWidth` × `codedHeight`。poster やシーク
- * タイルの座標は SAR を焼き込んでいるので使えない）。画面はコマを表示枠へ
- * 収め、右上を既定で 2.5 倍に拡大する（ロゴは右上にある）。その表示座標から
- * 記録上の座標へ戻すのがここである。
- *
- * **表示枠の寸法は実測でしか取れない**（jsdom の `getBoundingClientRect()` は
- * 常に 0 を返す）ので、配線の判定は `web/e2e/cm-logo-area.mjs` にある。
- * ここは寸法を引数で受ける純関数だけで、単体テストで全部測れる。
+ * 枠は記録上の coded size の画素で保存する。表示側は sample aspect ratio
+ * （SAR）を掛けた表示比で描くので、CSS 上の横倍率と縦倍率は同じとは限らない。
+ * 表示枠の寸法は実ブラウザでしか測れないため、ここは寸法を引数に取る純関数に
+ * して、座標・四隅の計算を単体テストで固定する。
  */
 
-/** FRAME_ZOOM は既定の拡大率。右上のロゴを狙う（全体表示 = 1 へ戻せる）。 */
+/** FRAME_ZOOM は「枠に寄る」の拡大率。全体表示は 1 倍。 */
 export const FRAME_ZOOM = 2.5
 
-/** MIN_AREA_SIZE はこれより小さい枠を保存させない。UI 上の下限（誤クリックの点を枠にしない）で、DB の CHECK は w > 0 / h > 0 だけを課す。 */
+/** MIN_AREA_SIZE は保存する枠の UI 上の最小幅・高さ。 */
 export const MIN_AREA_SIZE = 8
 
 /** CodedRect は記録上の画素で表した枠。 */
@@ -25,76 +21,111 @@ export type CodedRect = {
   h: number
 }
 
-/** FrameView は表示中のコマの寸法と、それを収める表示枠の寸法。 */
+/** FrameView はコマの寸法、SAR、表示枠の寸法、ズーム状態。 */
 export type FrameView = {
   codedWidth: number
   codedHeight: number
   /** 表示枠の CSS px。 */
   boxWidth: number
   boxHeight: number
+  /** `sample_aspect_ratio` の width / height。無効値は 1 として扱う。 */
+  sampleAspectRatio?: number
   zoom: number
+  /** 枠に寄る表示で画面中央へ置く記録上の焦点。 */
+  focus?: { x: number; y: number }
 }
 
-/**
- * frameScale は記録上の 1 画素が何 CSS px で描かれるかを返す。
- *
- * 全体表示（zoom = 1）では `object-fit: contain` と同じく表示枠に収まる倍率
- * （縦横の小さい方）。拡大はその倍率に掛ける。
- */
-export function frameScale(view: FrameView): number {
-  if (view.codedWidth <= 0 || view.codedHeight <= 0) return 0
-  const fit = Math.min(view.boxWidth / view.codedWidth, view.boxHeight / view.codedHeight)
-  return fit > 0 ? fit * view.zoom : 0
+/** FrameScale は記録上の 1 画素が何 CSS px で描かれるか（横・縦別）。 */
+export type FrameScale = { x: number; y: number }
+
+/** 有効な SAR を返す。ffprobe の欠落・壊れた値は正方画素へ倒す。 */
+function sampleAspectRatio(view: FrameView): number {
+  return view.sampleAspectRatio !== undefined && Number.isFinite(view.sampleAspectRatio) && view.sampleAspectRatio > 0
+    ? view.sampleAspectRatio
+    : 1
 }
 
-/**
- * frameImageBox はコマを描く大きさ（CSS px）を返す。
- *
- * **位置は右上合わせ**（`right: 0` / `top: 0`）。拡大しても右上が表示枠の右上に
- * 残るので、右上にあるロゴを見失わない。全体表示でも枠より小さければ右寄せに
- * なるだけである。
- */
+/** frameScale は SAR と contain の結果を横・縦別に返す。 */
+export function frameScale(view: FrameView): FrameScale {
+  if (
+    view.codedWidth <= 0 ||
+    view.codedHeight <= 0 ||
+    view.boxWidth <= 0 ||
+    view.boxHeight <= 0 ||
+    view.zoom <= 0
+  ) {
+    return { x: 0, y: 0 }
+  }
+  const sar = sampleAspectRatio(view)
+  const displayWidth = view.codedWidth * sar
+  const fit = Math.min(view.boxWidth / displayWidth, view.boxHeight / view.codedHeight)
+  if (!Number.isFinite(fit) || fit <= 0) return { x: 0, y: 0 }
+  return { x: fit * sar * view.zoom, y: fit * view.zoom }
+}
+
+/** frameImageBox は SAR を掛けたコマの CSS 上の大きさを返す。 */
 export function frameImageBox(view: FrameView): { width: number; height: number } {
   const scale = frameScale(view)
-  return { width: view.codedWidth * scale, height: view.codedHeight * scale }
+  return { width: view.codedWidth * scale.x, height: view.codedHeight * scale.y }
 }
 
 /**
- * frameToCoded は表示枠の中の 1 点（枠の左上が原点、CSS px）を記録上の画素へ写す。
+ * frameImageOffset はコマの左上位置を返す。
  *
- * **丸めない。** 描いている間は連続値のまま扱い、保存の直前にだけ
- * `clampCodedRect` で整数へ丸める（動かすたびに丸めると、拡大表示では
- * 1 画素が 2 px 以上あるので引っかかる）。
+ * 全体表示は表示枠の中央へ置く。ズーム時は focus を表示枠の中央へ置き、
+ * 画像の外が見える位置へは移動させない。
  */
+export function frameImageOffset(view: FrameView): { x: number; y: number } {
+  const box = frameImageBox(view)
+  if (box.width <= 0 || box.height <= 0 || view.boxWidth <= 0 || view.boxHeight <= 0) {
+    return { x: 0, y: 0 }
+  }
+  const centered = {
+    x: (view.boxWidth - box.width) / 2,
+    y: (view.boxHeight - box.height) / 2,
+  }
+  if (view.zoom <= 1 || view.focus === undefined) return centered
+
+  const scale = frameScale(view)
+  const wanted = {
+    x: view.boxWidth / 2 - view.focus.x * scale.x,
+    y: view.boxHeight / 2 - view.focus.y * scale.y,
+  }
+  return {
+    x: Math.min(Math.max(wanted.x, Math.min(view.boxWidth - box.width, 0)), Math.max(0, view.boxWidth - box.width)),
+    y: Math.min(Math.max(wanted.y, Math.min(view.boxHeight - box.height, 0)), Math.max(0, view.boxHeight - box.height)),
+  }
+}
+
+/** frameToCoded は表示枠の CSS 座標を記録上の座標へ写す。 */
 export function frameToCoded(
   point: { x: number; y: number },
   view: FrameView,
 ): { x: number; y: number } {
   const scale = frameScale(view)
-  if (scale <= 0) return { x: 0, y: 0 }
+  if (scale.x <= 0 || scale.y <= 0) return { x: 0, y: 0 }
+  const offset = frameImageOffset(view)
   return {
-    x: view.codedWidth - (view.boxWidth - point.x) / scale,
-    y: point.y / scale,
+    x: (point.x - offset.x) / scale.x,
+    y: (point.y - offset.y) / scale.y,
   }
 }
 
-/**
- * codedToFrame は記録上の 1 点を表示枠の中の座標（枠の左上が原点、CSS px）へ写す。
- * `frameToCoded` の逆で、枠を描くときに使う。
- */
+/** codedToFrame は記録上の座標を表示枠の CSS 座標へ写す。 */
 export function codedToFrame(
   point: { x: number; y: number },
   view: FrameView,
 ): { x: number; y: number } {
   const scale = frameScale(view)
-  if (scale <= 0) return { x: 0, y: 0 }
+  if (scale.x <= 0 || scale.y <= 0) return { x: 0, y: 0 }
+  const offset = frameImageOffset(view)
   return {
-    x: view.boxWidth - (view.codedWidth - point.x) * scale,
-    y: point.y * scale,
+    x: offset.x + point.x * scale.x,
+    y: offset.y + point.y * scale.y,
   }
 }
 
-/** codedRectFromPoints は 2 点（記録上の座標）を包む矩形を返す（順序は問わない）。 */
+/** codedRectFromPoints は 2 点（記録上の座標）を包む矩形を返す。 */
 export function codedRectFromPoints(
   a: { x: number; y: number },
   b: { x: number; y: number },
@@ -108,21 +139,26 @@ export function codedRectFromPoints(
 }
 
 /**
- * clampCodedRect は矩形をコマの内側の整数の矩形へ寄せる。
- *
- * DB の CHECK（`x >= 0` / `w > 0` / `x + w <= coded_width`）と同じ条件を
- * 画面側でも作る（保存してから 400 を受け取るより、描いた時点で収める）。
+ * clampCodedRect は矩形を映像内の整数へ寄せる。
+ * minSize を指定したときは、指定サイズを下限にして入力値も同じ規則にする。
  */
-export function clampCodedRect(rect: CodedRect, codedWidth: number, codedHeight: number): CodedRect {
+export function clampCodedRect(
+  rect: CodedRect,
+  codedWidth: number,
+  codedHeight: number,
+  minSize = 1,
+): CodedRect {
   const round = Math.round
-  const x = Math.min(Math.max(round(rect.x), 0), Math.max(codedWidth - 1, 0))
-  const y = Math.min(Math.max(round(rect.y), 0), Math.max(codedHeight - 1, 0))
-  const w = Math.min(Math.max(round(rect.w), 1), codedWidth - x)
-  const h = Math.min(Math.max(round(rect.h), 1), codedHeight - y)
+  const minW = Math.min(Math.max(round(minSize), 1), Math.max(codedWidth, 1))
+  const minH = Math.min(Math.max(round(minSize), 1), Math.max(codedHeight, 1))
+  const x = Math.min(Math.max(round(rect.x), 0), Math.max(codedWidth - minW, 0))
+  const y = Math.min(Math.max(round(rect.y), 0), Math.max(codedHeight - minH, 0))
+  const w = Math.min(Math.max(round(rect.w), minW), Math.max(codedWidth - x, minW))
+  const h = Math.min(Math.max(round(rect.h), minH), Math.max(codedHeight - y, minH))
   return { x, y, w, h }
 }
 
-/** moveCodedRect は矩形を (dx, dy) だけ動かし、コマの内側へ収める。大きさは変えない。 */
+/** moveCodedRect は矩形を動かし、映像の内側へ収める。 */
 export function moveCodedRect(
   rect: CodedRect,
   dx: number,
@@ -138,21 +174,49 @@ export function moveCodedRect(
   }
 }
 
-/** containsCodedPoint は点が矩形の内側か（ドラッグで動かすか、描き直すかの分岐）。 */
-export function containsCodedPoint(rect: CodedRect, point: { x: number; y: number }): boolean {
-  return (
-    point.x >= rect.x && point.x <= rect.x + rect.w && point.y >= rect.y && point.y <= rect.y + rect.h
-  )
+/** 四隅のリサイズ方向。 */
+export type ResizeHandle = 'nw' | 'ne' | 'sw' | 'se'
+
+/**
+ * resizeCodedRect は指定した角を点へ寄せて矩形を変形する。
+ * 最小サイズと映像境界を同時に守るので、マウスでも数値入力でも使える。
+ */
+export function resizeCodedRect(
+  rect: CodedRect,
+  handle: ResizeHandle,
+  point: { x: number; y: number },
+  codedWidth: number,
+  codedHeight: number,
+  minSize = MIN_AREA_SIZE,
+): CodedRect {
+  const minW = Math.min(Math.max(minSize, 1), codedWidth)
+  const minH = Math.min(Math.max(minSize, 1), codedHeight)
+  const fixedX = handle.includes('w') ? rect.x + rect.w : rect.x
+  const fixedY = handle.includes('n') ? rect.y + rect.h : rect.y
+  let x = handle.includes('w') ? Math.min(point.x, fixedX - minW) : rect.x
+  let y = handle.includes('n') ? Math.min(point.y, fixedY - minH) : rect.y
+  let right = handle.includes('e') ? Math.max(point.x, rect.x + minW) : rect.x + rect.w
+  let bottom = handle.includes('s') ? Math.max(point.y, rect.y + minH) : rect.y + rect.h
+  if (handle.includes('w')) right = fixedX
+  if (handle.includes('n')) bottom = fixedY
+  x = Math.max(0, Math.min(x, codedWidth - minW))
+  y = Math.max(0, Math.min(y, codedHeight - minH))
+  right = Math.max(x + minW, Math.min(right, codedWidth))
+  bottom = Math.max(y + minH, Math.min(bottom, codedHeight))
+  if (handle.includes('w')) x = Math.min(x, right - minW)
+  if (handle.includes('n')) y = Math.min(y, bottom - minH)
+  return { x, y, w: right - x, h: bottom - y }
 }
 
-/** savedAreaMatchesFrame は保存済みの枠を今のコマに当ててよいかを返す。 */
+/** containsCodedPoint は点が矩形の内側か返す。 */
+export function containsCodedPoint(rect: CodedRect, point: { x: number; y: number }): boolean {
+  return point.x >= rect.x && point.x <= rect.x + rect.w && point.y >= rect.y && point.y <= rect.y + rect.h
+}
+
+/** savedAreaMatchesFrame は保存済みの枠を今のコマに当ててよいか返す。 */
 export function savedAreaMatchesFrame(
   area: { codedWidth: number; codedHeight: number } | undefined,
   view: Pick<FrameView, 'codedWidth' | 'codedHeight'>,
 ): boolean {
-  return (
-    area !== undefined &&
-    area.codedWidth === view.codedWidth &&
-    area.codedHeight === view.codedHeight
-  )
+  return area !== undefined && area.codedWidth === view.codedWidth && area.codedHeight === view.codedHeight
 }
