@@ -878,7 +878,7 @@ export function LivePlayer({
               ? {
                   startPosition:
                     resumePosition ??
-                    loadPlaybackPosition(recordingId ?? 0, recordingPlaybackProfile) ??
+                    loadPlaybackPosition(recordingId ?? 0, recordingPlaybackProfile, '') ??
                     0,
                 }
               : undefined,
@@ -1067,6 +1067,8 @@ export function LivePlayer({
     }
   }, [isChase, isOriginalVOD, isRecordingPlayback, recordingId, site, networkId, serviceId, chaseStartOffset])
 
+  // 旧キーは空 profile（追っかけが以前書いていた）だけ名指しする。encode profile 名の旧キーは
+  // cut か否かを区別できないので移さない。
   // 再生位置のキーは呼び出し側が渡す時間軸名（`playbackProfile`。録画詳細は ORIGINAL_AXIS）。
   // `profile`（追っかけの画質）をキーに含めない --- 画質ごとに位置が分かれると、
   // 画質を切り替えただけで「続きから」が別の場所になる（issue #874）。
@@ -1088,7 +1090,7 @@ export function LivePlayer({
               event.currentTarget.currentTime = 0
               return
             }
-            const saved = loadPlaybackPosition(recordingId, recordingPlaybackProfile)
+            const saved = loadPlaybackPosition(recordingId, recordingPlaybackProfile, '')
             if (isChase) {
               const localPosition =
                 saved !== null && saved > chaseStartOffset ? saved - chaseStartOffset : 0

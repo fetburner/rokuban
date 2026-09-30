@@ -1,6 +1,6 @@
 /**
  * ブラウザ再生の再開位置を localStorage に保存する（#14 7c / M3-5）。
- * サーバー側視聴履歴は持たない。キーは録画 ID + 時間軸（下記 ORIGINAL_AXIS / cutAxis）。
+ * サーバー側視聴履歴は持たない。キーは録画 ID + 時間軸（下記 ORIGINAL_AXIS。cut 版だけはプロファイル名）。
  * 再生速度（端末ごとに 1 つ、録画をまたいで保つ）も同じく localStorage に持つ。
  */
 
@@ -13,22 +13,23 @@ const PREFIX = 'rokuban:playback:'
  */
 export const ORIGINAL_AXIS = 'original'
 
-/** cutAxis は cut 済み資産の保存キー名。cut 版は自分の時間軸を持つので別キーにする。 */
-export function cutAxis(profile: string): string {
-  return `cut:${profile}`
-}
-
 /** playbackStorageKey は recording id と profile から localStorage キーを作る。 */
 export function playbackStorageKey(recordingId: number, profile: string): string {
   return `${PREFIX}${recordingId}:${profile}`
 }
 
 /** loadPlaybackPosition は保存済みの秒位置を返す。無ければ null。 */
-export function loadPlaybackPosition(recordingId: number, profile: string): number | null {
+export function loadPlaybackPosition(
+  recordingId: number,
+  profile: string,
+  legacyProfile?: string,
+): number | null {
   try {
-    const raw = localStorage.getItem(playbackStorageKey(recordingId, profile)) ?? migrateLegacyKey(recordingId, profile)
-    if (raw === null) return null
-    const n = Number(raw)
+    const raw = localStorage.getItem(playbackStorageKey(recordingId, profile))
+    const migrated = migrateLegacyKey(recordingId, profile, legacyProfile, raw !== null)
+    const value = raw ?? migrated
+    if (value === null) return null
+    const n = Number(value)
     if (!Number.isFinite(n) || n < 0) return null
     return n
   } catch {
@@ -38,31 +39,24 @@ export function loadPlaybackPosition(recordingId: number, profile: string): numb
 }
 
 /**
- * migrateLegacyKey は、新キーが無いときだけ旧キー（プロファイル名・空文字で作っていた）を
- * 1 回読み、新キーへ移して旧キーを消す。旧キーの値は cut 前の軸か cut 版の軸かを区別できない
- * ので、cut 軸は旧 `:{profile}` だけ、ORIGINAL_AXIS は空 profile を優先して残りの旧キーから
- * 1 つを移す（cut 版の旧キーを拾う可能性がある。その場合の位置ずれは未評価）。
- * 移さなかった旧キーは消さない（cut 軸が後で自分の分を読むため）。
+ * migrateLegacyKey は、呼び出し側が名指しした旧キー（その呼び出し元が以前書いていた 1 つ）を
+ * 新キーへ移す。旧キーは列挙しない --- 軸の違うキー（cut 版の秒数など）を拾わないため。
+ * **旧キーは読んだかどうかに関わらず毎回消す**（新キーがあっても消す）。残すと、見終わって
+ * 消した新キーの後に旧キーの古い位置が生き返る。新キーが無く旧キーがあるときだけ値を返す。
  */
-function migrateLegacyKey(recordingId: number, axis: string): string | null {
-  const prefix = `${PREFIX}${recordingId}:`
-  let legacy: string | null = null
-  if (axis.startsWith('cut:')) {
-    legacy = prefix + axis.slice('cut:'.length)
-  } else if (axis === ORIGINAL_AXIS) {
-    const keys: string[] = []
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i)
-      if (k !== null && k.startsWith(prefix)) keys.push(k)
-    }
-    const isNew = (k: string) => k === prefix + ORIGINAL_AXIS || k.startsWith(prefix + 'cut:')
-    legacy = keys.find((k) => k === prefix) ?? keys.find((k) => !isNew(k)) ?? null
-  }
-  if (legacy === null) return null
+function migrateLegacyKey(
+  recordingId: number,
+  profile: string,
+  legacyProfile: string | undefined,
+  newKeyExists: boolean,
+): string | null {
+  if (legacyProfile === undefined || legacyProfile === profile) return null
+  const legacy = playbackStorageKey(recordingId, legacyProfile)
   const raw = localStorage.getItem(legacy)
   if (raw === null) return null
-  localStorage.setItem(playbackStorageKey(recordingId, axis), raw)
   localStorage.removeItem(legacy)
+  if (newKeyExists) return null
+  localStorage.setItem(playbackStorageKey(recordingId, profile), raw)
   return raw
 }
 
