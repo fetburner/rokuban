@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useSearch } from '@tanstack/react-router'
-import { Pencil, Plus, Trash2 } from 'lucide-react'
+import { Pencil, Plus, Tags, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 
 import {
@@ -88,9 +88,13 @@ export function ShelvesPage() {
         ) : shelvesQuery.isPending ? (
           <ListSkeleton />
         ) : rows.length === 0 ? (
-          <EmptyState>再生できる録画がまだありません</EmptyState>
+          <EmptyState>
+            {shelves.length === 0
+              ? '再生できる録画がまだありません'
+              : 'シリーズを開ける棚がまだありません'}
+          </EmptyState>
         ) : (
-          <ShelfList rows={rows} onSplit={(row) => openCreate({ value: row.value ?? undefined })} />
+          <ShelfList rows={rows} onSplit={(row) => openCreate({ value: row.value })} />
         )}
 
         <section className="flex flex-col gap-3">
@@ -148,41 +152,41 @@ export function ShelvesPage() {
 }
 
 /**
- * ShelfList は棚の行。押すと分類ルールの作成へ入る（棚のキーを見出しに添える）。
- *
- * 録画一覧への導線は**置かない**。`GET /api/recordings` は実効シリーズで
- * 絞れない（キーセットの軸は `program_start_at` で、棚は行の同一性を変えない。
- * docs/api.md）。棚の中身は代表の録画から辿る。
+ * ShelfList は棚の行。行全体が番組ハブへのリンクで、分類ルールを作るボタンだけを
+ * 手前に置く。代表の id は棚のどの録画からでも同じ実効シリーズを開ける起点である
+ * （docs/data/series.md §8「資源同定: 起点は録画 id」）。
  */
 function ShelfList({ rows, onSplit }: { rows: ShelfRow[]; onSplit: (row: ShelfRow) => void }) {
   return (
     <ul className="flex flex-col gap-2">
       {rows.map((row) => (
         <li
-          key={row.value ?? '__other__'}
-          className="flex items-center justify-between gap-3 rounded-lg border border-border p-3"
+          key={row.value}
+          className="relative flex items-center justify-between gap-3 rounded-lg border border-border p-3 hover:bg-muted/40"
         >
+          <Link
+            to="/recordings/$id/series"
+            params={{ id: String(row.representativeId) }}
+            aria-label={`${row.title}のシリーズ`}
+            className="absolute inset-0 rounded-lg"
+          />
           <div className="flex min-w-0 flex-col">
             <span className="truncate text-sm text-foreground">{row.title}</span>
             <span className="truncate text-xs text-muted-foreground">
-              {row.value ?? '（棚のキーなし）'} · {row.count} 件
+              {row.value} · {row.count} 件
             </span>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="relative z-10 flex shrink-0 items-center gap-2">
             <Button
-              size="sm"
+              type="button"
+              size="icon"
               variant="outline"
-              // 実体は <a>（Link）なので base-ui の button の意味論を主張しない。
-              nativeButton={false}
-              render={<Link to="/recordings/$id" params={{ id: String(row.representativeId) }} />}
+              aria-label="この棚を割る・指定する"
+              title="この棚を割る・指定する"
+              onClick={() => onSplit(row)}
             >
-              代表を見る
+              <Tags />
             </Button>
-            {!row.isOther && row.value !== null && (
-              <Button size="sm" variant="outline" onClick={() => onSplit(row)}>
-                この棚を割る・指定する
-              </Button>
-            )}
           </div>
         </li>
       ))}

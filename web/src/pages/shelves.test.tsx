@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { LabelRule, LabelRuleInput, RecordingShelf } from '@/api/generated'
 import { ShelvesPage } from '@/pages/shelves'
-import { minShelfSize } from '@/lib/shelves'
 import { renderInRouter } from '@/test/router'
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -56,7 +55,7 @@ function stubApi(shelves: RecordingShelf[], rules: LabelRule[] = []) {
 
 const shelves: RecordingShelf[] = [
   { value: 'NHK高校講座', title: 'NHK高校講座　日本史　第1回', count: 120, representativeId: 11 },
-  { value: '作品X', title: 'アニメ　作品X　第2話', count: minShelfSize, representativeId: 12 },
+  { value: '作品X', title: 'アニメ　作品X　第2話', count: 5, representativeId: 12 },
   { value: '単発', title: '単発の特番', count: 1, representativeId: 13 },
   { title: '【特集】', count: 2, representativeId: 14 },
 ]
@@ -66,7 +65,7 @@ afterEach(() => {
 })
 
 describe('ShelvesPage', () => {
-  it('大きい棚を並べ、小さい棚と値の無い棚をその他にまとめる', async () => {
+  it('件数によらず棚を並べ、値の無い棚は表示しない', async () => {
     stubApi(shelves)
     renderInRouter(<ShelvesPage />, { path: '/shelves' })
 
@@ -76,13 +75,28 @@ describe('ShelvesPage', () => {
     expect(
       await within(content).findByText((_, el) => el?.textContent === 'NHK高校講座　日本史　第1回'),
     ).toBeInTheDocument()
-    // 閾値未満の棚は行にならない。
+    // 件数 1 の棚にも行がある。
     await waitFor(() => {
-      expect(within(content).queryByText('単発の特番')).not.toBeInTheDocument()
+      expect(within(content).getByText('単発の特番')).toBeInTheDocument()
     })
-    // 代わりに「その他」の件数（1 + 2 = 3）が 1 行に出る。
-    expect(within(content).getByText(/その他（2 棚）/)).toBeInTheDocument()
-    expect(within(content).getByText(/3 件/)).toBeInTheDocument()
+    // 値が NULL の棚には番組ハブの起点がないため行を作らない。
+    expect(within(content).queryByText('【特集】')).not.toBeInTheDocument()
+  })
+
+  it('値の無い棚しか無いときは録画が無いとは言わない', async () => {
+    stubApi([{ title: '【特集】', count: 3, representativeId: 14 }])
+    renderInRouter(<ShelvesPage />, { path: '/shelves' })
+
+    expect(await screen.findByText('シリーズを開ける棚がまだありません')).toBeInTheDocument()
+    expect(screen.queryByText('再生できる録画がまだありません')).not.toBeInTheDocument()
+  })
+
+  it('棚が 0 件のときは録画が無いと言う', async () => {
+    stubApi([])
+    renderInRouter(<ShelvesPage />, { path: '/shelves' })
+
+    expect(await screen.findByText('再生できる録画がまだありません')).toBeInTheDocument()
+    expect(screen.queryByText('シリーズを開ける棚がまだありません')).not.toBeInTheDocument()
   })
 
   it('「この棚を割る・指定する」で棚のキーがフォームに入る', async () => {
@@ -105,6 +119,23 @@ describe('ShelvesPage', () => {
     // value は見出し（生タイトル）ではなく棚のキー。
     expect(within(dialog).getByLabelText('棚のキー')).toHaveValue('NHK高校講座')
     expect(within(dialog).getByLabelText('キーワード')).toHaveValue('')
+  })
+
+  it('棚の行は代表録画の番組ハブへリンクする', async () => {
+    stubApi(shelves)
+    renderInRouter(<ShelvesPage />, { path: '/shelves' })
+
+    const content = await screen.findByTestId('bounded-page-content')
+    const row = (
+      await within(content).findByText(
+        (_, el) => el?.textContent === 'NHK高校講座　日本史　第1回',
+      )
+    ).closest('li')
+    expect(row).not.toBeNull()
+    expect(within(row as HTMLElement).getByRole('link', { name: 'NHK高校講座　日本史　第1回のシリーズ' })).toHaveAttribute(
+      'href',
+      '/recordings/11/series',
+    )
   })
 
   it('キーワードを入力すると棚のキーが追従し、POST に両方が載る', async () => {
