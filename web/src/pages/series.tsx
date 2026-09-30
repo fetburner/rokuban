@@ -8,6 +8,7 @@ import {
   useListRecordingShelves,
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
+import { LabelRulesUnavailableNote, ManualSeriesBadge } from '@/components/manual-series'
 import { RecordingSeriesToggle } from '@/components/recording-series-toggle'
 import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
 import { Button } from '@/components/ui/button'
@@ -15,6 +16,7 @@ import { Input } from '@/components/ui/field'
 import { formatDate } from '@/lib/format'
 import { loadRecordingView, saveRecordingView, type RecordingView } from '@/lib/recording-view'
 import { buildShelfRows, sortShelfRows, type ShelfRow, type ShelfSort } from '@/lib/shelves'
+import { seriesLabelRules } from '@/lib/series'
 import { cn } from '@/lib/utils'
 
 /**
@@ -34,7 +36,7 @@ export function SeriesPage() {
 
   const rows = useMemo(() => buildShelfRows(unwrap(shelvesQuery.data) ?? []), [shelvesQuery.data])
   const manualValues = useMemo(
-    () => new Set((unwrap(rulesQuery.data) ?? []).map((rule) => rule.valueKey)),
+    () => new Set(seriesLabelRules(unwrap(rulesQuery.data) ?? []).map((rule) => rule.valueKey)),
     [rulesQuery.data],
   )
   const visibleRows = useMemo(() => {
@@ -137,9 +139,9 @@ export function SeriesPage() {
           </ul>
         )}
         {rulesQuery.isError && !shelvesQuery.isPending && (
-          <p role="status" className="px-4 pb-4 text-xs text-muted-foreground">
-            分類ルールを取得できないため、「手動」の表示を省略しています
-          </p>
+          <div className="px-4 pb-4">
+            <LabelRulesUnavailableNote />
+          </div>
         )}
       </PageContent>
     </>
@@ -170,11 +172,7 @@ function SeriesShelfLink({
       <span className="min-w-0 flex-1">
         <span className="flex min-w-0 items-center gap-2">
           <span className="truncate text-base text-foreground">{row.value}</span>
-          {manual && (
-            <span className="shrink-0 rounded border border-border px-1 text-xs text-muted-foreground">
-              手動
-            </span>
-          )}
+          {manual && <ManualSeriesBadge />}
         </span>
         <span className="mt-1 block truncate text-sm text-muted-foreground">{row.title}</span>
         <span

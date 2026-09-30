@@ -84,7 +84,11 @@ export function LabelRuleForm({
   const save = async () => {
     if (error !== undefined) return
     setPending(true)
-    const data = { keyword, value, priority: Number(priority) || 0 }
+    const data = {
+      keyword,
+      value,
+      priority: Number(priority) || 0,
+    }
     try {
       if (rule !== undefined) {
         await updateLabelRule(rule.id, data)

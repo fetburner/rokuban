@@ -1694,7 +1694,12 @@ type Recording struct {
 	// **導出値であって録画の属性ではない。** 分類ルールを変えると値が変わる
 	// （全件再評価のジョブが追従する）。null は自動キーを導出できず、
 	// どのルールも当たらない録画。
-	Series      *string `json:"series,omitempty"`
+	Series *string `json:"series,omitempty"`
+
+	// SeriesKey タイトルから導出した自動シリーズキー（`recordings.series_key`）。
+	// 分類ルールが当たっても変わらない表示用の補助情報で、URL や絞り込みの
+	// 宛先には使わない。自動キーを導出できないタイトルでは null。
+	SeriesKey   *string `json:"seriesKey,omitempty"`
 	ServiceId   int     `json:"serviceId"`
 	ServiceName string  `json:"serviceName"`
 

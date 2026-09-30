@@ -74,6 +74,9 @@ type recordingListFields struct {
 	// 値、当たらなければ自動キー。**導出値であって録画の属性ではない**ので、
 	// recording_series ビューから読む（recordings_query.go の SELECT 参照）。
 	Series *string
+	// SeriesKey はタイトルから導出した自動キー（recordings.series_key）。
+	// 分類ルールが当たっても変わらない補助情報で、URL や絞り込みには使わない。
+	SeriesKey *string
 
 	// HasOriginalAsset は kind='original' の media_assets 行が **state を問わず**
 	// 存在するか（issue #212）。OriginalSizeBytes（state <> 'deleted' の行だけを
@@ -367,6 +370,7 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool, profi
 		EndedAt:      utcTimePtr(r.EndedAt),
 		SizeBytes:    r.OriginalSizeBytes,
 		Series:       r.Series,
+		SeriesKey:    r.SeriesKey,
 		CreatedAt:    r.CreatedAt.UTC(),
 	}
 	cmState := CMDetectionStateDisabled

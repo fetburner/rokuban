@@ -1,82 +1,95 @@
 import { useInfiniteQuery } from '@tanstack/react-query'
-import { Link, useParams } from '@tanstack/react-router'
-import { ArrowLeft } from 'lucide-react'
-import { useMemo } from 'react'
+import { Link, useNavigate, useParams, useRouter } from '@tanstack/react-router'
+import { ArrowLeft, MoreVertical } from 'lucide-react'
+import { useMemo, useState } from 'react'
 
 import { ApiError } from '@/api/client'
 import {
+  ListRecordingsOrder,
+  RuleTextMatchMode,
+  RuleTextMatchTarget,
   listRecordings,
   useGetRecording,
+  useListLabelRules,
   useListRecordingUpcoming,
+  useListSites,
+  useListRules,
+  type ProgramSearchRequest,
   type Recording,
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
+import { LabelRuleForm } from '@/components/label-rule-form'
+import { LabelRulesUnavailableNote, ManualSeriesBadge } from '@/components/manual-series'
 import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
-import { IngestBadge, StatusBadge } from '@/components/recording-badges'
+import { RecordingRow } from '@/components/recording-row'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { useLiveEnabled } from '@/lib/capabilities'
 import { programsQueryKeyPrefix, recordingsQueryKeyPrefix } from '@/lib/events'
-import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
+import { formatDateTime, formatDuration } from '@/lib/format'
 import { programTitle } from '@/lib/program-labels'
-import { collapseUpcoming, type UpcomingRow } from '@/lib/series'
+import { shouldShowRecordingSite } from '@/lib/recording-search'
+import {
+  collapseUpcoming,
+  findManualSeriesRule,
+  isPlayableRecording,
+  type UpcomingRow,
+} from '@/lib/series'
 
 /** hubPageSize は 1 回のフェッチで取る件数（API の既定と同じ）。 */
 const hubPageSize = 50
 
 type HubPageParam = { before?: string; beforeId?: number }
 
+/** newestFirst は放送開始の新しい順。同時刻のときだけ id の降順で並べる。 */
+function newestFirst(a: Recording, b: Recording): number {
+  const dateDiff = Date.parse(b.startAt) - Date.parse(a.startAt)
+  return dateDiff !== 0 ? dateDiff : b.id - a.id
+}
+
 /**
  * SeriesHubPage は番組ハブ（`/recordings/$id/series`）。
  *
- * 録画から同じシリーズの他の回へ辿る手段が無かったので、シリーズの棚（M8-5）から
- * 1 つを開いた画面として置く。上に「次回」（これから放送される回）、下に
- * そのシリーズの録画を並べる。
+ * 画面上部は実効シリーズの identity、中央は再生・毎回録画・分類修正の操作、
+ * 下部は録画一覧の `RecordingRow` を使ったエピソード一覧という 3 ブロックに分ける。
+ * 起点は導出キーではなく録画 id のままにし、分類ルールが変わっても URL の宛先を
+ * 失わない。
  *
- * **起点は録画 id**（正規化キーではない）。正規化キーを URL に置くと、規則を
- * 変えた時点で 404 ではなく 0 件で黙って壊れる（docs/data/series.md §8
- * 「資源同定: 起点は録画 id」）。
+ * identity と操作（最新話・サムネイル・最新日時・毎回録画の判定・「自動: X」）は
+ * **並び順の切り替えに依存しない**新しい順の 1 ページ目（{@link hubPageSize} 件）から
+ * 導く。エピソード一覧は `order` で別に取るので、古い順にしても主ボタンは動かない。
+ * 新しい順を表示中は同じクエリキーなので取得も共有する。
  *
- * **起点の単体 GET が 404 でも、ハブは開く。** 単体 GET は purged の tombstone を
- * 除く契約なので（`queryRecordingByID`）、ハブを開いたブックマークの起点が後から
- * purge されると 404 になる。この場合も一覧（`?seriesOf=`）と次回は tombstone の
- * 行からシリーズを返すので、404 を「シリーズが無い」と読まずに一覧と次回を出す。
- * **存在しない id との区別は API が返す情報だけで付く** --- 行が無ければ一覧も
- * 次回も 0 件になる（openapi.yaml の `seriesOf` / `upcoming` 参照）。404 以外の
- * エラー（5xx など）は purged と見なさない。
- *
- * 見出しは**起点の録画の生のタイトル**（正規化キーではない）。値は正規化の
- * 産物なので表示名にならない（棚の見出しと同じ規律）。起点が purged なら一覧の
- * 先頭（最も新しい回）、一覧も空なら次回の先頭の生のタイトルで代用する。
- * 起点を purge した後にシリーズの他の回が 1 つも無い場合（その回しか録っていない
- * シリーズ）は、出せる一覧も次回も無いので見出しを諦めて「録画が見つかりません」
- * を出す（受け入れた限界）。
- *
- * **シリーズが無い録画（`series` が null）では導線を出さない**ので、この画面は
- * そこからは到達しない。直接 URL を叩かれた場合は「0 件」の画面になる
- * （サーバーは `?seriesOf=` に 0 件を返す。openapi.yaml 参照）。
+ * 限界（未検証。読み込み済みの範囲でしか判定しない）: 「ルール由来か」「自動: X」は
+ * 新しい順の 1 ページ目の行しか見ない。それより古い回だけがルール由来・別キーなら、
+ * 「毎回録画中」ではなく「毎回録画する」が出て、「自動: X」も出ない。
+ * 同じ値を指す分類ルールが複数あるときのキーワードは評価順の先頭で近似する
+ * （{@link findManualSeriesRule}）。
  */
 export function SeriesHubPage() {
   const { id } = useParams({ from: '/recordings/$id/series' })
   const idNum = Number(id)
+  const navigate = useNavigate({ from: '/recordings/$id/series' })
+  const router = useRouter()
+  const [order, setOrder] = useState<ListRecordingsOrder>(ListRecordingsOrder.desc)
+  const [labelRuleFormOpen, setLabelRuleFormOpen] = useState(false)
 
-  // 起点の録画。単体ページと同じクエリキーにする（`recordingsQueryKeyPrefix`
-  // で前方一致するので、削除・エンコード追加などの mutate が自動で巻き込む。
-  // pages/recording-detail.tsx と同じ理由）。
+  // 単体 GET の 404 は purge 済みの起点として一覧側の行から復元する。404 以外は
+  // retry してからエラーにするので、存在しない録画と一時障害を混同しない。
   const originQuery = useGetRecording(idNum, {
     query: {
       queryKey: [recordingsQueryKeyPrefix, 'detail', idNum] as const,
-      // この画面では 404 は終わりではなく「purged の起点でハブを出す」への分岐。
-      // 既定の 3 回再試行だと、一覧と次回が取得済みでも約 7 秒スケルトンのままになる。
       retry: (failureCount, error) =>
         !(error instanceof ApiError && error.status === 404) && failureCount < 3,
     },
   })
   const origin = unwrap(originQuery.data)
 
-  // 次回。キーの先頭を `programsQueryKeyPrefix` に揃える --- 分類ルールを
-  // 変えた直後（label_rules のトリガーが recordings トピックへ流す）に、
-  // 開いているハブが自動で更新されるのはこの接頭辞の経路である
-  // （lib/events.ts の recordings グループが programsQueryKeyPrefix も
-  // invalidate する）。
   const upcomingQuery = useListRecordingUpcoming(idNum, {
     query: { queryKey: [programsQueryKeyPrefix, 'upcoming', idNum] as const },
   })
@@ -85,67 +98,136 @@ export function SeriesHubPage() {
     [upcomingQuery.data],
   )
 
-  const listParams = useMemo(() => ({ seriesOf: idNum, limit: hubPageSize }), [idNum])
-  const listQuery = useInfiniteQuery({
-    // 先頭要素を `recordingsQueryKeyPrefix` に揃える（一覧・単体ページと同じ
-    // 前方一致の規律）。
-    queryKey: [recordingsQueryKeyPrefix, 'series', idNum] as const,
+  const sitesQuery = useListSites()
+  const registeredSites = useMemo(() => unwrap(sitesQuery.data) ?? [], [sitesQuery.data])
+  const liveEnabled = useLiveEnabled()
+
+  // 同じ order は同じキーなので、新しい順の表示中は latestQuery と一覧が取得を共有する。
+  const seriesListOptions = (listOrder: ListRecordingsOrder) => ({
+    queryKey: [recordingsQueryKeyPrefix, 'series', idNum, listOrder] as const,
     queryFn: ({ pageParam }: { pageParam: HubPageParam }) =>
-      listRecordings({ ...listParams, ...pageParam }),
+      listRecordings({ seriesOf: idNum, limit: hubPageSize, order: listOrder, ...pageParam }),
     initialPageParam: {} as HubPageParam,
-    getNextPageParam: (lastPage) => {
+    getNextPageParam: (lastPage: Awaited<ReturnType<typeof listRecordings>>) => {
       const data = unwrap(lastPage) ?? []
       if (data.length < hubPageSize) return undefined
       const last = data[data.length - 1]
       return { before: last.startAt, beforeId: last.id }
     },
   })
+  const latestQuery = useInfiniteQuery(seriesListOptions(ListRecordingsOrder.desc))
+  const latestPage = useMemo(
+    () => unwrap(latestQuery.data?.pages[0]) ?? [],
+    [latestQuery.data],
+  )
+  const listQuery = useInfiniteQuery(seriesListOptions(order))
   const recordings = useMemo(
     () => listQuery.data?.pages.flatMap((page) => unwrap(page) ?? []) ?? [],
     [listQuery.data],
   )
 
-  // 起点が purged の tombstone（単体 GET が 404）。存在しない id とは分けて扱う。
+  const labelRulesQuery = useListLabelRules()
+  const labelRules = useMemo(() => unwrap(labelRulesQuery.data) ?? [], [labelRulesQuery.data])
+  const rulesQuery = useListRules()
+  const rules = useMemo(() => unwrap(rulesQuery.data) ?? [], [rulesQuery.data])
+
+  // 起点は新しい順の 1 ページ目にも現れうる。identity・最新の再生可能回・自動キーの
+  // 開示に使う前に重複を除く。
+  const loadedRecordings = useMemo(() => {
+    const byID = new Map<number, Recording>()
+    if (origin !== undefined) byID.set(origin.id, origin)
+    for (const recording of latestPage) byID.set(recording.id, recording)
+    return [...byID.values()]
+  }, [origin, latestPage])
+  const newestRecordings = useMemo(
+    () => [...loadedRecordings].sort(newestFirst),
+    [loadedRecordings],
+  )
+  const latestRecording = newestRecordings[0]
+  const latestPlayable = newestRecordings.find(isPlayableRecording)
+  const identityRecording = origin ?? latestRecording
+  const effectiveSeries =
+    identityRecording?.series ??
+    newestRecordings.find((recording) => recording.series != null)?.series ??
+    undefined
+  const manualRule = findManualSeriesRule(labelRules, effectiveSeries)
+  const automaticSeriesKeys = useMemo(() => {
+    if (manualRule === undefined || effectiveSeries === undefined) return []
+    return [
+      ...new Set(
+        newestRecordings
+          .map((recording) => recording.seriesKey)
+          .filter((key): key is string => key != null && key !== effectiveSeries),
+      ),
+    ]
+  }, [effectiveSeries, manualRule, newestRecordings])
+  const recurringRule = useMemo(() => {
+    for (const recording of newestRecordings) {
+      if (recording.ruleId === undefined) continue
+      const rule = rules.find((candidate) => candidate.id === recording.ruleId)
+      if (rule !== undefined) return rule
+    }
+    return undefined
+  }, [newestRecordings, rules])
+  const automaticKeyword =
+    newestRecordings.find((recording) => recording.seriesKey != null)?.seriesKey ?? undefined
+  const recurringKeyword = manualRule?.keyword || automaticKeyword || effectiveSeries
+  const recurringCondition = useMemo<ProgramSearchRequest | undefined>(() => {
+    if (identityRecording === undefined || recurringKeyword === undefined) return undefined
+    return {
+      textMatches: [
+        {
+          target: RuleTextMatchTarget.name,
+          mode: RuleTextMatchMode.keyword,
+          value: recurringKeyword,
+        },
+      ],
+      // 同名の番組が別のサービスでも放送されうる。起点のサービスを検索に固定して、
+      // このチャンネルだけのルールを作らせる。
+      services: [
+        {
+          networkId: identityRecording.networkId,
+          serviceId: identityRecording.serviceId,
+        },
+      ],
+    }
+  }, [identityRecording, recurringKeyword])
+  const showSite = useMemo(
+    () =>
+      shouldShowRecordingSite(
+        registeredSites,
+        [...loadedRecordings, ...recordings].map((recording) => recording.site),
+      ),
+    [registeredSites, loadedRecordings, recordings],
+  )
+
   const originPurged = originQuery.error instanceof ApiError && originQuery.error.status === 404
-  // 一覧と次回が確定するまで「0 件」を判断しない（pending は空配列と同じ形）。
-  const seriesSettled = !listQuery.isPending && !upcomingQuery.isPending
-  // 起点が purged で、行が残っている証拠がどこにも無い場合だけ「見つかりません」。
-  // どちらかがエラーなら 0 件は判断材料にならないので、節ごとのエラー表示に委ねる。
+  const seriesSettled = !latestQuery.isPending && !upcomingQuery.isPending
   const nothingToShow =
     originPurged &&
     seriesSettled &&
-    !listQuery.isError &&
+    !latestQuery.isError &&
     !upcomingQuery.isError &&
-    recordings.length === 0 &&
+    loadedRecordings.length === 0 &&
     upcoming.length === 0
   const showHub = origin !== undefined || (originPurged && seriesSettled)
-  const heading =
-    origin !== undefined
-      ? programTitle(origin.title)
-      : recordings.length > 0
-        ? programTitle(recordings[0].title)
-        : upcoming.length > 0
-          ? programTitle(upcoming[0].name)
-          : undefined
+
+  const goBack = () => {
+    if (router.history.canGoBack()) {
+      router.history.back()
+    } else if (originPurged) {
+      void navigate({ to: '/recordings' })
+    } else {
+      void navigate({ to: '/recordings/$id', params: { id: String(idNum) } })
+    }
+  }
 
   return (
     <>
       <PageHeader
         title="シリーズ"
         leading={
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="戻る"
-            // 起点が purged なら戻り先の詳細も 404 になるので、一覧へ向ける。
-            render={
-              originPurged ? (
-                <Link to="/recordings" />
-              ) : (
-                <Link to="/recordings/$id" params={{ id: String(idNum) }} />
-              )
-            }
-          >
+          <Button type="button" variant="ghost" size="icon" aria-label="戻る" onClick={goBack}>
             <ArrowLeft />
           </Button>
         }
@@ -156,29 +238,138 @@ export function SeriesHubPage() {
       ) : !showHub ? (
         <ListSkeleton rows={4} />
       ) : (
-        <PageContent className="flex flex-col gap-4 px-4 py-4">
-          {heading !== undefined && <h2 className="text-lg font-medium">{heading}</h2>}
-
-          {(upcomingQuery.isError || upcoming.length > 0) && (
-            <section className="flex flex-col gap-2" aria-label="次回">
-              <h3 className="text-sm font-medium text-muted-foreground">次回</h3>
-              {upcomingQuery.isError ? (
-                <ErrorState onRetry={() => void upcomingQuery.refetch()}>
-                  次回の取得に失敗しました
-                </ErrorState>
-              ) : (
-                <ul className="flex flex-col gap-2">
-                  {upcoming.map((row) => (
-                    <li key={`${row.networkId}:${row.serviceId}:${row.startAt}`}>
-                      <UpcomingRowItem row={row} />
-                    </li>
-                  ))}
-                </ul>
+        <PageContent className="flex flex-col gap-8 px-4 py-4">
+          <section aria-label="シリーズ情報" className="flex items-start gap-3">
+            {latestRecording !== undefined && (
+              <SeriesThumbnail key={latestRecording.id} recording={latestRecording} />
+            )}
+            <div className="min-w-0">
+              {effectiveSeries !== undefined && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="truncate text-lg font-medium">{effectiveSeries}</h2>
+                  {manualRule !== undefined && <ManualSeriesBadge />}
+                </div>
               )}
-            </section>
-          )}
+              {manualRule !== undefined && automaticSeriesKeys.length > 0 && (
+                <p className="mt-1 text-sm text-muted-foreground">
+                  自動: {automaticSeriesKeys[0]}
+                  {automaticSeriesKeys.length > 1 && `（ほか ${automaticSeriesKeys.length - 1}）`}
+                </p>
+              )}
+              {latestRecording !== undefined && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  最新 {formatDateTime(latestRecording.startAt)}
+                </p>
+              )}
+              {labelRulesQuery.isError && (
+                <div className="mt-1">
+                  <LabelRulesUnavailableNote />
+                </div>
+              )}
+            </div>
+          </section>
 
-          <section className="flex flex-col gap-2" aria-label="このシリーズの録画">
+          <section aria-label="シリーズの操作" className="flex flex-col gap-4">
+            <div className="flex flex-wrap items-center gap-2">
+              {latestPlayable !== undefined && (
+                <Button
+                  render={
+                    <Link
+                      to="/recordings/$id"
+                      params={{ id: String(latestPlayable.id) }}
+                      aria-label="最新話を再生"
+                    />
+                  }
+                >
+                  最新話を再生
+                </Button>
+              )}
+              {recurringRule !== undefined ? (
+                <Button
+                  variant="outline"
+                  render={<Link to="/search" search={{ ruleId: recurringRule.id }} />}
+                >
+                  ルール「{recurringRule.name}」で毎回録画中
+                </Button>
+              ) : (
+                recurringCondition !== undefined && (
+                  <Button
+                    variant="outline"
+                    render={<Link to="/search" search={{ cond: recurringCondition }} />}
+                  >
+                    毎回録画する
+                  </Button>
+                )
+              )}
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      aria-label="シリーズのその他の操作"
+                    />
+                  }
+                >
+                  <MoreVertical />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => setLabelRuleFormOpen(true)}>
+                    分類を直す（割る・指定する）
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+
+            {(upcomingQuery.isError || upcoming.length > 0) && (
+              <section className="flex flex-col gap-2" aria-label="次回">
+                <h3 className="text-sm font-medium text-muted-foreground">次回</h3>
+                {upcomingQuery.isError ? (
+                  <ErrorState onRetry={() => void upcomingQuery.refetch()}>
+                    次回の取得に失敗しました
+                  </ErrorState>
+                ) : (
+                  <ul className="flex flex-col gap-2">
+                    {upcoming.map((row) => (
+                      <li key={`${row.networkId}:${row.serviceId}:${row.startAt}`}>
+                        <UpcomingRowItem row={row} />
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            )}
+          </section>
+
+          <section aria-label="このシリーズの録画" className="flex flex-col gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-base font-medium">エピソード</h2>
+              <div
+                role="group"
+                aria-label="エピソードの並び順"
+                className="flex items-center gap-1"
+              >
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={order === ListRecordingsOrder.desc ? 'secondary' : 'ghost'}
+                  aria-pressed={order === ListRecordingsOrder.desc}
+                  onClick={() => setOrder(ListRecordingsOrder.desc)}
+                >
+                  新しい順
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={order === ListRecordingsOrder.asc ? 'secondary' : 'ghost'}
+                  aria-pressed={order === ListRecordingsOrder.asc}
+                  onClick={() => setOrder(ListRecordingsOrder.asc)}
+                >
+                  古い順
+                </Button>
+              </div>
+            </div>
             {listQuery.isError ? (
               <ErrorState onRetry={() => void listQuery.refetch()}>
                 録画の取得に失敗しました
@@ -191,7 +382,13 @@ export function SeriesHubPage() {
               <ul className="flex flex-col">
                 {recordings.map((recording) => (
                   <li key={recording.id}>
-                    <SeriesRecordingRow recording={recording} />
+                    <RecordingRow
+                      recording={recording}
+                      trash={false}
+                      showSite={showSite}
+                      view="list"
+                      liveEnabled={liveEnabled}
+                    />
                   </li>
                 ))}
               </ul>
@@ -211,15 +408,40 @@ export function SeriesHubPage() {
           </section>
         </PageContent>
       )}
+
+      {labelRuleFormOpen && (
+        <LabelRuleForm
+          open={labelRuleFormOpen}
+          onOpenChange={setLabelRuleFormOpen}
+          initial={{ value: effectiveSeries ?? undefined }}
+        />
+      )}
     </>
   )
 }
 
-/**
- * UpcomingRowItem は「次回」の 1 行。**同じ放送は 1 行にまとまっている**
- * （`collapseUpcoming`）。site はチップで出す（表示だけ。同じ放送が 2 拠点の
- * EPG にあることを見せる）。
- */
+/** ハブの identity に置く最新録画のサムネイル。未生成・404 は静かにプレースホルダーへ落とす。 */
+function SeriesThumbnail({ recording }: { recording: Recording }) {
+  const [failed, setFailed] = useState(false)
+
+  return (
+    <div className="size-20 shrink-0 overflow-hidden rounded bg-muted sm:size-28">
+      {!failed ? (
+        <img
+          src={`/api/media/recordings/${recording.id}/thumbnail`}
+          alt=""
+          className="size-full object-cover"
+          loading="lazy"
+          onError={() => setFailed(true)}
+        />
+      ) : (
+        <div className="size-full bg-muted" aria-hidden />
+      )}
+    </div>
+  )
+}
+
+/** UpcomingRowItem は「次回」の 1 行。同じ放送は `collapseUpcoming` で 1 行になる。 */
 function UpcomingRowItem({ row }: { row: UpcomingRow }) {
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border p-3">
@@ -232,34 +454,6 @@ function UpcomingRowItem({ row }: { row: UpcomingRow }) {
             {site}
           </span>
         ))}
-      </span>
-    </div>
-  )
-}
-
-/**
- * SeriesRecordingRow はハブの録画の 1 行。行本体が詳細への全面リンク
- * （録画一覧の `RecordingRow` と同じ配置文法）。一覧側の行は編集モード・
- * カード表示・一括操作を抱えるので共有しない --- ハブは選択を持たない。
- */
-function SeriesRecordingRow({ recording }: { recording: Recording }) {
-  return (
-    <div className="relative flex min-h-14 flex-col justify-center gap-1 border-b border-border px-1 py-2.5 hover:bg-muted/40">
-      <Link
-        to="/recordings/$id"
-        params={{ id: String(recording.id) }}
-        aria-label={programTitle(recording.title)}
-        className="absolute inset-0"
-      />
-      <span className="truncate text-sm">{programTitle(recording.title)}</span>
-      <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-        <StatusBadge status={recording.status} />
-        <IngestBadge recording={recording} />
-        <span className="shrink-0">{recording.serviceName}</span>
-        <span className="shrink-0">{formatDateTime(recording.startAt)}</span>
-        {recording.sizeBytes !== undefined && (
-          <span className="shrink-0">{formatBytes(recording.sizeBytes)}</span>
-        )}
       </span>
     </div>
   )
