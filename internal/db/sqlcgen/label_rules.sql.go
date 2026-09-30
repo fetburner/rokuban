@@ -215,8 +215,8 @@ type ListRecordingShelvesRow struct {
 // 617 ms の仕組みは、MATERIALIZED を外すと部分一意索引 recordings_unique_active_event
 // が選ばれ、その行数見積もりが 1 になって下流が全部 1 行の計画になり、代表を求める
 // ソートが外側の行数ぶん繰り返されること、だった。**現スキーマ・合成 seed（下記）では
-// この 617 ms は再現しない**（MATERIALIZED を外した形は現行形の 0.9〜1.02 倍で、索引も
-// 選ばれない）。再現条件は未検証なので、MATERIALIZED は外さない。
+// この 617 ms は再現しない**（MATERIALIZED を外した形は現行形の 0.92〜0.96 倍で、EXPLAIN でも
+// recordings は Seq Scan のまま部分一意索引を使わない）。再現条件は未検証なので、MATERIALIZED は外さない。
 //
 // 実効シリーズは recording_series ビューが唯一の定義で、ここでも JOIN で読む
 // （COALESCE(lr.value_key, r.series_key) を書き下すと定義が 2 箇所になる）。
@@ -230,15 +230,16 @@ type ListRecordingShelvesRow struct {
 // 中央値（Apple M3 Max・PostgreSQL 16.2、3 回実行）:
 //
 //   - (a) この形: 269〜280 ms
-//   - (a') この形から playable の MATERIALIZED を外す: 248〜260 ms（(a) の 0.92〜0.93 倍）
+//   - (a') この形から playable の MATERIALIZED を外す: 248〜260 ms（(a) の 0.92〜0.93 倍。レビュー側の実行では 0.94〜0.96）
 //   - (b) 生きている録画 + playable_assets の LEFT JOIN + count FILTER + max(program_start_at):
 //     282〜289 ms（(a) の 1.03〜1.05 倍）
 //   - (b') (b) の live を MATERIALIZED にする: 294〜310 ms（(a) の 1.09〜1.12 倍。(b) より遅い）
 //
 // 結論: 母集団を広げる形は (b) を採る。同じ環境で現行形の約 1.05 倍で、live の
-// MATERIALIZED は改善にならない。(a) と (b) は playable の件数と代表が全棚で一致する。
+// MATERIALIZED は改善にならない。(a) の recording_count と (b) の playable_count は全棚で一致する
+// （ハーネスが検査する）。
 // **絶対値の 200 ms 予算の確認は未測定**（元の測定環境・実データ。この環境は現行形が
-// 予算を越える）。このクエリ本体は変えていない。
+// 予算を越える）。
 func (q *Queries) ListRecordingShelves(ctx context.Context) ([]ListRecordingShelvesRow, error) {
 	rows, err := q.db.Query(ctx, listRecordingShelves)
 	if err != nil {

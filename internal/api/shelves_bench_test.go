@@ -39,10 +39,11 @@ const shelfBenchmarkDatabaseURL = "ROKUBAN_BENCH_DATABASE_URL"
 // 中央値を t.Logf に出す。(a') / (a) の比も出すが、判定には使わない。
 //
 // 判定しているのは結果の一致だけである。棚ごとに (a) の recording_count と (b) の
-// playable_count、(a') と (a) の全列、(b) と (b') の全列（latest_start_at を含む）が一致する。
+// playable_count、(a') と (a) の全列、(b) と (b') の全列が一致し、(b) の latest_start_at は別クエリで求めた
+// 「その棚の生きている録画の program_start_at の最大値」と一致する。
 //
 // 既知の 617 ms（playable の MATERIALIZED を外すと数倍遅い）は、現スキーマ・この合成
-// seed では再現しない（Apple M3 Max・PostgreSQL 16.2 で (a') / (a) は 0.9〜1.02）。
+// seed では再現しない（Apple M3 Max・PostgreSQL 16.2 で (a') / (a) は 0.92〜0.96）。
 // 棚サイズの偏り・複数の自動キーを 1 棚に併合する分類ルール・統計なしの状態でも再現せず、
 // 617 ms の再現条件は未検証である。したがって (a') が遅いことはアサートしない。
 //
@@ -127,6 +128,10 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 	}
 
 	current, unmaterialized, expanded, expandedMaterialized := results[0], results[1], results[2], results[3]
+	wantLatest, err := queryExpectedLatest(ctx, conn.Conn())
+	if err != nil {
+		t.Fatalf("computing expected latest_start_at: %v", err)
+	}
 	var playable, live int64
 	for key, cur := range current {
 		if unmaterialized[key] != cur {
@@ -136,8 +141,8 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 		if exp.playable != cur.recording {
 			t.Errorf("shelf %q: (b) playable_count %d != (a) recording_count %d", key, exp.playable, cur.recording)
 		}
-		if exp.latest.IsZero() {
-			t.Errorf("shelf %q: (b) latest_start_at is zero", key)
+		if want, ok := wantLatest[key]; !ok || !exp.latest.Equal(want) {
+			t.Errorf("shelf %q: (b) latest_start_at %v != expected %v", key, exp.latest, want)
 		}
 		if expandedMaterialized[key] != exp {
 			t.Errorf("shelf %q: (b') %+v != (b) %+v", key, expandedMaterialized[key], exp)
@@ -166,6 +171,31 @@ type shelfResult struct {
 	playable       int64
 	latest         time.Time
 	representative int64
+}
+
+// queryExpectedLatest は棚ごとの latest_start_at の期待値を、測る SQL とは別のクエリで求める。
+// 生きている録画（deleted_at / superseded_at が NULL）の program_start_at の最大値である。
+func queryExpectedLatest(ctx context.Context, conn *pgx.Conn) (map[string]time.Time, error) {
+	rows, err := conn.Query(ctx, `
+SELECT rs.value, max(r.program_start_at)
+FROM recordings r
+JOIN recording_series rs ON rs.recording_id = r.id
+WHERE r.deleted_at IS NULL AND r.superseded_at IS NULL
+GROUP BY rs.value`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]time.Time{}
+	for rows.Next() {
+		var v *string
+		var latest time.Time
+		if err := rows.Scan(&v, &latest); err != nil {
+			return nil, err
+		}
+		out[shelfKey(v)] = latest
+	}
+	return out, rows.Err()
 }
 
 func shelfKey(v *string) string {
