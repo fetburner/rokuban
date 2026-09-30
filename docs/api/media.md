@@ -111,8 +111,9 @@ size_bytes は ingest / encode 時に照合した値なので、
 違うならコミット後に改変・切り詰めが起きている。配信自体は続ける
 （ユーザーは録画を見たい）。
 
-**再生位置はサーバーに持たない。** ブラウザの localStorage に録画 ID（+ プロファイル）
-をキーにして保存する。視聴履歴テーブルは作らない。
+**再生位置と視聴済みの印は api ロールが DB に持つと決めた**（移すまでは localStorage）。
+streamer は位置を知らない（Range 要求の位置は再生位置ではない）。決定と表の割り方は
+[frontend/recordings.md](../frontend/recordings.md) §視聴状態。
 
 #### X-Accel-Redirect（`storage.accel_location`）
 
