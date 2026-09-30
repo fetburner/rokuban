@@ -118,7 +118,7 @@ M0（歩く骨格）・M1（録れる）・M2（任せられる）・M5（名乗
 3. **コミット = DB 行**。ファイルの存在はコミットではない
 4. **ffmpeg/ffprobe の exec は worker / streamer パッケージのみ**。import 境界は `.golangci.yml` の `depguard` が判定する
 5. **レベルトリガー**: イベント（SSE/NOTIFY）はヒント。真実は定期 reconcile が再取得する
-6. **TS のストリーム処理をしない**（ingest 中の読み取り専用統計のみ例外）。統計のための PSI 読み取りは PAT / PMT の `stream_type` までで、**記述子は読まない**（[docs/recording.md](docs/recording.md) §1「例外の境界」）
+6. **TS のストリーム処理をしない**（ingest 中の読み取り専用統計のみ例外）。統計のための PSI 読み取りは PAT / PMT の `stream_type` までで、**記述子は読まない**（[docs/recording.md](docs/recording.md) §1「例外の境界」）。**フロントエンドも放送 TS を解釈しない**（ffmpeg の出力だけを扱う。同 §1「ブラウザにも同じ境界を適用する」）
 7. **mirakc 固有の概念を永続テーブル（rules / media_assets / 履歴）に入れない**
 8. **テストのないタスク完了はない**
 9. **導出値と不可逆な事実を同じ列に載せない**（下記）
