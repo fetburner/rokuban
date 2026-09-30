@@ -142,7 +142,7 @@ chip（`components/ui/chip.tsx`）・day-strip（`components/day-strip.tsx`）�
 `e2e:design` の出力の側に置く。そこに出ていない組み合わせは「測っていない」であって
 「通っている」ではない。今回の行 hover は 4 画面で `text-muted-foreground` を
 維持したまま面の濃さを揃えた。対象は `components/program-row.tsx` /
-`pages/recordings.tsx` / `pages/reservations.tsx` / `pages/home.tsx` である。
+`components/recording-row.tsx` / `pages/reservations.tsx` / `pages/home.tsx` である。
 代表として録画一覧の行を `e2e:design` が実際に hover して測る。いま分かっている残りは:
 
 - **測ってあり、下限を満たす**: 録画詳細（`/recordings/$id`）の `bg-muted/30` の

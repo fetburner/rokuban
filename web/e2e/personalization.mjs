@@ -182,7 +182,7 @@ await page.getByText('録画 1').waitFor({ timeout: 15000 })
 // 一覧の <ul> を行から辿って掴む。素の `ul li` はサイドバーのナビゲーションにも
 // 当たるので、それを測ると「1 行目に 1 枚」のような無関係な値になる（実際に踏んだ）。
 const list = page.getByText('録画 1').locator('xpath=ancestor::ul[1]')
-// サムネイルは 404 のときプレースホルダ div に差し替わる（`pages/recordings.tsx`）
+// サムネイルは 404 のときプレースホルダ div に差し替わる（`components/recording-row.tsx`）
 // ので、img ではなく枠（`aspect-video` の器）を測る。
 const thumbFrame = list.locator('li div.aspect-video').first()
 const rowThumbBox = await thumbFrame.boundingBox()
