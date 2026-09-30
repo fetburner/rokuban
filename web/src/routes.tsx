@@ -19,7 +19,7 @@ import {
 } from './lib/recording-search'
 import { asInteger, validValue } from './lib/url-search'
 import { HomePage } from './pages/home'
-import { CMLogosPage } from './pages/cm-logos'
+import { CMLogoStationPage, CMLogosPage } from './pages/cm-logos'
 import { LivePage } from './pages/live'
 import { ProgramsPage } from './pages/programs'
 import { RecordingDetailPage } from './pages/recording-detail'
@@ -212,6 +212,12 @@ export type CMLogoPageSearch = {
   recording?: number
 }
 
+/** CMLogoStationPageSearch は新しい局画面のクエリパラメータ。 */
+export type CMLogoStationPageSearch = {
+  /** 初期表示する録画。省略時は API が返す frameRecordingId を使う。 */
+  recording?: number
+}
+
 /** parseCMLogoSearch は正の整数だけを通し、他は落として undefined にする。 */
 function parseCMLogoSearch(search: Record<string, unknown>): CMLogoPageSearch {
   const positive = (v: unknown): number | undefined => {
@@ -223,6 +229,11 @@ function parseCMLogoSearch(search: Record<string, unknown>): CMLogoPageSearch {
     service: positive(search.service),
     recording: positive(search.recording),
   }
+}
+
+function parseCMLogoStationSearch(search: Record<string, unknown>): CMLogoStationPageSearch {
+  const n = asInteger(search.recording)
+  return { recording: typeof n === 'number' && n > 0 ? n : undefined }
 }
 
 /**
@@ -248,6 +259,15 @@ const cmLogosRoute = createRoute({
   // 探すロゴである（`pages/cm-logos.tsx` の `<PageHeader>` と同じ表記）。
   head: () => ({ meta: [{ title: pageTitle('CM 検出のロゴ') }] }),
   component: CMLogosPage,
+})
+
+const cmLogoStationRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/cm-logos/$networkId/$serviceId',
+  validateSearch: (search: Record<string, unknown>): CMLogoStationPageSearch =>
+    parseCMLogoStationSearch(search),
+  head: () => ({ meta: [{ title: pageTitle('CM 検出のロゴ') }] }),
+  component: CMLogoStationPage,
 })
 
 const reservationsRoute = createRoute({
@@ -457,6 +477,7 @@ export const routeTree = rootRoute.addChildren([
   rulesRoute,
   shelvesRoute,
   cmLogosRoute,
+  cmLogoStationRoute,
   reservationsRoute,
   reservationDetailRoute,
   recordingsRoute,
