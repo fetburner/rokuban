@@ -13,23 +13,64 @@ import (
 
 const maxJSONBodyBytes int64 = 1 << 20
 
+// headerTrackingWriter は ResponseWriter へのヘッダー書き込み済みを記録する。
+// Unwrap を持つので http.ResponseController 経由の Flush 等はそのまま届き、
+// Flush（暗黙の 200 送信）も書き込み済みとして数える。
+type headerTrackingWriter struct {
+	http.ResponseWriter
+	wroteHeader bool
+}
+
+func (w *headerTrackingWriter) WriteHeader(code int) {
+	// 1xx は最終ヘッダーではないので記録しない。
+	if code >= 200 || code == http.StatusSwitchingProtocols {
+		w.wroteHeader = true
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *headerTrackingWriter) Write(b []byte) (int, error) {
+	w.wroteHeader = true
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *headerTrackingWriter) Flush() {
+	w.wroteHeader = true
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+func (w *headerTrackingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
 // recoverPanic は HTTP handler の panic を境界で回収する。
-// panic の値と stack trace は運用ログへ残すが、クライアントへは内部情報を
-// 出さず、他の API エラーと同じ ErrorResponse だけを返す。
+// panic の値と stack trace は運用ログへ残す。ヘッダー未送信ならクライアントへ
+// 内部情報を出さず、他の API エラーと同じ ErrorResponse の 500 だけを返す。
+// 送信済み（HLS セグメント・SSE・JSON の書き出し途中）に 500 の本文を足すと
+// 壊れた本体が正常完了に見えるので、http.ErrAbortHandler で再 panic して
+// net/http に接続を中断させる。
 func recoverPanic(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tw := &headerTrackingWriter{ResponseWriter: w}
 		defer func() {
-			if recovered := recover(); recovered != nil {
-				slog.Error("api handler panic recovered",
-					"panic", recovered,
-					"stack", string(debug.Stack()),
-					"method", r.Method,
-					"path", r.URL.Path,
-				)
-				writeErrorResponse(w, http.StatusInternalServerError, "internal server error")
+			recovered := recover()
+			if recovered == nil {
+				return
 			}
+			if err, ok := recovered.(error); ok && errors.Is(err, http.ErrAbortHandler) {
+				panic(recovered)
+			}
+			slog.Error("api handler panic recovered",
+				"panic", recovered,
+				"stack", string(debug.Stack()),
+				"method", r.Method,
+				"path", r.URL.Path,
+				"header_sent", tw.wroteHeader,
+			)
+			if tw.wroteHeader {
+				panic(http.ErrAbortHandler)
+			}
+			writeErrorResponse(tw, http.StatusInternalServerError, "internal server error")
 		}()
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(tw, r)
 	})
 }
 

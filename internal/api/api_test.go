@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
@@ -53,6 +54,87 @@ func TestRouterRecoversPanicAsJSONError(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "test panic") || !strings.Contains(logs.String(), "stack=") {
 		t.Errorf("panic log should contain value and stack, got %q", logs.String())
+	}
+}
+
+func TestRouterPanicNilReturnsJSONError(t *testing.T) {
+	router := NewRouter(RouterConfig{Mounter: testMounter(func(r chi.Router) {
+		r.Get("/api/test-panic-nil", func(http.ResponseWriter, *http.Request) {
+			panic(nil)
+		})
+	})})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/test-panic-nil")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", resp.StatusCode)
+	}
+	var body ErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error != "internal server error" {
+		t.Errorf("error = %q", body.Error)
+	}
+}
+
+// ヘッダー送信後の panic は 500 本文を足さず接続を中断する。足すと壊れた本体が
+// 正常完了に見える。Flush がラップ越しに届くことも、panic 前の部分本文が
+// クライアントへ届くことで確かめる。
+func TestRouterPanicAfterHeaderSentAbortsConnection(t *testing.T) {
+	release := make(chan struct{})
+	router := NewRouter(RouterConfig{Mounter: testMounter(func(r chi.Router) {
+		r.Get("/api/test-partial", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("PARTIAL"))
+			w.(http.Flusher).Flush()
+			panic("boom after header")
+		})
+		r.Get("/api/test-flush", func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("first"))
+			if err := http.NewResponseController(w).Flush(); err != nil {
+				panic(err)
+			}
+			<-release
+			_, _ = w.Write([]byte("second"))
+		})
+	})})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/test-partial")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	got, readErr := io.ReadAll(resp.Body)
+	if readErr == nil {
+		t.Errorf("ReadAll succeeded with body %q; want an aborted connection", got)
+	}
+	if strings.Contains(string(got), "internal server error") {
+		t.Errorf("error body appended after header sent: %q", got)
+	}
+	if !strings.HasPrefix(string(got), "PARTIAL") {
+		t.Errorf("body = %q, want flushed PARTIAL prefix", got)
+	}
+
+	// ハンドラは release まで終わらないので、first が読めるなら Flush が
+	// ラップ越しに届いている。
+	defer close(release)
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp2, err := client.Get(srv.URL + "/api/test-flush")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp2.Body.Close() }()
+	buf := make([]byte, 5)
+	if _, err := io.ReadFull(resp2.Body, buf); err != nil || string(buf) != "first" {
+		t.Fatalf("first chunk = %q, %v; want flushed \"first\"", buf, err)
 	}
 }
 
