@@ -80,6 +80,8 @@ function createFakeServer(options: {
   // （保存中…の表示）を確認するテストが、呼び出し側で自分の Promise を渡して
   // 解決タイミングを制御できるようにするため。
   encodePolicyResponse?: () => Response | Promise<Response>
+  /** playbackState は別ページをまたぐサーバー再開位置を共有するテスト用。 */
+  playbackState?: { positionMs?: number }
   /**
    * seriesRecordings は `GET /api/recordings?seriesOf=` に返す行（「次の
    * エピソード」の探索。M8-6）。既定は空。
@@ -98,6 +100,7 @@ function createFakeServer(options: {
   const purgeResponse = options.purgeResponse
   const encodePostResponse = options.encodePostResponse
   const encodePolicyResponse = options.encodePolicyResponse
+  const playbackState = options.playbackState ?? {}
 
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
@@ -127,7 +130,13 @@ function createFakeServer(options: {
       if (!recording || recording.id !== id) {
         return Promise.resolve(jsonResponse({ error: 'not found' }, 404))
       }
-      return Promise.resolve(jsonResponse(recording))
+      return Promise.resolve(
+        jsonResponse(
+          playbackState.positionMs === undefined
+            ? recording
+            : { ...recording, resumePositionMs: playbackState.positionMs },
+        ),
+      )
     }
 
     const deleteMatch = /^\/api\/recordings\/(\d+)$/.exec(url.pathname)
@@ -198,6 +207,14 @@ function createFakeServer(options: {
 
     if (/^\/api\/recordings\/\d+\/drop-stats$/.test(url.pathname)) {
       return Promise.resolve(jsonResponse([]))
+    }
+    const playbackPositionMatch = /^\/api\/recordings\/(\d+)\/playback-position$/.exec(url.pathname)
+    if (playbackPositionMatch && (method === 'PUT' || method === 'DELETE')) {
+      playbackState.positionMs =
+        method === 'PUT' && init?.body
+          ? (JSON.parse(String(init.body)) as { positionMs: number }).positionMs
+          : undefined
+      return Promise.resolve(jsonResponse(null, 204))
     }
     if (
       /^\/api\/sites\/[^/]+\/recordings\/\d+\/chase(?:\/offset\/\d+)?\/playlist\.m3u8$/.test(
@@ -1133,11 +1150,7 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
 
   /**
    * 切替の配線（受け入れ 6）。`?profile=` の値が `chasePlaylistURL` に届くこと、
-   * 切替で離脱ヒントが飛ばないこと、`playbackProfile`（位置のキー）が変わらないことを見る。
-   *
-   * **`profile` と `playbackProfile` を混ぜると位置が画質ごとに分かれる**ので、
-   * 位置のキーは実際に localStorage へ書かれる宛先で確かめる
-   * （`chasePlaybackProfile` は内部の値なので表示からは見えない）。
+   * 切替で離脱ヒントが飛ばないこと、再開位置が recording 単位で API に保存されることを見る。
    */
   it('画質を切り替えると ?profile= が要求に載り、離脱ヒントも位置のキーも変えない', async () => {
     const user = userEvent.setup()
@@ -1167,14 +1180,22 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
     // 別プレイリストを取るだけ）。
     expect(chaseLeaveURLs(fetchMock)).toEqual([])
 
-    // 再生位置のキーは VOD 側のプロファイルのまま（画質ごとに分かれない）。
-    // 保存は持ち越した位置へ戻し終えた（canplay）後に再開する
+    // 再開位置は画質ではなく recording 単位で保存する。
     const video = document.querySelector('video')!
     fireEvent.canPlay(video)
     video.currentTime = 12
-    fireEvent.timeUpdate(video)
-    expect(localStorage.getItem('rokuban:playback:3:original')).toBe('12')
-    expect(localStorage.getItem('rokuban:playback:3:sd')).toBeNull()
+    fireEvent.pause(video)
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter(([url]) => String(url) === '/api/recordings/3/playback-position'),
+      ).toHaveLength(1)
+    })
+    const positionWrite = fetchMock.mock.calls.find(
+      ([url]) => String(url) === '/api/recordings/3/playback-position',
+    )
+    expect(positionWrite?.[1]).toEqual(
+      expect.objectContaining({ method: 'PUT', body: JSON.stringify({ positionMs: 12_000 }) }),
+    )
   })
 
   /** 選ぶ余地が無いのに出すと「機能しないコントロール」に戻る（issue #209 の規律）。 */
@@ -1321,10 +1342,9 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
     expect(originalVODURLs(fetchMock)[1]).toContain('profile=sd')
   })
 
-  it('encode profile が無い録画は画質を切り替えても再生位置の保存キーが変わらない', async () => {
+  it('encode profile が無い録画でも再開位置は画質によらず recording 単位で保存する', async () => {
     const user = userEvent.setup()
-    localStorage.clear()
-    createFakeServer({
+    const { fetchMock } = createFakeServer({
       recording: sampleRecording({ sizeBytes: 1_000_000, encodedAssets: [] }),
       liveProfiles: LIVE_PROFILES,
     })
@@ -1334,17 +1354,28 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
 
     const video = document.querySelector('video')!
     Object.defineProperty(video, 'currentTime', { value: 30, writable: true, configurable: true })
-    fireEvent.timeUpdate(video)
-    expect(localStorage.getItem('rokuban:playback:3:original')).toBe('30')
+    fireEvent.pause(video)
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter(([url]) => String(url) === '/api/recordings/3/playback-position'),
+      ).toHaveLength(1)
+    })
 
     await user.selectOptions(screen.getByLabelText('画質'), 'sd')
     await waitFor(() => expect(screen.getByLabelText('画質')).toHaveValue('sd'))
     const after = document.querySelector('video')!
     Object.defineProperty(after, 'currentTime', { value: 40, writable: true, configurable: true })
-    fireEvent.timeUpdate(after)
-    const keys = Object.keys(localStorage).filter((k) => k.startsWith('rokuban:playback:3:'))
-    expect(keys).toEqual(['rokuban:playback:3:original'])
-    expect(localStorage.getItem('rokuban:playback:3:original')).toBe('40')
+    fireEvent.pause(after)
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter(([url]) => String(url) === '/api/recordings/3/playback-position'),
+      ).toHaveLength(2)
+    })
+    const writes = fetchMock.mock.calls.filter(([url]) => String(url) === '/api/recordings/3/playback-position')
+    expect(writes.map(([url, init]) => [String(url), init?.body])).toEqual([
+      ['/api/recordings/3/playback-position', JSON.stringify({ positionMs: 30_000 })],
+      ['/api/recordings/3/playback-position', JSON.stringify({ positionMs: 40_000 })],
+    ])
   })
 
   /**
@@ -1353,8 +1384,8 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
    * 原本 VOD が読む。キーの文字列ではなく、保存と復元が噛み合うことを見る。
    */
   it('encode profile の構成に依らず、追っかけで保存した位置を原本 VOD が復元する', async () => {
-    localStorage.clear()
     const now = Date.now()
+    const playbackState: { positionMs?: number } = {}
     const recording = sampleRecording({
       startAt: new Date(now - 60 * 60_000).toISOString(),
       startedAt: new Date(now - 2 * 60_000).toISOString(),
@@ -1363,16 +1394,25 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
       encodedAssets: [],
       encodeProfiles: ['cut', 'h264'],
     })
-    createFakeServer({ recording: { ...recording, status: 'recording' }, liveProfiles: LIVE_PROFILES })
+    createFakeServer({
+      recording: { ...recording, status: 'recording' },
+      liveProfiles: LIVE_PROFILES,
+      playbackState,
+    })
     renderAt('/recordings/3#chase')
     await screen.findByRole('region', { name: '追っかけ再生' })
     await waitFor(() => expect(document.querySelector('video')).toBeInTheDocument())
     const chaseVideo = document.querySelector('video')!
     Object.defineProperty(chaseVideo, 'currentTime', { value: 42, writable: true, configurable: true })
-    fireEvent.timeUpdate(chaseVideo)
+    fireEvent.pause(chaseVideo)
+    await waitFor(() => expect(playbackState.positionMs).toBe(42_000))
     cleanup()
 
-    createFakeServer({ recording: { ...recording, status: 'finished' }, liveProfiles: LIVE_PROFILES })
+    createFakeServer({
+      recording: { ...recording, status: 'finished' },
+      liveProfiles: LIVE_PROFILES,
+      playbackState,
+    })
     renderAt('/recordings/3')
     await screen.findByRole('region', { name: '原本 TS をブラウザ再生' })
     await waitFor(() => expect(document.querySelector('video')).toBeInTheDocument())

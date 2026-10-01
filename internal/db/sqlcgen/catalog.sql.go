@@ -505,6 +505,31 @@ func (q *Queries) CatalogListRecordingPurgeRequests(ctx context.Context) ([]Reco
 	return items, nil
 }
 
+const catalogListRecordingWatched = `-- name: CatalogListRecordingWatched :many
+SELECT recording_id, watched_at FROM recording_watched ORDER BY recording_id
+`
+
+// Watched markers are durable user facts. Playback positions are transient and omitted.
+func (q *Queries) CatalogListRecordingWatched(ctx context.Context) ([]RecordingWatched, error) {
+	rows, err := q.db.Query(ctx, catalogListRecordingWatched)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RecordingWatched
+	for rows.Next() {
+		var i RecordingWatched
+		if err := rows.Scan(&i.RecordingID, &i.WatchedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const catalogListRecordings = `-- name: CatalogListRecordings :many
 SELECT id, rule_id, source, site, network_id, service_id, event_id, service_name, channel_type, channel, title, description, extended, genres, is_free, program_start_at, program_duration_ms, status, started_at, ended_at, quality_events, deleted_at, created_at, updated_at, superseded_at, purged_at, genre_lv1, series_key FROM recordings ORDER BY id
 `
@@ -1260,6 +1285,22 @@ type CatalogUpsertRecordingPurgeRequestParams struct {
 // §バックアップ）。rescue は DB を失った後にだけ使う操作なので実装は変えない。
 func (q *Queries) CatalogUpsertRecordingPurgeRequest(ctx context.Context, arg CatalogUpsertRecordingPurgeRequestParams) error {
 	_, err := q.db.Exec(ctx, catalogUpsertRecordingPurgeRequest, arg.RecordingID, arg.RequestedAt)
+	return err
+}
+
+const catalogUpsertRecordingWatched = `-- name: CatalogUpsertRecordingWatched :exec
+INSERT INTO recording_watched (recording_id, watched_at)
+VALUES ($1, $2)
+ON CONFLICT (recording_id) DO UPDATE SET watched_at = EXCLUDED.watched_at
+`
+
+type CatalogUpsertRecordingWatchedParams struct {
+	RecordingID int64
+	WatchedAt   time.Time
+}
+
+func (q *Queries) CatalogUpsertRecordingWatched(ctx context.Context, arg CatalogUpsertRecordingWatchedParams) error {
+	_, err := q.db.Exec(ctx, catalogUpsertRecordingWatched, arg.RecordingID, arg.WatchedAt)
 	return err
 }
 

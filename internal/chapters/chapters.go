@@ -227,6 +227,35 @@ func MapMs(keep []Range, t int64) int64 {
 	return out
 }
 
+// UnmapMs はカット後の時間軸 t を、凍結した keep 区間の原本時間軸へ戻す。
+// 区間の継ぎ目ちょうどは次の keep 区間の先頭へ写し、最終区間の終端だけは
+// その終端に留める。再開位置を原本秒で共有するための逆写像。
+func UnmapMs(keep []Range, t int64) int64 {
+	if len(keep) == 0 || t <= 0 {
+		if len(keep) == 0 {
+			return 0
+		}
+		return keep[0].StartMs
+	}
+	var offset int64
+	for i, r := range keep {
+		length := r.EndMs - r.StartMs
+		end := offset + length
+		if t < end || i == len(keep)-1 {
+			within := t - offset
+			if within < 0 {
+				within = 0
+			}
+			if within > length {
+				within = length
+			}
+			return r.StartMs + within
+		}
+		offset = end
+	}
+	return keep[len(keep)-1].EndMs
+}
+
 // quantizeSpan は 1 つのスパンの境界をフレーム境界へ丸める。
 func quantizeSpan(s Span) Span {
 	return Span{

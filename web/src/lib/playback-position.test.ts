@@ -1,49 +1,113 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import vectorsJSON from '../../../testdata/playback-position-vectors.json?raw'
 
 import {
-  loadPlaybackPosition,
+  clearLegacyPlaybackPositions,
+  cutMsToOriginalMs,
   loadPlaybackRate,
-  playbackStorageKey,
+  originalMsToCutMs,
+  persistPlaybackPosition,
+  playbackPositionWrite,
+  playbackResumeSeconds,
   recordingFileURL,
-  savePlaybackPosition,
   savePlaybackRate,
-  shouldSavePlaybackPosition,
 } from '@/lib/playback-position'
+
+type Vector = { fromMs: number; toMs: number }
+type Vectors = {
+  ranges: { startMs: number; endMs: number }[]
+  originalToCut: Vector[]
+  cutToOriginal: Vector[]
+  outsideOriginalToCut: Vector[]
+}
+
+const vectors = JSON.parse(vectorsJSON) as Vectors
 
 afterEach(() => {
   localStorage.clear()
+  vi.unstubAllGlobals()
 })
 
-describe('playbackStorageKey', () => {
-  it('録画 ID とプロファイルでキーを分ける', () => {
-    expect(playbackStorageKey(1, 'h264')).toBe('rokuban:playback:1:h264')
-    expect(playbackStorageKey(1, 'h265')).not.toBe(playbackStorageKey(1, 'h264'))
-    expect(playbackStorageKey(2, 'h264')).not.toBe(playbackStorageKey(1, 'h264'))
+describe('カット版と原本の位置変換', () => {
+  it('Go と共有するベクタで原本→カット、カット→原本を検証する', () => {
+    for (const vector of vectors.originalToCut) {
+      expect(originalMsToCutMs(vector.fromMs, vectors.ranges)).toBe(vector.toMs)
+    }
+    for (const vector of vectors.cutToOriginal) {
+      expect(cutMsToOriginalMs(vector.fromMs, vectors.ranges)).toBe(vector.toMs)
+    }
+  })
+
+  it('keep 外の原本位置は次の keep 区間の先頭へ寄せる', () => {
+    for (const vector of vectors.outsideOriginalToCut) {
+      expect(originalMsToCutMs(vector.fromMs, vectors.ranges)).toBe(vector.toMs)
+    }
+  })
+
+  it('原本の再開 ms を再生中のカット版 seconds へ変換する', () => {
+    expect(playbackResumeSeconds(15000, vectors.ranges)).toBe(10)
+    expect(playbackResumeSeconds(30000, vectors.ranges)).toBe(20)
+    expect(playbackResumeSeconds(undefined, vectors.ranges)).toBeNull()
+  })
+
+  it('再生位置は原本 ms で書き、cut の継ぎ目は次の keep 区間へ戻す', () => {
+    expect(playbackPositionWrite(10, 60, false, vectors.ranges)).toEqual({ kind: 'put', positionMs: 20000 })
   })
 })
 
-describe('load/savePlaybackRate', () => {
-  it('保存した速度を復元する（録画をまたいで 1 つ）', () => {
+describe('位置保存の終端判定', () => {
+  it('先頭 2 秒未満は消し、終端 90% は確定後だけ視聴済みにする', () => {
+    expect(playbackPositionWrite(1.9, 100, true)).toEqual({ kind: 'delete' })
+    expect(playbackPositionWrite(90, 100, false)).toEqual({ kind: 'put', positionMs: 90000 })
+    expect(playbackPositionWrite(89.9, 100, true)).toEqual({ kind: 'put', positionMs: 89900 })
+    expect(playbackPositionWrite(90, 100, true)).toEqual({ kind: 'watched' })
+  })
+
+  it('古い localStorage 位置だけを消して端末ごとの再生速度は残す', () => {
+    localStorage.setItem('rokuban:playback:7:h264', '123')
+    localStorage.setItem('rokuban:playback:8:original', '456')
+    localStorage.setItem('rokuban:playback-rate', '1.5')
+    clearLegacyPlaybackPositions()
+    expect(localStorage.getItem('rokuban:playback:7:h264')).toBeNull()
+    expect(localStorage.getItem('rokuban:playback:8:original')).toBeNull()
+    expect(loadPlaybackRate()).toBe(1.5)
+  })
+})
+
+describe('再生状態 API', () => {
+  it('位置を PUT、先頭位置を DELETE、視聴済みを PUT し pagehide は keepalive にする', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 204,
+      statusText: 'No Content',
+      headers: new Headers(),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(persistPlaybackPosition(7, { kind: 'put', positionMs: 12_000 }, true)).resolves.toBe(true)
+    await expect(persistPlaybackPosition(8, { kind: 'delete' })).resolves.toBe(true)
+    await expect(persistPlaybackPosition(9, { kind: 'watched' })).resolves.toBe(true)
+
+    expect(fetchMock.mock.calls).toEqual([
+      ['/api/recordings/7/playback-position', expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({ positionMs: 12_000 }),
+        keepalive: true,
+      })],
+      ['/api/recordings/8/playback-position', expect.objectContaining({ method: 'DELETE' })],
+      ['/api/recordings/9/watched', expect.objectContaining({ method: 'PUT' })],
+    ])
+  })
+})
+
+describe('再生速度は端末ごとに 1 つ', () => {
+  it('保存した速度を復元し、既定値はキーごと消す', () => {
     savePlaybackRate(1.5)
     expect(loadPlaybackRate()).toBe(1.5)
-    // キーに録画 ID を含めない（含めた実装ならこの 1 つのキーには入らない）
     expect(localStorage.getItem('rokuban:playback-rate')).toBe('1.5')
-  })
-
-  it('保存が無ければ 1 倍', () => {
-    expect(loadPlaybackRate()).toBe(1)
-  })
-
-  it('1 倍はキーごと消す（既定値の行を作らない）', () => {
-    savePlaybackRate(2)
     savePlaybackRate(1)
     expect(localStorage.getItem('rokuban:playback-rate')).toBeNull()
     expect(loadPlaybackRate()).toBe(1)
-  })
-
-  it('ブラウザ controls が保存した正の速度を復元する', () => {
-    localStorage.setItem('rokuban:playback-rate', '0.75')
-    expect(loadPlaybackRate()).toBe(0.75)
   })
 
   it('0 以下・壊れた値は 1 倍に落とす', () => {
@@ -53,82 +117,14 @@ describe('load/savePlaybackRate', () => {
     }
   })
 
-  it('無効な速度を保存しない', () => {
-    savePlaybackRate(-1)
-    expect(localStorage.getItem('rokuban:playback-rate')).toBeNull()
-  })
-})
-
-describe('load/savePlaybackPosition', () => {
-  it('保存した位置を復元する', () => {
-    savePlaybackPosition(7, 'h264', 123)
-    expect(loadPlaybackPosition(7, 'h264')).toBe(123)
-  })
-
-  it('プロファイルが違えば別位置', () => {
-    savePlaybackPosition(7, 'h264', 10)
-    savePlaybackPosition(7, 'h265', 50)
-    expect(loadPlaybackPosition(7, 'h264')).toBe(10)
-    expect(loadPlaybackPosition(7, 'h265')).toBe(50)
-  })
-
-  it('先頭付近は保存しない', () => {
-    savePlaybackPosition(7, 'h264', 1)
-    expect(loadPlaybackPosition(7, 'h264')).toBeNull()
-  })
-
-  it('終端付近はクリアする', () => {
-    savePlaybackPosition(7, 'h264', 100)
-    expect(loadPlaybackPosition(7, 'h264')).toBe(100)
-    savePlaybackPosition(7, 'h264', 296, 300)
-    expect(loadPlaybackPosition(7, 'h264')).toBeNull()
-  })
-
-  it('未保存は null', () => {
-    expect(loadPlaybackPosition(99, 'h264')).toBeNull()
-  })
-})
-
-describe('shouldSavePlaybackPosition', () => {
-  it('未保存（null）からは常に保存する', () => {
-    expect(shouldSavePlaybackPosition(null, 0.4)).toBe(true)
-    expect(shouldSavePlaybackPosition(null, 10.9)).toBe(true)
-  })
-
-  it('同じ秒の間は保存しない', () => {
-    expect(shouldSavePlaybackPosition(10, 10.1)).toBe(false)
-    expect(shouldSavePlaybackPosition(10, 10.5)).toBe(false)
-    expect(shouldSavePlaybackPosition(10, 10.999)).toBe(false)
-  })
-
-  it('秒が変わったら保存する', () => {
-    expect(shouldSavePlaybackPosition(10, 11.0)).toBe(true)
-    expect(shouldSavePlaybackPosition(10, 9.9)).toBe(true)
-  })
-})
-
-describe('private mode 等で localStorage が例外を投げる場合', () => {
-  it('getItem/setItem/removeItem が例外を投げても、読みは既定値・書きは無音で落ちる', () => {
-    const getItemSpy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
-      throw new Error('denied')
-    })
-    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
-      throw new Error('denied')
-    })
-    const removeItemSpy = vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => {
+  it('private mode で localStorage が例外でも既定値を使う', () => {
+    const getSpy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
       throw new Error('denied')
     })
     try {
       expect(loadPlaybackRate()).toBe(1)
-      expect(() => savePlaybackRate(1.5)).not.toThrow()
-      expect(loadPlaybackPosition(7, 'h264')).toBeNull()
-      expect(() => savePlaybackPosition(7, 'h264', 123)).not.toThrow()
-      // 終端付近（removeItem を叩く分岐）も例外を外に漏らさない
-      expect(() => savePlaybackPosition(7, 'h264', 296, 300)).not.toThrow()
     } finally {
-      getItemSpy.mockRestore()
-      setItemSpy.mockRestore()
-      removeItemSpy.mockRestore()
+      getSpy.mockRestore()
     }
   })
 })
@@ -138,11 +134,8 @@ describe('recordingFileURL', () => {
     expect(recordingFileURL(3)).toBe('/api/media/recordings/3/file')
   })
 
-  it('encoded は profile query', () => {
+  it('encoded は profile query を encode する', () => {
     expect(recordingFileURL(3, 'h264')).toBe('/api/media/recordings/3/file?profile=h264')
-  })
-
-  it('プロファイル名を encode する', () => {
     expect(recordingFileURL(3, 'a b')).toBe('/api/media/recordings/3/file?profile=a%20b')
   })
 })

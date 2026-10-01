@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LivePlayer } from '@/components/live-player'
 import { liveStallTimeoutMs } from '@/lib/live'
 import type { LiveDiagnostics, StallHandling } from '@/lib/live'
-import { savePlaybackPosition, savePlaybackRate } from '@/lib/playback-position'
+import { savePlaybackRate } from '@/lib/playback-position'
 
 /**
  * hls.js 経路（Safari 以外のネイティブ HLS 非対応ブラウザ）の内部呼び出しを
@@ -796,7 +796,6 @@ describe('LivePlayer の状態遷移', () => {
   })
 
   it('ネイティブHLSでも明示した追っかけ開始位置から再生する', async () => {
-    savePlaybackPosition(10, 'vod-h264', 42)
     const { resolve } = deferredFetch()
     render(
       <LivePlayer
@@ -804,7 +803,6 @@ describe('LivePlayer の状態遷移', () => {
         site="default"
         recordingId={10}
         startOffsetSeconds={30}
-        playbackProfile="vod-h264"
       />,
     )
     const video = document.querySelector('video')!
@@ -833,7 +831,6 @@ describe('LivePlayer の状態遷移', () => {
         site="default"
         recordingId={83}
         profile="live-720p"
-        playbackProfile="vod-h264"
       />,
     )
     const video = document.querySelector('video')!
@@ -853,7 +850,6 @@ describe('LivePlayer の状態遷移', () => {
         site="default"
         recordingId={83}
         profile="live-480p"
-        playbackProfile="vod-h264"
       />,
     )
     await waitFor(() => expect(video.src).toContain('profile=live-480p'))
@@ -946,15 +942,14 @@ describe('LivePlayer の状態遷移', () => {
     })
 
     it('原本 VOD を HLS で開き、保存位置を復元する', async () => {
-      savePlaybackPosition(42, 'vod-h264', 23)
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
       render(
         <LivePlayer
           mode="original-vod"
           site="default"
           recordingId={42}
+          resumePositionMs={23_000}
           profile="hd"
-          playbackProfile="vod-h264"
         />,
       )
 
@@ -970,26 +965,26 @@ describe('LivePlayer の状態遷移', () => {
       expect(video.currentTime).toBe(23)
     })
 
-    it('追っかけで保存した位置を原本 VOD の hls.js startPosition に渡す（同じ軸のキー）', async () => {
+    it('サーバーで共有する原本時間軸の位置を原本 VOD の hls.js startPosition に渡す', async () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
       const chase = render(
-        <LivePlayer mode="chase" site="default" recordingId={90} profile="hd" playbackProfile="original" />,
+        <LivePlayer mode="chase" site="default" recordingId={90} profile="hd" />,
       )
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
       const chaseVideo = document.querySelector('video')!
       Object.defineProperty(chaseVideo, 'currentTime', { value: 42, writable: true, configurable: true })
       fireEvent.timeUpdate(chaseVideo)
-      expect(localStorage.getItem('rokuban:playback:90:original')).toBe('42')
+      expect(localStorage.getItem('rokuban:playback:90:original')).toBeNull()
       chase.unmount()
 
-      render(<LivePlayer mode="original-vod" site="default" recordingId={90} profile="hd" playbackProfile="original" />)
+      render(<LivePlayer mode="original-vod" site="default" recordingId={90} resumePositionMs={42_000} profile="hd" />)
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
       expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: 42 }])
     })
 
     it('原本 VOD は ENDLIST を見るまで duration を完了判定に使わない', async () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
-      render(<LivePlayer mode="original-vod" site="default" recordingId={44} profile="hd" playbackProfile="vod-h264" />)
+      render(<LivePlayer mode="original-vod" site="default" recordingId={44} profile="hd" />)
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
       const video = document.querySelector('video')!
       Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
@@ -999,14 +994,14 @@ describe('LivePlayer の状態遷移', () => {
 
       video.currentTime = 118
       fireEvent.timeUpdate(video)
-      expect(localStorage.getItem('rokuban:playback:44:vod-h264')).toBe('118')
+      expect(localStorage.getItem('rokuban:playback:44:vod-h264')).toBeNull()
 
       // ENDLIST を読んだ（live === false）後は、終端 5 秒以内の位置を残さない
       const levelLoaded = hlsMockState.instances[0]!.on.mock.calls.find((c) => c[0] === 'hlsLevelLoaded')![1]
       levelLoaded('hlsLevelLoaded', { fatal: false, details: { live: true } })
       video.currentTime = 119
       fireEvent.timeUpdate(video)
-      expect(localStorage.getItem('rokuban:playback:44:vod-h264')).toBe('119')
+      expect(localStorage.getItem('rokuban:playback:44:vod-h264')).toBeNull()
       levelLoaded('hlsLevelLoaded', { fatal: false, details: { live: false } })
       video.currentTime = 120
       fireEvent.timeUpdate(video)
@@ -1014,9 +1009,8 @@ describe('LivePlayer の状態遷移', () => {
     })
 
     it('原本 VOD の ended で保存位置を消す（ネイティブ経路も同じイベント）', async () => {
-      savePlaybackPosition(45, 'vod-h264', 50)
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
-      render(<LivePlayer mode="original-vod" site="default" recordingId={45} profile="hd" playbackProfile="vod-h264" />)
+      render(<LivePlayer mode="original-vod" site="default" recordingId={45} profile="hd" />)
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
       const video = document.querySelector('video')!
       Object.defineProperty(video, 'duration', { value: 120, configurable: true })
@@ -1030,7 +1024,6 @@ describe('LivePlayer の状態遷移', () => {
         mode: 'original-vod',
         site: 'default',
         recordingId: 43,
-        playbackProfile: 'vod-h264',
       } as const
       const { rerender } = render(<LivePlayer {...props} profile="hd" />)
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
@@ -1067,20 +1060,19 @@ describe('LivePlayer の状態遷移', () => {
     })
 
     it('追っかけは配信プロファイルと別のVODプロファイルで位置を復元する', async () => {
-      savePlaybackPosition(7, 'vod-h264', 12)
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
       render(
         <LivePlayer
           mode="chase"
           site="default"
           recordingId={7}
+          resumePositionMs={12_000}
           profile="live-720p"
-          playbackProfile="vod-h264"
         />,
       )
 
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
-      expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition: 0 }])
+      expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition: 12 }])
       expect(hlsMockState.instances[0]!.loadSource).toHaveBeenCalledWith(
         '/api/sites/default/recordings/7/chase/playlist.m3u8?profile=live-720p',
       )
@@ -1107,7 +1099,6 @@ describe('LivePlayer の状態遷移', () => {
           recordingId={81}
           startOffsetSeconds={30}
           profile="live-720p"
-          playbackProfile="vod-h264"
         />,
       )
 
@@ -1129,7 +1120,6 @@ describe('LivePlayer の状態遷移', () => {
           recordingId={81}
           startOffsetSeconds={30}
           profile="live-480p"
-          playbackProfile="vod-h264"
         />,
       )
 
@@ -1144,7 +1134,7 @@ describe('LivePlayer の状態遷移', () => {
       // 位置のキーは VOD 側のプロファイルのまま（画質ごとに分かれない）。
       // offset 付きは録画全体の秒数（12 + 30）で保存する
       fireEvent.timeUpdate(video)
-      expect(localStorage.getItem('rokuban:playback:81:vod-h264')).toBe('42')
+      expect(localStorage.getItem('rokuban:playback:81:vod-h264')).toBeNull()
       expect(localStorage.getItem('rokuban:playback:81:live-480p')).toBeNull()
     })
 
@@ -1159,7 +1149,6 @@ describe('LivePlayer の状態遷移', () => {
           site="default"
           recordingId={82}
           profile="live-720p"
-          playbackProfile="vod-h264"
         />,
       )
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
@@ -1169,7 +1158,7 @@ describe('LivePlayer の状態遷移', () => {
       fireEvent.canPlay(video)
       video.currentTime = 12
       fireEvent.timeUpdate(video)
-      expect(localStorage.getItem('rokuban:playback:82:vod-h264')).toBe('12')
+      expect(localStorage.getItem('rokuban:playback:82:vod-h264')).toBeNull()
 
       rerender(
         <LivePlayer
@@ -1177,14 +1166,13 @@ describe('LivePlayer の状態遷移', () => {
           site="default"
           recordingId={82}
           profile="live-480p"
-          playbackProfile="vod-h264"
         />,
       )
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
       video.currentTime = 0
       fireEvent.timeUpdate(video)
       fireEvent.pause(video)
-      expect(localStorage.getItem('rokuban:playback:82:vod-h264')).toBe('12')
+      expect(localStorage.getItem('rokuban:playback:82:vod-h264')).toBeNull()
 
       // 戻し終える前にもう一度切り替えても、要素の位置（0）ではなく持ち越し中の
       // 位置を引き継ぐ
@@ -1194,7 +1182,6 @@ describe('LivePlayer の状態遷移', () => {
           site="default"
           recordingId={82}
           profile="live-360p"
-          playbackProfile="vod-h264"
         />,
       )
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(3))
@@ -1205,30 +1192,29 @@ describe('LivePlayer の状態遷移', () => {
       expect(video.currentTime).toBe(12)
       video.currentTime = 14
       fireEvent.timeUpdate(video)
-      expect(localStorage.getItem('rokuban:playback:82:vod-h264')).toBe('14')
+      expect(localStorage.getItem('rokuban:playback:82:vod-h264')).toBeNull()
     })
 
-    it('位置のキーが変わった後の画質切替でも、保存位置ではなく切替直前の位置に戻す', async () => {
-      // playbackProfile の変化は復元を立ち直らせるが、メイン effect は再実行
-      // しない。続く画質切替で持ち越しが復元に負けると、別キーの保存位置へ飛ぶ。
-      savePlaybackPosition(84, 'vod-h265', 40)
+    it('サーバー再開位置が更新された後の画質切替も、切替直前の位置を持ち越す', async () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
       const props = { mode: 'chase', site: 'default', recordingId: 84 } as const
       const { rerender } = render(
-        <LivePlayer {...props} profile="live-720p" playbackProfile="vod-h264" />,
+        <LivePlayer {...props} resumePositionMs={40_000} profile="live-720p" />,
       )
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
       const video = document.querySelector('video')!
       Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
       fireEvent.loadedMetadata(video)
       fireEvent.canPlay(video)
+      expect(video.currentTime).toBe(40)
       video.currentTime = 12
 
-      rerender(<LivePlayer {...props} profile="live-720p" playbackProfile="vod-h265" />)
-      rerender(<LivePlayer {...props} profile="live-480p" playbackProfile="vod-h265" />)
+      rerender(<LivePlayer {...props} resumePositionMs={30_000} profile="live-720p" />)
+      expect(hlsMockState.instances).toHaveLength(1)
+      rerender(<LivePlayer {...props} resumePositionMs={30_000} profile="live-480p" />)
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
       expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: 12 }])
-      // 最終値だけでなく、途中で保存位置（40）へ seek しないことも見る
+      // 最終値だけでなく、途中で更新後のサーバー位置（30）へ seek しないことも見る
       // （最後に 12 へ戻るのはリスナの登録順に依存しているだけ）。
       let position = 0
       const assigned: number[] = []
@@ -1243,34 +1229,32 @@ describe('LivePlayer の状態遷移', () => {
       fireEvent.loadedMetadata(video)
       fireEvent.canPlay(video)
       expect(video.currentTime).toBe(12)
-      expect(assigned).not.toContain(40)
+      expect(assigned).not.toContain(30)
     })
 
     it('最初の読み込みが終わる前に画質を切り替えても、保存位置から再生する', async () => {
       // probe 中（ffmpeg の起動待ち）の切替。読み込まれていない要素の位置 0 を
       // 持ち越すと、復元が潰れて保存位置が消える。
-      savePlaybackPosition(85, 'vod-h264', 40)
       const { resolve } = deferredFetch()
       const props = { mode: 'chase', site: 'default', recordingId: 85 } as const
       const { rerender } = render(
-        <LivePlayer {...props} profile="live-720p" playbackProfile="vod-h264" />,
+        <LivePlayer {...props} resumePositionMs={40_000} profile="live-720p" />,
       )
       const video = document.querySelector('video')!
       Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
-      rerender(<LivePlayer {...props} profile="live-480p" playbackProfile="vod-h264" />)
+      rerender(<LivePlayer {...props} resumePositionMs={40_000} profile="live-480p" />)
       resolve(new Response('', { status: 200 }))
 
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
-      expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition: 0 }])
+      expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition: 40 }])
       fireEvent.loadedMetadata(video)
       fireEvent.canPlay(video)
       expect(video.currentTime).toBe(40)
       fireEvent.timeUpdate(video)
-      expect(localStorage.getItem('rokuban:playback:85:vod-h264')).toBe('40')
+      expect(localStorage.getItem('rokuban:playback:85:vod-h264')).toBeNull()
     })
 
     it('指定した開始オフセットから読み、保存位置を上書きせず録画全体の秒数で扱う', async () => {
-      savePlaybackPosition(8, 'vod-h264', 42)
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
       render(
         <LivePlayer
@@ -1278,7 +1262,6 @@ describe('LivePlayer の状態遷移', () => {
           site="default"
           recordingId={8}
           startOffsetSeconds={30}
-          playbackProfile="vod-h264"
         />,
       )
 
@@ -1293,19 +1276,18 @@ describe('LivePlayer の状態遷移', () => {
 
       video.currentTime = 13
       fireEvent.timeUpdate(video)
-      expect(localStorage.getItem('rokuban:playback:8:vod-h264')).toBe('43')
+      expect(localStorage.getItem('rokuban:playback:8:vod-h264')).toBeNull()
     })
 
     it('録画先頭を明示したときも保存位置を復元しない', async () => {
-      savePlaybackPosition(9, 'vod-h264', 42)
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
       render(
         <LivePlayer
           mode="chase"
           site="default"
           recordingId={9}
+          resumePositionMs={45_000}
           startOffsetSeconds={0}
-          playbackProfile="vod-h264"
         />,
       )
 
@@ -1327,7 +1309,6 @@ describe('LivePlayer の状態遷移', () => {
           site="default"
           recordingId={70}
           profile="live-720p"
-          playbackProfile="vod-h264"
         />,
       )
 
@@ -1337,24 +1318,23 @@ describe('LivePlayer の状態遷移', () => {
       Object.defineProperty(video, 'currentTime', { value: 119.9, writable: true, configurable: true })
 
       fireEvent.timeUpdate(video)
-      expect(localStorage.getItem('rokuban:playback:70:vod-h264')).toBe('119')
+      expect(localStorage.getItem('rokuban:playback:70:vod-h264')).toBeNull()
 
       localStorage.clear()
       fireEvent.pause(video)
-      expect(localStorage.getItem('rokuban:playback:70:vod-h264')).toBe('119')
+      expect(localStorage.getItem('rokuban:playback:70:vod-h264')).toBeNull()
     })
 
     it('fatal エラー後の再読み込みでも追っかけの再生位置を復元する', async () => {
       const user = userEvent.setup()
-      savePlaybackPosition(71, 'vod-h264', 12)
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
       render(
         <LivePlayer
           mode="chase"
           site="default"
           recordingId={71}
+          resumePositionMs={12_000}
           profile="live-720p"
-          playbackProfile="vod-h264"
         />,
       )
 

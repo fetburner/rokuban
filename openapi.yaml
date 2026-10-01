@@ -1115,6 +1115,26 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/recordings/continue-watching:
+    get:
+      operationId: listContinueWatching
+      summary: List recordings to resume
+      description: |
+        再生位置があり、録画中または完了で supersede されていない録画を、
+        位置の更新時刻の降順で返す。ごみ箱・purge 済みの録画は含めない。
+        同じ放送イベントのいずれかの録画が視聴済みなら除外する。
+        home 専用の一覧で、履歴の更新順を番組開始時刻順の一覧と分ける。
+        上限は 6 件。位置の更新時刻は応答には含めない。
+      responses:
+        "200":
+          description: Recordings with resumable positions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Recording"
+
   /api/recordings/{id}:
     parameters:
       - name: id
@@ -1168,6 +1188,101 @@ paths:
       responses:
         "204":
           description: Soft-deleted (or already in trash)
+        "404":
+          description: Recording not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/recordings/{id}/playback-position:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    put:
+      operationId: putRecordingPlaybackPosition
+      summary: Save a recording playback position
+      description: |
+        原本の時間軸上の位置をミリ秒で保存する。カット版の位置は
+        現在のファイルに凍結された keep 区間で原本の時間軸へ変換する。
+        先頭付近と終端 90% 以降の位置はクライアントが送らない。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [positionMs]
+              properties:
+                positionMs:
+                  type: integer
+                  format: int64
+                  minimum: 2000
+                  description: 原本先頭からのミリ秒
+      responses:
+        "204":
+          description: Position saved
+        "400":
+          description: Position must be at least two seconds from the start
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Recording not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteRecordingPlaybackPosition
+      summary: Clear a recording playback position
+      description: 位置の行を削除する。既に無い場合も 204。
+      responses:
+        "204":
+          description: Position cleared
+        "404":
+          description: Recording not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/recordings/{id}/watched:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    put:
+      operationId: putRecordingWatched
+      summary: Mark a recording watched
+      description: |
+        指定した録画に印を立て、同じトランザクションでその録画の再生位置を消す。
+        一覧の watchedAt は同じ放送イベント
+        (networkId, serviceId, startAt) の全行から束ねて読む。
+      responses:
+        "204":
+          description: Watched marker saved
+        "404":
+          description: Recording not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteRecordingWatched
+      summary: Mark a broadcast event unwatched
+      description: 同じ放送イベントに属する全録画の印を削除する。既に無い場合も 204。
+      responses:
+        "204":
+          description: Watched markers cleared
         "404":
           description: Recording not found
           content:
@@ -2719,6 +2834,18 @@ components:
           description: 録画の実終了時刻。常に UTC（"Z" 終端の RFC3339）で返す。
           type: string
           format: date-time
+        resumePositionMs:
+          description: 原本の時間軸上にある再開位置。位置の行がある録画のみ。
+          type: integer
+          format: int64
+          readOnly: true
+        watchedAt:
+          description: |
+            同じ放送イベント (networkId, serviceId, startAt) の全録画から束ねた視聴済み時刻。
+            いずれかの行に印がある場合だけ返す。常に UTC。
+          type: string
+          format: date-time
+          readOnly: true
         sizeBytes:
           description: |
             原本の実サイズ。ingest 済み（media_assets 行あり）の場合のみ。
@@ -2917,6 +3044,14 @@ components:
             （api が `chapters.Derive` を通した keep 区間と突き合わせる。
             不変条件 9）。
           type: boolean
+        keepRanges:
+          description: |
+            配信中のカット版を作ったときに凍結した keep 区間。原本の時間軸上の ms。
+            同じプロファイル名の再作成で時間軸が変わるため、現在のチャプターから
+            再計算した区間ではなく、この asset に紐づく値を返す。
+          type: array
+          items:
+            $ref: "#/components/schemas/KeepRange"
         sizeBytes:
           description: |
             encoded 派生物の実サイズ。`media_assets.size_bytes` は NOT NULL
@@ -2928,6 +3063,17 @@ components:
             選択肢そのものは隠さない（ドロップ統計の「分類できなかった PID」と
             同じ判断。docs/frontend/recordings.md）という UI 側の表示規律を
             型で表現するため。
+          type: integer
+          format: int64
+
+    KeepRange:
+      type: object
+      required: [startMs, endMs]
+      properties:
+        startMs:
+          type: integer
+          format: int64
+        endMs:
           type: integer
           format: int64
 

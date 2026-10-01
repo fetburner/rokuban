@@ -32,6 +32,7 @@ type RescueResult struct {
 	Recordings              int
 	RecordingEncodePolicies int
 	RecordingPurgeRequests  int
+	RecordingWatched        int
 	MediaAssets             int
 	DropStats               int
 	DropPositions           int
@@ -224,6 +225,9 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document, mediaDir strin
 	// 何も書かない --- 「即時削除の要求は無い」は行の不在そのものが意味を持つ
 	// （不変条件 10）。
 	if err := applyRecordingPurgeRequests(ctx, q, doc.RecordingPurgeRequests, res); err != nil {
+		return nil, err
+	}
+	if err := applyRecordingWatched(ctx, q, doc.RecordingWatched, res); err != nil {
 		return nil, err
 	}
 
@@ -454,6 +458,19 @@ func applyRecordingPurgeRequests(ctx context.Context, q *sqlcgen.Queries, reques
 		}
 	}
 	res.RecordingPurgeRequests = len(requests)
+	return nil
+}
+
+func applyRecordingWatched(ctx context.Context, q *sqlcgen.Queries, rows []RecordingWatched, res *RescueResult) error {
+	for _, row := range rows {
+		if err := q.CatalogUpsertRecordingWatched(ctx, sqlcgen.CatalogUpsertRecordingWatchedParams{
+			RecordingID: row.RecordingID,
+			WatchedAt:   row.WatchedAt,
+		}); err != nil {
+			return fmt.Errorf("upserting recording_watched %d: %w", row.RecordingID, err)
+		}
+	}
+	res.RecordingWatched = len(rows)
 	return nil
 }
 

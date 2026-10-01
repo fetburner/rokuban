@@ -55,7 +55,10 @@ type recordingListFields struct {
 	// コメント参照。nil（trash など SELECT に含めなかった行）と `[]`（active な
 	// encoded が無い行）は区別しない --- どちらも recordingFromListFields で
 	// EncodedAssets を省略する結果になる。
-	AvailableEncodedAssets json.RawMessage
+	AvailableEncodedAssets  json.RawMessage
+	ResumePositionMs        *int64
+	ResumePositionUpdatedAt *time.Time
+	WatchedAt               *time.Time
 	// EncodeProfiles は凍結された desired 一覧（recording_encode_policy.encode_profiles）。
 	// AvailableEncodedAssets（observed、active のみ）とは異なり、pending な
 	// ジョブのプロファイルも含む。事後追加（issue #133）で増える唯一の経路。
@@ -442,14 +445,19 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool, profi
 				if len(row.KeepRanges) == 0 || string(row.KeepRanges) == "null" {
 					continue
 				}
-				// 凍結した区間がある = cut 版。値そのものは API に出さず、
-				// 「現在のタイムラインと一致するか」だけを出す。
+				// 凍結した区間がある = cut 版。asset の再生位置変換に使う
+				// keepRanges と、現在のタイムラインと一致するかの cutStale を返す。
 				isCut := true
 				assets[i].Cut = &isCut
 				var frozenRanges []chapters.Range
 				if err := json.Unmarshal(row.KeepRanges, &frozenRanges); err != nil {
 					return Recording{}, fmt.Errorf("decoding frozen cut ranges for recording %d: %w", r.ID, err)
 				}
+				keepRanges := make([]KeepRange, len(frozenRanges))
+				for j, keepRange := range frozenRanges {
+					keepRanges[j] = KeepRange{StartMs: keepRange.StartMs, EndMs: keepRange.EndMs}
+				}
+				assets[i].KeepRanges = &keepRanges
 				stale := r.ChaptersOwned && len(currentKeep) > 0 && !chapters.SameRanges(frozenRanges, currentKeep)
 				assets[i].CutStale = &stale
 			}
@@ -480,6 +488,11 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool, profi
 			rec.QualityEvents = &events
 		}
 	}
+	if r.ResumePositionMs != nil {
+		position := *r.ResumePositionMs
+		rec.ResumePositionMs = &position
+	}
+	rec.WatchedAt = utcTimePtr(r.WatchedAt)
 	return rec, nil
 }
 

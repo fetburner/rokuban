@@ -122,6 +122,11 @@ export function RecordingRow({
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
           <StatusBadge status={recording.status} />
+          {!trash && recording.status === 'finished' && recording.watchedAt === undefined && (
+            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">
+              未視聴
+            </span>
+          )}
           <IngestBadge recording={recording} />
           {/* エンコード失敗は StatusBadge / IngestBadge と同じ「この録画の
               パイプラインがどこで止まっているか」なので隣に置く。メタデータ列の

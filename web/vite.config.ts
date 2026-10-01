@@ -13,6 +13,8 @@ export default defineConfig({
     },
   },
   server: {
+    // Shared Go/TypeScript test vectors live at the repository root.
+    fs: { allow: [path.resolve(__dirname, '..')] },
     proxy: {
       '/api': 'http://localhost:40773',
       '/healthz': 'http://localhost:40773',

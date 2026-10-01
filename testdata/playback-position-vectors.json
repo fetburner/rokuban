@@ -1,0 +1,34 @@
+{
+  "ranges": [
+    { "startMs": 0, "endMs": 10000 },
+    { "startMs": 20000, "endMs": 40000 },
+    { "startMs": 50000, "endMs": 80000 }
+  ],
+  "originalToCut": [
+    { "fromMs": 0, "toMs": 0 },
+    { "fromMs": 5000, "toMs": 5000 },
+    { "fromMs": 10000, "toMs": 10000 },
+    { "fromMs": 20000, "toMs": 10000 },
+    { "fromMs": 30000, "toMs": 20000 },
+    { "fromMs": 50000, "toMs": 30000 },
+    { "fromMs": 80000, "toMs": 60000 }
+  ],
+  "cutToOriginal": [
+    { "fromMs": 0, "toMs": 0 },
+    { "fromMs": 5000, "toMs": 5000 },
+    { "fromMs": 10000, "toMs": 20000 },
+    { "fromMs": 15000, "toMs": 25000 },
+    { "fromMs": 30000, "toMs": 50000 },
+    { "fromMs": 35000, "toMs": 55000 },
+    { "fromMs": 60000, "toMs": 80000 },
+    { "fromMs": 70000, "toMs": 80000 }
+  ],
+  "outsideOriginalToCut": [
+    { "fromMs": 10001, "toMs": 10000 },
+    { "fromMs": 15000, "toMs": 10000 },
+    { "fromMs": 19999, "toMs": 10000 },
+    { "fromMs": 40000, "toMs": 30000 },
+    { "fromMs": 45000, "toMs": 30000 },
+    { "fromMs": 90000, "toMs": 60000 }
+  ]
+}

@@ -54,6 +54,8 @@ type recordingsFilter struct {
 	// bool に落として持つ（フィールド名 Desc が同名パッケージ定数と紛れるのを
 	// 避けるため）。
 	SortDesc bool
+	// ContinueWatching は再開位置の更新時刻で並べるホーム用コレクション。
+	ContinueWatching bool
 
 	Before   *time.Time
 	BeforeID *int64
@@ -329,7 +331,17 @@ const (
     -- （label_rule_hits は PK なので実際には増えないが、読み手がそれを確かめる
     -- 必要がある）を避けるため。一覧は LIMIT 50 なので 1 行 1 回の PK 引き。
 	    (SELECT s.value FROM recording_series s WHERE s.recording_id = r.id) AS series,
-	    r.series_key AS series_key`
+	    r.series_key AS series_key,
+	    pp.position_ms AS resume_position_ms,
+	    pp.updated_at AS resume_position_updated_at,
+	    (
+	        SELECT max(w.watched_at)
+	        FROM recording_watched w
+	        JOIN recordings event_recording ON event_recording.id = w.recording_id
+	        WHERE event_recording.network_id = r.network_id
+	          AND event_recording.service_id = r.service_id
+	          AND event_recording.program_start_at = r.program_start_at
+	    ) AS watched_at`
 
 	// recordingsAvailableEncodedAssetsSelect はブラウザ再生用の観測列（active な
 	// encoded のみ）。先頭にカンマを持つので recordingsSelectColumns の直後に
@@ -387,6 +399,7 @@ LEFT JOIN media_assets a
     ON a.recording_id = r.id AND a.kind = 'original' AND a.state <> 'deleted'
 LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
 LEFT JOIN recording_ingest_progress ip ON ip.recording_id = r.id
+LEFT JOIN recording_playback_positions pp ON pp.recording_id = r.id
 -- state を絞らず kind = 'original' の media_assets 行を JOIN しても二重計上しないのは、
 -- media_assets_recording_id_kind_profile_key（UNIQUE NULLS NOT DISTINCT
 -- (recording_id, kind, profile)）が recording_id ごとに original を高々 1 行に
@@ -516,6 +529,21 @@ func buildRecordingsQuery(f recordingsFilter) (string, []any, error) {
 	if f.From != nil {
 		and("r.program_start_at >= " + arg(*f.From))
 	}
+	if f.ContinueWatching {
+		and("pp.recording_id IS NOT NULL")
+		and("r.deleted_at IS NULL")
+		and("r.purged_at IS NULL")
+		and("r.superseded_at IS NULL")
+		and("r.status IN ('recording', 'finished')")
+		and(`NOT EXISTS (
+            SELECT 1
+            FROM recordings event_recording
+            JOIN recording_watched w ON w.recording_id = event_recording.id
+            WHERE event_recording.network_id = r.network_id
+              AND event_recording.service_id = r.service_id
+              AND event_recording.program_start_at = r.program_start_at
+        )`)
+	}
 	if f.To != nil {
 		and("r.program_start_at < " + arg(*f.To))
 	}
@@ -539,10 +567,15 @@ func buildRecordingsQuery(f recordingsFilter) (string, []any, error) {
 
 	limitPlaceholder := arg(f.Limit)
 
+	orderBy := "r.program_start_at " + orderDir + ", r.id " + orderDir
+	if f.ContinueWatching {
+		orderBy = "pp.updated_at DESC, r.id DESC"
+	}
+
 	sql := `
 SELECT` + recordingsSelectColumns + recordingsAvailableEncodedAssetsSelect + recordingsFromJoins + `
 WHERE ` + where.String() + `
-ORDER BY r.program_start_at ` + orderDir + `, r.id ` + orderDir + `
+ORDER BY ` + orderBy + `
 LIMIT ` + limitPlaceholder
 
 	return sql, args, nil
@@ -618,6 +651,9 @@ WHERE r.id = $1 AND r.purged_at IS NULL`
 		&fields.ChaptersOwned, &fields.ChapterSpans,
 		&fields.Series,
 		&fields.SeriesKey,
+		&fields.ResumePositionMs,
+		&fields.ResumePositionUpdatedAt,
+		&fields.WatchedAt,
 		&fields.AvailableEncodedAssets,
 	)
 	if err != nil {
@@ -666,6 +702,9 @@ func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter
 			&fields.ChaptersOwned, &fields.ChapterSpans,
 			&fields.Series,
 			&fields.SeriesKey,
+			&fields.ResumePositionMs,
+			&fields.ResumePositionUpdatedAt,
+			&fields.WatchedAt,
 			&fields.AvailableEncodedAssets,
 		); err != nil {
 			return nil, fmt.Errorf("scanning recording row: %w", err)

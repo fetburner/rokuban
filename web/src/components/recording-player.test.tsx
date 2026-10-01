@@ -1,12 +1,24 @@
-import { fireEvent, render } from '@testing-library/react'
+import { fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { RecordingPlayer } from '@/components/recording-player'
 
 afterEach(() => {
   localStorage.clear()
+  vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
+
+function stubSuccessfulAPI() {
+  const fetchMock = vi.fn().mockResolvedValue({
+    ok: true,
+    status: 204,
+    statusText: 'No Content',
+    headers: new Headers(),
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  return fetchMock
+}
 
 /** jsdom の video 要素は currentTime/duration の実再生をしないので、テスト側から直接設定する。 */
 function setMediaProps(
@@ -50,153 +62,188 @@ describe('RecordingPlayer の字幕サイドカー', () => {
   })
 })
 
-describe('RecordingPlayer の timeupdate 間引き', () => {
-  it('同一秒内の連続した timeupdate で localStorage への書き込みが 1 回に収まる', () => {
-    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem')
-    const { container } = render(<RecordingPlayer recordingId={7} encodedAssets={[{ profile: 'h264', sizeBytes: 123 }]} />)
+describe('RecordingPlayer のサーバー再生位置', () => {
+  it('pause で原本時間軸の ms を API に保存する', async () => {
+    const fetchMock = stubSuccessfulAPI()
+    const { container } = render(
+      <RecordingPlayer recordingId={9} encodedAssets={[{ profile: 'h264', sizeBytes: 123 }]} />,
+    )
     const video = container.querySelector('video')!
 
-    // 4Hz 相当（0.25 秒間隔）で同一秒内に 4 回発火させる
-    for (const t of [10.0, 10.25, 10.5, 10.75]) {
-      setMediaProps(video, { currentTime: t, duration: 300 })
-      fireEvent.timeUpdate(video)
-    }
-
-    expect(setItemSpy).toHaveBeenCalledTimes(1)
-  })
-
-  it('秒をまたぐと再び書き込む', () => {
-    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem')
-    const { container } = render(<RecordingPlayer recordingId={8} encodedAssets={[{ profile: 'h264', sizeBytes: 123 }]} />)
-    const video = container.querySelector('video')!
-
-    for (const t of [10.0, 10.5, 11.0, 11.5]) {
-      setMediaProps(video, { currentTime: t, duration: 300 })
-      fireEvent.timeUpdate(video)
-    }
-
-    expect(setItemSpy).toHaveBeenCalledTimes(2)
-  })
-
-  it('pause は間引かず必ず保存する', () => {
-    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem')
-    const { container } = render(<RecordingPlayer recordingId={9} encodedAssets={[{ profile: 'h264', sizeBytes: 123 }]} />)
-    const video = container.querySelector('video')!
-
-    // timeupdate で 10 秒として 1 回保存済みの状態にする
-    setMediaProps(video, { currentTime: 10.0, duration: 300 })
-    fireEvent.timeUpdate(video)
-    expect(setItemSpy).toHaveBeenCalledTimes(1)
-
-    // 同じ秒のまま pause しても、間引かずに必ず書き込む
-    setMediaProps(video, { currentTime: 10.2, duration: 300 })
-    fireEvent.pause(video)
-    expect(setItemSpy).toHaveBeenCalledTimes(2)
-  })
-
-  it('終端付近で pause すると removeItem が走る（続きから再開しない）', () => {
-    const removeItemSpy = vi.spyOn(Storage.prototype, 'removeItem')
-    const { container } = render(<RecordingPlayer recordingId={10} encodedAssets={[{ profile: 'h264', sizeBytes: 123 }]} />)
-    const video = container.querySelector('video')!
-
-    setMediaProps(video, { currentTime: 296, duration: 300 })
+    setMediaProps(video, { currentTime: 30.25, duration: 300 })
     fireEvent.pause(video)
 
-    expect(removeItemSpy).toHaveBeenCalledWith('rokuban:playback:10:original')
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    expect(fetchMock).toHaveBeenCalledWith('/api/recordings/9/playback-position', expect.objectContaining({
+      method: 'PUT',
+      body: JSON.stringify({ positionMs: 30_250 }),
+    }))
+    expect(Object.keys(localStorage)).toEqual([])
   })
 
-  it('プロファイル切替で間引き状態がリセットされる（旧プロファイルの秒を引きずらない）', () => {
-    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem')
+  it('2 秒未満と終端 90% では位置を消し、視聴済みにする', async () => {
+    const fetchMock = stubSuccessfulAPI()
     const { container } = render(
-      <RecordingPlayer
-        recordingId={11}
-        encodedAssets={[
-          { profile: 'h264', sizeBytes: 123 },
-          { profile: 'h265', sizeBytes: 456 },
-        ]}
-      />,
+      <RecordingPlayer recordingId={10} encodedAssets={[{ profile: 'h264', sizeBytes: 123 }]} />,
     )
+    const video = container.querySelector('video')!
 
-    let video = container.querySelector('video')!
-    setMediaProps(video, { currentTime: 10.0, duration: 300 })
+    setMediaProps(video, { currentTime: 1.5, duration: 300 })
+    fireEvent.pause(video)
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    expect(fetchMock.mock.calls[0]![0]).toBe('/api/recordings/10/playback-position')
+    expect(fetchMock.mock.calls[0]![1]).toEqual(expect.objectContaining({ method: 'DELETE' }))
+
+    fetchMock.mockClear()
+    setMediaProps(video, { currentTime: 270, duration: 300 })
     fireEvent.timeUpdate(video)
-    expect(setItemSpy).toHaveBeenCalledTimes(1)
-
-    // h265 に切り替える（video 要素は key 変更で作り直される）
-    fireEvent.change(container.querySelector('select')!, { target: { value: 'h265' } })
-
-    // 切替後の video で同じ 10 秒台の timeupdate が来ても、リセットされていれば保存する
-    video = container.querySelector('video')!
-    setMediaProps(video, { currentTime: 10.0, duration: 300 })
-    fireEvent.timeUpdate(video)
-
-    expect(setItemSpy).toHaveBeenCalledTimes(2)
-  })
-})
-
-describe('RecordingPlayer の再生位置キー（時間軸）', () => {
-  it('cut でない資産は profile が違っても同じ cut 前の軸のキーを共有する', () => {
-    const { container } = render(
-      <RecordingPlayer
-        recordingId={12}
-        encodedAssets={[
-          { profile: 'h264', sizeBytes: 1 },
-          { profile: 'h265', sizeBytes: 2 },
-        ]}
-      />,
-    )
-    let video = container.querySelector('video')!
-    setMediaProps(video, { currentTime: 30, duration: 300 })
-    fireEvent.timeUpdate(video)
-    fireEvent.change(container.querySelector('select')!, { target: { value: 'h265' } })
-    video = container.querySelector('video')!
-    setMediaProps(video, { currentTime: 40, duration: 300 })
-    fireEvent.timeUpdate(video)
-    expect(Object.keys(localStorage)).toEqual(['rokuban:playback:12:original'])
-    expect(localStorage.getItem('rokuban:playback:12:original')).toBe('40')
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    expect(fetchMock).toHaveBeenCalledWith('/api/recordings/10/watched', expect.objectContaining({ method: 'PUT' }))
   })
 
-  it('cut 版は自分の時間軸のキーに保存し、cut 前の軸の位置を読まない', () => {
-    localStorage.setItem('rokuban:playback:13:original', '500')
+  it('カット版の再開 ms を復元し、pause 位置を原本時間軸へ変換する', async () => {
+    const fetchMock = stubSuccessfulAPI()
+    const keepRanges = [
+      { startMs: 10_000, endMs: 20_000 },
+      { startMs: 30_000, endMs: 50_000 },
+    ]
     const { container } = render(
       <RecordingPlayer
         recordingId={13}
-        preferredProfile="cut-h264"
+        resumePositionMs={15_000}
+        preferredProfile="cut"
         encodedAssets={[
-          { profile: 'h264', sizeBytes: 1 },
-          { profile: 'cut-h264', sizeBytes: 2, cut: true },
+          { profile: 'cut', sizeBytes: 2, cut: true, keepRanges },
         ]}
+      />,
+    )
+    const video = container.querySelector('video')!
+    setMediaProps(video, { currentTime: 0, duration: 30 })
+    fireEvent.loadedMetadata(video)
+    expect(video.currentTime).toBe(5)
+
+    setMediaProps(video, { currentTime: 10, duration: 30 })
+    fireEvent.pause(video)
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    expect(fetchMock).toHaveBeenCalledWith('/api/recordings/13/playback-position', expect.objectContaining({
+      method: 'PUT',
+      body: JSON.stringify({ positionMs: 30_000 }),
+    }))
+  })
+
+  it('90% 到達の視聴済み PUT が通ったら onWatched を呼ぶ', async () => {
+    stubSuccessfulAPI()
+    const onWatched = vi.fn()
+    const { container } = render(
+      <RecordingPlayer
+        recordingId={14}
+        onWatched={onWatched}
+        encodedAssets={[{ profile: 'h264', sizeBytes: 123 }]}
       />,
     )
     const video = container.querySelector('video')!
     setMediaProps(video, { currentTime: 0, duration: 300 })
     fireEvent.loadedMetadata(video)
-    expect(video.currentTime).toBe(0)
-    setMediaProps(video, { currentTime: 60, duration: 300 })
+    setMediaProps(video, { currentTime: 270, duration: 300 })
     fireEvent.timeUpdate(video)
-    expect(localStorage.getItem('rokuban:playback:13:cut-h264')).toBe('60')
-    expect(localStorage.getItem('rokuban:playback:13:original')).toBe('500')
+    await waitFor(() => expect(onWatched).toHaveBeenCalledTimes(1))
   })
 
-  it('cut 版のキー（プロファイル名）は、cut でない資産では読まず、cut 版では復元する', () => {
-    localStorage.setItem('rokuban:playback:14:cut', '300')
+  describe('同じページ内の画質切替（resumePositionMs はページを開いた時点の値のまま）', () => {
+    const keepRanges = [
+      { startMs: 10_000, endMs: 20_000 },
+      { startMs: 30_000, endMs: 50_000 },
+    ]
     const assets = [
       { profile: 'h264', sizeBytes: 1 },
-      { profile: 'cut', sizeBytes: 2, cut: true },
+      { profile: 'h265', sizeBytes: 2 },
+      { profile: 'cut', sizeBytes: 3, cut: true, keepRanges },
     ]
-    const plain = render(<RecordingPlayer recordingId={14} preferredProfile="h264" encodedAssets={assets} />)
-    const v1 = plain.container.querySelector('video')!
-    setMediaProps(v1, { currentTime: 0, duration: 600 })
-    fireEvent.loadedMetadata(v1)
-    expect(v1.currentTime).toBe(0)
-    expect(localStorage.getItem('rokuban:playback:14:cut')).toBe('300')
-    plain.unmount()
 
-    const cut = render(<RecordingPlayer recordingId={14} preferredProfile="cut" encodedAssets={assets} />)
-    const v2 = cut.container.querySelector('video')!
-    setMediaProps(v2, { currentTime: 0, duration: 600 })
-    fireEvent.loadedMetadata(v2)
-    expect(v2.currentTime).toBe(300)
+    function switchTo(container: HTMLElement, profile: string) {
+      fireEvent.change(container.querySelector('select')!, { target: { value: profile } })
+      const video = container.querySelector('video')!
+      setMediaProps(video, { currentTime: 0, duration: 1000 })
+      fireEvent.loadedMetadata(video)
+      return video
+    }
+
+    function watch(container: HTMLElement, seconds: number) {
+      const video = container.querySelector('video')!
+      setMediaProps(video, { currentTime: 0, duration: 1000 })
+      fireEvent.loadedMetadata(video)
+      setMediaProps(video, { currentTime: seconds, duration: 1000 })
+      fireEvent.pause(video)
+    }
+
+    it('非カット → 非カットは同じ原本秒から始まる', () => {
+      stubSuccessfulAPI()
+      const { container } = render(
+        <RecordingPlayer recordingId={20} resumePositionMs={5_000} preferredProfile="h264" encodedAssets={assets} />,
+      )
+      watch(container, 600)
+      expect(switchTo(container, 'h265').currentTime).toBe(600)
+    })
+
+    it('非カット → カットは対応するカット版の秒から始まる', () => {
+      stubSuccessfulAPI()
+      const { container } = render(
+        <RecordingPlayer recordingId={21} resumePositionMs={5_000} preferredProfile="h264" encodedAssets={assets} />,
+      )
+      watch(container, 35)
+      // 原本 35 s = keep[1] の 5 s 目 = カット版 10 + 5 s
+      expect(switchTo(container, 'cut').currentTime).toBe(15)
+    })
+
+    it('カット → 非カットは原本の秒から始まる', () => {
+      stubSuccessfulAPI()
+      const { container } = render(
+        <RecordingPlayer recordingId={22} resumePositionMs={5_000} preferredProfile="cut" encodedAssets={assets} />,
+      )
+      watch(container, 15)
+      expect(switchTo(container, 'h264').currentTime).toBe(35)
+    })
+  })
+
+  it('再生中に keepRanges が別世代へ変わっても、保存される原本の秒は各世代の変換表で写される', async () => {
+    const fetchMock = stubSuccessfulAPI()
+    const oldRanges = [
+      { startMs: 10_000, endMs: 20_000 },
+      { startMs: 30_000, endMs: 50_000 },
+    ]
+    const newRanges = [
+      { startMs: 25_000, endMs: 35_000 },
+      { startMs: 60_000, endMs: 80_000 },
+    ]
+    const props = { recordingId: 23, preferredProfile: 'cut' }
+    const { container, rerender } = render(
+      <RecordingPlayer {...props} encodedAssets={[{ profile: 'cut', sizeBytes: 2, cut: true, keepRanges: oldRanges }]} />,
+    )
+    const oldVideo = container.querySelector('video')!
+    setMediaProps(oldVideo, { currentTime: 0, duration: 30 })
+    fireEvent.loadedMetadata(oldVideo)
+    setMediaProps(oldVideo, { currentTime: 12, duration: 30 })
+    fireEvent.pause(oldVideo)
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    expect(fetchMock.mock.calls[0]![1]).toEqual(expect.objectContaining({ body: JSON.stringify({ positionMs: 32_000 }) }))
+
+    rerender(
+      <RecordingPlayer {...props} encodedAssets={[{ profile: 'cut', sizeBytes: 2, cut: true, keepRanges: newRanges }]} />,
+    )
+    const newVideo = container.querySelector('video')!
+    // 別世代のファイルなので <video> ごと作り直される。
+    expect(newVideo).not.toBe(oldVideo)
+    setMediaProps(newVideo, { currentTime: 0, duration: 30 })
+    fireEvent.loadedMetadata(newVideo)
+    // 原本 32 s は新世代の keep 外（25-35 の中なので 7 s 目 = カット版 7 s）。
+    expect(newVideo.currentTime).toBe(7)
+
+    fetchMock.mockClear()
+    setMediaProps(newVideo, { currentTime: 12, duration: 30 })
+    fireEvent.pause(newVideo)
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    // 旧世代の表なら 32_000。新世代の表: 12 s = 2 つ目の keep の 2 s 目 = 原本 62 s。
+    expect(fetchMock.mock.calls[0]![1]).toEqual(expect.objectContaining({ body: JSON.stringify({ positionMs: 62_000 }) }))
   })
 })
 

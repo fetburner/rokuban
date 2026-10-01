@@ -319,6 +319,12 @@ type RecordingIngestProgress struct {
 	ObservedAt    time.Time
 }
 
+type RecordingPlaybackPosition struct {
+	RecordingID int64
+	PositionMs  int64
+	UpdatedAt   time.Time
+}
+
 type RecordingPurgeRequest struct {
 	RecordingID int64
 	RequestedAt time.Time
@@ -327,6 +333,11 @@ type RecordingPurgeRequest struct {
 type RecordingSeries struct {
 	RecordingID int64
 	Value       *string
+}
+
+type RecordingWatched struct {
+	RecordingID int64
+	WatchedAt   time.Time
 }
 
 type Reservation struct {

@@ -1249,11 +1249,17 @@ export const ListRecordingsResponseItem = zod.object({
 }),
   "startedAt": zod.iso.datetime({"offset":true}).optional().describe('録画の実開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。'),
   "endedAt": zod.iso.datetime({"offset":true}).optional().describe('録画の実終了時刻。常に UTC（"Z" 終端の RFC3339）で返す。'),
+  "resumePositionMs": zod.int().optional().describe('原本の時間軸上にある再開位置。位置の行がある録画のみ。'),
+  "watchedAt": zod.iso.datetime({"offset":true}).optional().describe('同じ放送イベント (networkId, serviceId, startAt) の全録画から束ねた視聴済み時刻。\nいずれかの行に印がある場合だけ返す。常に UTC。\n'),
   "sizeBytes": zod.int().optional().describe('原本の実サイズ。ingest 済み（media_assets 行あり）の場合のみ。\n省略は「まだ取り込めていない」と「取り込んだ後に削除した」の両方を\n含むので、区別が要るときは `ingest.state` を見る（issue #211 /\n#212）。**転送中の途中ファイルのサイズはここに混ぜない**（コミット =\nDB 行。不変条件 3）--- 途中経過は `ingest.writtenBytes`。\n'),
   "encodedAssets": zod.array(zod.object({
   "profile": zod.string(),
   "cut": zod.boolean().optional().describe('`encode.profiles[].cut: true` のプロファイルで作られたカット版\n（確認済みチャプターの `cut=true` 区間を除いた本編だけ）か。\n**クライアントはカット版を再生しているあいだ、シークプレビューと\nチャプターを出さない** --- タイルもチャプターも原本の時間軸で\n作られており、本編に残した OP などをカット版の軸へ写像する処理を\n初版では持たない（docs/frontend/recordings.md）。\n'),
   "cutStale": zod.boolean().optional().describe('凍結した keep 区間（`media_asset_cuts.keep_ranges`）が現在の量子化\n済みタイムラインと一致しない = 「編集前の内容です」。\n\nチャプターを直すと、その録画のカット版は**自動では作り直さない**。\n作り直しは `POST /api/recordings/{id}/encoded/{profile}/reencode`\nというユーザーの明示的な操作で行う（自動で作り直すと、ユーザーが\n確認していない区間が黙って本編から消える）。\n\n`cut` が真のときだけ意味を持つ。判定は保存値ではなく毎回の導出\n（api が `chapters.Derive` を通した keep 区間と突き合わせる。\n不変条件 9）。\n'),
+  "keepRanges": zod.array(zod.object({
+  "startMs": zod.int(),
+  "endMs": zod.int()
+})).optional().describe('配信中のカット版を作ったときに凍結した keep 区間。原本の時間軸上の ms。\n同じプロファイル名の再作成で時間軸が変わるため、現在のチャプターから\n再計算した区間ではなく、この asset に紐づく値を返す。\n'),
   "sizeBytes": zod.int().optional().describe('encoded 派生物の実サイズ。`media_assets.size_bytes` は NOT NULL\nなので active な行が存在する限り常に付く（未検証の断言にしないため:\n`media_assets.size_bytes` 列の `NOT NULL` 制約が根拠、実行時計測\nではない。同テーブルの CHECK は\n`kind` / `profile` / `state` に掛かるものだけで `size_bytes` には\n無い）。省略可能にしているのは、サイズが取れない資産があっても\n選択肢そのものは隠さない（ドロップ統計の「分類できなかった PID」と\n同じ判断。docs/frontend/recordings.md）という UI 側の表示規律を\n型で表現するため。\n')
 })).optional().describe('再生可能な encoded 派生物（media_assets の active のみ）。\nブラウザ再生は GET /api/media/recordings/{id}/file?profile=<name> を使う。\ndesired（encodeProfiles）ではなく observed。空配列は省略可。\n'),
   "encodeProfiles": zod.array(zod.string()).optional().describe('凍結された「望ましい」エンコードプロファイル一覧（desired。\nrecording_encode_policy.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は\n`POST /api/recordings/{id}/encode-profiles` による事後追加（凍結の例外。\ndocs/storage.md §6「原本 TS の保持ポリシー」）でのみ増える。\n`encodedAssets`（observed、再生可能なもの）とは異なり、まだ完了して\nいない pending なジョブのプロファイルも含む --- UI が「追加済み」を\n判定するのに使う。空配列は省略可。\n'),
@@ -1319,6 +1325,83 @@ export const ListRecordingShelvesResponse = zod.array(ListRecordingShelvesRespon
 
 
 /**
+ * 再生位置があり、録画中または完了で supersede されていない録画を、
+ * 位置の更新時刻の降順で返す。ごみ箱・purge 済みの録画は含めない。
+ * 同じ放送イベントのいずれかの録画が視聴済みなら除外する。
+ * home 専用の一覧で、履歴の更新順を番組開始時刻順の一覧と分ける。
+ * 上限は 6 件。位置の更新時刻は応答には含めない。
+ * @summary List recordings to resume
+ */
+export const ListContinueWatchingResponseItem = zod.object({
+  "id": zod.int(),
+  "site": zod.string().describe('この録画がどのサイト（mirakc インスタンス）のものか。`recordings.site`\nそのまま。`GET /api/recordings` は全サイトの録画を返すため\n（issue #184 M4-12）、クライアントはこの値で区別する。\n'),
+  "ruleId": zod.int().optional(),
+  "source": zod.enum(['rule', 'manual', 'unattributed']).describe('録画作成時に一度だけ焼かれる出自の snapshot。\n`rule` は予約行があり、`program_intents.action=record` が無い録画、\n`manual` はユーザーの録画意図があった録画、`unattributed` は予約も\n意図も特定できない録画を表す。\n'),
+  "serviceName": zod.string(),
+  "channelType": zod.enum(['GR', 'BS', 'CS', 'SKY']),
+  "channel": zod.string(),
+  "networkId": zod.int(),
+  "serviceId": zod.int(),
+  "eventId": zod.int(),
+  "title": zod.string(),
+  "description": zod.string().optional(),
+  "series": zod.string().nullish().describe('実効シリーズ = 分類ルールが当たればその値、当たらなければ自動キー\n（`series_key(title)`）。`GET /api/recording-shelves` の `value` と\n同じ空間の値なので、棚から録画一覧へ渡すときはこれをそのまま使える。\n\n**導出値であって録画の属性ではない。** 分類ルールを変えると値が変わる\n（全件再評価のジョブが追従する）。null は自動キーを導出できず、\nどのルールも当たらない録画。\n'),
+  "seriesKey": zod.string().nullish().describe('タイトルから導出した自動シリーズキー（`recordings.series_key`）。\n分類ルールが当たっても変わらない表示用の補助情報で、URL や絞り込みの\n宛先には使わない。自動キーを導出できないタイトルでは null。\n'),
+  "startAt": zod.iso.datetime({"offset":true}).describe('番組の放送開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。'),
+  "durationMs": zod.int(),
+  "status": zod.enum(['recording', 'finished', 'canceled', 'failed']),
+  "keepOriginal": zod.enum(['always', 'until_encoded']).describe('`recording_encode_policy.keep_original` に凍結された、この録画の原本保持\nポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の\n`PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。\n`until_encoded` でも、desired な全エンコードプロファイルとサムネイルが\n揃うまでは原本を削除しない。\n'),
+  "cmDetection": zod.object({
+  "state": zod.enum(['disabled', 'detecting', 'detected', 'failed']),
+  "ranges": zod.array(zod.object({
+  "startMs": zod.int(),
+  "endMs": zod.int()
+})).optional().describe('CM ranges in milliseconds from the first original frame.'),
+  "stage": zod.union([zod.literal('setup'),zod.literal('probe'),zod.literal('area'),zod.literal('logo'),zod.literal('chapter'),zod.literal('join'),zod.literal('parse'),zod.literal('save'),zod.literal('stopped'),zod.literal('resolution'),zod.literal('match'),zod.literal('adopt'),zod.literal(null)]).nullish().describe('The worker stage that produced the latest failed attempt, if known.'),
+  "error": zod.string().optional().describe('The unmodified technical detail of the latest attempt, if present.')
+}),
+  "startedAt": zod.iso.datetime({"offset":true}).optional().describe('録画の実開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。'),
+  "endedAt": zod.iso.datetime({"offset":true}).optional().describe('録画の実終了時刻。常に UTC（"Z" 終端の RFC3339）で返す。'),
+  "resumePositionMs": zod.int().optional().describe('原本の時間軸上にある再開位置。位置の行がある録画のみ。'),
+  "watchedAt": zod.iso.datetime({"offset":true}).optional().describe('同じ放送イベント (networkId, serviceId, startAt) の全録画から束ねた視聴済み時刻。\nいずれかの行に印がある場合だけ返す。常に UTC。\n'),
+  "sizeBytes": zod.int().optional().describe('原本の実サイズ。ingest 済み（media_assets 行あり）の場合のみ。\n省略は「まだ取り込めていない」と「取り込んだ後に削除した」の両方を\n含むので、区別が要るときは `ingest.state` を見る（issue #211 /\n#212）。**転送中の途中ファイルのサイズはここに混ぜない**（コミット =\nDB 行。不変条件 3）--- 途中経過は `ingest.writtenBytes`。\n'),
+  "encodedAssets": zod.array(zod.object({
+  "profile": zod.string(),
+  "cut": zod.boolean().optional().describe('`encode.profiles[].cut: true` のプロファイルで作られたカット版\n（確認済みチャプターの `cut=true` 区間を除いた本編だけ）か。\n**クライアントはカット版を再生しているあいだ、シークプレビューと\nチャプターを出さない** --- タイルもチャプターも原本の時間軸で\n作られており、本編に残した OP などをカット版の軸へ写像する処理を\n初版では持たない（docs/frontend/recordings.md）。\n'),
+  "cutStale": zod.boolean().optional().describe('凍結した keep 区間（`media_asset_cuts.keep_ranges`）が現在の量子化\n済みタイムラインと一致しない = 「編集前の内容です」。\n\nチャプターを直すと、その録画のカット版は**自動では作り直さない**。\n作り直しは `POST /api/recordings/{id}/encoded/{profile}/reencode`\nというユーザーの明示的な操作で行う（自動で作り直すと、ユーザーが\n確認していない区間が黙って本編から消える）。\n\n`cut` が真のときだけ意味を持つ。判定は保存値ではなく毎回の導出\n（api が `chapters.Derive` を通した keep 区間と突き合わせる。\n不変条件 9）。\n'),
+  "keepRanges": zod.array(zod.object({
+  "startMs": zod.int(),
+  "endMs": zod.int()
+})).optional().describe('配信中のカット版を作ったときに凍結した keep 区間。原本の時間軸上の ms。\n同じプロファイル名の再作成で時間軸が変わるため、現在のチャプターから\n再計算した区間ではなく、この asset に紐づく値を返す。\n'),
+  "sizeBytes": zod.int().optional().describe('encoded 派生物の実サイズ。`media_assets.size_bytes` は NOT NULL\nなので active な行が存在する限り常に付く（未検証の断言にしないため:\n`media_assets.size_bytes` 列の `NOT NULL` 制約が根拠、実行時計測\nではない。同テーブルの CHECK は\n`kind` / `profile` / `state` に掛かるものだけで `size_bytes` には\n無い）。省略可能にしているのは、サイズが取れない資産があっても\n選択肢そのものは隠さない（ドロップ統計の「分類できなかった PID」と\n同じ判断。docs/frontend/recordings.md）という UI 側の表示規律を\n型で表現するため。\n')
+})).optional().describe('再生可能な encoded 派生物（media_assets の active のみ）。\nブラウザ再生は GET /api/media/recordings/{id}/file?profile=<name> を使う。\ndesired（encodeProfiles）ではなく observed。空配列は省略可。\n'),
+  "encodeProfiles": zod.array(zod.string()).optional().describe('凍結された「望ましい」エンコードプロファイル一覧（desired。\nrecording_encode_policy.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は\n`POST /api/recordings/{id}/encode-profiles` による事後追加（凍結の例外。\ndocs/storage.md §6「原本 TS の保持ポリシー」）でのみ増える。\n`encodedAssets`（observed、再生可能なもの）とは異なり、まだ完了して\nいない pending なジョブのプロファイルも含む --- UI が「追加済み」を\n判定するのに使う。空配列は省略可。\n'),
+  "encodeStatus": zod.array(zod.object({
+  "profile": zod.string(),
+  "state": zod.enum(['queued', 'running', 'failed', 'awaiting_review']).describe('**サーバー側で recording_encode_attempts（衛星表）から毎回導出する**\n（列に焼いた値ではない）。River の river_job は直接露出しない\n（docs/schema.md の recording_encode_attempts の節を参照。\ndocs/recording/ingest.md §5.6 と共通なのは「river_job を露出しない」\nことだけで、§5.6 の「リトライ中と待ちを区別しない」判断とは逆に\nこの表は区別する）。\n\n- `queued`: まだ 1 度も試行が始まっていない（試行行が無い状態）。\n  **一度 `running`/`failed` を書いた行は成功するまで消えないので、\n  失敗後に `queued` へ戻ることはない**。「来る根拠」の無い\n  `queued` は出さない --- ごみ箱の録画（ジョブが二度と投入されない）\n  と、api が現在の設定にあるプロファイル一覧を知っていて、かつ\n  そのプロファイルが設定から消えていて試行行も無い場合は、この\n  プロファイルの要素自体が省略される\n- `awaiting_review`: `cut: true` のプロファイルで、まだチャプターを\n  確認していない（`recording_chapter_ownership` の行が無い）。\n  **`queued` とは別の状態**である --- `queued` は「ジョブが来る」、\n  `awaiting_review` は「ユーザーが確認するまでジョブは来ない」を\n  表す。投入側（`EnqueueMissingEncodes` /\n  `ListMissingEncodeProfiles`）がこの条件で候補から外しているので、\n  確認するまでこの状態のままになる。確認後に次の投入パスが拾う\n- `running`: いま ffmpeg が走っている\n- `failed`: 直前の試行が失敗した。**`failed` は「二度と来ない」の\n  断定ではない** --- 失敗したジョブはジョブキューの既定のリトライ\n  上限（25 回。上書きしていない）まで再実行され、その各試行の先頭で\n  `running` に戻る。上限に達した後も、encoded 資産が無い状態が続く\n  限り EncodeReconcileWorker が 15 分ごとに再投入する。例外は設定\n  から消えたプロファイルで、これは EncodeReconcileWorker の既知\n  プロファイル絞り込みが投入対象から外すため、リトライ上限に達した\n  ところで `failed` に留まる（**`failed` に固定されるのはリトライを\n  使い切った後で、最初の失敗の時点ではない**）\n')
+})).optional().describe('完了していないエンコードプロファイルの試行状態（issue #316）。\n`encodeProfiles`（desired）のうち `encodedAssets`（observed、\n再生可能）にまだ現れていないプロファイルだけを列挙する ---\n完了したプロファイルはここに出さず `encodedAssets` の存在で示す\n（2 つの配列に同じプロファイルが同時に出ることはない）。\n\nプロファイルを 1 つも設定していない録画・全プロファイルが完了\n済みの録画では省略する（空配列は返さない。機能しないキュー画面や\n空の進捗バーを出さない判断はサーバー側のこの省略で表現する）。\n\n`%` は含まない --- この REST モデルは `queued` / `running` /\n`failed` / 完了を復元する durable な状態だけを持つ。実行中の割合は\nnotifier の `/api/events` が `encode-progress` SSE として配送する\n揮発テレメトリで、テーブルにも OpenAPI にも保存しない。\n'),
+  "dropSummary": zod.object({
+  "packets": zod.int(),
+  "drops": zod.int(),
+  "errors": zod.int(),
+  "scrambled": zod.int()
+}).optional(),
+  "ingest": zod.object({
+  "state": zod.enum(['committed', 'transferring', 'pending', 'unknown']).describe('原本の取り込みの粗い状態。**サーバー側で DB 行から毎回導出する**\n（列に焼いた値ではない）。優先順に:\n\n- `committed`: `kind=\'original\'` の `media_assets` 行が存在する。\n  取り込みは少なくとも 1 回完了した。その原本が**いま**あるかどうかは\n  `sizeBytes` の有無で見る（`state=\'deleted\'` の原本でもここは\n  `committed` のまま --- 「取り込めなかった」と「取り込んだ後に\n  消した」を混同しないため。issue #211）\n- `transferring`: 原本行が無く、転送の進捗行がある。`writtenBytes` /\n  `observedAt` が付く。`observedAt` が古いまま止まっていれば停滞して\n  いる（River のバックオフ待ち・ストール）。**録画中の追従で\n  追い付いている状態は停滞ではない** --- worker は健全に 1 周した\n  ポーリングで `observedAt` を進めるので、追い付いたままでも\n  `observedAt` は新しくなる。% を出してよい条件は\n  `expectedBytes` 側に書いた\n- `pending`: 原本行も進捗行も無く、**ingest ジョブが投入される\n  はずの** mirakc record の観測（`record_sync.status` が `recording`\n  または `finished`。watcher が ingest を投入する条件と同じ述語）が\n  ある。取り込み待ち、または失敗して再試行待ち。録画開始直後で進捗行が\n  まだ無い数秒もここに入る\n- `unknown`: 上のどれでもない。取り込みが始まった観測が無い ---\n  mirakc record が観測されていないか、record が `failed` / `canceled`\n  で `record_sync.status` が上の述語を満たさない。録画中に投入済みの\n  ingest ジョブがあっても、`failed` / `canceled` を観測したジョブは\n  進捗行を消してから終端するのでここへ落ちる。\n  **`failed` / `canceled` の観測は `transferring` より優先する。**\n  進捗行の DELETE が失敗すると行が残りうるが、二度と取り込まれない\n  録画の残骸を「取り込み中」と読ませない（`ingestProgressFromFields`\n  の優先順位参照）。`success` した録画の原本行はこの判定より先に\n  見るので、コミット済みの録画を後に取り消しても `committed` のまま\n\n**`pending` は「これから来る」の断定なので、来る根拠が無いものは\n入れない。** `record_sync` 行の存在だけを根拠にすると、`failed` /\n`canceled` の録画（`record_sync` 行は消えない）が永久に\n「取り込み待ち」を名乗る。\n\n**「リトライ中」を `pending` と区別する値は持たない。** 区別するには\nRiver の `river_job` を API 契約に露出させる（内部実装の露出）か、\n失敗の観測という別寿命の値を進捗行に混ぜる（不変条件 9 / 12）\n必要があり、どちらも取らなかった。停滞は `observedAt` の古さで読む。\n'),
+  "writtenBytes": zod.int().optional().describe('ingest temp に書けたバイト数。`state = transferring` のときだけ付く。\n\n**これは「いま temp に書けているバイト数」であって累積の転送実績\nではない。** プロセス死後のジョブ再試行は同じ temp を replay して\n末尾から続く。サイズ / ハッシュ不一致や record の cancel / fail で temp を\n捨てた次の試行だけ 0 に戻る。戻りを隠さないのは、隠すと「進んでいるのに\n終わらない」に見えて実際に起きているやり直しが観測できなくなるため。\n\n**`sizeBytes`（原本の実サイズ）とは別のフィールドである。** コミット =\nDB 行（不変条件 3）なので、コミット前の途中ファイルのサイズを\n`sizeBytes` に混ぜない。\n'),
+  "expectedBytes": zod.int().optional().describe('転送の分母。Work 開始時は `record_sync.content_length`（watcher が\nmirakc record の `content.length` として観測した値）で初期化し、追従中は\n転送ループが `GetRecord` の `content.length` で更新する。mirakc が\nlength を返していなければ**省略する** --- でっち上げた分母を置かない。\n\n**この値はいつでも分母として使えるわけではない。** クライアントは\n次の 2 つのどちらかに当たる間、% を出さずバイト数だけを出す。\n\n- `status = \'recording\'`: 追従 ingest は録画開始から走るので、この値は\n  「mirakc がその時点で観測しているサイズ」であって番組の最終サイズ\n  ではない。割合にすると「番組の 9 割を取り込んだ」と読める嘘になる\n- `writtenBytes` がこの値を超えている: この観測が転送より遅れて古い\n  ことの証拠である。実機では録画終了後の drain 中に超過が続いた。\n  **超過を 100% に丸めて隠してはならない** --- 丸めると drain が\n  終わるまで「取り込み済み」と読める表示が出続ける\n'),
+  "observedAt": zod.iso.datetime({"offset":true}).optional().describe('進捗を最後に観測した時刻。`state = transferring` のときだけ付く。\n現在時刻との差が開いていれば転送は停滞している。常に UTC\n（"Z" 終端の RFC3339）で返す。\n')
+}).optional(),
+  "qualityEvents": zod.array(zod.looseObject({
+
+})).optional().describe('recording.failed / record-broken / bcas_anomaly の履歴'),
+  "deletedAt": zod.iso.datetime({"offset":true}).optional().describe('論理削除時刻。ごみ箱一覧（`trash=true`）と `GET /api/recordings/{id}`\n（ごみ箱の録画も 200 で返す）でのみ出現する。通常一覧・生きている\n行では省略（NULL）。常に UTC（"Z" 終端の RFC3339）で返す。\n'),
+  "createdAt": zod.iso.datetime({"offset":true}).describe('常に UTC（"Z" 終端の RFC3339）で返す。')
+})
+export const ListContinueWatchingResponse = zod.array(ListContinueWatchingResponseItem)
+
+
+/**
  * 一覧要素（`GET /api/recordings` の各要素）と同形。単体ページ・skip 理由や
  * 予約からの導線が着地する先。
  *
@@ -1373,11 +1456,17 @@ export const GetRecordingResponse = zod.object({
 }),
   "startedAt": zod.iso.datetime({"offset":true}).optional().describe('録画の実開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。'),
   "endedAt": zod.iso.datetime({"offset":true}).optional().describe('録画の実終了時刻。常に UTC（"Z" 終端の RFC3339）で返す。'),
+  "resumePositionMs": zod.int().optional().describe('原本の時間軸上にある再開位置。位置の行がある録画のみ。'),
+  "watchedAt": zod.iso.datetime({"offset":true}).optional().describe('同じ放送イベント (networkId, serviceId, startAt) の全録画から束ねた視聴済み時刻。\nいずれかの行に印がある場合だけ返す。常に UTC。\n'),
   "sizeBytes": zod.int().optional().describe('原本の実サイズ。ingest 済み（media_assets 行あり）の場合のみ。\n省略は「まだ取り込めていない」と「取り込んだ後に削除した」の両方を\n含むので、区別が要るときは `ingest.state` を見る（issue #211 /\n#212）。**転送中の途中ファイルのサイズはここに混ぜない**（コミット =\nDB 行。不変条件 3）--- 途中経過は `ingest.writtenBytes`。\n'),
   "encodedAssets": zod.array(zod.object({
   "profile": zod.string(),
   "cut": zod.boolean().optional().describe('`encode.profiles[].cut: true` のプロファイルで作られたカット版\n（確認済みチャプターの `cut=true` 区間を除いた本編だけ）か。\n**クライアントはカット版を再生しているあいだ、シークプレビューと\nチャプターを出さない** --- タイルもチャプターも原本の時間軸で\n作られており、本編に残した OP などをカット版の軸へ写像する処理を\n初版では持たない（docs/frontend/recordings.md）。\n'),
   "cutStale": zod.boolean().optional().describe('凍結した keep 区間（`media_asset_cuts.keep_ranges`）が現在の量子化\n済みタイムラインと一致しない = 「編集前の内容です」。\n\nチャプターを直すと、その録画のカット版は**自動では作り直さない**。\n作り直しは `POST /api/recordings/{id}/encoded/{profile}/reencode`\nというユーザーの明示的な操作で行う（自動で作り直すと、ユーザーが\n確認していない区間が黙って本編から消える）。\n\n`cut` が真のときだけ意味を持つ。判定は保存値ではなく毎回の導出\n（api が `chapters.Derive` を通した keep 区間と突き合わせる。\n不変条件 9）。\n'),
+  "keepRanges": zod.array(zod.object({
+  "startMs": zod.int(),
+  "endMs": zod.int()
+})).optional().describe('配信中のカット版を作ったときに凍結した keep 区間。原本の時間軸上の ms。\n同じプロファイル名の再作成で時間軸が変わるため、現在のチャプターから\n再計算した区間ではなく、この asset に紐づく値を返す。\n'),
   "sizeBytes": zod.int().optional().describe('encoded 派生物の実サイズ。`media_assets.size_bytes` は NOT NULL\nなので active な行が存在する限り常に付く（未検証の断言にしないため:\n`media_assets.size_bytes` 列の `NOT NULL` 制約が根拠、実行時計測\nではない。同テーブルの CHECK は\n`kind` / `profile` / `state` に掛かるものだけで `size_bytes` には\n無い）。省略可能にしているのは、サイズが取れない資産があっても\n選択肢そのものは隠さない（ドロップ統計の「分類できなかった PID」と\n同じ判断。docs/frontend/recordings.md）という UI 側の表示規律を\n型で表現するため。\n')
 })).optional().describe('再生可能な encoded 派生物（media_assets の active のみ）。\nブラウザ再生は GET /api/media/recordings/{id}/file?profile=<name> を使う。\ndesired（encodeProfiles）ではなく observed。空配列は省略可。\n'),
   "encodeProfiles": zod.array(zod.string()).optional().describe('凍結された「望ましい」エンコードプロファイル一覧（desired。\nrecording_encode_policy.encode_profiles）。ingest 完了時に一度だけ焼き込まれ、以後は\n`POST /api/recordings/{id}/encode-profiles` による事後追加（凍結の例外。\ndocs/storage.md §6「原本 TS の保持ポリシー」）でのみ増える。\n`encodedAssets`（observed、再生可能なもの）とは異なり、まだ完了して\nいない pending なジョブのプロファイルも含む --- UI が「追加済み」を\n判定するのに使う。空配列は省略可。\n'),
@@ -1416,6 +1505,62 @@ export const DeleteRecordingParams = zod.object({
 })
 
 export const DeleteRecordingResponse = zod.void()
+
+
+/**
+ * 原本の時間軸上の位置をミリ秒で保存する。カット版の位置は
+ * 現在のファイルに凍結された keep 区間で原本の時間軸へ変換する。
+ * 先頭付近と終端 90% 以降の位置はクライアントが送らない。
+ * @summary Save a recording playback position
+ */
+export const PutRecordingPlaybackPositionParams = zod.object({
+  "id": zod.int()
+})
+
+export const putRecordingPlaybackPositionBodyPositionMsMin = 2000;
+
+
+
+export const PutRecordingPlaybackPositionBody = zod.object({
+  "positionMs": zod.int().min(putRecordingPlaybackPositionBodyPositionMsMin).describe('原本先頭からのミリ秒')
+})
+
+export const PutRecordingPlaybackPositionResponse = zod.void()
+
+
+/**
+ * 位置の行を削除する。既に無い場合も 204。
+ * @summary Clear a recording playback position
+ */
+export const DeleteRecordingPlaybackPositionParams = zod.object({
+  "id": zod.int()
+})
+
+export const DeleteRecordingPlaybackPositionResponse = zod.void()
+
+
+/**
+ * 指定した録画に印を立て、同じトランザクションでその録画の再生位置を消す。
+ * 一覧の watchedAt は同じ放送イベント
+ * (networkId, serviceId, startAt) の全行から束ねて読む。
+ * @summary Mark a recording watched
+ */
+export const PutRecordingWatchedParams = zod.object({
+  "id": zod.int()
+})
+
+export const PutRecordingWatchedResponse = zod.void()
+
+
+/**
+ * 同じ放送イベントに属する全録画の印を削除する。既に無い場合も 204。
+ * @summary Mark a broadcast event unwatched
+ */
+export const DeleteRecordingWatchedParams = zod.object({
+  "id": zod.int()
+})
+
+export const DeleteRecordingWatchedResponse = zod.void()
 
 
 /**

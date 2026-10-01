@@ -252,6 +252,13 @@ tombstone（`purged_at` が立った行）だけは 404** にする --- ファ�
 通常一覧・ごみ箱一覧のどちらにも現れない行なので、単体 GET だけ見える形に
 しない。
 
+再開位置は同じ録画行を宛先にし、`/api/recordings/{id}/playback-position` の
+`PUT` / `DELETE` で扱う。再生中の資産によらず原本時間軸の ms で保存する。`GET
+/api/recordings/continue-watching` は位置の更新時刻が新しい順に返す。世帯共有の
+視聴済み印は `/api/recordings/{id}/watched` の `PUT` / `DELETE` で扱う。印は選択した行へ
+書き、読むときは同じ `(network_id, service_id, program_start_at)` の行を束ねる。
+そのため未視聴へ戻す操作は同じイベントの印をすべて消す。
+
 ### シリーズの棚と分類ルール: `GET /api/recording-shelves` / `/api/label-rules`
 
 棚は録画の一覧を実効シリーズごとに集計した射影であって、行の同一性もキーセットの軸も変えない

@@ -55,19 +55,22 @@ HLS / hls.js を使わない。原本 HLS の詳細は [api.md](../api.md)
   `profile` + `sizeBytes`）。複数ならセレクタ。原本だけの完了録画は live の HLS
   プロファイルを使って一時変換し、複数なら同じ画面で画質を選べる。原本は VLC 等で
   開けるリンクも残す
-- **再生位置は現在 localStorage**。サーバーへ移す決定は下記「視聴状態（続きから・視聴済み）」に
-  あり、移すまではこの形のまま動く。キーは録画 ID + **保存する秒数の時間軸**で決め、表示中の資産の
-  プロファイル名では決めない。cut 前の軸（録画開始からの秒数）を使う追っかけ・原本 HLS・cut でない
-  encoded MP4 は同じキーを共有する。プロファイル名で決めると、録画の途中で増える資産や成否で、
-  追っかけから原本 VOD・encoded MP4 への切替で位置が消える。原本 HLS の画質切替もキーを変えず、
-  位置を引き継ぐ。cut 版は cut 前の軸への換算をしないので、従来どおりプロファイル名のキーを使う。
-  原本 HLS は変換中の EVENT playlist なので、シークできる範囲は変換の先端まで伸びていく。
-  末尾まで届くのは変換の終了後である。`video.duration` は先端でしかないため、
-  終端付近の位置を消す判定に duration を使うのは ENDLIST を見てからにする。
-  信号は hls.js の level details が `live === false` になることと、`ended` イベントである。
-  ネイティブ HLS は ENDLIST を直接見られず、`ended` だけを信号にする。
-  jsdom で測れるのは信号と保存位置の関係までで、実ブラウザでは hls.js 経路の `ended` だけを
-  `web/e2e/recording-original-vod.mjs` で測っている。ネイティブ HLS は未検証である
+- **再生位置は `/api/recordings/{id}/playback-position` に原本時間軸の ms で保存する**。
+  追っかけ・原本 HLS・encoded MP4 は同じ録画行の値を共有し、画質プロファイルでは分けない。
+  カット版だけは、再生開始時に固定した `keepRanges` で原本時間軸と相互変換する。
+  位置の保存は 15 秒ごと、pause / seeked / pagehide で行い、2 秒未満は削除する。
+  同じページ内で画質を切り替えると `<video>` が作り直される。録画詳細クエリの
+  `resumePositionMs` はページを開いた時点の値のままなので、直前まで見ていた位置は
+  原本の ms でプレイヤーの ref に持ち越し、新しいファイルの `keepRanges` で写して復元する
+  （保存の成否に依らない。テスト: `RecordingPlayer` の「同じページ内の画質切替」）。
+  90% 到達の視聴済み PUT が通ったら録画クエリを取り直し、ボタンと未視聴の印を更新する。
+  速度だけは端末ごとの好みなので `localStorage` に残す。既存の localStorage 位置キーは
+  起動時に削除する
+- 原本 HLS は変換中の EVENT playlist なので、シークできる範囲は変換の先端まで伸びていく。
+  終端の 90% 到達で視聴済みにする判定は ENDLIST 後だけ行う。信号は hls.js の level details が
+  `live === false` になることと、`ended` イベントである。ネイティブ HLS は ENDLIST を直接
+  見られず、`ended` だけを信号にする。`web/e2e/recording-original-vod.mjs` が原本 HLS の
+  再開位置と ENDLIST のない先端を確認する
 - 再生・一時停止、シーク、音量、再生速度、PiP はネイティブ controls を使い、重複する
   自前の再生速度セレクトと PiP ボタンは置かない。2026-09-23 の Chromium 151 実測では
   標準 controls の `⋮` メニューに再生速度と PiP があった

@@ -63,6 +63,9 @@ func Export(ctx context.Context, pool *pgxpool.Pool) (*Document, error) {
 	if doc.RecordingPurgeRequests, err = exportRecordingPurgeRequests(ctx, q); err != nil {
 		return nil, err
 	}
+	if doc.RecordingWatched, err = exportRecordingWatched(ctx, q); err != nil {
+		return nil, err
+	}
 	if doc.RecordingEncodePolicies, err = exportRecordingEncodePolicies(ctx, q); err != nil {
 		return nil, err
 	}
@@ -226,6 +229,18 @@ func exportRecordingPurgeRequests(ctx context.Context, q *sqlcgen.Queries) ([]Re
 			RecordingID: p.RecordingID,
 			RequestedAt: p.RequestedAt,
 		})
+	}
+	return out, nil
+}
+
+func exportRecordingWatched(ctx context.Context, q *sqlcgen.Queries) ([]RecordingWatched, error) {
+	rows, err := q.CatalogListRecordingWatched(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing recording_watched: %w", err)
+	}
+	out := make([]RecordingWatched, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, RecordingWatched{RecordingID: row.RecordingID, WatchedAt: row.WatchedAt})
 	}
 	return out, nil
 }

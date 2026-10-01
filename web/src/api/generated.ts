@@ -579,6 +579,11 @@ export const RecordingKeepOriginal = {
 
 export type RecordingQualityEventsItem = { [key: string]: unknown };
 
+export interface KeepRange {
+  startMs: number;
+  endMs: number;
+}
+
 export interface EncodedAsset {
   profile: string;
   /**
@@ -604,6 +609,12 @@ export interface EncodedAsset {
      * 不変条件 9）。
      */
   cutStale?: boolean;
+  /**
+     * 配信中のカット版を作ったときに凍結した keep 区間。原本の時間軸上の ms。
+     * 同じプロファイル名の再作成で時間軸が変わるため、現在のチャプターから
+     * 再計算した区間ではなく、この asset に紐づく値を返す。
+     */
+  keepRanges?: KeepRange[];
   /**
      * encoded 派生物の実サイズ。`media_assets.size_bytes` は NOT NULL
      * なので active な行が存在する限り常に付く（未検証の断言にしないため:
@@ -901,6 +912,13 @@ export interface Recording {
   startedAt?: string;
   /** 録画の実終了時刻。常に UTC（"Z" 終端の RFC3339）で返す。 */
   endedAt?: string;
+  /** 原本の時間軸上にある再開位置。位置の行がある録画のみ。 */
+  readonly resumePositionMs?: number;
+  /**
+     * 同じ放送イベント (networkId, serviceId, startAt) の全録画から束ねた視聴済み時刻。
+     * いずれかの行に印がある場合だけ返す。常に UTC。
+     */
+  readonly watchedAt?: string;
   /**
      * 原本の実サイズ。ingest 済み（media_assets 行あり）の場合のみ。
      * 省略は「まだ取り込めていない」と「取り込んだ後に削除した」の両方を
@@ -1870,6 +1888,14 @@ export type ListRecordingShelvesKey = typeof ListRecordingShelvesKey[keyof typeo
 export const ListRecordingShelvesKey = {
   series: 'series',
 } as const;
+
+export type PutRecordingPlaybackPositionBody = {
+  /**
+     * 原本先頭からのミリ秒
+     * @minimum 2000
+     */
+  positionMs: number;
+};
 
 export type ListCapacityOveragesParams = {
 /**
@@ -5824,6 +5850,124 @@ export function useListRecordingShelves<TData = Awaited<ReturnType<typeof listRe
 
 
 
+export type listContinueWatchingResponse200 = {
+  data: Recording[]
+  status: 200
+}
+
+export type listContinueWatchingResponseSuccess = (listContinueWatchingResponse200) & {
+  headers: Headers;
+};
+;
+
+export type listContinueWatchingResponse = (listContinueWatchingResponseSuccess)
+
+export const getListContinueWatchingUrl = () => {
+
+
+
+
+  return `/api/recordings/continue-watching`
+}
+
+/**
+ * 再生位置があり、録画中または完了で supersede されていない録画を、
+ * 位置の更新時刻の降順で返す。ごみ箱・purge 済みの録画は含めない。
+ * 同じ放送イベントのいずれかの録画が視聴済みなら除外する。
+ * home 専用の一覧で、履歴の更新順を番組開始時刻順の一覧と分ける。
+ * 上限は 6 件。位置の更新時刻は応答には含めない。
+ * @summary List recordings to resume
+ */
+export const listContinueWatching = async ( options?: Parameters<typeof customInstance>[1]): Promise<listContinueWatchingResponse> => {
+
+  return customInstance<listContinueWatchingResponse>(getListContinueWatchingUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListContinueWatchingQueryKey = () => {
+    return [
+    `/api/recordings/continue-watching`
+    ] as const;
+    }
+
+
+export const getListContinueWatchingQueryOptions = <TData = Awaited<ReturnType<typeof listContinueWatching>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listContinueWatching>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListContinueWatchingQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listContinueWatching>>> = ({ signal }) => listContinueWatching({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listContinueWatching>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type ListContinueWatchingQueryResult = NonNullable<Awaited<ReturnType<typeof listContinueWatching>>>
+export type ListContinueWatchingQueryError = unknown
+
+
+export function useListContinueWatching<TData = Awaited<ReturnType<typeof listContinueWatching>>, TError = unknown>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listContinueWatching>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listContinueWatching>>,
+          TError,
+          Awaited<ReturnType<typeof listContinueWatching>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListContinueWatching<TData = Awaited<ReturnType<typeof listContinueWatching>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listContinueWatching>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listContinueWatching>>,
+          TError,
+          Awaited<ReturnType<typeof listContinueWatching>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListContinueWatching<TData = Awaited<ReturnType<typeof listContinueWatching>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listContinueWatching>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List recordings to resume
+ */
+
+export function useListContinueWatching<TData = Awaited<ReturnType<typeof listContinueWatching>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listContinueWatching>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getListContinueWatchingQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
 export type getRecordingResponse200 = {
   data: Recording
   status: 200
@@ -6056,6 +6200,406 @@ export const useDeleteRecording = <TError = ErrorResponse,
         TContext
       > => {
       return useMutation(getDeleteRecordingMutationOptions(options), queryClient);
+    }
+
+export type putRecordingPlaybackPositionResponse204 = {
+  data: void
+  status: 204
+}
+
+export type putRecordingPlaybackPositionResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
+export type putRecordingPlaybackPositionResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type putRecordingPlaybackPositionResponseSuccess = (putRecordingPlaybackPositionResponse204) & {
+  headers: Headers;
+};
+export type putRecordingPlaybackPositionResponseError = (putRecordingPlaybackPositionResponse400 | putRecordingPlaybackPositionResponse404) & {
+  headers: Headers;
+};
+
+export type putRecordingPlaybackPositionResponse = (putRecordingPlaybackPositionResponseSuccess | putRecordingPlaybackPositionResponseError)
+
+export const getPutRecordingPlaybackPositionUrl = (id: number,) => {
+
+
+
+
+  return `/api/recordings/${id}/playback-position`
+}
+
+/**
+ * 原本の時間軸上の位置をミリ秒で保存する。カット版の位置は
+ * 現在のファイルに凍結された keep 区間で原本の時間軸へ変換する。
+ * 先頭付近と終端 90% 以降の位置はクライアントが送らない。
+ * @summary Save a recording playback position
+ */
+export const putRecordingPlaybackPosition = async (id: number,
+    putRecordingPlaybackPositionBody: PutRecordingPlaybackPositionBody, options?: Parameters<typeof customInstance>[1]): Promise<putRecordingPlaybackPositionResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customInstance<putRecordingPlaybackPositionResponse>(getPutRecordingPlaybackPositionUrl(id),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(putRecordingPlaybackPositionBody)
+  }
+);}
+
+
+
+
+
+export const getPutRecordingPlaybackPositionMutationKey = () => ['putRecordingPlaybackPosition'] as const;
+
+export const getPutRecordingPlaybackPositionMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof putRecordingPlaybackPosition>>, TError,PutRecordingPlaybackPositionMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof putRecordingPlaybackPosition>>, TError,PutRecordingPlaybackPositionMutationVariables, TContext> => {
+
+const mutationKey = getPutRecordingPlaybackPositionMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof putRecordingPlaybackPosition>>, PutRecordingPlaybackPositionMutationVariables> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  putRecordingPlaybackPosition(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PutRecordingPlaybackPositionMutationResult = NonNullable<Awaited<ReturnType<typeof putRecordingPlaybackPosition>>>
+    export type PutRecordingPlaybackPositionMutationBody = PutRecordingPlaybackPositionBody
+    export type PutRecordingPlaybackPositionMutationError = ErrorResponse
+    export type PutRecordingPlaybackPositionMutationVariables = {id: number;data: PutRecordingPlaybackPositionBody}
+
+    /**
+ * @summary Save a recording playback position
+ */
+export const usePutRecordingPlaybackPosition = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof putRecordingPlaybackPosition>>, TError,PutRecordingPlaybackPositionMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof putRecordingPlaybackPosition>>,
+        TError,
+        PutRecordingPlaybackPositionMutationVariables,
+        TContext
+      > => {
+      return useMutation(getPutRecordingPlaybackPositionMutationOptions(options), queryClient);
+    }
+
+export type deleteRecordingPlaybackPositionResponse204 = {
+  data: void
+  status: 204
+}
+
+export type deleteRecordingPlaybackPositionResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type deleteRecordingPlaybackPositionResponseSuccess = (deleteRecordingPlaybackPositionResponse204) & {
+  headers: Headers;
+};
+export type deleteRecordingPlaybackPositionResponseError = (deleteRecordingPlaybackPositionResponse404) & {
+  headers: Headers;
+};
+
+export type deleteRecordingPlaybackPositionResponse = (deleteRecordingPlaybackPositionResponseSuccess | deleteRecordingPlaybackPositionResponseError)
+
+export const getDeleteRecordingPlaybackPositionUrl = (id: number,) => {
+
+
+
+
+  return `/api/recordings/${id}/playback-position`
+}
+
+/**
+ * 位置の行を削除する。既に無い場合も 204。
+ * @summary Clear a recording playback position
+ */
+export const deleteRecordingPlaybackPosition = async (id: number, options?: Parameters<typeof customInstance>[1]): Promise<deleteRecordingPlaybackPositionResponse> => {
+
+  return customInstance<deleteRecordingPlaybackPositionResponse>(getDeleteRecordingPlaybackPositionUrl(id),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+
+export const getDeleteRecordingPlaybackPositionMutationKey = () => ['deleteRecordingPlaybackPosition'] as const;
+
+export const getDeleteRecordingPlaybackPositionMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteRecordingPlaybackPosition>>, TError,DeleteRecordingPlaybackPositionMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteRecordingPlaybackPosition>>, TError,DeleteRecordingPlaybackPositionMutationVariables, TContext> => {
+
+const mutationKey = getDeleteRecordingPlaybackPositionMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteRecordingPlaybackPosition>>, DeleteRecordingPlaybackPositionMutationVariables> = (props) => {
+          const {id} = props ?? {};
+
+          return  deleteRecordingPlaybackPosition(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteRecordingPlaybackPositionMutationResult = NonNullable<Awaited<ReturnType<typeof deleteRecordingPlaybackPosition>>>
+
+    export type DeleteRecordingPlaybackPositionMutationError = ErrorResponse
+    export type DeleteRecordingPlaybackPositionMutationVariables = {id: number}
+
+    /**
+ * @summary Clear a recording playback position
+ */
+export const useDeleteRecordingPlaybackPosition = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteRecordingPlaybackPosition>>, TError,DeleteRecordingPlaybackPositionMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteRecordingPlaybackPosition>>,
+        TError,
+        DeleteRecordingPlaybackPositionMutationVariables,
+        TContext
+      > => {
+      return useMutation(getDeleteRecordingPlaybackPositionMutationOptions(options), queryClient);
+    }
+
+export type putRecordingWatchedResponse204 = {
+  data: void
+  status: 204
+}
+
+export type putRecordingWatchedResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type putRecordingWatchedResponseSuccess = (putRecordingWatchedResponse204) & {
+  headers: Headers;
+};
+export type putRecordingWatchedResponseError = (putRecordingWatchedResponse404) & {
+  headers: Headers;
+};
+
+export type putRecordingWatchedResponse = (putRecordingWatchedResponseSuccess | putRecordingWatchedResponseError)
+
+export const getPutRecordingWatchedUrl = (id: number,) => {
+
+
+
+
+  return `/api/recordings/${id}/watched`
+}
+
+/**
+ * 指定した録画に印を立て、同じトランザクションでその録画の再生位置を消す。
+ * 一覧の watchedAt は同じ放送イベント
+ * (networkId, serviceId, startAt) の全行から束ねて読む。
+ * @summary Mark a recording watched
+ */
+export const putRecordingWatched = async (id: number, options?: Parameters<typeof customInstance>[1]): Promise<putRecordingWatchedResponse> => {
+
+  return customInstance<putRecordingWatchedResponse>(getPutRecordingWatchedUrl(id),
+  {
+    ...options,
+    method: 'PUT'
+
+
+  }
+);}
+
+
+
+
+
+export const getPutRecordingWatchedMutationKey = () => ['putRecordingWatched'] as const;
+
+export const getPutRecordingWatchedMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof putRecordingWatched>>, TError,PutRecordingWatchedMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof putRecordingWatched>>, TError,PutRecordingWatchedMutationVariables, TContext> => {
+
+const mutationKey = getPutRecordingWatchedMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof putRecordingWatched>>, PutRecordingWatchedMutationVariables> = (props) => {
+          const {id} = props ?? {};
+
+          return  putRecordingWatched(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PutRecordingWatchedMutationResult = NonNullable<Awaited<ReturnType<typeof putRecordingWatched>>>
+
+    export type PutRecordingWatchedMutationError = ErrorResponse
+    export type PutRecordingWatchedMutationVariables = {id: number}
+
+    /**
+ * @summary Mark a recording watched
+ */
+export const usePutRecordingWatched = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof putRecordingWatched>>, TError,PutRecordingWatchedMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof putRecordingWatched>>,
+        TError,
+        PutRecordingWatchedMutationVariables,
+        TContext
+      > => {
+      return useMutation(getPutRecordingWatchedMutationOptions(options), queryClient);
+    }
+
+export type deleteRecordingWatchedResponse204 = {
+  data: void
+  status: 204
+}
+
+export type deleteRecordingWatchedResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type deleteRecordingWatchedResponseSuccess = (deleteRecordingWatchedResponse204) & {
+  headers: Headers;
+};
+export type deleteRecordingWatchedResponseError = (deleteRecordingWatchedResponse404) & {
+  headers: Headers;
+};
+
+export type deleteRecordingWatchedResponse = (deleteRecordingWatchedResponseSuccess | deleteRecordingWatchedResponseError)
+
+export const getDeleteRecordingWatchedUrl = (id: number,) => {
+
+
+
+
+  return `/api/recordings/${id}/watched`
+}
+
+/**
+ * 同じ放送イベントに属する全録画の印を削除する。既に無い場合も 204。
+ * @summary Mark a broadcast event unwatched
+ */
+export const deleteRecordingWatched = async (id: number, options?: Parameters<typeof customInstance>[1]): Promise<deleteRecordingWatchedResponse> => {
+
+  return customInstance<deleteRecordingWatchedResponse>(getDeleteRecordingWatchedUrl(id),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+
+export const getDeleteRecordingWatchedMutationKey = () => ['deleteRecordingWatched'] as const;
+
+export const getDeleteRecordingWatchedMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteRecordingWatched>>, TError,DeleteRecordingWatchedMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteRecordingWatched>>, TError,DeleteRecordingWatchedMutationVariables, TContext> => {
+
+const mutationKey = getDeleteRecordingWatchedMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteRecordingWatched>>, DeleteRecordingWatchedMutationVariables> = (props) => {
+          const {id} = props ?? {};
+
+          return  deleteRecordingWatched(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteRecordingWatchedMutationResult = NonNullable<Awaited<ReturnType<typeof deleteRecordingWatched>>>
+
+    export type DeleteRecordingWatchedMutationError = ErrorResponse
+    export type DeleteRecordingWatchedMutationVariables = {id: number}
+
+    /**
+ * @summary Mark a broadcast event unwatched
+ */
+export const useDeleteRecordingWatched = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteRecordingWatched>>, TError,DeleteRecordingWatchedMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteRecordingWatched>>,
+        TError,
+        DeleteRecordingWatchedMutationVariables,
+        TContext
+      > => {
+      return useMutation(getDeleteRecordingWatchedMutationOptions(options), queryClient);
     }
 
 export type listRecordingUpcomingResponse200 = {

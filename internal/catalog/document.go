@@ -60,12 +60,16 @@ type Document struct {
 	Recordings              []Recording             `json:"recordings"`
 	RecordingEncodePolicies []RecordingEncodePolicy `json:"recordingEncodePolicies"`
 	RecordingPurgeRequests  []RecordingPurgeRequest `json:"recordingPurgeRequests"`
-	MediaAssets             []MediaAsset            `json:"mediaAssets"`
-	DropStats               []DropStat              `json:"dropStats"`
-	DropPositions           []DropPosition          `json:"dropPositions"`
-	ProgramSnapshots        []ProgramSnapshot       `json:"programSnapshots"`
-	ProgramIntents          []ProgramIntent         `json:"programIntents"`
-	ProgramOverrides        []ProgramOverride       `json:"programOverrides"`
+	// RecordingWatched は取り返せない視聴済みの印。配列を足しても Version は上げない ---
+	// 古いバイナリは未知のキーを無視し、印だけ失われる。録画・資産は復旧でき、
+	// すべて未視聴に見える安全側へ倒れる。再生位置は一時的な利便状態なので含めない。
+	RecordingWatched []RecordingWatched `json:"recordingWatched"`
+	MediaAssets      []MediaAsset       `json:"mediaAssets"`
+	DropStats        []DropStat         `json:"dropStats"`
+	DropPositions    []DropPosition     `json:"dropPositions"`
+	ProgramSnapshots []ProgramSnapshot  `json:"programSnapshots"`
+	ProgramIntents   []ProgramIntent    `json:"programIntents"`
+	ProgramOverrides []ProgramOverride  `json:"programOverrides"`
 	// チャプターの所有 2 表は mediaAssets の後に載る（区間は所有の行を FK で
 	// 指すので、rescue はこの順に書く）。
 	RecordingChapterOwnerships []RecordingChapterOwnership `json:"recordingChapterOwnerships"`
@@ -210,6 +214,12 @@ type RecordingEncodePolicy struct {
 type RecordingPurgeRequest struct {
 	RecordingID int64     `json:"recordingId"`
 	RequestedAt time.Time `json:"requestedAt"`
+}
+
+// RecordingWatched は recording_watched の 1 行。
+type RecordingWatched struct {
+	RecordingID int64     `json:"recordingId"`
+	WatchedAt   time.Time `json:"watchedAt"`
 }
 
 // RecordingChapterOwnership は recording_chapter_ownership の 1 行（ユーザーが

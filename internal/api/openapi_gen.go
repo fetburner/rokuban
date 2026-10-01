@@ -1352,8 +1352,13 @@ type EncodedAsset struct {
 	// `cut` が真のときだけ意味を持つ。判定は保存値ではなく毎回の導出
 	// （api が `chapters.Derive` を通した keep 区間と突き合わせる。
 	// 不変条件 9）。
-	CutStale *bool  `json:"cutStale,omitempty"`
-	Profile  string `json:"profile"`
+	CutStale *bool `json:"cutStale,omitempty"`
+
+	// KeepRanges 配信中のカット版を作ったときに凍結した keep 区間。原本の時間軸上の ms。
+	// 同じプロファイル名の再作成で時間軸が変わるため、現在のチャプターから
+	// 再計算した区間ではなく、この asset に紐づく値を返す。
+	KeepRanges *[]KeepRange `json:"keepRanges,omitempty"`
+	Profile    string       `json:"profile"`
 
 	// SizeBytes encoded 派生物の実サイズ。`media_assets.size_bytes` は NOT NULL
 	// なので active な行が存在する限り常に付く（未検証の断言にしないため:
@@ -1506,6 +1511,12 @@ type IngestProgress struct {
 // 失敗の観測という別寿命の値を進捗行に混ぜる（不変条件 9 / 12）
 // 必要があり、どちらも取らなかった。停滞は `observedAt` の古さで読む。
 type IngestProgressState string
+
+// KeepRange defines model for KeepRange.
+type KeepRange struct {
+	EndMs   int64 `json:"endMs"`
+	StartMs int64 `json:"startMs"`
+}
 
 // LabelRule defines model for LabelRule.
 type LabelRule struct {
@@ -1842,7 +1853,10 @@ type Recording struct {
 
 	// QualityEvents recording.failed / record-broken / bcas_anomaly の履歴
 	QualityEvents *[]map[string]interface{} `json:"qualityEvents,omitempty"`
-	RuleId        *int64                    `json:"ruleId,omitempty"`
+
+	// ResumePositionMs 原本の時間軸上にある再開位置。位置の行がある録画のみ。
+	ResumePositionMs *int64 `json:"resumePositionMs,omitempty"`
+	RuleId           *int64 `json:"ruleId,omitempty"`
 
 	// Series 実効シリーズ = 分類ルールが当たればその値、当たらなければ自動キー
 	// （`series_key(title)`）。`GET /api/recording-shelves` の `value` と
@@ -1885,6 +1899,10 @@ type Recording struct {
 	StartedAt *time.Time      `json:"startedAt,omitempty"`
 	Status    RecordingStatus `json:"status"`
 	Title     string          `json:"title"`
+
+	// WatchedAt 同じ放送イベント (networkId, serviceId, startAt) の全録画から束ねた視聴済み時刻。
+	// いずれかの行に印がある場合だけ返す。常に UTC。
+	WatchedAt *time.Time `json:"watchedAt,omitempty"`
 }
 
 // RecordingChannelType defines model for Recording.ChannelType.
@@ -2399,6 +2417,12 @@ type ListRecordingsParamsSource string
 // ListRecordingsParamsOrder defines parameters for ListRecordings.
 type ListRecordingsParamsOrder string
 
+// PutRecordingPlaybackPositionJSONBody defines parameters for PutRecordingPlaybackPosition.
+type PutRecordingPlaybackPositionJSONBody struct {
+	// PositionMs 原本先頭からのミリ秒
+	PositionMs int64 `json:"positionMs"`
+}
+
 // ListProgramsParams defines parameters for ListPrograms.
 type ListProgramsParams struct {
 	// Start 時間窓の開始（この時刻より後に終わる番組が対象）
@@ -2434,6 +2458,9 @@ type SetRecordingEncodePolicyJSONRequestBody = SetRecordingEncodePolicyInput
 
 // AddRecordingEncodeProfilesJSONRequestBody defines body for AddRecordingEncodeProfiles for application/json ContentType.
 type AddRecordingEncodeProfilesJSONRequestBody = AddEncodeProfilesInput
+
+// PutRecordingPlaybackPositionJSONRequestBody defines body for PutRecordingPlaybackPosition for application/json ContentType.
+type PutRecordingPlaybackPositionJSONRequestBody PutRecordingPlaybackPositionJSONBody
 
 // CreateRuleJSONRequestBody defines body for CreateRule for application/json ContentType.
 type CreateRuleJSONRequestBody = RuleInput
@@ -2515,6 +2542,9 @@ type ServerInterface interface {
 	// ListRecordings List recordings
 	// (GET /api/recordings)
 	ListRecordings(w http.ResponseWriter, r *http.Request, params ListRecordingsParams)
+	// ListContinueWatching List recordings to resume
+	// (GET /api/recordings/continue-watching)
+	ListContinueWatching(w http.ResponseWriter, r *http.Request)
 	// DeleteRecording Soft-delete a recording (move to trash)
 	// (DELETE /api/recordings/{id})
 	DeleteRecording(w http.ResponseWriter, r *http.Request, id int64)
@@ -2545,6 +2575,12 @@ type ServerInterface interface {
 	// ReencodeRecordingProfile Rebuild the cut version of a recording with the current chapters
 	// (POST /api/recordings/{id}/encoded/{profile}/reencode)
 	ReencodeRecordingProfile(w http.ResponseWriter, r *http.Request, id int64, profile string)
+	// DeleteRecordingPlaybackPosition Clear a recording playback position
+	// (DELETE /api/recordings/{id}/playback-position)
+	DeleteRecordingPlaybackPosition(w http.ResponseWriter, r *http.Request, id int64)
+	// PutRecordingPlaybackPosition Save a recording playback position
+	// (PUT /api/recordings/{id}/playback-position)
+	PutRecordingPlaybackPosition(w http.ResponseWriter, r *http.Request, id int64)
 	// PurgeRecording Mark a recording for immediate physical purge
 	// (POST /api/recordings/{id}/purge)
 	PurgeRecording(w http.ResponseWriter, r *http.Request, id int64)
@@ -2554,6 +2590,12 @@ type ServerInterface interface {
 	// ListRecordingUpcoming List upcoming programs in the recording's series
 	// (GET /api/recordings/{id}/upcoming)
 	ListRecordingUpcoming(w http.ResponseWriter, r *http.Request, id int64)
+	// DeleteRecordingWatched Mark a broadcast event unwatched
+	// (DELETE /api/recordings/{id}/watched)
+	DeleteRecordingWatched(w http.ResponseWriter, r *http.Request, id int64)
+	// PutRecordingWatched Mark a recording watched
+	// (PUT /api/recordings/{id}/watched)
+	PutRecordingWatched(w http.ResponseWriter, r *http.Request, id int64)
 	// ListReservations List reservations
 	// (GET /api/reservations)
 	ListReservations(w http.ResponseWriter, r *http.Request)
@@ -2758,6 +2800,12 @@ func (_ Unimplemented) ListRecordings(w http.ResponseWriter, r *http.Request, pa
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// ListContinueWatching List recordings to resume
+// (GET /api/recordings/continue-watching)
+func (_ Unimplemented) ListContinueWatching(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // DeleteRecording Soft-delete a recording (move to trash)
 // (DELETE /api/recordings/{id})
 func (_ Unimplemented) DeleteRecording(w http.ResponseWriter, r *http.Request, id int64) {
@@ -2818,6 +2866,18 @@ func (_ Unimplemented) ReencodeRecordingProfile(w http.ResponseWriter, r *http.R
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// DeleteRecordingPlaybackPosition Clear a recording playback position
+// (DELETE /api/recordings/{id}/playback-position)
+func (_ Unimplemented) DeleteRecordingPlaybackPosition(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// PutRecordingPlaybackPosition Save a recording playback position
+// (PUT /api/recordings/{id}/playback-position)
+func (_ Unimplemented) PutRecordingPlaybackPosition(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // PurgeRecording Mark a recording for immediate physical purge
 // (POST /api/recordings/{id}/purge)
 func (_ Unimplemented) PurgeRecording(w http.ResponseWriter, r *http.Request, id int64) {
@@ -2833,6 +2893,18 @@ func (_ Unimplemented) RestoreRecording(w http.ResponseWriter, r *http.Request, 
 // ListRecordingUpcoming List upcoming programs in the recording's series
 // (GET /api/recordings/{id}/upcoming)
 func (_ Unimplemented) ListRecordingUpcoming(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// DeleteRecordingWatched Mark a broadcast event unwatched
+// (DELETE /api/recordings/{id}/watched)
+func (_ Unimplemented) DeleteRecordingWatched(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// PutRecordingWatched Mark a recording watched
+// (PUT /api/recordings/{id}/watched)
+func (_ Unimplemented) PutRecordingWatched(w http.ResponseWriter, r *http.Request, id int64) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -3748,6 +3820,20 @@ func (siw *ServerInterfaceWrapper) ListRecordings(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// ListContinueWatching operation middleware
+func (siw *ServerInterfaceWrapper) ListContinueWatching(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListContinueWatching(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // DeleteRecording operation middleware
 func (siw *ServerInterfaceWrapper) DeleteRecording(w http.ResponseWriter, r *http.Request) {
 
@@ -4017,6 +4103,58 @@ func (siw *ServerInterfaceWrapper) ReencodeRecordingProfile(w http.ResponseWrite
 	handler.ServeHTTP(w, r)
 }
 
+// DeleteRecordingPlaybackPosition operation middleware
+func (siw *ServerInterfaceWrapper) DeleteRecordingPlaybackPosition(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteRecordingPlaybackPosition(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PutRecordingPlaybackPosition operation middleware
+func (siw *ServerInterfaceWrapper) PutRecordingPlaybackPosition(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutRecordingPlaybackPosition(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // PurgeRecording operation middleware
 func (siw *ServerInterfaceWrapper) PurgeRecording(w http.ResponseWriter, r *http.Request) {
 
@@ -4086,6 +4224,58 @@ func (siw *ServerInterfaceWrapper) ListRecordingUpcoming(w http.ResponseWriter, 
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListRecordingUpcoming(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteRecordingWatched operation middleware
+func (siw *ServerInterfaceWrapper) DeleteRecordingWatched(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteRecordingWatched(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PutRecordingWatched operation middleware
+func (siw *ServerInterfaceWrapper) PutRecordingWatched(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutRecordingWatched(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4895,10 +5085,25 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/api/recording-shelves", wrapper.ListRecordingShelves)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/recordings/continue-watching", wrapper.ListContinueWatching)
+	})
+	r.Group(func(r chi.Router) {
 		r.Delete(options.BaseURL+"/api/recordings/{id}", wrapper.DeleteRecording)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/recordings/{id}", wrapper.GetRecording)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/recordings/{id}/playback-position", wrapper.DeleteRecordingPlaybackPosition)
+	})
+	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/api/recordings/{id}/playback-position", wrapper.PutRecordingPlaybackPosition)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/recordings/{id}/watched", wrapper.DeleteRecordingWatched)
+	})
+	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/api/recordings/{id}/watched", wrapper.PutRecordingWatched)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/recordings/{id}/upcoming", wrapper.ListRecordingUpcoming)
@@ -5615,6 +5820,27 @@ func (response ListRecordings400JSONResponse) VisitListRecordingsResponse(w http
 	return err
 }
 
+type ListContinueWatchingRequestObject struct {
+}
+
+type ListContinueWatchingResponseObject interface {
+	VisitListContinueWatchingResponse(w http.ResponseWriter) error
+}
+
+type ListContinueWatching200JSONResponse []Recording
+
+func (response ListContinueWatching200JSONResponse) VisitListContinueWatchingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type DeleteRecordingRequestObject struct {
 	Id int64 `json:"id"`
 }
@@ -6049,6 +6275,81 @@ func (response ReencodeRecordingProfile409JSONResponse) VisitReencodeRecordingPr
 	return err
 }
 
+type DeleteRecordingPlaybackPositionRequestObject struct {
+	Id int64 `json:"id"`
+}
+
+type DeleteRecordingPlaybackPositionResponseObject interface {
+	VisitDeleteRecordingPlaybackPositionResponse(w http.ResponseWriter) error
+}
+
+type DeleteRecordingPlaybackPosition204Response struct {
+}
+
+func (response DeleteRecordingPlaybackPosition204Response) VisitDeleteRecordingPlaybackPositionResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type DeleteRecordingPlaybackPosition404JSONResponse ErrorResponse
+
+func (response DeleteRecordingPlaybackPosition404JSONResponse) VisitDeleteRecordingPlaybackPositionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutRecordingPlaybackPositionRequestObject struct {
+	Id   int64 `json:"id"`
+	Body *PutRecordingPlaybackPositionJSONRequestBody
+}
+
+type PutRecordingPlaybackPositionResponseObject interface {
+	VisitPutRecordingPlaybackPositionResponse(w http.ResponseWriter) error
+}
+
+type PutRecordingPlaybackPosition204Response struct {
+}
+
+func (response PutRecordingPlaybackPosition204Response) VisitPutRecordingPlaybackPositionResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type PutRecordingPlaybackPosition400JSONResponse ErrorResponse
+
+func (response PutRecordingPlaybackPosition400JSONResponse) VisitPutRecordingPlaybackPositionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutRecordingPlaybackPosition404JSONResponse ErrorResponse
+
+func (response PutRecordingPlaybackPosition404JSONResponse) VisitPutRecordingPlaybackPositionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type PurgeRecordingRequestObject struct {
 	Id int64 `json:"id"`
 }
@@ -6141,6 +6442,66 @@ func (response ListRecordingUpcoming200JSONResponse) VisitListRecordingUpcomingR
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteRecordingWatchedRequestObject struct {
+	Id int64 `json:"id"`
+}
+
+type DeleteRecordingWatchedResponseObject interface {
+	VisitDeleteRecordingWatchedResponse(w http.ResponseWriter) error
+}
+
+type DeleteRecordingWatched204Response struct {
+}
+
+func (response DeleteRecordingWatched204Response) VisitDeleteRecordingWatchedResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type DeleteRecordingWatched404JSONResponse ErrorResponse
+
+func (response DeleteRecordingWatched404JSONResponse) VisitDeleteRecordingWatchedResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutRecordingWatchedRequestObject struct {
+	Id int64 `json:"id"`
+}
+
+type PutRecordingWatchedResponseObject interface {
+	VisitPutRecordingWatchedResponse(w http.ResponseWriter) error
+}
+
+type PutRecordingWatched204Response struct {
+}
+
+func (response PutRecordingWatched204Response) VisitPutRecordingWatchedResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type PutRecordingWatched404JSONResponse ErrorResponse
+
+func (response PutRecordingWatched404JSONResponse) VisitPutRecordingWatchedResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -6938,6 +7299,9 @@ type StrictServerInterface interface {
 	// ListRecordings List recordings
 	// (GET /api/recordings)
 	ListRecordings(ctx context.Context, request ListRecordingsRequestObject) (ListRecordingsResponseObject, error)
+	// ListContinueWatching List recordings to resume
+	// (GET /api/recordings/continue-watching)
+	ListContinueWatching(ctx context.Context, request ListContinueWatchingRequestObject) (ListContinueWatchingResponseObject, error)
 	// DeleteRecording Soft-delete a recording (move to trash)
 	// (DELETE /api/recordings/{id})
 	DeleteRecording(ctx context.Context, request DeleteRecordingRequestObject) (DeleteRecordingResponseObject, error)
@@ -6968,6 +7332,12 @@ type StrictServerInterface interface {
 	// ReencodeRecordingProfile Rebuild the cut version of a recording with the current chapters
 	// (POST /api/recordings/{id}/encoded/{profile}/reencode)
 	ReencodeRecordingProfile(ctx context.Context, request ReencodeRecordingProfileRequestObject) (ReencodeRecordingProfileResponseObject, error)
+	// DeleteRecordingPlaybackPosition Clear a recording playback position
+	// (DELETE /api/recordings/{id}/playback-position)
+	DeleteRecordingPlaybackPosition(ctx context.Context, request DeleteRecordingPlaybackPositionRequestObject) (DeleteRecordingPlaybackPositionResponseObject, error)
+	// PutRecordingPlaybackPosition Save a recording playback position
+	// (PUT /api/recordings/{id}/playback-position)
+	PutRecordingPlaybackPosition(ctx context.Context, request PutRecordingPlaybackPositionRequestObject) (PutRecordingPlaybackPositionResponseObject, error)
 	// PurgeRecording Mark a recording for immediate physical purge
 	// (POST /api/recordings/{id}/purge)
 	PurgeRecording(ctx context.Context, request PurgeRecordingRequestObject) (PurgeRecordingResponseObject, error)
@@ -6977,6 +7347,12 @@ type StrictServerInterface interface {
 	// ListRecordingUpcoming List upcoming programs in the recording's series
 	// (GET /api/recordings/{id}/upcoming)
 	ListRecordingUpcoming(ctx context.Context, request ListRecordingUpcomingRequestObject) (ListRecordingUpcomingResponseObject, error)
+	// DeleteRecordingWatched Mark a broadcast event unwatched
+	// (DELETE /api/recordings/{id}/watched)
+	DeleteRecordingWatched(ctx context.Context, request DeleteRecordingWatchedRequestObject) (DeleteRecordingWatchedResponseObject, error)
+	// PutRecordingWatched Mark a recording watched
+	// (PUT /api/recordings/{id}/watched)
+	PutRecordingWatched(ctx context.Context, request PutRecordingWatchedRequestObject) (PutRecordingWatchedResponseObject, error)
 	// ListReservations List reservations
 	// (GET /api/reservations)
 	ListReservations(ctx context.Context, request ListReservationsRequestObject) (ListReservationsResponseObject, error)
@@ -7681,6 +8057,30 @@ func (sh *strictHandler) ListRecordings(w http.ResponseWriter, r *http.Request, 
 	}
 }
 
+// ListContinueWatching operation middleware
+func (sh *strictHandler) ListContinueWatching(w http.ResponseWriter, r *http.Request) {
+	var request ListContinueWatchingRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListContinueWatching(ctx, request.(ListContinueWatchingRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListContinueWatching")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListContinueWatchingResponseObject); ok {
+		if err := validResponse.VisitListContinueWatchingResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // DeleteRecording operation middleware
 func (sh *strictHandler) DeleteRecording(w http.ResponseWriter, r *http.Request, id int64) {
 	var request DeleteRecordingRequestObject
@@ -7963,6 +8363,65 @@ func (sh *strictHandler) ReencodeRecordingProfile(w http.ResponseWriter, r *http
 	}
 }
 
+// DeleteRecordingPlaybackPosition operation middleware
+func (sh *strictHandler) DeleteRecordingPlaybackPosition(w http.ResponseWriter, r *http.Request, id int64) {
+	var request DeleteRecordingPlaybackPositionRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteRecordingPlaybackPosition(ctx, request.(DeleteRecordingPlaybackPositionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteRecordingPlaybackPosition")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteRecordingPlaybackPositionResponseObject); ok {
+		if err := validResponse.VisitDeleteRecordingPlaybackPositionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PutRecordingPlaybackPosition operation middleware
+func (sh *strictHandler) PutRecordingPlaybackPosition(w http.ResponseWriter, r *http.Request, id int64) {
+	var request PutRecordingPlaybackPositionRequestObject
+
+	request.Id = id
+
+	var body PutRecordingPlaybackPositionJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PutRecordingPlaybackPosition(ctx, request.(PutRecordingPlaybackPositionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PutRecordingPlaybackPosition")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PutRecordingPlaybackPositionResponseObject); ok {
+		if err := validResponse.VisitPutRecordingPlaybackPositionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // PurgeRecording operation middleware
 func (sh *strictHandler) PurgeRecording(w http.ResponseWriter, r *http.Request, id int64) {
 	var request PurgeRecordingRequestObject
@@ -8034,6 +8493,58 @@ func (sh *strictHandler) ListRecordingUpcoming(w http.ResponseWriter, r *http.Re
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListRecordingUpcomingResponseObject); ok {
 		if err := validResponse.VisitListRecordingUpcomingResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteRecordingWatched operation middleware
+func (sh *strictHandler) DeleteRecordingWatched(w http.ResponseWriter, r *http.Request, id int64) {
+	var request DeleteRecordingWatchedRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteRecordingWatched(ctx, request.(DeleteRecordingWatchedRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteRecordingWatched")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteRecordingWatchedResponseObject); ok {
+		if err := validResponse.VisitDeleteRecordingWatchedResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PutRecordingWatched operation middleware
+func (sh *strictHandler) PutRecordingWatched(w http.ResponseWriter, r *http.Request, id int64) {
+	var request PutRecordingWatchedRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PutRecordingWatched(ctx, request.(PutRecordingWatchedRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PutRecordingWatched")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PutRecordingWatchedResponseObject); ok {
+		if err := validResponse.VisitPutRecordingWatchedResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
