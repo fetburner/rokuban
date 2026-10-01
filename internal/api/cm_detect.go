@@ -94,6 +94,14 @@ func (h *Server) ListCMLogos(ctx context.Context, _ ListCMLogosRequestObject) (L
 			FrameRecordingId:  row.FrameRecordingID,
 			LearnedAt:         utcTimePtr(row.LearnedAt),
 		}
+		if row.LearnedCodedWidth != nil {
+			codedWidth := int(*row.LearnedCodedWidth)
+			item.CodedWidth = &codedWidth
+		}
+		if row.LearnedCodedHeight != nil {
+			codedHeight := int(*row.LearnedCodedHeight)
+			item.CodedHeight = &codedHeight
+		}
 		if row.PreviewPng != nil {
 			preview := row.PreviewPng
 			item.PreviewPng = &preview
@@ -114,16 +122,42 @@ func (h *Server) ListCMLogos(ctx context.Context, _ ListCMLogosRequestObject) (L
 				UpdatedAt:   *row.AreaUpdatedAt,
 			}
 		}
+		if row.CandidateState != nil {
+			candidate := &CMLogoCandidate{
+				State:       CMLogoCandidateState(*row.CandidateState),
+				X:           int(*row.CandidateX),
+				Y:           int(*row.CandidateY),
+				W:           int(*row.CandidateW),
+				H:           int(*row.CandidateH),
+				CodedWidth:  int(*row.CandidateCodedWidth),
+				CodedHeight: int(*row.CandidateCodedHeight),
+				AttemptedAt: *row.CandidateAttemptedAt,
+			}
+			if row.CandidateStage != nil {
+				stage := CMLogoCandidateStage(*row.CandidateStage)
+				candidate.Stage = &stage
+			}
+			if row.CandidateError != nil {
+				errorMessage := *row.CandidateError
+				candidate.Error = &errorMessage
+			}
+			if row.CandidatePreviewPng != nil {
+				preview := row.CandidatePreviewPng
+				candidate.PreviewPng = &preview
+			}
+			if row.CandidateRecordingID != nil {
+				recordingID := *row.CandidateRecordingID
+				candidate.RecordingId = &recordingID
+			}
+			item.Candidate = candidate
+		}
 		items = append(items, item)
 	}
 	return ListCMLogos200JSONResponse(items), nil
 }
 
-// PutCMLogoArea teaches the logo area for a station and forgets its learned logo.
-//
-// **枠を保存する同じ tx で `cm_logos` を消す。** 学習済みロゴは教えた枠の外で
-// 学習されたものなので、残すと次の検出が枠ではなくその古いロゴを使う。
-// 消せば次の検出が枠の中で学習し直す（「覚えたロゴを捨てる」と同じ経路）。
+// PutCMLogoArea saves the taught logo area and queues asynchronous candidate analysis.
+// The existing station logo remains usable until the candidate is adopted.
 func (h *Server) PutCMLogoArea(ctx context.Context, req PutCMLogoAreaRequestObject) (PutCMLogoAreaResponseObject, error) {
 	if req.Body == nil {
 		return PutCMLogoArea400JSONResponse{Error: "logo area is required"}, nil
@@ -131,7 +165,7 @@ func (h *Server) PutCMLogoArea(ctx context.Context, req PutCMLogoAreaRequestObje
 	body := *req.Body
 	// 枠は記録上の画素の矩形。表現できないものは DB の CHECK でも止まるが、
 	// 400 で理由を返せるようにここでも判定する（不変条件 10）。
-	if body.X < 0 || body.Y < 0 || body.W <= 0 || body.H <= 0 ||
+	if body.RecordingId <= 0 || body.X < 0 || body.Y < 0 || body.W <= 0 || body.H <= 0 ||
 		body.CodedWidth <= 0 || body.CodedHeight <= 0 ||
 		body.X+body.W > body.CodedWidth || body.Y+body.H > body.CodedHeight {
 		return PutCMLogoArea400JSONResponse{Error: "logo area must be a rectangle inside the recorded frame"}, nil
@@ -142,6 +176,27 @@ func (h *Server) PutCMLogoArea(ctx context.Context, req PutCMLogoAreaRequestObje
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := sqlcgen.New(tx)
+	recording, err := q.GetRecordingByID(ctx, body.RecordingId)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return PutCMLogoArea400JSONResponse{Error: "recording not found"}, nil
+		}
+		return nil, fmt.Errorf("loading analysis recording %d: %w", body.RecordingId, err)
+	}
+	if recording.NetworkID != int32(req.NetworkId) || recording.ServiceID != int32(req.ServiceId) {
+		return PutCMLogoArea400JSONResponse{Error: "recording does not belong to this station"}, nil
+	}
+	activeOriginal, err := q.HasCMRecordingOriginal(ctx, sqlcgen.HasCMRecordingOriginalParams{
+		RecordingID: body.RecordingId,
+		NetworkID:   int32(req.NetworkId),
+		ServiceID:   int32(req.ServiceId),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("checking analysis recording %d: %w", body.RecordingId, err)
+	}
+	if !activeOriginal {
+		return PutCMLogoArea409JSONResponse{Error: "active original media asset required for logo analysis"}, nil
+	}
 	// 検出ジョブの学習結果の保存と直列化する（worker の persistNewStationLogo と同じ鍵）。
 	if err := q.LockCMStation(ctx, sqlcgen.LockCMStationParams{NetworkID: int32(req.NetworkId), ServiceID: int32(req.ServiceId)}); err != nil {
 		return nil, fmt.Errorf("locking logo state for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
@@ -158,13 +213,22 @@ func (h *Server) PutCMLogoArea(ctx context.Context, req PutCMLogoAreaRequestObje
 	}); err != nil {
 		return nil, fmt.Errorf("saving logo area for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
 	}
-	if _, err := q.DeleteCMLogo(ctx, sqlcgen.DeleteCMLogoParams{
+	if _, err := q.DeleteCMLogoCandidate(ctx, sqlcgen.DeleteCMLogoCandidateParams{
 		NetworkID: int32(req.NetworkId),
 		ServiceID: int32(req.ServiceId),
 	}); err != nil {
-		return nil, fmt.Errorf("forgetting CM logo for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
+		return nil, fmt.Errorf("clearing CM logo candidate for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
 	}
-	if err := insertCMDetectReconcile(ctx, tx, h.river); err != nil {
+	area, err := q.GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{
+		NetworkID: int32(req.NetworkId), ServiceID: int32(req.ServiceId),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("loading saved logo area for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
+	}
+	if err := insertCMLogoCandidate(ctx, tx, h.river, jobs.CMLogoCandidateJobArgs{
+		NetworkID: int32(req.NetworkId), ServiceID: int32(req.ServiceId),
+		RecordingID: body.RecordingId, AreaUpdatedAt: area.UpdatedAt,
+	}); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -180,7 +244,18 @@ func (h *Server) DeleteCMLogoArea(ctx context.Context, req DeleteCMLogoAreaReque
 		return nil, fmt.Errorf("beginning logo area deletion for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := sqlcgen.New(tx).DeleteCMLogoArea(ctx, sqlcgen.DeleteCMLogoAreaParams{
+	q := sqlcgen.New(tx)
+	if err := q.LockCMStation(ctx, sqlcgen.LockCMStationParams{
+		NetworkID: int32(req.NetworkId), ServiceID: int32(req.ServiceId),
+	}); err != nil {
+		return nil, fmt.Errorf("locking logo state for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
+	}
+	if err := q.DeleteCMAdoptAttemptsForStation(ctx, sqlcgen.DeleteCMAdoptAttemptsForStationParams{
+		NetworkID: int32(req.NetworkId), ServiceID: int32(req.ServiceId),
+	}); err != nil {
+		return nil, fmt.Errorf("clearing adoption waits for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
+	}
+	if _, err := q.DeleteCMLogoArea(ctx, sqlcgen.DeleteCMLogoAreaParams{
 		NetworkID: int32(req.NetworkId),
 		ServiceID: int32(req.ServiceId),
 	}); err != nil {
@@ -202,19 +277,149 @@ func (h *Server) DeleteCMLogo(ctx context.Context, req DeleteCMLogoRequestObject
 		return nil, fmt.Errorf("beginning CM logo deletion for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := sqlcgen.New(tx).DeleteCMLogo(ctx, sqlcgen.DeleteCMLogoParams{
+	q := sqlcgen.New(tx)
+	if err := q.LockCMStation(ctx, sqlcgen.LockCMStationParams{
+		NetworkID: int32(req.NetworkId), ServiceID: int32(req.ServiceId),
+	}); err != nil {
+		return nil, fmt.Errorf("locking logo state for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
+	}
+	if _, err := q.DeleteCMLogo(ctx, sqlcgen.DeleteCMLogoParams{
 		NetworkID: int32(req.NetworkId),
 		ServiceID: int32(req.ServiceId),
 	}); err != nil {
 		return nil, fmt.Errorf("deleting CM logo for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
 	}
-	if err := insertCMDetectReconcile(ctx, tx, h.river); err != nil {
+	if area, areaErr := q.GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{
+		NetworkID: int32(req.NetworkId), ServiceID: int32(req.ServiceId),
+	}); areaErr == nil {
+		if _, err := q.DeleteCMLogoCandidate(ctx, sqlcgen.DeleteCMLogoCandidateParams{
+			NetworkID: int32(req.NetworkId), ServiceID: int32(req.ServiceId),
+		}); err != nil {
+			return nil, fmt.Errorf("clearing CM logo candidate for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
+		}
+		recording, recordingErr := q.GetCMLogoAnalysisRecording(ctx, sqlcgen.GetCMLogoAnalysisRecordingParams{
+			NetworkID: int32(req.NetworkId), ServiceID: int32(req.ServiceId),
+		})
+		if recordingErr == nil {
+			if err := insertCMLogoCandidate(ctx, tx, h.river, jobs.CMLogoCandidateJobArgs{
+				NetworkID: int32(req.NetworkId), ServiceID: int32(req.ServiceId),
+				RecordingID: recording.ID, AreaUpdatedAt: area.UpdatedAt,
+			}); err != nil {
+				return nil, err
+			}
+		} else if !errors.Is(recordingErr, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("finding analysis recording for network %d service %d: %w", req.NetworkId, req.ServiceId, recordingErr)
+		} else if err := insertCMDetectReconcile(ctx, tx, h.river); err != nil {
+			return nil, err
+		}
+	} else if !errors.Is(areaErr, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("loading logo area for network %d service %d: %w", req.NetworkId, req.ServiceId, areaErr)
+	} else if err := insertCMDetectReconcile(ctx, tx, h.river); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("committing CM logo deletion for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
 	}
 	return DeleteCMLogo204Response{}, nil
+}
+
+// DeleteCMLogoCandidate discards the current candidate. The unchanged area
+// remains an intent, so the reconcile pass can request a fresh candidate later.
+func (h *Server) DeleteCMLogoCandidate(ctx context.Context, req DeleteCMLogoCandidateRequestObject) (DeleteCMLogoCandidateResponseObject, error) {
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("beginning CM logo candidate deletion for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := sqlcgen.New(tx)
+	if err := q.LockCMStation(ctx, sqlcgen.LockCMStationParams{NetworkID: int32(req.NetworkId), ServiceID: int32(req.ServiceId)}); err != nil {
+		return nil, fmt.Errorf("locking candidate for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
+	}
+	if _, err := q.DeleteCMLogoCandidate(ctx, sqlcgen.DeleteCMLogoCandidateParams{NetworkID: int32(req.NetworkId), ServiceID: int32(req.ServiceId)}); err != nil {
+		return nil, fmt.Errorf("deleting CM logo candidate for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
+	}
+	if err := insertCMDetectReconcile(ctx, tx, h.river); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("committing candidate deletion for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
+	}
+	return DeleteCMLogoCandidate204Response{}, nil
+}
+
+// AdoptCMLogoCandidate atomically promotes a ready candidate to the station logo.
+func (h *Server) AdoptCMLogoCandidate(ctx context.Context, req AdoptCMLogoCandidateRequestObject) (AdoptCMLogoCandidateResponseObject, error) {
+	redetect := true
+	if req.Body != nil && req.Body.Redetect != nil {
+		redetect = *req.Body.Redetect
+	}
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("beginning CM logo candidate adoption for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := sqlcgen.New(tx)
+	if err := q.LockCMStation(ctx, sqlcgen.LockCMStationParams{NetworkID: int32(req.NetworkId), ServiceID: int32(req.ServiceId)}); err != nil {
+		return nil, fmt.Errorf("locking candidate for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
+	}
+	candidate, err := q.GetCMLogoCandidate(ctx, sqlcgen.GetCMLogoCandidateParams{NetworkID: int32(req.NetworkId), ServiceID: int32(req.ServiceId)})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AdoptCMLogoCandidate409JSONResponse{Error: "CM logo candidate is not available"}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("loading CM logo candidate: %w", err)
+	}
+	if candidate.State != "ready" {
+		return AdoptCMLogoCandidate409JSONResponse{Error: fmt.Sprintf("CM logo candidate is %s, not ready", candidate.State)}, nil
+	}
+	area, err := q.GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{NetworkID: int32(req.NetworkId), ServiceID: int32(req.ServiceId)})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AdoptCMLogoCandidate409JSONResponse{Error: "taught logo area no longer exists"}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("loading taught logo area: %w", err)
+	}
+	if !candidate.ObservedAreaUpdatedAt.Equal(area.UpdatedAt) {
+		return AdoptCMLogoCandidate409JSONResponse{Error: "taught logo area changed after candidate analysis"}, nil
+	}
+	if candidate.RecordingID == nil || len(candidate.Lgd) == 0 {
+		return AdoptCMLogoCandidate409JSONResponse{Error: "CM logo candidate has no adoptable recording or logo"}, nil
+	}
+	if err := q.UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
+		NetworkID: int32(req.NetworkId), ServiceID: int32(req.ServiceId),
+		Lgd: candidate.Lgd, PreviewPng: candidate.PreviewPng,
+		LearnedFrom: candidate.RecordingID,
+		CodedWidth:  candidate.CodedWidth, CodedHeight: candidate.CodedHeight,
+	}); err != nil {
+		return nil, fmt.Errorf("adopting CM logo candidate: %w", err)
+	}
+	if _, err := q.DeleteCMLogoCandidate(ctx, sqlcgen.DeleteCMLogoCandidateParams{NetworkID: int32(req.NetworkId), ServiceID: int32(req.ServiceId)}); err != nil {
+		return nil, fmt.Errorf("deleting adopted CM logo candidate: %w", err)
+	}
+	if redetect {
+		if err := q.DeleteCMDetectionsForStationWithActiveOriginal(ctx, sqlcgen.DeleteCMDetectionsForStationWithActiveOriginalParams{
+			NetworkID: int32(req.NetworkId), ServiceID: int32(req.ServiceId),
+		}); err != nil {
+			return nil, fmt.Errorf("clearing active CM detections after adoption: %w", err)
+		}
+	}
+	if err := insertCMDetectReconcile(ctx, tx, h.river); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("committing CM logo candidate adoption: %w", err)
+	}
+	return AdoptCMLogoCandidate204Response{}, nil
+}
+
+func insertCMLogoCandidate(ctx context.Context, tx pgx.Tx, riverClient *river.Client[pgx.Tx], args jobs.CMLogoCandidateJobArgs) error {
+	if riverClient == nil {
+		return nil
+	}
+	if _, err := riverClient.InsertTx(ctx, tx, args, nil); err != nil {
+		return fmt.Errorf("inserting CM logo candidate analysis: %w", err)
+	}
+	return nil
 }
 
 func insertCMDetectReconcile(ctx context.Context, tx pgx.Tx, riverClient *river.Client[pgx.Tx]) error {

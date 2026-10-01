@@ -144,7 +144,7 @@ API は現在のタイムラインから導出した keep 区間と凍結した�
 ユーザーが `POST /api/recordings/{id}/encoded/{profile}/reencode` を明示的に呼んだときだけ作り直す。
 この操作は新しい世代のパスへ置き換える（[contract.md](contract.md) §3「カット版の置き換え」）。
 
-この view は `recording_encode_policy.cm_detect` が true の録画について、CM 検出結果または最終失敗の記録も要求する。結果表の行が存在すれば CM が0区間でも検出完了であり、試行表が `failed` なら3回の自動試行を終えたことを示す。`running` / `retrying` は削除を許可しない。`failed` になると view は削除を許すので、その後に同じ局のロゴが新しく学習されて再検出が desired に戻っても、原本が既に削除されていれば再検出はできない。この学習による再検出が効くのは、原本が残っている場合（`keep_original=always` や削除 reconcile の前）に限る。API の再試行操作は結果と試行行を消し、active な原本があれば再び desired にする。
+この view は `recording_encode_policy.cm_detect` が true の録画について、CM 検出結果または最終失敗の記録も要求する。結果表の行が存在すれば CM が0区間でも検出完了であり、試行表が `failed` なら3回の自動試行を終えたことを示す。`running` / `retrying` は削除を許可しない。`failed` になると view は削除を許すので、その後に同じ局のロゴが新しく学習されて再検出が desired に戻っても、原本が既に削除されていれば再検出はできない。この学習による再検出が効くのは、原本が残っている場合（`keep_original=always` や削除 reconcile の前）に限る。API の再試行操作は結果と試行行を消し、active な原本があれば再び desired にする。ただし `stage = 'adopt'` は諦めではなく候補の採用待ちなので、採用待ちの局があるとその局の `until_encoded` の原本は消えない。削除エンジンに容量トリガーは無く、ディスク残量の警告で気付く。
 
 ### 不変条件の修正
 

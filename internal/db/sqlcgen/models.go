@@ -47,6 +47,32 @@ type CmLogoArea struct {
 	UpdatedAt   time.Time
 }
 
+type CmLogoCandidate struct {
+	NetworkID             int32
+	ServiceID             int32
+	State                 string
+	Stage                 *string
+	Error                 *string
+	X                     int32
+	Y                     int32
+	W                     int32
+	H                     int32
+	CodedWidth            int32
+	CodedHeight           int32
+	RecordingID           *int64
+	ObservedAreaUpdatedAt time.Time
+	Lgd                   []byte
+	PreviewPng            []byte
+	AttemptedAt           time.Time
+}
+
+type CmLogoCandidateDesired struct {
+	NetworkID     int32
+	ServiceID     int32
+	AreaUpdatedAt time.Time
+	RecordingID   int64
+}
+
 type DropPosition struct {
 	MediaAssetID int64
 	ByteOffset   int64

@@ -426,7 +426,12 @@ function CMLogoFrameEditor({
       {
         networkId: logo.networkId,
         serviceId: logo.serviceId,
-        data: { ...clamped, codedWidth: frame.codedWidth, codedHeight: frame.codedHeight },
+        data: {
+          recordingId,
+          ...clamped,
+          codedWidth: frame.codedWidth,
+          codedHeight: frame.codedHeight,
+        },
       },
       {
         onSuccess: () => {

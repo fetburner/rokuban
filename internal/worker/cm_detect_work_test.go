@@ -131,9 +131,9 @@ func newFakeCMTools(t *testing.T, lgd []byte, chapterExit int, cutAVS, videoSeco
 
 // newFakeCMToolsWithSize は記録上の大きさ（ffprobe の stream=width,height の答え）を
 // 指定できる版。CMDetectWorker は logoframe の前に大きさを 1 回引く。
-func newFakeCMToolsWithSize(t *testing.T, lgd []byte, chapterExit int, cutAVS, videoSeconds, size string) cmToolset {
+func newFakeCMToolsWithSize(t *testing.T, lgd []byte, size string) cmToolset {
 	t.Helper()
-	return newFakeCMToolsWithSizeAndReport(t, lgd, chapterExit, cutAVS, videoSeconds, size, "managed logo: v0001 match=90.00% threshold=0%")
+	return newFakeCMToolsWithSizeAndReport(t, lgd, 0, "Trim(0,299)", "10.010000", size, "managed logo: v0001 match=90.00% threshold=0%")
 }
 
 // newFakeCMToolsWithSizeAndReport は logoframe の成功出力を差し替えられる版。
@@ -200,22 +200,6 @@ func ffprobeSizeJSON(size string) string {
 	return fmt.Sprintf(`{"programs": [{"streams": [%s]}], "stream_groups": [], "streams": [%s]}`, stream, stream)
 }
 
-// logoframeSawArea は logoframe に渡された -logo-area の値（無ければ空文字）を返す。
-func logoframeSawArea(t *testing.T, tools cmToolset) string {
-	t.Helper()
-	data, err := os.ReadFile(tools.logoframeArgs)
-	if err != nil {
-		t.Fatalf("reading logoframe arguments: %v", err)
-	}
-	args := strings.Split(strings.TrimSpace(string(data)), "\n")
-	for i, arg := range args {
-		if arg == "-logo-area" && i+1 < len(args) {
-			return args[i+1]
-		}
-	}
-	return ""
-}
-
 func newCMDetectTestWorker(pool *pgxpool.Pool, mediaDir string, tools cmToolset) *CMDetectWorker {
 	return &CMDetectWorker{
 		Pool: pool, MediaDir: mediaDir, ScratchDir: filepath.Join(mediaDir, "scratch"),
@@ -243,6 +227,16 @@ func cmJob(recordingID int64, attempt int) *river.Job[jobs.CMDetectJobArgs] {
 	return &river.Job[jobs.CMDetectJobArgs]{
 		JobRow: &rivertype.JobRow{ID: 4242, Attempt: attempt, MaxAttempts: 3},
 		Args:   jobs.CMDetectJobArgs{RecordingID: recordingID},
+	}
+}
+
+func cmLogoCandidateJob(recordingID, jobID int64, areaUpdatedAt time.Time) *river.Job[jobs.CMLogoCandidateJobArgs] {
+	return &river.Job[jobs.CMLogoCandidateJobArgs]{
+		JobRow: &rivertype.JobRow{ID: jobID, Attempt: 1, MaxAttempts: 1},
+		Args: jobs.CMLogoCandidateJobArgs{
+			NetworkID: 32736, ServiceID: 1024, RecordingID: recordingID,
+			AreaUpdatedAt: areaUpdatedAt,
+		},
 	}
 }
 
@@ -300,13 +294,13 @@ func TestCMDetectWorkSavesLogoWhenPreviewCannotBeRendered(t *testing.T) {
 	}
 }
 
-// 人が教えた枠は logoframe の -logo-area に渡る（記録上の解像度の座標）。
+// 枠がありロゴが無い局の通常検出は logoframe を走らせず、候補の採用待ちにする。
 func TestCMDetectWorkPassesTaughtLogoAreaToLogoframe(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	id := seedCMRecording(t, pool, mediaDir, 920)
-	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000", "1440x1080")
+	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1440x1080")
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO cm_logo_areas (network_id, service_id, x, y, w, h, coded_width, coded_height)
 		VALUES (32736, 1024, 1180, 24, 240, 96, 1440, 1080)`); err != nil {
@@ -316,43 +310,40 @@ func TestCMDetectWorkPassesTaughtLogoAreaToLogoframe(t *testing.T) {
 	if err := newCMDetectTestWorker(pool, mediaDir, tools).Work(ctx, cmJob(id, 1)); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
-	if got := logoframeSawArea(t, tools); got != "1180,24,240,96" {
-		t.Errorf("-logo-area = %q, want the taught 1180,24,240,96", got)
+	if _, err := os.Stat(tools.logoframeArgs); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("logoframe ran (stat %v); a station without an adopted logo must wait for adoption", err)
 	}
 	var detections int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM recording_cm_detections WHERE recording_id = $1`, id).Scan(&detections); err != nil {
 		t.Fatal(err)
 	}
-	if detections != 1 {
-		t.Errorf("detections = %d, want 1 (the taught area must not stop the run)", detections)
+	if detections != 0 {
+		t.Errorf("detections = %d, want 0 while the candidate is awaiting adoption", detections)
 	}
-	if n := countLogos(t, pool); n != 1 {
-		t.Errorf("cm_logos rows = %d, want 1 (a logo learned under an unchanged taught area must be kept)", n)
+	var state, stage string
+	if err := pool.QueryRow(ctx, `SELECT state, stage FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &stage); err != nil {
+		t.Fatal(err)
+	}
+	if state != "failed" || stage != "adopt" {
+		t.Errorf("attempt = %q/%q, want failed/adopt", state, stage)
 	}
 }
 
-// 教えた枠と記録の解像度が違えば、枠を使わず（logoframe を回さず）失敗として
-// 理由を残す。理由は録画詳細と /api/cm-logos の警告に出る。
+// 通常検出側は枠の解像度を検査せず、候補解析側へ責務を渡す。
 func TestCMDetectWorkRejectsTaughtAreaWithOtherResolution(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	id := seedCMRecording(t, pool, mediaDir, 921)
-	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000", "1920x1080")
+	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1920x1080")
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO cm_logo_areas (network_id, service_id, x, y, w, h, coded_width, coded_height)
 		VALUES (32736, 1024, 1180, 24, 240, 96, 1440, 1080)`); err != nil {
 		t.Fatal(err)
 	}
 
-	err := newCMDetectTestWorker(pool, mediaDir, tools).Work(ctx, cmJob(id, 3))
-	if err == nil {
-		t.Fatal("Work succeeded although the taught area is for another resolution")
-	}
-	for _, want := range []string{"1440x1080", "1920x1080"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error = %q, want it to name %s", err, want)
-		}
+	if err := newCMDetectTestWorker(pool, mediaDir, tools).Work(ctx, cmJob(id, 3)); err != nil {
+		t.Fatalf("Work: %v", err)
 	}
 	if _, statErr := os.Stat(tools.logoframeArgs); !errors.Is(statErr, os.ErrNotExist) {
 		t.Errorf("logoframe ran (stat %v); the mismatched area must not be used", statErr)
@@ -363,11 +354,11 @@ func TestCMDetectWorkRejectsTaughtAreaWithOtherResolution(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT state, stage, error FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &stage, &message); err != nil {
 		t.Fatalf("attempt row: %v", err)
 	}
-	if state != "failed" || message == nil || !strings.Contains(*message, "1920x1080") {
-		t.Errorf("attempt = %q / %v, want failed with the resolution reason", state, message)
+	if state != "failed" || message == nil || !strings.Contains(*message, "adopt") {
+		t.Errorf("attempt = %q / %v, want failed with the adoption reason", state, message)
 	}
-	if stage == nil || *stage != "area" {
-		t.Errorf("attempt stage = %v, want area", stage)
+	if stage == nil || *stage != "adopt" {
+		t.Errorf("attempt stage = %v, want adopt", stage)
 	}
 	for _, query := range []string{
 		`SELECT count(*) FROM recording_cm_detections`,
@@ -383,6 +374,83 @@ func TestCMDetectWorkRejectsTaughtAreaWithOtherResolution(t *testing.T) {
 	}
 }
 
+func TestCMLogoCandidateWorkerCreatesReadyCandidateFromEmptyLogoDir(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	id := seedCMRecording(t, pool, mediaDir, 926)
+	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1440x1080")
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO cm_logo_areas (network_id, service_id, x, y, w, h, coded_width, coded_height)
+		VALUES (32736, 1024, 1180, 24, 240, 96, 1440, 1080)`); err != nil {
+		t.Fatal(err)
+	}
+	area, err := sqlcgen.New(pool).GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{NetworkID: 32736, ServiceID: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &CMLogoCandidateWorker{
+		Pool: pool, MediaDir: mediaDir, ScratchDir: filepath.Join(mediaDir, "scratch"),
+		CMDetect: config.CMDetectConfig{Enabled: true, BinaryDir: tools.binDir}, FFprobe: tools.ffprobe,
+	}
+	if err := w.Work(ctx, cmLogoCandidateJob(id, 4343, area.UpdatedAt)); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	candidate, err := sqlcgen.New(pool).GetCMLogoCandidate(ctx, sqlcgen.GetCMLogoCandidateParams{NetworkID: 32736, ServiceID: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidate.State != "ready" || candidate.Stage != nil || candidate.RecordingID == nil || *candidate.RecordingID != id {
+		t.Fatalf("candidate = %#v, want ready candidate for recording %d", candidate, id)
+	}
+	if !bytes.Equal(candidate.Lgd, buildTestLGD(4, 3, 1000, 4080)) {
+		t.Error("candidate LGD differs from the generated logo")
+	}
+	args, err := os.ReadFile(tools.logoframeArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	argText := string(args)
+	if !strings.Contains(argText, "-logo-area") || strings.Contains(argText, "-seek") || strings.Contains(argText, "-frames") {
+		t.Errorf("candidate logoframe args = %q, want area and no seek/frames", argText)
+	}
+	if n := countLogos(t, pool); n != 0 {
+		t.Errorf("cm_logos rows = %d, want 0 until adoption", n)
+	}
+}
+
+func TestCMLogoCandidateWorkerMarksResolutionMismatchFailed(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	id := seedCMRecording(t, pool, mediaDir, 927)
+	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1920x1080")
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO cm_logo_areas (network_id, service_id, x, y, w, h, coded_width, coded_height)
+		VALUES (32736, 1024, 1180, 24, 240, 96, 1440, 1080)`); err != nil {
+		t.Fatal(err)
+	}
+	area, err := sqlcgen.New(pool).GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{NetworkID: 32736, ServiceID: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &CMLogoCandidateWorker{
+		Pool: pool, MediaDir: mediaDir, ScratchDir: filepath.Join(mediaDir, "scratch"),
+		CMDetect: config.CMDetectConfig{Enabled: true, BinaryDir: tools.binDir}, FFprobe: tools.ffprobe,
+	}
+	err = w.Work(ctx, cmLogoCandidateJob(id, 4344, area.UpdatedAt))
+	if err == nil || !strings.Contains(err.Error(), "1440x1080") {
+		t.Fatalf("Work error = %v, want resolution mismatch", err)
+	}
+	candidate, err := sqlcgen.New(pool).GetCMLogoCandidate(ctx, sqlcgen.GetCMLogoCandidateParams{NetworkID: 32736, ServiceID: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidate.State != "failed" || candidate.Stage == nil || *candidate.Stage != "area" {
+		t.Fatalf("candidate = %#v, want failed/area", candidate)
+	}
+}
+
 // 学習済みロゴと原本の解像度が違えば、logoframe を呼ばずに resolution として
 // 失敗する。枠と違ってロゴ自身にも coded size が必要なことを検証する。
 func TestCMDetectWorkRejectsLearnedLogoWithOtherResolution(t *testing.T) {
@@ -390,7 +458,7 @@ func TestCMDetectWorkRejectsLearnedLogoWithOtherResolution(t *testing.T) {
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	id := seedCMRecording(t, pool, mediaDir, 922)
-	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000", "1920x1080")
+	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1920x1080")
 	if err := sqlcgen.New(pool).UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
 		NetworkID: 32736, ServiceID: 1024, Lgd: buildTestLGD(4, 3, 1000, 4080),
 		LearnedFrom: &id, CodedWidth: 1440, CodedHeight: 1080,
@@ -764,17 +832,24 @@ func TestCMDetectWorkDoesNotWriteBackAnOldLogoDeletedDuringTheJob(t *testing.T) 
 	}
 }
 
-// 枠なしで始まったジョブが枠の保存の後に失敗しても、attempted_at はジョブ開始時刻のまま
-// 残る。終了時刻で上書きすると `attempted_at < a.updated_at` が偽になり、枠に合わせた
-// 再検出が二度と投入されない。
-func TestCMDetectWorkFailureAfterAreaSaveStaysEligibleForRetry(t *testing.T) {
+// ジョブの実行中に採用（learned_at の更新）があって、そのジョブが失敗しても、attempted_at は
+// ジョブ開始時刻のまま残る。終了時刻で上書きすると `attempted_at < l.learned_at` が偽になり、
+// 新しいロゴでの再検出が二度と投入されない。
+func TestCMDetectWorkFailureAfterAdoptionStaysEligibleForRetry(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	id := seedCMRecording(t, pool, mediaDir, 932)
 	tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 1, "Trim(0,149)", "10.010000") // chapter_exe が失敗
 
-	err := workHeld(t, pool, mediaDir, tools, id, 3, func() { putAreaLikeAPI(t, pool) })
+	err := workHeld(t, pool, mediaDir, tools, id, 3, func() {
+		if err := sqlcgen.New(pool).UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
+			NetworkID: 32736, ServiceID: 1024, Lgd: buildTestLGD(4, 3, 1000, 4080), LearnedFrom: &id,
+			CodedWidth: 1440, CodedHeight: 1080,
+		}); err != nil {
+			t.Error(err)
+		}
+	})
 	if err == nil {
 		t.Fatal("Work succeeded although chapter_exe failed")
 	}
@@ -790,6 +865,6 @@ func TestCMDetectWorkFailureAfterAreaSaveStaysEligibleForRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(rows) != 1 || rows[0] != id {
-		t.Errorf("ListMissingCMDetections = %v, want [%d]: the area saved during the failed run must make it eligible again", rows, id)
+		t.Errorf("ListMissingCMDetections = %v, want [%d]: the logo adopted during the failed run must make it eligible again", rows, id)
 	}
 }

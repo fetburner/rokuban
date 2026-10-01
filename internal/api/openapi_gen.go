@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -18,43 +19,46 @@ import (
 
 // Defines values for CMDetectionStage.
 const (
-	Area       CMDetectionStage = "area"
-	Chapter    CMDetectionStage = "chapter"
-	Join       CMDetectionStage = "join"
-	Logo       CMDetectionStage = "logo"
-	Match      CMDetectionStage = "match"
-	Parse      CMDetectionStage = "parse"
-	Probe      CMDetectionStage = "probe"
-	Resolution CMDetectionStage = "resolution"
-	Save       CMDetectionStage = "save"
-	Setup      CMDetectionStage = "setup"
-	Stopped    CMDetectionStage = "stopped"
+	CMDetectionStageAdopt      CMDetectionStage = "adopt"
+	CMDetectionStageArea       CMDetectionStage = "area"
+	CMDetectionStageChapter    CMDetectionStage = "chapter"
+	CMDetectionStageJoin       CMDetectionStage = "join"
+	CMDetectionStageLogo       CMDetectionStage = "logo"
+	CMDetectionStageMatch      CMDetectionStage = "match"
+	CMDetectionStageParse      CMDetectionStage = "parse"
+	CMDetectionStageProbe      CMDetectionStage = "probe"
+	CMDetectionStageResolution CMDetectionStage = "resolution"
+	CMDetectionStageSave       CMDetectionStage = "save"
+	CMDetectionStageSetup      CMDetectionStage = "setup"
+	CMDetectionStageStopped    CMDetectionStage = "stopped"
 )
 
 // Valid indicates whether the value is a known member of the CMDetectionStage enum.
 func (e CMDetectionStage) Valid() bool {
 	switch e {
-	case Area:
+	case CMDetectionStageAdopt:
 		return true
-	case Chapter:
+	case CMDetectionStageArea:
 		return true
-	case Join:
+	case CMDetectionStageChapter:
 		return true
-	case Logo:
+	case CMDetectionStageJoin:
 		return true
-	case Match:
+	case CMDetectionStageLogo:
 		return true
-	case Parse:
+	case CMDetectionStageMatch:
 		return true
-	case Probe:
+	case CMDetectionStageParse:
 		return true
-	case Resolution:
+	case CMDetectionStageProbe:
 		return true
-	case Save:
+	case CMDetectionStageResolution:
 		return true
-	case Setup:
+	case CMDetectionStageSave:
 		return true
-	case Stopped:
+	case CMDetectionStageSetup:
+		return true
+	case CMDetectionStageStopped:
 		return true
 	default:
 		return false
@@ -79,6 +83,60 @@ func (e CMDetectionState) Valid() bool {
 	case CMDetectionStateDisabled:
 		return true
 	case CMDetectionStateFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for CMLogoCandidateStage.
+const (
+	CMLogoCandidateStageArea    CMLogoCandidateStage = "area"
+	CMLogoCandidateStageLogo    CMLogoCandidateStage = "logo"
+	CMLogoCandidateStageMatch   CMLogoCandidateStage = "match"
+	CMLogoCandidateStageProbe   CMLogoCandidateStage = "probe"
+	CMLogoCandidateStageSave    CMLogoCandidateStage = "save"
+	CMLogoCandidateStageSetup   CMLogoCandidateStage = "setup"
+	CMLogoCandidateStageStopped CMLogoCandidateStage = "stopped"
+)
+
+// Valid indicates whether the value is a known member of the CMLogoCandidateStage enum.
+func (e CMLogoCandidateStage) Valid() bool {
+	switch e {
+	case CMLogoCandidateStageArea:
+		return true
+	case CMLogoCandidateStageLogo:
+		return true
+	case CMLogoCandidateStageMatch:
+		return true
+	case CMLogoCandidateStageProbe:
+		return true
+	case CMLogoCandidateStageSave:
+		return true
+	case CMLogoCandidateStageSetup:
+		return true
+	case CMLogoCandidateStageStopped:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for CMLogoCandidateState.
+const (
+	CMLogoCandidateStateFailed  CMLogoCandidateState = "failed"
+	CMLogoCandidateStateReady   CMLogoCandidateState = "ready"
+	CMLogoCandidateStateRunning CMLogoCandidateState = "running"
+)
+
+// Valid indicates whether the value is a known member of the CMLogoCandidateState enum.
+func (e CMLogoCandidateState) Valid() bool {
+	switch e {
+	case CMLogoCandidateStateFailed:
+		return true
+	case CMLogoCandidateStateReady:
+		return true
+	case CMLogoCandidateStateRunning:
 		return true
 	default:
 		return false
@@ -896,16 +954,52 @@ type CMLogoArea struct {
 
 // CMLogoAreaInput defines model for CMLogoAreaInput.
 type CMLogoAreaInput struct {
-	CodedHeight int `json:"codedHeight"`
-	CodedWidth  int `json:"codedWidth"`
-	H           int `json:"h"`
-	W           int `json:"w"`
-	X           int `json:"x"`
-	Y           int `json:"y"`
+	CodedHeight int   `json:"codedHeight"`
+	CodedWidth  int   `json:"codedWidth"`
+	H           int   `json:"h"`
+	RecordingId int64 `json:"recordingId"`
+	W           int   `json:"w"`
+	X           int   `json:"x"`
+	Y           int   `json:"y"`
+}
+
+// CMLogoCandidate defines model for CMLogoCandidate.
+type CMLogoCandidate struct {
+	AttemptedAt time.Time             `json:"attemptedAt"`
+	CodedHeight int                   `json:"codedHeight"`
+	CodedWidth  int                   `json:"codedWidth"`
+	Error       *string               `json:"error,omitempty"`
+	H           int                   `json:"h"`
+	PreviewPng  *[]byte               `json:"previewPng,omitempty"`
+	RecordingId *int64                `json:"recordingId,omitempty"`
+	Stage       *CMLogoCandidateStage `json:"stage,omitempty"`
+	State       CMLogoCandidateState  `json:"state"`
+	W           int                   `json:"w"`
+	X           int                   `json:"x"`
+	Y           int                   `json:"y"`
+}
+
+// CMLogoCandidateStage defines model for CMLogoCandidate.Stage.
+type CMLogoCandidateStage string
+
+// CMLogoCandidateState defines model for CMLogoCandidate.State.
+type CMLogoCandidateState string
+
+// CMLogoCandidateAdoptInput defines model for CMLogoCandidateAdoptInput.
+type CMLogoCandidateAdoptInput struct {
+	Redetect *bool `json:"redetect,omitempty"`
 }
 
 // CMLogoState defines model for CMLogoState.
 type CMLogoState struct {
+	Candidate *CMLogoCandidate `json:"candidate,omitempty"`
+
+	// CodedHeight Coded height of the learned logo, if one is present.
+	CodedHeight *int `json:"codedHeight,omitempty"`
+
+	// CodedWidth Coded width of the learned logo, if one is present.
+	CodedWidth *int `json:"codedWidth,omitempty"`
+
 	// DetectedCount Number of recordings with a CM detection result.
 	DetectedCount int64 `json:"detectedCount"`
 	FailedCount   int64 `json:"failedCount"`
@@ -2320,6 +2414,9 @@ type ListProgramsParams struct {
 // PutCMLogoAreaJSONRequestBody defines body for PutCMLogoArea for application/json ContentType.
 type PutCMLogoAreaJSONRequestBody = CMLogoAreaInput
 
+// AdoptCMLogoCandidateJSONRequestBody defines body for AdoptCMLogoCandidate for application/json ContentType.
+type AdoptCMLogoCandidateJSONRequestBody = CMLogoCandidateAdoptInput
+
 // CreateLabelRuleJSONRequestBody defines body for CreateLabelRule for application/json ContentType.
 type CreateLabelRuleJSONRequestBody = LabelRuleInput
 
@@ -2373,9 +2470,15 @@ type ServerInterface interface {
 	// DeleteCMLogoArea Return a station's logo area to automatic detection
 	// (DELETE /api/cm-logos/{networkId}/{serviceId}/area)
 	DeleteCMLogoArea(w http.ResponseWriter, r *http.Request, networkId int, serviceId int)
-	// PutCMLogoArea Teach the station's CM logo area
+	// PutCMLogoArea Save a station's CM logo area and start candidate analysis
 	// (PUT /api/cm-logos/{networkId}/{serviceId}/area)
 	PutCMLogoArea(w http.ResponseWriter, r *http.Request, networkId int, serviceId int)
+	// DeleteCMLogoCandidate Discard the CM logo candidate
+	// (DELETE /api/cm-logos/{networkId}/{serviceId}/candidate)
+	DeleteCMLogoCandidate(w http.ResponseWriter, r *http.Request, networkId int, serviceId int)
+	// AdoptCMLogoCandidate Adopt the ready CM logo candidate
+	// (POST /api/cm-logos/{networkId}/{serviceId}/candidate/adopt)
+	AdoptCMLogoCandidate(w http.ResponseWriter, r *http.Request, networkId int, serviceId int)
 	// ListEncodeProfiles List configured encode profile names
 	// (GET /api/encode-profiles)
 	ListEncodeProfiles(w http.ResponseWriter, r *http.Request)
@@ -2565,9 +2668,21 @@ func (_ Unimplemented) DeleteCMLogoArea(w http.ResponseWriter, r *http.Request, 
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// PutCMLogoArea Teach the station's CM logo area
+// PutCMLogoArea Save a station's CM logo area and start candidate analysis
 // (PUT /api/cm-logos/{networkId}/{serviceId}/area)
 func (_ Unimplemented) PutCMLogoArea(w http.ResponseWriter, r *http.Request, networkId int, serviceId int) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// DeleteCMLogoCandidate Discard the CM logo candidate
+// (DELETE /api/cm-logos/{networkId}/{serviceId}/candidate)
+func (_ Unimplemented) DeleteCMLogoCandidate(w http.ResponseWriter, r *http.Request, networkId int, serviceId int) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// AdoptCMLogoCandidate Adopt the ready CM logo candidate
+// (POST /api/cm-logos/{networkId}/{serviceId}/candidate/adopt)
+func (_ Unimplemented) AdoptCMLogoCandidate(w http.ResponseWriter, r *http.Request, networkId int, serviceId int) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -3072,6 +3187,76 @@ func (siw *ServerInterfaceWrapper) PutCMLogoArea(w http.ResponseWriter, r *http.
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PutCMLogoArea(w, r, networkId, serviceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteCMLogoCandidate operation middleware
+func (siw *ServerInterfaceWrapper) DeleteCMLogoCandidate(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "networkId" -------------
+	var networkId int
+
+	err = runtime.BindStyledParameterWithOptions("simple", "networkId", chi.URLParam(r, "networkId"), &networkId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "networkId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "serviceId" -------------
+	var serviceId int
+
+	err = runtime.BindStyledParameterWithOptions("simple", "serviceId", chi.URLParam(r, "serviceId"), &serviceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "serviceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteCMLogoCandidate(w, r, networkId, serviceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AdoptCMLogoCandidate operation middleware
+func (siw *ServerInterfaceWrapper) AdoptCMLogoCandidate(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "networkId" -------------
+	var networkId int
+
+	err = runtime.BindStyledParameterWithOptions("simple", "networkId", chi.URLParam(r, "networkId"), &networkId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "networkId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "serviceId" -------------
+	var serviceId int
+
+	err = runtime.BindStyledParameterWithOptions("simple", "serviceId", chi.URLParam(r, "serviceId"), &serviceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "serviceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AdoptCMLogoCandidate(w, r, networkId, serviceId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4758,6 +4943,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Put(options.BaseURL+"/api/cm-logos/{networkId}/{serviceId}/area", wrapper.PutCMLogoArea)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/cm-logos/{networkId}/{serviceId}/candidate/adopt", wrapper.AdoptCMLogoCandidate)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/cm-logos/{networkId}/{serviceId}/candidate", wrapper.DeleteCMLogoCandidate)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/recordings/{id}/drop-stats", wrapper.ListRecordingDropStats)
 	})
 	r.Group(func(r chi.Router) {
@@ -4987,6 +5178,69 @@ func (response PutCMLogoArea400JSONResponse) VisitPutCMLogoAreaResponse(w http.R
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PutCMLogoArea409JSONResponse ErrorResponse
+
+func (response PutCMLogoArea409JSONResponse) VisitPutCMLogoAreaResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteCMLogoCandidateRequestObject struct {
+	NetworkId int `json:"networkId"`
+	ServiceId int `json:"serviceId"`
+}
+
+type DeleteCMLogoCandidateResponseObject interface {
+	VisitDeleteCMLogoCandidateResponse(w http.ResponseWriter) error
+}
+
+type DeleteCMLogoCandidate204Response struct {
+}
+
+func (response DeleteCMLogoCandidate204Response) VisitDeleteCMLogoCandidateResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type AdoptCMLogoCandidateRequestObject struct {
+	NetworkId int `json:"networkId"`
+	ServiceId int `json:"serviceId"`
+	Body      *AdoptCMLogoCandidateJSONRequestBody
+}
+
+type AdoptCMLogoCandidateResponseObject interface {
+	VisitAdoptCMLogoCandidateResponse(w http.ResponseWriter) error
+}
+
+type AdoptCMLogoCandidate204Response struct {
+}
+
+func (response AdoptCMLogoCandidate204Response) VisitAdoptCMLogoCandidateResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type AdoptCMLogoCandidate409JSONResponse ErrorResponse
+
+func (response AdoptCMLogoCandidate409JSONResponse) VisitAdoptCMLogoCandidateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -6639,9 +6893,15 @@ type StrictServerInterface interface {
 	// DeleteCMLogoArea Return a station's logo area to automatic detection
 	// (DELETE /api/cm-logos/{networkId}/{serviceId}/area)
 	DeleteCMLogoArea(ctx context.Context, request DeleteCMLogoAreaRequestObject) (DeleteCMLogoAreaResponseObject, error)
-	// PutCMLogoArea Teach the station's CM logo area
+	// PutCMLogoArea Save a station's CM logo area and start candidate analysis
 	// (PUT /api/cm-logos/{networkId}/{serviceId}/area)
 	PutCMLogoArea(ctx context.Context, request PutCMLogoAreaRequestObject) (PutCMLogoAreaResponseObject, error)
+	// DeleteCMLogoCandidate Discard the CM logo candidate
+	// (DELETE /api/cm-logos/{networkId}/{serviceId}/candidate)
+	DeleteCMLogoCandidate(ctx context.Context, request DeleteCMLogoCandidateRequestObject) (DeleteCMLogoCandidateResponseObject, error)
+	// AdoptCMLogoCandidate Adopt the ready CM logo candidate
+	// (POST /api/cm-logos/{networkId}/{serviceId}/candidate/adopt)
+	AdoptCMLogoCandidate(ctx context.Context, request AdoptCMLogoCandidateRequestObject) (AdoptCMLogoCandidateResponseObject, error)
 	// ListEncodeProfiles List configured encode profile names
 	// (GET /api/encode-profiles)
 	ListEncodeProfiles(ctx context.Context, request ListEncodeProfilesRequestObject) (ListEncodeProfilesResponseObject, error)
@@ -7029,6 +7289,70 @@ func (sh *strictHandler) PutCMLogoArea(w http.ResponseWriter, r *http.Request, n
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(PutCMLogoAreaResponseObject); ok {
 		if err := validResponse.VisitPutCMLogoAreaResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteCMLogoCandidate operation middleware
+func (sh *strictHandler) DeleteCMLogoCandidate(w http.ResponseWriter, r *http.Request, networkId int, serviceId int) {
+	var request DeleteCMLogoCandidateRequestObject
+
+	request.NetworkId = networkId
+	request.ServiceId = serviceId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteCMLogoCandidate(ctx, request.(DeleteCMLogoCandidateRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteCMLogoCandidate")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteCMLogoCandidateResponseObject); ok {
+		if err := validResponse.VisitDeleteCMLogoCandidateResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// AdoptCMLogoCandidate operation middleware
+func (sh *strictHandler) AdoptCMLogoCandidate(w http.ResponseWriter, r *http.Request, networkId int, serviceId int) {
+	var request AdoptCMLogoCandidateRequestObject
+
+	request.NetworkId = networkId
+	request.ServiceId = serviceId
+
+	var body AdoptCMLogoCandidateJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if !errors.Is(err, io.EOF) {
+			sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+			return
+		}
+	} else {
+		request.Body = &body
+	}
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.AdoptCMLogoCandidate(ctx, request.(AdoptCMLogoCandidateRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "AdoptCMLogoCandidate")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(AdoptCMLogoCandidateResponseObject); ok {
+		if err := validResponse.VisitAdoptCMLogoCandidateResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

@@ -194,7 +194,11 @@ CREATE TABLE recording_encode_policy (
 
 `recording_cm_detections` の1行は検出処理全体の完了を表す。`cm_ranges` は原本の先頭を0としたミリ秒の `int8multirange` で、空 multirange は広告区間が無かった結果である。処理に失敗した間は結果行を作らない。
 
-`recording_cm_attempts` は直近の試行だけを持つ。`running` は処理中、`retrying` は失敗後に River の自動再試行を待っている状態、`failed` は最大3回の試行後も失敗した状態である。`stage` は worker が観測した失敗工程（`setup` / `probe` / `area` / `logo` / `chapter` / `join` / `parse` / `save` / `stopped` / `resolution` / `match`）である。既存行は error の自由文から推定せず NULL のままにする。定期 reconcile は `running` のみを advisory lock で確認してプロセス停止を回収し、`retrying` を重複投入しない。回収は試行回数を消費させる。River ジョブの試行回数が残っていれば `retryable` に戻して River 自身の再試行に乗せ、試行行を `retrying` にする。使い切っていれば `discarded` にして試行行を `failed`（error は「process stopped」）にする。新しいジョブを積み直すと試行回数が 1 に戻り、OOM で落ち続ける録画が `failed` に届かない。結果の保存と試行行の削除は同一トランザクションで確定する。
+`recording_cm_attempts` は直近の試行だけを持つ。`running` は処理中、`retrying` は失敗後に River の自動再試行を待っている状態である。`failed` は最大3回の試行後も失敗した状態である。
+
+`stage` は worker が観測した失敗工程である。値は `setup` / `probe` / `area` / `logo` / `chapter` / `join` / `parse` / `save` である。ほかに `stopped` / `resolution` / `match` / `adopt` がある。`adopt` は枠があり、候補の採用を待つため検出しなかったことを表す。
+
+既存行は error の自由文から推定せず NULL のままにする。定期 reconcile は `running` のみを advisory lock で確認してプロセス停止を回収し、`retrying` を重複投入しない。回収は試行回数を消費させる。River ジョブの試行回数が残っていれば `retryable` に戻して River 自身の再試行に乗せ、試行行を `retrying` にする。使い切っていれば `discarded` にして試行行を `failed`（error は「process stopped」）にする。新しいジョブを積み直すと試行回数が 1 に戻り、OOM で落ち続ける録画が `failed` に届かない。結果の保存と試行行の削除は同一トランザクションで確定する。
 
 ### recording_chapter_ownership / recording_chapter_spans — ユーザーのチャプター（衛星表）
 
@@ -232,7 +236,7 @@ CREATE TABLE recording_chapter_spans (
 
 **ロゴと枠の単位は局で、解像度では割らない。** 同じ service_id のまま映像フォーマットを切り替える運用は、地上波・BS の運用規定が認めている（ARIB TR-B14 第七編 8.2.2、TR-B15 第三編 7.2.3）。実際に NHK 総合はマルチ編成の間、主サービスごと 480i になる。それでも割らないのは、測った範囲で主サービスの解像度が混ざったのは CM の無い NHK だけだったからである。局 × 解像度にすると、API の宛先と検出対象の導出の両方に解像度が要る。録画の側は coded size を持っていない。解像度の違う録画にはロゴも枠も使わず、失敗として残す。使われなくなった解像度のロゴを自動で捨てる案も採らない。手で作ったロゴという作り直せない事実を消し、年に数回しか使わない解像度ほど先に失われる。
 
-学習済みロゴは作成時の coded size を持ち、検出前に録画の coded size と比べる。違えば `resolution` として logoframe を実行せず止める。さらに logoframe の一致率を読み、閾値未満なら `match` として止める。
+学習済みロゴは作成時の coded size を持ち、検出前に録画の coded size と比べる。違えば `resolution` として logoframe を実行せず止める。さらに logoframe の一致率を読み、閾値未満なら `match` として止める。自動学習は枠の無い局だけで行う。
 
 録画の解像度は、原本の最初の映像ストリームの coded size とする。番組の境目をまたいで途中で解像度が変わる録画では、変化後の区間の検出結果を保証しない。
 
@@ -258,9 +262,15 @@ CREATE TABLE cm_logo_areas (
 );
 ```
 
-枠を保存すると局の学習済みロゴを消し、`updated_at` より前に失敗した検出を再投入可能にする。検出時の原本の解像度と枠の `coded_width` / `coded_height` が違うときは枠を使わず失敗として残す。枠も局に 1 つで、解像度ごとには持たない（判断は §cm_logos）。枠を削除すると自動探索へ戻る。
+枠は「この枠で新しいロゴを解析する」という意図である。保存時に `recording_id` を指定して候補解析を依頼し、旧い `cm_logos` は候補を採用するまで残す。候補は解析 worker だけが `running` → `failed` / `ready` と書き、局ごとに 1 行を持つ。
 
-検出ジョブは、実行中に枠が保存されても古い枠で学習したロゴを書き戻さない。学習結果の INSERT は、ロゴ不在と枠の `updated_at` がジョブの読んだ値のままであることを同じ文で再評価する。枠の保存とは局ごとの advisory lock で直列化する。ジョブ開始時にロゴを持っていたなら学習結果は保存しない。失敗しても `recording_cm_attempts.attempted_at` はジョブ開始時刻のまま残す。終了時刻で上書きすると、枠の保存前に始まった失敗が再投入されなくなる。
+採用 API は `ready` と解析時点の `updated_at` が一致することを確かめる。その後、候補の LGD・preview・coded size を `cm_logos` へ移し、必要なら active original のある録画の検出結果だけを消して再検出する。候補の破棄は行を消す操作である。外部形式との互換性維持コストを増やすため、`.lgd` の取り込み・書き出し API は作らない。
+
+枠も局に 1 つで、解像度ごとには持たない（判断は §cm_logos）。検出時の原本の解像度と枠の `coded_width` / `coded_height` が違うときは候補を `area` 失敗として残す。枠を削除すると候補と `adopt` 待ちの attempt を消して自動探索へ戻る。
+
+検出ジョブは、実行中に枠が保存されても古い枠で学習したロゴを書き戻さない。学習結果の INSERT は、ロゴ不在と枠の `updated_at` がジョブの読んだ値のままであることを同じ文で再評価する。枠の保存とは局ごとの advisory lock で直列化する。ジョブ開始時にロゴを持っていたなら学習結果は保存しない。失敗しても `recording_cm_attempts.attempted_at` はジョブ開始時刻のまま残す。再候補にする基準は採用で作られる `learned_at` だけで、`attempted_at < learned_at` と比べる。終了時刻で上書きすると、採用の前に始まって後に失敗した録画が `attempted_at > learned_at` になり、新しいロゴで再投入されなくなる。
+
+候補の解析は全編を走査するので、画面は待たずに `running` を表示する。候補を採用するまで旧いロゴでの通常検出は継続し、枠だけでは検出を再投入しない。枠あり・ロゴなしの局の録画は desired から外さず、検出ジョブが `failed` / `adopt` の attempt を書いて止める。解析ジョブが死んで `running` のまま残った候補は、対応する未完了の River ジョブが無いことを見て reconcile が `failed` / `stopped` にする。採用時に作られる `learned_at` が失敗録画を再び desired にする。
 
 ### recording_ingest_progress — 転送の途中経過（衛星表）
 

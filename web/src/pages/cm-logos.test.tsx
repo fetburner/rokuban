@@ -226,6 +226,7 @@ describe('CMLogoStationPage', () => {
 
     await waitFor(() => expect(requests.some((request) => request.method === 'PUT')).toBe(true))
     expect(requests.find((request) => request.method === 'PUT')?.body).toEqual({
+      recordingId: 7,
       x: 400,
       y: 300,
       w: 400,

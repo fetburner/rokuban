@@ -136,6 +136,13 @@ func (w *CMDetectWorker) Work(ctx context.Context, job *river.Job[jobs.CMDetectJ
 		}
 		message := err.Error()
 		stage := cmFailureStage(err)
+		terminalAdoptionWait := stage != nil && *stage == "adopt"
+		if terminalAdoptionWait {
+			// A station with a taught area but no adopted logo is waiting for a
+			// human decision. Retrying this recording cannot make progress and
+			// would keep producing the same attempt until the candidate is adopted.
+			state = "failed"
+		}
 		failureCtx, failureCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer failureCancel()
 		if markErr := q.MarkCMDetectionFailure(failureCtx, sqlcgen.MarkCMDetectionFailureParams{
@@ -146,6 +153,9 @@ func (w *CMDetectWorker) Work(ctx context.Context, job *river.Job[jobs.CMDetectJ
 		}); markErr != nil {
 			return errors.Join(fmt.Errorf("CM detection for recording %d: %w", job.Args.RecordingID, err),
 				fmt.Errorf("marking CM detection %s: %w", state, markErr))
+		}
+		if terminalAdoptionWait {
+			return nil
 		}
 		return fmt.Errorf("CM detection for recording %d: %w", job.Args.RecordingID, err)
 	}
@@ -181,31 +191,53 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 	if err := os.Symlink(original, inputPath); err != nil {
 		return cmFailure("setup", fmt.Errorf("linking original into scratch: %w", err))
 	}
+	channel := fmt.Sprintf("n%d-s%d", item.NetworkID, item.ServiceID)
+	// 枠は「次のロゴを作る」意図であり、既存ロゴの検出には使わない。
+	// 先に両方の資産を読むことで、枠あり・ロゴなしの録画を logoframe に
+	// 渡さず、採用待ちの attempt として明示できる。
+	area, err := sqlcgen.New(w.Pool).GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{
+		NetworkID: item.NetworkID, ServiceID: item.ServiceID,
+	})
+	areaExists := err == nil
+	if err != nil && !errors.Is(err, pgx5.ErrNoRows) {
+		return cmFailure("area", fmt.Errorf("loading taught logo area: %w", err))
+	}
+	var areaPtr *sqlcgen.GetCMLogoAreaRow
+	if areaExists {
+		areaPtr = &area
+	}
+	hadLogo := false
+	var startedLogoLearnedAt *time.Time
+	if logo, err := sqlcgen.New(w.Pool).GetCMLogo(ctx, sqlcgen.GetCMLogoParams{
+		NetworkID: item.NetworkID,
+		ServiceID: item.ServiceID,
+	}); err == nil {
+		hadLogo = true
+		learnedAt := logo.LearnedAt
+		startedLogoLearnedAt = &learnedAt
+	} else if !errors.Is(err, pgx5.ErrNoRows) {
+		return cmFailure("logo", fmt.Errorf("loading station logo: %w", err))
+	}
+	if areaPtr != nil && !hadLogo {
+		return cmFailure("adopt", fmt.Errorf("the station has a taught logo area but no adopted logo"))
+	}
 	// 人が教えた枠は記録上の解像度の座標なので、まず原本の実際の大きさを取る。
 	// poster やシークタイルの座標は使えない（あちらは SAR を焼き込んでいる）。
 	geometry, err := probeVideoGeometry(ctx, commandOutput, w.FFprobe, inputPath)
 	if err != nil {
 		return cmFailure("probe", fmt.Errorf("probing original size: %w", err))
 	}
-	area, err := taughtLogoArea(ctx, sqlcgen.New(w.Pool), item.NetworkID, item.ServiceID, geometry)
-	if err != nil {
-		return cmFailure("area", err)
-	}
-	channel := fmt.Sprintf("n%d-s%d", item.NetworkID, item.ServiceID)
 	logoDir := filepath.Join(jobDir, "logos")
 	if err := os.Mkdir(logoDir, 0o700); err != nil {
 		return cmFailure("setup", fmt.Errorf("creating temporary logo directory: %w", err))
 	}
-	// **ジョブ開始時にロゴを持っていたかを覚える。** 持っていたなら学習結果は書かない
-	// （logoDir の中身は読み込んだ古いロゴのままで、書き戻すと枠の保存が消した
-	// ロゴが復活する）。持っていなかったなら、読んだ時点の枠の更新時刻を
-	// persistNewStationLogo が同じ文で再評価する。
-	hadLogo := false
-	if logo, err := sqlcgen.New(w.Pool).GetCMLogo(ctx, sqlcgen.GetCMLogoParams{
-		NetworkID: item.NetworkID,
-		ServiceID: item.ServiceID,
-	}); err == nil {
-		hadLogo = true
+	if hadLogo {
+		logo, err := sqlcgen.New(w.Pool).GetCMLogo(ctx, sqlcgen.GetCMLogoParams{
+			NetworkID: item.NetworkID, ServiceID: item.ServiceID,
+		})
+		if err != nil {
+			return cmFailure("logo", fmt.Errorf("reloading station logo: %w", err))
+		}
 		if logo.CodedWidth != int32(geometry.width) || logo.CodedHeight != int32(geometry.height) {
 			return cmFailure("resolution", fmt.Errorf("the station logo is for %dx%d but this recording is %dx%d",
 				logo.CodedWidth, logo.CodedHeight, geometry.width, geometry.height))
@@ -213,12 +245,10 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 		if err := writeStationLogo(logoDir, channel, logo.Lgd); err != nil {
 			return cmFailure("logo", fmt.Errorf("writing learned station logo: %w", err))
 		}
-	} else if !errors.Is(err, pgx5.ErrNoRows) {
-		return cmFailure("logo", fmt.Errorf("loading station logo: %w", err))
 	}
 	var observedAreaUpdatedAt *time.Time
-	if area != nil {
-		observedAreaUpdatedAt = &area.UpdatedAt
+	if areaPtr != nil {
+		observedAreaUpdatedAt = &areaPtr.UpdatedAt
 	}
 
 	logoFrames := filepath.Join(jobDir, "logoframe.txt")
@@ -227,10 +257,6 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 	tools := func(name string) string { return filepath.Join(w.CMDetect.BinaryDir, name) }
 	logoArgs := []string{inputPath, "-channel", channel, "-logo-dir", logoDir,
 		"-logo-match", "0", "-oa", logoFrames}
-	if area != nil {
-		logoArgs = append(logoArgs,
-			"-logo-area", fmt.Sprintf("%d,%d,%d,%d", area.X, area.Y, area.W, area.H))
-	}
 	logoframeOutput, err := runCMTool(ctx, jobDir, tools("logoframe"), logoArgs...)
 	if err != nil {
 		return cmFailure("logo", fmt.Errorf("running logoframe: %w", err))
@@ -270,12 +296,25 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 		return cmFailure("parse", fmt.Errorf("parsing obs_cut.avs: %w", err))
 	}
 	multirange := encodeInt8Multirange(ranges, totalMs)
+	return w.saveCMDetectionResult(ctx, item, hadLogo, startedLogoLearnedAt, multirange)
+}
+
+func (w *CMDetectWorker) saveCMDetectionResult(
+	ctx context.Context,
+	item sqlcgen.GetCMDetectionWorkItemRow,
+	hadLogo bool,
+	startedLogoLearnedAt *time.Time,
+	multirange string,
+) error {
 	tx, err := w.Pool.Begin(ctx)
 	if err != nil {
 		return cmFailure("save", fmt.Errorf("beginning CM result transaction: %w", err))
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	q := sqlcgen.New(tx)
+	if err := q.LockCMStation(ctx, sqlcgen.LockCMStationParams{NetworkID: item.NetworkID, ServiceID: item.ServiceID}); err != nil {
+		return cmFailure("save", fmt.Errorf("locking station logo state for CM result: %w", err))
+	}
 	// **結果を書く前に recordings の行をロックする。** チャプターの引き取り
 	// （PUT /api/recordings/{id}/chapter-edits）も同じ行を先頭でロックしてから
 	// 「検出が終端に達しているか」を評価するので、両者は直列化される。ロックが
@@ -300,6 +339,24 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 			return cmFailure("save", fmt.Errorf("committing disabled CM detection state: %w", err))
 		}
 		return nil
+	}
+	if hadLogo {
+		currentLogo, logoErr := q.GetCMLogo(ctx, sqlcgen.GetCMLogoParams{
+			NetworkID: item.NetworkID, ServiceID: item.ServiceID,
+		})
+		if errors.Is(logoErr, pgx5.ErrNoRows) ||
+			(logoErr == nil && startedLogoLearnedAt != nil && !currentLogo.LearnedAt.Equal(*startedLogoLearnedAt)) {
+			if err := q.DeleteCMDetectionAttempt(ctx, item.ID); err != nil {
+				return cmFailure("save", fmt.Errorf("discarding stale CM result attempt: %w", err))
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return cmFailure("save", fmt.Errorf("committing stale CM result discard: %w", err))
+			}
+			return nil
+		}
+		if logoErr != nil {
+			return cmFailure("save", fmt.Errorf("checking station logo version: %w", logoErr))
+		}
 	}
 	if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{RecordingID: item.ID, CmRanges: multirange}); err != nil {
 		return cmFailure("save", fmt.Errorf("saving CM ranges: %w", err))
@@ -388,34 +445,6 @@ func probeVideoGeometry(
 		return videoGeometry{}, err
 	}
 	return videoGeometry{width: width, height: height}, nil
-}
-
-// taughtLogoArea は人が教えた枠を返す。行が無ければ nil（自動推定に任せる）。
-//
-// **解像度が違えばエラーにする。** 教えた枠は記録上の解像度の座標なので、違う
-// 大きさの映像に当てると logoframe は枠の外（または違う位置）の .lgd を学習し、
-// それが局全体に配られる。黙って自動推定へ落とすと、その失敗が成功に見える。
-func taughtLogoArea(
-	ctx context.Context,
-	q *sqlcgen.Queries,
-	networkID, serviceID int32,
-	geometry videoGeometry,
-) (*sqlcgen.GetCMLogoAreaRow, error) {
-	area, err := q.GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{
-		NetworkID: networkID,
-		ServiceID: serviceID,
-	})
-	if errors.Is(err, pgx5.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("loading taught logo area: %w", err)
-	}
-	if area.CodedWidth != int32(geometry.width) || area.CodedHeight != int32(geometry.height) {
-		return nil, fmt.Errorf("the taught logo area is for %dx%d but this recording is %dx%d",
-			area.CodedWidth, area.CodedHeight, geometry.width, geometry.height)
-	}
-	return &area, nil
 }
 
 func cmDetectRuleFile() string { return cmDetectRulePath }
