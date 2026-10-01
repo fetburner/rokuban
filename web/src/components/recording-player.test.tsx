@@ -560,6 +560,52 @@ describe('RecordingPlayer のチャプター', () => {
     expect(details.open).toBe(true)
   })
 
+  it('チャプター編集の境界行・区間行の時刻ボタンで再生位置が移る', () => {
+    const { container } = render(
+      <RecordingPlayer
+        recordingId={102}
+        encodedAssets={asset}
+        chapters={[cmSpan]}
+        chapterVersion="v1"
+        onSaveChapters={() => Promise.resolve()}
+        onResetChapters={() => {}}
+      />,
+    )
+    const video = container.querySelector('video')!
+    setMediaProps(video, { duration: 60, currentTime: 0 })
+    fireEvent.loadedMetadata(video)
+    const details = container.querySelector<HTMLDetailsElement>('[data-testid="chapter-editor-details"]')!
+    fireEvent.click(details.querySelector('summary')!)
+
+    const boundary = details.querySelector('[data-testid="chapter-boundary"] button')!
+    fireEvent.click(boundary)
+    expect(video.currentTime).toBe(10)
+
+    setMediaProps(video, { currentTime: 0 })
+    const span = details.querySelector('[data-testid="chapter-span-row"] button')!
+    fireEvent.click(span)
+    expect(video.currentTime).toBe(10)
+  })
+
+  it('チャプター要約の件数は保存値から数える（下書きの編集では変わらない）', () => {
+    const { container } = render(
+      <RecordingPlayer
+        recordingId={103}
+        encodedAssets={asset}
+        chapters={[cmSpan]}
+        chapterVersion="v1"
+        onSaveChapters={() => Promise.resolve()}
+        onResetChapters={() => {}}
+      />,
+    )
+    const details = container.querySelector<HTMLDetailsElement>('[data-testid="chapter-editor-details"]')!
+    fireEvent.click(details.querySelector('summary')!)
+    const label = details.querySelector('input[aria-label="ラベル"]')!
+    fireEvent.change(label, { target: { value: '本編' } })
+    expect(label).toHaveValue('本編')
+    expect(details.querySelector('summary')?.textContent).toBe('チャプター 1 件')
+  })
+
   it('自動スキップは直前位置が区間の手前のときだけ飛ばす', () => {
     const { container } = render(
       <RecordingPlayer recordingId={97} encodedAssets={asset} chapters={[cmSpan]} />,

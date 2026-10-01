@@ -360,7 +360,7 @@ describe('RecordingDetailPage', () => {
     expect(screen.queryByRole('link', { name: /ダウンロード \/ VLC/ })).not.toBeInTheDocument()
   })
 
-  it('ドロップ集計はヘッダーから観測グループへ移す', async () => {
+  it('詳細ヘッダーは状態・取り込み・エンコードの後にドロップ信号を並べ、観測にも要約を出す', async () => {
     createFakeServer({
       recording: sampleRecording({
         ingest: { state: 'pending' },
@@ -374,21 +374,24 @@ describe('RecordingDetailPage', () => {
     const status = await screen.findByText('完了', { selector: 'span' })
     const ingest = screen.getByText('取り込み待ち', { selector: 'span' })
     const encode = screen.getByText(/h264:.*エンコード失敗/, { selector: 'span' })
+    const drop = screen.getByText('ドロップ 12', { selector: 'span' })
+    const scrambled = screen.getByText('スクランブル 3', { selector: 'span' })
     const follows = (first: HTMLElement, second: HTMLElement) =>
       Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING)
 
     expect(follows(status, ingest)).toBe(true)
     expect(follows(ingest, encode)).toBe(true)
+    expect(follows(encode, drop)).toBe(true)
+    expect(follows(drop, scrambled)).toBe(true)
     const observation = await screen.findByTestId('recording-observations')
-    expect(within(observation).getByText('ドロップ 12')).toBeInTheDocument()
-    expect(within(observation).getByText('スクランブル 3')).toBeInTheDocument()
-    expect(screen.queryByText('ドロップ 12', { selector: 'span' })).not.toBeInTheDocument()
+    expect(within(observation).getByRole('heading', { name: 'ドロップ集計' })).toBeInTheDocument()
+    expect(drop.closest('[data-testid="recording-observations"]')).toBeNull()
   })
 
-  it('詳細ヘッダーはドロップ値がすべて0ならバッジを足さない', async () => {
+  it('ドロップ値がすべて0ならヘッダーにバッジも観測にドロップ節も出さない', async () => {
     createFakeServer({
       recording: sampleRecording({
-        dropSummary: { packets: 0, drops: 0, errors: 0, scrambled: 0 },
+        dropSummary: { packets: 1000, drops: 0, errors: 0, scrambled: 0 },
       }),
     })
 
@@ -396,7 +399,8 @@ describe('RecordingDetailPage', () => {
 
     expect(await screen.findByText('単体ページの録画')).toBeInTheDocument()
     expect(screen.queryByText(/^(ドロップ|エラー|スクランブル) /, { selector: 'span' })).not.toBeInTheDocument()
-    expect(await screen.findByRole('heading', { name: 'ドロップ集計' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'ドロップ集計' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('drop-stats-details')).not.toBeInTheDocument()
   })
 
   // M8-6: シリーズの導線。起点の実効シリーズが null の録画には出さない
@@ -958,6 +962,7 @@ describe('RecordingDetailPage の追加エンコード導線', () => {
 
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' })
     expect(assets).toHaveFocus()
+    expect(keepOriginal).toBeInTheDocument()
     expect(keepOriginal).toHaveValue('until_encoded')
     expect(router.state.location.hash).toBe(originalHash)
   })

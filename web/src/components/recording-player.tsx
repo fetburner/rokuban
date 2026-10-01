@@ -10,6 +10,7 @@ import {
 } from 'react'
 
 import type { ChapterSpan, EncodedAsset, KeepRange, RecordingChaptersSource } from '@/api/generated'
+import { DetailSummary } from '@/components/detail-heading'
 import { RecordingChapterEditor } from '@/components/recording-chapter-editor'
 import { Button } from '@/components/ui/button'
 import {
@@ -697,10 +698,8 @@ export function RecordingPlayer({
             CM を検出しています。終わるまでチャプターは編集できません
           </p>
         ) : (
-        <details data-testid="chapter-editor-details" className="max-w-3xl">
-          <summary className="flex min-h-11 cursor-pointer items-center font-medium">
-            チャプター {chapters?.length ?? 0} 件
-          </summary>
+        <details data-testid="chapter-editor-details" className="group max-w-3xl">
+          <DetailSummary>チャプター {chapters?.length ?? 0} 件</DetailSummary>
           <div className="pt-2">
           <RecordingChapterEditor
             spans={chapterSpans}

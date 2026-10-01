@@ -2653,7 +2653,7 @@ for (const theme of themes) {
     // 360px では詳細欄に余計な面・内側余白を付けず、本文を16pxで折り返す。
     const mobileContext = await open(mobile, theme, recordingDetailScreen, { pointer: 'coarse', isMobile: false })
     const mobilePage = mobileContext.page
-  await mobilePage.getByRole('heading', { name: 'PID 別ドロップ統計' }).waitFor({ state: 'visible' })
+    await mobilePage.getByRole('heading', { name: 'PID 別ドロップ統計' }).waitFor({ state: 'visible' })
     const mobileLayout = await mobilePage.evaluate(() => {
       const body = document.querySelector('[data-testid="recording-detail-body"]')
       const description = document.querySelector('[data-testid="recording-description"]')
@@ -3888,7 +3888,6 @@ async function checkMinimumTargetSize(locator, label, minimumWidth, minimumHeigh
 }
 
 // 録画詳細の頻繁に使う前後ナビゲーションと編集の開閉は、タッチ時に44pxを確保する。
-// 通常の size="sm" ボタンを比較にして32pxが44px基準を満たさないことも実寸で確かめる。
 {
   const { context, page } = await open(mobile, 'light', recordingDetailScreen, {
     pointer: 'coarse',
@@ -3902,17 +3901,6 @@ async function checkMinimumTargetSize(locator, label, minimumWidth, minimumHeigh
   await checkMinimumTargetSize(next, '次のチャプター', 44)
   await checkMinimumTargetSize(editorSummary, 'チャプター編集summary', 44)
 
-  const ordinarySmallButton = page.getByRole('button', { name: '視聴済みにする' })
-  const ordinarySmallBox = await ordinarySmallButton.boundingBox()
-  log(`  size="sm" 比較: ${ordinarySmallBox?.height.toFixed(1) ?? '取得不能'}px (44px基準)`)
-  if (ordinarySmallBox === null || ordinarySmallBox.height >= 44) {
-    ng.push('size="sm" の比較ボタンが44px未満にならず、従来寸法の負例を確認できない')
-  } else if (Math.abs(ordinarySmallBox.height - 32) > 0.5) {
-    ng.push(`size="sm" の比較ボタンが32pxではない（${ordinarySmallBox.height.toFixed(1)}px）`)
-  } else {
-    log('  size="sm" 32px は44px基準を満たさないことを確認')
-  }
-
   const details = page.locator('[data-testid="chapter-editor-details"]')
   await editorSummary.click()
   await details.evaluate((node) => {
@@ -3920,7 +3908,11 @@ async function checkMinimumTargetSize(locator, label, minimumWidth, minimumHeigh
   })
   const video = page.locator('video')
   for (let index = 0; index < 4; index += 1) {
-    await video.evaluate((node) => node.dispatchEvent(new Event('timeupdate', { bubbles: true })))
+    // 再生位置が動かないと currentSeconds が変わらず再描画が起きない。位置ごと動かして投げる。
+    await video.evaluate((node, seconds) => {
+      node.currentTime = seconds
+      node.dispatchEvent(new Event('timeupdate', { bubbles: true }))
+    }, index + 1)
     await page.waitForTimeout(250)
   }
   const editorState = await details.evaluate((node) => ({

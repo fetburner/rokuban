@@ -22,7 +22,7 @@ import {
 } from '@/api/generated'
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { DropStatsTable } from '@/components/drop-stats-table'
-import { DetailHeading } from '@/components/detail-heading'
+import { DetailHeading, DetailSummary } from '@/components/detail-heading'
 import { RecordingActions, RecordingAssetControls } from '@/components/recording-actions'
 import { RecordingPlayer } from '@/components/recording-player'
 import { LivePlayer } from '@/components/live-player'
@@ -313,8 +313,13 @@ export function RecordingDetail({
       (!chaptersQuery.isPending &&
         chapters !== undefined &&
         (chapters.source === 'user' || chapters.spans.length === 0)))
-  const dropSummaryItems = recording.dropSummary
-    ? [
+  // 0 の要約は「異常なし」を書くことになるので節ごと出さない（docs/frontend/recordings.md）。
+  const hasDrops =
+    recording.dropSummary != null &&
+    recording.dropSummary.drops + recording.dropSummary.errors + recording.dropSummary.scrambled > 0
+  const dropSummaryItems =
+    recording.dropSummary && hasDrops
+      ? [
         { label: 'パケット', value: recording.dropSummary.packets },
         { label: 'ドロップ', value: recording.dropSummary.drops },
         { label: 'エラー', value: recording.dropSummary.errors },
@@ -344,161 +349,98 @@ export function RecordingDetail({
           className="flex flex-col gap-3 border-t border-border/60 pt-3"
         >
           <DetailHeading>再生</DetailHeading>
-      {showChase && (
-        <section className="flex flex-col gap-2" aria-label="追っかけ再生">
-          <div className="flex items-center justify-between gap-2">
-            <h4 className="font-medium">追っかけ再生</h4>
-            <button
-              type="button"
-              onClick={() => setChasing(false)}
-              className="rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
-            >
-              閉じる
-            </button>
-          </div>
-          <div className="flex flex-col gap-1 rounded border border-border/60 px-3 py-2">
-            <div className="flex items-center justify-between gap-3 text-muted-foreground">
-              <span>{formatTime(recording.startAt)}</span>
-              <span className="text-right" data-testid="chase-timeline-end">
-                {timelineExtended
-                  ? `予定 ${formatTime(plannedEndAt)} / 録画中 ${formatTime(timelineEndAt)}`
-                  : `${formatTime(plannedEndAt)} まで（予定）`}
-              </span>
-            </div>
-            <div
-              className="relative my-1 h-2 rounded bg-muted"
-              data-testid="chase-timeline-track"
-            >
-              <div
-                className="absolute inset-y-0 left-0 rounded bg-primary/30"
-                data-testid="chase-timeline-recorded"
-                style={{ width: `${recordedProgressPercent}%` }}
-              />
-              {timelineExtended && (
+          {showChase && (
+            <section className="flex flex-col gap-2" aria-label="追っかけ再生">
+              <div className="flex items-center justify-between gap-2">
+                <h4 className="font-medium">追っかけ再生</h4>
+                <button
+                  type="button"
+                  onClick={() => setChasing(false)}
+                  className="rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
+                >
+                  閉じる
+                </button>
+              </div>
+              <div className="flex flex-col gap-1 rounded border border-border/60 px-3 py-2">
+                <div className="flex items-center justify-between gap-3 text-muted-foreground">
+                  <span>{formatTime(recording.startAt)}</span>
+                  <span className="text-right" data-testid="chase-timeline-end">
+                    {timelineExtended
+                      ? `予定 ${formatTime(plannedEndAt)} / 録画中 ${formatTime(timelineEndAt)}`
+                      : `${formatTime(plannedEndAt)} まで（予定）`}
+                  </span>
+                </div>
                 <div
-                  aria-hidden="true"
-                  className="absolute -top-1 h-4 border-l-2 border-dashed border-foreground"
-                  data-testid="chase-timeline-planned-end"
-                  style={{ left: `${(plannedChaseSeconds / timelineChaseSeconds) * 100}%` }}
-                  title={`予定 ${formatTime(plannedEndAt)}`}
-                />
-              )}
-              <input
-                id={`chase-offset-${recording.id}`}
-                type="range"
-                min={0}
-                max={timelineChaseSeconds}
-                step={1}
-                value={selectedOffset}
-                disabled={!Number.isFinite(recordingStartMs) || maxChaseOffsetSeconds === 0}
-                aria-label="追っかけ再生の位置"
-                aria-valuemin={0}
-                aria-valuenow={selectedOffset}
-                aria-valuemax={maxChaseOffsetSeconds}
-                aria-valuetext={formatChasePosition(recording.startAt, selectedOffset)}
-                className="chase-timeline-slider absolute inset-x-0 -top-5 h-11 w-full cursor-ew-resize bg-transparent focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2 disabled:cursor-not-allowed"
-                onChange={(event) => {
-                  const requested = Number.parseInt(event.target.value, 10)
-                  const next = Number.isFinite(requested)
-                    ? Math.min(Math.max(0, requested), maxChaseOffsetSeconds)
-                    : 0
-                  selectedChaseOffsetRef.current = next
-                  setSelectedChaseOffsetSeconds(next)
-                }}
-                onPointerUp={() => setChaseOffsetSeconds(selectedChaseOffsetRef.current)}
-                onKeyUp={(event) => {
-                  if (
-                    ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(
-                      event.key,
-                    )
-                  ) {
-                    setChaseOffsetSeconds(selectedChaseOffsetRef.current)
-                  }
-                }}
-              />
-            </div>
-            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-              <output htmlFor={`chase-offset-${recording.id}`} className="font-medium">
-                {formatChasePosition(recording.startAt, selectedOffset)}
-              </output>
-              <span className="text-muted-foreground">
-                録画済み {formatChaseElapsed(availableChaseSeconds)}
-              </span>
-            </div>
-          </div>
-          {/* 画質（issue #874）。**選択肢が 2 件以上のときだけ出す** ---
-              1 件しか無いのに出すと、選んでも何も変わらない「機能しない
-              コントロール」に戻る（issue #209 / `pages/live.tsx` と同じ規律）。
-              **切替はセッションを作り直さない** --- 追っかけのセッション鍵は
-              `(recordingID, offset)` でプロファイルを含まないので、同じセッションの
-              別プレイリストを取るだけである（`internal/streamer/live.go`。
-              `docs/api/media.md` §録画中の追っかけ再生）。`LivePlayer` は
-              key で作り直さない --- 作り直すと再生位置が先頭に戻る。
-              `value` は controlled なので、URL が未知の名前を運んでいても
-              既定の先頭に一致して表示される。 */}
-          {liveProfiles.length > 1 && (
-            <label className="flex items-center gap-2 text-xs text-muted-foreground">
-              <span>画質</span>
-              <select
-                aria-label="画質"
-                value={explicitLiveProfile ?? liveProfiles[0]?.name}
-                onChange={(e) => onSelectLiveProfile(e.target.value)}
-                className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none"
-              >
-                {liveProfiles.map((p) => (
-                  <option key={p.name} value={p.name}>
-                    {liveProfileLabel(p)}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          {!(liveProfile !== undefined && liveProfilesQuery.isPending) && (
-            <LivePlayer
-              mode="chase"
-              site={recording.site}
-              recordingId={recording.id}
-              resumePositionMs={recording.resumePositionMs}
-              startOffsetSeconds={chaseOffsetSeconds}
-              profile={explicitLiveProfile}
-            />
-          )}
-        </section>
-      )}
-
-      {!trash && recording.status === 'recording' && liveEnabled && !chasing && (
-        <button
-          type="button"
-          onClick={() => setChasing(true)}
-          className="self-start rounded border border-border px-3 py-1.5 text-sm text-primary hover:bg-muted"
-        >
-          追っかけ再生
-        </button>
-      )}
-
-      {showOriginalVOD && (
-        <section className="flex flex-col gap-2" aria-label="原本 TS をブラウザ再生">
-          <div>
-            <h4 className="font-medium">原本 TS をブラウザ再生</h4>
-            <p className="text-muted-foreground">
-              原本 MPEG-2 を一時的に HLS へ変換します。再生用ファイルは保存しません。
-            </p>
-          </div>
-          {liveProfilesQuery.isPending ? (
-            <p role="status" className="text-muted-foreground">再生設定を読み込み中…</p>
-          ) : liveProfiles.length === 0 ? (
-            <p className="text-muted-foreground">
-              HLS 再生プロファイルを利用できません。原本は{' '}
-              <a
-                href={recordingFileURL(recording.id)}
-                className="inline-flex min-h-6 items-center text-primary underline-offset-2 hover:underline"
-              >
-                VLC 等で開く
-              </a>
-              ことができます。
-            </p>
-          ) : (
-            <>
+                  className="relative my-1 h-2 rounded bg-muted"
+                  data-testid="chase-timeline-track"
+                >
+                  <div
+                    className="absolute inset-y-0 left-0 rounded bg-primary/30"
+                    data-testid="chase-timeline-recorded"
+                    style={{ width: `${recordedProgressPercent}%` }}
+                  />
+                  {timelineExtended && (
+                    <div
+                      aria-hidden="true"
+                      className="absolute -top-1 h-4 border-l-2 border-dashed border-foreground"
+                      data-testid="chase-timeline-planned-end"
+                      style={{ left: `${(plannedChaseSeconds / timelineChaseSeconds) * 100}%` }}
+                      title={`予定 ${formatTime(plannedEndAt)}`}
+                    />
+                  )}
+                  <input
+                    id={`chase-offset-${recording.id}`}
+                    type="range"
+                    min={0}
+                    max={timelineChaseSeconds}
+                    step={1}
+                    value={selectedOffset}
+                    disabled={!Number.isFinite(recordingStartMs) || maxChaseOffsetSeconds === 0}
+                    aria-label="追っかけ再生の位置"
+                    aria-valuemin={0}
+                    aria-valuenow={selectedOffset}
+                    aria-valuemax={maxChaseOffsetSeconds}
+                    aria-valuetext={formatChasePosition(recording.startAt, selectedOffset)}
+                    className="chase-timeline-slider absolute inset-x-0 -top-5 h-11 w-full cursor-ew-resize bg-transparent focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2 disabled:cursor-not-allowed"
+                    onChange={(event) => {
+                      const requested = Number.parseInt(event.target.value, 10)
+                      const next = Number.isFinite(requested)
+                        ? Math.min(Math.max(0, requested), maxChaseOffsetSeconds)
+                        : 0
+                      selectedChaseOffsetRef.current = next
+                      setSelectedChaseOffsetSeconds(next)
+                    }}
+                    onPointerUp={() => setChaseOffsetSeconds(selectedChaseOffsetRef.current)}
+                    onKeyUp={(event) => {
+                      if (
+                        ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(
+                          event.key,
+                        )
+                      ) {
+                        setChaseOffsetSeconds(selectedChaseOffsetRef.current)
+                      }
+                    }}
+                  />
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                  <output htmlFor={`chase-offset-${recording.id}`} className="font-medium">
+                    {formatChasePosition(recording.startAt, selectedOffset)}
+                  </output>
+                  <span className="text-muted-foreground">
+                    録画済み {formatChaseElapsed(availableChaseSeconds)}
+                  </span>
+                </div>
+              </div>
+              {/* 画質（issue #874）。**選択肢が 2 件以上のときだけ出す** ---
+                  1 件しか無いのに出すと、選んでも何も変わらない「機能しない
+                  コントロール」に戻る（issue #209 / `pages/live.tsx` と同じ規律）。
+                  **切替はセッションを作り直さない** --- 追っかけのセッション鍵は
+                  `(recordingID, offset)` でプロファイルを含まないので、同じセッションの
+                  別プレイリストを取るだけである（`internal/streamer/live.go`。
+                  `docs/api/media.md` §録画中の追っかけ再生）。`LivePlayer` は
+                  key で作り直さない --- 作り直すと再生位置が先頭に戻る。
+                  `value` は controlled なので、URL が未知の名前を運んでいても
+                  既定の先頭に一致して表示される。 */}
               {liveProfiles.length > 1 && (
                 <label className="flex items-center gap-2 text-xs text-muted-foreground">
                   <span>画質</span>
@@ -509,69 +451,132 @@ export function RecordingDetail({
                     className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none"
                   >
                     {liveProfiles.map((p) => (
-                      <option key={p.name} value={p.name}>{liveProfileLabel(p)}</option>
+                      <option key={p.name} value={p.name}>
+                        {liveProfileLabel(p)}
+                      </option>
                     ))}
                   </select>
                 </label>
               )}
-              <LivePlayer
-                mode="original-vod"
-                site={recording.site}
-                recordingId={recording.id}
-                resumePositionMs={recording.resumePositionMs}
-                profile={explicitLiveProfile}
-              />
-            </>
+              {!(liveProfile !== undefined && liveProfilesQuery.isPending) && (
+                <LivePlayer
+                  mode="chase"
+                  site={recording.site}
+                  recordingId={recording.id}
+                  resumePositionMs={recording.resumePositionMs}
+                  startOffsetSeconds={chaseOffsetSeconds}
+                  profile={explicitLiveProfile}
+                />
+              )}
+            </section>
           )}
-        </section>
-      )}
 
-      {!trash && !showChase && (encodedAssets.length > 0 || (hasOriginal && !showOriginalVOD)) && (
-        <RecordingPlayer
-          recordingId={recording.id}
-          resumePositionMs={recording.resumePositionMs}
-          preferredProfile={preferredPlaybackProfile}
-          encodedAssets={encodedAssets}
-          hasOriginal={hasOriginal}
-          chapters={chapters?.spans}
-          chapterSource={chapters?.source}
-          chapterVersion={chapters?.version}
-          chapterDetectionPending={chapters?.detectionPending}
-          onSaveChapters={canEditChapters ? saveChapters : undefined}
-          onResetChapters={canEditChapters ? resetChapters : undefined}
-          chapterSavePending={putChapters.isPending || deleteChapters.isPending}
-          onReencode={trash ? undefined : reencodeCut}
-          reencodePending={reencode.isPending}
-        />
-      )}
+          {!trash && recording.status === 'recording' && liveEnabled && !chasing && (
+            <button
+              type="button"
+              onClick={() => setChasing(true)}
+              className="self-start rounded border border-border px-3 py-1.5 text-sm text-primary hover:bg-muted"
+            >
+              追っかけ再生
+            </button>
+          )}
 
-      {!trash && recording.status === 'finished' && (
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={putWatched.isPending || deleteWatched.isPending}
-          onClick={() => void toggleWatched()}
-        >
-          {recording.watchedAt !== undefined ? '未視聴に戻す' : '視聴済みにする'}
-        </Button>
-      )}
+          {showOriginalVOD && (
+            <section className="flex flex-col gap-2" aria-label="原本 TS をブラウザ再生">
+              <div>
+                <h4 className="font-medium">原本 TS をブラウザ再生</h4>
+                <p className="text-muted-foreground">
+                  原本 MPEG-2 を一時的に HLS へ変換します。再生用ファイルは保存しません。
+                </p>
+              </div>
+              {liveProfilesQuery.isPending ? (
+                <p role="status" className="text-muted-foreground">再生設定を読み込み中…</p>
+              ) : liveProfiles.length === 0 ? (
+                <p className="text-muted-foreground">
+                  HLS 再生プロファイルを利用できません。原本は{' '}
+                  <a
+                    href={recordingFileURL(recording.id)}
+                    className="inline-flex min-h-6 items-center text-primary underline-offset-2 hover:underline"
+                  >
+                    VLC 等で開く
+                  </a>
+                  ことができます。
+                </p>
+              ) : (
+                <>
+                  {liveProfiles.length > 1 && (
+                    <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <span>画質</span>
+                      <select
+                        aria-label="画質"
+                        value={explicitLiveProfile ?? liveProfiles[0]?.name}
+                        onChange={(e) => onSelectLiveProfile(e.target.value)}
+                        className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none"
+                      >
+                        {liveProfiles.map((p) => (
+                          <option key={p.name} value={p.name}>{liveProfileLabel(p)}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  <LivePlayer
+                    mode="original-vod"
+                    site={recording.site}
+                    recordingId={recording.id}
+                    resumePositionMs={recording.resumePositionMs}
+                    profile={explicitLiveProfile}
+                  />
+                </>
+              )}
+            </section>
+          )}
 
-      {showAddEncodePrompt && !encodeProfilesQuery.isPending && !encodeProfilesQuery.isError &&
-        (configuredEncodeProfiles.length > 0 ? (
-          <Button
-            type="button"
-            size="sm"
-            onClick={() => {
-              assetsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-              assetsRef.current?.focus({ preventScroll: true })
-            }}
-          >
-            エンコードを追加
-          </Button>
-        ) : (
-          <p className="text-muted-foreground">エンコードプロファイルが設定されていません</p>
-        ))}
+          {!trash && !showChase && (encodedAssets.length > 0 || (hasOriginal && !showOriginalVOD)) && (
+            <RecordingPlayer
+              recordingId={recording.id}
+              resumePositionMs={recording.resumePositionMs}
+              preferredProfile={preferredPlaybackProfile}
+              encodedAssets={encodedAssets}
+              hasOriginal={hasOriginal}
+              chapters={chapters?.spans}
+              chapterSource={chapters?.source}
+              chapterVersion={chapters?.version}
+              chapterDetectionPending={chapters?.detectionPending}
+              onSaveChapters={canEditChapters ? saveChapters : undefined}
+              onResetChapters={canEditChapters ? resetChapters : undefined}
+              chapterSavePending={putChapters.isPending || deleteChapters.isPending}
+              onReencode={trash ? undefined : reencodeCut}
+              reencodePending={reencode.isPending}
+            />
+          )}
+
+          {!trash && recording.status === 'finished' && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={putWatched.isPending || deleteWatched.isPending}
+              onClick={() => void toggleWatched()}
+            >
+              {recording.watchedAt !== undefined ? '未視聴に戻す' : '視聴済みにする'}
+            </Button>
+          )}
+
+          {showAddEncodePrompt && !encodeProfilesQuery.isPending && !encodeProfilesQuery.isError &&
+            (configuredEncodeProfiles.length > 0 ? (
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => {
+                  assetsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                  assetsRef.current?.focus({ preventScroll: true })
+                }}
+              >
+                エンコードを追加
+              </Button>
+            ) : (
+              <p className="text-muted-foreground">エンコードプロファイルが設定されていません</p>
+            ))}
         </section>
       )}
 
@@ -655,129 +660,129 @@ export function RecordingDetail({
           )}
           <RecordingAssetControls recording={recording} />
 
-      <section className="flex flex-col gap-2" aria-label="CM 検出">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <DetailHeading>CM 検出</DetailHeading>
-          {!trash && (cmDetectEnabled || recording.cmDetection.state !== 'disabled') && (
-            <Button
-              type="button"
-              size="sm"
-              variant={recording.cmDetection.state === 'disabled' ? 'secondary' : 'outline'}
-              disabled={setEncodePolicy.isPending || (recording.cmDetection.state === 'disabled' && !hasOriginal)}
-              onClick={() => {
-                const enable = recording.cmDetection.state === 'disabled'
-                setEncodePolicy.mutate(
-                  { id: recording.id, data: { cmDetect: enable } },
-                  {
-                    onSuccess: () => {
-                      void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
-                      toast({ message: enable ? 'CM 検出を有効にしました' : 'CM 検出を停止しました' })
-                    },
-                    onError: (error) =>
-                      toast({
-                        message:
-                          apiErrorMessage(error) ??
-                          (enable ? 'CM 検出の有効化に失敗しました' : 'CM 検出の停止に失敗しました'),
-                        kind: 'error',
-                      }),
-                  },
-                )
-              }}
-            >
-              {recording.cmDetection.state === 'disabled' ? '検出を有効化' : '検出を停止'}
-            </Button>
-          )}
-        </div>
-        <p className="text-muted-foreground">
-          {recording.cmDetection.state === 'disabled' && '無効'}
-          {recording.cmDetection.state === 'detecting' && '検出中、または再試行待ち'}
-          {recording.cmDetection.state === 'detected' && '検出済み'}
-          {recording.cmDetection.state === 'failed' && '3 回の試行に失敗しました'}
-          {recording.cmDetection.state === 'disabled' && !hasOriginal && !trash &&
-            '（原本の取り込み後に有効化できます）'}
-        </p>
-        {recording.cmDetection.state === 'failed' && (
-          <p className="text-muted-foreground" data-testid="cm-detection-failure-message">
-            {cmDetectStageMessage(recording.cmDetection.stage)}
-          </p>
-        )}
-        {recording.cmDetection.state === 'detected' && rawCMRanges.length === 0 && (
-          <p className="text-muted-foreground">検出器が CM 区間を検出しませんでした</p>
-        )}
-        {showCMDetectorResults && (
-          <details data-testid="cm-detector-results-details" className="text-muted-foreground">
-            <summary className="flex min-h-11 cursor-pointer items-center">
-              <DetailHeading compact>検出器の結果</DetailHeading>
-            </summary>
-            <ul className="flex flex-col gap-1 py-1">
-              {rawCMRanges.map((range) => (
-                <li key={`${range.startMs}-${range.endMs}`}>
-                  {formatCMOffset(range.startMs)} – {formatCMOffset(range.endMs)}
-                </li>
-              ))}
-            </ul>
-          </details>
-        )}
-        {recording.cmDetection.state === 'failed' && !trash && (() => {
-          // logo / area は枠を教えるのが直し方なのでリンクを主導線にし、それ以外は再試行を主にする。
-          const teachLogo = recording.cmDetection.stage === 'logo' || recording.cmDetection.stage === 'area'
-          return (
-          <div className="flex flex-wrap items-center gap-3">
-            {teachLogo && (
-              <Link
-                to="/cm-logos"
-                search={{
-                  network: recording.networkId,
-                  service: recording.serviceId,
-                  recording: recording.id,
-                }}
-                className="text-primary underline underline-offset-4"
-              >
-                CM 検出のロゴを教える
-              </Link>
+          <section className="flex flex-col gap-2" aria-label="CM 検出">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <DetailHeading>CM 検出</DetailHeading>
+              {(cmDetectEnabled || recording.cmDetection.state !== 'disabled') && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={recording.cmDetection.state === 'disabled' ? 'secondary' : 'outline'}
+                  disabled={setEncodePolicy.isPending || (recording.cmDetection.state === 'disabled' && !hasOriginal)}
+                  onClick={() => {
+                    const enable = recording.cmDetection.state === 'disabled'
+                    setEncodePolicy.mutate(
+                      { id: recording.id, data: { cmDetect: enable } },
+                      {
+                        onSuccess: () => {
+                          void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
+                          toast({ message: enable ? 'CM 検出を有効にしました' : 'CM 検出を停止しました' })
+                        },
+                        onError: (error) =>
+                          toast({
+                            message:
+                              apiErrorMessage(error) ??
+                              (enable ? 'CM 検出の有効化に失敗しました' : 'CM 検出の停止に失敗しました'),
+                            kind: 'error',
+                          }),
+                      },
+                    )
+                  }}
+                >
+                  {recording.cmDetection.state === 'disabled' ? '検出を有効化' : '検出を停止'}
+                </Button>
+              )}
+            </div>
+            <p className="text-muted-foreground">
+              {recording.cmDetection.state === 'disabled' && '無効'}
+              {recording.cmDetection.state === 'detecting' && '検出中、または再試行待ち'}
+              {recording.cmDetection.state === 'detected' && '検出済み'}
+              {recording.cmDetection.state === 'failed' && '3 回の試行に失敗しました'}
+              {recording.cmDetection.state === 'disabled' && !hasOriginal &&
+                '（原本の取り込み後に有効化できます）'}
+            </p>
+            {recording.cmDetection.state === 'failed' && (
+              <p className="text-muted-foreground" data-testid="cm-detection-failure-message">
+                {cmDetectStageMessage(recording.cmDetection.stage)}
+              </p>
             )}
-            <Button
-              type="button"
-              size="sm"
-              variant={teachLogo ? 'secondary' : 'default'}
-              disabled={retryCMDetection.isPending || !hasOriginal || !cmDetectEnabled}
-              onClick={() => {
-                retryCMDetection.mutate(
-                  { id: recording.id },
-                  {
-                    onSuccess: () => {
-                      void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
-                      toast({ message: 'CM 検出を再試行します' })
-                    },
-                    onError: (error) =>
-                      toast({
-                        message: apiErrorMessage(error) ?? 'CM 検出の再試行に失敗しました',
-                        kind: 'error',
-                      }),
-                  },
-                )
-              }}
-            >
-              再試行
-            </Button>
-          </div>
-          )
-        })()}
-        {recording.cmDetection.state === 'failed' && recording.cmDetection.error && (
-          <details data-testid="cm-detection-technical-details" className="text-muted-foreground">
-            <summary className="cursor-pointer">技術的な詳細</summary>
-            <pre className="max-h-40 overflow-auto whitespace-pre-wrap font-mono text-xs">
-              {recording.cmDetection.error}
-            </pre>
-          </details>
-        )}
-      </section>
-      </section>
+            {recording.cmDetection.state === 'detected' && rawCMRanges.length === 0 && (
+              <p className="text-muted-foreground">検出器が CM 区間を検出しませんでした</p>
+            )}
+            {showCMDetectorResults && (
+              <details data-testid="cm-detector-results-details" className="group text-muted-foreground">
+                <DetailSummary>
+                  <DetailHeading compact>検出器の結果</DetailHeading>
+                </DetailSummary>
+                <ul className="flex flex-col gap-1 py-1">
+                  {rawCMRanges.map((range) => (
+                    <li key={`${range.startMs}-${range.endMs}`}>
+                      {formatCMOffset(range.startMs)} – {formatCMOffset(range.endMs)}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+            {recording.cmDetection.state === 'failed' && (() => {
+              // logo / area は枠を教えるのが直し方なのでリンクを主導線にし、それ以外は再試行を主にする。
+              const teachLogo = recording.cmDetection.stage === 'logo' || recording.cmDetection.stage === 'area'
+              return (
+              <div className="flex flex-wrap items-center gap-3">
+                {teachLogo && (
+                  <Link
+                    to="/cm-logos"
+                    search={{
+                      network: recording.networkId,
+                      service: recording.serviceId,
+                      recording: recording.id,
+                    }}
+                    className="text-primary underline underline-offset-4"
+                  >
+                    CM 検出のロゴを教える
+                  </Link>
+                )}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={teachLogo ? 'secondary' : 'default'}
+                  disabled={retryCMDetection.isPending || !hasOriginal || !cmDetectEnabled}
+                  onClick={() => {
+                    retryCMDetection.mutate(
+                      { id: recording.id },
+                      {
+                        onSuccess: () => {
+                          void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
+                          toast({ message: 'CM 検出を再試行します' })
+                        },
+                        onError: (error) =>
+                          toast({
+                            message: apiErrorMessage(error) ?? 'CM 検出の再試行に失敗しました',
+                            kind: 'error',
+                          }),
+                      },
+                    )
+                  }}
+                >
+                  再試行
+                </Button>
+              </div>
+              )
+            })()}
+            {recording.cmDetection.state === 'failed' && recording.cmDetection.error && (
+              <details data-testid="cm-detection-technical-details" className="text-muted-foreground">
+                <summary className="cursor-pointer">技術的な詳細</summary>
+                <pre className="max-h-40 overflow-auto whitespace-pre-wrap font-mono text-xs">
+                  {recording.cmDetection.error}
+                </pre>
+              </details>
+            )}
+          </section>
+        </section>
       )}
 
       {(ingestState !== undefined ||
         (recording.qualityEvents?.length ?? 0) > 0 ||
-        dropSummaryItems.length > 0) && (
+        hasDrops) && (
         <div
           data-testid="recording-observations"
           className="flex flex-col gap-3 border-t border-border/60 pt-3"
@@ -801,7 +806,7 @@ export function RecordingDetail({
               </ul>
             </section>
           )}
-          {dropSummaryItems.length > 0 && (
+          {hasDrops && (
             <section>
               <DetailHeading>ドロップ集計</DetailHeading>
               <ul className="flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">
@@ -812,7 +817,7 @@ export function RecordingDetail({
             </section>
           )}
           {/* PID 別の内訳は行数が多いので、初期状態では畳む。 */}
-          {recording.dropSummary && <DropStatsTable recordingId={recording.id} />}
+          {hasDrops && <DropStatsTable recordingId={recording.id} />}
         </div>
       )}
 
