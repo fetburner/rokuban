@@ -1,4 +1,4 @@
-package worker
+package medialock
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 func TestMediaRelPathFileLock_GateBlocksUnlinkBetweenOpenAndFlock(t *testing.T) {
 	mediaDir := t.TempDir()
 	const relPath = "race/window.m2ts"
-	a, err := lockMediaRelPathFile(context.Background(), mediaDir, relPath)
+	a, err := Lock(context.Background(), mediaDir, relPath)
 	if err != nil {
 		t.Fatalf("locking owner A: %v", err)
 	}
@@ -42,12 +42,12 @@ func TestMediaRelPathFileLock_GateBlocksUnlinkBetweenOpenAndFlock(t *testing.T) 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	armed.Store(true)
-	bCh := make(chan *mediaRelPathFileLock, 1)
+	bCh := make(chan *FileLock, 1)
 	bErr := make(chan error, 1)
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		b, err := lockMediaRelPathFile(ctx, mediaDir, relPath)
+		b, err := Lock(ctx, mediaDir, relPath)
 		if err != nil {
 			bErr <- err
 			return
@@ -78,7 +78,7 @@ func TestMediaRelPathFileLock_GateBlocksUnlinkBetweenOpenAndFlock(t *testing.T) 
 	case <-time.After(3 * time.Second):
 		t.Fatal("owner A Close did not finish")
 	}
-	var b *mediaRelPathFileLock
+	var b *FileLock
 	select {
 	case b = <-bCh:
 	case err := <-bErr:
@@ -86,7 +86,7 @@ func TestMediaRelPathFileLock_GateBlocksUnlinkBetweenOpenAndFlock(t *testing.T) 
 	case <-time.After(3 * time.Second):
 		t.Fatal("B did not acquire after A closed")
 	}
-	c, acquired, err := tryLockMediaRelPathFile(mediaDir, relPath)
+	c, acquired, err := TryLock(mediaDir, relPath)
 	if err != nil {
 		_ = b.Close()
 		t.Fatalf("C trying lock: %v", err)

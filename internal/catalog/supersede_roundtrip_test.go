@@ -66,7 +66,7 @@ func TestExportRescue_PreservesSupersededAt(t *testing.T) {
 		t.Fatalf("truncate: %v", err)
 	}
 
-	if _, err := RescueFile(ctx, pool, path); err != nil {
+	if _, err := RescueFile(ctx, pool, mediaDir, path); err != nil {
 		t.Fatalf("RescueFile: %v （superseded_at が往復で失われると一意索引に衝突して復旧が落ちる）", err)
 	}
 

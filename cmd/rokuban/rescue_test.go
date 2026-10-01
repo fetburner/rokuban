@@ -144,3 +144,24 @@ func TestRescueCmd_RejectsRemovedSiteFlag(t *testing.T) {
 		t.Errorf("err = %v: DB まで進んでいる（廃止済み --site を受け付けている）", err)
 	}
 }
+
+func TestRunRescue_ReportsMissingCatalogFiles(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	at := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	doc := &catalog.Document{Version: catalog.Version, ExportedAt: at,
+		Recordings:  []catalog.Recording{{ID: 1, Source: "manual", Site: "default", NetworkID: 1, ServiceID: 1, EventID: 1, ServiceName: "test", ChannelType: "GR", Channel: "27", Title: "test", ProgramStartAt: at, Status: "finished", CreatedAt: at, UpdatedAt: at}},
+		MediaAssets: []catalog.MediaAsset{{ID: 1, RecordingID: 1, Kind: "original", RelPath: "sites/default/missing.m2ts", State: "active", CreatedAt: at, UpdatedAt: at}},
+	}
+	mediaDir := t.TempDir()
+	if _, err := catalog.Write(mediaDir, doc, 7); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := runRescue(ctx, pool, mediaDir, []string{"default"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "warning: 1 media file(s) missing; not restored as active") {
+		t.Fatalf("missing-file warning absent: %s", out.String())
+	}
+}

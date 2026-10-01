@@ -95,6 +95,9 @@ func runRescue(ctx context.Context, pool *pgxpool.Pool, mediaDir string, registr
 				"(and %d program_intents / %d program_overrides that referenced them)\n",
 			result.SkippedProgramSnapshots, result.SkippedProgramIntents, result.SkippedProgramOverrides)
 	}
+	if result.MissingMediaFiles > 0 {
+		_, _ = fmt.Fprintf(out, "  warning: %d media file(s) missing; not restored as active\n", result.MissingMediaFiles)
+	}
 	// このファイルは登録されなかった --- 台帳が知らないままなので、後で孤児回収の
 	// エイジングを経て黙って削除される。件数だけでも運用者の目に触れるサマリに出す
 	// （slog の Warn は運用者が見ているとは限らない）。
