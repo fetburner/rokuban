@@ -164,6 +164,7 @@ func requireRegularMediaRelPathLockFile(file *os.File, path string) error {
 // 待つため、GC が始まる時点で active owner 以外の古い inode を握る waiter は存在しない。
 // active lock は flock が取れず残る。gate を取れなかった場合は (false, nil) を返す。
 func gcMediaRelPathLockFiles(ctx context.Context, mediaDir string, wait bool) (collected bool, resultErr error) {
+	onGCMediaRelPathLockFiles()
 	gate, err := acquireMediaRelPathLockGate(ctx, mediaDir, true, wait)
 	if err != nil {
 		if errors.Is(err, errMediaRelPathLockGateBusy) {
@@ -220,6 +221,9 @@ func gcMediaRelPathLockFiles(ctx context.Context, mediaDir string, wait bool) (c
 	return true, nil
 }
 
+// onGCMediaRelPathLockFiles はテストが GC の実行回数を数えるためのフック。本番では何もしない。
+var onGCMediaRelPathLockFiles = func() {}
+
 // afterOpenMediaRelPathLock はテストが lock file の open から flock までの窓で
 // 実行を止めるためのフック。本番では何もしない。
 var afterOpenMediaRelPathLock = func(relPath string) {}
@@ -263,6 +267,12 @@ func Lock(ctx context.Context, mediaDir, relPath string) (*FileLock, error) {
 	if _, err := gcMediaRelPathLockFiles(ctx, mediaDir, true); err != nil {
 		return nil, fmt.Errorf("collecting stale media rel_path locks: %w", err)
 	}
+	return lockNoGC(ctx, mediaDir, relPath)
+}
+
+// lockNoGC は Lock から GC を除いた本体。GC は全 lock file を open + flock するので、
+// 多数を保持したまま path ごとに回すと O(N²) になる。LockPaths は先頭で 1 回だけ回す。
+func lockNoGC(ctx context.Context, mediaDir, relPath string) (*FileLock, error) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("waiting for media rel_path lock: %w", err)

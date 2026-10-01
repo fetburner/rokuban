@@ -32,8 +32,12 @@ func LockPaths(ctx context.Context, mediaDir string, paths []string) (func() err
 		}
 		return err
 	}
+	// GC は 1 回だけ。保持済みの lock は GC が flock に失敗して残すので、取得ごとに回す必要がない。
+	if _, err := gcMediaRelPathLockFiles(ctx, mediaDir, true); err != nil {
+		return nil, fmt.Errorf("collecting stale media rel_path locks: %w", err)
+	}
 	for _, path := range paths {
-		lock, err := Lock(ctx, mediaDir, path)
+		lock, err := lockNoGC(ctx, mediaDir, path)
 		if err != nil {
 			return nil, errors.Join(err, release())
 		}

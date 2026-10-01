@@ -118,9 +118,13 @@ func RescueFile(ctx context.Context, pool *pgxpool.Pool, mediaDir, path string) 
 	}
 
 	// Acquire file locks before DB row locks and retain them through commit.
-	paths := make([]string, len(doc.MediaAssets))
-	for i, asset := range doc.MediaAssets {
-		paths[i] = asset.RelPath
+	// deleted の行は active 行を作らない（ファイルも見ない）ので、ロック対象から外す。
+	// 墓石は運用とともに増えるため、ロック数を live な行に抑える。
+	paths := make([]string, 0, len(doc.MediaAssets))
+	for _, asset := range doc.MediaAssets {
+		if asset.State != "deleted" {
+			paths = append(paths, asset.RelPath)
+		}
 	}
 	release, err := medialock.LockPaths(ctx, mediaDir, paths)
 	if err != nil {

@@ -89,7 +89,8 @@ func Register(ctx context.Context, pool *pgxpool.Pool, mediaDir string, in Input
 
 	paths := make([]string, len(in.Assets))
 	for i, asset := range in.Assets {
-		paths[i] = asset.RelPath
+		// checkAsset と同じ正規化。LockPaths は非正規 path を拒否する。
+		paths[i] = filepath.ToSlash(filepath.Clean(asset.RelPath))
 	}
 	release, err := medialock.LockPaths(ctx, mediaDir, paths)
 	if err != nil {
