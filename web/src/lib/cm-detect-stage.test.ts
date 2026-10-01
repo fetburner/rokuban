@@ -16,6 +16,10 @@ describe('cmDetectStageMessage', () => {
     )
   })
 
+  it('adopt は局の判断待ちとして言い分ける', () => {
+    expect(cmDetectStageMessage('adopt')).toBe('この局はロゴの採用待ちです。局の画面で候補を確かめて採用してください。')
+  })
+
   it('それ以外の工程は枠では直せない失敗に畳む', () => {
     expect(cmDetectStageMessage('chapter')).toBe('CM 検出の処理が失敗しました。ロゴの枠では直せない失敗です。')
   })

@@ -130,6 +130,121 @@ describe('RecordingPlayer のサーバー再生位置', () => {
       body: JSON.stringify({ positionMs: 30_000 }),
     }))
   })
+
+  it('90% 到達の視聴済み PUT が通ったら onWatched を呼ぶ', async () => {
+    stubSuccessfulAPI()
+    const onWatched = vi.fn()
+    const { container } = render(
+      <RecordingPlayer
+        recordingId={14}
+        onWatched={onWatched}
+        encodedAssets={[{ profile: 'h264', sizeBytes: 123 }]}
+      />,
+    )
+    const video = container.querySelector('video')!
+    setMediaProps(video, { currentTime: 0, duration: 300 })
+    fireEvent.loadedMetadata(video)
+    setMediaProps(video, { currentTime: 270, duration: 300 })
+    fireEvent.timeUpdate(video)
+    await waitFor(() => expect(onWatched).toHaveBeenCalledTimes(1))
+  })
+
+  describe('同じページ内の画質切替（resumePositionMs はページを開いた時点の値のまま）', () => {
+    const keepRanges = [
+      { startMs: 10_000, endMs: 20_000 },
+      { startMs: 30_000, endMs: 50_000 },
+    ]
+    const assets = [
+      { profile: 'h264', sizeBytes: 1 },
+      { profile: 'h265', sizeBytes: 2 },
+      { profile: 'cut', sizeBytes: 3, cut: true, keepRanges },
+    ]
+
+    function switchTo(container: HTMLElement, profile: string) {
+      fireEvent.change(container.querySelector('select')!, { target: { value: profile } })
+      const video = container.querySelector('video')!
+      setMediaProps(video, { currentTime: 0, duration: 1000 })
+      fireEvent.loadedMetadata(video)
+      return video
+    }
+
+    function watch(container: HTMLElement, seconds: number) {
+      const video = container.querySelector('video')!
+      setMediaProps(video, { currentTime: 0, duration: 1000 })
+      fireEvent.loadedMetadata(video)
+      setMediaProps(video, { currentTime: seconds, duration: 1000 })
+      fireEvent.pause(video)
+    }
+
+    it('非カット → 非カットは同じ原本秒から始まる', () => {
+      stubSuccessfulAPI()
+      const { container } = render(
+        <RecordingPlayer recordingId={20} resumePositionMs={5_000} preferredProfile="h264" encodedAssets={assets} />,
+      )
+      watch(container, 600)
+      expect(switchTo(container, 'h265').currentTime).toBe(600)
+    })
+
+    it('非カット → カットは対応するカット版の秒から始まる', () => {
+      stubSuccessfulAPI()
+      const { container } = render(
+        <RecordingPlayer recordingId={21} resumePositionMs={5_000} preferredProfile="h264" encodedAssets={assets} />,
+      )
+      watch(container, 35)
+      // 原本 35 s = keep[1] の 5 s 目 = カット版 10 + 5 s
+      expect(switchTo(container, 'cut').currentTime).toBe(15)
+    })
+
+    it('カット → 非カットは原本の秒から始まる', () => {
+      stubSuccessfulAPI()
+      const { container } = render(
+        <RecordingPlayer recordingId={22} resumePositionMs={5_000} preferredProfile="cut" encodedAssets={assets} />,
+      )
+      watch(container, 15)
+      expect(switchTo(container, 'h264').currentTime).toBe(35)
+    })
+  })
+
+  it('再生中に keepRanges が別世代へ変わっても、保存される原本の秒は各世代の変換表で写される', async () => {
+    const fetchMock = stubSuccessfulAPI()
+    const oldRanges = [
+      { startMs: 10_000, endMs: 20_000 },
+      { startMs: 30_000, endMs: 50_000 },
+    ]
+    const newRanges = [
+      { startMs: 25_000, endMs: 35_000 },
+      { startMs: 60_000, endMs: 80_000 },
+    ]
+    const props = { recordingId: 23, preferredProfile: 'cut' }
+    const { container, rerender } = render(
+      <RecordingPlayer {...props} encodedAssets={[{ profile: 'cut', sizeBytes: 2, cut: true, keepRanges: oldRanges }]} />,
+    )
+    const oldVideo = container.querySelector('video')!
+    setMediaProps(oldVideo, { currentTime: 0, duration: 30 })
+    fireEvent.loadedMetadata(oldVideo)
+    setMediaProps(oldVideo, { currentTime: 12, duration: 30 })
+    fireEvent.pause(oldVideo)
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    expect(fetchMock.mock.calls[0]![1]).toEqual(expect.objectContaining({ body: JSON.stringify({ positionMs: 32_000 }) }))
+
+    rerender(
+      <RecordingPlayer {...props} encodedAssets={[{ profile: 'cut', sizeBytes: 2, cut: true, keepRanges: newRanges }]} />,
+    )
+    const newVideo = container.querySelector('video')!
+    // 別世代のファイルなので <video> ごと作り直される。
+    expect(newVideo).not.toBe(oldVideo)
+    setMediaProps(newVideo, { currentTime: 0, duration: 30 })
+    fireEvent.loadedMetadata(newVideo)
+    // 原本 32 s は新世代の keep 外（25-35 の中なので 7 s 目 = カット版 7 s）。
+    expect(newVideo.currentTime).toBe(7)
+
+    fetchMock.mockClear()
+    setMediaProps(newVideo, { currentTime: 12, duration: 30 })
+    fireEvent.pause(newVideo)
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    // 旧世代の表なら 32_000。新世代の表: 12 s = 2 つ目の keep の 2 s 目 = 原本 62 s。
+    expect(fetchMock.mock.calls[0]![1]).toEqual(expect.objectContaining({ body: JSON.stringify({ positionMs: 62_000 }) }))
+  })
 })
 
 // issue #236（M7-3）: 押す前にサイズが見える値札。プロファイルセレクタの
