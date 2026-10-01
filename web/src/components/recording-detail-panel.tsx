@@ -219,17 +219,13 @@ export function RecordingDetail({
   const chapters = unwrap(chaptersQuery.data)
   const putChapters = usePutRecordingChapterEdits()
   const deleteChapters = useDeleteRecordingChapterEdits()
-  const putWatched = usePutRecordingWatched()
-  const deleteWatched = useDeleteRecordingWatched()
-  const toggleWatched = async () => {
+  const putWatchedMutation = usePutRecordingWatched()
+  const deleteWatchedMutation = useDeleteRecordingWatched()
+  const updateWatched = async (watched: boolean) => {
     try {
-      if (recording.watchedAt !== undefined) {
-        await deleteWatched.mutateAsync({ id: recording.id })
-        toast({ message: '未視聴に戻しました' })
-      } else {
-        await putWatched.mutateAsync({ id: recording.id })
-        toast({ message: '視聴済みにしました' })
-      }
+      if (watched) await putWatchedMutation.mutateAsync({ id: recording.id })
+      else await deleteWatchedMutation.mutateAsync({ id: recording.id })
+      toast({ message: watched ? '視聴済みにしました' : '未視聴に戻しました' })
       void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
     } catch (error) {
       toast({ message: apiErrorMessage(error) ?? '視聴状態の更新に失敗しました', kind: 'error' })
@@ -539,6 +535,11 @@ export function RecordingDetail({
               recordingId={recording.id}
               resumePositionMs={startAtBeginning ? undefined : recording.resumePositionMs}
               onWatched={() => void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })}
+              showWatched={recording.status === 'finished'}
+              watched={recording.watchedAt !== undefined}
+              watchedPending={putWatchedMutation.isPending || deleteWatchedMutation.isPending}
+              putWatched={() => void updateWatched(true)}
+              deleteWatched={() => void updateWatched(false)}
               preferredProfile={preferredPlaybackProfile}
               encodedAssets={encodedAssets}
               hasOriginal={hasOriginal}
@@ -552,18 +553,6 @@ export function RecordingDetail({
               onReencode={trash ? undefined : reencodeCut}
               reencodePending={reencode.isPending}
             />
-          )}
-
-          {!trash && recording.status === 'finished' && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={putWatched.isPending || deleteWatched.isPending}
-              onClick={() => void toggleWatched()}
-            >
-              {recording.watchedAt !== undefined ? '未視聴に戻す' : '視聴済みにする'}
-            </Button>
           )}
 
           {showAddEncodePrompt && !encodeProfilesQuery.isPending && !encodeProfilesQuery.isError &&

@@ -241,9 +241,11 @@ function createFakeServer(options: {
       return Promise.resolve(jsonResponse(null, 204))
     }
     const watchedMatch = /^\/api\/recordings\/(\d+)\/watched$/.exec(url.pathname)
-    if (watchedMatch && method === 'PUT') {
+    if (watchedMatch && (method === 'PUT' || method === 'DELETE')) {
       const id = Number(watchedMatch[1])
-      if (recording?.id === id) recording = { ...recording, watchedAt: '2026-10-01T00:00:00Z' }
+      if (recording?.id === id) {
+        recording = { ...recording, watchedAt: method === 'PUT' ? '2026-10-01T00:00:00Z' : undefined }
+      }
       return Promise.resolve(jsonResponse(null, 204))
     }
     if (
@@ -464,6 +466,30 @@ describe('RecordingDetailPage', () => {
     expect(screen.queryByRole('heading', { name: 'ドロップ集計' })).not.toBeInTheDocument()
     expect(screen.queryByTestId('drop-stats-details')).not.toBeInTheDocument()
     expect(fetchMock).not.toHaveBeenCalledWith('/api/recordings/3/drop-stats', expect.anything())
+  })
+
+  it('90% 到達後の視聴済み PUT 成功で録画一覧クエリを invalidate する', async () => {
+    const { fetchMock } = createFakeServer({
+      recording: sampleRecording({
+        durationMs: 100_000,
+        encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }],
+      }),
+    })
+    const { queryClient } = renderAt('/recordings/3')
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+
+    const video = await screen.findByLabelText('録画映像')
+    Object.defineProperty(video, 'duration', { value: 100, configurable: true })
+    Object.defineProperty(video, 'currentTime', { value: 90, writable: true, configurable: true })
+    fireEvent.timeUpdate(video)
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/recordings/3/watched',
+        expect.objectContaining({ method: 'PUT' }),
+      )
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: [recordingsQueryKeyPrefix] })
+    })
   })
 
   // M8-6: シリーズの導線。起点の実効シリーズが null の録画には出さない
@@ -1243,12 +1269,14 @@ describe('RecordingDetailPage 削除・復元のトースト (issue #297)', () =
 describe('RecordingDetailPage サイズが取れない資産（値札、issue #236）', () => {
   it('encoded 資産の sizeBytes が省略されていても、プロファイル名は出るがサイズは出さない', async () => {
     createFakeServer({ recording: sampleRecording({ encodedAssets: [{ profile: 'web' }] }) })
+    const user = userEvent.setup()
 
     renderAt('/recordings/3')
 
     const region = await screen.findByRole('region', { name: '再生' })
     expect(document.querySelector('video')).toBeInTheDocument()
-    expect(within(region).getByText('web')).toBeInTheDocument()
+    await user.click(within(region).getByRole('button', { name: '再生設定' }))
+    expect(within(region).getByRole('option', { name: 'web' })).toBeInTheDocument()
     expect(region.textContent).not.toMatch(/\d+(\.\d+)? (B|KB|MB|GB|TB)/)
   })
 })

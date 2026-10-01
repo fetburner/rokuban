@@ -88,8 +88,8 @@ await verifyBundleMatchesOrExit(URL_BASE, ng)
 const browser = await launchBrowser('chromium')
 
 // ============================================================
-// ① VOD: <track> が実ブラウザで cue を読み込み、
-//    textTracks[0].cues.length > 0 になる。
+// ① VOD: UI の字幕ボタンで track.mode が showing になり、実ブラウザで cue を読み込み、
+//    操作バーと重ならない負の VTTCue.line が適用される。
 // ============================================================
 log('\n=== ① VOD: <track> が実ブラウザで WebVTT の cue を読み込む ===')
 {
@@ -117,19 +117,15 @@ log('\n=== ① VOD: <track> が実ブラウザで WebVTT の cue を読み込む
 
   await page.goto(`${URL_BASE}/recordings/1`, { waitUntil: 'domcontentloaded' })
   await page.locator('video').waitFor({ timeout: 15000 })
+  await page.getByRole('button', { name: '再生設定' }).click()
+  await page.getByRole('button', { name: '字幕 オフ' }).click()
 
   const result = await page.evaluate(async () => {
     const video = document.querySelector('video')
-    const track = video?.textTracks?.[0]
+    const track = Array.from(video?.textTracks ?? []).find((item) => item.kind === 'subtitles')
     if (!track) return { trackFound: false }
-    // <track> に default 属性が無いと mode の既定は "disabled" で、cue は
-    // 一切フェッチ/パースされない（実測で確認済み）。字幕トグルを押したのと
-    // 同じ効果を模して "hidden" にする。
-    track.mode = 'hidden'
-    // track.cues は mode を "hidden" にした直後から非 null（空の
-    // TextTrackCueList）になる --- フェッチ完了前に埋まる前の空リストを
-    // 「読み込み済み」と誤判定しないよう、null チェックではなく length を
-    // 見て待つ（実測: null チェックだと 0 件のまま抜けて偽陰性になっていた）。
+    // mode を UI から showing にした後、空リストを読み込み済みと誤認しないよう
+    // cues が入るまで待つ。cue.line はコントロール行の高さを反映している。
     const deadline = Date.now() + 5000
     while ((track.cues?.length ?? 0) === 0 && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 50))
@@ -137,7 +133,9 @@ log('\n=== ① VOD: <track> が実ブラウザで WebVTT の cue を読み込む
     return {
       trackFound: true,
       kind: track.kind,
-      cueCount: track.cues ? track.cues.length : null,
+      mode: track.mode,
+      cueCount: track.cues?.length ?? null,
+      cueLine: track.cues?.[0] && 'line' in track.cues[0] ? track.cues[0].line : null,
     }
   })
 
@@ -145,10 +143,14 @@ log('\n=== ① VOD: <track> が実ブラウザで WebVTT の cue を読み込む
     ng.push('① VOD: <video> に <track> が見つからない')
   } else if (result.kind !== 'subtitles') {
     ng.push(`① VOD: track.kind = ${result.kind}, want subtitles`)
+  } else if (result.mode !== 'showing') {
+    ng.push(`① VOD: track.mode = ${result.mode}, want showing from player settings`)
   } else if (!(result.cueCount > 0)) {
     ng.push(`① VOD: textTracks[0].cues.length = ${result.cueCount}, want > 0`)
+  } else if (typeof result.cueLine !== 'number' || result.cueLine >= 0) {
+    ng.push(`① VOD: cue.line = ${result.cueLine}, want a raised numeric line`)
   } else {
-    log(`  OK: cues = ${result.cueCount}`)
+    log(`  OK: cues = ${result.cueCount}, cue.line = ${result.cueLine}`)
   }
   await page.close()
 }

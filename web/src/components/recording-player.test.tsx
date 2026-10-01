@@ -50,6 +50,13 @@ function setMediaProps(
   }
 }
 
+function openPlaybackSettings(container: HTMLElement): HTMLElement {
+  const existing = container.querySelector<HTMLElement>('[data-testid="playback-settings"]')
+  if (existing) return existing
+  fireEvent.click(container.querySelector('button[aria-label="再生設定"]')!)
+  return container.querySelector<HTMLElement>('[data-testid="playback-settings"]')!
+}
+
 describe('RecordingPlayer の字幕サイドカー', () => {
   it('encoded 動画に WebVTT subtitle track を付ける', () => {
     const { container } = render(
@@ -161,7 +168,8 @@ describe('RecordingPlayer のサーバー再生位置', () => {
     ]
 
     function switchTo(container: HTMLElement, profile: string) {
-      fireEvent.change(container.querySelector('select')!, { target: { value: profile } })
+      const select = openPlaybackSettings(container).querySelector('select[aria-label="プロファイル"]')!
+      fireEvent.change(select, { target: { value: profile } })
       const video = container.querySelector('video')!
       setMediaProps(video, { currentTime: 0, duration: 1000 })
       fireEvent.loadedMetadata(video)
@@ -235,7 +243,7 @@ describe('RecordingPlayer のサーバー再生位置', () => {
     expect(newVideo).not.toBe(oldVideo)
     setMediaProps(newVideo, { currentTime: 0, duration: 30 })
     fireEvent.loadedMetadata(newVideo)
-    // 原本 32 s は新世代の keep 外（25-35 の中なので 7 s 目 = カット版 7 s）。
+    // 原本 32 s は新世代の keep（25-35 s）に含まれ、カット版の 7 s 目になる。
     expect(newVideo.currentTime).toBe(7)
 
     fetchMock.mockClear()
@@ -247,14 +255,14 @@ describe('RecordingPlayer のサーバー再生位置', () => {
   })
 })
 
-// issue #236（M7-3）: 押す前にサイズが見える値札。プロファイルセレクタの
-// 各選択肢・ダウンロードリンク・VLC リンクに常置し、サイズが取れない資産でも
-// 選択肢そのものは隠さない（サイズだけ省く）ことを両方向で確認する。
+// issue #236（M7-3）: 設定メニュー内の値札。サイズが取れない資産でも
+// プロファイル名を選択肢から隠さない。
 describe('RecordingPlayer のサイズ常置（値札、issue #236）', () => {
   it('プロファイルが 1 つのとき、サイズ付きのキャプションを出す', () => {
     const { container } = render(
       <RecordingPlayer recordingId={20} encodedAssets={[{ profile: 'h264', sizeBytes: 1_200_000 }]} />,
     )
+    openPlaybackSettings(container)
     expect(container.textContent).toContain('h264 (1.1 MB)')
   })
 
@@ -262,6 +270,7 @@ describe('RecordingPlayer のサイズ常置（値札、issue #236）', () => {
     const { container } = render(
       <RecordingPlayer recordingId={21} encodedAssets={[{ profile: 'h264' }]} />,
     )
+    openPlaybackSettings(container)
     // 選択肢（プロファイル名）自体は必ず出る --- サイズが取れないことを理由に
     // 隠すと「機能しないコントロールは置かない」の逆（機能するコントロールを
     // 隠す）になる。
@@ -281,7 +290,8 @@ describe('RecordingPlayer のサイズ常置（値札、issue #236）', () => {
         ]}
       />,
     )
-    const options = Array.from(container.querySelector('select')!.querySelectorAll('option'))
+    const settings = openPlaybackSettings(container)
+    const options = Array.from(settings.querySelector('select[aria-label="プロファイル"]')!.querySelectorAll('option'))
     expect(options.map((o) => o.textContent)).toEqual(['h264 (476.8 MB)', 'h265'])
   })
 
@@ -324,21 +334,23 @@ describe('RecordingPlayer の encoded ダウンロード', () => {
         ]}
       />,
     )
+    openPlaybackSettings(container)
     const link = container.querySelector('a[aria-label="encoded 動画をダウンロード"]')!
 
     expect(link).toHaveAttribute('href', '/api/media/recordings/26/file?profile=h264')
     expect(link).toHaveAttribute('download', 'recording-26-h264.mp4')
 
-    fireEvent.change(container.querySelector('select')!, { target: { value: 'h265' } })
+    fireEvent.change(container.querySelector('select[aria-label="プロファイル"]')!, { target: { value: 'h265' } })
 
     expect(link).toHaveAttribute('href', '/api/media/recordings/26/file?profile=h265')
     expect(link).toHaveAttribute('download', 'recording-26-h265.mp4')
   })
 
-  it('単一プロファイルでもサイズ表示の隣にダウンロードリンクを出す', () => {
+  it('単一プロファイルでも設定メニューからサイズとダウンロードリンクを出す', () => {
     const { container } = render(
       <RecordingPlayer recordingId={27} encodedAssets={[{ profile: 'h264', sizeBytes: 1_200_000 }]} />,
     )
+    openPlaybackSettings(container)
     const link = container.querySelector('a[aria-label="encoded 動画をダウンロード"]')!
 
     expect(link).toHaveAttribute('href', '/api/media/recordings/27/file?profile=h264')
@@ -357,6 +369,7 @@ describe('RecordingPlayer の encoded ダウンロード', () => {
       />,
     )
 
+    openPlaybackSettings(container)
     expect(container.querySelector('a[aria-label="encoded 動画をダウンロード"]')).toBeInTheDocument()
     expect(container.querySelector('a[href="/api/media/recordings/28/file"]')).toBeNull()
     expect(container.querySelectorAll('a')).toHaveLength(1)
@@ -366,26 +379,29 @@ describe('RecordingPlayer の encoded ダウンロード', () => {
 describe('RecordingPlayer の再生操作', () => {
   const asset = [{ profile: 'h264', sizeBytes: 123 }]
 
-  it('再生速度と PiP はブラウザ controls に任せ、自前の重複操作を出さない', () => {
-    const { container, queryByLabelText, queryByRole } = render(
+  it('native controls を外し、自前の再生操作とアクセシブルな seekbar を出す', () => {
+    const { container, getByRole, queryByRole } = render(
       <RecordingPlayer recordingId={30} encodedAssets={asset} />,
     )
 
-    expect(container.querySelector('video')).toHaveProperty('controls', true)
-    expect(queryByLabelText('再生速度')).not.toBeInTheDocument()
+    expect(container.querySelector('video')).toHaveProperty('controls', false)
+    expect(getByRole('slider', { name: 'シークバー' })).toHaveAttribute('aria-valuetext', '0:00 / 0:00')
+    expect(getByRole('button', { name: '再生' })).toBeInTheDocument()
+    expect(getByRole('button', { name: '再生設定' })).toBeInTheDocument()
     expect(queryByRole('button', { name: 'ピクチャーインピクチャー' })).not.toBeInTheDocument()
+    expect(queryByRole('combobox', { name: '再生速度' })).not.toBeInTheDocument()
   })
 
   // 速度は「この録画をどう見るか」ではなく「自分がどう見るか」の好みなので、
-  // ブラウザ controls の ratechange から保存し、録画をまたいでも保つ
+  // 自前メニューの変更を保存し、録画をまたいでも保つ
   // （docs/frontend/design.md §個人化）。
-  it('ブラウザ controls で選んだ速度を保存し、別の録画でも video に適用する', () => {
+  it('メニューで選んだ速度を保存し、別の録画でも video に適用する', () => {
     const { container, rerender } = render(
       <RecordingPlayer recordingId={30} encodedAssets={asset} />,
     )
     let video = container.querySelector('video')!
-    video.playbackRate = 1.5
-    fireEvent.rateChange(video)
+    const settings = openPlaybackSettings(container)
+    fireEvent.change(settings.querySelector('select[aria-label="再生速度"]')!, { target: { value: '1.5' } })
 
     expect(localStorage.getItem('rokuban:playback-rate')).toBe('1.5')
     expect(video.defaultPlaybackRate).toBe(1.5)
@@ -405,6 +421,91 @@ describe('RecordingPlayer の再生操作', () => {
 
     expect(container.querySelector('video')!.playbackRate).toBe(2)
     expect(container.querySelector('video')!.defaultPlaybackRate).toBe(2)
+  })
+
+  it('自前のボタンと設定が video の再生状態へ反映される', () => {
+    const { container, getByRole, rerender } = render(
+      <RecordingPlayer recordingId={32} encodedAssets={asset} />,
+    )
+    const video = container.querySelector('video')!
+    const play = vi.spyOn(video, 'play').mockResolvedValue()
+    const pause = vi.spyOn(video, 'pause').mockImplementation(() => {})
+    const subtitleTrack = { kind: 'subtitles', mode: 'disabled', cues: null }
+    Object.defineProperty(video, 'textTracks', { value: [subtitleTrack], configurable: true })
+
+    fireEvent.click(getByRole('button', { name: '再生' }))
+    expect(play).toHaveBeenCalledOnce()
+    fireEvent.play(video)
+    setMediaProps(video, { paused: false })
+    expect(getByRole('button', { name: '一時停止' })).toBeInTheDocument()
+    fireEvent.click(getByRole('button', { name: '一時停止' }))
+    expect(pause).toHaveBeenCalledOnce()
+
+    fireEvent.click(getByRole('button', { name: 'ミュート' }))
+    expect(video.muted).toBe(true)
+    expect(getByRole('button', { name: 'ミュート解除' })).toBeInTheDocument()
+    fireEvent.change(getByRole('slider', { name: '音量' }), { target: { value: '0.25' } })
+    expect(video.volume).toBe(0.25)
+
+    const settings = openPlaybackSettings(container)
+    fireEvent.change(settings.querySelector('select[aria-label="再生速度"]')!, { target: { value: '2' } })
+    expect(video.playbackRate).toBe(2)
+    fireEvent.click(getByRole('button', { name: '字幕 オフ' }))
+    expect(subtitleTrack.mode).toBe('showing')
+    expect(getByRole('button', { name: '字幕 オン' })).toHaveAttribute('aria-pressed', 'true')
+
+    rerender(<RecordingPlayer recordingId={32} encodedAssets={asset} />)
+    expect(container.querySelector('video')).toBe(video)
+  })
+
+  it('PiP はブラウザが対応するときだけ表示し、クリックで video に要求する', () => {
+    const previous = Object.getOwnPropertyDescriptor(document, 'pictureInPictureEnabled')
+    Object.defineProperty(document, 'pictureInPictureEnabled', { value: true, configurable: true })
+    try {
+      const { container, getByRole } = render(
+        <RecordingPlayer recordingId={32} encodedAssets={asset} />,
+      )
+      const video = container.querySelector('video')!
+      const requestPictureInPicture = vi.fn().mockResolvedValue(undefined)
+      Object.defineProperty(video, 'requestPictureInPicture', { value: requestPictureInPicture })
+      fireEvent.click(getByRole('button', { name: 'ピクチャーインピクチャー' }))
+      expect(requestPictureInPicture).toHaveBeenCalledOnce()
+    } finally {
+      if (previous) Object.defineProperty(document, 'pictureInPictureEnabled', previous)
+      else Reflect.deleteProperty(document, 'pictureInPictureEnabled')
+    }
+  })
+
+  it('完了録画のバーから視聴状態を PUT / DELETE し、未完了録画では隠す', () => {
+    const putWatched = vi.fn()
+    const deleteWatched = vi.fn()
+    const { getByRole, queryByRole, rerender } = render(
+      <RecordingPlayer
+        recordingId={32}
+        encodedAssets={asset}
+        showWatched
+        putWatched={putWatched}
+        deleteWatched={deleteWatched}
+      />,
+    )
+    fireEvent.click(getByRole('button', { name: '視聴済みにする' }))
+    expect(putWatched).toHaveBeenCalledOnce()
+
+    rerender(
+      <RecordingPlayer
+        recordingId={32}
+        encodedAssets={asset}
+        showWatched
+        watched
+        putWatched={putWatched}
+        deleteWatched={deleteWatched}
+      />,
+    )
+    fireEvent.click(getByRole('button', { name: '未視聴に戻す' }))
+    expect(deleteWatched).toHaveBeenCalledOnce()
+
+    rerender(<RecordingPlayer recordingId={32} encodedAssets={asset} />)
+    expect(queryByRole('button', { name: '未視聴に戻す' })).not.toBeInTheDocument()
   })
 
   it('矢印キーで 10 秒、J/L で 30 秒移動する', () => {
@@ -442,7 +543,7 @@ describe('RecordingPlayer の再生操作', () => {
     expect(video.currentTime).toBe(140)
   })
 
-  it('入力欄と video からのキー操作は無視し、それ以外では処理する', () => {
+  it('入力欄とボタンではページキーを処理せず、video では処理する', () => {
     const { container } = render(
       <div>
         <input aria-label="検索" />
@@ -456,25 +557,54 @@ describe('RecordingPlayer の再生操作', () => {
     fireEvent.keyDown(input, { key: 'ArrowRight' })
     expect(video.currentTime).toBe(50)
     fireEvent.keyDown(video, { key: 'ArrowRight' })
-    expect(video.currentTime).toBe(50)
-    fireEvent.keyDown(window, { key: 'ArrowRight' })
+    expect(video.currentTime).toBe(60)
+    fireEvent.keyDown(container.querySelector('button[aria-label="再生"]')!, { key: 'ArrowRight' })
     expect(video.currentTime).toBe(60)
   })
 
-  it('Space で再生し、M でミュートし、F でフルスクリーンにする', () => {
+  it('seekbar の矢印キーは一度だけシークし、aria 時刻を更新する', () => {
+    const { container, getByRole } = render(<RecordingPlayer recordingId={33} encodedAssets={asset} />)
+    const video = container.querySelector('video')!
+    setMediaProps(video, { currentTime: 50, duration: 100 })
+    fireEvent.loadedMetadata(video)
+
+    const slider = getByRole('slider', { name: 'シークバー' })
+    fireEvent.keyDown(slider, { key: 'ArrowRight' })
+
+    expect(video.currentTime).toBe(60)
+    expect(slider).toHaveAttribute('aria-valuenow', '60')
+    expect(slider).toHaveAttribute('aria-valuetext', '1:00 / 1:40')
+  })
+
+  it('Space で再生し、M でミュートし、F とボタンで同じコンテナを全画面にする', () => {
     const { container } = render(<RecordingPlayer recordingId={34} encodedAssets={asset} />)
     const video = container.querySelector('video')!
     const play = vi.spyOn(video, 'play').mockResolvedValue()
     const requestFullscreen = vi.fn(() => Promise.resolve())
-    Object.defineProperty(video, 'requestFullscreen', { value: requestFullscreen })
+    const playerFrame = container.querySelector('[data-testid="recording-player-frame"]')!
+    Object.defineProperty(playerFrame, 'requestFullscreen', { value: requestFullscreen })
 
     fireEvent.keyDown(window, { key: ' ' })
     fireEvent.keyDown(window, { key: 'm' })
     fireEvent.keyDown(window, { key: 'F' })
+    fireEvent.click(container.querySelector('button[aria-label="全画面表示"]')!)
 
     expect(play).toHaveBeenCalledOnce()
     expect(video.muted).toBe(true)
-    expect(requestFullscreen).toHaveBeenCalledOnce()
+    expect(requestFullscreen).toHaveBeenCalledTimes(2)
+  })
+
+  it('要素全画面が無い Safari では video.webkitEnterFullscreen に落ちる', () => {
+    const { container } = render(<RecordingPlayer recordingId={34} encodedAssets={asset} />)
+    const video = container.querySelector('video')!
+    const frame = container.querySelector('[data-testid="recording-player-frame"]')!
+    const enterFullscreen = vi.fn()
+    Object.defineProperty(frame, 'requestFullscreen', { value: undefined, configurable: true })
+    Object.defineProperty(video, 'webkitEnterFullscreen', { value: enterFullscreen, configurable: true })
+
+    fireEvent.keyDown(window, { key: 'f' })
+
+    expect(enterFullscreen).toHaveBeenCalledOnce()
   })
 
   it('修飾キー付きのブラウザ・OS ショートカットを横取りしない', () => {
@@ -507,7 +637,8 @@ describe('RecordingPlayer の selectedProfile 導出', () => {
       />,
     )
 
-    expect((container.querySelector('select') as HTMLSelectElement).value).toBe('h265')
+    const select = openPlaybackSettings(container).querySelector('select[aria-label="プロファイル"]') as HTMLSelectElement
+    expect(select.value).toBe('h265')
     expect(container.querySelector('video')?.src).toContain('profile=h265')
   })
 
@@ -521,7 +652,7 @@ describe('RecordingPlayer の selectedProfile 導出', () => {
         ]}
       />,
     )
-    const select = container.querySelector('select')! as HTMLSelectElement
+    const select = openPlaybackSettings(container).querySelector('select[aria-label="プロファイル"]')! as HTMLSelectElement
     fireEvent.change(select, { target: { value: 'h265' } })
     expect(select.value).toBe('h265')
     expect(container.querySelector('video')?.src).toContain('profile=h265')
@@ -608,7 +739,7 @@ describe('RecordingPlayer のチャプター', () => {
     )
     expect(getByTestId('chapter-source')).not.toBeNull()
     expect(container.querySelectorAll('[data-testid="chapter-marker"]')).toHaveLength(0)
-    expect(container.querySelector('[aria-label="チャプター"]')).toBeNull()
+    expect(container.querySelector('[data-testid="chapter-navigation"]')).toBeNull()
   })
 
   it('版が未取得の間は編集 UI を出さない（下書きの基にする版が無い）', () => {
@@ -623,7 +754,7 @@ describe('RecordingPlayer のチャプター', () => {
     expect(queryByTestId('chapter-source')).toBeNull()
   })
 
-  it('チャプターがあるときはナビゲーションを外に置き、編集は件数付きで畳む', () => {
+  it('チャプターがあるときはナビゲーションをシークバーに集め、編集は件数付きで畳む', () => {
     const { container } = render(
       <RecordingPlayer
         recordingId={100}
@@ -640,7 +771,6 @@ describe('RecordingPlayer のチャプター', () => {
     const video = container.querySelector('video')!
     setMediaProps(video, { duration: 60, currentTime: 0 })
     fireEvent.loadedMetadata(video)
-    expect(container.querySelector('[aria-label="チャプター"]')).toBeNull()
     expect(container.querySelector('[data-testid="chapter-navigation"]')).not.toBeNull()
     const details = container.querySelector<HTMLDetailsElement>('[data-testid="chapter-editor-details"]')!
     expect(details.open).toBe(false)
@@ -702,7 +832,7 @@ describe('RecordingPlayer のチャプター', () => {
     expect(video.currentTime).toBe(10)
   })
 
-  it('チャプター要約の件数は保存値から数える（下書きの区間削除では変わらない）', () => {
+  it('チャプター下書きを削除しても要約の件数は保存値のまま', () => {
     const { container } = render(
       <RecordingPlayer
         recordingId={103}
@@ -715,8 +845,10 @@ describe('RecordingPlayer のチャプター', () => {
     )
     const details = container.querySelector<HTMLDetailsElement>('[data-testid="chapter-editor-details"]')!
     fireEvent.click(details.querySelector('summary')!)
-    fireEvent.click(within(details).getByRole('button', { name: '削除' }))
-    expect(details.querySelector('[data-testid="chapter-span-row"]')).toBeNull()
+    const deleteDraft = Array.from(details.querySelectorAll('[data-testid="chapter-span-row"] button'))
+      .find((button) => button.textContent === '削除')!
+    fireEvent.click(deleteDraft)
+    expect(details.querySelectorAll('[data-testid="chapter-span-row"]')).toHaveLength(0)
     expect(details.querySelector('summary')?.textContent).toBe('チャプター 1 件')
   })
 
@@ -781,14 +913,14 @@ describe('RecordingPlayer のカット版', () => {
     setMediaProps(video, { duration: 1800, currentTime: 0 })
     fireEvent.loadedMetadata(video)
     expect(container.querySelectorAll('[data-testid="chapter-marker"]')).toHaveLength(0)
-    expect(container.querySelector('[aria-label="チャプター"]')).toBeNull()
     // 編集 UI も出さない（境界は原本の ms で、カット版の軸には当てられない）。
+    expect(container.querySelector('[data-testid="chapter-navigation"]')).toBeNull()
     expect(queryByText('前のチャプター')).toBeNull()
     expect(container.querySelector('[data-testid="chapter-source"]')).toBeNull()
   })
 
   it('cut でない encoded では同じ props でも チャプターを出す（対照）', () => {
-    const { container, queryByText } = render(
+    const { container, queryByRole } = render(
       <RecordingPlayer
         recordingId={12}
         encodedAssets={[{ profile: 'h264', sizeBytes: 1 }]}
@@ -802,7 +934,7 @@ describe('RecordingPlayer のカット版', () => {
     setMediaProps(video, { duration: 1800, currentTime: 0 })
     fireEvent.loadedMetadata(video)
     expect(container.querySelectorAll('[data-testid="chapter-marker"]')).toHaveLength(2)
-    expect(queryByText('前のチャプター')).not.toBeNull()
+    expect(queryByRole('button', { name: '前のチャプター' })).not.toBeNull()
   })
 
   it('cutStale のカット版にだけ「編集前の内容です」と作り直しを出す', () => {

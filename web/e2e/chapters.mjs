@@ -235,6 +235,38 @@ if (markerCount !== CHAPTERS.spans.length) {
   }
 }
 
+log('\n=== ①-a native controls が無く、単一バーとチャプターナビが同じプレイヤーにある ===')
+if ((await video.evaluate((node) => node.hasAttribute('controls'))) !== false) {
+  ng.push('①-a encoded video に native controls が残っている')
+}
+if ((await page.locator('[data-testid="seek-scrub"]').count()) !== 1) {
+  ng.push('①-a encoded player の seekbar が 1 本ではない')
+}
+if ((await page.locator('[data-testid="player-controls"] [data-testid="chapter-navigation"]').count()) !== 1) {
+  ng.push('①-a 前後チャプターの操作が player toolbar にない')
+}
+
+log('\n=== ①-b 全画面要素に操作バーとシークバーが含まれる ===')
+try {
+  await page.getByRole('button', { name: '全画面表示' }).click()
+  await page.waitForFunction(() => document.fullscreenElement !== null, undefined, { timeout: 5000 })
+  const fullscreenContainsPlayerControls = await page.evaluate(() => {
+    const fullscreen = document.fullscreenElement
+    return Boolean(
+      fullscreen?.matches('[data-testid="recording-player-frame"]') &&
+      fullscreen.querySelector('[data-testid="player-controls"] [data-testid="seek-scrub"]'),
+    )
+  })
+  if (!fullscreenContainsPlayerControls) {
+    ng.push('①-b fullscreenElement が player frame ではないか、操作バー/seekbar を含まない')
+  }
+  await page.getByRole('button', { name: '全画面を終了' }).click()
+  await page.waitForFunction(() => document.fullscreenElement === null, undefined, { timeout: 5000 })
+} catch (error) {
+  ng.push(`①-b 全画面遷移の実ブラウザ確認に失敗: ${String(error)}`)
+  await page.keyboard.press('Escape').catch(() => {})
+}
+
 log('\n=== ② 通常の再生で cut 区間の先頭に差し掛かると終端へ飛ぶ ===')
 // 区間の手前 2 秒から再生する。飛ばなければ 4 秒後は 32 秒付近にとどまる。
 await seek(28)
