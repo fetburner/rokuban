@@ -8,7 +8,7 @@
 //   corepack pnpm preview --port 4173 --strictPort &
 //   E2E_URL=http://localhost:4173 corepack pnpm e2e:cm-logo-area
 
-import { ListCMLogosResponseItem } from '../src/api/zod.ts'
+import { GetRecordingResponse, ListCMLogosResponseItem } from '../src/api/zod.ts'
 import {
   finish,
   installApiStubs,
@@ -49,6 +49,26 @@ const FRAME_PNG = Buffer.from(
 let savedArea
 const frameRequests = []
 
+// 録画 7 の詳細。スライダーの範囲（尺）はここから決まる。
+const recording7 = {
+  id: 7,
+  site: 'tokyo',
+  source: 'rule',
+  serviceName: logo.serviceName,
+  channelType: 'GR',
+  channel: '27',
+  networkId: logo.networkId,
+  serviceId: logo.serviceId,
+  eventId: 1,
+  title: 'e2e 番組',
+  startAt: '2026-01-01T00:00:00Z',
+  durationMs: 1800000,
+  status: 'finished',
+  keepOriginal: 'always',
+  cmDetection: { state: 'failed' },
+  createdAt: '2026-01-01T00:00:00Z',
+}
+
 async function apiHandler({ path, url, json, route }) {
   const method = route.request().method()
   if (path === '/api/sites') return json(['tokyo'])
@@ -59,8 +79,9 @@ async function apiHandler({ path, url, json, route }) {
     return json([{ ...logo, ...(savedArea === undefined ? {} : { logoArea: savedArea }) }])
   }
   if (path === '/api/recordings' && method === 'GET') return json([])
+  if (path === '/api/recordings/7' && method === 'GET') return json(recording7)
   if (path === '/api/media/recordings/7/frame' && method === 'GET') {
-    frameRequests.push(Number(url.searchParams.get('at')))
+    frameRequests.push(url.searchParams.get('at'))
     return route.fulfill({
       status: 200,
       contentType: 'image/png',
@@ -95,12 +116,32 @@ function numberInput(page, label) {
   return page.locator(`input[type="number"][aria-label="${label}"]`)
 }
 
-async function computedCursor(locator) {
-  return locator.evaluate((element) => getComputedStyle(element).cursor)
+// 点 (x, y) の最前面の要素の computed cursor。透明オーバーレイが覆っていれば、それが見える。
+async function cursorAt(page, point) {
+  return page.evaluate(
+    ({ x, y }) => {
+      const element = document.elementFromPoint(x, y)
+      return element ? getComputedStyle(element).cursor : '(要素なし)'
+    },
+    point,
+  )
+}
+
+async function centerOf(locator, name) {
+  await locator.scrollIntoViewIfNeeded()
+  const box = await locator.boundingBox()
+  if (!box) throw new Error(`${name} の寸法が取れない`)
+  return { x: box.x + box.width / 2, y: box.y + box.height / 2 }
 }
 
 log(`URL: ${URL_BASE}`)
-await validateFixturesOrExit([['CM ロゴ状態', ListCMLogosResponseItem, logo]], ng)
+await validateFixturesOrExit(
+  [
+    ['CM ロゴ状態', ListCMLogosResponseItem, logo],
+    ['録画 7', GetRecordingResponse, recording7],
+  ],
+  ng,
+)
 
 log('\n=== ⓪ 配っている bundle と dist/ の一致 ===')
 await verifyBundleMatchesOrExit(URL_BASE, ng)
@@ -112,6 +153,7 @@ const context = await browser.newContext({
   timezoneId: 'Asia/Tokyo',
 })
 const page = await context.newPage()
+page.setDefaultTimeout(5000)
 await installApiStubs(page, apiHandler)
 await page.goto(`${URL_BASE}/cm-logos/32678/5168?recording=7`, {
   waitUntil: 'domcontentloaded',
@@ -138,21 +180,24 @@ log('\n=== ② スライダーの時刻を /frame?at= に渡す ===')
 await check('②', async () => {
   const slider = page.getByTestId('cm-logo-time')
   await slider.waitFor({ state: 'visible', timeout: 5000 })
-  const min = Number(await slider.getAttribute('min') ?? 0)
-  const max = Number(await slider.getAttribute('max') ?? 0)
+  const min = Number(await slider.getAttribute('min'))
+  const max = Number(await slider.getAttribute('max'))
+  if (!(max > min)) throw new Error(`スライダーの範囲が空（min=${min} max=${max}）`)
   const target = Math.round(min + (max - min) * 0.37)
+  if (String(target) === (await slider.inputValue())) throw new Error('目標値が初期値と同じで動かしたことにならない')
+  frameRequests.length = 0
   await slider.fill(String(target))
-  await page.waitForTimeout(200)
-  if (!frameRequests.includes(target)) {
-    throw new Error(`/frame?at=${target} が呼ばれない`)
+  for (let i = 0; i < 30 && !frameRequests.includes(String(target)); i++) await page.waitForTimeout(100)
+  if (!frameRequests.includes(String(target))) {
+    throw new Error(`/frame?at=${target} が呼ばれない（実際 ${JSON.stringify(frameRequests)}）`)
   }
 })
 
 log('\n=== ③ 4 隅の変形を coded size へ変換する ===')
 await check('③', async () => {
-  const frame = page.getByTestId('cm-logo-frame')
-  const frameBox = await frame.boundingBox()
-  if (!frameBox || frameBox.width <= 0 || frameBox.height <= 0) throw new Error('表示枠の寸法が取れない')
+  // ① と同じ要素の描画寸法を分母にする。
+  const frameBox = await page.getByTestId('cm-logo-frame-image').boundingBox()
+  if (!frameBox || frameBox.width <= 0 || frameBox.height <= 0) throw new Error('コマの描画寸法が取れない')
 
   const start = { x: frameBox.x + frameBox.width * 0.2, y: frameBox.y + frameBox.height * 0.2 }
   const end = { x: frameBox.x + frameBox.width * 0.55, y: frameBox.y + frameBox.height * 0.5 }
@@ -164,72 +209,106 @@ await check('③', async () => {
   const rect = page.getByTestId('cm-logo-rect')
   await rect.waitFor({ state: 'visible', timeout: 5000 })
   const before = await rect.boundingBox()
-  const handle = page.getByTestId('cm-logo-handle-se')
-  const handleBox = await handle.boundingBox()
-  if (!before || !handleBox) throw new Error('枠または右下ハンドルが表示されない')
+  const handleCenter = await centerOf(page.getByTestId('cm-logo-handle-se'), '右下ハンドル')
+  if (!before) throw new Error('枠が表示されない')
 
   const dx = 23
   const dy = 17
-  const finalRight = before.x + before.width + dx
-  const finalBottom = before.y + before.height + dy
   const expected = {
-    w: Math.round((finalRight - before.x) * 1440 / frameBox.width),
-    h: Math.round((finalBottom - before.y) * 1080 / frameBox.height),
+    w: Math.round(((before.width + dx) * 1440) / frameBox.width),
+    h: Math.round(((before.height + dy) * 1080) / frameBox.height),
   }
-  await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2)
+  await page.mouse.move(handleCenter.x, handleCenter.y)
   await page.mouse.down()
-  await page.mouse.move(handleBox.x + handleBox.width / 2 + dx, handleBox.y + handleBox.height / 2 + dy)
+  await page.mouse.move(handleCenter.x + dx, handleCenter.y + dy)
   await page.mouse.up()
 
-  const save = page.getByRole('button', { name: '枠を保存' })
-  await save.click()
+  await page.getByRole('button', { name: '枠を保存' }).click()
   await page.waitForTimeout(150)
-  if (savedArea?.w !== expected.w || savedArea?.h !== expected.h) {
-    throw new Error(`保存 w/h が ${savedArea?.w}×${savedArea?.h}（期待 ${expected.w}×${expected.h}）`)
+  if (Math.abs((savedArea?.w ?? NaN) - expected.w) > 1 || Math.abs((savedArea?.h ?? NaN) - expected.h) > 1) {
+    throw new Error(`保存 w/h が ${savedArea?.w}×${savedArea?.h}（期待 ${expected.w}×${expected.h} ±1）`)
   }
 })
 
 log('\n=== ④ 数値入力との往復 ===')
 await check('④', async () => {
+  const image = await page.getByTestId('cm-logo-frame-image').boundingBox()
   const rect = page.getByTestId('cm-logo-rect')
-  const before = await rect.boundingBox()
-  const x = numberInput(page, 'X')
-  await x.fill('120')
-  await x.press('Tab')
-  await page.waitForTimeout(50)
-  const after = await rect.boundingBox()
-  if (!before || !after || before.x === after.x) throw new Error('X 入力で枠の位置が変わらない')
+  if (!image) throw new Error('コマの描画寸法が取れない')
+  const fill = async (label, value) => {
+    const input = numberInput(page, label)
+    await input.fill(String(value))
+    await input.press('Tab')
+    await page.waitForTimeout(50)
+  }
+  await fill('X', 120)
+  await fill('幅', 200)
+  const box = await rect.boundingBox()
+  if (!box) throw new Error('枠の寸法が取れない')
+  const want = { x: image.x + (120 * image.width) / 1440, w: (200 * image.width) / 1440 }
+  if (Math.abs(box.x - want.x) > 1 || Math.abs(box.width - want.w) > 1) {
+    throw new Error(
+      `X=120 幅=200 の枠が x=${box.x.toFixed(1)} w=${box.width.toFixed(1)}（期待 x=${want.x.toFixed(1)} w=${want.w.toFixed(1)} ±1）`,
+    )
+  }
 
-  const currentX = await x.inputValue()
-  const rectBox = await rect.boundingBox()
-  if (!rectBox) throw new Error('枠の寸法が取れない')
-  await page.mouse.move(rectBox.x + rectBox.width / 2, rectBox.y + rectBox.height / 2)
+  const x = numberInput(page, 'X')
+  const beforeX = Number(await x.inputValue())
+  const center = await centerOf(rect, '枠')
+  const move = 12
+  await page.mouse.move(center.x, center.y)
   await page.mouse.down()
-  await page.mouse.move(rectBox.x + rectBox.width / 2 + 12, rectBox.y + rectBox.height / 2)
+  await page.mouse.move(center.x + move, center.y)
   await page.mouse.up()
-  if ((await x.inputValue()) === currentX) throw new Error('枠のドラッグで X 入力が変わらない')
+  const afterX = Number(await x.inputValue())
+  const wantX = beforeX + (move * 1440) / image.width
+  if (Math.abs(afterX - wantX) > 1) {
+    throw new Error(`${move}px ドラッグ後の X が ${afterX}（期待 ${wantX.toFixed(1)} ±1）`)
+  }
 })
 
-log('\n=== ⑤ カーソル ===')
+log('\n=== ⑤ カーソル（各点の最前面の要素で見る）===')
 await check('⑤', async () => {
-  const sliderCursor = await computedCursor(page.getByTestId('cm-logo-time'))
-  const frameCursor = await computedCursor(page.getByTestId('cm-logo-frame-image'))
-  const rectCursor = await computedCursor(page.getByTestId('cm-logo-rect'))
-  const nwCursor = await computedCursor(page.getByTestId('cm-logo-handle-nw'))
-  const neCursor = await computedCursor(page.getByTestId('cm-logo-handle-ne'))
-  const swCursor = await computedCursor(page.getByTestId('cm-logo-handle-sw'))
-  const seCursor = await computedCursor(page.getByTestId('cm-logo-handle-se'))
-  const got = [sliderCursor, frameCursor, rectCursor, nwCursor, neCursor, swCursor, seCursor]
-  const want = ['pointer', 'crosshair', 'move', 'nwse-resize', 'nesw-resize', 'nesw-resize', 'nwse-resize']
-  if (got.some((value, index) => value !== want[index])) {
-    throw new Error(`cursor=${JSON.stringify(got)}（期待 ${JSON.stringify(want)}）`)
+  const image = page.getByTestId('cm-logo-frame-image')
+  await image.scrollIntoViewIfNeeded()
+  const box = await image.boundingBox()
+  if (!box) throw new Error('コマの描画寸法が取れない')
+  const points = [
+    ['スライダー', await centerOf(page.getByTestId('cm-logo-time'), 'スライダー'), 'pointer'],
+    ['枠の外のコマ', { x: box.x + box.width * 0.95, y: box.y + box.height * 0.95 }, 'crosshair'],
+  ]
+  // 上のスクロールでコマの座標が動かないよう、コマはスライダーの後で測り直す。
+  const box2 = await image.boundingBox()
+  if (box2) points[1][1] = { x: box2.x + box2.width * 0.95, y: box2.y + box2.height * 0.95 }
+  points.push(['枠の中心', await centerOf(page.getByTestId('cm-logo-rect'), '枠'), 'move'])
+  for (const [corner, cursor] of [['nw', 'nwse-resize'], ['ne', 'nesw-resize'], ['sw', 'nesw-resize'], ['se', 'nwse-resize']]) {
+    points.push([`ハンドル ${corner}`, await centerOf(page.getByTestId(`cm-logo-handle-${corner}`), corner), cursor])
   }
+  const bad = []
+  for (const [name, point, want] of points) {
+    const got = await cursorAt(page, point)
+    if (got !== want) bad.push(`${name}=${got}（期待 ${want}）`)
+  }
+  if (bad.length > 0) throw new Error(bad.join(' / '))
 })
 
 log('\n=== ⑥ 局の画面に生ログを出さない ===')
 await check('⑥', async () => {
-  const text = await page.locator('body').innerText()
+  // 局の画面が描かれていなければ「出ない」は空虚に通るので、先に局名を待つ。
+  await page.getByText(logo.serviceName).first().waitFor({ state: 'attached', timeout: 10000 })
+  // 閉じた <details> の中の生ログも「画面に出さない」に反するので textContent で見る。
+  const text = await page.locator('body').evaluate((element) => element.textContent ?? '')
   if (text.includes(longError)) throw new Error('4KB の生ログが DOM に現れる')
+})
+
+log('\n=== ⑦ 旧形式の URL は局のルートへ飛ぶ ===')
+await check('⑦', async () => {
+  await page.goto(`${URL_BASE}/cm-logos?network=32678&service=5168&recording=7`, {
+    waitUntil: 'domcontentloaded',
+  })
+  await page.waitForURL((url) => url.pathname === '/cm-logos/32678/5168', { timeout: 5000 })
+  const search = new URL(page.url()).searchParams
+  if (search.get('recording') !== '7') throw new Error(`recording が引き継がれない（${page.url()}）`)
 })
 
 await finish(ng, browser)
