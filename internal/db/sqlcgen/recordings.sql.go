@@ -723,7 +723,7 @@ SELECT r.id, $1, now()
 FROM recordings r
 WHERE r.id = $2
   AND r.purged_at IS NULL
-  AND $1 >= 2000
+  AND $1::bigint >= 2000
 ON CONFLICT (recording_id) DO UPDATE SET
     position_ms = EXCLUDED.position_ms,
     updated_at = EXCLUDED.updated_at

@@ -326,7 +326,7 @@ SELECT r.id, sqlc.arg('position_ms'), now()
 FROM recordings r
 WHERE r.id = sqlc.arg('recording_id')
   AND r.purged_at IS NULL
-  AND sqlc.arg('position_ms') >= 2000
+  AND sqlc.arg('position_ms')::bigint >= 2000
 ON CONFLICT (recording_id) DO UPDATE SET
     position_ms = EXCLUDED.position_ms,
     updated_at = EXCLUDED.updated_at;
