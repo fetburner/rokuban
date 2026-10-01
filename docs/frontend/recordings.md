@@ -869,6 +869,8 @@ limit)`（カーソル `before` / `beforeId` を含めない）にする。同�
   同じ値を指す分類ルールが複数あるとき、キーワードの初期値は評価順（`priority DESC, id ASC`）の
   先頭で近似する。どのルールが勝つかは録画ごとの当たり判定で決まり、クライアントは持たない
 - **identity**: 最新録画のサムネイルと `Recording.series` の実効シリーズを出す。
+  サムネイルの枠は、worker が SAR を補正して生成する画像に合わせた 16:9 とする。
+  比率は録画一覧と同じにする。
   `/series` と同じく、対応する `label_rules.value_key` があれば「手動」バッジを
   付ける。手動棚では読み込み済みエピソードの `Recording.seriesKey`
   （`recordings.series_key`）を「自動: X（ほか N）」として補助表示する。これは

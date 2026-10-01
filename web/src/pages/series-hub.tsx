@@ -420,12 +420,17 @@ export function SeriesHubPage() {
   )
 }
 
-/** ハブの identity に置く最新録画のサムネイル。未生成・404 は静かにプレースホルダーへ落とす。 */
+/**
+ * ハブの identity に置く最新録画のサムネイル。未生成・404 は静かにプレースホルダーへ落とす。
+ * worker が SAR を補正した画像に合わせて 16:9 にする。
+ * 400px 幅では 144px の画像と 12px の間隔の隣に 212px 残り、現在に近い高さで identity の文字を読める。
+ * sm 以上は 192px 幅にし、高さを従来の 112px に近づける。
+ */
 function SeriesThumbnail({ recording }: { recording: Recording }) {
   const [failed, setFailed] = useState(false)
 
   return (
-    <div className="size-20 shrink-0 overflow-hidden rounded bg-muted sm:size-28">
+    <div className="aspect-video w-36 shrink-0 overflow-hidden rounded bg-muted sm:w-48">
       {!failed ? (
         <img
           src={`/api/media/recordings/${recording.id}/thumbnail`}
