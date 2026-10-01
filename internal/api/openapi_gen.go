@@ -18,15 +18,17 @@ import (
 
 // Defines values for CMDetectionStage.
 const (
-	Area    CMDetectionStage = "area"
-	Chapter CMDetectionStage = "chapter"
-	Join    CMDetectionStage = "join"
-	Logo    CMDetectionStage = "logo"
-	Parse   CMDetectionStage = "parse"
-	Probe   CMDetectionStage = "probe"
-	Save    CMDetectionStage = "save"
-	Setup   CMDetectionStage = "setup"
-	Stopped CMDetectionStage = "stopped"
+	Area       CMDetectionStage = "area"
+	Chapter    CMDetectionStage = "chapter"
+	Join       CMDetectionStage = "join"
+	Logo       CMDetectionStage = "logo"
+	Match      CMDetectionStage = "match"
+	Parse      CMDetectionStage = "parse"
+	Probe      CMDetectionStage = "probe"
+	Resolution CMDetectionStage = "resolution"
+	Save       CMDetectionStage = "save"
+	Setup      CMDetectionStage = "setup"
+	Stopped    CMDetectionStage = "stopped"
 )
 
 // Valid indicates whether the value is a known member of the CMDetectionStage enum.
@@ -40,9 +42,13 @@ func (e CMDetectionStage) Valid() bool {
 		return true
 	case Logo:
 		return true
+	case Match:
+		return true
 	case Parse:
 		return true
 	case Probe:
+		return true
+	case Resolution:
 		return true
 	case Save:
 		return true

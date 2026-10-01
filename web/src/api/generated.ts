@@ -153,6 +153,8 @@ export const CMDetectionStage = {
   parse: 'parse',
   save: 'save',
   stopped: 'stopped',
+  resolution: 'resolution',
+  match: 'match',
 } as const;
 
 export interface CMRange {

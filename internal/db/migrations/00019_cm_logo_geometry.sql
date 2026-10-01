@@ -29,6 +29,9 @@ ALTER TABLE cm_logos
     DROP COLUMN coded_width,
     DROP COLUMN coded_height;
 
+-- 旧 CHECK は新しい 2 値を許さない。再追加の前に、該当する試行の工程を未記録へ戻す。
+UPDATE recording_cm_attempts SET stage = NULL WHERE stage IN ('resolution', 'match');
+
 ALTER TABLE recording_cm_attempts
     DROP CONSTRAINT recording_cm_attempts_stage_check,
     ADD CONSTRAINT recording_cm_attempts_stage_check CHECK (

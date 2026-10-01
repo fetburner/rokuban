@@ -39,9 +39,12 @@ var trimCall = regexp.MustCompile(`Trim\s*\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)`)
 var cmLogoMatchLine = regexp.MustCompile(`(?i)managed\s+logo:\s+v\d+\s+match=([0-9]+(?:\.[0-9]+)?)%`)
 
 // cmDetectMinLogoMatchPercent は logoframe の一致率がこれ未満なら、ロゴが
-// 録画にほとんど映っていないとみなす下限。正常な局ロゴを拾うケースと、別の
-// 解像度・意匠を当てたケースを分けるための保守的な値で、判定は logoframe の
-// -logo-match ではなく rokuban が成功出力を読んで行う。
+// 録画にほとんど映っていないとみなす下限。判定は logoframe の -logo-match
+// ではなく rokuban が成功出力を読んで行う。
+//
+// 未検証: 10.0 は実録画の測定に基づかない暫定値で、正常な局ロゴの最小値と
+// 異解像度ロゴの値のどちらも測っていない。測定で分離を確かめるまで、
+// この値が正常な録画を弾かない・誤った成功を止めるとは言えない。
 const cmDetectMinLogoMatchPercent = 10.0
 
 // cmDetectFailure keeps the worker-observed failure stage next to the error that
