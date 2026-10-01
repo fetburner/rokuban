@@ -683,6 +683,7 @@ video stream duration は 660.000000 秒である。
 
 各 HLS 出力の先頭フレームを再度 decode したとき、再生時間軸の PTS はすべて 0.000 秒だった。
 この MPEG-TS 条件では、最初に表示されるフレームは全 offset で 0.36 秒以内に収まった。
+測定 runner は 0.5 秒を超える誤差で非ゼロ終了し、seek が外れた結果を検出する。
 放送 TS の PTS 不連続・wraparound を含む実録画では未検証である。
 
 同じ 5 offset を各 3 回 FFmpeg で変換した。原本 open 後に計時を始め、master playlist が読めるまで測った。

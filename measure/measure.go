@@ -59,8 +59,12 @@ func main() {
 			segmentPath := filepath.Join(dir, "segments", "hd.0_seg00000.ts")
 			seconds, frame := firstBurnedTimecode(segmentPath, offset)
 			errorFrames := (seconds-offset)*fps + int64(frame)
+			errorMS := errorFrames * 1000 / fps
+			if errorMS < -500 || errorMS > 500 {
+				must(fmt.Errorf("offset %d first frame error %dms exceeds 500ms", offset, errorMS))
+			}
 			fmt.Printf("trial=%d offset=%d first_frame=%05d:%02d error_ms=%d probe_ms=%d master_ms=%d first_segment_ms=%d\n",
-				trial, offset, seconds, frame, errorFrames*1000/fps, probeLatency.Milliseconds(),
+				trial, offset, seconds, frame, errorMS, probeLatency.Milliseconds(),
 				masterLatency.Milliseconds(), variantLatency.Milliseconds())
 		}
 	}
