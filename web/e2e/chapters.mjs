@@ -286,6 +286,8 @@ if (throughOp < 61 || throughOp >= 70) {
 }
 
 log('\n=== ④ 境界の「前後 3 秒」 ===')
+// チャプター編集は閉じた <details> に入っているので、境界行を見る前に開く。
+await page.locator('[data-testid="chapter-editor-details"] > summary').click()
 const firstBoundary = page.locator('[data-testid="chapter-boundary"]').first()
 const label = await firstBoundary.textContent()
 if (!label?.includes('0:00:30')) {

@@ -37,8 +37,7 @@ import { encodeSettingsError, keepOriginalLabel, type KeepOriginal } from '@/lib
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
 
 /**
- * RecordingActions は論理削除 / 復元 / 即時 purge 印 + 原本保持ポリシー変更 +
- * 追加エンコードの依頼。
+ * RecordingActions は論理削除 / 復元 / 即時 purge 印を扱う。
  * 削除系はいずれも DB だけを触り、ファイルは消さない（M3-7）。
  */
 export function RecordingActions({ recording, trash }: { recording: Recording; trash: boolean }) {
@@ -136,13 +135,6 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
             ごみ箱へ
           </Button>
         </div>
-        {/*
-          事後追加は凍結の例外（issue #133、docs/storage.md §6「凍結の例外:
-          事後追加」）。ごみ箱に入った録画は削除 reconcile 対象なので出さない
-          （下の trash 分岐と同じ理由）。
-        */}
-        <KeepOriginalAction recording={recording} />
-        <AddEncodeProfilesAction recording={recording} />
       </div>
     )
   }
@@ -208,6 +200,16 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </div>
+  )
+}
+
+/** 原本保持と追加エンコードのフォームを資産と一緒に表示する。 */
+export function RecordingAssetControls({ recording }: { recording: Recording }) {
+  return (
+    <div className="flex flex-col gap-3">
+      <KeepOriginalAction recording={recording} />
+      <AddEncodeProfilesAction recording={recording} />
     </div>
   )
 }
@@ -429,7 +431,7 @@ function AddEncodeProfilesAction({ recording }: { recording: Recording }) {
                   <label className="flex min-h-8 cursor-pointer items-center gap-2 text-sm text-foreground">
                     <input
                       type="checkbox"
-                      className="size-4 accent-primary"
+                      className="size-6 accent-primary"
                       checked={checked}
                       disabled={addProfiles.isPending}
                       onChange={() =>

@@ -23,6 +23,8 @@ type RecordingChapterEditorProps = {
   currentSeconds: number
   /** 境界の前後 3 秒を再生する。自動スキップを一時的に止めるのは呼び出し側の責務。 */
   playAround: (seconds: number) => void
+  /** 再生位置を時刻へ移す。 */
+  jumpTo: (seconds: number) => void
   /**
    * 保存する。成功で resolve、失敗で reject する。成功したら、次に届くサーバーの値を
    * 無条件で下書きの基として採用する（サーバーは境界をフレーム境界へ丸めて保存する
@@ -52,12 +54,9 @@ export function RecordingChapterEditor(props: RecordingChapterEditorProps) {
   // された後に「CM 無し」で引き取ってしまう（サーバーも版と 409 で拒否する）。
   if (props.detectionPending) {
     return (
-      <section className="flex flex-col gap-2 border-t border-border/60 pt-3" aria-label="チャプターの編集">
-        <h4 className="font-medium">チャプター</h4>
-        <p className="text-muted-foreground" data-testid="chapter-detecting">
-          CM を検出しています。終わるまでチャプターは編集できません
-        </p>
-      </section>
+      <p className="text-muted-foreground" data-testid="chapter-detecting">
+        CM を検出しています。終わるまでチャプターは編集できません
+      </p>
     )
   }
   return <ChapterDraftEditor {...props} />
@@ -69,6 +68,7 @@ function ChapterDraftEditor({
   source,
   currentSeconds,
   playAround,
+  jumpTo,
   onSave,
   onReset,
   pending,
@@ -116,9 +116,8 @@ function ChapterDraftEditor({
   }
 
   return (
-    <section className="flex flex-col gap-2 border-t border-border/60 pt-3" aria-label="チャプターの編集">
+    <section className="flex flex-col gap-2" aria-label="チャプターの編集">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h4 className="font-medium">チャプター</h4>
         <div className="flex flex-wrap items-center gap-2">
           <Button
             type="button"
@@ -172,9 +171,15 @@ function ChapterDraftEditor({
         <ul className="flex flex-col gap-1">
           {boundaries.map((boundary) => (
             <li key={boundary} className="flex flex-wrap items-center gap-1" data-testid="chapter-boundary">
-              <span className="w-20 shrink-0 text-muted-foreground">
+              <Button
+                type="button"
+                size="sm"
+                variant="link"
+                className="h-11 w-20 shrink-0 justify-start px-0 text-muted-foreground"
+                onClick={() => jumpTo(boundary)}
+              >
                 {formatChaptersTime(boundary)}
-              </span>
+              </Button>
               <Button type="button" size="sm" variant="outline" onClick={() => playAround(boundary)}>
                 前後3秒
               </Button>
@@ -235,9 +240,15 @@ function ChapterDraftEditor({
               className="flex flex-wrap items-center gap-2"
               data-testid="chapter-span-row"
             >
-              <span className="w-40 shrink-0 text-muted-foreground">
+              <Button
+                type="button"
+                size="sm"
+                variant="link"
+                className="h-11 w-40 shrink-0 justify-start px-0 text-muted-foreground"
+                onClick={() => jumpTo(span.startMs / 1000)}
+              >
                 {formatChaptersTime(span.startMs / 1000)} – {formatChaptersTime(span.endMs / 1000)}
-              </span>
+              </Button>
               <input
                 type="text"
                 value={span.label ?? ''}
@@ -253,6 +264,7 @@ function ChapterDraftEditor({
               <label className="flex items-center gap-1">
                 <input
                   type="checkbox"
+                  className="size-6 accent-primary"
                   checked={span.cut}
                   // ラベルが無い区間は本編と区別が付かない（DB の CHECK と同じ規則）。
                   // 表現できない状態を UI で作らせない。

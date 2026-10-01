@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -62,6 +62,15 @@ const stat = (pid: number, pidType?: string): DropStat => ({
 })
 
 describe('DropStatsTable', () => {
+  it('PID 別統計を既定で閉じ、summary を押すと開く', async () => {
+    renderTable([stat(0x100, 'video')])
+    const details = (await screen.findByTestId('drop-stats-details')) as HTMLDetailsElement
+    expect(details.open).toBe(false)
+    fireEvent.click(details.querySelector('summary')!)
+    expect(details.open).toBe(true)
+    expect(details).toHaveTextContent('0x0100')
+  })
+
   it('PID 種別が日本語のラベルで出る', async () => {
     renderTable([stat(0x100, 'video'), stat(0x110, 'audio'), stat(0x0, 'pat')])
 
