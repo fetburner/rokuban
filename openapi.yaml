@@ -2089,6 +2089,14 @@ components:
           description: CM ranges in milliseconds from the first original frame.
           items:
             $ref: "#/components/schemas/CMRange"
+        stage:
+          type: string
+          nullable: true
+          enum: [setup, probe, area, logo, chapter, join, parse, save, stopped]
+          description: The worker stage that produced the latest failed attempt, if known.
+        error:
+          type: string
+          description: The unmodified technical detail of the latest attempt, if present.
 
     CMRange:
       type: object
@@ -2173,13 +2181,17 @@ components:
 
     CMLogoState:
       type: object
-      required: [networkId, serviceId, serviceName, state, recordingCount, failedCount, frameRecordingId]
+      required:
+        [networkId, serviceId, serviceName, site, state, recordingCount, failedCount,
+         pendingCount, detectedCount, redetectableCount, frameRecordingId]
       properties:
         networkId:
           type: integer
         serviceId:
           type: integer
         serviceName:
+          type: string
+        site:
           type: string
         state:
           type: string
@@ -2190,15 +2202,28 @@ components:
         failedCount:
           type: integer
           format: int64
+        pendingCount:
+          type: integer
+          format: int64
+          description: Number of recordings that still need CM detection.
+        detectedCount:
+          type: integer
+          format: int64
+          description: Number of recordings with a CM detection result.
+        redetectableCount:
+          type: integer
+          format: int64
+          description: Detected recordings whose original media is still active.
         learnedAt:
           type: string
           format: date-time
         previewPng:
           type: string
           format: byte
-        lastError:
+        lastFailureStage:
           type: string
-          description: The most recent failed CM detection reason, if any.
+          description: The stage of the most recent failure that still needs attention, if known.
+          nullable: true
         frameRecordingId:
           type: integer
           format: int64

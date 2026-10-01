@@ -172,7 +172,10 @@ func TestCMLogoAPIListsFailuresAndForgetsLogo(t *testing.T) {
 	if err := q.MarkCMDetectionRunning(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.MarkCMDetectionFailure(context.Background(), sqlcgen.MarkCMDetectionFailureParams{RecordingID: id, State: "failed"}); err != nil {
+	stage := "logo"
+	if err := q.MarkCMDetectionFailure(context.Background(), sqlcgen.MarkCMDetectionFailureParams{
+		RecordingID: id, State: "failed", Stage: &stage,
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -189,8 +192,13 @@ func TestCMLogoAPIListsFailuresAndForgetsLogo(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || len(logos) != 1 {
 		t.Fatalf("logo list status=%d rows=%d; want 200/1", resp.StatusCode, len(logos))
 	}
-	if logos[0].State != CMLogoStateStateFailed || logos[0].FailedCount != 1 || logos[0].LearnedAt == nil || logos[0].PreviewPng == nil {
+	if logos[0].State != CMLogoStateStateFailed || logos[0].FailedCount != 1 || logos[0].PendingCount != 0 ||
+		logos[0].DetectedCount != 0 || logos[0].RedetectableCount != 0 || logos[0].Site != "default" ||
+		logos[0].LearnedAt == nil || logos[0].PreviewPng == nil {
 		t.Fatalf("logo state = %#v, want failed logo with preview", logos[0])
+	}
+	if logos[0].LastFailureStage == nil || *logos[0].LastFailureStage != stage {
+		t.Fatalf("lastFailureStage = %v, want %q", logos[0].LastFailureStage, stage)
 	}
 
 	req, err := http.NewRequest(http.MethodDelete, srv.URL+"/api/cm-logos/32678/5168", nil)
@@ -211,8 +219,7 @@ func TestCMLogoAPIListsFailuresAndForgetsLogo(t *testing.T) {
 }
 
 // 枠を教えると、その局の学習済みロゴが消え、失敗していた録画が再検出の候補に戻る。
-// 一覧は教えた枠と直近の失敗理由を返す（録画の解像度が枠と違うときの警告はこの
-// 失敗理由に出る --- 文言は worker 側のテストが固定する）。
+// 一覧は教えた枠と失敗の再投入状態を返す。
 func TestCMLogoAreaAPIForgetsLogoAndRequeuesFailures(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
@@ -323,8 +330,8 @@ func TestCMLogoAreaAPIForgetsLogoAndRequeuesFailures(t *testing.T) {
 	if logo.LogoArea == nil || logo.LogoArea.X != 1180 || logo.LogoArea.CodedWidth != 1440 {
 		t.Errorf("logoArea = %#v, want the taught 1180 / 1440x1080", logo.LogoArea)
 	}
-	if logo.LastError == nil || *logo.LastError != message {
-		t.Errorf("lastError = %v, want %q (this is the list's warning)", logo.LastError, message)
+	if logo.FailedCount != 0 || logo.PendingCount != 1 || logo.LastFailureStage != nil {
+		t.Errorf("failure counters = failed:%d pending:%d stage:%v, want 0/1/nil after area save", logo.FailedCount, logo.PendingCount, logo.LastFailureStage)
 	}
 	if logo.FrameRecordingId != id {
 		t.Errorf("frameRecordingId = %d, want the recording with an original (%d)", logo.FrameRecordingId, id)
@@ -376,6 +383,81 @@ func fetchCMLogos(t *testing.T, baseURL string) []CMLogoState {
 		t.Fatal(err)
 	}
 	return logos
+}
+
+func TestCMLogoMutationsEnqueueReconcile(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	riverClient, err := worker.NewInsertOnlyClient(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, RiverClient: riverClient}))
+	defer srv.Close()
+
+	queued := func(want int) {
+		t.Helper()
+		var got int
+		if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM river_job WHERE kind = $1`, jobs.CMDetectReconcileArgs{}.Kind()).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("CM reconcile jobs = %d, want %d", got, want)
+		}
+	}
+	finishQueued := func() {
+		t.Helper()
+		if _, err := pool.Exec(context.Background(), `
+			UPDATE river_job
+			SET state = 'completed'::river_job_state, finalized_at = now()
+			WHERE kind = $1`, jobs.CMDetectReconcileArgs{}.Kind()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	putBody := `{"x":10,"y":20,"w":100,"h":80,"codedWidth":1920,"codedHeight":1080}`
+	putReq, err := http.NewRequest(http.MethodPut, srv.URL+"/api/cm-logos/32678/5168/area", strings.NewReader(putBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	putResp, err := http.DefaultClient.Do(putReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = putResp.Body.Close()
+	if putResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT status = %d, want 204", putResp.StatusCode)
+	}
+	queued(1)
+	finishQueued()
+
+	deleteAreaReq, err := http.NewRequest(http.MethodDelete, srv.URL+"/api/cm-logos/32678/5168/area", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleteAreaResp, err := http.DefaultClient.Do(deleteAreaReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = deleteAreaResp.Body.Close()
+	if deleteAreaResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE area status = %d, want 204", deleteAreaResp.StatusCode)
+	}
+	queued(2)
+	finishQueued()
+
+	deleteLogoReq, err := http.NewRequest(http.MethodDelete, srv.URL+"/api/cm-logos/32678/5168", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleteLogoResp, err := http.DefaultClient.Do(deleteLogoReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = deleteLogoResp.Body.Close()
+	if deleteLogoResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE logo status = %d, want 204", deleteLogoResp.StatusCode)
+	}
+	queued(3)
 }
 
 func TestCMDetectionRejectedWhenDeploymentDisablesIt(t *testing.T) {

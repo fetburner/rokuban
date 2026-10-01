@@ -36,6 +36,34 @@ const (
 
 var trimCall = regexp.MustCompile(`Trim\s*\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)`)
 
+// cmDetectFailure keeps the worker-observed failure stage next to the error that
+// caused it. The stage is an observation, not a best-effort derivation from the
+// tool's free-form stderr.
+type cmDetectFailure struct {
+	stage string
+	err   error
+}
+
+func (e *cmDetectFailure) Error() string { return e.err.Error() }
+
+func (e *cmDetectFailure) Unwrap() error { return e.err }
+
+func cmFailure(stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &cmDetectFailure{stage: stage, err: err}
+}
+
+func cmFailureStage(err error) *string {
+	var failure *cmDetectFailure
+	if !errors.As(err, &failure) {
+		return nil
+	}
+	stage := failure.stage
+	return &stage
+}
+
 // CMDetectWorker analyzes a committed original and stores its commercial ranges.
 type CMDetectWorker struct {
 	river.WorkerDefaults[jobs.CMDetectJobArgs]
@@ -96,10 +124,12 @@ func (w *CMDetectWorker) Work(ctx context.Context, job *river.Job[jobs.CMDetectJ
 			state = "failed"
 		}
 		message := err.Error()
+		stage := cmFailureStage(err)
 		failureCtx, failureCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer failureCancel()
 		if markErr := q.MarkCMDetectionFailure(failureCtx, sqlcgen.MarkCMDetectionFailureParams{
 			State:       state,
+			Stage:       stage,
 			Error:       &message,
 			RecordingID: job.Args.RecordingID,
 		}); markErr != nil {
@@ -113,22 +143,22 @@ func (w *CMDetectWorker) Work(ctx context.Context, job *river.Job[jobs.CMDetectJ
 
 func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.GetCMDetectionWorkItemRow) error {
 	if item.RelPath == nil {
-		return fmt.Errorf("active original is missing")
+		return cmFailure("setup", fmt.Errorf("active original is missing"))
 	}
 	original, err := mediapath.Resolve(w.MediaDir, *item.RelPath)
 	if err != nil {
-		return fmt.Errorf("resolving original path: %w", err)
+		return cmFailure("setup", fmt.Errorf("resolving original path: %w", err))
 	}
 	jobRoot := filepath.Join(w.ScratchDir, "cm-detect")
 	if err := os.MkdirAll(jobRoot, 0o700); err != nil {
-		return fmt.Errorf("creating scratch root: %w", err)
+		return cmFailure("setup", fmt.Errorf("creating scratch root: %w", err))
 	}
 	jobDir := filepath.Join(jobRoot, strconv.FormatInt(jobID, 10))
 	if err := os.RemoveAll(jobDir); err != nil {
-		return fmt.Errorf("cleaning previous scratch directory: %w", err)
+		return cmFailure("setup", fmt.Errorf("cleaning previous scratch directory: %w", err))
 	}
 	if err := os.Mkdir(jobDir, 0o700); err != nil {
-		return fmt.Errorf("creating job scratch directory: %w", err)
+		return cmFailure("setup", fmt.Errorf("creating job scratch directory: %w", err))
 	}
 	defer func() {
 		if err := os.RemoveAll(jobDir); err != nil {
@@ -138,22 +168,22 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 
 	inputPath := filepath.Join(jobDir, "input.ts")
 	if err := os.Symlink(original, inputPath); err != nil {
-		return fmt.Errorf("linking original into scratch: %w", err)
+		return cmFailure("setup", fmt.Errorf("linking original into scratch: %w", err))
 	}
 	// 人が教えた枠は記録上の解像度の座標なので、まず原本の実際の大きさを取る。
 	// poster やシークタイルの座標は使えない（あちらは SAR を焼き込んでいる）。
 	geometry, err := probeVideoGeometry(ctx, commandOutput, w.FFprobe, inputPath)
 	if err != nil {
-		return fmt.Errorf("probing original size: %w", err)
+		return cmFailure("probe", fmt.Errorf("probing original size: %w", err))
 	}
 	area, err := taughtLogoArea(ctx, sqlcgen.New(w.Pool), item.NetworkID, item.ServiceID, geometry)
 	if err != nil {
-		return err
+		return cmFailure("area", err)
 	}
 	channel := fmt.Sprintf("n%d-s%d", item.NetworkID, item.ServiceID)
 	logoDir := filepath.Join(jobDir, "logos")
 	if err := os.Mkdir(logoDir, 0o700); err != nil {
-		return fmt.Errorf("creating temporary logo directory: %w", err)
+		return cmFailure("setup", fmt.Errorf("creating temporary logo directory: %w", err))
 	}
 	// **ジョブ開始時にロゴを持っていたかを覚える。** 持っていたなら学習結果は書かない
 	// （logoDir の中身は読み込んだ古いロゴのままで、書き戻すと枠の保存が消した
@@ -166,10 +196,10 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 	}); err == nil {
 		hadLogo = true
 		if err := writeStationLogo(logoDir, channel, logo); err != nil {
-			return fmt.Errorf("writing learned station logo: %w", err)
+			return cmFailure("logo", fmt.Errorf("writing learned station logo: %w", err))
 		}
 	} else if !errors.Is(err, pgx5.ErrNoRows) {
-		return fmt.Errorf("loading station logo: %w", err)
+		return cmFailure("logo", fmt.Errorf("loading station logo: %w", err))
 	}
 	var observedAreaUpdatedAt *time.Time
 	if area != nil {
@@ -187,39 +217,39 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 			"-logo-area", fmt.Sprintf("%d,%d,%d,%d", area.X, area.Y, area.W, area.H))
 	}
 	if err := runCMTool(ctx, jobDir, tools("logoframe"), logoArgs...); err != nil {
-		return fmt.Errorf("running logoframe: %w", err)
+		return cmFailure("logo", fmt.Errorf("running logoframe: %w", err))
 	}
 	if !hadLogo {
 		if err := w.persistNewStationLogo(ctx, item, channel, logoDir, observedAreaUpdatedAt); err != nil {
-			return err
+			return cmFailure("logo", err)
 		}
 	}
 	if err := runCMTool(ctx, jobDir, tools("chapter_exe"), "-v", inputPath, "-s", "8", "-e", "4", "-o", chapters); err != nil {
-		return fmt.Errorf("running chapter_exe: %w", err)
+		return cmFailure("chapter", fmt.Errorf("running chapter_exe: %w", err))
 	}
 	if err := runCMTool(ctx, jobDir, tools("join_logo_scp"), "-inlogo", logoFrames,
 		"-inscp", chapters, "-incmd", cmDetectRuleFile(), "-o", cutAvs); err != nil {
-		return fmt.Errorf("running join_logo_scp: %w", err)
+		return cmFailure("join", fmt.Errorf("running join_logo_scp: %w", err))
 	}
 	cutText, err := os.ReadFile(cutAvs)
 	if err != nil {
-		return fmt.Errorf("reading obs_cut.avs: %w", err)
+		return cmFailure("parse", fmt.Errorf("reading obs_cut.avs: %w", err))
 	}
 	// 総尺は EPG の尺ではなく原本の実尺から取る。録画は EIT 追従で延長されうるので、
 	// program_duration_ms で打ち切ると延長分の本編と CM を捨てる。
 	videoDuration, err := probeVideoDuration(ctx, commandOutput, w.FFprobe, inputPath)
 	if err != nil {
-		return fmt.Errorf("probing original duration: %w", err)
+		return cmFailure("probe", fmt.Errorf("probing original duration: %w", err))
 	}
 	totalMs := videoDuration.Milliseconds()
 	ranges, err := cmRangesFromCutAVS(string(cutText), totalMs)
 	if err != nil {
-		return fmt.Errorf("parsing obs_cut.avs: %w", err)
+		return cmFailure("parse", fmt.Errorf("parsing obs_cut.avs: %w", err))
 	}
 	multirange := encodeInt8Multirange(ranges, totalMs)
 	tx, err := w.Pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("beginning CM result transaction: %w", err)
+		return cmFailure("save", fmt.Errorf("beginning CM result transaction: %w", err))
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	q := sqlcgen.New(tx)
@@ -233,29 +263,29 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 		if errors.Is(err, pgx5.ErrNoRows) {
 			return nil
 		}
-		return fmt.Errorf("locking recording for CM result: %w", err)
+		return cmFailure("save", fmt.Errorf("locking recording for CM result: %w", err))
 	}
 	desired, err := q.IsCMDetectionDesired(ctx, item.ID)
 	if err != nil {
-		return fmt.Errorf("rechecking CM detection policy: %w", err)
+		return cmFailure("save", fmt.Errorf("rechecking CM detection policy: %w", err))
 	}
 	if !desired {
 		if err := q.DeleteCMDetectionAttempt(ctx, item.ID); err != nil {
-			return fmt.Errorf("clearing disabled CM detection attempt: %w", err)
+			return cmFailure("save", fmt.Errorf("clearing disabled CM detection attempt: %w", err))
 		}
 		if err := tx.Commit(ctx); err != nil {
-			return fmt.Errorf("committing disabled CM detection state: %w", err)
+			return cmFailure("save", fmt.Errorf("committing disabled CM detection state: %w", err))
 		}
 		return nil
 	}
 	if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{RecordingID: item.ID, CmRanges: multirange}); err != nil {
-		return fmt.Errorf("saving CM ranges: %w", err)
+		return cmFailure("save", fmt.Errorf("saving CM ranges: %w", err))
 	}
 	if err := q.DeleteCMDetectionAttempt(ctx, item.ID); err != nil {
-		return fmt.Errorf("clearing CM attempt state: %w", err)
+		return cmFailure("save", fmt.Errorf("clearing CM attempt state: %w", err))
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("committing CM result: %w", err)
+		return cmFailure("save", fmt.Errorf("committing CM result: %w", err))
 	}
 	return nil
 }

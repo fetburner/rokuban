@@ -1243,7 +1243,9 @@ export const ListRecordingsResponseItem = zod.object({
   "ranges": zod.array(zod.object({
   "startMs": zod.int(),
   "endMs": zod.int()
-})).optional().describe('CM ranges in milliseconds from the first original frame.')
+})).optional().describe('CM ranges in milliseconds from the first original frame.'),
+  "stage": zod.enum(['setup', 'probe', 'area', 'logo', 'chapter', 'join', 'parse', 'save', 'stopped']).nullish().describe('The worker stage that produced the latest failed attempt, if known.'),
+  "error": zod.string().optional().describe('The unmodified technical detail of the latest attempt, if present.')
 }),
   "startedAt": zod.iso.datetime({"offset":true}).optional().describe('録画の実開始時刻。常に UTC（\"Z\" 終端の RFC3339）で返す。'),
   "endedAt": zod.iso.datetime({"offset":true}).optional().describe('録画の実終了時刻。常に UTC（\"Z\" 終端の RFC3339）で返す。'),
@@ -1365,7 +1367,9 @@ export const GetRecordingResponse = zod.object({
   "ranges": zod.array(zod.object({
   "startMs": zod.int(),
   "endMs": zod.int()
-})).optional().describe('CM ranges in milliseconds from the first original frame.')
+})).optional().describe('CM ranges in milliseconds from the first original frame.'),
+  "stage": zod.enum(['setup', 'probe', 'area', 'logo', 'chapter', 'join', 'parse', 'save', 'stopped']).nullish().describe('The worker stage that produced the latest failed attempt, if known.'),
+  "error": zod.string().optional().describe('The unmodified technical detail of the latest attempt, if present.')
 }),
   "startedAt": zod.iso.datetime({"offset":true}).optional().describe('録画の実開始時刻。常に UTC（\"Z\" 終端の RFC3339）で返す。'),
   "endedAt": zod.iso.datetime({"offset":true}).optional().describe('録画の実終了時刻。常に UTC（\"Z\" 終端の RFC3339）で返す。'),
@@ -1707,12 +1711,16 @@ export const ListCMLogosResponseItem = zod.object({
   "networkId": zod.int(),
   "serviceId": zod.int(),
   "serviceName": zod.string(),
+  "site": zod.string(),
   "state": zod.enum(['learned', 'unlearned', 'failed']),
   "recordingCount": zod.int(),
   "failedCount": zod.int(),
+  "pendingCount": zod.int().describe('Number of recordings that still need CM detection.'),
+  "detectedCount": zod.int().describe('Number of recordings with a CM detection result.'),
+  "redetectableCount": zod.int().describe('Detected recordings whose original media is still active.'),
   "learnedAt": zod.iso.datetime({"offset":true}).optional(),
   "previewPng": zod.string().optional(),
-  "lastError": zod.string().optional().describe('The most recent failed CM detection reason, if any.'),
+  "lastFailureStage": zod.string().nullish().describe('The stage of the most recent failure that still needs attention, if known.'),
   "frameRecordingId": zod.int().describe('Recording with an active original for frame selection, or 0.'),
   "logoArea": zod.object({
   "x": zod.int().min(listCMLogosResponseLogoAreaXMin),

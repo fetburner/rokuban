@@ -310,7 +310,9 @@ describe('useServerEvents', () => {
       defaultOptions: { queries: { retry: false, staleTime: Infinity } },
     })
     const key = ['/api/encode-queue']
+    const cmLogosKey = ['/api/cm-logos']
     queryClient.setQueryData(key, { queued: 2, running: 1 })
+    queryClient.setQueryData(cmLogosKey, [])
     queryClient.setQueryData(programListKey, [])
     renderSubscriber(queryClient)
 
@@ -320,6 +322,7 @@ describe('useServerEvents', () => {
     EventSourceStub.last?.emit('recordings')
 
     expect(isStale(queryClient, key)).toBe(true)
+    expect(isStale(queryClient, cmLogosKey)).toBe(true)
     expect(isStale(queryClient, programListKey)).toBe(true)
   })
 

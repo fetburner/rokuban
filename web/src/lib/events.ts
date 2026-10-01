@@ -6,6 +6,7 @@ import {
   getGetStorageQueryKey,
   getListCapacityOveragesQueryKey,
   getListCircuitBreakersQueryKey,
+  getListCMLogosQueryKey,
   getListLabelRulesQueryKey,
   getListRecordingShelvesQueryKey,
   getListRecordingsQueryKey,
@@ -88,6 +89,7 @@ export const reservationsQueryKeyPrefix = getListReservationsQueryKey()[0]
 export const recordingsQueryKeyPrefix = getListRecordingsQueryKey()[0]
 export const capacityOveragesQueryKeyPrefix = getListCapacityOveragesQueryKey()[0]
 export const breakersQueryKeyPrefix = getListCircuitBreakersQueryKey()[0]
+export const cmLogosQueryKeyPrefix = getListCMLogosQueryKey()[0]
 export const encodeQueueQueryKeyPrefix = getGetEncodeQueueQueryKey()[0]
 export const storageQueryKeyPrefix = getGetStorageQueryKey()[0]
 export const sitesQueryKeyPrefix = `${getListSitesQueryKey()[0]}/`
@@ -202,6 +204,7 @@ const queryGroups: QueryGroup[] = [
       encodeQueueQueryKeyPrefix,
       labelRulesQueryKeyPrefix,
       shelvesQueryKeyPrefix,
+      cmLogosQueryKeyPrefix,
       programsQueryKeyPrefix,
     ],
     refreshPrefixes: [
@@ -209,6 +212,7 @@ const queryGroups: QueryGroup[] = [
       encodeQueueQueryKeyPrefix,
       labelRulesQueryKeyPrefix,
       shelvesQueryKeyPrefix,
+      cmLogosQueryKeyPrefix,
     ],
     refreshIntervalMs: operationalRefreshIntervalMs,
   },

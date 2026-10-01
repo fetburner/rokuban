@@ -101,7 +101,7 @@ RETURNING attempt < max_attempts`
 
 const markStaleCMDetectAttemptQuery = `
 UPDATE recording_cm_attempts
-SET state = $2, error = 'CM detection process stopped while job was running', attempted_at = now()
+SET state = $2, stage = 'stopped', error = 'CM detection process stopped while job was running', attempted_at = now()
 WHERE recording_id = $1 AND state = 'running'`
 
 type staleCMDetectJob struct {

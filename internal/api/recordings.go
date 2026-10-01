@@ -107,6 +107,8 @@ type recordingListFields struct {
 	CMDetected          bool
 	CMRanges            json.RawMessage
 	CMAttemptState      *string
+	CMAttemptStage      *string
+	CMAttemptError      *string
 }
 
 // utcTimePtr は timestamptz の scan 結果を UTC の Location に正規化する。
@@ -373,23 +375,9 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool, profi
 		SeriesKey:    r.SeriesKey,
 		CreatedAt:    r.CreatedAt.UTC(),
 	}
-	cmState := CMDetectionStateDisabled
-	if r.CMDetect {
-		cmState = CMDetectionStateDetecting
-		if r.CMAttemptState != nil && *r.CMAttemptState == "failed" {
-			cmState = CMDetectionStateFailed
-		}
-		if r.CMDetected {
-			cmState = CMDetectionStateDetected
-		}
-	}
-	cmDetection := CMDetection{State: cmState}
-	if r.CMDetected {
-		var ranges []CMRange
-		if err := json.Unmarshal(r.CMRanges, &ranges); err != nil {
-			return Recording{}, fmt.Errorf("decoding CM ranges for recording %d: %w", r.ID, err)
-		}
-		cmDetection.Ranges = &ranges
+	cmDetection, err := cmDetectionFromListFields(r)
+	if err != nil {
+		return Recording{}, err
 	}
 	rec.CmDetection = cmDetection
 	if includeDeletedAt {
@@ -493,6 +481,36 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool, profi
 		}
 	}
 	return rec, nil
+}
+
+func cmDetectionFromListFields(r recordingListFields) (CMDetection, error) {
+	state := CMDetectionStateDisabled
+	if r.CMDetect {
+		state = CMDetectionStateDetecting
+		if r.CMAttemptState != nil && *r.CMAttemptState == "failed" {
+			state = CMDetectionStateFailed
+		}
+		if r.CMDetected {
+			state = CMDetectionStateDetected
+		}
+	}
+	detection := CMDetection{State: state}
+	if r.CMAttemptStage != nil {
+		stage := CMDetectionStage(*r.CMAttemptStage)
+		detection.Stage = &stage
+	}
+	if r.CMAttemptError != nil {
+		errorMessage := *r.CMAttemptError
+		detection.Error = &errorMessage
+	}
+	if r.CMDetected {
+		var ranges []CMRange
+		if err := json.Unmarshal(r.CMRanges, &ranges); err != nil {
+			return CMDetection{}, fmt.Errorf("decoding CM ranges for recording %d: %w", r.ID, err)
+		}
+		detection.Ranges = &ranges
+	}
+	return detection, nil
 }
 
 // ListRecordings は録画履歴を絞り込み + キーセットページングで返す（既定は

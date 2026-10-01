@@ -100,6 +100,39 @@ func TestRecordingFromListFields_NormalizesTimestampsToUTC(t *testing.T) {
 	assertUTCSuffix(t, ingest, "observedAt")
 }
 
+func TestRecordingFromListFields_PreservesCMDetectionAttemptDetails(t *testing.T) {
+	stage := "area"
+	errorMessage := "the taught logo area is for 1440x1080 but this recording is 1920x1080"
+	state := "failed"
+	rec, err := recordingFromListFields(recordingListFields{
+		ID:             2,
+		Site:           db.DefaultSite,
+		Source:         "manual",
+		ServiceName:    "テスト局",
+		ChannelType:    "GR",
+		Channel:        "27",
+		NetworkID:      1,
+		ServiceID:      1,
+		EventID:        2,
+		Title:          "CM 検出の工程",
+		ProgramStartAt: time.Now(),
+		Status:         "finished",
+		CMDetect:       true,
+		CMAttemptState: &state,
+		CMAttemptStage: &stage,
+		CMAttemptError: &errorMessage,
+	}, false, profileSets{})
+	if err != nil {
+		t.Fatalf("recordingFromListFields: %v", err)
+	}
+	if rec.CmDetection.Stage == nil || string(*rec.CmDetection.Stage) != stage {
+		t.Fatalf("CM detection stage = %v, want %q", rec.CmDetection.Stage, stage)
+	}
+	if rec.CmDetection.Error == nil || *rec.CmDetection.Error != errorMessage {
+		t.Fatalf("CM detection error = %v, want %q", rec.CmDetection.Error, errorMessage)
+	}
+}
+
 // assertUTCSuffix は decoded[field] が JSON 文字列で、末尾が "Z"（UTC の
 // RFC3339 表現）であることを確認する。フィールドが無ければ Fatal（存在すべき
 // フィールドの欠落は別の壊れ方なので、このテストの主張とは分けて落とす）。

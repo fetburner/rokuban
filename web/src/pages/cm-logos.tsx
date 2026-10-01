@@ -31,6 +31,7 @@ import {
   type CodedRect,
 } from '@/lib/cm-logo-frame'
 import { formatDateTime } from '@/lib/format'
+import { cmDetectStageMessage } from '@/lib/cm-detect-stage'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
 import {
   SEEK_TILES_COLUMNS,
@@ -420,11 +421,11 @@ function LogoTutor({
             </p>
           </div>
 
-          {logo.lastError && (
+          {logo.failedCount > 0 && (
             <div>
               <h4 className="mb-1 font-medium">直近の失敗理由</h4>
-              <p className="break-all text-destructive" data-testid="cm-logo-last-error">
-                {logo.lastError}
+              <p className="break-all text-destructive" data-testid="cm-logo-failure-message">
+                {cmDetectStageMessage(logo.lastFailureStage)}
               </p>
             </div>
           )}
@@ -528,9 +529,9 @@ function LogoRow({
         </Button>
       </div>
       {/* 警告は閉じたままでも見える（枠と解像度が違う録画はここに出る）。 */}
-      {logo.lastError && (
+      {logo.failedCount > 0 && (
         <p className="break-all text-destructive" data-testid="cm-logo-warning">
-          {logo.lastError}
+          {cmDetectStageMessage(logo.lastFailureStage)}
         </p>
       )}
       {open && <LogoTutor logo={logo} recordingId={recordingId} />}

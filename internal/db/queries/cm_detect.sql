@@ -1,46 +1,17 @@
 -- CM detection jobs use the same desired predicate for the ingest hint and periodic pass.
--- A failed attempt becomes desired again after a newer logo for the station was learned,
--- or after the user taught the station a new logo area.
+-- The predicate lives in the cm_detection_desired view so a new caller cannot drift from
+-- the reconcile definition.
 -- name: ListMissingCMDetections :many
-SELECT r.id
-FROM recordings r
-JOIN recording_encode_policy p ON p.recording_id = r.id AND p.cm_detect
-JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original' AND o.state = 'active'
-LEFT JOIN recording_cm_attempts ca ON ca.recording_id = r.id
-LEFT JOIN cm_logos l ON l.network_id = r.network_id AND l.service_id = r.service_id
-LEFT JOIN cm_logo_areas a ON a.network_id = r.network_id AND a.service_id = r.service_id
-WHERE r.id > sqlc.arg('after_recording_id')::bigint
-  AND r.deleted_at IS NULL
-  AND NOT EXISTS (SELECT 1 FROM recording_cm_detections d WHERE d.recording_id = r.id)
-  AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = o.id)
-  AND (
-      ca.recording_id IS NULL
-      OR ca.state <> 'failed'
-      OR (l.learned_at IS NOT NULL AND ca.attempted_at < l.learned_at)
-      OR (a.updated_at IS NOT NULL AND ca.attempted_at < a.updated_at)
-  )
-ORDER BY r.id
+SELECT r.recording_id
+FROM cm_detection_desired r
+WHERE r.recording_id > sqlc.arg('after_recording_id')::bigint
+ORDER BY r.recording_id
 LIMIT sqlc.arg('row_limit');
 
 -- name: IsCMDetectionDesired :one
 SELECT EXISTS (
-    SELECT 1
-    FROM recordings r
-    JOIN recording_encode_policy p ON p.recording_id = r.id AND p.cm_detect
-    JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original' AND o.state = 'active'
-    LEFT JOIN recording_cm_attempts ca ON ca.recording_id = r.id
-    LEFT JOIN cm_logos l ON l.network_id = r.network_id AND l.service_id = r.service_id
-    LEFT JOIN cm_logo_areas a ON a.network_id = r.network_id AND a.service_id = r.service_id
-    WHERE r.id = sqlc.arg('recording_id')
-      AND r.deleted_at IS NULL
-      AND NOT EXISTS (SELECT 1 FROM recording_cm_detections d WHERE d.recording_id = r.id)
-      AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = o.id)
-      AND (
-          ca.recording_id IS NULL
-          OR ca.state <> 'failed'
-          OR (l.learned_at IS NOT NULL AND ca.attempted_at < l.learned_at)
-          OR (a.updated_at IS NOT NULL AND ca.attempted_at < a.updated_at)
-      )
+    SELECT 1 FROM cm_detection_desired desired
+    WHERE desired.recording_id = sqlc.arg('recording_id')
 );
 
 -- name: GetCMDetectionWorkItem :one
@@ -75,7 +46,7 @@ DELETE FROM recording_cm_attempts WHERE recording_id = sqlc.arg('recording_id');
 INSERT INTO recording_cm_attempts (recording_id, state, error, attempted_at)
 VALUES (sqlc.arg('recording_id'), 'running', NULL, now())
 ON CONFLICT (recording_id) DO UPDATE
-SET state = 'running', error = NULL, attempted_at = now();
+SET state = 'running', stage = NULL, error = NULL, attempted_at = now();
 
 -- name: MarkCMDetectionFailure :exec
 -- **attempted_at は書き換えない**（ジョブ開始時刻のまま）。再投入の判定は
@@ -83,7 +54,7 @@ SET state = 'running', error = NULL, attempted_at = now();
 -- 始まったジョブが PUT の後に失敗して終了時刻で上書きすると、その失敗が
 -- 新しい枠での試行に見え、枠に合わせた再検出が二度と投入されない。
 UPDATE recording_cm_attempts
-SET state = sqlc.arg('state'), error = sqlc.arg('error')
+SET state = sqlc.arg('state'), stage = sqlc.narg('stage'), error = sqlc.arg('error')
 WHERE recording_id = sqlc.arg('recording_id');
 
 -- name: SaveCMDetection :exec
@@ -126,16 +97,30 @@ SET lgd = EXCLUDED.lgd,
 -- name: ListCMLogoStates :many
 SELECT r.network_id, r.service_id,
        ((array_agg(r.service_name ORDER BY r.id DESC))[1])::text AS service_name,
+       ((array_agg(r.site ORDER BY r.id DESC))[1])::text AS site,
        count(DISTINCT r.id)::bigint AS recording_count,
        l.learned_at,
        l.preview_png,
        count(DISTINCT ca.recording_id) FILTER (
-           WHERE ca.state = 'failed' AND (l.learned_at IS NULL OR ca.attempted_at >= l.learned_at)
+           WHERE ca.state = 'failed' AND desired.recording_id IS NULL
        )::bigint AS failed_count,
-       -- 直近の失敗理由。人が教えた枠と解像度が違う録画はここに出る（一覧の警告）。
-       COALESCE(((array_agg(ca.error ORDER BY ca.attempted_at DESC) FILTER (
-           WHERE ca.state = 'failed' AND ca.error IS NOT NULL
-       ))[1])::text, '')::text AS last_error,
+       count(DISTINCT desired.recording_id)::bigint AS pending_count,
+       COALESCE(((array_agg(ca.stage ORDER BY ca.attempted_at DESC) FILTER (
+           WHERE ca.state = 'failed' AND desired.recording_id IS NULL
+       ))[1])::text, '')::text AS last_failure_stage,
+       count(DISTINCT d.recording_id)::bigint AS detected_count,
+       count(DISTINCT d.recording_id) FILTER (
+           WHERE EXISTS (
+               SELECT 1
+               FROM media_assets o2
+               WHERE o2.recording_id = r.id
+                 AND o2.kind = 'original'
+                 AND o2.state = 'active'
+                 AND NOT EXISTS (
+                     SELECT 1 FROM missing_media_assets m2 WHERE m2.media_asset_id = o2.id
+                 )
+           )
+       )::bigint AS redetectable_count,
        a.x, a.y, a.w, a.h, a.coded_width, a.coded_height, a.updated_at AS area_updated_at,
        -- コマとタイルを取り寄せる録画（原本があり、実体の無いマーカーが付いていない
        -- 最新のもの）。**0 = 無し**（recordings.id は 1 から始まる）で、
@@ -155,6 +140,8 @@ FROM recordings r
 LEFT JOIN cm_logos l ON l.network_id = r.network_id AND l.service_id = r.service_id
 LEFT JOIN cm_logo_areas a ON a.network_id = r.network_id AND a.service_id = r.service_id
 LEFT JOIN recording_cm_attempts ca ON ca.recording_id = r.id
+LEFT JOIN recording_cm_detections d ON d.recording_id = r.id
+LEFT JOIN cm_detection_desired desired ON desired.recording_id = r.id
 WHERE r.deleted_at IS NULL
 -- a の列は主キー (network_id, service_id) の関数従属なので、この 2 列だけで足りる。
 GROUP BY r.network_id, r.service_id, l.learned_at, l.preview_png, a.network_id, a.service_id

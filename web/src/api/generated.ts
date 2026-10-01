@@ -137,6 +137,24 @@ export const CMDetectionState = {
   failed: 'failed',
 } as const;
 
+/**
+ * The worker stage that produced the latest failed attempt, if known.
+ */
+export type CMDetectionStage = typeof CMDetectionStage[keyof typeof CMDetectionStage] | null;
+
+
+export const CMDetectionStage = {
+  setup: 'setup',
+  probe: 'probe',
+  area: 'area',
+  logo: 'logo',
+  chapter: 'chapter',
+  join: 'join',
+  parse: 'parse',
+  save: 'save',
+  stopped: 'stopped',
+} as const;
+
 export interface CMRange {
   startMs: number;
   endMs: number;
@@ -146,6 +164,10 @@ export interface CMDetection {
   state: CMDetectionState;
   /** CM ranges in milliseconds from the first original frame. */
   ranges?: CMRange[];
+  /** The worker stage that produced the latest failed attempt, if known. */
+  stage?: CMDetectionStage;
+  /** The unmodified technical detail of the latest attempt, if present. */
+  error?: string;
 }
 
 /**
@@ -244,13 +266,20 @@ export interface CMLogoState {
   networkId: number;
   serviceId: number;
   serviceName: string;
+  site: string;
   state: CMLogoStateState;
   recordingCount: number;
   failedCount: number;
+  /** Number of recordings that still need CM detection. */
+  pendingCount: number;
+  /** Number of recordings with a CM detection result. */
+  detectedCount: number;
+  /** Detected recordings whose original media is still active. */
+  redetectableCount: number;
   learnedAt?: string;
   previewPng?: string;
-  /** The most recent failed CM detection reason, if any. */
-  lastError?: string;
+  /** The stage of the most recent failure that still needs attention, if known. */
+  lastFailureStage?: string | null;
   /** Recording with an active original for frame selection, or 0. */
   frameRecordingId: number;
   logoArea?: CMLogoArea;
