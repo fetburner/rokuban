@@ -14,7 +14,7 @@ Vite + React + TypeScript の SPA。go:embed で単一バイナリに同梱し�
 | 進行方向の読み込み（時間窓の継ぎ足し） / ボトムタブの裏に隠れる行（到達可能性のみ保証） | [frontend/scroll.md](frontend/scroll.md) |
 | 予約の操作・予約詳細・録られない理由の表示 | [frontend/reservations.md](frontend/reservations.md) |
 | 検索 `/search` とルール条件の共有 | [frontend/search.md](frontend/search.md) |
-| 録画一覧・録画検索・録画単体の着地先・ブラウザ再生・ドロップ統計 | [frontend/recordings.md](frontend/recordings.md) |
+| 録画一覧・録画検索・録画単体の着地先・録画詳細の塊と並び順・ブラウザ再生・ドロップ統計 | [frontend/recordings.md](frontend/recordings.md) |
 | ライブ視聴 | [frontend/live.md](frontend/live.md) |
 | アセット配信（go:embed / S3+CDN・キャッシュ規約） | [frontend/assets.md](frontend/assets.md) |
 | ファビコン・走査線 | [frontend/branding.md](frontend/branding.md) |
@@ -27,7 +27,7 @@ Vite + React + TypeScript の SPA。go:embed で単一バイナリに同梱し�
 | 「番組リスト」/「リストを第一級に置く。グリッドはその上に足す」/「グリッドは lg 以上でのみ出し、モバイルは常にリスト」/「仮想化はライブラリを入れず自前」/「セルの高さに下限を設けない」/「容量超過は番組ではなく区間に描く」/「リスト・予約一覧・モバイル: 同じ文言のバッジ」/「受け入れは実機で行う」 | [frontend/programs.md](frontend/programs.md) |
 | 「エラーの本文も UI まで運ぶ」/「サイトの扱い」 | [frontend/shell.md](frontend/shell.md) |
 | 「検索とルールは同じ条件 UI を双方向に共有する」 | [frontend/search.md](frontend/search.md) |
-| 「録画検索は `/recordings` に同居する」/「debounce と URL 同期で履歴を汚さない」/「ごみ箱タブと検索条件は直交させる」 | [frontend/recordings.md](frontend/recordings.md) |
+| 「録画検索は `/recordings` に同居する」/「debounce と URL 同期で履歴を汚さない」/「ごみ箱タブと検索条件は直交させる」/「録画詳細の塊と並び順」 | [frontend/recordings.md](frontend/recordings.md) |
 | §ライブ視聴 / §フロントエンド実装 / §実機確認について | [frontend/live.md](frontend/live.md) |
 | アセット配信 | [frontend/assets.md](frontend/assets.md) |
 
