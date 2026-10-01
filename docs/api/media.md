@@ -590,20 +590,35 @@ map とファイルを直ちに解放して次の playlist 要求で再起動で
 ### 録画原本のブラウザ再生
 
 完了済みで active な原本 MPEG-2 TS を、site streamer が FFmpeg → HLS の一時セッションとして
-変換する。これは `media_assets` に保存する派生物ではない。資源同定は `recordings.id` で、
-profile は出力 playlist の選択にだけ使うため、同じ録画の視聴者と profile 切替は 1 本の
-FFmpeg セッションを共有する。live / chase と同じ `live.max_sessions`、idle GC、離脱ヒントを
-使う。Prometheus は `rokuban_live_active_sessions{kind="original_vod"}` に内訳を出す。
+変換する。これは `media_assets` に保存する派生物ではない。資源同定は
+`(recordings.id, offset)` で、profile は出力 playlist の選択にだけ使うため、同じ録画・同じ
+offset の視聴者と profile 切替は 1 本の FFmpeg セッションを共有する。省略 offset と `0` は
+同じ先頭セッションである。live / chase と同じ `live.max_sessions`、idle GC、離脱ヒントを使う。
+Prometheus は `rokuban_live_active_sessions{kind="original_vod"}` に内訳を出す。
 
 ```
 GET  /api/sites/{site}/recordings/{id}/original-vod/playlist.m3u8[?profile=<name>]
          → application/vnd.apple.mpegurl
+GET  /api/sites/{site}/recordings/{id}/original-vod/offset/{offset}/playlist.m3u8[?profile=<name>]
+         → application/vnd.apple.mpegurl
 GET  /api/sites/{site}/recordings/{id}/original-vod/segments/{name}
 GET  /api/sites/{site}/recordings/{id}/original-vod/{name}
          → video/mp2t / text/vtt / application/vnd.apple.mpegurl
+GET  /api/sites/{site}/recordings/{id}/original-vod/offset/{offset}/segments/{name}
+GET  /api/sites/{site}/recordings/{id}/original-vod/offset/{offset}/{name}
+         → video/mp2t / text/vtt / application/vnd.apple.mpegurl
 POST /api/sites/{site}/recordings/{id}/original-vod/leave
          → 204（離脱のヒント）
+POST /api/sites/{site}/recordings/{id}/original-vod/offset/{offset}/leave
+         → 204（離脱のヒント）
 ```
+
+`{offset}` は録画先頭からの秒を表す正準な 10 進整数である。`007`、`+5`、`5.0` などの
+非正準形は 400、原本の長さ以上は 416 にする。offset ごとに session key と HLS scratch を分ける。
+offset 付き playlist / segment / leave はすべて同じ offset の session を参照する。
+各 offset は通常の原本 HLS セッションとして `live.max_sessions` に数え、leave ヒント・idle GC・
+容量圧力時の idle session 退避も共有する。`offset/0` と offset 無しの URL は同じ session と scratch
+を使う。
 
 これらのバイナリ配信ルートは `openapi.yaml` に載せない。開始時に DB から同じ site の
 `finished` 録画と `state='active'` の original を引く。原本を read-only で open してから、
@@ -638,6 +653,64 @@ event は変換の先頭から playlist が書かれ、終了時に `#EXT-X-ENDL
 異常終了時は scratch とセッションを回収する。
 原本が引き続き active なら次の要求で作り直せる
 （`TestOriginalVODServesPlaylistWhileFFmpegIsStillConverting`）。
+
+offset 付きでは完成済み原本の長さを同じ開いたファイル記述子から ffprobe で調べ、FFmpeg に渡す前に
+範囲を確認する。原本は `cmd.ExtraFiles` の先頭として子プロセス fd 3 に渡し、FFmpeg は
+`/dev/fd/3` を入力にする。fd は seek 可能な同じ inode を指すため、`until_encoded` が canonical path
+を unlink した後も変換できる。通常のパイプ `pipe:0` では seek が効かないため、この fd 方式を選ぶ。
+ffprobe が descriptor を読み終わった後は親側で先頭へ戻し、FFmpeg の fd も seek 可能な状態から始める。
+offset が 0 より大きいときは `-ss {offset}` を `-i /dev/fd/3` より前に置く。FFmpeg の入力側 seek は
+入力の seek point から offset までを decode して捨てる。`-copyts` は付けず、HLS の再生時間軸は
+offset ごとに 0 から始めるので、再生位置は `offset + currentTime` として扱う。
+
+#### offset seek の精度と開始時間の測定
+
+FFmpeg / ffprobe 9.0.2、macOS arm64 で、25 fps の 320×80 合成映像を 660 秒間生成した。各フレームには
+録画先頭からの `秒:フレーム番号` を映像に焼き込み、MPEG-2 video（GOP 15、B-frame 2、closed GOP）、
+MP2 audio、1 Mbit/s MPEG-TS muxrate でまとめた。`ffprobe` が報告する format duration は 660.010022 秒、
+video stream duration は 660.000000 秒である。
+[measure/generate/main.go](../../measure/generate/main.go) が時刻表示付きフレームを作る。
+[measure/measure.go](../../measure/measure.go) で `BuildOriginalVODFFmpegArgs` と fd 3 を使い、
+出力 HLS の先頭映像フレームを読み取る。
+
+| 要求した offset | HLS の先頭フレーム表示 | offset との差 |
+| ---: | ---: | ---: |
+| 0 秒 | 0.00 秒 | 0.00 秒 |
+| 61 秒 | 61.36 秒 | +0.36 秒 |
+| 307 秒 | 307.32 秒 | +0.32 秒 |
+| 603 秒 | 603.20 秒 | +0.20 秒 |
+| 659 秒 | 659.36 秒 | +0.36 秒 |
+
+各 HLS 出力の先頭フレームを再度 decode したとき、再生時間軸の PTS はすべて 0.000 秒だった。
+この MPEG-TS 条件では、最初に表示されるフレームは全 offset で 0.36 秒以内に収まった。
+放送 TS の PTS 不連続・wraparound を含む実録画では未検証である。
+
+同じ 5 offset を各 3 回 FFmpeg で変換した。原本 open 後に計時を始め、master playlist が読めるまで測った。
+非ゼロ offset は duration probe と FFmpeg 起動を含む。DB lookup、HTTP/router、原本 open は計時外である。
+
+| offset | master ready 中央値（最小–最大） |
+| ---: | ---: |
+| 0 秒 | 80 ms（78–93 ms） |
+| 61 秒 | 94 ms（92–96 ms） |
+| 307 秒 | 93 ms（93–93 ms） |
+| 603 秒 | 93 ms（93–95 ms） |
+| 659 秒 | 59 ms（59–60 ms） |
+
+非ゼロ offset の duration probe は 17–20 ms だった。659 秒では残り 1 秒の短い出力になる。
+
+測定を再現するには、リポジトリ root から次を実行する。生成した TS は測定後に削除する。
+
+```sh
+go run ./measure/generate | ffmpeg -hide_banner -loglevel error \
+  -f image2pipe -framerate 25 -vcodec pgm -i pipe:0 \
+  -f lavfi -i sine=frequency=440:sample_rate=48000:duration=660 \
+  -map 0:v:0 -map 1:a:0 -c:v mpeg2video -g 15 -bf 2 \
+  -flags +cgop -sc_threshold 1000000000 -q:v 5 \
+  -c:a mp2 -b:a 128k -shortest -muxrate 1000000 \
+  -f mpegts -y /tmp/original-vod-offset-11m.ts
+go run ./measure /tmp/original-vod-offset-11m.ts
+rm /tmp/original-vod-offset-11m.ts
+```
 
 原本だけの完了録画はこの経路をブラウザ再生の既定にする。active な録画は既存の chase、
 active な encoded がある完了録画は MP4 progressive + Range を使う。原本 MPEG-2 decoder を

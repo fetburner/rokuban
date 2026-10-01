@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -346,7 +347,8 @@ func TestBuildOriginalVODFFmpegArgsRetainsSeekableVODOutput(t *testing.T) {
 		{name: "captions and subtitles", captions: true, withSubs: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			args := BuildOriginalVODFFmpegArgs(LiveConfig{Captions: tc.captions, Profiles: profiles}, "/tmp/original-vod", tc.withSubs)
+			cfg := LiveConfig{Captions: tc.captions, Profiles: profiles}
+			args := BuildOriginalVODFFmpegArgs(cfg, "/tmp/original-vod", tc.withSubs, 0)
 			joined := strings.Join(args, " ")
 			for _, want := range []string{"-hls_playlist_type event", "-hls_list_size 0", "-hls_flags temp_file", "-hls_base_url segments/"} {
 				if !strings.Contains(joined, want) {
@@ -364,6 +366,20 @@ func TestBuildOriginalVODFFmpegArgsRetainsSeekableVODOutput(t *testing.T) {
 			}
 			if tc.withSubs && !strings.Contains(joined, "-map 0:s:0?") {
 				t.Errorf("args = %q, want optional subtitle stream mapping", joined)
+			}
+			i := slices.Index(args, "-i")
+			if i < 0 || i+1 >= len(args) || args[i+1] != originalVODFFmpegInputPath {
+				t.Errorf("input args = %q, want seekable inherited fd %s", args, originalVODFFmpegInputPath)
+			}
+			if slices.Contains(args, "-ss") {
+				t.Errorf("zero-offset args = %q, want no explicit -ss", args)
+			}
+
+			seekArgs := BuildOriginalVODFFmpegArgs(cfg, "/tmp/original-vod", tc.withSubs, 120)
+			ss := slices.Index(seekArgs, "-ss")
+			seekInput := slices.Index(seekArgs, "-i")
+			if ss < 0 || ss+1 >= len(seekArgs) || seekArgs[ss+1] != "120" || seekInput <= ss {
+				t.Errorf("offset args = %q, want input-side -ss 120 before -i", seekArgs)
 			}
 		})
 	}

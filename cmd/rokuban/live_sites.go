@@ -77,9 +77,13 @@ func (ls liveSites) Mount(r chi.Router) {
 
 	const originalVODBase = streamer.OriginalVODRoutePattern
 	r.Get(originalVODBase+"/playlist.m3u8", ls.dispatch((*streamer.LiveStreamer).OriginalVODPlaylist))
+	r.Get(originalVODBase+"/offset/{offset}/playlist.m3u8", ls.dispatch((*streamer.LiveStreamer).OriginalVODPlaylist))
 	r.Get(originalVODBase+"/segments/{name}", ls.dispatch((*streamer.LiveStreamer).OriginalVODSegment))
+	r.Get(originalVODBase+"/offset/{offset}/segments/{name}", ls.dispatch((*streamer.LiveStreamer).OriginalVODSegment))
 	r.Get(originalVODBase+"/{name}", ls.dispatch((*streamer.LiveStreamer).OriginalVODSegment))
+	r.Get(originalVODBase+"/offset/{offset}/{name}", ls.dispatch((*streamer.LiveStreamer).OriginalVODSegment))
 	r.Post(originalVODBase+"/leave", ls.dispatch((*streamer.LiveStreamer).OriginalVODLeave))
+	r.Post(originalVODBase+"/offset/{offset}/leave", ls.dispatch((*streamer.LiveStreamer).OriginalVODLeave))
 }
 
 // dispatch は method（LiveStreamer.Playlist/Segment/Leave のいずれか）を、

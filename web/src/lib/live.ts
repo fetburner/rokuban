@@ -345,15 +345,29 @@ export function chaseLeaveURL(site: string, recordingId: number, offsetSeconds?:
 }
 
 /** originalVODPlaylistURL は完成済み録画の原本を HLS 化する URL を組み立てる。 */
-export function originalVODPlaylistURL(site: string, recordingId: number, profile?: string): string {
+export function originalVODPlaylistURL(
+  site: string,
+  recordingId: number,
+  profile?: string,
+  offsetSeconds?: number,
+): string {
+  const offset =
+    Number.isSafeInteger(offsetSeconds) && offsetSeconds !== undefined && offsetSeconds > 0
+      ? `/offset/${offsetSeconds}`
+      : ''
   const base =
-    `/api/sites/${encodeURIComponent(site)}/recordings/${recordingId}/original-vod/playlist.m3u8`
+    `/api/sites/${encodeURIComponent(site)}/recordings/${recordingId}/original-vod` +
+    `${offset}/playlist.m3u8`
   return profile ? `${base}?profile=${encodeURIComponent(profile)}` : base
 }
 
 /** originalVODLeaveURL は原本 VOD HLS セッションへの離脱ヒントの宛先。 */
-export function originalVODLeaveURL(site: string, recordingId: number): string {
-  return `/api/sites/${encodeURIComponent(site)}/recordings/${recordingId}/original-vod/leave`
+export function originalVODLeaveURL(site: string, recordingId: number, offsetSeconds?: number): string {
+  const offset =
+    Number.isSafeInteger(offsetSeconds) && offsetSeconds !== undefined && offsetSeconds > 0
+      ? `/offset/${offsetSeconds}`
+      : ''
+  return `/api/sites/${encodeURIComponent(site)}/recordings/${recordingId}/original-vod${offset}/leave`
 }
 
 /**
@@ -397,8 +411,8 @@ export function sendChaseLeaveHint(site: string, recordingId: number, offsetSeco
 }
 
 /** sendOriginalVODLeaveHint は原本 VOD の共有セッションに離脱を知らせる。 */
-export function sendOriginalVODLeaveHint(site: string, recordingId: number): void {
-  const url = originalVODLeaveURL(site, recordingId)
+export function sendOriginalVODLeaveHint(site: string, recordingId: number, offsetSeconds?: number): void {
+  const url = originalVODLeaveURL(site, recordingId, offsetSeconds)
   if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
     navigator.sendBeacon(url)
     return

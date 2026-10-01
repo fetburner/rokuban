@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -81,7 +82,7 @@ type LiveConfig struct {
 	// で入力 1 本・出力 N 本のため、プロファイル毎には表現しない）。
 	HWAccel *ffargs.HWAccel
 
-	// InputExtraArgs は `-f mpegts -i pipe:0` の直前に追加する引数。
+	// InputExtraArgs は `-f mpegts -i ...` の直前に追加する引数。
 	InputExtraArgs []string
 
 	Profiles []LiveProfile
@@ -172,6 +173,9 @@ var (
 	// not in the currently available recording range. It is translated to 416
 	// by the HTTP handler, rather than starting a session at an invalid byte.
 	errChaseOffsetUnavailable = errors.New("chase offset is outside the available recording range")
+	// errOriginalVODOffsetUnavailable means the requested second is at or beyond
+	// the completed original's measured duration. It becomes HTTP 416.
+	errOriginalVODOffsetUnavailable = errors.New("original VOD offset is outside the recording range")
 )
 
 // liveUpstreamStartError は mirakc の stream 要求が拒否された起動失敗を表す。
@@ -395,9 +399,13 @@ func (ls *LiveStreamer) Mount(r chi.Router) {
 
 	// 完了済み原本 VOD も live / chase と同じ process-local session pool を使う。
 	r.Get(OriginalVODRoutePattern+"/playlist.m3u8", ls.OriginalVODPlaylist)
+	r.Get(OriginalVODRoutePattern+"/offset/{offset}/playlist.m3u8", ls.OriginalVODPlaylist)
 	r.Get(OriginalVODRoutePattern+"/segments/{name}", ls.OriginalVODSegment)
+	r.Get(OriginalVODRoutePattern+"/offset/{offset}/segments/{name}", ls.OriginalVODSegment)
 	r.Get(OriginalVODRoutePattern+"/{name}", ls.OriginalVODSegment)
+	r.Get(OriginalVODRoutePattern+"/offset/{offset}/{name}", ls.OriginalVODSegment)
 	r.Post(OriginalVODRoutePattern+"/leave", ls.OriginalVODLeave)
+	r.Post(OriginalVODRoutePattern+"/offset/{offset}/leave", ls.OriginalVODLeave)
 }
 
 // Run は idle GC ループを ctx が Done になるまで回す。ctx が Done になったら
@@ -886,7 +894,7 @@ func (ls *LiveStreamer) lookupOriginalVODTarget(ctx context.Context, recordingID
 // while target is live. If the row is still active after open, the path cannot have
 // been unlinked before the open; if it is not, we return pgx.ErrNoRows. A later
 // unlink cannot change the descriptor FFmpeg already holds.
-func (ls *LiveStreamer) originalVODSource(recordingID int64, target sqlcgen.GetOriginalVODTargetRow) sessionSource {
+func (ls *LiveStreamer) originalVODSource(recordingID, offsetSeconds int64, target sqlcgen.GetOriginalVODTargetRow) sessionSource {
 	return func(ctx context.Context) (io.ReadCloser, error) {
 		if ls.cfg.MediaDir == "" {
 			return nil, errors.New("original VOD media directory is unavailable")
@@ -922,8 +930,58 @@ func (ls *LiveStreamer) originalVODSource(recordingID int64, target sqlcgen.GetO
 			_ = file.Close()
 			return nil, pgx.ErrNoRows
 		}
+		if offsetSeconds > 0 {
+			duration, err := probeOriginalVODDuration(ctx, ls.cfg.FFprobe, file)
+			if err != nil {
+				_ = file.Close()
+				return nil, fmt.Errorf("probing original VOD duration: %w", err)
+			}
+			if float64(offsetSeconds) >= duration {
+				_ = file.Close()
+				return nil, errOriginalVODOffsetUnavailable
+			}
+		}
+		// ffprobe can seek while reading the inherited descriptor. Reset it before
+		// ffmpeg opens /dev/fd/3 so input-side -ss is measured from the file start.
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			_ = file.Close()
+			return nil, fmt.Errorf("rewinding original media: %w", err)
+		}
 		return file, nil
 	}
+}
+
+const originalVODFFmpegInputPath = "/dev/fd/3"
+
+// probeOriginalVODDuration measures the completed MPEG-TS duration through the
+// already-open descriptor. ExtraFiles maps it to child fd 3, so ffprobe can seek
+// without reopening a canonical path that may be unlinked after the DB check.
+func probeOriginalVODDuration(ctx context.Context, ffprobe string, file *os.File) (float64, error) {
+	if ffprobe == "" {
+		ffprobe = "ffprobe"
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, liveCaptionProbeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(probeCtx, ffprobe,
+		"-v", "error", "-show_entries", "format=duration",
+		"-of", "default=noprint_wrappers=1:nokey=1", "-i", originalVODFFmpegInputPath,
+	)
+	cmd.ExtraFiles = []*os.File{file}
+	out, err := cmd.Output()
+	if err != nil {
+		if probeCtx.Err() != nil {
+			return 0, probeCtx.Err()
+		}
+		return 0, err
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return 0, fmt.Errorf("rewinding probed original media: %w", err)
+	}
+	duration, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
+	if err != nil || math.IsNaN(duration) || math.IsInf(duration, 0) || duration <= 0 {
+		return 0, fmt.Errorf("invalid original VOD duration %q", strings.TrimSpace(string(out)))
+	}
+	return duration, nil
 }
 
 // originalVODRecordingRemoved reports whether a user action (trash, purge,
@@ -1224,6 +1282,11 @@ func (ls *LiveStreamer) OriginalVODPlaylist(w http.ResponseWriter, r *http.Reque
 		http.NotFound(w, r)
 		return
 	}
+	offsetSeconds, ok := chaseOffsetFromRequest(r)
+	if !ok {
+		http.Error(w, "invalid original VOD offset", http.StatusBadRequest)
+		return
+	}
 	profile, ok := ls.cfg.profile(r.URL.Query().Get("profile"))
 	if !ok {
 		http.Error(w, "unknown original VOD profile", http.StatusBadRequest)
@@ -1237,12 +1300,14 @@ func (ls *LiveStreamer) OriginalVODPlaylist(w http.ResponseWriter, r *http.Reque
 		writeOriginalVODError(w, r, err)
 		return
 	}
-	key := originalVODSessionKeyFor(recordingID)
+	key := originalVODSessionKeyFor(recordingID, offsetSeconds)
 	ls.mu.Lock()
 	s, exists := ls.getSessionLocked(key)
 	ls.mu.Unlock()
 	if !exists {
-		s, err = ls.getOrCreateSessionFor(r.Context(), key, ls.originalVODSource(recordingID, target))
+		s, err = ls.getOrCreateSessionFor(
+			r.Context(), key, ls.originalVODSource(recordingID, offsetSeconds, target),
+		)
 		if err != nil {
 			writeOriginalVODError(w, r, err)
 			return
@@ -1286,6 +1351,11 @@ func (ls *LiveStreamer) OriginalVODSegment(w http.ResponseWriter, r *http.Reques
 		http.NotFound(w, r)
 		return
 	}
+	offsetSeconds, ok := chaseOffsetFromRequest(r)
+	if !ok {
+		http.Error(w, "invalid original VOD offset", http.StatusBadRequest)
+		return
+	}
 	name := chi.URLParam(r, "name")
 	if !ls.cfg.servesFile(name) {
 		http.Error(w, "invalid segment name", http.StatusBadRequest)
@@ -1296,8 +1366,9 @@ func (ls *LiveStreamer) OriginalVODSegment(w http.ResponseWriter, r *http.Reques
 		http.NotFound(w, r)
 		return
 	}
+	key := originalVODSessionKeyFor(recordingID, offsetSeconds)
 	ls.mu.Lock()
-	s, ok := ls.getSessionLocked(originalVODSessionKeyFor(recordingID))
+	s, ok := ls.getSessionLocked(key)
 	ls.mu.Unlock()
 	if !ok {
 		http.NotFound(w, r)
@@ -1334,21 +1405,26 @@ func (ls *LiveStreamer) OriginalVODSegment(w http.ResponseWriter, r *http.Reques
 	http.ServeFile(w, r, path)
 }
 
-// invalidateOriginalVODSession stops and removes retained HLS output after its
-// canonical original stops being an eligible VOD target (for example, trash or
-// purge). Completed FFmpeg sessions are otherwise retained until idle GC.
+// invalidateOriginalVODSession stops every offset session and removes its HLS
+// output after the recording stops being an eligible VOD target (for example,
+// trash or purge). Completed FFmpeg sessions are otherwise retained until idle GC.
 func (ls *LiveStreamer) invalidateOriginalVODSession(recordingID int64) {
 	ls.mu.Lock()
-	s, ok := ls.getSessionLocked(originalVODSessionKeyFor(recordingID))
-	if ok {
-		ls.deleteSessionLocked(s)
+	var sessions []*liveSession
+	for key, s := range ls.chaseSessions {
+		if key.kind == originalVODSessionKind && key.id == recordingID {
+			delete(ls.chaseSessions, key)
+			sessions = append(sessions, s)
+		}
 	}
 	ls.mu.Unlock()
-	if !ok {
+	if len(sessions) == 0 {
 		return
 	}
-	s.stop()
-	cleanupSessionDir(s)
+	for _, s := range sessions {
+		s.stop()
+		cleanupSessionDir(s)
+	}
 	ls.setActiveSessionMetrics()
 }
 
@@ -1364,8 +1440,14 @@ func (ls *LiveStreamer) OriginalVODLeave(w http.ResponseWriter, r *http.Request)
 		http.NotFound(w, r)
 		return
 	}
+	offsetSeconds, ok := chaseOffsetFromRequest(r)
+	if !ok {
+		http.Error(w, "invalid original VOD offset", http.StatusBadRequest)
+		return
+	}
+	key := originalVODSessionKeyFor(recordingID, offsetSeconds)
 	ls.mu.Lock()
-	s, ok := ls.getSessionLocked(originalVODSessionKeyFor(recordingID))
+	s, ok := ls.getSessionLocked(key)
 	ls.mu.Unlock()
 	if !ok {
 		metrics.LiveLeaveHints.WithLabelValues("no_session").Inc()
@@ -1390,6 +1472,10 @@ func writeOriginalVODError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	if errors.Is(err, errSessionLimit) {
 		writeSessionError(w, err)
+		return
+	}
+	if errors.Is(err, errOriginalVODOffsetUnavailable) {
+		http.Error(w, err.Error(), http.StatusRequestedRangeNotSatisfiable)
 		return
 	}
 	slog.Error("streamer: starting original VOD session", "err", err)
@@ -1904,12 +1990,19 @@ func chaseSessionDir(segmentDir, site string, recordingID, offsetSeconds int64) 
 	)
 }
 
-func originalVODSessionDir(segmentDir, site string, recordingID int64) string {
-	return filepath.Join(segmentDir, site, "original-vod", strconv.FormatInt(recordingID, 10))
+func originalVODSessionDir(segmentDir, site string, recordingID, offsetSeconds int64) string {
+	return filepath.Join(
+		segmentDir,
+		site,
+		"original-vod",
+		strconv.FormatInt(recordingID, 10),
+		"offset",
+		strconv.FormatInt(offsetSeconds, 10),
+	)
 }
 
-func originalVODSessionKeyFor(recordingID int64) sessionKey {
-	return sessionKey{kind: originalVODSessionKind, id: recordingID}
+func originalVODSessionKeyFor(recordingID, offsetSeconds int64) sessionKey {
+	return sessionKey{kind: originalVODSessionKind, id: recordingID, offsetSeconds: offsetSeconds}
 }
 
 // liveSession はライブまたは追っかけ再生の 1 セッション（1 mirakc 接続 +
@@ -2387,7 +2480,7 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 	case chaseSessionKind:
 		dir = chaseSessionDir(ls.cfg.SegmentDir, ls.site, sessionIDOf(s), s.key.offsetSeconds)
 	case originalVODSessionKind:
-		dir = originalVODSessionDir(ls.cfg.SegmentDir, ls.site, sessionIDOf(s))
+		dir = originalVODSessionDir(ls.cfg.SegmentDir, ls.site, sessionIDOf(s), s.key.offsetSeconds)
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "segments"), 0o755); err != nil {
 		s.startErr = fmt.Errorf("creating live segment dir: %w", err)
@@ -2416,6 +2509,18 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 	}
 	defer func() { _ = body.Close() }()
 
+	var originalFile *os.File
+	if kind == originalVODSessionKind {
+		var ok bool
+		originalFile, ok = body.(*os.File)
+		if !ok {
+			s.startErr = errors.New("original VOD source is not a seekable file")
+			metrics.LiveSessionStartFailures.WithLabelValues("ffmpeg_error").Inc()
+			close(s.ready)
+			return
+		}
+	}
+
 	input := io.Reader(body)
 	captionInput := false
 	if ls.cfg.Captions {
@@ -2437,7 +2542,14 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 		// を読んで確認）。
 		var prefix []byte
 		var readErr error
-		input, prefix, readErr = readLiveCaptionPrefix(body)
+		if originalFile != nil {
+			prefix = make([]byte, liveCaptionProbeBytes)
+			n, err := originalFile.ReadAt(prefix, 0)
+			prefix = prefix[:n]
+			readErr = err
+		} else {
+			input, prefix, readErr = readLiveCaptionPrefix(body)
+		}
 		if ctx.Err() != nil {
 			s.startErr = ctx.Err()
 			close(s.ready)
@@ -2460,10 +2572,16 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 	case chaseSessionKind:
 		args = BuildChaseFFmpegArgs(ls.cfg, dir, captionInput)
 	case originalVODSessionKind:
-		args = BuildOriginalVODFFmpegArgs(ls.cfg, dir, captionInput)
+		args = BuildOriginalVODFFmpegArgs(ls.cfg, dir, captionInput, s.key.offsetSeconds)
 	}
 	cmd := exec.CommandContext(ctx, ls.cfg.FFmpeg, args...)
-	cmd.Stdin = input
+	if originalFile != nil {
+		// Go maps ExtraFiles[0] to child fd 3. Passing the already-open original
+		// keeps ffmpeg's seekable input alive if until_encoded unlinks its name.
+		cmd.ExtraFiles = []*os.File{originalFile}
+	} else {
+		cmd.Stdin = input
+	}
 	stderr := newCappedWriter(stderrCap)
 	cmd.Stderr = stderr
 	// ctx がキャンセルされてプロセスを kill した後、I/O をコピーするゴルーチン
@@ -2694,7 +2812,7 @@ func (w *cappedWriter) String() string {
 // （false なら字幕 map / rendition を完全に省き、字幕の無い番組でも映像・音声の
 // HLS を継続できる）。Captions=false のときは無視される。
 func BuildLiveFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []string {
-	return buildHLSFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, hlsLivePlaylist)
+	return buildHLSFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, hlsLivePlaylist, "pipe:0", 0)
 }
 
 // BuildChaseFFmpegArgs builds the same multi-profile HLS graph as live, but as
@@ -2702,7 +2820,7 @@ func BuildLiveFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []strin
 // Event output keeps the whole recording history and must never use
 // delete_segments.
 func BuildChaseFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []string {
-	return buildHLSFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, hlsEventPlaylist)
+	return buildHLSFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, hlsEventPlaylist, "pipe:0", 0)
 }
 
 // BuildOriginalVODFFmpegArgs converts the original MPEG-2 TS into an EVENT HLS
@@ -2711,8 +2829,13 @@ func BuildChaseFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []stri
 // mode (measured), so a recording longer than playlistStartupTimeout would never
 // become playable. Every segment is kept until shared idle GC, and the output
 // has the same profile, audio rendition, and optional subtitle graph as live.
-func BuildOriginalVODFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []string {
-	return buildHLSFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, hlsOriginalEventPlaylist)
+// offsetSeconds is applied as accurate input-side -ss; fd 3 is the original
+// opened by the Go process and passed via Cmd.ExtraFiles, so unlinking its
+// canonical path cannot break the session.
+func BuildOriginalVODFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool, offsetSeconds int64) []string {
+	return buildHLSFFmpegArgsForPlaylistType(
+		cfg, dir, withSubtitles, hlsOriginalEventPlaylist, originalVODFFmpegInputPath, offsetSeconds,
+	)
 }
 
 type hlsPlaylistType uint8
@@ -2724,10 +2847,17 @@ const (
 	hlsOriginalEventPlaylist
 )
 
-func buildHLSFFmpegArgsForPlaylistType(cfg LiveConfig, dir string, withSubtitles bool, playlistType hlsPlaylistType) []string {
+func buildHLSFFmpegArgsForPlaylistType(
+	cfg LiveConfig,
+	dir string,
+	withSubtitles bool,
+	playlistType hlsPlaylistType,
+	inputPath string,
+	offsetSeconds int64,
+) []string {
 	eventPlaylist := playlistType == hlsEventPlaylist
 	if cfg.Captions {
-		return buildLiveCaptionFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, playlistType)
+		return buildLiveCaptionFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, playlistType, inputPath, offsetSeconds)
 	}
 	args := []string{
 		"-hide_banner", "-nostats", "-loglevel", "error",
@@ -2741,7 +2871,11 @@ func buildHLSFFmpegArgsForPlaylistType(cfg LiveConfig, dir string, withSubtitles
 		"-analyzeduration", "3M",
 	)
 	args = append(args, cfg.InputExtraArgs...)
-	args = append(args, "-f", "mpegts", "-i", "pipe:0")
+	args = append(args, "-f", "mpegts")
+	if offsetSeconds > 0 {
+		args = append(args, "-ss", strconv.FormatInt(offsetSeconds, 10))
+	}
+	args = append(args, "-i", inputPath)
 	renditions := audioRenditionsFor(eventPlaylist)
 	for _, p := range cfg.Profiles {
 		// 映像・音声だけ。字幕 / データ放送は捨てる（上記 arib_caption）。
@@ -2888,7 +3022,14 @@ func hlsFlagsForPlaylistType(playlistType hlsPlaylistType) string {
 // フィルタが両方の video ストリームに適用されて警告が出ることを実測で確認。
 // `-c:v:N` や `-preset:v:N` のような型を伴わない他オプションでの `:v:N` 付与は
 // 問題なく機能する --- `-vf`/`-filter:v` だけの挙動）。
-func buildLiveCaptionFFmpegArgsForPlaylistType(cfg LiveConfig, dir string, withSubtitles bool, playlistType hlsPlaylistType) []string {
+func buildLiveCaptionFFmpegArgsForPlaylistType(
+	cfg LiveConfig,
+	dir string,
+	withSubtitles bool,
+	playlistType hlsPlaylistType,
+	inputPath string,
+	offsetSeconds int64,
+) []string {
 	eventPlaylist := playlistType == hlsEventPlaylist
 	args := []string{"-hide_banner", "-nostats", "-loglevel", "error"}
 	args = append(args, cfg.HWAccel.Args()...)
@@ -2901,7 +3042,11 @@ func buildLiveCaptionFFmpegArgsForPlaylistType(cfg LiveConfig, dir string, withS
 		// 入力側オプションなので -i より前に置く。
 		args = append(args, "-fix_sub_duration")
 	}
-	args = append(args, "-f", "mpegts", "-i", "pipe:0")
+	args = append(args, "-f", "mpegts")
+	if offsetSeconds > 0 {
+		args = append(args, "-ss", strconv.FormatInt(offsetSeconds, 10))
+	}
+	args = append(args, "-i", inputPath)
 
 	var variants, audioVariants []string
 	renditions := audioRenditionsFor(eventPlaylist)
