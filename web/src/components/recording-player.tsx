@@ -44,6 +44,8 @@ import {
 type RecordingPlayerProps = {
   recordingId: number
   resumePositionMs?: number
+  /** 90% 到達の視聴済み PUT が通った後に呼ぶ（親が録画クエリを取り直してボタンと未視聴の印を更新する）。 */
+  onWatched?: () => void
   /** 追っかけ再生と揃えるVOD側の既定プロファイル。資産に無ければ先頭を使う。 */
   preferredProfile?: string
   /**
@@ -95,6 +97,7 @@ type RecordingPlayerProps = {
 export function RecordingPlayer({
   recordingId,
   resumePositionMs,
+  onWatched,
   preferredProfile,
   encodedAssets,
   hasOriginal = false,
@@ -188,26 +191,48 @@ export function RecordingPlayer({
     playingCut ? selectedAsset?.keepRanges : undefined,
   )
   const watchedRequestPendingRef = useRef(false)
+  // 同じページ内で画質を切り替えると <video> ごと作り直される。`resumePositionMs` は
+  // ページを開いた時点の値のままなので、直前まで見ていた位置は原本 ms でここに持ち越す
+  // （保存の成否に依らない）。復元が済むまでは書かない（先頭の 0 で上書きしない）。
+  const carriedPositionRef = useRef<{ recordingId: number; ms: number } | null>(null)
+  const onWatchedRef = useRef(onWatched)
+  useEffect(() => {
+    onWatchedRef.current = onWatched
+  })
 
-  const saveCurrentPosition = useCallback((video: HTMLVideoElement, keepalive = false) => {
+  const currentWrite = useCallback((video: HTMLVideoElement) => {
     const keepRanges = frozenKeepRangesRef.current
-    if (playingCut && (!keepRanges || keepRanges.length === 0)) return
-    const write = playbackPositionWrite(
+    if (playingCut && (!keepRanges || keepRanges.length === 0)) return null
+    return playbackPositionWrite(
       video.currentTime,
       video.duration,
       true,
       playingCut ? keepRanges : undefined,
     )
+  }, [playingCut])
+
+  const rememberPosition = useCallback((video: HTMLVideoElement) => {
+    if (restorePending.current) return
+    const write = currentWrite(video)
+    if (write === null) return
+    carriedPositionRef.current = { recordingId, ms: write.kind === 'put' ? write.positionMs : 0 }
+  }, [currentWrite, recordingId])
+
+  const saveCurrentPosition = useCallback((video: HTMLVideoElement, keepalive = false) => {
+    const write = currentWrite(video)
+    if (write === null) return
+    rememberPosition(video)
     if (write.kind === 'watched') {
       if (watchedRequestPendingRef.current) return
       watchedRequestPendingRef.current = true
       void persistPlaybackPosition(recordingId, write, keepalive).then((saved) => {
-        if (!saved) watchedRequestPendingRef.current = false
+        if (saved) onWatchedRef.current?.()
+        else watchedRequestPendingRef.current = false
       })
       return
     }
     void persistPlaybackPosition(recordingId, write, keepalive)
-  }, [playingCut, recordingId])
+  }, [currentWrite, recordingId, rememberPosition])
 
   useLayoutEffect(() => {
     frozenKeepRangesRef.current = playingCut ? selectedAsset?.keepRanges : undefined
@@ -216,7 +241,10 @@ export function RecordingPlayer({
     previousSecondsRef.current = 0
     skipSuppressedRef.current = false
     playAroundStopRef.current = null
-  }, [keepRangesKey, playingCut, recordingId, selectedAsset?.keepRanges, selectedProfile])
+    // keepRangesKey が selectedAsset.keepRanges の内容を表す。参照を依存に入れると、
+    // 内容が同じ再取得でも復元待ち・直前位置がリセットされる。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [keepRangesKey, playingCut, recordingId, selectedProfile])
 
   useEffect(() => {
     clearLegacyPlaybackPositions()
@@ -507,7 +535,11 @@ export function RecordingPlayer({
           updatePlayedFraction(e.currentTarget)
           if (!restorePending.current) return
           restorePending.current = false
-          const pos = playbackResumeSeconds(resumePositionMs, frozenKeepRangesRef.current)
+          const carried = carriedPositionRef.current
+          const pos = playbackResumeSeconds(
+            carried?.recordingId === recordingId ? carried.ms : resumePositionMs,
+            frozenKeepRangesRef.current,
+          )
           if (pos !== null) {
             e.currentTarget.currentTime = Number.isFinite(e.currentTarget.duration)
               ? Math.min(pos, e.currentTarget.duration)
@@ -532,6 +564,7 @@ export function RecordingPlayer({
         onTimeUpdate={(e) => {
           const v = e.currentTarget
           updatePlayedFraction(v)
+          rememberPosition(v)
           const previous = previousSecondsRef.current
           previousSecondsRef.current = v.currentTime
           const stopAt = playAroundStopRef.current

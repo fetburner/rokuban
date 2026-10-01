@@ -394,11 +394,11 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
 Component: github.com/jackc/pgx/v5
-Version: v5.10.0
+Version: v5.11.0
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2013-2021 Jack Christensen
 License: MIT
-Source: https://proxy.golang.org/github.com/jackc/pgx/v5/@v/v5.10.0.zip
+Source: https://proxy.golang.org/github.com/jackc/pgx/v5/@v/v5.11.0.zip
 
 ----- LICENSE (license text) -----
 Copyright (c) 2013-2021 Jack Christensen
@@ -744,11 +744,11 @@ Source: https://proxy.golang.org/github.com/oapi-codegen/runtime/@v/v1.7.0.zip
 
 
 Component: github.com/pressly/goose/v3
-Version: v3.27.3
+Version: v3.28.0
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Original work Copyright (c) 2012 Liam Staskawicz / Modified work Copyright (c) 2016 Vojtech Vitek / Modified work Copyright (c) 2021 Michael Fridman, Vojtech Vitek
 License: MIT
-Source: https://proxy.golang.org/github.com/pressly/goose/v3/@v/v3.27.3.zip
+Source: https://proxy.golang.org/github.com/pressly/goose/v3/@v/v3.28.0.zip
 
 ----- LICENSE (license text) -----
 MIT License
@@ -1440,11 +1440,11 @@ SoundCloud Ltd. (http://soundcloud.com/).
 
 
 Component: github.com/prometheus/procfs
-Version: v0.21.1
+Version: v0.22.0
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright 2014-2015 The Prometheus Authors
 License: Apache-2.0
-Source: https://proxy.golang.org/github.com/prometheus/procfs/@v/v0.21.1.zip
+Source: https://proxy.golang.org/github.com/prometheus/procfs/@v/v0.22.0.zip
 
 ----- LICENSE (license text) -----
                                  Apache License
@@ -4157,11 +4157,11 @@ THE SOFTWARE.
 
 
 Component: golang.org/x/sync
-Version: v0.22.0
+Version: v0.23.0
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright 2009 The Go Authors.
 License: BSD-3-Clause
-Source: https://proxy.golang.org/golang.org/x/sync/@v/v0.22.0.zip
+Source: https://proxy.golang.org/golang.org/x/sync/@v/v0.23.0.zip
 
 ----- LICENSE (license text) -----
 Copyright 2009 The Go Authors.
@@ -4217,11 +4217,11 @@ shall terminate as of the date such litigation is filed.
 
 
 Component: golang.org/x/sys
-Version: v0.47.0
+Version: v0.48.0
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright 2009 The Go Authors.
 License: BSD-3-Clause
-Source: https://proxy.golang.org/golang.org/x/sys/@v/v0.47.0.zip
+Source: https://proxy.golang.org/golang.org/x/sys/@v/v0.48.0.zip
 
 ----- LICENSE (license text) -----
 Copyright 2009 The Go Authors.
@@ -4430,11 +4430,11 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
 Component: @base-ui/react
-Version: 1.7.0
+Version: 1.8.0
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2019 Material-UI SAS
 License: MIT
-Source: https://registry.npmjs.org/@base-ui/react/-/react-1.7.0.tgz
+Source: https://registry.npmjs.org/@base-ui/react/-/react-1.8.0.tgz
 Upstream: https://github.com/mui/base-ui
 
 ----- LICENSE (license text) -----
@@ -4462,11 +4462,11 @@ SOFTWARE.
 
 
 Component: @base-ui/utils
-Version: 0.3.2
+Version: 0.4.0
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2019 Material-UI SAS
 License: MIT
-Source: https://registry.npmjs.org/@base-ui/utils/-/utils-0.3.2.tgz
+Source: https://registry.npmjs.org/@base-ui/utils/-/utils-0.4.0.tgz
 Upstream: https://github.com/mui/base-ui
 
 ----- LICENSE (license text) -----
@@ -4826,11 +4826,11 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
 Component: @tanstack/history
-Version: 1.162.1
+Version: 1.162.4
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Tanner Linsley
 License: MIT
-Source: https://registry.npmjs.org/@tanstack/history/-/history-1.162.1.tgz
+Source: https://registry.npmjs.org/@tanstack/history/-/history-1.162.4.tgz
 Upstream: https://github.com/TanStack/router
 
 ----- LICENSE (license text) -----
@@ -4858,11 +4858,11 @@ SOFTWARE.
 
 
 Component: @tanstack/query-core
-Version: 5.102.8
+Version: 5.104.0
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Tanner Linsley
 License: MIT
-Source: https://registry.npmjs.org/@tanstack/query-core/-/query-core-5.102.8.tgz
+Source: https://registry.npmjs.org/@tanstack/query-core/-/query-core-5.104.0.tgz
 Upstream: https://github.com/TanStack/query
 
 ----- LICENSE (license text) -----
@@ -4890,11 +4890,11 @@ SOFTWARE.
 
 
 Component: @tanstack/react-query
-Version: 5.102.8
+Version: 5.104.0
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Tanner Linsley
 License: MIT
-Source: https://registry.npmjs.org/@tanstack/react-query/-/react-query-5.102.8.tgz
+Source: https://registry.npmjs.org/@tanstack/react-query/-/react-query-5.104.0.tgz
 Upstream: https://github.com/TanStack/query
 
 ----- LICENSE (license text) -----
@@ -4922,11 +4922,11 @@ SOFTWARE.
 
 
 Component: @tanstack/react-router
-Version: 1.170.32
+Version: 1.170.40
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Tanner Linsley
 License: MIT
-Source: https://registry.npmjs.org/@tanstack/react-router/-/react-router-1.170.32.tgz
+Source: https://registry.npmjs.org/@tanstack/react-router/-/react-router-1.170.40.tgz
 Upstream: https://github.com/TanStack/router
 
 ----- LICENSE (license text) -----
@@ -4954,11 +4954,11 @@ SOFTWARE.
 
 
 Component: @tanstack/react-store
-Version: 0.9.3
+Version: 0.11.2
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021 Tanner Linsley
 License: MIT
-Source: https://registry.npmjs.org/@tanstack/react-store/-/react-store-0.9.3.tgz
+Source: https://registry.npmjs.org/@tanstack/react-store/-/react-store-0.11.2.tgz
 Upstream: https://github.com/TanStack/store
 
 ----- LICENSE (license text) -----
@@ -4986,11 +4986,11 @@ SOFTWARE.
 
 
 Component: @tanstack/react-virtual
-Version: 3.14.10
+Version: 3.14.13
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Tanner Linsley
 License: MIT
-Source: https://registry.npmjs.org/@tanstack/react-virtual/-/react-virtual-3.14.10.tgz
+Source: https://registry.npmjs.org/@tanstack/react-virtual/-/react-virtual-3.14.13.tgz
 Upstream: https://github.com/TanStack/virtual
 
 ----- LICENSE (license text) -----
@@ -5018,11 +5018,11 @@ SOFTWARE.
 
 
 Component: @tanstack/router-core
-Version: 1.171.27
+Version: 1.171.33
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Tanner Linsley
 License: MIT
-Source: https://registry.npmjs.org/@tanstack/router-core/-/router-core-1.171.27.tgz
+Source: https://registry.npmjs.org/@tanstack/router-core/-/router-core-1.171.33.tgz
 Upstream: https://github.com/TanStack/router
 
 ----- LICENSE (license text) -----
@@ -5050,11 +5050,11 @@ SOFTWARE.
 
 
 Component: @tanstack/store
-Version: 0.9.3
+Version: 0.11.2
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021 Tanner Linsley
 License: MIT
-Source: https://registry.npmjs.org/@tanstack/store/-/store-0.9.3.tgz
+Source: https://registry.npmjs.org/@tanstack/store/-/store-0.11.2.tgz
 Upstream: https://github.com/TanStack/store
 
 ----- LICENSE (license text) -----
@@ -5082,11 +5082,11 @@ SOFTWARE.
 
 
 Component: @tanstack/virtual-core
-Version: 3.17.8
+Version: 3.17.11
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Tanner Linsley
 License: MIT
-Source: https://registry.npmjs.org/@tanstack/virtual-core/-/virtual-core-3.17.8.tgz
+Source: https://registry.npmjs.org/@tanstack/virtual-core/-/virtual-core-3.17.11.tgz
 Upstream: https://github.com/TanStack/virtual
 
 ----- LICENSE (license text) -----
@@ -5374,11 +5374,11 @@ SOFTWARE.
 
 
 Component: hls.js
-Version: 1.7.1
+Version: 1.7.3
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2017 Dailymotion (http://www.dailymotion.com) / Copyright (c) 2013-2015 Brightcove
 License: Apache-2.0
-Source: https://registry.npmjs.org/hls.js/-/hls.js-1.7.1.tgz
+Source: https://registry.npmjs.org/hls.js/-/hls.js-1.7.3.tgz
 Upstream: https://github.com/video-dev/hls.js
 
 ----- LICENSE (license text) -----
@@ -5450,11 +5450,11 @@ For more information, please refer to <http://unlicense.org/>
 
 
 Component: lucide-react
-Version: 1.38.0
+Version: 1.48.0
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2026 Lucide Icons and Contributors / Copyright (c) 2013-present Cole Bemis
 License: ISC
-Source: https://registry.npmjs.org/lucide-react/-/lucide-react-1.38.0.tgz
+Source: https://registry.npmjs.org/lucide-react/-/lucide-react-1.48.0.tgz
 Upstream: https://github.com/lucide-icons/lucide
 
 ----- LICENSE (license text) -----
@@ -5504,11 +5504,11 @@ SOFTWARE.
 
 
 Component: react
-Version: 19.2.8
+Version: 19.3.0
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) Meta Platforms, Inc. and affiliates.
 License: MIT
-Source: https://registry.npmjs.org/react/-/react-19.2.8.tgz
+Source: https://registry.npmjs.org/react/-/react-19.3.0.tgz
 Upstream: https://github.com/react/react
 
 ----- LICENSE (license text) -----
@@ -5536,11 +5536,11 @@ SOFTWARE.
 
 
 Component: react-dom
-Version: 19.2.8
+Version: 19.3.0
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) Meta Platforms, Inc. and affiliates.
 License: MIT
-Source: https://registry.npmjs.org/react-dom/-/react-dom-19.2.8.tgz
+Source: https://registry.npmjs.org/react-dom/-/react-dom-19.3.0.tgz
 Upstream: https://github.com/react/react
 
 ----- LICENSE (license text) -----
@@ -5600,12 +5600,12 @@ SOFTWARE.
 
 
 Component: scheduler
-Version: 0.27.0
+Version: 0.28.0
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) Meta Platforms, Inc. and affiliates.
 License: MIT
-Source: https://registry.npmjs.org/scheduler/-/scheduler-0.27.0.tgz
-Upstream: https://github.com/facebook/react
+Source: https://registry.npmjs.org/scheduler/-/scheduler-0.28.0.tgz
+Upstream: https://github.com/react/react
 
 ----- LICENSE (license text) -----
 MIT License
@@ -5632,11 +5632,11 @@ SOFTWARE.
 
 
 Component: seroval
-Version: 1.6.4
+Version: 1.6.8
 Included in: Production Web dependency bundled in web/dist
 Copyright: MIT License Copyright (c) 2025 Alexis Munsayac <alexis.munsayac@gmail.com>
 License: MIT
-Source: https://registry.npmjs.org/seroval/-/seroval-1.6.4.tgz
+Source: https://registry.npmjs.org/seroval/-/seroval-1.6.8.tgz
 Upstream: https://github.com/lxsmnsyc/seroval
 
 ----- LICENSE (license text) -----
@@ -5650,11 +5650,11 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 
 Component: seroval-plugins
-Version: 1.6.4
+Version: 1.6.8
 Included in: Production Web dependency bundled in web/dist
 Copyright: MIT License Copyright (c) 2025 Alexis Munsayac <alexis.munsayac@gmail.com>
 License: MIT
-Source: https://registry.npmjs.org/seroval-plugins/-/seroval-plugins-1.6.4.tgz
+Source: https://registry.npmjs.org/seroval-plugins/-/seroval-plugins-1.6.8.tgz
 Upstream: https://github.com/lxsmnsyc/seroval
 
 ----- LICENSE (license text) -----
@@ -5668,11 +5668,11 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 
 Component: tailwind-merge
-Version: 3.6.0
+Version: 3.7.0
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021 Dany Castillo
 License: MIT
-Source: https://registry.npmjs.org/tailwind-merge/-/tailwind-merge-3.6.0.tgz
+Source: https://registry.npmjs.org/tailwind-merge/-/tailwind-merge-3.7.0.tgz
 Upstream: https://github.com/dcastil/tailwind-merge
 
 ----- LICENSE.md (license text) -----
@@ -5732,12 +5732,12 @@ SOFTWARE.
 
 
 Component: use-sync-external-store
-Version: 1.6.0
+Version: 1.7.0
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) Meta Platforms, Inc. and affiliates.
 License: MIT
-Source: https://registry.npmjs.org/use-sync-external-store/-/use-sync-external-store-1.6.0.tgz
-Upstream: https://github.com/facebook/react
+Source: https://registry.npmjs.org/use-sync-external-store/-/use-sync-external-store-1.7.0.tgz
+Upstream: https://github.com/react/react
 
 ----- LICENSE (license text) -----
 MIT License
@@ -5764,11 +5764,11 @@ SOFTWARE.
 
 
 Component: zod
-Version: 4.5.4
+Version: 4.6.5
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2025 Colin McDonnell
 License: MIT
-Source: https://registry.npmjs.org/zod/-/zod-4.5.4.tgz
+Source: https://registry.npmjs.org/zod/-/zod-4.6.5.tgz
 Upstream: https://github.com/colinhacks/zod
 
 ----- LICENSE (license text) -----

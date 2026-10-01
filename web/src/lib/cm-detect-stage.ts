@@ -22,6 +22,8 @@ export function cmDetectStageMessage(stage: string | null | undefined): string {
     case 'save':
     case 'stopped':
       return 'CM 検出の処理が失敗しました。ロゴの枠では直せない失敗です。'
+    case 'adopt':
+      return 'この局はロゴの採用待ちです。局の画面で候補を確かめて採用してください。'
     default:
       return '失敗の種類が記録されていない古い試行です。'
   }
