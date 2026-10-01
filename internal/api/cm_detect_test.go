@@ -402,6 +402,44 @@ func TestCMLogoCandidateAPIAdoptsAndRedetectsOnlyWhenRequested(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// 原本の無い録画・原本が missing の録画の検出は、再検出で消さない（消すと永遠に
+	// 「検出中」のまま回復できない）。失敗していた録画は採用で desired に入る。
+	noOriginal := seedRecording(t, pool, "原本なし", time.Now().Add(2*time.Second).Truncate(time.Second), "finished", 988)
+	missingOriginal := seedRecording(t, pool, "原本欠落", time.Now().Add(3*time.Second).Truncate(time.Second), "finished", 989)
+	failedRecording := seedRecording(t, pool, "失敗録画", time.Now().Add(4*time.Second).Truncate(time.Second), "finished", 990)
+	for _, id := range []int64{noOriginal, missingOriginal} {
+		if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{RecordingID: id, CmRanges: "{}"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []int64{missingOriginal, failedRecording} {
+		if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+			RecordingID: id, Kind: db.AssetKindOriginal, RelPath: fmt.Sprintf("test/%d.ts", id), SizeBytes: 1000,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO missing_media_assets (media_asset_id)
+		SELECT id FROM media_assets WHERE recording_id = $1 AND kind = 'original'`, missingOriginal); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int64{id1, id2, failedRecording} {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+			VALUES ($1, 'always', '{}', true)`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := q.MarkCMDetectionRunning(ctx, failedRecording); err != nil {
+		t.Fatal(err)
+	}
+	logoStage := "logo"
+	if err := q.MarkCMDetectionFailure(ctx, sqlcgen.MarkCMDetectionFailureParams{
+		RecordingID: failedRecording, State: "failed", Stage: &logoStage,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := q.UpsertCMLogoArea(ctx, sqlcgen.UpsertCMLogoAreaParams{
 		NetworkID: 32678, ServiceID: 5168, X: 1180, Y: 24, W: 240, H: 96, CodedWidth: 1440, CodedHeight: 1080,
 	}); err != nil {
@@ -480,6 +518,22 @@ func TestCMLogoCandidateAPIAdoptsAndRedetectsOnlyWhenRequested(t *testing.T) {
 	}
 	if detections != 0 {
 		t.Fatalf("detections after default redetect = %d, want 0", detections)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM recording_cm_detections WHERE recording_id IN ($1, $2)`, noOriginal, missingOriginal).Scan(&detections); err != nil {
+		t.Fatal(err)
+	}
+	if detections != 2 {
+		t.Fatalf("detections of recordings without an active original = %d, want 2 kept", detections)
+	}
+	for _, id := range []int64{id1, id2, failedRecording} {
+		if desired, err := q.IsCMDetectionDesired(ctx, id); err != nil || !desired {
+			t.Errorf("IsCMDetectionDesired(%d) after adoption = %v, %v; want true", id, desired, err)
+		}
+	}
+	for _, id := range []int64{noOriginal, missingOriginal} {
+		if desired, err := q.IsCMDetectionDesired(ctx, id); err != nil || desired {
+			t.Errorf("IsCMDetectionDesired(%d) = %v, %v; want false", id, desired, err)
+		}
 	}
 }
 
@@ -617,5 +671,172 @@ func TestCMDetectionRejectedWhenDeploymentDisablesIt(t *testing.T) {
 	}
 	if jobsCount != 0 {
 		t.Fatalf("cm_detect jobs after rejected retry = %d, want 0", jobsCount)
+	}
+}
+
+func cmLogoRequest(t *testing.T, method, url, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(method, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+// 採用できない候補（無い・running・failed・解析中に枠が変わった）は 409 で、ロゴを差し替えない。
+func TestCMLogoCandidateAdoptRejectsUnadoptableCandidates(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	id := seedRecording(t, pool, "採用拒否", time.Now().Truncate(time.Second), "finished", 991)
+	q := sqlcgen.New(pool)
+	if err := q.UpsertCMLogoArea(ctx, sqlcgen.UpsertCMLogoAreaParams{
+		NetworkID: 32678, ServiceID: 5168, X: 1180, Y: 24, W: 240, H: 96, CodedWidth: 1440, CodedHeight: 1080,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	area, err := q.GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{NetworkID: 32678, ServiceID: 5168})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	defer srv.Close()
+	insert := func(state string, observed time.Time) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `DELETE FROM cm_logo_candidates`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO cm_logo_candidates (
+				network_id, service_id, state, x, y, w, h, coded_width, coded_height,
+				recording_id, observed_area_updated_at, lgd
+			) VALUES (32678, 5168, $1, 1180, 24, 240, 96, 1440, 1080, $2, $3, 'lgd')`, state, id, observed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cases := []struct {
+		name  string
+		setup func()
+	}{
+		{"no candidate", func() {
+			if _, err := pool.Exec(ctx, `DELETE FROM cm_logo_candidates`); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"running", func() { insert("running", area.UpdatedAt) }},
+		{"failed", func() { insert("failed", area.UpdatedAt) }},
+		{"area changed after analysis", func() { insert("ready", area.UpdatedAt.Add(-time.Second)) }},
+	}
+	for _, tc := range cases {
+		tc.setup()
+		resp := cmLogoRequest(t, http.MethodPost, srv.URL+"/api/cm-logos/32678/5168/candidate/adopt", "")
+		if resp.StatusCode != http.StatusConflict {
+			t.Errorf("%s: adopt status = %d, want 409", tc.name, resp.StatusCode)
+		}
+		if _, err := q.GetCMLogo(ctx, sqlcgen.GetCMLogoParams{NetworkID: 32678, ServiceID: 5168}); err == nil {
+			t.Errorf("%s: a logo was adopted from an unadoptable candidate", tc.name)
+		}
+	}
+}
+
+// 候補の破棄は候補だけを消し、枠と採用済みのロゴは残す。
+func TestCMLogoCandidateDiscardKeepsAreaAndLogo(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	id := seedRecording(t, pool, "候補破棄", time.Now().Truncate(time.Second), "finished", 992)
+	q := sqlcgen.New(pool)
+	if err := q.UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
+		NetworkID: 32678, ServiceID: 5168, Lgd: []byte("old"), LearnedFrom: &id, CodedWidth: 1440, CodedHeight: 1080,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.UpsertCMLogoArea(ctx, sqlcgen.UpsertCMLogoAreaParams{
+		NetworkID: 32678, ServiceID: 5168, X: 1180, Y: 24, W: 240, H: 96, CodedWidth: 1440, CodedHeight: 1080,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	area, err := q.GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{NetworkID: 32678, ServiceID: 5168})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO cm_logo_candidates (
+			network_id, service_id, state, x, y, w, h, coded_width, coded_height,
+			recording_id, observed_area_updated_at, lgd
+		) VALUES (32678, 5168, 'ready', 1180, 24, 240, 96, 1440, 1080, $1, $2, 'new')`, id, area.UpdatedAt); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	defer srv.Close()
+
+	resp := cmLogoRequest(t, http.MethodDelete, srv.URL+"/api/cm-logos/32678/5168/candidate", "")
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE candidate status = %d, want 204", resp.StatusCode)
+	}
+	if _, err := q.GetCMLogoCandidate(ctx, sqlcgen.GetCMLogoCandidateParams{NetworkID: 32678, ServiceID: 5168}); err == nil {
+		t.Error("candidate still exists after discard")
+	}
+	if logo, err := q.GetCMLogo(ctx, sqlcgen.GetCMLogoParams{NetworkID: 32678, ServiceID: 5168}); err != nil || string(logo.Lgd) != "old" {
+		t.Errorf("adopted logo = %#v, %v; want the old logo kept", logo, err)
+	}
+	if _, err := q.GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{NetworkID: 32678, ServiceID: 5168}); err != nil {
+		t.Errorf("taught area was removed by discarding the candidate: %v", err)
+	}
+}
+
+// 枠の削除（自動に戻す）は、その局の adopt 待ち attempt だけを消す。別の局の adopt 待ちは残す。
+func TestCMLogoAreaDeleteClearsOnlyThisStationsAdoptAttempts(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+	here := seedRecording(t, pool, "この局", time.Now().Truncate(time.Second), "finished", 993)
+	other := seedRecording(t, pool, "別の局", time.Now().Truncate(time.Second), "finished", 994)
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET network_id = 32679 WHERE id = $1`, other); err != nil {
+		t.Fatal(err)
+	}
+	adopt, logo := "adopt", "logo"
+	hereLogo := seedRecording(t, pool, "この局の別失敗", time.Now().Truncate(time.Second), "finished", 995)
+	for id, stage := range map[int64]*string{here: &adopt, other: &adopt, hereLogo: &logo} {
+		if err := q.MarkCMDetectionRunning(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+		if err := q.MarkCMDetectionFailure(ctx, sqlcgen.MarkCMDetectionFailureParams{RecordingID: id, State: "failed", Stage: stage}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := q.UpsertCMLogoArea(ctx, sqlcgen.UpsertCMLogoAreaParams{
+		NetworkID: 32678, ServiceID: 5168, X: 1180, Y: 24, W: 240, H: 96, CodedWidth: 1440, CodedHeight: 1080,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	defer srv.Close()
+
+	resp := cmLogoRequest(t, http.MethodDelete, srv.URL+"/api/cm-logos/32678/5168/area", "")
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE area status = %d, want 204", resp.StatusCode)
+	}
+	has := func(id int64) bool {
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n == 1
+	}
+	if has(here) {
+		t.Error("the adopt attempt of this station survived the area deletion")
+	}
+	if !has(other) {
+		t.Error("the adopt attempt of another station was deleted")
+	}
+	if !has(hereLogo) {
+		t.Error("a non-adopt failure of this station was deleted")
 	}
 }

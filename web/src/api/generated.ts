@@ -153,6 +153,7 @@ export const CMDetectionStage = {
   parse: 'parse',
   save: 'save',
   stopped: 'stopped',
+  adopt: 'adopt',
 } as const;
 
 export interface CMRange {
@@ -280,6 +281,7 @@ export const CMLogoCandidateStage = {
   area: 'area',
   logo: 'logo',
   match: 'match',
+  save: 'save',
   stopped: 'stopped',
 } as const;
 

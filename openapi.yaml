@@ -2146,7 +2146,7 @@ components:
         stage:
           type: string
           nullable: true
-          enum: [setup, probe, area, logo, chapter, join, parse, save, stopped]
+          enum: [setup, probe, area, logo, chapter, join, parse, save, stopped, adopt]
           description: The worker stage that produced the latest failed attempt, if known.
         error:
           type: string
@@ -2306,7 +2306,7 @@ components:
           enum: [running, failed, ready]
         stage:
           type: string
-          enum: [setup, probe, area, logo, match, stopped]
+          enum: [setup, probe, area, logo, match, save, stopped]
           nullable: true
         error:
           type: string

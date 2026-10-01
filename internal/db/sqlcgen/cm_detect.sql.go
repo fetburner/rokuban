@@ -130,6 +130,7 @@ const deleteCMLogoCandidateForAreaVersion = `-- name: DeleteCMLogoCandidateForAr
 DELETE FROM cm_logo_candidates
 WHERE network_id = $1
   AND service_id = $2
+  AND state = 'running'
   AND observed_area_updated_at = $3::timestamptz
 `
 

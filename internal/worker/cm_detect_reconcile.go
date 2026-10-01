@@ -48,6 +48,9 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.CM
 	if err := recoverStaleCMLogoCandidateJobs(ctx, w.Pool); err != nil {
 		slog.Warn("cm_detect_reconcile: stale-candidate recovery had errors", "err", err)
 	}
+	if err := failOrphanCMLogoCandidates(ctx, w.Pool); err != nil {
+		slog.Warn("cm_detect_reconcile: orphan-candidate recovery had errors", "err", err)
+	}
 	limit := w.RowLimit
 	if limit <= 0 {
 		limit = cmDetectRowLimit
@@ -266,6 +269,31 @@ WHERE network_id = $1
   AND service_id = $2
   AND observed_area_updated_at = $3
   AND state = 'running'`
+
+// 解析ジョブが生きていない running 行（River が discarded にした・fail() 自体が
+// 書けなかった、など）は誰も進めない。River の状態だけを見て回収すると取りこぼすので、
+// 候補行の側から「対応する未完了ジョブが無い running」を failed にする。
+// running 行を書くのは job が running の間だけなので、この判定は時刻に依らない。
+const failOrphanCMLogoCandidatesQuery = `
+UPDATE cm_logo_candidates c
+SET state = 'failed', stage = 'stopped',
+    error = 'CM logo candidate job ended without recording a result'
+WHERE c.state = 'running'
+  AND NOT EXISTS (
+      SELECT 1 FROM river_job j
+      WHERE j.kind = 'cm_logo_candidate'
+        AND j.state IN ('available', 'pending', 'retryable', 'running', 'scheduled')
+        AND j.args->>'network_id' = c.network_id::text
+        AND j.args->>'service_id' = c.service_id::text
+        AND (j.args->>'area_updated_at')::timestamptz = c.observed_area_updated_at
+  )`
+
+func failOrphanCMLogoCandidates(ctx context.Context, pool *pgxpool.Pool) error {
+	if _, err := pool.Exec(ctx, failOrphanCMLogoCandidatesQuery); err != nil {
+		return fmt.Errorf("failing orphan CM logo candidates: %w", err)
+	}
+	return nil
+}
 
 type staleCMLogoCandidateJob struct {
 	id            int64

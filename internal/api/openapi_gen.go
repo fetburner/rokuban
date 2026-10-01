@@ -19,6 +19,7 @@ import (
 
 // Defines values for CMDetectionStage.
 const (
+	CMDetectionStageAdopt   CMDetectionStage = "adopt"
 	CMDetectionStageArea    CMDetectionStage = "area"
 	CMDetectionStageChapter CMDetectionStage = "chapter"
 	CMDetectionStageJoin    CMDetectionStage = "join"
@@ -33,6 +34,8 @@ const (
 // Valid indicates whether the value is a known member of the CMDetectionStage enum.
 func (e CMDetectionStage) Valid() bool {
 	switch e {
+	case CMDetectionStageAdopt:
+		return true
 	case CMDetectionStageArea:
 		return true
 	case CMDetectionStageChapter:
@@ -86,6 +89,7 @@ const (
 	CMLogoCandidateStageLogo    CMLogoCandidateStage = "logo"
 	CMLogoCandidateStageMatch   CMLogoCandidateStage = "match"
 	CMLogoCandidateStageProbe   CMLogoCandidateStage = "probe"
+	CMLogoCandidateStageSave    CMLogoCandidateStage = "save"
 	CMLogoCandidateStageSetup   CMLogoCandidateStage = "setup"
 	CMLogoCandidateStageStopped CMLogoCandidateStage = "stopped"
 )
@@ -100,6 +104,8 @@ func (e CMLogoCandidateStage) Valid() bool {
 	case CMLogoCandidateStageMatch:
 		return true
 	case CMLogoCandidateStageProbe:
+		return true
+	case CMLogoCandidateStageSave:
 		return true
 	case CMLogoCandidateStageSetup:
 		return true

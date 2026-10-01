@@ -286,6 +286,7 @@ WHERE network_id = sqlc.arg('network_id') AND service_id = sqlc.arg('service_id'
 DELETE FROM cm_logo_candidates
 WHERE network_id = sqlc.arg('network_id')
   AND service_id = sqlc.arg('service_id')
+  AND state = 'running'
   AND observed_area_updated_at = sqlc.arg('area_updated_at')::timestamptz;
 
 -- name: GetCMLogoCandidate :one
