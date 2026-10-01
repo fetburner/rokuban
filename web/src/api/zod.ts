@@ -1244,7 +1244,7 @@ export const ListRecordingsResponseItem = zod.object({
   "startMs": zod.int(),
   "endMs": zod.int()
 })).optional().describe('CM ranges in milliseconds from the first original frame.'),
-  "stage": zod.enum(['setup', 'probe', 'area', 'logo', 'chapter', 'join', 'parse', 'save', 'stopped']).nullish().describe('The worker stage that produced the latest failed attempt, if known.'),
+  "stage": zod.enum(['setup', 'probe', 'area', 'logo', 'chapter', 'join', 'parse', 'save', 'stopped', 'resolution', 'match']).nullish().describe('The worker stage that produced the latest failed attempt, if known.'),
   "error": zod.string().optional().describe('The unmodified technical detail of the latest attempt, if present.')
 }),
   "startedAt": zod.iso.datetime({"offset":true}).optional().describe('録画の実開始時刻。常に UTC（\"Z\" 終端の RFC3339）で返す。'),
@@ -1368,7 +1368,7 @@ export const GetRecordingResponse = zod.object({
   "startMs": zod.int(),
   "endMs": zod.int()
 })).optional().describe('CM ranges in milliseconds from the first original frame.'),
-  "stage": zod.enum(['setup', 'probe', 'area', 'logo', 'chapter', 'join', 'parse', 'save', 'stopped']).nullish().describe('The worker stage that produced the latest failed attempt, if known.'),
+  "stage": zod.enum(['setup', 'probe', 'area', 'logo', 'chapter', 'join', 'parse', 'save', 'stopped', 'resolution', 'match']).nullish().describe('The worker stage that produced the latest failed attempt, if known.'),
   "error": zod.string().optional().describe('The unmodified technical detail of the latest attempt, if present.')
 }),
   "startedAt": zod.iso.datetime({"offset":true}).optional().describe('録画の実開始時刻。常に UTC（\"Z\" 終端の RFC3339）で返す。'),

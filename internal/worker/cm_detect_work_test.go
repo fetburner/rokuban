@@ -126,12 +126,19 @@ func writeExecutable(t *testing.T, path, body string) {
 // join_logo_scp は cutAVS をそのまま obs_cut.avs に書く。ffprobe は videoSeconds を返す。
 func newFakeCMTools(t *testing.T, lgd []byte, chapterExit int, cutAVS, videoSeconds string) cmToolset {
 	t.Helper()
-	return newFakeCMToolsWithSize(t, lgd, chapterExit, cutAVS, videoSeconds, "1440x1080")
+	return newFakeCMToolsWithSizeAndReport(t, lgd, chapterExit, cutAVS, videoSeconds, "1440x1080", "managed logo: v0001 match=90.00% threshold=0%")
 }
 
 // newFakeCMToolsWithSize は記録上の大きさ（ffprobe の stream=width,height の答え）を
 // 指定できる版。CMDetectWorker は logoframe の前に大きさを 1 回引く。
 func newFakeCMToolsWithSize(t *testing.T, lgd []byte, chapterExit int, cutAVS, videoSeconds, size string) cmToolset {
+	t.Helper()
+	return newFakeCMToolsWithSizeAndReport(t, lgd, chapterExit, cutAVS, videoSeconds, size, "managed logo: v0001 match=90.00% threshold=0%")
+}
+
+// newFakeCMToolsWithSizeAndReport は logoframe の成功出力を差し替えられる版。
+// report が空なら一致率の行が無い出力になる。
+func newFakeCMToolsWithSizeAndReport(t *testing.T, lgd []byte, chapterExit int, cutAVS, videoSeconds, size, report string) cmToolset {
 	t.Helper()
 	dir := t.TempDir()
 	lgdPath := filepath.Join(dir, "fixture.lgd")
@@ -159,7 +166,8 @@ if [ ! -f "$d/$ch.latest" ]; then
   cp %q "$d/$ch-v0001.lgd"
   printf '1\n%%s\n' "$ch-v0001.lgd" > "$d/$ch.latest"
 fi
-`, argsPath, argsPath, holdPath, startedPath, holdPath, lgdPath))
+echo %q
+`, argsPath, argsPath, holdPath, startedPath, holdPath, lgdPath, report))
 	writeExecutable(t, filepath.Join(dir, "chapter_exe"), fmt.Sprintf(`
 while [ $# -gt 0 ]; do
   case "$1" in -o) o=$2;; esac
@@ -258,7 +266,8 @@ func TestCMDetectWorkKeepsCommercialsBeyondProgramDurationAndStoresLogoPreview(t
 	}
 	var preview []byte
 	var lgd []byte
-	if err := pool.QueryRow(ctx, `SELECT lgd, preview_png FROM cm_logos WHERE network_id = 32736 AND service_id = 1024`).Scan(&lgd, &preview); err != nil {
+	var codedWidth, codedHeight int
+	if err := pool.QueryRow(ctx, `SELECT lgd, preview_png, coded_width, coded_height FROM cm_logos WHERE network_id = 32736 AND service_id = 1024`).Scan(&lgd, &preview, &codedWidth, &codedHeight); err != nil {
 		t.Fatalf("logo row: %v", err)
 	}
 	if !bytes.Equal(lgd, buildTestLGD(4, 3, 1000, 4080)) {
@@ -266,6 +275,9 @@ func TestCMDetectWorkKeepsCommercialsBeyondProgramDurationAndStoresLogoPreview(t
 	}
 	if _, err := png.Decode(bytes.NewReader(preview)); err != nil {
 		t.Errorf("preview_png is not a PNG: %v", err)
+	}
+	if codedWidth != 1440 || codedHeight != 1080 {
+		t.Errorf("coded size = %dx%d, want 1440x1080", codedWidth, codedHeight)
 	}
 }
 
@@ -368,6 +380,118 @@ func TestCMDetectWorkRejectsTaughtAreaWithOtherResolution(t *testing.T) {
 		if n != 0 {
 			t.Errorf("%s = %d rows, want 0", query, n)
 		}
+	}
+}
+
+// 学習済みロゴと原本の解像度が違えば、logoframe を呼ばずに resolution として
+// 失敗する。枠と違ってロゴ自身にも coded size が必要なことを検証する。
+func TestCMDetectWorkRejectsLearnedLogoWithOtherResolution(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	id := seedCMRecording(t, pool, mediaDir, 922)
+	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000", "1920x1080")
+	if err := sqlcgen.New(pool).UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
+		NetworkID: 32736, ServiceID: 1024, Lgd: buildTestLGD(4, 3, 1000, 4080),
+		LearnedFrom: &id, CodedWidth: 1440, CodedHeight: 1080,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := newCMDetectTestWorker(pool, mediaDir, tools).Work(ctx, cmJob(id, 3))
+	if err == nil {
+		t.Fatal("Work succeeded although the learned logo is for another resolution")
+	}
+	for _, want := range []string{"1440x1080", "1920x1080"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to name %s", err, want)
+		}
+	}
+	if _, statErr := os.Stat(tools.logoframeArgs); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("logoframe ran (stat %v); the mismatched logo must not be used", statErr)
+	}
+	var state, stage string
+	if err := pool.QueryRow(ctx, `SELECT state, stage FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &stage); err != nil {
+		t.Fatal(err)
+	}
+	if state != "failed" || stage != "resolution" {
+		t.Errorf("attempt = state %q stage %q, want failed/resolution", state, stage)
+	}
+}
+
+// 既存ロゴにも一致率判定を掛け、低い場合は match で止める。
+func TestCMDetectWorkRejectsLowMatchForExistingLogo(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	id := seedCMRecording(t, pool, mediaDir, 923)
+	tools := newFakeCMToolsWithSizeAndReport(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000", "1440x1080", "managed logo: v0001 match=9.99% threshold=0%")
+	if err := sqlcgen.New(pool).UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
+		NetworkID: 32736, ServiceID: 1024, Lgd: buildTestLGD(4, 3, 1000, 4080),
+		LearnedFrom: &id, CodedWidth: 1440, CodedHeight: 1080,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := newCMDetectTestWorker(pool, mediaDir, tools).Work(ctx, cmJob(id, 3))
+	if err == nil || !strings.Contains(err.Error(), "below") {
+		t.Fatalf("Work error = %v, want a low-match failure", err)
+	}
+	var stage string
+	if err := pool.QueryRow(ctx, `SELECT stage FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&stage); err != nil {
+		t.Fatal(err)
+	}
+	if stage != "match" {
+		t.Errorf("attempt stage = %q, want match", stage)
+	}
+	if n := countLogos(t, pool); n != 1 {
+		t.Errorf("cm_logos rows = %d, want the existing logo preserved", n)
+	}
+}
+
+// 新規学習ロゴの一致率が低い場合、局のロゴとして保存しない。
+func TestCMDetectWorkDoesNotPersistLowMatchForNewLogo(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	id := seedCMRecording(t, pool, mediaDir, 924)
+	tools := newFakeCMToolsWithSizeAndReport(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000", "1440x1080", "managed logo: v0001 match=9.99% threshold=0%")
+
+	err := newCMDetectTestWorker(pool, mediaDir, tools).Work(context.Background(), cmJob(id, 3))
+	if err == nil || !strings.Contains(err.Error(), "below") {
+		t.Fatalf("Work error = %v, want a low-match failure", err)
+	}
+	var stage string
+	if err := pool.QueryRow(context.Background(), `SELECT stage FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&stage); err != nil {
+		t.Fatal(err)
+	}
+	if stage != "match" {
+		t.Errorf("attempt stage = %q, want match", stage)
+	}
+	if n := countLogos(t, pool); n != 0 {
+		t.Errorf("cm_logos rows = %d, want 0 for a low-match learned logo", n)
+	}
+}
+
+// logoframe の出力契約が変わったときは、成功扱いにせず logo で失敗する。
+func TestCMDetectWorkRequiresLogoMatchOutput(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	id := seedCMRecording(t, pool, mediaDir, 925)
+	tools := newFakeCMToolsWithSizeAndReport(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000", "1440x1080", "")
+
+	err := newCMDetectTestWorker(pool, mediaDir, tools).Work(context.Background(), cmJob(id, 3))
+	if err == nil || !strings.Contains(err.Error(), "does not contain") {
+		t.Fatalf("Work error = %v, want missing-match-output failure", err)
+	}
+	var stage string
+	if err := pool.QueryRow(context.Background(), `SELECT stage FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&stage); err != nil {
+		t.Fatal(err)
+	}
+	if stage != "logo" {
+		t.Errorf("attempt stage = %q, want logo", stage)
+	}
+	if n := countLogos(t, pool); n != 0 {
+		t.Errorf("cm_logos rows = %d, want 0 when match output is missing", n)
 	}
 }
 
@@ -622,6 +746,7 @@ func TestCMDetectWorkDoesNotWriteBackAnOldLogoDeletedDuringTheJob(t *testing.T) 
 	tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000")
 	if err := sqlcgen.New(pool).UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
 		NetworkID: 32736, ServiceID: 1024, Lgd: buildTestLGD(4, 3, 1000, 4080), LearnedFrom: &id,
+		CodedWidth: 1440, CodedHeight: 1080,
 	}); err != nil {
 		t.Fatal(err)
 	}

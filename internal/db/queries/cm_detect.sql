@@ -73,9 +73,10 @@ SELECT pg_advisory_xact_lock(sqlc.arg('network_id')::int, sqlc.arg('service_id')
 -- （同じ文で再評価する）。枠が変わっていれば、そのロゴは古い枠で学習されたもので、
 -- 書くと枠の保存が消したはずのロゴが復活する。observed_area_updated_at が NULL は
 -- 「ジョブが読んだとき枠は無かった」で、いま枠があれば不一致になる。
-INSERT INTO cm_logos (network_id, service_id, lgd, preview_png, learned_from)
+INSERT INTO cm_logos (network_id, service_id, lgd, preview_png, learned_from, coded_width, coded_height)
 SELECT sqlc.arg('network_id')::int, sqlc.arg('service_id')::int, sqlc.arg('lgd')::bytea,
-       sqlc.narg('preview_png')::bytea, sqlc.arg('learned_from')::bigint
+       sqlc.narg('preview_png')::bytea, sqlc.arg('learned_from')::bigint,
+       sqlc.arg('coded_width')::int, sqlc.arg('coded_height')::int
 WHERE NOT EXISTS (
     SELECT 1 FROM cm_logos l
     WHERE l.network_id = sqlc.arg('network_id')::int AND l.service_id = sqlc.arg('service_id')::int
@@ -86,13 +87,15 @@ AND (
 ) IS NOT DISTINCT FROM sqlc.narg('observed_area_updated_at')::timestamptz;
 
 -- name: UpsertCMLogo :exec
-INSERT INTO cm_logos (network_id, service_id, lgd, preview_png, learned_from)
-VALUES (sqlc.arg('network_id'), sqlc.arg('service_id'), sqlc.arg('lgd'), sqlc.narg('preview_png'), sqlc.arg('learned_from'))
+INSERT INTO cm_logos (network_id, service_id, lgd, preview_png, learned_from, coded_width, coded_height)
+VALUES (sqlc.arg('network_id'), sqlc.arg('service_id'), sqlc.arg('lgd'), sqlc.narg('preview_png'), sqlc.arg('learned_from'), sqlc.arg('coded_width'), sqlc.arg('coded_height'))
 ON CONFLICT (network_id, service_id) DO UPDATE
 SET lgd = EXCLUDED.lgd,
     preview_png = EXCLUDED.preview_png,
     learned_at = now(),
-    learned_from = EXCLUDED.learned_from;
+    learned_from = EXCLUDED.learned_from,
+    coded_width = EXCLUDED.coded_width,
+    coded_height = EXCLUDED.coded_height;
 
 -- name: ListCMLogoStates :many
 SELECT r.network_id, r.service_id,
@@ -187,6 +190,6 @@ FROM recording_cm_detections
 WHERE recording_id = sqlc.arg('recording_id');
 
 -- name: GetCMLogo :one
-SELECT lgd
+SELECT lgd, coded_width, coded_height
 FROM cm_logos
 WHERE network_id = sqlc.arg('network_id') AND service_id = sqlc.arg('service_id');

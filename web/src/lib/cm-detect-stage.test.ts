@@ -7,6 +7,15 @@ describe('cmDetectStageMessage', () => {
     expect(cmDetectStageMessage('logo')).toBe('ロゴを見つけられず、CM を検出できませんでした。')
   })
 
+  it('resolution と match はロゴ側の失敗として言い分ける', () => {
+    expect(cmDetectStageMessage('resolution')).toBe(
+      '覚えたロゴは別の解像度の録画から作られたため、この録画には使えませんでした。',
+    )
+    expect(cmDetectStageMessage('match')).toBe(
+      '覚えたロゴがこの録画にほとんど映っておらず、CM を検出できませんでした。局のロゴが変わった可能性があります。',
+    )
+  })
+
   it('それ以外の工程は枠では直せない失敗に畳む', () => {
     expect(cmDetectStageMessage('chapter')).toBe('CM 検出の処理が失敗しました。ロゴの枠では直せない失敗です。')
   })

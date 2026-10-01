@@ -85,7 +85,7 @@ func TestCMDetectionTimeoutUsesTwiceDurationWithThirtyMinuteMinimum(t *testing.T
 }
 
 func TestCMFailureStagePreservesWorkerObservation(t *testing.T) {
-	for _, stage := range []string{"setup", "probe", "area", "logo", "chapter", "join", "parse", "save", "stopped"} {
+	for _, stage := range []string{"setup", "probe", "area", "logo", "chapter", "join", "parse", "save", "stopped", "resolution", "match"} {
 		t.Run(stage, func(t *testing.T) {
 			got := cmFailureStage(fmt.Errorf("outer: %w", cmFailure(stage, fmt.Errorf("failure"))))
 			if got == nil || *got != stage {
@@ -95,6 +95,37 @@ func TestCMFailureStagePreservesWorkerObservation(t *testing.T) {
 	}
 	if got := cmFailureStage(fmt.Errorf("unclassified")); got != nil {
 		t.Fatalf("cmFailureStage(unclassified) = %q, want nil", *got)
+	}
+}
+
+func TestCMLogoMatchPercentParsesLogoframeOutput(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		output  string
+		want    float64
+		wantErr bool
+	}{
+		{name: "stderr line", output: "managed logo: v0001 match=12.34% threshold=0%\n", want: 12.34},
+		{name: "case and spaces", output: "MANAGED   LOGO: v42 match=100% threshold=20%", want: 100},
+		{name: "missing", output: "logoframe completed", wantErr: true},
+		{name: "malformed", output: "managed logo: v0001 match=unknown% threshold=0%", wantErr: true},
+		{name: "out of range", output: "managed logo: v0001 match=101.00% threshold=0%", wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := cmLogoMatchPercent([]byte(tt.output))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("cmLogoMatchPercent = %v, want error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Errorf("cmLogoMatchPercent = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -178,7 +209,7 @@ func TestCMDetectionDesiredPredicateAndFreshLogoReset(t *testing.T) {
 	}
 
 	logo := sqlcgen.UpsertCMLogoParams{
-		NetworkID: 32736, ServiceID: 1024, Lgd: []byte("lgd"), LearnedFrom: &ids[5],
+		NetworkID: 32736, ServiceID: 1024, Lgd: []byte("lgd"), LearnedFrom: &ids[5], CodedWidth: 1440, CodedHeight: 1080,
 	}
 	if err := q.UpsertCMLogo(ctx, logo); err != nil {
 		t.Fatal(err)

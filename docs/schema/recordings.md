@@ -194,7 +194,7 @@ CREATE TABLE recording_encode_policy (
 
 `recording_cm_detections` の1行は検出処理全体の完了を表す。`cm_ranges` は原本の先頭を0としたミリ秒の `int8multirange` で、空 multirange は広告区間が無かった結果である。処理に失敗した間は結果行を作らない。
 
-`recording_cm_attempts` は直近の試行だけを持つ。`running` は処理中、`retrying` は失敗後に River の自動再試行を待っている状態、`failed` は最大3回の試行後も失敗した状態である。`stage` は worker が観測した失敗工程（`setup` / `probe` / `area` / `logo` / `chapter` / `join` / `parse` / `save` / `stopped`）である。既存行は error の自由文から推定せず NULL のままにする。定期 reconcile は `running` のみを advisory lock で確認してプロセス停止を回収し、`retrying` を重複投入しない。回収は試行回数を消費させる。River ジョブの試行回数が残っていれば `retryable` に戻して River 自身の再試行に乗せ、試行行を `retrying` にする。使い切っていれば `discarded` にして試行行を `failed`（error は「process stopped」）にする。新しいジョブを積み直すと試行回数が 1 に戻り、OOM で落ち続ける録画が `failed` に届かない。結果の保存と試行行の削除は同一トランザクションで確定する。
+`recording_cm_attempts` は直近の試行だけを持つ。`running` は処理中、`retrying` は失敗後に River の自動再試行を待っている状態、`failed` は最大3回の試行後も失敗した状態である。`stage` は worker が観測した失敗工程（`setup` / `probe` / `area` / `logo` / `chapter` / `join` / `parse` / `save` / `stopped` / `resolution` / `match`）である。既存行は error の自由文から推定せず NULL のままにする。定期 reconcile は `running` のみを advisory lock で確認してプロセス停止を回収し、`retrying` を重複投入しない。回収は試行回数を消費させる。River ジョブの試行回数が残っていれば `retryable` に戻して River 自身の再試行に乗せ、試行行を `retrying` にする。使い切っていれば `discarded` にして試行行を `failed`（error は「process stopped」）にする。新しいジョブを積み直すと試行回数が 1 に戻り、OOM で落ち続ける録画が `failed` に届かない。結果の保存と試行行の削除は同一トランザクションで確定する。
 
 ### recording_chapter_ownership / recording_chapter_spans — ユーザーのチャプター（衛星表）
 
@@ -232,7 +232,7 @@ CREATE TABLE recording_chapter_spans (
 
 **ロゴと枠の単位は局で、解像度では割らない。** 同じ service_id のまま映像フォーマットを切り替える運用は、地上波・BS の運用規定が認めている（ARIB TR-B14 第七編 8.2.2、TR-B15 第三編 7.2.3）。実際に NHK 総合はマルチ編成の間、主サービスごと 480i になる。それでも割らないのは、測った範囲で主サービスの解像度が混ざったのは CM の無い NHK だけだったからである。局 × 解像度にすると、API の宛先と検出対象の導出の両方に解像度が要る。録画の側は coded size を持っていない。解像度の違う録画にはロゴも枠も使わず、失敗として残す。使われなくなった解像度のロゴを自動で捨てる案も採らない。手で作ったロゴという作り直せない事実を消し、年に数回しか使わない解像度ほど先に失われる。
 
-**LGD は学習元の解像度を持たない**（ヘッダは位置と大きさだけ）。logoframe は、枠が映像の外にはみ出すフレームの照合を飛ばすだけで失敗しない。join_logo_scp は、ロゴが 1 フレームも見つからない結果を「全編ロゴあり」として扱う。そのため解像度の違う録画に当てると、CM 区間がほぼ空の結果が成功として保存される。未解決: 学習済みロゴが解像度を持たず、logoframe の一致率も読んでいないので、この誤成功を止めていない。
+学習済みロゴは作成時の coded size を持ち、検出前に録画の coded size と比べる。違えば `resolution` として logoframe を実行せず止める。さらに logoframe の一致率を読み、閾値未満なら `match` として止める。
 
 録画の解像度は、原本の最初の映像ストリームの coded size とする。番組の境目をまたいで途中で解像度が変わる録画では、変化後の区間の検出結果を保証しない。
 

@@ -10,6 +10,10 @@ export function cmDetectStageMessage(stage: string | null | undefined): string {
       return 'ロゴを見つけられず、CM を検出できませんでした。'
     case 'area':
       return '教えた枠が録画の解像度と合わないため、枠を使えませんでした。'
+    case 'resolution':
+      return '覚えたロゴは別の解像度の録画から作られたため、この録画には使えませんでした。'
+    case 'match':
+      return '覚えたロゴがこの録画にほとんど映っておらず、CM を検出できませんでした。局のロゴが変わった可能性があります。'
     case 'setup':
     case 'probe':
     case 'chapter':
