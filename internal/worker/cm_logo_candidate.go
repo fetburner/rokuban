@@ -40,6 +40,17 @@ func (w *CMLogoCandidateWorker) Timeout(*river.Job[jobs.CMLogoCandidateJobArgs])
 // Work persists running before touching the original. Every analysis failure after
 // that point becomes a failed candidate row, so the desired view cannot hot-loop.
 func (w *CMLogoCandidateWorker) Work(ctx context.Context, job *river.Job[jobs.CMLogoCandidateJobArgs]) error {
+	// 検出ジョブと同じく job lock を保持し続ける。回収側は「lock が取れた = worker は
+	// 死んでいる」とみなすので、取らないと動いている解析を failed にしてしまう。
+	jobLock, acquired, err := acquireEncodeJobLock(ctx, w.Pool, job.ID, defaultJobLockTimeout)
+	if err != nil {
+		return fmt.Errorf("CM logo candidate: acquiring job lock: %w", err)
+	}
+	if !acquired {
+		return fmt.Errorf("CM logo candidate: job %d advisory lock is held by another session", job.ID)
+	}
+	defer jobLock.release()
+
 	args := job.Args
 	q := sqlcgen.New(w.Pool)
 	area, err := q.GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{

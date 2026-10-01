@@ -164,7 +164,7 @@ fi
 : > "$o"
 if [ ! -f "$d/$ch.latest" ]; then
   cp %q "$d/$ch-v0001.lgd"
-  echo "$ch-v0001.lgd" > "$d/$ch.latest"
+  printf '1\n%%s\n' "$ch-v0001.lgd" > "$d/$ch.latest"
 fi
 echo %q
 `, argsPath, argsPath, holdPath, startedPath, holdPath, lgdPath, report))
@@ -230,11 +230,11 @@ func cmJob(recordingID int64, attempt int) *river.Job[jobs.CMDetectJobArgs] {
 	}
 }
 
-func cmLogoCandidateJob(networkID, serviceID int32, recordingID, jobID int64, areaUpdatedAt time.Time) *river.Job[jobs.CMLogoCandidateJobArgs] {
+func cmLogoCandidateJob(recordingID, jobID int64, areaUpdatedAt time.Time) *river.Job[jobs.CMLogoCandidateJobArgs] {
 	return &river.Job[jobs.CMLogoCandidateJobArgs]{
 		JobRow: &rivertype.JobRow{ID: jobID, Attempt: 1, MaxAttempts: 1},
 		Args: jobs.CMLogoCandidateJobArgs{
-			NetworkID: networkID, ServiceID: serviceID, RecordingID: recordingID,
+			NetworkID: 32736, ServiceID: 1024, RecordingID: recordingID,
 			AreaUpdatedAt: areaUpdatedAt,
 		},
 	}
@@ -393,7 +393,7 @@ func TestCMLogoCandidateWorkerCreatesReadyCandidateFromEmptyLogoDir(t *testing.T
 		Pool: pool, MediaDir: mediaDir, ScratchDir: filepath.Join(mediaDir, "scratch"),
 		CMDetect: config.CMDetectConfig{Enabled: true, BinaryDir: tools.binDir}, FFprobe: tools.ffprobe,
 	}
-	if err := w.Work(ctx, cmLogoCandidateJob(32736, 1024, id, 4343, area.UpdatedAt)); err != nil {
+	if err := w.Work(ctx, cmLogoCandidateJob(id, 4343, area.UpdatedAt)); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
 	candidate, err := sqlcgen.New(pool).GetCMLogoCandidate(ctx, sqlcgen.GetCMLogoCandidateParams{NetworkID: 32736, ServiceID: 1024})
@@ -438,7 +438,7 @@ func TestCMLogoCandidateWorkerMarksResolutionMismatchFailed(t *testing.T) {
 		Pool: pool, MediaDir: mediaDir, ScratchDir: filepath.Join(mediaDir, "scratch"),
 		CMDetect: config.CMDetectConfig{Enabled: true, BinaryDir: tools.binDir}, FFprobe: tools.ffprobe,
 	}
-	err = w.Work(ctx, cmLogoCandidateJob(32736, 1024, id, 4344, area.UpdatedAt))
+	err = w.Work(ctx, cmLogoCandidateJob(id, 4344, area.UpdatedAt))
 	if err == nil || !strings.Contains(err.Error(), "1440x1080") {
 		t.Fatalf("Work error = %v, want resolution mismatch", err)
 	}
@@ -832,17 +832,24 @@ func TestCMDetectWorkDoesNotWriteBackAnOldLogoDeletedDuringTheJob(t *testing.T) 
 	}
 }
 
-// 枠なしで始まったジョブが枠の保存の後に失敗しても、attempted_at はジョブ開始時刻のまま
-// 残る。終了時刻で上書きすると `attempted_at < a.updated_at` が偽になり、枠に合わせた
-// 再検出が二度と投入されない。
-func TestCMDetectWorkFailureAfterAreaSaveStaysEligibleForRetry(t *testing.T) {
+// ジョブの実行中に採用（learned_at の更新）があって、そのジョブが失敗しても、attempted_at は
+// ジョブ開始時刻のまま残る。終了時刻で上書きすると `attempted_at < l.learned_at` が偽になり、
+// 新しいロゴでの再検出が二度と投入されない。
+func TestCMDetectWorkFailureAfterAdoptionStaysEligibleForRetry(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	id := seedCMRecording(t, pool, mediaDir, 932)
 	tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 1, "Trim(0,149)", "10.010000") // chapter_exe が失敗
 
-	err := workHeld(t, pool, mediaDir, tools, id, 3, func() { putAreaLikeAPI(t, pool) })
+	err := workHeld(t, pool, mediaDir, tools, id, 3, func() {
+		if err := sqlcgen.New(pool).UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
+			NetworkID: 32736, ServiceID: 1024, Lgd: buildTestLGD(4, 3, 1000, 4080), LearnedFrom: &id,
+			CodedWidth: 1440, CodedHeight: 1080,
+		}); err != nil {
+			t.Error(err)
+		}
+	})
 	if err == nil {
 		t.Fatal("Work succeeded although chapter_exe failed")
 	}
@@ -858,6 +865,6 @@ func TestCMDetectWorkFailureAfterAreaSaveStaysEligibleForRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(rows) != 1 || rows[0] != id {
-		t.Errorf("ListMissingCMDetections = %v, want [%d]: the area saved during the failed run must make it eligible again", rows, id)
+		t.Errorf("ListMissingCMDetections = %v, want [%d]: the logo adopted during the failed run must make it eligible again", rows, id)
 	}
 }

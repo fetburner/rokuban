@@ -228,56 +228,60 @@ func TestCMDetectionDesiredPredicateAndFreshLogoReset(t *testing.T) {
 	}
 }
 
-// 教えた枠は、その局で失敗していた録画を再検出の候補に戻す（新しいロゴを学習した
-// ときと同じ規則）。教えた直後に落ちた試行は候補に戻らない（同じ枠で同じ失敗を
-// 繰り返さない）。
+// 枠を教えただけでは、その局で失敗していた録画は再検出の候補に戻らない（ロゴは変わらない）。
+// 枠あり・ロゴなしの局でも新しい録画は desired から外れず（候補が既にあっても）、検出ジョブが
+// 書く adopt の attempt で止まる。採用（learned_at）で初めて失敗録画が戻る。
 func TestCMDetectionDesiredAfterTaughtLogoArea(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 	mediaDir := t.TempDir()
-	id := insertTestRecordingWithEventID(t, pool, 830)
-	seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d.ts", id), []byte("ts"))
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
-		VALUES ($1, 'always', '{}', true)`, id); err != nil {
-		t.Fatal(err)
+	seed := func(eventID int32) int64 {
+		id := insertTestRecordingWithEventID(t, pool, eventID)
+		seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d.ts", id), []byte("ts"))
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+			VALUES ($1, 'always', '{}', true)`, id); err != nil {
+			t.Fatal(err)
+		}
+		return id
 	}
-	message := "failed before the area was taught"
-	fail := func(t *testing.T) {
+	id := seed(830)
+	fail := func(t *testing.T, id int64, stage *string) {
 		t.Helper()
+		message := "failed"
 		if err := q.MarkCMDetectionRunning(ctx, id); err != nil {
 			t.Fatal(err)
 		}
 		if err := q.MarkCMDetectionFailure(ctx, sqlcgen.MarkCMDetectionFailureParams{
-			RecordingID: id, State: "failed", Error: &message,
+			RecordingID: id, State: "failed", Stage: stage, Error: &message,
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	fail(t)
-	if _, err := pool.Exec(ctx, `UPDATE recording_cm_attempts SET attempted_at = now() - interval '1 hour' WHERE recording_id = $1`, id); err != nil {
-		t.Fatal(err)
-	}
-	wantDesired := func(t *testing.T, want bool) {
+	wantDesired := func(t *testing.T, id int64, want bool) {
 		t.Helper()
 		desired, err := q.IsCMDetectionDesired(ctx, id)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if desired != want {
-			t.Fatalf("IsCMDetectionDesired = %v, want %v", desired, want)
+			t.Fatalf("IsCMDetectionDesired(%d) = %v, want %v", id, desired, want)
 		}
 		ids, err := q.ListMissingCMDetections(ctx, sqlcgen.ListMissingCMDetectionsParams{AfterRecordingID: 0, RowLimit: 100})
 		if err != nil {
 			t.Fatal(err)
 		}
-		listed := len(ids) == 1 && ids[0] == id
+		listed := false
+		for _, got := range ids {
+			listed = listed || got == id
+		}
 		if listed != want {
-			t.Fatalf("ListMissingCMDetections = %v, want the recording listed = %v", ids, want)
+			t.Fatalf("ListMissingCMDetections = %v, want recording %d listed = %v", ids, id, want)
 		}
 	}
-	wantDesired(t, false)
+	fail(t, id, nil)
+	wantDesired(t, id, false)
 
 	if err := q.UpsertCMLogoArea(ctx, sqlcgen.UpsertCMLogoAreaParams{
 		NetworkID: 32736, ServiceID: 1024, X: 1180, Y: 24, W: 240, H: 96,
@@ -285,17 +289,42 @@ func TestCMDetectionDesiredAfterTaughtLogoArea(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	wantDesired(t, true)
+	wantDesired(t, id, false) // 枠だけでは再投入しない
 
-	// 候補行がまだ無い間は、検出側も採用待ち attempt を作れるよう desired のまま。
-	fail(t)
-	wantDesired(t, true)
-
-	// 枠を自動に戻しても、失敗した試行は候補に戻らない（学習済みロゴも無い）。
-	if _, err := q.DeleteCMLogoArea(ctx, sqlcgen.DeleteCMLogoAreaParams{NetworkID: 32736, ServiceID: 1024}); err != nil {
+	// 候補が存在しても、枠あり・ロゴなしの局の新しい録画は desired のまま（ingest ヒントも
+	// Work 冒頭の再評価も IsCMDetectionDesired を通る）。外すと adopt の attempt が書かれず、
+	// pending にも failed にも出ない見えない停止になる。
+	area, err := q.GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{NetworkID: 32736, ServiceID: 1024})
+	if err != nil {
 		t.Fatal(err)
 	}
-	wantDesired(t, false)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO cm_logo_candidates (
+			network_id, service_id, state, x, y, w, h, coded_width, coded_height,
+			recording_id, observed_area_updated_at, lgd
+		) VALUES (32736, 1024, 'ready', 1180, 24, 240, 96, 1440, 1080, $1, $2, 'lgd')`, id, area.UpdatedAt); err != nil {
+		t.Fatal(err)
+	}
+	fresh := seed(831)
+	wantDesired(t, fresh, true)
+
+	// adopt の attempt が書かれた後は、候補が無くなっても再投入しない（reconcile が書き直さない）。
+	adopt := "adopt"
+	fail(t, fresh, &adopt)
+	wantDesired(t, fresh, false)
+	if _, err := pool.Exec(ctx, `DELETE FROM cm_logo_candidates`); err != nil {
+		t.Fatal(err)
+	}
+	wantDesired(t, fresh, false)
+
+	// 採用でロゴができると、失敗していた録画（adopt 待ちを含む）が desired に戻る。
+	if err := q.UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
+		NetworkID: 32736, ServiceID: 1024, Lgd: []byte("lgd"), LearnedFrom: &id, CodedWidth: 1440, CodedHeight: 1080,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wantDesired(t, id, true)
+	wantDesired(t, fresh, true)
 }
 
 func TestUntilEncodedViewWaitsForCMDetectionOrFinalFailure(t *testing.T) {
@@ -348,6 +377,34 @@ func TestUntilEncodedViewWaitsForCMDetectionOrFinalFailure(t *testing.T) {
 	}
 	if got := count(); got != 1 {
 		t.Fatalf("eligible originals after zero-CM successful result = %d, want 1", got)
+	}
+}
+
+func TestReadStationLogoLatestFormats(t *testing.T) {
+	for _, tt := range []struct {
+		name, latest string
+		ok           bool
+	}{
+		{"two lines (logoframe)", "1\nn1-s2-v0001.lgd\n", true},
+		{"one line (rokuban)", "n1-s2-v0001.lgd\n", true},
+		{"version only", "1\n", false},
+		{"traversal in name line", "1\n../outside.lgd\n", false},
+		{"not lgd", "1\nn1-s2-v0001.txt\n", false},
+		{"empty", "", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "n1-s2-v0001.lgd"), []byte("LGD"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "n1-s2.latest"), []byte(tt.latest), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := readStationLogo(dir, "n1-s2")
+			if (err == nil) != tt.ok || (tt.ok && string(got) != "LGD") {
+				t.Fatalf("got %q, %v; want ok=%v", got, err, tt.ok)
+			}
+		})
 	}
 }
 

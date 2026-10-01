@@ -43,7 +43,7 @@ CREATE TABLE cm_logo_candidates (
     ),
     CONSTRAINT cm_logo_candidates_stage_check CHECK (
         stage IS NULL OR stage = ANY (ARRAY[
-            'setup', 'probe', 'area', 'logo', 'match', 'stopped'
+            'setup', 'probe', 'area', 'logo', 'match', 'save', 'stopped'
         ]::text[])
     )
 );
@@ -100,19 +100,13 @@ JOIN media_assets o
 LEFT JOIN recording_cm_attempts ca ON ca.recording_id = r.id
 LEFT JOIN cm_logos l
   ON l.network_id = r.network_id AND l.service_id = r.service_id
-LEFT JOIN cm_logo_areas a
-  ON a.network_id = r.network_id AND a.service_id = r.service_id
-LEFT JOIN cm_logo_candidates c
-  ON c.network_id = r.network_id AND c.service_id = r.service_id
 WHERE r.deleted_at IS NULL
   AND NOT EXISTS (SELECT 1 FROM recording_cm_detections d WHERE d.recording_id = r.id)
   AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = o.id)
-  AND NOT (a.network_id IS NOT NULL AND l.network_id IS NULL AND c.network_id IS NOT NULL)
   AND (
       ca.recording_id IS NULL
       OR ca.state <> 'failed'
       OR (l.learned_at IS NOT NULL AND ca.attempted_at < l.learned_at)
-      OR (a.network_id IS NOT NULL AND l.network_id IS NULL AND c.network_id IS NULL)
   );
 
 CREATE OR REPLACE VIEW until_encoded_deletable_originals AS

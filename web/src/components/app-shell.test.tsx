@@ -27,13 +27,12 @@ const SIDEBAR_LABELS = [
   'ライブ',
   '検索',
   'ルール',
-  'シリーズ棚',
   'CM 検出のロゴ',
 ]
 /** モバイルのボトムタブに常時出る項目（「その他」を除く）。 */
 const MOBILE_PRIMARY_LABELS = ['ホーム', '番組', '録画']
 /** モバイルで「その他」ポップオーバーに畳まれる項目。 */
-const MOBILE_MORE_LABELS = ['予約', 'ライブ', '検索', 'ルール', 'シリーズ棚', 'CM 検出のロゴ']
+const MOBILE_MORE_LABELS = ['予約', 'ライブ', '検索', 'ルール', 'CM 検出のロゴ']
 const STORAGE_KEY = 'rokuban:sidebar:collapsed'
 
 /**
@@ -61,7 +60,7 @@ function renderShell(initialPath = '/', options: ShellStubOptions = {}) {
     '/live',
     '/search',
     '/rules',
-    '/shelves',
+    '/series',
     '/cm-logos',
   ]
   const children = paths.map((path) =>
@@ -346,6 +345,20 @@ describe('AppShell / Sidebar の畳み込み', () => {
       expect(link).not.toHaveAttribute('aria-current')
     }
   })
+
+  it('/series では「録画」が現在地になり、他の項目は現在地でない', async () => {
+    renderShell('/series')
+    await findToggle()
+
+    for (const link of screen.getAllByRole('link', { name: '録画' })) {
+      expect(link).toHaveAttribute('aria-current', 'page')
+    }
+    for (const label of ['ホーム', '番組']) {
+      for (const link of screen.getAllByRole('link', { name: label })) {
+        expect(link).not.toHaveAttribute('aria-current')
+      }
+    }
+  })
 })
 
 describe('モバイルの「その他」', () => {
@@ -444,12 +457,14 @@ describe('ナビの出し分け（live.enabled）', () => {
     expect(screen.queryByRole('link', { name: 'ライブ' })).not.toBeInTheDocument()
 
     const navs = screen.getAllByRole('navigation', { name: '主ナビゲーション' })
-    const sidebarNav = navs.find((nav) => within(nav).queryAllByRole('link').length === 8)
+    const sidebarNav = navs.find(
+      (nav) => within(nav).queryAllByRole('link').length === SIDEBAR_LABELS.length - 1,
+    )
     expect(sidebarNav).toBeDefined()
     const labels = within(sidebarNav as HTMLElement)
       .getAllByRole('link')
       .map((el) => el.textContent)
-    expect(labels).toEqual(['ホーム', '番組', '録画', '予約', '検索', 'ルール', 'シリーズ棚', 'CM 検出のロゴ'])
+    expect(labels).toEqual(['ホーム', '番組', '録画', '予約', '検索', 'ルール', 'CM 検出のロゴ'])
   })
 
   it('live.enabled が false でも「その他」の中身からライブだけが消える', async () => {
@@ -462,7 +477,7 @@ describe('ナビの出し分け（live.enabled）', () => {
     const labels = within(menu)
       .getAllByRole('link')
       .map((el) => el.textContent)
-    expect(labels).toEqual(['予約', '検索', 'ルール', 'シリーズ棚', 'CM 検出のロゴ'])
+    expect(labels).toEqual(['予約', '検索', 'ルール', 'CM 検出のロゴ'])
   })
 
   it('live.enabled が false でもボトムタブは 4 個（常時 3 個 + その他）のまま', async () => {

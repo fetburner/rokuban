@@ -1,14 +1,14 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { ArrowLeft, ChevronLeft, ChevronRight, Maximize2, ScanLine, Trash2 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   getListCMLogosQueryKey,
   useAdoptCMLogoCandidate,
   useDeleteCMLogo,
-  useDeleteCMLogoCandidate,
   useDeleteCMLogoArea,
+  useDeleteCMLogoCandidate,
   useListCMLogos,
   useListRecordings,
   usePutCMLogoArea,
@@ -57,8 +57,6 @@ export type CMLogoBucket = 'attention' | 'pending' | 'healthy'
 /** cmLogoBucket は一覧の「見るべき順」を API の件数から決める。 */
 // oxlint-disable-next-line react/only-export-components -- 一覧の並び契約を単体テストする
 export function cmLogoBucket(logo: CMLogoState): CMLogoBucket {
-  if (logo.candidate?.state === 'failed' || logo.candidate?.state === 'ready') return 'attention'
-  if (logo.candidate?.state === 'running') return 'pending'
   if (logo.failedCount > 0) return 'attention'
   if (logo.pendingCount > 0) return 'pending'
   return 'healthy'
@@ -67,9 +65,6 @@ export function cmLogoBucket(logo: CMLogoState): CMLogoBucket {
 /** cmLogoStateSentence は行に置く状態説明を一文へ畳む。 */
 // oxlint-disable-next-line react/only-export-components -- 表示順テストから共有する
 export function cmLogoStateSentence(logo: CMLogoState): string {
-  if (logo.candidate?.state === 'running') return 'ロゴ候補を解析中です'
-  if (logo.candidate?.state === 'failed') return cmDetectStageMessage(logo.candidate.stage)
-  if (logo.candidate?.state === 'ready') return 'ロゴ候補を確認して採用してください'
   if (logo.failedCount > 0) return cmDetectStageMessage(logo.lastFailureStage)
   if (logo.pendingCount > 0) return `検出待ち ${logo.pendingCount} 件`
   return `録画 ${logo.recordingCount} 件`
@@ -81,7 +76,6 @@ function serviceKey(networkId: number, serviceId: number): number {
 
 function stateBadge(logo: CMLogoState): { label: string; attention: boolean } {
   const bucket = cmLogoBucket(logo)
-  if (logo.candidate?.state === 'ready') return { label: '候補あり', attention: false }
   if (bucket === 'attention') return { label: '要対応', attention: true }
   if (bucket === 'pending') return { label: '検出待ち', attention: false }
   return { label: '問題なし', attention: false }
@@ -204,8 +198,7 @@ function awaitingCandidateAnalysis(logo: CMLogoState): boolean {
 
 /** isAwaitingAdoption は worker が採用待ちの局として止めた録画かを返す（再試行では進まない）。 */
 function isAwaitingAdoption(recording: Recording): boolean {
-  const stage: string | null | undefined = recording.cmDetection.stage
-  return recording.cmDetection.state === 'failed' && stage === 'adopt'
+  return recording.cmDetection.state === 'failed' && recording.cmDetection.stage === 'adopt'
 }
 
 function recordingCMState(recording: Recording): string {
@@ -239,35 +232,7 @@ type DragState =
       origin: CodedRect
     }
 
-function resizeHandleAt(
-  rect: CodedRect,
-  point: { x: number; y: number },
-  scale: { x: number; y: number },
-): ResizeHandle | undefined {
-  const toleranceX = Math.max(12 / Math.max(scale.x, 0.001), MIN_AREA_SIZE)
-  const toleranceY = Math.max(12 / Math.max(scale.y, 0.001), MIN_AREA_SIZE)
-  const corners: Array<[ResizeHandle, number, number]> = [
-    ['nw', rect.x, rect.y],
-    ['ne', rect.x + rect.w, rect.y],
-    ['sw', rect.x, rect.y + rect.h],
-    ['se', rect.x + rect.w, rect.y + rect.h],
-  ]
-  return corners.find(([, x, y]) => Math.abs(point.x - x) <= toleranceX && Math.abs(point.y - y) <= toleranceY)?.[0]
-}
-
-function cursorForPoint(
-  rect: CodedRect | undefined,
-  point: { x: number; y: number },
-  scale: { x: number; y: number },
-): string {
-  if (rect) {
-    const handle = resizeHandleAt(rect, point, scale)
-    if (handle === 'nw' || handle === 'se') return 'nwse-resize'
-    if (handle === 'ne' || handle === 'sw') return 'nesw-resize'
-    if (containsCodedPoint(rect, point)) return 'move'
-  }
-  return 'crosshair'
-}
+const NUMERIC_LABEL = { x: 'X', y: 'Y', w: '幅', h: '高さ' } as const
 
 function defaultRect(frame: Frame): CodedRect {
   const w = Math.max(MIN_AREA_SIZE, Math.round(frame.codedWidth / 4))
@@ -324,6 +289,7 @@ function FrameHandle({
   return (
     <span
       data-testid={`cm-logo-handle-${handle}`}
+      data-handle={handle}
       aria-hidden="true"
       className="pointer-events-auto absolute z-20 flex size-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center"
       style={{ left: point.x, top: point.y, cursor }}
@@ -365,7 +331,10 @@ function CMLogoFrameEditor({
   const [committedAtMs, setCommittedAtMs] = useState<number | undefined>(Math.round(durationMs / 2))
   const [zoom, setZoom] = useState(1)
   const [rect, setRect] = useState<CodedRect | undefined>(undefined)
-  const [cursor, setCursor] = useState('crosshair')
+  // 枠に寄るを押した瞬間の焦点。枠の現在位置から毎回導くと、ドラッグで枠が逃げる。
+  const [zoomFocus, setZoomFocus] = useState<{ x: number; y: number } | undefined>(undefined)
+  // 数値入力の入力中テキスト。blur / Enter で確定するまで枠へ反映しない。
+  const [draft, setDraft] = useState<Partial<Record<keyof CodedRect, string>>>({})
   const box = useBoxSize(frameRef)
   const { frame, failed, loading } = useFrame(recordingId, committedAtMs)
   const saveArea = usePutCMLogoArea()
@@ -404,7 +373,7 @@ function CMLogoFrameEditor({
     boxHeight: box.height,
     sampleAspectRatio: frame?.sampleAspectRatio,
     zoom,
-    focus: rect ? { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 } : undefined,
+    focus: zoomFocus,
   }
   const scale = frameScale(view)
   const imageBox = frameImageBox(view)
@@ -429,11 +398,17 @@ function CMLogoFrameEditor({
     }
   }
 
-  const updateCursor = (event: React.PointerEvent<HTMLDivElement>) => {
-    const point = codedPoint(event)
-    if (!point) return
-    setCursor(cursorForPoint(rect, point, scale))
-  }
+  // ドラッグ中は input、確定は native の change。React の onChange は input に張り付く。
+  const sliderRef = useCallback((element: HTMLInputElement | null) => {
+    if (!element) return
+    const onChange = () => {
+      const next = Number(element.value)
+      setSliderValue(next)
+      setCommittedAtMs(next)
+    }
+    element.addEventListener('change', onChange)
+    return () => element.removeEventListener('change', onChange)
+  }, [])
 
   const commitSlider = (value: number) => {
     const next = Math.min(Math.max(Math.round(value), 0), durationMs)
@@ -442,17 +417,24 @@ function CMLogoFrameEditor({
   }
 
   const numericRect = rect ?? (frame ? defaultRect(frame) : undefined)
-  const updateNumeric = (key: keyof CodedRect, value: string) => {
-    if (!frame || value === '') return
-    const number = Number(value)
+  const commitNumeric = (key: keyof CodedRect) => {
+    const text = draft[key]
+    setDraft((current) => {
+      const next = { ...current }
+      delete next[key]
+      return next
+    })
+    if (!frame || text === undefined || text.trim() === '') return
+    const number = Number(text)
     if (!Number.isFinite(number)) return
-    const next = clampCodedRect(
-      { ...(numericRect ?? defaultRect(frame)), [key]: number },
-      frame.codedWidth,
-      frame.codedHeight,
-      MIN_AREA_SIZE,
+    setRect(
+      clampCodedRect(
+        { ...(numericRect ?? defaultRect(frame)), [key]: number },
+        frame.codedWidth,
+        frame.codedHeight,
+        MIN_AREA_SIZE,
+      ),
     )
-    setRect(next)
   }
 
   const onSave = () => {
@@ -496,12 +478,14 @@ function CMLogoFrameEditor({
           <div
             ref={frameRef}
             data-testid="cm-logo-frame"
-            className="relative aspect-video touch-none overflow-hidden rounded border border-border bg-muted"
-            style={{ cursor }}
+            className="relative cursor-crosshair touch-none overflow-hidden rounded bg-muted ring-1 ring-border"
+            style={{ aspectRatio: frame ? (frame.codedWidth * frame.sampleAspectRatio) / frame.codedHeight : 16 / 9 }}
             onPointerDown={(event) => {
               const point = codedPoint(event)
               if (!point || !frame) return
-              const handle = rect ? resizeHandleAt(rect, point, scale) : undefined
+              // ハンドルは見た目の要素そのものが当たり判定。座標の許容を別に持つと、見えている範囲とずれる。
+              const handleName = (event.target as HTMLElement).closest<HTMLElement>('[data-handle]')?.dataset.handle
+              const handle = rect ? (handleName as ResizeHandle | undefined) : undefined
               if (rect && handle) {
                 dragRef.current = { mode: 'resize', handle, start: point, origin: rect }
               } else if (rect && containsCodedPoint(rect, point)) {
@@ -514,17 +498,13 @@ function CMLogoFrameEditor({
                 }
                 setRect(clampCodedRect({ x: point.x, y: point.y, w: MIN_AREA_SIZE, h: MIN_AREA_SIZE }, frame.codedWidth, frame.codedHeight, MIN_AREA_SIZE))
               }
-              setCursor('crosshair')
               event.currentTarget.setPointerCapture(event.pointerId)
             }}
             onPointerMove={(event) => {
               const point = codedPoint(event)
               if (!point || !frame) return
               const drag = dragRef.current
-              if (!drag) {
-                updateCursor(event)
-                return
-              }
+              if (!drag) return
               let next: CodedRect
               if (drag.mode === 'draw') {
                 next = clampCodedRect(
@@ -551,12 +531,12 @@ function CMLogoFrameEditor({
                   MIN_AREA_SIZE,
                 )
               }
-              setRect(next)
+              // 保存・数値入力に小数を渡さない。
+              setRect(clampCodedRect(next, frame.codedWidth, frame.codedHeight, MIN_AREA_SIZE))
             }}
             onPointerUp={(event) => {
               dragRef.current = null
               event.currentTarget.releasePointerCapture(event.pointerId)
-              updateCursor(event)
             }}
             onPointerCancel={() => {
               dragRef.current = null
@@ -577,7 +557,7 @@ function CMLogoFrameEditor({
               <>
                 <div
                   data-testid="cm-logo-rect"
-                  className="pointer-events-none absolute z-10 border-2 border-background"
+                  className="absolute z-10 cursor-move border-2 border-background"
                   style={{
                     left: rectOnScreen.x,
                     top: rectOnScreen.y,
@@ -606,16 +586,14 @@ function CMLogoFrameEditor({
 
           <input
             aria-label="コマの時刻"
-            data-testid="cm-logo-time-slider"
+            ref={sliderRef}
+            data-testid="cm-logo-time"
             type="range"
             min={0}
             max={durationMs}
             step={1}
             value={Math.min(sliderValue, durationMs)}
             onChange={(event) => setSliderValue(Number(event.currentTarget.value))}
-            onPointerUp={(event) => commitSlider(Number(event.currentTarget.value))}
-            onKeyUp={(event) => commitSlider(Number(event.currentTarget.value))}
-            onBlur={(event) => commitSlider(Number(event.currentTarget.value))}
             className="mt-2 w-full cursor-pointer"
           />
           <div className="mt-1 flex items-center justify-between text-xs text-muted-foreground">
@@ -669,20 +647,27 @@ function CMLogoFrameEditor({
             <h3 className="font-medium">② 枠の座標（記録上の画素）</h3>
             <div className="mt-2 grid grid-cols-2 gap-2">
               {(['x', 'y', 'w', 'h'] as const).map((key) => (
-                <Field key={key} label={key === 'x' ? 'X' : key === 'y' ? 'Y' : key === 'w' ? '幅' : '高さ'}>
+                <Field key={key} label={NUMERIC_LABEL[key]}>
                   <Input
                     data-testid={`cm-logo-field-${key}`}
+                    aria-label={NUMERIC_LABEL[key]}
                     type="number"
                     min={0}
-                    value={numericRect?.[key] ?? ''}
+                    value={draft[key] ?? numericRect?.[key] ?? ''}
                     disabled={!frame}
-                    onChange={(event) => updateNumeric(key, event.currentTarget.value)}
+                    onChange={(event) => setDraft({ ...draft, [key]: event.currentTarget.value })}
+                    onBlur={() => commitNumeric(key)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') commitNumeric(key)
+                    }}
                   />
                 </Field>
               ))}
             </div>
             <div className="mt-2 flex flex-wrap gap-2">
               <Button type="button" size="sm" variant="outline" disabled={!rect} onClick={() => {
+                if (!rect) return
+                setZoomFocus({ x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 })
                 setZoom(FRAME_ZOOM)
               }}>
                 <Maximize2 data-icon="inline-start" />
@@ -951,7 +936,12 @@ function AffectedRecordings({ recordings, cmDetectEnabled }: { recordings: Recor
       ) : (
         <ul className="divide-y divide-border rounded-lg border border-border">
           {recordings.map((recording) => {
-            const canRetry = recording.cmDetection.state === 'failed' && !isAwaitingAdoption(recording) && recording.sizeBytes !== undefined && cmDetectEnabled
+            // 失敗だけでなく、誤ったロゴで「成功」した録画の回復経路でもある。検出中は出さない。
+            const canRetry =
+              !isAwaitingAdoption(recording) &&
+              (recording.cmDetection.state === 'failed' || recording.cmDetection.state === 'detected') &&
+              recording.sizeBytes !== undefined &&
+              cmDetectEnabled
             return (
               <li key={recording.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 p-3">
                 <div className="min-w-0 flex-1">
@@ -971,12 +961,12 @@ function AffectedRecordings({ recordings, cmDetectEnabled }: { recordings: Recor
                     onClick={() => retry.mutate({ id: recording.id }, {
                       onSuccess: () => {
                         void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
-                        toast({ message: 'CM 検出を再試行します' })
+                        toast({ message: 'CM 再検出を始めます' })
                       },
-                      onError: (error) => toast({ message: mutationErrorMessage('CM 検出の再試行に失敗しました', error), kind: 'error' }),
+                      onError: (error) => toast({ message: mutationErrorMessage('CM 再検出に失敗しました', error), kind: 'error' }),
                     })}
                   >
-                    再試行
+                    再検出
                   </Button>
                 )}
               </li>
@@ -1025,7 +1015,6 @@ export function CMLogoStationPage() {
     deleteLogo.mutate({ networkId, serviceId }, {
       onSuccess: () => {
         void queryClient.invalidateQueries({ queryKey: getListCMLogosQueryKey() })
-        void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
         toast({
           message: logo.logoArea
             ? '覚えたロゴを削除しました。枠から新しい候補を作ります'
@@ -1066,11 +1055,7 @@ export function CMLogoStationPage() {
         {!cmDetectEnabled ? (
           <p className="text-sm text-muted-foreground">このデプロイでは CM 検出が無効なので、枠を教える面は出ません。</p>
         ) : (
-          <CMLogoFrameEditor
-            logo={logo}
-            recordings={recordings}
-            requestedRecordingId={search.recording}
-          />
+          <CMLogoFrameEditor logo={logo} recordings={recordings} requestedRecordingId={search.recording} />
         )}
 
         <AffectedRecordings recordings={recordings} cmDetectEnabled={cmDetectEnabled} />
@@ -1117,11 +1102,7 @@ function LogoRow({ logo }: { logo: CMLogoState }) {
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span className="font-medium">{logo.serviceName}</span>
             <span className="text-xs text-muted-foreground">{logo.site}</span>
-            {(badge.attention || logo.candidate?.state === 'ready') && (
-              <span className={cn('rounded px-1.5 py-0.5 text-xs', badge.attention ? 'bg-destructive/10 text-destructive' : 'bg-muted text-foreground')}>
-                {badge.label}
-              </span>
-            )}
+            {badge.attention && <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-xs text-destructive">要対応</span>}
           </div>
           <p className="mt-1 text-sm">{cmLogoStateSentence(logo)}</p>
         </div>

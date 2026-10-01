@@ -153,6 +153,9 @@ export const CMDetectionStage = {
   parse: 'parse',
   save: 'save',
   stopped: 'stopped',
+  resolution: 'resolution',
+  match: 'match',
+  adopt: 'adopt',
 } as const;
 
 export interface CMRange {
@@ -280,6 +283,7 @@ export const CMLogoCandidateStage = {
   area: 'area',
   logo: 'logo',
   match: 'match',
+  save: 'save',
   stopped: 'stopped',
 } as const;
 
@@ -859,6 +863,12 @@ export interface Recording {
      * どのルールも当たらない録画。
      */
   series?: string | null;
+  /**
+     * タイトルから導出した自動シリーズキー（`recordings.series_key`）。
+     * 分類ルールが当たっても変わらない表示用の補助情報で、URL や絞り込みの
+     * 宛先には使わない。自動キーを導出できないタイトルでは null。
+     */
+  seriesKey?: string | null;
   /** 番組の放送開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。 */
   startAt: string;
   durationMs: number;
@@ -1278,14 +1288,18 @@ export type LabelRule = LabelRuleInput & {
 
 export interface RecordingShelf {
   /**
-     * 棚のキー。null は実効シリーズを導出できなかった録画（UI は「その他」に
-     * まとめる）。
+     * 棚のキー（画面のシリーズ名）。null は実効シリーズを導出できなかった録画
+     * （番組ハブを開けないので UI は表示しない）。
      */
   value?: string | null;
-  /** 代表の録画の生のタイトル（見出しに使う）。 */
+  /** 代表の録画の生のタイトル（シリーズ名の下の副見出しに使う）。 */
   title: string;
-  /** この棚に入る録画の件数。 */
+  /** 生きている録画の件数（録画中・取り込み待ち・失敗を含む）。 */
   count: number;
+  /** この棚のうち、再生できる録画の件数。 */
+  playableCount: number;
+  /** シリーズ内で最も新しい録画の番組開始時刻。常に UTC。 */
+  latestStartAt: string;
   /** 代表の録画の id。棚から録画一覧・番組ハブへ渡す起点。 */
   representativeId: number;
 }
@@ -5617,16 +5631,18 @@ export const getListRecordingShelvesUrl = (params?: ListRecordingShelvesParams,)
 
 /**
  * 実効シリーズ（分類ルールが当たればその値、当たらなければ自動キー）ごとの
- * 棚。1 要素 = 1 棚で、`value` は棚のキー、`title` は代表の録画の生の
- * タイトル（値は正規化の産物なので表示名にならない）。
+ * 棚。1 要素 = 1 棚で、`value` は棚のキー（画面はこれをシリーズ名として
+ * 出す。キーを名前にすると `ドラマ` のような過剰併合が一目で分かる）、
+ * `title` は代表の録画の生のタイトル（副見出し。枠のキーでも中身が分かる）。
  *
  * 母集団は生きていて（`deleted_at IS NULL AND superseded_at IS NULL`）
- * 再生できる録画（原本の media_asset がある、または encoded の派生物が
- * ある）だけ。ごみ箱・superseded・取り込めていない録画は数えない。
+ * 録画中・取り込み待ち・失敗を含むすべての録画。ごみ箱・superseded は
+ * 除外する。`playableCount` はこの母集団のうち、原本の media_asset がある
+ * か encoded の派生物がある録画の件数。
  *
  * 代表は `ORDER BY program_start_at DESC, id DESC LIMIT 1`。
  * `value` が null の棚（自動キーを導出できず、どのルールも当たらない
- * 録画）も返す --- UI が「その他」にまとめる件数の材料にするため。
+ * 録画）も返す --- UI は番組ハブを開けないので表示しない。
  *
  * **パスを `/api/recordings/shelves` にしない。** `/api/recordings/{id}`
  * と id=`shelves` で曖昧になる。

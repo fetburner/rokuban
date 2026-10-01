@@ -19,20 +19,25 @@ import (
 
 // Defines values for CMDetectionStage.
 const (
-	CMDetectionStageArea    CMDetectionStage = "area"
-	CMDetectionStageChapter CMDetectionStage = "chapter"
-	CMDetectionStageJoin    CMDetectionStage = "join"
-	CMDetectionStageLogo    CMDetectionStage = "logo"
-	CMDetectionStageParse   CMDetectionStage = "parse"
-	CMDetectionStageProbe   CMDetectionStage = "probe"
-	CMDetectionStageSave    CMDetectionStage = "save"
-	CMDetectionStageSetup   CMDetectionStage = "setup"
-	CMDetectionStageStopped CMDetectionStage = "stopped"
+	CMDetectionStageAdopt      CMDetectionStage = "adopt"
+	CMDetectionStageArea       CMDetectionStage = "area"
+	CMDetectionStageChapter    CMDetectionStage = "chapter"
+	CMDetectionStageJoin       CMDetectionStage = "join"
+	CMDetectionStageLogo       CMDetectionStage = "logo"
+	CMDetectionStageMatch      CMDetectionStage = "match"
+	CMDetectionStageParse      CMDetectionStage = "parse"
+	CMDetectionStageProbe      CMDetectionStage = "probe"
+	CMDetectionStageResolution CMDetectionStage = "resolution"
+	CMDetectionStageSave       CMDetectionStage = "save"
+	CMDetectionStageSetup      CMDetectionStage = "setup"
+	CMDetectionStageStopped    CMDetectionStage = "stopped"
 )
 
 // Valid indicates whether the value is a known member of the CMDetectionStage enum.
 func (e CMDetectionStage) Valid() bool {
 	switch e {
+	case CMDetectionStageAdopt:
+		return true
 	case CMDetectionStageArea:
 		return true
 	case CMDetectionStageChapter:
@@ -41,9 +46,13 @@ func (e CMDetectionStage) Valid() bool {
 		return true
 	case CMDetectionStageLogo:
 		return true
+	case CMDetectionStageMatch:
+		return true
 	case CMDetectionStageParse:
 		return true
 	case CMDetectionStageProbe:
+		return true
+	case CMDetectionStageResolution:
 		return true
 	case CMDetectionStageSave:
 		return true
@@ -86,6 +95,7 @@ const (
 	CMLogoCandidateStageLogo    CMLogoCandidateStage = "logo"
 	CMLogoCandidateStageMatch   CMLogoCandidateStage = "match"
 	CMLogoCandidateStageProbe   CMLogoCandidateStage = "probe"
+	CMLogoCandidateStageSave    CMLogoCandidateStage = "save"
 	CMLogoCandidateStageSetup   CMLogoCandidateStage = "setup"
 	CMLogoCandidateStageStopped CMLogoCandidateStage = "stopped"
 )
@@ -100,6 +110,8 @@ func (e CMLogoCandidateStage) Valid() bool {
 	case CMLogoCandidateStageMatch:
 		return true
 	case CMLogoCandidateStageProbe:
+		return true
+	case CMLogoCandidateStageSave:
 		return true
 	case CMLogoCandidateStageSetup:
 		return true
@@ -1839,7 +1851,12 @@ type Recording struct {
 	// **導出値であって録画の属性ではない。** 分類ルールを変えると値が変わる
 	// （全件再評価のジョブが追従する）。null は自動キーを導出できず、
 	// どのルールも当たらない録画。
-	Series      *string `json:"series,omitempty"`
+	Series *string `json:"series,omitempty"`
+
+	// SeriesKey タイトルから導出した自動シリーズキー（`recordings.series_key`）。
+	// 分類ルールが当たっても変わらない表示用の補助情報で、URL や絞り込みの
+	// 宛先には使わない。自動キーを導出できないタイトルでは null。
+	SeriesKey   *string `json:"seriesKey,omitempty"`
 	ServiceId   int     `json:"serviceId"`
 	ServiceName string  `json:"serviceName"`
 
@@ -1915,17 +1932,23 @@ type RecordingChaptersSource string
 
 // RecordingShelf defines model for RecordingShelf.
 type RecordingShelf struct {
-	// Count この棚に入る録画の件数。
+	// Count 生きている録画の件数（録画中・取り込み待ち・失敗を含む）。
 	Count int `json:"count"`
+
+	// LatestStartAt シリーズ内で最も新しい録画の番組開始時刻。常に UTC。
+	LatestStartAt time.Time `json:"latestStartAt"`
+
+	// PlayableCount この棚のうち、再生できる録画の件数。
+	PlayableCount int `json:"playableCount"`
 
 	// RepresentativeId 代表の録画の id。棚から録画一覧・番組ハブへ渡す起点。
 	RepresentativeId int64 `json:"representativeId"`
 
-	// Title 代表の録画の生のタイトル（見出しに使う）。
+	// Title 代表の録画の生のタイトル（シリーズ名の下の副見出しに使う）。
 	Title string `json:"title"`
 
-	// Value 棚のキー。null は実効シリーズを導出できなかった録画（UI は「その他」に
-	// まとめる）。
+	// Value 棚のキー（画面のシリーズ名）。null は実効シリーズを導出できなかった録画
+	// （番組ハブを開けないので UI は表示しない）。
 	Value *string `json:"value,omitempty"`
 }
 
