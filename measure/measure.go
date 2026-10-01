@@ -21,7 +21,7 @@ func main() {
 	input := os.Args[1]
 	root, err := os.MkdirTemp("", "original-vod-offset-measure-")
 	must(err)
-	defer os.RemoveAll(root)
+	defer func() { must(os.RemoveAll(root)) }()
 	cfg := streamer.LiveConfig{
 		FFmpeg: "ffmpeg",
 		Profiles: []streamer.LiveProfile{{
