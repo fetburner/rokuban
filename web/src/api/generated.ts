@@ -139,6 +139,7 @@ export const CMDetectionState = {
 
 /**
  * The worker stage that produced the latest failed attempt, if known.
+ * @nullable
  */
 export type CMDetectionStage = typeof CMDetectionStage[keyof typeof CMDetectionStage] | null;
 
@@ -167,7 +168,10 @@ export interface CMDetection {
   state: CMDetectionState;
   /** CM ranges in milliseconds from the first original frame. */
   ranges?: CMRange[];
-  /** The worker stage that produced the latest failed attempt, if known. */
+  /**
+     * The worker stage that produced the latest failed attempt, if known.
+     * @nullable
+     */
   stage?: CMDetectionStage;
   /** The unmodified technical detail of the latest attempt, if present. */
   error?: string;
@@ -274,6 +278,9 @@ export const CMLogoCandidateState = {
   ready: 'ready',
 } as const;
 
+/**
+ * @nullable
+ */
 export type CMLogoCandidateStage = typeof CMLogoCandidateStage[keyof typeof CMLogoCandidateStage] | null;
 
 
@@ -289,7 +296,9 @@ export const CMLogoCandidateStage = {
 
 export interface CMLogoCandidate {
   state: CMLogoCandidateState;
+  /** @nullable */
   stage?: CMLogoCandidateStage;
+  /** @nullable */
   error?: string | null;
   previewPng?: string;
   /** @minimum 0 */
@@ -304,6 +313,7 @@ export interface CMLogoCandidate {
   codedWidth: number;
   /** @minimum 1 */
   codedHeight: number;
+  /** @nullable */
   recordingId?: number | null;
   attemptedAt: string;
 }
@@ -334,7 +344,10 @@ export interface CMLogoState {
   codedHeight?: number;
   learnedAt?: string;
   previewPng?: string;
-  /** The stage of the most recent failure that still needs attention, if known. */
+  /**
+     * The stage of the most recent failure that still needs attention, if known.
+     * @nullable
+     */
   lastFailureStage?: string | null;
   /** Recording with an active original for frame selection, or 0. */
   frameRecordingId: number;
@@ -872,12 +885,14 @@ export interface Recording {
      * **導出値であって録画の属性ではない。** 分類ルールを変えると値が変わる
      * （全件再評価のジョブが追従する）。null は自動キーを導出できず、
      * どのルールも当たらない録画。
+     * @nullable
      */
   series?: string | null;
   /**
      * タイトルから導出した自動シリーズキー（`recordings.series_key`）。
      * 分類ルールが当たっても変わらない表示用の補助情報で、URL や絞り込みの
      * 宛先には使わない。自動キーを導出できないタイトルでは null。
+     * @nullable
      */
   seriesKey?: string | null;
   /** 番組の放送開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。 */
@@ -1208,10 +1223,15 @@ export interface RuleTimeWindow {
  * 検索対象のサイトは `sites`（空または省略 = 全サイト）が決める。
  */
 export interface ProgramSearchRequest {
+  /** @nullable */
   isFree?: boolean | null;
+  /** @nullable */
   durationMinMs?: number | null;
+  /** @nullable */
   durationMaxMs?: number | null;
+  /** @nullable */
   periodStartAt?: string | null;
+  /** @nullable */
   periodEndAt?: string | null;
   textMatches?: RuleTextMatch[];
   services?: RuleService[];
@@ -1308,6 +1328,7 @@ export interface RecordingShelf {
   /**
      * 棚のキー（画面のシリーズ名）。null は実効シリーズを導出できなかった録画
      * （番組ハブを開けないので UI は表示しない）。
+     * @nullable
      */
   value?: string | null;
   /** 代表の録画の生のタイトル（シリーズ名の下の副見出しに使う）。 */
@@ -1347,11 +1368,18 @@ export interface RuleInput {
   description?: string;
   enabled?: boolean;
   priority?: number;
-  /** null = 問わない */
+  /**
+     * null = 問わない
+     * @nullable
+     */
   isFree?: boolean | null;
+  /** @nullable */
   durationMinMs?: number | null;
+  /** @nullable */
   durationMaxMs?: number | null;
+  /** @nullable */
   periodStartAt?: string | null;
+  /** @nullable */
   periodEndAt?: string | null;
   textMatches?: RuleTextMatch[];
   services?: RuleService[];
@@ -1373,6 +1401,7 @@ export interface RuleInput {
      * （録画が黙って止まる）。1 を超えると常に偽になり、重複排除が黙って無効化される。
      * @maximum 1
      * @exclusiveMinimum 0
+     * @nullable
      */
   dedupeThreshold?: number | null;
   /**
@@ -1381,6 +1410,7 @@ export interface RuleInput {
      * `program_start_at >= now() - window` が現在以降の開始時刻を要求する形になり、
      * 比較対象は必ず過去の放送なので常に偽（重複排除が黙って無効化される）。
      * @exclusiveMinimum 0
+     * @nullable
      */
   dedupeWindowSeconds?: number | null;
   keepOriginal?: RuleInputKeepOriginal;
@@ -2906,8 +2936,16 @@ export const createRule = async (ruleInput: RuleInput, options?: Parameters<type
     const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
     if (!h) return {};
     if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Array.isArray(h)) return Object.fromEntries(h);
-    return h;
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
   };
 return customInstance<createRuleResponse>(getCreateRuleUrl(),
   {
@@ -3131,8 +3169,16 @@ export const updateRule = async (id: number,
     const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
     if (!h) return {};
     if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Array.isArray(h)) return Object.fromEntries(h);
-    return h;
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
   };
 return customInstance<updateRuleResponse>(getUpdateRuleUrl(id),
   {
@@ -3442,8 +3488,16 @@ export const createLabelRule = async (labelRuleInput: LabelRuleInput, options?: 
     const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
     if (!h) return {};
     if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Array.isArray(h)) return Object.fromEntries(h);
-    return h;
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
   };
 return customInstance<createLabelRuleResponse>(getCreateLabelRuleUrl(),
   {
@@ -3791,8 +3845,16 @@ export const updateLabelRule = async (id: number,
     const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
     if (!h) return {};
     if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Array.isArray(h)) return Object.fromEntries(h);
-    return h;
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
   };
 return customInstance<updateLabelRuleResponse>(getUpdateLabelRuleUrl(id),
   {
@@ -4513,8 +4575,16 @@ export const searchPrograms = async (programSearchRequest: ProgramSearchRequest,
     const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
     if (!h) return {};
     if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Array.isArray(h)) return Object.fromEntries(h);
-    return h;
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
   };
 return customInstance<searchProgramsResponse>(getSearchProgramsUrl(),
   {
@@ -5059,8 +5129,16 @@ export const putProgramIntent = async (site: string,
     const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
     if (!h) return {};
     if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Array.isArray(h)) return Object.fromEntries(h);
-    return h;
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
   };
 return customInstance<putProgramIntentResponse>(getPutProgramIntentUrl(site,programId),
   {
@@ -5276,8 +5354,16 @@ export const patchProgramOverrides = async (site: string,
     const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
     if (!h) return {};
     if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Array.isArray(h)) return Object.fromEntries(h);
-    return h;
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
   };
 return customInstance<patchProgramOverridesResponse>(getPatchProgramOverridesUrl(site,programId),
   {
@@ -6160,8 +6246,16 @@ export const putRecordingPlaybackPosition = async (id: number,
     const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
     if (!h) return {};
     if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Array.isArray(h)) return Object.fromEntries(h);
-    return h;
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
   };
 return customInstance<putRecordingPlaybackPositionResponse>(getPutRecordingPlaybackPositionUrl(id),
   {
@@ -6899,8 +6993,16 @@ export const addRecordingEncodeProfiles = async (id: number,
     const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
     if (!h) return {};
     if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Array.isArray(h)) return Object.fromEntries(h);
-    return h;
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
   };
 return customInstance<addRecordingEncodeProfilesResponse>(getAddRecordingEncodeProfilesUrl(id),
   {
@@ -7150,8 +7252,16 @@ export const setRecordingEncodePolicy = async (id: number,
     const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
     if (!h) return {};
     if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Array.isArray(h)) return Object.fromEntries(h);
-    return h;
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
   };
 return customInstance<setRecordingEncodePolicyResponse>(getSetRecordingEncodePolicyUrl(id),
   {
@@ -7528,8 +7638,16 @@ export const putRecordingChapterEdits = async (id: number,
     const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
     if (!h) return {};
     if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Array.isArray(h)) return Object.fromEntries(h);
-    return h;
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
   };
 return customInstance<putRecordingChapterEditsResponse>(getPutRecordingChapterEditsUrl(id),
   {
@@ -7935,8 +8053,16 @@ export const putCMLogoArea = async (networkId: number,
     const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
     if (!h) return {};
     if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Array.isArray(h)) return Object.fromEntries(h);
-    return h;
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
   };
 return customInstance<putCMLogoAreaResponse>(getPutCMLogoAreaUrl(networkId,serviceId),
   {
@@ -8125,8 +8251,16 @@ export const adoptCMLogoCandidate = async (networkId: number,
     const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
     if (!h) return {};
     if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Array.isArray(h)) return Object.fromEntries(h);
-    return h;
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
   };
 return customInstance<adoptCMLogoCandidateResponse>(getAdoptCMLogoCandidateUrl(networkId,serviceId),
   {
