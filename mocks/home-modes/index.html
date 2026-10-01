@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Rokuban ホーム試作</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap">
+<style>
+/* レイアウト: モード切替 → デスクトップ枠とスマホ枠を並べる舞台 → 説明と「主張しないこと」。
+   色と角は web/src/index.css のトークンを転記（地は「イ」の 3 値、色は信号のみ、角は立てる）。 */
+:root {
+  --paper: oklch(0.985 0 0);
+  --scanline: oklch(0.552 0.016 285.938);
+  --sumi: oklch(0.21 0.006 285.885);
+  --tone-100: oklch(0.967 0.001 286.375);
+  --tone-200: oklch(0.92 0.004 286.32);
+  --tone-400: oklch(0.705 0.015 286.067);
+  --tone-800: oklch(0.274 0.006 286.033);
+  --tone-950: oklch(0.141 0.005 285.823);
+
+  --bg: var(--paper);
+  --fg: var(--sumi);
+  --card: oklch(1 0 0);
+  --muted: var(--tone-100);
+  --muted-fg: var(--scanline);
+  --border: var(--tone-200);
+  --primary: var(--sumi);
+  --primary-fg: var(--paper);
+  --tally: oklch(0.56 0.215 27);
+  --tally-fg: var(--paper);
+  --warning: oklch(0.52 0.15 46);
+  --destructive: oklch(0.48 0.195 27.325);
+  --stage: var(--tone-100);
+
+  --radius: 0.25rem;
+  --font-sans: 'Geist', 'Noto Sans JP', 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', 'Yu Gothic UI', sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: var(--tone-950);
+    --fg: var(--paper);
+    --card: var(--sumi);
+    --muted: var(--tone-800);
+    --muted-fg: var(--tone-400);
+    --border: oklch(1 0 0 / 10%);
+    --primary: var(--tone-200);
+    --primary-fg: var(--sumi);
+    --tally: oklch(0.58 0.215 27);
+    --warning: oklch(0.769 0.188 70.08);
+    --destructive: oklch(0.704 0.191 22.216);
+    --stage: oklch(0.18 0.005 285.9);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: var(--tone-950);
+  --fg: var(--paper);
+  --card: var(--sumi);
+  --muted: var(--tone-800);
+  --muted-fg: var(--tone-400);
+  --border: oklch(1 0 0 / 10%);
+  --primary: var(--tone-200);
+  --primary-fg: var(--sumi);
+  --tally: oklch(0.58 0.215 27);
+  --warning: oklch(0.769 0.188 70.08);
+  --destructive: oklch(0.704 0.191 22.216);
+  --stage: oklch(0.18 0.005 285.9);
+}
+
+* { box-sizing: border-box; }
+html { font-variant-numeric: tabular-nums; }
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--font-sans);
+  font-size: 14px; line-height: 1.6;
+  padding: 32px 20px 64px;
+}
+.wrap { max-width: 1240px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+h1 { font-size: 22px; margin: 0; font-weight: 700; text-wrap: balance; letter-spacing: 0.01em; }
+h2 { font-size: 15px; margin: 0; font-weight: 600; }
+.lede { margin: 6px 0 0; color: var(--muted-fg); max-width: 72ch; }
+a { color: inherit; }
+button, input { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
+.check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+.check input { accent-color: var(--fg); width: 15px; height: 15px; }
+
+/* 製品側の 2 択（RecordingSeriesToggle と同じ形） */
+.seg { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: calc(var(--radius) * 1.4); padding: 2px; background: var(--card); }
+.seg button {
+  border: 0; background: none; border-radius: var(--radius); padding: 3px 10px; font-size: 12px;
+  color: var(--muted-fg); cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+}
+.seg button[aria-pressed="true"] { background: var(--muted); color: var(--fg); font-weight: 500; }
+.seg.lg button { font-size: 13px; padding: 5px 14px; }
+.count {
+  font-size: 11px; line-height: 1; padding: 2px 5px; border-radius: var(--radius);
+  color: var(--destructive); background: color-mix(in oklch, var(--destructive) 12%, transparent); font-weight: 600;
+}
+
+/* 舞台 */
+.stage { background: var(--stage); border-radius: var(--radius); padding: 20px; display: flex; gap: 20px; align-items: flex-start; }
+.frame-label { font-size: 11px; color: var(--muted-fg); letter-spacing: 0.08em; margin-bottom: 6px; }
+.dcol { flex: 1; min-width: 0; }
+.mcol { flex: 0 0 auto; width: 360px; max-width: 100%; }
+.dscroll { overflow-x: auto; }
+@media (max-width: 1080px) {
+  .stage { flex-direction: column; align-items: stretch; }
+  .mcol { align-self: center; }
+}
+@media (max-width: 480px) { .stage { padding: 12px; } }
+
+.desk { min-width: 780px; height: 660px; display: flex; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.side { width: 148px; flex: 0 0 auto; border-right: 1px solid var(--border); padding: 12px 8px; display: flex; flex-direction: column; gap: 2px; }
+.side .brand { font-weight: 700; font-size: 15px; padding: 2px 8px 10px; letter-spacing: 0.06em; }
+.side .ni { padding: 6px 8px; border-radius: var(--radius); font-size: 13px; color: var(--muted-fg); }
+.side .ni.on { background: var(--muted); color: var(--fg); font-weight: 500; }
+.dmain { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.scroll { overflow-y: auto; flex: 1; }
+.appbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 20px; border-bottom: 1px solid var(--border); }
+.appbar h3 { margin: 0; font-size: 16px; font-weight: 600; }
+.dbody { padding: 18px 20px 28px; display: flex; flex-direction: column; gap: 22px; max-width: 1000px; }
+
+.phone { width: 360px; max-width: 100%; height: 720px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border); border-radius: calc(var(--radius) * 4); overflow: hidden; }
+.phone .appbar { padding: 10px 14px; }
+.mbody { padding: 14px 14px 20px; display: flex; flex-direction: column; gap: 20px; }
+.tabs { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--border); padding-bottom: 8px; }
+.tabs div { text-align: center; font-size: 11px; padding: 10px 0 6px; color: var(--muted-fg); }
+.tabs div.on { color: var(--fg); font-weight: 600; }
+
+/* 帯（ブレーカー） */
+.band { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 8px 20px; border-bottom: 1px solid color-mix(in oklch, var(--destructive) 30%, transparent); background: color-mix(in oklch, var(--destructive) 9%, var(--bg)); font-size: 12px; }
+.phone .band { padding: 8px 14px; }
+.band b { color: var(--destructive); font-weight: 600; }
+.band a { margin-left: auto; text-decoration: underline; text-underline-offset: 2px; }
+
+/* 共通部品 */
+.sec { display: flex; flex-direction: column; gap: 10px; }
+.sh { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.sh h4 { margin: 0; font-size: 13px; font-weight: 600; }
+.sh .aux, .sh a { font-size: 12px; color: var(--muted-fg); text-decoration: none; }
+.meta { font-size: 12px; color: var(--muted-fg); }
+.t { font-size: 13px; font-weight: 500; line-height: 1.4; }
+.thumb {
+  aspect-ratio: 16 / 9; max-width: 100%; border-radius: var(--radius); position: relative; overflow: hidden;
+  background: linear-gradient(135deg, color-mix(in oklch, var(--fg) var(--a), var(--bg)), color-mix(in oklch, var(--fg) var(--b), var(--bg)));
+}
+.thumb .ch { position: absolute; left: 6px; bottom: 5px; font-size: 10px; color: var(--muted-fg); }
+.thumb .prog { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: color-mix(in oklch, var(--fg) 15%, transparent); }
+.thumb .prog i { display: block; height: 100%; background: var(--fg); }
+.tally { display: inline-flex; align-items: center; gap: 4px; background: var(--tally); color: var(--tally-fg); font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: var(--radius); line-height: 1.5; white-space: nowrap; }
+.badge { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: var(--radius); background: var(--muted); color: var(--fg); line-height: 1.6; white-space: nowrap; }
+.badge.w { color: var(--warning); background: color-mix(in oklch, var(--warning) 12%, transparent); }
+.badge.d { color: var(--destructive); background: color-mix(in oklch, var(--destructive) 12%, transparent); }
+.badge.o { background: none; border: 1px solid var(--border); color: var(--muted-fg); }
+.btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 12px; font-size: 13px; background: var(--card); }
+.btn.p { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); font-weight: 500; }
+.card { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+
+/* 見る: PGM モニター */
+.hero { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 20px; align-items: end; }
+.phone .hero { grid-template-columns: 1fr; gap: 12px; }
+.hero .eyebrow { font-size: 12px; color: var(--muted-fg); letter-spacing: 0.06em; }
+.hero .ttl { font-size: 20px; font-weight: 700; line-height: 1.35; text-wrap: balance; margin: 4px 0 6px; }
+.phone .hero .ttl { font-size: 18px; }
+.hero .chips { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
+.hero .acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.hero .bar { height: 4px; background: var(--muted); border-radius: 2px; margin-top: 10px; }
+.hero .bar i { display: block; height: 100%; background: var(--fg); border-radius: 2px; }
+.mini { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
+.phone .mini { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.mini .t { font-size: 11px; font-weight: 400; color: var(--muted-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; color: var(--muted-fg); border-top: 1px solid var(--border); padding-top: 10px; }
+.strip a { margin-left: auto; text-decoration: none; }
+
+/* 管理: 種別ごとの時間軸 */
+.tl { border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.tl-body { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 8px; }
+.phone .tl-body { grid-template-columns: 44px minmax(0, 1fr); }
+.names, .tl-inner { display: flex; flex-direction: column; gap: 10px; }
+.gname { display: flex; align-items: center; font-size: 12px; font-weight: 600; }
+.tl-scroll { overflow-x: auto; padding-bottom: 14px; }
+.tl-inner { position: relative; padding-right: 64px; box-sizing: content-box; }
+.stack { position: relative; display: flex; flex-direction: column; gap: 3px; }
+.track { position: relative; height: 20px; background: color-mix(in oklch, var(--fg) 3%, transparent); border-radius: 2px; }
+.ruler { position: relative; height: 14px; }
+.ruler span { position: absolute; transform: translateX(-50%); font-size: 10px; color: var(--muted-fg); white-space: nowrap; line-height: 14px; }
+.ruler .nowtag { transform: none; margin-left: -1px; background: var(--tally); color: var(--tally-fg); padding: 0 4px; border-radius: 2px; font-weight: 600; }
+.blk { position: absolute; top: 2px; bottom: 2px; border-radius: 2px; font-size: 10px; line-height: 16px; padding: 0 3px; overflow: hidden; white-space: nowrap; }
+.blk.done { background: color-mix(in oklch, var(--fg) 20%, var(--card)); }
+.blk.drop { background: color-mix(in oklch, var(--fg) 20%, var(--card)); box-shadow: inset 0 -3px 0 var(--destructive); }
+.blk.fail { background: color-mix(in oklch, var(--destructive) 14%, var(--card)); border: 1px solid var(--destructive); color: var(--destructive); }
+.blk.rec { background: var(--tally); color: var(--tally-fg); font-weight: 600; }
+.blk.resv { background: var(--card); border: 1px solid color-mix(in oklch, var(--fg) 45%, var(--card)); }
+.over {
+  position: absolute; top: -3px; bottom: -3px; z-index: 1; pointer-events: none;
+  border: 1px dashed var(--warning);
+  background: repeating-linear-gradient(45deg, color-mix(in oklch, var(--warning) 22%, transparent) 0 3px, transparent 3px 7px);
+}
+.over span { position: absolute; top: 0; left: calc(100% + 4px); font-size: 10px; font-weight: 600; color: var(--warning); background: var(--card); padding: 0 3px; white-space: nowrap; line-height: 16px; }
+.now { position: absolute; top: -12px; bottom: -6px; width: 2px; margin-left: -1px; background: var(--tally); z-index: 2; pointer-events: none; }
+.daysep { position: absolute; top: -12px; bottom: -6px; width: 1px; background: var(--border); pointer-events: none; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11px; color: var(--muted-fg); border-top: 1px solid var(--border); padding-top: 8px; }
+.legend i { display: inline-block; width: 14px; height: 9px; margin-right: 5px; vertical-align: -1px; border-radius: 2px; }
+
+.issues { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
+.issue { display: grid; grid-template-columns: 7.5em 1fr; gap: 10px; padding: 8px 12px; align-items: baseline; border-top: 1px solid var(--border); }
+.issue:first-child { border-top: 0; }
+.issue .badge { justify-self: start; }
+.storage { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 12px; color: var(--muted-fg); }
+.storage b { color: var(--fg); font-weight: 600; }
+
+.notes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+@media (max-width: 760px) { .notes { grid-template-columns: 1fr; } }
+.note { display: flex; flex-direction: column; gap: 8px; }
+.note ul { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 4px; max-width: 64ch; }
+.note li::marker { color: var(--muted-fg); }
+.note code { font-size: 12px; background: var(--muted); padding: 0 4px; border-radius: var(--radius); }
+@media (prefers-reduced-motion: no-preference) { .stage > div { animation: fade .18s ease-out; } }
+@keyframes fade { from { opacity: .6; } to { opacity: 1; } }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <h1>ホーム試作: 見るは PGM モニター、管理は時間軸</h1>
+    <p class="lede">見る側は「次に見る 1 本」に面積を集め、管理側は録画と予約を地デジ / BS ごとの時間軸に描きます。番組と数値は例で、時刻は 10/1（木）20:42 の想定です。</p>
+  </header>
+
+  <div class="controls">
+    <div class="seg lg" role="group" aria-label="ホームのモード">
+      <button data-mode="watch" aria-pressed="true">見る</button>
+      <button data-mode="ops" aria-pressed="false">管理 <span class="count" data-count>3</span></button>
+    </div>
+    <label class="check" for="breaker"><input type="checkbox" id="breaker"> ブレーカー発動中の状態で見る</label>
+  </div>
+
+  <section class="stage" aria-live="polite">
+    <div class="dcol">
+      <div class="frame-label">デスクトップ</div>
+      <div class="dscroll"><div id="desk"></div></div>
+    </div>
+    <div class="mcol">
+      <div class="frame-label">スマホ（360px）</div>
+      <div id="phone"></div>
+    </div>
+  </section>
+
+  <div class="notes" id="notes"></div>
+</div>
+
+<script>
+(() => {
+  const state = { mode: 'watch', breaker: false };
+  const warnCount = () => (state.breaker ? 4 : 3);
+
+  const th = (a, b, ch, extra = '') => `<div class="thumb" style="--a:${a}%;--b:${b}%">${extra}${ch ? `<span class="ch">${ch}</span>` : ''}</div>`;
+  const prog = (pct) => `<span class="prog"><i style="width:${pct}%"></i></span>`;
+
+  const toggle = () => `
+    <div class="seg" role="group" aria-label="ホームのモード">
+      <button data-mode="watch" aria-pressed="${state.mode === 'watch'}">見る</button>
+      <button data-mode="ops" aria-pressed="${state.mode === 'ops'}">管理 <span class="count">${warnCount()}</span></button>
+    </div>`;
+
+  // 視聴側にだけ出す帯。ブレーカーは「録画が止まりうる」ので見る人にも関係がある。
+  const band = () => (state.breaker && state.mode === 'watch')
+    ? `<div class="band"><b>録画予定の削除が停止中</b><span>予約が失われていないか確認が必要です</span><a href="#" data-mode="ops">管理で見る</a></div>`
+    : '';
+
+  const desk = (body) => `
+    <div class="desk">
+      <nav class="side" aria-label="モックのナビ">
+        <div class="brand">録番</div>
+        ${['ホーム', '番組', '録画', '予約', 'ライブ', '検索', 'ルール'].map((n, i) => `<div class="ni${i === 0 ? ' on' : ''}">${n}</div>`).join('')}
+      </nav>
+      <div class="dmain">
+        <div class="appbar"><h3>ホーム</h3>${toggle()}</div>
+        ${band()}
+        <div class="scroll"><div class="dbody">${body}</div></div>
+      </div>
+    </div>`;
+
+  const phone = (body) => `
+    <div class="phone">
+      <div class="appbar"><h3>ホーム</h3>${toggle()}</div>
+      ${band()}
+      <div class="scroll"><div class="mbody">${body}</div></div>
+      <div class="tabs"><div class="on">ホーム</div><div>番組</div><div>録画</div><div>その他</div></div>
+    </div>`;
+
+  // ───────── 見る
+  const hero = () => `
+    <div class="hero">
+      ${th(30, 52, '日テレ', prog(62))}
+      <div>
+        <div class="eyebrow">次に見る · 続きから</div>
+        <div class="ttl">葬送のフリーレン 第3話「人を殺す魔法」</div>
+        <div class="meta">9/26（金）23:30 · 日テレ · 14:40 / 24:00</div>
+        <div class="chips"><span class="badge">CM カット版</span><span class="badge o">1440×1080</span><span class="badge o">再生元は自動</span></div>
+        <div class="bar"><i style="width:62%"></i></div>
+        <div class="acts"><span class="btn p">▶ 続きから再生</span><span class="btn">最初から</span></div>
+      </div>
+    </div>`;
+  const others = [['孤独のグルメ', 24, 48], ['ドキュメント72時間', 26, 46], ['アメトーーク!', 40, 20], ['カンブリア宮殿', 18, 40], ['サイエンスZERO', 16, 36], ['NHKスペシャル', 44, 22]];
+  const miniStrip = (n) => `
+    <div class="sec">
+      <div class="sh"><h4>ほかの新着</h4><a href="#" onclick="return false">すべてのシリーズ →</a></div>
+      <div class="mini">${others.slice(0, n).map(([t, a, b]) => `<div class="card">${th(a, b, '')}<div class="t">${t}</div></div>`).join('')}</div>
+      <div class="strip"><span class="tally">● 録画中 2</span><span>ブラタモリ（再）· 名曲アルバム</span><a href="#" onclick="return false">追っかけ再生 →</a></div>
+    </div>`;
+
+  // ───────── 管理
+  // 時刻は 10/1 0:00 からの時間。24 以上は翌日。段は表示上の詰め方で、チューナーの番号ではない。
+  const programs = [
+    ['GR', 12.0, 0.33, 'done', 'NHKニュース'],
+    ['GR', 12.75, 0.25, 'done', '連続テレビ小説（再）'],
+    ['GR', 17.0, 0.5, 'fail', 'サイエンスZERO（再）'],
+    ['GR', 19.0, 0.5, 'drop', 'NHKニュース7'],
+    ['GR', 19.5, 0.5, 'done', 'クローズアップ現代'],
+    ['GR', 20.0, 1.0, 'rec', 'ブラタモリ（再）'],
+    ['GR', 22.0, 0.9, 'resv', 'ダウンタウンDX'],
+    ['GR', 23.0, 1.0, 'resv', '孤独のグルメ'],
+    ['GR', 23.0, 0.93, 'resv', 'news23'],
+    ['GR', 23.25, 1.0, 'resv', 'アメトーーク!'],
+    ['GR', 23.5, 0.5, 'resv', '葬送のフリーレン'],
+    ['GR', 25.47, 0.5, 'resv', 'ダンジョン飯'],
+    ['GR', 43.95, 0.9, 'resv', 'ミュージックステーション'],
+    ['GR', 46.75, 0.5, 'resv', 'ドキュメント72時間'],
+    ['BS', 14.0, 1.5, 'done', 'BS 世界のドキュメンタリー'],
+    ['BS', 20.5, 1.0, 'rec', '名曲アルバム'],
+    ['BS', 31.0, 0.5, 'resv', 'BS ニュース'],
+    ['BS', 45.0, 2.0, 'resv', 'BS シネマ'],
+  ];
+  // /api/capacity/overages が返す形（区間と種別と不足本数）。どの番組が負けるかは持たない。
+  const overages = [{ type: 'GR', start: 23.5, end: 23.93, shortfall: 1 }];
+  // 種別ごとの本数は出さない（Tuner.types は配列で、BS/CS 共用のチューナーがある）。
+  const groups = [{ type: 'GR', name: '地デジ' }, { type: 'BS', name: 'BS' }];
+
+  const pack = (items) => {
+    const rows = [];
+    items.slice().sort((a, b) => a[1] - b[1]).forEach((it) => {
+      const r = rows.find((row) => row.end <= it[1] + 1e-6);
+      if (r) { r.items.push(it); r.end = it[1] + it[2]; } else rows.push({ items: [it], end: it[1] + it[2] });
+    });
+    return rows;
+  };
+  const hh = (h) => (h >= 24 ? '翌' : '') + (Math.floor(h) % 24) + '時';
+
+  const timeline = (S, E, step, pph, now) => {
+    const x = (h) => (h - S) * pph;
+    const W = (E - S) * pph;
+    const inWin = (s, d) => s + d > S && s < E;
+    const ticks = []; for (let h = Math.ceil(S / step) * step; h <= E; h += step) if (Math.abs(h - now) > 1.2) ticks.push(h);
+    const ROW = 20, GAP = 3;
+    const built = groups.map((g, gi) => {
+      const rows = pack(programs.filter((p) => p[0] === g.type && inWin(p[1], p[2])));
+      const height = rows.length * ROW + (rows.length - 1) * GAP;
+      const tracks = rows.map((row) => `<div class="track">${row.items.map(([, s, d, k, t]) => {
+        const l = Math.max(x(s), 0), w = Math.min(x(s + d), W) - l;
+        return `<div class="blk ${k}" style="left:${l}px;width:${w}px" title="${t}">${w >= 40 ? t : ''}</div>`;
+      }).join('')}</div>`).join('');
+      const ov = overages.filter((o) => o.type === g.type && o.end > S && o.start < E).map((o) => {
+        const l = Math.max(x(o.start), 0), w = Math.min(x(o.end), W) - l;
+        return `<div class="over" style="left:${l}px;width:${w}px"><span>${o.shortfall} 本不足</span></div>`;
+      }).join('');
+      const marks = `${24 > S && 24 < E ? `<div class="daysep" style="left:${x(24)}px"></div>` : ''}<div class="now" style="left:${x(now)}px"></div>`;
+      return { name: `<div class="gname" style="height:${height}px">${g.name}</div>`, stack: `<div class="stack" style="height:${height}px">${tracks}${ov}${marks}</div>` };
+    });
+    return `
+      <div class="tl">
+        <div class="tl-body">
+          <div class="names"><div style="height:14px"></div>${built.map((b) => b.name).join('')}</div>
+          <div class="tl-scroll" data-scroll-to="${Math.max(x(now - 3), 0)}">
+            <div class="tl-inner" style="width:${W}px">
+              <div class="ruler">${ticks.map((h) => `<span style="left:${x(h)}px">${hh(h)}</span>`).join('')}<span class="nowtag" style="left:${x(now)}px">いま 20:42</span></div>
+              ${built.map((b) => b.stack).join('')}
+            </div>
+          </div>
+        </div>
+        <div class="legend">
+          <span><i style="background:color-mix(in oklch,var(--fg) 20%,var(--card))"></i>録れた</span>
+          <span><i style="background:var(--tally)"></i>録画中</span>
+          <span><i style="border:1px solid color-mix(in oklch,var(--fg) 45%,var(--card))"></i>予約</span>
+          <span><i style="border:1px solid var(--destructive);background:color-mix(in oklch,var(--destructive) 14%,var(--card))"></i>失敗</span>
+          <span><i style="background:color-mix(in oklch,var(--fg) 20%,var(--card));box-shadow:inset 0 -3px 0 var(--destructive)"></i>ドロップあり</span>
+          <span><i style="border:1px dashed var(--warning);background:repeating-linear-gradient(45deg,color-mix(in oklch,var(--warning) 22%,transparent) 0 3px,transparent 3px 7px)"></i>チューナー不足の区間</span>
+          <span>段は重なりの表示で、チューナーの番号ではありません。枠の中を横にスクロールできます</span>
+        </div>
+      </div>`;
+  };
+
+  const issues = () => `
+    <div class="issues">
+      ${state.breaker ? `<div class="issue"><span class="badge d">停止中</span><div><div class="t">録画予定の削除が停止中</div><div class="meta">予約が 1 件も無いのに録画予定が残っています。予約が失われていないか確認してください</div></div></div>` : ''}
+      <div class="issue"><span class="badge d">録画失敗</span><div><div class="t">サイエンスZERO（再）</div><div class="meta">今日 17:00 · Eテレ · 未開始 / 理由: tuner-unavailable</div></div></div>
+      <div class="issue"><span class="badge w">チューナー不足</span><div><div class="t">今夜 23:30–23:56 地デジが 1 本不足しています</div><div class="meta">この時間帯の予約: 孤独のグルメ · news23 · アメトーーク! · 葬送のフリーレン</div></div></div>
+      <div class="issue"><span class="badge d">ドロップ 12</span><div><div class="t">NHKニュース7</div><div class="meta">今日 19:00 · NHK総合</div></div></div>
+    </div>`;
+  const storage = () => `<div class="storage"><span>残り <b>1.24 TB</b></span><span>今後 7 日の予約で <b>186 GB</b></span><span>満杯まで <b>約 12 日</b></span><span>エンコード待ち <b>3</b></span></div>`;
+  const opsBody = (step, pph, title) => `
+    <div class="sec"><div class="sh"><h4>${title}</h4><span class="aux">地デジ / BS ごと</span></div>${timeline(12, 48, step, pph, 20.7)}</div>
+    <div class="sec"><div class="sh"><h4>要対応</h4><span class="aux">${warnCount()} 件</span></div>${issues()}</div>
+    ${storage()}`;
+
+  const screens = {
+    watch: { d: () => hero() + miniStrip(6), m: () => hero() + miniStrip(3) },
+    ops: { d: () => opsBody(3, 64, '今日 12 時 → 明日の終わり'), m: () => opsBody(2, 30, '今日 12 時 → 明日の終わり') },
+  };
+
+  const notes = {
+    watch: [
+      ['この画面がすること', [
+        '面積の大半を「次に見る 1 本」に使います。選ぶ順は、続きからの先頭、無ければ <code>watchedAt</code> の無い直近の完了録画です。どちらも既存の API で取れます。',
+        'CM カット版か原本か、どの画質かは録画詳細と同じ自動選択で決めた状態で出し、1 タップで再生します。',
+        'ほかの新着と録画中は下の細い帯に置きます。シリーズは「すべてのシリーズ」から /series へ移ります。',
+      ]],
+      ['警告の扱い', [
+        '警告はトグルの件数だけです。0 件ならバッジを出さず、「異常なし」とも書きません。',
+        'ブレーカーが発動しているときだけ、視聴側にも帯を出します（上のチェックで確認できます）。録画が止まりうる状態は見る人にも関係があるためです。',
+        '失敗・チューナー不足・ドロップは管理側だけに出します。',
+      ]],
+    ],
+    ops: [
+      ['この画面がすること', [
+        '録れた・録画中・予約・失敗・ドロップを、地デジ / BS ごとの時間軸 1 本に描きます。いまの「警告」「今夜〜明日の予約」「直近の完了」の 3 セクションが、この時間軸と要対応の一覧になります。',
+        'チューナー不足は <code>/api/capacity/overages</code> の区間を、種別の行全体に重ねて描きます。',
+        '窓は今日 12 時から明日の終わりまでで、枠の中だけを横にスクロールします。初期表示は現在時刻の 3 時間前からです。',
+      ]],
+      ['この画面が主張しないこと', [
+        'どのチューナーで録るか。割り当ては mirakc が実行時に決めるので、段は重なりを詰めて並べただけです。',
+        '不足の区間でどの番組が録れないか。勝敗は mirakc と、Rokuban から見えない消費者で決まります。一覧には「この時間帯の予約」を並べるだけです。',
+        '不足の区間が出ていない時間帯が収まること。返る区間は下界だけです。',
+      ]],
+    ],
+  };
+
+  const render = () => {
+    const s = screens[state.mode];
+    document.getElementById('desk').innerHTML = desk(s.d());
+    document.getElementById('phone').innerHTML = phone(s.m());
+    document.querySelectorAll('.tl-scroll[data-scroll-to]').forEach((el) => { el.scrollLeft = Number(el.dataset.scrollTo); });
+    document.getElementById('notes').innerHTML = notes[state.mode].map(([h, items]) => `
+      <section class="note"><h2>${h}</h2><ul>${items.map((i) => `<li>${i}</li>`).join('')}</ul></section>`).join('');
+    document.querySelectorAll('.controls [data-mode]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mode === state.mode)));
+    document.querySelector('[data-count]').textContent = String(warnCount());
+  };
+
+  document.addEventListener('click', (e) => {
+    const t = e.target.closest('[data-mode]');
+    if (!t) return;
+    e.preventDefault();
+    state.mode = t.dataset.mode;
+    render();
+  });
+  document.getElementById('breaker').addEventListener('change', (e) => { state.breaker = e.target.checked; render(); });
+  render();
+})();
+</script>
+</body>
+</html>
