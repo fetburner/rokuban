@@ -448,6 +448,10 @@ describe('RecordingPlayer の再生操作', () => {
     expect(video.volume).toBe(0.25)
 
     const settings = openPlaybackSettings(container)
+    fireEvent.click(within(settings).getByRole('button', { name: 'ミュート' }))
+    expect(video.muted).toBe(true)
+    fireEvent.change(within(settings).getByRole('slider', { name: '音量' }), { target: { value: '0.5' } })
+    expect(video.volume).toBe(0.5)
     fireEvent.change(settings.querySelector('select[aria-label="再生速度"]')!, { target: { value: '2' } })
     expect(video.playbackRate).toBe(2)
     fireEvent.click(getByRole('button', { name: '字幕 オフ' }))
@@ -470,6 +474,9 @@ describe('RecordingPlayer の再生操作', () => {
       Object.defineProperty(video, 'requestPictureInPicture', { value: requestPictureInPicture })
       fireEvent.click(getByRole('button', { name: 'ピクチャーインピクチャー' }))
       expect(requestPictureInPicture).toHaveBeenCalledOnce()
+      const settings = openPlaybackSettings(container)
+      fireEvent.click(within(settings).getByRole('button', { name: 'ピクチャーインピクチャー' }))
+      expect(requestPictureInPicture).toHaveBeenCalledTimes(2)
     } finally {
       if (previous) Object.defineProperty(document, 'pictureInPictureEnabled', previous)
       else Reflect.deleteProperty(document, 'pictureInPictureEnabled')

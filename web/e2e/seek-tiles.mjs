@@ -430,7 +430,18 @@ for (const seconds of [35, 95]) {
 log('\n=== ⑥ 400px の設定パネルと狭い画面のプレビュー ===')
 if (EVIDENCE_DIR) {
   await page.setViewportSize({ width: 400, height: 844 })
-  await page.mouse.move(0, 0)
+  scrubBox = await page.locator('[data-testid="seek-scrub"]').boundingBox()
+  if (!scrubBox || scrubBox.width <= 0) {
+    ng.push('⑥ 400px のスクラブ帯の矩形が取れない（レイアウトが想定と違う）')
+  } else {
+    await hoverTile(35)
+    const mobilePreview = page.locator('[data-testid="seek-tile-preview"]')
+    const previewShown = await mobilePreview
+      .waitFor({ timeout: 5000 })
+      .then(() => true)
+      .catch(() => false)
+    if (!previewShown) ng.push('⑥ 400px で 35s 相当のタイルプレビューが出ない')
+  }
   await page.locator('[data-testid="recording-player-shell"]').screenshot({
     path: path.join(EVIDENCE_DIR, 'recording-detail-400px.png'),
   })

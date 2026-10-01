@@ -191,7 +191,8 @@ HLS / hls.js を使わない。原本 HLS の詳細は [api.md](../api.md)
   バー内にキーボードフォーカスがある間は操作バーを表示する。再生中にポインタが止まって 3 秒経つと隠す
 - 全画面は映像と操作バーを含むプレイヤー枠に要求する。ページの `F` キーも同じ経路を通る。
   要素全画面を持たない iPhone Safari では `video.webkitEnterFullscreen()` に落ちる。その場合は
-  Safari のネイティブ全画面 UI となり、タイルプレビューは出ない
+  Safari のネイティブ全画面 UI となり、タイルプレビューは出ない。iPhone Safari 実機での再生・全画面確認は
+  未実施であり、Playwright WebKit の結果を実機確認の代わりにしない。実機確認は別 Issue で追跡する
 - 操作バーを表示して字幕が重なるときは WebVTT cue の行をプレイヤー高さと操作バー高さから計算して上げる。
   `web/e2e/subtitles.mjs` で実ブラウザの字幕トラックをオンにし、cue の位置を確認する
 - ライブ視聴（`pages/live.tsx`）と原本 HLS VOD はネイティブ controls のまま残る。encoded VOD と
