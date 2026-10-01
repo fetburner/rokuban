@@ -309,6 +309,23 @@ describe('RecordingDetailPage', () => {
     expect(trashButton).not.toHaveClass('text-destructive')
   })
 
+  it('fromBeginning がある録画詳細は保存済みの再生位置を復元しない', async () => {
+    createFakeServer({
+      recording: sampleRecording({
+        resumePositionMs: 90_000,
+        sizeBytes: 1_000_000,
+        encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }],
+      }),
+    })
+
+    renderAt('/recordings/3?fromBeginning=true')
+    await screen.findByRole('region', { name: '再生' })
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+    fireEvent.loadedMetadata(video)
+    expect(video.currentTime).toBe(0)
+  })
+
   it('詳細グループを再生・続き・番組・資産・観測・操作の順に並べる', async () => {
     createFakeServer({
       recording: sampleRecording({

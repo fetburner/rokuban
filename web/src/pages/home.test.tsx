@@ -1,7 +1,8 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { CapacityOverage, CircuitBreaker, Recording, Reservation } from '@/api/generated'
+import { HOME_MODE_STORAGE_KEY } from '@/lib/home-mode'
 import { HomePage } from '@/pages/home'
 import { renderInRouter } from '@/test/router'
 
@@ -45,6 +46,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   vi.useRealTimers()
+  localStorage.removeItem(HOME_MODE_STORAGE_KEY)
 })
 
 function iso(offsetMsFromNow: number): string {
@@ -232,9 +234,153 @@ function stubApi(fixtures: Fixtures) {
   }
 }
 
-function renderHome() {
-  return renderInRouter(<HomePage />, { path: '/' })
+function renderHome(path = '/?mode=ops') {
+  return renderInRouter(<HomePage />, { path: '/', initialEntries: [path] })
 }
+
+describe('ホーム: 見る / 管理モード（issue #1020）', () => {
+  it('既定は「見る」、URL が無いときだけ端末の保存値を使う', async () => {
+    stubApi({})
+    const defaultHome = renderHome('/')
+    const toggle = await screen.findByTestId('home-mode-toggle')
+    expect(within(toggle).getByRole('link', { name: '見る' })).toHaveAttribute('aria-current', 'page')
+    expect(defaultHome.router.state.location.search).toMatchObject({})
+    defaultHome.unmount()
+
+    localStorage.setItem(HOME_MODE_STORAGE_KEY, 'ops')
+    stubApi({})
+    renderHome('/')
+    const opsToggle = await screen.findByTestId('home-mode-toggle')
+    expect(within(opsToggle).getByRole('link', { name: '管理' })).toHaveAttribute('aria-current', 'page')
+    expect(await screen.findByText('表示できる項目がありません')).toBeInTheDocument()
+  })
+
+  it('有効な URL が保存値より優先され、選択したモードを保存する', async () => {
+    localStorage.setItem(HOME_MODE_STORAGE_KEY, 'ops')
+    stubApi({})
+    renderHome('/?mode=watch')
+    const toggle = await screen.findByTestId('home-mode-toggle')
+    const watch = within(toggle).getByRole('link', { name: '見る' })
+    expect(watch).toHaveAttribute('aria-current', 'page')
+    fireEvent.click(within(toggle).getByRole('link', { name: '管理' }))
+    await waitFor(() => expect(localStorage.getItem(HOME_MODE_STORAGE_KEY)).toBe('ops'))
+    expect(await screen.findByText('表示できる項目がありません')).toBeInTheDocument()
+  })
+
+  it('未知の URL 値は無視し、保存値が無ければ見るへ戻る', async () => {
+    stubApi({})
+    renderHome('/?mode=unexpected')
+    const toggle = await screen.findByTestId('home-mode-toggle')
+    expect(within(toggle).getByRole('link', { name: '見る' })).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('続きからと完了録画の両方が解決するまで主役を決めない', async () => {
+    const api = stubApi({
+      finished: [recording(90, '後から届く完了録画', 'finished', { sizeBytes: 100 })],
+      pendingPaths: new Set(['/api/recordings/continue-watching']),
+    })
+    renderHome('/?mode=watch')
+    await waitFor(() =>
+      expect(api.unresolvedCount('/api/recordings/continue-watching')).toBe(1),
+    )
+    expect(screen.queryByText('後から届く完了録画')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('home-primary-action')).not.toBeInTheDocument()
+
+    await act(async () => api.resolvePending())
+    expect(await screen.findByText('後から届く完了録画')).toBeInTheDocument()
+    expect(screen.getByTestId('home-primary-action')).toHaveTextContent('再生')
+  })
+
+  it('続きからを主役にし、最初からのリンクは再開位置を復元しない詳細へ向ける', async () => {
+    stubApi({
+      continueWatching: [
+        recording(31, '続きの番組', 'finished', { resumePositionMs: 880_000 }),
+        recording(32, '次の続き', 'finished', { resumePositionMs: 420_000 }),
+      ],
+      finished: [recording(33, 'もっと新しい未視聴', 'finished', { sizeBytes: 100 })],
+    })
+    renderHome('/?mode=watch')
+
+    expect(await screen.findByRole('heading', { name: '続きの番組' })).toBeInTheDocument()
+    expect(screen.getByTestId('home-primary-action')).toHaveTextContent('続きから再生')
+    expect(screen.getByTestId('home-primary-action')).toHaveAttribute('href', '/recordings/31')
+    const beginning = screen.getByRole('link', { name: '最初から' })
+    expect(beginning.getAttribute('href')).toContain('fromBeginning=true')
+    expect(screen.queryByText(/再生元/)).not.toBeInTheDocument()
+  })
+
+  it('管理側の 5 セクションは順序を保ち、見る側では出さない', async () => {
+    stubApi({
+      recording: [recording(1, '録画中', 'recording')],
+      continueWatching: [recording(2, '続き', 'finished', { resumePositionMs: 1 })],
+      reservations: [reservation(3, '予約', 2 * HOUR)],
+      breakers: [breaker()],
+      finished: [recording(4, '完了', 'finished')],
+    })
+    const opsHome = renderHome('/?mode=ops')
+    const headings = ['いま録画中', '続きから', '今夜〜明日の予約', '警告', '直近の完了']
+    await screen.findByRole('heading', { name: headings[0] })
+    const found = headings.filter((name) => screen.queryByRole('heading', { name }))
+    expect(found).toEqual(headings)
+    opsHome.unmount()
+
+    stubApi({ recording: [recording(5, '録画中', 'recording')] })
+    const watchHome = renderHome('/?mode=watch')
+    expect(await screen.findByRole('region', { name: '録画中' })).toBeInTheDocument()
+    for (const heading of headings) {
+      expect(screen.queryByRole('heading', { name: heading })).not.toBeInTheDocument()
+    }
+    watchHome.unmount()
+  })
+
+  it('警告バッジは材料が未解決 / 0 件なら出ず、警告行数と一致する', async () => {
+    const api = stubApi({ pendingPaths: new Set(['/api/breakers']) })
+    const pendingHome = renderHome('/?mode=watch')
+    const toggle = await screen.findByTestId('home-mode-toggle')
+    await waitFor(() => expect(api.unresolvedCount('/api/breakers')).toBe(1))
+    expect(within(toggle).queryByTestId('home-warning-count')).not.toBeInTheDocument()
+    await act(async () => api.resolvePending())
+    await waitFor(() => expect(within(toggle).queryByTestId('home-warning-count')).not.toBeInTheDocument())
+    pendingHome.unmount()
+
+    stubApi({
+      breakers: [breaker()],
+      overages: [overage(-HOUR, HOUR)],
+      finished: [recording(6, 'drop', 'finished', { dropSummary: { packets: 10, drops: 1, errors: 0, scrambled: 0 } })],
+      failed: [recording(7, 'failure', 'failed')],
+    })
+    renderHome('/?mode=ops')
+    const badge = await screen.findByTestId('home-warning-count')
+    const warningSection = await screen.findByRole('heading', { name: '警告' })
+    const rows = within(warningSection.closest('section')!).getAllByRole('listitem')
+    expect(badge).toHaveTextContent(String(rows.length))
+  })
+
+  it('警告材料の取得失敗は既存規則どおり警告なしに縮退し、帯もバッジも出さない', async () => {
+    stubApi({ errorPaths: new Set(['/api/breakers', '/api/capacity/overages']) })
+    renderHome('/?mode=watch')
+    const toggle = await screen.findByTestId('home-mode-toggle')
+    await waitFor(() => {
+      expect(toggle).toBeInTheDocument()
+      expect(screen.queryByTestId('home-warning-count')).not.toBeInTheDocument()
+    })
+    expect(screen.queryByTestId('home-watch-breaker-band')).not.toBeInTheDocument()
+  })
+
+  it('見る側の帯はブレーカーだけで出し、容量超過や失敗だけでは出さない', async () => {
+    stubApi({ overages: [overage(-HOUR, HOUR)], failed: [recording(8, '失敗', 'failed')] })
+    const cleanWatchHome = renderHome('/?mode=watch')
+    const toggle = await screen.findByTestId('home-mode-toggle')
+    await waitFor(() => expect(within(toggle).getByTestId('home-warning-count')).toBeInTheDocument())
+    expect(screen.queryByTestId('home-watch-breaker-band')).not.toBeInTheDocument()
+    cleanWatchHome.unmount()
+
+    stubApi({ breakers: [breaker()] })
+    renderHome('/?mode=watch')
+    expect(await screen.findByTestId('home-watch-breaker-band')).toHaveTextContent('停止中')
+    expect(screen.getByRole('link', { name: '管理で見る' })).toHaveAttribute('href', '/?mode=ops')
+  })
+})
 
 describe('ホーム: 全セクションが空のときの単一の空状態', () => {
   it('5 セクションとも 0 件なら見出しを 1 つも出さず、単一の空状態だけを出す', async () => {

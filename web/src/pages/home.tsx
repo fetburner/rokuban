@@ -1,6 +1,7 @@
 import { keepPreviousData } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
+import { Link, useRouterState } from '@tanstack/react-router'
 import { TriangleAlert } from 'lucide-react'
+import { useState } from 'react'
 
 import {
   useListCapacityOverages,
@@ -15,11 +16,18 @@ import {
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { EmptyState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
+import { HomeModeToggle } from '@/components/home-mode-toggle'
 import { ReservationSkipBadge } from '@/components/reservation-skip-reason'
-import { describeBreakerName } from '@/lib/breaker'
+import { describeBreakerName, describeBreakerReason } from '@/lib/breaker'
 import { shortageRangeMessage } from '@/lib/capacity'
 import { dayOrigin } from '@/lib/day-offset'
 import { formatDateTime, formatDuration } from '@/lib/format'
+import {
+  readHomeModePreference,
+  resolveHomeMode,
+  saveHomeModePreference,
+} from '@/lib/home-mode'
+import { chooseHomeHero, homeNewArrivals, type HomeHeroChoice } from '@/lib/home-selection'
 import { programTitle } from '@/lib/program-labels'
 import { cn } from '@/lib/utils'
 
@@ -131,6 +139,12 @@ const FAILED_RECORDING_WARNING_WINDOW_MS = 7 * 24 * 3_600_000
  * 無ければ「理由不明」と沈黙を区別する（`failureReasonText` 参照）。
  */
 export function HomePage() {
+  const locationSearch = useRouterState({ select: (state) => state.location.search }) as Record<
+    string,
+    unknown
+  >
+  const mode = resolveHomeMode(locationSearch.mode, readHomeModePreference())
+
   // nowMs はこのレンダーの間で一貫させる（`pages/programs.tsx` と同じ規律。
   // 起点・上限を別々に Date.now() を呼んで求めると、ミリ秒単位でずれた「今」が
   // 混ざりうる）。
@@ -239,8 +253,9 @@ export function HomePage() {
     (r) => new Date(r.startAt).getTime() >= nowMs - FAILED_RECORDING_WARNING_WINDOW_MS,
   )
 
+  const breakers = unwrap(breakersQuery.data) ?? []
   const warnings = buildWarnings({
-    breakers: unwrap(breakersQuery.data) ?? [],
+    breakers,
     overages: activeOverages,
     dropCandidates: finishedRecordings,
     failedRecordings: recentFailedRecordings,
@@ -262,6 +277,9 @@ export function HomePage() {
     finishedQuery.isPending ||
     failedQuery.isPending
   const warningSectionVisible = !warningsPending && warnings.length > 0
+  const warningCount = warningsPending ? undefined : warnings.length
+  const watchBreakerBand =
+    !breakersQuery.isPending && breakers.length > 0 ? <WatchBreakerBand breakers={breakers} /> : null
   const finishedSectionVisible =
     !finishedQuery.isPending && (finishedQuery.isError || recentFinished.length > 0)
   const finishedShortcutVisible =
@@ -274,6 +292,106 @@ export function HomePage() {
       直近の完了へ
     </a>
   ) : undefined
+
+  // Watch では両方の一覧が解決した後にだけ主役を決める。続きからが空である
+  // ことを確認できなければ完了録画へフォールバックしない。
+  let homeHeroChoice: HomeHeroChoice | null | undefined
+  if (!continueWatchingQuery.isPending && !finishedQuery.isPending) {
+    if (!continueWatchingQuery.isError && continueWatching[0] !== undefined) {
+      homeHeroChoice = { recording: continueWatching[0], kind: 'continue' }
+    } else if (!continueWatchingQuery.isError && !finishedQuery.isError) {
+      homeHeroChoice = chooseHomeHero(continueWatching, finishedRecordings)
+    } else {
+      homeHeroChoice = null
+    }
+  }
+  const homeHeroError =
+    homeHeroChoice === null && (continueWatchingQuery.isError || finishedQuery.isError)
+  const watchArrivals =
+    homeHeroChoice !== undefined &&
+    !continueWatchingQuery.isError &&
+    !finishedQuery.isError &&
+    homeHeroChoice !== null
+      ? homeNewArrivals(
+          continueWatching,
+          finishedRecordings,
+          homeHeroChoice.recording.id,
+          6,
+        )
+      : []
+  const headerActions = (
+    <>
+      {mode === 'ops' && finishedShortcut}
+      <HomeModeToggle mode={mode} warningCount={warningCount} />
+    </>
+  )
+
+  if (mode === 'watch') {
+    return (
+      <>
+        <PageHeader title="ホーム" actions={headerActions}>
+          {watchBreakerBand}
+        </PageHeader>
+        <PageContent>
+          <div className="flex flex-col gap-5 px-4 py-4">
+            {homeHeroChoice === undefined ? (
+              <div aria-label="次に見る録画を読み込み中" role="status">
+                <ListSkeleton rows={3} />
+              </div>
+            ) : homeHeroError ? (
+              <p role="alert" className="text-sm text-destructive">
+                次に見る録画の取得に失敗しました
+              </p>
+            ) : homeHeroChoice !== null ? (
+              <WatchHero choice={homeHeroChoice} />
+            ) : null}
+
+            {homeHeroChoice !== undefined && watchArrivals.length > 0 && (
+              <section aria-labelledby="home-new-arrivals" className="flex flex-col gap-2">
+                <div className="flex items-baseline justify-between gap-2">
+                  <h2 id="home-new-arrivals" className="text-sm font-semibold">
+                    ほかの新着
+                  </h2>
+                  <Link
+                    to="/series"
+                    className="shrink-0 text-xs text-muted-foreground underline-offset-2 hover:underline"
+                  >
+                    すべてのシリーズ →
+                  </Link>
+                </div>
+                <ul className="grid grid-cols-3 gap-2 sm:grid-cols-6 sm:gap-3">
+                  {watchArrivals.map((recording, index) => (
+                    <li key={recording.id} className={index >= 3 ? 'hidden sm:block' : undefined}>
+                      <Link
+                        to="/recordings/$id"
+                        params={{ id: String(recording.id) }}
+                        hash={recording.status === 'recording' ? 'chase' : undefined}
+                        className="flex min-w-0 flex-col gap-1.5"
+                      >
+                        <HomeThumbnail recording={recording} />
+                        <span className="truncate text-xs text-muted-foreground">
+                          {programTitle(recording.title)}
+                        </span>
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
+            {!recordingQuery.isPending && recordingsInProgress.length > 0 && (
+              <RecordingStrip recordings={recordingsInProgress} />
+            )}
+            {recordingQuery.isError && (
+              <p role="alert" className="text-sm text-destructive">
+                録画中の取得に失敗しました
+              </p>
+            )}
+          </div>
+        </PageContent>
+      </>
+    )
+  }
 
   const anyVisible =
     recordingSectionVisible ||
@@ -301,7 +419,7 @@ export function HomePage() {
     // actions は渡さない。
     return (
       <>
-        <PageHeader title="ホーム" />
+        <PageHeader title="ホーム" actions={headerActions} />
         <PageContent>
           <ListSkeleton />
         </PageContent>
@@ -313,7 +431,7 @@ export function HomePage() {
 
   return (
     <>
-      <PageHeader title="ホーム" actions={finishedShortcut} />
+      <PageHeader title="ホーム" actions={headerActions} />
 
       <PageContent>
         {allEmpty ? (
@@ -463,6 +581,164 @@ function RecordingRow({ recording }: { recording: Recording }) {
         </span>
       </Link>
     </li>
+  )
+}
+
+/** 「次に見る 1 本」。desktop は本文幅の大半を 16:9 のサムネイルに割く。 */
+function WatchHero({ choice }: { choice: HomeHeroChoice }) {
+  const { recording, kind } = choice
+  const detail = {
+    to: '/recordings/$id' as const,
+    params: { id: String(recording.id) },
+    hash: recording.status === 'recording' ? ('chase' as const) : undefined,
+  }
+  const resumePosition = recording.resumePositionMs
+  const progress =
+    resumePosition !== undefined && recording.durationMs > 0
+      ? Math.max(0, Math.min(100, (resumePosition / recording.durationMs) * 100))
+      : undefined
+
+  return (
+    <section aria-label="次に見る 1 本" className="grid min-w-0 grid-cols-1 items-end gap-3 md:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)] md:gap-5">
+      <HomeThumbnail recording={recording} hero />
+      <div className="flex min-w-0 flex-col gap-1">
+        <p className="text-xs text-muted-foreground">次に見る · {kind === 'continue' ? '続きから' : '新着'}</p>
+        <h2 className="text-lg leading-snug font-semibold text-balance md:text-xl">
+          {programTitle(recording.title)}
+        </h2>
+        <p className="text-xs text-muted-foreground">
+          {formatDateTime(recording.startAt)} · {recording.serviceName}
+        </p>
+        {resumePosition !== undefined && (
+          <p className="text-xs text-muted-foreground">
+            再生位置 {formatPlaybackPosition(resumePosition)} /{' '}
+            {formatPlaybackPosition(recording.durationMs)}
+          </p>
+        )}
+        {progress !== undefined && (
+          <div
+            className="h-1 overflow-hidden rounded-sm bg-muted"
+            role="progressbar"
+            aria-label="再生位置"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(progress)}
+          >
+            <div className="h-full bg-foreground" style={{ width: `${progress}%` }} />
+          </div>
+        )}
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <Link
+            {...detail}
+            data-testid="home-primary-action"
+            className="inline-flex min-h-10 items-center justify-center rounded border border-primary bg-primary px-3 text-sm font-medium text-primary-foreground"
+          >
+            {kind === 'continue' ? '続きから再生' : '再生'}
+          </Link>
+          {kind === 'continue' && (
+            <Link
+              {...detail}
+              search={{ fromBeginning: true }}
+              className="inline-flex min-h-9 items-center justify-center rounded border border-border bg-card px-3 text-sm hover:bg-muted"
+            >
+              最初から
+            </Link>
+          )}
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function formatPlaybackPosition(milliseconds: number): string {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000))
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const remainder = seconds % 60
+  const paddedMinutes = String(minutes).padStart(2, '0')
+  const paddedSeconds = String(remainder).padStart(2, '0')
+  return hours > 0
+    ? `${hours}:${paddedMinutes}:${paddedSeconds}`
+    : `${paddedMinutes}:${paddedSeconds}`
+}
+
+function HomeThumbnail({ recording, hero = false }: { recording: Recording; hero?: boolean }) {
+  const [failed, setFailed] = useState(false)
+  return (
+    <div
+      data-testid={hero ? 'home-next-watch-thumbnail' : undefined}
+      className="aspect-video w-full min-w-0 overflow-hidden rounded border border-border bg-muted"
+    >
+      {!failed ? (
+        <img
+          src={`/api/media/recordings/${recording.id}/thumbnail`}
+          alt=""
+          loading={hero ? 'eager' : 'lazy'}
+          className="size-full object-cover"
+          onError={() => setFailed(true)}
+        />
+      ) : (
+        <div className="size-full bg-muted" aria-hidden />
+      )}
+    </div>
+  )
+}
+
+/** ブレーカーは見る側にも影響するため、警告一覧を複製せず帯で知らせる。 */
+function WatchBreakerBand({ breakers }: { breakers: readonly CircuitBreaker[] }) {
+  return (
+    <div
+      role="alert"
+      data-testid="home-watch-breaker-band"
+      className="flex flex-col gap-1 border-t border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive md:flex-row md:flex-wrap md:items-baseline md:gap-x-3"
+    >
+      {breakers.map((breaker) => (
+        <div
+          key={`${breaker.site}:${breaker.name}`}
+          className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"
+        >
+          <span className="font-semibold">{describeBreakerName(breaker.name)}が停止中</span>
+          {describeBreakerReason(breaker.name) && (
+            <span className="text-destructive/80">{describeBreakerReason(breaker.name)}</span>
+          )}
+        </div>
+      ))}
+      <Link
+        to="/"
+        search={{ mode: 'ops' }}
+        onClick={() => saveHomeModePreference('ops')}
+        className="shrink-0 text-primary underline-offset-2 hover:underline md:ml-auto"
+      >
+        管理で見る
+      </Link>
+    </div>
+  )
+}
+
+/** 録画中の件数と追っかけ導線だけを一行に畳む。 */
+function RecordingStrip({ recordings }: { recordings: readonly Recording[] }) {
+  const first = recordings[0]
+  if (first === undefined) return null
+  const titles = recordings.map((recording) => programTitle(recording.title)).join(' · ')
+  return (
+    <section
+      aria-label="録画中"
+      data-testid="home-recording-strip"
+      className="flex min-w-0 items-center gap-2 border-t border-border pt-3 text-xs"
+    >
+      <span className="inline-flex shrink-0 items-center gap-1 rounded bg-tally px-1.5 py-0.5 font-medium text-tally-foreground whitespace-nowrap">
+        <span aria-hidden="true">●</span> 録画中 {recordings.length}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-muted-foreground">{titles}</span>
+      <Link
+        to="/recordings/$id"
+        params={{ id: String(first.id) }}
+        hash="chase"
+        className="shrink-0 text-primary underline-offset-2 hover:underline"
+      >
+        追っかけ再生 →
+      </Link>
+    </section>
   )
 }
 
