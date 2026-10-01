@@ -58,13 +58,20 @@ const recording = {
   createdAt: '2026-01-02T12:30:00Z',
 }
 
-// 画像として認識できればよい 1x1 PNG。コマの表示比はヘッダの SAR と coded size で決まる。
+// コマ用の 1x1 PNG。コマの表示比はヘッダの SAR と coded size で決まる。
 const FRAME_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
   'base64',
 )
 
+// ロゴのプレビュー用。幅 100px 超の実寸（今のロゴ 240x120、候補 200x100）にして、
+// 狭い列での縮み（SAR が掛からない）と見切れを実ブラウザで測れるようにする。
+const CURRENT_LOGO_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAPAAAAB4CAIAAABD1OhwAAABW0lEQVR4nO3SQQkAMAzAwMqpfxWTNRODQTg4AXlkzi5kzPcCeMjQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUm5FI4TNhwFSAEAAAAASUVORK5CYII='
+const CANDIDATE_LOGO_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAMgAAABkCAIAAABM5OhcAAABG0lEQVR4nO3SUQkAIBTAQOO8/imMZQmHIAcXYB9bMxuuW88L+JKxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLxAHyZHf8ZP6KHgAAAABJRU5ErkJggg=='
+const SAR = 4 / 3
+
 let savedArea
+let areaUpdatedAt
 let candidate
 let adopted = false
 let adoptBody
@@ -80,10 +87,15 @@ async function apiHandler({ path, json, route }) {
     return json([{
       ...logo,
       pendingCount: adopted ? 2 : logo.pendingCount,
-      ...(savedArea === undefined ? {} : { logoArea: savedArea }),
+      ...(savedArea === undefined ? {} : { logoArea: { ...savedArea, updatedAt: areaUpdatedAt } }),
       ...(candidate === undefined ? {} : { candidate }),
-      ...(candidate?.state === 'ready'
-        ? { previewPng: FRAME_PNG.toString('base64'), codedWidth: 1440, codedHeight: 1080, learnedAt: '2026-01-01T00:00:00Z' }
+      ...(candidate?.state === 'ready' || adopted
+        ? {
+            previewPng: CURRENT_LOGO_PNG,
+            codedWidth: 1440,
+            codedHeight: 1080,
+            learnedAt: adopted ? '2026-01-03T00:00:00Z' : '2026-01-01T00:00:00Z',
+          }
         : {}),
     }])
   }
@@ -102,18 +114,11 @@ async function apiHandler({ path, json, route }) {
     })
   }
   if (path === '/api/cm-logos/32678/5168/area' && method === 'PUT') {
+    // 実バックエンドの PutCMLogoArea は旧候補を消して job を積むだけで、running 行は
+    // worker が job を拾ってから作る。ここでも candidate は作らない。
     savedArea = JSON.parse(route.request().postData() ?? '{}')
-    candidate = {
-      state: 'running',
-      x: savedArea.x,
-      y: savedArea.y,
-      w: savedArea.w,
-      h: savedArea.h,
-      codedWidth: savedArea.codedWidth,
-      codedHeight: savedArea.codedHeight,
-      recordingId: savedArea.recordingId,
-      attemptedAt: '2026-01-02T00:00:00Z',
-    }
+    areaUpdatedAt = '2026-01-02T00:00:00Z'
+    candidate = undefined
     return route.fulfill({ status: 204 })
   }
   if (path === '/api/cm-logos/32678/5168/area' && method === 'DELETE') {
@@ -210,10 +215,27 @@ if ('atMs' in (savedArea ?? {})) {
   ng.push('③ 全編解析なのに atMs を送っている')
 }
 
-log('\n=== ④ 画面を離れても候補の running が残る ===')
+log('\n=== ④ 画面を離れても解析待ちが残り、候補はポーリングで届く ===')
+// 枠を保存した直後は candidate の行が無い（worker が job を拾うまで）。それでも解析中を出す。
 await page.goto(`${URL_BASE}/cm-logos`, { waitUntil: 'domcontentloaded' })
 await page.goto(`${URL_BASE}/cm-logos/32678/5168?recording=7`, { waitUntil: 'domcontentloaded' })
 await page.getByTestId('cm-logo-candidate-running').waitFor({ timeout: 5000 })
+// 開き直したページ（メモリ state なし）が、candidate が無い間もポーリングして failed を拾う。
+candidate = {
+  state: 'failed',
+  stage: 'logo',
+  x: 400,
+  y: 300,
+  w: 400,
+  h: 300,
+  codedWidth: 1440,
+  codedHeight: 1080,
+  recordingId: 7,
+  attemptedAt: '2026-01-02T00:00:00Z',
+}
+await page.getByTestId('cm-logo-candidate-failed').waitFor({ timeout: 8000 }).catch(() => {
+  ng.push('④ candidate が無い解析待ちの間にポーリングしていない（開き直した後に failed が届かない）')
+})
 
 log('\n=== ⑤ 候補の failed / ready と原寸 SAR 表示 ===')
 candidate = {
@@ -237,7 +259,7 @@ if (!(await page.getByTestId('cm-logo-candidate-failure-message').textContent())
 
 candidate = {
   state: 'ready',
-  previewPng: FRAME_PNG.toString('base64'),
+  previewPng: CANDIDATE_LOGO_PNG,
   x: 400,
   y: 300,
   w: 400,
@@ -249,10 +271,44 @@ candidate = {
 }
 await page.reload({ waitUntil: 'domcontentloaded' })
 await page.getByTestId('cm-logo-candidate-ready').waitFor({ timeout: 5000 })
-const candidateImage = await page.getByTestId('cm-logo-candidate-preview').locator('img').boundingBox()
-if (candidateImage === null || Math.abs(candidateImage.width / candidateImage.height - 4 / 3) > 0.02) {
-  ng.push(`⑤ 候補プレビューに SAR 4:3 が適用されない（${JSON.stringify(candidateImage)}）`)
+// 今のロゴと候補の両方で「描画幅 = naturalWidth × SAR、描画高さ = naturalHeight」かつ
+// 各 img が自分の欄に収まっている（スクロールしないと見えない状態でない）ことを測る。
+async function measurePreviews(label) {
+  for (const [testId, name, width, height] of [
+    ['cm-logo-current-preview', '今のロゴ', 240, 120],
+    ['cm-logo-candidate-preview', '候補', 200, 100],
+  ]) {
+    const box = page.getByTestId(testId)
+    const m = await box.evaluate((element) => {
+      const image = element.querySelector('img')
+      const outer = element.getBoundingClientRect()
+      const rect = image?.getBoundingClientRect()
+      return {
+        natural: [image?.naturalWidth ?? 0, image?.naturalHeight ?? 0],
+        width: rect?.width ?? 0,
+        height: rect?.height ?? 0,
+        left: (rect?.left ?? 0) - outer.left,
+        right: outer.right - (rect?.right ?? 0),
+        scrolls: element.scrollWidth > element.clientWidth,
+      }
+    })
+    log(`  ${label} ${name}: ${JSON.stringify(m)}`)
+    if (m.natural[0] !== width || m.natural[1] !== height) {
+      ng.push(`⑤ ${label} ${name}の画像が読めていない（natural ${m.natural}）`)
+      continue
+    }
+    if (Math.abs(m.width - width * SAR) > 1 || Math.abs(m.height - height) > 1) {
+      ng.push(`⑤ ${label} ${name}が原寸×SAR でない（${m.width}x${m.height} / 期待 ${width * SAR}x${height}）`)
+    }
+    if (m.left < 0 || m.right < 0 || m.scrolls) {
+      ng.push(`⑤ ${label} ${name}が欄から見切れている（左 ${m.left} / 右 ${m.right} / scroll ${m.scrolls}）`)
+    }
+  }
 }
+await measurePreviews('lg 1280')
+await page.setViewportSize({ width: 1024, height: 900 })
+await measurePreviews('lg 1024')
+await page.setViewportSize({ width: 1280, height: 900 })
 
 log('\n=== ⑥ ready 候補を redetect=false で採用する ===')
 await page.getByTestId('cm-logo-candidate-redetect').uncheck()

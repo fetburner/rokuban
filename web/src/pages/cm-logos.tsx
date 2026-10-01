@@ -190,6 +190,24 @@ function recordingLabel(recording: Recording): string {
   return `${formatDateTime(recording.startAt)} ${recording.title}（${formatDuration(recording.durationMs)}）`
 }
 
+/**
+ * awaitingCandidateAnalysis は、枠が教えられているのに候補の行がまだ無い局を判定する。
+ *
+ * 枠の保存・候補の破棄・覚えたロゴの削除の直後は、job が CMDetectQueue で待つ間
+ * running 行が存在しない。cm_logo_candidate_desired view と同じ条件
+ * （枠あり・候補なし・学習が無い、または枠より古い）を画面側でも使い、メモリ state に頼らない。
+ */
+function awaitingCandidateAnalysis(logo: CMLogoState): boolean {
+  if (!logo.logoArea || logo.candidate !== undefined) return false
+  return !logo.learnedAt || Date.parse(logo.learnedAt) < Date.parse(logo.logoArea.updatedAt)
+}
+
+/** isAwaitingAdoption は worker が採用待ちの局として止めた録画かを返す（再試行では進まない）。 */
+function isAwaitingAdoption(recording: Recording): boolean {
+  const stage: string | null | undefined = recording.cmDetection.stage
+  return recording.cmDetection.state === 'failed' && stage === 'adopt'
+}
+
 function recordingCMState(recording: Recording): string {
   switch (recording.cmDetection.state) {
     case 'detected':
@@ -197,7 +215,7 @@ function recordingCMState(recording: Recording): string {
     case 'detecting':
       return '検出中、または再試行待ち'
     case 'failed':
-      return '3 回の試行に失敗しました'
+      return isAwaitingAdoption(recording) ? cmDetectStageMessage('adopt') : '3 回の試行に失敗しました'
     default:
       return '無効'
   }
@@ -319,14 +337,10 @@ function CMLogoFrameEditor({
   logo,
   recordings,
   requestedRecordingId,
-  onAnalysisRequested,
-  onAnalysisFinished,
 }: {
   logo: CMLogoState
   recordings: Recording[]
   requestedRecordingId?: number
-  onAnalysisRequested: () => void
-  onAnalysisFinished: () => void
 }) {
   const queryClient = useQueryClient()
   const toast = useToast()
@@ -459,7 +473,6 @@ function CMLogoFrameEditor({
         onSuccess: () => {
           void queryClient.invalidateQueries({ queryKey: getListCMLogosQueryKey() })
           void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
-          onAnalysisRequested()
           toast({ message: `${logo.serviceName} の解析を依頼しました` })
         },
         onError: (error) =>
@@ -689,15 +702,11 @@ function CMLogoFrameEditor({
             )}
             <p className="mt-1 text-xs text-muted-foreground">この枠でロゴを解析します。採用するまで今のロゴはそのまま使われます。</p>
             <Button type="button" className="mt-2 w-full" disabled={!canSave} onClick={onSave}>ロゴを解析</Button>
-            <CMLogoCandidatePanel
-              logo={logo}
-              recordings={recordings}
-              onAnalysisRequested={onAnalysisRequested}
-              onAnalysisFinished={onAnalysisFinished}
-            />
           </div>
         </aside>
       </div>
+
+      <CMLogoCandidatePanel logo={logo} recordings={recordings} />
 
       <p className="text-xs text-muted-foreground">
         枠の外をドラッグして描き、枠の中をドラッグして動かします。四隅をドラッグすると大きさを変えられます。
@@ -752,7 +761,7 @@ function NativeLogoPreview({
   return (
     <div
       data-testid={testId}
-      className="flex min-h-28 min-w-0 items-center justify-center overflow-auto rounded border border-border p-3"
+      className="flex min-h-28 min-w-0 overflow-auto rounded border border-border p-3"
       style={checkerboardStyle}
     >
       {previewPng ? (
@@ -763,7 +772,7 @@ function NativeLogoPreview({
             const image = event.currentTarget
             setIntrinsicSize({ width: image.naturalWidth, height: image.naturalHeight })
           }}
-          className="block max-w-none object-contain"
+          className="m-auto block max-w-none shrink-0 object-contain"
           style={
             intrinsicSize
               ? { width: intrinsicSize.width * sar, height: intrinsicSize.height, maxHeight: 'none' }
@@ -771,22 +780,27 @@ function NativeLogoPreview({
           }
         />
       ) : (
-        <span className="text-xs text-muted-foreground">プレビューなし</span>
+        <span className="m-auto text-xs text-muted-foreground">プレビューなし</span>
       )}
     </div>
+  )
+}
+
+function CandidateRunning() {
+  return (
+    <section className="flex flex-col gap-1 border-t border-border/60 pt-3" data-testid="cm-logo-candidate-running" aria-live="polite">
+      <span className="w-fit rounded bg-muted px-1.5 py-0.5 text-xs">解析中</span>
+      <p className="text-sm">解析中です。数分程度かかることがあります。画面を離れても続きます。</p>
+    </section>
   )
 }
 
 function CMLogoCandidatePanel({
   logo,
   recordings,
-  onAnalysisRequested,
-  onAnalysisFinished,
 }: {
   logo: CMLogoState
   recordings: Recording[]
-  onAnalysisRequested: () => void
-  onAnalysisFinished: () => void
 }) {
   const candidate = logo.candidate
   const queryClient = useQueryClient()
@@ -813,38 +827,36 @@ function CMLogoCandidatePanel({
   }
 
   if (candidate === undefined) {
+    if (awaitingCandidateAnalysis(logo)) return <CandidateRunning />
     if (!adopted || logo.pendingCount <= 0) return null
     return (
-      <p className="mt-3 text-sm" role="status" data-testid="cm-logo-candidate-adopted">
+      <p className="text-sm" role="status" data-testid="cm-logo-candidate-adopted">
         検出待ち {logo.pendingCount} 件。数分〜数十分かかります
       </p>
     )
   }
 
   if (candidate.state === 'running') {
-    return (
-      <section className="mt-3 flex flex-col gap-1 border-t border-border/60 pt-3" data-testid="cm-logo-candidate-running" aria-live="polite">
-        <span className="w-fit rounded bg-muted px-1.5 py-0.5 text-xs">解析中</span>
-        <p className="text-sm">解析中です。数分程度かかることがあります。画面を離れても続きます。</p>
-      </section>
-    )
+    return <CandidateRunning />
   }
 
   if (candidate.state === 'failed') {
     return (
-      <section className="mt-3 flex flex-col gap-1 border-t border-border/60 pt-3" data-testid="cm-logo-candidate-failed">
+      <section className="flex flex-col gap-1 border-t border-border/60 pt-3" data-testid="cm-logo-candidate-failed">
         <span className="w-fit rounded bg-destructive/10 px-1.5 py-0.5 text-xs text-destructive">解析失敗</span>
         <p className="text-sm text-destructive" data-testid="cm-logo-candidate-failure-message">
           {cmDetectStageMessage(candidate.stage)}
         </p>
-        <p className="text-xs text-muted-foreground">枠を描き直して解析し直してください。</p>
+        {(candidate.stage === 'area' || candidate.stage === 'logo' || candidate.stage === 'match') && (
+          <p className="text-xs text-muted-foreground">枠を描き直して解析し直してください。</p>
+        )}
       </section>
     )
   }
 
   const sourceLabel = candidateRecording ? recordingLabel(candidateRecording) : '解析に使った録画'
   return (
-    <section className="mt-3 flex flex-col gap-3 border-t border-border/60 pt-3" data-testid="cm-logo-candidate-ready">
+    <section className="flex flex-col gap-3 border-t border-border/60 pt-3" data-testid="cm-logo-candidate-ready">
       <div className="flex items-center gap-2">
         <span className="w-fit rounded bg-muted px-1.5 py-0.5 text-xs">候補があります</span>
         <p className="text-sm">候補を確認してから採用してください。</p>
@@ -892,7 +904,6 @@ function CMLogoCandidatePanel({
             {
               onSuccess: () => {
                 setAdopted(true)
-                onAnalysisFinished()
                 invalidate()
                 toast({ message: 'ロゴ候補を採用しました' })
               },
@@ -911,7 +922,6 @@ function CMLogoCandidatePanel({
             { networkId: logo.networkId, serviceId: logo.serviceId },
             {
               onSuccess: () => {
-                onAnalysisRequested()
                 invalidate()
                 toast({ message: '候補を破棄しました。同じ枠で解析し直します' })
               },
@@ -941,7 +951,7 @@ function AffectedRecordings({ recordings, cmDetectEnabled }: { recordings: Recor
       ) : (
         <ul className="divide-y divide-border rounded-lg border border-border">
           {recordings.map((recording) => {
-            const canRetry = recording.cmDetection.state === 'failed' && recording.sizeBytes !== undefined && cmDetectEnabled
+            const canRetry = recording.cmDetection.state === 'failed' && !isAwaitingAdoption(recording) && recording.sizeBytes !== undefined && cmDetectEnabled
             return (
               <li key={recording.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 p-3">
                 <div className="min-w-0 flex-1">
@@ -983,16 +993,13 @@ export function CMLogoStationPage() {
   const search = useSearch({ from: '/cm-logos/$networkId/$serviceId' })
   const networkId = Number(networkParam)
   const serviceId = Number(serviceParam)
-  const [analysisRequested, setAnalysisRequested] = useState(false)
   const logoQuery = useListCMLogos({
     query: {
       refetchInterval: (query) => {
         const current = (unwrap(query.state.data) ?? []).find(
           (item) => item.networkId === networkId && item.serviceId === serviceId,
         )
-        return current?.candidate?.state === 'running' || (analysisRequested && current?.candidate === undefined)
-          ? 5000
-          : false
+        return current && (current.candidate?.state === 'running' || awaitingCandidateAnalysis(current)) ? 5000 : false
       },
     },
   })
@@ -1005,13 +1012,6 @@ export function CMLogoStationPage() {
   const queryClient = useQueryClient()
   const toast = useToast()
   const [advancedOpen, setAdvancedOpen] = useState(false)
-
-  useEffect(() => {
-    if (logo?.candidate?.state === 'ready' || logo?.candidate?.state === 'failed') {
-      // oxlint-disable-next-line react/set-state-in-effect -- 候補が終端状態になったら待機ポーリングを止める
-      setAnalysisRequested(false)
-    }
-  }, [logo?.candidate?.state])
 
   if (!Number.isInteger(networkId) || networkId <= 0 || !Number.isInteger(serviceId) || serviceId <= 0) {
     return <ErrorState>局の指定が正しくありません</ErrorState>
@@ -1026,7 +1026,6 @@ export function CMLogoStationPage() {
       onSuccess: () => {
         void queryClient.invalidateQueries({ queryKey: getListCMLogosQueryKey() })
         void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
-        setAnalysisRequested(Boolean(logo.logoArea))
         toast({
           message: logo.logoArea
             ? '覚えたロゴを削除しました。枠から新しい候補を作ります'
@@ -1040,7 +1039,6 @@ export function CMLogoStationPage() {
     deleteArea.mutate({ networkId, serviceId }, {
       onSuccess: () => {
         void queryClient.invalidateQueries({ queryKey: getListCMLogosQueryKey() })
-        setAnalysisRequested(false)
         toast({ message: '枠を消して自動の探索に戻しました' })
       },
       onError: (error) => toast({ message: mutationErrorMessage('枠の削除に失敗しました', error), kind: 'error' }),
@@ -1072,8 +1070,6 @@ export function CMLogoStationPage() {
             logo={logo}
             recordings={recordings}
             requestedRecordingId={search.recording}
-            onAnalysisRequested={() => setAnalysisRequested(true)}
-            onAnalysisFinished={() => setAnalysisRequested(false)}
           />
         )}
 
