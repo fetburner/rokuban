@@ -90,12 +90,14 @@ func (s *Streamer) RecordingFrame(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	sar, err := s.frameSAR(ctx, path, atMs)
+	probed, err := s.probeFrame(ctx, path, atMs, width, height)
 	if err != nil {
+		// ffmpeg と ffprobe が別のコマを見ているときも、SAR を信用できないので返さない。
 		slog.Error("streamer: probing the SAR of a frame", "recording_id", id, "at_ms", atMs, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	sar := probed.sar
 
 	w.Header().Set("Content-Type", thumbnailContentType)
 	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
@@ -159,19 +161,26 @@ func jpegSize(b []byte) (width, height int, err error) {
 	return 0, 0, errors.New("JPEG has no SOF")
 }
 
-// sarWindow は frameSAR が at の手前に遡って読む長さ（秒）。ffprobe の
+// sarWindow は probeFrame が at の手前に遡って読む長さ（秒）。ffprobe の
 // -read_intervals は次のキーフレームから先しか出さず、狭い窓だと 1 コマも返らない
 // （合成 TS で実測）。放送の GOP より十分長く取る。
 const sarWindow = 3.0
 
-// frameSAR は原本の atMs のコマの SAR を ffprobe で返す。**ffmpeg が返す JPEG の
-// JFIF からは読めない。** ffmpeg CLI は途中で SAR が変わっても、フレームではなく
+// probedFrame は ffprobe が at のコマについて返す大きさと SAR。
+type probedFrame struct {
+	width, height int
+	sar           string
+}
+
+// probeFrame は原本の atMs のコマの大きさと SAR を ffprobe で返す。**ffmpeg が返す JPEG の
+// JFIF からは SAR を読めない。** ffmpeg CLI は途中で SAR が変わっても、フレームではなく
 // ストリーム先頭の SAR を出力へ渡す（合成 TS で実測。フレーム自体の SAR は
 // ffprobe -show_frames が正しく返す）。
 //
 // ffmpeg の `-ss` は start_time を足した位置へ飛ぶので、ffprobe の絶対 pts へ揃える。
-// 窓の中で pts が at 以下の最後のコマ（無ければ先頭）の SAR を採る。
-func (s *Streamer) frameSAR(ctx context.Context, path string, atMs int64) (string, error) {
+// start_time は 33bit wrap 直前に始まる TS では負になるため、窓の開始も 0 へ丸めない。
+// 窓の中から JPEG と大きさの合うコマを選ぶ（pickFrame）。
+func (s *Streamer) probeFrame(ctx context.Context, path string, atMs int64, width, height int) (probedFrame, error) {
 	ffprobe := s.cfg.FFprobe
 	if ffprobe == "" {
 		ffprobe = "ffprobe"
@@ -179,47 +188,68 @@ func (s *Streamer) frameSAR(ctx context.Context, path string, atMs int64) (strin
 	out, err := s.runCommand(ctx, ffprobe, "-v", "error",
 		"-show_entries", "format=start_time", "-of", "default=noprint_wrappers=1:nokey=1", path)
 	if err != nil {
-		return "", err
+		return probedFrame{}, err
 	}
 	start, _ := strconv.ParseFloat(strings.TrimSpace(string(out)), 64) // "N/A" は 0
 	target := start + float64(atMs)/1000
-	from := max(target-sarWindow, 0)
 	out, err = s.runCommand(ctx, ffprobe, "-v", "error", "-select_streams", "v:0",
-		"-read_intervals", fmt.Sprintf("%.3f%%+%.3f", from, target-from+0.5),
-		"-show_entries", "frame=best_effort_timestamp_time,sample_aspect_ratio",
+		"-read_intervals", fmt.Sprintf("%.3f%%+%.3f", target-sarWindow, sarWindow+0.5),
+		"-show_entries", "frame=best_effort_timestamp_time,width,height,sample_aspect_ratio",
 		"-of", "csv=p=0", path)
 	if err != nil {
-		return "", err
+		return probedFrame{}, err
 	}
-	return pickSAR(string(out), target)
+	return pickFrame(string(out), target, width, height)
 }
 
-// pickSAR は ffprobe の csv（`pts,sar` の行）から target 以下で最後のコマの SAR を返す。
-// SAR が不明・0 なら正方画素 (1:1)。
-func pickSAR(csv string, target float64) (string, error) {
-	sar, found := "", false
+// pickFrame は ffprobe の csv（`pts,width,height,sar` の行）から、ffmpeg が返した JPEG
+// （width x height）のコマの SAR を選ぶ。まず pts が target 以上の最初のコマ（無ければ最後）、
+// その大きさが JPEG と違えば 1 つ前のコマを見る。**ffmpeg の `-ss` は target から 1 コマ
+// 前後ずれたコマを返すことがある**（合成 TS で実測: ffprobe の pts が 3.36 / 3.40 のとき
+// target 3.37 は 3.36、3.371 は 3.40 を返した。規則は特定できていない）。どちらも JPEG と
+// 大きさが合わなければ、別のコマを見ているので error。**大きさが同じで SAR だけ違う
+// 隣り合うコマは区別できない**（境目の 1 コマだけ。未検証）。
+func pickFrame(csv string, target float64, width, height int) (probedFrame, error) {
+	var frames []probedFrame
+	pick := -1
 	for _, line := range strings.Split(csv, "\n") {
-		ts, v, ok := strings.Cut(strings.TrimSpace(line), ",")
-		if !ok {
+		f := strings.Split(strings.TrimSpace(line), ",")
+		if len(f) < 4 {
 			continue
 		}
-		pts, err := strconv.ParseFloat(ts, 64)
-		if err != nil {
+		pts, err1 := strconv.ParseFloat(f[0], 64)
+		w, err2 := strconv.Atoi(f[1])
+		h, err3 := strconv.Atoi(f[2])
+		if err1 != nil || err2 != nil || err3 != nil {
 			continue
 		}
-		if found && pts > target {
-			break
+		frames = append(frames, probedFrame{width: w, height: h, sar: normalizeSAR(f[3])})
+		if pick < 0 && pts >= target-1e-4 {
+			pick = len(frames) - 1
 		}
-		sar, found = strings.Trim(v, ","), true
 	}
-	if !found {
-		return "", errors.New("ffprobe returned no frame near the position")
+	if len(frames) == 0 {
+		return probedFrame{}, errors.New("ffprobe returned no frame near the position")
 	}
+	if pick < 0 {
+		pick = len(frames) - 1
+	}
+	for _, i := range []int{pick, pick - 1} {
+		if i >= 0 && frames[i].width == width && frames[i].height == height {
+			return frames[i], nil
+		}
+	}
+	return probedFrame{}, fmt.Errorf("ffprobe frames near the position (%dx%d at the pick) do not match the JPEG (%dx%d)",
+		frames[pick].width, frames[pick].height, width, height)
+}
+
+// normalizeSAR は "N:M" を返す。不明・0 以下・`N/A` は "1:1"。
+func normalizeSAR(v string) string {
 	var num, den int
-	if _, err := fmt.Sscanf(sar, "%d:%d", &num, &den); err == nil && num > 0 && den > 0 {
-		return fmt.Sprintf("%d:%d", num, den), nil
+	if _, err := fmt.Sscanf(v, "%d:%d", &num, &den); err == nil && num > 0 && den > 0 {
+		return fmt.Sprintf("%d:%d", num, den)
 	}
-	return "1:1", nil
+	return "1:1"
 }
 
 func (s *Streamer) ffmpegPath() string {

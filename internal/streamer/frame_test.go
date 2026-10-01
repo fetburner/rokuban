@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -53,7 +54,7 @@ func newFrameFixture(t *testing.T, frame []byte) (*frameFixture, int64) {
 		case strings.Contains(strings.Join(args, " "), "format=start_time"):
 			return []byte("0.000000\n"), nil
 		case filepath.Base(name) == "ffprobe":
-			return []byte("12.480000,4:3\n12.520000,4:3\n"), nil
+			return []byte("12.480000,1440,1080,4:3\n12.520000,1440,1080,4:3\n"), nil
 		}
 		return nil, fmt.Errorf("unexpected command %s", name)
 	}
@@ -226,8 +227,8 @@ func TestRecordingFrameReportsExtractionFailure(t *testing.T) {
 	}
 }
 
-// 実物の ffmpeg で MPEG-2 1440x1080（SAR 4:3）の TS を配る。偽の runCmd では
-// ffmpeg の mjpeg が SAR を JFIF に書くことを測れない。
+// 実物の ffmpeg / ffprobe で MPEG-2 1440x1080（SAR 4:3）の TS を配る。偽の runCmd では、
+// 実 ffprobe の -read_intervals と csv 出力から SAR を読めることを測れない。
 func TestRecordingFrameWithRealFFmpegOnAnamorphicMPEG2(t *testing.T) {
 	ffmpeg := lookPathFFmpeg(t)
 	pool := testutil.SetupDB(t)
@@ -271,6 +272,17 @@ func TestRecordingFrameWithRealFFmpegOnAnamorphicMPEG2(t *testing.T) {
 // 途中で解像度と SAR が変わる録画（1440x1080 SAR 4:3 の後に 720x480 SAR 32:27）で、
 // 後半の at を叩いたらヘッダは後半の値になる。先頭を probe する実装では 1440x1080 / 4:3 のまま。
 func TestRecordingFrameFollowsResolutionAndSARChange(t *testing.T) {
+	testFrameFollowsChange(t, "0")
+}
+
+// 33bit wrap 直前に始まる TS は start_time が負になる（-output_ts_offset 95441 で
+// start_time = -1.317689 を実測）。そこでも窓が空にならず、同じ値を返す。
+func TestRecordingFrameFollowsChangeWhenStartTimeIsNegative(t *testing.T) {
+	testFrameFollowsChange(t, "95441")
+}
+
+func testFrameFollowsChange(t *testing.T, baseOffset string) {
+	t.Helper()
 	ffmpeg := lookPathFFmpeg(t)
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
@@ -287,8 +299,8 @@ func TestRecordingFrameFollowsResolutionAndSARChange(t *testing.T) {
 		}
 		return out
 	}
-	first := gen("a.ts", "1440x1080", "4/3", "0")
-	second := gen("b.ts", "720x480", "32/27", "2")
+	first := gen("a.ts", "1440x1080", "4/3", baseOffset)
+	second := gen("b.ts", "720x480", "32/27", strconv.FormatFloat(mustFloat(t, baseOffset)+2, 'f', -1, 64))
 	// TS は連結できる。後半は pts を 2 秒ずらしてあり、at=2 秒以降が後半の解像度になる。
 	relPath := "gr/joined.ts"
 	var joined []byte
@@ -312,6 +324,12 @@ func TestRecordingFrameFollowsResolutionAndSARChange(t *testing.T) {
 
 	for _, tc := range []struct{ at, size, sar string }{
 		{"500", "1440x1080", "4:3"},
+		{"1900", "1440x1080", "4:3"},
+		{"1930", "1440x1080", "4:3"},
+		{"1950", "720x480", "32:27"},
+		{"1970", "720x480", "32:27"},
+		{"1990", "720x480", "32:27"},
+		{"2100", "720x480", "32:27"},
 		{"3000", "720x480", "32:27"},
 	} {
 		res, body := get(t, fmt.Sprintf("%s/api/media/recordings/%d/frame?at=%s", srv.URL, id, tc.at), nil)
@@ -324,5 +342,57 @@ func TestRecordingFrameFollowsResolutionAndSARChange(t *testing.T) {
 		if got := res.Header.Get("X-Sample-Aspect-Ratio"); got != tc.sar {
 			t.Errorf("at=%s: SAR = %q, want %s", tc.at, got, tc.sar)
 		}
+	}
+}
+
+func mustFloat(t *testing.T, v string) float64 {
+	t.Helper()
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// pickFrame は pts が at 以上の最初のコマを採り、大きさが JPEG と違えば 1 つ前を見る。
+// SAR が不明なら 1:1 にする。
+func TestPickFrame(t *testing.T) {
+	two := "1.00,1440,1080,4:3\n1.04,720,480,32:27\n"
+	hd, sd := probedFrame{1440, 1080, "4:3"}, probedFrame{720, 480, "32:27"}
+	for _, tc := range []struct {
+		name, csv string
+		target    float64
+		w, h      int
+		want      probedFrame
+	}{
+		{"exactly on a frame", two, 1.04, 720, 480, sd},
+		{"between frames takes the next", two, 1.02, 720, 480, sd},
+		{"next does not match the JPEG, takes the previous", two, 1.02, 1440, 1080, hd},
+		{"before the first", two, 0.5, 1440, 1080, hd},
+		{"after the last takes the last", two, 9, 720, 480, sd},
+		{"0:1", "1.0,720,480,0:1\n", 1, 720, 480, probedFrame{720, 480, "1:1"}},
+		{"N/A", "1.0,720,480,N/A\n", 1, 720, 480, probedFrame{720, 480, "1:1"}},
+		{"empty", "1.0,720,480,\n", 1, 720, 480, probedFrame{720, 480, "1:1"}},
+		{"negative pts", "-1.0,720,480,8:9\n-0.96,720,480,8:9\n", -0.97, 720, 480, probedFrame{720, 480, "8:9"}},
+	} {
+		got, err := pickFrame(tc.csv, tc.target, tc.w, tc.h)
+		if err != nil || got != tc.want {
+			t.Errorf("%s: got %+v, %v; want %+v", tc.name, got, err, tc.want)
+		}
+	}
+	if _, err := pickFrame("", 1, 720, 480); err == nil {
+		t.Error("no frames: want an error")
+	}
+	if _, err := pickFrame(two, 1.04, 1920, 1080); err == nil {
+		t.Error("no frame matches the JPEG: want an error")
+	}
+}
+
+// ffmpeg が返した JPEG と ffprobe のコマの大きさが違うなら、SAR を信用できないので 500。
+func TestRecordingFrameRejectsSizeMismatchBetweenJPEGAndProbe(t *testing.T) {
+	f, id := newFrameFixture(t, fakeJPEG(720, 480)) // fake ffprobe は 1440x1080 を返す
+	res, _ := get(t, f.url(id, "?at=12500"), nil)
+	if res.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", res.StatusCode)
 	}
 }
