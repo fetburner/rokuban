@@ -252,6 +252,11 @@ playlist を Chromium の hls.js（`E2E_BROWSER=webkit` ならネイティブ HL
   2 秒未満は `removeItem` になるので、それも 0 として記録する。
   持ち越し中の保存ガードを外すと、WebKit では先頭再生で `0`、offset 4 秒の切替で
   `4` が書かれて落ちる。Chromium + hls.js では `timeupdate` が来ないので落ちない
+- **追っかけで見た位置から、完了後の VOD を開くと同じ位置 ± 3 秒から始まる**（⑧、
+  issue #975 受け入れ 2）。追っかけの保存位置（スタブ API が保持）を読み、録画を完了に
+  切り替えて `/recordings/1` を開き直し、原本 VOD の `currentTime` を比べる。
+  **原本 VOD の `LivePlayer` に `resumePositionMs` を渡さない変異で
+  `5.52 秒 → 0.00 秒` になって落ちる**（Chromium で確認。WebKit は未実施）
 
 `E2E_BROWSER=webkit` で同じ判定を Safari 相当のネイティブ HLS 経路で回す。
 画質切替の位置の持ち越しは hls.js（`startPosition`）とネイティブ（要素への代入）で

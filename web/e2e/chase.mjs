@@ -778,4 +778,55 @@ if (offsetPositionAfter < 1 || Math.abs(offsetPositionAfter - offsetPositionBefo
   }
 }
 
+// --- ⑧ 追っかけで見た位置から、完了後の VOD を開く（issue #975 受け入れ 2） ---
+//
+// ⑦ までに追っかけで見た位置はサーバー（スタブ）へ原本の ms で保存されている。録画を
+// 完了にして `/recordings/1` を開き直すと、原本 VOD（original-vod の HLS）が同じ位置
+// ± 数秒から始まる。壊し方: 原本 VOD の `resumePositionMs` を渡さない / 復元を無効にする。
+log('\n=== ⑧ 完了後の VOD を開くと追っかけの位置から始まる ===')
+const chasedMs = recording.resumePositionMs
+if (chasedMs === undefined || chasedMs < 2000 || chasedMs > 9000) {
+  ng.push(`⑧ 前提が成立しない: 追っかけの保存位置が 2〜9 秒の範囲に無い（${chasedMs}）`)
+  await finish(ng, browser)
+}
+recording.status = 'finished'
+recording.sizeBytes = 1_000_000
+recording.encodedAssets = []
+const originalVODBase = '/api/sites/default/recordings/1/original-vod'
+await page.route(`**${originalVODBase}/playlist.m3u8*`, async (route) => {
+  await route.fulfill({
+    status: 200,
+    contentType: 'application/vnd.apple.mpegurl',
+    body: playlist(entries.length, true),
+  })
+})
+await page.route(`**${originalVODBase}/segments/*`, async (route) => {
+  const name = new URL(route.request().url()).pathname.split('/').pop()
+  const file = path.join(fixtureDir, 'segments', name)
+  if (!existsSync(file)) {
+    await route.fulfill({ status: 404, body: 'not found' })
+    return
+  }
+  await route.fulfill({ status: 200, contentType: 'video/mp2t', body: readFileSync(file) })
+})
+await page.goto(`${URL_BASE}/recordings/1`, { waitUntil: 'domcontentloaded' })
+await page.locator('video').waitFor({ timeout: 15000 })
+await page
+  .waitForFunction(
+    () => {
+      const element = document.querySelector('video')
+      return element !== null && Number.isFinite(element.duration) && element.duration > 5
+    },
+    { timeout: 15000 },
+  )
+  .catch(() => ng.push('⑧ 完了後の VOD の duration が確定しない'))
+await page.waitForTimeout(1000)
+const vodStart = await page.locator('video').evaluate((element) => element.currentTime)
+log(`  追っかけの保存位置 ${(chasedMs / 1000).toFixed(2)} 秒 → VOD の開始位置 ${vodStart.toFixed(2)} 秒`)
+if (Math.abs(vodStart - chasedMs / 1000) > 3) {
+  ng.push(
+    `⑧ 完了後の VOD が追っかけで見た位置から始まらない（保存 ${(chasedMs / 1000).toFixed(2)} 秒 → currentTime ${vodStart.toFixed(2)} 秒）`,
+  )
+}
+
 await finish(ng, browser)
