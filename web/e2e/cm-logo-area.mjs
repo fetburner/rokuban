@@ -46,7 +46,16 @@ const FRAME_PNG = Buffer.from(
   'base64',
 )
 
+// ロゴのプレビュー用。幅 100px 超の実寸（今のロゴ 240x120、候補 200x100）にして、
+// 狭い列での縮み（SAR が掛からない）と見切れを実ブラウザで測れるようにする。
+const CURRENT_LOGO_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAPAAAAB4CAIAAABD1OhwAAABW0lEQVR4nO3SQQkAMAzAwMqpfxWTNRODQTg4AXlkzi5kzPcCeMjQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUm5FI4TNhwFSAEAAAAASUVORK5CYII='
+const CANDIDATE_LOGO_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAMgAAABkCAIAAABM5OhcAAABG0lEQVR4nO3SUQkAIBTAQOO8/imMZQmHIAcXYB9bMxuuW88L+JKxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLxAHyZHf8ZP6KHgAAAABJRU5ErkJggg=='
+const SAR = 4 / 3
+
 let savedArea
+let candidate
+let adopted = false
+let adoptBody
 const frameRequests = []
 
 // 録画 7 の詳細。スライダーの範囲（尺）はここから決まる。
@@ -85,7 +94,20 @@ async function apiHandler({ path, url, json, route }) {
   if (path === '/api/breakers') return json([])
   if (path === '/api/events') return sseKeepAlive(route)
   if (path === '/api/cm-logos' && method === 'GET') {
-    return json([{ ...logo, ...(savedArea === undefined ? {} : { logoArea: savedArea }) }])
+    return json([{
+      ...logo,
+      pendingCount: adopted ? 2 : logo.pendingCount,
+      ...(savedArea === undefined ? {} : { logoArea: { ...savedArea, updatedAt: '2026-01-02T00:00:00Z' } }),
+      ...(candidate === undefined ? {} : { candidate }),
+      ...(candidate?.state === 'ready' || adopted
+        ? {
+            previewPng: CURRENT_LOGO_PNG,
+            codedWidth: 1440,
+            codedHeight: 1080,
+            learnedAt: adopted ? '2026-01-03T00:00:00Z' : '2026-01-01T00:00:00Z',
+          }
+        : {}),
+    }])
   }
   if (path === '/api/recordings' && method === 'GET') return json([recording7, recording8])
   if (path === '/api/recordings/7' && method === 'GET') return json(recording7)
@@ -99,7 +121,16 @@ async function apiHandler({ path, url, json, route }) {
       body: FRAME_PNG,
     })
   }
+  if (path === '/api/cm-logos/32678/5168/candidate/adopt' && method === 'POST') {
+    adoptBody = JSON.parse(route.request().postData() ?? '{}')
+    adopted = true
+    candidate = undefined
+    return route.fulfill({ status: 204 })
+  }
   if (path === '/api/cm-logos/32678/5168/area' && method === 'PUT') {
+    // 実バックエンドの PutCMLogoArea は旧候補を消して job を積むだけで、running 行は
+    // worker が job を拾ってから作る。ここでも candidate は作らない。
+    candidate = undefined
     savedArea = JSON.parse(route.request().postData() ?? '{}')
     return route.fulfill({ status: 204 })
   }
@@ -241,9 +272,11 @@ await check('③', async () => {
   await page.mouse.move(handleCenter.x + dx, handleCenter.y + dy)
   await page.mouse.up()
 
-  await page.getByRole('button', { name: '枠を保存' }).click()
+  await page.getByRole('button', { name: 'ロゴを解析' }).click()
   for (let i = 0; i < 30 && savedArea === undefined; i++) await page.waitForTimeout(100)
   if (savedArea === undefined) throw new Error('PUT /area が届かない')
+  if (savedArea.recordingId !== 7) throw new Error(`PUT body の recordingId が ${savedArea.recordingId}（期待 7）`)
+  if ('atMs' in savedArea) throw new Error('全編解析なのに PUT body に atMs が載っている')
   const { w, h } = savedArea
   if (!Number.isFinite(w) || !Number.isFinite(h)) throw new Error(`PUT body の w/h が有限数でない（${JSON.stringify(savedArea)}）`)
   if (Math.abs(w - expected.w) > 1 || Math.abs(h - expected.h) > 1) {
@@ -426,6 +459,18 @@ await check('⑫', async () => {
   if (Math.abs(image.width - frame.width) > 1 || Math.abs(image.height - frame.height) > 1) {
     throw new Error(`画像 ${image.width}x${image.height} が枠箱 ${frame.width}x${frame.height} を埋めない`)
   }
+  // 録画 8 を表示して解析すると、PUT body の recordingId が 8 になる（表示中の録画が載る）。
+  for (const [label, value] of Object.entries({ X: 10, Y: 20, 幅: 100, 高さ: 80 })) {
+    const input = numberInput(other, label)
+    await input.click()
+    await other.keyboard.press('ControlOrMeta+A')
+    await other.keyboard.type(String(value))
+  }
+  savedArea = undefined
+  await other.getByRole('button', { name: 'ロゴを解析' }).click()
+  for (let i = 0; i < 30 && savedArea === undefined; i++) await other.waitForTimeout(100)
+  if (savedArea === undefined) throw new Error('録画 8 の PUT /area が届かない')
+  if (savedArea.recordingId !== 8) throw new Error(`録画 8 を表示して解析したのに recordingId が ${savedArea.recordingId}`)
   await other.close()
 })
 
@@ -452,15 +497,100 @@ await check('⑬', async () => {
   }
   // Tab も Enter も押さず、入力中のまま保存を押す（blur で確定してから保存される）
   savedArea = undefined
-  await narrow.getByRole('button', { name: '枠を保存' }).click()
+  await narrow.getByRole('button', { name: 'ロゴを解析' }).click()
   for (let i = 0; i < 30 && savedArea === undefined; i++) await narrow.waitForTimeout(100)
   if (savedArea === undefined) throw new Error('PUT /area が届かない')
   const got = { X: savedArea.x, Y: savedArea.y, 幅: savedArea.w, 高さ: savedArea.h }
   if (JSON.stringify(got) !== JSON.stringify(want)) {
     throw new Error(`PUT body が ${JSON.stringify(got)}（期待 ${JSON.stringify(want)}）`)
   }
+  if (savedArea.recordingId !== 7 || 'atMs' in savedArea) {
+    throw new Error(`PUT body が表示中の録画 7 だけを指さない（${JSON.stringify(savedArea)}）`)
+  }
   await narrow.close()
 })
+
+log('\n=== ⑭ 解析待ち（candidate の行が無い間）の表示とポーリング ===')
+const candidateBase = {
+  x: 400,
+  y: 300,
+  w: 400,
+  h: 300,
+  codedWidth: 1440,
+  codedHeight: 1080,
+  recordingId: 7,
+  attemptedAt: '2026-01-02T00:00:00Z',
+}
+const candidatePage = await context.newPage()
+await installApiStubs(candidatePage, apiHandler)
+await check('⑭', async () => {
+  // 枠は保存済みで candidate の行がまだ無い。メモリ state の無い開き直したページでも解析中を出す。
+  savedArea = { recordingId: 7, ...candidateBase }
+  candidate = undefined
+  await candidatePage.goto(`${URL_BASE}/cm-logos/32678/5168?recording=7`, { waitUntil: 'domcontentloaded' })
+  await candidatePage.getByTestId('cm-logo-candidate-running').waitFor({ timeout: 5000 })
+  // candidate が無い間もポーリングして、worker が作った failed を拾う。
+  candidate = { state: 'failed', stage: 'area', ...candidateBase }
+  await candidatePage.getByTestId('cm-logo-candidate-failed').waitFor({ timeout: 8000 })
+  const text = await candidatePage.getByTestId('cm-logo-candidate-failure-message').textContent()
+  if (!text?.includes('教えた枠が録画の解像度と合わない')) throw new Error(`failed の工程文が違う（${text}）`)
+})
+
+log('\n=== ⑮ 候補と今のロゴのプレビュー寸法 ===')
+await check('⑮', async () => {
+  candidate = { state: 'ready', previewPng: CANDIDATE_LOGO_PNG, ...candidateBase }
+  await candidatePage.reload({ waitUntil: 'domcontentloaded' })
+  await candidatePage.getByTestId('cm-logo-candidate-ready').waitFor({ timeout: 5000 })
+  // 今のロゴと候補の両方で「描画幅 = naturalWidth × SAR、描画高さ = naturalHeight」かつ
+  // 各 img が自分の欄に収まっている（スクロールしないと見えない状態でない）ことを測る。
+  for (const width of [1280, 1024]) {
+    await candidatePage.setViewportSize({ width, height: 900 })
+    for (const [testId, name, w, h] of [
+      ['cm-logo-current-preview', '今のロゴ', 240, 120],
+      ['cm-logo-candidate-preview', '候補', 200, 100],
+    ]) {
+      await candidatePage.waitForFunction(
+        (id) => (document.querySelector(`[data-testid="${id}"] img`)?.naturalWidth ?? 0) > 0,
+        testId,
+      )
+      const m = await candidatePage.getByTestId(testId).evaluate((element) => {
+        const image = element.querySelector('img')
+        const outer = element.getBoundingClientRect()
+        const rect = image.getBoundingClientRect()
+        return {
+          natural: [image.naturalWidth, image.naturalHeight],
+          width: rect.width,
+          height: rect.height,
+          left: rect.left - outer.left,
+          right: outer.right - rect.right,
+          scrolls: element.scrollWidth > element.clientWidth,
+        }
+      })
+      log(`  ${width}px ${name}: ${JSON.stringify(m)}`)
+      if (m.natural[0] !== w || m.natural[1] !== h) throw new Error(`${width}px ${name}の画像が読めていない（natural ${m.natural}）`)
+      if (Math.abs(m.width - w * SAR) > 1 || Math.abs(m.height - h) > 1) {
+        throw new Error(`${width}px ${name}が原寸×SAR でない（${m.width}x${m.height} / 期待 ${w * SAR}x${h}）`)
+      }
+      if (m.left < 0 || m.right < 0 || m.scrolls) {
+        throw new Error(`${width}px ${name}が欄から見切れている（左 ${m.left} / 右 ${m.right} / scroll ${m.scrolls}）`)
+      }
+    }
+  }
+  await candidatePage.setViewportSize({ width: 1280, height: 900 })
+})
+
+log('\n=== ⑯ ready 候補を redetect=false で採用する ===')
+await check('⑯', async () => {
+  await candidatePage.getByTestId('cm-logo-candidate-redetect').uncheck()
+  await candidatePage.getByTestId('cm-logo-candidate-adopt').click()
+  await candidatePage.getByTestId('cm-logo-candidate-adopted').waitFor({ timeout: 5000 })
+  if (JSON.stringify(adoptBody) !== JSON.stringify({ redetect: false })) {
+    throw new Error(`採用 body が違う（実際 ${JSON.stringify(adoptBody)}）`)
+  }
+  const text = await candidatePage.getByTestId('cm-logo-candidate-adopted').textContent()
+  if (!text?.includes('検出待ち 2 件')) throw new Error(`採用後の検出待ちメッセージが違う（${text}）`)
+})
+await candidatePage.close()
 
 log('\n=== ⑦ 旧形式の URL は局のルートへ飛ぶ ===')
 await check('⑦', async () => {

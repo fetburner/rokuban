@@ -75,7 +75,7 @@ function StorageRootCapacity({ root, nowMs }: { root: StorageRoot; nowMs: number
  * 3. **予約が正当に 0 件**（`upcomingSchedule` が空配列。取得は成功したが窓の中に
  *    予約が無い）ときも「+0 B」は出さない --- `projectedConsumptionBytes` が `0`
  *    以下なら見込みの行自体を描かない（ドロップ統計バッジの「0 のものは出さない」
- *    規律と同じ。`docs/frontend/recordings.md`「ドロップ統計はバッジ + 展開」）
+ *    規律と同じ。`docs/frontend/recordings.md`「ドロップ統計はバッジ + PID 表」）
  * 4. **見込み消費が残量に収まる**ときは満杯見込み日を出さない（下界主義）
  */
 export function StorageBalance({ compact = false }: { compact?: boolean }) {

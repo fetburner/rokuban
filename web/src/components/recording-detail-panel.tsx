@@ -500,6 +500,7 @@ export function RecordingDetail({
         <RecordingPlayer
           recordingId={recording.id}
           resumePositionMs={recording.resumePositionMs}
+          onWatched={() => void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })}
           preferredProfile={preferredPlaybackProfile}
           encodedAssets={encodedAssets}
           hasOriginal={hasOriginal}
