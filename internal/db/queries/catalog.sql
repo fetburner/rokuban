@@ -49,6 +49,10 @@ SELECT * FROM recording_encode_policy ORDER BY recording_id;
 -- name: CatalogListRecordingPurgeRequests :many
 SELECT * FROM recording_purge_requests ORDER BY recording_id;
 
+-- Watched markers are durable user facts. Playback positions are transient and omitted.
+-- name: CatalogListRecordingWatched :many
+SELECT * FROM recording_watched ORDER BY recording_id;
+
 -- name: CatalogListMediaAssets :many
 SELECT * FROM media_assets ORDER BY id;
 
@@ -314,6 +318,11 @@ INSERT INTO recording_purge_requests (recording_id, requested_at)
 VALUES ($1, $2)
 ON CONFLICT (recording_id) DO UPDATE SET
     requested_at = EXCLUDED.requested_at;
+
+-- name: CatalogUpsertRecordingWatched :exec
+INSERT INTO recording_watched (recording_id, watched_at)
+VALUES ($1, $2)
+ON CONFLICT (recording_id) DO UPDATE SET watched_at = EXCLUDED.watched_at;
 
 -- name: CatalogUpsertMediaAsset :exec
 INSERT INTO media_assets (

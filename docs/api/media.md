@@ -119,8 +119,10 @@ size_bytes は ingest / encode 時に照合した値なので、
 違うならコミット後に改変・切り詰めが起きている。配信自体は続ける
 （ユーザーは録画を見たい）。
 
-**再生位置と視聴済みの印は api ロールが DB に持つと決めた**（移すまでは localStorage）。
-streamer は位置を知らない（Range 要求の位置は再生位置ではない）。決定と表の割り方は
+**再生位置と視聴済みの印は api ロールが DB に持つ**。
+streamer は位置を知らない（Range 要求の位置は再生位置ではない）。再開位置は
+`/api/recordings/{id}/playback-position` に原本時間軸の ms で保存し、視聴済み印は
+`/api/recordings/{id}/watched` で扱う。決定と表の割り方は
 [frontend/recordings.md](../frontend/recordings.md) §視聴状態。
 
 #### X-Accel-Redirect（`storage.accel_location`）
@@ -504,8 +506,8 @@ master から参照される variant playlist（映像・音声）と字幕 play
 - **追っかけ再生は画質を `?profile=` で選べる。** 追っかけのセレクタは
   `/recordings/$id?liveProfile=<name>#chase` に置き、一覧 API の名前を streamer へ
   渡す。画質の切替は `(recordingID, offset)` で同定された既存セッションの別
-  プレイリストを取るだけで、セッションを作り直さない。`playbackProfile` は VOD 側の
-  再生位置キーとして別に保ち、画質の切替で位置を分けない。**追っかけには rendition
+  プレイリストを取るだけで、セッションを作り直さない。再生位置は profile によらず
+  原本時間軸で保存する。**追っかけには rendition
   を出さない。** 音声を別 rendition に分けると配信の形（master + 映像だけの
   セグメント + 別の音声）が変わり、追っかけの seek や再生位置の復元を確かめる
   判定が無いので、音声は従来の形のままにする

@@ -1,71 +1,103 @@
+import {
+  deleteRecordingPlaybackPosition,
+  putRecordingPlaybackPosition,
+  putRecordingWatched,
+  type KeepRange,
+} from '@/api/generated'
+
 /**
- * ブラウザ再生の再開位置を localStorage に保存する（#14 7c / M3-5）。
- * サーバー側視聴履歴は持たない。キーは録画 ID + 時間軸（下記 ORIGINAL_AXIS。cut 版だけはプロファイル名）。
- * 再生速度（端末ごとに 1 つ、録画をまたいで保つ）も同じく localStorage に持つ。
+ * 再生速度は端末ごとの好みとして localStorage に残す。
+ * 再開位置と視聴済みは世帯共通の事実なので API に置く。
  */
 
-const PREFIX = 'rokuban:playback:'
+export type PlaybackPositionWrite =
+  | { kind: 'delete' }
+  | { kind: 'put'; positionMs: number }
+  | { kind: 'watched' }
 
-/**
- * ORIGINAL_AXIS は「cut 前の軸」（録画開始からの秒数）の保存キー名。追っかけ・原本 HLS・
- * cut でない encoded MP4 が共有する。キーを表示中の資産名で決めると、録画中に追っかけで
- * 保存した位置を、録画終了後の別プロファイルが読めなくなる。
- */
-export const ORIGINAL_AXIS = 'original'
-
-/** playbackStorageKey は recording id と profile から localStorage キーを作る。 */
-export function playbackStorageKey(recordingId: number, profile: string): string {
-  return `${PREFIX}${recordingId}:${profile}`
+/** 原本の ms をカット後の ms へ写す。keep 外の位置は次の区間の先頭へ寄せる。 */
+export function originalMsToCutMs(originalMs: number, keepRanges: readonly KeepRange[]): number {
+  let cutOffset = 0
+  for (const range of keepRanges) {
+    if (originalMs < range.startMs) return cutOffset
+    if (originalMs >= range.endMs) {
+      cutOffset += range.endMs - range.startMs
+      continue
+    }
+    return cutOffset + originalMs - range.startMs
+  }
+  return cutOffset
 }
 
-/** loadPlaybackPosition は保存済みの秒位置を返す。無ければ null。 */
-export function loadPlaybackPosition(recordingId: number, profile: string): number | null {
+/** カット後の ms を原本の ms へ戻す。内部境界は次の keep 区間の先頭へ寄せる。 */
+export function cutMsToOriginalMs(cutMs: number, keepRanges: readonly KeepRange[]): number {
+  if (keepRanges.length === 0) return cutMs
+  let cutOffset = 0
+  for (let index = 0; index < keepRanges.length; index += 1) {
+    const range = keepRanges[index]!
+    const length = range.endMs - range.startMs
+    const cutEnd = cutOffset + length
+    if (cutMs < cutEnd || index === keepRanges.length - 1) {
+      return range.startMs + Math.min(Math.max(cutMs - cutOffset, 0), length)
+    }
+    cutOffset = cutEnd
+  }
+  return keepRanges.at(-1)!.endMs
+}
+
+/** API の原本秒を、いま再生する video の currentTime 秒へ戻す。 */
+export function playbackResumeSeconds(positionMs: number | undefined, keepRanges?: readonly KeepRange[]): number | null {
+  if (positionMs === undefined || !Number.isFinite(positionMs) || positionMs <= 0) return null
+  return (keepRanges === undefined ? positionMs : originalMsToCutMs(positionMs, keepRanges)) / 1000
+}
+
+/** 各動画経路の currentTime から、位置 DELETE / PUT / 視聴済みを決める。 */
+export function playbackPositionWrite(
+  currentTimeSeconds: number,
+  durationSeconds: number,
+  durationFinal: boolean,
+  keepRanges?: readonly KeepRange[],
+): PlaybackPositionWrite {
+  if (!Number.isFinite(currentTimeSeconds) || currentTimeSeconds < 2) return { kind: 'delete' }
+  if (
+    durationFinal &&
+    Number.isFinite(durationSeconds) &&
+    durationSeconds > 0 &&
+    currentTimeSeconds >= durationSeconds * 0.9
+  ) {
+    return { kind: 'watched' }
+  }
+  const currentMs = Math.floor(currentTimeSeconds * 1000)
+  const positionMs = keepRanges === undefined ? currentMs : cutMsToOriginalMs(currentMs, keepRanges)
+  return positionMs < 2000 ? { kind: 'delete' } : { kind: 'put', positionMs }
+}
+
+/** 旧 localStorage の再開位置を削除する。速度キーは別名なので残る。 */
+export function clearLegacyPlaybackPositions(): void {
+  const prefix = 'rokuban:playback:'
   try {
-    const raw = localStorage.getItem(playbackStorageKey(recordingId, profile))
-    if (raw === null) return null
-    const n = Number(raw)
-    if (!Number.isFinite(n) || n < 0) return null
-    return n
+    for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+      const key = localStorage.key(index)
+      if (key?.startsWith(prefix)) localStorage.removeItem(key)
+    }
   } catch {
     // private mode 等で localStorage が使えない場合は無視
-    return null
   }
 }
 
-/**
- * shouldSavePlaybackPosition は timeupdate 由来の保存を間引くかどうかを判定する。
- *
- * video 要素の timeupdate は約 4Hz で発火するが、保存値は Math.floor(seconds) なので
- * 同じ秒の間に呼んでも書き込む値は変わらない。setInterval や debounce でタイマーを
- * 持つ代わりに「Math.floor(seconds) が前回保存時と変わったときだけ書く」を採用した
- * （実装が単純でタイマー管理が不要。保存頻度は最大で毎秒 1 回に収まる）。
- *
- * lastSavedSecond が null（未保存）のときは常に true を返す。
- */
-export function shouldSavePlaybackPosition(lastSavedSecond: number | null, seconds: number): boolean {
-  return lastSavedSecond === null || Math.floor(seconds) !== lastSavedSecond
-}
-
-/** savePlaybackPosition は秒位置を保存する。終端付近はクリアする。 */
-export function savePlaybackPosition(
+/** position writes are best effort; pause/pagehide supply later retry points. */
+export async function persistPlaybackPosition(
   recordingId: number,
-  profile: string,
-  seconds: number,
-  duration?: number,
-): void {
+  write: PlaybackPositionWrite,
+  keepalive = false,
+): Promise<boolean> {
   try {
-    // 終了 5 秒以内、または先頭 2 秒未満は「続きから」に残さない
-    if (
-      !Number.isFinite(seconds) ||
-      seconds < 2 ||
-      (duration !== undefined && Number.isFinite(duration) && duration > 0 && seconds >= duration - 5)
-    ) {
-      localStorage.removeItem(playbackStorageKey(recordingId, profile))
-      return
-    }
-    localStorage.setItem(playbackStorageKey(recordingId, profile), String(Math.floor(seconds)))
+    if (write.kind === 'delete') await deleteRecordingPlaybackPosition(recordingId, { keepalive })
+    else if (write.kind === 'watched') await putRecordingWatched(recordingId, { keepalive })
+    else await putRecordingPlaybackPosition(recordingId, { positionMs: write.positionMs }, { keepalive })
+    return true
   } catch {
-    // ignore
+    return false
   }
 }
 

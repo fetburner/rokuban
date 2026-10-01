@@ -318,6 +318,25 @@ CREATE TABLE recording_encode_attempts (
 - **`awaiting_review` はこの表ではなく所有の行から導出する**（`cut: true` のプロファイルで `recording_chapter_ownership` が無い）。`queued`（ジョブが来る）とは別の主張で、投入側も実際に候補から外している（[storage/retention.md](../storage/retention.md) §7）。行が無いことと「来ない」ことは別なので、`queued` と混ぜない
 - `error` / `attempted_at` の読み手は **API ではなく運用者の SELECT** である（[runbook/troubleshooting.md](../runbook/troubleshooting.md)「エンコードが失敗している」）。これは `recording_ingest_progress` を運用者が読むのと同じ立場である。`EncodeJobStatus` は `profile` / `state` だけを配る ―― 失敗理由は ffmpeg の内部情報で、クライアントに配る契約に載せると切り詰め方や書式が API 互換の対象になる。`recording_ingest_progress` の `observed_at` のような停滞判定をこの表に持たせるなら、それを使う API/フロントと同じ PR で決める（不変条件 11）。プロセス死で `state='running'` のまま残った encode は、`attempted_at` が 1 分以上古く、かつ job-id advisory lock を取得できた場合だけ `encode_reconcile` が回収する。ライブの長時間 encode は回収せず、`recording_encode_attempts` は代替ジョブの開始まで `running` を保つ
 
+### recording_playback_positions / recording_watched — 世帯共有の視聴状態
+
+```sql
+CREATE TABLE recording_playback_positions (
+    recording_id bigint PRIMARY KEY REFERENCES recordings (id),
+    position_ms bigint NOT NULL CHECK (position_ms >= 2000),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX ON recording_playback_positions (updated_at DESC, recording_id DESC);
+
+CREATE TABLE recording_watched (
+    recording_id bigint PRIMARY KEY REFERENCES recordings (id),
+    watched_at timestamptz NOT NULL DEFAULT now()
+);
+```
+
+再開位置は録画行ごとに更新し、視聴済みは選んだ録画行に印を付ける。視聴済みを読むときは同じ放送イベント `(network_id, service_id, program_start_at)` の全行を束ねるので、ごみ箱・supersede 済みの行に残った印も有効である。再開位置は一時状態なので catalog に含めず、視聴済みの印は復旧可能な世帯の事実として export / rescue に含める。どちらの表も `recordings` の spine を書く watcher ではなく API が書くため衛星表に置く。
+
 ## 6. media_assets — メディアアセット（永続資産）
 
 録画に紐づくファイルの台帳。**この行の存在が「公開済み」の定義**（ストレージ契約ルール 3）。

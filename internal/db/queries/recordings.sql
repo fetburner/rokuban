@@ -311,3 +311,48 @@ WHERE EXISTS (
 UPDATE recording_encode_policy
 SET cm_detect = false, updated_at = now()
 WHERE recording_id = sqlc.arg('recording_id');
+
+-- Playback positions are per recording row. The client decides when a position is
+-- meaningful using the active media duration.
+-- name: RecordingExistsForPlaybackState :one
+SELECT EXISTS (
+    SELECT 1 FROM recordings
+    WHERE id = sqlc.arg('recording_id') AND purged_at IS NULL
+);
+
+-- name: UpsertRecordingPlaybackPosition :execrows
+INSERT INTO recording_playback_positions (recording_id, position_ms, updated_at)
+SELECT r.id, sqlc.arg('position_ms'), now()
+FROM recordings r
+WHERE r.id = sqlc.arg('recording_id')
+  AND r.purged_at IS NULL
+  AND sqlc.arg('position_ms') >= 2000
+ON CONFLICT (recording_id) DO UPDATE SET
+    position_ms = EXCLUDED.position_ms,
+    updated_at = EXCLUDED.updated_at;
+
+-- name: DeleteRecordingPlaybackPosition :execrows
+DELETE FROM recording_playback_positions p
+USING recordings r
+WHERE p.recording_id = r.id
+  AND r.id = sqlc.arg('recording_id')
+  AND r.purged_at IS NULL;
+
+-- name: UpsertRecordingWatched :execrows
+INSERT INTO recording_watched (recording_id, watched_at)
+SELECT r.id, now()
+FROM recordings r
+WHERE r.id = sqlc.arg('recording_id')
+  AND r.purged_at IS NULL
+ON CONFLICT (recording_id) DO UPDATE SET watched_at = EXCLUDED.watched_at;
+
+-- Remove every marker for the same broadcast event, including trash/superseded rows.
+-- name: DeleteRecordingWatchedForEvent :execrows
+DELETE FROM recording_watched w
+USING recordings selected, recordings watched_recording
+WHERE selected.id = sqlc.arg('recording_id')
+  AND selected.purged_at IS NULL
+  AND watched_recording.network_id = selected.network_id
+  AND watched_recording.service_id = selected.service_id
+  AND watched_recording.program_start_at = selected.program_start_at
+  AND w.recording_id = watched_recording.id;

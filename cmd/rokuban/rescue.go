@@ -78,6 +78,7 @@ func runRescue(ctx context.Context, pool *pgxpool.Pool, mediaDir string, registr
 	}
 	_, _ = fmt.Fprintf(out, "  rules:              %d\n", result.Rules)
 	_, _ = fmt.Fprintf(out, "  recordings:         %d\n", result.Recordings)
+	_, _ = fmt.Fprintf(out, "  recording_watched:  %d\n", result.RecordingWatched)
 	_, _ = fmt.Fprintf(out, "  media_assets:       %d\n", result.MediaAssets)
 	_, _ = fmt.Fprintf(out, "  drop_stats:         %d\n", result.DropStats)
 	_, _ = fmt.Fprintf(out, "  drop_positions:     %d\n", result.DropPositions)

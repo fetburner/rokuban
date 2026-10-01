@@ -136,6 +136,7 @@ type Fixtures = {
   reservations?: Reservation[]
   breakers?: CircuitBreaker[]
   overages?: CapacityOverage[]
+  continueWatching?: Recording[]
   /** 特定パスの応答を意図的に遅延させ、読み込み中の状態を作るためのフック。 */
   pendingPaths?: Set<string>
   /**
@@ -157,7 +158,7 @@ type Fixtures = {
 }
 
 /**
- * stubApi はホームが叩く 6 本の GET を振り分ける。`/api/recordings` は `status`
+ * stubApi はホームが叩く 7 本の GET を振り分ける。`/api/recordings` は `status`
  * クエリで「いま録画中」「完了録画（表示 + ドロップ検出）」「失敗録画（警告）」を
  * 分ける（サーバーの絞り込みを模す）。
  */
@@ -184,6 +185,7 @@ function stubApi(fixtures: Fixtures) {
         }
         return jsonResponse([])
       }
+      if (p === '/api/recordings/continue-watching') return jsonResponse(fixtures.continueWatching ?? [])
       if (p === '/api/reservations') return jsonResponse(fixtures.reservations ?? [])
       if (p === '/api/breakers') return jsonResponse(fixtures.breakers ?? [])
       if (p === '/api/capacity/overages') return jsonResponse(fixtures.overages ?? [])
@@ -235,12 +237,12 @@ function renderHome() {
 }
 
 describe('ホーム: 全セクションが空のときの単一の空状態', () => {
-  it('4 セクションとも 0 件なら見出しを 1 つも出さず、単一の空状態だけを出す', async () => {
+  it('5 セクションとも 0 件なら見出しを 1 つも出さず、単一の空状態だけを出す', async () => {
     stubApi({})
     renderHome()
 
     expect(await screen.findByText('表示できる項目がありません')).toBeInTheDocument()
-    for (const heading of ['いま録画中', '今夜〜明日の予約', '警告', '直近の完了']) {
+    for (const heading of ['いま録画中', '続きから', '今夜〜明日の予約', '警告', '直近の完了']) {
       expect(screen.queryByRole('heading', { name: heading })).not.toBeInTheDocument()
     }
     // 「異常なし」「予約がありません」のような肯定/報告の文言を書いていない
@@ -276,6 +278,31 @@ describe('ホーム: 完了録画へのショートカット（issue #686）', (
 
     expect(await screen.findByText('直近の完了録画の取得に失敗しました')).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: '直近の完了へ' })).not.toBeInTheDocument()
+  })
+})
+
+describe('ホーム: 続きから', () => {
+  it('再開対象を表示し、録画中の行は追っかけページに向ける', async () => {
+    stubApi({
+      continueWatching: [
+        recording(31, '再開する録画', 'finished', { resumePositionMs: 12_000 }),
+        recording(32, '録画中の再開対象', 'recording', { resumePositionMs: 24_000 }),
+      ],
+    })
+    renderHome()
+
+    const heading = await screen.findByRole('heading', { name: '続きから' })
+    const links = within(heading.closest('section')!).getAllByRole('link')
+    expect(links.map((link) => link.getAttribute('href'))).toEqual([
+      '/recordings/31',
+      '/recordings/32#chase',
+    ])
+  })
+
+  it('取得失敗を空として隠さない', async () => {
+    stubApi({ errorPaths: new Set(['/api/recordings/continue-watching']) })
+    renderHome()
+    expect(await screen.findByText('再開位置の取得に失敗しました')).toBeInTheDocument()
   })
 })
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type {
   LiveAudioChoice,
@@ -25,11 +25,11 @@ import {
 } from '@/lib/live'
 import {
   applyPlaybackRate,
-  loadPlaybackPosition,
+  clearLegacyPlaybackPositions,
   loadPlaybackRate,
-  savePlaybackPosition,
+  playbackPositionWrite,
+  persistPlaybackPosition,
   savePlaybackRate,
-  shouldSavePlaybackPosition,
 } from '@/lib/playback-position'
 import { cn } from '@/lib/utils'
 
@@ -153,13 +153,13 @@ type LivePlayerProps = {
   serviceId?: number
   /** recordings.id。mode="chase" / "original-vod" のとき必須。 */
   recordingId?: number
+  /** 原本時間軸に保存された再開位置。 */
+  resumePositionMs?: number
   /**
    * chase playlist / live playlist の画質（`live.profiles` の名前）。省略時は
    * streamer の先頭プロファイル（既定）。
    *
-   * **`playbackProfile` とは別の軸である。** こちらは配られるバイト列（HLS の
-   * プレイリスト）を選び、あちらは再生位置の localStorage キーを選ぶ。混ぜると
-   * 画質を切り替えただけで「続きから」が別の場所に分かれる（issue #874）。
+   * 再開位置とは独立している。画質切替でも同じ再生位置を引き継ぐ（issue #874）。
    *
    * **切替はセッションを作り直さない。** 1 サービス / 1 録画 = ffmpeg 1 本が全
    * プロファイルを同時に出力しているので、替わるのは同じセッションのプレイリストの
@@ -176,12 +176,10 @@ type LivePlayerProps = {
   audio?: LiveAudioChoice
   /**
    * 明示的に選んだ録画開始からの秒数。省略時は録画先頭のセッションを
-   * 起動して保存済みの再生位置を復元し、0 を含む指定時はセッション先頭から
+   * 起動してサーバーに保存した再生位置を復元し、0 を含む指定時はセッション先頭から
    * 再生する。
    */
   startOffsetSeconds?: number
-  /** 追っかけと原本 VOD で共有する再生位置の時間軸名（保存キー）。live の配信プロファイルとは別に持つ。 */
-  playbackProfile?: string
   className?: string
   /**
    * onDiagnostics は遅延・バッファの計器（issue #476）の値を 1 秒ごとに
@@ -260,10 +258,10 @@ export function LivePlayer({
   networkId,
   serviceId,
   recordingId,
+  resumePositionMs,
   profile,
   audio,
   startOffsetSeconds,
-  playbackProfile,
   className,
   onDiagnostics,
   onStalled,
@@ -271,7 +269,6 @@ export function LivePlayer({
   const isChase = mode === 'chase'
   const isOriginalVOD = mode === 'original-vod'
   const isRecordingPlayback = isChase || isOriginalVOD
-  const recordingPlaybackProfile = playbackProfile ?? ''
   const explicitChaseStartOffset =
     isChase &&
     startOffsetSeconds !== undefined &&
@@ -281,6 +278,14 @@ export function LivePlayer({
       : undefined
   const hasExplicitChaseStart = explicitChaseStartOffset !== undefined
   const chaseStartOffset = explicitChaseStartOffset ?? 0
+  const serverResumePosition =
+    resumePositionMs !== undefined && resumePositionMs >= 2000
+      ? Math.max(resumePositionMs / 1000 - chaseStartOffset, 0)
+      : null
+  const serverResumePositionRef = useRef(serverResumePosition)
+  useEffect(() => {
+    serverResumePositionRef.current = serverResumePosition
+  }, [serverResumePosition])
   const videoRef = useRef<HTMLVideoElement>(null)
   const hlsRef = useRef<HlsLike | null>(null)
   const [loading, setLoading] = useState(true)
@@ -341,7 +346,7 @@ export function LivePlayer({
   // は動かないので、要素の状態ではなく自前で持つ。
   const chaseMetadataLoaded = useRef(false)
   const explicitStartSeekPending = useRef(false)
-  const lastSavedSecond = useRef<number | null>(null)
+  const watchedRequestPending = useRef(false)
   /**
    * 原本 VOD の playlist が ENDLIST まで書かれたか。変換中の EVENT playlist の
    * `video.duration` は変換の先端でしかないので、これが true になるまで
@@ -350,6 +355,24 @@ export function LivePlayer({
    * ネイティブ HLS を含む `ended` イベント。ネイティブ経路は ENDLIST を直接見られない。
    */
   const originalVODFinalized = useRef(false)
+  const saveCurrentPosition = useCallback((video: HTMLVideoElement, keepalive = false) => {
+    if (!isRecordingPlayback || recordingId === undefined || chaseResumePending.current !== null) return
+    const globalPosition = video.currentTime + chaseStartOffset
+    const write = playbackPositionWrite(
+      globalPosition,
+      video.duration,
+      isOriginalVOD && originalVODFinalized.current,
+    )
+    if (write.kind === 'watched') {
+      if (watchedRequestPending.current) return
+      watchedRequestPending.current = true
+      void persistPlaybackPosition(recordingId, write, keepalive).then((saved) => {
+        if (!saved) watchedRequestPending.current = false
+      })
+      return
+    }
+    void persistPlaybackPosition(recordingId, write, keepalive)
+  }, [chaseStartOffset, isOriginalVOD, isRecordingPlayback, recordingId])
   // onDiagnostics は ref 越しに読む。probe / hls.js のセットアップを担う
   // メイン effect の依存配列に関数 prop をそのまま入れると、呼び出し側が
   // 毎レンダー新しい関数を渡した場合にプレイリストの再取得・hls インスタンスの
@@ -364,7 +387,7 @@ export function LivePlayer({
   useEffect(() => {
     restorePending.current = true
     explicitStartSeekPending.current = hasExplicitChaseStart
-    lastSavedSecond.current = null
+    watchedRequestPending.current = false
   }, [
     mode,
     recordingId,
@@ -372,7 +395,6 @@ export function LivePlayer({
     // 復元が立ち直り、切替が「保存位置まで巻き戻る」操作になる（`offset` 付きなら
     // 先頭へ戻る）。位置の持ち越しは下の effect が `lastChasePositionRef` で行う。
     // 画質の切替は再生位置の基準を変えないので、復元をやり直す理由が無い。
-    playbackProfile,
     site,
     networkId,
     serviceId,
@@ -380,6 +402,28 @@ export function LivePlayer({
     chaseStartOffset,
     hasExplicitChaseStart,
   ])
+
+  useEffect(() => {
+    clearLegacyPlaybackPositions()
+  }, [])
+
+  useEffect(() => {
+    if (!isRecordingPlayback || recordingId === undefined) return
+    const saveIfPlaying = () => {
+      const video = videoRef.current
+      if (video && !video.paused) saveCurrentPosition(video)
+    }
+    const onPageHide = () => {
+      const video = videoRef.current
+      if (video) saveCurrentPosition(video, true)
+    }
+    const timer = window.setInterval(saveIfPlaying, 15_000)
+    window.addEventListener('pagehide', onPageHide)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('pagehide', onPageHide)
+    }
+  }, [isRecordingPlayback, recordingId, saveCurrentPosition])
 
   useEffect(() => {
     onDiagnosticsRef.current = onDiagnostics
@@ -460,12 +504,14 @@ export function LivePlayer({
     const resumePosition =
       isRecordingPlayback && lastChaseInputsRef.current === chaseInputs
         ? lastChasePositionRef.current
-        : null
+        : isRecordingPlayback && !(isChase && hasExplicitChaseStart)
+          ? serverResumePositionRef.current
+          : null
     lastChaseInputsRef.current = chaseInputs
     originalVODFinalized.current = false
     chaseResumePending.current = resumePosition
     if (resumePosition !== null) {
-      // 持ち越しは既存の復元より優先する。`playbackProfile` の変化で復元が
+      // 持ち越しは既存の復元より優先する。サーバーの再開位置が更新されて復元が
       // 立ち直っていると、`onLoadedMetadata` が保存位置へ、offset 付きなら
       // `onCanPlay` が 0 秒へ戻してしまう。
       restorePending.current = false
@@ -875,12 +921,7 @@ export function LivePlayer({
           isChase
             ? { startPosition: resumePosition ?? 0 }
             : isOriginalVOD
-              ? {
-                  startPosition:
-                    resumePosition ??
-                    loadPlaybackPosition(recordingId ?? 0, recordingPlaybackProfile) ??
-                    0,
-                }
+              ? { startPosition: resumePosition ?? 0 }
               : undefined,
         ) as unknown as HlsLike
         hls.subtitleDisplay = true
@@ -1021,7 +1062,6 @@ export function LivePlayer({
     retryNonce,
     chaseStartOffset,
     hasExplicitChaseStart,
-    recordingPlaybackProfile,
   ])
 
   // 離脱のヒント（issue #191）。**再生を担っているのはこのコンポーネントだけ**
@@ -1067,9 +1107,7 @@ export function LivePlayer({
     }
   }, [isChase, isOriginalVOD, isRecordingPlayback, recordingId, site, networkId, serviceId, chaseStartOffset])
 
-  // 再生位置のキーは呼び出し側が渡す時間軸名（`playbackProfile`。録画詳細は ORIGINAL_AXIS）。
-  // `profile`（追っかけの画質）をキーに含めない --- 画質ごとに位置が分かれると、
-  // 画質を切り替えただけで「続きから」が別の場所になる（issue #874）。
+  // 再開位置は原本時間軸で API に保存する。`profile` は映像品質の選択だけに使う。
   return (
     <div className={cn('flex w-full max-w-3xl flex-col', className)}>
       <div className="relative aspect-video w-full rounded bg-black">
@@ -1088,14 +1126,7 @@ export function LivePlayer({
               event.currentTarget.currentTime = 0
               return
             }
-            const saved = loadPlaybackPosition(recordingId, recordingPlaybackProfile)
-            if (isChase) {
-              const localPosition =
-                saved !== null && saved > chaseStartOffset ? saved - chaseStartOffset : 0
-              event.currentTarget.currentTime = localPosition
-            } else if (saved !== null) {
-              event.currentTarget.currentTime = saved
-            }
+            event.currentTarget.currentTime = serverResumePosition ?? 0
           }}
           onCanPlay={(event) => {
             if (!isChase || !hasExplicitChaseStart || !explicitStartSeekPending.current) return
@@ -1104,30 +1135,23 @@ export function LivePlayer({
             // attaching an EVENT playlist even if loadedmetadata accepted 0.
             event.currentTarget.currentTime = 0
           }}
+          onSeeked={(event) => {
+            if (isRecordingPlayback) saveCurrentPosition(event.currentTarget)
+          }}
           onTimeUpdate={(event) => {
-            if (!isRecordingPlayback || recordingId === undefined || chaseResumePending.current !== null) return
+            if (!isOriginalVOD || recordingId === undefined || chaseResumePending.current !== null) return
             const video = event.currentTarget
-            const globalPosition = video.currentTime + chaseStartOffset
-            if (!shouldSavePlaybackPosition(lastSavedSecond.current, globalPosition)) return
-            lastSavedSecond.current = Math.floor(globalPosition)
-            // EVENT duration is only the current conversion edge; only after ENDLIST
-            // (originalVODFinalized) does it mean the recording's end.
-            savePlaybackPosition(
-              recordingId,
-              recordingPlaybackProfile,
-              globalPosition,
-              originalVODFinalized.current ? video.duration : undefined,
-            )
+            // EVENT duration is only the current conversion edge. Auto-watch is valid
+            // only after ENDLIST (or ended on native HLS) finalized the VOD.
+            if (
+              originalVODFinalized.current &&
+              Number.isFinite(video.duration) &&
+              video.duration > 0 &&
+              video.currentTime >= video.duration * 0.9
+            ) saveCurrentPosition(video)
           }}
           onPause={(event) => {
-            if (!isRecordingPlayback || recordingId === undefined || chaseResumePending.current !== null) return
-            const video = event.currentTarget
-            savePlaybackPosition(
-              recordingId,
-              recordingPlaybackProfile,
-              video.currentTime + chaseStartOffset,
-              originalVODFinalized.current ? video.duration : undefined,
-            )
+            if (isRecordingPlayback) saveCurrentPosition(event.currentTarget)
           }}
           onEnded={(event) => {
             // ended は ENDLIST 済みの終端でだけ発火する前提で保存位置を消す。hls.js 経路では
@@ -1136,8 +1160,7 @@ export function LivePlayer({
             // 保存位置が消える（続きから再生できなくなる）。
             if (!isOriginalVOD || recordingId === undefined) return
             originalVODFinalized.current = true
-            const video = event.currentTarget
-            savePlaybackPosition(recordingId, recordingPlaybackProfile, video.duration, video.duration)
+            saveCurrentPosition(event.currentTarget)
           }}
           onRateChange={(event) => {
             if (!isRecordingPlayback) return

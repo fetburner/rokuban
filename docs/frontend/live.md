@@ -70,14 +70,11 @@ Chromium 151 では標準スクラバーの右端から playlist の seekable en
 ライブ視聴にはこの設定を適用しない。ネイティブ HLS での速度変更が実 Safari で有効かは
 未検証で、放送に対する速度変更として採用する判断材料が無いためである。
 
-再生位置は既存の VOD と同じ localStorage のキー
-`rokuban:playback:{recordingId}:{profile}` を共有する。live の配信プロファイルと encode の
-VOD プロファイルは別設定なので、追っかけは VOD 側の既定プロファイル名を再生位置のキー
-として使い、録画 ID とその名前が同じなら完了後の VOD と「続きから」が一致する。
-追っかけ中はプレイリストが伸び続けるため、現在の duration を終端とみなさず、先頭付近
-だけを保存しない。オフセット付き再生では、プレイヤー内部の相対秒に開始オフセットを足した
-録画全体の秒数を保存するので、VOD と同じ「続きから」を維持できる。VOD へ移行した後は
-通常どおり終端 5 秒以内を保存しない。
+再生位置は `/api/recordings/{id}/playback-position` に原本時間軸の ms で保存する。
+live の配信プロファイルや VOD のエンコードプロファイルでは分けず、原本 VOD と共通の値を使う。
+追っかけではプレイヤー内部の相対秒に開始 offset を加えて保存する。成長中の EVENT playlist
+では duration を終端とみなさず、視聴済み判定もしない。再生中は 15 秒ごと、pause / seeked /
+pagehide で保存する。
 画面遷移・`pagehide`・visibility hidden では `POST .../chase/leave` を送る。
 オフセット付きなら同じ `/offset/{offset}` を含め、sendBeacon を優先する。
 これは共有セッションを即時停止する命令ではなく idle GC を早めるヒントである。
@@ -262,8 +259,8 @@ JSON 404 にしてある（`internal/api/spa.go` の `spaOrAPINotFound`）。**�
   再生する。
 
   切替は同じ録画・同じ offset のセッションから別プレイリストを取得するだけで、
-  離脱ヒントを送らない。`playbackProfile`（再生位置のキー）は VOD 側の値のまま
-  変えず、切替直前の再生位置を次の playlist に持ち越す。したがって画質を変えても
+  離脱ヒントを送らない。profile は再開位置の軸に使わず、切替直前の再生位置を次の
+  playlist に持ち越す。したがって画質を変えても
   「続きから」の位置は画質ごとに分かれない。
 
   録画終了後（`ENDLIST` 済み）でも、保持セッションが残る idle GC までは切り替えられる。

@@ -186,6 +186,8 @@ await context.addInitScript(() => {
 })
 const page = await context.newPage()
 const chaseLeaveHints = []
+const playbackPositionWrites = []
+const watchedWrites = []
 
 await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
   const method = route.request().method()
@@ -204,6 +206,22 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
   }
   if (requestPath === '/api/recordings' && method === 'GET') return json([recording])
   if (requestPath === '/api/recordings/1' && method === 'GET') return json(recording)
+  if (requestPath === '/api/recordings/1/playback-position' && method === 'PUT') {
+    const body = route.request().postDataJSON()
+    recording.resumePositionMs = body.positionMs
+    playbackPositionWrites.push(body.positionMs)
+    return route.fulfill({ status: 204 })
+  }
+  if (requestPath === '/api/recordings/1/playback-position' && method === 'DELETE') {
+    delete recording.resumePositionMs
+    return route.fulfill({ status: 204 })
+  }
+  if (requestPath === '/api/recordings/1/watched' && method === 'PUT') {
+    recording.watchedAt = new Date().toISOString()
+    delete recording.resumePositionMs
+    watchedWrites.push(recording.watchedAt)
+    return route.fulfill({ status: 204 })
+  }
   if (/^\/api\/sites\/default\/recordings\/1\/chase(?:\/offset\/\d+)?\/leave$/.test(requestPath) && method === 'POST') {
     chaseLeaveHints.push(requestPath)
     return route.fulfill({ status: 204 })
@@ -443,6 +461,7 @@ async function dragTimelineTo(offsetSeconds) {
 }
 
 for (const offsetSeconds of offsetScenarios) {
+  const writesBeforeOffset = playbackPositionWrites.length
   const { requestedAt, selected } = await dragTimelineTo(offsetSeconds)
   if (selected !== offsetSeconds) {
     ng.push(`③ ${offsetSeconds}秒へドラッグしてもその位置を選べない（got=${selected}）`)
@@ -514,17 +533,15 @@ for (const offsetSeconds of offsetScenarios) {
   if (Date.now() - requestedAt > 5_000 || playback.elapsedMs > 5_000) {
     ng.push(`③ ${offsetSeconds}秒の選択から playing までに5秒以上かかる`)
   }
-  const savedPositionKey = 'rokuban:playback:1:vod-h264'
-  await page
-    .waitForFunction(
-      ({ key, offset }) => {
-        const saved = Number(localStorage.getItem(key))
-        return Number.isFinite(saved) && saved >= offset
-      },
-      { key: savedPositionKey, offset: offsetSeconds },
-      { timeout: 5000 },
-    )
-    .catch(() => ng.push(`③ ${offsetSeconds}秒の追っかけ位置が録画全体の秒数で保存されない`))
+  await page.locator('video').evaluate((element) => element.pause())
+  const positionDeadline = Date.now() + 5000
+  while (playbackPositionWrites.length === writesBeforeOffset && Date.now() < positionDeadline) {
+    await page.waitForTimeout(50)
+  }
+  if (!playbackPositionWrites.slice(writesBeforeOffset).some((positionMs) => positionMs >= offsetSeconds * 1000)) {
+    ng.push(`③ ${offsetSeconds}秒の追っかけ位置が録画全体の秒数で API に保存されない`)
+  }
+  if (watchedWrites.length > 0) ng.push('③ 録画中の追っかけで視聴済み印を付けた')
 
   const previousOffset = offsetSeconds === offsetScenarios[0] ? undefined : offsetScenarios[0]
   if (previousOffset !== undefined) {
@@ -540,9 +557,7 @@ if (offsetPlaylistRequests < offsetScenarios.length) {
   ng.push(`③ オフセット playlist の要求数が不足（${offsetPlaylistRequests}）`)
 }
 
-log('\n=== ④ 先頭指定と録画済み範囲への clamp ===')
-const savedPositionKey = 'rokuban:playback:1:vod-h264'
-await page.evaluate((key) => localStorage.setItem(key, '42'), savedPositionKey)
+log('\n=== ④ 先頭を明示したときの再生位置 ===')
 const baseRequestsBeforeZero = playlistRequests
 const offsetRequestsBeforeZero = offsetPlaylistRequests
 await dragTimelineTo(0)
@@ -669,33 +684,21 @@ await page
   .catch(() => ng.push('⑦ 実再生が 2 秒まで進まない'))
 
 const leaveHintsBeforeSwitch = chaseLeaveHints.length
+const writesBeforePause = playbackPositionWrites.length
 const positionBeforeSwitch = await chaseVideo.evaluate((element) => {
   element.pause()
   return element.currentTime
 })
+const pauseWriteDeadline = Date.now() + 5000
+while (playbackPositionWrites.length === writesBeforePause && Date.now() < pauseWriteDeadline) {
+  await page.waitForTimeout(50)
+}
 // 切替の途中で「続きから」が上書きされないことを見る。最終値は切替後の seek で
-// 正しい値に戻ってしまうので、**書かれた値をすべて記録する**。壊し方:
-// `onTimeUpdate` の持ち越し中ガードを外す（`load()` の位置 0 が一度書かれる）。
-const recordSavedPositions = () =>
-  page.evaluate((key) => {
-    window.__e2eSavedPositions = []
-    if (window.__e2eSetItemHooked) return
-    window.__e2eSetItemHooked = true
-    const originalSet = Storage.prototype.setItem
-    Storage.prototype.setItem = function (k, v) {
-      if (k === key) window.__e2eSavedPositions.push(Number(v))
-      return originalSet.call(this, k, v)
-    }
-    // 2 秒未満の位置は setItem ではなく removeItem になる（savePlaybackPosition）。
-    // 先頭再生で 0 が書かれる回帰はこちらにしか現れないので、0 として記録する。
-    const originalRemove = Storage.prototype.removeItem
-    Storage.prototype.removeItem = function (k) {
-      if (k === key) window.__e2eSavedPositions.push(0)
-      return originalRemove.call(this, k)
-    }
-  }, savedPositionKey)
-const savedPositions = () => page.evaluate(() => window.__e2eSavedPositions)
-await recordSavedPositions()
+// 正しい値に戻ってしまうので、profile 切替中に API へ送った位置をすべて記録する。
+let savedPositionWriteIndex = playbackPositionWrites.length
+const recordSavedPositions = () => { savedPositionWriteIndex = playbackPositionWrites.length }
+const savedPositions = () => playbackPositionWrites.slice(savedPositionWriteIndex).map((positionMs) => positionMs / 1000)
+recordSavedPositions()
 log(`  切替前の再生位置: ${positionBeforeSwitch.toFixed(2)} 秒`)
 
 await profileSelect.selectOption('sd')
@@ -747,10 +750,15 @@ await page
     { timeout: 10000 },
   )
   .catch(() => ng.push('⑦ offset 付きの実再生が 1.5 秒まで進まない'))
+const offsetWriteCountBeforePause = playbackPositionWrites.length
 const offsetPositionBefore = await chaseVideo.evaluate((element) => {
   element.pause()
   return element.currentTime
 })
+const offsetPauseDeadline = Date.now() + 5000
+while (playbackPositionWrites.length === offsetWriteCountBeforePause && Date.now() < offsetPauseDeadline) {
+  await page.waitForTimeout(50)
+}
 await recordSavedPositions()
 await profileSelect.selectOption('hd')
 await page.waitForTimeout(1500)

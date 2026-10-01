@@ -185,6 +185,8 @@ const playlistRequests = []
 const segmentRequests = []
 const subtitleRequests = []
 const encodedRequests = []
+const playbackPositionWrites = []
+const watchedWrites = []
 // ④ で true にする。variant / 字幕 playlist を先頭 4 segment で切り、ENDLIST を外して返す
 // （変換中の EVENT playlist の先端を再現する）。
 let growingEdge = false
@@ -212,6 +214,22 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
   if (requestPath === '/api/encode-queue') return json({ queued: 0, running: 0 })
   if (requestPath === '/api/recordings' && method === 'GET') return json([recording])
   if (requestPath === `/api/recordings/${RECORDING_ID}` && method === 'GET') return json(recording)
+  if (requestPath === `/api/recordings/${RECORDING_ID}/playback-position` && method === 'PUT') {
+    const body = route.request().postDataJSON()
+    recording.resumePositionMs = body.positionMs
+    playbackPositionWrites.push(body.positionMs)
+    return route.fulfill({ status: 204 })
+  }
+  if (requestPath === `/api/recordings/${RECORDING_ID}/playback-position` && method === 'DELETE') {
+    delete recording.resumePositionMs
+    return route.fulfill({ status: 204 })
+  }
+  if (requestPath === `/api/recordings/${RECORDING_ID}/watched` && method === 'PUT') {
+    recording.watchedAt = new Date().toISOString()
+    delete recording.resumePositionMs
+    watchedWrites.push(recording.watchedAt)
+    return route.fulfill({ status: 204 })
+  }
   if (/^\/api\/media\/recordings\/\d+\/thumbnail$/.test(requestPath)) {
     return route.fulfill({ status: 404 })
   }
@@ -299,14 +317,17 @@ await page.waitForFunction(() => {
   const element = document.querySelector('video')
   return element !== null && Math.abs(element.currentTime - 7.25) < 1.25
 }, undefined, { timeout: 10000 }).catch(() => ng.push('② currentTime を指定位置へ seek できない'))
-const playbackKey = `rokuban:playback:${RECORDING_ID}:original`
 await video.evaluate((element) => element.pause())
-await page.waitForFunction((key) => {
-  const saved = Number(localStorage.getItem(key))
-  return Number.isFinite(saved) && saved >= 6 && saved <= 10
-}, playbackKey, { timeout: 5000 }).catch(() => ng.push('② seek 位置が再生位置として localStorage に保存されない'))
-const savedPosition = Number(await page.evaluate((key) => localStorage.getItem(key), playbackKey))
-log(`  保存位置: ${savedPosition}s`)
+const positionWriteDeadline = Date.now() + 5000
+while (playbackPositionWrites.length === 0 && Date.now() < positionWriteDeadline) {
+  await page.waitForTimeout(50)
+}
+const savedPositionMs = recording.resumePositionMs
+if (savedPositionMs === undefined || savedPositionMs < 6000 || savedPositionMs > 10_000) {
+  ng.push(`② seek 位置がサーバーの再開位置として保存されない (${savedPositionMs})`)
+}
+const savedPosition = (savedPositionMs ?? 0) / 1000
+log(`  保存位置: ${savedPosition}s (${savedPositionMs}ms)`)
 
 await page.reload({ waitUntil: 'domcontentloaded' })
 await page.locator('video').waitFor({ timeout: 15000 })
@@ -323,8 +344,8 @@ await page.locator('video').evaluate(async (element) => {
 })
 await page.waitForFunction(() => document.querySelector('video')?.ended === true, undefined, { timeout: 10000 })
   .catch(() => ng.push('③ 原本 HLS の #EXT-X-ENDLIST まで再生し終わらない'))
-const finalSavedPosition = await page.evaluate((key) => localStorage.getItem(key), playbackKey)
-if (finalSavedPosition !== null) ng.push(`③ 終端付近の保存位置が残る (${finalSavedPosition})`)
+if (recording.resumePositionMs !== undefined) ng.push(`③ 視聴済み後も再開位置が残る (${recording.resumePositionMs})`)
+if (watchedWrites.length === 0 || recording.watchedAt === undefined) ng.push('③ ENDLIST 後の視聴済み印がサーバーに保存されない')
 if (segmentRequests.length === 0) ng.push('③ HLS segment を要求していない')
 if (subtitleRequests.length === 0) ng.push('③ WebVTT segment を要求していない')
 log(`  variant playlists=${playlistRequests.length}, video segments=${segmentRequests.length}, subtitle segments=${subtitleRequests.length}`)
@@ -333,7 +354,8 @@ log('\n=== ④ ENDLIST の無い変換中 playlist の先端で ended が発火�
 // live-player.tsx の onEnded は「ended は ENDLIST 済みの終端でしか発火しない」ことに依存する。
 // 先頭 4 segment（約 8 秒）で切った ENDLIST 無しの playlist を先端まで再生して確かめる。
 growingEdge = true
-await page.evaluate((key) => localStorage.removeItem(key), playbackKey)
+delete recording.resumePositionMs
+const watchedCountBeforeGrowingEdge = watchedWrites.length
 await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
 await page.locator('video').waitFor({ timeout: 15000 })
 await page.waitForFunction(() => {
@@ -354,5 +376,6 @@ const edge = await page.locator('video').evaluate(async (element) => {
 log(`  先端到達後 8 秒: ${JSON.stringify(edge)}`)
 if (edge.ended) ng.push(`④ ENDLIST の無い先端で ended が発火した (${JSON.stringify(edge)})`)
 if (edge.duration > 12) ng.push(`④ playlist が切れていない (duration=${edge.duration})`)
+if (watchedWrites.length !== watchedCountBeforeGrowingEdge) ng.push('④ ENDLIST の無い先端を視聴済みにした')
 
 await finish(ng, browser)

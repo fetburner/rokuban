@@ -1,5 +1,7 @@
 import {
+  useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -7,7 +9,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 
-import type { ChapterSpan, EncodedAsset, RecordingChaptersSource } from '@/api/generated'
+import type { ChapterSpan, EncodedAsset, KeepRange, RecordingChaptersSource } from '@/api/generated'
 import { RecordingChapterEditor } from '@/components/recording-chapter-editor'
 import { Button } from '@/components/ui/button'
 import {
@@ -21,14 +23,14 @@ import {
 import { formatBytes } from '@/lib/format'
 import {
   applyPlaybackRate,
-  loadPlaybackPosition,
-  ORIGINAL_AXIS,
+  clearLegacyPlaybackPositions,
   loadPlaybackRate,
+  playbackPositionWrite,
+  playbackResumeSeconds,
+  persistPlaybackPosition,
   recordingFileURL,
   recordingSubtitleURL,
-  savePlaybackPosition,
   savePlaybackRate,
-  shouldSavePlaybackPosition,
 } from '@/lib/playback-position'
 import { cn } from '@/lib/utils'
 import {
@@ -41,6 +43,7 @@ import {
 
 type RecordingPlayerProps = {
   recordingId: number
+  resumePositionMs?: number
   /** 追っかけ再生と揃えるVOD側の既定プロファイル。資産に無ければ先頭を使う。 */
   preferredProfile?: string
   /**
@@ -87,10 +90,11 @@ type RecordingPlayerProps = {
 
 /**
  * RecordingPlayer は encoded 派生物をネイティブ video 要素で再生する。
- * MP4 progressive + Range（streamer）。位置は localStorage（サーバー履歴なし）。
+ * MP4 progressive + Range（streamer）。再開位置と視聴済み状態は API で世帯共有する。
  */
 export function RecordingPlayer({
   recordingId,
+  resumePositionMs,
   preferredProfile,
   encodedAssets,
   hasOriginal = false,
@@ -125,9 +129,7 @@ export function RecordingPlayer({
   // 軸へ写像する処理を初版では持たない。チャプターの目盛り・一覧・スキップも
   // 同じ理由で出さない（境界は原本の ms で、その動画には当てられない）。
   const playingCut = selectedAsset?.cut === true
-  // 保存キーは時間軸で決める。cut 版だけが自分の軸を持ち（キーはプロファイル名のまま）、他は
-  // 追っかけ・原本 HLS と共有する。この player は currentTime を換算せずそのまま保存している。
-  const positionAxis = playingCut ? selectedProfile : ORIGINAL_AXIS
+  const keepRangesKey = JSON.stringify(selectedAsset?.keepRanges ?? [])
   const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
   const videoRef = useRef<HTMLVideoElement>(null)
   // タイルは録画ごとに 1 枚で profile に依存しないので、キーは recordingId だけ。
@@ -179,18 +181,63 @@ export function RecordingPlayer({
   )
   const shownPreview =
     tilePreview?.recordingId === recordingId && tilesAvailableFor === recordingId ? tilePreview : null
-  // プロファイル切替時に load したあとだけ currentTime を復元する
+  // 再生開始時の変換表を固定する。SSE で別世代が届くと video key が変わり、
+  // 新しいファイルだけが新しい keepRanges を使う。
   const restorePending = useRef(true)
-  // timeupdate 間引き用: 直近に保存した Math.floor(currentTime)。null は未保存
-  const lastSavedSecond = useRef<number | null>(null)
+  const frozenKeepRangesRef = useRef<readonly KeepRange[] | undefined>(
+    playingCut ? selectedAsset?.keepRanges : undefined,
+  )
+  const watchedRequestPendingRef = useRef(false)
 
-  useEffect(() => {
+  const saveCurrentPosition = useCallback((video: HTMLVideoElement, keepalive = false) => {
+    const keepRanges = frozenKeepRangesRef.current
+    if (playingCut && (!keepRanges || keepRanges.length === 0)) return
+    const write = playbackPositionWrite(
+      video.currentTime,
+      video.duration,
+      true,
+      playingCut ? keepRanges : undefined,
+    )
+    if (write.kind === 'watched') {
+      if (watchedRequestPendingRef.current) return
+      watchedRequestPendingRef.current = true
+      void persistPlaybackPosition(recordingId, write, keepalive).then((saved) => {
+        if (!saved) watchedRequestPendingRef.current = false
+      })
+      return
+    }
+    void persistPlaybackPosition(recordingId, write, keepalive)
+  }, [playingCut, recordingId])
+
+  useLayoutEffect(() => {
+    frozenKeepRangesRef.current = playingCut ? selectedAsset?.keepRanges : undefined
     restorePending.current = true
-    lastSavedSecond.current = null
+    watchedRequestPendingRef.current = false
     previousSecondsRef.current = 0
     skipSuppressedRef.current = false
     playAroundStopRef.current = null
-  }, [recordingId, selectedProfile])
+  }, [keepRangesKey, playingCut, recordingId, selectedAsset?.keepRanges, selectedProfile])
+
+  useEffect(() => {
+    clearLegacyPlaybackPositions()
+  }, [])
+
+  useEffect(() => {
+    const saveIfPlaying = () => {
+      const video = videoRef.current
+      if (video && !video.paused) saveCurrentPosition(video)
+    }
+    const onPageHide = () => {
+      const video = videoRef.current
+      if (video) saveCurrentPosition(video, true)
+    }
+    const timer = window.setInterval(saveIfPlaying, 15_000)
+    window.addEventListener('pagehide', onPageHide)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('pagehide', onPageHide)
+    }
+  }, [keepRangesKey, recordingId, saveCurrentPosition, selectedProfile])
 
   // 境界の前後再生のタイマーを残さない（再生中に別の録画へ移っても止まる）。
   useEffect(() => () => window.clearTimeout(playAroundTimerRef.current), [])
@@ -440,7 +487,7 @@ export function RecordingPlayer({
       <div className="flex max-w-3xl flex-col gap-1">
         <video
           ref={videoRef}
-          key={`${recordingId}:${selectedProfile}`}
+          key={`${recordingId}:${selectedProfile}:${keepRangesKey}`}
           controls
           playsInline
           preload="metadata"
@@ -460,9 +507,11 @@ export function RecordingPlayer({
           updatePlayedFraction(e.currentTarget)
           if (!restorePending.current) return
           restorePending.current = false
-          const pos = loadPlaybackPosition(recordingId, positionAxis)
-          if (pos !== null && pos > 0) {
-            e.currentTarget.currentTime = pos
+          const pos = playbackResumeSeconds(resumePositionMs, frozenKeepRangesRef.current)
+          if (pos !== null) {
+            e.currentTarget.currentTime = Number.isFinite(e.currentTarget.duration)
+              ? Math.min(pos, e.currentTarget.duration)
+              : pos
           }
         }}
         onSeeking={(e) => {
@@ -478,6 +527,7 @@ export function RecordingPlayer({
           // 追い出さないため（`lib/chapters.ts` の skipTarget）。
           previousSecondsRef.current = e.currentTarget.currentTime
           updatePlayedFraction(e.currentTarget)
+          saveCurrentPosition(e.currentTarget)
         }}
         onTimeUpdate={(e) => {
           const v = e.currentTarget
@@ -494,14 +544,14 @@ export function RecordingPlayer({
               previousSecondsRef.current = target
             }
           }
-          // timeupdate は約 4Hz で発火するが保存値は秒単位なので、秒が変わったときだけ書く
-          if (!shouldSavePlaybackPosition(lastSavedSecond.current, v.currentTime)) return
-          lastSavedSecond.current = Math.floor(v.currentTime)
-          savePlaybackPosition(recordingId, positionAxis, v.currentTime, v.duration)
+          // 閾値だけは timeupdate で拾い、終了位置の 90% で視聴済みを立てる。
+          // 通常の位置保存は 15 秒ごとと pause / seeked / pagehide に限る。
+          if (Number.isFinite(v.duration) && v.duration > 0 && v.currentTime >= v.duration * 0.9) {
+            saveCurrentPosition(v)
+          }
         }}
         onPause={(e) => {
-          const v = e.currentTarget
-          savePlaybackPosition(recordingId, positionAxis, v.currentTime, v.duration)
+          saveCurrentPosition(e.currentTarget)
         }}
         onRateChange={(e) => {
           const rate = e.currentTarget.playbackRate

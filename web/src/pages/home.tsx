@@ -5,6 +5,7 @@ import { TriangleAlert } from 'lucide-react'
 import {
   useListCapacityOverages,
   useListCircuitBreakers,
+  useListContinueWatching,
   useListRecordings,
   useListReservations,
   type CapacityOverage,
@@ -90,10 +91,9 @@ const FAILED_RECORDING_WARNING_WINDOW_MS = 7 * 24 * 3_600_000
  * 録画サーバーへの再訪の大半が知りたいこと（録れているか・今夜なにが録れるか・
  * 見るものはあるか・異常はないか）に 1 画面で答えられない。部品（録画中の状態・
  * 予約一覧・サーキットブレーカーバナー・容量バッジ・ドロップ統計）は既存のまま、
- * ここでは**新しい API を作らず**それらを集約するだけにする（issue #242 の
- * 着手宣言コメントの決定）。
+ * 再開位置 API の結果を加えて集約する。
  *
- * セクションは 4 つ: いま録画中 / 今夜〜明日の予約 / 警告 / 直近の完了。
+ * セクションは 5 つ: いま録画中 / 続きから / 今夜〜明日の予約 / 警告 / 直近の完了。
  * **0 件のセクションは文言も出さずセクションごと消し、全セクションが空のときだけ
  * ホーム全体で 1 つの空状態を出す**（一覧画面の「条件に合う録画がありません」の
  * ような「探した結果の報告」とは意味が違う --- ホームの空は「何も主張しない」
@@ -101,7 +101,7 @@ const FAILED_RECORDING_WARNING_WINDOW_MS = 7 * 24 * 3_600_000
  *
  * **セクションごとの可視性はそのセクション自身のクエリの解決だけを待つ。**
  * 「全セクションが空」（`allEmpty`）の判定だけが全クエリの解決を待つ ---
- * 6 本のうち最も遅い 1 本（絞り込みを持たない `GET /api/reservations` など）に
+ * 7 本のうち最も遅い 1 本（絞り込みを持たない `GET /api/reservations` など）に
  * 「いま録画中」のような最も見たいセクションまで引きずられて隠れる半径を
  * 小さくするため（レビュー指摘）。一方で「まだ解決していないセクションを
  * 0 件として隠す」ことはしない --- 個別のクエリが解決する前に「空だから隠す」を
@@ -122,7 +122,7 @@ const FAILED_RECORDING_WARNING_WINDOW_MS = 7 * 24 * 3_600_000
  * **失敗録画（`status=failed`）はホームに専用の一覧を持たず、「警告」への
  * 追加項目としてのみ出す**（issue #301）。「直近の完了」は
  * `status=finished` の絞り込みなので failed 行はそもそも混ざらず、既存の
- * 4 セクション構成を変えずに済む。行では予定尺（`durationMs`。番組の放送尺の
+ * 5 セクション構成を変えずに済む。行では予定尺（`durationMs`。番組の放送尺の
  * スナップショット）と実際に録れた尺（`startedAt`〜`endedAt`）を区別する ---
  * 録画が実際には開始しなかった失敗（`startedAt`/`endedAt` が無い）と、
  * 開始した直後に終わった失敗（両方あるが差が小さい）を同じ「予定尺」表示に
@@ -161,6 +161,7 @@ export function HomePage() {
   const reservationsWindowEndMs = dayOrigin(2, nowMs).getTime()
 
   const recordingQuery = useListRecordings({ status: 'recording' })
+  const continueWatchingQuery = useListContinueWatching()
   // 「直近の完了」の表示とドロップ警告の検出を兼ねる 1 本。取る範囲は広い方
   // （`DROP_WARNING_SCAN_LIMIT`）に合わせ、表示だけを先頭 `RECENT_FINISHED_LIMIT`
   // 件に切る（`DROP_WARNING_SCAN_LIMIT` の doc コメント参照）。
@@ -195,6 +196,7 @@ export function HomePage() {
   )
 
   const recordingsInProgress = unwrap(recordingQuery.data) ?? []
+  const continueWatching = unwrap(continueWatchingQuery.data) ?? []
   // 以下の導出は `useMemo` を使わない。**この関数の中で最も頻繁に変わる依存は
   // `nowMs`（= 生の `Date.now()`）で、レンダーごとに必ず変わる。** それを deps に
   // 持つ `useMemo` は毎レンダー再計算されるので何も買っていない（レビュー指摘。
@@ -249,6 +251,9 @@ export function HomePage() {
   // 未解決なら「まだ言わない」。
   const recordingSectionVisible =
     !recordingQuery.isPending && (recordingQuery.isError || recordingsInProgress.length > 0)
+  const continueWatchingSectionVisible =
+    !continueWatchingQuery.isPending &&
+    (continueWatchingQuery.isError || continueWatching.length > 0)
   const reservationSectionVisible =
     !reservationsQuery.isPending && (reservationsQuery.isError || shownReservations.length > 0)
   const warningsPending =
@@ -272,6 +277,7 @@ export function HomePage() {
 
   const anyVisible =
     recordingSectionVisible ||
+    continueWatchingSectionVisible ||
     reservationSectionVisible ||
     warningSectionVisible ||
     finishedSectionVisible
@@ -280,6 +286,7 @@ export function HomePage() {
   // 一部がまだ未解決のうちは「空である」とまだ言い切れない。
   const allSettled =
     !recordingQuery.isPending &&
+    !continueWatchingQuery.isPending &&
     !reservationsQuery.isPending &&
     !warningsPending &&
     !finishedQuery.isPending
@@ -311,7 +318,7 @@ export function HomePage() {
       <PageContent>
         {allEmpty ? (
         // 「異常なし」「予約がありません」のような肯定/報告の文言にしない ---
-        // これは検索結果の 0 件ではなく、4 セクションすべてが沈黙した結果の
+        // これは検索結果の 0 件ではなく、5 セクションすべてが沈黙した結果の
         // 集約なので、何も主張しない言い方に留める。
         <EmptyState>表示できる項目がありません</EmptyState>
       ) : (
@@ -327,6 +334,23 @@ export function HomePage() {
                 <ul>
                   {recordingsInProgress.map((r) => (
                     <RecordingRow key={r.id} recording={r} />
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
+
+          {continueWatchingSectionVisible && (
+            <section aria-labelledby="home-continue-watching">
+              <h2 id="home-continue-watching" className="px-4 pt-4 pb-2 text-sm font-semibold">
+                続きから
+              </h2>
+              {continueWatchingQuery.isError ? (
+                <p className="px-4 pb-4 text-sm text-destructive">再開位置の取得に失敗しました</p>
+              ) : (
+                <ul>
+                  {continueWatching.map((recording) => (
+                    <RecordingRow key={recording.id} recording={recording} />
                   ))}
                 </ul>
               )}
@@ -425,10 +449,14 @@ function RecordingRow({ recording }: { recording: Recording }) {
       <Link
         to="/recordings/$id"
         params={{ id: String(recording.id) }}
+        hash={recording.status === 'recording' ? 'chase' : undefined}
         className="flex min-h-14 flex-col justify-center gap-0.5 px-4 py-2.5 hover:bg-muted/40"
       >
         <span className="truncate text-base">{programTitle(recording.title)}</span>
         <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
+          {recording.status === 'finished' && recording.watchedAt === undefined && (
+            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">未視聴</span>
+          )}
           <span className="shrink-0">{recording.serviceName}</span>
           <span className="shrink-0">{formatDateTime(recording.startAt)}</span>
           <span className="shrink-0">{formatDuration(recording.durationMs)}</span>

@@ -345,6 +345,42 @@ func (q *Queries) CreateRecording(ctx context.Context, arg CreateRecordingParams
 	return id, err
 }
 
+const deleteRecordingPlaybackPosition = `-- name: DeleteRecordingPlaybackPosition :execrows
+DELETE FROM recording_playback_positions p
+USING recordings r
+WHERE p.recording_id = r.id
+  AND r.id = $1
+  AND r.purged_at IS NULL
+`
+
+func (q *Queries) DeleteRecordingPlaybackPosition(ctx context.Context, recordingID int64) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteRecordingPlaybackPosition, recordingID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteRecordingWatchedForEvent = `-- name: DeleteRecordingWatchedForEvent :execrows
+DELETE FROM recording_watched w
+USING recordings selected, recordings watched_recording
+WHERE selected.id = $1
+  AND selected.purged_at IS NULL
+  AND watched_recording.network_id = selected.network_id
+  AND watched_recording.service_id = selected.service_id
+  AND watched_recording.program_start_at = selected.program_start_at
+  AND w.recording_id = watched_recording.id
+`
+
+// Remove every marker for the same broadcast event, including trash/superseded rows.
+func (q *Queries) DeleteRecordingWatchedForEvent(ctx context.Context, recordingID int64) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteRecordingWatchedForEvent, recordingID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const freezeRecordingEncodePolicy = `-- name: FreezeRecordingEncodePolicy :exec
 INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
 VALUES ($1, $2, $3::text[], $4)
@@ -484,6 +520,22 @@ func (q *Queries) ListRecordingDropStats(ctx context.Context, recordingID int64)
 		return nil, err
 	}
 	return items, nil
+}
+
+const recordingExistsForPlaybackState = `-- name: RecordingExistsForPlaybackState :one
+SELECT EXISTS (
+    SELECT 1 FROM recordings
+    WHERE id = $1 AND purged_at IS NULL
+)
+`
+
+// Playback positions are per recording row. The client decides when a position is
+// meaningful using the active media duration.
+func (q *Queries) RecordingExistsForPlaybackState(ctx context.Context, recordingID int64) (bool, error) {
+	row := q.db.QueryRow(ctx, recordingExistsForPlaybackState, recordingID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const setRecordingCMDetection = `-- name: SetRecordingCMDetection :execrows
@@ -663,4 +715,46 @@ func (q *Queries) UpdateRecordingStatus(ctx context.Context, arg UpdateRecording
 		arg.ID,
 	)
 	return err
+}
+
+const upsertRecordingPlaybackPosition = `-- name: UpsertRecordingPlaybackPosition :execrows
+INSERT INTO recording_playback_positions (recording_id, position_ms, updated_at)
+SELECT r.id, $1, now()
+FROM recordings r
+WHERE r.id = $2
+  AND r.purged_at IS NULL
+  AND $1 >= 2000
+ON CONFLICT (recording_id) DO UPDATE SET
+    position_ms = EXCLUDED.position_ms,
+    updated_at = EXCLUDED.updated_at
+`
+
+type UpsertRecordingPlaybackPositionParams struct {
+	PositionMs  int64
+	RecordingID int64
+}
+
+func (q *Queries) UpsertRecordingPlaybackPosition(ctx context.Context, arg UpsertRecordingPlaybackPositionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, upsertRecordingPlaybackPosition, arg.PositionMs, arg.RecordingID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const upsertRecordingWatched = `-- name: UpsertRecordingWatched :execrows
+INSERT INTO recording_watched (recording_id, watched_at)
+SELECT r.id, now()
+FROM recordings r
+WHERE r.id = $1
+  AND r.purged_at IS NULL
+ON CONFLICT (recording_id) DO UPDATE SET watched_at = EXCLUDED.watched_at
+`
+
+func (q *Queries) UpsertRecordingWatched(ctx context.Context, recordingID int64) (int64, error) {
+	result, err := q.db.Exec(ctx, upsertRecordingWatched, recordingID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

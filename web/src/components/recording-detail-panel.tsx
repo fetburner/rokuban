@@ -11,6 +11,8 @@ import {
   useListRules,
   useListSites,
   usePutRecordingChapterEdits,
+  usePutRecordingWatched,
+  useDeleteRecordingWatched,
   useReencodeRecordingProfile,
   useRetryRecordingCMDetection,
   useSetRecordingEncodePolicy,
@@ -28,7 +30,7 @@ import { formatBytes, formatDateTime, formatTime } from '@/lib/format'
 import { cmDetectStageMessage } from '@/lib/cm-detect-stage'
 import { ingestDisplay, type IngestDisplay } from '@/lib/ingest'
 import { useCMDetectEnabled, useLiveEnabled } from '@/lib/capabilities'
-import { ORIGINAL_AXIS, recordingFileURL } from '@/lib/playback-position'
+import { recordingFileURL } from '@/lib/playback-position'
 import { liveProfileLabel, validLiveProfile } from '@/lib/live'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { shouldShowRecordingSite, sourceLabels } from '@/lib/recording-search'
@@ -212,6 +214,22 @@ export function RecordingDetail({
   const chapters = unwrap(chaptersQuery.data)
   const putChapters = usePutRecordingChapterEdits()
   const deleteChapters = useDeleteRecordingChapterEdits()
+  const putWatched = usePutRecordingWatched()
+  const deleteWatched = useDeleteRecordingWatched()
+  const toggleWatched = async () => {
+    try {
+      if (recording.watchedAt !== undefined) {
+        await deleteWatched.mutateAsync({ id: recording.id })
+        toast({ message: '未視聴に戻しました' })
+      } else {
+        await putWatched.mutateAsync({ id: recording.id })
+        toast({ message: '視聴済みにしました' })
+      }
+      void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
+    } catch (error) {
+      toast({ message: apiErrorMessage(error) ?? '視聴状態の更新に失敗しました', kind: 'error' })
+    }
+  }
   const invalidateChapters = () => {
     void queryClient.invalidateQueries({ queryKey: getGetRecordingChaptersQueryKey(recording.id) })
     void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
@@ -406,9 +424,9 @@ export function RecordingDetail({
               mode="chase"
               site={recording.site}
               recordingId={recording.id}
+              resumePositionMs={recording.resumePositionMs}
               startOffsetSeconds={chaseOffsetSeconds}
               profile={explicitLiveProfile}
-              playbackProfile={ORIGINAL_AXIS}
             />
           )}
         </section>
@@ -463,8 +481,8 @@ export function RecordingDetail({
                 mode="original-vod"
                 site={recording.site}
                 recordingId={recording.id}
+                resumePositionMs={recording.resumePositionMs}
                 profile={explicitLiveProfile}
-                playbackProfile={ORIGINAL_AXIS}
               />
               <p className="text-muted-foreground">
                 原本 TS:{' '}
@@ -481,6 +499,7 @@ export function RecordingDetail({
       {!trash && !showChase && (encodedAssets.length > 0 || (hasOriginal && !showOriginalVOD)) && (
         <RecordingPlayer
           recordingId={recording.id}
+          resumePositionMs={recording.resumePositionMs}
           preferredProfile={preferredPlaybackProfile}
           encodedAssets={encodedAssets}
           hasOriginal={hasOriginal}
@@ -677,6 +696,18 @@ export function RecordingDetail({
 
       {/* PID 別の内訳は行数が多いので、モバイルで横スクロールさせずここに畳む */}
       {recording.dropSummary && <DropStatsTable recordingId={recording.id} />}
+
+      {!trash && recording.status === 'finished' && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={putWatched.isPending || deleteWatched.isPending}
+          onClick={() => void toggleWatched()}
+        >
+          {recording.watchedAt !== undefined ? '未視聴に戻す' : '視聴済みにする'}
+        </Button>
+      )}
 
       <RecordingActions recording={recording} trash={trash} />
     </div>
