@@ -88,9 +88,13 @@ GET /api/media/recordings/{id}/frame?at=<milliseconds> → image/jpeg
 
 原本（`kind = 'original'`）だけを入力にする。画像の縮小や SAR の焼き込みはしない。
 応答には `X-Coded-Width` と `X-Coded-Height` を付ける。
-値は原本の映像ストリームの `width` と `height` である。
-さらに `X-Sample-Aspect-Ratio` を付ける。画面はこの SAR で表示比を補正し、
+値は返す JPEG 自身の幅と高さで、先頭のストリームではなく `at` のコマのものである。
+途中で解像度が変わる録画でも、画像とヘッダは食い違わない。
+教えた枠が後半の解像度なら、検出側は録画の解像度（最初の映像ストリーム）と合わず、失敗として残す。
+さらに `X-Sample-Aspect-Ratio` を付ける。値は `at` のコマの SAR で、画面はこの SAR で表示比を補正する。
 保存する枠は SAR 適用前の記録上の座標を使う。
+SAR は ffmpeg が返す JPEG からは読めない。ffmpeg は途中で SAR が変わっても、ストリーム先頭の SAR を出力へ渡す。
+そのため ffprobe で `at` の手前から読み、`at` 以下で最後のコマの SAR を採る。
 
 `at` が無い、負数、数値でない場合は 400 を返す。
 ごみ箱、原本の行が無い録画、原本の実体が無い録画は 404 を返す。

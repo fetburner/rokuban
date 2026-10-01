@@ -4,7 +4,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -12,7 +11,7 @@ import (
 // side_data_list に空オブジェクトが付く）。旧 csv 形式の "1440x1080x\n\n1440x1080x" は
 // json では出ないので、ここには残さない。
 const (
-	mpeg2Out = `{"programs":[{"streams":[{"width":1440,"height":1080,"sample_aspect_ratio":"4:3","side_data_list":[{}]}]}],"stream_groups":[],"streams":[{"width":1440,"height":1080,"sample_aspect_ratio":"4:3","side_data_list":[{}]}]}`
+	mpeg2Out = `{"programs":[{"streams":[{"width":1440,"height":1080,"side_data_list":[{}]}]}],"stream_groups":[],"streams":[{"width":1440,"height":1080,"side_data_list":[{}]}]}`
 	h264Out  = `{"programs":[{"streams":[{"width":1920,"height":1080}]}],"stream_groups":[],"streams":[{"width":1920,"height":1080}]}`
 )
 
@@ -31,38 +30,6 @@ func TestParseVideoGeometry(t *testing.T) {
 		w, h, err := ParseVideoGeometry([]byte(tc.in))
 		if (err != nil) != tc.wantErr || w != tc.w || h != tc.h {
 			t.Errorf("%s: got %dx%d err=%v, want %dx%d wantErr=%v", tc.name, w, h, err, tc.w, tc.h, tc.wantErr)
-		}
-	}
-}
-
-func TestVideoGeometryProbeArgsIncludesSAR(t *testing.T) {
-	args := VideoGeometryProbeArgs("input.ts")
-	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "stream=width,height,sample_aspect_ratio") {
-		t.Fatalf("args = %q, want sample_aspect_ratio", joined)
-	}
-}
-
-func TestParseVideoGeometryWithSAR(t *testing.T) {
-	for _, tc := range []struct {
-		name, in, wantSAR string
-	}{
-		{"anamorphic", mpeg2Out, "4:3"},
-		{"missing", h264Out, "1:1"},
-		{"zero numerator", strings.ReplaceAll(mpeg2Out, `"4:3"`, `"0:1"`), "1:1"},
-		{"not available", strings.ReplaceAll(mpeg2Out, `"4:3"`, `"N/A"`), "1:1"},
-		{"malformed", strings.ReplaceAll(mpeg2Out, `"4:3"`, `"4/3"`), "1:1"},
-	} {
-		geometry, err := ParseVideoGeometryWithSAR([]byte(tc.in))
-		if err != nil {
-			t.Errorf("%s: unexpected error: %v", tc.name, err)
-			continue
-		}
-		if geometry.SampleAspectRatio != tc.wantSAR {
-			t.Errorf("%s: SAR = %q, want %q", tc.name, geometry.SampleAspectRatio, tc.wantSAR)
-		}
-		if geometry.Width <= 0 || geometry.Height <= 0 {
-			t.Errorf("%s: geometry = %#v, want positive coded size", tc.name, geometry)
 		}
 	}
 }

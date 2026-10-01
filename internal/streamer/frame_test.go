@@ -27,8 +27,8 @@ type frameFixture struct {
 }
 
 // newFrameFixture は原本を 1 本持つ録画で /frame を配るサーバーを作る。
-// ffprobe は size、ffmpeg は frame を返す代役に差し替える。
-func newFrameFixture(t *testing.T, size string, frame []byte) (*frameFixture, int64) {
+// ffmpeg は frame、ffprobe は start_time 0 と SAR 4:3 のコマを返す代役に差し替える。
+func newFrameFixture(t *testing.T, frame []byte) (*frameFixture, int64) {
 	t.Helper()
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
@@ -44,14 +44,16 @@ func newFrameFixture(t *testing.T, size string, frame []byte) (*frameFixture, in
 	seedAsset(t, pool, id, relPath, int64(len(makeTSData(10))))
 
 	f := &frameFixture{pool: pool}
-	s := New(pool, Config{MediaDir: mediaDir, FFmpeg: "ffmpeg", FFprobe: "ffprobe"})
+	s := New(pool, Config{MediaDir: mediaDir, FFmpeg: "ffmpeg"})
 	s.runCmd = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		f.calls = append(f.calls, append([]string{filepath.Base(name)}, args...))
-		switch filepath.Base(name) {
-		case "ffprobe":
-			return []byte(probeJSON(size)), nil
-		case "ffmpeg":
+		switch {
+		case filepath.Base(name) == "ffmpeg":
 			return frame, nil
+		case strings.Contains(strings.Join(args, " "), "format=start_time"):
+			return []byte("0.000000\n"), nil
+		case filepath.Base(name) == "ffprobe":
+			return []byte("12.480000,4:3\n12.520000,4:3\n"), nil
 		}
 		return nil, fmt.Errorf("unexpected command %s", name)
 	}
@@ -62,12 +64,11 @@ func newFrameFixture(t *testing.T, size string, frame []byte) (*frameFixture, in
 	return f, id
 }
 
-// probeJSON は size（"1440x1080"）を、実 ffprobe 9.0.2 が MPEG-TS に対して
-// `-of json` で返す形（programs 側と streams 側の 2 回出る）にする。
-func probeJSON(size string) string {
-	w, h, _ := strings.Cut(size, "x")
-	stream := fmt.Sprintf(`{"width": %s, "height": %s, "sample_aspect_ratio": "4:3"}`, w, h)
-	return fmt.Sprintf(`{"programs": [{"streams": [%s]}], "stream_groups": [], "streams": [%s]}`, stream, stream)
+// fakeJPEG は SOF0 だけを持つ最小の JPEG を作る。
+func fakeJPEG(w, h int) []byte {
+	return []byte{0xFF, 0xD8,
+		0xFF, 0xC0, 0x00, 0x08, 8, byte(h >> 8), byte(h), byte(w >> 8), byte(w), 1,
+		0xFF, 0xD9}
 }
 
 func (f *frameFixture) url(id int64, query string) string {
@@ -76,8 +77,8 @@ func (f *frameFixture) url(id int64, query string) string {
 
 // 原本の指定位置のコマを、記録上の大きさ付きで返す。**encoded は使わない。**
 func TestRecordingFrameExtractsFromTheOriginalWithTheRecordedSize(t *testing.T) {
-	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xD9}
-	f, id := newFrameFixture(t, "1440x1080", jpeg)
+	jpeg := fakeJPEG(1440, 1080)
+	f, id := newFrameFixture(t, jpeg)
 	// encoded を持たせても、コマは原本から取る（縮小済みの座標は使えない）。
 	profile := "h264"
 	if _, err := sqlcgen.New(f.pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
@@ -106,10 +107,10 @@ func TestRecordingFrameExtractsFromTheOriginalWithTheRecordedSize(t *testing.T) 
 	if string(body) != string(jpeg) {
 		t.Errorf("body = %v, want the extracted frame", body)
 	}
-	if len(f.calls) != 2 {
-		t.Fatalf("commands = %v, want ffprobe then ffmpeg", f.calls)
+	if len(f.calls) != 3 {
+		t.Fatalf("commands = %v, want ffmpeg then two ffprobe", f.calls)
 	}
-	ffmpeg := f.calls[1]
+	ffmpeg := f.calls[0]
 	if ffmpeg[0] != "ffmpeg" {
 		t.Fatalf("second command = %q, want ffmpeg", ffmpeg[0])
 	}
@@ -134,7 +135,7 @@ func TestRecordingFrameNotFound(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	f := &frameFixture{pool: pool}
-	s := New(pool, Config{MediaDir: mediaDir, FFmpeg: "ffmpeg", FFprobe: "ffprobe"})
+	s := New(pool, Config{MediaDir: mediaDir, FFmpeg: "ffmpeg"})
 	s.runCmd = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		f.calls = append(f.calls, append([]string{filepath.Base(name)}, args...))
 		return nil, fmt.Errorf("must not run %s", name)
@@ -183,7 +184,7 @@ func TestRecordingFrameNotFound(t *testing.T) {
 
 // at が無い・負・数値でないのは 400。
 func TestRecordingFrameRejectsInvalidPosition(t *testing.T) {
-	f, id := newFrameFixture(t, "1440x1080", []byte{0xFF, 0xD8})
+	f, id := newFrameFixture(t, fakeJPEG(1440, 1080))
 	for _, query := range []string{"", "?at=", "?at=-1", "?at=abc"} {
 		res, _ := get(t, f.url(id, query), nil)
 		if res.StatusCode != http.StatusBadRequest {
@@ -210,11 +211,8 @@ func TestRecordingFrameReportsExtractionFailure(t *testing.T) {
 	id := seedRecording(t, pool)
 	seedAsset(t, pool, id, relPath, int64(len(makeTSData(10))))
 
-	s := New(pool, Config{MediaDir: mediaDir, FFmpeg: "ffmpeg", FFprobe: "ffprobe"})
+	s := New(pool, Config{MediaDir: mediaDir, FFmpeg: "ffmpeg"})
 	s.runCmd = func(_ context.Context, name string, args ...string) ([]byte, error) {
-		if filepath.Base(name) == "ffprobe" {
-			return []byte(probeJSON("1440x1080")), nil
-		}
 		return nil, fmt.Errorf("ffmpeg: exit status 1: Output file #0 does not contain any stream")
 	}
 	r := chi.NewRouter()
@@ -228,8 +226,8 @@ func TestRecordingFrameReportsExtractionFailure(t *testing.T) {
 	}
 }
 
-// 実物の ffprobe / ffmpeg で MPEG-2 1440x1080（SAR 4:3）の TS を配る。偽の runCmd では
-// ffprobe の実出力の形（programs 側と streams 側の 2 回出る）を読めることを測れない。
+// 実物の ffmpeg で MPEG-2 1440x1080（SAR 4:3）の TS を配る。偽の runCmd では
+// ffmpeg の mjpeg が SAR を JFIF に書くことを測れない。
 func TestRecordingFrameWithRealFFmpegOnAnamorphicMPEG2(t *testing.T) {
 	ffmpeg := lookPathFFmpeg(t)
 	pool := testutil.SetupDB(t)
@@ -249,7 +247,7 @@ func TestRecordingFrameWithRealFFmpegOnAnamorphicMPEG2(t *testing.T) {
 	}
 	id := seedRecording(t, pool)
 	seedAsset(t, pool, id, relPath, info.Size())
-	s := New(pool, Config{MediaDir: mediaDir, FFmpeg: ffmpeg, FFprobe: "ffprobe"})
+	s := New(pool, Config{MediaDir: mediaDir, FFmpeg: ffmpeg})
 	r := chi.NewRouter()
 	s.Mount(r)
 	srv := httptest.NewServer(r)
@@ -267,5 +265,64 @@ func TestRecordingFrameWithRealFFmpegOnAnamorphicMPEG2(t *testing.T) {
 	}
 	if got := res.Header.Get("X-Sample-Aspect-Ratio"); got != "4:3" {
 		t.Errorf("sample aspect ratio = %q, want 4:3", got)
+	}
+}
+
+// 途中で解像度と SAR が変わる録画（1440x1080 SAR 4:3 の後に 720x480 SAR 32:27）で、
+// 後半の at を叩いたらヘッダは後半の値になる。先頭を probe する実装では 1440x1080 / 4:3 のまま。
+func TestRecordingFrameFollowsResolutionAndSARChange(t *testing.T) {
+	ffmpeg := lookPathFFmpeg(t)
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	dir := filepath.Join(mediaDir, "gr")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gen := func(name, size, sar, offset string) string {
+		out := filepath.Join(dir, name)
+		if b, err := exec.Command(ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size="+size+":rate=25",
+			"-t", "2", "-vf", "setsar="+sar, "-g", "5", "-c:v", "mpeg2video",
+			"-output_ts_offset", offset, "-f", "mpegts", out).CombinedOutput(); err != nil {
+			t.Fatalf("ffmpeg: %v: %s", err, b)
+		}
+		return out
+	}
+	first := gen("a.ts", "1440x1080", "4/3", "0")
+	second := gen("b.ts", "720x480", "32/27", "2")
+	// TS は連結できる。後半は pts を 2 秒ずらしてあり、at=2 秒以降が後半の解像度になる。
+	relPath := "gr/joined.ts"
+	var joined []byte
+	for _, p := range []string{first, second} {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		joined = append(joined, b...)
+	}
+	if err := os.WriteFile(filepath.Join(mediaDir, relPath), joined, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id := seedRecording(t, pool)
+	seedAsset(t, pool, id, relPath, int64(len(joined)))
+	s := New(pool, Config{MediaDir: mediaDir, FFmpeg: ffmpeg})
+	r := chi.NewRouter()
+	s.Mount(r)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	for _, tc := range []struct{ at, size, sar string }{
+		{"500", "1440x1080", "4:3"},
+		{"3000", "720x480", "32:27"},
+	} {
+		res, body := get(t, fmt.Sprintf("%s/api/media/recordings/%d/frame?at=%s", srv.URL, id, tc.at), nil)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("at=%s: status = %d (body %q)", tc.at, res.StatusCode, body)
+		}
+		if got := res.Header.Get("X-Coded-Width") + "x" + res.Header.Get("X-Coded-Height"); got != tc.size {
+			t.Errorf("at=%s: coded size = %s, want %s", tc.at, got, tc.size)
+		}
+		if got := res.Header.Get("X-Sample-Aspect-Ratio"); got != tc.sar {
+			t.Errorf("at=%s: SAR = %q, want %s", tc.at, got, tc.sar)
+		}
 	}
 }
