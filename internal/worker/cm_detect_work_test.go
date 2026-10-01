@@ -164,7 +164,7 @@ fi
 : > "$o"
 if [ ! -f "$d/$ch.latest" ]; then
   cp %q "$d/$ch-v0001.lgd"
-  echo "$ch-v0001.lgd" > "$d/$ch.latest"
+  printf '1\n%%s\n' "$ch-v0001.lgd" > "$d/$ch.latest"
 fi
 echo %q
 `, argsPath, argsPath, holdPath, startedPath, holdPath, lgdPath, report))

@@ -350,3 +350,31 @@ func TestUntilEncodedViewWaitsForCMDetectionOrFinalFailure(t *testing.T) {
 		t.Fatalf("eligible originals after zero-CM successful result = %d, want 1", got)
 	}
 }
+
+func TestReadStationLogoLatestFormats(t *testing.T) {
+	for _, tt := range []struct {
+		name, latest string
+		ok           bool
+	}{
+		{"two lines (logoframe)", "1\nn1-s2-v0001.lgd\n", true},
+		{"one line (rokuban)", "n1-s2-v0001.lgd\n", true},
+		{"version only", "1\n", false},
+		{"traversal in name line", "1\n../outside.lgd\n", false},
+		{"not lgd", "1\nn1-s2-v0001.txt\n", false},
+		{"empty", "", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "n1-s2-v0001.lgd"), []byte("LGD"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "n1-s2.latest"), []byte(tt.latest), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := readStationLogo(dir, "n1-s2")
+			if (err == nil) != tt.ok || (tt.ok && string(got) != "LGD") {
+				t.Fatalf("got %q, %v; want ok=%v", got, err, tt.ok)
+			}
+		})
+	}
+}

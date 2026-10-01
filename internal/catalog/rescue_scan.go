@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -19,6 +21,9 @@ import (
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/reservation"
 )
+
+// statRescueCandidate allows tests to pause between walk observation and registration.
+var statRescueCandidate = os.Lstat
 
 // rescueStorage は catalog が 1 世代も残っていないときに、認識可能な動画ファイルをスキャンする。
 // 各ファイルは 1 件の recording になり、既知の事実は意図的に相対パス・ファイル名・サイズ・mtime
@@ -48,7 +53,7 @@ func rescueStorage(ctx context.Context, pool *pgxpool.Pool, mediaDir string, reg
 			return walkErr
 		}
 		if entry.IsDir() {
-			if filepath.Clean(path) == catalogDir {
+			if filepath.Clean(path) == catalogDir || filepath.Clean(path) == filepath.Join(realMediaDir, mediapath.MediaRelPathLockDirName) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -77,7 +82,10 @@ func rescueStorage(ctx context.Context, pool *pgxpool.Pool, mediaDir string, reg
 		if !ok {
 			return nil
 		}
-		info, err := entry.Info()
+		info, err := statRescueCandidate(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
 		if err != nil {
 			return fmt.Errorf("stating rescue candidate %q: %w", path, err)
 		}
@@ -126,6 +134,11 @@ func rescueStorage(ctx context.Context, pool *pgxpool.Pool, mediaDir string, reg
 			},
 			Assets: []inplace.Asset{{Kind: kind, Profile: profile, RelPath: relPath}},
 		})
+		if errors.Is(err, os.ErrNotExist) {
+			// The walk observation is a hint; Register checks again under the path lock.
+			result.MissingMediaFiles++
+			return nil
+		}
 		if err != nil {
 			return fmt.Errorf("registering rescue candidate %q: %w", relPath, err)
 		}
