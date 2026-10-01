@@ -585,7 +585,7 @@ export function RecordingDetail({
             '（原本の取り込み後に有効化できます）'}
         </p>
         {recording.cmDetection.state === 'failed' && (
-          <p className="text-destructive" data-testid="cm-detection-failure-message">
+          <p className="text-muted-foreground" data-testid="cm-detection-failure-message">
             {cmDetectStageMessage(recording.cmDetection.stage)}
           </p>
         )}
@@ -602,12 +602,28 @@ export function RecordingDetail({
             <p className="text-muted-foreground">CM 区間はありません</p>
           )
         )}
-        {recording.cmDetection.state === 'failed' && !trash && (
+        {recording.cmDetection.state === 'failed' && !trash && (() => {
+          // logo / area は枠を教えるのが直し方なのでリンクを主導線にし、それ以外は再試行を主にする。
+          const teachLogo = recording.cmDetection.stage === 'logo' || recording.cmDetection.stage === 'area'
+          return (
           <div className="flex flex-wrap items-center gap-3">
+            {teachLogo && (
+              <Link
+                to="/cm-logos"
+                search={{
+                  network: recording.networkId,
+                  service: recording.serviceId,
+                  recording: recording.id,
+                }}
+                className="text-primary underline underline-offset-4"
+              >
+                CM 検出のロゴを教える
+              </Link>
+            )}
             <Button
               type="button"
               size="sm"
-              variant="secondary"
+              variant={teachLogo ? 'secondary' : 'default'}
               disabled={retryCMDetection.isPending || !hasOriginal || !cmDetectEnabled}
               onClick={() => {
                 retryCMDetection.mutate(
@@ -628,18 +644,16 @@ export function RecordingDetail({
             >
               再試行
             </Button>
-            <Link
-              to="/cm-logos"
-              search={{
-                network: recording.networkId,
-                service: recording.serviceId,
-                recording: recording.id,
-              }}
-              className="text-primary underline underline-offset-4"
-            >
-              CM 検出のロゴを教える
-            </Link>
           </div>
+          )
+        })()}
+        {recording.cmDetection.state === 'failed' && recording.cmDetection.error && (
+          <details data-testid="cm-detection-technical-details" className="text-muted-foreground">
+            <summary className="cursor-pointer">技術的な詳細</summary>
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap font-mono text-xs">
+              {recording.cmDetection.error}
+            </pre>
+          </details>
         )}
       </section>
 
