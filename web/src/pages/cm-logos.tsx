@@ -67,9 +67,11 @@ export function cmLogoBucket(logo: CMLogoState): CMLogoBucket {
 /** cmLogoStateSentence は行に置く状態説明を一文へ畳む。 */
 // oxlint-disable-next-line react/only-export-components -- 表示順テストから共有する
 export function cmLogoStateSentence(logo: CMLogoState): string {
-  if (logo.candidate?.state === 'running' || awaitingCandidateAnalysis(logo)) return 'ロゴ候補を解析中です'
+  if (logo.candidate?.state === 'running') return 'ロゴ候補を解析中です'
   if (logo.candidate?.state === 'failed') return cmDetectStageMessage(logo.candidate.stage)
   if (logo.candidate?.state === 'ready') return 'ロゴ候補を確認して採用してください'
+  if (awaitingCandidateAnalysis(logo)) return 'ロゴ候補を解析中です'
+  if (candidateAnalysisNeeded(logo)) return '原本のある録画がないため、ロゴ候補の解析を始められません。'
   if (logo.failedCount > 0) return cmDetectStageMessage(logo.lastFailureStage)
   if (logo.pendingCount > 0) return `検出待ち ${logo.pendingCount} 件`
   return `録画 ${logo.recordingCount} 件`
@@ -190,16 +192,22 @@ function recordingLabel(recording: Recording): string {
   return `${formatDateTime(recording.startAt)} ${recording.title}（${formatDuration(recording.durationMs)}）`
 }
 
-/**
- * awaitingCandidateAnalysis は、枠が教えられているのに候補の行がまだ無い局を判定する。
- *
- * 枠の保存・候補の破棄・覚えたロゴの削除の直後は、job が CMDetectQueue で待つ間
- * running 行が存在しない。cm_logo_candidate_desired view と同じ条件
- * （枠あり・候補なし・学習が無い、または枠より古い）を画面側でも使い、メモリ state に頼らない。
- */
-function awaitingCandidateAnalysis(logo: CMLogoState): boolean {
+/** 候補解析の条件は満たすが、まだ候補行がない局かを返す。 */
+function candidateAnalysisNeeded(logo: CMLogoState): boolean {
   if (!logo.logoArea || logo.candidate !== undefined) return false
   return !logo.learnedAt || Date.parse(logo.learnedAt) < Date.parse(logo.logoArea.updatedAt)
+}
+
+/**
+ * awaitingCandidateAnalysis は、枠の再解析を始められる局だけを解析待ちにする。
+ *
+ * 枠の保存・候補の破棄・覚えたロゴの削除の直後は、job が CMDetectQueue で待つ間
+ * running 行が存在しない。画面とポーリングで共有する判定に API が既に返す
+ * frameRecordingId を加え、原本のない局を待ち続けない。desired view の条件を API から
+ * 返す変更は OpenAPI と API の変更が要るため、この画面で必要な原本有無の近似を使う。
+ */
+function awaitingCandidateAnalysis(logo: CMLogoState): boolean {
+  return candidateAnalysisNeeded(logo) && logo.frameRecordingId > 0
 }
 
 /** isAwaitingAdoption は worker が採用待ちの局として止めた録画かを返す（再試行では進まない）。 */

@@ -86,9 +86,14 @@ function stubApi(options: {
   area?: CMLogoState['logoArea']
   recordings?: Recording[]
   frameHeaders?: Record<string, string>
+  removeOriginalsOnCandidateDiscard?: boolean
 } = {}) {
   let currentArea = options.area
   let currentCandidate = options.candidate
+  let currentFrameRecordingId = (options.logo ?? logo).frameRecordingId
+  let currentLearnedAt = (options.logo ?? logo).learnedAt
+  let currentRecordings = options.recordings ?? [recording]
+  let logoFetchCount = 0
   const requests: Array<{ method: string; url: string; body?: unknown }> = []
   globalThis.fetch = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
@@ -97,15 +102,20 @@ function stubApi(options: {
       return Promise.resolve(jsonResponse({ live: false, cmDetect: options.cmDetect ?? true }))
     }
     if (url.pathname === '/api/cm-logos' && method === 'GET') {
-      const rows = options.logos ?? [{
+      logoFetchCount += 1
+      const state = {
         ...(options.logo ?? logo),
+        frameRecordingId: currentFrameRecordingId,
         logoArea: currentArea,
         ...(currentCandidate === undefined ? {} : { candidate: currentCandidate }),
-      }]
+      }
+      if (currentLearnedAt === undefined) delete state.learnedAt
+      else state.learnedAt = currentLearnedAt
+      const rows = options.logos ?? [state]
       return Promise.resolve(jsonResponse(rows))
     }
     if (url.pathname === '/api/recordings' && method === 'GET') {
-      return Promise.resolve(jsonResponse(options.recordings ?? [recording]))
+      return Promise.resolve(jsonResponse(currentRecordings))
     }
     if (url.pathname === '/api/media/recordings/7/frame' && method === 'GET') {
       requests.push({ method, url: url.pathname + url.search })
@@ -142,12 +152,22 @@ function stubApi(options: {
     if (url.pathname === '/api/cm-logos/32678/5168/candidate' && method === 'DELETE') {
       requests.push({ method, url: url.pathname })
       currentCandidate = undefined
+      if (options.removeOriginalsOnCandidateDiscard) {
+        currentFrameRecordingId = 0
+        currentRecordings = []
+      }
+      return Promise.resolve(new Response(null, { status: 204 }))
+    }
+    if (url.pathname === '/api/cm-logos/32678/5168' && method === 'DELETE') {
+      requests.push({ method, url: url.pathname })
+      currentLearnedAt = undefined
       return Promise.resolve(new Response(null, { status: 204 }))
     }
     throw new Error(`unexpected fetch: ${method} ${url.pathname}`)
   }) as unknown as typeof fetch
   return {
     requests,
+    logoFetchCount: () => logoFetchCount,
     setCandidate: (next: NonNullable<CMLogoState['candidate']> | undefined) => {
       currentCandidate = next
     },
@@ -249,6 +269,21 @@ describe('CMLogosPage の候補分類', () => {
     const section = await screen.findByTestId('cm-logo-pending')
     expect(section).toHaveTextContent('待ち局')
     expect(section).toHaveTextContent('ロゴ候補を解析中です')
+  })
+
+  it('原本のある録画がない局は解析待ちにせず、開始できない理由を表示する', async () => {
+    stubApi({
+      logos: [{
+        ...healthyLogo,
+        serviceName: '原本なし局',
+        frameRecordingId: 0,
+        logoArea: { x: 1, y: 1, w: 10, h: 10, codedWidth: 1440, codedHeight: 1080, updatedAt: '2026-09-30T00:00:00Z' },
+      }],
+    })
+    renderInRouter(<CMLogosPage />, { path: '/cm-logos' })
+
+    expect(await screen.findByText('原本のある録画がないため、ロゴ候補の解析を始められません。')).toBeInTheDocument()
+    expect(screen.queryByTestId('cm-logo-pending')).not.toBeInTheDocument()
   })
 
   it('failed 候補の局は工程の一文つきで要対応に入る', async () => {
@@ -495,6 +530,61 @@ describe('CMLogoStationPage', () => {
     expect(await screen.findByTestId('cm-logo-candidate-failed')).toHaveTextContent('ロゴの枠では直せない失敗です。')
     expect(screen.getByTestId('cm-logo-candidate-failed')).not.toHaveTextContent('枠を描き直して')
   })
+
+  it('原本を失った候補を破棄した後は解析不能の理由を表示してポーリングしない', async () => {
+    const { requests, logoFetchCount } = stubApi({
+      logo: { ...logo, serviceName: '候補破棄局', frameRecordingId: 7 },
+      area: { x: 1, y: 1, w: 10, h: 10, codedWidth: 1440, codedHeight: 1080, updatedAt: '2026-09-30T00:00:00Z' },
+      candidate: {
+        state: 'ready',
+        x: 1,
+        y: 1,
+        w: 10,
+        h: 10,
+        codedWidth: 1440,
+        codedHeight: 1080,
+        recordingId: 7,
+        attemptedAt: '2026-09-30T00:00:00Z',
+      },
+      recordings: [recording],
+      removeOriginalsOnCandidateDiscard: true,
+    })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+
+    fireEvent.click(await screen.findByTestId('cm-logo-candidate-discard'))
+    expect(await screen.findByText('原本のある録画がないため、ロゴ候補の解析を始められません。')).toBeInTheDocument()
+    expect(screen.getByTestId('cm-logo-no-original')).toBeInTheDocument()
+    expect(requests.some((request) => request.method === 'DELETE' && request.url.endsWith('/candidate'))).toBe(true)
+
+    const fetchCountAfterDiscard = logoFetchCount()
+    await new Promise((resolve) => window.setTimeout(resolve, 5200))
+    expect(logoFetchCount()).toBe(fetchCountAfterDiscard)
+  }, 12000)
+
+  it('原本のない局で覚えたロゴを捨てた後は解析不能の理由を表示してポーリングしない', async () => {
+    const { requests, logoFetchCount } = stubApi({
+      logo: { ...logo, serviceName: 'ロゴ削除局', frameRecordingId: 0, learnedAt: '2026-10-01T00:00:00Z' },
+      area: { x: 1, y: 1, w: 10, h: 10, codedWidth: 1440, codedHeight: 1080, updatedAt: '2026-09-30T00:00:00Z' },
+      recordings: [],
+    })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168'],
+    })
+
+    fireEvent.click(await screen.findByText('高度な操作'))
+    fireEvent.click(await screen.findByRole('button', { name: '覚えたロゴを捨てる' }))
+    expect(await screen.findByText('原本のある録画がないため、ロゴ候補の解析を始められません。')).toBeInTheDocument()
+    expect(screen.getByTestId('cm-logo-no-original')).toBeInTheDocument()
+    expect(requests.some((request) => request.method === 'DELETE' && request.url === '/api/cm-logos/32678/5168')).toBe(true)
+
+    const fetchCountAfterDelete = logoFetchCount()
+    await new Promise((resolve) => window.setTimeout(resolve, 5200))
+    expect(logoFetchCount()).toBe(fetchCountAfterDelete)
+  }, 12000)
 
   it.each([
     ['学習が無い', undefined, true],
