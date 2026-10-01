@@ -69,6 +69,7 @@ const recording = {
 } as Recording
 
 const frameBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xd9])
+const previewPng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
 
 /** 数値入力へ値を入れて blur で確定する。 */
 function typeNumber(key: 'x' | 'y' | 'w' | 'h', value: string) {
@@ -79,12 +80,15 @@ function typeNumber(key: 'x' | 'y' | 'w' | 'h', value: string) {
 
 function stubApi(options: {
   logos?: CMLogoState[]
+  logo?: CMLogoState
+  candidate?: NonNullable<CMLogoState['candidate']>
   cmDetect?: boolean
   area?: CMLogoState['logoArea']
   recordings?: Recording[]
   frameHeaders?: Record<string, string>
 } = {}) {
   let currentArea = options.area
+  let currentCandidate = options.candidate
   const requests: Array<{ method: string; url: string; body?: unknown }> = []
   globalThis.fetch = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
@@ -93,7 +97,11 @@ function stubApi(options: {
       return Promise.resolve(jsonResponse({ live: false, cmDetect: options.cmDetect ?? true }))
     }
     if (url.pathname === '/api/cm-logos' && method === 'GET') {
-      const rows = options.logos ?? [{ ...logo, logoArea: currentArea }]
+      const rows = options.logos ?? [{
+        ...(options.logo ?? logo),
+        logoArea: currentArea,
+        ...(currentCandidate === undefined ? {} : { candidate: currentCandidate }),
+      }]
       return Promise.resolve(jsonResponse(rows))
     }
     if (url.pathname === '/api/recordings' && method === 'GET') {
@@ -125,9 +133,25 @@ function stubApi(options: {
       if (method === 'DELETE') currentArea = undefined
       return Promise.resolve(new Response(null, { status: 204 }))
     }
+    if (url.pathname === '/api/cm-logos/32678/5168/candidate/adopt' && method === 'POST') {
+      const body = init?.body === undefined ? undefined : JSON.parse(String(init.body))
+      requests.push({ method, url: url.pathname, body })
+      currentCandidate = undefined
+      return Promise.resolve(new Response(null, { status: 204 }))
+    }
+    if (url.pathname === '/api/cm-logos/32678/5168/candidate' && method === 'DELETE') {
+      requests.push({ method, url: url.pathname })
+      currentCandidate = undefined
+      return Promise.resolve(new Response(null, { status: 204 }))
+    }
     throw new Error(`unexpected fetch: ${method} ${url.pathname}`)
   }) as unknown as typeof fetch
-  return { requests }
+  return {
+    requests,
+    setCandidate: (next: NonNullable<CMLogoState['candidate']> | undefined) => {
+      currentCandidate = next
+    },
+  }
 }
 
 const originalClientWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth')
@@ -190,6 +214,52 @@ describe('CMLogosPage', () => {
   })
 })
 
+describe('CMLogosPage の候補分類', () => {
+  const learned = { ...healthyLogo, networkId: 5, serviceId: 6, learnedAt: '2026-09-29T00:00:00Z' }
+  const candidateBase = {
+    x: 1, y: 1, w: 10, h: 10, codedWidth: 1440, codedHeight: 1080, recordingId: 7, attemptedAt: '2026-09-30T00:00:00Z',
+  }
+
+  it('ready 候補の局は問題なしの件数でも要対応に入り、札は候補あり', async () => {
+    stubApi({ logos: [{ ...learned, serviceName: '候補局', candidate: { state: 'ready', ...candidateBase } }] })
+    renderInRouter(<CMLogosPage />, { path: '/cm-logos' })
+    const section = await screen.findByTestId('cm-logo-attention')
+    expect(section).toHaveTextContent('候補局')
+    expect(section).toHaveTextContent('ロゴ候補を確認して採用してください')
+    expect(section).toHaveTextContent('候補あり')
+  })
+
+  it('running 候補の局は検出待ちに入る', async () => {
+    stubApi({ logos: [{ ...learned, serviceName: '解析局', candidate: { state: 'running', ...candidateBase } }] })
+    renderInRouter(<CMLogosPage />, { path: '/cm-logos' })
+    const section = await screen.findByTestId('cm-logo-pending')
+    expect(section).toHaveTextContent('解析局')
+    expect(section).toHaveTextContent('ロゴ候補を解析中です')
+  })
+
+  it('枠があり候補の行が無い解析待ちの局は検出待ちに入る', async () => {
+    stubApi({
+      logos: [{
+        ...healthyLogo,
+        serviceName: '待ち局',
+        logoArea: { x: 1, y: 1, w: 10, h: 10, codedWidth: 1440, codedHeight: 1080, updatedAt: '2026-09-30T00:00:00Z' },
+      }],
+    })
+    renderInRouter(<CMLogosPage />, { path: '/cm-logos' })
+    const section = await screen.findByTestId('cm-logo-pending')
+    expect(section).toHaveTextContent('待ち局')
+    expect(section).toHaveTextContent('ロゴ候補を解析中です')
+  })
+
+  it('failed 候補の局は工程の一文つきで要対応に入る', async () => {
+    stubApi({ logos: [{ ...learned, serviceName: '失敗局', candidate: { state: 'failed', stage: 'logo', ...candidateBase } }] })
+    renderInRouter(<CMLogosPage />, { path: '/cm-logos' })
+    const section = await screen.findByTestId('cm-logo-attention')
+    expect(section).toHaveTextContent('失敗局')
+    expect(section).toHaveTextContent('ロゴを見つけられず、CM を検出できませんでした。')
+  })
+})
+
 describe('CMLogoStationPage', () => {
   it('中央の時刻を初期表示し、スライダーを動かすまでコマを取り直さない', async () => {
     const { requests } = stubApi()
@@ -221,8 +291,8 @@ describe('CMLogoStationPage', () => {
     typeNumber('y', '300')
     typeNumber('w', '400')
     typeNumber('h', '300')
-    await waitFor(() => expect(screen.getByRole('button', { name: '枠を保存' })).toBeEnabled())
-    fireEvent.click(screen.getByRole('button', { name: '枠を保存' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'ロゴを解析' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: 'ロゴを解析' }))
 
     await waitFor(() => expect(requests.some((request) => request.method === 'PUT')).toBe(true))
     expect(requests.find((request) => request.method === 'PUT')?.body).toEqual({
@@ -234,7 +304,7 @@ describe('CMLogoStationPage', () => {
       codedWidth: 1440,
       codedHeight: 1080,
     })
-    expect(await screen.findByTestId('cm-logo-save-message')).toHaveTextContent('検出待ち')
+    expect(await screen.findByTestId('cm-logo-candidate-running')).toHaveTextContent('解析中です')
   })
 
   it('数値入力は入力中に丸めず、blur で下限・範囲へ確定する', async () => {
@@ -351,6 +421,185 @@ describe('CMLogoStationPage', () => {
     await screen.findByTestId('cm-logo-frame-image')
     expect(requests.some((request) => request.url.startsWith('/api/media/recordings/7/frame'))).toBe(true)
     expect(requests.some((request) => request.url.includes('/recordings/9/'))).toBe(false)
+  })
+
+  it('候補が running の間は解析中と画面を離れても続くことを表示する', async () => {
+    const candidate: NonNullable<CMLogoState['candidate']> = {
+      state: 'running',
+      x: 400,
+      y: 300,
+      w: 400,
+      h: 300,
+      codedWidth: 1440,
+      codedHeight: 1080,
+      recordingId: 7,
+      attemptedAt: '2026-09-30T00:00:00Z',
+    }
+    stubApi({ candidate })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+    expect(await screen.findByTestId('cm-logo-candidate-running')).toHaveTextContent('解析中です')
+    expect(screen.queryByTestId('cm-logo-candidate-adopt')).not.toBeInTheDocument()
+    expect(screen.getByTestId('cm-logo-candidate-running')).toHaveTextContent('画面を離れても続きます')
+  })
+
+  it('候補が failed のとき工程の一文と描き直しを表示する', async () => {
+    stubApi({
+      candidate: {
+        state: 'failed',
+        stage: 'area',
+        error: 'raw error must not be shown',
+        x: 400,
+        y: 300,
+        w: 400,
+        h: 300,
+        codedWidth: 1440,
+        codedHeight: 1080,
+        recordingId: 7,
+        attemptedAt: '2026-09-30T00:00:00Z',
+      },
+    })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+    expect(await screen.findByTestId('cm-logo-candidate-failed')).toHaveTextContent(
+      '教えた枠が録画の解像度と合わないため、枠を使えませんでした。',
+    )
+    expect(screen.getByTestId('cm-logo-candidate-failed')).toHaveTextContent('枠を描き直して解析し直してください。')
+    expect(screen.queryByTestId('cm-logo-candidate-adopt')).not.toBeInTheDocument()
+    expect(screen.getByTestId('cm-logo-candidate-failure-message')).not.toHaveTextContent('raw error must not be shown')
+  })
+
+  it('工程が枠で直らない failed 候補には描き直しの案内を出さない', async () => {
+    stubApi({
+      candidate: {
+        state: 'failed',
+        stage: 'setup',
+        x: 400,
+        y: 300,
+        w: 400,
+        h: 300,
+        codedWidth: 1440,
+        codedHeight: 1080,
+        recordingId: 7,
+        attemptedAt: '2026-09-30T00:00:00Z',
+      },
+    })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+    expect(await screen.findByTestId('cm-logo-candidate-failed')).toHaveTextContent('ロゴの枠では直せない失敗です。')
+    expect(screen.getByTestId('cm-logo-candidate-failed')).not.toHaveTextContent('枠を描き直して')
+  })
+
+  it.each([
+    ['学習が無い', undefined, true],
+    ['学習が枠より古い', '2026-09-29T00:00:00Z', true],
+    ['学習が枠より新しい', '2026-09-30T01:00:00Z', false],
+  ])('枠があり候補の行が無いとき（%s）の解析待ち表示は %s', async (_name, learnedAt, waiting) => {
+    stubApi({
+      logo: { ...logo, ...(learnedAt ? { learnedAt } : {}) },
+      area: { x: 1, y: 1, w: 10, h: 10, codedWidth: 1440, codedHeight: 1080, updatedAt: '2026-09-30T00:00:00Z' },
+    })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+    await screen.findByTestId('cm-logo-time')
+    if (waiting) expect(await screen.findByTestId('cm-logo-candidate-running')).toBeInTheDocument()
+    else expect(screen.queryByTestId('cm-logo-candidate-running')).not.toBeInTheDocument()
+  })
+
+  it('解析待ちの間は candidate が無くてもポーリングし、候補が届いたら表示を切り替える', async () => {
+    const { setCandidate } = stubApi({
+      area: { x: 1, y: 1, w: 10, h: 10, codedWidth: 1440, codedHeight: 1080, updatedAt: '2026-09-30T00:00:00Z' },
+    })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+    await screen.findByTestId('cm-logo-candidate-running')
+    setCandidate({
+      state: 'failed',
+      stage: 'logo',
+      x: 1,
+      y: 1,
+      w: 10,
+      h: 10,
+      codedWidth: 1440,
+      codedHeight: 1080,
+      recordingId: 7,
+      attemptedAt: '2026-09-30T00:00:10Z',
+    })
+    expect(await screen.findByTestId('cm-logo-candidate-failed', undefined, { timeout: 8000 })).toBeInTheDocument()
+  }, 12000)
+
+  it('採用待ちで止めた録画は採用待ちの文を出し、再試行を出さない', async () => {
+    stubApi({ recordings: [{ ...recording, cmDetection: { state: 'failed', stage: 'adopt' } } as Recording] })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+    expect(await screen.findByText(/この局はロゴの採用待ちです/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '再検出' })).not.toBeInTheDocument()
+    expect(screen.queryByText('3 回の試行に失敗しました')).not.toBeInTheDocument()
+  })
+
+  it('他の失敗した録画には再試行を出す', async () => {
+    stubApi()
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+    expect(await screen.findByRole('button', { name: '再検出' })).toBeInTheDocument()
+  })
+
+  it('候補が ready のとき現在のロゴと並べて表示し、採用 body に redetect を載せる', async () => {
+    const { requests } = stubApi({
+      logo: {
+        ...logo,
+        state: 'learned',
+        failedCount: 0,
+        pendingCount: 2,
+        learnedAt: '2026-09-29T00:00:00Z',
+        previewPng,
+        codedWidth: 1440,
+        codedHeight: 1080,
+      },
+      candidate: {
+        state: 'ready',
+        previewPng,
+        x: 400,
+        y: 300,
+        w: 400,
+        h: 300,
+        codedWidth: 1440,
+        codedHeight: 1080,
+        recordingId: 7,
+        attemptedAt: '2026-09-30T00:00:00Z',
+      },
+    })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+    expect(await screen.findByTestId('cm-logo-candidate-ready')).toBeInTheDocument()
+    expect(screen.getByTestId('cm-logo-candidate-ready')).toHaveTextContent(
+      '採用前に検出した録画 1 件（うち原本が残っている 2 件）も検出し直す',
+    )
+    expect(screen.getByTestId('cm-logo-current-preview')).toBeInTheDocument()
+    expect(screen.getByTestId('cm-logo-candidate-preview')).toBeInTheDocument()
+    const checkbox = screen.getByTestId('cm-logo-candidate-redetect')
+    expect(checkbox).toBeChecked()
+    fireEvent.click(checkbox)
+    expect(checkbox).not.toBeChecked()
+    fireEvent.click(screen.getByTestId('cm-logo-candidate-adopt'))
+    await waitFor(() => expect(requests.some((request) => request.url.endsWith('/candidate/adopt'))).toBe(true))
+    expect(requests.find((request) => request.url.endsWith('/candidate/adopt'))?.body).toEqual({ redetect: false })
   })
 
   it('CM 検出が無効なら枠の編集面を出さない', async () => {
