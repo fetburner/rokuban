@@ -358,7 +358,7 @@ const recordings = [
   // 出ることを撮る（キーボード到達性の判定 ⑤）。`encodedProfiles`（非推奨の後方
   // 互換フィールド）だけでは `RecordingPlayer` が <video> を出さない
   // （`encodedAssets` を見るため）ので両方持たせる。
-  { id: 12, site: SITE, source: 'manual', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', channel: 'BS15_0', networkId: 4, serviceId: 101, eventId: 12, title: 'クラシック音楽館', series: '音楽館', seriesKey: 'クラシック音楽館', startAt: iso(nowMs - 26 * HOUR), durationMs: 5_400_000, status: 'finished', keepOriginal: 'always', cmDetection: { state: 'disabled' }, sizeBytes: 8_123_456_789, createdAt: iso(nowMs - 26 * HOUR), dropSummary: { packets: 1_500_000, drops: 12, errors: 0, scrambled: 3 }, encodedAssets: [{ profile: 'hevc-1080p', sizeBytes: 2_345_678_901 }] },
+  { id: 12, site: SITE, source: 'manual', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', channel: 'BS15_0', networkId: 4, serviceId: 101, eventId: 12, title: 'クラシック音楽館', description: '番組の内容を補う説明です。画面幅が 360px のときも本文を読みやすい文字サイズで折り返し、詳細欄が横にはみ出さないことを確認するための文章です。', series: '音楽館', seriesKey: 'クラシック音楽館', startAt: iso(nowMs - 26 * HOUR), durationMs: 5_400_000, status: 'finished', keepOriginal: 'always', cmDetection: { state: 'disabled' }, sizeBytes: 8_123_456_789, createdAt: iso(nowMs - 26 * HOUR), dropSummary: { packets: 1_500_000, drops: 12, errors: 0, scrambled: 3 }, encodedAssets: [{ profile: 'hevc-1080p', sizeBytes: 2_345_678_901 }] },
   { id: 13, site: SITE, source: 'rule', serviceName: 'テレビ大阪', channelType: 'GR', channel: '18', networkId: 32738, serviceId: 1040, eventId: 13, title: 'アニメ劇場', startAt: iso(nowMs - 50 * HOUR), durationMs: 1_800_000, status: 'failed', keepOriginal: 'always', cmDetection: { state: 'disabled' }, createdAt: iso(nowMs - 50 * HOUR) },
   { id: 14, site: SITE, source: 'rule', serviceName: 'NHKEテレ', channelType: 'GR', channel: '26', networkId: 32737, serviceId: 1032, eventId: 14, title: '連続テレビ小説', startAt: iso(nowMs - 74 * HOUR), durationMs: 900_000, status: 'finished', keepOriginal: 'always', cmDetection: { state: 'disabled' }, sizeBytes: 1_234_567_890, createdAt: iso(nowMs - 74 * HOUR) },
 ]
@@ -624,7 +624,24 @@ function apiHandler({
       const rec = recordings.find((r) => r.id === Number(recMatch[1]))
       return rec ? json(rec) : route.fulfill({ status: 404 })
     }
-    if (/^\/api\/recordings\/\d+\/drop-stats$/.test(p)) return json([])
+    const dropStatsMatch = /^\/api\/recordings\/(\d+)\/drop-stats$/.exec(p)
+    if (dropStatsMatch) {
+      return json(
+        Number(dropStatsMatch[1]) === 12
+          ? [
+              {
+                pid: 256,
+                pidType: 'video',
+                packets: 1_500_000,
+                drops: 12,
+                errors: 0,
+                scrambled: 3,
+                positions: [{ byteOffset: 123_456, elapsedMs: 42_000 }],
+              },
+            ]
+          : [],
+      )
+    }
     // サムネイルは 404 に落として実装側のプレースホルダを撮る（画像を作らない）
     if (/^\/api\/media\/recordings\/\d+\/thumbnail$/.test(p)) return route.fulfill({ status: 404 })
     if (p === `/api/sites/${SITE}/services`) return json(services)
@@ -886,7 +903,7 @@ let checkedColorSchemeChange = false
 
 /** open は 1 ページを開いてスタブ・時刻・テーマを整えるところまでやる。 */
 async function open(viewport, theme, screen, opts = {}) {
-  const { pointer = 'fine', recordingView = null, ...apiOpts } = opts
+  const { pointer = 'fine', recordingView = null, isMobile = pointer === 'coarse', ...apiOpts } = opts
   if (pointer !== 'fine' && pointer !== 'coarse') {
     throw new Error(`未対応のポインタプロファイル: ${pointer}`)
   }
@@ -897,7 +914,7 @@ async function open(viewport, theme, screen, opts = {}) {
     colorScheme: theme,
     deviceScaleFactor: 2,
     hasTouch: pointer === 'coarse',
-    isMobile: pointer === 'coarse',
+    isMobile,
   })
   if (recordingView !== null) {
     await context.addInitScript((view) => localStorage.setItem('rokuban:recordings:view', view), recordingView)
@@ -2482,14 +2499,10 @@ for (const theme of themes) {
     await context.close()
   }
 
-  // --- 録画詳細: `bg-muted/30` のパネルに乗る muted の文字 ---
-  //
-  // 詳細（`/recordings/$id`）の本体は `bg-muted/30` の面で、その上の説明文・
-  // `<dt>` 群・品質イベントが `text-muted-foreground` のまま乗る（`RecordingDetail`。
-  // 一覧はインライン展開を持たないので、この面が出るのは詳細ページだけ）。hover と
-  // 違って**常時見えるので Lighthouse の監査対象**に入る。代表として `<dt>`
-  // 「チャンネル」を測る（同じパネル・同じトークン対なので説明文・品質イベントも
-  // 同値になる）。`recordingDetailScreen`（`screens` 定義の下）を使う。
+  // --- 録画詳細: muted の文字をページ地の上で測る ---
+  // 詳細本体には独立した面を置かないため、`<dt>`「チャンネル」の実効背景が
+  // body のページ地と一致することを確かめ、そのページ地に対してコントラストを測る。
+  // 代表として `<dt>` を使う。説明文・品質イベントも同じ色トークンを使う。
   {
     const { context, page } = await open(desktop, theme, recordingDetailScreen)
     // `screens`（① のループ）に無い画面なので、明示的に掛けないと欠損文字列
@@ -2505,30 +2518,111 @@ for (const theme of themes) {
     await checkMissingStrings(page, `recording-detail/${theme}`)
     const dt = page.locator('dt', { hasText: /^チャンネル$/ }).first()
     const fg = await computedOf(dt, 'color')
-    log(`  [${theme}] 録画詳細のパネルの文字=${fg?.value} ${fg?.rgba} / 乗っている面=${fg?.backdrop}`)
+    log(`  [${theme}] 録画詳細の文字=${fg?.value} ${fg?.rgba} / 実効背景=${fg?.backdrop}`)
     if (fg === null) {
       ng.push(`[${theme}] 録画詳細の <dt> が見つからない`)
     } else {
-      // 面が半透明（`bg-muted/30`）なので、遡って合成できていないと甘い数字が出る。
-      // ページの地と一致したら合成が効いていない
       const ground = await computedOf(page.locator('body'), 'background-color')
       const sameAsGround =
         ground !== null && [0, 1, 2].every((i) => Math.abs(fg.backdrop[i] - ground.backdrop[i]) < 1)
-      if (sameAsGround) {
+      if (ground === null || !sameAsGround) {
         ng.push(
-          `[${theme}] 録画詳細のパネルの文字が乗る面がページの地と同じ（${fg.backdrop}）` +
-            ' --- bg-muted/30 の合成が効いていない',
+          `[${theme}] 録画詳細の文字がページの地に直接乗っていない` +
+            `（文字の実効背景=${fg.backdrop}、ページ地=${ground?.backdrop ?? '取得できない'}）`,
+        )
+      } else {
+        checkContrast(
+          theme,
+          '録画詳細の muted text / page ground',
+          fg.rgba,
+          ground,
+          minTextContrast,
         )
       }
-      checkContrast(
-        theme,
-        '録画詳細のパネルの文字 / muted の半透明地',
-        fg.rgba,
-        fg,
-        minTextContrast,
-      )
     }
     await context.close()
+
+    // 360px では詳細欄に余計な面・内側余白を付けず、本文を16pxで折り返す。
+    const mobileContext = await open(mobile, theme, recordingDetailScreen, { pointer: 'coarse', isMobile: false })
+    const mobilePage = mobileContext.page
+    await mobilePage.getByRole('heading', { name: 'PID 別ドロップ統計' }).waitFor({ state: 'visible' })
+    const mobileLayout = await mobilePage.evaluate(() => {
+      const body = document.querySelector('[data-testid="recording-detail-body"]')
+      const description = document.querySelector('[data-testid="recording-description"]')
+      if (!(body instanceof HTMLElement) || !(description instanceof HTMLElement)) return null
+      const bodyStyle = getComputedStyle(body)
+      const descriptionStyle = getComputedStyle(description)
+      const range = document.createRange()
+      range.selectNodeContents(description)
+      const descriptionLines = range.getClientRects().length
+      const bodyRect = body.getBoundingClientRect()
+      return {
+        viewportWidth: window.innerWidth,
+        documentWidth: document.documentElement.scrollWidth,
+        bodyLeft: bodyRect.left,
+        bodyRight: bodyRect.right,
+        bodyBackground: bodyStyle.backgroundColor,
+        paddingLeft: bodyStyle.paddingLeft,
+        paddingRight: bodyStyle.paddingRight,
+        bodyFontSize: bodyStyle.fontSize,
+        descriptionFontSize: descriptionStyle.fontSize,
+        descriptionLines,
+        pointerCoarse: matchMedia('(pointer: coarse)').matches,
+      }
+    })
+    if (mobileLayout === null) {
+      ng.push(`[${theme}] 録画詳細/mobile: 本文か説明文が見つからない`)
+    } else {
+      if (mobileLayout.documentWidth > mobileLayout.viewportWidth) {
+        ng.push(`[${theme}] 録画詳細/mobile: 横スクロールが発生（${mobileLayout.documentWidth}px > ${mobileLayout.viewportWidth}px）`)
+      }
+      if (mobileLayout.viewportWidth !== mobile.width || !mobileLayout.pointerCoarse) {
+        ng.push(`[${theme}] 録画詳細/mobile: 360px/coarse の条件を満たさない（${JSON.stringify(mobileLayout)}）`)
+      }
+      if (mobileLayout.bodyLeft < 0 || mobileLayout.bodyRight > mobileLayout.viewportWidth) {
+        ng.push(`[${theme}] 録画詳細/mobile: 本文が viewport 外にはみ出す（left=${mobileLayout.bodyLeft}, right=${mobileLayout.bodyRight}）`)
+      }
+      if (mobileLayout.bodyBackground !== 'rgba(0, 0, 0, 0)' || mobileLayout.paddingLeft !== '0px' || mobileLayout.paddingRight !== '0px') {
+        ng.push(`[${theme}] 録画詳細/mobile: 本文に背景色または重複した左右余白がある（bg=${mobileLayout.bodyBackground}, padding=${mobileLayout.paddingLeft}/${mobileLayout.paddingRight}）`)
+      }
+      if (mobileLayout.bodyFontSize !== '14px' || mobileLayout.descriptionFontSize !== '16px') {
+        ng.push(`[${theme}] 録画詳細/mobile: 文字サイズが想定外（本文=${mobileLayout.bodyFontSize}, 説明=${mobileLayout.descriptionFontSize}）`)
+      }
+      if (mobileLayout.descriptionLines < 2) {
+        ng.push(`[${theme}] 録画詳細/mobile: 説明文が360px幅で折り返されない（${mobileLayout.descriptionLines}行）`)
+      }
+      log(`  [${theme}] 録画詳細/mobile 360px: ${JSON.stringify(mobileLayout)}`)
+
+      const tableViewport = mobilePage
+        .getByRole('heading', { name: 'PID 別ドロップ統計' })
+        .locator('..')
+        .locator('.overflow-x-auto')
+      const tableOverflow = await tableViewport.evaluate((el) => el.scrollWidth > el.clientWidth)
+      if (!tableOverflow) {
+        ng.push(`[${theme}] 録画詳細/mobile: はみ出す PID 表が局所スクロール領域に収まっていない`)
+      }
+
+      // 負の対照: 本文に 40rem の最小幅を一時設定し、ページ幅判定が実際に
+      // 横はみ出しを拾うことを確かめてからスタイルを戻す。
+      const detailBody = mobilePage.locator('[data-testid="recording-detail-body"]')
+      const originalMinWidth = await detailBody.evaluate((el) => el.style.minWidth)
+      await detailBody.evaluate((el) => {
+        el.style.minWidth = '40rem'
+      })
+      const brokenWidth = await mobilePage.evaluate(() => ({
+        documentWidth: document.documentElement.scrollWidth,
+        viewportWidth: window.innerWidth,
+      }))
+      await detailBody.evaluate((el, value) => {
+        el.style.minWidth = value
+      }, originalMinWidth)
+      if (brokenWidth.documentWidth <= brokenWidth.viewportWidth) {
+        ng.push(`[${theme}] 録画詳細/mobile: 本文の40rem負の対照で横はみ出しを検知できない（${JSON.stringify(brokenWidth)}）`)
+      } else {
+        log(`  [${theme}] 録画詳細/mobile 負の対照 本文 40rem: ${brokenWidth.documentWidth}px > ${brokenWidth.viewportWidth}px`)
+      }
+    }
+    await mobileContext.context.close()
   }
 
   // --- 予約一覧: チューナー不足 = 琥珀（淡い地の上で読めるか） ---

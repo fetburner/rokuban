@@ -145,11 +145,10 @@ chip（`components/ui/chip.tsx`）・day-strip（`components/day-strip.tsx`）�
 `components/recording-row.tsx` / `pages/reservations.tsx` / `pages/home.tsx` である。
 代表として録画一覧の行を `e2e:design` が実際に hover して測る。いま分かっている残りは:
 
-- **測ってあり、下限を満たす**: 録画詳細（`/recordings/$id`）の `bg-muted/30` の
-  パネルに乗る説明文・`<dt>` 群・品質イベント（`RecordingDetail`）。一覧は
-  インライン展開を持たないので、この面が出るのは詳細ページだけである。hover と違って**常時見えるので
-  Lighthouse の監査対象**に入るため、`e2e:design` が同じパネルの `<dt>` を測っている
-  （同じ面・同じトークン対なので説明文・品質イベントも同値）
+- **測ってあり、下限を満たす**: 録画詳細（`/recordings/$id`）の説明文・`<dt>` 群・
+  品質イベントの muted 文字（`RecordingDetail`）。詳細本体はページ地へ直接置き、
+  `e2e:design` は `<dt>`「チャンネル」の文字色をページ地に対して測る。同じ色トークンを
+  使う説明文・品質イベントも同じコントラストになる。常時見えるため Lighthouse の監査対象に入る。
 - **測っていない（未検証）**: 検索の `RuleSourceBanner`（`components/rule-form.tsx`）の
   読み込み中の枝（`bg-muted/40`）である。ここではルールが解決した本体が
   `text-muted-foreground` を持たず、エラーの枝は `text-destructive` である。

@@ -5,7 +5,7 @@ import { useState } from 'react'
 import { useGetRecording } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { ErrorState, ListSkeleton, PageHeader } from '@/components/page'
-import { EncodeStatusBadges, IngestBadge, StatusBadge } from '@/components/recording-badges'
+import { DropBadges, EncodeStatusBadges, IngestBadge, StatusBadge } from '@/components/recording-badges'
 import { RecordingDetail } from '@/components/recording-detail-panel'
 import { Button } from '@/components/ui/button'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
@@ -143,6 +143,7 @@ export function RecordingDetailPage() {
                 <StatusBadge status={recording.status} />
                 <IngestBadge recording={recording} />
                 <EncodeStatusBadges recording={recording} />
+                {recording.dropSummary && <DropBadges summary={recording.dropSummary} />}
                 <span className="shrink-0">{recording.serviceName}</span>
                 <span className="shrink-0">{formatDateTime(recording.startAt)}</span>
                 <span className="shrink-0">{formatDuration(recording.durationMs)}</span>

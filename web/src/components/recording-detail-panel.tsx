@@ -301,7 +301,7 @@ export function RecordingDetail({
   const showSite = shouldShowRecordingSite(registeredSites, [recording.site])
 
   return (
-    <div className="flex flex-col gap-4 bg-muted/30 px-4 py-3 text-xs">
+    <div data-testid="recording-detail-body" className="flex flex-col gap-4 text-sm">
       {/*
         ごみ箱の録画は配信 3 クエリ（GetOriginalMediaAssetForServing 等）が
         deleted_at IS NOT NULL を 404 にする（docs/api.md §メディア配信）。
@@ -522,7 +522,9 @@ export function RecordingDetail({
       {!trash && recording.series != null && <SeriesLinks recording={recording} />}
 
       {recording.description && (
-        <p className="whitespace-pre-wrap text-muted-foreground">{recording.description}</p>
+        <p data-testid="recording-description" className="whitespace-pre-wrap text-base text-muted-foreground">
+          {recording.description}
+        </p>
       )}
 
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">

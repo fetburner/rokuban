@@ -289,6 +289,44 @@ describe('RecordingDetailPage', () => {
     expect(trashButton).not.toHaveClass('text-destructive')
   })
 
+  it('詳細ヘッダーは状態・取り込み・エンコードの後にドロップ信号を並べる', async () => {
+    createFakeServer({
+      recording: sampleRecording({
+        ingest: { state: 'pending' },
+        encodeStatus: [{ profile: 'h264', state: 'failed' }],
+        dropSummary: { packets: 1000, drops: 12, errors: 0, scrambled: 3 },
+      }),
+    })
+
+    renderAt('/recordings/3')
+
+    const status = await screen.findByText('完了', { selector: 'span' })
+    const ingest = screen.getByText('取り込み待ち', { selector: 'span' })
+    const encode = screen.getByText(/h264:.*エンコード失敗/, { selector: 'span' })
+    const drop = screen.getByText('ドロップ 12', { selector: 'span' })
+    const scrambled = screen.getByText('スクランブル 3', { selector: 'span' })
+    const follows = (first: HTMLElement, second: HTMLElement) =>
+      Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING)
+
+    expect(follows(status, ingest)).toBe(true)
+    expect(follows(ingest, encode)).toBe(true)
+    expect(follows(encode, drop)).toBe(true)
+    expect(follows(drop, scrambled)).toBe(true)
+  })
+
+  it('詳細ヘッダーはドロップ値がすべて0ならバッジを足さない', async () => {
+    createFakeServer({
+      recording: sampleRecording({
+        dropSummary: { packets: 0, drops: 0, errors: 0, scrambled: 0 },
+      }),
+    })
+
+    renderAt('/recordings/3')
+
+    expect(await screen.findByText('単体ページの録画')).toBeInTheDocument()
+    expect(screen.queryByText(/^(ドロップ|エラー|スクランブル) /)).not.toBeInTheDocument()
+  })
+
   // M8-6: シリーズの導線。起点の実効シリーズが null の録画には出さない
   // （ハブも「次回」も 0 件になるので、押した先が無い導線を置かない）。
   it('実効シリーズが無い録画にはシリーズの導線を出さない', async () => {
