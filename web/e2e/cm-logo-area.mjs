@@ -39,6 +39,8 @@ const logo = {
   detectedCount: 0,
   redetectableCount: 0,
   lastFailureStage: 'logo',
+  // 古いサーバーが返しても画面に出してはならない生ログ。
+  lastError: 'logoframe: no logo found',
   frameRecordingId: 7,
 }
 
@@ -105,6 +107,9 @@ const row = page.getByTestId('cm-logo-row')
 await row.waitFor({ timeout: 15000 })
 if (!(await row.getByTestId('cm-logo-warning').textContent()).includes('ロゴを見つけられず、CM を検出できませんでした。')) {
   ng.push('③ 直近の失敗理由が局の行に表示されない')
+}
+if ((await row.textContent()).includes('logoframe')) {
+  ng.push('③ 生ログ（logoframe: ...）が局の行に出ている')
 }
 await row.getByRole('button', { name: 'e2e CM ロゴ局' }).click()
 const frame = page.getByTestId('cm-logo-frame')
