@@ -648,11 +648,11 @@ describe('RecordingDetailPage CM 検出の有効化導線', () => {
   })
 
   it.each([
-    ['logo', true],
-    ['area', true],
-    ['setup', false],
-    [undefined, false],
-  ] as const)('失敗工程 %s は利用者向けの理由を出し、枠の導線を工程に合わせる', async (stage, linkExpected) => {
+    ['logo', 'ロゴを見つけられず、CM を検出できませんでした。', true],
+    ['area', '教えた枠が録画の解像度と合わないため、枠を使えませんでした。', true],
+    ['setup', 'CM 検出の処理が失敗しました。ロゴの枠では直せない失敗です。', false],
+    [undefined, '失敗の種類が記録されていない古い試行です。', false],
+  ] as const)('失敗工程 %s は利用者向けの理由を出し、枠の導線を工程に合わせる', async (stage, message, linkExpected) => {
     createFakeServer({
       recording: sampleRecording({
         sizeBytes: 1_000_000,
@@ -663,11 +663,16 @@ describe('RecordingDetailPage CM 検出の有効化導線', () => {
 
     renderAt('/recordings/3')
 
-    expect(await screen.findByTestId('cm-detection-failure-message')).toBeInTheDocument()
+    expect(await screen.findByTestId('cm-detection-failure-message')).toHaveTextContent(message)
     const logoLink = screen.queryByRole('link', { name: 'CM 検出のロゴを教える' })
     if (linkExpected) expect(logoLink).toBeInTheDocument()
     else expect(logoLink).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '再試行' })).toBeInTheDocument()
+    const retry = screen.getByRole('button', { name: '再試行' })
+    // 枠を教えられる工程ではリンクが再試行より先（主導線）、それ以外は再試行が主ボタン
+    if (logoLink) {
+      expect(logoLink.compareDocumentPosition(retry) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    }
+    expect(retry.className.includes('bg-primary')).toBe(!linkExpected)
   })
 
   it('失敗の技術的な詳細は既定で閉じ、開くと改行を保ったまま表示する', async () => {
