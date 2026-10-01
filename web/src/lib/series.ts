@@ -1,4 +1,4 @@
-import type { ProgramSearchMatch, Recording } from '@/api/generated'
+import { LabelRuleInputKey, type LabelRule, type ProgramSearchMatch, type Recording } from '@/api/generated'
 
 /**
  * isPlayableRecording は「再生できる行」か（`GET /api/recordings` の要素の形から
@@ -111,4 +111,30 @@ export function collapseUpcoming(matches: readonly ProgramSearchMatch[]): Upcomi
     if (a.networkId !== b.networkId) return a.networkId - b.networkId
     return a.serviceId - b.serviceId
   })
+}
+
+/**
+ * seriesLabelRules はシリーズ軸の分類ルールを、サーバーの評価順
+ * （`priority DESC, id ASC`。docs/data/series.md）に並べて返す。
+ * `/series` の「手動」札とハブの実効シリーズ判定が同じ絞り込みを使う。
+ */
+export function seriesLabelRules(rules: readonly LabelRule[]): LabelRule[] {
+  return rules
+    .filter((rule) => (rule.key ?? LabelRuleInputKey.series) === LabelRuleInputKey.series)
+    .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || a.id - b.id)
+}
+
+/**
+ * findManualSeriesRule は value の棚を指定している分類ルールを返す。
+ *
+ * **同じ値を指すルールが複数あるとき「勝った」ルールはクライアントでは決められない**
+ * （勝敗は録画ごとにキーワードが当たるかで決まり、当たり判定はサーバーだけが持つ）。
+ * ここでは評価順の先頭を返す近似で、キーワードの初期値にだけ使う。
+ */
+export function findManualSeriesRule(
+  rules: readonly LabelRule[],
+  value: string | undefined,
+): LabelRule | undefined {
+  if (value === undefined) return undefined
+  return seriesLabelRules(rules).find((rule) => rule.valueKey === value)
 }

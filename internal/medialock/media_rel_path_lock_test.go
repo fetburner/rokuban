@@ -1,4 +1,4 @@
-package worker
+package medialock
 
 import (
 	"context"
@@ -15,9 +15,9 @@ import (
 func TestMediaRelPathFileLock_SerializesAndHonorsContext(t *testing.T) {
 	mediaDir := t.TempDir()
 	const relPath = "sites/default/recording.m2ts"
-	lockPath := mediaRelPathLockPath(mediaDir, relPath)
+	lockPath := Path(mediaDir, relPath)
 
-	first, err := lockMediaRelPathFile(context.Background(), mediaDir, relPath)
+	first, err := Lock(context.Background(), mediaDir, relPath)
 	if err != nil {
 		t.Fatalf("locking first rel_path file: %v", err)
 	}
@@ -25,7 +25,7 @@ func TestMediaRelPathFileLock_SerializesAndHonorsContext(t *testing.T) {
 		t.Fatalf("stat active rel_path lock: %v", err)
 	}
 
-	second, acquired, err := tryLockMediaRelPathFile(mediaDir, relPath)
+	second, acquired, err := TryLock(mediaDir, relPath)
 	if err != nil {
 		_ = first.Close()
 		t.Fatalf("trying second rel_path file lock: %v", err)
@@ -40,7 +40,7 @@ func TestMediaRelPathFileLock_SerializesAndHonorsContext(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
 	defer cancel()
-	blocked, err := lockMediaRelPathFile(ctx, mediaDir, relPath)
+	blocked, err := Lock(ctx, mediaDir, relPath)
 	if blocked != nil {
 		_ = blocked.Close()
 		_ = first.Close()
@@ -57,7 +57,7 @@ func TestMediaRelPathFileLock_SerializesAndHonorsContext(t *testing.T) {
 	if _, err := os.Stat(lockPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("lock path after release: stat error = %v, want not exist", err)
 	}
-	second, acquired, err = tryLockMediaRelPathFile(mediaDir, relPath)
+	second, acquired, err = TryLock(mediaDir, relPath)
 	if err != nil {
 		t.Fatalf("trying rel_path file lock after release: %v", err)
 	}
@@ -76,11 +76,11 @@ func TestMediaRelPathFileLock_RemovesSequentialAndParallelLockFiles(t *testing.T
 	mediaDir := t.TempDir()
 	for i := 0; i < 12; i++ {
 		relPath := filepath.ToSlash(filepath.Join("sequential", fmt.Sprintf("%02d", i), "recording.m2ts"))
-		lock, err := lockMediaRelPathFile(context.Background(), mediaDir, relPath)
+		lock, err := Lock(context.Background(), mediaDir, relPath)
 		if err != nil {
 			t.Fatalf("locking sequential rel_path %q: %v", relPath, err)
 		}
-		lockPath := mediaRelPathLockPath(mediaDir, relPath)
+		lockPath := Path(mediaDir, relPath)
 		if _, err := os.Stat(lockPath); err != nil {
 			t.Fatalf("stat sequential active lock %q: %v", lockPath, err)
 		}
@@ -104,7 +104,7 @@ func TestMediaRelPathFileLock_RemovesSequentialAndParallelLockFiles(t *testing.T
 			<-start
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			lock, err := lockMediaRelPathFile(ctx, mediaDir, relPath)
+			lock, err := Lock(ctx, mediaDir, relPath)
 			if err != nil {
 				errCh <- err
 				return
@@ -125,28 +125,28 @@ func TestMediaRelPathFileLock_RemovesSequentialAndParallelLockFiles(t *testing.T
 	if err != nil {
 		t.Fatalf("reading lock directory: %v", err)
 	}
-	if len(entries) != 1 || entries[0].Name() != mediaRelPathLockGateFile {
-		t.Errorf("lock directory entries after sequential and parallel lifecycles = %v, want only persistent gate %q", entryNames(entries), mediaRelPathLockGateFile)
+	if len(entries) != 1 || entries[0].Name() != GateFile {
+		t.Errorf("lock directory entries after sequential and parallel lifecycles = %v, want only persistent gate %q", entryNames(entries), GateFile)
 	}
 }
 
 func TestMediaRelPathFileLock_WaiterReopensAfterOwnerUnlinks(t *testing.T) {
 	mediaDir := t.TempDir()
 	const relPath = "race/reused.m2ts"
-	lockPath := mediaRelPathLockPath(mediaDir, relPath)
-	first, err := lockMediaRelPathFile(context.Background(), mediaDir, relPath)
+	lockPath := Path(mediaDir, relPath)
+	first, err := Lock(context.Background(), mediaDir, relPath)
 	if err != nil {
 		t.Fatalf("locking first owner: %v", err)
 	}
 
 	started := make(chan struct{})
-	secondDone := make(chan *mediaRelPathFileLock, 1)
+	secondDone := make(chan *FileLock, 1)
 	secondErr := make(chan error, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	go func() {
 		close(started)
-		second, err := lockMediaRelPathFile(ctx, mediaDir, relPath)
+		second, err := Lock(ctx, mediaDir, relPath)
 		if err != nil {
 			secondErr <- err
 			return
@@ -166,7 +166,7 @@ func TestMediaRelPathFileLock_WaiterReopensAfterOwnerUnlinks(t *testing.T) {
 	if err := first.Close(); err != nil {
 		t.Fatalf("closing first owner: %v", err)
 	}
-	var second *mediaRelPathFileLock
+	var second *FileLock
 	select {
 	case second = <-secondDone:
 	case err := <-secondErr:
@@ -177,7 +177,7 @@ func TestMediaRelPathFileLock_WaiterReopensAfterOwnerUnlinks(t *testing.T) {
 	if _, err := os.Stat(lockPath); err != nil {
 		t.Fatalf("stat second owner's current lock path: %v", err)
 	}
-	third, acquired, err := tryLockMediaRelPathFile(mediaDir, relPath)
+	third, acquired, err := TryLock(mediaDir, relPath)
 	if err != nil {
 		_ = second.Close()
 		t.Fatalf("trying third owner while second holds lock: %v", err)
@@ -199,13 +199,13 @@ func TestMediaRelPathLockGC_RemovesOnlyUnlockedEntries(t *testing.T) {
 	mediaDir := t.TempDir()
 	const activeRelPath = "active/recording.m2ts"
 	const staleRelPath = "stale/recording.m2ts"
-	active, err := lockMediaRelPathFile(context.Background(), mediaDir, activeRelPath)
+	active, err := Lock(context.Background(), mediaDir, activeRelPath)
 	if err != nil {
 		t.Fatalf("locking active rel_path: %v", err)
 	}
 	defer func() { _ = active.Close() }()
-	activePath := mediaRelPathLockPath(mediaDir, activeRelPath)
-	stalePath := mediaRelPathLockPath(mediaDir, staleRelPath)
+	activePath := Path(mediaDir, activeRelPath)
+	stalePath := Path(mediaDir, staleRelPath)
 	if err := os.WriteFile(stalePath, nil, 0o666); err != nil {
 		t.Fatalf("creating simulated crash residue: %v", err)
 	}
@@ -228,39 +228,6 @@ func TestMediaRelPathLockGC_RemovesOnlyUnlockedEntries(t *testing.T) {
 	}
 }
 
-func TestWalkMediaFiles_IgnoresRelPathLockDirectoryAndLegacyFiles(t *testing.T) {
-	mediaDir := t.TempDir()
-	canonicalPath := filepath.Join(mediaDir, "recording.m2ts")
-	const relPath = "recording.m2ts"
-	if err := os.WriteFile(canonicalPath, []byte("media"), 0o644); err != nil {
-		t.Fatalf("writing canonical file: %v", err)
-	}
-	lockPath := mediaRelPathLockPath(mediaDir, relPath)
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
-		t.Fatalf("creating lock directory: %v", err)
-	}
-	if err := os.WriteFile(mediaRelPathLockGatePath(mediaDir), nil, 0o666); err != nil {
-		t.Fatalf("writing GC gate: %v", err)
-	}
-	if err := os.WriteFile(lockPath, nil, 0o666); err != nil {
-		t.Fatalf("writing rel_path lock file: %v", err)
-	}
-	legacyPath := filepath.Join(mediaDir, ".rokuban-rel-path-lock-legacy.lock")
-	if err := os.WriteFile(legacyPath, nil, 0o666); err != nil {
-		t.Fatalf("writing legacy rel_path lock file: %v", err)
-	}
-
-	var got []string
-	if err := walkMediaFiles(mediaDir, func(path string, _ os.FileInfo) {
-		got = append(got, path)
-	}); err != nil {
-		t.Fatalf("walking media files: %v", err)
-	}
-	if len(got) != 1 || got[0] != relPath {
-		t.Fatalf("walked files = %v, want only %q", got, relPath)
-	}
-}
-
 func TestMediaRelPathFileLock_ParallelSamePathIsSerialized(t *testing.T) {
 	mediaDir := t.TempDir()
 	const relPath = "parallel/shared.m2ts"
@@ -277,7 +244,7 @@ func TestMediaRelPathFileLock_ParallelSamePathIsSerialized(t *testing.T) {
 			<-start
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			lock, err := lockMediaRelPathFile(ctx, mediaDir, relPath)
+			lock, err := Lock(ctx, mediaDir, relPath)
 			if err != nil {
 				errCh <- err
 				return
@@ -301,7 +268,7 @@ func TestMediaRelPathFileLock_ParallelSamePathIsSerialized(t *testing.T) {
 	if got := maxActive.Load(); got != 1 {
 		t.Errorf("maximum same-path critical sections = %d, want 1", got)
 	}
-	if _, err := os.Stat(mediaRelPathLockPath(mediaDir, relPath)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(Path(mediaDir, relPath)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("lock file after parallel lifecycle: stat error = %v, want not exist", err)
 	}
 }

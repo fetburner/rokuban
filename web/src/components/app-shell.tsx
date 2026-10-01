@@ -2,7 +2,6 @@ import { Link, useRouterState } from '@tanstack/react-router'
 import {
   CalendarClock,
   Home,
-  Layers,
   ListVideo,
   Menu,
   MoreHorizontal,
@@ -65,7 +64,7 @@ type NavItem = {
  * 単一世帯の運用を前提にした仮説であり、実測ではない:
  *
  * - 一等地: ホーム（毎回の起点。M8-3）・番組（これから録るものを眺める）・
- *   録画（視聴のたび）
+ *   録画とシリーズ（視聴のたび）
  * - 中間: 予約（差分・重複の確認は毎日ではないが週次では触る）・
  *   ライブ（視聴のたびではないが番組ほど反復しない）
  * - 端: 検索・ルール（どちらも利用頻度は低い）・CM ロゴ（手動管理時だけ）
@@ -80,7 +79,6 @@ const navItems: NavItem[] = [
   { to: '/live', label: 'ライブ', icon: Radio, requires: 'live' },
   { to: '/search', label: '検索', icon: Search },
   { to: '/rules', label: 'ルール', icon: Settings2 },
-  { to: '/shelves', label: 'シリーズ棚', icon: Layers },
   { to: '/cm-logos', label: 'CM 検出のロゴ', icon: ScanLine },
 ]
 
@@ -126,6 +124,7 @@ function useActivePath(): string {
 }
 
 function isActive(pathname: string, to: string): boolean {
+  if (to === '/recordings') return pathname.startsWith('/recordings') || pathname === '/series'
   return to === '/' ? pathname === '/' : pathname.startsWith(to)
 }
 

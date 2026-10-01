@@ -60,7 +60,10 @@ import {
   GetStorageResponseItem,
   ListCapacityOveragesResponseItem,
   ListCircuitBreakersResponseItem,
+  ListLabelRulesResponseItem,
   ListProgramsResponseItem,
+  ListRecordingShelvesResponseItem,
+  ListRecordingUpcomingResponseItem,
   ListRecordingsResponseItem,
   ListReservationsResponseItem,
   ListRulesResponseItem,
@@ -331,15 +334,72 @@ const searchNoteOverage = {
 // 必須化しており（zod に `.optional()`/`.default()` が無い）、これが無いと
 // 下の `validateFixturesOrExit` が落ちる。issue #686 とは無関係の既存の穴
 // （フィクスチャがそちらの必須化に追従していなかった）で、ここで揃える。
+/**
+ * シリーズ一覧（`/series`）のフィクスチャ。`/api/recording-shelves` はサーバーが
+ * 件数降順で返すので同じ順に並べる。NULL の棚（値なし）は画面に出ない側の確認用、
+ * 「NHK高校講座」は分類ルール（下）が勝つ棚＝「手動」の札が付く側。
+ */
+const seriesShelves = [
+  { value: 'NHK高校講座', title: 'NHK高校講座　日本史　第1回', count: 120, playableCount: 100, latestStartAt: '2026-08-10T10:00:00Z', representativeId: 11 },
+  { value: 'ドラマ', title: 'ドラマ　夜のさざなみ　第3話', count: 40, playableCount: 38, latestStartAt: '2026-08-11T13:00:00Z', representativeId: 12 },
+  { value: '作品X', title: 'アニメ　作品X　第2話', count: 12, playableCount: 0, latestStartAt: '2026-08-12T12:30:00Z', representativeId: 13 },
+  { value: '単発', title: '単発の特番', count: 1, playableCount: 1, latestStartAt: '2026-08-09T09:00:00Z', representativeId: 14 },
+  { title: '【特集】', count: 2, playableCount: 0, latestStartAt: '2026-08-12T13:00:00Z', representativeId: 15 },
+]
+const seriesLabelRules = [
+  { id: 1, key: 'series', keyword: '日本史', value: 'NHK高校講座 日本史', priority: 5, valueKey: 'NHK高校講座', createdAt: '2026-08-01T00:00:00Z', updatedAt: '2026-08-01T00:00:00Z' },
+  // 番組ハブ側: 起点の録画 12（series '音楽館'）が手動棚になる。
+  { id: 11, key: 'series', value: '音楽館', valueKey: '音楽館', keyword: '音楽館', priority: 10, createdAt: iso(nowMs - 100 * HOUR), updatedAt: iso(nowMs - 100 * HOUR) },
+]
+
 const recordings = [
   { id: 11, site: SITE, source: 'rule', serviceName: 'NHK総合', channelType: 'GR', channel: '27', networkId: 32736, serviceId: 1024, eventId: 11, title: 'ニュース７', startAt: iso(nowMs - 600_000), durationMs: 1_800_000, status: 'recording', keepOriginal: 'always', cmDetection: { state: 'disabled' }, createdAt: iso(nowMs - 600_000), startedAt: iso(nowMs - 600_000) },
   // encodedAssets を持たせて詳細ページ（/recordings/$id）で <video> が実ブラウザで
   // 出ることを撮る（キーボード到達性の判定 ⑤）。`encodedProfiles`（非推奨の後方
   // 互換フィールド）だけでは `RecordingPlayer` が <video> を出さない
   // （`encodedAssets` を見るため）ので両方持たせる。
-  { id: 12, site: SITE, source: 'manual', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', channel: 'BS15_0', networkId: 4, serviceId: 101, eventId: 12, title: 'クラシック音楽館', startAt: iso(nowMs - 26 * HOUR), durationMs: 5_400_000, status: 'finished', keepOriginal: 'always', cmDetection: { state: 'disabled' }, sizeBytes: 8_123_456_789, createdAt: iso(nowMs - 26 * HOUR), dropSummary: { packets: 1_500_000, drops: 12, errors: 0, scrambled: 3 }, encodedAssets: [{ profile: 'hevc-1080p', sizeBytes: 2_345_678_901 }] },
+  { id: 12, site: SITE, source: 'manual', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', channel: 'BS15_0', networkId: 4, serviceId: 101, eventId: 12, title: 'クラシック音楽館', series: '音楽館', seriesKey: 'クラシック音楽館', startAt: iso(nowMs - 26 * HOUR), durationMs: 5_400_000, status: 'finished', keepOriginal: 'always', cmDetection: { state: 'disabled' }, sizeBytes: 8_123_456_789, createdAt: iso(nowMs - 26 * HOUR), dropSummary: { packets: 1_500_000, drops: 12, errors: 0, scrambled: 3 }, encodedAssets: [{ profile: 'hevc-1080p', sizeBytes: 2_345_678_901 }] },
   { id: 13, site: SITE, source: 'rule', serviceName: 'テレビ大阪', channelType: 'GR', channel: '18', networkId: 32738, serviceId: 1040, eventId: 13, title: 'アニメ劇場', startAt: iso(nowMs - 50 * HOUR), durationMs: 1_800_000, status: 'failed', keepOriginal: 'always', cmDetection: { state: 'disabled' }, createdAt: iso(nowMs - 50 * HOUR) },
   { id: 14, site: SITE, source: 'rule', serviceName: 'NHKEテレ', channelType: 'GR', channel: '26', networkId: 32737, serviceId: 1032, eventId: 14, title: '連続テレビ小説', startAt: iso(nowMs - 74 * HOUR), durationMs: 900_000, status: 'finished', keepOriginal: 'always', cmDetection: { state: 'disabled' }, sizeBytes: 1_234_567_890, createdAt: iso(nowMs - 74 * HOUR) },
+]
+
+// 番組ハブは録画一覧と同じ fixture から切り出し、`seriesOf` と `order` を実際に
+// 反映する。最新の録画中/失敗行と、再生できる最新話を同時に置く。
+const seriesHubRecordings = [
+  recordings[1],
+  {
+    ...recordings[1],
+    id: 16,
+    eventId: 16,
+    title: 'クラシック音楽館 第2回',
+    startAt: iso(nowMs - 2 * HOUR),
+  },
+  {
+    ...recordings[2],
+    id: 17,
+    eventId: 17,
+    title: 'クラシック音楽館 第3回',
+    series: '音楽館',
+    seriesKey: 'クラシック音楽館',
+    startAt: iso(nowMs - HOUR),
+    networkId: 4,
+    serviceId: 101,
+    serviceName: 'ＮＨＫＢＳ',
+    channelType: 'BS',
+    channel: 'BS15_0',
+  },
+]
+const seriesHubUpcoming = [
+  {
+    site: SITE,
+    programId: 9016,
+    networkId: 4,
+    serviceId: 101,
+    startAt: iso(nowMs + HOUR),
+    durationMs: 1_800_000,
+    name: 'クラシック音楽館 第4回',
+    isFree: true,
+  },
 ]
 
 /**
@@ -401,7 +461,11 @@ await validateFixturesOrExit(
     // transferringRecording も既定オプション（multiSite + extraRecording）で
     // 実際にブラウザへ配る（:308 参照）ので検証対象に含める。
     ...[...recordings, transferringRecording].map((r) => [`recordings#${r.id}`, ListRecordingsResponseItem, r]),
+    ...seriesHubRecordings.map((r) => [`seriesHubRecordings#${r.id}`, ListRecordingsResponseItem, r]),
+    ...seriesHubUpcoming.map((p, i) => [`seriesHubUpcoming[${i}]`, ListRecordingUpcomingResponseItem, p]),
     ...rules.map((r, i) => [`rules[${i}]`, ListRulesResponseItem, r]),
+    ...seriesShelves.map((r, i) => [`seriesShelves[${i}]`, ListRecordingShelvesResponseItem, r]),
+    ...seriesLabelRules.map((r, i) => [`seriesLabelRules[${i}]`, ListLabelRulesResponseItem, r]),
     ...breakers.map((b, i) => [`breakers[${i}]`, ListCircuitBreakersResponseItem, b]),
     ['encodeQueue', GetEncodeQueueResponse, encodeQueue],
     ...storageRoots.map((root, i) => [`storage[${i}]`, GetStorageResponseItem, root]),
@@ -513,12 +577,23 @@ function apiHandler({
     }
     if (p === '/api/encode-profiles') return json([{ name: 'hevc-1080p', container: 'mp4' }])
     if (p === '/api/rules') return json(rules)
+    if (p === '/api/recording-shelves') return json(seriesShelves)
+    if (p === '/api/label-rules') return json(seriesLabelRules)
     if (p === '/api/reservations') {
       if (emptyHome) return json([])
       return json(layoutScenario === 'capacity' ? layoutCapacityReservations : reservations)
     }
     if (p === '/api/capacity/overages') return json(emptyHome ? [] : overages)
     if (p === '/api/recordings') {
+      const seriesOf = url.searchParams.get('seriesOf')
+      if (seriesOf !== null) {
+        const ascending = url.searchParams.get('order') === 'asc'
+        const sorted = [...seriesHubRecordings].sort((a, b) => {
+          const diff = Date.parse(a.startAt) - Date.parse(b.startAt)
+          return ascending ? diff : -diff
+        })
+        return json(sorted)
+      }
       // ホーム（M8-3）は `status` / `limit` を実際に付けて 3 本問い合わせる
       // （`いま録画中` = status=recording、完了録画 = status=finished&limit=20 で
       // 「直近の完了」の表示はその先頭 6 件に切られる、失敗録画 =
@@ -539,6 +614,8 @@ function apiHandler({
       const sorted = [...filtered].sort((a, b) => Date.parse(b.startAt) - Date.parse(a.startAt))
       return json(sorted.slice(0, limit))
     }
+    const upcomingMatch = /^\/api\/recordings\/(\d+)\/upcoming$/.exec(p)
+    if (upcomingMatch) return json(Number(upcomingMatch[1]) === 12 ? seriesHubUpcoming : [])
     // 録画単体（`/recordings/$id`、issue #232）。キーボード到達性の判定（⑤）が
     // 詳細ページの `<video>` を見るために引く。ごみ箱の録画は無いのでここでは
     // 常に 200（一覧のフィクスチャから引く）。
@@ -741,10 +818,12 @@ const screens = [
   { name: 'reservations', path: '/reservations', wait: 'text=チューナー不足' },
   { name: 'recordings', path: '/recordings', wait: 'text=録画中' },
   { name: 'rules', path: '/rules', wait: 'text=朝ドラ' },
+  { name: 'series', path: '/series', wait: 'text=作品X' },
   // 検索は初期状態で結果を持たないので、常時表示のフォーム見出しを目印にする
   // （詳細条件は初期状態で折りたたまれており、「チャンネル」は待機目印にならない）
   { name: 'search', path: '/search', wait: 'text=テキスト条件' },
   { name: 'live', path: '/live', wait: 'text=NHK総合' },
+  { name: 'series-hub', path: '/recordings/12/series', wait: 'text=エピソード' },
 ]
 
 /**
@@ -781,11 +860,15 @@ const mobile = viewports[1]
  * だけになる（レビュー指摘）。
  */
 const mobileWide = { name: 'mobile-wide', width: 390, height: 844 }
+/** 番組ハブ配置判定専用。受け入れ条件の 400px 幅をそのまま測る。 */
+const seriesHubMobile = { name: 'series-hub-400', width: 400, height: 844 }
+/** 同じ判定をデスクトップ幅でも回す。 */
+const seriesHubDesktop = { ...desktop, name: 'series-hub-desktop' }
 
 const INTERACTIVE_TARGET_SELECTOR =
   'button, a[href], [role="button"], [role="switch"], input, select, summary'
 const INTERACTIVE_TARGET_MIN_PX = 24
-const targetScreenNames = ['programs', 'search', 'reservations', 'recordings', 'rules', 'live']
+const targetScreenNames = ['programs', 'search', 'reservations', 'recordings', 'series', 'rules', 'live', 'series-hub']
 const targetPointerProfiles = [
   { name: 'fine', pointer: 'fine', viewport: desktop },
   { name: 'coarse', pointer: 'coarse', viewport: mobile },
@@ -803,7 +886,7 @@ let checkedColorSchemeChange = false
 
 /** open は 1 ページを開いてスタブ・時刻・テーマを整えるところまでやる。 */
 async function open(viewport, theme, screen, opts = {}) {
-  const { pointer = 'fine', ...apiOpts } = opts
+  const { pointer = 'fine', recordingView = null, ...apiOpts } = opts
   if (pointer !== 'fine' && pointer !== 'coarse') {
     throw new Error(`未対応のポインタプロファイル: ${pointer}`)
   }
@@ -816,6 +899,9 @@ async function open(viewport, theme, screen, opts = {}) {
     hasTouch: pointer === 'coarse',
     isMobile: pointer === 'coarse',
   })
+  if (recordingView !== null) {
+    await context.addInitScript((view) => localStorage.setItem('rokuban:recordings:view', view), recordingView)
+  }
   const page = await context.newPage()
   await page.clock.setFixedTime(FIXED_NOW)
   await installApiStubs(page, apiHandler(apiOpts))
@@ -1099,6 +1185,132 @@ for (const viewport of viewports) {
     }
   }
 }
+
+// --- 番組ハブ: 400px / デスクトップの 3 塊と操作 -------------------------
+//
+// 全画面ショットは 360px の共通モバイル幅で揃え、ここでは受け入れ条件の 400px 幅と
+// デスクトップ幅の両方で同じ判定を回す。API は上の seriesHubRecordings を使うので、最新の
+// 失敗回を飛ばす主ボタン、自動キー、次回、分類メニューを実ブラウザで確認できる。
+for (const hubViewport of [seriesHubMobile, seriesHubDesktop])
+for (const theme of themes) {
+  const { context, page } = await open(hubViewport, theme, screenOf('series-hub'))
+  const identity = page.getByRole('region', { name: 'シリーズ情報' })
+  const actions = page.getByRole('region', { name: 'シリーズの操作' })
+  const episodes = page.getByRole('region', { name: 'このシリーズの録画' })
+  const blocks = await Promise.all([identity, actions, episodes].map((block) => block.boundingBox()))
+  if (blocks.some((box) => box === null)) {
+    ng.push(`[${theme}/${hubViewport.name}] 3 つの塊の矩形を取得できない`)
+  } else {
+    const [identityBox, actionsBox, episodesBox] = blocks
+    const identityBottom = identityBox.y + identityBox.height
+    const actionsBottom = actionsBox.y + actionsBox.height
+    if (!(identityBox.y < actionsBox.y && actionsBox.y < episodesBox.y)) {
+      ng.push(`[${theme}/${hubViewport.name}] 3 つの塊が上から識別・行動・エピソードの順でない`)
+    }
+    if (actionsBox.y - identityBottom < 24 || episodesBox.y - actionsBottom < 24) {
+      ng.push(`[${theme}/${hubViewport.name}] 3 つの塊の間隔が 24px 未満`)
+    }
+  }
+  const primary = actions.locator('[class~="bg-primary"]')
+  if (await primary.count() !== 1) {
+    ng.push(`[${theme}/${hubViewport.name}] 塗りの主ボタンが 1 つでない（${await primary.count()} 件）`)
+  }
+  const shot = path.join(OUT_DIR, `${hubViewport.name}-${theme}.png`)
+  await page.screenshot({ path: shot })
+  log(`  ${path.basename(shot)}`)
+  await checkMissingStrings(page, `${hubViewport.name}/${theme}`)
+
+  const trigger = page.getByRole('button', { name: 'シリーズのその他の操作' })
+  await trigger.click()
+  const menu = page.getByRole('menuitem', { name: '分類を直す（割る・指定する）' })
+  const menuVisible = await menu.waitFor({ timeout: 5000 }).then(() => true).catch(() => false)
+  if (!menuVisible) {
+    ng.push(`[${theme}/${hubViewport.name}] 分類を直すメニューが開かない`)
+  } else {
+    const menuBox = await menu.boundingBox()
+    if (
+      menuBox === null ||
+      menuBox.x < 0 ||
+      menuBox.x + menuBox.width > hubViewport.width ||
+      menuBox.y < 0 ||
+      menuBox.y + menuBox.height > hubViewport.height
+    ) {
+      ng.push(`[${theme}/${hubViewport.name}] 分類メニューがビューポートからはみ出す`)
+    }
+    const menuShot = path.join(OUT_DIR, `series-hub-menu-${hubViewport.name.replace('series-hub-', '')}-${theme}.png`)
+    await page.screenshot({ path: menuShot })
+    log(`  ${path.basename(menuShot)}`)
+  }
+  await context.close()
+
+  // 主ボタンの隣に置いた「毎回録画する」が、検索結果とルール作成節を持つ
+  // `/search?cond=...` へ実際に着地することも同じ Chromium で確認する。
+  const searchContext = await open(hubViewport, theme, screenOf('series-hub'))
+  const recurring = searchContext.page.getByRole('link', { name: '毎回録画する' })
+  if ((await recurring.count()) === 0) {
+    ng.push(`[${theme}/${hubViewport.name}] 「毎回録画する」リンクが見つからない`)
+  } else {
+    await recurring.click()
+    const searchLoaded = await searchContext.page
+      .waitForURL('**/search?cond=*', { timeout: 10000 })
+      .then(() => true)
+      .catch(() => false)
+    if (!searchLoaded) {
+      ng.push(`[${theme}/${hubViewport.name}] 「毎回録画する」の検索 URL に着地しない`)
+    } else {
+      const results = searchContext.page.getByRole('region', { name: '検索結果' })
+      const createRule = searchContext.page.getByText('この条件でルールを作成').first()
+      if ((await results.count()) === 0 || (await createRule.count()) === 0) {
+        ng.push(`[${theme}/${hubViewport.name}] 検索結果またはルール作成節が表示されない`)
+      }
+    }
+  }
+  await searchContext.context.close()
+}
+
+// --- ①-B シリーズ一覧の格子とリスト ---
+//
+// 格子（2 列 / 4 列）とリストの切替、16:9 のサムネイル、横はみ出しの無さは
+// レイアウトの実測でしか分からない（jsdom は測れない）。サムネイルは 404 に
+// 落としてあるので、画像が無いときの代替表示（bg-muted。走査線にしない）も測る。
+log('\n=== ①-B シリーズ一覧の格子とリスト ===')
+for (const viewport of [mobile, desktop]) {
+  for (const view of ['card', 'list']) {
+    const label = `series/${view}/${viewport.name}`
+    const { context, page } = await open(viewport, 'light', screenOf('series'), { recordingView: view })
+    await page.screenshot({ path: path.join(OUT_DIR, `series-${view}-${viewport.name}.png`) })
+    const m = await page.locator('[data-testid="series-shelf"]').evaluateAll((items) => {
+      const rects = items.map((li) => li.getBoundingClientRect())
+      const ratios = items.map((li) => {
+        const r = li.querySelector('a > span').getBoundingClientRect()
+        return r.width / r.height
+      })
+      const placeholder = items[0].querySelector('a > span > span')
+      return {
+        n: items.length,
+        columns: new Set(rects.map((r) => Math.round(r.left))).size,
+        maxRight: Math.max(...rects.map((r) => r.right)),
+        ratios,
+        docOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        placeholderClass: placeholder?.className ?? null,
+        placeholderBg: placeholder ? getComputedStyle(placeholder).backgroundColor : null,
+        metaSizes: [...document.querySelectorAll('[data-testid="series-shelf-meta"]')].map((el) => getComputedStyle(el).fontSize),
+      }
+    })
+    log(`  ${label}: タイル=${m.n} 列=${m.columns} 右端=${m.maxRight.toFixed(1)} 比=${m.ratios[0]?.toFixed(3)}`)
+    if (m.n !== 4) ng.push(`${label}: タイルが 4 件でない（${m.n}。NULL の棚は出さない）`)
+    const expectedColumns = view === 'list' ? 1 : viewport === mobile ? 2 : 4
+    if (m.columns !== expectedColumns) ng.push(`${label}: 列数が ${expectedColumns} でない（${m.columns}）`)
+    if (m.docOverflow || m.maxRight > viewport.width + 0.5) ng.push(`${label}: 横にはみ出している（右端 ${m.maxRight}px）`)
+    if (m.ratios.some((r) => Math.abs(r - 16 / 9) > 0.01)) ng.push(`${label}: サムネイルが 16:9 でない（${m.ratios.map((r) => r.toFixed(3)).join(', ')}）`)
+    if (m.placeholderClass === null || /scanlines/.test(m.placeholderClass) || m.placeholderBg === 'rgba(0, 0, 0, 0)') {
+      ng.push(`${label}: 画像が無いときの代替表示が bg-muted の塗りでない（class=${m.placeholderClass} bg=${m.placeholderBg}）`)
+    }
+    if (m.metaSizes.some((size) => size !== '14px')) ng.push(`${label}: メタが text-sm でない（${m.metaSizes.join(', ')}）`)
+    await context.close()
+  }
+}
+
 // ストレージ階層は既定で畳むため、展開状態も画面幅・テーマごとに別途撮る。
 for (const viewport of viewports) {
   for (const theme of themes) {
@@ -1473,6 +1685,7 @@ const boundedListScreens = [
   { screen: 'home', title: 'ニュース７', secondary: 'NHK総合' },
   { screen: 'recordings', title: 'ニュース７', secondary: 'NHK総合' },
   { screen: 'reservations', title: '連続テレビ小説', secondary: 'NHKEテレ' },
+  { screen: 'series', title: '作品X', secondary: 'アニメ　作品X　第2話' },
   { screen: 'rules', title: '朝ドラ', secondary: '番組名に「連続テレビ小説」を含む' },
   { screen: 'programs', title: 'ニュース７', secondary: 'NHK総合' },
 ]
@@ -1589,7 +1802,7 @@ for (const spec of boundedListScreens) {
 // ルール作成はモバイルだけ本文全幅、lg 以上では PageHeader の右端に置く。
 {
   const { context, page } = await open(desktop, 'light', screenOf('rules'))
-  const create = page.locator('header').getByRole('button', { name: 'ルールを作成' })
+  const create = page.locator('header').getByRole('button', { name: 'ルールを作成', exact: true })
   const createBox = (await create.count()) === 0 ? null : await create.boundingBox()
   if (createBox === null) {
     ng.push('rules/desktop: PageHeader に「ルールを作成」が無い')
@@ -1618,12 +1831,12 @@ for (const spec of boundedListScreens) {
 }
 {
   const { context, page } = await open(mobile, 'light', screenOf('rules'))
-  const headerCreate = page.locator('header').getByRole('button', { name: 'ルールを作成' })
+  const headerCreate = page.locator('header').getByRole('button', { name: 'ルールを作成', exact: true })
   if ((await headerCreate.count()) > 0) {
     ng.push('rules/mobile: PageHeader に「ルールを作成」が出ている')
   }
   const mobileContent = page.locator('[data-testid="bounded-page-content"]')
-  const mobileCreate = mobileContent.getByRole('button', { name: 'ルールを作成' })
+  const mobileCreate = mobileContent.getByRole('button', { name: 'ルールを作成', exact: true })
   const contentBox =
     (await mobileContent.count()) === 0 ? null : await mobileContent.boundingBox()
   const createBox =
