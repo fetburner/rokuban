@@ -71,6 +71,13 @@ const recording7 = {
   createdAt: '2026-01-01T00:00:00Z',
 }
 
+// 720x480 SAR 8:9。SAR でしか 4:3 と 16:9 を区別できない録画。
+const recording8 = { ...recording7, id: 8, title: 'e2e 720x480' }
+const frameHeaders = {
+  7: { 'X-Coded-Width': '1440', 'X-Coded-Height': '1080', 'X-Sample-Aspect-Ratio': '4:3' },
+  8: { 'X-Coded-Width': '720', 'X-Coded-Height': '480', 'X-Sample-Aspect-Ratio': '8:9' },
+}
+
 async function apiHandler({ path, url, json, route }) {
   const method = route.request().method()
   if (path === '/api/sites') return json(['tokyo'])
@@ -80,18 +87,15 @@ async function apiHandler({ path, url, json, route }) {
   if (path === '/api/cm-logos' && method === 'GET') {
     return json([{ ...logo, ...(savedArea === undefined ? {} : { logoArea: savedArea }) }])
   }
-  if (path === '/api/recordings' && method === 'GET') return json([recording7])
+  if (path === '/api/recordings' && method === 'GET') return json([recording7, recording8])
   if (path === '/api/recordings/7' && method === 'GET') return json(recording7)
-  if (path === '/api/media/recordings/7/frame' && method === 'GET') {
+  const frameMatch = path.match(/^\/api\/media\/recordings\/(\d+)\/frame$/)
+  if (frameMatch && method === 'GET') {
     frameRequests.push(url.searchParams.get('at'))
     return route.fulfill({
       status: 200,
       contentType: 'image/png',
-      headers: {
-        'X-Coded-Width': '1440',
-        'X-Coded-Height': '1080',
-        'X-Sample-Aspect-Ratio': '4:3',
-      },
+      headers: frameHeaders[frameMatch[1]],
       body: FRAME_PNG,
     })
   }
@@ -178,6 +182,11 @@ await check('①', async () => {
   const ratio = box.width / box.height
   if (Math.abs(ratio / (16 / 9) - 1) > 0.01) {
     throw new Error(`表示比 ${ratio.toFixed(4)}（期待 16:9）`)
+  }
+  // 画像が枠箱を埋める（帯が残らない）
+  const outer = await page.getByTestId('cm-logo-frame').boundingBox()
+  if (!outer || Math.abs(outer.width - box.width) > 1 || Math.abs(outer.height - box.height) > 1) {
+    throw new Error(`画像 ${box.width}x${box.height} が枠箱 ${outer?.width}x${outer?.height} を埋めない`)
   }
 })
 
@@ -311,6 +320,146 @@ await check('⑥', async () => {
   // 閉じた <details> の中の生ログも「画面に出さない」に反するので textContent で見る。
   const text = await page.locator('body').evaluate((element) => element.textContent ?? '')
   if (text.includes(longError)) throw new Error('4KB の生ログが DOM に現れる')
+})
+
+log('\n=== ⑧ 数値入力へ打鍵できる（入力中に丸めない）===')
+await check('⑧', async () => {
+  const w = numberInput(page, '幅')
+  await w.click()
+  await page.keyboard.press('ControlOrMeta+A')
+  await page.keyboard.type('400')
+  await page.keyboard.press('Enter')
+  if ((await w.inputValue()) !== '400') throw new Error(`幅に 400 を打つと ${await w.inputValue()}`)
+  const x = numberInput(page, 'X')
+  await x.click()
+  await page.keyboard.press('ControlOrMeta+A')
+  await page.keyboard.type('500')
+  await page.keyboard.press('Tab')
+  await x.click()
+  await page.keyboard.press('End')
+  await page.keyboard.press('Backspace')
+  if ((await x.inputValue()) !== '50') throw new Error(`X の 500 から Backspace すると ${await x.inputValue()}（期待 50）`)
+  await page.keyboard.press('Tab')
+  if ((await x.inputValue()) !== '50') throw new Error(`X を 50 で確定すると ${await x.inputValue()}`)
+})
+
+log('\n=== ⑨ 角から離れた位置でもハンドルで変形する ===')
+await check('⑨', async () => {
+  const rect = page.getByTestId('cm-logo-rect')
+  const before = await rect.boundingBox()
+  const handleBox = await page.getByTestId('cm-logo-handle-se').boundingBox()
+  const xBefore = await numberInput(page, 'X').inputValue()
+  const yBefore = await numberInput(page, 'Y').inputValue()
+  const wBefore = Number(await numberInput(page, '幅').inputValue())
+  if (!before || !handleBox) throw new Error('枠またはハンドルが無い')
+  // ハンドルは 44px 角。中心から斜めに 13px ずらすと角から約 18px 離れる
+  const sx = handleBox.x + handleBox.width / 2 + 13
+  const sy = handleBox.y + handleBox.height / 2 + 13
+  await page.mouse.move(sx, sy)
+  const hit = await page.evaluate(([px, py]) => document.elementFromPoint(px, py)?.closest('[data-testid^="cm-logo-handle-"]')?.getAttribute('data-testid')?.slice('cm-logo-handle-'.length) ?? null, [sx, sy])
+  if (hit !== 'se') throw new Error(`角から 18px の elementFromPoint が se ハンドルでない: ${hit}`)
+  await page.mouse.down()
+  await page.mouse.move(sx + 20, sy)
+  await page.mouse.up()
+  const xAfter = await numberInput(page, 'X').inputValue()
+  const yAfter = await numberInput(page, 'Y').inputValue()
+  const wAfter = Number(await numberInput(page, '幅').inputValue())
+  if (xAfter !== xBefore || yAfter !== yBefore) throw new Error(`新しい枠を描いた: X,Y ${xBefore},${yBefore} → ${xAfter},${yAfter}`)
+  if (wAfter <= wBefore) throw new Error(`幅が増えない ${wBefore} → ${wAfter}`)
+  log(`  幅 ${wBefore} → ${wAfter}（X,Y は ${xAfter},${yAfter} のまま）`)
+})
+
+log('\n=== ⑩ 枠に寄ったまま枠を動かすと、枠はポインタに付いてくる ===')
+await check('⑩', async () => {
+  await page.getByRole('button', { name: '枠に寄る' }).click()
+  await page.waitForTimeout(100)
+  const rect = page.getByTestId('cm-logo-rect')
+  const before = await rect.boundingBox()
+  if (!before) throw new Error('枠が無い')
+  const cx = before.x + before.width / 2
+  const cy = before.y + before.height / 2
+  await page.mouse.move(cx, cy)
+  await page.mouse.down()
+  await page.mouse.move(cx + 10, cy, { steps: 2 })
+  await page.mouse.move(cx + 20, cy, { steps: 2 })
+  await page.mouse.up()
+  const after = await rect.boundingBox()
+  if (!after || Math.abs(after.x - before.x - 20) > 2) {
+    throw new Error(`ポインタを 20px 動かして枠が ${after ? after.x - before.x : NaN}px 動いた`)
+  }
+  log(`  ポインタ 20px → 枠 ${(after.x - before.x).toFixed(1)}px`)
+  await page.getByRole('button', { name: '全体' }).click()
+})
+
+log('\n=== ⑪ 整数に丸めて保存する ===')
+await check('⑪', async () => {
+  const rect = page.getByTestId('cm-logo-rect')
+  const box = await rect.boundingBox()
+  if (!box) throw new Error('枠が無い')
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x + box.width / 2 + 7.3, box.y + box.height / 2 + 3.7)
+  await page.mouse.up()
+  for (const label of ['X', 'Y', '幅', '高さ']) {
+    const value = await numberInput(page, label).inputValue()
+    if (!/^\d+$/.test(value)) throw new Error(`${label}=${value} が整数でない`)
+  }
+})
+
+log('\n=== ⑫ 720x480 SAR 8:9 の表示枠は 4:3 で、画像が埋める ===')
+await check('⑫', async () => {
+  const other = await context.newPage()
+  await installApiStubs(other, apiHandler)
+  await other.goto(`${URL_BASE}/cm-logos/32678/5168?recording=8`, { waitUntil: 'domcontentloaded' })
+  await other.waitForFunction(
+    () => (document.querySelector('[data-testid="cm-logo-frame-image"]')?.naturalWidth ?? 0) > 0,
+    undefined,
+    { timeout: 15000 },
+  )
+  const frame = await other.getByTestId('cm-logo-frame').boundingBox()
+  const image = await other.getByTestId('cm-logo-frame-image').boundingBox()
+  if (!frame || !image) throw new Error('寸法が取れない')
+  // 720 * 8/9 : 480 = 640 : 480 = 4:3
+  const ratio = frame.width / frame.height
+  log(`  枠箱の比 ${ratio.toFixed(4)}`)
+  if (Math.abs(ratio / (4 / 3) - 1) > 0.01) throw new Error(`枠箱の比 ${ratio.toFixed(4)}（期待 4:3）`)
+  if (Math.abs(image.width - frame.width) > 1 || Math.abs(image.height - frame.height) > 1) {
+    throw new Error(`画像 ${image.width}x${image.height} が枠箱 ${frame.width}x${frame.height} を埋めない`)
+  }
+  await other.close()
+})
+
+log('\n=== ⑬ 400px 幅で数値入力だけで保存できる ===')
+await check('⑬', async () => {
+  const narrow = await context.newPage()
+  await narrow.setViewportSize({ width: 400, height: 860 })
+  await installApiStubs(narrow, apiHandler)
+  await narrow.goto(`${URL_BASE}/cm-logos/32678/5168?recording=7`, { waitUntil: 'domcontentloaded' })
+  await narrow.waitForFunction(
+    () => (document.querySelector('[data-testid="cm-logo-frame-image"]')?.naturalWidth ?? 0) > 0,
+    undefined,
+    { timeout: 15000 },
+  )
+  const scrollWidth = await narrow.evaluate(() => document.documentElement.scrollWidth)
+  if (scrollWidth > 400) throw new Error(`400px 幅で横スクロールがある（scrollWidth=${scrollWidth}）`)
+  const want = { X: 100, Y: 200, 幅: 300, 高さ: 150 }
+  for (const [label, value] of Object.entries(want)) {
+    const input = numberInput(narrow, label)
+    await input.scrollIntoViewIfNeeded()
+    await input.click()
+    await narrow.keyboard.press('ControlOrMeta+A')
+    await narrow.keyboard.type(String(value))
+  }
+  // Tab も Enter も押さず、入力中のまま保存を押す（blur で確定してから保存される）
+  savedArea = undefined
+  await narrow.getByRole('button', { name: '枠を保存' }).click()
+  for (let i = 0; i < 30 && savedArea === undefined; i++) await narrow.waitForTimeout(100)
+  if (savedArea === undefined) throw new Error('PUT /area が届かない')
+  const got = { X: savedArea.x, Y: savedArea.y, 幅: savedArea.w, 高さ: savedArea.h }
+  if (JSON.stringify(got) !== JSON.stringify(want)) {
+    throw new Error(`PUT body が ${JSON.stringify(got)}（期待 ${JSON.stringify(want)}）`)
+  }
+  await narrow.close()
 })
 
 log('\n=== ⑦ 旧形式の URL は局のルートへ飛ぶ ===')

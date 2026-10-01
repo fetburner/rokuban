@@ -1,20 +1,24 @@
-import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useSearch } from '@tanstack/react-router'
-import { ScanLine, Trash2 } from 'lucide-react'
+import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
+import { ArrowLeft, ChevronLeft, ChevronRight, Maximize2, ScanLine, Trash2 } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   getListCMLogosQueryKey,
   useDeleteCMLogo,
   useDeleteCMLogoArea,
   useListCMLogos,
+  useListRecordings,
   usePutCMLogoArea,
+  useRetryRecordingCMDetection,
   type CMLogoState,
+  type Recording,
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { ErrorState, EmptyState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
+import { Field, Input, Select } from '@/components/ui/field'
 import { useCMDetectEnabled } from '@/lib/capabilities'
 import {
   clampCodedRect,
@@ -23,77 +27,104 @@ import {
   containsCodedPoint,
   FRAME_ZOOM,
   frameImageBox,
+  frameImageOffset,
   frameScale,
   frameToCoded,
   MIN_AREA_SIZE,
   moveCodedRect,
+  resizeCodedRect,
   savedAreaMatchesFrame,
   type CodedRect,
+  type FrameView,
+  type ResizeHandle,
 } from '@/lib/cm-logo-frame'
-import { formatDateTime } from '@/lib/format'
+import { recordingsQueryKeyPrefix } from '@/lib/events'
+import { formatDateTime, formatDuration } from '@/lib/format'
 import { cmDetectStageMessage } from '@/lib/cm-detect-stage'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
-import {
-  SEEK_TILES_COLUMNS,
-  SEEK_TILES_HEIGHT,
-  SEEK_TILES_INTERVAL_SECONDS,
-  seekTilesURL,
-} from '@/lib/seek-tiles'
+import { cn } from '@/lib/utils'
 
 /** frameURL は streamer のコマ切り出し URL を組み立てる（OpenAPI 外）。 */
-// oxlint-disable-next-line react/only-export-components -- テスト可能な URL 組み立て関数をページ契約と同じ場所に置く
+// oxlint-disable-next-line react/only-export-components -- URL の契約をテストで固定する
 export function frameURL(recordingId: number, atMs: number): string {
   return `/api/media/recordings/${recordingId}/frame?at=${atMs}`
 }
 
-function stateLabel(state: CMLogoState['state']): string {
-  switch (state) {
-    case 'learned':
-      return '学習済み'
-    case 'failed':
-      return '失敗あり'
-    default:
-      return '未学習'
+export type CMLogoBucket = 'attention' | 'pending' | 'healthy'
+
+/** cmLogoBucket は一覧の「見るべき順」を API の件数から決める。 */
+// oxlint-disable-next-line react/only-export-components -- 一覧の並び契約を単体テストする
+export function cmLogoBucket(logo: CMLogoState): CMLogoBucket {
+  if (logo.failedCount > 0) return 'attention'
+  if (logo.pendingCount > 0) return 'pending'
+  return 'healthy'
+}
+
+/** cmLogoStateSentence は行に置く状態説明を一文へ畳む。 */
+// oxlint-disable-next-line react/only-export-components -- 表示順テストから共有する
+export function cmLogoStateSentence(logo: CMLogoState): string {
+  if (logo.failedCount > 0) return cmDetectStageMessage(logo.lastFailureStage)
+  if (logo.pendingCount > 0) return `検出待ち ${logo.pendingCount} 件`
+  return `録画 ${logo.recordingCount} 件`
+}
+
+function serviceKey(networkId: number, serviceId: number): number {
+  return networkId * 100000 + serviceId
+}
+
+function stateBadge(logo: CMLogoState): { label: string; attention: boolean } {
+  const bucket = cmLogoBucket(logo)
+  if (bucket === 'attention') return { label: '要対応', attention: true }
+  if (bucket === 'pending') return { label: '検出待ち', attention: false }
+  return { label: '問題なし', attention: false }
+}
+
+function parseSampleAspectRatio(value: string | null): number {
+  if (value === null || value.trim() === '') return 1
+  const match = value.trim().match(/^(\d+(?:\.\d+)?)[/:](\d+(?:\.\d+)?)$/)
+  if (match) {
+    const numerator = Number(match[1])
+    const denominator = Number(match[2])
+    if (numerator > 0 && denominator > 0) return numerator / denominator
   }
+  const ratio = Number(value)
+  return Number.isFinite(ratio) && ratio > 0 ? ratio : 1
 }
 
-/** 1 本以上の録画がある局だけを並べる（サーバーもその条件で返す）。 */
-function stationKey(logo: CMLogoState): string {
-  return `${logo.networkId}-${logo.serviceId}`
+type Frame = {
+  url: string
+  codedWidth: number
+  codedHeight: number
+  sampleAspectRatio: number
 }
 
-/** formatPosition はコマの位置を m:ss で出す。 */
-function formatPosition(atMs: number): string {
-  const total = Math.floor(atMs / 1000)
-  const minutes = Math.floor(total / 60)
-  const seconds = total % 60
-  return `${minutes}:${String(seconds).padStart(2, '0')}`
-}
-
-type Frame = { url: string; codedWidth: number; codedHeight: number }
-
-/**
- * useFrame は指定位置の原寸のコマを取り寄せる。
- *
- * **記録上の大きさは応答ヘッダから読む**（`X-Coded-Width` / `X-Coded-Height`）。
- * 画像の画素数でも同じ値になるが、サーバーが返す値だけが「検出側が枠を当てる
- * 解像度」と一致する保証を持つ。
- */
-function useFrame(recordingId: number, atMs: number | null): { frame: Frame | null; failed: boolean } {
+/** useFrame は保存した時刻を確定したときだけ原本のコマを取り寄せる。 */
+function useFrame(
+  recordingId: number,
+  atMs: number | undefined,
+): { frame: Frame | null; failed: boolean; loading: boolean } {
   const [frame, setFrame] = useState<Frame | null>(null)
   const [failed, setFailed] = useState(false)
+  const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    if (recordingId <= 0 || atMs === null) {
-      // 外部入力（選択中のコマ）の変更に合わせて取得状態を同期する。
-      // oxlint-disable-next-line react/set-state-in-effect -- コマ選択時に前の画像を破棄する
+    if (recordingId <= 0 || atMs === undefined) {
+      // oxlint-disable-next-line react/set-state-in-effect -- コマ選択が無効になったとき前の取得状態を捨てる
       setFrame(null)
+      // oxlint-disable-next-line react/set-state-in-effect -- コマ選択が無効になったとき前の取得状態を捨てる
       setFailed(false)
+      // oxlint-disable-next-line react/set-state-in-effect -- コマ選択が無効になったとき前の取得状態を捨てる
+      setLoading(false)
       return
     }
     let cancelled = false
-    let objectURL: string | null = null
+    let objectURL: string | undefined
+    // oxlint-disable-next-line react/set-state-in-effect -- 確定したコマの取得開始時に前の画像を消す
+    setFrame(null)
+    // oxlint-disable-next-line react/set-state-in-effect -- 確定したコマの取得開始時にエラーを消す
     setFailed(false)
+    // oxlint-disable-next-line react/set-state-in-effect -- 確定したコマの取得中表示を同期する
+    setLoading(true)
     fetch(frameURL(recordingId, atMs))
       .then(async (response) => {
         if (!response.ok) throw new Error(`status ${response.status}`)
@@ -102,7 +133,12 @@ function useFrame(recordingId: number, atMs: number | null): { frame: Frame | nu
         const codedHeight = Number(response.headers.get('X-Coded-Height'))
         if (cancelled || codedWidth <= 0 || codedHeight <= 0) throw new Error('missing coded size')
         objectURL = URL.createObjectURL(blob)
-        setFrame({ url: objectURL, codedWidth, codedHeight })
+        setFrame({
+          url: objectURL,
+          codedWidth,
+          codedHeight,
+          sampleAspectRatio: parseSampleAspectRatio(response.headers.get('X-Sample-Aspect-Ratio')),
+        })
       })
       .catch(() => {
         if (!cancelled) {
@@ -110,23 +146,24 @@ function useFrame(recordingId: number, atMs: number | null): { frame: Frame | nu
           setFailed(true)
         }
       })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
     return () => {
       cancelled = true
       if (objectURL) URL.revokeObjectURL(objectURL)
     }
   }, [recordingId, atMs])
 
-  return { frame, failed }
+  return { frame, failed, loading }
 }
 
-/** useBoxSize は表示枠の実寸（CSS px）を返す。jsdom では 0 のまま（判定は e2e）。 */
 function useBoxSize(ref: React.RefObject<HTMLElement | null>): { width: number; height: number } {
   const [size, setSize] = useState({ width: 0, height: 0 })
   useEffect(() => {
     const element = ref.current
     if (!element) return
-    const publish = () =>
-      setSize({ width: element.clientWidth, height: element.clientHeight })
+    const publish = () => setSize({ width: element.clientWidth, height: element.clientHeight })
     publish()
     const observer = new ResizeObserver(publish)
     observer.observe(element)
@@ -135,115 +172,269 @@ function useBoxSize(ref: React.RefObject<HTMLElement | null>): { width: number; 
   return size
 }
 
-/**
- * LogoTutor は 1 局の枠を教える面。シークタイル帯で場面を選び、原寸のコマの上で
- * 枠を描く・動かす。
- *
- * **帯はポインタ操作の補助として `aria-hidden` にする。** キーボードの経路は
- * 「前のコマ / 次のコマ」のボタンが持つ（プレイヤーのシーク帯と同じ分担）。
- */
-function LogoTutor({
+function formatPosition(atMs: number | undefined): string {
+  if (atMs === undefined) return '時刻を選んでください'
+  const total = Math.floor(atMs / 1000)
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
+}
+
+function recordingLabel(recording: Recording): string {
+  return `${formatDateTime(recording.startAt)} ${recording.title}（${formatDuration(recording.durationMs)}）`
+}
+
+function recordingCMState(recording: Recording): string {
+  switch (recording.cmDetection.state) {
+    case 'detected':
+      return '検出済み'
+    case 'detecting':
+      return '検出中、または再試行待ち'
+    case 'failed':
+      return '3 回の試行に失敗しました'
+    default:
+      return '無効'
+  }
+}
+
+type DragState =
+  | {
+      mode: 'draw'
+      start: { x: number; y: number }
+      origin: CodedRect
+    }
+  | {
+      mode: 'move'
+      start: { x: number; y: number }
+      origin: CodedRect
+    }
+  | {
+      mode: 'resize'
+      handle: ResizeHandle
+      start: { x: number; y: number }
+      origin: CodedRect
+    }
+
+const NUMERIC_LABEL = { x: 'X', y: 'Y', w: '幅', h: '高さ' } as const
+
+function defaultRect(frame: Frame): CodedRect {
+  const w = Math.max(MIN_AREA_SIZE, Math.round(frame.codedWidth / 4))
+  const h = Math.max(MIN_AREA_SIZE, Math.round(frame.codedHeight / 4))
+  return clampCodedRect(
+    {
+      x: (frame.codedWidth - w) / 2,
+      y: (frame.codedHeight - h) / 2,
+      w,
+      h,
+    },
+    frame.codedWidth,
+    frame.codedHeight,
+    MIN_AREA_SIZE,
+  )
+}
+
+function FrameOutsideDim({
+  rect,
+  view,
+}: {
+  rect: CodedRect
+  view: FrameView
+}) {
+  const scale = frameScale(view)
+  const offset = frameImageOffset(view)
+  const left = offset.x + rect.x * scale.x
+  const top = offset.y + rect.y * scale.y
+  const right = left + rect.w * scale.x
+  const bottom = top + rect.h * scale.y
+  const common = {
+    position: 'absolute' as const,
+    background: 'color-mix(in oklch, var(--foreground) 38%, transparent)',
+    pointerEvents: 'none' as const,
+  }
+  return (
+    <>
+      <div style={{ ...common, left: 0, top: 0, width: Math.max(0, left), bottom: 0 }} />
+      <div style={{ ...common, left: right, top: 0, right: 0, bottom: 0 }} />
+      <div style={{ ...common, left, top: 0, width: Math.max(0, right - left), height: Math.max(0, top) }} />
+      <div style={{ ...common, left, top: bottom, width: Math.max(0, right - left), bottom: 0 }} />
+    </>
+  )
+}
+
+function FrameHandle({
+  handle,
+  point,
+}: {
+  handle: ResizeHandle
+  point: { x: number; y: number }
+}) {
+  const cursor = handle === 'nw' || handle === 'se' ? 'nwse-resize' : 'nesw-resize'
+  return (
+    <span
+      data-testid={`cm-logo-handle-${handle}`}
+      data-handle={handle}
+      aria-hidden="true"
+      className="pointer-events-auto absolute z-20 flex size-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center"
+      style={{ left: point.x, top: point.y, cursor }}
+    >
+      <span className="size-3 border-2 border-background bg-foreground" />
+    </span>
+  )
+}
+
+function CMLogoFrameEditor({
   logo,
-  recordingId,
+  recordings,
+  requestedRecordingId,
 }: {
   logo: CMLogoState
-  /** ディープリンクで指定された録画。0 なら原本のある最新の録画を使う。 */
-  recordingId: number
+  recordings: Recording[]
+  requestedRecordingId?: number
 }) {
-  const frameRecordingId = recordingId > 0 ? recordingId : logo.frameRecordingId
-  const [atMs, setAtMs] = useState<number | null>(null)
-  const [zoom, setZoom] = useState(FRAME_ZOOM)
-  const [rect, setRect] = useState<CodedRect | null>(null)
-  const boxRef = useRef<HTMLDivElement>(null)
-  const dragRef = useRef<{ mode: 'draw' | 'move'; start: { x: number; y: number }; origin: CodedRect } | null>(
-    null,
-  )
-  const box = useBoxSize(boxRef)
-  const { frame, failed } = useFrame(frameRecordingId, atMs)
   const queryClient = useQueryClient()
   const toast = useToast()
+  const frameRef = useRef<HTMLDivElement>(null)
+  const dragRef = useRef<DragState | null>(null)
+  const appliedFrameKey = useRef<string | null>(null)
+  const candidates = useMemo(
+    () => recordings.filter((recording) => recording.sizeBytes !== undefined),
+    [recordings],
+  )
+  const initialRecordingId =
+    (requestedRecordingId !== undefined && candidates.some((recording) => recording.id === requestedRecordingId)
+      ? requestedRecordingId
+      : undefined) ??
+    (candidates.some((recording) => recording.id === logo.frameRecordingId)
+      ? logo.frameRecordingId
+      : candidates[0]?.id ?? 0)
+  const [recordingId, setRecordingId] = useState(initialRecordingId)
+  const selectedRecording = candidates.find((recording) => recording.id === recordingId)
+  const durationMs = Math.max(1, selectedRecording?.durationMs ?? 1)
+  const [sliderValue, setSliderValue] = useState(Math.round(durationMs / 2))
+  const [committedAtMs, setCommittedAtMs] = useState<number | undefined>(Math.round(durationMs / 2))
+  const [zoom, setZoom] = useState(1)
+  const [rect, setRect] = useState<CodedRect | undefined>(undefined)
+  // 枠に寄るを押した瞬間の焦点。枠の現在位置から毎回導くと、ドラッグで枠が逃げる。
+  const [zoomFocus, setZoomFocus] = useState<{ x: number; y: number } | undefined>(undefined)
+  // 数値入力の入力中テキスト。blur / Enter で確定するまで枠へ反映しない。
+  const [draft, setDraft] = useState<Partial<Record<keyof CodedRect, string>>>({})
+  const [savePendingCount, setSavePendingCount] = useState<number | undefined>(undefined)
+  const box = useBoxSize(frameRef)
+  const { frame, failed, loading } = useFrame(recordingId, committedAtMs)
   const saveArea = usePutCMLogoArea()
-  const clearArea = useDeleteCMLogoArea()
 
-  const view = {
+  useEffect(() => {
+    if (recordingId === 0 && initialRecordingId !== 0) {
+      // oxlint-disable-next-line react/set-state-in-effect -- API 後に初期録画を確定する
+      setRecordingId(initialRecordingId)
+    }
+  }, [initialRecordingId, recordingId])
+
+  useEffect(() => {
+    const middle = Math.round(durationMs / 2)
+    // oxlint-disable-next-line react/set-state-in-effect -- 録画選択時にスライダーを中央へ戻す
+    setSliderValue(middle)
+    // oxlint-disable-next-line react/set-state-in-effect -- 録画選択時に中央のコマを確定する
+    setCommittedAtMs(middle)
+  }, [durationMs, recordingId])
+
+  useEffect(() => {
+    if (!frame) return
+    const key = `${recordingId}:${frame.codedWidth}x${frame.codedHeight}`
+    if (appliedFrameKey.current === key) return
+    appliedFrameKey.current = key
+    setRect(
+      savedAreaMatchesFrame(logo.logoArea, frame)
+        ? clampCodedRect(logo.logoArea!, frame.codedWidth, frame.codedHeight, MIN_AREA_SIZE)
+        : undefined,
+    )
+  }, [frame, logo.logoArea, recordingId])
+
+  const view: FrameView = {
     codedWidth: frame?.codedWidth ?? 0,
     codedHeight: frame?.codedHeight ?? 0,
     boxWidth: box.width,
     boxHeight: box.height,
+    sampleAspectRatio: frame?.sampleAspectRatio,
     zoom,
+    focus: zoomFocus,
   }
-  const area = logo.logoArea
-  const areaFitsFrame = savedAreaMatchesFrame(area, view)
-
-  // コマが変わったら、保存済みの枠がその解像度に合うときだけ書き戻す。
-  // **同じ大きさのコマを取り直したときは触らない**（一覧の再取得で編集中の枠を
-  // 消さないため）。
-  const appliedFrameKey = useRef<string | null>(null)
-  useEffect(() => {
-    const key = frame
-      ? `${frameRecordingId}:${frame.codedWidth}x${frame.codedHeight}`
-      : `${frameRecordingId}:none`
-    if (appliedFrameKey.current === key) return
-    appliedFrameKey.current = key
-    const fits =
-      frame !== null &&
-      savedAreaMatchesFrame(area, { codedWidth: frame.codedWidth, codedHeight: frame.codedHeight })
-    setRect(fits ? { x: area!.x, y: area!.y, w: area!.w, h: area!.h } : null)
-  }, [frame, area, frameRecordingId])
-
-  const stepTo = (index: number) => {
-    if (index < 0) return
-    setAtMs((index * SEEK_TILES_INTERVAL_SECONDS + SEEK_TILES_INTERVAL_SECONDS / 2) * 1000)
-  }
-
-  /** 帯の押した位置 → タイルの番号。格子は画像の実際の大きさから出す。 */
-  const tileFromEvent = (event: React.MouseEvent<HTMLImageElement>): number | null => {
-    const image = event.currentTarget
-    if (image.naturalWidth <= 0 || image.naturalHeight <= 0) return null
-    const bounds = image.getBoundingClientRect()
-    if (bounds.width <= 0 || bounds.height <= 0) return null
-    const column = Math.floor(((event.clientX - bounds.left) / bounds.width) * SEEK_TILES_COLUMNS)
-    const row = Math.floor(
-      ((event.clientY - bounds.top) / bounds.height) * (image.naturalHeight / SEEK_TILES_HEIGHT),
-    )
-    if (row < 0) return null
-    return row * SEEK_TILES_COLUMNS + Math.min(Math.max(column, 0), SEEK_TILES_COLUMNS - 1)
-  }
+  const scale = frameScale(view)
+  const imageBox = frameImageBox(view)
+  const imageOffset = frameImageOffset(view)
+  const rectOnScreen = rect ? codedToFrame({ x: rect.x, y: rect.y }, view) : undefined
+  const canSave = frame !== null && rect !== undefined && !saveArea.isPending
+  const areaMismatch =
+    logo.logoArea !== undefined &&
+    frame !== null &&
+    !savedAreaMatchesFrame(logo.logoArea, frame)
 
   const codedPoint = (event: React.PointerEvent<HTMLDivElement>) => {
-    const element = boxRef.current
-    if (!element || !frame) return null
-    const bounds = element.getBoundingClientRect()
-    return frameToCoded({ x: event.clientX - bounds.left, y: event.clientY - bounds.top }, view)
+    if (!frame || !frameRef.current) return undefined
+    const bounds = frameRef.current.getBoundingClientRect()
+    const point = frameToCoded(
+      { x: event.clientX - bounds.left, y: event.clientY - bounds.top },
+      view,
+    )
+    return {
+      x: Math.min(Math.max(point.x, 0), frame.codedWidth),
+      y: Math.min(Math.max(point.y, 0), frame.codedHeight),
+    }
   }
 
-  const imageBox = frameImageBox(view)
-  const scale = frameScale(view)
-  const rectOnScreen = rect && scale > 0 ? codedToFrame({ x: rect.x, y: rect.y }, view) : null
-  const canSave = rect !== null && rect.w >= MIN_AREA_SIZE && rect.h >= MIN_AREA_SIZE && !saveArea.isPending
+  // ドラッグ中は input、確定は native の change。React の onChange は input に張り付く。
+  const sliderRef = useCallback((element: HTMLInputElement | null) => {
+    if (!element) return
+    const onChange = () => {
+      const next = Number(element.value)
+      setSliderValue(next)
+      setCommittedAtMs(next)
+    }
+    element.addEventListener('change', onChange)
+    return () => element.removeEventListener('change', onChange)
+  }, [])
+
+  const commitSlider = (value: number) => {
+    const next = Math.min(Math.max(Math.round(value), 0), durationMs)
+    setSliderValue(next)
+    setCommittedAtMs(next)
+  }
+
+  const numericRect = rect ?? (frame ? defaultRect(frame) : undefined)
+  const commitNumeric = (key: keyof CodedRect) => {
+    const text = draft[key]
+    setDraft((current) => {
+      const next = { ...current }
+      delete next[key]
+      return next
+    })
+    if (!frame || text === undefined || text.trim() === '') return
+    const number = Number(text)
+    if (!Number.isFinite(number)) return
+    setRect(
+      clampCodedRect(
+        { ...(numericRect ?? defaultRect(frame)), [key]: number },
+        frame.codedWidth,
+        frame.codedHeight,
+        MIN_AREA_SIZE,
+      ),
+    )
+  }
 
   const onSave = () => {
-    if (!rect || !frame) return
-    const clamped = clampCodedRect(rect, frame.codedWidth, frame.codedHeight)
+    if (!frame || !rect) return
+    const clamped = clampCodedRect(rect, frame.codedWidth, frame.codedHeight, MIN_AREA_SIZE)
     saveArea.mutate(
       {
         networkId: logo.networkId,
         serviceId: logo.serviceId,
-        data: {
-          x: clamped.x,
-          y: clamped.y,
-          w: clamped.w,
-          h: clamped.h,
-          codedWidth: frame.codedWidth,
-          codedHeight: frame.codedHeight,
-        },
+        data: { ...clamped, codedWidth: frame.codedWidth, codedHeight: frame.codedHeight },
       },
       {
         onSuccess: () => {
           void queryClient.invalidateQueries({ queryKey: getListCMLogosQueryKey() })
-          toast({
-            message: `${logo.serviceName} の枠を保存しました。学習済みのロゴを捨て、次の検出でこの枠から学習します。`,
-          })
+          void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
+          const count = Math.max(logo.pendingCount, logo.redetectableCount, 1)
+          setSavePendingCount(count)
+          toast({ message: `${logo.serviceName} の枠を保存しました` })
         },
         onError: (error) =>
           toast({ message: mutationErrorMessage('枠の保存に失敗しました', error), kind: 'error' }),
@@ -251,22 +442,7 @@ function LogoTutor({
     )
   }
 
-  const onClear = () => {
-    clearArea.mutate(
-      { networkId: logo.networkId, serviceId: logo.serviceId },
-      {
-        onSuccess: () => {
-          setRect(null)
-          void queryClient.invalidateQueries({ queryKey: getListCMLogosQueryKey() })
-          toast({ message: `${logo.serviceName} の枠を消しました。自動の探索に戻ります。` })
-        },
-        onError: (error) =>
-          toast({ message: mutationErrorMessage('枠の削除に失敗しました', error), kind: 'error' }),
-      },
-    )
-  }
-
-  if (frameRecordingId <= 0) {
+  if (candidates.length === 0 || recordingId <= 0) {
     return (
       <p className="border-t border-border/60 pt-3 text-muted-foreground" data-testid="cm-logo-no-original">
         原本のある録画がありません。原本を消した録画からはコマを取り寄せられません。
@@ -275,299 +451,482 @@ function LogoTutor({
   }
 
   return (
-    <section className="flex flex-col gap-3 border-t border-border/60 pt-3" aria-label="ロゴの枠">
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_16rem]">
-        <div className="flex flex-col gap-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              disabled={atMs === null || atMs <= 0}
-              onClick={() => setAtMs(Math.max((atMs ?? 0) - SEEK_TILES_INTERVAL_SECONDS * 1000, 0))}
-            >
-              前のコマ
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              onClick={() =>
-                setAtMs(
-                  atMs === null
-                    ? (SEEK_TILES_INTERVAL_SECONDS / 2) * 1000
-                    : atMs + SEEK_TILES_INTERVAL_SECONDS * 1000,
-                )
-              }
-            >
-              次のコマ
-            </Button>
-            <span className="text-xs text-muted-foreground" data-testid="cm-logo-position">
-              {atMs === null ? '場面を選んでください' : `位置 ${formatPosition(atMs)}`}
-            </span>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={!frame}
-              onClick={() => setZoom(zoom === FRAME_ZOOM ? 1 : FRAME_ZOOM)}
-            >
-              {zoom === FRAME_ZOOM ? '全体表示' : '右上を拡大'}
-            </Button>
-          </div>
-
-          {/*
-            コマの表示枠。**座標はこの枠が自分で持つ**（poster やタイルは SAR を
-            焼き込んでいるので重ねられない）。表示枠の寸法は実測でしか取れないため、
-            配線の合否は web/e2e/cm-logo-area.mjs が見る。
-          */}
+    <section className="flex flex-col gap-4" aria-label="ロゴの枠">
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
+        <div className="min-w-0">
           <div
-            ref={boxRef}
+            ref={frameRef}
             data-testid="cm-logo-frame"
-            className="relative aspect-video touch-none overflow-hidden rounded border border-border bg-muted"
+            className="relative cursor-crosshair touch-none overflow-hidden rounded bg-muted ring-1 ring-border"
+            style={{ aspectRatio: frame ? (frame.codedWidth * frame.sampleAspectRatio) / frame.codedHeight : 16 / 9 }}
             onPointerDown={(event) => {
               const point = codedPoint(event)
               if (!point || !frame) return
-              if (rect && containsCodedPoint(rect, point)) {
+              // ハンドルは見た目の要素そのものが当たり判定。座標の許容を別に持つと、見えている範囲とずれる。
+              const handleName = (event.target as HTMLElement).closest<HTMLElement>('[data-handle]')?.dataset.handle
+              const handle = rect ? (handleName as ResizeHandle | undefined) : undefined
+              if (rect && handle) {
+                dragRef.current = { mode: 'resize', handle, start: point, origin: rect }
+              } else if (rect && containsCodedPoint(rect, point)) {
                 dragRef.current = { mode: 'move', start: point, origin: rect }
               } else {
-                dragRef.current = { mode: 'draw', start: point, origin: rect ?? { x: 0, y: 0, w: 1, h: 1 } }
-                setRect({ x: point.x, y: point.y, w: 0, h: 0 })
+                dragRef.current = {
+                  mode: 'draw',
+                  start: point,
+                  origin: rect ?? { x: point.x, y: point.y, w: MIN_AREA_SIZE, h: MIN_AREA_SIZE },
+                }
+                setRect(clampCodedRect({ x: point.x, y: point.y, w: MIN_AREA_SIZE, h: MIN_AREA_SIZE }, frame.codedWidth, frame.codedHeight, MIN_AREA_SIZE))
               }
               event.currentTarget.setPointerCapture(event.pointerId)
             }}
             onPointerMove={(event) => {
-              const drag = dragRef.current
               const point = codedPoint(event)
-              if (!drag || !point || !frame) return
-              setRect(
-                drag.mode === 'draw'
-                  ? codedRectFromPoints(drag.start, point)
-                  : moveCodedRect(drag.origin, point.x - drag.start.x, point.y - drag.start.y, frame.codedWidth, frame.codedHeight),
-              )
+              if (!point || !frame) return
+              const drag = dragRef.current
+              if (!drag) return
+              let next: CodedRect
+              if (drag.mode === 'draw') {
+                next = clampCodedRect(
+                  codedRectFromPoints(drag.start, point),
+                  frame.codedWidth,
+                  frame.codedHeight,
+                  MIN_AREA_SIZE,
+                )
+              } else if (drag.mode === 'move') {
+                next = moveCodedRect(
+                  drag.origin,
+                  point.x - drag.start.x,
+                  point.y - drag.start.y,
+                  frame.codedWidth,
+                  frame.codedHeight,
+                )
+              } else {
+                next = resizeCodedRect(
+                  drag.origin,
+                  drag.handle,
+                  point,
+                  frame.codedWidth,
+                  frame.codedHeight,
+                  MIN_AREA_SIZE,
+                )
+              }
+              // 保存・数値入力に小数を渡さない。
+              setRect(clampCodedRect(next, frame.codedWidth, frame.codedHeight, MIN_AREA_SIZE))
             }}
             onPointerUp={(event) => {
-              const drag = dragRef.current
               dragRef.current = null
               event.currentTarget.releasePointerCapture(event.pointerId)
-              // 動かさずに押しただけの点は枠にしない。
-              if (drag?.mode === 'draw' && rect && (rect.w < MIN_AREA_SIZE || rect.h < MIN_AREA_SIZE)) {
-                setRect(null)
-              }
+            }}
+            onPointerCancel={() => {
+              dragRef.current = null
             }}
           >
             {frame && (
               <img
                 src={frame.url}
-                alt={`${logo.serviceName} の ${atMs === null ? '' : formatPosition(atMs)} のコマ`}
+                alt={`${logo.serviceName} の ${formatPosition(committedAtMs)} のコマ`}
                 draggable={false}
                 data-testid="cm-logo-frame-image"
-                className="pointer-events-none absolute top-0 right-0 select-none"
-                style={{ width: imageBox.width, height: imageBox.height }}
+                className="pointer-events-none absolute select-none"
+                style={{ left: imageOffset.x, top: imageOffset.y, width: imageBox.width, height: imageBox.height }}
               />
             )}
+            {rect && frame && <FrameOutsideDim rect={rect} view={view} />}
             {rect && rectOnScreen && (
-              <div
-                data-testid="cm-logo-rect"
-                className="pointer-events-none absolute border-2 border-primary"
-                style={{ left: rectOnScreen.x, top: rectOnScreen.y, width: rect.w * scale, height: rect.h * scale }}
-              />
+              <>
+                <div
+                  data-testid="cm-logo-rect"
+                  className="absolute z-10 cursor-move border-2 border-background"
+                  style={{
+                    left: rectOnScreen.x,
+                    top: rectOnScreen.y,
+                    width: rect.w * scale.x,
+                    height: rect.h * scale.y,
+                    boxShadow: '0 0 0 1px var(--foreground)',
+                  }}
+                />
+                {(['nw', 'ne', 'sw', 'se'] as const).map((handle) => (
+                  <FrameHandle
+                    key={handle}
+                    handle={handle}
+                    point={codedToFrame(
+                      {
+                        x: handle.includes('w') ? rect.x : rect.x + rect.w,
+                        y: handle.includes('n') ? rect.y : rect.y + rect.h,
+                      },
+                      view,
+                    )}
+                  />
+                ))}
+              </>
             )}
+            {!frame && loading && <span className="absolute inset-0 grid place-items-center text-sm text-muted-foreground">コマを取り寄せています</span>}
           </div>
 
-          {failed && (
-            <p className="text-destructive" role="alert">
-              この位置のコマを取り寄せできませんでした。別の場面を選んでください。
-            </p>
-          )}
-
-          {/* 場面を選ぶ帯。ポインタ操作の補助（キーボードは前/次のコマ）なので aria-hidden。 */}
-          <div aria-hidden="true" data-testid="cm-logo-tiles" className="w-full cursor-crosshair">
-            <img
-              src={seekTilesURL(frameRecordingId)}
-              alt=""
-              className="w-full rounded border border-border"
-              onClick={(event) => {
-                const index = tileFromEvent(event)
-                if (index !== null) stepTo(index)
-              }}
-            />
+          <input
+            aria-label="コマの時刻"
+            ref={sliderRef}
+            data-testid="cm-logo-time"
+            type="range"
+            min={0}
+            max={durationMs}
+            step={1}
+            value={Math.min(sliderValue, durationMs)}
+            onChange={(event) => setSliderValue(Number(event.currentTarget.value))}
+            className="mt-2 w-full cursor-pointer"
+          />
+          <div className="mt-1 flex items-center justify-between text-xs text-muted-foreground">
+            <span data-testid="cm-logo-position">時刻 {formatPosition(committedAtMs)}</span>
+            <span>{formatDuration(durationMs)}</span>
           </div>
-          <p className="text-xs text-muted-foreground">
-            タイルを押すとその場面の原寸のコマを取り寄せます。コマの上でドラッグすると枠を描き、
-            枠の中をドラッグすると動かせます。
-          </p>
+          {failed && <p className="mt-2 text-destructive" role="alert">この時刻のコマを取り寄せできませんでした。別の時刻を選んでください。</p>}
         </div>
 
-        <aside className="flex flex-col gap-2 text-sm">
+        <aside className="flex flex-col gap-3 text-sm">
           <div>
-            <h4 className="mb-1 font-medium">覚えたロゴ</h4>
-            <div className="flex size-16 items-center justify-center overflow-hidden rounded border border-border bg-muted">
-              {logo.previewPng ? (
-                <img
-                  src={`data:image/png;base64,${logo.previewPng}`}
-                  alt={`${logo.serviceName} のロゴ`}
-                  className="max-h-full max-w-full object-contain"
-                />
-              ) : (
-                <ScanLine aria-hidden="true" className="size-6 text-muted-foreground" />
-              )}
+            <LearnedLogo logo={logo} />
+          </div>
+          <div>
+            <h3 className="font-medium">① 時刻と録画</h3>
+            <div className="mt-2 flex items-center gap-2">
+              <Button
+                type="button"
+                size="icon-sm"
+                variant="ghost"
+                aria-label="前のコマ"
+                onClick={() => commitSlider(sliderValue - Math.max(1, Math.round(durationMs / 100)))}
+              >
+                <ChevronLeft />
+              </Button>
+              <span className="min-w-20 text-center" data-testid="cm-logo-committed-time">{formatPosition(committedAtMs)}</span>
+              <Button
+                type="button"
+                size="icon-sm"
+                variant="ghost"
+                aria-label="次のコマ"
+                onClick={() => commitSlider(sliderValue + Math.max(1, Math.round(durationMs / 100)))}
+              >
+                <ChevronRight />
+              </Button>
             </div>
-            <p className="mt-1 text-muted-foreground">
-              {logo.learnedAt ? `学習 ${formatDateTime(logo.learnedAt)}` : '学習していません'}
-            </p>
-            <p className="text-muted-foreground">
-              {area ? `教えた枠 ${area.w}×${area.h}（${area.codedWidth}×${area.codedHeight}）` : '枠は自動の探索'}
-            </p>
+            <Field label="録画を選ぶ" className="mt-2">
+              <Select
+                value={recordingId}
+                onChange={(event) => setRecordingId(Number(event.currentTarget.value))}
+                data-testid="cm-logo-recording-select"
+              >
+                {candidates.map((recording) => (
+                  <option key={recording.id} value={recording.id}>{recordingLabel(recording)}</option>
+                ))}
+              </Select>
+            </Field>
           </div>
 
-          {logo.failedCount > 0 && (
-            <div>
-              <h4 className="mb-1 font-medium">直近の失敗理由</h4>
-              <p className="break-all text-destructive" data-testid="cm-logo-failure-message">
-                {cmDetectStageMessage(logo.lastFailureStage)}
+          <div>
+            <h3 className="font-medium">② 枠の座標（記録上の画素）</h3>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              {(['x', 'y', 'w', 'h'] as const).map((key) => (
+                <Field key={key} label={NUMERIC_LABEL[key]}>
+                  <Input
+                    data-testid={`cm-logo-field-${key}`}
+                    aria-label={NUMERIC_LABEL[key]}
+                    type="number"
+                    min={0}
+                    value={draft[key] ?? numericRect?.[key] ?? ''}
+                    disabled={!frame}
+                    onChange={(event) => setDraft({ ...draft, [key]: event.currentTarget.value })}
+                    onBlur={() => commitNumeric(key)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') commitNumeric(key)
+                    }}
+                  />
+                </Field>
+              ))}
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button type="button" size="sm" variant="outline" disabled={!rect} onClick={() => {
+                if (!rect) return
+                setZoomFocus({ x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 })
+                setZoom(FRAME_ZOOM)
+              }}>
+                <Maximize2 data-icon="inline-start" />
+                枠に寄る
+              </Button>
+              <Button type="button" size="sm" variant="ghost" onClick={() => setZoom(1)}>全体</Button>
+            </div>
+          </div>
+
+          <div>
+            <h3 className="font-medium">③ 保存</h3>
+            {areaMismatch && (
+              <p className="mt-1 text-xs text-destructive" role="alert" data-testid="cm-logo-area-mismatch">
+                保存済みの枠は {logo.logoArea?.codedWidth}×{logo.logoArea?.codedHeight} 用です。このコマは{' '}
+                {frame?.codedWidth}×{frame?.codedHeight} なので、枠はこの録画には使われません。
               </p>
-            </div>
-          )}
-
-          {area && frame && !areaFitsFrame && (
-            <p className="text-destructive" role="alert" data-testid="cm-logo-area-mismatch">
-              保存済みの枠は {area.codedWidth}×{area.codedHeight} 用です。このコマは{' '}
-              {frame.codedWidth}×{frame.codedHeight} なので、枠はこの録画には使われません。
-            </p>
-          )}
-
-          <div className="flex flex-wrap gap-2">
-            <Button type="button" size="sm" disabled={!canSave} onClick={onSave}>
-              枠を保存
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              disabled={!area || clearArea.isPending}
-              onClick={onClear}
-            >
-              自動に戻す
-            </Button>
+            )}
+            <p className="mt-1 text-xs text-muted-foreground">覚えたロゴを捨て、次の検出でこの枠から学習し直す</p>
+            <Button type="button" className="mt-2 w-full" disabled={!canSave} onClick={onSave}>枠を保存</Button>
+            {savePendingCount !== undefined && (
+              <p className="mt-2 text-sm" role="status" data-testid="cm-logo-save-message">
+                検出待ち {savePendingCount} 件。数分〜数十分かかります
+              </p>
+            )}
           </div>
-          <p className="text-xs text-muted-foreground">
-            保存すると、その局の覚えたロゴを捨てて次の検出で枠の中を学習し直します。
-          </p>
         </aside>
       </div>
+
+      <p className="text-xs text-muted-foreground">
+        枠の外をドラッグして描き、枠の中をドラッグして動かします。四隅をドラッグすると大きさを変えられます。
+      </p>
     </section>
   )
 }
 
-function LogoRow({
-  logo,
-  open,
-  recordingId,
-  onToggle,
-}: {
-  logo: CMLogoState
-  open: boolean
-  recordingId: number
-  onToggle: () => void
-}) {
+function LearnedLogo({ logo }: { logo: CMLogoState }) {
+  return (
+    <div className="flex items-center gap-3">
+      <div className="flex h-12 w-24 items-center justify-center overflow-hidden rounded border border-border bg-muted">
+        {logo.previewPng ? (
+          <img src={`data:image/png;base64,${logo.previewPng}`} alt={`${logo.serviceName} のロゴ`} className="max-h-full max-w-full object-contain" />
+        ) : (
+          <ScanLine aria-hidden="true" className="size-5 text-muted-foreground" />
+        )}
+      </div>
+      <div className="text-xs text-muted-foreground">
+        <p>{logo.learnedAt ? `学習 ${formatDateTime(logo.learnedAt)}` : '学習していません'}</p>
+        <p>{logo.logoArea ? `教えた枠 ${logo.logoArea.w}×${logo.logoArea.h}` : '枠は自動の探索'}</p>
+      </div>
+    </div>
+  )
+}
+
+function AffectedRecordings({ recordings, cmDetectEnabled }: { recordings: Recording[]; cmDetectEnabled: boolean }) {
   const queryClient = useQueryClient()
   const toast = useToast()
-  const remove = useDeleteCMLogo()
+  const retry = useRetryRecordingCMDetection()
+  return (
+    <section className="flex flex-col gap-3" aria-labelledby="cm-affected-recordings">
+      <div>
+        <h2 id="cm-affected-recordings" className="text-base font-semibold">影響する録画</h2>
+        <p className="mt-1 text-sm text-muted-foreground">成功した録画も含め、この局で CM 検出した録画を並べています。</p>
+      </div>
+      {recordings.length === 0 ? (
+        <p className="text-sm text-muted-foreground">録画がありません</p>
+      ) : (
+        <ul className="divide-y divide-border rounded-lg border border-border">
+          {recordings.map((recording) => {
+            // 失敗だけでなく、誤ったロゴで「成功」した録画の回復経路でもある。検出中は出さない。
+            const canRetry =
+              (recording.cmDetection.state === 'failed' || recording.cmDetection.state === 'detected') &&
+              recording.sizeBytes !== undefined &&
+              cmDetectEnabled
+            return (
+              <li key={recording.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 p-3">
+                <div className="min-w-0 flex-1">
+                  <Link className="font-medium hover:underline" to="/recordings/$id" params={{ id: String(recording.id) }}>
+                    {recording.title}
+                  </Link>
+                  <p className="text-xs text-muted-foreground">
+                    {formatDateTime(recording.startAt)} · {recordingCMState(recording)}
+                  </p>
+                </div>
+                {canRetry && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={retry.isPending}
+                    onClick={() => retry.mutate({ id: recording.id }, {
+                      onSuccess: () => {
+                        void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
+                        toast({ message: 'CM 再検出を始めます' })
+                      },
+                      onError: (error) => toast({ message: mutationErrorMessage('CM 再検出に失敗しました', error), kind: 'error' }),
+                    })}
+                  >
+                    再検出
+                  </Button>
+                )}
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </section>
+  )
+}
+
+export function CMLogoStationPage() {
+  const { networkId: networkParam, serviceId: serviceParam } = useParams({ from: '/cm-logos/$networkId/$serviceId' })
+  const search = useSearch({ from: '/cm-logos/$networkId/$serviceId' })
+  const networkId = Number(networkParam)
+  const serviceId = Number(serviceParam)
+  const logoQuery = useListCMLogos()
+  const logo = (unwrap(logoQuery.data) ?? []).find((item) => item.networkId === networkId && item.serviceId === serviceId)
+  const recordingsQuery = useListRecordings({ service: [serviceKey(networkId, serviceId)], limit: 200 })
+  const recordings = unwrap(recordingsQuery.data) ?? []
+  const cmDetectEnabled = useCMDetectEnabled()
+  const deleteLogo = useDeleteCMLogo()
+  const deleteArea = useDeleteCMLogoArea()
+  const queryClient = useQueryClient()
+  const toast = useToast()
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+
+  if (!Number.isInteger(networkId) || networkId <= 0 || !Number.isInteger(serviceId) || serviceId <= 0) {
+    return <ErrorState>局の指定が正しくありません</ErrorState>
+  }
+  if (logoQuery.isError) return <ErrorState onRetry={() => void logoQuery.refetch()}>CM ロゴの取得に失敗しました</ErrorState>
+  if (recordingsQuery.isError) return <ErrorState onRetry={() => void recordingsQuery.refetch()}>局の録画を取得できませんでした</ErrorState>
+  if (logoQuery.isPending || recordingsQuery.isPending || !logo) return <ListSkeleton rows={5} />
+
+  const badge = stateBadge(logo)
+  const clearLearnedLogo = () => {
+    deleteLogo.mutate({ networkId, serviceId }, {
+      onSuccess: () => {
+        void queryClient.invalidateQueries({ queryKey: getListCMLogosQueryKey() })
+        toast({ message: '覚えたロゴを削除しました。次の検出で再学習します。' })
+      },
+      onError: (error) => toast({ message: mutationErrorMessage('覚えたロゴの削除に失敗しました', error), kind: 'error' }),
+    })
+  }
+  const clearArea = () => {
+    deleteArea.mutate({ networkId, serviceId }, {
+      onSuccess: () => {
+        void queryClient.invalidateQueries({ queryKey: getListCMLogosQueryKey() })
+        toast({ message: '枠を消して自動の探索に戻しました' })
+      },
+      onError: (error) => toast({ message: mutationErrorMessage('枠の削除に失敗しました', error), kind: 'error' }),
+    })
+  }
 
   return (
-    <li className="flex flex-col gap-3 rounded-lg border border-border bg-card p-4" data-testid="cm-logo-row">
-      <div className="flex flex-wrap items-center gap-3">
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={onToggle}
-          className="min-w-0 flex-1 text-left"
-          data-testid="cm-logo-toggle"
-        >
-          <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+    <>
+      <PageHeader
+        title="CM 検出のロゴ"
+        leading={<Button variant="ghost" size="icon" aria-label="一覧へ戻る" render={<Link to="/cm-logos" />}><ArrowLeft /></Button>}
+      />
+      <PageContent className="flex flex-col gap-6 px-4 py-4">
+        <section className="flex flex-col gap-2" aria-labelledby="cm-station-heading">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 id="cm-station-heading" className="text-lg font-semibold">{logo.serviceName}</h2>
+            <span className={cn('rounded px-1.5 py-0.5 text-xs', badge.attention ? 'bg-destructive/10 text-destructive' : 'bg-muted text-foreground')}>
+              {badge.label}
+            </span>
+            <span className="text-sm text-muted-foreground">{logo.site}</span>
+          </div>
+          <p className="text-sm">{cmLogoStateSentence(logo)}</p>
+        </section>
+
+        {!cmDetectEnabled ? (
+          <p className="text-sm text-muted-foreground">このデプロイでは CM 検出が無効なので、枠を教える面は出ません。</p>
+        ) : (
+          <CMLogoFrameEditor logo={logo} recordings={recordings} requestedRecordingId={search.recording} />
+        )}
+
+        <AffectedRecordings recordings={recordings} cmDetectEnabled={cmDetectEnabled} />
+
+        <details open={advancedOpen} onToggle={(event) => setAdvancedOpen(event.currentTarget.open)} className="border-t border-border pt-4">
+          <summary className="cursor-pointer font-medium">高度な操作</summary>
+          <div className="mt-3 flex flex-col gap-4 text-sm">
+            <LearnedLogo logo={logo} />
+            <div>
+              <p>覚えたロゴを捨てる</p>
+              <p className="text-xs text-muted-foreground">次の検出で画面からロゴを探し直します。</p>
+              <Button type="button" className="mt-2" size="sm" variant="destructive" disabled={!logo.learnedAt || deleteLogo.isPending} onClick={clearLearnedLogo}>
+                <Trash2 data-icon="inline-start" />
+                覚えたロゴを捨てる
+              </Button>
+            </div>
+            <div>
+              <p>枠を消して自動に戻す</p>
+              <p className="text-xs text-muted-foreground">教えた枠を削除し、次の検出から自動の探索に戻します。</p>
+              <Button type="button" className="mt-2" size="sm" variant="outline" disabled={!logo.logoArea || deleteArea.isPending} onClick={clearArea}>枠を消して自動に戻す</Button>
+            </div>
+          </div>
+        </details>
+      </PageContent>
+    </>
+  )
+}
+
+function LogoRow({ logo }: { logo: CMLogoState }) {
+  const badge = stateBadge(logo)
+  return (
+    <li className="rounded-lg border border-border bg-card p-3">
+      <Link
+        className="flex min-w-0 items-center gap-3 rounded outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+        to="/cm-logos/$networkId/$serviceId"
+        params={{ networkId: String(logo.networkId), serviceId: String(logo.serviceId) }}
+      >
+        <div className="flex h-12 w-24 shrink-0 items-center justify-center overflow-hidden rounded border border-border bg-muted">
+          {logo.previewPng ? <img src={`data:image/png;base64,${logo.previewPng}`} alt="" className="max-h-full max-w-full object-contain" /> : <ScanLine aria-hidden="true" className="size-5 text-muted-foreground" />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span className="font-medium">{logo.serviceName}</span>
-            <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">
-              {stateLabel(logo.state)}
-            </span>
-            <span className="text-xs text-muted-foreground">
-              Network {logo.networkId} / Service {logo.serviceId}
-            </span>
-          </span>
-          <span className="mt-1 block text-sm text-muted-foreground">
-            録画 {logo.recordingCount} 件
-            {logo.failedCount > 0 && ` · 検出失敗 ${logo.failedCount} 件`}
-            {logo.learnedAt && ` · 学習 ${formatDateTime(logo.learnedAt)}`}
-          </span>
-        </button>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          disabled={remove.isPending || !logo.learnedAt}
-          onClick={() => {
-            remove.mutate(
-              { networkId: logo.networkId, serviceId: logo.serviceId },
-              {
-                onSuccess: () => {
-                  void queryClient.invalidateQueries({ queryKey: getListCMLogosQueryKey() })
-                  toast({
-                    message: `${logo.serviceName} のロゴを削除しました。次の検出で再学習します。`,
-                  })
-                },
-                onError: (error) =>
-                  toast({
-                    message: mutationErrorMessage('ロゴの削除に失敗しました', error),
-                    kind: 'error',
-                  }),
-              },
-            )
-          }}
-        >
-          <Trash2 data-icon="inline-start" />
-          ロゴを削除
-        </Button>
-      </div>
-      {/* 警告は閉じたままでも見える（枠と解像度が違う録画はここに出る）。 */}
-      {logo.failedCount > 0 && (
-        <p className="break-all text-destructive" data-testid="cm-logo-warning">
-          {cmDetectStageMessage(logo.lastFailureStage)}
-        </p>
-      )}
-      {open && <LogoTutor logo={logo} recordingId={recordingId} />}
+            <span className="text-xs text-muted-foreground">{logo.site}</span>
+            {badge.attention && <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-xs text-destructive">要対応</span>}
+          </div>
+          <p className="mt-1 text-sm">{cmLogoStateSentence(logo)}</p>
+        </div>
+        <span className="shrink-0 text-sm font-medium">直す →</span>
+      </Link>
     </li>
   )
 }
 
-/**
- * CMLogosPage は局ごとの CM ロゴと、自動学習で埋まらない局の枠を教える画面。
- *
- * **番組表の局ロゴとは別物である**（あちらはサービス一覧、こちらは CM 検出器が
- * 映像から探すロゴ）。
- */
+function LogoSection({
+  title,
+  logos,
+  testId,
+  collapsed = false,
+}: {
+  title: string
+  logos: CMLogoState[]
+  testId: string
+  collapsed?: boolean
+}) {
+  if (logos.length === 0) return null
+  const content = (
+    <ul className="flex flex-col gap-2" data-testid={testId}>
+      {logos.map((logo) => <LogoRow key={`${logo.networkId}-${logo.serviceId}`} logo={logo} />)}
+    </ul>
+  )
+  if (collapsed) {
+    return <details><summary className="cursor-pointer text-base font-semibold">{title}（{logos.length}）</summary><div className="mt-2">{content}</div></details>
+  }
+  return <section aria-labelledby={`${testId}-heading`}><h2 id={`${testId}-heading`} className="mb-2 text-base font-semibold">{title}</h2>{content}</section>
+}
+
 export function CMLogosPage() {
-  const query = useListCMLogos()
+  const search = useSearch({ from: '/cm-logos' })
+  const navigate = useNavigate()
+  const legacy = search.network !== undefined && search.service !== undefined
+  const query = useListCMLogos({ query: { enabled: !legacy } })
   const logos = unwrap(query.data) ?? []
   const cmDetectEnabled = useCMDetectEnabled()
-  const search = useSearch({ from: '/cm-logos' })
-  const [openKey, setOpenKey] = useState<string | null>(null)
 
-  // ディープリンク（録画詳細の「CM 検出に失敗」）はその局を開いた状態で来る。
-  const deepLinkKey =
-    search.network !== undefined && search.service !== undefined
-      ? `${search.network}-${search.service}`
-      : null
-  const deepLinkKeyExists = deepLinkKey !== null && logos.some((logo) => stationKey(logo) === deepLinkKey)
-  const effectiveOpenKey = openKey ?? (deepLinkKeyExists ? deepLinkKey : null)
+  useEffect(() => {
+    if (!legacy) return
+    void navigate({
+      to: '/cm-logos/$networkId/$serviceId',
+      params: { networkId: String(search.network), serviceId: String(search.service) },
+      search: search.recording === undefined ? {} : { recording: search.recording },
+      replace: true,
+    })
+  }, [legacy, navigate, search.network, search.recording, search.service])
+
+  if (legacy) return <ListSkeleton rows={3} />
+
+  const attention = logos.filter((logo) => cmLogoBucket(logo) === 'attention')
+  const pending = logos.filter((logo) => cmLogoBucket(logo) === 'pending')
+  const healthy = logos.filter((logo) => cmLogoBucket(logo) === 'healthy')
 
   return (
     <>
       <PageHeader title="CM 検出のロゴ" />
-      <PageContent className="flex flex-col gap-4 px-4 py-4">
-        <p className="text-sm text-muted-foreground">
-          自動の学習は画面の隅に同じ縁が続くことを手がかりにするので、薄いロゴや動くロゴの局では
-          見つけられません。そうした局だけ、映像のコマの上で枠を教えます。枠は局ごとに共有されます。
-        </p>
+      <PageContent className="flex flex-col gap-6 px-4 py-4">
+        <p className="text-sm text-muted-foreground">失敗や検出待ちの局から確認し、局ごとのコマで CM ロゴの枠を教えます。</p>
         {query.isError ? (
           <ErrorState onRetry={() => void query.refetch()}>CM ロゴの取得に失敗しました</ErrorState>
         ) : query.isPending ? (
@@ -575,28 +934,13 @@ export function CMLogosPage() {
         ) : logos.length === 0 ? (
           <EmptyState>録画局がありません</EmptyState>
         ) : (
-          <ul className="flex flex-col gap-3">
-            {logos.map((logo) => {
-              const key = stationKey(logo)
-              return (
-                <LogoRow
-                  key={key}
-                  logo={logo}
-                  open={cmDetectEnabled && effectiveOpenKey === key}
-                  recordingId={
-                    search.recording !== undefined && key === deepLinkKey ? search.recording : 0
-                  }
-                  onToggle={() => setOpenKey(effectiveOpenKey === key ? null : key)}
-                />
-              )
-            })}
-          </ul>
+          <div className="flex flex-col gap-6">
+            <LogoSection title="要対応" logos={attention} testId="cm-logo-attention" />
+            <LogoSection title="検出待ち" logos={pending} testId="cm-logo-pending" />
+            <LogoSection title="問題なし" logos={healthy} testId="cm-logo-healthy" collapsed />
+          </div>
         )}
-        {!cmDetectEnabled && (
-          <p className="text-sm text-muted-foreground">
-            このデプロイでは CM 検出が無効なので、枠を教える面は出ません。
-          </p>
-        )}
+        {!cmDetectEnabled && <p className="text-sm text-muted-foreground">このデプロイでは CM 検出が無効なので、枠を教える面は出ません。</p>}
       </PageContent>
     </>
   )

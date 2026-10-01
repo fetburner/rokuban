@@ -117,6 +117,7 @@ describe('routeTree', () => {
       '/series',
       '/shelves',
       '/cm-logos',
+      '/cm-logos/$networkId/$serviceId',
       '/reservations',
       '/reservations/$site/$programId',
       '/recordings',

@@ -1,9 +1,8 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { CMLogoState } from '@/api/generated'
-import { CMLogosPage } from '@/pages/cm-logos'
+import type { CMLogoState, Recording } from '@/api/generated'
+import { CMLogoStationPage, CMLogosPage } from '@/pages/cm-logos'
 import { renderInRouter } from '@/test/router'
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -22,37 +21,102 @@ const logo: CMLogoState = {
   recordingCount: 2,
   failedCount: 1,
   pendingCount: 0,
-  detectedCount: 0,
-  redetectableCount: 0,
+  detectedCount: 1,
+  redetectableCount: 2,
   lastFailureStage: 'logo',
   frameRecordingId: 7,
 }
 
+const pendingLogo: CMLogoState = {
+  ...logo,
+  networkId: 1,
+  serviceId: 2,
+  serviceName: '待機局',
+  state: 'learned',
+  failedCount: 0,
+  pendingCount: 3,
+  redetectableCount: 0,
+}
+
+const healthyLogo: CMLogoState = {
+  ...logo,
+  networkId: 3,
+  serviceId: 4,
+  serviceName: '問題なし局',
+  state: 'learned',
+  failedCount: 0,
+  pendingCount: 0,
+}
+
+const recording = {
+  id: 7,
+  site: 'default',
+  source: 'manual',
+  serviceName: 'テスト放送局',
+  channelType: 'GR',
+  channel: '27',
+  networkId: 32678,
+  serviceId: 5168,
+  eventId: 1,
+  title: 'テスト番組',
+  startAt: '2026-09-30T12:00:00Z',
+  durationMs: 600000,
+  status: 'finished',
+  keepOriginal: 'always',
+  cmDetection: { state: 'failed', stage: 'logo' },
+  sizeBytes: 1000,
+  createdAt: '2026-09-30T12:00:00Z',
+} as Recording
+
 const frameBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xd9])
 
-function stubApi(overrides: { cmDetect?: boolean; area?: CMLogoState['logoArea'] } = {}) {
-  let currentArea = overrides.area
+/** 数値入力へ値を入れて blur で確定する。 */
+function typeNumber(key: 'x' | 'y' | 'w' | 'h', value: string) {
+  const input = screen.getByTestId(`cm-logo-field-${key}`)
+  fireEvent.change(input, { target: { value } })
+  fireEvent.blur(input)
+}
+
+function stubApi(options: {
+  logos?: CMLogoState[]
+  cmDetect?: boolean
+  area?: CMLogoState['logoArea']
+  recordings?: Recording[]
+  frameHeaders?: Record<string, string>
+} = {}) {
+  let currentArea = options.area
   const requests: Array<{ method: string; url: string; body?: unknown }> = []
   globalThis.fetch = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
     const method = init?.method ?? 'GET'
     if (url.pathname === '/api/capabilities') {
-      return Promise.resolve(jsonResponse({ live: false, cmDetect: overrides.cmDetect ?? true }))
+      return Promise.resolve(jsonResponse({ live: false, cmDetect: options.cmDetect ?? true }))
     }
     if (url.pathname === '/api/cm-logos' && method === 'GET') {
-      return Promise.resolve(jsonResponse([{ ...logo, logoArea: currentArea }]))
+      const rows = options.logos ?? [{ ...logo, logoArea: currentArea }]
+      return Promise.resolve(jsonResponse(rows))
+    }
+    if (url.pathname === '/api/recordings' && method === 'GET') {
+      return Promise.resolve(jsonResponse(options.recordings ?? [recording]))
     }
     if (url.pathname === '/api/media/recordings/7/frame' && method === 'GET') {
+      requests.push({ method, url: url.pathname + url.search })
       return Promise.resolve(
         new Response(frameBytes, {
           status: 200,
           headers: {
             'Content-Type': 'image/jpeg',
-            'X-Coded-Width': '1920',
+            'X-Coded-Width': '1440',
             'X-Coded-Height': '1080',
+            'X-Sample-Aspect-Ratio': '4:3',
+            ...options.frameHeaders,
           },
         }),
       )
+    }
+    if (url.pathname === '/api/recordings/7/cm-detection/retry' && method === 'POST') {
+      requests.push({ method, url: url.pathname })
+      return Promise.resolve(new Response(null, { status: 204 }))
     }
     if (url.pathname === '/api/cm-logos/32678/5168/area') {
       const body = init?.body === undefined ? undefined : JSON.parse(String(init.body))
@@ -90,25 +154,13 @@ beforeEach(() => {
   Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
     configurable: true,
     get() {
-      return this.getAttribute('data-testid') === 'cm-logo-frame' ? 360 : 0
+      return this.getAttribute('data-testid') === 'cm-logo-frame' ? 640 / (16 / 9) : 0
     },
   })
-  Object.defineProperty(HTMLElement.prototype, 'setPointerCapture', {
-    configurable: true,
-    value: () => {},
-  })
-  Object.defineProperty(HTMLElement.prototype, 'releasePointerCapture', {
-    configurable: true,
-    value: () => {},
-  })
-  Object.defineProperty(URL, 'createObjectURL', {
-    configurable: true,
-    value: () => 'blob:cm-logo-frame',
-  })
-  Object.defineProperty(URL, 'revokeObjectURL', {
-    configurable: true,
-    value: () => {},
-  })
+  Object.defineProperty(HTMLElement.prototype, 'setPointerCapture', { configurable: true, value: () => {} })
+  Object.defineProperty(HTMLElement.prototype, 'releasePointerCapture', { configurable: true, value: () => {} })
+  Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: () => 'blob:cm-logo-frame' })
+  Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: () => {} })
 })
 
 afterEach(() => {
@@ -122,66 +174,192 @@ afterEach(() => {
 })
 
 describe('CMLogosPage', () => {
-  it('局の失敗理由を表示し、枠を開くと指定位置の原寸コマを取り寄せる', async () => {
-    const user = userEvent.setup()
+  it('局を要対応・検出待ち・問題なしの順に分け、問題なしを閉じる', async () => {
+    // 失敗と検出待ちが同居する局は「要対応」に入る（判定の順序を固定する）。
+    const mixedLogo = { ...logo, networkId: 5, serviceId: 6, serviceName: '混在局', failedCount: 1, pendingCount: 3 }
+    stubApi({ logos: [healthyLogo, pendingLogo, mixedLogo, logo] })
+    renderInRouter(<CMLogosPage />, { path: '/cm-logos' })
+
+    expect(await screen.findByTestId('cm-logo-attention')).toHaveTextContent('テスト放送局')
+    expect(screen.getByTestId('cm-logo-attention')).toHaveTextContent('混在局')
+    expect(screen.getByTestId('cm-logo-pending')).toHaveTextContent('待機局')
+    expect(screen.getByTestId('cm-logo-pending')).not.toHaveTextContent('混在局')
+    const healthy = screen.getByTestId('cm-logo-healthy')
+    expect(healthy).not.toBeVisible()
+    expect(screen.getByText('問題なし（1）')).toBeInTheDocument()
+  })
+})
+
+describe('CMLogoStationPage', () => {
+  it('中央の時刻を初期表示し、スライダーを動かすまでコマを取り直さない', async () => {
     const { requests } = stubApi()
-    renderInRouter(<CMLogosPage />, {
-      path: '/cm-logos',
-      initialEntries: ['/cm-logos?network=32678&service=5168&recording=7'],
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
     })
 
     expect(await screen.findByText('テスト放送局')).toBeInTheDocument()
-    expect(screen.getByTestId('cm-logo-warning')).toHaveTextContent('ロゴを見つけられず、CM を検出できませんでした。')
-    await user.click(screen.getByTestId('cm-logo-toggle'))
-    expect(await screen.findByRole('region', { name: 'ロゴの枠' })).toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: '次のコマ' }))
     await screen.findByTestId('cm-logo-frame-image')
-    expect(requests).toEqual([])
-    expect(globalThis.fetch).toHaveBeenCalledWith('/api/media/recordings/7/frame?at=5000')
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/media/recordings/7/frame?at=300000')
+    const frameRequestsBeforeDrag = requests.filter((request) => request.url.includes('/frame')).length
+    const slider = screen.getByTestId('cm-logo-time')
+    fireEvent.input(slider, { target: { value: '100000' } })
+    expect(requests.filter((request) => request.url.includes('/frame')).length).toBe(frameRequestsBeforeDrag)
+    fireEvent.change(slider)
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith('/api/media/recordings/7/frame?at=100000'))
   })
 
-  it('拡大表示中に描いた枠を記録上の画素へ変換して保存する', async () => {
-    const user = userEvent.setup()
+  it('SAR の違うコマで数値入力した枠を記録上の座標で保存する', async () => {
     const { requests } = stubApi()
-    renderInRouter(<CMLogosPage />, {
-      path: '/cm-logos',
-      initialEntries: ['/cm-logos?network=32678&service=5168&recording=7'],
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
     })
 
-    await user.click(await screen.findByTestId('cm-logo-toggle'))
-    await user.click(screen.getByRole('button', { name: '次のコマ' }))
-    const box = await screen.findByTestId('cm-logo-frame')
     await screen.findByTestId('cm-logo-frame-image')
-    box.getBoundingClientRect = () =>
-      ({ left: 0, top: 0, right: 640, bottom: 360, width: 640, height: 360 } as DOMRect)
-
-    fireEvent.pointerDown(box, { pointerId: 1, clientX: 100, clientY: 80 })
-    fireEvent.pointerMove(box, { pointerId: 1, clientX: 250, clientY: 200 })
-    fireEvent.pointerUp(box, { pointerId: 1, clientX: 250, clientY: 200 })
-
-    const save = screen.getByRole('button', { name: '枠を保存' })
-    await waitFor(() => expect(save).toBeEnabled())
-    await user.click(save)
+    typeNumber('x', '400')
+    typeNumber('y', '300')
+    typeNumber('w', '400')
+    typeNumber('h', '300')
+    await waitFor(() => expect(screen.getByRole('button', { name: '枠を保存' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: '枠を保存' }))
 
     await waitFor(() => expect(requests.some((request) => request.method === 'PUT')).toBe(true))
     expect(requests.find((request) => request.method === 'PUT')?.body).toEqual({
-      x: 1272,
-      y: 96,
-      w: 180,
-      h: 144,
-      codedWidth: 1920,
+      x: 400,
+      y: 300,
+      w: 400,
+      h: 300,
+      codedWidth: 1440,
       codedHeight: 1080,
     })
+    expect(await screen.findByTestId('cm-logo-save-message')).toHaveTextContent('検出待ち')
   })
 
-  it('CM 検出が無効なら枠を教える面を開かない', async () => {
-    const user = userEvent.setup()
-    stubApi({ cmDetect: false })
-    renderInRouter(<CMLogosPage />, { path: '/cm-logos' })
+  it('数値入力は入力中に丸めず、blur で下限・範囲へ確定する', async () => {
+    stubApi()
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+    await screen.findByTestId('cm-logo-frame-image')
+    const width = screen.getByTestId('cm-logo-field-w')
+    const x = screen.getByTestId('cm-logo-field-x')
 
-    await user.click(await screen.findByTestId('cm-logo-toggle'))
+    // 400 を打つ途中の 4 が下限 8 へ書き戻されると、続きの 00 が 800 になる。
+    fireEvent.change(width, { target: { value: '4' } })
+    expect(width).toHaveValue(4)
+    fireEvent.change(width, { target: { value: '40' } })
+    fireEvent.change(width, { target: { value: '400' } })
+    fireEvent.blur(width)
+    expect(width).toHaveValue(400)
+
+    // 空にして打ち直せる。消している途中で値が戻ってはならない。
+    fireEvent.change(x, { target: { value: '' } })
+    expect(x).toHaveValue(null)
+    fireEvent.change(x, { target: { value: '5' } })
+    fireEvent.change(x, { target: { value: '50' } })
+    expect(x).toHaveValue(50)
+    fireEvent.blur(x)
+    expect(x).toHaveValue(50)
+
+    // 確定時は下限と映像内へ寄せる。
+    fireEvent.change(width, { target: { value: '3' } })
+    fireEvent.blur(width)
+    expect(width).toHaveValue(8)
+    fireEvent.change(width, { target: { value: '99999' } })
+    fireEvent.blur(width)
+    expect(width).toHaveValue(1440 - 50)
+  })
+
+  it('枠に寄る焦点は押した時点で固定し、枠を動かしても画像は動かない', async () => {
+    stubApi()
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+    const image = await screen.findByTestId('cm-logo-frame-image')
+    typeNumber('x', '600')
+    typeNumber('y', '400')
+    typeNumber('w', '100')
+    typeNumber('h', '100')
+    fireEvent.click(screen.getByRole('button', { name: '枠に寄る' }))
+    const before = (image as HTMLElement).style.left
+    expect(before).not.toBe('')
+    typeNumber('x', '700')
+    expect((image as HTMLElement).style.left).toBe(before)
+  })
+
+  it('表示枠の比は SAR から導き、16:9 に固定しない', async () => {
+    stubApi({
+      frameHeaders: { 'X-Coded-Width': '720', 'X-Coded-Height': '480', 'X-Sample-Aspect-Ratio': '8:9' },
+    })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+    await screen.findByTestId('cm-logo-frame-image')
+    const ratio = parseFloat(screen.getByTestId('cm-logo-frame').style.aspectRatio)
+    expect(ratio).toBeCloseTo(4 / 3, 3)
+  })
+
+  it('ハンドルは見た目の要素で掴み、角から離れていても新しい枠を描かない。ドラッグ後は整数', async () => {
+    stubApi()
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+    await screen.findByTestId('cm-logo-frame-image')
+    typeNumber('x', '400')
+    typeNumber('y', '300')
+    typeNumber('w', '400')
+    typeNumber('h', '300')
+    const handle = screen.getByTestId('cm-logo-handle-se')
+    const frame = screen.getByTestId('cm-logo-frame')
+    // 箱 640x360 / coded 1440x1080 → 横縦とも 0.4444 CSS px / 画素。右下の角は (355.6, 266.7)。
+    fireEvent.pointerDown(handle, { clientX: 355.6 + 18, clientY: 266.7 + 18, pointerId: 1 })
+    fireEvent.pointerMove(frame, { clientX: 400.3, clientY: 300.3, pointerId: 1 })
+    fireEvent.pointerUp(frame, { clientX: 400.3, clientY: 300.3, pointerId: 1 })
+    expect(screen.getByTestId('cm-logo-field-x')).toHaveValue(400)
+    expect(screen.getByTestId('cm-logo-field-y')).toHaveValue(300)
+    const w = Number((screen.getByTestId('cm-logo-field-w') as HTMLInputElement).value)
+    expect(Number.isInteger(w)).toBe(true)
+    expect(w).toBe(501)
+  })
+
+  it('成功した録画にも再検出を出し、押すと再検出を依頼する', async () => {
+    const detected = { ...recording, cmDetection: { state: 'detected' } } as Recording
+    const { requests } = stubApi({ recordings: [detected] })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+    fireEvent.click(await screen.findByRole('button', { name: '再検出' }))
+    await waitFor(() =>
+      expect(requests.some((request) => request.method === 'POST' && request.url.endsWith('/retry'))).toBe(true),
+    )
+  })
+
+  it('原本の無い録画へのディープリンクは捨て、原本のある frameRecordingId のコマを使う', async () => {
+    const noOriginal = { ...recording, id: 9, sizeBytes: undefined } as Recording
+    const { requests } = stubApi({ recordings: [noOriginal, recording] })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=9'],
+    })
+    await screen.findByTestId('cm-logo-frame-image')
+    expect(requests.some((request) => request.url.startsWith('/api/media/recordings/7/frame'))).toBe(true)
+    expect(requests.some((request) => request.url.includes('/recordings/9/'))).toBe(false)
+  })
+
+  it('CM 検出が無効なら枠の編集面を出さない', async () => {
+    stubApi({ cmDetect: false })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168'],
+    })
+
+    expect(await screen.findByText('このデプロイでは CM 検出が無効なので、枠を教える面は出ません。')).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'ロゴの枠' })).not.toBeInTheDocument()
-    expect(screen.getByText('このデプロイでは CM 検出が無効なので、枠を教える面は出ません。')).toBeInTheDocument()
   })
 })
