@@ -193,6 +193,10 @@ func TestRecoverStaleCMLogoCandidateJobsSparesLiveWorker(t *testing.T) {
 		if err := recoverStaleCMLogoCandidateJobs(ctx, pool); err != nil {
 			t.Error(err)
 		}
+		// 生きた River ジョブ（running）を持つ行は orphan 回収も触らない。
+		if err := failOrphanCMLogoCandidates(ctx, pool); err != nil {
+			t.Error(err)
+		}
 		if state, _, _ := candidateRow(t, pool); state != "running" {
 			t.Errorf("candidate during a live analysis = %q, want running", state)
 		}
