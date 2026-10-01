@@ -8,7 +8,7 @@
 //   corepack pnpm preview --port 4173 --strictPort &
 //   E2E_URL=http://localhost:4173 corepack pnpm e2e:cm-logo-area
 
-import { GetRecordingResponse, ListCMLogosResponseItem } from '../src/api/zod.ts'
+import { GetRecordingResponse, ListCMLogosResponseItem, ListRecordingsResponseItem } from '../src/api/zod.ts'
 import {
   finish,
   installApiStubs,
@@ -65,7 +65,9 @@ const recording7 = {
   durationMs: 1800000,
   status: 'finished',
   keepOriginal: 'always',
-  cmDetection: { state: 'failed' },
+  sizeBytes: 123456789,
+  // L-4 後は生ログが録画の cmDetection.error に載る。現行の zod では未知フィールドとして無視される。
+  cmDetection: { state: 'failed', error: longError },
   createdAt: '2026-01-01T00:00:00Z',
 }
 
@@ -78,7 +80,7 @@ async function apiHandler({ path, url, json, route }) {
   if (path === '/api/cm-logos' && method === 'GET') {
     return json([{ ...logo, ...(savedArea === undefined ? {} : { logoArea: savedArea }) }])
   }
-  if (path === '/api/recordings' && method === 'GET') return json([])
+  if (path === '/api/recordings' && method === 'GET') return json([recording7])
   if (path === '/api/recordings/7' && method === 'GET') return json(recording7)
   if (path === '/api/media/recordings/7/frame' && method === 'GET') {
     frameRequests.push(url.searchParams.get('at'))
@@ -118,6 +120,8 @@ function numberInput(page, label) {
 
 // 点 (x, y) の最前面の要素の computed cursor。透明オーバーレイが覆っていれば、それが見える。
 async function cursorAt(page, point) {
+  // 利用者に見えるカーソルはポインタがそこにあるときの値なので、実際に動かしてから読む。
+  await page.mouse.move(point.x, point.y)
   return page.evaluate(
     ({ x, y }) => {
       const element = document.elementFromPoint(x, y)
@@ -139,6 +143,7 @@ await validateFixturesOrExit(
   [
     ['CM ロゴ状態', ListCMLogosResponseItem, logo],
     ['録画 7', GetRecordingResponse, recording7],
+    ['録画 7（一覧）', ListRecordingsResponseItem, recording7],
   ],
   ng,
 )
@@ -183,12 +188,16 @@ await check('②', async () => {
   const min = Number(await slider.getAttribute('min'))
   const max = Number(await slider.getAttribute('max'))
   if (!(max > min)) throw new Error(`スライダーの範囲が空（min=${min} max=${max}）`)
-  const target = Math.round(min + (max - min) * 0.37)
-  if (String(target) === (await slider.inputValue())) throw new Error('目標値が初期値と同じで動かしたことにならない')
+  const initial = await slider.inputValue()
+  // 利用者の操作で動かす（fill は input/change だけで、離したら確定する実装を落とす）。
+  const box = await slider.boundingBox()
+  if (!box) throw new Error('スライダーの寸法が取れない')
   frameRequests.length = 0
-  await slider.fill(String(target))
-  for (let i = 0; i < 30 && !frameRequests.includes(String(target)); i++) await page.waitForTimeout(100)
-  if (!frameRequests.includes(String(target))) {
+  await page.mouse.click(box.x + box.width * 0.37, box.y + box.height / 2)
+  const target = await slider.inputValue()
+  if (target === initial) throw new Error(`トラックをクリックしても値が動かない（${initial}）`)
+  for (let i = 0; i < 30 && !frameRequests.includes(target); i++) await page.waitForTimeout(100)
+  if (!frameRequests.includes(target)) {
     throw new Error(`/frame?at=${target} が呼ばれない（実際 ${JSON.stringify(frameRequests)}）`)
   }
 })
@@ -224,9 +233,12 @@ await check('③', async () => {
   await page.mouse.up()
 
   await page.getByRole('button', { name: '枠を保存' }).click()
-  await page.waitForTimeout(150)
-  if (Math.abs((savedArea?.w ?? NaN) - expected.w) > 1 || Math.abs((savedArea?.h ?? NaN) - expected.h) > 1) {
-    throw new Error(`保存 w/h が ${savedArea?.w}×${savedArea?.h}（期待 ${expected.w}×${expected.h} ±1）`)
+  for (let i = 0; i < 30 && savedArea === undefined; i++) await page.waitForTimeout(100)
+  if (savedArea === undefined) throw new Error('PUT /area が届かない')
+  const { w, h } = savedArea
+  if (!Number.isFinite(w) || !Number.isFinite(h)) throw new Error(`PUT body の w/h が有限数でない（${JSON.stringify(savedArea)}）`)
+  if (Math.abs(w - expected.w) > 1 || Math.abs(h - expected.h) > 1) {
+    throw new Error(`保存 w/h が ${w}×${h}（期待 ${expected.w}×${expected.h} ±1）`)
   }
 })
 
