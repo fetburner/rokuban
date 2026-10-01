@@ -7,9 +7,10 @@
 // 「問い合わせが始まること」だけ）。CLAUDE.md §テスト規律のとおり、
 // 実装より先にここで判定手段を作る。
 //
-// プレビューは動画の下のスクラブ帯（`seek-scrub`）の上でだけ出す。ネイティブ
-// controls のシークバーは位置も幅も外から測れないので、そこに重ねると「見えた
-// タイル」と「クリックで飛ぶ先」がずれる。
+// 実装後の判定契約: `<video>` に native controls はなく、プレイヤー内の
+// `seek-scrub` 1 本が role=slider を持ち、動画下端に重なる。そのシークバー上で
+// プレビュー・クリック位置が一致する。旧実装（native controls + 別帯）では
+// 最初の検査が失敗する。
 //
 // 見るのは 7 点:
 //   ① 帯の上のホバー位置に対応するタイルが出る（列の折り返しと行送りを別々の位置で固定）
@@ -228,6 +229,29 @@ const openPlayer = async () => {
 log('\n=== ④ タイルが無い録画ではプレビューを出さず、再生面は従来のまま ===')
 const noTilesVideo = await openPlayer()
 const noTilesBox = await page.locator('[data-testid="seek-scrub"]').boundingBox()
+const noTilesNativeControls = await noTilesVideo.evaluate((el) => el.hasAttribute('controls'))
+if (noTilesNativeControls) {
+  ng.push('プレイヤーの video に native controls が残っている')
+}
+const seekbar = page.locator('[data-testid="seek-scrub"]')
+if ((await seekbar.count()) !== 1) {
+  ng.push(`プレイヤー内の seek-scrub が 1 本ではない（count=${await seekbar.count()}）`)
+} else {
+  if ((await seekbar.getAttribute('role')) !== 'slider') {
+    ng.push('seek-scrub に role="slider" がない')
+  }
+  const videoBox = await noTilesVideo.boundingBox()
+  if (videoBox && noTilesBox) {
+    const overlapsVideo =
+      noTilesBox.x < videoBox.x + videoBox.width &&
+      noTilesBox.x + noTilesBox.width > videoBox.x &&
+      noTilesBox.y >= videoBox.y - 1 &&
+      noTilesBox.y + noTilesBox.height <= videoBox.y + videoBox.height + 1
+    if (!overlapsVideo) {
+      ng.push('seek-scrub が映像下端に重なっていない')
+    }
+  }
+}
 // タイルは 404 なので読み込まれない。duration は分かっているので、実装が
 // 「タイルの有無を見ずに出す」ならここで出てしまう。
 await moveToSeconds(page, noTilesBox, 120, 35)
