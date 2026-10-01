@@ -55,8 +55,8 @@ type recordingListFields struct {
 	// コメント参照。nil（trash など SELECT に含めなかった行）と `[]`（active な
 	// encoded が無い行）は区別しない --- どちらも recordingFromListFields で
 	// EncodedAssets を省略する結果になる。
-	AvailableEncodedAssets json.RawMessage
-	ResumePositionMs       *int64
+	AvailableEncodedAssets  json.RawMessage
+	ResumePositionMs        *int64
 	ResumePositionUpdatedAt *time.Time
 	WatchedAt               *time.Time
 	// EncodeProfiles は凍結された desired 一覧（recording_encode_policy.encode_profiles）。

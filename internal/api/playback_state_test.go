@@ -168,9 +168,9 @@ func TestListContinueWatchingOrderLimitAndWatchedGrouping(t *testing.T) {
 		}
 	}
 	for i, status := range []struct {
-		title     string
-		status    string
-		deleted   bool
+		title      string
+		status     string
+		deleted    bool
 		superseded bool
 	}{
 		{title: "失敗", status: "failed"},
