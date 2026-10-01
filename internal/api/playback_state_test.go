@@ -9,9 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/testutil"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func playbackRequest(t *testing.T, method, url string, body any) *http.Response {
