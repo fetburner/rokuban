@@ -50,7 +50,7 @@ export function HomeModeToggle({
           <span
             data-testid="home-warning-count"
             aria-label={`警告 ${warningCount} 件`}
-            className="inline-flex min-w-4 shrink-0 items-center justify-center rounded-sm bg-destructive/10 px-1 text-[10px] leading-4 text-destructive tabular-nums whitespace-nowrap"
+            className="inline-flex min-w-4 shrink-0 items-center justify-center rounded-sm bg-destructive/10 px-1 text-[10px] leading-4 text-destructive whitespace-nowrap"
           >
             {warningCount}
           </span>
