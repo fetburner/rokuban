@@ -216,7 +216,7 @@ API が解決済みの boolean を返す（クライアントで jsonb を合成
 - 副情報の行（局名・時刻・尺・state・skip・容量バッジ）は **`flex-wrap` で折り返す**。
   折り返さない実装では、360px 幅で長い局名 + 状態バッジが右端の chevron に食い込む
   （`flex items-center gap-2` に戻して再ビルドし実測）。その結果は overflow 37px / 25px、
-  子の右端 353 > chevron 左端 328 だった。`recordings.tsx` / `home.tsx` も同じ形。jsdom は overflow も
+  子の右端 353 > chevron 左端 328 だった。`recording-row.tsx` / `home.tsx` も同じ形。jsdom は overflow も
   要素の重なりも測れないため、判定は実ブラウザ（`web/e2e/reservations-mobile.mjs`。
   手順は `web/e2e/README.md`）に置く
 - **バッジ側の読み上げの規律は変えていない。** `<a>` の accessible name は

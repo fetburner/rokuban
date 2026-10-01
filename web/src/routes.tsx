@@ -1,4 +1,4 @@
-import { createRootRoute, createRoute, HeadContent, Outlet } from '@tanstack/react-router'
+import { createRootRoute, createRoute, HeadContent, Outlet, redirect } from '@tanstack/react-router'
 
 import type { ProgramSearchRequest } from './api/generated'
 import { SearchProgramsBody } from './api/zod'
@@ -19,7 +19,7 @@ import {
 } from './lib/recording-search'
 import { asInteger, validValue } from './lib/url-search'
 import { HomePage } from './pages/home'
-import { CMLogosPage } from './pages/cm-logos'
+import { CMLogoStationPage, CMLogosPage } from './pages/cm-logos'
 import { LivePage } from './pages/live'
 import { ProgramsPage } from './pages/programs'
 import { RecordingDetailPage } from './pages/recording-detail'
@@ -28,8 +28,8 @@ import { ReservationDetailPage } from './pages/reservation-detail'
 import { ReservationsPage } from './pages/reservations'
 import { RulesPage } from './pages/rules'
 import { SearchPage } from './pages/search'
+import { SeriesPage } from './pages/series'
 import { SeriesHubPage } from './pages/series-hub'
-import { ShelvesPage } from './pages/shelves'
 
 const rootRoute = createRootRoute({
   // 各ルートが `head` で自分の画面名を積むので、ここは「積み忘れ」への保険
@@ -177,28 +177,6 @@ const rulesRoute = createRoute({
 })
 
 /**
- * ShelvesPageSearch は `/shelves` のクエリパラメータ。
- *
- * 録画ルール画面の「このルールのキーワードで分類ルールを作る」導線が
- * `?keyword=<ルールのキーワード>` で渡し、棚画面が作成フォームの初期値に使う。
- * **画面を跨いだ下書きを URL に載せる**のは、`/search` の `cond` と同じ判断で、
- * 導線が「どこから来たか」の状態をグローバルに持たずに済む。
- *
- * `value` は棚の行から「この棚を割る・指定する」で入るときに載る棚のキー。
- */
-export type ShelvesPageSearch = {
-  keyword?: string
-  value?: string
-}
-
-/** parseShelvesSearch は壊れた値（文字列でない・空）を落として undefined にする。 */
-function parseShelvesSearch(search: Record<string, unknown>): ShelvesPageSearch {
-  const text = (v: unknown): string | undefined =>
-    typeof v === 'string' && v !== '' ? v : undefined
-  return { keyword: text(search.keyword), value: text(search.value) }
-}
-
-/**
  * CMLogoPageSearch は `/cm-logos` のクエリパラメータ。
  *
  * 録画詳細の「CM 検出に失敗」の導線が `(networkId, serviceId, recordingId)` を
@@ -209,6 +187,12 @@ export type CMLogoPageSearch = {
   network?: number
   service?: number
   /** コマを取り寄せる録画。**その録画が指定の局のものかは確かめない**（別の局の録画を渡すとその録画のコマが出る）。 */
+  recording?: number
+}
+
+/** CMLogoStationPageSearch は新しい局画面のクエリパラメータ。 */
+export type CMLogoStationPageSearch = {
+  /** 初期表示する録画。省略時は API が返す frameRecordingId を使う。 */
   recording?: number
 }
 
@@ -225,19 +209,29 @@ function parseCMLogoSearch(search: Record<string, unknown>): CMLogoPageSearch {
   }
 }
 
+function parseCMLogoStationSearch(search: Record<string, unknown>): CMLogoStationPageSearch {
+  const n = asInteger(search.recording)
+  return { recording: typeof n === 'number' && n > 0 ? n : undefined }
+}
+
 /**
- * シリーズ棚はルール（`/rules`）の隣に置く。棚は自動キーの結果で、分類ルールは
- * その上に重ねる上書きなので、間違った棚を見つける場所と直す場所を 1 画面にする
- * （docs/data/series.md §8「2 層: 分類ルール → 自動キー」）。
+ * シリーズ一覧は録画一覧と同じライブラリの入口に置く。棚の値は表示に使うが、
+ * タイルの宛先は代表録画 id の番組ハブである（docs/data/series.md §8）。
  */
-const shelvesRoute = createRoute({
+const seriesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/series',
+  head: () => ({ meta: [{ title: pageTitle('シリーズ') }] }),
+  component: SeriesPage,
+})
+
+/** `/shelves` は既存ブックマークをシリーズ一覧へ送る互換入口。 */
+const shelvesRedirectRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/shelves',
-  validateSearch: (search: Record<string, unknown>): ShelvesPageSearch =>
-    parseShelvesSearch(search),
-  // `pages/shelves.tsx` の `<PageHeader title="シリーズ棚">` と同じ表記。
-  head: () => ({ meta: [{ title: pageTitle('シリーズ棚') }] }),
-  component: ShelvesPage,
+  beforeLoad: () => {
+    throw redirect({ to: '/series' })
+  },
 })
 
 const cmLogosRoute = createRoute({
@@ -248,6 +242,15 @@ const cmLogosRoute = createRoute({
   // 探すロゴである（`pages/cm-logos.tsx` の `<PageHeader>` と同じ表記）。
   head: () => ({ meta: [{ title: pageTitle('CM 検出のロゴ') }] }),
   component: CMLogosPage,
+})
+
+const cmLogoStationRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/cm-logos/$networkId/$serviceId',
+  validateSearch: (search: Record<string, unknown>): CMLogoStationPageSearch =>
+    parseCMLogoStationSearch(search),
+  head: () => ({ meta: [{ title: pageTitle('CM 検出のロゴ') }] }),
+  component: CMLogoStationPage,
 })
 
 const reservationsRoute = createRoute({
@@ -455,8 +458,10 @@ export const routeTree = rootRoute.addChildren([
   programsRoute,
   searchRoute,
   rulesRoute,
-  shelvesRoute,
+  seriesRoute,
+  shelvesRedirectRoute,
   cmLogosRoute,
+  cmLogoStationRoute,
   reservationsRoute,
   reservationDetailRoute,
   recordingsRoute,

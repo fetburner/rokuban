@@ -328,7 +328,8 @@ const (
     -- 分かれる。相関サブクエリなのは、ビューを JOIN すると行が増えうる形
     -- （label_rule_hits は PK なので実際には増えないが、読み手がそれを確かめる
     -- 必要がある）を避けるため。一覧は LIMIT 50 なので 1 行 1 回の PK 引き。
-    (SELECT s.value FROM recording_series s WHERE s.recording_id = r.id) AS series`
+	    (SELECT s.value FROM recording_series s WHERE s.recording_id = r.id) AS series,
+	    r.series_key AS series_key`
 
 	// recordingsAvailableEncodedAssetsSelect はブラウザ再生用の観測列（active な
 	// encoded のみ）。先頭にカンマを持つので recordingsSelectColumns の直後に
@@ -616,6 +617,7 @@ WHERE r.id = $1 AND r.purged_at IS NULL`
 		&fields.CMAttemptStage, &fields.CMAttemptError,
 		&fields.ChaptersOwned, &fields.ChapterSpans,
 		&fields.Series,
+		&fields.SeriesKey,
 		&fields.AvailableEncodedAssets,
 	)
 	if err != nil {
@@ -663,6 +665,7 @@ func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter
 			&fields.CMAttemptStage, &fields.CMAttemptError,
 			&fields.ChaptersOwned, &fields.ChapterSpans,
 			&fields.Series,
+			&fields.SeriesKey,
 			&fields.AvailableEncodedAssets,
 		); err != nil {
 			return nil, fmt.Errorf("scanning recording row: %w", err)

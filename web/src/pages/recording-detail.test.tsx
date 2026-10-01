@@ -646,6 +646,56 @@ describe('RecordingDetailPage CM 検出の有効化導線', () => {
 
     expect(await screen.findByRole('button', { name: '検出を有効化' })).toBeInTheDocument()
   })
+
+  it.each([
+    ['logo', 'ロゴを見つけられず、CM を検出できませんでした。', true],
+    ['area', '教えた枠が録画の解像度と合わないため、枠を使えませんでした。', true],
+    ['setup', 'CM 検出の処理が失敗しました。ロゴの枠では直せない失敗です。', false],
+    [undefined, '失敗の種類が記録されていない古い試行です。', false],
+  ] as const)('失敗工程 %s は利用者向けの理由を出し、枠の導線を工程に合わせる', async (stage, message, linkExpected) => {
+    createFakeServer({
+      recording: sampleRecording({
+        sizeBytes: 1_000_000,
+        cmDetection: { state: 'failed', ...(stage === undefined ? {} : { stage }) },
+      }),
+      cmDetectCapability: true,
+    })
+
+    renderAt('/recordings/3')
+
+    expect(await screen.findByTestId('cm-detection-failure-message')).toHaveTextContent(message)
+    const logoLink = screen.queryByRole('link', { name: 'CM 検出のロゴを教える' })
+    if (linkExpected) expect(logoLink).toBeInTheDocument()
+    else expect(logoLink).not.toBeInTheDocument()
+    const retry = screen.getByRole('button', { name: '再試行' })
+    // 枠を教えられる工程ではリンクが再試行より先（主導線）、それ以外は再試行が主ボタン
+    if (logoLink) {
+      expect(logoLink.compareDocumentPosition(retry) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    }
+    expect(retry.className.includes('bg-primary')).toBe(!linkExpected)
+  })
+
+  it('失敗の技術的な詳細は既定で閉じ、開くと改行を保ったまま表示する', async () => {
+    const user = userEvent.setup()
+    const error = 'ffmpeg: first line\nlogoframe: second line'
+    createFakeServer({
+      recording: sampleRecording({
+        sizeBytes: 1_000_000,
+        cmDetection: { state: 'failed', stage: 'logo', error },
+      }),
+      cmDetectCapability: true,
+    })
+
+    renderAt('/recordings/3')
+
+    const details = await screen.findByTestId('cm-detection-technical-details')
+    expect((details as HTMLDetailsElement).open).toBe(false)
+    expect(details.querySelector('pre')).not.toBeNull()
+
+    await user.click(screen.getByText('技術的な詳細'))
+    expect((details as HTMLDetailsElement).open).toBe(true)
+    expect(details.querySelector('pre')?.textContent).toBe(error)
+  })
 })
 
 // 一覧の常時「再生」列とインライン展開を廃し、視聴・削除・エンコードは詳細ページに

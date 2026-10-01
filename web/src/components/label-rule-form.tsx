@@ -4,6 +4,7 @@ import { useState } from 'react'
 import {
   createLabelRule,
   getListLabelRulesQueryKey,
+  getListRecordingShelvesQueryKey,
   useGetLabelRuleValueKey,
   updateLabelRule,
   type LabelRule,
@@ -83,7 +84,11 @@ export function LabelRuleForm({
   const save = async () => {
     if (error !== undefined) return
     setPending(true)
-    const data = { keyword, value, priority: Number(priority) || 0 }
+    const data = {
+      keyword,
+      value,
+      priority: Number(priority) || 0,
+    }
     try {
       if (rule !== undefined) {
         await updateLabelRule(rule.id, data)
@@ -96,6 +101,7 @@ export function LabelRuleForm({
       // 分類ルールの一覧・棚・録画一覧のすべてが変わる。SSE でも届くが、
       // 押した本人の画面は待たせない。
       void queryClient.invalidateQueries({ queryKey: getListLabelRulesQueryKey() })
+      void queryClient.invalidateQueries({ queryKey: getListRecordingShelvesQueryKey() })
       void queryClient.invalidateQueries({
         predicate: (query) => query.queryKey[0] === labelRulesQueryKeyPrefix,
       })

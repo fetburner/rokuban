@@ -2,15 +2,19 @@ package catalog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/medialock"
+	"github.com/fetburner/rokuban/internal/mediapath"
 )
 
 // RescueResult は rescue で復元した件数のサマリ。
@@ -52,6 +56,9 @@ type RescueResult struct {
 	// rescue で唯一この件数だけが復元漏れを示す（slog の Warn は運用者の目に
 	// 触れるとは限らない）ので、呼び出し側のサマリ表示に必ず出す。
 	SkippedFilesWithoutSitePrefix int
+
+	// MissingMediaFiles counts missing snapshot files and scan candidates removed before registration.
+	MissingMediaFiles int
 }
 
 // RescueLatest は media_dir/catalog/ の**最新の完成世代**を読んで DB に冪等
@@ -89,7 +96,7 @@ func RescueLatest(ctx context.Context, pool *pgxpool.Pool, mediaDir string, regi
 		}
 		return nil, err
 	}
-	result, err := RescueFile(ctx, pool, sel.DocumentPath)
+	result, err := RescueFile(ctx, pool, mediaDir, sel.DocumentPath)
 	if err != nil {
 		return nil, err
 	}
@@ -98,16 +105,32 @@ func RescueLatest(ctx context.Context, pool *pgxpool.Pool, mediaDir string, regi
 	return result, nil
 }
 
-// RescueFile は path の catalog JSON を読んで DB に冪等 upsert する。
+// RescueFile は path の catalog JSON を読み、mediaDir のファイルをロックして
+// DB に冪等 upsert する。存在しないファイルの行は deleted として復元する。
 //
 // 書き込み順: rules（+ 子）→ program_snapshots → program_intents /
 // program_overrides → recordings → media_assets → drop_stats → drop_positions。
 // 全部 1 トランザクションで、途中失敗なら何も残さない。
-func RescueFile(ctx context.Context, pool *pgxpool.Pool, path string) (*RescueResult, error) {
+func RescueFile(ctx context.Context, pool *pgxpool.Pool, mediaDir, path string) (*RescueResult, error) {
 	doc, err := Load(path)
 	if err != nil {
 		return nil, err
 	}
+
+	// Acquire file locks before DB row locks and retain them through commit.
+	// deleted の行は active 行を作らない（ファイルも見ない）ので、ロック対象から外す。
+	// 墓石は運用とともに増えるため、ロック数を live な行に抑える。
+	paths := make([]string, 0, len(doc.MediaAssets))
+	for _, asset := range doc.MediaAssets {
+		if asset.State != "deleted" {
+			paths = append(paths, asset.RelPath)
+		}
+	}
+	release, err := medialock.LockPaths(ctx, mediaDir, paths)
+	if err != nil {
+		return nil, fmt.Errorf("locking rescue assets: %w", err)
+	}
+	defer func() { _ = release() }()
 
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -115,7 +138,7 @@ func RescueFile(ctx context.Context, pool *pgxpool.Pool, path string) (*RescueRe
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	result, err := applyDocument(ctx, tx, doc)
+	result, err := applyDocument(ctx, tx, doc, mediaDir)
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +179,7 @@ func insertableSnapshot(s ProgramSnapshot) bool {
 }
 
 // applyDocument は 1 つのトランザクション内で Document の各表を FK 順に復元する。
-func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult, error) {
+func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document, mediaDir string) (*RescueResult, error) {
 	q := sqlcgen.New(tx)
 	res := &RescueResult{}
 
@@ -211,7 +234,7 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document) (*RescueResult
 		return nil, err
 	}
 
-	if err := applyMediaAssets(ctx, q, doc.MediaAssets, res); err != nil {
+	if err := applyMediaAssets(ctx, q, doc.MediaAssets, res, mediaDir); err != nil {
 		return nil, err
 	}
 
@@ -458,8 +481,27 @@ func applyRecordingEncodePolicies(ctx context.Context, q *sqlcgen.Queries, polic
 }
 
 // applyMediaAssets は media_assets を復元し、件数を res.MediaAssets に書く。
-func applyMediaAssets(ctx context.Context, q *sqlcgen.Queries, assets []MediaAsset, res *RescueResult) error {
+func applyMediaAssets(ctx context.Context, q *sqlcgen.Queries, assets []MediaAsset, res *RescueResult, mediaDir string) error {
 	for _, a := range assets {
+		if a.State != "deleted" {
+			path, err := mediapath.Resolve(mediaDir, a.RelPath)
+			if err != nil {
+				return err
+			}
+			info, err := os.Lstat(path)
+			if errors.Is(err, os.ErrNotExist) {
+				// Keep the historical row and its dependent statistics, but never publish
+				// a snapshot's active state for a file removed since export.
+				a.State = "deleted"
+				at := time.Now().UTC()
+				a.DeletedAt = &at
+				res.MissingMediaFiles++
+			} else if err != nil {
+				return fmt.Errorf("checking rescue asset %q: %w", a.RelPath, err)
+			} else if !info.Mode().IsRegular() {
+				return fmt.Errorf("rescue asset %q is not a regular file", a.RelPath)
+			}
+		}
 		if err := q.CatalogUpsertMediaAsset(ctx, sqlcgen.CatalogUpsertMediaAssetParams{
 			ID:          a.ID,
 			RecordingID: a.RecordingID,
