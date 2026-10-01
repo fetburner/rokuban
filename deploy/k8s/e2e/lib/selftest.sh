@@ -37,6 +37,13 @@ check() {
   fi
 }
 
+# 判定 3 が仕込む original asset は worker の起動時検査を通る必要がある。
+case "$E2E_ENCODE_REL_PATH" in
+  "sites/${E2E_SITE_A}/"?*) encode_path_has_site_namespace="yes" ;;
+  *) encode_path_has_site_namespace="no" ;;
+esac
+check "encode fixture は site A の media 名前空間に置く" "yes" "$encode_path_has_site_namespace"
+
 # k / kall を差し替える。$K_FIXTURE の中身をそのまま返し、渡された引数を
 # **ファイル**に残す（探索の絞り込みを検査するため）。
 #

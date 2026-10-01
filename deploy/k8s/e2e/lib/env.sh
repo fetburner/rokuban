@@ -60,7 +60,9 @@ E2E_ENCODE_PRODUCER="${E2E_ENCODE_PRODUCER:-produce_real_encode_job}"
 # プロファイルは `deploy/k8s/overlays/e2e/config.yml` の `encode.profiles` に
 # 定義してある（**狙って遅くしてある** --- 判定 3 は 2 つの窓ぶん走り続けて
 # いることを要求する）。
-E2E_ENCODE_REL_PATH="e2e/encode-probe.m2ts"
+# original media_assets は worker 起動時に `sites/{site}/` 名前空間を検査する。
+# encode worker が Job を取れるよう、原本も site A の名前空間に置く。
+E2E_ENCODE_REL_PATH="sites/${E2E_SITE_A}/e2e/encode-probe.m2ts"
 E2E_ENCODE_PROFILE="e2e-slow"
 # 仕込んだ recording を後から見分けるための印。周回ごとに掃除する。
 E2E_ENCODE_TITLE="e2e encode probe"
