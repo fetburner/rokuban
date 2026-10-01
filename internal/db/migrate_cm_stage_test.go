@@ -5,10 +5,11 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/pressly/goose/v3"
 )
 
 // TestMigrateDown_CMStageResolutionMatch は、新しい工程 resolution / match を持つ試行が
-// ある状態でも最新マイグレーションの Down が通り、その工程だけが未記録に戻ることを確かめる。
+// ある状態でも 00019 の Down が通り、その工程だけが未記録に戻ることを確かめる。
 // 旧 CHECK は 2 値を許さず、行を残したままでは再追加が落ちる。
 func TestMigrateDown_CMStageResolutionMatch(t *testing.T) {
 	dbURL := testDatabaseURL(t)
@@ -34,7 +35,11 @@ func TestMigrateDown_CMStageResolutionMatch(t *testing.T) {
 		t.Fatalf("insert attempts: %v", err)
 	}
 
-	if err := MigrateDown(ctx, dbURL); err != nil {
+	// 後続のマイグレーションが増えても 00019 を確実に戻すため、版 18 まで戻す。
+	if err := runGooseMigration(ctx, dbURL, func(ctx context.Context, p *goose.Provider) error {
+		_, err := p.DownTo(ctx, 18)
+		return err
+	}); err != nil {
 		t.Fatalf("migrate down with resolution/match attempts: %v", err)
 	}
 
