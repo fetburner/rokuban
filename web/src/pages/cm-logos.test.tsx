@@ -70,10 +70,21 @@ const recording = {
 
 const frameBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xd9])
 
+/** 数値入力へ値を入れて blur で確定する。 */
+function typeNumber(key: 'x' | 'y' | 'w' | 'h', value: string) {
+  const input = screen.getByTestId(`cm-logo-field-${key}`)
+  fireEvent.change(input, { target: { value } })
+  fireEvent.blur(input)
+}
+
 function stubApi(options: {
   logos?: CMLogoState[]
   cmDetect?: boolean
   area?: CMLogoState['logoArea']
+  recordings?: Recording[]
+  /** 詳細 API が返す録画。未指定なら recordings と同じ。 */
+  detailRecordings?: Recording[]
+  frameHeaders?: Record<string, string>
 } = {}) {
   let currentArea = options.area
   const requests: Array<{ method: string; url: string; body?: unknown }> = []
@@ -88,7 +99,7 @@ function stubApi(options: {
       return Promise.resolve(jsonResponse(rows))
     }
     if (url.pathname === '/api/recordings' && method === 'GET') {
-      return Promise.resolve(jsonResponse([recording]))
+      return Promise.resolve(jsonResponse(options.recordings ?? [recording]))
     }
     if (url.pathname === '/api/media/recordings/7/frame' && method === 'GET') {
       requests.push({ method, url: url.pathname + url.search })
@@ -100,9 +111,19 @@ function stubApi(options: {
             'X-Coded-Width': '1440',
             'X-Coded-Height': '1080',
             'X-Sample-Aspect-Ratio': '4:3',
+            ...options.frameHeaders,
           },
         }),
       )
+    }
+    const detail = url.pathname.match(/^\/api\/recordings\/(\d+)$/)
+    if (detail && method === 'GET') {
+      const found = (options.detailRecordings ?? options.recordings ?? [recording]).find((item) => item.id === Number(detail[1]))
+      return Promise.resolve(found ? jsonResponse(found) : jsonResponse({ error: 'not found' }, 404))
+    }
+    if (url.pathname === '/api/recordings/7/cm-detection/retry' && method === 'POST') {
+      requests.push({ method, url: url.pathname })
+      return Promise.resolve(new Response(null, { status: 204 }))
     }
     if (url.pathname === '/api/cm-logos/32678/5168/area') {
       const body = init?.body === undefined ? undefined : JSON.parse(String(init.body))
@@ -161,11 +182,15 @@ afterEach(() => {
 
 describe('CMLogosPage', () => {
   it('局を要対応・検出待ち・問題なしの順に分け、問題なしを閉じる', async () => {
-    stubApi({ logos: [healthyLogo, pendingLogo, logo] })
+    // 失敗と検出待ちが同居する局は「要対応」に入る（判定の順序を固定する）。
+    const mixedLogo = { ...logo, networkId: 5, serviceId: 6, serviceName: '混在局', failedCount: 1, pendingCount: 3 }
+    stubApi({ logos: [healthyLogo, pendingLogo, mixedLogo, logo] })
     renderInRouter(<CMLogosPage />, { path: '/cm-logos' })
 
     expect(await screen.findByTestId('cm-logo-attention')).toHaveTextContent('テスト放送局')
+    expect(screen.getByTestId('cm-logo-attention')).toHaveTextContent('混在局')
     expect(screen.getByTestId('cm-logo-pending')).toHaveTextContent('待機局')
+    expect(screen.getByTestId('cm-logo-pending')).not.toHaveTextContent('混在局')
     const healthy = screen.getByTestId('cm-logo-healthy')
     expect(healthy).not.toBeVisible()
     expect(screen.getByText('問題なし（1）')).toBeInTheDocument()
@@ -184,10 +209,10 @@ describe('CMLogoStationPage', () => {
     await screen.findByTestId('cm-logo-frame-image')
     expect(globalThis.fetch).toHaveBeenCalledWith('/api/media/recordings/7/frame?at=300000')
     const frameRequestsBeforeDrag = requests.filter((request) => request.url.includes('/frame')).length
-    const slider = screen.getByTestId('cm-logo-time-slider')
-    fireEvent.change(slider, { target: { value: '100000' } })
+    const slider = screen.getByTestId('cm-logo-time')
+    fireEvent.input(slider, { target: { value: '100000' } })
     expect(requests.filter((request) => request.url.includes('/frame')).length).toBe(frameRequestsBeforeDrag)
-    fireEvent.pointerUp(slider)
+    fireEvent.change(slider)
     await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith('/api/media/recordings/7/frame?at=100000'))
   })
 
@@ -199,10 +224,10 @@ describe('CMLogoStationPage', () => {
     })
 
     await screen.findByTestId('cm-logo-frame-image')
-    fireEvent.change(screen.getByTestId('cm-logo-field-x'), { target: { value: '400' } })
-    fireEvent.change(screen.getByTestId('cm-logo-field-y'), { target: { value: '300' } })
-    fireEvent.change(screen.getByTestId('cm-logo-field-w'), { target: { value: '400' } })
-    fireEvent.change(screen.getByTestId('cm-logo-field-h'), { target: { value: '300' } })
+    typeNumber('x', '400')
+    typeNumber('y', '300')
+    typeNumber('w', '400')
+    typeNumber('h', '300')
     await waitFor(() => expect(screen.getByRole('button', { name: '枠を保存' })).toBeEnabled())
     fireEvent.click(screen.getByRole('button', { name: '枠を保存' }))
 
@@ -216,6 +241,130 @@ describe('CMLogoStationPage', () => {
       codedHeight: 1080,
     })
     expect(await screen.findByTestId('cm-logo-save-message')).toHaveTextContent('検出待ち')
+  })
+
+  it('数値入力は入力中に丸めず、blur で下限・範囲へ確定する', async () => {
+    stubApi()
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+    await screen.findByTestId('cm-logo-frame-image')
+    const width = screen.getByTestId('cm-logo-field-w')
+    const x = screen.getByTestId('cm-logo-field-x')
+
+    // 400 を打つ途中の 4 が下限 8 へ書き戻されると、続きの 00 が 800 になる。
+    fireEvent.change(width, { target: { value: '4' } })
+    expect(width).toHaveValue(4)
+    fireEvent.change(width, { target: { value: '40' } })
+    fireEvent.change(width, { target: { value: '400' } })
+    fireEvent.blur(width)
+    expect(width).toHaveValue(400)
+
+    // 空にして打ち直せる。消している途中で値が戻ってはならない。
+    fireEvent.change(x, { target: { value: '' } })
+    expect(x).toHaveValue(null)
+    fireEvent.change(x, { target: { value: '5' } })
+    fireEvent.change(x, { target: { value: '50' } })
+    expect(x).toHaveValue(50)
+    fireEvent.blur(x)
+    expect(x).toHaveValue(50)
+
+    // 確定時は下限と映像内へ寄せる。
+    fireEvent.change(width, { target: { value: '3' } })
+    fireEvent.blur(width)
+    expect(width).toHaveValue(8)
+    fireEvent.change(width, { target: { value: '99999' } })
+    fireEvent.blur(width)
+    expect(width).toHaveValue(1440 - 50)
+  })
+
+  it('枠に寄る焦点は押した時点で固定し、枠を動かしても画像は動かない', async () => {
+    stubApi()
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+    const image = await screen.findByTestId('cm-logo-frame-image')
+    typeNumber('x', '600')
+    typeNumber('y', '400')
+    typeNumber('w', '100')
+    typeNumber('h', '100')
+    fireEvent.click(screen.getByRole('button', { name: '枠に寄る' }))
+    const before = (image as HTMLElement).style.left
+    expect(before).not.toBe('')
+    typeNumber('x', '700')
+    expect((image as HTMLElement).style.left).toBe(before)
+  })
+
+  it('表示枠の比は SAR から導き、16:9 に固定しない', async () => {
+    stubApi({
+      frameHeaders: { 'X-Coded-Width': '720', 'X-Coded-Height': '480', 'X-Sample-Aspect-Ratio': '8:9' },
+    })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+    await screen.findByTestId('cm-logo-frame-image')
+    const ratio = parseFloat(screen.getByTestId('cm-logo-frame').style.aspectRatio)
+    expect(ratio).toBeCloseTo(4 / 3, 3)
+  })
+
+  it('ハンドルは見た目の要素で掴み、角から離れていても新しい枠を描かない。ドラッグ後は整数', async () => {
+    stubApi()
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+    await screen.findByTestId('cm-logo-frame-image')
+    typeNumber('x', '400')
+    typeNumber('y', '300')
+    typeNumber('w', '400')
+    typeNumber('h', '300')
+    const handle = screen.getByTestId('cm-logo-handle-se')
+    const frame = screen.getByTestId('cm-logo-frame')
+    // 箱 640x360 / coded 1440x1080 → 横縦とも 0.4444 CSS px / 画素。右下の角は (355.6, 266.7)。
+    fireEvent.pointerDown(handle, { clientX: 355.6 + 18, clientY: 266.7 + 18, pointerId: 1 })
+    fireEvent.pointerMove(frame, { clientX: 400.3, clientY: 300.3, pointerId: 1 })
+    fireEvent.pointerUp(frame, { clientX: 400.3, clientY: 300.3, pointerId: 1 })
+    expect(screen.getByTestId('cm-logo-field-x')).toHaveValue(400)
+    expect(screen.getByTestId('cm-logo-field-y')).toHaveValue(300)
+    const w = Number((screen.getByTestId('cm-logo-field-w') as HTMLInputElement).value)
+    expect(Number.isInteger(w)).toBe(true)
+    expect(w).toBe(501)
+  })
+
+  it('成功した録画にも再検出を出し、押すと再検出を依頼する', async () => {
+    const detected = { ...recording, cmDetection: { state: 'detected' } } as Recording
+    const { requests } = stubApi({ recordings: [detected] })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+    fireEvent.click(await screen.findByRole('button', { name: '再検出' }))
+    await waitFor(() =>
+      expect(requests.some((request) => request.method === 'POST' && request.url.endsWith('/retry'))).toBe(true),
+    )
+  })
+
+  it('一覧に載らない録画でも、ディープリンクの録画の詳細からコマを取る', async () => {
+    const { requests } = stubApi({ recordings: [], detailRecordings: [{ ...recording, sizeBytes: undefined } as Recording] })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+    await screen.findByTestId('cm-logo-frame-image')
+    expect(requests.some((request) => request.url === '/api/media/recordings/7/frame?at=300000')).toBe(true)
+  })
+
+  it('別の局のディープリンク録画は捨てる', async () => {
+    const other = { ...recording, serviceId: 9999 } as Recording
+    stubApi({ recordings: [], detailRecordings: [other] })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+    expect(await screen.findByTestId('cm-logo-no-original')).toBeInTheDocument()
   })
 
   it('CM 検出が無効なら枠の編集面を出さない', async () => {

@@ -984,23 +984,47 @@ E2E_URL=http://localhost:4173 pnpm e2e:seek-tiles
 
 ### CM 検出のロゴ位置（`cm-logo-area.mjs`）
 
-CM 検出のロゴ画面で、旧 URL から局別画面へ移動できること、EPG の duration の中央を
-初期値にしたスライダー、SAR 付きのコマ、数値入力で記録上の解像度の座標を保存できることを
-実ブラウザで見る。表示枠の寸法と画像の SAR は jsdom では測れないため、この判定を単体テストで
-置き換えない。
+CM 検出のロゴ画面は `/cm-logos/{networkId}/{serviceId}` を局の資源として開く。
+旧い query 形式は画面側のリダイレクト契約であり、この判定は新しい局ルートを使う。
+API はブラウザ側で差し替え、1x1 PNG と `X-Coded-Width: 1440`、
+`X-Coded-Height: 1080`、`X-Sample-Aspect-Ratio: 4:3` を返す。
+画像の画素数ではなく coded size と SAR を使えていることを測る。
 
-API はブラウザ側で差し替える。1x1 PNG に `X-Coded-Width: 1440`、
-`X-Coded-Height: 1080`、`X-Sample-Aspect-Ratio: 4:3` を付けるので、画像の画素数・
-記録上の座標・表示比を混同しない。
+`data-testid` と `aria-label` は画面の契約である。
 
-- ① 旧 `/cm-logos?network=&service=&recording=` から局別 URL へ移動し、旧シークタイルが表示されない
-- ② duration 600 秒の中央 `300000ms` からコマが表示され、スライダーを動かしただけでは再取得せず、確定後に取得する
-- ③ 1440×1080 + SAR 4:3 のコマが 16:9 に表示され、X/Y/幅/高さを 400px 前後で保存すると coded 座標の PUT になる
-- ④ 局の行に直近の CM 検出失敗理由が表示され、保存後に検出待ちメッセージが出る
+- `cm-logo-frame` / `cm-logo-frame-image` / `cm-logo-rect`
+- `cm-logo-handle-nw` / `-ne` / `-sw` / `-se`
+- `cm-logo-time`（`input[type=range]`）
+- 数値入力の `aria-label`: `X` / `Y` / `幅` / `高さ`
 
-判定側は表示枠と画像比を実測する。座標の保存値は数値入力で固定するので、実装の純関数を
-import して比較する循環を避ける。枠の外は crosshair、枠の中は move、四隅は
-`nwse-resize` / `nesw-resize`、スライダーは pointer になることは画面実装と単体テストで固定する。
+判定する項目は次の 12 項目である。
+
+- ① SAR を掛けたコマの表示比が 16:9（±1%）である
+- ② `cm-logo-time` に範囲があり、初期値と違う値へ動かすと `/frame?at=` がその値で呼ばれる。
+  録画 7 の詳細（尺つき）を返すので、リクエストが起きなければ落ちる
+- ③ 右下ハンドルの CSS px の移動が coded size の `w` / `h` になる。分母は ① と同じ
+  `cm-logo-frame-image` の描画寸法（外枠の border を含む寸法ではない）
+- ④ 数値入力 `X` と `幅` が枠の位置と大きさを `120 × 描画幅 / 1440` の式どおりに動かし、
+  枠のドラッグが `X` を移動量の式どおりに変える（±1）
+- ⑤ スライダー / 枠外のコマ / 枠の中心 / 4 ハンドルの中心で、`document.elementFromPoint`
+  が返した最前面の要素の computed cursor が契約どおりである（透明な覆いを見逃さない）
+- ⑥ 局名が描かれたことを確かめてから、4KB 相当の失敗ログが `textContent`
+  （閉じた `<details>` も含む）に現れないことを見る
+- ⑦ 旧形式 `/cm-logos?network=&service=&recording=` が局のルートへ `recording` を保ったまま飛ぶ
+- ⑧ 数値入力へ `keyboard.type` で打てる（幅に 400 が 400 のまま、X の Backspace が 50）
+- ⑨ 角から約 18px 離れても、`elementFromPoint` が右下ハンドルで、掴むと X / Y を変えず幅が増える
+- ⑩ 枠に寄った状態で枠を 20px ドラッグすると、枠が 20px（±2）動く
+- ⑪ ドラッグ後の X / Y / 幅 / 高さが整数である
+- ⑫ 720x480 SAR 8:9 の枠箱が 4:3 で、画像が枠箱を埋める（①の 1440x1080 でも画像 = 枠箱）
+
+録画 7・8 は `/api/recordings/{id}` の詳細だけで返し、一覧 `/api/recordings` は空にする。
+一覧に載らない録画でも、ディープリンクの録画の尺でスライダーとコマが決まることを見る。
+
+表示寸法を実測し、横は `css_x × 1440 / 描画幅`、縦は
+`css_y × 1080 / 描画高さ` の式を判定側にリテラルで書く。
+画面の純関数を import して比較すると、同じ実装を二度呼ぶだけになる。
+実装が無い状態でこの判定を回すと、局のルートが Not Found になり各項目が
+「要素が無い」で落ちる。実装後は全項目が通ることを確かめる。
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
