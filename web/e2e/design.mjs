@@ -2543,6 +2543,7 @@ for (const theme of themes) {
     await context.close()
 
     // 360px では詳細欄に余計な面・内側余白を付けず、本文を16pxで折り返す。
+    // isMobile: true でも documentWidth 360 / 負の対照 385px と同じ結果だった（実測）。false を選ぶ理由は未検証。
     const mobileContext = await open(mobile, theme, recordingDetailScreen, { pointer: 'coarse', isMobile: false })
     const mobilePage = mobileContext.page
     await mobilePage.getByRole('heading', { name: 'PID 別ドロップ統計' }).waitFor({ state: 'visible' })
@@ -2597,9 +2598,26 @@ for (const theme of themes) {
         .getByRole('heading', { name: 'PID 別ドロップ統計' })
         .locator('..')
         .locator('.overflow-x-auto')
-      const tableOverflow = await tableViewport.evaluate((el) => el.scrollWidth > el.clientWidth)
-      if (!tableOverflow) {
-        ng.push(`[${theme}] 録画詳細/mobile: はみ出す PID 表が局所スクロール領域に収まっていない`)
+      if ((await tableViewport.count()) === 0) {
+        ng.push(`[${theme}] 録画詳細/mobile: PID 表の .overflow-x-auto 容器が見つからない`)
+      } else {
+        const tableOverflow = await tableViewport.evaluate((el) => el.scrollWidth > el.clientWidth)
+        if (!tableOverflow) {
+          ng.push(`[${theme}] 録画詳細/mobile: はみ出す PID 表が局所スクロール領域に収まっていない`)
+        }
+        // 負の対照: 容器の overflow を無効化すると、表が自力でページ幅を押し広げることを確かめる。
+        await tableViewport.evaluate((el) => {
+          el.style.overflowX = 'visible'
+        })
+        const noGuard = await mobilePage.evaluate(() => document.documentElement.scrollWidth)
+        await tableViewport.evaluate((el) => {
+          el.style.overflowX = ''
+        })
+        if (noGuard <= mobileLayout.viewportWidth) {
+          ng.push(`[${theme}] 録画詳細/mobile: PID 表容器の overflow 負の対照で横はみ出しを検知できない（${noGuard}px）`)
+        } else {
+          log(`  [${theme}] 録画詳細/mobile 負の対照 PID 表 overflow 無効: ${noGuard}px > ${mobileLayout.viewportWidth}px`)
+        }
       }
 
       // 負の対照: 本文に 40rem の最小幅を一時設定し、ページ幅判定が実際に
