@@ -468,8 +468,8 @@ func TestApplyLabelRuleReevaluation_AppliesOnlyDifferences(t *testing.T) {
 	}
 }
 
-// 棚は生きていて再生できる録画だけを数える。ごみ箱・superseded・取り込めて
-// いない録画は外れる。
+// 棚は生きている録画を数える。ごみ箱・superseded は外れるが、録画中・取り込み待ち・
+// 失敗の録画も棚の母集団に残し、再生可能件数を別に返す。
 func TestListRecordingShelves_PopulationAndRepresentative(t *testing.T) {
 	pool := setupTestDB(t)
 	ctx := context.Background()
@@ -483,7 +483,7 @@ func TestListRecordingShelves_PopulationAndRepresentative(t *testing.T) {
 	activeMediaAsset(t, pool, newest, "encoded", "h264")
 	activeMediaAsset(t, pool, also, "original", "")
 
-	// 母集団から外れるもの: ごみ箱 / superseded / 再生できる資産が無い。
+	// 母集団から外れるもの: ごみ箱 / superseded。再生できる資産が無い行は残る。
 	trashed := createSeriesRecording(t, pool, "アニメ　作品X　第4話", 4, base.Add(time.Hour))
 	activeMediaAsset(t, pool, trashed, "original", "")
 	if _, err := pool.Exec(ctx, "UPDATE recordings SET deleted_at = now() WHERE id = $1", trashed); err != nil {
@@ -521,16 +521,18 @@ func TestListRecordingShelves_PopulationAndRepresentative(t *testing.T) {
 	if !ok {
 		t.Fatalf("no 作品X shelf in %v", byValue)
 	}
-	if got.RecordingCount != 3 {
-		t.Errorf("作品X count = %d, want 3 (deleted / superseded / assetless rows must be excluded)", got.RecordingCount)
+	if got.RecordingCount != 4 {
+		t.Errorf("作品X count = %d, want 4 (deleted / superseded rows are excluded, assetless rows remain)", got.RecordingCount)
 	}
-	if got.RepresentativeID != newest {
-		t.Errorf("作品X representative = %d, want %d (newest program_start_at)", got.RepresentativeID, newest)
+	if got.PlayableCount != 3 {
+		t.Errorf("作品X playable count = %d, want 3", got.PlayableCount)
 	}
-	if got.Title != "アニメ　作品X　第2話" {
+	if got.RepresentativeID != noAsset {
+		t.Errorf("作品X representative = %d, want %d (newest program_start_at)", got.RepresentativeID, noAsset)
+	}
+	if got.Title != "アニメ　作品X　第6話" {
 		t.Errorf("作品X title = %q, want the representative's raw title", got.Title)
 	}
-	_ = noAsset
 
 	nullShelf, ok := byValue["<NULL>"]
 	if !ok {

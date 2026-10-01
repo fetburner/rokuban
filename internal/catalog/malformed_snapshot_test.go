@@ -81,7 +81,7 @@ func TestRescueFile_MalformedSnapshotIsSkippedAndAssetsSurvive(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := RescueFile(context.Background(), pool, path)
+	res, err := RescueFile(context.Background(), pool, dir, path)
 	if err != nil {
 		t.Fatalf("RescueFile: %v（壊れた 1 行で rescue 全体を止めてはならない）", err)
 	}

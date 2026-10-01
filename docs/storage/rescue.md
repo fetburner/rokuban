@@ -68,8 +68,17 @@ catalog/
 `rokuban rescue` は DB を catalog の内容で更新する。catalog が無い場合はストレージを走査して
 asset row を登録する。実行前に file や media asset を変更する worker を止める。
 対象は ingest / encode / thumbnail / seek tiles / delete_reconcile などである。rescue 終了後まで再開しない。
-未解決: rescue と削除が共通の rel_path lock を使わないため、並行すると削除済み file の row を
-復元したり、走査後に消えた file を登録したりするおそれがある。
+catalog 復元は全 asset の rel_path をソートして、公開・削除と共通の filesystem lock を
+DB トランザクションの開始前に取得し、コミットまで保持する。走査の in-place 登録も
+ファイルの再確認からコミットまで同じ lock を保持する。DB 接続の切断だけでは排他が消えない。
+`TestRescueDeletionSerialization` が両経路のファイル確認後に実際の削除を試みて検証する。
+
+スナップショット後にファイルが消えた asset は履歴・統計を残して `deleted` として復元し、
+件数を CLI に表示する。走査後に消えたファイルは登録せず、その件数も表示する。
+`TestRescueCatalogMissingFiles` と `TestRescueScanCandidateRemoved` がこの再確認を検証する。
+この排他はファイルと asset row の整合性を守る。古い catalog による録画・保持ポリシーなどの
+上書きを防ぐものではないため、復旧中に worker を止める運用要件は続く。
+共有ストレージでは全参加プロセスから同じ lock namespace が見え、flock が相互に効く必要がある。
 
 `rokuban rescue` は次の順で入力を選ぶ:
 
