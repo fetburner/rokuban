@@ -564,6 +564,59 @@ describe('CMLogoStationPage', () => {
     expect(logoFetchCount()).toBe(fetchCountAfterDiscard)
   }, 12000)
 
+  it('原本のある局で覚えたロゴを捨てると枠から新しい候補を作ると案内する', async () => {
+    stubApi({
+      logo: { ...logo, serviceName: 'ロゴ削除局', frameRecordingId: 7, learnedAt: '2026-10-01T00:00:00Z' },
+      area: { x: 1, y: 1, w: 10, h: 10, codedWidth: 1440, codedHeight: 1080, updatedAt: '2026-09-30T00:00:00Z' },
+    })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168'],
+    })
+
+    fireEvent.click(await screen.findByText('高度な操作'))
+    expect(screen.getByText('枠から解析し直して新しい候補を作ります。')).toBeInTheDocument()
+    expect(screen.queryByText('原本のある録画が無いため、新しい候補は作れません。')).not.toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: '覚えたロゴを捨てる' }))
+    expect(await screen.findByText('覚えたロゴを削除しました。枠から新しい候補を作ります')).toBeInTheDocument()
+  })
+
+  it('原本のある局で候補を破棄すると同じ枠で解析し直すと案内する', async () => {
+    stubApi({
+      logo: { ...logo, serviceName: '候補破棄局', frameRecordingId: 7 },
+      area: { x: 1, y: 1, w: 10, h: 10, codedWidth: 1440, codedHeight: 1080, updatedAt: '2026-09-30T00:00:00Z' },
+      candidate: {
+        state: 'ready', x: 1, y: 1, w: 10, h: 10, codedWidth: 1440, codedHeight: 1080,
+        recordingId: 7, attemptedAt: '2026-09-30T00:00:00Z',
+      },
+    })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+
+    fireEvent.click(await screen.findByTestId('cm-logo-candidate-discard'))
+    expect(await screen.findByText('候補を破棄しました。同じ枠で解析し直します')).toBeInTheDocument()
+  })
+
+  it('原本のない局で候補を破棄すると新しい候補は作れないと案内する', async () => {
+    stubApi({
+      logo: { ...logo, serviceName: '候補破棄局', frameRecordingId: 0 },
+      area: { x: 1, y: 1, w: 10, h: 10, codedWidth: 1440, codedHeight: 1080, updatedAt: '2026-09-30T00:00:00Z' },
+      candidate: {
+        state: 'ready', x: 1, y: 1, w: 10, h: 10, codedWidth: 1440, codedHeight: 1080,
+        recordingId: 7, attemptedAt: '2026-09-30T00:00:00Z',
+      },
+    })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+
+    fireEvent.click(await screen.findByTestId('cm-logo-candidate-discard'))
+    expect(await screen.findByText('候補を破棄しました。原本のある録画が無いため、新しい候補は作れません')).toBeInTheDocument()
+  })
+
   it('原本のない局で覚えたロゴを捨てた後は解析不能の理由を表示してポーリングしない', async () => {
     const { requests, logoFetchCount } = stubApi({
       logo: { ...logo, serviceName: 'ロゴ削除局', frameRecordingId: 0, learnedAt: '2026-10-01T00:00:00Z' },
@@ -576,7 +629,10 @@ describe('CMLogoStationPage', () => {
     })
 
     fireEvent.click(await screen.findByText('高度な操作'))
+    expect(screen.getByText('原本のある録画が無いため、新しい候補は作れません。')).toBeInTheDocument()
+    expect(screen.queryByText('枠から解析し直して新しい候補を作ります。')).not.toBeInTheDocument()
     fireEvent.click(await screen.findByRole('button', { name: '覚えたロゴを捨てる' }))
+    expect(await screen.findByText('覚えたロゴを削除しました。原本のある録画が無いため、新しい候補は作れません')).toBeInTheDocument()
     expect(await screen.findByText('原本のある録画がないため、ロゴ候補の解析を始められません。')).toBeInTheDocument()
     expect(screen.getByTestId('cm-logo-no-original')).toBeInTheDocument()
     expect(requests.some((request) => request.method === 'DELETE' && request.url === '/api/cm-logos/32678/5168')).toBe(true)

@@ -207,7 +207,12 @@ function candidateAnalysisNeeded(logo: CMLogoState): boolean {
  * 返す変更は OpenAPI と API の変更が要るため、この画面で必要な原本有無の近似を使う。
  */
 function awaitingCandidateAnalysis(logo: CMLogoState): boolean {
-  return candidateAnalysisNeeded(logo) && logo.frameRecordingId > 0
+  return candidateAnalysisNeeded(logo) && hasOriginalRecording(logo)
+}
+
+/** hasOriginalRecording は枠から候補を作り直せる原本のある録画が局にあるかを返す。 */
+function hasOriginalRecording(logo: CMLogoState): boolean {
+  return logo.frameRecordingId > 0
 }
 
 /** isAwaitingAdoption は worker が採用待ちの局として止めた録画かを返す（再試行では進まない）。 */
@@ -922,7 +927,11 @@ function CMLogoCandidatePanel({
             {
               onSuccess: () => {
                 invalidate()
-                toast({ message: '候補を破棄しました。同じ枠で解析し直します' })
+                toast({
+                  message: hasOriginalRecording(logo)
+                    ? '候補を破棄しました。同じ枠で解析し直します'
+                    : '候補を破棄しました。原本のある録画が無いため、新しい候補は作れません',
+                })
               },
               onError: (error) => toast({ message: mutationErrorMessage('ロゴ候補の破棄に失敗しました', error), kind: 'error' }),
             },
@@ -1030,9 +1039,11 @@ export function CMLogoStationPage() {
       onSuccess: () => {
         void queryClient.invalidateQueries({ queryKey: getListCMLogosQueryKey() })
         toast({
-          message: logo.logoArea
-            ? '覚えたロゴを削除しました。枠から新しい候補を作ります'
-            : '覚えたロゴを削除しました。次の検出で自動に学習します',
+          message: !logo.logoArea
+            ? '覚えたロゴを削除しました。次の検出で自動に学習します'
+            : hasOriginalRecording(logo)
+              ? '覚えたロゴを削除しました。枠から新しい候補を作ります'
+              : '覚えたロゴを削除しました。原本のある録画が無いため、新しい候補は作れません',
         })
       },
       onError: (error) => toast({ message: mutationErrorMessage('覚えたロゴの削除に失敗しました', error), kind: 'error' }),
@@ -1081,7 +1092,11 @@ export function CMLogoStationPage() {
             <div>
               <p>覚えたロゴを捨てる</p>
               <p className="text-xs text-muted-foreground">
-                {logo.logoArea ? '枠から解析し直して新しい候補を作ります。' : '次の検出で画面からロゴを探し直します。'}
+                {!logo.logoArea
+                  ? '次の検出で画面からロゴを探し直します。'
+                  : hasOriginalRecording(logo)
+                    ? '枠から解析し直して新しい候補を作ります。'
+                    : '原本のある録画が無いため、新しい候補は作れません。'}
               </p>
               <Button type="button" className="mt-2" size="sm" variant="destructive" disabled={!logo.learnedAt || deleteLogo.isPending} onClick={clearLearnedLogo}>
                 <Trash2 data-icon="inline-start" />
