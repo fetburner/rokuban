@@ -170,15 +170,15 @@ describe('RecordingPlayer のサイズ常置（値札、issue #236）', () => {
     expect(options.map((o) => o.textContent)).toEqual(['h264 (476.8 MB)', 'h265'])
   })
 
-  it('encoded が無く原本のみのとき、VLC リンクに原本サイズを付ける', () => {
+  it('encoded が無く原本のみのとき、空状態から VLC リンクを出す', () => {
     const { container } = render(
-      <RecordingPlayer recordingId={23} encodedAssets={[]} hasOriginal originalSizeBytes={3_000_000_000} />,
+      <RecordingPlayer recordingId={23} encodedAssets={[]} hasOriginal />,
     )
     const link = container.querySelector('a')!
-    expect(link.textContent).toContain('VLC 等で開く (2.8 GB)')
+    expect(link.textContent).toBe('VLC 等で開く')
   })
 
-  it('encoded が無く原本のみで originalSizeBytes が省略されているとき、リンクは出すがサイズは出さない', () => {
+  it('encoded が無く原本のみでサイズが無くても VLC リンクは出す', () => {
     const { container } = render(
       <RecordingPlayer recordingId={24} encodedAssets={[]} hasOriginal />,
     )
@@ -186,17 +186,15 @@ describe('RecordingPlayer のサイズ常置（値札、issue #236）', () => {
     expect(link.textContent).toBe('VLC 等で開く')
   })
 
-  it('encoded があり原本もあるとき、ダウンロード / VLC リンクに原本サイズを付ける', () => {
+  it('encoded 再生では原本リンクをプレイヤーの外に置く', () => {
     const { container } = render(
       <RecordingPlayer
         recordingId={25}
         encodedAssets={[{ profile: 'h264', sizeBytes: 100 }]}
         hasOriginal
-        originalSizeBytes={4_500_000_000}
       />,
     )
-    const link = container.querySelector('a[href="/api/media/recordings/25/file"]')!
-    expect(link.textContent).toContain('ダウンロード / VLC (4.2 GB)')
+    expect(container.querySelector('a[href="/api/media/recordings/25/file"]')).toBeNull()
   })
 })
 
@@ -241,15 +239,12 @@ describe('RecordingPlayer の encoded ダウンロード', () => {
         recordingId={28}
         encodedAssets={[{ profile: 'h264', sizeBytes: 100 }]}
         hasOriginal
-        originalSizeBytes={200}
       />,
     )
 
     expect(container.querySelector('a[aria-label="encoded 動画をダウンロード"]')).toBeInTheDocument()
-    expect(container.querySelector('a[href="/api/media/recordings/28/file"]')).toHaveTextContent(
-      'ダウンロード / VLC',
-    )
-    expect(container.querySelectorAll('a')).toHaveLength(2)
+    expect(container.querySelector('a[href="/api/media/recordings/28/file"]')).toBeNull()
+    expect(container.querySelectorAll('a')).toHaveLength(1)
   })
 })
 
@@ -513,9 +508,16 @@ describe('RecordingPlayer のチャプター', () => {
     expect(queryByTestId('chapter-source')).toBeNull()
   })
 
-  it('チャプターがあるときは一覧と切る区間の印を出す', () => {
+  it('チャプターがあるときはナビゲーションを外に置き、編集は件数付きで畳む', () => {
     const { container } = render(
-      <RecordingPlayer recordingId={100} encodedAssets={asset} chapters={[cmSpan]} />,
+      <RecordingPlayer
+        recordingId={100}
+        encodedAssets={asset}
+        chapters={[cmSpan]}
+        chapterVersion="v1"
+        onSaveChapters={() => Promise.resolve()}
+        onResetChapters={() => {}}
+      />,
     )
     // **目盛りの位置は `<video>.duration` を分母にする。** 確定する前に描くと
     // 割合が 0 除算になるので、duration が来るまで目盛りは出さない。
@@ -523,10 +525,39 @@ describe('RecordingPlayer のチャプター', () => {
     const video = container.querySelector('video')!
     setMediaProps(video, { duration: 60, currentTime: 0 })
     fireEvent.loadedMetadata(video)
-    const list = container.querySelector('[aria-label="チャプター"]')
-    expect(list?.textContent).toContain('CM')
-    expect(list?.textContent).toContain('切る')
+    expect(container.querySelector('[aria-label="チャプター"]')).toBeNull()
+    expect(container.querySelector('[data-testid="chapter-navigation"]')).not.toBeNull()
+    const details = container.querySelector<HTMLDetailsElement>('[data-testid="chapter-editor-details"]')!
+    expect(details.open).toBe(false)
+    expect(details.querySelector('summary')?.textContent).toBe('チャプター 1 件')
+    expect(details.querySelector('summary')?.textContent).not.toMatch(/確認済み|未確認/)
+    fireEvent.click(details.querySelector('summary')!)
+    expect(details.open).toBe(true)
+    expect(details.querySelector('input[aria-label="ラベル"]')).toHaveValue('CM')
+    expect(details.textContent).toContain('切る')
     expect(container.querySelector('[data-testid="chapter-marker"]')).not.toBeNull()
+  })
+
+  it('4回のtimeupdateで再描画しても開いた編集detailsを保つ', () => {
+    const { container } = render(
+      <RecordingPlayer
+        recordingId={101}
+        encodedAssets={asset}
+        chapters={[cmSpan]}
+        chapterVersion="v1"
+        onSaveChapters={() => Promise.resolve()}
+        onResetChapters={() => {}}
+      />,
+    )
+    const details = container.querySelector<HTMLDetailsElement>('[data-testid="chapter-editor-details"]')!
+    fireEvent.click(details.querySelector('summary')!)
+    const video = container.querySelector('video')!
+    for (const seconds of [1, 2, 3, 4]) {
+      setMediaProps(video, { currentTime: seconds })
+      fireEvent.timeUpdate(video)
+    }
+    expect(container.querySelector('[data-testid="chapter-editor-details"]')).toBe(details)
+    expect(details.open).toBe(true)
   })
 
   it('自動スキップは直前位置が区間の手前のときだけ飛ばす', () => {

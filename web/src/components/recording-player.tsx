@@ -55,8 +55,6 @@ type RecordingPlayerProps = {
   encodedAssets: EncodedAsset[]
   /** 原本 TS があるとき VLC 向けリンクを出す。 */
   hasOriginal?: boolean
-  /** 原本 TS の実サイズ。`hasOriginal` のときだけ渡され、ダウンロード / VLC リンクに常置する。 */
-  originalSizeBytes?: number
   /**
    * 有効なチャプターの区間（`GET /api/recordings/{id}/chapters` の結果そのまま）。
    * **本編の区間は含まれない** --- 区間の隙間が本編で、終端は `<video>.duration`
@@ -98,7 +96,6 @@ export function RecordingPlayer({
   preferredProfile,
   encodedAssets,
   hasOriginal = false,
-  originalSizeBytes,
   chapters,
   chapterSource = 'auto',
   chapterVersion,
@@ -324,9 +321,9 @@ export function RecordingPlayer({
             ブラウザ再生用のエンコードがまだありません。原本は{' '}
             <a
               href={recordingFileURL(recordingId)}
-              className="text-primary underline-offset-2 hover:underline"
+              className="inline-flex min-h-6 items-center text-primary underline-offset-2 hover:underline"
             >
-              VLC 等で開く{originalSizeBytes !== undefined && ` (${formatBytes(originalSizeBytes)})`}
+              VLC 等で開く
             </a>
             ことができます。
           </p>
@@ -346,7 +343,7 @@ export function RecordingPlayer({
       href={src}
       download={downloadFilename}
       aria-label="encoded 動画をダウンロード"
-      className="text-primary underline-offset-2 hover:underline"
+      className="inline-flex min-h-6 items-center text-primary underline-offset-2 hover:underline"
     >
       ダウンロード
     </a>
@@ -481,6 +478,25 @@ export function RecordingPlayer({
             <p className="text-muted-foreground">{assetOptionLabel(selectedAsset)}</p>
           )}
           {encodedDownloadLink}
+        </div>
+      )}
+
+      {playingCut && selectedAsset?.cutStale === true && (
+        <div className="flex max-w-3xl flex-wrap items-center gap-2 rounded border border-warning/50 bg-warning/10 px-3 py-2">
+          <p className="text-warning">
+            このカット版は編集前の内容です。現在のチャプターに合わせて作り直せます。
+          </p>
+          {onReencode !== undefined && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={reencodePending}
+              onClick={() => onReencode(selectedProfile)}
+            >
+              作り直す
+            </Button>
+          )}
         </div>
       )}
 
@@ -644,20 +660,24 @@ export function RecordingPlayer({
         </div>
       </div>
 
-      {/* チャプター一覧と移動。区間が 1 つも無ければ「機能しないコントロールは
-          置かない」の規律でセクションごと出さない（CM 無しの録画がこれに当たる）。 */}
+      {/* 区間の移動と自動スキップは、編集 UI とは独立した再生操作として置く。 */}
       {chapterSpans.length > 0 && (
-        <div className="flex max-w-3xl flex-col gap-2" aria-label="チャプター">
+        <div
+          className="flex max-w-3xl flex-col gap-2"
+          aria-label="チャプターの操作"
+          data-testid="chapter-navigation"
+        >
           <div className="flex flex-wrap items-center gap-2">
-            <Button type="button" size="sm" variant="outline" onClick={() => jumpChapter('prev')}>
+            <Button type="button" size="sm" className="min-h-11" variant="outline" onClick={() => jumpChapter('prev')}>
               前のチャプター
             </Button>
-            <Button type="button" size="sm" variant="outline" onClick={() => jumpChapter('next')}>
+            <Button type="button" size="sm" className="min-h-11" variant="outline" onClick={() => jumpChapter('next')}>
               次のチャプター
             </Button>
             <label className="flex items-center gap-1 text-muted-foreground">
               <input
                 type="checkbox"
+                className="size-6 accent-primary"
                 checked={skipEnabled}
                 onChange={(event) => {
                   setSkipEnabled(event.target.checked)
@@ -667,78 +687,36 @@ export function RecordingPlayer({
               CM を飛ばす
             </label>
           </div>
-          <ul className="flex flex-col gap-1 text-muted-foreground">
-            {chapterSpans.map((span) => (
-              <li key={`${span.startMs}-${span.endMs}`}>
-                <button
-                  type="button"
-                  onClick={() => jumpTo(span.startMs / 1000)}
-                  className="text-left text-primary underline-offset-2 hover:underline"
-                >
-                  <span>
-                    {formatChaptersTime(span.startMs / 1000)}–{formatChaptersTime(span.endMs / 1000)}
-                  </span>{' '}
-                  {span.label ?? (span.cut ? 'CM' : 'チャプター')}
-                </button>
-                {span.cut && <span className="ml-2">切る</span>}
-              </li>
-            ))}
-          </ul>
         </div>
       )}
 
-      {/* カット版を再生しているあいだは編集 UI を出さない。境界は原本の ms で
-          置かれており、カット版の動画には当てられない（上の playingCut の
-          コメント参照）。 */}
-      {/* 「編集前の内容です」。凍結した keep 区間が現在のタイムラインと一致しない
-          カット版にだけ出す。**自動では作り直さない**ので、押すまでこの状態が
-          続く（自動で作り直すとユーザーが確認していない区間が黙って消える）。 */}
-      {playingCut && selectedAsset?.cutStale === true && (
-        <div className="flex max-w-3xl flex-wrap items-center gap-2 rounded border border-warning/50 bg-warning/10 px-3 py-2">
-          <p className="text-warning">
-            このカット版は編集前の内容です。現在のチャプターに合わせて作り直せます。
+      {!playingCut && onSaveChapters && onResetChapters &&
+        (chapterDetectionPending || chapterVersion !== undefined) && (
+        chapterDetectionPending ? (
+          <p className="text-muted-foreground" data-testid="chapter-detecting">
+            CM を検出しています。終わるまでチャプターは編集できません
           </p>
-          {onReencode !== undefined && (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={reencodePending}
-              onClick={() => onReencode(selectedProfile)}
-            >
-              作り直す
-            </Button>
-          )}
-        </div>
-      )}
-
-      {!playingCut && onSaveChapters && onResetChapters && chapterVersion !== undefined && (
-        <div className="max-w-3xl">
+        ) : (
+        <details data-testid="chapter-editor-details" className="max-w-3xl">
+          <summary className="flex min-h-11 cursor-pointer items-center font-medium">
+            チャプター {chapters?.length ?? 0} 件
+          </summary>
+          <div className="pt-2">
           <RecordingChapterEditor
             spans={chapterSpans}
-            version={chapterVersion}
-            detectionPending={chapterDetectionPending}
+            version={chapterVersion!}
+            detectionPending={false}
             source={chapterSource}
             currentSeconds={currentSeconds}
             playAround={playAround}
+            jumpTo={jumpTo}
             onSave={onSaveChapters}
             onReset={onResetChapters}
             pending={chapterSavePending}
           />
-        </div>
-      )}
-
-      {hasOriginal && (
-        <p className="text-muted-foreground">
-          原本 TS:{' '}
-          <a
-            href={recordingFileURL(recordingId)}
-            className="text-primary underline-offset-2 hover:underline"
-          >
-            ダウンロード / VLC
-            {originalSizeBytes !== undefined && ` (${formatBytes(originalSizeBytes)})`}
-          </a>
-        </p>
+          </div>
+        </details>
+        )
       )}
     </section>
   )

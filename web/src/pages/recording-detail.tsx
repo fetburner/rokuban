@@ -2,16 +2,17 @@ import { Link, useLocation, useNavigate, useParams, useSearch } from '@tanstack/
 import { ArrowLeft } from 'lucide-react'
 import { useState } from 'react'
 
-import { useGetRecording } from '@/api/generated'
+import { useGetRecording, useListSites } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { ErrorState, ListSkeleton, PageHeader } from '@/components/page'
-import { DropBadges, EncodeStatusBadges, IngestBadge, StatusBadge } from '@/components/recording-badges'
+import { EncodeStatusBadges, IngestBadge, StatusBadge } from '@/components/recording-badges'
 import { RecordingDetail } from '@/components/recording-detail-panel'
 import { Button } from '@/components/ui/button'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
 import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
 import { hasLiveIngestProgress, ingestRefetchIntervalMs } from '@/lib/ingest'
 import { programTitle } from '@/lib/program-labels'
+import { shouldShowRecordingSite } from '@/lib/recording-search'
 
 /**
  * recordingDetailQueryKey は単体ページ自身のクエリキー。
@@ -65,6 +66,7 @@ export function RecordingDetailPage() {
   const navigate = useNavigate({ from: '/recordings/$id' })
   const idNum = Number(id)
   const [thumbFailed, setThumbFailed] = useState(false)
+  const sitesQuery = useListSites()
 
   // 追っかけ再生の画質は `?liveProfile=` に持つ（issue #874）。**既定は URL に
   // 書き戻さない** --- 明示的に選んだ値だけを載せる（`/live` の `?profile=` と
@@ -95,6 +97,8 @@ export function RecordingDetailPage() {
     },
   })
   const recording = unwrap(query.data)
+  const registeredSites = unwrap(sitesQuery.data) ?? []
+  const showSite = recording !== undefined && shouldShowRecordingSite(registeredSites, [recording.site])
   // ごみ箱の録画（deletedAt 付き）も 200 で返る（getRecording の openapi.yaml
   // description）。この真偽で再生系を出さない規律（下記 RecordingDetail）を適用する。
   const trash = recording?.deletedAt != null
@@ -143,7 +147,11 @@ export function RecordingDetailPage() {
                 <StatusBadge status={recording.status} />
                 <IngestBadge recording={recording} />
                 <EncodeStatusBadges recording={recording} />
-                {recording.dropSummary && <DropBadges summary={recording.dropSummary} />}
+                {showSite && (
+                  <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">
+                    {recording.site}
+                  </span>
+                )}
                 <span className="shrink-0">{recording.serviceName}</span>
                 <span className="shrink-0">{formatDateTime(recording.startAt)}</span>
                 <span className="shrink-0">{formatDuration(recording.durationMs)}</span>

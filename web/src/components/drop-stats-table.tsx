@@ -1,5 +1,6 @@
 import { useListRecordingDropStats, type Recording } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
+import { DetailHeading } from '@/components/detail-heading'
 import { cn } from '@/lib/utils'
 
 // pidTypeLabels は PID 種別（M2-13）の表示名。
@@ -44,8 +45,10 @@ export function DropStatsTable({ recordingId }: { recordingId: Recording['id'] }
   if (stats.length === 0) return null
 
   return (
-    <section>
-      <h4 className="mb-1 font-medium">PID 別ドロップ統計</h4>
+    <details data-testid="drop-stats-details">
+      <summary className="flex min-h-11 cursor-pointer items-center">
+        <DetailHeading compact>PID 別ドロップ統計</DetailHeading>
+      </summary>
       <div className="min-w-0 max-w-full overflow-x-auto">
         <div className="grid grid-cols-[auto_auto_1fr_1fr_1fr_1fr_minmax(0,2fr)] gap-x-3 gap-y-0.5">
           <span className="text-muted-foreground">PID</span>
@@ -99,6 +102,6 @@ export function DropStatsTable({ recordingId }: { recordingId: Recording['id'] }
           })}
         </div>
       </div>
-    </section>
+    </details>
   )
 }

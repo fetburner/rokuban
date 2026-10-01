@@ -4,7 +4,14 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { EncodeProfileSummary, LiveProfileSummary, Recording, Rule } from '@/api/generated'
+import { getGetRecordingChaptersQueryKey } from '@/api/generated'
+import type {
+  EncodeProfileSummary,
+  LiveProfileSummary,
+  Recording,
+  RecordingChapters,
+  Rule,
+} from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { formatTime } from '@/lib/format'
 import { routeTree } from '@/routes'
@@ -82,6 +89,8 @@ function createFakeServer(options: {
   encodePolicyResponse?: () => Response | Promise<Response>
   /** playbackState は別ページをまたぐサーバー再開位置を共有するテスト用。 */
   playbackState?: { positionMs?: number }
+  chapters?: RecordingChapters
+  chaptersResponse?: () => Promise<Response>
   /**
    * seriesRecordings は `GET /api/recordings?seriesOf=` に返す行（「次の
    * エピソード」の探索。M8-6）。既定は空。
@@ -101,6 +110,12 @@ function createFakeServer(options: {
   const encodePostResponse = options.encodePostResponse
   const encodePolicyResponse = options.encodePolicyResponse
   const playbackState = options.playbackState ?? {}
+  const chapters = options.chapters ?? {
+    version: 'chapters-v1',
+    detectionPending: false,
+    source: 'auto' as const,
+    spans: [],
+  }
 
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
@@ -208,6 +223,11 @@ function createFakeServer(options: {
     if (/^\/api\/recordings\/\d+\/drop-stats$/.test(url.pathname)) {
       return Promise.resolve(jsonResponse([]))
     }
+    if (/^\/api\/recordings\/\d+\/chapters$/.test(url.pathname)) {
+      return options.chaptersResponse
+        ? options.chaptersResponse()
+        : Promise.resolve(jsonResponse(chapters))
+    }
     const playbackPositionMatch = /^\/api\/recordings\/(\d+)\/playback-position$/.exec(url.pathname)
     if (playbackPositionMatch && (method === 'PUT' || method === 'DELETE')) {
       playbackState.positionMs =
@@ -289,7 +309,58 @@ describe('RecordingDetailPage', () => {
     expect(trashButton).not.toHaveClass('text-destructive')
   })
 
-  it('詳細ヘッダーは状態・取り込み・エンコードの後にドロップ信号を並べる', async () => {
+  it('詳細グループを再生・続き・番組・資産・観測・操作の順に並べる', async () => {
+    createFakeServer({
+      recording: sampleRecording({
+        encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }],
+        sizeBytes: 1_000_000,
+        series: '作品X',
+        ruleId: 5,
+        source: 'rule',
+        startedAt: '2026-01-01T12:02:00Z',
+        endedAt: '2026-01-01T12:30:00Z',
+        ingest: { state: 'pending' },
+        qualityEvents: [{ event: 'write-error' }],
+        dropSummary: { packets: 1000, drops: 12, errors: 0, scrambled: 3 },
+      }),
+    })
+
+    renderAt('/recordings/3')
+
+    await screen.findByRole('heading', { name: '操作' })
+    const body = screen.getByTestId('recording-detail-body')
+    const groups = Array.from(body.querySelectorAll('[data-testid="recording-playback-group"], [data-testid="recording-continuation-group"], [data-testid="recording-program-group"], [data-testid="recording-assets-group"], [data-testid="recording-observations"], [data-testid="recording-actions-group"]'))
+    expect(groups.map((group) => group.getAttribute('data-testid'))).toEqual([
+      'recording-playback-group',
+      'recording-continuation-group',
+      'recording-program-group',
+      'recording-assets-group',
+      'recording-observations',
+      'recording-actions-group',
+    ])
+    expect(within(screen.getByTestId('recording-program-group')).getByText('番組開始')).toBeInTheDocument()
+    expect(within(screen.getByTestId('recording-program-group')).getByText('実録画開始')).toBeInTheDocument()
+  })
+
+  it('ごみ箱では再生と資産を出さず、復元を操作グループに残す', async () => {
+    createFakeServer({
+      recording: sampleRecording({
+        deletedAt: '2026-01-05T00:00:00Z',
+        sizeBytes: 1_000_000,
+        encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }],
+      }),
+    })
+
+    renderAt('/recordings/3')
+
+    expect(await screen.findByRole('button', { name: '復元' })).toBeInTheDocument()
+    expect(screen.queryByTestId('recording-playback-group')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('recording-assets-group')).not.toBeInTheDocument()
+    expect(screen.getByTestId('recording-actions-group')).toContainElement(screen.getByRole('button', { name: '復元' }))
+    expect(screen.queryByRole('link', { name: /ダウンロード \/ VLC/ })).not.toBeInTheDocument()
+  })
+
+  it('ドロップ集計はヘッダーから観測グループへ移す', async () => {
     createFakeServer({
       recording: sampleRecording({
         ingest: { state: 'pending' },
@@ -303,15 +374,15 @@ describe('RecordingDetailPage', () => {
     const status = await screen.findByText('完了', { selector: 'span' })
     const ingest = screen.getByText('取り込み待ち', { selector: 'span' })
     const encode = screen.getByText(/h264:.*エンコード失敗/, { selector: 'span' })
-    const drop = screen.getByText('ドロップ 12', { selector: 'span' })
-    const scrambled = screen.getByText('スクランブル 3', { selector: 'span' })
     const follows = (first: HTMLElement, second: HTMLElement) =>
       Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING)
 
     expect(follows(status, ingest)).toBe(true)
     expect(follows(ingest, encode)).toBe(true)
-    expect(follows(encode, drop)).toBe(true)
-    expect(follows(drop, scrambled)).toBe(true)
+    const observation = await screen.findByTestId('recording-observations')
+    expect(within(observation).getByText('ドロップ 12')).toBeInTheDocument()
+    expect(within(observation).getByText('スクランブル 3')).toBeInTheDocument()
+    expect(screen.queryByText('ドロップ 12', { selector: 'span' })).not.toBeInTheDocument()
   })
 
   it('詳細ヘッダーはドロップ値がすべて0ならバッジを足さない', async () => {
@@ -324,7 +395,8 @@ describe('RecordingDetailPage', () => {
     renderAt('/recordings/3')
 
     expect(await screen.findByText('単体ページの録画')).toBeInTheDocument()
-    expect(screen.queryByText(/^(ドロップ|エラー|スクランブル) /)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^(ドロップ|エラー|スクランブル) /, { selector: 'span' })).not.toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'ドロップ集計' })).toBeInTheDocument()
   })
 
   // M8-6: シリーズの導線。起点の実効シリーズが null の録画には出さない
@@ -423,7 +495,8 @@ describe('RecordingDetailPage', () => {
 
     renderAt('/recordings/3')
 
-    expect(await screen.findByText(/site2/)).toBeInTheDocument()
+    const title = await screen.findByRole('heading', { name: '単体ページの録画' })
+    expect(within(title.parentElement!).getByText('site2')).toHaveClass('rounded')
   })
 
   it('単一サイトのときは詳細に site を出さない', async () => {
@@ -431,7 +504,7 @@ describe('RecordingDetailPage', () => {
 
     renderAt('/recordings/3')
 
-    await screen.findByText('チャンネル')
+    await screen.findByText('物理チャンネル')
     expect(screen.queryByText(/default/)).not.toBeInTheDocument()
   })
 
@@ -443,7 +516,8 @@ describe('RecordingDetailPage', () => {
 
     renderAt('/recordings/3')
 
-    expect(await screen.findByText(/site2/)).toBeInTheDocument()
+    const title = await screen.findByRole('heading', { name: '単体ページの録画' })
+    expect(within(title.parentElement!).getByText('site2')).toHaveClass('rounded')
   })
 
   it('存在しない id は「録画が見つかりません」を表示する', async () => {
@@ -750,6 +824,167 @@ describe('RecordingDetailPage CM 検出の有効化導線', () => {
     await user.click(screen.getByText('技術的な詳細'))
     expect((details as HTMLDetailsElement).open).toBe(true)
     expect(details.querySelector('pre')?.textContent).toBe(error)
+  })
+})
+
+describe('RecordingDetailPage の検出器結果', () => {
+  const rawRanges = [{ startMs: 10_000, endMs: 20_000 }]
+  const autoChapters: RecordingChapters = {
+    version: 'chapters-v1',
+    detectionPending: false,
+    source: 'auto',
+    spans: [],
+  }
+
+  it('検出器の生区間が空なら一文だけを出して詳細を作らない', async () => {
+    createFakeServer({ recording: sampleRecording({ cmDetection: { state: 'detected', ranges: [] } }) })
+    renderAt('/recordings/3')
+    expect(await screen.findByText('検出器が CM 区間を検出しませんでした')).toBeInTheDocument()
+    expect(screen.queryByTestId('cm-detector-results-details')).not.toBeInTheDocument()
+  })
+
+  it('チャプターを編集できない原本だけの録画では検出器の区間を表示する', async () => {
+    createFakeServer({
+      recording: sampleRecording({ sizeBytes: 500, cmDetection: { state: 'detected', ranges: rawRanges } }),
+    })
+    renderAt('/recordings/3')
+    const details = await screen.findByTestId('cm-detector-results-details')
+    expect(details.querySelector('summary')).toHaveTextContent('検出器の結果')
+    expect(details.textContent).toContain('00:00:10 – 00:00:20')
+  })
+
+  it('チャプター取得中は検出器の詳細を表示しない', async () => {
+    let resolveChapters!: (response: Response) => void
+    const response = new Promise<Response>((resolve) => {
+      resolveChapters = resolve
+    })
+    createFakeServer({
+      recording: sampleRecording({
+        encodedAssets: [{ profile: 'web', sizeBytes: 500 }],
+        cmDetection: { state: 'detected', ranges: rawRanges },
+      }),
+      chaptersResponse: () => response,
+    })
+    renderAt('/recordings/3')
+    await screen.findByTestId('recording-assets-group')
+    expect(screen.queryByTestId('cm-detector-results-details')).not.toBeInTheDocument()
+    await act(async () => resolveChapters(jsonResponse(autoChapters)))
+    expect(await screen.findByTestId('cm-detector-results-details')).toBeInTheDocument()
+  })
+
+  it('チャプター取得エラーでは検出器の区間を表示する', async () => {
+    createFakeServer({
+      recording: sampleRecording({
+        encodedAssets: [{ profile: 'web', sizeBytes: 500 }],
+        cmDetection: { state: 'detected', ranges: rawRanges },
+      }),
+      chaptersResponse: () => Promise.resolve(jsonResponse({ error: 'unavailable' }, 500)),
+    })
+    const { queryClient } = renderAt('/recordings/3')
+    await waitFor(() => {
+      expect(queryClient.getQueryState(getGetRecordingChaptersQueryKey(3))?.status).toBe('error')
+    })
+    expect(await screen.findByTestId('cm-detector-results-details')).toBeInTheDocument()
+  })
+
+  it('ユーザーが保存したチャプターがあれば検出器の区間を表示する', async () => {
+    createFakeServer({
+      recording: sampleRecording({
+        encodedAssets: [{ profile: 'web', sizeBytes: 500 }],
+        cmDetection: { state: 'detected', ranges: rawRanges },
+      }),
+      chapters: { ...autoChapters, source: 'user', spans: [{ startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }] },
+    })
+    renderAt('/recordings/3')
+    expect(await screen.findByTestId('cm-detector-results-details')).toBeInTheDocument()
+  })
+
+  it('自動チャプターが空なら検出器の区間を表示する', async () => {
+    createFakeServer({
+      recording: sampleRecording({
+        encodedAssets: [{ profile: 'web', sizeBytes: 500 }],
+        cmDetection: { state: 'detected', ranges: rawRanges },
+      }),
+      chapters: autoChapters,
+    })
+    renderAt('/recordings/3')
+    expect(await screen.findByTestId('cm-detector-results-details')).toBeInTheDocument()
+  })
+
+  it('自動チャプターに区間があれば検出器の詳細を省く', async () => {
+    createFakeServer({
+      recording: sampleRecording({
+        encodedAssets: [{ profile: 'web', sizeBytes: 500 }],
+        cmDetection: { state: 'detected', ranges: rawRanges },
+      }),
+      chapters: {
+        ...autoChapters,
+        spans: [{ startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }],
+      },
+    })
+    const { queryClient } = renderAt('/recordings/3')
+    await waitFor(() => {
+      expect(queryClient.getQueryState(getGetRecordingChaptersQueryKey(3))?.status).toBe('success')
+    })
+    expect(screen.queryByTestId('cm-detector-results-details')).not.toBeInTheDocument()
+  })
+
+  it('検出状態でなければ検出器結果を表示しない', async () => {
+    createFakeServer({ recording: sampleRecording({ cmDetection: { state: 'disabled' } }) })
+    renderAt('/recordings/3')
+    expect(await screen.findByText(/無効/)).toBeInTheDocument()
+    expect(screen.queryByTestId('cm-detector-results-details')).not.toBeInTheDocument()
+    expect(screen.queryByText('検出器が CM 区間を検出しませんでした')).not.toBeInTheDocument()
+  })
+})
+
+describe('RecordingDetailPage の追加エンコード導線', () => {
+  it('プロファイルがある完了録画だけCTAを出し、資産へフォーカスして下書きを保つ', async () => {
+    const user = userEvent.setup()
+    createFakeServer({
+      recording: sampleRecording({ sizeBytes: 1_000_000, encodeProfiles: [] }),
+      encodeProfiles: [{ name: 'h264' }],
+    })
+    const { router } = renderAt('/recordings/3#review')
+    const assets = await screen.findByTestId('recording-assets-group')
+    const scrollIntoView = vi.fn()
+    Object.defineProperty(assets, 'scrollIntoView', { configurable: true, value: scrollIntoView })
+    const keepOriginal = await screen.findByRole('combobox', { name: '原本の保持' })
+    await user.selectOptions(keepOriginal, 'until_encoded')
+    expect(keepOriginal).toHaveValue('until_encoded')
+
+    const originalHash = router.state.location.hash
+    await user.click(await screen.findByRole('button', { name: 'エンコードを追加' }))
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' })
+    expect(assets).toHaveFocus()
+    expect(keepOriginal).toHaveValue('until_encoded')
+    expect(router.state.location.hash).toBe(originalHash)
+  })
+
+  it('プロファイル未設定ならCTAを出さず、設定がない旨だけを伝える', async () => {
+    createFakeServer({ recording: sampleRecording({ sizeBytes: 1_000_000, encodeProfiles: [] }) })
+    renderAt('/recordings/3')
+    expect(await screen.findByText('エンコードプロファイルが設定されていません')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'エンコードを追加' })).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['設定済み', { encodeProfiles: ['h264'] }, []],
+    ['変換済み資産あり', { encodeProfiles: [] }, [{ profile: 'h264', sizeBytes: 500 }]],
+  ])('%s の録画では再生グループに追加エンコードCTAを出さない', async (_name, overrides, encodedAssets) => {
+    createFakeServer({
+      recording: sampleRecording({
+        ...overrides,
+        encodedAssets,
+        sizeBytes: 1_000_000,
+      }),
+      encodeProfiles: [{ name: 'h264' }],
+    })
+    renderAt('/recordings/3')
+    expect(await screen.findByRole('heading', { name: '再生' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'エンコードを追加' })).not.toBeInTheDocument()
+    expect(screen.queryByText('エンコードプロファイルが設定されていません')).not.toBeInTheDocument()
   })
 })
 

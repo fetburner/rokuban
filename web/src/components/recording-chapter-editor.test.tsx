@@ -12,6 +12,7 @@ function renderEditor(
 ) {
   const onSave = vi.fn((_spans: ChapterSpan[], _version: string) => Promise.resolve())
   const onReset = vi.fn()
+  const jumpTo = vi.fn()
   const view = render(
     <RecordingChapterEditor
       spans={spans}
@@ -20,13 +21,14 @@ function renderEditor(
       source="auto"
       currentSeconds={0}
       playAround={vi.fn()}
+      jumpTo={jumpTo}
       onSave={onSave}
       onReset={onReset}
       pending={false}
       {...overrides}
     />,
   )
-  return { ...view, onSave, onReset }
+  return { ...view, onSave, onReset, jumpTo }
 }
 
 describe('RecordingChapterEditor', () => {
@@ -43,6 +45,18 @@ describe('RecordingChapterEditor', () => {
     expect(checkbox.disabled).toBe(false)
     fireEvent.click(checkbox)
     expect(checkbox.checked).toBe(false)
+  })
+
+  it('境界行と区間行の時刻を押すと対応する位置へジャンプする', () => {
+    const { container, jumpTo } = renderEditor([cm])
+    const boundaryTime = container.querySelector('[data-testid="chapter-boundary"] button')!
+    fireEvent.click(boundaryTime)
+    expect(jumpTo).toHaveBeenCalledWith(10)
+
+    const spanTime = container.querySelector('[data-testid="chapter-span-row"] button')!
+    fireEvent.click(spanTime)
+    expect(jumpTo).toHaveBeenCalledTimes(2)
+    expect(jumpTo).toHaveBeenLastCalledWith(10)
   })
 
   it('境界の −1秒でドラフトが動き、保存で送る区間が変わる', () => {
@@ -65,6 +79,7 @@ describe('RecordingChapterEditor', () => {
       detectionPending: false,
       source: 'auto' as const,
       playAround: vi.fn(),
+      jumpTo: vi.fn(),
       onSave,
       onReset: vi.fn(),
       pending: false,
@@ -92,6 +107,7 @@ describe('RecordingChapterEditor', () => {
         source="user"
         currentSeconds={0}
         playAround={vi.fn()}
+        jumpTo={vi.fn()}
         onSave={onSave}
         onReset={vi.fn()}
         pending={false}
@@ -117,6 +133,7 @@ describe('RecordingChapterEditor', () => {
         source="auto"
         currentSeconds={0}
         playAround={vi.fn()}
+        jumpTo={vi.fn()}
         onSave={onSave}
         onReset={vi.fn()}
         pending={false}
@@ -151,6 +168,7 @@ describe('RecordingChapterEditor', () => {
         source="user"
         currentSeconds={0}
         playAround={vi.fn()}
+        jumpTo={vi.fn()}
         onSave={onSave}
         onReset={vi.fn()}
         pending={false}

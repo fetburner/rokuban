@@ -363,6 +363,49 @@ const recordings = [
   { id: 14, site: SITE, source: 'rule', serviceName: 'NHKEテレ', channelType: 'GR', channel: '26', networkId: 32737, serviceId: 1032, eventId: 14, title: '連続テレビ小説', startAt: iso(nowMs - 74 * HOUR), durationMs: 900_000, status: 'finished', keepOriginal: 'always', cmDetection: { state: 'disabled' }, sizeBytes: 1_234_567_890, createdAt: iso(nowMs - 74 * HOUR) },
 ]
 
+const recordingDetailScenarios = {
+  completed: {
+    ...recordings[1],
+    startedAt: iso(nowMs - 26 * HOUR),
+    endedAt: iso(nowMs - 24.5 * HOUR),
+    cmDetection: { state: 'detected', ranges: [{ startMs: 60_000, endMs: 90_000 }] },
+  },
+  recording: {
+    ...recordings[1],
+    status: 'recording',
+    startAt: iso(nowMs - 45 * 60_000),
+    durationMs: 3_600_000,
+    sizeBytes: undefined,
+    encodedAssets: [],
+    encodeProfiles: [],
+    encodeStatus: [],
+    startedAt: iso(nowMs - 45 * 60_000),
+    endedAt: undefined,
+    ingest: { state: 'transferring', writtenBytes: 900_000_000, expectedBytes: 1_200_000_000, observedAt: iso(nowMs - 2_000) },
+    cmDetection: { state: 'detecting' },
+  },
+  'encode-waiting': {
+    ...recordings[1],
+    encodedAssets: [],
+    encodeProfiles: ['hevc-1080p'],
+    encodeStatus: [{ profile: 'hevc-1080p', state: 'running' }],
+    cmDetection: { state: 'detected', ranges: [{ startMs: 60_000, endMs: 90_000 }] },
+  },
+  trash: {
+    ...recordings[1],
+    deletedAt: iso(nowMs - 30 * 60_000),
+    encodedAssets: [],
+    cmDetection: { state: 'disabled' },
+  },
+}
+
+const recordingDetailChapters = {
+  version: 'fixture-v1',
+  detectionPending: false,
+  source: 'user',
+  spans: [{ startMs: 60_000, endMs: 90_000, label: 'CM', cut: true }],
+}
+
 // 番組ハブは録画一覧と同じ fixture から切り出し、`seriesOf` と `order` を実際に
 // 反映する。最新の録画中/失敗行と、再生できる最新話を同時に置く。
 const seriesHubRecordings = [
@@ -534,6 +577,7 @@ function apiHandler({
   extraRecording = false,
   layoutScenario = 'default',
   toastLayout = false,
+  recordingDetailScenario = null,
 } = {}) {
   return async ({ path: p, url, json, route }) => {
     if (delayPath !== null && p === delayPath) {
@@ -621,8 +665,21 @@ function apiHandler({
     // 常に 200（一覧のフィクスチャから引く）。
     const recMatch = /^\/api\/recordings\/(\d+)$/.exec(p)
     if (recMatch && route.request().method() === 'GET') {
-      const rec = recordings.find((r) => r.id === Number(recMatch[1]))
+      const id = Number(recMatch[1])
+      const rec =
+        id === 12 && recordingDetailScenario !== null
+          ? recordingDetailScenarios[recordingDetailScenario]
+          : recordings.find((r) => r.id === id)
       return rec ? json(rec) : route.fulfill({ status: 404 })
+    }
+    const chaptersMatch = /^\/api\/recordings\/(\d+)\/chapters$/.exec(p)
+    if (chaptersMatch) {
+      return json(Number(chaptersMatch[1]) === 12 ? recordingDetailChapters : {
+        version: 'fixture-empty',
+        detectionPending: false,
+        source: 'auto',
+        spans: [],
+      })
     }
     const dropStatsMatch = /^\/api\/recordings\/(\d+)\/drop-stats$/.exec(p)
     if (dropStatsMatch) {
@@ -849,7 +906,7 @@ const screens = [
  * path と目印だけなので、この 1 つを複数箇所（②の色判定・withBreaker の
  * ショット）から共有する。
  */
-const recordingDetailScreen = { name: 'recording-detail', path: '/recordings/12', wait: 'text=チャンネル' }
+const recordingDetailScreen = { name: 'recording-detail', path: '/recordings/12', wait: 'text=物理チャンネル' }
 
 const viewports = [
   // 一覧の行長上限は広幅で初めて効くので、デスクトップショットは 2560px で撮る。
@@ -886,6 +943,7 @@ const INTERACTIVE_TARGET_SELECTOR =
   'button, a[href], [role="button"], [role="switch"], input, select, summary'
 const INTERACTIVE_TARGET_MIN_PX = 24
 const targetScreenNames = ['programs', 'search', 'reservations', 'recordings', 'series', 'rules', 'live', 'series-hub']
+const targetScreens = [...targetScreenNames.map(screenOf), recordingDetailScreen]
 const targetPointerProfiles = [
   { name: 'fine', pointer: 'fine', viewport: desktop },
   { name: 'coarse', pointer: 'coarse', viewport: mobile },
@@ -1448,6 +1506,56 @@ for (const theme of themes) {
     await page.screenshot({ path: file })
     log(`  ${path.basename(file)}`)
     await checkMissingStrings(page, `home-empty/${theme}`)
+    await context.close()
+  }
+}
+
+// issue #978: レビュー用に録画詳細の4状態をデスクトップ / モバイルで記録する。
+for (const scenario of ['completed', 'recording', 'encode-waiting', 'trash']) {
+  for (const viewport of viewports) {
+    const pointer = viewport === mobile ? 'coarse' : 'fine'
+    const { context, page } = await open(viewport, 'light', recordingDetailScreen, {
+      pointer,
+      multiSite: true,
+      recordingDetailScenario: scenario,
+    })
+    const file = path.join(OUT_DIR, `recording-detail-${scenario}-${viewport.name}.jpg`)
+    await page.evaluate(() => {
+      for (const element of document.querySelectorAll('*')) {
+        element.scrollTop = 0
+      }
+      document.scrollingElement?.scrollTo({ top: 0, left: 0, behavior: 'instant' })
+      window.scrollTo({ top: 0, left: 0, behavior: 'instant' })
+    })
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    const scrollPosition = await page.evaluate(() => ({
+      window: window.scrollY,
+      main: document.querySelector('main')?.scrollTop ?? 0,
+    }))
+    if (scrollPosition.window !== 0 || scrollPosition.main !== 0) {
+      ng.push(
+        `recording-detail/${scenario}/${viewport.name}: 撮影前のスクロール位置が先頭でない ` +
+          `(window=${scrollPosition.window}, main=${scrollPosition.main})`,
+      )
+    }
+    const pageHeadingTop = await page
+      .getByRole('heading', { name: '録画の詳細' })
+      .evaluate((element) => element.getBoundingClientRect().top)
+      .catch(() => null)
+    if (pageHeadingTop === null || pageHeadingTop < 0 || pageHeadingTop > viewport.height) {
+      ng.push(
+        `recording-detail/${scenario}/${viewport.name}: ページ見出しが撮影範囲にない ` +
+          `(top=${pageHeadingTop ?? '取得不能'})`,
+      )
+    }
+    await page.screenshot({
+      path: file,
+      type: 'jpeg',
+      quality: 88,
+      fullPage: viewport.name === 'desktop',
+    })
+    log(`  ${path.basename(file)}`)
+    await checkMissingStrings(page, `recording-detail/${scenario}/${viewport.name}`)
     await context.close()
   }
 }
@@ -2516,7 +2624,7 @@ for (const theme of themes) {
     // `DropStatsTable` の行は 1 件も描画されない（未検証の断言をしない。
     // CLAUDE.md「一度も真でなかった記述」）。
     await checkMissingStrings(page, `recording-detail/${theme}`)
-    const dt = page.locator('dt', { hasText: /^チャンネル$/ }).first()
+    const dt = page.locator('dt', { hasText: /^物理チャンネル$/ }).first()
     const fg = await computedOf(dt, 'color')
     log(`  [${theme}] 録画詳細の文字=${fg?.value} ${fg?.rgba} / 実効背景=${fg?.backdrop}`)
     if (fg === null) {
@@ -2545,7 +2653,7 @@ for (const theme of themes) {
     // 360px では詳細欄に余計な面・内側余白を付けず、本文を16pxで折り返す。
     const mobileContext = await open(mobile, theme, recordingDetailScreen, { pointer: 'coarse', isMobile: false })
     const mobilePage = mobileContext.page
-    await mobilePage.getByRole('heading', { name: 'PID 別ドロップ統計' }).waitFor({ state: 'visible' })
+  await mobilePage.getByRole('heading', { name: 'PID 別ドロップ統計' }).waitFor({ state: 'visible' })
     const mobileLayout = await mobilePage.evaluate(() => {
       const body = document.querySelector('[data-testid="recording-detail-body"]')
       const description = document.querySelector('[data-testid="recording-description"]')
@@ -2593,10 +2701,9 @@ for (const theme of themes) {
       }
       log(`  [${theme}] 録画詳細/mobile 360px: ${JSON.stringify(mobileLayout)}`)
 
-      const tableViewport = mobilePage
-        .getByRole('heading', { name: 'PID 別ドロップ統計' })
-        .locator('..')
-        .locator('.overflow-x-auto')
+      const pidDetails = mobilePage.getByTestId('drop-stats-details')
+      await pidDetails.locator('summary').click()
+      const tableViewport = pidDetails.locator('.overflow-x-auto')
       const tableOverflow = await tableViewport.evaluate((el) => el.scrollWidth > el.clientWidth)
       if (!tableOverflow) {
         ng.push(`[${theme}] 録画詳細/mobile: はみ出す PID 表が局所スクロール領域に収まっていない`)
@@ -3737,16 +3844,18 @@ for (const theme of themes) {
 // 日付・チャンネル候補・行の主操作・ライブチャンネルの 44px と、モバイルナビの
 // 幅44px・高さ56pxは下記の個別契約で固定する。
 for (const profile of targetPointerProfiles) {
-  for (const screenName of targetScreenNames) {
+  for (const screen of targetScreens) {
     const { context, page } = await open(
       profile.viewport,
       'light',
-      screenOf(screenName),
-      { pointer: profile.pointer },
+      screen,
+      screen.name === 'recording-detail'
+        ? { pointer: profile.pointer, multiSite: true, recordingDetailScenario: 'completed' }
+        : { pointer: profile.pointer },
     )
-    const measurement = await measureInteractiveTargets(page, `${profile.name}/${screenName}`)
+    const measurement = await measureInteractiveTargets(page, `${profile.name}/${screen.name}`)
     if (
-      screenName === 'recordings' &&
+      screen.name === 'recordings' &&
       !measurement.targets.some((target) => target.tag === 'summary')
     ) {
       ng.push(`[${profile.name}/recordings] <summary> を操作標的として列挙できない`)
@@ -3776,6 +3885,52 @@ async function checkMinimumTargetSize(locator, label, minimumWidth, minimumHeigh
       )
     }
   }
+}
+
+// 録画詳細の頻繁に使う前後ナビゲーションと編集の開閉は、タッチ時に44pxを確保する。
+// 通常の size="sm" ボタンを比較にして32pxが44px基準を満たさないことも実寸で確かめる。
+{
+  const { context, page } = await open(mobile, 'light', recordingDetailScreen, {
+    pointer: 'coarse',
+    multiSite: true,
+    recordingDetailScenario: 'completed',
+  })
+  const previous = page.getByRole('button', { name: '前のチャプター' })
+  const next = page.getByRole('button', { name: '次のチャプター' })
+  const editorSummary = page.locator('[data-testid="chapter-editor-details"] > summary')
+  await checkMinimumTargetSize(previous, '前のチャプター', 44)
+  await checkMinimumTargetSize(next, '次のチャプター', 44)
+  await checkMinimumTargetSize(editorSummary, 'チャプター編集summary', 44)
+
+  const ordinarySmallButton = page.getByRole('button', { name: '視聴済みにする' })
+  const ordinarySmallBox = await ordinarySmallButton.boundingBox()
+  log(`  size="sm" 比較: ${ordinarySmallBox?.height.toFixed(1) ?? '取得不能'}px (44px基準)`)
+  if (ordinarySmallBox === null || ordinarySmallBox.height >= 44) {
+    ng.push('size="sm" の比較ボタンが44px未満にならず、従来寸法の負例を確認できない')
+  } else if (Math.abs(ordinarySmallBox.height - 32) > 0.5) {
+    ng.push(`size="sm" の比較ボタンが32pxではない（${ordinarySmallBox.height.toFixed(1)}px）`)
+  } else {
+    log('  size="sm" 32px は44px基準を満たさないことを確認')
+  }
+
+  const details = page.locator('[data-testid="chapter-editor-details"]')
+  await editorSummary.click()
+  await details.evaluate((node) => {
+    node.dataset.e2eIdentity = 'chapter-details-before-timeupdate'
+  })
+  const video = page.locator('video')
+  for (let index = 0; index < 4; index += 1) {
+    await video.evaluate((node) => node.dispatchEvent(new Event('timeupdate', { bubbles: true })))
+    await page.waitForTimeout(250)
+  }
+  const editorState = await details.evaluate((node) => ({
+    same: node.dataset.e2eIdentity === 'chapter-details-before-timeupdate',
+    open: node.open,
+  }))
+  if (editorState.same !== true || editorState.open !== true) {
+    ng.push('4Hzのtimeupdate再描画後にチャプター編集detailsの開いた状態が保たれない')
+  }
+  await context.close()
 }
 
 // 高頻度の主操作は、共通下限とは別に 44px 高の配置契約を保つ
