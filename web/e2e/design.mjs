@@ -2543,7 +2543,10 @@ for (const theme of themes) {
     await context.close()
 
     // 360px では詳細欄に余計な面・内側余白を付けず、本文を16pxで折り返す。
-    // isMobile: true でも documentWidth 360 / 負の対照 385px と同じ結果だった（実測）。false を選ぶ理由は未検証。
+    // open() の既定（pointer: 'coarse' なら isMobile: true）をこの呼び出しだけ false で上書きする。
+    // isMobile: true では Chromium が layout viewport を内容幅へ広げ、innerWidth が scrollWidth に
+    // 追従して横はみ出し判定が空虚に通る（下の本文 40rem の負の対照で documentWidth 656 /
+    // innerWidth 656 を light/dark とも実測）。そのため false にする。
     const mobileContext = await open(mobile, theme, recordingDetailScreen, { pointer: 'coarse', isMobile: false })
     const mobilePage = mobileContext.page
     await mobilePage.getByRole('heading', { name: 'PID 別ドロップ統計' }).waitFor({ state: 'visible' })
