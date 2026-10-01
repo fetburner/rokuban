@@ -7,7 +7,6 @@ import {
   getListCMLogosQueryKey,
   useDeleteCMLogo,
   useDeleteCMLogoArea,
-  useGetRecording,
   useListCMLogos,
   useListRecordings,
   usePutCMLogoArea,
@@ -285,13 +284,10 @@ function CMLogoFrameEditor({
   logo,
   recordings,
   requestedRecordingId,
-  targetRecordingId,
 }: {
   logo: CMLogoState
   recordings: Recording[]
   requestedRecordingId?: number
-  /** 詳細で直接取った録画。一覧と違い sizeBytes が無くてもコマの取得を試す。 */
-  targetRecordingId?: number
 }) {
   const queryClient = useQueryClient()
   const toast = useToast()
@@ -299,8 +295,8 @@ function CMLogoFrameEditor({
   const dragRef = useRef<DragState | null>(null)
   const appliedFrameKey = useRef<string | null>(null)
   const candidates = useMemo(
-    () => recordings.filter((recording) => recording.sizeBytes !== undefined || recording.id === targetRecordingId),
-    [recordings, targetRecordingId],
+    () => recordings.filter((recording) => recording.sizeBytes !== undefined),
+    [recordings],
   )
   const initialRecordingId =
     (requestedRecordingId !== undefined && candidates.some((recording) => recording.id === requestedRecordingId)
@@ -768,21 +764,7 @@ export function CMLogoStationPage() {
   const logoQuery = useListCMLogos()
   const logo = (unwrap(logoQuery.data) ?? []).find((item) => item.networkId === networkId && item.serviceId === serviceId)
   const recordingsQuery = useListRecordings({ service: [serviceKey(networkId, serviceId)], limit: 200 })
-  const listed = unwrap(recordingsQuery.data) ?? []
-  // コマを取る録画は、一覧（limit 200）に載っているとは限らない。ディープリンクの録画と
-  // frameRecordingId は詳細で直接取り、別の局の録画なら捨てる。
-  const frameTargetId = search.recording ?? logo?.frameRecordingId
-  const targetQuery = useGetRecording(frameTargetId ?? 0, {
-    query: {
-      queryKey: [recordingsQueryKeyPrefix, 'detail', frameTargetId ?? 0] as const,
-      enabled: frameTargetId !== undefined && frameTargetId > 0,
-      retry: false,
-    },
-  })
-  const target = unwrap(targetQuery.data)
-  const targetOfStation =
-    target !== undefined && target.networkId === networkId && target.serviceId === serviceId ? target : undefined
-  const recordings = targetOfStation && !listed.some((item) => item.id === targetOfStation.id) ? [targetOfStation, ...listed] : listed
+  const recordings = unwrap(recordingsQuery.data) ?? []
   const cmDetectEnabled = useCMDetectEnabled()
   const deleteLogo = useDeleteCMLogo()
   const deleteArea = useDeleteCMLogoArea()
@@ -795,9 +777,7 @@ export function CMLogoStationPage() {
   }
   if (logoQuery.isError) return <ErrorState onRetry={() => void logoQuery.refetch()}>CM ロゴの取得に失敗しました</ErrorState>
   if (recordingsQuery.isError) return <ErrorState onRetry={() => void recordingsQuery.refetch()}>局の録画を取得できませんでした</ErrorState>
-  if (logoQuery.isPending || recordingsQuery.isPending || (targetQuery.isPending && targetQuery.fetchStatus !== 'idle') || !logo) {
-    return <ListSkeleton rows={5} />
-  }
+  if (logoQuery.isPending || recordingsQuery.isPending || !logo) return <ListSkeleton rows={5} />
 
   const badge = stateBadge(logo)
   const clearLearnedLogo = () => {
@@ -840,7 +820,7 @@ export function CMLogoStationPage() {
         {!cmDetectEnabled ? (
           <p className="text-sm text-muted-foreground">このデプロイでは CM 検出が無効なので、枠を教える面は出ません。</p>
         ) : (
-          <CMLogoFrameEditor logo={logo} recordings={recordings} requestedRecordingId={search.recording} targetRecordingId={targetOfStation?.id} />
+          <CMLogoFrameEditor logo={logo} recordings={recordings} requestedRecordingId={search.recording} />
         )}
 
         <AffectedRecordings recordings={recordings} cmDetectEnabled={cmDetectEnabled} />

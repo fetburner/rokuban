@@ -82,8 +82,6 @@ function stubApi(options: {
   cmDetect?: boolean
   area?: CMLogoState['logoArea']
   recordings?: Recording[]
-  /** 詳細 API が返す録画。未指定なら recordings と同じ。 */
-  detailRecordings?: Recording[]
   frameHeaders?: Record<string, string>
 } = {}) {
   let currentArea = options.area
@@ -115,11 +113,6 @@ function stubApi(options: {
           },
         }),
       )
-    }
-    const detail = url.pathname.match(/^\/api\/recordings\/(\d+)$/)
-    if (detail && method === 'GET') {
-      const found = (options.detailRecordings ?? options.recordings ?? [recording]).find((item) => item.id === Number(detail[1]))
-      return Promise.resolve(found ? jsonResponse(found) : jsonResponse({ error: 'not found' }, 404))
     }
     if (url.pathname === '/api/recordings/7/cm-detection/retry' && method === 'POST') {
       requests.push({ method, url: url.pathname })
@@ -347,24 +340,16 @@ describe('CMLogoStationPage', () => {
     )
   })
 
-  it('一覧に載らない録画でも、ディープリンクの録画の詳細からコマを取る', async () => {
-    const { requests } = stubApi({ recordings: [], detailRecordings: [{ ...recording, sizeBytes: undefined } as Recording] })
+  it('原本の無い録画へのディープリンクは捨て、原本のある frameRecordingId のコマを使う', async () => {
+    const noOriginal = { ...recording, id: 9, sizeBytes: undefined } as Recording
+    const { requests } = stubApi({ recordings: [noOriginal, recording] })
     renderInRouter(<CMLogoStationPage />, {
       path: '/cm-logos/$networkId/$serviceId',
-      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+      initialEntries: ['/cm-logos/32678/5168?recording=9'],
     })
     await screen.findByTestId('cm-logo-frame-image')
-    expect(requests.some((request) => request.url === '/api/media/recordings/7/frame?at=300000')).toBe(true)
-  })
-
-  it('別の局のディープリンク録画は捨てる', async () => {
-    const other = { ...recording, serviceId: 9999 } as Recording
-    stubApi({ recordings: [], detailRecordings: [other] })
-    renderInRouter(<CMLogoStationPage />, {
-      path: '/cm-logos/$networkId/$serviceId',
-      initialEntries: ['/cm-logos/32678/5168?recording=7'],
-    })
-    expect(await screen.findByTestId('cm-logo-no-original')).toBeInTheDocument()
+    expect(requests.some((request) => request.url.startsWith('/api/media/recordings/7/frame'))).toBe(true)
+    expect(requests.some((request) => request.url.includes('/recordings/9/'))).toBe(false)
   })
 
   it('CM 検出が無効なら枠の編集面を出さない', async () => {
