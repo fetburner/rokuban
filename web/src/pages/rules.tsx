@@ -1,17 +1,22 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { MoreVertical, Trash2 } from 'lucide-react'
+import { MoreVertical, Pencil, Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 
 import {
   getListReservationsQueryKey,
   getListReservationsQueryOptions,
+  getListLabelRulesQueryKey,
+  getListRecordingShelvesQueryKey,
   getListRulesQueryKey,
+  useDeleteLabelRule,
   useCreateRule,
   useDeleteRule,
+  useListLabelRules,
   useListRules,
   useUpdateRule,
   type DeleteRuleResponse,
+  type LabelRule,
   type ListRulesQueryResult,
   type Rule,
 } from '@/api/generated'
@@ -21,6 +26,7 @@ import {
   EncodeSettingsFields,
   type EncodeSettingsValue,
 } from '@/components/encode-settings-fields'
+import { LabelRuleForm } from '@/components/label-rule-form'
 import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
 import { summarizeRuleConditions } from '@/components/rule-condition-summary'
 import { useToast } from '@/components/toaster'
@@ -42,6 +48,14 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Field, Input } from '@/components/ui/field'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { keepOriginalLabel, type KeepOriginal } from '@/lib/encode-settings'
 import {
   buildRuleInput,
@@ -80,10 +94,16 @@ import { cn } from '@/lib/utils'
  */
 export function RulesPage() {
   const query = useListRules()
+  const labelRulesQuery = useListLabelRules()
   const rules = unwrap(query.data) ?? []
+  const labelRules = unwrap(labelRulesQuery.data) ?? []
   const disambiguateRule = ruleDisambiguator(rules)
   const [isCreating, setIsCreating] = useState(false)
   const [isCountingReservations, setIsCountingReservations] = useState(false)
+  const [labelRuleEditor, setLabelRuleEditor] = useState<{
+    rule?: LabelRule
+    initial?: { keyword?: string; value?: string }
+  }>()
 
   return (
     <>
@@ -135,12 +155,67 @@ export function RulesPage() {
                   disambiguate={disambiguateRule}
                   isCountingReservations={isCountingReservations}
                   onCountingReservationsChange={setIsCountingReservations}
+                  onCreateLabelRule={(keyword) =>
+                    setLabelRuleEditor({ initial: { keyword } })
+                  }
                 />
               </li>
             ))}
           </ul>
         )}
+
+        <section className="flex flex-col gap-3 border-t border-border pt-5">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-sm font-medium text-foreground">シリーズ分類</h2>
+              <p className="mt-1 text-xs text-muted-foreground">
+                録画タイトルのキーワードに当たった録画を、指定したシリーズキーへ分類します。
+              </p>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              className="shrink-0"
+              onClick={() => setLabelRuleEditor({})}
+            >
+              <Plus />
+              分類ルールを作成
+            </Button>
+          </div>
+
+          {labelRulesQuery.isError ? (
+            <ErrorState onRetry={() => void labelRulesQuery.refetch()}>
+              分類ルールの取得に失敗しました
+            </ErrorState>
+          ) : labelRulesQuery.isPending ? (
+            <ListSkeleton rows={2} />
+          ) : labelRules.length === 0 ? (
+            <EmptyState>分類ルールがありません</EmptyState>
+          ) : (
+            <ul className="flex flex-col gap-2">
+              {labelRules.map((rule) => (
+                <li key={rule.id}>
+                  <LabelRuleRow
+                    rule={rule}
+                    onEdit={() => setLabelRuleEditor({ rule })}
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
       </PageContent>
+
+      {labelRuleEditor !== undefined && (
+        <LabelRuleForm
+          open
+          rule={labelRuleEditor.rule}
+          initial={labelRuleEditor.initial}
+          onOpenChange={(open) => {
+            if (!open) setLabelRuleEditor(undefined)
+          }}
+        />
+      )}
     </>
   )
 }
@@ -214,6 +289,80 @@ function deleteRuleResultMessage(res: DeleteRuleResponse | undefined): string | 
   return `ルールを削除しました（予約 ${res.deletedReservations} 件を削除）`
 }
 
+/** LabelRuleRow はシリーズ分類ルールの一覧 1 行。 */
+function LabelRuleRow({ rule, onEdit }: { rule: LabelRule; onEdit: () => void }) {
+  const toast = useToast()
+  const queryClient = useQueryClient()
+  const remove = useDeleteLabelRule()
+  const [confirmOpen, setConfirmOpen] = useState(false)
+
+  const doRemove = () => {
+    remove.mutate(
+      { id: rule.id },
+      {
+        onSuccess: () => {
+          setConfirmOpen(false)
+          toast({ message: '分類ルールを削除しました（シリーズは再評価の後に変わります）' })
+          void queryClient.invalidateQueries({ queryKey: getListLabelRulesQueryKey() })
+          void queryClient.invalidateQueries({ queryKey: getListRecordingShelvesQueryKey() })
+        },
+        onError: (err) =>
+          toast({ message: apiErrorMessage(err) ?? '分類ルールの削除に失敗しました', kind: 'error' }),
+      },
+    )
+  }
+
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
+      <div className="flex min-w-0 flex-col">
+        <span className="truncate text-sm text-foreground">
+          「{rule.keyword}」→ {rule.value}
+        </span>
+        <span className="text-xs text-muted-foreground">優先度 {rule.priority ?? 0}</span>
+        {rule.valueKey !== rule.value && (
+          <span className="text-xs text-muted-foreground">
+            この値は棚キー {rule.valueKey} として扱われます
+          </span>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center gap-1">
+        <Button type="button" size="icon-sm" variant="ghost" aria-label="編集" onClick={onEdit}>
+          <Pencil />
+        </Button>
+        <Button
+          type="button"
+          size="icon-sm"
+          variant="ghost"
+          aria-label="削除"
+          onClick={() => setConfirmOpen(true)}
+        >
+          <Trash2 />
+        </Button>
+      </div>
+
+      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>分類ルール「{rule.keyword}」を削除しますか？</DialogTitle>
+            <DialogDescription>
+              このルールが勝っていた録画は、次に当たるルールへ移ります。無ければ自動キーの
+              シリーズへ戻ります（全録画の再評価が走ります）。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setConfirmOpen(false)}>
+              キャンセル
+            </Button>
+            <Button type="button" variant="destructive" onClick={doRemove} disabled={remove.isPending}>
+              削除する
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
+
 /**
  * RuleRow は一覧の 1 行。
  *
@@ -233,11 +382,13 @@ function RuleRow({
   disambiguate,
   isCountingReservations,
   onCountingReservationsChange,
+  onCreateLabelRule,
 }: {
   rule: Rule
   disambiguate: (rule: Rule) => string | undefined
   isCountingReservations: boolean
   onCountingReservationsChange: (counting: boolean) => void
+  onCreateLabelRule: (keyword: string) => void
 }) {
   const profiles = rule.encodeProfiles ?? []
   const keep = (rule.keepOriginal ?? 'always') as KeepOriginal
@@ -449,18 +600,16 @@ function RuleRow({
             >
               このルールの録画
             </Button>
-            {/* 録画ルールのキーワードを分類ルール（シリーズ棚）へ写す導線。
+            {/* 録画ルールのキーワードを分類ルール（シリーズ）へ写す導線。
                 録画ルールから分類ルールを**継承はさせない**（勝者ルールだけを
                 継承すると広いルールに黙って負ける。docs/data/series.md §8
-                「評価結果を宛先にしない」）。写すのはユーザーが押したときだけで、
-                値は棚画面で入れる。 */}
+                「評価結果を宛先にしない」）。このボタンは同じ /rules の
+                ダイアログを開くだけで、保存は利用者が明示する。 */}
             {firstKeyword(rule) !== undefined && (
               <Button
                 variant="ghost"
                 size="sm"
-                render={
-                  <Link to="/shelves" search={{ keyword: firstKeyword(rule) }} />
-                }
+                onClick={() => onCreateLabelRule(firstKeyword(rule) as string)}
               >
                 このキーワードで分類ルールを作る
               </Button>

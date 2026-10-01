@@ -114,6 +114,7 @@ describe('routeTree', () => {
       '/programs',
       '/search',
       '/rules',
+      '/series',
       '/shelves',
       '/cm-logos',
       '/cm-logos/$networkId/$serviceId',
@@ -124,6 +125,15 @@ describe('routeTree', () => {
       '/recordings/$id/series',
       '/live',
     ])
+  })
+
+  it('/shelves は /series へリダイレクトする', async () => {
+    const router = createRouter({
+      routeTree,
+      history: createMemoryHistory({ initialEntries: ['/shelves'] }),
+    })
+    await router.load()
+    expect(router.state.location.pathname).toBe('/series')
   })
 
   it('検索は番組表とは別のルートに置く', () => {
