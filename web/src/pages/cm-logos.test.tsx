@@ -214,6 +214,52 @@ describe('CMLogosPage', () => {
   })
 })
 
+describe('CMLogosPage の候補分類', () => {
+  const learned = { ...healthyLogo, networkId: 5, serviceId: 6, learnedAt: '2026-09-29T00:00:00Z' }
+  const candidateBase = {
+    x: 1, y: 1, w: 10, h: 10, codedWidth: 1440, codedHeight: 1080, recordingId: 7, attemptedAt: '2026-09-30T00:00:00Z',
+  }
+
+  it('ready 候補の局は問題なしの件数でも要対応に入り、札は候補あり', async () => {
+    stubApi({ logos: [{ ...learned, serviceName: '候補局', candidate: { state: 'ready', ...candidateBase } }] })
+    renderInRouter(<CMLogosPage />, { path: '/cm-logos' })
+    const section = await screen.findByTestId('cm-logo-attention')
+    expect(section).toHaveTextContent('候補局')
+    expect(section).toHaveTextContent('ロゴ候補を確認して採用してください')
+    expect(section).toHaveTextContent('候補あり')
+  })
+
+  it('running 候補の局は検出待ちに入る', async () => {
+    stubApi({ logos: [{ ...learned, serviceName: '解析局', candidate: { state: 'running', ...candidateBase } }] })
+    renderInRouter(<CMLogosPage />, { path: '/cm-logos' })
+    const section = await screen.findByTestId('cm-logo-pending')
+    expect(section).toHaveTextContent('解析局')
+    expect(section).toHaveTextContent('ロゴ候補を解析中です')
+  })
+
+  it('枠があり候補の行が無い解析待ちの局は検出待ちに入る', async () => {
+    stubApi({
+      logos: [{
+        ...healthyLogo,
+        serviceName: '待ち局',
+        logoArea: { x: 1, y: 1, w: 10, h: 10, codedWidth: 1440, codedHeight: 1080, updatedAt: '2026-09-30T00:00:00Z' },
+      }],
+    })
+    renderInRouter(<CMLogosPage />, { path: '/cm-logos' })
+    const section = await screen.findByTestId('cm-logo-pending')
+    expect(section).toHaveTextContent('待ち局')
+    expect(section).toHaveTextContent('ロゴ候補を解析中です')
+  })
+
+  it('failed 候補の局は工程の一文つきで要対応に入る', async () => {
+    stubApi({ logos: [{ ...learned, serviceName: '失敗局', candidate: { state: 'failed', stage: 'logo', ...candidateBase } }] })
+    renderInRouter(<CMLogosPage />, { path: '/cm-logos' })
+    const section = await screen.findByTestId('cm-logo-attention')
+    expect(section).toHaveTextContent('失敗局')
+    expect(section).toHaveTextContent('ロゴを見つけられず、CM を検出できませんでした。')
+  })
+})
+
 describe('CMLogoStationPage', () => {
   it('中央の時刻を初期表示し、スライダーを動かすまでコマを取り直さない', async () => {
     const { requests } = stubApi()

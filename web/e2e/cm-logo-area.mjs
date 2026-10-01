@@ -275,6 +275,8 @@ await check('③', async () => {
   await page.getByRole('button', { name: 'ロゴを解析' }).click()
   for (let i = 0; i < 30 && savedArea === undefined; i++) await page.waitForTimeout(100)
   if (savedArea === undefined) throw new Error('PUT /area が届かない')
+  if (savedArea.recordingId !== 7) throw new Error(`PUT body の recordingId が ${savedArea.recordingId}（期待 7）`)
+  if ('atMs' in savedArea) throw new Error('全編解析なのに PUT body に atMs が載っている')
   const { w, h } = savedArea
   if (!Number.isFinite(w) || !Number.isFinite(h)) throw new Error(`PUT body の w/h が有限数でない（${JSON.stringify(savedArea)}）`)
   if (Math.abs(w - expected.w) > 1 || Math.abs(h - expected.h) > 1) {
@@ -457,6 +459,18 @@ await check('⑫', async () => {
   if (Math.abs(image.width - frame.width) > 1 || Math.abs(image.height - frame.height) > 1) {
     throw new Error(`画像 ${image.width}x${image.height} が枠箱 ${frame.width}x${frame.height} を埋めない`)
   }
+  // 録画 8 を表示して解析すると、PUT body の recordingId が 8 になる（表示中の録画が載る）。
+  for (const [label, value] of Object.entries({ X: 10, Y: 20, 幅: 100, 高さ: 80 })) {
+    const input = numberInput(other, label)
+    await input.click()
+    await other.keyboard.press('ControlOrMeta+A')
+    await other.keyboard.type(String(value))
+  }
+  savedArea = undefined
+  await other.getByRole('button', { name: 'ロゴを解析' }).click()
+  for (let i = 0; i < 30 && savedArea === undefined; i++) await other.waitForTimeout(100)
+  if (savedArea === undefined) throw new Error('録画 8 の PUT /area が届かない')
+  if (savedArea.recordingId !== 8) throw new Error(`録画 8 を表示して解析したのに recordingId が ${savedArea.recordingId}`)
   await other.close()
 })
 
@@ -489,6 +503,9 @@ await check('⑬', async () => {
   const got = { X: savedArea.x, Y: savedArea.y, 幅: savedArea.w, 高さ: savedArea.h }
   if (JSON.stringify(got) !== JSON.stringify(want)) {
     throw new Error(`PUT body が ${JSON.stringify(got)}（期待 ${JSON.stringify(want)}）`)
+  }
+  if (savedArea.recordingId !== 7 || 'atMs' in savedArea) {
+    throw new Error(`PUT body が表示中の録画 7 だけを指さない（${JSON.stringify(savedArea)}）`)
   }
   await narrow.close()
 })

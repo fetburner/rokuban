@@ -57,6 +57,8 @@ export type CMLogoBucket = 'attention' | 'pending' | 'healthy'
 /** cmLogoBucket は一覧の「見るべき順」を API の件数から決める。 */
 // oxlint-disable-next-line react/only-export-components -- 一覧の並び契約を単体テストする
 export function cmLogoBucket(logo: CMLogoState): CMLogoBucket {
+  if (logo.candidate?.state === 'failed' || logo.candidate?.state === 'ready') return 'attention'
+  if (logo.candidate?.state === 'running' || awaitingCandidateAnalysis(logo)) return 'pending'
   if (logo.failedCount > 0) return 'attention'
   if (logo.pendingCount > 0) return 'pending'
   return 'healthy'
@@ -65,6 +67,9 @@ export function cmLogoBucket(logo: CMLogoState): CMLogoBucket {
 /** cmLogoStateSentence は行に置く状態説明を一文へ畳む。 */
 // oxlint-disable-next-line react/only-export-components -- 表示順テストから共有する
 export function cmLogoStateSentence(logo: CMLogoState): string {
+  if (logo.candidate?.state === 'running' || awaitingCandidateAnalysis(logo)) return 'ロゴ候補を解析中です'
+  if (logo.candidate?.state === 'failed') return cmDetectStageMessage(logo.candidate.stage)
+  if (logo.candidate?.state === 'ready') return 'ロゴ候補を確認して採用してください'
   if (logo.failedCount > 0) return cmDetectStageMessage(logo.lastFailureStage)
   if (logo.pendingCount > 0) return `検出待ち ${logo.pendingCount} 件`
   return `録画 ${logo.recordingCount} 件`
@@ -76,6 +81,7 @@ function serviceKey(networkId: number, serviceId: number): number {
 
 function stateBadge(logo: CMLogoState): { label: string; attention: boolean } {
   const bucket = cmLogoBucket(logo)
+  if (logo.candidate?.state === 'ready') return { label: '候補あり', attention: false }
   if (bucket === 'attention') return { label: '要対応', attention: true }
   if (bucket === 'pending') return { label: '検出待ち', attention: false }
   return { label: '問題なし', attention: false }
@@ -1102,7 +1108,11 @@ function LogoRow({ logo }: { logo: CMLogoState }) {
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span className="font-medium">{logo.serviceName}</span>
             <span className="text-xs text-muted-foreground">{logo.site}</span>
-            {badge.attention && <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-xs text-destructive">要対応</span>}
+            {(badge.attention || logo.candidate?.state === 'ready') && (
+              <span className={cn('rounded px-1.5 py-0.5 text-xs', badge.attention ? 'bg-destructive/10 text-destructive' : 'bg-muted text-foreground')}>
+                {badge.label}
+              </span>
+            )}
           </div>
           <p className="mt-1 text-sm">{cmLogoStateSentence(logo)}</p>
         </div>
