@@ -406,12 +406,16 @@ func writeStationLogo(dir, channel string, data []byte) error {
 	return os.WriteFile(filepath.Join(dir, channel+".latest"), []byte(name+"\n"), 0o600)
 }
 
+// readStationLogo は .latest が指す LGD を読む。logoframe は
+// "%d\n%s\n"（version 行 + 名前行）で書き、rokuban 自身は名前 1 行で書く。
+// どちらも最後の非空行が名前なので、それを取る。
 func readStationLogo(dir, channel string) ([]byte, error) {
 	latest, err := os.ReadFile(filepath.Join(dir, channel+".latest"))
 	if err != nil {
 		return nil, err
 	}
-	name := strings.TrimSpace(string(latest))
+	lines := strings.Split(strings.TrimSpace(string(latest)), "\n")
+	name := strings.TrimSpace(lines[len(lines)-1])
 	if name == "" || filepath.Base(name) != name || !strings.HasSuffix(name, ".lgd") {
 		return nil, fmt.Errorf("invalid latest logo pointer %q", name)
 	}
