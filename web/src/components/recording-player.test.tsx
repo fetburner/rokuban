@@ -762,21 +762,76 @@ describe('RecordingPlayer の設定メニュー（行リスト）', () => {
     expect(getByTestId('playback-chapter')).toHaveTextContent('· 本編')
   })
 
-  it('チャプター編集がある録画では、時刻の横のチャプター名からチャプター一覧を開く', () => {
-    const { getByTestId } = render(
-      <RecordingPlayer
-        recordingId={65}
-        encodedAssets={assets}
-        chapters={chapters}
-        chapterVersion="auto:1"
-        onSaveChapters={vi.fn()}
-        onResetChapters={vi.fn()}
-      />,
+  it('チャプター名から見るためのチャプター一覧を開き、行で飛ぶ（編集フォームは開かない・全画面を抜けない）', async () => {
+    const exitFullscreen = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(document, 'exitFullscreen', { value: exitFullscreen, configurable: true })
+    try {
+      const { container, getByTestId, getByRole } = render(
+        <RecordingPlayer
+          recordingId={65}
+          encodedAssets={assets}
+          chapters={chapters}
+          chapterVersion="auto:1"
+          onSaveChapters={vi.fn()}
+          onResetChapters={vi.fn()}
+        />,
+      )
+      const video = container.querySelector('video')!
+      setMediaProps(video, { currentTime: 35, duration: 120 })
+      fireEvent.loadedMetadata(video)
+      fireEvent.timeUpdate(video)
+      const details = getByTestId('chapter-editor-details') as HTMLDetailsElement
+
+      fireEvent.click(getByTestId('playback-chapter'))
+      const list = getByRole('menu', { name: 'チャプター' })
+      const rows = within(list).getAllByRole('menuitemradio')
+      // 区間の隙間は本編。時刻順に並び、いまの CM に印が付く。
+      expect(rows.map((row) => [row.textContent, row.getAttribute('aria-checked')])).toEqual([
+        ['0:00本編', 'false'],
+        ['0:30CM', 'true'],
+        ['0:40本編', 'false'],
+      ])
+      await waitFor(() => expect(document.activeElement).toBe(rows[1]))
+      expect(list.querySelector('input, select, textarea, details')).toBeNull()
+      expect(details.open).toBe(false)
+      expect(exitFullscreen).not.toHaveBeenCalled()
+      // 設定メニューとは同時に開かない。
+      expect(container.querySelector('[data-testid="playback-settings"]')).toBeNull()
+
+      fireEvent.click(rows[2])
+      expect(video.currentTime).toBe(40)
+      expect(container.querySelector('[data-testid="chapter-list"]')).toBeNull()
+      expect(document.activeElement).toBe(getByTestId('playback-chapter'))
+    } finally {
+      Reflect.deleteProperty(document, 'exitFullscreen')
+    }
+  })
+
+  it('チャプター一覧も矢印キーで移り、Esc で閉じて名前のボタンにフォーカスを戻す。設定を開くと一覧は閉じる', async () => {
+    const { container, getByTestId, getByRole } = render(
+      <RecordingPlayer recordingId={68} encodedAssets={assets} chapters={chapters} />,
     )
-    const details = getByTestId('chapter-editor-details') as HTMLDetailsElement
-    expect(details.open).toBe(false)
+    const video = container.querySelector('video')!
+    setMediaProps(video, { currentTime: 5, duration: 120 })
+    fireEvent.loadedMetadata(video)
     fireEvent.click(getByTestId('playback-chapter'))
-    expect(details.open).toBe(true)
+    const rows = within(getByRole('menu', { name: 'チャプター' })).getAllByRole('menuitemradio')
+    await waitFor(() => expect(document.activeElement).toBe(rows[0]))
+    fireEvent.keyDown(rows[0], { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(rows[1])
+    fireEvent.keyDown(rows[1], { key: 'Escape' })
+    expect(container.querySelector('[data-testid="chapter-list"]')).toBeNull()
+    expect(document.activeElement).toBe(getByTestId('playback-chapter'))
+
+    fireEvent.click(getByTestId('playback-chapter'))
+    fireEvent.click(getByRole('button', { name: '再生設定' }))
+    expect(container.querySelector('[data-testid="chapter-list"]')).toBeNull()
+    expect(container.querySelector('[data-testid="playback-settings"]')).not.toBeNull()
+  })
+
+  it('チャプターが無い録画ではチャプター名（と ›）を出さない', () => {
+    const { queryByTestId } = render(<RecordingPlayer recordingId={69} encodedAssets={assets} chapters={[]} />)
+    expect(queryByTestId('playback-chapter')).toBeNull()
   })
 
   it('操作の幕を押すと、タッチは操作を閉じるだけ（再生は切り替えない）、マウスは再生 / 一時停止する', () => {

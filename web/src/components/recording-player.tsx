@@ -150,7 +150,6 @@ export function RecordingPlayer({
   const controlsTimerRef = useRef<number | undefined>(undefined)
   // 映像を押したポインタの種類。タッチは再生 / 一時停止ではなく操作の表示に使う（スマホの定石）。
   const videoPointerTypeRef = useRef<string>('')
-  const chapterDetailsRef = useRef<HTMLDetailsElement>(null)
   const subtitleLinesRef = useRef(new WeakMap<VTTCue, VTTCue['line']>())
   const [mediaPlaying, setMediaPlaying] = useState(false)
   const [muted, setMuted] = useState(false)
@@ -399,7 +398,7 @@ export function RecordingPlayer({
     const relatedTarget = event.relatedTarget
     const shell = event.currentTarget.closest('[data-testid="recording-player-shell"]')
     const toolbar = shell?.querySelector('[data-testid="player-controls"]')
-    const settings = shell?.querySelector('[data-testid="playback-settings"]')
+    const settings = shell?.querySelector('[data-player-popover]')
     if (
       relatedTarget instanceof Node &&
       (toolbar?.contains(relatedTarget) || settings?.contains(relatedTarget))
@@ -674,17 +673,6 @@ export function RecordingPlayer({
         onSelectProfile={setProfile}
         onPreviousChapter={() => jumpChapter('prev')}
         onNextChapter={() => jumpChapter('next')}
-        onShowChapters={
-          !playingCut && onSaveChapters && onResetChapters && !chapterDetectionPending && chapterVersion !== undefined
-            ? () => {
-                const details = chapterDetailsRef.current
-                if (!details) return
-                if (document.fullscreenElement) void document.exitFullscreen?.().catch(() => {})
-                details.open = true
-                details.scrollIntoView?.({ block: 'nearest' })
-              }
-            : undefined
-        }
         isPlaying={mediaPlaying}
         muted={muted}
         volume={volume}
@@ -882,7 +870,7 @@ export function RecordingPlayer({
             CM を検出しています。終わるまでチャプターは編集できません
           </p>
         ) : (
-        <details ref={chapterDetailsRef} data-testid="chapter-editor-details" className="group max-w-3xl">
+        <details data-testid="chapter-editor-details" className="group max-w-3xl">
           <DetailSummary>チャプター {chapters?.length ?? 0} 件</DetailSummary>
           <div className="pt-2">
           <RecordingChapterEditor

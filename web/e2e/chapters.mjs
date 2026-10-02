@@ -622,6 +622,64 @@ try {
   }
   // Esc はブラウザが全画面の解除に使うので、歯車で閉じる。
   await gear.click()
+  // 時刻の横のチャプター名: 全画面のまま、枠の中に見るためのチャプター一覧を出し、行で飛ぶ。
+  // 編集フォーム（<details>）は ④ で開いたままなので、閉じてから押して開かないことを見る。
+  await page.evaluate(() => {
+    const details = document.querySelector('[data-testid="chapter-editor-details"]')
+    if (details) details.open = false
+  })
+  await page.locator('[data-testid="playback-chapter"]').click({ timeout: 3000 })
+  await page.waitForTimeout(300)
+  const chapterList = await page.evaluate(() => {
+    const frame = document.querySelector('[data-testid="recording-player-frame"]')
+    const list = document.querySelector('[data-testid="chapter-list"]')
+    const editorOpened = document.querySelector('[data-testid="chapter-editor-details"]')?.open === true
+    if (!list) return { fullscreen: document.fullscreenElement === frame, exists: false, editorOpened }
+    const r = list.getBoundingClientRect()
+    return {
+      editorOpened,
+      fullscreen: document.fullscreenElement === frame,
+      exists: true,
+      inside: frame.contains(list),
+      visible: r.width > 0 && r.height > 0 && r.bottom <= window.innerHeight,
+      role: list.getAttribute('role'),
+      rows: Array.from(list.querySelectorAll('[role^="menuitem"]')).map((el) => ({
+        text: el.textContent?.trim() ?? '',
+        checked: el.getAttribute('aria-checked'),
+      })),
+      editControls: list.querySelectorAll('input, select, textarea, details, [data-testid="chapter-boundary"]').length,
+      editText: /保存|変更を破棄|削除|前後3秒|秒/.test(
+        Array.from(list.querySelectorAll('button')).map((el) => el.textContent ?? '').join(' ').replace(/\d+:\d+/g, ''),
+      ),
+    }
+  })
+  if (!chapterList.fullscreen) ng.push('⑦ チャプター名を押すと全画面が解除された')
+  if (chapterList.editorOpened) ng.push('⑦ チャプター名を押すと編集フォーム（<details>）が開いた')
+  if (!chapterList.exists || !chapterList.inside || !chapterList.visible || chapterList.role !== 'menu') {
+    ng.push(`⑦ 全画面でチャプター名を押しても枠の中にチャプター一覧（role="menu"）が出ない（${JSON.stringify(chapterList)}）`)
+  } else {
+    const labels = chapterList.rows.map((row) => row.text)
+    if (!labels.some((text) => /0:30.*CM/.test(text)) || !labels.some((text) => /1:00.*OP/.test(text))) {
+      ng.push(`⑦ チャプター一覧に「時刻・チャプター名」が並んでいない（${JSON.stringify(labels)}）`)
+    }
+    const current = chapterList.rows.filter((row) => row.checked === 'true')
+    if (current.length !== 1 || !current[0].text.includes('OP')) {
+      ng.push(`⑦ いまのチャプター（OP、65 秒）に印が付いていない（${JSON.stringify(chapterList.rows)}）`)
+    }
+    if (chapterList.editControls !== 0 || chapterList.editText) {
+      ng.push(`⑦ チャプター一覧に編集の操作がある（controls=${chapterList.editControls} text=${chapterList.editText}）`)
+    }
+    await page.locator('[data-testid="chapter-list"] [role^="menuitem"]', { hasText: 'CM' }).first().click()
+    await page.waitForTimeout(400)
+    const afterJump = await page.evaluate(() => ({
+      time: document.querySelector('video').currentTime,
+      fullscreen: document.fullscreenElement !== null,
+      listOpen: Boolean(document.querySelector('[data-testid="chapter-list"]')),
+    }))
+    if (Math.abs(afterJump.time - 30) > 1 || !afterJump.fullscreen || afterJump.listOpen) {
+      ng.push(`⑦ 一覧の CM の行を押しても全画面のまま 30 秒へ飛んで閉じない（${JSON.stringify(afterJump)}）`)
+    }
+  }
   await page.getByRole('button', { name: '全画面を終了' }).click()
   await page.waitForFunction(() => document.fullscreenElement === null, undefined, { timeout: 5000 })
 } catch (error) {
@@ -795,6 +853,20 @@ if (sheet === null) {
   if (phoneQuality.length !== 2 || !phoneQuality.every((text) => /\d+(\.\d+)?\s?(B|KB|MB|GB)/.test(text))) {
     ng.push(`⑧ シートの画質の下の階層にサイズ付きの選択肢が出ない（${JSON.stringify(phoneQuality)}）`)
   }
+}
+// スマホのチャプター一覧も画面下からのシートで出る。背後の幕を叩くと設定のシートは閉じる。
+await phone.touchscreen.tap(195, 40)
+await phone.waitForTimeout(300)
+if (await phone.locator('[data-testid="playback-settings"]').count()) ng.push('⑧ 背後の幕を叩いても設定のシートが閉じない')
+await tapVisible('[data-testid="playback-chapter"]')
+const phoneChapters = await phone.evaluate(() => {
+  const list = document.querySelector('[data-testid="chapter-list"]')
+  if (!list) return null
+  const r = list.getBoundingClientRect()
+  return { bottom: r.bottom, top: r.top, innerHeight: window.innerHeight, rows: list.querySelectorAll('[role^="menuitem"]').length }
+})
+if (!phoneChapters || Math.abs(phoneChapters.bottom - phoneChapters.innerHeight) > 2 || phoneChapters.top < phoneChapters.innerHeight / 2 - 2 || phoneChapters.rows === 0) {
+  ng.push(`⑧ スマホでチャプター名を押しても画面下からのシートでチャプター一覧が出ない（${JSON.stringify(phoneChapters)}）`)
 }
 await phoneContext.close()
 

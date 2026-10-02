@@ -78,8 +78,6 @@ type RecordingPlaybackControlsProps = {
   onSelectProfile: (profile: string) => void
   onPreviousChapter: () => void
   onNextChapter: () => void
-  /** 時刻の横のチャプター名から、チャプター一覧を開く。undefined なら名前だけを出す。 */
-  onShowChapters?: () => void
   isPlaying: boolean
   muted: boolean
   volume: number
@@ -141,7 +139,6 @@ export function RecordingPlaybackControls({
   onSelectProfile,
   onPreviousChapter,
   onNextChapter,
-  onShowChapters,
   isPlaying,
   muted,
   volume,
@@ -171,8 +168,12 @@ export function RecordingPlaybackControls({
   onShellKeyDown,
 }: RecordingPlaybackControlsProps) {
   const [menuView, setMenuView] = useState<MenuView | null>(null)
+  const [chaptersOpen, setChaptersOpen] = useState(false)
   const menuOpen = menuView !== null
+  // 設定メニューとチャプター一覧は同じ置き場（小窓 / シート）を使うので、同時には開かない。
+  const popoverOpen = menuOpen || chaptersOpen
   const gearRef = useRef<HTMLButtonElement>(null)
+  const chapterButtonRef = useRef<HTMLButtonElement>(null)
   // 幕を押したポインタの種類（click には pointerType が載らないブラウザがある）。
   const scrimPointerTypeRef = useRef('')
   const seconds = Math.max(0, Math.min(durationSeconds || 0, currentSeconds))
@@ -185,19 +186,27 @@ export function RecordingPlaybackControls({
     setMenuView(null)
     if (focusGear) gearRef.current?.focus()
   }
+  const closeChapters = (focusButton: boolean) => {
+    setChaptersOpen(false)
+    if (focusButton) chapterButtonRef.current?.focus()
+  }
 
-  // メニューの外を押したら閉じる（歯車は自分で開閉するので除く）。スマホの幕もここで閉じる。
+  // 開いている小窓の外を押したら閉じる（開いた本人のボタンは自分で開閉するので除く）。
+  // スマホの幕もここで閉じる。
   useEffect(() => {
-    if (!menuOpen) return
+    if (!popoverOpen) return
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node
-      const menu = fullscreenRef.current?.querySelector('[data-testid="playback-settings"]')
-      if (menu?.contains(target) || gearRef.current?.contains(target)) return
+      const popover = fullscreenRef.current?.querySelector('[data-player-popover]')
+      if (popover?.contains(target) || gearRef.current?.contains(target) || chapterButtonRef.current?.contains(target)) {
+        return
+      }
       setMenuView(null)
+      setChaptersOpen(false)
     }
     document.addEventListener('pointerdown', onPointerDown, true)
     return () => document.removeEventListener('pointerdown', onPointerDown, true)
-  }, [menuOpen, fullscreenRef])
+  }, [popoverOpen, fullscreenRef])
 
   const seekByKeyboard = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     let target: number | undefined
@@ -227,13 +236,12 @@ export function RecordingPlaybackControls({
       ? chapters.find((span) => tilePreview.seconds * 1000 >= span.startMs && tilePreview.seconds * 1000 < span.endMs)
       : undefined
   // 区間の隙間が本編（chapters は本編の区間を持たない。recording-player.tsx の props 注記）。
-  const currentSpan = hasChapters
-    ? chapters.find((span) => seconds * 1000 >= span.startMs && seconds * 1000 < span.endMs)
-    : undefined
-  const currentChapterName = hasChapters ? (currentSpan ? chapterLabel(currentSpan) : '本編') : undefined
+  const entries = hasChapters ? chapterEntries(chapters, durationSeconds) : []
+  const currentEntryIndex = entries.findIndex((entry) => seconds >= entry.start && seconds < entry.end)
+  const currentChapterName = hasChapters ? (entries[currentEntryIndex]?.label ?? '本編') : undefined
   const ghost = 'text-white hover:bg-white/15 hover:text-white'
   const watchedAction = watched ? onDeleteWatched : onPutWatched
-  const showControls = controlsVisible || menuOpen
+  const showControls = controlsVisible || popoverOpen
 
   return (
     <div
@@ -434,23 +442,29 @@ export function RecordingPlaybackControls({
               <span data-testid="playback-time" className="shrink-0 px-1 font-mono text-xs whitespace-nowrap md:px-2 md:text-sm">
                 {formatPlaybackTime(seconds)} / {formatPlaybackTime(durationSeconds)}
               </span>
+              {/*
+                チャプターがある録画だけ名前を出し、押すとプレイヤー内のチャプター一覧（見るだけ）を開く。
+                チャプターが無い録画（カット版を含む）は名前も「›」も出さない。
+              */}
               {currentChapterName !== undefined && (
-                onShowChapters ? (
-                  <button
-                    type="button"
-                    data-testid="playback-chapter"
-                    className="flex min-h-8 min-w-0 items-center gap-0.5 rounded px-1 text-xs text-white/85 outline-none hover:text-white focus-visible:ring-2 focus-visible:ring-white md:text-sm"
-                    aria-label={`チャプター: ${currentChapterName}`}
-                    onClick={onShowChapters}
-                  >
-                    <span className="truncate">· {currentChapterName}</span>
-                    <ChevronRight className="hidden size-3.5 shrink-0 md:block" />
-                  </button>
-                ) : (
-                  <span data-testid="playback-chapter" className="min-w-0 truncate px-1 text-xs text-white/85 md:text-sm">
-                    · {currentChapterName}
-                  </span>
-                )
+                <button
+                  ref={chapterButtonRef}
+                  type="button"
+                  data-testid="playback-chapter"
+                  className="flex min-h-8 min-w-0 items-center gap-0.5 rounded px-1 text-xs text-white/85 outline-none hover:text-white focus-visible:ring-2 focus-visible:ring-white md:text-sm"
+                  aria-label={`チャプター: ${currentChapterName}`}
+                  aria-haspopup="menu"
+                  aria-expanded={chaptersOpen}
+                  aria-controls={`chapter-list-${recordingId}`}
+                  onClick={() => {
+                    onControlsActivity()
+                    setMenuView(null)
+                    setChaptersOpen((open) => !open)
+                  }}
+                >
+                  <span className="truncate">· {currentChapterName}</span>
+                  <ChevronRight className="hidden size-3.5 shrink-0 md:block" />
+                </button>
               )}
               <div className="flex-1" />
               <Button
@@ -498,6 +512,7 @@ export function RecordingPlaybackControls({
                 aria-controls={`playback-settings-${recordingId}`}
                 onClick={() => {
                   onControlsActivity()
+                  setChaptersOpen(false)
                   setMenuView((view) => (view === null ? 'main' : null))
                 }}
               >
@@ -555,8 +570,139 @@ export function RecordingPlaybackControls({
             onBlurCapture={onToolbarBlur}
           />
         )}
+        {chaptersOpen && hasChapters && (
+          <ChapterListMenu
+            id={`chapter-list-${recordingId}`}
+            entries={entries}
+            currentIndex={currentEntryIndex}
+            onJump={(start) => {
+              onSeek(start)
+              closeChapters(true)
+            }}
+            onClose={closeChapters}
+            onFocusCapture={onToolbarFocus}
+            onBlurCapture={onToolbarBlur}
+          />
+        )}
       </div>
     </div>
+  )
+}
+
+type ChapterEntry = { start: number; end: number; label: string }
+
+/** chapterEntries は区間と隙間（本編）を時刻順に並べる。終端は duration が分かるときだけ閉じる。 */
+function chapterEntries(spans: ChapterSpan[], durationSeconds: number): ChapterEntry[] {
+  const out: ChapterEntry[] = []
+  let cursor = 0
+  for (const span of [...spans].sort((a, b) => a.startMs - b.startMs)) {
+    const start = span.startMs / 1000
+    const end = span.endMs / 1000
+    if (start > cursor) out.push({ start: cursor, end: start, label: '本編' })
+    out.push({ start, end, label: chapterLabel(span) })
+    cursor = Math.max(cursor, end)
+  }
+  if (durationSeconds > cursor) out.push({ start: cursor, end: durationSeconds, label: '本編' })
+  return out
+}
+
+/** popoverClass は設定メニューとチャプター一覧が共有する置き場（md 以上は小窓、md 未満は画面下のシート）。 */
+function popoverClass(align: 'left' | 'right') {
+  return cn(
+    'fixed inset-x-0 bottom-0 z-50 max-h-[50dvh] overflow-y-auto rounded-t-2xl bg-card pt-2 pb-[max(1.5rem,env(safe-area-inset-bottom))] text-[15px] text-foreground shadow-lg',
+    'md:absolute md:bottom-18 md:z-30 md:max-h-[calc(100%-5.5rem)] md:w-75 md:rounded-xl md:bg-black/85 md:py-2 md:text-sm md:text-white md:backdrop-blur-sm',
+    align === 'right' ? 'md:right-3.5 md:left-auto' : 'md:right-auto md:left-3.5',
+  )
+}
+
+/** moveMenuFocus は ↑ / ↓ / Home / End で見た目の順に項目を移る。扱ったキーなら true。 */
+function moveMenuFocus(key: string, menu: HTMLElement): boolean {
+  const items = orderedMenuItems(menu)
+  const index = items.indexOf(document.activeElement as HTMLElement)
+  const focusAt = (i: number) => items[(i + items.length) % items.length]?.focus()
+  switch (key) {
+    case 'ArrowDown':
+      focusAt(index + 1)
+      return true
+    case 'ArrowUp':
+      focusAt(index < 0 ? -1 : index - 1)
+      return true
+    case 'Home':
+      focusAt(0)
+      return true
+    case 'End':
+      focusAt(-1)
+      return true
+    default:
+      return false
+  }
+}
+
+type ChapterListMenuProps = {
+  id: string
+  entries: ChapterEntry[]
+  currentIndex: number
+  onJump: (start: number) => void
+  onClose: (focusButton: boolean) => void
+  onFocusCapture: (event: ReactFocusEvent<HTMLElement>) => void
+  onBlurCapture: (event: ReactFocusEvent<HTMLElement>) => void
+}
+
+/**
+ * ChapterListMenu は時刻の横のチャプター名から開く、見るためのチャプター一覧。設定メニューと同じ
+ * 置き場に「時刻・チャプター名」を時刻順に並べ、いまのチャプターに ✓ を付ける。行を押すとその位置へ
+ * 飛ぶ。編集の操作は置かない（チャプターを直す入口は別に持つ）。
+ */
+function ChapterListMenu({ id, entries, currentIndex, onJump, onClose, onFocusCapture, onBlurCapture }: ChapterListMenuProps) {
+  const menuRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const menu = menuRef.current
+    if (!menu) return
+    ;(menu.querySelector<HTMLElement>('[aria-checked="true"]') ?? orderedMenuItems(menu)[0])?.focus()
+  }, [])
+  return (
+    <>
+      <div data-testid="playback-settings-scrim" aria-hidden className="fixed inset-0 z-40 bg-black/45 md:hidden" />
+      <div
+        ref={menuRef}
+        id={id}
+        role="menu"
+        aria-label="チャプター"
+        data-testid="chapter-list"
+        data-player-popover
+        className={popoverClass('left')}
+        onKeyDown={(event) => {
+          const menu = menuRef.current
+          if (!menu) return
+          if (event.key === 'Escape') onClose(true)
+          else if (!moveMenuFocus(event.key, menu)) return
+          event.preventDefault()
+          event.stopPropagation()
+        }}
+        onFocusCapture={onFocusCapture}
+        onBlurCapture={onBlurCapture}
+      >
+        <div aria-hidden className="mx-auto mt-1 mb-2 h-1 w-9 rounded-full bg-border md:hidden" />
+        {entries.map((entry, index) => (
+          <button
+            key={`${entry.start}-${entry.end}`}
+            type="button"
+            role="menuitemradio"
+            aria-checked={index === currentIndex}
+            className="flex min-h-12 w-full items-center gap-3 px-5 text-left outline-none active:bg-muted focus-visible:bg-muted md:min-h-10 md:px-4 md:hover:bg-white/10 md:focus-visible:bg-white/15 md:active:bg-white/15"
+            onClick={() => onJump(entry.start)}
+          >
+            <span className="flex w-5 shrink-0 justify-center">
+              {index === currentIndex && <Check className="size-5" aria-hidden />}
+            </span>
+            <span className="w-14 shrink-0 font-mono text-xs text-muted-foreground md:text-white/70">
+              {formatPlaybackTime(entry.start)}
+            </span>
+            <span className="flex-1 truncate">{entry.label}</span>
+          </button>
+        ))}
+      </div>
+    </>
   )
 }
 
@@ -633,22 +779,12 @@ function PlaybackSettingsMenu({
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const menu = menuRef.current
     if (!menu) return
-    const items = orderedMenuItems(menu)
-    const index = items.indexOf(document.activeElement as HTMLElement)
-    const focusAt = (i: number) => items[(i + items.length) % items.length]?.focus()
+    if (moveMenuFocus(event.key, menu)) {
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
     switch (event.key) {
-      case 'ArrowDown':
-        focusAt(index + 1)
-        break
-      case 'ArrowUp':
-        focusAt(index < 0 ? -1 : index - 1)
-        break
-      case 'Home':
-        focusAt(0)
-        break
-      case 'End':
-        focusAt(-1)
-        break
       case 'Escape':
         if (view === 'main') onClose(true)
         else back()
@@ -761,10 +897,8 @@ function PlaybackSettingsMenu({
         role="menu"
         aria-label={view === 'main' ? '再生設定' : view === 'speed' ? '再生速度' : '画質'}
         data-testid="playback-settings"
-        className={cn(
-          'fixed inset-x-0 bottom-0 z-50 max-h-[50dvh] overflow-y-auto rounded-t-2xl bg-card pt-2 pb-[max(1.5rem,env(safe-area-inset-bottom))] text-[15px] text-foreground shadow-lg',
-          'md:absolute md:right-3.5 md:bottom-18 md:left-auto md:z-30 md:max-h-[calc(100%-5.5rem)] md:w-75 md:rounded-xl md:bg-black/85 md:py-2 md:text-sm md:text-white md:backdrop-blur-sm',
-        )}
+        data-player-popover
+        className={popoverClass('right')}
         onKeyDown={onKeyDown}
         onFocusCapture={onFocusCapture}
         onBlurCapture={onBlurCapture}
