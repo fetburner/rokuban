@@ -151,14 +151,22 @@ export function RecordingPlayer({
   // 変化したと判定されて毎回走ってしまう（中身は冪等で setProfile を呼ばない
   // 限りループにはならないが、無駄な再実行を避ける）。
   const profiles = useMemo(() => encodedAssets.map((a) => a.profile), [encodedAssets])
-  const [profile, setProfile] = useState(
-    preferredProfile !== undefined && profiles.includes(preferredProfile)
-      ? preferredProfile
-      : (profiles[0] ?? ''),
-  )
+  // 選んだ画質は録画ごとに戻す（docs/frontend/recordings.md）。親は録画を切り替えても
+  // このコンポーネントを作り直さないので、id が変わったら描画中に選択を捨てて既定に倒す。
+  // 親（版タブの「再生中」）も同じ時点で既定に戻すので、両者が一致する。「戻る」で前の回へ
+  // 戻ったときも既定に戻す（id と組で残すだけだと、戻った回でプレイヤーだけが前の選択に戻る）。
+  const [chosenProfile, setChosenProfile] = useState<string | null>(null)
+  const [chosenFor, setChosenFor] = useState(recordingId)
+  if (chosenFor !== recordingId) {
+    setChosenFor(recordingId)
+    setChosenProfile(null)
+  }
+  const defaultProfile =
+    preferredProfile !== undefined && profiles.includes(preferredProfile) ? preferredProfile : (profiles[0] ?? '')
   // props の資産一覧が更新されて選択中プロファイルが消えた場合は、effect で一度
-  // 無効な値を描いてから直すのではなく、表示値をその場で先頭へ導出する。
-  const selectedProfile = profiles.includes(profile) ? profile : (profiles[0] ?? '')
+  // 無効な値を描いてから直すのではなく、表示値をその場で既定へ導出する。
+  const selectedProfile =
+    chosenFor === recordingId && chosenProfile !== null && profiles.includes(chosenProfile) ? chosenProfile : defaultProfile
   const selectedAsset = encodedAssets.find((a) => a.profile === selectedProfile)
   // カット版を再生しているあいだは、原本の時間軸で作られたものを一切出さない。
   // シークタイルは原本の時間軸で作られており、本編に残した OP などをカット版の
@@ -826,7 +834,7 @@ export function RecordingPlayer({
         onSeekPointerLeave={() => setTilePreview(null)}
         onSeek={jumpTo}
         onSelectProfile={(nextProfile) => {
-          setProfile(nextProfile)
+          setChosenProfile(nextProfile)
           onProfileChange?.(nextProfile)
         }}
         onPreviousChapter={() => jumpChapter('prev')}
@@ -1037,7 +1045,9 @@ export function RecordingPlayer({
             CM を検出しています。終わるまでチャプターは編集できません
           </p>
         ) : (
-        <details data-testid="chapter-editor-details" className="group">
+        // 録画を切り替えてもプレイヤーは作り直さないので、編集器（下書き・開閉）は録画 id で作り直す。
+        // 無いと前の回の下書きが次の回に載り、「未保存の変更」として保存されうる。
+        <details key={recordingId} data-testid="chapter-editor-details" className="group">
           <DetailSummary>チャプター {chapters?.length ?? 0} 件</DetailSummary>
           <div className="pt-2">
           <RecordingChapterEditor

@@ -26,6 +26,7 @@ import { RecordingAssetControls } from '@/components/recording-actions'
 import { DropBadges, EncodeStatusBadges, IngestBadge, StatusBadge } from '@/components/recording-badges'
 import { RecordingPlayer } from '@/components/recording-player'
 import { LivePlayer } from '@/components/live-player'
+import { ThumbnailProgressLine } from '@/components/thumbnail-overlay'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
 import {
@@ -192,6 +193,10 @@ export function RecordingDetail({
     setSelectedChaseOffsetSeconds(0)
     setSelectedPlaybackProfile(undefined)
   }
+  // ref は描画中に書けないので、id が変わった直後の effect で戻す（キー操作が前の回の位置を使わないように）。
+  useEffect(() => {
+    selectedChaseOffsetRef.current = 0
+  }, [recording.id])
   const showChase = !trash && recording.status === 'recording' && liveEnabled && chasing
   const encodedAssets = recording.encodedAssets ?? []
   const hasOriginal = recording.sizeBytes !== undefined
@@ -592,13 +597,8 @@ export function RecordingDetail({
           )}
 
           {showOriginalVOD && (
+            // 映像の上に見出しを置かない（docs/frontend/recordings.md）。説明は映像の下に置く。
             <section className="flex flex-col gap-2" aria-label="原本 TS をブラウザ再生">
-              <div>
-                <h4 className="font-medium">原本 TS をブラウザ再生</h4>
-                <p className="text-muted-foreground">
-                  原本 MPEG-2 を一時的に HLS へ変換します。再生用ファイルは保存しません。
-                </p>
-              </div>
               {liveProfilesQuery.isPending ? (
                 <p role="status" className="text-muted-foreground">再生設定を読み込み中…</p>
               ) : liveProfiles.length === 0 ? (
@@ -636,6 +636,9 @@ export function RecordingDetail({
                     resumePositionMs={startAtBeginning ? undefined : recording.resumePositionMs}
                     profile={explicitLiveProfile}
                   />
+                  <p className="text-muted-foreground">
+                    原本 MPEG-2 を一時的に HLS へ変換します。再生用ファイルは保存しません。
+                  </p>
                 </>
               )}
             </section>
@@ -982,6 +985,7 @@ export function RecordingDetail({
                     formatDuration(item.durationMs),
                     item.sizeBytes === undefined && (item.encodedAssets?.length ?? 0) > 0 ? '原本なし' : undefined,
                   ].filter((part): part is string => part !== undefined)
+              const progress = shelfWatchProgress(item)
               return (
                 <li key={item.id}>
                   <Link
@@ -994,13 +998,18 @@ export function RecordingDetail({
                     )}
                     onClick={() => seedRecordingDetail(queryClient, item)}
                   >
-                    <img
-                      src={`/api/media/recordings/${item.id}/thumbnail`}
-                      alt=""
-                      loading="lazy"
-                      className="aspect-video w-20 shrink-0 rounded bg-muted object-cover"
-                      onError={(event) => event.currentTarget.remove()}
-                    />
+                    <span className="relative aspect-video w-20 shrink-0 overflow-hidden rounded bg-muted">
+                      <img
+                        src={`/api/media/recordings/${item.id}/thumbnail`}
+                        alt=""
+                        loading="lazy"
+                        className="size-full object-cover"
+                        onError={(event) => event.currentTarget.remove()}
+                      />
+                      {progress !== undefined && (
+                        <ThumbnailProgressLine progress={progress} testId="series-shelf-progress-line" />
+                      )}
+                    </span>
                     <span className="min-w-0">
                       <span className="block truncate text-sm font-medium">{formatDate(item.startAt)}</span>
                       <span className="block truncate text-xs text-muted-foreground">{parts.join(' · ')}</span>
@@ -1015,6 +1024,16 @@ export function RecordingDetail({
       )}
     </div>
   )
+}
+
+/**
+ * shelfWatchProgress は棚のサムネイルに重ねる進み線の割合（0〜100）。視聴済みは全幅、
+ * 途中まで見た回は保存位置の割合、まだ見ていない回は線を出さない（undefined）。
+ */
+function shelfWatchProgress(item: Pick<Recording, 'watchedAt' | 'resumePositionMs' | 'durationMs'>): number | undefined {
+  if (item.watchedAt !== undefined) return 100
+  if (item.resumePositionMs === undefined || item.durationMs <= 0) return undefined
+  return Math.max(0, Math.min(100, (item.resumePositionMs / item.durationMs) * 100))
 }
 
 /**

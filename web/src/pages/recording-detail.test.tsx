@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getGetRecordingChaptersQueryKey } from '@/api/generated'
+import { getGetRecordingChaptersQueryKey, getRecordingChapters } from '@/api/generated'
 import type {
   EncodeProfileSummary,
   LiveProfileSummary,
@@ -2350,6 +2350,158 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
     expect(card).toHaveTextContent(formatTime('2026-01-08T12:00:00Z'))
     expect(within(card).getByTestId('end-card-countdown-ring')).toBeInTheDocument()
     expect(card.querySelector('img')).toHaveAttribute('src', '/api/media/recordings/4/thumbnail')
+  })
+
+  // 次の回へ移ってもページ（プレイヤーの枠）は作り直さない（全画面を保つため）。録画ごとの状態は
+  // RecordingDetail とプレイヤーが録画 id の変化で既定へ戻す。戻さないと前の回の状態が次の回に漏れる。
+  it('次の回へ移ると、開いていたタブと説明の展開を既定に戻す', async () => {
+    const user = userEvent.setup()
+    const origin = seriesEpisode(3, '2026-01-01T12:00:00Z', { description: '第3話の説明' })
+    const next = seriesEpisode(4, '2026-01-08T12:00:00Z', { description: '第4話の説明' })
+    createFakeServer({ recording: origin, seriesRecordings: [origin, next] })
+    renderAt('/recordings/3')
+
+    await selectDetailTab('記録')
+    await user.click(await screen.findByTestId('recording-description'))
+    expect(screen.getByTestId('recording-description')).toHaveAttribute('aria-expanded', 'true')
+
+    await user.click(await screen.findByTestId('next-episode-link'))
+    expect(await screen.findByRole('heading', { name: '作品X 第4話' })).toBeInTheDocument()
+    // 既定のタブ（デスクトップは「版」）。jsdom の matchMedia は無いのでデスクトップ扱い。
+    expect(screen.getByRole('tab', { name: '版' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: '記録' })).toHaveAttribute('aria-selected', 'false')
+    expect(screen.getByTestId('recording-description')).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('次の回へ移ると、選んだ画質を既定に戻し、映像と版タブの「再生中」を一致させる', async () => {
+    const user = userEvent.setup()
+    const assets = [
+      { profile: 'h264-720p', sizeBytes: 900_000 },
+      { profile: 'h264-cut', sizeBytes: 700_000, cut: true },
+    ]
+    const origin = seriesEpisode(3, '2026-01-01T12:00:00Z', { encodedAssets: assets })
+    const next = seriesEpisode(4, '2026-01-08T12:00:00Z', { encodedAssets: assets })
+    createFakeServer({ recording: origin, seriesRecordings: [origin, next] })
+    const { router } = renderAt('/recordings/3')
+    await screen.findByTestId('next-episode-link')
+
+    await user.click(screen.getByRole('button', { name: '再生設定' }))
+    await user.click(screen.getByRole('menuitem', { name: '画質' }))
+    const cut = screen.getAllByRole('menuitemradio').find((item) => item.textContent?.includes('h264-cut'))
+    await user.click(cut!)
+    expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/3/file?profile=h264-cut')
+
+    await user.click(screen.getByTestId('next-episode-link'))
+    expect(await screen.findByRole('heading', { name: '作品X 第4話' })).toBeInTheDocument()
+    expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/4/file?profile=h264-720p')
+    await selectDetailTab('版')
+    const playing = within(screen.getByRole('list', { name: '録画の版' }))
+      .getAllByTestId('recording-version-row')
+      .filter((row) => within(row).queryByText('再生中') !== null)
+      .map((row) => row.textContent)
+    expect(playing).toHaveLength(1)
+    expect(playing[0]).toMatch(/^h264-720p再生中/)
+
+    // 「戻る」で前の回へ戻っても、プレイヤーだけが前の選択（カット版）に戻らない。
+    act(() => router.history.back())
+    expect(await screen.findByRole('heading', { name: '作品X 第3話' })).toBeInTheDocument()
+    expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/3/file?profile=h264-720p')
+    await selectDetailTab('版')
+    expect(
+      within(screen.getByRole('list', { name: '録画の版' }))
+        .getAllByTestId('recording-version-row')
+        .filter((row) => within(row).queryByText('再生中') !== null)
+        .map((row) => row.textContent?.split('再生中')[0]),
+    ).toEqual(['h264-720p'])
+  })
+
+  it('次の回へ移ると、チャプター編集の下書きと開閉を捨てる（移動先のチャプターが取得済みでも）', async () => {
+    const user = userEvent.setup()
+    const origin = seriesEpisode(3, '2026-01-01T12:00:00Z')
+    const next = seriesEpisode(4, '2026-01-08T12:00:00Z')
+    createFakeServer({
+      recording: origin,
+      seriesRecordings: [origin, next],
+      chapters: {
+        version: 'chapters-v1',
+        detectionPending: false,
+        source: 'auto',
+        spans: [{ startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }],
+      },
+    })
+    const { queryClient } = renderAt('/recordings/3')
+    // 移動先のチャプターを先に取得しておく（取得待ちで編集器が一度消える経路に頼らない）。
+    await queryClient.fetchQuery({
+      queryKey: getGetRecordingChaptersQueryKey(4),
+      queryFn: () => getRecordingChapters(4),
+    })
+
+    const details = (await screen.findByTestId('chapter-editor-details')) as HTMLDetailsElement
+    await user.click(details.querySelector('summary')!)
+    const label = within(details).getByLabelText('ラベル')
+    await user.clear(label)
+    await user.type(label, '前の回の下書き')
+    expect(details).toHaveTextContent('未保存の変更があります')
+
+    await user.click(screen.getByTestId('next-episode-link'))
+    expect(await screen.findByRole('heading', { name: '作品X 第4話' })).toBeInTheDocument()
+    const nextDetails = (await screen.findByTestId('chapter-editor-details')) as HTMLDetailsElement
+    expect(nextDetails.open).toBe(false)
+    expect(within(nextDetails).getByLabelText('ラベル')).toHaveValue('CM')
+    expect(nextDetails).not.toHaveTextContent('未保存の変更があります')
+    expect(nextDetails).not.toHaveTextContent('サーバー側の内容が変わりました')
+  })
+
+  it('次の回へ移ると、追っかけ再生で選んでいた位置を先頭に戻す（キー操作でも前の位置を使わない）', async () => {
+    const user = userEvent.setup()
+    const now = Date.now()
+    const live = (id: number, minutesAgo: number) =>
+      seriesEpisode(id, new Date(now - minutesAgo * 60_000).toISOString(), {
+        status: 'recording',
+        startedAt: new Date(now - minutesAgo * 60_000).toISOString(),
+        durationMs: 2 * 60 * 60_000,
+        encodedAssets: undefined,
+        sizeBytes: undefined,
+      })
+    const origin = live(3, 10)
+    const other = live(4, 5)
+    const { fetchMock } = createFakeServer({ recording: origin, seriesRecordings: [other, origin] })
+    renderAt('/recordings/3')
+
+    await user.click(await screen.findByRole('button', { name: '追っかけ再生' }))
+    fireEvent.change(await screen.findByRole('slider', { name: '追っかけ再生の位置' }), { target: { value: '30' } })
+    expect(screen.getByRole('slider', { name: '追っかけ再生の位置' })).toHaveAttribute('aria-valuenow', '30')
+
+    const shelf = screen.getByTestId('recording-series-shelf')
+    await user.click(within(shelf).getAllByRole('link').find((link) => link.getAttribute('href') === '/recordings/4')!)
+    expect(await screen.findByRole('heading', { name: '作品X 第4話' })).toBeInTheDocument()
+    await user.click(await screen.findByRole('button', { name: '追っかけ再生' }))
+    const slider = await screen.findByRole('slider', { name: '追っかけ再生の位置' })
+    expect(slider).toHaveAttribute('aria-valuenow', '0')
+    fireEvent.keyUp(slider, { key: 'ArrowRight' })
+    // 前の回の 30 秒を確定していれば、次の回の offset/30 のプレイリストを取りに行く。
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const paths = fetchMock.mock.calls.map(([input]) => new URL(String(input), 'http://localhost').pathname)
+    expect(paths.filter((path) => path.includes('/recordings/4/chase/offset/'))).toEqual([])
+  })
+
+  it('棚のサムネイルに視聴の進み線を重ねる（視聴済みは全幅、途中は保存位置の割合、未視聴は出さない）', async () => {
+    const watched = seriesEpisode(2, '2025-12-25T12:00:00Z', { watchedAt: '2026-01-02T00:00:00Z' })
+    const origin = seriesEpisode(3, '2026-01-01T12:00:00Z', { resumePositionMs: 450_000, durationMs: 1_800_000 })
+    const unwatched = seriesEpisode(4, '2026-01-08T12:00:00Z')
+    createFakeServer({ recording: origin, seriesRecordings: [unwatched, origin, watched] })
+    renderAt('/recordings/3')
+
+    const shelf = await screen.findByTestId('recording-series-shelf')
+    await waitFor(() => expect(within(shelf).getAllByRole('link')).toHaveLength(3))
+    const widthOf = (href: string) => {
+      const link = within(shelf).getAllByRole('link').find((item) => item.getAttribute('href') === href)!
+      const line = link.querySelector<HTMLElement>('[data-testid="series-shelf-progress-line"] > div')
+      return line?.style.width
+    }
+    expect(widthOf('/recordings/2')).toBe('100%')
+    expect(widthOf('/recordings/3')).toBe('25%')
+    expect(widthOf('/recordings/4')).toBeUndefined()
   })
 })
 

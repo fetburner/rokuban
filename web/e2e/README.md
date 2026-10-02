@@ -65,7 +65,7 @@ preview サーバー、`dist/`、Playwright のブラウザ本体は必要ない
 増えたスクリプトの契約検証が一覧への追加漏れで静かに検査対象から外れる。各スクリプトは
 このモードで全フィクスチャを検証してから `launchBrowser` や bundle 検証へ進まない。
 実ブラウザを使う判定はこのコマンドの対象外である。
-CI では browser-e2e ジョブが 3 本だけ回し、残りはローカルの個別 E2E で行う（下記 §CI で回す 3 本とそれ以外）。
+CI では browser-e2e ジョブが 4 本だけ回し、残りはローカルの個別 E2E で行う（下記 §CI で回す 4 本とそれ以外）。
 子プロセスは順番にすべて実行するので、先のスクリプトが失敗しても後続のフィクスチャ検証を
 省略しない。
 
@@ -1102,6 +1102,9 @@ E2E_URL=http://localhost:4173 pnpm e2e:chapters
 - ⑥ 棚の見出し・新しい順（過去の回を含む）・行を押すと移る・スマホでは出ない
 - ⑦ シリーズへのリンクが 400px の各状態（エンコード版・原本のみ・録画中）で画面内に見える
 - ⑧ バーの次のエピソード（デスクトップは「次: 9/30(水)」、スマホはアイコンだけ）
+- ⑨ 次の回へ移ると、前の回のチャプター編集の下書きと開閉が残らない（移動先のチャプターは取得済みにしておく）。
+  選んだ画質も持ち越さず、映像の `src` と版タブの「再生中」が既定の画質を指す
+- ⑩ 棚のサムネイルの下端の進み線が、視聴済みで全幅・途中で保存位置の割合・未視聴で無し
 
 **変異で落ちることを確認済み**: カードのボタンを白地に白文字にする変異は②
 （「『取り消す』の文字と地のコントラスト比が 1.00」）。破線を両端の縦線に戻す変異は①
@@ -1111,6 +1114,10 @@ E2E_URL=http://localhost:4173 pnpm e2e:chapters
 ページの `key` に録画 id を戻す変異は⑥ と④（「自動で次の回へ移ると全画面が解除された」）。
 取り消しを効かなくする変異は③（「取り消したのに /recordings/2 へ移った」）。
 自動遷移を 3 秒待たずに起こす変異は、カードを観測する前の待ち受けが TimeoutError で落ちる。
+チャプター編集を録画 id で作り直さない変異は⑨（「1 話の下書きが 2 話に漏れた」）。
+プレイヤーが録画 id の変化で画質の選択を捨てない変異も⑨（「移った先の映像が既定の画質でない」）。
+`RecordingDetail` の id 変化での戻しを消す変異も⑨（「版タブの『再生中』が映像の画質と一致しない」）。
+棚の進み線を描かない変異と、視聴済みを全幅にしない変異は⑩ で落ちる。
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
@@ -1175,22 +1182,23 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:recordings-rule-filter
 ```
 
-## CI で回す 3 本とそれ以外
+## CI で回す 4 本とそれ以外
 
 CI の `browser-e2e` ジョブは、実バイナリが `go:embed` した `dist/` を配るサーバーへ Chromium を向ける。
-回すのは `cls` / `chip-overflow` / `recordings-selection` の 3 本だけである。3 本は 1 本が落ちても残りを走らせる。
+回すのは `cls` / `chip-overflow` / `recordings-selection` / `recording-detail-layout` の 4 本だけである。
+4 本は 1 本が落ちても残りを走らせる。
 選定基準は次の 3 つを全部満たすことである。
 
-- jsdom が原理的に測れない（レイアウトシフト・幅の溢れ・スクロール余白）
+- jsdom が原理的に測れない（レイアウトシフト・幅の溢れ・スクロール余白・viewport への収まり）
 - `/api/**` を Playwright 内でスタブし、mirakc・チューナー・実データに依存しない
 - ffmpeg・webkit・DB への直接書き込みを要らず、Chromium だけで軽く終わる
 
-それ以外の 28 ファイル（判定スクリプトは 26 本。`lib.mjs` と `validate-fixtures.mjs` は共有部品）は
+それ以外の 31 ファイル（判定スクリプトは 29 本。`lib.mjs` と `validate-fixtures.mjs` は共有部品）は
 **ローカルでの受け入れ確認**の位置づけである。
 [docs/frontend.md](../../docs/frontend.md) の「受け入れは実機で行う」に実行可能な形を与えるものだ。
 回さない理由は 3 類型ある。
 
-- 実メディアが要る: `chapters` / `seek-tiles` / `subtitles` / `chase` / `live` / `live-audio` は
+- 実メディアが要る: `chapters` / `seek-tiles` / `subtitles` / `recording-next-episode` / `chase` / `live` / `live-audio` は
   ffmpeg でフィクスチャを作る。`live` と `live-audio` は webkit も要る
 - 実 DB の状態が要る: `checks`（既定の `pnpm e2e`）は API をスタブせず実 EPG の番組行の描画を待つ。
   `live` は `epg_services` に実サービスの行が要り、`shelves-split` は `E2E_DATABASE_URL` の DB を TRUNCATE する
@@ -1198,8 +1206,8 @@ CI の `browser-e2e` ジョブは、実バイナリが `go:embed` した `dist/`
   全体の所要時間を測っておらず、毎 PR に払う価値をまだ判断していない。`design.mjs` は
   63 枚のショットを撮るぶん重い
 
-判定スクリプト全 29 本を回す定期ジョブは作らない。回す主体と失敗の受け手が決まっておらず、誰も見ない
-赤い定期ジョブは PR ごとに回す 3 本より信号として弱いためである。対象を増やすときは
+判定スクリプト全 33 本を回す定期ジョブは作らない。回す主体と失敗の受け手が決まっておらず、誰も見ない
+赤い定期ジョブは PR ごとに回す 4 本より信号として弱いためである。対象を増やすときは
 `.github/workflows/ci.yml` のコメントとこの節の本数・類型を同じ PR で直す。
 実ブラウザ不要の `pnpm check:colors` は lint job に入っている。
 

@@ -15,6 +15,10 @@
 //   ⑥ 棚: 本数と合計サイズ、新しい順、過去の回の行を押すとその録画へ移る（スマホには出ない）
 //   ⑦ シリーズへの導線が、エンコード版・原本のみ・録画中の各状態と 400px 幅で見える
 //   ⑧ バーの「次のエピソード」が見える（デスクトップは日付つき、スマホはアイコンだけ）
+//   ⑨ 次の回へ移ると、前の回のチャプター編集の下書き・開閉と選んだ画質が持ち越されない
+//      （ページを作り直さない移動なので、録画ごとの状態は id の変化で戻す）。映像の src と
+//      版タブの「再生中」が同じ画質を指す
+//   ⑩ 棚のサムネイルの下端に視聴の進み線（視聴済みは全幅、途中は保存位置の割合、未視聴は無し）
 //
 //   cd web && corepack pnpm build
 //   corepack pnpm preview --port 4173 --strictPort &
@@ -71,8 +75,8 @@ const ep1 = {
   createdAt: '2026-09-29T10:05:00.000Z',
 }
 const ep2 = { ...base, id: 2, startAt: '2026-09-30T10:00:00.000Z', createdAt: '2026-09-30T10:05:00.000Z' }
-const ep10 = { ...base, id: 10, startAt: '2026-09-28T10:00:00.000Z', createdAt: '2026-09-28T10:05:00.000Z' }
-const originalOnly = { ...base, id: 3, title: '原本だけの回', startAt: '2026-10-01T10:00:00.000Z', createdAt: '2026-10-01T10:05:00.000Z', encodedAssets: [], encodeProfiles: [] }
+const ep10 = { ...base, id: 10, startAt: '2026-09-28T10:00:00.000Z', createdAt: '2026-09-28T10:05:00.000Z', watchedAt: '2026-09-28T12:00:00.000Z' }
+const originalOnly = { ...base, id: 3, title: '原本だけの回', startAt: '2026-10-01T10:00:00.000Z', createdAt: '2026-10-01T10:05:00.000Z', encodedAssets: [], encodeProfiles: [], resumePositionMs: 60_000 }
 const inProgress = {
   ...base,
   id: 4,
@@ -310,7 +314,7 @@ async function transitionsAlong(png) {
     if (changes < 4) ng.push(`① 後ろの区間が破線になっていない（中央の 1 行の明暗の切り替わり ${changes} 回。幅 ${a.width.toFixed(1)}px）`)
     log(`  手前 w=${b.width.toFixed(1)} / 後ろ x=${a.x.toFixed(1)} w=${a.width.toFixed(1)} / 後ろの明暗切替 ${changes} 回`)
   }
-  await shot(page, 'v2-desktop-bar-outside-program.png')
+  await shot(page, 'v3-desktop-bar-outside-program.png')
 
   log('\n=== ⑧ バーの次のエピソード（デスクトップは日付つき） ===')
   const next = page.locator('[data-testid="next-episode-link"]')
@@ -326,10 +330,34 @@ async function transitionsAlong(png) {
   if (JSON.stringify(hrefs) !== JSON.stringify(['/recordings/4', '/recordings/3', '/recordings/2', '/recordings/1', '/recordings/10'])) {
     ng.push(`⑥ 棚の並びが新しい順（過去の回を含む）でない（${JSON.stringify(hrefs)}）`)
   }
+
+  log('\n=== ⑩ 棚の進み線 ===')
+  // 行ごとに、サムネイルの幅に対する線の塗りの幅（%）と、線がサムネイルの下端に載っているかを測る。
+  const lines = await page.locator('[data-testid="recording-series-shelf"] a').evaluateAll((links) =>
+    links.map((link) => {
+      const thumb = link.querySelector('img')?.parentElement?.getBoundingClientRect()
+      const line = link.querySelector('[data-testid="series-shelf-progress-line"]')
+      const fill = line?.firstElementChild?.getBoundingClientRect()
+      const track = line?.getBoundingClientRect()
+      return {
+        href: link.getAttribute('href'),
+        percent: fill && thumb ? Math.round((fill.width / thumb.width) * 100) : null,
+        height: track?.height ?? 0,
+        atBottom: track && thumb ? Math.abs(track.bottom - thumb.bottom) <= 1 : false,
+      }
+    }),
+  )
+  log(`  ${JSON.stringify(lines)}`)
+  const want = { '/recordings/10': 100, '/recordings/3': 50, '/recordings/1': null, '/recordings/2': null, '/recordings/4': null }
+  for (const line of lines) {
+    if (line.percent !== want[line.href]) ng.push(`⑩ 棚の ${line.href} の進み線が ${line.percent}%（期待 ${want[line.href]}）`)
+    if (line.percent !== null && (!line.atBottom || line.height < 3)) ng.push(`⑩ 棚の ${line.href} の進み線がサムネイルの下端に見えない（高さ ${line.height}px）`)
+  }
+
   await page.evaluate(() => {
     window.__frame = document.querySelector('[data-testid="recording-player-frame"]')
   })
-  await shot(page, 'v2-desktop-versions.png')
+  await shot(page, 'v3-desktop-versions.png')
   await page.locator('[data-testid="recording-series-shelf"] a[href="/recordings/10"]').click()
   await page.waitForURL('**/recordings/10', { timeout: 5000 }).catch(() => ng.push('⑥ 棚の過去の回の行を押しても /recordings/10 へ移らない'))
   const sameFrame = await page.evaluate(() => window.__frame === document.querySelector('[data-testid="recording-player-frame"]')).catch(() => false)
@@ -354,7 +382,7 @@ async function transitionsAlong(png) {
   const thumb = await page.locator('[data-testid="recording-end-card"] img').boundingBox().catch(() => null)
   if (!ring || ring.width < 20) ng.push('② カウントダウンの輪が見えない')
   if (!thumb || thumb.width < 100) ng.push('② 次の回のサムネイルが見えない')
-  await shot(page, 'v2-desktop-end-card.png')
+  await shot(page, 'v3-desktop-end-card.png')
 
   log('\n=== ③ 取り消すと自動遷移が止まる ===')
   await page.getByRole('button', { name: '取り消す' }).click()
@@ -397,6 +425,89 @@ async function transitionsAlong(png) {
 }
 
 {
+  // ⑨ 録画ごとの状態の持ち越し。2 つの回にカット版とチャプター（CM 1 区間）を持たせる。
+  const { context, page } = await newPage(1280, 800)
+  log('\n=== ⑨ 次の回へ前の回の下書きと画質を持ち越さない ===')
+  const withCut = (item) => ({
+    ...item,
+    encodedAssets: [
+      { profile: 'h264-720p', sizeBytes: 572_000_000 },
+      { profile: 'h264-cut', sizeBytes: 450_000_000, cut: true, keepRanges: [{ startMs: 0, endMs: 120_000 }] },
+    ],
+    encodeProfiles: ['h264-720p', 'h264-cut'],
+  })
+  await page.route((url) => /^\/api\/recordings\/[12]$/.test(url.pathname), (route) => {
+    const id = Number(new URL(route.request().url()).pathname.split('/').pop())
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(withCut(id === 1 ? ep1 : ep2)) })
+  })
+  await page.route((url) => /^\/api\/recordings\/\d+\/chapters$/.test(url.pathname), (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ source: 'auto', version: 'v1', detectionPending: false, spans: [{ startMs: 30_000, endMs: 45_000, label: 'CM', cut: true }] }),
+    }),
+  )
+  // 2 話のチャプターを先に取得してキャッシュに載せる（取得待ちで編集器が一度消える経路に頼らない）。
+  // 2 話を開いてから棚で 1 話へ移る（ページを作り直さない移動）。
+  await openRecording(page, 2)
+  await page.locator('[data-testid="chapter-editor-details"]').waitFor({ timeout: 10000 })
+  await page.locator('[data-testid="recording-series-shelf"] a[href="/recordings/1"]').click()
+  await page.waitForURL('**/recordings/1', { timeout: 5000 })
+  await page.waitForFunction(() => document.querySelector('video')?.getAttribute('src')?.includes('/recordings/1/'), undefined, { timeout: 5000 })
+  await page.locator('[data-testid="chapter-editor-details"]').waitFor({ timeout: 10000 })
+  await page.locator('[data-testid="chapter-editor-details"] > summary').click()
+  const label = page.locator('[data-testid="chapter-editor-details"] input[aria-label="ラベル"]').first()
+  await label.fill('前の回の下書き')
+  if (!(await page.locator('[data-testid="chapter-editor-details"]').textContent()).includes('未保存の変更があります')) {
+    ng.push('⑨ 前提: 1 話の下書きが「未保存の変更」にならない')
+  }
+  // 画質はまだ選ばない（カット版では編集器そのものが消え、下書きも消えるので、持ち越しを測れない）。
+  await page.locator('[data-testid="next-episode-link"]').click()
+  await page.waitForURL('**/recordings/2', { timeout: 5000 })
+  await page.waitForFunction(() => document.querySelector('video')?.getAttribute('src')?.includes('/recordings/2/'), undefined, { timeout: 5000 })
+    .catch(() => {})
+  await page.locator('[data-testid="chapter-editor-details"]').waitFor({ timeout: 5000 }).catch(() => {})
+  const draft = await page.evaluate(() => {
+    const details = document.querySelector('[data-testid="chapter-editor-details"]')
+    return {
+      open: details?.open,
+      labels: [...(details?.querySelectorAll('input[aria-label="ラベル"]') ?? [])].map((input) => input.value),
+      text: details?.textContent ?? '',
+    }
+  })
+  log(`  2 話のチャプター編集: open=${draft.open} labels=${JSON.stringify(draft.labels)}`)
+  if (draft.open === undefined) ng.push('⑨ 2 話にチャプター編集が出ない')
+  if (draft.open) ng.push('⑨ 1 話で開いたチャプター編集が 2 話でも開いている')
+  if (draft.labels.includes('前の回の下書き')) ng.push(`⑨ 1 話の下書きが 2 話に漏れた（${JSON.stringify(draft.labels)}）`)
+  if (/未保存の変更があります|サーバー側の内容が変わりました/.test(draft.text)) ng.push('⑨ 2 話のチャプター編集に前の回の未保存・競合の表示が出ている')
+
+  // 2 話でカット版を選び、棚で 1 話へ移る。1 話は既定の画質に戻り、版タブの「再生中」もそれを指す。
+  await page.locator('[data-testid="recording-player-frame"]').hover()
+  await page.getByRole('button', { name: '再生設定' }).click()
+  await page.getByRole('menuitem', { name: '画質' }).click()
+  await page.getByRole('menuitemradio').filter({ hasText: 'h264-cut' }).click()
+  await page.waitForFunction(() => document.querySelector('video')?.getAttribute('src')?.endsWith('/recordings/2/file?profile=h264-cut'), undefined, { timeout: 5000 })
+    .catch(() => ng.push('⑨ 前提: 2 話でカット版に切り替わらない'))
+  await page.keyboard.press('Escape')
+  await page.locator('[data-testid="recording-series-shelf"] a[href="/recordings/1"]').click()
+  await page.waitForURL('**/recordings/1', { timeout: 5000 })
+  await page.waitForFunction(() => document.querySelector('video')?.getAttribute('src')?.includes('/recordings/1/'), undefined, { timeout: 5000 })
+    .catch(() => {})
+  const src = await page.evaluate(() => document.querySelector('video')?.getAttribute('src'))
+  log(`  1 話へ移った後の映像: ${src}`)
+  if (src !== '/api/media/recordings/1/file?profile=h264-720p') ng.push(`⑨ 移った先の映像が既定の画質でない（${src}）`)
+  await page.getByRole('tab', { name: '版' }).click()
+  const playingRows = await page.locator('[data-testid="recording-version-row"]').evaluateAll((rows) =>
+    rows.filter((row) => row.textContent.includes('再生中')).map((row) => row.textContent),
+  )
+  if (playingRows.length !== 1 || !playingRows[0].startsWith('h264-720p')) {
+    ng.push(`⑨ 版タブの「再生中」が映像の画質（h264-720p）と一致しない（${JSON.stringify(playingRows)}）`)
+  }
+  await shot(page, 'v3-desktop-after-next-reset.png')
+  await context.close()
+}
+
+{
   // 最後の回: 次の回が再生できない（原本のみ・録画中）ときが「最後」。ep2 の後に再生できる行が無い構成にする。
   const { context, page } = await newPage(1280, 800)
   log('\n=== ⑤ 最後の回のカード ===')
@@ -418,7 +529,7 @@ async function transitionsAlong(png) {
   }
   await page.waitForTimeout(4000)
   if (new URL(page.url()).pathname !== '/recordings/2') ng.push('⑤ 最後の回なのに別の録画へ移った')
-  await shot(page, 'v2-desktop-end-card-last.png')
+  await shot(page, 'v3-desktop-end-card-last.png')
   await context.close()
 }
 
@@ -445,7 +556,7 @@ async function transitionsAlong(png) {
     }
   }
   await openRecording(page, 1)
-  await shot(page, 'v2-phone-programme.png')
+  await shot(page, 'v3-phone-programme.png')
 
   log('\n=== ② スマホの終端カード ===')
   await playToEnd(page)
@@ -457,7 +568,7 @@ async function transitionsAlong(png) {
       ng.push(`② スマホ: 「${b.name}」が映像の枠からはみ出している`)
     }
   }
-  await shot(page, 'v2-phone-end-card.png')
+  await shot(page, 'v3-phone-end-card.png')
   await context.close()
 }
 
@@ -469,9 +580,13 @@ if (SHOT_DIR) {
       { name: 'phone', width: 400, height: 800 },
     ]) {
       const { context, page } = await newPage(vp.width, vp.height, scheme)
-      const out = (state) => `v2-${scheme}-${vp.name}-${state}.png`
+      const out = (state) => `v3-${scheme}-${vp.name}-${state}.png`
       await openRecording(page, 1)
       if (vp.name === 'desktop') {
+        // 棚（進み線）まで入るよう、ページ全体も撮る。
+        await page.locator('[data-testid="recording-series-shelf"] img').first().waitFor()
+        await page.screenshot({ path: path.join(SHOT_DIR, out('full')), fullPage: true, animations: 'disabled' })
+        await page.locator('[data-testid="recording-series-shelf"]').screenshot({ path: path.join(SHOT_DIR, out('shelf')), animations: 'disabled' })
         await page.getByRole('button', { name: '録画のその他の操作' }).click()
         await page.getByRole('menu').waitFor()
         await shot(page, out('detail-menu'))
@@ -501,7 +616,7 @@ if (SHOT_DIR) {
     })
     await openRecording(page, 2)
     await playToEnd(page)
-    await shot(page, `v2-${scheme}-desktop-end-card-last.png`)
+    await shot(page, `v3-${scheme}-desktop-end-card-last.png`)
     await context.close()
   }
 }
