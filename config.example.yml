@@ -236,7 +236,8 @@ live:
   #   kind: vaapi
   #   device: /dev/dri/renderD128
   #   output_format: vaapi
-  # input_extra_args: []         # `-f mpegts -i pipe:0` の直前に足す許可済み引数
+  # input_extra_args: []         # 入力 `-f mpegts [-ss N] -i ...` の直前に足す許可済み引数
+                                 # （ライブ/追っかけは pipe:0、原本 VOD は /dev/fd/3）
   # profiles:
   #   - name: h264                 # `?profile=` から参照する名前
   #     video_codec: libx264       # ISDB-T の映像は MPEG-2 なのでブラウザの HLS 経路

@@ -590,20 +590,35 @@ map とファイルを直ちに解放して次の playlist 要求で再起動で
 ### 録画原本のブラウザ再生
 
 完了済みで active な原本 MPEG-2 TS を、site streamer が FFmpeg → HLS の一時セッションとして
-変換する。これは `media_assets` に保存する派生物ではない。資源同定は `recordings.id` で、
-profile は出力 playlist の選択にだけ使うため、同じ録画の視聴者と profile 切替は 1 本の
-FFmpeg セッションを共有する。live / chase と同じ `live.max_sessions`、idle GC、離脱ヒントを
-使う。Prometheus は `rokuban_live_active_sessions{kind="original_vod"}` に内訳を出す。
+変換する。これは `media_assets` に保存する派生物ではない。資源同定は
+`(recordings.id, offset)` で、profile は出力 playlist の選択にだけ使うため、同じ録画・同じ
+offset の視聴者と profile 切替は 1 本の FFmpeg セッションを共有する。省略 offset と `0` は
+同じ先頭セッションである。live / chase と同じ `live.max_sessions`、idle GC、離脱ヒントを使う。
+Prometheus は `rokuban_live_active_sessions{kind="original_vod"}` に内訳を出す。
 
 ```
 GET  /api/sites/{site}/recordings/{id}/original-vod/playlist.m3u8[?profile=<name>]
          → application/vnd.apple.mpegurl
+GET  /api/sites/{site}/recordings/{id}/original-vod/offset/{offset}/playlist.m3u8[?profile=<name>]
+         → application/vnd.apple.mpegurl
 GET  /api/sites/{site}/recordings/{id}/original-vod/segments/{name}
 GET  /api/sites/{site}/recordings/{id}/original-vod/{name}
          → video/mp2t / text/vtt / application/vnd.apple.mpegurl
+GET  /api/sites/{site}/recordings/{id}/original-vod/offset/{offset}/segments/{name}
+GET  /api/sites/{site}/recordings/{id}/original-vod/offset/{offset}/{name}
+         → video/mp2t / text/vtt / application/vnd.apple.mpegurl
 POST /api/sites/{site}/recordings/{id}/original-vod/leave
          → 204（離脱のヒント）
+POST /api/sites/{site}/recordings/{id}/original-vod/offset/{offset}/leave
+         → 204（離脱のヒント）
 ```
+
+`{offset}` は録画先頭からの秒を表す正準な 10 進整数である。`007`、`+5`、`5.0` などの
+非正準形は 400、原本の長さ以上は 416 にする。offset ごとに session key と HLS scratch を分ける。
+offset 付き playlist / segment / leave はすべて同じ offset の session を参照する。
+各 offset は通常の原本 HLS セッションとして `live.max_sessions` に数え、leave ヒント・idle GC・
+容量圧力時の idle session 退避も共有する。`offset/0` と offset 無しの URL は同じ session と scratch
+を使う。
 
 これらのバイナリ配信ルートは `openapi.yaml` に載せない。開始時に DB から同じ site の
 `finished` 録画と `state='active'` の original を引く。原本を read-only で open してから、
@@ -638,6 +653,71 @@ event は変換の先頭から playlist が書かれ、終了時に `#EXT-X-ENDL
 異常終了時は scratch とセッションを回収する。
 原本が引き続き active なら次の要求で作り直せる
 （`TestOriginalVODServesPlaylistWhileFFmpegIsStillConverting`）。
+
+offset 付きでは完成済み原本の「映像の長さ」を同じ開いたファイル記述子から ffprobe で調べ、FFmpeg に渡す前に
+範囲を確認する。原本は `cmd.ExtraFiles` の先頭として子プロセス fd 3 に渡し、FFmpeg は
+`/dev/fd/3` を入力にする。fd は seek 可能な同じ inode を指すため、`until_encoded` が canonical path
+を unlink した後も変換できる。通常のパイプ `pipe:0` では seek が効かないため、この fd 方式を選ぶ。
+ffprobe が descriptor を読み終わった後は親側で先頭へ戻し、FFmpeg の fd も seek 可能な状態から始める。
+offset が 0 より大きいときは `-ss {offset}` を `-i /dev/fd/3` より前に置く。FFmpeg の入力側 seek は
+入力の seek point から offset までを decode して捨てる。`-copyts` は付けず、HLS の再生時間軸は
+offset ごとに 0 から始めるので、再生位置は `offset + currentTime` として扱う。
+
+**範囲の判定は format の duration でなく映像ストリームの終端で行う。**
+format の duration は音声など最長のストリームで決まり、映像より長い。
+実バイナリで測った合成 660 秒 TS は format 660.010 秒・映像 660.000 秒で、
+format と比べる判定では、`[映像の終端, format の duration)` に入る整数 offset（660）が通った。
+FFmpeg は何も出力せず、playlist 待ちの 15 秒後に 504 になった。
+いまは映像の終端（`start_time + duration - format の start_time`）の手前 0.5 秒より後ろの offset を 416 にする。
+終端ちょうどの offset も最後のフレームより後ろを指して出力が空になりうるので、この余白を取る。
+同じ 660 秒 TS で offset 659 は 200（0.14 秒）、660 / 661 / 99999 は 416（0.03 秒）だった。
+範囲外の offset は利用者入力の結果なので ERROR ではなく INFO で記録する。
+
+**原本 VOD の退避は mirakc のチューナー解放待ち（`liveMirakcReleaseWait`、5 秒）を挟まない。**
+原本 VOD はチューナーを持たない。`max_sessions: 2` で容量が埋まった状態からのシークは、
+待ちを挟むと約 5.4 秒、挟まないと 0.13 秒だった（実バイナリ、合成 660 秒 TS）。
+
+#### offset seek の精度と開始時間の測定
+
+精度と範囲は CI の `TestOriginalVODOffsetRealFFmpegSeekAccuracyAndRange` が固定する。
+このテストは実 ffmpeg / ffprobe で `runSession` の経路を通り、`ROKUBAN_REQUIRE_FFMPEG` を立てると skip できない。入力は lavfi で作る 40 秒の MPEG-2 + MP2 の TS で、
+映像の輝度が録画先頭からの秒に比例し、音声は 41.5 秒まで続く。HLS の先頭セグメントの先頭フレームの輝度から時刻を読む。
+FFmpeg 9.0.2、macOS arm64 で offset 0 / 7 / 20 / 38 の誤差はすべて 0.00 秒だった。
+offset 40 / 41 / 42 は 416 が 3 秒以内に返る。
+format の duration と比べる判定に戻すと、40 と 41 が 15 秒待って 504 になった（変異で確認）。
+この条件は 40 秒の合成映像だけで、PTS の不連続・wraparound を含む放送 TS の実録画では未検証である。
+
+HLS の先頭セグメントの映像 PTS は、どの offset でも 1.48 秒だった（上のテストのログ）。
+mpegts muxer の既定の遅延で、offset によらない。ブラウザの `currentTime` は 0 から始まる。
+HLS の PTS 自体を 0 にそろえているわけではない。
+
+10 分以上の入力での精度は 660 秒の合成 TS で 1 回測った。
+25 fps の 320×80 映像に録画先頭からの `秒:フレーム番号` を焼き込んだ。
+映像は MPEG-2（GOP 15、B-frame 2、closed GOP）、音声は MP2 で、1 Mbit/s MPEG-TS muxrate でまとめた。
+format duration は 660.010022 秒、video stream duration は 660.000000 秒である。
+測定に使った runner は不変条件 4（ffmpeg の exec は worker / streamer のみ）を破るため、リポジトリには置いていない。
+再実行できる形では残っていない。
+
+| 要求した offset | HLS の先頭フレーム表示 | offset との差 |
+| ---: | ---: | ---: |
+| 0 秒 | 0.00 秒 | 0.00 秒 |
+| 61 秒 | 61.36 秒 | +0.36 秒 |
+| 307 秒 | 307.32 秒 | +0.32 秒 |
+| 603 秒 | 603.20 秒 | +0.20 秒 |
+| 659 秒 | 659.36 秒 | +0.36 秒 |
+
+同じ 5 offset を各 3 回 FFmpeg で変換し、原本 open 後から master playlist が読めるまでを測った。
+非ゼロ offset は duration probe と FFmpeg 起動を含む。DB lookup、HTTP/router、原本 open は計時外である。
+
+| offset | master ready 中央値（最小–最大） |
+| ---: | ---: |
+| 0 秒 | 80 ms（78–93 ms） |
+| 61 秒 | 94 ms（92–96 ms） |
+| 307 秒 | 93 ms（93–93 ms） |
+| 603 秒 | 93 ms（93–95 ms） |
+| 659 秒 | 59 ms（59–60 ms） |
+
+非ゼロ offset の duration probe は 17–20 ms だった。659 秒では残り 1 秒の短い出力になる。
 
 原本だけの完了録画はこの経路をブラウザ再生の既定にする。active な録画は既存の chase、
 active な encoded がある完了録画は MP4 progressive + Range を使う。原本 MPEG-2 decoder を

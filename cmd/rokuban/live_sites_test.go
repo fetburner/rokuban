@@ -111,6 +111,14 @@ func TestLiveSites_DispatchesByURLSite(t *testing.T) {
 		if resp.StatusCode != http.StatusNoContent {
 			t.Errorf("original VOD leave (site=%s) status = %d, want 204", site, resp.StatusCode)
 		}
+		resp, err = http.Post(ts.URL+"/api/sites/"+site+"/recordings/1/original-vod/offset/0/leave", "", nil)
+		if err != nil {
+			t.Fatalf("POST original VOD offset leave (site=%s): %v", site, err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Errorf("original VOD offset leave (site=%s) status = %d, want 204", site, resp.StatusCode)
+		}
 	}
 
 	if status := get(t, "osaka"); status != http.StatusNotFound {

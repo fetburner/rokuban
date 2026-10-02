@@ -113,8 +113,23 @@ describe('originalVODPlaylistURL', () => {
     expect(originalVODPlaylistURL('a b', 42, 'hd 720p')).toBe(
       '/api/sites/a%20b/recordings/42/original-vod/playlist.m3u8?profile=hd%20720p',
     )
+    expect(originalVODPlaylistURL('default', 42, undefined, 90)).toBe(
+      '/api/sites/default/recordings/42/original-vod/offset/90/playlist.m3u8',
+    )
+    expect(originalVODPlaylistURL('default', 42, 'hd', 90)).toBe(
+      '/api/sites/default/recordings/42/original-vod/offset/90/playlist.m3u8?profile=hd',
+    )
+    expect(originalVODPlaylistURL('default', 42, undefined, 0)).toBe(
+      '/api/sites/default/recordings/42/original-vod/playlist.m3u8',
+    )
     expect(originalVODLeaveURL('a b', 42)).toBe(
       '/api/sites/a%20b/recordings/42/original-vod/leave',
+    )
+    expect(originalVODLeaveURL('default', 42, 90)).toBe(
+      '/api/sites/default/recordings/42/original-vod/offset/90/leave',
+    )
+    expect(originalVODLeaveURL('default', 42, 0)).toBe(
+      '/api/sites/default/recordings/42/original-vod/leave',
     )
   })
 })
@@ -212,9 +227,9 @@ describe('sendOriginalVODLeaveHint', () => {
     const beacon = vi.fn(() => true)
     vi.stubGlobal('navigator', { sendBeacon: beacon })
 
-    sendOriginalVODLeaveHint('default', 42)
+    sendOriginalVODLeaveHint('default', 42, 90)
 
-    expect(beacon).toHaveBeenCalledWith('/api/sites/default/recordings/42/original-vod/leave')
+    expect(beacon).toHaveBeenCalledWith('/api/sites/default/recordings/42/original-vod/offset/90/leave')
   })
 })
 

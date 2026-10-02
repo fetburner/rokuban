@@ -1781,9 +1781,13 @@ func TestLiveStreamer_URLPathFixedDepth(t *testing.T) {
 		"/api/sites/{site}/recordings/{id}/chase/leave",
 		"/api/sites/{site}/recordings/{id}/chase/offset/{offset}/leave",
 		"/api/sites/{site}/recordings/{id}/original-vod/playlist.m3u8",
+		"/api/sites/{site}/recordings/{id}/original-vod/offset/{offset}/playlist.m3u8",
 		"/api/sites/{site}/recordings/{id}/original-vod/segments/{name}",
+		"/api/sites/{site}/recordings/{id}/original-vod/offset/{offset}/segments/{name}",
 		"/api/sites/{site}/recordings/{id}/original-vod/{name}",
+		"/api/sites/{site}/recordings/{id}/original-vod/offset/{offset}/{name}",
 		"/api/sites/{site}/recordings/{id}/original-vod/leave",
+		"/api/sites/{site}/recordings/{id}/original-vod/offset/{offset}/leave",
 	}
 	slices.Sort(routes)
 	slices.Sort(want)
