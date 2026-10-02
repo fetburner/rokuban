@@ -2613,7 +2613,7 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
     const { fetchMock } = createFakeServer({ recording: origin, seriesRecordings: [other, origin] })
     renderAt('/recordings/3')
 
-    await user.click(await screen.findByRole('button', { name: '追っかけ再生' }))
+    await user.click(await screen.findByTestId('recording-playback-start'))
     const chasePaths = () =>
       fetchMock.mock.calls
         .map(([input]) => new URL(String(input), 'http://localhost').pathname)
@@ -2627,7 +2627,7 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
     const shelf = screen.getByTestId('recording-series-shelf')
     await user.click(within(within(shelf).getByRole('list')).getAllByRole('link').find((link) => link.getAttribute('href') === '/recordings/4')!)
     expect(await screen.findByRole('heading', { name: '作品X 第4話' })).toBeInTheDocument()
-    await user.click(await screen.findByRole('button', { name: '追っかけ再生' }))
+    await user.click(await screen.findByTestId('recording-playback-start'))
     const slider = await screen.findByRole('slider', { name: 'シークバー' })
     await waitFor(() => expect(chasePaths().filter((path) => path.includes('/recordings/4/'))).toHaveLength(1))
     // 次の回は前の回の offset を引き継がず、録画の先頭のセッションから始める。
