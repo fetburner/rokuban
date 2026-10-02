@@ -302,6 +302,23 @@ describe('routeTree', () => {
     }
   })
 
+  it('/reservations の ruleId は正の安全整数だけを通し、不正値を検索状態から落とす', async () => {
+    for (const raw of ['', '0', '-1', 'abc', '1.5', '1e30', '9007199254740993']) {
+      const router = createRouter({
+        routeTree,
+        history: createMemoryHistory({ initialEntries: [`/reservations?ruleId=${raw}`] }),
+      })
+      await router.load()
+      expect((router.state.matches.at(-1)!.search as { ruleId?: unknown }).ruleId).toBeUndefined()
+    }
+    const valid = createRouter({
+      routeTree,
+      history: createMemoryHistory({ initialEntries: ['/reservations?ruleId=42'] }),
+    })
+    await valid.load()
+    expect((valid.state.matches.at(-1)!.search as { ruleId?: unknown }).ruleId).toBe(42)
+  })
+
   it('/live?service=abc は useSearch の戻り値に文字列を残さない', async () => {
     // **`validateSearch` を直接呼ぶだけでは検出できない。** TanStack Router は
     // 非 strict モードで `{ ...生の location.search, ...validateSearch の戻り値 }`

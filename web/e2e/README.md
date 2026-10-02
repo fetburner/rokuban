@@ -750,6 +750,18 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:reservations-mobile
 ```
 
+### 予約一覧の日付・出自・ルール絞り込み（`reservations-rule-filter.mjs`）
+
+予約一覧の時間順ビューで、ローカル日付の見出しがスクロール後もページヘッダーの下に留まること、ルール出自リンクが行全面リンクより手前でクリックできることを測る。360 / 390 / 1280px で日付見出しと出自リンクを確認し、同じ幅でルールメニューが画面内に収まり、各項目が 24 × 24px 以上であることを確認する。360px ではページの横スクロールが無いことも判定する。7px 刻みでスクロールし、日付見出しとヘッダーのチップの中心が行の中身に遮られないこと、時刻欄のクリックで詳細へ遷移することも測る。light / dark・各幅のスクリーンショット（時刻順・スクロール後・ルールメニュー・ルール絞り込み）を `E2E_SHOT_DIR` へ保存する。
+
+`/api/**` をブラウザー側でスタブするので mirakc・DB は要らない。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 E2E_SHOT_DIR=/tmp/reservation-rule-shots \
+  pnpm e2e:reservations-rule-filter
+```
+
 ### 予約一覧の容量確認失敗（`reservations-capacity-error.mjs`）
 
 予約一覧の容量超過 API が失敗すると、失敗を空配列として扱った「確認が要る予約は

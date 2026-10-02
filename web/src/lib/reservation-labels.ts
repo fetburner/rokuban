@@ -1,5 +1,6 @@
 import type { CapacityOverage, Reservation } from '@/api/generated'
 import { intersectingOverages } from '@/lib/capacity'
+import { parseRuleId } from '@/lib/recording-search'
 import { parseEnum } from '@/lib/url-search'
 
 /**
@@ -24,13 +25,20 @@ export const stateLabels: Record<Reservation['state'], string> = {
 export type ReservationsPageSearch = {
   /** 問題のある予約だけに絞る。既定の全件表示は URL に書かない。 */
   only?: 'attention'
+  /** ルールに関連付いた予約に絞る。削除済みルール ID は 0 件として扱う。 */
+  ruleId?: number
 }
 
-/** parseReservationsSearch は不正な `only` を既定の全件表示へ落とす。 */
+/** parseReservationsSearch は不正な `only` / `ruleId` を既定の絞り込みなしへ落とす。 */
 export function parseReservationsSearch(
   search: Record<string, unknown>,
 ): ReservationsPageSearch {
-  return { only: parseEnum(search.only, ['attention'] as const) }
+  // TanStack Router の非 strict モードでは、生の search に戻り値を重ねるため
+  // 無効な値を消すキーも明示的に返す（docs/frontend/recordings.md §validateSearch）。
+  return {
+    only: parseEnum(search.only, ['attention'] as const),
+    ruleId: parseRuleId(search.ruleId),
+  }
 }
 
 /** reservationNeedsAttention は予約が非 active または容量不足区間と交差するか判定する。 */

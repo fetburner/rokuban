@@ -30,7 +30,7 @@ import { reservationsQueryKeyPrefix } from '@/lib/events'
 import { formatDateTime, formatDuration } from '@/lib/format'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
 import { programTitle } from '@/lib/program-labels'
-import { ruleDisambiguator } from '@/lib/rule-label'
+import { makeRuleLabel } from '@/lib/rule-label'
 import { stateLabels } from '@/lib/reservation-labels'
 
 /**
@@ -338,13 +338,7 @@ function overrideValue(reservation: Reservation, key: string): string | undefine
 function RuleName({ ruleId }: { ruleId: number }) {
   const query = useListRules()
   const rules = unwrap(query.data) ?? []
-  const rule = rules.find((r) => r.id === ruleId)
-  const disambiguateRule = ruleDisambiguator(rules)
-  const disambiguator = rule === undefined ? undefined : disambiguateRule(rule)
-  const label =
-    rule === undefined
-      ? `#${ruleId}`
-      : `${rule.name}${disambiguator === undefined ? '' : ` (${disambiguator})`}`
+  const label = makeRuleLabel(rules)(ruleId)
 
   return (
     <Link
