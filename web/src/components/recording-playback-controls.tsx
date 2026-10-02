@@ -900,16 +900,18 @@ export function RecordingPlaybackControls({
                   className="h-6 w-0 opacity-0 transition-all focus-visible:w-16 focus-visible:opacity-100 group-hover/volume:w-16 group-hover/volume:opacity-100 accent-white"
                 />
               </div>
-              <span data-testid="playback-time" className="shrink-0 px-1 font-mono text-xs whitespace-nowrap md:px-2 md:text-sm">
-                {chaseTimeline ? (
-                  <>
-                    {formatAxisTime(seconds)} / <span className="hidden md:inline">録画済み </span>
-                    {formatAxisTime(chaseTimeline.recordedEndSeconds)}
-                  </>
-                ) : (
-                  `${formatPlaybackTime(seconds)} / ${formatPlaybackTime(durationSeconds)}`
-                )}
-              </span>
+              {(liveTimeline !== undefined || playbackMode !== 'live') && (
+                <span data-testid="playback-time" className="shrink-0 px-1 font-mono text-xs whitespace-nowrap md:px-2 md:text-sm">
+                  {liveTimeline
+                    ? `${formatPlaybackTime(liveTimeline.liveEdgeSeconds, false)} / ${formatPlaybackTime(liveTimeline.plannedEndSeconds, false)}`
+                    : chaseTimeline ? (
+                      <>
+                        {formatAxisTime(seconds)} / <span className="hidden md:inline">録画済み </span>
+                        {formatAxisTime(chaseTimeline.recordedEndSeconds)}
+                      </>
+                    ) : `${formatPlaybackTime(seconds)} / ${formatPlaybackTime(durationSeconds)}`}
+                </span>
+              )}
               {/*
                 チャプターがある録画だけ名前を出し、押すとプレイヤー内のチャプター一覧（見るだけ）を開く。
                 チャプターが無い録画（カット版を含む）は名前も「›」も出さない。
@@ -1462,15 +1464,27 @@ function PlaybackSettingsMenu({
         <div aria-hidden className="mx-auto mt-1 mb-2 h-1 w-9 rounded-full bg-border md:hidden" />
         {view === 'main' && (
           <>
-            {/* デスクトップは CM・字幕・再生速度・（音声）・画質の順で、画質を歯車に近い最下段に置く。
-                スマホのシートは画質を一番上に置く（ラフ）。並びだけを CSS で逆にするので、音声は
-                どちらでも画質の隣（デスクトップは直前、スマホは直後）に入る。 */}
-            <div role="none" className="flex flex-col-reverse md:flex-col">
-              {skipRow}
-              {subtitlesRow}
-              {speedRow}
-              {audioRow}
-              {qualityRow}
+            {/* 配信プロファイルでは画質・音声を先頭に置く。encoded はデスクトップの既存順を保ち、
+                スマホだけ CSS で画質を先頭にする。 */}
+            <div
+              role="none"
+              className={playbackMode === 'live' ? 'flex flex-col' : 'flex flex-col-reverse md:flex-col'}
+            >
+              {playbackMode === 'live' ? (
+                <>
+                  {qualityRow}
+                  {audioRow}
+                  {subtitlesRow}
+                </>
+              ) : (
+                <>
+                  {skipRow}
+                  {subtitlesRow}
+                  {speedRow}
+                  {audioRow}
+                  {qualityRow}
+                </>
+              )}
             </div>
             {pictureInPictureEnabled && (
               <>
