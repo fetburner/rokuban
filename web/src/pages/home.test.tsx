@@ -307,6 +307,13 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
     const beginning = screen.getByRole('link', { name: '最初から' })
     expect(beginning.getAttribute('href')).toContain('fromBeginning=true')
     expect(screen.queryByText(/再生元/)).not.toBeInTheDocument()
+    // ラフ（#1020）: ▶ 付きの主ボタン、メタは 1 行で位置を末尾に、サムネ内に局名と進み線
+    expect(screen.getByTestId('home-primary-action')).toHaveTextContent('▶')
+    expect(screen.getByText(/\(.\) \d\d:\d\d · NHK総合 · 14:40 \/ /)).toBeInTheDocument()
+    expect(screen.getByTestId('home-hero-station')).toHaveTextContent('NHK総合')
+    expect(screen.getByTestId('home-hero-progress-line')).toBeInTheDocument()
+    // 「ほかの新着」のサムネイルには重ねない
+    expect(screen.getAllByTestId('home-hero-station')).toHaveLength(1)
   })
 
   it('管理側の 5 セクションは順序を保ち、見る側では出さない', async () => {

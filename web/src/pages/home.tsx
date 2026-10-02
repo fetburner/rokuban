@@ -1,7 +1,7 @@
 import { keepPreviousData } from '@tanstack/react-query'
 import { Link, useRouterState } from '@tanstack/react-router'
 import { TriangleAlert } from 'lucide-react'
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 
 import {
   useListCapacityOverages,
@@ -21,7 +21,7 @@ import { ReservationSkipBadge } from '@/components/reservation-skip-reason'
 import { describeBreakerName, describeBreakerReason } from '@/lib/breaker'
 import { shortageRangeMessage } from '@/lib/capacity'
 import { dayOrigin } from '@/lib/day-offset'
-import { formatDateTime, formatDuration } from '@/lib/format'
+import { formatDate, formatDateTime, formatDuration, formatTime } from '@/lib/format'
 import {
   readHomeModePreference,
   resolveHomeMode,
@@ -597,22 +597,18 @@ function WatchHero({ choice }: { choice: HomeHeroChoice }) {
       : undefined
 
   return (
-    <section aria-label="次に見る 1 本" className="grid min-w-0 grid-cols-1 items-end gap-3 md:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)] md:gap-5">
-      <HomeThumbnail recording={recording} hero />
+    <section aria-label="次に見る 1 本" className="grid min-w-0 grid-cols-1 items-start gap-3 md:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)] md:gap-5">
+      <HomeThumbnail recording={recording} hero progress={progress} />
       <div className="flex min-w-0 flex-col gap-1">
         <p className="text-xs text-muted-foreground">次に見る · {kind === 'continue' ? '続きから' : '新着'}</p>
         <h2 className="text-lg leading-snug font-semibold text-balance md:text-xl">
           {programTitle(recording.title)}
         </h2>
         <p className="text-xs text-muted-foreground">
-          {formatDateTime(recording.startAt)} · {recording.serviceName}
+          {formatDate(recording.startAt)} {formatTime(recording.startAt)} · {recording.serviceName}
+          {resumePosition !== undefined &&
+            ` · ${formatPlaybackPosition(resumePosition)} / ${formatPlaybackPosition(recording.durationMs)}`}
         </p>
-        {resumePosition !== undefined && (
-          <p className="text-xs text-muted-foreground">
-            再生位置 {formatPlaybackPosition(resumePosition)} /{' '}
-            {formatPlaybackPosition(recording.durationMs)}
-          </p>
-        )}
         {progress !== undefined && (
           <div
             className="h-1 overflow-hidden rounded-sm bg-muted"
@@ -631,6 +627,9 @@ function WatchHero({ choice }: { choice: HomeHeroChoice }) {
             data-testid="home-primary-action"
             className="inline-flex min-h-10 items-center justify-center rounded border border-primary bg-primary px-3 text-sm font-medium text-primary-foreground"
           >
+            <span aria-hidden="true" className="mr-1">
+              ▶
+            </span>
             {kind === 'continue' ? '続きから再生' : '再生'}
           </Link>
           {kind === 'continue' && (
@@ -660,12 +659,20 @@ function formatPlaybackPosition(milliseconds: number): string {
     : `${paddedMinutes}:${paddedSeconds}`
 }
 
-function HomeThumbnail({ recording, hero = false }: { recording: Recording; hero?: boolean }) {
+function HomeThumbnail({
+  recording,
+  hero = false,
+  progress,
+}: {
+  recording: Recording
+  hero?: boolean
+  progress?: number
+}) {
   const [failed, setFailed] = useState(false)
   return (
     <div
       data-testid={hero ? 'home-next-watch-thumbnail' : undefined}
-      className="aspect-video w-full min-w-0 overflow-hidden rounded border border-border bg-muted"
+      className="relative aspect-video w-full min-w-0 overflow-hidden rounded border border-border bg-muted"
     >
       {!failed ? (
         <img
@@ -678,6 +685,25 @@ function HomeThumbnail({ recording, hero = false }: { recording: Recording; hero
       ) : (
         <div className="size-full bg-muted" aria-hidden />
       )}
+      {hero && (
+        <>
+          <span
+            data-testid="home-hero-station"
+            className="absolute bottom-2 left-2 text-[11px] text-white [text-shadow:0_1px_2px_rgb(0_0_0/0.6)]"
+          >
+            {recording.serviceName}
+          </span>
+          {progress !== undefined && (
+            <div
+              aria-hidden
+              data-testid="home-hero-progress-line"
+              className="absolute inset-x-0 bottom-0 h-1 bg-black/30"
+            >
+              <div className="h-full bg-white" style={{ width: `${progress}%` }} />
+            </div>
+          )}
+        </>
+      )}
     </div>
   )
 }
@@ -688,24 +714,25 @@ function WatchBreakerBand({ breakers }: { breakers: readonly CircuitBreaker[] })
     <div
       role="alert"
       data-testid="home-watch-breaker-band"
-      className="flex flex-col gap-1 border-t border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive md:flex-row md:flex-wrap md:items-baseline md:gap-x-3"
+      className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-t border-destructive/30 bg-destructive/10 px-4 py-2 text-xs"
     >
       {breakers.map((breaker) => (
-        <div
-          key={`${breaker.site}:${breaker.name}`}
-          className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1"
-        >
-          <span className="font-semibold">{describeBreakerName(breaker.name)}が停止中</span>
+        <Fragment key={`${breaker.site}:${breaker.name}`}>
+          <span className="font-semibold text-destructive max-md:basis-full">
+            {describeBreakerName(breaker.name)}が停止中
+          </span>
           {describeBreakerReason(breaker.name) && (
-            <span className="text-destructive/80">{describeBreakerReason(breaker.name)}</span>
+            <span className="min-w-0 flex-1 text-foreground">
+              {describeBreakerReason(breaker.name)}
+            </span>
           )}
-        </div>
+        </Fragment>
       ))}
       <Link
         to="/"
         search={{ mode: 'ops' }}
         onClick={() => saveHomeModePreference('ops')}
-        className="shrink-0 text-primary underline-offset-2 hover:underline md:ml-auto"
+        className="ml-auto shrink-0 text-foreground underline underline-offset-2"
       >
         管理で見る
       </Link>
