@@ -1573,7 +1573,7 @@ for (const theme of themes) {
     }
 
     {
-      const text = (await page.getByTestId('home-ops-timeline').innerText()).replaceAll(/\s+/g, ' ')
+      const text = ((await page.getByTestId('home-ops-timeline').innerText({ timeout: 3000 }).catch(() => '')) ?? '').replaceAll(/\s+/g, ' ')
       for (const expected of ['今日 0 時 → 明日の終わり', '地デジ / BS ごと', 'チューナー不足の区間', '枠の中を横にスクロールできます']) {
         if (!text.includes(expected)) ng.push(`[ops-timeline/${theme}/${viewport.width}px] 時間軸に「${expected}」が無い`)
       }
@@ -1689,7 +1689,9 @@ for (const multiSite of [false, true]) {
       await page.waitForTimeout(50)
     }
     seen.push(`${width}px=${[...samples].join('|')}`)
-    if (samples.size !== 1) {
+    if ([...samples].some((sample) => sample.startsWith('undefined'))) {
+      ng.push(`[ops-resize/${multiSite ? 'multi' : 'single'}/${width}px] 時間軸が描かれていない（縮尺を測れない）`)
+    } else if (samples.size !== 1) {
       ng.push(`[ops-resize/${multiSite ? 'multi' : 'single'}/${width}px] 縮尺が往復する（${[...samples].join(' ⇄ ')}）`)
     }
   }
@@ -1733,11 +1735,14 @@ for (const viewport of [homeDesktop, mobile]) {
     }
     for (const scrollLeft of [0, 37, 101, 333, 100000]) {
       await page.evaluate((x) => {
-        document.querySelector('[data-testid="home-ops-timeline-frame"]').scrollLeft = x
+        const frame = document.querySelector('[data-testid="home-ops-timeline-frame"]')
+        if (frame) frame.scrollLeft = x
       }, scrollLeft)
       await page.waitForTimeout(100)
       const cut = await page.evaluate(() => {
-        const frame = document.querySelector('[data-testid="home-ops-timeline-frame"]').getBoundingClientRect()
+        const frameElement = document.querySelector('[data-testid="home-ops-timeline-frame"]')
+        if (!frameElement) return ['時間軸の枠が無い']
+        const frame = frameElement.getBoundingClientRect()
         return [...document.querySelectorAll('[data-testid="home-timeline-tick"]')]
           .filter((tick) => getComputedStyle(tick).visibility !== 'hidden')
           .map((tick) => ({ text: tick.textContent, rect: tick.getBoundingClientRect() }))
