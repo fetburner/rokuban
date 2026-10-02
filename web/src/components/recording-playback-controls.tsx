@@ -375,45 +375,45 @@ export function RecordingPlaybackControls({
 
             <div data-testid="player-controls-row" className="flex min-h-9 items-center gap-0.5 md:min-h-10 md:gap-1">
               {/*
-                スマホでは枠の中央に前 → 再生 → 次の順で大きく出す（DOM 順もこの順）。md 以上は
-                バーの左端に再生 → 前 → 次で並べるため、再生だけ order で先頭へ出す。
+                DOM 順はデスクトップの見た目（再生 → 前 → 次）にそろえ、Tab 順を見た目と一致させる。
+                スマホは枠の中央に前 → 再生 → 次で大きく出すため、order で並べ替える。
               */}
               <div
                 data-testid={hasChapters ? 'chapter-navigation' : undefined}
                 className="pointer-events-none absolute inset-x-0 top-1/2 flex -translate-y-1/2 items-center justify-center gap-10 md:pointer-events-auto md:static md:translate-y-0 md:gap-0">
-                {hasChapters && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className={cn(ghost, 'pointer-events-auto size-11 rounded-full bg-black/35 md:size-8 md:rounded-lg md:bg-transparent')}
-                    aria-label="前のチャプター"
-                    onClick={onPreviousChapter}
-                  >
-                    <SkipBack className="size-5 md:size-4" />
-                  </Button>
-                )}
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className={cn(ghost, 'pointer-events-auto size-14 rounded-full bg-black/45 md:-order-1 md:size-8 md:rounded-lg md:bg-transparent')}
+                  className={cn(ghost, 'pointer-events-auto order-1 size-14 rounded-full bg-black/45 md:order-none md:size-8 md:rounded-lg md:bg-transparent')}
                   aria-label={isPlaying ? '一時停止' : '再生'}
                   onClick={onTogglePlay}
                 >
                   {isPlaying ? <Pause className="size-7 md:size-4" /> : <Play className="size-7 md:size-4" />}
                 </Button>
                 {hasChapters && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className={cn(ghost, 'pointer-events-auto size-11 rounded-full bg-black/35 md:size-8 md:rounded-lg md:bg-transparent')}
-                    aria-label="次のチャプター"
-                    onClick={onNextChapter}
-                  >
-                    <SkipForward className="size-5 md:size-4" />
-                  </Button>
+                  <>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className={cn(ghost, 'pointer-events-auto size-11 rounded-full bg-black/35 md:size-8 md:rounded-lg md:bg-transparent')}
+                      aria-label="前のチャプター"
+                      onClick={onPreviousChapter}
+                    >
+                      <SkipBack className="size-5 md:size-4" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className={cn(ghost, 'pointer-events-auto order-2 size-11 rounded-full bg-black/35 md:order-none md:size-8 md:rounded-lg md:bg-transparent')}
+                      aria-label="次のチャプター"
+                      onClick={onNextChapter}
+                    >
+                      <SkipForward className="size-5 md:size-4" />
+                    </Button>
+                  </>
                 )}
               </div>
               {/* 端末の音量ボタンで足りるので、スマホにはミュート / 音量を置かない。 */}

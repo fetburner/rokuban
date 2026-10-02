@@ -847,7 +847,9 @@ describe('RecordingPlayer の設定メニュー（行リスト）', () => {
     expect(play).toHaveBeenCalledOnce()
   })
 
-  it('前後チャプターと再生は DOM 順も「前 → 再生 → 次」（スマホの見た目の順）', () => {
+  // DOM 順（= Tab 順）はデスクトップの見た目に合わせる。スマホの中央の並びは CSS の order。
+  // 実ブラウザの Tab 順と位置は web/e2e/chapters.mjs ①-a が見る。
+  it('再生と前後チャプターの DOM 順はデスクトップの見た目「再生 → 前 → 次」', () => {
     const { getByTestId } = render(
       <RecordingPlayer recordingId={67} encodedAssets={assets} chapters={chapters} />,
     )
@@ -855,7 +857,7 @@ describe('RecordingPlayer の設定メニュー（行リスト）', () => {
       within(getByTestId('chapter-navigation'))
         .getAllByRole('button')
         .map((button) => button.getAttribute('aria-label')),
-    ).toEqual(['前のチャプター', '再生', '次のチャプター'])
+    ).toEqual(['再生', '前のチャプター', '次のチャプター'])
   })
 
   it('タッチで映像を叩くと操作を出すだけで、再生は中央のボタンで始める', () => {

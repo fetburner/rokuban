@@ -290,6 +290,24 @@ if ((await page.locator('[data-testid="seek-scrub"]').count()) !== 1) {
 if ((await page.locator('[data-testid="player-controls"] [data-testid="chapter-navigation"]').count()) !== 1) {
   ng.push('①-a 前後チャプターの操作が player toolbar にない')
 }
+// デスクトップの Tab 順が見た目（左から再生 → 前 → 次）と一致する（WCAG 2.4.3）。
+await page.getByRole('button', { name: '再生', exact: true }).focus()
+const tabOrder = []
+for (let i = 0; i < 3; i += 1) {
+  tabOrder.push(
+    await page.evaluate(() => {
+      const el = document.activeElement
+      return { label: el?.getAttribute('aria-label'), left: el?.getBoundingClientRect().left ?? -1 }
+    }),
+  )
+  await page.keyboard.press('Tab')
+}
+const tabLabels = tabOrder.map((item) => item.label)
+const leftToRight = tabOrder.every((item, index) => index === 0 || item.left > tabOrder[index - 1].left)
+if (JSON.stringify(tabLabels) !== JSON.stringify(['再生', '前のチャプター', '次のチャプター']) || !leftToRight) {
+  ng.push(`①-a デスクトップの Tab 順が見た目（再生 → 前 → 次）と一致しない（${JSON.stringify(tabOrder)}）`)
+}
+await page.evaluate(() => document.activeElement?.blur())
 
 log('\n=== ①-b 全画面要素に操作バーとシークバーが含まれる ===')
 try {
