@@ -69,17 +69,35 @@ export type ChaseTimeline = {
   hoverSeconds: number | null
 }
 
+export type LiveProgramTimeline = {
+  minSeconds: number
+  maxSeconds: number
+  plannedEndSeconds: number
+  recordingStartSeconds: number
+  liveEdgeSeconds: number
+  canSeek: boolean
+  canStartOver: boolean
+  ariaValueText: string
+  startLabel: string
+  endLabel: string
+  liveTimeLabel: string
+}
+
 /** 設定メニューの階層。`main` が行リストで、残りは「›」で入る下の階層。 */
 type MenuView = 'main' | 'speed' | 'quality' | 'audio'
 
 const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
 
 type RecordingPlaybackControlsProps = {
-  recordingId: number
+  recordingId?: number
   profile: string
   encodedAssets: EncodedAsset[]
-  playbackMode?: 'encoded' | 'original-vod' | 'chase'
+  playbackMode?: 'encoded' | 'original-vod' | 'chase' | 'live'
   chaseTimeline?: ChaseTimeline
+  liveTimeline?: LiveProgramTimeline
+  liveDiagnostics?: string
+  liveNotice?: string
+  onStartOver?: () => void
   profileOptions?: readonly { name: string; label?: string }[]
   audioChoice?: LiveAudioChoice
   onSelectAudio?: (choice: LiveAudioChoice | undefined) => void
@@ -91,6 +109,7 @@ type RecordingPlaybackControlsProps = {
   outsideProgramSegments?: { beforeEndPercent: number; afterStartPercent: number }
   /** 映像の上に重ねる終端カード。 */
   endCard?: ReactNode
+  className?: string
   fullscreenRef: RefObject<HTMLDivElement | null>
   video: ReactNode
   currentSeconds: number
@@ -162,6 +181,10 @@ export function RecordingPlaybackControls({
   encodedAssets,
   playbackMode = 'encoded',
   chaseTimeline,
+  liveTimeline,
+  liveDiagnostics,
+  liveNotice,
+  onStartOver,
   profileOptions,
   audioChoice,
   onSelectAudio,
@@ -169,6 +192,7 @@ export function RecordingPlaybackControls({
   onNextEpisodeNavigate,
   outsideProgramSegments,
   endCard,
+  className,
   fullscreenRef,
   video,
   currentSeconds,
@@ -235,8 +259,11 @@ export function RecordingPlaybackControls({
   // 幕を押したポインタの種類（click には pointerType が載らないブラウザがある）。
   const scrimPointerTypeRef = useRef('')
   const pendingKeyboardSeek = useRef<number | null>(null)
-  const rangeMin = chaseTimeline?.minSeconds ?? 0
-  const rangeMax = chaseTimeline?.maxSeconds ?? durationSeconds
+  const isLiveTimeline = liveTimeline !== undefined
+  const hasTimeline = chaseTimeline !== undefined || liveTimeline !== undefined
+  const playerId = recordingId ?? 'live'
+  const rangeMin = chaseTimeline?.minSeconds ?? liveTimeline?.minSeconds ?? 0
+  const rangeMax = chaseTimeline?.maxSeconds ?? liveTimeline?.maxSeconds ?? durationSeconds
   const range = Math.max(0, rangeMax - rangeMin)
   const seconds = Math.max(rangeMin, Math.min(rangeMax, currentSeconds))
   const axisFraction = (value: number) => (range > 0 ? Math.max(0, Math.min(1, (value - rangeMin) / range)) : 0)
@@ -319,7 +346,7 @@ export function RecordingPlaybackControls({
         target = rangeMin
         break
       case 'End':
-        target = chaseTimeline?.liveEdgeSeconds ?? durationSeconds
+        target = chaseTimeline?.liveEdgeSeconds ?? liveTimeline?.liveEdgeSeconds ?? durationSeconds
         break
       default:
         return
@@ -365,7 +392,7 @@ export function RecordingPlaybackControls({
 
   return (
     <div
-      className="relative w-full"
+      className={cn('relative w-full', className)}
       data-testid="recording-player-shell"
       onPointerMove={chapterEditing ? undefined : onControlsActivity}
       onKeyDown={chapterEditing ? undefined : onShellKeyDown}
@@ -377,6 +404,15 @@ export function RecordingPlaybackControls({
         onPointerMove={onControlsActivity}
       >
         {video}
+        {liveNotice && (
+          <div
+            data-testid="live-quality-downgraded"
+            aria-live="polite"
+            className="absolute top-3 left-3 z-20 max-w-[80%] rounded bg-black/75 px-3 py-2 text-sm text-white shadow"
+          >
+            {liveNotice}
+          </div>
+        )}
         {endCard}
         {chapterEditing ? (
           // 編集中は操作バーを簡素な 1 本に差し替える。**`<video>` は同じ場所に置いたままにする**
@@ -436,13 +472,19 @@ export function RecordingPlaybackControls({
             data-testid="player-controls-bottom"
             className="flex flex-col bg-gradient-to-t from-black/80 to-transparent px-2.5 pt-8 pb-1 md:bg-none md:p-0"
           >
-            <div
-              data-testid={chaseTimeline ? 'chase-timeline-track' : undefined}
-              className={cn('order-last mt-1 md:order-none md:mt-0 md:mb-1', chaseTimeline && 'relative')}
-            >
+            {(playbackMode !== 'live' || liveTimeline !== undefined) && (
+              <div
+                data-testid={chaseTimeline ? 'chase-timeline-track' : isLiveTimeline ? 'live-program-timeline-track' : undefined}
+                className={cn(
+                  isLiveTimeline
+                    ? 'order-first mt-1 md:order-none md:mt-0 md:mb-1'
+                    : 'order-last mt-1 md:order-none md:mt-0 md:mb-1',
+                  hasTimeline && 'relative',
+                )}
+              >
               <div
                 role="slider"
-                aria-label="シークバー"
+                aria-label={isLiveTimeline ? '番組の時間軸' : 'シークバー'}
                 aria-valuemin={rangeMin}
                 aria-valuemax={Math.max(rangeMin, rangeMax)}
                 aria-valuenow={seconds}
@@ -452,8 +494,9 @@ export function RecordingPlaybackControls({
                 tabIndex={0}
                 data-testid="seek-scrub"
                 className={cn(
-                  'group relative cursor-pointer touch-none outline-none focus-visible:ring-2 focus-visible:ring-white',
-                  chaseTimeline ? 'h-6' : 'h-4',
+                  'group relative touch-none outline-none focus-visible:ring-2 focus-visible:ring-white',
+                  liveTimeline !== undefined && !liveTimeline.canSeek ? 'cursor-not-allowed' : 'cursor-pointer',
+                  hasTimeline ? 'h-6' : 'h-4',
                 )}
                 onKeyDown={seekByKeyboard}
                 onKeyUp={finishKeyboardSeek}
@@ -567,18 +610,18 @@ export function RecordingPlaybackControls({
                 <div
                   data-testid="seek-thumb"
                   className="pointer-events-none absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow"
-                  style={{ left: `${(chaseTimeline ? seekFraction : playedFraction) * 100}%` }}
+                  style={{ left: `${(hasTimeline ? seekFraction : playedFraction) * 100}%` }}
                 />
                 {!playingCut && tilesRequested && (
                   <img
-                    src={seekTilesURL(recordingId)}
+                    src={seekTilesURL(recordingId ?? 0)}
                     alt=""
                     className="pointer-events-none absolute size-px opacity-0"
                     onLoad={onTileImageLoad}
                     onError={onTileImageError}
                   />
                 )}
-                {tilePreview && tilesAvailable && (
+                {tilePreview && (isLiveTimeline || tilesAvailable) && (
                   <div
                     className="pointer-events-none absolute bottom-full z-20 mb-2 flex origin-bottom-left flex-col items-center gap-1"
                     style={{
@@ -587,23 +630,25 @@ export function RecordingPlaybackControls({
                       transform: tilePreview.scale < 1 ? `scale(${tilePreview.scale})` : undefined,
                     }}
                   >
-                    <div
-                      data-testid="seek-tile-preview"
-                      className="overflow-hidden rounded border border-white/30 bg-black shadow-lg"
-                      style={{ width: SEEK_TILES_DISPLAY_WIDTH, height: SEEK_TILES_DISPLAY_HEIGHT }}
-                    >
+                    {!isLiveTimeline && (
                       <div
-                        className="h-full w-full bg-no-repeat"
-                        style={{
-                          backgroundImage: `url(${seekTilesURL(recordingId)})`,
-                          backgroundPosition: `${tilePreview.x}px ${tilePreview.y}px`,
-                          backgroundSize: seekTileBackgroundSize(),
-                        }}
-                      />
-                    </div>
-                    <span data-testid="seek-tile-label" className="rounded bg-black/80 px-1.5 text-xs">
-                      {formatPlaybackTime(tilePreview.seconds)}
-                      {hoverSpan ? ` · ${chapterLabel(hoverSpan)}` : ''}
+                        data-testid="seek-tile-preview"
+                        className="overflow-hidden rounded border border-white/30 bg-black shadow-lg"
+                        style={{ width: SEEK_TILES_DISPLAY_WIDTH, height: SEEK_TILES_DISPLAY_HEIGHT }}
+                      >
+                        <div
+                          className="h-full w-full bg-no-repeat"
+                          style={{
+                            backgroundImage: `url(${seekTilesURL(recordingId ?? 0)})`,
+                            backgroundPosition: `${tilePreview.x}px ${tilePreview.y}px`,
+                            backgroundSize: seekTileBackgroundSize(),
+                          }}
+                        />
+                      </div>
+                    )}
+                    <span data-testid={isLiveTimeline ? 'live-seek-preview-label' : 'seek-tile-label'} className="rounded bg-black/80 px-1.5 text-xs">
+                      {isLiveTimeline ? `${formatTimelineTime(tilePreview.seconds)} · ここから見る（録画中）` : formatPlaybackTime(tilePreview.seconds)}
+                      {!isLiveTimeline && hoverSpan ? ` · ${chapterLabel(hoverSpan)}` : ''}
                     </span>
                   </div>
                 )}
@@ -677,15 +722,64 @@ export function RecordingPlaybackControls({
                 )}
               </div>
             )}
+            {liveTimeline && (
+              <div className="mb-1 hidden justify-between text-[10px] text-white/75 md:flex">
+                <span data-testid="live-program-start-label">{liveTimeline.startLabel}</span>
+                <span data-testid="live-program-live-time" className="text-[#ff8a80]">いま {liveTimeline.liveTimeLabel}</span>
+                <span data-testid="live-program-end-label">{liveTimeline.endLabel}</span>
+              </div>
+            )}
 
             <div data-testid="player-controls-row" className="flex min-h-9 items-center gap-0.5 md:min-h-10 md:gap-1">
+              {playbackMode === 'live' && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className={cn(ghost, 'size-8 shrink-0')}
+                  aria-label={isPlaying ? '一時停止' : '再生'}
+                  onClick={onTogglePlay}
+                >
+                  {isPlaying ? <Pause className="size-4" /> : <Play className="size-4" />}
+                </Button>
+              )}
+              {liveTimeline?.canStartOver && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  data-testid="live-start-over"
+                  aria-label="最初から"
+                  className="size-10 shrink-0 rounded-full bg-white/15 p-0 text-white hover:bg-white/20 md:h-8 md:w-auto md:px-3"
+                  onClick={onStartOver}
+                >
+                  <SkipBack className="size-4" aria-hidden />
+                  <span className="hidden md:inline">最初から</span>
+                </Button>
+              )}
+              {playbackMode === 'live' && (
+                <span data-testid="live-source-label" className="shrink-0 rounded bg-red-600 px-2 py-1 text-[10px] font-medium text-white md:text-xs">
+                  ● ライブ
+                </span>
+              )}
+              {liveDiagnostics && playbackMode === 'live' && (
+                <span data-testid="live-diagnostics" className="hidden shrink-0 whitespace-nowrap text-[10px] text-white/80 md:inline">
+                  {liveDiagnostics}
+                </span>
+              )}
+              {chaseTimeline && (
+                <span data-testid="chase-source-label" className="shrink-0 px-1 text-[10px] font-medium text-white md:text-xs">
+                  ● 録画から再生中
+                </span>
+              )}
               {/*
                 DOM 順はデスクトップの見た目（再生 → 前 → 次）にそろえ、Tab 順を見た目と一致させる。
                 スマホは枠の中央に前 → 再生 → 次で大きく出すため、order で並べ替える。
               */}
-              <div
-                data-testid={hasChapters ? 'chapter-navigation' : undefined}
-                className="pointer-events-none absolute inset-x-0 top-1/2 flex -translate-y-1/2 items-center justify-center gap-10 md:pointer-events-auto md:static md:translate-y-0 md:gap-0">
+              {playbackMode !== 'live' && (
+                <div
+                  data-testid={hasChapters ? 'chapter-navigation' : undefined}
+                  className="pointer-events-none absolute inset-x-0 top-1/2 flex -translate-y-1/2 items-center justify-center gap-10 md:pointer-events-auto md:static md:translate-y-0 md:gap-0">
                 <Button
                   type="button"
                   variant="ghost"
@@ -720,7 +814,8 @@ export function RecordingPlaybackControls({
                     </Button>
                   </>
                 )}
-              </div>
+                </div>
+              )}
               {/* 端末の音量ボタンで足りるので、スマホにはミュート / 音量を置かない。 */}
               <div className="group/volume hidden items-center md:flex">
                 <Button
@@ -798,7 +893,9 @@ export function RecordingPlaybackControls({
                 size="icon"
                 className={cn(
                   ghost,
-                  'absolute top-1.5 right-11 md:relative md:top-auto md:right-auto',
+                  playbackMode === 'live'
+                    ? 'hidden'
+                    : 'absolute top-1.5 right-11 md:relative md:top-auto md:right-auto',
                   subtitlesEnabled &&
                     'after:absolute after:inset-x-2 after:bottom-1 after:h-0.5 after:rounded-full after:bg-orange-400',
                 )}
@@ -830,11 +927,17 @@ export function RecordingPlaybackControls({
                 type="button"
                 variant="ghost"
                 size="icon"
-                className={cn(ghost, 'absolute top-1.5 right-1.5 aria-expanded:bg-white/20 aria-expanded:text-white md:static')}
-                aria-label="再生設定"
+                className={cn(
+                  ghost,
+                  playbackMode === 'live'
+                    ? 'shrink-0'
+                    : 'absolute top-1.5 right-1.5 md:static',
+                  'aria-expanded:bg-white/20 aria-expanded:text-white',
+                )}
+                aria-label={playbackMode === 'live' ? 'ライブ設定' : '再生設定'}
                 aria-haspopup="menu"
                 aria-expanded={menuOpen}
-                aria-controls={`playback-settings-${recordingId}`}
+                aria-controls={`playback-settings-${playerId}`}
                 onClick={() => {
                   onControlsActivity()
                   setChaptersOpen(false)
@@ -866,6 +969,11 @@ export function RecordingPlaybackControls({
                 {isFullscreen ? <Minimize /> : <Maximize />}
               </Button>
             </div>
+            {liveDiagnostics && playbackMode === 'live' && (
+              <div data-testid="live-diagnostics-mobile" className="px-1 text-[10px] text-white/75 md:hidden">
+                {liveDiagnostics}
+              </div>
+            )}
           </div>
         </div>
         {/*
@@ -874,7 +982,7 @@ export function RecordingPlaybackControls({
         */}
         {menuView !== null && (
           <PlaybackSettingsMenu
-            id={`playback-settings-${recordingId}`}
+            id={`playback-settings-${playerId}`}
             view={menuView}
             onViewChange={setMenuView}
             onClose={closeMenu}
@@ -903,7 +1011,7 @@ export function RecordingPlaybackControls({
         )}
         {chaptersOpen && hasChapters && (
           <ChapterListMenu
-            id={`chapter-list-${recordingId}`}
+            id={`chapter-list-${playerId}`}
             entries={entries}
             currentIndex={currentEntryIndex}
             onJump={(start) => {
@@ -1046,7 +1154,7 @@ type PlaybackSettingsMenuProps = {
   onClose: (focusGear: boolean) => void
   profile: string
   encodedAssets: EncodedAsset[]
-  playbackMode: 'encoded' | 'original-vod' | 'chase'
+  playbackMode: 'encoded' | 'original-vod' | 'chase' | 'live'
   profileOptions?: readonly { name: string; label?: string }[]
   audioChoice?: LiveAudioChoice
   onSelectAudio?: (choice: LiveAudioChoice | undefined) => void
@@ -1153,7 +1261,7 @@ function PlaybackSettingsMenu({
 
   const selectedAsset = encodedAssets.find((asset) => asset.profile === profile)
   const selectedLiveProfile = profileOptions?.find((option) => option.name === profile)
-  const usesLiveProfiles = playbackMode === 'original-vod' || playbackMode === 'chase'
+  const usesLiveProfiles = playbackMode === 'original-vod' || playbackMode === 'chase' || playbackMode === 'live'
   const selectedProfileLabel = usesLiveProfiles
     ? selectedLiveProfile?.label ?? profile
     : selectedAsset ? assetLabel(selectedAsset) : profile
@@ -1243,13 +1351,13 @@ function PlaybackSettingsMenu({
     '画質',
     selectedProfileLabel,
   )
-  const audioRow = playbackMode === 'original-vod' && submenuRow(
+  const audioRow = (playbackMode === 'original-vod' || playbackMode === 'live') && submenuRow(
     'audio',
     <Volume2 className={icon} aria-hidden />,
     '音声',
     selectedAudioLabel,
   )
-  const speedRow = submenuRow('speed', <Gauge className={icon} aria-hidden />, '再生速度', rateLabel(playbackRate))
+  const speedRow = playbackMode !== 'live' && submenuRow('speed', <Gauge className={icon} aria-hidden />, '再生速度', rateLabel(playbackRate))
   const subtitlesRow = switchRow(<Captions className={icon} aria-hidden />, '字幕', subtitlesEnabled, onToggleSubtitles)
   const skipRow = showSkip && switchRow(
     <Activity className={icon} aria-hidden />,
@@ -1284,7 +1392,7 @@ function PlaybackSettingsMenu({
         ref={menuRef}
         id={id}
         role="menu"
-        aria-label={view === 'main' ? '再生設定' : view === 'speed' ? '再生速度' : view === 'quality' ? '画質' : '音声'}
+        aria-label={view === 'main' ? (playbackMode === 'live' ? 'ライブ設定' : '再生設定') : view === 'speed' ? '再生速度' : view === 'quality' ? '画質' : '音声'}
         data-testid="playback-settings"
         data-player-popover
         className={popoverClass('right')}

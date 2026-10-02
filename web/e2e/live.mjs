@@ -34,6 +34,8 @@ const SITE = process.env.E2E_LIVE_SITE ?? 'default'
 const SERVICE_A = process.env.E2E_LIVE_SERVICE_A ?? '9001'
 const SERVICE_B = process.env.E2E_LIVE_SERVICE_B ?? '9002'
 const NETWORK_ID = process.env.E2E_LIVE_NETWORK_ID ?? '1'
+const ISSUE_1022_ONLY = process.env.E2E_LIVE_1022_ONLY === '1'
+const ISSUE_1022_CAPTURE_DIR = process.env.E2E_LIVE_1022_CAPTURE_DIR
 
 const ng = []
 const skipped = []
@@ -41,7 +43,9 @@ const skipped = []
 // ⓪ 配っている bundle が dist/ の現物と一致するか（web/e2e/README.md 参照）。
 // resolveServiceId 等より先に見る --- 前提が崩れているとそちらが先に例外で
 // 落ち、⓪ に一度も到達しないまま無関係なエラーだけが出てしまう。
-await verifyBundleMatchesOrExit(BASE_URL, ng)
+if (!ISSUE_1022_ONLY || process.env.E2E_LIVE_1022_VERIFY_BUNDLE === '1') {
+  await verifyBundleMatchesOrExit(BASE_URL, ng)
+}
 
 /**
  * resolveServiceId は SI の (networkId, serviceId) から `?service=` に載せる
@@ -80,8 +84,12 @@ async function resolveServiceId(networkId, serviceId) {
   return match.id
 }
 
-const SERVICE_ID_A = await resolveServiceId(NETWORK_ID, SERVICE_A)
-const SERVICE_ID_B = await resolveServiceId(NETWORK_ID, SERVICE_B)
+const SERVICE_ID_A = ISSUE_1022_ONLY
+  ? Number(NETWORK_ID) * 100_000 + Number(SERVICE_A)
+  : await resolveServiceId(NETWORK_ID, SERVICE_A)
+const SERVICE_ID_B = ISSUE_1022_ONLY
+  ? Number(NETWORK_ID) * 100_000 + Number(SERVICE_B)
+  : await resolveServiceId(NETWORK_ID, SERVICE_B)
 
 const FIXTURE_DIR = path.join(os.tmpdir(), 'rokuban-e2e-live-fixture')
 const SEGMENTS_DIR = path.join(FIXTURE_DIR, 'segments')
@@ -492,6 +500,42 @@ async function mockLiveRoutes(page, mode) {
 }
 
 /**
+ * Open the hierarchical live quality menu added by #1014 and return its submenu.
+ * Keep this in one place so the existing profile/downgrade checks follow the
+ * player menu contract instead of depending on the old page-level select.
+ */
+async function openLiveQualityMenu(page) {
+  await page.getByTestId('player-controls').hover()
+  const qualityMenu = page.getByRole('menu', { name: '画質' })
+  if (await qualityMenu.isVisible().catch(() => false)) return qualityMenu
+
+  const rootMenu = page.getByRole('menu', { name: 'ライブ設定' })
+  if (!(await rootMenu.isVisible().catch(() => false))) {
+    await page.getByRole('button', { name: 'ライブ設定' }).click()
+    await rootMenu.waitFor({ state: 'visible' })
+  }
+  await rootMenu.getByRole('menuitem', { name: /^画質/ }).click()
+  await qualityMenu.waitFor({ state: 'visible' })
+  return qualityMenu
+}
+
+async function selectLiveProfile(page, profile) {
+  const qualityMenu = await openLiveQualityMenu(page)
+  const option = qualityMenu.getByRole('menuitemradio', {
+    name: new RegExp(`^${profile}(?:（|$)`),
+  })
+  await option.waitFor({ state: 'visible' })
+  await option.click()
+}
+
+async function selectedLiveProfile(page) {
+  const qualityMenu = await openLiveQualityMenu(page)
+  const selected = qualityMenu.locator('[role="menuitemradio"][aria-checked="true"]')
+  await selected.waitFor({ state: 'visible' })
+  return (await selected.textContent())?.trim() ?? null
+}
+
+/**
  * clickPlay は選択画面（issue #234 M7-1）の「再生」ボタンを押す。
  *
  * `pages/live.tsx` はチャンネルを選んだだけでは `LivePlayer` をマウントしない
@@ -702,11 +746,489 @@ async function runConsentCheck() {
   }
 }
 
-log('\n=== ⓪ 選択と視聴開始の分離（issue #234 M7-1。ffmpeg 不要） ===')
+if (!ISSUE_1022_ONLY) {
+  log('\n=== ⓪ 選択と視聴開始の分離（issue #234 M7-1。ffmpeg 不要） ===')
+  try {
+    await runConsentCheck()
+  } catch (err) {
+    ng.push(`⓪ の検証中に例外が発生した: ${err.message}`)
+  }
+}
+
+/**
+ * runIssue1022Acceptance fixes the visual and data contract for the live player.
+ * It runs before any product changes are applied so that the same assertions can
+ * be observed RED on the current page and GREEN after implementation.
+ */
+async function runIssue1022Acceptance(engine = 'chromium') {
+  const browser = await launchBrowser(engine)
+  try {
+    const page = await browser.newPage({ viewport: { width: 1182, height: 942 } })
+    const requestLog = []
+    const programRequests = []
+    page.on('request', (request) => {
+      requestLog.push({ method: request.method(), url: request.url() })
+      if (request.url().includes('/programs')) programRequests.push({ method: request.method(), url: request.url() })
+    })
+
+    const now = Date.now()
+    const programAStart = now - 20 * 60_000
+    const programEnd = now + 25 * 60_000
+    const programFor = (serviceId, programId, name, recordingId) => ({
+      programId,
+      networkId: 1,
+      serviceId,
+      eventId: programId,
+      ...(recordingId === undefined ? {} : { recordingId }),
+      startAt: new Date(programAStart).toISOString(),
+      endAt: new Date(programEnd).toISOString(),
+      durationMs: 45 * 60_000,
+      name,
+      description: '',
+      genres: [],
+      isFree: true,
+    })
+    const servicesBySite = {
+      default: [
+        { id: 109001, networkId: 1, serviceId: 9001, name: '放送局 A', channelType: 'GR', channel: '1', remoteControlKeyId: 1, hasLogoData: false, hasPrograms: true },
+        { id: 109002, networkId: 1, serviceId: 9002, name: '放送局 B', channelType: 'GR', channel: '2', remoteControlKeyId: 2, hasLogoData: false, hasPrograms: true },
+      ],
+      secondary: [
+        { id: 109003, networkId: 1, serviceId: 9003, name: '放送局 C', channelType: 'GR', channel: '3', remoteControlKeyId: 3, hasLogoData: false, hasPrograms: true },
+      ],
+    }
+    const nextProgram = {
+      ...programFor(9001, 204, '次番組 A'),
+      startAt: new Date(programEnd).toISOString(),
+      endAt: new Date(programEnd + 30 * 60_000).toISOString(),
+      durationMs: 30 * 60_000,
+    }
+    const programsBySite = {
+      default: [
+        programFor(9001, 201, '番組 A（予定）', 501),
+        nextProgram,
+        programFor(9002, 202, '番組 B（予定）'),
+      ],
+      secondary: [programFor(9003, 203, '番組 C（予定）')],
+    }
+    const recordingStartedAt = new Date(programAStart - 180_000).toISOString()
+
+    await page.route('**/api/capabilities', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ live: true, cmDetect: false }) }),
+    )
+    await page.route('**/api/live-profiles', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(E2E_LIVE_PROFILES) }),
+    )
+    await page.route('**/live/playlist.m3u8*', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body: '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nsegment.ts\n' }),
+    )
+    await page.route('**/live/segments/*', (route) =>
+      route.fulfill({ status: 200, contentType: 'video/mp2t', body: Buffer.from([0x47]) }),
+    )
+    await page.route('**/api/sites', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(['default', 'secondary']) }),
+    )
+    await page.route('**/api/sites/*/services', (route) => {
+      const site = new URL(route.request().url()).pathname.split('/')[3]
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(servicesBySite[site] ?? []) })
+    })
+    await page.route('**/api/sites/*/programs*', (route) => {
+      const url = new URL(route.request().url())
+      const site = url.pathname.split('/')[3]
+      const requestedServices = url.searchParams.getAll('service').map(Number)
+      const rows = programsBySite[site] ?? []
+      const filtered = requestedServices.length === 0
+        ? rows
+        : rows.filter((program) => requestedServices.includes(program.networkId * 100_000 + program.serviceId))
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(filtered) })
+    })
+    await page.route('**/api/sites/*/tuners', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
+    )
+    await page.route('**/api/reservations', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }),
+    )
+    await page.route('**/api/recordings/501', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ id: 501, site: 'default', startAt: new Date(programAStart).toISOString(), startedAt: recordingStartedAt, durationMs: 45 * 60_000, status: 'recording' }),
+      }),
+    )
+    const fulfillChase = (route) => route.fulfill({
+      status: 200,
+      contentType: 'application/vnd.apple.mpegurl',
+      body: '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nsegments/segment_000.ts\n',
+    })
+    for (const id of [501, 502]) {
+      await page.route(`**/api/sites/default/recordings/${id}/chase/playlist.m3u8*`, fulfillChase)
+      await page.route(`**/api/sites/default/recordings/${id}/chase/offset/*/playlist.m3u8*`, fulfillChase)
+      await page.route(`**/api/sites/default/recordings/${id}/chase/leave`, (route) =>
+        route.fulfill({ status: 204, body: '' }),
+      )
+      await page.route(`**/api/sites/default/recordings/${id}/chase/offset/*/leave`, (route) =>
+        route.fulfill({ status: 204, body: '' }),
+      )
+    }
+    await page.route('**/api/sites/default/networks/1/services/9001/live/leave', (route) =>
+      route.fulfill({ status: 204, body: '' }),
+    )
+    await page.route('**/api/sites/default/networks/1/services/9002/live/leave', (route) =>
+      route.fulfill({ status: 204, body: '' }),
+    )
+
+    // Arm one response waiter per site before navigation. This replaces a fixed
+    // sleep and ensures the request log is complete before cardinality checks.
+    const unfilteredProgramResponses = ['default', 'secondary'].map((site) =>
+      page.waitForResponse((response) => {
+        const url = new URL(response.url())
+        return response.request().method() === 'GET' && url.pathname === `/api/sites/${site}/programs` && !url.searchParams.has('service')
+      }, { timeout: 15000 }).catch(() => null),
+    )
+
+    await page.goto(`${BASE_URL}/live?site=default&service=109001`, { waitUntil: 'domcontentloaded' })
+    await page.getByRole('link', { name: /放送局 A/ }).waitFor({ timeout: 15000 })
+    const siteProgramResponses = await Promise.all(unfilteredProgramResponses)
+    for (const [index, response] of siteProgramResponses.entries()) {
+      if (!response) ng.push(`#1022 ${['default', 'secondary'][index]} の全局番組レスポンスが返らない`)
+    }
+    log(`  #1022 observed program requests: ${JSON.stringify(programRequests)}`)
+
+    const unfilteredBySite = Object.fromEntries(['default', 'secondary'].map((site) => [
+      site,
+      programRequests.filter(({ method, url: raw }) => {
+        const url = new URL(raw)
+        return method === 'GET' && url.pathname === `/api/sites/${site}/programs` && !url.searchParams.has('service')
+      }),
+    ]))
+    log(`  #1022 unfiltered programs requests per site: ${JSON.stringify(Object.fromEntries(Object.entries(unfilteredBySite).map(([site, rows]) => [site, rows.length])))}`)
+    for (const site of ['default', 'secondary']) {
+      if (unfilteredBySite[site].length !== 1) {
+        ng.push(`#1022 ${site} の番組一覧要求が未絞込で 1 回ではない（${unfilteredBySite[site].length} 回）`)
+      }
+      for (const { url: raw } of unfilteredBySite[site]) {
+        const url = new URL(raw)
+        const start = Date.parse(url.searchParams.get('start') ?? '')
+        const end = Date.parse(url.searchParams.get('end') ?? '')
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end - start > 2 * 60_000 || end <= start) {
+          ng.push(`#1022 ${site} の番組一覧要求が短い正の時間窓ではない (${raw})`)
+        }
+      }
+    }
+    const selectedProgramRequests = programRequests.filter(({ method, url: raw }) => {
+      const url = new URL(raw)
+      return method === 'GET' && url.pathname === '/api/sites/default/programs' && url.searchParams.getAll('service').includes('109001')
+    })
+    if (selectedProgramRequests.length !== 1) {
+      ng.push(`#1022 選択局 service=109001 の番組要求を 1 回維持していない (${selectedProgramRequests.length} 回)`)
+    }
+
+    for (const [serviceId, name] of [[109001, '番組 A（予定）'], [109002, '番組 B（予定）'], [109003, '番組 C（予定）']]) {
+      const row = page.locator(`nav[aria-label="チャンネル一覧"] a[href*="service=${serviceId}"]`)
+      if (!(await row.getByText(name, { exact: false }).isVisible().catch(() => false))) ng.push(`#1022 service=${serviceId} のチャンネル行に予定番組名が無い`)
+      if (!(await row.getByText(/残り\s*25\s*分/).isVisible().catch(() => false))) ng.push(`#1022 service=${serviceId} のチャンネル行に文字の残り時間が無い`)
+    }
+    const recordedRow = page.locator('nav[aria-label="チャンネル一覧"] a[href*="service=109001"]')
+    if (!(await recordedRow.getByText('● 録画中', { exact: true }).isVisible().catch(() => false))) ng.push('#1022 録画中番組のチャンネル行に録画中マークが無い')
+    const channelProgress = await page.locator('nav[aria-label="チャンネル一覧"] progress, nav[aria-label="チャンネル一覧"] [role="progressbar"], nav[aria-label="チャンネル一覧"] [data-testid*="progress"]').count()
+    if (channelProgress > 0) ng.push('#1022 チャンネル行に禁止された進み具合のバーがある')
+
+    await clickPlay(page)
+    const video = page.locator('video')
+    await video.waitFor({ timeout: 15000 })
+    const hasNativeControls = await video.evaluate((element) => element.controls)
+    if (hasNativeControls) ng.push('#1022 ライブ video に native controls が残っている')
+    const timeline = page.getByTestId('live-program-timeline')
+    if ((await timeline.count()) !== 1) {
+      ng.push(`#1022 live program timeline が操作バーに 1 本ない (${await timeline.count()})`)
+    } else {
+      if ((await timeline.getAttribute('role')) !== 'slider') ng.push('#1022 番組の軸がアクセシブルな slider ではない')
+      if (!(await timeline.evaluate((element) => Boolean(element.closest('[data-testid="player-controls"]'))))) {
+        ng.push('#1022 番組の軸がプレイヤー操作バーの中にない')
+      }
+    }
+    const externalProgressCount = async () => {
+      const semanticLines = await page.locator('main progress, main [role="progressbar"]').count()
+      const taggedLines = await page.locator('main [data-testid="live-program-progress"]').evaluateAll((elements) =>
+        elements.filter((element) => !element.closest('[data-testid="player-controls"]')).length,
+      )
+      return semanticLines + taggedLines
+    }
+    const outsideTimeline = await externalProgressCount()
+    if (outsideTimeline > 0) ng.push('#1022 プレイヤー外に test id の有無を問わず番組の進み具合の線がある')
+    await page.evaluate(() => {
+      const line = document.createElement('div')
+      line.dataset.testid = 'live-program-progress'
+      line.textContent = 'prohibited progress line mutant'
+      document.querySelector('main')?.append(line)
+      window.__issue1022ExternalProgressMutation = line
+    })
+    if (await externalProgressCount() !== 1) ng.push('#1022 外部進捗線の mutation を E2E 判定が検出しない')
+    await page.evaluate(() => window.__issue1022ExternalProgressMutation?.remove())
+    const liveEdgeMark = page.getByTestId('live-program-live-edge')
+    if (await liveEdgeMark.count() !== 1 || !(await liveEdgeMark.isVisible().catch(() => false))) {
+      ng.push('#1022 番組の時間軸にライブ位置の赤い印が無い')
+    } else if (!(await liveEdgeMark.getAttribute('class')).includes('border-[#ff5252]')) {
+      ng.push('#1022 番組のライブ位置マークが赤色ではない')
+    }
+    if (!(await page.getByTestId('live-program-start-label').isVisible().catch(() => false))) ng.push('#1022 番組の軸に開始時刻ラベルが無い')
+    if (!(await page.getByTestId('live-program-end-label').getByText('予定').isVisible().catch(() => false))) ng.push('#1022 番組の軸に予定終了ラベルが無い')
+    if (!(await page.getByTestId('live-program-live-time').getByText('いま').isVisible().catch(() => false))) ng.push('#1022 番組の軸に現在時刻ラベルが無い')
+    if (!(await page.getByTestId('live-next-program').getByText('次番組 A').isVisible().catch(() => false))) ng.push('#1022 選択局の次番組情報が見えない')
+
+    const captureDir = ISSUE_1022_CAPTURE_DIR ? path.resolve(ISSUE_1022_CAPTURE_DIR) : null
+    if (captureDir) {
+      mkdirSync(captureDir, { recursive: true })
+      await page.getByTestId('recording-player-frame').hover()
+      await page.getByRole('button', { name: 'ライブ設定' }).click()
+      await page.screenshot({ path: path.join(captureDir, 'live-1022-desktop.png'), fullPage: true })
+      await page.keyboard.press('Escape')
+    }
+    await page.setViewportSize({ width: 362, height: 1299 })
+    await page.getByTestId('recording-player-frame').hover()
+    const phoneTimelineBox = await page.getByTestId('live-program-timeline-track').boundingBox()
+    const phoneControlsRowBox = await page.getByTestId('player-controls-row').boundingBox()
+    if (!phoneTimelineBox || !phoneControlsRowBox || phoneTimelineBox.y >= phoneControlsRowBox.y) {
+      ng.push('#1022 スマホの番組時間軸を操作列より上に表示しない')
+    }
+    if (captureDir) {
+      await page.screenshot({ path: path.join(captureDir, 'live-1022-phone.png'), fullPage: true })
+    }
+    await page.setViewportSize({ width: 1182, height: 942 })
+
+    if (await page.getByRole('button', { name: '最初から' }).count() === 0) {
+      ng.push('#1022 録画中番組の最初からボタンが無い')
+    } else {
+      const routeBefore = new URL(page.url()).pathname
+      await video.evaluate((element) => { window.__issue1022Video = element })
+      const chaseStartWaiter = page.waitForRequest((request) =>
+        /\/recordings\/501\/chase\/offset\/180\/playlist\.m3u8/.test(request.url()),
+      { timeout: 10000 }).catch(() => null)
+      const liveLeaveBefore = requestLog.filter((request) =>
+        request.method === 'POST' && request.url.includes('/networks/1/services/9001/live/leave'),
+      ).length
+      const leaveWaiter = page.waitForRequest((request) =>
+        request.method() === 'POST' && request.url().includes('/networks/1/services/9001/live/leave'),
+      { timeout: 5000 }).catch(() => null)
+      await page.getByRole('button', { name: '最初から' }).click()
+      const chaseStartRequest = await chaseStartWaiter
+      if (!chaseStartRequest) {
+        ng.push('#1022 最初からで番組開始分の chase offset=180 を要求しない')
+      }
+      const leaveRequest = await leaveWaiter
+      const liveLeaveAfter = requestLog.filter((request) =>
+        request.method === 'POST' && request.url.includes('/networks/1/services/9001/live/leave'),
+      ).length
+      if (!leaveRequest || liveLeaveAfter <= liveLeaveBefore) ng.push('#1022 live→追っかけ切替時に POST 離脱ヒントを送らない')
+      await page.waitForFunction(() => document.querySelector('video') === window.__issue1022Video, undefined, { timeout: 10000 }).catch(() => {
+        ng.push('#1022 live→追っかけ切替で同じ video 要素を保たない')
+      })
+      if (new URL(page.url()).pathname !== routeBefore || routeBefore !== '/live') ng.push('#1022 最初からが /live ページ内の切替ではない')
+      await page.waitForFunction(() => document.body.innerText.includes('録画から再生中'), undefined, { timeout: 10000 }).catch(() => {
+        ng.push('#1022 chase 中に「録画から再生中」を表示しない')
+      })
+      const edge = page.getByTestId('chase-live-edge')
+      if ((await edge.count()) === 0) ng.push('#1022 chase timeline にライブ先端への赤い印が無い')
+      else {
+        const livePlaylistBefore = requestLog.filter((request) =>
+          request.url.includes('/networks/1/services/9001/live/playlist.m3u8'),
+        ).length
+        const freshLivePlaylistWaiter = page.waitForRequest((request) =>
+          request.url().includes('/networks/1/services/9001/live/playlist.m3u8'),
+        { timeout: 10000 }).catch(() => null)
+        await edge.click()
+        const freshLivePlaylist = await freshLivePlaylistWaiter
+        const livePlaylistAfter = requestLog.filter((request) =>
+          request.url.includes('/networks/1/services/9001/live/playlist.m3u8'),
+        ).length
+        if (!freshLivePlaylist || livePlaylistAfter <= livePlaylistBefore) ng.push('#1022 chase の赤い先端印から新しいライブ playlist 要求で戻らない')
+        if (!(await page.getByTestId('live-source-label').isVisible().catch(() => false))) {
+          ng.push('#1022 ライブ先端を押しても UI がライブ再生へ戻らない')
+        }
+        if (await page.getByTestId('chase-source-label').count() > 0) ng.push('#1022 ライブ先端へ戻った後も chase 表示が残る')
+
+        const timelineBox = await timeline.boundingBox()
+        if (!timelineBox) ng.push('#1022 再生位置指定用のライブ軸が取得できない')
+        else {
+          const pickedOffsetWaiter = page.waitForRequest((request) =>
+            /\/recordings\/501\/chase\/offset\/\d+\/playlist\.m3u8/.test(request.url()),
+          { timeout: 10000 }).catch(() => null)
+          await timeline.click({ position: { x: timelineBox.width * 0.25, y: timelineBox.height / 2 } })
+          const pickedOffsetRequest = await pickedOffsetWaiter
+          const pickedOffset = pickedOffsetRequest && Number(/\/offset\/(\d+)\/playlist/.exec(pickedOffsetRequest.url())?.[1])
+          if (!Number.isFinite(pickedOffset) || Math.abs(pickedOffset - 855) > 3) {
+            ng.push(`#1022 番組軸の選択位置から chase offset≈855 を再生しない (${pickedOffset ?? '要求なし'})`)
+          }
+        }
+      }
+    }
+
+    // A programme without a recording still has its scheduled live axis, but
+    // there is no start-over action and no recorded range that can be selected.
+    await page.goto(`${BASE_URL}/live?site=default&service=109002`, { waitUntil: 'domcontentloaded' })
+    await page.getByRole('link', { name: /放送局 B/ }).waitFor({ timeout: 15000 })
+    await clickPlay(page)
+    const noRecordingTimeline = page.getByTestId('live-program-timeline')
+    await noRecordingTimeline.waitFor({ timeout: 10000 }).catch(() => null)
+    if (await page.getByRole('button', { name: '最初から' }).count() > 0) ng.push('#1022 録画のない番組に最初からボタンが出る')
+    if (await noRecordingTimeline.count() === 0) {
+      ng.push('#1022 録画のない番組の時間軸が見つからない')
+    } else if ((await noRecordingTimeline.getAttribute('aria-disabled')) !== 'true' || (await noRecordingTimeline.getAttribute('tabindex')) !== '-1') {
+      ng.push('#1022 録画のない番組の時間軸を無効化しない')
+    } else {
+      const before = await noRecordingTimeline.getAttribute('aria-valuenow')
+      const chaseRequestsBefore = requestLog.filter((request) => request.url.includes('/recordings/502/chase/')).length
+      const box = await noRecordingTimeline.boundingBox()
+      if (box) await noRecordingTimeline.click({ position: { x: box.width * 0.5, y: box.height / 2 }, force: true })
+      const after = await noRecordingTimeline.getAttribute('aria-valuenow')
+      if (Math.abs(Number(after) - Number(before)) > 2) ng.push('#1022 録画のない番組で無効時間軸のクリックが選択位置を変える')
+      if (requestLog.filter((request) => request.url.includes('/recordings/502/chase/')).length !== chaseRequestsBefore) {
+        ng.push('#1022 録画のない番組の時間軸クリックで chase playlist を要求する')
+      }
+      if (await page.getByTestId('live-seek-preview-label').count() > 0) ng.push('#1022 録画のない番組で選択可能な録画位置プレビューを表示する')
+    }
+
+    // A late recording starts five minutes into the scheduled programme. The
+    // earlier part of the axis must stay unselectable; a later recorded point
+    // must map to a recording-relative chase offset.
+    programsBySite.default = [
+      programFor(9001, 201, '番組 A（予定）', 501),
+      programFor(9002, 202, '番組 B（予定）', 502),
+    ]
+    await page.route('**/api/recordings/502', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ id: 502, site: 'default', startAt: new Date(programAStart).toISOString(), startedAt: new Date(programAStart + 5 * 60_000).toISOString(), durationMs: 45 * 60_000, status: 'recording' }),
+      }),
+    )
+    // Reload to start with a clean React Query cache after the earlier
+    // no-recording case for this same selected service.
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await page.getByRole('link', { name: /放送局 B/ }).waitFor({ timeout: 15000 })
+    const lateRecordingLoaded = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === '/api/recordings/502' && response.ok(),
+    { timeout: 10000 }).catch(() => null)
+    await clickPlay(page)
+    if (!(await lateRecordingLoaded)) ng.push('#1022 遅れて始まった録画の記録情報を要求しない')
+    const lateTimeline = page.getByTestId('live-program-timeline')
+    const lateTimelineVisible = await lateTimeline.waitFor({ timeout: 10000 }).then(() => true).catch(() => false)
+    if (!lateTimelineVisible) ng.push('#1022 遅れて始まった録画の時間軸が見つからない')
+    const lateMark = page.getByTestId('live-recording-start')
+    if ((await lateMark.count()) !== 1) ng.push('#1022 遅れて始まった録画の開始位置を番組軸に示さない')
+    else {
+      const markStyle = await lateMark.getAttribute('style') ?? ''
+      const markLeft = Number(/left:\s*([\d.]+)%/.exec(markStyle)?.[1])
+      if (!(markLeft > 10 && markLeft < 12)) ng.push(`#1022 録画開始マークが番組開始から約5分の位置でない (${markStyle})`)
+    }
+    const lateStartOver = page.getByRole('button', { name: '最初から' })
+    if (!(await lateStartOver.isVisible().catch(() => false))) ng.push('#1022 遅れて始まった録画に最初からの開始操作が無い')
+    else {
+      const earliestRecordingWaiter = page.waitForRequest((request) =>
+        /\/recordings\/502\/chase\/playlist\.m3u8/.test(request.url()) && !/\/offset\//.test(request.url()),
+      { timeout: 10000 }).catch(() => null)
+      await lateStartOver.click()
+      const earliestRecordingRequest = await earliestRecordingWaiter
+      if (!earliestRecordingRequest) ng.push('#1022 遅れて始まった録画の最初からが録画開始 offset=0 を使わない')
+      const liveAfterLateStartWaiter = page.waitForRequest((request) =>
+        request.url().includes('/networks/1/services/9002/live/playlist.m3u8'),
+      { timeout: 10000 }).catch(() => null)
+      const lateEdge = page.getByTestId('chase-live-edge')
+      if (await lateEdge.count() === 0) ng.push('#1022 遅い録画の chase にライブ先端ボタンが無い')
+      else {
+        await lateEdge.click()
+        if (!(await liveAfterLateStartWaiter)) ng.push('#1022 遅い録画の開始後にライブへ戻らない')
+      }
+    }
+    const lateBox = lateTimelineVisible ? await lateTimeline.boundingBox() : null
+    if (lateBox) {
+      const chaseRequestsBefore = requestLog.filter((request) => request.url.includes('/recordings/502/chase/')).length
+      const selectedOffsetBefore = await lateTimeline.getAttribute('aria-valuenow')
+      await lateTimeline.click({ position: { x: lateBox.width * 0.03, y: lateBox.height / 2 } })
+      await page.getByText('● ライブ').waitFor({ timeout: 3000 }).catch(() => null)
+      const chaseRequestsAfterMissingPart = requestLog.filter((request) => request.url.includes('/recordings/502/chase/')).length
+      if (chaseRequestsAfterMissingPart !== chaseRequestsBefore) ng.push('#1022 録画開始前の未録画部分を選択できる')
+      const selectedOffsetAfter = await lateTimeline.getAttribute('aria-valuenow')
+      if (Math.abs(Number(selectedOffsetAfter) - Number(selectedOffsetBefore)) > 2) ng.push('#1022 録画開始前の未録画位置へ時間軸の選択値を動かせる')
+
+      const latePickedWaiter = page.waitForRequest((request) =>
+        /\/recordings\/502\/chase\/offset\/\d+\/playlist\.m3u8/.test(request.url()),
+      { timeout: 10000 }).catch(() => null)
+      await lateTimeline.click({ position: { x: lateBox.width * 0.20, y: lateBox.height / 2 } })
+      const latePicked = await latePickedWaiter
+      const lateOffset = latePicked && Number(/\/offset\/(\d+)\/playlist/.exec(latePicked.url())?.[1])
+      if (!Number.isFinite(lateOffset) || Math.abs(lateOffset - 240) > 3) {
+        ng.push(`#1022 遅れて始まった録画の既録画位置を正しい offset≈240 で再生しない (${lateOffset ?? '要求なし'})`)
+      }
+    }
+
+    // EPG is a schedule, not a live signal. Keep its planned end marked while
+    // the local clock's live edge continues beyond the scheduled duration.
+    await page.goto(`${BASE_URL}/live?site=default&service=109001`, { waitUntil: 'domcontentloaded' })
+    await page.getByRole('link', { name: /放送局 A/ }).waitFor({ timeout: 15000 })
+    await clickPlay(page)
+    const overrunFrame = page.getByTestId('recording-player-frame')
+    if (await overrunFrame.count() > 0) await overrunFrame.hover()
+    await page.evaluate((overrunAt) => {
+      Date.now = () => overrunAt
+    }, programEnd + 3 * 60_000)
+    await page.getByTestId('live-schedule-overrun').waitFor({ timeout: 5000 }).catch(() => null)
+    const overrunTimeline = page.getByTestId('live-program-timeline')
+    if (!(await page.getByTestId('live-schedule-overrun').isVisible().catch(() => false))) {
+      ng.push('#1022 予定終了後に現在スケジュールと超過表示を維持しない')
+    }
+    if (await overrunTimeline.count() === 0) {
+      ng.push('#1022 予定終了後のライブ時間軸が見つからない')
+    } else {
+      const overrunNow = Number(await overrunTimeline.getAttribute('aria-valuenow'))
+      const overrunMax = Number(await overrunTimeline.getAttribute('aria-valuemax'))
+      if (Math.abs(overrunNow - 2880) > 2 || Math.abs(overrunMax - 2880) > 2) {
+        ng.push(`#1022 予定終端を超えたライブ位置を軸に反映しない (now=${overrunNow}, max=${overrunMax})`)
+      }
+    }
+    const plannedEndMark = page.getByTestId('live-program-planned-end')
+    if ((await plannedEndMark.count()) !== 1) ng.push('#1022 予定終端超過中も予定終端の印を残さない')
+    else {
+      const planStyle = await plannedEndMark.getAttribute('style') ?? ''
+      const planLeft = Number(/left:\s*([\d.]+)%/.exec(planStyle)?.[1])
+      if (!(planLeft > 90 && planLeft < 100)) ng.push(`#1022 予定終端印を実ライブ先端より前に残さない (${planStyle})`)
+    }
+    if (!(await page.getByRole('button', { name: '最初から' }).isVisible().catch(() => false))) {
+      ng.push('#1022 予定終了後も録画中なら最初から操作を維持しない')
+    }
+
+    // With no EPG programme, a live source must not fall back to a generic
+    // media seek bar whose range is not an observed broadcast timeline.
+    programsBySite.default = []
+    await page.goto(`${BASE_URL}/live?site=default&service=109002`, { waitUntil: 'domcontentloaded' })
+    await page.getByRole('link', { name: /放送局 B/ }).waitFor({ timeout: 15000 })
+    await clickPlay(page)
+    if (!(await page.getByTestId('live-source-label').isVisible().catch(() => false))) {
+      ng.push('#1022 EPG が無くても live playback source の表示を維持しない')
+    }
+    if (await page.getByTestId('live-program-timeline').count() !== 0) ng.push('#1022 EPG が無いライブに番組時間軸を表示する')
+    if (await page.getByTestId('seek-scrub').count() !== 0) {
+      ng.push('#1022 EPG が無いライブに無意味な通常シークバーを表示する')
+    }
+
+    log(`  #1022 ${engine}: native=${hasNativeControls} timeline=${await timeline.count()} progressOutside=${outsideTimeline}`)
+    await page.close()
+  } finally {
+    await browser.close()
+  }
+}
+
+log('\n=== #1022 ライブ番組の軸・最初から・全局番組 ===')
 try {
-  await runConsentCheck()
+  await runIssue1022Acceptance(process.env.E2E_LIVE_1022_ENGINE ?? 'chromium')
 } catch (err) {
-  ng.push(`⓪ の検証中に例外が発生した: ${err.message}`)
+  ng.push(`#1022 ${process.env.E2E_LIVE_1022_ENGINE ?? 'chromium'} の検証中に例外が発生した: ${err.message}`)
+}
+if (process.env.E2E_LIVE_1022_ONLY === '1') {
+  log('\n=== #1022 RED/GREEN 結果 ===')
+  if (ng.length === 0) log('  すべて期待どおり')
+  else ng.forEach((failure) => log('  NG: ' + failure))
+  process.exit(ng.length === 0 ? 0 : 1)
 }
 
 const hasFixture = ensureFixture()
@@ -984,7 +1506,7 @@ async function runChromiumChecks(browser) {
     // 一覧を届かせる。`profile` が変わらない実装なら、ここで要求は増えない
     holdProfiles = false
     releaseProfiles?.()
-    await profilePage.waitForSelector('select[aria-label="画質"]', { timeout: 15000 })
+    await openLiveQualityMenu(profilePage)
     await profilePage.waitForTimeout(500)
     const probesAfterRelease = playlistLog.length
     log(`  一覧の到着後のプレイリスト要求: ${probesAfterRelease} 件（増分 ${probesAfterRelease - probesBeforeRelease}）`)
@@ -1004,7 +1526,7 @@ async function runChromiumChecks(browser) {
 
     // 再生中の切替
     const leavesBeforeSwitch = profileLeaveLog.length
-    await profilePage.selectOption('select[aria-label="画質"]', 'sd')
+    await selectLiveProfile(profilePage, 'sd')
     const switchDeadline = Date.now() + 15000
     while (
       !playlistLog.some((u) => u.includes('profile=sd')) &&
@@ -1098,7 +1620,7 @@ async function runChromiumChecks(browser) {
     log(`  視聴者が切った直後: ${JSON.stringify(await subtitleModes())}`)
 
     const before = captionPlaylists.length
-    await captionPage.selectOption('select[aria-label="画質"]', 'sd')
+    await selectLiveProfile(captionPage, 'sd')
     const switchDeadline = Date.now() + 15000
     while (captionPlaylists.length === before && Date.now() < switchDeadline) {
       await captionPage.waitForTimeout(100)
@@ -1174,7 +1696,7 @@ async function runChromiumChecks(browser) {
       })
       log(`  入にした直後: ${JSON.stringify(await modes())}`)
 
-      await page.selectOption('select[aria-label="画質"]', 'sd')
+      await selectLiveProfile(page, 'sd')
       await page.waitForTimeout(3000)
       const after = await modes()
       log(`  切替後の mode: ${JSON.stringify(after)}`)
@@ -1549,6 +2071,72 @@ if (hasFixture) {
      */
     const mode = { playlist: 'ok', segments: 'ok', liveSegmentCount: 1 }
     await mockLiveRoutes(page, mode)
+    if (ISSUE_1022_CAPTURE_DIR) {
+      const fixtureNow = Date.now()
+      const programStart = fixtureNow - 20 * 60_000
+      const programEnd = fixtureNow + 25 * 60_000
+      const capturedProgram = {
+        programId: 201,
+        networkId: Number(NETWORK_ID),
+        serviceId: Number(SERVICE_A),
+        eventId: 201,
+        recordingId: 501,
+        startAt: new Date(programStart).toISOString(),
+        endAt: new Date(programEnd).toISOString(),
+        durationMs: 45 * 60_000,
+        name: 'ライブ E2E 番組（予定）',
+        description: '',
+        genres: [],
+        isFree: true,
+      }
+      await page.route('**/api/sites/default/programs*', (route) =>
+        route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([capturedProgram]) }),
+      )
+      await page.route('**/api/recordings/501', (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            id: 501,
+            site: 'default',
+            startAt: capturedProgram.startAt,
+            startedAt: new Date(programStart - 180_000).toISOString(),
+            durationMs: 45 * 60_000,
+            status: 'recording',
+          }),
+        }),
+      )
+      await page.route('**/api/sites/default/tuners', (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify([
+            { index: 0, name: '地デジチューナー 1', types: ['GR'], isAvailable: true, isFault: false, observedAt: new Date(fixtureNow).toISOString() },
+            { index: 1, name: 'BS チューナー 1', types: ['BS'], isAvailable: true, isFault: false, observedAt: new Date(fixtureNow).toISOString() },
+          ]),
+        }),
+      )
+      await page.route('**/api/reservations', (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify([{
+            site: 'default',
+            programId: 202,
+            source: 'manual',
+            state: 'active',
+            title: '次番組の録画予約',
+            serviceName: 'Issue 1022 E2E A',
+            channelType: 'GR',
+            startAt: new Date(programEnd).toISOString(),
+            durationMs: 30 * 60_000,
+            createdAt: new Date(fixtureNow).toISOString(),
+            updatedAt: new Date(fixtureNow).toISOString(),
+            skip: false,
+          }]),
+        }),
+      )
+    }
     await page.goto(`${BASE_URL}${path}`, { waitUntil: 'domcontentloaded' })
     await clickPlay(page)
     await page.waitForFunction(mseAttached, undefined, { timeout: 15000 })
@@ -1583,16 +2171,26 @@ if (hasFixture) {
       .getByTestId('live-quality-downgraded')
       .textContent({ timeout: 2000 })
       .catch(() => null)
-    const selected = await page.evaluate(() => {
-      const el = document.querySelector('select[aria-label="画質"]')
-      return el instanceof HTMLSelectElement ? el.value : null
-    })
+    const selected = await selectedLiveProfile(page).catch(() => null)
     const crossed = playlists.some((u) => u.includes(wanted))
 
+    // Match the agreed desktop rough: keep the automatic downgrade notice
+    // and quality submenu visible together during the notice's five-second window.
+    if (ISSUE_1022_CAPTURE_DIR && !path.includes('profile=hd')) {
+      mkdirSync(ISSUE_1022_CAPTURE_DIR, { recursive: true })
+      await page.setViewportSize({ width: 1182, height: 942 })
+      await page.screenshot({ path: `${ISSUE_1022_CAPTURE_DIR}/live-1022-desktop.png`, fullPage: true })
+      await page.setViewportSize({ width: 960, height: 640 })
+    }
+
     // 配信を復旧させる（プレイリストを伸ばす = 新しいセグメントを配る）
+    const servedBefore = mode.servedSegments ?? 0
     mode.liveSegmentCount = segmentCount
-    const servedBefore = mode.servedSegments
     const resumed = await waitForProgress(page, recoverWaitMs)
+    const segmentDeadline = Date.now() + recoverWaitMs
+    while ((mode.servedSegments ?? 0) <= servedBefore && Date.now() < segmentDeadline) {
+      await page.waitForTimeout(100)
+    }
     // **「復旧した」ことを配信側でも確かめる。** `currentTime` が進んだだけでは
     // 「切替で 0 秒から読み直して、その 1 本を再生した」場合と区別できない
     // （新しいデータが届いていなければ、そもそも resume の `canplay` も来ない）
@@ -1663,7 +2261,7 @@ if (hasFixture) {
           `（黙って画質が落ちると「汚くなった」と読める。通知: ${JSON.stringify(auto.notice)}）`,
       )
     }
-    if (auto.selected !== downgraded.name) {
+    if (!auto.selected?.startsWith(downgraded.name)) {
       ng.push(
         `⑪ 下げた後も画質セレクタの表示が下げた先と違う（${JSON.stringify(auto.selected)}、` +
           `期待 ${downgraded.name}）`,

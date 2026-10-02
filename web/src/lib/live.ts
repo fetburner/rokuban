@@ -526,6 +526,167 @@ export function currentProgramWindow(
   }
 }
 
+/**
+ * remainingProgramMinutes rounds up so a program with any time left still says
+ * “残り 1 分”; an expired scheduled slot is kept at zero until EPG refreshes.
+ */
+export function remainingProgramMinutes(endAt: string, nowMs: number): number | null {
+  const endMs = Date.parse(endAt)
+  if (!Number.isFinite(endMs) || !Number.isFinite(nowMs)) return null
+  return Math.max(0, Math.ceil((endMs - nowMs) / 60_000))
+}
+
+export function scheduledProgramAt<T extends { startAt: string; endAt: string }>(
+  programs: readonly T[],
+  nowMs: number,
+): { program: T; overrun: boolean } | null {
+  const current = programs.find((program) => {
+    const start = Date.parse(program.startAt)
+    const end = Date.parse(program.endAt)
+    return Number.isFinite(start) && Number.isFinite(end) && start <= nowMs && nowMs < end
+  })
+  if (current) return { program: current, overrun: false }
+  const lastScheduled = programs
+    .filter((program) => {
+      const start = Date.parse(program.startAt)
+      const end = Date.parse(program.endAt)
+      return Number.isFinite(start) && Number.isFinite(end) && start <= nowMs && end <= nowMs
+    })
+    .sort((a, b) => Date.parse(b.endAt) - Date.parse(a.endAt))[0]
+  return lastScheduled ? { program: lastScheduled, overrun: true } : null
+}
+
+export type LiveProgramAxis = {
+  plannedSeconds: number
+  liveEdgeSeconds: number
+  maxSeconds: number
+}
+
+/** Keep the planned end visible while letting the live edge move past it. */
+export function liveProgramAxis(
+  startAt: string,
+  endAt: string,
+  nowMs: number,
+): LiveProgramAxis | null {
+  const startMs = Date.parse(startAt)
+  const endMs = Date.parse(endAt)
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || !Number.isFinite(nowMs) || endMs <= startMs) {
+    return null
+  }
+  const plannedSeconds = (endMs - startMs) / 1000
+  const liveEdgeSeconds = Math.max(0, (nowMs - startMs) / 1000)
+  return {
+    plannedSeconds,
+    liveEdgeSeconds,
+    maxSeconds: Math.max(plannedSeconds, liveEdgeSeconds),
+  }
+}
+
+/**
+ * programChaseStartOffsetSeconds converts the program start into the recording
+ * relative offset used by the existing chase playlist. A recording that starts
+ * after the scheduled program start can only begin at offset zero; callers use
+ * programStartIsRecorded to disable the missing earlier segment.
+ */
+export function programChaseStartOffsetSeconds(
+  programStartAt: string,
+  recordingStartedAt: string,
+): number | null {
+  const programStartMs = Date.parse(programStartAt)
+  const recordingStartMs = Date.parse(recordingStartedAt)
+  if (!Number.isFinite(programStartMs) || !Number.isFinite(recordingStartMs)) return null
+  return Math.max(0, Math.floor((programStartMs - recordingStartMs) / 1000))
+}
+
+/** Convert a point on the scheduled-program axis into a recording-relative offset. */
+export function programRecordingOffsetSeconds(
+  programStartAt: string,
+  recordingStartedAt: string,
+  programSeconds: number,
+): number | null {
+  const programStartMs = Date.parse(programStartAt)
+  const recordingStartMs = Date.parse(recordingStartedAt)
+  if (!Number.isFinite(programStartMs) || !Number.isFinite(recordingStartMs) || !Number.isFinite(programSeconds)) {
+    return null
+  }
+  const offset = Math.floor((programStartMs + programSeconds * 1000 - recordingStartMs) / 1000)
+  return offset >= 0 ? offset : null
+}
+
+/** The first point on the scheduled-program axis that exists in the recording. */
+export function programRecordingHeadSeconds(
+  programStartAt: string,
+  recordingStartedAt: string,
+): number | null {
+  const programStartMs = Date.parse(programStartAt)
+  const recordingStartMs = Date.parse(recordingStartedAt)
+  if (!Number.isFinite(programStartMs) || !Number.isFinite(recordingStartMs)) return null
+  return Math.max(0, (recordingStartMs - programStartMs) / 1000)
+}
+
+export type ProgramRecordingAccess = {
+  canStartOver: boolean
+  canSeek: boolean
+  recordingHeadSeconds: number | null
+}
+
+/** Resolve which part of a scheduled programme has an associated recording. */
+export function programRecordingAccess(
+  recordingId: number | null | undefined,
+  programStartAt: string,
+  recordingStartedAt: string | null | undefined,
+): ProgramRecordingAccess {
+  const hasRecording = recordingId !== null && recordingId !== undefined
+  const head = hasRecording && recordingStartedAt
+    ? programRecordingHeadSeconds(programStartAt, recordingStartedAt)
+    : null
+  return {
+    canStartOver: hasRecording && head !== null,
+    canSeek: hasRecording && head !== null,
+    recordingHeadSeconds: head,
+  }
+}
+
+/** A picked point is usable only when it is inside both the recorded and live portions. */
+export function isRecordedProgramOffset(
+  targetSeconds: number,
+  recordingHeadSeconds: number | null,
+  liveEdgeSeconds: number,
+): boolean {
+  return (
+    Number.isFinite(targetSeconds) &&
+    Number.isFinite(liveEdgeSeconds) &&
+    recordingHeadSeconds !== null &&
+    Number.isFinite(recordingHeadSeconds) &&
+    targetSeconds >= recordingHeadSeconds &&
+    targetSeconds <= liveEdgeSeconds
+  )
+}
+
+/** Return the next scheduled boundary (start or end), without inventing polling. */
+export function nextProgramBoundaryMs(
+  programs: readonly { startAt: string; endAt: string }[],
+  nowMs: number,
+): number | null {
+  let next: number | null = null
+  for (const program of programs) {
+    for (const value of [program.startAt, program.endAt]) {
+      const time = Date.parse(value)
+      if (Number.isFinite(time) && time > nowMs && (next === null || time < next)) next = time
+    }
+  }
+  return next
+}
+
+/** Refresh at a known schedule boundary, or when an empty short query window expires. */
+export function nextProgramRefreshMs(
+  programs: readonly { startAt: string; endAt: string }[],
+  nowMs: number,
+  windowEndMs: number,
+): number {
+  return nextProgramBoundaryMs(programs, nowMs) ?? Math.max(nowMs, windowEndMs)
+}
+
 /** LiveLoadError はプレイリスト読み込み失敗の分類。 */
 export type LiveLoadError =
   // streamer に到達できない（fetch 自体が reject）。ハイブリッド構成では
