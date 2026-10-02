@@ -26,9 +26,13 @@ const ALLOW = new Map([
     'ジャンルの淡色は Tailwind 標準パレットの 50 / 950 に限定するという既存の規律' +
       '（docs/frontend/programs.md）。16 ジャンルぶんの色相をトークンにはしない',
   ],
-  // 以下 4 つの `black` は「テーマの色」ではない。映像が来ていない領域と、
-  // 背後を沈める幕であって、ライト/ダークで変わってはいけない。
+  // 以下の黒は「テーマの色」ではない。映像が来ていない領域と、背後を沈める幕で
+  // あって、ライト/ダークで変わってはいけない。
   ['src/components/recording-player.tsx', '<video> のレターボックス（映像の無い領域）は黒で固定する'],
+  [
+    'src/components/recording-playback-controls.tsx',
+    '映像上の操作バーは動画内容に左右されない黒い幕と白い操作色でコントラストを保ち、ライト/ダークでも固定する',
+  ],
   ['src/components/live-player.tsx', '<video> のレターボックス（映像の無い領域）は黒で固定する'],
   [
     'src/pages/live.tsx',

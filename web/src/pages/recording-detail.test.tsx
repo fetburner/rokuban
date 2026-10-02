@@ -241,9 +241,14 @@ function createFakeServer(options: {
       return Promise.resolve(jsonResponse(null, 204))
     }
     const watchedMatch = /^\/api\/recordings\/(\d+)\/watched$/.exec(url.pathname)
-    if (watchedMatch && method === 'PUT') {
+    if (watchedMatch && (method === 'PUT' || method === 'DELETE')) {
       const id = Number(watchedMatch[1])
-      if (recording?.id === id) recording = { ...recording, watchedAt: '2026-10-01T00:00:00Z' }
+      if (recording?.id === id) {
+        recording = {
+          ...recording,
+          watchedAt: method === 'PUT' ? '2026-10-01T00:00:00Z' : undefined,
+        }
+      }
       return Promise.resolve(jsonResponse(null, 204))
     }
     if (
@@ -465,6 +470,73 @@ describe('RecordingDetailPage', () => {
     expect(screen.queryByTestId('drop-stats-details')).not.toBeInTheDocument()
     expect(fetchMock).not.toHaveBeenCalledWith('/api/recordings/3/drop-stats', expect.anything())
   })
+
+  it('90% 到達後の視聴済み PUT 成功で録画一覧クエリを invalidate する', async () => {
+    const { fetchMock } = createFakeServer({
+      recording: sampleRecording({
+        durationMs: 100_000,
+        encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }],
+      }),
+    })
+    const { queryClient } = renderAt('/recordings/3')
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+
+    const video = await screen.findByLabelText('録画映像')
+    Object.defineProperty(video, 'duration', { value: 100, configurable: true })
+    Object.defineProperty(video, 'currentTime', { value: 90, writable: true, configurable: true })
+    fireEvent.timeUpdate(video)
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/recordings/3/watched',
+        expect.objectContaining({ method: 'PUT' }),
+      )
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: [recordingsQueryKeyPrefix] })
+    })
+  })
+
+  // 操作バーの ✓ は固定の名前「視聴済み」+ aria-pressed のトグル。プレイヤー外のボタンは
+  // 押した後の動作を名前にする（aria-pressed を持たない）。
+  const barToggle = (watched: boolean) => ({ name: '視聴済み', pressed: watched })
+  const outsideButton = (watched: boolean) => ({ name: watched ? '未視聴に戻す' : '視聴済みにする' })
+  describe.each([
+    [
+      'プレイヤーの操作バー',
+      { encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }], sizeBytes: 1_000_000 },
+      barToggle,
+    ],
+    ['原本のみ（プレイヤー外）', { sizeBytes: 1_000_000 }, outsideButton],
+    ['資産なし（プレイヤー外）', {}, outsideButton],
+  ] as [string, Partial<Recording>, (watched: boolean) => { name: string; pressed?: boolean }][])(
+    '視聴済みボタン: %s',
+    (_name, overrides, button) => {
+      it('押すと PUT、もう一度押すと DELETE が飛ぶ', async () => {
+        const { fetchMock } = createFakeServer({ recording: sampleRecording({ ...overrides }) })
+        const user = userEvent.setup()
+        renderAt('/recordings/3')
+
+        await user.click(await screen.findByRole('button', button(false)))
+        await waitFor(() =>
+          expect(fetchMock).toHaveBeenCalledWith('/api/recordings/3/watched', expect.objectContaining({ method: 'PUT' })),
+        )
+        await user.click(await screen.findByRole('button', button(true)))
+        await waitFor(() =>
+          expect(fetchMock).toHaveBeenCalledWith(
+            '/api/recordings/3/watched',
+            expect.objectContaining({ method: 'DELETE' }),
+          ),
+        )
+      })
+
+      it('完了していない録画には出さない', async () => {
+        createFakeServer({ recording: sampleRecording({ ...overrides, status: 'failed' }) })
+        renderAt('/recordings/3')
+        await screen.findByText('単体ページの録画')
+        expect(screen.queryByRole('button', { name: button(false).name })).not.toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: button(true).name })).not.toBeInTheDocument()
+      })
+    },
+  )
 
   // M8-6: シリーズの導線。起点の実効シリーズが null の録画には出さない
   // （ハブも「次回」も 0 件になるので、押した先が無い導線を置かない）。
@@ -1243,12 +1315,15 @@ describe('RecordingDetailPage 削除・復元のトースト (issue #297)', () =
 describe('RecordingDetailPage サイズが取れない資産（値札、issue #236）', () => {
   it('encoded 資産の sizeBytes が省略されていても、プロファイル名は出るがサイズは出さない', async () => {
     createFakeServer({ recording: sampleRecording({ encodedAssets: [{ profile: 'web' }] }) })
+    const user = userEvent.setup()
 
     renderAt('/recordings/3')
 
     const region = await screen.findByRole('region', { name: '再生' })
     expect(document.querySelector('video')).toBeInTheDocument()
-    expect(within(region).getByText('web')).toBeInTheDocument()
+    await user.click(within(region).getByRole('button', { name: '再生設定' }))
+    await user.click(within(region).getByRole('menuitem', { name: '画質' }))
+    expect(within(region).getByRole('menuitemradio', { name: 'web' })).toBeInTheDocument()
     expect(region.textContent).not.toMatch(/\d+(\.\d+)? (B|KB|MB|GB|TB)/)
   })
 })

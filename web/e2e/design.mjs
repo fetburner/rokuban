@@ -4089,7 +4089,7 @@ async function checkMinimumTargetSize(locator, label, minimumWidth, minimumHeigh
   }
 }
 
-// 録画詳細の頻繁に使う前後ナビゲーションと編集の開閉は、タッチ時に44pxを確保する。
+// 録画詳細の前後ナビゲーションはモバイルでは映像の中央に置き、タッチ時に44pxを確保する。
 {
   const { context, page } = await open(mobile, 'light', recordingDetailScreen, {
     pointer: 'coarse',

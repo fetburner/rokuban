@@ -7,9 +7,10 @@
 // 「問い合わせが始まること」だけ）。CLAUDE.md §テスト規律のとおり、
 // 実装より先にここで判定手段を作る。
 //
-// プレビューは動画の下のスクラブ帯（`seek-scrub`）の上でだけ出す。ネイティブ
-// controls のシークバーは位置も幅も外から測れないので、そこに重ねると「見えた
-// タイル」と「クリックで飛ぶ先」がずれる。
+// 実装後の判定契約: `<video>` に native controls はなく、プレイヤー内の
+// `seek-scrub` 1 本が role=slider を持ち、動画下端に重なる。そのシークバー上で
+// プレビュー・クリック位置が一致する。旧実装（native controls + 別帯）では
+// 最初の検査が失敗する。
 //
 // 見るのは 7 点:
 //   ① 帯の上のホバー位置に対応するタイルが出る（列の折り返しと行送りを別々の位置で固定）
@@ -43,6 +44,10 @@ import {
 } from './lib.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'
+const EVIDENCE_DIR = process.env.E2E_SHOT_DIR
+const browserEngine = process.env.E2E_BROWSER ?? 'chromium'
+const videoContentType = browserEngine === 'webkit' ? 'video/mp4' : 'video/webm'
+if (EVIDENCE_DIR) mkdirSync(EVIDENCE_DIR, { recursive: true })
 const ng = []
 
 // タイルの形。**web/src/lib/seek-tiles.ts と同じ値をここにも書く**のは意図的で、
@@ -76,25 +81,18 @@ const recording = {
 /** serveTiles が false の間はタイル配信だけ 404 を返す（④の判定用）。 */
 let serveTiles = false
 
-/**
- * タイル画像のフィクスチャ（1x1 の PNG）。**中身は判定に効かない** ---
- * 見ているのは `background-position` が指す格子の位置である。必要なのは
- * 「ブラウザが画像として実際に読み込めること」だけで、`<img>` の
- * `naturalWidth > 0` がその証拠になる。
- */
-const TILE_PNG = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
-  'base64',
-)
+/** タイルの中身ではなく、背景位置が指す格子と実ブラウザでの描画を判定する。 */
+let tileSprite
 
 /**
  * 判定に使う動画を一度だけ作る。長さ（duration）が要るので実在の動画を配る。
- * **VP8/WebM を使う** --- Playwright の Chromium は H.264 を持たない構成があり、
- * コーデックの有無で落ちると「実装が壊れている」と区別できない。
+ * Chromium / Firefox はビルドによって H.264 を持たないことがあるため VP8/WebM、
+ * WebKit は実際の MP4 再生経路に合わせて H.264/MP4 を使う。
  */
 function ensureFixture() {
   const fixtureDir = path.join(os.tmpdir(), 'rokuban-e2e-seek-tiles')
-  const videoPath = path.join(fixtureDir, 'clip.webm')
+  const webkit = browserEngine === 'webkit'
+  const videoPath = path.join(fixtureDir, webkit ? 'clip.mp4' : 'clip.webm')
   if (existsSync(videoPath) && statSync(videoPath).size > 0) return videoPath
 
   try {
@@ -105,6 +103,9 @@ function ensureFixture() {
 
   mkdirSync(fixtureDir, { recursive: true })
   log(`判定用の動画フィクスチャを生成中... (${videoPath})`)
+  const codecArgs = webkit
+    ? ['-c:v', 'libx264', '-preset', 'ultrafast', '-movflags', '+faststart']
+    : ['-c:v', 'libvpx', '-b:v', '30k']
   execFileSync(
     'ffmpeg',
     [
@@ -115,10 +116,7 @@ function ensureFixture() {
       'testsrc=size=160x90:rate=2',
       '-t',
       '120',
-      '-c:v',
-      'libvpx',
-      '-b:v',
-      '30k',
+      ...codecArgs,
       '-pix_fmt',
       'yuv420p',
       videoPath,
@@ -145,12 +143,12 @@ async function apiHandler({ path: apiPath, url, json, route }) {
     // Range に応じる（実物の streamer と同じ）。応じないと Chromium は動画を
     // seekable にせず、⑤のクリックが 0 秒から動かない。
     const range = /bytes=(\d+)-(\d*)/.exec(route.request().headers().range ?? '')
-    if (!range) return route.fulfill({ status: 200, contentType: 'video/webm', body: videoBytes, headers: { 'Accept-Ranges': 'bytes' } })
+    if (!range) return route.fulfill({ status: 200, contentType: videoContentType, body: videoBytes, headers: { 'Accept-Ranges': 'bytes' } })
     const start = Number(range[1])
     const end = range[2] ? Number(range[2]) : videoBytes.length - 1
     return route.fulfill({
       status: 206,
-      contentType: 'video/webm',
+      contentType: videoContentType,
       body: videoBytes.subarray(start, end + 1),
       headers: { 'Accept-Ranges': 'bytes', 'Content-Range': `bytes ${start}-${end}/${videoBytes.length}` },
     })
@@ -160,7 +158,15 @@ async function apiHandler({ path: apiPath, url, json, route }) {
   }
   if (/^\/api\/media\/recordings\/1\/seek-tiles$/.test(apiPath)) {
     if (!serveTiles) return route.fulfill({ status: 404 })
-    return route.fulfill({ status: 200, contentType: 'image/png', body: TILE_PNG })
+    return route.fulfill({ status: 200, contentType: 'image/png', body: tileSprite })
+  }
+  if (/^\/api\/recordings\/1\/chapters$/.test(apiPath)) {
+    return json({
+      source: 'auto',
+      version: 'auto:detected:1',
+      detectionPending: false,
+      spans: [{ startMs: 30_000, endMs: 40_000, label: 'CM', cut: true }],
+    })
   }
   return json([])
 }
@@ -199,8 +205,16 @@ if (videoPath === undefined) {
   await finish(ng)
 }
 const videoBytes = readFileSync(videoPath)
+// スクリーンショットに 1×1 の単色タイルを拡大して写さないよう、動画フィクスチャ
+// からプロダクトと同じ 320×180・10 列の sprite を作る。判定自体は tile sheet の
+// 画素ではなく background-position を見るため、10×2 の大きさだけ合わせる。
+tileSprite = execFileSync('ffmpeg', [
+  '-hide_banner', '-loglevel', 'error', '-y', '-i', videoPath,
+  '-vf', 'fps=1/10,scale=320:180,tile=10x2:padding=0:margin=0',
+  '-frames:v', '1', '-f', 'image2pipe', '-vcodec', 'png', 'pipe:1',
+])
 
-const browser = await launchBrowser()
+const browser = await launchBrowser(browserEngine)
 const context = await browser.newContext({
   viewport: { width: 1280, height: 900 },
   locale: 'ja-JP',
@@ -228,6 +242,33 @@ const openPlayer = async () => {
 log('\n=== ④ タイルが無い録画ではプレビューを出さず、再生面は従来のまま ===')
 const noTilesVideo = await openPlayer()
 const noTilesBox = await page.locator('[data-testid="seek-scrub"]').boundingBox()
+const noTilesNativeControls = await noTilesVideo.evaluate((el) => el.hasAttribute('controls'))
+if (noTilesNativeControls) {
+  ng.push('プレイヤーの video に native controls が残っている')
+}
+const seekbar = page.locator('[data-testid="seek-scrub"]')
+if ((await seekbar.count()) !== 1) {
+  ng.push(`プレイヤー内の seek-scrub が 1 本ではない（count=${await seekbar.count()}）`)
+} else {
+  if ((await seekbar.getAttribute('role')) !== 'slider') {
+    ng.push('seek-scrub に role="slider" がない')
+  }
+  const videoBox = await noTilesVideo.boundingBox()
+  if (videoBox && noTilesBox) {
+    const overlapsVideo =
+      noTilesBox.x < videoBox.x + videoBox.width &&
+      noTilesBox.x + noTilesBox.width > videoBox.x &&
+      noTilesBox.y >= videoBox.y - 1 &&
+      noTilesBox.y + noTilesBox.height <= videoBox.y + videoBox.height + 1
+    if (!overlapsVideo) {
+      ng.push('seek-scrub が映像下端に重なっていない')
+    }
+  }
+  const playerSliders = page.locator('[data-testid="recording-player-frame"] [role="slider"]')
+  if ((await playerSliders.count()) !== 1) {
+    ng.push(`プレイヤー内の role="slider" が 1 本ではない（count=${await playerSliders.count()}）`)
+  }
+}
 // タイルは 404 なので読み込まれない。duration は分かっているので、実装が
 // 「タイルの有無を見ずに出す」ならここで出てしまう。
 await moveToSeconds(page, noTilesBox, 120, 35)
@@ -314,6 +355,21 @@ for (const seconds of [35, 95, 105]) {
   if (previewBox.y + previewBox.height > scrubBox.y + 1) {
     ng.push(`② タイル #${want.index} のプレビューが帯に重なっている`)
   }
+  // タイルの下に「時刻 · チャプター名」（ラフの「15:27 · CM」）。CM の中だけ名前が付く。
+  const labelBox = await page.locator('[data-testid="seek-tile-label"]').boundingBox()
+  const labelText = (await page.locator('[data-testid="seek-tile-label"]').textContent())?.trim()
+  const wantLabel = { 35: /^0:3[4-6] · CM$/, 95: /^1:3[4-6]$/, 105: /^1:4[4-6]$/ }[seconds]
+  if (!wantLabel.test(labelText ?? '')) {
+    ng.push(`② ${seconds}s 相当のタイル下ラベルが想定と違う（${labelText}）`)
+  }
+  if (!labelBox || labelBox.y < previewBox.y + previewBox.height - 1 || labelBox.y + labelBox.height > scrubBox.y + 1) {
+    ng.push('② タイル下ラベルがタイルの下・帯の上に収まっていない')
+  }
+  if (EVIDENCE_DIR && seconds === 35) {
+    await page.locator('[data-testid="recording-player-shell"]').screenshot({
+      path: path.join(EVIDENCE_DIR, 'recording-detail-desktop.png'),
+    })
+  }
 }
 
 log('\n=== ③ ポインタが離れると消える ===')
@@ -343,18 +399,77 @@ for (const seconds of [35, 95]) {
     .waitFor({ timeout: 5000 })
     .then(() => previewTile.evaluate((el) => getComputedStyle(el).backgroundPosition))
     .catch(() => null)
-  const p = scrubPoint(scrubBox, duration, want.index * TILE_INTERVAL_SECONDS + 5)
-  await page.mouse.click(p.x, p.y)
+  const targetSeconds = want.index * TILE_INTERVAL_SECONDS + 5
+  const p = scrubPoint(scrubBox, duration, targetSeconds)
+  const seekable = await page.waitForFunction(
+    (target) => {
+      const video = document.querySelector('video')
+      if (!video || video.readyState < HTMLMediaElement.HAVE_METADATA) return false
+      for (let index = 0; index < video.seekable.length; index += 1) {
+        if (target >= video.seekable.start(index) && target <= video.seekable.end(index)) return true
+      }
+      return false
+    },
+    targetSeconds,
+    { timeout: 10000 },
+  ).then(() => true).catch(() => false)
+  if (!seekable) {
+    const state = await video.evaluate((el) => ({
+      readyState: el.readyState,
+      duration: el.duration,
+      currentTime: el.currentTime,
+      seekable: Array.from({ length: el.seekable.length }, (_, index) => [el.seekable.start(index), el.seekable.end(index)]),
+    }))
+    ng.push(`⑤ ${targetSeconds}s をクリックする前に metadata と seekable range が揃わない（${JSON.stringify(state)}）`)
+    continue
+  }
+  await page.locator('[data-testid="seek-scrub"]').click({
+    position: { x: p.x - scrubBox.x, y: p.y - scrubBox.y },
+  })
+  // WebKit may expose seeking=false for a tick before the asynchronous seek request
+  // starts. Wait for the requested time itself before checking the resolved tile.
+  await page.waitForFunction(
+    (target) => {
+      const video = document.querySelector('video')
+      return video !== null && Math.abs(video.currentTime - target) < 0.5
+    },
+    targetSeconds,
+    { timeout: 5000 },
+  ).catch(() => {})
   await page.waitForFunction(() => !document.querySelector('video')?.seeking, undefined, { timeout: 5000 }).catch(() => {})
   const currentTime = await video.evaluate((v) => v.currentTime)
   const landed = expectedTile(currentTime)
   // 見えていたタイルそのものと、飛んだ先のタイルを比べる。
   if (shown !== `${landed.x}px ${landed.y}px`) {
-    ng.push(`⑤ ${shown ?? 'プレビュー無し'} を見てクリックしたが ${currentTime.toFixed(1)}s（タイル #${landed.index}）へ飛んだ`)
+    ng.push(`⑤ ${seconds}s で ${shown ?? 'プレビュー無し'} を見てクリックしたが ${currentTime.toFixed(1)}s（タイル #${landed.index}、期待 ${targetSeconds}s）へ飛んだ`)
   }
 }
 
-log('\n=== ⑥ 帯が 1 枚ぶんより狭い画面でも、プレビューが帯に収まる ===')
+log('\n=== ⑥ 400px の設定パネルと狭い画面のプレビュー ===')
+if (EVIDENCE_DIR) {
+  await page.setViewportSize({ width: 400, height: 844 })
+  scrubBox = await page.locator('[data-testid="seek-scrub"]').boundingBox()
+  if (!scrubBox || scrubBox.width <= 0) {
+    ng.push('⑥ 400px のスクラブ帯の矩形が取れない（レイアウトが想定と違う）')
+  } else {
+    await hoverTile(35)
+    const mobilePreview = page.locator('[data-testid="seek-tile-preview"]')
+    const previewShown = await mobilePreview
+      .waitFor({ timeout: 5000 })
+      .then(() => true)
+      .catch(() => false)
+    if (!previewShown) ng.push('⑥ 400px で 35s 相当のタイルプレビューが出ない')
+  }
+  await page.locator('[data-testid="recording-player-shell"]').screenshot({
+    path: path.join(EVIDENCE_DIR, 'recording-detail-400px.png'),
+  })
+  await page.getByRole('button', { name: '再生設定' }).click()
+  await page.locator('[data-testid="playback-settings"]').waitFor({ timeout: 5000 })
+  await page.locator('[data-testid="recording-player-shell"]').screenshot({
+    path: path.join(EVIDENCE_DIR, 'recording-detail-400px-settings.png'),
+  })
+  await page.keyboard.press('Escape')
+}
 await page.setViewportSize({ width: 340, height: 800 })
 await page.waitForTimeout(200)
 scrubBox = await page.locator('[data-testid="seek-scrub"]').boundingBox()
