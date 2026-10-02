@@ -2833,8 +2833,9 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
     expect(encoded.currentTime).toBe(30)
   })
 
-  it('押す前に録画が終わって追っかけが 404 でも、保存位置を 0 秒で上書きしない', async () => {
+  it('押す前に録画が終わって追っかけが 404 でも、保存位置を 0 秒で上書きせず、移った先で再生を始める', async () => {
     const user = userEvent.setup()
+    const playSpy = vi.spyOn(window.HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
     const fake = createFakeServer({
       recording: sampleRecording({ ...RUNNING, resumePositionMs: 12_000 }),
       liveProfiles: LIVE_PROFILES,
@@ -2858,6 +2859,11 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
     setMediaProps(video, { currentTime: 0 })
     fireEvent.loadedMetadata(video)
     expect(video.currentTime).toBe(12)
+    // ▶ を押した意図は、再生前に消えた追っかけから原本 HLS へ持ち越す（押し直させない）。
+    expect(playSpy).not.toHaveBeenCalled()
+    fireEvent.canPlay(video)
+    await waitFor(() => expect(playSpy).toHaveBeenCalledTimes(1))
+    expect(playSpy.mock.contexts[0]).toBe(video)
   })
 
   it('同じ再生元のままのエラーは上限つきで張り直し、上限を超えたらエラー表示に落とす', async () => {

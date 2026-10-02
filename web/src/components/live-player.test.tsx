@@ -3158,3 +3158,22 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     expect(within(settings).getByRole('menuitem', { name: '音声' })).toHaveAccessibleDescription('標準')
   })
 })
+
+describe('LivePlayer / 再生前のエラー（再生元の選び直し）', () => {
+  // 押した ▶（autoPlay）の意図は、始まる前のエラーでも親へ渡す（選び直した先で再生を続ける）。
+  // 止めたまま移ったセッションのエラーは「再生していた」にしない。位置はどちらも作らない。
+  it.each([
+    [true, true],
+    [false, false],
+  ])('autoPlay=%s のセッションが再生前に 404 なら wasPlaying=%s・位置 undefined で親へ渡す', async (autoPlay, expected) => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('gone\n', { status: 404 }))))
+    const onError = vi.fn(() => true)
+    render(
+      <LivePlayer mode="chase" site="default" recordingId={7} autoPlay={autoPlay} onRecordingPlaybackError={onError} />,
+    )
+    await waitFor(() => expect(onError).toHaveBeenCalledTimes(1))
+    expect(onError).toHaveBeenCalledWith(undefined, expected)
+    // 親が選び直したのでエラー表示に落ちない。
+    expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument()
+  })
+})
