@@ -15,8 +15,8 @@ import type {
 } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
-import { formatTime } from '@/lib/format'
 import { cmDetectStageMessage } from '@/lib/cm-detect-stage'
+import { formatTime } from '@/lib/format'
 import { routeTree } from '@/routes'
 
 afterEach(() => {
@@ -1005,11 +1005,11 @@ describe('RecordingDetailPage', () => {
     expect(await screen.findByText('録画が見つかりません')).toBeInTheDocument()
   })
 
-  it('追っかけタイムラインは番組時刻を表示し、録画開始からの範囲でキー確定する', async () => {
+  it('追っかけは番組開始からの経過を共通バー1本に表示する', async () => {
     const now = Date.now()
     const startAt = new Date(now - 60 * 60_000).toISOString()
     const startedAt = new Date(now - 2 * 60_000).toISOString()
-    const { fetchMock } = createFakeServer({
+    createFakeServer({
       recording: sampleRecording({
         startAt,
         durationMs: 2 * 60 * 60_000,
@@ -1020,24 +1020,20 @@ describe('RecordingDetailPage', () => {
 
     renderAt('/recordings/3#chase')
 
-    const slider = await screen.findByRole('slider', { name: '追っかけ再生の位置' })
-    expect(slider).toHaveAttribute('max', '7200')
-    expect(Number(slider.getAttribute('aria-valuemax'))).toBeLessThan(300)
-    expect(slider).toHaveAttribute('aria-valuetext', `${formatTime(startAt)}（開始から0秒）`)
+    const slider = await screen.findByRole('slider', { name: 'シークバー' })
+    expect(slider).toHaveAttribute('aria-valuemin', '0')
+    expect(slider).toHaveAttribute('aria-valuemax', '7200')
+    expect(slider).toHaveAttribute('aria-valuenow', '3480')
+    expect(slider.getAttribute('aria-valuetext')).toMatch(/^58:00 \/ 録画済み 60:0[0-1]$/)
     expect(screen.queryByRole('button', { name: '最新' })).not.toBeInTheDocument()
-
-    fireEvent.change(slider, { target: { value: '30' } })
-    expect(slider).toHaveAttribute('aria-valuenow', '30')
-    const offsetPlaylistRequested = () =>
-      fetchMock.mock.calls.some(([input]) =>
-        new URL(String(input), 'http://localhost').pathname.endsWith(
-          '/chase/offset/30/playlist.m3u8',
-        ),
-      )
-    expect(offsetPlaylistRequested()).toBe(false)
-
-    fireEvent.keyUp(slider, { key: 'ArrowRight' })
-    await waitFor(() => expect(offsetPlaylistRequested()).toBe(true))
+    expect(screen.queryByRole('slider', { name: '追っかけ再生の位置' })).not.toBeInTheDocument()
+    const region = screen.getByRole('region', { name: '追っかけ再生' })
+    const track = region.querySelector('[data-testid="chase-timeline-track"]')
+    expect(track).not.toBeNull()
+    expect(track?.closest('[data-testid="player-controls"]')).not.toBeNull()
+    expect(region.querySelector('[data-testid="chase-live-edge"]')).not.toBeNull()
+    expect(region.querySelector('[data-testid="chase-timeline-end"]')?.textContent).toContain('予定')
+    expect(screen.getByTestId('playback-time').textContent).toMatch(/\/ 録画済み /)
   })
 
   // ごみ箱の録画も 200 で返る（getRecording の openapi.yaml description の決定）
@@ -1943,17 +1939,21 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
 
     renderAt('/recordings/3#chase')
 
-    const select = await screen.findByLabelText('画質')
+    await user.click(await screen.findByRole('button', { name: '再生設定' }))
+    const settings = screen.getByRole('menu', { name: '再生設定' })
+    const qualityEntry = within(settings).getByRole('menuitem', { name: '画質' })
     // 既定はサーバー側と同じ先頭。表示名は height を添える
-    expect(select).toHaveValue('hd')
-    expect(screen.getByRole('option', { name: 'hd（720p）' })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: 'sd（480p）' })).toBeInTheDocument()
+    expect(qualityEntry).toHaveAccessibleDescription('hd（720p）')
+    await user.click(qualityEntry)
+    const quality = screen.getByRole('menu', { name: '画質' })
+    expect(within(quality).getByRole('menuitemradio', { name: 'hd（720p）' })).toHaveAttribute('aria-checked', 'true')
+    expect(within(quality).getByRole('menuitemradio', { name: 'sd（480p）' })).toHaveAttribute('aria-checked', 'false')
 
     // 既定は URL に書き戻さない（`?profile=` を付けずサーバー側の先頭に任せる）
     await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
     expect(chasePlaylistURLs(fetchMock)[0]).not.toContain('profile=')
 
-    await user.selectOptions(select, 'sd')
+    await user.click(within(quality).getByRole('menuitemradio', { name: 'sd（480p）' }))
 
     await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(2))
     expect(chasePlaylistURLs(fetchMock)[1]).toContain('profile=sd')
@@ -1982,6 +1982,7 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
 
   /** 選ぶ余地が無いのに出すと「機能しないコントロール」に戻る（issue #209 の規律）。 */
   it('一覧が 1 件ならセレクタを出さず、既定のプロファイルで再生する', async () => {
+    const user = userEvent.setup()
     const { fetchMock } = createFakeServer({
       recording: chaseRecording(),
       liveProfiles: [{ name: 'hd', height: 720 }],
@@ -1991,6 +1992,7 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
 
     await screen.findByRole('region', { name: '追っかけ再生' })
     await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
+    await user.click(screen.getByRole('button', { name: '再生設定' }))
     expect(screen.queryByLabelText('画質')).not.toBeInTheDocument()
     expect(chasePlaylistURLs(fetchMock)[0]).not.toContain('profile=')
   })
@@ -2000,17 +2002,20 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
    * （0 件）でも追っかけは既定のプロファイルで動き続ける。
    */
   it('一覧が 0 件でもセレクタを出さず、既定のプロファイルで再生する', async () => {
+    const user = userEvent.setup()
     const { fetchMock } = createFakeServer({ recording: chaseRecording(), liveProfiles: [] })
 
     renderAt('/recordings/3#chase')
 
     await screen.findByRole('region', { name: '追っかけ再生' })
     await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
+    await user.click(screen.getByRole('button', { name: '再生設定' }))
     expect(screen.queryByLabelText('画質')).not.toBeInTheDocument()
   })
 
   /** 直リンク（受け入れ: 復元の両方向）。有効な `?liveProfile=` は選択状態として復元される。 */
   it('直リンクの ?liveProfile= が選択状態として復元される', async () => {
+    const user = userEvent.setup()
     const { fetchMock } = createFakeServer({
       recording: chaseRecording(),
       liveProfiles: LIVE_PROFILES,
@@ -2018,7 +2023,10 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
 
     renderAt('/recordings/3?liveProfile=sd#chase')
 
-    expect(await screen.findByLabelText('画質')).toHaveValue('sd')
+    await user.click(await screen.findByRole('button', { name: '再生設定' }))
+    await user.click(within(screen.getByRole('menu', { name: '再生設定' })).getByRole('menuitem', { name: '画質' }))
+    expect(within(screen.getByRole('menu', { name: '画質' })).getByRole('menuitemradio', { name: 'sd（480p）' }))
+      .toHaveAttribute('aria-checked', 'true')
     // **要求に実際に載ることまで見る。** セレクタの表示だけだと、URL の値を
     // そのまま握って選択肢に無い値でも「先頭が選ばれて見える」状態と区別できない
     // （React の controlled `<select>` は一致しない値で先頭に落ちるだけ）。
@@ -2032,6 +2040,7 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
    * 古いブックマークがエラー画面になる（`lib/live.ts` の `validLiveProfile`）。
    */
   it('未知の ?liveProfile= は既定に落ちる（400 を踏まない）', async () => {
+    const user = userEvent.setup()
     const { fetchMock } = createFakeServer({
       recording: chaseRecording(),
       liveProfiles: LIVE_PROFILES,
@@ -2039,7 +2048,10 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
 
     renderAt('/recordings/3?liveProfile=does-not-exist#chase')
 
-    expect(await screen.findByLabelText('画質')).toHaveValue('hd')
+    await user.click(await screen.findByRole('button', { name: '再生設定' }))
+    await user.click(within(screen.getByRole('menu', { name: '再生設定' })).getByRole('menuitem', { name: '画質' }))
+    expect(within(screen.getByRole('menu', { name: '画質' })).getByRole('menuitemradio', { name: 'hd（720p）' }))
+      .toHaveAttribute('aria-checked', 'true')
     await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
     expect(chasePlaylistURLs(fetchMock)[0]).not.toContain('profile=')
     expect(chasePlaylistURLs(fetchMock)[0]).not.toContain('does-not-exist')
@@ -2064,7 +2076,7 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
     renderAt('/recordings/3?liveProfile=sd#chase')
 
     // 一覧が未解決の間はプレイリストを要求しない
-    await screen.findByRole('slider', { name: '追っかけ再生の位置' })
+    await screen.findByRole('region', { name: '追っかけ再生' })
     expect(chasePlaylistURLs(fetchMock)).toEqual([])
 
     await act(async () => {
@@ -2539,20 +2551,31 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
     renderAt('/recordings/3')
 
     await user.click(await screen.findByRole('button', { name: '追っかけ再生' }))
-    fireEvent.change(await screen.findByRole('slider', { name: '追っかけ再生の位置' }), { target: { value: '30' } })
-    expect(screen.getByRole('slider', { name: '追っかけ再生の位置' })).toHaveAttribute('aria-valuenow', '30')
+    const chasePaths = () =>
+      fetchMock.mock.calls
+        .map(([input]) => new URL(String(input), 'http://localhost').pathname)
+        .filter((path) => path.endsWith('/playlist.m3u8') && path.includes('/chase'))
+    // 前の回で、録画の先端（End キー）へ移って offset 付きのセッションを張り直しておく。
+    const originSlider = await screen.findByRole('slider', { name: 'シークバー' })
+    fireEvent.keyDown(originSlider, { key: 'End' })
+    fireEvent.keyUp(originSlider, { key: 'End' })
+    await waitFor(() => expect(chasePaths().some((path) => /\/recordings\/3\/chase\/offset\/\d+\//.test(path))).toBe(true))
 
     const shelf = screen.getByTestId('recording-series-shelf')
     await user.click(within(within(shelf).getByRole('list')).getAllByRole('link').find((link) => link.getAttribute('href') === '/recordings/4')!)
     expect(await screen.findByRole('heading', { name: '作品X 第4話' })).toBeInTheDocument()
     await user.click(await screen.findByRole('button', { name: '追っかけ再生' }))
-    const slider = await screen.findByRole('slider', { name: '追っかけ再生の位置' })
+    const slider = await screen.findByRole('slider', { name: 'シークバー' })
+    await waitFor(() => expect(chasePaths().filter((path) => path.includes('/recordings/4/'))).toHaveLength(1))
+    // 次の回は前の回の offset を引き継がず、録画の先頭のセッションから始める。
+    expect(chasePaths().filter((path) => path.includes('/recordings/4/'))).toEqual([
+      '/api/sites/default/recordings/4/chase/playlist.m3u8',
+    ])
     expect(slider).toHaveAttribute('aria-valuenow', '0')
     fireEvent.keyUp(slider, { key: 'ArrowRight' })
-    // 前の回の 30 秒を確定していれば、次の回の offset/30 のプレイリストを取りに行く。
+    // 前の回の位置を確定していれば、次の回の offset 付きプレイリストを取りに行く。
     await new Promise((resolve) => setTimeout(resolve, 50))
-    const paths = fetchMock.mock.calls.map(([input]) => new URL(String(input), 'http://localhost').pathname)
-    expect(paths.filter((path) => path.includes('/recordings/4/chase/offset/'))).toEqual([])
+    expect(chasePaths().filter((path) => path.includes('/recordings/4/chase/offset/'))).toEqual([])
   })
 
   it('棚のサムネイルに視聴の進み線を重ねる（視聴済みは全幅、途中は保存位置の割合、未視聴は出さない）', async () => {
