@@ -758,6 +758,23 @@ describe('RecordingPlayer の設定メニュー（行リスト）', () => {
     expect(getByTestId('playback-chapter')).toHaveTextContent('· 本編')
   })
 
+  it('チャプター編集がある録画では、時刻の横のチャプター名からチャプター一覧を開く', () => {
+    const { getByTestId } = render(
+      <RecordingPlayer
+        recordingId={65}
+        encodedAssets={assets}
+        chapters={chapters}
+        chapterVersion="auto:1"
+        onSaveChapters={vi.fn()}
+        onResetChapters={vi.fn()}
+      />,
+    )
+    const details = getByTestId('chapter-editor-details') as HTMLDetailsElement
+    expect(details.open).toBe(false)
+    fireEvent.click(getByTestId('playback-chapter'))
+    expect(details.open).toBe(true)
+  })
+
   it('タッチで映像を叩くと操作を出すだけで、再生は中央のボタンで始める', () => {
     const { container } = render(<RecordingPlayer recordingId={64} encodedAssets={assets} />)
     const video = container.querySelector('video')!

@@ -681,7 +681,7 @@ export function RecordingPlayer({
                 if (!details) return
                 if (document.fullscreenElement) void document.exitFullscreen?.().catch(() => {})
                 details.open = true
-                details.scrollIntoView({ block: 'nearest' })
+                details.scrollIntoView?.({ block: 'nearest' })
               }
             : undefined
         }

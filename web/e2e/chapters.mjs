@@ -12,6 +12,9 @@
 //   ④ 境界の「前後 3 秒」が境界の手前から始まり、境界を跨いでも飛ばされない
 //      （前後再生の間は自動スキップを止める）
 //   ⑤ 2 倍速でも前後 3 秒が境界の 3 秒後で止まる（実時間ではなく再生位置で止める）
+//   ⑥ 再生中のバー: マウスで押した後は隠れ、キーボードの Tab で届く
+//   ⑦ デスクトップの設定メニューが歯車の真上の行リストで、「›」で中身を差し替える
+//   ⑧ スマホの操作表示（中央の前後チャプター・右上の CC と歯車）と画面下からのシート
 //
 // フィクスチャは ffmpeg で作る（再生位置の推移が判定に要る）。無い環境では
 // この判定だけを skip として終了する。
@@ -316,6 +319,8 @@ try {
 } catch (error) {
   ng.push(`①-b 全画面遷移の実ブラウザ確認に失敗: ${String(error)}`)
   await page.keyboard.press('Escape').catch(() => {})
+  // 失敗したまま全画面に残ると後続の判定が全画面の映像に遮られて崩れるので、確実に抜ける。
+  await page.evaluate(() => document.fullscreenElement && document.exitFullscreen()).catch(() => {})
 }
 
 log('\n=== ② 通常の再生で cut 区間の先頭に差し掛かると終端へ飛ぶ ===')
@@ -614,6 +619,8 @@ try {
 } catch (error) {
   ng.push(`⑦ 全画面の設定メニューを確かめられない: ${String(error)}`)
   await page.keyboard.press('Escape').catch(() => {})
+  // 失敗したまま全画面に残ると後続の判定が全画面の映像に遮られて崩れるので、確実に抜ける。
+  await page.evaluate(() => document.fullscreenElement && document.exitFullscreen()).catch(() => {})
 }
 
 log('\n=== ⑧ スマホ: 中央に前後チャプター、右上に CC と歯車、歯車は画面下からのシート ===')
@@ -645,7 +652,7 @@ const phoneLayout = await phone.evaluate(() => {
     return r ? { top: r.top, left: r.left, width: r.width, height: r.height } : null
   }
   return {
-    frame: frame ? { top: frame.top, bottom: frame.bottom } : null,
+    frame: frame ? { top: frame.top, bottom: frame.bottom, left: frame.left, right: frame.right } : null,
     prev: box('button[aria-label="前のチャプター"]'),
     play: box('[data-testid="player-controls"] button[aria-label="再生"]'),
     next: box('button[aria-label="次のチャプター"]'),
@@ -660,9 +667,12 @@ if (!phoneLayout.frame || !phoneLayout.prev || !phoneLayout.play || !phoneLayout
 } else {
   const f = phoneLayout.frame
   const third = (f.bottom - f.top) / 3
-  const centered = [phoneLayout.prev, phoneLayout.play, phoneLayout.next].every(
-    (r) => middle(r) > f.top + third && middle(r) < f.bottom - third,
-  )
+  // 縦は枠の中段、横は再生ボタンが枠の中心に来る（下端の行に並んでいるだけだと左に寄る）。
+  const playCenterX = phoneLayout.play.left + phoneLayout.play.width / 2
+  const centered =
+    [phoneLayout.prev, phoneLayout.play, phoneLayout.next].every(
+      (r) => middle(r) > f.top + third && middle(r) < f.bottom - third,
+    ) && Math.abs(playCenterX - (f.left + f.right) / 2) < 4
   if (!centered || !(phoneLayout.prev.left < phoneLayout.play.left && phoneLayout.play.left < phoneLayout.next.left)) {
     ng.push(`⑧ 前のチャプター / 再生 / 次のチャプターが映像の中央に並んでいない（${JSON.stringify(phoneLayout)}）`)
   }
