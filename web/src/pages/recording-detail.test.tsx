@@ -577,15 +577,25 @@ describe('RecordingDetailPage', () => {
       { encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }], sizeBytes: 1_000_000 },
       barToggle,
     ],
-    ['原本のみ（プレイヤー外）', { sizeBytes: 1_000_000 }, outsideButton],
+    ['原本のみ（HLS プレイヤー内）', { sizeBytes: 1_000_000 }, barToggle],
+    ['原本のみ（HLS 再生不可ならプレイヤー外）', { sizeBytes: 1_000_000 }, outsideButton],
     ['資産なし（プレイヤー外）', {}, outsideButton],
   ] as [string, Partial<Recording>, (watched: boolean) => { name: string; pressed?: boolean }][])(
     '視聴済みボタン: %s',
     (_name, overrides, button) => {
       it('押すと PUT、もう一度押すと DELETE が飛ぶ', async () => {
-        const { fetchMock } = createFakeServer({ recording: sampleRecording({ ...overrides }) })
+        const { fetchMock } = createFakeServer({
+          recording: sampleRecording({ ...overrides }),
+          liveProfiles: _name === '原本のみ（HLS プレイヤー内）' ? [{ name: 'hd', height: 720 }] : [],
+        })
         const user = userEvent.setup()
         renderAt('/recordings/3')
+
+        if (_name === '原本のみ（HLS プレイヤー内）') {
+          await screen.findByRole('region', { name: '原本 TS をブラウザ再生' })
+          await screen.findByRole('button', { name: '再生設定' })
+          expect(screen.queryByRole('button', { name: '視聴済みにする' })).not.toBeInTheDocument()
+        }
 
         await user.click(await screen.findByRole('button', button(false)))
         await waitFor(() =>
@@ -2084,21 +2094,48 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
       .filter((url) => url.includes('/original-vod/playlist.m3u8'))
   }
 
+  async function selectOriginalVODProfile(user: ReturnType<typeof userEvent.setup>, profile: string) {
+    if (!screen.queryByRole('menu', { name: '再生設定' })) {
+      await user.click(screen.getByRole('button', { name: '再生設定' }))
+    }
+    const settings = screen.getByRole('menu', { name: '再生設定' })
+    await user.click(within(settings).getByRole('menuitem', { name: '画質' }))
+    const quality = screen.getByRole('menu', { name: '画質' })
+    await user.click(within(quality).getByRole('menuitemradio', { name: new RegExp(profile) }))
+  }
+
   it('エンコードの無い完成録画は HLS で原本を再生し、プロファイルを同じ recording URL に渡す', async () => {
     const user = userEvent.setup()
     const { fetchMock } = createFakeServer({
       recording: sampleRecording({
+        startedAt: '2026-01-01T12:02:00Z',
+        endedAt: '2026-01-01T12:30:00Z',
+        durationMs: 60_000,
         sizeBytes: 1_000_000,
         encodeProfiles: ['vod-h264'],
         encodedAssets: [],
       }),
       liveProfiles: LIVE_PROFILES,
+      chapters: {
+        version: 'chapters-v1',
+        detectionPending: false,
+        source: 'auto',
+        spans: [{ startMs: 10_000, endMs: 15_000, label: 'CM', cut: true }],
+      },
     })
 
     renderAt('/recordings/3')
 
     expect(await screen.findByRole('region', { name: '原本 TS をブラウザ再生' })).toBeInTheDocument()
-    expect(await screen.findByLabelText('画質')).toHaveValue('hd')
+    expect(await screen.findByTestId('chapter-marker')).toBeInTheDocument()
+    await user.click(await screen.findByRole('button', { name: '再生設定' }))
+    expect(screen.getByRole('menuitemcheckbox', { name: 'CM を飛ばす' })).toHaveAttribute('aria-checked', 'true')
+    const settings = await screen.findByRole('menu', { name: '再生設定' })
+    await user.click(within(settings).getByRole('menuitem', { name: '画質' }))
+    expect(
+      within(screen.getByRole('menu', { name: '画質' })).getByRole('menuitemradio', { name: /hd/ }),
+    ).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('slider', { name: 'シークバー' })).toHaveAttribute('aria-valuemax', '1680')
     await waitFor(() => expect(originalVODURLs(fetchMock)).toHaveLength(1))
     expect(originalVODURLs(fetchMock)[0]).toBe(
       '/api/sites/default/recordings/3/original-vod/playlist.m3u8',
@@ -2109,9 +2146,26 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
     )
     expect(screen.queryByText('ブラウザ再生用のエンコードがまだありません。')).not.toBeInTheDocument()
 
-    await user.selectOptions(screen.getByLabelText('画質'), 'sd')
+    await user.click(
+      within(screen.getByRole('menu', { name: '画質' })).getByRole('menuitemradio', { name: /sd/ }),
+    )
     await waitFor(() => expect(originalVODURLs(fetchMock)).toHaveLength(2))
     expect(originalVODURLs(fetchMock)[1]).toContain('profile=sd')
+  })
+
+  it('endedAt が無い原本だけの録画は予定尺をシークバーの長さに代用する', async () => {
+    createFakeServer({
+      recording: sampleRecording({
+        startedAt: '2026-01-01T12:02:00Z',
+        endedAt: undefined,
+        durationMs: 1_800_000,
+        sizeBytes: 1_000_000,
+        encodedAssets: [],
+      }),
+      liveProfiles: LIVE_PROFILES,
+    })
+    renderAt('/recordings/3')
+    expect(await screen.findByRole('slider', { name: 'シークバー' })).toHaveAttribute('aria-valuemax', '1800')
   })
 
   it('encode profile が無い録画でも再開位置は画質によらず recording 単位で保存する', async () => {
@@ -2121,10 +2175,14 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
       liveProfiles: LIVE_PROFILES,
     })
     renderAt('/recordings/3')
-    await screen.findByLabelText('画質')
+    await screen.findByRole('region', { name: '原本 TS をブラウザ再生' })
+    await user.click(await screen.findByRole('button', { name: '再生設定' }))
+    await screen.findByRole('menuitem', { name: '画質' })
     await waitFor(() => expect(document.querySelector('video')).toBeInTheDocument())
 
     const video = document.querySelector('video')!
+    // 開始位置を canplay で明示し終えるまでは位置を保存しない（WebKit の端への飛びを書かない）。
+    fireEvent.canPlay(video)
     Object.defineProperty(video, 'currentTime', { value: 30, writable: true, configurable: true })
     fireEvent.pause(video)
     await waitFor(() => {
@@ -2133,9 +2191,10 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
       ).toHaveLength(1)
     })
 
-    await user.selectOptions(screen.getByLabelText('画質'), 'sd')
-    await waitFor(() => expect(screen.getByLabelText('画質')).toHaveValue('sd'))
+    await selectOriginalVODProfile(user, 'sd')
+    await waitFor(() => expect(screen.queryByRole('menu', { name: '再生設定' })).toBeNull())
     const after = document.querySelector('video')!
+    fireEvent.canPlay(after)
     Object.defineProperty(after, 'currentTime', { value: 40, writable: true, configurable: true })
     fireEvent.pause(after)
     await waitFor(() => {

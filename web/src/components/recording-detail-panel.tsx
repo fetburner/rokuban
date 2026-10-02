@@ -209,6 +209,8 @@ export function RecordingDetail({
     () => unwrap(liveProfilesQuery.data) ?? [],
     [liveProfilesQuery.data],
   )
+  const showOriginalVODPlayer =
+    showOriginalVOD && !liveProfilesQuery.isPending && liveProfiles.length > 0
   // 未知の名前は落として既定（サーバー側の先頭）に倒す。streamer は未知の
   // 名前を 400 で返すので（`internal/streamer/live.go` の Chase）、旧ブックマーク・
   // 綴り違いの共有リンクをエラー画面にしない（`lib/live.ts` の `validLiveProfile`）。
@@ -257,12 +259,14 @@ export function RecordingDetail({
   // 「今どの encoded を再生しているか」はプレイヤーが持つので、ここでは
   // 「確認に使える（cut でない）encoded が 1 つ以上あるか」で判定する。実際に
   // カット版へ切り替えたときの編集 UI の抑止はプレイヤー側が `playingCut` で行う。
+  // 原本 HLS は編集 UI を出さないが、再生バーの目盛り・一覧・自動スキップでは
+  // 同じ区間を使う。原本 VOD プレイヤーがある場合は再生用に取得する。
   // ここでカット版しか無い録画に対してチャプターを取りに行かないのは、その
   // 構成では編集も確認再生もできないためである（cut だけの録画をそもそも
   // 凍結できないのは config 検証の仕事）。
   const canEditChapters = !trash && encodedAssets.some((a) => a.cut !== true)
   const chaptersQuery = useGetRecordingChapters(recording.id, {
-    query: { enabled: canEditChapters },
+    query: { enabled: canEditChapters || showOriginalVODPlayer },
   })
   const chapters = unwrap(chaptersQuery.data)
   const putChapters = usePutRecordingChapterEdits()
@@ -616,27 +620,25 @@ export function RecordingDetail({
                 </p>
               ) : (
                 <>
-                  {liveProfiles.length > 1 && (
-                    <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <span>画質</span>
-                      <select
-                        aria-label="画質"
-                        value={explicitLiveProfile ?? liveProfiles[0]?.name}
-                        onChange={(e) => onSelectLiveProfile(e.target.value)}
-                        className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none"
-                      >
-                        {liveProfiles.map((p) => (
-                          <option key={p.name} value={p.name}>{liveProfileLabel(p)}</option>
-                        ))}
-                      </select>
-                    </label>
-                  )}
                   <LivePlayer
                     mode="original-vod"
                     site={recording.site}
                     recordingId={recording.id}
+                    chapters={chapters?.spans}
                     resumePositionMs={startAtBeginning ? undefined : recording.resumePositionMs}
+                    recordingDurationMs={
+                      recording.startedAt !== undefined && recording.endedAt !== undefined
+                        ? Date.parse(recording.endedAt) - Date.parse(recording.startedAt)
+                        : recording.durationMs
+                    }
                     profile={explicitLiveProfile}
+                    availableProfiles={liveProfiles}
+                    onProfileChange={onSelectLiveProfile}
+                    onWatched={() => void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })}
+                    watched={recording.watchedAt !== undefined}
+                    watchedPending={putWatchedMutation.isPending || deleteWatchedMutation.isPending}
+                    onPutWatched={() => void updateWatched(true)}
+                    onDeleteWatched={() => void updateWatched(false)}
                   />
                   <p className="text-muted-foreground">
                     原本 MPEG-2 を一時的に HLS へ変換します。再生用ファイルは保存しません。
@@ -677,9 +679,11 @@ export function RecordingDetail({
             />
           )}
 
-          {/* 操作バーを持つプレイヤー（encoded あり）以外では、視聴済みの操作をここに残す。
-              原本のみ・エンコード無し・資産無しでも完了録画の唯一の操作になるため。 */}
-          {!trash && recording.status === 'finished' && !(!showChase && encodedAssets.length > 0) && (
+          {/* 操作バーを持つプレイヤー以外では、視聴済みの操作をここに残す。
+              再生できない原本のみ・資産なしでも完了録画の操作口になる。 */}
+          {!trash && recording.status === 'finished' && !(
+            (!showChase && encodedAssets.length > 0) || showOriginalVODPlayer
+          ) && (
             <Button
               type="button"
               variant="outline"
