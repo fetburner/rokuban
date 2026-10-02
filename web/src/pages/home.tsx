@@ -295,16 +295,14 @@ export function HomePage() {
 
   // Watch では両方の一覧が解決した後にだけ主役を決める。続きからが空である
   // ことを確認できなければ完了録画へフォールバックしない。
-  let homeHeroChoice: HomeHeroChoice | null | undefined
-  if (!continueWatchingQuery.isPending && !finishedQuery.isPending) {
-    if (!continueWatchingQuery.isError && continueWatching[0] !== undefined) {
-      homeHeroChoice = { recording: continueWatching[0], kind: 'continue' }
-    } else if (!continueWatchingQuery.isError && !finishedQuery.isError) {
-      homeHeroChoice = chooseHomeHero(continueWatching, finishedRecordings)
-    } else {
-      homeHeroChoice = null
-    }
-  }
+  const homeHeroChoice = chooseHomeHero(
+    {
+      pending: continueWatchingQuery.isPending,
+      error: continueWatchingQuery.isError,
+      items: continueWatching,
+    },
+    { pending: finishedQuery.isPending, error: finishedQuery.isError, items: finishedRecordings },
+  )
   const homeHeroError =
     homeHeroChoice === null && (continueWatchingQuery.isError || finishedQuery.isError)
   const watchArrivals =

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { Recording } from '@/api/generated'
-import { chooseHomeHero, homeNewArrivals } from '@/lib/home-selection'
+import { chooseHomeHero, homeNewArrivals, type HeroSource } from '@/lib/home-selection'
 
 function recording(
   id: number,
@@ -30,11 +30,15 @@ function recording(
   }
 }
 
+const ok = (items: Recording[]): HeroSource => ({ pending: false, error: false, items })
+const pending: HeroSource = { pending: true, error: false, items: [] }
+const failed: HeroSource = { pending: false, error: true, items: [] }
+
 describe('ホームの「次に見る 1 本」', () => {
   it('続きからの先頭を完了録画より優先する', () => {
     const continuation = recording(1, '2026-09-01T00:00:00Z', { resumePositionMs: 120_000 })
     const newest = recording(2, '2026-10-01T00:00:00Z')
-    expect(chooseHomeHero([continuation], [newest])).toEqual({
+    expect(chooseHomeHero(ok([continuation]), ok([newest]))).toEqual({
       recording: continuation,
       kind: 'continue',
     })
@@ -46,16 +50,24 @@ describe('ホームの「次に見る 1 本」', () => {
     const latest = recording(3, '2026-10-02T00:00:00Z')
     const unavailable = recording(4, '2026-10-05T00:00:00Z', { sizeBytes: undefined })
 
-    expect(chooseHomeHero([], [old, watched, latest, unavailable])).toEqual({
+    expect(chooseHomeHero(ok([]), ok([old, watched, latest, unavailable]))).toEqual({
       recording: latest,
       kind: 'unwatched',
     })
   })
 
   it('両クエリが解決するまで決めず、候補が無い場合は null にする', () => {
-    expect(chooseHomeHero(undefined, [])).toBeUndefined()
-    expect(chooseHomeHero([], undefined)).toBeUndefined()
-    expect(chooseHomeHero([], [])).toBeNull()
+    expect(chooseHomeHero(pending, ok([]))).toBeUndefined()
+    expect(chooseHomeHero(ok([]), pending)).toBeUndefined()
+    expect(chooseHomeHero(ok([]), ok([]))).toBeNull()
+  })
+
+  it('取得失敗: 続きからがあれば完了側の失敗に依らず選び、確認できなければフォールバックしない', () => {
+    const continuation = recording(1, '2026-09-01T00:00:00Z')
+    const newest = recording(2, '2026-10-01T00:00:00Z')
+    expect(chooseHomeHero(ok([continuation]), failed)).toEqual({ recording: continuation, kind: 'continue' })
+    expect(chooseHomeHero(ok([]), failed)).toBeNull()
+    expect(chooseHomeHero(failed, ok([newest]))).toBeNull()
   })
 
   it('ほかの新着を続きからの 2 件目以降、未視聴完了の順に並べ、重複を除く', () => {

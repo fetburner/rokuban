@@ -334,26 +334,33 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
   })
 
   it('警告バッジは材料が未解決 / 0 件なら出ず、警告行数と一致する', async () => {
-    const api = stubApi({ pendingPaths: new Set(['/api/breakers']) })
-    const pendingHome = renderHome('/?mode=watch')
-    const toggle = await screen.findByTestId('home-mode-toggle')
-    await waitFor(() => expect(api.unresolvedCount('/api/breakers')).toBe(1))
-    expect(within(toggle).queryByTestId('home-warning-count')).not.toBeInTheDocument()
-    await act(async () => api.resolvePending())
-    await waitFor(() => expect(within(toggle).queryByTestId('home-warning-count')).not.toBeInTheDocument())
-    pendingHome.unmount()
-
-    stubApi({
+    // breakers だけ未解決。超過・失敗・ドロップで警告材料は既にあるので、
+    // pending ガードが無ければ件数 > 0 のバッジが出てしまう。
+    const api = stubApi({
+      pendingPaths: new Set(['/api/breakers']),
       breakers: [breaker()],
       overages: [overage(-HOUR, HOUR)],
       finished: [recording(6, 'drop', 'finished', { dropSummary: { packets: 10, drops: 1, errors: 0, scrambled: 0 } })],
       failed: [recording(7, 'failure', 'failed')],
     })
-    renderHome('/?mode=ops')
-    const badge = await screen.findByTestId('home-warning-count')
+    const pendingHome = renderHome('/?mode=ops')
+    const toggle = await screen.findByTestId('home-mode-toggle')
+    await waitFor(() => expect(api.unresolvedCount('/api/breakers')).toBe(1))
+    await screen.findAllByText(/failure/)
+    expect(within(toggle).queryByTestId('home-warning-count')).not.toBeInTheDocument()
+    await act(async () => api.resolvePending())
+    const badge = await within(toggle).findByTestId('home-warning-count')
     const warningSection = await screen.findByRole('heading', { name: '警告' })
     const rows = within(warningSection.closest('section')!).getAllByRole('listitem')
     expect(badge).toHaveTextContent(String(rows.length))
+    pendingHome.unmount()
+
+    // 材料が 0 件ならバッジは出ない
+    stubApi({})
+    renderHome('/?mode=watch')
+    await screen.findByTestId('home-mode-toggle')
+    await screen.findByText('次に見る録画はありません')
+    expect(screen.queryByTestId('home-warning-count')).not.toBeInTheDocument()
   })
 
   it('警告材料の取得失敗は既存規則どおり警告なしに縮退し、帯もバッジも出さない', async () => {

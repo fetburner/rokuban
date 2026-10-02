@@ -6,19 +6,25 @@ export type HomeHeroChoice = {
   kind: 'continue' | 'unwatched'
 }
 
+/** 主役選定に使う一覧の状態。`items` は未解決・失敗のとき意味を持たない。 */
+export type HeroSource = { pending: boolean; error: boolean; items: readonly Recording[] }
+
 /**
- * 両方の問い合わせが解決するまで主役を決めない。`undefined` は待機中、`null` は
- * 両方を確認したうえで候補が無い状態を表す。
+ * 両方の問い合わせが解決するまで主役を決めない（`undefined`）。続きからが空であることを
+ * 確認できなければ完了録画へフォールバックしない。続きからに先頭があれば完了側の失敗に
+ * 依らずそれを選ぶ。候補が無い・取得失敗は `null`。
  */
 export function chooseHomeHero(
-  continueWatching: readonly Recording[] | undefined,
-  finished: readonly Recording[] | undefined,
+  continueWatching: HeroSource,
+  finished: HeroSource,
 ): HomeHeroChoice | null | undefined {
-  if (continueWatching === undefined || finished === undefined) return undefined
-  const continuation = continueWatching[0]
+  if (continueWatching.pending || finished.pending) return undefined
+  if (continueWatching.error) return null
+  const continuation = continueWatching.items[0]
   if (continuation !== undefined) return { recording: continuation, kind: 'continue' }
+  if (finished.error) return null
 
-  const recentUnwatched = finished
+  const recentUnwatched = finished.items
     .filter((recording) => recording.watchedAt === undefined && isPlayableRecording(recording))
     .sort((a, b) => Date.parse(b.startAt) - Date.parse(a.startAt))
   const recording = recentUnwatched[0]
