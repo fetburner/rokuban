@@ -266,6 +266,13 @@ function renderHome(path = '/?mode=ops') {
   return renderInRouter(<HomePage />, { path: '/', initialEntries: [path] })
 }
 
+/** 「要対応」の行をタイトルで探す（時間軸の詳細一覧や title 属性と取り違えない）。 */
+async function findWarningRow(title: string): Promise<HTMLElement> {
+  const section = (await screen.findByRole('heading', { name: '要対応' })).closest('section')!
+  const el = await within(section).findByText(title, { selector: '[data-testid="warning-title"]' })
+  return el.closest('li')!
+}
+
 async function openTimelineDetails() {
   const details = await screen.findByTestId('home-timeline-details')
   fireEvent.click(within(details).getByText('録画・予約の詳細'))
@@ -359,14 +366,14 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
       finished: [recording(4, '完了', 'finished')],
     })
     const opsHome = renderHome('/?mode=ops')
-    expect(await screen.findByRole('heading', { name: '時間軸' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '今日 0 時 → 明日の終わり' })).toBeInTheDocument()
     expect(await screen.findByRole('heading', { name: '要対応' })).toBeInTheDocument()
     opsHome.unmount()
 
     stubApi({ recording: [recording(5, '録画中', 'recording')] })
     const watchHome = renderHome('/?mode=watch')
     expect(await screen.findByRole('region', { name: '録画中' })).toBeInTheDocument()
-    for (const heading of ['時間軸', '要対応']) {
+    for (const heading of ['今日 0 時 → 明日の終わり', '要対応']) {
       expect(screen.queryByRole('heading', { name: heading })).not.toBeInTheDocument()
     }
     watchHome.unmount()
@@ -434,7 +441,7 @@ describe('ホーム: 全セクションが空のときの単一の空状態', ()
     renderHome()
 
     expect(await screen.findByText('表示できる項目がありません')).toBeInTheDocument()
-    for (const heading of ['時間軸', '要対応']) {
+    for (const heading of ['今日 0 時 → 明日の終わり', '要対応']) {
       expect(screen.queryByRole('heading', { name: heading })).not.toBeInTheDocument()
     }
     // 「異常なし」「予約がありません」のような肯定/報告の文言を書いていない
@@ -445,7 +452,7 @@ describe('ホーム: 全セクションが空のときの単一の空状態', ()
     stubApi({ reservations: [reservation(1, '予約の番組', HOUR)] })
     renderHome()
 
-    expect(await screen.findByRole('heading', { name: '時間軸' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '今日 0 時 → 明日の終わり' })).toBeInTheDocument()
     expect(screen.queryByText('表示できる項目がありません')).not.toBeInTheDocument()
   })
 })
@@ -499,16 +506,16 @@ describe('ホーム: 0 件のセクションは文言も出さず消える', () 
     stubApi({ reservations: [reservation(1, '今夜の予約', 2 * HOUR)] })
     renderHome()
 
-    expect(await screen.findByRole('heading', { name: '時間軸' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '今日 0 時 → 明日の終わり' })).toBeInTheDocument()
     expect(screen.queryByText('録画中の番組がありません')).not.toBeInTheDocument()
   })
 })
 
 describe('ホーム管理モード: 時間軸の窓', () => {
-  it('今日 12 時から明後日 0 時までの予約を表示する', async () => {
+  it('今日 0 時から明後日 0 時までの予約を表示する', async () => {
     stubApi({
       reservations: [
-        reservation(1, '12 時より前', -10 * HOUR),
+        reservation(1, '0 時より前', -21 * HOUR),
         reservation(2, '窓に入る予約', 3 * HOUR),
         reservation(3, '窓の終端以降', 28 * HOUR),
       ],
@@ -517,7 +524,7 @@ describe('ホーム管理モード: 時間軸の窓', () => {
 
     const details = await openTimelineDetails()
     expect(within(details).getByRole('link', { name: /窓に入る予約/ })).toBeInTheDocument()
-    expect(screen.queryByText('12 時より前')).not.toBeInTheDocument()
+    expect(screen.queryByText('0 時より前')).not.toBeInTheDocument()
     expect(screen.queryByText('窓の終端以降')).not.toBeInTheDocument()
   })
 
@@ -529,7 +536,7 @@ describe('ホーム管理モード: 時間軸の窓', () => {
     renderHome()
 
     const details = await openTimelineDetails()
-    expect(within(details).getByRole('link', { name: /予約 1$/ })).toBeInTheDocument()
+    expect(within(details).getByRole('link', { name: /予約 1(?!\d)/ })).toBeInTheDocument()
     expect(within(details).getByRole('link', { name: /予約 10/ })).toBeInTheDocument()
   })
 })
@@ -560,11 +567,11 @@ describe('ホーム管理モード: 失敗/ドロップの timeline rendering', 
     })
     renderHome()
 
-    expect(await screen.findByRole('heading', { name: '時間軸' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '今日 0 時 → 明日の終わり' })).toBeInTheDocument()
     expect(await screen.findByRole('heading', { name: '要対応' })).toBeInTheDocument()
     // 警告セクションのテキストとしては出るが、行自体には drop バッジ（DropBadges
     // 由来の「ドロップ」ラベル）を重ねない
-    expect(screen.getByText(/ドロップのある録画: ドロップ 12 \/ スクランブル 3/)).toBeInTheDocument()
+    expect(within(await findWarningRow('ドロップのある録画')).getByText('ドロップ 12 / スクランブル 3')).toBeInTheDocument()
     const details = await openTimelineDetails()
     const link = within(details).getByRole('link', { name: /ドロップのある録画/ })
     const block = screen.getByTestId('home-timeline-block')
@@ -587,9 +594,9 @@ describe('ホーム: 警告セクション', () => {
     renderHome()
 
     expect(await screen.findByRole('heading', { name: '要対応' })).toBeInTheDocument()
-    expect(screen.getByText(/ルール評価による予約の削除が停止中/)).toBeInTheDocument()
+    expect(screen.getByText(/ルール評価による予約の削除/)).toBeInTheDocument()
     expect(screen.getByText(/BSが 1 本不足しています/)).toBeInTheDocument()
-    expect(screen.getByText(/ドロップのある録画: ドロップ 12 \/ スクランブル 3/)).toBeInTheDocument()
+    expect(within(await findWarningRow('ドロップのある録画')).getByText('ドロップ 12 / スクランブル 3')).toBeInTheDocument()
   })
 
   it('チューナー不足の項目は番組表のその時間帯への導線を持つ', async () => {
@@ -648,7 +655,7 @@ describe('ホーム: 警告セクション', () => {
     })
     renderHome()
 
-    expect(await screen.findByRole('heading', { name: '時間軸' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '今日 0 時 → 明日の終わり' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: '要対応' })).not.toBeInTheDocument()
   })
 
@@ -677,9 +684,9 @@ describe('ホーム: 警告セクション', () => {
     renderHome()
 
     const overageRow = (await screen.findByText(/BSが 1 本不足しています/)).closest('li')
-    const breakerRow = screen.getByText(/ルール評価による予約の削除が停止中/).closest('li')
-    const dropRow = screen.getByText(/ドロップのある録画: ドロップ 12/).closest('li')
-    const failedRow = screen.getByText(/失敗した録画: 録画失敗/).closest('li')
+    const breakerRow = await findWarningRow('ルール評価による予約の削除')
+    const dropRow = await findWarningRow('ドロップのある録画')
+    const failedRow = await findWarningRow('失敗した録画')
     const warningSection = screen.getByRole('heading', { name: '要対応' }).closest('section')!
     expect(
       within(warningSection)
@@ -687,18 +694,14 @@ describe('ホーム: 警告セクション', () => {
         .map((row) => row.getAttribute('data-warning-kind')),
     ).toEqual(['breaker', 'failed', 'overage', 'drop'])
 
-    // 色クラスは、リンクを持つ行（チューナー不足）では中の `<a>` に、
-    // リンクを持たない行（ブレーカー・ドロップ）では `<li>` 自身に付く
-    // （`WarningRow` の実装どおり）。`<a>` を持たない行のメッセージ `<span>`
-    // 自体は色クラスを持たないので、そこを誤って掴まないよう `a` だけを探し、
-    // 無ければ `<li>` 自身にフォールバックする。
-    const colorElement = (row: HTMLElement | null) => row?.querySelector('a') ?? row
-    expect(colorElement(overageRow)?.className).toMatch(/bg-warning\/10/)
-    expect(colorElement(overageRow)?.className).toMatch(/text-warning/)
+    // 色は種別チップだけが持つ（`WarningRow` の実装どおり）。
+    const chipOf = (row: HTMLElement | null) => within(row!).getByTestId('warning-chip')
+    expect(chipOf(overageRow).className).toMatch(/bg-warning\/15/)
+    expect(chipOf(overageRow).className).toMatch(/text-warning/)
     for (const row of [breakerRow, dropRow, failedRow]) {
-      const el = colorElement(row)
-      expect(el?.className).toMatch(/text-destructive/)
-      expect(el?.className).not.toMatch(/bg-warning/)
+      const el = chipOf(row)
+      expect(el.className).toMatch(/text-destructive/)
+      expect(el.className).not.toMatch(/bg-warning/)
     }
   })
 })
@@ -711,7 +714,7 @@ describe('ホーム: 失敗録画が警告に出る（issue #301）', () => {
     renderHome()
 
     expect(await screen.findByRole('heading', { name: '要対応' })).toBeInTheDocument()
-    expect(screen.getByText(/失敗した番組: 録画失敗/)).toBeInTheDocument()
+    expect(within(await findWarningRow('失敗した番組')).getByText('録画失敗')).toBeInTheDocument()
   })
 
   it('失敗録画が無ければ警告に出ない（両方向）', async () => {
@@ -720,7 +723,7 @@ describe('ホーム: 失敗録画が警告に出る（issue #301）', () => {
     })
     renderHome()
 
-    expect(await screen.findByRole('heading', { name: '時間軸' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '今日 0 時 → 明日の終わり' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: '要対応' })).not.toBeInTheDocument()
     expect(screen.queryByText(/録画失敗/)).not.toBeInTheDocument()
   })
@@ -742,9 +745,7 @@ describe('ホーム: 失敗録画が警告に出る（issue #301）', () => {
 
     // 実際尺（0 分）と予定尺（5 分）の両方が別々に出る --- 予定尺だけの表示に
     // 潰すと「実際 0分」が消え、この変異でテストが落ちる。
-    expect(
-      await screen.findByText(/直後に切れた録画: 録画失敗（実際 0分・予定 5分/),
-    ).toBeInTheDocument()
+    expect((await findWarningRow('直後に切れた録画')).textContent).toMatch(/実際 0分・予定 5分/)
   })
 
   it('開始が観測されていない失敗は「未開始」と出し、実際尺は主張しない', async () => {
@@ -759,9 +760,7 @@ describe('ホーム: 失敗録画が警告に出る（issue #301）', () => {
     })
     renderHome()
 
-    expect(
-      await screen.findByText(/開始が観測されていない録画: 録画失敗（予定 5分・未開始/),
-    ).toBeInTheDocument()
+    expect((await findWarningRow('開始が観測されていない録画')).textContent).toMatch(/予定 5分・未開始/)
     // 「実際」という言葉は、開始の観測が無い以上出さない（実際尺が定義できない）
     expect(screen.queryByText(/実際/)).not.toBeInTheDocument()
   })
@@ -783,7 +782,7 @@ describe('ホーム: 失敗録画が警告に出る（issue #301）', () => {
     })
     renderHome()
 
-    const row = await screen.findByText(/終了未記録の録画: 録画失敗/)
+    const row = await findWarningRow('終了未記録の録画')
     expect(row.textContent).not.toMatch(/未開始/)
     expect(row.textContent).not.toMatch(/実際/)
   })
@@ -882,7 +881,7 @@ describe('ホーム: 失敗録画が警告に出る（issue #301）', () => {
     })
     renderHome()
 
-    const row = await screen.findByText(/空の理由の失敗: 録画失敗/)
+    const row = await findWarningRow('空の理由の失敗')
     expect(row.textContent).toMatch(/理由不明/)
     expect(row.textContent).not.toMatch(/理由: 理由不明/)
     expect(row.textContent).not.toMatch(/\{/)
@@ -905,16 +904,16 @@ describe('ホーム: 失敗録画が警告に出る（issue #301）', () => {
     })
     renderHome()
 
-    expect(await screen.findByText(/直近の失敗: 録画失敗/)).toBeInTheDocument()
-    expect(screen.queryByText(/古い失敗: 録画失敗/)).not.toBeInTheDocument()
+    await findWarningRow('直近の失敗')
+    expect(screen.queryByText('古い失敗', { selector: '[data-testid="warning-title"]' })).not.toBeInTheDocument()
   })
 })
 
 describe('ホーム: 警告の検出範囲は時間軸の窓から独立している', () => {
-  it('今日 12 時より前の finished drop も 20 件の警告 scan から拾う', async () => {
+  it('今日 0 時より前の finished drop も 20 件の警告 scan から拾う', async () => {
     const finished = Array.from({ length: 7 }, (_, i) =>
       recording(i + 1, `録画 ${i + 1}`, 'finished', {
-        startAt: iso(i === 6 ? -9 * HOUR : -(i + 1) * HOUR),
+        startAt: iso(i === 6 ? -21 * HOUR : -(i + 1) * HOUR),
       }),
     )
     finished[6] = {
@@ -928,7 +927,7 @@ describe('ホーム: 警告の検出範囲は時間軸の窓から独立して�
     expect(await screen.findByTestId('home-ops-timeline-frame')).toBeInTheDocument()
     // 時間軸には出ないが、warning scan は timeline の窓と独立している。
     expect([...screen.queryAllByTestId('home-timeline-block')].some((block) => block.getAttribute('title') === '録画 7')).toBe(false)
-    expect(await screen.findByText(/録画 7: ドロップ 5/)).toBeInTheDocument()
+    expect(within(await findWarningRow('録画 7')).getByText('ドロップ 5')).toBeInTheDocument()
   })
 
   it('失敗ブロックは status=failed の応答から作り、superseded 行を除く', async () => {
@@ -974,6 +973,21 @@ describe('ホーム: 警告の検出範囲は時間軸の窓から独立して�
     expect(item).not.toHaveTextContent(/十分|余裕|収まる/)
   })
 
+  it('詰まっていない種別の予約は副行に並べない（GR だけの超過に重なる BS の予約）', async () => {
+    stubApi({
+      overages: [{ ...overage(HOUR, 2 * HOUR), jammedTypes: ['GR'] }],
+      reservations: [
+        reservation(1, '地デジの予約', HOUR),
+        reservation(2, 'BSの予約', HOUR, { channelType: 'BS' }),
+      ],
+    })
+    renderHome()
+
+    const item = (await screen.findByText(/地デジが 1 本不足しています/)).closest('li')!
+    expect(within(item).getByText('この時間帯の予約: 地デジの予約')).toBeInTheDocument()
+    expect(item).not.toHaveTextContent('BSの予約')
+  })
+
   it('timeline窓外でも7日内の failed は警告し、時間軸のブロックにはしない', async () => {
     const outsideWindow = recording(40, '窓外だが直近の失敗', 'failed', {
       startAt: iso(-26 * HOUR),
@@ -981,7 +995,7 @@ describe('ホーム: 警告の検出範囲は時間軸の窓から独立して�
     stubApi({ failed: [outsideWindow] })
     renderHome()
 
-    expect(await screen.findByText(/窓外だが直近の失敗: 録画失敗/)).toBeInTheDocument()
+    expect(within(await findWarningRow('窓外だが直近の失敗')).getByText('録画失敗')).toBeInTheDocument()
     expect(
       screen.queryAllByTestId('home-timeline-block').some(
         (block) => block.getAttribute('title') === '窓外だが直近の失敗',
@@ -1010,7 +1024,7 @@ describe('ホーム管理モード: 時間軸の読み込み', () => {
     renderHome()
 
     // 見出しは出るが、timeline data が揃うまでは chart/frame を出さない。
-    expect(await screen.findByRole('heading', { name: '時間軸' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '今日 0 時 → 明日の終わり' })).toBeInTheDocument()
     expect(screen.queryByTestId('home-ops-timeline-frame')).not.toBeInTheDocument()
     expect(screen.queryByText('表示できる項目がありません')).not.toBeInTheDocument()
 
@@ -1035,7 +1049,7 @@ describe('ホーム管理モード: 時間軸の読み込み', () => {
     resolvePending()
 
     expect(await screen.findByRole('heading', { name: '要対応' })).toBeInTheDocument()
-    expect(screen.getByText(/ルール評価による予約の削除が停止中/)).toBeInTheDocument()
+    expect(screen.getByText(/ルール評価による予約の削除/)).toBeInTheDocument()
   })
 
   /**
@@ -1063,7 +1077,7 @@ describe('ホーム管理モード: 時間軸の読み込み', () => {
     resolvePending()
 
     expect(await screen.findByRole('heading', { name: '要対応' })).toBeInTheDocument()
-    expect(screen.getByText(/ルール評価による予約の削除が停止中/)).toBeInTheDocument()
+    expect(screen.getByText(/ルール評価による予約の削除/)).toBeInTheDocument()
   })
 
   it('失敗録画だけが未解決のうちは、単一の空状態（表示できる項目がありません）も出さない', async () => {
@@ -1083,7 +1097,7 @@ describe('ホーム管理モード: 時間軸の読み込み', () => {
     resolvePending()
 
     // 解決したら警告として出る（「たまたま速すぎて見えなかった」の排除）
-    expect(await screen.findByText(/後から届いた失敗: 録画失敗/)).toBeInTheDocument()
+    expect(within(await findWarningRow('後から届いた失敗')).getByText('録画失敗')).toBeInTheDocument()
     expect(screen.queryByText('表示できる項目がありません')).not.toBeInTheDocument()
   })
 
@@ -1194,6 +1208,144 @@ describe('ホーム: 時境界を越えてキーが変わっても警告は消�
 
     // 新しいキーは未解決のままだが、警告は消えていない
     expect(screen.getByRole('heading', { name: '要対応' })).toBeInTheDocument()
-    expect(screen.getByText(/ルール評価による予約の削除が停止中/)).toBeInTheDocument()
+    expect(screen.getByText(/ルール評価による予約の削除/)).toBeInTheDocument()
+  })
+})
+
+describe('ホーム管理モード: 窓は常に今日 0 時から（午前に開いても）', () => {
+  it('午前 9 時に開いても「いま」の線は 9 時の位置にあり、午前の録画・録画中も窓に入る', async () => {
+    const morning = dayStart.getTime() + 9 * HOUR
+    vi.setSystemTime(morning)
+    const at = (hours: number) => new Date(dayStart.getTime() + hours * HOUR).toISOString()
+    stubApi({
+      finished: [recording(1, '朝の完了', 'finished', { startAt: at(7), durationMs: HOUR })],
+      recording: [recording(2, '朝の録画中', 'recording', { startAt: at(8.75), durationMs: HOUR })],
+    })
+    renderHome()
+
+    const titles = (await screen.findAllByTestId('home-timeline-block')).map((block) =>
+      block.getAttribute('title'),
+    )
+    expect(titles.sort()).toEqual(['朝の完了', '朝の録画中'])
+    // jsdom の window.innerWidth は 1024（desktop の 64px/h）。9 時 = 9 * 64px。
+    expect(screen.getByTestId('home-timeline-now')).toHaveStyle({ left: '576px' })
+    expect(screen.getByRole('heading', { name: '今日 0 時 → 明日の終わり' })).toBeInTheDocument()
+  })
+})
+
+describe('ホーム管理モード: 容量超過は個々の予約ブロックに印を付けない', () => {
+  it('超過区間に重なる予約ブロックは、区間の外の予約ブロックと同じクラスを持つ', async () => {
+    stubApi({
+      overages: [{ ...overage(2 * HOUR, 3 * HOUR), jammedTypes: ['GR'] }],
+      reservations: [
+        reservation(1, '区間の中', 2 * HOUR + 10 * 60_000, { durationMs: 30 * 60_000 }),
+        reservation(2, '区間の外', 5 * HOUR, { durationMs: 30 * 60_000 }),
+      ],
+    })
+    renderHome()
+
+    const blocks = await screen.findAllByTestId('home-timeline-block')
+    const inside = blocks.find((block) => block.getAttribute('title') === '区間の中')!
+    const outside = blocks.find((block) => block.getAttribute('title') === '区間の外')!
+    expect(inside.className).toBe(outside.className)
+    expect(inside.className).not.toMatch(/warning/)
+  })
+})
+
+describe('ホーム管理モード: 時間軸の見出しと凡例', () => {
+  it('窓・行の種別を見出しに、スクロールの案内とチューナー不足の区間を凡例に出す', async () => {
+    stubApi({
+      reservations: [
+        reservation(1, 'GR 番組', 2 * HOUR),
+        reservation(2, 'BS 番組', 2 * HOUR, { channelType: 'BS' }),
+      ],
+    })
+    renderHome()
+
+    await screen.findAllByTestId('home-timeline-block')
+    const section = screen.getByTestId('home-ops-timeline')
+    expect(within(section).getByRole('heading')).toHaveTextContent('今日 0 時 → 明日の終わり')
+    expect(section).toHaveTextContent('地デジ / BS ごと')
+    expect(section).toHaveTextContent('チューナー不足の区間')
+    expect(section).toHaveTextContent('枠の中を横にスクロールできます')
+    expect(section).not.toHaveTextContent('容量不足')
+  })
+
+  it('目盛りは日の境界が読める（翌日は「翌」を付ける）', async () => {
+    stubApi({ reservations: [reservation(1, '番組', 2 * HOUR)] })
+    renderHome()
+
+    await screen.findAllByTestId('home-timeline-block')
+    const labels = screen.getAllByTestId('home-timeline-tick').map((tick) => tick.textContent)
+    expect(labels).toContain('18時')
+    expect(labels).toContain('翌0時')
+    expect(labels).toContain('翌3時')
+    expect(labels.filter((label) => label === '0時')).toHaveLength(1)
+  })
+})
+
+describe('ホーム管理モード: 詳細一覧は時刻順で、日・種別・状態を出す', () => {
+  it('状態ごとの連結ではなく開始時刻順に並べ、日・種別 / site・状態を各行に出す', async () => {
+    stubApi({
+      reservations: [
+        reservation(1, '明日の予約', 13 * HOUR, { channelType: 'BS' }), // 明日 09:00
+        reservation(2, '今夜の予約', 2 * HOUR), // 22:00
+      ],
+      finished: [recording(3, '昼の完了', 'finished', { startAt: iso(-8 * HOUR) })], // 12:00
+      failed: [recording(4, '夕方の失敗', 'failed', { startAt: iso(-3 * HOUR) })], // 17:00
+      recording: [recording(5, '録画中の番組', 'recording', { startAt: iso(-30 * 60_000) })], // 19:30
+    })
+    renderHome()
+
+    const details = await openTimelineDetails()
+    const rows = within(details).getAllByTestId('home-timeline-detail-row')
+    expect(rows.map((row) => row.textContent)).toEqual([
+      '今日 12:00地デジ昼の完了録れた',
+      '今日 17:00地デジ夕方の失敗失敗',
+      '今日 19:30地デジ録画中の番組録画中',
+      '今日 22:00地デジ今夜の予約予約',
+      '明日 09:00BS明日の予約予約',
+    ])
+  })
+
+  it('複数 site のときは種別の前に site を出す', async () => {
+    stubApi({
+      reservations: [
+        reservation(1, 'A', 2 * HOUR),
+        reservation(2, 'B', 3 * HOUR, { site: 'sub' }),
+      ],
+    })
+    renderHome()
+
+    const details = await openTimelineDetails()
+    expect(
+      within(details).getAllByTestId('home-timeline-detail-row').map((row) => row.textContent),
+    ).toEqual(['今日 22:00default · 地デジA予約', '今日 23:00sub · 地デジB予約'])
+  })
+})
+
+describe('ホーム管理モード: 見るモードだけの取得はしない', () => {
+  it('録画中の無条件一覧と続きからを取らない（見るモードでは取る）', async () => {
+    const ops = stubApi({})
+    const opsHome = renderHome('/?mode=ops')
+    await screen.findByTestId('home-ops-timeline').catch(() => undefined)
+    await new Promise((r) => setTimeout(r, 50))
+    const paths = (fetchMock: typeof ops.fetchMock) =>
+      fetchMock.mock.calls.map(([input]) => new URL(String(input), 'http://localhost'))
+    expect(paths(ops.fetchMock).some((url) => url.pathname === '/api/recordings/continue-watching')).toBe(false)
+    expect(
+      paths(ops.fetchMock).some(
+        (url) => url.pathname === '/api/recordings' && url.searchParams.get('status') === 'recording' && !url.searchParams.has('from'),
+      ),
+    ).toBe(false)
+    opsHome.unmount()
+
+    const watch = stubApi({})
+    renderHome('/?mode=watch')
+    await waitFor(() =>
+      expect(
+        paths(watch.fetchMock).some((url) => url.pathname === '/api/recordings/continue-watching'),
+      ).toBe(true),
+    )
   })
 })

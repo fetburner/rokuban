@@ -162,3 +162,54 @@ export function homeTimelineChannelLabel(channelType: string): string {
 function isValidSpan(startMs: number, endMs: number): boolean {
   return Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs
 }
+
+const KIND_LABEL: Record<HomeTimelineKind, string> = {
+  finished: '録れた',
+  recording: '録画中',
+  failed: '失敗',
+  reservation: '予約',
+}
+
+/** homeTimelineKindLabel は詳細一覧の状態欄に出す語。凡例と同じ語を使う。 */
+export function homeTimelineKindLabel(kind: HomeTimelineKind): string {
+  return KIND_LABEL[kind]
+}
+
+/** sortHomeTimelineEvents は詳細一覧用に開始時刻順（同時刻は終了、key の順）へ並べる。 */
+export function sortHomeTimelineEvents(events: readonly HomeTimelineEvent[]): HomeTimelineEvent[] {
+  return events
+    .slice()
+    .sort(
+      (left, right) =>
+        left.startMs - right.startMs ||
+        left.endMs - right.endMs ||
+        left.key.localeCompare(right.key),
+    )
+}
+
+function calendarDayDiff(ms: number, baseMs: number): number {
+  const day = (value: number) => {
+    const date = new Date(value)
+    return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
+  }
+  return Math.round((day(ms) - day(baseMs)) / 86_400_000)
+}
+
+/** homeTimelineDayLabel は ms の暦日を「今日 / 明日 / M/D」で返す（nowMs の暦日基準）。 */
+export function homeTimelineDayLabel(ms: number, nowMs: number): string {
+  const diff = calendarDayDiff(ms, nowMs)
+  if (diff === 0) return '今日'
+  if (diff === 1) return '明日'
+  const date = new Date(ms)
+  return `${date.getMonth() + 1}/${date.getDate()}`
+}
+
+/**
+ * homeTimelineTickLabel は目盛りの語。窓の始端と同じ暦日は「18時」、翌日は「翌0時」。
+ * 窓は 2 日にまたがり同じ時刻が 2 回出るので、日の境界を語で読めるようにする。
+ */
+export function homeTimelineTickLabel(tickMs: number, startMs: number): string {
+  const diff = calendarDayDiff(tickMs, startMs)
+  const prefix = diff <= 0 ? '' : diff === 1 ? '翌' : diff === 2 ? '翌々' : `+${diff}日 `
+  return `${prefix}${new Date(tickMs).getHours()}時`
+}

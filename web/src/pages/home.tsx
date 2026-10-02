@@ -1,7 +1,6 @@
 import { keepPreviousData } from '@tanstack/react-query'
 import { Link, useRouterState } from '@tanstack/react-router'
-import { TriangleAlert } from 'lucide-react'
-import { Fragment, useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import {
   useGetEncodeQueue,
@@ -34,6 +33,10 @@ import { chooseHomeHero, homeNewArrivals, type HomeHeroChoice } from '@/lib/home
 import {
   buildHomeTimelineRows,
   homeTimelineChannelLabel,
+  homeTimelineDayLabel,
+  homeTimelineKindLabel,
+  homeTimelineTickLabel,
+  sortHomeTimelineEvents,
   type HomeTimelineEvent,
   type HomeTimelineKind,
 } from '@/lib/home-timeline'
@@ -51,54 +54,24 @@ import {
 import { cn } from '@/lib/utils'
 
 /**
- * RESERVATION_LIMIT / RECENT_FINISHED_LIMIT は「1 セクションが画面を占有しない」
- * ための恣意的な上限（実測ではない。issue #242 着手宣言コメント）。窓の方
- * （今夜〜明日の予約の時間窓）は既存の日境界（`lib/day-offset.ts`）に揃えたという
- * 根拠があるが、この 2 つの件数はそうではない。
- */
-
-/**
- * DROP_WARNING_SCAN_LIMIT はドロップ警告の材料を取る範囲。**「直近の完了」の
- * 表示件数（`RECENT_FINISHED_LIMIT`）とは独立の定数にしてある** ---
- * 表示（何行見せるか = レイアウトの都合）と検出（どこまで遡って異常を拾うか =
- * 正しさの都合）は別の関心事で、同じ値に乗せるとレイアウト都合で表示件数を
- * 下げただけで警告の遡り幅まで黙って縮む。この値も上と同じく恣意的な上限
- * （実測ではない）。
- *
- * **問い合わせは 1 本にまとめる**（`limit=DROP_WARNING_SCAN_LIMIT` で取り、
- * 表示はその先頭 `RECENT_FINISHED_LIMIT` 件へ切る）。同じ絞り込み・同じ既定順
- * （`program_start_at` 降順）なので `limit=6` の集合は `limit=20` の先頭 6 件と
- * 一致し、2 本目の問い合わせは何も新しい情報を持ってこない。定数 2 つの独立性は
- * スライスでも保たれる（テスト「表示上限（6 件）の外にある録画のドロップも警告
- * には出る」がそれを固定している）。
- *
- * 以前は本当に 2 本のクエリに分けていた（`dropScanQuery`）。分ける根拠として
- * 「表示件数を変える変更と警告を壊す変更が同じ 1 行の定数変更に潰れる」と
- * 書いていたが、それはスライスでも潰れないのでレビューで根拠にならないと
- * 指摘された。実際に払っていた代償は: 問い合わせが 1 本増える（マウント時も
- * `recordings` の SSE invalidate のたびも 2 本走る）/ 表示ゲート
- * （`warningsPending` / `allSettled`）が待つクエリが 1 本増える /
- * **2 つの応答の間に録画が 1 本完了すると、表示リストと警告の検出リストが
- * 食い違いうる**（同じ画面の中で「直近の完了」に出ていない録画のドロップ警告が
- * 出る、または逆）。
+ * DROP_WARNING_SCAN_LIMIT はドロップ警告の材料を取る範囲（完了録画の直近 20 件）。
+ * **時間軸の窓とは独立した定数にしてある** --- 表示の都合で窓を狭めたとき、警告の
+ * 遡り幅まで黙って縮まないようにするため（検出は正しさの都合、窓は見た目の都合）。
+ * 値は実測ではない恣意的な上限。判定: `pages/home.test.tsx`「今日 0 時より前の
+ * finished drop も 20 件の警告 scan から拾う」。
  */
 const DROP_WARNING_SCAN_LIMIT = 20
 
 /**
- * FAILED_RECORDING_SCAN_LIMIT は警告に出す失敗録画（`status=failed`）を取る
- * 範囲。**「直近の完了」「ドロップ警告」の限度とは無関係の別の定数にする**
- * （issue #301）--- 失敗はホームに専用の表示欄を持たず「警告」セクションへの
- * 追加項目として出すだけなので、表示件数と検出範囲を分ける理由（上記
- * `DROP_WARNING_SCAN_LIMIT` の doc コメント）はここには無いが、他の 2 つの
- * 上限と値だけ共有すると「表示件数を変えたら失敗の遡り幅まで連動する」将来の
- * 罠を先に埋めてしまう。値自体は他の上限と同じく実測ではない恣意的な上限。
+ * FAILED_RECORDING_SCAN_LIMIT は「要対応」に出す失敗録画（`status=failed`）を取る
+ * 範囲。`DROP_WARNING_SCAN_LIMIT` とは別の定数にする（値だけ共有すると、一方を
+ * 変えたときもう一方の遡り幅まで連動する）。値は実測ではない恣意的な上限。
  */
 const FAILED_RECORDING_SCAN_LIMIT = 20
 
 /**
- * FAILED_RECORDING_WARNING_WINDOW_MS は警告に出す失敗録画の recency 窓（レビュー
- * 指摘）。他の警告材料（ブレーカーは発動中のみ・容量超過は今夜〜明日の窓・
- * ドロップは「直近 20 件の完了」で実質 recency がある）はどれも自然に消えるが、
+ * FAILED_RECORDING_WARNING_WINDOW_MS は警告に出す失敗録画の recency 窓。他の警告材料（ブレーカーは発動中のみ・容量超過は今日〜明日の窓・
+ * ドロップは直近 20 件の完了で実質 recency がある）はどれも自然に消えるが、
  * 失敗だけは `FAILED_RECORDING_SCAN_LIMIT` 件に収まる限り**いつの失敗でも
  * 出続けてしまう**。稼働の長いサーバーでは警告セクションが古い失敗で常時
  * 埋まり、警告全体の情報価値が下がる（issue #301 の受け入れ基準も「直近の」
@@ -115,54 +88,27 @@ const HOME_TIMELINE_HOUR_PX_DESKTOP = 64
 const HOME_TIMELINE_HOUR_PX_PHONE = 30
 const HOME_TIMELINE_TRACK_HEIGHT_PX = 20
 const HOME_TIMELINE_TRACK_GAP_PX = 3
-const HOME_TIMELINE_START_HOUR = 12
 const HOME_TIMELINE_PAST_CONTEXT_MS = 3 * 3_600_000
 
 /**
- * HomePage はホーム（`/`。M8-3, issue #242）。
+ * HomePage はホーム（`/`）。右上の「見る / 管理」で 2 つのモードを切り替える
+ * （`lib/home-mode.ts`。設計の判断は docs/frontend/home.md）。
  *
- * 起動して最初に見えるのが番組表（「これから録るもの」）だと、運用が安定した
- * 録画サーバーへの再訪の大半が知りたいこと（録れているか・今夜なにが録れるか・
- * 見るものはあるか・異常はないか）に 1 画面で答えられない。部品（録画中の状態・
- * 予約一覧・サーキットブレーカーバナー・容量バッジ・ドロップ統計）は既存のまま、
- * 再開位置 API の結果を加えて集約する。
+ * 見るモードは「次に見る 1 本」・ほかの新着・録画中の細い行。管理モードは
+ * 時間軸（今日 0 時〜明日の終わり）・要対応の一覧・ストレージの 1 行。
+ * どちらのモードでも使わないクエリは発行しない（`enabled`）。
  *
- * セクションは 5 つ: いま録画中 / 続きから / 今夜〜明日の予約 / 警告 / 直近の完了。
- * **0 件のセクションは文言も出さずセクションごと消し、全セクションが空のときだけ
- * ホーム全体で 1 つの空状態を出す**（一覧画面の「条件に合う録画がありません」の
- * ような「探した結果の報告」とは意味が違う --- ホームの空は「何も主張しない」
- * ことそのものなので、肯定的な文言（「異常なし」）に転ばないよう沈黙を選ぶ）。
+ * **0 件のものは文言も出さず消え、材料が全部確定して表示対象も無いときだけ
+ * 単一の空状態を出す**。ホームの空は「何も主張しない」ことそのもので、肯定的な
+ * 文言（「異常なし」）には転ばない。未解決の材料を 0 件として隠さない（読み込み中の
+ * 一瞬を「無い」と誤読させない。CLAUDE.md「非同期の空虚な成功」）。
  *
- * **セクションごとの可視性はそのセクション自身のクエリの解決だけを待つ。**
- * 「全セクションが空」（`allEmpty`）の判定だけが全クエリの解決を待つ ---
- * 7 本のうち最も遅い 1 本（絞り込みを持たない `GET /api/reservations` など）に
- * 「いま録画中」のような最も見たいセクションまで引きずられて隠れる半径を
- * 小さくするため（レビュー指摘）。一方で「まだ解決していないセクションを
- * 0 件として隠す」ことはしない --- 個別のクエリが解決する前に「空だから隠す」を
- * 判定すると、読み込み中の一瞬を「セクションが無い」と誤読する（CLAUDE.md
- * 「非同期の空虚な成功」）。未解決のセクションは「解決するまで存在を主張しない」
- * （消えているのではなく、まだ何も言っていない）。
- *
- * 取得が失敗した場合は空扱いにせず、そのセクションだけ取得失敗を表示する
- * （空白のセクションを「異常なし」と取り違えさせないため）。ただし警告
- * セクションの材料（サーキットブレーカー・容量超過・完了録画のドロップ統計・
- * 失敗録画）は、他の画面（`CircuitBreakerBanner` / 予約一覧の容量バッジ）と
- * 同じ「取得失敗は警告が無いことにする」流儀に揃える --- `docs/data.md` §6.5 が
- * 言う「既知の盲点は警告を見逃す方向に偏っている」を承知のうえで、既存の
- * 踏襲先が同じ判断をしている。完了録画の一覧は「直近の完了」の表示と警告の
- * 材料を兼ねるので、それが失敗したときは前者にエラーを出し、後者は黙って
- * 警告なしに縮退する。
- *
- * **失敗録画（`status=failed`）はホームに専用の一覧を持たず、「警告」への
- * 追加項目としてのみ出す**（issue #301）。「直近の完了」は
- * `status=finished` の絞り込みなので failed 行はそもそも混ざらず、既存の
- * 5 セクション構成を変えずに済む。行では予定尺（`durationMs`。番組の放送尺の
- * スナップショット）と実際に録れた尺（`startedAt`〜`endedAt`）を区別する ---
- * 録画が実際には開始しなかった失敗（`startedAt`/`endedAt` が無い）と、
- * 開始した直後に終わった失敗（両方あるが差が小さい）を同じ「予定尺」表示に
- * 潰すと、後者が「ほぼ予定通り録れた」ように見えてしまう。失敗理由は
- * `qualityEvents`（失敗系イベントの最後の要素の `reason`）にあれば出し、
- * 無ければ「理由不明」と沈黙を区別する（`failureReasonText` 参照）。
+ * 要対応の材料（ブレーカー・容量超過・完了録画のドロップ・失敗録画）の取得失敗は
+ * 「警告が無い」へ縮退する（`CircuitBreakerBanner` / 予約一覧の容量バッジと同じ流儀。
+ * docs/data.md §6.5 の既知の盲点）。時間軸の取得失敗は空にせずエラーを出す。
+ * 失敗録画（`status=failed`）は専用の一覧を持たず、時間軸のブロックと要対応の
+ * 追加項目としてだけ出す。行では予定尺（`durationMs`）と実際に録れた尺
+ * （`startedAt`〜`endedAt`）を区別する（`failedDurationText`）。
  */
 export function HomePage() {
   const locationSearch = useRouterState({ select: (state) => state.location.search }) as Record<
@@ -200,27 +146,29 @@ export function HomePage() {
   // こちらは元から日単位に量子化済みなので上記の無限再取得は起きない。
   const reservationsWindowEndMs = dayOrigin(2, nowMs).getTime()
 
-  // 時間軸は今日の 12 時から表示する。`dayOrigin(0)` が返す今日の日付を基準に
-  // 正午へ固定し、終端は従来の予約窓と同じ明日の暦日の終わりに揃える。
-  const timelineWindowStartDate = dayOrigin(0, nowMs)
-  timelineWindowStartDate.setHours(HOME_TIMELINE_START_HOUR, 0, 0, 0)
+  // 時間軸は常に今日の 0 時から明日の暦日の終わり（予約窓と同じ終端）までの 48 時間。
+  // 始点を現在時刻に依存させない（正午固定だと午前に開いたとき午前の録画が窓から
+  // 落ち、「いま」の線が窓の外に張り付く。測定: home.test.tsx「午前に開いても…」）。
+  const timelineWindowStartDate = new Date(nowMs)
+  timelineWindowStartDate.setHours(0, 0, 0, 0)
   const timelineWindowStartMs = timelineWindowStartDate.getTime()
   const timelineWindowEndMs = reservationsWindowEndMs
   const timelineFrom = new Date(timelineWindowStartMs).toISOString()
   const timelineTo = new Date(timelineWindowEndMs).toISOString()
 
-  const recordingQuery = useListRecordings({ status: 'recording' })
-  const continueWatchingQuery = useListContinueWatching()
-  // 「直近の完了」の表示とドロップ警告の検出を兼ねる 1 本。取る範囲は広い方
-  // （`DROP_WARNING_SCAN_LIMIT`）に合わせ、表示だけを先頭 `RECENT_FINISHED_LIMIT`
-  // 件に切る（`DROP_WARNING_SCAN_LIMIT` の doc コメント参照）。
+  // 見るモードだけの材料。管理モードでは取らない。
+  const recordingQuery = useListRecordings(
+    { status: 'recording' },
+    { query: { enabled: mode === 'watch' } },
+  )
+  const continueWatchingQuery = useListContinueWatching({ query: { enabled: mode === 'watch' } })
+  // ドロップ警告の検出（`DROP_WARNING_SCAN_LIMIT` 件）と、見るモードの主役・
+  // ほかの新着の材料を兼ねる 1 本。時間軸の窓とは独立（時間軸は下の 3 本）。
   const finishedQuery = useListRecordings({
     status: 'finished',
     limit: DROP_WARNING_SCAN_LIMIT,
   })
-  // 失敗録画（issue #301）。表示専用のセクションは持たず「警告」への追加項目
-  // としてのみ使うので、`finishedQuery` のような「表示 + 検出の兼用」は無い ---
-  // 取る範囲がそのまま警告に出す範囲になる。
+  // 失敗録画。取る範囲がそのまま「要対応」に出す範囲になる。
   const failedQuery = useListRecordings({
     status: 'failed',
     limit: FAILED_RECORDING_SCAN_LIMIT,
@@ -609,6 +557,9 @@ function HomeOpsTimeline({
 }) {
   const frameRef = useRef<HTMLDivElement>(null)
   const initialScrollLayoutRef = useRef<string | null>(null)
+  // 縮尺・ラベル幅の切替は window 幅だけで決める。frame の幅から決めると、切替が
+  // ラベル幅を変え、ラベル幅が frame の幅を変える帰還ループになる（実測: 単一 site
+  // で window 592–598px、複数 site で 660–676px で 2 つのモードを往復した）。
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
   const [frameViewport, setFrameViewport] = useState({ scrollLeft: 0, clientWidth: 0 })
   const hourPx = viewportWidth <= 480 ? HOME_TIMELINE_HOUR_PX_PHONE : HOME_TIMELINE_HOUR_PX_DESKTOP
@@ -618,17 +569,23 @@ function HomeOpsTimeline({
   const nowX = Math.max(0, Math.min(axisWidth, ((nowMs - startMs) / 3_600_000) * hourPx))
   const siteCount = new Set(rows.map((row) => row.site)).size
   const labelWidth = siteCount > 1 ? (viewportWidth <= 480 ? 112 : 132) : viewportWidth <= 480 ? 44 : 52
+  const rowTypes = [...new Set(rows.map((row) => homeTimelineChannelLabel(row.channelType)))]
   const tickHours = viewportWidth <= 480 ? 2 : 3
   const ticks: number[] = []
-  for (let elapsedHour = 0; elapsedHour <= durationMs / 3_600_000; elapsedHour += tickHours) {
+  for (let elapsedHour = 0; elapsedHour < durationMs / 3_600_000; elapsedHour += tickHours) {
     ticks.push(elapsedHour)
   }
+
+  useEffect(() => {
+    const onResize = () => setViewportWidth(window.innerWidth)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
 
   useLayoutEffect(() => {
     const frame = frameRef.current
     if (frame === null) return
     const resize = () => {
-      setViewportWidth(frame.clientWidth || window.innerWidth)
       setFrameViewport({ scrollLeft: frame.scrollLeft, clientWidth: frame.clientWidth })
     }
     resize()
@@ -663,26 +620,30 @@ function HomeOpsTimeline({
         {ticks.map((elapsedHour) => {
           const tickMs = startMs + elapsedHour * 3_600_000
           const tickX = elapsedHour * hourPx
-          const tickLabelHalfWidth = 20
+          // 見える範囲の境界で半端に切れるラベルは隠す: ラベル全体（中心 ± 20px。
+          // 始端の目盛りだけは中心から右へ 40px）が枠に収まるときだけ出す。
+          const labelStart = elapsedHour === 0 ? tickX : tickX - 20
+          const labelEnd = elapsedHour === 0 ? tickX + 40 : tickX + 20
           const visibleStart = frameViewport.scrollLeft
           const visibleEnd = visibleStart + frameViewport.clientWidth
-          const tickLabelIntersectsFrame = tickX + tickLabelHalfWidth > visibleStart &&
-            tickX - tickLabelHalfWidth < visibleEnd
-          const tickCenterIsVisible = frameViewport.clientWidth > 0 &&
-            tickX >= visibleStart && tickX <= visibleEnd
+          const tickLabelIntersectsFrame = labelEnd > visibleStart && labelStart < visibleEnd
+          const tickLabelFits = labelStart >= visibleStart && labelEnd <= visibleEnd
           return (
             <span
               key={elapsedHour}
-              className="absolute top-0 -translate-x-1/2 whitespace-nowrap text-[10px] leading-[14px] text-muted-foreground"
+              className={cn(
+                'absolute top-0 whitespace-nowrap text-[10px] leading-[14px] text-muted-foreground',
+                elapsedHour !== 0 && '-translate-x-1/2',
+              )}
               style={{
                 left: `${tickX}px`,
-                visibility: frameViewport.clientWidth > 0 && tickLabelIntersectsFrame && !tickCenterIsVisible
+                visibility: frameViewport.clientWidth > 0 && tickLabelIntersectsFrame && !tickLabelFits
                   ? 'hidden'
                   : undefined,
               }}
               data-testid="home-timeline-tick"
             >
-              {formatTime(new Date(tickMs).toISOString())}
+              {homeTimelineTickLabel(tickMs, startMs)}
             </span>
           )
         })}
@@ -787,8 +748,10 @@ function HomeOpsTimeline({
     <>
       <section aria-labelledby="home-ops-timeline-title" className="flex min-w-0 flex-col gap-2" data-testid="home-ops-timeline" data-hour-px={hourPx} data-viewport-width={viewportWidth}>
         <div className="flex items-baseline justify-between gap-2">
-          <h2 id="home-ops-timeline-title" className="text-sm font-semibold">時間軸</h2>
-          <span className="text-xs text-muted-foreground">種別ごと</span>
+          <h2 id="home-ops-timeline-title" className="text-sm font-semibold">今日 0 時 → 明日の終わり</h2>
+          <span className="text-xs text-muted-foreground">
+            {siteCount > 1 ? 'サイト × ' : ''}{rowTypes.join(' / ')} ごと
+          </span>
         </div>
         {isPending ? (
           <div role="status" aria-label="時間軸を読み込み中"><ListSkeleton rows={3} /></div>
@@ -816,7 +779,7 @@ function HomeOpsTimeline({
               </div>
               <div
                 ref={frameRef}
-                className="min-w-0 overflow-x-auto overflow-y-hidden pb-3"
+                className="min-w-0 overflow-x-auto overflow-y-hidden pb-3 [&::-webkit-scrollbar]:h-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-foreground/30"
                 data-testid="home-ops-timeline-frame"
                 role="region"
                 aria-label="時間軸。横にスクロールできます"
@@ -835,8 +798,8 @@ function HomeOpsTimeline({
               <TimelineLegend color="border border-foreground/40 bg-card">予約</TimelineLegend>
               <TimelineLegend color="border border-destructive bg-destructive/10">失敗</TimelineLegend>
               <TimelineLegend color="border-b-[3px] border-destructive bg-foreground/20">ドロップあり</TimelineLegend>
-              <TimelineLegend color="border border-dashed border-warning bg-warning/20">容量不足の区間</TimelineLegend>
-              <span>段は重なりの表示で、チューナーの番号ではありません</span>
+              <TimelineLegend color="border border-dashed border-warning bg-warning/20">チューナー不足の区間</TimelineLegend>
+              <span className="basis-full">段は重なりの表示で、チューナーの番号ではありません。枠の中を横にスクロールできます</span>
             </div>
           </div>
         )}
@@ -847,29 +810,46 @@ function HomeOpsTimeline({
             録画・予約の詳細
           </summary>
           <ul className="flex min-w-0 flex-col border-t border-border">
-            {events.map((event) => (
-              <li key={event.key} className="border-b border-border last:border-b-0">
-                {event.href.to === '/recordings/$id' ? (
-                  <Link
-                    to="/recordings/$id"
-                    params={{ id: String(event.href.id) }}
-                    className="flex min-h-6 items-center gap-2 px-3 py-1 hover:bg-muted/40"
+            {sortHomeTimelineEvents(events).map((event) => {
+              const body = (
+                <>
+                  <span className="w-20 shrink-0 text-xs tabular-nums text-muted-foreground">
+                    {homeTimelineDayLabel(event.startMs, nowMs)} {formatTime(new Date(event.startMs).toISOString())}
+                  </span>
+                  <span className="w-20 shrink-0 truncate text-xs text-muted-foreground sm:w-28">
+                    {siteCount > 1 ? `${event.site} · ` : ''}{homeTimelineChannelLabel(event.channelType)}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{programTitle(event.title)}</span>
+                  <span
+                    className={cn(
+                      'shrink-0 text-xs',
+                      event.kind === 'failed' ? 'text-destructive' : 'text-muted-foreground',
+                    )}
+                    data-testid="home-timeline-detail-kind"
                   >
-                    <span className="w-14 shrink-0 text-xs text-muted-foreground">{formatTime(new Date(event.startMs).toISOString())}</span>
-                    <span className="truncate">{programTitle(event.title)}</span>
-                  </Link>
-                ) : (
-                  <Link
-                    to="/reservations/$site/$programId"
-                    params={{ site: event.href.site, programId: String(event.href.programId) }}
-                    className="flex min-h-6 items-center gap-2 px-3 py-1 hover:bg-muted/40"
-                  >
-                    <span className="w-14 shrink-0 text-xs text-muted-foreground">{formatTime(new Date(event.startMs).toISOString())}</span>
-                    <span className="truncate">{programTitle(event.title)}</span>
-                  </Link>
-                )}
-              </li>
-            ))}
+                    {homeTimelineKindLabel(event.kind)}
+                  </span>
+                </>
+              )
+              const className = 'flex min-h-6 items-center gap-2 px-3 py-1 hover:bg-muted/40'
+              return (
+                <li key={event.key} className="border-b border-border last:border-b-0" data-testid="home-timeline-detail-row">
+                  {event.href.to === '/recordings/$id' ? (
+                    <Link to="/recordings/$id" params={{ id: String(event.href.id) }} className={className}>
+                      {body}
+                    </Link>
+                  ) : (
+                    <Link
+                      to="/reservations/$site/$programId"
+                      params={{ site: event.href.site, programId: String(event.href.programId) }}
+                      className={className}
+                    >
+                      {body}
+                    </Link>
+                  )}
+                </li>
+              )
+            })}
           </ul>
         </details>
       )}
@@ -1107,10 +1087,13 @@ function RecordingStrip({ recordings }: { recordings: readonly Recording[] }) {
   )
 }
 
-/** WarningKind はホーム「警告」セクションの項目の種別。表示色と、色を選ぶ判断の両方をこれ 1 つに一本化する。 */
+/** WarningKind は「要対応」の項目の種別。表示色と、色を選ぶ判断の両方をこれ 1 つに一本化する。 */
 type WarningKind = 'breaker' | 'overage' | 'drop' | 'failed'
 
-/** WarningItem はホーム「警告」セクションの 1 件（サーキットブレーカー / チューナー不足 / ドロップ / 失敗録画）。 */
+/**
+ * WarningItem は「要対応」の 1 件（サーキットブレーカー / 失敗録画 / チューナー不足 /
+ * ドロップ）。行は種別チップ + 太字のタイトル + 副行の形で描く。
+ */
 type WarningItem = {
   key: string
   /**
@@ -1120,30 +1103,24 @@ type WarningItem = {
    * 持たせる形に直した）。
    */
   kind: WarningKind
-  message: string
-  /** 超過区間に重なる予約名。予約取得が未解決/失敗なら省略する。 */
+  /** 種別チップの語（録画失敗 / チューナー不足 / ドロップ N など）。 */
+  chip: string
+  /** 太字のタイトル。 */
+  title: string
+  /** 副行。チューナー不足では、種別が詰まった区間に重なる予約名（予約取得が未解決/失敗なら省略）。 */
   detail?: string
   /** 遷移先。サーキットブレーカーは対応する専用画面が無い（`CircuitBreakerBanner` が同じページの上部で扱う）ので省略。 */
   link?: { to: '/programs'; search: { at: number } } | { to: '/recordings/$id'; id: number }
 }
 
 /**
- * buildWarnings はサーキットブレーカー・容量超過・ドロップ統計・失敗録画から
- * ホームの「警告」セクションの項目を組む（issue #242 着手宣言コメントの決定：
- * 新しい API を作らず、既存の取得結果だけを材料にする。失敗録画も既存の
- * `GET /api/recordings?status=failed` の絞り込みだけで足りる。issue #301）。
+ * buildWarnings はサーキットブレーカー・失敗録画・容量超過・ドロップ統計から
+ * 「要対応」の項目をこの順で組む。新しい API は作らず、既存の取得結果だけを材料にする。
  *
- * `dropCandidates` は `limit=DROP_WARNING_SCAN_LIMIT` で取った完了録画の全件で、
- * 「直近の完了」に**表示する分（先頭 `RECENT_FINISHED_LIMIT` 件）に切る前**の
- * リスト --- 表示件数を絞っても警告の検出範囲まで連動して狭まらないようにする
- * ため（呼び出し元の doc コメント参照）。`failedRecordings` は
- * `limit=FAILED_RECORDING_SCAN_LIMIT` で取った失敗録画のうち、呼び出し元で
- * さらに `FAILED_RECORDING_WARNING_WINDOW_MS` の recency 窓へ絞り込んだもの
- * （表示専用セクションを持たないので表示/検出の区別は無いが、警告としての
- * recency は要る）。
- *
- * 容量超過・失敗録画はいずれも呼び出し元で時間フィルタ済みなので、ここでは
- * 追加の時間フィルタはしない。
+ * `dropCandidates` は `limit=DROP_WARNING_SCAN_LIMIT` で取った完了録画の全件、
+ * `failedRecordings` は呼び出し元が `FAILED_RECORDING_WARNING_WINDOW_MS` の recency 窓へ
+ * 絞った失敗録画。どちらも時間軸の窓とは独立（窓の外の失敗・ドロップも出る）。
+ * 容量超過も呼び出し元で `endAt > now` に絞り済みなので、ここでは時間フィルタをしない。
  */
 function buildWarnings({
   breakers,
@@ -1166,7 +1143,9 @@ function buildWarnings({
     items.push({
       key: `breaker:${breaker.site}:${breaker.name}`,
       kind: 'breaker',
-      message: `${describeBreakerName(breaker.name)}が停止中（保留 ${breaker.pending} 件）`,
+      chip: '停止中',
+      title: describeBreakerName(breaker.name),
+      detail: `保留 ${breaker.pending} 件`,
     })
   }
 
@@ -1178,7 +1157,9 @@ function buildWarnings({
     items.push({
       key: `failed:${recording.id}`,
       kind: 'failed',
-      message: `${programTitle(recording.title)}: 録画失敗（${failedDurationText(recording)} / ${reasonSegment}）`,
+      chip: '録画失敗',
+      title: programTitle(recording.title),
+      detail: `${warningStartText(recording, nowMs)} · ${failedDurationText(recording)} / ${reasonSegment}`,
       link: { to: '/recordings/$id', id: recording.id },
     })
   }
@@ -1197,7 +1178,14 @@ function buildWarnings({
         : `${startsAt.getMonth() + 1}/${startsAt.getDate()} `
     const types = overage.jammedTypes.map(homeTimelineChannelLabel).join('・')
     const overlappingReservations = reservations?.filter((reservation) => {
-      if (reservation.skip || reservation.site !== overage.site) return false
+      // 詰まっていない種別（GR だけの超過に重なる BS の予約など）は不足と無関係。
+      if (
+        reservation.skip ||
+        reservation.site !== overage.site ||
+        !overage.jammedTypes.includes(reservation.channelType)
+      ) {
+        return false
+      }
       const reservationStart = new Date(reservation.startAt).getTime()
       const reservationEnd = reservationStart + reservation.durationMs
       return reservationStart < endMs && reservationEnd > startMs
@@ -1205,7 +1193,8 @@ function buildWarnings({
     items.push({
       key: `overage:${overage.site}:${overage.startAt}:${overage.endAt}`,
       kind: 'overage',
-      message: `${scope}${formatTime(overage.startAt)}–${formatTime(overage.endAt)} ${types}が ${overage.shortfall} 本不足しています`,
+      chip: 'チューナー不足',
+      title: `${scope}${formatTime(overage.startAt)}–${formatTime(overage.endAt)} ${types}が ${overage.shortfall} 本不足しています`,
       detail: overlappingReservations === undefined
         ? undefined
         : `この時間帯の予約: ${overlappingReservations.length > 0
@@ -1219,7 +1208,7 @@ function buildWarnings({
     const summary = recording.dropSummary
     if (summary === undefined) continue
     if (summary.drops === 0 && summary.errors === 0 && summary.scrambled === 0) continue
-    const parts = [
+    const chip = [
       { label: 'ドロップ', value: summary.drops },
       { label: 'エラー', value: summary.errors },
       { label: 'スクランブル', value: summary.scrambled },
@@ -1230,12 +1219,20 @@ function buildWarnings({
     items.push({
       key: `drop:${recording.id}`,
       kind: 'drop',
-      message: `${programTitle(recording.title)}: ${parts}`,
+      chip,
+      title: programTitle(recording.title),
+      detail: warningStartText(recording, nowMs),
       link: { to: '/recordings/$id', id: recording.id },
     })
   }
 
   return items
+}
+
+/** warningStartText は録画の警告の副行に載せる「今日 17:00 · Eテレ」。 */
+function warningStartText(recording: Recording, nowMs: number): string {
+  const startMs = new Date(recording.startAt).getTime()
+  return `${homeTimelineDayLabel(startMs, nowMs)} ${formatTime(recording.startAt)} · ${recording.serviceName}`
 }
 
 /**
@@ -1337,34 +1334,37 @@ function failureReasonText(recording: Recording): string | undefined {
 }
 
 /**
- * WarningRow は 1 件の警告。サーキットブレーカー・直近のドロップ・失敗録画は
+ * WarningRow は「要対応」の 1 件。種別チップ + 太字のタイトル + 副行。
+ * 色はチップだけが持つ: サーキットブレーカー・直近のドロップ・失敗録画は
  * 「取り返しがつかない/止まっている」意味の destructive、チューナー不足は容量
- * バッジ（`components/capacity-shortfall-badge.tsx`）と同じ warning（琥珀）に
- * 揃える（docs/frontend/design.md「色は信号のみ」。同じ事実は同じ色で言う）。
- *
- * **失敗録画（`kind: 'failed'`）は destructive 側。** design.md の表が
- * destructive を「取り返しがつかない・壊れた（失敗・ドロップ・…）」と定めており、
- * 録画が失われたことは後から取り返せない --- 琥珀（「これから足りない」の予告）
- * とは別の事実なので、色でも分ける（種別 × 色は `pages/home.test.tsx`
- * 「警告項目は種別ごとに固定の色クラスを持つ」と `e2e/design.mjs` ①'' が固定する）。
+ * バッジ（`components/capacity-shortfall-badge.tsx`）と同じ warning（琥珀）
+ * （docs/frontend/design.md「色は信号のみ」。同じ事実は同じ色で言う）。
+ * 種別 × 色は `pages/home.test.tsx`「警告項目は種別ごとに固定の色クラスを持つ」と
+ * `e2e/design.mjs` ①'' が固定する。
  */
 function WarningRow({ warning, divider }: { warning: WarningItem; divider: boolean }) {
-  const amber = warning.kind === 'overage'
   const content = (
-    <span className="grid min-w-0 grid-cols-[16px_minmax(0,1fr)] items-start gap-x-2 gap-y-1">
-      <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+    <span className="grid min-w-0 grid-cols-[6.5rem_minmax(0,1fr)] items-start gap-x-3">
+      <span
+        className={cn(
+          'w-fit max-w-full rounded-sm px-2 py-0.5 text-xs font-semibold tabular-nums',
+          warning.kind === 'overage'
+            ? 'bg-warning/15 text-warning'
+            : 'bg-destructive/10 text-destructive',
+        )}
+        data-testid="warning-chip"
+      >
+        {warning.chip}
+      </span>
       <span className="min-w-0">
-        <span className="block">{warning.message}</span>
+        <span className="block font-semibold" data-testid="warning-title">{warning.title}</span>
         {warning.detail !== undefined && (
-          <span className="mt-0.5 block text-xs opacity-80">{warning.detail}</span>
+          <span className="mt-0.5 block text-xs text-muted-foreground">{warning.detail}</span>
         )}
       </span>
     </span>
   )
-  const rowClassName = cn(
-    'flex min-h-10 items-center px-3 py-2 text-sm',
-    amber ? 'bg-warning/10 text-warning' : 'text-destructive',
-  )
+  const rowClassName = 'flex min-h-10 items-center px-3 py-2.5 text-sm text-foreground'
   const itemClassName = cn('min-w-0', divider && 'border-t border-border')
 
   if (warning.link === undefined) {
@@ -1373,11 +1373,11 @@ function WarningRow({ warning, divider }: { warning: WarningItem; divider: boole
 
   if (warning.link.to === '/programs') {
     return (
-        <li data-warning-kind={warning.kind} className={itemClassName}>
+      <li data-warning-kind={warning.kind} className={itemClassName}>
         <Link
           to="/programs"
           search={warning.link.search}
-          className={cn(rowClassName, 'hover:underline')}
+          className={cn(rowClassName, 'hover:bg-muted/40')}
         >
           {content}
         </Link>
@@ -1386,11 +1386,11 @@ function WarningRow({ warning, divider }: { warning: WarningItem; divider: boole
   }
 
   return (
-      <li data-warning-kind={warning.kind} className={itemClassName}>
+    <li data-warning-kind={warning.kind} className={itemClassName}>
       <Link
         to="/recordings/$id"
         params={{ id: String(warning.link.id) }}
-        className={cn(rowClassName, 'hover:underline')}
+        className={cn(rowClassName, 'hover:bg-muted/40')}
       >
         {content}
       </Link>

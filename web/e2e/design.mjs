@@ -968,7 +968,7 @@ async function computedVar(locator, varName) {
 /** 撮る画面。`wait` はその画面で描画完了と見なせる目印。 */
 const screens = [
   // ホームの全画面ショットは管理 mode を明示。既定「見る」は専用判定で `/` のまま確認する。
-  { name: 'home', path: '/?mode=ops', wait: 'text=時間軸' },
+  { name: 'home', path: '/?mode=ops', wait: 'text=明日の終わり' },
   { name: 'programs', path: '/programs', wait: 'li[data-program-id], [data-testid="program-grid-now-line"]' },
   { name: 'reservations', path: '/reservations', wait: 'text=チューナー不足' },
   { name: 'recordings', path: '/recordings', wait: 'text=録画中' },
@@ -1456,11 +1456,11 @@ async function waitForHomeTimelineLayout(page) {
       const content = timeline?.querySelector('[data-testid="home-ops-timeline-content"]')
       const marker = timeline?.querySelector('[data-testid="home-timeline-now"]')
       if (!frame || !content || !marker) return false
-      // #1021 の固定 fixture は今日 12:00 から翌々日 00:00 までの36時間。
+      // #1021 の固定 fixture は今日 0:00 から翌々日 0:00 までの 48 時間。
       // スマホは 30px/h、desktop は 64px/h。React Query 完了後に frame が現れ、
       // ResizeObserver と初期スクロールが反映された実寸まで待つ。
       const hourPx = window.innerWidth <= 480 ? 30 : 64
-      const expectedContentWidth = 36 * hourPx + 64
+      const expectedContentWidth = 48 * hourPx + 64
       const frameRect = frame.getBoundingClientRect()
       const markerRect = marker.getBoundingClientRect()
       return Math.abs(content.getBoundingClientRect().width - expectedContentWidth) < 1 &&
@@ -1514,7 +1514,7 @@ for (const theme of themes) {
         frameScrollWidth: frame?.scrollWidth ?? null,
         frameScrollLeft: frame?.scrollLeft ?? null,
         contentWidth: content?.getBoundingClientRect().width ?? null,
-        hourPx: content === null ? null : content.getBoundingClientRect().width <= 36 * 30 + 64 + 1 ? 30 : 64,
+        hourPx: content === null ? null : content.getBoundingClientRect().width <= 48 * 30 + 64 + 1 ? 30 : 64,
         tickRects: ticks.map((element) => ({ rect: rect(element), visibility: getComputedStyle(element).visibility })),
         rowLabelRects: rowLabels.map(rect),
         overageLabelRects: overageLabels.map(rect),
@@ -1531,7 +1531,7 @@ for (const theme of themes) {
       if (!(geometry.frameScrollWidth > geometry.frameClientWidth)) {
         ng.push(`[ops-timeline/${theme}/${viewport.width}px] 時間軸の枠内だけの横スクロールが無い`)
       }
-      const expectedContentWidth = 36 * (viewport.width <= 480 ? 30 : 64) + 64
+      const expectedContentWidth = 48 * (viewport.width <= 480 ? 30 : 64) + 64
       if (geometry.contentWidth === null || Math.abs(geometry.contentWidth - expectedContentWidth) >= 1) {
         ng.push(`[ops-timeline/${theme}/${viewport.width}px] 時間軸の縮尺が想定と違う (${geometry.contentWidth}px; expected ${expectedContentWidth}px)`)
       }
@@ -1572,6 +1572,12 @@ for (const theme of themes) {
       log(`  [ops-timeline/${theme}/${viewport.width}px] frame=${geometry.frameClientWidth}px content=${geometry.contentWidth}px (${geometry.hourPx}px/h) scrollLeft=${geometry.frameScrollLeft}px now=${(geometry.marker?.x ?? 0) - geometry.frame.x}px visibleTicks=${visibleTicks.length} hiddenEdgeTicks=${geometry.tickRects.filter((tick) => tick.visibility === 'hidden').length}`)
     }
 
+    {
+      const text = (await page.getByTestId('home-ops-timeline').innerText()).replaceAll(/\s+/g, ' ')
+      for (const expected of ['今日 0 時 → 明日の終わり', '地デジ / BS ごと', 'チューナー不足の区間', '枠の中を横にスクロールできます']) {
+        if (!text.includes(expected)) ng.push(`[ops-timeline/${theme}/${viewport.width}px] 時間軸に「${expected}」が無い`)
+      }
+    }
     const file = path.join(OUT_DIR, `home-ops-timeline-${theme}-${viewport.name}.png`)
     await page.screenshot({ path: file })
     log(`  ${path.basename(file)} (${viewport.width}x${viewport.height}, single-site)`)
@@ -1593,7 +1599,9 @@ for (const theme of themes) {
     ng.push(`ホーム: 要対応の順序が breaker→failed→overage→drop でない（${warningKinds.join(',')}）`)
   }
   const overageRow = page.locator('li[data-warning-kind="overage"]')
-  const overageText = (await overageRow.innerText()).replaceAll(/\s+/g, ' ')
+  // 要対応の行が無い実装（M8-25）でも TimeoutError で結果が消えないよう、取れなければ NG に積む。
+  const overageText = (await overageRow.innerText({ timeout: 3000 }).catch(() => null))?.replaceAll(/\s+/g, ' ') ?? ''
+  if (overageText === '') ng.push('ホーム: チューナー不足の要対応行が無い（時間軸 + 要対応の一覧になっていない）')
   if (!overageText.includes('この時間帯の予約: 大相撲中継')) {
     ng.push(`ホーム: overage の時間帯 subtitle が予約を示していない（${overageText}）`)
   }
@@ -1628,6 +1636,122 @@ for (const theme of themes) {
     log(`  ${path.basename(file)} (${viewport.width}x${viewport.height}, multi-site)`)
     await context.close()
   }
+}
+
+// 横スクロールバーが常に見える（macOS の自動非表示でも枠の中を横に動かせると分かる）。
+// Playwright の既定は --hide-scrollbars でバーの高さが常に 0 になるので、この判定だけ
+// そのフラグを外した専用のブラウザで測る。
+log('\n=== ホーム管理モード: 横スクロールバーの可視 ===')
+{
+  const sbBrowser = await launchBrowser('chromium', { ignoreDefaultArgs: ['--hide-scrollbars'] })
+  for (const viewport of [homeDesktop, mobile]) {
+    const context = await sbBrowser.newContext({
+      viewport: { width: viewport.width, height: viewport.height },
+      locale: 'ja-JP',
+      timezoneId: 'Asia/Tokyo',
+      colorScheme: 'light',
+    })
+    const page = await context.newPage()
+    await page.clock.setFixedTime(FIXED_NOW)
+    await installApiStubs(page, apiHandler({ homeModeFixture: true, homeOpsFixture: true }))
+    await page.goto(URL_BASE + '/?mode=ops', { waitUntil: 'domcontentloaded' })
+    await page.getByTestId('home-ops-timeline-frame').waitFor({ timeout: 5000 }).catch(() => {})
+    const height = await page.getByTestId('home-ops-timeline-frame').evaluate((el) => el.offsetHeight - el.clientHeight).catch(() => 0)
+    log(`  [ops-scrollbar/${viewport.width}px] バーの高さ ${height}px`)
+    if (height < 4) ng.push(`[ops-scrollbar/${viewport.width}px] 横スクロールバーが見えない（高さ ${height}px）`)
+    await context.close()
+  }
+  await sbBrowser.close()
+}
+
+// 窓幅を連続して変えたときに縮尺（30 / 64px/h）が往復しない。切替が時間軸の枠の幅
+// （= 切替で変わるラベル幅に依存）で決まっていた版は、単一 site で 592–598px、複数
+// site で 660–676px で 2 つのモードを往復した（レビュー実測）。
+log('\n=== ホーム管理モード: 窓幅での縮尺の安定 ===')
+for (const multiSite of [false, true]) {
+  const { context, page } = await open({ name: 'home-ops-resize', width: 700, height: 900 }, 'light', {
+    name: 'home-ops-resize',
+    path: '/?mode=ops',
+  }, { homeModeFixture: true, homeOpsFixture: true, multiSite })
+  await page.getByTestId('home-ops-timeline-frame').waitFor({ timeout: 5000 }).catch(() => {})
+  const widths = multiSite ? [656, 660, 664, 668, 672, 676, 680] : [588, 592, 594, 596, 598, 600, 604]
+  const seen = []
+  for (const width of widths) {
+    await page.setViewportSize({ width, height: 900 })
+    await page.waitForTimeout(150)
+    const samples = new Set()
+    for (let i = 0; i < 10; i += 1) {
+      samples.add(await page.evaluate(() => {
+        const section = document.querySelector('[data-testid="home-ops-timeline"]')
+        const content = document.querySelector('[data-testid="home-ops-timeline-content"]')
+        return `${section?.getAttribute('data-hour-px')}/${Math.round(content?.getBoundingClientRect().width ?? -1)}`
+      }))
+      await page.waitForTimeout(50)
+    }
+    seen.push(`${width}px=${[...samples].join('|')}`)
+    if (samples.size !== 1) {
+      ng.push(`[ops-resize/${multiSite ? 'multi' : 'single'}/${width}px] 縮尺が往復する（${[...samples].join(' ⇄ ')}）`)
+    }
+  }
+  log(`  [ops-resize/${multiSite ? 'multi' : 'single'}] ${seen.join(' ')}`)
+  await context.close()
+}
+
+// 時刻（午前を含む）とスクロール位置を変えても、見える範囲の境界で目盛りが半端に
+// 切れず、「いま」の線が窓の中の正しい位置（現在時刻 × 縮尺）にある。
+// 窓の始点が今日 12 時固定だと、午前では「いま」が窓の左端に張り付く。
+log('\n=== ホーム管理モード: 午前の「いま」と目盛りの切れ ===')
+for (const viewport of [homeDesktop, mobile]) {
+  const hourPx = viewport.width <= 480 ? 30 : 64
+  const { context, page } = await open(viewport, 'light', {
+    name: 'home-ops-ticks',
+    path: '/?mode=ops',
+  }, { homeModeFixture: true, homeOpsFixture: true })
+  for (const clock of ['09:00', '14:17', '20:42', '23:50']) {
+    const now = new Date(`2026-08-12T${clock}:00+09:00`)
+    await page.clock.setFixedTime(now)
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await page.getByTestId('home-ops-timeline-frame').waitFor({ timeout: 5000 }).catch(() => {})
+    await page.waitForFunction(
+      (expected) => Math.abs((document.querySelector('[data-testid="home-ops-timeline-content"]')?.getBoundingClientRect().width ?? 0) - expected) < 1,
+      48 * hourPx + 64,
+      { timeout: 5000 },
+    ).catch(() => ng.push(`[ops-ticks/${viewport.width}px/${clock}] 窓が 48 時間でない`))
+    const expectedNowX = (now.getHours() + now.getMinutes() / 60) * hourPx
+    const measured = await page.evaluate(() => {
+      const frame = document.querySelector('[data-testid="home-ops-timeline-frame"]')
+      const content = document.querySelector('[data-testid="home-ops-timeline-content"]')
+      const marker = document.querySelector('[data-testid="home-timeline-now"]')
+      if (!frame || !content || !marker) return null
+      return {
+        nowInContent: marker.getBoundingClientRect().x - content.getBoundingClientRect().x,
+        nowInFrame: marker.getBoundingClientRect().x - frame.getBoundingClientRect().x,
+      }
+    })
+    if (measured === null || Math.abs(measured.nowInContent - expectedNowX) > 1.5) {
+      ng.push(`[ops-ticks/${viewport.width}px/${clock}] 「いま」の線が現在時刻の位置にない（${JSON.stringify(measured)}、期待 ${expectedNowX}px）`)
+    }
+    for (const scrollLeft of [0, 37, 101, 333, 100000]) {
+      await page.evaluate((x) => {
+        document.querySelector('[data-testid="home-ops-timeline-frame"]').scrollLeft = x
+      }, scrollLeft)
+      await page.waitForTimeout(100)
+      const cut = await page.evaluate(() => {
+        const frame = document.querySelector('[data-testid="home-ops-timeline-frame"]').getBoundingClientRect()
+        return [...document.querySelectorAll('[data-testid="home-timeline-tick"]')]
+          .filter((tick) => getComputedStyle(tick).visibility !== 'hidden')
+          .map((tick) => ({ text: tick.textContent, rect: tick.getBoundingClientRect() }))
+          .filter(({ rect }) => rect.right > frame.x && rect.x < frame.right)
+          .filter(({ rect }) => rect.x < frame.x - 0.5 || rect.right > frame.right + 0.5)
+          .map(({ text }) => text)
+      })
+      if (cut.length > 0) {
+        ng.push(`[ops-ticks/${viewport.width}px/${clock}/scrollLeft=${scrollLeft}] 見える範囲の境界で目盛りが切れて見える（${cut.join(',')}）`)
+      }
+    }
+    log(`  [ops-ticks/${viewport.width}px/${clock}] now@content=${measured?.nowInContent?.toFixed(1)}px (期待 ${expectedNowX}px)`)
+  }
+  await context.close()
 }
 
 // 時計更新と recordings SSE による親画面の再描画後も、手動スクロールを奪わず
@@ -2460,7 +2584,7 @@ for (const spec of boundedListScreens) {
 log("\n=== ホーム管理モード: timeline / action list ===")
 {
   const { context, page } = await open(desktop, 'light', screenOf('home'), { homeModeFixture: true, homeOpsFixture: true })
-  for (const heading of ['時間軸', '要対応']) {
+  for (const heading of ['今日 0 時 → 明日の終わり', '要対応']) {
     const found = await page.getByRole('heading', { name: heading }).count()
     if (found === 0) {
       ng.push(`ホーム: 見出し「${heading}」が #1021 fixture で出ていない`)
@@ -2498,7 +2622,7 @@ log("\n=== ホーム管理モード: timeline / action list ===")
     .catch(() => {
       ng.push('ホーム: 全セクション空でも単一の空状態が出ない')
     })
-  for (const heading of ['時間軸', '要対応']) {
+  for (const heading of ['今日 0 時 → 明日の終わり', '要対応']) {
     if ((await page.getByRole('heading', { name: heading }).count()) > 0) {
       ng.push(`ホーム: 全領域空のはずが見出し「${heading}」が出ている`)
     }
@@ -2516,9 +2640,12 @@ log("\n=== ①'' ホーム: 警告の種別ごとの色（琥珀 vs destructive�
   })
   await page.getByRole('heading', { name: '要対応' }).waitFor({ timeout: 5000 }).catch(() => {})
 
-  // 容量超過 = 琥珀。色はリンク（`<a>`）に付く。
-  const overageRow = page.locator('li', { hasText: '地デジ・BSが 1 本不足しています' }).first()
-  const overageColor = await computedOf(overageRow.locator('a').first(), 'color')
+  // 種別チップだけが色を持つ。行の文字色は中立のまま。
+  const chipColor = (rowLocator) => computedOf(rowLocator.getByTestId('warning-chip'), 'color')
+
+  // 容量超過 = 琥珀。
+  const overageRow = page.locator('li[data-warning-kind="overage"]').first()
+  const overageColor = await chipColor(overageRow)
   if (overageColor === null) {
     ng.push('ホーム: 容量不足の警告項目の文字色が取得できない')
   } else if (!isAmber(overageColor.rgba)) {
@@ -2527,9 +2654,9 @@ log("\n=== ①'' ホーム: 警告の種別ごとの色（琥珀 vs destructive�
     )
   }
 
-  // サーキットブレーカー = destructive。リンクを持たないので色は <li> 自身に付く。
-  const breakerRow = page.locator('li', { hasText: 'ルール評価による予約の削除が停止中' }).first()
-  const breakerColor = await computedOf(breakerRow, 'color')
+  // サーキットブレーカー = destructive。
+  const breakerRow = page.locator('li[data-warning-kind="breaker"]').first()
+  const breakerColor = await chipColor(breakerRow)
   if (breakerColor === null) {
     ng.push('ホーム: ブレーカーの警告項目の文字色が取得できない')
   } else if (!isRed(breakerColor.rgba)) {
@@ -2538,19 +2665,18 @@ log("\n=== ①'' ホーム: 警告の種別ごとの色（琥珀 vs destructive�
     )
   }
 
-  // ドロップ = destructive。色はリンクに付く。
-  const dropRow = page.locator('li', { hasText: 'クラシック音楽館: ドロップ' }).first()
-  const dropColor = await computedOf(dropRow.locator('a').first(), 'color')
+  // ドロップ = destructive。
+  const dropRow = page.locator('li[data-warning-kind="drop"]').first()
+  const dropColor = await chipColor(dropRow)
   if (dropColor === null) {
     ng.push('ホーム: ドロップの警告項目の文字色が取得できない')
   } else if (!isRed(dropColor.rgba)) {
     ng.push(`ホーム: ドロップの警告項目が destructive でない（${dropColor.value} = ${dropColor.rgba}）`)
   }
 
-  // 失敗録画 = destructive（録画が失われたことは取り返しがつかない）。色はリンク
-  // に付く。フィクスチャの id 13「アニメ劇場」が `status: 'failed'`。
-  const failedRow = page.locator('li', { hasText: 'アニメ劇場: 録画失敗' }).first()
-  const failedColor = await computedOf(failedRow.locator('a').first(), 'color')
+  // 失敗録画 = destructive（録画が失われたことは取り返しがつかない）。
+  const failedRow = page.locator('li[data-warning-kind="failed"]').first()
+  const failedColor = await chipColor(failedRow)
   if (failedColor === null) {
     ng.push('ホーム: 失敗録画の警告項目の文字色が取得できない（行が出ていない可能性）')
   } else if (!isRed(failedColor.rgba)) {
