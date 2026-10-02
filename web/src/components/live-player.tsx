@@ -45,7 +45,6 @@ import {
   savePlaybackRate,
 } from '@/lib/playback-position'
 import { usePlayerFrame } from '@/lib/use-player-frame'
-import { formatPlaybackTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { SEEK_TILES_DISPLAY_WIDTH, seekTileAt } from '@/lib/seek-tiles'
 
@@ -220,7 +219,7 @@ type LivePlayerProps = {
    * 再生する。
    */
   startOffsetSeconds?: number
-  /** 追っかけバーから現在の session offset より前を要求したとき、親の offset state を更新する。 */
+  /** 追っかけのシーク先が今のセッションの外（開始 offset より前・変換済みの端より先）のとき、その秒を親の offset にする。 */
   onChaseOffsetChange?: (offsetSeconds: number) => void
   className?: string
   /**
@@ -431,7 +430,11 @@ export function LivePlayer({
     seconds: chaseHeadOffsetSeconds + chaseStartOffset + (hasExplicitChaseStart ? 0 : serverResumePosition ?? 0),
   })
   const [chasePreviewSeconds, setChasePreviewSeconds] = useState<number | null>(null)
+  const [chaseHoverSeconds, setChaseHoverSeconds] = useState<number | null>(null)
   const isChaseScrubbingRef = useRef(false)
+  // ドラッグ中に最後に見せた位置。離したときはこれを確定する（延長中は軸が毎秒伸びるので、
+  // 同じ座標を離した時点で計算し直すと見せた時刻と 1 秒ずれる。chase.mjs ⑤ で実測）。
+  const chaseScrubTargetRef = useRef<number | null>(null)
   const [originalTilePreview, setOriginalTilePreview] = useState<TilePreview>(null)
   const [originalTilesRequested, setOriginalTilesRequested] = useState(false)
   const [originalTilesAvailable, setOriginalTilesAvailable] = useState(false)
@@ -500,7 +503,6 @@ export function LivePlayer({
   // 0 を持ち越して既存の復元を潰し、保存位置が消える。jsdom の `readyState`
   // は動かないので、要素の状態ではなく自前で持つ。
   const chaseMetadataLoaded = useRef(false)
-  const explicitStartSeekPending = useRef(false)
   const watchedRequestPending = useRef(false)
   /**
    * 原本 VOD の playlist が ENDLIST まで書かれたか。変換中の EVENT playlist の
@@ -545,7 +547,6 @@ export function LivePlayer({
 
   useEffect(() => {
     restorePending.current = true
-    explicitStartSeekPending.current = hasExplicitChaseStart
     watchedRequestPending.current = false
   }, [
     mode,
@@ -674,24 +675,25 @@ export function LivePlayer({
     // 端数のどれも無ければ 0）。offset のセッションは変換中の EVENT playlist で、WebKit の
     // ネイティブ HLS は明示しないとライブ端の近くから始める（`recording-original-vod.mjs` ⑤-a。
     // 再表明を外すと WebKit で 1.5 秒後に 17.4 秒だった）。
-    const startAt = isOriginalVOD ? (resumePosition ?? pendingOffsetSeekRef.current ?? 0) : resumePosition
+    // 追っかけも開始位置を明示したセッション（offset 付き・明示 0 秒）は同じ経路で 0 を明示する。
+    const startAt = isOriginalVOD || hasExplicitChaseStart
+      ? (resumePosition ?? pendingOffsetSeekRef.current ?? 0)
+      : resumePosition
     chaseResumePending.current = startAt
     if (startAt !== null) {
       // 持ち越しは既存の復元より優先する。サーバーの再開位置が更新されて復元が
-      // 立ち直っていると、`onLoadedMetadata` が保存位置へ、offset 付きなら
-      // `onCanPlay` が 0 秒へ戻してしまう。
+      // 立ち直っていると、`onLoadedMetadata` が保存位置へ戻してしまう。
       restorePending.current = false
-      explicitStartSeekPending.current = false
     }
     // 同じ録画の中で張り直した（セッション外へのシーク・画質の切替・416 の丸め）ときは再生を
     // 引き継ぐ。`load()` は pause を発火しないので、引き継がないときは操作バーの状態を戻す。
     // 別の録画へ替わったときは勝手に再生を始めない。
     const resumePlaying =
       preserved?.playing === true &&
-      (!isRecordingPlayback || (isOriginalVOD && preserved.recordingId === recordingId))
+      (!isRecordingPlayback || preserved.recordingId === recordingId)
     resumePlaybackPendingRef.current = resumePlaying
     // oxlint-disable-next-line react/set-state-in-effect -- load() で止めた要素と操作バーの同期
-    if (isOriginalVOD && !resumePlaying) setMediaPlaying(false)
+    if (isRecordingPlayback && !resumePlaying) setMediaPlaying(false)
     // video / hls の外部再生状態と UI の loading/error 表示を同期する effect。
     // render 中に導出すると、再生開始・失敗イベントの境界を表現できない。
     // oxlint-disable-next-line react/set-state-in-effect -- 外部メディア状態との同期
@@ -722,11 +724,11 @@ export function LivePlayer({
     // 差し替えで位置が 0 に戻る**ので、`loadedmetadata` の時点で戻す。
     // **`canplay` でもう一度戻す** --- WebKit のネイティブ経路は EVENT
     // playlist を付けるとき、`loadedmetadata` で受け付けた位置を捨てて最新端を
-    // 選ぶことがある（`onCanPlay` の 0 秒への再表明と同じ理由）。**画質切替の
+    // 選ぶことがある（追っかけの明示 0 秒もこの経路で戻す）。**画質切替の
     // 経路でこの飛びが起きるかは未検証である** --- `chase.mjs` ⑦ の fixture は
     // 切替の時点で ENDLIST 済みなので、WebKit で再表明を外しても落ちなかった。
     // 既存の再表明と同じ防御として置いている。`loadedmetadata` と `canplay` の
-    // 間に利用者が動かした位置も、この再表明で戻る（0 秒への再表明と同じ）。
+    // 間に利用者が動かした位置も、この再表明で戻る。
     // iOS Safari は再生を始めるまで `canplay` を出さないことがあり、その間は
     // 保存が止まる（止まっている間は位置も動かない。未検証）。hls.js 経路は
     // `startPosition` で既に同じ位置にいるので、ずれていなければ触らない
@@ -973,7 +975,7 @@ export function LivePlayer({
           return
         }
         resumePlaybackPendingRef.current = false
-        if (isOriginalVOD) setMediaPlaying(false)
+        if (isRecordingPlayback) setMediaPlaying(false)
         setError(probe.error)
         setLoading(false)
         return
@@ -1019,12 +1021,14 @@ export function LivePlayer({
           // ⑤-d: 張り直した offset/31 を canplay で再開すると、2.5 秒後に 18.3 秒＝原本 49.2 秒。
           // seeked を待ってから play() しても同じだった）。その間に利用者がシークしたら触らない。
           // 利用者が自分で ▶ を押して始める経路は canplay の明示だけで 0 から始まった（同 ⑤-a）。
-          startReassertPending.current = isOriginalVOD
+          // 追っかけにも同じ再表明を掛けるが、追っかけで飛びが起きるかは未検証である（`chase.mjs` の
+          // offset playlist は ENDLIST 済みで、WebKit で再表明を外しても落ちなかった）。
+          startReassertPending.current = true
           void video.play().then(() => {
             if (startReassertPending.current) reassertStart()
             startReassertPending.current = false
           }, () => {
-            if (isOriginalVOD) setMediaPlaying(false)
+            if (isRecordingPlayback) setMediaPlaying(false)
           })
         }
         video.addEventListener('canplay', resume, { once: true })
@@ -1337,31 +1341,19 @@ export function LivePlayer({
     chasePositionState.recordingId === recordingId && chasePositionState.offset === chaseStartOffset
       ? chasePositionState.seconds
       : chaseHeadOffsetSeconds + chaseStartOffset + (hasExplicitChaseStart ? 0 : serverResumePosition ?? 0)
+  // ドラッグ中・キー操作中だけ位置のプレビューでつまみと時刻を動かす。マウスのホバーは吹き出しだけ。
   const visibleChaseSeconds = chasePreviewSeconds ?? chaseCurrentSeconds
   const chaseTimelineBar: ChaseTimeline | undefined = isChase
     ? {
         minSeconds: chaseTimelineMinSeconds,
         maxSeconds: chaseTimelineMaxSeconds,
+        headSeconds: chaseHeadOffsetSeconds,
         recordedEndSeconds: chaseRecordedEndSeconds,
         plannedEndSeconds: chasePlannedEndSeconds,
         liveEdgeSeconds: chaseLiveEdgeSeconds,
-        endLabel: chaseRecordedEndSeconds > chasePlannedEndSeconds
-          ? `予定 ${formatPlaybackTime(chasePlannedEndSeconds)} / 録画中 ${formatPlaybackTime(chaseRecordedEndSeconds)}`
-          : `${formatPlaybackTime(chasePlannedEndSeconds)} まで（予定）`,
-        ariaValueText: `${formatPlaybackTime(visibleChaseSeconds)} / 録画済み ${formatPlaybackTime(chaseRecordedEndSeconds)}`,
-        liveEdgeLabel: `録画の先端 ${formatPlaybackTime(chaseLiveEdgeSeconds)}（押すと先端へ）`,
+        hoverSeconds: chaseHoverSeconds,
       }
     : undefined
-  const chasePlayedFraction = chaseTimelineMaxSeconds > chaseTimelineMinSeconds
-    ? Math.max(
-        0,
-        Math.min(
-          1,
-          (chaseCurrentSeconds - chaseTimelineMinSeconds) /
-            (chaseTimelineMaxSeconds - chaseTimelineMinSeconds),
-        ),
-      )
-    : 0
   const updateOriginalPosition = (video: HTMLVideoElement) => {
     const seconds = sessionStartOffset + video.currentTime
     originalPreviousSecondsRef.current = seconds
@@ -1375,38 +1367,34 @@ export function LivePlayer({
     })
   }
   const chaseSeekTargetAtPointer = (event: ReactPointerEvent<HTMLDivElement>): number | null => {
-    const min = chaseTimelineBar?.minSeconds ?? 0
-    const max = chaseTimelineBar?.maxSeconds ?? 0
-    if (max <= min) return null
     const rect = event.currentTarget.getBoundingClientRect()
     if (rect.width <= 0) return null
     const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
-    return Math.round(min + fraction * (max - min))
+    return Math.round(chaseTimelineMinSeconds + fraction * (chaseTimelineMaxSeconds - chaseTimelineMinSeconds))
   }
   const handleChaseSeekPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const target = chaseSeekTargetAtPointer(event)
     if (target === null) return
-    if (isChaseScrubbingRef.current || event.pointerType === 'mouse') {
+    if (isChaseScrubbingRef.current) {
+      chaseScrubTargetRef.current = target
       setChasePreviewSeconds(target)
     }
+    if (isChaseScrubbingRef.current || event.pointerType === 'mouse') setChaseHoverSeconds(target)
   }
+  /**
+   * commitChaseSeek はシークバーの位置（番組開始からの秒）へ移る。録画の先端より後ろは先端で止め、
+   * 今のセッションの seekable の中ならセッション内をシークし、外（開始 offset より前・変換済みの
+   * 端より先）なら、その秒を offset にしてセッションを張り直す（古いセッションへの leave ヒントは
+   * offset が変わったときの effect の cleanup が送る）。
+   */
   const commitChaseSeek = (timelineSeconds: number) => {
     const video = videoRef.current
-    if (!video || !chaseTimelineBar) return
-    const targetRecordingSeconds = Math.round(timelineSeconds - chaseHeadOffsetSeconds)
-    const requested = Math.max(0, targetRecordingSeconds)
-    if (requested < chaseStartOffset) {
-      const nextOffset = Math.floor(requested)
-      setChasePreviewSeconds(null)
-      setChasePositionState({
-        recordingId,
-        offset: nextOffset,
-        seconds: chaseHeadOffsetSeconds + nextOffset,
-      })
-      onChaseOffsetChange?.(nextOffset)
-      return
-    }
-
+    setChasePreviewSeconds(null)
+    if (!video) return
+    startReassertPending.current = false
+    const target = Math.round(
+      Math.max(0, Math.min(chaseLiveEdgeSeconds, timelineSeconds) - chaseHeadOffsetSeconds),
+    )
     let seekableEnd = 0
     try {
       const ranges = video.seekable
@@ -1415,25 +1403,14 @@ export function LivePlayer({
     } catch {
       if (Number.isFinite(video.duration)) seekableEnd = video.duration
     }
-    if (timelineSeconds <= chaseLiveEdgeSeconds && requested > chaseStartOffset + seekableEnd) {
-      const nextOffset = Math.floor(requested)
-      setChasePreviewSeconds(null)
-      setChasePositionState({
-        recordingId,
-        offset: nextOffset,
-        seconds: chaseHeadOffsetSeconds + nextOffset,
-      })
-      onChaseOffsetChange?.(nextOffset)
+    const localTarget = target - chaseStartOffset
+    if (localTarget < 0 || localTarget > seekableEnd) {
+      setChasePositionState({ recordingId, offset: target, seconds: chaseHeadOffsetSeconds + target })
+      onChaseOffsetChange?.(target)
       return
     }
-    const localTarget = Math.max(0, Math.min(requested - chaseStartOffset, seekableEnd))
     video.currentTime = localTarget
-    setChasePositionState({
-      recordingId,
-      offset: chaseStartOffset,
-      seconds: chaseHeadOffsetSeconds + chaseStartOffset + localTarget,
-    })
-    setChasePreviewSeconds(null)
+    setChasePositionState({ recordingId, offset: chaseStartOffset, seconds: chaseHeadOffsetSeconds + target })
   }
   const handleChaseSeekPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     isChaseScrubbingRef.current = true
@@ -1442,23 +1419,27 @@ export function LivePlayer({
   }
   const handleChaseSeekPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!isChaseScrubbingRef.current) return
-    const target = chaseSeekTargetAtPointer(event)
+    const target = chaseScrubTargetRef.current ?? chaseSeekTargetAtPointer(event)
+    chaseScrubTargetRef.current = null
     isChaseScrubbingRef.current = false
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
       event.currentTarget.releasePointerCapture?.(event.pointerId)
     }
+    if (event.pointerType !== 'mouse') setChaseHoverSeconds(null)
     if (target !== null) commitChaseSeek(target)
     else setChasePreviewSeconds(null)
   }
   const handleChaseSeekPointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
     isChaseScrubbingRef.current = false
+    chaseScrubTargetRef.current = null
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
       event.currentTarget.releasePointerCapture?.(event.pointerId)
     }
     setChasePreviewSeconds(null)
+    setChaseHoverSeconds(null)
   }
   const handleChaseSeekPointerLeave = () => {
-    if (!isChaseScrubbingRef.current) setChasePreviewSeconds(null)
+    if (!isChaseScrubbingRef.current) setChaseHoverSeconds(null)
   }
   const originalSeekTargetAtPointer = (event: ReactPointerEvent<HTMLDivElement>): number | null => {
     if (originalDurationSeconds <= 0) return null
@@ -1568,31 +1549,12 @@ export function LivePlayer({
         (loading || error) && 'invisible',
       )}
       onLoadedMetadata={(event) => {
-        if (isOriginalVOD) {
-          updateOriginalPosition(event.currentTarget)
-          frame.onVolumeChange(event.currentTarget)
-        }
+        if (isOriginalVOD) updateOriginalPosition(event.currentTarget)
+        if (isRecordingPlayback) frame.onVolumeChange(event.currentTarget)
         if (!isRecordingPlayback || recordingId === undefined || !restorePending.current) return
         restorePending.current = false
-        if (isChase && hasExplicitChaseStart) {
-          // The streamer has already applied the recording-relative offset.
-          // Native HLS may otherwise choose the current EVENT edge, because
-          // hls.js's startPosition option is not involved on this path.
-          event.currentTarget.currentTime = 0
-          updateChasePosition(event.currentTarget)
-          return
-        }
         event.currentTarget.currentTime = serverResumePosition ?? 0
         if (isChase) updateChasePosition(event.currentTarget)
-      }}
-      onCanPlay={(event) => {
-        if (isChase && hasExplicitChaseStart && explicitStartSeekPending.current) {
-          explicitStartSeekPending.current = false
-          // Reassert once after metadata. WebKit can select the live edge while
-          // attaching an EVENT playlist even if loadedmetadata accepted 0.
-          event.currentTarget.currentTime = 0
-          updateChasePosition(event.currentTarget)
-        }
       }}
       onSeeked={(event) => {
         if (isRecordingPlayback) saveCurrentPosition(event.currentTarget)
@@ -1726,7 +1688,7 @@ export function LivePlayer({
         durationSeconds={isChase
           ? chaseTimelineMaxSeconds - chaseTimelineMinSeconds
           : originalDurationSeconds}
-        playedFraction={isChase ? chasePlayedFraction : originalPlayedFraction}
+        playedFraction={originalPlayedFraction}
         chapters={chapters ?? []}
         playingCut={false}
         tilePreview={originalTilePreview}

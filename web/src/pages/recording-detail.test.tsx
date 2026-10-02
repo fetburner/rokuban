@@ -1024,7 +1024,7 @@ describe('RecordingDetailPage', () => {
     expect(slider).toHaveAttribute('aria-valuemin', '0')
     expect(slider).toHaveAttribute('aria-valuemax', '7200')
     expect(slider).toHaveAttribute('aria-valuenow', '3480')
-    expect(slider.getAttribute('aria-valuetext')).toMatch(/^58:00 \/ 録画済み 1:00:0[0-1]$/)
+    expect(slider.getAttribute('aria-valuetext')).toMatch(/^58:00 \/ 録画済み 60:0[0-1]$/)
     expect(screen.queryByRole('button', { name: '最新' })).not.toBeInTheDocument()
     expect(screen.queryByRole('slider', { name: '追っかけ再生の位置' })).not.toBeInTheDocument()
     const region = screen.getByRole('region', { name: '追っかけ再生' })
@@ -2551,20 +2551,31 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
     renderAt('/recordings/3')
 
     await user.click(await screen.findByRole('button', { name: '追っかけ再生' }))
-    fireEvent.change(await screen.findByRole('slider', { name: '追っかけ再生の位置' }), { target: { value: '30' } })
-    expect(screen.getByRole('slider', { name: '追っかけ再生の位置' })).toHaveAttribute('aria-valuenow', '30')
+    const chasePaths = () =>
+      fetchMock.mock.calls
+        .map(([input]) => new URL(String(input), 'http://localhost').pathname)
+        .filter((path) => path.endsWith('/playlist.m3u8') && path.includes('/chase'))
+    // 前の回で、録画の先端（End キー）へ移って offset 付きのセッションを張り直しておく。
+    const originSlider = await screen.findByRole('slider', { name: 'シークバー' })
+    fireEvent.keyDown(originSlider, { key: 'End' })
+    fireEvent.keyUp(originSlider, { key: 'End' })
+    await waitFor(() => expect(chasePaths().some((path) => /\/recordings\/3\/chase\/offset\/\d+\//.test(path))).toBe(true))
 
     const shelf = screen.getByTestId('recording-series-shelf')
     await user.click(within(within(shelf).getByRole('list')).getAllByRole('link').find((link) => link.getAttribute('href') === '/recordings/4')!)
     expect(await screen.findByRole('heading', { name: '作品X 第4話' })).toBeInTheDocument()
     await user.click(await screen.findByRole('button', { name: '追っかけ再生' }))
-    const slider = await screen.findByRole('slider', { name: '追っかけ再生の位置' })
+    const slider = await screen.findByRole('slider', { name: 'シークバー' })
+    await waitFor(() => expect(chasePaths().filter((path) => path.includes('/recordings/4/'))).toHaveLength(1))
+    // 次の回は前の回の offset を引き継がず、録画の先頭のセッションから始める。
+    expect(chasePaths().filter((path) => path.includes('/recordings/4/'))).toEqual([
+      '/api/sites/default/recordings/4/chase/playlist.m3u8',
+    ])
     expect(slider).toHaveAttribute('aria-valuenow', '0')
     fireEvent.keyUp(slider, { key: 'ArrowRight' })
-    // 前の回の 30 秒を確定していれば、次の回の offset/30 のプレイリストを取りに行く。
+    // 前の回の位置を確定していれば、次の回の offset 付きプレイリストを取りに行く。
     await new Promise((resolve) => setTimeout(resolve, 50))
-    const paths = fetchMock.mock.calls.map(([input]) => new URL(String(input), 'http://localhost').pathname)
-    expect(paths.filter((path) => path.includes('/recordings/4/chase/offset/'))).toEqual([])
+    expect(chasePaths().filter((path) => path.includes('/recordings/4/chase/offset/'))).toEqual([])
   })
 
   it('棚のサムネイルに視聴の進み線を重ねる（視聴済みは全幅、途中は保存位置の割合、未視聴は出さない）', async () => {

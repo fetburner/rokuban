@@ -46,13 +46,16 @@ export function formatDateTimeSeconds(iso: string): string {
   return dateTimeSecondsFormatter.format(new Date(iso))
 }
 
-/** formatPlaybackTime は動画の経過秒を 1:23 または -0:30 の形式で返す。 */
-export function formatPlaybackTime(value: number): string {
+/**
+ * formatPlaybackTime は動画の経過秒を 1:23 / 1:02:03 / -0:30 の形式で返す。
+ * `withHours` が false なら 1 時間を超えても分で数える（62:03）。
+ */
+export function formatPlaybackTime(value: number, withHours = true): string {
   if (!Number.isFinite(value)) return '0:00'
-  const negative = value < 0
   const seconds = Math.floor(Math.abs(value))
-  const hours = Math.floor(seconds / 3600)
-  const minutes = Math.floor((seconds % 3600) / 60)
+  const negative = value < 0 && seconds > 0
+  const hours = withHours ? Math.floor(seconds / 3600) : 0
+  const minutes = Math.floor((seconds - hours * 3600) / 60)
   const remaining = seconds % 60
   const formatted = hours > 0
     ? `${hours}:${String(minutes).padStart(2, '0')}:${String(remaining).padStart(2, '0')}`

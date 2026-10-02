@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { LivePlayer } from '@/components/live-player'
@@ -2345,6 +2346,172 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
     rerender(<LivePlayer {...props} startOffsetSeconds={15} />)
     await waitFor(() => expect(playlistRequests(fetchMock)).toHaveLength(2))
     expect(playlistRequests(fetchMock)[1]).toContain('/chase/offset/15/playlist.m3u8')
+  })
+
+  const rect600 = () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 24, width: 600, height: 24, toJSON: () => ({}) })
+  const percent = (el: Element | null, prop: 'left' | 'width') =>
+    Number.parseFloat((el as HTMLElement | null)?.style[prop] ?? 'NaN')
+
+  it('マウスのホバーは吹き出しだけを出し、つまみ・再生済みの塗り・時刻・aria-valuenow は再生位置のまま', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    render(
+      <LivePlayer
+        mode="chase"
+        site="default"
+        recordingId={513}
+        chaseTimeline={{ programmeStartMs: 0, recordingStartedAtMs: 0, plannedSeconds: 3600, recordedSeconds: 1501 }}
+      />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const slider = screen.getByRole('slider', { name: 'シークバー' })
+    Object.defineProperty(slider, 'getBoundingClientRect', { value: rect600 })
+    const thumb = screen.getByTestId('seek-thumb')
+    const played = screen.getByTestId('chase-timeline-played')
+    expect(slider).toHaveAttribute('aria-valuenow', '0')
+    expect(screen.getByTestId('playback-time')).toHaveTextContent('0:00 / 録画済み 25:01')
+
+    // 37:00 は録画の先端（25:01）より先 = まだ録画されていない。
+    fireEvent.pointerMove(slider, { pointerId: 4, pointerType: 'mouse', clientX: 370, clientY: 12 })
+    expect(screen.getByTestId('chase-hover-label')).toHaveTextContent('37:00 · まだ録画されていません')
+    expect(slider).toHaveAttribute('aria-valuenow', '0')
+    expect(slider.getAttribute('aria-valuetext')).toBe('0:00 / 録画済み 25:01')
+    expect(percent(thumb, 'left')).toBe(0)
+    expect(percent(played, 'width')).toBe(0)
+    expect(screen.getByTestId('playback-time')).toHaveTextContent('0:00 / 録画済み 25:01')
+
+    // 録画済みの中なら時刻だけ。
+    fireEvent.pointerMove(slider, { pointerId: 4, pointerType: 'mouse', clientX: 120, clientY: 12 })
+    expect(screen.getByTestId('chase-hover-label').textContent).toBe('12:00')
+    expect(slider).toHaveAttribute('aria-valuenow', '0')
+
+    fireEvent.pointerLeave(slider, { pointerId: 4, pointerType: 'mouse' })
+    expect(screen.queryByTestId('chase-hover-label')).not.toBeInTheDocument()
+  })
+
+  it('番組開始より前から録っていれば、時刻・目盛り・aria は負の経過で出す', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    render(
+      <LivePlayer
+        mode="chase"
+        site="default"
+        recordingId={514}
+        chaseTimeline={{ programmeStartMs: 30_000, recordingStartedAtMs: 0, plannedSeconds: 3600, recordedSeconds: 1530 }}
+      />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const slider = screen.getByRole('slider', { name: 'シークバー' })
+    expect(slider).toHaveAttribute('aria-valuemin', '-30')
+    expect(slider).toHaveAttribute('aria-valuenow', '-30')
+    expect(slider.getAttribute('aria-valuetext')).toBe('-0:30 / 録画済み 25:00')
+    expect(screen.getByTestId('playback-time')).toHaveTextContent('-0:30 / 録画済み 25:00')
+    expect(screen.getByTestId('chase-timeline-labels').firstElementChild).toHaveTextContent('-0:30')
+  })
+
+  it('番組開始より遅れて録り始めた録画は、録画済みと再生済みの塗りを録画開始の位置から始める', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    render(
+      <LivePlayer
+        mode="chase"
+        site="default"
+        recordingId={515}
+        // 15 秒遅れて開始、録画済み 15 秒 → 先端は番組開始から 30 秒。軸は 0〜60 秒。
+        chaseTimeline={{ programmeStartMs: 0, recordingStartedAtMs: 15_000, plannedSeconds: 60, recordedSeconds: 15 }}
+      />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const recorded = screen.getByTestId('chase-timeline-recorded')
+    expect(percent(recorded, 'left')).toBe(25)
+    expect(percent(recorded, 'width')).toBe(25)
+    const played = screen.getByTestId('chase-timeline-played')
+    expect(percent(played, 'left')).toBe(25)
+    expect(screen.getByRole('slider', { name: 'シークバー' })).toHaveAttribute('aria-valuenow', '15')
+  })
+
+  it('再生中にセッション外へシークしたら、張り直したセッションで再生を続ける（原本 HLS と同じ）', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    function Harness() {
+      const [offset, setOffset] = useState<number | undefined>(undefined)
+      return (
+        <LivePlayer
+          mode="chase"
+          site="default"
+          recordingId={517}
+          chaseTimeline={chaseTimeline}
+          startOffsetSeconds={offset}
+          onChaseOffsetChange={setOffset}
+        />
+      )
+    }
+    render(<Harness />)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'paused', { value: false, writable: true, configurable: true })
+    Object.defineProperty(video, 'seekable', { value: { length: 1, start: () => 0, end: () => 4 }, configurable: true })
+    const play = vi.spyOn(video, 'play').mockResolvedValue()
+    fireEvent.canPlay(video)
+    fireEvent.play(video)
+    const slider = screen.getByRole('slider', { name: 'シークバー' })
+    Object.defineProperty(slider, 'getBoundingClientRect', { value: rect600 })
+    // 軸 60 秒の 15 秒（変換済みの端 4 秒より先、録画の先端 19 秒より手前）。
+    fireEvent.pointerDown(slider, { pointerId: 5, pointerType: 'mouse', clientX: 150 })
+    fireEvent.pointerUp(slider, { pointerId: 5, pointerType: 'mouse', clientX: 150 })
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+    expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/517/chase/offset/15/playlist.m3u8',
+    )
+    expect(screen.getAllByRole('button', { name: '一時停止' }).length).toBeGreaterThan(0)
+    expect(play).not.toHaveBeenCalled()
+    fireEvent.canPlay(video)
+    expect(play).toHaveBeenCalledOnce()
+  })
+
+  it('延長中に軸が伸びても、離したときはドラッグ中に見せた位置を確定する', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    const onChaseOffsetChange = vi.fn()
+    const props = { mode: 'chase' as const, site: 'default', recordingId: 518, onChaseOffsetChange }
+    const { rerender } = render(
+      <LivePlayer {...props} chaseTimeline={{ programmeStartMs: 0, recordingStartedAtMs: 0, plannedSeconds: 60, recordedSeconds: 120 }} />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const slider = screen.getByRole('slider', { name: 'シークバー' })
+    Object.defineProperty(slider, 'getBoundingClientRect', { value: rect600 })
+    fireEvent.pointerDown(slider, { pointerId: 6, pointerType: 'mouse', clientX: 300 })
+    fireEvent.pointerMove(slider, { pointerId: 6, pointerType: 'mouse', clientX: 300 })
+    expect(slider).toHaveAttribute('aria-valuenow', '60')
+    // 1 秒ごとに録画の先端が伸び、同じ座標の秒が変わる。
+    rerender(
+      <LivePlayer {...props} chaseTimeline={{ programmeStartMs: 0, recordingStartedAtMs: 0, plannedSeconds: 60, recordedSeconds: 122 }} />,
+    )
+    fireEvent.pointerUp(slider, { pointerId: 6, pointerType: 'mouse', clientX: 300 })
+    expect(onChaseOffsetChange).toHaveBeenCalledWith(60)
+  })
+
+  it('予定を超えて録画が続いたら、軸を先端まで広げ、予定終端と延長中の先端を分で出す', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    const props = {
+      mode: 'chase' as const,
+      site: 'default',
+      recordingId: 516,
+    }
+    const { rerender } = render(
+      <LivePlayer {...props} chaseTimeline={{ programmeStartMs: 0, recordingStartedAtMs: 0, plannedSeconds: 3600, recordedSeconds: 1501 }} />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    expect(screen.getByTestId('chase-live-edge-label')).toHaveTextContent('録画の先端 25:01（押すと先端へ）')
+    expect(screen.getByTestId('chase-timeline-end')).toHaveTextContent('60:00 まで（予定）')
+    expect(percent(screen.getByTestId('chase-timeline-planned-end'), 'left')).toBe(100)
+
+    rerender(
+      <LivePlayer {...props} chaseTimeline={{ programmeStartMs: 0, recordingStartedAtMs: 0, plannedSeconds: 3600, recordedSeconds: 4212 }} />,
+    )
+    const slider = screen.getByRole('slider', { name: 'シークバー' })
+    expect(slider).toHaveAttribute('aria-valuemax', '4212')
+    expect(screen.queryByTestId('chase-live-edge-label')).not.toBeInTheDocument()
+    expect(screen.getByTestId('chase-timeline-planned-label')).toHaveTextContent('予定 60:00 ¦')
+    expect(screen.getByTestId('chase-timeline-end')).toHaveTextContent('延長中 · 先端 70:12')
+    expect(screen.getByTestId('playback-time')).toHaveTextContent('0:00 / 録画済み 70:12')
+    expect(percent(screen.getByTestId('chase-timeline-planned-end'), 'left')).toBeCloseTo((3600 / 4212) * 100, 5)
+    expect(percent(screen.getByTestId('chase-timeline-recorded'), 'width')).toBe(100)
   })
 })
 

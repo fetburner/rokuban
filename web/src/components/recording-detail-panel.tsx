@@ -172,10 +172,6 @@ export function RecordingDetail({
     setChaseOffsetSeconds(undefined)
     setSelectedPlaybackProfile(undefined)
   }
-  // ref は描画中に書けないので、id が変わった直後の effect で戻す（キー操作が前の回の位置を使わないように）。
-  useEffect(() => {
-    selectedChaseOffsetRef.current = 0
-  }, [recording.id])
   const showChase = !trash && recording.status === 'recording' && liveEnabled && chasing
   const encodedAssets = recording.encodedAssets ?? []
   const hasOriginal = recording.sizeBytes !== undefined
@@ -455,7 +451,7 @@ export function RecordingDetail({
                   site={recording.site}
                   recordingId={recording.id}
                   resumePositionMs={startAtBeginning ? undefined : recording.resumePositionMs}
-                  startOffsetSeconds={startAtBeginning ? 0 : chaseOffsetSeconds}
+                  startOffsetSeconds={chaseOffsetSeconds ?? (startAtBeginning ? 0 : undefined)}
                   profile={explicitLiveProfile}
                   availableProfiles={liveProfiles}
                   onProfileChange={onSelectLiveProfile}
