@@ -7,7 +7,9 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 
+import type { ChapterSpan } from '@/api/generated'
 import { RecordingPlaybackControls, type TilePreview } from '@/components/recording-playback-controls'
+import { chapterJumpTarget, loadChapterSkip, saveChapterSkip, skipTarget } from '@/lib/chapters'
 import type {
   LiveAudioChoice,
   LiveDiagnostics,
@@ -169,6 +171,8 @@ type LivePlayerProps = {
    * original-vod の固定タイムラインと視聴済み閾値に使う。
    */
   recordingDurationMs?: number
+  /** 原本の時間軸で保存されたチャプター（目盛り・一覧・自動スキップ）。 */
+  chapters?: ChapterSpan[]
   /**
    * chase playlist / live playlist の画質（`live.profiles` の名前）。省略時は
    * streamer の先頭プロファイル（既定）。
@@ -289,6 +293,7 @@ export function LivePlayer({
   onDiagnostics,
   onStalled,
   recordingDurationMs,
+  chapters,
   availableProfiles,
   onProfileChange,
   onAudioChange,
@@ -389,6 +394,8 @@ export function LivePlayer({
   const [originalFullscreen, setOriginalFullscreen] = useState(false)
   const [originalControlsVisible, setOriginalControlsVisible] = useState(true)
   const [originalToolbarFocused, setOriginalToolbarFocused] = useState(false)
+  const [chapterSkipEnabled, setChapterSkipEnabled] = useState(loadChapterSkip)
+  const originalPreviousSecondsRef = useRef(0)
   const onWatchedRef = useRef(onWatched)
   useEffect(() => {
     onWatchedRef.current = onWatched
@@ -1226,7 +1233,9 @@ export function LivePlayer({
     ? Math.max(0, Math.min(1, originalCurrentSeconds / originalDurationSeconds))
     : 0
   const updateOriginalPosition = (video: HTMLVideoElement) => {
-    setOriginalCurrentSeconds(sessionStartOffset + video.currentTime)
+    const seconds = sessionStartOffset + video.currentTime
+    originalPreviousSecondsRef.current = seconds
+    setOriginalCurrentSeconds(seconds)
   }
   const originalSeekTargetAtPointer = (event: ReactPointerEvent<HTMLDivElement>): number | null => {
     if (originalDurationSeconds <= 0) return null
@@ -1262,6 +1271,7 @@ export function LivePlayer({
     const video = videoRef.current
     if (!video || originalDurationSeconds <= 0) return
     const target = Math.max(0, Math.min(originalDurationSeconds, seconds))
+    originalPreviousSecondsRef.current = target
     const localTarget = target - sessionStartOffset
     let seekableEnd = 0
     try {
@@ -1289,6 +1299,10 @@ export function LivePlayer({
       setRetryNonce((nonce) => nonce + 1)
     }
     setOriginalCurrentSeconds(target)
+  }
+  const jumpOriginalChapter = (direction: 'next' | 'prev') => {
+    const target = chapterJumpTarget(chapters ?? [], originalCurrentSeconds, direction)
+    if (target !== undefined) commitOriginalSeek(target)
   }
   const handleOriginalSeekPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     isOriginalScrubbingRef.current = true
@@ -1442,10 +1456,30 @@ export function LivePlayer({
         if (isRecordingPlayback) saveCurrentPosition(event.currentTarget)
         if (isOriginalVOD) updateOriginalPosition(event.currentTarget)
       }}
+      onSeeking={(event) => {
+        if (!isOriginalVOD) return
+        // seeking → timeupdate → seeked の順に来る環境では、保存位置からの再開が
+        // cut 区間の途中でも timeupdate が「0 秒から区間へ入った」と誤認しないよう
+        // seek 開始時に原本時間軸の直前位置を更新する。
+        originalPreviousSecondsRef.current = sessionStartOffset + event.currentTarget.currentTime
+      }}
       onTimeUpdate={(event) => {
         if (!isOriginalVOD || recordingId === undefined || chaseResumePending.current !== null) return
         const media = event.currentTarget
+        const previousSeconds = originalPreviousSecondsRef.current
         updateOriginalPosition(media)
+        if (chapterSkipEnabled && !isOriginalScrubbingRef.current && !media.paused) {
+          const target = skipTarget(
+            chapters ?? [],
+            previousSeconds,
+            sessionStartOffset + media.currentTime,
+            originalDurationSeconds,
+          )
+          if (target !== undefined) {
+            commitOriginalSeek(target)
+            return
+          }
+        }
         // EVENT duration is only the current conversion edge. Auto-watch is valid
         // only after ENDLIST (or ended on native HLS) finalized the VOD.
         const finalLength = originalDurationSeconds || (media.duration + sessionStartOffset)
@@ -1540,7 +1574,7 @@ export function LivePlayer({
         currentSeconds={visibleOriginalSeconds}
         durationSeconds={originalDurationSeconds}
         playedFraction={originalPlayedFraction}
-        chapters={[]}
+        chapters={chapters ?? []}
         playingCut={false}
         tilePreview={originalTilePreview}
         tilesRequested={originalTilesRequested}
@@ -1574,14 +1608,14 @@ export function LivePlayer({
           if (onProfileChange) onProfileChange(nextProfile)
           else setOriginalVODProfileOverrideState({ recordingId, value: nextProfile })
         }}
-        onPreviousChapter={() => {}}
-        onNextChapter={() => {}}
+        onPreviousChapter={() => jumpOriginalChapter('prev')}
+        onNextChapter={() => jumpOriginalChapter('next')}
         isPlaying={originalMediaPlaying}
         muted={originalMuted}
         volume={originalVolume}
         playbackRate={playbackRate}
         subtitlesEnabled={originalSubtitlesEnabled}
-        skipEnabled={false}
+        skipEnabled={chapterSkipEnabled}
         pictureInPicture={originalPictureInPicture}
         isFullscreen={originalFullscreen}
         showWatched
@@ -1623,13 +1657,24 @@ export function LivePlayer({
           if (media) applySubtitleVisibility(media, enabled)
           setOriginalSubtitlesEnabled(enabled)
         }}
-        onToggleSkip={() => {}}
+        onToggleSkip={(enabled) => {
+          setChapterSkipEnabled(enabled)
+          saveChapterSkip(enabled)
+        }}
         onTogglePictureInPicture={toggleOriginalPictureInPicture}
         onToggleFullscreen={requestOriginalFullscreen}
         controlsVisible={originalControlsVisible || !originalMediaPlaying || originalToolbarFocused}
         onControlsActivity={handleOriginalControlsActivity}
         onHideControls={() => {
           window.clearTimeout(controlsTimerRef.current)
+          const activeElement = document.activeElement
+          const controls = fullscreenRef.current?.querySelector('[data-testid="player-controls"]')
+          const settings = fullscreenRef.current?.querySelector('[data-testid="playback-settings"]')
+          if (
+            activeElement instanceof HTMLElement &&
+            (controls?.contains(activeElement) || settings?.contains(activeElement))
+          ) activeElement.blur()
+          setOriginalToolbarFocused(false)
           setOriginalControlsVisible(false)
         }}
         onToolbarFocus={handleOriginalToolbarFocus}

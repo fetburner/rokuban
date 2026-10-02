@@ -997,6 +997,26 @@ function PlaybackSettingsMenu({
     </button>
   )
   const icon = 'size-5 shrink-0'
+  const qualityRow = showQuality && submenuRow(
+    'quality',
+    <SlidersHorizontal className={icon} aria-hidden />,
+    '画質',
+    selectedProfileLabel,
+  )
+  const audioRow = playbackMode === 'original-vod' && submenuRow(
+    'audio',
+    <Volume2 className={icon} aria-hidden />,
+    '音声',
+    selectedAudioLabel,
+  )
+  const speedRow = submenuRow('speed', <Gauge className={icon} aria-hidden />, '再生速度', rateLabel(playbackRate))
+  const subtitlesRow = switchRow(<Captions className={icon} aria-hidden />, '字幕', subtitlesEnabled, onToggleSubtitles)
+  const skipRow = showSkip && switchRow(
+    <Activity className={icon} aria-hidden />,
+    'CM を飛ばす',
+    skipEnabled,
+    () => onToggleSkip(!skipEnabled),
+  )
 
   return (
     <>
@@ -1020,22 +1040,27 @@ function PlaybackSettingsMenu({
         <div aria-hidden className="mx-auto mt-1 mb-2 h-1 w-9 rounded-full bg-border md:hidden" />
         {view === 'main' && (
           <>
-            {/* スマホのシートは画質を一番上に置く（ラフ）。並びだけを CSS で逆にする。 */}
-            <div role="none" className="flex flex-col-reverse md:flex-col">
-              {showSkip && switchRow(<Activity className={icon} aria-hidden />, 'CM を飛ばす', skipEnabled, () => onToggleSkip(!skipEnabled))}
-              {switchRow(<Captions className={icon} aria-hidden />, '字幕', subtitlesEnabled, onToggleSubtitles)}
-              {submenuRow('speed', <Gauge className={icon} aria-hidden />, '再生速度', rateLabel(playbackRate))}
-              {showQuality && submenuRow(
-                'quality',
-                <SlidersHorizontal className={icon} aria-hidden />,
-                '画質',
-                selectedProfileLabel,
-              )}
-              {playbackMode === 'original-vod' && submenuRow(
-                'audio',
-                <Volume2 className={icon} aria-hidden />,
-                '音声',
-                selectedAudioLabel,
+            {/* 原本 HLS は画質・音声を先頭に置き、desktop と phone の rough を揃える。
+                encoded は #1013 の既存順を保ち、phone だけ CSS で反転する。 */}
+            <div
+              role="none"
+              className={playbackMode === 'original-vod' ? 'flex flex-col' : 'flex flex-col-reverse md:flex-col'}
+            >
+              {playbackMode === 'original-vod' ? (
+                <>
+                  {qualityRow}
+                  {audioRow}
+                  {speedRow}
+                  {subtitlesRow}
+                  {skipRow}
+                </>
+              ) : (
+                <>
+                  {skipRow}
+                  {subtitlesRow}
+                  {speedRow}
+                  {qualityRow}
+                </>
               )}
             </div>
             {pictureInPictureEnabled && (

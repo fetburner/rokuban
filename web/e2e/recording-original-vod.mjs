@@ -240,10 +240,20 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
   if (requestPath === '/api/breakers') return json([])
   if (requestPath === '/api/events') return sseKeepAlive(route)
   if (requestPath === '/api/rules' || requestPath === '/api/encode-profiles') return json([])
-  if (requestPath === '/api/live-profiles') return json([{ name: 'h264', height: 360 }])
+  if (requestPath === '/api/live-profiles') {
+    return json([{ name: 'hd', height: 720 }, { name: 'sd', height: 480 }])
+  }
   if (requestPath === '/api/encode-queue') return json({ queued: 0, running: 0 })
   if (requestPath === '/api/recordings' && method === 'GET') return json([recording])
   if (requestPath === `/api/recordings/${RECORDING_ID}` && method === 'GET') return json(recording)
+  if (requestPath === `/api/recordings/${RECORDING_ID}/chapters`) {
+    return json({
+      version: 'chapters-v1',
+      detectionPending: false,
+      source: 'auto',
+      spans: [{ startMs: 10_000, endMs: 15_000, label: 'CM', cut: true }],
+    })
+  }
   if (requestPath === `/api/recordings/${RECORDING_ID}/playback-position` && method === 'PUT') {
     const body = route.request().postDataJSON()
     recording.resumePositionMs = body.positionMs
@@ -349,6 +359,10 @@ if (encodedRequests.length !== 0) ng.push(`① original-only なのに encoded M
 if (!playlistRequests.some((name) => name === 'playlist.m3u8')) {
   ng.push(`① 原本 VOD の master playlist が要求されない (${playlistRequests.join(', ') || 'none'})`)
 }
+await page.getByTestId('chapter-marker').waitFor({ timeout: 5000 }).catch(() => {})
+if (await page.getByTestId('chapter-marker').count() !== 1) {
+  ng.push('① 原本 VOD のチャプター目盛りが出ない')
+}
 if (!readFileSync(path.join(fixtureDir, 'playlist_0.m3u8'), 'utf8').includes('#EXT-X-ENDLIST')) {
   ng.push('① variant に #EXT-X-ENDLIST がない')
 }
@@ -366,21 +380,42 @@ if (process.env.E2E_SHOT_DIR) {
   await page.screenshot({ path: path.join(process.env.E2E_SHOT_DIR, 'v3-original-vod.png') })
 }
 
+const screenshotDir = process.env.E2E_SCREENSHOT_DIR
+if (screenshotDir) mkdirSync(screenshotDir, { recursive: true })
+
 const audioSettingsButton = page.getByRole('button', { name: '再生設定' })
 await audioSettingsButton.click()
-const screenshotDir = process.env.E2E_SCREENSHOT_DIR
-if (screenshotDir) {
-  mkdirSync(screenshotDir, { recursive: true })
-  await page.screenshot({ path: path.join(screenshotDir, 'desktop.png'), fullPage: true, animations: 'disabled' })
-  await page.setViewportSize({ width: 400, height: 800 })
-  await page.screenshot({ path: path.join(screenshotDir, 'mobile.png'), fullPage: true, animations: 'disabled' })
-  await page.setViewportSize({ width: 1280, height: 900 })
-}
 const settingsMenu = page.getByRole('menu', { name: '再生設定' })
+const settingsOrder = async () => settingsMenu.locator('[role^="menuitem"]').evaluateAll((items) =>
+  items
+    .map((item) => ({ label: item.getAttribute('aria-label'), top: item.getBoundingClientRect().top }))
+    .filter((item) => item.label !== null)
+    .sort((a, b) => a.top - b.top)
+    .map((item) => item.label),
+)
+const expectedSettingsOrder = ['画質', '音声', '再生速度', '字幕', 'CM を飛ばす']
+if ((await settingsOrder()).slice(0, expectedSettingsOrder.length).join('|') !== expectedSettingsOrder.join('|')) {
+  ng.push(`① desktop 設定順が rough と異なる (${(await settingsOrder()).join(', ')})`)
+}
+if (screenshotDir) {
+  await page.screenshot({ path: path.join(screenshotDir, 'desktop-settings.png'), fullPage: true, animations: 'disabled' })
+}
+await page.setViewportSize({ width: 400, height: 800 })
+if ((await settingsOrder()).slice(0, expectedSettingsOrder.length).join('|') !== expectedSettingsOrder.join('|')) {
+  ng.push(`① phone 設定順が rough と異なる (${(await settingsOrder()).join(', ')})`)
+}
+if (screenshotDir) {
+  await page.screenshot({ path: path.join(screenshotDir, 'mobile-settings.png'), fullPage: true, animations: 'disabled' })
+}
+await page.setViewportSize({ width: 1280, height: 900 })
 const audioSettingsRow = settingsMenu.getByRole('menuitem', { name: '音声' })
 if (await audioSettingsRow.count() !== 1) {
   ng.push('① 音声の設定項目がメニューにない')
 } else {
+  const skipRow = settingsMenu.getByRole('menuitemcheckbox', { name: 'CM を飛ばす' })
+  if (await skipRow.count() !== 1 || await skipRow.getAttribute('aria-checked') !== 'true') {
+    ng.push('① チャプターがあるのに CM 自動スキップが設定にない')
+  }
   const masterCountBeforeAudioChange = masterPlaylistRequests.length
   const leaveCountBeforeAudioChange = originalVODLeaveRequests.length
   await audioSettingsRow.click()
@@ -388,6 +423,12 @@ if (await audioSettingsRow.count() !== 1) {
   const audioLabels = (await audioMenu.getByRole('menuitemradio').allTextContents()).map((label) => label.trim())
   if (audioLabels.length !== 3 || audioLabels[0] !== '標準' || audioLabels[1] !== '主音声' || audioLabels[2] !== '副音声') {
     ng.push(`① 音声の選択肢が不正 (${audioLabels.join(', ')})`)
+  }
+  if (screenshotDir) {
+    await page.screenshot({ path: path.join(screenshotDir, 'desktop-audio.png'), fullPage: true, animations: 'disabled' })
+    await page.setViewportSize({ width: 400, height: 800 })
+    await page.screenshot({ path: path.join(screenshotDir, 'mobile-audio.png'), fullPage: true, animations: 'disabled' })
+    await page.setViewportSize({ width: 1280, height: 900 })
   }
   await audioMenu.getByRole('menuitemradio', { name: '主音声' }).click()
   await page.waitForTimeout(500)
@@ -427,6 +468,35 @@ if (!cueResult.trackFound || cueResult.cueCount === 0) {
   ng.push(`② WebVTT 字幕の cue を読み込めない (${JSON.stringify(cueResult)})`)
 }
 
+// 同じ原本 TS から作った 10 秒タイルと HLS 映像を同じ既知時刻で並べて確認する。
+await video.evaluate((element) => {
+  element.pause()
+  element.currentTime = 10.2
+})
+await page.waitForFunction(() => {
+  const element = document.querySelector('video')
+  return element !== null && Math.abs(element.currentTime - 10.2) < 0.3
+}, undefined, { timeout: 10000 }).catch(() => ng.push('② 既知位置 10.2 秒へ seek できない'))
+const alignmentSeekbar = await seekbars.boundingBox()
+if (!alignmentSeekbar) {
+  ng.push('② タイル位置比較のシークバーを取得できない')
+} else {
+  await page.mouse.move(
+    alignmentSeekbar.x + alignmentSeekbar.width * (10.2 / (recordingDurationMs / 1000)),
+    alignmentSeekbar.y + alignmentSeekbar.height / 2,
+  )
+  await page.getByTestId('seek-tile-preview').waitFor({ timeout: 1500 })
+    .catch(() => ng.push('② 既知位置 10.2 秒でタイルプレビューが出ない'))
+  const previewLabel = await page.getByTestId('seek-tile-label').textContent().catch(() => null)
+  if (!previewLabel?.trim().startsWith('0:10')) {
+    ng.push(`② 10.2 秒に 10 秒タイルが対応しない (${previewLabel})`)
+  }
+  if (screenshotDir) {
+    await page.screenshot({ path: path.join(screenshotDir, 'tile-alignment-10s.png'), fullPage: true, animations: 'disabled' })
+  }
+}
+
+let positionWritesBeforeInRangeSeek = playbackPositionWrites.length
 const inRangeSeekbarBox = await seekbars.boundingBox()
 if (!inRangeSeekbarBox) {
   ng.push('② 範囲内 seek の操作バーを取得できない')
@@ -435,6 +505,7 @@ if (!inRangeSeekbarBox) {
   const playlistCountBeforeInRangeSeek = playlistRequests.length
   const masterCountBeforeInRangeSeek = masterPlaylistRequests.length
   const leaveCountBeforeInRangeSeek = originalVODLeaveRequests.length
+  positionWritesBeforeInRangeSeek = playbackPositionWrites.length
   const inRangeFraction = 7.25 / (recordingDurationMs / 1000)
   await page.mouse.click(
     inRangeSeekbarBox.x + inRangeSeekbarBox.width * inRangeFraction,
@@ -453,7 +524,7 @@ if (!inRangeSeekbarBox) {
 }
 await video.evaluate((element) => element.pause())
 const positionWriteDeadline = Date.now() + 5000
-while (playbackPositionWrites.length === 0 && Date.now() < positionWriteDeadline) {
+while (playbackPositionWrites.length <= positionWritesBeforeInRangeSeek && Date.now() < positionWriteDeadline) {
   await page.waitForTimeout(50)
 }
 const savedPositionMs = recording.resumePositionMs

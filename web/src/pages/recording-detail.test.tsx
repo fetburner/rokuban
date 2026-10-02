@@ -577,15 +577,25 @@ describe('RecordingDetailPage', () => {
       { encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }], sizeBytes: 1_000_000 },
       barToggle,
     ],
-    ['原本のみ（プレイヤー外）', { sizeBytes: 1_000_000 }, outsideButton],
+    ['原本のみ（HLS プレイヤー内）', { sizeBytes: 1_000_000 }, barToggle],
+    ['原本のみ（HLS 再生不可ならプレイヤー外）', { sizeBytes: 1_000_000 }, outsideButton],
     ['資産なし（プレイヤー外）', {}, outsideButton],
   ] as [string, Partial<Recording>, (watched: boolean) => { name: string; pressed?: boolean }][])(
     '視聴済みボタン: %s',
     (_name, overrides, button) => {
       it('押すと PUT、もう一度押すと DELETE が飛ぶ', async () => {
-        const { fetchMock } = createFakeServer({ recording: sampleRecording({ ...overrides }) })
+        const { fetchMock } = createFakeServer({
+          recording: sampleRecording({ ...overrides }),
+          liveProfiles: _name === '原本のみ（HLS プレイヤー内）' ? [{ name: 'hd', height: 720 }] : [],
+        })
         const user = userEvent.setup()
         renderAt('/recordings/3')
+
+        if (_name === '原本のみ（HLS プレイヤー内）') {
+          await screen.findByRole('region', { name: '原本 TS をブラウザ再生' })
+          await screen.findByRole('button', { name: '再生設定' })
+          expect(screen.queryByRole('button', { name: '視聴済みにする' })).not.toBeInTheDocument()
+        }
 
         await user.click(await screen.findByRole('button', button(false)))
         await waitFor(() =>
@@ -2106,12 +2116,20 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
         encodedAssets: [],
       }),
       liveProfiles: LIVE_PROFILES,
+      chapters: {
+        version: 'chapters-v1',
+        detectionPending: false,
+        source: 'auto',
+        spans: [{ startMs: 10_000, endMs: 15_000, label: 'CM', cut: true }],
+      },
     })
 
     renderAt('/recordings/3')
 
     expect(await screen.findByRole('region', { name: '原本 TS をブラウザ再生' })).toBeInTheDocument()
+    expect(await screen.findByTestId('chapter-marker')).toBeInTheDocument()
     await user.click(await screen.findByRole('button', { name: '再生設定' }))
+    expect(screen.getByRole('menuitemcheckbox', { name: 'CM を飛ばす' })).toHaveAttribute('aria-checked', 'true')
     const settings = await screen.findByRole('menu', { name: '再生設定' })
     await user.click(within(settings).getByRole('menuitem', { name: '画質' }))
     expect(

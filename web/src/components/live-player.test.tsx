@@ -2278,6 +2278,25 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     expect(document.querySelector('video')!.controls).toBe(true)
   })
 
+  it('原本 VOD はフォーカス中でもタッチで操作幕を閉じる', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    render(<LivePlayer mode="original-vod" site="default" recordingId={418} recordingDurationMs={30_000} />)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+
+    const video = document.querySelector('video')!
+    fireEvent.play(video)
+    const settings = screen.getByRole('button', { name: '再生設定' })
+    settings.focus()
+    expect(screen.getByTestId('player-controls')).toHaveAttribute('aria-hidden', 'false')
+
+    const scrim = screen.getByTestId('player-controls')
+    fireEvent.pointerDown(scrim, { pointerType: 'touch' })
+    fireEvent.click(scrim)
+
+    expect(scrim).toHaveAttribute('aria-hidden', 'true')
+    expect(document.activeElement).not.toBe(settings)
+  })
+
   it('原本の画質メニューは profile が 1 件なら表示しない', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
     render(
@@ -2294,6 +2313,68 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     const settings = screen.getByRole('menu', { name: '再生設定' })
     expect(within(settings).queryByRole('menuitem', { name: '画質' })).not.toBeInTheDocument()
     expect(within(settings).getByRole('menuitem', { name: '音声' })).toHaveAccessibleDescription('標準')
+  })
+
+  it('原本 HLS はチャプターを描き、再生中に cut 区間を自動で飛ばす', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    const chapters = [{ startMs: 6_000, endMs: 8_000, label: 'CM', cut: true }]
+    render(
+      <LivePlayer
+        mode="original-vod"
+        site="default"
+        recordingId={417}
+        recordingDurationMs={30_000}
+        chapters={chapters}
+      />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'paused', { value: false, writable: true, configurable: true })
+    Object.defineProperty(video, 'duration', { value: 30, writable: true, configurable: true })
+    Object.defineProperty(video, 'seekable', {
+      value: { length: 1, start: () => 0, end: () => 30 },
+      configurable: true,
+    })
+    fireEvent.loadedMetadata(video)
+    expect(screen.getByTestId('chapter-marker')).toHaveAttribute('data-cut', 'true')
+
+    video.currentTime = 5
+    fireEvent.timeUpdate(video)
+    video.currentTime = 6.5
+    fireEvent.timeUpdate(video)
+    expect(video.currentTime).toBe(8)
+
+    fireEvent.click(screen.getByRole('button', { name: '再生設定' }))
+    const skip = screen.getByRole('menuitemcheckbox', { name: 'CM を飛ばす' })
+    expect(skip).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(skip)
+    expect(skip).toHaveAttribute('aria-checked', 'false')
+    expect(localStorage.getItem('rokuban:chapter-skip')).toBe('off')
+  })
+
+  it('保存位置から cut 区間内へ再開したときは自動スキップしない', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    const chapters = [{ startMs: 6_000, endMs: 8_000, label: 'CM', cut: true }]
+    render(
+      <LivePlayer
+        mode="original-vod"
+        site="default"
+        recordingId={419}
+        resumePositionMs={6_500}
+        recordingDurationMs={30_000}
+        chapters={chapters}
+      />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'paused', { value: false, writable: true, configurable: true })
+    Object.defineProperty(video, 'duration', { value: 30, writable: true, configurable: true })
+    Object.defineProperty(video, 'currentTime', { value: 6.5, writable: true, configurable: true })
+    fireEvent.canPlay(video)
+    fireEvent.seeking(video)
+    fireEvent.timeUpdate(video)
+    expect(video.currentTime).toBe(6.5)
   })
 
   it('シークはキーを離すまで確定せず、セッション範囲内なら playlist を取り直さない', async () => {
