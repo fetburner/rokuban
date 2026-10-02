@@ -332,7 +332,6 @@ export function RecordingDetail({
     (recording.encodeProfiles ?? []).length === 0
   const encodeProfilesQuery = useListEncodeProfiles({ query: { enabled: showAddEncodePrompt } })
   const configuredEncodeProfiles = unwrap(encodeProfilesQuery.data) ?? []
-  const assetsRef = useRef<HTMLElement | null>(null)
   const rawCMRanges = recording.cmDetection.state === 'detected' ? recording.cmDetection.ranges ?? [] : []
   const showCMDetectorResults =
     recording.cmDetection.state === 'detected' &&
@@ -790,28 +789,10 @@ export function RecordingDetail({
                   </div>
                 ) : null}
                 {showAddEncodePrompt && !encodeProfilesQuery.isPending && !encodeProfilesQuery.isError &&
-                  (configuredEncodeProfiles.length > 0 ? (
-                    <Button
-                      type="button"
-                      size="sm"
-                      className="self-start"
-                      onClick={() => {
-                        assetsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-                        assetsRef.current?.focus({ preventScroll: true })
-                      }}
-                    >
-                      エンコードを追加
-                    </Button>
-                  ) : (
+                  configuredEncodeProfiles.length === 0 && (
                     <p className="text-muted-foreground">エンコードプロファイルが設定されていません</p>
-                  ))}
-                <div
-                  ref={assetsRef}
-                  tabIndex={-1}
-                  className="scroll-mt-20 focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2"
-                >
-                  <RecordingAssetControls recording={recording} />
-                </div>
+                  )}
+                <RecordingAssetControls recording={recording} />
               </section>
             )}
 
