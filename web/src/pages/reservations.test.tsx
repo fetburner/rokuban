@@ -3,7 +3,7 @@ import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { CapacityOverage, Reservation } from '@/api/generated'
+import type { CapacityOverage, Reservation, Rule } from '@/api/generated'
 import { ReservationsPage } from '@/pages/reservations'
 import { renderInRouter } from '@/test/router'
 
@@ -22,6 +22,7 @@ function reservation(
   durationMinutes: number,
   site = 'default',
   serviceName = 'テスト局',
+  overrides: Partial<Reservation> = {},
 ): Reservation {
   return {
     site,
@@ -36,6 +37,19 @@ function reservation(
     createdAt: at(0),
     updatedAt: at(0),
     skip: false,
+    ...overrides,
+  }
+}
+
+function rule(id: number, name: string): Rule {
+  return {
+    id,
+    name,
+    enabled: true,
+    priority: 10,
+    keepOriginal: 'always',
+    createdAt: at(0),
+    updatedAt: at(0),
   }
 }
 
@@ -75,10 +89,12 @@ type CapacityResult =
 function stubApi(
   reservations: Reservation[],
   overages: CapacityResult,
+  rules: Rule[] = [],
 ) {
   const fetchMock = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === '/api/reservations') return Promise.resolve(jsonResponse(reservations))
+    if (url.pathname === '/api/rules') return Promise.resolve(jsonResponse(rules))
     if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
     if (url.pathname === '/api/capacity/overages') {
       const start = new Date(url.searchParams.get('start') ?? 0).getTime()
@@ -114,8 +130,9 @@ function renderWith(
   reservations: Reservation[],
   overages: CapacityResult,
   initialEntries?: string[],
+  rules: Rule[] = [],
 ) {
-  const fetchMock = stubApi(reservations, overages)
+  const fetchMock = stubApi(reservations, overages, rules)
   return { ...renderPage(initialEntries), fetchMock }
 }
 
@@ -330,10 +347,12 @@ describe('予約一覧の要確認フィルタ', () => {
     expect(screen.getByRole('button', { name: '再試行' })).toBeInTheDocument()
     expect(screen.queryByText('確認が要る予約はありません')).toBeNull()
     // このフィクスチャは state: 'active' の 1 件だけなので、容量抜きの下界でも
-    // 要確認は 0 件になる。チップが消えるのは「実装がチップを丸ごと隠す」からではなく
-    // 「要確認が 0 件」だからであることは、次の「非 active + 容量失敗」のテストが
-    // 同じ状況でチップが出ることで区別する。
-    expect(screen.queryByRole('button', { name: /要確認/ })).toBeNull()
+    // 要確認は 0 件になる。それでも URL が only=attention なら、選択中の要確認
+    // チップは 0 件のまま残す（どのチップも選ばれない状態を作らない）。
+    expect(screen.getByRole('button', { name: '要確認（0）' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
     // 容量の絞り込みが壊れていても、全件表示へ戻る導線は使える
     expect(screen.getByRole('button', { name: 'すべて（1）' })).toBeInTheDocument()
     expect(screen.queryByText('容量未確認の予約')).toBeNull()
@@ -420,7 +439,7 @@ describe('予約一覧の要確認フィルタ', () => {
     expect(screen.queryByText('確認が要る予約はありません')).toBeNull()
   })
 
-  it('要確認が 0 件なら要確認チップを置かず、URL 指定時は専用の空状態を出す', async () => {
+  it('要確認が 0 件なら要確認チップを置かず、URL 指定時は選択中の 0 件チップと専用の空状態を出す', async () => {
     const { queryClient } = renderWith(
       [reservation(1, '通常の予約', 18 * 60, 60)],
       [],
@@ -430,9 +449,20 @@ describe('予約一覧の要確認フィルタ', () => {
     expect(await screen.findByRole('button', { name: 'すべて（1）' })).toBeInTheDocument()
     await overagesSettled(queryClient)
 
-    expect(screen.queryByRole('button', { name: /要確認/ })).toBeNull()
+    expect(screen.getByRole('button', { name: '要確認（0）' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
     expect(screen.getByText('確認が要る予約はありません')).toBeInTheDocument()
     expect(screen.queryByText('通常の予約')).toBeNull()
+  })
+
+  it('要確認が 0 件で only が無いときは要確認チップを置かない', async () => {
+    const { queryClient } = renderWith([reservation(1, '通常の予約', 18 * 60, 60)], [])
+
+    expect(await screen.findByRole('button', { name: 'すべて（1）' })).toBeInTheDocument()
+    await overagesSettled(queryClient)
+    expect(screen.queryByRole('button', { name: /要確認/ })).toBeNull()
   })
 
   it('チップ操作を URL に書き、すべては only を省略する', async () => {
@@ -455,6 +485,192 @@ describe('予約一覧の要確認フィルタ', () => {
     await user.click(screen.getByRole('button', { name: 'すべて（2）' }))
     await waitFor(() => expect(router.state.location.search).toEqual({}))
     expect(screen.getByText('通常の予約')).toBeInTheDocument()
+  })
+})
+
+describe('予約一覧の日付見出し・出自・ルールフィルタ（issue #1030）', () => {
+  it('日付ごとに時刻順でまとめ、今日・明日だけの見出しと出自リンクを出す', async () => {
+    const previousNow = Date.now()
+    vi.setSystemTime(new Date(2026, 6, 25, 12, 0, 0, 0))
+    try {
+      const { queryClient } = renderWith(
+        [
+          reservation(1, '今日の遅い番組', 22 * 60, 60),
+          reservation(2, '明日の番組', 24 * 60 + 30, 60, 'default', 'テスト局', {
+            source: 'rule',
+            ruleId: 7,
+          }),
+          reservation(3, '今日の早い番組', 18 * 60, 60, 'default', 'テスト局', {
+            source: 'rule',
+            ruleId: 7,
+          }),
+          reservation(4, '3日後の番組', 72 * 60 + 30, 60),
+          reservation(5, '手動だがルールも一致', 23 * 60, 60, 'default', 'テスト局', {
+            source: 'manual',
+            ruleId: 7,
+          }),
+          reservation(6, '未解決ルール', 24 * 60 + 90, 60, 'default', 'テスト局', {
+            source: 'rule',
+            ruleId: 99,
+          }),
+          reservation(7, 'ルール出自で関連 ID なし', 24 * 60 + 150, 60, 'default', 'テスト局', {
+            source: 'rule',
+          }),
+        ],
+        [],
+        undefined,
+        [rule(7, 'ニュース'), rule(8, 'ニュース')],
+      )
+
+      const headings = await screen.findAllByTestId('reservation-date-heading')
+      expect(headings.map((heading) => heading.textContent)).toEqual([
+        '今日 7/25(土)3 件',
+        '明日 7/26(日)3 件',
+        '7/28(火)1 件',
+      ])
+      await overagesSettled(queryClient)
+
+      const titles = screen.getAllByText(/番組|一致/).map((title) => title.textContent)
+      expect(titles.indexOf('今日の早い番組')).toBeLessThan(titles.indexOf('今日の遅い番組'))
+      expect(screen.getAllByRole('link', { name: 'ルール「ニュース (#7)」' })).toHaveLength(2)
+      expect(screen.getAllByRole('link', { name: 'ルール「ニュース (#7)」' })[0]).toHaveAttribute(
+        'href',
+        '/search?ruleId=7',
+      )
+      expect(screen.getByRole('link', { name: 'ルール「#99」' })).toHaveAttribute(
+        'href',
+        '/search?ruleId=99',
+      )
+      expect(row('手動だがルールも一致')).toHaveTextContent('手動')
+      expect(
+        within(row('手動だがルールも一致')).queryByRole('link', { name: /ルール「/ }),
+      ).toBeNull()
+      expect(row('ルール出自で関連 ID なし')).toHaveTextContent('ルール')
+      expect(row('ルール出自で関連 ID なし')).not.toHaveTextContent('手動')
+      expect(
+        within(row('ルール出自で関連 ID なし')).queryByRole('link', { name: /ルール「/ }),
+      ).toBeNull()
+      const rowLink = screen.getByRole('link', { name: /今日の早い番組/ })
+      expect(rowLink).not.toHaveAccessibleName(/ニュース|ルール/)
+      // 毎日の番組を行ごとに区別できるよう、名前には日付を残す
+      expect(rowLink).toHaveAccessibleName(/7\/25 \d{2}:\d{2}/)
+      expect(document.querySelectorAll('a a')).toHaveLength(0)
+    } finally {
+      vi.setSystemTime(new Date(previousNow))
+    }
+  })
+
+  it('ルールメニューは全予約の件数順を保ち、要確認とルールを組み合わせられる', async () => {
+    const user = userEvent.setup()
+    const reservations = [
+      reservation(1, '手動の予約', 18 * 60, 60),
+      reservation(2, 'ルール7の有効予約', 19 * 60, 60, 'default', 'テスト局', {
+        source: 'rule',
+        ruleId: 7,
+      }),
+      reservation(3, 'ルール7の要確認予約', 20 * 60, 60, 'default', 'テスト局', {
+        source: 'rule',
+        ruleId: 7,
+        state: 'detached',
+      }),
+      reservation(4, '手動だがルール7に一致', 21 * 60, 60, 'default', 'テスト局', {
+        source: 'manual',
+        ruleId: 7,
+      }),
+      reservation(5, 'ルール3の消失予約', 22 * 60, 60, 'default', 'テスト局', {
+        source: 'rule',
+        ruleId: 3,
+        state: 'orphaned',
+      }),
+      reservation(6, 'ルール3の通常予約', 23 * 60, 60, 'default', 'テスト局', {
+        source: 'rule',
+        ruleId: 3,
+      }),
+      reservation(7, 'ルール4の通常予約', 24 * 60, 60, 'default', 'テスト局', {
+        source: 'rule',
+        ruleId: 4,
+      }),
+      reservation(8, 'ルール4の2件目', 25 * 60, 60, 'default', 'テスト局', {
+        source: 'rule',
+        ruleId: 4,
+      }),
+      reservation(9, '未解決ルール99', 26 * 60, 60, 'default', 'テスト局', {
+        source: 'rule',
+        ruleId: 99,
+      }),
+    ]
+    const rules = [
+      rule(7, 'Drama'),
+      rule(8, 'Drama'),
+      rule(3, 'Alpha rule'),
+      rule(4, 'Beta rule'),
+      rule(55, '予約のないルール'),
+    ]
+    const { queryClient, router } = renderWith(
+      reservations,
+      [],
+      ['/reservations?only=attention'],
+      rules,
+    )
+
+    expect(await screen.findByRole('button', { name: 'すべて（9）' })).toBeInTheDocument()
+    await overagesSettled(queryClient)
+    expect(screen.getByRole('button', { name: '要確認（2）' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'ルールで絞り込む' }))
+
+    const items = await screen.findAllByRole('menuitem')
+    expect(items.map((item) => item.textContent)).toEqual([
+      'Drama (#7)3',
+      'Alpha rule2',
+      'Beta rule2',
+      '#991',
+    ])
+    expect(screen.queryByRole('menuitem', { name: /予約のないルール/ })).toBeNull()
+
+    await user.click(screen.getByRole('menuitem', { name: /Drama \(#7\)/ }))
+    await waitFor(() =>
+      expect(router.state.location.search).toEqual({ only: 'attention', ruleId: 7 }),
+    )
+    expect(screen.getByRole('button', { name: 'すべて（3）' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '要確認（1）' })).toBeInTheDocument()
+    expect(screen.getByText('ルール7の要確認予約')).toBeInTheDocument()
+    expect(screen.queryByText('ルール7の有効予約')).toBeNull()
+    expect(screen.getByRole('link', { name: 'ルールの条件を直す' })).toHaveAttribute(
+      'href',
+      '/search?ruleId=7',
+    )
+
+    await user.click(screen.getByRole('button', { name: 'すべて（3）' }))
+    await waitFor(() => expect(router.state.location.search).toEqual({ ruleId: 7 }))
+    expect(screen.getByText('ルール7の有効予約')).toBeInTheDocument()
+    expect(screen.getByText('手動だがルール7に一致')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'ルールの絞り込みを解除' }))
+    await waitFor(() => expect(router.state.location.search).toEqual({}))
+    await user.click(screen.getByRole('button', { name: 'ルールで絞り込む' }))
+    expect((await screen.findAllByRole('menuitem')).map((item) => item.textContent)).toEqual([
+      'Drama (#7)3',
+      'Alpha rule2',
+      'Beta rule2',
+      '#991',
+    ])
+  })
+
+  it('削除済みルール ID は #N と専用の空状態になり、条件編集リンクも残す', async () => {
+    renderWith(
+      [reservation(1, '別ルールの予約', 19 * 60, 60)],
+      [],
+      ['/reservations?ruleId=99'],
+      [rule(7, '別ルール')],
+    )
+
+    expect(await screen.findByText('このルールの予約はありません')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'ルールの絞り込みを解除' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'ルールの条件を直す' })).toHaveAttribute(
+      'href',
+      '/search?ruleId=99',
+    )
+    expect(screen.queryByRole('button', { name: 'ルールで絞り込む' })).toBeNull()
   })
 })
 
