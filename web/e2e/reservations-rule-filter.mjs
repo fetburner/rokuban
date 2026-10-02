@@ -8,7 +8,11 @@
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 
-import { ListReservationsResponseItem, ListRulesResponseItem } from '../src/api/zod.ts'
+import {
+  ListCapacityOveragesResponseItem,
+  ListReservationsResponseItem,
+  ListRulesResponseItem,
+} from '../src/api/zod.ts'
 import {
   finish,
   installApiStubs,
@@ -25,14 +29,14 @@ const ng = []
 const FIXED_NOW = new Date('2026-10-02T12:00:00+09:00')
 const STAMP = FIXED_NOW.toISOString()
 
-function reservation({ id, day, hour, title, source = 'manual', ruleId }) {
+function reservation({ id, day, hour, title, state = 'active', source = 'manual', ruleId }) {
   const start = new Date(`2026-10-${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}:00:00+09:00`)
   return {
     site: 'default',
     programId: 9000 + id,
     source,
     ...(ruleId === undefined ? {} : { ruleId }),
-    state: 'active',
+    state,
     title,
     serviceName: 'ＮＨＫ総合１・東京',
     channelType: 'GR',
@@ -45,7 +49,7 @@ function reservation({ id, day, hour, title, source = 'manual', ruleId }) {
 }
 
 const reservations = [
-  reservation({ id: 1, day: 2, hour: 18, title: 'ニュース７', source: 'manual' }),
+  reservation({ id: 1, day: 2, hour: 18, title: 'ニュース７', state: 'orphaned', source: 'manual' }),
   reservation({ id: 2, day: 2, hour: 20, title: '深夜アニメ 第一話', source: 'rule', ruleId: 8 }),
   reservation({ id: 3, day: 2, hour: 22, title: '深夜アニメ 第二話', source: 'rule', ruleId: 8 }),
   reservation({ id: 4, day: 3, hour: 7, title: '朝の連続ドラマ', source: 'rule', ruleId: 3 }),
@@ -66,6 +70,14 @@ const reservations = [
     }),
   ),
 ]
+
+const overages = [reservations[3], reservations[4]].map((item) => ({
+  site: item.site,
+  startAt: item.startAt,
+  endAt: new Date(Date.parse(item.startAt) + item.durationMs).toISOString(),
+  shortfall: 1,
+  jammedTypes: ['BS'],
+}))
 
 const rules = [
   {
@@ -103,7 +115,7 @@ async function apiHandler({ path: requestPath, json }) {
   if (requestPath === '/api/breakers') return json([])
   if (requestPath === '/api/reservations') return json(reservations)
   if (requestPath === '/api/rules') return json(rules)
-  if (requestPath === '/api/capacity/overages') return json([])
+  if (requestPath === '/api/capacity/overages') return json(overages)
   return json([])
 }
 
@@ -111,6 +123,7 @@ log(`URL: ${URL_BASE}`)
 await validateFixturesOrExit(
   [
     ...reservations.map((item, index) => [`reservations[${index}]`, ListReservationsResponseItem, item]),
+    ...overages.map((item, index) => [`overages[${index}]`, ListCapacityOveragesResponseItem, item]),
     ...rules.map((item, index) => [`rules[${index}]`, ListRulesResponseItem, item]),
   ],
   ng,
@@ -150,6 +163,9 @@ async function screenshot(page, name, fullPage = true) {
 
 async function checkLayout(width, theme) {
   const { context, page } = await openPage(width, theme)
+  await page.getByRole('button', { name: '要確認（3）' }).waitFor({ timeout: 5_000 }).catch(() => {
+    ng.push(`${width}px/${theme}: モックと同じ要確認チップ（3件）が表示されない`)
+  })
   const headings = page.getByTestId('reservation-date-heading')
   const count = await headings.count()
   log(`\n=== ${width}px / ${theme}: date groups=${count} ===`)
