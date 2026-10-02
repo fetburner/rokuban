@@ -624,7 +624,7 @@ export function RecordingDetail({
                     />
                     <div
                       data-testid="recording-playback-preview-live-edge"
-                      className="absolute top-1/2 z-[3] h-5 w-0.5 -translate-x-1/2 -translate-y-1/2 bg-red-500"
+                      className="absolute top-1/2 z-[3] h-5 w-0.5 -translate-x-1/2 -translate-y-1/2 bg-tally"
                       style={{ left: `${previewRecordedFraction * 100}%` }}
                     />
                   </div>
