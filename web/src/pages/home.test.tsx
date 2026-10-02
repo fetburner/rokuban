@@ -346,7 +346,7 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
     const pendingHome = renderHome('/?mode=ops')
     const toggle = await screen.findByTestId('home-mode-toggle')
     await waitFor(() => expect(api.unresolvedCount('/api/breakers')).toBe(1))
-    await screen.findAllByText(/failure/)
+    await screen.findByText('drop')
     expect(within(toggle).queryByTestId('home-warning-count')).not.toBeInTheDocument()
     await act(async () => api.resolvePending())
     const badge = await within(toggle).findByTestId('home-warning-count')
