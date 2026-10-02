@@ -152,9 +152,8 @@ function stubFetch(
   return fetchMock
 }
 
-function renderAt(path: string) {
+function renderAt(path: string, queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   window.scrollTo = vi.fn()
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const router = createRouter({
     routeTree,
     history: createMemoryHistory({ initialEntries: [path] }),
@@ -172,7 +171,13 @@ function renderAt(path: string) {
 async function openReservationOverflow(
   user: Pick<ReturnType<typeof userEvent.setup>, 'click'>,
 ) {
-  await user.click(await screen.findByRole('button', { name: '予約のその他の操作' }))
+  // 取消は主操作の位置に置かない: メニューを開く前は画面に出ていない。
+  expect(screen.queryByRole('button', { name: '予約を取消' })).not.toBeInTheDocument()
+  const trigger = await screen.findByRole('button', { name: '予約のその他の操作' })
+  await screen.findByRole('heading', { name: 'テスト番組' })
+  // 取消は主操作の位置に置かない: メニューを開く前は画面に出ていない。
+  expect(screen.queryByRole('button', { name: '予約を取消' })).not.toBeInTheDocument()
+  await user.click(trigger)
   await screen.findByRole('menuitem', { name: '予約を取消' })
 }
 
@@ -279,10 +284,16 @@ describe('ReservationDetailPage', () => {
     renderAt('/reservations/default/300000')
 
     const title = await screen.findByRole('heading', { name: 'テスト番組' })
-    expect(await screen.findByText('地域の人々の暮らしを紹介します。')).toBeInTheDocument()
+    const description = await screen.findByText('地域の人々の暮らしを紹介します。')
     expect(screen.getByText('出演者')).toBeInTheDocument()
     expect(screen.getByText('山田花子')).toBeInTheDocument()
-    expect(title.compareDocumentPosition(screen.getByText('地域の人々の暮らしを紹介します。')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // 題名の塊（題名・局・時刻）を分断しない: 説明は局・時刻の行より後ろ、「予約」欄より前。
+    const link = screen.getByTestId('reservation-program-link')
+    const follows = (a: Node, b: Node) =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(follows(title, link)).toBe(true)
+    expect(follows(link, description)).toBe(true)
+    expect(follows(description, screen.getByText('状態'))).toBe(true)
   })
 
   it('番組情報が 404 でも予約詳細は残し、番組詳細だけを隠す', async () => {
@@ -303,6 +314,27 @@ describe('ReservationDetailPage', () => {
     expect(screen.queryByText('詳細の取得に失敗しました')).not.toBeInTheDocument()
   })
 
+  // main.tsx の QueryClient は retry 既定（3 回、1s/2s/4s）。404 は初回応答で隠す。
+  it('番組情報の 404 は retry せず初回応答で読み込み中表示を消す', async () => {
+    const fetchMock = stubFetch(
+      (site, programId) =>
+        site === 'default' && programId === 300000 ? baseReservation() : null,
+      ['default'],
+      [],
+      undefined,
+      () => errorResponse(404, 'program not found'),
+    )
+
+    renderAt('/reservations/default/300000', new QueryClient())
+
+    await screen.findByRole('heading', { name: 'テスト番組' })
+    await waitFor(() => expect(screen.queryByText('詳細を読み込み中…')).not.toBeInTheDocument())
+    const programGets = fetchMock.mock.calls.filter(([input]) =>
+      /\/programs\/300000$/.test(new URL(String(input), 'http://localhost').pathname),
+    )
+    expect(programGets).toHaveLength(1)
+  })
+
   it('番組情報の 5xx は指定の文言で表示する', async () => {
     stubFetch(
       (site, programId) =>
@@ -315,9 +347,12 @@ describe('ReservationDetailPage', () => {
 
     renderAt('/reservations/default/300000')
 
-    expect(await screen.findByText('番組情報の取得に失敗しました')).toBeInTheDocument()
+    // 5xx は予約詳細の retry（1s/2s/4s）を使い切ってから文言が出る。
+    expect(
+      await screen.findByText('番組情報の取得に失敗しました', undefined, { timeout: 12_000 }),
+    ).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'テスト番組' })).toBeInTheDocument()
-  })
+  }, 20_000)
 
   // 局名が空文字のときに裸の区切りが残らない。`serviceName` は openapi で
   // required だが空文字を禁じていないので、無条件連結（`{serviceName} · ...`）だと
