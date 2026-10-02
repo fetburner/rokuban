@@ -11,7 +11,7 @@ import { routeTree } from '@/routes'
  * 取り込み（ingest）進捗の表示（issue #212）。
  *
  * 録画単体ページ（`/recordings/{id}`）越しに見る --- ヘッダーのバッジ
- * （`IngestBadge`）と本体の「取り込み」欄（`RecordingDetailPanel`）を同時に
+ * （`IngestBadge`）と本体の「取り込み」欄（`RecordingDetail`）を同時に
  * 確認する。一覧の行は `RecordingRow` が別に `IngestBadge` を描くため、行の
  * バッジは別テストで確認する。
  *
@@ -82,10 +82,9 @@ function renderRecording(recording: Recording) {
 /**
  * renderList は録画一覧（`/recordings`）を描画する。
  *
- * 単体ページ（`renderRecording`）と別に要るのは、一覧の行
- * （`RecordingRow`）がバッジを載せる配線がそこにしか無いため --- 展開部
- * （`RecordingDetail`）は両画面で共有されているが、行のメタ行は共有されて
- * いない。
+ * 単体ページ（`renderRecording`）と別に要るのは、`RecordingDetail` は単体
+ * ページだけが使い、一覧の行（`RecordingRow`）は `IngestBadge` を別に描く
+ * ため、その配線はここでしか確かめられないため。
  *
  * 一覧ページはヘッダーのストレージ残高など多くの副次的なクエリを叩くので、
  * 知らないパスは空配列で答える（本題ではない）。

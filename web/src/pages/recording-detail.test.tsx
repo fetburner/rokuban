@@ -241,15 +241,9 @@ function createFakeServer(options: {
       return Promise.resolve(jsonResponse(null, 204))
     }
     const watchedMatch = /^\/api\/recordings\/(\d+)\/watched$/.exec(url.pathname)
-    if (watchedMatch && (method === 'PUT' || method === 'DELETE')) {
+    if (watchedMatch && method === 'PUT') {
       const id = Number(watchedMatch[1])
-      if (recording?.id === id) {
-        if (method === 'PUT') recording = { ...recording, watchedAt: '2026-10-01T00:00:00Z' }
-        else {
-          const { watchedAt: _watchedAt, ...rest } = recording
-          recording = rest
-        }
-      }
+      if (recording?.id === id) recording = { ...recording, watchedAt: '2026-10-01T00:00:00Z' }
       return Promise.resolve(jsonResponse(null, 204))
     }
     if (
