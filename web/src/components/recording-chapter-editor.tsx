@@ -217,7 +217,7 @@ function ChapterDraftEditor({
                 >
                   <span
                     aria-hidden="true"
-                    className={`absolute inset-y-2 left-2 w-1 rounded-full ${span.cut ? 'bg-orange-500' : 'bg-muted-foreground/40'}`}
+                    className={`absolute inset-y-2 left-2 w-1 rounded-full ${span.cut ? 'bg-chapter-cut' : 'bg-muted-foreground/40'}`}
                   />
                   <button
                     type="button"
@@ -258,7 +258,7 @@ function ChapterDraftEditor({
                       />
                       <span
                         aria-hidden="true"
-                        className="relative inline-flex h-6 w-11 shrink-0 rounded-full bg-muted transition-colors after:absolute after:top-0.5 after:left-0.5 after:size-5 after:rounded-full after:bg-background after:shadow after:transition-transform peer-checked:bg-orange-500 peer-checked:after:translate-x-5 peer-focus-visible:outline-2 peer-focus-visible:outline-ring peer-focus-visible:outline-offset-2"
+                        className="relative inline-flex h-6 w-11 shrink-0 rounded-full bg-muted transition-colors after:absolute after:top-0.5 after:left-0.5 after:size-5 after:rounded-full after:bg-background after:shadow after:transition-transform peer-checked:bg-chapter-cut peer-checked:after:translate-x-5 peer-focus-visible:outline-2 peer-focus-visible:outline-ring peer-focus-visible:outline-offset-2"
                       />
                     </label>
                     <Button type="button" size="sm" variant="link" className="h-7 px-1" onClick={() => setDraft((current) => current.filter((_, i) => i !== index))}>

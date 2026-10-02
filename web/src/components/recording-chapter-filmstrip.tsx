@@ -172,7 +172,7 @@ export function RecordingChapterFilmstrip({
           {durationSeconds > 0 && spans.filter((span) => span.cut).map((span, index) => (
             <span
               key={`${span.startMs}-${span.endMs}-${index}`}
-              className="absolute inset-y-0 bg-orange-500"
+              className="absolute inset-y-0 bg-chapter-cut"
               style={{
                 left: `${(span.startMs / 1000 / durationSeconds) * 100}%`,
                 width: `${((span.endMs - span.startMs) / 1000 / durationSeconds) * 100}%`,
@@ -251,7 +251,7 @@ export function RecordingChapterFilmstrip({
             <span
               key={`${span.startMs}-${span.endMs}-${index}`}
               data-testid="chapter-filmstrip-cut-range"
-              className="pointer-events-none absolute inset-y-0 z-10 bg-orange-400/55"
+              className="pointer-events-none absolute inset-y-0 z-10 bg-chapter-cut-muted/55"
               style={{ left: `${left}%`, width: `${width}%` }}
             />
           )
@@ -270,7 +270,7 @@ export function RecordingChapterFilmstrip({
               data-time-ms={Math.round(displayTime * 1000)}
               aria-label={`境界 ${formatChaptersTime(displayTime)}`}
               aria-pressed={selected}
-              className={`absolute inset-y-0 z-20 w-1 -translate-x-1/2 touch-none border-0 p-0 ${selected ? 'bg-orange-500 outline outline-2 outline-foreground' : 'bg-foreground'}`}
+              className={`absolute inset-y-0 z-20 w-1 -translate-x-1/2 touch-none border-0 p-0 ${selected ? 'bg-chapter-selection outline outline-2 outline-foreground' : 'bg-foreground'}`}
               style={{ left: `${x}%` }}
               onPointerDown={(event) => startBoundaryDrag(event, boundary)}
               onPointerMove={moveBoundary}
