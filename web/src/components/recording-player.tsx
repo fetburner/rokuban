@@ -27,6 +27,7 @@ import {
   playbackPositionWrite,
   playbackResumeSeconds,
   persistPlaybackPosition,
+  cutMsToOriginalMs,
   recordingFileURL,
   recordingSubtitleURL,
   savePlaybackRate,
@@ -46,6 +47,14 @@ const AUTO_ADVANCE_SECONDS = 3
 type RecordingPlayerProps = {
   recordingId: number
   resumePositionMs?: number
+  /** 現在の位置を原本時間軸の秒で親へ伝える。 */
+  onRecordingPositionChange?: (seconds: number) => void
+  /** 終端 / エラーで再生元を選び直した場合は true を返す。 */
+  onRecordingPlaybackEnded?: (recordingPositionSeconds: number) => boolean
+  /** 動画がエラーを返した。一度も再生していなければ位置は undefined。親が選び直したら true。 */
+  onRecordingPlaybackError?: (recordingPositionSeconds: number | undefined, wasPlaying: boolean) => boolean
+  /** 最初の読み込みが終わったら再生を始める（再生元を替えた直後に、再生中だった続きを見る）。 */
+  autoPlay?: boolean
   /** 90% 到達の視聴済み PUT が通った後に呼ぶ（親が録画クエリを取り直してボタンと未視聴の印を更新する）。 */
   onWatched?: () => void
   /** 視聴済みボタンを出す完了録画かどうか。 */
@@ -80,8 +89,6 @@ type RecordingPlayerProps = {
    * 「分類できなかった PID」と同じ判断。docs/frontend/recordings.md）。
    */
   encodedAssets: EncodedAsset[]
-  /** 原本 TS があるとき VLC 向けリンクを出す。 */
-  hasOriginal?: boolean
   /**
    * 有効なチャプターの区間（`GET /api/recordings/{id}/chapters` の結果そのまま）。
    * **本編の区間は含まれない** --- 区間の隙間が本編で、終端は `<video>.duration`
@@ -120,7 +127,11 @@ type RecordingPlayerProps = {
 export function RecordingPlayer({
   recordingId,
   resumePositionMs,
+  autoPlay = false,
   onWatched,
+  onRecordingPositionChange,
+  onRecordingPlaybackEnded,
+  onRecordingPlaybackError,
   showWatched = false,
   watched = false,
   watchedPending = false,
@@ -134,7 +145,6 @@ export function RecordingPlayer({
   onTrash,
   onProfileChange,
   encodedAssets,
-  hasOriginal = false,
   chapters,
   chapterSource = 'auto',
   chapterVersion,
@@ -189,7 +199,7 @@ export function RecordingPlayer({
   const endCardOpen = endCardFor === recordingId
   const [countdownSeconds, setCountdownSeconds] = useState(AUTO_ADVANCE_SECONDS)
   // 終端カードから移った先の録画 id。移った先は再生を始める（カードの文言どおり）。
-  const autoplayRecordingRef = useRef<number | null>(null)
+  const autoplayRecordingRef = useRef<number | null>(autoPlay ? recordingId : null)
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(false)
   // タイルは録画ごとに 1 枚で profile に依存しないので、キーは recordingId だけ。
   const [tilesRequestedFor, setTilesRequestedFor] = useState<number | null>(null)
@@ -388,12 +398,20 @@ export function RecordingPlayer({
     )
   }, [playingCut])
 
+  const originalPositionSeconds = useCallback((video: HTMLVideoElement) => {
+    const keepRanges = frozenKeepRangesRef.current
+    return playingCut && keepRanges && keepRanges.length > 0
+      ? cutMsToOriginalMs(video.currentTime * 1000, keepRanges) / 1000
+      : video.currentTime
+  }, [playingCut])
+
   const rememberPosition = useCallback((video: HTMLVideoElement) => {
     if (restorePending.current) return
     const write = currentWrite(video)
+    onRecordingPositionChange?.(originalPositionSeconds(video))
     if (write === null) return
     carriedPositionRef.current = { recordingId, ms: write.kind === 'put' ? write.positionMs : 0 }
-  }, [currentWrite, recordingId])
+  }, [currentWrite, onRecordingPositionChange, originalPositionSeconds, recordingId])
 
   const saveCurrentPosition = useCallback((video: HTMLVideoElement, keepalive = false) => {
     const write = currentWrite(video)
@@ -574,26 +592,8 @@ export function RecordingPlayer({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [requestFullscreen])
 
-  if (profiles.length === 0) {
-    return (
-      <div className={cn('text-muted-foreground', className)}>
-        {hasOriginal ? (
-          <p>
-            ブラウザ再生用のエンコードがまだありません。原本は{' '}
-            <a
-              href={recordingFileURL(recordingId)}
-              className="inline-flex min-h-6 items-center text-primary underline-offset-2 hover:underline"
-            >
-              VLC 等で開く
-            </a>
-            ことができます。
-          </p>
-        ) : (
-          <p>再生可能なファイルがありません。</p>
-        )}
-      </div>
-    )
-  }
+  // 再生できる版が無いときは呼び出し側（録画詳細）が空状態を出す。ここには来ない。
+  if (profiles.length === 0) return null
 
   const src = recordingFileURL(recordingId, selectedProfile)
   const updatePlayedFraction = (video: HTMLVideoElement) => {
@@ -836,9 +836,16 @@ export function RecordingPlayer({
               frame.onPause()
               saveCurrentPosition(e.currentTarget)
             }}
-            onEnded={() => {
+            onEnded={(e) => {
+              if (onRecordingPlaybackEnded?.(originalPositionSeconds(e.currentTarget)) === true) return
               setCountdownSeconds(AUTO_ADVANCE_SECONDS)
               setEndCardFor(recordingId)
+            }}
+            onError={(e) => {
+              onRecordingPlaybackError?.(
+                e.currentTarget.currentTime > 0 ? originalPositionSeconds(e.currentTarget) : undefined,
+                !e.currentTarget.paused,
+              )
             }}
             onVolumeChange={(e) => {
               frame.onVolumeChange(e.currentTarget)

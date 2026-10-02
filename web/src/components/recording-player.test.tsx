@@ -311,28 +311,11 @@ describe('RecordingPlayer のサイズ常置（値札、issue #236）', () => {
     expect(radioTexts(openSubmenu(container, '画質'))).toEqual(['h264476.8 MB', 'h265'])
   })
 
-  it('encoded が無く原本のみのとき、空状態から VLC リンクを出す', () => {
-    const { container } = render(
-      <RecordingPlayer recordingId={23} encodedAssets={[]} hasOriginal />,
-    )
-    const link = container.querySelector('a')!
-    expect(link.textContent).toBe('VLC 等で開く')
-  })
-
-  it('encoded が無く原本のみでサイズが無くても VLC リンクは出す', () => {
-    const { container } = render(
-      <RecordingPlayer recordingId={24} encodedAssets={[]} hasOriginal />,
-    )
-    const link = container.querySelector('a')!
-    expect(link.textContent).toBe('VLC 等で開く')
-  })
-
   it('encoded 再生では原本リンクをプレイヤーの外に置く', () => {
     const { container } = render(
       <RecordingPlayer
         recordingId={25}
         encodedAssets={[{ profile: 'h264', sizeBytes: 100 }]}
-        hasOriginal
       />,
     )
     expect(container.querySelector('a[href="/api/media/recordings/25/file"]')).toBeNull()
@@ -349,7 +332,6 @@ describe('RecordingPlayer の設定メニューにダウンロードを置かな
           { profile: 'h264', sizeBytes: 100 },
           { profile: 'h265', sizeBytes: 200 },
         ]}
-        hasOriginal
       />,
     )
     expect(openPlaybackSettings(container)).not.toHaveTextContent('ダウンロード')
