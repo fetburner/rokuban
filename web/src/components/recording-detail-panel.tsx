@@ -24,6 +24,7 @@ import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { DropStatsTable } from '@/components/drop-stats-table'
 import { RecordingAssetControls } from '@/components/recording-actions'
 import { DropBadges, EncodeStatusBadges, IngestBadge, StatusBadge } from '@/components/recording-badges'
+import { RecordingPlaybackPoster, type PosterTimeline } from '@/components/recording-playback-poster'
 import { RecordingPlayer } from '@/components/recording-player'
 import { LivePlayer } from '@/components/live-player'
 import { ThumbnailProgressLine } from '@/components/thumbnail-overlay'
@@ -35,20 +36,14 @@ import {
   formatDateTime,
   formatDateTimeSeconds,
   formatDuration,
-  formatPlaybackTime,
   formatTime,
-  formatTimelineTime,
 } from '@/lib/format'
 import { cmDetectStageMessage } from '@/lib/cm-detect-stage'
 import { ingestDisplay, type IngestDisplay } from '@/lib/ingest'
 import { useLiveEnabled } from '@/lib/capabilities'
 import { recordingFileURL } from '@/lib/playback-position'
 import { seedRecordingDetail } from '@/lib/recording-detail-cache'
-import {
-  selectRecordingPlaybackSource,
-  transitionRecordingPlaybackSource,
-  type RecordingPlaybackTransitionTrigger,
-} from '@/lib/recording-playback-source'
+import { selectRecordingPlaybackSource, type RecordingPlaybackSource } from '@/lib/recording-playback-source'
 import { validLiveProfile } from '@/lib/live'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { shouldShowRecordingSite, sourceLabels } from '@/lib/recording-search'
@@ -114,6 +109,19 @@ function cmDetectionLabel(state: Recording['cmDetection']['state']): string {
   }
 }
 
+/** 再生の塊の状態。再生元・開始済みか・開始の意図（保存位置 / 先頭から / 持ち越した位置）を持つ。 */
+type PlaybackState = {
+  source: RecordingPlaybackSource
+  started: boolean
+  /** プレイヤーが最初の読み込みを終えたら再生を始めるか（ポスターの ▶・`#chase`・再生中の再選択）。 */
+  autoPlay: boolean
+  startFromBeginning: boolean
+  /** 再選択で持ち越した録画先頭からの秒。 */
+  positionSeconds: number | undefined
+  /** プレイヤーの key。替えるとプレイヤーを作り直す。 */
+  generation: number
+}
+
 /**
  * RecordingDetail は録画 1 件の詳細本体（プレイヤー・メタデータ・操作）。
  * 単体ページ（`pages/recording-detail.tsx`）が使う。一覧はインライン展開せず、
@@ -170,13 +178,15 @@ export function RecordingDetail({
     liveEnabled,
     isTrashed: trash,
   }
-  const initialPlaybackState = () => {
+  const initialPlaybackState = (): PlaybackState => {
     const source = selectRecordingPlaybackSource(playbackSelection)
     return {
       source,
+      // `#chase` は「開いたら再生する」。変換を伴う再生元はそれ以外ではポスターの ▶ で始める。
       started: chase || source === 'encoded',
+      autoPlay: chase,
       startFromBeginning: startAtBeginning,
-      positionSeconds: undefined as number | undefined,
+      positionSeconds: undefined,
       generation: 0,
     }
   }
@@ -186,8 +196,11 @@ export function RecordingDetail({
     playbackStateRef.current = playbackState
   }, [playbackState])
   const recordingPositionSecondsRef = useRef<number | undefined>(undefined)
+  // 同じ再生元を張り直して続ける回数の上限管理（idle GC で消えたセッションの再試行が続かないように）。
+  const sourceRetryRef = useRef({ count: 0, position: 0 })
   useLayoutEffect(() => {
     recordingPositionSecondsRef.current = undefined
+    sourceRetryRef.current = { count: 0, position: 0 }
   }, [recording.id])
   const [chaseOffsetSeconds, setChaseOffsetSeconds] = useState<number | undefined>(undefined)
   const [selectedPlaybackProfile, setSelectedPlaybackProfile] = useState<string | undefined>(undefined)
@@ -200,71 +213,95 @@ export function RecordingDetail({
     setDescriptionExpanded(false)
     setChaseOffsetSeconds(undefined)
     setSelectedPlaybackProfile(undefined)
-    const nextState = initialPlaybackState()
-    setPlaybackState(nextState)
+    setPlaybackState(initialPlaybackState())
   }
   const showChase = playbackState.source === 'chase'
   const showOriginalVOD = playbackState.source === 'original-vod'
   const showEncoded = playbackState.source === 'encoded'
   const showLiveSource = showChase || showOriginalVOD
-  const updatePlaybackState = (next: typeof playbackState) => {
+  const updatePlaybackState = (next: PlaybackState) => {
     playbackStateRef.current = next
     setPlaybackState(next)
   }
   const startPlayback = () => {
-    updatePlaybackState({ ...playbackStateRef.current, started: true })
+    updatePlaybackState({ ...playbackStateRef.current, started: true, autoPlay: true })
   }
   const startPlaybackFromBeginning = () => {
     updatePlaybackState({
       ...playbackStateRef.current,
       started: true,
+      autoPlay: true,
       startFromBeginning: true,
       positionSeconds: undefined,
       generation: playbackStateRef.current.generation + 1,
     })
+    setChaseOffsetSeconds(undefined)
   }
+  const recordedSpanMs = recording.startedAt !== undefined && recording.endedAt !== undefined
+    ? Date.parse(recording.endedAt) - Date.parse(recording.startedAt)
+    : Number.NaN
+  const recordedEndSeconds = Number.isFinite(recordedSpanMs) ? Math.max(0, recordedSpanMs / 1000) : undefined
+  /**
+   * reselectPlaybackSource は範囲外のシーク・終端・エラーのときだけ呼ばれ、そのときの録画の状態で
+   * 再生元を選び直す。true を返したら親が再生元を替えた（プレイヤーは何もしない）。
+   * 再生元が今と同じなら false を返し、プレイヤー自身が張り直す（範囲外のシークは中の張り直しが
+   * 再生と全画面を保つ）。エラーだけは、同じ再生元でも上限つきで作り直す。
+   *
+   * 位置は録画先頭からの秒。一度も再生していないセッションのエラーでは undefined で、
+   * 保存位置・先頭から・シークで選んだ offset といった開始の意図をそのまま持ち越す。
+   */
   const reselectPlaybackSource = (
-    trigger: RecordingPlaybackTransitionTrigger,
-    positionSeconds = recordingPositionSecondsRef.current,
+    trigger: 'source-range-exit' | 'ended' | 'source-error',
+    positionSeconds: number | undefined,
+    wasPlaying: boolean,
   ) => {
     const current = playbackStateRef.current
-    if (trigger === 'source-range-exit' && current.source === 'chase' && playbackSelection.status === 'recording') {
+    const position = positionSeconds ?? recordingPositionSecondsRef.current
+    const selected = selectRecordingPlaybackSource(playbackSelection)
+    // 録画の終端まで見終えたなら、同じ終端に新しいセッションを作らない。終了の状態のまま止める。
+    if (
+      trigger === 'ended' &&
+      position !== undefined &&
+      recordedEndSeconds !== undefined &&
+      position >= recordedEndSeconds - 1.5
+    ) return false
+    if (selected !== current.source) {
+      if (selected === 'none') return false
+    } else if (trigger !== 'source-error' || current.source === 'encoded') {
       return false
+    } else {
+      const retry = sourceRetryRef.current
+      if (retry.count >= 2) return false
+      sourceRetryRef.current = { count: retry.count + 1, position: position ?? 0 }
     }
-    const transition = transitionRecordingPlaybackSource({
-      currentSource: current.source,
-      currentPositionSeconds: positionSeconds,
-      trigger,
-      recording: playbackSelection,
-    })
-    if (transition.kind === 'keep-current') return false
-
-    const sourceChanged = transition.source !== current.source
-    const restartSession = trigger === 'source-range-exit'
-    if (!sourceChanged && !restartSession) return false
     updatePlaybackState({
-      source: transition.source,
-      started: transition.source !== 'none',
-      startFromBeginning: false,
-      positionSeconds: transition.positionSeconds,
+      source: selected,
+      started: true,
+      autoPlay: wasPlaying,
+      startFromBeginning: position === undefined ? current.startFromBeginning : false,
+      positionSeconds: position ?? current.positionSeconds,
       generation: current.generation + 1,
     })
+    if (position !== undefined) setChaseOffsetSeconds(undefined)
     return true
+  }
+  const reportRecordingPosition = (seconds: number) => {
+    recordingPositionSecondsRef.current = seconds
+    const retry = sourceRetryRef.current
+    if (retry.count > 0 && seconds - retry.position > 5) sourceRetryRef.current = { count: 0, position: 0 }
   }
   const resumePositionMs = playbackState.positionSeconds !== undefined
     ? Math.max(0, Math.round(playbackState.positionSeconds * 1000))
     : playbackState.startFromBeginning
       ? undefined
       : recording.resumePositionMs
+  const carriedOffsetSeconds = playbackState.positionSeconds !== undefined
+    ? Math.floor(Math.max(0, playbackState.positionSeconds))
+    : undefined
+  // 追っかけはシークで選んだ offset が最優先（セッション外へのシークで張り直した位置）。
   const startOffsetSeconds = showChase
-    ? playbackState.startFromBeginning
-      ? 0
-      : playbackState.positionSeconds === undefined
-        ? chaseOffsetSeconds
-        : undefined
-    : playbackState.positionSeconds !== undefined
-      ? Math.floor(Math.max(0, playbackState.positionSeconds))
-      : undefined
+    ? chaseOffsetSeconds ?? carriedOffsetSeconds ?? (playbackState.startFromBeginning ? 0 : undefined)
+    : carriedOffsetSeconds
   // 追っかけか原本 VOD を表示するときだけ live プロファイルを取る。一覧は
   // セレクタ用で、取得できなくても先頭プロファイルで再生できる既存契約を保つ。
   const liveProfilesQuery = useListLiveProfiles({ query: { enabled: showChase || showOriginalVOD } })
@@ -306,23 +343,17 @@ export function RecordingDetail({
   const chaseProgrammeHeadSeconds = Number.isFinite(programStartMs) && Number.isFinite(recordingStartMs)
     ? (recordingStartMs - programStartMs) / 1000
     : 0
-  const previewTimelineMinSeconds = Math.min(0, chaseProgrammeHeadSeconds)
-  const previewTimelineMaxSeconds = Math.max(
-    previewTimelineMinSeconds + 1,
-    plannedChaseSeconds,
-    chaseProgrammeHeadSeconds + availableChaseSeconds,
-  )
-  const previewTimelineRange = previewTimelineMaxSeconds - previewTimelineMinSeconds
-  const previewRecordingStartFraction = Math.max(0, Math.min(1,
-    (chaseProgrammeHeadSeconds - previewTimelineMinSeconds) / previewTimelineRange,
-  ))
-  const previewRecordedFraction = Math.max(0, Math.min(1,
-    (chaseProgrammeHeadSeconds + availableChaseSeconds - previewTimelineMinSeconds) / previewTimelineRange,
-  ))
-  const previewRecordedWidthFraction = Math.max(0, previewRecordedFraction - previewRecordingStartFraction)
-  const previewPlannedFraction = Math.max(0, Math.min(1,
-    (plannedChaseSeconds - previewTimelineMinSeconds) / previewTimelineRange,
-  ))
+  const posterTimeline: PosterTimeline = {
+    minSeconds: Math.min(0, chaseProgrammeHeadSeconds),
+    maxSeconds: Math.max(
+      Math.min(0, chaseProgrammeHeadSeconds) + 1,
+      plannedChaseSeconds,
+      chaseProgrammeHeadSeconds + availableChaseSeconds,
+    ),
+    headSeconds: chaseProgrammeHeadSeconds,
+    recordedEndSeconds: chaseProgrammeHeadSeconds + availableChaseSeconds,
+    plannedEndSeconds: plannedChaseSeconds,
+  }
   // チャプター（CM とユーザー区間）。**ごみ箱では取らない** --- ごみ箱では
   // プレイヤーを出さず、配信経路も 404 になる（配信 3 クエリと同じ契約）。
   //
@@ -547,98 +578,21 @@ export function RecordingDetail({
           className="col-span-full flex flex-col gap-3"
         >
           {showLiveSource && !playbackState.started && (
-            <div
-              data-testid="recording-playback-poster"
-              className="relative w-full overflow-hidden rounded bg-neutral-950 text-white"
-            >
-              <div className="group relative aspect-video">
-                <img
-                  src={`/api/media/recordings/${recording.id}/thumbnail`}
-                  alt=""
-                  className="absolute inset-0 size-full object-cover opacity-60 transition-opacity group-hover:opacity-75"
-                />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/20 to-black/50" />
-                <button
-                  type="button"
-                  data-testid="recording-playback-start"
-                  aria-label={showChase
-                    ? `続きから再生（${formatPlaybackTime((recording.resumePositionMs ?? 0) / 1000)}）`
-                    : '再生'}
-                  onClick={startPlayback}
-                  className="absolute inset-x-0 top-0 bottom-16 flex flex-col items-center justify-center gap-3 text-center"
-                >
-                  <span className="grid size-16 place-items-center rounded-full bg-white/90 text-3xl text-black shadow-lg">
-                    ▶
-                  </span>
-                  {showChase ? (
-                    <>
-                      <span className="text-lg font-semibold">
-                        続きから（{formatPlaybackTime((recording.resumePositionMs ?? 0) / 1000)}）
-                      </span>
-                      <span className="text-sm text-white/80">
-                        録画済み {formatDuration(availableChaseSeconds * 1000)} · 押すと追っかけ再生を始めます
-                      </span>
-                    </>
-                  ) : (
-                    <span className="text-sm font-medium">再生</span>
-                  )}
-                </button>
-                {showChase && (
-                  <button
-                    type="button"
-                    data-testid="recording-playback-start-from-beginning"
-                    onClick={startPlaybackFromBeginning}
-                    className="absolute inset-x-0 bottom-12 z-10 mx-auto min-h-8 w-fit px-3 text-sm underline underline-offset-2"
-                  >
-                    先頭から見る
-                  </button>
-                )}
-              </div>
-              {showChase && (
-                <div
-                  data-testid="recording-playback-preview-timeline"
-                  role="img"
-                  aria-label={`録画時間: 0:00 から ${formatTimelineTime(plannedChaseSeconds)} まで（予定）、録画済み ${formatTimelineTime(availableChaseSeconds)}`}
-                  className="bg-gradient-to-t from-black/95 via-black/70 to-transparent px-3 pb-2 pt-3"
-                >
-                  <div className="relative h-6" aria-hidden="true">
-                    <div className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full bg-white/30">
-                      <div
-                        data-testid="recording-playback-preview-recorded"
-                        className="absolute inset-y-0 bg-white/55"
-                        style={{ left: `${previewRecordingStartFraction * 100}%`, width: `${previewRecordedWidthFraction * 100}%` }}
-                      />
-                      <div
-                        className="absolute inset-y-0"
-                        style={{
-                          left: `${previewRecordedFraction * 100}%`,
-                          right: `${(1 - previewRecordedFraction) * 100}%`,
-                          backgroundImage: 'repeating-linear-gradient(90deg, transparent 0 3px, rgb(255 255 255 / 45%) 3px 5px)',
-                        }}
-                      />
-                    </div>
-                    <div
-                      aria-hidden="true"
-                      className="absolute top-1 z-[2] h-4 border-l-2 border-dashed border-white"
-                      style={{ left: `${previewPlannedFraction * 100}%` }}
-                    />
-                    <div
-                      data-testid="recording-playback-preview-live-edge"
-                      className="absolute top-1/2 z-[3] h-5 w-0.5 -translate-x-1/2 -translate-y-1/2 bg-tally"
-                      style={{ left: `${previewRecordedFraction * 100}%` }}
-                    />
-                  </div>
-                  <div className="flex justify-between text-[10px] text-white/75">
-                    <span>{formatTimelineTime(previewTimelineMinSeconds)}</span>
-                    <span>
-                      {chaseProgrammeHeadSeconds + availableChaseSeconds > plannedChaseSeconds
-                        ? `予定 ${formatTimelineTime(plannedChaseSeconds)} ┆ 延長中 · 先端 ${formatTimelineTime(chaseProgrammeHeadSeconds + availableChaseSeconds)}`
-                        : `${formatTimelineTime(plannedChaseSeconds)} まで（予定）`}
-                    </span>
-                  </div>
-                </div>
-              )}
-            </div>
+            <RecordingPlaybackPoster
+              recordingId={recording.id}
+              timeline={showChase ? posterTimeline : undefined}
+              resumeSeconds={recording.resumePositionMs === undefined ? undefined : recording.resumePositionMs / 1000}
+              recordedSeconds={availableChaseSeconds}
+              onStart={startPlayback}
+              onStartFromBeginning={showChase ? startPlaybackFromBeginning : undefined}
+              watched={showOriginalVOD && recording.status === 'finished'
+                ? {
+                    value: recording.watchedAt !== undefined,
+                    pending: putWatchedMutation.isPending || deleteWatchedMutation.isPending,
+                    onToggle: () => void updateWatched(recording.watchedAt === undefined),
+                  }
+                : undefined}
+            />
           )}
 
           {showChase && playbackState.started && liveProfile !== undefined && liveProfilesQuery.isPending && (
@@ -655,7 +609,7 @@ export function RecordingDetail({
               profile={explicitLiveProfile}
               availableProfiles={liveProfiles}
               onProfileChange={onSelectLiveProfile}
-              allowChaseOffsetRestart={recording.status === 'recording'}
+              autoPlay={playbackState.autoPlay}
               chaseTimeline={{
                 programmeStartMs: programStartMs,
                 recordingStartedAtMs: recordingStartMs,
@@ -663,10 +617,10 @@ export function RecordingDetail({
                 recordedSeconds: availableChaseSeconds,
               }}
               onChaseOffsetChange={setChaseOffsetSeconds}
-              onRecordingPositionChange={(seconds) => { recordingPositionSecondsRef.current = seconds }}
-              onSourceRangeExit={(seconds) => reselectPlaybackSource('source-range-exit', seconds)}
-              onRecordingPlaybackEnded={(seconds) => reselectPlaybackSource('ended', seconds)}
-              onRecordingPlaybackError={(seconds) => reselectPlaybackSource('source-error', seconds)}
+              onRecordingPositionChange={reportRecordingPosition}
+              onSourceRangeExit={(seconds, playing) => reselectPlaybackSource('source-range-exit', seconds, playing)}
+              onRecordingPlaybackEnded={(seconds) => reselectPlaybackSource('ended', seconds, false)}
+              onRecordingPlaybackError={(seconds, playing) => reselectPlaybackSource('source-error', seconds, playing)}
             />
           )}
 
@@ -699,19 +653,18 @@ export function RecordingDetail({
               onWatched={() => void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })}
               resumePositionMs={resumePositionMs}
               startOffsetSeconds={startOffsetSeconds}
+              autoPlay={playbackState.autoPlay}
               startPositionSeconds={playbackState.positionSeconds !== undefined
-                ? Math.max(0, playbackState.positionSeconds - (startOffsetSeconds ?? 0))
+                ? Math.max(0, playbackState.positionSeconds - (carriedOffsetSeconds ?? 0))
                 : undefined}
-              recordingDurationMs={recording.startedAt !== undefined && recording.endedAt !== undefined
-                ? Date.parse(recording.endedAt) - Date.parse(recording.startedAt)
-                : undefined}
+              recordingDurationMs={Number.isFinite(recordedSpanMs) ? recordedSpanMs : recording.durationMs}
               profile={explicitLiveProfile}
               availableProfiles={liveProfiles}
               onProfileChange={onSelectLiveProfile}
-              onRecordingPositionChange={(seconds) => { recordingPositionSecondsRef.current = seconds }}
-              onSourceRangeExit={(seconds) => reselectPlaybackSource('source-range-exit', seconds)}
-              onRecordingPlaybackEnded={(seconds) => reselectPlaybackSource('ended', seconds)}
-              onRecordingPlaybackError={(seconds) => reselectPlaybackSource('source-error', seconds)}
+              onRecordingPositionChange={reportRecordingPosition}
+              onSourceRangeExit={(seconds, playing) => reselectPlaybackSource('source-range-exit', seconds, playing)}
+              onRecordingPlaybackEnded={(seconds) => reselectPlaybackSource('ended', seconds, false)}
+              onRecordingPlaybackError={(seconds, playing) => reselectPlaybackSource('source-error', seconds, playing)}
             />
           )}
 
@@ -734,7 +687,6 @@ export function RecordingDetail({
               onTrash={moveToTrash}
               onProfileChange={setSelectedPlaybackProfile}
               encodedAssets={encodedAssets}
-              hasOriginal={hasOriginal}
               chapters={chapters?.spans}
               chapterSource={chapters?.source}
               chapterVersion={chapters?.version}
@@ -744,9 +696,10 @@ export function RecordingDetail({
               chapterSavePending={putChapters.isPending || deleteChapters.isPending}
               onReencode={trash ? undefined : reencodeCut}
               reencodePending={reencode.isPending}
-              onRecordingPositionChange={(seconds) => { recordingPositionSecondsRef.current = seconds }}
-              onRecordingPlaybackEnded={(seconds) => reselectPlaybackSource('ended', seconds)}
-              onRecordingPlaybackError={(seconds) => reselectPlaybackSource('source-error', seconds)}
+              autoPlay={playbackState.autoPlay}
+              onRecordingPositionChange={reportRecordingPosition}
+              onRecordingPlaybackEnded={(seconds) => reselectPlaybackSource('ended', seconds, false)}
+              onRecordingPlaybackError={(seconds, playing) => reselectPlaybackSource('source-error', seconds, playing)}
             />
           )}
 
@@ -772,7 +725,8 @@ export function RecordingDetail({
           {/* 操作バーを持つプレイヤー以外では、視聴済みの操作をここに残す。
               再生できない原本のみ・資産なしでも完了録画の操作口になる。 */}
           {!trash && recording.status === 'finished' && !showEncoded &&
-            !(showOriginalVODPlayer && playbackState.started) && (
+            !(showOriginalVODPlayer && playbackState.started) &&
+            !(showOriginalVOD && !playbackState.started) && (
             <Button
               type="button"
               variant="outline"

@@ -439,10 +439,37 @@ if (playlistsBeforePlay !== 0) {
   ng.push(`① 再生ボタンを押す前に original HLS playlist を要求した (${playlistRequests.join(', ')})`)
 } else {
   const playButton = page.getByRole('button', { name: '再生', exact: true })
+  // 再生前のポスターは再生後のプレイヤー枠と同じ寸法で、視聴済みの操作も枠の中にある
+  // （枠の外に出すと、押した後に消えて下の要素が跳ぶ）。
+  const posterBox = await page.evaluate(() => {
+    const poster = document.querySelector('[data-testid="recording-playback-poster"]')
+    const group = document.querySelector('[data-testid="recording-playback-group"]')
+    const watched = Array.from(document.querySelectorAll('button')).filter((b) => /視聴済みにする|未視聴に戻す/.test(b.textContent ?? ''))
+    const rect = poster?.getBoundingClientRect()
+    return {
+      width: rect?.width, height: rect?.height, top: rect?.top,
+      groupHeight: group?.getBoundingClientRect().height,
+      watchedButtons: watched.length,
+      watchedInsidePoster: watched.every((b) => poster?.contains(b)),
+    }
+  })
+  if (posterBox.watchedButtons !== 1 || !posterBox.watchedInsidePoster) {
+    ng.push(`① 再生前の視聴済み操作が枠の中に 1 つでない（${JSON.stringify(posterBox)}）`)
+  }
   if (await playButton.count() !== 1) {
     ng.push(`① playlist が始まる再生ボタンが 1 つでない (${await playButton.count()})`)
   } else {
     await playButton.click()
+    await page.getByTestId('recording-player-frame').waitFor({ timeout: 15000 })
+    const frameBox = await page.evaluate(() => {
+      const frame = document.querySelector('[data-testid="recording-player-frame"]').getBoundingClientRect()
+      const group = document.querySelector('[data-testid="recording-playback-group"]')
+      return { width: frame.width, height: frame.height, top: frame.top, groupHeight: group.getBoundingClientRect().height }
+    })
+    if (Math.abs(frameBox.width - posterBox.width) > 1 || Math.abs(frameBox.height - posterBox.height) > 1 ||
+      Math.abs(frameBox.top - posterBox.top) > 1 || Math.abs(frameBox.groupHeight - posterBox.groupHeight) > 1) {
+      ng.push(`① 原本 HLS の枠が再生の前後で変わる（前 ${JSON.stringify(posterBox)} 後 ${JSON.stringify(frameBox)}）`)
+    }
     const playlistDeadline = Date.now() + 10000
     while (playlistRequests.length === 0 && Date.now() < playlistDeadline) await page.waitForTimeout(50)
     if (playlistRequests.length === 0) ng.push('① 再生ボタンを押しても original HLS playlist を要求しない')
@@ -883,23 +910,26 @@ const sampleOffsetPlayer = (target) => target.evaluate(() => {
   const offsetPage = await offsetContext.newPage()
   await installApiStubs(offsetPage, offsetHandler)
   await offsetPage.goto(`${URL_BASE}/recordings/${OFFSET_ID}`, { waitUntil: 'domcontentloaded' })
+  // ⑤-a 先頭（offset 0・続きから位置なし）をポスターの ▶ で再生すると、手で play() を呼ばなくても
+  // 再生が始まり、0 から始まる。WebKit のネイティブ HLS は開始位置を明示しないと ENDLIST の無い
+  // EVENT playlist のライブ端近くから始める。
+  await offsetPage.getByTestId('recording-playback-start').click()
   await offsetPage.locator('video').waitFor({ timeout: 15000 })
-  await offsetPage.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 1, undefined, { timeout: 30000 })
-    .catch(() => ng.push('⑤ offset 0 のセッションが読み込まれない'))
-  await offsetPage.evaluate(() => {
-    document.querySelector('video').muted = true
-  })
-  // ⑤-a 先頭（offset 0・続きから位置なし）を再生すると 0 から始まる。WebKit のネイティブ HLS は
-  // 開始位置を明示しないと ENDLIST の無い EVENT playlist のライブ端近くから始める。
+  await offsetPage.mouse.move(5, 5)
+  await offsetPage.waitForTimeout(2500)
+  const afterStart = await sampleOffsetPlayer(offsetPage)
+  log(`  ポスターの ▶ の 2.5 秒後: ${JSON.stringify(afterStart)}`)
+  if (afterStart.time === null || afterStart.time > 4 || afterStart.paused !== false || !(afterStart.time > 0.5)) {
+    ng.push(`⑤-a ポスターの ▶ で再生が始まらないか 0 から始まらない（${JSON.stringify(afterStart)}）`)
+  }
   // ⑤-b バーの ▶ をマウスで押した後もフォーカスでバーを出したままにしない（chapters.mjs ⑥-a と同じ）。
+  const startFrameBox = await offsetPage.getByTestId('recording-player-frame').boundingBox()
+  await offsetPage.mouse.move(startFrameBox.x + startFrameBox.width / 2, startFrameBox.y + startFrameBox.height / 2)
+  await offsetPage.waitForTimeout(300)
+  await offsetPage.locator('[data-testid="player-controls"]').getByRole('button', { name: '一時停止', exact: true }).click()
   await offsetPage.locator('[data-testid="player-controls"]').getByRole('button', { name: '再生', exact: true }).click()
   await offsetPage.mouse.move(5, 5)
   await offsetPage.waitForTimeout(1500)
-  const afterStart = await sampleOffsetPlayer(offsetPage)
-  log(`  再生 1.5 秒後: ${JSON.stringify(afterStart)}`)
-  if (afterStart.time === null || afterStart.time > 3) {
-    ng.push(`⑤-a offset 0 の変換中セッションが 0 から始まらない（currentTime=${afterStart.time}）`)
-  }
   await offsetPage.waitForTimeout(3000)
   const afterIdle = await sampleOffsetPlayer(offsetPage)
   if (afterIdle.controlsOpacity !== '0') {
@@ -927,6 +957,7 @@ const sampleOffsetPlayer = (target) => target.evaluate(() => {
   const scrub = offsetPage.getByTestId('seek-scrub')
   const scrubBox = await scrub.boundingBox()
   const requestsBeforeSeek = offsetRequests.length
+  await offsetPage.evaluate(() => { window.__e2eVideoBeforeRangeExit = document.querySelector('video') })
   await offsetPage.mouse.click(scrubBox.x + scrubBox.width * 0.5, scrubBox.y + scrubBox.height / 2)
   await offsetPage.waitForTimeout(2500)
   const afterOffsetSeek = await sampleOffsetPlayer(offsetPage)
@@ -934,6 +965,10 @@ const sampleOffsetPlayer = (target) => target.evaluate(() => {
   log(`  50% シークの 2.5 秒後: ${JSON.stringify(afterOffsetSeek)} 要求=${JSON.stringify(seekRequests)}`)
   if (!seekRequests.some((request) => request.offset === 31 && request.status === 200)) {
     ng.push(`⑤-d 50%（31.5 秒）のシークで offset/31 に張り直さない（${JSON.stringify(seekRequests)}）`)
+  }
+  // 再生元が同じ（原本 HLS のまま）なら video を作り直さない。作り直すと一時停止・全画面解除になる。
+  if (!(await offsetPage.evaluate(() => window.__e2eVideoBeforeRangeExit === document.querySelector('video')))) {
+    ng.push('⑤-d 原本 HLS のまま範囲外へシークしたら video を作り直した')
   }
   if (afterOffsetSeek.paused !== false || afterOffsetSeek.playLabel !== '一時停止') {
     ng.push(`⑤-d 再生中のセッション外シークで再生が止まるか、ボタンが再生中を示さない（${JSON.stringify(afterOffsetSeek)}）`)
@@ -1003,13 +1038,12 @@ const sampleOffsetPlayer = (target) => target.evaluate(() => {
   const phonePage = await phoneContext.newPage()
   await installApiStubs(phonePage, offsetHandler)
   await phonePage.goto(`${URL_BASE}/recordings/${OFFSET_ID}`, { waitUntil: 'domcontentloaded' })
+  await phonePage.getByTestId('recording-playback-start').tap()
   await phonePage.locator('video').waitFor({ timeout: 15000 })
-  await phonePage.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, undefined, { timeout: 30000 })
-    .catch(() => ng.push('⑤-g スマホで offset 0 のセッションが読み込まれない'))
-  await phonePage.locator('video').evaluate((element) => {
-    element.muted = true
-    return element.play()
-  })
+  await phonePage.waitForFunction(() => {
+    const element = document.querySelector('video')
+    return element !== null && element.readyState >= 2 && !element.paused
+  }, undefined, { timeout: 30000 }).catch(() => ng.push('⑤-g スマホでポスターの ▶ を押しても再生が始まらない'))
   await phonePage.waitForTimeout(3800)
   const hiddenWhilePlaying = await sampleOffsetPlayer(phonePage)
   const phoneFrame = await phonePage.getByTestId('recording-player-frame').boundingBox()
@@ -1057,16 +1091,17 @@ const sampleOffsetPlayer = (target) => target.evaluate(() => {
   const narrowPage = await narrowContext.newPage()
   await installApiStubs(narrowPage, offsetHandler)
   await narrowPage.goto(`${URL_BASE}/recordings/${OFFSET_ID}`, { waitUntil: 'domcontentloaded' })
+  await narrowPage.getByTestId('recording-playback-start').click()
   await narrowPage.locator('video').waitFor({ timeout: 15000 })
-  await narrowPage.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, undefined, { timeout: 30000 })
-    .catch(() => ng.push('⑤-i 600px で offset 0 のセッションが読み込まれない'))
-  await narrowPage.locator('video').evaluate((element) => {
-    element.muted = true
-  })
+  await narrowPage.waitForFunction(() => {
+    const element = document.querySelector('video')
+    return element !== null && element.readyState >= 2 && !element.paused
+  }, undefined, { timeout: 30000 }).catch(() => ng.push('⑤-i 600px でポスターの ▶ を押しても再生が始まらない'))
   const narrowFrame = await narrowPage.getByTestId('recording-player-frame').boundingBox()
   await narrowPage.mouse.click(narrowFrame.x + 30, narrowFrame.y + 30)
   await narrowPage.waitForTimeout(400)
-  if ((await sampleOffsetPlayer(narrowPage)).paused) ng.push('⑤-i md 未満の幅でマウスで映像を押しても再生が始まらない')
+  // 再生中に映像を押すと一時停止する（押して再生に切り替わる方向は ⑤-c が見る）。
+  if (!(await sampleOffsetPlayer(narrowPage)).paused) ng.push('⑤-i md 未満の幅でマウスで映像を押しても一時停止しない')
   await narrowContext.close()
 }
 
@@ -1157,6 +1192,51 @@ if (!transitionSeekbarBox) {
   log(`  range-exit encoded requests=${encodedRequests.length - encodedCountBeforeRangeExit}, axis=${await transitionSeekbar.getAttribute('aria-valuenow')}`)
   if (encodedRequests.length === encodedCountBeforeRangeExit) {
     ng.push('⑥ original HLS 範囲外 seek で encoded MP4 を要求しない')
+  }
+}
+
+log('\n=== ⑦ 再生元ごとの再生前後で枠の寸法が変わらない（1280 / 400） ===')
+const sourceShotDir = process.env.E2E_SHOT_DIR
+/** playbackFrameBox は再生前のポスターか再生後のプレイヤー枠の寸法と、再生の塊の高さを返す。 */
+const playbackFrameBox = () => page.evaluate(() => {
+  const frame = document.querySelector('[data-testid="recording-playback-poster"]') ??
+    document.querySelector('[data-testid="recording-player-frame"]')
+  const rect = frame.getBoundingClientRect()
+  return {
+    width: rect.width,
+    height: rect.height,
+    top: rect.top,
+    groupHeight: document.querySelector('[data-testid="recording-playback-group"]').getBoundingClientRect().height,
+  }
+})
+for (const [label, viewport] of [['1280', { width: 1280, height: 900 }], ['400', { width: 400, height: 860 }]]) {
+  await page.setViewportSize(viewport)
+  for (const source of ['original-hls', 'encoded']) {
+    recording.encodedAssets = source === 'encoded' ? [{ profile: PLAYBACK_PROFILE, sizeBytes: 400_000 }] : []
+    delete recording.resumePositionMs
+    await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
+    await page.waitForSelector('[data-testid="recording-playback-poster"], [data-testid="recording-player-frame"]', { timeout: 15000 })
+    await page.waitForTimeout(500)
+    const before = await playbackFrameBox()
+    if (sourceShotDir) await page.screenshot({ path: path.join(sourceShotDir, `fix-${source}-before-${label}.png`), animations: 'disabled' })
+    if (source === 'original-hls') {
+      await page.getByTestId('recording-playback-start').click()
+    } else {
+      await page.locator('[data-testid="player-controls"]').getByRole('button', { name: '再生', exact: true }).click()
+    }
+    await page.waitForFunction(() => {
+      const element = document.querySelector('video')
+      return element !== null && !element.paused && element.currentTime > 0.5
+    }, undefined, { timeout: 15000 }).catch(() => ng.push(`⑦(${source}/${label}) 再生ボタンを押しても再生が進まない`))
+    await page.mouse.move(200, 5)
+    await page.waitForTimeout(500)
+    if (sourceShotDir) await page.screenshot({ path: path.join(sourceShotDir, `fix-${source}-after-${label}.png`), animations: 'disabled' })
+    const after = await playbackFrameBox()
+    log(`  ${source}/${label}: 前 ${JSON.stringify(before)} 後 ${JSON.stringify(after)}`)
+    if (Math.abs(after.width - before.width) > 1 || Math.abs(after.height - before.height) > 1 ||
+      Math.abs(after.groupHeight - before.groupHeight) > 1 || Math.abs(after.top - before.top) > 1) {
+      ng.push(`⑦(${source}/${label}) 再生の前後で枠の寸法・位置が変わる（前 ${JSON.stringify(before)} 後 ${JSON.stringify(after)}）`)
+    }
   }
 }
 

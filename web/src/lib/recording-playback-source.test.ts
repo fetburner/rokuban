@@ -2,10 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import {
   selectRecordingPlaybackSource,
-  transitionRecordingPlaybackSource,
   type RecordingPlaybackSource,
   type RecordingPlaybackSourceInput,
-  type RecordingPlaybackTransitionTrigger,
 } from '@/lib/recording-playback-source'
 
 describe('selectRecordingPlaybackSource', () => {
@@ -92,95 +90,4 @@ describe('selectRecordingPlaybackSource', () => {
       expect(selectRecordingPlaybackSource(input)).toBe(expected)
     },
   )
-})
-
-describe('transitionRecordingPlaybackSource', () => {
-  it('keeps the playing source and current position when only recording state updates', () => {
-    const transition = transitionRecordingPlaybackSource({
-      currentSource: 'chase',
-      currentPositionSeconds: 1_234,
-      trigger: 'recording-updated',
-      recording: {
-        status: 'finished',
-        hasEncoded: true,
-        hasOriginal: true,
-        liveEnabled: true,
-      },
-    })
-
-    expect(transition).toEqual({
-      kind: 'keep-current',
-      source: 'chase',
-      positionSeconds: 1_234,
-    })
-  })
-
-  it.each([
-    'opened',
-    'source-range-exit',
-    'ended',
-    'source-error',
-    'reopened',
-  ] satisfies RecordingPlaybackTransitionTrigger[])(
-    '%s reselects from the latest recording state and carries the current source position',
-    (trigger) => {
-      const transition = transitionRecordingPlaybackSource({
-        currentSource: 'chase',
-        currentPositionSeconds: 1_234,
-        trigger,
-        recording: {
-          status: 'finished',
-          hasEncoded: true,
-          hasOriginal: true,
-          liveEnabled: true,
-        },
-      })
-
-      expect(transition).toEqual({
-        kind: 'reselect',
-        source: 'encoded',
-        positionSeconds: 1_234,
-      })
-    },
-  )
-
-  it('reselects on a range exit even when the selected source kind remains chase', () => {
-    const transition = transitionRecordingPlaybackSource({
-      currentSource: 'chase',
-      currentPositionSeconds: 1_234,
-      trigger: 'source-range-exit',
-      recording: {
-        status: 'recording',
-        hasEncoded: false,
-        hasOriginal: true,
-        liveEnabled: true,
-      },
-    })
-
-    expect(transition).toEqual({
-      kind: 'reselect',
-      source: 'chase',
-      positionSeconds: 1_234,
-    })
-  })
-
-  it('preserves an explicit zero position instead of treating it as absent', () => {
-    const transition = transitionRecordingPlaybackSource({
-      currentSource: 'chase',
-      currentPositionSeconds: 0,
-      trigger: 'source-error',
-      recording: {
-        status: 'finished',
-        hasEncoded: true,
-        hasOriginal: true,
-        liveEnabled: true,
-      },
-    })
-
-    expect(transition).toEqual({
-      kind: 'reselect',
-      source: 'encoded',
-      positionSeconds: 0,
-    })
-  })
 })

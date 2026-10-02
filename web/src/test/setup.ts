@@ -38,6 +38,13 @@ Element.prototype.scrollIntoView = function (this: Element) {}
 // 残らないようにするため）。window.scrollTo と同じ理由でスタブする。
 HTMLMediaElement.prototype.load = function (this: HTMLMediaElement) {}
 
+// jsdom の play() は「未実装」で undefined を返す。ポスターの ▶ で作られたプレイヤーは最初の
+// canplay で play() を呼ぶので、実ブラウザと同じく Promise を返すスタブを置く（再生が実際に
+// 進むかは jsdom では判定できない。web/e2e/ の実ブラウザで見る）。
+HTMLMediaElement.prototype.play = function (this: HTMLMediaElement) {
+  return Promise.resolve()
+}
+
 // vitest config で test.globals を有効にしていないため、
 // @testing-library/react の自動クリーンアップ検出（グローバル afterEach の有無）
 // が働かない。前のテストの DOM がそのまま残ると screen クエリが複数要素に

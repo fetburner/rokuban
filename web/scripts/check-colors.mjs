@@ -30,9 +30,9 @@ const ALLOW = new Map([
   // あって、ライト/ダークで変わってはいけない。
   ['src/components/recording-player.tsx', '<video> のレターボックス（映像の無い領域）は黒で固定する'],
   [
-    'src/components/recording-detail-panel.tsx',
-    '録画詳細の再生プレビューはサムネイル上の暗幕・白い操作文字と番組軸を持ち、' +
-      '映像上のコントラストをライト/ダークでも固定する',
+    'src/components/recording-playback-poster.tsx',
+    '再生前のポスターはサムネイル上の暗幕・白い操作文字と番組軸を持ち、' +
+      '映像上のコントラストをライト/ダークでも固定する（再生後の操作バーと同じ理由）',
   ],
   [
     'src/components/recording-playback-controls.tsx',

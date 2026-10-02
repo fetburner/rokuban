@@ -107,6 +107,7 @@ function createFakeServer(options: {
   seriesRecordings?: Recording[]
 }) {
   let recording = options.recording
+  let chaseGone = false
   const sites = options.sites ?? ['default']
   const encodeProfiles = options.encodeProfiles ?? []
   const liveProfiles = options.liveProfiles ?? []
@@ -264,6 +265,8 @@ function createFakeServer(options: {
         url.pathname,
       )
     ) {
+      // 録画が終わった後・idle GC の後は新しい追っかけのセッションを作れない（404）。
+      if (chaseGone) return Promise.resolve(new Response('gone\n', { status: 404 }))
       return Promise.resolve(new Response('#EXTM3U\n', { status: 200 }))
     }
     if (
@@ -272,13 +275,13 @@ function createFakeServer(options: {
     ) {
       return Promise.resolve(new Response(null, { status: 204 }))
     }
-    if (/^\/api\/sites\/[^/]+\/recordings\/\d+\/original-vod\/playlist\.m3u8$/.test(url.pathname)) {
+    if (/^\/api\/sites\/[^/]+\/recordings\/\d+\/original-vod(?:\/offset\/\d+)?\/playlist\.m3u8$/.test(url.pathname)) {
       return Promise.resolve(
         new Response('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\nhd.0.m3u8\n', { status: 200 }),
       )
     }
     if (
-      /^\/api\/sites\/[^/]+\/recordings\/\d+\/original-vod\/leave$/.test(url.pathname) &&
+      /^\/api\/sites\/[^/]+\/recordings\/\d+\/original-vod(?:\/offset\/\d+)?\/leave$/.test(url.pathname) &&
       method === 'POST'
     ) {
       return Promise.resolve(new Response(null, { status: 204 }))
@@ -288,7 +291,17 @@ function createFakeServer(options: {
   })
 
   globalThis.fetch = fetchMock as unknown as typeof fetch
-  return { fetchMock }
+  return {
+    fetchMock,
+    /** setRecording はサーバー側の録画を差し替える（取り直しは呼び出し側が invalidate する）。 */
+    setRecording: (next: Recording) => {
+      recording = next
+    },
+    /** setChaseGone は追っかけのセッションを作れない状態（404）にする。 */
+    setChaseGone: (gone: boolean) => {
+      chaseGone = gone
+    },
+  }
 }
 
 function renderAt(path: string) {
@@ -2237,6 +2250,7 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
       liveProfiles: LIVE_PROFILES,
     })
     renderAt('/recordings/3')
+    await userEvent.setup().click(await screen.findByTestId('recording-playback-start'))
     expect(await screen.findByRole('slider', { name: 'シークバー' })).toHaveAttribute('aria-valuemax', '1800')
   })
 
@@ -2719,5 +2733,162 @@ describe('RecordingDetailPage メニューと版タブの細部 (#1018)', () => 
     await selectDetailTab('版')
     await screen.findByTestId('recording-assets-group')
     expect(screen.queryByRole('list', { name: '録画の版' })).not.toBeInTheDocument()
+  })
+})
+
+// 再生元の選び直し（範囲外のシーク・終端・エラー）。レイアウトと実再生は web/e2e/chase.mjs と
+// web/e2e/recording-original-vod.mjs が実ブラウザで見る。ここは「どの契機で、どの再生元へ、
+// どの位置を持ち越すか」の配線を固定する。
+describe('RecordingDetailPage 再生元の選び直し', () => {
+  const LIVE_PROFILES: LiveProfileSummary[] = [
+    { name: 'hd', height: 720 },
+    { name: 'sd', height: 480 },
+  ]
+  const RUNNING = {
+    startAt: '2026-01-01T12:00:00Z',
+    startedAt: '2026-01-01T12:00:00Z',
+    durationMs: 120_000,
+    status: 'recording' as const,
+    encodeProfiles: ['vod-h264'],
+  }
+  // 録画が終わった後の同じ録画（encoded あり）。
+  const FINISHED = {
+    ...RUNNING,
+    status: 'finished' as const,
+    endedAt: '2026-01-01T12:02:00Z',
+    sizeBytes: 1_000_000,
+    encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }],
+  }
+  const playlistPaths = (fetchMock: ReturnType<typeof createFakeServer>['fetchMock'], kind: string) =>
+    fetchMock.mock.calls
+      .map(([input]) => new URL(String(input), 'http://localhost').pathname)
+      .filter((path) => path.endsWith('/playlist.m3u8') && path.includes(kind))
+
+  async function startChase() {
+    const user = userEvent.setup()
+    const fake = createFakeServer({
+      recording: sampleRecording(RUNNING),
+      liveProfiles: LIVE_PROFILES,
+    })
+    const rendered = renderAt('/recordings/3')
+    await user.click(await screen.findByTestId('recording-playback-start'))
+    await waitFor(() => expect(document.querySelector('video')).not.toBeNull())
+    return { user, ...fake, ...rendered }
+  }
+
+  /** finishRecording は録画が終わった状態を取り直させる（追っかけのセッションはそのまま）。 */
+  async function finishRecording(
+    server: Awaited<ReturnType<typeof startChase>>,
+    overrides: Partial<Recording> = {},
+  ) {
+    server.setRecording(sampleRecording({ ...FINISHED, ...overrides }))
+    await server.queryClient.invalidateQueries()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+
+  it('録画が終わっただけでは追っかけを替えず、終端で encoded へ移り位置を持ち越す', async () => {
+    const server = await startChase()
+    const chaseVideo = document.querySelector('video')!
+    await finishRecording(server)
+    expect(document.querySelector('video')).toBe(chaseVideo)
+
+    setMediaProps(chaseVideo, { currentTime: 10 })
+    fireEvent.ended(chaseVideo)
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src')).toContain('/api/media/recordings/3/file'))
+    const encoded = document.querySelector('video')!
+    setMediaProps(encoded, { currentTime: 0 })
+    fireEvent.loadedMetadata(encoded)
+    expect(encoded.currentTime).toBe(10)
+  })
+
+  it('録画の終端まで見終えたなら、同じ終端に新しい再生元を作らない', async () => {
+    const server = await startChase()
+    const chaseVideo = document.querySelector('video')!
+    await finishRecording(server)
+
+    setMediaProps(chaseVideo, { currentTime: 119 })
+    fireEvent.ended(chaseVideo)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(document.querySelector('video')).toBe(chaseVideo)
+    expect(playlistPaths(server.fetchMock, '/original-vod')).toEqual([])
+  })
+
+  it('追っかけのセッションが消えたら、録画の状態から選び直して今の位置を持ち越す', async () => {
+    const server = await startChase()
+    const chaseVideo = document.querySelector('video')!
+    await finishRecording(server)
+
+    // 位置は 30 秒（再生イベントはまだ無い = このセッションは「再生した」と見なさない）。
+    setMediaProps(chaseVideo, { currentTime: 30 })
+    fireEvent.seeked(chaseVideo)
+    server.setChaseGone(true)
+    // 画質の切替でセッションを張り直すと、追っかけの playlist が 404 になる。
+    await server.user.click(await screen.findByRole('button', { name: '再生設定' }))
+    await server.user.click(within(screen.getByRole('menu', { name: '再生設定' })).getByRole('menuitem', { name: '画質' }))
+    await server.user.click(within(screen.getByRole('menu', { name: '画質' })).getByRole('menuitemradio', { name: 'sd（480p）' }))
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src')).toContain('/api/media/recordings/3/file'))
+    const encoded = document.querySelector('video')!
+    setMediaProps(encoded, { currentTime: 0 })
+    fireEvent.loadedMetadata(encoded)
+    expect(encoded.currentTime).toBe(30)
+  })
+
+  it('押す前に録画が終わって追っかけが 404 でも、保存位置を 0 秒で上書きしない', async () => {
+    const user = userEvent.setup()
+    const fake = createFakeServer({
+      recording: sampleRecording({ ...RUNNING, resumePositionMs: 12_000 }),
+      liveProfiles: LIVE_PROFILES,
+    })
+    const { queryClient } = renderAt('/recordings/3')
+    await screen.findByTestId('recording-playback-start')
+    // ポスターを出したまま録画が終わり（原本のみ）、追っかけは作れなくなる。
+    fake.setRecording(sampleRecording({
+      ...RUNNING,
+      status: 'finished',
+      endedAt: '2026-01-01T12:02:00Z',
+      sizeBytes: 1_000_000,
+      resumePositionMs: 12_000,
+    }))
+    fake.setChaseGone(true)
+    await queryClient.invalidateQueries()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    await user.click(screen.getByTestId('recording-playback-start'))
+    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod').length).toBeGreaterThan(0))
+    const video = document.querySelector('video')!
+    setMediaProps(video, { currentTime: 0 })
+    fireEvent.loadedMetadata(video)
+    expect(video.currentTime).toBe(12)
+  })
+
+  it('同じ再生元のままのエラーは上限つきで張り直し、上限を超えたらエラー表示に落とす', async () => {
+    const user = userEvent.setup()
+    const fake = createFakeServer({
+      recording: sampleRecording(RUNNING),
+      liveProfiles: LIVE_PROFILES,
+    })
+    fake.setChaseGone(true)
+    renderAt('/recordings/3')
+    await user.click(await screen.findByTestId('recording-playback-start'))
+    await screen.findByRole('button', { name: '再読み込み' })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    // 最初の 1 回 + 張り直し 2 回。
+    expect(playlistPaths(fake.fetchMock, '/chase')).toHaveLength(3)
+  })
+
+  it('原本 HLS のまま範囲外へシークしても video を作り直さない（再生元が同じなら中で張り直す）', async () => {
+    const user = userEvent.setup()
+    const fake = createFakeServer({
+      recording: sampleRecording({ ...FINISHED, encodedAssets: [] }),
+      liveProfiles: LIVE_PROFILES,
+    })
+    renderAt('/recordings/3')
+    await user.click(await screen.findByTestId('recording-playback-start'))
+    await waitFor(() => expect(document.querySelector('video')).not.toBeNull())
+    const video = document.querySelector('video')!
+    const slider = await screen.findByRole('slider', { name: 'シークバー' })
+    fireEvent.keyDown(slider, { key: 'End' })
+    fireEvent.keyUp(slider, { key: 'End' })
+    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod/offset/').length).toBeGreaterThan(0))
+    expect(document.querySelector('video')).toBe(video)
   })
 })
