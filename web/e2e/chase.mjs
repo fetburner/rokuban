@@ -374,7 +374,29 @@ await page.route(`**${chaseBase}/offset/*/segments/*`, async (route) => {
   await route.fulfill({ status: 200, contentType: 'video/mp2t', body: readFileSync(file) })
 })
 
-log('\n=== ① 録画詳細の #chase で追っかけプレイヤーを開く ===')
+log('\n=== ① 通常表示は追っかけのポスターを出し、#chase 直リンクは再生を始める ===')
+await page.goto(`${URL_BASE}/recordings/1`, { waitUntil: 'domcontentloaded' })
+const poster = page.getByTestId('recording-playback-poster')
+await poster.waitFor({ timeout: 15000 })
+if (await page.locator('video').count() !== 0 || playlistRequests !== 0) {
+  ng.push(`① 通常表示で追っかけ変換を始めた（video=${await page.locator('video').count()}, playlists=${playlistRequests}）`)
+}
+const previewRecordedGeometry = await page.evaluate(() => {
+  const preview = document.querySelector('[data-testid="recording-playback-preview-recorded"]')
+  if (!preview) return undefined
+  return {
+    left: Number.parseFloat(preview.style.left),
+    width: Number.parseFloat(preview.style.width),
+  }
+})
+const expectedRecordingStartFraction = recordingHeadOffsetSeconds / (recording.durationMs / 1000) * 100
+if (previewRecordedGeometry === undefined ||
+  Math.abs(previewRecordedGeometry.left - expectedRecordingStartFraction) > 0.1 ||
+  previewRecordedGeometry.width <= 0) {
+  ng.push(`① 遅れて開始した録画のポスター塗りが実録画開始位置から始まらない（${JSON.stringify(previewRecordedGeometry)}; 期待 left=${expectedRecordingStartFraction.toFixed(2)}%）`)
+}
+await captureEvidence('chase-before-play-desktop.png')
+
 await page.goto(`${URL_BASE}/recordings/1#chase`, { waitUntil: 'domcontentloaded' })
 const playbackGroup = page.getByTestId('recording-playback-group')
 await playbackGroup.waitFor({ timeout: 15000 })
@@ -445,6 +467,20 @@ if (initialFrameGeometry === undefined || [
   log(
     `  desktop player/bar/track: ${initialFrameGeometry.frameWidth.toFixed(0)}/${initialFrameGeometry.controlsWidth.toFixed(0)}/${initialFrameGeometry.trackWidth.toFixed(0)} / content ${initialFrameGeometry.regionWidth.toFixed(0)} px`,
   )
+}
+
+const delayedStartGeometry = await page.evaluate(() => {
+  const player = document.querySelector('[data-testid="chase-timeline-recorded"]')
+  if (!player) return undefined
+  return {
+    playerLeft: Number.parseFloat(player.style.left),
+    playerWidth: Number.parseFloat(player.style.width),
+  }
+})
+if (delayedStartGeometry === undefined ||
+  Math.abs(delayedStartGeometry.playerLeft - expectedRecordingStartFraction) > 0.1 ||
+  delayedStartGeometry.playerWidth <= 0) {
+  ng.push(`① 遅れて開始した録画の塗りが実録画開始位置から始まらない（${JSON.stringify(delayedStartGeometry)}; 期待 left=${expectedRecordingStartFraction.toFixed(2)}%）`)
 }
 
 await page.waitForFunction(
@@ -649,6 +685,7 @@ async function dragTimelineTo(second) {
   return {
     requestedAt,
     selected: previewValue,
+    preview: previewValue,
     pixelResolutionSeconds,
   }
 }
@@ -707,14 +744,56 @@ await page.waitForFunction(
 const baseRequestsBeforeZero = playlistRequests
 const offsetRequestsBeforeZero = offsetPlaylistRequests
 await timelineSlider.focus()
-await page.keyboard.press('Home')
-await page.waitForFunction(
+await timelineSlider.evaluate(() => {
+  window.__e2eHomeKeyEvents = []
+  for (const type of ['keydown', 'keyup']) {
+    window.addEventListener(type, (event) => {
+      if (event.key === 'Home') {
+        window.__e2eHomeKeyEvents.push({
+          type: event.type,
+          target: event.target?.getAttribute?.('data-testid'),
+          active: document.activeElement?.getAttribute?.('data-testid'),
+        })
+      }
+    }, true)
+  }
+})
+const homeFocusTarget = await timelineSlider.evaluate((slider) => document.activeElement === slider)
+await page.keyboard.down('Home')
+const homePreview = await page.waitForFunction(
+  () => Number(document.querySelector('[data-testid="seek-scrub"]')?.getAttribute('aria-valuenow')) === 0,
+  undefined,
+  { timeout: 2000 },
+).then(() => true).catch(() => false)
+await page.keyboard.up('Home')
+const homeSeekCompleted = await page.waitForFunction(
   () => {
     const video = document.querySelector('video')
     return video !== null && video.currentTime < 1
   },
   { timeout: 5000 },
-).catch(() => ng.push('④ Home/0秒で保存位置から先頭へ移動しない'))
+).then(() => true).catch(() => false)
+const homeSeekDiagnostics = await page.evaluate(() => {
+  const video = document.querySelector('video')
+  const slider = document.querySelector('[data-testid="seek-scrub"]')
+  return {
+    keyEvents: window.__e2eHomeKeyEvents,
+    focusOnSlider: document.activeElement === slider,
+    sliderValue: slider?.getAttribute('aria-valuenow'),
+    sliderText: slider?.getAttribute('aria-valuetext'),
+    currentTime: video?.currentTime,
+    seekable: video ? Array.from({ length: video.seekable.length }, (_, index) => [
+      video.seekable.start(index), video.seekable.end(index),
+    ]) : [],
+  }
+})
+log(`  Home seek: focused=${homeFocusTarget}, preview=${homePreview}, completed=${homeSeekCompleted}, ${JSON.stringify(homeSeekDiagnostics)}`)
+if (!homeFocusTarget || !homePreview) {
+  ng.push(`④ Home keydownで軸の先頭をプレビューしない (${JSON.stringify(homeSeekDiagnostics)})`)
+}
+if (!homeSeekCompleted || Math.abs(Number(homeSeekDiagnostics.sliderValue) - recordingHeadOffsetSeconds) > 1) {
+  ng.push(`④ Home/0秒で保存位置から先頭へ移動しない (${JSON.stringify(homeSeekDiagnostics)})`)
+}
 if (playlistRequests !== baseRequestsBeforeZero) ng.push('④ 0秒へのin-range seekでplaylistを再要求する')
 if (offsetPlaylistRequests !== offsetRequestsBeforeZero) ng.push('④ 0秒へのin-range seekでoffset playlistを要求する')
 if (chaseLeaveHints.some((path) => path.includes('/offset/'))) {
@@ -807,7 +886,18 @@ holdResumePositionSeed = false
 
 log('\n=== ⑤ 予定尺を超えた録画のタイムライン ===')
 recording.resumePositionMs = undefined
-recording.durationMs = 5_000
+const extendedMockNow = await page.evaluate(() => Date.now())
+const extendedProgramEndSeconds = 70 * 60 + 12
+const extendedRecordedSeconds = extendedProgramEndSeconds - recordingHeadOffsetSeconds
+recording.startedAt = new Date(extendedMockNow - extendedRecordedSeconds * 1000).toISOString()
+recording.startAt = new Date(Date.parse(recording.startedAt) - recordingHeadOffsetSeconds * 1000).toISOString()
+recording.durationMs = 60 * 60_000
+const extensionClockKey = 'rokuban-e2e-extended-chase-clock'
+await page.addInitScript((key) => {
+  const fixedNow = Number(sessionStorage.getItem(key))
+  if (Number.isFinite(fixedNow) && fixedNow > 0) Date.now = () => fixedNow
+}, extensionClockKey)
+await page.evaluate(([key, fixedNow]) => sessionStorage.setItem(key, String(fixedNow)), [extensionClockKey, extendedMockNow])
 await page.reload({ waitUntil: 'domcontentloaded' })
 await playbackGroup.locator('video').waitFor({ timeout: 15000 })
 const extendedSlider = page.getByRole('slider', { name: 'シークバー' })
@@ -843,6 +933,13 @@ if (!extendedEndLabel?.includes('延長中 · 先端')) {
   ng.push(`⑤ 予定尺を超えた録画の右端に録画中の時刻が表示されない（${extendedEndLabel}）`)
 }
 await captureEvidence('chase-extended-desktop.png')
+const normalMockNow = Date.now()
+recording.startedAt = new Date(normalMockNow - 60_000).toISOString()
+recording.startAt = new Date(normalMockNow - 60_000 - recordingHeadOffsetSeconds * 1000).toISOString()
+recording.durationMs = 60 * 60_000
+await page.evaluate((key) => sessionStorage.removeItem(key), extensionClockKey)
+await page.reload({ waitUntil: 'domcontentloaded' })
+await playbackGroup.locator('video').waitFor({ timeout: 15000 })
 const liveEdgeButton = page.getByRole('button', { name: '録画の先端へ' })
 const liveEdgeBounds = await liveEdgeButton.boundingBox()
 if (liveEdgeBounds === null || liveEdgeBounds.width < 24 || liveEdgeBounds.height < 24) {
@@ -1011,6 +1108,26 @@ if (lastChasePlaylistOffset !== offsetBeforeReturnToFive) {
   }
 }
 await page.locator('video').evaluate((video) => video.pause())
+const savedSeekCompleted = await page.waitForFunction(
+  ([expectedTime, resolution]) => {
+    const video = document.querySelector('video')
+    return video !== null && !video.seeking && Math.abs(video.currentTime - expectedTime) <= resolution / 2 + 0.25
+  },
+  [expectedSavedSeekTime, savedSeekResolution],
+  { timeout: 5000 },
+).then(() => true).catch(() => false)
+const finalSavedState = await page.locator('video').evaluate((video) => ({
+  currentTime: video.currentTime,
+  axis: Number(document.querySelector('[data-testid="seek-scrub"]')?.getAttribute('aria-valuenow')),
+}))
+const savedRecordingPositionSeconds = expectedSavedStartOffset + finalSavedState.currentTime
+const expectedSavedPositionMs = Math.round(savedRecordingPositionSeconds * 1000)
+if (Math.abs(finalSavedState.axis - (recordingHeadOffsetSeconds + savedRecordingPositionSeconds)) > 0.25) {
+  ng.push(`⑤ 範囲内seek後の軸とvideo位置が一致しない（${JSON.stringify(finalSavedState)}）`)
+}
+if (Math.abs(finalSavedState.currentTime - expectedSavedSeekTime) > savedSeekResolution / 2 + 0.25) {
+  ng.push(`⑤ seek先が実ブラウザの1px分解能を超えてずれる（expected=${expectedSavedSeekTime}, actual=${finalSavedState.currentTime}, resolution=${savedSeekResolution}）`)
+}
 const returnWriteDeadline = Date.now() + 5000
 const savedNear = () => playbackPositionWrites
   .slice(writesBeforeReturnToFive)
@@ -1307,6 +1424,11 @@ await page.route(`**${originalVODBase}/offset/*/segments/*`, async (route) => {
   await route.fulfill({ status: 200, contentType: 'video/mp2t', body: readFileSync(file) })
 })
 await page.goto(`${URL_BASE}/recordings/1`, { waitUntil: 'domcontentloaded' })
+await page.getByTestId('recording-playback-start').waitFor({ timeout: 15000 })
+if (originalVODPlaylistRequests.length !== 0) {
+  ng.push(`⑧ 原本 VOD のポスターを開いただけで playlist を要求した (${originalVODPlaylistRequests.length})`)
+}
+await page.getByTestId('recording-playback-start').click()
 await page.locator('video').waitFor({ timeout: 15000 })
 await page
   .waitForFunction(
@@ -1337,12 +1459,27 @@ recording.sizeBytes = undefined
 recording.encodedAssets = []
 delete recording.resumePositionMs
 await page.goto(`${URL_BASE}/recordings/1#chase`, { waitUntil: 'domcontentloaded' })
+await page.reload({ waitUntil: 'domcontentloaded' })
 await playbackGroup.locator('video').waitFor({ timeout: 15000 })
 const finishingVideo = playbackGroup.locator('video')
-await finishingVideo.evaluate(async (video) => {
+await page.waitForFunction(() => {
+  const video = document.querySelector('video')
+  return video !== null &&
+    video.readyState >= HTMLMediaElement.HAVE_METADATA &&
+    video.seekable.length > 0
+}, undefined, { timeout: 15000 }).catch(() => ng.push('⑨ 録画完了テスト前に追っかけ media range が揃わない'))
+const finishingPlay = await finishingVideo.evaluate(async (video) => {
   video.muted = true
-  await video.play()
+  try {
+    await video.play()
+    return { playing: !video.paused, error: undefined }
+  } catch (error) {
+    return { playing: false, error: String(error) }
+  }
 })
+if (!finishingPlay.playing) {
+  ng.push(`⑨ 準備済み追っかけ動画の再生を開始できない（${finishingPlay.error ?? 'paused のまま'}）`)
+}
 await page.waitForFunction(() => {
   const video = document.querySelector('video')
   return video !== null && video.videoWidth > 0 && video.currentTime > 1 && !video.paused
@@ -1401,6 +1538,16 @@ const originalOffsetDeadline = Date.now() + 10000
 while (originalOffsetPlaylistRequests.length === originalOffsetsBeforeSeek && Date.now() < originalOffsetDeadline) {
   await page.waitForTimeout(50)
 }
+await page.waitForFunction((expectedPosition) => {
+  const video = document.querySelector('video')
+  const slider = document.querySelector('[data-testid="seek-scrub"]')
+  const axisPosition = Number(slider?.getAttribute('aria-valuenow'))
+  return video !== null && video.readyState >= HTMLMediaElement.HAVE_METADATA &&
+    Number.isFinite(axisPosition) && Math.abs(axisPosition - expectedPosition) < 0.25 &&
+    Math.abs(video.currentTime) < 0.25
+}, seekToOriginalResult.selected, { timeout: 10000 }).catch(() => {
+  ng.push('⑩ 原本 HLS の offset が video と軸へ反映されない')
+})
 const requestedOriginalOffsets = originalOffsetPlaylistRequests.slice(originalOffsetsBeforeSeek)
 const carriedOriginalPosition = Number(await page.getByTestId('seek-scrub').getAttribute('aria-valuenow'))
 const originalVideoState = await page.locator('video').evaluate((video) => ({

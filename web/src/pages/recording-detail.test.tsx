@@ -592,7 +592,7 @@ describe('RecordingDetailPage', () => {
         renderAt('/recordings/3')
 
         if (_name === '原本のみ（HLS プレイヤー内）') {
-          await screen.findByRole('region', { name: '原本 TS をブラウザ再生' })
+          await user.click(await screen.findByTestId('recording-playback-start'))
           await screen.findByRole('button', { name: '再生設定' })
           expect(screen.queryByRole('button', { name: '視聴済みにする' })).not.toBeInTheDocument()
         }
@@ -1027,12 +1027,15 @@ describe('RecordingDetailPage', () => {
     expect(slider.getAttribute('aria-valuetext')).toMatch(/^58:00 \/ 録画済み 60:0[0-1]$/)
     expect(screen.queryByRole('button', { name: '最新' })).not.toBeInTheDocument()
     expect(screen.queryByRole('slider', { name: '追っかけ再生の位置' })).not.toBeInTheDocument()
-    const region = screen.getByRole('region', { name: '追っかけ再生' })
-    const track = region.querySelector('[data-testid="chase-timeline-track"]')
+    const group = screen.getByTestId('recording-playback-group')
+    const track = group.querySelector('[data-testid="chase-timeline-track"]')
     expect(track).not.toBeNull()
     expect(track?.closest('[data-testid="player-controls"]')).not.toBeNull()
-    expect(region.querySelector('[data-testid="chase-live-edge"]')).not.toBeNull()
-    expect(region.querySelector('[data-testid="chase-timeline-end"]')?.textContent).toContain('予定')
+    expect(group.querySelector('[data-testid="chase-live-edge"]')).not.toBeNull()
+    expect(group.querySelector('[data-testid="chase-timeline-end"]')?.textContent).toContain('予定')
+    expect(screen.queryByRole('heading', { name: '追っかけ再生' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '閉じる' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('recording-playback-start')).not.toBeInTheDocument()
     expect(screen.getByTestId('playback-time').textContent).toMatch(/\/ 録画済み /)
   })
 
@@ -1914,7 +1917,7 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
   }
 
   /** chaseRecording は追っかけを出せる録画（録画中 + 追っかけの VOD プロファイル）。 */
-  function chaseRecording(): Recording {
+  function chaseRecording(overrides: Partial<Recording> = {}): Recording {
     const now = Date.now()
     return sampleRecording({
       startAt: new Date(now - 60 * 60_000).toISOString(),
@@ -1923,8 +1926,64 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
       status: 'recording',
       // VOD 側のプロファイル。再生位置のキーはこちらで作る（画質とは別の軸）
       encodeProfiles: ['vod-h264'],
+      ...overrides,
     })
   }
+
+  it('録画詳細は1つの再生枠を使い、通常表示では再生操作まで追っかけを始めない', async () => {
+    const user = userEvent.setup()
+    const { fetchMock } = createFakeServer({
+      recording: chaseRecording(),
+      playbackState: { positionMs: 12 * 60_000 },
+      liveProfiles: LIVE_PROFILES,
+    })
+
+    renderAt('/recordings/3')
+
+    await screen.findByTestId('recording-playback-start')
+    expect(screen.queryByRole('heading', { name: '追っかけ再生' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '閉じる' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '追っかけ再生' })).not.toBeInTheDocument()
+    expect(document.querySelectorAll('video')).toHaveLength(0)
+    expect(chasePlaylistURLs(fetchMock)).toEqual([])
+
+    await user.click(screen.getByTestId('recording-playback-start'))
+    await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
+    expect(document.querySelectorAll('video')).toHaveLength(1)
+    const video = document.querySelector('video')!
+    fireEvent.loadedMetadata(video)
+    await waitFor(() => expect(video.currentTime).toBe(720))
+  })
+
+  it('追っかけのポスターに再開位置と録画範囲を示し、先頭から見る操作も再生開始まで変換しない', async () => {
+    const user = userEvent.setup()
+    const now = Date.now()
+    const startedAt = new Date(now - 25 * 60_000).toISOString()
+    const { fetchMock } = createFakeServer({
+      recording: chaseRecording({ startAt: startedAt, startedAt, durationMs: 60 * 60_000 }),
+      playbackState: { positionMs: 12 * 60_000 },
+      liveProfiles: LIVE_PROFILES,
+    })
+
+    renderAt('/recordings/3')
+
+    expect(await screen.findByRole('button', { name: '続きから再生（12:00）' })).toBeInTheDocument()
+    expect(screen.getByText('録画済み 25分 · 押すと追っかけ再生を始めます')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '先頭から見る' })).toBeInTheDocument()
+    expect(screen.getByTestId('recording-playback-preview-timeline')).toHaveAttribute(
+      'aria-label',
+      '録画時間: 0:00 から 60:00 まで（予定）、録画済み 25:00',
+    )
+    expect(chasePlaylistURLs(fetchMock)).toEqual([])
+    expect(document.querySelectorAll('video')).toHaveLength(0)
+
+    await user.click(screen.getByRole('button', { name: '先頭から見る' }))
+    await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
+    expect(document.querySelectorAll('video')).toHaveLength(1)
+    const video = document.querySelector('video')!
+    fireEvent.loadedMetadata(video)
+    await waitFor(() => expect(video.currentTime).toBe(0))
+  })
 
   /**
    * 切替の配線（受け入れ 6）。`?profile=` の値が `chasePlaylistURL` に届くこと、
@@ -1990,7 +2049,7 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
 
     renderAt('/recordings/3#chase')
 
-    await screen.findByRole('region', { name: '追っかけ再生' })
+    await screen.findByRole('button', { name: '再生設定' })
     await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
     await user.click(screen.getByRole('button', { name: '再生設定' }))
     expect(screen.queryByLabelText('画質')).not.toBeInTheDocument()
@@ -2007,7 +2066,7 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
 
     renderAt('/recordings/3#chase')
 
-    await screen.findByRole('region', { name: '追っかけ再生' })
+    await screen.findByRole('button', { name: '再生設定' })
     await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
     await user.click(screen.getByRole('button', { name: '再生設定' }))
     expect(screen.queryByLabelText('画質')).not.toBeInTheDocument()
@@ -2076,7 +2135,7 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
     renderAt('/recordings/3?liveProfile=sd#chase')
 
     // 一覧が未解決の間はプレイリストを要求しない
-    await screen.findByRole('region', { name: '追っかけ再生' })
+    await screen.findByText('再生設定を読み込み中…')
     expect(chasePlaylistURLs(fetchMock)).toEqual([])
 
     await act(async () => {
@@ -2138,7 +2197,8 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
 
     renderAt('/recordings/3')
 
-    expect(await screen.findByRole('region', { name: '原本 TS をブラウザ再生' })).toBeInTheDocument()
+    await user.click(await screen.findByTestId('recording-playback-start'))
+    await screen.findByRole('button', { name: '再生設定' })
     expect(await screen.findByTestId('chapter-marker')).toBeInTheDocument()
     await user.click(await screen.findByRole('button', { name: '再生設定' }))
     expect(screen.getByRole('menuitemcheckbox', { name: 'CM を飛ばす' })).toHaveAttribute('aria-checked', 'true')
@@ -2187,7 +2247,8 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
       liveProfiles: LIVE_PROFILES,
     })
     renderAt('/recordings/3')
-    await screen.findByRole('region', { name: '原本 TS をブラウザ再生' })
+    await user.click(await screen.findByTestId('recording-playback-start'))
+    await screen.findByRole('button', { name: '再生設定' })
     await user.click(await screen.findByRole('button', { name: '再生設定' }))
     await screen.findByRole('menuitem', { name: '画質' })
     await waitFor(() => expect(document.querySelector('video')).toBeInTheDocument())
@@ -2243,7 +2304,7 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
       playbackState,
     })
     renderAt('/recordings/3#chase')
-    await screen.findByRole('region', { name: '追っかけ再生' })
+    await screen.findByRole('button', { name: '再生設定' })
     await waitFor(() => expect(document.querySelector('video')).toBeInTheDocument())
     const chaseVideo = document.querySelector('video')!
     Object.defineProperty(chaseVideo, 'currentTime', { value: 42, writable: true, configurable: true })
@@ -2257,7 +2318,8 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
       playbackState,
     })
     renderAt('/recordings/3')
-    await screen.findByRole('region', { name: '原本 TS をブラウザ再生' })
+    await userEvent.setup().click(await screen.findByTestId('recording-playback-start'))
+    await screen.findByRole('slider', { name: 'シークバー' })
     await waitFor(() => expect(document.querySelector('video')).toBeInTheDocument())
     const vodVideo = document.querySelector('video')!
     Object.defineProperty(vodVideo, 'currentTime', { value: 0, writable: true, configurable: true })
@@ -2273,6 +2335,7 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
 
     renderAt('/recordings/3')
 
+    await userEvent.setup().click(await screen.findByTestId('recording-playback-start'))
     expect(await screen.findByText(/HLS 再生プロファイルを利用できません/)).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: '再生' })).not.toBeInTheDocument()
     expect(document.querySelector('video')).not.toBeInTheDocument()

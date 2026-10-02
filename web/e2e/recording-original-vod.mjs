@@ -263,6 +263,7 @@ const playlistRequests = []
 const segmentRequests = []
 const subtitleRequests = []
 const encodedRequests = []
+const encodedRangeRequests = []
 const playbackPositionWrites = []
 const watchedWrites = []
 const seekTileRequests = []
@@ -325,6 +326,7 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
       source: 'auto',
       spans: [{ startMs: 10_000, endMs: 15_000, label: 'CM', cut: true }],
     })
+  }
   if (requestPath === `/api/recordings/${RECORDING_ID}/playback-position` && method === 'PUT') {
     const body = route.request().postDataJSON()
     recording.resumePositionMs = body.positionMs
@@ -387,7 +389,31 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
   if (/^\/api\/media\/recordings\/\d+\/file$/.test(requestPath)) {
     encodedRequests.push(url.href)
     if (recording.encodedAssets.length > 0) {
-      return route.fulfill({ status: 200, contentType: 'video/mp4', body: readFileSync(encodedFixturePath) })
+      const bytes = readFileSync(encodedFixturePath)
+      const range = /^bytes=(\d+)-(\d*)$/.exec(route.request().headers().range ?? '')
+      if (!range) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'video/mp4',
+          body: bytes,
+          headers: { 'Accept-Ranges': 'bytes' },
+        })
+      }
+      const start = Number(range[1])
+      const end = Math.min(range[2] ? Number(range[2]) : bytes.length - 1, bytes.length - 1)
+      if (start >= bytes.length || end < start) {
+        return route.fulfill({ status: 416, headers: { 'Content-Range': `bytes */${bytes.length}` } })
+      }
+      encodedRangeRequests.push({ start, end })
+      return route.fulfill({
+        status: 206,
+        contentType: 'video/mp4',
+        body: bytes.subarray(start, end + 1),
+        headers: {
+          'Accept-Ranges': 'bytes',
+          'Content-Range': `bytes ${start}-${end}/${bytes.length}`,
+        },
+      })
     }
     return route.fulfill({ status: 404 })
   }
@@ -629,7 +655,13 @@ if (savedPositionMs === undefined || savedPositionMs < 6000 || savedPositionMs >
 const savedPosition = (savedPositionMs ?? 0) / 1000
 log(`  保存位置: ${savedPosition}s (${savedPositionMs}ms)`)
 
+const playlistsBeforeReload = playlistRequests.length
 await page.reload({ waitUntil: 'domcontentloaded' })
+await page.getByTestId('recording-playback-start').waitFor({ timeout: 15000 })
+if (playlistRequests.length !== playlistsBeforeReload) {
+  ng.push('② reload 後、再生ボタンを押す前に original HLS playlist を要求した')
+}
+await page.getByTestId('recording-playback-start').click()
 await page.locator('video').waitFor({ timeout: 15000 })
 await page.waitForFunction((expected) => {
   const element = document.querySelector('video')
@@ -663,7 +695,13 @@ log('\n=== ④ ENDLIST の無い変換中 playlist の先端で ended が発火�
 growingEdge = true
 delete recording.resumePositionMs
 const watchedCountBeforeGrowingEdge = watchedWrites.length
-await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
+const playlistsBeforeGrowingEdge = playlistRequests.length
+await page.reload({ waitUntil: 'domcontentloaded' })
+await page.getByTestId('recording-playback-start').waitFor({ timeout: 15000 })
+if (playlistRequests.length !== playlistsBeforeGrowingEdge) {
+  ng.push('④ 再生ボタンを押す前に変換中 original HLS playlist を要求した')
+}
+await page.getByTestId('recording-playback-start').click()
 await page.locator('video').waitFor({ timeout: 15000 })
 await page.waitForFunction(() => {
   const element = document.querySelector('video')
@@ -1025,8 +1063,6 @@ const sampleOffsetPlayer = (target) => target.evaluate(() => {
 log('\n=== ⑥ エンコード完了時は HLS を保ち、次の範囲外 seek で encoded へ移る ===')
 delete recording.resumePositionMs
 recording.encodedAssets = []
-await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
-await page.locator('video').waitFor({ timeout: 15000 })
 await page.waitForFunction(() => {
   const element = document.querySelector('video')
   return element !== null && element.duration > 0 && element.readyState >= HTMLMediaElement.HAVE_METADATA

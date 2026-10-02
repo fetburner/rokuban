@@ -63,6 +63,16 @@ export function formatPlaybackTime(value: number, withHours = true): string {
   return negative ? `-${formatted}` : formatted
 }
 
+/** formatTimelineTime は番組の時間軸を合計分と秒（70:12 など）で返す。 */
+export function formatTimelineTime(value: number): string {
+  if (!Number.isFinite(value)) return '0:00'
+  const negative = value < 0
+  const seconds = Math.floor(Math.abs(value))
+  const minutes = Math.floor(seconds / 60)
+  const remaining = seconds % 60
+  return `${negative ? '-' : ''}${minutes}:${String(remaining).padStart(2, '0')}`
+}
+
 /** dayKey は日付ヘッダのグルーピングに使うローカル日付のキーを返す。 */
 export function dayKey(iso: string): string {
   const d = new Date(iso)

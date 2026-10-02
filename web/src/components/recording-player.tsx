@@ -27,6 +27,7 @@ import {
   playbackPositionWrite,
   playbackResumeSeconds,
   persistPlaybackPosition,
+  cutMsToOriginalMs,
   recordingFileURL,
   recordingSubtitleURL,
   savePlaybackRate,
@@ -46,6 +47,11 @@ const AUTO_ADVANCE_SECONDS = 3
 type RecordingPlayerProps = {
   recordingId: number
   resumePositionMs?: number
+  /** 現在の位置を原本時間軸の秒で親へ伝える。 */
+  onRecordingPositionChange?: (seconds: number) => void
+  /** 終端 / エラーで再生元を選び直した場合は true を返す。 */
+  onRecordingPlaybackEnded?: (recordingPositionSeconds: number) => boolean
+  onRecordingPlaybackError?: (recordingPositionSeconds: number) => boolean
   /** 90% 到達の視聴済み PUT が通った後に呼ぶ（親が録画クエリを取り直してボタンと未視聴の印を更新する）。 */
   onWatched?: () => void
   /** 視聴済みボタンを出す完了録画かどうか。 */
@@ -121,6 +127,9 @@ export function RecordingPlayer({
   recordingId,
   resumePositionMs,
   onWatched,
+  onRecordingPositionChange,
+  onRecordingPlaybackEnded,
+  onRecordingPlaybackError,
   showWatched = false,
   watched = false,
   watchedPending = false,
@@ -388,12 +397,20 @@ export function RecordingPlayer({
     )
   }, [playingCut])
 
+  const originalPositionSeconds = useCallback((video: HTMLVideoElement) => {
+    const keepRanges = frozenKeepRangesRef.current
+    return playingCut && keepRanges && keepRanges.length > 0
+      ? cutMsToOriginalMs(video.currentTime * 1000, keepRanges) / 1000
+      : video.currentTime
+  }, [playingCut])
+
   const rememberPosition = useCallback((video: HTMLVideoElement) => {
     if (restorePending.current) return
     const write = currentWrite(video)
+    onRecordingPositionChange?.(originalPositionSeconds(video))
     if (write === null) return
     carriedPositionRef.current = { recordingId, ms: write.kind === 'put' ? write.positionMs : 0 }
-  }, [currentWrite, recordingId])
+  }, [currentWrite, onRecordingPositionChange, originalPositionSeconds, recordingId])
 
   const saveCurrentPosition = useCallback((video: HTMLVideoElement, keepalive = false) => {
     const write = currentWrite(video)
@@ -836,9 +853,13 @@ export function RecordingPlayer({
               frame.onPause()
               saveCurrentPosition(e.currentTarget)
             }}
-            onEnded={() => {
+            onEnded={(e) => {
+              if (onRecordingPlaybackEnded?.(originalPositionSeconds(e.currentTarget)) === true) return
               setCountdownSeconds(AUTO_ADVANCE_SECONDS)
               setEndCardFor(recordingId)
+            }}
+            onError={(e) => {
+              onRecordingPlaybackError?.(originalPositionSeconds(e.currentTarget))
             }}
             onVolumeChange={(e) => {
               frame.onVolumeChange(e.currentTarget)
