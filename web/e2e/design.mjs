@@ -60,6 +60,7 @@ import {
   GetStorageResponseItem,
   ListCapacityOveragesResponseItem,
   ListCircuitBreakersResponseItem,
+  ListContinueWatchingResponseItem,
   ListLabelRulesResponseItem,
   ListProgramsResponseItem,
   ListRecordingShelvesResponseItem,
@@ -363,6 +364,37 @@ const recordings = [
   { id: 14, site: SITE, source: 'rule', serviceName: 'NHKEテレ', channelType: 'GR', channel: '26', networkId: 32737, serviceId: 1032, eventId: 14, title: '連続テレビ小説', startAt: iso(nowMs - 74 * HOUR), durationMs: 900_000, status: 'finished', keepOriginal: 'always', cmDetection: { state: 'disabled' }, sizeBytes: 1_234_567_890, createdAt: iso(nowMs - 74 * HOUR) },
 ]
 
+/** ホーム「見る」側の帯と「次に見る 1 本」専用の再開位置フィクスチャ。 */
+const homeContinueWatching = [
+  {
+    ...recordings[1],
+    id: 21,
+    eventId: 21,
+    title: '葬送のフリーレン 第3話「人を殺す魔法」',
+    serviceName: '日テレ',
+    startAt: '2026-09-26T14:30:00.000Z',
+    durationMs: 24 * 60_000,
+    resumePositionMs: 14 * 60_000 + 40_000,
+    dropSummary: undefined,
+  },
+  ...[
+    '孤独のグルメ',
+    'ドキュメント72時間',
+    'アメトーーク!',
+    'カンブリア宮殿',
+    'サイエンスZERO',
+  ].map((title, i) => ({
+    ...recordings[1],
+    id: 22 + i,
+    eventId: 22 + i,
+    title,
+    startAt: iso(nowMs - (i + 1) * HOUR),
+    resumePositionMs: (i + 1) * 60_000 + 10_000,
+    watchedAt: undefined,
+    dropSummary: undefined,
+  })),
+]
+
 const recordingDetailScenarios = {
   completed: {
     ...recordings[1],
@@ -504,6 +536,11 @@ await validateFixturesOrExit(
     // transferringRecording も既定オプション（multiSite + extraRecording）で
     // 実際にブラウザへ配る（:308 参照）ので検証対象に含める。
     ...[...recordings, transferringRecording].map((r) => [`recordings#${r.id}`, ListRecordingsResponseItem, r]),
+    ...homeContinueWatching.map((r, i) => [
+      `homeContinueWatching[${i}]`,
+      ListContinueWatchingResponseItem,
+      r,
+    ]),
     ...seriesHubRecordings.map((r) => [`seriesHubRecordings#${r.id}`, ListRecordingsResponseItem, r]),
     ...seriesHubUpcoming.map((p, i) => [`seriesHubUpcoming[${i}]`, ListRecordingUpcomingResponseItem, p]),
     ...rules.map((r, i) => [`rules[${i}]`, ListRulesResponseItem, r]),
@@ -570,6 +607,7 @@ await validateFixturesOrExit(
  */
 function apiHandler({
   withBreaker = false,
+  homeModeFixture = false,
   delayPath = null,
   delayMs = 0,
   emptyHome = false,
@@ -627,7 +665,12 @@ function apiHandler({
       if (emptyHome) return json([])
       return json(layoutScenario === 'capacity' ? layoutCapacityReservations : reservations)
     }
-    if (p === '/api/capacity/overages') return json(emptyHome ? [] : overages)
+    if (p === '/api/capacity/overages') {
+      // #1020 のモード比較ショットは mock の警告 3 件（容量超過・ドロップ・失敗）
+      // を再現する。ほかの既存シナリオでは従来の全超過 fixture を使う。
+      return json(emptyHome ? [] : homeModeFixture ? overages.slice(0, 1) : overages)
+    }
+    if (p === '/api/recordings/continue-watching') return json(emptyHome ? [] : homeContinueWatching)
     if (p === '/api/recordings') {
       const seriesOf = url.searchParams.get('seriesOf')
       if (seriesOf !== null) {
@@ -882,12 +925,11 @@ async function computedVar(locator, varName) {
 
 /** 撮る画面。`wait` はその画面で描画完了と見なせる目印。 */
 const screens = [
-  // ホーム（M8-3, issue #242）は `/` を新設で受け取り、番組表は `/programs` へ
-  // 移設した。フィクスチャは「いま録画中」1 件・「今夜〜明日の予約」窓に入る
+  // 既存ホームの回帰は M8-25 の管理モードで検証する。フィクスチャは「いま録画中」1 件・「今夜〜明日の予約」窓に入る
   // 予約複数件・容量超過 1 件・失敗録画 1 件（id 13「アニメ劇場」、recency 窓の
-  // 内側）（いずれも→「警告」）・「直近の完了」複数件を持つので、4 セクション
-  // すべてが一度に撮れる。
-  { name: 'home', path: '/', wait: 'text=いま録画中' },
+  // 内側）（いずれも→「警告」）・「直近の完了」複数件を持つので、5 セクション
+  // すべてが一度に撮れる。初回既定の「見る」は専用判定で `/` のまま確認する。
+  { name: 'home', path: '/?mode=ops', wait: 'text=いま録画中' },
   { name: 'programs', path: '/programs', wait: 'li[data-program-id], [data-testid="program-grid-now-line"]' },
   { name: 'reservations', path: '/reservations', wait: 'text=チューナー不足' },
   { name: 'recordings', path: '/recordings', wait: 'text=録画中' },
@@ -934,6 +976,8 @@ const mobile = viewports[1]
  * だけになる（レビュー指摘）。
  */
 const mobileWide = { name: 'mobile-wide', width: 390, height: 844 }
+/** issue #1020 の主役幅（本文幅とのサムネイル比を測る）。 */
+const homeDesktop = { name: 'home-desktop', width: 1280, height: 800 }
 /** 番組ハブ配置判定専用。受け入れ条件の 400px 幅をそのまま測る。 */
 const seriesHubMobile = { name: 'series-hub-400', width: 400, height: 844 }
 /** 同じ判定をデスクトップ幅でも回す。 */
@@ -1251,13 +1295,150 @@ log('\n=== ① スクリーンショット ===')
 for (const viewport of viewports) {
   for (const theme of themes) {
     for (const screen of screens) {
-      const { context, page } = await open(viewport, theme, screen)
+      const screenOptions = screen.name === 'home' ? { homeModeFixture: true } : {}
+      const { context, page } = await open(viewport, theme, screen, screenOptions)
       const file = path.join(OUT_DIR, `${screen.name}-${theme}-${viewport.name}.png`)
       await page.screenshot({ path: file })
       log(`  ${path.basename(file)}`)
       await checkMissingStrings(page, `${screen.name}/${theme}/${viewport.name}`)
       await context.close()
     }
+  }
+}
+
+// --- ホーム M8-25: モードと「次に見る 1 本」の実寸 -------------------------
+// jsdom では測れないサムネイル比・固定ナビとの重なり・バッジのはみ出しを、
+// 実ブラウザで 1280 / 360 / 390px において測る。各モードの desktop/phone は
+// ライト・ダーク両方を撮り、issue のモックと並べて確認する。
+for (const mode of ['watch', 'ops']) {
+  for (const theme of themes) {
+    for (const viewport of [homeDesktop, mobile, mobileWide]) {
+      const screen = { name: `home-${mode}`, path: `/?mode=${mode}` }
+      const { context, page } = await open(viewport, theme, screen, { homeModeFixture: true })
+      await page.locator('main > header').waitFor({ timeout: 5000 }).catch(() => {})
+
+      const toggle = page.getByTestId('home-mode-toggle')
+      if ((await toggle.count()) === 0) {
+        ng.push(`[${mode}/${theme}/${viewport.width}px] ホームのモード切替が見つからない`)
+      }
+      const badge = page.getByTestId('home-warning-count')
+      if ((await badge.count()) === 0) {
+        ng.push(`[${mode}/${theme}/${viewport.width}px] 警告件数バッジが見つからない`)
+      } else if ((await badge.innerText()).trim() !== '3') {
+        ng.push(`[${mode}/${theme}/${viewport.width}px] 警告件数が3でない（${(await badge.innerText()).trim()}）`)
+      }
+
+      const geometry = await page.evaluate(() => {
+        const rect = (selector) => {
+          const element = document.querySelector(selector)
+          if (!element) return null
+          const { x, y, width, height, bottom, right } = element.getBoundingClientRect()
+          return { x, y, width, height, bottom, right }
+        }
+        const badgeElement = document.querySelector('[data-testid="home-warning-count"]')
+        const badgeStyle = badgeElement ? getComputedStyle(badgeElement) : null
+        return {
+          content: rect('[data-testid="bounded-page-content"]'),
+          thumbnail: rect('[data-testid="home-next-watch-thumbnail"]'),
+          primary: rect('[data-testid="home-primary-action"]'),
+          header: rect('main > header'),
+          nav: rect('[data-testid="bottom-nav"]'),
+          toggle: rect('[data-testid="home-mode-toggle"]'),
+          badge: rect('[data-testid="home-warning-count"]'),
+          badgeWhiteSpace: badgeStyle?.whiteSpace ?? null,
+          badgeScrollWidth: badgeElement?.scrollWidth ?? null,
+          badgeClientWidth: badgeElement?.clientWidth ?? null,
+        }
+      })
+
+      if (geometry.toggle !== null && geometry.badge !== null) {
+        const { toggle: frame, badge: count } = geometry
+        if (
+          count.x < frame.x ||
+          count.y < frame.y ||
+          count.right > frame.right ||
+          count.bottom > frame.bottom
+        ) {
+          ng.push(`[${mode}/${theme}/${viewport.width}px] 管理バッジがトグル枠からはみ出す`)
+        }
+        if (
+          geometry.badgeWhiteSpace !== 'nowrap' ||
+          geometry.badgeScrollWidth > geometry.badgeClientWidth
+        ) {
+          ng.push(`[${mode}/${theme}/${viewport.width}px] 管理バッジが折り返す`)
+        }
+      }
+
+      if (mode === 'watch' && viewport.width === homeDesktop.width) {
+        if (geometry.content === null || geometry.thumbnail === null) {
+          ng.push(`[watch/${theme}/1280px] 「次に見る 1 本」か本文の幅を測れない`)
+        } else {
+          const ratio = geometry.thumbnail.width / geometry.content.width
+          log(`  [watch/${theme}/1280px] 主役サムネイル / 本文幅=${ratio.toFixed(3)}`)
+          if (ratio < 0.55) {
+            ng.push(`[watch/${theme}/1280px] 主役サムネイルが本文幅の55%未満（${ratio.toFixed(3)}）`)
+          }
+        }
+      }
+
+      if (mode === 'watch' && (viewport.width === mobile.width || viewport.width === mobileWide.width)) {
+        if (geometry.primary === null || geometry.header === null || geometry.nav === null) {
+          ng.push(`[watch/${theme}/${viewport.width}px] 主ボタン・固定ヘッダー・ボトムナビを測れない`)
+        } else if (
+          geometry.primary.y < geometry.header.bottom ||
+          geometry.primary.bottom > viewport.height ||
+          geometry.primary.bottom > geometry.nav.y
+        ) {
+          ng.push(`[watch/${theme}/${viewport.width}px] 主ボタンが初期画面から隠れる`)
+        }
+      }
+
+      if (viewport.width === homeDesktop.width || viewport.width === mobile.width) {
+        const file = path.join(OUT_DIR, `home-${mode}-${theme}-${viewport.name}.png`)
+        await page.screenshot({ path: file })
+        log(`  ${path.basename(file)}`)
+        await checkMissingStrings(page, `home-${mode}/${theme}/${viewport.name}`)
+      }
+      await context.close()
+    }
+  }
+}
+
+// 初回アクセス（URL も localStorage も空）の既定は「見る」。既存の管理側
+// シナリオは上の mode=ops で維持し、既定値だけは `/` を直接開いて確認する。
+{
+  const screen = { name: 'home-default', path: '/', wait: 'text=続きから再生' }
+  const { context, page } = await open(homeDesktop, 'light', screen, { homeModeFixture: true })
+  const watchLink = page.getByRole('link', { name: '見る', exact: true })
+  const opsLink = page.getByRole('link', { name: '管理', exact: false })
+  if ((await watchLink.getAttribute('aria-current')) !== 'page') {
+    ng.push('home/default: URL・localStorage が空なのに既定が「見る」でない')
+  }
+  if ((await opsLink.getAttribute('aria-current')) === 'page') {
+    ng.push('home/default: URL・localStorage が空なのに「管理」が選択されている')
+  }
+  await context.close()
+}
+
+// ブレーカー発動中の「見る」帯も desktop/phone・ライト/ダークで撮る。
+for (const theme of themes) {
+  for (const viewport of [homeDesktop, mobile]) {
+    const screen = { name: 'home-watch-breaker', path: '/?mode=watch' }
+    const { context, page } = await open(viewport, theme, screen, {
+      withBreaker: true,
+      homeModeFixture: true,
+    })
+    if ((await page.getByTestId('home-watch-breaker-band').count()) === 0) {
+      ng.push(`[home-watch-breaker/${theme}/${viewport.width}px] 見る側のブレーカー帯が無い`)
+    }
+    if ((await page.getByText('削除が保留されています', { exact: false }).count()) > 0) {
+      ng.push(`[home-watch-breaker/${theme}/${viewport.width}px] 共通バナーと見る側の帯が重複する`)
+    }
+    const file = path.join(OUT_DIR, `home-watch-breaker-${theme}-${viewport.name}.png`)
+    await page.screenshot({ path: file })
+    log(`  ${path.basename(file)}`)
+    await checkMissingStrings(page, `home-watch-breaker/${theme}/${viewport.name}`)
+    await context.close()
   }
 }
 
@@ -1494,7 +1675,7 @@ for (const theme of themes) {
     const page = await context.newPage()
     await page.clock.setFixedTime(FIXED_NOW)
     await installApiStubs(page, apiHandler({ emptyHome: true }))
-    await page.goto(URL_BASE + '/', { waitUntil: 'domcontentloaded' })
+    await page.goto(URL_BASE + '/?mode=ops', { waitUntil: 'domcontentloaded' })
     await page
       .locator('div.scanlines', { hasText: '表示できる項目がありません' })
       .first()
@@ -2003,7 +2184,7 @@ for (const spec of boundedListScreens) {
 log("\n=== ①' ホームの空セクション判定 ===")
 {
   const { context, page } = await open(desktop, 'light', screenOf('home'))
-  for (const heading of ['いま録画中', '今夜〜明日の予約', '警告', '直近の完了']) {
+  for (const heading of ['いま録画中', '続きから', '今夜〜明日の予約', '警告', '直近の完了']) {
     const found = await page.getByRole('heading', { name: heading }).count()
     if (found === 0) {
       ng.push(`ホーム: 見出し「${heading}」が既定フィクスチャで出ていない`)
@@ -2035,14 +2216,14 @@ log("\n=== ①' ホームの空セクション判定 ===")
   const page = await context.newPage()
   await page.clock.setFixedTime(FIXED_NOW)
   await installApiStubs(page, apiHandler({ emptyHome: true }))
-  await page.goto(URL_BASE + '/', { waitUntil: 'domcontentloaded' })
+  await page.goto(URL_BASE + '/?mode=ops', { waitUntil: 'domcontentloaded' })
   await page
     .getByText('表示できる項目がありません')
     .waitFor({ timeout: 5000 })
     .catch(() => {
       ng.push('ホーム: 全セクション空でも単一の空状態が出ない')
     })
-  for (const heading of ['いま録画中', '今夜〜明日の予約', '警告', '直近の完了']) {
+  for (const heading of ['いま録画中', '続きから', '今夜〜明日の予約', '警告', '直近の完了']) {
     if ((await page.getByRole('heading', { name: heading }).count()) > 0) {
       ng.push(`ホーム: 全セクション空のはずが見出し「${heading}」が出ている`)
     }
@@ -2135,7 +2316,7 @@ log("\n=== ①''' ホーム: 実時計でのクエリキー安定性（無限再
     if (url.pathname === '/api/capacity/overages') overagesRequests.push(url.toString())
   })
   await installApiStubs(page, apiHandler())
-  await page.goto(URL_BASE + '/', { waitUntil: 'domcontentloaded' })
+  await page.goto(URL_BASE + '/?mode=ops', { waitUntil: 'domcontentloaded' })
   let homeUp = true
   await page
     .locator(screenOf('home').wait)

@@ -448,6 +448,7 @@ Rokuban は利用者という概念を持たない（[api/deployment.md](../api/
 | 番組表の表示形式（リスト / 番組表） | `rokuban:programs:view` | URL の `view` が優先。モバイルは常にリスト |
 | 番組表の時間軸の縮尺 | `rokuban:programs:grid-scale` | 120 / 240 / 480 px/時。URL には持たない |
 | 最後の検索条件 | `rokuban:search:last` | URL が優先（下記） |
+| ホームのモード | `rokuban:home:mode` | `watch` / `ops`。URL の `?mode=` が優先し、初回既定は `watch` |
 
 **再生速度を録画ごとに持たない**のは、速度が「この録画をどう見るか」ではなく「自分が
 どう見るか」の好みだから。録画を変えるたびに 1 倍へ戻ると、毎回選び直しになる。

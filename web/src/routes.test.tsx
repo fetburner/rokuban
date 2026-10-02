@@ -421,6 +421,30 @@ describe('routeTree', () => {
       expect(router.state.location.pathname).toBe('/')
       expect(router.state.location.search).toEqual({})
     })
+
+    it('ホーム mode と録画詳細 fromBeginning の search を検証する', async () => {
+      for (const [path, expected] of [
+        ['/?mode=watch', 'watch'],
+        ['/?mode=ops', 'ops'],
+        ['/?mode=unknown', undefined],
+      ] as const) {
+        const router = createRouter({
+          routeTree,
+          history: createMemoryHistory({ initialEntries: [path] }),
+        })
+        await router.load()
+        expect((router.state.matches.at(-1)!.search as { mode?: unknown }).mode).toBe(expected)
+      }
+
+      const recording = createRouter({
+        routeTree,
+        history: createMemoryHistory({ initialEntries: ['/recordings/12?fromBeginning=true'] }),
+      })
+      await recording.load()
+      expect(
+        (recording.state.matches.at(-1)!.search as { fromBeginning?: unknown }).fromBeginning,
+      ).toBe(true)
+    })
   })
 
   it('/search を開くと検索画面が出て、主ナビゲーションから辿れる', async () => {

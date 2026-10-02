@@ -16,6 +16,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { CircuitBreakerBanner } from '@/components/circuit-breaker-banner'
 import { ConnectionBanner } from '@/components/connection-banner'
+import { readHomeModePreference, resolveHomeMode } from '@/lib/home-mode'
 import { Popover, PopoverClose, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useLiveEnabled } from '@/lib/capabilities'
 import { cn } from '@/lib/utils'
@@ -375,6 +376,15 @@ function Sidebar() {
  */
 function StickyBanners() {
   const ref = useRef<HTMLDivElement>(null)
+  const location = useRouterState({
+    select: (state) => ({ pathname: state.location.pathname, search: state.location.search }),
+  })
+  const watchHome =
+    location.pathname === '/' &&
+    resolveHomeMode(
+      (location.search as Record<string, unknown>).mode,
+      readHomeModePreference(),
+    ) === 'watch'
 
   useLayoutEffect(() => {
     const el = ref.current
@@ -394,7 +404,8 @@ function StickyBanners() {
   return (
     <div ref={ref} className="sticky top-0 z-20">
       <ConnectionBanner />
-      <CircuitBreakerBanner />
+      {/* ホーム「見る」には同じブレーカーを読む側の帯で一度だけ表示する。 */}
+      {!watchHome && <CircuitBreakerBanner />}
     </div>
   )
 }

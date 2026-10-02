@@ -36,6 +36,7 @@ const ALLOW = new Map([
       'マウントしない（issue #234 M7-1）。同じ寸法・同じ黒地にして、押した瞬間の' +
       'レイアウトシフト/フラッシュを避ける --- live-player.tsx と同じ理由',
   ],
+  ['src/components/thumbnail-overlay.tsx', 'サムネイル画像の上に載る局名ラベルと進み線の幕。画像の上の黒で、テーマで変わってはいけない'],
   ['src/components/ui/alert-dialog.tsx', 'ダイアログの幕（shadcn 生成物）。背後を沈める黒で、地の色ではない'],
   ['src/components/ui/dialog.tsx', 'ダイアログの幕（shadcn 生成物）。背後を沈める黒で、地の色ではない'],
 ])

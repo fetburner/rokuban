@@ -4,6 +4,7 @@ import type { ProgramSearchRequest } from './api/generated'
 import { SearchProgramsBody } from './api/zod'
 import { AppShell } from './components/app-shell'
 import { pageTitle } from './lib/document-title'
+import { parseHomeMode, type HomeMode } from './lib/home-mode'
 import { type LiveAudioChoice, validLiveAudio } from './lib/live'
 import { canonicalSearchConditions } from './lib/program-search'
 import {
@@ -72,11 +73,17 @@ const rootRoute = createRootRoute({
 const homeRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
+  validateSearch: (search: Record<string, unknown>): HomePageSearch => ({
+    // `undefined` を明示して、不正な生の値が strict でない useSearch に残らないようにする。
+    mode: parseHomeMode(search.mode),
+  }),
   // ナビ（`components/app-shell.tsx` の `navItems`）・`PageHeader` と同じ
   // 「ホーム」を使う。
   head: () => ({ meta: [{ title: pageTitle('ホーム') }] }),
   component: HomePage,
 })
+
+export type HomePageSearch = { mode?: HomeMode }
 
 /**
  * 番組表のチャンネル絞り込みは `?service=<Service.id>` に持つ。壊れた
@@ -330,6 +337,8 @@ export type RecordingDetailSearch = {
    * で行う。
    */
   liveProfile?: string
+  /** ホームの「最初から」導線。再生位置を復元せず録画の先頭から始める。 */
+  fromBeginning?: boolean
 }
 
 /**
@@ -351,6 +360,7 @@ const recordingDetailRoute = createRoute({
       typeof search.liveProfile === 'string' && search.liveProfile !== ''
         ? search.liveProfile
         : undefined,
+    fromBeginning: search.fromBeginning === true || search.fromBeginning === 'true' ? true : undefined,
   }),
   // 録画名は `useGetRecording`（react-query。コンポーネント側で取得する）が
   // 持っていて、`loader` を持たないこのルートの `head` からは見えない

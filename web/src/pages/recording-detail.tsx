@@ -174,6 +174,7 @@ export function RecordingDetailPage() {
             trash={trash}
             chase={location.hash === 'chase'}
             liveProfile={search.liveProfile}
+            startAtBeginning={search.fromBeginning}
             onSelectLiveProfile={selectLiveProfile}
           />
         </div>

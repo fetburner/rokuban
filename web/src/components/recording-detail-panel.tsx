@@ -123,11 +123,14 @@ export function RecordingDetail({
   trash,
   chase = false,
   liveProfile,
+  startAtBeginning = false,
   onSelectLiveProfile,
 }: {
   recording: Recording
   trash: boolean
   chase?: boolean
+  /** ホームの「最初から」から来た場合は保存位置を復元しない。 */
+  startAtBeginning?: boolean
   /** 追っかけ再生の画質（`?liveProfile=`。issue #874）。未検証の生の値。 */
   liveProfile?: string
   onSelectLiveProfile: (name: string) => void
@@ -463,8 +466,8 @@ export function RecordingDetail({
                   mode="chase"
                   site={recording.site}
                   recordingId={recording.id}
-                  resumePositionMs={recording.resumePositionMs}
-                  startOffsetSeconds={chaseOffsetSeconds}
+                  resumePositionMs={startAtBeginning ? undefined : recording.resumePositionMs}
+                  startOffsetSeconds={startAtBeginning ? 0 : chaseOffsetSeconds}
                   profile={explicitLiveProfile}
                 />
               )}
@@ -523,7 +526,7 @@ export function RecordingDetail({
                     mode="original-vod"
                     site={recording.site}
                     recordingId={recording.id}
-                    resumePositionMs={recording.resumePositionMs}
+                    resumePositionMs={startAtBeginning ? undefined : recording.resumePositionMs}
                     profile={explicitLiveProfile}
                   />
                 </>
@@ -534,7 +537,7 @@ export function RecordingDetail({
           {!trash && !showChase && (encodedAssets.length > 0 || (hasOriginal && !showOriginalVOD)) && (
             <RecordingPlayer
               recordingId={recording.id}
-              resumePositionMs={recording.resumePositionMs}
+              resumePositionMs={startAtBeginning ? undefined : recording.resumePositionMs}
               onWatched={() => void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })}
               preferredProfile={preferredPlaybackProfile}
               encodedAssets={encodedAssets}
