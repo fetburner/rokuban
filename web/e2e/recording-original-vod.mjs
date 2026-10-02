@@ -376,15 +376,27 @@ if (screenshotDir) {
   await page.screenshot({ path: path.join(screenshotDir, 'mobile.png'), fullPage: true, animations: 'disabled' })
   await page.setViewportSize({ width: 1280, height: 900 })
 }
-const audioSelector = page.getByLabel('音声')
-if (await audioSelector.count() !== 1) {
+const settingsMenu = page.getByRole('menu', { name: '再生設定' })
+const audioSettingsRow = settingsMenu.getByRole('menuitem', { name: '音声' })
+if (await audioSettingsRow.count() !== 1) {
   ng.push('① 音声の設定項目がメニューにない')
 } else {
   const masterCountBeforeAudioChange = masterPlaylistRequests.length
   const leaveCountBeforeAudioChange = originalVODLeaveRequests.length
-  await audioSelector.selectOption('main')
-  if (await audioSelector.inputValue() !== 'main') ng.push('① 主音声を選択できない')
+  await audioSettingsRow.click()
+  const audioMenu = page.getByRole('menu', { name: '音声' })
+  const audioLabels = (await audioMenu.getByRole('menuitemradio').allTextContents()).map((label) => label.trim())
+  if (audioLabels.length !== 3 || audioLabels[0] !== '標準' || audioLabels[1] !== '主音声' || audioLabels[2] !== '副音声') {
+    ng.push(`① 音声の選択肢が不正 (${audioLabels.join(', ')})`)
+  }
+  await audioMenu.getByRole('menuitemradio', { name: '主音声' }).click()
   await page.waitForTimeout(500)
+  await audioSettingsButton.click()
+  await page.getByRole('menu', { name: '再生設定' }).getByRole('menuitem', { name: '音声' }).click()
+  if (await page.getByRole('menu', { name: '音声' }).getByRole('menuitemradio', { name: '主音声' }).getAttribute('aria-checked') !== 'true') {
+    ng.push('① 主音声の選択状態が維持されない')
+  }
+  await audioSettingsButton.click()
   if (!audioPlaylistRequests.includes('playlist_2.m3u8')) {
     ng.push(`① 主音声の playlist を取得しない (${audioPlaylistRequests.join(', ') || 'none'})`)
   }

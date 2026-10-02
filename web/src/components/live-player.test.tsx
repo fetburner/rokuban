@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -6,6 +6,20 @@ import { LivePlayer } from '@/components/live-player'
 import { liveStallTimeoutMs } from '@/lib/live'
 import type { LiveDiagnostics, StallHandling } from '@/lib/live'
 import { savePlaybackRate } from '@/lib/playback-position'
+
+function openPlaybackSettingsSubmenu(label: '画質' | '音声') {
+  if (!screen.queryByRole('menu', { name: '再生設定' })) {
+    fireEvent.click(screen.getByRole('button', { name: '再生設定' }))
+  }
+  const settings = screen.getByRole('menu', { name: '再生設定' })
+  fireEvent.click(within(settings).getByRole('menuitem', { name: label }))
+  return screen.getByRole('menu', { name: label })
+}
+
+function choosePlaybackOption(label: '画質' | '音声', option: RegExp) {
+  const submenu = openPlaybackSettingsSubmenu(label)
+  fireEvent.click(within(submenu).getByRole('menuitemradio', { name: option }))
+}
 
 /**
  * hls.js 経路（Safari 以外のネイティブ HLS 非対応ブラウザ）の内部呼び出しを
@@ -2219,19 +2233,25 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     expect(video.controls).toBe(false)
     expect(screen.getAllByRole('slider', { name: 'シークバー' })).toHaveLength(1)
     fireEvent.click(screen.getByRole('button', { name: '再生設定' }))
-    expect(screen.getByLabelText('画質')).toHaveTextContent('hd（720p）')
-    const audio = screen.getByLabelText('音声') as HTMLSelectElement
-    expect(Array.from(audio.options, (option) => option.textContent)).toEqual(['標準', '主音声', '副音声'])
+    const settings = screen.getByRole('menu', { name: '再生設定' })
+    expect(within(settings).getByRole('menuitem', { name: '画質' })).toHaveAccessibleDescription('hd（720p）')
     expect(screen.queryByRole('link', { name: 'encoded 動画をダウンロード' })).not.toBeInTheDocument()
 
     const hls = hlsMockState.instances[0]!
     hls.audioTracks = [{}, {}, {}]
-    fireEvent.change(audio, { target: { value: 'main' } })
+    expect(within(settings).getByRole('menuitem', { name: '音声' })).toHaveAccessibleDescription('標準')
+    const audio = openPlaybackSettingsSubmenu('音声')
+    expect(within(audio).getAllByRole('menuitemradio').map((item) => item.textContent?.trim())).toEqual([
+      '標準',
+      '主音声',
+      '副音声',
+    ])
+    fireEvent.click(within(audio).getByRole('menuitemradio', { name: '主音声' }))
     expect(hls.audioTrack).toBe(1)
     expect(hlsMockState.instances).toHaveLength(1)
     expect(playlistRequests(fetchMock)).toHaveLength(1)
 
-    fireEvent.click(screen.getByRole('button', { name: '視聴済みにする' }))
+    fireEvent.click(screen.getByTitle('視聴済みにする'))
     expect(putWatched).toHaveBeenCalledOnce()
     rerender(
       <LivePlayer
@@ -2246,7 +2266,7 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
         onDeleteWatched={deleteWatched}
       />,
     )
-    fireEvent.click(screen.getByRole('button', { name: '未視聴に戻す' }))
+    fireEvent.click(screen.getByTitle('未視聴に戻す'))
     expect(deleteWatched).toHaveBeenCalledOnce()
     rerender(<LivePlayer site="default" networkId={0} serviceId={1024} />)
     expect(document.querySelector('video')!.controls).toBe(true)
@@ -2271,8 +2291,9 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     )
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
     fireEvent.click(screen.getByRole('button', { name: '再生設定' }))
-    expect(screen.queryByLabelText('画質')).not.toBeInTheDocument()
-    expect(screen.getByLabelText('音声')).toHaveTextContent('標準')
+    const settings = screen.getByRole('menu', { name: '再生設定' })
+    expect(within(settings).queryByRole('menuitem', { name: '画質' })).not.toBeInTheDocument()
+    expect(within(settings).getByRole('menuitem', { name: '音声' })).toHaveAccessibleDescription('標準')
   })
 
   it('シークはキーを離すまで確定せず、セッション範囲内なら playlist を取り直さない', async () => {
@@ -2360,8 +2381,7 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     video.currentTime = 12
     fireEvent.timeUpdate(video)
 
-    fireEvent.click(screen.getByRole('button', { name: '再生設定' }))
-    fireEvent.change(screen.getByLabelText('画質'), { target: { value: 'sd' } })
+    choosePlaybackOption('画質', /sd（360p）/)
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
     video.currentTime = 0
     fireEvent.loadedMetadata(video)
@@ -2545,10 +2565,9 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
       '/api/sites/default/recordings/419/original-vod/offset/10/playlist.m3u8?profile=hd',
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '再生設定' }))
-    fireEvent.change(screen.getByLabelText('画質'), { target: { value: 'sd' } })
+    choosePlaybackOption('画質', /sd（360p）/)
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(3))
-    fireEvent.change(screen.getByLabelText('音声'), { target: { value: 'sub' } })
+    choosePlaybackOption('音声', /副音声/)
 
     rerender(
       <LivePlayer
@@ -2564,7 +2583,9 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     expect(hlsMockState.instances[3]!.loadSource).toHaveBeenCalledWith(
       '/api/sites/default/recordings/420/original-vod/playlist.m3u8?profile=hd',
     )
-    expect(screen.getByLabelText('画質')).toHaveValue('hd')
-    expect(screen.getByLabelText('音声')).toHaveValue('standard')
+    fireEvent.click(screen.getByRole('button', { name: '再生設定' }))
+    const settings = screen.getByRole('menu', { name: '再生設定' })
+    expect(within(settings).getByRole('menuitem', { name: '画質' })).toHaveAccessibleDescription('hd（720p）')
+    expect(within(settings).getByRole('menuitem', { name: '音声' })).toHaveAccessibleDescription('標準')
   })
 })
