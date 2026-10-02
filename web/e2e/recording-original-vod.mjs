@@ -657,11 +657,16 @@ log(`  保存位置: ${savedPosition}s (${savedPositionMs}ms)`)
 
 const playlistsBeforeReload = playlistRequests.length
 await page.reload({ waitUntil: 'domcontentloaded' })
-await page.getByTestId('recording-playback-start').waitFor({ timeout: 15000 })
+await page.waitForTimeout(750)
 if (playlistRequests.length !== playlistsBeforeReload) {
   ng.push('② reload 後、再生ボタンを押す前に original HLS playlist を要求した')
 }
-await page.getByTestId('recording-playback-start').click()
+const resumePlaybackButton = page.getByTestId('recording-playback-start')
+if (await resumePlaybackButton.count() === 1) {
+  await resumePlaybackButton.click()
+} else {
+  ng.push(`② reload 後の再生ボタンが 1 つでない (${await resumePlaybackButton.count()})`)
+}
 await page.locator('video').waitFor({ timeout: 15000 })
 await page.waitForFunction((expected) => {
   const element = document.querySelector('video')
@@ -697,11 +702,16 @@ delete recording.resumePositionMs
 const watchedCountBeforeGrowingEdge = watchedWrites.length
 const playlistsBeforeGrowingEdge = playlistRequests.length
 await page.reload({ waitUntil: 'domcontentloaded' })
-await page.getByTestId('recording-playback-start').waitFor({ timeout: 15000 })
+await page.waitForTimeout(750)
 if (playlistRequests.length !== playlistsBeforeGrowingEdge) {
   ng.push('④ 再生ボタンを押す前に変換中 original HLS playlist を要求した')
 }
-await page.getByTestId('recording-playback-start').click()
+const growingEdgePlaybackButton = page.getByTestId('recording-playback-start')
+if (await growingEdgePlaybackButton.count() === 1) {
+  await growingEdgePlaybackButton.click()
+} else {
+  ng.push(`④ 変換中原本HLSの再生ボタンが 1 つでない (${await growingEdgePlaybackButton.count()})`)
+}
 await page.locator('video').waitFor({ timeout: 15000 })
 await page.waitForFunction(() => {
   const element = document.querySelector('video')

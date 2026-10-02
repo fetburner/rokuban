@@ -30,7 +30,9 @@ import {
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'
 const ng = []
 const recordingStartAt = new Date(Date.now() - 25 * 60_000).toISOString()
-const recordingStartedAt = new Date(Date.now() - 4 * 60_000).toISOString()
+// Derive both timestamps from the same instant so fractional clock drift
+// cannot make the programmed 70:12 extension appear as 70:11.
+const recordingStartedAt = new Date(Date.parse(recordingStartAt) + 21 * 60_000).toISOString()
 const evidenceDir = process.env.E2E_EVIDENCE_DIR
 
 const recording = {
