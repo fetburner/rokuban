@@ -117,8 +117,7 @@ log('\n=== ① VOD: <track> が実ブラウザで WebVTT の cue を読み込む
 
   await page.goto(`${URL_BASE}/recordings/1`, { waitUntil: 'domcontentloaded' })
   await page.locator('video').waitFor({ timeout: 15000 })
-  await page.getByRole('button', { name: '再生設定' }).click()
-  await page.getByRole('button', { name: '字幕 オフ' }).click()
+  await page.locator('[data-testid="player-controls"] button[aria-label="字幕"]').click()
 
   const result = await page.evaluate(async () => {
     const video = document.querySelector('video')

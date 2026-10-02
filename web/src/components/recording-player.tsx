@@ -148,6 +148,9 @@ export function RecordingPlayer({
   const isScrubbingRef = useRef(false)
   const jumpToRef = useRef<(seconds: number) => void>(() => {})
   const controlsTimerRef = useRef<number | undefined>(undefined)
+  // 映像を押したポインタの種類。タッチは再生 / 一時停止ではなく操作の表示に使う（スマホの定石）。
+  const videoPointerTypeRef = useRef<string>('')
+  const chapterDetailsRef = useRef<HTMLDetailsElement>(null)
   const subtitleLinesRef = useRef(new WeakMap<VTTCue, VTTCue['line']>())
   const [mediaPlaying, setMediaPlaying] = useState(false)
   const [muted, setMuted] = useState(false)
@@ -348,7 +351,8 @@ export function RecordingPlayer({
   }
   const updateSubtitleCueLines = (video: HTMLVideoElement, raise: boolean) => {
     const frame = fullscreenRef.current
-    const controls = frame?.querySelector<HTMLElement>('[data-testid="player-controls"]')
+    // スマホの操作表示は枠全体に幕を敷くので、字幕を避ける高さは下端の帯（時刻・シークバー）だけ。
+    const controls = frame?.querySelector<HTMLElement>('[data-testid="player-controls-bottom"]')
     const frameHeight = frame?.getBoundingClientRect().height ?? 0
     const controlsHeight = controls?.getBoundingClientRect().height ?? 0
     // WebVTT の snap-to-lines は画面高の約 5% が 1 行分。シークバーと操作行が
@@ -432,7 +436,7 @@ export function RecordingPlayer({
   useEffect(() => {
     const video = videoRef.current
     const frame = fullscreenRef.current
-    const controls = frame?.querySelector<HTMLElement>('[data-testid="player-controls"]')
+    const controls = frame?.querySelector<HTMLElement>('[data-testid="player-controls-bottom"]')
     if (!video) return
     const update = () => updateSubtitleCueLines(video, controlsVisible)
     update()
@@ -670,6 +674,17 @@ export function RecordingPlayer({
         onSelectProfile={setProfile}
         onPreviousChapter={() => jumpChapter('prev')}
         onNextChapter={() => jumpChapter('next')}
+        onShowChapters={
+          !playingCut && onSaveChapters && onResetChapters && !chapterDetectionPending && chapterVersion !== undefined
+            ? () => {
+                const details = chapterDetailsRef.current
+                if (!details) return
+                if (document.fullscreenElement) void document.exitFullscreen?.().catch(() => {})
+                details.open = true
+                details.scrollIntoView({ block: 'nearest' })
+              }
+            : undefined
+        }
         isPlaying={mediaPlaying}
         muted={muted}
         volume={volume}
@@ -728,6 +743,10 @@ export function RecordingPlayer({
         onToggleFullscreen={requestPlayerFullscreen}
         controlsVisible={controlsVisible || !mediaPlaying || toolbarFocused}
         onControlsActivity={handleControlsActivity}
+        onHideControls={() => {
+          window.clearTimeout(controlsTimerRef.current)
+          if (mediaPlaying) setControlsVisible(false)
+        }}
         onToolbarFocus={handleToolbarFocus}
         onToolbarBlur={handleToolbarBlur}
         onShellKeyDown={handleControlsActivity}
@@ -741,7 +760,16 @@ export function RecordingPlayer({
             preload="metadata"
             src={src}
             className="absolute inset-0 size-full bg-black object-contain"
+            onPointerDown={(event) => {
+              videoPointerTypeRef.current = event.pointerType
+            }}
             onClick={(event) => {
+              // タッチでは映像のタップで操作を出す（再生 / 一時停止は中央のボタン）。
+              if (videoPointerTypeRef.current === 'touch') {
+                videoPointerTypeRef.current = ''
+                handleControlsActivity()
+                return
+              }
               if (event.currentTarget.paused) void event.currentTarget.play().catch(() => {})
               else event.currentTarget.pause()
             }}
@@ -854,7 +882,7 @@ export function RecordingPlayer({
             CM を検出しています。終わるまでチャプターは編集できません
           </p>
         ) : (
-        <details data-testid="chapter-editor-details" className="group max-w-3xl">
+        <details ref={chapterDetailsRef} data-testid="chapter-editor-details" className="group max-w-3xl">
           <DetailSummary>チャプター {chapters?.length ?? 0} 件</DetailSummary>
           <div className="pt-2">
           <RecordingChapterEditor

@@ -448,6 +448,20 @@ if (!afterTab.inBar || shownAfterTab !== '1') {
 
 log('\n=== ⑦ デスクトップの設定メニュー: 行リストを歯車の真上に開き、› で中身を差し替える ===')
 await page.mouse.move(640, 300)
+/**
+ * defineRgbaOf はページに `rgbaOf(color)`（[r, g, b, a]）を生やす。Tailwind v4 の不透明度
+ * 修飾は `oklab(... / a)` で返るので、canvas に塗って RGBA に揃えてから比べる。
+ */
+const defineRgbaOf = () => {
+  window.rgbaOf = (color) => {
+    const ctx = document.createElement('canvas').getContext('2d')
+    ctx.fillStyle = color
+    ctx.fillRect(0, 0, 1, 1)
+    const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data
+    return [r, g, b, a / 255]
+  }
+}
+await page.evaluate(defineRgbaOf)
 const gear = page.getByRole('button', { name: '再生設定' })
 const settingsMenu = page.locator('[data-testid="playback-settings"]')
 /** menuShape は設定メニューの形（行の役割・フォーム部品の有無・歯車との位置）を返す。 */
@@ -470,7 +484,7 @@ const menuShape = () =>
         name: el.getAttribute('aria-label') ?? el.textContent?.trim(),
         checked: el.getAttribute('aria-checked'),
       })),
-      background: getComputedStyle(menu).backgroundColor,
+      background: rgbaOf(getComputedStyle(menu).backgroundColor),
       aboveGear: m.bottom <= g.top + 1 && m.left <= g.left + g.width / 2 && m.right >= g.left + g.width / 2,
       insideFrame: frame.contains(menu) && m.top >= f.top - 1 && m.bottom <= f.bottom + 1,
     }
@@ -494,8 +508,8 @@ if (desktopMenu === null) {
     ng.push(`⑦ 行に現在値（標準 / h264）が出ていない（${desktopMenu.text}）`)
   }
   if (/ダウンロード/.test(desktopMenu.text)) ng.push('⑦ 設定メニューにダウンロードが残っている')
-  const alpha = /rgba\(\s*(\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)/.exec(desktopMenu.background)
-  if (!alpha || Number(alpha[4]) >= 1 || Number(alpha[1]) > 60) {
+  const [red, , , alpha] = desktopMenu.background
+  if (alpha >= 1 || alpha === 0 || red > 60) {
     ng.push(`⑦ メニューが半透明の黒い小窓でない（background=${desktopMenu.background}）`)
   }
   if (!desktopMenu.aboveGear) ng.push('⑦ メニューが歯車の真上に開いていない')
@@ -593,7 +607,8 @@ try {
   if (!fullscreenMenu?.aboveGear || !fullscreenMenu.insideFrame || fullscreenMenu.formControls !== 0) {
     ng.push(`⑦ 全画面で設定メニューが歯車の真上の行リストにならない（${JSON.stringify(fullscreenMenu)}）`)
   }
-  await page.keyboard.press('Escape')
+  // Esc はブラウザが全画面の解除に使うので、歯車で閉じる。
+  await gear.click()
   await page.getByRole('button', { name: '全画面を終了' }).click()
   await page.waitForFunction(() => document.fullscreenElement === null, undefined, { timeout: 5000 })
 } catch (error) {
@@ -609,6 +624,7 @@ const phoneContext = await browser.newContext({
   locale: 'ja-JP',
   timezoneId: 'Asia/Tokyo',
 })
+await phoneContext.addInitScript(defineRgbaOf)
 const phone = await phoneContext.newPage()
 await installApiStubs(phone, apiHandler)
 await phone.goto(URL_BASE + '/recordings/1', { waitUntil: 'domcontentloaded' })
@@ -655,7 +671,7 @@ if (!phoneLayout.frame || !phoneLayout.prev || !phoneLayout.play || !phoneLayout
   }
 }
 if (phoneLayout.volume !== 0) ng.push(`⑧ スマホにミュート / 音量が ${phoneLayout.volume} 個見えている`)
-// 中央の次のチャプター / 前のチャプターが実際に動く（0 秒 → CM の先頭 30 秒 → 先頭）。
+// 中央の次のチャプター / 前のチャプターが実際に動く。
 const tapVisible = async (selector) => {
   const box = await phone.evaluate((sel) => {
     const el = Array.from(document.querySelectorAll(sel)).find((node) => node.getBoundingClientRect().width > 0)
@@ -668,9 +684,11 @@ const tapVisible = async (selector) => {
 await tapVisible('button[aria-label="次のチャプター"]')
 const phoneJump = await phone.locator('video').evaluate((v) => v.currentTime)
 if (Math.abs(phoneJump - 30) > 1) ng.push(`⑧ 中央の次のチャプターで 30 秒へ飛ばない（currentTime=${phoneJump.toFixed(1)}）`)
+// 境界は区間の端だけ（先頭 0 秒は境界でない）。CM の終端 40 秒まで進めてから 30 秒へ戻す。
+await tapVisible('button[aria-label="次のチャプター"]')
 await tapVisible('button[aria-label="前のチャプター"]')
 const phoneBack = await phone.locator('video').evaluate((v) => v.currentTime)
-if (phoneBack > 1) ng.push(`⑧ 中央の前のチャプターで先頭へ戻らない（currentTime=${phoneBack.toFixed(1)}）`)
+if (Math.abs(phoneBack - 30) > 1) ng.push(`⑧ 中央の前のチャプターで 30 秒へ戻らない（currentTime=${phoneBack.toFixed(1)}）`)
 // 歯車 → 画面の下からモーダルのシート。背後を暗くし、シートは下半分に収まる。
 await tapVisible('button[aria-label="再生設定"]')
 const sheet = await phone.evaluate(() => {
@@ -694,7 +712,7 @@ const sheet = await phone.evaluate(() => {
       .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)
       .map((el) => (el.getAttribute('aria-label') ?? el.textContent?.trim() ?? '').slice(0, 20)),
     scrimCovers: Boolean(s && s.top <= 0 && s.bottom >= window.innerHeight && s.width >= window.innerWidth),
-    scrimBackground: scrim ? getComputedStyle(scrim).backgroundColor : null,
+    scrimBackground: scrim ? rgbaOf(getComputedStyle(scrim).backgroundColor) : null,
   }
 })
 if (sheet === null) {
@@ -706,7 +724,7 @@ if (sheet === null) {
   if (sheet.top < sheet.innerHeight / 2 - 2) {
     ng.push(`⑧ シートが画面の下半分に収まっていない（top=${sheet.top} / ${sheet.innerHeight}）`)
   }
-  if (!sheet.scrimCovers || !/rgba\(0, 0, 0, 0\.[1-9]/.test(sheet.scrimBackground ?? '')) {
+  if (!sheet.scrimCovers || !sheet.scrimBackground || sheet.scrimBackground[0] > 40 || sheet.scrimBackground[3] < 0.1) {
     ng.push(`⑧ シートの背後が暗くならない（scrim=${sheet.scrimBackground} covers=${sheet.scrimCovers}）`)
   }
   if (sheet.formControls !== 0) ng.push(`⑧ シートにプルダウン・チェックボックス等が ${sheet.formControls} 個ある`)

@@ -4089,14 +4089,13 @@ async function checkMinimumTargetSize(locator, label, minimumWidth, minimumHeigh
   }
 }
 
-// 録画詳細の前後ナビゲーションはモバイルの設定シートに置き、タッチ時に44pxを確保する。
+// 録画詳細の前後ナビゲーションはモバイルでは映像の中央に置き、タッチ時に44pxを確保する。
 {
   const { context, page } = await open(mobile, 'light', recordingDetailScreen, {
     pointer: 'coarse',
     multiSite: true,
     recordingDetailScenario: 'completed',
   })
-  await page.getByRole('button', { name: '再生設定' }).click()
   const previous = page.getByRole('button', { name: '前のチャプター' })
   const next = page.getByRole('button', { name: '次のチャプター' })
   const editorSummary = page.locator('[data-testid="chapter-editor-details"] > summary')

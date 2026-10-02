@@ -57,6 +57,25 @@ function openPlaybackSettings(container: HTMLElement): HTMLElement {
   return container.querySelector<HTMLElement>('[data-testid="playback-settings"]')!
 }
 
+/** openSubmenu は設定メニューの「›」の行（画質 / 再生速度）から下の階層へ入り、メニューを返す。 */
+function openSubmenu(container: HTMLElement, label: '画質' | '再生速度'): HTMLElement {
+  const menu = openPlaybackSettings(container)
+  fireEvent.click(within(menu).getByRole('menuitem', { name: label }))
+  return container.querySelector<HTMLElement>('[data-testid="playback-settings"]')!
+}
+
+/** radioTexts は下の階層の選択肢の表示文字列を返す。 */
+function radioTexts(menu: HTMLElement): string[] {
+  return within(menu).getAllByRole('menuitemradio').map((el) => el.textContent ?? '')
+}
+
+/** selectProfile は設定メニューの画質の下の階層から profile を選ぶ。 */
+function selectProfile(container: HTMLElement, profile: string) {
+  const menu = openSubmenu(container, '画質')
+  const option = within(menu).getAllByRole('menuitemradio').find((el) => el.textContent?.includes(profile))
+  fireEvent.click(option!)
+}
+
 describe('RecordingPlayer の字幕サイドカー', () => {
   it('encoded 動画に WebVTT subtitle track を付ける', () => {
     const { container } = render(
@@ -168,8 +187,7 @@ describe('RecordingPlayer のサーバー再生位置', () => {
     ]
 
     function switchTo(container: HTMLElement, profile: string) {
-      const select = openPlaybackSettings(container).querySelector('select[aria-label="画質"]')!
-      fireEvent.change(select, { target: { value: profile } })
+      selectProfile(container, profile)
       const video = container.querySelector('video')!
       setMediaProps(video, { currentTime: 0, duration: 1000 })
       fireEvent.loadedMetadata(video)
@@ -258,19 +276,19 @@ describe('RecordingPlayer のサーバー再生位置', () => {
 // issue #236（M7-3）: 設定メニュー内の値札。サイズが取れない資産でも
 // プロファイル名を選択肢から隠さない。
 describe('RecordingPlayer のサイズ常置（値札、issue #236）', () => {
-  it('プロファイルが 1 つのとき、サイズ付きのキャプションを出す', () => {
+  it('プロファイルが 1 つのとき、画質の選択肢にサイズを付ける', () => {
     const { container } = render(
       <RecordingPlayer recordingId={20} encodedAssets={[{ profile: 'h264', sizeBytes: 1_200_000 }]} />,
     )
-    openPlaybackSettings(container)
-    expect(container.textContent).toContain('h264 (1.1 MB)')
+    expect(radioTexts(openSubmenu(container, '画質'))).toEqual(['h2641.1 MB'])
   })
 
   it('プロファイルが 1 つで sizeBytes が省略されているとき、プロファイル名は出すがサイズは出さない（隠さない）', () => {
     const { container } = render(
       <RecordingPlayer recordingId={21} encodedAssets={[{ profile: 'h264' }]} />,
     )
-    openPlaybackSettings(container)
+    const menu = openSubmenu(container, '画質')
+    expect(radioTexts(menu)).toEqual(['h264'])
     // 選択肢（プロファイル名）自体は必ず出る --- サイズが取れないことを理由に
     // 隠すと「機能しないコントロールは置かない」の逆（機能するコントロールを
     // 隠す）になる。
@@ -280,7 +298,7 @@ describe('RecordingPlayer のサイズ常置（値札、issue #236）', () => {
     expect(container.querySelector('video')).not.toBeNull()
   })
 
-  it('プロファイルが複数のとき、各 <option> にサイズを付ける。サイズが無いものは名前だけになる', () => {
+  it('プロファイルが複数のとき、画質の各選択肢にサイズを付ける。サイズが無いものは名前だけになる', () => {
     const { container } = render(
       <RecordingPlayer
         recordingId={22}
@@ -290,9 +308,7 @@ describe('RecordingPlayer のサイズ常置（値札、issue #236）', () => {
         ]}
       />,
     )
-    const settings = openPlaybackSettings(container)
-    const options = Array.from(settings.querySelector('select[aria-label="画質"]')!.querySelectorAll('option'))
-    expect(options.map((o) => o.textContent)).toEqual(['h264 (476.8 MB)', 'h265'])
+    expect(radioTexts(openSubmenu(container, '画質'))).toEqual(['h264476.8 MB', 'h265'])
   })
 
   it('encoded が無く原本のみのとき、空状態から VLC リンクを出す', () => {
@@ -323,56 +339,22 @@ describe('RecordingPlayer のサイズ常置（値札、issue #236）', () => {
   })
 })
 
-describe('RecordingPlayer の encoded ダウンロード', () => {
-  it('複数プロファイルでは選択中プロファイルの URL とファイル名に追従する', () => {
+// 定石の VOD プレイヤーは設定メニューにダウンロードを置かない。
+describe('RecordingPlayer の設定メニューにダウンロードを置かない', () => {
+  it('メニューのどの階層にもダウンロードが無く、プレイヤー内のリンクは 0 本', () => {
     const { container } = render(
       <RecordingPlayer
-        recordingId={26}
+        recordingId={28}
         encodedAssets={[
           { profile: 'h264', sizeBytes: 100 },
           { profile: 'h265', sizeBytes: 200 },
         ]}
-      />,
-    )
-    openPlaybackSettings(container)
-    const link = container.querySelector('a[aria-label="encoded 動画をダウンロード"]')!
-
-    expect(link).toHaveAttribute('href', '/api/media/recordings/26/file?profile=h264')
-    expect(link).toHaveAttribute('download', 'recording-26-h264.mp4')
-
-    fireEvent.change(container.querySelector('select[aria-label="画質"]')!, { target: { value: 'h265' } })
-
-    expect(link).toHaveAttribute('href', '/api/media/recordings/26/file?profile=h265')
-    expect(link).toHaveAttribute('download', 'recording-26-h265.mp4')
-  })
-
-  it('単一プロファイルでも設定メニューからサイズとダウンロードリンクを出す', () => {
-    const { container } = render(
-      <RecordingPlayer recordingId={27} encodedAssets={[{ profile: 'h264', sizeBytes: 1_200_000 }]} />,
-    )
-    openPlaybackSettings(container)
-    const link = container.querySelector('a[aria-label="encoded 動画をダウンロード"]')!
-
-    expect(link).toHaveAttribute('href', '/api/media/recordings/27/file?profile=h264')
-    expect(link).toHaveAttribute('download', 'recording-27-h264.mp4')
-    expect(link).toHaveTextContent('ダウンロード')
-    expect(link).toHaveTextContent('1.1 MB')
-    expect(container.textContent).toContain('h264 (1.1 MB)')
-  })
-
-  it('encoded 用リンクと原本 TS リンクを同時に出す', () => {
-    const { container } = render(
-      <RecordingPlayer
-        recordingId={28}
-        encodedAssets={[{ profile: 'h264', sizeBytes: 100 }]}
         hasOriginal
       />,
     )
-
-    openPlaybackSettings(container)
-    expect(container.querySelector('a[aria-label="encoded 動画をダウンロード"]')).toBeInTheDocument()
-    expect(container.querySelector('a[href="/api/media/recordings/28/file"]')).toBeNull()
-    expect(container.querySelectorAll('a')).toHaveLength(1)
+    expect(openPlaybackSettings(container)).not.toHaveTextContent('ダウンロード')
+    expect(openSubmenu(container, '画質')).not.toHaveTextContent('ダウンロード')
+    expect(container.querySelectorAll('a')).toHaveLength(0)
   })
 })
 
@@ -400,8 +382,9 @@ describe('RecordingPlayer の再生操作', () => {
       <RecordingPlayer recordingId={30} encodedAssets={asset} />,
     )
     let video = container.querySelector('video')!
-    const settings = openPlaybackSettings(container)
-    fireEvent.change(settings.querySelector('select[aria-label="再生速度"]')!, { target: { value: '1.5' } })
+    const speeds = openSubmenu(container, '再生速度')
+    expect(radioTexts(speeds)).toEqual(['0.5x', '0.75x', '標準', '1.25x', '1.5x', '1.75x', '2x'])
+    fireEvent.click(within(speeds).getByRole('menuitemradio', { name: '1.5x' }))
 
     expect(localStorage.getItem('rokuban:playback-rate')).toBe('1.5')
     expect(video.defaultPlaybackRate).toBe(1.5)
@@ -447,16 +430,26 @@ describe('RecordingPlayer の再生操作', () => {
     fireEvent.change(getByRole('slider', { name: '音量' }), { target: { value: '0.25' } })
     expect(video.volume).toBe(0.25)
 
+    // スマホにミュート / 音量を置かない（端末の音量ボタンで足りる）ので、メニューには無い。
     const settings = openPlaybackSettings(container)
-    fireEvent.click(within(settings).getByRole('button', { name: 'ミュート' }))
-    expect(video.muted).toBe(true)
-    fireEvent.change(within(settings).getByRole('slider', { name: '音量' }), { target: { value: '0.5' } })
-    expect(video.volume).toBe(0.5)
-    fireEvent.change(settings.querySelector('select[aria-label="再生速度"]')!, { target: { value: '2' } })
-    expect(video.playbackRate).toBe(2)
-    fireEvent.click(getByRole('button', { name: '字幕 オフ' }))
+    expect(within(settings).queryByRole('slider', { name: '音量' })).toBeNull()
+    expect(within(settings).queryByRole('button', { name: /ミュート/ })).toBeNull()
+    expect(settings.querySelector('select, input')).toBeNull()
+    // 2 択はスイッチ（menuitemcheckbox）。押しても閉じず、状態がスイッチと CC に戻る。
+    const subtitleSwitch = within(settings).getByRole('menuitemcheckbox', { name: '字幕' })
+    expect(subtitleSwitch).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(subtitleSwitch)
     expect(subtitleTrack.mode).toBe('showing')
-    expect(getByRole('button', { name: '字幕 オン' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(settings).getByRole('menuitemcheckbox', { name: '字幕' })).toHaveAttribute('aria-checked', 'true')
+    expect(getByRole('button', { name: '字幕' })).toHaveAttribute('aria-pressed', 'true')
+    // バーの CC はメニューの字幕スイッチと同じ操作。
+    fireEvent.click(getByRole('button', { name: '字幕' }))
+    expect(subtitleTrack.mode).toBe('disabled')
+    expect(getByRole('button', { name: '字幕' })).toHaveAttribute('aria-pressed', 'false')
+    // 3 択以上は「›」で下の階層。選ぶと video に効き、メニューは閉じる。
+    fireEvent.click(within(openSubmenu(container, '再生速度')).getByRole('menuitemradio', { name: '2x' }))
+    expect(video.playbackRate).toBe(2)
+    expect(container.querySelector('[data-testid="playback-settings"]')).toBeNull()
 
     rerender(<RecordingPlayer recordingId={32} encodedAssets={asset} />)
     expect(container.querySelector('video')).toBe(video)
@@ -474,8 +467,9 @@ describe('RecordingPlayer の再生操作', () => {
       Object.defineProperty(video, 'requestPictureInPicture', { value: requestPictureInPicture })
       fireEvent.click(getByRole('button', { name: 'ピクチャーインピクチャー' }))
       expect(requestPictureInPicture).toHaveBeenCalledOnce()
+      // スマホのシートの PiP 行（md 以上では CSS で隠れる）。
       const settings = openPlaybackSettings(container)
-      fireEvent.click(within(settings).getByRole('button', { name: 'ピクチャーインピクチャー' }))
+      fireEvent.click(within(settings).getByRole('menuitem', { name: 'ピクチャー・イン・ピクチャー' }))
       expect(requestPictureInPicture).toHaveBeenCalledTimes(2)
     } finally {
       if (previous) Object.defineProperty(document, 'pictureInPictureEnabled', previous)
@@ -644,8 +638,11 @@ describe('RecordingPlayer の selectedProfile 導出', () => {
       />,
     )
 
-    const select = openPlaybackSettings(container).querySelector('select[aria-label="画質"]') as HTMLSelectElement
-    expect(select.value).toBe('h265')
+    const menu = openPlaybackSettings(container)
+    expect(within(menu).getByRole('menuitem', { name: '画質' })).toHaveAccessibleDescription(/h265/)
+    expect(
+      within(openSubmenu(container, '画質')).getByRole('menuitemradio', { checked: true }),
+    ).toHaveTextContent('h265')
     expect(container.querySelector('video')?.src).toContain('profile=h265')
   })
 
@@ -659,14 +656,12 @@ describe('RecordingPlayer の selectedProfile 導出', () => {
         ]}
       />,
     )
-    const select = openPlaybackSettings(container).querySelector('select[aria-label="画質"]')! as HTMLSelectElement
-    fireEvent.change(select, { target: { value: 'h265' } })
-    expect(select.value).toBe('h265')
+    selectProfile(container, 'h265')
     expect(container.querySelector('video')?.src).toContain('profile=h265')
 
     // 選択中だった h265 が資産一覧から消える（新しいエンコードが完了して古い
     // 派生物が消えた等）。h264_low を足して選択肢が 2 つのまま残る形にし、
-    // <select> 自体が引き続き出ることを確かめつつフォールバック先を見る。
+    // 選択肢が引き続き出ることを確かめつつフォールバック先を見る。
     rerender(
       <RecordingPlayer
         recordingId={40}
@@ -677,8 +672,102 @@ describe('RecordingPlayer の selectedProfile 導出', () => {
       />,
     )
 
-    expect(select.value).toBe('h264')
     expect(container.querySelector('video')?.src).toContain('profile=h264')
+    const options = within(openSubmenu(container, '画質')).getAllByRole('menuitemradio')
+    expect(options.map((el) => [el.textContent, el.getAttribute('aria-checked')])).toEqual([
+      ['h264100 B', 'true'],
+      ['h264_low50 B', 'false'],
+    ])
+  })
+})
+
+// 再生設定は動画サービスの定石に寄せた行リスト。位置（歯車の真上・画面下のシート）は
+// jsdom で測れないので web/e2e/chapters.mjs ⑦⑧ が見る。ここは役割とキーボードだけ。
+describe('RecordingPlayer の設定メニュー（行リスト）', () => {
+  const assets = [
+    { profile: 'h264', sizeBytes: 100 },
+    { profile: 'h265', sizeBytes: 200 },
+  ]
+  const chapters = [{ startMs: 30_000, endMs: 40_000, label: 'CM', cut: true }]
+
+  it('行は CM を飛ばす / 字幕 / 再生速度 / 画質で、› の行は同じ枠の中身を差し替える', () => {
+    const { container } = render(<RecordingPlayer recordingId={60} encodedAssets={assets} chapters={chapters} />)
+    const menu = openPlaybackSettings(container)
+    expect(menu).toHaveAttribute('role', 'menu')
+    expect(
+      Array.from(menu.querySelectorAll('[role^="menuitem"]'))
+        // PiP 行は pictureInPictureEnabled が偽の jsdom では出ない。
+        .map((el) => `${el.getAttribute('role')}:${el.getAttribute('aria-label') ?? el.textContent}`),
+    ).toEqual([
+      'menuitemcheckbox:CM を飛ばす',
+      'menuitemcheckbox:字幕',
+      'menuitem:再生速度',
+      'menuitem:画質',
+    ])
+    expect(within(menu).getByRole('menuitem', { name: '再生速度' })).toHaveAccessibleDescription('標準')
+
+    fireEvent.click(within(menu).getByRole('menuitem', { name: '画質' }))
+    const quality = container.querySelector<HTMLElement>('[data-testid="playback-settings"]')!
+    expect(quality).toBe(menu)
+    expect(within(quality).queryByRole('menuitem', { name: '再生速度' })).toBeNull()
+    expect(within(quality).getByRole('menuitem', { name: '戻る（画質）' })).toBeInTheDocument()
+    fireEvent.click(within(quality).getByRole('menuitem', { name: '戻る（画質）' }))
+    expect(within(menu).getByRole('menuitem', { name: '再生速度' })).toBeInTheDocument()
+  })
+
+  it('CM を飛ばすスイッチは端末の好みとして保存する', () => {
+    const { container } = render(<RecordingPlayer recordingId={61} encodedAssets={assets} chapters={chapters} />)
+    const toggle = within(openPlaybackSettings(container)).getByRole('menuitemcheckbox', { name: 'CM を飛ばす' })
+    const before = toggle.getAttribute('aria-checked')
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-checked', before === 'true' ? 'false' : 'true')
+  })
+
+  it('矢印キーで行を移り、Esc で 1 段戻り、もう一度 Esc で閉じて歯車にフォーカスを戻す', async () => {
+    const { container, getByRole } = render(
+      <RecordingPlayer recordingId={62} encodedAssets={assets} chapters={chapters} />,
+    )
+    const menu = openPlaybackSettings(container)
+    await waitFor(() => expect(document.activeElement).toBe(within(menu).getByRole('menuitemcheckbox', { name: 'CM を飛ばす' })))
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(within(menu).getByRole('menuitemcheckbox', { name: '字幕' }))
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowUp' })
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowUp' })
+    expect(document.activeElement).toBe(within(menu).getByRole('menuitem', { name: '画質' }))
+    // → で下の階層へ入ると選択中の選択肢にフォーカスが移る。
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' })
+    await waitFor(() => expect(document.activeElement).toHaveAttribute('aria-checked', 'true'))
+    expect(document.activeElement).toHaveAttribute('role', 'menuitemradio')
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+    await waitFor(() => expect(document.activeElement).toBe(within(menu).getByRole('menuitem', { name: '画質' })))
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+    expect(container.querySelector('[data-testid="playback-settings"]')).toBeNull()
+    expect(document.activeElement).toBe(getByRole('button', { name: '再生設定' }))
+  })
+
+  it('時刻の横にいまのチャプター名を出す（区間の隙間は本編）', () => {
+    const { container, getByTestId } = render(
+      <RecordingPlayer recordingId={63} encodedAssets={assets} chapters={chapters} />,
+    )
+    const video = container.querySelector('video')!
+    setMediaProps(video, { currentTime: 35, duration: 120 })
+    fireEvent.timeUpdate(video)
+    expect(getByTestId('playback-chapter')).toHaveTextContent('· CM')
+    setMediaProps(video, { currentTime: 50, duration: 120 })
+    fireEvent.timeUpdate(video)
+    expect(getByTestId('playback-chapter')).toHaveTextContent('· 本編')
+  })
+
+  it('タッチで映像を叩くと操作を出すだけで、再生は中央のボタンで始める', () => {
+    const { container } = render(<RecordingPlayer recordingId={64} encodedAssets={assets} />)
+    const video = container.querySelector('video')!
+    const play = vi.spyOn(video, 'play').mockResolvedValue()
+    fireEvent.pointerDown(video, { pointerType: 'touch' })
+    fireEvent.click(video)
+    expect(play).not.toHaveBeenCalled()
+    fireEvent.pointerDown(video, { pointerType: 'mouse' })
+    fireEvent.click(video)
+    expect(play).toHaveBeenCalledOnce()
   })
 })
 

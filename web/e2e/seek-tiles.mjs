@@ -468,7 +468,7 @@ if (EVIDENCE_DIR) {
   await page.locator('[data-testid="recording-player-shell"]').screenshot({
     path: path.join(EVIDENCE_DIR, 'recording-detail-400px-settings.png'),
   })
-  await page.getByRole('button', { name: '再生設定' }).click()
+  await page.keyboard.press('Escape')
 }
 await page.setViewportSize({ width: 340, height: 800 })
 await page.waitForTimeout(200)
