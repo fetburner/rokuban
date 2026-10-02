@@ -71,7 +71,7 @@ const reservations = [
   ),
 ]
 
-const overages = [reservations[3], reservations[4]].map((item) => ({
+const overages = [reservations[3], reservations[1]].map((item) => ({
   site: item.site,
   startAt: item.startAt,
   endAt: new Date(Date.parse(item.startAt) + item.durationMs).toISOString(),
@@ -375,6 +375,32 @@ async function checkRuleMenu(width, theme) {
     ng.push(`${width}px/${theme}: ルール絞り込みの結果が不正`)
   }
   await screenshot(page, `${width}-rule-filter-${theme}.png`, false)
+
+  await page.getByRole('button', { name: 'ルールの絞り込みを解除' }).click()
+  await page.waitForURL((url) => {
+    const search = new URL(url).searchParams
+    return !search.has('ruleId') && !search.has('only')
+  })
+  await page.getByRole('button', { name: '要確認（3）' }).click()
+  await page.waitForURL(/only=attention/)
+  await page.getByRole('button', { name: 'ルールで絞り込む' }).click()
+  await page.getByRole('menu').waitFor({ state: 'visible', timeout: 3_000 })
+  const attentionMenuNames = await page.getByRole('menuitem').allTextContents()
+  if (attentionMenuNames.join('|') !== names.join('|')) {
+    ng.push(`${width}px/${theme}: only=attention でルールメニューの全予約件数が変わる (${JSON.stringify(attentionMenuNames)})`)
+  }
+  await page.getByRole('menuitem', { name: /深夜アニメ/ }).first().click()
+  await page.waitForURL((url) => {
+    const search = new URL(url).searchParams
+    return search.get('ruleId') === '8' && search.get('only') === 'attention'
+  })
+  if (await page.getByRole('button', { name: '要確認（1）' }).count() !== 1) {
+    ng.push(`${width}px/${theme}: only=attention と ruleId の組み合わせを維持しない`)
+  }
+  if (await page.getByText('深夜アニメ 第一話', { exact: true }).count() !== 1 ||
+      await page.getByText('深夜アニメ 第二話', { exact: true }).count() !== 0) {
+    ng.push(`${width}px/${theme}: only=attention と ruleId の組み合わせ結果が不正`)
+  }
   await context.close()
 }
 
