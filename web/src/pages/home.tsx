@@ -689,7 +689,7 @@ function HomeThumbnail({
         <>
           <span
             data-testid="home-hero-station"
-            className="absolute bottom-2 left-2 text-[11px] text-white [text-shadow:0_1px_2px_rgb(0_0_0/0.6)]"
+            className="absolute bottom-2 left-2 rounded bg-black/55 px-1 text-[11px] text-white"
           >
             {recording.serviceName}
           </span>
@@ -697,9 +697,9 @@ function HomeThumbnail({
             <div
               aria-hidden
               data-testid="home-hero-progress-line"
-              className="absolute inset-x-0 bottom-0 h-1 bg-black/30"
+              className="absolute inset-x-0 bottom-0 h-1 bg-black/25"
             >
-              <div className="h-full bg-white" style={{ width: `${progress}%` }} />
+              <div className="h-full bg-foreground" style={{ width: `${progress}%` }} />
             </div>
           )}
         </>
