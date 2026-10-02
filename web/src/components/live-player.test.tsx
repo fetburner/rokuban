@@ -2588,13 +2588,15 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     fireEvent.click(screen.getByTitle('未視聴に戻す'))
     expect(deleteWatched).toHaveBeenCalledOnce()
     rerender(<LivePlayer site="default" networkId={0} serviceId={1024} />)
-    expect(document.querySelector('video')!.controls).toBe(true)
+    expect(document.querySelector('video')!.controls).toBe(false)
   })
 
-  it('mode=live はネイティブ controls を残す', async () => {
+  it('mode=live はネイティブ controls を外してプレイヤー操作バーを使う', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
     render(<LivePlayer mode="live" site="default" networkId={1} serviceId={2} />)
-    expect(document.querySelector('video')!.controls).toBe(true)
+    expect(document.querySelector('video')!.controls).toBe(false)
+    expect(screen.getByTestId('player-controls')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '再生' })).toBeInTheDocument()
   })
 
   // 枠の振る舞いは encoded の RecordingPlayer と同じフック（use-player-frame）を使う。

@@ -1,8 +1,11 @@
 import { Link, useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
+import { useQueries } from '@tanstack/react-query'
 import { Play } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
 import {
+  getListProgramsQueryOptions,
+  useGetRecording,
   useListLiveProfiles,
   useListPrograms,
   useListReservations,
@@ -18,9 +21,16 @@ import { useLiveCapability } from '@/lib/capabilities'
 import {
   currentProgramWindow,
   formatLiveDiagnostics,
+  isRecordedProgramOffset,
   liveProfileLabel,
+  nextProgramRefreshMs,
   nextLowerProfile,
   pickInitialService,
+  programChaseStartOffsetSeconds,
+  programRecordingOffsetSeconds,
+  programRecordingAccess,
+  remainingProgramMinutes,
+  scheduledProgramAt,
   validLiveAudio,
   validLiveProfile,
   type LiveDiagnostics,
@@ -33,21 +43,12 @@ import { siteServiceKey, useAllSitesServices } from '@/lib/all-sites-services'
 import { cn } from '@/lib/utils'
 
 /**
- * nowPlayingRefetchMs は「いま放送中」表示を作り直す間隔。
- *
- * 番組が終わって次の番組に切り替わるタイミングを追いかけるためのポーリング。
- * SSE の `programs` 相当のトピックは無い（EPG 更新は元々 watcher の定期
- * ジョブなので、番組の切り替わり自体はサーバー側で NOTIFY されない）ため、
- * レベルトリガーの精神（不変条件 5）に沿って一定間隔で再取得する。
- *
- * **`useListPrograms` に `refetchInterval` は渡さない。** `nowMs`（tick）が
- * この間隔で更新されるたびに `currentProgramWindow` の結果が変わって
- * クエリキー自体が変わるので、それだけで同じ周期の再取得が起きる ---
- * `refetchInterval` を並置すると「キー変化による取得」と「タイマーによる
- * 取得」の同じ周期の再取得が二重に走るだけで、後者は何も追加しない
- * （レビュー #190 の指摘）。
+ * The display clock updates each second. Site-wide EPG queries refresh at known
+ * programme boundaries; the selected-channel query also includes upcoming
+ * programmes so the detail panel can show what is next.
  */
-const nowPlayingRefetchMs = 30_000
+const scheduleClockTickMs = 1_000
+const selectedProgramWindowMs = 6 * 60 * 60_000
 
 /**
  * LivePage はライブ視聴画面（M4-4。選択と視聴開始の分離は M7-1。録画予約による
@@ -84,6 +85,7 @@ export function LivePage() {
   const liveCapability = useLiveCapability()
   const {
     siteServices,
+    sites,
     isPending: servicesPending,
     isError: servicesError,
   } = useAllSitesServices()
@@ -150,9 +152,6 @@ export function LivePage() {
   // 届くと `undefined → 'hd'` に変わって probe の effect が再実行され、
   // 再生が先頭からやり直しになる（`web/e2e/live.mjs` ⑨ が実ブラウザで見ている）。
   const effectiveProfile = explicitProfile ?? autoProfile
-  // セレクタの表示は実効プロファイル。一覧が 1 件以下のときはセレクタ自体を
-  // 出さないので、ここが `undefined` でも表示には現れない
-  const selectedProfile = effectiveProfile ?? liveProfiles[0]?.name
 
   // **URL が画質を名指ししているときだけ、一覧の到着を待ってから再生させる。**
   // 上の理由と同じ窓を塞ぐためである --- 名指しされた値の実在は一覧が無いと
@@ -178,7 +177,7 @@ export function LivePage() {
   // 音声（issue #870）。**選択はプレイヤーの中だけで効く** --- streamer は標準 /
   // 主 / 副の 3 本を常に出しているので、選んでもプレイリストの取り直しも
   // セッションの作り直しも起きず、同じチャンネルを見ている他の視聴者にも影響しない。
-  const selectAudio = (value: string) => {
+  const selectAudio = (value: string | undefined) => {
     void navigate({
       search: { ...routeSearch, audio: validLiveAudio(value) },
       replace: true,
@@ -236,6 +235,12 @@ export function LivePage() {
     autoProfile !== undefined
       ? liveProfiles.find((p) => p.name === autoProfile)
       : undefined
+  const [visibleDowngradeNotice, setVisibleDowngradeNotice] = useState<string | null>(null)
+  useEffect(() => {
+    if (visibleDowngradeNotice === null) return
+    const timer = window.setTimeout(() => setVisibleDowngradeNotice(null), 5_000)
+    return () => window.clearTimeout(timer)
+  }, [visibleDowngradeNotice])
 
   // 停滞したときに 1 段下げる（issue #871）。`LivePlayer` から呼ばれ、
   // `true` を返すと「引き取った」= エラー表示に落ちない。
@@ -262,11 +267,12 @@ export function LivePage() {
     const next = nextLowerProfile(liveProfiles, effectiveProfile)
     if (next === undefined) return false
     setAutoQuality({ name: next, key: playingKey })
+    setVisibleDowngradeNotice(next)
     return true
   }
 
   // diagnostics は遅延・バッファの計器（issue #476）。値の取得は `LivePlayer`
-  // が担うが、表示は ON AIR バッジと同じ情報欄に置くのでこちらで持つ
+  // が担うが、表示は再生操作バーのライブ表示の隣に置くのでこちらで持つ
   // （`LivePlayer` の `onDiagnostics` コールバック prop から受け取る）。
   // `isPlaying` が false になった瞬間にレンダー中で捨てる --- playingKey と
   // 同じ理由（上のコメント参照）で、effect の cleanup 待ちにすると
@@ -279,26 +285,126 @@ export function LivePage() {
   // nowMs は「いま」を一定間隔で更新するティック。Date.now() を毎レンダー呼ぶだけでは
   // 再レンダーの理由にならず、番組が終わっても表示が切り替わらない。
   const [nowMs, setNowMs] = useState(() => Date.now())
+  const [programWindowAnchor, setProgramWindowAnchor] = useState(() => Date.now())
   useEffect(() => {
-    const id = setInterval(() => setNowMs(Date.now()), nowPlayingRefetchMs)
+    const id = setInterval(() => setNowMs(Date.now()), scheduleClockTickMs)
     return () => clearInterval(id)
   }, [])
 
-  const window_ = currentProgramWindow(nowMs)
+  // Query keys move only when a known EPG start/end boundary passes. The 1s
+  // display clock updates remaining time and the live edge without polling the
+  // API, so each site has one short-window query per scheduled boundary.
+  const window_ = useMemo(() => currentProgramWindow(programWindowAnchor), [programWindowAnchor])
+  const siteProgramQueries = useQueries({
+    queries: sites.map((site) => getListProgramsQueryOptions(site, window_)),
+  })
+  const sitePrograms = useMemo(() => sites.flatMap((site, index) =>
+    (unwrap(siteProgramQueries[index]?.data) ?? []).map((program) => ({ ...program, site })),
+  ), [siteProgramQueries, sites])
+  const scheduledPrograms = useMemo(() => sitePrograms.filter((program) =>
+    isAiring(program.startAt, program.endAt, nowMs),
+  ), [nowMs, sitePrograms])
+  const programByService = useMemo(() => new Map(scheduledPrograms.map((program) => [
+    siteServiceKey(program.site, program.networkId, program.serviceId),
+    program,
+  ])), [scheduledPrograms])
+  const nextRefresh = useMemo(
+    () => nextProgramRefreshMs(sitePrograms, nowMs, Date.parse(window_.end)),
+    [nowMs, sitePrograms, window_.end],
+  )
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setProgramWindowAnchor(Date.now()), Math.max(0, nextRefresh - Date.now()) + 10)
+    return () => window.clearTimeout(timeout)
+  }, [nextRefresh])
+
   const nowPlayingQuery = useListPrograms(
     selectedService?.site ?? '',
     {
-      start: window_.start,
-      end: window_.end,
+      start: new Date(programWindowAnchor - selectedProgramWindowMs).toISOString(),
+      end: new Date(programWindowAnchor + selectedProgramWindowMs).toISOString(),
       // 組で渡す --- `serviceId` は network をまたぐと一意でない（issue #291）。
       service: selectedService ? [selectedService.id] : undefined,
     },
     { query: { enabled: selectedService !== undefined } },
   )
-  const nowPlaying = useMemo(() => {
-    const programs: ProgramListItem[] = unwrap(nowPlayingQuery.data) ?? []
-    return programs.find((p) => isAiring(p.startAt, p.endAt, nowMs))
-  }, [nowPlayingQuery.data, nowMs])
+  const selectedPrograms = useMemo(
+    () => unwrap(nowPlayingQuery.data) as ProgramListItem[] | undefined ?? [],
+    [nowPlayingQuery.data],
+  )
+  const selectedScheduled = useMemo(
+    () => scheduledProgramAt(selectedPrograms, nowMs),
+    [selectedPrograms, nowMs],
+  )
+  const nowPlaying = selectedScheduled?.program
+  const nowPlayingOverrun = selectedScheduled?.overrun ?? false
+  const nextProgram = useMemo(() => {
+    return selectedPrograms
+      .filter((program) => Date.parse(program.startAt) > nowMs)
+      .sort((a, b) => Date.parse(a.startAt) - Date.parse(b.startAt))[0]
+  }, [selectedPrograms, nowMs])
+  const selectedRecordingId = nowPlaying?.recordingId
+  const selectedRecordingQuery = useGetRecording(selectedRecordingId ?? 0, {
+    query: { enabled: isPlaying && selectedRecordingId !== undefined },
+  })
+  const selectedRecording = unwrap(selectedRecordingQuery.data)
+
+  const [playbackSource, setPlaybackSource] = useState<'live' | 'chase'>('live')
+  const [chaseOffset, setChaseOffset] = useState<number | undefined>(undefined)
+  const [chaseTarget, setChaseTarget] = useState<{
+    site: string
+    recordingId: number
+    programStartAt: string
+    programEndAt: string
+    recordingStartedAt: string
+  } | null>(null)
+  const recordingAccess = programRecordingAccess(
+    selectedRecordingId,
+    nowPlaying?.startAt ?? '',
+    selectedRecording?.startedAt,
+  )
+  const onStartOver = () => {
+    if (!nowPlaying || selectedRecordingId === undefined || !selectedRecording?.startedAt) return
+    const offset = programChaseStartOffsetSeconds(nowPlaying.startAt, selectedRecording.startedAt)
+    if (offset === null) return
+    setChaseTarget({
+      site: selectedService?.site ?? 'default',
+      recordingId: selectedRecordingId,
+      programStartAt: nowPlaying.startAt,
+      programEndAt: nowPlaying.endAt,
+      recordingStartedAt: selectedRecording.startedAt,
+    })
+    setChaseOffset(offset)
+    setPlaybackSource('chase')
+  }
+  const onLiveProgramSeek = (programSeconds: number) => {
+    if (!nowPlaying || selectedRecordingId === undefined || !selectedRecording?.startedAt) return
+    const headSeconds = recordingAccess.recordingHeadSeconds
+    const liveEdgeSeconds = Math.max(0, (nowMs - Date.parse(nowPlaying.startAt)) / 1000)
+    if (!isRecordedProgramOffset(programSeconds, headSeconds, liveEdgeSeconds)) return
+    const offset = programRecordingOffsetSeconds(
+      nowPlaying.startAt,
+      selectedRecording.startedAt,
+      programSeconds,
+    )
+    if (offset === null) return
+    setChaseTarget({
+      site: selectedService?.site ?? 'default',
+      recordingId: selectedRecordingId,
+      programStartAt: nowPlaying.startAt,
+      programEndAt: nowPlaying.endAt,
+      recordingStartedAt: selectedRecording.startedAt,
+    })
+    setChaseOffset(offset)
+    setPlaybackSource('chase')
+  }
+  const chaseTimeline = playbackSource === 'chase' && chaseTarget
+    ? {
+        programmeStartMs: Date.parse(chaseTarget.programStartAt),
+        recordingStartedAtMs: Date.parse(chaseTarget.recordingStartedAt),
+        plannedSeconds: Math.max(1, (Date.parse(chaseTarget.programEndAt) - Date.parse(chaseTarget.programStartAt)) / 1000),
+        recordedSeconds: Math.max(0, (nowMs - Date.parse(chaseTarget.recordingStartedAt)) / 1000),
+      }
+    : undefined
 
   // 録画予約による中断予測（M7-2, issue #235）。
   //
@@ -324,6 +430,9 @@ export function LivePage() {
           ),
     [reservations, selectedService, nowMs],
   )
+  const selectedProgramRemaining = nowPlaying
+    ? remainingProgramMinutes(nowPlaying.endAt, nowMs)
+    : null
 
   return (
     <>
@@ -367,20 +476,52 @@ export function LivePage() {
           <div className="flex min-w-0 flex-1 flex-col gap-2">
             {isPlaying ? (
               <LivePlayer
-                site={selectedService.site}
+                mode={playbackSource}
+                site={playbackSource === 'chase' ? chaseTarget?.site ?? selectedService.site : selectedService.site}
                 networkId={selectedService.networkId}
                 serviceId={selectedService.serviceId}
+                recordingId={playbackSource === 'chase' ? chaseTarget?.recordingId : undefined}
+                chaseTimeline={chaseTimeline}
+                startOffsetSeconds={playbackSource === 'chase' ? chaseOffset : undefined}
                 profile={effectiveProfile}
                 audio={routeSearch.audio}
+                availableProfiles={liveProfiles.map((profile) => ({
+                  ...profile,
+                  label: `${liveProfileLabel(profile)}${autoDowngradedProfile?.name === profile.name ? ' · 自動で下げた' : ''}`,
+                }))}
+                onProfileChange={selectProfile}
+                onAudioChange={selectAudio}
+                liveProgram={playbackSource === 'live' && nowPlaying ? {
+                  startAt: nowPlaying.startAt,
+                  endAt: nowPlaying.endAt,
+                  nowMs,
+                  recordingId: selectedRecordingId,
+                  recordingStartedAt: selectedRecording?.startedAt,
+                } : undefined}
+                onLiveProgramSeek={onLiveProgramSeek}
+                onStartOver={onStartOver}
+                liveDiagnostics={diagnostics ? formatLiveDiagnostics(diagnostics) : undefined}
+                liveNotice={visibleDowngradeNotice === autoDowngradedProfile?.name && autoDowngradedProfile
+                  ? `映像が止まったため、画質を ${liveProfileLabel(autoDowngradedProfile)}に下げました`
+                  : undefined}
+                onReturnLive={() => {
+                  setPlaybackSource('live')
+                  setChaseOffset(undefined)
+                  setChaseTarget(null)
+                }}
                 onStalled={handleStalled}
                 onDiagnostics={setDiagnostics}
               />
             ) : (
               <LiveSelectionPreview
                 serviceName={selectedService.name}
-                onPlay={() =>
+                onPlay={() => {
+                  setVisibleDowngradeNotice(null)
+                  setPlaybackSource('live')
+                  setChaseOffset(undefined)
+                  setChaseTarget(null)
                   setPlayingKey(selectedKey ?? null)
-                }
+                }}
               />
             )}
             <div>
@@ -396,42 +537,26 @@ export function LivePage() {
                   {channelTypeLabel(selectedService.channelType)}
                 </span>
                 {nowPlaying && <OnAirBadge />}
-                {/* 遅延・バッファの計器（issue #476）。ON AIR・録画中バッジと
-                    同じ「いま電波に乗っているものとの距離」を言う中立表示
-                    なので信号色は使わず text-muted-foreground に固定する。
-                    aria-live は付けない --- 毎秒変わる数字を読み上げさせない。 */}
-                {isPlaying && diagnostics && (
-                  <span
-                    data-testid="live-diagnostics"
-                    className="shrink-0 whitespace-nowrap text-xs text-muted-foreground"
-                  >
-                    {formatLiveDiagnostics(diagnostics)}
-                  </span>
-                )}
+                {/* 遅延・バッファの計器（issue #476）は再生操作バーの LIVE 表示の
+                    隣に置く。選択中の番組予定と視聴計器を分け、診断値を観測可能な
+                    現在の番組情報として読ませない。 */}
               </div>
-              {/* 自動で下げたことの通知（issue #871）。**トーストにしない** ---
-                  消えた後に「なぜ汚いのか」を知る手段が無くなる。ON AIR バッジ・
-                  計器と同じ情報欄に残す。**原因を断定しない**（「回線が細い」とは
-                  書かない。測っていない）し、帯域の推定値も出さない。
-                  この 1 行だけ `aria-live` を持つ --- 計器が持たないのは毎秒
-                  変わるからで、こちらは 1 回の出来事である。 */}
-              {isPlaying && autoDowngradedProfile && (
-                <p
-                  data-testid="live-quality-downgraded"
-                  aria-live="polite"
-                  className="mt-1 text-sm text-muted-foreground"
-                >
-                  映像が止まったため、画質を{' '}
-                  {liveProfileLabel(autoDowngradedProfile)}に下げました
-                </p>
-              )}
+              {/* 自動で下げたことの通知（issue #871）は動画上に数秒だけ出し、
+                  選択済みプロファイルには設定メニュー内で「自動で下げた」と残す。
+                  **原因を断定しない**（「回線が細い」とは書かない。測っていない）し、
+                  帯域の推定値も出さない。この出来事の通知だけ aria-live を持たせる。 */}
               {nowPlaying ? (
-                <p className="text-sm text-muted-foreground">
-                  <span>
-                    {formatTime(nowPlaying.startAt)}〜{formatTime(nowPlaying.endAt)}
-                  </span>{' '}
-                  <span>{nowPlaying.name}</span>
-                </p>
+                <div className="mt-2">
+                  <p className="text-xl font-semibold">{nowPlaying.name}</p>
+                  <p className="text-sm text-muted-foreground">
+                    <span className="mr-1">予定:</span>
+                    <span>{formatTime(nowPlaying.startAt)}〜{formatTime(nowPlaying.endAt)}</span>
+                    {selectedProgramRemaining !== null && (
+                      <span> · 残り {selectedProgramRemaining} 分</span>
+                    )}
+                    {nowPlayingOverrun && <span data-testid="live-schedule-overrun"> · 予定終了時刻を超過</span>}
+                  </p>
+                </div>
               ) : !nowPlayingQuery.isPending ? (
                 <p className="text-sm text-muted-foreground">いま放送中の番組の情報はありません</p>
               ) : null}
@@ -444,52 +569,11 @@ export function LivePage() {
               >
                 この局の番組表
               </Link>
-              {/* 画質（issue #869）。**選択肢が 2 件以上のときだけ出す** ---
-                  1 件しか無いのに出すと、選んでも何も変わらない「機能しない
-                  コントロール」に戻る（issue #209 と同じ規律）。一覧が空に
-                  なるのは `live.profiles` が未定義のときだけである
-                  （`live.enabled: false` でも定義があれば返る）。
-                  表示は実効プロファイル（`selectedProfile`）に一致させるので、
-                  URL が未知の名前を運んでいても既定の先頭に一致し、**自動で
-                  下げた後は下げた先が選ばれて見える**（issue #871）。
-                  **その副作用として「自動で下がった段と同じ値を選んで自動を
-                  止める」ことはできない**（`change` が発火しない）。別の段を
-                  選べば止まる。セレクタに「自動」を常設しない判断の帰結である
-                  （`docs/frontend/live.md` §フロントエンド実装）。 */}
-              {liveProfiles.length > 1 && (
-                <label className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
-                  <span>画質</span>
-                  <select
-                    aria-label="画質"
-                    value={selectedProfile}
-                    onChange={(e) => selectProfile(e.target.value)}
-                    className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none"
-                  >
-                    {liveProfiles.map((p) => (
-                      <option key={p.name} value={p.name}>
-                        {liveProfileLabel(p)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+              {nextProgram && (
+                <p data-testid="live-next-program" className="mt-1 text-sm text-muted-foreground">
+                  次 {formatTime(nextProgram.startAt)} {nextProgram.name}
+                </p>
               )}
-              {/* 音声（issue #870）。**常に 3 択で出す** --- どの番組が二重音声かを
-                  知る手段が無い（音声 ES の情報を持たず、二重音声は ffprobe では
-                  通常のステレオと区別できない。記述子を読むのは不変条件 6 の外）。
-                  二重音声でない番組で主 / 副を選ぶと片側のチャンネルだけになる。 */}
-              <label className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
-                <span>音声</span>
-                <select
-                  aria-label="音声"
-                  value={routeSearch.audio ?? ''}
-                  onChange={(e) => selectAudio(e.target.value)}
-                  className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none"
-                >
-                  <option value="">標準</option>
-                  <option value="main">主音声</option>
-                  <option value="sub">副音声</option>
-                </select>
-              </label>
               {/* 録画予約による中断予測（issue #235 M7-2）。選択状態（値札）・
                   視聴中のどちらの画面でもこの情報欄は共通なので、1 箇所に置くだけで
                   両方の受け入れ条件（値札 / 視聴中画面への表示）を満たす。 */}
@@ -513,8 +597,12 @@ export function LivePage() {
                     {channelTypeLabel(group.channelType)}
                   </p>
                   <ul className="flex flex-col gap-1">
-                    {group.services.map((s) => (
-                      <li key={siteServiceKey(s.site, s.networkId, s.serviceId)}>
+                    {group.services.map((s) => {
+                      const key = siteServiceKey(s.site, s.networkId, s.serviceId)
+                      const scheduled = programByService.get(key)
+                      const remaining = scheduled ? remainingProgramMinutes(scheduled.endAt, nowMs) : null
+                      return (
+                      <li key={key}>
                         {/* チャンネルを選ぶこと自体はコスト 0（probe もセッションも
                             起こさない）なので、デバウンスも onClick での介入も無い
                             --- 通常のクリックナビゲーションのまま（issue #234）。
@@ -538,9 +626,8 @@ export function LivePage() {
                               : undefined
                           }
                           className={cn(
-                            'flex min-h-11 w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm transition-colors hover:bg-muted',
-                            siteServiceKey(s.site, s.networkId, s.serviceId) === selectedKey &&
-                              'bg-muted font-medium',
+                            'flex min-h-13 w-full items-start gap-2 rounded-md px-2 py-2 text-left text-sm transition-colors hover:bg-muted',
+                            key === selectedKey && 'bg-muted font-medium',
                           )}
                         >
                           {s.channelType === 'GR' && s.remoteControlKeyId > 0 && (
@@ -551,10 +638,26 @@ export function LivePage() {
                               {s.remoteControlKeyId}
                             </span>
                           )}
-                          <span className="truncate">{s.name}</span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate">{s.name}</span>
+                            {scheduled && (
+                              <span className="mt-0.5 block truncate text-xs font-normal text-muted-foreground">
+                                {scheduled.recordingId !== undefined && (
+                                  <span data-testid={`live-recording-mark-${scheduled.serviceId}`} className="mr-1 text-[11px] font-medium text-[#ff8a80]">
+                                    ● 録画中
+                                  </span>
+                                )}
+                                <span aria-label={`番組表の予定: ${scheduled.name}`}>{scheduled.name}</span>
+                              </span>
+                            )}
+                            {remaining !== null && (
+                              <span className="block text-xs font-normal text-muted-foreground">残り {remaining} 分</span>
+                            )}
+                          </span>
                         </Link>
                       </li>
-                    ))}
+                      )
+                    })}
                   </ul>
                 </li>
               ))}
@@ -612,7 +715,11 @@ function LiveSelectionPreview({
  */
 function OnAirBadge() {
   return (
-    <span className="tally-scanlines shrink-0 rounded px-1.5 py-0.5 text-xs font-medium text-tally-foreground">
+    <span
+      title="番組表上の現在予定（放送状態を観測したものではありません）"
+      aria-label="番組表上の現在予定"
+      className="tally-scanlines shrink-0 rounded px-1.5 py-0.5 text-xs font-medium text-tally-foreground"
+    >
       ON AIR
     </span>
   )

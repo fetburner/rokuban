@@ -10,6 +10,7 @@ import type { ChapterSpan } from '@/api/generated'
 import {
   RecordingPlaybackControls,
   type ChaseTimeline,
+  type LiveProgramTimeline,
   type TilePreview,
 } from '@/components/recording-playback-controls'
 import { chapterJumpTarget, loadChapterSkip, saveChapterSkip, skipTarget } from '@/lib/chapters'
@@ -24,12 +25,15 @@ import {
   claimsHlsPlaylistSupport,
   chasePlaylistURL,
   createStallTracker,
+  isRecordedProgramOffset,
+  liveProgramAxis,
   liveAudioTrackIndex,
   livePlaylistURL,
   liveStallTimeoutMs,
   originalVODPlaylistURL,
   observeStall,
   probeLivePlaylist,
+  programRecordingAccess,
   readSubtitleVisibility,
   sendChaseLeaveHint,
   sendLiveLeaveHint,
@@ -161,6 +165,18 @@ function applyNativeAudioTrack(media: HTMLVideoElement, index: number): void {
 type LivePlayerProps = {
   /** live は site/network/service、録画再生は site/recordingId を使う。 */
   mode?: 'live' | 'chase' | 'original-vod'
+  liveProgram?: {
+    startAt: string
+    endAt: string
+    nowMs: number
+    recordingId?: number
+    recordingStartedAt?: string
+  }
+  onLiveProgramSeek?: (programSeconds: number) => void
+  onStartOver?: () => void
+  onReturnLive?: () => void
+  liveDiagnostics?: string
+  liveNotice?: string
   site?: string
   /** SI の networkId。mirakc 合成 service id の組み立てに使う（issue #208）。 */
   networkId?: number
@@ -205,7 +221,7 @@ type LivePlayerProps = {
    */
   audio?: LiveAudioChoice
   /** original-vod の画質メニュー。1 件以下ならセレクタを隠す。 */
-  availableProfiles?: readonly { name: string; height?: number }[]
+  availableProfiles?: readonly { name: string; height?: number; label?: string }[]
   onProfileChange?: (profile: string) => void
   onAudioChange?: (audio: LiveAudioChoice | undefined) => void
   watched?: boolean
@@ -320,6 +336,12 @@ function observeMediaStall(
  */
 export function LivePlayer({
   mode = 'live',
+  liveProgram,
+  onLiveProgramSeek,
+  onStartOver,
+  onReturnLive,
+  liveDiagnostics,
+  liveNotice,
   site,
   networkId,
   serviceId,
@@ -352,6 +374,7 @@ export function LivePlayer({
 }: LivePlayerProps) {
   const isChase = mode === 'chase'
   const isOriginalVOD = mode === 'original-vod'
+  const isLive = mode === 'live'
   const isRecordingPlayback = isChase || isOriginalVOD
   const explicitChaseStartOffset =
     isChase &&
@@ -429,12 +452,18 @@ export function LivePlayer({
   const originalVODAudioOverride = originalVODAudioOverrideState.recordingId === recordingId
     ? originalVODAudioOverrideState
     : { recordingId, set: false, value: undefined }
+  const [liveAudioOverrideState, setLiveAudioOverrideState] = useState<{
+    set: boolean
+    value: LiveAudioChoice | undefined
+  }>({ set: false, value: undefined })
   const playbackProfile = isOriginalVOD
     ? onProfileChange ? profile : originalVODProfileOverride ?? profile
     : profile
   const playbackAudio = isOriginalVOD && !onAudioChange && originalVODAudioOverride.set
     ? originalVODAudioOverride.value
-    : audio
+    : isLive && !onAudioChange && liveAudioOverrideState.set
+      ? liveAudioOverrideState.value
+      : audio
   const originalDurationSeconds =
     recordingDurationMs !== undefined && Number.isFinite(recordingDurationMs) && recordingDurationMs > 0
       ? recordingDurationMs / 1000
@@ -1517,6 +1546,75 @@ export function LivePlayer({
   const handleChaseSeekPointerLeave = () => {
     if (!isChaseScrubbingRef.current) setChaseHoverSeconds(null)
   }
+  const liveProgramSeekTargetAtPointer = (event: ReactPointerEvent<HTMLDivElement>): number | null => {
+    if (!liveTimelineBar || !liveTimelineBar.canSeek || liveTimelineBar.maxSeconds <= liveTimelineBar.minSeconds) return null
+    const rect = event.currentTarget.getBoundingClientRect()
+    if (rect.width <= 0) return null
+    const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
+    return Math.round(liveTimelineBar.minSeconds + fraction * (liveTimelineBar.maxSeconds - liveTimelineBar.minSeconds))
+  }
+  const isSelectableLiveProgramPoint = (seconds: number | null): seconds is number =>
+    seconds !== null && liveTimelineBar !== undefined && isRecordedProgramOffset(
+      seconds,
+      liveRecordingAccess.recordingHeadSeconds,
+      liveTimelineBar.liveEdgeSeconds,
+    )
+  const showLiveProgramPreview = (event: ReactPointerEvent<HTMLDivElement>, seconds: number | null) => {
+    if (event.pointerType !== 'mouse' || !isSelectableLiveProgramPoint(seconds)) {
+      setOriginalPreviewSeconds(null)
+      setOriginalTilePreview(null)
+      return
+    }
+    const rect = event.currentTarget.getBoundingClientRect()
+    const left = Math.max(0, Math.min(rect.width, event.clientX - rect.left))
+    setOriginalPreviewSeconds(seconds)
+    setOriginalTilePreview({ x: 0, y: 0, left, scale: 1, seconds })
+  }
+  const commitLiveProgramSeek = (seconds: number) => {
+    if (!isSelectableLiveProgramPoint(seconds)) return
+    setOriginalPreviewSeconds(null)
+    setOriginalTilePreview(null)
+    onLiveProgramSeek?.(seconds)
+  }
+  const handleLiveProgramSeekPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const seconds = liveProgramSeekTargetAtPointer(event)
+    if (!isSelectableLiveProgramPoint(seconds)) return
+    isLiveProgramScrubbingRef.current = true
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+    showLiveProgramPreview(event, seconds)
+  }
+  const handleLiveProgramSeekPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const seconds = liveProgramSeekTargetAtPointer(event)
+    if (isLiveProgramScrubbingRef.current) showLiveProgramPreview(event, seconds)
+    else if (event.pointerType === 'mouse') showLiveProgramPreview(event, seconds)
+  }
+  const handleLiveProgramSeekPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!isLiveProgramScrubbingRef.current) return
+    const seconds = liveProgramSeekTargetAtPointer(event)
+    isLiveProgramScrubbingRef.current = false
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture?.(event.pointerId)
+    }
+    if (isSelectableLiveProgramPoint(seconds)) commitLiveProgramSeek(seconds)
+    else {
+      setOriginalPreviewSeconds(null)
+      setOriginalTilePreview(null)
+    }
+  }
+  const handleLiveProgramSeekPointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
+    isLiveProgramScrubbingRef.current = false
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture?.(event.pointerId)
+    }
+    setOriginalPreviewSeconds(null)
+    setOriginalTilePreview(null)
+  }
+  const handleLiveProgramSeekPointerLeave = () => {
+    if (!isLiveProgramScrubbingRef.current) {
+      setOriginalPreviewSeconds(null)
+      setOriginalTilePreview(null)
+    }
+  }
   const originalSeekTargetAtPointer = (event: ReactPointerEvent<HTMLDivElement>): number | null => {
     if (originalDurationSeconds <= 0) return null
     const rect = event.currentTarget.getBoundingClientRect()
@@ -1620,12 +1718,12 @@ export function LivePlayer({
   const video = (
     <video
       ref={videoRef}
-      controls={!isRecordingPlayback}
+      controls={false}
       playsInline
       aria-label={isRecordingPlayback ? (isChase ? '追っかけ映像' : '録画映像') : undefined}
       {...(isRecordingPlayback ? frame.video : {})}
       className={cn(
-        isRecordingPlayback ? 'absolute inset-0 size-full rounded object-contain' : 'size-full rounded',
+        'absolute inset-0 size-full rounded object-contain',
         (loading || error) && 'invisible',
       )}
       onLoadedMetadata={(event) => {
@@ -1752,29 +1850,35 @@ export function LivePlayer({
     </>
   )
 
-  if ((isOriginalVOD || isChase) && recordingId !== undefined) {
+  if (isLive || ((isOriginalVOD || isChase) && recordingId !== undefined)) {
     const menuProfile = playbackProfile ?? availableProfiles?.[0]?.name ?? ''
-    const profileOptions = availableProfiles?.map(({ name, height }) => ({
+    const profileOptions = availableProfiles?.map(({ name, height, label }) => ({
       name,
-      label: height !== undefined && height > 0 ? `${name}（${height}p）` : name,
+      label: label ?? (height !== undefined && height > 0 ? `${name}（${height}p）` : name),
     }))
     return (
       <RecordingPlaybackControls
         recordingId={recordingId}
         profile={menuProfile}
         encodedAssets={[]}
-        playbackMode={isChase ? 'chase' : 'original-vod'}
+        playbackMode={isLive ? 'live' : isChase ? 'chase' : 'original-vod'}
+        className={className}
         chaseTimeline={chaseTimelineBar}
+        liveTimeline={liveTimelineBar}
+        liveDiagnostics={isLive ? liveDiagnostics : undefined}
+        liveNotice={isLive ? liveNotice : undefined}
+        onStartOver={onStartOver}
         profileOptions={profileOptions}
         audioChoice={playbackAudio}
         onSelectAudio={(choice) => {
           if (onAudioChange) onAudioChange(choice)
+          else if (isLive) setLiveAudioOverrideState({ set: true, value: choice })
           else setOriginalVODAudioOverrideState({ recordingId, set: true, value: choice })
         }}
         {...frame.controls}
         video={<>{video}{playerOverlay}</>}
-        currentSeconds={isChase ? visibleChaseSeconds : visibleOriginalSeconds}
-        durationSeconds={isChase
+        currentSeconds={isLive ? liveProgramEdgeSeconds : isChase ? visibleChaseSeconds : visibleOriginalSeconds}
+        durationSeconds={isLive ? liveProgramDurationSeconds : isChase
           ? chaseTimelineMaxSeconds - chaseTimelineMinSeconds
           : originalDurationSeconds}
         playedFraction={originalPlayedFraction}
@@ -1788,12 +1892,14 @@ export function LivePlayer({
           setOriginalTilesAvailable(false)
           setOriginalTilePreview(null)
         }}
-        onSeekPointerDown={isChase ? handleChaseSeekPointerDown : handleOriginalSeekPointerDown}
-        onSeekPointerMove={isChase ? handleChaseSeekPointerMove : handleOriginalSeekPointerMove}
-        onSeekPointerUp={isChase ? handleChaseSeekPointerUp : handleOriginalSeekPointerUp}
-        onSeekPointerCancel={isChase ? handleChaseSeekPointerCancel : handleOriginalSeekPointerCancel}
+        onSeekPointerDown={isLive ? handleLiveProgramSeekPointerDown : isChase ? handleChaseSeekPointerDown : handleOriginalSeekPointerDown}
+        onSeekPointerMove={isLive ? handleLiveProgramSeekPointerMove : isChase ? handleChaseSeekPointerMove : handleOriginalSeekPointerMove}
+        onSeekPointerUp={isLive ? handleLiveProgramSeekPointerUp : isChase ? handleChaseSeekPointerUp : handleOriginalSeekPointerUp}
+        onSeekPointerCancel={isLive ? handleLiveProgramSeekPointerCancel : isChase ? handleChaseSeekPointerCancel : handleOriginalSeekPointerCancel}
         onSeekPointerLeave={() => {
-          if (isChase) {
+          if (isLive) {
+            handleLiveProgramSeekPointerLeave()
+          } else if (isChase) {
             handleChaseSeekPointerLeave()
           } else if (!isOriginalScrubbingRef.current) {
             setOriginalPreviewSeconds(null)
@@ -1801,7 +1907,9 @@ export function LivePlayer({
           }
         }}
         onSeek={(seconds) => {
-          if (isChase) {
+          if (isLive) {
+            commitLiveProgramSeek(seconds)
+          } else if (isChase) {
             commitChaseSeek(seconds)
           } else {
             setOriginalPreviewSeconds(null)
@@ -1809,10 +1917,17 @@ export function LivePlayer({
             commitOriginalSeek(seconds)
           }
         }}
-        onLiveEdgeSeek={isChase ? () => commitChaseSeek(chaseLiveEdgeSeconds) : undefined}
+        onLiveEdgeSeek={isChase ? onReturnLive ?? (() => commitChaseSeek(chaseLiveEdgeSeconds)) : undefined}
         deferKeyboardSeek
         onSeekPreview={(seconds) => {
-          if (isChase) setChasePreviewSeconds(seconds)
+          if (isLive) {
+            if (isSelectableLiveProgramPoint(seconds)) {
+              setOriginalPreviewSeconds(seconds)
+              setOriginalTilePreview(null)
+            } else {
+              setOriginalPreviewSeconds(null)
+            }
+          } else if (isChase) setChasePreviewSeconds(seconds)
           else {
             setOriginalPreviewSeconds(seconds)
             setOriginalTilePreview(null)
@@ -1853,15 +1968,7 @@ export function LivePlayer({
       />
     )
   }
-
-  return (
-    <div className={cn('flex w-full max-w-3xl flex-col', className)}>
-      <div className="relative aspect-video w-full rounded bg-black">
-        {video}
-        {playerOverlay}
-      </div>
-    </div>
-  )
+  return null
 }
 
 /**
