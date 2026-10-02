@@ -192,11 +192,13 @@ kubectl get pod -l app.kubernetes.io/component=api -o name   # Pod 名が入れ�
 mirakc は実機ではなくモックで確認している（同 README）。
 全 5 判定と `--oracles` を最後に通した環境は kind v0.32.0 / k8s v1.36.1 /
 KEDA v2.20.2（Colima 2 CPU / 3.8 GB、2026-08-28）。そのときの結果は次のとおり。
+`--only 3` の行だけ 2026-10-01 に Colima aarch64 で通した。
 
 | コマンド | 結果 | 終了コード | 所要（実測） |
 |---|---|---|---|
 | `run.sh` | `PASS 25 / FAIL 0 / TODO 0` | 0 | 約 10 分（`--no-build`） |
 | `run.sh --oracles` | `PASS 19 / FAIL 0` | 0 | 約 40 分（同上） |
+| `run.sh --only 3` | `PASS 9 / FAIL 0 / TODO 0` | 2（部分実行のため仕様どおり） | 未計測 |
 
 **`--oracles` は長い。** 判定 2 は CronJob の自然な発火（分単位）を待ち、
 判定 3 / 5 は「起きないこと」を窓で見る。変異のたびにその待ちを通るので、
@@ -210,19 +212,6 @@ TODO で抜けていた）。一部だけ見たいときは `E2E_ORACLES_ONLY=3`
 **イメージのビルドを含めると初回はさらに数分かかる。** ffmpeg 入り
 （`Dockerfile.full`）を焼いて `kind load` する時間で、`--no-build` を付けた
 2 回目以降は上の値になる。
-
-### 判定 3 の encode fixture パス（Issue 1009、2026-10-01）
-
-kind v0.32.0 / k8s v1.36.1 / KEDA v2.20.2、Colima aarch64（4 CPU / 8 GiB）で
-`./deploy/k8s/e2e/run.sh --only 3` を実行した。3.1〜3.4 はすべて PASS、集計は
-`PASS 9 / FAIL 0 / TODO 0`。`--only` は部分実行のため、終了コードは仕様どおり
-2 だった。
-
-負の確認では `deploy/k8s/e2e/lib/env.sh` の `E2E_ENCODE_REL_PATH` を旧値
-`e2e/encode-probe.m2ts` に一時変更し、既にビルドしたイメージを使って同じ判定を
-実行した。3.1 は PASS、3.2 は encode の行が 120 秒以内に `running` にならず FAIL
-した。3.2 で測定できなかったため 3.3 / 3.4 は TODO になった。確認後、値は
-`sites/${E2E_SITE_A}/e2e/encode-probe.m2ts` に戻した。
 
 ### CI では回さない
 
