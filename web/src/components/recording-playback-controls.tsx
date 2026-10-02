@@ -173,6 +173,8 @@ export function RecordingPlaybackControls({
   const [menuView, setMenuView] = useState<MenuView | null>(null)
   const menuOpen = menuView !== null
   const gearRef = useRef<HTMLButtonElement>(null)
+  // 幕を押したポインタの種類（click には pointerType が載らないブラウザがある）。
+  const scrimPointerTypeRef = useRef('')
   const seconds = Math.max(0, Math.min(durationSeconds || 0, currentSeconds))
   const volumeValue = muted ? 0 : volume
   const hasChapters = !playingCut && chapters.length > 0
@@ -262,8 +264,16 @@ export function RecordingPlaybackControls({
           inert={!showControls}
           onFocusCapture={onToolbarFocus}
           onBlurCapture={onToolbarBlur}
-          onPointerUp={(event) => {
-            if (event.pointerType !== 'mouse' && event.target === event.currentTarget) onHideControls()
+          onPointerDown={(event) => {
+            scrimPointerTypeRef.current = event.pointerType
+          }}
+          // 幕そのものを押したときだけ（ボタンは除く）。pointerup で幕を消すと、続く click が
+          // 下の <video> に落ちて再生 / 一時停止してしまうので、click で処理する。
+          // タッチは操作を閉じ、マウスは映像のクリックと同じく再生 / 一時停止する。
+          onClick={(event) => {
+            if (event.target !== event.currentTarget) return
+            if (scrimPointerTypeRef.current === 'mouse') onTogglePlay()
+            else onHideControls()
           }}
         >
           <div
@@ -356,43 +366,46 @@ export function RecordingPlaybackControls({
             </div>
 
             <div data-testid="player-controls-row" className="flex min-h-9 items-center gap-0.5 md:min-h-10 md:gap-1">
-              {/* スマホでは枠の中央に大きく出す。md 以上はバーの左端に再生 → 前 → 次で並ぶ。 */}
+              {/*
+                スマホでは枠の中央に前 → 再生 → 次の順で大きく出す（DOM 順もこの順）。md 以上は
+                バーの左端に再生 → 前 → 次で並べるため、再生だけ order で先頭へ出す。
+              */}
               <div
                 data-testid={hasChapters ? 'chapter-navigation' : undefined}
                 className="pointer-events-none absolute inset-x-0 top-1/2 flex -translate-y-1/2 items-center justify-center gap-10 md:pointer-events-auto md:static md:translate-y-0 md:gap-0">
+                {hasChapters && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className={cn(ghost, 'pointer-events-auto size-11 rounded-full bg-black/35 md:size-8 md:rounded-lg md:bg-transparent')}
+                    aria-label="前のチャプター"
+                    onClick={onPreviousChapter}
+                  >
+                    <SkipBack className="size-5 md:size-4" />
+                  </Button>
+                )}
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className={cn(ghost, 'pointer-events-auto order-1 size-14 rounded-full bg-black/45 md:order-none md:size-8 md:rounded-lg md:bg-transparent')}
+                  className={cn(ghost, 'pointer-events-auto size-14 rounded-full bg-black/45 md:-order-1 md:size-8 md:rounded-lg md:bg-transparent')}
                   aria-label={isPlaying ? '一時停止' : '再生'}
                   onClick={onTogglePlay}
                 >
                   {isPlaying ? <Pause className="size-7 md:size-4" /> : <Play className="size-7 md:size-4" />}
                 </Button>
                 {hasChapters && (
-                  <>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className={cn(ghost, 'pointer-events-auto size-11 rounded-full bg-black/35 md:size-8 md:rounded-lg md:bg-transparent')}
-                      aria-label="前のチャプター"
-                      onClick={onPreviousChapter}
-                    >
-                      <SkipBack className="size-5 md:size-4" />
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className={cn(ghost, 'pointer-events-auto order-2 size-11 rounded-full bg-black/35 md:order-none md:size-8 md:rounded-lg md:bg-transparent')}
-                      aria-label="次のチャプター"
-                      onClick={onNextChapter}
-                    >
-                      <SkipForward className="size-5 md:size-4" />
-                    </Button>
-                  </>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className={cn(ghost, 'pointer-events-auto size-11 rounded-full bg-black/35 md:size-8 md:rounded-lg md:bg-transparent')}
+                    aria-label="次のチャプター"
+                    onClick={onNextChapter}
+                  >
+                    <SkipForward className="size-5 md:size-4" />
+                  </Button>
                 )}
               </div>
               {/* 端末の音量ボタンで足りるので、スマホにはミュート / 音量を置かない。 */}
@@ -462,7 +475,9 @@ export function RecordingPlaybackControls({
                   variant="ghost"
                   size="icon"
                   className={cn(ghost, watched && 'bg-white/20')}
-                  aria-label={watched ? '未視聴に戻す' : '視聴済みにする'}
+                  // トグルは固定の名前 + aria-pressed で状態を伝える（名前も入れ替えると
+                  // 「押されている・未視聴に戻す」のように状態が二重に読まれる）。
+                  aria-label="視聴済み"
                   aria-pressed={watched}
                   title={watched ? '未視聴に戻す' : '視聴済みにする'}
                   disabled={watchedPending || watchedAction === undefined}

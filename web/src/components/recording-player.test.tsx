@@ -489,7 +489,10 @@ describe('RecordingPlayer の再生操作', () => {
         deleteWatched={deleteWatched}
       />,
     )
-    fireEvent.click(getByRole('button', { name: '視聴済みにする' }))
+    // 固定の名前 + aria-pressed のトグル（名前は状態で入れ替えない）。
+    const toggle = getByRole('button', { name: '視聴済み' })
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(toggle)
     expect(putWatched).toHaveBeenCalledOnce()
 
     rerender(
@@ -502,11 +505,12 @@ describe('RecordingPlayer の再生操作', () => {
         deleteWatched={deleteWatched}
       />,
     )
-    fireEvent.click(getByRole('button', { name: '未視聴に戻す' }))
+    expect(getByRole('button', { name: '視聴済み' })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(getByRole('button', { name: '視聴済み' }))
     expect(deleteWatched).toHaveBeenCalledOnce()
 
     rerender(<RecordingPlayer recordingId={32} encodedAssets={asset} />)
-    expect(queryByRole('button', { name: '未視聴に戻す' })).not.toBeInTheDocument()
+    expect(queryByRole('button', { name: '視聴済み' })).not.toBeInTheDocument()
   })
 
   it('矢印キーで 10 秒、J/L で 30 秒移動する', () => {
@@ -773,6 +777,30 @@ describe('RecordingPlayer の設定メニュー（行リスト）', () => {
     expect(details.open).toBe(false)
     fireEvent.click(getByTestId('playback-chapter'))
     expect(details.open).toBe(true)
+  })
+
+  it('操作の幕を押すと、タッチは操作を閉じるだけ（再生は切り替えない）、マウスは再生 / 一時停止する', () => {
+    const { container } = render(<RecordingPlayer recordingId={66} encodedAssets={assets} />)
+    const video = container.querySelector('video')!
+    const play = vi.spyOn(video, 'play').mockResolvedValue()
+    const scrim = container.querySelector<HTMLElement>('[data-testid="player-controls"]')!
+    fireEvent.pointerDown(scrim, { pointerType: 'touch' })
+    fireEvent.click(scrim)
+    expect(play).not.toHaveBeenCalled()
+    fireEvent.pointerDown(scrim, { pointerType: 'mouse' })
+    fireEvent.click(scrim)
+    expect(play).toHaveBeenCalledOnce()
+  })
+
+  it('前後チャプターと再生は DOM 順も「前 → 再生 → 次」（スマホの見た目の順）', () => {
+    const { getByTestId } = render(
+      <RecordingPlayer recordingId={67} encodedAssets={assets} chapters={chapters} />,
+    )
+    expect(
+      within(getByTestId('chapter-navigation'))
+        .getAllByRole('button')
+        .map((button) => button.getAttribute('aria-label')),
+    ).toEqual(['前のチャプター', '再生', '次のチャプター'])
   })
 
   it('タッチで映像を叩くと操作を出すだけで、再生は中央のボタンで始める', () => {

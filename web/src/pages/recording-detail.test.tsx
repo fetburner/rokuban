@@ -495,34 +495,48 @@ describe('RecordingDetailPage', () => {
     })
   })
 
+  // 操作バーの ✓ は固定の名前「視聴済み」+ aria-pressed のトグル。プレイヤー外のボタンは
+  // 押した後の動作を名前にする（aria-pressed を持たない）。
+  const barToggle = (watched: boolean) => ({ name: '視聴済み', pressed: watched })
+  const outsideButton = (watched: boolean) => ({ name: watched ? '未視聴に戻す' : '視聴済みにする' })
   describe.each([
-    ['プレイヤーの操作バー', { encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }], sizeBytes: 1_000_000 }],
-    ['原本のみ（プレイヤー外）', { sizeBytes: 1_000_000 }],
-    ['資産なし（プレイヤー外）', {}],
-  ] as [string, Partial<Recording>][])('視聴済みボタン: %s', (_name, overrides) => {
-    it('押すと PUT、もう一度押すと DELETE が飛ぶ', async () => {
-      const { fetchMock } = createFakeServer({ recording: sampleRecording({ ...overrides }) })
-      const user = userEvent.setup()
-      renderAt('/recordings/3')
+    [
+      'プレイヤーの操作バー',
+      { encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }], sizeBytes: 1_000_000 },
+      barToggle,
+    ],
+    ['原本のみ（プレイヤー外）', { sizeBytes: 1_000_000 }, outsideButton],
+    ['資産なし（プレイヤー外）', {}, outsideButton],
+  ] as [string, Partial<Recording>, (watched: boolean) => { name: string; pressed?: boolean }][])(
+    '視聴済みボタン: %s',
+    (_name, overrides, button) => {
+      it('押すと PUT、もう一度押すと DELETE が飛ぶ', async () => {
+        const { fetchMock } = createFakeServer({ recording: sampleRecording({ ...overrides }) })
+        const user = userEvent.setup()
+        renderAt('/recordings/3')
 
-      await user.click(await screen.findByRole('button', { name: '視聴済みにする' }))
-      await waitFor(() =>
-        expect(fetchMock).toHaveBeenCalledWith('/api/recordings/3/watched', expect.objectContaining({ method: 'PUT' })),
-      )
-      await user.click(await screen.findByRole('button', { name: '未視聴に戻す' }))
-      await waitFor(() =>
-        expect(fetchMock).toHaveBeenCalledWith('/api/recordings/3/watched', expect.objectContaining({ method: 'DELETE' })),
-      )
-    })
+        await user.click(await screen.findByRole('button', button(false)))
+        await waitFor(() =>
+          expect(fetchMock).toHaveBeenCalledWith('/api/recordings/3/watched', expect.objectContaining({ method: 'PUT' })),
+        )
+        await user.click(await screen.findByRole('button', button(true)))
+        await waitFor(() =>
+          expect(fetchMock).toHaveBeenCalledWith(
+            '/api/recordings/3/watched',
+            expect.objectContaining({ method: 'DELETE' }),
+          ),
+        )
+      })
 
-    it('完了していない録画には出さない', async () => {
-      createFakeServer({ recording: sampleRecording({ ...overrides, status: 'failed' }) })
-      renderAt('/recordings/3')
-      await screen.findByText('単体ページの録画')
-      expect(screen.queryByRole('button', { name: '視聴済みにする' })).not.toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: '未視聴に戻す' })).not.toBeInTheDocument()
-    })
-  })
+      it('完了していない録画には出さない', async () => {
+        createFakeServer({ recording: sampleRecording({ ...overrides, status: 'failed' }) })
+        renderAt('/recordings/3')
+        await screen.findByText('単体ページの録画')
+        expect(screen.queryByRole('button', { name: button(false).name })).not.toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: button(true).name })).not.toBeInTheDocument()
+      })
+    },
+  )
 
   // M8-6: シリーズの導線。起点の実効シリーズが null の録画には出さない
   // （ハブも「次回」も 0 件になるので、押した先が無い導線を置かない）。

@@ -245,6 +245,14 @@ if (markerCount !== CHAPTERS.spans.length) {
 log('\n=== ①-c 目盛りはトラック上にあり、再生済みの塗りと thumb は映像上で読める固定色 ===')
 for (const scheme of ['light', 'dark']) {
   await page.emulateMedia({ colorScheme: scheme })
+  // `.dark` は matchMedia の change で付く。付く前に測ると dark の回が light を測ってしまう。
+  const themed = await page
+    .waitForFunction((dark) => document.documentElement.classList.contains('dark') === dark, scheme === 'dark', {
+      timeout: 5000,
+    })
+    .then(() => true)
+    .catch(() => false)
+  if (!themed) ng.push(`①-c (${scheme}) テーマのクラスが切り替わらない --- 判定の前提が崩れている`)
   const geometry = await page.evaluate(() => {
     const track = document.querySelector('[data-testid="seek-scrub"] .bg-white\\/30')
     const fill = track?.firstElementChild
@@ -699,6 +707,42 @@ await tapVisible('button[aria-label="次のチャプター"]')
 await tapVisible('button[aria-label="前のチャプター"]')
 const phoneBack = await phone.locator('video').evaluate((v) => v.currentTime)
 if (Math.abs(phoneBack - 30) > 1) ng.push(`⑧ 中央の前のチャプターで 30 秒へ戻らない（currentTime=${phoneBack.toFixed(1)}）`)
+// 再生中: 映像のタップで操作が出て、暗い幕のタップで隠れる。どちらのタップでも再生は止まらない。
+// 幕が pointerup で消えると、続く click が下の <video> に落ちて再生 / 一時停止してしまう。
+await phone.locator('video').evaluate((v) => {
+  v.muted = true
+  return v.play()
+})
+await phone.waitForTimeout(3800)
+const phoneControlsOpacity = () =>
+  phone.locator('[data-testid="player-controls"]').evaluate((el) => getComputedStyle(el).opacity)
+const hiddenWhilePlaying = await phoneControlsOpacity()
+// 左上（CC・歯車・中央のボタンが無いところ）を叩く。
+const frameBox = await phone.locator('[data-testid="recording-player-frame"]').boundingBox()
+const emptySpot = { x: frameBox.x + 30, y: frameBox.y + 30 }
+await phone.touchscreen.tap(emptySpot.x, emptySpot.y)
+await phone.waitForTimeout(400)
+const afterVideoTap = {
+  opacity: await phoneControlsOpacity(),
+  paused: await phone.locator('video').evaluate((v) => v.paused),
+}
+await phone.touchscreen.tap(emptySpot.x, emptySpot.y)
+await phone.waitForTimeout(400)
+const afterScrimTap = {
+  opacity: await phoneControlsOpacity(),
+  paused: await phone.locator('video').evaluate((v) => v.paused),
+}
+await phone.locator('video').evaluate((v) => v.pause())
+if (hiddenWhilePlaying !== '0') {
+  ng.push(`⑧ 前提: 再生中に操作が隠れていない（opacity=${hiddenWhilePlaying}）`)
+} else {
+  if (afterVideoTap.opacity !== '1' || afterVideoTap.paused) {
+    ng.push(`⑧ 再生中に映像をタップしても操作が出ないか、再生が止まった（${JSON.stringify(afterVideoTap)}）`)
+  }
+  if (afterScrimTap.opacity !== '0' || afterScrimTap.paused) {
+    ng.push(`⑧ 再生中に暗い幕をタップしても操作が隠れないか、再生が止まった（${JSON.stringify(afterScrimTap)}）`)
+  }
+}
 // 歯車 → 画面の下からモーダルのシート。背後を暗くし、シートは下半分に収まる。
 await tapVisible('button[aria-label="再生設定"]')
 const sheet = await phone.evaluate(() => {
@@ -753,5 +797,17 @@ if (sheet === null) {
   }
 }
 await phoneContext.close()
+
+log('\n=== ⑨ md 未満の幅でもマウスで映像（操作の幕）を押すと再生 / 一時停止する ===')
+await page.setViewportSize({ width: 600, height: 900 })
+await page.waitForTimeout(300)
+await video.evaluate((v) => v.pause())
+const narrowFrame = await page.locator('[data-testid="recording-player-frame"]').boundingBox()
+await page.mouse.click(narrowFrame.x + 30, narrowFrame.y + 30)
+await page.waitForTimeout(400)
+const narrowPaused = await video.evaluate((v) => v.paused)
+await video.evaluate((v) => v.pause())
+if (narrowPaused) ng.push('⑨ md 未満の幅でマウスで映像を押しても再生が始まらない')
+await page.setViewportSize({ width: 1280, height: 900 })
 
 await finish(ng, browser)
