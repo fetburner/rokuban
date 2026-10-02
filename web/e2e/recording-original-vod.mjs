@@ -866,6 +866,10 @@ const sampleOffsetPlayer = (target) => target.evaluate(() => {
   if (nearEnd.error || landed === undefined || landed.offset < OFFSET_PLAYABLE_END - 8) {
     ng.push(`⑤-f 末尾付近の 416 を有効な最後の offset へ丸めない（${JSON.stringify({ nearEnd, endRequests })}）`)
   }
+  // 416 を挟んで張り直しても、再生中だったなら再生を続ける。
+  if (nearEnd.paused !== false || nearEnd.playLabel !== '一時停止') {
+    ng.push(`⑤-f 416 を丸めて張り直した後に再生が止まる（${JSON.stringify(nearEnd)}）`)
+  }
   if (screenshotDir) {
     await offsetPage.mouse.move(endScrubBox.x + endScrubBox.width / 2, endScrubBox.y - 40)
     await offsetPage.screenshot({ path: path.join(screenshotDir, 'desktop-near-end.png'), animations: 'disabled' })
