@@ -250,12 +250,6 @@ export function ReservationDetailPage() {
         <div className="flex flex-col gap-6 px-4 py-4">
           <section>
             <h2 className="text-lg font-medium">{programTitle(reservation.title)}</h2>
-            <ProgramReservationDetails
-              site={reservation.site}
-              programId={reservation.programId}
-              hideWhenNotFound
-              errorMessage="番組情報の取得に失敗しました"
-            />
             {/* 局名・開始時刻・尺を中点でつなぐ。`serviceName` は API では required
                 だが空文字を禁じてはいないので、空の成分を落としてから join する
                 （無条件連結だと先頭に裸の `·` が残る）。 */}
@@ -263,7 +257,7 @@ export function ReservationDetailPage() {
               to="/programs"
               search={{ view: 'grid', at: Date.parse(reservation.startAt) }}
               data-testid="reservation-program-link"
-              className="mt-1 inline-flex min-h-6 flex-wrap items-center text-sm text-muted-foreground hover:text-foreground"
+              className="mt-1 inline-flex min-h-6 flex-wrap items-center text-sm text-muted-foreground underline underline-offset-2 hover:text-foreground"
             >
               {[
                 reservation.serviceName,
@@ -277,6 +271,13 @@ export function ReservationDetailPage() {
                 詳細画面でも常に出す（issue #24 M2-8。件数だけ・断定なし）。 */}
             <div className="mt-2">
               <ProgramOverlapWarningFromApi site={site} programId={reservation.programId} />
+            </div>
+            <div className="mt-3">
+              <ProgramReservationDetails
+                site={reservation.site}
+                programId={reservation.programId}
+                hideWhenNotFound
+              />
             </div>
           </section>
 

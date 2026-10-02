@@ -327,16 +327,23 @@ export function ProgramReservationDetails({
   programId,
   description: summaryDescription,
   hideWhenNotFound = false,
-  errorMessage = '詳細の取得に失敗しました',
 }: {
   site: string
   programId: number
   description?: string
   /** 予約本体を残したまま、EPG に無い番組の詳細だけを隠す。 */
   hideWhenNotFound?: boolean
-  errorMessage?: string
 }) {
-  const detail = useGetProgram(site, programId)
+  // 404 は「EPG から消えた」確定の応答なので retry しない（既定の 3 回 retry だと
+  // 隠すまで約 7.5 秒「読み込み中…」が出続ける）。hideWhenNotFound のときだけ適用する。
+  const detail = useGetProgram(site, programId, {
+    query: hideWhenNotFound
+      ? {
+          retry: (failureCount, error) =>
+            !(error instanceof ApiError && error.status === 404) && failureCount < 3,
+        }
+      : {},
+  })
   const d = unwrap(detail.data)
   const description = summaryDescription ?? d?.description
 
@@ -357,7 +364,7 @@ export function ProgramReservationDetails({
           詳細を読み込み中…
         </p>
       )}
-      {detail.isError && <p className="text-destructive">{errorMessage}</p>}
+      {detail.isError && <p className="text-destructive">番組情報の取得に失敗しました</p>}
 
       {d?.extended && Object.keys(d.extended).length > 0 && (
         <dl className="flex flex-col gap-1">
