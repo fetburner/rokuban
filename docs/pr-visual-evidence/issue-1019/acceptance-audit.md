@@ -4,7 +4,7 @@ This audit supplements the passing #1019 E2E, component tests, and visual captur
 
 ## Pre-implementation browser RED
 
-Built parent `5a6934e1735986c156575c8d72c2461c10c9113f` in a detached worktree, copied the #1019 `web/e2e/chapters.mjs` into that worktree, and ran `E2E_URL=http://127.0.0.1:4220 corepack pnpm e2e:chapters`. Playback checks ⓪–③ completed. The run then failed at the chapter-edit entry:
+Built parent `5a6934e1735986c156575c8d72c2461c10c9113f` in a detached worktree. Copied the #1019 E2E script there. Ran `E2E_URL=http://127.0.0.1:4220 corepack pnpm e2e:chapters` against that parent. Playback checks ⓪–③ completed. The run then failed at the chapter-edit entry:
 
 ```text
 locator.click: Timeout 30000ms exceeded
@@ -12,7 +12,7 @@ waiting for getByRole('menuitem', { name: 'チャプターを直す', exact: tru
 at web/e2e/chapters.mjs:447
 ```
 
-The parent has no dedicated chapter-edit entry or filmstrip; the later editor assertions cannot be reached before the implementation.
+The parent has no chapter-edit entry or filmstrip. The later editor assertions were therefore unreachable.
 
 ## Mutation checks
 
@@ -29,7 +29,7 @@ The parent has no dedicated chapter-edit entry or filmstrip; the later editor as
 
 ## Rough comparison for the PR
 
-The issue comment’s roughs show only the editor surface. These browser captures include the app shell and its reconnect banner. The desktop capture is 1280 × 800 CSS px; the phone capture is 400 × 800 CSS px. The main order matches: desktop player left, chapter cards right, full-width strip below; mobile player, strip and tuning controls above the independently scrolling chapter list. The narrower phone viewport wraps the tuning controls, and the app’s bottom navigation remains visible.
+The issue comment’s roughs show the editor surface. These captures use the E2E fixture: a two-minute recording with synthetic color bars. The rough instead shows program artwork and values. The captures also show the app shell and reconnect banner. The desktop capture is 1280 × 800 CSS px. The phone capture is 400 × 800 CSS px. The main layout order matches in both sizes. On desktop, the player sits left of the chapter cards, with the full-width strip below. On mobile, the player, strip, and tuning controls sit above the independently scrolling chapter list. At 400 px, the phone controls wrap. The app’s bottom navigation remains visible.
 
 | Desktop rough | Desktop implementation |
 |---|---|
