@@ -2,6 +2,8 @@ import { Link } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { cn } from '@/lib/utils'
+
 import {
   getGetRecordingChaptersQueryKey,
   listRecordings,
@@ -26,11 +28,19 @@ import { RecordingPlayer } from '@/components/recording-player'
 import { LivePlayer } from '@/components/live-player'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
-import { formatBytes, formatDateTime, formatDuration, formatTime } from '@/lib/format'
+import {
+  formatBytes,
+  formatDate,
+  formatDateTime,
+  formatDateTimeSeconds,
+  formatDuration,
+  formatTime,
+} from '@/lib/format'
 import { cmDetectStageMessage } from '@/lib/cm-detect-stage'
 import { ingestDisplay, type IngestDisplay } from '@/lib/ingest'
 import { useLiveEnabled } from '@/lib/capabilities'
 import { recordingFileURL } from '@/lib/playback-position'
+import { seedRecordingDetail } from '@/lib/recording-detail-cache'
 import { liveProfileLabel, validLiveProfile } from '@/lib/live'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { shouldShowRecordingSite, sourceLabels } from '@/lib/recording-search'
@@ -159,21 +169,29 @@ export function RecordingDetail({
   const queryClient = useQueryClient()
   const toast = useToast()
   const { moveToTrash } = useMoveRecordingToTrash(recording.id)
-  const [selectedTab, setSelectedTab] = useState<'programme' | 'versions' | 'record'>(() =>
-    typeof window !== 'undefined' &&
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(max-width: 767px)').matches
-      ? 'programme'
-      : 'versions',
-  )
+  const [selectedTab, setSelectedTab] = useState<DetailTab>(defaultDetailTab)
+  const [descriptionExpanded, setDescriptionExpanded] = useState(false)
   const [chasing, setChasing] = useState(chase)
   // undefined means the user has not chosen a start position yet: the default
   // chase session may restore the saved VOD position. Once the button is
   // clicked, even an explicit 0 must be distinguishable so it can reset to the
   // recording head instead of restoring that saved position.
   const [chaseOffsetSeconds, setChaseOffsetSeconds] = useState<number | undefined>(undefined)
+  const [selectedPlaybackProfile, setSelectedPlaybackProfile] = useState<string | undefined>(undefined)
   const [selectedChaseOffsetSeconds, setSelectedChaseOffsetSeconds] = useState(0)
   const selectedChaseOffsetRef = useRef(0)
+  // 次のエピソードへ移るときページは作り直さず（全画面を保つため）、同じ部品に別の録画が来る。
+  // 録画ごとの state（タブ・追っかけの位置・選んだ画質・説明の展開）はここで戻す。
+  const [shownRecordingId, setShownRecordingId] = useState(recording.id)
+  if (shownRecordingId !== recording.id) {
+    setShownRecordingId(recording.id)
+    setSelectedTab(defaultDetailTab())
+    setDescriptionExpanded(false)
+    setChasing(chase)
+    setChaseOffsetSeconds(undefined)
+    setSelectedChaseOffsetSeconds(0)
+    setSelectedPlaybackProfile(undefined)
+  }
   const showChase = !trash && recording.status === 'recording' && liveEnabled && chasing
   const encodedAssets = recording.encodedAssets ?? []
   const hasOriginal = recording.sizeBytes !== undefined
@@ -319,7 +337,6 @@ export function RecordingDetail({
   const preferredPlaybackProfile =
     (encodedAssets.find((a) => a.cut !== true) ?? encodedAssets[0])?.profile ??
     recording.encodeProfiles?.[0]
-  const [selectedPlaybackProfile, setSelectedPlaybackProfile] = useState<string | undefined>(undefined)
   const activePlaybackProfile =
     selectedPlaybackProfile !== undefined && encodedAssets.some((asset) => asset.profile === selectedPlaybackProfile)
       ? selectedPlaybackProfile
@@ -364,14 +381,39 @@ export function RecordingDetail({
   })
   const seriesRecordings = useMemo(() => unwrap(seriesQuery.data) ?? [], [seriesQuery.data])
   const next = useMemo(() => nextEpisode(seriesRecordings, recording), [seriesRecordings, recording])
+  // 棚は過去の回を含めて新しい順に並べるので、「次のエピソード」用の窓（いまの回以降）とは別に引く。
+  // 使い回すと過去の回が出ず、件数も誤る。
+  const shelfQuery = useQuery({
+    queryKey: [recordingsQueryKeyPrefix, 'series-shelf', recording.id] as const,
+    enabled: !trash && recording.series != null,
+    queryFn: () => listRecordings({ seriesOf: recording.id, order: 'desc', limit: seriesShelfPageSize }),
+  })
+  const shelfRows = unwrap(shelfQuery.data)
+  const shelfTruncated = (shelfRows?.length ?? 0) >= seriesShelfPageSize
   const shelfRecordings = useMemo(() => {
     if (recording.series == null) return []
-    const byId = new Map(seriesRecordings.map((item) => [item.id, item]))
+    const byId = new Map((shelfRows ?? []).map((item) => [item.id, item]))
+    // いまの回は開いている最新の状態（再取得で変わる視聴状態など）を使う。
     byId.set(recording.id, recording)
     return [...byId.values()]
       .filter((item) => item.series === recording.series && item.deletedAt === undefined)
-      .sort((a, b) => Date.parse(a.startAt) - Date.parse(b.startAt))
-  }, [recording, seriesRecordings])
+      .sort((a, b) => Date.parse(b.startAt) - Date.parse(a.startAt) || b.id - a.id)
+  }, [recording, shelfRows])
+  const shelfTotalBytes = shelfRecordings.reduce(
+    (sum, item) =>
+      sum +
+      (item.sizeBytes ?? 0) +
+      (item.encodedAssets ?? []).reduce((assetSum, asset) => assetSum + (asset.sizeBytes ?? 0), 0),
+    0,
+  )
+  // 移動先の詳細を先にキャッシュへ入れてから移る（全画面を保つ。`seedRecordingDetail`）。
+  const openRecording = (id: number) => {
+    const target = [...seriesRecordings, ...(shelfRows ?? [])].find((item) => item.id === id)
+    if (target !== undefined) seedRecordingDetail(queryClient, target)
+    onNavigateToRecording(id)
+  }
+  // 操作バー（encoded のプレイヤー）が無い状態では、次のエピソードへの導線をシリーズの行に出す。
+  const hasPlayerBar = !trash && !showChase && encodedAssets.length > 0
 
   const hasVersions = !trash && (
     encodedAssets.length > 0 || hasOriginal || recording.status === 'recording' ||
@@ -407,7 +449,10 @@ export function RecordingDetail({
   return (
     <div
       data-testid="recording-detail-body"
-      className={trash || recording.series == null ? 'w-full' : 'grid w-full grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_18rem]'}
+      className={cn(
+        'w-full text-sm',
+        !trash && recording.series != null && 'grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_18rem]',
+      )}
     >
       {!trash && (
         <section
@@ -608,9 +653,9 @@ export function RecordingDetail({
               deleteWatched={() => void updateWatched(false)}
               preferredProfile={preferredPlaybackProfile}
               nextEpisode={next ? { id: next.id, title: next.title, startAt: next.startAt } : undefined}
+              onNextEpisodeNavigate={next ? () => seedRecordingDetail(queryClient, next) : undefined}
               outsideProgramSegments={outsideProgramSegments}
-              seriesId={recording.series != null ? recording.id : undefined}
-              onNavigateToRecording={onNavigateToRecording}
+              onNavigateToRecording={openRecording}
               onTrash={moveToTrash}
               onProfileChange={setSelectedPlaybackProfile}
               encodedAssets={encodedAssets}
@@ -649,27 +694,29 @@ export function RecordingDetail({
         <section data-testid="recording-title-row" className="flex flex-col gap-2">
           <h2 className="text-xl font-semibold leading-tight">{programTitle(recording.title)}</h2>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-            <button type="button" aria-label="録画状態を記録タブで見る" onClick={() => setSelectedTab('record')}>
+            <button type="button" className="inline-flex min-h-6 items-center" aria-label="録画状態を記録タブで見る" onClick={() => setSelectedTab('record')}>
               <StatusBadge status={recording.status} />
             </button>
             {recording.ingest && (
-              <button type="button" aria-label="取り込み状態を記録タブで見る" onClick={() => setSelectedTab('record')}>
+              <button type="button" className="inline-flex min-h-6 items-center" aria-label="取り込み状態を記録タブで見る" onClick={() => setSelectedTab('record')}>
                 <IngestBadge recording={recording} />
               </button>
             )}
             {(recording.encodeStatus?.length ?? 0) > 0 && (
-              <button type="button" aria-label="エンコード状態を記録タブで見る" onClick={() => setSelectedTab('record')}>
+              <button type="button" className="inline-flex min-h-6 items-center" aria-label="エンコード状態を記録タブで見る" onClick={() => setSelectedTab('record')}>
                 <EncodeStatusBadges recording={recording} />
               </button>
             )}
             {hasDrops && recording.dropSummary && (
-              <button type="button" aria-label="ドロップ状態を記録タブで見る" onClick={() => setSelectedTab('record')}>
+              <button type="button" className="inline-flex min-h-6 items-center" aria-label="ドロップ状態を記録タブで見る" onClick={() => setSelectedTab('record')}>
                 <DropBadges summary={recording.dropSummary} />
               </button>
             )}
             {showSite && <span className="rounded bg-muted px-1.5 py-0.5 text-foreground">{recording.site}</span>}
             <span>{recording.serviceName}</span>
-            <span>{formatDateTime(recording.startAt)}</span>
+            <span>
+              {formatDate(recording.startAt)} {formatTime(recording.startAt)}–{formatTime(programEndAt)}
+            </span>
             <span>{formatDuration(recording.durationMs)}</span>
             {actualTimeLabels.length > 0 && (
               <span data-testid="recording-actual-time-difference" className="text-foreground">
@@ -680,10 +727,47 @@ export function RecordingDetail({
               <span>ごみ箱（削除 {formatDateTime(recording.deletedAt)}）</span>
             )}
           </div>
+          {recording.series != null && (
+            <div data-testid="recording-series-links" className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+              {/* シリーズの導線はあらゆる状態・幅で出す（原本のみ・録画中・ごみ箱・スマホでも）。
+                  棚はデスクトップだけ、操作バーの次のエピソードはエンコード版のプレイヤーだけにしか無い。 */}
+              <Link
+                to="/recordings/$id/series"
+                params={{ id: String(recording.id) }}
+                aria-label={`このシリーズへ: ${recording.series}`}
+                className="inline-flex min-h-6 items-center text-primary underline-offset-2 hover:underline"
+              >
+                {recording.series} <span aria-hidden className="ml-1">›</span>
+              </Link>
+              {/* **再生できる行だけを「次」にする。** 開始時刻がずれて supersede されなかった
+                  failed 行を指すと、押した先の再生が 404 になる（`lib/series.ts`）。 */}
+              {next !== undefined && !hasPlayerBar && (
+                <Link
+                  to="/recordings/$id"
+                  params={{ id: String(next.id) }}
+                  className="inline-flex min-h-6 items-center text-muted-foreground underline-offset-2 hover:underline"
+                  onClick={() => seedRecordingDetail(queryClient, next)}
+                >
+                  次のエピソード: {programTitle(next.title)}
+                </Link>
+              )}
+            </div>
+          )}
           {recording.description && (
-            <p data-testid="recording-description-preview" className="line-clamp-2 text-sm text-muted-foreground">
+            // 説明はここだけに置く（番組タブには繰り返さない）。2 行で切り、押すと全文を開く。
+            <button
+              type="button"
+              data-testid="recording-description"
+              aria-expanded={descriptionExpanded}
+              title={descriptionExpanded ? '説明を 2 行に戻す' : '説明の全文を開く'}
+              className={cn(
+                'text-left text-base whitespace-pre-wrap text-muted-foreground',
+                !descriptionExpanded && 'line-clamp-2',
+              )}
+              onClick={() => setDescriptionExpanded((open) => !open)}
+            >
               {recording.description}
-            </p>
+            </button>
           )}
         </section>
 
@@ -698,7 +782,7 @@ export function RecordingDetail({
                 aria-selected={activeTab === tab.id}
                 aria-controls="recording-detail-tab-panel"
                 tabIndex={activeTab === tab.id ? 0 : -1}
-                className={`min-h-10 border-b-2 px-1 text-sm ${activeTab === tab.id ? 'border-foreground font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+                className={`min-h-10 min-w-6 border-b-2 px-1.5 text-sm ${activeTab === tab.id ? 'border-foreground font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
                 onClick={() => setSelectedTab(tab.id)}
                 onKeyDown={(event) => {
                   if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
@@ -725,26 +809,19 @@ export function RecordingDetail({
           >
             {activeTab === 'programme' && (
               <section data-testid="recording-program-group" aria-label="番組" className="flex flex-col gap-4">
-                {recording.description && (
-                  <p data-testid="recording-description" className="whitespace-pre-wrap text-sm text-muted-foreground">
-                    {recording.description}
-                  </p>
-                )}
                 <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm">
                   <dt className="text-muted-foreground">チャンネル</dt>
-                  <dd>{recording.serviceName} ({recording.channelType}/{recording.channel}){showSite ? ` · ${recording.site}` : ''}</dd>
-                  <dt className="text-muted-foreground">放送日時</dt>
-                  <dd>{formatDateTime(recording.startAt)} – {formatDateTime(programEndAt)}（{formatDuration(recording.durationMs)}）</dd>
+                  <dd>{recording.serviceName}（{recording.channelType} {recording.channel}）{showSite ? ` · ${recording.site}` : ''}</dd>
                   {recording.startedAt && Date.parse(recording.startedAt) !== Date.parse(recording.startAt) && (
                     <>
                       <dt className="text-muted-foreground">実録画開始</dt>
-                      <dd>{formatDateTime(recording.startedAt)}</dd>
+                      <dd>{formatDateTimeSeconds(recording.startedAt)}</dd>
                     </>
                   )}
                   {recording.endedAt && Date.parse(recording.endedAt) !== Date.parse(programEndAt) && (
                     <>
                       <dt className="text-muted-foreground">実録画終了</dt>
-                      <dd>{formatDateTime(recording.endedAt)}</dd>
+                      <dd>{formatDateTimeSeconds(recording.endedAt)}</dd>
                     </>
                   )}
                   {trash && recording.deletedAt && (
@@ -760,34 +837,36 @@ export function RecordingDetail({
             )}
 
             {activeTab === 'versions' && !trash && (
-              <section data-testid="recording-assets-group" aria-label="版" className="flex flex-col divide-y divide-border">
-                <div role="list" aria-label="録画の版">
-                  {encodedAssets.map((asset) => (
-                    <div
-                      key={asset.profile}
-                      role="listitem"
-                      data-testid="recording-version-row"
-                      className="flex min-h-14 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border py-2 text-sm"
-                    >
-                      <span className="font-medium">{asset.cut ? `カット版 (${asset.profile})` : asset.profile}</span>
-                      {asset.profile === activePlaybackProfile && <span className="rounded bg-foreground px-1.5 py-0.5 text-xs text-background">再生中</span>}
-                      <span className="ml-auto text-muted-foreground">{asset.sizeBytes === undefined ? 'サイズ不明' : formatBytes(asset.sizeBytes)}</span>
-                      <a href={recordingFileURL(recording.id, asset.profile)} download className="text-primary underline-offset-2 hover:underline">ダウンロード</a>
-                    </div>
-                  ))}
-                </div>
-                {hasOriginal ? (
-                  <div data-testid="recording-original-row" className="flex min-h-14 flex-wrap items-center gap-3 py-2 text-sm">
-                    <span className="font-medium">原本 TS</span>
-                    <span className="ml-auto text-muted-foreground">{formatBytes(recording.sizeBytes!)}</span>
-                    <a href={recordingFileURL(recording.id)} className="text-primary underline-offset-2 hover:underline">ダウンロード / VLC</a>
+              <section data-testid="recording-assets-group" aria-label="版" className="flex flex-col gap-3">
+                {(encodedAssets.length > 0 || hasOriginal || recording.status === 'recording') && (
+                  <div role="list" aria-label="録画の版" className="divide-y divide-border rounded-md border border-border px-3">
+                    {encodedAssets.map((asset) => (
+                      <div
+                        key={asset.profile}
+                        role="listitem"
+                        data-testid="recording-version-row"
+                        className="flex min-h-14 flex-wrap items-center gap-x-3 gap-y-1 py-2 text-sm"
+                      >
+                        <span className="font-medium">{asset.cut ? `カット版 (${asset.profile})` : asset.profile}</span>
+                        {asset.profile === activePlaybackProfile && <span className="rounded bg-foreground px-1.5 py-0.5 text-xs text-background">再生中</span>}
+                        <span className="ml-auto text-muted-foreground">{asset.sizeBytes === undefined ? 'サイズ不明' : formatBytes(asset.sizeBytes)}</span>
+                        <a href={recordingFileURL(recording.id, asset.profile)} download className="inline-flex min-h-6 items-center text-primary underline-offset-2 hover:underline">ダウンロード</a>
+                      </div>
+                    ))}
+                    {hasOriginal ? (
+                      <div role="listitem" data-testid="recording-original-row" className="flex min-h-14 flex-wrap items-center gap-3 py-2 text-sm">
+                        <span className="font-medium">原本 TS</span>
+                        <span className="ml-auto text-muted-foreground">{formatBytes(recording.sizeBytes!)}</span>
+                        <a href={recordingFileURL(recording.id)} className="inline-flex min-h-6 items-center text-primary underline-offset-2 hover:underline">ダウンロード / VLC</a>
+                      </div>
+                    ) : recording.status === 'recording' ? (
+                      <div role="listitem" data-testid="recording-original-row" className="flex min-h-14 flex-wrap items-center gap-3 py-2 text-sm">
+                        <span className="font-medium">原本 TS</span>
+                        <span className="ml-auto text-muted-foreground">{ingestState ? ingestDetailText(ingestState) : '取り込み中'}</span>
+                      </div>
+                    ) : null}
                   </div>
-                ) : recording.status === 'recording' ? (
-                  <div data-testid="recording-original-row" className="flex min-h-14 flex-wrap items-center gap-3 py-2 text-sm">
-                    <span className="font-medium">原本 TS</span>
-                    <span className="ml-auto text-muted-foreground">{ingestState ? ingestDetailText(ingestState) : '取り込み中'}</span>
-                  </div>
-                ) : null}
+                )}
                 {showAddEncodePrompt && !encodeProfilesQuery.isPending && !encodeProfilesQuery.isError &&
                   configuredEncodeProfiles.length === 0 && (
                     <p className="text-muted-foreground">エンコードプロファイルが設定されていません</p>
@@ -817,6 +896,21 @@ export function RecordingDetail({
                     <span>{recording.cmDetection.ranges.length} 区間</span>
                   )}
                   {recording.cmDetection.state === 'failed' && <span>{cmDetectStageMessage(recording.cmDetection.stage)}</span>}
+                  {/* logo / area は枠を教えるのが直し方なので、記録の明細からそこへ行けるようにする。 */}
+                  {recording.cmDetection.state === 'failed' &&
+                    (recording.cmDetection.stage === 'logo' || recording.cmDetection.stage === 'area') && (
+                      <Link
+                        to="/cm-logos"
+                        search={{
+                          network: recording.networkId,
+                          service: recording.serviceId,
+                          recording: recording.id,
+                        }}
+                        className="text-primary underline underline-offset-4"
+                      >
+                        CM 検出のロゴを教える
+                      </Link>
+                    )}
                 </div>
                 {showCMDetectorResults && (
                   <details data-testid="cm-detector-results-details" className="text-muted-foreground">
@@ -862,35 +956,59 @@ export function RecordingDetail({
 
       {!trash && recording.series != null && (
         <aside data-testid="recording-series-shelf" aria-label="シリーズの録画" className="hidden min-w-0 border-l border-border pl-5 lg:block">
-          <div className="mb-3 flex items-center justify-between gap-2">
-            <h3 className="font-semibold">{recording.series}</h3>
-            <span className="text-xs text-muted-foreground">{shelfRecordings.length} 本</span>
+          <div className="mb-3 flex items-baseline justify-between gap-2">
+            <h3 className="min-w-0 truncate font-semibold">{recording.series}</h3>
+            {shelfQuery.isSuccess && (
+              <span data-testid="series-shelf-summary" className="shrink-0 text-xs text-muted-foreground">
+                {shelfTruncated
+                  ? `${seriesShelfPageSize} 本以上`
+                  : `${shelfRecordings.length} 本 · ${formatBytes(shelfTotalBytes)}`}
+              </span>
+            )}
           </div>
           <ul className="flex flex-col gap-2">
-            {shelfRecordings.map((item) => (
-              <li key={item.id}>
-                <Link
-                  to="/recordings/$id"
-                  params={{ id: String(item.id) }}
-                  aria-current={item.id === recording.id ? 'page' : undefined}
-                  className={`flex min-w-0 items-center gap-3 rounded-md p-2 hover:bg-muted ${item.id === recording.id ? 'ring-1 ring-foreground' : ''}`}
-                >
-                  <img
-                    src={`/api/media/recordings/${item.id}/thumbnail`}
-                    alt=""
-                    loading="lazy"
-                    className="aspect-video w-20 shrink-0 rounded bg-muted object-cover"
-                    onError={(event) => event.currentTarget.remove()}
-                  />
-                  <span className="min-w-0">
-                    <span className="block truncate text-sm">{formatDateTime(item.startAt)}</span>
-                    <span className="block truncate text-xs text-muted-foreground">
-                      {item.id === recording.id ? '再生中' : item.watchedAt ? '視聴済み' : formatDuration(item.durationMs)}
+            {shelfRecordings.map((item) => {
+              const current = item.id === recording.id
+              const parts = current
+                ? [item.status === 'recording' ? '録画中' : '再生中']
+                : [
+                    item.status === 'recording'
+                      ? '録画中'
+                      : item.watchedAt
+                        ? '視聴済み'
+                        : item.status === 'finished'
+                          ? '未視聴'
+                          : undefined,
+                    formatDuration(item.durationMs),
+                    item.sizeBytes === undefined && (item.encodedAssets?.length ?? 0) > 0 ? '原本なし' : undefined,
+                  ].filter((part): part is string => part !== undefined)
+              return (
+                <li key={item.id}>
+                  <Link
+                    to="/recordings/$id"
+                    params={{ id: String(item.id) }}
+                    aria-current={current ? 'page' : undefined}
+                    className={cn(
+                      'flex min-w-0 items-center gap-3 rounded-md p-2 hover:bg-muted',
+                      current && 'ring-1 ring-foreground',
+                    )}
+                    onClick={() => seedRecordingDetail(queryClient, item)}
+                  >
+                    <img
+                      src={`/api/media/recordings/${item.id}/thumbnail`}
+                      alt=""
+                      loading="lazy"
+                      className="aspect-video w-20 shrink-0 rounded bg-muted object-cover"
+                      onError={(event) => event.currentTarget.remove()}
+                    />
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-medium">{formatDate(item.startAt)}</span>
+                      <span className="block truncate text-xs text-muted-foreground">{parts.join(' · ')}</span>
                     </span>
-                  </span>
-                </Link>
-              </li>
-            ))}
+                  </Link>
+                </li>
+              )
+            })}
           </ul>
           <p className="mt-3 text-xs text-muted-foreground">行を押すと、その録画の詳細へ移ります。まとめて操作する場合はシリーズ画面を使います。</p>
         </aside>
@@ -908,6 +1026,20 @@ export function RecordingDetail({
  * はみ出し、その場合は「次のエピソード」が出ない（`lib/series.ts` の `nextEpisode`）。
  */
 const seriesNextPageSize = 50
+
+/** seriesShelfPageSize は棚が 1 回で引く件数（API の上限）。これ以上あるシリーズは件数を「以上」で出す。 */
+const seriesShelfPageSize = 200
+
+type DetailTab = 'programme' | 'versions' | 'record'
+
+/** defaultDetailTab はスマホ（md 未満）では番組、それ以外では版を最初に開く。 */
+function defaultDetailTab(): DetailTab {
+  return typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(max-width: 767px)').matches
+    ? 'programme'
+    : 'versions'
+}
 
 /**
  * RuleSection は「この録画はどのルールが録ったのか」への導線（issue #230）。
@@ -951,9 +1083,9 @@ function RuleSection({ ruleId }: { ruleId: number }) {
       : `${rule.name}${disambiguator === undefined ? '' : ` (${disambiguator})`}`
 
   return (
-    <section>
-      <h4 className="mb-1 font-medium">ルール</h4>
-      <div className="flex flex-wrap items-center gap-3">
+    <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+      <span>
+        ルール「
         <Link
           to="/search"
           search={{ ruleId }}
@@ -961,14 +1093,15 @@ function RuleSection({ ruleId }: { ruleId: number }) {
         >
           {label}
         </Link>
-        <Link
-          to="/recordings"
-          search={{ ruleId }}
-          className="text-muted-foreground underline-offset-2 hover:underline"
-        >
-          このルールの録画で絞る
-        </Link>
-      </div>
-    </section>
+        」
+      </span>
+      <Link
+        to="/recordings"
+        search={{ ruleId }}
+        className="text-muted-foreground underline-offset-2 hover:underline"
+      >
+        このルールの録画で絞る
+      </Link>
+    </span>
   )
 }

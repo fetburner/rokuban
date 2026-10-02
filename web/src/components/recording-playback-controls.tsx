@@ -9,6 +9,8 @@ import {
   type RefObject,
 } from 'react'
 
+import { Link } from '@tanstack/react-router'
+
 import type { ChapterSpan, EncodedAsset } from '@/api/generated'
 import {
   Activity,
@@ -16,6 +18,7 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  FastForward,
   Gauge,
   Maximize,
   Minimize,
@@ -31,7 +34,7 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { formatChaptersTime } from '@/lib/chapters'
-import { formatBytes } from '@/lib/format'
+import { formatBytes, formatDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
   SEEK_TILES_DISPLAY_HEIGHT,
@@ -58,6 +61,14 @@ type RecordingPlaybackControlsProps = {
   recordingId: number
   profile: string
   encodedAssets: EncodedAsset[]
+  /** 次のエピソード（再生できる行だけ）。バーの右側に「次: 10/1(水)」で出す。 */
+  nextEpisode?: { id: number; title: string; startAt: string }
+  /** 次のエピソードのリンクを押したとき（移動先の詳細を先にキャッシュへ入れる）。 */
+  onNextEpisodeNavigate?: () => void
+  /** 番組枠の外を録った部分（シークバー内の割合）。カット版の再生中は描かない。 */
+  outsideProgramSegments?: { beforeEndPercent: number; afterStartPercent: number }
+  /** 映像の上に重ねる終端カード。 */
+  endCard?: ReactNode
   fullscreenRef: RefObject<HTMLDivElement | null>
   video: ReactNode
   currentSeconds: number
@@ -119,6 +130,10 @@ export function RecordingPlaybackControls({
   recordingId,
   profile,
   encodedAssets,
+  nextEpisode,
+  onNextEpisodeNavigate,
+  outsideProgramSegments,
+  endCard,
   fullscreenRef,
   video,
   currentSeconds,
@@ -245,7 +260,7 @@ export function RecordingPlaybackControls({
 
   return (
     <div
-      className="relative w-full max-w-3xl"
+      className="relative w-full"
       data-testid="recording-player-shell"
       onPointerMove={onControlsActivity}
       onKeyDown={onShellKeyDown}
@@ -257,6 +272,7 @@ export function RecordingPlaybackControls({
         onPointerMove={onControlsActivity}
       >
         {video}
+        {endCard}
         {/*
           スマホ（md 未満）では枠全体に暗い幕を敷き、中央に前後チャプターと再生、右上に CC と
           歯車、下に時刻・✓・全画面とシークバーを置く。md 以上は下端の帯 1 本にまとめる。
@@ -308,6 +324,32 @@ export function RecordingPlaybackControls({
               <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full bg-white/30">
                 <div className="h-full bg-white" style={{ width: `${playedFraction * 100}%` }} />
               </div>
+              {outsideProgramSegments && !playingCut && (
+                <div
+                  data-testid="recorded-outside-program-range"
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-x-0 top-1/2 z-10 h-1 -translate-y-1/2"
+                >
+                  {[
+                    { id: 'before', left: 0, width: outsideProgramSegments.beforeEndPercent },
+                    {
+                      id: 'after',
+                      left: outsideProgramSegments.afterStartPercent,
+                      width: 100 - outsideProgramSegments.afterStartPercent,
+                    },
+                  ]
+                    .filter((segment) => segment.width > 0)
+                    .map((segment) => (
+                      // 番組の外は実線のバーを破線にして「番組ではない部分」と読ませる（┄┄）。
+                      <div
+                        key={segment.id}
+                        data-testid={`recorded-${segment.id}-program`}
+                        className="absolute inset-y-0 bg-black/70 bg-[repeating-linear-gradient(to_right,white_0_3px,transparent_3px_6px)]"
+                        style={{ left: `${segment.left}%`, width: `${segment.width}%` }}
+                      />
+                    ))}
+                </div>
+              )}
               {chapters.length > 0 && !playingCut && durationSeconds > 0 && (
                 <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2">
                   {chapters.map((span) => {
@@ -467,6 +509,19 @@ export function RecordingPlaybackControls({
                 </button>
               )}
               <div className="flex-1" />
+              {nextEpisode && (
+                <Link
+                  to="/recordings/$id"
+                  params={{ id: String(nextEpisode.id) }}
+                  data-testid="next-episode-link"
+                  aria-label={`次のエピソード: ${nextEpisode.title}`}
+                  className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-full px-2 text-xs text-white outline-none hover:bg-white/15 focus-visible:ring-2 focus-visible:ring-white md:bg-white/10 md:px-3"
+                  onClick={onNextEpisodeNavigate}
+                >
+                  <FastForward className="size-4" aria-hidden />
+                  <span className="hidden md:inline">次: {formatDate(nextEpisode.startAt)}</span>
+                </Link>
+              )}
               <Button
                 type="button"
                 variant="ghost"

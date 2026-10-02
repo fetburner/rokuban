@@ -7,36 +7,8 @@ import { ErrorState, ListSkeleton, PageHeader } from '@/components/page'
 import { RecordingActions } from '@/components/recording-actions'
 import { RecordingDetail } from '@/components/recording-detail-panel'
 import { Button } from '@/components/ui/button'
-import { recordingsQueryKeyPrefix } from '@/lib/events'
+import { recordingDetailQueryKey } from '@/lib/recording-detail-cache'
 import { hasLiveIngestProgress, ingestRefetchIntervalMs } from '@/lib/ingest'
-
-/**
- * recordingDetailQueryKey は単体ページ自身のクエリキー。
- *
- * orval が生成する `getGetRecordingQueryKey`（`['/api/recordings/{id}']`、id を
- * 埋め込んだ 1 要素の文字列）は使わない。一覧側の mutater（`RecordingActions` の
- * `invalidate` / `AddEncodeProfilesAction` の `onSuccess`、両方
- * `components/recording-actions.tsx`）はどちらも `queryClient.invalidateQueries({ queryKey:
- * [recordingsQueryKeyPrefix] })` で捨てる --- TanStack Query の既定の前方一致
- * （`partialMatchKey`）はフィルタキーに書いた要素を**前から順に**比較する
- * ため（ここではフィルタが 1 要素なので、実質「先頭要素が等しいか」になる）、
- * 生成された 1 要素キー（'/api/recordings/{id}' という別の文字列）はそこに
- * 前方一致しない。
- *
- * `RecordingDetail` の下に mutater を足すたびに単体ページへの配線
- * （`onMutated` のような prop）を手で通す形は、通し忘れても型エラーにも
- * ならず黒く抜ける（実際に `AddEncodeProfilesAction` がこの穴を最初に踏んだ
- * --- issue #232 のレビューで実機再現された）。**「覚えておく」を要求する
- * 代わりに、単体ページ自身のキーの先頭要素を一覧と同じ `recordingsQueryKeyPrefix`
- * （`'/api/recordings'`）に揃えておけば、一覧側のどの mutater（今あるものも将来
- * 足されるものも）の invalidate がこのページのキャッシュも自動的に巻き込む**
- * （前方一致は `getListRecordingsQueryKey` が返す `['/api/recordings', {...}]`
- * にも同じ理屈で効いている）。`RecordingDetail` 配下に prop を新設する必要が
- * 無くなる。
- */
-function recordingDetailQueryKey(id: number) {
-  return [recordingsQueryKeyPrefix, 'detail', id] as const
-}
 
 /**
  * RecordingDetailPage は録画単体の着地先。
@@ -120,7 +92,9 @@ export function RecordingDetailPage() {
       ) : (
         <div className="px-4 py-4">
           <RecordingDetail
-            key={`${recording.id}:${location.hash}`}
+            // key に録画 id を含めない。次のエピソードへ移るとき、プレイヤーの DOM を作り直すと
+            // 全画面が解除される。録画ごとの state は RecordingDetail が id の変化で自分で戻す。
+            key={location.hash}
             recording={recording}
             trash={trash}
             chase={location.hash === 'chase'}
@@ -132,7 +106,6 @@ export function RecordingDetailPage() {
                 to: '/recordings/$id',
                 params: { id: String(nextId) },
                 hash: '',
-                replace: true,
               })
             }
           />

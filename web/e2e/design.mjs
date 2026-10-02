@@ -990,7 +990,7 @@ const screens = [
  * path と目印だけなので、この 1 つを複数箇所（②の色判定・withBreaker の
  * ショット）から共有する。
  */
-const recordingDetailScreen = { name: 'recording-detail', path: '/recordings/12', wait: 'text=物理チャンネル' }
+const recordingDetailScreen = { name: 'recording-detail', path: '/recordings/12', wait: '[data-testid="recording-detail-tabs"]' }
 
 const viewports = [
   // 一覧の行長上限は広幅で初めて効くので、デスクトップショットは 2560px で撮る。
@@ -3328,7 +3328,9 @@ for (const theme of themes) {
     // `DropStatsTable` の行は 1 件も描画されない（未検証の断言をしない。
     // CLAUDE.md「一度も真でなかった記述」）。
     await checkMissingStrings(page, `recording-detail/${theme}`)
-    const dt = page.locator('dt', { hasText: /^物理チャンネル$/ }).first()
+    // 番組の明細（dt）は「番組」タブの中にある。デスクトップの既定は「版」なので開いてから測る。
+    await page.getByRole('tab', { name: '番組' }).click()
+    const dt = page.locator('dt', { hasText: /^チャンネル$/ }).first()
     const fg = await computedOf(dt, 'color')
     log(`  [${theme}] 録画詳細の文字=${fg?.value} ${fg?.rgba} / 実効背景=${fg?.backdrop}`)
     if (fg === null) {
@@ -3361,6 +3363,8 @@ for (const theme of themes) {
     // innerWidth 656 を light/dark とも実測）。そのため false にする。
     const mobileContext = await open(mobile, theme, recordingDetailScreen, { pointer: 'coarse', isMobile: false })
     const mobilePage = mobileContext.page
+    // PID 表は「記録」タブの中にある（異常がある録画だけ）。スマホの既定は「番組」。
+    await mobilePage.getByRole('tab', { name: '記録' }).click()
     await mobilePage.getByRole('heading', { name: 'PID 別ドロップ統計' }).waitFor({ state: 'visible' })
     const mobileLayout = await mobilePage.evaluate(() => {
       const body = document.querySelector('[data-testid="recording-detail-body"]')

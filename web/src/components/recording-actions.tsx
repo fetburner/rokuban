@@ -8,6 +8,7 @@ import {
   restoreRecording as restoreRecordingRequest,
   useAddRecordingEncodeProfiles,
   useListEncodeProfiles,
+  useListRules,
   usePurgeRecording,
   useRetryRecordingCMDetection,
   useSetRecordingEncodePolicy,
@@ -55,6 +56,9 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
   const cmDetectEnabled = useCMDetectEnabled()
   const setEncodePolicy = useSetRecordingEncodePolicy()
   const retryCMDetection = useRetryRecordingCMDetection()
+  // ルール名はメニューの行に添える。RuleSection と同じ一覧クエリ（キャッシュ共有）から引く。
+  const rules = unwrap(useListRules().data) ?? []
+  const ruleName = rules.find((rule) => rule.id === recording.ruleId)?.name
 
   const invalidate = () => {
     // ライブラリとごみ箱の両方を捨てる（片側の操作がもう片側の集合を変える）。
@@ -115,11 +119,17 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
           {recording.ruleId !== undefined && (
             <DropdownMenuItem render={<Link to="/search" search={{ ruleId: recording.ruleId }} />}>
               ルールを開く
+              {ruleName !== undefined && (
+                <span data-testid="menu-rule-name" className="ml-auto max-w-40 truncate text-muted-foreground">
+                  {ruleName}
+                </span>
+              )}
             </DropdownMenuItem>
           )}
           {recording.cmDetection.state === 'detected' || recording.cmDetection.state === 'failed' ? (
             <DropdownMenuItem
-              disabled={busy || !cmDetectEnabled}
+              // 原本が無いと再検出は 409 になる（検出は原本から読む）。押せる形で出さない。
+              disabled={busy || !cmDetectEnabled || recording.sizeBytes === undefined}
               onClick={() =>
                 retryCMDetection.mutate(
                   { id: recordingId },
@@ -284,6 +294,9 @@ function KeepOriginalAction({ recording }: { recording: Recording }) {
   const current = recording.keepOriginal as KeepOriginal
   const profiles = recording.encodeProfiles ?? []
   const [selected, setSelected] = useState<KeepOriginal>(current)
+  // 凍結された値がルールの現在の既定と同じなら「ルールの既定」と添える（違うときは何も言わない）。
+  const rules = unwrap(useListRules().data) ?? []
+  const matchesRuleDefault = rules.find((rule) => rule.id === recording.ruleId)?.keepOriginal === current
   const [expanded, setExpanded] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
   // confirmedRef は「確認ダイアログを確定して閉じた」ことを覚える。
@@ -344,7 +357,7 @@ function KeepOriginalAction({ recording }: { recording: Recording }) {
   return (
     <section className="flex flex-col gap-2 py-2 text-sm">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <span className="text-muted-foreground">原本: {keepOriginalLabel(current)}</span>
+        <span className="text-muted-foreground">原本: {keepOriginalLabel(current)}{matchesRuleDefault ? '（ルールの既定）' : ''}</span>
         <Button
           type="button"
           variant="ghost"

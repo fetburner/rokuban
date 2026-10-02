@@ -656,7 +656,7 @@ describe('RecordingDetailPage', () => {
 
     renderAt('/recordings/3')
 
-    expect(await screen.findByRole('link', { name: 'このシリーズへ' })).toHaveAttribute(
+    expect(await screen.findByRole('link', { name: /^このシリーズへ/ })).toHaveAttribute(
       'href',
       '/recordings/3/series',
     )
@@ -666,13 +666,18 @@ describe('RecordingDetailPage', () => {
 
     // 探索は `?seriesOf=` + 昇順 + 起点の時刻から。降順で引くと「次の回」が
     // 最初のページに入らない（記録として URL を固定する）。
-    const listURL = fetchMock.mock.calls
+    const listURLs = fetchMock.mock.calls
       .map(([input]) => String(input))
-      .find((target) => target.startsWith('/api/recordings?'))
-    expect(listURL).toContain('seriesOf=3')
-    expect(listURL).toContain('order=asc')
-    expect(listURL).toContain('from=2026-01-01T12%3A00%3A00Z')
-    expect(fetchMock.mock.calls.filter(([url]) => String(url).startsWith('/api/recordings?'))).toHaveLength(1)
+      .filter((target) => target.startsWith('/api/recordings?'))
+    const nextURL = listURLs.find((target) => target.includes('order=asc'))
+    expect(nextURL).toContain('seriesOf=3')
+    expect(nextURL).toContain('from=2026-01-01T12%3A00%3A00Z')
+    // 棚は過去の回を含めて新しい順に 1 本だけ引く（次のエピソードの窓を使い回さない）。
+    const shelfURLs = listURLs.filter((target) => target.includes('order=desc'))
+    expect(shelfURLs).toHaveLength(1)
+    expect(shelfURLs[0]).toContain('seriesOf=3')
+    expect(shelfURLs[0]).not.toContain('from=')
+    expect(listURLs).toHaveLength(2)
   })
 
   it('desktop のシリーズ棚から選んだ行はその録画の詳細を開く', async () => {
@@ -719,12 +724,15 @@ describe('RecordingDetailPage', () => {
       '30秒早く開始・30秒遅れて終了',
     )
     await selectDetailTab('番組')
-    expect(screen.getByText('実録画開始')).toBeInTheDocument()
-    expect(screen.getByText('実録画終了')).toBeInTheDocument()
+    // 30 秒の差が番組の開始・終了と同じ「分」表示に潰れないよう、秒まで出す。
+    expect(screen.getByText('実録画開始').nextElementSibling).toHaveTextContent(/:59:30$/)
+    expect(screen.getByText('実録画終了').nextElementSibling).toHaveTextContent(/:30:30$/)
     const beforeProgramme = await screen.findByTestId('recorded-before-program')
     const afterProgramme = screen.getByTestId('recorded-after-program')
-    expect(beforeProgramme).toHaveClass('border-dashed')
-    expect(afterProgramme).toHaveClass('border-dashed')
+    // 破線は repeating-linear-gradient で描く（両端の縦線だけにならない）。実ブラウザの描画は
+    // web/e2e/recording-detail-layout.mjs が測る。
+    expect(beforeProgramme.className).toContain('repeating-linear-gradient')
+    expect(afterProgramme.className).toContain('repeating-linear-gradient')
     expect(parseFloat(beforeProgramme.getAttribute('style')!.match(/width:\s*([^;]+)/)![1])).toBeCloseTo(
       (30 / 1860) * 100,
       2,
@@ -733,6 +741,21 @@ describe('RecordingDetailPage', () => {
       (1830 / 1860) * 100,
       2,
     )
+  })
+
+  it('カット版の再生中は番組外区間を描かない（原本の時間軸の割合をカット版に当てない）', async () => {
+    createFakeServer({
+      recording: sampleRecording({
+        encodedAssets: [{ profile: 'cut', cut: true, sizeBytes: 500_000 }],
+        startedAt: '2026-01-01T11:59:30Z',
+        endedAt: '2026-01-01T12:30:30Z',
+      }),
+    })
+
+    renderAt('/recordings/3')
+
+    await screen.findByTestId('player-controls')
+    expect(screen.queryByTestId('recorded-outside-program-range')).not.toBeInTheDocument()
   })
 
   it('実録画時刻が番組時刻と一致すると差分ラベルを出さない', async () => {
@@ -769,8 +792,8 @@ describe('RecordingDetailPage', () => {
       '30秒遅れて開始・30秒早く終了',
     )
     await selectDetailTab('番組')
-    expect(screen.getByText('実録画開始')).toBeInTheDocument()
-    expect(screen.getByText('実録画終了')).toBeInTheDocument()
+    expect(screen.getByText('実録画開始').nextElementSibling).toHaveTextContent(/:00:30$/)
+    expect(screen.getByText('実録画終了').nextElementSibling).toHaveTextContent(/:29:30$/)
   })
 
   it('終端カードに次がないときは再視聴とごみ箱を示す', async () => {
@@ -791,7 +814,8 @@ describe('RecordingDetailPage', () => {
     const card = await screen.findByTestId('recording-end-card')
     expect(within(card).getByRole('button', { name: 'もう一度見る' })).toBeInTheDocument()
     expect(within(card).getByRole('button', { name: 'この回をごみ箱へ' })).toBeInTheDocument()
-    expect(within(card).queryByText(/次のエピソードを .* 秒後/)).not.toBeInTheDocument()
+    expect(within(card).queryByText(/秒後に再生/)).not.toBeInTheDocument()
+    expect(within(card).getByText('最後のエピソードです')).toBeInTheDocument()
 
     await user.click(within(card).getByRole('button', { name: 'もう一度見る' }))
     expect(video.currentTime).toBe(0)
@@ -855,7 +879,7 @@ describe('RecordingDetailPage', () => {
 
       fireEvent.ended(video)
       const card = await screen.findByTestId('recording-end-card')
-      expect(within(card).getByText('次のエピソードを 3 秒後に再生')).toBeInTheDocument()
+      expect(within(card).getByText('次のエピソード · 3 秒後に再生')).toBeInTheDocument()
       await user.click(within(card).getByRole('button', { name: '取り消す' }))
       await act(async () => vi.advanceTimersByTimeAsync(3000))
       expect(router.state.location.pathname).toBe('/recordings/3')
@@ -892,7 +916,7 @@ describe('RecordingDetailPage', () => {
       createFakeServer({ recording: origin, seriesRecordings: [origin, next] })
       const { router } = renderAt('/recordings/3')
       fireEvent.ended(await screen.findByLabelText('録画映像'))
-      expect(await screen.findByText('次のエピソードを 3 秒後に再生')).toBeInTheDocument()
+      expect(await screen.findByText('次のエピソード · 3 秒後に再生')).toBeInTheDocument()
 
       cleanup()
       await act(async () => vi.advanceTimersByTimeAsync(3000))
@@ -937,7 +961,7 @@ describe('RecordingDetailPage', () => {
 
     await screen.findByRole('heading', { name: '単体ページの録画' })
     await selectDetailTab('番組')
-    expect(screen.getByText(/ＯＨＫ \(GR\/27\).*site2/)).toBeInTheDocument()
+    expect(screen.getByText(/ＯＨＫ（GR 27）.*site2/)).toBeInTheDocument()
   })
 
   it('単一サイトのときは詳細に site を出さない', async () => {
@@ -947,7 +971,7 @@ describe('RecordingDetailPage', () => {
 
     await screen.findByRole('heading', { name: '単体ページの録画' })
     await selectDetailTab('番組')
-    expect(screen.getByText(/ＯＨＫ \(GR\/27\)/)).toBeInTheDocument()
+    expect(screen.getByText(/ＯＨＫ（GR 27）/)).toBeInTheDocument()
     expect(screen.queryByText(/default/)).not.toBeInTheDocument()
   })
 
@@ -961,7 +985,7 @@ describe('RecordingDetailPage', () => {
 
     await screen.findByRole('heading', { name: '単体ページの録画' })
     await selectDetailTab('番組')
-    expect(screen.getByText(/ＯＨＫ \(GR\/27\).*site2/)).toBeInTheDocument()
+    expect(screen.getByText(/ＯＨＫ（GR 27）.*site2/)).toBeInTheDocument()
   })
 
   it('存在しない id は「録画が見つかりません」を表示する', async () => {
@@ -1215,9 +1239,14 @@ describe('RecordingDetailPage CM 検出の有効化導線', () => {
     expect(screen.getByRole('menuitem', { name: 'CM 検出を有効にする' })).toBeInTheDocument()
   })
 
-  it.each(['logo', 'area', 'setup', undefined] as const)(
-    '失敗工程 %s は記録タブに説明を出し、やり直しは見出しメニューに置く',
-    async (stage) => {
+  it.each([
+    ['logo', true],
+    ['area', true],
+    ['setup', false],
+    [undefined, false],
+  ] as const)(
+    '失敗工程 %s は記録タブに説明を出し、枠の導線を工程に合わせ、やり直しは見出しメニューに置く',
+    async (stage, linkExpected) => {
     createFakeServer({
       recording: sampleRecording({
         sizeBytes: 1_000_000,
@@ -1231,6 +1260,13 @@ describe('RecordingDetailPage CM 検出の有効化導線', () => {
     await selectDetailTab('記録')
     const cmRow = screen.getAllByTestId('recording-diagnostic-row').find((row) => row.textContent?.includes('CM 検出'))
     expect(cmRow).toHaveTextContent(cmDetectStageMessage(stage))
+    // logo / area は枠を教えるのが直し方（ロゴ登録画面へ録画の局と録画 id を渡す）。それ以外には出さない。
+    const logoLink = within(cmRow!).queryByRole('link', { name: 'CM 検出のロゴを教える' })
+    if (linkExpected) {
+      expect(logoLink).toHaveAttribute('href', '/cm-logos?network=32678&service=5168&recording=3')
+    } else {
+      expect(logoLink).not.toBeInTheDocument()
+    }
     await openRecordingMenu()
     expect(screen.getByRole('menuitem', { name: 'CM 検出をやり直す' })).toBeInTheDocument()
     },
@@ -1748,7 +1784,8 @@ describe('RecordingDetailPage ルール導線 (issue #230)', () => {
     renderAt('/recordings/3')
 
     await selectDetailTab('番組')
-    expect(await screen.findByRole('heading', { name: 'ルール', level: 4 })).toBeInTheDocument()
+    // 録画のしかたの行に「ルール「名前」」の形で出る（見出しにしない）。
+    expect((await screen.findByText('録画のしかた')).nextElementSibling).toHaveTextContent('ルール「ニュース全部」')
     expect(await screen.findByRole('link', { name: 'ニュース全部' })).toHaveAttribute(
       'href',
       '/search?ruleId=5',
@@ -1781,7 +1818,7 @@ describe('RecordingDetailPage ルール導線 (issue #230)', () => {
 
     await selectDetailTab('番組')
     await screen.findByText('録画のしかた')
-    expect(screen.queryByRole('heading', { name: 'ルール', level: 4 })).not.toBeInTheDocument()
+    expect(screen.queryByText(/^ルール「/)).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'このルールの録画で絞る' })).not.toBeInTheDocument()
   })
 
@@ -1798,7 +1835,7 @@ describe('RecordingDetailPage ルール導線 (issue #230)', () => {
     renderAt('/recordings/3')
 
     await selectDetailTab('番組')
-    await screen.findByRole('heading', { name: 'ルール', level: 4 })
+    await screen.findByText('録画のしかた')
     expect(await screen.findByRole('link', { name: '#99' })).toHaveAttribute(
       'href',
       '/search?ruleId=99',
@@ -2173,5 +2210,206 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
       'href',
       '/api/media/recordings/3/file',
     )
+  })
+})
+
+// #1018 の見直し: シリーズの導線・棚・終端カードの移動・メニュー・版タブの細部。
+describe('RecordingDetailPage シリーズの導線と終端カードの移動 (#1018)', () => {
+  const seriesEpisode = (id: number, startAt: string, overrides: Partial<Recording> = {}) =>
+    sampleRecording({
+      id,
+      title: `作品X 第${id}話`,
+      series: '作品X',
+      startAt,
+      sizeBytes: 1_000_000,
+      encodedAssets: [{ profile: 'h264', sizeBytes: 900_000 }],
+      ...overrides,
+    })
+
+  // 操作バーも棚も出ない状態（原本のみ・録画中・資産なし・ごみ箱）でも、シリーズへの導線は 1 つ出る。
+  it.each([
+    ['エンコード版のプレイヤー', {}],
+    ['原本のみ', { encodedAssets: undefined }],
+    ['録画中', { encodedAssets: undefined, sizeBytes: undefined, status: 'recording' as const }],
+    ['資産なし', { encodedAssets: undefined, sizeBytes: undefined }],
+    ['ごみ箱', { deletedAt: '2026-01-05T00:00:00Z' }],
+  ] as [string, Partial<Recording>][])('シリーズの導線をタイトル行に出す: %s', async (_name, overrides) => {
+    const origin = seriesEpisode(3, '2026-01-01T12:00:00Z', overrides)
+    createFakeServer({ recording: origin, seriesRecordings: [origin] })
+
+    renderAt('/recordings/3')
+
+    const row = await screen.findByTestId('recording-series-links')
+    expect(within(row).getByRole('link', { name: 'このシリーズへ: 作品X' })).toHaveAttribute(
+      'href',
+      '/recordings/3/series',
+    )
+  })
+
+  it('操作バーが無い状態では次のエピソードをシリーズの行に出し、バーがあるときは重ねて出さない', async () => {
+    const next = seriesEpisode(4, '2026-01-08T12:00:00Z')
+    const originalOnly = seriesEpisode(3, '2026-01-01T12:00:00Z', { encodedAssets: undefined })
+    createFakeServer({ recording: originalOnly, seriesRecordings: [originalOnly, next] })
+    renderAt('/recordings/3')
+    const row = await screen.findByTestId('recording-series-links')
+    expect(await within(row).findByRole('link', { name: '次のエピソード: 作品X 第4話' })).toHaveAttribute(
+      'href',
+      '/recordings/4',
+    )
+    cleanup()
+
+    const withPlayer = seriesEpisode(3, '2026-01-01T12:00:00Z')
+    createFakeServer({ recording: withPlayer, seriesRecordings: [withPlayer, next] })
+    renderAt('/recordings/3')
+    await screen.findByTestId('next-episode-link')
+    expect(screen.getAllByRole('link', { name: '次のエピソード: 作品X 第4話' })).toHaveLength(1)
+    expect(within(screen.getByTestId('recording-series-links')).queryByRole('link', { name: /次のエピソード/ })).toBeNull()
+  })
+
+  it('棚は過去の回を含めて新しい順に並べ、本数と合計サイズを見出しに出す', async () => {
+    const gib = 1024 * 1024 * 1024
+    const big = { sizeBytes: gib, encodedAssets: [{ profile: 'h264', sizeBytes: gib }] }
+    const past = seriesEpisode(2, '2025-12-25T12:00:00Z', big)
+    const origin = seriesEpisode(3, '2026-01-01T12:00:00Z', big)
+    const later = seriesEpisode(4, '2026-01-08T12:00:00Z', big)
+    createFakeServer({ recording: origin, seriesRecordings: [later, origin, past] })
+
+    renderAt('/recordings/3')
+
+    const summary = await screen.findByTestId('series-shelf-summary')
+    // 3 本 × (原本 1 GB + エンコード 1 GB)
+    expect(summary).toHaveTextContent('3 本 · 6.0 GB')
+    const shelf = screen.getByTestId('recording-series-shelf')
+    const hrefs = within(shelf).getAllByRole('link').map((link) => link.getAttribute('href'))
+    expect(hrefs).toEqual(['/recordings/4', '/recordings/3', '/recordings/2'])
+    expect(within(shelf).getByRole('link', { name: /再生中/ })).toHaveAttribute('href', '/recordings/3')
+  })
+
+  it('録画中の録画は棚で「再生中」ではなく「録画中」と出す', async () => {
+    const origin = seriesEpisode(3, '2026-01-01T12:00:00Z', { status: 'recording', encodedAssets: undefined, sizeBytes: undefined })
+    createFakeServer({ recording: origin, seriesRecordings: [origin] })
+
+    renderAt('/recordings/3')
+
+    const shelf = await screen.findByTestId('recording-series-shelf')
+    expect(shelf).toHaveTextContent('録画中')
+    expect(shelf).not.toHaveTextContent('再生中')
+  })
+
+  it('終端カードから次の回へ移ると、履歴を積み、プレイヤーの DOM を作り直さず、移った先を再生する', async () => {
+    const user = userEvent.setup()
+    const playSpy = vi.spyOn(window.HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
+    const origin = seriesEpisode(3, '2026-01-01T12:00:00Z')
+    const next = seriesEpisode(4, '2026-01-08T12:00:00Z')
+    createFakeServer({ recording: origin, seriesRecordings: [origin, next] })
+    const { router } = renderAt('/recordings/3')
+    const frame = await screen.findByTestId('recording-player-frame')
+    await screen.findByTestId('next-episode-link')
+
+    fireEvent.ended(await screen.findByLabelText('録画映像'))
+    await user.click(within(await screen.findByTestId('recording-end-card')).getByRole('button', { name: '今すぐ再生' }))
+
+    expect(await screen.findByRole('heading', { name: '作品X 第4話' })).toBeInTheDocument()
+    // 全画面を保つため、プレイヤーの枠（全画面の対象）は同じ DOM 要素のまま中身だけが替わる。
+    expect(screen.getByTestId('recording-player-frame')).toBe(frame)
+    // 移った先の video が読み込まれたら再生を始める（カードの文言「N 秒後に再生」どおり）。
+    expect(playSpy).not.toHaveBeenCalled()
+    fireEvent.loadedMetadata(screen.getByLabelText('録画映像'))
+    expect(playSpy).toHaveBeenCalledTimes(1)
+    // 履歴を積んでいるので「戻る」で見ていた回へ戻れる。
+    act(() => router.history.back())
+    expect(await screen.findByRole('heading', { name: '作品X 第3話' })).toBeInTheDocument()
+    expect(router.state.location.pathname).toBe('/recordings/3')
+  })
+
+  it('バーの「次のエピソード」で移っても再生は始めない', async () => {
+    const user = userEvent.setup()
+    const playSpy = vi.spyOn(window.HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
+    const origin = seriesEpisode(3, '2026-01-01T12:00:00Z')
+    const next = seriesEpisode(4, '2026-01-08T12:00:00Z')
+    createFakeServer({ recording: origin, seriesRecordings: [origin, next] })
+    renderAt('/recordings/3')
+
+    await user.click(await screen.findByTestId('next-episode-link'))
+    expect(await screen.findByRole('heading', { name: '作品X 第4話' })).toBeInTheDocument()
+    fireEvent.loadedMetadata(screen.getByLabelText('録画映像'))
+    expect(playSpy).not.toHaveBeenCalled()
+  })
+
+  it('終端カードに次のエピソードの題・放送日時とカウントダウンを出す', async () => {
+    const origin = seriesEpisode(3, '2026-01-01T12:00:00Z')
+    const next = seriesEpisode(4, '2026-01-08T12:00:00Z')
+    createFakeServer({ recording: origin, seriesRecordings: [origin, next] })
+    renderAt('/recordings/3')
+
+    fireEvent.ended(await screen.findByLabelText('録画映像'))
+
+    const card = await screen.findByTestId('recording-end-card')
+    expect(within(card).getByText('次のエピソード · 3 秒後に再生')).toBeInTheDocument()
+    expect(card).toHaveTextContent('作品X 第4話')
+    expect(card).toHaveTextContent(formatTime('2026-01-08T12:00:00Z'))
+    expect(within(card).getByTestId('end-card-countdown-ring')).toBeInTheDocument()
+    expect(card.querySelector('img')).toHaveAttribute('src', '/api/media/recordings/4/thumbnail')
+  })
+})
+
+describe('RecordingDetailPage メニューと版タブの細部 (#1018)', () => {
+  it('⋮ の「ルールを開く」にルール名を添える', async () => {
+    createFakeServer({
+      recording: sampleRecording({ ruleId: 5, source: 'rule' }),
+      rules: [sampleRule({ id: 5, name: 'ニュース全部' })],
+    })
+    renderAt('/recordings/3')
+
+    const menu = await openRecordingMenu()
+    await waitFor(() => expect(within(menu).getByTestId('menu-rule-name')).toHaveTextContent('ニュース全部'))
+  })
+
+  it('原本が無い録画では「CM 検出をやり直す」を押せない形で出す', async () => {
+    createFakeServer({
+      recording: sampleRecording({
+        encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }],
+        cmDetection: { state: 'failed', stage: 'logo' },
+      }),
+      cmDetectCapability: true,
+    })
+    renderAt('/recordings/3')
+
+    await openRecordingMenu()
+    await waitFor(() => expect(screen.getByRole('menuitem', { name: 'CM 検出をやり直す' })).toHaveAttribute('aria-disabled', 'true'))
+  })
+
+  it('原本の保持が既定どおりなら「ルールの既定」と添える', async () => {
+    createFakeServer({
+      recording: sampleRecording({ ruleId: 5, source: 'rule', sizeBytes: 1_000_000, keepOriginal: 'always' }),
+      rules: [sampleRule({ id: 5, keepOriginal: 'always' })],
+    })
+    renderAt('/recordings/3')
+
+    await selectDetailTab('版')
+    expect(await screen.findByText('原本: 常に保持（ルールの既定）')).toBeInTheDocument()
+  })
+
+  it('説明は番組タブに繰り返さず、タイトル行の 1 か所だけに出す（押すと全文を開く）', async () => {
+    const user = userEvent.setup()
+    createFakeServer({ recording: sampleRecording({ description: '説明の本文です' }) })
+    renderAt('/recordings/3')
+
+    const description = await screen.findByTestId('recording-description')
+    await selectDetailTab('番組')
+    expect(screen.getAllByText('説明の本文です')).toHaveLength(1)
+    expect(description).toHaveAttribute('aria-expanded', 'false')
+    await user.click(description)
+    expect(description).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('版タブは中身の無い区切り枠を先頭に出さない', async () => {
+    // 版が 1 つも無い（エンコード待ちだけ）なら、行の無い枠そのものを出さない。
+    createFakeServer({ recording: sampleRecording({ encodeProfiles: ['web'] }) })
+    renderAt('/recordings/3')
+
+    await selectDetailTab('版')
+    await screen.findByTestId('recording-assets-group')
+    expect(screen.queryByRole('list', { name: '録画の版' })).not.toBeInTheDocument()
   })
 })

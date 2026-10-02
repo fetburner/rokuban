@@ -33,6 +33,19 @@ export function formatDateTime(iso: string): string {
   return dateTimeFormatter.format(new Date(iso))
 }
 
+const dateTimeSecondsFormatter = new Intl.DateTimeFormat('ja-JP', {
+  month: 'numeric',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+})
+
+/** formatDateTimeSeconds は 7/25 19:00:30 の形式で返す。数十秒のずれを見せたいときに使う。 */
+export function formatDateTimeSeconds(iso: string): string {
+  return dateTimeSecondsFormatter.format(new Date(iso))
+}
+
 /** dayKey は日付ヘッダのグルーピングに使うローカル日付のキーを返す。 */
 export function dayKey(iso: string): string {
   const d = new Date(iso)

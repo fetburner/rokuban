@@ -241,8 +241,23 @@ for (const viewport of [
   const tabList = page.locator('[data-testid="recording-detail-tabs"]')
   if ((await tabList.count()) !== 1) {
     ng.push(`${viewport.name}: 番組・版・記録のタブ見出しが1つ表示されない`)
-  } else if (measured.tabPanelCount > 1) {
-    ng.push(`${viewport.name}: 非選択タブの内容まで同時に面積を使っている`)
+  } else {
+    // 層 3・4 は選んだタブの中身だけが DOM にある（閉じた状態で面積を使わない）。パネル数だけでは
+    // 常に 1 になって何も言えないので、タブごとにどの塊が DOM にあるかを見る。
+    const groupOf = { 番組: 'recording-program-group', 版: 'recording-assets-group', 記録: 'recording-observations' }
+    if ((await page.getByRole('menuitem').count()) !== 0) ng.push(`${viewport.name}: 閉じた ⋮ メニューの中身が DOM にある`)
+    for (const [tabName, testId] of Object.entries(groupOf)) {
+      await page.getByRole('tab', { name: tabName }).click()
+      const present = await page.evaluate(
+        (ids) => ids.filter((id) => document.querySelector(`[data-testid="${id}"]`) !== null),
+        Object.values(groupOf),
+      )
+      if (present.length !== 1 || present[0] !== testId) {
+        ng.push(`${viewport.name}: 「${tabName}」を選んだときに DOM にある塊が ${JSON.stringify(present)}（期待 [${testId}] だけ）`)
+      }
+    }
+    // 初期選択の確認（下）のため、最初のタブへ戻す。
+    await page.getByRole('tab', { name: viewport.name === 'mobile' ? '番組' : '版' }).click()
   }
   const expectedSelectedTab = viewport.name === 'mobile' ? '番組' : '版'
   if (!(await page.getByRole('tab', { name: expectedSelectedTab }).getAttribute('aria-selected') === 'true')) {

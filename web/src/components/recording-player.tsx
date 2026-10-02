@@ -32,11 +32,16 @@ import {
   recordingSubtitleURL,
   savePlaybackRate,
 } from '@/lib/playback-position'
+import { formatDate, formatTime } from '@/lib/format'
+import { programTitle } from '@/lib/program-labels'
 import { cn } from '@/lib/utils'
 import {
   SEEK_TILES_DISPLAY_WIDTH,
   seekTileAt,
 } from '@/lib/seek-tiles'
+
+/** 終端カードが次のエピソードへ自動で移るまでの秒数。「取り消す」で止められる。 */
+const AUTO_ADVANCE_SECONDS = 3
 
 type RecordingPlayerProps = {
   recordingId: number
@@ -57,10 +62,14 @@ type RecordingPlayerProps = {
   preferredProfile?: string
   /** 操作バーと終端カードに出す再生可能な次のエピソード。 */
   nextEpisode?: { id: number; title: string; startAt: string }
+  /** バーの「次のエピソード」リンクを押したとき（移動先の詳細を先にキャッシュへ入れる）。 */
+  onNextEpisodeNavigate?: () => void
   /** 番組時間枠より前後を録画した部分をシークバー内に示す割合。 */
   outsideProgramSegments?: { beforeEndPercent: number; afterStartPercent: number }
-  /** 「このシリーズへ」の宛先。 */
-  seriesId?: number
+  /**
+   * 別の録画の詳細へ移る（履歴に積む）。終端カードの「今すぐ再生」と自動遷移が使う。
+   * 呼び出し側が移動先の詳細を先にキャッシュへ入れておくと、全画面のまま移れる。
+   */
   onNavigateToRecording?: (id: number) => void
   onTrash?: () => void
   onProfileChange?: (profile: string) => void
@@ -119,8 +128,8 @@ export function RecordingPlayer({
   deleteWatched,
   preferredProfile,
   nextEpisode,
+  onNextEpisodeNavigate,
   outsideProgramSegments,
-  seriesId,
   onNavigateToRecording,
   onTrash,
   onProfileChange,
@@ -167,8 +176,13 @@ export function RecordingPlayer({
   const videoPointerTypeRef = useRef<string>('')
   const subtitleLinesRef = useRef(new WeakMap<VTTCue, VTTCue['line']>())
   const [mediaPlaying, setMediaPlaying] = useState(false)
-  const [endCardOpen, setEndCardOpen] = useState(false)
-  const [countdownSeconds, setCountdownSeconds] = useState(3)
+  // 終端カードを出している録画の id。録画を切り替えても作り直さないので、id と組で持って
+  // 切り替えた瞬間に前の録画のカードを描かない（`played` と同じ規律）。
+  const [endCardFor, setEndCardFor] = useState<number | null>(null)
+  const endCardOpen = endCardFor === recordingId
+  const [countdownSeconds, setCountdownSeconds] = useState(AUTO_ADVANCE_SECONDS)
+  // 終端カードから移った先の録画 id。移った先は再生を始める（カードの文言どおり）。
+  const autoplayRecordingRef = useRef<number | null>(null)
   const [muted, setMuted] = useState(false)
   const [volume, setVolume] = useState(1)
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(false)
@@ -231,55 +245,118 @@ export function RecordingPlayer({
   const nextEpisodeRef = useRef(nextEpisode)
   nextEpisodeRef.current = nextEpisode
 
+  const advanceToNext = (id: number) => {
+    autoplayRecordingRef.current = id
+    navigateToRecordingRef.current?.(id)
+  }
+  const advanceToNextRef = useRef(advanceToNext)
+  advanceToNextRef.current = advanceToNext
+
   useEffect(() => {
     if (!endCardOpen || nextEpisodeRef.current === undefined || navigateToRecordingRef.current === undefined) return
     const interval = window.setInterval(() => setCountdownSeconds((seconds) => Math.max(0, seconds - 1)), 1000)
     const timeout = window.setTimeout(() => {
       const nextId = nextEpisodeRef.current?.id
-      if (nextId !== undefined) navigateToRecordingRef.current?.(nextId)
-    }, 3000)
+      if (nextId !== undefined) advanceToNextRef.current(nextId)
+    }, AUTO_ADVANCE_SECONDS * 1000)
     return () => {
       window.clearInterval(interval)
       window.clearTimeout(timeout)
     }
   }, [endCardOpen, nextEpisode?.id])
 
+  // 暗い映像の上の固定色のボタン。テーマのボタンは明るい地を前提にしていて、黒いカード上では読めない。
+  const cardButton =
+    'inline-flex min-h-10 items-center justify-center rounded-md border border-white/40 bg-white/10 px-4 text-sm font-medium whitespace-nowrap text-white outline-none hover:bg-white/20 focus-visible:ring-2 focus-visible:ring-white'
+  const cardPrimaryButton =
+    'inline-flex min-h-10 items-center justify-center rounded-md bg-white px-4 text-sm font-semibold whitespace-nowrap text-black outline-none hover:bg-white/90 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-white focus-visible:ring-offset-black'
+  const trashButton = onTrash && (
+    <button type="button" className={cardButton} onClick={onTrash}>
+      この回をごみ箱へ
+    </button>
+  )
   const endCard = endCardOpen ? (
     <div
       data-testid="recording-end-card"
-      className="absolute inset-x-4 bottom-16 z-20 mx-auto flex max-w-lg flex-col items-center gap-3 rounded-lg border border-white/20 bg-black/90 p-4 text-center text-white shadow-lg"
+      role="group"
+      aria-label="再生が終わりました"
+      className="absolute inset-0 z-20 flex items-center justify-center bg-black/90 p-3 text-white sm:p-6"
     >
       {nextEpisode ? (
-        <>
-          <p>次のエピソードを {countdownSeconds} 秒後に再生</p>
-          <div className="flex flex-wrap justify-center gap-2">
-            <Button type="button" onClick={() => onNavigateToRecording?.(nextEpisode.id)}>
-              今すぐ再生
-            </Button>
-            <Button type="button" variant="outline" onClick={() => setEndCardOpen(false)}>
-              取り消す
-            </Button>
+        <div className="flex w-full max-w-3xl items-center gap-3 sm:gap-6">
+          <div className="relative aspect-video w-[34%] max-w-72 shrink-0 overflow-hidden rounded-md bg-white/10">
+            <img
+              src={`/api/media/recordings/${nextEpisode.id}/thumbnail`}
+              alt=""
+              className="size-full object-cover"
+              onError={(event) => event.currentTarget.remove()}
+            />
+            <svg
+              data-testid="end-card-countdown-ring"
+              viewBox="0 0 36 36"
+              aria-hidden
+              className="absolute right-1.5 bottom-1.5 size-9 sm:size-11"
+            >
+              <circle cx="18" cy="18" r="15" className="fill-black/70" />
+              <circle cx="18" cy="18" r="15" fill="none" strokeWidth="3" className="stroke-white/30" />
+              <circle
+                cx="18"
+                cy="18"
+                r="15"
+                fill="none"
+                strokeWidth="3"
+                strokeLinecap="round"
+                className="origin-center -rotate-90 stroke-white transition-[stroke-dashoffset] duration-1000 ease-linear"
+                strokeDasharray={2 * Math.PI * 15}
+                strokeDashoffset={2 * Math.PI * 15 * (1 - countdownSeconds / AUTO_ADVANCE_SECONDS)}
+              />
+              <text x="18" y="22.5" textAnchor="middle" className="fill-white text-[13px]">
+                {countdownSeconds}
+              </text>
+            </svg>
           </div>
-        </>
+          <div className="flex min-w-0 flex-col gap-1.5 sm:gap-2">
+            <p className="text-xs text-white/70 sm:text-sm">
+              次のエピソード · {countdownSeconds} 秒後に再生
+            </p>
+            <p className="truncate text-sm font-semibold sm:text-lg">
+              {programTitle(nextEpisode.title)}
+              <span className="ml-2 font-normal">
+                {formatDate(nextEpisode.startAt)} {formatTime(nextEpisode.startAt)}
+              </span>
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className={cardPrimaryButton} onClick={() => advanceToNext(nextEpisode.id)}>
+                今すぐ再生
+              </button>
+              <button type="button" className={cardButton} onClick={() => setEndCardFor(null)}>
+                取り消す
+              </button>
+              {trashButton}
+            </div>
+          </div>
+        </div>
       ) : (
-        <Button
-          type="button"
-          onClick={() => {
-            setEndCardOpen(false)
-            const video = videoRef.current
-            if (video) {
-              video.currentTime = 0
-              void video.play().catch(() => {})
-            }
-          }}
-        >
-          もう一度見る
-        </Button>
-      )}
-      {onTrash && (
-        <Button type="button" variant="outline" onClick={onTrash}>
-          この回をごみ箱へ
-        </Button>
+        <div className="flex flex-col items-center gap-3 text-center">
+          <p className="text-sm text-white/70 sm:text-base">最後のエピソードです</p>
+          <div className="flex flex-wrap justify-center gap-2">
+            <button
+              type="button"
+              className={cardPrimaryButton}
+              onClick={() => {
+                setEndCardFor(null)
+                const video = videoRef.current
+                if (video) {
+                  video.currentTime = 0
+                  void video.play().catch(() => {})
+                }
+              }}
+            >
+              もう一度見る
+            </button>
+            {trashButton}
+          </div>
+        </div>
       )}
     </div>
   ) : null
@@ -727,7 +804,7 @@ export function RecordingPlayer({
         encodedAssets={encodedAssets}
         nextEpisode={nextEpisode}
         outsideProgramSegments={outsideProgramSegments}
-        seriesId={seriesId}
+        onNextEpisodeNavigate={onNextEpisodeNavigate}
         endCard={endCard}
         fullscreenRef={fullscreenRef}
         currentSeconds={currentSeconds}
@@ -846,6 +923,10 @@ export function RecordingPlayer({
               updatePlayedFraction(e.currentTarget)
               syncMediaState(e.currentTarget)
               updateSubtitleCueLines(e.currentTarget, controlsVisible)
+              if (autoplayRecordingRef.current === recordingId) {
+                autoplayRecordingRef.current = null
+                void e.currentTarget.play().catch(() => {})
+              }
               if (!restorePending.current) return
               restorePending.current = false
               const carried = carriedPositionRef.current
@@ -888,6 +969,7 @@ export function RecordingPlayer({
               }
             }}
             onPlay={() => {
+              setEndCardFor(null)
               setMediaPlaying(true)
               setControlsVisible(true)
               window.clearTimeout(controlsTimerRef.current)
@@ -902,8 +984,8 @@ export function RecordingPlayer({
               saveCurrentPosition(e.currentTarget)
             }}
             onEnded={() => {
-              setCountdownSeconds(3)
-              setEndCardOpen(true)
+              setCountdownSeconds(AUTO_ADVANCE_SECONDS)
+              setEndCardFor(recordingId)
             }}
             onVolumeChange={(e) => {
               setMuted(e.currentTarget.muted)
