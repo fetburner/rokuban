@@ -16,6 +16,7 @@ import {
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { EmptyState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
+import { ThumbnailOverlay } from '@/components/thumbnail-overlay'
 import { HomeModeToggle } from '@/components/home-mode-toggle'
 import { ReservationSkipBadge } from '@/components/reservation-skip-reason'
 import { describeBreakerName, describeBreakerReason } from '@/lib/breaker'
@@ -685,25 +686,7 @@ function HomeThumbnail({
       ) : (
         <div className="size-full bg-muted" aria-hidden />
       )}
-      {hero && (
-        <>
-          <span
-            data-testid="home-hero-station"
-            className="absolute bottom-2 left-2 rounded bg-black/55 px-1 text-[11px] text-white"
-          >
-            {recording.serviceName}
-          </span>
-          {progress !== undefined && (
-            <div
-              aria-hidden
-              data-testid="home-hero-progress-line"
-              className="absolute inset-x-0 bottom-0 h-1 bg-black/25"
-            >
-              <div className="h-full bg-foreground" style={{ width: `${progress}%` }} />
-            </div>
-          )}
-        </>
-      )}
+      {hero && <ThumbnailOverlay serviceName={recording.serviceName} progress={progress} />}
     </div>
   )
 }
