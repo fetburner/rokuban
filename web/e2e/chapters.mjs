@@ -62,7 +62,11 @@ const recording = {
   keepOriginal: 'always',
   cmDetection: { state: 'detected' },
   sizeBytes: 500_000_000,
-  encodedAssets: [{ profile: 'h264', sizeBytes: 400_000_000 }],
+  // 画質の下の階層でサイズ付きの選択肢を見るため 2 つ置く（同じ動画を配る）。
+  encodedAssets: [
+    { profile: 'h264', sizeBytes: 400_000_000 },
+    { profile: 'h265', sizeBytes: 300_000_000 },
+  ],
   createdAt: '2026-01-02T12:30:00Z',
 }
 
@@ -441,5 +445,285 @@ if (hiddenBeforeTab !== '0') ng.push(`⑥-b 前提: 映像クリックで再生�
 if (!afterTab.inBar || shownAfterTab !== '1') {
   ng.push(`⑥-b 再生中に Tab を押してもバーに届かない（focus=${afterTab.active} opacity=${shownAfterTab}）`)
 }
+
+log('\n=== ⑦ デスクトップの設定メニュー: 行リストを歯車の真上に開き、› で中身を差し替える ===')
+await page.mouse.move(640, 300)
+const gear = page.getByRole('button', { name: '再生設定' })
+const settingsMenu = page.locator('[data-testid="playback-settings"]')
+/** menuShape は設定メニューの形（行の役割・フォーム部品の有無・歯車との位置）を返す。 */
+const menuShape = () =>
+  page.evaluate(() => {
+    const menu = document.querySelector('[data-testid="playback-settings"]')
+    const gearButton = document.querySelector('button[aria-label="再生設定"]')
+    const frame = document.querySelector('[data-testid="recording-player-frame"]')
+    if (!menu || !gearButton || !frame) return null
+    const m = menu.getBoundingClientRect()
+    const g = gearButton.getBoundingClientRect()
+    const f = frame.getBoundingClientRect()
+    const items = Array.from(menu.querySelectorAll('[role^="menuitem"]')).filter((el) => el.getClientRects().length > 0)
+    return {
+      role: menu.getAttribute('role'),
+      formControls: menu.querySelectorAll('select, input, a[download]').length,
+      text: menu.textContent ?? '',
+      items: items.map((el) => ({
+        role: el.getAttribute('role'),
+        name: el.getAttribute('aria-label') ?? el.textContent?.trim(),
+        checked: el.getAttribute('aria-checked'),
+      })),
+      background: getComputedStyle(menu).backgroundColor,
+      aboveGear: m.bottom <= g.top + 1 && m.left <= g.left + g.width / 2 && m.right >= g.left + g.width / 2,
+      insideFrame: frame.contains(menu) && m.top >= f.top - 1 && m.bottom <= f.bottom + 1,
+    }
+  })
+await gear.click()
+await settingsMenu.waitFor({ timeout: 5000 })
+const desktopMenu = await menuShape()
+if (desktopMenu === null) {
+  ng.push('⑦ 設定メニューが開かない')
+} else {
+  if (desktopMenu.role !== 'menu') ng.push(`⑦ 設定メニューが role="menu" でない（${desktopMenu.role}）`)
+  if (desktopMenu.formControls !== 0) {
+    ng.push(`⑦ 設定メニューにプルダウン・チェックボックス・ダウンロード等のフォーム部品が ${desktopMenu.formControls} 個ある`)
+  }
+  const names = desktopMenu.items.map((item) => `${item.role}:${item.name}`)
+  const wantRows = ['menuitemcheckbox:CM を飛ばす', 'menuitemcheckbox:字幕', 'menuitem:再生速度', 'menuitem:画質']
+  if (JSON.stringify(names) !== JSON.stringify(wantRows)) {
+    ng.push(`⑦ 行リストが「CM を飛ばす / 字幕 / 再生速度 / 画質」でない（${JSON.stringify(names)}）`)
+  }
+  if (!/標準/.test(desktopMenu.text) || !/h264/.test(desktopMenu.text)) {
+    ng.push(`⑦ 行に現在値（標準 / h264）が出ていない（${desktopMenu.text}）`)
+  }
+  if (/ダウンロード/.test(desktopMenu.text)) ng.push('⑦ 設定メニューにダウンロードが残っている')
+  const alpha = /rgba\(\s*(\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)/.exec(desktopMenu.background)
+  if (!alpha || Number(alpha[4]) >= 1 || Number(alpha[1]) > 60) {
+    ng.push(`⑦ メニューが半透明の黒い小窓でない（background=${desktopMenu.background}）`)
+  }
+  if (!desktopMenu.aboveGear) ng.push('⑦ メニューが歯車の真上に開いていない')
+  if (!desktopMenu.insideFrame) ng.push('⑦ メニューが映像の枠の中に収まっていない')
+}
+// › で下の階層へ: 同じ枠の中身が「‹ 画質」と選択肢（✓・サイズ）に替わる。
+await settingsMenu.evaluate((node) => {
+  node.dataset.e2eIdentity = 'settings-before-submenu'
+}).catch(() => {})
+await page.getByRole('menuitem', { name: '画質' }).click({ timeout: 3000 }).catch(() => {})
+const qualityMenu = await page.evaluate(() => {
+  const menu = document.querySelector('[data-testid="playback-settings"]')
+  if (!menu) return null
+  const options = Array.from(menu.querySelectorAll('[role="menuitemradio"]'))
+  return {
+    sameElement: menu.dataset.e2eIdentity === 'settings-before-submenu',
+    back: Array.from(menu.querySelectorAll('[role="menuitem"]')).some((el) =>
+      (el.getAttribute('aria-label') ?? el.textContent ?? '').includes('画質'),
+    ),
+    mainRowsGone: !Array.from(menu.querySelectorAll('[role^="menuitem"]')).some((el) =>
+      (el.textContent ?? '').includes('再生速度'),
+    ),
+    options: options.map((el) => ({ text: el.textContent?.trim() ?? '', checked: el.getAttribute('aria-checked') })),
+  }
+})
+if (qualityMenu === null) {
+  ng.push('⑦ 画質を押したらメニューが閉じた')
+} else {
+  if (!qualityMenu.sameElement) ng.push('⑦ 画質の下の階層が同じ枠の中身の差し替えでない（別の要素になった）')
+  if (!qualityMenu.back || !qualityMenu.mainRowsGone) {
+    ng.push(`⑦ 画質の下の階層が「‹ 画質」+ 選択肢に差し替わっていない（back=${qualityMenu.back} mainRowsGone=${qualityMenu.mainRowsGone}）`)
+  }
+  const sized = qualityMenu.options.filter((option) => /\d+(\.\d+)?\s?(B|KB|MB|GB)/.test(option.text))
+  if (qualityMenu.options.length !== 2 || sized.length !== 2) {
+    ng.push(`⑦ 画質の選択肢 2 つにサイズが付いていない（${JSON.stringify(qualityMenu.options)}）`)
+  }
+  if (qualityMenu.options.filter((option) => option.checked === 'true').length !== 1) {
+    ng.push(`⑦ 画質の選択中が 1 つだけ ✓（aria-checked）になっていない（${JSON.stringify(qualityMenu.options)}）`)
+  }
+}
+// Esc で 1 段戻り、矢印キーで行を移り、もう一度 Esc で閉じて歯車にフォーカスが戻る。
+await page.keyboard.press('Escape')
+const afterFirstEscape = await page.evaluate(() => ({
+  open: Boolean(document.querySelector('[data-testid="playback-settings"]')),
+  speedRow: Array.from(document.querySelectorAll('[data-testid="playback-settings"] [role="menuitem"]')).some((el) =>
+    (el.textContent ?? '').includes('再生速度'),
+  ),
+}))
+if (!afterFirstEscape.open || !afterFirstEscape.speedRow) {
+  ng.push(`⑦ 下の階層で Esc を押しても元の行リストに戻らない（${JSON.stringify(afterFirstEscape)}）`)
+}
+await page.keyboard.press('ArrowUp')
+const afterArrow = await page.evaluate(() => document.activeElement?.getAttribute('role') ?? document.activeElement?.tagName)
+if (!String(afterArrow).startsWith('menuitem')) ng.push(`⑦ 矢印キーで行を移れない（focus=${afterArrow}）`)
+await page.keyboard.press('Escape')
+const afterSecondEscape = await page.evaluate(() => ({
+  open: Boolean(document.querySelector('[data-testid="playback-settings"]')),
+  focus: document.activeElement?.getAttribute('aria-label'),
+}))
+if (afterSecondEscape.open || afterSecondEscape.focus !== '再生設定') {
+  ng.push(`⑦ Esc でメニューが閉じて歯車にフォーカスが戻らない（${JSON.stringify(afterSecondEscape)}）`)
+}
+if (afterSecondEscape.open) await gear.click()
+// バーの CC はメニューの字幕スイッチと同じ状態を持つ。
+const ccButton = page.locator('[data-testid="player-controls"] button[aria-label="字幕"]')
+if ((await ccButton.count()) !== 1) {
+  ng.push('⑦ バーに字幕（CC）ボタンが無い')
+} else {
+  await ccButton.click()
+  const ccPressed = await ccButton.getAttribute('aria-pressed')
+  await gear.click()
+  const subtitleSwitch = await page
+    .getByRole('menuitemcheckbox', { name: '字幕' })
+    .getAttribute('aria-checked', { timeout: 3000 })
+    .catch(() => null)
+  if (ccPressed !== 'true' || subtitleSwitch !== 'true') {
+    ng.push(`⑦ CC を押してもバーとメニューの字幕が揃ってオンにならない（cc=${ccPressed} menu=${subtitleSwitch}）`)
+  }
+  await page.keyboard.press('Escape')
+  await ccButton.click()
+}
+// 時刻の横にいまのチャプター名。
+await seek(65)
+const chapterName = await page
+  .locator('[data-testid="playback-chapter"]')
+  .textContent({ timeout: 3000 })
+  .catch(() => null)
+if (!chapterName?.includes('OP')) ng.push(`⑦ 時刻の横にいまのチャプター名（OP）が出ない（${chapterName}）`)
+// 全画面でも歯車の真上に、全画面要素の中で開く。
+try {
+  await page.getByRole('button', { name: '全画面表示' }).click()
+  await page.waitForFunction(() => document.fullscreenElement !== null, undefined, { timeout: 5000 })
+  await gear.click()
+  const fullscreenMenu = await menuShape()
+  if (!fullscreenMenu?.aboveGear || !fullscreenMenu.insideFrame || fullscreenMenu.formControls !== 0) {
+    ng.push(`⑦ 全画面で設定メニューが歯車の真上の行リストにならない（${JSON.stringify(fullscreenMenu)}）`)
+  }
+  await page.keyboard.press('Escape')
+  await page.getByRole('button', { name: '全画面を終了' }).click()
+  await page.waitForFunction(() => document.fullscreenElement === null, undefined, { timeout: 5000 })
+} catch (error) {
+  ng.push(`⑦ 全画面の設定メニューを確かめられない: ${String(error)}`)
+  await page.keyboard.press('Escape').catch(() => {})
+}
+
+log('\n=== ⑧ スマホ: 中央に前後チャプター、右上に CC と歯車、歯車は画面下からのシート ===')
+const phoneContext = await browser.newContext({
+  viewport: { width: 390, height: 844 },
+  hasTouch: true,
+  isMobile: true,
+  locale: 'ja-JP',
+  timezoneId: 'Asia/Tokyo',
+})
+const phone = await phoneContext.newPage()
+await installApiStubs(phone, apiHandler)
+await phone.goto(URL_BASE + '/recordings/1', { waitUntil: 'domcontentloaded' })
+await phone.waitForFunction(
+  () => Number.isFinite(document.querySelector('video')?.duration) && document.querySelector('video').duration > 0,
+  undefined,
+  { timeout: 15000 },
+)
+const phoneLayout = await phone.evaluate(() => {
+  const frame = document.querySelector('[data-testid="recording-player-frame"]')?.getBoundingClientRect()
+  const visible = (selector) =>
+    Array.from(document.querySelectorAll(selector)).filter((el) => {
+      const r = el.getBoundingClientRect()
+      return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'
+    })
+  const box = (selector) => {
+    const r = visible(selector)[0]?.getBoundingClientRect()
+    return r ? { top: r.top, left: r.left, width: r.width, height: r.height } : null
+  }
+  return {
+    frame: frame ? { top: frame.top, bottom: frame.bottom } : null,
+    prev: box('button[aria-label="前のチャプター"]'),
+    play: box('[data-testid="player-controls"] button[aria-label="再生"]'),
+    next: box('button[aria-label="次のチャプター"]'),
+    cc: box('[data-testid="player-controls"] button[aria-label="字幕"]'),
+    gear: box('button[aria-label="再生設定"]'),
+    volume: visible('input[aria-label="音量"], button[aria-label="ミュート"], button[aria-label="ミュート解除"]').length,
+  }
+})
+const middle = (r) => r.top + r.height / 2
+if (!phoneLayout.frame || !phoneLayout.prev || !phoneLayout.play || !phoneLayout.next) {
+  ng.push(`⑧ スマホに前後チャプター・再生が見えない（${JSON.stringify(phoneLayout)}）`)
+} else {
+  const f = phoneLayout.frame
+  const third = (f.bottom - f.top) / 3
+  const centered = [phoneLayout.prev, phoneLayout.play, phoneLayout.next].every(
+    (r) => middle(r) > f.top + third && middle(r) < f.bottom - third,
+  )
+  if (!centered || !(phoneLayout.prev.left < phoneLayout.play.left && phoneLayout.play.left < phoneLayout.next.left)) {
+    ng.push(`⑧ 前のチャプター / 再生 / 次のチャプターが映像の中央に並んでいない（${JSON.stringify(phoneLayout)}）`)
+  }
+  if (!phoneLayout.cc || !phoneLayout.gear || middle(phoneLayout.gear) > f.top + third || middle(phoneLayout.cc) > f.top + third) {
+    ng.push(`⑧ CC と歯車が映像の右上にない（cc=${JSON.stringify(phoneLayout.cc)} gear=${JSON.stringify(phoneLayout.gear)}）`)
+  }
+}
+if (phoneLayout.volume !== 0) ng.push(`⑧ スマホにミュート / 音量が ${phoneLayout.volume} 個見えている`)
+// 中央の次のチャプター / 前のチャプターが実際に動く（0 秒 → CM の先頭 30 秒 → 先頭）。
+const tapVisible = async (selector) => {
+  const box = await phone.evaluate((sel) => {
+    const el = Array.from(document.querySelectorAll(sel)).find((node) => node.getBoundingClientRect().width > 0)
+    const r = el?.getBoundingClientRect()
+    return r ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null
+  }, selector)
+  if (box) await phone.touchscreen.tap(box.x, box.y)
+  await phone.waitForTimeout(400)
+}
+await tapVisible('button[aria-label="次のチャプター"]')
+const phoneJump = await phone.locator('video').evaluate((v) => v.currentTime)
+if (Math.abs(phoneJump - 30) > 1) ng.push(`⑧ 中央の次のチャプターで 30 秒へ飛ばない（currentTime=${phoneJump.toFixed(1)}）`)
+await tapVisible('button[aria-label="前のチャプター"]')
+const phoneBack = await phone.locator('video').evaluate((v) => v.currentTime)
+if (phoneBack > 1) ng.push(`⑧ 中央の前のチャプターで先頭へ戻らない（currentTime=${phoneBack.toFixed(1)}）`)
+// 歯車 → 画面の下からモーダルのシート。背後を暗くし、シートは下半分に収まる。
+await tapVisible('button[aria-label="再生設定"]')
+const sheet = await phone.evaluate(() => {
+  const menu = document.querySelector('[data-testid="playback-settings"]')
+  if (!menu) return null
+  const scrim = document.querySelector('[data-testid="playback-settings-scrim"]')
+  const r = menu.getBoundingClientRect()
+  const s = scrim?.getBoundingClientRect()
+  const items = Array.from(menu.querySelectorAll('[role^="menuitem"]')).filter((el) => el.getClientRects().length > 0)
+  return {
+    top: r.top,
+    bottom: r.bottom,
+    left: r.left,
+    right: r.right,
+    innerHeight: window.innerHeight,
+    innerWidth: window.innerWidth,
+    formControls: menu.querySelectorAll('select, input, a[download]').length,
+    volume: menu.querySelectorAll('[aria-label="音量"], [aria-label="ミュート"], [aria-label="ミュート解除"]').length,
+    items: items
+      .slice()
+      .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)
+      .map((el) => (el.getAttribute('aria-label') ?? el.textContent?.trim() ?? '').slice(0, 20)),
+    scrimCovers: Boolean(s && s.top <= 0 && s.bottom >= window.innerHeight && s.width >= window.innerWidth),
+    scrimBackground: scrim ? getComputedStyle(scrim).backgroundColor : null,
+  }
+})
+if (sheet === null) {
+  ng.push('⑧ 歯車を押しても設定が開かない')
+} else {
+  if (Math.abs(sheet.bottom - sheet.innerHeight) > 2 || sheet.left > 1 || sheet.right < sheet.innerWidth - 1) {
+    ng.push(`⑧ 設定が画面の下端に幅いっぱいのシートで開かない（${JSON.stringify(sheet)}）`)
+  }
+  if (sheet.top < sheet.innerHeight / 2 - 2) {
+    ng.push(`⑧ シートが画面の下半分に収まっていない（top=${sheet.top} / ${sheet.innerHeight}）`)
+  }
+  if (!sheet.scrimCovers || !/rgba\(0, 0, 0, 0\.[1-9]/.test(sheet.scrimBackground ?? '')) {
+    ng.push(`⑧ シートの背後が暗くならない（scrim=${sheet.scrimBackground} covers=${sheet.scrimCovers}）`)
+  }
+  if (sheet.formControls !== 0) ng.push(`⑧ シートにプルダウン・チェックボックス等が ${sheet.formControls} 個ある`)
+  if (sheet.volume !== 0) ng.push('⑧ シートにミュート / 音量がある')
+  if (!/画質/.test(sheet.items[0] ?? '') || !sheet.items.some((name) => /ピクチャー/.test(name))) {
+    ng.push(`⑧ シートの行が画質から始まり PiP を含む行リストでない（${JSON.stringify(sheet.items)}）`)
+  }
+  await tapVisible('[data-testid="playback-settings"] [role="menuitem"][aria-label="画質"]')
+  const phoneQuality = await phone.evaluate(() =>
+    Array.from(document.querySelectorAll('[data-testid="playback-settings"] [role="menuitemradio"]')).map(
+      (el) => el.textContent?.trim() ?? '',
+    ),
+  )
+  if (phoneQuality.length !== 2 || !phoneQuality.every((text) => /\d+(\.\d+)?\s?(B|KB|MB|GB)/.test(text))) {
+    ng.push(`⑧ シートの画質の下の階層にサイズ付きの選択肢が出ない（${JSON.stringify(phoneQuality)}）`)
+  }
+}
+await phoneContext.close()
 
 await finish(ng, browser)
