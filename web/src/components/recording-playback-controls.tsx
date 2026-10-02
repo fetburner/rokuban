@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type FocusEvent as ReactFocusEvent,
@@ -239,6 +240,37 @@ export function RecordingPlaybackControls({
   const pictureInPictureEnabled =
     typeof document !== 'undefined' && document.pictureInPictureEnabled === true
 
+  // 目盛りの中ほどのラベル（先端 / 予定終端）を印の位置に置く。印に合わせると行からはみ出すなら
+  // 行の中へ寄せ、左端の「0:00」と重なるなら左端を隠す。延長中は右端の先端ラベルを隠さず、予定の
+  // ラベルをその手前まで寄せる。通常時は右端の「… まで（予定）」と重なるなら右端を隠す。
+  // 幅は描画ごと（録画中は毎秒）と行の大きさが変わったとき（全画面・窓の幅）に測り直す。
+  const axisLabelsRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const row = axisLabelsRef.current
+    if (!row) return
+    const place = () => {
+      const mark = row.querySelector<HTMLElement>('[data-axis-mark]')
+      const start = row.querySelector<HTMLElement>('[data-axis-start]')
+      const end = row.querySelector<HTMLElement>('[data-axis-end]')
+      if (!mark || !start || !end) return
+      const gap = 8
+      const rowWidth = row.clientWidth
+      const width = mark.offsetWidth
+      const pointer = mark.querySelector<HTMLElement>('[data-axis-pointer]')
+      const anchor = pointer ? pointer.offsetLeft + pointer.offsetWidth / 2 : width / 2
+      const rightLimit = (chaseExtended ? rowWidth - end.offsetWidth - gap : rowWidth) - width
+      const left = Math.max(0, Math.min(rightLimit, Number(mark.dataset.axisMark) * rowWidth - anchor))
+      mark.style.left = `${left}px`
+      start.style.visibility = left < start.offsetWidth + gap ? 'hidden' : ''
+      end.style.visibility = !chaseExtended && left + width > rowWidth - end.offsetWidth - gap ? 'hidden' : ''
+    }
+    place()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(place)
+    observer.observe(row)
+    return () => observer.disconnect()
+  })
+
   const closeMenu = (focusGear: boolean) => {
     setMenuView(null)
     if (focusGear) gearRef.current?.focus()
@@ -445,7 +477,9 @@ export function RecordingPlaybackControls({
                     }}
                   >
                     <span className="font-mono">{formatAxisTime(chaseTimeline.hoverSeconds)}</span>
-                    {chaseTimeline.hoverSeconds > chaseTimeline.recordedEndSeconds ? ' · まだ録画されていません' : ''}
+                    {chaseTimeline.hoverSeconds > chaseTimeline.recordedEndSeconds || chaseTimeline.hoverSeconds < chaseTimeline.headSeconds
+                      ? ' · まだ録画されていません'
+                      : ''}
                   </div>
                 )}
                 {outsideProgramSegments && !playingCut && (
@@ -563,28 +597,42 @@ export function RecordingPlaybackControls({
                 </>
               )}
             </div>
-            {/* 軸の目盛り（デスクトップだけ。スマホは時刻の表示で足りる）。延長したら予定終端を中に、先端を右端に出す。 */}
+            {/*
+              軸の目盛り（デスクトップだけ。スマホは時刻の表示で足りる）。左端と右端のほかに、通常は先端の
+              ラベルを先端の印の真下に、延長中は「予定 … ¦」の ¦ を予定終端の印に合わせて置く（ラフ 6・7）。
+              置き場は実レイアウトの幅で決める（上の `axisLabelsRef` の effect）。
+            */}
             {chaseTimeline && (
               <div
+                ref={axisLabelsRef}
                 data-testid="chase-timeline-labels"
-                className="mb-1 hidden items-baseline justify-between gap-2 text-xs text-white/75 md:flex"
+                className="relative mb-1 hidden h-4 text-xs whitespace-nowrap text-white/75 md:block"
               >
-                <span className="font-mono">{formatAxisTime(rangeMin)}</span>
+                <span data-axis-start className="absolute left-0 font-mono">{formatAxisTime(rangeMin)}</span>
                 {chaseExtended ? (
                   <>
-                    <span data-testid="chase-timeline-planned-label">
-                      予定 <span className="font-mono">{formatAxisTime(chaseTimeline.plannedEndSeconds)}</span> ¦
+                    <span
+                      data-testid="chase-timeline-planned-label"
+                      data-axis-mark={axisFraction(chaseTimeline.plannedEndSeconds)}
+                      className="absolute"
+                    >
+                      予定 <span className="font-mono">{formatAxisTime(chaseTimeline.plannedEndSeconds)}</span>{' '}
+                      <span data-axis-pointer>¦</span>
                     </span>
-                    <span data-testid="chase-timeline-end" className="text-red-400">
+                    <span data-testid="chase-timeline-end" data-axis-end className="absolute right-0 text-red-400">
                       延長中 · 先端 <span className="font-mono">{formatAxisTime(chaseTimeline.recordedEndSeconds)}</span>
                     </span>
                   </>
                 ) : (
                   <>
-                    <span data-testid="chase-live-edge-label" className="text-red-400">
+                    <span
+                      data-testid="chase-live-edge-label"
+                      data-axis-mark={axisFraction(chaseTimeline.liveEdgeSeconds)}
+                      className="absolute text-red-400"
+                    >
                       録画の先端 <span className="font-mono">{formatAxisTime(chaseTimeline.recordedEndSeconds)}</span>（押すと先端へ）
                     </span>
-                    <span data-testid="chase-timeline-end">
+                    <span data-testid="chase-timeline-end" data-axis-end className="absolute right-0">
                       <span className="font-mono">{formatAxisTime(chaseTimeline.plannedEndSeconds)}</span> まで（予定）
                     </span>
                   </>

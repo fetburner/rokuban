@@ -2424,7 +2424,14 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
     expect(percent(recorded, 'width')).toBe(25)
     const played = screen.getByTestId('chase-timeline-played')
     expect(percent(played, 'left')).toBe(25)
-    expect(screen.getByRole('slider', { name: 'シークバー' })).toHaveAttribute('aria-valuenow', '15')
+    const slider = screen.getByRole('slider', { name: 'シークバー' })
+    expect(slider).toHaveAttribute('aria-valuenow', '15')
+    // 録画開始より前（6 秒）も録っていない部分なので、ホバーの吹き出しに添える。
+    Object.defineProperty(slider, 'getBoundingClientRect', { value: rect600 })
+    fireEvent.pointerMove(slider, { pointerId: 7, pointerType: 'mouse', clientX: 60, clientY: 12 })
+    expect(screen.getByTestId('chase-hover-label')).toHaveTextContent('0:06 · まだ録画されていません')
+    fireEvent.pointerMove(slider, { pointerId: 7, pointerType: 'mouse', clientX: 200, clientY: 12 })
+    expect(screen.getByTestId('chase-hover-label').textContent).toBe('0:20')
   })
 
   it('再生中にセッション外へシークしたら、張り直したセッションで再生を続ける（原本 HLS と同じ）', async () => {

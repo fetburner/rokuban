@@ -1000,6 +1000,88 @@ if (lastChasePlaylistOffset === playingReopenOffsetBefore) {
 }
 await page.locator('video').evaluate((video) => video.pause())
 
+log('\n=== ⑤ バー下の目盛りは対応する印の真下に出る ===')
+// 予定終端の「¦」は予定終端の印を、先端のラベルは先端の印を指す。両端の「0:00」「… まで（予定）」
+// と重なるなら端のほうを隠す。読むのは実レイアウトの x（jsdom では測れない）。
+async function axisLabelGeometry() {
+  return page.evaluate(() => {
+    const centerX = (rect) => rect.left + rect.width / 2
+    const visible = (el) => el !== null && getComputedStyle(el).visibility !== 'hidden'
+    const row = document.querySelector('[data-testid="chase-timeline-labels"]')
+    const planned = document.querySelector('[data-testid="chase-timeline-planned-label"]')
+    const edge = document.querySelector('[data-testid="chase-live-edge-label"]')
+    let pipeX = null
+    if (planned) {
+      const walker = document.createTreeWalker(planned, NodeFilter.SHOW_TEXT)
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const index = node.textContent.indexOf('¦')
+        if (index < 0) continue
+        const range = document.createRange()
+        range.setStart(node, index)
+        range.setEnd(node, index + 1)
+        pipeX = centerX(range.getBoundingClientRect())
+      }
+    }
+    const rect = (el) => (el ? el.getBoundingClientRect() : null)
+    const start = row?.firstElementChild ?? null
+    const end = document.querySelector('[data-testid="chase-timeline-end"]')
+    const shown = [start, planned, edge, end].filter(visible).map((el) => {
+      const r = el.getBoundingClientRect()
+      return { left: r.left, right: r.right }
+    })
+    const overlaps = shown.some((a, i) => shown.some((b, j) => i < j && a.left < b.right && b.left < a.right))
+    return {
+      rowLeft: rect(row)?.left,
+      rowRight: rect(row)?.right,
+      plannedMarkX: centerX(document.querySelector('[data-testid="chase-timeline-planned-end"]').getBoundingClientRect()),
+      edgeMarkX: centerX(document.querySelector('[data-testid="chase-live-edge"]').getBoundingClientRect()),
+      pipeX,
+      edgeLabelX: edge ? centerX(edge.getBoundingClientRect()) : null,
+      edgeLabelLeft: rect(edge)?.left,
+      edgeLabelRight: rect(edge)?.right,
+      overlaps,
+    }
+  })
+}
+const durationBeforeAxisLabels = recording.durationMs
+const nowRecordedEndSeconds = () => (Date.now() - Date.parse(recording.startAt)) / 1000
+// 延長中: 予定終端を録画の先端の 86% に置く（ラフ 7 右）。
+recording.durationMs = Math.round(nowRecordedEndSeconds() * 0.86) * 1000
+await page.reload({ waitUntil: 'domcontentloaded' })
+await page.getByTestId('chase-timeline-planned-label').waitFor({ timeout: 15000 })
+await page.waitForTimeout(300)
+const extendedLabels = await axisLabelGeometry()
+log(`  延長中: 予定の印 x=${extendedLabels.plannedMarkX.toFixed(1)}, 「¦」x=${extendedLabels.pipeX?.toFixed(1)}`)
+if (extendedLabels.pipeX === null || Math.abs(extendedLabels.pipeX - extendedLabels.plannedMarkX) > 3) {
+  ng.push(`⑤ 延長中の「予定 … ¦」の ¦ が予定終端の印を指さない（印 ${extendedLabels.plannedMarkX.toFixed(1)} / ¦ ${extendedLabels.pipeX?.toFixed(1)}）`)
+}
+if (extendedLabels.overlaps) ng.push('⑤ 延長中の目盛りのラベル同士が重なる')
+await captureEvidence('chase-axis-labels-extended.png')
+// 通常時で録画済みが短い（予定の 1/6）: 先端のラベルの中心が先端の印の真下に来る。
+recording.durationMs = Math.round(nowRecordedEndSeconds() * 6) * 1000
+await page.reload({ waitUntil: 'domcontentloaded' })
+await page.getByTestId('chase-live-edge-label').waitFor({ timeout: 15000 })
+await page.waitForTimeout(300)
+const shortLabels = await axisLabelGeometry()
+log(`  録画済みが短い: 先端の印 x=${shortLabels.edgeMarkX.toFixed(1)}, ラベル中心 x=${shortLabels.edgeLabelX?.toFixed(1)}`)
+if (shortLabels.edgeLabelX === null || Math.abs(shortLabels.edgeLabelX - shortLabels.edgeMarkX) > 3) {
+  ng.push(`⑤ 先端のラベルが先端の印の真下に出ない（印 ${shortLabels.edgeMarkX.toFixed(1)} / ラベル中心 ${shortLabels.edgeLabelX?.toFixed(1)}）`)
+}
+if (shortLabels.overlaps) ng.push('⑤ 録画済みが短いとき目盛りのラベル同士が重なる')
+// 録画済みがごく短い（予定の 1/60）: 印に中心を合わせると左へはみ出すので、行の中に寄せる。
+recording.durationMs = Math.round(nowRecordedEndSeconds() * 60) * 1000
+await page.reload({ waitUntil: 'domcontentloaded' })
+await page.getByTestId('chase-live-edge-label').waitFor({ timeout: 15000 })
+await page.waitForTimeout(300)
+const tinyLabels = await axisLabelGeometry()
+log(`  録画済みがごく短い: 印 x=${tinyLabels.edgeMarkX.toFixed(1)}, ラベル ${tinyLabels.edgeLabelLeft?.toFixed(1)}〜${tinyLabels.edgeLabelRight?.toFixed(1)}, 行 ${tinyLabels.rowLeft?.toFixed(1)}〜`)
+if (tinyLabels.edgeLabelLeft === undefined || tinyLabels.edgeLabelLeft < tinyLabels.rowLeft - 0.5 ||
+  tinyLabels.edgeLabelLeft > tinyLabels.edgeMarkX || tinyLabels.edgeLabelRight < tinyLabels.edgeMarkX) {
+  ng.push('⑤ 先端が左端に近いとき、先端のラベルが行からはみ出すか印の上に無い')
+}
+if (tinyLabels.overlaps) ng.push('⑤ 先端が左端に近いとき目盛りのラベル同士が重なる')
+recording.durationMs = durationBeforeAxisLabels
+
 log('\n=== ⑥ VOD と共通の再生速度 ===')
 await page.evaluate(() => localStorage.setItem('rokuban:playback-rate', '1.5'))
 await page.reload({ waitUntil: 'domcontentloaded' })
