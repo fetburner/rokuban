@@ -1,18 +1,14 @@
 import { Link, useLocation, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { ArrowLeft } from 'lucide-react'
-import { useState } from 'react'
 
-import { useGetRecording, useListSites } from '@/api/generated'
+import { useGetRecording } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { ErrorState, ListSkeleton, PageHeader } from '@/components/page'
-import { DropBadges, EncodeStatusBadges, IngestBadge, StatusBadge } from '@/components/recording-badges'
+import { RecordingActions } from '@/components/recording-actions'
 import { RecordingDetail } from '@/components/recording-detail-panel'
 import { Button } from '@/components/ui/button'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
-import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
 import { hasLiveIngestProgress, ingestRefetchIntervalMs } from '@/lib/ingest'
-import { programTitle } from '@/lib/program-labels'
-import { shouldShowRecordingSite } from '@/lib/recording-search'
 
 /**
  * recordingDetailQueryKey は単体ページ自身のクエリキー。
@@ -65,8 +61,6 @@ export function RecordingDetailPage() {
   const search = useSearch({ from: '/recordings/$id' })
   const navigate = useNavigate({ from: '/recordings/$id' })
   const idNum = Number(id)
-  const [thumbFailed, setThumbFailed] = useState(false)
-  const sitesQuery = useListSites()
 
   // 追っかけ再生の画質は `?liveProfile=` に持つ（issue #874）。**既定は URL に
   // 書き戻さない** --- 明示的に選んだ値だけを載せる（`/live` の `?profile=` と
@@ -97,8 +91,6 @@ export function RecordingDetailPage() {
     },
   })
   const recording = unwrap(query.data)
-  const registeredSites = unwrap(sitesQuery.data) ?? []
-  const showSite = recording !== undefined && shouldShowRecordingSite(registeredSites, [recording.site])
   // ごみ箱の録画（deletedAt 付き）も 200 で返る（getRecording の openapi.yaml
   // description）。この真偽で再生系を出さない規律（下記 RecordingDetail）を適用する。
   const trash = recording?.deletedAt != null
@@ -114,6 +106,7 @@ export function RecordingDetailPage() {
             <ArrowLeft />
           </Button>
         }
+        actions={recording ? <RecordingActions recording={recording} trash={trash} /> : undefined}
       />
 
       {query.isError ? (
@@ -125,49 +118,7 @@ export function RecordingDetailPage() {
       ) : query.isPending || !recording ? (
         <ListSkeleton rows={4} />
       ) : (
-        <div className="flex flex-col gap-4 px-4 py-4">
-          <section className="flex gap-3">
-            {/* サムネイルは一覧行と同じ規律: ごみ箱ではそもそもリクエストしない
-                （配信側が deleted_at IS NOT NULL を 404 にする契約。docs/api/media.md）。 */}
-            <div className="aspect-video h-20 shrink-0 overflow-hidden rounded bg-muted">
-              {!trash && !thumbFailed ? (
-                <img
-                  src={`/api/media/recordings/${recording.id}/thumbnail`}
-                  alt=""
-                  className="size-full object-cover"
-                  onError={() => setThumbFailed(true)}
-                />
-              ) : (
-                <div className="size-full bg-muted" aria-hidden />
-              )}
-            </div>
-            <div className="min-w-0 flex-1">
-              <h2 className="text-lg font-medium">{programTitle(recording.title)}</h2>
-              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-                <StatusBadge status={recording.status} />
-                <IngestBadge recording={recording} />
-                <EncodeStatusBadges recording={recording} />
-                {recording.dropSummary && <DropBadges summary={recording.dropSummary} />}
-                {showSite && (
-                  <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">
-                    {recording.site}
-                  </span>
-                )}
-                <span className="shrink-0">{recording.serviceName}</span>
-                <span className="shrink-0">{formatDateTime(recording.startAt)}</span>
-                <span className="shrink-0">{formatDuration(recording.durationMs)}</span>
-                {recording.sizeBytes !== undefined && (
-                  <span className="shrink-0">{formatBytes(recording.sizeBytes)}</span>
-                )}
-              </div>
-              {trash && recording.deletedAt && (
-                <p className="mt-1 text-xs text-muted-foreground">
-                  ごみ箱（削除 {formatDateTime(recording.deletedAt)}）
-                </p>
-              )}
-            </div>
-          </section>
-
+        <div className="px-4 py-4">
           <RecordingDetail
             key={`${recording.id}:${location.hash}`}
             recording={recording}
@@ -176,6 +127,14 @@ export function RecordingDetailPage() {
             liveProfile={search.liveProfile}
             startAtBeginning={search.fromBeginning}
             onSelectLiveProfile={selectLiveProfile}
+            onNavigateToRecording={(nextId) =>
+              void navigate({
+                to: '/recordings/$id',
+                params: { id: String(nextId) },
+                hash: '',
+                replace: true,
+              })
+            }
           />
         </div>
       )}

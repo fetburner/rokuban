@@ -1,4 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import { MoreVertical, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
@@ -6,9 +7,9 @@ import { ApiError } from '@/api/client'
 import {
   restoreRecording as restoreRecordingRequest,
   useAddRecordingEncodeProfiles,
-  useDeleteRecording,
   useListEncodeProfiles,
   usePurgeRecording,
+  useRetryRecordingCMDetection,
   useSetRecordingEncodePolicy,
   type Recording,
 } from '@/api/generated'
@@ -30,11 +31,14 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
 import { encodeSettingsError, keepOriginalLabel, type KeepOriginal } from '@/lib/encode-settings'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
+import { useCMDetectEnabled } from '@/lib/capabilities'
+import { useMoveRecordingToTrash } from '@/lib/use-recording-trash'
 
 /**
  * RecordingActions は論理削除 / 復元 / 即時 purge 印を扱う。
@@ -46,8 +50,11 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
   const [restoring, setRestoring] = useState(false)
   const queryClient = useQueryClient()
   const toast = useToast()
-  const deleteRecording = useDeleteRecording()
+  const moveToTrash = useMoveRecordingToTrash(recordingId)
   const purgeRecording = usePurgeRecording()
+  const cmDetectEnabled = useCMDetectEnabled()
+  const setEncodePolicy = useSetRecordingEncodePolicy()
+  const retryCMDetection = useRetryRecordingCMDetection()
 
   const invalidate = () => {
     // ライブラリとごみ箱の両方を捨てる（片側の操作がもう片側の集合を変える）。
@@ -94,48 +101,88 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
       .finally(() => setRestoring(false))
   }
 
-  const busy = deleteRecording.isPending || restoring || purgeRecording.isPending
+  const busy = moveToTrash.pending || restoring || purgeRecording.isPending || setEncodePolicy.isPending || retryCMDetection.isPending
 
   if (!trash) {
     return (
-      <div className="flex flex-col gap-2">
-        <div className="flex flex-wrap gap-2">
-          {/* 取り返せる操作（Undo あり）なので secondary --- 取り返しがつかない
-              完全削除（⋮ の中）との強さの逆転を作らない（issue #467 レビュー）。 */}
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            disabled={busy}
-            onClick={() => {
-              deleteRecording.mutate(
-                { id: recordingId },
-                {
-                  onSuccess: () => {
-                    invalidate()
-                    // ごみ箱送りの効果（単体ページのボタン入れ替え）は
-                    // restore と同じ理由で常に画面に見えるが、
-                    // ごみ箱送りは復元で即座に取り消せる安価な操作なので、
-                    // 素の成功通知の代わりに Undo 付きトーストにする
-                    // （`pages/programs.tsx` の予約作成 + 取消と同じ形。
-                    // issue #297 が指す理想形）。復元と違ってここは Undo を
-                    // 提供する側なので silence だけでは終わらせない。
-                    toast({
-                      message: 'ごみ箱に移しました',
-                      actions: [{ label: '元に戻す', onClick: () => restore() }],
-                    })
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={<Button type="button" variant="ghost" size="icon" aria-label="録画のその他の操作" />}
+        >
+          <MoreVertical />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-72">
+          {recording.ruleId !== undefined && (
+            <DropdownMenuItem render={<Link to="/search" search={{ ruleId: recording.ruleId }} />}>
+              ルールを開く
+            </DropdownMenuItem>
+          )}
+          {recording.cmDetection.state === 'detected' || recording.cmDetection.state === 'failed' ? (
+            <DropdownMenuItem
+              disabled={busy || !cmDetectEnabled}
+              onClick={() =>
+                retryCMDetection.mutate(
+                  { id: recordingId },
+                  {
+                    onSuccess: () => {
+                      invalidate()
+                      toast({ message: 'CM 検出を再試行します' })
+                    },
+                    onError: (err) =>
+                      toast({ message: mutationErrorMessage('CM 検出の再試行に失敗しました', err), kind: 'error' }),
                   },
-                  onError: (err) =>
-                    toast({ message: mutationErrorMessage('削除に失敗しました', err), kind: 'error' }),
-                },
-              )
-            }}
-          >
-            <Trash2 data-icon="inline-start" />
+                )
+              }
+            >
+              CM 検出をやり直す
+            </DropdownMenuItem>
+          ) : null}
+          {recording.cmDetection.state !== 'disabled' ? (
+            <DropdownMenuItem
+              disabled={busy || !cmDetectEnabled}
+              onClick={() =>
+                setEncodePolicy.mutate(
+                  { id: recordingId, data: { cmDetect: false } },
+                  {
+                    onSuccess: () => {
+                      invalidate()
+                      toast({ message: 'CM 検出を停止しました' })
+                    },
+                    onError: (err) =>
+                      toast({ message: mutationErrorMessage('CM 検出の停止に失敗しました', err), kind: 'error' }),
+                  },
+                )
+              }
+            >
+              CM 検出を止める
+            </DropdownMenuItem>
+          ) : cmDetectEnabled && recording.sizeBytes !== undefined ? (
+            <DropdownMenuItem
+              disabled={busy}
+              onClick={() =>
+                setEncodePolicy.mutate(
+                  { id: recordingId, data: { cmDetect: true } },
+                  {
+                    onSuccess: () => {
+                      invalidate()
+                      toast({ message: 'CM 検出を有効にしました' })
+                    },
+                    onError: (err) =>
+                      toast({ message: mutationErrorMessage('CM 検出の有効化に失敗しました', err), kind: 'error' }),
+                  },
+                )
+              }
+            >
+              CM 検出を有効にする
+            </DropdownMenuItem>
+          ) : null}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem disabled={busy} onClick={moveToTrash.moveToTrash}>
+            <Trash2 />
             ごみ箱へ
-          </Button>
-        </div>
-      </div>
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     )
   }
 
@@ -154,7 +201,7 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
         >
           <MoreVertical />
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
+        <DropdownMenuContent align="end" className="w-72">
           <DropdownMenuItem
             variant="destructive"
             disabled={busy}
@@ -237,6 +284,7 @@ function KeepOriginalAction({ recording }: { recording: Recording }) {
   const current = recording.keepOriginal as KeepOriginal
   const profiles = recording.encodeProfiles ?? []
   const [selected, setSelected] = useState<KeepOriginal>(current)
+  const [expanded, setExpanded] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
   // confirmedRef は「確認ダイアログを確定して閉じた」ことを覚える。
   // AlertDialogAction の onClick は commit() を呼んだ後、Radix が同じイベントの
@@ -294,35 +342,52 @@ function KeepOriginalAction({ recording }: { recording: Recording }) {
   }
 
   return (
-    <section className="flex flex-col gap-2 rounded-lg border border-border p-2">
-      <Field label="原本の保持">
-        <Select
-          value={selected}
-          disabled={setPolicy.isPending}
-          onChange={(e) => setSelected(e.target.value as KeepOriginal)}
-        >
-          <option value="always">{keepOriginalLabel('always')}</option>
-          <option value="until_encoded">{keepOriginalLabel('until_encoded')}</option>
-        </Select>
-      </Field>
-      <p className="text-xs text-muted-foreground">
-        「エンコード後に削除」を選ぶと、エンコードとサムネイルが揃った後、最大 15 分で原本を
-        削除します。原本削除後は再エンコードできません。
-      </p>
-      {error !== undefined && (
-        <p role="alert" className="text-xs text-destructive">
-          {error}
-        </p>
-      )}
-      {dirty && (
+    <section className="flex flex-col gap-2 py-2 text-sm">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span className="text-muted-foreground">原本: {keepOriginalLabel(current)}</span>
         <Button
           type="button"
+          variant="ghost"
           size="sm"
-          disabled={error !== undefined || setPolicy.isPending}
-          onClick={save}
+          aria-expanded={expanded}
+          aria-controls={`keep-original-${recording.id}`}
+          onClick={() => setExpanded((open) => !open)}
         >
-          {setPolicy.isPending ? '保存中…' : '保持ポリシーを保存'}
+          {expanded ? '変更を閉じる' : 'この回だけ変える'}
         </Button>
+      </div>
+      {expanded && (
+        <div id={`keep-original-${recording.id}`} className="flex flex-col items-start gap-2">
+          <Field label="原本の保持">
+            <Select
+              value={selected}
+              disabled={setPolicy.isPending}
+              onChange={(e) => setSelected(e.target.value as KeepOriginal)}
+            >
+              <option value="always">{keepOriginalLabel('always')}</option>
+              <option value="until_encoded">{keepOriginalLabel('until_encoded')}</option>
+            </Select>
+          </Field>
+          <p className="text-xs text-muted-foreground">
+            「エンコード後に削除」を選ぶと、エンコードとサムネイルが揃った後、最大 15 分で原本を
+            削除します。原本削除後は再エンコードできません。
+          </p>
+          {error !== undefined && (
+            <p role="alert" className="text-xs text-destructive">
+              {error}
+            </p>
+          )}
+          {dirty && (
+            <Button
+              type="button"
+              size="sm"
+              disabled={error !== undefined || setPolicy.isPending}
+              onClick={save}
+            >
+              {setPolicy.isPending ? '保存中…' : '保持ポリシーを保存'}
+            </Button>
+          )}
+        </div>
       )}
       <AlertDialog
         open={confirmOpen}
@@ -386,14 +451,18 @@ function AddEncodeProfilesAction({ recording }: { recording: Recording }) {
   const profilesQuery = useListEncodeProfiles()
   const profiles = unwrap(profilesQuery.data) ?? []
   const alreadyRequested = recording.encodeProfiles ?? []
-  const alreadyRequestedSet = new Set(alreadyRequested)
+  const availableProfiles = new Set(alreadyRequested)
+  for (const asset of recording.encodedAssets ?? []) availableProfiles.add(asset.profile)
+  const alreadyRequestedSet = availableProfiles
   const addable = profiles.filter((p) => !alreadyRequestedSet.has(p.name))
   const [selected, setSelected] = useState<string[]>([])
+  const [expanded, setExpanded] = useState(false)
   const queryClient = useQueryClient()
   const toast = useToast()
   const addProfiles = useAddRecordingEncodeProfiles()
 
   if (!hasOriginal) {
+    if (recording.status === 'recording') return null
     return (
       <p className="text-xs text-muted-foreground">
         この録画には再生可能な原本がありません。追加のエンコードは依頼できません。
@@ -408,17 +477,25 @@ function AddEncodeProfilesAction({ recording }: { recording: Recording }) {
     // （EncodeSettingsFields と違い、こちらは無くても他の操作に支障が無い）。
     return null
   }
+  if (addable.length === 0) return null
 
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-border p-2">
-      <span className="text-xs text-muted-foreground">事後エンコードの追加</span>
-      {alreadyRequested.length > 0 && (
-        <p className="text-xs text-muted-foreground">追加済み: {alreadyRequested.join(', ')}</p>
-      )}
-      {addable.length === 0 ? (
-        <p className="text-xs text-muted-foreground">すべてのエンコードプロファイルが追加済みです。</p>
-      ) : (
-        <>
+    <div className="flex flex-col items-start gap-2 py-2">
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        aria-expanded={expanded}
+        aria-controls={`add-encode-profiles-${recording.id}`}
+        onClick={() => setExpanded((open) => !open)}
+      >
+        {expanded ? 'エンコード追加を閉じる' : '＋ エンコードを追加'}
+      </Button>
+      {expanded && (
+        <div id={`add-encode-profiles-${recording.id}`} className="flex flex-col gap-2">
+          {alreadyRequested.length > 0 && (
+            <p className="text-xs text-muted-foreground">追加済み: {alreadyRequested.join(', ')}</p>
+          )}
           <ul
             role="group"
             aria-label="追加するエンコードプロファイル"
@@ -480,7 +557,7 @@ function AddEncodeProfilesAction({ recording }: { recording: Recording }) {
           >
             {addProfiles.isPending ? '依頼中…' : '追加エンコードを依頼'}
           </Button>
-        </>
+        </div>
       )}
     </div>
   )

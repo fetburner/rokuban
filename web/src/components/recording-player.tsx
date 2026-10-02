@@ -55,6 +55,15 @@ type RecordingPlayerProps = {
   deleteWatched?: () => void
   /** 追っかけ再生と揃えるVOD側の既定プロファイル。資産に無ければ先頭を使う。 */
   preferredProfile?: string
+  /** 操作バーと終端カードに出す再生可能な次のエピソード。 */
+  nextEpisode?: { id: number; title: string; startAt: string }
+  /** 番組時間枠より前後を録画した部分をシークバー内に示す割合。 */
+  outsideProgramSegments?: { beforeEndPercent: number; afterStartPercent: number }
+  /** 「このシリーズへ」の宛先。 */
+  seriesId?: number
+  onNavigateToRecording?: (id: number) => void
+  onTrash?: () => void
+  onProfileChange?: (profile: string) => void
   /**
    * 再生可能な encoded 派生物（active media_assets）。空ならプレイヤーを出さない。
    * `sizeBytes` が省略された要素も**選択肢そのものは隠さない**（M7-3 の値札
@@ -109,6 +118,12 @@ export function RecordingPlayer({
   putWatched,
   deleteWatched,
   preferredProfile,
+  nextEpisode,
+  outsideProgramSegments,
+  seriesId,
+  onNavigateToRecording,
+  onTrash,
+  onProfileChange,
   encodedAssets,
   hasOriginal = false,
   chapters,
@@ -152,6 +167,8 @@ export function RecordingPlayer({
   const videoPointerTypeRef = useRef<string>('')
   const subtitleLinesRef = useRef(new WeakMap<VTTCue, VTTCue['line']>())
   const [mediaPlaying, setMediaPlaying] = useState(false)
+  const [endCardOpen, setEndCardOpen] = useState(false)
+  const [countdownSeconds, setCountdownSeconds] = useState(3)
   const [muted, setMuted] = useState(false)
   const [volume, setVolume] = useState(1)
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(false)
@@ -209,6 +226,63 @@ export function RecordingPlayer({
   )
   const shownPreview =
     tilePreview?.recordingId === recordingId && tilesAvailableFor === recordingId ? tilePreview : null
+  const navigateToRecordingRef = useRef(onNavigateToRecording)
+  navigateToRecordingRef.current = onNavigateToRecording
+  const nextEpisodeRef = useRef(nextEpisode)
+  nextEpisodeRef.current = nextEpisode
+
+  useEffect(() => {
+    if (!endCardOpen || nextEpisodeRef.current === undefined || navigateToRecordingRef.current === undefined) return
+    const interval = window.setInterval(() => setCountdownSeconds((seconds) => Math.max(0, seconds - 1)), 1000)
+    const timeout = window.setTimeout(() => {
+      const nextId = nextEpisodeRef.current?.id
+      if (nextId !== undefined) navigateToRecordingRef.current?.(nextId)
+    }, 3000)
+    return () => {
+      window.clearInterval(interval)
+      window.clearTimeout(timeout)
+    }
+  }, [endCardOpen, nextEpisode?.id])
+
+  const endCard = endCardOpen ? (
+    <div
+      data-testid="recording-end-card"
+      className="absolute inset-x-4 bottom-16 z-20 mx-auto flex max-w-lg flex-col items-center gap-3 rounded-lg border border-white/20 bg-black/90 p-4 text-center text-white shadow-lg"
+    >
+      {nextEpisode ? (
+        <>
+          <p>次のエピソードを {countdownSeconds} 秒後に再生</p>
+          <div className="flex flex-wrap justify-center gap-2">
+            <Button type="button" onClick={() => onNavigateToRecording?.(nextEpisode.id)}>
+              今すぐ再生
+            </Button>
+            <Button type="button" variant="outline" onClick={() => setEndCardOpen(false)}>
+              取り消す
+            </Button>
+          </div>
+        </>
+      ) : (
+        <Button
+          type="button"
+          onClick={() => {
+            setEndCardOpen(false)
+            const video = videoRef.current
+            if (video) {
+              video.currentTime = 0
+              void video.play().catch(() => {})
+            }
+          }}
+        >
+          もう一度見る
+        </Button>
+      )}
+      {onTrash && (
+        <Button type="button" variant="outline" onClick={onTrash}>
+          この回をごみ箱へ
+        </Button>
+      )}
+    </div>
+  ) : null
   // 再生開始時の変換表を固定する。SSE で別世代が届くと video key が変わり、
   // 新しいファイルだけが新しい keepRanges を使う。
   const restorePending = useRef(true)
@@ -651,6 +725,10 @@ export function RecordingPlayer({
         recordingId={recordingId}
         profile={selectedProfile}
         encodedAssets={encodedAssets}
+        nextEpisode={nextEpisode}
+        outsideProgramSegments={outsideProgramSegments}
+        seriesId={seriesId}
+        endCard={endCard}
         fullscreenRef={fullscreenRef}
         currentSeconds={currentSeconds}
         durationSeconds={durationSeconds}
@@ -670,7 +748,10 @@ export function RecordingPlayer({
         onSeekPointerUp={handleScrubPointerUp}
         onSeekPointerLeave={() => setTilePreview(null)}
         onSeek={jumpTo}
-        onSelectProfile={setProfile}
+        onSelectProfile={(nextProfile) => {
+          setProfile(nextProfile)
+          onProfileChange?.(nextProfile)
+        }}
         onPreviousChapter={() => jumpChapter('prev')}
         onNextChapter={() => jumpChapter('next')}
         isPlaying={mediaPlaying}
@@ -820,6 +901,10 @@ export function RecordingPlayer({
               window.clearTimeout(controlsTimerRef.current)
               saveCurrentPosition(e.currentTarget)
             }}
+            onEnded={() => {
+              setCountdownSeconds(3)
+              setEndCardOpen(true)
+            }}
             onVolumeChange={(e) => {
               setMuted(e.currentTarget.muted)
               setVolume(e.currentTarget.volume)
@@ -845,7 +930,7 @@ export function RecordingPlayer({
       />
 
       {playingCut && selectedAsset?.cutStale === true && (
-        <div className="flex max-w-3xl flex-wrap items-center gap-2 rounded border border-warning/50 bg-warning/10 px-3 py-2">
+        <div className="flex flex-wrap items-center gap-2 rounded border border-warning/50 bg-warning/10 px-3 py-2">
           <p className="text-warning">
             このカット版は編集前の内容です。現在のチャプターに合わせて作り直せます。
           </p>
@@ -870,7 +955,7 @@ export function RecordingPlayer({
             CM を検出しています。終わるまでチャプターは編集できません
           </p>
         ) : (
-        <details data-testid="chapter-editor-details" className="group max-w-3xl">
+        <details data-testid="chapter-editor-details" className="group">
           <DetailSummary>チャプター {chapters?.length ?? 0} 件</DetailSummary>
           <div className="pt-2">
           <RecordingChapterEditor
