@@ -8,7 +8,17 @@ const event = (
   endMs: number,
   site = 'default',
   channelType = 'GR',
-) => ({ key, site, channelType, startMs, endMs, kind: 'reservation' as const, title: key })
+) => ({
+  key,
+  site,
+  channelType,
+  startMs,
+  endMs,
+  kind: 'reservation' as const,
+  title: key,
+  hasDrop: false,
+  href: { to: '/reservations/$site/$programId' as const, site, programId: 1 },
+})
 
 describe('packHomeTimelineEvents', () => {
   it('時間が重ならない番組を同じ段へ入れる', () => {

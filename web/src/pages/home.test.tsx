@@ -1,7 +1,7 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { CapacityOverage, CircuitBreaker, Recording, Reservation } from '@/api/generated'
+import type { CapacityOverage, CircuitBreaker, EncodeQueueSummary, Recording, Reservation, StorageRoot } from '@/api/generated'
 import { HOME_MODE_STORAGE_KEY } from '@/lib/home-mode'
 import { HomePage } from '@/pages/home'
 import { renderInRouter } from '@/test/router'
@@ -139,6 +139,8 @@ type Fixtures = {
   breakers?: CircuitBreaker[]
   overages?: CapacityOverage[]
   continueWatching?: Recording[]
+  storage?: StorageRoot[]
+  encodeQueue?: EncodeQueueSummary
   /** 特定パスの応答を意図的に遅延させ、読み込み中の状態を作るためのフック。 */
   pendingPaths?: Set<string>
   /**
@@ -178,12 +180,36 @@ function stubApi(fixtures: Fixtures) {
       if (p === '/api/recordings') {
         const status = url.searchParams.get('status')
         const limit = url.searchParams.get('limit')
+        const from = url.searchParams.get('from')
+        const to = url.searchParams.get('to')
+        if (status === null) throw new Error('home must not fetch recordings without status')
+        if (status === 'recording' && limit === '200' && from !== null && to !== null) {
+          return jsonResponse((fixtures.recording ?? []).filter((item) => {
+            const start = new Date(item.startAt).getTime()
+            return start >= new Date(from).getTime() && start < new Date(to).getTime()
+          }))
+        }
+        if (status === 'finished' && limit === '200' && from !== null && to !== null) {
+          return jsonResponse((fixtures.finished ?? []).filter((item) => {
+            const start = new Date(item.startAt).getTime()
+            return start >= new Date(from).getTime() && start < new Date(to).getTime()
+          }))
+        }
+        const serverFailed = (fixtures.failed ?? []).filter(
+          (item) => (item as Recording & { supersededAt?: string }).supersededAt === undefined,
+        )
+        if (status === 'failed' && limit === '200' && from !== null && to !== null) {
+          return jsonResponse(serverFailed.filter((item) => {
+            const start = new Date(item.startAt).getTime()
+            return start >= new Date(from).getTime() && start < new Date(to).getTime()
+          }))
+        }
         if (status === 'recording') return jsonResponse(fixtures.recording ?? [])
         if (status === 'finished' && limit === String(DROP_WARNING_SCAN_LIMIT)) {
           return jsonResponse(fixtures.finished ?? [])
         }
         if (status === 'failed' && limit === String(FAILED_RECORDING_SCAN_LIMIT)) {
-          return jsonResponse(fixtures.failed ?? [])
+          return jsonResponse(serverFailed)
         }
         return jsonResponse([])
       }
@@ -191,6 +217,8 @@ function stubApi(fixtures: Fixtures) {
       if (p === '/api/reservations') return jsonResponse(fixtures.reservations ?? [])
       if (p === '/api/breakers') return jsonResponse(fixtures.breakers ?? [])
       if (p === '/api/capacity/overages') return jsonResponse(fixtures.overages ?? [])
+      if (p === '/api/storage') return jsonResponse(fixtures.storage ?? [])
+      if (p === '/api/encode-queue') return jsonResponse(fixtures.encodeQueue ?? { queued: 0, running: 0 })
       throw new Error(`unexpected fetch: ${p}`)
     }
 
@@ -236,6 +264,12 @@ function stubApi(fixtures: Fixtures) {
 
 function renderHome(path = '/?mode=ops') {
   return renderInRouter(<HomePage />, { path: '/', initialEntries: [path] })
+}
+
+async function openTimelineDetails() {
+  const details = await screen.findByTestId('home-timeline-details')
+  fireEvent.click(within(details).getByText('録画・予約の詳細'))
+  return details
 }
 
 describe('ホーム: 見る / 管理モード（issue #1020）', () => {
@@ -316,7 +350,7 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
     expect(screen.getAllByTestId('home-hero-station')).toHaveLength(1)
   })
 
-  it('管理側の 5 セクションは順序を保ち、見る側では出さない', async () => {
+  it('管理側は時間軸と要対応を表示し、見る側では出さない', async () => {
     stubApi({
       recording: [recording(1, '録画中', 'recording')],
       continueWatching: [recording(2, '続き', 'finished', { resumePositionMs: 1 })],
@@ -325,16 +359,14 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
       finished: [recording(4, '完了', 'finished')],
     })
     const opsHome = renderHome('/?mode=ops')
-    const headings = ['いま録画中', '続きから', '今夜〜明日の予約', '警告', '直近の完了']
-    await screen.findByRole('heading', { name: headings[0] })
-    const found = headings.filter((name) => screen.queryByRole('heading', { name }))
-    expect(found).toEqual(headings)
+    expect(await screen.findByRole('heading', { name: '時間軸' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '要対応' })).toBeInTheDocument()
     opsHome.unmount()
 
     stubApi({ recording: [recording(5, '録画中', 'recording')] })
     const watchHome = renderHome('/?mode=watch')
     expect(await screen.findByRole('region', { name: '録画中' })).toBeInTheDocument()
-    for (const heading of headings) {
+    for (const heading of ['時間軸', '要対応']) {
       expect(screen.queryByRole('heading', { name: heading })).not.toBeInTheDocument()
     }
     watchHome.unmount()
@@ -357,7 +389,7 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
     expect(within(toggle).queryByTestId('home-warning-count')).not.toBeInTheDocument()
     await act(async () => api.resolvePending())
     const badge = await within(toggle).findByTestId('home-warning-count')
-    const warningSection = await screen.findByRole('heading', { name: '警告' })
+    const warningSection = await screen.findByRole('heading', { name: '要対応' })
     const rows = within(warningSection.closest('section')!).getAllByRole('listitem')
     expect(badge).toHaveTextContent(String(rows.length))
     pendingHome.unmount()
@@ -397,47 +429,46 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
 })
 
 describe('ホーム: 全セクションが空のときの単一の空状態', () => {
-  it('5 セクションとも 0 件なら見出しを 1 つも出さず、単一の空状態だけを出す', async () => {
+  it('時間軸と要対応が空なら単一の空状態だけを出す', async () => {
     stubApi({})
     renderHome()
 
     expect(await screen.findByText('表示できる項目がありません')).toBeInTheDocument()
-    for (const heading of ['いま録画中', '続きから', '今夜〜明日の予約', '警告', '直近の完了']) {
+    for (const heading of ['時間軸', '要対応']) {
       expect(screen.queryByRole('heading', { name: heading })).not.toBeInTheDocument()
     }
     // 「異常なし」「予約がありません」のような肯定/報告の文言を書いていない
     expect(screen.queryByText(/異常/)).not.toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: '直近の完了へ' })).not.toBeInTheDocument()
   })
 
-  it('1 セクションでもあれば単一の空状態は出ない（両方向）', async () => {
-    stubApi({ recording: [recording(1, '録画中の番組', 'recording')] })
+  it('予約が時間軸にあれば単一の空状態は出ない', async () => {
+    stubApi({ reservations: [reservation(1, '予約の番組', HOUR)] })
     renderHome()
 
-    expect(await screen.findByRole('heading', { name: 'いま録画中' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '時間軸' })).toBeInTheDocument()
     expect(screen.queryByText('表示できる項目がありません')).not.toBeInTheDocument()
   })
 })
 
-describe('ホーム: 完了録画へのショートカット（issue #686）', () => {
-  it('完了録画が取得済みで 1 件以上あるときだけ表示する', async () => {
+describe('ホーム管理モード: 時間軸から詳細へ移る', () => {
+  it('録画ブロックは非対話のまま、詳細一覧に 24px 以上の導線を置く', async () => {
     stubApi({ finished: [recording(9, '完了した番組', 'finished')] })
     renderHome()
 
-    const heading = await screen.findByRole('heading', { name: '直近の完了' })
-    const shortcut = screen.getByRole('link', { name: '直近の完了へ' })
-
-    expect(shortcut).toHaveAttribute('href', '#home-finished')
-    expect(heading.closest('section')).toHaveAttribute('id', 'home-finished')
-    expect(heading).toHaveAttribute('id', 'home-finished-heading')
+    const block = await screen.findByTestId('home-timeline-block')
+    expect(block).toHaveAttribute('data-kind', 'finished')
+    expect(block.closest('a')).toBeNull()
+    const details = await openTimelineDetails()
+    const link = within(details).getByRole('link', { name: /完了した番組/ })
+    expect(link).toHaveAttribute('href', '/recordings/9')
+    expect(link.className).toContain('min-h-6')
   })
 
-  it('完了録画の取得に失敗したときは表示しない', async () => {
+  it('時間軸用の完了録画取得に失敗したときはエラーを出す', async () => {
     stubApi({ errorPaths: new Set(['/api/recordings']) })
     renderHome()
 
-    expect(await screen.findByText('直近の完了録画の取得に失敗しました')).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: '直近の完了へ' })).not.toBeInTheDocument()
+    expect(await screen.findByText('時間軸の取得に失敗しました')).toBeInTheDocument()
   })
 })
 
@@ -449,103 +480,77 @@ describe('ホーム: 続きから', () => {
         recording(32, '録画中の再開対象', 'recording', { resumePositionMs: 24_000 }),
       ],
     })
-    renderHome()
+    renderHome('/?mode=watch')
 
-    const heading = await screen.findByRole('heading', { name: '続きから' })
-    const links = within(heading.closest('section')!).getAllByRole('link')
-    expect(links.map((link) => link.getAttribute('href'))).toEqual([
-      '/recordings/31',
-      '/recordings/32#chase',
-    ])
+    expect(await screen.findByRole('heading', { name: '再開する録画' })).toBeInTheDocument()
+    expect(screen.getByTestId('home-primary-action')).toHaveAttribute('href', '/recordings/31')
+    expect(screen.getByRole('link', { name: '最初から' }).getAttribute('href')).toContain('fromBeginning=true')
   })
 
   it('取得失敗を空として隠さない', async () => {
     stubApi({ errorPaths: new Set(['/api/recordings/continue-watching']) })
-    renderHome()
-    expect(await screen.findByText('再開位置の取得に失敗しました')).toBeInTheDocument()
+    renderHome('/?mode=watch')
+    expect(await screen.findByText('次に見る録画の取得に失敗しました')).toBeInTheDocument()
   })
 })
 
 describe('ホーム: 0 件のセクションは文言も出さず消える', () => {
-  it('いま録画中が 0 件ならセクションごと消える（他のセクションは出る）', async () => {
+  it('予約があれば時間軸を出し、録画中が 0 件でも空の状態文言を足さない', async () => {
     stubApi({ reservations: [reservation(1, '今夜の予約', 2 * HOUR)] })
     renderHome()
 
-    expect(await screen.findByRole('heading', { name: '今夜〜明日の予約' })).toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'いま録画中' })).not.toBeInTheDocument()
-    // 「録画中の番組がありません」のような文言も出さない
-    expect(screen.queryByText(/録画中/)).not.toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '時間軸' })).toBeInTheDocument()
+    expect(screen.queryByText('録画中の番組がありません')).not.toBeInTheDocument()
   })
 })
 
-describe('ホーム: 今夜〜明日の予約の窓', () => {
-  it('今から明日の暦日の終わりまでに入る予約だけを表示し、外は除外する', async () => {
+describe('ホーム管理モード: 時間軸の窓', () => {
+  it('今日 12 時から明後日 0 時までの予約を表示する', async () => {
     stubApi({
       reservations: [
-        reservation(1, '過去に始まった予約', -HOUR),
+        reservation(1, '12 時より前', -10 * HOUR),
         reservation(2, '窓に入る予約', 3 * HOUR),
-        reservation(3, '明後日以降の予約', 30 * HOUR),
+        reservation(3, '窓の終端以降', 28 * HOUR),
       ],
     })
     renderHome()
 
-    expect(await screen.findByText('窓に入る予約')).toBeInTheDocument()
-    expect(screen.queryByText('過去に始まった予約')).not.toBeInTheDocument()
-    expect(screen.queryByText('明後日以降の予約')).not.toBeInTheDocument()
+    const details = await openTimelineDetails()
+    expect(within(details).getByRole('link', { name: /窓に入る予約/ })).toBeInTheDocument()
+    expect(screen.queryByText('12 時より前')).not.toBeInTheDocument()
+    expect(screen.queryByText('窓の終端以降')).not.toBeInTheDocument()
   })
 
-  it('ちょうど 10 件なら「予約をすべて見る」は出ない', async () => {
+  it('時間軸の詳細一覧は表示件数で打ち切らない', async () => {
     const reservations = Array.from({ length: 10 }, (_, i) =>
       reservation(i + 1, `予約 ${i + 1}`, (i + 1) * HOUR),
     )
     stubApi({ reservations })
     renderHome()
 
-    expect(await screen.findByText('予約 1')).toBeInTheDocument()
-    expect(screen.getByText('予約 10')).toBeInTheDocument()
-    expect(screen.queryByText('予約をすべて見る')).not.toBeInTheDocument()
-  })
-
-  it('10 件を超えたら先頭 10 件のみ表示し、「予約をすべて見る」を出す', async () => {
-    const reservations = Array.from({ length: 11 }, (_, i) =>
-      reservation(i + 1, `予約 ${i + 1}`, (i + 1) * HOUR),
-    )
-    stubApi({ reservations })
-    renderHome()
-
-    expect(await screen.findByText('予約 1')).toBeInTheDocument()
-    expect(screen.getByText('予約 10')).toBeInTheDocument()
-    expect(screen.queryByText('予約 11')).not.toBeInTheDocument()
-    const link = screen.getByRole('link', { name: '予約をすべて見る' })
-    expect(link).toHaveAttribute('href', '/reservations')
+    const details = await openTimelineDetails()
+    expect(within(details).getByRole('link', { name: /予約 1$/ })).toBeInTheDocument()
+    expect(within(details).getByRole('link', { name: /予約 10/ })).toBeInTheDocument()
   })
 })
 
-// issue #302: 同じタイトルの番組が日付・局違いで並ぶと局名なしでは区別でき
-// ない。タイトルが重複するため `getByText` は使わず、`findAllByText` で
-// 得た 2 つのタイトル要素からそれぞれの行（`<li>`）を辿って局名を確認する。
-describe('ホーム: 今夜〜明日の予約に局名を出す（issue #302）', () => {
-  it('同タイトル・別局の予約を局名で区別できる', async () => {
+describe('ホーム管理モード: site × channelType の行', () => {
+  it('サイト別・種別別に行を分ける', async () => {
     stubApi({
       reservations: [
         reservation(1, '同じ番組名', 2 * HOUR, { serviceName: 'NHK総合' }),
-        reservation(2, '同じ番組名', 4 * HOUR, { serviceName: 'NHK Eテレ' }),
+        reservation(2, '別サイトの番組', 4 * HOUR, { site: 'sub', channelType: 'BS', serviceName: 'NHK Eテレ' }),
       ],
     })
     renderHome()
 
-    const titles = await screen.findAllByText('同じ番組名')
-    expect(titles).toHaveLength(2)
-    const rows = titles.map((el) => el.closest('li'))
-    expect(rows[0]).not.toBeNull()
-    expect(rows[1]).not.toBeNull()
-    expect(within(rows[0]!).getByText('NHK総合')).toBeInTheDocument()
-    expect(within(rows[1]!).getByText('NHK Eテレ')).toBeInTheDocument()
+    const labels = await screen.findAllByTestId('home-timeline-row-label')
+    expect(labels.map((label) => label.textContent)).toEqual(['default · 地デジ', 'sub · BS'])
   })
 })
 
-describe('ホーム: 「いま録画中」「直近の完了」の行は警告と二重に主張しない', () => {
-  it('ドロップがあっても行にバッジは出ない（警告セクションだけが一覧化する）', async () => {
+describe('ホーム管理モード: 失敗/ドロップの timeline rendering', () => {
+  it('drop block は destructive の下端線を持ち、drop数は要対応にだけ表示する', async () => {
     stubApi({
       finished: [
         recording(9, 'ドロップのある録画', 'finished', {
@@ -555,14 +560,16 @@ describe('ホーム: 「いま録画中」「直近の完了」の行は警告�
     })
     renderHome()
 
-    expect(await screen.findByRole('heading', { name: '直近の完了' })).toBeInTheDocument()
-    expect(await screen.findByRole('heading', { name: '警告' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '時間軸' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '要対応' })).toBeInTheDocument()
     // 警告セクションのテキストとしては出るが、行自体には drop バッジ（DropBadges
     // 由来の「ドロップ」ラベル）を重ねない
     expect(screen.getByText(/ドロップのある録画: ドロップ 12 \/ スクランブル 3/)).toBeInTheDocument()
-    const row = screen.getByText('ドロップのある録画', { selector: 'span' }).closest('li')
-    expect(row).not.toBeNull()
-    expect(row!.textContent).not.toMatch(/ドロップ 12/)
+    const details = await openTimelineDetails()
+    const link = within(details).getByRole('link', { name: /ドロップのある録画/ })
+    const block = screen.getByTestId('home-timeline-block')
+    expect(block.className).toContain('shadow-[inset_0_-3px_0_var(--destructive)]')
+    expect(link.textContent).not.toMatch(/ドロップ 12/)
   })
 })
 
@@ -579,9 +586,9 @@ describe('ホーム: 警告セクション', () => {
     })
     renderHome()
 
-    expect(await screen.findByRole('heading', { name: '警告' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '要対応' })).toBeInTheDocument()
     expect(screen.getByText(/ルール評価による予約の削除が停止中/)).toBeInTheDocument()
-    expect(screen.getByText(/チューナーが不足しています/)).toBeInTheDocument()
+    expect(screen.getByText(/BSが 1 本不足しています/)).toBeInTheDocument()
     expect(screen.getByText(/ドロップのある録画: ドロップ 12 \/ スクランブル 3/)).toBeInTheDocument()
   })
 
@@ -590,7 +597,7 @@ describe('ホーム: 警告セクション', () => {
     stubApi({ overages: [shortage] })
     renderHome()
 
-    const link = await screen.findByRole('link', { name: /チューナーが不足しています/ })
+    const link = await screen.findByRole('link', { name: /BSが 1 本不足しています/ })
     const expectedAtMs = new Date(shortage.startAt).getTime()
     expect(link).toHaveAttribute('href', `/programs?at=${expectedAtMs}`)
   })
@@ -620,8 +627,8 @@ describe('ホーム: 警告セクション', () => {
     // 全クエリが解決したことを、単一の空状態が出ることで確かめてから不在を見る
     // （非同期の空虚な成功を避ける）。
     expect(await screen.findByText('表示できる項目がありません')).toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: '警告' })).not.toBeInTheDocument()
-    expect(screen.queryByText(/チューナーが不足しています/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '要対応' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/BSが 1 本不足しています/)).not.toBeInTheDocument()
   })
 
   it('時境界より前に始まり進行中の超過区間は警告に出す（回収が広すぎない）', async () => {
@@ -631,8 +638,8 @@ describe('ホーム: 警告セクション', () => {
     stubApi({ overages: [overage(-2 * HOUR, HOUR)] })
     renderHome()
 
-    expect(await screen.findByRole('heading', { name: '警告' })).toBeInTheDocument()
-    expect(screen.getByText(/チューナーが不足しています/)).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '要対応' })).toBeInTheDocument()
+    expect(screen.getByText(/BSが 1 本不足しています/)).toBeInTheDocument()
   })
 
   it('直近完了にドロップが無く、ブレーカー・チューナー不足も無ければ警告は出ない（両方向）', async () => {
@@ -641,8 +648,8 @@ describe('ホーム: 警告セクション', () => {
     })
     renderHome()
 
-    expect(await screen.findByRole('heading', { name: '直近の完了' })).toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: '警告' })).not.toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '時間軸' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '要対応' })).not.toBeInTheDocument()
   })
 
   it('警告項目は種別ごとに固定の色クラスを持つ（チューナー不足=warning、ブレーカー/ドロップ/失敗録画=destructive）', async () => {
@@ -669,10 +676,16 @@ describe('ホーム: 警告セクション', () => {
     })
     renderHome()
 
-    const overageRow = (await screen.findByText(/チューナーが不足しています/)).closest('li')
+    const overageRow = (await screen.findByText(/BSが 1 本不足しています/)).closest('li')
     const breakerRow = screen.getByText(/ルール評価による予約の削除が停止中/).closest('li')
     const dropRow = screen.getByText(/ドロップのある録画: ドロップ 12/).closest('li')
     const failedRow = screen.getByText(/失敗した録画: 録画失敗/).closest('li')
+    const warningSection = screen.getByRole('heading', { name: '要対応' }).closest('section')!
+    expect(
+      within(warningSection)
+        .getAllByRole('listitem')
+        .map((row) => row.getAttribute('data-warning-kind')),
+    ).toEqual(['breaker', 'failed', 'overage', 'drop'])
 
     // 色クラスは、リンクを持つ行（チューナー不足）では中の `<a>` に、
     // リンクを持たない行（ブレーカー・ドロップ）では `<li>` 自身に付く
@@ -697,7 +710,7 @@ describe('ホーム: 失敗録画が警告に出る（issue #301）', () => {
     })
     renderHome()
 
-    expect(await screen.findByRole('heading', { name: '警告' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '要対応' })).toBeInTheDocument()
     expect(screen.getByText(/失敗した番組: 録画失敗/)).toBeInTheDocument()
   })
 
@@ -707,8 +720,8 @@ describe('ホーム: 失敗録画が警告に出る（issue #301）', () => {
     })
     renderHome()
 
-    expect(await screen.findByRole('heading', { name: '直近の完了' })).toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: '警告' })).not.toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '時間軸' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '要対応' })).not.toBeInTheDocument()
     expect(screen.queryByText(/録画失敗/)).not.toBeInTheDocument()
   })
 
@@ -879,8 +892,8 @@ describe('ホーム: 失敗録画が警告に出る（issue #301）', () => {
     stubApi({ failed: [recording(9, '失敗した番組', 'failed')] })
     renderHome()
 
-    const link = await screen.findByRole('link', { name: /失敗した番組/ })
-    expect(link).toHaveAttribute('href', '/recordings/9')
+    const links = await screen.findAllByRole('link', { name: /失敗した番組/ })
+    expect(links.some((link) => link.getAttribute('href') === '/recordings/9')).toBe(true)
   })
 
   it('recency 窓の外にある古い失敗は警告に出ない（issue の受け入れ基準「直近の」失敗録画）', async () => {
@@ -897,13 +910,12 @@ describe('ホーム: 失敗録画が警告に出る（issue #301）', () => {
   })
 })
 
-describe('ホーム: ドロップ警告の検出範囲は「直近の完了」の表示件数から独立している', () => {
-  it('表示上限（6 件）の外にある録画のドロップも警告には出る', async () => {
-    // サーバーは `limit=20` の 7 件を返し、ホームは表示だけを先頭 6 件に切る。
-    // 7 番目（表示には出ない）にドロップを持たせ、それでも警告に出ることを見る
-    // --- 表示のスライスを警告の材料にも掛けてしまうと落ちる。
+describe('ホーム: 警告の検出範囲は時間軸の窓から独立している', () => {
+  it('今日 12 時より前の finished drop も 20 件の警告 scan から拾う', async () => {
     const finished = Array.from({ length: 7 }, (_, i) =>
-      recording(i + 1, `録画 ${i + 1}`, 'finished', { startAt: iso(-(i + 1) * HOUR) }),
+      recording(i + 1, `録画 ${i + 1}`, 'finished', {
+        startAt: iso(i === 6 ? -9 * HOUR : -(i + 1) * HOUR),
+      }),
     )
     finished[6] = {
       ...finished[6]!,
@@ -913,31 +925,83 @@ describe('ホーム: ドロップ警告の検出範囲は「直近の完了」�
     stubApi({ finished })
     renderHome()
 
-    expect(await screen.findByRole('heading', { name: '直近の完了' })).toBeInTheDocument()
-    // 表示（直近の完了）には出ない
-    expect(screen.queryByText('録画 7')).not.toBeInTheDocument()
-    // が、警告には出る（検出範囲が表示件数から独立していることの証拠）
+    expect(await screen.findByTestId('home-ops-timeline-frame')).toBeInTheDocument()
+    // 時間軸には出ないが、warning scan は timeline の窓と独立している。
+    expect([...screen.queryAllByTestId('home-timeline-block')].some((block) => block.getAttribute('title') === '録画 7')).toBe(false)
     expect(await screen.findByText(/録画 7: ドロップ 5/)).toBeInTheDocument()
+  })
+
+  it('失敗ブロックは status=failed の応答から作り、superseded 行を除く', async () => {
+    const realFailed = recording(30, '現在の失敗', 'failed', { startAt: iso(-2 * HOUR) })
+    const superseded = Object.assign(
+      recording(31, '置き換え済み擬似失敗', 'failed', { startAt: iso(-2 * HOUR) }),
+      { supersededAt: iso(-HOUR) },
+    ) as Recording
+    const { fetchMock } = stubApi({ failed: [realFailed, superseded] })
+    renderHome()
+
+    expect(await screen.findByTestId('home-timeline-block')).toHaveAttribute('data-kind', 'failed')
+    expect(screen.queryByText('置き換え済み擬似失敗')).not.toBeInTheDocument()
+    const calls = fetchMock.mock.calls
+      .map(([input]) => new URL(String(input), 'http://localhost'))
+      .filter((url) => url.pathname === '/api/recordings')
+    expect(calls.every((url) => url.searchParams.has('status'))).toBe(true)
+    const timelineCalls = calls.filter((url) => url.searchParams.get('limit') === '200')
+    expect(timelineCalls.map((url) => url.searchParams.get('status')).sort()).toEqual([
+      'failed', 'finished', 'recording',
+    ])
+    expect(timelineCalls.every((url) =>
+      url.searchParams.has('status') && url.searchParams.has('from') && url.searchParams.has('to'),
+    )).toBe(true)
+  })
+
+  it('overage警告は同site・時間重複予約だけを補足し、敗者や容量保証を示さない', async () => {
+    stubApi({
+      overages: [{ ...overage(HOUR, 2 * HOUR), jammedTypes: ['GR', 'BS'] }],
+      reservations: [
+        reservation(1, '重なる予約', HOUR),
+        reservation(2, '別siteの予約', HOUR, { site: 'sub' }),
+        reservation(3, 'skipされた予約', HOUR, { skip: true }),
+      ],
+    })
+    renderHome()
+
+    const row = await screen.findByText(/地デジ・BSが 1 本不足しています/)
+    const item = row.closest('li')!
+    expect(within(item).getByText('この時間帯の予約: 重なる予約')).toBeInTheDocument()
+    expect(item).not.toHaveTextContent(/別siteの予約|skipされた予約/)
+    expect(item).not.toHaveTextContent(/重なる予約.*(?:失敗|録れない|除外)/)
+    expect(item).not.toHaveTextContent(/十分|余裕|収まる/)
+  })
+
+  it('timeline窓外でも7日内の failed は警告し、時間軸のブロックにはしない', async () => {
+    const outsideWindow = recording(40, '窓外だが直近の失敗', 'failed', {
+      startAt: iso(-26 * HOUR),
+    })
+    stubApi({ failed: [outsideWindow] })
+    renderHome()
+
+    expect(await screen.findByText(/窓外だが直近の失敗: 録画失敗/)).toBeInTheDocument()
+    expect(
+      screen.queryAllByTestId('home-timeline-block').some(
+        (block) => block.getAttribute('title') === '窓外だが直近の失敗',
+      ),
+    ).toBe(false)
   })
 })
 
 describe('ホーム: 取得失敗はセクションを隠さずエラー表示にする', () => {
-  it('いま録画中の取得が失敗しても、0 件と違いセクション自体は表示してエラーを出す', async () => {
+  it('見る側の録画中取得が失敗しても、取得失敗を空件数として扱わない', async () => {
     stubApi({ errorPaths: new Set(['/api/recordings']) })
-    renderHome()
+    renderHome('/?mode=watch')
 
-    expect(await screen.findByRole('heading', { name: 'いま録画中' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'ホーム' })).toBeInTheDocument()
     expect(screen.getByText('録画中の取得に失敗しました')).toBeInTheDocument()
-    // 0 件のときの「セクションごと消す」とは違う挙動であることの確認
-    expect(screen.queryByText('表示できる項目がありません')).not.toBeInTheDocument()
   })
 })
 
-describe('ホーム: セクションごとに独立して読み込み、空セクション判定はしない', () => {
-  it('遅いセクション（予約）が未解決でも、解決済みのセクション（いま録画中）は先に表示する', async () => {
-    // レビュー指摘: `GET /api/reservations` は絞り込みを持たない全件取得で、
-    // 予約が増えるほど遅くなりうる。これに「いま録画中」のような速く・最も
-    // 見たいセクションまで引きずられて隠れないことを固定する。
+describe('ホーム管理モード: 時間軸の読み込み', () => {
+  it('予約取得が未解決なら timeline rows を描かず、解決後に表示する', async () => {
     const { resolvePending } = stubApi({
       recording: [recording(1, '録画中の番組', 'recording')],
       reservations: [reservation(2, '今夜の予約', 2 * HOUR)],
@@ -945,17 +1009,14 @@ describe('ホーム: セクションごとに独立して読み込み、空セ�
     })
     renderHome()
 
-    // 「いま録画中」は予約を待たずに出る
-    expect(await screen.findByRole('heading', { name: 'いま録画中' })).toBeInTheDocument()
-    // 予約はまだ解決していないので、まだ何も言っていない（見出しも出ない。
-    // 「0 件だから消えている」のではなく「まだ分からない」）
-    expect(screen.queryByRole('heading', { name: '今夜〜明日の予約' })).not.toBeInTheDocument()
-    // まだ全部は解決していないので、単一の空状態も出さない
+    // 見出しは出るが、timeline data が揃うまでは chart/frame を出さない。
+    expect(await screen.findByRole('heading', { name: '時間軸' })).toBeInTheDocument()
+    expect(screen.queryByTestId('home-ops-timeline-frame')).not.toBeInTheDocument()
     expect(screen.queryByText('表示できる項目がありません')).not.toBeInTheDocument()
 
     resolvePending()
 
-    expect(await screen.findByRole('heading', { name: '今夜〜明日の予約' })).toBeInTheDocument()
+    expect(await screen.findByTestId('home-ops-timeline-frame')).toBeInTheDocument()
   })
 
   it('警告は 4 本（ブレーカー・容量超過・ドロップ検出・失敗録画）すべての解決を待つ: 容量超過が遅い場合', async () => {
@@ -969,11 +1030,11 @@ describe('ホーム: セクションごとに独立して読み込み、空セ�
     renderHome()
 
     await new Promise((r) => setTimeout(r, 50))
-    expect(screen.queryByRole('heading', { name: '警告' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '要対応' })).not.toBeInTheDocument()
 
     resolvePending()
 
-    expect(await screen.findByRole('heading', { name: '警告' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '要対応' })).toBeInTheDocument()
     expect(screen.getByText(/ルール評価による予約の削除が停止中/)).toBeInTheDocument()
   })
 
@@ -996,12 +1057,12 @@ describe('ホーム: セクションごとに独立して読み込み、空セ�
     await new Promise((r) => setTimeout(r, 50))
     // 遅延の仕掛けが実際に効いていることを前提として assert する（即答に
     // 戻ったら以下の不在は空虚な成功になる）。
-    expect(unresolvedCount('/api/recordings?status=failed')).toBe(1)
-    expect(screen.queryByRole('heading', { name: '警告' })).not.toBeInTheDocument()
+    expect(unresolvedCount('/api/recordings?status=failed')).toBe(2)
+    expect(screen.queryByRole('heading', { name: '要対応' })).not.toBeInTheDocument()
 
     resolvePending()
 
-    expect(await screen.findByRole('heading', { name: '警告' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '要対応' })).toBeInTheDocument()
     expect(screen.getByText(/ルール評価による予約の削除が停止中/)).toBeInTheDocument()
   })
 
@@ -1016,7 +1077,7 @@ describe('ホーム: セクションごとに独立して読み込み、空セ�
     renderHome()
 
     await new Promise((r) => setTimeout(r, 50))
-    expect(unresolvedCount('/api/recordings?status=failed')).toBe(1)
+    expect(unresolvedCount('/api/recordings?status=failed')).toBe(2)
     expect(screen.queryByText('表示できる項目がありません')).not.toBeInTheDocument()
 
     resolvePending()
@@ -1036,7 +1097,7 @@ describe('ホーム: セクションごとに独立して読み込み、空セ�
     // 排除するため、解決後の表示が変わることも合わせて確認する。
     await new Promise((r) => setTimeout(r, 50))
     expect(screen.queryByText('表示できる項目がありません')).not.toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'いま録画中' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('home-ops-timeline-frame')).not.toBeInTheDocument()
 
     resolvePending()
 
@@ -1106,14 +1167,16 @@ describe('ホーム: 時境界を越えてキーが変わっても警告は消�
     })
     renderHome()
 
-    expect(await screen.findByRole('heading', { name: '警告' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '要対応' })).toBeInTheDocument()
 
     // 時境界を越える
     vi.setSystemTime(nowMs + 500)
     resolvePending()
 
-    // 予約が解決 = 新しい「今」でレンダーされたことの目印
-    expect(await screen.findByRole('heading', { name: '今夜〜明日の予約' })).toBeInTheDocument()
+    // 見出しだけでは予約 query の解決を証明しない。詳細リンクが現れるまで待ち、
+    // 予約の応答が新しい「今」でのレンダーを起こしたことを確認する。
+    const details = await openTimelineDetails()
+    expect(await within(details).findByRole('link', { name: /今夜の予約/ })).toBeInTheDocument()
 
     // キーが実際に進んだこと（`start` の違う 2 回目の要求が出たこと）を確かめる。
     // これが無いと「キーが変わらなかったので消えなかった」でも通ってしまう。
@@ -1130,7 +1193,7 @@ describe('ホーム: 時境界を越えてキーが変わっても警告は消�
     expect(unresolvedCount('/api/capacity/overages')).toBe(1)
 
     // 新しいキーは未解決のままだが、警告は消えていない
-    expect(screen.getByRole('heading', { name: '警告' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '要対応' })).toBeInTheDocument()
     expect(screen.getByText(/ルール評価による予約の削除が停止中/)).toBeInTheDocument()
   })
 })
