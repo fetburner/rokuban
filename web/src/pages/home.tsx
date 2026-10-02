@@ -508,7 +508,7 @@ export function HomePage() {
                   <h2 id="home-action-required" className="text-sm font-semibold">
                     要対応
                   </h2>
-                  <span className="text-xs tabular-nums text-muted-foreground">
+                  <span className="text-xs text-muted-foreground">
                     {warnings.length} 件
                   </span>
                 </div>
@@ -855,7 +855,7 @@ function HomeOpsTimeline({
                     params={{ id: String(event.href.id) }}
                     className="flex min-h-6 items-center gap-2 px-3 py-1 hover:bg-muted/40"
                   >
-                    <span className="w-14 shrink-0 text-xs tabular-nums text-muted-foreground">{formatTime(new Date(event.startMs).toISOString())}</span>
+                    <span className="w-14 shrink-0 text-xs text-muted-foreground">{formatTime(new Date(event.startMs).toISOString())}</span>
                     <span className="truncate">{programTitle(event.title)}</span>
                   </Link>
                 ) : (
@@ -864,7 +864,7 @@ function HomeOpsTimeline({
                     params={{ site: event.href.site, programId: String(event.href.programId) }}
                     className="flex min-h-6 items-center gap-2 px-3 py-1 hover:bg-muted/40"
                   >
-                    <span className="w-14 shrink-0 text-xs tabular-nums text-muted-foreground">{formatTime(new Date(event.startMs).toISOString())}</span>
+                    <span className="w-14 shrink-0 text-xs text-muted-foreground">{formatTime(new Date(event.startMs).toISOString())}</span>
                     <span className="truncate">{programTitle(event.title)}</span>
                   </Link>
                 )}
