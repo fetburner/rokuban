@@ -989,7 +989,7 @@ describe('LivePlayer の状態遷移', () => {
       const video = document.querySelector('video')!
       Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
       // 変換中の EVENT playlist: duration は変換の先端（120 秒）でしかない
-      Object.defineProperty(video, 'duration', { value: 120, configurable: true })
+      Object.defineProperty(video, 'duration', { value: 300, configurable: true })
       fireEvent.loadedMetadata(video)
 
       video.currentTime = 118
@@ -2189,5 +2189,382 @@ describe('LivePlayer / 音声（issue #870）', () => {
     rerender(<LivePlayer site="default" networkId={0} serviceId={1024} />)
     expect(list.map((t) => t.enabled)).toEqual([true, false, false])
     expect(video.src).toBe(src)
+  })
+})
+
+describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
+  const playlistRequests = (fetchMock: ReturnType<typeof vi.fn>) =>
+    fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes('playlist.m3u8'))
+
+  it('原本は native controls を外して共通バーを使い、音声・視聴状態を操作できる', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+    const putWatched = vi.fn()
+    const deleteWatched = vi.fn()
+    const { rerender } = render(
+      <LivePlayer
+        mode="original-vod"
+        site="default"
+        recordingId={410}
+        recordingDurationMs={30_000}
+        profile="hd"
+        availableProfiles={[{ name: 'hd', height: 720 }, { name: 'sd', height: 360 }]}
+        onPutWatched={putWatched}
+        onDeleteWatched={deleteWatched}
+      />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+
+    const video = document.querySelector('video')!
+    expect(video.controls).toBe(false)
+    expect(screen.getAllByRole('slider', { name: 'シークバー' })).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: '再生設定' }))
+    expect(screen.getByLabelText('画質')).toHaveTextContent('hd（720p）')
+    const audio = screen.getByLabelText('音声') as HTMLSelectElement
+    expect(Array.from(audio.options, (option) => option.textContent)).toEqual(['標準', '主音声', '副音声'])
+    expect(screen.queryByRole('link', { name: 'encoded 動画をダウンロード' })).not.toBeInTheDocument()
+
+    const hls = hlsMockState.instances[0]!
+    hls.audioTracks = [{}, {}, {}]
+    fireEvent.change(audio, { target: { value: 'main' } })
+    expect(hls.audioTrack).toBe(1)
+    expect(hlsMockState.instances).toHaveLength(1)
+    expect(playlistRequests(fetchMock)).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole('button', { name: '視聴済みにする' }))
+    expect(putWatched).toHaveBeenCalledOnce()
+    rerender(
+      <LivePlayer
+        mode="original-vod"
+        site="default"
+        recordingId={410}
+        recordingDurationMs={30_000}
+        profile="hd"
+        availableProfiles={[{ name: 'hd', height: 720 }, { name: 'sd', height: 360 }]}
+        watched
+        onPutWatched={putWatched}
+        onDeleteWatched={deleteWatched}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '未視聴に戻す' }))
+    expect(deleteWatched).toHaveBeenCalledOnce()
+    rerender(<LivePlayer site="default" networkId={0} serviceId={1024} />)
+    expect(document.querySelector('video')!.controls).toBe(true)
+  })
+
+  it('mode=live はネイティブ controls を残す', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+    render(<LivePlayer mode="live" site="default" networkId={1} serviceId={2} />)
+    expect(document.querySelector('video')!.controls).toBe(true)
+  })
+
+  it('原本の画質メニューは profile が 1 件なら表示しない', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    render(
+      <LivePlayer
+        mode="original-vod"
+        site="default"
+        recordingId={411}
+        recordingDurationMs={30_000}
+        availableProfiles={[{ name: 'hd', height: 720 }]}
+      />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    fireEvent.click(screen.getByRole('button', { name: '再生設定' }))
+    expect(screen.queryByLabelText('画質')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('音声')).toHaveTextContent('標準')
+  })
+
+  it('シークはキーを離すまで確定せず、セッション範囲内なら playlist を取り直さない', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <LivePlayer mode="original-vod" site="default" recordingId={412} recordingDurationMs={30_000} />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'currentTime', { value: 5, writable: true, configurable: true })
+    Object.defineProperty(video, 'seekable', {
+      value: { length: 1, start: () => 0, end: () => 20 },
+      configurable: true,
+    })
+    fireEvent.timeUpdate(video)
+    const slider = screen.getByRole('slider', { name: 'シークバー' })
+
+    fireEvent.keyDown(slider, { key: 'ArrowRight' })
+    expect(video.currentTime).toBe(5)
+    expect(playlistRequests(fetchMock)).toHaveLength(1)
+    fireEvent.keyUp(slider, { key: 'ArrowRight' })
+
+    expect(video.currentTime).toBe(15)
+    expect(hlsMockState.instances).toHaveLength(1)
+    expect(playlistRequests(fetchMock)).toHaveLength(1)
+  })
+
+  it('ドラッグ中は preview だけを更新し、pointerup で一度だけ offset playlist を取る', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <LivePlayer mode="original-vod" site="default" recordingId={414} recordingDurationMs={30_000} />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'seekable', {
+      value: { length: 1, start: () => 0, end: () => 8 },
+      configurable: true,
+    })
+    const slider = screen.getByRole('slider', { name: 'シークバー' })
+    vi.spyOn(slider, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 100,
+      bottom: 16,
+      width: 100,
+      height: 16,
+      toJSON: () => ({}),
+    } as DOMRect)
+
+    fireEvent.pointerDown(slider, { pointerId: 1, pointerType: 'touch', clientX: 30 })
+    fireEvent.pointerMove(slider, { pointerId: 1, pointerType: 'touch', clientX: 45 })
+    fireEvent.pointerMove(slider, { pointerId: 1, pointerType: 'touch', clientX: 60 })
+    expect(playlistRequests(fetchMock)).toHaveLength(1)
+    expect(hlsMockState.instances).toHaveLength(1)
+    fireEvent.pointerUp(slider, { pointerId: 1, pointerType: 'touch', clientX: 60 })
+
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+    expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/414/original-vod/offset/18/playlist.m3u8',
+    )
+    expect(playlistRequests(fetchMock)).toHaveLength(2)
+  })
+
+  it('画質メニュー切替では原本時間の再生位置を持ち越す', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <LivePlayer
+        mode="original-vod"
+        site="default"
+        recordingId={415}
+        recordingDurationMs={30_000}
+        profile="hd"
+        availableProfiles={[{ name: 'hd', height: 720 }, { name: 'sd', height: 360 }]}
+      />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+    fireEvent.loadedMetadata(video)
+    video.currentTime = 12
+    fireEvent.timeUpdate(video)
+
+    fireEvent.click(screen.getByRole('button', { name: '再生設定' }))
+    fireEvent.change(screen.getByLabelText('画質'), { target: { value: 'sd' } })
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+    video.currentTime = 0
+    fireEvent.loadedMetadata(video)
+    expect(video.currentTime).toBe(12)
+    expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/415/original-vod/playlist.m3u8?profile=sd',
+    )
+    expect(playlistRequests(fetchMock)).toHaveLength(2)
+  })
+
+  it('変換端より後ろはキーを離した時だけ offset URL で張り直す', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <LivePlayer
+        mode="original-vod"
+        site="default"
+        recordingId={413}
+        recordingDurationMs={30_000}
+        profile="hd"
+      />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'seekable', {
+      value: { length: 1, start: () => 0, end: () => 8 },
+      configurable: true,
+    })
+    const slider = screen.getByRole('slider', { name: 'シークバー' })
+
+    fireEvent.keyDown(slider, { key: 'ArrowRight' })
+    fireEvent.keyDown(slider, { key: 'ArrowRight', repeat: true })
+    expect(playlistRequests(fetchMock)).toHaveLength(1)
+    expect(hlsMockState.instances).toHaveLength(1)
+    fireEvent.keyUp(slider, { key: 'ArrowRight' })
+
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+    expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/413/original-vod/offset/20/playlist.m3u8?profile=hd',
+    )
+    expect(playlistRequests(fetchMock).some((url) => url.includes('/original-vod/offset/20/playlist.m3u8')))
+      .toBe(true)
+  })
+
+  it('offset セッションの再開位置は offset + currentTime の原本時刻で送る', async () => {
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+      if (init?.method && init.method !== 'GET') return Promise.resolve(new Response(null, { status: 204 }))
+      return Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <LivePlayer
+        mode="original-vod"
+        site="default"
+        recordingId={418}
+        recordingDurationMs={120_000}
+        startOffsetSeconds={15}
+      />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+    fireEvent.loadedMetadata(video)
+    fireEvent.canPlay(video)
+    video.currentTime = 5
+    fireEvent.timeUpdate(video)
+    expect(screen.getByRole('slider', { name: 'シークバー' })).toHaveAttribute('aria-valuenow', '20')
+    fireEvent.pause(video)
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([url]) => String(url) === '/api/recordings/418/playback-position')).toBe(true)
+    })
+    const positionWrite = fetchMock.mock.calls.find(([url]) => String(url) === '/api/recordings/418/playback-position')
+    expect(JSON.parse(String(positionWrite?.[1]?.body))).toEqual({ positionMs: 20_000 })
+  })
+
+  it('ENDLIST 後だけ実尺の 90% で watched を送り、成功後に親へ通知する', async () => {
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+      if (init?.method) return Promise.resolve(new Response(null, { status: 204 }))
+      return Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const onWatched = vi.fn()
+    render(
+      <LivePlayer
+        mode="original-vod"
+        site="default"
+        recordingId={417}
+        recordingDurationMs={120_000}
+        onWatched={onWatched}
+      />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const video = document.querySelector('video')!
+    // The actual recording lasts 120s, while EVENT duration is merely the
+    // current conversion edge and intentionally differs.
+    Object.defineProperty(video, 'duration', { value: 300, configurable: true })
+    Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+    fireEvent.loadedMetadata(video)
+    const levelLoaded = hlsMockState.instances[0]!.on.mock.calls.find((call) => call[0] === 'hlsLevelLoaded')![1]
+
+    video.currentTime = 118
+    fireEvent.timeUpdate(video)
+    fireEvent.pause(video)
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url) === '/api/recordings/417/playback-position')).toBe(true))
+    const requests = () => fetchMock.mock.calls.filter(([url]) => String(url).includes('/api/recordings/417/'))
+    expect(requests().some(([url]) => String(url).endsWith('/watched'))).toBe(false)
+    expect(onWatched).not.toHaveBeenCalled()
+
+    levelLoaded('hlsLevelLoaded', { fatal: false, details: { live: true } })
+    video.currentTime = 119
+    fireEvent.timeUpdate(video)
+    expect(requests().some(([url]) => String(url).endsWith('/watched'))).toBe(false)
+
+    levelLoaded('hlsLevelLoaded', { fatal: false, details: { live: false } })
+    fireEvent.timeUpdate(video)
+    await waitFor(() => expect(requests().filter(([url]) => String(url).endsWith('/watched'))).toHaveLength(1))
+    await waitFor(() => expect(onWatched).toHaveBeenCalledOnce())
+  })
+
+  it('現在の offset より前はその秒数の offset セッションへ戻す', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <LivePlayer
+        mode="original-vod"
+        site="default"
+        recordingId={416}
+        recordingDurationMs={30_000}
+        startOffsetSeconds={15}
+        profile="hd"
+      />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    expect(hlsMockState.instances[0]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/416/original-vod/offset/15/playlist.m3u8?profile=hd',
+    )
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'seekable', {
+      value: { length: 1, start: () => 0, end: () => 20 },
+      configurable: true,
+    })
+    fireEvent.loadedMetadata(video)
+    const slider = screen.getByRole('slider', { name: 'シークバー' })
+
+    fireEvent.keyDown(slider, { key: 'ArrowLeft' })
+    expect(hlsMockState.instances).toHaveLength(1)
+    fireEvent.keyUp(slider, { key: 'ArrowLeft' })
+
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+    expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/416/original-vod/offset/5/playlist.m3u8?profile=hd',
+    )
+  })
+
+  it('同じ player instance で録画 ID を替えると offset・画質・音声を新しい録画の props に戻す', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+    const profiles = [{ name: 'hd', height: 720 }, { name: 'sd', height: 360 }] as const
+    const { rerender } = render(
+      <LivePlayer
+        mode="original-vod"
+        site="default"
+        recordingId={419}
+        recordingDurationMs={30_000}
+        profile="hd"
+        availableProfiles={profiles}
+      />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'seekable', {
+      value: { length: 1, start: () => 0, end: () => 8 },
+      configurable: true,
+    })
+    const slider = screen.getByRole('slider', { name: 'シークバー' })
+    fireEvent.keyDown(slider, { key: 'ArrowRight' })
+    fireEvent.keyUp(slider, { key: 'ArrowRight' })
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+    expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/419/original-vod/offset/10/playlist.m3u8?profile=hd',
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '再生設定' }))
+    fireEvent.change(screen.getByLabelText('画質'), { target: { value: 'sd' } })
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(3))
+    fireEvent.change(screen.getByLabelText('音声'), { target: { value: 'sub' } })
+
+    rerender(
+      <LivePlayer
+        mode="original-vod"
+        site="default"
+        recordingId={420}
+        recordingDurationMs={30_000}
+        profile="hd"
+        availableProfiles={profiles}
+      />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(4))
+    expect(hlsMockState.instances[3]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/420/original-vod/playlist.m3u8?profile=hd',
+    )
+    expect(screen.getByLabelText('画質')).toHaveValue('hd')
+    expect(screen.getByLabelText('音声')).toHaveValue('standard')
   })
 })

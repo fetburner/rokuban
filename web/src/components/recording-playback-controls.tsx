@@ -12,6 +12,7 @@ import {
 import { Link } from '@tanstack/react-router'
 
 import type { ChapterSpan, EncodedAsset } from '@/api/generated'
+import type { LiveAudioChoice } from '@/lib/live'
 import {
   Activity,
   Captions,
@@ -53,7 +54,7 @@ export type TilePreview = {
 } | null
 
 /** 設定メニューの階層。`main` が行リストで、残りは「›」で入る下の階層。 */
-type MenuView = 'main' | 'speed' | 'quality'
+type MenuView = 'main' | 'speed' | 'quality' | 'audio'
 
 const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
 
@@ -61,6 +62,10 @@ type RecordingPlaybackControlsProps = {
   recordingId: number
   profile: string
   encodedAssets: EncodedAsset[]
+  playbackMode?: 'encoded' | 'original-vod'
+  profileOptions?: readonly { name: string; label?: string }[]
+  audioChoice?: LiveAudioChoice
+  onSelectAudio?: (choice: LiveAudioChoice | undefined) => void
   /** 次のエピソード（再生できる行だけ）。バーの右側に「次: 10/1(水)」で出す。 */
   nextEpisode?: { id: number; title: string; startAt: string }
   /** 次のエピソードのリンクを押したとき（移動先の詳細を先にキャッシュへ入れる）。 */
@@ -84,8 +89,11 @@ type RecordingPlaybackControlsProps = {
   onSeekPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void
   onSeekPointerMove: (event: ReactPointerEvent<HTMLDivElement>) => void
   onSeekPointerUp: (event: ReactPointerEvent<HTMLDivElement>) => void
+  onSeekPointerCancel?: (event: ReactPointerEvent<HTMLDivElement>) => void
   onSeekPointerLeave: () => void
   onSeek: (seconds: number) => void
+  deferKeyboardSeek?: boolean
+  onSeekPreview?: (seconds: number) => void
   onSelectProfile: (profile: string) => void
   onPreviousChapter: () => void
   onNextChapter: () => void
@@ -130,6 +138,10 @@ export function RecordingPlaybackControls({
   recordingId,
   profile,
   encodedAssets,
+  playbackMode = 'encoded',
+  profileOptions,
+  audioChoice,
+  onSelectAudio,
   nextEpisode,
   onNextEpisodeNavigate,
   outsideProgramSegments,
@@ -149,8 +161,11 @@ export function RecordingPlaybackControls({
   onSeekPointerDown,
   onSeekPointerMove,
   onSeekPointerUp,
+  onSeekPointerCancel,
   onSeekPointerLeave,
   onSeek,
+  deferKeyboardSeek = false,
+  onSeekPreview,
   onSelectProfile,
   onPreviousChapter,
   onNextChapter,
@@ -191,6 +206,7 @@ export function RecordingPlaybackControls({
   const chapterButtonRef = useRef<HTMLButtonElement>(null)
   // 幕を押したポインタの種類（click には pointerType が載らないブラウザがある）。
   const scrimPointerTypeRef = useRef('')
+  const pendingKeyboardSeek = useRef<number | null>(null)
   const seconds = Math.max(0, Math.min(durationSeconds || 0, currentSeconds))
   const volumeValue = muted ? 0 : volume
   const hasChapters = !playingCut && chapters.length > 0
@@ -227,10 +243,10 @@ export function RecordingPlaybackControls({
     let target: number | undefined
     switch (event.key) {
       case 'ArrowLeft':
-        target = seconds - 10
+        target = (pendingKeyboardSeek.current ?? seconds) - 10
         break
       case 'ArrowRight':
-        target = seconds + 10
+        target = (pendingKeyboardSeek.current ?? seconds) + 10
         break
       case 'Home':
         target = 0
@@ -243,7 +259,28 @@ export function RecordingPlaybackControls({
     }
     event.preventDefault()
     event.stopPropagation()
-    onSeek(Math.max(0, Math.min(durationSeconds, target)))
+    const bounded = Math.max(0, Math.min(durationSeconds, target))
+    if (deferKeyboardSeek) {
+      pendingKeyboardSeek.current = bounded
+      onSeekPreview?.(bounded)
+    } else {
+      onSeek(bounded)
+    }
+  }
+
+  const finishKeyboardSeek = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!deferKeyboardSeek || pendingKeyboardSeek.current === null) return
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault()
+    event.stopPropagation()
+    onSeek(pendingKeyboardSeek.current)
+    pendingKeyboardSeek.current = null
+  }
+
+  const cancelKeyboardSeek = () => {
+    if (!deferKeyboardSeek || pendingKeyboardSeek.current === null) return
+    onSeek(pendingKeyboardSeek.current)
+    pendingKeyboardSeek.current = null
   }
 
   const hoverSpan =
@@ -315,10 +352,12 @@ export function RecordingPlaybackControls({
               data-testid="seek-scrub"
               className="group relative order-last mt-1 h-4 cursor-pointer touch-none outline-none focus-visible:ring-2 focus-visible:ring-white md:order-none md:mt-0 md:mb-1"
               onKeyDown={seekByKeyboard}
+              onKeyUp={finishKeyboardSeek}
+              onBlur={cancelKeyboardSeek}
               onPointerDown={onSeekPointerDown}
               onPointerMove={onSeekPointerMove}
               onPointerUp={onSeekPointerUp}
-              onPointerCancel={onSeekPointerUp}
+              onPointerCancel={onSeekPointerCancel ?? onSeekPointerUp}
               onPointerLeave={onSeekPointerLeave}
             >
               <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full bg-white/30">
@@ -610,6 +649,10 @@ export function RecordingPlaybackControls({
             onClose={closeMenu}
             profile={profile}
             encodedAssets={encodedAssets}
+            playbackMode={playbackMode}
+            profileOptions={profileOptions}
+            audioChoice={audioChoice}
+            onSelectAudio={onSelectAudio}
             playbackRate={playbackRate}
             subtitlesEnabled={subtitlesEnabled}
             skipEnabled={skipEnabled}
@@ -768,6 +811,10 @@ type PlaybackSettingsMenuProps = {
   onClose: (focusGear: boolean) => void
   profile: string
   encodedAssets: EncodedAsset[]
+  playbackMode: 'encoded' | 'original-vod'
+  profileOptions?: readonly { name: string; label?: string }[]
+  audioChoice?: LiveAudioChoice
+  onSelectAudio?: (choice: LiveAudioChoice | undefined) => void
   playbackRate: number
   subtitlesEnabled: boolean
   skipEnabled: boolean
@@ -795,6 +842,10 @@ function PlaybackSettingsMenu({
   onClose,
   profile,
   encodedAssets,
+  playbackMode,
+  profileOptions,
+  audioChoice,
+  onSelectAudio,
   playbackRate,
   subtitlesEnabled,
   skipEnabled,
@@ -862,6 +913,14 @@ function PlaybackSettingsMenu({
   }
 
   const selectedAsset = encodedAssets.find((asset) => asset.profile === profile)
+  const selectedLiveProfile = profileOptions?.find((option) => option.name === profile)
+  const selectedProfileLabel = playbackMode === 'original-vod'
+    ? selectedLiveProfile?.label ?? profile
+    : selectedAsset ? assetLabel(selectedAsset) : profile
+  const showQuality = playbackMode === 'original-vod'
+    ? (profileOptions?.length ?? 0) > 1
+    : encodedAssets.length > 0
+  const selectedAudioLabel = audioChoice === 'main' ? '主音声' : audioChoice === 'sub' ? '副音声' : '標準'
   const rates = PLAYBACK_RATES.includes(playbackRate) ? PLAYBACK_RATES : [...PLAYBACK_RATES, playbackRate].sort((a, b) => a - b)
   const row =
     'flex min-h-13 w-full items-center gap-4 px-5 text-left outline-none active:bg-muted focus-visible:bg-muted md:min-h-11 md:gap-3.5 md:px-4 md:hover:bg-white/10 md:focus-visible:bg-white/15 md:active:bg-white/15'
@@ -870,7 +929,7 @@ function PlaybackSettingsMenu({
     'flex h-12 w-full items-center gap-2.5 border-b border-border px-3 font-semibold outline-none focus-visible:bg-muted md:mb-1 md:h-11 md:border-white/15 md:focus-visible:bg-white/15'
   const option = cn(row, 'min-h-12 md:min-h-10 md:gap-3')
 
-  const submenuRow = (key: 'speed' | 'quality', icon: ReactNode, label: string, current: string) => (
+  const submenuRow = (key: 'speed' | 'quality' | 'audio', icon: ReactNode, label: string, current: string) => (
     <button
       type="button"
       role="menuitem"
@@ -950,7 +1009,7 @@ function PlaybackSettingsMenu({
         ref={menuRef}
         id={id}
         role="menu"
-        aria-label={view === 'main' ? '再生設定' : view === 'speed' ? '再生速度' : '画質'}
+        aria-label={view === 'main' ? '再生設定' : view === 'speed' ? '再生速度' : view === 'quality' ? '画質' : '音声'}
         data-testid="playback-settings"
         data-player-popover
         className={popoverClass('right')}
@@ -966,11 +1025,17 @@ function PlaybackSettingsMenu({
               {showSkip && switchRow(<Activity className={icon} aria-hidden />, 'CM を飛ばす', skipEnabled, () => onToggleSkip(!skipEnabled))}
               {switchRow(<Captions className={icon} aria-hidden />, '字幕', subtitlesEnabled, onToggleSubtitles)}
               {submenuRow('speed', <Gauge className={icon} aria-hidden />, '再生速度', rateLabel(playbackRate))}
-              {submenuRow(
+              {showQuality && submenuRow(
                 'quality',
                 <SlidersHorizontal className={icon} aria-hidden />,
                 '画質',
-                selectedAsset ? assetLabel(selectedAsset) : profile,
+                selectedProfileLabel,
+              )}
+              {playbackMode === 'original-vod' && submenuRow(
+                'audio',
+                <Volume2 className={icon} aria-hidden />,
+                '音声',
+                selectedAudioLabel,
               )}
             </div>
             {pictureInPictureEnabled && (
@@ -1002,16 +1067,28 @@ function PlaybackSettingsMenu({
         {view === 'quality' && (
           <>
             {backRow('画質')}
-            {encodedAssets.map((asset) =>
-              radioRow(
-                asset.profile,
-                assetLabel(asset),
-                asset.profile === profile,
-                () => onSelectProfile(asset.profile),
-                // サイズが取れない資産も選択肢は隠さず、サイズだけ省く（値札の規律）。
-                asset.sizeBytes === undefined ? undefined : formatBytes(asset.sizeBytes),
-              ),
-            )}
+            {playbackMode === 'original-vod'
+              ? profileOptions?.map((option) =>
+                  radioRow(option.name, option.label ?? option.name, option.name === profile, () => onSelectProfile(option.name)),
+                )
+              : encodedAssets.map((asset) =>
+                  radioRow(
+                    asset.profile,
+                    assetLabel(asset),
+                    asset.profile === profile,
+                    () => onSelectProfile(asset.profile),
+                    // サイズが取れない資産も選択肢は隠さず、サイズだけ省く（値札の規律）。
+                    asset.sizeBytes === undefined ? undefined : formatBytes(asset.sizeBytes),
+                  ),
+                )}
+          </>
+        )}
+        {view === 'audio' && (
+          <>
+            {backRow('音声')}
+            {radioRow('standard', '標準', audioChoice === undefined, () => onSelectAudio?.(undefined))}
+            {radioRow('main', '主音声', audioChoice === 'main', () => onSelectAudio?.('main'))}
+            {radioRow('sub', '副音声', audioChoice === 'sub', () => onSelectAudio?.('sub'))}
           </>
         )}
       </div>

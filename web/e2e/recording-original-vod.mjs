@@ -38,7 +38,9 @@ const SITE = 'default'
 const RECORDING_ID = 920
 const PLAYBACK_PROFILE = 'vod-h264'
 const ng = []
-const startedAt = new Date(Date.now() - 16_000).toISOString()
+const recordingDurationMs = 16_000
+const startedAt = new Date(Date.now() - recordingDurationMs).toISOString()
+const endedAt = new Date(Date.parse(startedAt) + recordingDurationMs).toISOString()
 const recording = {
   id: RECORDING_ID,
   site: SITE,
@@ -52,11 +54,13 @@ const recording = {
   title: '原本 MPEG-2 のブラウザ再生',
   description: 'MPEG-2 TS 原本だけがある完了録画の実ブラウザ E2E fixture。',
   startAt: startedAt,
-  durationMs: 16_000,
+  // 予定尺と実尺をずらし、プレイヤーが startedAt〜endedAt を使うことを確かめる。
+  durationMs: 60_000,
   status: 'finished',
   keepOriginal: 'always',
   cmDetection: { state: 'disabled' },
   startedAt,
+  endedAt,
   createdAt: '2026-01-01T12:00:00Z',
   encodeProfiles: [PLAYBACK_PROFILE],
   sizeBytes: 1_000_000,
@@ -163,6 +167,7 @@ await validateFixturesOrExit([['recording', ListRecordingsResponseItem, recordin
 await verifyBundleMatchesOrExit(URL_BASE, ng)
 
 let fixtureDir
+let seekTileSprite
 try {
   fixtureDir = ensureFixture()
 } catch (err) {
@@ -173,6 +178,11 @@ if (fixtureDir === undefined) {
   ng.push('ffmpeg / ffprobe が無いため原本 HLS の実ブラウザ判定を実行できない')
   await finish(ng)
 }
+seekTileSprite = execFileSync('ffmpeg', [
+  '-hide_banner', '-loglevel', 'error', '-y', '-i', path.join(fixtureDir, 'original.ts'),
+  '-vf', 'fps=1/10,scale=160:90:force_original_aspect_ratio=decrease,pad=160:90:(ow-iw)/2:(oh-ih)/2,setsar=1,tpad=stop_mode=clone:stop_duration=100,tile=10x2:padding=0:margin=0',
+  '-frames:v', '1', '-f', 'image2pipe', '-vcodec', 'mjpeg', 'pipe:1',
+])
 
 const engine = process.env.E2E_BROWSER ?? 'chrome'
 log(`\n=== 実ブラウザ: ${engine} ===`)
@@ -187,9 +197,29 @@ const subtitleRequests = []
 const encodedRequests = []
 const playbackPositionWrites = []
 const watchedWrites = []
+const seekTileRequests = []
+const masterPlaylistRequests = []
+const audioPlaylistRequests = []
+const offsetVideoSegmentRequests = []
+const originalVODLeaveRequests = []
 // ④ で true にする。variant / 字幕 playlist を先頭 4 segment で切り、ENDLIST を外して返す
 // （変換中の EVENT playlist の先端を再現する）。
 let growingEdge = false
+
+function playlistAtOffset(text, offsetSeconds) {
+  const firstSegment = Math.floor(offsetSeconds / 2)
+  const out = []
+  let segment = -1
+  for (const line of text.split('\n')) {
+    if (line.startsWith('#EXT-X-MEDIA-SEQUENCE:')) {
+      out.push(`#EXT-X-MEDIA-SEQUENCE:${firstSegment}`)
+      continue
+    }
+    if (line.startsWith('#EXTINF:')) segment += 1
+    if (segment < 0 || segment >= firstSegment || line.startsWith('#EXT-X-ENDLIST')) out.push(line)
+  }
+  return out.join('\n') + '\n'
+}
 
 function growingEdgePlaylist(text) {
   const out = []
@@ -233,11 +263,27 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
   if (/^\/api\/media\/recordings\/\d+\/thumbnail$/.test(requestPath)) {
     return route.fulfill({ status: 404 })
   }
+  if (requestPath === `/api/media/recordings/${RECORDING_ID}/seek-tiles`) {
+    seekTileRequests.push(requestPath)
+    return route.fulfill({
+      status: 200,
+      contentType: 'image/jpeg',
+      body: seekTileSprite,
+    })
+  }
   if (requestPath.startsWith(`/api/sites/${SITE}/recordings/${RECORDING_ID}/original-vod/`)) {
     const relative = requestPath.split(`/original-vod/`)[1]
+    const offsetMatch = relative.match(/^offset\/(\d+)\//)
+    const offsetSeconds = offsetMatch ? Number(offsetMatch[1]) : undefined
+    const resource = offsetMatch ? relative.slice(offsetMatch[0].length) : relative
     if (relative.endsWith('.m3u8')) playlistRequests.push(relative)
-    if (relative.includes('segments/')) {
-      const name = relative.split('/').pop()
+    if (resource === 'playlist.m3u8') masterPlaylistRequests.push(relative)
+    if (/^playlist_[1-3]\.m3u8$/.test(resource)) audioPlaylistRequests.push(resource)
+    if (resource.includes('segments/')) {
+      const name = resource.split('/').pop()
+      if (offsetSeconds !== undefined && name.startsWith('0_seg')) {
+        offsetVideoSegmentRequests.push({ offsetSeconds, name })
+      }
       if (name.endsWith('.vtt')) subtitleRequests.push(name)
       else segmentRequests.push(name)
       const file = name.endsWith('.vtt')
@@ -246,11 +292,13 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
       if (!existsSync(file)) return route.fulfill({ status: 404, body: 'fixture missing' })
       return route.fulfill({ status: 200, contentType: name.endsWith('.vtt') ? 'text/vtt; charset=utf-8' : 'video/mp2t', body: readFileSync(file) })
     }
-    const name = relative.split('/').pop()
+    const name = resource.split('/').pop()
     const file = path.join(fixtureDir, name)
     if (!existsSync(file)) return route.fulfill({ status: 404, body: 'fixture missing' })
     let body = readFileSync(file)
-    if (growingEdge && /^(playlist|subtitles)_\d+\.m3u8$/.test(name)) {
+    if (offsetSeconds !== undefined && /^(playlist|subtitles)_\d+\.m3u8$/.test(name)) {
+      body = playlistAtOffset(body.toString('utf8'), offsetSeconds)
+    } else if (growingEdge && offsetSeconds === undefined && /^(playlist|subtitles)_\d+\.m3u8$/.test(name)) {
       body = growingEdgePlaylist(body.toString('utf8'))
     }
     return route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body })
@@ -260,6 +308,7 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
     return route.fulfill({ status: 404 })
   }
   if (requestPath.endsWith('/original-vod/leave') && method === 'POST') {
+    originalVODLeaveRequests.push(requestPath)
     return route.fulfill({ status: 204 })
   }
   return json([])
@@ -273,6 +322,23 @@ await originalRegion.waitFor({ timeout: 15000 })
 if ((await originalRegion.getByRole('heading').count()) !== 0) ng.push('① 原本 VOD の映像の上に見出しがある')
 const video = page.locator('video')
 await video.waitFor({ timeout: 15000 })
+if (await video.evaluate((element) => element.controls)) {
+  ng.push('① 原本 VOD の video に native controls が残っている')
+}
+const seekbars = page.getByTestId('seek-scrub')
+if (await seekbars.count() !== 1) {
+  ng.push(`① 共通操作バーのシークバーが 1 本ではない (${await seekbars.count()})`)
+} else {
+  const box = await seekbars.boundingBox()
+  if (!box) {
+    ng.push('① 共通シークバーの位置を取得できない')
+  } else {
+    await page.mouse.move(box.x + box.width * 0.7, box.y + box.height / 2)
+    await page.locator('[data-testid="seek-tile-preview"]').waitFor({ timeout: 1500 })
+      .catch(() => ng.push('① シークバーのホバーでタイルプレビューが出ない'))
+    if (seekTileRequests.length === 0) ng.push('① ホバー時に seek-tile 画像を要求しない')
+  }
+}
 await page.waitForFunction(() => {
   const element = document.querySelector('video')
   return element !== null && Number.isFinite(element.duration) && element.duration > 0
@@ -298,6 +364,28 @@ await page.waitForFunction(() => {
 if (process.env.E2E_SHOT_DIR) {
   mkdirSync(process.env.E2E_SHOT_DIR, { recursive: true })
   await page.screenshot({ path: path.join(process.env.E2E_SHOT_DIR, 'v3-original-vod.png') })
+}
+
+const audioSettingsButton = page.getByRole('button', { name: '再生設定' })
+await audioSettingsButton.click()
+const audioSelector = page.getByLabel('音声')
+if (await audioSelector.count() !== 1) {
+  ng.push('① 音声の設定項目がメニューにない')
+} else {
+  const masterCountBeforeAudioChange = masterPlaylistRequests.length
+  const leaveCountBeforeAudioChange = originalVODLeaveRequests.length
+  await audioSelector.selectOption('main')
+  if (await audioSelector.inputValue() !== 'main') ng.push('① 主音声を選択できない')
+  await page.waitForTimeout(500)
+  if (!audioPlaylistRequests.includes('playlist_2.m3u8')) {
+    ng.push(`① 主音声の playlist を取得しない (${audioPlaylistRequests.join(', ') || 'none'})`)
+  }
+  if (masterPlaylistRequests.length !== masterCountBeforeAudioChange) {
+    ng.push('① 音声切替で master playlist を取り直した')
+  }
+  if (originalVODLeaveRequests.length !== leaveCountBeforeAudioChange) {
+    ng.push('① 音声切替で HLS セッションを張り直した')
+  }
 }
 
 log('\n=== ② 実 seek・字幕 cue・保存位置の復元 ===')
@@ -351,6 +439,13 @@ await page.locator('video').evaluate(async (element) => {
 })
 await page.waitForFunction(() => document.querySelector('video')?.ended === true, undefined, { timeout: 10000 })
   .catch(() => ng.push('③ 原本 HLS の #EXT-X-ENDLIST まで再生し終わらない'))
+const watchedWriteDeadline = Date.now() + 5000
+while (watchedWrites.length === 0 && Date.now() < watchedWriteDeadline) {
+  await page.waitForTimeout(50)
+}
+while (watchedWrites.length > 0 && recording.resumePositionMs !== undefined && Date.now() < watchedWriteDeadline) {
+  await page.waitForTimeout(50)
+}
 if (recording.resumePositionMs !== undefined) ng.push(`③ 視聴済み後も再開位置が残る (${recording.resumePositionMs})`)
 if (watchedWrites.length === 0 || recording.watchedAt === undefined) ng.push('③ ENDLIST 後の視聴済み印がサーバーに保存されない')
 if (segmentRequests.length === 0) ng.push('③ HLS segment を要求していない')
@@ -378,11 +473,47 @@ await page.waitForFunction(() => (document.querySelector('video')?.currentTime ?
 const edge = await page.locator('video').evaluate(async (element) => {
   element.currentTime = Math.max(0, element.duration - 0.8)
   await new Promise((resolve) => setTimeout(resolve, 8000))
-  return { ended: element.ended, time: element.currentTime, duration: element.duration }
+  const seekableRanges = Array.from({ length: element.seekable.length }, (_, index) => [
+    element.seekable.start(index),
+    element.seekable.end(index),
+  ])
+  const seekableEnd = seekableRanges.at(-1)?.[1] ?? null
+  return { ended: element.ended, time: element.currentTime, duration: element.duration, seekableEnd, seekableRanges }
 })
 log(`  先端到達後 8 秒: ${JSON.stringify(edge)}`)
 if (edge.ended) ng.push(`④ ENDLIST の無い先端で ended が発火した (${JSON.stringify(edge)})`)
-if (edge.duration > 12) ng.push(`④ playlist が切れていない (duration=${edge.duration})`)
+if (engine === 'webkit' && edge.duration === Infinity) {
+  if (edge.seekableEnd === null || edge.seekableEnd > 12) {
+    ng.push(`④ native HLS の seekable 範囲が切れていない (${edge.seekableEnd})`)
+  }
+} else if (edge.duration > 12) {
+  ng.push(`④ playlist が切れていない (duration=${edge.duration})`)
+}
 if (watchedWrites.length !== watchedCountBeforeGrowingEdge) ng.push('④ ENDLIST の無い先端を視聴済みにした')
+
+const offsetSeekbar = page.getByTestId('seek-scrub')
+const offsetSeekbarBox = await offsetSeekbar.boundingBox()
+if (!offsetSeekbarBox) {
+  ng.push('④ offset seek のシークバーが見つからない')
+} else {
+  await page.mouse.move(offsetSeekbarBox.x + offsetSeekbarBox.width * 0.875, offsetSeekbarBox.y + offsetSeekbarBox.height / 2)
+  await page.mouse.click(offsetSeekbarBox.x + offsetSeekbarBox.width * 0.875, offsetSeekbarBox.y + offsetSeekbarBox.height / 2)
+  const offsetDeadline = Date.now() + 10_000
+  while (!playlistRequests.includes('offset/14/playlist.m3u8') && Date.now() < offsetDeadline) {
+    await page.waitForTimeout(50)
+  }
+  if (!playlistRequests.includes('offset/14/playlist.m3u8')) {
+    ng.push(`④ 変換端より後ろへの seek で offset/14 playlist に張り直さない (${playlistRequests.join(', ')})`)
+  } else {
+    const segmentDeadline = Date.now() + 10_000
+    while (!offsetVideoSegmentRequests.some((request) => request.offsetSeconds === 14) && Date.now() < segmentDeadline) {
+      await page.waitForTimeout(50)
+    }
+    const firstOffsetSegment = offsetVideoSegmentRequests.find((request) => request.offsetSeconds === 14)
+    if (firstOffsetSegment?.name !== '0_seg00007.ts') {
+      ng.push(`④ offset/14 の先頭 video segment が 14 秒位置のものではない (${firstOffsetSegment?.name ?? 'none'})`)
+    }
+  }
+}
 
 await finish(ng, browser)
