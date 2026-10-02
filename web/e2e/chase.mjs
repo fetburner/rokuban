@@ -185,6 +185,31 @@ await context.addInitScript(() => {
   localStorage.clear()
   sessionStorage.setItem(initializedKey, 'true')
 })
+await context.addInitScript(() => {
+  const sources = []
+  class E2EEventSource extends EventTarget {
+    static CONNECTING = 0
+    static OPEN = 1
+    static CLOSED = 2
+    readyState = E2EEventSource.OPEN
+    withCredentials = false
+
+    constructor(url) {
+      super()
+      this.url = String(url)
+      sources.push(this)
+      queueMicrotask(() => this.dispatchEvent(new Event('open')))
+    }
+
+    close() {
+      this.readyState = E2EEventSource.CLOSED
+    }
+  }
+  window.EventSource = E2EEventSource
+  window.__emitE2EEvent = (type) => {
+    for (const source of sources) source.dispatchEvent(new Event(type))
+  }
+})
 const page = await context.newPage()
 if (evidenceDir) mkdirSync(evidenceDir, { recursive: true })
 async function captureEvidence(filename) {
@@ -197,6 +222,10 @@ const chaseLeaveHints = []
 const playbackPositionWrites = []
 const watchedWrites = []
 let holdResumePositionSeed = false
+let transitionTestMode = false
+let recordingDetailRequests = 0
+const originalVODPlaylistRequests = []
+const originalOffsetPlaylistRequests = []
 
 // 追っかけの時刻は 1 時間を超えても分で数える（70:12）。
 function formatPlaybackTime(seconds) {
@@ -231,7 +260,10 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
     return route.fulfill({ status: 404 })
   }
   if (requestPath === '/api/recordings' && method === 'GET') return json([recording])
-  if (requestPath === '/api/recordings/1' && method === 'GET') return json(recording)
+  if (requestPath === '/api/recordings/1' && method === 'GET') {
+    recordingDetailRequests += 1
+    return json(recording)
+  }
   if (requestPath === '/api/recordings/1/playback-position' && method === 'PUT') {
     const body = route.request().postDataJSON()
     if (!holdResumePositionSeed) recording.resumePositionMs = body.positionMs
@@ -289,8 +321,10 @@ await page.route(`**${chaseBase}/playlist.m3u8*`, async (route) => {
   if (requestedURL.searchParams.has('profile')) profilePlaylistURLs.push(requestedURL.href)
   playlistRequests += 1
   lastChasePlaylistOffset = 0
-  const count = playlistRequests < 2 ? 1 : Math.min(entries.length, 6)
-  const end = playlistRequests >= 2
+  const count = transitionTestMode
+    ? Math.min(4, entries.length)
+    : playlistRequests < 2 ? 1 : Math.min(entries.length, 6)
+  const end = transitionTestMode ? false : playlistRequests >= 2
   playlistSizes.push(count)
   playlistEnded ||= end
   await route.fulfill({
@@ -342,8 +376,25 @@ await page.route(`**${chaseBase}/offset/*/segments/*`, async (route) => {
 
 log('\n=== ① 録画詳細の #chase で追っかけプレイヤーを開く ===')
 await page.goto(`${URL_BASE}/recordings/1#chase`, { waitUntil: 'domcontentloaded' })
-await page.getByRole('region', { name: '追っかけ再生' }).waitFor({ timeout: 15000 })
-await page.locator('video').waitFor({ timeout: 15000 })
+const playbackGroup = page.getByTestId('recording-playback-group')
+await playbackGroup.waitFor({ timeout: 15000 })
+await playbackGroup.locator('video').waitFor({ timeout: 15000 })
+
+const playbackGroupVideoCount = await playbackGroup.locator('video').count()
+const obsoletePlaybackHeadingCount = await playbackGroup.getByRole('heading', {
+  name: /追っかけ再生|原本 TS をブラウザ再生/,
+}).count()
+const obsoleteCloseActionCount = await playbackGroup.getByRole('button', { name: '閉じる' }).count()
+const obsoleteChaseStartActionCount = await playbackGroup.getByRole('button', {
+  name: '追っかけ再生',
+  exact: true,
+}).count()
+if (playbackGroupVideoCount !== 1 || obsoletePlaybackHeadingCount !== 0 ||
+  obsoleteCloseActionCount !== 0 || obsoleteChaseStartActionCount !== 0) {
+  ng.push(
+    `① 再生の塊は1 playerで旧見出し/CTAが無い（videos=${playbackGroupVideoCount}, headings=${obsoletePlaybackHeadingCount}, close=${obsoleteCloseActionCount}, chaseStart=${obsoleteChaseStartActionCount}）`,
+  )
+}
 
 // The chase timeline belongs to the playback bar, with no second panel range.
 const initialVideo = page.locator('video')
@@ -366,7 +417,7 @@ if (externalTimelineCount !== 0) {
   ng.push('① プレイヤー外に chase 専用タイムラインが残っている')
 }
 const initialFrameGeometry = await page.evaluate(() => {
-  const region = document.querySelector('[aria-label="追っかけ再生"]')
+  const region = document.querySelector('[data-testid="recording-playback-group"]')
   const shell = document.querySelector('[data-testid="recording-player-shell"]')
   const frame = document.querySelector('[data-testid="recording-player-frame"]')
   const controls = document.querySelector('[data-testid="player-controls"]')
@@ -477,13 +528,13 @@ if (evidenceDir) {
   await page.getByRole('button', { name: '再生設定' }).click()
 
   await page.setViewportSize({ width: 390, height: 844 })
-  await page.getByRole('region', { name: '追っかけ再生' }).scrollIntoViewIfNeeded()
+  await playbackGroup.scrollIntoViewIfNeeded()
   const phoneFrame = await page.getByTestId('recording-player-frame').boundingBox()
   if (phoneFrame !== null) {
     await page.mouse.move(phoneFrame.x + phoneFrame.width / 2, phoneFrame.y + phoneFrame.height - 12)
   }
   const phoneGeometry = await page.evaluate(() => {
-    const region = document.querySelector('[aria-label="追っかけ再生"]')
+    const region = document.querySelector('[data-testid="recording-playback-group"]')
     const frame = document.querySelector('[data-testid="recording-player-frame"]')
     const controls = document.querySelector('[data-testid="player-controls"]')
     const track = document.querySelector('[data-testid="chase-timeline-track"]')
@@ -584,9 +635,10 @@ async function dragTimelineTo(second) {
   const previewValue = Number(await timelineSlider.getAttribute('aria-valuenow'))
   const accessiblePreview = await timelineSlider.getAttribute('aria-valuetext')
   // 延長中は軸の右端（録画の先端）が毎秒伸びるので、同じ座標の秒は測る間に 1 秒動きうる。
-  if (Math.abs(previewValue - expected) > 1 || !accessiblePreview?.startsWith(`${formatPlaybackTime(previewValue)} /`)) {
+  const previewToleranceSeconds = 1
+  if (Math.abs(previewValue - expected) > previewToleranceSeconds || !accessiblePreview?.startsWith(`${formatPlaybackTime(previewValue)} /`)) {
     ng.push(
-      `③ ドラッグ中の時刻プレビューが位置と一致しない（slider=${previewValue}/${expected}, aria=${accessiblePreview}）`,
+      `③ ドラッグ中の時刻プレビューが位置と一致しない（slider=${previewValue}/${expected}, diff=${Math.abs(previewValue - expected).toFixed(3)}s, tolerance=${previewToleranceSeconds.toFixed(3)}s, aria=${accessiblePreview}）`,
     )
   }
   if (playlistRequests !== requestsBeforeRelease) {
@@ -597,7 +649,7 @@ async function dragTimelineTo(second) {
   return {
     requestedAt,
     selected: previewValue,
-    pixelResolutionSeconds: (max - min) / bounds.width,
+    pixelResolutionSeconds,
   }
 }
 
@@ -757,7 +809,7 @@ log('\n=== ⑤ 予定尺を超えた録画のタイムライン ===')
 recording.resumePositionMs = undefined
 recording.durationMs = 5_000
 await page.reload({ waitUntil: 'domcontentloaded' })
-await page.getByRole('region', { name: '追っかけ再生' }).waitFor({ timeout: 15000 })
+await playbackGroup.locator('video').waitFor({ timeout: 15000 })
 const extendedSlider = page.getByRole('slider', { name: 'シークバー' })
 await extendedSlider.waitFor({ timeout: 5000 })
 const extensionGeometry = await page.evaluate(() => {
@@ -1121,7 +1173,7 @@ await page.waitForFunction(
 // あるいは `playbackProfile` に live の画質名を流す（位置のキーが画質ごとに分かれる）。
 log('\n=== ⑦ 画質（プロファイル）の切替 ===')
 await page.reload({ waitUntil: 'domcontentloaded' })
-await page.getByRole('region', { name: '追っかけ再生' }).waitFor({ timeout: 15000 })
+await playbackGroup.locator('video').waitFor({ timeout: 15000 })
 await page.getByRole('button', { name: '再生設定' }).click()
 const settingsMenu = page.getByRole('menu', { name: '再生設定' })
 await settingsMenu.getByRole('menuitem', { name: '画質' }).click()
@@ -1216,13 +1268,36 @@ recording.sizeBytes = 1_000_000
 recording.encodedAssets = []
 const originalVODBase = '/api/sites/default/recordings/1/original-vod'
 await page.route(`**${originalVODBase}/playlist.m3u8*`, async (route) => {
+  originalVODPlaylistRequests.push('playlist.m3u8')
+  const count = transitionTestMode ? Math.min(4, entries.length) : entries.length
   await route.fulfill({
     status: 200,
     contentType: 'application/vnd.apple.mpegurl',
-    body: playlist(entries.length, true),
+    body: playlist(count, !transitionTestMode),
+  })
+})
+await page.route(`**${originalVODBase}/offset/*/playlist.m3u8*`, async (route) => {
+  const pathname = new URL(route.request().url()).pathname
+  const match = pathname.match(/\/offset\/(\d+)\/playlist\.m3u8$/)
+  const offsetSeconds = match === null ? Number.NaN : Number(match[1])
+  originalOffsetPlaylistRequests.push(offsetSeconds)
+  const sourceEntries = entries.slice(Math.floor(offsetSeconds / 2))
+  await route.fulfill({
+    status: 200,
+    contentType: 'application/vnd.apple.mpegurl',
+    body: playlist(sourceEntries.length, true, sourceEntries),
   })
 })
 await page.route(`**${originalVODBase}/segments/*`, async (route) => {
+  const name = new URL(route.request().url()).pathname.split('/').pop()
+  const file = path.join(fixtureDir, 'segments', name)
+  if (!existsSync(file)) {
+    await route.fulfill({ status: 404, body: 'not found' })
+    return
+  }
+  await route.fulfill({ status: 200, contentType: 'video/mp2t', body: readFileSync(file) })
+})
+await page.route(`**${originalVODBase}/offset/*/segments/*`, async (route) => {
   const name = new URL(route.request().url()).pathname.split('/').pop()
   const file = path.join(fixtureDir, 'segments', name)
   if (!existsSync(file)) {
@@ -1249,6 +1324,101 @@ if (Math.abs(vodStart - chasedMs / 1000) > 3) {
   ng.push(
     `⑧ 完了後の VOD が追っかけで見た位置から始まらない（保存 ${(chasedMs / 1000).toFixed(2)} 秒 → currentTime ${vodStart.toFixed(2)} 秒）`,
   )
+}
+
+log('\n=== ⑨ 録画終了後も現在の追っかけを保ち、範囲外で原本へ切り替える ===')
+transitionTestMode = true
+recording.status = 'recording'
+recording.startedAt = new Date(Date.now() - 16_000).toISOString()
+recording.startAt = recording.startedAt
+recording.durationMs = 60_000
+recording.endedAt = undefined
+recording.sizeBytes = undefined
+recording.encodedAssets = []
+delete recording.resumePositionMs
+await page.goto(`${URL_BASE}/recordings/1#chase`, { waitUntil: 'domcontentloaded' })
+await playbackGroup.locator('video').waitFor({ timeout: 15000 })
+const finishingVideo = playbackGroup.locator('video')
+await finishingVideo.evaluate(async (video) => {
+  video.muted = true
+  await video.play()
+})
+await page.waitForFunction(() => {
+  const video = document.querySelector('video')
+  return video !== null && video.videoWidth > 0 && video.currentTime > 1 && !video.paused
+}, undefined, { timeout: 15000 }).catch(() => ng.push('⑨ 録画終了前の追っかけ再生が開始しない'))
+const liveTimeBeforeFinish = await finishingVideo.evaluate((video) => video.currentTime)
+await finishingVideo.evaluate((video) => { window.__e2eVideoBeforeRecordingFinished = video })
+const originalPlaylistsBeforeFinish = originalVODPlaylistRequests.length
+const chasePlaylistsBeforeFinish = playlistRequests
+const videoSourceBeforeFinish = await finishingVideo.evaluate((video) => video.currentSrc)
+const detailRequestsBeforeFinish = recordingDetailRequests
+recording.status = 'finished'
+recording.endedAt = new Date(Date.parse(recording.startedAt) + 16_000).toISOString()
+recording.sizeBytes = 1_000_000
+await page.evaluate(() => window.__emitE2EEvent('recordings'))
+const finishRefreshDeadline = Date.now() + 5000
+while (recordingDetailRequests === detailRequestsBeforeFinish && Date.now() < finishRefreshDeadline) {
+  await page.waitForTimeout(50)
+}
+if (recordingDetailRequests === detailRequestsBeforeFinish) {
+  ng.push('⑨ recordings SSE後に録画詳細を再取得しない')
+}
+await page.waitForTimeout(500)
+const finishTransitionState = await page.evaluate(() => {
+  const video = document.querySelector('video')
+  return {
+    sameVideo: video !== null && video === window.__e2eVideoBeforeRecordingFinished,
+    currentTime: video?.currentTime,
+    paused: video?.paused,
+    currentSrc: video?.currentSrc,
+    videoCount: document.querySelectorAll('[data-testid="recording-playback-group"] video').length,
+  }
+})
+log(
+  `  finished更新後: detailGET ${detailRequestsBeforeFinish}→${recordingDetailRequests}, sameVideo=${finishTransitionState.sameVideo}, current=${finishTransitionState.currentTime?.toFixed(2)}, paused=${finishTransitionState.paused}, src=${finishTransitionState.currentSrc}, chasePlaylists=${chasePlaylistsBeforeFinish}→${playlistRequests}, originalPlaylists=${originalPlaylistsBeforeFinish}→${originalVODPlaylistRequests.length}, count=${finishTransitionState.videoCount}`,
+)
+if (!finishTransitionState.sameVideo || finishTransitionState.videoCount !== 1) {
+  ng.push('⑨ 録画完了で同じvideo要素を継続しない')
+}
+if (finishTransitionState.paused || (finishTransitionState.currentTime ?? 0) <= liveTimeBeforeFinish) {
+  ng.push('⑨ 録画完了後に追っかけ再生が継続しない')
+}
+if (finishTransitionState.currentSrc !== videoSourceBeforeFinish || playlistRequests !== chasePlaylistsBeforeFinish) {
+  ng.push('⑨ 録画完了の状態更新だけで現在の追っかけ再生元を張り直した')
+}
+if (finishTransitionState.currentTime === undefined || !Number.isFinite(finishTransitionState.currentTime)) {
+  ng.push('⑨ 録画完了だけでvideoを作り直さず、追っかけ再生を継続する')
+}
+if (originalVODPlaylistRequests.length !== originalPlaylistsBeforeFinish) {
+  ng.push('⑨ 録画完了の状態更新だけで原本 HLS へ切り替えた')
+}
+
+log('\n=== ⑩ 現在の追っかけ範囲外へのシークで原本 HLS offsetへ移る ===')
+const originalOffsetsBeforeSeek = originalOffsetPlaylistRequests.length
+const seekToOriginalResult = await dragTimelineTo(11)
+const originalOffsetDeadline = Date.now() + 10000
+while (originalOffsetPlaylistRequests.length === originalOffsetsBeforeSeek && Date.now() < originalOffsetDeadline) {
+  await page.waitForTimeout(50)
+}
+const requestedOriginalOffsets = originalOffsetPlaylistRequests.slice(originalOffsetsBeforeSeek)
+const carriedOriginalPosition = Number(await page.getByTestId('seek-scrub').getAttribute('aria-valuenow'))
+const originalVideoState = await page.locator('video').evaluate((video) => ({
+  currentTime: video.currentTime,
+  currentSrc: video.currentSrc,
+  readyState: video.readyState,
+}))
+log(
+  `  target=${seekToOriginalResult.selected}, original offsets=[${requestedOriginalOffsets.join(', ')}], axis=${carriedOriginalPosition}, video=${JSON.stringify(originalVideoState)}`,
+)
+if (requestedOriginalOffsets.length === 0 || !requestedOriginalOffsets.some((offset) => Math.abs(offset - 11) <= 1)) {
+  ng.push(`⑩ 追っかけ範囲外へのシークで原本 HLS offset を要求しない（offsets=${requestedOriginalOffsets.join(',') || 'none'}）`)
+}
+if (Math.abs(carriedOriginalPosition - seekToOriginalResult.selected) > 1) {
+  ng.push(`⑩ 原本 HLS offset へシーク位置を持ち越さない（selected=${seekToOriginalResult.selected}, axis=${carriedOriginalPosition}）`)
+}
+if (originalVideoState.readyState < 1 || originalVideoState.currentTime > 3) {
+  ng.push(`⑩ offset URL のシーク位置から再生を開始しない（video=${JSON.stringify(originalVideoState)}）`)
 }
 
 await finish(ng, browser)
