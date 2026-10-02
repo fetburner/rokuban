@@ -1512,7 +1512,13 @@ export function LivePlayer({
           <button
             type="button"
             onClick={() => setRetryNonce((n) => n + 1)}
-            className="rounded-md border border-border px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-muted"
+            className={cn(
+              'rounded-md border px-3 py-1.5 text-sm transition-colors',
+              // 原本 VOD は黒い枠の上に出すので、テーマに依らず映像の上の配色にする。
+              isOriginalVOD
+                ? 'border-white/40 text-white hover:bg-white/15'
+                : 'border-border text-foreground hover:bg-muted',
+            )}
           >
             再読み込み
           </button>
