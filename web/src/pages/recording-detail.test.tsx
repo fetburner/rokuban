@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getGetRecordingChaptersQueryKey } from '@/api/generated'
 import type {
+  DropStat,
   EncodeProfileSummary,
   LiveProfileSummary,
   Recording,
@@ -13,6 +14,7 @@ import type {
   Rule,
 } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
+import { recordingsQueryKeyPrefix } from '@/lib/events'
 import { formatTime } from '@/lib/format'
 import { routeTree } from '@/routes'
 
@@ -91,6 +93,8 @@ function createFakeServer(options: {
   playbackState?: { positionMs?: number }
   chapters?: RecordingChapters
   chaptersResponse?: () => Promise<Response>
+  /** dropStats はゼロ要約時に詳細表を誤ってマウントしないことの確認用。 */
+  dropStats?: DropStat[]
   /**
    * seriesRecordings は `GET /api/recordings?seriesOf=` に返す行（「次の
    * エピソード」の探索。M8-6）。既定は空。
@@ -221,7 +225,7 @@ function createFakeServer(options: {
     }
 
     if (/^\/api\/recordings\/\d+\/drop-stats$/.test(url.pathname)) {
-      return Promise.resolve(jsonResponse([]))
+      return Promise.resolve(jsonResponse(options.dropStats ?? []))
     }
     if (/^\/api\/recordings\/\d+\/chapters$/.test(url.pathname)) {
       return options.chaptersResponse
@@ -234,6 +238,12 @@ function createFakeServer(options: {
         method === 'PUT' && init?.body
           ? (JSON.parse(String(init.body)) as { positionMs: number }).positionMs
           : undefined
+      return Promise.resolve(jsonResponse(null, 204))
+    }
+    const watchedMatch = /^\/api\/recordings\/(\d+)\/watched$/.exec(url.pathname)
+    if (watchedMatch && method === 'PUT') {
+      const id = Number(watchedMatch[1])
+      if (recording?.id === id) recording = { ...recording, watchedAt: '2026-10-01T00:00:00Z' }
       return Promise.resolve(jsonResponse(null, 204))
     }
     if (
@@ -285,6 +295,13 @@ function renderAt(path: string) {
   return { queryClient, router }
 }
 
+/** jsdom の video 要素は再生位置と長さを自動更新しないので、テストから設定する。 */
+function setMediaProps(video: HTMLVideoElement, props: { currentTime?: number; duration?: number }) {
+  for (const [key, value] of Object.entries(props)) {
+    Object.defineProperty(video, key, { value, writable: true, configurable: true })
+  }
+}
+
 describe('RecordingDetailPage', () => {
   // 受け入れ基準: /recordings/{id} で録画単体が開き、再生・操作が機能する
   // （issue #232。issue #311 で一覧のインライン展開を廃止したため、ここが唯一の着地先）。
@@ -307,6 +324,29 @@ describe('RecordingDetailPage', () => {
     const trashButton = screen.getByRole('button', { name: 'ごみ箱へ' })
     expect(trashButton).toBeInTheDocument()
     expect(trashButton).not.toHaveClass('text-destructive')
+  })
+
+  it('視聴済み PUT が通ると録画一覧クエリを無効化する', async () => {
+    const { fetchMock } = createFakeServer({
+      recording: sampleRecording({ encodedAssets: [{ profile: 'h264', sizeBytes: 123 }] }),
+    })
+    const { queryClient } = renderAt('/recordings/3')
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries')
+
+    expect(await screen.findByText('単体ページの録画')).toBeInTheDocument()
+    const video = document.querySelector('video')!
+    setMediaProps(video, { currentTime: 0, duration: 300 })
+    fireEvent.loadedMetadata(video)
+    setMediaProps(video, { currentTime: 270 })
+    fireEvent.timeUpdate(video)
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/recordings/3/watched',
+        expect.objectContaining({ method: 'PUT' }),
+      )
+      expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: [recordingsQueryKeyPrefix] })
+    })
   })
 
   it('詳細グループを再生・続き・番組・資産・観測・操作の順に並べる', async () => {
@@ -389,18 +429,24 @@ describe('RecordingDetailPage', () => {
   })
 
   it('ドロップ値がすべて0ならヘッダーにバッジも観測にドロップ節も出さない', async () => {
-    createFakeServer({
+    const { fetchMock } = createFakeServer({
       recording: sampleRecording({
         dropSummary: { packets: 1000, drops: 0, errors: 0, scrambled: 0 },
+        // 取り込み観測で外側の観測グループを表示し、内訳表だけを条件確認する。
+        ingest: { state: 'pending' },
       }),
+      // 行があっても、要約がすべて 0 なら内訳表を取得・表示しない。
+      dropStats: [{ pid: 256, packets: 1000, drops: 0, errors: 0, scrambled: 0, positions: [] }],
     })
 
-    renderAt('/recordings/3')
+    const { queryClient } = renderAt('/recordings/3')
 
     expect(await screen.findByText('単体ページの録画')).toBeInTheDocument()
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0))
     expect(screen.queryByText(/^(ドロップ|エラー|スクランブル) /, { selector: 'span' })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'ドロップ集計' })).not.toBeInTheDocument()
     expect(screen.queryByTestId('drop-stats-details')).not.toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/recordings/3/drop-stats', expect.anything())
   })
 
   // M8-6: シリーズの導線。起点の実効シリーズが null の録画には出さない
