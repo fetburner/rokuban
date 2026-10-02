@@ -199,8 +199,13 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 		float64(medians[1])/float64(medians[0]), float64(medians[2])/float64(medians[0]),
 		float64(medians[3])/float64(medians[0]), float64(medians[2])/float64(medians[1]))
 
-	seedReservationBenchmarkRange(t, conn.Conn(), 1, 500)
-	reservationMedian, reservationCount, nullSeriesCount, err := measureReservationsWithSeries(ctx, conn.Conn())
+	benchmarkReservationsWithSeries(t, ctx, conn.Conn())
+}
+
+func benchmarkReservationsWithSeries(t *testing.T, ctx context.Context, conn *pgx.Conn) {
+	t.Helper()
+	seedReservationBenchmarkRange(t, conn, 1, 500)
+	reservationMedian, reservationCount, nullSeriesCount, err := measureReservationsWithSeries(ctx, conn)
 	if err != nil {
 		t.Fatalf("measuring ListReservationsFull + epg_program_series at 500 reservations: %v", err)
 	}
@@ -209,8 +214,8 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 	}
 	t.Logf("(d) ListReservationsFull + epg_program_series, 500 reservations: median %s (null series %d)", reservationMedian, nullSeriesCount)
 
-	seedReservationBenchmarkRange(t, conn.Conn(), 501, 2_000)
-	reservationMedian, reservationCount, nullSeriesCount, err = measureReservationsWithSeries(ctx, conn.Conn())
+	seedReservationBenchmarkRange(t, conn, 501, 2_000)
+	reservationMedian, reservationCount, nullSeriesCount, err = measureReservationsWithSeries(ctx, conn)
 	if err != nil {
 		t.Fatalf("measuring ListReservationsFull + epg_program_series at 2000 reservations: %v", err)
 	}
