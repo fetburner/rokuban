@@ -48,6 +48,7 @@ import {
   persistPlaybackPosition,
   savePlaybackRate,
 } from '@/lib/playback-position'
+import { formatPlaybackTime, formatTime } from '@/lib/format'
 import { usePlayerFrame } from '@/lib/use-player-frame'
 import { cn } from '@/lib/utils'
 import { SEEK_TILES_DISPLAY_WIDTH, seekTileAt } from '@/lib/seek-tiles'
@@ -496,6 +497,7 @@ export function LivePlayer({
   const [chasePreviewSeconds, setChasePreviewSeconds] = useState<number | null>(null)
   const [chaseHoverSeconds, setChaseHoverSeconds] = useState<number | null>(null)
   const isChaseScrubbingRef = useRef(false)
+  const isLiveProgramScrubbingRef = useRef(false)
   // ドラッグ中に最後に見せた位置。離したときはこれを確定する（延長中は軸が毎秒伸びるので、
   // 同じ座標を離した時点で計算し直すと見せた時刻と 1 秒ずれる。chase.mjs ⑤ で実測）。
   const chaseScrubTargetRef = useRef<number | null>(null)
@@ -1452,6 +1454,27 @@ export function LivePlayer({
         plannedEndSeconds: chasePlannedEndSeconds,
         liveEdgeSeconds: chaseLiveEdgeSeconds,
         hoverSeconds: chaseHoverSeconds,
+      }
+    : undefined
+  const liveAxis = liveProgram ? liveProgramAxis(liveProgram.startAt, liveProgram.endAt, liveProgram.nowMs) : null
+  const liveProgramDurationSeconds = liveAxis?.plannedSeconds ?? 0
+  const liveProgramEdgeSeconds = liveAxis?.liveEdgeSeconds ?? 0
+  const liveRecordingAccess = liveProgram
+    ? programRecordingAccess(liveProgram.recordingId, liveProgram.startAt, liveProgram.recordingStartedAt)
+    : { canStartOver: false, canSeek: false, recordingHeadSeconds: null }
+  const liveTimelineBar: LiveProgramTimeline | undefined = isLive && liveProgram && liveAxis
+    ? {
+        minSeconds: 0,
+        maxSeconds: liveAxis.maxSeconds,
+        plannedEndSeconds: liveProgramDurationSeconds,
+        recordingStartSeconds: liveRecordingAccess.recordingHeadSeconds ?? 0,
+        liveEdgeSeconds: liveProgramEdgeSeconds,
+        canSeek: liveRecordingAccess.canSeek,
+        canStartOver: liveRecordingAccess.canStartOver,
+        ariaValueText: `${formatPlaybackTime(liveProgramEdgeSeconds, false)} / ${formatPlaybackTime(liveProgramDurationSeconds, false)}（番組表上の予定）`,
+        startLabel: formatTime(liveProgram.startAt),
+        endLabel: `${formatTime(liveProgram.endAt)}（予定）`,
+        liveTimeLabel: formatTime(new Date(liveProgram.nowMs).toISOString()),
       }
     : undefined
   const updateOriginalPosition = (video: HTMLVideoElement) => {
