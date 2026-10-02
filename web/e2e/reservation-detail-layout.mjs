@@ -1,4 +1,4 @@
-// 予約詳細のヘッダーとその他メニューが desktop / 400px の両方で使えることを
+// 予約詳細のヘッダーとその他メニューが desktop / 360px の両方で使えることを
 // 実ブラウザで判定する（issue #1029）。
 //
 //   cd web && pnpm build && pnpm preview --port 40773 --strictPort &
@@ -107,7 +107,7 @@ const shot = async (page, name) => {
 
 for (const viewport of [
   { name: 'desktop', width: 1280, height: 800 },
-  { name: 'smartphone', width: 400, height: 800 },
+  { name: 'smartphone', width: 360, height: 800 },
 ]) {
   for (const colorScheme of ['light', 'dark']) {
     const tag = `${viewport.name}-${colorScheme}`
