@@ -616,27 +616,19 @@ export function RecordingDetail({
                 </p>
               ) : (
                 <>
-                  {liveProfiles.length > 1 && (
-                    <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <span>画質</span>
-                      <select
-                        aria-label="画質"
-                        value={explicitLiveProfile ?? liveProfiles[0]?.name}
-                        onChange={(e) => onSelectLiveProfile(e.target.value)}
-                        className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none"
-                      >
-                        {liveProfiles.map((p) => (
-                          <option key={p.name} value={p.name}>{liveProfileLabel(p)}</option>
-                        ))}
-                      </select>
-                    </label>
-                  )}
                   <LivePlayer
                     mode="original-vod"
                     site={recording.site}
                     recordingId={recording.id}
                     resumePositionMs={startAtBeginning ? undefined : recording.resumePositionMs}
+                    recordingDurationMs={
+                      recording.startedAt !== undefined && recording.endedAt !== undefined
+                        ? Date.parse(recording.endedAt) - Date.parse(recording.startedAt)
+                        : undefined
+                    }
                     profile={explicitLiveProfile}
+                    availableProfiles={liveProfiles}
+                    onProfileChange={onSelectLiveProfile}
                   />
                   <p className="text-muted-foreground">
                     原本 MPEG-2 を一時的に HLS へ変換します。再生用ファイルは保存しません。

@@ -368,6 +368,14 @@ if (process.env.E2E_SHOT_DIR) {
 
 const audioSettingsButton = page.getByRole('button', { name: '再生設定' })
 await audioSettingsButton.click()
+const screenshotDir = process.env.E2E_SCREENSHOT_DIR
+if (screenshotDir) {
+  mkdirSync(screenshotDir, { recursive: true })
+  await page.screenshot({ path: path.join(screenshotDir, 'desktop.png'), fullPage: true, animations: 'disabled' })
+  await page.setViewportSize({ width: 400, height: 800 })
+  await page.screenshot({ path: path.join(screenshotDir, 'mobile.png'), fullPage: true, animations: 'disabled' })
+  await page.setViewportSize({ width: 1280, height: 900 })
+}
 const audioSelector = page.getByLabel('音声')
 if (await audioSelector.count() !== 1) {
   ng.push('① 音声の設定項目がメニューにない')
@@ -407,11 +415,30 @@ if (!cueResult.trackFound || cueResult.cueCount === 0) {
   ng.push(`② WebVTT 字幕の cue を読み込めない (${JSON.stringify(cueResult)})`)
 }
 
-await video.evaluate((element) => { element.currentTime = 7.25 })
-await page.waitForFunction(() => {
-  const element = document.querySelector('video')
-  return element !== null && Math.abs(element.currentTime - 7.25) < 1.25
-}, undefined, { timeout: 10000 }).catch(() => ng.push('② currentTime を指定位置へ seek できない'))
+const inRangeSeekbarBox = await seekbars.boundingBox()
+if (!inRangeSeekbarBox) {
+  ng.push('② 範囲内 seek の操作バーを取得できない')
+} else {
+  await page.waitForTimeout(300)
+  const playlistCountBeforeInRangeSeek = playlistRequests.length
+  const masterCountBeforeInRangeSeek = masterPlaylistRequests.length
+  const leaveCountBeforeInRangeSeek = originalVODLeaveRequests.length
+  const inRangeFraction = 7.25 / (recordingDurationMs / 1000)
+  await page.mouse.click(
+    inRangeSeekbarBox.x + inRangeSeekbarBox.width * inRangeFraction,
+    inRangeSeekbarBox.y + inRangeSeekbarBox.height / 2,
+  )
+  await page.waitForFunction(() => {
+    const element = document.querySelector('video')
+    return element !== null && Math.abs(element.currentTime - 7.25) < 1.25
+  }, undefined, { timeout: 10000 }).catch(() => ng.push('② シークバーから範囲内へ seek できない'))
+  if (playlistRequests.length !== playlistCountBeforeInRangeSeek || masterPlaylistRequests.length !== masterCountBeforeInRangeSeek) {
+    ng.push('② 範囲内 seek で HLS playlist を取り直す')
+  }
+  if (originalVODLeaveRequests.length !== leaveCountBeforeInRangeSeek) {
+    ng.push('② 範囲内 seek で HLS セッションを張り直す')
+  }
+}
 await video.evaluate((element) => element.pause())
 const positionWriteDeadline = Date.now() + 5000
 while (playbackPositionWrites.length === 0 && Date.now() < positionWriteDeadline) {
@@ -496,8 +523,15 @@ const offsetSeekbarBox = await offsetSeekbar.boundingBox()
 if (!offsetSeekbarBox) {
   ng.push('④ offset seek のシークバーが見つからない')
 } else {
-  await page.mouse.move(offsetSeekbarBox.x + offsetSeekbarBox.width * 0.875, offsetSeekbarBox.y + offsetSeekbarBox.height / 2)
-  await page.mouse.click(offsetSeekbarBox.x + offsetSeekbarBox.width * 0.875, offsetSeekbarBox.y + offsetSeekbarBox.height / 2)
+  const offsetSeekbarY = offsetSeekbarBox.y + offsetSeekbarBox.height / 2
+  await page.mouse.move(offsetSeekbarBox.x + offsetSeekbarBox.width * 0.7, offsetSeekbarY)
+  await page.mouse.down()
+  await page.mouse.move(offsetSeekbarBox.x + offsetSeekbarBox.width * 0.875, offsetSeekbarY)
+  await page.waitForTimeout(250)
+  if (playlistRequests.includes('offset/14/playlist.m3u8')) {
+    ng.push('④ ドラッグ中に offset/14 playlist を要求する')
+  }
+  await page.mouse.up()
   const offsetDeadline = Date.now() + 10_000
   while (!playlistRequests.includes('offset/14/playlist.m3u8') && Date.now() < offsetDeadline) {
     await page.waitForTimeout(50)

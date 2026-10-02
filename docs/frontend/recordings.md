@@ -254,8 +254,9 @@ HLS / hls.js を使わない。原本 HLS の詳細は [api.md](../api.md)
 - 利用可能な MP4 プロファイルは `Recording.encodedAssets`（active な encoded のみ。各要素は
   `profile` + `sizeBytes`）。プロファイルの選択は操作バー内の設定メニューの「画質」に置く。
   選択肢にはサイズを付け、サイズが無い資産もプロファイル名を出す。原本だけの完了録画は live の HLS
-  プロファイルを使って一時変換し、複数なら同じ画面で画質を選べる。原本は VLC 等で
-  開けるリンクも残す
+  プロファイルを使って一時変換し、複数なら同じメニューで画質を選べる。音声は標準 / 主 / 副の 3 択を
+  常にメニューへ出す。音声切替は選択中の `LivePlayer` の音声トラックだけを変え、playlist と HLS
+  セッションは作り直さない。原本 TS は VLC 等で開けるリンクも残し、プレイヤー内のダウンロードには置かない
 - **再生位置は `/api/recordings/{id}/playback-position` に原本時間軸の ms で保存する**。
   追っかけ・原本 HLS・encoded MP4 は同じ録画行の値を共有し、画質プロファイルでは分けない。
   カット版だけは、再生開始時に固定した `keepRanges` で原本時間軸と相互変換する。
@@ -268,6 +269,10 @@ HLS / hls.js を使わない。原本 HLS の詳細は [api.md](../api.md)
   速度だけは端末ごとの好みなので `localStorage` に残す。既存の localStorage 位置キーは
   起動時に削除する
 - 原本 HLS は変換中の EVENT playlist なので、シークできる範囲は変換の先端まで伸びていく。
+  操作バーの時間軸は `startedAt` から `endedAt` までの実尺を使い、予定尺 `durationMs` や HLS の
+  変換先端を分母にしない。現在位置は `session offset + video.currentTime` で原本時間軸に直す。
+  シーク先が現在セッションの offset から seekable 終端までにあれば同じセッション内で移動し、範囲外なら
+  離した時点でその位置を offset にして張り直す。変換済み範囲は seekbar に描かず、変換の完了待ちもさせない。
   終端の 90% 到達で視聴済みにする判定は ENDLIST 後だけ行う。信号は hls.js の level details が
   `live === false` になることと、`ended` イベントである。ネイティブ HLS は ENDLIST を直接
   見られず、`ended` だけを信号にする。`web/e2e/recording-original-vod.mjs` が原本 HLS の
@@ -330,8 +335,9 @@ HLS / hls.js を使わない。原本 HLS の詳細は [api.md](../api.md)
 - 操作バーを表示して字幕が重なるときは WebVTT cue の行をプレイヤー高さと下端の帯（時刻・シークバー）の高さから
   計算して上げる。スマホの暗い幕は枠全体に敷くので、幕の高さは数えない。
   `web/e2e/subtitles.mjs` で実ブラウザの字幕トラックをオンにし、cue の位置を確認する
-- ライブ視聴（`pages/live.tsx`）と原本 HLS VOD はネイティブ controls のまま残る。encoded VOD と
-  見た目がそろわない点は未解決
+- ライブ視聴（`pages/live.tsx`）はネイティブ controls のまま残る。原本 HLS VOD と encoded VOD は
+  同じ自前の操作バーを使う。原本 VOD では変換済み範囲を描かず、画質（複数候補があるとき）と音声を
+  設定メニューに置く
 - ページのキー操作は入力欄・選択欄・リンク・ボタン・`role="slider"`・編集可能領域にフォーカスが
   ある間は働かない。video にフォーカスがある場合はページのショートカットを使える。シークバーが
   `role="slider"` を持ち、← / → を自分で処理するため、グローバルの 10 秒シークと二重処理しない

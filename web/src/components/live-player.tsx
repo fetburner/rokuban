@@ -1250,7 +1250,7 @@ export function LivePlayer({
     const scale = Math.min(1, rect.width / SEEK_TILES_DISPLAY_WIDTH)
     const width = SEEK_TILES_DISPLAY_WIDTH * scale
     const left = Math.max(0, Math.min(rect.width - width, event.clientX - rect.left - width / 2))
-    setOriginalTilePreview({ ...tile, left, scale })
+    setOriginalTilePreview({ ...tile, left, scale, seconds })
   }
   const handleOriginalSeekPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const seconds = originalSeekTargetAtPointer(event)
@@ -1630,6 +1630,7 @@ export function LivePlayer({
         onControlsActivity={handleOriginalControlsActivity}
         onToolbarFocus={handleOriginalToolbarFocus}
         onToolbarBlur={handleOriginalToolbarBlur}
+        onShellKeyDown={handleOriginalControlsActivity}
       />
     )
   }

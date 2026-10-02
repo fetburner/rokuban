@@ -2088,6 +2088,9 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
     const user = userEvent.setup()
     const { fetchMock } = createFakeServer({
       recording: sampleRecording({
+        startedAt: '2026-01-01T12:02:00Z',
+        endedAt: '2026-01-01T12:30:00Z',
+        durationMs: 60_000,
         sizeBytes: 1_000_000,
         encodeProfiles: ['vod-h264'],
         encodedAssets: [],
@@ -2098,7 +2101,9 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
     renderAt('/recordings/3')
 
     expect(await screen.findByRole('region', { name: '原本 TS をブラウザ再生' })).toBeInTheDocument()
+    await user.click(await screen.findByRole('button', { name: '再生設定' }))
     expect(await screen.findByLabelText('画質')).toHaveValue('hd')
+    expect(screen.getByRole('slider', { name: 'シークバー' })).toHaveAttribute('aria-valuemax', '1680')
     await waitFor(() => expect(originalVODURLs(fetchMock)).toHaveLength(1))
     expect(originalVODURLs(fetchMock)[0]).toBe(
       '/api/sites/default/recordings/3/original-vod/playlist.m3u8',
@@ -2121,6 +2126,8 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
       liveProfiles: LIVE_PROFILES,
     })
     renderAt('/recordings/3')
+    await screen.findByRole('region', { name: '原本 TS をブラウザ再生' })
+    await user.click(await screen.findByRole('button', { name: '再生設定' }))
     await screen.findByLabelText('画質')
     await waitFor(() => expect(document.querySelector('video')).toBeInTheDocument())
 
