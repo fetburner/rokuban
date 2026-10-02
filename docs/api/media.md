@@ -654,7 +654,7 @@ event は変換の先頭から playlist が書かれ、終了時に `#EXT-X-ENDL
 原本が引き続き active なら次の要求で作り直せる
 （`TestOriginalVODServesPlaylistWhileFFmpegIsStillConverting`）。
 
-offset 付きでは完成済み原本の長さを同じ開いたファイル記述子から ffprobe で調べ、FFmpeg に渡す前に
+offset 付きでは完成済み原本の「映像の長さ」を同じ開いたファイル記述子から ffprobe で調べ、FFmpeg に渡す前に
 範囲を確認する。原本は `cmd.ExtraFiles` の先頭として子プロセス fd 3 に渡し、FFmpeg は
 `/dev/fd/3` を入力にする。fd は seek 可能な同じ inode を指すため、`until_encoded` が canonical path
 を unlink した後も変換できる。通常のパイプ `pipe:0` では seek が効かないため、この fd 方式を選ぶ。
@@ -663,15 +663,40 @@ offset が 0 より大きいときは `-ss {offset}` を `-i /dev/fd/3` より�
 入力の seek point から offset までを decode して捨てる。`-copyts` は付けず、HLS の再生時間軸は
 offset ごとに 0 から始めるので、再生位置は `offset + currentTime` として扱う。
 
+**範囲の判定は format の duration でなく映像ストリームの終端で行う。**
+format の duration は音声など最長のストリームで決まり、映像より長い。
+実バイナリで測った合成 660 秒 TS は format 660.010 秒・映像 660.000 秒で、
+format と比べる判定では、`[映像の終端, format の duration)` に入る整数 offset（660）が通った。
+FFmpeg は何も出力せず、playlist 待ちの 15 秒後に 504 になった。
+いまは映像の終端（`start_time + duration - format の start_time`）の手前 0.5 秒より後ろの offset を 416 にする。
+終端ちょうどの offset も最後のフレームより後ろを指して出力が空になりうるので、この余白を取る。
+同じ 660 秒 TS で offset 659 は 200（0.14 秒）、660 / 661 / 99999 は 416（0.03 秒）だった。
+範囲外の offset は利用者入力の結果なので ERROR ではなく INFO で記録する。
+
+**原本 VOD の退避は mirakc のチューナー解放待ち（`liveMirakcReleaseWait`、5 秒）を挟まない。**
+原本 VOD はチューナーを持たない。`max_sessions: 2` で容量が埋まった状態からのシークは、
+待ちを挟むと約 5.4 秒、挟まないと 0.13 秒だった（実バイナリ、合成 660 秒 TS）。
+
 #### offset seek の精度と開始時間の測定
 
-FFmpeg / ffprobe 9.0.2、macOS arm64 で、25 fps の 320×80 合成映像を 660 秒間生成した。各フレームには
-録画先頭からの `秒:フレーム番号` を映像に焼き込み、MPEG-2 video（GOP 15、B-frame 2、closed GOP）、
-MP2 audio、1 Mbit/s MPEG-TS muxrate でまとめた。`ffprobe` が報告する format duration は 660.010022 秒、
-video stream duration は 660.000000 秒である。
-[measure/generate/main.go](../../measure/generate/main.go) が時刻表示付きフレームを作る。
-[measure/measure.go](../../measure/measure.go) で `BuildOriginalVODFFmpegArgs` と fd 3 を使い、
-出力 HLS の先頭映像フレームを読み取る。
+精度と範囲は CI の `TestOriginalVODOffsetRealFFmpegSeekAccuracyAndRange` が固定する。
+このテストは実 ffmpeg / ffprobe で `runSession` の経路を通り、`ROKUBAN_REQUIRE_FFMPEG` を立てると skip できない。入力は lavfi で作る 40 秒の MPEG-2 + MP2 の TS で、
+映像の輝度が録画先頭からの秒に比例し、音声は 41.5 秒まで続く。HLS の先頭セグメントの先頭フレームの輝度から時刻を読む。
+FFmpeg 9.0.2、macOS arm64 で offset 0 / 7 / 20 / 38 の誤差はすべて 0.00 秒だった。
+offset 40 / 41 / 42 は 416 が 3 秒以内に返る。
+format の duration と比べる判定に戻すと、40 と 41 が 15 秒待って 504 になった（変異で確認）。
+この条件は 40 秒の合成映像だけで、PTS の不連続・wraparound を含む放送 TS の実録画では未検証である。
+
+HLS の先頭セグメントの映像 PTS は、どの offset でも 1.48 秒だった（上のテストのログ）。
+mpegts muxer の既定の遅延で、offset によらない。ブラウザの `currentTime` は 0 から始まる。
+HLS の PTS 自体を 0 にそろえているわけではない。
+
+10 分以上の入力での精度は 660 秒の合成 TS で 1 回測った。
+25 fps の 320×80 映像に録画先頭からの `秒:フレーム番号` を焼き込んだ。
+映像は MPEG-2（GOP 15、B-frame 2、closed GOP）、音声は MP2 で、1 Mbit/s MPEG-TS muxrate でまとめた。
+format duration は 660.010022 秒、video stream duration は 660.000000 秒である。
+測定に使った runner は不変条件 4（ffmpeg の exec は worker / streamer のみ）を破るため、リポジトリには置いていない。
+再実行できる形では残っていない。
 
 | 要求した offset | HLS の先頭フレーム表示 | offset との差 |
 | ---: | ---: | ---: |
@@ -681,12 +706,7 @@ video stream duration は 660.000000 秒である。
 | 603 秒 | 603.20 秒 | +0.20 秒 |
 | 659 秒 | 659.36 秒 | +0.36 秒 |
 
-各 HLS 出力の先頭フレームを再度 decode したとき、再生時間軸の PTS はすべて 0.000 秒だった。
-この MPEG-TS 条件では、最初に表示されるフレームは全 offset で 0.36 秒以内に収まった。
-測定 runner は 0.5 秒を超える誤差で非ゼロ終了し、seek が外れた結果を検出する。
-放送 TS の PTS 不連続・wraparound を含む実録画では未検証である。
-
-同じ 5 offset を各 3 回 FFmpeg で変換した。原本 open 後に計時を始め、master playlist が読めるまで測った。
+同じ 5 offset を各 3 回 FFmpeg で変換し、原本 open 後から master playlist が読めるまでを測った。
 非ゼロ offset は duration probe と FFmpeg 起動を含む。DB lookup、HTTP/router、原本 open は計時外である。
 
 | offset | master ready 中央値（最小–最大） |
@@ -698,20 +718,6 @@ video stream duration は 660.000000 秒である。
 | 659 秒 | 59 ms（59–60 ms） |
 
 非ゼロ offset の duration probe は 17–20 ms だった。659 秒では残り 1 秒の短い出力になる。
-
-測定を再現するには、リポジトリ root から次を実行する。生成した TS は測定後に削除する。
-
-```sh
-go run ./measure/generate | ffmpeg -hide_banner -loglevel error \
-  -f image2pipe -framerate 25 -vcodec pgm -i pipe:0 \
-  -f lavfi -i sine=frequency=440:sample_rate=48000:duration=660 \
-  -map 0:v:0 -map 1:a:0 -c:v mpeg2video -g 15 -bf 2 \
-  -flags +cgop -sc_threshold 1000000000 -q:v 5 \
-  -c:a mp2 -b:a 128k -shortest -muxrate 1000000 \
-  -f mpegts -y /tmp/original-vod-offset-11m.ts
-go run ./measure /tmp/original-vod-offset-11m.ts
-rm /tmp/original-vod-offset-11m.ts
-```
 
 原本だけの完了録画はこの経路をブラウザ再生の既定にする。active な録画は既存の chase、
 active な encoded がある完了録画は MP4 progressive + Range を使う。原本 MPEG-2 decoder を

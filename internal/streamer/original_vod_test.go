@@ -43,7 +43,10 @@ for a in "$@"; do
   case "$a" in *.%%v.m3u8) outputs="$outputs $a" ;; esac
   prev="$a"
 done
-cat "$input" >/dev/null || exit 3
+# fd 3 is the descriptor the parent opened. Its read position is shared with the
+# parent and ffprobe, so a missing rewind shows up as zero bytes here.
+bytes=$(cat <&3 | wc -c)
+[ "$bytes" -gt 0 ] || exit 3
 write() {
   endlist="$1"
   for a in $outputs; do
@@ -83,13 +86,24 @@ func installFailedOriginalVODFFmpeg(t *testing.T) string {
 	return path
 }
 
-func installFakeFFprobeDuration(t *testing.T, duration string) string {
+// installFakeFFprobeDuration is a fake ffprobe whose video stream ends at
+// videoEnd seconds (start_time 0) while the format duration is formatEnd. It
+// drains fd 3 like the real ffprobe, which moves the descriptor's shared read
+// position.
+func installFakeFFprobeDuration(t *testing.T, videoEnd, formatEnd string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("fake ffprobe script assumes a POSIX shell")
 	}
 	path := filepath.Join(t.TempDir(), "fake-ffprobe-duration")
-	script := fmt.Sprintf("#!/bin/sh\ninput=\"\"\nprev=\"\"\nfor a in \"$@\"; do if [ \"$prev\" = \"-i\" ]; then input=\"$a\"; fi; prev=\"$a\"; done\n[ \"$input\" = \"/dev/fd/3\" ] || exit 2\ncat \"$input\" >/dev/null || exit 3\nprintf '%%s\\n' %q\n", duration)
+	script := fmt.Sprintf(`#!/bin/sh
+input=""
+prev=""
+for a in "$@"; do if [ "$prev" = "-i" ]; then input="$a"; fi; prev="$a"; done
+[ "$input" = "/dev/fd/3" ] || exit 2
+cat <&3 >/dev/null || exit 3
+printf '{"streams":[{"start_time":"0.000000","duration":"%s"}],"format":{"start_time":"0.000000","duration":"%s"}}\n'
+`, videoEnd, formatEnd)
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("writing fake ffprobe: %v", err)
 	}
@@ -302,7 +316,7 @@ func TestOriginalVODOffsetIdleGCRemovesScratch(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	recordingID, mediaDir, _ := originalVODTargetFixture(t, pool)
 	cfg := originalVODConfig(t, mediaDir, installCompletedOriginalVODFFmpeg(t))
-	cfg.FFprobe = installFakeFFprobeDuration(t, "600.000000")
+	cfg.FFprobe = installFakeFFprobeDuration(t, "600.000000", "600.000000")
 	ls, srv := newOriginalVODTestServer(t, pool, cfg)
 
 	const offset = int64(73)
@@ -343,7 +357,8 @@ func TestOriginalVODOffsetRejectsNonCanonicalAndOutOfRangeValues(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	recordingID, mediaDir, _ := originalVODTargetFixture(t, pool)
 	cfg := originalVODConfig(t, mediaDir, installOriginalVODFFmpeg(t, 0))
-	cfg.FFprobe = installFakeFFprobeDuration(t, "600.000000")
+	// 映像は 600 秒で終わり、format の duration は音声のぶん 601.5 秒まで続く。
+	cfg.FFprobe = installFakeFFprobeDuration(t, "600.000000", "601.500000")
 	ls, srv := newOriginalVODTestServer(t, pool, cfg)
 
 	for _, raw := range []string{"007", "+5", "5.0", "-1", "9223372036854775808"} {
@@ -372,21 +387,26 @@ func TestOriginalVODOffsetRejectsNonCanonicalAndOutOfRangeValues(t *testing.T) {
 	}
 }
 
+// 原本 VOD の退避は mirakc のチューナー解放待ち（既定 5 秒）を挟まない。
+// liveMirakcReleaseWait を短縮しないまま、容量が埋まった状態からのシークが速いことを固定する。
 func TestOriginalVODRepeatedSeeksReuseMaxSessionCapacityAfterLeaveHints(t *testing.T) {
-	setShortLiveMirakcReleaseWait(t, time.Millisecond)
 	pool := testutil.SetupDB(t)
 	recordingID, mediaDir, _ := originalVODTargetFixture(t, pool)
 	cfg := originalVODConfig(t, mediaDir, installOriginalVODFFmpeg(t, 0))
-	cfg.FFprobe = installFakeFFprobeDuration(t, "1000.000000")
+	cfg.FFprobe = installFakeFFprobeDuration(t, "1000.000000", "1000.000000")
 	cfg.MaxSessions = 1
 	cfg.IdleTimeout = time.Minute
 	ls, srv := newOriginalVODTestServer(t, pool, cfg)
 
 	offsets := []int64{0, 61, 307, 603, 659}
 	for i, offset := range offsets {
+		seekStarted := time.Now()
 		resp, body := get(t, originalVODOffsetPlaylistURL(srv.URL, recordingID, offset, "hd"), nil)
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("seek to offset %d status/body = %d %q, want 200", offset, resp.StatusCode, body)
+		}
+		if elapsed := time.Since(seekStarted); elapsed > time.Second {
+			t.Fatalf("seek to offset %d took %v from a full pool, want under 1s (no tuner release wait)", offset, elapsed)
 		}
 		key := originalVODSessionKeyFor(recordingID, offset)
 		ls.mu.Lock()
@@ -494,7 +514,7 @@ func TestOriginalVODTrashInvalidatesRetainedSessionAndScratch(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	recordingID, mediaDir, _ := originalVODTargetFixture(t, pool)
 	cfg := originalVODConfig(t, mediaDir, installCompletedOriginalVODFFmpeg(t))
-	cfg.FFprobe = installFakeFFprobeDuration(t, "600.000000")
+	cfg.FFprobe = installFakeFFprobeDuration(t, "600.000000", "600.000000")
 	ls, srv := newOriginalVODTestServer(t, pool, cfg)
 
 	resp, body := get(t, originalVODOffsetPlaylistURL(srv.URL, recordingID, 60, "hd"), nil)
@@ -596,7 +616,7 @@ func TestOriginalVODRetainedSessionSurvivesOriginalDeletion(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	recordingID, mediaDir, _ := originalVODTargetFixture(t, pool)
 	cfg := originalVODConfig(t, mediaDir, installCompletedOriginalVODFFmpeg(t))
-	cfg.FFprobe = installFakeFFprobeDuration(t, "600.000000")
+	cfg.FFprobe = installFakeFFprobeDuration(t, "600.000000", "600.000000")
 	ls, srv := newOriginalVODTestServer(t, pool, cfg)
 	originalPath := filepath.Join(mediaDir, "recordings/original-vod.ts")
 	unlinked := make(chan error, 1)

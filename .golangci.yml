@@ -41,18 +41,16 @@ linters:
               desc: api role must not execute external processes
         exec-role:
           # os/exec は worker/streamer が実行に使い、config は LookPath で
-          # ツールの存在だけを検証する。measure は合成 TS の offline 測定用に
-          # ffmpeg / ffprobe を起動する。テストの子プロセス起動も対象外。
+          # ツールの存在だけを検証する。テストの子プロセス起動は対象外。
           list-mode: lax
           files:
             - "!$test"
             - "!${config-path}/internal/worker/**"
             - "!${config-path}/internal/streamer/**"
             - "!${config-path}/internal/config/**"
-            - "!${config-path}/measure/**"
           deny:
             - pkg: os/exec
-              desc: os/exec is limited to worker/streamer plus config and measurement helper exceptions
+              desc: os/exec is limited to worker, streamer, and config
         ts-inspection:
           # 不変条件 6: 放送 TS を読むのは ingest の読み取り専用統計（tsstat）だけ。
           # テストは TS のフィクスチャを組み立てるのに gots を使うので対象外。

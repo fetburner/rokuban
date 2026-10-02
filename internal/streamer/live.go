@@ -20,6 +20,7 @@ package streamer
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -82,7 +83,7 @@ type LiveConfig struct {
 	// で入力 1 本・出力 N 本のため、プロファイル毎には表現しない）。
 	HWAccel *ffargs.HWAccel
 
-	// InputExtraArgs は `-f mpegts -i ...` の直前に追加する引数。
+	// InputExtraArgs は `-f mpegts [-ss N] -i ...` の直前に追加する引数。
 	InputExtraArgs []string
 
 	Profiles []LiveProfile
@@ -936,35 +937,56 @@ func (ls *LiveStreamer) originalVODSource(recordingID, offsetSeconds int64, targ
 				_ = file.Close()
 				return nil, fmt.Errorf("probing original VOD duration: %w", err)
 			}
-			if float64(offsetSeconds) >= duration {
+			// 映像が残らない offset を通すと ffmpeg は何も出力せず、playlist 待ちの
+			// 15 秒後に 504 になる（実バイナリで測定）。
+			if float64(offsetSeconds) >= duration-originalVODTailMargin {
 				_ = file.Close()
 				return nil, errOriginalVODOffsetUnavailable
 			}
-		}
-		// ffprobe can seek while reading the inherited descriptor. Reset it before
-		// ffmpeg opens /dev/fd/3 so input-side -ss is measured from the file start.
-		if _, err := file.Seek(0, io.SeekStart); err != nil {
-			_ = file.Close()
-			return nil, fmt.Errorf("rewinding original media: %w", err)
 		}
 		return file, nil
 	}
 }
 
+// originalVODFFmpegInputPath は ffmpeg / ffprobe が原本を開く名前。
+//
+// Cmd.ExtraFiles[0] が子の fd 3 になるので /dev/fd/3 でその記述子を開く。
+// ffmpeg の `fd:` プロトコルを使わないのは、`-ss` の入力側シークに必要な
+// 「ファイルとして開き直せる入力」を avformat に渡したいため（`fd:` は
+// 記述子を直接読むので、seekable かどうかの判定が OS 任せになる。未検証）。
+// /dev/fd/3 は記述子を保持する inode を指すので、DB 確認の後に canonical path が
+// unlink されても読める（TestOriginalVODRetainedSessionSurvivesOriginalDeletion）。
 const originalVODFFmpegInputPath = "/dev/fd/3"
 
-// probeOriginalVODDuration measures the completed MPEG-TS duration through the
-// already-open descriptor. ExtraFiles maps it to child fd 3, so ffprobe can seek
-// without reopening a canonical path that may be unlinked after the DB check.
+// originalVODProbeTimeout は probeOriginalVODDuration（ffprobe 起動）の上限。
+const originalVODProbeTimeout = 5 * time.Second
+
+// originalVODTailMargin は映像の終端からこの秒数以内の offset を範囲外にする。
+// 終端ちょうどの offset は最後のフレームより後ろを指して出力が空になりうる
+// （合成 TS で offset 40 / 映像終端 40.01 が 15 秒待って 504 になった）。
+const originalVODTailMargin = 0.5
+
+// probeOriginalVODDuration は原本の「映像が存在する長さ」（録画先頭からの秒）を
+// 開いた記述子越しに測る。offset がこの値以上なら映像が 1 フレームも残らない。
+//
+// format の duration は音声など最長のストリームで決まり、映像の終端より長い
+// （合成 660 秒 TS: format 660.010 / 映像 660.000）。そのため映像ストリームの
+// 終端（start_time + duration - format の start_time）を使う。ストリームの値が
+// 取れなければ format の duration に落とす。
+//
+// ffprobe は継承した記述子の読み位置を共有して動かすので、返す前に先頭へ戻す
+// （ffmpeg の入力側 -ss は先頭からの位置で測る。外すと偽 ffmpeg が fd 3 から 0 バイトしか読めず
+// TestOriginalVODOffsetIdleGCRemovesScratch が落ちる）。
 func probeOriginalVODDuration(ctx context.Context, ffprobe string, file *os.File) (float64, error) {
 	if ffprobe == "" {
 		ffprobe = "ffprobe"
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, liveCaptionProbeTimeout)
+	probeCtx, cancel := context.WithTimeout(ctx, originalVODProbeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(probeCtx, ffprobe,
-		"-v", "error", "-show_entries", "format=duration",
-		"-of", "default=noprint_wrappers=1:nokey=1", "-i", originalVODFFmpegInputPath,
+		"-v", "error", "-select_streams", "v:0",
+		"-show_entries", "format=start_time,duration:stream=start_time,duration",
+		"-of", "json", "-i", originalVODFFmpegInputPath,
 	)
 	cmd.ExtraFiles = []*os.File{file}
 	out, err := cmd.Output()
@@ -977,9 +999,34 @@ func probeOriginalVODDuration(ctx context.Context, ffprobe string, file *os.File
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return 0, fmt.Errorf("rewinding probed original media: %w", err)
 	}
-	duration, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
-	if err != nil || math.IsNaN(duration) || math.IsInf(duration, 0) || duration <= 0 {
-		return 0, fmt.Errorf("invalid original VOD duration %q", strings.TrimSpace(string(out)))
+	var probed struct {
+		Format struct {
+			StartTime string `json:"start_time"`
+			Duration  string `json:"duration"`
+		} `json:"format"`
+		Streams []struct {
+			StartTime string `json:"start_time"`
+			Duration  string `json:"duration"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal(out, &probed); err != nil {
+		return 0, fmt.Errorf("parsing original VOD probe output: %w", err)
+	}
+	valid := func(raw string) (float64, bool) {
+		v, err := strconv.ParseFloat(raw, 64)
+		return v, err == nil && !math.IsNaN(v) && !math.IsInf(v, 0)
+	}
+	duration, ok := valid(probed.Format.Duration)
+	if len(probed.Streams) > 0 {
+		vStart, ok1 := valid(probed.Streams[0].StartTime)
+		vDur, ok2 := valid(probed.Streams[0].Duration)
+		fStart, ok3 := valid(probed.Format.StartTime)
+		if ok1 && ok2 && ok3 {
+			duration, ok = vStart+vDur-fStart, true
+		}
+	}
+	if !ok || duration <= 0 {
+		return 0, fmt.Errorf("invalid original VOD duration in %q", strings.TrimSpace(string(out)))
 	}
 	return duration, nil
 }
@@ -2285,6 +2332,12 @@ func (ls *LiveStreamer) getOrCreateSessionFor(ctx context.Context, key sessionKe
 	cleanupSessionDir(victim)
 	// mirakc は HTTP body の Close と tuner プロセスの解放を同期していない。
 	// stop が done まで待っても、直後の要求が容量エラーになる窓が実物で観測された。
+	releaseWait := liveMirakcReleaseWait
+	if sessionKindOf(victim) == originalVODSessionKind {
+		// 原本 VOD はチューナーを持たないので、解放待ちは無意味（シークのたびに
+		// 5 秒止まる。実バイナリで測定）。
+		releaseWait = 0
+	}
 	select {
 	case <-ctx.Done():
 		// **退避は既に起きている**（victim.stop() は完了済み）。ここで諦めるのは
@@ -2293,7 +2346,7 @@ func (ls *LiveStreamer) getOrCreateSessionFor(ctx context.Context, key sessionKe
 		ls.evictMu.Unlock()
 		metrics.LiveSessionEvictions.WithLabelValues(reason, "retry_abandoned").Inc()
 		return nil, ctx.Err()
-	case <-time.After(liveMirakcReleaseWait):
+	case <-time.After(releaseWait):
 	}
 	ls.evictMu.Unlock()
 
@@ -2502,7 +2555,12 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 			s.startErr = &liveUpstreamStartError{err: err}
 			metrics.LiveSessionStartFailures.WithLabelValues("upstream_error").Inc()
 		}
-		slog.Error("streamer: requesting session upstream",
+		// 範囲外の offset は利用者入力の結果で、サーバーの障害ではない（416 になる）。
+		level := slog.LevelError
+		if errors.Is(err, errOriginalVODOffsetUnavailable) {
+			level = slog.LevelInfo
+		}
+		slog.Log(ctx, level, "streamer: requesting session upstream",
 			"kind", string(kind), "session_id", sessionIDOf(s), "err", err)
 		close(s.ready)
 		return
@@ -2838,6 +2896,16 @@ func BuildOriginalVODFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool, 
 	)
 }
 
+// appendMPEGTSInput は MPEG-TS 入力（`-f mpegts [-ss N] -i path`）を args に足す。
+// offsetSeconds > 0 のときだけ入力側シークを付ける。
+func appendMPEGTSInput(args []string, inputPath string, offsetSeconds int64) []string {
+	args = append(args, "-f", "mpegts")
+	if offsetSeconds > 0 {
+		args = append(args, "-ss", strconv.FormatInt(offsetSeconds, 10))
+	}
+	return append(args, "-i", inputPath)
+}
+
 type hlsPlaylistType uint8
 
 const (
@@ -2871,11 +2939,7 @@ func buildHLSFFmpegArgsForPlaylistType(
 		"-analyzeduration", "3M",
 	)
 	args = append(args, cfg.InputExtraArgs...)
-	args = append(args, "-f", "mpegts")
-	if offsetSeconds > 0 {
-		args = append(args, "-ss", strconv.FormatInt(offsetSeconds, 10))
-	}
-	args = append(args, "-i", inputPath)
+	args = appendMPEGTSInput(args, inputPath, offsetSeconds)
 	renditions := audioRenditionsFor(eventPlaylist)
 	for _, p := range cfg.Profiles {
 		// 映像・音声だけ。字幕 / データ放送は捨てる（上記 arib_caption）。
@@ -3042,11 +3106,7 @@ func buildLiveCaptionFFmpegArgsForPlaylistType(
 		// 入力側オプションなので -i より前に置く。
 		args = append(args, "-fix_sub_duration")
 	}
-	args = append(args, "-f", "mpegts")
-	if offsetSeconds > 0 {
-		args = append(args, "-ss", strconv.FormatInt(offsetSeconds, 10))
-	}
-	args = append(args, "-i", inputPath)
+	args = appendMPEGTSInput(args, inputPath, offsetSeconds)
 
 	var variants, audioVariants []string
 	renditions := audioRenditionsFor(eventPlaylist)

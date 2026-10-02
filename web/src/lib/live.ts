@@ -318,6 +318,13 @@ export function liveLeaveURL(site: string, networkId: number, serviceId: number)
   )
 }
 
+/** offsetPathSegment は offset > 0 のときだけ `/offset/{n}` を返す（追っかけと原本 VOD で共通）。 */
+function offsetPathSegment(offsetSeconds?: number): string {
+  return Number.isSafeInteger(offsetSeconds) && offsetSeconds !== undefined && offsetSeconds > 0
+    ? `/offset/${offsetSeconds}`
+    : ''
+}
+
 /** chasePlaylistURL は録画中の追っかけ再生 EVENT playlist の URL を組み立てる。 */
 export function chasePlaylistURL(
   site: string,
@@ -325,10 +332,7 @@ export function chasePlaylistURL(
   profile?: string,
   offsetSeconds?: number,
 ): string {
-  const offset =
-    Number.isSafeInteger(offsetSeconds) && offsetSeconds !== undefined && offsetSeconds > 0
-      ? `/offset/${offsetSeconds}`
-      : ''
+  const offset = offsetPathSegment(offsetSeconds)
   const base =
     `/api/sites/${encodeURIComponent(site)}/recordings/${recordingId}/chase` +
     `${offset}/playlist.m3u8`
@@ -337,10 +341,7 @@ export function chasePlaylistURL(
 
 /** chaseLeaveURL は追っかけ再生セッションへの離脱ヒントの宛先。 */
 export function chaseLeaveURL(site: string, recordingId: number, offsetSeconds?: number): string {
-  const offset =
-    Number.isSafeInteger(offsetSeconds) && offsetSeconds !== undefined && offsetSeconds > 0
-      ? `/offset/${offsetSeconds}`
-      : ''
+  const offset = offsetPathSegment(offsetSeconds)
   return `/api/sites/${encodeURIComponent(site)}/recordings/${recordingId}/chase${offset}/leave`
 }
 
@@ -351,10 +352,7 @@ export function originalVODPlaylistURL(
   profile?: string,
   offsetSeconds?: number,
 ): string {
-  const offset =
-    Number.isSafeInteger(offsetSeconds) && offsetSeconds !== undefined && offsetSeconds > 0
-      ? `/offset/${offsetSeconds}`
-      : ''
+  const offset = offsetPathSegment(offsetSeconds)
   const base =
     `/api/sites/${encodeURIComponent(site)}/recordings/${recordingId}/original-vod` +
     `${offset}/playlist.m3u8`
@@ -363,10 +361,7 @@ export function originalVODPlaylistURL(
 
 /** originalVODLeaveURL は原本 VOD HLS セッションへの離脱ヒントの宛先。 */
 export function originalVODLeaveURL(site: string, recordingId: number, offsetSeconds?: number): string {
-  const offset =
-    Number.isSafeInteger(offsetSeconds) && offsetSeconds !== undefined && offsetSeconds > 0
-      ? `/offset/${offsetSeconds}`
-      : ''
+  const offset = offsetPathSegment(offsetSeconds)
   return `/api/sites/${encodeURIComponent(site)}/recordings/${recordingId}/original-vod${offset}/leave`
 }
 
