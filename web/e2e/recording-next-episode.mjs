@@ -554,6 +554,7 @@ async function transitionsAlong(png) {
     const want = id === 6 ? 'title-row' : 'shelf-heading'
     if (entry.place !== want) ng.push(`⑦ ${label}（1280）でシリーズへのリンクの置き場が ${entry.place}（期待 ${want}）`)
     if (want === 'shelf-heading' && !/›$/.test(entry.text)) ng.push(`⑦ ${label}（1280）で棚の見出しのリンクに「›」が無い（${entry.text}）`)
+    if (!entry.underlined) ng.push(`⑦ ${label}（1280）でシリーズへのリンクがリンクの見た目（下線）でない`)
   }
   await page.goto(`${URL_BASE}/recordings/1`, { waitUntil: 'domcontentloaded' })
   await page.locator('[data-testid="recording-series-shelf"] h3 a').waitFor({ timeout: 10000 }).catch(() => {})

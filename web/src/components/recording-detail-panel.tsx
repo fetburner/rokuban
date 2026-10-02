@@ -980,7 +980,7 @@ export function RecordingDetail({
                 to="/recordings/$id/series"
                 params={{ id: String(recording.id) }}
                 aria-label={`このシリーズへ: ${recording.series}`}
-                className="inline-flex min-h-6 max-w-full items-center gap-1 underline-offset-4 hover:underline"
+                className="inline-flex min-h-6 max-w-full items-center gap-1 underline underline-offset-4"
               >
                 <span className="truncate">{recording.series}</span>
                 <span aria-hidden>›</span>
