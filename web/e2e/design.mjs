@@ -1404,6 +1404,117 @@ for (const mode of ['watch', 'ops']) {
   }
 }
 
+// --- ホーム管理モード M8-26: 時間軸の実寸 -------------------------------
+// 3 幅でページ自体は固定し、時間軸の枠だけが横スクロールすることを測る。
+// 時間軸は機械配置の推定ではなく既存 API の観測値を時刻に置く表示なので、
+// この実ブラウザ検査で初期位置・30 分ブロック・容量ラベルの衝突を確認する。
+log('\n=== ホーム管理モード M8-26: 時間軸の実寸 ===')
+for (const theme of themes) {
+  for (const viewport of [homeDesktop, mobile, mobileWide]) {
+    const { context, page } = await open(viewport, theme, {
+      name: 'home-ops-timeline',
+      path: '/?mode=ops',
+    }, { homeModeFixture: true, homeOpsFixture: true })
+    const geometry = await page.evaluate(() => {
+      const rect = (element) => {
+        if (!element) return null
+        const { x, y, width, height, right, bottom } = element.getBoundingClientRect()
+        return { x, y, width, height, right, bottom }
+      }
+      const timeline = document.querySelector('[data-testid="home-ops-timeline"]')
+      const frame = timeline?.querySelector('[data-testid="home-ops-timeline-frame"]') ?? null
+      const marker = timeline?.querySelector('[data-testid="home-timeline-now"]') ?? null
+      const thirtyMinuteBlock = timeline?.querySelector(
+        '[data-testid="home-timeline-block"][data-duration-ms="1800000"]',
+      ) ?? null
+      const rowLabels = [...(timeline?.querySelectorAll('[data-testid="home-timeline-row-label"]') ?? [])]
+      const overageLabels = [...(timeline?.querySelectorAll('[data-testid="home-overage-label"]') ?? [])]
+      const controls = [...(timeline?.querySelectorAll('a, button, input, select, [role="button"], [tabindex="0"]') ?? [])]
+      return {
+        timeline: rect(timeline),
+        frame: rect(frame),
+        marker: rect(marker),
+        block: rect(thirtyMinuteBlock),
+        documentScrollWidth: document.documentElement.scrollWidth,
+        bodyScrollWidth: document.body.scrollWidth,
+        viewportWidth: window.innerWidth,
+        frameClientWidth: frame?.clientWidth ?? null,
+        frameScrollWidth: frame?.scrollWidth ?? null,
+        rowLabelRects: rowLabels.map(rect),
+        overageLabelRects: overageLabels.map(rect),
+        controls: controls.map((element) => ({ rect: rect(element), tag: element.tagName })),
+      }
+    })
+
+    if (geometry.timeline === null || geometry.frame === null) {
+      ng.push(`[ops-timeline/${theme}/${viewport.width}px] 時間軸またはスクロール枠が無い`)
+    } else {
+      if (geometry.documentScrollWidth > geometry.viewportWidth || geometry.bodyScrollWidth > geometry.viewportWidth) {
+        ng.push(`[ops-timeline/${theme}/${viewport.width}px] ページ本体が横にはみ出す`)
+      }
+      if (!(geometry.frameScrollWidth > geometry.frameClientWidth)) {
+        ng.push(`[ops-timeline/${theme}/${viewport.width}px] 時間軸の枠内だけの横スクロールが無い`)
+      }
+      if (geometry.marker === null) {
+        ng.push(`[ops-timeline/${theme}/${viewport.width}px] 現在時刻の線が無い`)
+      } else if (
+        geometry.marker.x < geometry.frame.x ||
+        geometry.marker.right > geometry.frame.right ||
+        geometry.marker.x < geometry.frame.x - 1
+      ) {
+        ng.push(`[ops-timeline/${theme}/${viewport.width}px] 現在時刻の線が初期表示範囲に無い`)
+      }
+      if (viewport.width === mobile.width && (geometry.block === null || geometry.block.width < 12)) {
+        ng.push(`[ops-timeline/${theme}/360px] 30 分番組のブロックが 12px 未満`)
+      }
+      for (const control of geometry.controls) {
+        if (control.rect === null || control.rect.width < 24 || control.rect.height < 24) {
+          ng.push(`[ops-timeline/${theme}/${viewport.width}px] 時間軸の操作標的が 24×24px 未満 (${control.tag})`)
+        }
+      }
+      if (geometry.overageLabelRects.length === 0) {
+        ng.push(`[ops-timeline/${theme}/${viewport.width}px] 容量超過のラベルが無い`)
+      }
+      for (const label of geometry.overageLabelRects) {
+        if (
+          label.x < geometry.frame.x ||
+          label.right > geometry.frame.right ||
+          geometry.rowLabelRects.some((rowLabel) => rowLabel && label.x < rowLabel.right && label.right > rowLabel.x)
+        ) {
+          ng.push(`[ops-timeline/${theme}/${viewport.width}px] 容量超過ラベルが枠外か行見出しと重なる`)
+        }
+      }
+    }
+
+    if (viewport.width === homeDesktop.width || viewport.width === mobile.width) {
+      const file = path.join(OUT_DIR, `home-ops-timeline-${theme}-${viewport.name}.png`)
+      await page.screenshot({ path: file })
+      log(`  ${path.basename(file)}`)
+      await checkMissingStrings(page, `home-ops-timeline/${theme}/${viewport.name}`)
+    }
+    await context.close()
+  }
+}
+
+// 複数サイトは不足区間の site をまたがず、行を site × 種別で分けて描く。
+for (const theme of themes) {
+  for (const viewport of [homeDesktop, mobile]) {
+    const { context, page } = await open(viewport, theme, {
+      name: 'home-ops-timeline-multisite',
+      path: '/?mode=ops',
+    }, { homeModeFixture: true, homeOpsFixture: true, multiSite: true })
+    const siteRows = await page.locator('[data-testid="home-timeline-row-label"]').allTextContents()
+    if (!siteRows.some((label) => label.includes('default · 地デジ')) ||
+        !siteRows.some((label) => label.includes('sub · 地デジ'))) {
+      ng.push(`[ops-timeline-multisite/${theme}/${viewport.width}px] site × channelType の行が分離されていない`)
+    }
+    const file = path.join(OUT_DIR, `home-ops-timeline-multisite-${theme}-${viewport.name}.png`)
+    await page.screenshot({ path: file })
+    log(`  ${path.basename(file)}`)
+    await context.close()
+  }
+}
+
 // 初回アクセス（URL も localStorage も空）の既定は「見る」。既存の管理側
 // シナリオは上の mode=ops で維持し、既定値だけは `/` を直接開いて確認する。
 {
