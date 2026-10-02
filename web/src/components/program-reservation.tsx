@@ -2,6 +2,7 @@ import { Link } from '@tanstack/react-router'
 import { Play } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 
+import { ApiError } from '@/api/client'
 import { useGetProgram, type ProgramOverlaps, type ProgramOverridesInput } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { EncodeSettingsFields } from '@/components/encode-settings-fields'
@@ -268,7 +269,11 @@ export function ProgramReservationBody({
 
   return (
     <>
-      <ProgramReservationDetails program={program} />
+      <ProgramReservationDetails
+        site={program.site}
+        programId={program.programId}
+        description={program.description}
+      />
 
       {(canSearchByName || reserved) && (
         <div className="mt-3 flex flex-wrap gap-4 text-xs">
@@ -317,10 +322,29 @@ export function ProgramReservationBody({
  * 説明・出演者・映像音声属性は一覧レスポンスに含まれないため、表示した時だけ詳細を
  * 取得する（段階的開示）。
  */
-function ProgramReservationDetails({ program }: { program: ProgramReservationProgram }) {
-  const detail = useGetProgram(program.site, program.programId)
+export function ProgramReservationDetails({
+  site,
+  programId,
+  description: summaryDescription,
+  hideWhenNotFound = false,
+  errorMessage = '詳細の取得に失敗しました',
+}: {
+  site: string
+  programId: number
+  description?: string
+  /** 予約本体を残したまま、EPG に無い番組の詳細だけを隠す。 */
+  hideWhenNotFound?: boolean
+  errorMessage?: string
+}) {
+  const detail = useGetProgram(site, programId)
   const d = unwrap(detail.data)
-  const description = program.description ?? d?.description
+  const description = summaryDescription ?? d?.description
+
+  // EPG は予約より先に番組情報を消すことがある。予約自体は有効な画面資源なので
+  // 呼び出し元が予約詳細を表示している場合だけ、番組情報 404 のサブ領域を隠す。
+  if (hideWhenNotFound && detail.error instanceof ApiError && detail.error.status === 404) {
+    return null
+  }
 
   return (
     <div className="flex flex-col gap-2 text-xs">
@@ -333,7 +357,7 @@ function ProgramReservationDetails({ program }: { program: ProgramReservationPro
           詳細を読み込み中…
         </p>
       )}
-      {detail.isError && <p className="text-destructive">詳細の取得に失敗しました</p>}
+      {detail.isError && <p className="text-destructive">{errorMessage}</p>}
 
       {d?.extended && Object.keys(d.extended).length > 0 && (
         <dl className="flex flex-col gap-1">
