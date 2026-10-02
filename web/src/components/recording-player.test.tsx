@@ -1,4 +1,4 @@
-import { fireEvent, render, waitFor } from '@testing-library/react'
+import { fireEvent, render, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { RecordingPlayer } from '@/components/recording-player'
@@ -702,7 +702,7 @@ describe('RecordingPlayer のチャプター', () => {
     expect(video.currentTime).toBe(10)
   })
 
-  it('チャプター要約の件数は保存値から数える（下書きの編集では変わらない）', () => {
+  it('チャプター要約の件数は保存値から数える（下書きの区間削除では変わらない）', () => {
     const { container } = render(
       <RecordingPlayer
         recordingId={103}
@@ -715,9 +715,8 @@ describe('RecordingPlayer のチャプター', () => {
     )
     const details = container.querySelector<HTMLDetailsElement>('[data-testid="chapter-editor-details"]')!
     fireEvent.click(details.querySelector('summary')!)
-    const label = details.querySelector('input[aria-label="ラベル"]')!
-    fireEvent.change(label, { target: { value: '本編' } })
-    expect(label).toHaveValue('本編')
+    fireEvent.click(within(details).getByRole('button', { name: '削除' }))
+    expect(details.querySelector('[data-testid="chapter-span-row"]')).toBeNull()
     expect(details.querySelector('summary')?.textContent).toBe('チャプター 1 件')
   })
 

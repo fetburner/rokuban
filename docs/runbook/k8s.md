@@ -190,13 +190,15 @@ kubectl get pod -l app.kubernetes.io/component=api -o name   # Pod 名が入れ�
 黙って古くなる）。
 
 mirakc は実機ではなくモックで確認している（同 README）。
-最後に通した環境は kind v0.32.0 / k8s v1.36.1 / KEDA v2.20.2（colima 2 CPU /
-3.8 GB、2026-08-28）。そのときの結果は次のとおり。
+全 5 判定と `--oracles` を最後に通した環境は kind v0.32.0 / k8s v1.36.1 /
+KEDA v2.20.2（Colima 2 CPU / 3.8 GB、2026-08-28）。そのときの結果は次のとおり。
+`--only 3` の行だけ 2026-10-01 に Colima aarch64 で通した。
 
 | コマンド | 結果 | 終了コード | 所要（実測） |
 |---|---|---|---|
 | `run.sh` | `PASS 25 / FAIL 0 / TODO 0` | 0 | 約 10 分（`--no-build`） |
 | `run.sh --oracles` | `PASS 19 / FAIL 0` | 0 | 約 40 分（同上） |
+| `run.sh --only 3` | `PASS 9 / FAIL 0 / TODO 0` | 2（部分実行のため仕様どおり） | 未計測 |
 
 **`--oracles` は長い。** 判定 2 は CronJob の自然な発火（分単位）を待ち、
 判定 3 / 5 は「起きないこと」を窓で見る。変異のたびにその待ちを通るので、
