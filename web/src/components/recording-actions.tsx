@@ -41,6 +41,10 @@ import { mutationErrorMessage } from '@/lib/mutation-error-message'
 import { useCMDetectEnabled } from '@/lib/capabilities'
 import { useMoveRecordingToTrash } from '@/lib/use-recording-trash'
 
+// ⋮ メニューの行。#1018 のラフ（13px × 行間 1.7 + 上下 7px = 36px）の高さに合わせる。
+// 部品の既定（実測 28px）では詰まって窮屈に見える。`web/e2e/recording-detail-layout.mjs` が下限 36px を測る。
+const menuRow = 'min-h-[36px] px-2.5 py-[7px]'
+
 /**
  * RecordingActions は論理削除 / 復元 / 即時 purge 印を扱う。
  * 削除系はいずれも DB だけを触り、ファイルは消さない（M3-7）。
@@ -115,9 +119,9 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
         >
           <MoreVertical />
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-72">
+        <DropdownMenuContent align="end" className="w-72 p-1.5">
           {recording.ruleId !== undefined && (
-            <DropdownMenuItem render={<Link to="/search" search={{ ruleId: recording.ruleId }} />}>
+            <DropdownMenuItem className={menuRow} render={<Link to="/search" search={{ ruleId: recording.ruleId }} />}>
               ルールを開く
               {ruleName !== undefined && (
                 <span data-testid="menu-rule-name" className="ml-auto max-w-40 truncate text-muted-foreground">
@@ -128,6 +132,7 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
           )}
           {recording.cmDetection.state === 'detected' || recording.cmDetection.state === 'failed' ? (
             <DropdownMenuItem
+              className={menuRow}
               // 原本が無いと再検出は 409 になる（検出は原本から読む）。押せる形で出さない。
               disabled={busy || !cmDetectEnabled || recording.sizeBytes === undefined}
               onClick={() =>
@@ -149,6 +154,7 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
           ) : null}
           {recording.cmDetection.state !== 'disabled' ? (
             <DropdownMenuItem
+              className={menuRow}
               disabled={busy || !cmDetectEnabled}
               onClick={() =>
                 setEncodePolicy.mutate(
@@ -168,6 +174,7 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
             </DropdownMenuItem>
           ) : cmDetectEnabled && recording.sizeBytes !== undefined ? (
             <DropdownMenuItem
+              className={menuRow}
               disabled={busy}
               onClick={() =>
                 setEncodePolicy.mutate(
@@ -187,7 +194,7 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
             </DropdownMenuItem>
           ) : null}
           <DropdownMenuSeparator />
-          <DropdownMenuItem disabled={busy} onClick={moveToTrash.moveToTrash}>
+          <DropdownMenuItem className={menuRow} disabled={busy} onClick={moveToTrash.moveToTrash}>
             <Trash2 />
             ごみ箱へ
           </DropdownMenuItem>
@@ -211,8 +218,9 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
         >
           <MoreVertical />
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-72">
+        <DropdownMenuContent align="end" className="w-72 p-1.5">
           <DropdownMenuItem
+            className={menuRow}
             variant="destructive"
             disabled={busy}
             onClick={() => setPurgeConfirmOpen(true)}

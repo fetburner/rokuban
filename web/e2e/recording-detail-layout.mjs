@@ -281,6 +281,15 @@ for (const viewport of [
     if (await page.getByText('今すぐ完全削除', { exact: true }).count() !== 0) {
       ng.push(`${viewport.name}: 通常の録画に今すぐ完全削除が表示される`)
     }
+    // 行の高さはラフ（13px × 行間 1.7 + 上下 7px = 36px）を下限にする。詰まると押し分けにくく窮屈に見える。
+    const rows = await page.getByRole('menuitem').evaluateAll((items) =>
+      // 開くアニメーション（zoom-in-95）の途中で測らないよう、変形の影響を受けない offsetHeight を使う。
+      items.map((item) => ({ text: item.textContent.trim(), height: item.offsetHeight })),
+    )
+    log(`  ${viewport.name} ⋮ メニューの行: ${JSON.stringify(rows)}`)
+    for (const row of rows) {
+      if (row.height < 36) ng.push(`${viewport.name}: ⋮ メニューの「${row.text}」の行の高さが ${row.height}px（ラフは 36px）`)
+    }
     if (EVIDENCE_DIR && viewport.name === 'desktop') {
       await page.screenshot({ path: path.join(EVIDENCE_DIR, 'desktop.png'), fullPage: true, animations: 'disabled' })
     }
