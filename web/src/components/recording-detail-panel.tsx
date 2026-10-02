@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { cn } from '@/lib/utils'
 
@@ -42,7 +42,7 @@ import { ingestDisplay, type IngestDisplay } from '@/lib/ingest'
 import { useLiveEnabled } from '@/lib/capabilities'
 import { recordingFileURL } from '@/lib/playback-position'
 import { seedRecordingDetail } from '@/lib/recording-detail-cache'
-import { liveProfileLabel, validLiveProfile } from '@/lib/live'
+import { validLiveProfile } from '@/lib/live'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { shouldShowRecordingSite, sourceLabels } from '@/lib/recording-search'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
@@ -78,24 +78,6 @@ function ingestDetailText(display: IngestDisplay): string {
       return `${display.stale ? '転送中・停滞' : '転送中'} ${size}${percent}`
     }
   }
-}
-
-function formatChaseElapsed(seconds: number): string {
-  const hours = Math.floor(seconds / 3600)
-  const minutes = Math.floor((seconds % 3600) / 60)
-  const remainder = seconds % 60
-  const parts = [
-    hours > 0 ? `${hours}時間` : '',
-    minutes > 0 ? `${minutes}分` : '',
-    remainder > 0 || (hours === 0 && minutes === 0) ? `${remainder}秒` : '',
-  ]
-  return parts.filter(Boolean).join('')
-}
-
-function formatChasePosition(startAt: string, offsetSeconds: number): string {
-  const startMs = Date.parse(startAt)
-  const positionAt = new Date(startMs + offsetSeconds * 1000).toISOString()
-  return `${formatTime(positionAt)}（開始から${formatChaseElapsed(offsetSeconds)}）`
 }
 
 function formatCMOffset(ms: number): string {
@@ -179,8 +161,6 @@ export function RecordingDetail({
   // recording head instead of restoring that saved position.
   const [chaseOffsetSeconds, setChaseOffsetSeconds] = useState<number | undefined>(undefined)
   const [selectedPlaybackProfile, setSelectedPlaybackProfile] = useState<string | undefined>(undefined)
-  const [selectedChaseOffsetSeconds, setSelectedChaseOffsetSeconds] = useState(0)
-  const selectedChaseOffsetRef = useRef(0)
   // 次のエピソードへ移るときページは作り直さず（全画面を保つため）、同じ部品に別の録画が来る。
   // 録画ごとの state（タブ・追っかけの位置・選んだ画質・説明の展開）はここで戻す。
   const [shownRecordingId, setShownRecordingId] = useState(recording.id)
@@ -190,7 +170,6 @@ export function RecordingDetail({
     setDescriptionExpanded(false)
     setChasing(chase)
     setChaseOffsetSeconds(undefined)
-    setSelectedChaseOffsetSeconds(0)
     setSelectedPlaybackProfile(undefined)
   }
   // ref は描画中に書けないので、id が変わった直後の effect で戻す（キー操作が前の回の位置を使わないように）。
@@ -233,20 +212,8 @@ export function RecordingDetail({
   const availableChaseSeconds = Number.isFinite(recordingStartMs)
     ? Math.max(0, Math.floor((now - recordingStartMs) / 1000))
     : 0
-  // The current edge is still moving while the recording is active. Leave one
-  // second of headroom so the initial Range is not exactly at a moving EOF.
-  const maxChaseOffsetSeconds = Math.max(0, availableChaseSeconds - 1)
-  const selectedOffset = Math.min(selectedChaseOffsetSeconds, maxChaseOffsetSeconds)
   const programStartMs = Date.parse(recording.startAt)
   const plannedChaseSeconds = Math.max(0, Math.ceil(recording.durationMs / 1000))
-  // `program_duration_ms` is copied into the recording when it is created. The
-  // watcher updates status/timestamps, not the planned duration, so an extension
-  // must grow this client-side axis from the elapsed recording time.
-  const timelineChaseSeconds = Math.max(1, plannedChaseSeconds, availableChaseSeconds)
-  const timelineExtended = availableChaseSeconds > plannedChaseSeconds
-  const recordedProgressPercent = Math.min(100, (availableChaseSeconds / timelineChaseSeconds) * 100)
-  const plannedEndAt = new Date(programStartMs + recording.durationMs).toISOString()
-  const timelineEndAt = new Date(programStartMs + timelineChaseSeconds * 1000).toISOString()
   // チャプター（CM とユーザー区間）。**ごみ箱では取らない** --- ごみ箱では
   // プレイヤーを出さず、配信経路も 404 になる（配信 3 クエリと同じ契約）。
   //
@@ -482,103 +449,6 @@ export function RecordingDetail({
                   閉じる
                 </button>
               </div>
-              <div className="flex flex-col gap-1 rounded border border-border/60 px-3 py-2">
-                <div className="flex items-center justify-between gap-3 text-muted-foreground">
-                  <span>{formatTime(recording.startAt)}</span>
-                  <span className="text-right" data-testid="chase-timeline-end">
-                    {timelineExtended
-                      ? `予定 ${formatTime(plannedEndAt)} / 録画中 ${formatTime(timelineEndAt)}`
-                      : `${formatTime(plannedEndAt)} まで（予定）`}
-                  </span>
-                </div>
-                <div
-                  className="relative my-1 h-2 rounded bg-muted"
-                  data-testid="chase-timeline-track"
-                >
-                  <div
-                    className="absolute inset-y-0 left-0 rounded bg-primary/30"
-                    data-testid="chase-timeline-recorded"
-                    style={{ width: `${recordedProgressPercent}%` }}
-                  />
-                  {timelineExtended && (
-                    <div
-                      aria-hidden="true"
-                      className="absolute -top-1 h-4 border-l-2 border-dashed border-foreground"
-                      data-testid="chase-timeline-planned-end"
-                      style={{ left: `${(plannedChaseSeconds / timelineChaseSeconds) * 100}%` }}
-                      title={`予定 ${formatTime(plannedEndAt)}`}
-                    />
-                  )}
-                  <input
-                    id={`chase-offset-${recording.id}`}
-                    type="range"
-                    min={0}
-                    max={timelineChaseSeconds}
-                    step={1}
-                    value={selectedOffset}
-                    disabled={!Number.isFinite(recordingStartMs) || maxChaseOffsetSeconds === 0}
-                    aria-label="追っかけ再生の位置"
-                    aria-valuemin={0}
-                    aria-valuenow={selectedOffset}
-                    aria-valuemax={maxChaseOffsetSeconds}
-                    aria-valuetext={formatChasePosition(recording.startAt, selectedOffset)}
-                    className="chase-timeline-slider absolute inset-x-0 -top-5 h-11 w-full cursor-ew-resize bg-transparent focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2 disabled:cursor-not-allowed"
-                    onChange={(event) => {
-                      const requested = Number.parseInt(event.target.value, 10)
-                      const next = Number.isFinite(requested)
-                        ? Math.min(Math.max(0, requested), maxChaseOffsetSeconds)
-                        : 0
-                      selectedChaseOffsetRef.current = next
-                      setSelectedChaseOffsetSeconds(next)
-                    }}
-                    onPointerUp={() => setChaseOffsetSeconds(selectedChaseOffsetRef.current)}
-                    onKeyUp={(event) => {
-                      if (
-                        ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(
-                          event.key,
-                        )
-                      ) {
-                        setChaseOffsetSeconds(selectedChaseOffsetRef.current)
-                      }
-                    }}
-                  />
-                </div>
-                <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-                  <output htmlFor={`chase-offset-${recording.id}`} className="font-medium">
-                    {formatChasePosition(recording.startAt, selectedOffset)}
-                  </output>
-                  <span className="text-muted-foreground">
-                    録画済み {formatChaseElapsed(availableChaseSeconds)}
-                  </span>
-                </div>
-              </div>
-              {/* 画質（issue #874）。**選択肢が 2 件以上のときだけ出す** ---
-                  1 件しか無いのに出すと、選んでも何も変わらない「機能しない
-                  コントロール」に戻る（issue #209 / `pages/live.tsx` と同じ規律）。
-                  **切替はセッションを作り直さない** --- 追っかけのセッション鍵は
-                  `(recordingID, offset)` でプロファイルを含まないので、同じセッションの
-                  別プレイリストを取るだけである（`internal/streamer/live.go`。
-                  `docs/api/media.md` §録画中の追っかけ再生）。`LivePlayer` は
-                  key で作り直さない --- 作り直すと再生位置が先頭に戻る。
-                  `value` は controlled なので、URL が未知の名前を運んでいても
-                  既定の先頭に一致して表示される。 */}
-              {liveProfiles.length > 1 && (
-                <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span>画質</span>
-                  <select
-                    aria-label="画質"
-                    value={explicitLiveProfile ?? liveProfiles[0]?.name}
-                    onChange={(e) => onSelectLiveProfile(e.target.value)}
-                    className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none"
-                  >
-                    {liveProfiles.map((p) => (
-                      <option key={p.name} value={p.name}>
-                        {liveProfileLabel(p)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
               {!(liveProfile !== undefined && liveProfilesQuery.isPending) && (
                 <LivePlayer
                   mode="chase"
@@ -587,6 +457,15 @@ export function RecordingDetail({
                   resumePositionMs={startAtBeginning ? undefined : recording.resumePositionMs}
                   startOffsetSeconds={startAtBeginning ? 0 : chaseOffsetSeconds}
                   profile={explicitLiveProfile}
+                  availableProfiles={liveProfiles}
+                  onProfileChange={onSelectLiveProfile}
+                  chaseTimeline={{
+                    programmeStartMs: programStartMs,
+                    recordingStartedAtMs: recordingStartMs,
+                    plannedSeconds: plannedChaseSeconds,
+                    recordedSeconds: availableChaseSeconds,
+                  }}
+                  onChaseOffsetChange={setChaseOffsetSeconds}
                 />
               )}
             </section>

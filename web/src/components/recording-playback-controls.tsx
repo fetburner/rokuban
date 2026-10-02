@@ -53,6 +53,17 @@ export type TilePreview = {
   seconds: number
 } | null
 
+export type ChaseTimeline = {
+  minSeconds: number
+  maxSeconds: number
+  recordedEndSeconds: number
+  plannedEndSeconds: number
+  liveEdgeSeconds: number
+  endLabel: string
+  ariaValueText: string
+  liveEdgeLabel: string
+}
+
 /** 設定メニューの階層。`main` が行リストで、残りは「›」で入る下の階層。 */
 type MenuView = 'main' | 'speed' | 'quality' | 'audio'
 
@@ -62,7 +73,8 @@ type RecordingPlaybackControlsProps = {
   recordingId: number
   profile: string
   encodedAssets: EncodedAsset[]
-  playbackMode?: 'encoded' | 'original-vod'
+  playbackMode?: 'encoded' | 'original-vod' | 'chase'
+  chaseTimeline?: ChaseTimeline
   profileOptions?: readonly { name: string; label?: string }[]
   audioChoice?: LiveAudioChoice
   onSelectAudio?: (choice: LiveAudioChoice | undefined) => void
@@ -92,6 +104,7 @@ type RecordingPlaybackControlsProps = {
   onSeekPointerCancel?: (event: ReactPointerEvent<HTMLDivElement>) => void
   onSeekPointerLeave: () => void
   onSeek: (seconds: number) => void
+  onLiveEdgeSeek?: () => void
   deferKeyboardSeek?: boolean
   onSeekPreview?: (seconds: number) => void
   onSelectProfile: (profile: string) => void
@@ -139,6 +152,7 @@ export function RecordingPlaybackControls({
   profile,
   encodedAssets,
   playbackMode = 'encoded',
+  chaseTimeline,
   profileOptions,
   audioChoice,
   onSelectAudio,
@@ -164,6 +178,7 @@ export function RecordingPlaybackControls({
   onSeekPointerCancel,
   onSeekPointerLeave,
   onSeek,
+  onLiveEdgeSeek,
   deferKeyboardSeek = false,
   onSeekPreview,
   onSelectProfile,
@@ -207,7 +222,20 @@ export function RecordingPlaybackControls({
   // 幕を押したポインタの種類（click には pointerType が載らないブラウザがある）。
   const scrimPointerTypeRef = useRef('')
   const pendingKeyboardSeek = useRef<number | null>(null)
-  const seconds = Math.max(0, Math.min(durationSeconds || 0, currentSeconds))
+  const rangeMin = chaseTimeline?.minSeconds ?? 0
+  const rangeMax = chaseTimeline?.maxSeconds ?? durationSeconds
+  const range = Math.max(0, rangeMax - rangeMin)
+  const seconds = Math.max(rangeMin, Math.min(rangeMax, currentSeconds))
+  const seekFraction = range > 0 ? Math.max(0, Math.min(1, (seconds - rangeMin) / range)) : 0
+  const recordedFraction = chaseTimeline && range > 0
+    ? Math.max(0, Math.min(1, (chaseTimeline.recordedEndSeconds - rangeMin) / range))
+    : 0
+  const plannedFraction = chaseTimeline && range > 0
+    ? Math.max(0, Math.min(1, (chaseTimeline.plannedEndSeconds - rangeMin) / range))
+    : 0
+  const liveEdgeFraction = chaseTimeline && range > 0
+    ? Math.max(0, Math.min(1, (chaseTimeline.liveEdgeSeconds - rangeMin) / range))
+    : 0
   const volumeValue = muted ? 0 : volume
   const hasChapters = !playingCut && chapters.length > 0
   const pictureInPictureEnabled =
@@ -249,17 +277,17 @@ export function RecordingPlaybackControls({
         target = (pendingKeyboardSeek.current ?? seconds) + 10
         break
       case 'Home':
-        target = 0
+        target = rangeMin
         break
       case 'End':
-        target = durationSeconds
+        target = chaseTimeline?.liveEdgeSeconds ?? durationSeconds
         break
       default:
         return
     }
     event.preventDefault()
     event.stopPropagation()
-    const bounded = Math.max(0, Math.min(durationSeconds, target))
+    const bounded = Math.max(rangeMin, Math.min(rangeMax, target))
     if (deferKeyboardSeek) {
       pendingKeyboardSeek.current = bounded
       onSeekPreview?.(bounded)
@@ -343,117 +371,164 @@ export function RecordingPlaybackControls({
             className="flex flex-col bg-gradient-to-t from-black/80 to-transparent px-2.5 pt-8 pb-1 md:bg-none md:p-0"
           >
             <div
-              role="slider"
-              aria-label="シークバー"
-              aria-valuemin={0}
-              aria-valuemax={Math.max(0, durationSeconds)}
-              aria-valuenow={seconds}
-              aria-valuetext={`${formatPlaybackTime(seconds)} / ${formatPlaybackTime(durationSeconds)}`}
-              tabIndex={0}
-              data-testid="seek-scrub"
-              className="group relative order-last mt-1 h-4 cursor-pointer touch-none outline-none focus-visible:ring-2 focus-visible:ring-white md:order-none md:mt-0 md:mb-1"
-              onKeyDown={seekByKeyboard}
-              onKeyUp={finishKeyboardSeek}
-              onBlur={commitPendingKeyboardSeek}
-              onPointerDown={onSeekPointerDown}
-              onPointerMove={onSeekPointerMove}
-              onPointerUp={onSeekPointerUp}
-              onPointerCancel={onSeekPointerCancel ?? onSeekPointerUp}
-              onPointerLeave={onSeekPointerLeave}
+              data-testid={chaseTimeline ? 'chase-timeline-track' : undefined}
+              className={cn('order-last mt-1 md:order-none md:mt-0 md:mb-1', chaseTimeline && 'relative')}
             >
-              <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full bg-white/30">
-                <div className="h-full bg-white" style={{ width: `${playedFraction * 100}%` }} />
-              </div>
-              {outsideProgramSegments && !playingCut && (
-                <div
-                  data-testid="recorded-outside-program-range"
-                  aria-hidden="true"
-                  className="pointer-events-none absolute inset-x-0 top-1/2 z-10 h-1 -translate-y-1/2"
-                >
-                  {[
-                    { id: 'before', left: 0, width: outsideProgramSegments.beforeEndPercent },
-                    {
-                      id: 'after',
-                      left: outsideProgramSegments.afterStartPercent,
-                      width: 100 - outsideProgramSegments.afterStartPercent,
-                    },
-                  ]
-                    .filter((segment) => segment.width > 0)
-                    .map((segment) => (
-                      // 番組の外は実線のバーを破線にして「番組ではない部分」と読ませる（┄┄）。
-                      <div
-                        key={segment.id}
-                        data-testid={`recorded-${segment.id}-program`}
-                        className="absolute inset-y-0 bg-black/70 bg-[repeating-linear-gradient(to_right,white_0_3px,transparent_3px_6px)]"
-                        style={{ left: `${segment.left}%`, width: `${segment.width}%` }}
-                      />
-                    ))}
-                </div>
-              )}
-              {chapters.length > 0 && !playingCut && durationSeconds > 0 && (
-                <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2">
-                  {chapters.map((span) => {
-                    const left = (span.startMs / 1000 / durationSeconds) * 100
-                    const width = ((span.endMs - span.startMs) / 1000 / durationSeconds) * 100
-                    return (
-                      <div
-                        key={`${span.startMs}-${span.endMs}`}
-                        data-testid="chapter-marker"
-                        data-cut={span.cut ? 'true' : 'false'}
-                        title={`${chapterLabel(span)} ${formatChaptersTime(
-                          span.startMs / 1000,
-                        )}–${formatChaptersTime(span.endMs / 1000)}`}
-                        className={`absolute -inset-y-0.5 min-w-0.5 rounded-sm ${span.cut ? 'bg-orange-400' : 'bg-sky-300'}`}
-                        style={{ left: `${left}%`, width: `${width}%` }}
-                      />
-                    )
-                  })}
-                </div>
-              )}
               <div
-                data-testid="seek-thumb"
-                className="pointer-events-none absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow"
-                style={{ left: `${playedFraction * 100}%` }}
-              />
-              {!playingCut && tilesRequested && (
-                <img
-                  src={seekTilesURL(recordingId)}
-                  alt=""
-                  className="pointer-events-none absolute size-px opacity-0"
-                  onLoad={onTileImageLoad}
-                  onError={onTileImageError}
-                />
-              )}
-              {tilePreview && tilesAvailable && (
-                <div
-                  className="pointer-events-none absolute bottom-full z-20 mb-2 flex origin-bottom-left flex-col items-center gap-1"
-                  style={{
-                    left: tilePreview.left,
-                    width: SEEK_TILES_DISPLAY_WIDTH,
-                    transform: tilePreview.scale < 1 ? `scale(${tilePreview.scale})` : undefined,
-                  }}
-                >
+                role="slider"
+                aria-label="シークバー"
+                aria-valuemin={rangeMin}
+                aria-valuemax={Math.max(rangeMin, rangeMax)}
+                aria-valuenow={seconds}
+                aria-valuetext={chaseTimeline?.ariaValueText ?? `${formatPlaybackTime(seconds)} / ${formatPlaybackTime(durationSeconds)}`}
+                tabIndex={0}
+                data-testid="seek-scrub"
+                className={cn(
+                  'group relative cursor-pointer touch-none outline-none focus-visible:ring-2 focus-visible:ring-white',
+                  chaseTimeline ? 'h-6' : 'h-4',
+                )}
+                onKeyDown={seekByKeyboard}
+                onKeyUp={finishKeyboardSeek}
+                onBlur={commitPendingKeyboardSeek}
+                onPointerDown={onSeekPointerDown}
+                onPointerMove={onSeekPointerMove}
+                onPointerUp={onSeekPointerUp}
+                onPointerCancel={onSeekPointerCancel ?? onSeekPointerUp}
+                onPointerLeave={onSeekPointerLeave}
+              >
+                {chaseTimeline && (
                   <div
-                    data-testid="seek-tile-preview"
-                    className="overflow-hidden rounded border border-white/30 bg-black shadow-lg"
-                    style={{ width: SEEK_TILES_DISPLAY_WIDTH, height: SEEK_TILES_DISPLAY_HEIGHT }}
+                    data-testid="chase-timeline-recorded"
+                    className="pointer-events-none absolute inset-y-0 left-0 z-[1] my-auto h-1 rounded-full bg-primary/55"
+                    style={{ width: `${recordedFraction * 100}%` }}
+                  />
+                )}
+                <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full bg-white/30">
+                  <div className="h-full bg-white" style={{ width: `${(chaseTimeline ? seekFraction : playedFraction) * 100}%` }} />
+                </div>
+                {outsideProgramSegments && !playingCut && (
+                  <div
+                    data-testid="recorded-outside-program-range"
+                    aria-hidden="true"
+                    className="pointer-events-none absolute inset-x-0 top-1/2 z-10 h-1 -translate-y-1/2"
+                  >
+                    {[
+                      { id: 'before', left: 0, width: outsideProgramSegments.beforeEndPercent },
+                      {
+                        id: 'after',
+                        left: outsideProgramSegments.afterStartPercent,
+                        width: 100 - outsideProgramSegments.afterStartPercent,
+                      },
+                    ]
+                      .filter((segment) => segment.width > 0)
+                      .map((segment) => (
+                        // 番組の外は実線のバーを破線にして「番組ではない部分」と読ませる（┄┄）。
+                        <div
+                          key={segment.id}
+                          data-testid={`recorded-${segment.id}-program`}
+                          className="absolute inset-y-0 bg-black/70 bg-[repeating-linear-gradient(to_right,white_0_3px,transparent_3px_6px)]"
+                          style={{ left: `${segment.left}%`, width: `${segment.width}%` }}
+                        />
+                      ))}
+                  </div>
+                )}
+                {chapters.length > 0 && !playingCut && durationSeconds > 0 && (
+                  <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2">
+                    {chapters.map((span) => {
+                      const left = (span.startMs / 1000 / durationSeconds) * 100
+                      const width = ((span.endMs - span.startMs) / 1000 / durationSeconds) * 100
+                      return (
+                        <div
+                          key={`${span.startMs}-${span.endMs}`}
+                          data-testid="chapter-marker"
+                          data-cut={span.cut ? 'true' : 'false'}
+                          title={`${chapterLabel(span)} ${formatChaptersTime(
+                            span.startMs / 1000,
+                          )}–${formatChaptersTime(span.endMs / 1000)}`}
+                          className={`absolute -inset-y-0.5 min-w-0.5 rounded-sm ${span.cut ? 'bg-orange-400' : 'bg-sky-300'}`}
+                          style={{ left: `${left}%`, width: `${width}%` }}
+                        />
+                      )
+                    })}
+                  </div>
+                )}
+                <div
+                  data-testid="seek-thumb"
+                  className="pointer-events-none absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow"
+                  style={{ left: `${(chaseTimeline ? seekFraction : playedFraction) * 100}%` }}
+                />
+                {!playingCut && tilesRequested && (
+                  <img
+                    src={seekTilesURL(recordingId)}
+                    alt=""
+                    className="pointer-events-none absolute size-px opacity-0"
+                    onLoad={onTileImageLoad}
+                    onError={onTileImageError}
+                  />
+                )}
+                {tilePreview && tilesAvailable && (
+                  <div
+                    className="pointer-events-none absolute bottom-full z-20 mb-2 flex origin-bottom-left flex-col items-center gap-1"
+                    style={{
+                      left: tilePreview.left,
+                      width: SEEK_TILES_DISPLAY_WIDTH,
+                      transform: tilePreview.scale < 1 ? `scale(${tilePreview.scale})` : undefined,
+                    }}
                   >
                     <div
-                      className="h-full w-full bg-no-repeat"
-                      style={{
-                        backgroundImage: `url(${seekTilesURL(recordingId)})`,
-                        backgroundPosition: `${tilePreview.x}px ${tilePreview.y}px`,
-                        backgroundSize: seekTileBackgroundSize(),
-                      }}
-                    />
+                      data-testid="seek-tile-preview"
+                      className="overflow-hidden rounded border border-white/30 bg-black shadow-lg"
+                      style={{ width: SEEK_TILES_DISPLAY_WIDTH, height: SEEK_TILES_DISPLAY_HEIGHT }}
+                    >
+                      <div
+                        className="h-full w-full bg-no-repeat"
+                        style={{
+                          backgroundImage: `url(${seekTilesURL(recordingId)})`,
+                          backgroundPosition: `${tilePreview.x}px ${tilePreview.y}px`,
+                          backgroundSize: seekTileBackgroundSize(),
+                        }}
+                      />
+                    </div>
+                    <span data-testid="seek-tile-label" className="rounded bg-black/80 px-1.5 text-xs">
+                      {formatPlaybackTime(tilePreview.seconds)}
+                      {hoverSpan ? ` · ${chapterLabel(hoverSpan)}` : ''}
+                    </span>
                   </div>
-                  <span data-testid="seek-tile-label" className="rounded bg-black/80 px-1.5 text-xs">
-                    {formatPlaybackTime(tilePreview.seconds)}
-                    {hoverSpan ? ` · ${chapterLabel(hoverSpan)}` : ''}
-                  </span>
-                </div>
+                )}
+              </div>
+              {chaseTimeline && (
+                <>
+                  <div
+                    aria-hidden="true"
+                    data-testid="chase-timeline-planned-end"
+                    className="pointer-events-none absolute top-0 z-[2] h-4 border-l-2 border-dashed border-white"
+                    style={{ left: `${plannedFraction * 100}%` }}
+                    title={`予定 ${formatPlaybackTime(chaseTimeline.plannedEndSeconds)}`}
+                  />
+                  <button
+                    type="button"
+                    data-testid="chase-live-edge"
+                    aria-label="録画の先端へ"
+                    title={chaseTimeline.liveEdgeLabel}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      onLiveEdgeSeek?.()
+                    }}
+                    className="absolute top-1/2 z-[3] size-6 -translate-x-1/2 -translate-y-1/2 rounded-full focus-visible:outline-2 focus-visible:outline-white"
+                    style={{ left: `${liveEdgeFraction * 100}%` }}
+                  >
+                    <span aria-hidden="true" className="mx-auto block h-5 w-0.5 bg-red-500" />
+                  </button>
+                </>
               )}
             </div>
+            {chaseTimeline && (
+              <div className="mb-1 flex justify-between text-[10px] text-white/75">
+                <span>{formatPlaybackTime(rangeMin)}</span>
+                <span data-testid="chase-timeline-end">{chaseTimeline.endLabel}</span>
+              </div>
+            )}
 
             <div data-testid="player-controls-row" className="flex min-h-9 items-center gap-0.5 md:min-h-10 md:gap-1">
               {/*
@@ -522,7 +597,9 @@ export function RecordingPlaybackControls({
                 />
               </div>
               <span data-testid="playback-time" className="shrink-0 px-1 font-mono text-xs whitespace-nowrap md:px-2 md:text-sm">
-                {formatPlaybackTime(seconds)} / {formatPlaybackTime(durationSeconds)}
+                {chaseTimeline
+                  ? `${formatPlaybackTime(seconds)} / 録画済み ${formatPlaybackTime(chaseTimeline.recordedEndSeconds)}`
+                  : `${formatPlaybackTime(seconds)} / ${formatPlaybackTime(durationSeconds)}`}
               </span>
               {/*
                 チャプターがある録画だけ名前を出し、押すとプレイヤー内のチャプター一覧（見るだけ）を開く。
@@ -812,7 +889,7 @@ type PlaybackSettingsMenuProps = {
   onClose: (focusGear: boolean) => void
   profile: string
   encodedAssets: EncodedAsset[]
-  playbackMode: 'encoded' | 'original-vod'
+  playbackMode: 'encoded' | 'original-vod' | 'chase'
   profileOptions?: readonly { name: string; label?: string }[]
   audioChoice?: LiveAudioChoice
   onSelectAudio?: (choice: LiveAudioChoice | undefined) => void
@@ -915,10 +992,11 @@ function PlaybackSettingsMenu({
 
   const selectedAsset = encodedAssets.find((asset) => asset.profile === profile)
   const selectedLiveProfile = profileOptions?.find((option) => option.name === profile)
-  const selectedProfileLabel = playbackMode === 'original-vod'
+  const usesLiveProfiles = playbackMode === 'original-vod' || playbackMode === 'chase'
+  const selectedProfileLabel = usesLiveProfiles
     ? selectedLiveProfile?.label ?? profile
     : selectedAsset ? assetLabel(selectedAsset) : profile
-  const showQuality = playbackMode === 'original-vod'
+  const showQuality = usesLiveProfiles
     ? (profileOptions?.length ?? 0) > 1
     : encodedAssets.length > 0
   const selectedAudioLabel = audioChoice === 'main' ? '主音声' : audioChoice === 'sub' ? '副音声' : '標準'
@@ -1080,7 +1158,7 @@ function PlaybackSettingsMenu({
         {view === 'quality' && (
           <>
             {backRow('画質')}
-            {playbackMode === 'original-vod'
+            {usesLiveProfiles
               ? profileOptions?.map((option) =>
                   radioRow(option.name, option.label ?? option.name, option.name === profile, () => onSelectProfile(option.name)),
                 )

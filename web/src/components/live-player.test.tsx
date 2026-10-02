@@ -2208,6 +2208,104 @@ describe('LivePlayer / 音声（issue #870）', () => {
   })
 })
 
+describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () => {
+  const chaseTimeline = {
+    programmeStartMs: 0,
+    recordingStartedAtMs: 0,
+    plannedSeconds: 60,
+    recordedSeconds: 20,
+  }
+
+  const playlistRequests = (fetchMock: ReturnType<typeof vi.fn>) =>
+    fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes('playlist.m3u8'))
+
+  it('native controlsを外し、画質を設定メニューに置き、範囲内シークは再要求しない', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <LivePlayer
+        mode="chase"
+        site="default"
+        recordingId={510}
+        chaseTimeline={chaseTimeline}
+        profile="hd"
+        availableProfiles={[{ name: 'hd', height: 720 }, { name: 'sd', height: 480 }]}
+      />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+
+    const video = document.querySelector('video')!
+    expect(video.controls).toBe(false)
+    const sliders = screen.getAllByRole('slider', { name: 'シークバー' })
+    expect(sliders).toHaveLength(1)
+    const slider = sliders[0]!
+    expect(slider).toHaveAttribute('aria-valuemin', '0')
+    expect(slider).toHaveAttribute('aria-valuemax', '60')
+    expect(screen.queryByRole('slider', { name: '追っかけ再生の位置' })).not.toBeInTheDocument()
+    expect(document.querySelector('[data-testid="chase-timeline-track"]')?.closest('[data-testid="player-controls"]'))
+      .not.toBeNull()
+
+    const seekable = { length: 1, start: () => 0, end: () => 10 }
+    Object.defineProperty(video, 'seekable', { value: seekable, configurable: true })
+    Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+    Object.defineProperty(slider, 'getBoundingClientRect', {
+      value: () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 24, width: 600, height: 24, toJSON: () => ({}) }),
+    })
+
+    const beforeSeek = playlistRequests(fetchMock).length
+    fireEvent.pointerDown(slider, { pointerId: 1, pointerType: 'mouse', clientX: 50, clientY: 12 })
+    fireEvent.pointerMove(slider, { pointerId: 1, pointerType: 'mouse', clientX: 50, clientY: 12 })
+    expect(video.currentTime).toBe(0)
+    expect(playlistRequests(fetchMock)).toHaveLength(beforeSeek)
+    expect(slider).toHaveAttribute('aria-valuenow', '5')
+    fireEvent.pointerUp(slider, { pointerId: 1, pointerType: 'mouse', clientX: 50, clientY: 12 })
+    expect(video.currentTime).toBe(5)
+    expect(playlistRequests(fetchMock)).toHaveLength(beforeSeek)
+
+    fireEvent.click(screen.getByRole('button', { name: '再生設定' }))
+    expect(screen.getByLabelText('画質')).toHaveValue('hd')
+    expect(screen.getByRole('region', { name: '再生設定' })).toContainElement(screen.getByLabelText('画質'))
+  })
+
+  it('現在のoffsetより前への確定は親へ秒を渡し、offset付きplaylistに張り直す', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+    const onChaseOffsetChange = vi.fn()
+    const props = {
+      mode: 'chase' as const,
+      site: 'default',
+      recordingId: 511,
+      chaseTimeline,
+      onChaseOffsetChange,
+    }
+    const { rerender } = render(<LivePlayer {...props} startOffsetSeconds={5} />)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    expect(playlistRequests(fetchMock)[0]).toContain('/chase/offset/5/playlist.m3u8')
+
+    const slider = screen.getByRole('slider', { name: 'シークバー' })
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'seekable', {
+      value: { length: 1, start: () => 0, end: () => 10 },
+      configurable: true,
+    })
+    Object.defineProperty(slider, 'getBoundingClientRect', {
+      value: () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 24, width: 600, height: 24, toJSON: () => ({}) }),
+    })
+    // Axis second 3 is earlier than session offset 5. It is committed only on pointerup.
+    fireEvent.pointerDown(slider, { pointerId: 2, pointerType: 'mouse', clientX: 30, clientY: 12 })
+    fireEvent.pointerMove(slider, { pointerId: 2, pointerType: 'mouse', clientX: 30, clientY: 12 })
+    expect(onChaseOffsetChange).not.toHaveBeenCalled()
+    expect(playlistRequests(fetchMock)).toHaveLength(1)
+    fireEvent.pointerUp(slider, { pointerId: 2, pointerType: 'mouse', clientX: 30, clientY: 12 })
+    expect(onChaseOffsetChange).toHaveBeenCalledWith(3)
+    expect(playlistRequests(fetchMock)).toHaveLength(1)
+
+    rerender(<LivePlayer {...props} startOffsetSeconds={3} />)
+    await waitFor(() => expect(playlistRequests(fetchMock)).toHaveLength(2))
+    expect(playlistRequests(fetchMock)[1]).toContain('/chase/offset/3/playlist.m3u8')
+  })
+})
+
 describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
   const playlistRequests = (fetchMock: ReturnType<typeof vi.fn>) =>
     fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes('playlist.m3u8'))
