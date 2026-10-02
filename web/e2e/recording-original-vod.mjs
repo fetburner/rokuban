@@ -906,6 +906,14 @@ const sampleOffsetPlayer = (target) => target.evaluate(() => {
     ng.push(`⑤-g 前提: スマホで再生中に操作が隠れない（${JSON.stringify(hiddenWhilePlaying)}）`)
   } else if (afterTap.controlsOpacity !== '1' || afterTap.paused) {
     ng.push(`⑤-g スマホで再生中に映像をタップしても操作が出ないか、再生が止まった（${JSON.stringify(afterTap)}）`)
+  } else {
+    // 暗い幕のタップで操作が隠れ、再生は止まらない（幕は click で閉じる。chapters.mjs ⑧）。
+    await phonePage.touchscreen.tap(phoneFrame.x + 30, phoneFrame.y + 30)
+    await phonePage.waitForTimeout(400)
+    const afterScrimTap = await sampleOffsetPlayer(phonePage)
+    if (afterScrimTap.controlsOpacity !== '0' || afterScrimTap.paused) {
+      ng.push(`⑤-g スマホで暗い幕をタップしても操作が隠れないか、再生が止まった（${JSON.stringify(afterScrimTap)}）`)
+    }
   }
   offsetFailAll = true
   await phonePage.locator('[data-testid="player-controls"]').getByRole('button', { name: '次のチャプター' }).tap().catch(() => {})
@@ -922,6 +930,25 @@ const sampleOffsetPlayer = (target) => target.evaluate(() => {
   if (screenshotDir) await phonePage.screenshot({ path: path.join(screenshotDir, 'mobile-error.png'), animations: 'disabled' })
   offsetFailAll = false
   await phoneContext.close()
+}
+
+{
+  // ⑤-i md 未満の幅でもマウスで映像（操作の幕）を押すと再生 / 一時停止する（chapters.mjs ⑨ と同じ）。
+  const narrowContext = await browser.newContext({ viewport: { width: 600, height: 900 }, locale: 'ja-JP' })
+  const narrowPage = await narrowContext.newPage()
+  await installApiStubs(narrowPage, offsetHandler)
+  await narrowPage.goto(`${URL_BASE}/recordings/${OFFSET_ID}`, { waitUntil: 'domcontentloaded' })
+  await narrowPage.locator('video').waitFor({ timeout: 15000 })
+  await narrowPage.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, undefined, { timeout: 30000 })
+    .catch(() => ng.push('⑤-i 600px で offset 0 のセッションが読み込まれない'))
+  await narrowPage.locator('video').evaluate((element) => {
+    element.muted = true
+  })
+  const narrowFrame = await narrowPage.getByTestId('recording-player-frame').boundingBox()
+  await narrowPage.mouse.click(narrowFrame.x + 30, narrowFrame.y + 30)
+  await narrowPage.waitForTimeout(400)
+  if ((await sampleOffsetPlayer(narrowPage)).paused) ng.push('⑤-i md 未満の幅でマウスで映像を押しても再生が始まらない')
+  await narrowContext.close()
 }
 
 await finish(ng, browser)
