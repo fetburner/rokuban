@@ -267,6 +267,11 @@ export function RecordingPlaybackControls({
   const seconds = Math.max(rangeMin, Math.min(rangeMax, currentSeconds))
   const axisFraction = (value: number) => (range > 0 ? Math.max(0, Math.min(1, (value - rangeMin) / range)) : 0)
   const seekFraction = axisFraction(seconds)
+  const recordingStartFraction = liveTimeline && range > 0
+    ? axisFraction(liveTimeline.recordingStartSeconds)
+    : 0
+  const plannedFraction = liveTimeline && range > 0 ? axisFraction(liveTimeline.plannedEndSeconds) : 0
+  const liveEdgeFraction = liveTimeline && range > 0 ? axisFraction(liveTimeline.liveEdgeSeconds) : 0
   // 追っかけの時刻は番組の長さに合わせて分で数える（ラフ: 「60:00」「70:12」）。
   const formatAxisTime = (value: number) => formatPlaybackTime(value, !chaseTimeline)
   const chaseExtended = chaseTimeline !== undefined && chaseTimeline.recordedEndSeconds > chaseTimeline.plannedEndSeconds
@@ -497,21 +502,40 @@ export function RecordingPlaybackControls({
                 aria-valuenow={seconds}
                 aria-valuetext={chaseTimeline
                   ? `${formatAxisTime(seconds)} / 録画済み ${formatAxisTime(chaseTimeline.recordedEndSeconds)}`
-                  : `${formatPlaybackTime(seconds)} / ${formatPlaybackTime(durationSeconds)}`}
-                tabIndex={0}
-                data-testid="seek-scrub"
+                  : liveTimeline?.ariaValueText ?? `${formatPlaybackTime(seconds)} / ${formatPlaybackTime(durationSeconds)}`}
+                aria-disabled={liveTimeline !== undefined && !liveTimeline.canSeek}
+                tabIndex={liveTimeline !== undefined && !liveTimeline.canSeek ? -1 : 0}
+                data-testid={isLiveTimeline ? 'live-program-timeline' : 'seek-scrub'}
                 className={cn(
                   'group relative touch-none outline-none focus-visible:ring-2 focus-visible:ring-white',
                   liveTimeline !== undefined && !liveTimeline.canSeek ? 'cursor-not-allowed' : 'cursor-pointer',
                   hasTimeline ? 'h-6' : 'h-4',
                 )}
-                onKeyDown={seekByKeyboard}
-                onKeyUp={finishKeyboardSeek}
+                onKeyDown={(event) => {
+                  if (liveTimeline !== undefined && !liveTimeline.canSeek) return
+                  seekByKeyboard(event)
+                }}
+                onKeyUp={(event) => {
+                  if (liveTimeline !== undefined && !liveTimeline.canSeek) return
+                  finishKeyboardSeek(event)
+                }}
                 onBlur={commitPendingKeyboardSeek}
-                onPointerDown={onSeekPointerDown}
-                onPointerMove={onSeekPointerMove}
-                onPointerUp={onSeekPointerUp}
-                onPointerCancel={onSeekPointerCancel ?? onSeekPointerUp}
+                onPointerDown={(event) => {
+                  if (liveTimeline !== undefined && !liveTimeline.canSeek) return
+                  onSeekPointerDown(event)
+                }}
+                onPointerMove={(event) => {
+                  if (liveTimeline !== undefined && !liveTimeline.canSeek) return
+                  onSeekPointerMove(event)
+                }}
+                onPointerUp={(event) => {
+                  if (liveTimeline !== undefined && !liveTimeline.canSeek) return
+                  onSeekPointerUp(event)
+                }}
+                onPointerCancel={(event) => {
+                  if (liveTimeline !== undefined && !liveTimeline.canSeek) return
+                  ;(onSeekPointerCancel ?? onSeekPointerUp)(event)
+                }}
                 onPointerLeave={onSeekPointerLeave}
               >
                 {chaseTimeline ? (
@@ -550,8 +574,37 @@ export function RecordingPlaybackControls({
                   </div>
                 ) : (
                   <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full bg-white/30">
-                    <div className="h-full bg-white" style={{ width: `${playedFraction * 100}%` }} />
+                    <div className="h-full bg-white" style={{ width: `${(hasTimeline ? seekFraction : playedFraction) * 100}%` }} />
                   </div>
+                )}
+                {liveTimeline && range > 0 && (
+                  <>
+                    {liveTimeline.plannedEndSeconds < rangeMax && (
+                      <span
+                        aria-hidden="true"
+                        data-testid="live-program-planned-end"
+                        className="pointer-events-none absolute top-1/2 z-[2] h-3 border-l border-dashed border-white/70"
+                        style={{ left: `${plannedFraction * 100}%` }}
+                        title={`予定終端 ${formatPlaybackTime(liveTimeline.plannedEndSeconds, false)}`}
+                      />
+                    )}
+                    {liveTimeline.canSeek && (
+                      <span
+                        aria-hidden="true"
+                        data-testid="live-recording-start"
+                        className="pointer-events-none absolute top-1/2 z-[2] h-4 border-l-2 border-dashed border-white"
+                        style={{ left: `${recordingStartFraction * 100}%` }}
+                        title={`録画開始 ${formatPlaybackTime(liveTimeline.recordingStartSeconds, false)}`}
+                      />
+                    )}
+                    <span
+                      aria-hidden="true"
+                      data-testid="live-program-live-edge"
+                      className="pointer-events-none absolute top-1/2 z-[2] h-4 border-l-2 border-[#ff5252]"
+                      style={{ left: `${liveEdgeFraction * 100}%` }}
+                      title={`ライブ ${formatPlaybackTime(liveTimeline.liveEdgeSeconds, false)}`}
+                    />
+                  </>
                 )}
                 {chaseTimeline && chaseTimeline.hoverSeconds !== null && (
                   <div
@@ -654,7 +707,7 @@ export function RecordingPlaybackControls({
                       </div>
                     )}
                     <span data-testid={isLiveTimeline ? 'live-seek-preview-label' : 'seek-tile-label'} className="rounded bg-black/80 px-1.5 text-xs">
-                      {isLiveTimeline ? `${formatTimelineTime(tilePreview.seconds)} · ここから見る（録画中）` : formatPlaybackTime(tilePreview.seconds)}
+                      {isLiveTimeline ? `${formatPlaybackTime(tilePreview.seconds, false)} · ここから見る（録画中）` : formatPlaybackTime(tilePreview.seconds)}
                       {!isLiveTimeline && hoverSpan ? ` · ${chapterLabel(hoverSpan)}` : ''}
                     </span>
                   </div>
@@ -686,6 +739,7 @@ export function RecordingPlaybackControls({
                 </>
               )}
             </div>
+            )}
             {/*
               軸の目盛り（デスクトップだけ。スマホは時刻の表示で足りる）。左端と右端のほかに、通常は先端の
               時刻だけを先端の印の真下に（「押すと先端へ」の説明は印のアクセシブル名と title に置く）、
