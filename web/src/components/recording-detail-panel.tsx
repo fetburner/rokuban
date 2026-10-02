@@ -629,7 +629,7 @@ export function RecordingDetail({
                     recordingDurationMs={
                       recording.startedAt !== undefined && recording.endedAt !== undefined
                         ? Date.parse(recording.endedAt) - Date.parse(recording.startedAt)
-                        : undefined
+                        : recording.durationMs
                     }
                     profile={explicitLiveProfile}
                     availableProfiles={liveProfiles}

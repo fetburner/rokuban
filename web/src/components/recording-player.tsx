@@ -5,7 +5,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type FocusEvent as ReactFocusEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 
@@ -34,6 +33,7 @@ import {
 } from '@/lib/playback-position'
 import { formatDate, formatTime } from '@/lib/format'
 import { programTitle } from '@/lib/program-labels'
+import { usePlayerFrame } from '@/lib/use-player-frame'
 import { cn } from '@/lib/utils'
 import {
   SEEK_TILES_DISPLAY_WIDTH,
@@ -179,11 +179,10 @@ export function RecordingPlayer({
   const fullscreenRef = useRef<HTMLDivElement>(null)
   const isScrubbingRef = useRef(false)
   const jumpToRef = useRef<(seconds: number) => void>(() => {})
-  const controlsTimerRef = useRef<number | undefined>(undefined)
-  // 映像を押したポインタの種類。タッチは再生 / 一時停止ではなく操作の表示に使う（スマホの定石）。
-  const videoPointerTypeRef = useRef<string>('')
   const subtitleLinesRef = useRef(new WeakMap<VTTCue, VTTCue['line']>())
-  const [mediaPlaying, setMediaPlaying] = useState(false)
+  // 枠（バーの自動非表示・フォーカス・映像のタップ・全画面・PiP）は原本 HLS の LivePlayer と共有する。
+  const frame = usePlayerFrame(videoRef, fullscreenRef, `${recordingId}:${selectedProfile}`)
+  const { controlsVisible, requestFullscreen } = frame
   // 終端カードを出している録画の id。録画を切り替えても作り直さないので、id と組で持って
   // 切り替えた瞬間に前の録画のカードを描かない（`played` と同じ規律）。
   const [endCardFor, setEndCardFor] = useState<number | null>(null)
@@ -191,13 +190,7 @@ export function RecordingPlayer({
   const [countdownSeconds, setCountdownSeconds] = useState(AUTO_ADVANCE_SECONDS)
   // 終端カードから移った先の録画 id。移った先は再生を始める（カードの文言どおり）。
   const autoplayRecordingRef = useRef<number | null>(null)
-  const [muted, setMuted] = useState(false)
-  const [volume, setVolume] = useState(1)
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(false)
-  const [pictureInPicture, setPictureInPicture] = useState(false)
-  const [isFullscreen, setIsFullscreen] = useState(false)
-  const [controlsVisible, setControlsVisible] = useState(true)
-  const [toolbarFocused, setToolbarFocused] = useState(false)
   // タイルは録画ごとに 1 枚で profile に依存しないので、キーは recordingId だけ。
   const [tilesRequestedFor, setTilesRequestedFor] = useState<number | null>(null)
   const [tilesAvailableFor, setTilesAvailableFor] = useState<number | null>(null)
@@ -451,11 +444,8 @@ export function RecordingPlayer({
     }
   }, [keepRangesKey, recordingId, saveCurrentPosition, selectedProfile])
 
-  // 再生中に別の録画へ移ってもタイマーや境界の前後再生を残さない。
-  useEffect(() => () => {
-    window.clearTimeout(controlsTimerRef.current)
-    window.clearTimeout(playAroundTimerRef.current)
-  }, [])
+  // 再生中に別の録画へ移っても境界の前後再生を残さない。
+  useEffect(() => () => window.clearTimeout(playAroundTimerRef.current), [])
 
   // 録画を変えても速度は保つ（以前はここで 1 倍に戻していた）。速度は端末ごとの
   // 好みであって録画ごとの状態ではない（`lib/playback-position.ts`）。
@@ -475,38 +465,6 @@ export function RecordingPlayer({
     if (appliedRate !== playbackRate) setPlaybackRate(appliedRate)
   }, [recordingId, selectedProfile, playbackRate])
 
-  const updateFullscreenState = () => {
-    setIsFullscreen(document.fullscreenElement === fullscreenRef.current)
-  }
-  const requestPlayerFullscreen = () => {
-    const container = fullscreenRef.current
-    if (document.fullscreenElement === container) {
-      void document.exitFullscreen?.().catch(() => {})
-      return
-    }
-    if (container?.requestFullscreen) {
-      void container.requestFullscreen().catch(() => {})
-      return
-    }
-    const video = videoRef.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null
-    video?.webkitEnterFullscreen?.()
-  }
-  const togglePictureInPicture = () => {
-    const video = videoRef.current
-    if (!video || !document.pictureInPictureEnabled) return
-    if (document.pictureInPictureElement === video) {
-      void document.exitPictureInPicture?.().catch(() => {})
-      return
-    }
-    void video.requestPictureInPicture?.().catch(() => {})
-  }
-  const syncMediaState = (video: HTMLVideoElement) => {
-    setMediaPlaying(!video.paused)
-    setMuted(video.muted)
-    setVolume(video.volume)
-    setSubtitlesEnabled(Array.from(video.textTracks).some((track) => track.kind === 'subtitles' && track.mode === 'showing'))
-    setPictureInPicture(document.pictureInPictureElement === video)
-  }
   const updateSubtitleCueLines = (video: HTMLVideoElement, raise: boolean) => {
     const frame = fullscreenRef.current
     // スマホの操作表示は枠全体に幕を敷くので、字幕を避ける高さは下端の帯（時刻・シークバー）だけ。
@@ -533,68 +491,10 @@ export function RecordingPlayer({
       }
     }
   }
-  const handleControlsActivity = () => {
-    setControlsVisible(true)
-    window.clearTimeout(controlsTimerRef.current)
-    if (!mediaPlaying || toolbarFocused) return
-    controlsTimerRef.current = window.setTimeout(() => setControlsVisible(false), 3000)
-  }
-  // バーを出したままにするのはキーボードフォーカス（:focus-visible）だけ。
-  // マウスで押したボタンに残ったフォーカスで出しっぱなしにすると、再生中ずっと映像に被る。
-  const handleToolbarFocus = (event: ReactFocusEvent<HTMLElement>) => {
-    let keyboard = false
-    try {
-      keyboard = (event.target as Element).matches(':focus-visible')
-    } catch {
-      keyboard = false
-    }
-    if (!keyboard) return
-    setToolbarFocused(true)
-    setControlsVisible(true)
-    window.clearTimeout(controlsTimerRef.current)
-  }
-  const handleToolbarBlur = (event: ReactFocusEvent<HTMLElement>) => {
-    const relatedTarget = event.relatedTarget
-    const shell = event.currentTarget.closest('[data-testid="recording-player-shell"]')
-    const toolbar = shell?.querySelector('[data-testid="player-controls"]')
-    const settings = shell?.querySelector('[data-player-popover]')
-    if (
-      relatedTarget instanceof Node &&
-      (toolbar?.contains(relatedTarget) || settings?.contains(relatedTarget))
-    ) return
-    // マウスで押したボタンの blur（隠れたバーの inert でフォーカスが落ちるときも来る）で
-    // 再表示しない。キーボードフォーカスを離れたときだけ、隠すタイマーを張り直す。
-    if (!toolbarFocused) return
-    setToolbarFocused(false)
-    handleControlsActivity()
-  }
-
-  useEffect(() => {
-    const onFullscreenChange = () => updateFullscreenState()
-    document.addEventListener('fullscreenchange', onFullscreenChange)
-    return () => {
-      document.removeEventListener('fullscreenchange', onFullscreenChange)
-    }
-  }, [])
-
   useEffect(() => {
     const video = videoRef.current
-    if (!video) return
-    const onPictureInPictureChange = () => {
-      setPictureInPicture(document.pictureInPictureElement === video)
-    }
-    video.addEventListener('enterpictureinpicture', onPictureInPictureChange)
-    video.addEventListener('leavepictureinpicture', onPictureInPictureChange)
-    return () => {
-      video.removeEventListener('enterpictureinpicture', onPictureInPictureChange)
-      video.removeEventListener('leavepictureinpicture', onPictureInPictureChange)
-    }
-  }, [recordingId, selectedProfile])
-
-  useEffect(() => {
-    const video = videoRef.current
-    const frame = fullscreenRef.current
-    const controls = frame?.querySelector<HTMLElement>('[data-testid="player-controls-bottom"]')
+    const frameElement = fullscreenRef.current
+    const controls = frameElement?.querySelector<HTMLElement>('[data-testid="player-controls-bottom"]')
     if (!video) return
     const update = () => updateSubtitleCueLines(video, controlsVisible)
     update()
@@ -606,10 +506,10 @@ export function RecordingPlayer({
     eventTrackElements.forEach((track) => track.addEventListener('load', update))
     eventTextTracks.forEach((track) => track.addEventListener('cuechange', update))
 
-    const observer = frame && controls && typeof ResizeObserver !== 'undefined'
+    const observer = frameElement && controls && typeof ResizeObserver !== 'undefined'
       ? new ResizeObserver(update)
       : null
-    observer?.observe(frame!)
+    observer?.observe(frameElement!)
     observer?.observe(controls!)
     return () => {
       eventTrackElements.forEach((track) => track.removeEventListener('load', update))
@@ -658,7 +558,7 @@ export function RecordingPlayer({
           video.muted = !video.muted
           break
         case 'f':
-          requestPlayerFullscreen()
+          requestFullscreen()
           break
         default:
           if (/^[0-9]$/.test(key) && Number.isFinite(video.duration)) {
@@ -672,7 +572,7 @@ export function RecordingPlayer({
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+  }, [requestFullscreen])
 
   if (profiles.length === 0) {
     return (
@@ -814,7 +714,6 @@ export function RecordingPlayer({
         outsideProgramSegments={outsideProgramSegments}
         onNextEpisodeNavigate={onNextEpisodeNavigate}
         endCard={endCard}
-        fullscreenRef={fullscreenRef}
         currentSeconds={currentSeconds}
         durationSeconds={durationSeconds}
         playedFraction={playedFraction}
@@ -839,39 +738,15 @@ export function RecordingPlayer({
         }}
         onPreviousChapter={() => jumpChapter('prev')}
         onNextChapter={() => jumpChapter('next')}
-        isPlaying={mediaPlaying}
-        muted={muted}
-        volume={volume}
+        {...frame.controls}
         playbackRate={playbackRate}
         subtitlesEnabled={subtitlesEnabled}
         skipEnabled={skipEnabled}
-        pictureInPicture={pictureInPicture}
-        isFullscreen={isFullscreen}
         showWatched={showWatched}
         watched={watched}
         watchedPending={watchedPending}
         onPutWatched={putWatched}
         onDeleteWatched={deleteWatched}
-        onTogglePlay={() => {
-          const video = videoRef.current
-          if (!video) return
-          if (video.paused) void video.play().catch(() => {})
-          else video.pause()
-        }}
-        onToggleMute={() => {
-          const video = videoRef.current
-          if (!video) return
-          video.muted = !video.muted
-          setMuted(video.muted)
-        }}
-        onVolumeChange={(nextVolume) => {
-          const video = videoRef.current
-          if (!video) return
-          video.volume = nextVolume
-          video.muted = nextVolume === 0
-          setVolume(video.volume)
-          setMuted(video.muted)
-        }}
         onRateChange={(rate) => {
           const video = videoRef.current
           if (!video) return
@@ -893,43 +768,20 @@ export function RecordingPlayer({
           setSkipEnabled(enabled)
           saveChapterSkip(enabled)
         }}
-        onTogglePictureInPicture={togglePictureInPicture}
-        onToggleFullscreen={requestPlayerFullscreen}
-        controlsVisible={controlsVisible || !mediaPlaying || toolbarFocused}
-        onControlsActivity={handleControlsActivity}
-        onHideControls={() => {
-          window.clearTimeout(controlsTimerRef.current)
-          if (mediaPlaying) setControlsVisible(false)
-        }}
-        onToolbarFocus={handleToolbarFocus}
-        onToolbarBlur={handleToolbarBlur}
-        onShellKeyDown={handleControlsActivity}
         video={(
           <video
             ref={videoRef}
             key={`${recordingId}:${selectedProfile}:${keepRangesKey}`}
-            tabIndex={0}
+            {...frame.video}
             aria-label="録画映像"
             playsInline
             preload="metadata"
             src={src}
             className="absolute inset-0 size-full bg-black object-contain"
-            onPointerDown={(event) => {
-              videoPointerTypeRef.current = event.pointerType
-            }}
-            onClick={(event) => {
-              // タッチでは映像のタップで操作を出す（再生 / 一時停止は中央のボタン）。
-              if (videoPointerTypeRef.current === 'touch') {
-                videoPointerTypeRef.current = ''
-                handleControlsActivity()
-                return
-              }
-              if (event.currentTarget.paused) void event.currentTarget.play().catch(() => {})
-              else event.currentTarget.pause()
-            }}
             onLoadedMetadata={(e) => {
               updatePlayedFraction(e.currentTarget)
-              syncMediaState(e.currentTarget)
+              frame.syncFromVideo(e.currentTarget)
+              setSubtitlesEnabled(Array.from(e.currentTarget.textTracks).some((track) => track.kind === 'subtitles' && track.mode === 'showing'))
               updateSubtitleCueLines(e.currentTarget, controlsVisible)
               if (autoplayRecordingRef.current === recordingId) {
                 autoplayRecordingRef.current = null
@@ -978,17 +830,10 @@ export function RecordingPlayer({
             }}
             onPlay={() => {
               setEndCardFor(null)
-              setMediaPlaying(true)
-              setControlsVisible(true)
-              window.clearTimeout(controlsTimerRef.current)
-              if (!toolbarFocused) {
-                controlsTimerRef.current = window.setTimeout(() => setControlsVisible(false), 3000)
-              }
+              frame.onPlay()
             }}
             onPause={(e) => {
-              setMediaPlaying(false)
-              setControlsVisible(true)
-              window.clearTimeout(controlsTimerRef.current)
+              frame.onPause()
               saveCurrentPosition(e.currentTarget)
             }}
             onEnded={() => {
@@ -996,8 +841,7 @@ export function RecordingPlayer({
               setEndCardFor(recordingId)
             }}
             onVolumeChange={(e) => {
-              setMuted(e.currentTarget.muted)
-              setVolume(e.currentTarget.volume)
+              frame.onVolumeChange(e.currentTarget)
             }}
             onRateChange={(e) => {
               const rate = e.currentTarget.playbackRate

@@ -277,7 +277,8 @@ export function RecordingPlaybackControls({
     pendingKeyboardSeek.current = null
   }
 
-  const cancelKeyboardSeek = () => {
+  // フォーカスが帯を離れたら、キーを離す前でも保留中のシークを確定する（捨てない）。
+  const commitPendingKeyboardSeek = () => {
     if (!deferKeyboardSeek || pendingKeyboardSeek.current === null) return
     onSeek(pendingKeyboardSeek.current)
     pendingKeyboardSeek.current = null
@@ -353,7 +354,7 @@ export function RecordingPlaybackControls({
               className="group relative order-last mt-1 h-4 cursor-pointer touch-none outline-none focus-visible:ring-2 focus-visible:ring-white md:order-none md:mt-0 md:mb-1"
               onKeyDown={seekByKeyboard}
               onKeyUp={finishKeyboardSeek}
-              onBlur={cancelKeyboardSeek}
+              onBlur={commitPendingKeyboardSeek}
               onPointerDown={onSeekPointerDown}
               onPointerMove={onSeekPointerMove}
               onPointerUp={onSeekPointerUp}
@@ -1040,28 +1041,15 @@ function PlaybackSettingsMenu({
         <div aria-hidden className="mx-auto mt-1 mb-2 h-1 w-9 rounded-full bg-border md:hidden" />
         {view === 'main' && (
           <>
-            {/* 原本 HLS は画質・音声を先頭に置き、desktop と phone の rough を揃える。
-                encoded は #1013 の既存順を保ち、phone だけ CSS で反転する。 */}
-            <div
-              role="none"
-              className={playbackMode === 'original-vod' ? 'flex flex-col' : 'flex flex-col-reverse md:flex-col'}
-            >
-              {playbackMode === 'original-vod' ? (
-                <>
-                  {qualityRow}
-                  {audioRow}
-                  {speedRow}
-                  {subtitlesRow}
-                  {skipRow}
-                </>
-              ) : (
-                <>
-                  {skipRow}
-                  {subtitlesRow}
-                  {speedRow}
-                  {qualityRow}
-                </>
-              )}
+            {/* デスクトップは CM・字幕・再生速度・（音声）・画質の順で、画質を歯車に近い最下段に置く。
+                スマホのシートは画質を一番上に置く（ラフ）。並びだけを CSS で逆にするので、音声は
+                どちらでも画質の隣（デスクトップは直前、スマホは直後）に入る。 */}
+            <div role="none" className="flex flex-col-reverse md:flex-col">
+              {skipRow}
+              {subtitlesRow}
+              {speedRow}
+              {audioRow}
+              {qualityRow}
             </div>
             {pictureInPictureEnabled && (
               <>

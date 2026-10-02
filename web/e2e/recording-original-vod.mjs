@@ -10,8 +10,10 @@
 // ここの手書き引数はそれと同じ形に揃えてあるだけで、同一であることは保証しない。
 // 元 TS は MPEG-2 video / MP2 audio だけを持つ。字幕は SRT から直接 WebVTT にしており、
 // **原本（ARIB / DVB 字幕ストリーム）由来の字幕は未検証**（ffmpeg はテキスト字幕から
-// ビットマップ字幕を作れない）。配る playlist は最初から ENDLIST 済みなので、
-// 変換中に伸びる playlist を追う挙動も未検証（それは live-player のユニットテストが信号だけ見る）。
+// ビットマップ字幕を作れない）。①〜③ の playlist は最初から ENDLIST 済みである。
+// ⑤ は streamer と同じ `-ss {offset}`（0 起点）で offset ごとに作り、ENDLIST を外した
+// 変換中の playlist で開始位置・張り直し後の再生継続・末尾の 416・枠の操作を見る。
+// 変換が進んで playlist が伸びていく挙動そのものは配らない（先端は 20 秒で止まる）。
 //
 //   cd web && pnpm build
 //   pnpm preview --port 4173 --strictPort &
@@ -70,6 +72,9 @@ const recording = {
 // ⑤ の録画。映像は 60 秒、DB の実尺は 63 秒（末尾付近のクリックを 416 にする）。
 const OFFSET_ID = 921
 const OFFSET_VIDEO_SECONDS = 60
+// この合成 TS は `-ss 59` で映像が 0 フレームになる（ffmpeg 実測。-ss 58 は 50 フレーム）。
+// streamer の範囲判定（映像の終端 - 0.5 秒より後ろを 416）を、使える映像の終端 58.5 秒で真似る。
+const OFFSET_PLAYABLE_END = 58.5
 const OFFSET_DB_SECONDS = 63
 const offsetStartedAt = new Date(Date.now() - 3_600_000).toISOString()
 const offsetRecording = {
@@ -408,21 +413,25 @@ await audioSettingsButton.click()
 const settingsMenu = page.getByRole('menu', { name: '再生設定' })
 const settingsOrder = async () => settingsMenu.locator('[role^="menuitem"]').evaluateAll((items) =>
   items
+    .filter((item) => item.getClientRects().length > 0)
     .map((item) => ({ label: item.getAttribute('aria-label'), top: item.getBoundingClientRect().top }))
     .filter((item) => item.label !== null)
     .sort((a, b) => a.top - b.top)
     .map((item) => item.label),
 )
-const expectedSettingsOrder = ['画質', '音声', '再生速度', '字幕', 'CM を飛ばす']
-if ((await settingsOrder()).slice(0, expectedSettingsOrder.length).join('|') !== expectedSettingsOrder.join('|')) {
-  ng.push(`① desktop 設定順が rough と異なる (${(await settingsOrder()).join(', ')})`)
+// #1013 の決定: デスクトップは CM・字幕・再生速度・画質（画質が歯車に近い最下段）、スマホのシートは
+// 画質が先頭。原本 HLS もエンコード版と同じ順にし、音声は画質の隣に入れる。
+const expectedDesktopOrder = ['CM を飛ばす', '字幕', '再生速度', '音声', '画質']
+const expectedPhoneOrder = ['画質', '音声', '再生速度', '字幕', 'CM を飛ばす']
+if ((await settingsOrder()).join('|') !== expectedDesktopOrder.join('|')) {
+  ng.push(`① デスクトップの設定の順がエンコード版と違う (${(await settingsOrder()).join(', ')})`)
 }
 if (screenshotDir) {
   await page.screenshot({ path: path.join(screenshotDir, 'desktop-settings.png'), fullPage: true, animations: 'disabled' })
 }
 await page.setViewportSize({ width: 400, height: 800 })
-if ((await settingsOrder()).slice(0, expectedSettingsOrder.length).join('|') !== expectedSettingsOrder.join('|')) {
-  ng.push(`① phone 設定順が rough と異なる (${(await settingsOrder()).join(', ')})`)
+if ((await settingsOrder()).slice(0, expectedPhoneOrder.length).join('|') !== expectedPhoneOrder.join('|')) {
+  ng.push(`① スマホのシートの順がエンコード版と違う (${(await settingsOrder()).join(', ')})`)
 }
 if (screenshotDir) {
   await page.screenshot({ path: path.join(screenshotDir, 'mobile-settings.png'), fullPage: true, animations: 'disabled' })
@@ -719,7 +728,7 @@ const offsetHandler = async ({ path: requestPath, json, route }) => {
     const offset = match ? Number(match[1]) : 0
     const resource = match ? relative.slice(match[0].length) : relative
     if (offsetFailAll) return route.fulfill({ status: 500, contentType: 'text/plain', body: 'stub failure\n' })
-    if (offset > OFFSET_VIDEO_SECONDS - 0.5) {
+    if (offset > OFFSET_PLAYABLE_END - 0.5) {
       if (resource === 'playlist.m3u8') offsetRequests.push({ offset, status: 416 })
       return route.fulfill({ status: 416, contentType: 'text/plain', body: 'offset is outside the original\n' })
     }
@@ -782,7 +791,15 @@ const sampleOffsetPlayer = (target) => target.evaluate(() => {
   if (afterIdle.controlsOpacity !== '0') {
     ng.push(`⑤-b バーの ▶ をマウスで押した後、4.5 秒待ってもバーが隠れない（${JSON.stringify(afterIdle)}）`)
   }
-  // ⑤-c 再生中に Tab でバーへ届く（隠れたバーは inert。chapters.mjs ⑥-b と同じ）。
+  // ⑤-c 映像クリックで再生 → バーが隠れた後に Tab でバーへ届く（隠れたバーは inert。chapters.mjs ⑥-b と同じ）。
+  await offsetPage.locator('video').evaluate((element) => element.pause())
+  await offsetPage.locator('video').click()
+  await offsetPage.mouse.move(5, 5)
+  await offsetPage.waitForTimeout(4500)
+  const hiddenBeforeTab = await sampleOffsetPlayer(offsetPage)
+  if (hiddenBeforeTab.controlsOpacity !== '0' || hiddenBeforeTab.paused) {
+    ng.push(`⑤-c 前提: 映像クリックで再生した後にバーが隠れていない（${JSON.stringify(hiddenBeforeTab)}）`)
+  }
   await offsetPage.keyboard.press('Tab')
   await offsetPage.waitForTimeout(400)
   const afterTab = await offsetPage.evaluate(() => Boolean(document.activeElement?.closest('[data-testid="player-controls"]')))
@@ -830,8 +847,13 @@ const sampleOffsetPlayer = (target) => target.evaluate(() => {
 
   // ⑤-f 末尾付近（99% = 62.4 秒。映像は 60 秒）のクリックは 416 になる。エラーにせず、
   // 有効な最後の offset へ丸めて再生する。
+  // マウスで押したボタンのフォーカスでは出したままにしないので、バーを出してから押す。
+  // ボタンの click で頁がスクロールしうるので、帯の位置は測り直す。
+  await offsetPage.mouse.move(frameBox.x + frameBox.width / 2, frameBox.y + frameBox.height / 2)
+  await offsetPage.waitForTimeout(300)
+  const endScrubBox = await scrub.boundingBox()
   const requestsBeforeEnd = offsetRequests.length
-  await offsetPage.mouse.click(scrubBox.x + scrubBox.width * 0.99, scrubBox.y + scrubBox.height / 2)
+  await offsetPage.mouse.click(endScrubBox.x + endScrubBox.width * 0.99, endScrubBox.y + endScrubBox.height / 2)
   const endDeadline = Date.now() + 15_000
   while (!offsetRequests.slice(requestsBeforeEnd).some((request) => request.status === 200) && Date.now() < endDeadline) {
     await offsetPage.waitForTimeout(100)
@@ -841,11 +863,11 @@ const sampleOffsetPlayer = (target) => target.evaluate(() => {
   const endRequests = offsetRequests.slice(requestsBeforeEnd)
   log(`  99% クリック: ${JSON.stringify(nearEnd)} 要求=${JSON.stringify(endRequests)}`)
   const landed = endRequests.find((request) => request.status === 200)
-  if (nearEnd.error || landed === undefined || landed.offset < OFFSET_VIDEO_SECONDS - 8) {
+  if (nearEnd.error || landed === undefined || landed.offset < OFFSET_PLAYABLE_END - 8) {
     ng.push(`⑤-f 末尾付近の 416 を有効な最後の offset へ丸めない（${JSON.stringify({ nearEnd, endRequests })}）`)
   }
   if (screenshotDir) {
-    await offsetPage.mouse.move(frameBox.x + frameBox.width / 2, frameBox.y + frameBox.height / 2)
+    await offsetPage.mouse.move(endScrubBox.x + endScrubBox.width / 2, endScrubBox.y - 40)
     await offsetPage.screenshot({ path: path.join(screenshotDir, 'desktop-near-end.png'), animations: 'disabled' })
   }
   await offsetContext.close()

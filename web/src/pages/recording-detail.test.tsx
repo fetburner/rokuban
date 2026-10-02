@@ -2153,6 +2153,21 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
     expect(originalVODURLs(fetchMock)[1]).toContain('profile=sd')
   })
 
+  it('endedAt が無い原本だけの録画は予定尺をシークバーの長さに代用する', async () => {
+    createFakeServer({
+      recording: sampleRecording({
+        startedAt: '2026-01-01T12:02:00Z',
+        endedAt: undefined,
+        durationMs: 1_800_000,
+        sizeBytes: 1_000_000,
+        encodedAssets: [],
+      }),
+      liveProfiles: LIVE_PROFILES,
+    })
+    renderAt('/recordings/3')
+    expect(await screen.findByRole('slider', { name: 'シークバー' })).toHaveAttribute('aria-valuemax', '1800')
+  })
+
   it('encode profile が無い録画でも再開位置は画質によらず recording 単位で保存する', async () => {
     const user = userEvent.setup()
     const { fetchMock } = createFakeServer({
@@ -2166,6 +2181,8 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
     await waitFor(() => expect(document.querySelector('video')).toBeInTheDocument())
 
     const video = document.querySelector('video')!
+    // 開始位置を canplay で明示し終えるまでは位置を保存しない（WebKit の端への飛びを書かない）。
+    fireEvent.canPlay(video)
     Object.defineProperty(video, 'currentTime', { value: 30, writable: true, configurable: true })
     fireEvent.pause(video)
     await waitFor(() => {
@@ -2177,6 +2194,7 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
     await selectOriginalVODProfile(user, 'sd')
     await waitFor(() => expect(screen.queryByRole('menu', { name: '再生設定' })).toBeNull())
     const after = document.querySelector('video')!
+    fireEvent.canPlay(after)
     Object.defineProperty(after, 'currentTime', { value: 40, writable: true, configurable: true })
     fireEvent.pause(after)
     await waitFor(() => {
