@@ -2504,7 +2504,10 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
       <LivePlayer {...props} chaseTimeline={{ programmeStartMs: 0, recordingStartedAtMs: 0, plannedSeconds: 3600, recordedSeconds: 1501 }} />,
     )
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
-    expect(screen.getByTestId('chase-live-edge-label')).toHaveTextContent('録画の先端 25:01（押すと先端へ）')
+    // 先端の印の下は時刻だけ。押すと先端へ移る説明は印のアクセシブル名と title に置く。
+    expect(screen.getByTestId('chase-live-edge-label').textContent).toBe('25:01')
+    const edgeButton = screen.getByRole('button', { name: '録画の先端へ' })
+    expect(edgeButton).toHaveAttribute('title', '録画の先端 25:01（押すと先端へ）')
     expect(screen.getByTestId('chase-timeline-end')).toHaveTextContent('60:00 まで（予定）')
     expect(percent(screen.getByTestId('chase-timeline-planned-end'), 'left')).toBe(100)
 

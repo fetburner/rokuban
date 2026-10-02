@@ -1068,13 +1068,20 @@ if (shortLabels.edgeLabelX === null || Math.abs(shortLabels.edgeLabelX - shortLa
   ng.push(`⑤ 先端のラベルが先端の印の真下に出ない（印 ${shortLabels.edgeMarkX.toFixed(1)} / ラベル中心 ${shortLabels.edgeLabelX?.toFixed(1)}）`)
 }
 if (shortLabels.overlaps) ng.push('⑤ 録画済みが短いとき目盛りのラベル同士が重なる')
+// 先端の印の下は時刻だけ（「録画の先端 …（押すと先端へ）」の説明は印の title とアクセシブル名に置く）。
+const edgeLabelText = (await page.getByTestId('chase-live-edge-label').textContent())?.trim() ?? ''
+const edgeTitle = await page.getByRole('button', { name: '録画の先端へ' }).getAttribute('title')
+if (!/^\d+:\d{2}$/.test(edgeLabelText)) ng.push(`⑤ 先端の印の下に時刻以外の文言が出る（${edgeLabelText}）`)
+if (!edgeTitle?.includes(`録画の先端 ${edgeLabelText}（押すと先端へ）`)) {
+  ng.push(`⑤ 先端の印の title に「録画の先端 …（押すと先端へ）」が無い（${edgeTitle}）`)
+}
 // 録画済みがごく短い（予定の 1/60）: 印に中心を合わせると左へはみ出すので、行の中に寄せる。
 recording.durationMs = Math.round(nowRecordedEndSeconds() * 60) * 1000
 await page.reload({ waitUntil: 'domcontentloaded' })
 await page.getByTestId('chase-live-edge-label').waitFor({ timeout: 15000 })
 await page.waitForTimeout(300)
 const tinyLabels = await axisLabelGeometry()
-log(`  録画済みがごく短い: 印 x=${tinyLabels.edgeMarkX.toFixed(1)}, ラベル ${tinyLabels.edgeLabelLeft?.toFixed(1)}〜${tinyLabels.edgeLabelRight?.toFixed(1)}, 行 ${tinyLabels.rowLeft?.toFixed(1)}〜`)
+log(`  録画済みがごく短い: 印 x=${tinyLabels.edgeMarkX.toFixed(1)}, ラベル ${tinyLabels.edgeLabelLeft?.toFixed(1)}〜${tinyLabels.edgeLabelRight?.toFixed(1)}（中心 ${tinyLabels.edgeLabelX?.toFixed(1)}）, 行 ${tinyLabels.rowLeft?.toFixed(1)}〜`)
 if (tinyLabels.edgeLabelLeft === undefined || tinyLabels.edgeLabelLeft < tinyLabels.rowLeft - 0.5 ||
   tinyLabels.edgeLabelLeft > tinyLabels.edgeMarkX || tinyLabels.edgeLabelRight < tinyLabels.edgeMarkX) {
   ng.push('⑤ 先端が左端に近いとき、先端のラベルが行からはみ出すか印の上に無い')

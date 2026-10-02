@@ -584,6 +584,7 @@ export function RecordingPlaybackControls({
                     type="button"
                     data-testid="chase-live-edge"
                     aria-label="録画の先端へ"
+                    title={`録画の先端 ${formatAxisTime(chaseTimeline.recordedEndSeconds)}（押すと先端へ）`}
                     onPointerDown={(event) => event.stopPropagation()}
                     onClick={(event) => {
                       event.stopPropagation()
@@ -599,7 +600,8 @@ export function RecordingPlaybackControls({
             </div>
             {/*
               軸の目盛り（デスクトップだけ。スマホは時刻の表示で足りる）。左端と右端のほかに、通常は先端の
-              ラベルを先端の印の真下に、延長中は「予定 … ¦」の ¦ を予定終端の印に合わせて置く（ラフ 6・7）。
+              時刻だけを先端の印の真下に（「押すと先端へ」の説明は印のアクセシブル名と title に置く）、
+              延長中は「予定 … ¦」の ¦ を予定終端の印に合わせて置く（ラフ 7。ラフ 6 の文言は利用者の決定で時刻だけに変えた）。
               置き場は実レイアウトの幅で決める（上の `axisLabelsRef` の effect）。
             */}
             {chaseTimeline && (
@@ -628,9 +630,9 @@ export function RecordingPlaybackControls({
                     <span
                       data-testid="chase-live-edge-label"
                       data-axis-mark={axisFraction(chaseTimeline.liveEdgeSeconds)}
-                      className="absolute text-red-400"
+                      className="absolute font-mono text-red-400"
                     >
-                      録画の先端 <span className="font-mono">{formatAxisTime(chaseTimeline.recordedEndSeconds)}</span>（押すと先端へ）
+                      {formatAxisTime(chaseTimeline.recordedEndSeconds)}
                     </span>
                     <span data-testid="chase-timeline-end" data-axis-end className="absolute right-0">
                       <span className="font-mono">{formatAxisTime(chaseTimeline.plannedEndSeconds)}</span> まで（予定）
