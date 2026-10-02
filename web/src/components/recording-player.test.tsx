@@ -168,7 +168,7 @@ describe('RecordingPlayer のサーバー再生位置', () => {
     ]
 
     function switchTo(container: HTMLElement, profile: string) {
-      const select = openPlaybackSettings(container).querySelector('select[aria-label="プロファイル"]')!
+      const select = openPlaybackSettings(container).querySelector('select[aria-label="画質"]')!
       fireEvent.change(select, { target: { value: profile } })
       const video = container.querySelector('video')!
       setMediaProps(video, { currentTime: 0, duration: 1000 })
@@ -291,7 +291,7 @@ describe('RecordingPlayer のサイズ常置（値札、issue #236）', () => {
       />,
     )
     const settings = openPlaybackSettings(container)
-    const options = Array.from(settings.querySelector('select[aria-label="プロファイル"]')!.querySelectorAll('option'))
+    const options = Array.from(settings.querySelector('select[aria-label="画質"]')!.querySelectorAll('option'))
     expect(options.map((o) => o.textContent)).toEqual(['h264 (476.8 MB)', 'h265'])
   })
 
@@ -340,7 +340,7 @@ describe('RecordingPlayer の encoded ダウンロード', () => {
     expect(link).toHaveAttribute('href', '/api/media/recordings/26/file?profile=h264')
     expect(link).toHaveAttribute('download', 'recording-26-h264.mp4')
 
-    fireEvent.change(container.querySelector('select[aria-label="プロファイル"]')!, { target: { value: 'h265' } })
+    fireEvent.change(container.querySelector('select[aria-label="画質"]')!, { target: { value: 'h265' } })
 
     expect(link).toHaveAttribute('href', '/api/media/recordings/26/file?profile=h265')
     expect(link).toHaveAttribute('download', 'recording-26-h265.mp4')
@@ -356,7 +356,7 @@ describe('RecordingPlayer の encoded ダウンロード', () => {
     expect(link).toHaveAttribute('href', '/api/media/recordings/27/file?profile=h264')
     expect(link).toHaveAttribute('download', 'recording-27-h264.mp4')
     expect(link).toHaveTextContent('ダウンロード')
-    expect(link).not.toHaveTextContent('1.1 MB')
+    expect(link).toHaveTextContent('1.1 MB')
     expect(container.textContent).toContain('h264 (1.1 MB)')
   })
 
@@ -644,7 +644,7 @@ describe('RecordingPlayer の selectedProfile 導出', () => {
       />,
     )
 
-    const select = openPlaybackSettings(container).querySelector('select[aria-label="プロファイル"]') as HTMLSelectElement
+    const select = openPlaybackSettings(container).querySelector('select[aria-label="画質"]') as HTMLSelectElement
     expect(select.value).toBe('h265')
     expect(container.querySelector('video')?.src).toContain('profile=h265')
   })
@@ -659,7 +659,7 @@ describe('RecordingPlayer の selectedProfile 導出', () => {
         ]}
       />,
     )
-    const select = openPlaybackSettings(container).querySelector('select[aria-label="プロファイル"]')! as HTMLSelectElement
+    const select = openPlaybackSettings(container).querySelector('select[aria-label="画質"]')! as HTMLSelectElement
     fireEvent.change(select, { target: { value: 'h265' } })
     expect(select.value).toBe('h265')
     expect(container.querySelector('video')?.src).toContain('profile=h265')

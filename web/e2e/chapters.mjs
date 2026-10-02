@@ -235,6 +235,36 @@ if (markerCount !== CHAPTERS.spans.length) {
   }
 }
 
+log('\n=== ①-c 目盛りはトラック上にあり、再生済みの塗りと thumb は映像上で読める固定色 ===')
+for (const scheme of ['light', 'dark']) {
+  await page.emulateMedia({ colorScheme: scheme })
+  const geometry = await page.evaluate(() => {
+    const track = document.querySelector('[data-testid="seek-scrub"] .bg-white\\/30')
+    const fill = track?.firstElementChild
+    const thumb = document.querySelector('[data-testid="seek-thumb"]')
+    const marker = document.querySelector('[data-testid="chapter-marker"]')
+    if (!track || !fill || !thumb || !marker) return null
+    const t = track.getBoundingClientRect()
+    const m = marker.getBoundingClientRect()
+    const th = thumb.getBoundingClientRect()
+    return {
+      fill: getComputedStyle(fill).backgroundColor,
+      markerCoversTrack: m.top <= t.top + 0.5 && m.bottom >= t.bottom - 0.5,
+      thumbCenterOnTrack: Math.abs(th.top + th.height / 2 - (t.top + t.height / 2)) < 1,
+      volume: getComputedStyle(document.querySelector('input[aria-label="音量"]')).accentColor,
+    }
+  })
+  if (geometry === null) {
+    ng.push(`①-c (${scheme}) トラック・thumb・目盛りのいずれかが見つからない`)
+    continue
+  }
+  if (geometry.fill !== 'rgb(255, 255, 255)') ng.push(`①-c (${scheme}) 再生済みの塗りが白でない（${geometry.fill}）`)
+  if (!geometry.markerCoversTrack) ng.push(`①-c (${scheme}) 目盛りがトラック上に重なっていない`)
+  if (!geometry.thumbCenterOnTrack) ng.push(`①-c (${scheme}) thumb の中心がトラック上にない`)
+  if (geometry.volume !== 'rgb(255, 255, 255)') ng.push(`①-c (${scheme}) 音量スライダーが白でない（${geometry.volume}）`)
+}
+await page.emulateMedia({ colorScheme: null })
+
 log('\n=== ①-a native controls が無く、単一バーとチャプターナビが同じプレイヤーにある ===')
 if ((await video.evaluate((node) => node.hasAttribute('controls'))) !== false) {
   ng.push('①-a encoded video に native controls が残っている')
@@ -260,6 +290,23 @@ try {
   if (!fullscreenContainsPlayerControls) {
     ng.push('①-b fullscreenElement が player frame ではないか、操作バー/seekbar を含まない')
   }
+  // 全画面でも設定メニューが全画面要素の中に描かれ、画面内に見える。
+  await page.getByRole('button', { name: '再生設定' }).click()
+  const settingsInFullscreen = await page.evaluate(() => {
+    const fullscreen = document.fullscreenElement
+    const settings = document.querySelector('[data-testid="playback-settings"]')
+    if (!fullscreen || !settings) return { exists: Boolean(settings), inside: false, visible: false }
+    const r = settings.getBoundingClientRect()
+    return {
+      exists: true,
+      inside: fullscreen.contains(settings),
+      visible: r.width > 0 && r.height > 0 && r.bottom <= window.innerHeight && r.right <= window.innerWidth,
+    }
+  })
+  if (!settingsInFullscreen.inside || !settingsInFullscreen.visible) {
+    ng.push(`①-b 全画面で設定メニューが全画面要素の中に見えない（${JSON.stringify(settingsInFullscreen)}）`)
+  }
+  await page.getByRole('button', { name: '再生設定' }).click()
   await page.getByRole('button', { name: '全画面を終了' }).click()
   await page.waitForFunction(() => document.fullscreenElement === null, undefined, { timeout: 5000 })
 } catch (error) {
@@ -362,6 +409,37 @@ if (!fast.paused || fast.t < 32 || fast.t > 34.5) {
   ng.push(
     `⑤ 2 倍速の前後 3 秒が境界の 3 秒後（33 秒）で止まっていない（位置 ${fast.t.toFixed(2)} 秒 paused=${fast.paused}）`,
   )
+}
+
+log('\n=== ⑥ 再生中のバー: マウスで押した後は隠れ、キーボードの Tab で届く ===')
+const controls = page.locator('[data-testid="player-controls"]')
+const controlsOpacity = () => controls.evaluate((el) => getComputedStyle(el).opacity)
+await seek(80)
+// 6-a: バーの ▶ をマウスで押す。フォーカスが残っても 3 秒後にバーは隠れる。
+await page.getByRole('button', { name: '再生', exact: true }).click()
+await page.mouse.move(5, 5)
+await page.waitForTimeout(4500)
+const hiddenAfterClick = await controlsOpacity()
+await video.evaluate((v) => v.pause())
+if (hiddenAfterClick !== '0') {
+  ng.push(`⑥-a バーのボタンをマウスで押して再生した後もバーが隠れない（opacity=${hiddenAfterClick}）`)
+}
+// 6-b: 映像クリックで再生 → バーが隠れた後に Tab でバーへ届く（隠れたバーは inert）。
+await page.locator('video').click()
+await page.mouse.move(5, 5)
+await page.waitForTimeout(4500)
+const hiddenBeforeTab = await controlsOpacity()
+await page.keyboard.press('Tab')
+await page.waitForTimeout(400)
+const afterTab = await page.evaluate(() => ({
+  inBar: Boolean(document.activeElement?.closest('[data-testid="player-controls"]')),
+  active: document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.tagName,
+}))
+const shownAfterTab = await controlsOpacity()
+await video.evaluate((v) => v.pause())
+if (hiddenBeforeTab !== '0') ng.push(`⑥-b 前提: 映像クリックで再生した後にバーが隠れていない（opacity=${hiddenBeforeTab}）`)
+if (!afterTab.inBar || shownAfterTab !== '1') {
+  ng.push(`⑥-b 再生中に Tab を押してもバーに届かない（focus=${afterTab.active} opacity=${shownAfterTab}）`)
 }
 
 await finish(ng, browser)

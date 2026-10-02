@@ -160,6 +160,14 @@ async function apiHandler({ path: apiPath, url, json, route }) {
     if (!serveTiles) return route.fulfill({ status: 404 })
     return route.fulfill({ status: 200, contentType: 'image/png', body: tileSprite })
   }
+  if (/^\/api\/recordings\/1\/chapters$/.test(apiPath)) {
+    return json({
+      source: 'auto',
+      version: 'auto:detected:1',
+      detectionPending: false,
+      spans: [{ startMs: 30_000, endMs: 40_000, label: 'CM', cut: true }],
+    })
+  }
   return json([])
 }
 
@@ -346,6 +354,16 @@ for (const seconds of [35, 95, 105]) {
   }
   if (previewBox.y + previewBox.height > scrubBox.y + 1) {
     ng.push(`② タイル #${want.index} のプレビューが帯に重なっている`)
+  }
+  // タイルの下に「時刻 · チャプター名」（ラフの「15:27 · CM」）。CM の中だけ名前が付く。
+  const labelBox = await page.locator('[data-testid="seek-tile-label"]').boundingBox()
+  const labelText = (await page.locator('[data-testid="seek-tile-label"]').textContent())?.trim()
+  const wantLabel = { 35: /^0:3[4-6] · CM$/, 95: /^1:3[4-6]$/, 105: /^1:4[4-6]$/ }[seconds]
+  if (!wantLabel.test(labelText ?? '')) {
+    ng.push(`② ${seconds}s 相当のタイル下ラベルが想定と違う（${labelText}）`)
+  }
+  if (!labelBox || labelBox.y < previewBox.y + previewBox.height - 1 || labelBox.y + labelBox.height > scrubBox.y + 1) {
+    ng.push('② タイル下ラベルがタイルの下・帯の上に収まっていない')
   }
   if (EVIDENCE_DIR && seconds === 35) {
     await page.locator('[data-testid="recording-player-shell"]').screenshot({

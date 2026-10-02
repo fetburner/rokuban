@@ -6,20 +6,21 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react'
+
+import type { ChapterSpan, EncodedAsset } from '@/api/generated'
 import {
+  Check,
   Maximize,
   Minimize,
   Pause,
   PictureInPicture2,
   Play,
-  Settings2,
+  Settings,
   SkipBack,
   SkipForward,
   Volume2,
   VolumeX,
 } from 'lucide-react'
-
-import type { ChapterSpan, EncodedAsset } from '@/api/generated'
 import { Button } from '@/components/ui/button'
 import { formatChaptersTime } from '@/lib/chapters'
 import { formatBytes } from '@/lib/format'
@@ -37,6 +38,8 @@ export type TilePreview = {
   y: number
   left: number
   scale: number
+  /** ホバー位置の再生位置（秒）。タイルの下の時刻ラベルに使う。 */
+  seconds: number
 } | null
 
 type RecordingPlaybackControlsProps = {
@@ -86,8 +89,10 @@ type RecordingPlaybackControlsProps = {
   onToggleFullscreen: () => void
   controlsVisible: boolean
   onControlsActivity: () => void
-  onToolbarFocus: () => void
+  onToolbarFocus: (event: ReactFocusEvent<HTMLElement>) => void
   onToolbarBlur: (event: ReactFocusEvent<HTMLElement>) => void
+  /** shell 内のキー入力（Tab を含む）。隠れたバーを出してから Tab を処理させる。 */
+  onShellKeyDown: () => void
 }
 
 /** RecordingPlaybackControls は encoded VOD の再生操作と単一タイムラインを描画する。 */
@@ -140,6 +145,7 @@ export function RecordingPlaybackControls({
   onControlsActivity,
   onToolbarFocus,
   onToolbarBlur,
+  onShellKeyDown,
 }: RecordingPlaybackControlsProps) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const seconds = Math.max(0, Math.min(durationSeconds || 0, currentSeconds))
@@ -172,11 +178,140 @@ export function RecordingPlaybackControls({
     onSeek(Math.max(0, Math.min(durationSeconds, target)))
   }
 
+  const hoverSpan =
+    tilePreview && !playingCut
+      ? chapters.find((span) => tilePreview.seconds * 1000 >= span.startMs && tilePreview.seconds * 1000 < span.endMs)
+      : undefined
+  const selectedAsset = encodedAssets.find((asset) => asset.profile === profile)
+  const downloadSize = selectedAsset?.sizeBytes === undefined ? undefined : formatBytes(selectedAsset.sizeBytes)
+  const ghost = 'text-white hover:bg-white/15 hover:text-white'
+  const settingsPanel = settingsOpen ? (
+    <section
+      id={`playback-settings-${recordingId}`}
+      role="region"
+      aria-label="再生設定"
+      data-testid="playback-settings"
+      className={cn(
+        'z-30 grid gap-3 border border-border bg-background p-3 text-sm text-foreground shadow-lg',
+        isFullscreen
+          ? 'absolute inset-x-2 bottom-24 max-h-[60%] overflow-auto rounded-lg md:right-2 md:left-auto md:w-80'
+          : 'md:absolute md:right-2 md:bottom-[5.5rem] md:w-80 md:rounded-lg',
+      )}
+      onFocusCapture={onToolbarFocus}
+      onBlurCapture={onToolbarBlur}
+    >
+      <label className="grid grid-cols-[6rem_1fr] items-center gap-2">
+        <span>画質</span>
+        <select
+          aria-label="画質"
+          value={profile}
+          onChange={(event) => onSelectProfile(event.target.value)}
+          className="h-9 min-w-0 rounded border border-border bg-background px-2"
+        >
+          {encodedAssets.map((asset) => (
+            <option key={asset.profile} value={asset.profile}>
+              {assetOptionLabel(asset)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="flex items-center gap-3 sm:hidden">
+        <Button type="button" variant="outline" className="min-h-9" onClick={onToggleMute}>
+          {muted || volume === 0 ? 'ミュート解除' : 'ミュート'}
+        </Button>
+        <label className="flex min-w-0 flex-1 items-center gap-2">
+          <span>音量</span>
+          <input
+            aria-label="音量"
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={volumeValue}
+            onChange={(event) => onVolumeChange(Number(event.target.value))}
+            className="h-6 min-w-0 flex-1 accent-foreground"
+          />
+        </label>
+      </div>
+      <label className="grid grid-cols-[6rem_1fr] items-center gap-2">
+        <span>再生速度</span>
+        <select
+          aria-label="再生速度"
+          value={String(playbackRate)}
+          onChange={(event) => onRateChange(Number(event.target.value))}
+          className="h-9 rounded border border-border bg-background px-2"
+        >
+          {![0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].includes(playbackRate) && (
+            <option value={playbackRate}>{playbackRate}x</option>
+          )}
+          {[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map((rate) => (
+            <option key={rate} value={rate}>{rate}x</option>
+          ))}
+        </select>
+      </label>
+      <Button
+        type="button"
+        variant="outline"
+        className="justify-start"
+        aria-pressed={subtitlesEnabled}
+        onClick={onToggleSubtitles}
+      >
+        字幕 {subtitlesEnabled ? 'オン' : 'オフ'}
+      </Button>
+      {hasChapters && (
+        <>
+          <label className="flex min-h-9 items-center gap-2">
+            <input
+              type="checkbox"
+              aria-label="CM を飛ばす"
+              checked={skipEnabled}
+              onChange={(event) => onToggleSkip(event.target.checked)}
+              className="size-5 accent-foreground"
+            />
+            CM を飛ばす
+          </label>
+          <div className="flex gap-2 md:hidden">
+            <Button type="button" variant="outline" className="min-h-11 flex-1" onClick={onPreviousChapter}>
+              前のチャプター
+            </Button>
+            <Button type="button" variant="outline" className="min-h-11 flex-1" onClick={onNextChapter}>
+              次のチャプター
+            </Button>
+          </div>
+        </>
+      )}
+      {pictureInPictureEnabled && (
+        <Button
+          type="button"
+          variant="outline"
+          className="justify-start md:hidden"
+          onClick={onTogglePictureInPicture}
+        >
+          <PictureInPicture2 />
+          {pictureInPicture ? 'ピクチャーインピクチャーを終了' : 'ピクチャーインピクチャー'}
+        </Button>
+      )}
+      <a
+        href={recordingFileURL(recordingId, profile)}
+        download={downloadFilename}
+        aria-label="encoded 動画をダウンロード"
+        className="flex min-h-9 items-center justify-between gap-3 text-primary underline-offset-2 hover:underline"
+      >
+        <span>この版をダウンロード</span>
+        {downloadSize !== undefined && <span className="text-muted-foreground">{downloadSize}</span>}
+      </a>
+    </section>
+  ) : null
   const watchedAction = watched ? onDeleteWatched : onPutWatched
   const showControls = controlsVisible || settingsOpen
 
   return (
-    <div className="relative w-full max-w-3xl" data-testid="recording-player-shell" onPointerMove={onControlsActivity}>
+    <div
+      className="relative w-full max-w-3xl"
+      data-testid="recording-player-shell"
+      onPointerMove={onControlsActivity}
+      onKeyDown={onShellKeyDown}
+    >
       <div
         ref={fullscreenRef}
         data-testid="recording-player-frame"
@@ -212,8 +347,11 @@ export function RecordingPlaybackControls({
             onPointerCancel={onSeekPointerUp}
             onPointerLeave={onSeekPointerLeave}
           >
+            <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full bg-white/30">
+              <div className="h-full bg-white" style={{ width: `${playedFraction * 100}%` }} />
+            </div>
             {chapters.length > 0 && !playingCut && durationSeconds > 0 && (
-              <div className="pointer-events-none absolute inset-x-0 top-0 h-1">
+              <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2">
                 {chapters.map((span) => {
                   const left = (span.startMs / 1000 / durationSeconds) * 100
                   const width = ((span.endMs - span.startMs) / 1000 / durationSeconds) * 100
@@ -222,19 +360,21 @@ export function RecordingPlaybackControls({
                       key={`${span.startMs}-${span.endMs}`}
                       data-testid="chapter-marker"
                       data-cut={span.cut ? 'true' : 'false'}
-                      title={`${span.label ?? (span.cut ? 'CM' : 'チャプター')} ${formatChaptersTime(
+                      title={`${chapterLabel(span)} ${formatChaptersTime(
                         span.startMs / 1000,
                       )}–${formatChaptersTime(span.endMs / 1000)}`}
-                      className={`absolute inset-y-0 rounded-full ${span.cut ? 'bg-warning' : 'bg-primary'}`}
+                      className={`absolute -inset-y-0.5 min-w-0.5 rounded-sm ${span.cut ? 'bg-orange-400' : 'bg-sky-300'}`}
                       style={{ left: `${left}%`, width: `${width}%` }}
                     />
                   )
                 })}
               </div>
             )}
-            <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full bg-white/40">
-              <div className="h-full bg-primary" style={{ width: `${playedFraction * 100}%` }} />
-            </div>
+            <div
+              data-testid="seek-thumb"
+              className="pointer-events-none absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow"
+              style={{ left: `${playedFraction * 100}%` }}
+            />
             {!playingCut && tilesRequested && (
               <img
                 src={seekTilesURL(recordingId)}
@@ -246,23 +386,31 @@ export function RecordingPlaybackControls({
             )}
             {tilePreview && tilesAvailable && (
               <div
-                data-testid="seek-tile-preview"
-                className="pointer-events-none absolute bottom-full z-20 mb-2 origin-bottom-left overflow-hidden rounded border border-white/30 bg-black shadow-lg"
+                className="pointer-events-none absolute bottom-full z-20 mb-2 flex origin-bottom-left flex-col items-center gap-1"
                 style={{
                   left: tilePreview.left,
                   width: SEEK_TILES_DISPLAY_WIDTH,
-                  height: SEEK_TILES_DISPLAY_HEIGHT,
                   transform: tilePreview.scale < 1 ? `scale(${tilePreview.scale})` : undefined,
                 }}
               >
                 <div
-                  className="h-full w-full bg-no-repeat"
-                  style={{
-                    backgroundImage: `url(${seekTilesURL(recordingId)})`,
-                    backgroundPosition: `${tilePreview.x}px ${tilePreview.y}px`,
-                    backgroundSize: seekTileBackgroundSize(),
-                  }}
-                />
+                  data-testid="seek-tile-preview"
+                  className="overflow-hidden rounded border border-white/30 bg-black shadow-lg"
+                  style={{ width: SEEK_TILES_DISPLAY_WIDTH, height: SEEK_TILES_DISPLAY_HEIGHT }}
+                >
+                  <div
+                    className="h-full w-full bg-no-repeat"
+                    style={{
+                      backgroundImage: `url(${seekTilesURL(recordingId)})`,
+                      backgroundPosition: `${tilePreview.x}px ${tilePreview.y}px`,
+                      backgroundSize: seekTileBackgroundSize(),
+                    }}
+                  />
+                </div>
+                <span data-testid="seek-tile-label" className="rounded bg-black/80 px-1.5 text-xs">
+                  {formatPlaybackTime(tilePreview.seconds)}
+                  {hoverSpan ? ` · ${chapterLabel(hoverSpan)}` : ''}
+                </span>
               </div>
             )}
           </div>
@@ -272,79 +420,84 @@ export function RecordingPlaybackControls({
               type="button"
               variant="ghost"
               size="icon"
-              className="text-white hover:bg-white/15 hover:text-white"
+              className={ghost}
               aria-label={isPlaying ? '一時停止' : '再生'}
               onClick={onTogglePlay}
             >
               {isPlaying ? <Pause /> : <Play />}
             </Button>
-            <span data-testid="playback-time" className="min-w-0 whitespace-nowrap text-xs">
-              {formatPlaybackTime(seconds)} / {formatPlaybackTime(durationSeconds)}
-            </span>
             {hasChapters && (
               <div data-testid="chapter-navigation" className="hidden items-center md:flex">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="text-white hover:bg-white/15 hover:text-white"
-                  aria-label="前のチャプター"
-                  onClick={onPreviousChapter}
-                >
+                <Button type="button" variant="ghost" size="icon" className={ghost} aria-label="前のチャプター" onClick={onPreviousChapter}>
                   <SkipBack />
                 </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="text-white hover:bg-white/15 hover:text-white"
-                  aria-label="次のチャプター"
-                  onClick={onNextChapter}
-                >
+                <Button type="button" variant="ghost" size="icon" className={ghost} aria-label="次のチャプター" onClick={onNextChapter}>
                   <SkipForward />
                 </Button>
               </div>
             )}
+            <div className="group/volume hidden items-center sm:flex">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className={ghost}
+                aria-label={muted || volume === 0 ? 'ミュート解除' : 'ミュート'}
+                onClick={onToggleMute}
+              >
+                {muted || volume === 0 ? <VolumeX /> : <Volume2 />}
+              </Button>
+              <input
+                aria-label="音量"
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={volumeValue}
+                onChange={(event) => onVolumeChange(Number(event.target.value))}
+                className="h-6 w-0 opacity-0 transition-all focus-visible:w-16 focus-visible:opacity-100 group-hover/volume:w-16 group-hover/volume:opacity-100 accent-white"
+              />
+            </div>
+            <span data-testid="playback-time" className="min-w-0 whitespace-nowrap text-xs">
+              {formatPlaybackTime(seconds)} / {formatPlaybackTime(durationSeconds)}
+            </span>
+            <div className="flex-1" />
             {showWatched && (
               <Button
                 type="button"
                 variant="ghost"
-                size="sm"
-                className="min-h-8 px-1.5 text-xs text-white hover:bg-white/15 hover:text-white sm:px-2"
+                size="icon"
+                className={cn(ghost, watched && 'bg-white/20')}
                 aria-label={watched ? '未視聴に戻す' : '視聴済みにする'}
+                aria-pressed={watched}
+                title={watched ? '未視聴に戻す' : '視聴済みにする'}
                 disabled={watchedPending || watchedAction === undefined}
                 onClick={watchedAction}
               >
-                {watched ? '視聴済み' : '視聴済みにする'}
+                <Check />
               </Button>
             )}
-            <div className="flex-1" />
             <Button
               type="button"
               variant="ghost"
               size="icon"
-              className="hidden text-white hover:bg-white/15 hover:text-white sm:inline-flex"
-              aria-label={muted || volume === 0 ? 'ミュート解除' : 'ミュート'}
-              onClick={onToggleMute}
+              className={cn(ghost, settingsOpen && 'bg-white/20')}
+              aria-label="再生設定"
+              aria-expanded={settingsOpen}
+              aria-controls={`playback-settings-${recordingId}`}
+              onClick={() => {
+                onControlsActivity()
+                setSettingsOpen((open) => !open)
+              }}
             >
-              {muted || volume === 0 ? <VolumeX /> : <Volume2 />}
+              <Settings />
             </Button>
-            <input
-              aria-label="音量"
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              value={volumeValue}
-              onChange={(event) => onVolumeChange(Number(event.target.value))}
-              className="hidden h-6 w-16 accent-primary sm:block"
-            />
             {pictureInPictureEnabled && (
               <Button
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="hidden text-white hover:bg-white/15 hover:text-white md:inline-flex"
+                className={cn(ghost, 'hidden md:inline-flex')}
                 aria-label={pictureInPicture ? 'ピクチャーインピクチャーを終了' : 'ピクチャーインピクチャー'}
                 onClick={onTogglePictureInPicture}
               >
@@ -355,23 +508,7 @@ export function RecordingPlaybackControls({
               type="button"
               variant="ghost"
               size="icon"
-              className="text-white hover:bg-white/15 hover:text-white"
-              aria-label="再生設定"
-              aria-expanded={settingsOpen}
-              aria-controls={`playback-settings-${recordingId}`}
-              onClick={() => {
-                onControlsActivity()
-                onToolbarFocus()
-                setSettingsOpen((open) => !open)
-              }}
-            >
-              <Settings2 />
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="text-white hover:bg-white/15 hover:text-white"
+              className={ghost}
               aria-label={isFullscreen ? '全画面を終了' : '全画面表示'}
               onClick={onToggleFullscreen}
             >
@@ -379,121 +516,16 @@ export function RecordingPlaybackControls({
             </Button>
           </div>
         </div>
+        {isFullscreen && settingsPanel}
       </div>
 
-      {settingsOpen && (
-        <section
-          id={`playback-settings-${recordingId}`}
-          role="region"
-          aria-label="再生設定"
-          data-testid="playback-settings"
-          className="z-20 grid gap-3 border border-border bg-background p-3 text-sm shadow-lg md:absolute md:right-2 md:bottom-12 md:w-80 md:rounded-lg"
-          onFocusCapture={onToolbarFocus}
-          onBlurCapture={onToolbarBlur}
-        >
-          <label className="grid grid-cols-[6rem_1fr] items-center gap-2">
-            <span>プロファイル</span>
-            <select
-              aria-label="プロファイル"
-              value={profile}
-              onChange={(event) => onSelectProfile(event.target.value)}
-              className="h-9 min-w-0 rounded border border-border bg-background px-2"
-            >
-              {encodedAssets.map((asset) => (
-                <option key={asset.profile} value={asset.profile}>
-                  {assetOptionLabel(asset)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="flex items-center gap-3 sm:hidden">
-            <Button type="button" variant="outline" className="min-h-9" onClick={onToggleMute}>
-              {muted || volume === 0 ? 'ミュート解除' : 'ミュート'}
-            </Button>
-            <label className="flex min-w-0 flex-1 items-center gap-2">
-              <span>音量</span>
-              <input
-                aria-label="音量"
-                type="range"
-                min={0}
-                max={1}
-                step={0.05}
-                value={volumeValue}
-                onChange={(event) => onVolumeChange(Number(event.target.value))}
-                className="h-6 min-w-0 flex-1 accent-primary"
-              />
-            </label>
-          </div>
-          <label className="grid grid-cols-[6rem_1fr] items-center gap-2">
-            <span>再生速度</span>
-            <select
-              aria-label="再生速度"
-              value={String(playbackRate)}
-              onChange={(event) => onRateChange(Number(event.target.value))}
-              className="h-9 rounded border border-border bg-background px-2"
-            >
-              {![0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].includes(playbackRate) && (
-                <option value={playbackRate}>{playbackRate}x</option>
-              )}
-              {[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map((rate) => (
-                <option key={rate} value={rate}>{rate}x</option>
-              ))}
-            </select>
-          </label>
-          <Button
-            type="button"
-            variant="outline"
-            className="justify-start"
-            aria-pressed={subtitlesEnabled}
-            onClick={onToggleSubtitles}
-          >
-            字幕 {subtitlesEnabled ? 'オン' : 'オフ'}
-          </Button>
-          {hasChapters && (
-            <>
-              <label className="flex min-h-9 items-center gap-2">
-                <input
-                  type="checkbox"
-                  aria-label="CM を飛ばす"
-                  checked={skipEnabled}
-                  onChange={(event) => onToggleSkip(event.target.checked)}
-                  className="size-5 accent-primary"
-                />
-                CM を飛ばす
-              </label>
-              <div className="flex gap-2 md:hidden">
-                <Button type="button" variant="outline" className="min-h-11 flex-1" onClick={onPreviousChapter}>
-                  前のチャプター
-                </Button>
-                <Button type="button" variant="outline" className="min-h-11 flex-1" onClick={onNextChapter}>
-                  次のチャプター
-                </Button>
-              </div>
-            </>
-          )}
-          {pictureInPictureEnabled && (
-            <Button
-              type="button"
-              variant="outline"
-              className="justify-start md:hidden"
-              onClick={onTogglePictureInPicture}
-            >
-              <PictureInPicture2 />
-              {pictureInPicture ? 'ピクチャーインピクチャーを終了' : 'ピクチャーインピクチャー'}
-            </Button>
-          )}
-          <a
-            href={recordingFileURL(recordingId, profile)}
-            download={downloadFilename}
-            aria-label="encoded 動画をダウンロード"
-            className="flex min-h-9 items-center justify-between gap-3 text-primary underline-offset-2 hover:underline"
-          >
-            <span>この版をダウンロード</span>
-          </a>
-        </section>
-      )}
+      {!isFullscreen && settingsPanel}
     </div>
   )
+}
+
+function chapterLabel(span: ChapterSpan): string {
+  return span.label ?? (span.cut ? 'CM' : 'チャプター')
 }
 
 function formatPlaybackTime(value: number): string {

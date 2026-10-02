@@ -555,6 +555,20 @@ export function RecordingDetail({
             />
           )}
 
+          {/* 操作バーを持つプレイヤー（encoded あり）以外では、視聴済みの操作をここに残す。
+              原本のみ・エンコード無し・資産無しでも完了録画の唯一の操作になるため。 */}
+          {!trash && recording.status === 'finished' && !(!showChase && encodedAssets.length > 0) && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={putWatchedMutation.isPending || deleteWatchedMutation.isPending}
+              onClick={() => void updateWatched(recording.watchedAt === undefined)}
+            >
+              {recording.watchedAt !== undefined ? '未視聴に戻す' : '視聴済みにする'}
+            </Button>
+          )}
+
           {showAddEncodePrompt && !encodeProfilesQuery.isPending && !encodeProfilesQuery.isError &&
             (configuredEncodeProfiles.length > 0 ? (
               <Button

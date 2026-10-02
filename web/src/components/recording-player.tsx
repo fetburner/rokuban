@@ -168,6 +168,7 @@ export function RecordingPlayer({
     y: number
     left: number
     scale: number
+    seconds: number
   } | null>(null)
   // スクラブ帯の再生済み割合（0..1）・現在位置（秒）・タイムラインの終端
   // （`<video>.duration`）。timeupdate / seeked / loadedmetadata で更新する。
@@ -376,7 +377,16 @@ export function RecordingPlayer({
     if (!mediaPlaying || toolbarFocused) return
     controlsTimerRef.current = window.setTimeout(() => setControlsVisible(false), 3000)
   }
-  const handleToolbarFocus = () => {
+  // バーを出したままにするのはキーボードフォーカス（:focus-visible）だけ。
+  // マウスで押したボタンに残ったフォーカスで出しっぱなしにすると、再生中ずっと映像に被る。
+  const handleToolbarFocus = (event: ReactFocusEvent<HTMLElement>) => {
+    let keyboard = false
+    try {
+      keyboard = (event.target as Element).matches(':focus-visible')
+    } catch {
+      keyboard = false
+    }
+    if (!keyboard) return
     setToolbarFocused(true)
     setControlsVisible(true)
     window.clearTimeout(controlsTimerRef.current)
@@ -390,6 +400,9 @@ export function RecordingPlayer({
       relatedTarget instanceof Node &&
       (toolbar?.contains(relatedTarget) || settings?.contains(relatedTarget))
     ) return
+    // マウスで押したボタンの blur（隠れたバーの inert でフォーカスが落ちるときも来る）で
+    // 再表示しない。キーボードフォーカスを離れたときだけ、隠すタイマーを張り直す。
+    if (!toolbarFocused) return
     setToolbarFocused(false)
     handleControlsActivity()
   }
@@ -487,7 +500,7 @@ export function RecordingPlayer({
           break
         default:
           if (/^[0-9]$/.test(key) && Number.isFinite(video.duration)) {
-            video.currentTime = (video.duration * Number(key)) / 10
+            jumpToRef.current((video.duration * Number(key)) / 10)
           } else {
             handled = false
           }
@@ -613,7 +626,7 @@ export function RecordingPlayer({
     const scale = Math.min(1, rect.width / SEEK_TILES_DISPLAY_WIDTH)
     const width = SEEK_TILES_DISPLAY_WIDTH * scale
     const left = Math.max(0, Math.min(rect.width - width, event.clientX - rect.left - width / 2))
-    setTilePreview({ recordingId, ...tile, left, scale })
+    setTilePreview({ recordingId, ...tile, left, scale, seconds: seconds ?? 0 })
   }
   const handleScrubPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     isScrubbingRef.current = true
@@ -717,6 +730,7 @@ export function RecordingPlayer({
         onControlsActivity={handleControlsActivity}
         onToolbarFocus={handleToolbarFocus}
         onToolbarBlur={handleToolbarBlur}
+        onShellKeyDown={handleControlsActivity}
         video={(
           <video
             ref={videoRef}

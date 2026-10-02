@@ -244,7 +244,10 @@ function createFakeServer(options: {
     if (watchedMatch && (method === 'PUT' || method === 'DELETE')) {
       const id = Number(watchedMatch[1])
       if (recording?.id === id) {
-        recording = { ...recording, watchedAt: method === 'PUT' ? '2026-10-01T00:00:00Z' : undefined }
+        recording = {
+          ...recording,
+          watchedAt: method === 'PUT' ? '2026-10-01T00:00:00Z' : undefined,
+        }
       }
       return Promise.resolve(jsonResponse(null, 204))
     }
@@ -489,6 +492,35 @@ describe('RecordingDetailPage', () => {
         expect.objectContaining({ method: 'PUT' }),
       )
       expect(invalidate).toHaveBeenCalledWith({ queryKey: [recordingsQueryKeyPrefix] })
+    })
+  })
+
+  describe.each([
+    ['プレイヤーの操作バー', { encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }], sizeBytes: 1_000_000 }],
+    ['原本のみ（プレイヤー外）', { sizeBytes: 1_000_000 }],
+    ['資産なし（プレイヤー外）', {}],
+  ] as [string, Partial<Recording>][])('視聴済みボタン: %s', (_name, overrides) => {
+    it('押すと PUT、もう一度押すと DELETE が飛ぶ', async () => {
+      const { fetchMock } = createFakeServer({ recording: sampleRecording({ ...overrides }) })
+      const user = userEvent.setup()
+      renderAt('/recordings/3')
+
+      await user.click(await screen.findByRole('button', { name: '視聴済みにする' }))
+      await waitFor(() =>
+        expect(fetchMock).toHaveBeenCalledWith('/api/recordings/3/watched', expect.objectContaining({ method: 'PUT' })),
+      )
+      await user.click(await screen.findByRole('button', { name: '未視聴に戻す' }))
+      await waitFor(() =>
+        expect(fetchMock).toHaveBeenCalledWith('/api/recordings/3/watched', expect.objectContaining({ method: 'DELETE' })),
+      )
+    })
+
+    it('完了していない録画には出さない', async () => {
+      createFakeServer({ recording: sampleRecording({ ...overrides, status: 'failed' }) })
+      renderAt('/recordings/3')
+      await screen.findByText('単体ページの録画')
+      expect(screen.queryByRole('button', { name: '視聴済みにする' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: '未視聴に戻す' })).not.toBeInTheDocument()
     })
   })
 
