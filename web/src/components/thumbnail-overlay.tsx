@@ -18,15 +18,19 @@ export function ThumbnailOverlay({
       >
         {serviceName}
       </span>
-      {progress !== undefined && (
-        <div
-          aria-hidden
-          data-testid="home-hero-progress-line"
-          className="absolute inset-x-0 bottom-0 h-1 bg-black/25"
-        >
-          <div className="h-full bg-foreground" style={{ width: `${progress}%` }} />
-        </div>
-      )}
+      {progress !== undefined && <ThumbnailProgressLine progress={progress} testId="home-hero-progress-line" />}
     </>
+  )
+}
+
+/**
+ * ThumbnailProgressLine はサムネイルの下端に重ねる視聴の進み線（0〜100%）。
+ * ホームのヒーローと録画詳細のシリーズ棚が同じ線を使う。親は `relative` にする。
+ */
+export function ThumbnailProgressLine({ progress, testId }: { progress: number; testId: string }) {
+  return (
+    <div aria-hidden data-testid={testId} className="absolute inset-x-0 bottom-0 h-1 bg-black/25">
+      <div className="h-full bg-foreground" style={{ width: `${progress}%` }} />
+    </div>
   )
 }

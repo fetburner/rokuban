@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { Recording } from '@/api/generated'
@@ -11,9 +11,9 @@ import { routeTree } from '@/routes'
  * 取り込み（ingest）進捗の表示（issue #212）。
  *
  * 録画単体ページ（`/recordings/{id}`）越しに見る --- ヘッダーのバッジ
- * （`IngestBadge`）と本体の「取り込み」欄（`RecordingDetail`）を同時に
- * 確認する。一覧の行は `RecordingRow` が別に `IngestBadge` を描くため、行の
- * バッジは別テストで確認する。
+ * （`IngestBadge`）と、バッジから「記録」タブへ移動した後の詳細を確認する。
+ * 一覧の行は `RecordingRow` が別に `IngestBadge` を描くため、行のバッジは
+ * 別テストで確認する。
  *
  * ファイルを `recordings.test.tsx` と分けているのは、あちらが一覧
  * （`GET /api/recordings`）専用の大きなフェイクサーバーを持っており、
@@ -157,6 +157,7 @@ describe('取り込み進捗の表示', () => {
     // 確かめると必ず通ってしまう）。
     expect(await screen.findByText('取り込みを見る録画')).toBeInTheDocument()
     expect(screen.getByText('取り込み中 25%')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '取り込み状態を記録タブで見る' }))
     expect(screen.getByText('転送中 238.4 MB / 953.7 MB（25%）')).toBeInTheDocument()
     // 途中ファイルのサイズは公開済みの sizeBytes に混ぜない（不変条件 3）ので、
     // ヘッダーのサイズ表示は出ない。
@@ -177,6 +178,7 @@ describe('取り込み進捗の表示', () => {
     expect(await screen.findByText('取り込みを見る録画')).toBeInTheDocument()
     // 分母が無いので % ではなくバイト数を出す。
     expect(screen.getByText('取り込み中 1000 B（停滞）')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '取り込み状態を記録タブで見る' }))
     expect(screen.getByText('転送中・停滞 1000 B')).toBeInTheDocument()
   })
 
@@ -185,6 +187,7 @@ describe('取り込み進捗の表示', () => {
 
     expect(await screen.findByText('取り込みを見る録画')).toBeInTheDocument()
     expect(screen.getByText('取り込み待ち')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '取り込み状態を記録タブで見る' }))
     expect(screen.getByText('待機中（まだ原本を取り込んでいません）')).toBeInTheDocument()
     expect(screen.queryByText(/原本は削除済み/)).not.toBeInTheDocument()
   })
@@ -195,6 +198,7 @@ describe('取り込み進捗の表示', () => {
     renderRecording(sampleRecording({ ingest: { state: 'committed' } }))
 
     expect(await screen.findByText('取り込みを見る録画')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '取り込み状態を記録タブで見る' }))
     expect(screen.getByText('完了（原本は削除済み）')).toBeInTheDocument()
     // 一覧行のバッジには出さない（展開後の欄が引き受ける）。
     expect(screen.queryByText(/取り込み中|取り込み待ち/)).not.toBeInTheDocument()

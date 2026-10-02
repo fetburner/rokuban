@@ -267,7 +267,10 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
 
 log('\n=== ① encoded なしの完了録画で原本 HLS を再生 ===')
 await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
-await page.getByRole('region', { name: '原本 TS をブラウザ再生' }).waitFor({ timeout: 15000 })
+const originalRegion = page.getByRole('region', { name: '原本 TS をブラウザ再生' })
+await originalRegion.waitFor({ timeout: 15000 })
+// 映像の上に見出しを置かない（docs/frontend/recordings.md「録画詳細の面積配分と構成」）。
+if ((await originalRegion.getByRole('heading').count()) !== 0) ng.push('① 原本 VOD の映像の上に見出しがある')
 const video = page.locator('video')
 await video.waitFor({ timeout: 15000 })
 await page.waitForFunction(() => {
@@ -292,6 +295,10 @@ await page.waitForFunction(() => {
   const element = document.querySelector('video')
   return element !== null && element.videoWidth > 0 && element.currentTime > 1
 }, undefined, { timeout: 15000 }).catch(() => ng.push('① H.264 映像の実再生が始まらない'))
+if (process.env.E2E_SHOT_DIR) {
+  mkdirSync(process.env.E2E_SHOT_DIR, { recursive: true })
+  await page.screenshot({ path: path.join(process.env.E2E_SHOT_DIR, 'v3-original-vod.png') })
+}
 
 log('\n=== ② 実 seek・字幕 cue・保存位置の復元 ===')
 await page.waitForFunction(() => {
