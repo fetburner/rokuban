@@ -916,6 +916,11 @@ const sampleOffsetPlayer = (target) => target.evaluate(() => {
     }
   }
   offsetFailAll = true
+  // 操作を出してから中央の次のチャプター（40 秒。変換の先端より先）を押し、張り直しを失敗させる。
+  if ((await sampleOffsetPlayer(phonePage)).controlsOpacity !== '1') {
+    await phonePage.touchscreen.tap(phoneFrame.x + 30, phoneFrame.y + 30)
+    await phonePage.waitForTimeout(400)
+  }
   await phonePage.locator('[data-testid="player-controls"]').getByRole('button', { name: '次のチャプター' }).tap().catch(() => {})
   await phonePage.getByRole('button', { name: '再読み込み' }).waitFor({ timeout: 10_000 })
     .catch(() => ng.push('⑤-h 前提: 配信の失敗でエラー表示が出ない'))
