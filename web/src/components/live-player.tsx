@@ -1628,6 +1628,10 @@ export function LivePlayer({
         onToggleFullscreen={requestOriginalFullscreen}
         controlsVisible={originalControlsVisible || !originalMediaPlaying || originalToolbarFocused}
         onControlsActivity={handleOriginalControlsActivity}
+        onHideControls={() => {
+          window.clearTimeout(controlsTimerRef.current)
+          setOriginalControlsVisible(false)
+        }}
         onToolbarFocus={handleOriginalToolbarFocus}
         onToolbarBlur={handleOriginalToolbarBlur}
         onShellKeyDown={handleOriginalControlsActivity}

@@ -2084,6 +2084,16 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
       .filter((url) => url.includes('/original-vod/playlist.m3u8'))
   }
 
+  async function selectOriginalVODProfile(user: ReturnType<typeof userEvent.setup>, profile: string) {
+    if (!screen.queryByRole('menu', { name: '再生設定' })) {
+      await user.click(screen.getByRole('button', { name: '再生設定' }))
+    }
+    const settings = screen.getByRole('menu', { name: '再生設定' })
+    await user.click(within(settings).getByRole('menuitem', { name: '画質' }))
+    const quality = screen.getByRole('menu', { name: '画質' })
+    await user.click(within(quality).getByRole('menuitemradio', { name: new RegExp(profile) }))
+  }
+
   it('エンコードの無い完成録画は HLS で原本を再生し、プロファイルを同じ recording URL に渡す', async () => {
     const user = userEvent.setup()
     const { fetchMock } = createFakeServer({
@@ -2102,7 +2112,11 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
 
     expect(await screen.findByRole('region', { name: '原本 TS をブラウザ再生' })).toBeInTheDocument()
     await user.click(await screen.findByRole('button', { name: '再生設定' }))
-    expect(await screen.findByLabelText('画質')).toHaveValue('hd')
+    const settings = await screen.findByRole('menu', { name: '再生設定' })
+    await user.click(within(settings).getByRole('menuitem', { name: '画質' }))
+    expect(
+      within(screen.getByRole('menu', { name: '画質' })).getByRole('menuitemradio', { name: /hd/ }),
+    ).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByRole('slider', { name: 'シークバー' })).toHaveAttribute('aria-valuemax', '1680')
     await waitFor(() => expect(originalVODURLs(fetchMock)).toHaveLength(1))
     expect(originalVODURLs(fetchMock)[0]).toBe(
@@ -2114,7 +2128,9 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
     )
     expect(screen.queryByText('ブラウザ再生用のエンコードがまだありません。')).not.toBeInTheDocument()
 
-    await user.selectOptions(screen.getByLabelText('画質'), 'sd')
+    await user.click(
+      within(screen.getByRole('menu', { name: '画質' })).getByRole('menuitemradio', { name: /sd/ }),
+    )
     await waitFor(() => expect(originalVODURLs(fetchMock)).toHaveLength(2))
     expect(originalVODURLs(fetchMock)[1]).toContain('profile=sd')
   })
@@ -2128,7 +2144,7 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
     renderAt('/recordings/3')
     await screen.findByRole('region', { name: '原本 TS をブラウザ再生' })
     await user.click(await screen.findByRole('button', { name: '再生設定' }))
-    await screen.findByLabelText('画質')
+    await screen.findByRole('menuitem', { name: '画質' })
     await waitFor(() => expect(document.querySelector('video')).toBeInTheDocument())
 
     const video = document.querySelector('video')!
@@ -2140,8 +2156,8 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
       ).toHaveLength(1)
     })
 
-    await user.selectOptions(screen.getByLabelText('画質'), 'sd')
-    await waitFor(() => expect(screen.getByLabelText('画質')).toHaveValue('sd'))
+    await selectOriginalVODProfile(user, 'sd')
+    await waitFor(() => expect(screen.queryByRole('menu', { name: '再生設定' })).toBeNull())
     const after = document.querySelector('video')!
     Object.defineProperty(after, 'currentTime', { value: 40, writable: true, configurable: true })
     fireEvent.pause(after)
