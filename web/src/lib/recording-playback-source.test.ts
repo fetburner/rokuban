@@ -16,6 +16,11 @@ describe('selectRecordingPlaybackSource', () => {
       expected: 'chase',
     },
     {
+      name: 'recording with live capability still selects chase when encoded media is present',
+      input: { status: 'recording', hasEncoded: true, hasOriginal: true, liveEnabled: true },
+      expected: 'chase',
+    },
+    {
       name: 'recording without live capability has no browser source',
       input: { status: 'recording', hasEncoded: false, hasOriginal: true, liveEnabled: false },
       expected: 'none',
@@ -60,6 +65,17 @@ describe('selectRecordingPlaybackSource', () => {
       input: {
         status: 'finished',
         hasEncoded: true,
+        hasOriginal: true,
+        liveEnabled: true,
+        isTrashed: true,
+      },
+      expected: 'none',
+    },
+    {
+      name: 'trashed recording with live capability does not select chase',
+      input: {
+        status: 'recording',
+        hasEncoded: false,
         hasOriginal: true,
         liveEnabled: true,
         isTrashed: true,
