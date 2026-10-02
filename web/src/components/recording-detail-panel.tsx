@@ -419,6 +419,8 @@ export function RecordingDetail({
   }
   // 操作バー（encoded のプレイヤー）が無い状態では、次のエピソードへの導線をシリーズの行に出す。
   const hasPlayerBar = !trash && !showChase && encodedAssets.length > 0
+  // 棚（lg 以上だけで見える）を描く条件。シリーズ画面への導線をどちらに置くかもこれで決める。
+  const hasShelf = !trash && recording.series != null
 
   const hasVersions = !trash && (
     encodedAssets.length > 0 || hasOriginal || recording.status === 'recording' ||
@@ -731,17 +733,29 @@ export function RecordingDetail({
             )}
           </div>
           {recording.series != null && (
-            <div data-testid="recording-series-links" className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-              {/* シリーズの導線はあらゆる状態・幅で出す（原本のみ・録画中・ごみ箱・スマホでも）。
-                  棚はデスクトップだけ、操作バーの次のエピソードはエンコード版のプレイヤーだけにしか無い。 */}
-              <Link
-                to="/recordings/$id/series"
-                params={{ id: String(recording.id) }}
-                aria-label={`このシリーズへ: ${recording.series}`}
-                className="inline-flex min-h-6 items-center text-primary underline-offset-2 hover:underline"
-              >
-                {recording.series} <span aria-hidden className="ml-1">›</span>
-              </Link>
+            <div
+              data-testid="recording-series-links"
+              className={cn(
+                'flex flex-wrap items-center gap-x-4 gap-y-1 text-sm',
+                // 棚がある幅では、行の中身がシリーズのリンクだけなら行ごと出さない（空の余白を残さない）。
+                hasShelf && !(next !== undefined && !hasPlayerBar) && 'lg:hidden',
+              )}
+            >
+              {/* シリーズの導線はどの状態でも、どちらかの幅で 1 つ見える。棚がある幅（lg 以上）では
+                  棚の見出しが受け持つので、ここは棚が無い幅とごみ箱（棚が無い）だけで出す。
+                  回のタイトルとシリーズ名が同じ録画でタイトルの繰り返しに見えないよう、
+                  「シリーズ」の見出し語と下線を付ける。 */}
+              <span className={cn('inline-flex items-center gap-1.5', hasShelf && 'lg:hidden')}>
+                <span className="text-muted-foreground">シリーズ</span>
+                <Link
+                  to="/recordings/$id/series"
+                  params={{ id: String(recording.id) }}
+                  aria-label={`このシリーズへ: ${recording.series}`}
+                  className="inline-flex min-h-6 items-center text-primary underline underline-offset-4"
+                >
+                  {recording.series} <span aria-hidden className="ml-1">›</span>
+                </Link>
+              </span>
               {/* **再生できる行だけを「次」にする。** 開始時刻がずれて supersede されなかった
                   failed 行を指すと、押した先の再生が 404 になる（`lib/series.ts`）。 */}
               {next !== undefined && !hasPlayerBar && (
@@ -957,10 +971,21 @@ export function RecordingDetail({
         </section>
       </div>
 
-      {!trash && recording.series != null && (
+      {hasShelf && (
         <aside data-testid="recording-series-shelf" aria-label="シリーズの録画" className="hidden min-w-0 border-l border-border pl-5 lg:block">
           <div className="mb-3 flex items-baseline justify-between gap-2">
-            <h3 className="min-w-0 truncate font-semibold">{recording.series}</h3>
+            {/* 棚がある幅では、見出しのシリーズ名がシリーズ画面への導線を受け持つ。 */}
+            <h3 className="min-w-0 font-semibold">
+              <Link
+                to="/recordings/$id/series"
+                params={{ id: String(recording.id) }}
+                aria-label={`このシリーズへ: ${recording.series}`}
+                className="inline-flex min-h-6 max-w-full items-center gap-1 underline-offset-4 hover:underline"
+              >
+                <span className="truncate">{recording.series}</span>
+                <span aria-hidden>›</span>
+              </Link>
+            </h3>
             {shelfQuery.isSuccess && (
               <span data-testid="series-shelf-summary" className="shrink-0 text-xs text-muted-foreground">
                 {shelfTruncated

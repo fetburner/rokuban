@@ -13,7 +13,9 @@
 //   ④ 取り消さなければ次の回へ自動で移る。移った先は再生を始め、全画面は保たれ、履歴が積まれる
 //   ⑤ 最後の回のカードは「もう一度見る」と「この回をごみ箱へ」だけ
 //   ⑥ 棚: 本数と合計サイズ、新しい順、過去の回の行を押すとその録画へ移る（スマホには出ない）
-//   ⑦ シリーズへの導線が、エンコード版・原本のみ・録画中の各状態と 400px 幅で見える
+//   ⑦ シリーズへの導線が各状態（エンコード版・原本のみ・録画中・ごみ箱）でちょうど 1 つ見える。
+//      1280 では棚の見出し（シリーズ名）がリンクで、タイトル下の行は出ない（棚の無いごみ箱は除く）。
+//      400px ではタイトル下にリンクがあり、「シリーズ」の見出し語を持つ
 //   ⑧ バーの「次のエピソード」が見える（デスクトップは日付つき、スマホはアイコンだけ）
 //   ⑨ 次の回へ移ると、前の回のチャプター編集の下書き・開閉と選んだ画質が持ち越されない
 //      （ページを作り直さない移動なので、録画ごとの状態は id の変化で戻す）。映像の src と
@@ -90,7 +92,33 @@ const inProgress = {
   ingest: { state: 'pending' },
 }
 const trashed = { ...base, id: 5, title: '録画した番組', series: undefined, ruleId: undefined, source: 'manual', startAt: '2026-09-27T10:00:00.000Z', createdAt: '2026-09-27T10:05:00.000Z', deletedAt: '2026-10-02T10:40:00.000Z', encodedAssets: undefined }
-const all = [ep1, ep2, ep10, originalOnly, inProgress, trashed]
+const trashedSeries = { ...base, id: 6, title: 'ごみ箱の回', startAt: '2026-09-26T10:00:00.000Z', createdAt: '2026-09-26T10:05:00.000Z', deletedAt: '2026-10-02T10:40:00.000Z' }
+const all = [ep1, ep2, ep10, originalOnly, inProgress, trashed, trashedSeries]
+
+/** seriesEntries は画面に見えているシリーズ画面へのリンクと、その置き場を返す。 */
+async function seriesEntries(page) {
+  return page.evaluate(() =>
+    [...document.querySelectorAll('a[href$="/series"]')]
+      .filter((a) => {
+        const r = a.getBoundingClientRect()
+        return r.width > 0 && r.height > 0
+      })
+      .map((a) => {
+        const r = a.getBoundingClientRect()
+        const row = a.closest('[data-testid="recording-series-links"]')
+        return {
+          place: a.closest('[data-testid="recording-series-shelf"] h3') ? 'shelf-heading' : row ? 'title-row' : 'other',
+          text: a.textContent.trim(),
+          // 見出し語は行の中のリンク以外の部分にあること（リンクの文字はシリーズ名そのもの）。
+          rowLabel: row ? row.textContent.replace(a.textContent, '').trim() : '',
+          underlined: getComputedStyle(a).textDecorationLine.includes('underline'),
+          x: r.x,
+          right: r.right,
+        }
+      }),
+  )
+}
+const seriesStates = [[1, 'エンコード版'], [3, '原本のみ'], [4, '録画中'], [6, 'ごみ箱']]
 const rule = {
   id: 5,
   name: 'ニュース７（平日）',
@@ -179,6 +207,7 @@ await validateFixturesOrExit(
     ['ep1', ListRecordingsResponseItem, ep1],
     ['originalOnly', ListRecordingsResponseItem, originalOnly],
     ['inProgress', ListRecordingsResponseItem, inProgress],
+    ['trashedSeries', ListRecordingsResponseItem, trashedSeries],
   ],
   ng,
 )
@@ -326,14 +355,14 @@ async function transitionsAlong(png) {
   const summary = ((await page.locator('[data-testid="series-shelf-summary"]').textContent()) ?? '').trim()
   // 録画 5 件のうちこのシリーズ（series=ニュース７）は全部。原本 3.2 GB + エンコード 572 MB を持つ回が 3 本。
   if (!/^5 本 · /.test(summary)) ng.push(`⑥ 棚の見出しが「5 本 · …」でない（${summary}）`)
-  const hrefs = await page.locator('[data-testid="recording-series-shelf"] a').evaluateAll((links) => links.map((l) => l.getAttribute('href')))
+  const hrefs = await page.locator('[data-testid="recording-series-shelf"] li a').evaluateAll((links) => links.map((l) => l.getAttribute('href')))
   if (JSON.stringify(hrefs) !== JSON.stringify(['/recordings/4', '/recordings/3', '/recordings/2', '/recordings/1', '/recordings/10'])) {
     ng.push(`⑥ 棚の並びが新しい順（過去の回を含む）でない（${JSON.stringify(hrefs)}）`)
   }
 
   log('\n=== ⑩ 棚の進み線 ===')
   // 行ごとに、サムネイルの幅に対する線の塗りの幅（%）と、線がサムネイルの下端に載っているかを測る。
-  const lines = await page.locator('[data-testid="recording-series-shelf"] a').evaluateAll((links) =>
+  const lines = await page.locator('[data-testid="recording-series-shelf"] li a').evaluateAll((links) =>
     links.map((link) => {
       const thumb = link.querySelector('img')?.parentElement?.getBoundingClientRect()
       const line = link.querySelector('[data-testid="series-shelf-progress-line"]')
@@ -508,6 +537,32 @@ async function transitionsAlong(png) {
 }
 
 {
+  const { context, page } = await newPage(1280, 800)
+  log('\n=== ⑦ シリーズへの導線（1280、各状態） ===')
+  for (const [id, label] of seriesStates) {
+    await page.goto(`${URL_BASE}/recordings/${id}`, { waitUntil: 'domcontentloaded' })
+    await page.locator('a[href$="/series"]').first().waitFor({ timeout: 10000 }).catch(() => {})
+    // 棚の見出しは棚の問い合わせの後に出るので、棚がある状態では見出しのリンクを待つ。
+    if (id !== 6) await page.locator('[data-testid="recording-series-shelf"] h3 a').waitFor({ timeout: 10000 }).catch(() => {})
+    const entries = await seriesEntries(page)
+    log(`  ${label}: ${JSON.stringify(entries)}`)
+    if (entries.length !== 1) {
+      ng.push(`⑦ ${label}（1280）で見えるシリーズへのリンクが ${entries.length} 個（期待 1。${JSON.stringify(entries.map((e) => e.place))}）`)
+      continue
+    }
+    const [entry] = entries
+    const want = id === 6 ? 'title-row' : 'shelf-heading'
+    if (entry.place !== want) ng.push(`⑦ ${label}（1280）でシリーズへのリンクの置き場が ${entry.place}（期待 ${want}）`)
+    if (want === 'shelf-heading' && !/›$/.test(entry.text)) ng.push(`⑦ ${label}（1280）で棚の見出しのリンクに「›」が無い（${entry.text}）`)
+  }
+  await page.goto(`${URL_BASE}/recordings/1`, { waitUntil: 'domcontentloaded' })
+  await page.locator('[data-testid="recording-series-shelf"] h3 a').waitFor({ timeout: 10000 }).catch(() => {})
+  await shot(page, 'v5-light-desktop-series.png')
+  if (SHOT_DIR) await page.screenshot({ path: path.join(SHOT_DIR, 'v5-light-desktop-series-full.png'), fullPage: true, animations: 'disabled' })
+  await context.close()
+}
+
+{
   // 最後の回: 次の回が再生できない（原本のみ・録画中）ときが「最後」。ep2 の後に再生できる行が無い構成にする。
   const { context, page } = await newPage(1280, 800)
   log('\n=== ⑤ 最後の回のカード ===')
@@ -546,17 +601,24 @@ async function transitionsAlong(png) {
   if (await page.locator('[data-testid="recording-series-shelf"]').isVisible().catch(() => false)) ng.push('⑥ スマホに棚が出ている')
 
   log('\n=== ⑦ シリーズへの導線（400px、各状態） ===')
-  for (const [id, label] of [[1, 'エンコード版'], [3, '原本のみ'], [4, '録画中']]) {
+  for (const [id, label] of seriesStates) {
     await page.goto(`${URL_BASE}/recordings/${id}`, { waitUntil: 'domcontentloaded' })
-    const link = page.getByRole('link', { name: /^このシリーズへ/ })
-    await link.waitFor({ timeout: 10000 }).catch(() => {})
-    const linkBox = await link.boundingBox().catch(() => null)
-    if (!linkBox || linkBox.x < 0 || linkBox.x + linkBox.width > 400 || linkBox.width < 20) {
-      ng.push(`⑦ ${label}（400px）でシリーズへのリンクが画面内に見えない`)
+    await page.locator('a[href$="/series"]').first().waitFor({ timeout: 10000 }).catch(() => {})
+    const entries = await seriesEntries(page)
+    log(`  ${label}: ${JSON.stringify(entries)}`)
+    if (entries.length !== 1) {
+      ng.push(`⑦ ${label}（400px）で見えるシリーズへのリンクが ${entries.length} 個（期待 1）`)
+      continue
     }
+    const [entry] = entries
+    if (entry.place !== 'title-row') ng.push(`⑦ ${label}（400px）でシリーズへのリンクがタイトル下に無い（${entry.place}）`)
+    if (!entry.rowLabel.includes('シリーズ')) ng.push(`⑦ ${label}（400px）でタイトル下のリンクに「シリーズ」の見出し語が無い（「${entry.rowLabel}」）`)
+    if (!entry.underlined) ng.push(`⑦ ${label}（400px）でタイトル下のシリーズ名がリンクの見た目（下線）でない`)
+    if (entry.x < 0 || entry.right > 400) ng.push(`⑦ ${label}（400px）でシリーズへのリンクが画面からはみ出す`)
   }
   await openRecording(page, 1)
   await shot(page, 'v3-phone-programme.png')
+  await shot(page, 'v5-light-phone-series.png')
 
   log('\n=== ② スマホの終端カード ===')
   await playToEnd(page)

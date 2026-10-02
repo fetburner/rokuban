@@ -656,10 +656,9 @@ describe('RecordingDetailPage', () => {
 
     renderAt('/recordings/3')
 
-    expect(await screen.findByRole('link', { name: /^このシリーズへ/ })).toHaveAttribute(
-      'href',
-      '/recordings/3/series',
-    )
+    expect(
+      within(await screen.findByTestId('recording-series-links')).getByRole('link', { name: /^このシリーズへ/ }),
+    ).toHaveAttribute('href', '/recordings/3/series')
     expect(
       await screen.findByRole('link', { name: '次のエピソード: アニメ　作品X　第3話' }),
     ).toHaveAttribute('href', '/recordings/5')
@@ -2239,11 +2238,23 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
 
     renderAt('/recordings/3')
 
+    // 棚が無い幅（とごみ箱）向けのタイトル下の行。見出し語「シリーズ」で、タイトルの繰り返しに見せない。
     const row = await screen.findByTestId('recording-series-links')
     expect(within(row).getByRole('link', { name: 'このシリーズへ: 作品X' })).toHaveAttribute(
       'href',
       '/recordings/3/series',
     )
+    expect(within(row).getByText('シリーズ')).toBeInTheDocument()
+    // 棚がある状態では、棚の見出しのシリーズ名がシリーズ画面へのリンク（どの幅で見えるかは e2e ⑦ が測る）。
+    const trash = overrides.deletedAt !== undefined
+    const shelf = screen.queryByTestId('recording-series-shelf')
+    if (trash) {
+      expect(shelf).toBeNull()
+    } else {
+      expect(
+        within(within(shelf!).getByRole('heading', { name: /作品X/ })).getByRole('link', { name: 'このシリーズへ: 作品X' }),
+      ).toHaveAttribute('href', '/recordings/3/series')
+    }
   })
 
   it('操作バーが無い状態では次のエピソードをシリーズの行に出し、バーがあるときは重ねて出さない', async () => {
@@ -2280,7 +2291,7 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
     // 3 本 × (原本 1 GB + エンコード 1 GB)
     expect(summary).toHaveTextContent('3 本 · 6.0 GB')
     const shelf = screen.getByTestId('recording-series-shelf')
-    const hrefs = within(shelf).getAllByRole('link').map((link) => link.getAttribute('href'))
+    const hrefs = within(within(shelf).getByRole('list')).getAllByRole('link').map((link) => link.getAttribute('href'))
     expect(hrefs).toEqual(['/recordings/4', '/recordings/3', '/recordings/2'])
     expect(within(shelf).getByRole('link', { name: /再生中/ })).toHaveAttribute('href', '/recordings/3')
   })
@@ -2473,7 +2484,7 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
     expect(screen.getByRole('slider', { name: '追っかけ再生の位置' })).toHaveAttribute('aria-valuenow', '30')
 
     const shelf = screen.getByTestId('recording-series-shelf')
-    await user.click(within(shelf).getAllByRole('link').find((link) => link.getAttribute('href') === '/recordings/4')!)
+    await user.click(within(within(shelf).getByRole('list')).getAllByRole('link').find((link) => link.getAttribute('href') === '/recordings/4')!)
     expect(await screen.findByRole('heading', { name: '作品X 第4話' })).toBeInTheDocument()
     await user.click(await screen.findByRole('button', { name: '追っかけ再生' }))
     const slider = await screen.findByRole('slider', { name: '追っかけ再生の位置' })
@@ -2493,9 +2504,9 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
     renderAt('/recordings/3')
 
     const shelf = await screen.findByTestId('recording-series-shelf')
-    await waitFor(() => expect(within(shelf).getAllByRole('link')).toHaveLength(3))
+    await waitFor(() => expect(within(within(shelf).getByRole('list')).getAllByRole('link')).toHaveLength(3))
     const widthOf = (href: string) => {
-      const link = within(shelf).getAllByRole('link').find((item) => item.getAttribute('href') === href)!
+      const link = within(within(shelf).getByRole('list')).getAllByRole('link').find((item) => item.getAttribute('href') === href)!
       const line = link.querySelector<HTMLElement>('[data-testid="series-shelf-progress-line"] > div')
       return line?.style.width
     }
