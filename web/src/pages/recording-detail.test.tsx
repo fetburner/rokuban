@@ -2574,7 +2574,7 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
     ).toEqual(['h264-720p'])
   })
 
-  it('次の回へ移ると、チャプター編集の下書きと開閉を捨てる（移動先のチャプターが取得済みでも）', async () => {
+  it('未保存の編集から次の回へ移ると確認し、破棄後は移動先に下書きを持ち越さない', async () => {
     const user = userEvent.setup()
     const origin = seriesEpisode(3, '2026-01-01T12:00:00Z')
     const next = seriesEpisode(4, '2026-01-08T12:00:00Z')
@@ -2588,27 +2588,43 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
         spans: [{ startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }],
       },
     })
-    const { queryClient } = renderAt('/recordings/3')
+    const { queryClient, router } = renderAt('/recordings/3')
     // 移動先のチャプターを先に取得しておく（取得待ちで編集器が一度消える経路に頼らない）。
     await queryClient.fetchQuery({
       queryKey: getGetRecordingChaptersQueryKey(4),
       queryFn: () => getRecordingChapters(4),
     })
 
-    const details = (await screen.findByTestId('chapter-editor-details')) as HTMLDetailsElement
-    await user.click(details.querySelector('summary')!)
-    const label = within(details).getByLabelText('ラベル')
+    await screen.findByTestId('recording-player-frame')
+    await user.click(screen.getByRole('button', { name: '再生設定' }))
+    await user.click(screen.getByRole('menuitem', { name: 'チャプターを直す' }))
+    const editor = await screen.findByTestId('chapter-edit-layout')
+    const label = within(editor).getByLabelText('ラベル')
     await user.clear(label)
     await user.type(label, '前の回の下書き')
-    expect(details).toHaveTextContent('未保存の変更があります')
+    expect(editor).toHaveTextContent('未保存の変更があります')
 
-    await user.click(screen.getByTestId('next-episode-link'))
+    const navigateToNext = () => {
+      void router.navigate({ to: '/recordings/$id', params: { id: '4' }, hash: '' })
+    }
+    act(navigateToNext)
+    const confirmation = await screen.findByTestId('chapter-exit-confirmation')
+    expect(confirmation).toHaveTextContent('未保存の変更があります')
+    await user.click(within(confirmation).getByRole('button', { name: '編集を続ける' }))
+    expect(screen.queryByTestId('chapter-exit-confirmation')).toBeNull()
+    expect(within(screen.getByTestId('chapter-edit-layout')).getByLabelText('ラベル')).toHaveValue('前の回の下書き')
+
+    act(navigateToNext)
+    const blockedConfirmation = await screen.findByTestId('chapter-exit-confirmation')
+    await user.click(within(blockedConfirmation).getByRole('button', { name: '変更を捨てる' }))
     expect(await screen.findByRole('heading', { name: '作品X 第4話' })).toBeInTheDocument()
-    const nextDetails = (await screen.findByTestId('chapter-editor-details')) as HTMLDetailsElement
-    expect(nextDetails.open).toBe(false)
-    expect(within(nextDetails).getByLabelText('ラベル')).toHaveValue('CM')
-    expect(nextDetails).not.toHaveTextContent('未保存の変更があります')
-    expect(nextDetails).not.toHaveTextContent('サーバー側の内容が変わりました')
+    expect(screen.queryByTestId('chapter-edit-layout')).toBeNull()
+    await user.click(screen.getByRole('button', { name: '再生設定' }))
+    await user.click(screen.getByRole('menuitem', { name: 'チャプターを直す' }))
+    const nextEditor = await screen.findByTestId('chapter-edit-layout')
+    expect(within(nextEditor).getByLabelText('ラベル')).toHaveValue('CM')
+    expect(nextEditor).not.toHaveTextContent('未保存の変更があります')
+    expect(nextEditor).not.toHaveTextContent('サーバー側の内容が変わりました')
   })
 
   it('次の回へ移ると、追っかけ再生で選んでいた位置を先頭に戻す（キー操作でも前の位置を使わない）', async () => {

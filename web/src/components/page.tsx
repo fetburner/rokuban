@@ -19,7 +19,7 @@ export function PageHeader({
   actions,
   children,
 }: {
-  title: string
+  title: React.ReactNode
   /** タイトル左に置く「戻る」ボタン等。 */
   leading?: React.ReactNode
   /** タイトル行の右端に置くコントロール。 */
@@ -60,7 +60,7 @@ export function PageHeader({
     >
       <div className="flex items-center gap-3 px-4 py-3">
         {leading}
-        <h1 className="shrink-0 text-base font-semibold tracking-tight">{title}</h1>
+        <h1 className="min-w-0 text-base font-semibold tracking-tight">{title}</h1>
         {actions && <div className="ml-auto flex min-w-0 items-center gap-2">{actions}</div>}
       </div>
       {children}

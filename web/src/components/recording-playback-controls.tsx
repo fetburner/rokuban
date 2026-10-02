@@ -97,6 +97,10 @@ type RecordingPlaybackControlsProps = {
   playedFraction: number
   chapters: ChapterSpan[]
   playingCut: boolean
+  chapterEditing?: boolean
+  canEditChapters?: boolean
+  onEnterChapterEditing?: () => void
+  onPlayAround?: () => void
   tilePreview: TilePreview
   tilesRequested: boolean
   tilesAvailable: boolean
@@ -171,6 +175,10 @@ export function RecordingPlaybackControls({
   playedFraction,
   chapters,
   playingCut,
+  chapterEditing = false,
+  canEditChapters = false,
+  onEnterChapterEditing,
+  onPlayAround,
   tilePreview,
   tilesRequested,
   tilesAvailable,
@@ -353,6 +361,41 @@ export function RecordingPlaybackControls({
   const ghost = 'text-white hover:bg-white/15 hover:text-white'
   const watchedAction = watched ? onDeleteWatched : onPutWatched
   const showControls = controlsVisible || popoverOpen
+
+  if (chapterEditing) {
+    return (
+      <div className="relative w-full" data-testid="recording-player-shell">
+        <div
+          ref={fullscreenRef}
+          data-testid="recording-player-frame"
+          className="relative aspect-video w-full overflow-hidden rounded bg-black"
+        >
+          {video}
+          {endCard}
+          <div className="absolute inset-x-0 bottom-0 flex items-center gap-3 bg-black/75 px-3 py-2 text-white">
+            <Button type="button" variant="ghost" size="icon" className={ghost} aria-label={isPlaying ? '一時停止' : '再生'} onClick={onTogglePlay}>
+              {isPlaying ? <Pause /> : <Play />}
+            </Button>
+            <span data-testid="chapter-edit-playhead" className="font-mono text-sm">
+              {formatPlaybackTime(seconds)} / {formatPlaybackTime(durationSeconds)}
+            </span>
+            <Button
+              type="button"
+              variant="secondary"
+              className="ml-auto rounded-full"
+              onClick={onPlayAround}
+              disabled={onPlayAround === undefined}
+            >
+              前後 3 秒を再生
+            </Button>
+            <span className="hidden rounded-full bg-white/15 px-3 py-2 text-sm md:inline-flex" aria-label="CM自動スキップは編集中に停止">
+              CM を飛ばさない（編集中）
+            </span>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div
@@ -852,6 +895,8 @@ export function RecordingPlaybackControls({
             subtitlesEnabled={subtitlesEnabled}
             skipEnabled={skipEnabled}
             showSkip={hasChapters}
+            canEditChapters={canEditChapters}
+            onEnterChapterEditing={onEnterChapterEditing}
             pictureInPictureEnabled={pictureInPictureEnabled}
             pictureInPicture={pictureInPicture}
             onSelectProfile={onSelectProfile}
@@ -1014,6 +1059,8 @@ type PlaybackSettingsMenuProps = {
   subtitlesEnabled: boolean
   skipEnabled: boolean
   showSkip: boolean
+  canEditChapters: boolean
+  onEnterChapterEditing?: () => void
   pictureInPictureEnabled: boolean
   pictureInPicture: boolean
   onSelectProfile: (profile: string) => void
@@ -1045,6 +1092,8 @@ function PlaybackSettingsMenu({
   subtitlesEnabled,
   skipEnabled,
   showSkip,
+  canEditChapters,
+  onEnterChapterEditing,
   pictureInPictureEnabled,
   pictureInPicture,
   onSelectProfile,
@@ -1213,6 +1262,21 @@ function PlaybackSettingsMenu({
     skipEnabled,
     () => onToggleSkip(!skipEnabled),
   )
+  const chapterEditRow = canEditChapters && (
+    <button
+      type="button"
+      role="menuitem"
+      aria-label="チャプターを直す"
+      className={row}
+      onClick={() => {
+        onClose(false)
+        onEnterChapterEditing?.()
+      }}
+    >
+      <SlidersHorizontal className={icon} aria-hidden />
+      <span className="flex-1">チャプターを直す</span>
+    </button>
+  )
 
   return (
     <>
@@ -1260,6 +1324,12 @@ function PlaybackSettingsMenu({
                     {pictureInPicture ? 'ピクチャー・イン・ピクチャーを終了' : 'ピクチャー・イン・ピクチャー'}
                   </span>
                 </button>
+              </>
+            )}
+            {chapterEditRow && (
+              <>
+                <div role="separator" className="my-1 border-t border-border" />
+                {chapterEditRow}
               </>
             )}
           </>

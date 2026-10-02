@@ -47,6 +47,11 @@ const ng = []
 const CM_SPAN = { startMs: 30_000, endMs: 40_000, label: 'CM', cut: true }
 const OP_SPAN = { startMs: 60_000, endMs: 70_000, label: 'OP', cut: false }
 const CHAPTERS = { source: 'auto', version: 'auto:detected:1', detectionPending: false, spans: [CM_SPAN, OP_SPAN] }
+let currentChapters = CHAPTERS
+const chapterEditBodies = []
+const seekTileRequests = []
+let tileResponseStatus = 200
+let chapterResetCount = 0
 
 const recording = {
   id: 1,
@@ -103,6 +108,21 @@ function ensureFixture() {
   return existsSync(videoPath) ? videoPath : undefined
 }
 
+/** ensureSeekTilesFixture は録画原本時間軸の 10 秒格子を作る。 */
+function ensureSeekTilesFixture(videoPath) {
+  const fixturePath = path.join(path.dirname(videoPath), 'seek-tiles.jpg')
+  if (existsSync(fixturePath) && statSync(fixturePath).size > 0) return fixturePath
+  execFileSync(
+    'ffmpeg',
+    [
+      '-y', '-i', videoPath, '-vf', 'fps=1/10,scale=160:90,tile=10x1',
+      '-frames:v', '1', '-q:v', '3', fixturePath,
+    ],
+    { stdio: 'ignore' },
+  )
+  return existsSync(fixturePath) ? fixturePath : undefined
+}
+
 /** rangeResponse は Range に応じる（応じないと Chromium は seekable にしない）。 */
 function rangeResponse(route, bytes, contentType) {
   const range = /bytes=(\d+)-(\d*)/.exec(route.request().headers().range ?? '')
@@ -120,6 +140,7 @@ function rangeResponse(route, bytes, contentType) {
 }
 
 let videoBytes = Buffer.alloc(0)
+let tileBytes = Buffer.alloc(0)
 
 async function apiHandler({ path: apiPath, url, json, route }) {
   const method = route.request().method()
@@ -134,11 +155,26 @@ async function apiHandler({ path: apiPath, url, json, route }) {
     return json(url.searchParams.get('trash') === 'true' ? [] : [recording])
   }
   if (/^\/api\/recordings\/1$/.test(apiPath) && method === 'GET') return json(recording)
-  if (/^\/api\/recordings\/1\/chapters$/.test(apiPath) && method === 'GET') return json(CHAPTERS)
+  if (/^\/api\/recordings\/1\/chapters$/.test(apiPath) && method === 'GET') return json(currentChapters)
+  if (/^\/api\/recordings\/1\/chapter-edits$/.test(apiPath) && method === 'PUT') {
+    const body = route.request().postDataJSON()
+    chapterEditBodies.push(body)
+    currentChapters = { ...currentChapters, source: 'user', version: 'user:edited:1', spans: body.spans }
+    return route.fulfill({ status: 204 })
+  }
+  if (/^\/api\/recordings\/1\/chapter-edits$/.test(apiPath) && method === 'DELETE') {
+    chapterResetCount += 1
+    currentChapters = { ...CHAPTERS, version: `auto:detected:${chapterResetCount + 1}` }
+    return route.fulfill({ status: 204 })
+  }
   if (/^\/api\/media\/recordings\/1\/file$/.test(apiPath)) {
     return rangeResponse(route, videoBytes, 'video/webm')
   }
-  if (/^\/api\/media\/recordings\/\d+\/(thumbnail|seek-tiles)$/.test(apiPath)) {
+  if (/^\/api\/media\/recordings\/\d+\/seek-tiles$/.test(apiPath)) {
+    seekTileRequests.push(apiPath)
+    return route.fulfill({ status: tileResponseStatus, contentType: 'image/jpeg', body: tileResponseStatus === 200 ? tileBytes : '' })
+  }
+  if (/^\/api\/media\/recordings\/\d+\/thumbnail$/.test(apiPath)) {
     return route.fulfill({ status: 404 })
   }
   return json([])
@@ -157,6 +193,12 @@ if (videoPath === undefined) {
   await finish(ng)
 }
 videoBytes = readFileSync(videoPath)
+const tilesPath = ensureSeekTilesFixture(videoPath)
+if (tilesPath === undefined) {
+  ng.push('filmstrip 判定用の seek-tile fixture を生成できない')
+  await finish(ng)
+}
+tileBytes = readFileSync(tilesPath)
 
 // 音声トラックの無いフィクスチャでも Chromium の自動再生ポリシーは掛かる。判定は
 // 「実際に再生が進むこと」に依存するので、ジェスチャ無しの再生を許す。
@@ -400,15 +442,15 @@ if (throughOp < 61 || throughOp >= 70) {
 }
 
 log('\n=== ④ 境界の「前後 3 秒」 ===')
-// チャプター編集は閉じた <details> に入っているので、境界行を見る前に開く。
-await page.locator('[data-testid="chapter-editor-details"] > summary').click()
-const firstBoundary = page.locator('[data-testid="chapter-boundary"]').first()
-const label = await firstBoundary.textContent()
-if (!label?.includes('0:00:30')) {
-  ng.push(`④ 先頭の境界が 30 秒ではない（${label?.trim()}）--- 判定の前提が崩れている`)
-}
+// #1019 の専用編集画面で境界を選んで前後再生する。
+await page.getByRole('button', { name: '再生設定' }).click()
+await page.getByRole('menuitem', { name: 'チャプターを直す', exact: true }).click()
+await page.waitForSelector('[data-testid="chapter-edit-layout"]', { timeout: 5000 })
+const firstBoundary = page.locator('[data-testid="chapter-filmstrip-boundary"][data-time-ms="30000"]')
+if ((await firstBoundary.count()) !== 1) ng.push('④ 30 秒の境界が filmstrip に無い --- 判定の前提が崩れている')
+else await firstBoundary.click()
 await seek(100)
-await firstBoundary.getByRole('button', { name: '前後3秒' }).click()
+await page.getByRole('button', { name: '選択中の境界の前後3秒を再生' }).click()
 // まず開始位置を見る。境界の 3 秒手前（27 秒）から始まり、1 秒後に 28 秒付近に居る。
 // 境界そのもの（30 秒）から始めていれば 31 秒付近になるので、ここで区別できる。
 const afterOneSecond = await playFor(1000)
@@ -433,7 +475,8 @@ await video.evaluate((v) => {
   v.playbackRate = 2
 })
 await seek(100)
-await firstBoundary.getByRole('button', { name: '前後3秒' }).click()
+await firstBoundary.click()
+await page.getByRole('button', { name: '選択中の境界の前後3秒を再生' }).click()
 await page.waitForTimeout(4500)
 const fast = await video.evaluate((v) => ({ t: v.currentTime, paused: v.paused }))
 await video.evaluate((v) => {
@@ -445,6 +488,10 @@ if (!fast.paused || fast.t < 32 || fast.t > 34.5) {
     `⑤ 2 倍速の前後 3 秒が境界の 3 秒後（33 秒）で止まっていない（位置 ${fast.t.toFixed(2)} 秒 paused=${fast.paused}）`,
   )
 }
+
+// 編集に変更は加えていないので「やめる」で通常再生へ戻る。
+await page.getByRole('button', { name: 'やめる', exact: true }).click()
+await page.waitForSelector('[data-testid="chapter-edit-layout"]', { state: 'detached' })
 
 log('\n=== ⑥ 再生中のバー: マウスで押した後は隠れ、キーボードの Tab で届く ===')
 const controls = page.locator('[data-testid="player-controls"]')
@@ -531,7 +578,13 @@ if (desktopMenu === null) {
     ng.push(`⑦ 設定メニューにプルダウン・チェックボックス・ダウンロード等のフォーム部品が ${desktopMenu.formControls} 個ある`)
   }
   const names = desktopMenu.items.map((item) => `${item.role}:${item.name}`)
-  const wantRows = ['menuitemcheckbox:CM を飛ばす', 'menuitemcheckbox:字幕', 'menuitem:再生速度', 'menuitem:画質']
+  const wantRows = [
+    'menuitemcheckbox:CM を飛ばす',
+    'menuitemcheckbox:字幕',
+    'menuitem:再生速度',
+    'menuitem:画質',
+    'menuitem:チャプターを直す',
+  ]
   if (JSON.stringify(names) !== JSON.stringify(wantRows)) {
     ng.push(`⑦ 行リストが「CM を飛ばす / 字幕 / 再生速度 / 画質」でない（${JSON.stringify(names)}）`)
   }
@@ -641,17 +694,13 @@ try {
   // Esc はブラウザが全画面の解除に使うので、歯車で閉じる。
   await gear.click()
   // 時刻の横のチャプター名: 全画面のまま、枠の中に見るためのチャプター一覧を出し、行で飛ぶ。
-  // 編集フォーム（<details>）は ④ で開いたままなので、閉じてから押して開かないことを見る。
-  await page.evaluate(() => {
-    const details = document.querySelector('[data-testid="chapter-editor-details"]')
-    if (details) details.open = false
-  })
+  // ④ で閉じた編集モードへ誤って入らないことも確かめる。
   await page.locator('[data-testid="playback-chapter"]').click({ timeout: 3000 })
   await page.waitForTimeout(300)
   const chapterList = await page.evaluate(() => {
     const frame = document.querySelector('[data-testid="recording-player-frame"]')
     const list = document.querySelector('[data-testid="chapter-list"]')
-    const editorOpened = document.querySelector('[data-testid="chapter-editor-details"]')?.open === true
+    const editorOpened = Boolean(document.querySelector('[data-testid="chapter-edit-layout"]'))
     if (!list) return { fullscreen: document.fullscreenElement === frame, exists: false, editorOpened }
     const r = list.getBoundingClientRect()
     return {
@@ -672,7 +721,7 @@ try {
     }
   })
   if (!chapterList.fullscreen) ng.push('⑦ チャプター名を押すと全画面が解除された')
-  if (chapterList.editorOpened) ng.push('⑦ チャプター名を押すと編集フォーム（<details>）が開いた')
+  if (chapterList.editorOpened) ng.push('⑦ チャプター名を押すとチャプター編集モードが開いた')
   if (!chapterList.exists || !chapterList.inside || !chapterList.visible || chapterList.role !== 'menu') {
     ng.push(`⑦ 全画面でチャプター名を押しても枠の中にチャプター一覧（role="menu"）が出ない（${JSON.stringify(chapterList)}）`)
   } else {
@@ -899,5 +948,324 @@ const narrowPaused = await video.evaluate((v) => v.paused)
 await video.evaluate((v) => v.pause())
 if (narrowPaused) ng.push('⑨ md 未満の幅でマウスで映像を押しても再生が始まらない')
 await page.setViewportSize({ width: 1280, height: 900 })
+
+log('\n=== #1019 編集モード: 入り口・first viewport の配置 ===')
+await page.setViewportSize({ width: 1280, height: 800 })
+await page.getByRole('button', { name: '再生設定' }).click()
+const enterEdit = page.getByRole('menuitem', { name: 'チャプターを直す', exact: true })
+let editModeAvailable = (await enterEdit.count()) === 1
+if (!editModeAvailable) {
+  ng.push('#1019: 設定メニューに「チャプターを直す」が無い')
+} else {
+  await enterEdit.click()
+  await page.waitForSelector('[data-testid="chapter-edit-layout"]', { timeout: 5000 })
+}
+const editHeader = page.locator('header h1').last()
+const resetButton = page.getByRole('button', { name: '自動に戻す', exact: true })
+const initialHeader = await editHeader.textContent()
+if (!initialHeader?.includes('チャプターを直す') || !initialHeader.includes('チャプター確認用') || !initialHeader.includes('自動検出（未確認）')) {
+  ng.push(`#1019: 編集ヘッダーに編集名/番組名/未確認状態が無い（${initialHeader}）`)
+}
+if (!(await page.getByRole('button', { name: '編集をやめる' }).isVisible())) {
+  ng.push('#1019 desktop: roughにある編集用の戻る矢印がない')
+}
+
+async function editLayoutMetrics(viewport) {
+  await page.setViewportSize(viewport)
+  await page.waitForTimeout(100)
+  return page.evaluate(() => {
+    const box = (selector) => {
+      const element = document.querySelector(selector)
+      if (!element) return null
+      const rect = element.getBoundingClientRect()
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, bottom: rect.bottom }
+    }
+    const list = document.querySelector('[data-testid="chapter-span-list"]')
+    return {
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      editing: box('[data-testid="chapter-edit-layout"]'),
+      player: box('[data-testid="chapter-edit-player"]'),
+      spans: box('[data-testid="chapter-span-list"]'),
+      strip: box('[data-testid="chapter-filmstrip"]'),
+      tuning: box('[data-testid="chapter-tuning-controls"]'),
+      listOverflowY: list ? getComputedStyle(list).overflowY : null,
+      listClientHeight: list?.clientHeight ?? 0,
+      listScrollHeight: list?.scrollHeight ?? 0,
+    }
+  })
+}
+
+for (const viewport of [{ width: 1280, height: 800 }, { width: 400, height: 800 }]) {
+  const metrics = await editLayoutMetrics(viewport)
+  log(`  ${viewport.width}×${viewport.height}: ${JSON.stringify(metrics)}`)
+  if (!metrics.editing || !metrics.player || !metrics.spans || !metrics.strip || !metrics.tuning) {
+    ng.push(`#1019 ${viewport.width}px: player・区間一覧・filmstrip・境界調整を同じ編集画面に出していない`)
+  } else {
+    for (const [name, rect] of [['player', metrics.player], ['spans', metrics.spans], ['strip', metrics.strip], ['tuning', metrics.tuning]]) {
+      if (rect.y < 0 || rect.bottom > viewport.height) {
+        ng.push(`#1019 ${viewport.width}px: ${name} が最初の画面に収まらない（bottom=${rect.bottom}）`)
+      }
+    }
+    if (viewport.width > 767 && !(metrics.player.x < metrics.spans.x && metrics.strip.width > metrics.spans.width)) {
+      ng.push(`#1019 desktop: player左・区間一覧右・全幅filmstripの配置がroughと異なる（${JSON.stringify(metrics)}）`)
+    }
+    if (viewport.width <= 400 && !(metrics.player.y < metrics.strip.y && metrics.strip.y < metrics.tuning.y && metrics.tuning.y < metrics.spans.y)) {
+      ng.push(`#1019 mobile: player→filmstrip→tuning→区間一覧の順がroughと異なる（${JSON.stringify(metrics)}）`)
+    }
+  }
+  if (viewport.width <= 400 && metrics.listOverflowY !== 'auto' && metrics.listOverflowY !== 'scroll') {
+    ng.push('#1019 mobile: 区間一覧以外を固定し、一覧だけスクロールできる構造になっていない')
+  }
+  if (viewport.width <= 400 && metrics.listScrollHeight <= metrics.listClientHeight) {
+    ng.push('#1019 mobile: 区間一覧に独立した縦スクロールが発生していない')
+  }
+  if (viewport.width <= 400 && await resetButton.isVisible()) {
+    ng.push('#1019 mobile: 自動に戻すが編集ヘッダーに出ている')
+  }
+  const screenshotDir = process.env.E2E_SHOT_DIR
+  if (screenshotDir && editModeAvailable) {
+    mkdirSync(screenshotDir, { recursive: true })
+    await page.screenshot({ path: path.join(screenshotDir, viewport.width <= 400 ? 'smartphone.png' : 'desktop.png') })
+  }
+}
+
+log('\n=== #1019 zoom limit: 10秒タイル1枚より拡大しない ===')
+await page.setViewportSize({ width: 1280, height: 800 })
+const zoomIn = page.getByRole('button', { name: 'フィルムストリップを拡大' })
+for (let index = 0; index < 8; index += 1) await zoomIn.click()
+const maxZoomTrack = page.locator('[data-testid="chapter-filmstrip-track"]')
+const maxZoomStart = Number(await maxZoomTrack.getAttribute('data-visible-start-seconds'))
+const maxZoomEnd = Number(await maxZoomTrack.getAttribute('data-visible-end-seconds'))
+log(`  最大表示範囲: ${maxZoomStart}–${maxZoomEnd} (${maxZoomEnd - maxZoomStart}s)`)
+if (Math.abs((maxZoomEnd - maxZoomStart) - 10) > 0.01) {
+  ng.push(`#1019: zoom上限が10秒タイル1枚になっていない（${maxZoomEnd - maxZoomStart}s）`)
+}
+await page.getByRole('button', { name: '全体', exact: true }).click()
+
+log('\n=== #1019 編集中の自動スキップ抑止 ===')
+await page.setViewportSize({ width: 1280, height: 800 })
+await seek(28)
+const editPlayback = await playFor(4000)
+if (editPlayback >= 40 || editPlayback < 31) {
+  ng.push(`#1019: 編集画面の再生で自動スキップが抑止されない、または再生が進まない（${editPlayback.toFixed(1)}秒）`)
+}
+
+log('\n=== #1019 filmstrip: timestamp → x ===')
+const tilePosition = await page.evaluate(() => {
+  const strip = document.querySelector('[data-testid="chapter-filmstrip-track"]')
+  const tile = document.querySelector('[data-testid="chapter-filmstrip-tile"][data-time-seconds="30"]')
+  if (!strip || !tile) return null
+  const s = strip.getBoundingClientRect()
+  const t = tile.getBoundingClientRect()
+  const duration = Number(strip.getAttribute('data-duration-seconds'))
+  const start = Number(strip.getAttribute('data-visible-start-seconds'))
+  const end = Number(strip.getAttribute('data-visible-end-seconds'))
+  return {
+    actualX: t.left,
+    expectedX: s.left + ((30 - start) / (end - start)) * s.width,
+    duration,
+    start,
+    end,
+  }
+})
+log(`  30秒 tile: ${JSON.stringify(tilePosition)}`)
+if (!tilePosition || Math.abs(tilePosition.actualX - tilePosition.expectedX) > 2) {
+  ng.push(`#1019: 30秒tileのx位置が表示範囲の時刻→x計算と一致しない（${JSON.stringify(tilePosition)}）`)
+}
+
+log('\n=== #1019 filmstrip: 境界選択・1 frame 調整・PUT ===')
+await page.setViewportSize({ width: 1280, height: 800 })
+if (await resetButton.isVisible() && await resetButton.isEnabled()) {
+  ng.push('#1019: 自動検出結果のまま「自動に戻す」が有効になっている')
+}
+const targetBoundary = page.locator('[data-testid="chapter-filmstrip-boundary"][data-time-ms="30000"]')
+if ((await targetBoundary.count()) !== 1) {
+  ng.push('#1019: 30秒境界がfilmstripに無い')
+} else {
+  await targetBoundary.click()
+  if ((await targetBoundary.getAttribute('aria-pressed')) !== 'true') {
+    ng.push('#1019: filmstrip境界を押しても選択状態にならない')
+  }
+  const save = page.getByRole('button', { name: '保存', exact: true })
+  const track = page.locator('[data-testid="chapter-filmstrip-track"]')
+  const trackBox = await track.boundingBox()
+  const boundaryBox = await targetBoundary.boundingBox()
+    if (!trackBox || !boundaryBox) {
+      ng.push('#1019: coarse drag の境界/track矩形を取得できない')
+    } else {
+    const rangeStart = Number(await track.getAttribute('data-visible-start-seconds'))
+    const rangeEnd = Number(await track.getAttribute('data-visible-end-seconds'))
+    const deltaX = (4 / (rangeEnd - rangeStart)) * trackBox.width
+    const originalCenterX = boundaryBox.x + boundaryBox.width / 2
+    const centerY = boundaryBox.y + boundaryBox.height / 2
+    await page.mouse.move(originalCenterX, centerY)
+    await page.mouse.down()
+    await page.mouse.move(originalCenterX + deltaX, centerY, { steps: 3 })
+    const previewBoundary = await page.locator('[data-testid="chapter-filmstrip-boundary"][aria-pressed="true"]').getAttribute('data-time-ms')
+    if (Number(previewBoundary) <= 30_000 || await save.isEnabled()) {
+      ng.push(`#1019: drag中にpreviewだけが動き、未releaseのdraft/保存は変わらない（preview=${previewBoundary}）`)
+    }
+    await page.mouse.up()
+    const movedBoundary = page.locator('[data-testid="chapter-filmstrip-boundary"][aria-pressed="true"]')
+    const committedBoundary = await movedBoundary.getAttribute('data-time-ms')
+    if (committedBoundary !== previewBoundary) {
+      ng.push(`#1019: pointer release がpreviewの境界を下書きへ commit しない（preview=${previewBoundary}, committed=${committedBoundary}）`)
+    }
+    const movedBox = await movedBoundary.boundingBox()
+    const latestTrackBox = await track.boundingBox()
+    if (!movedBox || !latestTrackBox) {
+      ng.push('#1019: release後の境界位置を取得できない')
+    } else {
+      const movedCenterX = movedBox.x + movedBox.width / 2
+      const currentRangeStart = Number(await track.getAttribute('data-visible-start-seconds'))
+      const currentRangeEnd = Number(await track.getAttribute('data-visible-end-seconds'))
+      const originalX = latestTrackBox.x + ((30 - currentRangeStart) / (currentRangeEnd - currentRangeStart)) * latestTrackBox.width
+      await page.mouse.move(movedCenterX, movedBox.y + movedBox.height / 2)
+      await page.mouse.down()
+      await page.mouse.move(originalX, movedBox.y + movedBox.height / 2, { steps: 3 })
+      const restorePreview = await page.locator('[data-testid="chapter-filmstrip-boundary"][aria-pressed="true"]').getAttribute('data-time-ms')
+      await page.mouse.up()
+      await page.waitForTimeout(100)
+      const restoredBoundary = await page.locator('[data-testid="chapter-filmstrip-boundary"][aria-pressed="true"]').getAttribute('data-time-ms')
+      log(`  drag ${previewBoundary} preview → ${committedBoundary} released → ${restorePreview} reverse preview → ${restoredBoundary} restored; Save disabled=${await save.isDisabled()}`)
+      if (await save.isEnabled()) ng.push('#1019: coarse dragを元の境界に戻してもdirtyが解除されない')
+    }
+  }
+  const nudge = page.getByRole('button', { name: '選択中の境界を 1 フレーム進める', exact: true })
+  if ((await nudge.count()) !== 1) {
+    ng.push('#1019: 選択境界ひとつだけの調整欄に +1 frame が無い')
+  } else {
+    await nudge.click()
+    const selectedBoundary = page.locator('[data-testid="chapter-filmstrip-boundary"][aria-pressed="true"]')
+    const adjusted = await selectedBoundary.getAttribute('data-time-ms')
+  if (Number(adjusted) < 30_032 || Number(adjusted) > 30_034) {
+    ng.push(`#1019: +1 frame が境界を約33ms動かさない（${adjusted}ms）`)
+  }
+  await page.waitForFunction(() => document.querySelector('header h1')?.textContent?.includes('未保存の変更があります'))
+  const screenshotDir = process.env.E2E_SHOT_DIR
+  if (screenshotDir) {
+    await page.screenshot({ path: path.join(screenshotDir, 'desktop.png') })
+    await page.setViewportSize({ width: 400, height: 800 })
+    await page.screenshot({ path: path.join(screenshotDir, 'smartphone.png') })
+    await page.setViewportSize({ width: 1280, height: 800 })
+  }
+}
+  if ((await save.count()) !== 1) {
+    ng.push('#1019: 編集ヘッダーに保存が無い')
+  } else {
+    const response = page.waitForResponse((res) => res.url().includes('/chapter-edits') && res.request().method() === 'PUT')
+    await save.click()
+    await response
+  }
+  const submitted = chapterEditBodies.at(-1)
+  if (!submitted || submitted.version !== 'auto:detected:1' || submitted.spans?.[0]?.startMs !== 30_033) {
+    ng.push(`#1019: PUT本文にframe調整済み境界と元versionが無い（${JSON.stringify(submitted)}）`)
+  }
+}
+if (seekTileRequests.length !== 1) {
+  ng.push(`#1019: seek-tile格子画像が一回のGETで共有されていない（GET数=${seekTileRequests.length}）`)
+}
+
+log('\n=== #1019 dirty cancel: 確認中は編集を続けられ、破棄で戻る ===')
+// Save は保存成功後に編集モードを閉じるので、ここからもう一度入る。
+await page.getByRole('button', { name: '再生設定' }).click()
+await page.getByRole('menuitem', { name: 'チャプターを直す', exact: true }).click()
+await page.waitForSelector('[data-testid="chapter-edit-layout"]', { timeout: 5000 })
+const secondBoundary = page.locator('[data-testid="chapter-filmstrip-boundary"][data-time-ms="60000"]')
+if ((await secondBoundary.count()) === 1) {
+  await secondBoundary.click()
+  await page.getByRole('button', { name: '選択中の境界を 1 フレーム進める' }).click()
+  await page.getByRole('button', { name: 'やめる', exact: true }).click()
+  if ((await page.locator('[data-testid="chapter-exit-confirmation"]').count()) !== 1) {
+    ng.push('#1019: dirty な「やめる」で独自の確認バーが出ない')
+  }
+  await page.getByRole('button', { name: '編集を続ける' }).click()
+  if ((await page.locator('[data-testid="chapter-edit-layout"]').count()) !== 1) {
+    ng.push('#1019: 「編集を続ける」でドラフトを保持していない')
+  }
+  await page.getByRole('button', { name: 'やめる', exact: true }).click()
+  await page.getByRole('button', { name: '変更を捨てる' }).click()
+  await page.waitForSelector('[data-testid="chapter-edit-layout"]', { state: 'detached' })
+} else {
+  ng.push('#1019: dirty cancel 確認に使う60秒境界が無い')
+}
+
+log('\n=== #1019 dirty route navigation: SPA link uses the same in-band guard ===')
+await page.getByRole('button', { name: '再生設定' }).click()
+await page.getByRole('menuitem', { name: 'チャプターを直す', exact: true }).click()
+await page.waitForSelector('[data-testid="chapter-edit-layout"]', { timeout: 5000 })
+const routeBoundary = page.locator('[data-testid="chapter-filmstrip-boundary"][data-time-ms="60000"]')
+if ((await routeBoundary.count()) === 1) {
+  await routeBoundary.click()
+  await page.getByRole('button', { name: '選択中の境界を 1 フレーム進める' }).click()
+  await page.waitForFunction(() => {
+    const save = [...document.querySelectorAll('button')].find((button) => button.textContent?.trim() === '保存')
+    return save !== undefined && !save.disabled
+  })
+  let nativeDialogSeen = false
+  page.on('dialog', async (dialog) => {
+    nativeDialogSeen = true
+    await dialog.dismiss()
+  })
+  const recordingsLink = page.locator('a[href="/recordings"]:visible').first()
+  if ((await recordingsLink.count()) === 0) {
+    ng.push('#1019: dirty route guard を起動する録画一覧リンクが見つからない')
+  } else {
+    await recordingsLink.click()
+    await page.waitForSelector('[data-testid="chapter-exit-confirmation"]', { timeout: 5000 })
+    await page.getByRole('button', { name: '編集を続ける' }).click()
+    if (!page.url().includes('/recordings/1') || (await page.locator('[data-testid="chapter-edit-layout"]').count()) !== 1) {
+      ng.push('#1019: route guard の「編集を続ける」で録画ページ・下書きを保持しない')
+    }
+    await recordingsLink.click()
+    await page.waitForSelector('[data-testid="chapter-exit-confirmation"]', { timeout: 5000 })
+    await page.getByRole('button', { name: '変更を捨てる' }).click()
+    await page.waitForURL('**/recordings', { timeout: 5000 })
+    if (nativeDialogSeen) ng.push('#1019: dirty SPA route navigation が native confirm を開いた')
+  }
+} else {
+  ng.push('#1019: route guard 確認に使う60秒境界が無い')
+}
+
+log('\n=== #1019 tile 404: 画像なしでも境界調整を続けられる ===')
+tileResponseStatus = 404
+await page.goto(URL_BASE + '/recordings/1', { waitUntil: 'domcontentloaded' })
+await video.waitFor({ timeout: 15000 })
+await page.waitForFunction(
+  () => Number.isFinite(document.querySelector('video')?.duration) && document.querySelector('video').duration > 0,
+  undefined,
+  { timeout: 15000 },
+)
+const missingTileResponse = page.waitForResponse((response) => response.url().includes('/seek-tiles') && response.status() === 404)
+await page.getByRole('button', { name: '再生設定' }).click()
+await page.getByRole('menuitem', { name: 'チャプターを直す', exact: true }).click()
+await page.waitForSelector('[data-testid="chapter-filmstrip"] img', { timeout: 5000 })
+await missingTileResponse
+if ((await page.locator('[data-testid="chapter-filmstrip-boundary"]').count()) === 0) {
+  ng.push('#1019: seek-tileが404だと境界が表示されない')
+}
+if (await page.getByRole('button', { name: '選択中の境界を 1 フレーム進める' }).isDisabled()) {
+  ng.push('#1019: seek-tileが404だと境界調整が使えない')
+}
+if (seekTileRequests.length !== 2) {
+  ng.push(`#1019: tile 404 を含む各編集画面が1回ずつタイル画像を要求していない（GET数=${seekTileRequests.length}）`)
+}
+if (await page.getByRole('button', { name: '自動に戻す', exact: true }).isVisible()) {
+  if (await page.getByRole('button', { name: '自動に戻す', exact: true }).isDisabled()) {
+    ng.push('#1019: 確認済み状態で自動に戻すが無効になっている')
+  } else {
+    const resetResponse = page.waitForResponse((response) => response.url().includes('/chapter-edits') && response.request().method() === 'DELETE')
+    await page.getByRole('button', { name: '自動に戻す', exact: true }).click()
+    await resetResponse
+    await page.waitForFunction(() => document.querySelector('[data-testid="chapter-edit-layout"]') === null, undefined, { timeout: 5000 }).catch(() => undefined)
+    const editLayoutCountAfterReset = await page.locator('[data-testid="chapter-edit-layout"]').count()
+    log(`  reset DELETE count=${chapterResetCount}; editor layout count=${editLayoutCountAfterReset}`)
+    if (chapterResetCount !== 1 || editLayoutCountAfterReset !== 0) ng.push('#1019: 自動に戻すが自動層へ戻して編集を終了しない')
+  }
+} else {
+  ng.push('#1019: 確認済み状態のヘッダーに自動に戻すがない')
+}
+
+
 
 await finish(ng, browser)
