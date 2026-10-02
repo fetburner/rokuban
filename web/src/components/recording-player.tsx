@@ -5,7 +5,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type FocusEvent as ReactFocusEvent,
   type MutableRefObject,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
