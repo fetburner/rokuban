@@ -30,7 +30,7 @@ import {
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'
 const ng = []
 const recordingStartAt = new Date(Date.now() - 25 * 60_000).toISOString()
-const recordingStartedAt = new Date(Date.now() - 13 * 60_000).toISOString()
+const recordingStartedAt = new Date(Date.now() - 4 * 60_000).toISOString()
 const evidenceDir = process.env.E2E_EVIDENCE_DIR
 
 const recording = {
@@ -57,7 +57,7 @@ const recordingHeadOffsetSeconds = (Date.parse(recording.startedAt) - Date.parse
 
 /** ffmpeg の実 H.264/AAC セグメントを一度だけ作る。 */
 function ensureFixture() {
-  const fixtureDir = path.join(os.tmpdir(), 'rokuban-e2e-chase-fixture')
+  const fixtureDir = path.join(os.tmpdir(), 'rokuban-e2e-chase-fixture-360s')
   const playlistPath = path.join(fixtureDir, 'playlist.m3u8')
   if (existsSync(playlistPath)) {
     const segments = readFileSync(playlistPath, 'utf8').match(/^#EXTINF:/gm) ?? []
@@ -85,7 +85,7 @@ function ensureFixture() {
       '-i',
       'sine=frequency=440',
       '-t',
-      '12',
+      '360',
       '-c:v',
       'libx264',
       '-profile:v',
@@ -289,7 +289,7 @@ await page.route(`**${chaseBase}/playlist.m3u8*`, async (route) => {
   const requestedURL = new URL(route.request().url())
   if (requestedURL.searchParams.has('profile')) profilePlaylistURLs.push(requestedURL.href)
   playlistRequests += 1
-  const count = playlistRequests < 2 ? 1 : entries.length
+  const count = playlistRequests < 2 ? 1 : Math.min(entries.length, 6)
   const end = playlistRequests >= 2
   playlistSizes.push(count)
   playlistEnded ||= end
@@ -511,7 +511,7 @@ if (evidenceDir) {
   await captureEvidence('chase-phone-390px.png')
   await page.getByRole('button', { name: '再生設定' }).click()
   await captureEvidence('chase-phone-settings-390px.png')
-  await page.getByRole('button', { name: '再生設定' }).click()
+  await page.keyboard.press('Escape')
   await page.setViewportSize({ width: 1280, height: 900 })
 }
 
@@ -652,7 +652,52 @@ if (chaseLeaveHints.some((path) => path.includes('/offset/'))) {
   ng.push('④ 0秒へのin-range seekでoffset付きleaveヒントを送った')
 }
 
+log('\n=== ④ 変換済みの端より先へのシークは offset で張り直す ===')
+await page.waitForFunction(
+  () => {
+    const video = document.querySelector('video')
+    return video !== null && video.seekable.length > 0 && video.seekable.end(video.seekable.length - 1) >= 10
+  },
+  { timeout: 10000 },
+).catch(() => ng.push('④ offset seek 前に変換済み範囲が 10 秒まで揃わない'))
+const beforeConvertedEndRequests = playlistRequests
+const beforeConvertedEndOffsetRequests = offsetPlaylistRequests
+const beforeConvertedEndLeaves = chaseLeaveHints.length
+const { selected: convertedEndTarget } = await dragTimelineTo(recordingHeadOffsetSeconds + 15)
+const convertedEndOffset = Math.max(0, Math.round(convertedEndTarget - recordingHeadOffsetSeconds))
+const convertedEndSegment = `segment_${String(Math.floor(convertedEndOffset / 2)).padStart(3, '0')}.ts`
+const convertedEndObservationDeadline = Date.now() + 7000
+while (
+  (!offsetObservations.has(convertedEndOffset) ||
+    offsetObservations.get(convertedEndOffset).segmentNames.length === 0) &&
+  Date.now() < convertedEndObservationDeadline
+) {
+  await page.waitForTimeout(50)
+}
+const convertedEndObservation = offsetObservations.get(convertedEndOffset)
+log(`  seek ${convertedEndOffset}s -> first segment ${convertedEndObservation?.segmentNames[0] ?? '未要求'}`)
+if (playlistRequests !== beforeConvertedEndRequests) ng.push('④ converted-end seekで通常 playlist を取り直した')
+if (offsetPlaylistRequests <= beforeConvertedEndOffsetRequests) {
+  ng.push('④ converted-end seekで offset playlist を要求しない')
+}
+if (convertedEndObservation?.segmentNames[0] !== convertedEndSegment) {
+  ng.push(`④ offset playlist の先頭セグメントが指定 offset と一致しない（${convertedEndObservation?.segmentNames[0]} / ${convertedEndSegment}）`)
+}
+if (chaseLeaveHints.length !== beforeConvertedEndLeaves + 1 || chaseLeaveHints.at(-1)?.endsWith('/chase/leave') !== true) {
+  ng.push(`④ offset 張り直しで元セッションに leave ヒントを送らない（${chaseLeaveHints.slice(beforeConvertedEndLeaves).join(', ')}）`)
+}
+await page.waitForFunction(
+  (target) => {
+    const slider = document.querySelector('[data-testid="seek-scrub"]')
+    return slider !== null && Number(slider.getAttribute('aria-valuenow')) >= target - 1 &&
+      Number(slider.getAttribute('aria-valuenow')) <= target + 1
+  },
+  convertedEndTarget,
+  { timeout: 5000 },
+).catch(() => ng.push('④ offset 張り直し後の表示位置が選んだ番組時刻に移らない'))
+
 log('\n=== ⑤ 予定尺を超えた録画のタイムライン ===')
+recording.resumePositionMs = undefined
 recording.durationMs = 5_000
 await page.reload({ waitUntil: 'domcontentloaded' })
 await page.getByRole('region', { name: '追っかけ再生' }).waitFor({ timeout: 15000 })
@@ -694,8 +739,6 @@ const liveEdgeBounds = await liveEdgeButton.boundingBox()
 if (liveEdgeBounds === null || liveEdgeBounds.width < 24 || liveEdgeBounds.height < 24) {
   ng.push(`⑤ 録画先端印の当たり判定が24px未満（${liveEdgeBounds?.width}x${liveEdgeBounds?.height}）`)
 }
-const offsetRequestsBeforeLiveEdge = offsetPlaylistRequests
-const leaveHintsBeforeLiveEdge = chaseLeaveHints.length
 await page.waitForFunction(
   () => {
     const video = document.querySelector('video')
@@ -743,23 +786,32 @@ if (Number.isFinite(liveEdgeRecordedEnd) &&
   Math.abs(liveEdgeRecordedEnd - liveEdgeMarkerAxisSeconds - 1) > 0.25) {
   ng.push(`⑤ 赤い先端markerが録画済み上限の1秒手前でない（録画済み=${liveEdgeRecordedEnd}, marker=${liveEdgeMarkerAxisSeconds}）`)
 }
-const expectedLiveEdgeCurrentTime = liveEdgeTargetInfo === undefined
+const expectedLiveEdgeOffset = liveEdgeTargetInfo === undefined
   ? Number.NaN
-  : Math.max(0, Math.min(
-      Math.round(liveEdgeMarkerAxisSeconds - recordingHeadOffsetSeconds),
-      liveEdgeTargetInfo.seekableEnd,
-    ))
+  : Math.max(0, Math.round(liveEdgeMarkerAxisSeconds - recordingHeadOffsetSeconds))
+const expectedLiveEdgeCurrentTime = 0
+const liveEdgeFirstSegment = `segment_${String(Math.floor(expectedLiveEdgeOffset / 2)).padStart(3, '0')}.ts`
+const beforeLiveEdgeObservationDeadline = Date.now() + 7000
+const offsetRequestsBeforeLiveEdge = offsetPlaylistRequests
+const leaveHintsBeforeLiveEdge = chaseLeaveHints.length
+const playlistRequestsBeforeLiveEdge = playlistRequests
 await liveEdgeButton.click()
-await page.waitForTimeout(250)
+while (
+  (!offsetObservations.has(expectedLiveEdgeOffset) ||
+    offsetObservations.get(expectedLiveEdgeOffset).segmentNames.length === 0) &&
+  Date.now() < beforeLiveEdgeObservationDeadline
+) {
+  await page.waitForTimeout(50)
+}
+const liveEdgeObservation = offsetObservations.get(expectedLiveEdgeOffset)
 await page.waitForFunction(
   (expectedTarget) => {
     const video = document.querySelector('video')
-    if (video === null || video.seekable.length === 0) return false
-    return Math.abs(video.currentTime - expectedTarget) < 0.25
+    return video !== null && Math.abs(video.currentTime - expectedTarget) < 0.25
   },
   expectedLiveEdgeCurrentTime,
   { timeout: 5000 },
-).catch(() => ng.push('⑤ 先端の印を押しても指定した録画端（または seekable 上限）へ移動しない'))
+).catch(() => ng.push('⑤ 先端の印を押しても offset セッションの先頭へ移動しない'))
 const liveEdgeState = await page.locator('video').evaluate((video) => ({
   currentTime: video.currentTime,
   duration: video.duration,
@@ -767,13 +819,23 @@ const liveEdgeState = await page.locator('video').evaluate((video) => ({
   readyState: video.readyState,
   paused: video.paused,
 }))
-log(`  先端ボタン直後: current=${liveEdgeState.currentTime.toFixed(2)}, target=${expectedLiveEdgeCurrentTime.toFixed(2)}, seekable=${liveEdgeState.seekableEnd}, duration=${liveEdgeState.duration}, ready=${liveEdgeState.readyState}, paused=${liveEdgeState.paused}`)
-if (offsetPlaylistRequests !== offsetRequestsBeforeLiveEdge) ng.push('⑤ 先端の印からoffset playlistを要求してsessionを作り直す')
-if (chaseLeaveHints.length !== leaveHintsBeforeLiveEdge) ng.push('⑤ 先端の印からsession leave hintを送る')
+log(`  先端 offset=${expectedLiveEdgeOffset}s, first segment=${liveEdgeObservation?.segmentNames[0] ?? '未要求'}, current=${liveEdgeState.currentTime.toFixed(2)}s`)
+if (offsetPlaylistRequests <= offsetRequestsBeforeLiveEdge) ng.push('⑤ 先端の印から offset playlist を要求しない')
+if (liveEdgeObservation?.segmentNames[0] !== liveEdgeFirstSegment) {
+  ng.push(`⑤ 先端 offset の最初の segment が一致しない（${liveEdgeObservation?.segmentNames[0]} / ${liveEdgeFirstSegment}）`)
+}
+if (playlistRequests !== playlistRequestsBeforeLiveEdge) ng.push('⑤ 先端の印から通常 playlist を取り直した')
+if (chaseLeaveHints.length !== leaveHintsBeforeLiveEdge + 1 || chaseLeaveHints.at(-1)?.endsWith('/chase/leave') !== true) {
+  ng.push('⑤ 先端へ offset 張り直し時に古い session の leave hint を送らない')
+}
 // Keep the later save-position/VOD assertion independent from the marker check.
 const requestsBeforeReturnSeek = playlistRequests
+const offsetsBeforeReturnSeek = offsetPlaylistRequests
+const leavesBeforeReturnSeek = chaseLeaveHints.length
 const { selected: returnSeekTarget } = await dragTimelineTo(recordingHeadOffsetSeconds + 5)
-const expectedReturnSeekTime = Math.max(0, Math.min(returnSeekTarget - recordingHeadOffsetSeconds, 12))
+const expectedReturnOffset = Math.max(0, Math.round(returnSeekTarget - recordingHeadOffsetSeconds))
+const expectedReturnSegment = `segment_${String(Math.floor(expectedReturnOffset / 2)).padStart(3, '0')}.ts`
+const expectedReturnSeekTime = 0
 const returnSeekState = await page.evaluate(() => ({
   currentTime: document.querySelector('video')?.currentTime,
   value: document.querySelector('[data-testid="seek-scrub"]')?.getAttribute('aria-valuenow'),
@@ -788,21 +850,104 @@ await page.waitForFunction(
   { timeout: 5000 },
 ).catch(() => ng.push('⑤ 録画先端から操作バーで5秒へ戻れない'))
 if (playlistRequests !== requestsBeforeReturnSeek) ng.push('⑤ 先端から範囲内へ戻る操作でplaylistを再要求する')
+const returnObservationDeadline = Date.now() + 7000
+while (
+  (!offsetObservations.has(expectedReturnOffset) ||
+    offsetObservations.get(expectedReturnOffset).segmentNames.length === 0) &&
+  Date.now() < returnObservationDeadline
+) {
+  await page.waitForTimeout(50)
+}
+const returnObservation = offsetObservations.get(expectedReturnOffset)
+if (offsetPlaylistRequests <= offsetsBeforeReturnSeek) ng.push('⑤ 先端から前へ戻る offset playlist を要求しない')
+if (returnObservation?.segmentNames[0] !== expectedReturnSegment) {
+  ng.push(`⑤ 戻る offset の最初の segment が一致しない（${returnObservation?.segmentNames[0]} / ${expectedReturnSegment}）`)
+}
+if (chaseLeaveHints.length !== leavesBeforeReturnSeek + 1) ng.push('⑤ 戻る offset 張り直しで leave hint を送らない')
+await page.waitForFunction(
+  () => {
+    const video = document.querySelector('video')
+    return video !== null && video.seekable.length > 0
+  },
+  { timeout: 10000 },
+).catch(() => ng.push('⑤ 戻る offset セッションの seekable range が揃わない'))
+const returnSessionSeekableEnd = await page.locator('video').evaluate((video) =>
+  video.seekable.length > 0 ? video.seekable.end(video.seekable.length - 1) : 0,
+)
+const expectedEndNeedsOffset = expectedLiveEdgeOffset > expectedReturnOffset + returnSessionSeekableEnd
 const offsetRequestsBeforeEndKey = offsetPlaylistRequests
+const leaveHintsBeforeEndKey = chaseLeaveHints.length
+let expectedEndStartOffset = expectedReturnOffset
 await timelineSlider.focus()
 await page.keyboard.press('End')
+if (expectedEndNeedsOffset) {
+  await page.waitForFunction(
+    (expectedAxis) => {
+      const slider = document.querySelector('[data-testid="seek-scrub"]')
+      const video = document.querySelector('video')
+      return slider !== null && video !== null && video.currentTime < 0.25 &&
+        Math.abs(Number(slider.getAttribute('aria-valuenow')) - expectedAxis) < 1
+    },
+    recordingHeadOffsetSeconds + expectedLiveEdgeOffset,
+    { timeout: 7000 },
+  ).catch(() => ng.push('⑤ End キーで offset を張り直して録画先端へ移動しない'))
+  if (offsetPlaylistRequests <= offsetRequestsBeforeEndKey) ng.push('⑤ End キーの録画先端 offset playlist を要求しない')
+  if (chaseLeaveHints.length !== leaveHintsBeforeEndKey + 1) ng.push('⑤ End キーで古い offset session の leave hint を送らない')
+  expectedEndStartOffset = expectedLiveEdgeOffset
+} else {
+  const expectedEndKeyCurrentTime = Math.max(0, Math.min(
+    returnSessionSeekableEnd,
+    expectedLiveEdgeOffset - expectedReturnOffset,
+  ))
+  await page.waitForFunction(
+    (expectedTarget) => {
+      const video = document.querySelector('video')
+      return video !== null && video.seekable.length > 0 && Math.abs(video.currentTime - expectedTarget) < 0.25
+    },
+    expectedEndKeyCurrentTime,
+    { timeout: 5000 },
+  ).catch(() => ng.push('⑤ End キーで録画先端へ移動しない'))
+  if (offsetPlaylistRequests !== offsetRequestsBeforeEndKey) ng.push('⑤ 変換済み範囲内の End キーで offset playlist を再要求する')
+}
 await page.waitForFunction(
-  (expectedTarget) => {
+  () => {
     const video = document.querySelector('video')
-    return video !== null && video.seekable.length > 0 && Math.abs(video.currentTime - expectedTarget) < 0.25
+    return video !== null && video.seekable.length > 0
   },
-  expectedLiveEdgeCurrentTime,
-  { timeout: 5000 },
-).catch(() => ng.push('⑤ End キーで録画先端へ移動しない'))
-if (offsetPlaylistRequests !== offsetRequestsBeforeEndKey) ng.push('⑤ End キーでoffset playlistを要求してsessionを作り直す')
+  { timeout: 10000 },
+).catch(() => ng.push('⑤ End キー後に seekable range が揃わない'))
+const endSessionSeekableEnd = await page.locator('video').evaluate((video) =>
+  video.seekable.length > 0 ? video.seekable.end(video.seekable.length - 1) : 0,
+)
 const writesBeforeReturnToFive = playbackPositionWrites.length
+const offsetsBeforeReturnToFive = offsetPlaylistRequests
+const leavesBeforeReturnToFive = chaseLeaveHints.length
 const { selected: savedSeekTarget } = await dragTimelineTo(recordingHeadOffsetSeconds + 5)
-const expectedSavedSeekTime = Math.max(0, Math.min(savedSeekTarget - recordingHeadOffsetSeconds, 12))
+const requestedSavedOffset = Math.max(0, Math.round(savedSeekTarget - recordingHeadOffsetSeconds))
+let expectedSavedStartOffset = expectedEndStartOffset
+if (requestedSavedOffset < expectedSavedStartOffset ||
+  (savedSeekTarget <= liveEdgeMarkerAxisSeconds && requestedSavedOffset > expectedSavedStartOffset + endSessionSeekableEnd)) {
+  expectedSavedStartOffset = Math.floor(requestedSavedOffset)
+}
+const expectedSavedSeekTime = Math.max(0, Math.min(requestedSavedOffset - expectedSavedStartOffset, endSessionSeekableEnd))
+const expectedSavedPositionSeconds = expectedSavedStartOffset + expectedSavedSeekTime
+if (expectedSavedStartOffset !== expectedEndStartOffset) {
+  if (offsetPlaylistRequests <= offsetsBeforeReturnToFive) ng.push('⑤ 5秒位置へ戻る offset playlist を要求しない')
+  if (chaseLeaveHints.length !== leavesBeforeReturnToFive + 1) ng.push('⑤ 5秒位置へ戻す際に古い offset session の leave hint を送らない')
+}
+const savedOffsetObservationDeadline = Date.now() + 7000
+while (
+  (!offsetObservations.has(expectedSavedStartOffset) ||
+    offsetObservations.get(expectedSavedStartOffset).segmentNames.length === 0) &&
+  Date.now() < savedOffsetObservationDeadline
+) {
+  await page.waitForTimeout(50)
+}
+const savedOffsetObservation = offsetObservations.get(expectedSavedStartOffset)
+const expectedSavedFirstSegment = `segment_${String(Math.floor(expectedSavedStartOffset / 2)).padStart(3, '0')}.ts`
+if (savedOffsetObservation?.segmentNames[0] !== expectedSavedFirstSegment) {
+  ng.push(`⑤ 5秒へ戻す offset の最初の segment が一致しない（${savedOffsetObservation?.segmentNames[0]} / ${expectedSavedFirstSegment}）`)
+}
 await page.waitForFunction(
   (expectedTime) => {
     const video = document.querySelector('video')
@@ -814,12 +959,12 @@ await page.waitForFunction(
 await page.locator('video').evaluate((video) => video.pause())
 const returnWriteDeadline = Date.now() + 5000
 while (
-  !playbackPositionWrites.slice(writesBeforeReturnToFive).some((positionMs) => Math.abs(positionMs - 5000) < 100) &&
+  !playbackPositionWrites.slice(writesBeforeReturnToFive).some((positionMs) => Math.abs(positionMs - expectedSavedPositionSeconds * 1000) < 100) &&
   Date.now() < returnWriteDeadline
 ) {
   await page.waitForTimeout(50)
 }
-if (!playbackPositionWrites.slice(writesBeforeReturnToFive).some((positionMs) => Math.abs(positionMs - expectedSavedSeekTime * 1000) < 100)) {
+if (!playbackPositionWrites.slice(writesBeforeReturnToFive).some((positionMs) => Math.abs(positionMs - expectedSavedPositionSeconds * 1000) < 100)) {
   ng.push('⑤ 範囲内へ戻した5秒位置が原本時間軸のmsで保存されない')
 }
 
@@ -857,10 +1002,13 @@ log('\n=== ⑦ 画質（プロファイル）の切替 ===')
 await page.reload({ waitUntil: 'domcontentloaded' })
 await page.getByRole('region', { name: '追っかけ再生' }).waitFor({ timeout: 15000 })
 await page.getByRole('button', { name: '再生設定' }).click()
-const profileSelect = page.locator('select[aria-label="画質"]')
-await profileSelect.waitFor({ timeout: 15000 })
-const defaultProfile = await profileSelect.inputValue()
-if (defaultProfile !== 'hd') {
+const settingsMenu = page.getByRole('menu', { name: '再生設定' })
+await settingsMenu.getByRole('menuitem', { name: '画質' }).click()
+const qualityMenu = page.getByRole('menu', { name: '画質' })
+const selectedProfile = qualityMenu.getByRole('menuitemradio', { checked: true })
+await selectedProfile.waitFor({ timeout: 15000 })
+const defaultProfile = (await selectedProfile.textContent())?.trim() ?? ''
+if (!defaultProfile.startsWith('hd')) {
   ng.push(`⑦ 既定の画質が一覧の先頭でない（${defaultProfile}）`)
 }
 if (profilePlaylistURLs.length !== 0) {
@@ -901,7 +1049,7 @@ const savedPositions = () => playbackPositionWrites.slice(savedPositionWriteInde
 recordSavedPositions()
 log(`  切替前の再生位置: ${positionBeforeSwitch.toFixed(2)} 秒`)
 
-await profileSelect.selectOption('sd')
+await qualityMenu.getByRole('menuitemradio', { name: 'sd（480p）' }).click()
 const switchDeadline = Date.now() + 10_000
 while (
   !profilePlaylistURLs.some((u) => u.includes('profile=sd')) &&

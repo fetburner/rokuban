@@ -2263,8 +2263,12 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
     expect(playlistRequests(fetchMock)).toHaveLength(beforeSeek)
 
     fireEvent.click(screen.getByRole('button', { name: '再生設定' }))
-    expect(screen.getByLabelText('画質')).toHaveValue('hd')
-    expect(screen.getByRole('region', { name: '再生設定' })).toContainElement(screen.getByLabelText('画質'))
+    const settings = screen.getByRole('menu', { name: '再生設定' })
+    expect(within(settings).getByRole('menuitem', { name: '画質' })).toHaveAccessibleDescription('hd（720p）')
+    const quality = openPlaybackSettingsSubmenu('画質')
+    expect(within(quality).getByRole('menuitemradio', { name: 'hd（720p）' })).toHaveAttribute('aria-checked', 'true')
+    expect(within(quality).getByRole('menuitemradio', { name: 'sd（480p）' })).toHaveAttribute('aria-checked', 'false')
+    expect(settings).toHaveAttribute('aria-label', '画質')
   })
 
   it('現在のoffsetより前への確定は親へ秒を渡し、offset付きplaylistに張り直す', async () => {
@@ -2303,6 +2307,44 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
     rerender(<LivePlayer {...props} startOffsetSeconds={3} />)
     await waitFor(() => expect(playlistRequests(fetchMock)).toHaveLength(2))
     expect(playlistRequests(fetchMock)[1]).toContain('/chase/offset/3/playlist.m3u8')
+  })
+
+  it('変換済みの端より先で録画済み範囲内なら、選んだ秒へoffsetで張り直す', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+    const onChaseOffsetChange = vi.fn()
+    const props = {
+      mode: 'chase' as const,
+      site: 'default',
+      recordingId: 512,
+      chaseTimeline,
+      onChaseOffsetChange,
+    }
+    const { rerender } = render(<LivePlayer {...props} />)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+
+    const slider = screen.getByRole('slider', { name: 'シークバー' })
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'seekable', {
+      value: { length: 1, start: () => 0, end: () => 10 },
+      configurable: true,
+    })
+    Object.defineProperty(slider, 'getBoundingClientRect', {
+      value: () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 24, width: 600, height: 24, toJSON: () => ({}) }),
+    })
+
+    fireEvent.pointerDown(slider, { pointerId: 3, pointerType: 'mouse', clientX: 150, clientY: 12 })
+    fireEvent.pointerMove(slider, { pointerId: 3, pointerType: 'mouse', clientX: 150, clientY: 12 })
+    expect(slider).toHaveAttribute('aria-valuenow', '15')
+    expect(onChaseOffsetChange).not.toHaveBeenCalled()
+    expect(playlistRequests(fetchMock)).toHaveLength(1)
+    fireEvent.pointerUp(slider, { pointerId: 3, pointerType: 'mouse', clientX: 150, clientY: 12 })
+
+    expect(onChaseOffsetChange).toHaveBeenCalledWith(15)
+    expect(playlistRequests(fetchMock)).toHaveLength(1)
+    rerender(<LivePlayer {...props} startOffsetSeconds={15} />)
+    await waitFor(() => expect(playlistRequests(fetchMock)).toHaveLength(2))
+    expect(playlistRequests(fetchMock)[1]).toContain('/chase/offset/15/playlist.m3u8')
   })
 })
 

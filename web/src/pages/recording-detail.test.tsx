@@ -16,6 +16,7 @@ import type {
 import { ToastProvider } from '@/components/toaster'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
 import { cmDetectStageMessage } from '@/lib/cm-detect-stage'
+import { formatTime } from '@/lib/format'
 import { routeTree } from '@/routes'
 
 afterEach(() => {
@@ -1939,17 +1940,20 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
     renderAt('/recordings/3#chase')
 
     await user.click(await screen.findByRole('button', { name: '再生設定' }))
-    const select = await screen.findByLabelText('画質')
+    const settings = screen.getByRole('menu', { name: '再生設定' })
+    const qualityEntry = within(settings).getByRole('menuitem', { name: '画質' })
     // 既定はサーバー側と同じ先頭。表示名は height を添える
-    expect(select).toHaveValue('hd')
-    expect(screen.getByRole('option', { name: 'hd（720p）' })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: 'sd（480p）' })).toBeInTheDocument()
+    expect(qualityEntry).toHaveAccessibleDescription('hd（720p）')
+    await user.click(qualityEntry)
+    const quality = screen.getByRole('menu', { name: '画質' })
+    expect(within(quality).getByRole('menuitemradio', { name: 'hd（720p）' })).toHaveAttribute('aria-checked', 'true')
+    expect(within(quality).getByRole('menuitemradio', { name: 'sd（480p）' })).toHaveAttribute('aria-checked', 'false')
 
     // 既定は URL に書き戻さない（`?profile=` を付けずサーバー側の先頭に任せる）
     await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
     expect(chasePlaylistURLs(fetchMock)[0]).not.toContain('profile=')
 
-    await user.selectOptions(select, 'sd')
+    await user.click(within(quality).getByRole('menuitemradio', { name: 'sd（480p）' }))
 
     await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(2))
     expect(chasePlaylistURLs(fetchMock)[1]).toContain('profile=sd')
@@ -2020,7 +2024,9 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
     renderAt('/recordings/3?liveProfile=sd#chase')
 
     await user.click(await screen.findByRole('button', { name: '再生設定' }))
-    expect(await screen.findByLabelText('画質')).toHaveValue('sd')
+    await user.click(within(screen.getByRole('menu', { name: '再生設定' })).getByRole('menuitem', { name: '画質' }))
+    expect(within(screen.getByRole('menu', { name: '画質' })).getByRole('menuitemradio', { name: 'sd（480p）' }))
+      .toHaveAttribute('aria-checked', 'true')
     // **要求に実際に載ることまで見る。** セレクタの表示だけだと、URL の値を
     // そのまま握って選択肢に無い値でも「先頭が選ばれて見える」状態と区別できない
     // （React の controlled `<select>` は一致しない値で先頭に落ちるだけ）。
@@ -2043,7 +2049,9 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
     renderAt('/recordings/3?liveProfile=does-not-exist#chase')
 
     await user.click(await screen.findByRole('button', { name: '再生設定' }))
-    expect(await screen.findByLabelText('画質')).toHaveValue('hd')
+    await user.click(within(screen.getByRole('menu', { name: '再生設定' })).getByRole('menuitem', { name: '画質' }))
+    expect(within(screen.getByRole('menu', { name: '画質' })).getByRole('menuitemradio', { name: 'hd（720p）' }))
+      .toHaveAttribute('aria-checked', 'true')
     await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
     expect(chasePlaylistURLs(fetchMock)[0]).not.toContain('profile=')
     expect(chasePlaylistURLs(fetchMock)[0]).not.toContain('does-not-exist')

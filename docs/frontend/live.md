@@ -58,7 +58,9 @@ hls.js には `startPosition: 0` を渡す。追っかけの時間軸は、プ�
 秒 `t` とすると、現在のセッション範囲 (`offset` から `offset + seekable.end`) 内は
 `currentTime = t - offset` で移動し、playlist を取り直さない。開始 `offset` より前なら
 その秒を新しい offset として `/chase/offset/{offset}/...` に張り直し、古いセッションへ
-leave ヒントを送る。範囲より後ろなら `seekable` の終端で止め、移動後の位置を表示する。
+leave ヒントを送る。変換済み playlist の `seekable` 終端より後でも録画済み上限より前なら、
+その秒を新しい offset として張り直す。範囲より後ろで録画の先端を越える位置は
+`seekable` の終端で止め、移動後の位置を表示する。
 ドラッグ中は位置のプレビューだけを出し、pointer up（キーボードでは操作キーを離したとき）
 に確定する。録画先端へは軸上の赤い印を押すか End キーで移動する。専用の「最新」ボタン、
 秒数入力、「この位置から再生」ボタンは置かない。

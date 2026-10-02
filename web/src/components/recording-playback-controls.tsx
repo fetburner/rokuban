@@ -368,7 +368,10 @@ export function RecordingPlaybackControls({
         >
           <div
             data-testid="player-controls-bottom"
-            className="flex flex-col bg-gradient-to-t from-black/80 to-transparent px-2.5 pt-8 pb-1 md:bg-none md:p-0"
+            className={cn(
+              'flex flex-col bg-gradient-to-t from-black/80 to-transparent px-2.5 pt-8 pb-1 md:bg-none md:p-0',
+              chaseTimeline && 'px-2',
+            )}
           >
             <div
               data-testid={chaseTimeline ? 'chase-timeline-track' : undefined}

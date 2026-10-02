@@ -1415,6 +1415,17 @@ export function LivePlayer({
     } catch {
       if (Number.isFinite(video.duration)) seekableEnd = video.duration
     }
+    if (timelineSeconds <= chaseLiveEdgeSeconds && requested > chaseStartOffset + seekableEnd) {
+      const nextOffset = Math.floor(requested)
+      setChasePreviewSeconds(null)
+      setChasePositionState({
+        recordingId,
+        offset: nextOffset,
+        seconds: chaseHeadOffsetSeconds + nextOffset,
+      })
+      onChaseOffsetChange?.(nextOffset)
+      return
+    }
     const localTarget = Math.max(0, Math.min(requested - chaseStartOffset, seekableEnd))
     video.currentTime = localTarget
     setChasePositionState({
