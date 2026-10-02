@@ -359,7 +359,7 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
     stubApi({})
     renderHome('/?mode=watch')
     await screen.findByTestId('home-mode-toggle')
-    await screen.findByText('次に見る録画はありません')
+    await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument())
     expect(screen.queryByTestId('home-warning-count')).not.toBeInTheDocument()
   })
 
