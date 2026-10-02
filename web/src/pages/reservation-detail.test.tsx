@@ -354,6 +354,26 @@ describe('ReservationDetailPage', () => {
     expect(screen.getByRole('heading', { name: 'テスト番組' })).toBeInTheDocument()
   }, 20_000)
 
+  it('番組情報の 5xx 以外のエラーでは 5xx 用の文言を出さない', async () => {
+    stubFetch(
+      (site, programId) =>
+        site === 'default' && programId === 300000 ? baseReservation() : null,
+      ['default'],
+      [],
+      undefined,
+      () => errorResponse(400, 'bad request'),
+    )
+
+    renderAt(
+      '/reservations/default/300000',
+      new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } }),
+    )
+
+    expect(await screen.findByRole('heading', { name: 'テスト番組' })).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('詳細を読み込み中…')).not.toBeInTheDocument())
+    expect(screen.queryByText('番組情報の取得に失敗しました')).not.toBeInTheDocument()
+  })
+
   // 局名が空文字のときに裸の区切りが残らない。`serviceName` は openapi で
   // required だが空文字を禁じていないので、無条件連結（`{serviceName} · ...`）だと
   // 先頭に「· 」が出る。期待値はリテラルで書く（実装の式と比べても何も主張しない）。

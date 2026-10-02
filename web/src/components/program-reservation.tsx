@@ -346,6 +346,8 @@ export function ProgramReservationDetails({
   })
   const d = unwrap(detail.data)
   const description = summaryDescription ?? d?.description
+  const isServerError =
+    detail.error instanceof ApiError && detail.error.status >= 500 && detail.error.status < 600
 
   // EPG は予約より先に番組情報を消すことがある。予約自体は有効な画面資源なので
   // 呼び出し元が予約詳細を表示している場合だけ、番組情報 404 のサブ領域を隠す。
@@ -364,7 +366,7 @@ export function ProgramReservationDetails({
           詳細を読み込み中…
         </p>
       )}
-      {detail.isError && <p className="text-destructive">番組情報の取得に失敗しました</p>}
+      {isServerError && <p className="text-destructive">番組情報の取得に失敗しました</p>}
 
       {d?.extended && Object.keys(d.extended).length > 0 && (
         <dl className="flex flex-col gap-1">
