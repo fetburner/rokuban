@@ -84,6 +84,11 @@ const FAILED_RECORDING_WARNING_WINDOW_MS = 7 * 24 * 3_600_000
 
 /** 時間軸は API の `limit` 上限である 200 件までを既存 API から取得する。 */
 const HOME_TIMELINE_RECORDING_LIMIT = 200
+// 完了・失敗録画を窓の始点より前から取る幅。API の `from` は開始時刻で絞るので、
+// 0 時より前に始まって窓に食い込む録画を拾うにはこの分さかのぼる。
+// ponytail: 24 時間を超えて窓に食い込む録画は落ちる（番組の最長尺は測っていない）。
+// 落ちる例が出たら幅を広げる。
+const HOME_TIMELINE_LOOKBACK_MS = 24 * 3_600_000
 const HOME_TIMELINE_HOUR_PX_DESKTOP = 64
 const HOME_TIMELINE_HOUR_PX_PHONE = 30
 const HOME_TIMELINE_TRACK_HEIGHT_PX = 20
@@ -153,7 +158,9 @@ export function HomePage() {
   timelineWindowStartDate.setHours(0, 0, 0, 0)
   const timelineWindowStartMs = timelineWindowStartDate.getTime()
   const timelineWindowEndMs = reservationsWindowEndMs
-  const timelineFrom = new Date(timelineWindowStartMs).toISOString()
+  // 完了・失敗は窓の始点より `HOME_TIMELINE_LOOKBACK_MS` 前から取り、下で窓と
+  // 重なるものだけに絞る。
+  const timelineLookbackFrom = new Date(timelineWindowStartMs - HOME_TIMELINE_LOOKBACK_MS).toISOString()
   const timelineTo = new Date(timelineWindowEndMs).toISOString()
 
   // 見るモードだけの材料。管理モードでは取らない。
@@ -173,13 +180,14 @@ export function HomePage() {
     status: 'failed',
     limit: FAILED_RECORDING_SCAN_LIMIT,
   })
-  // 時間軸のデータは時間窓の始端以降だけ status 別に取る。警告に使う全期間の
-  // finished/drop scan と failed の 7 日窓は上のクエリのまま独立させる。
+  // 時間軸の録画は status 別に取り、窓と**重なる**ものを描く（予約と同じ規則）。
+  // API の `from` / `to` は `program_start_at` の範囲なので、`from` に窓の始点を
+  // 渡すと 0 時より前に始まった日またぎの録画が録画中でも落ちる（深夜の映画を
+  // 0:00 から終わるまで消していた。測定: home.test.tsx「0 時をまたぐ録画は…」）。
+  // 録画中は `from` を付けない（件数はチューナー数で抑えられる）。
   const timelineRecordingQuery = useListRecordings(
     {
       status: 'recording',
-      from: timelineFrom,
-      to: timelineTo,
       limit: HOME_TIMELINE_RECORDING_LIMIT,
     },
     { query: { enabled: mode === 'ops' } },
@@ -187,18 +195,18 @@ export function HomePage() {
   const timelineFinishedQuery = useListRecordings(
     {
       status: 'finished',
-      from: timelineFrom,
+      from: timelineLookbackFrom,
       to: timelineTo,
       limit: HOME_TIMELINE_RECORDING_LIMIT,
     },
     { query: { enabled: mode === 'ops' } },
   )
   // `status=failed` を必須にする: API が supersede 済みの擬似 failed 行を除外する。
-  // 時間軸用の `from` は警告用の 7 日窓とは独立し、timeline の放送枠だけを絞る。
+  // 時間軸用の範囲は警告用の 7 日窓とは独立させる。
   const timelineFailedQuery = useListRecordings(
     {
       status: 'failed',
-      from: timelineFrom,
+      from: timelineLookbackFrom,
       to: timelineTo,
       limit: HOME_TIMELINE_RECORDING_LIMIT,
     },
@@ -381,31 +389,22 @@ export function HomePage() {
 
   const reservations = unwrap(reservationsQuery.data) ?? []
   const timelineRecordingEvents = [
-    ...(unwrap(timelineRecordingQuery.data) ?? []).flatMap((recording) => {
-      const event = recordingTimelineEvent(recording, 'recording')
-      return event === null ? [] : [event]
-    }),
-    ...(unwrap(timelineFinishedQuery.data) ?? []).flatMap((recording) => {
-      const event = recordingTimelineEvent(recording, 'finished')
-      return event === null ? [] : [event]
-    }),
-    ...(unwrap(timelineFailedQuery.data) ?? []).flatMap((recording) => {
-      const event = recordingTimelineEvent(recording, 'failed')
-      return event === null ? [] : [event]
-    }),
+    ...(unwrap(timelineRecordingQuery.data) ?? []).map((recording) =>
+      recordingTimelineEvent(recording, 'recording'),
+    ),
+    ...(unwrap(timelineFinishedQuery.data) ?? []).map((recording) =>
+      recordingTimelineEvent(recording, 'finished'),
+    ),
+    ...(unwrap(timelineFailedQuery.data) ?? []).map((recording) =>
+      recordingTimelineEvent(recording, 'failed'),
+    ),
   ]
-  const timelineReservationEvents = reservations.flatMap((reservation) => {
-    const event = reservationTimelineEvent(reservation)
-    if (
-      event === null ||
-      event.endMs <= timelineWindowStartMs ||
-      event.startMs >= timelineWindowEndMs
-    ) {
-      return []
-    }
-    return [event]
-  })
-  const timelineEvents = [...timelineRecordingEvents, ...timelineReservationEvents]
+  const timelineReservationEvents = reservations.map(reservationTimelineEvent)
+  // 録画・予約とも、窓と重なるものだけを置く（左右の端で切って描く）。
+  const timelineEvents = [...timelineRecordingEvents, ...timelineReservationEvents].filter(
+    (event): event is HomeTimelineEvent =>
+      event !== null && event.endMs > timelineWindowStartMs && event.startMs < timelineWindowEndMs,
+  )
   const timelineRows = buildHomeTimelineRows(timelineEvents, activeOverages)
   const timelinePending =
     timelineRecordingQuery.isPending ||
@@ -562,6 +561,10 @@ function HomeOpsTimeline({
   // で window 592–598px、複数 site で 660–676px で 2 つのモードを往復した）。
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
   const [frameViewport, setFrameViewport] = useState({ scrollLeft: 0, clientWidth: 0 })
+  // 目盛りラベルと「いま」の pill の実幅（px）。隠す判定に使う。0 は未計測。
+  const tickLabelRefs = useRef<(HTMLSpanElement | null)[]>([])
+  const nowPillRef = useRef<HTMLSpanElement>(null)
+  const [labelWidths, setLabelWidths] = useState<{ ticks: number[]; pill: number }>({ ticks: [], pill: 0 })
   const hourPx = viewportWidth <= 480 ? HOME_TIMELINE_HOUR_PX_PHONE : HOME_TIMELINE_HOUR_PX_DESKTOP
   const durationMs = Math.max(0, endMs - startMs)
   const axisWidth = (durationMs / 3_600_000) * hourPx
@@ -594,6 +597,22 @@ function HomeOpsTimeline({
     return () => observer.disconnect()
   }, [isError, isPending, rows.length])
 
+  // ラベルの文言（翌 / 時刻）と縮尺で幅が変わるので毎レンダー測り、変わったときだけ更新する。
+  useLayoutEffect(() => {
+    const measure = () => {
+      const widths = tickLabelRefs.current.slice(0, ticks.length).map((element) => element?.offsetWidth ?? 0)
+      const pill = nowPillRef.current?.offsetWidth ?? 0
+      setLabelWidths((current) =>
+        current.pill === pill &&
+        current.ticks.length === widths.length &&
+        current.ticks.every((width, index) => width === widths[index])
+          ? current
+          : { ticks: widths, pill },
+      )
+    }
+    measure()
+  })
+
   useLayoutEffect(() => {
     const frame = frameRef.current
     if (frame === null) {
@@ -617,27 +636,37 @@ function HomeOpsTimeline({
       data-testid="home-ops-timeline-content"
     >
       <div className="relative h-[14px]" aria-hidden="true">
-        {ticks.map((elapsedHour) => {
+        {ticks.map((elapsedHour, index) => {
           const tickMs = startMs + elapsedHour * 3_600_000
           const tickX = elapsedHour * hourPx
-          // 見える範囲の境界で半端に切れるラベルは隠す: ラベル全体（中心 ± 20px。
-          // 始端の目盛りだけは中心から右へ 40px）が枠に収まるときだけ出す。
-          const labelStart = elapsedHour === 0 ? tickX : tickX - 20
-          const labelEnd = elapsedHour === 0 ? tickX + 40 : tickX + 20
+          // 見える範囲の境界で半端に切れるラベルと、「いま」の pill（z-20）の下に
+          // 隠れるラベルは隠す。ラベルの箱は実幅で測る（始端の目盛りだけは左揃え）。
+          // 未計測（jsdom 等）のあいだは中心 ± 20px の箱で枠の境界だけを判定する。
+          const labelWidth = labelWidths.ticks[index] || 40
+          const labelStart = elapsedHour === 0 ? tickX : tickX - labelWidth / 2
+          const labelEnd = labelStart + labelWidth
           const visibleStart = frameViewport.scrollLeft
           const visibleEnd = visibleStart + frameViewport.clientWidth
           const tickLabelIntersectsFrame = labelEnd > visibleStart && labelStart < visibleEnd
           const tickLabelFits = labelStart >= visibleStart && labelEnd <= visibleEnd
+          // pill は nowX - 1px から実幅ぶん。左右 2px の余白を取って重なりを見る。
+          const pillStart = nowX - 1
+          const tickLabelUnderPill = labelWidths.pill > 0 &&
+            labelEnd + 2 > pillStart && labelStart - 2 < pillStart + labelWidths.pill
           return (
             <span
               key={elapsedHour}
+              ref={(element) => {
+                tickLabelRefs.current[index] = element
+              }}
               className={cn(
                 'absolute top-0 whitespace-nowrap text-[10px] leading-[14px] text-muted-foreground',
                 elapsedHour !== 0 && '-translate-x-1/2',
               )}
               style={{
                 left: `${tickX}px`,
-                visibility: frameViewport.clientWidth > 0 && tickLabelIntersectsFrame && !tickLabelFits
+                visibility: tickLabelUnderPill ||
+                  (frameViewport.clientWidth > 0 && tickLabelIntersectsFrame && !tickLabelFits)
                   ? 'hidden'
                   : undefined,
               }}
@@ -648,6 +677,8 @@ function HomeOpsTimeline({
           )
         })}
         <span
+          ref={nowPillRef}
+          data-testid="home-timeline-now-label"
           className="absolute top-0 z-20 -translate-x-px rounded-sm bg-tally px-1 text-[10px] font-semibold leading-[14px] text-tally-foreground"
           style={{ left: `${nowX}px` }}
         >
@@ -749,9 +780,11 @@ function HomeOpsTimeline({
       <section aria-labelledby="home-ops-timeline-title" className="flex min-w-0 flex-col gap-2" data-testid="home-ops-timeline" data-hour-px={hourPx} data-viewport-width={viewportWidth}>
         <div className="flex items-baseline justify-between gap-2">
           <h2 id="home-ops-timeline-title" className="text-sm font-semibold">今日 0 時 → 明日の終わり</h2>
-          <span className="text-xs text-muted-foreground">
-            {siteCount > 1 ? 'サイト × ' : ''}{rowTypes.join(' / ')} ごと
-          </span>
+          {rowTypes.length > 0 && (
+            <span className="text-xs text-muted-foreground">
+              {siteCount > 1 ? 'サイト × ' : ''}{rowTypes.join(' / ')} ごと
+            </span>
+          )}
         </div>
         {isPending ? (
           <div role="status" aria-label="時間軸を読み込み中"><ListSkeleton rows={3} /></div>

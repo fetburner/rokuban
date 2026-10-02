@@ -618,6 +618,7 @@ function apiHandler({
   layoutScenario = 'default',
   toastLayout = false,
   recordingDetailScenario = null,
+  extraOpsRecordings = [],
 } = {}) {
   return async ({ path: p, url, json, route }) => {
     if (delayPath !== null && p === delayPath) {
@@ -715,7 +716,7 @@ function apiHandler({
         })
         return json(sorted)
       }
-      // ホームは status 別に timeline の from/to/limit を付けた 3 本を取得し、
+      // ホームは status 別に timeline の limit=200 を付けた 3 本（完了・失敗は from/to 付き）を取得し、
       // これとは別に drop 20 件・failed 20 件の警告範囲を取得する。
       // homeOpsFixture では finished/failed を窓内へ動かし、ブロックと警告を両方撮る。
       // 既定の録画一覧（`pages/recordings.tsx`）は status を付けずに常に
@@ -726,6 +727,7 @@ function apiHandler({
         { ...recordings[1], startAt: iso(nowMs - 90 * 60_000), createdAt: iso(nowMs - 90 * 60_000) },
         { ...recordings[2], startAt: iso(nowMs - 40 * 60_000), createdAt: iso(nowMs - 40 * 60_000) },
         recordings[3],
+        ...extraOpsRecordings,
       ] : recordings
       const source = emptyHome
         ? []
@@ -737,9 +739,10 @@ function apiHandler({
       const filtered = status ? source.filter((r) => r.status === status) : source
       const from = url.searchParams.get('from')
       const to = url.searchParams.get('to')
-      const inWindow = from !== null && to !== null
-        ? filtered.filter((r) => Date.parse(r.startAt) >= Date.parse(from) && Date.parse(r.startAt) < Date.parse(to))
-        : filtered
+      // 実サーバーと同じく `from` / `to` は開始時刻の範囲で、付いたものだけで絞る。
+      const inWindow = filtered.filter((r) =>
+        (from === null || Date.parse(r.startAt) >= Date.parse(from)) &&
+        (to === null || Date.parse(r.startAt) < Date.parse(to)))
       const sorted = [...inWindow].sort((a, b) => Date.parse(b.startAt) - Date.parse(a.startAt))
       return json(sorted.slice(0, limit))
     }
@@ -1699,6 +1702,19 @@ for (const multiSite of [false, true]) {
   await context.close()
 }
 
+/** visibleTickLabels は時間軸の枠の中に見えている目盛りラベル（文言と中心の x）を返す。 */
+async function visibleTickLabels(page) {
+  return page.evaluate(() => {
+    const frame = document.querySelector('[data-testid="home-ops-timeline-frame"]')?.getBoundingClientRect()
+    if (!frame) return []
+    return [...document.querySelectorAll('[data-testid="home-timeline-tick"]')]
+      .filter((tick) => getComputedStyle(tick).visibility !== 'hidden')
+      .map((tick) => ({ text: tick.textContent, rect: tick.getBoundingClientRect() }))
+      .filter(({ rect }) => rect.x >= frame.x - 0.5 && rect.right <= frame.right + 0.5)
+      .map(({ text, rect }) => ({ text, center: rect.x + rect.width / 2 }))
+  })
+}
+
 // 時刻（午前を含む）とスクロール位置を変えても、見える範囲の境界で目盛りが半端に
 // 切れず、「いま」の線が窓の中の正しい位置（現在時刻 × 縮尺）にある。
 // 窓の始点が今日 12 時固定だと、午前では「いま」が窓の左端に張り付く。
@@ -1733,6 +1749,19 @@ for (const viewport of [homeDesktop, mobile]) {
     if (measured === null || Math.abs(measured.nowInContent - expectedNowX) > 1.5) {
       ng.push(`[ops-ticks/${viewport.width}px/${clock}] 「いま」の線が現在時刻の位置にない（${JSON.stringify(measured)}、期待 ${expectedNowX}px）`)
     }
+    // 初期表示（現在 − 3 時間から）で見えている目盛り。ラフ（20:42 / 1280px）は
+    // 過去側に「18時」が見える。端から 20px 以内の目盛りを固定箱で隠すと消えていた。
+    const initialTicks = await visibleTickLabels(page)
+    log(`  [ops-ticks/${viewport.width}px/${clock}] 初期表示の目盛り: ${initialTicks.map((tick) => tick.text).join(' ') || '（なし）'}`)
+    if (clock === '20:42') {
+      const markerX = await page.getByTestId('home-timeline-now').first().evaluate((el) => el.getBoundingClientRect().x).catch(() => null)
+      if (markerX === null || !initialTicks.some((tick) => tick.center < markerX)) {
+        ng.push(`[ops-ticks/${viewport.width}px/${clock}] 初期表示の過去側に目盛りが 1 本も無い（${initialTicks.map((tick) => tick.text).join(',')}）`)
+      }
+      if (viewport.width === homeDesktop.width && !initialTicks.some((tick) => tick.text === '18時')) {
+        ng.push(`[ops-ticks/${viewport.width}px/${clock}] 初期表示に「18時」が見えない（ラフでは見える）`)
+      }
+    }
     for (const scrollLeft of [0, 37, 101, 333, 100000]) {
       await page.evaluate((x) => {
         const frame = document.querySelector('[data-testid="home-ops-timeline-frame"]')
@@ -1753,9 +1782,92 @@ for (const viewport of [homeDesktop, mobile]) {
       if (cut.length > 0) {
         ng.push(`[ops-ticks/${viewport.width}px/${clock}/scrollLeft=${scrollLeft}] 見える範囲の境界で目盛りが切れて見える（${cut.join(',')}）`)
       }
+      // 「いま」の pill（z-20）の下に隠れる目盛りは出さない。
+      const underPill = await page.evaluate(() => {
+        const pill = document.querySelector('[data-testid="home-timeline-now-label"]')?.getBoundingClientRect()
+        if (!pill) return ['pill が無い']
+        return [...document.querySelectorAll('[data-testid="home-timeline-tick"]')]
+          .filter((tick) => getComputedStyle(tick).visibility !== 'hidden')
+          .map((tick) => ({ text: tick.textContent, rect: tick.getBoundingClientRect() }))
+          .filter(({ rect }) => rect.right > pill.x && rect.x < pill.right)
+          .map(({ text }) => text)
+      })
+      if (underPill.length > 0) {
+        ng.push(`[ops-ticks/${viewport.width}px/${clock}/scrollLeft=${scrollLeft}] 目盛りが「いま」の pill の下に隠れる（${underPill.join(',')}）`)
+      }
     }
     log(`  [ops-ticks/${viewport.width}px/${clock}] now@content=${measured?.nowInContent?.toFixed(1)}px (期待 ${expectedNowX}px)`)
   }
+  await context.close()
+}
+
+// 0 時をまたぐ録画は 0:00 から終わるまで時間軸に残る。API の `from` は開始時刻で
+// 絞るので、窓の始点を `from` に渡すと前日 23:40 開始の録画中が消えていた。
+log('\n=== ホーム管理モード: 0 時をまたぐ録画 ===')
+{
+  const midnight = new Date('2026-08-13T00:20:00+09:00')
+  const crossingStart = new Date('2026-08-12T23:40:00+09:00').getTime()
+  const crossing = [
+    { ...recordings[1], id: 91, title: '日またぎの映画', status: 'recording', startAt: iso(crossingStart), startedAt: iso(crossingStart), durationMs: 140 * 60_000, createdAt: iso(crossingStart) },
+    { ...recordings[1], id: 92, title: '日またぎの完了', status: 'finished', startAt: iso(crossingStart - 10 * 60_000), durationMs: 40 * 60_000, createdAt: iso(crossingStart), dropSummary: undefined },
+  ]
+  for (const viewport of [homeDesktop, mobile]) {
+    const hourPx = viewport.width <= 480 ? 30 : 64
+    const { context, page } = await open(viewport, 'light', {
+      name: 'home-ops-midnight',
+      path: '/?mode=ops',
+    }, { homeModeFixture: true, homeOpsFixture: true, extraOpsRecordings: crossing })
+    await page.clock.setFixedTime(midnight)
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await page.getByTestId('home-ops-timeline-frame').waitFor({ timeout: 5000 }).catch(() => {})
+    await page.evaluate(() => document.fonts.ready)
+    await page.waitForTimeout(300)
+    const blocks = await page.evaluate(() => {
+      const content = document.querySelector('[data-testid="home-ops-timeline-content"]')?.getBoundingClientRect()
+      return [...document.querySelectorAll('[data-testid="home-timeline-block"]')].map((block) => {
+        const rect = block.getBoundingClientRect()
+        return { kind: block.dataset.kind, title: block.getAttribute('title'), left: rect.x - (content?.x ?? 0), width: rect.width }
+      })
+    })
+    for (const [title, kind, visibleMinutes] of [['日またぎの映画', 'recording', 120], ['日またぎの完了', 'finished', 10]]) {
+      const block = blocks.find((b) => b.title === title)
+      if (block === undefined || block.kind !== kind) {
+        ng.push(`[ops-midnight/${viewport.width}px] 0 時をまたぐ「${title}」（${kind}）が 00:20 の時間軸に無い（${blocks.map((b) => `${b.kind}:${b.title}`).join(', ')}）`)
+      } else if (Math.abs(block.left) > 0.5 || Math.abs(block.width - (visibleMinutes / 60) * hourPx) > 1) {
+        ng.push(`[ops-midnight/${viewport.width}px] 「${title}」が窓の左端で切られていない（left=${block.left}px width=${block.width}px、期待 0px / ${(visibleMinutes / 60) * hourPx}px）`)
+      }
+    }
+    log(`  [ops-midnight/${viewport.width}px] ${blocks.map((b) => `${b.kind}:${b.title}@${b.left.toFixed(1)}+${b.width.toFixed(1)}`).join(' ')}`)
+    await context.close()
+  }
+}
+
+// 管理モードのホームから完了録画へ: 「録画・予約の詳細」を開く → 行を選ぶ の 2 操作。
+// 「直近の完了へ」アンカーは置かない（docs/frontend/home.md）。
+log('\n=== ホーム管理モード: 完了録画への到達 ===')
+for (const viewport of [homeDesktop, mobile]) {
+  const { context, page } = await open(viewport, 'light', {
+    name: 'home-ops-reach',
+    path: '/?mode=ops',
+  }, { homeModeFixture: true, homeOpsFixture: true })
+  const summary = page.getByTestId('home-timeline-details').locator('summary')
+  await summary.waitFor({ timeout: 5000 }).catch(() => {})
+  let operations = 0
+  if (await summary.count() === 1) {
+    await summary.click()
+    operations += 1
+    const row = page.getByTestId('home-timeline-detail-row').filter({ hasText: '録れた' }).first()
+    if (await row.count() === 1) {
+      await row.locator('a').click()
+      operations += 1
+      await page.waitForURL(/\/recordings\/\d+$/, { timeout: 5000 }).catch(() => {})
+    }
+  }
+  const pathname = new URL(page.url()).pathname
+  if (!/^\/recordings\/\d+$/.test(pathname) || operations !== 2) {
+    ng.push(`[ops-reach/${viewport.width}px] 管理モードのホームから 2 操作で完了録画へ着かない（操作=${operations} 到達=${pathname}）`)
+  }
+  log(`  [ops-reach/${viewport.width}px] 操作=${operations} 到達=${pathname}`)
   await context.close()
 }
 
@@ -2190,8 +2302,9 @@ for (const scenario of ['completed', 'recording', 'encode-waiting', 'trash']) {
 //
 // 変更前の基準値は 360/390px が録画詳細リンクの viewport 上端約 317px、
 // デスクトップが約 245px だった。ここでは固定時刻・同じ API モックで状態を分け、
-// ①リンクの viewport Y、②固定ヘッダー/ボトムナビに隠れないこと、③必要スクロール量、
-// ④ホームのショートカットを 1 操作で完了録画へ移せることを測る。
+// ①リンクの viewport Y、②固定ヘッダー/ボトムナビに隠れないこと、③必要スクロール量を
+// 録画一覧（/recordings）で測る。管理モードのホームから完了録画への到達は
+// 「ホーム管理モード: 完了録画への到達」が測る。
 // 数値は docs/frontend/recordings.md にも結果として記録するが、合否の権威はここ。
 log('\n=== ①-A\' issue #686 視聴対象への到達距離 ===')
 const layoutScenarios = [

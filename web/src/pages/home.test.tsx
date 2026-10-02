@@ -124,8 +124,8 @@ function jsonResponse(body: unknown, status = 200): Response {
 type Fixtures = {
   recording?: Recording[]
   /**
-   * 完了録画（`status=finished&limit=20`）。ホームはこれの先頭 6 件を
-   * 「直近の完了」に表示し、ドロップ警告は全件から拾う。
+   * 完了録画。ドロップ警告（`status=finished&limit=20`）は全件から拾い、
+   * 時間軸（`limit=200` + `from` / `to`）は開始時刻の範囲で絞って返す。
    */
   finished?: Recording[]
   /**
@@ -183,26 +183,25 @@ function stubApi(fixtures: Fixtures) {
         const from = url.searchParams.get('from')
         const to = url.searchParams.get('to')
         if (status === null) throw new Error('home must not fetch recordings without status')
-        if (status === 'recording' && limit === '200' && from !== null && to !== null) {
-          return jsonResponse((fixtures.recording ?? []).filter((item) => {
-            const start = new Date(item.startAt).getTime()
-            return start >= new Date(from).getTime() && start < new Date(to).getTime()
-          }))
-        }
-        if (status === 'finished' && limit === '200' && from !== null && to !== null) {
-          return jsonResponse((fixtures.finished ?? []).filter((item) => {
-            const start = new Date(item.startAt).getTime()
-            return start >= new Date(from).getTime() && start < new Date(to).getTime()
-          }))
+        // サーバーと同じく `from` / `to` は開始時刻（`program_start_at`）の範囲で、
+        // 付いたものだけで絞る。
+        const inRange = (item: Recording) => {
+          const start = new Date(item.startAt).getTime()
+          return (from === null || start >= new Date(from).getTime()) &&
+            (to === null || start < new Date(to).getTime())
         }
         const serverFailed = (fixtures.failed ?? []).filter(
           (item) => (item as Recording & { supersededAt?: string }).supersededAt === undefined,
         )
-        if (status === 'failed' && limit === '200' && from !== null && to !== null) {
-          return jsonResponse(serverFailed.filter((item) => {
-            const start = new Date(item.startAt).getTime()
-            return start >= new Date(from).getTime() && start < new Date(to).getTime()
-          }))
+        if (limit === '200') {
+          const source = status === 'recording'
+            ? fixtures.recording
+            : status === 'finished'
+              ? fixtures.finished
+              : status === 'failed'
+                ? serverFailed
+                : []
+          return jsonResponse((source ?? []).filter(inRange))
         }
         if (status === 'recording') return jsonResponse(fixtures.recording ?? [])
         if (status === 'finished' && limit === String(DROP_WARNING_SCAN_LIMIT)) {
@@ -949,9 +948,10 @@ describe('ホーム: 警告の検出範囲は時間軸の窓から独立して�
     expect(timelineCalls.map((url) => url.searchParams.get('status')).sort()).toEqual([
       'failed', 'finished', 'recording',
     ])
-    expect(timelineCalls.every((url) =>
-      url.searchParams.has('status') && url.searchParams.has('from') && url.searchParams.has('to'),
-    )).toBe(true)
+    // 完了・失敗は開始時刻の範囲で絞る。録画中は開始時刻で絞らない（日またぎを落とさない）。
+    expect(timelineCalls.map((url) =>
+      `${url.searchParams.get('status')}:${url.searchParams.has('from')}:${url.searchParams.has('to')}`,
+    ).sort()).toEqual(['failed:true:true', 'finished:true:true', 'recording:false:false'])
   })
 
   it('overage警告は同site・時間重複予約だけを補足し、敗者や容量保証を示さない', async () => {
@@ -1233,8 +1233,45 @@ describe('ホーム管理モード: 窓は常に今日 0 時から（午前に�
   })
 })
 
+describe('ホーム管理モード: 0 時をまたぐ録画は窓の左端で切って描く', () => {
+  it('0 時をまたぐ録画は、録画中・録れた・失敗とも 0:20 に開いた時間軸に出て、窓の前に終わったものは出ない', async () => {
+    // 翌日 00:20 に開く。窓の始点はその日の 0:00、前日 23:40 開始の 140 分の録画が録画中。
+    const tomorrow = new Date(dayStart)
+    tomorrow.setDate(tomorrow.getDate() + 1)
+    const after = tomorrow.getTime() + 20 * 60_000
+    vi.setSystemTime(after)
+    const at = (minutes: number) => new Date(tomorrow.getTime() + minutes * 60_000).toISOString()
+    stubApi({
+      recording: [recording(1, '日またぎの映画', 'recording', { startAt: at(-20), durationMs: 140 * 60_000 })],
+      finished: [
+        recording(2, '日またぎの完了', 'finished', { startAt: at(-30), durationMs: 40 * 60_000 }),
+        recording(3, '前日に終わった完了', 'finished', { startAt: at(-90), durationMs: 60 * 60_000 }),
+      ],
+      failed: [recording(4, '日またぎの失敗', 'failed', { startAt: at(-10), durationMs: 20 * 60_000 })],
+    })
+    renderHome()
+
+    const blocks = await screen.findAllByTestId('home-timeline-block')
+    expect(blocks.map((block) => `${block.dataset.kind}:${block.getAttribute('title')}`).sort()).toEqual([
+      'failed:日またぎの失敗',
+      'finished:日またぎの完了',
+      'recording:日またぎの映画',
+    ])
+    // 左端で切る: 開始は窓の始点（0px）、幅は 0:00〜2:00 の 2 時間（jsdom は 64px/h）。
+    const movie = blocks.find((block) => block.getAttribute('title') === '日またぎの映画')!
+    expect(movie).toHaveStyle({ left: '0px', width: '128px' })
+    // 窓の前に終わった録画は詳細一覧にも出さない（幅 0 のブロックは描かれないので一覧で見る）。
+    const details = await openTimelineDetails()
+    expect(within(details).getAllByTestId('home-timeline-detail-row').map((row) => row.textContent)).toEqual([
+      '7/25 23:30地デジ日またぎの完了録れた',
+      '7/25 23:40地デジ日またぎの映画録画中',
+      '7/25 23:50地デジ日またぎの失敗失敗',
+    ])
+  })
+})
+
 describe('ホーム管理モード: 容量超過は個々の予約ブロックに印を付けない', () => {
-  it('超過区間に重なる予約ブロックは、区間の外の予約ブロックと同じクラスを持つ', async () => {
+  it('超過区間に重なる予約ブロックは、区間の外の予約ブロックと位置・題名以外が同じ', async () => {
     stubApi({
       overages: [{ ...overage(2 * HOUR, 3 * HOUR), jammedTypes: ['GR'] }],
       reservations: [
@@ -1247,12 +1284,31 @@ describe('ホーム管理モード: 容量超過は個々の予約ブロック�
     const blocks = await screen.findAllByTestId('home-timeline-block')
     const inside = blocks.find((block) => block.getAttribute('title') === '区間の中')!
     const outside = blocks.find((block) => block.getAttribute('title') === '区間の外')!
-    expect(inside.className).toBe(outside.className)
+    // 印はクラスだけでなく子要素・data-*・style でも付けられるので、ブロックの
+    // 属性と子要素の全体を比べる。違ってよいのは位置（left）と題名だけ。
+    const signature = (block: HTMLElement) => {
+      const title = block.getAttribute('title')!
+      const clone = block.cloneNode(true) as HTMLElement
+      clone.removeAttribute('title')
+      clone.style.removeProperty('left')
+      clone.innerHTML = clone.innerHTML.replaceAll(title, '{title}')
+      return clone.outerHTML
+    }
+    expect(signature(inside)).toBe(signature(outside))
     expect(inside.className).not.toMatch(/warning/)
   })
 })
 
 describe('ホーム管理モード: 時間軸の見出しと凡例', () => {
+  it('時間軸の行が無く要対応だけあるときは、見出しの右側に種別を出さない', async () => {
+    stubApi({ breakers: [breaker()] })
+    renderHome()
+
+    const heading = await screen.findByRole('heading', { name: '今日 0 時 → 明日の終わり' })
+    await screen.findByRole('heading', { name: '要対応' })
+    expect(heading.parentElement).toHaveTextContent(/^今日 0 時 → 明日の終わり$/)
+  })
+
   it('窓・行の種別を見出しに、スクロールの案内とチューナー不足の区間を凡例に出す', async () => {
     stubApi({
       reservations: [
@@ -1335,7 +1391,7 @@ describe('ホーム管理モード: 見るモードだけの取得はしない',
     expect(paths(ops.fetchMock).some((url) => url.pathname === '/api/recordings/continue-watching')).toBe(false)
     expect(
       paths(ops.fetchMock).some(
-        (url) => url.pathname === '/api/recordings' && url.searchParams.get('status') === 'recording' && !url.searchParams.has('from'),
+        (url) => url.pathname === '/api/recordings' && url.searchParams.get('status') === 'recording' && !url.searchParams.has('limit'),
       ),
     ).toBe(false)
     opsHome.unmount()
