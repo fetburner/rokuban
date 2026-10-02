@@ -813,7 +813,7 @@ function HomeOpsTimeline({
             {sortHomeTimelineEvents(events).map((event) => {
               const body = (
                 <>
-                  <span className="w-20 shrink-0 text-xs tabular-nums text-muted-foreground">
+                  <span className="w-20 shrink-0 text-xs text-muted-foreground">
                     {homeTimelineDayLabel(event.startMs, nowMs)} {formatTime(new Date(event.startMs).toISOString())}
                   </span>
                   <span className="w-20 shrink-0 truncate text-xs text-muted-foreground sm:w-28">
@@ -1347,7 +1347,7 @@ function WarningRow({ warning, divider }: { warning: WarningItem; divider: boole
     <span className="grid min-w-0 grid-cols-[6.5rem_minmax(0,1fr)] items-start gap-x-3">
       <span
         className={cn(
-          'w-fit max-w-full rounded-sm px-2 py-0.5 text-xs font-semibold tabular-nums',
+          'w-fit max-w-full rounded-sm px-2 py-0.5 text-xs font-semibold',
           warning.kind === 'overage'
             ? 'bg-warning/15 text-warning'
             : 'bg-destructive/10 text-destructive',
