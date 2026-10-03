@@ -68,12 +68,12 @@ export function PageHeader({
   )
 }
 
-/** PageContent は一覧ページの本文幅を制限し、サイドバー側へ左寄せする。 */
+/** PageContent は一覧ページ本文を main の幅いっぱいにする。 */
 export function PageContent({ className, ...props }: React.ComponentProps<'div'>) {
   return (
     <div
-      data-testid="bounded-page-content"
-      className={cn('w-full max-w-5xl', className)}
+      data-testid="page-content"
+      className={cn('w-full', className)}
       {...props}
     />
   )

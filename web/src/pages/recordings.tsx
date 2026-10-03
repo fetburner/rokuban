@@ -468,11 +468,13 @@ export function RecordingsPage() {
             aria-multiselectable={selecting || undefined}
             aria-label={selecting ? '録画を選択' : undefined}
             className={
-              view === 'card' ? 'grid grid-cols-2 gap-3 p-4 sm:grid-cols-3 lg:grid-cols-4' : undefined
+              view === 'card'
+                ? 'grid grid-cols-2 lg:grid-cols-[repeat(auto-fill,minmax(min(100%,16rem),1fr))] gap-3 p-4'
+                : undefined
             }
           >
             {recordings.map((r) => (
-              <li key={r.id}>
+              <li key={r.id} data-testid={view === 'card' ? 'recording-card' : undefined}>
                 <RecordingRow
                   recording={r}
                   trash={trash}
