@@ -10,6 +10,7 @@
 //   E2E_URL=http://localhost:4173 pnpm e2e:header-stacking
 import {
   ListCircuitBreakersResponseItem,
+  GetRecordingResponse,
   ListRecordingsResponseItem,
 } from '../src/api/zod.ts'
 import {
@@ -102,7 +103,7 @@ log(`URL: ${URL_BASE}`)
 log('\n=== 契約検証: フィクスチャの zod parse ===')
 await validateFixturesOrExit(
   [
-    ['detailRecording', ListRecordingsResponseItem, detailRecording],
+    ['detailRecording', GetRecordingResponse, detailRecording],
     ...recordings.map((item, i) => [`recordings[${i}]`, ListRecordingsResponseItem, item]),
     ...breakers.map((item, i) => [`breakers[${i}]`, ListCircuitBreakersResponseItem, item]),
   ],
