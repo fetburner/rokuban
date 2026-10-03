@@ -135,7 +135,7 @@ await installApiStubs(page, apiHandler)
 
 await page.goto(URL_BASE + '/reservations', { waitUntil: 'domcontentloaded' })
 
-const rows = page.locator('li:has([data-testid="reservation-secondary"])')
+const rows = page.locator('li.relative:has([data-testid="reservation-secondary"])')
 await rows.first().waitFor({ timeout: 15000 }).catch(() => {
   ng.push('行が見つからない（一覧が描画されていない）')
 })

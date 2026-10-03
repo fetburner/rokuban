@@ -31,3 +31,18 @@ export function ruleDisambiguator(
 
   return (rule) => labelOf.get(rule.id)
 }
+
+/**
+ * makeRuleLabel は ID からルールの表示名を返す関数を作る。同名には `#<id>` を添え、
+ * 一覧に無い ID（取得前・削除済み）は `#<id>` に落とす。
+ */
+export function makeRuleLabel(rules: readonly Rule[]): (ruleId: number) => string {
+  const byId = new Map(rules.map((rule) => [rule.id, rule]))
+  const disambiguate = ruleDisambiguator(rules)
+  return (ruleId) => {
+    const rule = byId.get(ruleId)
+    if (!rule) return `#${ruleId}`
+    const suffix = disambiguate(rule)
+    return suffix === undefined ? rule.name : `${rule.name} (${suffix})`
+  }
+}
