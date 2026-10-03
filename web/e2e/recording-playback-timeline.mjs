@@ -121,14 +121,14 @@ if (!(audioStart < videoStart) || Math.abs((videoStart - audioStart) - 0.7) > 0.
 }
 
 const decodedFrames = probe.frames ?? []
-const markerTimes = manifest.markerFrames.map((frameIndex) => {
+const markerTimes = manifest.markerFrames.map((frameIndex, markerSlot) => {
   const frame = decodedFrames[frameIndex]
   const pts = Number(frame?.best_effort_timestamp_time ?? frame?.pts_time)
   if (!Number.isFinite(pts)) {
     ng.push(`ffprobe で目印 frame ${frameIndex} の PTS を得られない`)
-    return { frame: frameIndex, pts: Number.NaN, expectedSeconds: Number.NaN }
+    return { frame: frameIndex, markerSlot, pts: Number.NaN, expectedSeconds: Number.NaN }
   }
-  return { frame: frameIndex, pts, expectedSeconds: pts - earliestStart }
+  return { frame: frameIndex, markerSlot, pts, expectedSeconds: pts - earliestStart }
 })
 log(`  ffprobe: fps=${videoStream?.r_frame_rate}, earliest=${earliestStart.toFixed(6)}s, audio lead=${(videoStart - audioStart).toFixed(6)}s`)
 log(`  目印 PTS - earliest start_time: ${markerTimes.map((item) => `${item.frame}:${item.expectedSeconds.toFixed(6)}`).join(', ')}`)
@@ -162,11 +162,11 @@ function growingPlaylist(text) {
   return out.join('\n') + '\n'
 }
 
-await context.addInitScript(() => {
+await context.addInitScript((markerPixels) => {
   window.__timelineMarks = []
   window.__timelineCaptureError = null
   window.__timelineCapture = null
-  window.__startTimelineCapture = (sessionOffsetSeconds, frameNumber) => {
+  window.__startTimelineCapture = (sessionOffsetSeconds) => {
     const video = document.querySelector('video')
     if (!video || typeof video.requestVideoFrameCallback !== 'function') {
       window.__timelineCaptureError = 'video or requestVideoFrameCallback is unavailable'
@@ -180,7 +180,6 @@ await context.addInitScript(() => {
     canvas.width = 64
     canvas.height = 36
     const ctx = canvas.getContext('2d', { willReadFrequently: true })
-    let wasWhite = false
     const capture = { video, callbackId: undefined }
     window.__timelineCaptureComplete = false
     window.__timelineCaptureError = null
@@ -188,11 +187,13 @@ await context.addInitScript(() => {
       try {
         if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0 && ctx) {
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-          const pixel = ctx.getImageData(32, 18, 1, 1).data
-          const white = pixel[0] > 210 && pixel[1] > 210 && pixel[2] > 210
-          if (white && !wasWhite) {
+          const markerSlot = markerPixels.findIndex(([x, y]) => {
+            const pixel = ctx.getImageData(x, y, 1, 1).data
+            return pixel[0] > 210 && pixel[1] > 210 && pixel[2] > 210
+          })
+          if (markerSlot >= 0) {
             window.__timelineMarks.push({
-              frame: frameNumber,
+              markerSlot,
               sessionOffsetSeconds,
               mediaTime: metadata.mediaTime,
               presentedFrames: metadata.presentedFrames,
@@ -200,7 +201,6 @@ await context.addInitScript(() => {
             window.__timelineCaptureComplete = true
             video.pause()
           }
-          wasWhite = white
         }
       } catch (err) {
         window.__timelineCaptureError = String(err)
@@ -215,7 +215,11 @@ await context.addInitScript(() => {
     void video.play().catch((err) => { window.__timelineCaptureError = String(err) })
     return true
   }
-})
+}, [
+  [16, 9], [32, 9], [48, 9],
+  [16, 18], [32, 18], [48, 18],
+  [16, 27], [32, 27], [48, 27],
+])
 
 async function captureExpectedMarkers(page, sessionOffsetSeconds, expectedMarkers, label) {
   const observed = []
@@ -253,15 +257,19 @@ async function captureExpectedMarkers(page, sessionOffsetSeconds, expectedMarker
         })
       }, seekTime)
       const previousCount = await page.evaluate(() => window.__timelineMarks.length)
-      await page.evaluate(({ offset, frame }) => window.__startTimelineCapture(offset, frame), {
-        offset: sessionOffsetSeconds,
-        frame: marker.frame,
-      })
+      await page.evaluate((offset) => window.__startTimelineCapture(offset), sessionOffsetSeconds)
       await page.waitForFunction((count) => (
         window.__timelineMarks.length > count || window.__timelineCaptureError !== null
       ), previousCount, { timeout: 5000 })
       const capture = await page.evaluate((index) => window.__timelineMarks[index], previousCount)
-      if (capture) observed.push(capture)
+      if (capture) {
+        const frame = manifest.markerFrames[capture.markerSlot]
+        if (!Number.isInteger(frame)) {
+          ng.push(`${label}: unknown marker slot ${capture.markerSlot}`)
+        } else {
+          observed.push({ ...capture, frame })
+        }
+      }
       else ng.push(`${label}: frame ${marker.frame} の目印を取得できない (${await page.evaluate(() => window.__timelineCaptureError)})`)
     } catch (err) {
       ng.push(`${label}: frame ${marker.frame} が表示されない (${err.message})`)
@@ -372,13 +380,13 @@ function compareMarkers(label, observed, expected, sessionOffset) {
   }
   const count = Math.min(observed.length, expected.length)
   for (let i = 0; i < count; i += 1) {
-    if (observed[i].frame !== expected[i].frame) {
+    if (observed[i].markerSlot !== expected[i].markerSlot || observed[i].frame !== expected[i].frame) {
       ng.push(`${label}: 目印フレームの順序が違う (got=${observed[i].frame}, want=${expected[i].frame})`)
     }
     const actual = sessionOffset + observed[i].mediaTime
     const expectedSeconds = expected[i].expectedSeconds + EXPECTED_SHIFT_FRAMES / SOURCE_FRAME_RATE
     const diff = actual - expectedSeconds
-    log(`  frame=${expected[i].frame} pts=${expected[i].pts.toFixed(6)} expected=${expectedSeconds.toFixed(6)} actual=${actual.toFixed(6)} diff=${diff >= 0 ? '+' : ''}${(diff * 1000).toFixed(2)}ms presentedFrames=${observed[i].presentedFrames}`)
+    log(`  frame=${observed[i].frame} want=${expected[i].frame} pts=${expected[i].pts.toFixed(6)} expected=${expectedSeconds.toFixed(6)} actual=${actual.toFixed(6)} diff=${diff >= 0 ? '+' : ''}${(diff * 1000).toFixed(2)}ms presentedFrames=${observed[i].presentedFrames}`)
     if (!Number.isFinite(actual) || Math.abs(diff) > HALF_FRAME_SECONDS) {
       ng.push(`${label}: frame ${expected[i].frame} の差が半フレームを超える (${(diff * 1000).toFixed(2)}ms)`)
     }

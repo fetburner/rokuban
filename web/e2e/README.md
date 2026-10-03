@@ -285,8 +285,9 @@ E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:chase
 Go テストで放送 TS に似せた MPEG-2 29.97 fps の fixture を作る。
 HLS は製品の `BuildOriginalVODFFmpegArgs`（offset 0 / 10 秒）で生成する。
 MP4 は製品の `BuildFFmpegArgs` と `config.example.yml` の h264 例で生成する。
-入力は先頭 PTS が 0 でない。音声を映像より約 700 ms 先に置き、目印の白いフレームを
-不規則な間隔で9枚入れる。期待時刻は目印 PTS から stream の最早 `start_time` を引いて求める。
+入力は先頭 PTS が 0 でない。音声を映像より約 700 ms 先に置く。
+不規則な間隔の9フレームに白い目印を入れ、位置で各フレームの ID を表す。
+期待時刻は目印 PTS から stream の最早 `start_time` を引いて求める。
 
 Chrome の hls.js と WebKit のネイティブ HLS の両方で、原本 HLS offset 0、シークで
 張り直した offset 10 秒、非カット MP4 を再生する。各目印の表示を画素で検出し、
@@ -298,7 +299,7 @@ Chrome の hls.js と WebKit のネイティブ HLS の両方で、原本 HLS of
 ```sh
 E2E_URL=http://localhost:4173 pnpm e2e:recording-playback-timeline
 E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:recording-playback-timeline
-E2E_URL=http://localhost:4173 E2E_TIMELINE_EXPECTED_SHIFT_FRAMES=1 pnpm e2e:recording-playback-timeline
+E2E_URL=http://localhost:4173 E2E_BROWSER=webkit E2E_TIMELINE_EXPECTED_SHIFT_FRAMES=1 pnpm e2e:recording-playback-timeline
 ```
 
 この判定は ffmpeg / ffprobe / Go と Chromium / WebKit を使うため、これらが必要である。

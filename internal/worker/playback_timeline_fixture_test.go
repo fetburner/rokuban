@@ -49,10 +49,21 @@ func TestWritePlaybackTimelineFixture(t *testing.T) {
 
 	sourcePath := filepath.Join(fixtureDir, "original.ts")
 	filterParts := make([]string, 0, len(playbackTimelineMarkerFrames))
-	for _, frame := range playbackTimelineMarkerFrames {
-		filterParts = append(filterParts, fmt.Sprintf("eq(n\\,%d)", frame))
+	markerPositions := [][2]string{
+		{"iw/4-24", "ih/4-24"}, {"iw/2-24", "ih/4-24"}, {"iw*3/4-24", "ih/4-24"},
+		{"iw/4-24", "ih/2-24"}, {"iw/2-24", "ih/2-24"}, {"iw*3/4-24", "ih/2-24"},
+		{"iw/4-24", "ih*3/4-24"}, {"iw/2-24", "ih*3/4-24"}, {"iw*3/4-24", "ih*3/4-24"},
 	}
-	videoFilter := "drawbox=x=iw/2-24:y=ih/2-24:w=48:h=48:color=white:t=fill:enable='" + strings.Join(filterParts, "+") + "'"
+	for slot, frame := range playbackTimelineMarkerFrames {
+		position := markerPositions[slot]
+		filterParts = append(filterParts, fmt.Sprintf(
+			"drawbox=x=%s:y=%s:w=48:h=48:color=white:t=fill:enable='eq(n\\,%d)'",
+			position[0], position[1], frame,
+		))
+	}
+	// The marker slot is encoded by its position in a 3x3 grid. The browser can
+	// decode the actual displayed frame number instead of trusting the requested one.
+	videoFilter := strings.Join(filterParts, ",")
 	videoInput := "color=c=black:s=320x180:r=30000/1001:d=22"
 	audioInput := "sine=frequency=440:sample_rate=48000:duration=22.7"
 	inputArgs := []string{
