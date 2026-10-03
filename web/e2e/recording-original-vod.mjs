@@ -1126,8 +1126,6 @@ for (const route of ['video-click', 'paused-outside-seek']) {
 log(`  実測値: ${JSON.stringify(routeMeasurements)}`)
 delete offsetRecording.resumePositionMs
 delete offsetRecording.watchedAt
-delete offsetRecording.resumePositionMs
-delete offsetRecording.watchedAt
 
 {
   const offsetContext = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: 'ja-JP' })

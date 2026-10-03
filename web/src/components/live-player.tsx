@@ -848,8 +848,12 @@ export function LivePlayer({
       }
       if (isOriginalVOD || isChase) {
         // 再生の開始経路（自動再開・▶・映像クリック・ネイティブ操作・メディアキー）を問わず、
-        // 最初の `playing` で開始位置を明示し直す。WebKit は EVENT playlist で canplay の後に
-        // 再生を始めると、受け付けた位置をライブ端寄りへ動かす（`recording-original-vod.mjs` ⑤）。
+        // 最初の `playing` で開始位置を明示し直す。WebKit は canplay で受け付けた位置を、その後に
+        // 再生を始めるとライブ端へ動かす（`recording-original-vod.mjs` ⑤-d: 張り直した offset/31 を
+        // canplay で再開すると、2.5 秒後に 18.3 秒＝原本 49.2 秒。seeked を待ってから play() しても
+        // 同じだった）。利用者のシーク（commitOriginalSeek / commitChaseSeek）が先なら触らない。
+        // 追っかけにも同じ再表明を掛けるが、追っかけで飛びが起きるかは未検証である（`chase.mjs` の
+        // offset playlist は ENDLIST 済みで、WebKit で再表明を外しても落ちなかった）。
         startReassertPending.current = true
         const onPlaying = () => {
           if (startReassertPending.current) apply()
@@ -1126,14 +1130,7 @@ export function LivePlayer({
           resumePending = false
           if (cancelled) return
           resumePlaybackPendingRef.current = false
-          // **原本 VOD は再生が始まった時点でもう一度開始位置を明示する。** WebKit は canplay で
-          // 受け付けた位置を、ここで再生を始めるとライブ端へ動かす（`recording-original-vod.mjs`
-          // ⑤-d: 張り直した offset/31 を canplay で再開すると、2.5 秒後に 18.3 秒＝原本 49.2 秒。
-          // seeked を待ってから play() しても同じだった）。その間に利用者がシークしたら触らない。
-          // 利用者が自分で再生を始める経路（▶・映像クリックなど）も同じ飛びが起きるので、
-          // 再表明は play() の解決ではなく上の effect の `playing` に一本化している。
-          // 追っかけにも同じ再表明を掛けるが、追っかけで飛びが起きるかは未検証である（`chase.mjs` の
-          // offset playlist は ENDLIST 済みで、WebKit で再表明を外しても落ちなかった）。
+          // 開始位置の再表明は、上の effect の最初の `playing` が行う。
           void video.play().catch(() => {
             if (isRecordingPlayback) setMediaPlaying(false)
           })
