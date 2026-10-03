@@ -272,24 +272,15 @@ playlist を Chromium の hls.js（`E2E_BROWSER=webkit` ならネイティブ HL
   `reselectPlaybackSource` へ `playing && false` を渡すものである。**停止 10073ms・`advances=0` になって落ちる**
   （Chromium で確認）。**再生元を替えない変異（`selected !== current.source`
   を `false &&` にする）で、offset を要求せず ⑩ の 4 判定が落ちる**（Chromium で確認）
-- **追っかけ playlist の終端が録画全体の終端より手前なら、原本 HLS に位置を渡して再生を続ける**（⑪）。
-  終端までは成長する EVENT playlist（ENDLIST 無し）を配り、追っかけの 12 秒に対して原本は 20 秒の fixture にする。
-  playlist は 6 segment で伸びを止める（`growthCapSegments`）ので、ENDLIST を付けた終端でも本数が縮まない。
-  **終端の handoff を `autoPlay: false` にする変異（`wasPlaying && false`）で、移った先が止まり
-  15036ms の停止になって落ちる**。**`ended` 直前の `pause` で再生中の記憶を消す変異（`live-player.tsx` の
-  `if (!event.currentTarget.ended)` を外す）も同じ形で落ちる**。再生元を替えない変異は
-  `追っかけを終端まで再生しても原本 HLS へ自動で切り替えない` で落ちる（以上 Chromium で確認）。
-  **終端の切替に 3 秒の遅延を入れる変異で、終端切替の停止が 3150ms になって落ちる**（Chromium で確認。
-  ⑩・⑥ は切替前の再生元が再生を続けるので、この遅延では落ちない。⑩・⑥ の停止判定は上の「引き継がない変異」で落ちる）
-- **録画全体の終端では別の再生元を作らず、追っかけの終了状態を保つ**（⑫）。原本 fixture も 12 秒に制限し、
-  真の終端 offset が要求されないことを見る。実メディア（12 秒）は壁時計の録画時間（15 秒）より 1.5 秒を超えて
-  短くしてある。**終端の許容を 5 秒から 1.5 秒へ戻す変異で `sameVideo:false`・原本 HLS 要求 3 件になって落ちる**
-  （Chromium で確認）
-- **一時停止したまま終端へシークして `ended` になっても、移った先は再生しない**（⑪b）。
-  Chromium は一時停止中のシークで `ended` を発火しないので、この判定は Chromium では何も保証しない
-  （`endedFired:false` を記録するだけ）。WebKit は発火して原本 HLS へ移る。**常に再生中として引き継ぐ変異
-  （`wasPlaying || true`）で、WebKit が `paused:false` になって落ちる**（WebKit で確認）。
-  次のポスター判定は⑬
+- **追っかけの終端（`ended`）では、別の再生元を作らず終了状態のまま止まる**（⑪・⑫）。追っかけの
+  `ENDLIST` は mirakc の録画が終わった後にだけ付くので、終端は常に録画ファイルの終端である
+  （`docs/api/media.md`）。fixture は伸びる EVENT playlist を 6 segment（12 秒）で止め、そこへ
+  `ENDLIST` を付ける。壁時計の録画時間は 20 秒、原本 HLS fixture は 20 秒以上ある。⑪ は完了の取得の後に、
+  ⑫ は前に `ENDLIST` を付ける。**main の実装（壁時計の終端の 1.5 秒手前より前なら移る）で ⑪ が
+  `sameVideo:false`・原本 HLS 要求 2 件になって落ちる**。**前回の実装（5 秒の許容と、完了の取得を待つ保留）
+  では ⑪ と ⑫ の両方が同じ形で落ちる**（以上 Chromium で確認）。終端の 1 秒後の `ended` は判定に使わない。
+  Playwright の WebKit は `ended` の約 0.9 秒後に `durationchange` だけを出して `currentTime` を 0 に戻すことがある
+  （11 回の実行の 22 判定中 4 回。`seeking` / `loadstart` / `emptied` は出ない）。次のポスター判定は⑬
 
 `E2E_BROWSER=webkit` で同じ判定を Safari 相当のネイティブ HLS 経路で回す。
 画質切替の位置の持ち越しは hls.js（`startPosition`）とネイティブ（要素への代入）で
@@ -342,8 +333,8 @@ WebKit の HLS は 0.00ms / +23.37ms（-10.02 / +13.34）だった。
 Chromium と WebKit で確認する。再生を引き継がない変異は、⑩ と同じ
 `playing && false` である。**切替後が `paused:true`・停止 10077ms・`advances=0` になって落ちる**（Chromium で確認）。
 
-切替の停止時間（上限 2000ms）の実測は、Chromium で ⑩ 93ms・⑪ 133ms・⑥ 100ms、
-WebKit で ⑩ 270ms・⑪ 185ms・⑥ 306ms だった（1 回ずつの測定）。
+切替の停止時間（上限 2000ms）の実測は、Chromium で ⑩ 88〜177ms（3 回）・⑥ 165ms（1 回）、
+WebKit で ⑩ 202〜281ms（11 回）・⑥ 299ms（1 回）だった。
 
 ```sh
 E2E_URL=http://localhost:4173 E2E_BROWSER=chromium pnpm e2e:recording-original-vod

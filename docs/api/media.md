@@ -573,8 +573,13 @@ HLS シークで補正できる。許容誤差は放送・エンコーダーご�
 として保証しない。
 
 追っかけの ffmpeg は通常ライブの「直近だけを残す」HLS と異なり、`EVENT` playlist、
-`hls_list_size=0`、`temp_file` を使い、`delete_segments` を使わない。mirakc の入力が
-EOF になれば `ENDLIST` を出し、ffmpeg が**正常終了した場合**は idle GC が回収するまで
+`hls_list_size=0`、`temp_file` を使い、`delete_segments` を使わない。ffmpeg の入力は
+mirakc が録画の終了（状態が `recording` でない）を返した後にだけ EOF にする。先頭からの
+追従配信は mirakc 側の無入力タイムアウトで録画中にも閉じうる（実際に閉じる頻度は未検証）。
+閉じた後は読んだバイトの続きから Range で追う
+（`TestFollowChaseRecordContinuesWithRangeAfterFollowCloses`）。したがって追っかけの `ENDLIST` は、
+offset の有無によらず録画ファイルの終端まで変換したことを表す。入力が EOF になれば `ENDLIST` を出し、
+ffmpeg が**正常終了した場合**は idle GC が回収するまで
 playlist と全セグメントを保持する。これにより、録画完了直後にブラウザが最後の playlist /
 segment を取りに来る窓を失わない。保持中は全プロファイルのプレイリストが残るので、
 終了後でも再起動なしに `?profile=` を切り替えられる
