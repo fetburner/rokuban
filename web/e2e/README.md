@@ -280,7 +280,7 @@ playlist を Chromium の hls.js（`E2E_BROWSER=webkit` ならネイティブ HL
   `sameVideo:false`・原本 HLS 要求 2 件になって落ちる**。**前回の実装（5 秒の許容と、完了の取得を待つ保留）
   では ⑪ と ⑫ の両方が同じ形で落ちる**（以上 Chromium で確認）。終端の 1 秒後の `ended` は判定に使わない。
   Playwright の WebKit は `ended` の約 0.9 秒後に `durationchange` だけを出して `currentTime` を 0 に戻すことがある
-  （12 回の実行の 24 判定中 4 回。`seeking` / `loadstart` / `emptied` は出ない）。次のポスター判定は⑬
+  （13 回の実行の 26 判定中 4 回。`seeking` / `loadstart` / `emptied` は出ない）。次のポスター判定は⑬
 
 `E2E_BROWSER=webkit` で同じ判定を Safari 相当のネイティブ HLS 経路で回す。
 画質切替の位置の持ち越しは hls.js（`startPosition`）とネイティブ（要素への代入）で
@@ -333,8 +333,8 @@ WebKit の HLS は 0.00ms / +23.37ms（-10.02 / +13.34）だった。
 Chromium と WebKit で確認する。再生を引き継がない変異は、⑩ と同じ
 `playing && false` である。**切替後が `paused:true`・停止 10077ms・`advances=0` になって落ちる**（Chromium で確認）。
 
-切替の停止時間（上限 2000ms）の実測は、Chromium で ⑩ 88〜177ms（4 回）・⑥ 113〜165ms（2 回）、
-WebKit で ⑩ 202〜281ms（12 回）・⑥ 299〜310ms（2 回）だった。
+切替の停止時間（上限 2000ms）の実測は、Chromium で ⑩ 88〜177ms（5 回）・⑥ 113〜165ms（3 回）、
+WebKit で ⑩ 202〜281ms（13 回）・⑥ 241〜310ms（3 回）だった。
 
 ```sh
 E2E_URL=http://localhost:4173 E2E_BROWSER=chromium pnpm e2e:recording-original-vod
