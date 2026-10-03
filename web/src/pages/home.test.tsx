@@ -342,8 +342,9 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
     renderHome('/?mode=watch')
 
     expect(await screen.findByRole('heading', { name: '続きの番組' })).toBeInTheDocument()
-    expect(screen.getByTestId('home-primary-action')).toHaveTextContent('続きから再生')
-    expect(screen.getByTestId('home-primary-action')).toHaveAttribute('href', '/recordings/31')
+    const primaryAction = await screen.findByTestId('home-primary-action')
+    expect(primaryAction).toHaveTextContent('続きから再生')
+    expect(primaryAction).toHaveAttribute('href', '/recordings/31')
     const beginning = screen.getByRole('link', { name: '最初から' })
     expect(beginning.getAttribute('href')).toContain('fromBeginning=true')
     expect(screen.queryByText(/再生元/)).not.toBeInTheDocument()
@@ -352,6 +353,9 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
     expect(screen.getByText(/\(.\) \d\d:\d\d · NHK総合 · 14:40 \/ /)).toBeInTheDocument()
     expect(screen.getByTestId('home-hero-station')).toHaveTextContent('NHK総合')
     expect(screen.getByTestId('home-hero-progress-line')).toBeInTheDocument()
+    expect(
+      within(screen.getByRole('region', { name: '次に見る 1 本' })).queryByRole('progressbar'),
+    ).not.toBeInTheDocument()
     // 「ほかの新着」のサムネイルには重ねない
     expect(screen.getAllByTestId('home-hero-station')).toHaveLength(1)
   })
