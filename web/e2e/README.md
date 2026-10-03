@@ -325,10 +325,10 @@ playlist の先頭 6 segment から始まり、待ち時間中に1秒ごとに s
 始まり、2 秒ごとに配信済み segment が増える。固定 VOD playlist ではなく変換中の EVENT を使い、
 再生可能範囲の端で止まる挙動も測る。
 
-⑦ が失敗したときは `paused`・`currentTime`・`readyState`・`seekable`・`buffered`・メディア
-エラー、クリック後に呼ばれた `play()` の成否、要求した playlist / segment と HTTP 応答をログに
-出す。再生中の操作バーは 3 秒で隠れ `aria-hidden` / `inert` になるため、手動でバーの操作を
-調べるときは枠の上でマウスを動かして表示を待つ。
+⑦ が失敗した場合は `paused`・`currentTime`・`readyState`・`seekable`・`buffered` とメディアエラーを記録する。
+クリック後の `play()` の成否、playlist / segment の要求と HTTP 応答も記録する。
+再生中の操作バーは 3 秒で隠れ `aria-hidden` / `inert` になる。手動でバーの操作を調べるときは、
+枠の上でマウスを動かして表示を待つ。
 
 ```sh
 E2E_URL=http://localhost:4173 pnpm e2e:recording-original-vod
