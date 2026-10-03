@@ -7,8 +7,8 @@ Screenshots were captured by `web/e2e/design.mjs` in light mode on 2026-10-03:
 - `live-2560x1440.png`: 2560×1440 viewport with the long channel-list fixture.
 - `live-360x844.png`: 360×844 mobile viewport.
 
-The screenshots show the selection preview so the capture does not depend on a real
-stream. The #1022 rough shows active playback, its settings menu, and auto-downgrade
-notice; those media-state details differ, while the player frame and surrounding
-layout are what this comparison measures. The local fixture has four sample channels,
-so the 1180px screenshot shows fewer rows than the rough.
+The screenshots show the selection preview, so capture does not depend on a real stream.
+The #1022 rough shows active playback, its settings menu, and an auto-downgrade notice.
+Those media-state details differ from the screenshots here.
+This comparison measures the player frame and surrounding layout.
+The local fixture has four sample channels, while the rough shows eight.
