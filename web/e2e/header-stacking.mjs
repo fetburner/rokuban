@@ -43,6 +43,7 @@ const reservations = Array.from({ length: 24 }, (_, i) => {
     durationMs: HOUR / 2,
     createdAt: iso(baseMs),
     updatedAt: iso(baseMs),
+    series: null,
     skip: false,
   }
 })
@@ -142,6 +143,11 @@ for (const width of [400, 1280]) {
     ng.push(`① ${width}px: サーキットブレーカー帯が表示されない`)
   })
 
+  // 予約行は isolate で z-10 を閉じ込めており、そのままでは PageHeader が z-10 でも
+  // 通ってしまう（空虚な成功）。行の isolate を外し、行内 z-10 と素で競合させて測る。
+  await page.evaluate(() => {
+    for (const li of document.querySelectorAll('li.isolate')) li.classList.remove('isolate')
+  })
   const setup = await page.evaluate(() => {
     const header = Array.from(document.querySelectorAll('header')).find(
       (el) => el.querySelector('h1')?.textContent?.trim() === '予約',
@@ -183,11 +189,20 @@ for (const width of [400, 1280]) {
         bannerBottom: document.querySelector('[role="alert"]')?.getBoundingClientRect().bottom ?? null,
         bannerHeight: document.querySelector('[role="alert"]')?.getBoundingClientRect().height ?? 0,
         hitBadge: Boolean(badge && hit && badge.contains(hit)),
+        badgeLeft: badgeBox?.left ?? null,
+        badgeRight: badgeBox?.right ?? null,
       }
     }, { x: setup.x, y: setup.targetY })
     log(`  point=(${Math.round(setup.x)},${Math.round(setup.targetY)}) scrollY=${Math.round(result.scrollY)} banner=${result.bannerTop}..${result.bannerBottom} (${result.bannerHeight}px) hit=${result.hitTag} header=${result.headerTop}..${result.headerBottom} z=${result.headerZ} badge=${result.badgeTop}..${result.badgeBottom} z=${result.badgeZ} hitHeader=${result.hitHeader} hitBadge=${result.hitBadge}`)
     if (result.scrollY <= 0 || result.headerTop === null || result.badgeTop === null) {
       ng.push(`① ${width}px: スクロールまたは重なり判定の前提が成立しない`)
+    } else if (
+      setup.targetY < result.badgeTop ||
+      setup.targetY > result.badgeBottom ||
+      setup.x < result.badgeLeft ||
+      setup.x > result.badgeRight
+    ) {
+      ng.push(`① ${width}px: 前提が成立しない（判定点がスクロール後のバッジ矩形に入っていない）`)
     } else if (
       result.bannerHeight <= 0 ||
       result.bannerTop === null ||
@@ -197,11 +212,7 @@ for (const width of [400, 1280]) {
       ng.push(`① ${width}px: サーキットブレーカー帯が表示されない`)
     } else if (result.headerTop < result.bannerBottom - 1) {
       ng.push(`① ${width}px: PageHeader がサーキットブレーカー帯に重なる`)
-    } else if (
-      !result.hitHeader ||
-      result.hitBadge ||
-      Number(result.headerZ) <= Number(result.badgeZ)
-    ) {
+    } else if (!result.hitHeader || result.hitBadge) {
       ng.push(
         `① ${width}px: ヘッダーが行内リンクより前面でない（hit=${result.hitTag}, z=${result.headerZ}/${result.badgeZ}）`,
       )
@@ -213,10 +224,13 @@ for (const width of [400, 1280]) {
 for (const width of [400, 1280]) {
   const { context, page } = await openPage(width)
   log(`\n=== ② ${width}px: 録画一覧をスクロールして header と導線を確認 ===`)
+  const capabilities = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/capabilities')
   await page.goto(URL_BASE + '/recordings', { waitUntil: 'domcontentloaded' })
+  await capabilities
   const lastRow = page.getByText('一覧スクロール確認 24', { exact: true })
   await lastRow.waitFor({ timeout: 15000 })
   await lastRow.scrollIntoViewIfNeeded()
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
   const result = await page.evaluate(() => {
     const header = Array.from(document.querySelectorAll('header')).find(
       (el) => el.querySelector('h1')?.textContent?.trim() === '録画',
