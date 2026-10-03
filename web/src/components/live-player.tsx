@@ -760,14 +760,16 @@ export function LivePlayer({
     }
     // 同じ録画の中で張り直した（セッション外へのシーク・画質の切替・416 の丸め）ときは再生を
     // 引き継ぐ。`load()` は pause を発火しないので、引き継がないときは操作バーの状態を戻す。
-    // 別の録画へ替わったときは勝手に再生を始めない。
+    // 別の録画へ替わったときは勝手に再生を始めない。ライブ（`recordingId` を持たない）から
+    // 追っかけへ替えたとき（ライブページの「最初から」・軸のシーク）は同じ番組なので引き継ぐ
+    // （`live.mjs` の「frame c)」。引き継がないと 0:00 で止まったままになる）。
     // 自動再生の指定は最初のセッションにだけ効く。張り直し前に消費しても、再開待ちの
     // `resumePlaybackPendingRef` が次のセッションへ持ち越す（下の `preservedState`）。
     const autoPlayNow = isRecordingPlayback && autoPlayPendingRef.current
     autoPlayPendingRef.current = false
     const resumePlaying =
       (preserved?.playing === true &&
-        (!isRecordingPlayback || preserved.recordingId === recordingId)) ||
+        (!isRecordingPlayback || preserved.recordingId === undefined || preserved.recordingId === recordingId)) ||
       autoPlayNow
     resumePlaybackPendingRef.current = resumePlaying
     // oxlint-disable-next-line react/set-state-in-effect -- load() で止めた要素と操作バーの同期

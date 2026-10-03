@@ -947,39 +947,44 @@ async function runIssue1022Acceptance(engine = 'chromium') {
         ng.push('#1022 番組の軸がプレイヤー操作バーの中にない')
       }
     }
-    // 見た目で判定する（testid や要素の種類に依らない）。操作バーの外で、細く（高さ 6px 以下）幅があり
-    // （40px 以上）背景が透明でなく、幅が割合の背景付きの子を持つ要素は「進み具合の線」。
+    // 見た目で判定する（testid や要素の種類に依らない）。プレイヤーの外で、細く（高さ 6px 以下）幅があり
+    // （40px 以上）塗られている要素は「進み具合の線」。溝 + 割合幅の塗りでも、塗りだけの 1 本の線でも拾う。
+    // 子の形（割合幅の塗りを持つか）は条件にしない --- それだと子の無い 1 本の線を見逃す。
+    // 除外は `<hr>` / 罫線だけの区切り（border で描き背景を塗らない）で、それらは背景を見ないので自然に外れる。
     const externalProgressCount = () => page.evaluate(() => {
       const painted = (element) => {
         const style = getComputedStyle(element)
         return style.backgroundColor !== 'rgba(0, 0, 0, 0)' || style.backgroundImage !== 'none'
       }
       const semantic = document.querySelectorAll('main progress, main [role="progressbar"]').length
-      const visual = [...document.querySelectorAll('main *')].filter((element) => {
-        if (element.closest('[data-testid="player-controls"]')) return false
+      const lines = [...document.querySelectorAll('main *')].filter((element) => {
+        if (element.closest('[data-testid="recording-player-frame"]')) return false
         const box = element.getBoundingClientRect()
-        if (box.height <= 0 || box.height > 6 || box.width < 40 || !painted(element)) return false
-        return [...element.children].some((child) => {
-          const childBox = child.getBoundingClientRect()
-          return childBox.width > 0 && childBox.width < box.width - 1 && childBox.height > 0 && painted(child)
-        })
-      }).length
+        return box.height > 0 && box.height <= 6 && box.width >= 40 && painted(element)
+      })
+      // 溝と塗りの組は 1 本の線として数える（入れ子の線は外側だけ）。
+      const visual = lines.filter((element) => !lines.some((other) => other !== element && other.contains(element))).length
       return semantic + visual
     })
     const outsideTimeline = await externalProgressCount()
-    if (outsideTimeline > 0) ng.push('#1022 プレイヤー外に番組の進み具合の線（見た目で判定）がある')
-    // 変異: チャンネル行に普通の進み具合バー（細い灰色の溝 + 半分の白い塗り）を差し込む。
-    await page.evaluate(() => {
-      const track = document.createElement('span')
-      track.style.cssText = 'display:block;height:4px;width:96px;background:rgb(150,150,150)'
-      const fill = document.createElement('span')
-      fill.style.cssText = 'display:block;height:100%;width:50%;background:rgb(20,20,20)'
-      track.append(fill)
-      document.querySelector('nav[aria-label="チャンネル一覧"] a span.min-w-0')?.append(track)
-      window.__issue1022ExternalProgressMutation = track
-    })
-    if (await externalProgressCount() !== 1) ng.push('#1022 チャンネル行の普通の進み具合バーを E2E 判定が検出しない')
-    await page.evaluate(() => window.__issue1022ExternalProgressMutation?.remove())
+    if (outsideTimeline > 0) ng.push(`#1022 プレイヤー外に番組の進み具合の線（見た目で判定）がある (${outsideTimeline})`)
+    // 変異 1: チャンネル行に普通の進み具合バー（細い灰色の溝 + 半分の塗り）を差し込む。
+    // 変異 2: チャンネル行に子の無い 1 本の線（割合幅の塗りだけ）を差し込む。
+    for (const [name, html] of [
+      ['溝 + 塗り', '<span style="display:block;height:4px;width:96px;background:rgb(150,150,150)"><span style="display:block;height:100%;width:50%;background:rgb(20,20,20)"></span></span>'],
+      ['1 本の線', '<span class="block h-0.5 bg-tally" style="width:45%"></span>'],
+    ]) {
+      await page.evaluate((markup) => {
+        const holder = document.createElement('span')
+        holder.style.cssText = 'display:block;width:200px'
+        holder.innerHTML = markup
+        document.querySelector('nav[aria-label="チャンネル一覧"] a span.min-w-0')?.append(holder)
+        window.__issue1022ExternalProgressMutation = holder
+      }, html)
+      const count = await externalProgressCount()
+      if (count !== 1) ng.push(`#1022 チャンネル行の進み具合の線（${name}）を E2E 判定が検出しない (${count})`)
+      await page.evaluate(() => window.__issue1022ExternalProgressMutation?.remove())
+    }
     const liveEdgeMark = page.getByTestId('live-program-live-edge')
     if (await liveEdgeMark.count() !== 1 || !(await liveEdgeMark.isVisible().catch(() => false))) {
       ng.push('#1022 番組の時間軸にライブ位置の赤い印が無い')
@@ -1072,7 +1077,14 @@ async function runIssue1022Acceptance(engine = 'chromium') {
         if ((await edge.getAttribute('aria-label')) !== 'ライブへ戻る' || !/ライブ/.test((await edge.getAttribute('title')) ?? '')) {
           ng.push(`#1022 ライブページの追っかけで先端の印の名前が「ライブへ戻る」でない (${await edge.getAttribute('aria-label')})`)
         }
-        if (await page.getByTestId('chase-source-label').count() > 0) ng.push('#1022 ライブページの追っかけに「録画から再生中」が出る')
+        // 「ライブ」の印は「録画から再生中」に替わる（文言で見る。testid に依らない）。
+        const controls = page.getByTestId('player-controls')
+        if (!(await controls.getByText('録画から再生中').isVisible().catch(() => false))) {
+          ng.push('#1022 ライブページの追っかけで「ライブ」の印が「録画から再生中」に替わらない')
+        }
+        if (await controls.getByText('ライブ', { exact: true }).count() + await controls.getByText('● ライブ', { exact: true }).count() > 0) {
+          ng.push('#1022 ライブページの追っかけに「ライブ」の印が残る')
+        }
         const livePlaylistBefore = requestLog.filter((request) =>
           request.url.includes('/networks/1/services/9001/live/playlist.m3u8'),
         ).length
@@ -1088,7 +1100,7 @@ async function runIssue1022Acceptance(engine = 'chromium') {
         if (!(await page.getByTestId('live-source-label').isVisible().catch(() => false))) {
           ng.push('#1022 ライブ先端を押しても UI がライブ再生へ戻らない')
         }
-        if (await page.getByTestId('chase-source-label').count() > 0) ng.push('#1022 ライブ先端へ戻った後も chase 表示が残る')
+        if (await page.getByTestId('player-controls').getByText('録画から再生中').count() > 0) ng.push('#1022 ライブ先端へ戻った後も「録画から再生中」が残る')
 
         const timelineBox = await timeline.boundingBox()
         if (!timelineBox) ng.push('#1022 再生位置指定用のライブ軸が取得できない')
@@ -1283,14 +1295,33 @@ async function runIssue1022FrameChecks(engine = 'chromium') {
     }
     const service = { id: 109001, networkId: 1, serviceId: 9001, name: '放送局 A', channelType: 'GR', channel: '1', remoteControlKeyId: 1, hasLogoData: false, hasPrograms: true }
     const json = (body) => (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
-    const open = async (contextOptions) => {
+    // recorded: いまの番組を録画中にする（録画は番組開始の 3 分前から）。追っかけの playlist も同じ実映像を返す。
+    const open = async (contextOptions, { recorded = false } = {}) => {
       const context = await browser.newContext(contextOptions)
       const page = await context.newPage()
       await page.route('**/api/capabilities', json({ live: true, cmDetect: false }))
       await page.route('**/api/live-profiles', json(E2E_LIVE_PROFILES))
       await page.route('**/api/sites', json(['default']))
       await page.route('**/api/sites/*/services', json([service]))
-      await page.route('**/api/sites/*/programs*', json([program]))
+      await page.route('**/api/sites/*/programs*', json([recorded ? { ...program, recordingId: 501 } : program]))
+      if (recorded) {
+        await page.route('**/api/recordings/501', json({
+          id: 501, site: 'default', startAt: program.startAt,
+          startedAt: new Date(Date.parse(program.startAt) - 180_000).toISOString(),
+          durationMs: program.durationMs, status: 'recording',
+        }))
+        await page.route('**/recordings/501/chase/**', (route) => {
+          const url = new URL(route.request().url())
+          if (url.pathname.endsWith('/leave')) return route.fulfill({ status: 204, body: '' })
+          if (url.pathname.endsWith('.m3u8')) {
+            return route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body: readFileSync(PLAYLIST_PATH) })
+          }
+          const file = path.join(SEGMENTS_DIR, url.pathname.split('/').pop())
+          return existsSync(file)
+            ? route.fulfill({ status: 200, contentType: 'video/mp2t', body: readFileSync(file) })
+            : route.fulfill({ status: 404, body: '' })
+        })
+      }
       await page.route('**/api/sites/*/tuners', json([]))
       await page.route('**/api/reservations', json([]))
       await page.route('**/live/leave', (route) => route.fulfill({ status: 204, body: '' }))
@@ -1336,6 +1367,44 @@ async function runIssue1022FrameChecks(engine = 'chromium') {
       const idle = await sample(page)
       log(`  #1022 frame a) マウス操作後 4.5 秒: ${JSON.stringify(idle)}`)
       if (idle.opacity !== '0') ng.push(`#1022 マウスで再生・歯車を押してポインタを外しても 4.5 秒後にバーが隠れない (${JSON.stringify(idle)})`)
+      await context.close()
+    }
+
+    // c) 再生中のライブから「最初から」・軸のシークで追っかけへ替えても、再生が続く（0:00 で止まらない）。
+    //    追っかけ → ライブも続く。判定は「止まっていない」かつ「新しいセッションで位置が進んだ」。
+    const chase = await open({ viewport: { width: 1280, height: 900 }, locale: 'ja-JP' }, { recorded: true }).catch((err) => {
+      ng.push(`#1022 フレーム c) 録画中の番組で実再生を始められない: ${err.message}`)
+      return null
+    })
+    if (chase) {
+      const { page, context } = chase
+      const controls = page.getByTestId('player-controls')
+      const expectPlaying = async (label) => {
+        const ok = await page.waitForFunction(() => {
+          const v = document.querySelector('video')
+          return Boolean(v) && !v.paused && v.currentTime > 0.3
+        }, undefined, { timeout: 6000 }).then(() => true, () => false)
+        const state = await page.evaluate(() => {
+          const v = document.querySelector('video')
+          return { paused: v.paused, t: Number(v.currentTime.toFixed(1)), rs: v.readyState }
+        })
+        log(`  #1022 frame c) ${label}: ${JSON.stringify(state)}`)
+        if (!ok) ng.push(`#1022 ${label}に再生が続かない (${JSON.stringify(state)})`)
+      }
+      const show = () => page.getByTestId('recording-player-frame').hover()
+      await show()
+      await controls.getByRole('button', { name: '最初から' }).click()
+      await page.getByTestId('chase-live-edge').waitFor({ timeout: 10000 })
+      await expectPlaying('「最初から」で追っかけへ替えた後')
+      await show()
+      await page.getByTestId('chase-live-edge').click()
+      await page.getByTestId('live-program-timeline').waitFor({ timeout: 10000 })
+      await expectPlaying('先端の印でライブへ戻った後')
+      await show()
+      const axis = await page.getByTestId('live-program-timeline').boundingBox()
+      await page.mouse.click(axis.x + axis.width * 0.25, axis.y + axis.height / 2)
+      await page.getByTestId('chase-live-edge').waitFor({ timeout: 10000 })
+      await expectPlaying('軸のシークで追っかけへ替えた後')
       await context.close()
     }
 

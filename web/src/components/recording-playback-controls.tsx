@@ -872,8 +872,9 @@ export function RecordingPlaybackControls({
                   {liveDiagnostics}
                 </span>
               )}
-              {chaseTimeline && !chaseReturnsToLive && (
-                <span data-testid="chase-source-label" className="shrink-0 px-1 text-[10px] font-medium text-white md:text-xs">
+              {/* ライブページの追っかけでは「ライブ」の印をこれに替える。録画詳細の追っかけには出さない。 */}
+              {chaseTimeline && chaseReturnsToLive && (
+                <span data-testid="chase-source-label" className="shrink-0 rounded bg-white/15 px-2 py-1 text-[10px] font-medium text-white md:text-xs">
                   ● 録画から再生中
                 </span>
               )}
