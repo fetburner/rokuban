@@ -40,6 +40,7 @@ function shelf(
     title,
     count,
     playableCount,
+    unwatchedCount: 0,
     latestStartAt,
     representativeId,
   }

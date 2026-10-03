@@ -3535,7 +3535,7 @@ components:
 
     RecordingShelf:
       type: object
-      required: [title, count, playableCount, latestStartAt, representativeId]
+      required: [title, count, playableCount, unwatchedCount, latestStartAt, representativeId]
       properties:
         value:
           type: string
@@ -3552,6 +3552,11 @@ components:
         playableCount:
           type: integer
           description: この棚のうち、再生できる録画の件数。
+        unwatchedCount:
+          type: integer
+          description: |
+            未視聴の放送イベント数。再生できる生きた録画を (networkId, serviceId, startAt) で束ねて数え、
+            ごみ箱・supersede 済み・purge 済みを含むいずれかの録画に視聴済み印があれば除外する。
         latestStartAt:
           type: string
           format: date-time
@@ -3718,6 +3723,7 @@ components:
         - createdAt
         - updatedAt
         - skip
+        - series
       properties:
         site:
           description: |
@@ -3782,6 +3788,15 @@ components:
             true の間 reconciler は mirakc に同期しないが、予約行自体は
             「なぜ録られていないか」を説明するため残る。
           type: boolean
+        series:
+          type: string
+          nullable: true
+          # 必須かつ nullable な文字列は、ポインタにしないと JSON の null ではなく空文字列で出る（oapi-codegen v2.8.0 は x-go-type が無いと string を出す）。
+          x-go-type: "*string"
+          description: |
+            予約に対応する EPG 番組の実効シリーズ。EPG 行が無い、または実効シリーズを
+            導出できないとき null。予約評価と録画棚は更新契機が異なるため棚の集計は結合せず、
+            UI はこの値を GET /api/recording-shelves の value と突き合わせる。
         dedupMatchRecordingId:
           description: 履歴ベース重複排除でマッチした録画の ID（マッチが無ければ省略）
           type: integer

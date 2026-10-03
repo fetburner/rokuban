@@ -44,6 +44,7 @@ function reservation({ id, day, hour, title, state = 'active', source = 'manual'
     durationMs: 60 * 60_000,
     createdAt: STAMP,
     updatedAt: STAMP,
+    series: null,
     skip: false,
   }
 }

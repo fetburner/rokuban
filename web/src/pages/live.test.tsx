@@ -57,6 +57,7 @@ function reservation(overrides: Partial<Reservation> = {}): Reservation {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     skip: false,
+    series: null,
     ...overrides,
   }
 }

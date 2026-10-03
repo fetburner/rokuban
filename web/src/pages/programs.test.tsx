@@ -182,6 +182,7 @@ function reservation(
     createdAt: new Date(origin).toISOString(),
     updatedAt: new Date(origin).toISOString(),
     skip: false,
+    series: null,
     ...overrides,
   }
 }

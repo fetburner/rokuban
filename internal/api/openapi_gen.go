@@ -1965,6 +1965,10 @@ type RecordingShelf struct {
 	// Title 代表の録画の生のタイトル（シリーズ名の下の副見出しに使う）。
 	Title string `json:"title"`
 
+	// UnwatchedCount 未視聴の放送イベント数。再生できる生きた録画を (networkId, serviceId, startAt) で束ねて数え、
+	// ごみ箱・supersede 済み・purge 済みを含むいずれかの録画に視聴済み印があれば除外する。
+	UnwatchedCount int `json:"unwatchedCount"`
+
 	// Value 棚のキー（画面のシリーズ名）。null は実効シリーズを導出できなかった録画
 	// （番組ハブを開けないので UI は表示しない）。
 	Value *string `json:"value,omitempty"`
@@ -1985,6 +1989,11 @@ type Reservation struct {
 	Overrides       *map[string]interface{} `json:"overrides,omitempty"`
 	ProgramId       int64                   `json:"programId"`
 	RuleId          *int64                  `json:"ruleId,omitempty"`
+
+	// Series 予約に対応する EPG 番組の実効シリーズ。EPG 行が無い、または実効シリーズを
+	// 導出できないとき null。予約評価と録画棚は更新契機が異なるため棚の集計は結合せず、
+	// UI はこの値を GET /api/recording-shelves の value と突き合わせる。
+	Series *string `json:"series"`
 
 	// ServiceName 番組スナップショット（program_snapshots.service_name）由来のチャンネル
 	// 表示名。同じタイトルが日付・局違いで並ぶと区別できないため（issue #302）、
