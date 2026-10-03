@@ -8,7 +8,7 @@
  * 「oxlint の既存 warning 3 件を増やさない」に抵触する）。
  */
 
-import type { Rule, RuleTextMatch, RuleTimeWindow } from '@/api/generated'
+import type { Rule, RuleTextMatch } from '@/api/generated'
 import { formatDate, formatDuration } from '@/lib/format'
 import { allWeekdays, genreCodeLabel, hasWeekday, secToTimeValue, weekdayLabels } from '@/lib/program-search'
 
