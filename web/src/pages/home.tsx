@@ -954,18 +954,6 @@ function WatchHero({ choice }: { choice: HomeHeroChoice }) {
           {resumePosition !== undefined &&
             ` · ${formatPlaybackPosition(resumePosition)} / ${formatPlaybackPosition(recording.durationMs)}`}
         </p>
-        {progress !== undefined && (
-          <div
-            className="h-1 overflow-hidden rounded-sm bg-muted"
-            role="progressbar"
-            aria-label="再生位置"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={Math.round(progress)}
-          >
-            <div className="h-full bg-foreground" style={{ width: `${progress}%` }} />
-          </div>
-        )}
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <Link
             {...detail}
