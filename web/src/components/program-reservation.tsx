@@ -346,8 +346,12 @@ export function ProgramReservationDetails({
   })
   const d = unwrap(detail.data)
   const description = summaryDescription ?? d?.description
+  // 予約詳細（hideWhenNotFound）は予約本体が主役で、5xx だけが一時的なサーバー側の失敗を
+  // 示す。それ以外は利用者に取れる手がなく、隠しても困らない。番組一覧・番組表の展開
+  // パネルは番組情報そのものが目的なので、どのエラーでも出す。
   const isServerError =
     detail.error instanceof ApiError && detail.error.status >= 500 && detail.error.status < 600
+  const showError = hideWhenNotFound ? isServerError : detail.isError
 
   // EPG は予約より先に番組情報を消すことがある。予約自体は有効な画面資源なので
   // 呼び出し元が予約詳細を表示している場合だけ、番組情報 404 のサブ領域を隠す。
@@ -356,7 +360,7 @@ export function ProgramReservationDetails({
   }
 
   return (
-    <div className="flex flex-col gap-2 text-xs">
+    <div className={hideWhenNotFound ? 'mt-3 flex flex-col gap-2 text-xs' : 'flex flex-col gap-2 text-xs'}>
       {description && (
         <p className="whitespace-pre-wrap text-muted-foreground">{description}</p>
       )}
@@ -366,7 +370,7 @@ export function ProgramReservationDetails({
           詳細を読み込み中…
         </p>
       )}
-      {isServerError && <p className="text-destructive">番組情報の取得に失敗しました</p>}
+      {showError && <p className="text-destructive">番組情報の取得に失敗しました</p>}
 
       {d?.extended && Object.keys(d.extended).length > 0 && (
         <dl className="flex flex-col gap-1">

@@ -345,14 +345,15 @@ describe('ReservationDetailPage', () => {
       () => errorResponse(503, 'epg unavailable'),
     )
 
-    renderAt('/reservations/default/300000')
+    // retry（3 回）は残し、待ち時間だけ 0 にする。
+    renderAt(
+      '/reservations/default/300000',
+      new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } }),
+    )
 
-    // 5xx は予約詳細の retry（1s/2s/4s）を使い切ってから文言が出る。
-    expect(
-      await screen.findByText('番組情報の取得に失敗しました', undefined, { timeout: 12_000 }),
-    ).toBeInTheDocument()
+    expect(await screen.findByText('番組情報の取得に失敗しました')).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'テスト番組' })).toBeInTheDocument()
-  }, 20_000)
+  })
 
   it('番組情報の 5xx 以外のエラーでは 5xx 用の文言を出さない', async () => {
     stubFetch(
