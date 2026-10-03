@@ -135,8 +135,7 @@ export function ReservationsPage() {
                 <>
                   <button
                     type="button"
-                    aria-pressed
-                    aria-label="ルールの絞り込みを解除"
+                    aria-label={`ルール「${ruleLabel(search.ruleId)}」の絞り込みを解除`}
                     onClick={() => selectSearch({ ruleId: undefined })}
                     className="flex min-h-7 max-w-full shrink-0 items-center rounded-full border border-primary px-3 py-1.5 text-xs text-foreground transition-colors outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
                   >
@@ -222,7 +221,7 @@ function ReservationRow({
   // accessible name を明示する。採否は行を一意に識別できる情報（タイトル・局・
   // 日時・尺・state）だけにする。毎日放送の番組は時刻だけでは同名の行が並ぶ。
   // 見た目の行は日付見出しの下にあるので日付を省くが、名前には日付を残す。
-  // 出自や容量バッジの文言は混ぜない、出自や容量バッジの文言は混ぜない（issue #302）。
+  // 出自や容量バッジの文言は混ぜない。
   const rowLabel = [
     programTitle(reservation.title),
     reservation.serviceName,
@@ -315,7 +314,7 @@ function dateHeading(iso: string): string {
   return `${prefix}${formatDate(iso)}`
 }
 
-/** rulesWithReservationCounts counts every associated reservation before either page filter. */
+/** rulesWithReservationCounts は、どの絞り込みより前の全予約でルールごとの件数を数える。 */
 function rulesWithReservationCounts(
   reservations: Reservation[],
   ruleLabel: (ruleId: number) => string,
@@ -331,7 +330,7 @@ function rulesWithReservationCounts(
     .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'ja') || a.id - b.id)
 }
 
-/** ReservationOrigin keeps the separate rule edit target above the full-row link. */
+/** ReservationOrigin は、ルールの編集先リンクを行全面リンクより手前に置く。 */
 function ReservationOrigin({
   reservation,
   ruleLabel,

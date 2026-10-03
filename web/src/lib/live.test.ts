@@ -453,14 +453,25 @@ describe('live program axis and boundaries', () => {
     expect(liveProgramAxis('', end, startMs)).toBeNull()
   })
 
-  it('keeps the last EPG schedule visible as an overrun until a later schedule starts', () => {
+  it('keeps the last EPG schedule visible as an overrun while the EPG has no later schedule', () => {
     const currentProgram = { startAt: start, endAt: '2026-10-02T10:45:00.000Z', name: '予定中' }
     const futureProgram = { startAt: '2026-10-02T11:15:00.000Z', endAt: '2026-10-02T11:45:00.000Z', name: '次番組' }
     expect(scheduledProgramAt([currentProgram, futureProgram], Date.parse('2026-10-02T10:20:00.000Z')))
       .toEqual({ program: currentProgram, overrun: false })
-    expect(scheduledProgramAt([currentProgram, futureProgram], Date.parse('2026-10-02T10:48:00.000Z')))
+    expect(scheduledProgramAt([currentProgram], Date.parse('2026-10-02T10:48:00.000Z')))
       .toEqual({ program: currentProgram, overrun: true })
     expect(scheduledProgramAt([], Date.parse('2026-10-02T10:48:00.000Z'))).toBeNull()
+  })
+
+  it('does not treat a broadcast gap or a long-finished programme as an overrun', () => {
+    const finished = { startAt: start, endAt: '2026-10-02T10:45:00.000Z', name: '終了済み' }
+    const later = { startAt: '2026-10-02T14:00:00.000Z', endAt: '2026-10-02T14:30:00.000Z', name: '数時間後' }
+    // 予定終了の後に始まる番組がある = 空き時間。延長ではない。
+    expect(scheduledProgramAt([finished, later], Date.parse('2026-10-02T10:48:00.000Z'))).toBeNull()
+    // 後続が無くても、予定終了から 1 時間を超えたら番組情報なし。
+    expect(scheduledProgramAt([finished], Date.parse('2026-10-02T11:45:01.000Z'))).toBeNull()
+    expect(scheduledProgramAt([finished], Date.parse('2026-10-02T11:44:59.000Z')))
+      .toEqual({ program: finished, overrun: true })
   })
 
   it('refreshes at a known programme boundary or the short-window expiry during a gap', () => {

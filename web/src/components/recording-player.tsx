@@ -200,6 +200,7 @@ export function RecordingPlayer({
   const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
   const videoRef = useRef<HTMLVideoElement>(null)
   const fullscreenRef = useRef<HTMLDivElement>(null)
+  const [editorSelected, setEditorSelected] = useState<number | null>(null)
   const localChapterEditorCommandsRef = useRef<ChapterEditorCommands | null>(null)
   const resolvedChapterEditorCommandsRef = chapterEditorCommandsRef ?? localChapterEditorCommandsRef
   const isScrubbingRef = useRef(false)
@@ -211,7 +212,8 @@ export function RecordingPlayer({
   // 終端カードを出している録画の id。録画を切り替えても作り直さないので、id と組で持って
   // 切り替えた瞬間に前の録画のカードを描かない（`played` と同じ規律）。
   const [endCardFor, setEndCardFor] = useState<number | null>(null)
-  const endCardOpen = endCardFor === recordingId
+  // 編集中は終端カードも次の回への自動遷移も止める（自動スキップと同じ。前後 3 秒の再生で終端に届きうる）。
+  const endCardOpen = endCardFor === recordingId && !chapterEditing
   const [countdownSeconds, setCountdownSeconds] = useState(AUTO_ADVANCE_SECONDS)
   // 終端カードから移った先の録画 id。移った先は再生を始める（カードの文言どおり）。
   const autoplayRecordingRef = useRef<number | null>(autoPlay ? recordingId : null)
@@ -724,7 +726,7 @@ export function RecordingPlayer({
     }
   }
 
-  const renderPlaybackControls = (selectedBoundary: number | null) => (
+  const playbackControls = (
       <RecordingPlaybackControls
         recordingId={recordingId}
         profile={selectedProfile}
@@ -744,7 +746,7 @@ export function RecordingPlayer({
           onSaveChapters !== undefined && onResetChapters !== undefined
         }
         onEnterChapterEditing={onEnterChapterEditing}
-        onPlayAround={selectedBoundary === null ? undefined : () => playAround(selectedBoundary)}
+        onPlayAround={editorSelected === null ? undefined : () => playAround(editorSelected)}
         tilePreview={shownPreview}
         tilesRequested={tilesRequestedFor === recordingId}
         tilesAvailable={tilesAvailableFor === recordingId}
@@ -863,6 +865,7 @@ export function RecordingPlayer({
               saveCurrentPosition(e.currentTarget)
             }}
             onEnded={(e) => {
+              if (chapterEditing) return
               if (onRecordingPlaybackEnded?.(originalPositionSeconds(e.currentTarget)) === true) return
               setCountdownSeconds(AUTO_ADVANCE_SECONDS)
               setEndCardFor(recordingId)
@@ -897,43 +900,50 @@ export function RecordingPlayer({
       />
   )
 
-  if (
+  const editorOpen =
     chapterEditing && !playingCut && chapterVersion !== undefined &&
     onSaveChapters !== undefined && onResetChapters !== undefined
-  ) {
-    return (
-      <section className={cn('min-w-0', className)} aria-label="チャプターを直す">
-        <RecordingChapterEditor
-          key={recordingId}
-          spans={chapters ?? []}
-          version={chapterVersion}
-          detectionPending={false}
-          source={chapterSource}
-          recordingId={recordingId}
-          currentSeconds={currentSeconds}
-          durationSeconds={durationSeconds}
-          tilesAvailable={tilesAvailableFor === recordingId}
-          onTileImageLoad={() => setTilesAvailableFor(recordingId)}
-          onTileImageError={() => {
-            setTilesAvailableFor((current) => (current === recordingId ? null : current))
-            setTilePreview(null)
-          }}
-          playAround={playAround}
-          jumpTo={jumpTo}
-          renderPlayer={renderPlaybackControls}
-          onSave={onSaveChapters}
-          onReset={async () => await onResetChapters()}
-          pending={chapterSavePending}
-          commandsRef={resolvedChapterEditorCommandsRef}
-          onStatusChange={chapterEditorStatusChange}
-        />
-      </section>
-    )
-  }
 
+  // **`playbackControls`（`<video>` を含む）は編集の出入りで同じ木の位置に置く。** 編集用に別の木へ
+  // 描き直すと `<video>` が作り直され、再生位置が 0 に戻って止まる。編集の部品は兄弟として足すだけ。
   return (
-    <section className={cn('flex flex-col gap-2', className)} aria-label="再生">
-      {renderPlaybackControls(null)}
+    <section className={cn(editorOpen ? 'min-w-0' : 'flex flex-col gap-2', className)} aria-label={editorOpen ? 'チャプターを直す' : '再生'}>
+      <div
+        data-testid={editorOpen ? 'chapter-edit-layout' : undefined}
+        className={editorOpen
+          ? 'grid h-[calc(100dvh-var(--page-header-height,72px)-var(--sticky-banners-height,0px)-var(--bottom-nav-height,0px)-1rem)] min-h-0 grid-cols-1 grid-rows-[auto_auto_minmax(0,1fr)] gap-3 overflow-hidden md:h-auto md:grid-cols-[minmax(0,1.65fr)_minmax(20rem,0.9fr)] md:grid-rows-[auto_auto] md:overflow-visible'
+          : 'contents'}
+      >
+        <div data-testid={editorOpen ? 'chapter-edit-player' : undefined} className={editorOpen ? 'min-w-0 md:col-start-1 md:row-start-1' : 'contents'}>
+          {playbackControls}
+        </div>
+        {editorOpen && (
+          <RecordingChapterEditor
+            key={recordingId}
+            spans={chapters ?? []}
+            version={chapterVersion}
+            detectionPending={false}
+            source={chapterSource}
+            recordingId={recordingId}
+            currentSeconds={currentSeconds}
+            durationSeconds={durationSeconds}
+            tilesAvailable={tilesAvailableFor === recordingId}
+            onTileImageLoad={() => setTilesAvailableFor(recordingId)}
+            onTileImageError={() => {
+              setTilesAvailableFor((current) => (current === recordingId ? null : current))
+              setTilePreview(null)
+            }}
+            playAround={playAround}
+            jumpTo={jumpTo}
+            onSelectedBoundaryChange={setEditorSelected}
+            onSave={onSaveChapters}
+            onReset={async () => await onResetChapters()}
+            pending={chapterSavePending}
+            commandsRef={resolvedChapterEditorCommandsRef}
+            onStatusChange={chapterEditorStatusChange}
+          />
+        )}
+      </div>
       {playingCut && selectedAsset?.cutStale === true && (
         <div className="flex flex-wrap items-center gap-2 rounded border border-warning/50 bg-warning/10 px-3 py-2">
           <p className="text-warning">

@@ -575,8 +575,14 @@ export function RecordingDetail({
     <div
       data-testid="recording-detail-body"
       className={cn(
+        // 18rem は 16:9 の映像の上下に置くものの高さの見積もり（上: ページ見出し、
+        // 下: チャプター要約・タイトル・説明の先頭二行）。本文全体を映像の上限幅に揃えて中央に置く。
+        // recording-detail-layout.mjs が実測する。編集モードは映像の横に区間一覧を置くので、
+        // 映像が全幅を占める前提の上限は掛けない（chapters.mjs が測る）。
         'w-full text-sm',
-        !trash && recording.series != null && 'grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_18rem]',
+        !chapterEditing && 'mx-auto max-w-[calc((100dvh-18rem)*16/9)]',
+        !trash && 'flex flex-col gap-8',
+        !trash && recording.series != null && 'lg:grid lg:grid-cols-[minmax(0,1fr)_18rem]',
       )}
     >
       {!trash && (

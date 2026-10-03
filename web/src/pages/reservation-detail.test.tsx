@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Reservation, Rule } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
@@ -152,7 +152,19 @@ function stubFetch(
   return fetchMock
 }
 
-function renderAt(path: string, queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
+// テストが作った QueryClient。終了時に clear() して、retry タイマーなどが teardown 後に
+// 発火して `window is not defined` を起こすのを防ぐ安全網にする。
+const clients: QueryClient[] = []
+
+afterEach(() => {
+  for (const c of clients.splice(0)) c.clear()
+})
+
+function renderAt(
+  path: string,
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
+  clients.push(queryClient)
   window.scrollTo = vi.fn()
   const router = createRouter({
     routeTree,
@@ -325,7 +337,13 @@ describe('ReservationDetailPage', () => {
       () => errorResponse(404, 'program not found'),
     )
 
-    renderAt('/reservations/default/300000', new QueryClient())
+    // retry は既定（3 回）のまま待ち時間だけ 0 にする。404 の retry 除外を外すと
+    // 番組 GET が 4 回になって落ちる。capabilities などスタブ外のクエリも即座に
+    // retry を使い切るので、テスト終了後にタイマーが残らない。
+    renderAt(
+      '/reservations/default/300000',
+      new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } }),
+    )
 
     await screen.findByRole('heading', { name: 'テスト番組' })
     await waitFor(() => expect(screen.queryByText('詳細を読み込み中…')).not.toBeInTheDocument())
@@ -345,14 +363,15 @@ describe('ReservationDetailPage', () => {
       () => errorResponse(503, 'epg unavailable'),
     )
 
-    renderAt('/reservations/default/300000')
+    // retry（3 回）は残し、待ち時間だけ 0 にする。
+    renderAt(
+      '/reservations/default/300000',
+      new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } }),
+    )
 
-    // 5xx は予約詳細の retry（1s/2s/4s）を使い切ってから文言が出る。
-    expect(
-      await screen.findByText('番組情報の取得に失敗しました', undefined, { timeout: 12_000 }),
-    ).toBeInTheDocument()
+    expect(await screen.findByText('番組情報の取得に失敗しました')).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'テスト番組' })).toBeInTheDocument()
-  }, 20_000)
+  })
 
   it('番組情報の 5xx 以外のエラーでは 5xx 用の文言を出さない', async () => {
     stubFetch(

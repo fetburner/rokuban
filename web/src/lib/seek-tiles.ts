@@ -31,6 +31,14 @@ export type SeekTileRect = {
   y: number
 }
 
+/** seekTileCell は再生位置に対応するタイルの格子上の列と行を返す。範囲外は null。 */
+export function seekTileCell(seconds: number): { column: number; row: number } | null {
+  if (!Number.isFinite(seconds) || seconds < 0) return null
+  const index = Math.floor(seconds / SEEK_TILES_INTERVAL_SECONDS)
+  if (index >= SEEK_TILES_MAX_TILES) return null
+  return { column: index % SEEK_TILES_COLUMNS, row: Math.floor(index / SEEK_TILES_COLUMNS) }
+}
+
 /** seekTilesURL は streamer のタイル配信 URL を組み立てる（OpenAPI 外）。 */
 export function seekTilesURL(recordingId: number): string {
   return `/api/media/recordings/${recordingId}/seek-tiles`

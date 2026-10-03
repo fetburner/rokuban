@@ -498,6 +498,7 @@ export function LivePlayer({
   const [chaseHoverSeconds, setChaseHoverSeconds] = useState<number | null>(null)
   const isChaseScrubbingRef = useRef(false)
   const isLiveProgramScrubbingRef = useRef(false)
+  const [liveHoverSeconds, setLiveHoverSeconds] = useState<number | null>(null)
   // ドラッグ中に最後に見せた位置。離したときはこれを確定する（延長中は軸が毎秒伸びるので、
   // 同じ座標を離した時点で計算し直すと見せた時刻と 1 秒ずれる。chase.mjs ⑤ で実測）。
   const chaseScrubTargetRef = useRef<number | null>(null)
@@ -759,14 +760,16 @@ export function LivePlayer({
     }
     // 同じ録画の中で張り直した（セッション外へのシーク・画質の切替・416 の丸め）ときは再生を
     // 引き継ぐ。`load()` は pause を発火しないので、引き継がないときは操作バーの状態を戻す。
-    // 別の録画へ替わったときは勝手に再生を始めない。
+    // 別の録画へ替わったときは勝手に再生を始めない。ライブ（`recordingId` を持たない）から
+    // 追っかけへ替えたとき（ライブページの「最初から」・軸のシーク）は同じ番組なので引き継ぐ
+    // （`live.mjs` の「frame c)」。引き継がないと 0:00 で止まったままになる）。
     // 自動再生の指定は最初のセッションにだけ効く。張り直し前に消費しても、再開待ちの
     // `resumePlaybackPendingRef` が次のセッションへ持ち越す（下の `preservedState`）。
     const autoPlayNow = isRecordingPlayback && autoPlayPendingRef.current
     autoPlayPendingRef.current = false
     const resumePlaying =
       (preserved?.playing === true &&
-        (!isRecordingPlayback || preserved.recordingId === recordingId)) ||
+        (!isRecordingPlayback || preserved.recordingId === undefined || preserved.recordingId === recordingId)) ||
       autoPlayNow
     resumePlaybackPendingRef.current = resumePlaying
     // oxlint-disable-next-line react/set-state-in-effect -- load() で止めた要素と操作バーの同期
@@ -1472,9 +1475,9 @@ export function LivePlayer({
         canSeek: liveRecordingAccess.canSeek,
         canStartOver: liveRecordingAccess.canStartOver,
         ariaValueText: `${formatPlaybackTime(liveProgramEdgeSeconds, false)} / ${formatPlaybackTime(liveProgramDurationSeconds, false)}（番組表上の予定）`,
-        startLabel: formatTime(liveProgram.startAt),
-        endLabel: `${formatTime(liveProgram.endAt)}（予定）`,
-        liveTimeLabel: formatTime(new Date(liveProgram.nowMs).toISOString()),
+        startClock: formatTime(liveProgram.startAt),
+        endClock: formatTime(liveProgram.endAt),
+        hoverSeconds: liveHoverSeconds,
       }
     : undefined
   const updateOriginalPosition = (video: HTMLVideoElement) => {
@@ -1583,20 +1586,11 @@ export function LivePlayer({
       liveTimelineBar.liveEdgeSeconds,
     )
   const showLiveProgramPreview = (event: ReactPointerEvent<HTMLDivElement>, seconds: number | null) => {
-    if (event.pointerType !== 'mouse' || !isSelectableLiveProgramPoint(seconds)) {
-      setOriginalPreviewSeconds(null)
-      setOriginalTilePreview(null)
-      return
-    }
-    const rect = event.currentTarget.getBoundingClientRect()
-    const left = Math.max(0, Math.min(rect.width, event.clientX - rect.left))
-    setOriginalPreviewSeconds(seconds)
-    setOriginalTilePreview({ x: 0, y: 0, left, scale: 1, seconds })
+    setLiveHoverSeconds(event.pointerType === 'mouse' && isSelectableLiveProgramPoint(seconds) ? seconds : null)
   }
   const commitLiveProgramSeek = (seconds: number) => {
     if (!isSelectableLiveProgramPoint(seconds)) return
-    setOriginalPreviewSeconds(null)
-    setOriginalTilePreview(null)
+    setLiveHoverSeconds(null)
     onLiveProgramSeek?.(seconds)
   }
   const handleLiveProgramSeekPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -1620,8 +1614,7 @@ export function LivePlayer({
     }
     if (isSelectableLiveProgramPoint(seconds)) commitLiveProgramSeek(seconds)
     else {
-      setOriginalPreviewSeconds(null)
-      setOriginalTilePreview(null)
+      setLiveHoverSeconds(null)
     }
   }
   const handleLiveProgramSeekPointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -1629,13 +1622,11 @@ export function LivePlayer({
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
       event.currentTarget.releasePointerCapture?.(event.pointerId)
     }
-    setOriginalPreviewSeconds(null)
-    setOriginalTilePreview(null)
+    setLiveHoverSeconds(null)
   }
   const handleLiveProgramSeekPointerLeave = () => {
     if (!isLiveProgramScrubbingRef.current) {
-      setOriginalPreviewSeconds(null)
-      setOriginalTilePreview(null)
+      setLiveHoverSeconds(null)
     }
   }
   const originalSeekTargetAtPointer = (event: ReactPointerEvent<HTMLDivElement>): number | null => {
@@ -1744,14 +1735,14 @@ export function LivePlayer({
       controls={false}
       playsInline
       aria-label={isRecordingPlayback ? (isChase ? '追っかけ映像' : '録画映像') : undefined}
-      {...(isRecordingPlayback ? frame.video : {})}
+      {...frame.video}
       className={cn(
         'absolute inset-0 size-full rounded object-contain',
         (loading || error) && 'invisible',
       )}
       onLoadedMetadata={(event) => {
         if (isOriginalVOD) updateOriginalPosition(event.currentTarget)
-        if (isRecordingPlayback) frame.onVolumeChange(event.currentTarget)
+        frame.onVolumeChange(event.currentTarget)
         if (!isRecordingPlayback || recordingId === undefined || !restorePending.current) return
         restorePending.current = false
         event.currentTarget.currentTime = serverResumePosition ?? 0
@@ -1803,18 +1794,12 @@ export function LivePlayer({
       onPlaying={() => {
         playedRef.current = true
       }}
-      onPlay={() => {
-        if (isRecordingPlayback) frame.onPlay()
-      }}
+      onPlay={() => frame.onPlay()}
       onPause={(event) => {
-        if (isRecordingPlayback) {
-          saveCurrentPosition(event.currentTarget)
-          frame.onPause()
-        }
+        if (isRecordingPlayback) saveCurrentPosition(event.currentTarget)
+        frame.onPause()
       }}
-      onVolumeChange={(event) => {
-        if (isRecordingPlayback) frame.onVolumeChange(event.currentTarget)
-      }}
+      onVolumeChange={(event) => frame.onVolumeChange(event.currentTarget)}
       onEnded={(event) => {
         if (
           isRecordingPlayback &&
@@ -1887,6 +1872,7 @@ export function LivePlayer({
         playbackMode={isLive ? 'live' : isChase ? 'chase' : 'original-vod'}
         className={className}
         chaseTimeline={chaseTimelineBar}
+        chaseReturnsToLive={isChase && onReturnLive !== undefined}
         liveTimeline={liveTimelineBar}
         liveDiagnostics={isLive ? liveDiagnostics : undefined}
         liveNotice={isLive ? liveNotice : undefined}
@@ -1944,12 +1930,7 @@ export function LivePlayer({
         deferKeyboardSeek
         onSeekPreview={(seconds) => {
           if (isLive) {
-            if (isSelectableLiveProgramPoint(seconds)) {
-              setOriginalPreviewSeconds(seconds)
-              setOriginalTilePreview(null)
-            } else {
-              setOriginalPreviewSeconds(null)
-            }
+            setLiveHoverSeconds(isSelectableLiveProgramPoint(seconds) ? seconds : null)
           } else if (isChase) setChasePreviewSeconds(seconds)
           else {
             setOriginalPreviewSeconds(seconds)

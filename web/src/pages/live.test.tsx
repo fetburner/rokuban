@@ -153,6 +153,8 @@ let releaseLiveProfiles: (() => void) | null = null
 function stubFetch(options: {
   services?: Service[]
   programsByServiceId?: Record<number, ProgramListItem[]>
+  /** チャンネル一覧の行用の全局取得（service 絞り込みなし）にも番組を返す。 */
+  allSitePrograms?: boolean
   /** サーバーの `live.enabled`（`GET /api/capabilities`）。既定は有効。 */
   live?: boolean
   /** 能力 API のステータス。200 以外なら「有効か無効か分からない」状態になる。 */
@@ -188,6 +190,7 @@ function stubFetch(options: {
   const {
     services = [],
     programsByServiceId = {},
+    allSitePrograms = false,
     live = true,
     capabilitiesStatus = 200,
     reservations = [],
@@ -277,11 +280,14 @@ function stubFetch(options: {
       // ここでも同じ規則で絞る --- serviceId だけで拾うと、同じ id を持つ
       // 別 network の番組が混ざるフィクスチャ（issue #291）で実物と食い違う。
       const ids = url.searchParams.getAll('service').map(Number)
-      const list = ids.flatMap((id) =>
-        (programsByServiceId[id % 100_000] ?? []).filter(
-          (p) => p.networkId === Math.floor(id / 100_000),
-        ),
-      )
+      // 絞り込みなし（チャンネル一覧の行用の全局取得）は allSitePrograms のときだけ全件を返す。
+      const list = ids.length === 0 && allSitePrograms
+        ? Object.values(programsByServiceId).flat()
+        : ids.flatMap((id) =>
+            (programsByServiceId[id % 100_000] ?? []).filter(
+              (p) => p.networkId === Math.floor(id / 100_000),
+            ),
+          )
       return Promise.resolve(new Response(JSON.stringify(list), { status: 200 }))
     }
     return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }))
@@ -823,6 +829,20 @@ describe('LivePage', () => {
     const badge = within(link).getByText('3')
     expect(badge.className).toContain('text-foreground')
     expect(badge.className).not.toContain('text-muted-foreground')
+  })
+
+  it('チャンネル一覧の「● 録画中」は tally トークンの色（生の色値を使わない）', async () => {
+    stubFetch({
+      services: [service({ serviceId: 1, name: 'チャンネル A' })],
+      programsByServiceId: { 1: [program({ serviceId: 1, name: '放送中の番組', recordingId: 7 })] },
+      allSitePrograms: true,
+    })
+    renderLive()
+
+    const link = await screen.findByRole('link', { name: /チャンネル A/ })
+    const mark = await within(link).findByText('● 録画中')
+    expect(mark.className.split(' ')).toContain('text-tally')
+    expect(mark.className).not.toMatch(/text-\[#/)
   })
 
   it('チャンネル一覧の別チャンネルを押すと選択が切り替わる', async () => {

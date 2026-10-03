@@ -222,6 +222,8 @@ function countRequests(page, pattern) {
 
 async function selectLiveAudio(page, choice) {
   const label = choice === 'main' ? '主音声' : choice === 'sub' ? '副音声' : '標準'
+  // 再生中に操作しないとバーが隠れる（usePlayerFrame）。ポインタを映像に載せて出してから押す。
+  await page.getByTestId('recording-player-frame').hover()
   await page.getByRole('button', { name: 'ライブ設定' }).click()
   await page.getByRole('menuitem', { name: '音声', exact: true }).click()
   await page.getByRole('menuitemradio', { name: label, exact: true }).click()

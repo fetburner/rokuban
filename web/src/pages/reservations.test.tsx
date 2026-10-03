@@ -645,7 +645,7 @@ describe('予約一覧の日付見出し・出自・ルールフィルタ（issu
     expect(screen.getByText('ルール7の有効予約')).toBeInTheDocument()
     expect(screen.getByText('手動だがルール7に一致')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'ルールの絞り込みを解除' }))
+    await user.click(screen.getByRole('button', { name: 'ルール「Drama (#7)」の絞り込みを解除' }))
     await waitFor(() => expect(router.state.location.search).toEqual({}))
     await user.click(screen.getByRole('button', { name: 'ルールで絞り込む' }))
     expect((await screen.findAllByRole('menuitem')).map((item) => item.textContent)).toEqual([
@@ -665,7 +665,7 @@ describe('予約一覧の日付見出し・出自・ルールフィルタ（issu
     )
 
     expect(await screen.findByText('このルールの予約はありません')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'ルールの絞り込みを解除' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'ルール「#99」の絞り込みを解除' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'ルールの条件を直す' })).toHaveAttribute(
       'href',
       '/search?ruleId=99',

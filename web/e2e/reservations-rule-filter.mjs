@@ -362,7 +362,7 @@ async function checkRuleMenu(width, theme) {
   const ruleItem = menu.getByRole('menuitem').filter({ hasText: '深夜アニメ' }).first()
   await ruleItem.click()
   await page.waitForURL(/\/reservations\?ruleId=8/)
-  if (await page.getByRole('button', { name: 'ルールの絞り込みを解除' }).count() !== 1) {
+  if (await page.getByRole('button', { name: /ルール「深夜アニメ.*」の絞り込みを解除/ }).count() !== 1) {
     ng.push(`${width}px/${theme}: 選択したルールの chip が表示されない`)
   }
   const editLink = page.getByRole('link', { name: 'ルールの条件を直す' })
@@ -376,7 +376,7 @@ async function checkRuleMenu(width, theme) {
   }
   await screenshot(page, `${width}-rule-filter-${theme}.png`, false)
 
-  await page.getByRole('button', { name: 'ルールの絞り込みを解除' }).click()
+  await page.getByRole('button', { name: /ルール「.*」の絞り込みを解除/ }).click()
   await page.waitForURL((url) => {
     const search = new URL(url).searchParams
     return !search.has('ruleId') && !search.has('only')

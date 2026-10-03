@@ -29,6 +29,10 @@ afterEach(() => {
 })
 
 describe('カット版と原本の位置変換', () => {
+  it('keep 区間が空なら原本の 0 を返す', () => {
+    expect(cutMsToOriginalMs(5000, [])).toBe(0)
+  })
+
   it('Go と共有するベクタで原本→カット、カット→原本を検証する', () => {
     for (const vector of vectors.originalToCut) {
       expect(originalMsToCutMs(vector.fromMs, vectors.ranges)).toBe(vector.toMs)
@@ -97,6 +101,26 @@ describe('再生状態 API', () => {
       ['/api/recordings/8/playback-position', expect.objectContaining({ method: 'DELETE' })],
       ['/api/recordings/9/watched', expect.objectContaining({ method: 'PUT' })],
     ])
+  })
+
+  it('先行の位置 PUT が settle するまで watched を送らない', async () => {
+    let release!: (r: Response) => void
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { release = resolve }))
+      .mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const put = persistPlaybackPosition(7, { kind: 'put', positionMs: 12_000 })
+    const watched = persistPlaybackPosition(7, { kind: 'watched' })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    release(new Response(null, { status: 204 }))
+    await expect(put).resolves.toBe(true)
+    await expect(watched).resolves.toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[1]![0]).toBe('/api/recordings/7/watched')
   })
 })
 

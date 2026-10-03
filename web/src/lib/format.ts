@@ -63,6 +63,18 @@ export function formatPlaybackTime(value: number, withHours = true): string {
   return negative ? `-${formatted}` : formatted
 }
 
+/**
+ * formatPlaybackTimeMs は経過秒をミリ秒つきの 1:23.456 形式で返す（フレーム単位の調整が見える桁）。
+ * ミリ秒に丸めてから分解するので、59.9996 は 1:00.000 になる。
+ */
+export function formatPlaybackTimeMs(value: number): string {
+  if (!Number.isFinite(value)) return '0:00.000'
+  const totalMs = Math.round(Math.abs(value) * 1000)
+  const ms = totalMs % 1000
+  const base = formatPlaybackTime(Math.sign(value) * Math.floor(totalMs / 1000))
+  return `${base}.${String(ms).padStart(3, '0')}`
+}
+
 /** dayKey は日付ヘッダのグルーピングに使うローカル日付のキーを返す。 */
 export function dayKey(iso: string): string {
   const d = new Date(iso)

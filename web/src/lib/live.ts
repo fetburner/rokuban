@@ -536,24 +536,29 @@ export function remainingProgramMinutes(endAt: string, nowMs: number): number | 
   return Math.max(0, Math.ceil((endMs - nowMs) / 60_000))
 }
 
+/** 番組表の予定終了を過ぎても「延長中」と見なす最長の時間。これを超えたら番組情報なしにする。 */
+export const PROGRAM_OVERRUN_LIMIT_MS = 60 * 60_000
+
+/**
+ * scheduledProgramAt は nowMs に放送中の番組を返す。予定どおりの番組が無いときだけ、直前の番組の
+ * 延長（overrun）と見なす。ただし予定終了の後に始まる番組が番組表にあれば、いまは放送の空き時間で
+ * 延長ではないので null。延長は予定終了から {@link PROGRAM_OVERRUN_LIMIT_MS} までで、超えたら null。
+ */
 export function scheduledProgramAt<T extends { startAt: string; endAt: string }>(
   programs: readonly T[],
   nowMs: number,
 ): { program: T; overrun: boolean } | null {
-  const current = programs.find((program) => {
-    const start = Date.parse(program.startAt)
-    const end = Date.parse(program.endAt)
-    return Number.isFinite(start) && Number.isFinite(end) && start <= nowMs && nowMs < end
-  })
-  if (current) return { program: current, overrun: false }
-  const lastScheduled = programs
-    .filter((program) => {
-      const start = Date.parse(program.startAt)
-      const end = Date.parse(program.endAt)
-      return Number.isFinite(start) && Number.isFinite(end) && start <= nowMs && end <= nowMs
-    })
-    .sort((a, b) => Date.parse(b.endAt) - Date.parse(a.endAt))[0]
-  return lastScheduled ? { program: lastScheduled, overrun: true } : null
+  const spans = programs
+    .map((program) => ({ program, start: Date.parse(program.startAt), end: Date.parse(program.endAt) }))
+    .filter(({ start, end }) => Number.isFinite(start) && Number.isFinite(end))
+  const current = spans.find(({ start, end }) => start <= nowMs && nowMs < end)
+  if (current) return { program: current.program, overrun: false }
+  const last = spans
+    .filter(({ start, end }) => start <= nowMs && end <= nowMs)
+    .sort((a, b) => b.end - a.end)[0]
+  if (!last || nowMs - last.end > PROGRAM_OVERRUN_LIMIT_MS) return null
+  if (spans.some(({ start }) => start >= last.end)) return null
+  return { program: last.program, overrun: true }
 }
 
 export type LiveProgramAxis = {

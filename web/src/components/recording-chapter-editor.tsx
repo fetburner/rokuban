@@ -1,12 +1,10 @@
-import { useCallback, useEffect, useMemo, useState, type MutableRefObject, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type MutableRefObject } from 'react'
 
 import type { ChapterSpan, RecordingChaptersSource } from '@/api/generated'
 import { Button } from '@/components/ui/button'
 import { RecordingChapterFilmstrip } from '@/components/recording-chapter-filmstrip'
-import {
-  chapterBoundaries,
-  formatChaptersTime,
-} from '@/lib/chapters'
+import { chapterBoundaries } from '@/lib/chapters'
+import { formatPlaybackTime } from '@/lib/format'
 
 export type ChapterEditorCommands = {
   save: () => Promise<boolean>
@@ -37,7 +35,8 @@ type RecordingChapterEditorProps = {
   onTileImageError: () => void
   playAround: (seconds: number) => void
   jumpTo: (seconds: number) => void
-  renderPlayer: (selectedBoundary: number | null) => ReactNode
+  /** 選んでいる境界（既定は再生位置に最も近い境界）。映像側の「前後 3 秒を再生」が使う。 */
+  onSelectedBoundaryChange: (seconds: number | null) => void
   /** 保存は成功で resolve、失敗で reject。 */
   onSave: (spans: ChapterSpan[], version: string) => Promise<unknown>
   onReset: () => Promise<unknown>
@@ -75,7 +74,7 @@ function ChapterDraftEditor({
   onTileImageError,
   playAround,
   jumpTo,
-  renderPlayer,
+  onSelectedBoundaryChange,
   onSave,
   onReset,
   pending,
@@ -120,6 +119,31 @@ function ChapterDraftEditor({
     onStatusChange({ source, dirty, stale })
   }, [dirty, onStatusChange, source, stale])
 
+  useEffect(() => {
+    onSelectedBoundaryChange(selectedBoundary)
+  }, [onSelectedBoundaryChange, selectedBoundary])
+
+  // ← → は編集画面のどこにフォーカスがあっても前後の境界へ移る（入力欄・シークバー・メニューを除く）。
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || boundaries.length === 0) return
+      const target = event.target
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable || target.closest('input, textarea, select, [role="slider"], [role="menu"], [role="dialog"]'))
+      ) {
+        return
+      }
+      event.preventDefault()
+      const index = selectedBoundary === null ? -1 : boundaries.indexOf(selectedBoundary)
+      const next = event.key === 'ArrowRight' ? index + 1 : (index < 0 ? 0 : index - 1)
+      setSelectedBoundaryValue(boundaries[Math.max(0, Math.min(boundaries.length - 1, next))])
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [boundaries, selectedBoundary])
+
   const save = useCallback(async () => {
     if (!dirty || stale || pending) return false
     try {
@@ -160,14 +184,7 @@ function ChapterDraftEditor({
   }
 
   return (
-    <div
-      data-testid="chapter-edit-layout"
-      className="grid h-[calc(100dvh-var(--page-header-height,72px)-2.625rem)] min-h-0 grid-cols-1 grid-rows-[auto_auto_minmax(0,1fr)] gap-3 overflow-hidden md:grid-cols-[minmax(0,1.65fr)_minmax(20rem,0.9fr)] md:grid-rows-[minmax(0,1fr)_auto]"
-    >
-      <div data-testid="chapter-edit-player" className="min-w-0 md:col-start-1 md:row-start-1">
-        {renderPlayer(selectedBoundary)}
-      </div>
-
+    <>
       <div className="min-w-0 md:col-span-2 md:row-start-2">
         <RecordingChapterFilmstrip
           recordingId={recordingId}
@@ -185,10 +202,12 @@ function ChapterDraftEditor({
         />
       </div>
 
+      {/* 右の列は高さを映像の行に任せ（絶対配置）、一覧だけがスクロールする。 */}
+      <div className="relative min-h-0 min-w-0 md:col-start-2 md:row-start-1">
       <section
         data-testid="chapter-span-list"
         aria-label="区間の一覧"
-        className="min-h-0 min-w-0 overflow-y-auto overscroll-contain rounded-md border border-border/70 p-2 md:col-start-2 md:row-start-1"
+        className="h-full overflow-y-auto overscroll-contain rounded-md border border-border/70 p-2 md:absolute md:inset-0 md:h-auto"
       >
         <p className="sr-only" data-testid="chapter-source">
           {source === 'user' ? '確認済み' : '自動検出（未確認）'}{dirty ? '・未保存の変更があります' : ''}
@@ -222,7 +241,7 @@ function ChapterDraftEditor({
                   <button
                     type="button"
                     className="col-span-2 flex min-h-8 items-center text-left font-mono text-sm text-muted-foreground"
-                    aria-label={`${formatChaptersTime(span.startMs / 1000)} から ${formatChaptersTime(span.endMs / 1000)} の境界を選ぶ`}
+                    aria-label={`${formatPlaybackTime(span.startMs / 1000)} から ${formatPlaybackTime(span.endMs / 1000)} の境界を選ぶ`}
                     onClick={() => {
                       const start = span.startMs / 1000
                       const end = span.endMs / 1000
@@ -231,7 +250,7 @@ function ChapterDraftEditor({
                       jumpTo(boundary)
                     }}
                   >
-                    {formatChaptersTime(span.startMs / 1000)} – {formatChaptersTime(span.endMs / 1000)}
+                    {formatPlaybackTime(span.startMs / 1000)} – {formatPlaybackTime(span.endMs / 1000)}
                   </button>
                   <input
                     type="text"
@@ -273,21 +292,25 @@ function ChapterDraftEditor({
 
         <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
           {pendingStartMs === null ? (
-            <Button type="button" size="sm" variant="outline" onClick={startNewSpan}>
-              ここから区間を足す
-            </Button>
+            <>
+              <Button type="button" size="sm" variant="outline" onClick={startNewSpan}>
+                ここから区間を足す
+              </Button>
+              <span className="text-xs text-muted-foreground">再生位置から始まる区間を作ります</span>
+            </>
           ) : (
             <>
               <Button type="button" size="sm" variant="outline" disabled={currentMs <= pendingStartMs} onClick={closeNewSpan}>
                 ここまで
               </Button>
-              <span className="text-xs text-muted-foreground">{formatChaptersTime(pendingStartMs / 1000)} から</span>
+              <span className="text-xs text-muted-foreground">{formatPlaybackTime(pendingStartMs / 1000)} から</span>
               <Button type="button" size="sm" variant="ghost" onClick={() => setPendingStartMs(null)}>取り消し</Button>
             </>
           )}
         </div>
       </section>
-    </div>
+      </div>
+    </>
   )
 }
 

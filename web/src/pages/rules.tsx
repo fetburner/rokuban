@@ -27,6 +27,7 @@ import {
   type EncodeSettingsValue,
 } from '@/components/encode-settings-fields'
 import { LabelRuleForm } from '@/components/label-rule-form'
+import { suggestRuleName } from '@/components/rule-name-suggestion'
 import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
 import { summarizeRuleConditions } from '@/components/rule-condition-summary'
 import { useToast } from '@/components/toaster'
@@ -56,6 +57,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { useAllSitesServices } from '@/lib/all-sites-services'
 import { keepOriginalLabel, type KeepOriginal } from '@/lib/encode-settings'
 import {
   buildRuleInput,
@@ -685,9 +687,18 @@ function RuleForm({ onCancel, onSaved }: { onCancel: () => void; onSaved: () => 
   const toast = useToast()
   const queryClient = useQueryClient()
   const createRule = useCreateRule()
+  const { services } = useAllSitesServices()
 
   const [draft, setDraft] = useState<SearchDraft>(emptyDraft)
   const [meta, setMeta] = useState<RuleMetaDraft>(emptyRuleMeta)
+  const [nameTouched, setNameTouched] = useState(false)
+
+  const suggestedName = suggestRuleName(draft, (ref) =>
+    services.find(
+      (service) => service.networkId === ref.networkId && service.serviceId === ref.serviceId,
+    )?.name,
+  )
+  const effectiveMeta = { ...meta, name: nameTouched ? meta.name : suggestedName }
 
   const encodeValue: EncodeSettingsValue = {
     keepOriginal: meta.keepOriginal,
@@ -696,7 +707,7 @@ function RuleForm({ onCancel, onSaved }: { onCancel: () => void; onSaved: () => 
   const onEncodeChange = (next: EncodeSettingsValue) =>
     setMeta((m) => ({ ...m, keepOriginal: next.keepOriginal, encodeProfiles: next.encodeProfiles }))
 
-  const formError = draftError(draft) ?? ruleMetaError(meta)
+  const formError = draftError(draft) ?? ruleMetaError(effectiveMeta)
   const pending = createRule.isPending
   const [matchAllConfirmOpen, setMatchAllConfirmOpen] = useState(false)
 
@@ -719,7 +730,7 @@ function RuleForm({ onCancel, onSaved }: { onCancel: () => void; onSaved: () => 
   // 複数フィールド分書き込む操作で、予約のワンタップや削除のワンタップとは
   // 重みが違う --- 誤タップで即座に取り消したくなる操作ではない。
   const doSave = () => {
-    const data = buildRuleInput(draft, meta)
+    const data = buildRuleInput(draft, effectiveMeta)
     createRule.mutate(
       { data },
       {
@@ -770,9 +781,12 @@ function RuleForm({ onCancel, onSaved }: { onCancel: () => void; onSaved: () => 
     >
       <Field label="名前">
         <Input
-          value={meta.name}
+          value={effectiveMeta.name}
           disabled={pending}
-          onChange={(e) => setMeta((m) => ({ ...m, name: e.target.value }))}
+          onChange={(e) => {
+            setNameTouched(true)
+            setMeta((m) => ({ ...m, name: e.target.value }))
+          }}
           placeholder="例: ニュース全部"
           required
         />

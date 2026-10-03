@@ -961,7 +961,10 @@ describe('RecordingsPage 検索条件', () => {
 
   it('ジャンル・チャンネルの選択が GET のクエリに乗る', async () => {
     const user = userEvent.setup()
-    const server = createFakeRecordingsServer({ library: [sampleRecording()] })
+    const server = createFakeRecordingsServer({
+      library: [sampleRecording()],
+      services: [sampleService(), sampleService({ serviceId: 5169, name: '別局' })],
+    })
 
     renderPage()
     await screen.findByText('ライブラリの録画')
@@ -977,7 +980,9 @@ describe('RecordingsPage 検索条件', () => {
 
     await user.click(within(panel).getByRole('button', { name: /チャンネル/ }))
     const channelDialog = await screen.findByRole('dialog', { name: 'チャンネル' })
-    await user.click(within(channelDialog).getByRole('button', { name: /ＯＨＫ/ }))
+    // 空の service は全局を表すため、先に「すべて」を外してから局を選ぶ。
+    await user.click(within(channelDialog).getByRole('checkbox', { name: 'すべて' }))
+    await user.click(within(channelDialog).getByRole('checkbox', { name: /ＯＨＫ/ }))
 
     await waitFor(() => {
       const last = recordingsRequests(server.fetchMock).at(-1)

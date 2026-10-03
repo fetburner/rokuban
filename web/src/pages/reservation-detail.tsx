@@ -272,13 +272,11 @@ export function ReservationDetailPage() {
             <div className="mt-2">
               <ProgramOverlapWarningFromApi site={site} programId={reservation.programId} />
             </div>
-            <div className="mt-3">
-              <ProgramReservationDetails
-                site={reservation.site}
-                programId={reservation.programId}
-                hideWhenNotFound
-              />
-            </div>
+            <ProgramReservationDetails
+              site={reservation.site}
+              programId={reservation.programId}
+              hideWhenNotFound
+            />
           </section>
 
           <Fields title="予約">

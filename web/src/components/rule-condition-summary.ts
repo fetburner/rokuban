@@ -8,7 +8,7 @@
  * 「oxlint の既存 warning 3 件を増やさない」に抵触する）。
  */
 
-import type { Rule, RuleTextMatch, RuleTimeWindow } from '@/api/generated'
+import type { Rule, RuleTextMatch } from '@/api/generated'
 import { formatDate, formatDuration } from '@/lib/format'
 import { allWeekdays, genreCodeLabel, hasWeekday, secToTimeValue, weekdayLabels } from '@/lib/program-search'
 
@@ -34,7 +34,7 @@ function textMatchSummary(m: RuleTextMatch): string {
  * （飛び石）は個別に列挙する。一覧の 1 行に収めるための要約であり、
  * `ConditionFields` の曜日チップ（個別選択）とは別の表現でよい。
  */
-function weekdayRangeLabel(weekdays: number): string {
+export function weekdayRangeLabel(weekdays: number): string {
   if (weekdays === allWeekdays) return '毎日'
   const indices: number[] = []
   for (let i = 0; i < weekdayLabels.length; i++) {
@@ -48,8 +48,14 @@ function weekdayRangeLabel(weekdays: number): string {
   return indices.map((i) => weekdayLabels[i]).join('・')
 }
 
-function timeWindowSummary(t: RuleTimeWindow): string {
+/** timeWindowSummary は時間帯（曜日 + 開始–終了）を 1 つの要約にする。 */
+export function timeWindowSummary(t: { weekdays: number; startSec: number; endSec: number }): string {
   return `${weekdayRangeLabel(t.weekdays)} ${secToTimeValue(t.startSec)}–${secToTimeValue(t.endSec)}`
+}
+
+/** genresSummary はジャンルコードを昇順に並べ「/」で連結する。 */
+export function genresSummary(genres: readonly number[]): string {
+  return [...genres].sort((a, b) => a - b).map(genreCodeLabel).join('/')
 }
 
 /**
@@ -76,7 +82,7 @@ export function summarizeRuleConditions(rule: Rule): string[] {
   }
 
   if (rule.genres && rule.genres.length > 0) {
-    parts.push([...rule.genres].sort((a, b) => a - b).map(genreCodeLabel).join('/'))
+    parts.push(genresSummary(rule.genres))
   }
 
   for (const t of rule.times ?? []) parts.push(timeWindowSummary(t))

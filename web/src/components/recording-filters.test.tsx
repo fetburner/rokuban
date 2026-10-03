@@ -471,11 +471,13 @@ describe('RecordingFilters 絞り込みパネル', () => {
     await user.click(within(panel).getByRole('button', { name: /チャンネル/ }))
     const channelDialog = await screen.findByRole('dialog', { name: 'チャンネル' })
     // 両サイトにある局は合成 id が同じなので候補は 1 つに畳まれる。
-    const shared = await within(channelDialog).findAllByRole('button', { name: /ＮＨＫ総合/ })
+    const shared = await within(channelDialog).findAllByRole('checkbox', { name: /ＮＨＫ総合/ })
     expect(shared).toHaveLength(1)
     // site2 にしか無い局も候補に出る。
-    expect(within(channelDialog).getByRole('button', { name: /site2 だけの局/ })).toBeInTheDocument()
+    expect(within(channelDialog).getByRole('checkbox', { name: /site2 だけの局/ })).toBeInTheDocument()
 
+    // 何も絞っていない状態は全局チェック済みなので、まず全局を外してから選ぶ。
+    await user.click(within(channelDialog).getByRole('checkbox', { name: 'すべて' }))
     await user.click(shared[0])
     await waitFor(() => expect(getCurrent().service).toEqual([101024]))
   })
@@ -532,9 +534,9 @@ describe('RecordingFilters 絞り込みパネル', () => {
 
     await user.click(within(panel).getByRole('button', { name: /チャンネル/ }))
     const channelDialog = await screen.findByRole('dialog', { name: 'チャンネル' })
-    const options = within(channelDialog).getAllByRole('button', { name: /同名チャンネル/ })
+    const options = within(channelDialog).getAllByRole('checkbox', { name: /同名チャンネル/ })
     expect(options).toHaveLength(2)
-    expect(options.map((option) => option.getAttribute('aria-pressed'))).toEqual(['true', 'true'])
+    expect(options.map((option) => option.getAttribute('aria-checked'))).toEqual(['true', 'true'])
 
     // 片方（CS 側）を解除すると、もう片方（BS 側）だけが残る。
     await user.click(options[1])

@@ -31,7 +31,7 @@ function renderEditor(
     onTileImageError: vi.fn(),
     playAround: vi.fn(),
     jumpTo,
-    renderPlayer: () => <video />,
+    onSelectedBoundaryChange: vi.fn(),
     onSave,
     onReset,
     pending: false,
@@ -63,7 +63,7 @@ describe('RecordingChapterEditor の編集専用画面', () => {
     const { getByRole, getByTestId, jumpTo, onSave, commandsRef } = renderEditor([cm], {
       currentSeconds: 18,
     })
-    fireEvent.click(getByRole('button', { name: '0:00:10 から 0:00:20 の境界を選ぶ' }))
+    fireEvent.click(getByRole('button', { name: '0:10 から 0:20 の境界を選ぶ' }))
     expect(jumpTo).toHaveBeenCalledWith(20)
 
     const filmstrip = getByTestId('chapter-filmstrip')
@@ -95,6 +95,21 @@ describe('RecordingChapterEditor の編集専用画面', () => {
     expect(boundary20.getAttribute('aria-pressed')).toBe('true')
   })
 
+  it('矢印キーはフォーカスが調整ボタンにあっても効き、ラベル入力の中では効かない', () => {
+    const op: ChapterSpan = { startMs: 60_000, endMs: 70_000, label: 'OP', cut: false }
+    const { container, getByRole, getAllByLabelText } = renderEditor([cm, op])
+    const boundary = (ms: number) => container.querySelector<HTMLButtonElement>(
+      `[data-testid="chapter-filmstrip-boundary"][data-time-ms="${ms}"]`,
+    )!
+    fireEvent.click(boundary(20_000))
+    // +1秒 を押した後（フォーカスは調整ボタン）でも → で次の境界へ移る。
+    fireEvent.click(getByRole('button', { name: '選択中の境界を1秒進める' }))
+    fireEvent.keyDown(getByRole('button', { name: '選択中の境界を1秒進める' }), { key: 'ArrowRight' })
+    expect(boundary(60_000).getAttribute('aria-pressed')).toBe('true')
+    fireEvent.keyDown(getAllByLabelText('ラベル')[0], { key: 'ArrowLeft' })
+    expect(boundary(60_000).getAttribute('aria-pressed')).toBe('true')
+  })
+
   it('選択中の境界を前後再生し、現在の再生位置へ合わせる', () => {
     const playAround = vi.fn()
     const { container, getByRole, getByTestId } = renderEditor([cm], {
@@ -108,7 +123,7 @@ describe('RecordingChapterEditor の編集専用画面', () => {
     fireEvent.click(getByRole('button', { name: '選択中の境界の前後3秒を再生' }))
     expect(playAround).toHaveBeenCalledWith(20)
     fireEvent.click(getByRole('button', { name: '選択中の境界を現在の再生位置に合わせる' }))
-    expect(getByTestId('chapter-selected-boundary').textContent).toBe('0:00:18')
+    expect(getByTestId('chapter-selected-boundary').textContent).toBe('0:18.000')
     expect(container.querySelector('[data-testid="chapter-filmstrip-boundary"][data-time-ms="18000"]')).not.toBeNull()
   })
 
@@ -145,8 +160,8 @@ describe('RecordingChapterEditor の編集専用画面', () => {
     const { rerender, container, props } = renderEditor([cm])
     const next: ChapterSpan[] = [{ startMs: 50_000, endMs: 60_000, label: 'ED', cut: true }]
     rerender(<RecordingChapterEditor {...props} spans={next} version="v2" source="user" />)
-    expect(container.textContent).toContain('0:00:50')
-    expect(container.textContent).not.toContain('0:00:10')
+    expect(container.textContent).toContain('0:50')
+    expect(container.textContent).not.toContain('0:10')
     expect(container.querySelector('[data-testid="chapter-stale"]')).toBeNull()
   })
 
@@ -159,10 +174,10 @@ describe('RecordingChapterEditor の編集専用画面', () => {
     const next: ChapterSpan[] = [{ startMs: 50_000, endMs: 60_000, label: 'ED', cut: true }]
     rerender(<RecordingChapterEditor {...props} spans={next} version="v2" />)
     expect(container.querySelector('[data-testid="chapter-stale"]')).not.toBeNull()
-    expect(container.textContent).toContain('0:00:09')
+    expect(container.textContent).toContain('0:09')
     fireEvent.click(getByRole('button', { name: '下書きを破棄して最新から編集し直す' }))
     expect(container.querySelector('[data-testid="chapter-stale"]')).toBeNull()
-    expect(container.textContent).toContain('0:00:50')
+    expect(container.textContent).toContain('0:50')
   })
 
   it('キャンセル命令は dirty draft を捨てる', () => {
@@ -172,8 +187,8 @@ describe('RecordingChapterEditor の編集専用画面', () => {
     )!)
     fireEvent.click(getByRole('button', { name: '選択中の境界を1秒戻す' }))
     act(() => commandsRef.current?.discard())
-    expect(container.textContent).toContain('0:00:10')
-    expect(container.textContent).not.toContain('0:00:09')
+    expect(container.textContent).toContain('0:10')
+    expect(container.textContent).not.toContain('0:09')
   })
 
   it('検出中は編集 UI を出さない', () => {

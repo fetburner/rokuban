@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { filmstripTileIndices, filmstripTimeToX, filmstripXToTime } from './chapter-filmstrip'
+import {
+  defaultFilmstripRangeSeconds,
+  filmstripTicks,
+  filmstripTileIndices,
+  filmstripTimeToX,
+  filmstripXToTime,
+  minFilmstripRangeSeconds,
+} from './chapter-filmstrip'
 
 describe('filmstrip time/position mapping', () => {
   const range = { startSeconds: 20, endSeconds: 60 }
@@ -25,5 +32,24 @@ describe('filmstrip time/position mapping', () => {
     expect(filmstripTileIndices({ startSeconds: 10_790, endSeconds: 10_830 }, 20_000)).toEqual([1079])
     expect(filmstripTileIndices({ startSeconds: 10_800, endSeconds: 10_830 }, 20_000)).toEqual([])
     expect(filmstripTileIndices({ startSeconds: 10, endSeconds: 10 }, 120)).toEqual([])
+  })
+
+  it('拡大の上限は 1 マスが実画素 160px を超えない範囲（リテラルで固定）', () => {
+    expect(minFilmstripRangeSeconds(1600)).toBe(100)
+    expect(minFilmstripRangeSeconds(800)).toBe(50)
+    expect(minFilmstripRangeSeconds(80)).toBe(10)
+    expect(minFilmstripRangeSeconds(0)).toBe(10)
+  })
+
+  it('開いたときの範囲は 1 マスが約 76px になり、拡大の上限より短くならない', () => {
+    expect(defaultFilmstripRangeSeconds(760)).toBe(100)
+    expect(defaultFilmstripRangeSeconds(100)).toBeCloseTo(13.16, 1)
+    expect(defaultFilmstripRangeSeconds(0)).toBe(140)
+  })
+
+  it('時刻の目盛りはラベルが重ならない刻みで、範囲内の倍数だけを返す', () => {
+    expect(filmstripTicks({ startSeconds: 840, endSeconds: 980 }, 400)).toEqual([840, 870, 900, 930, 960])
+    expect(filmstripTicks({ startSeconds: 0, endSeconds: 70 }, 350)).toEqual([0, 30, 60])
+    expect(filmstripTicks({ startSeconds: 5, endSeconds: 5 }, 350)).toEqual([])
   })
 })
