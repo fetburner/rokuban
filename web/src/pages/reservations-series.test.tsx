@@ -235,4 +235,16 @@ describe('予約一覧のシリーズ表示', () => {
     expect(screen.queryByTestId('reservation-series-row')).toBeNull()
     expect(localStorage.getItem(RESERVATION_GROUPING_KEY)).toBe('time')
   })
+
+  it('単件の除外予約にも除外バッジを残す', async () => {
+    renderPage({
+      reservations: [
+        reservation(1, '手動で除外した番組', '手動で除外した番組', 18, { skip: true }),
+      ],
+    })
+
+    const row = await screen.findByTestId('reservation-series-row')
+    expect(within(row).getByText('除外')).toBeInTheDocument()
+    expect(within(row).getByRole('link', { name: /手動で除外した番組/ })).toBeInTheDocument()
+  })
 })

@@ -101,6 +101,9 @@ export function ReservationSeriesRow({
                 {summary}
               </span>
               <ReservationGroupBadges group={group} />
+              {!canExpand && next.skip && next.dedupMatchRecordingId === undefined && (
+                <ReservationSkipBadge reservation={next} />
+              )}
               {shelfKnownForSeries && shelf !== undefined && (
                 <MobileShelfSummary series={group.series!} shelf={shelf} />
               )}
@@ -249,7 +252,7 @@ function ReservationEpisodeRow({
         aria-label={accessibilityLabel}
         className="absolute inset-0"
       />
-      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 pl-7">
+      <div className="flex min-h-11 min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 pl-7">
         <span className="shrink-0 text-sm">{formatDateTime(reservation.startAt)}</span>
         <span className="min-w-0 flex-1 truncate text-sm">{title}</span>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">

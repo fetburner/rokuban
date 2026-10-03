@@ -283,6 +283,13 @@ async function checkPage(browser, width, theme, multipleSites, saveShot) {
   if (!(await episodeList.getByText('第2話', { exact: true }).count())) {
     ng.push(`${label}: 展開した各回の題名が無い`)
   }
+  const episodeLinks = episodeList.locator(':scope > li > a.absolute')
+  for (let index = 0; index < await episodeLinks.count(); index += 1) {
+    const box = await episodeLinks.nth(index).boundingBox()
+    if (!box || box.width < 44 || box.height < 44) {
+      ng.push(`${label}: 展開した各回の予約詳細リンクが 44x44px 未満 (${JSON.stringify(box)})`)
+    }
+  }
   if (multipleSites && !(await seriesRow.getByText('takamatsu', { exact: true }).count())) {
     ng.push(`${label}: 複数サイトの各回に site が出ない`)
   }
@@ -307,6 +314,9 @@ async function checkPage(browser, width, theme, multipleSites, saveShot) {
   // 表示形式の好みだけが localStorage に残り、絞り込みの URL は変更しない。
   await timeButton.click()
   if (await timeButton.getAttribute('aria-pressed') !== 'true') ng.push(`${label}: 時間順に切り替わらない`)
+  if (saveShot && width === 360 && !multipleSites && theme === 'light') {
+    await screenshot(page, '360-time-single-light.png')
+  }
   const stored = await page.evaluate(() => localStorage.getItem('rokuban:reservations:group'))
   if (stored !== 'time') ng.push(`${label}: 表示設定が localStorage に保存されない (${stored})`)
   if (new URL(page.url()).search !== '') ng.push(`${label}: 表示形式の変更が URL に混ざる`)
@@ -354,8 +364,13 @@ for (const [width, multipleSites] of [[360, false], [1280, false], [360, true], 
   if (await filtered.getByRole('button', { name: /予約を開く/ }).count()) {
     ng.push('filter: 1 件に絞られた行が開閉ボタンのまま')
   }
-  if ((await filtered.locator(':scope > div > a.absolute').getAttribute('href')) !== '/reservations/default/9003') {
+  const filteredDetailLink = filtered.locator(':scope > div > a.absolute')
+  if ((await filteredDetailLink.getAttribute('href')) !== '/reservations/default/9003') {
     ng.push('filter: 1 件だけのシリーズ行が次回の予約詳細へリンクしない')
+  }
+  const filteredDetailBox = await filteredDetailLink.boundingBox()
+  if (!filteredDetailBox || filteredDetailBox.width < 44 || filteredDetailBox.height < 44) {
+    ng.push(`filter: 単件の予約詳細リンクが 44x44px 未満 (${JSON.stringify(filteredDetailBox)})`)
   }
   await screenshot(page, '1280-filtered-attention-rule-light.png')
   await context.close()
