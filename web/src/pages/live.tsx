@@ -472,8 +472,15 @@ export function LivePage() {
         // ここには来ないはずだが、型上 undefined を許すため防御的に置く
         <EmptyState>チャンネルを選んでください</EmptyState>
       ) : (
-        <div className="flex flex-col gap-4 p-4 lg:flex-row lg:items-start">
-          <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <div className="flex flex-col gap-4 p-4 lg:flex-row lg:items-start lg:gap-5">
+          {/* max-w の 25rem は映像の下に積む縦の予算: ページ見出し（約 72px）・p-4 の上下・
+              局名/番組名/時刻の 3 行。映像と 3 行が初期 viewport に収まることは e2e/design.mjs が測る */}
+          <div
+            className="flex min-w-0 flex-1 flex-col gap-2 lg:sticky lg:w-[calc(100%-18rem-1.25rem)] lg:max-w-[max(24rem,calc((100dvh-25rem)*16/9))] lg:flex-none"
+            style={{
+              top: 'calc(var(--sticky-banners-height, 0px) + var(--page-header-height, 0px))',
+            }}
+          >
             {isPlaying ? (
               <LivePlayer
                 mode={playbackSource}
@@ -581,7 +588,7 @@ export function LivePage() {
             </div>
           </div>
 
-          <nav aria-label="チャンネル一覧" className="w-full shrink-0 lg:w-72">
+          <nav aria-label="チャンネル一覧" className="w-full min-w-0 lg:min-w-[18rem] lg:flex-1">
             {/* チューナーそのものの状態を見る場所が UI に無く、故障
                 （tuner_sync.is_fault）は容量判定の下界主義（docs/data/capacity.md
                 §6.5）から外れて「警告が無い = 大丈夫」と誤読されうるため、
@@ -596,7 +603,7 @@ export function LivePage() {
                   <p className="px-1 pb-1 text-xs font-medium text-muted-foreground">
                     {channelTypeLabel(group.channelType)}
                   </p>
-                  <ul className="flex flex-col gap-1">
+                  <ul className="grid grid-cols-1 gap-1 lg:grid-cols-[repeat(auto-fill,minmax(12rem,1fr))]">
                     {group.services.map((s) => {
                       const key = siteServiceKey(s.site, s.networkId, s.serviceId)
                       const scheduled = programByService.get(key)
@@ -694,7 +701,7 @@ function LiveSelectionPreview({
       type="button"
       aria-label={`${serviceName}を再生`}
       onClick={onPlay}
-      className="group relative flex aspect-video w-full max-w-3xl items-center justify-center rounded border border-transparent bg-black p-0 outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+      className="group relative flex aspect-video w-full items-center justify-center rounded border border-transparent bg-black p-0 outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
     >
       <span className={cn(buttonVariants({ size: 'lg' }), 'group-hover:bg-primary/80')}>
         <Play data-icon="inline-start" />

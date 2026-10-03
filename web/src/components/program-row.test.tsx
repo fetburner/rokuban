@@ -501,7 +501,8 @@ describe('ProgramRow の外向き導線（issue #229 / #755）', () => {
     await expandRow()
     await waitFor(() => expect(screen.queryByText('詳細を読み込み中…')).not.toBeInTheDocument())
 
-    expect(screen.getByText('一覧側の説明')).toBeInTheDocument()
+    // 先頭 1 行は wide-list 列、詳細本文にも同じ説明が出る。
+    expect(screen.getAllByText('一覧側の説明')).toHaveLength(2)
     expect(screen.queryByText('詳細から取得した別の説明')).not.toBeInTheDocument()
   })
 })

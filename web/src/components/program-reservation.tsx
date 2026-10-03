@@ -9,6 +9,7 @@ import { EncodeSettingsFields } from '@/components/encode-settings-fields'
 import { ProgramOverlapWarning } from '@/components/program-overlap-warning'
 import { Button } from '@/components/ui/button'
 import { useLiveEnabled } from '@/lib/capabilities'
+import { cn } from '@/lib/utils'
 import {
   defaultEncodeSettingsValue,
   encodeSettingsError,
@@ -123,6 +124,7 @@ export function ProgramReservationSummary({
   program,
   serviceName,
   siteName,
+  rowDescription,
   overlaps,
   skipIntent = false,
   title,
@@ -130,6 +132,8 @@ export function ProgramReservationSummary({
   program: ProgramReservationProgram
   serviceName?: string
   siteName?: string
+  /** 番組リスト / 検索結果で使う、広い画面用の説明列。 */
+  rowDescription?: string
   overlaps?: ProgramOverlaps
   skipIntent?: boolean
   title?: ReactNode
@@ -145,26 +149,44 @@ export function ProgramReservationSummary({
           {formatTime(program.startAt)}
         </div>
       </div>
-      <div className="min-w-0 flex-1">
-        {title ?? <div className="truncate text-base">{program.name}</div>}
-        <div
-          data-testid="program-row-meta"
-          className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground"
-        >
-          {siteName && <span className="shrink-0">{siteName}</span>}
-          {serviceName && <span className="truncate">{serviceName}</span>}
-          <span className="shrink-0">{formatDuration(program.durationMs)}</span>
-          {!program.isFree && <span className="shrink-0">有料</span>}
-          {skipIntent && (
-            <span
-              data-testid="program-skip-intent-badge"
-              className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-foreground"
-            >
-              スキップ中
-            </span>
-          )}
+      <div
+        className={cn(
+          'min-w-0 flex-1',
+          // 2xl starts at 1536px: after the 44px time, 32rem title column, and action area,
+          // this leaves a useful description column. Below it, keep the current row layout.
+          rowDescription !== undefined && '2xl:grid 2xl:grid-cols-[32rem_minmax(0,1fr)] 2xl:gap-6',
+        )}
+      >
+        <div className="min-w-0">
+          {title ?? <div className="truncate text-base">{program.name}</div>}
+          <div
+            data-testid="program-row-meta"
+            className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground"
+          >
+            {siteName && <span className="shrink-0">{siteName}</span>}
+            {serviceName && <span className="truncate">{serviceName}</span>}
+            <span className="shrink-0">{formatDuration(program.durationMs)}</span>
+            {!program.isFree && <span className="shrink-0">有料</span>}
+            {skipIntent && (
+              <span
+                data-testid="program-skip-intent-badge"
+                className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-foreground"
+              >
+                スキップ中
+              </span>
+            )}
+          </div>
+          <ProgramOverlapWarning overlaps={overlaps} />
         </div>
-        <ProgramOverlapWarning overlaps={overlaps} />
+        {rowDescription !== undefined && (
+          <div
+            data-testid="program-row-description"
+            title={rowDescription || undefined}
+            className="hidden min-w-0 truncate text-sm text-muted-foreground 2xl:block"
+          >
+            {rowDescription}
+          </div>
+        )}
       </div>
     </div>
   )

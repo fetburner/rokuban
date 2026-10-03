@@ -121,7 +121,9 @@ export function SeriesPage() {
             aria-label="シリーズ一覧"
             className={cn(
               'p-4',
-              view === 'card' ? 'grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4' : 'flex flex-col gap-2',
+              view === 'card'
+                ? 'grid grid-cols-2 lg:grid-cols-[repeat(auto-fill,minmax(min(100%,16rem),1fr))] gap-3'
+                : 'flex flex-col gap-2',
             )}
           >
             {visibleRows.map((row) => (
