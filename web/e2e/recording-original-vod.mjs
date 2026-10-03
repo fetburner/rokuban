@@ -232,6 +232,7 @@ log(`\n=== 実ブラウザ: ${engine} ===`)
 const browser = engine === 'chrome'
   ? await launchBrowser('chromium', { channel: 'chrome' })
   : await launchBrowser(engine)
+log(`  browser version: ${browser.version()}`)
 const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: 'ja-JP' })
 await context.addInitScript(() => {
   const sources = []
@@ -904,6 +905,68 @@ const sampleOffsetPlayer = (target) => target.evaluate(() => {
     error: /エラー/.test(document.querySelector('[data-testid="recording-player-frame"]')?.textContent ?? ''),
   }
 })
+
+log('\n=== ⑤-manual 手動の ▶ は、待ち時間 0 / 1 / 3 秒でも変換中 playlist の先頭から始まる ===')
+const manualPlayMeasurements = []
+for (const waitMs of [0, 1000, 3000]) {
+  delete offsetRecording.resumePositionMs
+  delete offsetRecording.watchedAt
+  const manualPage = await context.newPage()
+  await installApiStubs(manualPage, offsetHandler)
+  // Poster start mounts the source and asks for playback, but a browser can reject
+  // that asynchronous request after the click's user activation has expired. Model
+  // that policy result so the toolbar's manual ▶ is the first successful play().
+  await manualPage.addInitScript(() => {
+    const play = HTMLMediaElement.prototype.play
+    let blocked = false
+    HTMLMediaElement.prototype.play = function (...args) {
+      if (!blocked && this instanceof HTMLVideoElement) {
+        blocked = true
+        window.__e2eInitialVideoPlayBlocked = true
+        return Promise.reject(new DOMException('autoplay blocked for manual-play coverage', 'NotAllowedError'))
+      }
+      return play.apply(this, args)
+    }
+  })
+  await manualPage.goto(`${URL_BASE}/recordings/${OFFSET_ID}`, { waitUntil: 'domcontentloaded' })
+  await manualPage.getByTestId('recording-playback-start').click()
+  await manualPage.waitForFunction(() => {
+    const element = document.querySelector('video')
+    return element !== null && element.duration > 0 && element.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA &&
+      element.paused && window.__e2eInitialVideoPlayBlocked === true
+  }, undefined, { timeout: 20000 }).catch(() => ng.push(`⑤-manual ${waitMs}ms: 手動再生用に HLS を読み込めない`))
+  await manualPage.locator('video').evaluate((element) => {
+    element.pause()
+    element.currentTime = 0
+  })
+  await manualPage.waitForFunction(() => {
+    const element = document.querySelector('video')
+    return element !== null && element.paused && element.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA &&
+      Math.abs(element.currentTime) < 0.25
+  }, undefined, { timeout: 10000 }).catch(() => ng.push(`⑤-manual ${waitMs}ms: 手動再生前に 0 秒で一時停止できない`))
+  if (waitMs > 0) await manualPage.waitForTimeout(waitMs)
+  const beforeManualPlay = await sampleOffsetPlayer(manualPage)
+  const manualPlayRequestedAt = Date.now()
+  await manualPage.locator('[data-testid="player-controls"]')
+    .getByRole('button', { name: '再生', exact: true }).click()
+  await manualPage.waitForFunction(() => {
+    const element = document.querySelector('video')
+    return element !== null && !element.paused && element.currentTime > 0.25
+  }, undefined, { timeout: 10000 }).catch(() => ng.push(`⑤-manual ${waitMs}ms: 手動の ▶ で再生が始まらない`))
+  const untilMeasurement = manualPlayRequestedAt + 1000 - Date.now()
+  if (untilMeasurement > 0) await manualPage.waitForTimeout(untilMeasurement)
+  const afterManualPlay = await sampleOffsetPlayer(manualPage)
+  const measurement = { waitMs, before: beforeManualPlay.time, after: afterManualPlay.time, paused: afterManualPlay.paused }
+  manualPlayMeasurements.push(measurement)
+  log(`  手動 ▶ 待ち ${waitMs}ms、押下前 ${beforeManualPlay.time?.toFixed(2)}s → 1 秒後 ${afterManualPlay.time?.toFixed(2)}s`)
+  if (afterManualPlay.time === null || afterManualPlay.time > 4 || afterManualPlay.paused !== false) {
+    ng.push(`⑤-manual ${waitMs}ms 待って押した手動の ▶ が 0 秒付近から始まらない（${JSON.stringify(measurement)}）`)
+  }
+  await manualPage.close()
+}
+log(`  実測値: ${JSON.stringify(manualPlayMeasurements)}`)
+delete offsetRecording.resumePositionMs
+delete offsetRecording.watchedAt
 
 {
   const offsetContext = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: 'ja-JP' })
