@@ -202,6 +202,8 @@ encode:
   #     #   kind: vaapi
   #     #   device: /dev/dri/renderD128
   #     #   output_format: vaapi
+  #     # ffmpeg 5.1 は MPEG-2 の VAAPI デコード surface が固定数。deinterlace_vaapi で
+  #     # 足りなければ input_extra_args に -extra_hw_frames を足す（未検証）。
   #     # extra_args の -map は cut では起動エラー（ストリームの並びはアプリが握る）
 
 # JLSE による CM 検出（Dockerfile.full の worker でのみ利用可能）

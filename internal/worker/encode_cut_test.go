@@ -293,9 +293,9 @@ func TestBuildFFmpegArgs_CutUsesFilterComplexNotVF(t *testing.T) {
 	}
 }
 
-// TestBuildFFmpegArgs_CutHWDecodeUsesPreInput は GPU 経路の入力 argv と VAAPI filtergraph
-// の literal を固定する。HW decode オプションは -i より前で、-vaapi_device と
-// hwupload を使わない。
+// TestBuildFFmpegArgs_CutHWDecodeUsesPreInput は GPU 経路の入力 argv を固定する。
+// HW decode オプションは -i より前で、-vaapi_device を使わない（filtergraph は
+// TestBuildCutFilter_UploadMatchesDecodePath が固定する）。
 func TestBuildFFmpegArgs_CutHWDecodeUsesPreInput(t *testing.T) {
 	p := config.EncodeProfile{
 		Name: "cut", Container: "mp4", VideoCodec: "h264_vaapi", AudioCodec: "aac",
@@ -317,9 +317,6 @@ func TestBuildFFmpegArgs_CutHWDecodeUsesPreInput(t *testing.T) {
 	}
 	if !slices.Equal(args, wantArgs) {
 		t.Errorf("GPU cut argv = %v, want %v", args, wantArgs)
-	}
-	if strings.Contains(strings.Join(args, " "), "hwupload") {
-		t.Errorf("GPU cut argv/filtergraph must not upload again: %v", args)
 	}
 }
 

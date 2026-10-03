@@ -219,7 +219,7 @@ VAAPI を載せた Linux GPU では未実施。
 `cut` にだけ掛かる起動エラー:
 
 - `hwaccel.output_format` があり、`height > 0` または `deinterlace: true` なのに `scaler: vaapi` でない --- HW フレームの後ろに CPU filter は置けない
-- `hwaccel.output_format` を指定する場合は `vaapi` のみ --- CPU フレームは VAAPI encoder に渡せない
+- `hwaccel.output_format` を指定する場合は `vaapi` のみ --- 指定すると hwupload を付けないので、ソフトウェア形式を HW へ上げる手段が無い
 - `scaler: vaapi` で filter があるのに `hwaccel.output_format: vaapi` が無い --- upload は filter 後なので VAAPI filter に CPU フレームを渡せない
 - `hwaccel.kind` が `vaapi` 以外 --- VAAPI scaler と救済経路を使えない
 - `hwaccel.kind: vaapi` なのに `device` が無い --- `-hwaccel_device` または `-vaapi_device` に渡すものが無い

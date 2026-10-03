@@ -742,7 +742,7 @@ func validateEncodeProfileFFArgs(p EncodeProfile) error {
 // FFmpeg の trim / setpts / concat は HW フレームを受け取り、そのコンテキストを
 // 後段へ渡す。根拠は FFmpeg n5.1.6 / n9.0 の trim.c、avf_concat.c、avfilter.c。
 // 実測は ffmpeg 9.0.2 の VideoToolbox 経路（trim → setpts → concat → scale_vt →
-// h264_videotoolbox）で、VAAPI 実機では未検証（issue #1062）。
+// h264_videotoolbox）で、VAAPI 実機では未検証（issue #1064）。
 //
 // 起動時には HW フレームへ CPU filter をつなぐ形と、ソフトウェアフレームを VAAPI
 // filter に渡す形を拒否する。救済経路では CPU decode / filter の後ろに
@@ -755,8 +755,8 @@ func validateEncodeProfileFFArgs(p EncodeProfile) error {
 //   - `hwaccel.kind` が vaapi 以外 — scaler と救済経路が VAAPI にしかない
 //   - `hwaccel.kind: vaapi` で device が無い — `-hwaccel_device` / `-vaapi_device` に
 //     渡すものが無い
-//   - `hwaccel.output_format` が vaapi 以外 — ソフトウェアフレームでは VAAPI encoder に
-//     渡せず、cut の経路には HW upload も無い
+//   - `hwaccel.output_format` が vaapi 以外 — output_format があると hwupload を
+//     付けないので、ソフトウェア形式のフレームを HW へ上げる手段が無い
 //   - `extra_args` の `-map` — ストリームの並びはアプリが握る（live と同じ理由）
 func validateCutProfile(p EncodeProfile) error {
 	if !p.Cut {
