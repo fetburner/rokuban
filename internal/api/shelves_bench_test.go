@@ -116,19 +116,19 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 			return out, nil
 		}},
 		{name: "(o) previous playable-only shape", run: func() (map[string]shelfResult, error) {
-			return queryShelves(ctx, conn.Conn(), previousShelfQuery, false)
+			return queryShelves(ctx, conn.Conn(), previousShelfQuery)
 		}},
 		{name: "(o') previous shape without playable MATERIALIZED", run: func() (map[string]shelfResult, error) {
-			return queryShelves(ctx, conn.Conn(), previousUnmaterializedShelfQuery, false)
+			return queryShelves(ctx, conn.Conn(), previousUnmaterializedShelfQuery)
 		}},
 		{name: "(b') production shape with live MATERIALIZED", run: func() (map[string]shelfResult, error) {
-			return queryShelves(ctx, conn.Conn(), liveMaterializedShelfQuery, true)
+			return queryFullShelves(ctx, conn.Conn(), liveMaterializedShelfQuery)
 		}},
 		{name: "(c) production shelf with unwatched broadcast-event counts", run: func() (map[string]shelfResult, error) {
-			return queryUnwatchedShelves(ctx, conn.Conn())
+			return queryFullShelves(ctx, conn.Conn(), unwatchedShelfQuery)
 		}},
 		{name: "(o_inline) previous shape with the effective series written inline", run: func() (map[string]shelfResult, error) {
-			return queryShelves(ctx, conn.Conn(), previousInlineShelfQuery, false)
+			return queryShelves(ctx, conn.Conn(), previousInlineShelfQuery)
 		}},
 	}
 
@@ -182,7 +182,7 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 		if want := wantUnwatched[key]; prod.unwatched != want {
 			t.Errorf("shelf %q: (a) unwatched count %d != expected %d", key, prod.unwatched, want)
 		}
-		if liveMaterialized[key] != prod {
+		if got, ok := liveMaterialized[key]; !ok || got != prod {
 			t.Errorf("shelf %q: (b') %+v != (a) %+v", key, liveMaterialized[key], prod)
 		}
 		gotUnwatched, ok := withUnwatched[key]
@@ -215,10 +215,11 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 	// 予算 200 ms は、(o_inline) の形が 141 ms だった環境で決めた。そのため同じ回の (o_inline) との比
 	// 200/141 で読む。当時は 73,000 行すべてが再生可能だったが、この seed では 65,000 行である。
 	// この違いが比をどちらへ動かすかは未検証。
-	t.Logf("ratios to (a): (o)=%.2f, (o')=%.2f, (b')=%.2f; (o')/(o)=%.2f; (o)/(o_inline)=%.2f; (c)/(o_inline)=%.2f (budget 200/141=%.2f)",
+	t.Logf("ratios to (a): (o)=%.2f, (o')=%.2f, (b')=%.2f; (o')/(o)=%.2f; (a)/(o_inline)=%.2f; (o)/(o_inline)=%.2f; (c)/(o_inline)=%.2f (budget 200/141=%.2f)",
 		float64(medians[1])/float64(medians[0]), float64(medians[2])/float64(medians[0]),
 		float64(medians[3])/float64(medians[0]), float64(medians[2])/float64(medians[1]),
-		float64(medians[1])/float64(medians[5]), float64(medians[4])/float64(medians[5]), 200.0/141.0)
+		float64(medians[0])/float64(medians[5]), float64(medians[1])/float64(medians[5]),
+		float64(medians[4])/float64(medians[5]), 200.0/141.0)
 
 	benchmarkReservationsWithSeries(t, ctx, conn.Conn())
 }
@@ -363,9 +364,8 @@ func median(samples []time.Duration) time.Duration {
 	return (s[len(s)/2-1] + s[len(s)/2]) / 2
 }
 
-// queryShelves は棚のクエリを実行して棚ごとの結果を返す。expanded は playable_count と
-// latest_start_at の列を持つ形（本番形の派生）を読む。
-func queryShelves(ctx context.Context, conn *pgx.Conn, query string, expanded bool) (map[string]shelfResult, error) {
+// queryShelves は旧形の棚クエリを実行して棚ごとの結果を返す。
+func queryShelves(ctx context.Context, conn *pgx.Conn, query string) (map[string]shelfResult, error) {
 	rows, err := conn.Query(ctx, query)
 	if err != nil {
 		return nil, err
@@ -375,12 +375,7 @@ func queryShelves(ctx context.Context, conn *pgx.Conn, query string, expanded bo
 	for rows.Next() {
 		var value pgtype.Text
 		var r shelfResult
-		if expanded {
-			err = rows.Scan(&value, &r.title, &r.playable, &r.recording, &r.latest, &r.representative)
-		} else {
-			err = rows.Scan(&value, &r.title, &r.recording, &r.representative)
-		}
-		if err != nil {
+		if err := rows.Scan(&value, &r.title, &r.recording, &r.representative); err != nil {
 			return nil, err
 		}
 		var v *string
@@ -392,8 +387,9 @@ func queryShelves(ctx context.Context, conn *pgx.Conn, query string, expanded bo
 	return out, rows.Err()
 }
 
-func queryUnwatchedShelves(ctx context.Context, conn *pgx.Conn) (map[string]shelfResult, error) {
-	rows, err := conn.Query(ctx, unwatchedShelfQuery)
+// queryFullShelves は本番と同じ列順の 7 列を返す棚クエリを実行する。
+func queryFullShelves(ctx context.Context, conn *pgx.Conn, query string) (map[string]shelfResult, error) {
+	rows, err := conn.Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -402,7 +398,7 @@ func queryUnwatchedShelves(ctx context.Context, conn *pgx.Conn) (map[string]shel
 	for rows.Next() {
 		var value pgtype.Text
 		var r shelfResult
-		if err := rows.Scan(&value, &r.title, &r.playable, &r.recording, &r.unwatched, &r.latest, &r.representative); err != nil {
+		if err := rows.Scan(&value, &r.title, &r.recording, &r.playable, &r.unwatched, &r.latest, &r.representative); err != nil {
 			return nil, err
 		}
 		var v *string
@@ -727,29 +723,43 @@ ORDER BY recording_count DESC, p.value ASC NULLS LAST
 `
 
 const liveMaterializedShelfQuery = `
-WITH playable_assets AS MATERIALIZED (
+WITH playable_assets AS (
     SELECT DISTINCT ma.recording_id
     FROM media_assets ma
     WHERE (ma.kind = 'original' AND ma.state <> 'deleted')
        OR (ma.kind = 'encoded' AND ma.state = 'active')
 ),
+watched_events AS MATERIALIZED (
+    SELECT DISTINCT r.network_id, r.service_id, r.program_start_at
+    FROM recordings r
+    JOIN recording_watched w ON w.recording_id = r.id
+),
 live AS MATERIALIZED (
     SELECT r.id,
            r.title,
            r.program_start_at,
+           r.network_id,
+           r.service_id,
            rs.value,
-           pa.recording_id AS playable_recording_id
+           pa.recording_id AS playable_recording_id,
+           we.network_id AS watched_network_id
     FROM recordings r
     LEFT JOIN playable_assets pa ON pa.recording_id = r.id
     JOIN recording_series rs ON rs.recording_id = r.id
+    LEFT JOIN watched_events we
+      ON we.network_id = r.network_id
+     AND we.service_id = r.service_id
+     AND we.program_start_at = r.program_start_at
     WHERE r.deleted_at IS NULL
       AND r.superseded_at IS NULL
 )
 SELECT l.value,
        (array_agg(l.title ORDER BY l.program_start_at DESC, l.id DESC))[1]::text AS title,
-       count(*) FILTER (WHERE l.playable_recording_id IS NOT NULL) AS playable_count,
        count(*) AS recording_count,
-       max(l.program_start_at) AS latest_start_at,
+       count(*) FILTER (WHERE l.playable_recording_id IS NOT NULL) AS playable_count,
+       (count(DISTINCT (l.network_id, l.service_id, l.program_start_at))
+           FILTER (WHERE l.playable_recording_id IS NOT NULL AND l.watched_network_id IS NULL))::bigint AS unwatched_count,
+       max(l.program_start_at)::timestamptz AS latest_start_at,
        (array_agg(l.id ORDER BY l.program_start_at DESC, l.id DESC))[1]::bigint AS representative_id
 FROM live l
 GROUP BY l.value
@@ -790,11 +800,11 @@ live AS (
 )
 SELECT l.value,
        (array_agg(l.title ORDER BY l.program_start_at DESC, l.id DESC))[1]::text AS title,
-       count(*) FILTER (WHERE l.playable_recording_id IS NOT NULL) AS playable_count,
        count(*) AS recording_count,
-       count(DISTINCT (l.network_id, l.service_id, l.program_start_at))
-           FILTER (WHERE l.playable_recording_id IS NOT NULL AND l.watched_network_id IS NULL) AS unwatched_count,
-       max(l.program_start_at) AS latest_start_at,
+       count(*) FILTER (WHERE l.playable_recording_id IS NOT NULL) AS playable_count,
+       (count(DISTINCT (l.network_id, l.service_id, l.program_start_at))
+           FILTER (WHERE l.playable_recording_id IS NOT NULL AND l.watched_network_id IS NULL))::bigint AS unwatched_count,
+       max(l.program_start_at)::timestamptz AS latest_start_at,
        (array_agg(l.id ORDER BY l.program_start_at DESC, l.id DESC))[1]::bigint AS representative_id
 FROM live l
 GROUP BY l.value
