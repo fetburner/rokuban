@@ -51,7 +51,7 @@ import {
 import { formatPlaybackTime, formatTime } from '@/lib/format'
 import { usePlayerFrame } from '@/lib/use-player-frame'
 import { cn } from '@/lib/utils'
-import { SEEK_TILES_DISPLAY_WIDTH, seekTileAt } from '@/lib/seek-tiles'
+import { seekTilePlacement } from '@/lib/seek-tiles'
 
 /** HlsLike は hls.js の型を静的 import せずに使うための最小限の形。 */
 type HlsLike = {
@@ -1642,22 +1642,13 @@ export function LivePlayer({
       return
     }
     setOriginalTilesRequested(true)
-    const tile = seekTileAt(seconds)
-    if (!tile) {
+    const rect = event.currentTarget.getBoundingClientRect()
+    const tile = seekTilePlacement(seconds, rect.width, event.clientX - rect.left)
+    if (tile === null) {
       setOriginalTilePreview(null)
       return
     }
-    const rect = event.currentTarget.getBoundingClientRect()
-    // 480px 以下では幅も半分に制限する。16:9 のタイル面積は映像の約25%以下になる。
-    const compactViewport = window.innerWidth <= 480
-    const scale = Math.min(
-      1,
-      rect.width / SEEK_TILES_DISPLAY_WIDTH,
-      compactViewport ? rect.width / (SEEK_TILES_DISPLAY_WIDTH * 2) : 1,
-    )
-    const width = SEEK_TILES_DISPLAY_WIDTH * scale
-    const left = Math.max(0, Math.min(rect.width - width, event.clientX - rect.left - width / 2))
-    setOriginalTilePreview({ ...tile, left, scale, seconds })
+    setOriginalTilePreview({ ...tile, seconds })
   }
   const handleOriginalSeekPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const seconds = originalSeekTargetAtPointer(event)

@@ -4,8 +4,8 @@ import {
   SEEK_TILES_COLUMNS,
   SEEK_TILES_DISPLAY_HEIGHT,
   SEEK_TILES_DISPLAY_WIDTH,
-  seekTileAt,
   seekTileBackgroundSize,
+  seekTilePlacement,
   seekTilesURL,
 } from './seek-tiles'
 
@@ -16,7 +16,8 @@ describe('seek tiles geometry', () => {
     expect(SEEK_TILES_COLUMNS).toBe(10)
     expect(SEEK_TILES_DISPLAY_WIDTH).toBe(320)
     expect(SEEK_TILES_DISPLAY_HEIGHT).toBe(180)
-    expect(seekTileBackgroundSize()).toBe('3200px auto')
+    expect(seekTileBackgroundSize(320)).toBe('3200px auto')
+    expect(seekTileBackgroundSize(144)).toBe('1440px auto')
   })
 
   it('seekTilesURL は配信 URL を組み立てる', () => {
@@ -24,29 +25,39 @@ describe('seek tiles geometry', () => {
   })
 })
 
-describe('seekTileAt', () => {
-  it('10 秒間隔で位置を出し、列をまたぐと次の行へ移る', () => {
-    // 0s → タイル 0（左上）
-    expect(seekTileAt(0)).toEqual({ x: 0, y: 0 })
-    // 9.9s → まだタイル 0
-    expect(seekTileAt(9.9)).toEqual({ x: 0, y: 0 })
-    // 10s → タイル 1（2 列目）
-    expect(seekTileAt(10)).toEqual({ x: -320, y: 0 })
-    // 90s → タイル 9（最終列）
-    expect(seekTileAt(90)).toEqual({ x: -2880, y: 0 })
-    // 100s → タイル 10（2 行目の先頭）
-    expect(seekTileAt(100)).toEqual({ x: 0, y: -180 })
-    // 600s → タイル 60（7 行目の先頭）
-    expect(seekTileAt(600)).toEqual({ x: 0, y: -1080 })
+describe('seekTilePlacement', () => {
+  const at = (seconds: number, band = 1000, pointer = 500) => seekTilePlacement(seconds, band, pointer)
+
+  it('10 秒間隔で位置を出し、列をまたぐと次の行へ移る（幅 320）', () => {
+    expect(at(0)).toMatchObject({ x: 0, y: 0, width: 320, height: 180 })
+    expect(at(9.9)).toMatchObject({ x: 0, y: 0 })
+    expect(at(10)).toMatchObject({ x: -320, y: 0 })
+    expect(at(90)).toMatchObject({ x: -2880, y: 0 })
+    expect(at(100)).toMatchObject({ x: 0, y: -180 })
+    expect(at(600)).toMatchObject({ x: 0, y: -1080 })
+  })
+
+  it('幅は帯の 4 割までを 16 の倍数に切り捨て、上限 320（400px 前後 / 800px 以上 / 1280px）', () => {
+    expect(at(100, 368)).toMatchObject({ width: 144, height: 81, x: 0, y: -81 })
+    expect(at(10, 308)).toMatchObject({ width: 112, height: 63, x: -112 })
+    expect(at(0, 568)).toMatchObject({ width: 224, height: 126 })
+    expect(at(0, 800)).toMatchObject({ width: 320, height: 180 })
+    expect(at(0, 1240)).toMatchObject({ width: 320, height: 180 })
+  })
+
+  it('ポインタ中心に置き、帯からはみ出さない', () => {
+    expect(at(0, 1000, 500)).toMatchObject({ left: 340 })
+    expect(at(0, 1000, 0)).toMatchObject({ left: 0 })
+    expect(at(0, 1000, 1000)).toMatchObject({ left: 680 })
+    expect(at(0, 368, 368)).toMatchObject({ left: 224 })
   })
 
   it('上限（3 時間）以降と不正な値は null', () => {
-    // 1080 枚ぶん = 10800 秒。その 1 枚手前までは出る。
-    expect(seekTileAt(10790)).toEqual({ x: -2880, y: -19260 })
-    expect(seekTileAt(10800)).toBeNull()
-    expect(seekTileAt(99999)).toBeNull()
-    expect(seekTileAt(-1)).toBeNull()
-    expect(seekTileAt(Number.NaN)).toBeNull()
-    expect(seekTileAt(Number.POSITIVE_INFINITY)).toBeNull()
+    expect(at(10790)).toMatchObject({ x: -2880, y: -19260 })
+    expect(at(10800)).toBeNull()
+    expect(at(99999)).toBeNull()
+    expect(at(-1)).toBeNull()
+    expect(at(Number.NaN)).toBeNull()
+    expect(at(Number.POSITIVE_INFINITY)).toBeNull()
   })
 })

@@ -20,7 +20,8 @@
 //   ⑤ 帯をクリックすると、その位置でプレビューに出ていたタイルの時刻へ飛ぶ
 //   ⑥ 帯が 1 枚ぶん（320px）より狭い画面でも、プレビューが帯の幅に収まる
 //   ⑦ タッチではタップで飛ぶだけで、プレビューは出ない（pointerleave が来ないので居座る）
-//   ⑧ 400px ではプレビュー面積を映像の 25% 以下に抑え、ラベルを時刻・チャプター表示から離す（light / dark）
+//   ⑧ 400px（light / dark）と 600px（light）で、プレビュー面積を映像の 16% 以下に抑え、ラベルを
+//      読める大きさ（描画の高さ 14px 以上）のまま時刻・チャプター表示から離す
 //
 // フィクスチャは ffmpeg で作る（動画の長さが判定に要る）。無い環境では
 // この判定だけを skip として終了する。
@@ -58,7 +59,9 @@ const TILE_INTERVAL_SECONDS = 10
 const TILE_DISPLAY_WIDTH = 320
 const TILE_DISPLAY_HEIGHT = 180
 const TILE_COLUMNS = 10
-const MOBILE_PREVIEW_MAX_VIDEO_AREA_RATIO = 0.25
+const PREVIEW_MAX_VIDEO_AREA_RATIO = 0.16
+// scale で縮めると text-xs（行高 16px）のラベルが 10px 前後になる。それを落とす下限。
+const LABEL_MIN_HEIGHT = 14
 
 const recording = {
   id: 1,
@@ -472,10 +475,14 @@ if (EVIDENCE_DIR) {
   })
   await page.keyboard.press('Escape')
 }
-log('\n=== ⑧ 400px でタイル面積とラベルの重なりを light / dark で判定 ===')
-await page.setViewportSize({ width: 400, height: 844 })
-await page.waitForTimeout(200)
-for (const colorScheme of ['light', 'dark']) {
+log('\n=== ⑧ 400px（light / dark）と 600px（light）でタイル面積・ラベルの大きさと重なりを判定 ===')
+for (const { width: vw, colorScheme } of [
+  { width: 400, colorScheme: 'light' },
+  { width: 400, colorScheme: 'dark' },
+  { width: 600, colorScheme: 'light' },
+]) {
+  await page.setViewportSize({ width: vw, height: 844 })
+  await page.waitForTimeout(200)
   await page.emulateMedia({ colorScheme })
   await page.waitForFunction(
     (dark) => document.documentElement.classList.contains('dark') === dark,
@@ -485,7 +492,7 @@ for (const colorScheme of ['light', 'dark']) {
   scrubBox = await page.locator('[data-testid="seek-scrub"]').boundingBox()
   const mobileVideoBox = await video.boundingBox()
   if (!scrubBox || scrubBox.width <= 0 || !mobileVideoBox || mobileVideoBox.width <= 0 || mobileVideoBox.height <= 0) {
-    ng.push(`⑧ 400px ${colorScheme} で映像かスクラブ帯の矩形が取れない`)
+    ng.push(`⑧ ${vw}px ${colorScheme} で映像かスクラブ帯の矩形が取れない`)
     continue
   }
   await hoverTile(35)
@@ -495,26 +502,33 @@ for (const colorScheme of ['light', 'dark']) {
   const timeBox = await page.locator('[data-testid="playback-time"]').boundingBox()
   const chapterBox = await page.locator('[data-testid="playback-chapter"]').boundingBox()
   if (!previewBox) {
-    ng.push(`⑧ 400px ${colorScheme} でタイルプレビューの矩形が取れない`)
+    ng.push(`⑧ ${vw}px ${colorScheme} でタイルプレビューの矩形が取れない`)
   } else {
     const previewAreaRatio = (previewBox.width * previewBox.height) / (mobileVideoBox.width * mobileVideoBox.height)
-    if (previewAreaRatio > MOBILE_PREVIEW_MAX_VIDEO_AREA_RATIO) {
+    log(
+      `  ${vw}px ${colorScheme}: preview ${previewBox.width}×${previewBox.height} / video ${mobileVideoBox.width}×${mobileVideoBox.height}` +
+        ` = ${(previewAreaRatio * 100).toFixed(1)}% / label 高さ ${labelBox?.height.toFixed(1)}px`,
+    )
+    if (previewAreaRatio > PREVIEW_MAX_VIDEO_AREA_RATIO) {
       ng.push(
-        `⑧ 400px ${colorScheme} のタイル面積が映像の25%を超える` +
+        `⑧ ${vw}px ${colorScheme} のタイル面積が映像の16%を超える` +
           `（preview ${previewBox.width.toFixed(0)}×${previewBox.height.toFixed(0)} / video ${mobileVideoBox.width.toFixed(0)}×${mobileVideoBox.height.toFixed(0)} / ${(previewAreaRatio * 100).toFixed(1)}%）`,
       )
     }
   }
+  if (labelBox && labelBox.height < LABEL_MIN_HEIGHT) {
+    ng.push(`⑧ ${vw}px ${colorScheme} のタイル下ラベルが縮んで読めない（描画の高さ ${labelBox.height.toFixed(1)}px < ${LABEL_MIN_HEIGHT}px）`)
+  }
   if (!labelBox || !timeBox) {
-    ng.push(`⑧ 400px ${colorScheme} でタイル下ラベルか時刻表示の矩形が取れない`)
+    ng.push(`⑧ ${vw}px ${colorScheme} でタイル下ラベルか時刻表示の矩形が取れない`)
   } else {
     const overlaps = (a, b) =>
       a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y
     if (overlaps(labelBox, timeBox)) {
-      ng.push(`⑧ 400px ${colorScheme} のタイル下ラベルが時刻表示と重なる`)
+      ng.push(`⑧ ${vw}px ${colorScheme} のタイル下ラベルが時刻表示と重なる`)
     }
     if (chapterBox && overlaps(labelBox, chapterBox)) {
-      ng.push(`⑧ 400px ${colorScheme} のタイル下ラベルがチャプター名と重なる`)
+      ng.push(`⑧ ${vw}px ${colorScheme} のタイル下ラベルがチャプター名と重なる`)
     }
     if (chapterBox) {
       const rowLeft = Math.min(timeBox.x, chapterBox.x)
@@ -528,7 +542,7 @@ for (const colorScheme of ['light', 'dark']) {
         labelBox.y < playbackRow.y + playbackRow.height + 4 &&
         labelBox.y + labelBox.height + 4 > playbackRow.y
       if (touchesPlaybackRow) {
-        ng.push(`⑧ 400px ${colorScheme} のタイル下ラベルが時刻・チャプター行から4px以上離れていない`)
+        ng.push(`⑧ ${vw}px ${colorScheme} のタイル下ラベルが時刻・チャプター行から4px以上離れていない`)
       }
     }
   }

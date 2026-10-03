@@ -41,8 +41,7 @@ import { programTitle } from '@/lib/program-labels'
 import { usePlayerFrame } from '@/lib/use-player-frame'
 import { cn } from '@/lib/utils'
 import {
-  SEEK_TILES_DISPLAY_WIDTH,
-  seekTileAt,
+  seekTilePlacement,
 } from '@/lib/seek-tiles'
 
 /** 終端カードが次のエピソードへ自動で移るまでの秒数。「取り消す」で止められる。 */
@@ -228,7 +227,8 @@ export function RecordingPlayer({
     x: number
     y: number
     left: number
-    scale: number
+    width: number
+    height: number
     seconds: number
   } | null>(null)
   // スクラブ帯の再生済み割合（0..1）・現在位置（秒）・タイムラインの終端
@@ -700,23 +700,14 @@ export function RecordingPlayer({
     setTilesRequestedFor(recordingId)
 
     const seconds = scrubSeconds(event)
-    const tile = seconds === null ? null : seekTileAt(seconds)
+    const rect = event.currentTarget.getBoundingClientRect()
+    const tile =
+      seconds === null ? null : seekTilePlacement(seconds, rect.width, event.clientX - rect.left)
     if (tile === null || tilesAvailableFor !== recordingId) {
       setTilePreview(null)
       return
     }
-    const rect = event.currentTarget.getBoundingClientRect()
-    // 帯が 1 枚ぶんより狭い（狭い画面）ときは、はみ出さないよう縮めて出す。
-    // 480px 以下では幅も半分に制限する。16:9 のタイル面積は映像の約25%以下になる。
-    const compactViewport = window.innerWidth <= 480
-    const scale = Math.min(
-      1,
-      rect.width / SEEK_TILES_DISPLAY_WIDTH,
-      compactViewport ? rect.width / (SEEK_TILES_DISPLAY_WIDTH * 2) : 1,
-    )
-    const width = SEEK_TILES_DISPLAY_WIDTH * scale
-    const left = Math.max(0, Math.min(rect.width - width, event.clientX - rect.left - width / 2))
-    setTilePreview({ recordingId, ...tile, left, scale, seconds: seconds ?? 0 })
+    setTilePreview({ recordingId, ...tile, seconds: seconds ?? 0 })
   }
   const handleScrubPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     isScrubbingRef.current = true
