@@ -456,7 +456,7 @@ func (w *EncodeWorker) buildCutFilter(ctx context.Context, profile config.Encode
 	if err != nil {
 		return nil, err
 	}
-	hwUpload := profile.HWAccel != nil && profile.HWAccel.Kind == "vaapi"
+	hwUpload := profile.HWAccel != nil && profile.HWAccel.Kind == "vaapi" && profile.HWAccel.OutputFormat == ""
 	result, err := ffargs.CutFilterComplex(keep, video, audio, profile.Scaler, profile.Height, profile.Deinterlace, hwUpload)
 	if err != nil {
 		return nil, fmt.Errorf("building cut filtergraph: %w", err)
@@ -1212,8 +1212,9 @@ func keepRangesParam(keep []chapters.Range) (pgtype.Multirange[pgtype.Range[pgty
 // `-vf` を出さない** --- filtergraph はアプリが 1 本だけ組み、deinterlace / scale /
 // hwupload を連結の後ろに置く（ffargs.CutFilterComplex）。`-vf` と
 // `-filter_complex` の併用は、同じ入力を 2 回フィルタする意図の無い形になる。
-// cut の入力側は `-hwaccel` の代わりに `-vaapi_device` を出す（HW デコードした
-// フレームは trim に通せない。ffargs.VAAPIDeviceArgs）。
+// cut で hwaccel.output_format があれば通常の `-hwaccel` 前置ブロックを出す。
+// 省略時は CPU decode の救済経路なので `-vaapi_device` を使う
+// （ffargs.VAAPIDeviceArgs）。
 func BuildFFmpegArgs(profile config.EncodeProfile, input, output string, withSubtitles bool, cut *ffargs.CutFilterResult) []string {
 	args := []string{
 		"-hide_banner",
@@ -1221,8 +1222,12 @@ func BuildFFmpegArgs(profile config.EncodeProfile, input, output string, withSub
 		"-y",
 	}
 	if profile.Cut {
-		args = append(args, ffargs.VAAPIDeviceArgs(profile.HWAccel)...)
-		args = append(args, profile.InputExtraArgs...)
+		if profile.HWAccel != nil && profile.HWAccel.OutputFormat != "" {
+			args = append(args, ffargs.PreInput(profile.HWAccel, profile.InputExtraArgs)...)
+		} else {
+			args = append(args, ffargs.VAAPIDeviceArgs(profile.HWAccel)...)
+			args = append(args, profile.InputExtraArgs...)
+		}
 	} else {
 		args = append(args, ffargs.PreInput(profile.HWAccel, profile.InputExtraArgs)...)
 	}

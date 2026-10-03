@@ -188,22 +188,41 @@ argv は `cut` のときだけ filtergraph になる:
 
 ```
 -hide_banner -nostats -y
-[-vaapi_device D] [input_extra_args…]                          # hwaccel ブロックは出さない（下記）
+[-hwaccel K [-hwaccel_device D] [-hwaccel_output_format F] | -vaapi_device D] [input_extra_args…]
 -i INPUT
 -filter_complex <trim/atrim → concat → deinterlace → scale>    # アプリが組む
 -map [vout] -map [aout]
 -c:v VC -c:a AC …
 ```
 
-filtergraph は区間ごとに映像を `trim=start=…:end=…`、音声を `atrim=start=…:end=…` で切り、それぞれ `concat` したあとに 1 本の連鎖へ通す。**映像も音声も時刻（入力の最早 start_time が原点。チャプターの原点と同じ）で切る**。映像を「最初の映像フレームから数えたフレーム番号」で切ると、放送 TS のように音声が先に始まる入力で映像だけがずれる。境界はどちらも同じフレーム番号から秒へ換算する（`frame / fps`）ので、区間ごとの A/V のずれが蓄積しない。trim の後で PTS から区間の開始時刻を引くのは `concat` が各区間の先頭を 0 とみなすため。`PTS-STARTPTS` にしないのは、映像の最初のフレームが区間の頭より遅れる入力でその遅れを区間の長さに残すため。
+`hwaccel.output_format` があれば、通常の encode と同じ hwaccel 引数を `-i` の前に出す。
+省略時は従来の救済経路を使う。`hwaccel.kind: vaapi` なら `-vaapi_device D` を出す。
+各区間を映像は `trim=start=…:end=…`、音声は `atrim=start=…:end=…` で切る。
+各区間を `concat` したあとに、`scaler` から導出した deinterlace / scale を連結する。
+VAAPI の GPU 経路は `deinterlace_vaapi` → `scale_vaapi` を使う。
+この経路に `format=nv12,hwupload` は付けない。
+救済経路では CPU filter の後ろに `format=nv12,hwupload` を付ける。
+**映像も音声も時刻（入力の最早 start_time が原点。チャプターの原点と同じ）で切る**。
+映像を「最初の映像フレームから数えたフレーム番号」で切ると、放送 TS では映像だけがずれる。
+境界は同じフレーム番号から秒へ換算する（`frame / fps`）ので、区間ごとに A/V のずれが蓄積しない。
+trim の後に PTS から区間の開始時刻を引くのは、`concat` が各区間の先頭を 0 とみなすため。
+`PTS-STARTPTS` ではなく開始時刻を引き、映像の先頭が区間の頭より遅れる場合も遅れを残す。
+
+**HW フレームも trim / setpts / concat を通せる。**
+FFmpeg n5.1.6 / n9.0 の trim.c と avf_concat.c はフレーム内容を参照せず、HW pixel format を除外しない。
+avfilter.c はこれらの filter の入力 `hw_frames_ctx` を出力へ引き継ぐ。
+ffmpeg 9.0.2 の VideoToolbox で trim → setpts → concat → `scale_vt` → `h264_videotoolbox` を実測した。
+VAAPI を載せた Linux GPU では未実施。
 
 **出力側に `-map` を書けないので、アプリがストリームを選ぶ。** ffmpeg の既定の選択（映像は最大解像度、音声は最大チャンネル数、同点は若い番号）を ffprobe で再現する。再現しないとカット版だけ別のストリームが選ばれ、カットしない版と音声が食い違う。
 
 `cut` にだけ掛かる起動エラー:
 
-- `scaler: vaapi` / `hwaccel.output_format` --- HW デコードしたフレームは `trim` に通せない
-- `hwaccel.kind` が `vaapi` 以外 --- 救済（`-hwaccel` の代わりに `-vaapi_device` を出し、連鎖の最後に `format=nv12,hwupload` を足す）が VAAPI にしかない
-- `hwaccel.kind: vaapi` なのに `device` が無い --- `-vaapi_device` に渡すものが無い
+- `hwaccel.output_format` があり、`height > 0` または `deinterlace: true` なのに `scaler: vaapi` でない --- HW フレームの後ろに CPU filter は置けない
+- `hwaccel.output_format` を指定する場合は `vaapi` のみ --- 指定すると hwupload を付けないので、ソフトウェア形式を HW へ上げる手段が無い
+- `scaler: vaapi` で filter があるのに `hwaccel.output_format: vaapi` が無い --- upload は filter 後なので VAAPI filter に CPU フレームを渡せない
+- `hwaccel.kind` が `vaapi` 以外 --- VAAPI scaler と救済経路を使えない
+- `hwaccel.kind: vaapi` なのに `device` が無い --- `-hwaccel_device` または `-vaapi_device` に渡すものが無い
 - `extra_args` の `-map` --- ストリームの並びはアプリが握る（live と同じ理由）
 
 **字幕サイドカーは同じ ffmpeg 起動の別出力なので `trim` が効かない。** 書き出した後に同じ keep 区間の写像で時刻を付け替える。CM 区間の中に収まるキューは捨て、境界をまたぐキューは keep 側でクリップする。
