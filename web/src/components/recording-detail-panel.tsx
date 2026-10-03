@@ -581,7 +581,8 @@ export function RecordingDetail({
         // 映像が全幅を占める前提の上限は掛けない（chapters.mjs が測る）。
         'w-full text-sm',
         !chapterEditing && 'mx-auto max-w-[calc((100dvh-18rem)*16/9)]',
-        !trash && recording.series != null && 'grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_18rem]',
+        !trash && 'flex flex-col gap-8',
+        !trash && recording.series != null && 'lg:grid lg:grid-cols-[minmax(0,1fr)_18rem]',
       )}
     >
       {!trash && (
