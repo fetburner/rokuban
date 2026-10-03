@@ -98,13 +98,14 @@ async function sendPlaybackWrite(recordingId: number, write: PlaybackPositionWri
 
 // 先に出した位置 PUT が後から出した watched を追い越すと、watched が消した位置行を
 // PUT が作り直す。書き込みは前のものが settle するまで次を送らない。
-// ponytail: 全録画で 1 本のチェーン。プレイヤーは同時に 1 つなので録画ごとのキーは持たない。
+// ponytail: 全録画で 1 本のチェーン。録画をまたいでも順序が厳しくなるだけで結果は変わらない。
+// 待ちが問題になったら録画ごとのチェーンにする。
 let writeTail: Promise<unknown> = Promise.resolve()
 
 /**
  * position writes are best effort; pause/pagehide supply later retry points.
- * keepalive（pagehide）は待てないので直列化せず即送る。終端で位置を消した後は位置を書かない
- * 規則（docs/frontend/recordings.md）により、pagehide の書き込みが watched を追い越す形は作られない。
+ * keepalive（pagehide）は待てないので直列化せず即送る。残差: pagehide 時に未完了の書き込みが
+ * あれば keepalive が追い越しうる。窓は直前の 1 往復だけで、ページを閉じる経路では待てないので受け入れる。
  */
 export function persistPlaybackPosition(
   recordingId: number,
