@@ -739,33 +739,47 @@ func validateEncodeProfileFFArgs(p EncodeProfile) error {
 
 // validateCutProfile は cut: true のプロファイルだけに掛かる制約を検査する。
 //
-// cut プロファイルでは映像を `-filter_complex` の trim に通すため、HW デコードした
-// フレームをそのまま渡せない。デコードとフィルタはソフトウェアで行い、VAAPI を
-// 使う場合は連鎖の最後に `format=nv12,hwupload` を置いてエンコードだけを HW に
-// 任せる。したがって表現できない組み合わせを起動時に落とす:
+// FFmpeg の trim / setpts / concat は HW フレームを受け取り、そのコンテキストを
+// 後段へ渡す。根拠は FFmpeg n5.1.6 / n9.0 の trim.c、avf_concat.c、avfilter.c。
+// 実測は ffmpeg 9.0.2 の VideoToolbox 経路（trim → setpts → concat → scale_vt →
+// h264_videotoolbox）で、VAAPI 実機では未検証（issue #1064）。
 //
-//   - `scaler: vaapi` — HW デコードしたフレーム前提のスケール。trim の後ろに置けない
-//   - `hwaccel.output_format` — HW サーフェスのまま後段へ渡す指示。同上
-//   - `hwaccel.kind` が vaapi 以外 — 上記の救済（-vaapi_device + hwupload）が
-//     VAAPI にしか無い。黙って `-hwaccel <kind>` を出すと trim が壊れる
-//   - `hwaccel.kind: vaapi` で device が無い — `-vaapi_device` に渡すものが無い
+// 起動時には HW フレームへ CPU filter をつなぐ形と、ソフトウェアフレームを VAAPI
+// filter に渡す形を拒否する。救済経路では CPU decode / filter の後ろに
+// `format=nv12,hwupload` を置き、VAAPI エンコードだけを使う:
+//
+//   - `hwaccel.output_format` と VAAPI 以外の scaler で height / deinterlace がある —
+//     後段の CPU filter は HW フレームを処理できない
+//   - `scaler: vaapi` で filter があるのに `hwaccel.output_format: vaapi` が無い —
+//     VAAPI filter にソフトウェアフレームが渡る。救済経路の upload は filter の後ろ
+//   - `hwaccel.kind` が vaapi 以外 — scaler と救済経路が VAAPI にしかない
+//   - `hwaccel.kind: vaapi` で device が無い — `-hwaccel_device` / `-vaapi_device` に
+//     渡すものが無い
+//   - `hwaccel.output_format` が vaapi 以外 — output_format があると hwupload を
+//     付けないので、ソフトウェア形式のフレームを HW へ上げる手段が無い
 //   - `extra_args` の `-map` — ストリームの並びはアプリが握る（live と同じ理由）
 func validateCutProfile(p EncodeProfile) error {
 	if !p.Cut {
 		return nil
 	}
 	var errs []string
-	if p.Scaler == ffargs.ScalerVAAPI {
-		errs = append(errs, "cut profiles must not use scaler \"vaapi\" (hardware-decoded frames cannot pass through trim)")
+	hasVideoFilters := p.Height > 0 || p.Deinterlace
+	hasHWFrames := p.HWAccel != nil && p.HWAccel.OutputFormat != ""
+	if hasHWFrames && hasVideoFilters && p.Scaler != ffargs.ScalerVAAPI {
+		errs = append(errs, "cut profiles with hwaccel.output_format and height/deinterlace require scaler \"vaapi\" (CPU filters cannot process hardware frames)")
+	}
+	if hasVideoFilters && p.Scaler == ffargs.ScalerVAAPI &&
+		(p.HWAccel == nil || p.HWAccel.Kind != "vaapi" || p.HWAccel.OutputFormat != "vaapi") {
+		errs = append(errs, "cut profiles with scaler \"vaapi\" and height/deinterlace require hwaccel.kind \"vaapi\" and hwaccel.output_format \"vaapi\" (the rescue path uploads after the filters)")
 	}
 	if p.HWAccel != nil {
-		if p.HWAccel.OutputFormat != "" {
-			errs = append(errs, "cut profiles must not set hwaccel.output_format (hardware frames cannot pass through trim)")
-		}
 		switch p.HWAccel.Kind {
 		case "vaapi":
 			if p.HWAccel.Device == "" {
-				errs = append(errs, "cut profiles with hwaccel.kind \"vaapi\" require hwaccel.device (it becomes -vaapi_device)")
+				errs = append(errs, "cut profiles with hwaccel.kind \"vaapi\" require hwaccel.device (it becomes -hwaccel_device or -vaapi_device)")
+			}
+			if p.HWAccel.OutputFormat != "" && p.HWAccel.OutputFormat != "vaapi" {
+				errs = append(errs, fmt.Sprintf("cut profiles support only hwaccel.output_format \"vaapi\", got %q", p.HWAccel.OutputFormat))
 			}
 		default:
 			errs = append(errs, fmt.Sprintf("cut profiles support only hwaccel.kind \"vaapi\", got %q", p.HWAccel.Kind))

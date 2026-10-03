@@ -40,8 +40,6 @@ import { formatChaptersTime } from '@/lib/chapters'
 import { formatBytes, formatDate, formatPlaybackTime, formatPlaybackTimeMs } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
-  SEEK_TILES_DISPLAY_HEIGHT,
-  SEEK_TILES_DISPLAY_WIDTH,
   seekTileBackgroundSize,
   seekTilesURL,
 } from '@/lib/seek-tiles'
@@ -50,7 +48,8 @@ export type TilePreview = {
   x: number
   y: number
   left: number
-  scale: number
+  width: number
+  height: number
   /** ホバー位置の再生位置（秒）。タイルの下の時刻ラベルに使う。 */
   seconds: number
 } | null
@@ -695,28 +694,27 @@ export function RecordingPlaybackControls({
                 )}
                 {tilePreview && tilesAvailable && (
                   <div
-                    className="pointer-events-none absolute bottom-full z-20 mb-2 flex origin-bottom-left flex-col items-center gap-1"
+                    className="pointer-events-none absolute bottom-full z-20 mb-12 md:mb-2 flex flex-col items-center gap-1"
                     style={{
                       left: tilePreview.left,
-                      width: SEEK_TILES_DISPLAY_WIDTH,
-                      transform: tilePreview.scale < 1 ? `scale(${tilePreview.scale})` : undefined,
+                      width: tilePreview.width,
                     }}
                   >
                     <div
                       data-testid="seek-tile-preview"
                       className="overflow-hidden rounded border border-white/30 bg-black shadow-lg"
-                      style={{ width: SEEK_TILES_DISPLAY_WIDTH, height: SEEK_TILES_DISPLAY_HEIGHT }}
+                      style={{ width: tilePreview.width, height: tilePreview.height }}
                     >
                       <div
                         className="h-full w-full bg-no-repeat"
                         style={{
                           backgroundImage: `url(${seekTilesURL(recordingId ?? 0)})`,
                           backgroundPosition: `${tilePreview.x}px ${tilePreview.y}px`,
-                          backgroundSize: seekTileBackgroundSize(),
+                          backgroundSize: seekTileBackgroundSize(tilePreview.width),
                         }}
                       />
                     </div>
-                    <span data-testid="seek-tile-label" className="rounded bg-black/80 px-1.5 text-xs">
+                    <span data-testid="seek-tile-label" className="max-w-full truncate rounded bg-black/80 px-1.5 text-xs">
                       {formatPlaybackTime(tilePreview.seconds)}
                       {hoverSpan ? ` · ${chapterLabel(hoverSpan)}` : ''}
                     </span>

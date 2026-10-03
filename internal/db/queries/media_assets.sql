@@ -155,6 +155,46 @@ WHERE recording_id = $1
   AND kind = 'thumbnail'
   AND state = 'active';
 
+-- thumbnail 差し替えの commit tx 内で行を直列化し、世代付きパスへ UPDATE する。
+-- seek_ms は衛星表から読む。行が無ければ旧サムネイルで位置不明。
+-- name: LockActiveThumbnailMediaAsset :one
+SELECT a.id, a.rel_path, s.seek_ms
+FROM media_assets a
+LEFT JOIN media_asset_thumbnail_seeks s ON s.media_asset_id = a.id
+WHERE a.recording_id = sqlc.arg('recording_id')
+  AND a.kind = 'thumbnail'
+  AND a.state = 'active'
+FOR UPDATE OF a;
+
+-- thumbnail 差し替え時に、同じ media_asset 行の相対パスとサイズだけを更新する。
+-- name: UpdateThumbnailMediaAssetPath :exec
+UPDATE media_assets
+SET rel_path   = sqlc.arg('rel_path'),
+    size_bytes = sqlc.arg('size_bytes'),
+    updated_at = now()
+WHERE id = sqlc.arg('id')
+  AND kind = 'thumbnail'
+  AND state = 'active';
+
+-- 生成に使ったファイルがまだ使えるかを commit tx 内で確認する。
+-- name: IsActiveThumbnailInput :one
+SELECT EXISTS (
+    SELECT 1
+    FROM media_assets a
+    WHERE a.id = sqlc.arg('media_asset_id')
+      AND a.kind IN ('original', 'encoded')
+      AND a.state = 'active'
+      AND NOT EXISTS (
+          SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id
+      )
+);
+
+-- サムネイル作成時に抽出した原本時間軸の位置を、media_assets の公開と同じ tx で記録。
+-- name: UpsertMediaAssetThumbnailSeek :exec
+INSERT INTO media_asset_thumbnail_seeks (media_asset_id, seek_ms)
+VALUES (sqlc.arg('media_asset_id'), sqlc.arg('seek_ms'))
+ON CONFLICT (media_asset_id) DO UPDATE SET seek_ms = EXCLUDED.seek_ms;
+
 -- seek_tiles の冪等性チェック用。active な seek_tiles 行があれば id を返す。
 -- name: GetActiveSeekTilesMediaAssetID :one
 SELECT id FROM media_assets

@@ -19,6 +19,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
@@ -79,6 +80,149 @@ func TestThumbnailSeek(t *testing.T) {
 	}
 }
 
+func TestThumbnailPlanForInputs(t *testing.T) {
+	tests := []struct {
+		name      string
+		inputs    thumbnailInputs
+		keep      []chapters.Range
+		wantPath  string
+		wantInput int64
+		wantSeek  int64
+		wantOK    bool
+	}{
+		{
+			name: "original maps keep-axis seek back to the source",
+			inputs: thumbnailInputs{Original: &thumbnailSource{
+				MediaAssetID: 1, RelPath: "original.ts",
+			}, Encoded: []thumbnailSource{{
+				MediaAssetID: 2, Profile: "a", RelPath: "encoded.mp4",
+			}}},
+			keep:      []chapters.Range{{StartMs: 60000, EndMs: 1800000}},
+			wantPath:  "original.ts",
+			wantInput: 90000,
+			wantSeek:  90000,
+			wantOK:    true,
+		},
+		{
+			name: "short first keep continues into the next keep range",
+			inputs: thumbnailInputs{Original: &thumbnailSource{
+				MediaAssetID: 1, RelPath: "original.ts",
+			}},
+			keep:      []chapters.Range{{StartMs: 0, EndMs: 20000}, {StartMs: 60000, EndMs: 360000}},
+			wantPath:  "original.ts",
+			wantInput: 70000,
+			wantSeek:  70000,
+			wantOK:    true,
+		},
+		{
+			name: "encoded profiles are chosen lexically before cut profiles",
+			inputs: thumbnailInputs{Encoded: []thumbnailSource{
+				{MediaAssetID: 4, Profile: "z-un-cut", RelPath: "z.mp4"},
+				{MediaAssetID: 3, Profile: "a-un-cut", RelPath: "a.mp4"},
+				{MediaAssetID: 2, Profile: "0-cut", RelPath: "cut.mp4", Cut: true,
+					KeepRanges: []chapters.Range{{StartMs: 0, EndMs: 500000}}},
+			}},
+			keep:      []chapters.Range{{StartMs: 60000, EndMs: 1800000}},
+			wantPath:  "a.mp4",
+			wantInput: 90000,
+			wantSeek:  90000,
+			wantOK:    true,
+		},
+		{
+			name: "cut input uses its frozen keep duration and maps the fact back",
+			inputs: thumbnailInputs{Encoded: []thumbnailSource{
+				{MediaAssetID: 2, Profile: "cut", RelPath: "cut.mp4", Cut: true,
+					KeepRanges: []chapters.Range{{StartMs: 60000, EndMs: 960000}}},
+			}},
+			keep:      []chapters.Range{{StartMs: 60000, EndMs: 1800000}},
+			wantPath:  "cut.mp4",
+			wantInput: 30000,
+			wantSeek:  90000,
+			wantOK:    true,
+		},
+		{
+			name:   "empty keep has no chapter-aware plan",
+			inputs: thumbnailInputs{Original: &thumbnailSource{MediaAssetID: 1, RelPath: "original.ts"}},
+			wantOK: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := thumbnailPlanForInputs(tt.inputs, tt.keep)
+			if ok != tt.wantOK {
+				t.Fatalf("plan available = %v, want %v", ok, tt.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if got.Source.RelPath != tt.wantPath || got.InputSeekMs != tt.wantInput || got.RecordedSeek != tt.wantSeek {
+				t.Errorf("plan = {path:%q input:%d recorded:%d}, want {path:%q input:%d recorded:%d}",
+					got.Source.RelPath, got.InputSeekMs, got.RecordedSeek,
+					tt.wantPath, tt.wantInput, tt.wantSeek)
+			}
+		})
+	}
+}
+
+func TestNextThumbnailRelPath(t *testing.T) {
+	tests := []struct {
+		previous string
+		want     string
+	}{
+		{"thumbnails/12.jpg", "thumbnails/12.g1.jpg"},
+		{"thumbnails/12.g1.jpg", "thumbnails/12.g2.jpg"},
+		{"thumbnails/12.g8.jpg", "thumbnails/12.g9.jpg"},
+	}
+	for _, tt := range tests {
+		if got := nextThumbnailRelPath(12, tt.previous); got != tt.want {
+			t.Errorf("nextThumbnailRelPath(%q) = %q, want %q", tt.previous, got, tt.want)
+		}
+	}
+}
+
+func TestThumbnailNeedsReselect(t *testing.T) {
+	inputs := thumbnailInputs{Original: &thumbnailSource{MediaAssetID: 1, RelPath: "original.ts"}}
+	timeline := chapters.Derive(false, nil,
+		[]chapters.Span{{StartMs: 0, EndMs: 60000, Label: chapters.LabelCM, Cut: true}}, 1800000)
+
+	inside := int64(60000)
+	if thumbnailNeedsReselect(&inside, inputs, timeline) {
+		t.Fatal("a recorded frame at the first keep boundary should not be replaced")
+	}
+	inCM := int64(30000)
+	if !thumbnailNeedsReselect(&inCM, inputs, timeline) {
+		t.Fatal("a recorded frame in a CM range should be replaced")
+	}
+	if !thumbnailNeedsReselect(nil, inputs, timeline) {
+		t.Fatal("an unknown legacy position should be replaced when a timeline and input exist")
+	}
+	if thumbnailNeedsReselect(&inCM, thumbnailInputs{}, timeline) {
+		t.Fatal("no usable input should not enqueue a retry")
+	}
+	if thumbnailNeedsReselect(&inCM, inputs, nil) {
+		t.Fatal("a recording without a chapter timeline should not be replaced")
+	}
+
+	allCut := chapters.Derive(true,
+		[]chapters.Span{{StartMs: 0, EndMs: 1800000, Label: chapters.LabelCM, Cut: true}}, nil, 1800000)
+	if thumbnailNeedsReselect(&inCM, inputs, allCut) {
+		t.Fatal("an empty keep set should not repeatedly replace a thumbnail")
+	}
+
+	// A cut-only source can keep planning the exact same seek after a chapter edit.
+	// The position is now in CM, but want == recorded must stop a repeat loop.
+	cutOnly := thumbnailInputs{Encoded: []thumbnailSource{{
+		MediaAssetID: 2, Profile: "cut", RelPath: "cut.mp4", Cut: true,
+		KeepRanges: []chapters.Range{{StartMs: 0, EndMs: 500000}},
+	}}}
+	changed := chapters.Derive(true,
+		[]chapters.Span{{StartMs: 30000, EndMs: 60000, Label: chapters.LabelCM, Cut: true}}, nil, 1800000)
+	position := int64(30000)
+	if thumbnailNeedsReselect(&position, cutOnly, changed) {
+		t.Fatal("the same planned cut-only position should not be enqueued repeatedly")
+	}
+}
+
 func TestThumbnailWorker_CreatesAsset(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -132,6 +276,13 @@ func TestThumbnailWorker_CreatesAsset(t *testing.T) {
 	if id == 0 {
 		t.Fatal("thumbnail asset id is 0")
 	}
+	state, err := sqlcgen.New(pool).LockActiveThumbnailMediaAsset(context.Background(), recordingID)
+	if err != nil {
+		t.Fatalf("loading thumbnail seek: %v", err)
+	}
+	if state.SeekMs == nil || *state.SeekMs != 10000 {
+		t.Errorf("initial thumbnail seek_ms = %v, want 10000", state.SeekMs)
+	}
 
 	// メディア上に JPEG がある。
 	dest := filepath.Join(mediaDir, "thumbnails", fmt.Sprintf("%d.jpg", recordingID))
@@ -150,6 +301,232 @@ func TestThumbnailWorker_CreatesAsset(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("scratch dirs left behind: %v", entries)
+	}
+}
+
+func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	scratchDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, "reselect/original.ts", []byte("fake-ts"))
+	oldRelPath := thumbnailRelPath(recordingID)
+	thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
+		db.AssetKindThumbnail, nil, oldRelPath, tinyJPEG)
+	q := sqlcgen.New(pool)
+	if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+		MediaAssetID: thumbnailID,
+		SeekMs:       30000,
+	}); err != nil {
+		t.Fatalf("seeding old thumbnail seek: %v", err)
+	}
+	if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
+		RecordingID: recordingID,
+		CmRanges:    "{[0,60000)}",
+	}); err != nil {
+		t.Fatalf("seeding CM ranges: %v", err)
+	}
+
+	var gotInputSeek string
+	w := &ThumbnailWorker{
+		Pool:       pool,
+		MediaDir:   mediaDir,
+		ScratchDir: scratchDir,
+		runCmd: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			if containsArg(args, "format=duration") {
+				t.Fatal("chapter-aware reselection must not call ffprobe")
+			}
+			if i := indexOfArg(args, "-ss"); i >= 0 && i+1 < len(args) {
+				gotInputSeek = args[i+1]
+			}
+			out := args[len(args)-1]
+			if err := os.WriteFile(out, tinyJPEG, 0o644); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		},
+	}
+	job := &river.Job[ThumbnailJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   ThumbnailJobArgs{RecordingID: recordingID},
+	}
+	if err := w.Work(ctx, job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+	// chapter boundary 60,000ms is quantized to source frame 59,993ms; the
+	// 30s policy seek therefore maps to 89,993ms on the original timeline.
+	if gotInputSeek != "89.993" {
+		t.Errorf("ffmpeg -ss = %q, want 89.993 seconds", gotInputSeek)
+	}
+
+	state, err := q.LockActiveThumbnailMediaAsset(ctx, recordingID)
+	if err != nil {
+		t.Fatalf("loading thumbnail planning state: %v", err)
+	}
+	if state.ID != thumbnailID {
+		t.Errorf("thumbnail row id = %d, want unchanged id %d", state.ID, thumbnailID)
+	}
+	if state.RelPath != fmt.Sprintf("thumbnails/%d.g1.jpg", recordingID) {
+		t.Errorf("thumbnail rel_path = %q, want first replacement generation", state.RelPath)
+	}
+	if state.SeekMs == nil || *state.SeekMs != 89993 {
+		t.Errorf("thumbnail seek_ms = %v, want 89993", state.SeekMs)
+	}
+	if _, err := os.Stat(filepath.Join(mediaDir, filepath.FromSlash(oldRelPath))); !os.IsNotExist(err) {
+		t.Errorf("old thumbnail path still exists (stat err = %v)", err)
+	}
+	newPath := filepath.Join(mediaDir, "thumbnails", fmt.Sprintf("%d.g1.jpg", recordingID))
+	if data, err := os.ReadFile(newPath); err != nil || !bytesEqual(data, tinyJPEG) {
+		t.Errorf("new thumbnail file = %v, err = %v", data, err)
+	}
+	if active, err := q.IsActiveThumbnailInput(ctx, originalID); err != nil || !active {
+		t.Errorf("original input active after replacement = %v, err = %v", active, err)
+	}
+}
+
+func TestThumbnailWorker_UsesCutOnlyInputAndFrozenKeep(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+	profile := "cut-profile"
+	cutAssetID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
+		db.AssetKindEncoded, &profile, "encoded/cut.mp4", []byte("fake-mp4"))
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO media_asset_cuts (media_asset_id, keep_ranges) VALUES ($1, $2::int8multirange)`,
+		cutAssetID, "{[60000,960000)}"); err != nil {
+		t.Fatalf("seeding cut keep ranges: %v", err)
+	}
+	oldRelPath := thumbnailRelPath(recordingID)
+	thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
+		db.AssetKindThumbnail, nil, oldRelPath, tinyJPEG)
+	q := sqlcgen.New(pool)
+	if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+		MediaAssetID: thumbnailID,
+		SeekMs:       30000,
+	}); err != nil {
+		t.Fatalf("seeding old thumbnail seek: %v", err)
+	}
+	if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
+		RecordingID: recordingID,
+		CmRanges:    "{[0,60000)}",
+	}); err != nil {
+		t.Fatalf("seeding CM ranges: %v", err)
+	}
+
+	var gotInputSeek string
+	w := &ThumbnailWorker{
+		Pool:       pool,
+		MediaDir:   mediaDir,
+		ScratchDir: t.TempDir(),
+		runCmd: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			if i := indexOfArg(args, "-ss"); i >= 0 && i+1 < len(args) {
+				gotInputSeek = args[i+1]
+			}
+			if err := os.WriteFile(args[len(args)-1], tinyJPEG, 0o644); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		},
+	}
+	job := &river.Job[ThumbnailJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   ThumbnailJobArgs{RecordingID: recordingID},
+	}
+	if err := w.Work(ctx, job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+	if gotInputSeek != "30.000" {
+		t.Errorf("cut input -ss = %q, want 30.000 seconds", gotInputSeek)
+	}
+	state, err := q.LockActiveThumbnailMediaAsset(ctx, recordingID)
+	if err != nil {
+		t.Fatalf("loading thumbnail planning state: %v", err)
+	}
+	if state.SeekMs == nil || *state.SeekMs != 90000 {
+		t.Errorf("cut-only thumbnail seek_ms = %v, want 90000", state.SeekMs)
+	}
+	if state.ID != thumbnailID {
+		t.Errorf("thumbnail id = %d, want unchanged id %d", state.ID, thumbnailID)
+	}
+}
+
+func TestThumbnailWorker_UsesUncutEncodedInputWhenOriginalIsMissing(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+	profile := "uncut-profile"
+	encodedRelPath := "encoded/uncut.mp4"
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
+		db.AssetKindEncoded, &profile, encodedRelPath, []byte("fake-mp4"))
+	thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
+		db.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), tinyJPEG)
+	q := sqlcgen.New(pool)
+	if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+		MediaAssetID: thumbnailID,
+		SeekMs:       30000,
+	}); err != nil {
+		t.Fatalf("seeding old thumbnail seek: %v", err)
+	}
+	if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
+		RecordingID: recordingID,
+		CmRanges:    "{[0,60000)}",
+	}); err != nil {
+		t.Fatalf("seeding CM ranges: %v", err)
+	}
+
+	var gotInputSeek, gotInputPath string
+	w := &ThumbnailWorker{
+		Pool:       pool,
+		MediaDir:   mediaDir,
+		ScratchDir: t.TempDir(),
+		runCmd: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			if i := indexOfArg(args, "-ss"); i >= 0 && i+1 < len(args) {
+				gotInputSeek = args[i+1]
+			}
+			if i := indexOfArg(args, "-i"); i >= 0 && i+1 < len(args) {
+				gotInputPath = args[i+1]
+			}
+			if err := os.WriteFile(args[len(args)-1], tinyJPEG, 0o644); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		},
+	}
+	job := &river.Job[ThumbnailJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   ThumbnailJobArgs{RecordingID: recordingID},
+	}
+	if err := w.Work(ctx, job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+	if gotInputSeek != "89.993" {
+		t.Errorf("uncut encoded input -ss = %q, want 89.993 seconds", gotInputSeek)
+	}
+	wantInputPath := filepath.Join(mediaDir, filepath.FromSlash(encodedRelPath))
+	if gotInputPath != wantInputPath {
+		t.Errorf("ffmpeg input path = %q, want uncut encoded file %q", gotInputPath, wantInputPath)
+	}
+	state, err := q.LockActiveThumbnailMediaAsset(ctx, recordingID)
+	if err != nil {
+		t.Fatalf("loading thumbnail planning state: %v", err)
+	}
+	if state.SeekMs == nil || *state.SeekMs != 89993 {
+		t.Errorf("thumbnail seek_ms = %v, want 89993", state.SeekMs)
 	}
 }
 
@@ -935,5 +1312,62 @@ func TestCommandOutput_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) 
 	}
 	if string(got) != "fake-input" {
 		t.Errorf("output file = %q, want copy of input", got)
+	}
+}
+
+// 再選択の入口は候補クエリ 1 本なので、チャプター無し・ごみ箱の録画は、後続 id に
+// 本物の候補があっても作り直さない（`after = id-1, limit 1` が別録画の行を返す形）。
+func TestThumbnailWorker_ReselectSkipsNonCandidatesEvenWhenLaterRecordingIsCandidate(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	q := sqlcgen.New(pool)
+
+	seed := func(name string, ranges string) (int64, string) {
+		id := insertTestRecording(t, pool)
+		seedOriginalAsset(t, pool, mediaDir, id, name+"/original.ts", []byte("fake-ts"))
+		rel := thumbnailRelPath(id)
+		thumbID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, db.AssetKindThumbnail, nil, rel, tinyJPEG)
+		if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+			MediaAssetID: thumbID, SeekMs: 30000,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if ranges != "" {
+			if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{RecordingID: id, CmRanges: ranges}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return id, rel
+	}
+	noChapters, noChaptersRel := seed("nochap", "")
+	trashed, trashedRel := seed("trash", "{[0,60000)}")
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET deleted_at = now() WHERE id = $1`, trashed); err != nil {
+		t.Fatal(err)
+	}
+	seed("candidate", "{[0,60000)}")
+
+	w := &ThumbnailWorker{
+		Pool: pool, MediaDir: mediaDir, ScratchDir: t.TempDir(),
+		runCmd: func(context.Context, string, ...string) ([]byte, error) {
+			t.Error("non-candidate recording must not run ffmpeg/ffprobe")
+			return nil, fmt.Errorf("unexpected command")
+		},
+	}
+	for id, rel := range map[int64]string{noChapters: noChaptersRel, trashed: trashedRel} {
+		job := &river.Job[ThumbnailJobArgs]{JobRow: &rivertype.JobRow{}, Args: ThumbnailJobArgs{RecordingID: id}}
+		if err := w.Work(ctx, job); err != nil {
+			t.Fatalf("Work(%d) error: %v", id, err)
+		}
+		cur, err := q.LockActiveThumbnailMediaAsset(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cur.RelPath != rel {
+			t.Errorf("recording %d rel_path = %q, want unchanged %q", id, cur.RelPath, rel)
+		}
 	}
 }

@@ -8,11 +8,11 @@ import (
 	"github.com/fetburner/rokuban/internal/chapters"
 )
 
-// VAAPIDeviceArgs は cut プロファイルの VAAPI 用の入力側引数を返す。
+// VAAPIDeviceArgs はソフトウェア decode を使う cut プロファイルの VAAPI 用入力側引数を返す。
 //
-// **`-hwaccel vaapi` の代わりに `-vaapi_device` を出す。** HW でデコードした
-// フレームは trim に通せないのでデコードはソフトウェアで行い、`-vaapi_device` で
-// デバイスだけを用意して、連鎖の最後の `format=nv12,hwupload` で初めて HW へ上げる。
+// `hwaccel.output_format` を省略した救済経路では `-hwaccel vaapi` を使わず、
+// `-vaapi_device` でデバイスを用意する。CPU の trim / filter の後ろに
+// `format=nv12,hwupload` を付けて、エンコード時に HW へ上げる。
 //
 // h が nil または kind が vaapi でなければ nil（kind の制約は config の起動時検査が
 // 持つ。ここは「vaapi ならどう出すか」だけを決める）。
@@ -35,8 +35,10 @@ type CutFilterResult struct {
 
 // CutFilterComplex は確認済みの keep 区間でカットする filtergraph を組み立てる。
 //
-// 順序は trim / atrim → concat → deinterlace → scale →（VAAPI なら）
-// format=nv12,hwupload。**連結した後に 1 本の連鎖へ通す**ので、区間ごとに
+// 順序は trim / atrim → concat → scaler から導出した deinterlace → scale。
+// ソフトウェア filter の救済経路ではその後ろに format=nv12,hwupload を付ける。
+// HW decode と VAAPI scaler を使う経路では VAAPI filter が HW フレームをそのまま
+// 処理するので upload は付けない。**連結した後に 1 本の連鎖へ通す**ため、区間ごとに
 // フィルタが重複しない。
 //
 // 映像・音声とも**時刻（秒）で切る**。時刻の原点は入力の最早 start_time
