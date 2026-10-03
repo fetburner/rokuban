@@ -118,15 +118,21 @@ function tileColor(seconds) {
   return [20 + index * 18, 240 - index * 18, 100]
 }
 
-/** ensureSeekTilesFixture は 10 秒ごとに単色の 10 列格子（1600x180、12 枚 + 黒）を作る。 */
+/** QUAD_BLUE は 1 枚のタイルの 4 象限（左上・右上・左下・右下）の青。象限ごとに違う値にして、切り抜きのずれを読めるようにする。 */
+const QUAD_BLUE = [40, 120, 200, 255]
+
+/**
+ * ensureSeekTilesFixture は 10 秒ごとの 10 列格子（1600x180、12 枚 + 黒）を作る。1 枚は 4 象限で、
+ * 赤・緑が時刻（タイルの番号）、青が象限を表す。タイルの左上だけを写す切り抜きは、右・下の象限の青が違うので分かる。
+ */
 function ensureSeekTilesFixture(videoPath) {
-  const fixturePath = path.join(path.dirname(videoPath), 'seek-tiles-colors.jpg')
+  const fixturePath = path.join(path.dirname(videoPath), 'seek-tiles-quads.jpg')
   if (existsSync(fixturePath) && statSync(fixturePath).size > 0) return fixturePath
   const width = 1600
   const height = 180
   const pixels = Buffer.alloc(width * height * 3)
   for (let index = 0; index < 12; index += 1) {
-    const [r, g, b] = tileColor(index * 10)
+    const [r, g] = tileColor(index * 10)
     const x0 = (index % 10) * 160
     const y0 = Math.floor(index / 10) * 90
     for (let y = 0; y < 90; y += 1) {
@@ -134,11 +140,11 @@ function ensureSeekTilesFixture(videoPath) {
         const offset = ((y0 + y) * width + x0 + x) * 3
         pixels[offset] = r
         pixels[offset + 1] = g
-        pixels[offset + 2] = b
+        pixels[offset + 2] = QUAD_BLUE[(y >= 45 ? 2 : 0) + (x >= 80 ? 1 : 0)]
       }
     }
   }
-  const ppmPath = path.join(path.dirname(videoPath), 'seek-tiles-colors.ppm')
+  const ppmPath = path.join(path.dirname(videoPath), 'seek-tiles-quads.ppm')
   writeFileSync(ppmPath, Buffer.concat([Buffer.from(`P6\n${width} ${height}\n255\n`), pixels]))
   execFileSync('ffmpeg', ['-y', '-i', ppmPath, '-q:v', '2', fixturePath], { stdio: 'ignore' })
   return existsSync(fixturePath) ? fixturePath : undefined
@@ -1069,18 +1075,24 @@ async function checkTilePixels(label) {
   const png = await page.screenshot({ clip: { x: trackBox.x, y: trackBox.y, width: trackBox.width, height: trackBox.height } })
   let checked = 0
   for (const cell of cells) {
-    const left = Math.max(cell.x, trackBox.x)
-    const right = Math.min(cell.x + cell.width, trackBox.x + trackBox.width)
     // 切る区間（CM）のマスは橙の幕が重なって画素が混ざる。幕のないマスで見る。
     const covered = cell.seconds >= CM_SPAN.startMs / 1000 && cell.seconds < CM_SPAN.endMs / 1000
-    if (right - left < 12 || cell.seconds >= 120 || covered) continue
-    const y = Math.round(cell.y - trackBox.y + cell.height / 2)
-    const xs = [0.2, 0.5, 0.8].map((f) => Math.round(left + (right - left) * f - trackBox.x))
-    const pixels = await readPixels(png, xs.map((x) => [x, y]))
-    const want = tileColor(cell.seconds)
+    // 四隅を読むので、帯に全体が入っているマスだけを見る。
+    const inside = cell.x >= trackBox.x - 0.5 && cell.x + cell.width <= trackBox.x + trackBox.width + 0.5
+    if (!inside || cell.seconds >= 120 || covered) continue
+    // 四隅寄り（横・縦とも 20% / 80%）の 4 点。象限ごとに青が違うので、タイル全体が縮んで入っているかが分かる。
+    const points = []
+    for (const fy of [0.2, 0.8]) {
+      for (const fx of [0.2, 0.8]) {
+        points.push([Math.round(cell.x + cell.width * fx - trackBox.x), Math.round(cell.y + cell.height * fy - trackBox.y)])
+      }
+    }
+    const pixels = await readPixels(png, points)
+    const [wantR, wantG] = tileColor(cell.seconds)
     for (const [i, px] of pixels.entries()) {
+      const want = [wantR, wantG, QUAD_BLUE[i]]
       if (px.some((value, channel) => Math.abs(value - want[channel]) > 14)) {
-        ng.push(`${label}: ${cell.seconds}秒のマスの画素が違う（点${i} 実際 rgb(${px}) / 期待 rgb(${want})）`)
+        ng.push(`${label}: ${cell.seconds}秒のマスの画素が違う（隅${i} 実際 rgb(${px}) / 期待 rgb(${want})）`)
         break
       }
     }

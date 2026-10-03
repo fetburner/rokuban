@@ -507,9 +507,10 @@ async function transitionsAlong(png) {
   }
   // 画質はまだ選ばない（カット版では編集器そのものが消え、下書きも消えるので、持ち越しを測れない）。
   // 履歴を戻って 2 話へ移る。未保存なので画面内の確認バーが出る（捨てて移る）。
-  // 待たないと 6 回中 2〜3 回は戻る操作がブロックされなかった（測定）。原因は表示更新直後でブロッカーの登録が
-  // 済んでいないためと推測している（未検証）。
-  await page.waitForTimeout(300)
+  // ヘッダー（`header h1`）に「未保存」が出るまで待ってから戻る。editor の sr-only の文言はヘッダーより 1 commit
+  // 早く出るので、それで待つとブロッカー（useBlocker は useEffect で張り直す）が張られる前に戻ってしまう
+  // （レビュアーの実測で最大約 5ms の窓）。人が最後の打鍵から 5ms 以内に戻ることはなく、製品の不具合ではない。
+  await page.locator('header h1').filter({ hasText: '未保存' }).waitFor({ timeout: 5000 })
   await page.evaluate(() => history.back())
   await page.getByRole('button', { name: '変更を捨てる' }).click({ timeout: 5000 })
   await page.waitForURL('**/recordings/2', { timeout: 5000 })
