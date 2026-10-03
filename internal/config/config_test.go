@@ -2334,15 +2334,26 @@ func TestLoad_EncodeProfileCut(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			// HW デコードしたフレームは trim に通せない。
-			name:    "cut with scaler vaapi is an error",
-			extra:   "      cut: true\n      height: 720\n      scaler: vaapi\n",
+			name: "cut with vaapi decode and vaapi filters is accepted",
+			extra: "      cut: true\n      height: 720\n      deinterlace: true\n      scaler: vaapi\n" +
+				"      hwaccel:\n        kind: vaapi\n        device: /dev/dri/renderD128\n        output_format: vaapi\n",
+			wantErr: false,
+		},
+		{
+			name:    "cut with hwaccel output_format and software scale is an error",
+			extra:   "      cut: true\n      height: 720\n      hwaccel:\n        kind: vaapi\n        device: /dev/dri/renderD128\n        output_format: vaapi\n",
 			wantErr: true,
 			wantMsg: "scaler",
 		},
 		{
-			name:    "cut with hwaccel output_format is an error",
-			extra:   "      cut: true\n      hwaccel:\n        kind: vaapi\n        device: /dev/dri/renderD128\n        output_format: vaapi\n",
+			name:    "cut with hwaccel output_format and software deinterlace is an error",
+			extra:   "      cut: true\n      deinterlace: true\n      hwaccel:\n        kind: vaapi\n        device: /dev/dri/renderD128\n        output_format: vaapi\n",
+			wantErr: true,
+			wantMsg: "scaler",
+		},
+		{
+			name:    "cut with vaapi scaler and no hwaccel output_format is an error",
+			extra:   "      cut: true\n      height: 720\n      scaler: vaapi\n      hwaccel:\n        kind: vaapi\n        device: /dev/dri/renderD128\n",
 			wantErr: true,
 			wantMsg: "output_format",
 		},
