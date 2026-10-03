@@ -34,7 +34,7 @@ function textMatchSummary(m: RuleTextMatch): string {
  * （飛び石）は個別に列挙する。一覧の 1 行に収めるための要約であり、
  * `ConditionFields` の曜日チップ（個別選択）とは別の表現でよい。
  */
-function weekdayRangeLabel(weekdays: number): string {
+export function weekdayRangeLabel(weekdays: number): string {
   if (weekdays === allWeekdays) return '毎日'
   const indices: number[] = []
   for (let i = 0; i < weekdayLabels.length; i++) {

@@ -293,6 +293,33 @@ describe('RulesPage encode settings', () => {
 })
 
 describe('RulesPage 新規作成', () => {
+  it('名前候補はキーワードに追従し、触った後は空でも再生成されない', async () => {
+    const { postBodies } = stubApi([])
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(await findCreateRuleButton())
+    const nameInput = await screen.findByLabelText('名前')
+    const keywordInput = screen.getByLabelText('テキスト条件 1 の値')
+
+    await user.type(keywordInput, 'ニュース')
+    expect(nameInput).toHaveValue('ニュース')
+
+    await user.clear(nameInput)
+    await user.clear(keywordInput)
+    await user.type(keywordInput, '深夜')
+    expect(nameInput).toHaveValue('')
+
+    await user.type(nameInput, '手動の名前')
+    await user.clear(keywordInput)
+    await user.type(keywordInput, 'ドラマ')
+    expect(nameInput).toHaveValue('手動の名前')
+
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(postBodies).toHaveLength(1))
+    expect(postBodies[0]?.name).toBe('手動の名前')
+  })
+
   it('新規作成で入力した条件が RuleInput に入る', async () => {
     const { postBodies } = stubApi([])
     const user = userEvent.setup()
