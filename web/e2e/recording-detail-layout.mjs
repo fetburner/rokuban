@@ -427,7 +427,7 @@ if (await noSeriesPage.locator('[data-testid="recording-series-shelf"]').count()
   ng.push('no-series: シリーズ棚が表示される')
 }
 if (EVIDENCE_DIR) {
-  await noSeriesPage.screenshot({ path: path.join(EVIDENCE_DIR, 'no-series-1280x800.png'), fullPage: false, animations: 'disabled' })
+  await noSeriesPage.screenshot({ path: path.join(EVIDENCE_DIR, 'no-series-1280x800.png'), fullPage: true, animations: 'disabled' })
 }
 await noSeriesContext.close()
 
