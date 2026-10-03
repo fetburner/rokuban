@@ -103,7 +103,7 @@ const context = await browser.newContext({
 })
 const page = await context.newPage()
 
-// `bounded-page-content` は ProgramsPage のリスト分岐、`program-grid` はグリッド分岐
+// `page-content` は ProgramsPage のリスト分岐、`program-grid` はグリッド分岐
 // にだけ存在する。同期初期化前は最初の分岐が必ずリストになるので、
 // 「最後にグリッドが出た」だけでなく「最初からグリッドだった」ことを確認できる。
 await page.addInitScript(() => {
@@ -111,7 +111,7 @@ await page.addInitScript(() => {
   let lastView = null
   const recordView = () => {
     const main = document.querySelector('main')
-    const view = main?.querySelector('[data-testid="bounded-page-content"]')
+    const view = main?.querySelector('[data-testid="page-content"]')
       ? 'list'
       : main?.querySelector('[data-testid="program-grid"]')
         ? 'grid'

@@ -109,6 +109,26 @@ const services = [
   { id: 3273801040, networkId: 32738, serviceId: 1040, name: 'テレビ大阪', channelType: 'GR', channel: '18', remoteControlKeyId: 7, hasLogoData: false, hasPrograms: true },
   { id: 400101, networkId: 4, serviceId: 101, name: 'ＮＨＫＢＳ', channelType: 'BS', channel: 'BS15_0', remoteControlKeyId: 0, hasLogoData: false, hasPrograms: true },
 ]
+// ライブ一覧のスクロール / 多段表示だけに使う長いリスト。番組 API を持たないので
+// 初期選択には影響せず、最初の実データ局（NHK総合）を維持する。
+const wideLiveServices = [
+  ...services,
+  ...Array.from({ length: 200 }, (_, i) => {
+    const networkId = 32800 + i
+    const serviceId = 2000 + i
+    return {
+      id: networkId * 100000 + serviceId,
+      networkId,
+      serviceId,
+      name: `デザイン確認局${i + 1}`,
+      channelType: 'GR',
+      channel: String(100 + i),
+      remoteControlKeyId: 10 + (i % 10),
+      hasLogoData: false,
+      hasPrograms: false,
+    }
+  }),
+]
 
 /** 番組名は固定の輪番。ジャンルの淡色が並ぶ様子を見たいので lv1 も回す。 */
 const titles = [
@@ -146,7 +166,10 @@ function programsFor(startISO, endISO, serviceIds) {
         endAt: new Date(t + duration).toISOString(),
         durationMs: duration,
         name: `${name}`,
-        description: '副調整室の計器盤。地は無彩 3 値、色は信号のみ。',
+        description:
+          out.length % 5 === 0
+            ? ''
+            : '放送内容の説明です。広い画面でも先頭の一行だけを揃えて表示します。地は無彩 3 値、色は信号のみ。',
         genres: [genre],
         isFree: i % 5 !== 0,
       })
@@ -395,6 +418,18 @@ const homeContinueWatching = [
   })),
 ]
 
+// 2560px の「ほかの新着」で 1 行に並べられる枚数が 6 を超えることを確認する専用材料。
+const homeWideContinueWatching = [
+  ...homeContinueWatching,
+  ...Array.from({ length: 8 }, (_, i) => ({
+    ...homeContinueWatching[1],
+    id: 40 + i,
+    eventId: 40 + i,
+    title: `広幅テスト番組 ${i + 1}`,
+    startAt: iso(nowMs - (8 + i) * HOUR),
+  })),
+]
+
 const recordingDetailScenarios = {
   completed: {
     ...recordings[1],
@@ -530,6 +565,11 @@ log('\n=== 契約検証: フィクスチャの zod parse ===')
 await validateFixturesOrExit(
   [
     ...services.map((s, i) => [`services[${i}]`, ListServicesResponseItem, s]),
+    ...wideLiveServices.slice(services.length).map((s, i) => [
+      `wideLiveServices[${i}]`,
+      ListServicesResponseItem,
+      s,
+    ]),
     ...programsFor(iso(nowMs), iso(nowMs + 6 * HOUR)).map((p, i) => [`programs[${i}]`, ListProgramsResponseItem, p]),
     ['toastLayoutProgram', ListProgramsResponseItem, toastLayoutProgram],
     ...reservations.map((r, i) => [`reservations[${i}]`, ListReservationsResponseItem, r]),
@@ -538,6 +578,11 @@ await validateFixturesOrExit(
     ...[...recordings, transferringRecording].map((r) => [`recordings#${r.id}`, ListRecordingsResponseItem, r]),
     ...homeContinueWatching.map((r, i) => [
       `homeContinueWatching[${i}]`,
+      ListContinueWatchingResponseItem,
+      r,
+    ]),
+    ...homeWideContinueWatching.slice(homeContinueWatching.length).map((r, i) => [
+      `homeWideContinueWatching[${i}]`,
       ListContinueWatchingResponseItem,
       r,
     ]),
@@ -608,6 +653,8 @@ await validateFixturesOrExit(
 function apiHandler({
   withBreaker = false,
   homeModeFixture = false,
+  homeWideFixture = false,
+  wideLiveFixture = false,
   homeOpsFixture = false,
   homeOpsSseFixture = null,
   delayPath = null,
@@ -705,7 +752,15 @@ function apiHandler({
       }
       return json(homeModeFixture ? overages.slice(0, 1) : overages)
     }
-    if (p === '/api/recordings/continue-watching') return json(emptyHome ? [] : homeContinueWatching)
+    if (p === '/api/recordings/continue-watching') {
+      return json(
+        emptyHome
+          ? []
+          : homeWideFixture
+            ? homeWideContinueWatching
+            : homeContinueWatching,
+      )
+    }
     if (p === '/api/recordings') {
       const seriesOf = url.searchParams.get('seriesOf')
       if (seriesOf !== null) {
@@ -789,7 +844,7 @@ function apiHandler({
     }
     // サムネイルは 404 に落として実装側のプレースホルダを撮る（画像を作らない）
     if (/^\/api\/media\/recordings\/\d+\/thumbnail$/.test(p)) return route.fulfill({ status: 404 })
-    if (p === `/api/sites/${SITE}/services`) return json(services)
+    if (p === `/api/sites/${SITE}/services`) return json(wideLiveFixture ? wideLiveServices : services)
     if (p === `/api/sites/${SITE}/programs`) {
       const startISO = url.searchParams.get('start') ?? iso(nowMs)
       const endISO = url.searchParams.get('end') ?? iso(nowMs + 6 * HOUR)
@@ -1380,7 +1435,7 @@ for (const mode of ['watch', 'ops']) {
         const badgeElement = document.querySelector('[data-testid="home-warning-count"]')
         const badgeStyle = badgeElement ? getComputedStyle(badgeElement) : null
         return {
-          content: rect('[data-testid="bounded-page-content"]'),
+          content: rect('[data-testid="page-content"], [data-testid="bounded-page-content"]'),
           thumbnail: rect('[data-testid="home-next-watch-thumbnail"]'),
           primary: rect('[data-testid="home-primary-action"]'),
           header: rect('main > header'),
@@ -1446,6 +1501,78 @@ for (const mode of ['watch', 'ops']) {
   }
 }
 
+// ホーム「見る」: 2560x1440 でも主役と新着 1 行目が初期 viewport に入り、
+// 新着件数は 176px カードで入る列数に追従する。
+{
+  const wideViewport = { name: 'home-wide', width: 2560, height: 1440 }
+  const arrivalCounts = new Map()
+  for (const viewport of [homeDesktop, wideViewport]) {
+    const { context, page } = await open(
+      viewport,
+      'light',
+      { name: 'home-watch', path: '/?mode=watch' },
+      { homeModeFixture: true, homeWideFixture: true },
+    )
+    const grid = page.getByTestId('home-new-arrivals-grid')
+    const ready = await grid.waitFor({ timeout: 10000 }).then(() => true).catch(() => false)
+    if (!ready) {
+      ng.push(`home/watch/${viewport.width}: 新着カードが表示されない`)
+      await context.close()
+      continue
+    }
+    const metrics = await page.evaluate(() => {
+      const rect = (element) => {
+        if (!(element instanceof HTMLElement)) return null
+        const { x, y, right, bottom, width, height } = element.getBoundingClientRect()
+        return { x, y, right, bottom, width, height }
+      }
+      const gridElement = document.querySelector('[data-testid="home-new-arrivals-grid"]')
+      const hero = document.querySelector('[data-testid="home-next-watch-thumbnail"]')
+      const firstCard = gridElement?.querySelector('li')
+      return {
+        columns: Number(gridElement?.getAttribute('data-column-count') ?? 0),
+        cards: gridElement?.children.length ?? 0,
+        cardRows: gridElement
+          ? [...gridElement.children].map((card) => Math.round(card.getBoundingClientRect().y))
+          : [],
+        hero: rect(hero),
+        firstCard: rect(firstCard),
+        header: rect(document.querySelector('main > header')),
+      }
+    })
+    arrivalCounts.set(viewport.width, metrics.cards)
+    log(`  home/watch/${viewport.width}: columns=${metrics.columns}, cards=${metrics.cards}`)
+    if (metrics.cards !== metrics.columns) {
+      ng.push(`home/watch/${viewport.width}: 新着 ${metrics.cards} 件が 1 行の ${metrics.columns} 列と一致しない`)
+    }
+    if (new Set(metrics.cardRows).size > 1) {
+      ng.push(`home/watch/${viewport.width}: 新着カードが 2 行以上に折り返されている`)
+    }
+    if (viewport.width === wideViewport.width) {
+      if (metrics.cards <= 6) ng.push('home/watch/2560: 新着が 6 件以下のまま')
+      if (metrics.hero === null || metrics.firstCard === null || metrics.header === null) {
+        ng.push('home/watch/2560: 主役または先頭カードの位置を測れない')
+      } else {
+        if (metrics.hero.width > 1024.5 || metrics.hero.height > 576.5) {
+          ng.push(`home/watch/2560: 主役サムネイルの上限を超えている（${metrics.hero.width}×${metrics.hero.height}px）`)
+        }
+        if (metrics.hero.bottom > viewport.height || metrics.firstCard.bottom > viewport.height) {
+          ng.push('home/watch/2560: 主役または新着 1 枚目が初期画面に入らない')
+        }
+      }
+      const file = path.join(OUT_DIR, 'home-watch-light-desktop-wide.png')
+      await page.screenshot({ path: file })
+      log(`  ${path.basename(file)}`)
+    }
+    await context.close()
+  }
+  const narrowCount = arrivalCounts.get(homeDesktop.width)
+  const wideCount = arrivalCounts.get(2560)
+  if (narrowCount !== undefined && wideCount !== undefined && narrowCount >= wideCount) {
+    ng.push(`home/watch: 1280px の新着件数 ${narrowCount} が 2560px の ${wideCount} 件より減っていない`)
+  }
+}
+
 // --- ホーム管理モード M8-26: 時間軸の実寸 -------------------------------
 // 3 幅でページ自体は固定し、時間軸の枠だけが横スクロールすることを測る。
 // 時間軸は機械配置の推定ではなく既存 API の観測値を時刻に置く表示なので、
@@ -1502,7 +1629,7 @@ for (const theme of themes) {
       const rowLabels = [...(timeline?.querySelectorAll('[data-testid="home-timeline-row-label"]') ?? [])]
       const overageLabels = [...(timeline?.querySelectorAll('[data-testid="home-overage-label"]') ?? [])]
       const ticks = [...(timeline?.querySelectorAll('[data-testid="home-timeline-tick"]') ?? [])]
-      const home = document.querySelector('[data-testid="bounded-page-content"]')
+      const home = document.querySelector('[data-testid="page-content"], [data-testid="bounded-page-content"]')
       const controls = [...(home?.querySelectorAll('a, button, input, select, summary, [role="button"], [tabindex="0"]') ?? [])]
         .filter((element) => element.getClientRects().length > 0)
       return {
@@ -1608,7 +1735,7 @@ for (const theme of themes) {
   if (!overageText.includes('この時間帯の予約: 大相撲中継')) {
     ng.push(`ホーム: overage の時間帯 subtitle が予約を示していない（${overageText}）`)
   }
-  const homeText = (await page.locator('[data-testid="bounded-page-content"]').innerText()).replaceAll(/\s+/g, ' ')
+  const homeText = (await page.locator('[data-testid="page-content"], [data-testid="bounded-page-content"]').innerText()).replaceAll(/\s+/g, ' ')
   if (/(?:チューナー\s*#?\s*\d|tuner\s*#?\s*\d|容量(?:に)?(?:は)?(?:十分|余裕がある)|予約は容量に収まる)/i.test(homeText)) {
     ng.push('ホーム: tuner の個別割当または容量の確約を示す文言がある')
   }
@@ -2503,12 +2630,12 @@ for (const scenario of layoutScenarios) {
   }
 }
 
-// --- ①-A 広幅の行長上限と一覧の文字サイズ ---
+// --- ①-A 広幅の本文と一覧の文字サイズ ---
 //
 // jsdom は幅も継承後の実フォントサイズも測れない。2560px の実ブラウザで、一覧本文が
-// max-w-5xl の範囲に収まり、サイドバー直後へ左寄せされることを全対象画面で見る。
+// サイドバーを除く main の幅いっぱいに広がることを全対象画面で見る。
 // 題名と副情報は各画面の既定フィクスチャから実要素を掴み、計算済み px 値を測る。
-log('\n=== ①-A 広幅の行長上限と一覧の文字サイズ ===')
+log('\n=== ①-A 広幅の本文と一覧の文字サイズ ===')
 const boundedListScreens = [
   { screen: 'recordings', title: 'ニュース７', secondary: 'NHK総合' },
   { screen: 'reservations', title: '連続テレビ小説', secondary: 'NHKEテレ' },
@@ -2518,20 +2645,23 @@ const boundedListScreens = [
 ]
 for (const spec of boundedListScreens) {
   const { context, page } = await open(desktop, 'light', screenOf(spec.screen))
-  const content = page.locator('[data-testid="bounded-page-content"]')
+  const content = page.locator('[data-testid="page-content"], [data-testid="bounded-page-content"]')
   const contentBox = (await content.count()) === 0 ? null : await content.boundingBox()
   const mainBox = await page.locator('main').boundingBox()
   if (contentBox === null || mainBox === null) {
-    ng.push(`${spec.screen}: 行長を制限する本文コンテナが見つからない`)
+    ng.push(`${spec.screen}: 本文コンテナが見つからない`)
     await context.close()
     continue
   } else {
     log(`  ${spec.screen}: x=${contentBox.x}, width=${contentBox.width}`)
-    if (contentBox.width > 1024.5) {
-      ng.push(`${spec.screen}: 本文幅 ${contentBox.width}px が max-w-5xl（1024px）を超えている`)
-    }
-    if (Math.abs(contentBox.x - mainBox.x) > 0.5) {
-      ng.push(`${spec.screen}: 本文が左寄せでない（main x=${mainBox.x}, 本文 x=${contentBox.x}）`)
+    if (
+      Math.abs(contentBox.x - mainBox.x) > 0.5 ||
+      Math.abs(contentBox.width - mainBox.width) > 0.5
+    ) {
+      ng.push(
+        `${spec.screen}: 本文が main 幅いっぱいでない` +
+          `（main x=${mainBox.x}, width=${mainBox.width}; 本文 x=${contentBox.x}, width=${contentBox.width}）`,
+      )
     }
   }
 
@@ -2568,6 +2698,236 @@ for (const spec of boundedListScreens) {
   await context.close()
 }
 
+for (const screenName of ['home', 'series-hub']) {
+  const { context, page } = await open(
+    desktop,
+    'light',
+    screenOf(screenName),
+    screenName === 'home' ? { homeModeFixture: true } : {},
+  )
+  const content = page.locator('[data-testid="page-content"], [data-testid="bounded-page-content"]')
+  const contentBox = (await content.count()) === 0 ? null : await content.boundingBox()
+  const mainBox = await page.locator('main').boundingBox()
+  if (contentBox === null || mainBox === null) {
+    ng.push(`${screenName}: 本文コンテナが見つからない`)
+  } else if (
+    Math.abs(contentBox.x - mainBox.x) > 0.5 ||
+    Math.abs(contentBox.width - mainBox.width) > 0.5
+  ) {
+    ng.push(`${screenName}: 本文が main 幅いっぱいでない（main=${mainBox.width}px, 本文=${contentBox.width}px）`)
+  }
+  await context.close()
+}
+
+// 広い番組リストは説明列を使い、説明の有無にかかわらず左端と行高を揃える。
+{
+  const viewports = [
+    { name: 'desktop-1280', width: 1280, height: 900 },
+    desktop,
+  ]
+  const measured = new Map()
+  for (const viewport of viewports) {
+    const { context, page } = await open(viewport, 'light', screenOf('programs'))
+    const rows = page.locator('li[data-program-id]')
+    const rowsReady = await rows.first().waitFor({ timeout: 10000 }).then(() => true).catch(() => false)
+    if (!rowsReady) {
+      ng.push(`programs/${viewport.name}: 番組行が見つからない`)
+      await context.close()
+      continue
+    }
+    const rowMetrics = await rows.evaluateAll((items) =>
+      items.slice(0, 8).flatMap((item) => {
+        const row = item.querySelector('[data-testid="program-row"]')
+        const description = item.querySelector('[data-testid="program-row-description"]')
+        if (!row) return []
+        const rowRect = row.getBoundingClientRect()
+        const descriptionRect = description?.getBoundingClientRect()
+        return [{
+          id: item.getAttribute('data-program-id'),
+          height: rowRect.height,
+          descriptionX: descriptionRect?.width ? descriptionRect.x : null,
+          descriptionWidth: descriptionRect?.width ?? 0,
+        }]
+      }),
+    )
+    measured.set(viewport.width, rowMetrics)
+    if (viewport.width === desktop.width) {
+      const descriptions = rowMetrics.filter((row) => row.descriptionX !== null)
+      if (descriptions.length < 2) {
+        ng.push('programs/2560: 番組説明の列が 2 行以上で表示されていない')
+      } else {
+        const leftEdges = descriptions.map((row) => row.descriptionX)
+        if (Math.max(...leftEdges) - Math.min(...leftEdges) > 0.5) {
+          ng.push(`programs/2560: 番組説明列の左端が揃っていない（${leftEdges.join(', ')}）`)
+        }
+      }
+    }
+    await context.close()
+  }
+
+  const normalRows = new Map((measured.get(1280) ?? []).map((row) => [row.id, row]))
+  const wideRows = measured.get(2560) ?? []
+  for (const row of wideRows) {
+    const normal = normalRows.get(row.id)
+    if (normal && Math.abs(row.height - normal.height) > 0.5) {
+      ng.push(
+        `programs/${row.id}: 説明列で番組行の高さが変わった（1280=${normal.height}px, 2560=${row.height}px）`,
+      )
+    }
+  }
+}
+
+// カードの幅を上限し、2560px では固定 4 列より多く並べる。
+for (const screenName of ['series', 'recordings']) {
+  const { context, page } = await open(desktop, 'light', screenOf(screenName))
+  const cardToggle = page.getByRole('button', { name: 'カード表示', exact: true })
+  if ((await cardToggle.count()) === 0) {
+    ng.push(`${screenName}/2560: カード表示への切り替えが無い`)
+    await context.close()
+    continue
+  }
+  if ((await cardToggle.getAttribute('aria-pressed')) !== 'true') await cardToggle.click()
+  const cards = page.locator(
+    screenName === 'series' ? '[data-testid="series-shelf"]' : '[data-testid="recording-card"]',
+  )
+  const cardsReady = await cards.first().waitFor({ timeout: 10000 }).then(() => true).catch(() => false)
+  const boxes = cardsReady ? await cards.evaluateAll((items) => items.map((item) => {
+    const { x, y, width, height } = item.getBoundingClientRect()
+    return { x, y, width, height }
+  })) : []
+  if (!cardsReady || boxes.length === 0) {
+    ng.push(`${screenName}/2560: カードが見つからない`)
+  } else {
+    const maxWidth = Math.max(...boxes.map((box) => box.width))
+    const rows = new Set(boxes.map((box) => Math.round(box.y)))
+    log(`  ${screenName}/2560: cards=${boxes.length}, max-width=${maxWidth}px, rows=${rows.size}`)
+    if (maxWidth > 360.5) {
+      ng.push(`${screenName}/2560: カード幅 ${maxWidth}px が 360px の上限を超えている`)
+    }
+    if (boxes.length > 4 && rows.size > 1) {
+      ng.push(`${screenName}/2560: 4 列を超えたカードが複数行になっている`)
+    }
+  }
+  await page.screenshot({ path: path.join(OUT_DIR, `${screenName}-cards-light-desktop.png`) })
+  await context.close()
+}
+
+// ライブ外枠の広幅判定。受け入れ寸法（映像 + 情報 3 行、一覧との隙間なし、
+// 複数列、sticky）を実ブラウザで測る。
+for (const viewport of [
+  { name: 'live-1920', width: 1920, height: 1080 },
+  desktop,
+]) {
+  const liveScreen = {
+    ...screenOf('live'),
+    path: `/live?service=${services[0].id}&site=${SITE}`,
+  }
+  const { context, page } = await open(
+    viewport,
+    'light',
+    liveScreen,
+    { wideLiveFixture: true },
+  )
+  const preview = page.getByRole('button', { name: 'NHK総合を再生', exact: true })
+  const playerColumn = preview.locator('xpath=..')
+  const channelList = page.getByRole('navigation', { name: 'チャンネル一覧' })
+  const ready = await preview.waitFor({ timeout: 10000 }).then(() => true).catch(() => false)
+  if (!ready || (await channelList.count()) === 0) {
+    ng.push(`live/${viewport.width}: 映像またはチャンネル一覧が見つからない`)
+    await context.close()
+    continue
+  }
+  const station = page.locator('main').getByText('NHK総合', { exact: true }).first()
+  const programLine = page.locator('main p.text-xl.font-semibold').first()
+  const timeLine = page.locator('main p').filter({ hasText: /予定:/ }).first()
+  const [stationFound, programFound, timeFound] = await Promise.all([
+    station.waitFor({ timeout: 5000 }).then(() => true).catch(() => false),
+    programLine.waitFor({ timeout: 5000 }).then(() => true).catch(() => false),
+    timeLine.waitFor({ timeout: 5000 }).then(() => true).catch(() => false),
+  ])
+  const [videoBox, channelBox, stationBox, programBox, timeBox] = await Promise.all([
+    preview.boundingBox(),
+    channelList.boundingBox(),
+    stationFound ? station.boundingBox() : Promise.resolve(null),
+    programFound ? programLine.boundingBox() : Promise.resolve(null),
+    timeFound ? timeLine.boundingBox() : Promise.resolve(null),
+  ])
+  if (videoBox === null || channelBox === null || stationBox === null || programBox === null || timeBox === null) {
+    ng.push(`live/${viewport.width}: 映像と局名・番組名・時刻の位置を測れない`)
+  } else {
+    if (
+      videoBox.bottom > viewport.height ||
+      stationBox.bottom > viewport.height ||
+      programBox.bottom > viewport.height ||
+      timeBox.bottom > viewport.height
+    ) {
+      ng.push(`live/${viewport.width}: 映像または局名・番組情報が初期 viewport に収まらない`)
+    }
+    const gap = channelBox.x - videoBox.x - (await playerColumn.boundingBox())?.width
+    if (Math.abs(gap) > 0.5) {
+      ng.push(`live/${viewport.width}: 映像とチャンネル一覧の間に隙間がある（${gap}px）`)
+    }
+    log(`  live/${viewport.width}: video=${videoBox.width}×${videoBox.height}, channel-x=${channelBox.x}`)
+  }
+
+  const serviceItems = channelList.locator('ul ul').first().locator(':scope > li')
+  if (viewport.width === desktop.width) {
+    const columnXs = await serviceItems.evaluateAll((items) =>
+      [...new Set(items.map((item) => Math.round(item.getBoundingClientRect().x)))],
+    )
+    if (columnXs.length < 2) ng.push('live/2560: チャンネル一覧が複数列になっていない')
+
+    const scrollRange = await page.evaluate(() => document.documentElement.scrollHeight - window.innerHeight)
+    if (scrollRange < 500) {
+      ng.push(`live/2560: sticky を判定するスクロール量が足りない（${scrollRange}px）`)
+    } else {
+      await page.evaluate(() => window.scrollTo({ top: 600, behavior: 'instant' }))
+      await page.waitForTimeout(100)
+      const [playerAfterScroll, headerAfterScroll] = await Promise.all([
+        playerColumn.boundingBox(),
+        page.locator('main > header').boundingBox(),
+      ])
+      const stickyPosition = await playerColumn.evaluate((element) => getComputedStyle(element).position)
+      if (
+        playerAfterScroll === null ||
+        headerAfterScroll === null ||
+        stickyPosition !== 'sticky' ||
+        Math.abs(playerAfterScroll.y - headerAfterScroll.y - headerAfterScroll.height) > 1
+      ) {
+        ng.push('live/2560: スクロール後もプレイヤー列がヘッダー直下に sticky されていない')
+      }
+      await page.evaluate(() => window.scrollTo(0, 0))
+    }
+  }
+  await page.screenshot({ path: path.join(OUT_DIR, `${viewport.name}-light.png`) })
+  await context.close()
+}
+
+// 1280px の一覧ラフ比較用。自動判定だけでなく、1 行目・カード密度・右端の余白を
+// 2560px のショットと並べて確認する。
+for (const screenName of ['programs', 'reservations', 'recordings', 'rules', 'series', 'series-hub']) {
+  const viewport = { name: 'desktop-1280', width: 1280, height: 900 }
+  const { context, page } = await open(viewport, 'light', screenOf(screenName))
+  const file = path.join(OUT_DIR, `${screenName}-light-desktop-1280.png`)
+  await page.screenshot({ path: file })
+  log(`  ${path.basename(file)}`)
+  await context.close()
+}
+
+// #1022 の合意済みライブ画面ラフ（幅約 1180px）との比較対象。
+{
+  const viewport = { name: 'live-rough', width: 1180, height: 900 }
+  const liveScreen = {
+    ...screenOf('live'),
+    path: `/live?service=${services[0].id}&site=${SITE}`,
+  }
+  const { context, page } = await open(viewport, 'light', liveScreen)
+  const file = path.join(OUT_DIR, 'live-light-rough-1180.png')
+  await page.screenshot({ path: file })
+  log(`  ${path.basename(file)}`)
+  await context.close()
+}
+
 // 同じ /programs でも番組表グリッドは横幅が情報量なので、本文上限を適用しない。
 {
   const { context, page } = await open(desktop, 'light', screenOf('programs'))
@@ -2592,7 +2952,7 @@ for (const spec of boundedListScreens) {
       ng.push('programs-grid: 番組表グリッドが描画されない（待ちがタイムアウト）')
     } else {
       const gridBox = await grid.boundingBox()
-      if ((await page.locator('[data-testid="bounded-page-content"]').count()) > 0) {
+      if ((await page.locator('[data-testid="page-content"], [data-testid="bounded-page-content"]').count()) > 0) {
         ng.push('programs-grid: 番組表グリッドに一覧本文の幅上限が適用されている')
       }
       if (gridBox === null || gridBox.width <= 1024.5) {
@@ -2662,7 +3022,7 @@ for (const spec of boundedListScreens) {
   if ((await headerCreate.count()) > 0) {
     ng.push('rules/mobile: PageHeader に「ルールを作成」が出ている')
   }
-  const mobileContent = page.locator('[data-testid="bounded-page-content"]')
+  const mobileContent = page.locator('[data-testid="page-content"], [data-testid="bounded-page-content"]')
   const mobileCreate = mobileContent.getByRole('button', { name: 'ルールを作成', exact: true })
   const contentBox =
     (await mobileContent.count()) === 0 ? null : await mobileContent.boundingBox()

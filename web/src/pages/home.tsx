@@ -94,6 +94,9 @@ const HOME_TIMELINE_HOUR_PX_PHONE = 30
 const HOME_TIMELINE_TRACK_HEIGHT_PX = 20
 const HOME_TIMELINE_TRACK_GAP_PX = 3
 const HOME_TIMELINE_PAST_CONTEXT_MS = 3 * 3_600_000
+/** 新着カードの幅。本文内で 1 行を保てる最低幅から列数を計算する。 */
+const HOME_ARRIVAL_CARD_MIN_WIDTH_PX = 176
+const HOME_ARRIVAL_CARD_GAP_PX = 12
 
 /**
  * HomePage はホーム（`/`）。右上の「見る / 管理」で 2 つのモードを切り替える
@@ -313,7 +316,7 @@ export function HomePage() {
           continueWatching,
           finishedRecordings,
           homeHeroChoice.recording.id,
-          6,
+          20,
         )
       : []
   const headerActions = (
@@ -341,36 +344,7 @@ export function HomePage() {
             ) : null}
 
             {homeHeroChoice !== undefined && watchArrivals.length > 0 && (
-              <section aria-labelledby="home-new-arrivals" className="flex flex-col gap-2">
-                <div className="flex items-baseline justify-between gap-2">
-                  <h2 id="home-new-arrivals" className="text-sm font-semibold">
-                    ほかの新着
-                  </h2>
-                  <Link
-                    to="/series"
-                    className="shrink-0 text-xs text-muted-foreground underline-offset-2 hover:underline"
-                  >
-                    すべてのシリーズ →
-                  </Link>
-                </div>
-                <ul className="grid grid-cols-3 gap-2 sm:grid-cols-6 sm:gap-3">
-                  {watchArrivals.map((recording, index) => (
-                    <li key={recording.id} className={index >= 3 ? 'hidden sm:block' : undefined}>
-                      <Link
-                        to="/recordings/$id"
-                        params={{ id: String(recording.id) }}
-                        hash={recording.status === 'recording' ? 'chase' : undefined}
-                        className="flex min-w-0 flex-col gap-1.5"
-                      >
-                        <HomeThumbnail recording={recording} />
-                        <span className="truncate text-xs text-muted-foreground">
-                          {programTitle(recording.title)}
-                        </span>
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
-              </section>
+              <HomeNewArrivals recordings={watchArrivals} />
             )}
 
             {!recordingQuery.isPending && recordingsInProgress.length > 0 && (
@@ -953,7 +927,7 @@ function OpsStorageLine({
   )
 }
 
-/** 「次に見る 1 本」。desktop は本文幅の大半を 16:9 のサムネイルに割く。 */
+/** 「次に見る 1 本」。幅が広い画面ではサムネイルの高さを抑え、下の棚も初期画面に入れる。 */
 function WatchHero({ choice }: { choice: HomeHeroChoice }) {
   const { recording, kind } = choice
   const detail = {
@@ -968,9 +942,9 @@ function WatchHero({ choice }: { choice: HomeHeroChoice }) {
       : undefined
 
   return (
-    <section aria-label="次に見る 1 本" className="grid min-w-0 grid-cols-1 items-start gap-3 md:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)] md:gap-5">
+    <section aria-label="次に見る 1 本" className="flex min-w-0 flex-col items-start gap-3 md:flex-row md:gap-5">
       <HomeThumbnail recording={recording} hero progress={progress} />
-      <div className="flex min-w-0 flex-col gap-1">
+      <div className="flex w-full min-w-0 flex-col gap-1 md:flex-1">
         <p className="text-xs text-muted-foreground">次に見る · {kind === 'continue' ? '続きから' : '新着'}</p>
         <h2 className="text-lg leading-snug font-semibold text-balance md:text-xl">
           {programTitle(recording.title)}
@@ -1018,6 +992,74 @@ function WatchHero({ choice }: { choice: HomeHeroChoice }) {
   )
 }
 
+/** 画面幅に入る列数を観測し、「ほかの新着」を 1 行分だけ表示する。 */
+function HomeNewArrivals({ recordings }: { recordings: Recording[] }) {
+  const [columns, setColumns] = useState(3)
+  const listRef = useRef<HTMLUListElement>(null)
+
+  useLayoutEffect(() => {
+    const list = listRef.current
+    if (!list) return
+
+    const measure = () => {
+      const width = list.getBoundingClientRect().width
+      const gap = Number.parseFloat(getComputedStyle(list).columnGap) || HOME_ARRIVAL_CARD_GAP_PX
+      // phone は 3 枚。広い画面では 176px カードの列数に合わせる。
+      const next = width < 640
+        ? 3
+        : Math.max(
+            3,
+            Math.floor((width + gap) / (HOME_ARRIVAL_CARD_MIN_WIDTH_PX + gap)),
+          )
+      setColumns((current) => (current === next ? current : next))
+    }
+
+    const observer = new ResizeObserver(measure)
+    observer.observe(list)
+    measure()
+    return () => observer.disconnect()
+  }, [])
+
+  return (
+    <section aria-labelledby="home-new-arrivals" className="flex flex-col gap-2">
+      <div className="flex items-baseline justify-between gap-2">
+        <h2 id="home-new-arrivals" className="text-sm font-semibold">
+          ほかの新着
+        </h2>
+        <Link
+          to="/series"
+          className="shrink-0 text-xs text-muted-foreground underline-offset-2 hover:underline"
+        >
+          すべてのシリーズ →
+        </Link>
+      </div>
+      <ul
+        ref={listRef}
+        data-testid="home-new-arrivals-grid"
+        data-column-count={columns}
+        style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+        className="grid grid-cols-3 gap-2 sm:gap-3"
+      >
+        {recordings.slice(0, columns).map((recording) => (
+          <li key={recording.id} className="min-w-0">
+            <Link
+              to="/recordings/$id"
+              params={{ id: String(recording.id) }}
+              hash={recording.status === 'recording' ? 'chase' : undefined}
+              className="flex min-w-0 flex-col gap-1.5"
+            >
+              <HomeThumbnail recording={recording} />
+              <span className="truncate text-xs text-muted-foreground">
+                {programTitle(recording.title)}
+              </span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
 function formatPlaybackPosition(milliseconds: number): string {
   const seconds = Math.max(0, Math.floor(milliseconds / 1000))
   const hours = Math.floor(seconds / 3600)
@@ -1043,7 +1085,11 @@ function HomeThumbnail({
   return (
     <div
       data-testid={hero ? 'home-next-watch-thumbnail' : undefined}
-      className="relative aspect-video w-full min-w-0 overflow-hidden rounded border border-border bg-muted"
+      className={cn(
+        'relative aspect-video w-full min-w-0 overflow-hidden rounded border border-border bg-muted',
+        hero &&
+          'md:flex-[1.7_1_0%] md:max-w-[min(64rem,calc((100dvh-25rem)*16/9))]',
+      )}
     >
       {!failed ? (
         <img
