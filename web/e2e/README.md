@@ -280,6 +280,38 @@ E2E_URL=http://localhost:4173 pnpm e2e:chase
 E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:chase
 ```
 
+### 録画原本 HLS と encoded の再生時刻（`recording-playback-timeline.mjs`）
+
+Go テストで放送 TS に似せた MPEG-2 29.97 fps の fixture を作る。
+HLS は製品の `BuildOriginalVODFFmpegArgs`（offset 0 / 10 秒）で生成する。
+MP4 は製品の `BuildFFmpegArgs` と `config.example.yml` の h264 例で生成する。
+入力は先頭 PTS が 0 でない。音声を映像より約 700 ms 先に置く。
+不規則な間隔の9フレームに白い目印を入れ、位置で各フレームの ID を表す。
+期待時刻は、チャプターの軸である非カット MP4 を ffprobe して得た目印フレームの PTS とする。
+原本 TS の「目印 PTS - 最早 `start_time`」との差は参考値としてログにだけ出す。
+
+Chrome の hls.js と WebKit のネイティブ HLS の両方で、原本 HLS offset 0、シークで
+張り直した offset 10 秒、非カット MP4 を再生する。各目印の表示を画素で検出し、
+その時点の `requestVideoFrameCallback` の `mediaTime` を読む。offset 付き HLS は
+セッションの offset を足して原本時間軸へ戻し、フレーム番号の順序と半フレーム以内の
+差を記録する。`E2E_TIMELINE_EXPECTED_SHIFT_FRAMES=1` を付けると期待値を 1 フレーム
+ずらす変異確認になる。
+
+```sh
+E2E_URL=http://localhost:4173 pnpm e2e:recording-playback-timeline
+E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:recording-playback-timeline
+E2E_URL=http://localhost:4173 E2E_BROWSER=webkit E2E_TIMELINE_EXPECTED_SHIFT_FRAMES=1 pnpm e2e:recording-playback-timeline
+```
+
+この判定は ffmpeg / ffprobe / Go と Chromium / WebKit を使うため、これらが必要である。
+非カット MP4 基準の測定（HLS offset 0 / 10、括弧内は参考の原本 PTS 基準）では、
+Chrome の HLS が +66.73ms / +90.10ms（+56.71 / +80.08）だった。
+WebKit の HLS は 0.00ms / +23.37ms（-10.02 / +13.34）だった。
+半フレーム許容差 16.68ms を超えるため exit 1 になる。
+非カット MP4 は両ブラウザで 0.00ms（-10.02）だった。1 フレーム変異は WebKit で 13 件の NG
+になり、ずれを検出することを確認した。測定値と未測定の範囲は
+[`docs/frontend/recordings.md`](../../docs/frontend/recordings.md) に記録している。
+
 ### デザイン（`design.mjs`）
 
 **色は jsdom では測れない。** Tailwind のクラスは解決されず、oklch も計算されない。
