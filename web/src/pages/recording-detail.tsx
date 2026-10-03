@@ -38,6 +38,8 @@ export function RecordingDetailPage() {
   const idNum = Number(id)
   // 編集モードに入った録画の id。録画を移ったら（次の回への遷移など）編集モードを抜ける。
   const [editingId, setEditingId] = useState<number | null>(null)
+  // 別の録画へ移った瞬間に捨てる（id の比較だけだと、戻ってきたときに編集モードが復活する）。
+  if (editingId !== null && editingId !== idNum) setEditingId(null)
   const chapterEditing = editingId === idNum
   const [confirmChapterExit, setConfirmChapterExit] = useState(false)
   const [chapterEditorStatus, setChapterEditorStatus] = useState<ChapterEditorStatus>({

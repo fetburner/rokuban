@@ -2698,6 +2698,13 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
       expect(await screen.findByRole('heading', { name: '作品X 第4話' })).toBeInTheDocument()
       expect(screen.queryByTestId('chapter-edit-layout')).toBeNull()
       expect(screen.queryByTestId('chapter-exit-confirmation')).toBeNull()
+
+      // 元の録画へ戻っても編集モードは復活しない。
+      act(() => {
+        void router.navigate({ to: '/recordings/$id', params: { id: '3' }, hash: '' })
+      })
+      expect(await screen.findByRole('heading', { name: '作品X 第3話' })).toBeInTheDocument()
+      expect(screen.queryByTestId('chapter-edit-layout')).toBeNull()
     })
 
     it('やめる: 下書きが綺麗なら確認せず戻り、未保存なら確認を出す', async () => {

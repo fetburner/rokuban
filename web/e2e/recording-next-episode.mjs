@@ -481,10 +481,25 @@ async function transitionsAlong(png) {
   await page.locator('[data-testid="recording-series-shelf"] a[href="/recordings/1"]').click()
   await page.waitForURL('**/recordings/1', { timeout: 5000 })
   await page.waitForFunction(() => document.querySelector('video')?.getAttribute('src')?.includes('/recordings/1/'), undefined, { timeout: 5000 })
-  await page.locator('[data-testid="recording-player-frame"]').hover()
-  await page.getByRole('button', { name: '再生設定' }).click()
-  await page.getByRole('menuitem', { name: 'チャプターを直す' }).click()
-  await page.locator('[data-testid="chapter-edit-layout"]').waitFor({ timeout: 10000 })
+  const enterEditMode = async () => {
+    await page.locator('[data-testid="recording-player-frame"]').hover()
+    await page.getByRole('button', { name: '再生設定' }).click()
+    await page.getByRole('menuitem', { name: 'チャプターを直す' }).click()
+    await page.locator('[data-testid="chapter-edit-layout"]').waitFor({ timeout: 10000 })
+  }
+  // 下書きが綺麗なまま別の回へ移ると、移動先は編集モードで開かない（確認バーも出ない）。
+  await enterEditMode()
+  await page.goBack()
+  await page.waitForURL('**/recordings/2', { timeout: 5000 })
+  await page.waitForTimeout(500)
+  if ((await page.locator('[data-testid="chapter-edit-layout"]').count()) > 0) {
+    ng.push('⑨ 下書きが綺麗なまま移った 2 話が編集モードのまま')
+    await finish(ng) // 以降は編集モードで始まらない前提なので続けられない。
+  }
+  await page.locator('[data-testid="recording-series-shelf"] a[href="/recordings/1"]').click()
+  await page.waitForURL('**/recordings/1', { timeout: 5000 })
+  await page.waitForFunction(() => document.querySelector('video')?.getAttribute('src')?.includes('/recordings/1/'), undefined, { timeout: 5000 })
+  await enterEditMode()
   const label = page.locator('[data-testid="chapter-edit-layout"] input[aria-label="ラベル"]').first()
   await label.fill('前の回の下書き')
   if (!(await page.locator('body').textContent()).includes('未保存の変更があります')) {
@@ -492,7 +507,10 @@ async function transitionsAlong(png) {
   }
   // 画質はまだ選ばない（カット版では編集器そのものが消え、下書きも消えるので、持ち越しを測れない）。
   // 履歴を戻って 2 話へ移る。未保存なので画面内の確認バーが出る（捨てて移る）。
-  await page.goBack()
+  // 待たないと 6 回中 2〜3 回は戻る操作がブロックされなかった（測定）。原因は表示更新直後でブロッカーの登録が
+  // 済んでいないためと推測している（未検証）。
+  await page.waitForTimeout(300)
+  await page.evaluate(() => history.back())
   await page.getByRole('button', { name: '変更を捨てる' }).click({ timeout: 5000 })
   await page.waitForURL('**/recordings/2', { timeout: 5000 })
   await page.waitForFunction(() => document.querySelector('video')?.getAttribute('src')?.includes('/recordings/2/'), undefined, { timeout: 5000 })
