@@ -569,6 +569,8 @@ export function RecordingDetail({
       data-testid="recording-detail-body"
       className={cn(
         'w-full text-sm',
+        // 18rem leaves room for the page header, chapter summary, title, and two-line description
+        // after a 16:9 player. recording-detail-layout.mjs checks this at the target viewport sizes.
         !trash && recording.series != null && 'grid grid-cols-1 gap-x-8 gap-y-6 lg:grid-cols-[minmax(0,calc((100dvh-18rem)*16/9))_18rem] lg:justify-center',
       )}
     >
