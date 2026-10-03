@@ -4625,13 +4625,15 @@ async function checkMinimumTargetSize(locator, label, minimumWidth, minimumHeigh
   })
   const previous = page.getByRole('button', { name: '前のチャプター' })
   const next = page.getByRole('button', { name: '次のチャプター' })
-  const editorSummary = page.locator('[data-testid="chapter-editor-details"] > summary')
   await checkMinimumTargetSize(previous, '前のチャプター', 44)
   await checkMinimumTargetSize(next, '次のチャプター', 44)
-  await checkMinimumTargetSize(editorSummary, 'チャプター編集summary', 44)
+  await page.getByRole('button', { name: '再生設定' }).click()
+  const editorEntry = page.getByRole('menuitem', { name: 'チャプターを直す' })
+  await checkMinimumTargetSize(editorEntry, '「チャプターを直す」メニュー項目', 44)
 
-  const details = page.locator('[data-testid="chapter-editor-details"]')
-  await editorSummary.click()
+  const details = page.locator('[data-testid="chapter-edit-layout"]')
+  await editorEntry.click()
+  await details.waitFor({ timeout: 10000 })
   await details.evaluate((node) => {
     node.dataset.e2eIdentity = 'chapter-details-before-timeupdate'
   })
@@ -4646,10 +4648,9 @@ async function checkMinimumTargetSize(locator, label, minimumWidth, minimumHeigh
   }
   const editorState = await details.evaluate((node) => ({
     same: node.dataset.e2eIdentity === 'chapter-details-before-timeupdate',
-    open: node.open,
   }))
-  if (editorState.same !== true || editorState.open !== true) {
-    ng.push('4Hzのtimeupdate再描画後にチャプター編集detailsの開いた状態が保たれない')
+  if (editorState.same !== true) {
+    ng.push('4Hzのtimeupdate再描画後にチャプター編集画面が作り直される')
   }
   await context.close()
 }

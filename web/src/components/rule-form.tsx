@@ -12,6 +12,7 @@ import {
 import { ApiError } from '@/api/client'
 import { apiErrorMessage } from '@/api/unwrap'
 import { EncodeSettingsFields } from '@/components/encode-settings-fields'
+import { suggestRuleName } from '@/components/rule-name-suggestion'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/field'
@@ -25,6 +26,7 @@ import {
   type RuleMetaDraft,
   type SearchDraft,
 } from '@/lib/program-search'
+import { useAllSitesServices } from '@/lib/all-sites-services'
 import {
   epgWindowDays,
   ruleCostWeekDays,
@@ -261,14 +263,22 @@ export function CreateRuleForm({
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const createRule = useCreateRule()
+  const { services } = useAllSitesServices()
 
   const [meta, setMeta] = useState<RuleMetaDraft>(emptyRuleMeta)
+  const [nameTouched, setNameTouched] = useState(false)
   // 「全番組が対象になる」ことを理解した上での作成かどうか。条件を追加すれば
   // このチェックは意味を失うが、外れたままでも実害はない(次の保存試行時に
   // 改めて noConditions を評価するだけ)。
   const [confirmedEmpty, setConfirmedEmpty] = useState(false)
 
-  const metaError = ruleMetaError(meta)
+  const suggestedName = suggestRuleName(draft, (ref) =>
+    services.find(
+      (service) => service.networkId === ref.networkId && service.serviceId === ref.serviceId,
+    )?.name,
+  )
+  const effectiveMeta = { ...meta, name: nameTouched ? meta.name : suggestedName }
+  const metaError = ruleMetaError(effectiveMeta)
   const noConditions = hasNoConditions(draft)
   const hasPeriod = draft.periodStartAt !== '' || draft.periodEndAt !== ''
   const pending = createRule.isPending
@@ -277,7 +287,7 @@ export function CreateRuleForm({
 
   const save = () => {
     if (blocked) return
-    const input = buildRuleInput(draft, meta)
+    const input = buildRuleInput(draft, effectiveMeta)
     createRule.mutate(
       { data: input },
       {
@@ -332,9 +342,12 @@ export function CreateRuleForm({
 
       <Field label="名前">
         <Input
-          value={meta.name}
+          value={effectiveMeta.name}
           disabled={pending}
-          onChange={(e) => setMeta((m) => ({ ...m, name: e.target.value }))}
+          onChange={(e) => {
+            setNameTouched(true)
+            setMeta((m) => ({ ...m, name: e.target.value }))
+          }}
           placeholder="例: ニュース全部"
           required
         />

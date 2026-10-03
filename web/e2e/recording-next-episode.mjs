@@ -476,39 +476,55 @@ async function transitionsAlong(png) {
       body: JSON.stringify({ source: 'auto', version: 'v1', detectionPending: false, spans: [{ startMs: 30_000, endMs: 45_000, label: 'CM', cut: true }] }),
     }),
   )
-  // 2 話のチャプターを先に取得してキャッシュに載せる（取得待ちで編集器が一度消える経路に頼らない）。
-  // 2 話を開いてから棚で 1 話へ移る（ページを作り直さない移動）。
+  // 2 話を開いてから棚で 1 話へ移り（ページを作り直さない移動）、1 話で編集モードに入って下書きを作る。
   await openRecording(page, 2)
-  await page.locator('[data-testid="chapter-editor-details"]').waitFor({ timeout: 10000 })
   await page.locator('[data-testid="recording-series-shelf"] a[href="/recordings/1"]').click()
   await page.waitForURL('**/recordings/1', { timeout: 5000 })
   await page.waitForFunction(() => document.querySelector('video')?.getAttribute('src')?.includes('/recordings/1/'), undefined, { timeout: 5000 })
-  await page.locator('[data-testid="chapter-editor-details"]').waitFor({ timeout: 10000 })
-  await page.locator('[data-testid="chapter-editor-details"] > summary').click()
-  const label = page.locator('[data-testid="chapter-editor-details"] input[aria-label="ラベル"]').first()
+  const enterEditMode = async () => {
+    await page.locator('[data-testid="recording-player-frame"]').hover()
+    await page.getByRole('button', { name: '再生設定' }).click()
+    await page.getByRole('menuitem', { name: 'チャプターを直す' }).click()
+    await page.locator('[data-testid="chapter-edit-layout"]').waitFor({ timeout: 10000 })
+  }
+  // 下書きが綺麗なまま別の回へ移ると、移動先は編集モードで開かない（確認バーも出ない）。
+  await enterEditMode()
+  await page.goBack()
+  await page.waitForURL('**/recordings/2', { timeout: 5000 })
+  await page.waitForTimeout(500)
+  if ((await page.locator('[data-testid="chapter-edit-layout"]').count()) > 0) {
+    ng.push('⑨ 下書きが綺麗なまま移った 2 話が編集モードのまま')
+    await finish(ng) // 以降は編集モードで始まらない前提なので続けられない。
+  }
+  await page.locator('[data-testid="recording-series-shelf"] a[href="/recordings/1"]').click()
+  await page.waitForURL('**/recordings/1', { timeout: 5000 })
+  await page.waitForFunction(() => document.querySelector('video')?.getAttribute('src')?.includes('/recordings/1/'), undefined, { timeout: 5000 })
+  await enterEditMode()
+  const label = page.locator('[data-testid="chapter-edit-layout"] input[aria-label="ラベル"]').first()
   await label.fill('前の回の下書き')
-  if (!(await page.locator('[data-testid="chapter-editor-details"]').textContent()).includes('未保存の変更があります')) {
+  if (!(await page.locator('body').textContent()).includes('未保存の変更があります')) {
     ng.push('⑨ 前提: 1 話の下書きが「未保存の変更」にならない')
   }
   // 画質はまだ選ばない（カット版では編集器そのものが消え、下書きも消えるので、持ち越しを測れない）。
-  await page.locator('[data-testid="next-episode-link"]').click()
+  // 履歴を戻って 2 話へ移る。未保存なので画面内の確認バーが出る（捨てて移る）。
+  // ヘッダー（`header h1`）に「未保存」が出るまで待ってから戻る。editor の sr-only の文言はヘッダーより 1 commit
+  // 早く出るので、それで待つとブロッカー（useBlocker は useEffect で張り直す）が張られる前に戻ってしまう
+  // （レビュアーの実測で最大約 5ms の窓）。人が最後の打鍵から 5ms 以内に戻ることはなく、製品の不具合ではない。
+  await page.locator('header h1').filter({ hasText: '未保存' }).waitFor({ timeout: 5000 })
+  await page.evaluate(() => history.back())
+  await page.getByRole('button', { name: '変更を捨てる' }).click({ timeout: 5000 })
   await page.waitForURL('**/recordings/2', { timeout: 5000 })
   await page.waitForFunction(() => document.querySelector('video')?.getAttribute('src')?.includes('/recordings/2/'), undefined, { timeout: 5000 })
     .catch(() => {})
-  await page.locator('[data-testid="chapter-editor-details"]').waitFor({ timeout: 5000 }).catch(() => {})
-  const draft = await page.evaluate(() => {
-    const details = document.querySelector('[data-testid="chapter-editor-details"]')
-    return {
-      open: details?.open,
-      labels: [...(details?.querySelectorAll('input[aria-label="ラベル"]') ?? [])].map((input) => input.value),
-      text: details?.textContent ?? '',
-    }
-  })
-  log(`  2 話のチャプター編集: open=${draft.open} labels=${JSON.stringify(draft.labels)}`)
-  if (draft.open === undefined) ng.push('⑨ 2 話にチャプター編集が出ない')
-  if (draft.open) ng.push('⑨ 1 話で開いたチャプター編集が 2 話でも開いている')
+  const draft = await page.evaluate(() => ({
+    editing: document.querySelector('[data-testid="chapter-edit-layout"]') !== null,
+    labels: [...document.querySelectorAll('input[aria-label="ラベル"]')].map((input) => input.value),
+    text: document.body.textContent ?? '',
+  }))
+  log(`  2 話のチャプター編集: editing=${draft.editing} labels=${JSON.stringify(draft.labels)}`)
+  if (draft.editing) ng.push('⑨ 1 話で入った編集モードが 2 話でも続いている')
   if (draft.labels.includes('前の回の下書き')) ng.push(`⑨ 1 話の下書きが 2 話に漏れた（${JSON.stringify(draft.labels)}）`)
-  if (/未保存の変更があります|サーバー側の内容が変わりました/.test(draft.text)) ng.push('⑨ 2 話のチャプター編集に前の回の未保存・競合の表示が出ている')
+  if (/未保存の変更があります|サーバー側の内容が変わりました/.test(draft.text)) ng.push('⑨ 2 話に前の回の未保存・競合の表示が出ている')
 
   // 2 話でカット版を選び、棚で 1 話へ移る。1 話は既定の画質に戻り、版タブの「再生中」もそれを指す。
   await page.locator('[data-testid="recording-player-frame"]').hover()

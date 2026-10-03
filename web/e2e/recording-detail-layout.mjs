@@ -1,7 +1,8 @@
 // 録画詳細の面積配分を実ブラウザで測る（issue #1049）。
 //
 // レイアウト・viewport 内への収まりは jsdom では測れないため、実装前にこの判定を
-// 追加して旧画面で落ちることを確かめる。典型例（完了・エンコード済み・チャプターと
+// 追加して旧画面で落ちることを確かめる。desktop ではシリーズ棚が映像の下の右列に
+// あり、本文全体が映像の上限幅に揃っていることも測る。典型例（完了・エンコード済み・チャプターと
 // CM 検出あり・シリーズとルールあり・ドロップなし）を 3 種の desktop viewport と
 // smartphone で開き、シリーズ無し録画も別に開く。
 //
@@ -204,8 +205,10 @@ function measureLayout() {
     playerVisibleInFirstViewport: player !== null && player.y >= 0 && player.bottom <= viewport.height,
     titleVisibleInFirstViewport: title !== null && title.y >= 0 && title.bottom <= viewport.height,
     descriptionVisibleInFirstViewport: description !== null && description.bottom <= viewport.height,
-    shelfAlignedWithPlayer: shelf !== null && player !== null && Math.abs(shelf.y - player.y) <= 1,
-    shelfRightOfPlayer: shelf !== null && player !== null && shelf.x >= player.x + player.width,
+    shelfTopAlignedWithTitle: shelf !== null && title !== null && Math.abs(shelf.y - title.y) <= 1,
+    shelfRightOfTitleColumn: shelf !== null && playerColumn !== null && shelf.x >= playerColumn.x + playerColumn.width,
+    shelfRightEdgeWithinPlayer: shelf !== null && player !== null && shelf.x + shelf.width <= player.x + player.width + 1,
+    shelfTopVisibleInFirstViewport: shelf !== null && shelf.y >= 0 && shelf.y < viewport.height,
     tabs,
     tabPanelCount,
     outsideProgramTrackCount,
@@ -257,11 +260,17 @@ for (const viewport of [
   if (viewport.desktop && !measured.titleVisibleInFirstViewport) {
     ng.push(`${viewport.name}: タイトルが最初の画面に収まらない`)
   }
-  if (viewport.desktop && !measured.shelfAlignedWithPlayer) {
-    ng.push(`${viewport.name}: シリーズ棚の上端が映像の上端と揃わない`)
+  if (viewport.desktop && !measured.shelfTopAlignedWithTitle) {
+    ng.push(`${viewport.name}: シリーズ棚の上端がタイトル行の上端と揃わない`)
   }
-  if (viewport.desktop && !measured.shelfRightOfPlayer) {
-    ng.push(`${viewport.name}: シリーズ棚が映像の右側にない`)
+  if (viewport.desktop && !measured.shelfRightOfTitleColumn) {
+    ng.push(`${viewport.name}: シリーズ棚がタイトル列の右にない`)
+  }
+  if (viewport.desktop && !measured.shelfRightEdgeWithinPlayer) {
+    ng.push(`${viewport.name}: シリーズ棚の右端が映像の右端を超える（本文全体が映像幅に揃っていない）`)
+  }
+  if (viewport.desktop && !measured.shelfTopVisibleInFirstViewport) {
+    ng.push(`${viewport.name}: シリーズ棚の上端が最初の画面に入らない`)
   }
   if (measured.outsideProgramTrackCount !== 1 || measured.outsideProgramSegmentCount !== 2) {
     ng.push(`${viewport.name}: 番組枠外の前後区間が一本のシークバーに点線表示されない`)

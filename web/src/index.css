@@ -100,6 +100,9 @@
     --color-border: var(--border);
     --color-destructive: var(--destructive);
     --color-warning: var(--warning);
+    --color-chapter-cut: var(--chapter-cut);
+    --color-chapter-cut-muted: var(--chapter-cut-muted);
+    --color-chapter-selection: var(--chapter-selection);
     --color-tally-foreground: var(--tally-foreground);
     --color-tally: var(--tally);
     --color-accent-foreground: var(--accent-foreground);
@@ -145,6 +148,10 @@
     --paper: oklch(0.985 0 0); /* 輝線 = 紙白 #fafafa */
     --scanline: oklch(0.552 0.016 285.938); /* 間隙 = 走査線グレー #71717a */
     --sumi: oklch(0.21 0.006 285.885); /* 字 = 墨 #18181b */
+    /* チャプター編集の cut 区間と選択中の境界。ライト/ダークで意味を変えない。 */
+    --chapter-cut: oklch(0.705 0.213 47.604); /* orange-500 */
+    --chapter-cut-muted: oklch(0.75 0.183 55.934); /* orange-400 */
+    --chapter-selection: oklch(0.705 0.213 47.604); /* orange-500 */
     --tone-100: oklch(0.967 0.001 286.375);
     --tone-200: oklch(0.92 0.004 286.32);
     --tone-400: oklch(0.705 0.015 286.067);

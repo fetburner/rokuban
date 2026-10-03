@@ -30,13 +30,14 @@ import {
   Settings,
   SkipBack,
   SkipForward,
+  Scissors,
   SlidersHorizontal,
   Volume2,
   VolumeX,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { formatChaptersTime } from '@/lib/chapters'
-import { formatBytes, formatDate, formatPlaybackTime } from '@/lib/format'
+import { formatBytes, formatDate, formatPlaybackTime, formatPlaybackTimeMs } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
   SEEK_TILES_DISPLAY_HEIGHT,
@@ -97,6 +98,10 @@ type RecordingPlaybackControlsProps = {
   playedFraction: number
   chapters: ChapterSpan[]
   playingCut: boolean
+  chapterEditing?: boolean
+  canEditChapters?: boolean
+  onEnterChapterEditing?: () => void
+  onPlayAround?: () => void
   tilePreview: TilePreview
   tilesRequested: boolean
   tilesAvailable: boolean
@@ -171,6 +176,10 @@ export function RecordingPlaybackControls({
   playedFraction,
   chapters,
   playingCut,
+  chapterEditing = false,
+  canEditChapters = false,
+  onEnterChapterEditing,
+  onPlayAround,
   tilePreview,
   tilesRequested,
   tilesAvailable,
@@ -358,8 +367,8 @@ export function RecordingPlaybackControls({
     <div
       className="relative w-full"
       data-testid="recording-player-shell"
-      onPointerMove={onControlsActivity}
-      onKeyDown={onShellKeyDown}
+      onPointerMove={chapterEditing ? undefined : onControlsActivity}
+      onKeyDown={chapterEditing ? undefined : onShellKeyDown}
     >
       <div
         ref={fullscreenRef}
@@ -369,6 +378,33 @@ export function RecordingPlaybackControls({
       >
         {video}
         {endCard}
+        {chapterEditing ? (
+          // 編集中は操作バーを簡素な 1 本に差し替える。**`<video>` は同じ場所に置いたままにする**
+          // （別の木に描くと作り直され、再生位置が 0 に戻って止まる）。
+          <div className="absolute inset-x-0 bottom-0 flex items-center gap-3 bg-gradient-to-t from-black/85 to-transparent px-3 pt-8 pb-2 text-white">
+            <Button type="button" variant="ghost" size="icon" className={ghost} aria-label={isPlaying ? '一時停止' : '再生'} onClick={onTogglePlay}>
+              {isPlaying ? <Pause /> : <Play />}
+            </Button>
+            <span data-testid="chapter-edit-playhead" className="font-mono text-sm">
+              {formatPlaybackTimeMs(seconds)}
+              <span className="hidden md:inline"> / {formatPlaybackTime(durationSeconds)}</span>
+            </span>
+            <Button
+              type="button"
+              variant="secondary"
+              className="ml-auto rounded-full"
+              onClick={onPlayAround}
+              disabled={onPlayAround === undefined}
+            >
+              <span className="md:hidden">前後 3 秒</span>
+              <span className="hidden md:inline">前後 3 秒を再生</span>
+            </Button>
+            <span className="hidden rounded-full bg-white/15 px-3 py-2 text-sm md:inline-flex" aria-label="CM自動スキップは編集中に停止">
+              CM を飛ばさない（編集中）
+            </span>
+          </div>
+        ) : (
+        <>
         {/*
           スマホ（md 未満）では枠全体に暗い幕を敷き、中央に前後チャプターと再生、右上に CC と
           歯車、下に時刻・✓・全画面とシークバーを置く。md 以上は下端の帯 1 本にまとめる。
@@ -852,6 +888,8 @@ export function RecordingPlaybackControls({
             subtitlesEnabled={subtitlesEnabled}
             skipEnabled={skipEnabled}
             showSkip={hasChapters}
+            canEditChapters={canEditChapters}
+            onEnterChapterEditing={onEnterChapterEditing}
             pictureInPictureEnabled={pictureInPictureEnabled}
             pictureInPicture={pictureInPicture}
             onSelectProfile={onSelectProfile}
@@ -876,6 +914,8 @@ export function RecordingPlaybackControls({
             onFocusCapture={onToolbarFocus}
             onBlurCapture={onToolbarBlur}
           />
+        )}
+        </>
         )}
       </div>
     </div>
@@ -1014,6 +1054,8 @@ type PlaybackSettingsMenuProps = {
   subtitlesEnabled: boolean
   skipEnabled: boolean
   showSkip: boolean
+  canEditChapters: boolean
+  onEnterChapterEditing?: () => void
   pictureInPictureEnabled: boolean
   pictureInPicture: boolean
   onSelectProfile: (profile: string) => void
@@ -1045,6 +1087,8 @@ function PlaybackSettingsMenu({
   subtitlesEnabled,
   skipEnabled,
   showSkip,
+  canEditChapters,
+  onEnterChapterEditing,
   pictureInPictureEnabled,
   pictureInPicture,
   onSelectProfile,
@@ -1213,6 +1257,21 @@ function PlaybackSettingsMenu({
     skipEnabled,
     () => onToggleSkip(!skipEnabled),
   )
+  const chapterEditRow = canEditChapters && (
+    <button
+      type="button"
+      role="menuitem"
+      aria-label="チャプターを直す"
+      className={row}
+      onClick={() => {
+        onClose(false)
+        onEnterChapterEditing?.()
+      }}
+    >
+      <Scissors className={icon} aria-hidden />
+      <span className="flex-1">チャプターを直す</span>
+    </button>
+  )
 
   return (
     <>
@@ -1260,6 +1319,12 @@ function PlaybackSettingsMenu({
                     {pictureInPicture ? 'ピクチャー・イン・ピクチャーを終了' : 'ピクチャー・イン・ピクチャー'}
                   </span>
                 </button>
+              </>
+            )}
+            {chapterEditRow && (
+              <>
+                <div role="separator" className="my-1 border-t border-border" />
+                {chapterEditRow}
               </>
             )}
           </>

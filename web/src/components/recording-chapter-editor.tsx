@@ -1,57 +1,57 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, type MutableRefObject } from 'react'
 
 import type { ChapterSpan, RecordingChaptersSource } from '@/api/generated'
 import { Button } from '@/components/ui/button'
-import {
-  FRAME_SECONDS,
-  NUDGE_SECONDS,
-  chapterBoundaries,
-  formatChaptersTime,
-  nudgeBoundary,
-} from '@/lib/chapters'
+import { RecordingChapterFilmstrip } from '@/components/recording-chapter-filmstrip'
+import { chapterBoundaries } from '@/lib/chapters'
+import { formatPlaybackTime } from '@/lib/format'
+
+export type ChapterEditorCommands = {
+  save: () => Promise<boolean>
+  reset: () => Promise<boolean>
+  discard: () => void
+}
+
+export type ChapterEditorStatus = {
+  source: RecordingChaptersSource
+  dirty: boolean
+  stale: boolean
+}
 
 type RecordingChapterEditorProps = {
   /** サーバーが持っているタイムライン。ドラフトの初期値。 */
   spans: ChapterSpan[]
-  /** `spans` の版（GET が返す）。保存時にそのまま返し、下書きの基が変わっていないかをサーバーが確かめる。 */
+  /** `spans` の版（GET が返す）。保存時にそのまま返す。 */
   version: string
   /** 検出が終端に達していない。空の `spans` は「CM 無し」ではないので編集させない。 */
   detectionPending: boolean
-  /** どの層を編集しているか（表示だけに使う）。 */
+  /** どの層を編集しているか。 */
   source: RecordingChaptersSource
-  /** 再生位置（秒）。「現在位置を境界にする」と「ここから / ここまで」に使う。 */
+  recordingId: number
   currentSeconds: number
-  /** 境界の前後 3 秒を再生する。自動スキップを一時的に止めるのは呼び出し側の責務。 */
+  durationSeconds: number
+  tilesAvailable: boolean
+  onTileImageLoad: () => void
+  onTileImageError: () => void
   playAround: (seconds: number) => void
-  /** 再生位置を時刻へ移す。 */
   jumpTo: (seconds: number) => void
-  /**
-   * 保存する。成功で resolve、失敗で reject する。成功したら、次に届くサーバーの値を
-   * 無条件で下書きの基として採用する（サーバーは境界をフレーム境界へ丸めて保存する
-   * ので、届く値は下書きと一致しない。クライアントで丸めを複製しない）。
-   */
+  /** 選んでいる境界（既定は再生位置に最も近い境界）。映像側の「前後 3 秒を再生」が使う。 */
+  onSelectedBoundaryChange: (seconds: number | null) => void
+  /** 保存は成功で resolve、失敗で reject。 */
   onSave: (spans: ChapterSpan[], version: string) => Promise<unknown>
-  onReset: () => void
+  onReset: () => Promise<unknown>
   pending: boolean
+  commandsRef: MutableRefObject<ChapterEditorCommands | null>
+  onStatusChange: (status: ChapterEditorStatus) => void
 }
 
-const nudgeLabel = (seconds: number) => (seconds > 0 ? `+${seconds}秒` : `${seconds}秒`)
-
 /**
- * RecordingChapterEditor はチャプターを手で直す UI。
+ * RecordingChapterEditor は編集専用の録画プレイヤー画面。
  *
- * **本編の区間は出さない。** API も本編を返さない（区間の隙間が本編）。ここで
- * 並ぶのは CM と、ユーザーが印を付けた OP / ED などの区間だけである。
- *
- * 編集の単位は「タイムライン全体の置き換え」1 つだけに保つ。境界ごとの差分を
- * 送る形にしない理由は、境界の修正が「その時点の検出結果に対する差分」であり、
- * 再検出で境界が動くと意味を失うためである（docs/schema/recordings.md）。
- *
- * 境界は前後の区間で共有されうるので、同じ値の境界はまとめて 1 行に出す。
+ * 境界をストリップで選び、選択中の境界だけをフレーム単位で調整する。編集は
+ * タイムライン全体の置き換えとして保存し、サーバーが返す版をそのまま使う。
  */
 export function RecordingChapterEditor(props: RecordingChapterEditorProps) {
-  // 検出中は編集 UI を出さない。検出中の空の層を基に下書きを作ると、検出が commit
-  // された後に「CM 無し」で引き取ってしまう（サーバーも版と 409 で拒否する）。
   if (props.detectionPending) {
     return (
       <p className="text-muted-foreground" data-testid="chapter-detecting">
@@ -66,23 +66,25 @@ function ChapterDraftEditor({
   spans,
   version,
   source,
+  recordingId,
   currentSeconds,
+  durationSeconds,
+  tilesAvailable,
+  onTileImageLoad,
+  onTileImageError,
   playAround,
   jumpTo,
+  onSelectedBoundaryChange,
   onSave,
   onReset,
   pending,
+  commandsRef,
+  onStatusChange,
 }: RecordingChapterEditorProps) {
   const [draft, setDraft] = useState<ChapterSpan[]>(spans)
-  // 下書きの基にしたサーバーの値と版。サーバーの値が変わったら（保存後の再取得・
-  // 再検出・他タブの編集）、下書きが基と同じか、新しい値と同じ（自分の保存が
-  // 反映された）ときだけ追随する。**それ以外は黙って捨てず** stale として
-  // 知らせる（下書きは残し、保存は止める。保存は版で 409 になる）。effect では
-  // なく**レンダー中の調整**にする（React の "storing information from previous
-  // renders" の形）。親が `unwrap(query.data)` の配列をそのまま渡すので、参照が
-  // 変わるのは新しいデータが来たときだけである。
+  // 下書きの基にしたサーバーの値と版。下書きが未変更か自分の保存結果と一致するとき
+  // だけ追随する。それ以外は stale として知らせ、黙って上書きしない。
   const [base, setBase] = useState({ spans, version })
-  // 自分の保存が成功した後、次に届くサーバーの値を採用する印。
   const [adoptNext, setAdoptNext] = useState(false)
   if (base.spans !== spans || base.version !== version) {
     if (adoptNext || sameSpans(draft, base.spans) || sameSpans(draft, spans)) {
@@ -92,239 +94,227 @@ function ChapterDraftEditor({
     }
   }
   const stale = base.spans !== spans || base.version !== version
-  const discardDraft = () => {
+  const discardDraft = useCallback(() => {
     setBase({ spans, version })
     setDraft(spans)
-  }
-  const [pendingStartMs, setPendingStartMs] = useState<number | null>(null)
+    setAdoptNext(false)
+  }, [spans, version])
   const boundaries = useMemo(() => chapterBoundaries(draft), [draft])
   const dirty = useMemo(() => !sameSpans(draft, base.spans), [draft, base.spans])
-
-  const startNewSpan = () => {
-    setPendingStartMs(Math.round(currentSeconds * 1000))
-  }
+  const [selectedBoundaryValue, setSelectedBoundaryValue] = useState<number | null>(null)
+  const [pendingStartMs, setPendingStartMs] = useState<number | null>(null)
   const currentMs = Math.round(currentSeconds * 1000)
+  const nearestBoundary = boundaries.length === 0
+    ? null
+    : boundaries.reduce((best, candidate) =>
+      Math.abs(candidate - currentSeconds) < Math.abs(best - currentSeconds) ? candidate : best,
+    )
+  // nudgeBoundary stores integer milliseconds, while frame controls pass a rational
+  // 29.97fps interval. Match within 1ms so the chosen boundary stays selected.
+  const selectedBoundary = boundaries.find((boundary) =>
+    selectedBoundaryValue !== null && Math.abs(boundary - selectedBoundaryValue) <= 0.001,
+  ) ?? nearestBoundary
+
+  useEffect(() => {
+    onStatusChange({ source, dirty, stale })
+  }, [dirty, onStatusChange, source, stale])
+
+  useEffect(() => {
+    onSelectedBoundaryChange(selectedBoundary)
+  }, [onSelectedBoundaryChange, selectedBoundary])
+
+  // ← → は編集画面のどこにフォーカスがあっても前後の境界へ移る（入力欄・シークバー・メニューを除く）。
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || boundaries.length === 0) return
+      const target = event.target
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable || target.closest('input, textarea, select, [role="slider"], [role="menu"], [role="dialog"]'))
+      ) {
+        return
+      }
+      event.preventDefault()
+      const index = selectedBoundary === null ? -1 : boundaries.indexOf(selectedBoundary)
+      const next = event.key === 'ArrowRight' ? index + 1 : (index < 0 ? 0 : index - 1)
+      setSelectedBoundaryValue(boundaries[Math.max(0, Math.min(boundaries.length - 1, next))])
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [boundaries, selectedBoundary])
+
+  const save = useCallback(async () => {
+    if (!dirty || stale || pending) return false
+    try {
+      await onSave(draft, base.version)
+      setAdoptNext(true)
+      return true
+    } catch {
+      return false
+    }
+  }, [base.version, dirty, draft, onSave, pending, stale])
+
+  const reset = useCallback(async () => {
+    if (pending) return false
+    try {
+      const result = await onReset()
+      return result !== false
+    } catch {
+      return false
+    }
+  }, [onReset, pending])
+
+  useEffect(() => {
+    const commands = { save, reset, discard: discardDraft }
+    commandsRef.current = commands
+    return () => {
+      if (commandsRef.current === commands) commandsRef.current = null
+    }
+  }, [commandsRef, discardDraft, reset, save])
+
+  const startNewSpan = () => setPendingStartMs(currentMs)
   const closeNewSpan = () => {
     if (pendingStartMs === null) return
     const startMs = Math.min(pendingStartMs, currentMs)
     const endMs = Math.max(pendingStartMs, currentMs)
     if (endMs <= startMs) return
-    // 既定は「CM と同じ扱い」= 切る。ラベルは後から入れる。ラベルが無いまま
-    // cut を外す状態は DB が拒否するので、UI 側でも外させない（下の checkbox）。
     setDraft((current) => [...current, { startMs, endMs, cut: true }])
     setPendingStartMs(null)
   }
 
   return (
-    <section className="flex flex-col gap-2" aria-label="チャプターの編集">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={pending || !dirty || stale}
-            onClick={() => {
-              onSave(draft, base.version).then(
-                () => setAdoptNext(true),
-                () => {},
-              )
-            }}
-          >
-            保存
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            disabled={!dirty}
-            onClick={discardDraft}
-          >
-            変更を破棄
-          </Button>
-          {/* 自動に戻すは「取り込み直し」ではない。やり直しはこれ 1 つだけである
-              （出自と意図を 1 つの列に載せない規律。docs/schema/recordings.md）。 */}
-          <Button
-            type="button"
-            size="sm"
-            variant="secondary"
-            disabled={pending || source === 'auto'}
-            onClick={onReset}
-          >
-            自動に戻す
-          </Button>
-        </div>
+    <>
+      <div className="min-w-0 md:col-span-2 md:row-start-2">
+        <RecordingChapterFilmstrip
+          recordingId={recordingId}
+          durationSeconds={durationSeconds}
+          currentSeconds={currentSeconds}
+          spans={draft}
+          selectedBoundary={selectedBoundary}
+          tilesAvailable={tilesAvailable}
+          onTileImageLoad={onTileImageLoad}
+          onTileImageError={onTileImageError}
+          onSeek={jumpTo}
+          onSelectBoundary={setSelectedBoundaryValue}
+          onChangeSpans={setDraft}
+          onPlayAround={playAround}
+        />
       </div>
-      <p className="text-muted-foreground" data-testid="chapter-source">
-        {source === 'user' ? '確認済み（手で直した内容を使っています）' : '自動検出（未確認）'}
-        {dirty && ' · 未保存の変更があります'}
-      </p>
-      {stale && (
-        <p className="text-destructive" role="alert" data-testid="chapter-stale">
-          サーバー側の内容が変わりました。下書きを破棄して最新の内容から編集し直してください
+
+      {/* 右の列は高さを映像の行に任せ（絶対配置）、一覧だけがスクロールする。 */}
+      <div className="relative min-h-0 min-w-0 md:col-start-2 md:row-start-1">
+      <section
+        data-testid="chapter-span-list"
+        aria-label="区間の一覧"
+        className="h-full overflow-y-auto overscroll-contain rounded-md border border-border/70 p-2 md:absolute md:inset-0 md:h-auto"
+      >
+        <p className="sr-only" data-testid="chapter-source">
+          {source === 'user' ? '確認済み' : '自動検出（未確認）'}{dirty ? '・未保存の変更があります' : ''}
         </p>
-      )}
-
-      {boundaries.length === 0 ? (
-        <p className="text-muted-foreground">チャプターはありません</p>
-      ) : (
-        <ul className="flex flex-col gap-1">
-          {boundaries.map((boundary) => (
-            <li key={boundary} className="flex flex-wrap items-center gap-1" data-testid="chapter-boundary">
-              <Button
-                type="button"
-                size="sm"
-                variant="link"
-                className="h-11 w-20 shrink-0 justify-start px-0 text-muted-foreground"
-                onClick={() => jumpTo(boundary)}
-              >
-                {formatChaptersTime(boundary)}
-              </Button>
-              <Button type="button" size="sm" variant="outline" onClick={() => playAround(boundary)}>
-                前後3秒
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                aria-label={`${formatChaptersTime(boundary)} を ${nudgeLabel(-NUDGE_SECONDS)}`}
-                onClick={() => setDraft((c) => nudgeBoundary(c, boundary, -NUDGE_SECONDS))}
-              >
-                −1秒
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                aria-label={`${formatChaptersTime(boundary)} を 1 フレーム戻す`}
-                onClick={() => setDraft((c) => nudgeBoundary(c, boundary, -FRAME_SECONDS))}
-              >
-                −1f
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                aria-label={`${formatChaptersTime(boundary)} を 1 フレーム進める`}
-                onClick={() => setDraft((c) => nudgeBoundary(c, boundary, FRAME_SECONDS))}
-              >
-                +1f
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                aria-label={`${formatChaptersTime(boundary)} を ${nudgeLabel(NUDGE_SECONDS)}`}
-                onClick={() => setDraft((c) => nudgeBoundary(c, boundary, NUDGE_SECONDS))}
-              >
-                +1秒
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                onClick={() => setDraft((c) => nudgeBoundary(c, boundary, currentSeconds - boundary))}
-              >
-                現在位置
-              </Button>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {draft.length > 0 && (
-        <ul className="flex flex-col gap-1">
-          {draft.map((span, index) => (
-            <li
-              key={`${span.startMs}-${span.endMs}-${index}`}
-              className="flex flex-wrap items-center gap-2"
-              data-testid="chapter-span-row"
-            >
-              <Button
-                type="button"
-                size="sm"
-                variant="link"
-                className="h-11 w-40 shrink-0 justify-start px-0 text-muted-foreground"
-                onClick={() => jumpTo(span.startMs / 1000)}
-              >
-                {formatChaptersTime(span.startMs / 1000)} – {formatChaptersTime(span.endMs / 1000)}
-              </Button>
-              <input
-                type="text"
-                value={span.label ?? ''}
-                placeholder="ラベル（OP / ED など）"
-                aria-label="ラベル"
-                onChange={(event) =>
-                  setDraft((current) =>
-                    current.map((s, i) => (i === index ? withLabel(s, event.target.value) : s)),
-                  )
-                }
-                className="h-8 w-40 rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none"
-              />
-              <label className="flex items-center gap-1">
-                <input
-                  type="checkbox"
-                  className="size-6 accent-primary"
-                  checked={span.cut}
-                  // ラベルが無い区間は本編と区別が付かない（DB の CHECK と同じ規則）。
-                  // 表現できない状態を UI で作らせない。
-                  disabled={(span.label ?? '') === ''}
-                  title={(span.label ?? '') === '' ? 'ラベルが無い区間は切る扱いのままにする' : undefined}
-                  onChange={(event) =>
-                    setDraft((current) =>
-                      current.map((s, i) => (i === index ? { ...s, cut: event.target.checked } : s)),
-                    )
-                  }
-                />
-                切る
-              </label>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                onClick={() => setDraft((current) => current.filter((_, i) => i !== index))}
-              >
-                削除
-              </Button>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <div className="flex flex-wrap items-center gap-2">
-        {pendingStartMs === null ? (
-          <Button type="button" size="sm" variant="outline" onClick={startNewSpan}>
-            ここから
-          </Button>
-        ) : (
-          <>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={currentMs <= pendingStartMs}
-              onClick={closeNewSpan}
-            >
-              ここまで
+        {stale && (
+          <div className="mb-2 rounded border border-destructive/40 bg-destructive/5 p-2" data-testid="chapter-stale" role="alert">
+            <p>サーバー側の内容が変わりました。下書きを破棄して最新の内容から編集し直してください</p>
+            <Button type="button" size="sm" variant="outline" className="mt-2" onClick={discardDraft}>
+              下書きを破棄して最新から編集し直す
             </Button>
-            <span className="text-muted-foreground">
-              {formatChaptersTime(pendingStartMs / 1000)} から
-            </span>
-            <Button type="button" size="sm" variant="ghost" onClick={() => setPendingStartMs(null)}>
-              取り消し
-            </Button>
-          </>
+          </div>
         )}
+
+        {draft.length === 0 ? (
+          <p className="p-3 text-sm text-muted-foreground">チャプターはありません</p>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {draft.map((span, index) => {
+              const selected = selectedBoundary === span.startMs / 1000 || selectedBoundary === span.endMs / 1000
+              return (
+                <li
+                  key={`${span.startMs}-${span.endMs}-${index}`}
+                  data-testid="chapter-span-row"
+                  data-selected={selected}
+                  className={`relative grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1 rounded-lg border py-2 pr-2 pl-5 ${selected ? 'border-foreground ring-1 ring-foreground' : 'border-border'}`}
+                >
+                  <span
+                    aria-hidden="true"
+                    className={`absolute inset-y-2 left-2 w-1 rounded-full ${span.cut ? 'bg-chapter-cut' : 'bg-muted-foreground/40'}`}
+                  />
+                  <button
+                    type="button"
+                    className="col-span-2 flex min-h-8 items-center text-left font-mono text-sm text-muted-foreground"
+                    aria-label={`${formatPlaybackTime(span.startMs / 1000)} から ${formatPlaybackTime(span.endMs / 1000)} の境界を選ぶ`}
+                    onClick={() => {
+                      const start = span.startMs / 1000
+                      const end = span.endMs / 1000
+                      const boundary = Math.abs(currentSeconds - start) <= Math.abs(currentSeconds - end) ? start : end
+                      setSelectedBoundaryValue(boundary)
+                      jumpTo(boundary)
+                    }}
+                  >
+                    {formatPlaybackTime(span.startMs / 1000)} – {formatPlaybackTime(span.endMs / 1000)}
+                  </button>
+                  <input
+                    type="text"
+                    value={span.label ?? ''}
+                    placeholder="ラベル（OP / ED など）"
+                    aria-label="ラベル"
+                    onChange={(event) => setDraft((current) => current.map((item, i) => (
+                      i === index ? withLabel(item, event.target.value) : item
+                    )))}
+                    className="h-9 min-w-0 rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none"
+                  />
+                  <div className="flex flex-col items-end gap-1">
+                    <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <span>切る</span>
+                      <input
+                        type="checkbox"
+                        checked={span.cut}
+                        disabled={(span.label ?? '') === ''}
+                        title={(span.label ?? '') === '' ? 'ラベルが無い区間は切る扱いのままにする' : undefined}
+                        onChange={(event) => setDraft((current) => current.map((item, i) => (
+                          i === index ? { ...item, cut: event.target.checked } : item
+                        )))}
+                        className="peer sr-only"
+                      />
+                      <span
+                        aria-hidden="true"
+                        className="relative inline-flex h-6 w-11 shrink-0 rounded-full bg-muted transition-colors after:absolute after:top-0.5 after:left-0.5 after:size-5 after:rounded-full after:bg-background after:shadow after:transition-transform peer-checked:bg-chapter-cut peer-checked:after:translate-x-5 peer-focus-visible:outline-2 peer-focus-visible:outline-ring peer-focus-visible:outline-offset-2"
+                      />
+                    </label>
+                    <Button type="button" size="sm" variant="link" className="h-7 px-1" onClick={() => setDraft((current) => current.filter((_, i) => i !== index))}>
+                      削除
+                    </Button>
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
+          {pendingStartMs === null ? (
+            <>
+              <Button type="button" size="sm" variant="outline" onClick={startNewSpan}>
+                ここから区間を足す
+              </Button>
+              <span className="text-xs text-muted-foreground">再生位置から始まる区間を作ります</span>
+            </>
+          ) : (
+            <>
+              <Button type="button" size="sm" variant="outline" disabled={currentMs <= pendingStartMs} onClick={closeNewSpan}>
+                ここまで
+              </Button>
+              <span className="text-xs text-muted-foreground">{formatPlaybackTime(pendingStartMs / 1000)} から</span>
+              <Button type="button" size="sm" variant="ghost" onClick={() => setPendingStartMs(null)}>取り消し</Button>
+            </>
+          )}
+        </div>
+      </section>
       </div>
-    </section>
+    </>
   )
 }
 
-/**
- * withLabel はラベルを差し替える。空文字は「ラベル無し」なので省略する
- * （生成型の `label` は省略可能で、空文字を載せるとサーバー側の
- * 「ラベルも無く cut でもない」判定と食い違う）。
- */
+/** withLabel はラベルが空なら省略し、DB と同じ「ラベルなし cut=false」を作らせない。 */
 function withLabel(span: ChapterSpan, label: string): ChapterSpan {
   if (label === '') {
     const { label: _removed, ...rest } = span
@@ -333,7 +323,7 @@ function withLabel(span: ChapterSpan, label: string): ChapterSpan {
   return { ...span, label }
 }
 
-/** sameSpans は区間の集合が同じかを返す（並び替えだけの差は無視する）。 */
+/** sameSpans は並び替えだけの差を無視して区間の集合を比較する。 */
 function sameSpans(a: ChapterSpan[], b: ChapterSpan[]): boolean {
   if (a.length !== b.length) return false
   const key = (span: ChapterSpan) => `${span.startMs}:${span.endMs}:${span.label ?? ''}:${span.cut}`

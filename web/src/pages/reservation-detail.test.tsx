@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Reservation, Rule } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
@@ -24,6 +24,24 @@ function baseReservation(overrides: Partial<Reservation> = {}): Reservation {
     createdAt: dayStart.toISOString(),
     updatedAt: dayStart.toISOString(),
     skip: false,
+    ...overrides,
+  }
+}
+
+function baseProgram(overrides: Record<string, unknown> = {}) {
+  return {
+    programId: 300000,
+    networkId: 1,
+    serviceId: 1,
+    eventId: 1,
+    startAt: dayStart.toISOString(),
+    endAt: new Date(dayStart.getTime() + 30 * 60_000).toISOString(),
+    durationMs: 30 * 60_000,
+    name: 'テスト番組',
+    description: '',
+    genres: [],
+    isFree: true,
+    extended: {},
     ...overrides,
   }
 }
@@ -72,7 +90,9 @@ function stubFetch(
   reservationOf: (site: string, programId: number) => Reservation | Response | null,
   sites: string[] = ['default'],
   rules: Rule[] = [],
-  intentPutResponse?: () => Response,
+  intentPutResponse?: () => Response | Promise<Response>,
+  programOf: (site: string, programId: number) => Record<string, unknown> | Response | null = () =>
+    baseProgram(),
 ) {
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
@@ -113,6 +133,15 @@ function stubFetch(
       return Promise.resolve(jsonResponse(reservation))
     }
 
+    const programMatch = /^\/api\/sites\/([^/]+)\/programs\/(\d+)$/.exec(url.pathname)
+    if (programMatch) {
+      const [, site, programId] = programMatch
+      const program = programOf(site, Number(programId))
+      if (program instanceof Response) return Promise.resolve(program)
+      if (!program) return Promise.resolve(jsonResponse({ error: 'not found' }, 404))
+      return Promise.resolve(jsonResponse(program))
+    }
+
     if (/^\/api\/sites\/[^/]+\/programs\/\d+\/overlaps$/.test(url.pathname)) {
       return Promise.resolve(jsonResponse({ count: 0, reservations: [] }))
     }
@@ -123,9 +152,20 @@ function stubFetch(
   return fetchMock
 }
 
-function renderAt(path: string) {
+// テストが作った QueryClient。終了時に clear() して、retry タイマーなどが teardown 後に
+// 発火して `window is not defined` を起こすのを防ぐ安全網にする。
+const clients: QueryClient[] = []
+
+afterEach(() => {
+  for (const c of clients.splice(0)) c.clear()
+})
+
+function renderAt(
+  path: string,
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
+  clients.push(queryClient)
   window.scrollTo = vi.fn()
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const router = createRouter({
     routeTree,
     history: createMemoryHistory({ initialEntries: [path] }),
@@ -138,6 +178,26 @@ function renderAt(path: string) {
     </QueryClientProvider>,
   )
   return { queryClient, router }
+}
+
+async function openReservationOverflow(
+  user: Pick<ReturnType<typeof userEvent.setup>, 'click'>,
+) {
+  // 取消は主操作の位置に置かない: メニューを開く前は画面に出ていない。
+  expect(screen.queryByRole('button', { name: '予約を取消' })).not.toBeInTheDocument()
+  const trigger = await screen.findByRole('button', { name: '予約のその他の操作' })
+  await screen.findByRole('heading', { name: 'テスト番組' })
+  // 取消は主操作の位置に置かない: メニューを開く前は画面に出ていない。
+  expect(screen.queryByRole('button', { name: '予約を取消' })).not.toBeInTheDocument()
+  await user.click(trigger)
+  await screen.findByRole('menuitem', { name: '予約を取消' })
+}
+
+async function cancelFromOverflow(
+  user: Pick<ReturnType<typeof userEvent.setup>, 'click'>,
+) {
+  await openReservationOverflow(user)
+  await user.click(screen.getByRole('menuitem', { name: '予約を取消' }))
 }
 
 describe('ReservationDetailPage', () => {
@@ -189,6 +249,148 @@ describe('ReservationDetailPage', () => {
     // 局名は日時・尺と同じ <p> 内で中点区切りのテキストになる（`getByText` の
     // 完全一致はこの要素全体の文字列にしか当たらないため、部分一致で見る）。
     expect(screen.getByText(/NHK総合/)).toBeInTheDocument()
+  })
+
+  it('タイトルは番組表リンクではなく、局・開始時刻・尺の行が該当時刻の番組表へリンクする', async () => {
+    stubFetch((site, programId) =>
+      site === 'default' && programId === 300000 ? baseReservation() : null,
+    )
+
+    renderAt('/reservations/default/300000')
+
+    const title = await screen.findByRole('heading', { name: 'テスト番組' })
+    expect(title.querySelector('a')).toBeNull()
+    const link = await screen.findByTestId('reservation-program-link')
+    const destination = new URL((link as HTMLAnchorElement).href)
+    expect(destination.pathname).toBe('/programs')
+    expect(destination.searchParams.get('view')).toBe('grid')
+    expect(destination.searchParams.get('at')).toBe(String(dayStart.getTime()))
+    expect(link).toHaveTextContent('テスト局')
+  })
+
+  it('録画設定に保存先パスは表示しない', async () => {
+    stubFetch((site, programId) =>
+      site === 'default' && programId === 300000 ? baseReservation() : null,
+    )
+
+    renderAt('/reservations/default/300000')
+
+    expect(await screen.findByText('テスト番組')).toBeInTheDocument()
+    expect(screen.queryByText('保存先パス')).not.toBeInTheDocument()
+  })
+
+  it('番組説明と拡張情報を予約タイトルの下に表示する', async () => {
+    stubFetch(
+      (site, programId) =>
+        site === 'default' && programId === 300000 ? baseReservation() : null,
+      ['default'],
+      [],
+      undefined,
+      () =>
+        baseProgram({
+          description: '地域の人々の暮らしを紹介します。',
+          extended: { 出演者: '山田花子' },
+        }),
+    )
+
+    renderAt('/reservations/default/300000')
+
+    const title = await screen.findByRole('heading', { name: 'テスト番組' })
+    const description = await screen.findByText('地域の人々の暮らしを紹介します。')
+    expect(screen.getByText('出演者')).toBeInTheDocument()
+    expect(screen.getByText('山田花子')).toBeInTheDocument()
+    // 題名の塊（題名・局・時刻）を分断しない: 説明は局・時刻の行より後ろ、「予約」欄より前。
+    const link = screen.getByTestId('reservation-program-link')
+    const follows = (a: Node, b: Node) =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(follows(title, link)).toBe(true)
+    expect(follows(link, description)).toBe(true)
+    expect(follows(description, screen.getByText('状態'))).toBe(true)
+  })
+
+  it('番組情報が 404 でも予約詳細は残し、番組詳細だけを隠す', async () => {
+    stubFetch(
+      (site, programId) =>
+        site === 'default' && programId === 300000 ? baseReservation() : null,
+      ['default'],
+      [],
+      undefined,
+      () => errorResponse(404, 'program not found'),
+    )
+
+    renderAt('/reservations/default/300000')
+
+    expect(await screen.findByRole('heading', { name: 'テスト番組' })).toBeInTheDocument()
+    expect(await screen.findByText('有効')).toBeInTheDocument()
+    expect(screen.queryByText('番組情報の取得に失敗しました')).not.toBeInTheDocument()
+    expect(screen.queryByText('詳細の取得に失敗しました')).not.toBeInTheDocument()
+  })
+
+  // main.tsx の QueryClient は retry 既定（3 回、1s/2s/4s）。404 は初回応答で隠す。
+  it('番組情報の 404 は retry せず初回応答で読み込み中表示を消す', async () => {
+    const fetchMock = stubFetch(
+      (site, programId) =>
+        site === 'default' && programId === 300000 ? baseReservation() : null,
+      ['default'],
+      [],
+      undefined,
+      () => errorResponse(404, 'program not found'),
+    )
+
+    // retry は既定（3 回）のまま待ち時間だけ 0 にする。404 の retry 除外を外すと
+    // 番組 GET が 4 回になって落ちる。capabilities などスタブ外のクエリも即座に
+    // retry を使い切るので、テスト終了後にタイマーが残らない。
+    renderAt(
+      '/reservations/default/300000',
+      new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } }),
+    )
+
+    await screen.findByRole('heading', { name: 'テスト番組' })
+    await waitFor(() => expect(screen.queryByText('詳細を読み込み中…')).not.toBeInTheDocument())
+    const programGets = fetchMock.mock.calls.filter(([input]) =>
+      /\/programs\/300000$/.test(new URL(String(input), 'http://localhost').pathname),
+    )
+    expect(programGets).toHaveLength(1)
+  })
+
+  it('番組情報の 5xx は指定の文言で表示する', async () => {
+    stubFetch(
+      (site, programId) =>
+        site === 'default' && programId === 300000 ? baseReservation() : null,
+      ['default'],
+      [],
+      undefined,
+      () => errorResponse(503, 'epg unavailable'),
+    )
+
+    // retry（3 回）は残し、待ち時間だけ 0 にする。
+    renderAt(
+      '/reservations/default/300000',
+      new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } }),
+    )
+
+    expect(await screen.findByText('番組情報の取得に失敗しました')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'テスト番組' })).toBeInTheDocument()
+  })
+
+  it('番組情報の 5xx 以外のエラーでは 5xx 用の文言を出さない', async () => {
+    stubFetch(
+      (site, programId) =>
+        site === 'default' && programId === 300000 ? baseReservation() : null,
+      ['default'],
+      [],
+      undefined,
+      () => errorResponse(400, 'bad request'),
+    )
+
+    renderAt(
+      '/reservations/default/300000',
+      new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } }),
+    )
+
+    expect(await screen.findByRole('heading', { name: 'テスト番組' })).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('詳細を読み込み中…')).not.toBeInTheDocument())
+    expect(screen.queryByText('番組情報の取得に失敗しました')).not.toBeInTheDocument()
   })
 
   // 局名が空文字のときに裸の区切りが残らない。`serviceName` は openapi で
@@ -476,7 +678,7 @@ describe('ReservationDetailPage', () => {
 
     const { router } = renderAt('/reservations/default/300000')
 
-    await user.click(await screen.findByRole('button', { name: '予約を取消' }))
+    await cancelFromOverflow(user)
 
     expect(await screen.findByText('予約を取消しました')).toBeInTheDocument()
     await waitFor(() => expect(router.state.location.pathname).toBe('/reservations'))
@@ -496,7 +698,7 @@ describe('ReservationDetailPage', () => {
 
     renderAt('/reservations/default/300000')
 
-    await user.click(await screen.findByRole('button', { name: '予約を取消' }))
+    await cancelFromOverflow(user)
 
     expect(
       await screen.findByText('予約の取消に失敗しました: reservation already cleared'),
@@ -517,7 +719,7 @@ describe('ReservationDetailPage', () => {
 
     const { router } = renderAt('/reservations/default/300000')
 
-    await user.click(await screen.findByRole('button', { name: '予約を取消' }))
+    await cancelFromOverflow(user)
     await waitFor(() => expect(router.state.location.pathname).toBe('/reservations'))
 
     await user.click(await screen.findByRole('button', { name: '元に戻す' }))
@@ -549,7 +751,7 @@ describe('ReservationDetailPage', () => {
 
     renderAt('/reservations/default/300000')
 
-    await user.click(await screen.findByRole('button', { name: '予約を取消' }))
+    await cancelFromOverflow(user)
     await user.click(await screen.findByRole('button', { name: '元に戻す' }))
     expect(await screen.findByText('予約を元に戻しました')).toBeInTheDocument()
 
@@ -583,11 +785,37 @@ describe('ReservationDetailPage', () => {
 
     renderAt('/reservations/default/300000')
 
-    await user.click(await screen.findByRole('button', { name: '予約を取消' }))
+    await cancelFromOverflow(user)
     await screen.findByRole('button', { name: '元に戻す' })
     await user.click(screen.getByRole('button', { name: '元に戻す' }))
 
     expect(await screen.findByText('予約への復帰に失敗しました')).toBeInTheDocument()
     expect(screen.queryByText('予約を元に戻しました')).not.toBeInTheDocument()
+  })
+
+  it('取消リクエスト中はその他メニューの取消項目を無効にする', async () => {
+    const user = userEvent.setup()
+    let finishRequest: ((response: Response) => void) | undefined
+    const pending = new Promise<Response>((resolve) => {
+      finishRequest = resolve
+    })
+    stubFetch(
+      (site, programId) =>
+        site === 'default' && programId === 300000 ? baseReservation() : null,
+      ['default'],
+      [],
+      () => pending,
+    )
+
+    renderAt('/reservations/default/300000')
+
+    await openReservationOverflow(user)
+    await user.click(screen.getByRole('menuitem', { name: '予約を取消' }))
+    await user.click(screen.getByRole('button', { name: '予約のその他の操作' }))
+    expect(await screen.findByRole('menuitem', { name: '取消中…' })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    )
+    finishRequest?.(new Response(null, { status: 204 }))
   })
 })

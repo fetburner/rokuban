@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 
 import { cn } from '@/lib/utils'
 
@@ -22,6 +22,7 @@ import {
 } from '@/api/generated'
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { DropStatsTable } from '@/components/drop-stats-table'
+import type { ChapterEditorCommands, ChapterEditorStatus } from '@/components/recording-chapter-editor'
 import { RecordingAssetControls } from '@/components/recording-actions'
 import { DropBadges, EncodeStatusBadges, IngestBadge, StatusBadge } from '@/components/recording-badges'
 import { RecordingPlaybackPoster, type PosterTimeline } from '@/components/recording-playback-poster'
@@ -150,6 +151,10 @@ export function RecordingDetail({
   chase = false,
   liveProfile,
   startAtBeginning = false,
+  chapterEditing = false,
+  onEnterChapterEditing,
+  chapterEditorCommandsRef,
+  onChapterEditorStatusChange,
   onSelectLiveProfile,
   onNavigateToRecording,
 }: {
@@ -158,6 +163,10 @@ export function RecordingDetail({
   chase?: boolean
   /** ホームの「最初から」から来た場合は保存位置を復元しない。 */
   startAtBeginning?: boolean
+  chapterEditing?: boolean
+  onEnterChapterEditing?: () => void
+  chapterEditorCommandsRef?: MutableRefObject<ChapterEditorCommands | null>
+  onChapterEditorStatusChange?: (status: ChapterEditorStatus) => void
   /** 追っかけ再生の画質（`?liveProfile=`。issue #874）。未検証の生の値。 */
   liveProfile?: string
   onSelectLiveProfile: (name: string) => void
@@ -411,18 +420,16 @@ export function RecordingDetail({
           throw error
         },
       )
-  const resetChapters = () => {
-    deleteChapters.mutate(
-      { id: recording.id },
-      {
-        onSuccess: () => {
-          invalidateChapters()
-          toast({ message: '自動検出の結果に戻しました' })
-        },
-        onError: (error) =>
-          toast({ message: apiErrorMessage(error) ?? '自動に戻せませんでした', kind: 'error' }),
-      },
-    )
+  const resetChapters = async () => {
+    try {
+      await deleteChapters.mutateAsync({ id: recording.id })
+      invalidateChapters()
+      toast({ message: '自動検出の結果に戻しました' })
+      return true
+    } catch (error) {
+      toast({ message: apiErrorMessage(error) ?? '自動に戻せませんでした', kind: 'error' })
+      return false
+    }
   }
   // カット版の作り直し（`encodedAssets[].cutStale`）。**自動では起きない**ので、
   // ユーザーが押したときだけジョブを積む。新しい世代のパスに置き換わるので、
@@ -568,16 +575,16 @@ export function RecordingDetail({
     <div
       data-testid="recording-detail-body"
       className={cn(
-        'w-full text-sm',
-        // 18rem leaves room for the page header, chapter summary, title, and two-line description
-        // after a 16:9 player. recording-detail-layout.mjs checks this at the target viewport sizes.
-        !trash && recording.series != null && 'grid grid-cols-1 gap-x-8 gap-y-6 lg:grid-cols-[minmax(0,calc((100dvh-18rem)*16/9))_18rem] lg:justify-center',
+        // 18rem は 16:9 の映像の下にページ見出し・チャプター要約・タイトル・説明二行を収める見積もり。
+        // 本文全体を映像の上限幅に揃えて中央に置く。recording-detail-layout.mjs が実測する。
+        'mx-auto w-full max-w-[calc((100dvh-18rem)*16/9)] text-sm',
+        !trash && recording.series != null && 'grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_18rem]',
       )}
     >
       {!trash && (
         <section
           data-testid="recording-playback-group"
-          className="mx-auto flex w-full min-w-0 max-w-[calc((100dvh-18rem)*16/9)] flex-col gap-3"
+          className="col-span-full flex flex-col gap-3"
         >
           {showLiveSource && !playbackState.started && (
             <RecordingPlaybackPoster
@@ -693,6 +700,10 @@ export function RecordingDetail({
               chapterSource={chapters?.source}
               chapterVersion={chapters?.version}
               chapterDetectionPending={chapters?.detectionPending}
+              chapterEditing={chapterEditing}
+              onEnterChapterEditing={onEnterChapterEditing}
+              chapterEditorCommandsRef={chapterEditorCommandsRef}
+              onChapterEditorStatusChange={onChapterEditorStatusChange}
               onSaveChapters={canEditChapters ? saveChapters : undefined}
               onResetChapters={canEditChapters ? resetChapters : undefined}
               chapterSavePending={putChapters.isPending || deleteChapters.isPending}
@@ -744,7 +755,9 @@ export function RecordingDetail({
         </section>
       )}
 
-      <div data-testid="recording-player-column" className="mx-auto flex w-full min-w-0 max-w-[calc((100dvh-18rem)*16/9)] flex-col gap-4">
+      {!chapterEditing && (
+      <>
+      <div data-testid="recording-player-column" className="min-w-0 flex flex-col gap-4">
         <section data-testid="recording-title-row" className="flex flex-col gap-2">
           <h2 className="text-xl font-semibold leading-tight">{programTitle(recording.title)}</h2>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
@@ -1021,7 +1034,7 @@ export function RecordingDetail({
       </div>
 
       {hasShelf && (
-        <aside data-testid="recording-series-shelf" aria-label="シリーズの録画" className="hidden min-w-0 self-start border-l border-border pl-5 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:block">
+        <aside data-testid="recording-series-shelf" aria-label="シリーズの録画" className="hidden min-w-0 border-l border-border pl-5 lg:block">
           <div className="mb-3 flex items-baseline justify-between gap-2">
             {/* 棚がある幅では、見出しのシリーズ名がシリーズ画面への導線を受け持つ。 */}
             <h3 className="min-w-0 font-semibold">
@@ -1095,6 +1108,8 @@ export function RecordingDetail({
           </ul>
           <p className="mt-3 text-xs text-muted-foreground">行を押すと、その録画の詳細へ移ります。まとめて操作する場合はシリーズ画面を使います。</p>
         </aside>
+      )}
+      </>
       )}
     </div>
   )
