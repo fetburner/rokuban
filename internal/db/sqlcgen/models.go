@@ -166,6 +166,11 @@ type MediaAssetCut struct {
 	KeepRanges   pgtype.Multirange[pgtype.Range[pgtype.Int8]]
 }
 
+type MediaAssetThumbnailSeek struct {
+	MediaAssetID int64
+	SeekMs       int64
+}
+
 type MissingMediaAsset struct {
 	MediaAssetID int64
 	FirstSeen    time.Time

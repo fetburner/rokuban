@@ -367,6 +367,15 @@ func (w *CMDetectWorker) saveCMDetectionResult(
 	if err := tx.Commit(ctx); err != nil {
 		return cmFailure("save", fmt.Errorf("committing CM result: %w", err))
 	}
+	// CM ranges make an existing thumbnail eligible for reselection. This is only
+	// a hint; thumbnail_reconcile remains the durable backstop if enqueueing fails.
+	if client, clientErr := river.ClientFromContextSafely[pgx5.Tx](ctx); clientErr != nil {
+		slog.Warn("cm_detect: could not enqueue thumbnail reselection hint",
+			"recording_id", item.ID, "err", clientErr)
+	} else if _, enqueueErr := client.Insert(ctx, jobs.ThumbnailJobArgs{RecordingID: item.ID}, nil); enqueueErr != nil {
+		slog.Warn("cm_detect: failed to enqueue thumbnail reselection hint",
+			"recording_id", item.ID, "err", enqueueErr)
+	}
 	return nil
 }
 

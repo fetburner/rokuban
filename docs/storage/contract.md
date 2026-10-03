@@ -184,7 +184,7 @@ catalog export は `catalog/` の新しい世代 directory を `Mkdir` で原子
 7 日より古い不完全世代は、より新しい完成世代がある場合だけ prune する。catalog directory
 以外へは触れない。
 
-### カット版の置き換え（「置くのは一回」の 1 つの例外）
+### カット版・サムネイルの置き換え（「置くのは一回」の 2 つの例外）
 
 カット版（`encode.profiles[].cut`）は、チャプターを直した後に同じ出力を作り直す。**同じパスへ上書きしない** --- ルール 2 の「置くのは一回」に反し、生きている行の `rel_path` 部分一意索引とも衝突する。
 
@@ -192,6 +192,16 @@ catalog export は `catalog/` の新しい世代 directory を `Mkdir` で原子
 - 新しいファイルを置く → 1 つの tx で `media_assets` の `rel_path` / `size_bytes` を UPDATE し、`media_asset_cuts` を差し替える → commit 後に旧パスを unlink する
 - **unlink を commit の前にしない**。commit が失敗すると、生きている行が指すファイルを失う（ルール 3 の「DB commit が公開点」と同じ向き）。unlink に失敗した場合だけ孤児回収に委ねる（旧行はもう存在しないので、`media_assets` に載っていないファイルとして拾われる）
 - **行は消さずに UPDATE する**。消して作り直すと `rel_path` の部分一意索引から一瞬外れ、その隙間に別の行が同じパスを取れる
+
+CM 検出の後にサムネイルを選び直す場合も、同じパスへ上書きしない。
+
+- 初回の `thumbnails/{recording_id}.jpg` は世代なしのままにし、差し替えは
+  `thumbnails/{recording_id}.g{n}.jpg`（最初の差し替えは `.g1`）へ置く
+- 新しい JPEG を置く → 1 つの tx で同じ `media_assets` 行の `rel_path` /
+  `size_bytes` を UPDATE し、`media_asset_thumbnail_seeks` を差し替える → commit 後に
+  旧パスを unlink する
+- **行は消さずに UPDATE する**。行 id と配信対象を保ったまま世代を進める。unlink は
+  commit 前にしない。失敗した旧ファイルは孤児回収に委ねる
 
 ポイントはルール 3。DB commit を公開点にしつつ、公開前のファイル操作は強い FS
 契約で確定させる。起動時 probe はこの操作列が実行できることだけを確認し、FS の
@@ -270,7 +280,8 @@ catalog export は `catalog/` の新しい世代 directory を `Mkdir` で原子
 
 ## 5.1 サムネイル
 
-録画 1 本につき `kind = 'thumbnail'` の media_asset を 1 つ作る（`UNIQUE (recording_id, kind, profile)`）。
+録画 1 本につき `kind = 'thumbnail'` の media_asset を 1 つ作る
+（`UNIQUE (recording_id, kind, profile)`）。
 
 - **投入（レベルトリガー）**: 次の条件を満たす録画だけ、River `thumbnail` キューへ
   unique ジョブ（`recording_id`）を積む。条件は「active な original があり、active な
@@ -283,15 +294,43 @@ catalog export は `catalog/` の新しい世代 directory を `Mkdir` で原子
   マーカーが消えれば、次の定期パスで再び候補になる。`EnqueueMissingThumbnails`
   による明示的な復旧投入はこの除外をせず、ファイルを戻した直後などに使える。
   命令的チェーン（「ingest 成功 → 必ず thumbnail」）は採らない
-- **抽出位置（固定ポリシー）**: `seek = min(duration × 10%, 30s)`。duration は
-  ffprobe が読む実ファイル長。取れなければ 0 秒（先頭フレーム）。設定キーは設けない
+- **初回の抽出位置（仮サムネイル）**: `seek = min(duration × 10%, 30s)`。duration は
+  原本の ffprobe が読む実ファイル長。取れなければ 0 秒（先頭フレーム）。初回は
+  CM 検出を待たず、従来どおり原本から作る。設定キーは設けない
+- **CM 検出後の選び直し**: 同じ `min(尺 × 10%, 30s)` ポリシーを、CM 区間を除いた
+  keep の合計尺に適用する。原本またはカットしない encoded 版ではその位置を
+  `UnmapMs(keep, seek)` で原本時間軸へ写して抽出する。カット版では凍結した
+  `media_asset_cuts.keep_ranges` の合計尺で位置を決め、抽出位置を同じ凍結 keep から
+  原本時間軸へ戻す。カット版の尺は ffprobe せず凍結 keep の合計を使う
+- **再選択入力**: active かつ `missing_media_assets` に無い原本を優先し、次に
+  プロファイル名昇順のカットしない encoded、最後に同じ順のカット版を選ぶ。
+  未確認の自動 CM 検出も使う。チャプターがない録画は再選択せず、keep が空なら
+  再選択を繰り返さない
+- **作り直す条件**: 記録済み位置が現在の keep 外にあり、同じ入力選択で計画した
+  位置とも異なる場合だけ。`seek_ms` が無い旧サムネイルは、チャプターと使える入力が
+  あれば一度選び直す。位置が keep 内なら、望ましい位置との違いだけでは作り直さない
+- **再選択 reconcile**: active なサムネイルと CM 検出または所有済みチャプターがある
+  録画を recording ID の窓で巡回し、Go の共通判定で対象だけを投入する。ごみ箱は除外し、
+  `seek_tiles` や初回生成とは別の再開位置を持つ。CM 検出の保存後に 1 件ヒントを出すが、
+  ヒントはベストエフォート。手動編集は次の窓で拾う
+- **時間軸**: `ffargs.CutFilterComplex` は入力の最早 `start_time` を 0 とする秒で
+  カット境界を適用する。thumbnail の `-ss` も `-i` より前の入力シークであり、同じ
+  数値の位置を渡す。chapter ranges と `seek_ms` は `recording_chapter_spans` /
+  `media_asset_cuts.keep_ranges` と同じ ms を使う。放送 TS は音声が映像より先に始まる
+  ことがあり、章の原点（最初の映像フレーム）と入力の最早 `start_time` の差は未測定。
+  そのため、この値が同じ画面を指すことと、原本 / encoded 版間で同じ `seek_ms` が
+  揃うことは実録画で確認する
 - **画素縦横比**: ffmpeg で入力の SAR を偶数幅の正方形ピクセルへ焼き込んでから
   JPEG 化する。JPEG の SAR を解釈しないブラウザでも anamorphic 映像を歪ませない
 - **ストレージ契約**: ffmpeg は `storage.scratch_dir` に JPEG を書き、完成後に
-  メディアへストリームコピー + fsync する。その後 `media_assets` に INSERT する
-  （`ON CONFLICT DO NOTHING`）
-- **相対パス**: `thumbnails/{recording_id}.jpg`（原本の contentPath に依存しない。
-  原本削除後もパスが安定する）
+  メディアへストリームコピー + fsync する。初回は `media_assets` と
+  `media_asset_thumbnail_seeks` を同じ tx で INSERT し、差し替えでは両方を同じ tx で
+  UPDATE する（差し替え規約は §3）
+- **相対パス**: 初回は `thumbnails/{recording_id}.jpg`。差し替えは
+  `thumbnails/{recording_id}.g{n}.jpg`（n は現行パスの次の世代）。原本の contentPath に
+  依存しないので、原本削除後もパスが安定する
+- **位置の事実**: `media_asset_thumbnail_seeks` に、その JPEG を切り出した原本時間軸の
+  `seek_ms` を 1 行記録する。旧サムネイルで行が無い場合は位置不明として扱う
 - **配信**: streamer の `GET /api/media/recordings/{id}/thumbnail`（openapi 外。api はファイルを開かない）
 
 ## 5.2 シークプレビュー用タイル

@@ -389,3 +389,24 @@ CREATE TABLE media_asset_cuts (
 - `keep_ranges` は原本の最初の映像フレームを 0 とする ms の半開区間（`recording_chapter_spans` と同じ単位）。境界はフレーム境界へ量子化済み。**空はカット版を作れないことを意味するので CHECK で表現不可能にする**（不変条件 10）
 - 値は JLSE のフレーム番号（最初の映像フレームが 0）から作る。ただし当てる側は、入力の最早 start_time を 0 とする秒として使う。カット版の切り出し（`internal/ffargs/cut.go`）とプレイヤーの `currentTime` がそうである。放送 TS は音声が映像より先に始まるので、2 つの原点はその開始差だけずれる（大きさは未測定）
 - **行の不在は「カット版ではない」**（cut でない encoded。不変条件 10）。API はこの不在を `encodedAssets[].cut` の偽に写す —— 「cut = false」を表す列を `media_assets` に足すと、2 つの主張が片方だけ古くなる
+
+### media_asset_thumbnail_seeks — サムネイルの抽出位置
+
+サムネイル JPEG の内容から抽出時刻は取り直せない。`seek_ms` は導出値ではなく、
+そのファイルを実際に切り出した位置という事実である（不変条件 9）。thumbnail worker
+だけが書く値なので `media_assets` 本体の列にせず、同じ tx でアセットを INSERT /
+UPDATE する衛星表に置く（不変条件 12 / 13）。
+
+```sql
+CREATE TABLE media_asset_thumbnail_seeks (
+    media_asset_id bigint PRIMARY KEY REFERENCES media_assets (id) ON DELETE CASCADE,
+    seek_ms        bigint NOT NULL CHECK (seek_ms >= 0)
+);
+```
+
+- `seek_ms` は `recording_chapter_spans` / `media_asset_cuts.keep_ranges` と同じ原本時間軸の
+  ms。サムネイルを作るたび必ず 1 行書く。行の不在はこの表より前に作られ位置が不明な
+  サムネイルだけを意味する。不明は NULL 列ではなく行の不在で表す（不変条件 10）
+- 主キーと FK が `media_assets` を指すのは、行の寿命がサムネイルアセットと同時だから。
+  カタログ export / rescue では運ばない。失われた位置はチャプターがある録画なら次の
+  reconcile pass で選び直せる

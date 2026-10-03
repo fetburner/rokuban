@@ -153,9 +153,14 @@ func TestSeekTilesWorkerPublishesUnderRelPathLock(t *testing.T) {
 
 func publishThumbnailForTest(pool *pgxpool.Pool, mediaDir string, id int64, scratch string) (int64, bool, error) {
 	relPath := thumbnailRelPath(id)
+	// 呼び出し時点の active original を入力として計画した初回生成を模す。
+	var inputID int64
+	if orig, err := sqlcgen.New(pool).GetActiveOriginalMediaAsset(context.Background(), id); err == nil {
+		inputID = orig.ID
+	}
 	return publishGeneratedMediaAsset(context.Background(), pool, mediaDir, relPath, scratch,
 		func(ctx context.Context, q *sqlcgen.Queries) (bool, error) {
-			return skipThumbnailPublish(ctx, q, id)
+			return skipThumbnailPlanPublish(ctx, q, id, nil, inputID)
 		},
 		func(ctx context.Context, q *sqlcgen.Queries, size int64) error {
 			_, err := q.UpsertThumbnailMediaAsset(ctx, sqlcgen.UpsertThumbnailMediaAssetParams{

@@ -104,6 +104,163 @@ func TestThumbnailReconcile_DoesNotDoubleEnqueue(t *testing.T) {
 	}
 }
 
+func TestThumbnailReconcile_EnqueuesOnlyWhenRecordedThumbnailIsInCM(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	inCM := insertTestRecordingForSite(t, pool, "default", 941)
+	inKeep := insertTestRecordingForSite(t, pool, "default", 942)
+	q := sqlcgen.New(pool)
+	for _, recordingID := range []int64{inCM, inKeep} {
+		seedOriginalAsset(t, pool, mediaDir, recordingID,
+			fmt.Sprintf("reselect/%d.ts", recordingID), []byte("fake-ts"))
+		thumbID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
+			db.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), []byte("old-thumbnail"))
+		if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
+			RecordingID: recordingID,
+			CmRanges:    "{[0,60000)}",
+		}); err != nil {
+			t.Fatalf("seeding CM ranges for %d: %v", recordingID, err)
+		}
+		seek := int64(30000)
+		if recordingID == inKeep {
+			seek = 60000
+		}
+		if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+			MediaAssetID: thumbID,
+			SeekMs:       seek,
+		}); err != nil {
+			t.Fatalf("seeding thumbnail seek for %d: %v", recordingID, err)
+		}
+	}
+
+	runThumbnailReconcilePass(t, pool, &ThumbnailReconcileWorker{Pool: pool})
+	if got := countThumbnailJobs(t, pool, inCM); got != 1 {
+		t.Errorf("thumbnail jobs for CM frame = %d, want 1", got)
+	}
+	if got := countThumbnailJobs(t, pool, inKeep); got != 0 {
+		t.Errorf("thumbnail jobs for keep frame = %d, want 0", got)
+	}
+}
+
+// 再選択候補の窓も missing thumbnail の窓と独立して進める。1・2 は
+// thumbnail 欠落、3・4・5 は既存 thumbnail と chapter 候補に分け、2 パスで
+// reselect 側の末尾 5 まで判定されることを確認する。
+func TestThumbnailReconcile_ReselectCursorIsIndependent(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	ids := make([]int64, 0, 5)
+	for eventID := int32(1); eventID <= 5; eventID++ {
+		ids = append(ids, insertTestRecordingWithEventID(t, pool, eventID))
+	}
+	q := sqlcgen.New(pool)
+	for i, recordingID := range ids {
+		seedOriginalAsset(t, pool, mediaDir, recordingID,
+			fmt.Sprintf("reselect-cursor/%d.ts", i+1), []byte("fake-ts"))
+		if i < 2 {
+			continue
+		}
+		thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
+			db.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), []byte("old-thumbnail"))
+		if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
+			RecordingID: recordingID,
+			CmRanges:    "{[0,60000)}",
+		}); err != nil {
+			t.Fatalf("seeding CM ranges for %d: %v", recordingID, err)
+		}
+		seek := int64(60000) // 3・4 は keep 内なので再選択しない。
+		if i == 4 {
+			seek = 30000 // 5 は CM 内なので再選択ジョブが必要。
+		}
+		if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+			MediaAssetID: thumbnailID,
+			SeekMs:       seek,
+		}); err != nil {
+			t.Fatalf("seeding thumbnail seek for %d: %v", recordingID, err)
+		}
+	}
+
+	w := &ThumbnailReconcileWorker{Pool: pool, RowLimit: 2}
+	runThumbnailReconcilePass(t, pool, w)
+	runThumbnailReconcilePass(t, pool, w)
+
+	if got := countThumbnailJobs(t, pool, ids[4]); got != 1 {
+		t.Errorf("reselection jobs for recording %d = %d, want 1 after the second window", ids[4], got)
+	}
+}
+
+func TestThumbnailReconcile_DoesNotRepeatUnactionableReselections(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	q := sqlcgen.New(pool)
+	allCutID := insertTestRecordingWithEventID(t, pool, 61)
+	seedOriginalAsset(t, pool, mediaDir, allCutID, "reselect-noop/all-cut.ts", []byte("fake-ts"))
+	allCutThumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, allCutID,
+		db.AssetKindThumbnail, nil, thumbnailRelPath(allCutID), []byte("old-thumbnail"))
+	cutOnlyID := insertTestRecordingWithEventID(t, pool, 62)
+	cutProfile := "cut-only"
+	cutAssetID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, cutOnlyID,
+		db.AssetKindEncoded, &cutProfile, "reselect-noop/cut-only.mp4", []byte("fake-mp4"))
+	cutThumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, cutOnlyID,
+		db.AssetKindThumbnail, nil, thumbnailRelPath(cutOnlyID), []byte("old-thumbnail"))
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO media_asset_cuts (media_asset_id, keep_ranges) VALUES ($1, $2::int8multirange)`,
+		cutAssetID, "{[0,300000)}"); err != nil {
+		t.Fatalf("seeding cut-only frozen keep ranges: %v", err)
+	}
+	for _, recordingID := range []int64{allCutID, cutOnlyID} {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
+			t.Fatalf("adopting chapters for %d: %v", recordingID, err)
+		}
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(0, 1800000), 'CM', true)`,
+		allCutID); err != nil {
+		t.Fatalf("seeding all-cut span: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(25000, 35000), 'CM', true)`,
+		cutOnlyID); err != nil {
+		t.Fatalf("seeding edited cut-only span: %v", err)
+	}
+	if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+		MediaAssetID: allCutThumbnailID,
+		SeekMs:       30000,
+	}); err != nil {
+		t.Fatalf("seeding all-cut thumbnail seek: %v", err)
+	}
+	if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+		MediaAssetID: cutThumbnailID,
+		SeekMs:       30000,
+	}); err != nil {
+		t.Fatalf("seeding cut-only thumbnail seek: %v", err)
+	}
+
+	w := &ThumbnailReconcileWorker{Pool: pool}
+	runThumbnailReconcilePass(t, pool, w)
+	runThumbnailReconcilePass(t, pool, w)
+	for _, recordingID := range []int64{allCutID, cutOnlyID} {
+		if got := countThumbnailJobs(t, pool, recordingID); got != 0 {
+			t.Errorf("thumbnail jobs for no-op reselection recording %d = %d, want 0 after two passes", recordingID, got)
+		}
+	}
+}
+
 // ファイルが無いことを delete_reconcile が確認した原本は定期パスから除外する。
 // マーカーが消えた後は同じ録画を回収対象へ戻す。
 func TestThumbnailReconcile_SkipsKnownMissingOriginalUntilRestored(t *testing.T) {
@@ -380,5 +537,110 @@ func TestThumbnailReconcile_SeekTilesCursorIsIndependent(t *testing.T) {
 			t.Errorf("seek_tiles jobs for recording %d = %d, want 1 "+
 				"(the seek_tiles cursor must not be dragged along by the thumbnail window)", id, got)
 		}
+	}
+}
+
+// 本番の既存サムネイルには衛星表の行が無い。チャプターが無い録画は作り直さず、
+// 検出済みの録画だけを作り直す（崩れるとデプロイ直後に全録画が作り直される）。
+func TestThumbnailReconcile_RowlessThumbnailOnlyReselectsWithChapters(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	q := sqlcgen.New(pool)
+	seed := func(site int32) int64 {
+		id := insertTestRecordingForSite(t, pool, "default", site)
+		seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("rowless/%d.ts", id), []byte("fake-ts"))
+		seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, db.AssetKindThumbnail, nil,
+			thumbnailRelPath(id), []byte("old-thumbnail"))
+		return id
+	}
+	noChapters := seed(951)
+	detected := seed(952)
+	if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
+		RecordingID: detected, CmRanges: "{[0,60000)}",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	runThumbnailReconcilePass(t, pool, &ThumbnailReconcileWorker{Pool: pool})
+	if got := countThumbnailJobs(t, pool, noChapters); got != 0 {
+		t.Errorf("thumbnail jobs without chapters = %d, want 0", got)
+	}
+	if got := countThumbnailJobs(t, pool, detected); got != 1 {
+		t.Errorf("thumbnail jobs with CM detection = %d, want 1", got)
+	}
+
+	w := &ThumbnailWorker{
+		Pool: pool, MediaDir: mediaDir, ScratchDir: t.TempDir(),
+		runCmd: func(context.Context, string, ...string) ([]byte, error) {
+			t.Error("recording without chapters must not run ffmpeg/ffprobe")
+			return nil, fmt.Errorf("unexpected command")
+		},
+	}
+	job := &river.Job[ThumbnailJobArgs]{JobRow: &rivertype.JobRow{}, Args: ThumbnailJobArgs{RecordingID: noChapters}}
+	if err := w.Work(ctx, job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+	cur, err := q.LockActiveThumbnailMediaAsset(ctx, noChapters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur.RelPath != thumbnailRelPath(noChapters) {
+		t.Errorf("rel_path = %q, want unchanged", cur.RelPath)
+	}
+}
+
+// 使える入力が無い録画（原本は missing、encoded 無し）は、ジョブがエラーにならず
+// サムネイルも変えず、reconcile も投入しない。
+func TestThumbnailWorker_NoUsableInputKeepsThumbnailWithoutError(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	q := sqlcgen.New(pool)
+	id := insertTestRecordingForSite(t, pool, "default", 961)
+	originalID := seedOriginalAsset(t, pool, mediaDir, id, "noinput/original.ts", []byte("fake-ts"))
+	thumbID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, db.AssetKindThumbnail, nil,
+		thumbnailRelPath(id), []byte("old-thumbnail"))
+	if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+		MediaAssetID: thumbID, SeekMs: 30000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
+		RecordingID: id, CmRanges: "{[0,60000)}",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO missing_media_assets (media_asset_id) VALUES ($1)`, originalID); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &ThumbnailWorker{
+		Pool: pool, MediaDir: mediaDir, ScratchDir: t.TempDir(),
+		runCmd: func(context.Context, string, ...string) ([]byte, error) {
+			t.Error("no usable input must not run ffmpeg/ffprobe")
+			return nil, fmt.Errorf("unexpected command")
+		},
+	}
+	job := &river.Job[ThumbnailJobArgs]{JobRow: &rivertype.JobRow{}, Args: ThumbnailJobArgs{RecordingID: id}}
+	if err := w.Work(ctx, job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+	cur, err := q.LockActiveThumbnailMediaAsset(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur.RelPath != thumbnailRelPath(id) || cur.SeekMs == nil || *cur.SeekMs != 30000 {
+		t.Errorf("thumbnail = %q seek %v, want unchanged %q / 30000", cur.RelPath, cur.SeekMs, thumbnailRelPath(id))
+	}
+	runThumbnailReconcilePass(t, pool, &ThumbnailReconcileWorker{Pool: pool})
+	if got := countThumbnailJobs(t, pool, id); got != 0 {
+		t.Errorf("thumbnail jobs = %d, want 0", got)
 	}
 }
