@@ -376,7 +376,7 @@ async function checkRuleMenu(width, theme) {
   }
   await screenshot(page, `${width}-rule-filter-${theme}.png`, false)
 
-  await page.getByRole('button', { name: 'ルールの絞り込みを解除' }).click()
+  await page.getByRole('button', { name: /ルール「.*」の絞り込みを解除/ }).click()
   await page.waitForURL((url) => {
     const search = new URL(url).searchParams
     return !search.has('ruleId') && !search.has('only')
