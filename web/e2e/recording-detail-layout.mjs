@@ -267,7 +267,7 @@ for (const viewport of [
     ng.push(`${viewport.name}: シリーズ棚がタイトル列の右にない`)
   }
   if (viewport.desktop && !measured.shelfRightEdgeWithinPlayer) {
-    ng.push(`${viewport.name}: シリーズ棚の右端が映像の右端を超える（本文全体が映像幅に揃っていない）`)
+    ng.push(`${viewport.name}: シリーズ棚の右端が映像の右端を超える（下段が映像の上限幅を超えて広がっている）`)
   }
   if (viewport.desktop && !measured.shelfTopVisibleInFirstViewport) {
     ng.push(`${viewport.name}: シリーズ棚の上端が最初の画面に入らない`)
