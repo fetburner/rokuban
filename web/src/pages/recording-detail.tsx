@@ -82,6 +82,10 @@ export function RecordingDetailPage() {
   const saveAndExitChapterEdit = async () => {
     if (await chapterEditorCommandsRef.current?.save()) leaveChapterEditMode()
   }
+  const confirmAutoChapters =
+    chapterEditorStatus.source === 'auto' && !chapterEditorStatus.dirty && !chapterEditorStatus.stale
+  const chapterSaveDisabled =
+    chapterEditorStatus.stale || (!chapterEditorStatus.dirty && chapterEditorStatus.source !== 'auto')
   const resetAndExitChapterEdit = async () => {
     if (await chapterEditorCommandsRef.current?.reset()) leaveChapterEditMode()
   }
@@ -169,8 +173,8 @@ export function RecordingDetailPage() {
               自動に戻す
             </Button>
             <Button type="button" variant="outline" onClick={requestChapterExit}>やめる</Button>
-            <Button type="button" disabled={!chapterEditorStatus.dirty || chapterEditorStatus.stale} onClick={() => void saveAndExitChapterEdit()}>
-              保存
+            <Button type="button" disabled={chapterSaveDisabled} onClick={() => void saveAndExitChapterEdit()}>
+              {confirmAutoChapters ? 'このまま確認' : '保存'}
             </Button>
           </>
         ) : recording ? <RecordingActions recording={recording} trash={trash} /> : undefined}
