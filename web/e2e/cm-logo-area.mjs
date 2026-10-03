@@ -173,6 +173,14 @@ async function centerOf(locator, name) {
   return { x: box.x + box.width / 2, y: box.y + box.height / 2 }
 }
 
+// 画像・フォント読込後に ResizeObserver と CSS レイアウトが反映される機会を作る。
+async function settleLayout(page) {
+  await page.evaluate(async () => {
+    await document.fonts.ready
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+  })
+}
+
 log(`URL: ${URL_BASE}`)
 await validateFixturesOrExit(
   [
@@ -208,6 +216,7 @@ await check('①', async () => {
     undefined,
     { timeout: 15000 },
   )
+  await settleLayout(page)
   const box = await image.boundingBox()
   if (!box || box.width <= 0 || box.height <= 0) throw new Error('コマの描画寸法が取れない')
   const ratio = box.width / box.height
@@ -225,6 +234,9 @@ log('\n=== ② スライダーの時刻を /frame?at= に渡す ===')
 await check('②', async () => {
   const slider = page.getByTestId('cm-logo-time')
   await slider.waitFor({ state: 'visible', timeout: 5000 })
+  const image = page.getByTestId('cm-logo-frame-image')
+  const previousFrameSrc = await image.getAttribute('src')
+  if (!previousFrameSrc) throw new Error('変更前のコマ画像が無い')
   const min = Number(await slider.getAttribute('min'))
   const max = Number(await slider.getAttribute('max'))
   if (!(max > min)) throw new Error(`スライダーの範囲が空（min=${min} max=${max}）`)
@@ -240,6 +252,16 @@ await check('②', async () => {
   if (!frameRequests.includes(target)) {
     throw new Error(`/frame?at=${target} が呼ばれない（実際 ${JSON.stringify(frameRequests)}）`)
   }
+  // fetch の発行だけで進むと旧画像が外れた直後に③が寸法を読み、null や古い枠を使う。
+  await page.waitForFunction(
+    (oldSrc) => {
+      const current = document.querySelector('[data-testid="cm-logo-frame-image"]')
+      return current instanceof HTMLImageElement && current.src !== oldSrc && current.complete && current.naturalWidth > 0
+    },
+    previousFrameSrc,
+    { timeout: 15000 },
+  )
+  await settleLayout(page)
 })
 
 log('\n=== ③ 4 隅の変形を coded size へ変換する ===')
@@ -325,19 +347,40 @@ log('\n=== ⑤ カーソル（各点の最前面の要素で見る）===')
 await check('⑤', async () => {
   const image = page.getByTestId('cm-logo-frame-image')
   await image.scrollIntoViewIfNeeded()
-  const box = await image.boundingBox()
-  if (!box) throw new Error('コマの描画寸法が取れない')
-  const points = [
-    ['スライダー', await centerOf(page.getByTestId('cm-logo-time'), 'スライダー'), 'pointer'],
-    ['枠の外のコマ', { x: box.x + box.width * 0.95, y: box.y + box.height * 0.95 }, 'crosshair'],
-  ]
-  // 上のスクロールでコマの座標が動かないよう、コマはスライダーの後で測り直す。
-  const box2 = await image.boundingBox()
-  if (box2) points[1][1] = { x: box2.x + box2.width * 0.95, y: box2.y + box2.height * 0.95 }
-  points.push(['枠の中心', await centerOf(page.getByTestId('cm-logo-rect'), '枠'), 'move'])
-  for (const [corner, cursor] of [['nw', 'nwse-resize'], ['ne', 'nesw-resize'], ['sw', 'nesw-resize'], ['se', 'nwse-resize']]) {
-    points.push([`ハンドル ${corner}`, await centerOf(page.getByTestId(`cm-logo-handle-${corner}`), corner), cursor])
+  await settleLayout(page)
+  // スクロールは一度だけ行い、全点の座標を同じレイアウトから一括で採る。
+  // 各 locator の scrollIntoViewIfNeeded を繰り返すと、後のハンドルを見せるスクロールで
+  // 先に採った NW / NE の画面座標がずれ、反対側のハンドルを測ることがある。
+  const boxes = await page.evaluate(() => {
+    const box = (testId) => {
+      const element = document.querySelector(`[data-testid="${testId}"]`)
+      if (!element) return null
+      const { x, y, width, height } = element.getBoundingClientRect()
+      return { x, y, width, height }
+    }
+    return {
+      image: box('cm-logo-frame-image'),
+      slider: box('cm-logo-time'),
+      rect: box('cm-logo-rect'),
+      nw: box('cm-logo-handle-nw'),
+      ne: box('cm-logo-handle-ne'),
+      sw: box('cm-logo-handle-sw'),
+      se: box('cm-logo-handle-se'),
+    }
+  })
+  if (!boxes.image || !boxes.slider || !boxes.rect || !boxes.nw || !boxes.ne || !boxes.sw || !boxes.se) {
+    throw new Error('カーソル判定に必要な要素の寸法が取れない')
   }
+  const center = (box) => ({ x: box.x + box.width / 2, y: box.y + box.height / 2 })
+  const points = [
+    ['スライダー', center(boxes.slider), 'pointer'],
+    ['枠の外のコマ', { x: boxes.image.x + boxes.image.width * 0.95, y: boxes.image.y + boxes.image.height * 0.95 }, 'crosshair'],
+    ['枠の中心', center(boxes.rect), 'move'],
+    ['ハンドル nw', center(boxes.nw), 'nwse-resize'],
+    ['ハンドル ne', center(boxes.ne), 'nesw-resize'],
+    ['ハンドル sw', center(boxes.sw), 'nesw-resize'],
+    ['ハンドル se', center(boxes.se), 'nwse-resize'],
+  ]
   const bad = []
   for (const [name, point, want] of points) {
     const got = await cursorAt(page, point)
@@ -380,14 +423,14 @@ log('\n=== ⑨ 角から離れた位置でもハンドルで変形する ===')
 await check('⑨', async () => {
   const rect = page.getByTestId('cm-logo-rect')
   const before = await rect.boundingBox()
-  const handleBox = await page.getByTestId('cm-logo-handle-se').boundingBox()
+  const handleCenter = await centerOf(page.getByTestId('cm-logo-handle-se'), '右下ハンドル')
   const xBefore = await numberInput(page, 'X').inputValue()
   const yBefore = await numberInput(page, 'Y').inputValue()
   const wBefore = Number(await numberInput(page, '幅').inputValue())
-  if (!before || !handleBox) throw new Error('枠またはハンドルが無い')
+  if (!before) throw new Error('枠が無い')
   // ハンドルは 44px 角。中心から斜めに 13px ずらすと角から約 18px 離れる
-  const sx = handleBox.x + handleBox.width / 2 + 13
-  const sy = handleBox.y + handleBox.height / 2 + 13
+  const sx = handleCenter.x + 13
+  const sy = handleCenter.y + 13
   await page.mouse.move(sx, sy)
   const hit = await page.evaluate(([px, py]) => document.elementFromPoint(px, py)?.closest('[data-testid^="cm-logo-handle-"]')?.getAttribute('data-testid')?.slice('cm-logo-handle-'.length) ?? null, [sx, sy])
   if (hit !== 'se') throw new Error(`角から 18px の elementFromPoint が se ハンドルでない: ${hit}`)
