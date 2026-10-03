@@ -53,7 +53,7 @@ type RecordingPlayerProps = {
   /** 現在の位置を原本時間軸の秒で親へ伝える。 */
   onRecordingPositionChange?: (seconds: number) => void
   /** 終端 / エラーで再生元を選び直した場合は true を返す。 */
-  onRecordingPlaybackEnded?: (recordingPositionSeconds: number) => boolean
+  onRecordingPlaybackEnded?: (recordingPositionSeconds: number, wasPlaying: boolean) => boolean
   /** 動画がエラーを返した。一度も再生していなければ位置は undefined。親が選び直したら true。 */
   onRecordingPlaybackError?: (recordingPositionSeconds: number | undefined, wasPlaying: boolean) => boolean
   /** 最初の読み込みが終わったら再生を始める（再生元を替えた直後に、再生中だった続きを見る）。 */
@@ -203,6 +203,7 @@ export function RecordingPlayer({
   const localChapterEditorCommandsRef = useRef<ChapterEditorCommands | null>(null)
   const resolvedChapterEditorCommandsRef = chapterEditorCommandsRef ?? localChapterEditorCommandsRef
   const isScrubbingRef = useRef(false)
+  const playingRef = useRef(false)
   const jumpToRef = useRef<(seconds: number) => void>(() => {})
   const subtitleLinesRef = useRef(new WeakMap<VTTCue, VTTCue['line']>())
   // 枠（バーの自動非表示・フォーカス・映像のタップ・全画面・PiP）は原本 HLS の LivePlayer と共有する。
@@ -854,16 +855,19 @@ export function RecordingPlayer({
               }
             }}
             onPlay={() => {
+              playingRef.current = true
               setEndCardFor(null)
               frame.onPlay()
             }}
             onPause={(e) => {
+              // 自然終端では ended の直前に pause が来る（ended 状態）。それは再生中だった扱いのまま残す。
+              if (!e.currentTarget.ended) playingRef.current = false
               frame.onPause()
               saveCurrentPosition(e.currentTarget)
             }}
             onEnded={(e) => {
               if (chapterEditing) return
-              if (onRecordingPlaybackEnded?.(originalPositionSeconds(e.currentTarget)) === true) return
+              if (onRecordingPlaybackEnded?.(originalPositionSeconds(e.currentTarget), playingRef.current) === true) return
               setCountdownSeconds(AUTO_ADVANCE_SECONDS)
               setEndCardFor(recordingId)
             }}

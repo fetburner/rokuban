@@ -268,11 +268,28 @@ playlist を Chromium の hls.js（`E2E_BROWSER=webkit` ならネイティブ HL
   **原本 VOD の `LivePlayer` に `resumePositionMs` を渡さない変異で
   `5.52 秒 → 0.00 秒` になって落ちる**（Chromium で確認。WebKit は未実施）
 - **追っかけ範囲外 seek で原本 HLS に移った後も再生が続く**（⑩）。最後に進んだ `currentTime` から
-  次に進んだ時刻までの最大停止時間を記録し、2 秒以下を判定する
+  次に進んだ時刻までの最大停止時間を記録し、2 秒以下を判定する。再生を引き継がない変異は、範囲外 seek の
+  `reselectPlaybackSource` へ `playing && false` を渡すものである。**停止 10073ms・`advances=0` になって落ちる**
+  （Chromium で確認）。**再生元を替えない変異（`selected !== current.source`
+  を `false &&` にする）で、offset を要求せず ⑩ の 4 判定が落ちる**（Chromium で確認）
 - **追っかけ playlist の終端が録画全体の終端より手前なら、原本 HLS に位置を渡して再生を続ける**（⑪）。
-  終端までは成長する EVENT playlist（ENDLIST 無し）を配り、追っかけの 12 秒に対して原本は 20 秒の fixture にする
+  終端までは成長する EVENT playlist（ENDLIST 無し）を配り、追っかけの 12 秒に対して原本は 20 秒の fixture にする。
+  playlist は 6 segment で伸びを止める（`growthCapSegments`）ので、ENDLIST を付けた終端でも本数が縮まない。
+  **終端の handoff を `autoPlay: false` にする変異（`wasPlaying && false`）で、移った先が止まり
+  15036ms の停止になって落ちる**。**`ended` 直前の `pause` で再生中の記憶を消す変異（`live-player.tsx` の
+  `if (!event.currentTarget.ended)` を外す）も同じ形で落ちる**。再生元を替えない変異は
+  `追っかけを終端まで再生しても原本 HLS へ自動で切り替えない` で落ちる（以上 Chromium で確認）。
+  **終端の切替に 3 秒の遅延を入れる変異で、終端切替の停止が 3150ms になって落ちる**（Chromium で確認。
+  ⑩・⑥ は切替前の再生元が再生を続けるので、この遅延では落ちない。⑩・⑥ の停止判定は上の「引き継がない変異」で落ちる）
 - **録画全体の終端では別の再生元を作らず、追っかけの終了状態を保つ**（⑫）。原本 fixture も 12 秒に制限し、
-  真の終端 offset が要求されないことを見る。次のポスター判定は⑬
+  真の終端 offset が要求されないことを見る。実メディア（12 秒）は壁時計の録画時間（15 秒）より 1.5 秒を超えて
+  短くしてある。**終端の許容を 5 秒から 1.5 秒へ戻す変異で `sameVideo:false`・原本 HLS 要求 3 件になって落ちる**
+  （Chromium で確認）
+- **一時停止したまま終端へシークして `ended` になっても、移った先は再生しない**（⑪b）。
+  Chromium は一時停止中のシークで `ended` を発火しないので、この判定は Chromium では何も保証しない
+  （`endedFired:false` を記録するだけ）。WebKit は発火して原本 HLS へ移る。**常に再生中として引き継ぐ変異
+  （`wasPlaying || true`）で、WebKit が `paused:false` になって落ちる**（WebKit で確認）。
+  次のポスター判定は⑬
 
 `E2E_BROWSER=webkit` で同じ判定を Safari 相当のネイティブ HLS 経路で回す。
 画質切替の位置の持ち越しは hls.js（`startPosition`）とネイティブ（要素への代入）で
@@ -322,7 +339,11 @@ WebKit の HLS は 0.00ms / +23.37ms（-10.02 / +13.34）だった。
 
 ⑥ は原本 HLS 再生中に encoded が追加されても現在の HLS を保ち、次の範囲外 seek で encoded MP4 へ
 位置を渡す。切替後に `currentTime` が進むことと、最後に進んだ時刻からの最大停止時間が 2 秒以下であることも、
-Chromium と WebKit で確認する。
+Chromium と WebKit で確認する。再生を引き継がない変異は、⑩ と同じ
+`playing && false` である。**切替後が `paused:true`・停止 10077ms・`advances=0` になって落ちる**（Chromium で確認）。
+
+切替の停止時間（上限 2000ms）の実測は、Chromium で ⑩ 93ms・⑪ 133ms・⑥ 100ms、
+WebKit で ⑩ 270ms・⑪ 185ms・⑥ 306ms だった（1 回ずつの測定）。
 
 ```sh
 E2E_URL=http://localhost:4173 E2E_BROWSER=chromium pnpm e2e:recording-original-vod

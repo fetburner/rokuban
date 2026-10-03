@@ -355,7 +355,7 @@ async function expandKeepOriginalEditor() {
 }
 
 /** jsdom の video 要素は再生位置と長さを自動更新しないので、テストから設定する。 */
-function setMediaProps(video: HTMLVideoElement, props: { currentTime?: number; duration?: number }) {
+function setMediaProps(video: HTMLVideoElement, props: { currentTime?: number; duration?: number; ended?: boolean }) {
   for (const [key, value] of Object.entries(props)) {
     Object.defineProperty(video, key, { value, writable: true, configurable: true })
   }
@@ -3066,6 +3066,76 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
     await finishRecording(server)
 
     setMediaProps(chaseVideo, { currentTime: 119 })
+    fireEvent.ended(chaseVideo)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(document.querySelector('video')).toBe(chaseVideo)
+    expect(playlistPaths(server.fetchMock, '/original-vod')).toEqual([])
+  })
+
+  /** 追っかけの終端から次の再生元へ移り、移った先の <video> で play() が呼ばれた回数を返す。 */
+  async function playsAfterHandoff(playSpy: ReturnType<typeof vi.spyOn>) {
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src')).toContain('/api/media/recordings/3/file'))
+    const next = document.querySelector('video')!
+    setMediaProps(next, { currentTime: 0 })
+    fireEvent.loadedMetadata(next)
+    fireEvent.canPlay(next)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    return playSpy.mock.calls.length
+  }
+
+  it('再生中に追っかけが終端へ達したなら、移った先で自動で再生を続ける（自然終端は pause が先に来る）', async () => {
+    const playSpy = vi.spyOn(window.HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
+    const server = await startChase()
+    const chaseVideo = document.querySelector('video')!
+    await finishRecording(server)
+    playSpy.mockClear()
+
+    fireEvent.play(chaseVideo)
+    setMediaProps(chaseVideo, { currentTime: 10, ended: true })
+    fireEvent.pause(chaseVideo)
+    fireEvent.ended(chaseVideo)
+    expect(await playsAfterHandoff(playSpy)).toBe(1)
+  })
+
+  it('一時停止中に終端へシークして ended になっても、移った先で勝手に再生しない', async () => {
+    const playSpy = vi.spyOn(window.HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
+    const server = await startChase()
+    const chaseVideo = document.querySelector('video')!
+    await finishRecording(server)
+    playSpy.mockClear()
+
+    fireEvent.play(chaseVideo)
+    setMediaProps(chaseVideo, { currentTime: 5, ended: false })
+    fireEvent.pause(chaseVideo)
+    setMediaProps(chaseVideo, { currentTime: 10, ended: true })
+    fireEvent.ended(chaseVideo)
+    expect(await playsAfterHandoff(playSpy)).toBe(0)
+  })
+
+  it('録画完了の取得より先に追っかけが終わっても、完了の状態が届いた時点で次の再生元へ移る', async () => {
+    const playSpy = vi.spyOn(window.HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
+    const server = await startChase()
+    const chaseVideo = document.querySelector('video')!
+    fireEvent.play(chaseVideo)
+    setMediaProps(chaseVideo, { currentTime: 10, ended: true })
+    fireEvent.pause(chaseVideo)
+    fireEvent.ended(chaseVideo)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    // まだ録画中の状態では替えない。
+    expect(document.querySelector('video')).toBe(chaseVideo)
+    playSpy.mockClear()
+
+    await finishRecording(server)
+    expect(await playsAfterHandoff(playSpy)).toBe(1)
+  })
+
+  it('実メディアが壁時計の録画時間より 1.5 秒を超えて短くても、その終端は録画全体の終端として止まる', async () => {
+    const server = await startChase()
+    const chaseVideo = document.querySelector('video')!
+    await finishRecording(server)
+
+    // 録画は 120 秒。メディアは 116 秒で終わる。
+    setMediaProps(chaseVideo, { currentTime: 116 })
     fireEvent.ended(chaseVideo)
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(document.querySelector('video')).toBe(chaseVideo)

@@ -27,10 +27,13 @@ import path from 'node:path'
 
 import { ListRecordingsResponseItem } from '../src/api/zod.ts'
 import {
+  beginCurrentTimeGapMeasurement,
   finish,
+  finishCurrentTimeGapMeasurement,
   installApiStubs,
   launchBrowser,
   log,
+  MAX_SOURCE_SWITCH_STALL_MS,
   sseKeepAlive,
   validateFixturesOrExit,
   verifyBundleMatchesOrExit,
@@ -40,7 +43,6 @@ const URL_BASE = process.env.E2E_URL ?? 'http://localhost:4173'
 const SITE = 'default'
 const RECORDING_ID = 920
 const PLAYBACK_PROFILE = 'vod-h264'
-const MAX_SOURCE_SWITCH_STALL_MS = 2000
 const ng = []
 const recordingDurationMs = 16_000
 const startedAt = new Date(Date.now() - recordingDurationMs).toISOString()
@@ -262,68 +264,6 @@ await context.addInitScript(() => {
   }
 })
 const page = await context.newPage()
-/** Measure the longest interval with no currentTime advance across a source switch. */
-async function beginCurrentTimeGapMeasurement(name) {
-  await page.evaluate((measurementName) => {
-    const video = document.querySelector('video')
-    const now = performance.now()
-    const measurement = {
-      name: measurementName,
-      startedAt: now,
-      lastProgressAt: now,
-      previousTime: video?.currentTime ?? 0,
-      maxGapMs: 0,
-      advances: 0,
-      seekResets: 0,
-      stopped: false,
-    }
-    window.__currentTimeGapMeasurements ??= {}
-    window.__currentTimeGapMeasurements[measurementName] = measurement
-    const sample = () => {
-      if (measurement.stopped) return
-      const currentVideo = document.querySelector('video')
-      const sampledAt = performance.now()
-      const currentTime = currentVideo?.currentTime
-      if (Number.isFinite(currentTime)) {
-        const delta = currentTime - measurement.previousTime
-        if (Math.abs(delta) > 0.5) {
-          // Ignore a seek/source-reset jump; the gap ends only when playback advances again.
-          measurement.previousTime = currentTime
-          measurement.seekResets += 1
-        } else if (delta > 0.01) {
-          measurement.maxGapMs = Math.max(measurement.maxGapMs, sampledAt - measurement.lastProgressAt)
-          measurement.lastProgressAt = sampledAt
-          measurement.previousTime = currentTime
-          measurement.advances += 1
-        }
-      }
-      measurement.maxGapMs = Math.max(
-        measurement.maxGapMs,
-        sampledAt - measurement.lastProgressAt,
-      )
-      requestAnimationFrame(sample)
-    }
-    requestAnimationFrame(sample)
-  }, name)
-}
-
-async function finishCurrentTimeGapMeasurement(name) {
-  return page.evaluate((measurementName) => {
-    const measurement = window.__currentTimeGapMeasurements?.[measurementName]
-    if (!measurement) return undefined
-    measurement.maxGapMs = Math.max(
-      measurement.maxGapMs,
-      performance.now() - measurement.lastProgressAt,
-    )
-    measurement.stopped = true
-    return {
-      maxGapMs: measurement.maxGapMs,
-      advances: measurement.advances,
-      seekResets: measurement.seekResets,
-      elapsedMs: performance.now() - measurement.startedAt,
-    }
-  }, name)
-}
 const playlistRequests = []
 const segmentRequests = []
 const subtitleRequests = []
@@ -1456,7 +1396,7 @@ if (!transitionSeekbarBox) {
   const seekY = transitionSeekbarBox.y + transitionSeekbarBox.height / 2
   const encodedCountBeforeRangeExit = encodedRequests.length
   await page.mouse.move(seekX, seekY)
-  await beginCurrentTimeGapMeasurement('original-hls-to-encoded')
+  await beginCurrentTimeGapMeasurement(page, 'original-hls-to-encoded')
   await page.mouse.click(seekX, seekY)
   const encodedSwitchDeadline = Date.now() + 10000
   while (encodedRequests.length === encodedCountBeforeRangeExit && Date.now() < encodedSwitchDeadline) {
@@ -1490,7 +1430,7 @@ if (!transitionSeekbarBox) {
   if (!encodedContinued) {
     ng.push(`⑥ encoded MP4 へ切り替えた後に再生が続かない（${JSON.stringify(await page.locator('video').evaluate((element) => ({ currentSrc: element.currentSrc, currentTime: element.currentTime, paused: element.paused })))}）`)
   }
-  const originalToEncodedGap = await finishCurrentTimeGapMeasurement('original-hls-to-encoded')
+  const originalToEncodedGap = await finishCurrentTimeGapMeasurement(page, 'original-hls-to-encoded')
   if (encodedRequests.length > encodedCountBeforeRangeExit && originalToEncodedGap !== undefined) {
     log(`  HLS→encoded 切替中の currentTime 停止: ${originalToEncodedGap.maxGapMs.toFixed(0)}ms (limit ${MAX_SOURCE_SWITCH_STALL_MS}ms)`)
     if (originalToEncodedGap.advances === 0 || originalToEncodedGap.maxGapMs > MAX_SOURCE_SWITCH_STALL_MS) {

@@ -207,9 +207,12 @@ export function RecordingDetail({
   const recordingPositionSecondsRef = useRef<number | undefined>(undefined)
   // 同じ再生元を張り直して続ける回数の上限管理（idle GC で消えたセッションの再試行が続かないように）。
   const sourceRetryRef = useRef({ count: 0, position: 0 })
+  // 終端で選び直しても替わらなかった（録画状態が古かった）とき、最新の状態で選び直すための保留。
+  const endedPendingRef = useRef<{ position: number, wasPlaying: boolean } | undefined>(undefined)
   useLayoutEffect(() => {
     recordingPositionSecondsRef.current = undefined
     sourceRetryRef.current = { count: 0, position: 0 }
+    endedPendingRef.current = undefined
   }, [recording.id])
   const [chaseOffsetSeconds, setChaseOffsetSeconds] = useState<number | undefined>(undefined)
   const [selectedPlaybackProfile, setSelectedPlaybackProfile] = useState<string | undefined>(undefined)
@@ -267,13 +270,22 @@ export function RecordingDetail({
     const current = playbackStateRef.current
     const position = positionSeconds ?? recordingPositionSecondsRef.current
     const selected = selectRecordingPlaybackSource(playbackSelection)
-    // 録画全体の終端まで見終えたなら、選び直した再生元が別でも切り替えず終了状態のまま止める。
-    if (
-      trigger === 'ended' &&
-      position !== undefined &&
-      recordedEndSeconds !== undefined &&
-      position >= recordedEndSeconds - 1.5
-    ) return false
+    if (trigger === 'ended') {
+      // 録画全体の終端まで見終えたなら、選び直した再生元が別でも切り替えず終了状態のまま止める。
+      // 追っかけ以外は録画全体を覆う再生元なので、終端は常に真の終端。追っかけは実メディアが壁時計の
+      // 録画時間より短いことがあるので、END_TOLERANCE_SECONDS 以内なら真の終端と見なす。
+      const trueEnd = current.source !== 'chase' || (
+        position !== undefined &&
+        recordedEndSeconds !== undefined &&
+        position >= recordedEndSeconds - END_TOLERANCE_SECONDS
+      )
+      if (trueEnd) {
+        endedPendingRef.current = undefined
+        return false
+      }
+      // 録画完了の通知より先に追っかけが終わった場合に備え、状態が変わったら選び直す（下の effect）。
+      endedPendingRef.current = position === undefined ? undefined : { position, wasPlaying }
+    }
     if (selected !== current.source) {
       if (selected === 'none') return false
     } else if (trigger !== 'source-error' || current.source === 'encoded') {
@@ -291,11 +303,22 @@ export function RecordingDetail({
       positionSeconds: position ?? current.positionSeconds,
       generation: current.generation + 1,
     })
+    endedPendingRef.current = undefined
     if (position !== undefined) setChaseOffsetSeconds(undefined)
     return true
   }
+  const reselectRef = useRef(reselectPlaybackSource)
+  useLayoutEffect(() => {
+    reselectRef.current = reselectPlaybackSource
+  })
+  useEffect(() => {
+    const pending = endedPendingRef.current
+    if (pending) reselectRef.current('ended', pending.position, pending.wasPlaying)
+  }, [recording.status, recording.endedAt, recording.startedAt, hasOriginal, encodedAssets.length, liveEnabled, trash])
   const reportRecordingPosition = (seconds: number) => {
     recordingPositionSecondsRef.current = seconds
+    const pending = endedPendingRef.current
+    if (pending && seconds < pending.position - 1) endedPendingRef.current = undefined
     const retry = sourceRetryRef.current
     if (retry.count > 0 && seconds - retry.position > 5) sourceRetryRef.current = { count: 0, position: 0 }
   }
@@ -632,7 +655,7 @@ export function RecordingDetail({
               onChaseOffsetChange={setChaseOffsetSeconds}
               onRecordingPositionChange={reportRecordingPosition}
               onSourceRangeExit={(seconds, playing) => reselectPlaybackSource('source-range-exit', seconds, playing)}
-              onRecordingPlaybackEnded={(seconds) => reselectPlaybackSource('ended', seconds, true)}
+              onRecordingPlaybackEnded={(seconds, wasPlaying) => reselectPlaybackSource('ended', seconds, wasPlaying)}
               onRecordingPlaybackError={(seconds, playing) => reselectPlaybackSource('source-error', seconds, playing)}
             />
           )}
@@ -676,7 +699,7 @@ export function RecordingDetail({
               onProfileChange={onSelectLiveProfile}
               onRecordingPositionChange={reportRecordingPosition}
               onSourceRangeExit={(seconds, playing) => reselectPlaybackSource('source-range-exit', seconds, playing)}
-              onRecordingPlaybackEnded={(seconds) => reselectPlaybackSource('ended', seconds, true)}
+              onRecordingPlaybackEnded={(seconds, wasPlaying) => reselectPlaybackSource('ended', seconds, wasPlaying)}
               onRecordingPlaybackError={(seconds, playing) => reselectPlaybackSource('source-error', seconds, playing)}
             />
           )}
@@ -715,7 +738,7 @@ export function RecordingDetail({
               reencodePending={reencode.isPending}
               autoPlay={playbackState.autoPlay}
               onRecordingPositionChange={reportRecordingPosition}
-              onRecordingPlaybackEnded={(seconds) => reselectPlaybackSource('ended', seconds, true)}
+              onRecordingPlaybackEnded={(seconds, wasPlaying) => reselectPlaybackSource('ended', seconds, wasPlaying)}
               onRecordingPlaybackError={(seconds, playing) => reselectPlaybackSource('source-error', seconds, playing)}
             />
           )}
@@ -1137,6 +1160,9 @@ function shelfWatchProgress(item: Pick<Recording, 'watchedAt' | 'resumePositionM
  * 先頭側に入るので、通常は 1 ページで足りる。再生できない行が 49 件以上続くと
  * はみ出し、その場合は「次のエピソード」が出ない（`lib/series.ts` の `nextEpisode`）。
  */
+/** 追っかけの実メディアが壁時計の録画時間より短くても、この秒数以内の終端は録画全体の終端と見なす。 */
+const END_TOLERANCE_SECONDS = 5
+
 const seriesNextPageSize = 50
 
 /** seriesShelfPageSize は棚が 1 回で引く件数（API の上限）。これ以上あるシリーズは件数を「以上」で出す。 */
