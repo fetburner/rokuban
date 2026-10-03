@@ -167,15 +167,27 @@ WITH playable_assets AS MATERIALIZED (
     WHERE (ma.kind = 'original' AND ma.state <> 'deleted')
        OR (ma.kind = 'encoded' AND ma.state = 'active')
 ),
+watched_events AS (
+    SELECT DISTINCT r.network_id, r.service_id, r.program_start_at
+    FROM recording_watched w
+    JOIN recordings r ON r.id = w.recording_id
+),
 live AS (
     SELECT r.id,
            r.title,
            r.program_start_at,
+           r.network_id,
+           r.service_id,
            rs.value,
-           pa.recording_id AS playable_recording_id
+           pa.recording_id AS playable_recording_id,
+           we.network_id IS NULL AS unwatched
     FROM recordings r
     LEFT JOIN playable_assets pa ON pa.recording_id = r.id
     JOIN recording_series rs ON rs.recording_id = r.id
+    LEFT JOIN watched_events we
+      ON we.network_id = r.network_id
+     AND we.service_id = r.service_id
+     AND we.program_start_at = r.program_start_at
     WHERE r.deleted_at IS NULL
       AND r.superseded_at IS NULL
 )
@@ -183,6 +195,8 @@ SELECT l.value,
        (array_agg(l.title ORDER BY l.program_start_at DESC, l.id DESC))[1]::text AS title,
        count(*) AS recording_count,
        count(*) FILTER (WHERE l.playable_recording_id IS NOT NULL) AS playable_count,
+       count(DISTINCT (l.network_id, l.service_id, l.program_start_at))
+           FILTER (WHERE l.unwatched)::bigint AS unwatched_count,
        max(l.program_start_at)::timestamptz AS latest_start_at,
        (array_agg(l.id ORDER BY l.program_start_at DESC, l.id DESC))[1]::bigint AS representative_id
 FROM live l
@@ -195,6 +209,7 @@ type ListRecordingShelvesRow struct {
 	Title            string
 	RecordingCount   int64
 	PlayableCount    int64
+	UnwatchedCount   int64
 	LatestStartAt    time.Time
 	RepresentativeID int64
 }
@@ -210,6 +225,10 @@ type ListRecordingShelvesRow struct {
 //
 // 値が NULL の棚の行は `GROUP BY value` が 1 つのグループにまとめる（SQL の
 // GROUP BY は NULL を等しいものとして扱う）。
+//
+// 未視聴件数は放送イベント（network_id, service_id, program_start_at）単位で数える。
+// 印は recording_watched の録画 id に付くため、全 recordings から放送イベント単位の印を引く。
+// ごみ箱・supersede 済みの録画に印があっても、生きている録画を未視聴へ戻さない。
 //
 // **この形はプランの形に依存する。** 旧母集団（再生できる録画だけ。73,000 行がすべて
 // 再生可能）での過去の実測（別の環境、sqlc / pgx の prepared statement 経由）:
@@ -268,6 +287,7 @@ func (q *Queries) ListRecordingShelves(ctx context.Context) ([]ListRecordingShel
 			&i.Title,
 			&i.RecordingCount,
 			&i.PlayableCount,
+			&i.UnwatchedCount,
 			&i.LatestStartAt,
 			&i.RepresentativeID,
 		); err != nil {

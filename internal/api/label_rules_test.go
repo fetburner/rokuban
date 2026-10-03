@@ -147,6 +147,50 @@ func TestListRecordingShelves_IncludesLivePopulation(t *testing.T) {
 	}
 }
 
+// 未視聴は放送イベント単位で数え、別拠点の録画やごみ箱の視聴済み印も束ねる。
+func TestListRecordingShelves_CountsUnwatchedBroadcastEvents(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+	ctx := context.Background()
+	base := time.Now().Truncate(time.Second)
+
+	// 同じ放送を 2 拠点で録り、片方に視聴済み印を付ける。
+	watched := seedRecordingFull(t, pool, seedRecordingOpts{
+		title: "アニメ　作品X　第1話", start: base, status: "finished", eventID: 1, site: "tokyo",
+	})
+	seedRecordingFull(t, pool, seedRecordingOpts{
+		title: "アニメ　作品X　第1話", start: base, status: "finished", eventID: 1, site: "osaka",
+	})
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_watched (recording_id) VALUES ($1)`, watched); err != nil {
+		t.Fatalf("marking broadcast watched: %v", err)
+	}
+
+	// もう 1 放送は 2 拠点で録るが印を付けない。2 行ではなく 1 件と数える。
+	seedRecordingFull(t, pool, seedRecordingOpts{
+		title: "アニメ　作品X　第2話", start: base.Add(time.Hour), status: "finished", eventID: 2, site: "tokyo",
+	})
+	seedRecordingFull(t, pool, seedRecordingOpts{
+		title: "アニメ　作品X　第2話", start: base.Add(time.Hour), status: "finished", eventID: 2, site: "osaka",
+	})
+
+	shelves := getShelves(t, srv.URL, url.Values{})
+	if len(shelves) != 1 || shelves[0].Value == nil || *shelves[0].Value != "作品X" {
+		t.Fatalf("shelves = %+v, want one 作品X shelf", shelves)
+	}
+	if shelves[0].UnwatchedCount != 1 {
+		t.Fatalf("unwatched count = %d, want 1 distinct unwatched event", shelves[0].UnwatchedCount)
+	}
+
+	// 印を持つ録画を後からごみ箱へ移しても、生きている同一放送は未視聴にならない。
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET deleted_at = now() WHERE id = $1`, watched); err != nil {
+		t.Fatalf("trashing watched recording: %v", err)
+	}
+	shelves = getShelves(t, srv.URL, url.Values{})
+	if len(shelves) != 1 || shelves[0].UnwatchedCount != 1 {
+		t.Fatalf("shelves after trashing watched recording = %+v, want one unwatched event", shelves)
+	}
+}
+
 // key が未知の値なら 400（黙って 0 件にしない。docs/api/rest.md の規約）。
 func TestListRecordingShelves_RejectsUnknownKey(t *testing.T) {
 	pool := testutil.SetupDB(t)

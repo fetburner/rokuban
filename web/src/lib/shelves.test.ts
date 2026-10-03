@@ -12,8 +12,8 @@ function shelf(
   latestStartAt = '2026-01-01T00:00:00Z',
 ): RecordingShelf {
   return value === null
-    ? { title, count, playableCount, latestStartAt, representativeId: id }
-    : { value, title, count, playableCount, latestStartAt, representativeId: id }
+    ? { title, count, playableCount, unwatchedCount: 0, latestStartAt, representativeId: id }
+    : { value, title, count, playableCount, unwatchedCount: 0, latestStartAt, representativeId: id }
 }
 
 describe('buildShelfRows', () => {

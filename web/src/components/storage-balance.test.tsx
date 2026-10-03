@@ -102,6 +102,7 @@ function reservation(overrides: Partial<Reservation> = {}): Reservation {
     createdAt: '2026-08-01T00:00:00Z',
     updatedAt: '2026-08-01T00:00:00Z',
     skip: false,
+    series: null,
     ...overrides,
   }
 }

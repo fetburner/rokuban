@@ -89,6 +89,7 @@ function reservation(id: number, title: string, startOffsetMs: number, overrides
     createdAt: iso(-HOUR),
     updatedAt: iso(-HOUR),
     skip: false,
+    series: null,
     ...overrides,
   }
 }

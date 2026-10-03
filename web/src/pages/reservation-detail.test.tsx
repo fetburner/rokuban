@@ -24,6 +24,7 @@ function baseReservation(overrides: Partial<Reservation> = {}): Reservation {
     createdAt: dayStart.toISOString(),
     updatedAt: dayStart.toISOString(),
     skip: false,
+    series: null,
     ...overrides,
   }
 }
