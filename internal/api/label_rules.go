@@ -142,29 +142,68 @@ func (h *Server) GetLabelRuleValueKey(ctx context.Context, req GetLabelRuleValue
 	return GetLabelRuleValueKey200JSONResponse{ValueKey: *key}, nil
 }
 
-// ListRecordingShelves は生きている録画を実効シリーズごとに集計し、再生可能な
-// 件数を別に返す。
+// ListRecordingShelves は生きている録画を実効シリーズごとに集計する。未視聴件数は
+// 別クエリで並列に数え、棚の一覧集計に放送イベントの DISTINCT 費用を足さない。
 func (h *Server) ListRecordingShelves(ctx context.Context, req ListRecordingShelvesRequestObject) (ListRecordingShelvesResponseObject, error) {
 	if req.Params.Key != nil && !req.Params.Key.Valid() {
 		return ListRecordingShelves400JSONResponse{Error: fmt.Sprintf("invalid key %q (want series)", *req.Params.Key)}, nil
 	}
-	rows, err := sqlcgen.New(h.pool).ListRecordingShelves(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("listing recording shelves: %w", err)
+	type shelfResult struct {
+		rows []sqlcgen.ListRecordingShelvesRow
+		err  error
 	}
-	out := make([]RecordingShelf, 0, len(rows))
-	for _, row := range rows {
+	type unwatchedResult struct {
+		rows []sqlcgen.ListRecordingShelvesUnwatchedCountRow
+		err  error
+	}
+	queries := sqlcgen.New(h.pool)
+	shelfCh := make(chan shelfResult, 1)
+	unwatchedCh := make(chan unwatchedResult, 1)
+	go func() {
+		rows, err := queries.ListRecordingShelves(ctx)
+		shelfCh <- shelfResult{rows: rows, err: err}
+	}()
+	go func() {
+		rows, err := queries.ListRecordingShelvesUnwatchedCount(ctx)
+		unwatchedCh <- unwatchedResult{rows: rows, err: err}
+	}()
+	shelves, unwatched := <-shelfCh, <-unwatchedCh
+	if shelves.err != nil {
+		return nil, fmt.Errorf("listing recording shelves: %w", shelves.err)
+	}
+	if unwatched.err != nil {
+		return nil, fmt.Errorf("counting unwatched recording shelf events: %w", unwatched.err)
+	}
+	unwatchedByValue := make(map[recordingShelfValueKey]int64, len(unwatched.rows))
+	for _, row := range unwatched.rows {
+		unwatchedByValue[recordingShelfValueKeyFor(row.Value)] = row.UnwatchedCount
+	}
+	out := make([]RecordingShelf, 0, len(shelves.rows))
+	for _, row := range shelves.rows {
+		unwatchedCount := unwatchedByValue[recordingShelfValueKeyFor(row.Value)]
 		out = append(out, RecordingShelf{
 			Value:            row.Value,
 			Title:            row.Title,
 			Count:            int(row.RecordingCount),
 			PlayableCount:    int(row.PlayableCount),
-			UnwatchedCount:   int(row.UnwatchedCount),
+			UnwatchedCount:   int(unwatchedCount),
 			LatestStartAt:    row.LatestStartAt.UTC(),
 			RepresentativeId: row.RepresentativeID,
 		})
 	}
 	return ListRecordingShelves200JSONResponse(out), nil
+}
+
+type recordingShelfValueKey struct {
+	value string
+	valid bool
+}
+
+func recordingShelfValueKeyFor(value *string) recordingShelfValueKey {
+	if value == nil {
+		return recordingShelfValueKey{}
+	}
+	return recordingShelfValueKey{value: *value, valid: true}
 }
 
 type labelRuleInputValues struct {

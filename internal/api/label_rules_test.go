@@ -166,19 +166,40 @@ func TestListRecordingShelves_CountsUnwatchedBroadcastEvents(t *testing.T) {
 	}
 
 	// もう 1 放送は 2 拠点で録るが印を付けない。2 行ではなく 1 件と数える。
-	seedRecordingFull(t, pool, seedRecordingOpts{
+	secondEpisode := seedRecordingFull(t, pool, seedRecordingOpts{
 		title: "アニメ　作品X　第2話", start: base.Add(time.Hour), status: "finished", eventID: 2, site: "tokyo",
 	})
 	seedRecordingFull(t, pool, seedRecordingOpts{
 		title: "アニメ　作品X　第2話", start: base.Add(time.Hour), status: "finished", eventID: 2, site: "osaka",
+	})
+	// 視聴済み印が supersede 済み録画にだけ残る場合も、別拠点の生きた録画を除外する。
+	supersededWatched := seedRecordingFull(t, pool, seedRecordingOpts{
+		title: "アニメ　作品X　第3話", start: base.Add(2 * time.Hour), status: "finished", eventID: 3, site: "tokyo",
+	})
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_watched (recording_id) VALUES ($1)`, supersededWatched); err != nil {
+		t.Fatalf("marking superseded broadcast watched: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET superseded_at = now() WHERE id = $1`, supersededWatched); err != nil {
+		t.Fatalf("superseding watched recording: %v", err)
+	}
+	thirdEpisode := seedRecordingFull(t, pool, seedRecordingOpts{
+		title: "アニメ　作品X　第3話", start: base.Add(2 * time.Hour), status: "finished", eventID: 3, site: "osaka",
+	})
+
+	// 同時刻でも network_id / service_id が違えば別の放送イベント。
+	networkEvent := seedRecordingFull(t, pool, seedRecordingOpts{
+		title: "アニメ　作品X　第4話", start: base.Add(time.Hour), status: "finished", eventID: 2, networkID: 32679,
+	})
+	serviceEvent := seedRecordingFull(t, pool, seedRecordingOpts{
+		title: "アニメ　作品X　第5話", start: base.Add(time.Hour), status: "finished", eventID: 2, serviceID: 5169,
 	})
 
 	shelves := getShelves(t, srv.URL, url.Values{})
 	if len(shelves) != 1 || shelves[0].Value == nil || *shelves[0].Value != "作品X" {
 		t.Fatalf("shelves = %+v, want one 作品X shelf", shelves)
 	}
-	if shelves[0].UnwatchedCount != 1 {
-		t.Fatalf("unwatched count = %d, want 1 distinct unwatched event", shelves[0].UnwatchedCount)
+	if shelves[0].UnwatchedCount != 3 {
+		t.Fatalf("unwatched count = %d, want 3 distinct unwatched events", shelves[0].UnwatchedCount)
 	}
 
 	// 印を持つ録画を後からごみ箱へ移しても、生きている同一放送は未視聴にならない。
@@ -186,8 +207,28 @@ func TestListRecordingShelves_CountsUnwatchedBroadcastEvents(t *testing.T) {
 		t.Fatalf("trashing watched recording: %v", err)
 	}
 	shelves = getShelves(t, srv.URL, url.Values{})
-	if len(shelves) != 1 || shelves[0].UnwatchedCount != 1 {
-		t.Fatalf("shelves after trashing watched recording = %+v, want one unwatched event", shelves)
+	if len(shelves) != 1 || shelves[0].UnwatchedCount != 3 {
+		t.Fatalf("shelves after trashing watched recording = %+v, want three unwatched events", shelves)
+	}
+
+	// 視聴を解除すると、生きている同一放送が再び未視聴に数えられる。
+	if _, err := pool.Exec(ctx, `DELETE FROM recording_watched WHERE recording_id = $1`, watched); err != nil {
+		t.Fatalf("clearing watched marker: %v", err)
+	}
+	shelves = getShelves(t, srv.URL, url.Values{})
+	if len(shelves) != 1 || shelves[0].UnwatchedCount != 4 {
+		t.Fatalf("shelves after clearing watched marker = %+v, want four unwatched events", shelves)
+	}
+
+	// 全イベントに視聴済み印を付けても、棚は残り件数だけが 0 になる。
+	for _, id := range []int64{watched, secondEpisode, thirdEpisode, networkEvent, serviceEvent} {
+		if _, err := pool.Exec(ctx, `INSERT INTO recording_watched (recording_id) VALUES ($1)`, id); err != nil {
+			t.Fatalf("marking event recording %d watched: %v", id, err)
+		}
+	}
+	shelves = getShelves(t, srv.URL, url.Values{})
+	if len(shelves) != 1 || shelves[0].UnwatchedCount != 0 {
+		t.Fatalf("shelves after watching every event = %+v, want a shelf with zero unwatched events", shelves)
 	}
 }
 
