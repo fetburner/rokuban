@@ -29,7 +29,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { useLiveEnabled } from '@/lib/capabilities'
 import { programsQueryKeyPrefix, recordingsQueryKeyPrefix } from '@/lib/events'
 import { formatDateTime, formatDuration } from '@/lib/format'
 import { programTitle } from '@/lib/program-labels'
@@ -100,7 +99,6 @@ export function SeriesHubPage() {
 
   const sitesQuery = useListSites()
   const registeredSites = useMemo(() => unwrap(sitesQuery.data) ?? [], [sitesQuery.data])
-  const liveEnabled = useLiveEnabled()
 
   // 同じ order は同じキーなので、新しい順の表示中は latestQuery と一覧が取得を共有する。
   const seriesListOptions = (listOrder: ListRecordingsOrder) => ({
@@ -387,7 +385,6 @@ export function SeriesHubPage() {
                       trash={false}
                       showSite={showSite}
                       view="list"
-                      liveEnabled={liveEnabled}
                     />
                   </li>
                 ))}
