@@ -42,7 +42,11 @@ function airingProgram(overrides: Partial<ProgramListItem> = {}): SiteProgram {
  * - `GET /api/capabilities`: ライブボタンの出し分け（issue #209 / #755）
  * - `GET .../programs/{programId}`: 展開時に `ProgramDetail` が問い合わせる番組詳細
  */
-function stubFetch({ live = true, description }: { live?: boolean; description?: string } = {}) {
+function stubFetch({
+  live = true,
+  description,
+  programStatus = 200,
+}: { live?: boolean; description?: string; programStatus?: number } = {}) {
   const fetchMock = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === '/api/capabilities') {
@@ -66,7 +70,7 @@ function stubFetch({ live = true, description }: { live?: boolean; description?:
     // 番組詳細（ProgramDetail）。テストは中身を見ないので最小限。
     return Promise.resolve(
       new Response(JSON.stringify(description === undefined ? {} : { description }), {
-        status: 200,
+        status: programStatus,
         headers: { 'Content-Type': 'application/json' },
       }),
     )
@@ -499,6 +503,26 @@ describe('ProgramRow の外向き導線（issue #229 / #755）', () => {
 
     expect(screen.getByText('一覧側の説明')).toBeInTheDocument()
     expect(screen.queryByText('詳細から取得した別の説明')).not.toBeInTheDocument()
+  })
+})
+
+describe('ProgramRow の展開パネルの番組情報エラー', () => {
+  // 予約詳細は 5xx だけ文言を出すが、番組一覧では番組情報が目的なのでどのエラーでも出す。
+  it.each([404, 400, 503])('番組情報が %i でも「番組情報の取得に失敗しました」を出す', async (status) => {
+    stubFetch({ programStatus: status })
+    renderInRouter(
+      <ProgramRow
+        program={program()}
+        reserved={false}
+        pending={false}
+        reservationStateUnknown={false}
+        onReserve={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    await expandRow()
+    expect(await screen.findByText('番組情報の取得に失敗しました')).toBeInTheDocument()
   })
 })
 

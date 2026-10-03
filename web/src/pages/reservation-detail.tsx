@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, MoreVertical } from 'lucide-react'
 
 import { ApiError } from '@/api/client'
 import {
@@ -16,9 +16,16 @@ import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { EncodeOverridesEditor } from '@/components/encode-settings-fields'
 import { ErrorState, ListSkeleton, PageHeader } from '@/components/page'
 import { ProgramOverlapWarningFromApi } from '@/components/program-overlap-warning'
+import { ProgramReservationDetails } from '@/components/program-reservation'
 import { ReservationSkipReason } from '@/components/reservation-skip-reason'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { reservationsQueryKeyPrefix } from '@/lib/events'
 import { formatDateTime, formatDuration } from '@/lib/format'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
@@ -195,6 +202,34 @@ export function ReservationDetailPage() {
             <ArrowLeft />
           </Button>
         }
+        actions={
+          reservation ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    aria-label="予約のその他の操作"
+                  />
+                }
+              >
+                <MoreVertical />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-44 p-1.5">
+                <DropdownMenuItem
+                  variant="destructive"
+                  className="min-h-6"
+                  disabled={putIntent.isPending}
+                  onClick={cancel}
+                >
+                  {putIntent.isPending ? '取消中…' : '予約を取消'}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : undefined
+        }
       />
 
       {query.isError ? (
@@ -218,7 +253,12 @@ export function ReservationDetailPage() {
             {/* 局名・開始時刻・尺を中点でつなぐ。`serviceName` は API では required
                 だが空文字を禁じてはいないので、空の成分を落としてから join する
                 （無条件連結だと先頭に裸の `·` が残る）。 */}
-            <p className="mt-1 text-sm text-muted-foreground">
+            <Link
+              to="/programs"
+              search={{ view: 'grid', at: Date.parse(reservation.startAt) }}
+              data-testid="reservation-program-link"
+              className="mt-1 inline-flex min-h-6 flex-wrap items-center text-sm text-muted-foreground underline underline-offset-2 hover:text-foreground"
+            >
               {[
                 reservation.serviceName,
                 formatDateTime(reservation.startAt),
@@ -226,12 +266,17 @@ export function ReservationDetailPage() {
               ]
                 .filter((s) => s !== '')
                 .join(' · ')}
-            </p>
+            </Link>
             {/* この予約が作られたあとで他の予約が増え、重なりが生じることもあるので
                 詳細画面でも常に出す（issue #24 M2-8。件数だけ・断定なし）。 */}
             <div className="mt-2">
               <ProgramOverlapWarningFromApi site={site} programId={reservation.programId} />
             </div>
+            <ProgramReservationDetails
+              site={reservation.site}
+              programId={reservation.programId}
+              hideWhenNotFound
+            />
           </section>
 
           <Fields title="予約">
@@ -249,7 +294,6 @@ export function ReservationDetailPage() {
 
           <Fields title="録画の設定">
             <Field label="優先度" value={overrideValue(reservation, 'priority') ?? '既定'} />
-            <Field label="保存先パス" value="自動生成" />
           </Fields>
 
           <section>
@@ -261,15 +305,6 @@ export function ReservationDetailPage() {
             />
           </section>
 
-          <Button
-            variant="destructive"
-            size="lg"
-            className="w-full"
-            disabled={putIntent.isPending}
-            onClick={cancel}
-          >
-            {putIntent.isPending ? '取消中…' : '予約を取消'}
-          </Button>
         </div>
       )}
     </>
