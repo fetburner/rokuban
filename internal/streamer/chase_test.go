@@ -1846,9 +1846,13 @@ func TestFFmpegSessionCompletedKeepsCrashBesideInputFailure(t *testing.T) {
 			if !strings.Contains(got, "chase input failed") {
 				t.Fatalf("logs = %q, want the input failure", got)
 			}
-			gotCrash := strings.Contains(got, "ffmpeg exited unexpectedly") && strings.Contains(got, "fake ffmpeg crashed")
+			// 否定側は stderr の有無に依らず判定する（echo が kill に間に合わないと素通りするため）。
+			gotCrash := strings.Contains(got, "ffmpeg exited unexpectedly")
 			if gotCrash != tt.wantCrash {
-				t.Fatalf("crash logged with stderr = %v, want %v (logs = %q)", gotCrash, tt.wantCrash, got)
+				t.Fatalf("crash logged = %v, want %v (logs = %q)", gotCrash, tt.wantCrash, got)
+			}
+			if tt.wantCrash && !strings.Contains(got, "fake ffmpeg crashed") {
+				t.Fatalf("logs = %q, want the crash logged with its stderr", got)
 			}
 		})
 	}
