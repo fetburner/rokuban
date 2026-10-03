@@ -1,0 +1,364 @@
+// 予約を実効シリーズでまとめる一覧の実ブラウザ判定。
+// jsdom では測れない横スクロール、実際の操作標的、sticky header と展開行の位置を測る。
+//
+//   cd web && pnpm build && pnpm preview --port 4173 --strictPort &
+//   E2E_URL=http://localhost:4173 E2E_SHOT_DIR=/tmp/reservations-series \
+//     pnpm e2e:reservations-series
+
+import { mkdirSync } from 'node:fs'
+import path from 'node:path'
+
+import {
+  ListCapacityOveragesResponseItem,
+  ListRecordingShelvesResponseItem,
+  ListReservationsResponseItem,
+  ListRulesResponseItem,
+} from '../src/api/zod.ts'
+import {
+  finish,
+  installApiStubs,
+  launchBrowser,
+  log,
+  validateFixturesOrExit,
+  verifyBundleMatchesOrExit,
+} from './lib.mjs'
+
+const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'
+const EVIDENCE_DIR = process.env.E2E_SHOT_DIR
+if (EVIDENCE_DIR) mkdirSync(EVIDENCE_DIR, { recursive: true })
+const ng = []
+const FIXED_NOW = new Date('2026-10-02T12:00:00+09:00')
+const STAMP = FIXED_NOW.toISOString()
+const iso = (day, hour) => new Date(`2026-10-${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}:00:00+09:00`).toISOString()
+
+function reservation({ id, day, hour, title, series, site = 'default', state = 'active', skip = false, source = 'rule', ruleId = 8, durationMinutes = 45, dedupMatchRecordingId }) {
+  return {
+    site,
+    programId: 9000 + id,
+    source,
+    ...(ruleId === undefined ? {} : { ruleId }),
+    state,
+    title,
+    serviceName: site === 'default' ? 'ＮＨＫ総合１・東京' : '高松総合',
+    channelType: 'GR',
+    startAt: iso(day, hour),
+    durationMs: durationMinutes * 60_000,
+    createdAt: STAMP,
+    updatedAt: STAMP,
+    series,
+    skip,
+    ...(dedupMatchRecordingId === undefined ? {} : { dedupMatchRecordingId, dedupSimilarity: 0.91 }),
+  }
+}
+
+function fixtures(multipleSites) {
+  const reservations = [
+    reservation({ id: 1, day: 2, hour: 18, title: '金曜アニメ 第1話', series: '金曜アニメ', skip: true, dedupMatchRecordingId: 71 }),
+    reservation({ id: 2, day: 2, hour: 20, title: '金曜アニメ 第2話', series: '金曜アニメ' }),
+    reservation({ id: 3, day: 3, hour: 20, title: '金曜アニメ 第3話', series: '金曜アニメ', state: 'detached' }),
+    reservation({ id: 4, day: 4, hour: 21, title: 'ひとり予約', series: 'まだ録画なし', source: 'manual', ruleId: undefined }),
+    reservation({ id: 5, day: 5, hour: 22, title: 'EPG から消えた番組', series: null, state: 'orphaned', source: 'manual', ruleId: undefined }),
+    reservation({ id: 6, day: 6, hour: 23, title: '要確認外の番組', series: '別のシリーズ', source: 'manual', ruleId: undefined }),
+    reservation({ id: 8, day: 7, hour: 18, title: '視聴済みシリーズ 最終話', series: '視聴済みシリーズ', source: 'manual', ruleId: undefined }),
+  ]
+  if (multipleSites) {
+    // 同じ放送を 2 サイトで予約した 2 件。件数は予約件数として数える。
+    reservations.push(
+      reservation({ id: 7, day: 2, hour: 20, title: '金曜アニメ 第2話', series: '金曜アニメ', site: 'takamatsu' }),
+    )
+  }
+  const overages = [
+    {
+      site: 'default',
+      startAt: iso(3, 20),
+      endAt: iso(3, 21),
+      shortfall: 1,
+      jammedTypes: ['BS'],
+    },
+  ]
+  const shelves = [
+    {
+      value: '金曜アニメ',
+      title: '金曜アニメ 第3話',
+      count: 12,
+      playableCount: 10,
+      unwatchedCount: 4,
+      latestStartAt: iso(1, 20),
+      representativeId: 701,
+    },
+    {
+      value: '視聴済みシリーズ',
+      title: '視聴済みシリーズ 最終話',
+      count: 2,
+      playableCount: 2,
+      unwatchedCount: 0,
+      latestStartAt: iso(1, 21),
+      representativeId: 702,
+    },
+    // null の棚は null series の予約と照合してはいけない。
+    {
+      value: null,
+      title: '対応するシリーズなし',
+      count: 99,
+      playableCount: 99,
+      unwatchedCount: 99,
+      latestStartAt: iso(1, 22),
+      representativeId: 799,
+    },
+  ]
+  const rules = [{
+    id: 8,
+    name: '金曜アニメ',
+    enabled: true,
+    priority: 10,
+    keepOriginal: 'always',
+    createdAt: STAMP,
+    updatedAt: STAMP,
+  }]
+  return { reservations, overages, shelves, rules }
+}
+
+async function validateAll(fixturesForRun) {
+  await validateFixturesOrExit(
+    [
+      ...fixturesForRun.reservations.map((item, index) => [`reservations[${index}]`, ListReservationsResponseItem, item]),
+      ...fixturesForRun.overages.map((item, index) => [`overages[${index}]`, ListCapacityOveragesResponseItem, item]),
+      ...fixturesForRun.shelves.map((item, index) => [`shelves[${index}]`, ListRecordingShelvesResponseItem, item]),
+      ...fixturesForRun.rules.map((item, index) => [`rules[${index}]`, ListRulesResponseItem, item]),
+    ],
+    ng,
+  )
+}
+
+async function apiHandler({ path: requestPath, json }, data) {
+  if (requestPath === '/api/sites') return json(data.multipleSites ? ['default', 'takamatsu'] : ['default'])
+  if (requestPath === '/api/capabilities') return json({ live: true })
+  if (requestPath === '/api/breakers') return json([])
+  if (requestPath === '/api/reservations') return json(data.reservations)
+  if (requestPath === '/api/rules') return json(data.rules)
+  if (requestPath === '/api/capacity/overages') return json(data.overages)
+  if (requestPath === '/api/recording-shelves') return json(data.shelves)
+  return json([])
+}
+
+async function screenshot(page, name, fullPage = true) {
+  if (!EVIDENCE_DIR) return
+  await page.screenshot({ path: path.join(EVIDENCE_DIR, name), fullPage, animations: 'disabled' })
+  log(`  screenshot: ${path.join(EVIDENCE_DIR, name)}`)
+}
+
+async function openPage(browser, width, theme, multipleSites) {
+  const data = fixtures(multipleSites)
+  const context = await browser.newContext({
+    viewport: { width, height: 820 },
+    locale: 'ja-JP',
+    timezoneId: 'Asia/Tokyo',
+    colorScheme: theme,
+    isMobile: width <= 390,
+    hasTouch: width <= 390,
+  })
+  const page = await context.newPage()
+  await page.clock.install({ time: FIXED_NOW })
+  await installApiStubs(page, (args) => apiHandler(args, { ...data, multipleSites }))
+  await page.goto(URL_BASE + '/reservations', { waitUntil: 'domcontentloaded' })
+  return { context, page, data }
+}
+
+async function checkPage(browser, width, theme, multipleSites, saveShot) {
+  const { context, page } = await openPage(browser, width, theme, multipleSites)
+  const label = `${width}px/${theme}/${multipleSites ? 'multi' : 'single'}`
+  const toggle = page.getByRole('group', { name: '予約のまとめ方' })
+  if (await toggle.count() === 0) {
+    ng.push(`${label}: 予約のシリーズ/時間順トグルが無い`)
+    await context.close()
+    return
+  }
+  const seriesButton = toggle.getByRole('button', { name: 'シリーズ' })
+  const timeButton = toggle.getByRole('button', { name: '時間順' })
+  if (!(await seriesButton.getAttribute('aria-pressed')) || await seriesButton.getAttribute('aria-pressed') !== 'true') {
+    ng.push(`${label}: 初期表示がシリーズになっていない`)
+  }
+
+  const seriesRow = page.locator('[data-testid="reservation-series-row"]').filter({ hasText: '金曜アニメ' }).first()
+  await seriesRow.waitFor({ timeout: 15000 }).catch(() => ng.push(`${label}: 金曜アニメのシリーズ行が無い`))
+  if (await seriesRow.count() === 0) {
+    await context.close()
+    return
+  }
+  const title = seriesRow.locator('[data-testid="reservation-series-title"]')
+  const titleText = await title.innerText()
+  if (titleText !== '金曜アニメ') ng.push(`${label}: シリーズ名が不正 (${titleText})`)
+  if (!(await seriesRow.getByText(/20:00/).count()) || await seriesRow.getByText(/18:00/).count()) {
+    ng.push(`${label}: 次回が skip を飛ばしていない`)
+  }
+  const expectedCount = multipleSites ? '今後 4 本' : '今後 3 本'
+  if (!(await seriesRow.getByText(expectedCount, { exact: true }).count())) {
+    ng.push(`${label}: 絞り込み前の予約件数が不正 (${expectedCount})`)
+  }
+  if (!(await page.getByText('まだ録画なし', { exact: true }).count())) {
+    ng.push(`${label}: 録画棚が無いシリーズの説明が無い`)
+  }
+  if (await page.getByText(/99 本|未視聴 99/).count()) {
+    ng.push(`${label}: value=null の棚が null series へ誤って結合された`)
+  }
+  const watchedRow = page.locator('[data-testid="reservation-series-row"][data-series-value="視聴済みシリーズ"]')
+  if (!(await watchedRow.getByRole('link', { name: /すべて視聴済み/ }).count())) {
+    ng.push(`${label}: 未視聴 0 件をすべて視聴済みと表示しない`)
+  }
+
+  const expand = seriesRow.getByRole('button', { name: /金曜アニメ/ })
+  const target = await expand.boundingBox()
+  if (!target || target.width < 44 || target.height < 44) {
+    ng.push(`${label}: シリーズ行の主操作が 44x44px 未満 (${JSON.stringify(target)})`)
+  }
+  const hub = seriesRow.getByRole('link', { name: /録画 12 本/ })
+  const hubBox = await hub.boundingBox()
+  if (!hubBox || hubBox.width < 24 || hubBox.height < 24) {
+    ng.push(`${label}: 番組ハブへの導線が 24x24px 未満 (${JSON.stringify(hubBox)})`)
+  }
+  if ((await hub.getAttribute('href')) !== '/recordings/701/series') {
+    ng.push(`${label}: ハブの宛先が代表録画 ID でない`)
+  }
+  const origin = seriesRow.getByRole('link', { name: 'ルール「金曜アニメ」' })
+  const originBox = await origin.boundingBox()
+  if (!originBox || originBox.width < 24 || originBox.height < 24) {
+    ng.push(`${label}: 出自リンクが 24x24px 未満 (${JSON.stringify(originBox)})`)
+  }
+  if ((await origin.getAttribute('href')) !== '/search?ruleId=8') {
+    ng.push(`${label}: 出自リンクの宛先が不正`)
+  }
+  const capacity = seriesRow.getByRole('link', { name: /該当する予約 1 件/ })
+
+  const hitTarget = async (locator) => locator.evaluate((el) => {
+    const rect = el.getBoundingClientRect()
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
+    return hit !== null && (hit === el || el.contains(hit))
+  })
+  if (!(await hitTarget(hub))) ng.push(`${label}: 番組ハブの hit-test を行本体が奪っている`)
+  if (!(await hitTarget(origin))) ng.push(`${label}: 出自リンクの hit-test を行本体が奪っている`)
+  if ((await capacity.count()) && !(await hitTarget(capacity))) {
+    ng.push(`${label}: 容量不足バッジの hit-test を行本体が奪っている`)
+  }
+
+  if (saveShot) await screenshot(page, `${width}-series-${multipleSites ? 'multi' : 'single'}-${theme}.png`)
+
+  await hub.click()
+  await page.waitForURL(/\/recordings\/701\/series/, { timeout: 3000 }).catch(() => {
+    ng.push(`${label}: 番組ハブへのリンクが行本体から分離されていない`)
+  })
+  await page.goBack()
+  await seriesRow.waitFor({ timeout: 3000 }).catch(() => ng.push(`${label}: 予約一覧へ戻れない`))
+  if (await capacity.count()) {
+    await capacity.click()
+    await page.waitForURL(/\/programs\?/, { timeout: 3000 }).catch(() => {
+      ng.push(`${label}: 容量不足バッジから番組表へ移れない`)
+    })
+    const capacitySearch = new URL(page.url()).searchParams
+    if (capacitySearch.get('view') !== 'grid' || !capacitySearch.has('at')) {
+      ng.push(`${label}: 容量不足バッジの番組表宛先に grid/at が無い`)
+    }
+    await page.goBack()
+    await seriesRow.waitFor({ timeout: 3000 }).catch(() => ng.push(`${label}: 予約一覧へ戻れない`))
+  }
+  const returnedOrigin = page.getByRole('link', { name: 'ルール「金曜アニメ」' }).first()
+  await returnedOrigin.click()
+  await page.waitForURL(/\/search\?ruleId=8/, { timeout: 3000 }).catch(() => {
+    ng.push(`${label}: 出自リンクが行本体から分離されていない`)
+  })
+  await page.goBack()
+  await seriesRow.waitFor({ timeout: 3000 }).catch(() => ng.push(`${label}: 予約一覧へ戻れない`))
+
+  // 伸びる行の見出しが sticky page header に隠れない位置まで動かしてから開く。
+  await title.evaluate((el) => {
+    const header = document.querySelector('header')
+    const offset = header?.getBoundingClientRect().height ?? 0
+    window.scrollTo(0, window.scrollY + el.getBoundingClientRect().top - offset + 2)
+  })
+  await page.waitForTimeout(80)
+  await expand.click()
+  const episodeList = seriesRow.locator('ul[aria-label="金曜アニメの予約"]')
+  await episodeList.waitFor({ timeout: 3000 }).catch(() => {
+    ng.push(`${label}: 展開した各回の詳細が無い`)
+  })
+  if (!(await episodeList.getByText('第2話', { exact: true }).count())) {
+    ng.push(`${label}: 展開した各回の題名が無い`)
+  }
+  if (multipleSites && !(await seriesRow.getByText('takamatsu', { exact: true }).count())) {
+    ng.push(`${label}: 複数サイトの各回に site が出ない`)
+  }
+  if (!multipleSites && await seriesRow.getByText('default', { exact: true }).count()) {
+    ng.push(`${label}: 単一サイトなのに site が表示されている`)
+  }
+
+  const top = await title.evaluate((el) => el.getBoundingClientRect().top)
+  const headerBottom = await page.locator('header').evaluate((el) => el.getBoundingClientRect().bottom)
+  if (top < headerBottom - 1) ng.push(`${label}: 展開行の見出しがページヘッダーに隠れる (${top}px < ${headerBottom}px)`)
+
+  const dimensions = await page.evaluate(() => ({
+    viewport: document.documentElement.clientWidth,
+    page: document.documentElement.scrollWidth,
+  }))
+  if (dimensions.page > dimensions.viewport) {
+    ng.push(`${label}: ページが横スクロールする (${dimensions.page}px > ${dimensions.viewport}px)`)
+  }
+
+  if (saveShot) await screenshot(page, `${width}-expanded-${multipleSites ? 'multi' : 'single'}-${theme}.png`)
+
+  // 表示形式の好みだけが localStorage に残り、絞り込みの URL は変更しない。
+  await timeButton.click()
+  if (await timeButton.getAttribute('aria-pressed') !== 'true') ng.push(`${label}: 時間順に切り替わらない`)
+  const stored = await page.evaluate(() => localStorage.getItem('rokuban:reservations:group'))
+  if (stored !== 'time') ng.push(`${label}: 表示設定が localStorage に保存されない (${stored})`)
+  if (new URL(page.url()).search !== '') ng.push(`${label}: 表示形式の変更が URL に混ざる`)
+  if (await page.locator('[data-testid="reservation-series-row"]').count()) {
+    ng.push(`${label}: 時間順でシリーズのグループが残っている`)
+  }
+  if (!(await page.locator('li.relative:has([data-testid="reservation-secondary"])').count())) {
+    ng.push(`${label}: 時間順で既存の予約一覧が表示されない`)
+  }
+  await context.close()
+}
+
+log(`URL: ${URL_BASE}`)
+for (const multipleSites of [false, true]) await validateAll(fixtures(multipleSites))
+await verifyBundleMatchesOrExit(URL_BASE, ng)
+
+const browser = await launchBrowser()
+for (const width of [360, 390, 1280]) {
+  await checkPage(browser, width, 'light', false, width !== 390)
+}
+for (const width of [360, 1280]) await checkPage(browser, width, 'light', true, true)
+for (const [width, multipleSites] of [[360, false], [1280, false], [360, true], [1280, true]]) {
+  await checkPage(browser, width, 'dark', multipleSites, true)
+}
+
+// 要確認とルールの両条件を先に適用し、その後のシリーズ件数・バッジが残った集合
+// だけで再計算されることを確かめる（モック 4）。
+{
+  const { context, page } = await openPage(browser, 1280, 'light', true)
+  await page.goto(URL_BASE + '/reservations?only=attention&ruleId=8', { waitUntil: 'domcontentloaded' })
+  const filtered = page.locator('[data-testid="reservation-series-row"]').filter({ hasText: '金曜アニメ' })
+  await filtered.waitFor({ timeout: 15000 }).catch(() => ng.push('filter: 絞り込み後のシリーズ行が無い'))
+  if (!(await filtered.getByText('今後 1 本', { exact: true }).count())) {
+    ng.push('filter: 今後 N 本が絞り込み後の予約数にならない')
+  }
+  if (!(await filtered.getByText('ルール外 1', { exact: true }).count())) {
+    ng.push('filter: 絞り込み後のルール外件数が不正')
+  }
+  if (!(await filtered.getByText('容量不足 1', { exact: true }).count())) {
+    ng.push('filter: 絞り込み後の容量不足件数が不正')
+  }
+  if (await filtered.getByText(/重複スキップ/).count()) {
+    ng.push('filter: 絞り込みで外れた重複スキップが件数に残る')
+  }
+  if (await filtered.getByRole('button', { name: /予約を開く/ }).count()) {
+    ng.push('filter: 1 件に絞られた行が開閉ボタンのまま')
+  }
+  if ((await filtered.locator(':scope > div > a.absolute').getAttribute('href')) !== '/reservations/default/9003') {
+    ng.push('filter: 1 件だけのシリーズ行が次回の予約詳細へリンクしない')
+  }
+  await screenshot(page, '1280-filtered-attention-rule-light.png')
+  await context.close()
+}
+
+await finish(ng, browser)

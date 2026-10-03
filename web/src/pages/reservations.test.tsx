@@ -1,11 +1,17 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { CapacityOverage, Reservation, Rule } from '@/api/generated'
 import { ReservationsPage } from '@/pages/reservations'
 import { renderInRouter } from '@/test/router'
+import { RESERVATION_GROUPING_KEY } from '@/lib/reservation-grouping'
+
+// このファイルは日付別の時刻順一覧を判定する。新しい既定（シリーズ表示）とは
+// 独立して M8-30 の URL 絞り込み・行レイアウトを固定する。
+beforeEach(() => localStorage.setItem(RESERVATION_GROUPING_KEY, 'time'))
+afterEach(() => localStorage.clear())
 
 /** 時刻はローカルの 0 時基準で組む（表示に時刻が入るのでタイムゾーンに依存させない）。 */
 const dayStart = new Date(2026, 6, 25, 0, 0, 0, 0)

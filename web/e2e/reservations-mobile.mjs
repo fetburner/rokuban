@@ -134,6 +134,8 @@ const context = await browser.newContext({
   timezoneId: 'Asia/Tokyo',
 })
 const page = await context.newPage()
+// この判定は #302 の時刻順行レイアウトを保つ。既定のシリーズ表示は別判定で測る。
+await page.addInitScript(() => localStorage.setItem('rokuban:reservations:group', 'time'))
 await installApiStubs(page, apiHandler)
 
 await page.goto(URL_BASE + '/reservations', { waitUntil: 'domcontentloaded' })
