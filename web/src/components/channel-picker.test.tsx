@@ -1,5 +1,6 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { Service } from '@/api/generated'
@@ -151,7 +152,7 @@ describe('ChannelPicker', () => {
     )
   })
 
-  it('全局から0局にすると URL を変えず、次の局選択で選択集合を渡す', async () => {
+  it('全局から 0 局にすると URL を変えず、次の局選択で選択集合を渡す', async () => {
     let selected = new Set<number>()
     const onChange = vi.fn((next: ReadonlySet<number>) => {
       selected = new Set(next)
@@ -173,7 +174,7 @@ describe('ChannelPicker', () => {
       'aria-checked',
       'false',
     )
-    expect(within(dialog).getByRole('status')).toHaveTextContent('1つ以上選んでください')
+    expect(within(dialog).getByRole('status')).toHaveTextContent('1 つ以上選んでください')
     expect(within(dialog).getByRole('checkbox', { name: /NHK総合/ })).toHaveAttribute(
       'aria-checked',
       'false',
@@ -193,7 +194,42 @@ describe('ChannelPicker', () => {
     await waitFor(() => expect(screen.getByRole('dialog', { name: 'チャンネル' })).toBeInTheDocument())
   })
 
-  it('0局のまま閉じると全局に戻る', async () => {
+  it('候補に無い id だけが選択中でも、「すべて」を押すと空集合（すべて）へ戻れる', async () => {
+    const services = [
+      service({ serviceId: 1024, name: 'NHK総合' }),
+      service({ serviceId: 1032, name: 'NHKEテレ' }),
+    ]
+    const onChange = vi.fn()
+    function Host(): React.ReactElement {
+      const [selected, setSelected] = useState<ReadonlySet<number>>(new Set([400999]))
+      return (
+        <ChannelPicker
+          services={services}
+          selected={selected}
+          onChange={(next) => {
+            onChange(next)
+            setSelected(next)
+          }}
+        />
+      )
+    }
+    render(<Host />)
+
+    const dialog = await openPicker(/チャンネル:/)
+    const user = userEvent.setup()
+    const all = within(dialog).getByRole('checkbox', { name: 'すべて' })
+    // 候補外の id は選択数に数えられず、親は未チェック。押すと全候補の選択になり空集合へ正準化される。
+    await user.click(all)
+    expect(onChange).toHaveBeenLastCalledWith(new Set())
+    // 空集合（= すべて）からもう一度押すと 0 局の一時状態になり、候補外 id が復活しない。
+    await user.click(all)
+    expect(onChange).toHaveBeenCalledTimes(1)
+    await user.click(all)
+    expect(onChange).toHaveBeenCalledTimes(2)
+    expect(onChange).toHaveBeenLastCalledWith(new Set())
+  })
+
+  it('0 局のまま閉じると全局に戻る', async () => {
     const services = [
       service({ serviceId: 1024, name: 'NHK総合' }),
       service({ serviceId: 1032, name: 'NHKEテレ' }),
@@ -222,7 +258,7 @@ describe('ChannelPicker', () => {
     )
   })
 
-  it('明示選択の最後を外して0局のまま閉じると全局を通知する', async () => {
+  it('明示選択の最後を外して 0 局のまま閉じると全局を通知する', async () => {
     const onChange = vi.fn()
     const services = [
       service({ serviceId: 1024, name: 'NHK総合' }),
@@ -278,7 +314,7 @@ describe('ChannelPicker', () => {
     expect(selected).toEqual(new Set([3273602024]))
   })
 
-  it('種別が1つだけの候補では見出しをチェックボックスにしない', async () => {
+  it('種別が 1 つだけの候補では見出しをチェックボックスにしない', async () => {
     const services = [
       service({ serviceId: 1024, name: 'NHK総合' }),
       service({ serviceId: 1032, name: 'NHKEテレ' }),

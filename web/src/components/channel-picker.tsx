@@ -63,7 +63,6 @@ export function ChannelPicker({
   }, [ordered, query])
 
   const groups = useMemo(() => groupByChannelType(filtered), [filtered])
-  const isNoneSelected = noneSelected
 
   // トリガーの表示は件数で切り替える。局名を並べる形にしないのは、狭い幅で
   // truncate されると件数が消えるため（2 局以上は常に「n 局を選択中」）。
@@ -75,7 +74,7 @@ export function ChannelPicker({
         : `${selectedServices.length} 局を選択中`
 
   const checkboxState = (scope: readonly Service[]): CheckboxState =>
-    getCheckboxState(scope, selected, isNoneSelected)
+    getCheckboxState(scope, selected, noneSelected)
 
   const toggleScope = (scope: readonly Service[]) => {
     if (scope.length === 0) return
@@ -83,11 +82,13 @@ export function ChannelPicker({
     const state = checkboxState(scope)
     // 空集合は全局を表すため、部分操作の前に services（ピッカーの全候補）を
     // 明示集合にする。検索中や種別見出しの操作でも、表示中の scope だけを変える。
-    const next = isNoneSelected
+    // 起点は候補（allIds）内の id だけにする。候補外の id（EPG から消えた局の
+    // URL など）を残すと「すべて」が 2 状態を往復し、空集合へ戻れなくなる。
+    const next = noneSelected
       ? new Set<number>()
       : selected.size === 0
         ? new Set(allIds)
-        : new Set(selected)
+        : new Set([...selected].filter((id) => allIds.has(id)))
 
     if (state === true) {
       for (const service of scope) next.delete(service.id)
@@ -167,9 +168,9 @@ export function ChannelPicker({
               </div>
             )}
             <div className="min-h-0 flex-1 overflow-y-auto p-1">
-              {isNoneSelected && (
+              {noneSelected && (
                 <p role="status" className="px-3 py-2 text-sm text-muted-foreground">
-                  1つ以上選んでください
+                  1 つ以上選んでください
                 </p>
               )}
               <ChannelOption
