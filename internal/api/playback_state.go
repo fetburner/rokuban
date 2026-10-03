@@ -2,10 +2,7 @@ package api
 
 import (
 	"context"
-	"errors"
 	"fmt"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
@@ -30,26 +27,15 @@ func (h *Server) PutRecordingPlaybackPosition(ctx context.Context, req PutRecord
 	if req.Body == nil || req.Body.PositionMs < 2000 {
 		return PutRecordingPlaybackPosition400JSONResponse{Error: "positionMs must be at least 2000"}, nil
 	}
-	tx, err := h.pool.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("beginning playback position write for recording %d: %w", req.Id, err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	q := sqlcgen.New(tx)
-	if _, err := q.LockRecordingForPlaybackState(ctx, req.Id); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return PutRecordingPlaybackPosition404JSONResponse{Error: "recording not found"}, nil
-		}
-		return nil, fmt.Errorf("locking recording %d for playback position write: %w", req.Id, err)
-	}
-	if _, err := q.UpsertRecordingPlaybackPosition(ctx, sqlcgen.UpsertRecordingPlaybackPositionParams{
+	rows, err := sqlcgen.New(h.pool).UpsertRecordingPlaybackPosition(ctx, sqlcgen.UpsertRecordingPlaybackPositionParams{
 		RecordingID: req.Id,
 		PositionMs:  req.Body.PositionMs,
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, fmt.Errorf("saving playback position for recording %d: %w", req.Id, err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("committing playback position for recording %d: %w", req.Id, err)
+	if rows == 0 {
+		return PutRecordingPlaybackPosition404JSONResponse{Error: "recording not found"}, nil
 	}
 	return PutRecordingPlaybackPosition204Response{}, nil
 }
@@ -86,12 +72,6 @@ func (h *Server) PutRecordingWatched(ctx context.Context, req PutRecordingWatche
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := sqlcgen.New(tx)
-	if _, err := q.LockRecordingForPlaybackState(ctx, req.Id); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return PutRecordingWatched404JSONResponse{Error: "recording not found"}, nil
-		}
-		return nil, fmt.Errorf("locking recording %d for watched marker write: %w", req.Id, err)
-	}
 	rows, err := q.UpsertRecordingWatched(ctx, req.Id)
 	if err != nil {
 		return nil, fmt.Errorf("saving watched marker for recording %d: %w", req.Id, err)

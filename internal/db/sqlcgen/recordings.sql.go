@@ -522,24 +522,6 @@ func (q *Queries) ListRecordingDropStats(ctx context.Context, recordingID int64)
 	return items, nil
 }
 
-const lockRecordingForPlaybackState = `-- name: LockRecordingForPlaybackState :one
-SELECT id
-FROM recordings
-WHERE id = $1
-  AND purged_at IS NULL
-FOR UPDATE
-`
-
-// Playback position writes and watched writes lock the same recording row so a
-// position request that races with marking it watched cannot recreate the row
-// after the watched transaction clears it.
-func (q *Queries) LockRecordingForPlaybackState(ctx context.Context, recordingID int64) (int64, error) {
-	row := q.db.QueryRow(ctx, lockRecordingForPlaybackState, recordingID)
-	var id int64
-	err := row.Scan(&id)
-	return id, err
-}
-
 const recordingExistsForPlaybackState = `-- name: RecordingExistsForPlaybackState :one
 SELECT EXISTS (
     SELECT 1 FROM recordings
@@ -742,9 +724,6 @@ FROM recordings r
 WHERE r.id = $2
   AND r.purged_at IS NULL
   AND $1::bigint >= 2000
-  AND NOT EXISTS (
-      SELECT 1 FROM recording_watched w WHERE w.recording_id = r.id
-  )
 ON CONFLICT (recording_id) DO UPDATE SET
     position_ms = EXCLUDED.position_ms,
     updated_at = EXCLUDED.updated_at
