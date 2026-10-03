@@ -1051,6 +1051,81 @@ for (const waitMs of [0, 1000, 3000]) {
   manualPlaylistGrowth = null
 }
 log(`  実測値: ${JSON.stringify(manualPlayMeasurements)}`)
+
+// ⑤-route: ▶ ボタン以外の再生開始経路でも、開始位置がライブ端へ飛ばない。
+//  - video-click: autoplay 拒否の後、映像クリックで再生する（play() 直呼び）。
+//  - paused-outside-seek: 一時停止中にセッション外へシークして張り直し、操作バーの ▶ で再生する
+//    （自動再開の play() が走らない経路）。
+log('\n=== ⑤-route ▶ 以外の経路 / 一時停止中のセッション外シーク後の ▶ ===')
+const routeMeasurements = []
+for (const route of ['video-click', 'paused-outside-seek']) {
+  delete offsetRecording.resumePositionMs
+  delete offsetRecording.watchedAt
+  manualPlaylistGrowth = { startedAt: null, maxVisibleSegments: 0, responses: [] }
+  const routePage = await context.newPage()
+  await installApiStubs(routePage, offsetHandler)
+  if (route === 'video-click') {
+    await routePage.addInitScript(() => {
+      const play = HTMLMediaElement.prototype.play
+      let blocked = false
+      HTMLMediaElement.prototype.play = function (...args) {
+        if (!blocked && this instanceof HTMLVideoElement) {
+          blocked = true
+          window.__e2eInitialVideoPlayBlocked = true
+          return Promise.reject(new DOMException('autoplay blocked for route coverage', 'NotAllowedError'))
+        }
+        return play.apply(this, args)
+      }
+    })
+  }
+  await routePage.goto(`${URL_BASE}/recordings/${OFFSET_ID}`, { waitUntil: 'domcontentloaded' })
+  await routePage.getByTestId('recording-playback-start').click()
+  if (route === 'video-click') {
+    await routePage.waitForFunction(() => {
+      const element = document.querySelector('video')
+      return element !== null && element.duration > 0 && element.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA &&
+        element.paused && window.__e2eInitialVideoPlayBlocked === true
+    }, undefined, { timeout: 20000 }).catch(() => ng.push(`⑤-route ${route}: HLS を読み込めない`))
+    manualPlaylistGrowth.startedAt = Date.now()
+    await routePage.waitForTimeout(1000)
+    await routePage.locator('video').click()
+  } else {
+    await routePage.waitForFunction(() => {
+      const element = document.querySelector('video')
+      return element !== null && !element.paused && element.currentTime > 0.5
+    }, undefined, { timeout: 10000 }).catch(() => ng.push(`⑤-route ${route}: 最初の再生が始まらない`))
+    const controls = routePage.locator('[data-testid="player-controls"]')
+    const box = await routePage.getByTestId('recording-player-frame').boundingBox()
+    await routePage.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await routePage.waitForTimeout(300)
+    await controls.getByRole('button', { name: '一時停止', exact: true }).click()
+    const scrubBox = await routePage.getByTestId('seek-scrub').boundingBox()
+    await routePage.mouse.click(scrubBox.x + scrubBox.width * 0.5, scrubBox.y + scrubBox.height / 2)
+    await routePage.waitForTimeout(3000)
+    await routePage.mouse.move(box.x + box.width / 2, box.y + box.height / 2 + 10)
+    const before = await sampleOffsetPlayer(routePage)
+    log(`  paused-outside-seek 張り直し後 ▶ 前: ${JSON.stringify(before)}`)
+    if (before.paused !== true) ng.push(`⑤-route ${route}: 張り直し後に一時停止のままでない（${JSON.stringify(before)}）`)
+    await controls.getByRole('button', { name: '再生', exact: true }).click()
+  }
+  await routePage.waitForFunction(() => {
+    const element = document.querySelector('video')
+    return element !== null && !element.paused
+  }, undefined, { timeout: 10000 }).catch(() => ng.push(`⑤-route ${route}: 再生が始まらない`))
+  await routePage.waitForTimeout(1500)
+  const afterRoute = await sampleOffsetPlayer(routePage)
+  routeMeasurements.push({ route, ...afterRoute })
+  log(`  ${route}: 1.5 秒後 ${JSON.stringify(afterRoute)}`)
+  const expectedBase = route === 'video-click' ? 0 : 31
+  if (afterRoute.paused !== false || !(afterRoute.position >= expectedBase - 0.5 && afterRoute.position < expectedBase + 4)) {
+    ng.push(`⑤-route ${route}: 再生開始位置が ${expectedBase} 秒付近でない（${JSON.stringify(afterRoute)}）`)
+  }
+  await routePage.close()
+  manualPlaylistGrowth = null
+}
+log(`  実測値: ${JSON.stringify(routeMeasurements)}`)
+delete offsetRecording.resumePositionMs
+delete offsetRecording.watchedAt
 delete offsetRecording.resumePositionMs
 delete offsetRecording.watchedAt
 

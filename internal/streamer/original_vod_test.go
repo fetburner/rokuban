@@ -716,7 +716,13 @@ func TestOriginalVODRetainedSessionSurvivesOriginalDeletion(t *testing.T) {
 	ls, srv := newOriginalVODTestServer(t, pool, cfg)
 	originalPath := filepath.Join(mediaDir, "recordings/original-vod.ts")
 	unlinked := make(chan error, 1)
-	ls.afterOriginalVODOpen = func() { unlinked <- os.Remove(originalPath) }
+	// 1 回目の open は範囲判定の確認で、すぐ閉じられる。セッションが開く 2 回目の直後に消す。
+	var opens atomic.Int32
+	ls.afterOriginalVODOpen = func() {
+		if opens.Add(1) == 2 {
+			unlinked <- os.Remove(originalPath)
+		}
+	}
 
 	resp, body := get(t, originalVODOffsetPlaylistURL(srv.URL, recordingID, 90, "hd"), nil)
 	if resp.StatusCode != http.StatusOK {

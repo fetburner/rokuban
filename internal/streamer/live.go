@@ -1353,13 +1353,12 @@ func (ls *LiveStreamer) OriginalVODPlaylist(w http.ResponseWriter, r *http.Reque
 	ls.mu.Unlock()
 	if !exists {
 		source := ls.originalVODSource(recordingID, offsetSeconds, target)
-		var closePreparedSource func()
 		// Reject out-of-range requests before getOrCreateSessionFor can fail on a
-		// full pool or evict an unrelated idle session. The session source receives
-		// this already opened and checked descriptor, so the file is verified once
-		// and remains usable if its path is unlinked before FFmpeg starts.
+		// full pool or evict an unrelated idle session. The descriptor opened here
+		// is closed at once; the session reopens the file itself, so a file unlinked
+		// in between yields the usual 404.
 		if offsetSeconds > 0 {
-			prepared, err := source(r.Context())
+			probe, err := source(r.Context())
 			if err != nil {
 				if errors.Is(err, errOriginalVODOffsetUnavailable) {
 					slog.Info("streamer: original VOD offset outside recording range",
@@ -1368,33 +1367,11 @@ func (ls *LiveStreamer) OriginalVODPlaylist(w http.ResponseWriter, r *http.Reque
 				writeOriginalVODError(w, r, err)
 				return
 			}
-			var preparedMu sync.Mutex
-			closePreparedSource = func() {
-				preparedMu.Lock()
-				unused := prepared
-				prepared = nil
-				preparedMu.Unlock()
-				if unused != nil {
-					_ = unused.Close()
-				}
-			}
-			source = func(ctx context.Context) (io.ReadCloser, error) {
-				preparedMu.Lock()
-				file := prepared
-				prepared = nil
-				preparedMu.Unlock()
-				if file != nil {
-					return file, nil
-				}
-				return ls.originalVODSource(recordingID, offsetSeconds, target)(ctx)
-			}
+			_ = probe.Close()
 		}
 		s, err = ls.getOrCreateSessionFor(
 			r.Context(), key, source,
 		)
-		if closePreparedSource != nil {
-			closePreparedSource()
-		}
 		if err != nil {
 			writeOriginalVODError(w, r, err)
 			return

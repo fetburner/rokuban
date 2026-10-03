@@ -429,10 +429,9 @@ export function LivePlayer({
   const rangeStepRef = useRef(1)
   // 張り直した後に再生を再開する予定があるか。再開前にもう一度張り直しても再生を引き継ぐ。
   const resumePlaybackPendingRef = useRef(false)
-  // 再開の play() が始まった時点で原本 VOD の開始位置を明示し直すか（下の effect）。
+  // 原本 VOD のセッションが張られてから、最初の再生開始で開始位置を明示し直すか（下の effect）。
+  // 利用者のシーク（commitOriginalSeek / commitChaseSeek）で解除する。
   const startReassertPending = useRef(false)
-  // 原本 VOD の開始 play() が自動再生制限で拒否された後、利用者が再生したときの再表明先。
-  const originalStartReassertRef = useRef<(() => void) | null>(null)
   // 最初のセッションの自動再生が残っているか（上の autoPlay）。
   const autoPlayPendingRef = useRef(autoPlay)
   // この要素が一度でも再生を始めたか。始めていないセッションのエラーは「位置」を持たない。
@@ -832,7 +831,6 @@ export function LivePlayer({
     // 保存が止まる（止まっている間は位置も動かない。未検証）。hls.js 経路は
     // `startPosition` で既に同じ位置にいるので、ずれていなければ触らない
     // （同じ値の代入でも seek が走る）。戻し終えたら保存を再開する。
-    let reassertStart = () => {}
     if (video && startAt !== null) {
       const apply = () => {
         if (!cancelled && Math.abs(video.currentTime - startAt) > 0.5) {
@@ -848,12 +846,17 @@ export function LivePlayer({
           setOriginalCurrentSeconds(sessionStartOffset + startAt)
         }
       }
-      reassertStart = apply
-      if (isOriginalVOD) {
-        originalStartReassertRef.current = apply
-        teardown.push(() => {
-          if (originalStartReassertRef.current === apply) originalStartReassertRef.current = null
-        })
+      if (isOriginalVOD || isChase) {
+        // 再生の開始経路（自動再開・▶・映像クリック・ネイティブ操作・メディアキー）を問わず、
+        // 最初の `playing` で開始位置を明示し直す。WebKit は EVENT playlist で canplay の後に
+        // 再生を始めると、受け付けた位置をライブ端寄りへ動かす（`recording-original-vod.mjs` ⑤）。
+        startReassertPending.current = true
+        const onPlaying = () => {
+          if (startReassertPending.current) apply()
+          startReassertPending.current = false
+        }
+        video.addEventListener('playing', onPlaying, { once: true })
+        teardown.push(() => video.removeEventListener('playing', onPlaying))
       }
       video.addEventListener('loadedmetadata', apply, { once: true })
       video.addEventListener('canplay', settle, { once: true })
@@ -1127,14 +1130,11 @@ export function LivePlayer({
           // 受け付けた位置を、ここで再生を始めるとライブ端へ動かす（`recording-original-vod.mjs`
           // ⑤-d: 張り直した offset/31 を canplay で再開すると、2.5 秒後に 18.3 秒＝原本 49.2 秒。
           // seeked を待ってから play() しても同じだった）。その間に利用者がシークしたら触らない。
-          // 利用者が自分で ▶ を押して始める経路は canplay の明示だけで 0 から始まった（同 ⑤-a）。
+          // 利用者が自分で再生を始める経路（▶・映像クリックなど）も同じ飛びが起きるので、
+          // 再表明は play() の解決ではなく上の effect の `playing` に一本化している。
           // 追っかけにも同じ再表明を掛けるが、追っかけで飛びが起きるかは未検証である（`chase.mjs` の
           // offset playlist は ENDLIST 済みで、WebKit で再表明を外しても落ちなかった）。
-          startReassertPending.current = true
-          void video.play().then(() => {
-            if (startReassertPending.current) reassertStart()
-            startReassertPending.current = false
-          }, () => {
+          void video.play().catch(() => {
             if (isRecordingPlayback) setMediaPlaying(false)
           })
         }
@@ -1890,23 +1890,6 @@ export function LivePlayer({
           else setOriginalVODAudioOverrideState({ recordingId, set: true, value: choice })
         }}
         {...frame.controls}
-        onTogglePlay={() => {
-          const media = videoRef.current
-          if (!media) return
-          if (!media.paused) {
-            media.pause()
-            return
-          }
-          if (!isOriginalVOD || !startReassertPending.current) {
-            frame.controls.onTogglePlay()
-            return
-          }
-          void media.play().then(() => {
-            if (!startReassertPending.current) return
-            originalStartReassertRef.current?.()
-            startReassertPending.current = false
-          }, () => {})
-        }}
         video={<>{video}{playerOverlay}</>}
         currentSeconds={isLive ? liveProgramEdgeSeconds : isChase ? visibleChaseSeconds : visibleOriginalSeconds}
         durationSeconds={isLive ? liveProgramDurationSeconds : isChase
