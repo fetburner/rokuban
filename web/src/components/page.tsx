@@ -54,8 +54,10 @@ export function PageHeader({
       // top は居座り通知バナーの合計高さぶんずらす（接続断 + サーキットブレーカー。
       // app-shell.tsx の StickyBanners が publish する）。バナーは全ページ共通の
       // 居座り表示で、これも sticky top-0 なので、ずらさないと両者が同じ位置で
-      // 重なる（バナー未発動時は 0px）。
-      className="sticky z-10 border-b border-border bg-background/95 backdrop-blur"
+      // 重なる（バナー未発動時は 0px）。行内の操作リンクは `relative z-10` を
+      // 使うため、共通ヘッダーを z-20 にしてスクロール中も行より前面に保つ。
+      // バナーとの縦位置は上の変数で分け、固定の選択バー・下部ナビとは画面の上下で分かれる。
+      className="sticky z-20 border-b border-border bg-background/95 backdrop-blur"
       style={{ top: 'var(--sticky-banners-height, 0px)' }}
     >
       <div className="flex items-center gap-3 px-4 py-3">

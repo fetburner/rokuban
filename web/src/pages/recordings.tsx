@@ -35,7 +35,6 @@ import { Chip } from '@/components/ui/chip'
 import { shouldAutoLoadNextPage, shouldShowLoadMoreButton } from '@/lib/auto-load'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
 import { hasLiveIngestProgress, ingestRefetchIntervalMs } from '@/lib/ingest'
-import { useLiveEnabled } from '@/lib/capabilities'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
 import {
   buildListRecordingsParams,
@@ -85,7 +84,6 @@ export function RecordingsPage() {
   const search = useRouteSearch({ from: '/recordings' })
   const navigate = useNavigate()
   const trash = search.tab === 'trash'
-  const liveEnabled = useLiveEnabled()
 
   const sitesQuery = useListSites()
   const registeredSites = useMemo(() => unwrap(sitesQuery.data) ?? [], [sitesQuery.data])
@@ -483,7 +481,6 @@ export function RecordingsPage() {
                   selecting={selecting}
                   selected={selected.has(r.id)}
                   onToggle={() => toggleSelected(r.id)}
-                  liveEnabled={liveEnabled}
                 />
               </li>
             ))}
