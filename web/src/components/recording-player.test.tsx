@@ -762,8 +762,6 @@ describe('RecordingPlayer の設定メニュー（行リスト）', () => {
       setMediaProps(video, { currentTime: 35, duration: 120 })
       fireEvent.loadedMetadata(video)
       fireEvent.timeUpdate(video)
-      const details = getByTestId('chapter-editor-details') as HTMLDetailsElement
-
       fireEvent.click(getByTestId('playback-chapter'))
       const list = getByRole('menu', { name: 'チャプター' })
       const rows = within(list).getAllByRole('menuitemradio')
@@ -775,7 +773,7 @@ describe('RecordingPlayer の設定メニュー（行リスト）', () => {
       ])
       await waitFor(() => expect(document.activeElement).toBe(rows[1]))
       expect(list.querySelector('input, select, textarea, details')).toBeNull()
-      expect(details.open).toBe(false)
+      expect(container.querySelector('[data-testid="chapter-edit-layout"]')).toBeNull()
       expect(exitFullscreen).not.toHaveBeenCalled()
       // 設定メニューとは同時に開かない。
       expect(container.querySelector('[data-testid="playback-settings"]')).toBeNull()
@@ -905,131 +903,91 @@ describe('RecordingPlayer のチャプター', () => {
   const asset = [{ profile: 'h264', sizeBytes: 123 }]
   const cmSpan = { startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }
 
-  it('未取得の間は目盛りもチャプター一覧も出さず、編集 UI だけを出す', () => {
-    // 目盛りと一覧は区間が要る（帯の位置は実寸に対する割合で決まる）。取得前の
-    // 1 フレームに空の一覧を出さない。
-    const { container, getByTestId } = render(
+  it('未取得または検出中は「チャプターを直す」を出さない', () => {
+    const { container, queryByRole, rerender } = render(
       <RecordingPlayer
         recordingId={96}
         encodedAssets={asset}
-        chapterVersion="v1"
         onSaveChapters={() => Promise.resolve()}
         onResetChapters={() => {}}
       />,
     )
-    expect(getByTestId('chapter-source')).not.toBeNull()
-    expect(container.querySelectorAll('[data-testid="chapter-marker"]')).toHaveLength(0)
-    expect(container.querySelector('[data-testid="chapter-navigation"]')).toBeNull()
-  })
+    openPlaybackSettings(container)
+    expect(queryByRole('menuitem', { name: 'チャプターを直す' })).toBeNull()
 
-  it('版が未取得の間は編集 UI を出さない（下書きの基にする版が無い）', () => {
-    const { queryByTestId } = render(
+    rerender(
       <RecordingPlayer
-        recordingId={95}
+        recordingId={96}
         encodedAssets={asset}
+        chapters={[cmSpan]}
+        chapterVersion="v1"
+        chapterDetectionPending
         onSaveChapters={() => Promise.resolve()}
         onResetChapters={() => {}}
       />,
     )
-    expect(queryByTestId('chapter-source')).toBeNull()
+    openPlaybackSettings(container)
+    expect(queryByRole('menuitem', { name: 'チャプターを直す' })).toBeNull()
   })
 
-  it('チャプターがあるときはナビゲーションをシークバーに集め、編集は件数付きで畳む', () => {
-    const { container } = render(
+  it('編集可能な通常版だけ設定メニューから編集モードへ入れる', () => {
+    const enter = vi.fn()
+    const { container, getByRole } = render(
       <RecordingPlayer
         recordingId={100}
         encodedAssets={asset}
         chapters={[cmSpan]}
         chapterVersion="v1"
+        onEnterChapterEditing={enter}
         onSaveChapters={() => Promise.resolve()}
         onResetChapters={() => {}}
       />,
     )
-    // **目盛りの位置は `<video>.duration` を分母にする。** 確定する前に描くと
-    // 割合が 0 除算になるので、duration が来るまで目盛りは出さない。
-    expect(container.querySelector('[data-testid="chapter-marker"]')).toBeNull()
-    const video = container.querySelector('video')!
-    setMediaProps(video, { duration: 60, currentTime: 0 })
-    fireEvent.loadedMetadata(video)
-    expect(container.querySelector('[data-testid="chapter-navigation"]')).not.toBeNull()
-    const details = container.querySelector<HTMLDetailsElement>('[data-testid="chapter-editor-details"]')!
-    expect(details.open).toBe(false)
-    expect(details.querySelector('summary')?.textContent).toBe('チャプター 1 件')
-    expect(details.querySelector('summary')?.textContent).not.toMatch(/確認済み|未確認/)
-    fireEvent.click(details.querySelector('summary')!)
-    expect(details.open).toBe(true)
-    expect(details.querySelector('input[aria-label="ラベル"]')).toHaveValue('CM')
-    expect(details.textContent).toContain('切る')
-    expect(container.querySelector('[data-testid="chapter-marker"]')).not.toBeNull()
+    openPlaybackSettings(container)
+    fireEvent.click(getByRole('menuitem', { name: 'チャプターを直す' }))
+    expect(enter).toHaveBeenCalledOnce()
   })
 
-  it('4回のtimeupdateで再描画しても開いた編集detailsを保つ', () => {
-    const { container } = render(
+  it('cut版ではチャプター編集の入口を出さない', () => {
+    const { container, queryByRole } = render(
       <RecordingPlayer
         recordingId={101}
-        encodedAssets={asset}
+        preferredProfile="cut"
+        encodedAssets={[{ profile: 'cut', sizeBytes: 123, cut: true, keepRanges: [{ startMs: 0, endMs: 50_000 }] }]}
         chapters={[cmSpan]}
         chapterVersion="v1"
         onSaveChapters={() => Promise.resolve()}
         onResetChapters={() => {}}
       />,
     )
-    const details = container.querySelector<HTMLDetailsElement>('[data-testid="chapter-editor-details"]')!
-    fireEvent.click(details.querySelector('summary')!)
-    const video = container.querySelector('video')!
-    for (const seconds of [1, 2, 3, 4]) {
-      setMediaProps(video, { currentTime: seconds })
-      fireEvent.timeUpdate(video)
-    }
-    expect(container.querySelector('[data-testid="chapter-editor-details"]')).toBe(details)
-    expect(details.open).toBe(true)
+    openPlaybackSettings(container)
+    expect(queryByRole('menuitem', { name: 'チャプターを直す' })).toBeNull()
   })
 
-  it('チャプター編集の境界行・区間行の時刻ボタンで再生位置が移る', () => {
-    const { container } = render(
+  it('編集モードではCM自動スキップと通常目盛りを止め、filmstrip操作を残す', () => {
+    const commandsRef = { current: null }
+    const { container, queryByRole } = render(
       <RecordingPlayer
         recordingId={102}
         encodedAssets={asset}
         chapters={[cmSpan]}
         chapterVersion="v1"
+        chapterEditing
+        chapterEditorCommandsRef={commandsRef}
+        onChapterEditorStatusChange={vi.fn()}
         onSaveChapters={() => Promise.resolve()}
         onResetChapters={() => {}}
       />,
     )
     const video = container.querySelector('video')!
-    setMediaProps(video, { duration: 60, currentTime: 0 })
+    setMediaProps(video, { duration: 60, currentTime: 9.8, paused: false })
     fireEvent.loadedMetadata(video)
-    const details = container.querySelector<HTMLDetailsElement>('[data-testid="chapter-editor-details"]')!
-    fireEvent.click(details.querySelector('summary')!)
-
-    const boundary = details.querySelector('[data-testid="chapter-boundary"] button')!
-    fireEvent.click(boundary)
-    expect(video.currentTime).toBe(10)
-
-    setMediaProps(video, { currentTime: 0 })
-    const span = details.querySelector('[data-testid="chapter-span-row"] button')!
-    fireEvent.click(span)
-    expect(video.currentTime).toBe(10)
-  })
-
-  it('チャプター下書きを削除しても要約の件数は保存値のまま', () => {
-    const { container } = render(
-      <RecordingPlayer
-        recordingId={103}
-        encodedAssets={asset}
-        chapters={[cmSpan]}
-        chapterVersion="v1"
-        onSaveChapters={() => Promise.resolve()}
-        onResetChapters={() => {}}
-      />,
-    )
-    const details = container.querySelector<HTMLDetailsElement>('[data-testid="chapter-editor-details"]')!
-    fireEvent.click(details.querySelector('summary')!)
-    const deleteDraft = Array.from(details.querySelectorAll('[data-testid="chapter-span-row"] button'))
-      .find((button) => button.textContent === '削除')!
-    fireEvent.click(deleteDraft)
-    expect(details.querySelectorAll('[data-testid="chapter-span-row"]')).toHaveLength(0)
-    expect(details.querySelector('summary')?.textContent).toBe('チャプター 1 件')
+    setMediaProps(video, { currentTime: 10.1, paused: false })
+    fireEvent.timeUpdate(video)
+    expect(video.currentTime).toBe(10.1)
+    expect(container.querySelector('[data-testid="chapter-marker"]')).toBeNull()
+    expect(queryByRole('checkbox', { name: 'CM を飛ばす' })).toBeNull()
+    expect(container.querySelector('[data-testid="chapter-filmstrip-boundary"]')).not.toBeNull()
   })
 
   it('自動スキップは直前位置が区間の手前のときだけ飛ばす', () => {

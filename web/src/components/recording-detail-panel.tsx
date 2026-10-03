@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 
 import { cn } from '@/lib/utils'
 
@@ -22,6 +22,7 @@ import {
 } from '@/api/generated'
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { DropStatsTable } from '@/components/drop-stats-table'
+import type { ChapterEditorCommands, ChapterEditorStatus } from '@/components/recording-chapter-editor'
 import { RecordingAssetControls } from '@/components/recording-actions'
 import { DropBadges, EncodeStatusBadges, IngestBadge, StatusBadge } from '@/components/recording-badges'
 import { RecordingPlaybackPoster, type PosterTimeline } from '@/components/recording-playback-poster'
@@ -150,6 +151,10 @@ export function RecordingDetail({
   chase = false,
   liveProfile,
   startAtBeginning = false,
+  chapterEditing = false,
+  onEnterChapterEditing,
+  chapterEditorCommandsRef,
+  onChapterEditorStatusChange,
   onSelectLiveProfile,
   onNavigateToRecording,
 }: {
@@ -158,6 +163,10 @@ export function RecordingDetail({
   chase?: boolean
   /** ホームの「最初から」から来た場合は保存位置を復元しない。 */
   startAtBeginning?: boolean
+  chapterEditing?: boolean
+  onEnterChapterEditing?: () => void
+  chapterEditorCommandsRef?: MutableRefObject<ChapterEditorCommands | null>
+  onChapterEditorStatusChange?: (status: ChapterEditorStatus) => void
   /** 追っかけ再生の画質（`?liveProfile=`。issue #874）。未検証の生の値。 */
   liveProfile?: string
   onSelectLiveProfile: (name: string) => void
@@ -411,18 +420,16 @@ export function RecordingDetail({
           throw error
         },
       )
-  const resetChapters = () => {
-    deleteChapters.mutate(
-      { id: recording.id },
-      {
-        onSuccess: () => {
-          invalidateChapters()
-          toast({ message: '自動検出の結果に戻しました' })
-        },
-        onError: (error) =>
-          toast({ message: apiErrorMessage(error) ?? '自動に戻せませんでした', kind: 'error' }),
-      },
-    )
+  const resetChapters = async () => {
+    try {
+      await deleteChapters.mutateAsync({ id: recording.id })
+      invalidateChapters()
+      toast({ message: '自動検出の結果に戻しました' })
+      return true
+    } catch (error) {
+      toast({ message: apiErrorMessage(error) ?? '自動に戻せませんでした', kind: 'error' })
+      return false
+    }
   }
   // カット版の作り直し（`encodedAssets[].cutStale`）。**自動では起きない**ので、
   // ユーザーが押したときだけジョブを積む。新しい世代のパスに置き換わるので、
@@ -691,6 +698,10 @@ export function RecordingDetail({
               chapterSource={chapters?.source}
               chapterVersion={chapters?.version}
               chapterDetectionPending={chapters?.detectionPending}
+              chapterEditing={chapterEditing}
+              onEnterChapterEditing={onEnterChapterEditing}
+              chapterEditorCommandsRef={chapterEditorCommandsRef}
+              onChapterEditorStatusChange={onChapterEditorStatusChange}
               onSaveChapters={canEditChapters ? saveChapters : undefined}
               onResetChapters={canEditChapters ? resetChapters : undefined}
               chapterSavePending={putChapters.isPending || deleteChapters.isPending}
@@ -742,6 +753,8 @@ export function RecordingDetail({
         </section>
       )}
 
+      {!chapterEditing && (
+      <>
       <div data-testid="recording-player-column" className="min-w-0 flex flex-col gap-4">
         <section data-testid="recording-title-row" className="flex flex-col gap-2">
           <h2 className="text-xl font-semibold leading-tight">{programTitle(recording.title)}</h2>
@@ -1093,6 +1106,8 @@ export function RecordingDetail({
           </ul>
           <p className="mt-3 text-xs text-muted-foreground">行を押すと、その録画の詳細へ移ります。まとめて操作する場合はシリーズ画面を使います。</p>
         </aside>
+      )}
+      </>
       )}
     </div>
   )

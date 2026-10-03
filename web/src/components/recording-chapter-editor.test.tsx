@@ -2,7 +2,10 @@ import { act, fireEvent, render } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { ChapterSpan } from '@/api/generated'
-import { RecordingChapterEditor } from '@/components/recording-chapter-editor'
+import {
+  RecordingChapterEditor,
+  type ChapterEditorCommands,
+} from '@/components/recording-chapter-editor'
 
 const cm: ChapterSpan = { startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }
 
@@ -11,35 +14,44 @@ function renderEditor(
   overrides: Partial<Parameters<typeof RecordingChapterEditor>[0]> = {},
 ) {
   const onSave = vi.fn((_spans: ChapterSpan[], _version: string) => Promise.resolve())
-  const onReset = vi.fn()
+  const onReset = vi.fn(() => Promise.resolve())
   const jumpTo = vi.fn()
-  const view = render(
-    <RecordingChapterEditor
-      spans={spans}
-      version="v1"
-      detectionPending={false}
-      source="auto"
-      currentSeconds={0}
-      playAround={vi.fn()}
-      jumpTo={jumpTo}
-      onSave={onSave}
-      onReset={onReset}
-      pending={false}
-      {...overrides}
-    />,
-  )
-  return { ...view, onSave, onReset, jumpTo }
+  const onStatusChange = vi.fn()
+  const commandsRef: { current: ChapterEditorCommands | null } = { current: null }
+  const props: Parameters<typeof RecordingChapterEditor>[0] = {
+    spans,
+    version: 'v1',
+    detectionPending: false,
+    source: 'auto',
+    recordingId: 7,
+    currentSeconds: 0,
+    durationSeconds: 120,
+    tilesAvailable: true,
+    onTileImageLoad: vi.fn(),
+    onTileImageError: vi.fn(),
+    playAround: vi.fn(),
+    jumpTo,
+    onSelectedBoundaryChange: vi.fn(),
+    onSave,
+    onReset,
+    pending: false,
+    commandsRef,
+    onStatusChange,
+    ...overrides,
+  }
+  const view = render(<RecordingChapterEditor {...props} />)
+  return { ...view, onSave, onReset, jumpTo, commandsRef, onStatusChange, props }
 }
 
-describe('RecordingChapterEditor', () => {
-  it('ラベルが空の区間は「切る」を外せない（本編と区別できなくなる）', () => {
+describe('RecordingChapterEditor の編集専用画面', () => {
+  it('ラベルが空の区間は「切る」を外せない', () => {
     const { container } = renderEditor([{ startMs: 0, endMs: 10_000, cut: true }])
     const checkbox = container.querySelector<HTMLInputElement>('input[type="checkbox"]')!
     expect(checkbox.checked).toBe(true)
     expect(checkbox.disabled).toBe(true)
   })
 
-  it('ラベルがあれば「切る」を外せる（印だけ付ける OP / ED）', () => {
+  it('ラベルがあれば「切る」を外せる', () => {
     const { container } = renderEditor([cm])
     const checkbox = container.querySelector<HTMLInputElement>('input[type="checkbox"]')!
     expect(checkbox.disabled).toBe(false)
@@ -47,155 +59,164 @@ describe('RecordingChapterEditor', () => {
     expect(checkbox.checked).toBe(false)
   })
 
-  it('境界行と区間行の時刻を押すと対応する位置へジャンプする', () => {
-    const { container, jumpTo } = renderEditor([cm])
-    const boundaryTime = container.querySelector('[data-testid="chapter-boundary"] button')!
-    fireEvent.click(boundaryTime)
-    expect(jumpTo).toHaveBeenCalledWith(10)
+  it('区間カードから近い境界へ移動し、filmstripで選んだ境界だけを調整する', () => {
+    const { getByRole, getByTestId, jumpTo, onSave, commandsRef } = renderEditor([cm], {
+      currentSeconds: 18,
+    })
+    fireEvent.click(getByRole('button', { name: '0:10 から 0:20 の境界を選ぶ' }))
+    expect(jumpTo).toHaveBeenCalledWith(20)
 
-    const spanTime = container.querySelector('[data-testid="chapter-span-row"] button')!
-    fireEvent.click(spanTime)
-    expect(jumpTo).toHaveBeenCalledTimes(2)
-    expect(jumpTo).toHaveBeenLastCalledWith(10)
-  })
-
-  it('境界の −1秒でドラフトが動き、保存で送る区間が変わる', () => {
-    const { container, getByRole, onSave } = renderEditor([cm])
-    // 先頭の境界（10 秒）を 1 秒戻す。
-    fireEvent.click(container.querySelectorAll('[data-testid="chapter-boundary"]')[0].querySelector('[aria-label$="を -1秒"]')!)
+    const filmstrip = getByTestId('chapter-filmstrip')
+    const startBoundary = filmstrip.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="10000"]',
+    )!
+    fireEvent.click(startBoundary)
+    expect(startBoundary.getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(getByRole('button', { name: '選択中の境界を 1 フレーム進める' }))
     expect(onSave).not.toHaveBeenCalled()
-    fireEvent.click(getByRole('button', { name: '保存' }))
-    expect(onSave).toHaveBeenCalledTimes(1)
-    expect(onSave.mock.calls[0][0]).toEqual([
-      { startMs: 9000, endMs: 20_000, label: 'CM', cut: true },
-    ])
+    expect(filmstrip.querySelector('[data-testid="chapter-filmstrip-boundary"][data-time-ms="10033"]')).not.toBeNull()
+
+    expect(commandsRef.current).not.toBeNull()
   })
 
-  it('「ここから / ここまで」で現在位置の区間を足す', () => {
-    const onSave = vi.fn((_spans: ChapterSpan[], _version: string) => Promise.resolve())
-    const props = {
-      spans: [] as ChapterSpan[],
-      version: 'v1',
-      detectionPending: false,
-      source: 'auto' as const,
-      playAround: vi.fn(),
-      jumpTo: vi.fn(),
-      onSave,
-      onReset: vi.fn(),
-      pending: false,
-    }
-    const { rerender, getByRole } = render(
-      <RecordingChapterEditor {...props} currentSeconds={30} />,
+  it('矢印キーで前後の境界へ移る', () => {
+    const op: ChapterSpan = { startMs: 60_000, endMs: 70_000, label: 'OP', cut: false }
+    const { container } = renderEditor([cm, op])
+    const boundary20 = container.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="20000"]',
+    )!
+    fireEvent.click(boundary20)
+    fireEvent.keyDown(boundary20, { key: 'ArrowRight' })
+    const boundary60 = container.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="60000"]',
+    )!
+    expect(boundary60.getAttribute('aria-pressed')).toBe('true')
+    fireEvent.keyDown(boundary60, { key: 'ArrowLeft' })
+    expect(boundary20.getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('矢印キーはフォーカスが調整ボタンにあっても効き、ラベル入力の中では効かない', () => {
+    const op: ChapterSpan = { startMs: 60_000, endMs: 70_000, label: 'OP', cut: false }
+    const { container, getByRole, getAllByLabelText } = renderEditor([cm, op])
+    const boundary = (ms: number) => container.querySelector<HTMLButtonElement>(
+      `[data-testid="chapter-filmstrip-boundary"][data-time-ms="${ms}"]`,
+    )!
+    fireEvent.click(boundary(20_000))
+    // +1秒 を押した後（フォーカスは調整ボタン）でも → で次の境界へ移る。
+    fireEvent.click(getByRole('button', { name: '選択中の境界を1秒進める' }))
+    fireEvent.keyDown(getByRole('button', { name: '選択中の境界を1秒進める' }), { key: 'ArrowRight' })
+    expect(boundary(60_000).getAttribute('aria-pressed')).toBe('true')
+    fireEvent.keyDown(getAllByLabelText('ラベル')[0], { key: 'ArrowLeft' })
+    expect(boundary(60_000).getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('選択中の境界を前後再生し、現在の再生位置へ合わせる', () => {
+    const playAround = vi.fn()
+    const { container, getByRole, getByTestId } = renderEditor([cm], {
+      currentSeconds: 18,
+      playAround,
+    })
+    const boundary20 = container.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="20000"]',
+    )!
+    fireEvent.click(boundary20)
+    fireEvent.click(getByRole('button', { name: '選択中の境界の前後3秒を再生' }))
+    expect(playAround).toHaveBeenCalledWith(20)
+    fireEvent.click(getByRole('button', { name: '選択中の境界を現在の再生位置に合わせる' }))
+    expect(getByTestId('chapter-selected-boundary').textContent).toBe('0:18.000')
+    expect(container.querySelector('[data-testid="chapter-filmstrip-boundary"][data-time-ms="18000"]')).not.toBeNull()
+  })
+
+  it('ページヘッダーから呼ぶ保存は下書きと元の版を送り、成功後は dirty を外す', async () => {
+    const { container, getByRole, commandsRef, onSave, onStatusChange } = renderEditor([cm])
+    const startBoundary = container.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="10000"]',
+    )!
+    fireEvent.click(startBoundary)
+    fireEvent.click(getByRole('button', { name: '選択中の境界を 1 フレーム進める' }))
+
+    await act(async () => {
+      expect(await commandsRef.current?.save()).toBe(true)
+    })
+    expect(onSave).toHaveBeenCalledWith(
+      [{ startMs: 10_033, endMs: 20_000, label: 'CM', cut: true }],
+      'v1',
     )
-    fireEvent.click(getByRole('button', { name: 'ここから' }))
-    // 再生が進んでから閉じる（同じ位置では空の区間になるので足さない）。
+    expect(onStatusChange).toHaveBeenLastCalledWith({ source: 'auto', dirty: true, stale: false })
+  })
+
+  it('「ここから区間を足す / ここまで」で再生位置の範囲を追加する', () => {
+    const { rerender, getByRole, commandsRef, props, onSave } = renderEditor([], { currentSeconds: 30 })
+    fireEvent.click(getByRole('button', { name: 'ここから区間を足す' }))
     rerender(<RecordingChapterEditor {...props} currentSeconds={40} />)
     fireEvent.click(getByRole('button', { name: 'ここまで' }))
-    fireEvent.click(getByRole('button', { name: '保存' }))
-    expect(onSave.mock.calls[0][0]).toEqual([{ startMs: 30_000, endMs: 40_000, cut: true }])
-  })
-
-  it('サーバーの値が変わるとドラフト（境界の一覧）が追随する', () => {
-    const { rerender, container, onSave } = renderEditor([cm])
-    expect(container.textContent).toContain('0:00:10')
-    const next: ChapterSpan[] = [{ startMs: 50_000, endMs: 60_000, label: 'ED', cut: true }]
-    rerender(
-      <RecordingChapterEditor
-        spans={next}
-        version="v2"
-        detectionPending={false}
-        source="user"
-        currentSeconds={0}
-        playAround={vi.fn()}
-        jumpTo={vi.fn()}
-        onSave={onSave}
-        onReset={vi.fn()}
-        pending={false}
-      />,
-    )
-    // 前の録画の境界が残らない（残ると、保存で前の値を送ってしまう）。
-    expect(container.textContent).toContain('0:00:50')
-    expect(container.textContent).not.toContain('0:00:10')
-  })
-
-  it('下書きがあるときサーバーの値が変わっても黙って捨てず、知らせて保存を止める', () => {
-    const { rerender, container, getByRole, getByTestId, queryByTestId, onSave } = renderEditor([cm])
-    // 下書きを作る（境界を 1 秒戻す）。
-    fireEvent.click(
-      container.querySelectorAll('[data-testid="chapter-boundary"]')[0].querySelector('[aria-label$="を -1秒"]')!,
-    )
-    const next: ChapterSpan[] = [{ startMs: 50_000, endMs: 60_000, label: 'ED', cut: true }]
-    rerender(
-      <RecordingChapterEditor
-        spans={next}
-        version="v2"
-        detectionPending={false}
-        source="auto"
-        currentSeconds={0}
-        playAround={vi.fn()}
-        jumpTo={vi.fn()}
-        onSave={onSave}
-        onReset={vi.fn()}
-        pending={false}
-      />,
-    )
-    expect(getByTestId('chapter-stale').textContent).toContain('サーバー側の内容が変わりました')
-    // 下書き（9 秒）が残っている。
-    expect(container.textContent).toContain('0:00:09')
-    expect(getByRole('button', { name: '保存' })).toHaveProperty('disabled', true)
-    // 破棄するとサーバーの新しい内容になる。
-    fireEvent.click(getByRole('button', { name: '変更を破棄' }))
-    expect(queryByTestId('chapter-stale')).toBeNull()
-    expect(container.textContent).toContain('0:00:50')
-  })
-
-  it('自分の保存が成功したら、丸められたサーバーの値を採用して stale にならない', async () => {
-    // サーバーは境界をフレーム境界へ丸めて保存する（9000 → 9009）ので、届く値は
-    // 下書きと一致しない。クライアントで丸めを複製せず、保存成功後の次の値を採用する。
-    const { rerender, container, getByRole, queryByTestId, onSave } = renderEditor([cm])
-    fireEvent.click(
-      container.querySelectorAll('[data-testid="chapter-boundary"]')[0].querySelector('[aria-label$="を -1秒"]')!,
-    )
-    await act(async () => {
-      fireEvent.click(getByRole('button', { name: '保存' }))
+    act(() => {
+      void commandsRef.current?.save()
     })
-    const saved: ChapterSpan[] = [{ startMs: 9009, endMs: 20_020, label: 'CM', cut: true }]
-    rerender(
-      <RecordingChapterEditor
-        spans={saved}
-        version="v2"
-        detectionPending={false}
-        source="user"
-        currentSeconds={0}
-        playAround={vi.fn()}
-        jumpTo={vi.fn()}
-        onSave={onSave}
-        onReset={vi.fn()}
-        pending={false}
-      />,
-    )
-    expect(queryByTestId('chapter-stale')).toBeNull()
-    expect(container.textContent).toContain('0:00:09')
-    expect(getByRole('button', { name: '保存' })).toHaveProperty('disabled', true) // dirty でない
+    expect(onSave).toHaveBeenCalledWith([{ startMs: 30_000, endMs: 40_000, cut: true }], 'v1')
   })
 
-  it('保存には下書きの基にした版を渡す', () => {
-    const { container, getByRole, onSave } = renderEditor([cm])
-    fireEvent.click(
-      container.querySelectorAll('[data-testid="chapter-boundary"]')[0].querySelector('[aria-label$="を -1秒"]')!,
-    )
-    fireEvent.click(getByRole('button', { name: '保存' }))
-    expect(onSave.mock.calls[0][1]).toBe('v1')
+  it('未変更ならサーバーの新しい値と版へ追随する', () => {
+    const { rerender, container, props } = renderEditor([cm])
+    const next: ChapterSpan[] = [{ startMs: 50_000, endMs: 60_000, label: 'ED', cut: true }]
+    rerender(<RecordingChapterEditor {...props} spans={next} version="v2" source="user" />)
+    expect(container.textContent).toContain('0:50')
+    expect(container.textContent).not.toContain('0:10')
+    expect(container.querySelector('[data-testid="chapter-stale"]')).toBeNull()
   })
 
-  it('検出中は編集 UI を出さず理由を表示する', () => {
-    const { getByTestId, queryByRole } = renderEditor([], { detectionPending: true })
+  it('dirty draft はサーバー更新時に保持し、stale 警告から最新値を採用できる', () => {
+    const { rerender, container, getByRole, props } = renderEditor([cm])
+    fireEvent.click(container.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="10000"]',
+    )!)
+    fireEvent.click(getByRole('button', { name: '選択中の境界を1秒戻す' }))
+    const next: ChapterSpan[] = [{ startMs: 50_000, endMs: 60_000, label: 'ED', cut: true }]
+    rerender(<RecordingChapterEditor {...props} spans={next} version="v2" />)
+    expect(container.querySelector('[data-testid="chapter-stale"]')).not.toBeNull()
+    expect(container.textContent).toContain('0:09')
+    fireEvent.click(getByRole('button', { name: '下書きを破棄して最新から編集し直す' }))
+    expect(container.querySelector('[data-testid="chapter-stale"]')).toBeNull()
+    expect(container.textContent).toContain('0:50')
+  })
+
+  it('キャンセル命令は dirty draft を捨てる', () => {
+    const { commandsRef, getByRole, container } = renderEditor([cm])
+    fireEvent.click(container.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="10000"]',
+    )!)
+    fireEvent.click(getByRole('button', { name: '選択中の境界を1秒戻す' }))
+    act(() => commandsRef.current?.discard())
+    expect(container.textContent).toContain('0:10')
+    expect(container.textContent).not.toContain('0:09')
+  })
+
+  it('検出中は編集 UI を出さない', () => {
+    const { getByTestId, queryByTestId } = renderEditor([], { detectionPending: true })
     expect(getByTestId('chapter-detecting')).toBeTruthy()
-    expect(queryByRole('button', { name: '保存' })).toBeNull()
+    expect(queryByTestId('chapter-edit-layout')).toBeNull()
+    expect(queryByTestId('chapter-filmstrip')).toBeNull()
   })
 
-  it('「自動に戻す」は所有していないときは押せない', () => {
-    const { getByRole } = renderEditor([cm], { source: 'auto' })
-    expect(getByRole('button', { name: '自動に戻す' })).toHaveProperty('disabled', true)
+  it('タイルが利用できなくても境界編集は残る', () => {
+    const onTileImageError = vi.fn()
+    const { getByTestId, getByRole } = renderEditor([cm], {
+      tilesAvailable: false,
+      onTileImageError,
+    })
+    fireEvent.error(getByTestId('chapter-filmstrip').querySelector('img')!)
+    expect(onTileImageError).toHaveBeenCalledOnce()
+    expect(getByTestId('chapter-filmstrip').querySelector('[data-testid="chapter-filmstrip-boundary"]')).not.toBeNull()
+    expect(getByRole('button', { name: '選択中の境界を 1 フレーム進める' })).toHaveProperty('disabled', false)
+  })
+
+  it('自動に戻すは外側のヘッダーから呼ばれ、保存/破棄のUIを内側に重ねない', async () => {
+    const { commandsRef, onReset, queryByRole } = renderEditor([cm], { source: 'user' })
+    expect(queryByRole('button', { name: '自動に戻す' })).toBeNull()
+    await act(async () => {
+      expect(await commandsRef.current?.reset()).toBe(true)
+    })
+    expect(onReset).toHaveBeenCalledOnce()
+    expect(queryByRole('button', { name: '保存' })).toBeNull()
   })
 })
