@@ -34,6 +34,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -249,9 +250,6 @@ type LiveStreamer struct {
 	mu            sync.Mutex
 	sessions      map[int64]*liveSession
 	chaseSessions map[sessionKey]*liveSession
-	// chaseFailedAt は、起動した後に異常終了した追っかけのセッション鍵と時刻
-	// （chaseFailedRecently）。mu で守る。
-	chaseFailedAt map[sessionKey]time.Time
 
 	// afterOriginalVODOpen はテスト専用: 原本を open した直後、DB を再確認する前に呼ぶ。
 	afterOriginalVODOpen func()
@@ -1130,13 +1128,6 @@ func (ls *LiveStreamer) ChasePlaylistForTarget(w http.ResponseWriter, r *http.Re
 	key := chaseSessionKeyFor(target.RecordingID, offsetSeconds)
 	var s *liveSession
 	if target.canStartChaseSession() {
-		if ls.chaseFailedRecently(key) {
-			// 入力のエラーで止めた直後に同じ鍵で作り直すと、先頭から縮んだ EVENT playlist を
-			// 配り直し、失敗が続く間は要求のたびに作り直す。しばらくはエラーを返し、
-			// フロントの再生元のエラー経路に任せる。
-			http.Error(w, "chase stream failed recently", http.StatusServiceUnavailable)
-			return
-		}
 		committedSize := ls.committedOriginalSize(target.RecordingID)
 		var source sessionSource
 		if offsetSeconds == 0 {
@@ -1773,8 +1764,9 @@ type chaseCommittedSize func(ctx context.Context) (size int64, ok bool, err erro
 //   - GetRecord が録画の終了（recording 以外）を返し、同じ offset への最後の Range も空だった
 //     （状態遷移と最後の追記の競合を吸収する）
 //   - record が 404 になり、かつコミット済み原本のバイト数が読んだ位置と一致した。ingest は
-//     録画の終了を見て最後の差分まで読み、mirakc が HEAD で返す長さと一致しない転送を
-//     コミットしないので（internal/worker/ingest.go）、一致すれば終端まで読んでいる
+//     mirakc が録画の終了を返し、最後の Range が空になるまで読んでからコミットするので
+//     （internal/worker/ingest.go の transferIngestRecord）、コミットされたバイト数は終了時点の
+//     ファイル長である。一致すれば終端まで読んでいる
 //
 // 404 で原本と一致しない（ffmpeg が先端より遅れていて purge が先に来た、別経路の原本、
 // mirakc が record を失った等）ならエラーを返す。終端が分からないまま EOF にすると、
@@ -2751,7 +2743,6 @@ func sessionReady(s *liveSession) bool {
 func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 	kind := sessionKindOf(s)
 	keepCompletedRecordingSession := false
-	chaseFailed := false
 	// close(s.done) は必ず最後（他の全ての後片付けの後）に行う。stop() は
 	// `<-s.done` が閉じたら「片付け完了」とみなして戻るので、途中の状態
 	// （map から消す前・ディレクトリを消す前）で閉じると、呼び出し側が
@@ -2760,9 +2751,6 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 	defer close(s.done)
 	defer func() {
 		ls.mu.Lock()
-		if chaseFailed { // map から消すのと同じロックの中で残し、作り直す窓を作らない。
-			ls.noteChaseFailureLocked(s.key, time.Now())
-		}
 		// idle GC が先にこの id を削除して新しいセッションに入れ替えていたら、
 		// 新しいセッションを消さない（cur == s のときだけ削除）。
 		if !keepCompletedRecordingSession {
@@ -2927,7 +2915,6 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 	waitErr := cmd.Wait()
 	inputErr := chaseInput.finish(body)
 	ffmpegCompleted := ffmpegSessionCompleted(ctx, cmd, waitErr, inputErr, kind, sessionIDOf(s), stderr)
-	chaseFailed = kind == chaseSessionKind && ctx.Err() == nil && !ffmpegCompleted
 	if (kind == chaseSessionKind || kind == originalVODSessionKind) && ctx.Err() == nil && ffmpegCompleted {
 		// Keep completed recording playlists and all segments until the shared idle
 		// GC reclaims the session, so clients can fetch ENDLIST and seek the full VOD.
@@ -2965,36 +2952,6 @@ func ffmpegSessionCompleted(ctx context.Context, cmd *exec.Cmd, waitErr, inputEr
 	return ffmpegCompleted
 }
 
-// chaseFailureCooldown は、起動した後に異常終了した追っかけと同じ鍵の新しいセッションを
-// 作らない時間。var なのはテストのため。
-var chaseFailureCooldown = 30 * time.Second
-
-// noteChaseFailureLocked は鍵の追っかけが異常終了したことを残す。ls.mu を持って呼ぶ。
-// 冷却の過ぎた記録はここで捨てる（鍵は録画と offset の組なので、捨てないと増え続ける）。
-func (ls *LiveStreamer) noteChaseFailureLocked(key sessionKey, at time.Time) {
-	if ls.chaseFailedAt == nil {
-		ls.chaseFailedAt = make(map[sessionKey]time.Time)
-	}
-	for k, failedAt := range ls.chaseFailedAt {
-		if at.Sub(failedAt) >= chaseFailureCooldown {
-			delete(ls.chaseFailedAt, k)
-		}
-	}
-	ls.chaseFailedAt[key] = at
-}
-
-// chaseFailedRecently は、鍵の追っかけが冷却時間内に異常終了していて、その後に作られた
-// セッションも無いかを返す（TestChaseFailureCooldownRefusesRestart）。
-func (ls *LiveStreamer) chaseFailedRecently(key sessionKey) bool {
-	ls.mu.Lock()
-	defer ls.mu.Unlock()
-	if _, ok := ls.chaseSessions[key]; ok {
-		return false
-	}
-	failedAt, ok := ls.chaseFailedAt[key]
-	return ok && time.Since(failedAt) < chaseFailureCooldown
-}
-
 // committedOriginalSize は録画のコミット済み原本（active）のバイト数を返す関数を作る。
 // DB が無い構成（テスト）では nil で、404 は常にエラーになる。
 func (ls *LiveStreamer) committedOriginalSize(recordingID int64) chaseCommittedSize {
@@ -3021,6 +2978,9 @@ type chaseInputCopy struct {
 	read, write *os.File
 	done        chan struct{}
 	err         error
+	// finishing は finish が入力と stdin を閉じ始めたこと。その後の入力のエラーは finish が
+	// 起こしたもので、入力の失敗ではない（ffmpeg が自分で終わった）。
+	finishing atomic.Bool
 }
 
 // attachChaseInput は cmd の stdin にパイプの読み側を付ける。Start の前に呼ぶ。
@@ -3053,17 +3013,22 @@ func (c *chaseInputCopy) copy(input io.Reader, kill func() error) {
 	c.done = make(chan struct{})
 	go func() {
 		defer close(c.done)
-		c.err = copyChaseInput(c.write, input, kill)
+		c.err = copyChaseInput(c.write, input, kill, &c.finishing)
 	}()
 }
 
-// finish は Wait の後に呼び、入力のエラー（無ければ nil）を返す。ffmpeg が自分で終わった
-// とき、写しは入力の Read で待っているかもしれないので、入力を閉じて抜けさせてから待つ。
+// finish は Wait の後に呼び、写しが入力のエラーで ffmpeg を kill したならそのエラーを返す
+// （それ以外は nil）。ffmpeg が自分で終わったとき、写しは入力の Read か stdin への Write で
+// 待っているかもしれない。入力と stdin の書き側を閉じて抜けさせてから待つ。stdin を閉じるのは、
+// ffmpeg の孫が読み側を握ったまま読まないと、パイプが埋まった Write が終わらないためである
+// （TestChaseInputCopyFinishUnblocksStuckWrite）。
 func (c *chaseInputCopy) finish(input io.Closer) error {
 	if c == nil || c.done == nil {
 		return nil
 	}
+	c.finishing.Store(true)
 	_ = input.Close()
+	_ = c.write.Close()
 	<-c.done
 	return c.err
 }
@@ -3072,21 +3037,25 @@ func (c *chaseInputCopy) finish(input io.Closer) error {
 // ENDLIST を書くので、stdin を閉じるのは入力が正常な EOF で終わったときだけにする。入力が
 // エラーで終わったら、先に kill してから stdin を閉じる（kill の後の ffmpeg は何も実行しない）。
 // そうしないと途中までの入力に ENDLIST が付く（TestChaseInputErrorDoesNotWriteEndlist）。
-// 戻り値は入力のエラー（正常な EOF と、ffmpeg が先に終わって書けなかった場合は nil）。
-func copyChaseInput(stdin io.WriteCloser, input io.Reader, kill func() error) error {
+// finishing が立った後の入力のエラーは finish が閉じたためなので kill せず nil を返す
+// （TestChaseFFmpegCrashIsNotReportedAsInputFailure）。戻り値は kill した入力のエラー。
+func copyChaseInput(stdin io.WriteCloser, input io.Reader, kill func() error, finishing *atomic.Bool) error {
 	buf := make([]byte, 64<<10)
 	for {
 		n, readErr := input.Read(buf)
 		if n > 0 {
 			if _, writeErr := stdin.Write(buf[:n]); writeErr != nil {
 				_ = stdin.Close()
-				//nolint:nilerr // ffmpeg が先に終わった。その終わり方は Wait が扱い、入力の失敗ではない。
+				//nolint:nilerr // ffmpeg が先に終わったか finish が閉じた。終わり方は Wait が扱う。
 				return nil
 			}
 		}
 		switch {
 		case readErr == nil:
 		case errors.Is(readErr, io.EOF):
+			_ = stdin.Close()
+			return nil
+		case finishing.Load():
 			_ = stdin.Close()
 			return nil
 		default:

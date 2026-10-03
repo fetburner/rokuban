@@ -578,8 +578,8 @@ HLS シークで補正できる。許容誤差は放送・エンコーダーご�
 
 - **EOF にするのは録画ファイルの終端まで渡した後だけ。** mirakc が録画の終了（状態が `recording` でない）を
   返し、同じ offset への最後の Range も空だったときである。record が 404 になったとき（ingest の purge 等）は、
-  読んだ位置がコミット済み原本のバイト数と一致するときだけ終端とみなす。ingest は録画の終了を見て最後の差分まで読み、
-  mirakc が HEAD で返す長さと一致しない転送をコミットしないので、一致すれば終端まで読んでいる。一致しなければエラーにする。
+  読んだ位置がコミット済み原本のバイト数と一致するときだけ終端とみなす。ingest は mirakc が録画の終了を返し、最後の Range が
+  空になるまで読んでからコミットするので、コミットされたバイト数は終了時点のファイル長である。一致しなければエラーにする。
   ffmpeg が先端より遅れていて purge が先に来た場合や、別経路の原本、mirakc が record を失った場合である。
   判定は `TestChaseRangeFollowReaderTreatsPurgeAsEndOnlyWhenComplete` と
   `TestChasePurgeEndUsesCommittedOriginal` が固定する
@@ -606,10 +606,9 @@ playlist と全セグメントを保持する。これにより、録画完了�
 segment を取りに来る窓を失わない。保持中は全プロファイルのプレイリストが残るので、
 終了後でも再起動なしに `?profile=` を切り替えられる
 （`TestFinishedChaseProfileSwitchServesRetainedPlaylists`）。ffmpeg が異常終了した場合（kill を含む）は
-壊れたセッションを保持せず、map とファイルを直ちに解放する。起動した後に異常終了した追っかけは、同じ録画・
-offset のセッションを 30 秒作り直さず 503 を返す。作り直すと先頭から縮んだ playlist を配り直し、失敗が続く間は
-要求のたびに作り直すためである。録画が終わっていれば新しいセッションは作らず 404 になる
-（`TestChaseInputErrorDoesNotWriteEndlist`）。
+壊れたセッションを保持せず、map とファイルを直ちに解放する。次の playlist 要求は、録画中なら同じ録画・offset の
+セッションを先頭から作り直し、録画が終わっていれば 404 になる（`TestChaseInputErrorDoesNotWriteEndlist`）。
+未解決: 作り直した EVENT playlist は先頭から縮み、失敗が続く間は要求のたびに作り直す。
 
 ライブと追っかけのセッション数は合算し、Prometheus の
 `rokuban_live_active_sessions{kind="live"|"chase"}` で内訳を見る。セグメントの保存先は

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -250,11 +251,11 @@ func TestChaseRangeFollowReaderDrainsDataAppendedBeforeRecordingFinished(t *test
 // withFastChaseTimings は追っかけの Range 追従の間隔と再試行の待ちを短くする。
 func withFastChaseTimings(t *testing.T) {
 	t.Helper()
-	pollMin, pollMax, retryDelay, cooldown := chaseRangePollMin, chaseRangePollMax, chaseRetryDelay, chaseFailureCooldown
+	pollMin, pollMax, retryDelay := chaseRangePollMin, chaseRangePollMax, chaseRetryDelay
 	chaseRangePollMin, chaseRangePollMax = 5*time.Millisecond, 20*time.Millisecond
 	chaseRetryDelay = func(int) time.Duration { return time.Millisecond }
 	t.Cleanup(func() {
-		chaseRangePollMin, chaseRangePollMax, chaseRetryDelay, chaseFailureCooldown = pollMin, pollMax, retryDelay, cooldown
+		chaseRangePollMin, chaseRangePollMax, chaseRetryDelay = pollMin, pollMax, retryDelay
 	})
 }
 
@@ -850,8 +851,9 @@ func TestChaseRangeFollowReaderCloseStopsConcurrentRead(t *testing.T) {
 }
 
 // TestChaseInputErrorDoesNotWriteEndlist は、追っかけの入力がエラーで終わったら ffmpeg が
-// ENDLIST を書く前に止め、セッションを保持せず、冷却の間は同じ鍵で作り直さないことを
-// 固定する。録画が終わった状態なら 404、録画中なら 503 を返す。
+// ENDLIST を書く前に止め、セッションを保持しないことを固定する。その後の playlist 要求は、
+// 録画が終わっていれば 404、録画中なら先頭から作り直す（今の振る舞い。作り直しの繰り返しは
+// 未解決として別の issue にある）。
 func TestChaseInputErrorDoesNotWriteEndlist(t *testing.T) {
 	withFastChaseTimings(t)
 	ffmpeg, marker := installEndlistMarkerFFmpeg(t)
@@ -873,31 +875,23 @@ func TestChaseInputErrorDoesNotWriteEndlist(t *testing.T) {
 		t.Fatal("a chase session whose input failed was retained")
 	}
 
-	if resp := requestHeadChasePlaylist(ls, 42, "recording"); resp.Code != http.StatusServiceUnavailable {
-		t.Fatalf("playlist status right after the failure = %d, want 503 (no restart from the head)", resp.Code)
-	}
 	if resp := requestHeadChasePlaylist(ls, 42, "finished"); resp.Code != http.StatusNotFound {
 		t.Fatalf("playlist status after the recording finished = %d, want 404", resp.Code)
 	}
 	client.mu.Lock()
+	client.followGate = make(chan struct{})
+	gate := client.followGate
+	client.mu.Unlock()
+	defer close(gate)
+	if resp := requestHeadChasePlaylist(ls, 42, "recording"); resp.Code != http.StatusOK {
+		t.Fatalf("playlist status while still recording = %d, want 200 (a new session from the head)", resp.Code)
+	}
+	client.mu.Lock()
 	followCalls := client.followCalls
 	client.mu.Unlock()
-	if followCalls != 1 {
-		t.Fatalf("mirakc follow requests = %d, want 1 (the failed session must not be recreated)", followCalls)
+	if followCalls != 2 {
+		t.Fatalf("mirakc follow requests = %d, want 2 (the failed session recreated from the head)", followCalls)
 	}
-
-	// 冷却が過ぎたら作り直せる。
-	chaseFailureCooldown = 0
-	client.mu.Lock()
-	client.followGate = make(chan struct{})
-	client.mu.Unlock()
-	resp := requestHeadChasePlaylist(ls, 42, "recording")
-	if resp.Code != http.StatusOK {
-		t.Fatalf("playlist status after the cooldown = %d, want 200", resp.Code)
-	}
-	client.mu.Lock()
-	close(client.followGate)
-	client.mu.Unlock()
 }
 
 // TestChasePurgeEndUsesCommittedOriginal は、record が 404 になったときの判定が DB の
@@ -1639,5 +1633,135 @@ func TestEvictingCompletedChaseCleansRetainedFiles(t *testing.T) {
 
 	if _, err := os.Stat(chase.dir); !os.IsNotExist(err) {
 		t.Errorf("evicted completed chase directory still exists, stat err = %v", err)
+	}
+}
+
+// lockedLogBuffer は複数の goroutine から書かれるログを集める。
+type lockedLogBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func captureSlog(t *testing.T) *lockedLogBuffer {
+	t.Helper()
+	logs := &lockedLogBuffer{}
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	return logs
+}
+
+// installChaseFFmpegScript は playlist を書いてから body を実行する偽 ffmpeg を作る。
+func installChaseFFmpegScript(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "fake-ffmpeg-chase")
+	script := `#!/bin/sh
+playlist=""
+for a in "$@"; do case "$a" in *.m3u8) playlist="$a";; esac; done
+printf '#EXTM3U\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nsegments/x.ts\n' > "$playlist"
+` + body
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestChaseFFmpegCrashIsNotReportedAsInputFailure は、入力が待っている間に ffmpeg が自分で
+// 異常終了したら、入力の失敗ではなく ffmpeg の異常終了として stderr ごと記録することを固定する。
+// 終了後に入力を閉じて起きるエラーを入力の失敗と取り違えると、stderr が残らない。
+func TestChaseFFmpegCrashIsNotReportedAsInputFailure(t *testing.T) {
+	withFastChaseTimings(t)
+	// 入力は追い付いたまま次の Range を 2 秒待っている。
+	chaseRangePollMin, chaseRangePollMax = 2*time.Second, 2*time.Second
+	logs := captureSlog(t)
+	ffmpeg := installChaseFFmpegScript(t, `sleep 0.5
+echo "fake ffmpeg crashed" >&2
+exit 1
+`)
+	client := &scriptedChaseRecord{content: "head", visible: 4, followBytes: 4, recording: true}
+	ls := newLiveStreamer(client, chaseTestConfig(t, ffmpeg))
+	t.Cleanup(ls.shutdown)
+	if resp := requestHeadChasePlaylist(ls, 42, "recording"); resp.Code != http.StatusOK {
+		t.Fatalf("playlist status = %d, want 200 (%s)", resp.Code, resp.Body.String())
+	}
+	ls.mu.Lock()
+	s := ls.chaseSessions[chaseSessionKeyFor(42, 0)]
+	ls.mu.Unlock()
+	if s == nil {
+		t.Fatal("chase session disappeared before ffmpeg exited")
+	}
+	select {
+	case <-s.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("chase session did not end after ffmpeg exited")
+	}
+	got := logs.String()
+	if !strings.Contains(got, "ffmpeg exited unexpectedly") || !strings.Contains(got, "fake ffmpeg crashed") {
+		t.Fatalf("logs = %q, want the ffmpeg crash with its stderr", got)
+	}
+	if strings.Contains(got, "chase input failed") {
+		t.Fatalf("logs = %q, want no input failure for an ffmpeg crash", got)
+	}
+}
+
+// TestChaseInputCopyFinishUnblocksStuckWrite は、ffmpeg の孫が stdin の読み側を握ったまま
+// 読まず、パイプが埋まって写しの Write が止まっても、セッションの終了（ffmpeg が自分で
+// 終わった場合）と stop（shutdown）が戻ることを固定する。
+func TestChaseInputCopyFinishUnblocksStuckWrite(t *testing.T) {
+	tests := []struct {
+		name string
+		// body は偽 ffmpeg の後半。孫（sleep）は stdin を握って読まない。
+		body string
+		// stop が真なら、ffmpeg が生きている間に shutdown する。
+		stop bool
+	}{
+		{name: "ffmpeg exits", body: "sleep 5 0<&0 >/dev/null 2>&1 &\nsleep 0.3\nexit 0\n"},
+		{name: "shutdown", body: "sleep 5 0<&0 >/dev/null 2>&1 &\nexec sleep 5 </dev/null >/dev/null 2>&1\n", stop: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withFastChaseTimings(t)
+			ffmpeg := installChaseFFmpegScript(t, tt.body)
+			// 1 MiB はパイプの容量より大きいので、読まれなければ Write が止まる。
+			content := strings.Repeat("x", 1<<20)
+			client := &scriptedChaseRecord{content: content, visible: len(content), followBytes: len(content), recording: true}
+			ls := newLiveStreamer(client, chaseTestConfig(t, ffmpeg))
+			if resp := requestHeadChasePlaylist(ls, 42, "recording"); resp.Code != http.StatusOK {
+				t.Fatalf("playlist status = %d, want 200 (%s)", resp.Code, resp.Body.String())
+			}
+			ls.mu.Lock()
+			s := ls.chaseSessions[chaseSessionKeyFor(42, 0)]
+			ls.mu.Unlock()
+			if s == nil {
+				t.Fatal("chase session disappeared")
+			}
+			ended := make(chan struct{})
+			go func() {
+				if tt.stop {
+					time.Sleep(300 * time.Millisecond)
+				} else {
+					<-s.done
+				}
+				ls.shutdown()
+				close(ended)
+			}()
+			select {
+			case <-ended:
+			case <-time.After(2 * time.Second):
+				t.Fatal("the chase session (or shutdown) did not return while its stdin write was stuck")
+			}
+		})
 	}
 }
