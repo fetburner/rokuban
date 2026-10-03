@@ -1337,6 +1337,11 @@ export interface RecordingShelf {
   count: number;
   /** この棚のうち、再生できる録画の件数。 */
   playableCount: number;
+  /**
+     * 未視聴の放送イベント数。再生できる生きた録画を (networkId, serviceId, startAt) で束ねて数え、
+     * ごみ箱・supersede 済み・purge 済みを含むいずれかの録画に視聴済み印があれば除外する。
+     */
+  unwatchedCount: number;
   /** シリーズ内で最も新しい録画の番組開始時刻。常に UTC。 */
   latestStartAt: string;
   /** 代表の録画の id。棚から録画一覧・番組ハブへ渡す起点。 */
@@ -1520,6 +1525,13 @@ export interface Reservation {
      * 「なぜ録られていないか」を説明するため残る。
      */
   skip: boolean;
+  /**
+     * 予約に対応する EPG 番組の実効シリーズ。EPG 行が無い、または実効シリーズを
+     * 導出できないとき null。予約評価と録画棚は更新契機が異なるため棚の集計は結合せず、
+     * UI はこの値を GET /api/recording-shelves の value と突き合わせる。
+     * @nullable
+     */
+  series: string | null;
   /** 履歴ベース重複排除でマッチした録画の ID（マッチが無ければ省略） */
   dedupMatchRecordingId?: number;
   /** 上記マッチの pg_trgm 類似度（0.0〜1.0、マッチが無ければ省略） */

@@ -28,6 +28,7 @@ function reservation(overrides: Partial<Reservation> = {}): Reservation {
     durationMs: 1800000,
     createdAt: '2026-07-28T00:00:00+09:00',
     updatedAt: '2026-07-28T00:00:00+09:00',
+    series: null,
     ...overrides,
   }
 }

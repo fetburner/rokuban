@@ -742,6 +742,7 @@ export const ListReservationsResponseItem = zod.object({
   "createdAt": zod.iso.datetime({"offset":true}),
   "updatedAt": zod.iso.datetime({"offset":true}),
   "skip": zod.boolean().describe('effective.skip（M2-6, issue #24）。program_intents.action=\'skip\' の\n明示、または意図が無く base.skip（ルールの重複排除判定）が true。\ntrue の間 reconciler は mirakc に同期しないが、予約行自体は\n「なぜ録られていないか」を説明するため残る。\n'),
+  "series": zod.string().nullable().describe('予約に対応する EPG 番組の実効シリーズ。EPG 行が無い、または実効シリーズを\n導出できないとき null。予約評価と録画棚は更新契機が異なるため棚の集計は結合せず、\nUI はこの値を GET /api/recording-shelves の value と突き合わせる。\n'),
   "dedupMatchRecordingId": zod.int().optional().describe('履歴ベース重複排除でマッチした録画の ID（マッチが無ければ省略）'),
   "dedupSimilarity": zod.number().optional().describe('上記マッチの pg_trgm 類似度（0.0〜1.0、マッチが無ければ省略）')
 })
@@ -782,6 +783,7 @@ export const GetProgramReservationResponse = zod.object({
   "createdAt": zod.iso.datetime({"offset":true}),
   "updatedAt": zod.iso.datetime({"offset":true}),
   "skip": zod.boolean().describe('effective.skip（M2-6, issue #24）。program_intents.action=\'skip\' の\n明示、または意図が無く base.skip（ルールの重複排除判定）が true。\ntrue の間 reconciler は mirakc に同期しないが、予約行自体は\n「なぜ録られていないか」を説明するため残る。\n'),
+  "series": zod.string().nullable().describe('予約に対応する EPG 番組の実効シリーズ。EPG 行が無い、または実効シリーズを\n導出できないとき null。予約評価と録画棚は更新契機が異なるため棚の集計は結合せず、\nUI はこの値を GET /api/recording-shelves の value と突き合わせる。\n'),
   "dedupMatchRecordingId": zod.int().optional().describe('履歴ベース重複排除でマッチした録画の ID（マッチが無ければ省略）'),
   "dedupSimilarity": zod.number().optional().describe('上記マッチの pg_trgm 類似度（0.0〜1.0、マッチが無ければ省略）')
 })
@@ -1318,6 +1320,7 @@ export const ListRecordingShelvesResponseItem = zod.object({
   "title": zod.string().describe('代表の録画の生のタイトル（シリーズ名の下の副見出しに使う）。'),
   "count": zod.int().describe('生きている録画の件数（録画中・取り込み待ち・失敗を含む）。'),
   "playableCount": zod.int().describe('この棚のうち、再生できる録画の件数。'),
+  "unwatchedCount": zod.int().describe('未視聴の放送イベント数。再生できる生きた録画を (networkId, serviceId, startAt) で束ねて数え、\nごみ箱・supersede 済み・purge 済みを含むいずれかの録画に視聴済み印があれば除外する。\n'),
   "latestStartAt": zod.iso.datetime({"offset":true}).describe('シリーズ内で最も新しい録画の番組開始時刻。常に UTC。'),
   "representativeId": zod.int().describe('代表の録画の id。棚から録画一覧・番組ハブへ渡す起点。')
 })
