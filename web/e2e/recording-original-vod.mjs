@@ -13,7 +13,7 @@
 // ビットマップ字幕を作れない）。①〜③ の playlist は最初から ENDLIST 済みである。
 // ⑤ は streamer と同じ `-ss {offset}`（0 起点）で offset ごとに作り、ENDLIST を外した
 // 変換中の playlist で開始位置・張り直し後の再生継続・末尾の 416・枠の操作を見る。
-// 変換が進んで playlist が伸びていく挙動そのものは配らない（先端は 20 秒で止まる）。
+// 手動の ▶ は、autoplay 拒否後に待ち時間を置き、segment が増える EVENT playlist で測る。
 //
 //   cd web && pnpm build
 //   pnpm preview --port 4173 --strictPort &
@@ -840,6 +840,49 @@ function offsetSession(offset) {
   ], dir)
   return dir
 }
+
+/** Full EVENT fixture used by the manual-play timing matrix. The route below
+ * reveals one additional 1-second segment per elapsed second, as the real
+ * transcoder extends its playlist while playback is waiting to start. */
+function manualGrowingOffsetSession() {
+  const dir = path.join(offsetFixtureDir, 'offset-manual-growing')
+  if (existsSync(path.join(dir, 'playlist.m3u8'))) return dir
+  mkdirSync(path.join(dir, 'segments'), { recursive: true })
+  runFFmpeg([
+    '-hide_banner', '-nostats', '-loglevel', 'error', '-y',
+    '-i', offsetSourcePath, '-t', String(OFFSET_VIDEO_SECONDS),
+    '-map', '0:v:0', '-map', '0:a:0', '-map', '0:a:0', '-map', '0:a:0',
+    '-c:v', 'libx264', '-profile:v', 'baseline', '-pix_fmt', 'yuv420p', '-preset', 'veryfast', '-g', '25',
+    '-sc_threshold', '0', '-force_key_frames', 'expr:gte(t,n_forced*1)', '-c:a', 'aac', '-b:a', '64k',
+    '-var_stream_map', 'v:0,agroup:a0 a:0,agroup:a0,default:yes a:1,agroup:a0 a:2,agroup:a0',
+    '-master_pl_name', 'playlist.m3u8', '-f', 'hls', '-hls_time', '1', '-hls_list_size', '0',
+    '-hls_playlist_type', 'event', '-hls_base_url', 'segments/',
+    '-hls_segment_filename', path.join(dir, 'segments', '%v_seg%05d.ts'), path.join(dir, 'playlist_%v.m3u8'),
+  ], dir)
+  return dir
+}
+
+const MANUAL_INITIAL_SEGMENTS = 6
+let manualPlaylistGrowth = null
+function eventPlaylistPrefix(playlist, segmentCount) {
+  const header = []
+  const segments = []
+  let segment = null
+  for (const line of playlist.split(/\r?\n/)) {
+    if (!line || line === '#EXT-X-ENDLIST') continue
+    if (line.startsWith('#EXTINF:')) {
+      if (segment !== null) segments.push(segment)
+      segment = [line]
+    } else if (segment !== null) {
+      segment.push(line)
+    } else {
+      header.push(line)
+    }
+  }
+  if (segment !== null) segments.push(segment)
+  return [...header, ...segments.slice(0, segmentCount).flat()].join('\n') + '\n'
+}
+
 const offsetRequests = []
 let offsetFailAll = false
 const offsetHandler = async ({ path: requestPath, json, route }) => {
@@ -875,11 +918,34 @@ const offsetHandler = async ({ path: requestPath, json, route }) => {
       return route.fulfill({ status: 416, contentType: 'text/plain', body: 'offset is outside the original\n' })
     }
     if (resource === 'playlist.m3u8') offsetRequests.push({ offset, status: 200 })
-    const file = path.join(offsetSession(offset), resource)
+    const sessionDir = manualPlaylistGrowth && offset === 0
+      ? manualGrowingOffsetSession()
+      : offsetSession(offset)
+    const file = path.join(sessionDir, resource)
     if (!existsSync(file)) return route.fulfill({ status: 404, body: 'fixture missing' })
     let body = readFileSync(file)
-    // 変換中: ENDLIST を外す（-t 20 で先端は 20 秒）。
-    if (/^playlist_\d+\.m3u8$/.test(resource)) body = body.toString('utf8').replace('#EXT-X-ENDLIST\n', '')
+    // 変換中: ENDLIST を外す。手動再生測定では、時間とともに EVENT playlist の先端を伸ばす。
+    if (/^playlist_\d+\.m3u8$/.test(resource)) {
+      if (manualPlaylistGrowth && offset === 0) {
+        const growingPlaylist = readFileSync(path.join(manualGrowingOffsetSession(), resource), 'utf8')
+        const totalSegments = (growingPlaylist.match(/^#EXTINF:/gm) ?? []).length
+        const elapsedMs = manualPlaylistGrowth.startedAt === null
+          ? 0
+          : Math.max(0, Date.now() - manualPlaylistGrowth.startedAt)
+        const visibleSegments = Math.min(
+          totalSegments,
+          MANUAL_INITIAL_SEGMENTS + Math.floor(elapsedMs / 1000),
+        )
+        manualPlaylistGrowth.maxVisibleSegments = Math.max(
+          manualPlaylistGrowth.maxVisibleSegments,
+          visibleSegments,
+        )
+        manualPlaylistGrowth.responses.push({ elapsedMs, visibleSegments })
+        body = Buffer.from(eventPlaylistPrefix(growingPlaylist, visibleSegments))
+      } else {
+        body = body.toString('utf8').replace('#EXT-X-ENDLIST\n', '')
+      }
+    }
     return route.fulfill({
       status: 200,
       contentType: resource.endsWith('.ts') ? 'video/mp2t' : 'application/vnd.apple.mpegurl',
@@ -911,6 +977,11 @@ const manualPlayMeasurements = []
 for (const waitMs of [0, 1000, 3000]) {
   delete offsetRecording.resumePositionMs
   delete offsetRecording.watchedAt
+  manualPlaylistGrowth = {
+    startedAt: null,
+    maxVisibleSegments: 0,
+    responses: [],
+  }
   const manualPage = await context.newPage()
   await installApiStubs(manualPage, offsetHandler)
   // Poster start mounts the source and asks for playback, but a browser can reject
@@ -935,17 +1006,20 @@ for (const waitMs of [0, 1000, 3000]) {
     return element !== null && element.duration > 0 && element.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA &&
       element.paused && window.__e2eInitialVideoPlayBlocked === true
   }, undefined, { timeout: 20000 }).catch(() => ng.push(`⑤-manual ${waitMs}ms: 手動再生用に HLS を読み込めない`))
-  await manualPage.locator('video').evaluate((element) => {
-    element.pause()
-    element.currentTime = 0
-  })
-  await manualPage.waitForFunction(() => {
-    const element = document.querySelector('video')
-    return element !== null && element.paused && element.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA &&
-      Math.abs(element.currentTime) < 0.25
-  }, undefined, { timeout: 10000 }).catch(() => ng.push(`⑤-manual ${waitMs}ms: 手動再生前に 0 秒で一時停止できない`))
+  const afterCanplay = await sampleOffsetPlayer(manualPage)
+  if (afterCanplay.time === null || afterCanplay.time > 0.5 || afterCanplay.paused !== true) {
+    ng.push(`⑤-manual ${waitMs}ms: 製品が canplay 後に先頭で一時停止できない（${JSON.stringify(afterCanplay)}）`)
+  }
+  // Count time from the product's canplay correction. The browser receives an
+  // initial 6-second EVENT playlist; subsequent reads expose one more segment
+  // for each elapsed second while the user waits before pressing ▶.
+  manualPlaylistGrowth.startedAt = Date.now()
   if (waitMs > 0) await manualPage.waitForTimeout(waitMs)
   const beforeManualPlay = await sampleOffsetPlayer(manualPage)
+  const playlistSegmentsBeforeManualPlay = manualPlaylistGrowth.maxVisibleSegments
+  if (beforeManualPlay.time === null || beforeManualPlay.time > 0.5 || beforeManualPlay.paused !== true) {
+    ng.push(`⑤-manual ${waitMs}ms: 手動 ▶ 押下前に開始位置が変わった（${JSON.stringify(beforeManualPlay)}）`)
+  }
   const manualPlayRequestedAt = Date.now()
   await manualPage.locator('[data-testid="player-controls"]')
     .getByRole('button', { name: '再生', exact: true }).click()
@@ -956,13 +1030,25 @@ for (const waitMs of [0, 1000, 3000]) {
   const untilMeasurement = manualPlayRequestedAt + 1000 - Date.now()
   if (untilMeasurement > 0) await manualPage.waitForTimeout(untilMeasurement)
   const afterManualPlay = await sampleOffsetPlayer(manualPage)
-  const measurement = { waitMs, before: beforeManualPlay.time, after: afterManualPlay.time, paused: afterManualPlay.paused }
+  const measurement = {
+    waitMs,
+    afterCanplay: afterCanplay.time,
+    before: beforeManualPlay.time,
+    after: afterManualPlay.time,
+    paused: afterManualPlay.paused,
+    playlistSegmentsBeforePlay: playlistSegmentsBeforeManualPlay,
+    playlistSegmentsAfterPlay: manualPlaylistGrowth.maxVisibleSegments,
+  }
   manualPlayMeasurements.push(measurement)
-  log(`  手動 ▶ 待ち ${waitMs}ms、押下前 ${beforeManualPlay.time?.toFixed(2)}s → 1 秒後 ${afterManualPlay.time?.toFixed(2)}s`)
-  if (afterManualPlay.time === null || afterManualPlay.time > 4 || afterManualPlay.paused !== false) {
+  log(`  手動 ▶ 待ち ${waitMs}ms、押下前 ${beforeManualPlay.time?.toFixed(2)}s → 1 秒後 ${afterManualPlay.time?.toFixed(2)}s、EVENT segments 押下時=${playlistSegmentsBeforeManualPlay} / 1 秒後=${manualPlaylistGrowth.maxVisibleSegments}`)
+  if (afterManualPlay.time === null || afterManualPlay.time > 2.5 || afterManualPlay.paused !== false) {
     ng.push(`⑤-manual ${waitMs}ms 待って押した手動の ▶ が 0 秒付近から始まらない（${JSON.stringify(measurement)}）`)
   }
+  if (waitMs === 3000 && playlistSegmentsBeforeManualPlay <= MANUAL_INITIAL_SEGMENTS) {
+    ng.push(`⑤-manual: 3 秒待機中に EVENT playlist が伸びなかった（${JSON.stringify(manualPlaylistGrowth.responses)}）`)
+  }
   await manualPage.close()
+  manualPlaylistGrowth = null
 }
 log(`  実測値: ${JSON.stringify(manualPlayMeasurements)}`)
 delete offsetRecording.resumePositionMs
@@ -977,11 +1063,12 @@ delete offsetRecording.watchedAt
   // 再生が始まり、0 から始まる。WebKit のネイティブ HLS は開始位置を明示しないと ENDLIST の無い
   // EVENT playlist のライブ端近くから始める。
   await offsetPage.getByTestId('recording-playback-start').click()
-  await offsetPage.locator('video').waitFor({ timeout: 15000 })
-  await offsetPage.mouse.move(5, 5)
-  await offsetPage.waitForTimeout(2500)
+  await offsetPage.waitForFunction(() => {
+    const element = document.querySelector('video')
+    return element !== null && !element.paused && element.currentTime > 0.5
+  }, undefined, { timeout: 10000 }).catch(() => ng.push('⑤-a ポスターの ▶ で再生位置が進まない'))
   const afterStart = await sampleOffsetPlayer(offsetPage)
-  log(`  ポスターの ▶ の 2.5 秒後: ${JSON.stringify(afterStart)}`)
+  log(`  ポスターの ▶ 再生開始: ${JSON.stringify(afterStart)}`)
   if (afterStart.time === null || afterStart.time > 4 || afterStart.paused !== false || !(afterStart.time > 0.5)) {
     ng.push(`⑤-a ポスターの ▶ で再生が始まらないか 0 から始まらない（${JSON.stringify(afterStart)}）`)
   }

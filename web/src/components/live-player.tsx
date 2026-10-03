@@ -431,6 +431,8 @@ export function LivePlayer({
   const resumePlaybackPendingRef = useRef(false)
   // 再開の play() が始まった時点で原本 VOD の開始位置を明示し直すか（下の effect）。
   const startReassertPending = useRef(false)
+  // 原本 VOD の開始 play() が自動再生制限で拒否された後、利用者が再生したときの再表明先。
+  const originalStartReassertRef = useRef<(() => void) | null>(null)
   // 最初のセッションの自動再生が残っているか（上の autoPlay）。
   const autoPlayPendingRef = useRef(autoPlay)
   // この要素が一度でも再生を始めたか。始めていないセッションのエラーは「位置」を持たない。
@@ -847,6 +849,12 @@ export function LivePlayer({
         }
       }
       reassertStart = apply
+      if (isOriginalVOD) {
+        originalStartReassertRef.current = apply
+        teardown.push(() => {
+          if (originalStartReassertRef.current === apply) originalStartReassertRef.current = null
+        })
+      }
       video.addEventListener('loadedmetadata', apply, { once: true })
       video.addEventListener('canplay', settle, { once: true })
       teardown.push(() => {
@@ -1882,6 +1890,23 @@ export function LivePlayer({
           else setOriginalVODAudioOverrideState({ recordingId, set: true, value: choice })
         }}
         {...frame.controls}
+        onTogglePlay={() => {
+          const media = videoRef.current
+          if (!media) return
+          if (!media.paused) {
+            media.pause()
+            return
+          }
+          if (!isOriginalVOD || !startReassertPending.current) {
+            frame.controls.onTogglePlay()
+            return
+          }
+          void media.play().then(() => {
+            if (!startReassertPending.current) return
+            originalStartReassertRef.current?.()
+            startReassertPending.current = false
+          }, () => {})
+        }}
         video={<>{video}{playerOverlay}</>}
         currentSeconds={isLive ? liveProgramEdgeSeconds : isChase ? visibleChaseSeconds : visibleOriginalSeconds}
         durationSeconds={isLive ? liveProgramDurationSeconds : isChase
