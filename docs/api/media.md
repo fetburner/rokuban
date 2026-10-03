@@ -574,7 +574,9 @@ HLS シークで補正できる。許容誤差は放送・エンコーダーご�
 
 追っかけの ffmpeg は通常ライブの「直近だけを残す」HLS と異なり、`EVENT` playlist、
 `hls_list_size=0`、`temp_file` を使い、`delete_segments` を使わない。ffmpeg は stdin の EOF で
-`ENDLIST` を書くので、追っかけの `ENDLIST` が録画ファイルの終端を表すかは入力をいつ EOF にするかで決まる。
+`ENDLIST` を書き、stdin が開いている間と kill されたときは書かない。本物の ffmpeg で
+`TestBuildChaseFFmpegArgs_RealFFmpegEndlistOnlyAtStdinEOF` が測り、CI は ffmpeg を入れて skip を禁じている。
+したがって追っかけの `ENDLIST` が録画ファイルの終端を表すかは、入力をいつ EOF にするかで決まる。
 
 - **EOF にするのは録画ファイルの終端まで渡した後だけ。** mirakc が録画の終了（状態が `recording` でない）を
   返し、同じ offset への最後の Range も空だったときである。record が 404 になったとき（ingest の purge 等）は、

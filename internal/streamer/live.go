@@ -35,6 +35,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -2931,6 +2932,13 @@ func ffmpegSessionCompleted(ctx context.Context, cmd *exec.Cmd, waitErr, inputEr
 	if inputFailed {
 		slog.Error("streamer: chase input failed; killed ffmpeg so the playlist does not get ENDLIST",
 			"session_id", sessionID, "err", inputErr)
+		// 入力の失敗と同じころに ffmpeg が自分で落ちていたら（kill より先に終わっていて、
+		// 終わり方が SIGKILL でない）、その落ち方も stderr ごと残す
+		// （TestFFmpegSessionCompletedKeepsCrashBesideInputFailure）。
+		if ffmpegExitedOnItsOwn(waitErr) {
+			slog.Error("streamer: ffmpeg exited unexpectedly",
+				"kind", string(kind), "session_id", sessionID, "err", waitErr, "stderr", strings.TrimSpace(stderr.String()))
+		}
 	}
 	ffmpegCompleted := waitErr == nil && !inputFailed
 	if waitErr != nil && ctx.Err() == nil && !inputFailed {
@@ -2968,6 +2976,17 @@ func (ls *LiveStreamer) committedOriginalSize(recordingID int64) chaseCommittedS
 		}
 		return row.SizeBytes, true, nil
 	}
+}
+
+// ffmpegExitedOnItsOwn は Wait のエラーが、こちらの kill（SIGKILL）以外での ffmpeg の
+// 異常終了（0 以外の終了コードか、SIGKILL 以外のシグナル）か。
+func ffmpegExitedOnItsOwn(waitErr error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(waitErr, &exitErr) {
+		return false
+	}
+	status, ok := exitErr.Sys().(syscall.WaitStatus)
+	return !ok || !status.Signaled() || status.Signal() != syscall.SIGKILL
 }
 
 // chaseInputCopy は追っかけの ffmpeg の stdin のパイプと、そこへの写し（copyChaseInput）を持つ。

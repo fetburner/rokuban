@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -453,22 +455,12 @@ func chaseTestConfig(t *testing.T, ffmpeg string) LiveConfig {
 // ENDLIST を足して marker を作る偽 ffmpeg。kill されると marker は作られない。
 func installEndlistMarkerFFmpeg(t *testing.T) (ffmpeg, marker string) {
 	t.Helper()
-	dir := t.TempDir()
-	marker = filepath.Join(dir, "endlist-written")
-	ffmpeg = filepath.Join(dir, "fake-ffmpeg-chase-endlist")
-	script := `#!/bin/sh
-playlist=""
-for a in "$@"; do case "$a" in *.m3u8) playlist="$a";; esac; done
-outdir=$(dirname "$playlist")
-printf '#EXTM3U\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nsegments/x.ts\n' > "$playlist"
-cat > "$outdir/input.bin"
+	marker = filepath.Join(t.TempDir(), "endlist-written")
+	ffmpeg = installChaseFFmpegScript(t, `cat > "$(dirname "$playlist")/input.bin"
 echo '#EXT-X-ENDLIST' >> "$playlist"
-touch "` + marker + `"
+touch "`+marker+`"
 exit 0
-`
-	if err := os.WriteFile(ffmpeg, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+`)
 	return ffmpeg, marker
 }
 
@@ -1707,6 +1699,12 @@ exit 1
 	case <-time.After(5 * time.Second):
 		t.Fatal("chase session did not end after ffmpeg exited")
 	}
+	ls.mu.Lock()
+	_, retained := ls.chaseSessions[chaseSessionKeyFor(42, 0)]
+	ls.mu.Unlock()
+	if retained {
+		t.Fatal("a chase session whose ffmpeg crashed was retained")
+	}
 	got := logs.String()
 	if !strings.Contains(got, "ffmpeg exited unexpectedly") || !strings.Contains(got, "fake ffmpeg crashed") {
 		t.Fatalf("logs = %q, want the ffmpeg crash with its stderr", got)
@@ -1716,51 +1714,215 @@ exit 1
 	}
 }
 
+// stdinHolderScript は、ffmpeg の stdin（パイプの読み側）を握ったまま読まない孫を起こし、その
+// pid を pidFile に書くシェル断片。非対話シェルの非同期リストは stdin が /dev/null になる
+// （dash は `0<&0` を付けてもそうなる）ので、stdin を fd 3 に写してから孫の stdin に戻す。
+func stdinHolderScript(pidFile string) string {
+	return "{ sleep 5 <&3 3<&- >/dev/null 2>&1 & echo $! > '" + pidFile + "'; } 3<&0\n"
+}
+
 // TestChaseInputCopyFinishUnblocksStuckWrite は、ffmpeg の孫が stdin の読み側を握ったまま
 // 読まず、パイプが埋まって写しの Write が止まっても、セッションの終了（ffmpeg が自分で
 // 終わった場合）と stop（shutdown）が戻ることを固定する。
 func TestChaseInputCopyFinishUnblocksStuckWrite(t *testing.T) {
 	tests := []struct {
 		name string
-		// body は偽 ffmpeg の後半。孫（sleep）は stdin を握って読まない。
-		body string
+		// rest は孫を起こした後の偽 ffmpeg の振る舞い。
+		rest string
 		// stop が真なら、ffmpeg が生きている間に shutdown する。
 		stop bool
 	}{
-		{name: "ffmpeg exits", body: "sleep 5 0<&0 >/dev/null 2>&1 &\nsleep 0.3\nexit 0\n"},
-		{name: "shutdown", body: "sleep 5 0<&0 >/dev/null 2>&1 &\nexec sleep 5 </dev/null >/dev/null 2>&1\n", stop: true},
+		{name: "ffmpeg exits", rest: "sleep 0.3\nexit 0\n"},
+		{name: "shutdown", rest: "exec sleep 5 </dev/null >/dev/null 2>&1\n", stop: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			withFastChaseTimings(t)
-			ffmpeg := installChaseFFmpegScript(t, tt.body)
+			pidFile := filepath.Join(t.TempDir(), "holder.pid")
+			ffmpeg := installChaseFFmpegScript(t, stdinHolderScript(pidFile)+tt.rest)
 			// 1 MiB はパイプの容量より大きいので、読まれなければ Write が止まる。
 			content := strings.Repeat("x", 1<<20)
 			client := &scriptedChaseRecord{content: content, visible: len(content), followBytes: len(content), recording: true}
 			ls := newLiveStreamer(client, chaseTestConfig(t, ffmpeg))
+			ended := make(chan struct{})
+			// 判定が落ちても、孫を止めて読み側を閉じれば止まった Write も抜けるので、後の
+			// テストへセッションとパイプを持ち越さない。それでも終わらなければ待ちを打ち切る。
+			t.Cleanup(func() {
+				if data, err := os.ReadFile(pidFile); err == nil {
+					if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
+						_ = syscall.Kill(pid, syscall.SIGKILL)
+					}
+				}
+				select {
+				case <-ended:
+				case <-time.After(10 * time.Second):
+					t.Error("cleanup: the chase session did not end even after the stdin holder was killed")
+				}
+			})
 			if resp := requestHeadChasePlaylist(ls, 42, "recording"); resp.Code != http.StatusOK {
+				close(ended)
+				ls.shutdown()
 				t.Fatalf("playlist status = %d, want 200 (%s)", resp.Code, resp.Body.String())
 			}
 			ls.mu.Lock()
 			s := ls.chaseSessions[chaseSessionKeyFor(42, 0)]
 			ls.mu.Unlock()
-			if s == nil {
-				t.Fatal("chase session disappeared")
-			}
-			ended := make(chan struct{})
 			go func() {
 				if tt.stop {
 					time.Sleep(300 * time.Millisecond)
-				} else {
+				} else if s != nil {
 					<-s.done
 				}
 				ls.shutdown()
 				close(ended)
 			}()
+			if s == nil {
+				t.Fatal("chase session disappeared")
+			}
+			for deadline := time.Now().Add(time.Second); ; time.Sleep(10 * time.Millisecond) {
+				if _, err := os.Stat(pidFile); err == nil {
+					break
+				} else if time.Now().After(deadline) {
+					t.Fatalf("the stdin holder did not start: %v", err)
+				}
+			}
 			select {
 			case <-ended:
 			case <-time.After(2 * time.Second):
 				t.Fatal("the chase session (or shutdown) did not return while its stdin write was stuck")
+			}
+		})
+	}
+}
+
+// TestFFmpegSessionCompletedKeepsCrashBesideInputFailure は、入力の失敗で kill したのと同じころに
+// ffmpeg が自分で落ちていたら（終わり方が SIGKILL でない）、ffmpeg の異常終了も stderr ごと
+// 記録し、こちらの kill で終わったなら記録しないことを固定する。2 つが同時に起きる窓は
+// runSession を通して決定的に作れないので、終わり方を判定する関数に本物のプロセスの Wait の
+// 結果を渡して見る。
+func TestFFmpegSessionCompletedKeepsCrashBesideInputFailure(t *testing.T) {
+	inputErr := errors.New("chase input broke")
+	tests := []struct {
+		name      string
+		run       func(t *testing.T, cmd *exec.Cmd) error
+		script    string
+		wantCrash bool
+	}{
+		{
+			name:   "ffmpeg exited by itself",
+			script: "echo 'fake ffmpeg crashed' >&2; exit 3",
+			run: func(_ *testing.T, cmd *exec.Cmd) error {
+				return cmd.Run()
+			},
+			wantCrash: true,
+		},
+		{
+			name:   "killed by us",
+			script: "echo 'fake ffmpeg crashed' >&2; exec sleep 5",
+			run: func(t *testing.T, cmd *exec.Cmd) error {
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				time.Sleep(200 * time.Millisecond)
+				_ = cmd.Process.Kill()
+				return cmd.Wait()
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := captureSlog(t)
+			stderr := newCappedWriter(stderrCap)
+			cmd := exec.Command("/bin/sh", "-c", tt.script)
+			cmd.Stderr = stderr
+			waitErr := tt.run(t, cmd)
+			if waitErr == nil {
+				t.Fatal("the process exited 0, want a failure")
+			}
+			if ffmpegSessionCompleted(context.Background(), cmd, waitErr, inputErr, chaseSessionKind, 42, stderr) {
+				t.Fatal("ffmpegSessionCompleted = true, want false after an input failure")
+			}
+			got := logs.String()
+			if !strings.Contains(got, "chase input failed") {
+				t.Fatalf("logs = %q, want the input failure", got)
+			}
+			gotCrash := strings.Contains(got, "ffmpeg exited unexpectedly") && strings.Contains(got, "fake ffmpeg crashed")
+			if gotCrash != tt.wantCrash {
+				t.Fatalf("crash logged with stderr = %v, want %v (logs = %q)", gotCrash, tt.wantCrash, got)
+			}
+		})
+	}
+}
+
+// TestBuildChaseFFmpegArgs_RealFFmpegEndlistOnlyAtStdinEOF は、本物の ffmpeg が追っかけの
+// 引数で、stdin の EOF で ENDLIST を書き、stdin が開いている間と kill されたときは書かないことを
+// 測る（docs/api/media.md の追っかけの節の前提）。CI は ROKUBAN_REQUIRE_FFMPEG で skip を禁じる。
+func TestBuildChaseFFmpegArgs_RealFFmpegEndlistOnlyAtStdinEOF(t *testing.T) {
+	ffmpeg := lookPathFFmpeg(t)
+	in := filepath.Join(t.TempDir(), "in.ts")
+	runFFmpeg(t, ffmpeg, nil,
+		"-hide_banner", "-loglevel", "error",
+		"-f", "lavfi", "-i", "testsrc2=size=160x120:rate=30",
+		"-f", "lavfi", "-i", "sine=f=440:r=48000",
+		"-t", "6", "-c:v", "mpeg2video", "-c:a", "aac", "-f", "mpegts", in)
+	input, err := os.ReadFile(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := LiveConfig{Profiles: []LiveProfile{
+		{Name: "hd", VideoCodec: "mpeg2video", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
+	}}
+	for _, tc := range []struct {
+		name string
+		eof  bool
+	}{
+		{name: "stdin EOF", eof: true},
+		{name: "killed", eof: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(dir, "segments"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(ffmpeg, BuildChaseFFmpegArgs(cfg, dir, false)...)
+			stdin, err := cmd.StdinPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+			go func() { _, _ = stdin.Write(input) }()
+
+			playlist := filepath.Join(dir, "hd.m3u8")
+			read := func() string {
+				data, _ := os.ReadFile(playlist)
+				return string(data)
+			}
+			// 入力を全部渡しても stdin が開いている間は、全 segment を書いても ENDLIST は無い。
+			for deadline := time.Now().Add(20 * time.Second); strings.Count(read(), "#EXTINF") < 2; time.Sleep(50 * time.Millisecond) {
+				if time.Now().After(deadline) {
+					t.Fatalf("ffmpeg wrote no segments within 20s (playlist %q)\n%s", read(), stderr.String())
+				}
+			}
+			time.Sleep(500 * time.Millisecond)
+			if strings.Contains(read(), "#EXT-X-ENDLIST") {
+				t.Fatalf("playlist has ENDLIST while stdin is still open:\n%s", read())
+			}
+			if tc.eof {
+				_ = stdin.Close()
+				if err := cmd.Wait(); err != nil {
+					t.Fatalf("ffmpeg after stdin EOF: %v\n%s", err, stderr.String())
+				}
+			} else {
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+			}
+			if got := strings.Contains(read(), "#EXT-X-ENDLIST"); got != tc.eof {
+				t.Fatalf("ENDLIST written = %v, want %v:\n%s", got, tc.eof, read())
 			}
 		})
 	}
