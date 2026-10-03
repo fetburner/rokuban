@@ -153,6 +153,8 @@ let releaseLiveProfiles: (() => void) | null = null
 function stubFetch(options: {
   services?: Service[]
   programsByServiceId?: Record<number, ProgramListItem[]>
+  /** チャンネル一覧の行用の全局取得（service 絞り込みなし）にも番組を返す。 */
+  allSitePrograms?: boolean
   /** サーバーの `live.enabled`（`GET /api/capabilities`）。既定は有効。 */
   live?: boolean
   /** 能力 API のステータス。200 以外なら「有効か無効か分からない」状態になる。 */
@@ -163,7 +165,7 @@ function stubFetch(options: {
   sites?: string[]
   /**
    * `GET /api/live-profiles`（issue #869）。**既定は空配列** --- 既存のテストは
-   * 「一覧が無いデプロイ」の挙動（セレクタを出さない）をそのまま見る。
+   * 「一覧が無いデプロイ」の挙動（設定メニューに画質項目を出さない）をそのまま見る。
    */
   liveProfiles?: LiveProfileSummary[]
   /** `GET /api/sites/{site}/tuners`。site ごとに指定しない限り空配列（issue #474）。 */
@@ -188,6 +190,7 @@ function stubFetch(options: {
   const {
     services = [],
     programsByServiceId = {},
+    allSitePrograms = false,
     live = true,
     capabilitiesStatus = 200,
     reservations = [],
@@ -277,11 +280,14 @@ function stubFetch(options: {
       // ここでも同じ規則で絞る --- serviceId だけで拾うと、同じ id を持つ
       // 別 network の番組が混ざるフィクスチャ（issue #291）で実物と食い違う。
       const ids = url.searchParams.getAll('service').map(Number)
-      const list = ids.flatMap((id) =>
-        (programsByServiceId[id % 100_000] ?? []).filter(
-          (p) => p.networkId === Math.floor(id / 100_000),
-        ),
-      )
+      // 絞り込みなし（チャンネル一覧の行用の全局取得）は allSitePrograms のときだけ全件を返す。
+      const list = ids.length === 0 && allSitePrograms
+        ? Object.values(programsByServiceId).flat()
+        : ids.flatMap((id) =>
+            (programsByServiceId[id % 100_000] ?? []).filter(
+              (p) => p.networkId === Math.floor(id / 100_000),
+            ),
+          )
       return Promise.resolve(new Response(JSON.stringify(list), { status: 200 }))
     }
     return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }))
@@ -317,6 +323,61 @@ function playlistFetchURLs(): string[] {
 function leaveHintURLs(): string[] {
   const calls = (globalThis.fetch as unknown as { mock: { calls: [string][] } }).mock.calls
   return calls.map(([url]) => String(url)).filter((url) => url.includes('/live/leave'))
+}
+
+type LiveTestUser = ReturnType<typeof userEvent.setup>
+
+async function startLivePlayback(user: LiveTestUser): Promise<void> {
+  const previousCalls = playlistFetchCallCount()
+  await user.click(await screen.findByRole('button', { name: /を再生$/ }))
+  await waitFor(() => expect(playlistFetchCallCount()).toBeGreaterThan(previousCalls))
+}
+
+async function openLiveSettingsMenu(user: LiveTestUser) {
+  // A settings submenu may still be open from the previous assertion. Escape
+  // returns to the main menu, where the next setting can be opened.
+  if (screen.queryByRole('menu', { name: '画質' }) || screen.queryByRole('menu', { name: '音声' })) {
+    await user.keyboard('{Escape}')
+  }
+  const existing = screen.queryByRole('menu', { name: 'ライブ設定' })
+  if (existing) return existing
+
+  await user.click(await screen.findByRole('button', { name: 'ライブ設定' }))
+  return screen.findByRole('menu', { name: 'ライブ設定' })
+}
+
+async function openLiveSettingsSubmenu(user: LiveTestUser, label: '画質' | '音声') {
+  const settings = await openLiveSettingsMenu(user)
+  await user.click(within(settings).getByRole('menuitem', { name: label }))
+  return screen.findByRole('menu', { name: label })
+}
+
+function liveProfileRadio(menu: HTMLElement, profile: string): HTMLElement {
+  const option = within(menu).getAllByRole('menuitemradio').find((item) => item.textContent?.trim().startsWith(profile))
+  if (!option) throw new Error(`画質 ${profile} の選択肢が見つかりません`)
+  return option
+}
+
+async function selectLiveProfile(user: LiveTestUser, profile: string): Promise<void> {
+  const quality = await openLiveSettingsSubmenu(user, '画質')
+  await user.click(liveProfileRadio(quality, profile))
+}
+
+async function expectLiveProfileSelected(user: LiveTestUser, profile: string, automatic = false): Promise<void> {
+  const quality = await openLiveSettingsSubmenu(user, '画質')
+  const option = liveProfileRadio(quality, profile)
+  expect(option).toHaveAttribute('aria-checked', 'true')
+  if (automatic) expect(option).toHaveTextContent('自動で下げた')
+}
+
+async function selectLiveAudio(user: LiveTestUser, label: '標準' | '主音声' | '副音声'): Promise<void> {
+  const audio = await openLiveSettingsSubmenu(user, '音声')
+  await user.click(within(audio).getByRole('menuitemradio', { name: label }))
+}
+
+async function expectLiveAudioSelected(user: LiveTestUser, label: '標準' | '主音声' | '副音声'): Promise<void> {
+  const audio = await openLiveSettingsSubmenu(user, '音声')
+  expect(within(audio).getByRole('menuitemradio', { name: label })).toHaveAttribute('aria-checked', 'true')
 }
 
 afterEach(() => {
@@ -669,15 +730,15 @@ describe('LivePage', () => {
 
   /**
    * 遅延・バッファの計器（issue #476）は `LivePlayer` の `onDiagnostics`
-   * コールバックから値を受け取り、ON AIR バッジと同じ情報欄に表示する
-   * （`LivePlayer` 自身は描画しない）。この画面のテストは通常プレイリストを
+   * コールバックから値を受け取り、ライブ視聴中は操作バーの「ライブ」印の横に表示する
+   * （`LivePlayer` 自身は計測値を描画しない）。この画面のテストは通常プレイリストを
    * unreachable に落として hls.js の動的 import を誘発しない（`stubFetch` の
    * コメント参照）ため、ここだけプレイリストを 200 にしたうえで `canPlayType`
    * をネイティブ HLS 対応に差し替え、`components/live-player.test.tsx` の
    * `renderNativePath` と同じ手でネイティブ経路（hls.js 動的 import 不要）に
    * 入れる。
    */
-  it('計器（issue #476）: 再生中は ON AIR バッジと同じ情報欄に出る', async () => {
+  it('計器（issue #476/#1022）: EPG がなくても再生中はライブ印の横に出る', async () => {
     const user = userEvent.setup()
     // プレイリスト応答を保留にし、「再生」を押した後・<video> が probe の
     // 結果を読む前に canPlayType を差し替える窓を作る（`live-player.test.tsx`
@@ -721,10 +782,13 @@ describe('LivePage', () => {
     // ネイティブ経路は「先読み」だけ（latency は取得できない）。jsdom の
     // `video.buffered` は常に空なので「先読み—」のまま --- ここで見たいのは
     // 数値そのものではなく、経路の区別（「放送から」を出さない）と
-    // ON AIR バッジと同じ情報欄に描画されることそのもの
+    // EPG がなくても「ライブ」印と同じ操作列に描画されることを見る
     expect(gauge).toHaveTextContent('先読み—')
     expect(gauge.textContent).not.toContain('放送から')
     expect(gauge.textContent).not.toMatch(/\bNaN\b/)
+    const controlsRow = screen.getByTestId('player-controls-row')
+    expect(gauge.closest('[data-testid="player-controls-row"]')).toBe(controlsRow)
+    expect(within(controlsRow).getByTestId('live-source-label')).toBeInTheDocument()
   })
 
   it('選択中チャンネルのチャンネル種別（GR/BS/CS）を表示する（issue #234 の含むもの 1）', async () => {
@@ -765,6 +829,20 @@ describe('LivePage', () => {
     const badge = within(link).getByText('3')
     expect(badge.className).toContain('text-foreground')
     expect(badge.className).not.toContain('text-muted-foreground')
+  })
+
+  it('チャンネル一覧の「● 録画中」は tally トークンの色（生の色値を使わない）', async () => {
+    stubFetch({
+      services: [service({ serviceId: 1, name: 'チャンネル A' })],
+      programsByServiceId: { 1: [program({ serviceId: 1, name: '放送中の番組', recordingId: 7 })] },
+      allSitePrograms: true,
+    })
+    renderLive()
+
+    const link = await screen.findByRole('link', { name: /チャンネル A/ })
+    const mark = await within(link).findByText('● 録画中')
+    expect(mark.className.split(' ')).toContain('text-tally')
+    expect(mark.className).not.toMatch(/text-\[#/)
   })
 
   it('チャンネル一覧の別チャンネルを押すと選択が切り替わる', async () => {
@@ -836,15 +914,16 @@ describe('LivePage', () => {
       expect(await screen.findByText('A の番組')).toBeInTheDocument()
       // 選択（チャンネル一覧の描画・now/next の取得）だけでは probe しない
       expect(playlistFetchCalled()).toBe(false)
-      // プレイヤー本体（読み込み中の表示）はまだ無く、「再生」ボタンだけがある
+      // プレイヤー本体（読み込み中の表示）はまだ無く、この局のプレビュー再生ボタンだけがある
       expect(screen.queryByText('読み込み中…')).not.toBeInTheDocument()
-      expect(screen.getByRole('button', { name: /再生/ })).toBeInTheDocument()
+      const previewPlay = screen.getByRole('button', { name: 'チャンネル Aを再生' })
+      expect(previewPlay).toBeInTheDocument()
 
-      await user.click(screen.getByRole('button', { name: /再生/ }))
+      await user.click(previewPlay)
 
       await waitFor(() => expect(playlistFetchCalled()).toBe(true))
-      // 再生ボタンは消え、プレイヤー本体に置き換わる
-      expect(screen.queryByRole('button', { name: /再生/ })).not.toBeInTheDocument()
+      // 選択プレビューのボタンは消え、プレイヤー本体の controls に置き換わる
+      expect(screen.queryByRole('button', { name: 'チャンネル Aを再生' })).not.toBeInTheDocument()
     },
   )
 
@@ -884,7 +963,7 @@ describe('LivePage', () => {
     renderLive('/live?service=100010')
 
     expect(await screen.findByText('A の番組')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /再生/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'チャンネル Aを再生' })).toBeInTheDocument()
     expect(playlistFetchCalled()).toBe(false)
   })
 
@@ -903,14 +982,14 @@ describe('LivePage', () => {
     renderLive('/live?service=100010')
     await screen.findByText('A の番組')
 
-    await user.click(screen.getByRole('button', { name: /再生/ }))
+    await user.click(screen.getByRole('button', { name: 'チャンネル Aを再生' }))
     // LivePlayer がマウントされたことを、probe 失敗（stubFetch が
     // playlist.m3u8 を reject する）後の終端状態で確認する。「読み込み中…」は
     // reject が即座に解決すると一度も観測されない瞬間的な状態なので、判定には
     // 使わない（テスト規律「非同期の空虚な成功に注意する」の逆 --- 早すぎて
     // 見えない状態を待つと flaky になる）
     await screen.findByText(/接続できません/)
-    expect(screen.queryByRole('button', { name: /再生/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'チャンネル Aを再生' })).not.toBeInTheDocument()
 
     // A の再生で飛んだ playlist 要求の件数を基準値にする（0 件ではないことも確認 ---
     // 基準値が既に壊れていたら、以降の「増えていない」判定が何も守らなくなる）
@@ -921,7 +1000,7 @@ describe('LivePage', () => {
 
     await waitFor(() => expect(screen.getByText('B の番組')).toBeInTheDocument())
     // B に切り替わったら選択状態（再生ボタン）に戻り、プレイヤー（A のエラー表示）は消える
-    expect(screen.getByRole('button', { name: /再生/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'チャンネル Bを再生' })).toBeInTheDocument()
     expect(screen.queryByText(/接続できません/)).not.toBeInTheDocument()
     // **押していない B の playlist を一度も取りに行かない。** レビューでの指摘:
     // 再生状態のリセットを `useEffect` で行うと、`selectedServiceId` が A→B に
@@ -1298,8 +1377,8 @@ describe('チューナー状態（issue #474）', () => {
 /**
  * 画質（プロファイル）切替（issue #869）。
  *
- * 一覧 API は `GET /api/live-profiles`。**選択肢が 2 件以上のときだけ**セレクタを
- * 出し、切替は `?profile=` の更新だけにする（`LivePlayer` を作り直さない = 再生の
+ * 一覧 API は `GET /api/live-profiles`。**選択肢が 2 件以上のときだけ**ライブ設定に
+ * 画質項目を出し、切替は `?profile=` の更新だけにする（`LivePlayer` を作り直さない = 再生の
  * 同意を取り直さない）。ここで見るのは配線だけである --- 実再生そのものは
  * `components/live-player.test.tsx` と `web/e2e/live.mjs` の担い。
  */
@@ -1309,63 +1388,69 @@ describe('LivePage / 画質（プロファイル）切替（issue #869）', () =
     { name: 'sd', height: 480 },
   ]
 
-  it('一覧が 2 件以上ならセレクタを出し、既定は先頭（サーバー側と同じ）', async () => {
+  it('一覧が 2 件以上なら画質メニューを出し、既定は先頭（サーバー側と同じ）', async () => {
+    const user = userEvent.setup()
     stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })], liveProfiles: PROFILES })
     renderLive()
 
-    const select = await screen.findByLabelText('画質')
-    expect(select).toHaveValue('hd')
+    await startLivePlayback(user)
+    const quality = await openLiveSettingsSubmenu(user, '画質')
+    expect(within(quality).getByRole('menuitemradio', { name: 'hd（720p）' })).toHaveAttribute('aria-checked', 'true')
     // 表示名は height を添える（名前だけでは画質として読めない）
-    expect(screen.getByRole('option', { name: 'hd（720p）' })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: 'sd（480p）' })).toBeInTheDocument()
+    expect(within(quality).getByRole('menuitemradio', { name: 'hd（720p）' })).toBeInTheDocument()
+    expect(within(quality).getByRole('menuitemradio', { name: 'sd（480p）' })).toBeInTheDocument()
   })
 
   /** 選ぶ余地が無いのに出すと「機能しないコントロール」に戻る（issue #209 の規律）。 */
-  it('一覧が 1 件ならセレクタを出さない', async () => {
+  it('一覧が 1 件なら画質項目を出さない', async () => {
+    const user = userEvent.setup()
     stubFetch({
       services: [service({ serviceId: 1, name: 'チャンネル A' })],
       liveProfiles: [{ name: 'hd', height: 720 }],
     })
     renderLive()
 
-    await screen.findByRole('navigation', { name: 'チャンネル一覧' })
-    expect(screen.queryByLabelText('画質')).not.toBeInTheDocument()
+    await startLivePlayback(user)
+    const settings = await openLiveSettingsMenu(user)
+    expect(within(settings).queryByRole('menuitem', { name: '画質' })).not.toBeInTheDocument()
   })
 
-  it('一覧が 0 件ならセレクタを出さない', async () => {
+  it('一覧が 0 件なら画質項目を出さない', async () => {
+    const user = userEvent.setup()
     stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })], liveProfiles: [] })
     renderLive()
 
-    await screen.findByRole('navigation', { name: 'チャンネル一覧' })
-    expect(screen.queryByLabelText('画質')).not.toBeInTheDocument()
+    await startLivePlayback(user)
+    const settings = await openLiveSettingsMenu(user)
+    expect(within(settings).queryByRole('menuitem', { name: '画質' })).not.toBeInTheDocument()
   })
 
   /**
-   * **切替はセッションを作り直さない。** 選ぶだけでは probe もセッションも
-   * 起こさず（「選ぶ」と「流す」の分離。issue #234）、再生中に切り替えた場合は
+   * **画質切替はセッションを作り直さない。** 再生中に設定メニューから切り替えた場合は
    * 同じセッションの別プレイリストを取るだけである --- 離脱ヒント（= セッションを
    * 手放す合図）を送らないことでそれを固定する。1 サービスの ffmpeg 1 本が
    * 全プロファイルを同時に出力している（docs/api/media.md §資源同定）。
    */
-  it('選択は probe を起こさず、再生中の切替は離脱ヒントを送らない', async () => {
+  it('再生中の画質切替は同じセッションを保ち、離脱ヒントを送らない', async () => {
     const user = userEvent.setup()
     stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })], liveProfiles: PROFILES })
     renderLive()
 
-    const select = await screen.findByLabelText('画質')
-    // 選ぶだけ（まだ再生していない）--- probe は 0 件のまま
-    await user.selectOptions(select, 'sd')
-    expect(playlistFetchCallCount()).toBe(0)
-    expect(select).toHaveValue('sd')
+    await startLivePlayback(user)
+    expect(playlistFetchCallCount()).toBe(1)
+    expect(playlistFetchURLs()[0]).not.toContain('profile=')
+    await expectLiveProfileSelected(user, 'hd')
+    // 設定を開いて現在値を見るだけでは playlist を取り直さない。
+    expect(playlistFetchCallCount()).toBe(1)
 
-    await user.click(screen.getByRole('button', { name: /再生/ }))
-    await waitFor(() => expect(playlistFetchCallCount()).toBe(1))
-    // 既定ではなく選んだ方が要求に載る
-    expect(playlistFetchURLs()[0]).toContain('profile=sd')
-
-    await user.selectOptions(screen.getByLabelText('画質'), 'hd')
+    await selectLiveProfile(user, 'sd')
     await waitFor(() => expect(playlistFetchCallCount()).toBe(2))
-    expect(playlistFetchURLs()[1]).toContain('profile=hd')
+    // メニューから選んだプロファイルが URL と次の playlist に反映される。
+    expect(playlistFetchURLs()[1]).toContain('profile=sd')
+
+    await selectLiveProfile(user, 'hd')
+    await waitFor(() => expect(playlistFetchCallCount()).toBe(3))
+    expect(playlistFetchURLs()[2]).toContain('profile=hd')
     // セッションを手放す合図は送らない（同じセッションの別プレイリストを取るだけ）
     expect(leaveHintURLs()).toEqual([])
   })
@@ -1376,11 +1461,10 @@ describe('LivePage / 画質（プロファイル）切替（issue #869）', () =
     stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })], liveProfiles: PROFILES })
     renderLive('/live?service=100001&site=default&profile=sd')
 
-    expect(await screen.findByLabelText('画質')).toHaveValue('sd')
-    // **要求に実際に載ることまで見る。** セレクタの表示だけだと、URL の値を
-    // そのまま握って選択肢に無い値でも「先頭が選ばれて見える」状態と区別できない
-    // （React の controlled `<select>` は一致しない値で先頭に落ちるだけ）。
-    await user.click(screen.getByRole('button', { name: /再生/ }))
+    await startLivePlayback(user)
+    await expectLiveProfileSelected(user, 'sd')
+    // **要求に実際に載ることまで見る。** メニューの値札だけでなく、共有 URL の
+    // プロファイルが初回 playlist URL に反映されることも確認する。
     await waitFor(() => expect(playlistFetchCallCount()).toBe(1))
     expect(playlistFetchURLs()[0]).toContain('profile=sd')
   })
@@ -1395,8 +1479,8 @@ describe('LivePage / 画質（プロファイル）切替（issue #869）', () =
     stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })], liveProfiles: PROFILES })
     renderLive('/live?service=100001&site=default&profile=does-not-exist')
 
-    expect(await screen.findByLabelText('画質')).toHaveValue('hd')
-    await user.click(screen.getByRole('button', { name: /再生/ }))
+    await startLivePlayback(user)
+    await expectLiveProfileSelected(user, 'hd')
     await waitFor(() => expect(playlistFetchCallCount()).toBe(1))
     // 不正な名前を streamer に送っていない（送れば 400 になる）。既定は
     // 「`?profile=` を付けない」で表す（サーバー側の先頭に解決される）
@@ -1410,8 +1494,8 @@ describe('LivePage / 画質（プロファイル）切替（issue #869）', () =
     stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })], liveProfiles: PROFILES })
     renderLive('/live?service=100001&site=default&profile=')
 
-    expect(await screen.findByLabelText('画質')).toHaveValue('hd')
-    await user.click(screen.getByRole('button', { name: /再生/ }))
+    await startLivePlayback(user)
+    await expectLiveProfileSelected(user, 'hd')
     await waitFor(() => expect(playlistFetchCallCount()).toBe(1))
     expect(playlistFetchURLs()[0]).not.toContain('profile=')
   })
@@ -1446,7 +1530,7 @@ describe('LivePage / 画質（プロファイル）切替（issue #869）', () =
     await act(async () => {
       releaseLiveProfiles?.()
     })
-    await waitFor(() => expect(screen.getByLabelText('画質')).toHaveValue('hd'))
+    await expectLiveProfileSelected(user, 'hd')
 
     expect(playlistFetchCallCount()).toBe(1)
     expect(leaveHintURLs()).toEqual([])
@@ -1500,10 +1584,14 @@ describe('LivePage / 画質（プロファイル）切替（issue #869）', () =
     })
     renderLive()
 
-    await user.selectOptions(await screen.findByLabelText('画質'), 'sd')
+    await startLivePlayback(user)
+    await selectLiveProfile(user, 'sd')
+    await waitFor(() => expect(playlistFetchCallCount()).toBe(2))
     await user.click(screen.getByRole('link', { name: /チャンネル B/ }))
 
-    expect(await screen.findByLabelText('画質')).toHaveValue('sd')
+    await startLivePlayback(user)
+    await expectLiveProfileSelected(user, 'sd')
+    expect(playlistFetchURLs().at(-1)).toContain('profile=sd')
   })
 })
 
@@ -1551,7 +1639,8 @@ describe('LivePage / 停滞したときの画質の自動降格（issue #871）'
     })
   }
 
-  it('自動のとき（?profile= なし）は 1 段下げて、下げたことを情報欄に残す', async () => {
+  it('自動のとき（?profile= なし）は 1 段下げ、映像上に通知して設定にも印を付ける', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     vi.useFakeTimers({ shouldAdvanceTime: true })
     forceNativePath()
     stubFetch({
@@ -1566,12 +1655,12 @@ describe('LivePage / 停滞したときの画質の自動降格（issue #871）'
     // 下げた先で再生し直す（プレイリストを取り直す）
     await waitFor(() => expect(playlistFetchCallCount()).toBe(2))
     expect(playlistFetchURLs()[1]).toContain('profile=sd')
-    // **黙って画質が落ちると「汚くなった」と読める。** 何が起きたかを残す
+    // **黙って画質が落ちると「汚くなった」と読める。** 何が起きたかを通知する
     expect(screen.getByTestId('live-quality-downgraded')).toHaveTextContent(
       '映像が止まったため、画質を sd（480p）に下げました',
     )
-    // セレクタの表示も下げた先に一致する（値札と実際が食い違わない）
-    expect(screen.getByLabelText('画質')).toHaveValue('sd')
+    // 設定の選択中表示も下げた先に一致し、自動降格の印が付く。
+    await expectLiveProfileSelected(user, 'sd', true)
     // セッションを手放す合図は送らない（同じセッションの別プレイリストを取るだけ）
     expect(leaveHintURLs()).toEqual([])
   })
@@ -1601,6 +1690,7 @@ describe('LivePage / 停滞したときの画質の自動降格（issue #871）'
    * 確認を空虚にしないため、猶予が実際に満了したこと（エラーが出ること）まで見る。**
    */
   it('明示選択のとき（?profile=hd）は下げず、従来どおりエラー表示に落ちる', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     vi.useFakeTimers({ shouldAdvanceTime: true })
     forceNativePath()
     stubFetch({
@@ -1617,7 +1707,7 @@ describe('LivePage / 停滞したときの画質の自動降格（issue #871）'
     expect(playlistFetchCallCount()).toBe(1)
     expect(playlistFetchURLs()[0]).toContain('profile=hd')
     expect(screen.queryByTestId('live-quality-downgraded')).not.toBeInTheDocument()
-    expect(screen.getByLabelText('画質')).toHaveValue('hd')
+    await expectLiveProfileSelected(user, 'hd')
   })
 
   /**
@@ -1639,10 +1729,10 @@ describe('LivePage / 停滞したときの画質の自動降格（issue #871）'
     renderLive()
 
     await stallOnce()
-    await waitFor(() => expect(screen.getByLabelText('画質')).toHaveValue('sd'))
+    await expectLiveProfileSelected(user, 'sd', true)
 
     // 手で hd に戻す（URL が明示選択を持つ）
-    await user.selectOptions(screen.getByLabelText('画質'), 'hd')
+    await selectLiveProfile(user, 'hd')
     await waitFor(() => expect(playlistFetchURLs().at(-1)).toContain('profile=hd'))
     // 自動の通知は消える（もう自動ではない）
     expect(screen.queryByTestId('live-quality-downgraded')).not.toBeInTheDocument()
@@ -1667,6 +1757,7 @@ describe('LivePage / 停滞したときの画質の自動降格（issue #871）'
    * 回線が不安定なままタブに戻ったとき（= 停滞が起きる状況）に起きる形である。
    */
   it('一覧の再取得が失敗しても、手元の一覧で 1 段下げる', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     vi.useFakeTimers({ shouldAdvanceTime: true })
     forceNativePath()
     stubFetch({
@@ -1676,7 +1767,7 @@ describe('LivePage / 停滞したときの画質の自動降格（issue #871）'
     })
     const { queryClient } = renderLive()
     // 一覧が届いてから、以後の一覧要求だけを失敗させて再取得する
-    await waitFor(() => expect(screen.getByLabelText('画質')).toHaveValue('hd'))
+    await waitFor(() => expect(queryClient.getQueryState(['/api/live-profiles'])?.status).toBe('success'))
     const fetchMock = vi.mocked(globalThis.fetch)
     const base = fetchMock.getMockImplementation()!
     fetchMock.mockImplementation((input) =>
@@ -1689,12 +1780,13 @@ describe('LivePage / 停滞したときの画質の自動降格（issue #871）'
     })
     // 前提: クエリは error で、一覧は残っている（ここが崩れると判定が空虚になる）
     expect(queryClient.getQueryState(['/api/live-profiles'])?.status).toBe('error')
-    expect(screen.getByLabelText('画質')).toHaveValue('hd')
+    expect(queryClient.getQueryData(['/api/live-profiles'])).toBeDefined()
 
     await stallOnce()
 
     await waitFor(() => expect(playlistFetchCallCount()).toBe(2))
     expect(playlistFetchURLs()[1]).toContain('profile=sd')
+    await expectLiveProfileSelected(user, 'sd', true)
     expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
   })
 
@@ -1731,7 +1823,7 @@ describe('LivePage / 停滞したときの画質の自動降格（issue #871）'
 
     // 画質は保つ（「この端末の回線」の性質）
     expect(playlistFetchURLs().at(-1)).toContain('profile=sd')
-    expect(screen.getByLabelText('画質')).toHaveValue('sd')
+    await expectLiveProfileSelected(user, 'sd')
     // 通知は出さない（この再生では下げていない）
     expect(screen.queryByTestId('live-quality-downgraded')).not.toBeInTheDocument()
   })
@@ -1746,20 +1838,20 @@ describe('LivePage / 停滞したときの画質の自動降格（issue #871）'
  * `components/live-player.test.tsx`。
  */
 describe('LivePage / 音声（issue #870）', () => {
-  it('セレクタは常に出て既定は標準。再生中に選んでも probe をやり直さない', async () => {
+  it('設定メニューに標準・主音声・副音声があり、選択は URL だけを変える', async () => {
     const user = userEvent.setup()
     stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })] })
     const { router } = renderLive()
 
-    const select = await screen.findByLabelText('音声')
-    expect(select).toHaveValue('')
-    await user.click(screen.getByRole('button', { name: /再生/ }))
-    await waitFor(() => expect(playlistFetchCallCount()).toBe(1))
+    await startLivePlayback(user)
+    const audio = await openLiveSettingsSubmenu(user, '音声')
+    expect(within(audio).getByRole('menuitemradio', { name: '標準' })).toHaveAttribute('aria-checked', 'true')
+    expect(within(audio).getByRole('menuitemradio', { name: '主音声' })).toBeInTheDocument()
+    expect(within(audio).getByRole('menuitemradio', { name: '副音声' })).toBeInTheDocument()
 
-    await user.selectOptions(screen.getByLabelText('音声'), '副音声')
-    expect(screen.getByLabelText('音声')).toHaveValue('sub')
+    await selectLiveAudio(user, '副音声')
     expect(router.state.location.search).toMatchObject({ audio: 'sub' })
-    await user.selectOptions(screen.getByLabelText('音声'), '標準')
+    await selectLiveAudio(user, '標準')
     expect(router.state.location.search).not.toHaveProperty('audio')
 
     expect(playlistFetchCallCount()).toBe(1)
@@ -1768,17 +1860,23 @@ describe('LivePage / 音声（issue #870）', () => {
   })
 
   it('直リンクの ?audio= が復元される', async () => {
+    const user = userEvent.setup()
     stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })] })
     renderLive('/live?service=100001&site=default&audio=sub')
-    expect(await screen.findByLabelText('音声')).toHaveValue('sub')
+
+    await startLivePlayback(user)
+    await expectLiveAudioSelected(user, '副音声')
   })
 
   it('未知の ?audio= は標準に落ちる', async () => {
+    const user = userEvent.setup()
     stubFetch({ services: [service({ serviceId: 1, name: 'チャンネル A' })] })
     const { router } = renderLive('/live?service=100001&site=default&audio=both')
-    await screen.findByLabelText('音声')
-    // **セレクタの値では判定しない。** jsdom の controlled <select> は一致する option が
-    // 無いと '' を返すので、生の値が残っていても標準に見える（落とし損ねても緑になる）
+
+    await startLivePlayback(user)
+    await expectLiveAudioSelected(user, '標準')
+    // **ラジオの表示だけでは判定しない。** route search に無効な値が残っていても
+    // 標準の選択肢は見た目上 checked になりうるため、URL から落ちたことを確認する。
     expect(router.state.location.search).not.toHaveProperty('audio')
   })
 

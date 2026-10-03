@@ -1983,6 +1983,37 @@ describe('LivePlayer / 画質（プロファイル）切替（issue #869）', ()
     expect(play).toHaveBeenCalledTimes(1)
   })
 
+  /**
+   * ライブページの「最初から」・軸のシークは同じ要素のまま再生元を追っかけへ替える。
+   * 再生中のライブから替えたなら canplay で再開し、止めたライブから替えたなら再開しない
+   * （実ブラウザは `web/e2e/live.mjs` の「frame c)」）。
+   */
+  it.each([
+    [true, 1],
+    [false, 0],
+  ])('ライブ（再生中=%s）から追っかけへ替えると、canplay で play を %i 回呼ぶ', async (playing, calls) => {
+    const fetchMock = vi.fn((_url: string) => Promise.resolve(new Response('', { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+    const probeURLs = () =>
+      fetchMock.mock.calls.map(([url]) => String(url)).filter((u) => u.includes('playlist.m3u8'))
+    const { rerender } = render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
+    const video = document.querySelector('video')!
+    const play = vi.spyOn(video, 'play').mockResolvedValue(undefined)
+    await waitFor(() => expect(probeURLs()).toHaveLength(1))
+    Object.defineProperty(video, 'paused', { value: !playing, configurable: true })
+    if (playing) video.dispatchEvent(new Event('playing'))
+
+    rerender(
+      <LivePlayer mode="chase" site="default" networkId={0} serviceId={1024} recordingId={501} startOffsetSeconds={180} />,
+    )
+    await waitFor(() => expect(probeURLs()).toHaveLength(2))
+    expect(probeURLs()[1]).toContain('/recordings/501/chase/offset/180/')
+    await act(async () => {
+      video.dispatchEvent(new Event('canplay'))
+    })
+    expect(play).toHaveBeenCalledTimes(calls)
+  })
+
   /** ネイティブ経路（Safari 相当）でも同じく `canplay` で再開する。 */
   it('ネイティブ経路でも canplay で再生を再開する', async () => {
     const { resolve } = deferredFetch()
@@ -2219,6 +2250,26 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
 
   const playlistRequests = (fetchMock: ReturnType<typeof vi.fn>) =>
     fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes('playlist.m3u8'))
+
+  // ライブページの追っかけ（onReturnLive あり）だけ「録画から再生中」を出す。録画詳細の追っかけには出さない。
+  it.each([
+    ['ライブページ', true],
+    ['録画詳細', false],
+  ])('%s の追っかけで「録画から再生中」を出すか: %s', async (_page, fromLive) => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    render(
+      <LivePlayer
+        mode="chase"
+        site="default"
+        recordingId={510}
+        chaseTimeline={chaseTimeline}
+        onReturnLive={fromLive ? () => {} : undefined}
+      />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    expect(screen.queryByText('● 録画から再生中') !== null).toBe(fromLive)
+    expect(screen.getByRole('button', { name: fromLive ? 'ライブへ戻る' : '録画の先端へ' })).toBeInTheDocument()
+  })
 
   it('native controlsを外し、画質を設定メニューに置き、範囲内シークは再要求しない', async () => {
     const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
@@ -2588,13 +2639,15 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     fireEvent.click(screen.getByTitle('未視聴に戻す'))
     expect(deleteWatched).toHaveBeenCalledOnce()
     rerender(<LivePlayer site="default" networkId={0} serviceId={1024} />)
-    expect(document.querySelector('video')!.controls).toBe(true)
+    expect(document.querySelector('video')!.controls).toBe(false)
   })
 
-  it('mode=live はネイティブ controls を残す', async () => {
+  it('mode=live はネイティブ controls を外してプレイヤー操作バーを使う', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
     render(<LivePlayer mode="live" site="default" networkId={1} serviceId={2} />)
-    expect(document.querySelector('video')!.controls).toBe(true)
+    expect(document.querySelector('video')!.controls).toBe(false)
+    expect(screen.getByTestId('player-controls')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '再生' })).toBeInTheDocument()
   })
 
   // 枠の振る舞いは encoded の RecordingPlayer と同じフック（use-player-frame）を使う。

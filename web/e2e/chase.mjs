@@ -1253,6 +1253,8 @@ if (shortLabels.overlaps) ng.push('⑤ 録画済みが短いとき目盛りの�
 // 先端の印の下は時刻だけ（「録画の先端 …（押すと先端へ）」の説明は印の title とアクセシブル名に置く）。
 const edgeLabelText = (await page.getByTestId('chase-live-edge-label').textContent())?.trim() ?? ''
 const edgeTitle = await page.getByRole('button', { name: '録画の先端へ' }).getAttribute('title')
+// 「録画から再生中」はライブページで「ライブ」の印を替える表示で、録画詳細の追っかけには出さない。
+if (await page.getByTestId('player-controls').getByText('録画から再生中').count() > 0) ng.push('⑤ 録画詳細の追っかけに「録画から再生中」が出る')
 if (!/^\d+:\d{2}$/.test(edgeLabelText)) ng.push(`⑤ 先端の印の下に時刻以外の文言が出る（${edgeLabelText}）`)
 if (!edgeTitle?.includes(`録画の先端 ${edgeLabelText}（押すと先端へ）`)) {
   ng.push(`⑤ 先端の印の title に「録画の先端 …（押すと先端へ）」が無い（${edgeTitle}）`)

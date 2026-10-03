@@ -106,7 +106,7 @@ try {
     ]
     const before = masterFetches.count
     for (const [value, label, [wantL, wantR]] of steps) {
-      await page.getByLabel('音声').selectOption(value)
+      await selectLiveAudio(page, value)
       const got = await waitForChannels(page, wantL, wantR, 12_000)
       if (!got.ok) {
         ng.push(
@@ -150,7 +150,7 @@ try {
       if (tracks === null) {
         ng.push('② video.audioTracks が 3 本にならない（ネイティブ経路が代替音声を読んでいない）')
       } else {
-        await page.getByLabel('音声').selectOption('sub')
+        await selectLiveAudio(page, 'sub')
         let lastEnabled = []
         const enabled = await waitFor(async () => {
           lastEnabled = await page.evaluate(() =>
@@ -218,6 +218,15 @@ function countRequests(page, pattern) {
     if (pattern.test(new URL(req.url()).pathname)) counter.count++
   })
   return counter
+}
+
+async function selectLiveAudio(page, choice) {
+  const label = choice === 'main' ? '主音声' : choice === 'sub' ? '副音声' : '標準'
+  // 再生中に操作しないとバーが隠れる（usePlayerFrame）。ポインタを映像に載せて出してから押す。
+  await page.getByTestId('recording-player-frame').hover()
+  await page.getByRole('button', { name: 'ライブ設定' }).click()
+  await page.getByRole('menuitem', { name: '音声', exact: true }).click()
+  await page.getByRole('menuitemradio', { name: label, exact: true }).click()
 }
 
 // startPlaybackWithAnalyser は再生を始め、<video> の音を左右別の AnalyserNode に通す。

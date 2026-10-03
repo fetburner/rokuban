@@ -22,6 +22,16 @@ import {
   probeLivePlaylist,
   liveProfileLabel,
   readSubtitleVisibility,
+  remainingProgramMinutes,
+  liveProgramAxis,
+  scheduledProgramAt,
+  programChaseStartOffsetSeconds,
+  programRecordingOffsetSeconds,
+  programRecordingHeadSeconds,
+  programRecordingAccess,
+  isRecordedProgramOffset,
+  nextProgramBoundaryMs,
+  nextProgramRefreshMs,
   sendLiveLeaveHint,
   sendOriginalVODLeaveHint,
   stalledForMs,
@@ -371,6 +381,105 @@ describe('currentProgramWindow', () => {
     const nowMs = new Date('2026-08-08T10:00:00.000Z').getTime()
     const { start, end } = currentProgramWindow(nowMs)
     expect(new Date(end).getTime() - new Date(start).getTime()).toBe(60_000)
+  })
+})
+
+describe('live program axis and boundaries', () => {
+  const start = '2026-10-02T10:00:00.000Z'
+  const recordingBefore = '2026-10-02T09:57:00.000Z'
+  const recordingLate = '2026-10-02T10:03:00.000Z'
+
+  it('shows a positive textual remainder until the scheduled end, rounded up', () => {
+    const end = '2026-10-02T10:45:00.000Z'
+    expect(remainingProgramMinutes(end, Date.parse('2026-10-02T10:20:00.001Z'))).toBe(25)
+    expect(remainingProgramMinutes(end, Date.parse('2026-10-02T10:44:59.999Z'))).toBe(1)
+    expect(remainingProgramMinutes(end, Date.parse('2026-10-02T10:46:00.000Z'))).toBe(0)
+    expect(remainingProgramMinutes('not-a-date', 0)).toBeNull()
+  })
+
+  it('maps the scheduled program start to the recording-relative chase offset', () => {
+    expect(programChaseStartOffsetSeconds(start, recordingBefore)).toBe(180)
+    expect(programRecordingHeadSeconds(start, recordingBefore)).toBe(0)
+    expect(programChaseStartOffsetSeconds(start, recordingLate)).toBe(0)
+    expect(programRecordingHeadSeconds(start, recordingLate)).toBe(180)
+    expect(programChaseStartOffsetSeconds(start, 'invalid')).toBeNull()
+  })
+
+  it('hides start-over and disables the axis when the programme has no recording', () => {
+    const access = programRecordingAccess(undefined, start, undefined)
+    expect(access).toEqual({ canStartOver: false, canSeek: false, recordingHeadSeconds: null })
+    expect(isRecordedProgramOffset(60, access.recordingHeadSeconds, 1200)).toBe(false)
+  })
+
+  it('does not make the unrecorded programme head selectable when recording starts late', () => {
+    const access = programRecordingAccess(42, start, recordingLate)
+    expect(access).toEqual({ canStartOver: true, canSeek: true, recordingHeadSeconds: 180 })
+    expect(isRecordedProgramOffset(179, access.recordingHeadSeconds, 1200)).toBe(false)
+    expect(isRecordedProgramOffset(180, access.recordingHeadSeconds, 1200)).toBe(true)
+    expect(isRecordedProgramOffset(600, access.recordingHeadSeconds, 1200)).toBe(true)
+    expect(isRecordedProgramOffset(1201, access.recordingHeadSeconds, 1200)).toBe(false)
+  })
+
+  it('maps schedule positions into the recording timeline for early and late recordings', () => {
+    expect(programRecordingOffsetSeconds(start, recordingBefore, 540)).toBe(720)
+    expect(programRecordingOffsetSeconds(start, recordingLate, 540)).toBe(360)
+    expect(programRecordingOffsetSeconds(start, recordingLate, 180)).toBe(0)
+    expect(programRecordingOffsetSeconds(start, recordingLate, 179)).toBeNull()
+  })
+
+  it('returns only the nearest future scheduled start or end boundary', () => {
+    const now = Date.parse('2026-10-02T10:20:00.000Z')
+    expect(nextProgramBoundaryMs([
+      { startAt: start, endAt: '2026-10-02T10:45:00.000Z' },
+      { startAt: '2026-10-02T10:45:00.000Z', endAt: '2026-10-02T11:30:00.000Z' },
+      { startAt: '2026-10-02T09:00:00.000Z', endAt: '2026-10-02T10:10:00.000Z' },
+    ], now)).toBe(Date.parse('2026-10-02T10:45:00.000Z'))
+    expect(nextProgramBoundaryMs([], now)).toBeNull()
+  })
+
+  it('extends the live edge past the planned end and has no axis without valid EPG times', () => {
+    const startMs = Date.parse(start)
+    const end = '2026-10-02T10:45:00.000Z'
+    expect(liveProgramAxis(start, end, Date.parse('2026-10-02T10:20:00.000Z'))).toEqual({
+      plannedSeconds: 2700,
+      liveEdgeSeconds: 1200,
+      maxSeconds: 2700,
+    })
+    expect(liveProgramAxis(start, end, startMs + 48 * 60_000)).toEqual({
+      plannedSeconds: 2700,
+      liveEdgeSeconds: 2880,
+      maxSeconds: 2880,
+    })
+    expect(liveProgramAxis('', end, startMs)).toBeNull()
+  })
+
+  it('keeps the last EPG schedule visible as an overrun while the EPG has no later schedule', () => {
+    const currentProgram = { startAt: start, endAt: '2026-10-02T10:45:00.000Z', name: '予定中' }
+    const futureProgram = { startAt: '2026-10-02T11:15:00.000Z', endAt: '2026-10-02T11:45:00.000Z', name: '次番組' }
+    expect(scheduledProgramAt([currentProgram, futureProgram], Date.parse('2026-10-02T10:20:00.000Z')))
+      .toEqual({ program: currentProgram, overrun: false })
+    expect(scheduledProgramAt([currentProgram], Date.parse('2026-10-02T10:48:00.000Z')))
+      .toEqual({ program: currentProgram, overrun: true })
+    expect(scheduledProgramAt([], Date.parse('2026-10-02T10:48:00.000Z'))).toBeNull()
+  })
+
+  it('does not treat a broadcast gap or a long-finished programme as an overrun', () => {
+    const finished = { startAt: start, endAt: '2026-10-02T10:45:00.000Z', name: '終了済み' }
+    const later = { startAt: '2026-10-02T14:00:00.000Z', endAt: '2026-10-02T14:30:00.000Z', name: '数時間後' }
+    // 予定終了の後に始まる番組がある = 空き時間。延長ではない。
+    expect(scheduledProgramAt([finished, later], Date.parse('2026-10-02T10:48:00.000Z'))).toBeNull()
+    // 後続が無くても、予定終了から 1 時間を超えたら番組情報なし。
+    expect(scheduledProgramAt([finished], Date.parse('2026-10-02T11:45:01.000Z'))).toBeNull()
+    expect(scheduledProgramAt([finished], Date.parse('2026-10-02T11:44:59.000Z')))
+      .toEqual({ program: finished, overrun: true })
+  })
+
+  it('refreshes at a known programme boundary or the short-window expiry during a gap', () => {
+    const now = Date.parse('2026-10-02T10:20:00.000Z')
+    const windowEnd = now + 60_000
+    expect(nextProgramRefreshMs([], now, windowEnd)).toBe(windowEnd)
+    expect(nextProgramRefreshMs([{ startAt: start, endAt: '2026-10-02T10:45:00.000Z' }], now, windowEnd))
+      .toBe(Date.parse('2026-10-02T10:45:00.000Z'))
   })
 })
 
