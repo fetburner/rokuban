@@ -152,7 +152,7 @@ function stubFetch(
   return fetchMock
 }
 
-function renderAt(path: string, queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
+function renderAt(path: string, queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })) {
   window.scrollTo = vi.fn()
   const router = createRouter({
     routeTree,
