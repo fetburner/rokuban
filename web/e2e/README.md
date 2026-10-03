@@ -782,6 +782,23 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:reservations-mobile
 ```
 
+### 固定ヘッダーとページ内 z-10 要素の重なり（`header-stacking.mjs`）
+
+録画詳細のポスター上の「視聴済みにする」は `absolute z-10` を持つ。祖先に stacking context が無いので、
+`PageHeader` が同じ `z-10` だと DOM 順で後ろのボタンがヘッダーの手前に描かれる。録画詳細を 400px / 1280px 幅で
+スクロールし、ボタンの矩形をヘッダーの中央に重ねた位置で `document.elementFromPoint` がヘッダー内を返すことを
+実ブラウザで確認する。ボタンの祖先に stacking context が無いこと、判定点がボタン矩形に入っていること、
+ブレーカー帯とヘッダーが重ならないことは前提として検査し、成立しなければ落とす。DOM は書き換えない。
+録画一覧も同じ幅でスクロールし、ヘッダーが残ることと録画中の行に追っかけリンクが無いことを見る。
+jsdom は描画順と hit testing を測れない。
+
+API をスタブするため mirakc と DB は要らない。①は `PageHeader` を `z-10` に戻すと落ちる。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:header-stacking
+```
+
 ### 予約一覧の日付・出自・ルール絞り込み（`reservations-rule-filter.mjs`）
 
 予約一覧の時間順ビューで、ローカル日付の見出しがスクロール後もページヘッダーの下に留まること、ルール出自リンクが行全面リンクより手前でクリックできることを測る。360 / 390 / 1280px で日付見出しと出自リンクを確認し、同じ幅でルールメニューが画面内に収まり、各項目が 24 × 24px 以上であることを確認する。360px ではページの横スクロールが無いことも判定する。7px 刻みでスクロールし、日付見出しとヘッダーのチップの中心が行の中身に遮られないこと、時刻欄のクリックで詳細へ遷移することも測る。light / dark・各幅のスクリーンショット（時刻順・スクロール後・ルールメニュー・ルール絞り込み）を `E2E_SHOT_DIR` へ保存する。

@@ -5,7 +5,7 @@ import type { Recording } from '@/api/generated'
 import { RecordingRow } from '@/components/recording-row'
 import { renderInRouter } from '@/test/router'
 
-const base = { trash: false, showSite: false, view: 'list', liveEnabled: false } as const
+const base = { trash: false, showSite: false, view: 'list' } as const
 
 const recording: Recording = {
   id: 42,
@@ -27,6 +27,20 @@ const recording: Recording = {
 }
 
 describe('RecordingRow', () => {
+  it('録画中でも一覧に追っかけ再生の導線を出さない', async () => {
+    renderInRouter(
+      <RecordingRow recording={{ ...recording, status: 'recording' }} {...base} />,
+      { path: '/recordings' },
+    )
+
+    await screen.findByText('共有する録画')
+    expect(screen.queryByRole('link', { name: '共有する録画を追っかけ再生' })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '共有する録画' })).toHaveAttribute(
+      'href',
+      '/recordings/42',
+    )
+  })
+
   it('選択 props を渡さなくても詳細への全面リンクとして描ける', async () => {
     renderInRouter(<RecordingRow recording={recording} {...base} />, { path: '/recordings' })
 
