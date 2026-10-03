@@ -458,6 +458,102 @@ func TestOriginalVODRepeatedSeeksReuseMaxSessionCapacityAfterLeaveHints(t *testi
 	}
 }
 
+func TestOriginalVODOutOfRangeOffsetReturns416WhenAllSessionsAreActive(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	recordingID, mediaDir, _ := originalVODTargetFixture(t, pool)
+	cfg := originalVODConfig(t, mediaDir, installOriginalVODFFmpeg(t, 30))
+	cfg.FFprobe = installFakeFFprobeDuration(t, "10.000000", "10.000000")
+	cfg.MaxSessions = 1
+	ls, srv := newOriginalVODTestServer(t, pool, cfg)
+
+	resp, body := get(t, originalVODPlaylistURL(srv.URL, recordingID, "hd"), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("active session playlist status/body = %d %q, want 200", resp.StatusCode, body)
+	}
+	key := originalVODSessionKeyFor(recordingID, 0)
+	ls.mu.Lock()
+	active := ls.chaseSessions[key]
+	ls.mu.Unlock()
+	if active == nil {
+		t.Fatal("active original VOD session is missing")
+	}
+	select {
+	case <-active.done:
+		t.Fatal("original VOD session finished before the out-of-range request")
+	default:
+	}
+
+	resp, body = get(t, originalVODOffsetPlaylistURL(srv.URL, recordingID, 10, "hd"), nil)
+	if resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("out-of-range offset status/body = %d %q, want 416", resp.StatusCode, body)
+	}
+	ls.mu.Lock()
+	stillActive := ls.chaseSessions[key]
+	ls.mu.Unlock()
+	if stillActive != active {
+		t.Fatal("out-of-range request displaced the active session")
+	}
+	select {
+	case <-active.done:
+		t.Fatal("out-of-range request stopped the active session")
+	default:
+	}
+}
+
+func TestOriginalVODOutOfRangeOffsetDoesNotEvictIdleSession(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	recordingID, mediaDir, _ := originalVODTargetFixture(t, pool)
+	cfg := originalVODConfig(t, mediaDir, installCompletedOriginalVODFFmpeg(t))
+	cfg.FFprobe = installFakeFFprobeDuration(t, "10.000000", "10.000000")
+	cfg.MaxSessions = 1
+	ls, srv := newOriginalVODTestServer(t, pool, cfg)
+
+	resp, body := get(t, originalVODPlaylistURL(srv.URL, recordingID, "hd"), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("idle session playlist status/body = %d %q, want 200", resp.StatusCode, body)
+	}
+	key := originalVODSessionKeyFor(recordingID, 0)
+	ls.mu.Lock()
+	idle := ls.chaseSessions[key]
+	ls.mu.Unlock()
+	if idle == nil {
+		t.Fatal("original VOD session is missing")
+	}
+	select {
+	case <-idle.done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("completed original VOD session did not finish")
+	}
+
+	leaveURL := fmt.Sprintf("%s/api/sites/default/recordings/%d/original-vod/leave", srv.URL, recordingID)
+	leaveResp, err := http.Post(leaveURL, "", nil)
+	if err != nil {
+		t.Fatalf("leave hint: %v", err)
+	}
+	_ = leaveResp.Body.Close()
+	if leaveResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("leave hint status = %d, want 204", leaveResp.StatusCode)
+	}
+	if idle.idleSince(time.Now()) <= ls.cfg.idleEvictionThreshold() {
+		t.Fatal("leave hint did not make the session eligible for eviction")
+	}
+	dir := originalVODSessionDir(ls.cfg.SegmentDir, testSite, recordingID, 0)
+
+	resp, body = get(t, originalVODOffsetPlaylistURL(srv.URL, recordingID, 10, "hd"), nil)
+	if resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("out-of-range offset status/body = %d %q, want 416", resp.StatusCode, body)
+	}
+	ls.mu.Lock()
+	stillIdle := ls.chaseSessions[key]
+	ls.mu.Unlock()
+	if stillIdle != idle {
+		t.Fatal("out-of-range request evicted the idle session")
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("idle session scratch was removed by out-of-range request: %v", err)
+	}
+}
+
 func TestOriginalVODUnavailableTargetsReturn404WithoutSession(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	recordingID, mediaDir, _ := originalVODTargetFixture(t, pool)
@@ -620,7 +716,13 @@ func TestOriginalVODRetainedSessionSurvivesOriginalDeletion(t *testing.T) {
 	ls, srv := newOriginalVODTestServer(t, pool, cfg)
 	originalPath := filepath.Join(mediaDir, "recordings/original-vod.ts")
 	unlinked := make(chan error, 1)
-	ls.afterOriginalVODOpen = func() { unlinked <- os.Remove(originalPath) }
+	// 1 回目の open は範囲判定の確認で、すぐ閉じられる。セッションが開く 2 回目の直後に消す。
+	var opens atomic.Int32
+	ls.afterOriginalVODOpen = func() {
+		if opens.Add(1) == 2 {
+			unlinked <- os.Remove(originalPath)
+		}
+	}
 
 	resp, body := get(t, originalVODOffsetPlaylistURL(srv.URL, recordingID, 90, "hd"), nil)
 	if resp.StatusCode != http.StatusOK {
