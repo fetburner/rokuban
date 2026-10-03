@@ -259,8 +259,35 @@ await context.addInitScript(() => {
   window.__emitE2EEvent = (type) => {
     for (const source of sources) source.dispatchEvent(new Event(type))
   }
+  const playResults = []
+  const nativePlay = HTMLMediaElement.prototype.play
+  HTMLMediaElement.prototype.play = function (...args) {
+    const result = nativePlay.apply(this, args)
+    const attempt = { src: this.currentSrc, requestedAt: performance.now() }
+    playResults.push(attempt)
+    result.then(
+      () => { attempt.result = 'resolved' },
+      (error) => { attempt.result = 'rejected'; attempt.error = { name: error.name, message: error.message } },
+    )
+    return result
+  }
+  window.__e2ePlayResults = playResults
 })
 const page = await context.newPage()
+const originalMediaResponses = []
+const originalMediaFailures = []
+page.on('response', (response) => {
+  const url = new URL(response.url())
+  if (url.pathname.includes('/original-vod/') || url.pathname.endsWith('/file')) {
+    originalMediaResponses.push({ path: url.pathname, status: response.status() })
+  }
+})
+page.on('requestfailed', (request) => {
+  const url = new URL(request.url())
+  if (url.pathname.includes('/original-vod/') || url.pathname.endsWith('/file')) {
+    originalMediaFailures.push({ path: url.pathname, error: request.failure()?.errorText ?? 'unknown' })
+  }
+})
 const playlistRequests = []
 const segmentRequests = []
 const subtitleRequests = []
@@ -275,8 +302,10 @@ const offsetVideoSegmentRequests = []
 const originalVODLeaveRequests = []
 let recordingDetailRequests = 0
 // ④ で true にする。variant / 字幕 playlist を先頭 4 segment で切り、ENDLIST を外して返す
-// （変換中の EVENT playlist の先端を再現する）。
+// （変換中の EVENT playlist の先端を再現する）。⑦ は実際の変換と同様に、時間とともに
+// 配信済み segment 数を増やす。
 let growingEdge = false
+let growingEventStartedAt
 
 function playlistAtOffset(text, offsetSeconds) {
   const firstSegment = Math.floor(offsetSeconds / 2)
@@ -293,13 +322,13 @@ function playlistAtOffset(text, offsetSeconds) {
   return out.join('\n') + '\n'
 }
 
-function growingEdgePlaylist(text) {
+function growingEdgePlaylist(text, segmentLimit = 4) {
   const out = []
   let extinf = 0
   for (const line of text.split('\n')) {
     if (line.startsWith('#EXT-X-ENDLIST')) continue
     if (line.startsWith('#EXTINF')) extinf += 1
-    if (extinf > 4) break
+    if (extinf > segmentLimit) break
     out.push(line)
   }
   return out.join('\n') + '\n'
@@ -384,7 +413,9 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
     if (offsetSeconds !== undefined && /^(playlist|subtitles)_\d+\.m3u8$/.test(name)) {
       body = playlistAtOffset(body.toString('utf8'), offsetSeconds)
     } else if (growingEdge && offsetSeconds === undefined && /^(playlist|subtitles)_\d+\.m3u8$/.test(name)) {
-      body = growingEdgePlaylist(body.toString('utf8'))
+      const elapsedMs = growingEventStartedAt === undefined ? 0 : Date.now() - growingEventStartedAt
+      const segmentLimit = Math.min(8, 4 + Math.floor(elapsedMs / 2000))
+      body = growingEdgePlaylist(body.toString('utf8'), segmentLimit)
     }
     return route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body })
   }
@@ -1433,6 +1464,21 @@ const playbackFrameBox = () => page.evaluate(() => {
     groupHeight: document.querySelector('[data-testid="recording-playback-group"]').getBoundingClientRect().height,
   }
 })
+const revealPlaybackControls = async () => {
+  const frame = await page.getByTestId('recording-player-frame').boundingBox()
+  if (frame === null) {
+    ng.push('⑦ 操作バーを出すためのプレイヤー枠を測れない')
+    return
+  }
+  const y = frame.y + frame.height / 3
+  await page.mouse.move(frame.x + frame.width / 2, y)
+  await page.mouse.move(frame.x + frame.width / 2 + 8, y)
+  await page.waitForFunction(
+    () => document.querySelector('[data-testid="player-controls"]')?.getAttribute('aria-hidden') === 'false',
+    undefined,
+    { timeout: 3000 },
+  ).catch(() => ng.push('⑦ マウス移動後も操作バーが出ない'))
+}
 for (const [label, viewport] of [['1280', { width: 1280, height: 900 }], ['400', { width: 400, height: 860 }]]) {
   await page.setViewportSize(viewport)
   for (const source of ['original-hls', 'encoded']) {
@@ -1443,15 +1489,68 @@ for (const [label, viewport] of [['1280', { width: 1280, height: 900 }], ['400',
     await page.waitForTimeout(500)
     const before = await playbackFrameBox()
     if (sourceShotDir) await page.screenshot({ path: path.join(sourceShotDir, `fix-${source}-before-${label}.png`), animations: 'disabled' })
+    const requestCursor = {
+      playlists: playlistRequests.length,
+      segments: segmentRequests.length,
+      responses: originalMediaResponses.length,
+      failures: originalMediaFailures.length,
+    }
+    const playResultCursor = await page.evaluate(() => window.__e2ePlayResults.length)
+    growingEventStartedAt = source === 'original-hls' ? Date.now() : undefined
     if (source === 'original-hls') {
       await page.getByTestId('recording-playback-start').click()
     } else {
+      await revealPlaybackControls()
       await page.locator('[data-testid="player-controls"]').getByRole('button', { name: '再生', exact: true }).click()
     }
-    await page.waitForFunction(() => {
-      const element = document.querySelector('video')
-      return element !== null && !element.paused && element.currentTime > 0.5
-    }, undefined, { timeout: 15000 }).catch(() => ng.push(`⑦(${source}/${label}) 再生ボタンを押しても再生が進まない`))
+    let playbackStartTime
+    let playbackAdvanced = false
+    try {
+      await page.locator('video').waitFor({ timeout: 15000 })
+      await page.waitForFunction(() => {
+        const element = document.querySelector('video')
+        return element !== null && element.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+      }, undefined, { timeout: 15000 })
+      playbackStartTime = await page.locator('video').evaluate((element) => element.currentTime)
+      await page.waitForFunction((startTime) => {
+        const element = document.querySelector('video')
+        return element !== null && !element.paused && element.currentTime > startTime + 0.5
+      }, playbackStartTime, { timeout: 15000 })
+      playbackAdvanced = true
+    } catch {
+      // Failure details below distinguish a rejected autoplay from playlist/segment delivery or a stalled edge.
+    }
+    if (!playbackAdvanced) {
+      const media = await page.evaluate(() => {
+        const element = document.querySelector('video')
+        const ranges = (timeRanges) => Array.from(
+          { length: timeRanges?.length ?? 0 },
+          (_, index) => [timeRanges.start(index), timeRanges.end(index)],
+        )
+        return element === null ? null : {
+          paused: element.paused,
+          currentTime: element.currentTime,
+          readyState: element.readyState,
+          networkState: element.networkState,
+          seekable: ranges(element.seekable),
+          buffered: ranges(element.buffered),
+          currentSrc: element.currentSrc,
+          error: element.error === null ? null : {
+            code: element.error.code,
+            message: element.error.message,
+          },
+        }
+      })
+      const requests = {
+        playlists: playlistRequests.slice(requestCursor.playlists),
+        segments: segmentRequests.slice(requestCursor.segments),
+        responses: originalMediaResponses.slice(requestCursor.responses),
+        failures: originalMediaFailures.slice(requestCursor.failures),
+        playResults: await page.evaluate((cursor) => window.__e2ePlayResults.slice(cursor), playResultCursor),
+      }
+      log(`  ⑦(${source}/${label}) 再生失敗時の診断: ${JSON.stringify({ playbackStartTime, media, requests })}`)
+      ng.push(`⑦(${source}/${label}) 再生ボタンを押しても再生が進まない`)
+    }
     await page.mouse.move(200, 5)
     await page.waitForTimeout(500)
     if (sourceShotDir) await page.screenshot({ path: path.join(sourceShotDir, `fix-${source}-after-${label}.png`), animations: 'disabled' })
