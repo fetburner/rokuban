@@ -104,6 +104,49 @@ func TestThumbnailReconcile_DoesNotDoubleEnqueue(t *testing.T) {
 	}
 }
 
+func TestThumbnailReconcile_EnqueuesOnlyWhenRecordedThumbnailIsInCM(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	inCM := insertTestRecordingForSite(t, pool, "default", 941)
+	inKeep := insertTestRecordingForSite(t, pool, "default", 942)
+	q := sqlcgen.New(pool)
+	for _, recordingID := range []int64{inCM, inKeep} {
+		seedOriginalAsset(t, pool, mediaDir, recordingID,
+			fmt.Sprintf("reselect/%d.ts", recordingID), []byte("fake-ts"))
+		thumbID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
+			db.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), []byte("old-thumbnail"))
+		if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
+			RecordingID: recordingID,
+			CmRanges:    "{[0,60000)}",
+		}); err != nil {
+			t.Fatalf("seeding CM ranges for %d: %v", recordingID, err)
+		}
+		seek := int64(30000)
+		if recordingID == inKeep {
+			seek = 60000
+		}
+		if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+			MediaAssetID: thumbID,
+			SeekMs:       seek,
+		}); err != nil {
+			t.Fatalf("seeding thumbnail seek for %d: %v", recordingID, err)
+		}
+	}
+
+	runThumbnailReconcilePass(t, pool, &ThumbnailReconcileWorker{Pool: pool})
+	if got := countThumbnailJobs(t, pool, inCM); got != 1 {
+		t.Errorf("thumbnail jobs for CM frame = %d, want 1", got)
+	}
+	if got := countThumbnailJobs(t, pool, inKeep); got != 0 {
+		t.Errorf("thumbnail jobs for keep frame = %d, want 0", got)
+	}
+}
+
 // ファイルが無いことを delete_reconcile が確認した原本は定期パスから除外する。
 // マーカーが消えた後は同じ録画を回収対象へ戻す。
 func TestThumbnailReconcile_SkipsKnownMissingOriginalUntilRestored(t *testing.T) {

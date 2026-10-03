@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
+	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
@@ -29,15 +31,15 @@ import (
 //
 // オープニング直後のロゴ寄りを避けつつ、長尺でも 30 秒で頭打ちにする。
 // duration が取れない / 0 のときは 0 秒（先頭フレーム）に落とす。
-// docs/storage.md「サムネイル」。
+// docs/storage/contract.md §5.1。
 const (
 	thumbnailSeekFraction = 0.10
 	thumbnailSeekMax      = 30 * time.Second
 	thumbnailTimeout      = 5 * time.Minute
 )
 
-// ThumbnailWorker は原本から代表フレームを JPEG 抽出し、media_assets
-// （kind = 'thumbnail'）としてコミットする。
+// ThumbnailWorker は原本または利用可能なエンコード版から代表フレームを JPEG 抽出し、
+// media_assets（kind = 'thumbnail'）としてコミットする。
 //
 // ストレージ契約: ジョブ固有 scratch に ffmpeg 出力 → 同じディレクトリの staged file
 // へ fsync → rel_path lock と DB transaction の下で DB 行予約 → rename + 親 dir fsync
@@ -68,8 +70,8 @@ func (w *ThumbnailWorker) Timeout(*river.Job[jobs.ThumbnailJobArgs]) time.Durati
 
 // Work は thumbnail ジョブを実行する。
 //
-// レベルトリガー: original が無くても / active thumbnail が既にあっても成功扱い
-// で終える（desired − observed が空なら何もしない）。
+// レベルトリガー: 初回生成では active original が無ければ成功扱いで終える。
+// 既存 thumbnail は、チャプター上で抽出位置が CM 区間に入ったときだけ選び直す。
 func (w *ThumbnailWorker) Work(ctx context.Context, job *river.Job[jobs.ThumbnailJobArgs]) error {
 	recordingID := job.Args.RecordingID
 	log := slog.With("recording_id", recordingID, "job", "thumbnail")
@@ -83,40 +85,104 @@ func (w *ThumbnailWorker) Work(ctx context.Context, job *river.Job[jobs.Thumbnai
 
 	q := sqlcgen.New(w.Pool)
 
-	// 既に active thumbnail があるなら再生成しない（冪等）。
-	if _, err := q.GetActiveThumbnailMediaAssetID(ctx, recordingID); err == nil {
-		log.Info("thumbnail: already committed, skipping")
-		result = "success"
-		return nil
-	} else if !errors.Is(err, pgx5.ErrNoRows) {
-		return fmt.Errorf("checking existing thumbnail: %w", err)
-	}
-
-	orig, err := q.GetActiveOriginalMediaAsset(ctx, recordingID)
+	stateRow, err := q.GetThumbnailPlanningState(ctx, recordingID)
 	if err != nil {
 		if errors.Is(err, pgx5.ErrNoRows) {
-			// original がまだ無い（ingest 前）なら desired が空。再試行しても
-			// 埋まらないので成功扱いで捨てる。original コミット後のレベルトリガー
-			// 投入が改めて積む。
-			log.Info("thumbnail: no active original, skipping")
+			log.Info("thumbnail: recording no longer exists, skipping")
 			result = "success"
 			return nil
 		}
-		return fmt.Errorf("loading original media asset: %w", err)
+		return fmt.Errorf("loading thumbnail planning state: %w", err)
+	}
+	if stateRow.Trashed {
+		log.Info("thumbnail: recording is in trash, skipping")
+		result = "success"
+		return nil
 	}
 
-	inputPath, err := mediapath.Resolve(w.MediaDir, orig.RelPath)
-	if err != nil {
-		return fmt.Errorf("resolving original path: %w", err)
+	var (
+		inputPath string
+		inputID   int64
+		inputSeek time.Duration
+		seekMs    int64
+		relPath   string
+		expected  *thumbnailObserved
+		replaced  string
+	)
+	if stateRow.ThumbnailMediaAssetID == nil {
+		// 初回の仮サムネイルは従来どおり原本だけを使い、CM 検出を待たずに作る。
+		orig, err := q.GetActiveOriginalMediaAsset(ctx, recordingID)
+		if err != nil {
+			if errors.Is(err, pgx5.ErrNoRows) {
+				log.Info("thumbnail: no active original, skipping")
+				result = "success"
+				return nil
+			}
+			return fmt.Errorf("loading original media asset: %w", err)
+		}
+		inputID = orig.ID
+		inputPath, err = mediapath.Resolve(w.MediaDir, orig.RelPath)
+		if err != nil {
+			return fmt.Errorf("resolving original path: %w", err)
+		}
+		duration, err := w.probeDuration(ctx, inputPath)
+		if err != nil {
+			// 長さが取れなくても先頭フレームで続行する（壊れたメタデータへの保険）。
+			log.Warn("thumbnail: ffprobe duration failed, seeking to 0", "err", err)
+			duration = 0
+		}
+		seek := thumbnailSeek(duration)
+		seekMs = int64(math.Round(float64(seek) / float64(time.Millisecond)))
+		inputSeek = time.Duration(seekMs) * time.Millisecond
+		relPath = thumbnailRelPath(recordingID)
+	} else {
+		planning := thumbnailPlanningFromWorkerRow(stateRow)
+		timeline, hasTimeline, err := planning.timeline()
+		if err != nil {
+			return fmt.Errorf("decoding chapter timeline: %w", err)
+		}
+		if !hasTimeline {
+			log.Info("thumbnail: no chapter timeline, keeping current thumbnail")
+			result = "success"
+			return nil
+		}
+		inputs, err := planning.inputs()
+		if err != nil {
+			return fmt.Errorf("decoding thumbnail inputs: %w", err)
+		}
+		if !thumbnailNeedsReselect(planning.SeekMs, inputs, timeline) {
+			log.Info("thumbnail: no reselection needed or no usable input, skipping")
+			result = "success"
+			return nil
+		}
+		plan, ok := thumbnailPlanForInputs(inputs, chapters.KeepRanges(timeline))
+		if !ok {
+			// 入力が戻るまで同じジョブを失敗扱いにせず、reconcile の次の窓に任せる。
+			log.Info("thumbnail: no usable input, skipping")
+			result = "success"
+			return nil
+		}
+		inputID = plan.Source.MediaAssetID
+		inputPath, err = mediapath.Resolve(w.MediaDir, plan.Source.RelPath)
+		if err != nil {
+			return fmt.Errorf("resolving thumbnail input path: %w", err)
+		}
+		inputSeek = time.Duration(plan.InputSeekMs) * time.Millisecond
+		seekMs = plan.RecordedSeek
+		if stateRow.ThumbnailRelPath == nil || stateRow.ThumbnailMediaAssetID == nil {
+			return fmt.Errorf("active thumbnail planning state is incomplete")
+		}
+		expected = &thumbnailObserved{
+			ID:      *stateRow.ThumbnailMediaAssetID,
+			RelPath: *stateRow.ThumbnailRelPath,
+			SeekMs:  stateRow.SeekMs,
+		}
+		replaced = expected.RelPath
+		relPath, err = w.nextUnusedThumbnailRelPath(recordingID, replaced)
+		if err != nil {
+			return fmt.Errorf("choosing thumbnail replacement path: %w", err)
+		}
 	}
-
-	duration, err := w.probeDuration(ctx, inputPath)
-	if err != nil {
-		// 長さが取れなくても先頭フレームで続行する（壊れたメタデータへの保険）。
-		log.Warn("thumbnail: ffprobe duration failed, seeking to 0", "err", err)
-		duration = 0
-	}
-	seek := thumbnailSeek(duration)
 
 	scratchDir, err := newWorkerScratchDir(w.ScratchDir, "thumbnail", job.ID, job.Attempt)
 	if err != nil {
@@ -125,7 +191,7 @@ func (w *ThumbnailWorker) Work(ctx context.Context, job *river.Job[jobs.Thumbnai
 	defer func() { _ = os.RemoveAll(scratchDir) }()
 	scratchPath := filepath.Join(scratchDir, "thumbnail.jpg")
 
-	if err := w.extractFrame(ctx, inputPath, scratchPath, seek); err != nil {
+	if err := w.extractFrame(ctx, inputPath, scratchPath, inputSeek); err != nil {
 		return fmt.Errorf("extracting frame: %w", err)
 	}
 
@@ -137,16 +203,32 @@ func (w *ThumbnailWorker) Work(ctx context.Context, job *river.Job[jobs.Thumbnai
 		return fmt.Errorf("scratch thumbnail is empty")
 	}
 
-	relPath := thumbnailRelPath(recordingID)
 	size, published, err := publishGeneratedMediaAsset(ctx, w.Pool, w.MediaDir, relPath, scratchPath,
 		func(ctx context.Context, q *sqlcgen.Queries) (bool, error) {
-			return skipThumbnailPublish(ctx, q, recordingID)
+			return skipThumbnailPlanPublish(ctx, q, recordingID, expected, inputID)
 		},
 		func(ctx context.Context, q *sqlcgen.Queries, size int64) error {
-			_, err := q.UpsertThumbnailMediaAsset(ctx, sqlcgen.UpsertThumbnailMediaAssetParams{
-				RecordingID: recordingID, RelPath: relPath, SizeBytes: size,
+			var assetID int64
+			if expected == nil {
+				var err error
+				assetID, err = q.UpsertThumbnailMediaAsset(ctx, sqlcgen.UpsertThumbnailMediaAssetParams{
+					RecordingID: recordingID, RelPath: relPath, SizeBytes: size,
+				})
+				if err != nil {
+					return err
+				}
+			} else {
+				assetID = expected.ID
+				if err := q.UpdateThumbnailMediaAssetPath(ctx, sqlcgen.UpdateThumbnailMediaAssetPathParams{
+					RelPath: relPath, SizeBytes: size, ID: assetID,
+				}); err != nil {
+					return err
+				}
+			}
+			return q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+				MediaAssetID: assetID,
+				SeekMs:       seekMs,
 			})
-			return err
 		})
 	if err != nil {
 		return fmt.Errorf("publishing thumbnail: %w", err)
@@ -156,17 +238,52 @@ func (w *ThumbnailWorker) Work(ctx context.Context, job *river.Job[jobs.Thumbnai
 		result = "success"
 		return nil
 	}
+	if replaced != "" {
+		w.removeReplacedThumbnail(replaced, log)
+	}
 
-	log.Info("thumbnail: committed", "rel_path", relPath, "size_bytes", size, "seek", seek)
+	log.Info("thumbnail: committed", "rel_path", relPath, "size_bytes", size,
+		"input_seek_ms", inputSeek.Milliseconds(), "seek_ms", seekMs)
 	result = "success"
 	return nil
 }
 
-// thumbnailRelPath はメディアストレージ上の相対パスを返す。
-// recording_id をファイル名に使い、原本の contentPath に依存しない
-// （原本削除後もパスが安定する。docs/storage.md の until_encoded）。
+// thumbnailRelPath は初回サムネイルの相対パスを返す。recording_id を使うため、
+// 原本の contentPath や原本削除に依存しない。
 func thumbnailRelPath(recordingID int64) string {
 	return fmt.Sprintf("thumbnails/%d.jpg", recordingID)
+}
+
+// nextThumbnailRelPath gives each replacement a never-reused path. The initial
+// thumbnail keeps the legacy path without a generation suffix.
+func nextThumbnailRelPath(recordingID int64, previous string) string {
+	stem := strings.TrimSuffix(filepath.Base(previous), filepath.Ext(previous))
+	prefix := fmt.Sprintf("%d.g", recordingID)
+	generation := 1
+	if strings.HasPrefix(stem, prefix) {
+		if n, err := strconv.Atoi(strings.TrimPrefix(stem, prefix)); err == nil && n > 0 {
+			generation = n + 1
+		}
+	}
+	return fmt.Sprintf("thumbnails/%d.g%d.jpg", recordingID, generation)
+}
+
+func (w *ThumbnailWorker) nextUnusedThumbnailRelPath(recordingID int64, previous string) (string, error) {
+	candidate := nextThumbnailRelPath(recordingID, previous)
+	for {
+		path, err := mediapath.Resolve(w.MediaDir, candidate)
+		if err != nil {
+			return "", err
+		}
+		_, err = os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return candidate, nil
+		}
+		if err != nil {
+			return "", err
+		}
+		candidate = nextThumbnailRelPath(recordingID, candidate)
+	}
 }
 
 // thumbnailSeek は代表フレーム位置を返す（min(duration×10%, 30s)）。
@@ -179,6 +296,85 @@ func thumbnailSeek(duration time.Duration) time.Duration {
 		return thumbnailSeekMax
 	}
 	return seek
+}
+
+type thumbnailObserved struct {
+	ID      int64
+	RelPath string
+	SeekMs  *int64
+}
+
+// skipThumbnailPlanPublish rechecks the observed row under the same transaction
+// that publishes the new file. For replacements it locks the existing media row so
+// two workers cannot publish over the same generation.
+func skipThumbnailPlanPublish(
+	ctx context.Context,
+	q *sqlcgen.Queries,
+	recordingID int64,
+	expected *thumbnailObserved,
+	inputAssetID int64,
+) (bool, error) {
+	recording, err := q.LockRecording(ctx, recordingID)
+	if errors.Is(err, pgx5.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if recording.IsTrashed || recording.IsPurged {
+		return true, nil
+	}
+
+	if expected == nil {
+		if _, err := q.GetActiveThumbnailMediaAssetID(ctx, recordingID); err == nil {
+			return true, nil
+		} else if !errors.Is(err, pgx5.ErrNoRows) {
+			return false, err
+		}
+		original, err := q.GetActiveOriginalMediaAsset(ctx, recordingID)
+		if errors.Is(err, pgx5.ErrNoRows) {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return original.ID != inputAssetID, nil
+	}
+
+	current, err := q.LockActiveThumbnailMediaAsset(ctx, recordingID)
+	if errors.Is(err, pgx5.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if current.ID != expected.ID || current.RelPath != expected.RelPath || !sameThumbnailSeek(current.SeekMs, expected.SeekMs) {
+		return true, nil
+	}
+	active, err := q.IsActiveThumbnailInput(ctx, inputAssetID)
+	if err != nil {
+		return false, err
+	}
+	return !active, nil
+}
+
+func sameThumbnailSeek(a, b *int64) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+func (w *ThumbnailWorker) removeReplacedThumbnail(relPath string, log *slog.Logger) {
+	path, err := mediapath.Resolve(w.MediaDir, relPath)
+	if err != nil {
+		log.Warn("thumbnail: could not resolve replaced path", "rel_path", relPath, "err", err)
+		return
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Warn("thumbnail: removing replaced file failed; orphan collection will pick it up",
+			"rel_path", relPath, "err", err)
+	}
 }
 
 func (w *ThumbnailWorker) probeDuration(ctx context.Context, inputPath string) (time.Duration, error) {

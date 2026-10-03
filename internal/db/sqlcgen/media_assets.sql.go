@@ -458,6 +458,27 @@ func (q *Queries) InsertMediaAssetCuts(ctx context.Context, arg InsertMediaAsset
 	return err
 }
 
+const isActiveThumbnailInput = `-- name: IsActiveThumbnailInput :one
+SELECT EXISTS (
+    SELECT 1
+    FROM media_assets a
+    WHERE a.id = $1
+      AND a.kind IN ('original', 'encoded')
+      AND a.state = 'active'
+      AND NOT EXISTS (
+          SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id
+      )
+)
+`
+
+// 生成に使ったファイルがまだ使えるかを commit tx 内で確認する。
+func (q *Queries) IsActiveThumbnailInput(ctx context.Context, mediaAssetID int64) (bool, error) {
+	row := q.db.QueryRow(ctx, isActiveThumbnailInput, mediaAssetID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const listRecordingIDsMissingThumbnail = `-- name: ListRecordingIDsMissingThumbnail :many
 SELECT o.recording_id
 FROM media_assets o
@@ -498,6 +519,31 @@ func (q *Queries) ListRecordingIDsMissingThumbnail(ctx context.Context) ([]int64
 	return items, nil
 }
 
+const lockActiveThumbnailMediaAsset = `-- name: LockActiveThumbnailMediaAsset :one
+SELECT a.id, a.rel_path, s.seek_ms
+FROM media_assets a
+LEFT JOIN media_asset_thumbnail_seeks s ON s.media_asset_id = a.id
+WHERE a.recording_id = $1
+  AND a.kind = 'thumbnail'
+  AND a.state = 'active'
+FOR UPDATE OF a
+`
+
+type LockActiveThumbnailMediaAssetRow struct {
+	ID      int64
+	RelPath string
+	SeekMs  *int64
+}
+
+// thumbnail 差し替えの commit tx 内で行を直列化し、世代付きパスへ UPDATE する。
+// seek_ms は衛星表から読む。行が無ければ旧サムネイルで位置不明。
+func (q *Queries) LockActiveThumbnailMediaAsset(ctx context.Context, recordingID int64) (LockActiveThumbnailMediaAssetRow, error) {
+	row := q.db.QueryRow(ctx, lockActiveThumbnailMediaAsset, recordingID)
+	var i LockActiveThumbnailMediaAssetRow
+	err := row.Scan(&i.ID, &i.RelPath, &i.SeekMs)
+	return i, err
+}
+
 const updateEncodedMediaAssetPath = `-- name: UpdateEncodedMediaAssetPath :exec
 UPDATE media_assets
 SET rel_path   = $1,
@@ -517,6 +563,28 @@ type UpdateEncodedMediaAssetPathParams struct {
 // 取れてしまう。世代番号で必ず新しいパスになるので、UPDATE で足りる。
 func (q *Queries) UpdateEncodedMediaAssetPath(ctx context.Context, arg UpdateEncodedMediaAssetPathParams) error {
 	_, err := q.db.Exec(ctx, updateEncodedMediaAssetPath, arg.RelPath, arg.SizeBytes, arg.ID)
+	return err
+}
+
+const updateThumbnailMediaAssetPath = `-- name: UpdateThumbnailMediaAssetPath :exec
+UPDATE media_assets
+SET rel_path   = $1,
+    size_bytes = $2,
+    updated_at = now()
+WHERE id = $3
+  AND kind = 'thumbnail'
+  AND state = 'active'
+`
+
+type UpdateThumbnailMediaAssetPathParams struct {
+	RelPath   string
+	SizeBytes int64
+	ID        int64
+}
+
+// thumbnail 差し替え時に、同じ media_asset 行の相対パスとサイズだけを更新する。
+func (q *Queries) UpdateThumbnailMediaAssetPath(ctx context.Context, arg UpdateThumbnailMediaAssetPathParams) error {
+	_, err := q.db.Exec(ctx, updateThumbnailMediaAssetPath, arg.RelPath, arg.SizeBytes, arg.ID)
 	return err
 }
 
@@ -552,6 +620,23 @@ func (q *Queries) UpsertEncodedMediaAsset(ctx context.Context, arg UpsertEncoded
 	var id int64
 	err := row.Scan(&id)
 	return id, err
+}
+
+const upsertMediaAssetThumbnailSeek = `-- name: UpsertMediaAssetThumbnailSeek :exec
+INSERT INTO media_asset_thumbnail_seeks (media_asset_id, seek_ms)
+VALUES ($1, $2)
+ON CONFLICT (media_asset_id) DO UPDATE SET seek_ms = EXCLUDED.seek_ms
+`
+
+type UpsertMediaAssetThumbnailSeekParams struct {
+	MediaAssetID int64
+	SeekMs       int64
+}
+
+// サムネイル作成時に抽出した原本時間軸の位置を、media_assets の公開と同じ tx で記録。
+func (q *Queries) UpsertMediaAssetThumbnailSeek(ctx context.Context, arg UpsertMediaAssetThumbnailSeekParams) error {
+	_, err := q.db.Exec(ctx, upsertMediaAssetThumbnailSeek, arg.MediaAssetID, arg.SeekMs)
+	return err
 }
 
 const upsertSeekTilesMediaAsset = `-- name: UpsertSeekTilesMediaAsset :one

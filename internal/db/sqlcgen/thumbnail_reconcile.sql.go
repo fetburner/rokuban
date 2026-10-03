@@ -7,7 +7,123 @@ package sqlcgen
 
 import (
 	"context"
+	"encoding/json"
 )
+
+const getThumbnailPlanningState = `-- name: GetThumbnailPlanningState :one
+WITH planning AS (
+    SELECT
+        r.id AS recording_id,
+        (r.deleted_at IS NOT NULL)::boolean AS trashed,
+        r.program_duration_ms,
+        COALESCE(p.cm_detect, false)::boolean AS cm_detect,
+        EXISTS (SELECT 1 FROM recording_cm_detections d WHERE d.recording_id = r.id) AS detected,
+        EXISTS (SELECT 1 FROM recording_chapter_ownership o WHERE o.recording_id = r.id) AS owned,
+        COALESCE((
+            SELECT jsonb_agg(jsonb_build_object('startMs', lower(cr.cm_range), 'endMs', upper(cr.cm_range))
+                             ORDER BY lower(cr.cm_range))
+            FROM recording_cm_detections d
+            CROSS JOIN LATERAL unnest(d.cm_ranges) AS cr(cm_range)
+            WHERE d.recording_id = r.id
+        ), '[]'::jsonb)::jsonb AS cm_ranges,
+        COALESCE((
+            SELECT jsonb_agg(jsonb_build_object('startMs', lower(s.span), 'endMs', upper(s.span),
+                                                'label', s.label, 'cut', s.cut)
+                             ORDER BY lower(s.span))
+            FROM recording_chapter_spans s
+            WHERE s.recording_id = r.id
+        ), '[]'::jsonb)::jsonb AS user_spans,
+        COALESCE(original.id, 0)::bigint AS original_media_asset_id,
+        COALESCE(original.rel_path, '')::text AS original_rel_path,
+        COALESCE(encoded.assets, '[]'::jsonb)::jsonb AS encoded_assets,
+        thumbnail.id AS thumbnail_media_asset_id,
+        thumbnail.rel_path AS thumbnail_rel_path,
+        thumbnail_seek.seek_ms
+    FROM recordings r
+    LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
+    LEFT JOIN LATERAL (
+        SELECT a.id, a.rel_path
+        FROM media_assets a
+        WHERE a.recording_id = r.id
+          AND a.kind = 'original'
+          AND a.state = 'active'
+          AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id)
+        LIMIT 1
+    ) original ON true
+    LEFT JOIN LATERAL (
+        SELECT jsonb_agg(
+            jsonb_build_object(
+                'mediaAssetId', a.id,
+                'profile', a.profile,
+                'relPath', a.rel_path,
+                'cut', c.media_asset_id IS NOT NULL,
+                'keepRanges', COALESCE(frozen.ranges, '[]'::jsonb)
+            ) ORDER BY a.profile
+        ) AS assets
+        FROM media_assets a
+        LEFT JOIN media_asset_cuts c ON c.media_asset_id = a.id
+        LEFT JOIN LATERAL (
+            SELECT jsonb_agg(jsonb_build_object('startMs', lower(k), 'endMs', upper(k))
+                             ORDER BY lower(k)) AS ranges
+            FROM unnest(c.keep_ranges) AS k
+        ) frozen ON true
+        WHERE a.recording_id = r.id
+          AND a.kind = 'encoded'
+          AND a.state = 'active'
+          AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id)
+    ) encoded ON true
+    LEFT JOIN media_assets thumbnail
+      ON thumbnail.recording_id = r.id
+     AND thumbnail.kind = 'thumbnail'
+     AND thumbnail.state = 'active'
+    LEFT JOIN media_asset_thumbnail_seeks thumbnail_seek
+      ON thumbnail_seek.media_asset_id = thumbnail.id
+    WHERE r.id = $1::bigint
+      AND r.purged_at IS NULL
+)
+SELECT recording_id, trashed, program_duration_ms, cm_detect, detected, owned, cm_ranges, user_spans, original_media_asset_id, original_rel_path, encoded_assets, thumbnail_media_asset_id, thumbnail_rel_path, seek_ms FROM planning
+`
+
+type GetThumbnailPlanningStateRow struct {
+	RecordingID           int64
+	Trashed               bool
+	ProgramDurationMs     int64
+	CmDetect              bool
+	Detected              bool
+	Owned                 bool
+	CmRanges              json.RawMessage
+	UserSpans             json.RawMessage
+	OriginalMediaAssetID  int64
+	OriginalRelPath       string
+	EncodedAssets         json.RawMessage
+	ThumbnailMediaAssetID *int64
+	ThumbnailRelPath      *string
+	SeekMs                *int64
+}
+
+// ThumbnailWorker の skip 判定と入力選択に使う現在状態。reconcile と同じ材料を
+// 返すが、初回生成（thumbnail がまだ無い・チャプターが無い録画）にも使う。
+func (q *Queries) GetThumbnailPlanningState(ctx context.Context, recordingID int64) (GetThumbnailPlanningStateRow, error) {
+	row := q.db.QueryRow(ctx, getThumbnailPlanningState, recordingID)
+	var i GetThumbnailPlanningStateRow
+	err := row.Scan(
+		&i.RecordingID,
+		&i.Trashed,
+		&i.ProgramDurationMs,
+		&i.CmDetect,
+		&i.Detected,
+		&i.Owned,
+		&i.CmRanges,
+		&i.UserSpans,
+		&i.OriginalMediaAssetID,
+		&i.OriginalRelPath,
+		&i.EncodedAssets,
+		&i.ThumbnailMediaAssetID,
+		&i.ThumbnailRelPath,
+		&i.SeekMs,
+	)
+	return i, err
+}
 
 const listMissingSeekTilesRecordings = `-- name: ListMissingSeekTilesRecordings :many
 SELECT o.recording_id
@@ -106,6 +222,148 @@ func (q *Queries) ListMissingThumbnailRecordings(ctx context.Context, arg ListMi
 			return nil, err
 		}
 		items = append(items, recording_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listThumbnailReselectCandidates = `-- name: ListThumbnailReselectCandidates :many
+WITH planning AS (
+    SELECT
+        r.id AS recording_id,
+        (r.deleted_at IS NOT NULL)::boolean AS trashed,
+        r.program_duration_ms,
+        COALESCE(p.cm_detect, false)::boolean AS cm_detect,
+        EXISTS (SELECT 1 FROM recording_cm_detections d WHERE d.recording_id = r.id) AS detected,
+        EXISTS (SELECT 1 FROM recording_chapter_ownership o WHERE o.recording_id = r.id) AS owned,
+        COALESCE((
+            SELECT jsonb_agg(jsonb_build_object('startMs', lower(cr.cm_range), 'endMs', upper(cr.cm_range))
+                             ORDER BY lower(cr.cm_range))
+            FROM recording_cm_detections d
+            CROSS JOIN LATERAL unnest(d.cm_ranges) AS cr(cm_range)
+            WHERE d.recording_id = r.id
+        ), '[]'::jsonb)::jsonb AS cm_ranges,
+        COALESCE((
+            SELECT jsonb_agg(jsonb_build_object('startMs', lower(s.span), 'endMs', upper(s.span),
+                                                'label', s.label, 'cut', s.cut)
+                             ORDER BY lower(s.span))
+            FROM recording_chapter_spans s
+            WHERE s.recording_id = r.id
+        ), '[]'::jsonb)::jsonb AS user_spans,
+        COALESCE(original.id, 0)::bigint AS original_media_asset_id,
+        COALESCE(original.rel_path, '')::text AS original_rel_path,
+        COALESCE(encoded.assets, '[]'::jsonb)::jsonb AS encoded_assets,
+        thumbnail.id AS thumbnail_media_asset_id,
+        thumbnail.rel_path AS thumbnail_rel_path,
+        thumbnail_seek.seek_ms
+    FROM recordings r
+    LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
+    LEFT JOIN LATERAL (
+        SELECT a.id, a.rel_path
+        FROM media_assets a
+        WHERE a.recording_id = r.id
+          AND a.kind = 'original'
+          AND a.state = 'active'
+          AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id)
+        LIMIT 1
+    ) original ON true
+    LEFT JOIN LATERAL (
+        SELECT jsonb_agg(
+            jsonb_build_object(
+                'mediaAssetId', a.id,
+                'profile', a.profile,
+                'relPath', a.rel_path,
+                'cut', c.media_asset_id IS NOT NULL,
+                'keepRanges', COALESCE(frozen.ranges, '[]'::jsonb)
+            ) ORDER BY a.profile
+        ) AS assets
+        FROM media_assets a
+        LEFT JOIN media_asset_cuts c ON c.media_asset_id = a.id
+        LEFT JOIN LATERAL (
+            SELECT jsonb_agg(jsonb_build_object('startMs', lower(k), 'endMs', upper(k))
+                             ORDER BY lower(k)) AS ranges
+            FROM unnest(c.keep_ranges) AS k
+        ) frozen ON true
+        WHERE a.recording_id = r.id
+          AND a.kind = 'encoded'
+          AND a.state = 'active'
+          AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id)
+    ) encoded ON true
+    LEFT JOIN media_assets thumbnail
+      ON thumbnail.recording_id = r.id
+     AND thumbnail.kind = 'thumbnail'
+     AND thumbnail.state = 'active'
+    LEFT JOIN media_asset_thumbnail_seeks thumbnail_seek
+      ON thumbnail_seek.media_asset_id = thumbnail.id
+    WHERE r.purged_at IS NULL
+)
+SELECT recording_id, trashed, program_duration_ms, cm_detect, detected, owned, cm_ranges, user_spans, original_media_asset_id, original_rel_path, encoded_assets, thumbnail_media_asset_id, thumbnail_rel_path, seek_ms
+FROM planning
+WHERE recording_id > $1::bigint
+  AND NOT trashed
+  AND thumbnail_media_asset_id IS NOT NULL
+  AND (detected OR owned)
+ORDER BY recording_id
+LIMIT $2
+`
+
+type ListThumbnailReselectCandidatesParams struct {
+	AfterRecordingID int64
+	RowLimit         int32
+}
+
+type ListThumbnailReselectCandidatesRow struct {
+	RecordingID           int64
+	Trashed               bool
+	ProgramDurationMs     int64
+	CmDetect              bool
+	Detected              bool
+	Owned                 bool
+	CmRanges              json.RawMessage
+	UserSpans             json.RawMessage
+	OriginalMediaAssetID  int64
+	OriginalRelPath       string
+	EncodedAssets         json.RawMessage
+	ThumbnailMediaAssetID *int64
+	ThumbnailRelPath      *string
+	SeekMs                *int64
+}
+
+// thumbnail が既にあり、CM 検出またはユーザー所有のチャプターがある録画のうち、
+// CM 判定により位置を選び直す候補窓。SQL は候補を窓に収めるだけで、区間内外の
+// 判定は chapters.Derive を通す Go の thumbnailNeedsReselect に任せる。
+// 入力は active かつ missing_media_assets に無いものだけを返す。cut 版の尺と
+// UnmapMs 用区間は media_asset_cuts.keep_ranges の凍結値から作り、ffprobe は呼ばない。
+func (q *Queries) ListThumbnailReselectCandidates(ctx context.Context, arg ListThumbnailReselectCandidatesParams) ([]ListThumbnailReselectCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listThumbnailReselectCandidates, arg.AfterRecordingID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListThumbnailReselectCandidatesRow
+	for rows.Next() {
+		var i ListThumbnailReselectCandidatesRow
+		if err := rows.Scan(
+			&i.RecordingID,
+			&i.Trashed,
+			&i.ProgramDurationMs,
+			&i.CmDetect,
+			&i.Detected,
+			&i.Owned,
+			&i.CmRanges,
+			&i.UserSpans,
+			&i.OriginalMediaAssetID,
+			&i.OriginalRelPath,
+			&i.EncodedAssets,
+			&i.ThumbnailMediaAssetID,
+			&i.ThumbnailRelPath,
+			&i.SeekMs,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
