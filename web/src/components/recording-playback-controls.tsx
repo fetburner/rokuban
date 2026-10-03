@@ -695,7 +695,7 @@ export function RecordingPlaybackControls({
                 )}
                 {tilePreview && tilesAvailable && (
                   <div
-                    className="pointer-events-none absolute bottom-full z-20 mb-2 flex origin-bottom-left flex-col items-center gap-1"
+                    className="pointer-events-none absolute bottom-full z-20 mb-2 max-[480px]:mb-11 flex origin-bottom-left flex-col items-center gap-1"
                     style={{
                       left: tilePreview.left,
                       width: SEEK_TILES_DISPLAY_WIDTH,
