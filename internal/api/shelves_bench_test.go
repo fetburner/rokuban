@@ -33,7 +33,8 @@ const shelfBenchmarkDatabaseURL = "ROKUBAN_BENCH_DATABASE_URL"
 //
 // タイトルは 141 個の自動キーへ均等に分け、分類ルールを 50 本置く。ルールの値は
 // 自動キーと同じなので、recording_series の JOIN と評価結果を含むプランを測れる。
-// 100 件は別 site に同じ放送イベントの live 録画を置く。削除済み / supersede 済み行にも
+// 200 件は別 site に同じ放送イベントの live 録画を置く。うち 100 イベントはどの行にも watched 印が無く、
+// 録画行で数えると未視聴を二重に数える。削除済み / supersede 済み行にも
 // watched 印を置き、読み取り時に全行を束ねて同じイベントを 1 回だけ数える条件を検査する。
 //
 // 測る形は棚クエリ 5 つと予約一覧 2 点である。
@@ -54,7 +55,8 @@ const shelfBenchmarkDatabaseURL = "ROKUBAN_BENCH_DATABASE_URL"
 // (a) の latest_start_at は別クエリで求めた「その棚の生きている録画の program_start_at の最大値」と
 // 一致する。(a) の本番 SQL の max や FILTER を壊すとここで落ちる。
 // (c) は (a) の全列に加えて、独立に集計した「再生可能な live 放送イベントのうち、
-// 全録画行を通じて watched 印が無いイベント数」と一致する。
+// 全録画行を通じて watched 印が無いイベント数」と一致する。(c) を録画行で数える形にしても、
+// watched 印を生きている行からだけ読む形にしても、合計 64,600 との比較で落ちる（両方とも壊して確認した）。
 //
 // 既知の 617 ms（playable の MATERIALIZED を外すと数倍遅い）は、現スキーマ・この合成
 // seed では再現しない。617 ms の再現条件は未検証なので (o') が遅いことはアサートしない。
@@ -191,13 +193,15 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 	if playable != 65_000 || live != 71_000 {
 		t.Errorf("production totals = playable %d / live %d, want 65000 / 71000", playable, live)
 	}
-	if unwatched != 64_700 {
-		t.Errorf("(c) total unwatched events = %d, want 64700", unwatched)
+	if unwatched != 64_600 {
+		t.Errorf("(c) total unwatched events = %d, want 64600", unwatched)
 	}
 
-	t.Logf("ratios to (a): (o)=%.2f, (o')=%.2f, (b')=%.2f; (o')/(o)=%.2f; budget=200ms; absolute comparison to the original 141ms environment is not established here",
+	// 予算 200 ms は (o) と同じ旧形が 141 ms だった環境で決めたので、同じ回の (o) との比 200/141 で読む。
+	t.Logf("ratios to (a): (o)=%.2f, (o')=%.2f, (b')=%.2f; (o')/(o)=%.2f; (c)/(o)=%.2f (budget 200/141=%.2f)",
 		float64(medians[1])/float64(medians[0]), float64(medians[2])/float64(medians[0]),
-		float64(medians[3])/float64(medians[0]), float64(medians[2])/float64(medians[1]))
+		float64(medians[3])/float64(medians[0]), float64(medians[2])/float64(medians[1]),
+		float64(medians[4])/float64(medians[1]), 200.0/141.0)
 
 	benchmarkReservationsWithSeries(t, ctx, conn.Conn())
 }
@@ -478,11 +482,12 @@ WITH seed AS (
   SELECT i,
          CASE
            WHEN i BETWEEN 1001 AND 1100 THEN i - 1000
+           WHEN i BETWEEN 1101 AND 1200 THEN i - 900
            WHEN i BETWEEN 71001 AND 72000 THEN i - 71000
            WHEN i BETWEEN 72001 AND 73000 THEN i - 71950
            ELSE i
          END AS event_index,
-         CASE WHEN i BETWEEN 1001 AND 1100 THEN 'secondary' ELSE 'default' END AS site
+         CASE WHEN i BETWEEN 1001 AND 1200 THEN 'secondary' ELSE 'default' END AS site
   FROM generate_series(1, 73000) AS s(i)
 )
 INSERT INTO recordings (
@@ -523,8 +528,9 @@ SELECT
   50 - i
 FROM generate_series(0, 49) AS s(i);
 
--- 100 live events are present at two sites; watched marks on deleted and superseded rows
--- exercise the event-wide read population. Together these mark events 1..200 exactly once.
+-- Events 1..100 and 201..300 are present at two live sites. Watched marks on deleted and superseded rows
+-- cover events 1..100 and live marks cover 101..200, so 201..300 stay unwatched at both sites;
+-- counting rows instead of events double-counts them.
 INSERT INTO recording_watched (recording_id)
 SELECT id
 FROM recordings
