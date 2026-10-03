@@ -477,15 +477,16 @@ Rokuban は利用者を持たないので（[api/deployment.md](../api/deploymen
 原本 HLS と追っかけはセッションの offset を足し戻してこの軸へ変換する。カット版の切り出し
 （`internal/ffargs/cut.go`）も、チャプターの原点をこの軸と同じとみなして切っている。
 
-ただし、ブラウザが報告する `requestVideoFrameCallback` の `mediaTime` がこの軸と一致するかは
-ブラウザと再生経路で測る必要がある。`web/e2e/recording-playback-timeline.mjs` は ffprobe の
-各目印フレーム PTS から入力全ストリームの最小 `start_time` を引き、Chrome の hls.js 再生と
-WebKit の native HLS 再生、非カット MP4 の表示時刻を比較する。許容差は 29.97fps の半フレーム
-（16.68ms）。
+ただし、ブラウザが報告する `requestVideoFrameCallback` の `mediaTime` は経路ごとに測る。
+測定には `web/e2e/recording-playback-timeline.mjs` を使う。各目印フレームの PTS は ffprobe で
+読み取る。そこから入力全ストリームの最小 `start_time` を引き、ブラウザ表示時刻と比較する。
+Chrome の hls.js 再生、WebKit の native HLS 再生、非カット MP4 を測定対象とする。
+許容差は 29.97fps の半フレーム（16.68ms）。
 
-合成 MPEG-2 TS では映像 30000/1001fps、最小 `start_time` 10.389978s、映像 `start_time`
-11.100700s、音声先行 710.722ms、非ゼロ PTS を確認した。目印は frame 45, 106, 181, 240,
-330, 401, 492, 540, 624 に置き、10 秒 offset の前後を測定した。
+合成 MPEG-2 TS の映像は 30000/1001fps だった。最小 `start_time` は 10.389978s、映像の
+`start_time` は 11.100700s だった。音声は映像より 710.722ms 先行し、PTS は非ゼロだった。
+目印は9個のフレームに置いた。対象は frame 45 と 106 と 181 と 240 と 330 と 401 と 492 と 540 と 624 である。
+10 秒 offset の前後を測定した。
 
 | 経路 | HLS offset 0 | HLS offset 10 | 非カット MP4 |
 | --- | ---: | ---: | ---: |
@@ -498,9 +499,9 @@ E2E はこの差を NG として報告するため、Chrome 実行は exit 1 に
 
 2026-10-03 時点の homelab 録画 API には 29 件あり、すべて GR だった。原本が残る行は 2 件、
 encoded asset がある行は 26 件だが、原本と encoded asset の両方がある行は 0 件だった。
-そのため、実録画での GR/BS 各 1 件の同一シーン比較は実施できていない。実 streamer から
-GR 録画 ID 251 の original-VOD master playlist が HTTP 200 で返ることは確認したが、
-BS 録画および同一録画の non-cut encoded がないため、これをペア測定の結果には含めない。
+実録画の GR/BS 各 1 件の同一シーン比較は未実施である。実 streamer では GR 録画 ID 251 の
+original-VOD master playlist が HTTP 200 で返ることを確認した。ただし BS 録画と、同一録画の
+non-cut encoded がない。このため、ペア測定の結果には含めていない。
 
 - **カット版の秒と原本の秒の変換はクライアントが行う。** 材料はいま再生しているファイルの
   凍結済み keep 区間（`media_asset_cuts.keep_ranges`）である。カット版を作り直しても、
