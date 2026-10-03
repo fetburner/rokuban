@@ -169,6 +169,7 @@ function measureLayout() {
   }
   const detail = rect('[data-testid="recording-detail-body"]')
   const player = rect('[data-testid="recording-player-frame"]')
+  const playbackGroup = rect('[data-testid="recording-playback-group"]')
   const playerColumn = rect('[data-testid="recording-player-column"]')
   const title = rect('[data-testid="recording-title-row"] h2')
   const description = rect('[data-testid="recording-description"]')
@@ -203,6 +204,9 @@ function measureLayout() {
     shelf,
     playerHeightRatio: player ? Math.round((player.height / viewport.height) * 1000) / 1000 : null,
     playerVisibleInFirstViewport: player !== null && player.y >= 0 && player.bottom <= viewport.height,
+    playbackToTitleGapPx: playbackGroup && playerColumn
+      ? Math.round((playerColumn.y - playbackGroup.bottom) * 100) / 100
+      : null,
     titleVisibleInFirstViewport: title !== null && title.y >= 0 && title.bottom <= viewport.height,
     descriptionVisibleInFirstViewport: description !== null && description.bottom <= viewport.height,
     shelfTopAlignedWithTitle: shelf !== null && title !== null && Math.abs(shelf.y - title.y) <= 1,
@@ -230,6 +234,7 @@ log('\n=== ⓪ 配っている bundle と dist/ の一致 ===')
 await verifyBundleMatchesOrExit(URL_BASE, ng)
 
 const browser = await launchBrowser()
+let seriesGapPx
 for (const viewport of [
   { name: 'desktop-1280x720', desktop: true, width: 1280, height: 720 },
   { name: 'desktop-1280x800', desktop: true, width: 1280, height: 800 },
@@ -251,6 +256,12 @@ for (const viewport of [
   const measured = await page.evaluate(measureLayout)
   log(`\n=== ${viewport.name} ${viewport.width}×${viewport.height}: 面積実測 ===`)
   log(JSON.stringify(measured, null, 2))
+  if (viewport.name === 'desktop-1280x800') {
+    seriesGapPx = measured.playbackToTitleGapPx
+    if (seriesGapPx !== 32) {
+      ng.push(`series: 映像とタイトル行の間隔が ${seriesGapPx ?? '未測定'}px（期待 32px）`)
+    }
+  }
   if (!measured.playerVisibleInFirstViewport) {
     ng.push(`${viewport.name}: 映像全体が最初の画面に収まらない`)
   }
@@ -408,6 +419,9 @@ if (noSeriesLayout.player === null || noSeriesLayout.playerColumn === null) {
   Math.abs(noSeriesLayout.player.width - noSeriesLayout.playerColumn.width) > 1
 ) {
   ng.push('no-series: 映像と下段カラムの左右位置または幅が揃わない')
+}
+if (noSeriesLayout.playbackToTitleGapPx !== 32 || noSeriesLayout.playbackToTitleGapPx !== seriesGapPx) {
+  ng.push(`no-series: 映像とタイトル行の間隔が ${noSeriesLayout.playbackToTitleGapPx ?? '未測定'}px（シリーズあり ${seriesGapPx ?? '未測定'}px、期待 32px）`)
 }
 if (await noSeriesPage.locator('[data-testid="recording-series-shelf"]').count() !== 0) {
   ng.push('no-series: シリーズ棚が表示される')
