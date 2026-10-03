@@ -97,7 +97,8 @@ LIKE のエスケープは SQL 関数に一本化する。分類ルールは DB 
   過去の実測では、外すと主テーブルの走査が部分一意索引（`recordings_unique_active_event`）に乗った。
   一意索引の行数を 1 と見積もるので下流が全部 1 行の計画になり、代表を求めるソートが外側の行数ぶん繰り返された。
   73,000 行で 141 ms → 617 ms だった（代表と件数を別の CTE に割ると 231 ms）
-- **本番の `live` は旧 `playable` に当たるが、`MATERIALIZED` にしない。** 旧母集団の形を使った過去の合成 seed では 617 ms は再現せず、`live` を `MATERIALIZED` にした形は未視聴数追加前の本番形より 1.05〜1.06 倍遅かった。
+- **本番の `live` は旧 `playable` に当たるが、`MATERIALIZED` にしない。** 旧母集団の過去の合成 seed では 617 ms は再現しなかった。
+  未視聴数追加前の本番形と比べ、`live` を `MATERIALIZED` にすると 1.05〜1.06 倍遅かった。
   この測定は現行クエリ全体の比較ではない。617 ms の再現条件は未検証なので、再発したら `EXPLAIN` で計画を調べる
 - `playable_assets` は現行クエリでは参照が 1 回なので `MATERIALIZED` にしない。過去の単独比較では指定を外すと棚集計が 193.6 ms から 157.4 ms になり、結果も一致した。現在のハーネスでは、本番形と `playable_assets` だけを `MATERIALIZED` にした形を比較する
 - **測定は `internal/api/shelves_bench_test.go` に残してある。** `ROKUBAN_BENCH_DATABASE_URL` が無ければスキップする。
