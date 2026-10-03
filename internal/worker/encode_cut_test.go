@@ -251,9 +251,9 @@ func TestEncodedRelPath_Generation(t *testing.T) {
 	}
 }
 
-// TestBuildFFmpegArgs_CutUsesFilterComplexNotVF は cut プロファイルの argv を
-// 固定する。**`-vf` と `-filter_complex` を併用しない**こと、`-map` がアプリ側で
-// 入ること、入力側が `-vaapi_device` になることが要点。
+// TestBuildFFmpegArgs_CutUsesFilterComplexNotVF は cut プロファイルの救済経路 argv を
+// 固定する。`-vf` と `-filter_complex` を併用せず、`-map` はアプリが出し、
+// output_format が無いときは `-vaapi_device` を使う。
 func TestBuildFFmpegArgs_CutUsesFilterComplexNotVF(t *testing.T) {
 	p := config.EncodeProfile{
 		Name: "cut", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
@@ -263,6 +263,14 @@ func TestBuildFFmpegArgs_CutUsesFilterComplexNotVF(t *testing.T) {
 	filter := &ffargs.CutFilterResult{FilterComplex: "[0:0]trim[vout]", VideoMap: "[vout]", AudioMap: "[aout]"}
 	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4", false, filter)
 	joined := strings.Join(args, " ")
+	wantArgs := []string{
+		"-hide_banner", "-nostats", "-y", "-vaapi_device", "/dev/dri/renderD128",
+		"-i", "/in.m2ts", "-filter_complex", "[0:0]trim[vout]", "-map", "[vout]", "-map", "[aout]",
+		"-c:v", "libx264", "-c:a", "aac", "-f", "mp4", "-progress", "pipe:1", "-loglevel", "error", "/out.mp4",
+	}
+	if !slices.Equal(args, wantArgs) {
+		t.Errorf("rescue argv = %v, want %v", args, wantArgs)
+	}
 
 	if strings.Contains(joined, "-vf ") {
 		t.Errorf("cut profile must not emit -vf: %s", joined)
@@ -282,6 +290,82 @@ func TestBuildFFmpegArgs_CutUsesFilterComplexNotVF(t *testing.T) {
 	plainArgs := strings.Join(BuildFFmpegArgs(plain, "/in.m2ts", "/out.mp4", false, nil), " ")
 	if !strings.Contains(plainArgs, "-vf scale=-2:480") || strings.Contains(plainArgs, "-filter_complex") {
 		t.Errorf("non-cut profile args changed: %s", plainArgs)
+	}
+}
+
+// TestBuildFFmpegArgs_CutHWDecodeUsesPreInput は GPU 経路の入力 argv を固定する。
+// HW decode オプションは -i より前で、-vaapi_device を使わない（filtergraph は
+// TestBuildCutFilter_UploadMatchesDecodePath が固定する）。
+func TestBuildFFmpegArgs_CutHWDecodeUsesPreInput(t *testing.T) {
+	p := config.EncodeProfile{
+		Name: "cut", Container: "mp4", VideoCodec: "h264_vaapi", AudioCodec: "aac",
+		Cut: true, Height: 720, Deinterlace: true, Scaler: ffargs.ScalerVAAPI,
+		HWAccel: &ffargs.HWAccel{Kind: "vaapi", Device: "/dev/dri/renderD128", OutputFormat: "vaapi"},
+	}
+	filter := &ffargs.CutFilterResult{
+		FilterComplex: "[0:0]trim,concat[vcat];[vcat]deinterlace_vaapi,scale_vaapi=w=-2:h=720[vout];[acat]anull[aout]",
+		VideoMap:      "[vout]",
+		AudioMap:      "[aout]",
+	}
+	args := BuildFFmpegArgs(p, "/in.m2ts", "/out.mp4", false, filter)
+	wantArgs := []string{
+		"-hide_banner", "-nostats", "-y",
+		"-hwaccel", "vaapi", "-hwaccel_device", "/dev/dri/renderD128", "-hwaccel_output_format", "vaapi",
+		"-i", "/in.m2ts", "-filter_complex", "[0:0]trim,concat[vcat];[vcat]deinterlace_vaapi,scale_vaapi=w=-2:h=720[vout];[acat]anull[aout]",
+		"-map", "[vout]", "-map", "[aout]",
+		"-c:v", "h264_vaapi", "-c:a", "aac", "-f", "mp4", "-progress", "pipe:1", "-loglevel", "error", "/out.mp4",
+	}
+	if !slices.Equal(args, wantArgs) {
+		t.Errorf("GPU cut argv = %v, want %v", args, wantArgs)
+	}
+}
+
+// TestBuildCutFilter_UploadMatchesDecodePath は production の cut filter builder を通し、
+// HW decode 経路では再 upload せず、CPU 救済経路では従来どおり upload することを固定する。
+func TestBuildCutFilter_UploadMatchesDecodePath(t *testing.T) {
+	ffprobe := filepath.Join(t.TempDir(), "ffprobe")
+	if err := os.WriteFile(ffprobe, []byte("#!/bin/sh\nprintf '0,video,1440,1080,\\n1,audio,,,2\\n'\n"), 0o755); err != nil {
+		t.Fatalf("write fake ffprobe: %v", err)
+	}
+	w := &EncodeWorker{FFprobe: ffprobe}
+	keep := []chapters.Range{{StartMs: 0, EndMs: 1000}}
+	cases := []struct {
+		name       string
+		profile    config.EncodeProfile
+		wantChain  string
+		wantUpload bool
+	}{
+		{
+			name: "hardware decode filters in VAAPI",
+			profile: config.EncodeProfile{
+				Cut: true, Height: 720, Deinterlace: true, Scaler: ffargs.ScalerVAAPI,
+				HWAccel: &ffargs.HWAccel{Kind: "vaapi", Device: "/dev/dri/renderD128", OutputFormat: "vaapi"},
+			},
+			wantChain: "[vcat]deinterlace_vaapi,scale_vaapi=w=-2:h=720[vout]",
+		},
+		{
+			name: "software decode rescue uploads after CPU filters",
+			profile: config.EncodeProfile{
+				Cut: true, Height: 720, Deinterlace: true,
+				HWAccel: &ffargs.HWAccel{Kind: "vaapi", Device: "/dev/dri/renderD128"},
+			},
+			wantChain:  "[vcat]yadif,scale=-2:720,format=nv12,hwupload[vout]",
+			wantUpload: true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			filter, err := w.buildCutFilter(context.Background(), c.profile, "/in.m2ts", keep)
+			if err != nil {
+				t.Fatalf("buildCutFilter: %v", err)
+			}
+			if !strings.Contains(filter.FilterComplex, c.wantChain) {
+				t.Errorf("filter chain = %s, want %s", filter.FilterComplex, c.wantChain)
+			}
+			if gotUpload := strings.Contains(filter.FilterComplex, "hwupload"); gotUpload != c.wantUpload {
+				t.Errorf("hwupload present = %v, want %v: %s", gotUpload, c.wantUpload, filter.FilterComplex)
+			}
+		})
 	}
 }
 

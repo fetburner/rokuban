@@ -7,8 +7,8 @@ import (
 	"github.com/fetburner/rokuban/internal/chapters"
 )
 
-// TestCutFilterComplex_OrderAndBoundaries は filtergraph の順序（trim → concat →
-// deinterlace → scale → hwupload）と、音声の境界が映像と同じフレーム番号から
+// TestCutFilterComplex_OrderAndBoundaries は救済経路の filtergraph の順序
+// （trim → concat → deinterlace → scale → hwupload）と、音声の境界が映像と同じフレーム番号から
 // 出ていることを固定する。**音声を ms で切ると区間ごとに半フレームぶんずれ、
 // 5 区間で 1 フレームを超える**（受け入れの「A/V のずれの累積が 1 フレーム以内」）。
 func TestCutFilterComplex_OrderAndBoundaries(t *testing.T) {
@@ -52,6 +52,18 @@ func TestCutFilterComplex_OrderAndBoundaries(t *testing.T) {
 	}
 	if !strings.Contains(plain.FilterComplex, "[vcat]null[vout]") {
 		t.Errorf("no post filters should still terminate the video chain: %s", plain.FilterComplex)
+	}
+
+	// GPU decode の HW フレームは VAAPI deinterlace / scale を通り、再 upload しない。
+	gpu, err := CutFilterComplex(keep, 0, 1, ScalerVAAPI, 720, true, false)
+	if err != nil {
+		t.Fatalf("CutFilterComplex (VAAPI): %v", err)
+	}
+	if !strings.Contains(gpu.FilterComplex, "[vcat]deinterlace_vaapi,scale_vaapi=w=-2:h=720[vout]") {
+		t.Errorf("VAAPI filters do not follow concat: %s", gpu.FilterComplex)
+	}
+	if strings.Contains(gpu.FilterComplex, "hwupload") {
+		t.Errorf("GPU decode path must not upload frames again: %s", gpu.FilterComplex)
 	}
 }
 
@@ -98,9 +110,7 @@ func TestSelectDefaultStreams(t *testing.T) {
 	}
 }
 
-// TestVAAPIDeviceArgs は cut プロファイルの入力側が `-hwaccel` ではなく
-// `-vaapi_device` になることを固定する。**HW デコードしたフレームは trim に
-// 通せない**ので、ここが `-hwaccel vaapi` に戻ると filtergraph が壊れる。
+// TestVAAPIDeviceArgs は output_format を省略した救済経路が `-vaapi_device` を使うことを固定する。
 func TestVAAPIDeviceArgs(t *testing.T) {
 	got := VAAPIDeviceArgs(&HWAccel{Kind: "vaapi", Device: "/dev/dri/renderD128"})
 	want := []string{"-vaapi_device", "/dev/dri/renderD128"}

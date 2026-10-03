@@ -1,5 +1,5 @@
 import { Popover as PopoverPrimitive } from '@base-ui/react/popover'
-import { Check, ChevronDown } from 'lucide-react'
+import { Check, ChevronDown, Minus } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import type { Service } from '@/api/generated'
@@ -25,6 +25,11 @@ const searchThreshold = 15
  * **選択の identity は `Service.id`**（`networkId * 100000 + serviceId`）。
  * 呼び出し側がキーの作り方を選べるようにする（総称 + `keyOf` の注入）と、
  * 画面ごとに違う複合キーが生えて区切り文字すら揃わなくなる。
+ *
+ * 「すべて」は三状態の親チェックボックス。URL では空集合を「全局」と定義しているため、
+ * 全局から 0 局へ変える瞬間だけはポップオーバー内の一時状態として持つ。そこでは
+ * `onChange` を呼ばず、1 局以上選ばずに閉じたら全局へ戻す。空集合を URL に書いても
+ * 0 局を表せず全局になってしまい、意味の無い共有状態を作るだけだからである。
  */
 export function ChannelPicker({
   services,
@@ -42,8 +47,10 @@ export function ChannelPicker({
 }): React.ReactElement {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
+  const [noneSelected, setNoneSelected] = useState(false)
 
   const ordered = useMemo(() => orderServices(services), [services])
+  const allIds = useMemo(() => new Set(ordered.map((s) => s.id)), [ordered])
   const selectedServices = useMemo(
     () => ordered.filter((s) => selected.has(s.id)),
     [ordered, selected],
@@ -66,15 +73,37 @@ export function ChannelPicker({
         ? selectedServices[0].name
         : `${selectedServices.length} 局を選択中`
 
-  // 「すべて」は選択を空にする専用の項目。他の項目と同じくポップオーバーは閉じない
-  // （複数選ぶのに毎回開き直させないため。閉じるのは外側クリック / Esc）。
-  const clearAll = () => onChange(new Set())
+  const checkboxState = (scope: readonly Service[]): CheckboxState =>
+    getCheckboxState(scope, selected, noneSelected)
 
-  const toggle = (key: number) => {
-    const next = new Set(selected)
-    if (next.has(key)) next.delete(key)
-    else next.add(key)
-    onChange(next)
+  const toggleScope = (scope: readonly Service[]) => {
+    if (scope.length === 0) return
+
+    const state = checkboxState(scope)
+    // 空集合は全局を表すため、部分操作の前に services（ピッカーの全候補）を
+    // 明示集合にする。検索中や種別見出しの操作でも、表示中の scope だけを変える。
+    // 起点は候補（allIds）内の id だけにする。候補外の id（EPG から消えた局の
+    // URL など）を残すと「すべて」が 2 状態を往復し、空集合へ戻れなくなる。
+    const next = noneSelected
+      ? new Set<number>()
+      : selected.size === 0
+        ? new Set(allIds)
+        : new Set([...selected].filter((id) => allIds.has(id)))
+
+    if (state === true) {
+      for (const service of scope) next.delete(service.id)
+    } else {
+      for (const service of scope) next.add(service.id)
+    }
+
+    if (next.size === 0) {
+      // 0 局は URL に表現できない。次の選択か、閉じて全局に戻るまでローカルに保つ。
+      setNoneSelected(true)
+      return
+    }
+
+    setNoneSelected(false)
+    onChange(setsEqual(next, allIds) ? new Set() : next)
   }
 
   return (
@@ -84,7 +113,12 @@ export function ChannelPicker({
         setOpen(next)
         // 閉じたら検索語をリセットする（再度開いたときに前回の絞り込みが残っていると、
         // 「候補が減っている」ことに気付かず選びたいチャンネルが無いと誤解する）。
-        if (!next) setQuery('')
+        if (!next) {
+          // 0 局のまま閉じる場合は全局へ戻す。元が明示選択だったときだけ URL も更新する。
+          if (noneSelected && selected.size > 0) onChange(new Set())
+          setQuery('')
+          setNoneSelected(false)
+        }
       }}
     >
       <PopoverPrimitive.Trigger
@@ -134,17 +168,35 @@ export function ChannelPicker({
               </div>
             )}
             <div className="min-h-0 flex-1 overflow-y-auto p-1">
-              <ChannelOption label="すべて" active={selected.size === 0} onClick={clearAll} />
+              {noneSelected && (
+                <p role="status" className="px-3 py-2 text-sm text-muted-foreground">
+                  1 つ以上選んでください
+                </p>
+              )}
+              <ChannelOption
+                label={query.trim() === '' ? 'すべて' : '一致したものをすべて'}
+                checked={checkboxState(filtered)}
+                disabled={filtered.length === 0}
+                onClick={() => toggleScope(filtered)}
+              />
               {groups.map((group) => (
                 <div key={group.channelType}>
-                  <div className="px-2 pt-2 pb-1 text-xs font-medium text-muted-foreground">
-                    {channelTypeLabel(group.channelType)}
-                  </div>
+                  {groups.length > 1 ? (
+                    <ChannelOption
+                      label={channelTypeLabel(group.channelType)}
+                      checked={checkboxState(group.services)}
+                      onClick={() => toggleScope(group.services)}
+                      heading
+                    />
+                  ) : (
+                    <div className="flex min-h-11 items-center px-2 text-sm font-medium text-muted-foreground">
+                      {channelTypeLabel(group.channelType)}
+                    </div>
+                  )}
                   {group.services.map((s) => {
-                    const key = s.id
                     return (
                       <ChannelOption
-                        key={key}
+                        key={s.id}
                         label={s.name}
                         secondary={secondaryLabel?.(s)}
                         remoteControlKeyId={
@@ -152,8 +204,8 @@ export function ChannelPicker({
                             ? s.remoteControlKeyId
                             : undefined
                         }
-                        active={selected.has(key)}
-                        onClick={() => toggle(key)}
+                        checked={checkboxState([s])}
+                        onClick={() => toggleScope([s])}
                       />
                     )
                   })}
@@ -172,6 +224,27 @@ export function ChannelPicker({
   )
 }
 
+type CheckboxState = boolean | 'mixed'
+
+/** 表示と操作で同じ判定を使い、検索・見出しの部分集合でも状態が食い違わないようにする。 */
+function getCheckboxState(
+  scope: readonly Service[],
+  selected: ReadonlySet<number>,
+  noneSelected: boolean,
+): CheckboxState {
+  if (scope.length === 0 || noneSelected) return false
+  if (selected.size === 0) return true
+
+  const selectedCount = scope.reduce((count, service) => count + Number(selected.has(service.id)), 0)
+  if (selectedCount === 0) return false
+  if (selectedCount === scope.length) return true
+  return 'mixed'
+}
+
+function setsEqual(left: ReadonlySet<number>, right: ReadonlySet<number>): boolean {
+  return left.size === right.size && [...left].every((id) => right.has(id))
+}
+
 /**
  * ChannelOption は複数選択の 1 候補。
  * フォーカスは `Button` と同じ明示リングを使い、ブラウザ既定の outline は消す。
@@ -180,24 +253,31 @@ function ChannelOption({
   label,
   secondary,
   remoteControlKeyId,
-  active,
+  checked,
   onClick,
+  heading = false,
+  disabled = false,
 }: {
   label: string
   /** 補足ラベル（多サイトの site 名など）。渡されたときだけ添える。 */
   secondary?: string
   /** GR で `remoteControlKeyId > 0` のときだけ渡す。program-grid.tsx のヘッダと同じ見た目。 */
   remoteControlKeyId?: number
-  active: boolean
+  checked: CheckboxState
   onClick: () => void
+  heading?: boolean
+  disabled?: boolean
 }) {
   return (
     <button
       type="button"
-      aria-pressed={active}
+      role="checkbox"
+      aria-checked={checked}
+      disabled={disabled}
       onClick={onClick}
       className={cn(
-        'flex min-h-11 w-full items-center gap-2 rounded-md border border-transparent px-2 py-2 text-left text-sm transition-[color,background-color] outline-none hover:bg-muted focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50',
+        'flex min-h-11 w-full items-center gap-2 rounded-md border border-transparent px-2 py-2 text-left text-sm transition-[color,background-color] outline-none hover:bg-muted focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50',
+        heading && 'font-medium',
       )}
     >
       {/* 四角い枠 + チェックで複数選択であることを形で示す。Check アイコンだけだと
@@ -206,12 +286,21 @@ function ChannelOption({
         aria-hidden="true"
         className={cn(
           'flex size-4 shrink-0 items-center justify-center rounded-sm border',
-          active ? 'border-primary bg-primary' : 'border-border',
+          checked === true || checked === 'mixed'
+            ? 'border-primary bg-primary'
+            : 'border-border',
         )}
       >
-        <Check
-          className={cn('size-3', active ? 'text-primary-foreground opacity-100' : 'opacity-0')}
-        />
+        {checked === 'mixed' ? (
+          <Minus className="size-3 text-primary-foreground" />
+        ) : (
+          <Check
+            className={cn(
+              'size-3',
+              checked === true ? 'text-primary-foreground opacity-100' : 'opacity-0',
+            )}
+          />
+        )}
       </span>
       {remoteControlKeyId !== undefined && (
         /* 文字色は text-foreground（bg-muted 小バッジの合成後コントラスト対策。

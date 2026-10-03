@@ -186,13 +186,24 @@ encode:
   #     height: 720
   #     deinterlace: true
   #     crf: 23
-  #     # VAAPI でエンコードする場合も **デコードはソフトウェア**（HW でデコードした
-  #     # フレームは trim に通せない）。-hwaccel の代わりに -vaapi_device を出し、
-  #     # 連鎖の最後に format=nv12,hwupload を足す。scaler: vaapi と
-  #     # hwaccel.output_format は cut では起動エラー
+  #     # VAAPI 救済経路は software decode/filter の後ろに format=nv12,hwupload を付ける。
+  #     # この経路では hwaccel.output_format を省略する。VAAPI encode にする場合は
+  #     # video_codec: h264_vaapi とし、crf の代わりに qp を指定する。
   #     # hwaccel:
   #     #   kind: vaapi
   #     #   device: /dev/dri/renderD128
+  #     #
+  #     # GPU decode/filter/encode を使う場合は、上の codec/quality を切り替えてから
+  #     # 次の設定を使う。trim / setpts / concat は HW フレームを通す。VAAPI 実機では未検証。
+  #     # video_codec: h264_vaapi
+  #     # qp: 24
+  #     # scaler: vaapi
+  #     # hwaccel:
+  #     #   kind: vaapi
+  #     #   device: /dev/dri/renderD128
+  #     #   output_format: vaapi
+  #     # ffmpeg 5.1 は MPEG-2 の VAAPI デコード surface が固定数。deinterlace_vaapi で
+  #     # 足りなければ input_extra_args に -extra_hw_frames を足す（未検証）。
   #     # extra_args の -map は cut では起動エラー（ストリームの並びはアプリが握る）
 
 # JLSE による CM 検出（Dockerfile.full の worker でのみ利用可能）
