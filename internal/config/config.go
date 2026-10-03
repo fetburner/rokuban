@@ -755,6 +755,8 @@ func validateEncodeProfileFFArgs(p EncodeProfile) error {
 //   - `hwaccel.kind` が vaapi 以外 — scaler と救済経路が VAAPI にしかない
 //   - `hwaccel.kind: vaapi` で device が無い — `-hwaccel_device` / `-vaapi_device` に
 //     渡すものが無い
+//   - `hwaccel.output_format` が vaapi 以外 — ソフトウェアフレームでは VAAPI encoder に
+//     渡せず、cut の経路には HW upload も無い
 //   - `extra_args` の `-map` — ストリームの並びはアプリが握る（live と同じ理由）
 func validateCutProfile(p EncodeProfile) error {
 	if !p.Cut {
@@ -775,6 +777,9 @@ func validateCutProfile(p EncodeProfile) error {
 		case "vaapi":
 			if p.HWAccel.Device == "" {
 				errs = append(errs, "cut profiles with hwaccel.kind \"vaapi\" require hwaccel.device (it becomes -hwaccel_device or -vaapi_device)")
+			}
+			if p.HWAccel.OutputFormat != "" && p.HWAccel.OutputFormat != "vaapi" {
+				errs = append(errs, fmt.Sprintf("cut profiles support only hwaccel.output_format \"vaapi\", got %q", p.HWAccel.OutputFormat))
 			}
 		default:
 			errs = append(errs, fmt.Sprintf("cut profiles support only hwaccel.kind \"vaapi\", got %q", p.HWAccel.Kind))

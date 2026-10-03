@@ -2334,6 +2334,12 @@ func TestLoad_EncodeProfileCut(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name:    "cut with software hwaccel output_format is an error",
+			extra:   "      cut: true\n      hwaccel:\n        kind: vaapi\n        device: /dev/dri/renderD128\n        output_format: nv12\n",
+			wantErr: true,
+			wantMsg: "output_format",
+		},
+		{
 			name: "cut with vaapi decode and vaapi filters is accepted",
 			extra: "      cut: true\n      height: 720\n      deinterlace: true\n      scaler: vaapi\n" +
 				"      hwaccel:\n        kind: vaapi\n        device: /dev/dri/renderD128\n        output_format: vaapi\n",
