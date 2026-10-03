@@ -1038,7 +1038,7 @@ function HomeNewArrivals({ recordings }: { recordings: Recording[] }) {
         data-testid="home-new-arrivals-grid"
         data-column-count={columns}
         style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
-        className="grid grid-cols-3 gap-2 sm:gap-3"
+        className="grid gap-2 sm:gap-3"
       >
         {recordings.slice(0, columns).map((recording) => (
           <li key={recording.id} className="min-w-0">
@@ -1087,6 +1087,8 @@ function HomeThumbnail({
       data-testid={hero ? 'home-next-watch-thumbnail' : undefined}
       className={cn(
         'relative aspect-video w-full min-w-0 overflow-hidden rounded border border-border bg-muted',
+        // calc の 25rem は映像の外に積む縦の予算: ページ見出し・本文の上下余白・局名/番組名/時刻の 3 行。
+        // 映像と 3 行が初期 viewport に収まることは e2e/design.mjs が測る
         hero &&
           'md:flex-[1.7_1_0%] md:max-w-[clamp(24rem,calc((100dvh-25rem)*16/9),64rem)]',
       )}

@@ -472,9 +472,11 @@ export function LivePage() {
         // ここには来ないはずだが、型上 undefined を許すため防御的に置く
         <EmptyState>チャンネルを選んでください</EmptyState>
       ) : (
-        <div className="flex flex-col gap-4 p-4 lg:flex-row lg:items-start lg:gap-0">
+        <div className="flex flex-col gap-4 p-4 lg:flex-row lg:items-start lg:gap-5">
+          {/* max-w の 25rem は映像の下に積む縦の予算: ページ見出し（約 72px）・p-4 の上下・
+              局名/番組名/時刻の 3 行。映像と 3 行が初期 viewport に収まることは e2e/design.mjs が測る */}
           <div
-            className="flex min-w-0 flex-1 flex-col gap-2 lg:sticky lg:w-[calc(100%-18rem)] lg:max-w-[max(24rem,calc((100dvh-25rem)*16/9))] lg:flex-none"
+            className="flex min-w-0 flex-1 flex-col gap-2 lg:sticky lg:w-[calc(100%-18rem-1.25rem)] lg:max-w-[max(24rem,calc((100dvh-25rem)*16/9))] lg:flex-none"
             style={{
               top: 'calc(var(--sticky-banners-height, 0px) + var(--page-header-height, 0px))',
             }}

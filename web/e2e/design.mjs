@@ -2863,16 +2863,17 @@ for (const viewport of [
     ng.push(`live/${viewport.width}: 映像と局名・番組名・時刻の位置を測れない`)
   } else {
     if (
-      videoBox.bottom > viewport.height ||
-      stationBox.bottom > viewport.height ||
-      programBox.bottom > viewport.height ||
-      timeBox.bottom > viewport.height
+      videoBox.y + videoBox.height > viewport.height ||
+      stationBox.y + stationBox.height > viewport.height ||
+      programBox.y + programBox.height > viewport.height ||
+      timeBox.y + timeBox.height > viewport.height
     ) {
       ng.push(`live/${viewport.width}: 映像または局名・番組情報が初期 viewport に収まらない`)
     }
-    const gap = channelBox.x - videoBox.x - (await playerColumn.boundingBox())?.width
-    if (Math.abs(gap) > 0.5) {
-      ng.push(`live/${viewport.width}: 映像とチャンネル一覧の間に隙間がある（${gap}px）`)
+    // #1022 のラフの列間隔は 20px。映像の幅上限で一覧が右へ離れる（旧 max-w-3xl）のを弾く
+    const gap = channelBox.x - (videoBox.x + videoBox.width)
+    if (gap < 0 || gap > 24) {
+      ng.push(`live/${viewport.width}: 映像とチャンネル一覧の間隔が 0〜24px に収まらない（${gap}px）`)
     }
     log(`  live/${viewport.width}: video=${videoBox.width}×${videoBox.height}, channel-x=${channelBox.x}`)
   }
