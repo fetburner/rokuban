@@ -158,7 +158,9 @@ SELECT r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.de
              AND rec.network_id = s.network_id
              AND rec.service_id = s.service_id
              AND rec.event_id = s.event_id
-       ))::boolean AS never_recorded
+       ))::boolean AS never_recorded,
+       -- LEFT JOIN にしない（EPG 全行の評価になる）。docs/data/series.md §予約一覧の実効シリーズは相関サブクエリで引く
+       (SELECT eps.value FROM epg_program_series eps WHERE eps.site = r.site AND eps.program_id = r.program_id) AS series
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
@@ -177,6 +179,7 @@ type GetReservationFullBySiteAndProgramIDRow struct {
 	IntentAction    *string
 	Overrides       json.RawMessage
 	NeverRecorded   bool
+	Series          *string
 }
 
 // 予約とユーザー意図・上書き・番組スナップショットを 1 行に合わせて返す。
@@ -228,6 +231,7 @@ func (q *Queries) GetReservationFullBySiteAndProgramID(ctx context.Context, arg 
 		&i.IntentAction,
 		&i.Overrides,
 		&i.NeverRecorded,
+		&i.Series,
 	)
 	return i, err
 }
@@ -367,7 +371,9 @@ SELECT r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.de
              AND rec.network_id = s.network_id
              AND rec.service_id = s.service_id
              AND rec.event_id = s.event_id
-       ))::boolean AS never_recorded
+       ))::boolean AS never_recorded,
+       -- LEFT JOIN にしない（EPG 全行の評価になる）。docs/data/series.md §予約一覧の実効シリーズは相関サブクエリで引く
+       (SELECT eps.value FROM epg_program_series eps WHERE eps.site = r.site AND eps.program_id = r.program_id) AS series
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
@@ -381,6 +387,7 @@ type ListReservationsFullRow struct {
 	IntentAction    *string
 	Overrides       json.RawMessage
 	NeverRecorded   bool
+	Series          *string
 }
 
 // never_recorded は GetReservationFullBySiteAndProgramID と同じ導出（コメント参照）。
@@ -422,6 +429,7 @@ func (q *Queries) ListReservationsFull(ctx context.Context) ([]ListReservationsF
 			&i.IntentAction,
 			&i.Overrides,
 			&i.NeverRecorded,
+			&i.Series,
 		); err != nil {
 			return nil, err
 		}

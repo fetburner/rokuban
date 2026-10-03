@@ -32,7 +32,7 @@ func (h *Server) GetProgramReservation(ctx context.Context, req GetProgramReserv
 		}
 		return nil, err
 	}
-	res, err := reservationFromRow(row.Reservation, row.ProgramSnapshot, row.Overrides, row.IntentAction, row.NeverRecorded)
+	res, err := reservationFromRow(row.Reservation, row.ProgramSnapshot, row.Overrides, row.IntentAction, row.NeverRecorded, row.Series)
 	if err != nil {
 		return nil, err
 	}

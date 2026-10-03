@@ -217,10 +217,10 @@ const storageRoots = [
 ]
 
 const reservations = [
-  { id: 1, site: SITE, programId: 9001, source: 'rule', state: 'active', title: '連続テレビ小説', serviceName: 'NHKEテレ', channelType: 'GR', startAt: iso(nowMs + HOUR), durationMs: 900_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), skip: false },
-  { id: 2, site: SITE, programId: 9002, source: 'manual', state: 'active', title: '大相撲中継', serviceName: 'NHK総合', channelType: 'GR', startAt: iso(nowMs + 2 * HOUR), durationMs: 5_400_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), skip: false },
-  { id: 3, site: SITE, programId: 9003, source: 'rule', state: 'detached', title: 'クラシック音楽館', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', startAt: iso(nowMs + 5 * HOUR), durationMs: 3_600_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), skip: false },
-  { id: 4, site: SITE, programId: 9004, source: 'rule', state: 'orphaned', title: '日曜洋画劇場', serviceName: 'テレビ大阪', channelType: 'GR', startAt: iso(nowMs + 26 * HOUR), durationMs: 7_200_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), skip: false },
+  { id: 1, site: SITE, programId: 9001, source: 'rule', state: 'active', title: '連続テレビ小説', serviceName: 'NHKEテレ', channelType: 'GR', startAt: iso(nowMs + HOUR), durationMs: 900_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), series: null, skip: false },
+  { id: 2, site: SITE, programId: 9002, source: 'manual', state: 'active', title: '大相撲中継', serviceName: 'NHK総合', channelType: 'GR', startAt: iso(nowMs + 2 * HOUR), durationMs: 5_400_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), series: null, skip: false },
+  { id: 3, site: SITE, programId: 9003, source: 'rule', state: 'detached', title: 'クラシック音楽館', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', startAt: iso(nowMs + 5 * HOUR), durationMs: 3_600_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), series: null, skip: false },
+  { id: 4, site: SITE, programId: 9004, source: 'rule', state: 'orphaned', title: '日曜洋画劇場', serviceName: 'テレビ大阪', channelType: 'GR', startAt: iso(nowMs + 26 * HOUR), durationMs: 7_200_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), series: null, skip: false },
 ]
 
 /** issue #686 の状態別レイアウト判定用。容量警告だけを増やし、他の条件は揃える。 */
@@ -364,11 +364,11 @@ const searchNoteOverage = {
  * 「NHK高校講座」は分類ルール（下）が勝つ棚＝「手動」の札が付く側。
  */
 const seriesShelves = [
-  { value: 'NHK高校講座', title: 'NHK高校講座　日本史　第1回', count: 120, playableCount: 100, latestStartAt: '2026-08-10T10:00:00Z', representativeId: 11 },
-  { value: 'ドラマ', title: 'ドラマ　夜のさざなみ　第3話', count: 40, playableCount: 38, latestStartAt: '2026-08-11T13:00:00Z', representativeId: 12 },
-  { value: '作品X', title: 'アニメ　作品X　第2話', count: 12, playableCount: 0, latestStartAt: '2026-08-12T12:30:00Z', representativeId: 13 },
-  { value: '単発', title: '単発の特番', count: 1, playableCount: 1, latestStartAt: '2026-08-09T09:00:00Z', representativeId: 14 },
-  { title: '【特集】', count: 2, playableCount: 0, latestStartAt: '2026-08-12T13:00:00Z', representativeId: 15 },
+  { value: 'NHK高校講座', title: 'NHK高校講座　日本史　第1回', count: 120, playableCount: 100, unwatchedCount: 20, latestStartAt: '2026-08-10T10:00:00Z', representativeId: 11 },
+  { value: 'ドラマ', title: 'ドラマ　夜のさざなみ　第3話', count: 40, playableCount: 38, unwatchedCount: 5, latestStartAt: '2026-08-11T13:00:00Z', representativeId: 12 },
+  { value: '作品X', title: 'アニメ　作品X　第2話', count: 12, playableCount: 0, unwatchedCount: 0, latestStartAt: '2026-08-12T12:30:00Z', representativeId: 13 },
+  { value: '単発', title: '単発の特番', count: 1, playableCount: 1, unwatchedCount: 1, latestStartAt: '2026-08-09T09:00:00Z', representativeId: 14 },
+  { title: '【特集】', count: 2, playableCount: 0, unwatchedCount: 2, latestStartAt: '2026-08-12T13:00:00Z', representativeId: 15 },
 ]
 const seriesLabelRules = [
   { id: 1, key: 'series', keyword: '日本史', value: 'NHK高校講座 日本史', priority: 5, valueKey: 'NHK高校講座', createdAt: '2026-08-01T00:00:00Z', updatedAt: '2026-08-01T00:00:00Z' },

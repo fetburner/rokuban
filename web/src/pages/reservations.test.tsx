@@ -37,6 +37,7 @@ function reservation(
     createdAt: at(0),
     updatedAt: at(0),
     skip: false,
+    series: null,
     ...overrides,
   }
 }

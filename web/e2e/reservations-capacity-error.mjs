@@ -39,6 +39,7 @@ const reservations = [
     durationMs: HOUR,
     createdAt: iso(Date.now()),
     updatedAt: iso(Date.now()),
+    series: null,
     skip: false,
   },
 ]

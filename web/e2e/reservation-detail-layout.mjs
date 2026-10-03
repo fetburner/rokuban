@@ -37,6 +37,7 @@ const reservation = {
   durationMs: 3_600_000,
   createdAt: '2026-10-03T00:00:00.000Z',
   updatedAt: '2026-10-03T00:00:00.000Z',
+  series: null,
   skip: false,
 }
 
