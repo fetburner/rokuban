@@ -108,8 +108,11 @@ func getReservationSeriesBody(t *testing.T, client *http.Client, url string) jso
 
 func assertReservationSeries(t *testing.T, got *string, want string) {
 	t.Helper()
-	if got == nil || *got != want {
-		t.Fatalf("series = %v, want %q", got, want)
+	if got == nil {
+		t.Fatalf("series = <nil>, want %q", want)
+	}
+	if *got != want {
+		t.Fatalf("series = %q, want %q", *got, want)
 	}
 }
 

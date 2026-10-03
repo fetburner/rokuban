@@ -159,6 +159,7 @@ SELECT r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.de
              AND rec.service_id = s.service_id
              AND rec.event_id = s.event_id
        ))::boolean AS never_recorded,
+       -- LEFT JOIN にしない（EPG 全行の評価になる）。docs/data/series.md §予約一覧の実効シリーズは相関サブクエリで引く
        (SELECT eps.value FROM epg_program_series eps WHERE eps.site = r.site AND eps.program_id = r.program_id) AS series
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
@@ -371,6 +372,7 @@ SELECT r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.de
              AND rec.service_id = s.service_id
              AND rec.event_id = s.event_id
        ))::boolean AS never_recorded,
+       -- LEFT JOIN にしない（EPG 全行の評価になる）。docs/data/series.md §予約一覧の実効シリーズは相関サブクエリで引く
        (SELECT eps.value FROM epg_program_series eps WHERE eps.site = r.site AND eps.program_id = r.program_id) AS series
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id

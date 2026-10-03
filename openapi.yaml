@@ -3791,7 +3791,7 @@ components:
         series:
           type: string
           nullable: true
-          # Required nullable strings need a pointer to emit JSON null rather than an empty string.
+          # 必須かつ nullable な文字列は、ポインタにしないと JSON の null ではなく空文字列で出る（oapi-codegen v2.8.0 は x-go-type が無いと string を出す）。
           x-go-type: "*string"
           description: |
             予約に対応する EPG 番組の実効シリーズ。EPG 行が無い、または実効シリーズを

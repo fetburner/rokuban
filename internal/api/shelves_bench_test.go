@@ -41,12 +41,12 @@ const shelfBenchmarkDatabaseURL = "ROKUBAN_BENCH_DATABASE_URL"
 // 測る形は棚クエリ 6 つと予約一覧 2 つである。
 //
 //   - (a) 本番: sqlc の ListRecordingShelves。生きている録画を母集団にして playable_assets を
-//     LEFT JOIN し、見られる件数（count FILTER）と latestStartAt（max）を同じ集計から返す形
+//     LEFT JOIN し、見られる件数（count FILTER）・放送イベント単位の未視聴件数・latestStartAt（max）を
+//     同じ集計から返す形
 //   - (o) 旧形: 再生できる録画だけを INNER JOIN した母集団（playable を MATERIALIZED）。
 //     母集団が (a) と違うので比較用のリテラルとして持つ
 //   - (o') (o) から playable の MATERIALIZED を外した形。同じ母集団どうしの比較
-//   - (b') (a) の live を MATERIALIZED にした形
-//   - (c) (a) に放送イベント単位の未視聴件数を加えた形
+//   - (b') 本番 SQL の live を MATERIALIZED にした形（本番の全列と比べる）
 //   - (o_inline) (o) の recording_series を書き下した形。予算の 141 ms を測った形で、比の分母
 //   - (d) / (d') 予約一覧に実効シリーズを LEFT JOIN / 相関サブクエリで足す形。予約数と、予約に
 //     載らない EPG の行数を別々に動かす
@@ -55,11 +55,12 @@ const shelfBenchmarkDatabaseURL = "ROKUBAN_BENCH_DATABASE_URL"
 // 中央値を t.Logf に出す。比も出すが、判定には使わない。
 //
 // 判定しているのは結果の一致だけである。棚ごとに (a) の playable_count と (o) の recording_count
-// （母集団が違うのでこの対応で見る）、(o') / (o_inline) と (o) の全列、(b') と (a) の全列が一致し、
+// （母集団が違うのでこの対応で見る）、(o') / (o_inline) と (o) の全列、(b') と (a) の全列（未視聴件数を含む）が一致し、
 // (a) の latest_start_at は別クエリで求めた「その棚の生きている録画の program_start_at の最大値」と
 // 一致する。(a) の本番 SQL の max や FILTER を壊すとここで落ちる。
-// (c) は (a) の全列に加えて、独立に集計した「再生可能な live 放送イベントのうち、
-// 全録画行を通じて watched 印が無いイベント数」と一致し、合計は 64,600 である。
+// (a) の未視聴件数は、独立に集計した「再生可能な live 放送イベントのうち、
+// 全録画行を通じて watched 印が無いイベント数」と棚ごとに一致し、合計は 64,600、
+// 各棚で 0 以上かつ playable_count 以下である。本番 SQL の未視聴の数え方を壊すとここで落ちる。
 // (d') は (d) と予約ごとの実効シリーズが一致する。
 //
 // 既知の 617 ms（playable の MATERIALIZED を外すと数倍遅い）は、現スキーマ・この合成
@@ -109,25 +110,22 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 			for _, r := range rows {
 				out[shelfKey(r.Value)] = shelfResult{
 					title: r.Title, recording: r.RecordingCount, playable: r.PlayableCount,
-					latest: r.LatestStartAt, representative: r.RepresentativeID,
+					unwatched: r.UnwatchedCount, latest: r.LatestStartAt, representative: r.RepresentativeID,
 				}
 			}
 			return out, nil
 		}},
 		{name: "(o) previous playable-only shape", run: func() (map[string]shelfResult, error) {
-			return queryShelves(ctx, conn.Conn(), previousShelfQuery, false)
+			return queryShelves(ctx, conn.Conn(), previousShelfQuery)
 		}},
 		{name: "(o') previous shape without playable MATERIALIZED", run: func() (map[string]shelfResult, error) {
-			return queryShelves(ctx, conn.Conn(), previousUnmaterializedShelfQuery, false)
+			return queryShelves(ctx, conn.Conn(), previousUnmaterializedShelfQuery)
 		}},
 		{name: "(b') production shape with live MATERIALIZED", run: func() (map[string]shelfResult, error) {
-			return queryShelves(ctx, conn.Conn(), liveMaterializedShelfQuery, true)
-		}},
-		{name: "(c) production shelf with unwatched broadcast-event counts", run: func() (map[string]shelfResult, error) {
-			return queryUnwatchedShelves(ctx, conn.Conn())
+			return queryProductionColumnsShelves(ctx, conn.Conn(), liveMaterializedShelfQuery)
 		}},
 		{name: "(o_inline) previous shape with the effective series written inline", run: func() (map[string]shelfResult, error) {
-			return queryShelves(ctx, conn.Conn(), previousInlineShelfQuery, false)
+			return queryShelves(ctx, conn.Conn(), previousInlineShelfQuery)
 		}},
 	}
 
@@ -154,7 +152,7 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 		t.Logf("%s: median %s", shape.name, medians[i])
 	}
 
-	production, previous, previousUnmaterialized, liveMaterialized, withUnwatched, previousInline := results[0], results[1], results[2], results[3], results[4], results[5]
+	production, previous, previousUnmaterialized, liveMaterialized, previousInline := results[0], results[1], results[2], results[3], results[4]
 	wantLatest, err := queryExpectedLatest(ctx, conn.Conn())
 	if err != nil {
 		t.Fatalf("computing expected latest_start_at: %v", err)
@@ -181,23 +179,13 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 		if liveMaterialized[key] != prod {
 			t.Errorf("shelf %q: (b') %+v != (a) %+v", key, liveMaterialized[key], prod)
 		}
-		gotUnwatched, ok := withUnwatched[key]
-		if !ok {
-			t.Errorf("(c) missing shelf %q", key)
-			continue
+		if prod.unwatched < 0 || prod.unwatched > prod.playable {
+			t.Errorf("shelf %q: (a) unwatched count %d is outside [0, playable %d]", key, prod.unwatched, prod.playable)
 		}
-		if gotUnwatched.title != prod.title || gotUnwatched.recording != prod.recording ||
-			gotUnwatched.playable != prod.playable || !gotUnwatched.latest.Equal(prod.latest) ||
-			gotUnwatched.representative != prod.representative {
-			t.Errorf("(c) shelf %q base fields %+v != (a) %+v", key, gotUnwatched, prod)
+		if want := wantUnwatched[key]; prod.unwatched != want {
+			t.Errorf("shelf %q: (a) unwatched count = %d, want %d", key, prod.unwatched, want)
 		}
-		if gotUnwatched.unwatched < 0 || gotUnwatched.unwatched > gotUnwatched.playable {
-			t.Errorf("(c) shelf %q unwatched count %d is outside [0, playable %d]", key, gotUnwatched.unwatched, gotUnwatched.playable)
-		}
-		if want := wantUnwatched[key]; gotUnwatched.unwatched != want {
-			t.Errorf("(c) shelf %q unwatched count = %d, want %d", key, gotUnwatched.unwatched, want)
-		}
-		unwatched += gotUnwatched.unwatched
+		unwatched += prod.unwatched
 		playable += prod.playable
 		live += prod.recording
 	}
@@ -205,16 +193,16 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 		t.Errorf("production totals = playable %d / live %d, want 65000 / 71000", playable, live)
 	}
 	if unwatched != 64_600 {
-		t.Errorf("(c) total unwatched events = %d, want 64600", unwatched)
+		t.Errorf("(a) total unwatched events = %d, want 64600", unwatched)
 	}
 
 	// 予算 200 ms は、(o_inline) の形が 141 ms だった環境で決めた。そのため同じ回の (o_inline) との比
 	// 200/141 で読む。当時は 73,000 行すべてが再生可能だったが、この seed では 65,000 行である。
 	// この違いが比をどちらへ動かすかは未検証。
-	t.Logf("ratios to (a): (o)=%.2f, (o')=%.2f, (b')=%.2f; (o')/(o)=%.2f; (o)/(o_inline)=%.2f; (c)/(o_inline)=%.2f (budget 200/141=%.2f)",
+	t.Logf("ratios to (a): (o)=%.2f, (o')=%.2f, (b')=%.2f; (o')/(o)=%.2f; (o)/(o_inline)=%.2f; (a)/(o_inline)=%.2f (budget 200/141=%.2f)",
 		float64(medians[1])/float64(medians[0]), float64(medians[2])/float64(medians[0]),
 		float64(medians[3])/float64(medians[0]), float64(medians[2])/float64(medians[1]),
-		float64(medians[1])/float64(medians[5]), float64(medians[4])/float64(medians[5]), 200.0/141.0)
+		float64(medians[1])/float64(medians[4]), float64(medians[0])/float64(medians[4]), 200.0/141.0)
 
 	benchmarkReservationsWithSeries(t, ctx, conn.Conn())
 }
@@ -359,9 +347,9 @@ func median(samples []time.Duration) time.Duration {
 	return (s[len(s)/2-1] + s[len(s)/2]) / 2
 }
 
-// queryShelves は棚のクエリを実行して棚ごとの結果を返す。expanded は playable_count と
-// latest_start_at の列を持つ形（本番形の派生）を読む。
-func queryShelves(ctx context.Context, conn *pgx.Conn, query string, expanded bool) (map[string]shelfResult, error) {
+// queryShelves は旧形（value / title / recording_count / representative_id の 4 列）の
+// 棚のクエリを実行して棚ごとの結果を返す。
+func queryShelves(ctx context.Context, conn *pgx.Conn, query string) (map[string]shelfResult, error) {
 	rows, err := conn.Query(ctx, query)
 	if err != nil {
 		return nil, err
@@ -371,12 +359,7 @@ func queryShelves(ctx context.Context, conn *pgx.Conn, query string, expanded bo
 	for rows.Next() {
 		var value pgtype.Text
 		var r shelfResult
-		if expanded {
-			err = rows.Scan(&value, &r.title, &r.playable, &r.recording, &r.latest, &r.representative)
-		} else {
-			err = rows.Scan(&value, &r.title, &r.recording, &r.representative)
-		}
-		if err != nil {
+		if err := rows.Scan(&value, &r.title, &r.recording, &r.representative); err != nil {
 			return nil, err
 		}
 		var v *string
@@ -388,8 +371,10 @@ func queryShelves(ctx context.Context, conn *pgx.Conn, query string, expanded bo
 	return out, rows.Err()
 }
 
-func queryUnwatchedShelves(ctx context.Context, conn *pgx.Conn) (map[string]shelfResult, error) {
-	rows, err := conn.Query(ctx, unwatchedShelfQuery)
+// queryProductionColumnsShelves は本番形の派生（value / title / playable_count / recording_count /
+// unwatched_count / latest_start_at / representative_id の 7 列）を読む。
+func queryProductionColumnsShelves(ctx context.Context, conn *pgx.Conn, query string) (map[string]shelfResult, error) {
+	rows, err := conn.Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -722,37 +707,9 @@ GROUP BY p.value
 ORDER BY recording_count DESC, p.value ASC NULLS LAST
 `
 
+// liveMaterializedShelfQuery は本番 SQL の live を MATERIALIZED にした測定用の形である。
+// 本番との違いはそれだけで、列順と型キャスト以外は書き写している。
 const liveMaterializedShelfQuery = `
-WITH playable_assets AS MATERIALIZED (
-    SELECT DISTINCT ma.recording_id
-    FROM media_assets ma
-    WHERE (ma.kind = 'original' AND ma.state <> 'deleted')
-       OR (ma.kind = 'encoded' AND ma.state = 'active')
-),
-live AS MATERIALIZED (
-    SELECT r.id,
-           r.title,
-           r.program_start_at,
-           rs.value,
-           pa.recording_id AS playable_recording_id
-    FROM recordings r
-    LEFT JOIN playable_assets pa ON pa.recording_id = r.id
-    JOIN recording_series rs ON rs.recording_id = r.id
-    WHERE r.deleted_at IS NULL
-      AND r.superseded_at IS NULL
-)
-SELECT l.value,
-       (array_agg(l.title ORDER BY l.program_start_at DESC, l.id DESC))[1]::text AS title,
-       count(*) FILTER (WHERE l.playable_recording_id IS NOT NULL) AS playable_count,
-       count(*) AS recording_count,
-       max(l.program_start_at) AS latest_start_at,
-       (array_agg(l.id ORDER BY l.program_start_at DESC, l.id DESC))[1]::bigint AS representative_id
-FROM live l
-GROUP BY l.value
-ORDER BY recording_count DESC, l.value ASC NULLS LAST
-`
-
-const unwatchedShelfQuery = `
 WITH playable_assets AS MATERIALIZED (
     SELECT DISTINCT ma.recording_id
     FROM media_assets ma
@@ -765,7 +722,7 @@ watched_events AS MATERIALIZED (
     FROM recordings r
     JOIN recording_watched w ON w.recording_id = r.id
 ),
-live AS (
+live AS MATERIALIZED (
     SELECT r.id,
            r.title,
            r.program_start_at,
@@ -789,7 +746,7 @@ SELECT l.value,
        count(*) FILTER (WHERE l.playable_recording_id IS NOT NULL) AS playable_count,
        count(*) AS recording_count,
        count(DISTINCT (l.network_id, l.service_id, l.program_start_at))
-           FILTER (WHERE l.playable_recording_id IS NOT NULL AND l.watched_network_id IS NULL) AS unwatched_count,
+           FILTER (WHERE l.playable_recording_id IS NOT NULL AND l.watched_network_id IS NULL)::bigint AS unwatched_count,
        max(l.program_start_at) AS latest_start_at,
        (array_agg(l.id ORDER BY l.program_start_at DESC, l.id DESC))[1]::bigint AS representative_id
 FROM live l

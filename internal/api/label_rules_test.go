@@ -266,6 +266,34 @@ VALUES ($1, 'original', 'test/purged', 1, 'deleted')`, purgedWatched); err != ni
 	}
 }
 
+// 同じ放送が 2 拠点の両方で視聴済みでも、棚の件数は録画行の数のままで増えない。
+//
+// 視聴済み印を束ねる CTE が DISTINCT でないと、印が 2 行ある放送の live 行が複製され、
+// count / playableCount が水増しされる（自動 PUT は行ごとに印を付けるので実際に起きる）。
+func TestListRecordingShelves_WatchedOnEveryRowDoesNotInflateCounts(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+	ctx := context.Background()
+	base := time.Now().Truncate(time.Second)
+
+	for _, site := range []string{"tokyo", "osaka"} {
+		id := seedPlayableOpts(t, pool, seedRecordingOpts{
+			title: "アニメ　作品X　第1話", start: base, status: "finished", eventID: 1, site: site,
+		})
+		if _, err := pool.Exec(ctx, `INSERT INTO recording_watched (recording_id) VALUES ($1)`, id); err != nil {
+			t.Fatalf("marking %s row watched: %v", site, err)
+		}
+	}
+
+	shelves := getShelves(t, srv.URL, url.Values{})
+	if len(shelves) != 1 {
+		t.Fatalf("shelves = %+v, want one shelf", shelves)
+	}
+	if got := shelves[0]; got.Count != 2 || got.PlayableCount != 2 || got.UnwatchedCount != 0 {
+		t.Fatalf("count/playable/unwatched = %d/%d/%d, want 2/2/0", got.Count, got.PlayableCount, got.UnwatchedCount)
+	}
+}
+
 // key が未知の値なら 400（黙って 0 件にしない。docs/api/rest.md の規約）。
 func TestListRecordingShelves_RejectsUnknownKey(t *testing.T) {
 	pool := testutil.SetupDB(t)

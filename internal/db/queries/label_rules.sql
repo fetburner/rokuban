@@ -111,24 +111,24 @@ SELECT (SELECT count(*) FROM upserted) + (SELECT count(*) FROM removed);
 -- ビュー経由は書き下しより約 8% 遅かった（旧母集団の形、合成データ 73,000 行・141 棚・
 -- 分類ルール 50 本で約 223 ms 対 約 206 ms）。
 --
--- 現在の形（生きている録画 + playable_assets の LEFT JOIN + count FILTER +
--- max(program_start_at) を同じ集計から返す）の測定は
+-- 現在の形（生きている録画 + playable_assets の LEFT JOIN + 視聴済み放送イベントの
+-- LEFT JOIN + count FILTER + max(program_start_at) を同じ集計から返す）の測定は
 -- `internal/api/shelves_bench_test.go`（`ROKUBAN_BENCH_DATABASE_URL` が無ければ
 -- スキップ）が専用 DB で再現する。録画 73,000 行（再生可能 65,000・録画中 3,000・
 -- ingest 待ち 2,000・failed 1,000・ごみ箱 1,000・superseded 1,000）・141 棚・分類ルール
--- 50 本で、各形を交互に 10 ラウンド回した中央値（Apple M3 Max・PostgreSQL 16.2。
--- 同じハーネスの 3 回実行）:
+-- 50 本で、各形を交互に 10 ラウンド回した中央値（Apple M3 Max・PostgreSQL 16.2）:
 --
---   - 本番（この形）: 254〜257 ms
+--   - 本番（この形）: 310〜314 ms。同じ回の旧母集団・書き下し形（222〜224 ms）の 1.40〜1.41 倍
+--   - 未視聴を足す前の形（旧本番）: 250〜257 ms
 --   - 旧母集団の形（再生できる録画だけを INNER JOIN、playable は MATERIALIZED）:
---     240〜241 ms（本番の 0.93〜0.95 倍）
---   - 旧母集団の形から playable の MATERIALIZED を外す: 227〜228 ms（本番の 0.89 倍）
---   - この形の live を MATERIALIZED にする: 272 ms（本番の 1.06〜1.07 倍。改善にならない）
+--     240〜241 ms（未視聴を足す前の形の 0.93〜0.95 倍）
 --
--- 結論: live は MATERIALIZED にしない。母集団を広げた費用は旧形の約 1.06 倍（本番 / 旧形）である。
+-- live を MATERIALIZED にする効果は、未視聴を足す前の形では本番の 1.06〜1.07 倍遅く
+-- 改善にならなかった。現在の形での再測定は未実施なので、live は MATERIALIZED にしない前提を
+-- 引き継いでいる。
 -- 本番の playable_count は旧形の recording_count と全棚で一致する（ハーネスが検査する）。
--- **絶対値の 200 ms 予算の確認は未測定**（元の測定環境・実データ。この環境は旧形でも
--- 予算を越える）。
+-- 200 ms の予算は docs/data/series.md のとおり、同じ回の書き下し形との比
+-- 200/141 ≈ 1.42 倍で読む。310〜314 ms は 1.40〜1.41 倍でこれに収まる（余裕は 1〜2%）。
 WITH playable_assets AS MATERIALIZED (
     SELECT DISTINCT ma.recording_id
     FROM media_assets ma
