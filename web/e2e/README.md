@@ -782,16 +782,17 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:reservations-mobile
 ```
 
-### 固定ヘッダーと行内リンクの重なり（`header-stacking.mjs`）
+### 固定ヘッダーとページ内 z-10 要素の重なり（`header-stacking.mjs`）
 
-予約一覧の容量不足バッジは行全面リンクより手前に置くため `relative z-10` を持つ。
-行に stacking context がないまま一覧をスクロールすると、同じ `z-10` の `PageHeader`
-と競合する。予約一覧を 400px / 1280px 幅でスクロールし、バッジの矩形をヘッダーに
-重ねた位置で `document.elementFromPoint` がヘッダー内を返すことを実ブラウザで確認する。
-録画一覧も同じ幅でスクロールし、ヘッダーが残ることと録画中の行に追っかけリンクが
-無いことを見る。jsdom は描画順と hit testing を測れない。
+録画詳細のポスター上の「視聴済みにする」は `absolute z-10` を持つ。祖先に stacking context が無いので、
+`PageHeader` が同じ `z-10` だと DOM 順で後ろのボタンがヘッダーの手前に描かれる。録画詳細を 400px / 1280px 幅で
+スクロールし、ボタンの矩形をヘッダーの中央に重ねた位置で `document.elementFromPoint` がヘッダー内を返すことを
+実ブラウザで確認する。ボタンの祖先に stacking context が無いこと、判定点がボタン矩形に入っていること、
+ブレーカー帯とヘッダーが重ならないことは前提として検査し、成立しなければ落とす。DOM は書き換えない。
+録画一覧も同じ幅でスクロールし、ヘッダーが残ることと録画中の行に追っかけリンクが無いことを見る。
+jsdom は描画順と hit testing を測れない。
 
-API をスタブするため mirakc と DB は要らない。判定は z-index を直す前の実装で落ちる。
+API をスタブするため mirakc と DB は要らない。①は `PageHeader` を `z-10` に戻すと落ちる。
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &

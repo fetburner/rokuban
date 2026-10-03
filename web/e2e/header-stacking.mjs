@@ -1,15 +1,16 @@
-// PageHeader が録画・予約の一覧行にある z-10 の操作より手前に描画されることを
-// 実ブラウザで確認する（issue #1078）。jsdom では stacking context と hit testing
-// を測れないため、capacity badge をヘッダーの位置までスクロールして判定する。
-// 録画一覧も 400px / デスクトップ幅でスクロールし、sticky header と追っかけ導線を確認する。
+// PageHeader が、隔離されていないページ内の z-10 要素より手前に描画されることを
+// 実ブラウザで確認する（issue #1078）。jsdom では stacking context と hit testing を
+// 測れない。① 録画詳細のポスター上の「視聴済みにする」（absolute z-10。祖先に
+// stacking context が無いことも実行時に検査する）をヘッダーの位置までスクロールし、
+// document.elementFromPoint がヘッダーを返すことを見る。DOM は書き換えない。
+// ② 録画一覧を 400px / デスクトップ幅でスクロールし、sticky header が残ることと、
+// 録画中の行に追っかけリンクが無いことを見る。
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
 //   E2E_URL=http://localhost:4173 pnpm e2e:header-stacking
 import {
-  ListCapacityOveragesResponseItem,
   ListCircuitBreakersResponseItem,
   ListRecordingsResponseItem,
-  ListReservationsResponseItem,
 } from '../src/api/zod.ts'
 import {
   finish,
@@ -28,36 +29,6 @@ const baseMs = Date.parse('2026-01-01T12:00:00Z')
 const iso = (ms) => new Date(ms).toISOString()
 const ng = []
 
-const reservations = Array.from({ length: 24 }, (_, i) => {
-  const startAt = baseMs + HOUR + i * (HOUR / 2)
-  return {
-    id: i + 1,
-    site: SITE,
-    programId: 9001 + i,
-    source: 'manual',
-    state: 'active',
-    title: `重なり判定の予約 ${i + 1}`,
-    serviceName: 'テスト局',
-    channelType: 'GR',
-    startAt: iso(startAt),
-    durationMs: HOUR / 2,
-    createdAt: iso(baseMs),
-    updatedAt: iso(baseMs),
-    series: null,
-    skip: false,
-  }
-})
-
-const overages = [
-  {
-    site: SITE,
-    startAt: iso(baseMs + HOUR),
-    endAt: iso(baseMs + 14 * HOUR),
-    shortfall: 1,
-    jammedTypes: ['BS'],
-  },
-]
-
 const breakers = [
   {
     site: SITE,
@@ -68,6 +39,32 @@ const breakers = [
     detail: { total: 1, programs: [] },
   },
 ]
+
+// 完了済み・原本のみ（encodedAssets なし、sizeBytes あり）。live 有効時は再生元が original-vod になり、
+// 詳細のポスターに「視聴済みにする」（absolute z-10）が出る。
+const detailRecording = {
+  id: 77,
+  site: SITE,
+  source: 'manual',
+  serviceName: 'ＯＨＫ',
+  channelType: 'GR',
+  channel: '27',
+  networkId: 32678,
+  serviceId: 5168,
+  eventId: 77,
+  title: 'ポスター上の操作を確認する録画',
+  description: '説明\n'.repeat(40),
+  startAt: iso(baseMs),
+  durationMs: HOUR,
+  status: 'finished',
+  keepOriginal: 'always',
+  cmDetection: { state: 'disabled' },
+  startedAt: iso(baseMs),
+  endedAt: iso(baseMs + HOUR),
+  createdAt: iso(baseMs + HOUR),
+  sizeBytes: 1_000_000,
+  encodedAssets: [],
+}
 
 const recordings = Array.from({ length: 24 }, (_, i) => ({
   id: i + 1,
@@ -92,8 +89,7 @@ async function apiHandler({ path, json, route }) {
   if (path === '/api/sites') return json([SITE])
   if (path === '/api/capabilities') return json({ live: true, cmDetect: false })
   if (path === '/api/breakers') return json(breakers)
-  if (path === '/api/reservations') return json(reservations)
-  if (path === '/api/capacity/overages') return json(overages)
+  if (path === '/api/recordings/77' && route.request().method() === 'GET') return json(detailRecording)
   if (path === '/api/recordings' && route.request().method() === 'GET') return json(recordings)
   if (path === '/api/events') return sseKeepAlive(route)
   if (/^\/api\/media\/recordings\/\d+\/thumbnail$/.test(path)) {
@@ -106,9 +102,8 @@ log(`URL: ${URL_BASE}`)
 log('\n=== 契約検証: フィクスチャの zod parse ===')
 await validateFixturesOrExit(
   [
-    ...reservations.map((item, i) => [`reservations[${i}]`, ListReservationsResponseItem, item]),
+    ['detailRecording', ListRecordingsResponseItem, detailRecording],
     ...recordings.map((item, i) => [`recordings[${i}]`, ListRecordingsResponseItem, item]),
-    ['overages[0]', ListCapacityOveragesResponseItem, overages[0]],
     ...breakers.map((item, i) => [`breakers[${i}]`, ListCircuitBreakersResponseItem, item]),
   ],
   ng,
@@ -119,9 +114,9 @@ await verifyBundleMatchesOrExit(URL_BASE, ng)
 
 const browser = await launchBrowser()
 
-async function openPage(width) {
+async function openPage(width, height = 800) {
   const context = await browser.newContext({
-    viewport: { width, height: 800 },
+    viewport: { width, height },
     locale: 'ja-JP',
     timezoneId: 'Asia/Tokyo',
   })
@@ -130,92 +125,117 @@ async function openPage(width) {
   return { context, page }
 }
 
+const STACKING_CONTEXT_PROBE = (el) => {
+  const cs = getComputedStyle(el)
+  const reasons = []
+  if (cs.position !== 'static' && cs.zIndex !== 'auto') reasons.push(`z-index:${cs.zIndex}`)
+  if (cs.position === 'fixed' || cs.position === 'sticky') reasons.push(cs.position)
+  if (cs.opacity !== '1') reasons.push('opacity')
+  if (cs.transform !== 'none') reasons.push('transform')
+  if (cs.filter !== 'none') reasons.push('filter')
+  if (cs.backdropFilter && cs.backdropFilter !== 'none') reasons.push('backdrop-filter')
+  if (cs.isolation === 'isolate') reasons.push('isolate')
+  if (cs.willChange !== 'auto') reasons.push('will-change')
+  if (cs.contain !== 'none' && /layout|paint|strict|content/.test(cs.contain)) reasons.push('contain')
+  return reasons
+}
+
 for (const width of [400, 1280]) {
-  const { context, page } = await openPage(width)
-  log(`\n=== ① ${width}px: 予約行の z-10 バッジが sticky header に隠れる ===`)
-  await page.goto(URL_BASE + '/reservations', { waitUntil: 'domcontentloaded' })
-  const badge = page.locator('a.relative.z-10').first()
-  await badge.waitFor({ timeout: 15000 }).catch(() => {
-    ng.push(`① ${width}px: 容量不足バッジが表示されない`)
+  // 詳細は 400px では内容が短くスクロールできないので、ビューポート高さを下げて前提を成立させる。
+  const { context, page } = await openPage(width, 500)
+  log(`\n=== ① ${width}px: 録画詳細ポスターの z-10 ボタンが sticky header に隠れる ===`)
+  const capabilities = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/capabilities')
+  await page.goto(URL_BASE + '/recordings/77', { waitUntil: 'domcontentloaded' })
+  await capabilities
+  const button = page.getByRole('button', { name: '視聴済みにする' })
+  await button.waitFor({ timeout: 15000 }).catch(() => {
+    ng.push(`① ${width}px: ポスターの「視聴済みにする」が表示されない`)
   })
-  const breakerBanner = page.locator('[role="alert"]', { hasText: '削除が保留されています' })
-  await breakerBanner.waitFor({ timeout: 15000 }).catch(() => {
+  await page.locator('[role="alert"]', { hasText: '削除が保留されています' }).waitFor({ timeout: 15000 }).catch(() => {
     ng.push(`① ${width}px: サーキットブレーカー帯が表示されない`)
   })
-
-  // 予約行は isolate で z-10 を閉じ込めており、そのままでは PageHeader が z-10 でも
-  // 通ってしまう（空虚な成功）。行の isolate を外し、行内 z-10 と素で競合させて測る。
-  await page.evaluate(() => {
-    for (const li of document.querySelectorAll('li.isolate')) li.classList.remove('isolate')
-  })
-  const setup = await page.evaluate(() => {
-    const header = Array.from(document.querySelectorAll('header')).find(
-      (el) => el.querySelector('h1')?.textContent?.trim() === '予約',
-    )
-    const badge = document.querySelector('a.relative.z-10')
-    if (!header || !badge) return null
-    const headerBox = header.getBoundingClientRect()
-    const badgeBox = badge.getBoundingClientRect()
-    return {
-      x: badgeBox.left + badgeBox.width / 2,
-      targetY: headerBox.top + headerBox.height / 2,
-      scrollBy: badgeBox.top + badgeBox.height / 2 - (headerBox.top + headerBox.height / 2),
-    }
-  })
-  if (!setup) {
-    ng.push(`① ${width}px: header または容量不足バッジの矩形が取れない`)
-  } else {
-    await page.evaluate((amount) => window.scrollBy(0, amount), setup.scrollBy)
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
-    const result = await page.evaluate(({ x, y }) => {
-      const header = Array.from(document.querySelectorAll('header')).find(
-        (el) => el.querySelector('h1')?.textContent?.trim() === '予約',
-      )
-      const hit = document.elementFromPoint(x, y)
-      const headerBox = header?.getBoundingClientRect()
-      const badge = document.querySelector('a.relative.z-10')
-      const badgeBox = badge?.getBoundingClientRect()
-      return {
-        scrollY: window.scrollY,
-        hitHeader: Boolean(header && hit && header.contains(hit)),
-        hitTag: hit?.tagName ?? '(なし)',
-        headerTop: headerBox?.top ?? null,
-        headerBottom: headerBox?.bottom ?? null,
-        badgeTop: badgeBox?.top ?? null,
-        badgeBottom: badgeBox?.bottom ?? null,
-        headerZ: header ? getComputedStyle(header).zIndex : 'auto',
-        badgeZ: badge ? getComputedStyle(badge).zIndex : 'auto',
-        bannerTop: document.querySelector('[role="alert"]')?.getBoundingClientRect().top ?? null,
-        bannerBottom: document.querySelector('[role="alert"]')?.getBoundingClientRect().bottom ?? null,
-        bannerHeight: document.querySelector('[role="alert"]')?.getBoundingClientRect().height ?? 0,
-        hitBadge: Boolean(badge && hit && badge.contains(hit)),
-        badgeLeft: badgeBox?.left ?? null,
-        badgeRight: badgeBox?.right ?? null,
+  if (await button.count()) {
+    // 前提: ボタンの祖先（body まで）に stacking context を作るものが無い。あれば z-10 が閉じ込められ、
+    // PageHeader の z 値と競合しないので、この判定は何も測れない。
+    const contexts = await button.evaluate((el, probeSrc) => {
+      const probe = new Function('el', `return (${probeSrc})(el)`)
+      const found = []
+      for (let n = el.parentElement; n && n !== document.body; n = n.parentElement) {
+        const reasons = probe(n)
+        if (reasons.length) found.push(`${n.tagName.toLowerCase()}[${reasons.join(',')}]`)
       }
-    }, { x: setup.x, y: setup.targetY })
-    log(`  point=(${Math.round(setup.x)},${Math.round(setup.targetY)}) scrollY=${Math.round(result.scrollY)} banner=${result.bannerTop}..${result.bannerBottom} (${result.bannerHeight}px) hit=${result.hitTag} header=${result.headerTop}..${result.headerBottom} z=${result.headerZ} badge=${result.badgeTop}..${result.badgeBottom} z=${result.badgeZ} hitHeader=${result.hitHeader} hitBadge=${result.hitBadge}`)
-    if (result.scrollY <= 0 || result.headerTop === null || result.badgeTop === null) {
-      ng.push(`① ${width}px: スクロールまたは重なり判定の前提が成立しない`)
-    } else if (
-      setup.targetY < result.badgeTop ||
-      setup.targetY > result.badgeBottom ||
-      setup.x < result.badgeLeft ||
-      setup.x > result.badgeRight
-    ) {
-      ng.push(`① ${width}px: 前提が成立しない（判定点がスクロール後のバッジ矩形に入っていない）`)
-    } else if (
-      result.bannerHeight <= 0 ||
-      result.bannerTop === null ||
-      Math.abs(result.bannerTop) > 1 ||
-      result.bannerBottom === null
-    ) {
-      ng.push(`① ${width}px: サーキットブレーカー帯が表示されない`)
-    } else if (result.headerTop < result.bannerBottom - 1) {
-      ng.push(`① ${width}px: PageHeader がサーキットブレーカー帯に重なる`)
-    } else if (!result.hitHeader || result.hitBadge) {
-      ng.push(
-        `① ${width}px: ヘッダーが行内リンクより前面でない（hit=${result.hitTag}, z=${result.headerZ}/${result.badgeZ}）`,
+      return found
+    }, STACKING_CONTEXT_PROBE.toString())
+    log(`  ボタンの祖先の stacking context: ${contexts.length ? contexts.join(' ') : '(なし)'}`)
+    if (contexts.length) ng.push(`① ${width}px: 前提が成立しない（ボタンの祖先に stacking context がある: ${contexts.join(' ')}）`)
+
+    const setup = await page.evaluate(() => {
+      const header = Array.from(document.querySelectorAll('header')).find(
+        (el) => el.querySelector('h1') && getComputedStyle(el).position === 'sticky',
       )
+      const target = Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.trim() === '視聴済みにする')
+      if (!header || !target) return null
+      const headerBox = header.getBoundingClientRect()
+      const box = target.getBoundingClientRect()
+      const y = headerBox.top + headerBox.height / 2
+      return { x: box.left + box.width / 2, targetY: y, scrollBy: box.top + box.height / 2 - y }
+    })
+    if (!setup) {
+      ng.push(`① ${width}px: header またはボタンの矩形が取れない`)
+    } else {
+      await page.evaluate((amount) => window.scrollBy(0, amount), setup.scrollBy)
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+      const result = await page.evaluate(({ x, y }) => {
+        const header = Array.from(document.querySelectorAll('header')).find(
+          (el) => el.querySelector('h1') && getComputedStyle(el).position === 'sticky',
+        )
+        const target = Array.from(document.querySelectorAll('button')).find((b) => b.textContent?.trim() === '視聴済みにする')
+        const hit = document.elementFromPoint(x, y)
+        const headerBox = header?.getBoundingClientRect()
+        const box = target?.getBoundingClientRect()
+        const alert = document.querySelector('[role="alert"]')?.getBoundingClientRect()
+        return {
+          scrollY: window.scrollY,
+          hitHeader: Boolean(header && hit && header.contains(hit)),
+          hitButton: Boolean(target && hit && target.contains(hit)),
+          hitTag: hit?.tagName ?? '(なし)',
+          headerTop: headerBox?.top ?? null,
+          headerBottom: headerBox?.bottom ?? null,
+          boxTop: box?.top ?? null,
+          boxBottom: box?.bottom ?? null,
+          boxLeft: box?.left ?? null,
+          boxRight: box?.right ?? null,
+          headerZ: header ? getComputedStyle(header).zIndex : 'auto',
+          buttonZ: target ? getComputedStyle(target).zIndex : 'auto',
+          bannerTop: alert?.top ?? null,
+          bannerBottom: alert?.bottom ?? null,
+          bannerHeight: alert?.height ?? 0,
+        }
+      }, { x: setup.x, y: setup.targetY })
+      log(`  point=(${Math.round(setup.x)},${Math.round(setup.targetY)}) scrollY=${Math.round(result.scrollY)} banner=${result.bannerTop}..${result.bannerBottom} (${result.bannerHeight}px) hit=${result.hitTag} header=${result.headerTop}..${result.headerBottom} z=${result.headerZ} button=${result.boxTop}..${result.boxBottom} z=${result.buttonZ} hitHeader=${result.hitHeader} hitButton=${result.hitButton}`)
+      if (result.scrollY <= 0 || result.headerTop === null || result.boxTop === null) {
+        ng.push(`① ${width}px: スクロールまたは重なり判定の前提が成立しない`)
+      } else if (
+        setup.targetY < result.boxTop ||
+        setup.targetY > result.boxBottom ||
+        setup.x < result.boxLeft ||
+        setup.x > result.boxRight
+      ) {
+        ng.push(`① ${width}px: 前提が成立しない（判定点がスクロール後のボタン矩形に入っていない）`)
+      } else if (
+        result.bannerHeight <= 0 ||
+        result.bannerTop === null ||
+        Math.abs(result.bannerTop) > 1 ||
+        result.bannerBottom === null
+      ) {
+        ng.push(`① ${width}px: サーキットブレーカー帯が表示されない`)
+      } else if (result.headerTop < result.bannerBottom - 1) {
+        ng.push(`① ${width}px: PageHeader がサーキットブレーカー帯に重なる`)
+      } else if (!result.hitHeader || result.hitButton) {
+        ng.push(
+          `① ${width}px: ヘッダーが詳細ポスターの z-10 ボタンより前面でない（hit=${result.hitTag}, z=${result.headerZ}/${result.buttonZ}）`,
+        )
+      }
     }
   }
   await context.close()
