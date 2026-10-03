@@ -3067,8 +3067,12 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
 
     setMediaProps(chaseVideo, { currentTime: 119 })
     fireEvent.ended(chaseVideo)
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src')).toContain('/api/media/recordings/3/file'))
+    const encodedVideo = document.querySelector('video')!
+    setMediaProps(encodedVideo, { currentTime: 119 })
+    fireEvent.ended(encodedVideo)
     await new Promise((resolve) => setTimeout(resolve, 50))
-    expect(document.querySelector('video')).toBe(chaseVideo)
+    expect(document.querySelector('video')).toBe(encodedVideo)
     expect(playlistPaths(server.fetchMock, '/original-vod')).toEqual([])
   })
 
