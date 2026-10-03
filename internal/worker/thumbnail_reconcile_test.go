@@ -539,3 +539,108 @@ func TestThumbnailReconcile_SeekTilesCursorIsIndependent(t *testing.T) {
 		}
 	}
 }
+
+// 本番の既存サムネイルには衛星表の行が無い。チャプターが無い録画は作り直さず、
+// 検出済みの録画だけを作り直す（崩れるとデプロイ直後に全録画が作り直される）。
+func TestThumbnailReconcile_RowlessThumbnailOnlyReselectsWithChapters(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	q := sqlcgen.New(pool)
+	seed := func(site int32) int64 {
+		id := insertTestRecordingForSite(t, pool, "default", site)
+		seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("rowless/%d.ts", id), []byte("fake-ts"))
+		seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, db.AssetKindThumbnail, nil,
+			thumbnailRelPath(id), []byte("old-thumbnail"))
+		return id
+	}
+	noChapters := seed(951)
+	detected := seed(952)
+	if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
+		RecordingID: detected, CmRanges: "{[0,60000)}",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	runThumbnailReconcilePass(t, pool, &ThumbnailReconcileWorker{Pool: pool})
+	if got := countThumbnailJobs(t, pool, noChapters); got != 0 {
+		t.Errorf("thumbnail jobs without chapters = %d, want 0", got)
+	}
+	if got := countThumbnailJobs(t, pool, detected); got != 1 {
+		t.Errorf("thumbnail jobs with CM detection = %d, want 1", got)
+	}
+
+	w := &ThumbnailWorker{
+		Pool: pool, MediaDir: mediaDir, ScratchDir: t.TempDir(),
+		runCmd: func(context.Context, string, ...string) ([]byte, error) {
+			t.Error("recording without chapters must not run ffmpeg/ffprobe")
+			return nil, fmt.Errorf("unexpected command")
+		},
+	}
+	job := &river.Job[ThumbnailJobArgs]{JobRow: &rivertype.JobRow{}, Args: ThumbnailJobArgs{RecordingID: noChapters}}
+	if err := w.Work(ctx, job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+	cur, err := q.LockActiveThumbnailMediaAsset(ctx, noChapters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur.RelPath != thumbnailRelPath(noChapters) {
+		t.Errorf("rel_path = %q, want unchanged", cur.RelPath)
+	}
+}
+
+// 使える入力が無い録画（原本は missing、encoded 無し）は、ジョブがエラーにならず
+// サムネイルも変えず、reconcile も投入しない。
+func TestThumbnailWorker_NoUsableInputKeepsThumbnailWithoutError(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	q := sqlcgen.New(pool)
+	id := insertTestRecordingForSite(t, pool, "default", 961)
+	originalID := seedOriginalAsset(t, pool, mediaDir, id, "noinput/original.ts", []byte("fake-ts"))
+	thumbID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, db.AssetKindThumbnail, nil,
+		thumbnailRelPath(id), []byte("old-thumbnail"))
+	if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+		MediaAssetID: thumbID, SeekMs: 30000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
+		RecordingID: id, CmRanges: "{[0,60000)}",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO missing_media_assets (media_asset_id) VALUES ($1)`, originalID); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &ThumbnailWorker{
+		Pool: pool, MediaDir: mediaDir, ScratchDir: t.TempDir(),
+		runCmd: func(context.Context, string, ...string) ([]byte, error) {
+			t.Error("no usable input must not run ffmpeg/ffprobe")
+			return nil, fmt.Errorf("unexpected command")
+		},
+	}
+	job := &river.Job[ThumbnailJobArgs]{JobRow: &rivertype.JobRow{}, Args: ThumbnailJobArgs{RecordingID: id}}
+	if err := w.Work(ctx, job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+	cur, err := q.LockActiveThumbnailMediaAsset(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur.RelPath != thumbnailRelPath(id) || cur.SeekMs == nil || *cur.SeekMs != 30000 {
+		t.Errorf("thumbnail = %q seek %v, want unchanged %q / 30000", cur.RelPath, cur.SeekMs, thumbnailRelPath(id))
+	}
+	runThumbnailReconcilePass(t, pool, &ThumbnailReconcileWorker{Pool: pool})
+	if got := countThumbnailJobs(t, pool, id); got != 0 {
+		t.Errorf("thumbnail jobs = %d, want 0", got)
+	}
+}
