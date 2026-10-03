@@ -10,7 +10,6 @@ import (
 	"hash"
 	"io"
 	"log/slog"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -33,17 +32,6 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/tsstat"
-)
-
-const (
-	maxInJobRetries = 5
-
-	// connectRetryBaseDelay / connectRetryMaxDelay は StreamRecord への接続が
-	// 失敗したときの指数バックオフの下限・上限。mirakc が即座に refuse する状況
-	// （再起動直後など）で 6 回のリトライを一瞬で使い切らないようにする。
-	// 転送中断（Range 再開）側は stallReader が既に間を置くのでバックオフ不要。
-	connectRetryBaseDelay = 200 * time.Millisecond
-	connectRetryMaxDelay  = 5 * time.Second
 )
 
 // errIngestRecordEndedAbnormally は、追従中の record が finished ではなく
@@ -722,7 +710,7 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 			}
 			if retryErr := retryPoll(ctx, &consecutiveFailures, copyErr, log, "transfer", offset); retryErr != nil {
 				// retryPoll 自身が "transfer failed N consecutive times" を
-				// 付けている。ここで包み直すと固定回数（maxInJobRetries）と
+				// 付けている。ここで包み直すと固定回数（mirakc.MaxConsecutiveRetries）と
 				// retryPoll が数えた回数がずれた文になり、ctx キャンセル時は
 				// ctx.Err() が「N 回連続失敗」を名乗ってしまう。他の 2 箇所
 				// （"record status" / "stream connect"）と同じくそのまま返す。
@@ -884,15 +872,15 @@ func waitForFollowPoll(ctx context.Context) error {
 // 失敗が散発しても River の attempt を消費しない一方、mirakc が落ち続ける
 // とジョブを River の再試行へ戻す。
 func retryPoll(ctx context.Context, consecutiveFailures *int, err error, log *slog.Logger, phase string, offset int64) error {
-	if !isRetryablePollError(err) {
+	if !mirakc.IsRetryable(err) {
 		return fmt.Errorf("%s: %w", phase, err)
 	}
 	*consecutiveFailures++
 	attempt := *consecutiveFailures - 1
-	if *consecutiveFailures > maxInJobRetries {
+	if *consecutiveFailures > mirakc.MaxConsecutiveRetries {
 		return fmt.Errorf("%s failed %d consecutive times at offset %d: %w", phase, *consecutiveFailures, offset, err)
 	}
-	delay := connectRetryDelay(attempt)
+	delay := mirakc.RetryDelay(attempt)
 	log.Warn("ingest: transient poll failure, retrying", "phase", phase, "consecutive_failures", *consecutiveFailures, "offset", offset, "err", err, "delay", delay)
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
@@ -902,14 +890,6 @@ func retryPoll(ctx context.Context, consecutiveFailures *int, err error, log *sl
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-func isRetryablePollError(err error) bool {
-	var apiErr *mirakc.APIError
-	if errors.As(err, &apiErr) {
-		return apiErr.StatusCode >= http.StatusInternalServerError
-	}
-	return true
 }
 
 // recordIngestMetrics は転送結果のバイト数・TS 統計をメトリクスへ記録する。
@@ -942,16 +922,6 @@ func (w *IngestWorker) enqueueIngestFollowups(ctx context.Context, client *mirak
 	if _, err := client.DeleteRecord(ctx, recordID, true); err != nil {
 		log.Error("ingest: failed to delete edge record (committed OK)", "err", err)
 	}
-}
-
-// connectRetryDelay は StreamRecord への接続リトライの待ち時間を指数バックオフで返す。
-// attempt は 0 始まり。connectRetryMaxDelay で頭打ちにする。
-func connectRetryDelay(attempt int) time.Duration {
-	delay := connectRetryBaseDelay << attempt
-	if delay > connectRetryMaxDelay || delay <= 0 {
-		return connectRetryMaxDelay
-	}
-	return delay
 }
 
 // hasOriginalMediaAsset は recordingID に対する kind='original' の media_asset

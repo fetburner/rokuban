@@ -27,10 +27,13 @@ import path from 'node:path'
 
 import { ListRecordingsResponseItem } from '../src/api/zod.ts'
 import {
+  beginCurrentTimeGapMeasurement,
   finish,
+  finishCurrentTimeGapMeasurement,
   installApiStubs,
   launchBrowser,
   log,
+  MAX_SOURCE_SWITCH_STALL_MS,
   sseKeepAlive,
   validateFixturesOrExit,
   verifyBundleMatchesOrExit,
@@ -1445,6 +1448,7 @@ if (!transitionSeekbarBox) {
   const seekY = transitionSeekbarBox.y + transitionSeekbarBox.height / 2
   const encodedCountBeforeRangeExit = encodedRequests.length
   await page.mouse.move(seekX, seekY)
+  await beginCurrentTimeGapMeasurement(page, 'original-hls-to-encoded')
   await page.mouse.click(seekX, seekY)
   const encodedSwitchDeadline = Date.now() + 10000
   while (encodedRequests.length === encodedCountBeforeRangeExit && Date.now() < encodedSwitchDeadline) {
@@ -1468,6 +1472,22 @@ if (!transitionSeekbarBox) {
   log(`  range-exit encoded requests=${encodedRequests.length - encodedCountBeforeRangeExit}, axis=${await transitionSeekbar.getAttribute('aria-valuenow')}`)
   if (encodedRequests.length === encodedCountBeforeRangeExit) {
     ng.push('⑥ original HLS 範囲外 seek で encoded MP4 を要求しない')
+  }
+  const encodedPlaybackBaseline = await page.locator('video').evaluate((element) => element.currentTime)
+  const encodedContinued = await page.waitForFunction((baseline) => {
+    const element = document.querySelector('video')
+    return element !== null && element.currentSrc.includes('/file') && !element.paused &&
+      element.currentTime > baseline + 0.5
+  }, encodedPlaybackBaseline, { timeout: 10000 }).then(() => true).catch(() => false)
+  if (!encodedContinued) {
+    ng.push(`⑥ encoded MP4 へ切り替えた後に再生が続かない（${JSON.stringify(await page.locator('video').evaluate((element) => ({ currentSrc: element.currentSrc, currentTime: element.currentTime, paused: element.paused })))}）`)
+  }
+  const originalToEncodedGap = await finishCurrentTimeGapMeasurement(page, 'original-hls-to-encoded')
+  if (encodedRequests.length > encodedCountBeforeRangeExit && originalToEncodedGap !== undefined) {
+    log(`  HLS→encoded 切替中の currentTime 停止: ${originalToEncodedGap.maxGapMs.toFixed(0)}ms (limit ${MAX_SOURCE_SWITCH_STALL_MS}ms)`)
+    if (originalToEncodedGap.advances === 0 || originalToEncodedGap.maxGapMs > MAX_SOURCE_SWITCH_STALL_MS) {
+      ng.push(`⑥ 原本 HLS→encoded の切替停止時間が上限を超えるか、再生進行を観測できない（${JSON.stringify(originalToEncodedGap)}）`)
+    }
   }
 }
 
