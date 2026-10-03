@@ -199,6 +199,19 @@ func TestListRecordingShelves_CountsUnwatchedBroadcastEvents(t *testing.T) {
 		title: "アニメ　作品X　第5話", start: base.Add(time.Hour), status: "finished", eventID: 2, serviceID: 5169,
 	})
 
+	// 視聴済みイベント（base）と同時刻でも network_id / service_id が違えば未視聴。
+	// 視聴済み印の JOIN 条件から network_id / service_id を外すと、ここが視聴済みに数えられる。
+	networkAtWatched := seedPlayableOpts(t, pool, seedRecordingOpts{
+		title: "アニメ　作品X　第8話", start: base, status: "finished", eventID: 8, networkID: 32679,
+	})
+	serviceAtWatched := seedPlayableOpts(t, pool, seedRecordingOpts{
+		title: "アニメ　作品X　第9話", start: base, status: "finished", eventID: 9, serviceID: 5169,
+	})
+
+	// 再生できない生きた録画（録画中）は未視聴に数えない。
+	seedRecordingFull(t, pool, seedRecordingOpts{
+		title: "アニメ　作品X　第6話", start: base.Add(3 * time.Hour), status: "recording", eventID: 6,
+	})
 	// 視聴済み印が purge 済み tombstone にだけ残る場合も、生きている別拠点の録画を除外する。
 	purgedWatched := seedRecordingFull(t, pool, seedRecordingOpts{
 		title: "アニメ　作品X　第7話", start: base.Add(4 * time.Hour), status: "finished", eventID: 7, site: "tokyo",
@@ -221,8 +234,8 @@ VALUES ($1, 'original', 'test/purged', 1, 'deleted')`, purgedWatched); err != ni
 	if len(shelves) != 1 || shelves[0].Value == nil || *shelves[0].Value != "作品X" {
 		t.Fatalf("shelves = %+v, want one 作品X shelf", shelves)
 	}
-	if shelves[0].UnwatchedCount != 3 {
-		t.Fatalf("unwatched count = %d, want 3 distinct unwatched events", shelves[0].UnwatchedCount)
+	if shelves[0].UnwatchedCount != 5 {
+		t.Fatalf("unwatched count = %d, want 5 distinct unwatched events", shelves[0].UnwatchedCount)
 	}
 
 	// 印を持つ録画を後からごみ箱へ移しても、生きている同一放送は未視聴にならない。
@@ -230,8 +243,8 @@ VALUES ($1, 'original', 'test/purged', 1, 'deleted')`, purgedWatched); err != ni
 		t.Fatalf("trashing watched recording: %v", err)
 	}
 	shelves = getShelves(t, srv.URL, url.Values{})
-	if len(shelves) != 1 || shelves[0].UnwatchedCount != 3 {
-		t.Fatalf("shelves after trashing watched recording = %+v, want three unwatched events", shelves)
+	if len(shelves) != 1 || shelves[0].UnwatchedCount != 5 {
+		t.Fatalf("shelves after trashing watched recording = %+v, want five unwatched events", shelves)
 	}
 
 	// 視聴を解除すると、生きている同一放送が再び未視聴に数えられる。
@@ -239,12 +252,12 @@ VALUES ($1, 'original', 'test/purged', 1, 'deleted')`, purgedWatched); err != ni
 		t.Fatalf("clearing watched marker: %v", err)
 	}
 	shelves = getShelves(t, srv.URL, url.Values{})
-	if len(shelves) != 1 || shelves[0].UnwatchedCount != 4 {
-		t.Fatalf("shelves after clearing watched marker = %+v, want four unwatched events", shelves)
+	if len(shelves) != 1 || shelves[0].UnwatchedCount != 6 {
+		t.Fatalf("shelves after clearing watched marker = %+v, want six unwatched events", shelves)
 	}
 
 	// 全イベントに視聴済み印を付けても、棚は残り件数だけが 0 になる。
-	for _, id := range []int64{watched, secondEpisode, thirdEpisode, networkEvent, serviceEvent, purgedLive} {
+	for _, id := range []int64{watched, secondEpisode, thirdEpisode, networkEvent, serviceEvent, networkAtWatched, serviceAtWatched, purgedLive} {
 		if _, err := pool.Exec(ctx, `INSERT INTO recording_watched (recording_id) VALUES ($1)`, id); err != nil {
 			t.Fatalf("marking event recording %d watched: %v", id, err)
 		}
@@ -256,7 +269,9 @@ VALUES ($1, 'original', 'test/purged', 1, 'deleted')`, purgedWatched); err != ni
 }
 
 // 同じ放送が 2 拠点の両方で視聴済みでも、棚の件数は録画行の数のままで増えない。
-// 視聴済み印を束ねる CTE が DISTINCT でないと、live 行が複製されて件数が水増しされる。
+//
+// 視聴済み印を束ねる CTE が DISTINCT でないと、印が 2 行ある放送の live 行が複製され、
+// 件数が水増しされる（自動 PUT は行ごとに印を付けるので実際に起きる）。
 func TestListRecordingShelves_WatchedOnEveryRowDoesNotInflateCounts(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newAPIServer(t, pool)

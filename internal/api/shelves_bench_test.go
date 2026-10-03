@@ -46,7 +46,7 @@ const shelfBenchmarkDatabaseURL = "ROKUBAN_BENCH_DATABASE_URL"
 //     母集団が (a) と違うので比較用のリテラルとして持つ
 //   - (o') (o) から playable の MATERIALIZED を外した形。同じ母集団どうしの比較
 //   - (b') (a) の live を MATERIALIZED にした形
-//   - (c) 未視聴イベント数を含む比較形。playable_assets を MATERIALIZED にする
+//   - (c) (a) の playable_assets を MATERIALIZED にした形
 //   - (o_inline) (o) の recording_series を書き下した形。予算の 141 ms を測った形で、比の分母
 //   - (d) / (d') 予約一覧に実効シリーズを LEFT JOIN / 相関サブクエリで足す形。予約数と、予約に
 //     載らない EPG の行数を別々に動かす
@@ -58,8 +58,8 @@ const shelfBenchmarkDatabaseURL = "ROKUBAN_BENCH_DATABASE_URL"
 // （母集団が違うのでこの対応で見る）、(o') / (o_inline) と (o) の全列、(b') と (a) の全列が一致し、
 // (a) の latest_start_at は別クエリで求めた「その棚の生きている録画の program_start_at の最大値」と
 // 一致する。(a) の本番 SQL の max や FILTER を壊すとここで落ちる。
-// (c) は (a) の全列に加えて、独立に集計した「再生可能な live 放送イベントのうち、
-// 全録画行を通じて watched 印が無いイベント数」と一致し、合計は 64,600 である。
+// (c) も (a) の全列と一致する。(a) の未視聴件数は、独立に集計した「再生可能な live 放送イベントのうち、
+// 全録画行を通じて watched 印が無いイベント数」と棚ごとに一致し、合計は 64,600 である。
 // (d') は (d) と予約ごとの実効シリーズが一致する。
 //
 // 既知の 617 ms（playable の MATERIALIZED を外すと数倍遅い）は、現スキーマ・この合成
@@ -124,8 +124,8 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 		{name: "(b') production shape with live MATERIALIZED", run: func() (map[string]shelfResult, error) {
 			return queryFullShelves(ctx, conn.Conn(), liveMaterializedShelfQuery)
 		}},
-		{name: "(c) production shelf with unwatched broadcast-event counts", run: func() (map[string]shelfResult, error) {
-			return queryFullShelves(ctx, conn.Conn(), unwatchedShelfQuery)
+		{name: "(c) production shape with playable_assets MATERIALIZED", run: func() (map[string]shelfResult, error) {
+			return queryFullShelves(ctx, conn.Conn(), materializedAssetsShelfQuery)
 		}},
 		{name: "(o_inline) previous shape with the effective series written inline", run: func() (map[string]shelfResult, error) {
 			return queryShelves(ctx, conn.Conn(), previousInlineShelfQuery)
@@ -155,7 +155,7 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 		t.Logf("%s: median %s", shape.name, medians[i])
 	}
 
-	production, previous, previousUnmaterialized, liveMaterialized, withUnwatched, previousInline := results[0], results[1], results[2], results[3], results[4], results[5]
+	production, previous, previousUnmaterialized, liveMaterialized, withMaterializedAssets, previousInline := results[0], results[1], results[2], results[3], results[4], results[5]
 	wantLatest, err := queryExpectedLatest(ctx, conn.Conn())
 	if err != nil {
 		t.Fatalf("computing expected latest_start_at: %v", err)
@@ -185,21 +185,8 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 		if got, ok := liveMaterialized[key]; !ok || got != prod {
 			t.Errorf("shelf %q: (b') %+v != (a) %+v", key, liveMaterialized[key], prod)
 		}
-		gotUnwatched, ok := withUnwatched[key]
-		if !ok {
-			t.Errorf("(c) missing shelf %q", key)
-			continue
-		}
-		if gotUnwatched.title != prod.title || gotUnwatched.recording != prod.recording ||
-			gotUnwatched.playable != prod.playable || !gotUnwatched.latest.Equal(prod.latest) ||
-			gotUnwatched.unwatched != prod.unwatched || gotUnwatched.representative != prod.representative {
-			t.Errorf("(c) shelf %q base fields %+v != (a) %+v", key, gotUnwatched, prod)
-		}
-		if gotUnwatched.unwatched < 0 || gotUnwatched.unwatched > gotUnwatched.playable {
-			t.Errorf("(c) shelf %q unwatched count %d is outside [0, playable %d]", key, gotUnwatched.unwatched, gotUnwatched.playable)
-		}
-		if want := wantUnwatched[key]; gotUnwatched.unwatched != want {
-			t.Errorf("(c) shelf %q unwatched count = %d, want %d", key, gotUnwatched.unwatched, want)
+		if got, ok := withMaterializedAssets[key]; !ok || got != prod {
+			t.Errorf("shelf %q: (c) %+v != (a) %+v", key, withMaterializedAssets[key], prod)
 		}
 		unwatched += prod.unwatched
 		playable += prod.playable
@@ -209,7 +196,7 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 		t.Errorf("production totals = playable %d / live %d, want 65000 / 71000", playable, live)
 	}
 	if unwatched != 64_600 {
-		t.Errorf("(c) total unwatched events = %d, want 64600", unwatched)
+		t.Errorf("(a) total unwatched events = %d, want 64600", unwatched)
 	}
 
 	// 予算 200 ms は、(o_inline) の形が 141 ms だった環境で決めた。そのため同じ回の (o_inline) との比
@@ -766,7 +753,7 @@ GROUP BY l.value
 ORDER BY recording_count DESC, l.value ASC NULLS LAST
 `
 
-const unwatchedShelfQuery = `
+const materializedAssetsShelfQuery = `
 WITH playable_assets AS MATERIALIZED (
     SELECT DISTINCT ma.recording_id
     FROM media_assets ma
@@ -848,5 +835,5 @@ var reservationSeriesShapes = []struct {
 	{"(d) ListReservationsFull LEFT JOIN epg_program_series", fmt.Sprintf(reservationsWithSeriesTemplate,
 		"eps.value", "LEFT JOIN epg_program_series eps ON eps.site = r.site AND eps.program_id = r.program_id\n")},
 	{"(d') ListReservationsFull with correlated epg_program_series", fmt.Sprintf(reservationsWithSeriesTemplate,
-		"series.value", "LEFT JOIN LATERAL (SELECT (SELECT eps.value FROM epg_program_series eps WHERE eps.site = r.site AND eps.program_id = r.program_id) AS value) series ON true\n")},
+		"(SELECT eps.value FROM epg_program_series eps WHERE eps.site = r.site AND eps.program_id = r.program_id)", "")},
 }

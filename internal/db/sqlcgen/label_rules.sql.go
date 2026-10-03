@@ -244,29 +244,24 @@ type ListRecordingShelvesRow struct {
 //
 // 下の live は旧 playable に当たる（recordings を走査する CTE）が、MATERIALIZED にしない。
 // 現スキーマ・合成 seed（下記）では 617 ms は再現せず、live を MATERIALIZED にした形は
-// 統合集計より遅い。617 ms の再現条件は未検証なので、再発したら EXPLAIN で計画を調べる。
+// 本番形の 1.06〜1.09 倍遅い（3 回）。617 ms の再現条件は未検証なので、再発したら
+// EXPLAIN で計画を調べる。
 //
-// playable_assets は参照が 1 回なので MATERIALIZED にしない。合成 seed で指定を外すと
-// 棚集計が 193.6 ms から 157.4 ms になり、結果も一致した。
+// playable_assets は参照が 1 回なので MATERIALIZED にしない。MATERIALIZED にした形は
+// 本番形の 1.03〜1.05 倍遅く（3 回）、結果は一致した。
 //
 // 実効シリーズは recording_series ビューが唯一の定義で、ここでも JOIN で読む
 // （COALESCE(lr.value_key, r.series_key) を書き下すと定義が 2 箇所になる）。
 // ビュー経由は書き下しより約 8% 遅かった（旧母集団の形、合成データ 73,000 行・141 棚・
 // 分類ルール 50 本で約 223 ms 対 約 206 ms）。
 //
-// 未視聴数を加えた過去の計測は、playable_assets を MATERIALIZED にしていた旧 SQL 形の値である。
-// 現行 SQL は playable_assets を MATERIALIZED にしないため、以下の値を現行形の絶対時間とはみなさない。
 // `internal/api/shelves_bench_test.go` は `ROKUBAN_BENCH_DATABASE_URL` がなければ
 // スキップし、専用 DB で各形を交互に 10 ラウンド計測する。
-//
-//   - 旧本番形（未視聴数あり、playable_assets MATERIALIZED）: 開発機の 3 回で 310〜314 ms
-//   - 同じ回の旧母集団・実効シリーズ書き下し形: 222〜224 ms
-//   - 旧本番形 / 書き下し形: 1.40〜1.41 倍（当時の予算 200/141 ≈ 1.42 倍）
-//
 // seed は生きている録画 71,000 行を含む全 73,000 行、141 棚、分類ルール 50 本で、
 // 放送イベントを複数拠点の録画で作り、視聴済み印と再生状態を混ぜる。
-// 予算に対する比は合成 seed で満たすが、実データでの絶対値は未測定である。
-// 予約一覧の EPG JOIN は同じハーネスで 500 件が 16.4 ms、2,000 件が 59.6 ms。
+// 本番形の中央値は 3 回で 302.6〜307.3 ms（Apple M3 Max・PostgreSQL 16.2）で、
+// 同じ回の旧母集団・実効シリーズ書き下し形（223.1〜229.8 ms）の 1.33〜1.36 倍だった。
+// 予算 200 ms を 141 ms の環境で決めた比 200/141 ≈ 1.42 倍に収まる。実データでの絶対値は未測定である。
 // 本番の playable_count は旧形の recording_count と全棚で一致する（ハーネスが検査する）。
 func (q *Queries) ListRecordingShelves(ctx context.Context) ([]ListRecordingShelvesRow, error) {
 	rows, err := q.db.Query(ctx, listRecordingShelves)
