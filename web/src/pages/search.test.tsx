@@ -1464,6 +1464,54 @@ describe('SearchPage', () => {
   })
 
   describe('この条件でルールを作成', () => {
+    it('?cond= の正のキーワードとサービス 1 件から、名前に触れずルールを作成できる', async () => {
+      const { createRuleBodies } = stubApi()
+      const condition = {
+        textMatches: [{ target: 'name', mode: 'keyword', value: 'ニュース' }],
+        services: [{ networkId: 32736, serviceId: 1024 }],
+      }
+      renderPage([`/search?cond=${encodeURIComponent(JSON.stringify(condition))}`])
+
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+      await userEvent.click(screen.getByRole('button', { name: 'この条件でルールを作成' }))
+      expect(await screen.findByLabelText('名前')).toHaveValue('ニュース')
+
+      await userEvent.click(screen.getByRole('button', { name: 'ルールを作成' }))
+      await waitFor(() => expect(createRuleBodies).toHaveLength(1))
+      expect(createRuleBodies[0]?.name).toBe('ニュース')
+      expect(createRuleBodies[0]?.services).toEqual([{ networkId: 32736, serviceId: 1024 }])
+    })
+
+    it('名前を一度編集すると、空にしても条件変更後も候補で上書きしない', async () => {
+      const { createRuleBodies } = stubApi()
+      const condition = {
+        textMatches: [{ target: 'name', mode: 'keyword', value: 'ニュース' }],
+      }
+      renderPage([`/search?cond=${encodeURIComponent(JSON.stringify(condition))}`])
+
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+      await userEvent.click(screen.getByRole('button', { name: 'この条件でルールを作成' }))
+
+      const nameInput = await screen.findByLabelText('名前')
+      expect(nameInput).toHaveValue('ニュース')
+      await userEvent.clear(nameInput)
+
+      const keywordInput = screen.getByLabelText('テキスト条件 1 の値')
+      await userEvent.clear(keywordInput)
+      await userEvent.type(keywordInput, '深夜')
+      expect(nameInput).toHaveValue('')
+      expect(screen.getByRole('button', { name: 'ルールを作成' })).toBeDisabled()
+
+      await userEvent.type(nameInput, '個別の名前')
+      await userEvent.clear(keywordInput)
+      await userEvent.type(keywordInput, 'ドラマ')
+      expect(nameInput).toHaveValue('個別の名前')
+
+      await userEvent.click(screen.getByRole('button', { name: 'ルールを作成' }))
+      await waitFor(() => expect(createRuleBodies).toHaveLength(1))
+      expect(createRuleBodies[0]?.name).toBe('個別の名前')
+    })
+
     it('テキスト・ジャンル・時間帯の条件を落とさずに RuleInput にする（核心）', async () => {
       const { createRuleBodies } = stubApi()
       renderPage()
@@ -1478,6 +1526,7 @@ describe('SearchPage', () => {
       await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
 
       await userEvent.click(screen.getByRole('button', { name: 'この条件でルールを作成' }))
+      await userEvent.clear(screen.getByLabelText('名前'))
       await userEvent.type(screen.getByLabelText('名前'), 'テストルール')
       await userEvent.click(screen.getByRole('button', { name: 'ルールを作成' }))
 
@@ -1523,6 +1572,7 @@ describe('SearchPage', () => {
       expect(await waitForServiceChip()).toBeInTheDocument()
       await addKeyword('ニュース')
       await userEvent.click(screen.getByRole('button', { name: 'この条件でルールを作成' }))
+      await userEvent.clear(screen.getByLabelText('名前'))
 
       expect(screen.getByRole('button', { name: 'ルールを作成' })).toBeDisabled()
       expect(screen.getByText('名前は必須です')).toBeInTheDocument()
@@ -1630,6 +1680,7 @@ describe('SearchPage', () => {
       const input = screen.getByLabelText('テキスト条件 1 の値')
       await userEvent.clear(input)
       await userEvent.type(input, '深夜')
+      expect(screen.getByLabelText('名前')).toHaveValue('ニュースルール')
 
       await userEvent.click(screen.getByRole('button', { name: 'ルールを上書き保存' }))
 
