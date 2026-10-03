@@ -1088,7 +1088,7 @@ function HomeThumbnail({
       className={cn(
         'relative aspect-video w-full min-w-0 overflow-hidden rounded border border-border bg-muted',
         hero &&
-          'md:flex-[1.7_1_0%] md:max-w-[min(64rem,calc((100dvh-25rem)*16/9))]',
+          'md:flex-[1.7_1_0%] md:max-w-[clamp(24rem,calc((100dvh-25rem)*16/9),64rem)]',
       )}
     >
       {!failed ? (

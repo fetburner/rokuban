@@ -474,7 +474,7 @@ export function LivePage() {
       ) : (
         <div className="flex flex-col gap-4 p-4 lg:flex-row lg:items-start lg:gap-0">
           <div
-            className="flex min-w-0 flex-1 flex-col gap-2 lg:sticky lg:w-[calc(100%-18rem)] lg:max-w-[calc((100dvh-25rem)*16/9)] lg:flex-none"
+            className="flex min-w-0 flex-1 flex-col gap-2 lg:sticky lg:w-[calc(100%-18rem)] lg:max-w-[max(24rem,calc((100dvh-25rem)*16/9))] lg:flex-none"
             style={{
               top: 'calc(var(--sticky-banners-height, 0px) + var(--page-header-height, 0px))',
             }}

@@ -1502,11 +1502,12 @@ for (const mode of ['watch', 'ops']) {
 }
 
 // ホーム「見る」: 2560x1440 でも主役と新着 1 行目が初期 viewport に入り、
-// 新着件数は 176px カードで入る列数に追従する。
+// 新着件数は 176px カードで入る列数に追従する。低い desktop viewport でも主役を保つ。
 {
   const wideViewport = { name: 'home-wide', width: 2560, height: 1440 }
+  const shortViewport = { name: 'home-short', width: 1366, height: 400 }
   const arrivalCounts = new Map()
-  for (const viewport of [homeDesktop, wideViewport]) {
+  for (const viewport of [homeDesktop, wideViewport, shortViewport]) {
     const { context, page } = await open(
       viewport,
       'light',
@@ -1547,6 +1548,12 @@ for (const mode of ['watch', 'ops']) {
     }
     if (new Set(metrics.cardRows).size > 1) {
       ng.push(`home/watch/${viewport.width}: 新着カードが 2 行以上に折り返されている`)
+    }
+    if (viewport.name === shortViewport.name) {
+      if (metrics.hero === null || metrics.hero.width < 320 || metrics.hero.height < 180) {
+        ng.push(`home/watch/1366x400: 主役サムネイルが表示可能な大きさでない（${metrics.hero?.width ?? 0}×${metrics.hero?.height ?? 0}px）`)
+      }
+      await page.screenshot({ path: path.join(OUT_DIR, 'home-watch-light-short.png') })
     }
     if (viewport.width === wideViewport.width) {
       if (metrics.cards <= 6) ng.push('home/watch/2560: 新着が 6 件以下のまま')
@@ -2900,6 +2907,24 @@ for (const viewport of [
     }
   }
   await page.screenshot({ path: path.join(OUT_DIR, `${viewport.name}-light.png`) })
+  await context.close()
+}
+
+// 高さが足りない desktop viewport でもライブ映像をゼロ幅にしない。
+{
+  const viewport = { name: 'live-short', width: 1366, height: 400 }
+  const liveScreen = {
+    ...screenOf('live'),
+    path: `/live?service=${services[0].id}&site=${SITE}`,
+  }
+  const { context, page } = await open(viewport, 'light', liveScreen, { wideLiveFixture: true })
+  const preview = page.getByRole('button', { name: 'NHK総合を再生', exact: true })
+  const ready = await preview.waitFor({ timeout: 10000 }).then(() => true).catch(() => false)
+  const videoBox = ready ? await preview.boundingBox() : null
+  if (videoBox === null || videoBox.width < 320 || videoBox.height < 180) {
+    ng.push(`live/1366x400: 映像プレビューが表示可能な大きさでない（${videoBox?.width ?? 0}×${videoBox?.height ?? 0}px）`)
+  }
+  await page.screenshot({ path: path.join(OUT_DIR, 'live-short-light.png') })
   await context.close()
 }
 
@@ -4755,7 +4780,7 @@ for (const theme of themes) {
         )
         await checkExplicitFocusRing(
           page,
-          popup.getByRole('button', { name: 'すべて', exact: true }),
+          popup.getByRole('checkbox', { name: 'すべて', exact: true }),
           'ChannelOption',
           theme,
         )
@@ -5030,7 +5055,7 @@ async function checkMinimumTargetSize(locator, label, minimumWidth, minimumHeigh
   await channelTrigger.click()
   const channelPopup = page.getByRole('dialog', { name: 'チャンネル' })
   await channelPopup.waitFor({ timeout: 5000 }).catch(() => {})
-  await checkMinimumTargetSize(channelPopup.getByRole('button'), 'チャンネル候補', 44)
+  await checkMinimumTargetSize(channelPopup.getByRole('checkbox'), 'チャンネル候補', 44)
   await context.close()
 }
 

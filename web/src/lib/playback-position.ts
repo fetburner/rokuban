@@ -31,7 +31,7 @@ export function originalMsToCutMs(originalMs: number, keepRanges: readonly KeepR
 
 /** カット後の ms を原本の ms へ戻す。内部境界は次の keep 区間の先頭へ寄せる。 */
 export function cutMsToOriginalMs(cutMs: number, keepRanges: readonly KeepRange[]): number {
-  if (keepRanges.length === 0) return cutMs
+  if (keepRanges.length === 0) return 0
   let cutOffset = 0
   for (let index = 0; index < keepRanges.length; index += 1) {
     const range = keepRanges[index]!
@@ -85,12 +85,7 @@ export function clearLegacyPlaybackPositions(): void {
   }
 }
 
-/** position writes are best effort; pause/pagehide supply later retry points. */
-export async function persistPlaybackPosition(
-  recordingId: number,
-  write: PlaybackPositionWrite,
-  keepalive = false,
-): Promise<boolean> {
+async function sendPlaybackWrite(recordingId: number, write: PlaybackPositionWrite, keepalive: boolean): Promise<boolean> {
   try {
     if (write.kind === 'delete') await deleteRecordingPlaybackPosition(recordingId, { keepalive })
     else if (write.kind === 'watched') await putRecordingWatched(recordingId, { keepalive })
@@ -99,6 +94,28 @@ export async function persistPlaybackPosition(
   } catch {
     return false
   }
+}
+
+// 先に出した位置 PUT が後から出した watched を追い越すと、watched が消した位置行を
+// PUT が作り直す。書き込みは前のものが settle するまで次を送らない。
+// ponytail: 全録画で 1 本のチェーン。録画をまたいでも順序が厳しくなるだけで結果は変わらない。
+// 待ちが問題になったら録画ごとのチェーンにする。
+let writeTail: Promise<unknown> = Promise.resolve()
+
+/**
+ * position writes are best effort; pause/pagehide supply later retry points.
+ * keepalive（pagehide）は待てないので直列化せず即送る。残差: pagehide 時に未完了の書き込みが
+ * あれば keepalive が追い越しうる。窓は直前の 1 往復だけで、ページを閉じる経路では待てないので受け入れる。
+ */
+export function persistPlaybackPosition(
+  recordingId: number,
+  write: PlaybackPositionWrite,
+  keepalive = false,
+): Promise<boolean> {
+  if (keepalive) return sendPlaybackWrite(recordingId, write, true)
+  const run = writeTail.then(() => sendPlaybackWrite(recordingId, write, false))
+  writeTail = run
+  return run
 }
 
 const RATE_KEY = 'rokuban:playback-rate'
