@@ -1,8 +1,10 @@
-// 録画詳細の面積配分を実ブラウザで測る（issue #1018）。
+// 録画詳細の面積配分を実ブラウザで測る（issue #1049）。
 //
 // レイアウト・viewport 内への収まりは jsdom では測れないため、実装前にこの判定を
-// 追加して旧画面で落ちることを確かめる。典型例（完了・エンコード済み・チャプターと
-// CM 検出あり・シリーズとルールあり・ドロップなし）を desktop/mobile の両方で開く。
+// 追加して旧画面で落ちることを確かめる。desktop ではシリーズ棚が映像の下の右列に
+// あり、本文全体が映像の上限幅に揃っていることも測る。典型例（完了・エンコード済み・チャプターと
+// CM 検出あり・シリーズとルールあり・ドロップなし）を 3 種の desktop viewport と
+// smartphone で開き、シリーズ無し録画も別に開く。
 //
 //   cd web && corepack pnpm build
 //   corepack pnpm preview --port 4188 --strictPort &
@@ -90,6 +92,13 @@ const inProgressRecording = {
   ingest: { state: 'pending' },
 }
 
+const noSeriesRecording = {
+  ...recording,
+  id: 5,
+  title: 'シリーズに属さない録画',
+  series: null,
+}
+
 const chapters = {
   source: 'auto',
   version: 'auto:detected:1',
@@ -130,7 +139,7 @@ async function apiHandler({ path: apiPath, url, json, route }) {
   }
   const recordingMatch = /^\/api\/recordings\/(\d+)$/.exec(apiPath)
   if (recordingMatch && method === 'GET') {
-    const item = [recording, nextRecording, trashRecording, inProgressRecording]
+    const item = [recording, nextRecording, trashRecording, inProgressRecording, noSeriesRecording]
       .find((candidate) => candidate.id === Number(recordingMatch[1]))
     return item ? json(item) : json({ error: 'not found' }, 404)
   }
@@ -159,8 +168,11 @@ function measureLayout() {
     return { x, y, width, height, bottom }
   }
   const detail = rect('[data-testid="recording-detail-body"]')
-  const content = detail
   const player = rect('[data-testid="recording-player-frame"]')
+  const playerColumn = rect('[data-testid="recording-player-column"]')
+  const title = rect('[data-testid="recording-title-row"] h2')
+  const description = rect('[data-testid="recording-description"]')
+  const shelf = rect('[data-testid="recording-series-shelf"]')
   const viewport = { width: innerWidth, height: innerHeight }
   const groups = Object.fromEntries(
     [
@@ -184,11 +196,19 @@ function measureLayout() {
   return {
     viewport,
     detail,
-    content,
     player,
-    playerWidthRatio: content && player ? Math.round((player.width / content.width) * 1000) / 1000 : null,
+    playerColumn,
+    title,
+    description,
+    shelf,
     playerHeightRatio: player ? Math.round((player.height / viewport.height) * 1000) / 1000 : null,
     playerVisibleInFirstViewport: player !== null && player.y >= 0 && player.bottom <= viewport.height,
+    titleVisibleInFirstViewport: title !== null && title.y >= 0 && title.bottom <= viewport.height,
+    descriptionVisibleInFirstViewport: description !== null && description.bottom <= viewport.height,
+    shelfTopAlignedWithTitle: shelf !== null && title !== null && Math.abs(shelf.y - title.y) <= 1,
+    shelfRightOfTitleColumn: shelf !== null && playerColumn !== null && shelf.x >= playerColumn.x + playerColumn.width,
+    shelfRightEdgeWithinPlayer: shelf !== null && player !== null && shelf.x + shelf.width <= player.x + player.width + 1,
+    shelfTopVisibleInFirstViewport: shelf !== null && shelf.y >= 0 && shelf.y < viewport.height,
     tabs,
     tabPanelCount,
     outsideProgramTrackCount,
@@ -203,6 +223,7 @@ await validateFixturesOrExit([
   ['recording', ListRecordingsResponseItem, recording],
   ['trashRecording', ListRecordingsResponseItem, trashRecording],
   ['inProgressRecording', ListRecordingsResponseItem, inProgressRecording],
+  ['noSeriesRecording', ListRecordingsResponseItem, noSeriesRecording],
 ], ng)
 
 log('\n=== ⓪ 配っている bundle と dist/ の一致 ===')
@@ -210,8 +231,10 @@ await verifyBundleMatchesOrExit(URL_BASE, ng)
 
 const browser = await launchBrowser()
 for (const viewport of [
-  { name: 'desktop', width: 1280, height: 800 },
-  { name: 'mobile', width: 400, height: 800 },
+  { name: 'desktop-1280x720', desktop: true, width: 1280, height: 720 },
+  { name: 'desktop-1280x800', desktop: true, width: 1280, height: 800 },
+  { name: 'desktop-1920x1080', desktop: true, width: 1920, height: 1080 },
+  { name: 'mobile-400x800', desktop: false, width: 400, height: 800 },
 ]) {
   const context = await browser.newContext({
     viewport: { width: viewport.width, height: viewport.height },
@@ -228,11 +251,26 @@ for (const viewport of [
   const measured = await page.evaluate(measureLayout)
   log(`\n=== ${viewport.name} ${viewport.width}×${viewport.height}: 面積実測 ===`)
   log(JSON.stringify(measured, null, 2))
-  if (measured.playerWidthRatio === null || measured.playerWidthRatio < 0.95) {
-    ng.push(`${viewport.name}: 映像幅がコンテンツ幅の95%未満（比率=${measured.playerWidthRatio ?? '未測定'}）`)
-  }
   if (!measured.playerVisibleInFirstViewport) {
     ng.push(`${viewport.name}: 映像全体が最初の画面に収まらない`)
+  }
+  if (viewport.desktop && !measured.descriptionVisibleInFirstViewport) {
+    ng.push(`${viewport.name}: タイトルと説明の先頭2行が最初の画面に収まらない`)
+  }
+  if (viewport.desktop && !measured.titleVisibleInFirstViewport) {
+    ng.push(`${viewport.name}: タイトルが最初の画面に収まらない`)
+  }
+  if (viewport.desktop && !measured.shelfTopAlignedWithTitle) {
+    ng.push(`${viewport.name}: シリーズ棚の上端がタイトル行の上端と揃わない`)
+  }
+  if (viewport.desktop && !measured.shelfRightOfTitleColumn) {
+    ng.push(`${viewport.name}: シリーズ棚がタイトル列の右にない`)
+  }
+  if (viewport.desktop && !measured.shelfRightEdgeWithinPlayer) {
+    ng.push(`${viewport.name}: シリーズ棚の右端が映像の右端を超える（下段が映像の上限幅を超えて広がっている）`)
+  }
+  if (viewport.desktop && !measured.shelfTopVisibleInFirstViewport) {
+    ng.push(`${viewport.name}: シリーズ棚の上端が最初の画面に入らない`)
   }
   if (measured.outsideProgramTrackCount !== 1 || measured.outsideProgramSegmentCount !== 2) {
     ng.push(`${viewport.name}: 番組枠外の前後区間が一本のシークバーに点線表示されない`)
@@ -257,15 +295,19 @@ for (const viewport of [
       }
     }
     // 初期選択の確認（下）のため、最初のタブへ戻す。
-    await page.getByRole('tab', { name: viewport.name === 'mobile' ? '番組' : '版' }).click()
+    await page.getByRole('tab', { name: viewport.desktop ? '版' : '番組' }).click()
   }
-  const expectedSelectedTab = viewport.name === 'mobile' ? '番組' : '版'
+  const expectedSelectedTab = viewport.desktop ? '版' : '番組'
   if (!(await page.getByRole('tab', { name: expectedSelectedTab }).getAttribute('aria-selected') === 'true')) {
     ng.push(`${viewport.name}: 初期選択タブが「${expectedSelectedTab}」ではない`)
   }
   const shelfVisible = await page.locator('[data-testid="recording-series-shelf"]').isVisible().catch(() => false)
-  if (shelfVisible !== (viewport.name === 'desktop')) {
+  if (shelfVisible !== viewport.desktop) {
     ng.push(`${viewport.name}: シリーズ棚の表示条件が一致しない`)
+  }
+
+  if (EVIDENCE_DIR) {
+    await page.screenshot({ path: path.join(EVIDENCE_DIR, `${viewport.name}.png`), fullPage: true, animations: 'disabled' })
   }
 
   const more = page.getByRole('button', { name: '録画のその他の操作' })
@@ -290,16 +332,13 @@ for (const viewport of [
     for (const row of rows) {
       if (row.height < 36) ng.push(`${viewport.name}: ⋮ メニューの「${row.text}」の行の高さが ${row.height}px（ラフは 36px）`)
     }
-    if (EVIDENCE_DIR && viewport.name === 'desktop') {
-      await page.screenshot({ path: path.join(EVIDENCE_DIR, 'desktop.png'), fullPage: true, animations: 'disabled' })
-    }
     await page.keyboard.press('Escape')
   }
-  if (EVIDENCE_DIR && viewport.name === 'mobile') {
+  if (EVIDENCE_DIR && !viewport.desktop) {
     await page.locator('[data-testid="recording-player-frame"]').hover()
     await page.getByRole('button', { name: '再生設定' }).click()
     await page.getByTestId('playback-settings').waitFor({ timeout: 5000 })
-    await page.screenshot({ path: path.join(EVIDENCE_DIR, 'smartphone.png'), fullPage: true, animations: 'disabled' })
+    await page.screenshot({ path: path.join(EVIDENCE_DIR, 'mobile-playback-settings-400x800.png'), fullPage: true, animations: 'disabled' })
   }
   await context.close()
 }
@@ -352,5 +391,30 @@ if (EVIDENCE_DIR) {
   await recordingPage.screenshot({ path: path.join(EVIDENCE_DIR, 'recording.png'), fullPage: true, animations: 'disabled' })
 }
 await recordingContext.close()
+
+const noSeriesContext = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: 'ja-JP', timezoneId: 'Asia/Tokyo' })
+const noSeriesPage = await noSeriesContext.newPage()
+await installApiStubs(noSeriesPage, apiHandler)
+await noSeriesPage.goto(`${URL_BASE}/recordings/5`, { waitUntil: 'domcontentloaded' })
+await noSeriesPage.getByRole('heading', { name: 'シリーズに属さない録画' }).waitFor({ timeout: 15000 })
+await noSeriesPage.locator('[data-testid="recording-player-frame"]').waitFor({ timeout: 15000 })
+const noSeriesLayout = await noSeriesPage.evaluate(measureLayout)
+log('\n=== no-series 1280×800: 映像と下段の位置 ===')
+log(JSON.stringify(noSeriesLayout, null, 2))
+if (noSeriesLayout.player === null || noSeriesLayout.playerColumn === null) {
+  ng.push('no-series: 映像または下段カラムを測定できない')
+} else if (
+  Math.abs(noSeriesLayout.player.x - noSeriesLayout.playerColumn.x) > 1 ||
+  Math.abs(noSeriesLayout.player.width - noSeriesLayout.playerColumn.width) > 1
+) {
+  ng.push('no-series: 映像と下段カラムの左右位置または幅が揃わない')
+}
+if (await noSeriesPage.locator('[data-testid="recording-series-shelf"]').count() !== 0) {
+  ng.push('no-series: シリーズ棚が表示される')
+}
+if (EVIDENCE_DIR) {
+  await noSeriesPage.screenshot({ path: path.join(EVIDENCE_DIR, 'no-series-1280x800.png'), fullPage: true, animations: 'disabled' })
+}
+await noSeriesContext.close()
 
 await finish(ng, browser)

@@ -1121,6 +1121,7 @@ async function editLayoutMetrics(viewport) {
     const navRect = nav && getComputedStyle(nav).display !== 'none' ? nav.getBoundingClientRect() : null
     return {
       viewport: { width: window.innerWidth, height: window.innerHeight },
+      body: box('[data-testid="recording-detail-body"]'),
       editing: box('[data-testid="chapter-edit-layout"]'),
       player: box('[data-testid="chapter-edit-player"]'),
       spans: box('[data-testid="chapter-span-list"]'),
@@ -1217,6 +1218,18 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 400, height: 800 
     await checkTilePixels(`#1019 タイルの画素 ${viewport.width}px`)
     await shot(`entered-${phone ? 'phone' : 'desktop'}`)
   }
+}
+
+log('\n=== 編集モード: 本文幅が通常表示の映像高さ上限で絞られない ===')
+// 上限 (100dvh - 18rem) * 16/9 は映像が本文全幅を占める通常表示の式。編集中は映像の横に区間一覧があるので掛けない。
+{
+  const metrics720 = await editLayoutMetrics({ width: 1280, height: 720 })
+  const cap = ((720 - 288) * 16) / 9
+  log(`  1280×720 本文幅=${metrics720.body?.width} 上限=${cap}`)
+  if (metrics720.body === null || !(metrics720.body.width > cap + 1)) {
+    ng.push(`編集モード 1280×720: 本文幅が通常表示の上限 ${cap}px で絞られている（body=${metrics720.body?.width}）`)
+  }
+  await page.setViewportSize({ width: 1280, height: 800 })
 }
 
 log('\n=== #1019 zoom limit: 1 マスがタイルの実画素幅 160px を超えて引き伸ばされない ===')
