@@ -312,6 +312,29 @@ WebKit の HLS は 0.00ms / +23.37ms（-10.02 / +13.34）だった。
 になり、ずれを検出することを確認した。測定値と未測定の範囲は
 [`docs/frontend/recordings.md`](../../docs/frontend/recordings.md) に記録している。
 
+### 原本 HLS VOD の再生開始（`recording-original-vod.mjs`）
+
+FFmpeg で MPEG-2 TS と H.264/AAC HLS の fixture を作り、録画 API と streamer の URL を
+`page.route` で差し替える。mirakc と実録画は要らない。⑤-manual は自動再生を意図的に
+`NotAllowedError` で拒否し、0 / 1 / 3 秒待ってから操作バーの ▶ を押す。fixture は EVENT
+playlist の先頭 6 segment から始まり、待ち時間中に1秒ごとに segment を増やす。
+
+⑦ は原本 HLS と encoded の両方について 1280px / 400px で再生開始と枠の寸法を測る。
+再生開始は `HAVE_CURRENT_DATA` を待ってから開始時刻を取り、video が一時停止しておらず、
+`currentTime` がその値から 0.5 秒以上進むまで待つ。原本 HLS fixture は先頭 4 segment から
+始まり、2 秒ごとに配信済み segment が増える。固定 VOD playlist ではなく変換中の EVENT を使い、
+再生可能範囲の端で止まる挙動も測る。
+
+⑦ が失敗した場合は `paused`・`currentTime`・`readyState`・`seekable`・`buffered` とメディアエラーを記録する。
+クリック後の `play()` の成否、playlist / segment の要求と HTTP 応答も記録する。
+再生中の操作バーは 3 秒で隠れ `aria-hidden` / `inert` になる。手動でバーの操作を調べるときは、
+枠の上でマウスを動かして表示を待つ。
+
+```sh
+E2E_URL=http://localhost:4173 pnpm e2e:recording-original-vod
+E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:recording-original-vod
+```
+
 ### デザイン（`design.mjs`）
 
 **色は jsdom では測れない。** Tailwind のクラスは解決されず、oklch も計算されない。
