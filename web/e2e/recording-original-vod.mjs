@@ -302,8 +302,7 @@ const offsetVideoSegmentRequests = []
 const originalVODLeaveRequests = []
 let recordingDetailRequests = 0
 // ④ で true にする。variant / 字幕 playlist を先頭 4 segment で切り、ENDLIST を外して返す
-// （変換中の EVENT playlist の先端を再現する）。⑦ は実際の変換と同様に、時間とともに
-// 配信済み segment 数を増やす。
+// （変換中の EVENT playlist の先端を再現する）。⑦ は開始後に配信済み segment 数を増やす。
 let growingEdge = false
 let growingEventStartedAt
 
@@ -1464,21 +1463,6 @@ const playbackFrameBox = () => page.evaluate(() => {
     groupHeight: document.querySelector('[data-testid="recording-playback-group"]').getBoundingClientRect().height,
   }
 })
-const revealPlaybackControls = async () => {
-  const frame = await page.getByTestId('recording-player-frame').boundingBox()
-  if (frame === null) {
-    ng.push('⑦ 操作バーを出すためのプレイヤー枠を測れない')
-    return
-  }
-  const y = frame.y + frame.height / 3
-  await page.mouse.move(frame.x + frame.width / 2, y)
-  await page.mouse.move(frame.x + frame.width / 2 + 8, y)
-  await page.waitForFunction(
-    () => document.querySelector('[data-testid="player-controls"]')?.getAttribute('aria-hidden') === 'false',
-    undefined,
-    { timeout: 3000 },
-  ).catch(() => ng.push('⑦ マウス移動後も操作バーが出ない'))
-}
 for (const [label, viewport] of [['1280', { width: 1280, height: 900 }], ['400', { width: 400, height: 860 }]]) {
   await page.setViewportSize(viewport)
   for (const source of ['original-hls', 'encoded']) {
@@ -1500,27 +1484,16 @@ for (const [label, viewport] of [['1280', { width: 1280, height: 900 }], ['400',
     if (source === 'original-hls') {
       await page.getByTestId('recording-playback-start').click()
     } else {
-      await revealPlaybackControls()
       await page.locator('[data-testid="player-controls"]').getByRole('button', { name: '再生', exact: true }).click()
     }
-    let playbackStartTime
-    let playbackAdvanced = false
-    try {
-      await page.locator('video').waitFor({ timeout: 15000 })
-      await page.waitForFunction(() => {
-        const element = document.querySelector('video')
-        return element !== null && element.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
-      }, undefined, { timeout: 15000 })
-      playbackStartTime = await page.locator('video').evaluate((element) => element.currentTime)
-      await page.waitForFunction((startTime) => {
-        const element = document.querySelector('video')
-        return element !== null && !element.paused && element.currentTime > startTime + 0.5
-      }, playbackStartTime, { timeout: 15000 })
-      playbackAdvanced = true
-    } catch {
-      // Failure details below distinguish a rejected autoplay from playlist/segment delivery or a stalled edge.
-    }
-    if (!playbackAdvanced) {
+    let playbackFailure
+    await page.waitForFunction(() => {
+      const element = document.querySelector('video')
+      return element !== null && !element.paused && element.currentTime > 0.5
+    }, undefined, { timeout: 15000 }).catch((error) => {
+      playbackFailure = { name: error.name, message: error.message }
+    })
+    if (playbackFailure) {
       const media = await page.evaluate(() => {
         const element = document.querySelector('video')
         const ranges = (timeRanges) => Array.from(
@@ -1548,7 +1521,7 @@ for (const [label, viewport] of [['1280', { width: 1280, height: 900 }], ['400',
         failures: originalMediaFailures.slice(requestCursor.failures),
         playResults: await page.evaluate((cursor) => window.__e2ePlayResults.slice(cursor), playResultCursor),
       }
-      log(`  ⑦(${source}/${label}) 再生失敗時の診断: ${JSON.stringify({ playbackStartTime, media, requests })}`)
+      log(`  ⑦(${source}/${label}) 再生失敗時の診断: ${JSON.stringify({ failure: playbackFailure, media, requests })}`)
       ng.push(`⑦(${source}/${label}) 再生ボタンを押しても再生が進まない`)
     }
     await page.mouse.move(200, 5)

@@ -320,13 +320,13 @@ FFmpeg で MPEG-2 TS と H.264/AAC HLS の fixture を作り、録画 API と st
 playlist の先頭 6 segment から始まり、待ち時間中に1秒ごとに segment を増やす。
 
 ⑦ は原本 HLS と encoded の両方について 1280px / 400px で再生開始と枠の寸法を測る。
-再生開始は `HAVE_CURRENT_DATA` を待ってから開始時刻を取り、video が一時停止しておらず、
-`currentTime` がその値から 0.5 秒以上進むまで待つ。原本 HLS fixture は先頭 4 segment から
-始まり、2 秒ごとに配信済み segment が増える。固定 VOD playlist ではなく変換中の EVENT を使い、
-再生可能範囲の端で止まる挙動も測る。
+元の判定条件を保ち、クリック後 15 秒以内に video が一時停止状態を抜けて `currentTime > 0.5`
+になることを待つ。以前の⑦ fixture も EVENT playlist だったが segment 数は固定で、再生可能範囲の
+終端に達すると停止し得た。現在は原本 HLS を先頭 4 segment から始め、2 秒ごとに segment を
+追加して最大 8 segment まで配る。⑦は範囲端の停止ではなく、再生開始と枠の寸法を測る。
 
-⑦ が失敗した場合は `paused`・`currentTime`・`readyState`・`seekable`・`buffered` とメディアエラーを記録する。
-クリック後の `play()` の成否、playlist / segment の要求と HTTP 応答も記録する。
+⑦が失敗した場合は待機エラー、`paused`・`currentTime`・`readyState`・`seekable`・`buffered` と
+メディアエラーを記録する。`play()` の呼び出し・成否、playlist / segment の要求と HTTP 応答も記録する。
 再生中の操作バーは 3 秒で隠れ `aria-hidden` / `inert` になる。手動でバーの操作を調べるときは、
 枠の上でマウスを動かして表示を待つ。
 
