@@ -331,7 +331,9 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
   依存しないので、原本削除後もパスが安定する
 - **位置の事実**: `media_asset_thumbnail_seeks` に、その JPEG を切り出した原本時間軸の
   `seek_ms` を 1 行記録する。旧サムネイルで行が無い場合は位置不明として扱う
-- **配信**: streamer の `GET /api/media/recordings/{id}/thumbnail`（openapi 外。api はファイルを開かない）
+- **配信**: streamer は `GET /api/media/recordings/{id}/thumbnail` を提供する（openapi 外）。
+  api はファイルを開かない。世代別 ETag は active `media_assets` 行の ID と `rel_path` から作る。
+  同じ秒の差し替えにも対応するため、サムネイルは X-Accel を使わず streamer から直接返す
 
 ## 5.2 シークプレビュー用タイル
 

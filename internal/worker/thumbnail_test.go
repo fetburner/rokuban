@@ -460,6 +460,76 @@ func TestThumbnailWorker_UsesCutOnlyInputAndFrozenKeep(t *testing.T) {
 	}
 }
 
+func TestThumbnailWorker_UsesUncutEncodedInputWhenOriginalIsMissing(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+	profile := "uncut-profile"
+	encodedRelPath := "encoded/uncut.mp4"
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
+		db.AssetKindEncoded, &profile, encodedRelPath, []byte("fake-mp4"))
+	thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
+		db.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), tinyJPEG)
+	q := sqlcgen.New(pool)
+	if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+		MediaAssetID: thumbnailID,
+		SeekMs:       30000,
+	}); err != nil {
+		t.Fatalf("seeding old thumbnail seek: %v", err)
+	}
+	if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
+		RecordingID: recordingID,
+		CmRanges:    "{[0,60000)}",
+	}); err != nil {
+		t.Fatalf("seeding CM ranges: %v", err)
+	}
+
+	var gotInputSeek, gotInputPath string
+	w := &ThumbnailWorker{
+		Pool:       pool,
+		MediaDir:   mediaDir,
+		ScratchDir: t.TempDir(),
+		runCmd: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			if i := indexOfArg(args, "-ss"); i >= 0 && i+1 < len(args) {
+				gotInputSeek = args[i+1]
+			}
+			if i := indexOfArg(args, "-i"); i >= 0 && i+1 < len(args) {
+				gotInputPath = args[i+1]
+			}
+			if err := os.WriteFile(args[len(args)-1], tinyJPEG, 0o644); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		},
+	}
+	job := &river.Job[ThumbnailJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   ThumbnailJobArgs{RecordingID: recordingID},
+	}
+	if err := w.Work(ctx, job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+	if gotInputSeek != "89.993" {
+		t.Errorf("uncut encoded input -ss = %q, want 89.993 seconds", gotInputSeek)
+	}
+	wantInputPath := filepath.Join(mediaDir, filepath.FromSlash(encodedRelPath))
+	if gotInputPath != wantInputPath {
+		t.Errorf("ffmpeg input path = %q, want uncut encoded file %q", gotInputPath, wantInputPath)
+	}
+	state, err := q.GetThumbnailPlanningState(ctx, recordingID)
+	if err != nil {
+		t.Fatalf("loading thumbnail planning state: %v", err)
+	}
+	if state.SeekMs == nil || *state.SeekMs != 89993 {
+		t.Errorf("thumbnail seek_ms = %v, want 89993", state.SeekMs)
+	}
+}
+
 func TestThumbnailWorker_IdempotentRerun(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
