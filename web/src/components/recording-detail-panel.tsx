@@ -569,13 +569,13 @@ export function RecordingDetail({
       data-testid="recording-detail-body"
       className={cn(
         'w-full text-sm',
-        !trash && recording.series != null && 'grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_18rem]',
+        !trash && recording.series != null && 'grid grid-cols-1 gap-x-8 gap-y-6 lg:grid-cols-[minmax(0,calc((100dvh-18rem)*16/9))_18rem] lg:justify-center',
       )}
     >
       {!trash && (
         <section
           data-testid="recording-playback-group"
-          className="col-span-full flex flex-col gap-3"
+          className="mx-auto flex w-full min-w-0 max-w-[calc((100dvh-18rem)*16/9)] flex-col gap-3"
         >
           {showLiveSource && !playbackState.started && (
             <RecordingPlaybackPoster
@@ -742,7 +742,7 @@ export function RecordingDetail({
         </section>
       )}
 
-      <div data-testid="recording-player-column" className="min-w-0 flex flex-col gap-4">
+      <div data-testid="recording-player-column" className="mx-auto flex w-full min-w-0 max-w-[calc((100dvh-18rem)*16/9)] flex-col gap-4">
         <section data-testid="recording-title-row" className="flex flex-col gap-2">
           <h2 className="text-xl font-semibold leading-tight">{programTitle(recording.title)}</h2>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
@@ -1019,7 +1019,7 @@ export function RecordingDetail({
       </div>
 
       {hasShelf && (
-        <aside data-testid="recording-series-shelf" aria-label="シリーズの録画" className="hidden min-w-0 border-l border-border pl-5 lg:block">
+        <aside data-testid="recording-series-shelf" aria-label="シリーズの録画" className="hidden min-w-0 self-start border-l border-border pl-5 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:block">
           <div className="mb-3 flex items-baseline justify-between gap-2">
             {/* 棚がある幅では、見出しのシリーズ名がシリーズ画面への導線を受け持つ。 */}
             <h3 className="min-w-0 font-semibold">
