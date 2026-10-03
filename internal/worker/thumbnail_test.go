@@ -358,8 +358,10 @@ func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
 	if err := w.Work(ctx, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
-	if gotInputSeek != "90.000" {
-		t.Errorf("ffmpeg -ss = %q, want 90.000 seconds", gotInputSeek)
+	// chapter boundary 60,000ms is quantized to source frame 59,993ms; the
+	// 30s policy seek therefore maps to 89,993ms on the original timeline.
+	if gotInputSeek != "89.993" {
+		t.Errorf("ffmpeg -ss = %q, want 89.993 seconds", gotInputSeek)
 	}
 
 	state, err := q.GetThumbnailPlanningState(ctx, recordingID)
@@ -372,8 +374,8 @@ func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
 	if state.ThumbnailRelPath == nil || *state.ThumbnailRelPath != fmt.Sprintf("thumbnails/%d.g1.jpg", recordingID) {
 		t.Errorf("thumbnail rel_path = %v, want first replacement generation", state.ThumbnailRelPath)
 	}
-	if state.SeekMs == nil || *state.SeekMs != 90000 {
-		t.Errorf("thumbnail seek_ms = %v, want 90000", state.SeekMs)
+	if state.SeekMs == nil || *state.SeekMs != 89993 {
+		t.Errorf("thumbnail seek_ms = %v, want 89993", state.SeekMs)
 	}
 	if _, err := os.Stat(filepath.Join(mediaDir, filepath.FromSlash(oldRelPath))); !os.IsNotExist(err) {
 		t.Errorf("old thumbnail path still exists (stat err = %v)", err)
