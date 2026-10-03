@@ -1338,8 +1338,8 @@ export interface RecordingShelf {
   /** この棚のうち、再生できる録画の件数。 */
   playableCount: number;
   /**
-     * 未視聴の放送イベント数。再生できる生きた録画を (networkId, serviceId, startAt) で束ねて数え、
-     * ごみ箱・supersede 済み・purge 済みを含むいずれかの録画に視聴済み印があれば除外する。
+     * 未視聴の放送イベント数。生きている再生可能な録画を (networkId, serviceId, startAt) で束ね、同じイベントは一つに数える。
+     * ごみ箱・supersede 済み・purge 済みの tombstone を含む録画に視聴済み印があれば除外する。
      */
   unwatchedCount: number;
   /** シリーズ内で最も新しい録画の番組開始時刻。常に UTC。 */

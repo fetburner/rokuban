@@ -159,12 +159,18 @@ SELECT r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.de
              AND rec.service_id = s.service_id
              AND rec.event_id = s.event_id
        ))::boolean AS never_recorded,
-       -- LEFT JOIN にしない（EPG 全行の評価になる）。docs/data/series.md §予約一覧の実効シリーズは相関サブクエリで引く
-       (SELECT eps.value FROM epg_program_series eps WHERE eps.site = r.site AND eps.program_id = r.program_id) AS series
+       series.value AS series
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
+LEFT JOIN LATERAL (
+    SELECT (
+        SELECT eps.value
+        FROM epg_program_series eps
+        WHERE eps.site = r.site AND eps.program_id = r.program_id
+    ) AS value
+) series ON true
 WHERE r.site = $1 AND r.program_id = $2
 `
 
@@ -187,6 +193,10 @@ type GetReservationFullBySiteAndProgramIDRow struct {
 // にあり、予約が存在しても意図・上書きのどちらかしかない（あるいはどちらも
 // 無い）ことがあるので両方 LEFT JOIN する。番組スナップショットは FK が
 // あるので必ず存在する（INNER JOIN）。
+//
+// series は epg_program_series ビューを予約キーで絞る相関 scalar subquery から読む。
+// sqlc が scalar subquery の nullability を推論できないため、nullable 出力にする外側だけ
+// LATERAL で包む。ビュー全体を LEFT JOIN すると全 EPG 行で分類ルール評価が走る。
 //
 // never_recorded は orphaned_at の代わりに読むたび導出する列（CLAUDE.md
 // 不変条件 9）。放送イベントキーで never_scheduled_events 表を引き、欠測行が
@@ -372,12 +382,18 @@ SELECT r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.de
              AND rec.service_id = s.service_id
              AND rec.event_id = s.event_id
        ))::boolean AS never_recorded,
-       -- LEFT JOIN にしない（EPG 全行の評価になる）。docs/data/series.md §予約一覧の実効シリーズは相関サブクエリで引く
-       (SELECT eps.value FROM epg_program_series eps WHERE eps.site = r.site AND eps.program_id = r.program_id) AS series
+       series.value AS series
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
+LEFT JOIN LATERAL (
+    SELECT (
+        SELECT eps.value
+        FROM epg_program_series eps
+        WHERE eps.site = r.site AND eps.program_id = r.program_id
+    ) AS value
+) series ON true
 ORDER BY r.site, s.start_at
 `
 

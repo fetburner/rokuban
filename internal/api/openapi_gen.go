@@ -1965,8 +1965,8 @@ type RecordingShelf struct {
 	// Title 代表の録画の生のタイトル（シリーズ名の下の副見出しに使う）。
 	Title string `json:"title"`
 
-	// UnwatchedCount 未視聴の放送イベント数。再生できる生きた録画を (networkId, serviceId, startAt) で束ねて数え、
-	// ごみ箱・supersede 済み・purge 済みを含むいずれかの録画に視聴済み印があれば除外する。
+	// UnwatchedCount 未視聴の放送イベント数。生きている再生可能な録画を (networkId, serviceId, startAt) で束ね、同じイベントは一つに数える。
+	// ごみ箱・supersede 済み・purge 済みの tombstone を含む録画に視聴済み印があれば除外する。
 	UnwatchedCount int `json:"unwatchedCount"`
 
 	// Value 棚のキー（画面のシリーズ名）。null は実効シリーズを導出できなかった録画
