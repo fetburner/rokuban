@@ -25,7 +25,7 @@ const DISPLAY_SCALE = 2
 export const SEEK_TILES_DISPLAY_WIDTH = SEEK_TILES_WIDTH * DISPLAY_SCALE
 export const SEEK_TILES_DISPLAY_HEIGHT = SEEK_TILES_HEIGHT * DISPLAY_SCALE
 
-/** 1 枚のタイルの位置（表示倍率を掛けた CSS px のオフセット）。 */
+/** 1 枚のタイルの位置（表示幅を掛けた CSS px のオフセット）。 */
 export type SeekTileRect = {
   x: number
   y: number
@@ -44,29 +44,51 @@ export function seekTilesURL(recordingId: number): string {
   return `/api/media/recordings/${recordingId}/seek-tiles`
 }
 
+/** タイルの幅を帯の幅の何割までにするか。狭い窓で映像の大半を覆わないための上限。 */
+const MAX_BAND_FRACTION = 0.4
+
+/** タイル幅の刻み。16 の倍数なら 16:9 の高さが整数になり、隣のタイルが滲まない。 */
+const WIDTH_STEP = 16
+
+/** seekTileDisplayWidth は帯の幅からタイルの表示幅（16 の倍数、最大 320）を決める。 */
+export function seekTileDisplayWidth(bandWidth: number): number {
+  const fit = Math.floor((bandWidth * MAX_BAND_FRACTION) / WIDTH_STEP) * WIDTH_STEP
+  return Math.max(WIDTH_STEP, Math.min(SEEK_TILES_DISPLAY_WIDTH, fit))
+}
+
+/** SeekTilePlacement は 1 枚のプレビューの表示幅・格子上のオフセット・帯内の左端（CSS px）。 */
+export type SeekTilePlacement = SeekTileRect & { width: number; height: number; left: number }
+
 /**
- * seekTileAt は再生位置に対応するタイルのオフセットを返す。
+ * seekTilePlacement は再生位置と帯の寸法からプレビューの配置を返す（録画・ライブ共通）。
  *
- * 上限（`SEEK_TILES_MAX_TILES`）より後ろの位置にはタイルが無いので null を返す
- * （呼び出し側はプレビューを出さない）。負の位置も null。
+ * 幅は帯の幅の 4 割まで（上限 320px）。ポインタ中心に置き、帯からはみ出さない。
+ * 上限（`SEEK_TILES_MAX_TILES`）より後ろの位置や負の位置は null
+ * （呼び出し側はプレビューを出さない）。
  */
-export function seekTileAt(seconds: number): SeekTileRect | null {
-  if (!Number.isFinite(seconds) || seconds < 0) return null
-  const index = Math.floor(seconds / SEEK_TILES_INTERVAL_SECONDS)
-  if (index >= SEEK_TILES_MAX_TILES) return null
-  const column = index % SEEK_TILES_COLUMNS
-  const row = Math.floor(index / SEEK_TILES_COLUMNS)
+export function seekTilePlacement(
+  seconds: number,
+  bandWidth: number,
+  pointerOffsetX: number,
+): SeekTilePlacement | null {
+  const cell = seekTileCell(seconds)
+  if (cell === null) return null
+  const width = seekTileDisplayWidth(bandWidth)
+  const height = (width * SEEK_TILES_HEIGHT) / SEEK_TILES_WIDTH
   return {
-    x: column === 0 ? 0 : -column * SEEK_TILES_DISPLAY_WIDTH,
-    y: row === 0 ? 0 : -row * SEEK_TILES_DISPLAY_HEIGHT,
+    x: cell.column === 0 ? 0 : -cell.column * width,
+    y: cell.row === 0 ? 0 : -cell.row * height,
+    width,
+    height,
+    left: Math.max(0, Math.min(bandWidth - width, pointerOffsetX - width / 2)),
   }
 }
 
 /**
- * seekTileBackgroundSize は格子画像を 1 枚ぶんの表示サイズで割り付けるための
+ * seekTileBackgroundSize は格子画像を 1 枚ぶんの表示幅で割り付けるための
  * `background-size` を返す。高さは auto（画像の実際の行数に従う）なので、
  * クライアントは行数を知らなくてよい。
  */
-export function seekTileBackgroundSize(): string {
-  return `${SEEK_TILES_COLUMNS * SEEK_TILES_DISPLAY_WIDTH}px auto`
+export function seekTileBackgroundSize(width: number): string {
+  return `${SEEK_TILES_COLUMNS * width}px auto`
 }
