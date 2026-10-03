@@ -225,6 +225,9 @@ log('\n=== ② スライダーの時刻を /frame?at= に渡す ===')
 await check('②', async () => {
   const slider = page.getByTestId('cm-logo-time')
   await slider.waitFor({ state: 'visible', timeout: 5000 })
+  const image = page.getByTestId('cm-logo-frame-image')
+  const previousFrameSrc = await image.getAttribute('src')
+  if (!previousFrameSrc) throw new Error('変更前のコマ画像が無い')
   const min = Number(await slider.getAttribute('min'))
   const max = Number(await slider.getAttribute('max'))
   if (!(max > min)) throw new Error(`スライダーの範囲が空（min=${min} max=${max}）`)
@@ -240,6 +243,16 @@ await check('②', async () => {
   if (!frameRequests.includes(target)) {
     throw new Error(`/frame?at=${target} が呼ばれない（実際 ${JSON.stringify(frameRequests)}）`)
   }
+  // 要求の発行だけで進むと、React が frame=null を描画する前に③が旧画像の上でドラッグを始める。
+  // 直後に frame が null になり onPointerMove が pointermove を捨てて最小枠が残る（⑤のハンドル重なりも同じ原因）。
+  await page.waitForFunction(
+    (oldSrc) => {
+      const current = document.querySelector('[data-testid="cm-logo-frame-image"]')
+      return current instanceof HTMLImageElement && current.src !== oldSrc && current.complete && current.naturalWidth > 0
+    },
+    previousFrameSrc,
+    { timeout: 15000 },
+  )
 })
 
 log('\n=== ③ 4 隅の変形を coded size へ変換する ===')

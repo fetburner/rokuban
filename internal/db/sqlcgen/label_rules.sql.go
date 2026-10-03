@@ -161,21 +161,34 @@ func (q *Queries) ListLabelRules(ctx context.Context) ([]LabelRule, error) {
 }
 
 const listRecordingShelves = `-- name: ListRecordingShelves :many
-WITH playable_assets AS MATERIALIZED (
+WITH playable_assets AS (
     SELECT DISTINCT ma.recording_id
     FROM media_assets ma
     WHERE (ma.kind = 'original' AND ma.state <> 'deleted')
        OR (ma.kind = 'encoded' AND ma.state = 'active')
 ),
+watched_events AS MATERIALIZED (
+    -- 印を束ねる側は live / playable を絞らない。ごみ箱・supersede 済みの印も読む。
+    SELECT DISTINCT r.network_id, r.service_id, r.program_start_at
+    FROM recordings r
+    JOIN recording_watched w ON w.recording_id = r.id
+),
 live AS (
     SELECT r.id,
            r.title,
            r.program_start_at,
+           r.network_id,
+           r.service_id,
            rs.value,
-           pa.recording_id AS playable_recording_id
+           pa.recording_id AS playable_recording_id,
+           we.network_id AS watched_network_id
     FROM recordings r
     LEFT JOIN playable_assets pa ON pa.recording_id = r.id
     JOIN recording_series rs ON rs.recording_id = r.id
+    LEFT JOIN watched_events we
+      ON we.network_id = r.network_id
+     AND we.service_id = r.service_id
+     AND we.program_start_at = r.program_start_at
     WHERE r.deleted_at IS NULL
       AND r.superseded_at IS NULL
 )
@@ -183,6 +196,8 @@ SELECT l.value,
        (array_agg(l.title ORDER BY l.program_start_at DESC, l.id DESC))[1]::text AS title,
        count(*) AS recording_count,
        count(*) FILTER (WHERE l.playable_recording_id IS NOT NULL) AS playable_count,
+       (count(DISTINCT (l.network_id, l.service_id, l.program_start_at))
+           FILTER (WHERE l.playable_recording_id IS NOT NULL AND l.watched_network_id IS NULL))::bigint AS unwatched_count,
        max(l.program_start_at)::timestamptz AS latest_start_at,
        (array_agg(l.id ORDER BY l.program_start_at DESC, l.id DESC))[1]::bigint AS representative_id
 FROM live l
@@ -195,6 +210,7 @@ type ListRecordingShelvesRow struct {
 	Title            string
 	RecordingCount   int64
 	PlayableCount    int64
+	UnwatchedCount   int64
 	LatestStartAt    time.Time
 	RepresentativeID int64
 }
@@ -211,6 +227,9 @@ type ListRecordingShelvesRow struct {
 // 値が NULL の棚の行は `GROUP BY value` が 1 つのグループにまとめる（SQL の
 // GROUP BY は NULL を等しいものとして扱う）。
 //
+// 未視聴件数もこの集計で返す。放送イベントは生きている再生可能な録画から束ね、
+// 視聴済み印はごみ箱・supersede 済みを含む全録画から読む。
+//
 // **この形はプランの形に依存する。** 旧母集団（再生できる録画だけ。73,000 行がすべて
 // 再生可能）での過去の実測（別の環境、sqlc / pgx の prepared statement 経由）:
 //
@@ -224,36 +243,26 @@ type ListRecordingShelvesRow struct {
 // ソートが外側の行数ぶん繰り返されること、だった。
 //
 // 下の live は旧 playable に当たる（recordings を走査する CTE）が、MATERIALIZED にしない。
-// 現スキーマ・合成 seed（下記）では 617 ms は再現せず（旧形から MATERIALIZED を外した形は
-// 旧形の 0.94〜0.95 倍で、EXPLAIN でも recordings は Seq Scan のまま部分一意索引を使わない）、
-// live を MATERIALIZED にすると本番の 1.06〜1.07 倍遅い。617 ms の再現条件は未検証なので、
-// 再発したら live を MATERIALIZED に戻す。
+// 現スキーマ・合成 seed（下記）では 617 ms は再現せず、live を MATERIALIZED にした形は
+// 本番形の 1.06〜1.09 倍遅い（3 回）。617 ms の再現条件は未検証なので、再発したら
+// EXPLAIN で計画を調べる。
 //
-// playable_assets の MATERIALIZED は旧形から引き継いだもので、外したときの計画と速さは未検証。
+// playable_assets は参照が 1 回なので MATERIALIZED にしない。MATERIALIZED にした形は
+// 本番形の 1.03〜1.05 倍遅く（3 回）、結果は一致した。
 //
 // 実効シリーズは recording_series ビューが唯一の定義で、ここでも JOIN で読む
 // （COALESCE(lr.value_key, r.series_key) を書き下すと定義が 2 箇所になる）。
 // ビュー経由は書き下しより約 8% 遅かった（旧母集団の形、合成データ 73,000 行・141 棚・
 // 分類ルール 50 本で約 223 ms 対 約 206 ms）。
 //
-// 現在の形（生きている録画 + playable_assets の LEFT JOIN + count FILTER +
-// max(program_start_at) を同じ集計から返す）の測定は
-// `internal/api/shelves_bench_test.go`（`ROKUBAN_BENCH_DATABASE_URL` が無ければ
-// スキップ）が専用 DB で再現する。録画 73,000 行（再生可能 65,000・録画中 3,000・
-// ingest 待ち 2,000・failed 1,000・ごみ箱 1,000・superseded 1,000）・141 棚・分類ルール
-// 50 本で、各形を交互に 10 ラウンド回した中央値（Apple M3 Max・PostgreSQL 16.2。
-// 同じハーネスの 3 回実行）:
-//
-//   - 本番（この形）: 254〜257 ms
-//   - 旧母集団の形（再生できる録画だけを INNER JOIN、playable は MATERIALIZED）:
-//     240〜241 ms（本番の 0.93〜0.95 倍）
-//   - 旧母集団の形から playable の MATERIALIZED を外す: 227〜228 ms（本番の 0.89 倍）
-//   - この形の live を MATERIALIZED にする: 272 ms（本番の 1.06〜1.07 倍。改善にならない）
-//
-// 結論: live は MATERIALIZED にしない。母集団を広げた費用は旧形の約 1.06 倍（本番 / 旧形）である。
+// `internal/api/shelves_bench_test.go` は `ROKUBAN_BENCH_DATABASE_URL` がなければ
+// スキップし、専用 DB で各形を交互に 10 ラウンド計測する。
+// seed は生きている録画 71,000 行を含む全 73,000 行、141 棚、分類ルール 50 本で、
+// 放送イベントを複数拠点の録画で作り、視聴済み印と再生状態を混ぜる。
+// 本番形の中央値は 3 回で 302.6〜307.3 ms（Apple M3 Max・PostgreSQL 16.2）で、
+// 同じ回の旧母集団・実効シリーズ書き下し形（223.1〜229.8 ms）の 1.33〜1.36 倍だった。
+// 予算 200 ms を 141 ms の環境で決めた比 200/141 ≈ 1.42 倍に収まる。実データでの絶対値は未測定である。
 // 本番の playable_count は旧形の recording_count と全棚で一致する（ハーネスが検査する）。
-// **絶対値の 200 ms 予算の確認は未測定**（元の測定環境・実データ。この環境は旧形でも
-// 予算を越える）。
 func (q *Queries) ListRecordingShelves(ctx context.Context) ([]ListRecordingShelvesRow, error) {
 	rows, err := q.db.Query(ctx, listRecordingShelves)
 	if err != nil {
@@ -268,6 +277,7 @@ func (q *Queries) ListRecordingShelves(ctx context.Context) ([]ListRecordingShel
 			&i.Title,
 			&i.RecordingCount,
 			&i.PlayableCount,
+			&i.UnwatchedCount,
 			&i.LatestStartAt,
 			&i.RepresentativeID,
 		); err != nil {

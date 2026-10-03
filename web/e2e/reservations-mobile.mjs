@@ -63,6 +63,7 @@ const reservations = [
     durationMs: HOUR,
     createdAt: iso(nowMs),
     updatedAt: iso(nowMs),
+    series: null,
     skip: false,
   },
   {
@@ -78,6 +79,7 @@ const reservations = [
     durationMs: HOUR,
     createdAt: iso(nowMs),
     updatedAt: iso(nowMs),
+    series: null,
     skip: false,
   },
   {
@@ -93,6 +95,7 @@ const reservations = [
     durationMs: HOUR,
     createdAt: iso(nowMs),
     updatedAt: iso(nowMs),
+    series: null,
     skip: false,
   },
 ]

@@ -24,8 +24,7 @@ export type RecordingRowView = RecordingView
  * 再生系の出し分け（`deleted_at` / encoded の有無）は詳細側の規律に任せる。
  *
  * 選択関連の props（selecting / selected / onToggle）だけは編集モードを持たない
- * シリーズページから省略できる。他は権威（`useLiveEnabled` /
- * `shouldShowRecordingSite` 等）が呼び出し側にあるので必須にする。
+ * シリーズページから省略できる。他は呼び出し側で決まる（`showSite` 等）ので必須にする。
  */
 export function RecordingRow({
   recording,
@@ -35,7 +34,6 @@ export function RecordingRow({
   selecting = false,
   selected = false,
   onToggle = () => undefined,
-  liveEnabled,
 }: {
   recording: Recording
   trash: boolean
@@ -50,7 +48,6 @@ export function RecordingRow({
   selecting?: boolean
   selected?: boolean
   onToggle?: () => void
-  liveEnabled: boolean
 }) {
   const [thumbFailed, setThumbFailed] = useState(false)
   const card = view === 'card'
@@ -154,17 +151,6 @@ export function RecordingRow({
           {recording.dropSummary && <DropBadges summary={recording.dropSummary} />}
         </div>
       </div>
-      {!selecting && liveEnabled && recording.status === 'recording' && (
-        <Link
-          to="/recordings/$id"
-          params={{ id: String(recording.id) }}
-          hash="chase"
-          aria-label={`${programTitle(recording.title)}を追っかけ再生`}
-          className="relative z-10 shrink-0 rounded border border-border px-2 py-1 text-xs text-primary hover:bg-muted"
-        >
-          追っかけ
-        </Link>
-      )}
       {/* カードは行ではないので、行末の「開く」記号は出さない（面全体がリンク）。 */}
       {!selecting && !card && <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}
     </div>

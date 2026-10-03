@@ -146,6 +146,7 @@ const reservation = (program) => ({
   durationMs: program.durationMs,
   createdAt: iso(nowMs - 3_600_000),
   updatedAt: iso(nowMs - 3_600_000),
+  series: null,
   skip: false,
 })
 

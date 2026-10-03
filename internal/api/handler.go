@@ -188,7 +188,7 @@ func (h *Server) ListReservations(ctx context.Context, _ ListReservationsRequest
 
 	result := make([]Reservation, 0, len(rows))
 	for _, r := range rows {
-		res, err := reservationFromRow(r.Reservation, r.ProgramSnapshot, r.Overrides, r.IntentAction, r.NeverRecorded)
+		res, err := reservationFromRow(r.Reservation, r.ProgramSnapshot, r.Overrides, r.IntentAction, r.NeverRecorded, r.Series)
 		if err != nil {
 			return nil, err
 		}
@@ -249,7 +249,7 @@ func reservationState(ruleID *int64, base json.RawMessage, neverRecorded bool) R
 // neverRecorded は呼び出し元のクエリ（GetReservationFullBySiteAndProgramID /
 // ListReservationsFull）が EXISTS で計算した「この予約に status='failed' の
 // recordings 行があるか」（issue #98。reservationState のコメント参照）。
-func reservationFromRow(r sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, overrides []byte, intentAction *string, neverRecorded bool) (Reservation, error) {
+func reservationFromRow(r sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, overrides []byte, intentAction *string, neverRecorded bool, series *string) (Reservation, error) {
 	source := ReservationSourceRule
 	if intentAction != nil && *intentAction == reservation.IntentRecord {
 		source = ReservationSourceManual
@@ -263,6 +263,7 @@ func reservationFromRow(r sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, ove
 		ProgramId: r.ProgramID,
 		Source:    source,
 		State:     reservationState(r.RuleID, r.Base, neverRecorded),
+		Series:    series,
 		// site を返すのは容量超過の判定がサイトごとに独立しているため
 		// （docs/data.md §6.5）。クライアントに単一サイト前提の定数を持たせると、
 		// 多サイト化のときに「他サイトの不足を自分の不足として出す」形で静かに壊れる。

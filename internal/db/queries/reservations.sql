@@ -64,7 +64,9 @@ SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS o
              AND rec.network_id = s.network_id
              AND rec.service_id = s.service_id
              AND rec.event_id = s.event_id
-       ))::boolean AS never_recorded
+       ))::boolean AS never_recorded,
+       -- LEFT JOIN にしない（EPG 全行の評価になる）。docs/data/series.md §予約一覧の実効シリーズは相関サブクエリで引く
+       (SELECT eps.value FROM epg_program_series eps WHERE eps.site = r.site AND eps.program_id = r.program_id) AS series
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
@@ -91,7 +93,9 @@ SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS o
              AND rec.network_id = s.network_id
              AND rec.service_id = s.service_id
              AND rec.event_id = s.event_id
-       ))::boolean AS never_recorded
+       ))::boolean AS never_recorded,
+       -- LEFT JOIN にしない（EPG 全行の評価になる）。docs/data/series.md §予約一覧の実効シリーズは相関サブクエリで引く
+       (SELECT eps.value FROM epg_program_series eps WHERE eps.site = r.site AND eps.program_id = r.program_id) AS series
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id

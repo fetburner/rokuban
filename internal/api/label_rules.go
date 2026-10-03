@@ -143,7 +143,7 @@ func (h *Server) GetLabelRuleValueKey(ctx context.Context, req GetLabelRuleValue
 }
 
 // ListRecordingShelves は生きている録画を実効シリーズごとに集計し、再生可能な
-// 件数を別に返す。
+// 件数と未視聴の放送イベント数を同じ集計から返す。
 func (h *Server) ListRecordingShelves(ctx context.Context, req ListRecordingShelvesRequestObject) (ListRecordingShelvesResponseObject, error) {
 	if req.Params.Key != nil && !req.Params.Key.Valid() {
 		return ListRecordingShelves400JSONResponse{Error: fmt.Sprintf("invalid key %q (want series)", *req.Params.Key)}, nil
@@ -159,6 +159,7 @@ func (h *Server) ListRecordingShelves(ctx context.Context, req ListRecordingShel
 			Title:            row.Title,
 			Count:            int(row.RecordingCount),
 			PlayableCount:    int(row.PlayableCount),
+			UnwatchedCount:   int(row.UnwatchedCount),
 			LatestStartAt:    row.LatestStartAt.UTC(),
 			RepresentativeId: row.RepresentativeID,
 		})
