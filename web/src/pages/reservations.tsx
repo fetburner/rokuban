@@ -1,17 +1,22 @@
 import { Link, useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
 import { ChevronDown, ChevronRight } from 'lucide-react'
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 
 import {
+  ListRecordingShelvesKey,
   useListCapacityOverages,
+  useListRecordingShelves,
   useListReservations,
   useListRules,
   type CapacityOverage,
+  type RecordingShelf,
   type Reservation,
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { CapacityShortfallBadge } from '@/components/capacity-shortfall-badge'
 import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
+import { ReservationGroupToggle } from '@/components/reservation-group-toggle'
+import { ReservationSeriesRow } from '@/components/reservation-series-row'
 import { ReservationSkipBadge } from '@/components/reservation-skip-reason'
 import { Chip } from '@/components/ui/chip'
 import {
@@ -29,13 +34,24 @@ import {
   type ReservationsPageSearch,
 } from '@/lib/reservation-labels'
 import { makeRuleLabel } from '@/lib/rule-label'
+import { groupReservations } from '@/lib/reservation-groups'
+import {
+  loadReservationGrouping,
+  saveReservationGrouping,
+  type ReservationGrouping,
+} from '@/lib/reservation-grouping'
 import { cn } from '@/lib/utils'
 
 export function ReservationsPage() {
   const search = useRouteSearch({ from: '/reservations' })
   const navigate = useNavigate()
+  const [grouping, setGrouping] = useState(loadReservationGrouping)
   const query = useListReservations()
   const rulesQuery = useListRules()
+  const shelvesQuery = useListRecordingShelves(
+    { key: ListRecordingShelvesKey.series },
+    { query: { enabled: grouping === 'series' } },
+  )
   const reservations = useMemo(() => unwrap(query.data) ?? [], [query.data])
   const rules = useMemo(() => unwrap(rulesQuery.data) ?? [], [rulesQuery.data])
 
@@ -77,6 +93,21 @@ export function ReservationsPage() {
   const displayedReservations =
     search.only === 'attention' ? attentionReservations : ruleFilteredReservations
   const groupedReservations = useMemo(() => groupByLocalDay(displayedReservations), [displayedReservations])
+  const reservationGroups = useMemo(
+    () => groupReservations(displayedReservations, overages),
+    [displayedReservations, overages],
+  )
+  // 取得が成功し、再取得も終わるまで棚の存在/不在を主張しない。
+  const shelvesKnown = shelvesQuery.isSuccess && !shelvesQuery.isFetching
+  const shelvesByValue = useMemo(() => {
+    if (!shelvesKnown) return undefined
+    const byValue = new Map<string, RecordingShelf>()
+    for (const shelf of unwrap(shelvesQuery.data) ?? []) {
+      // value=null の棚は番組ハブを開けない。null series の予約とも突き合わせない。
+      if (shelf.value !== undefined && shelf.value !== null) byValue.set(shelf.value, shelf)
+    }
+    return byValue
+  }, [shelvesKnown, shelvesQuery.data])
   const ruleLabel = useMemo(() => makeRuleLabel(rules), [rules])
   const rulesWithReservations = useMemo(
     () => rulesWithReservationCounts(reservations, ruleLabel),
@@ -89,10 +120,17 @@ export function ReservationsPage() {
       replace: true,
     })
   }
+  const changeGrouping = (next: ReservationGrouping) => {
+    setGrouping(next)
+    saveReservationGrouping(next)
+  }
 
   return (
     <>
-      <PageHeader title="予約">
+      <PageHeader
+        title="予約"
+        actions={<ReservationGroupToggle grouping={grouping} onChange={changeGrouping} />}
+      >
         {!query.isPending && !query.isError && (
           <div role="group" aria-label="予約の絞り込み" className="flex flex-wrap gap-2 px-4 pb-3">
             <Chip active={search.only === undefined} onClick={() => selectSearch({ only: undefined })}>
@@ -165,7 +203,20 @@ export function ReservationsPage() {
           <ErrorState onRetry={() => void query.refetch()}>予約の取得に失敗しました</ErrorState>
         ) : query.isPending || (search.only === 'attention' && !attentionReady) ? (
           <ListSkeleton />
-        ) : displayedReservations.length > 0 ? (
+        ) : grouping === 'series' && reservationGroups.length > 0 ? (
+          <ul aria-label="シリーズ別の予約">
+            {reservationGroups.map((group) => (
+              <ReservationSeriesRow
+                key={group.key}
+                group={group}
+                overages={overages}
+                shelvesKnown={shelvesByValue !== undefined}
+                shelf={group.series === null ? undefined : shelvesByValue?.get(group.series)}
+                ruleLabel={ruleLabel}
+              />
+            ))}
+          </ul>
+        ) : grouping === 'time' && displayedReservations.length > 0 ? (
           <ul aria-label="日付別の予約">
             {groupedReservations.map(({ key, date, reservations: dayReservations }) => (
               <li key={key}>
