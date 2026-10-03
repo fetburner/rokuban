@@ -310,6 +310,8 @@ const subtitleRequests = []
 const encodedRequests = []
 const encodedRangeRequests = []
 const playbackPositionWrites = []
+// 前のページの再開位置 PUT は遷移の後に届くことがある。再開位置に依存しない節（④ / ⑦）は false にして反映を止める。
+let applyPositionWrites = true
 const watchedWrites = []
 const seekTileRequests = []
 const masterPlaylistRequests = []
@@ -377,7 +379,7 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
   }
   if (requestPath === `/api/recordings/${RECORDING_ID}/playback-position` && method === 'PUT') {
     const body = route.request().postDataJSON()
-    recording.resumePositionMs = body.positionMs
+    if (applyPositionWrites) recording.resumePositionMs = body.positionMs
     playbackPositionWrites.push(body.positionMs)
     return route.fulfill({ status: 204 })
   }
@@ -775,14 +777,11 @@ log('\n=== ④ ENDLIST の無い変換中 playlist の先端で ended が発火�
 // live-player.tsx の onEnded は「ended は ENDLIST 済みの終端でしか発火しない」ことに依存する。
 // 先頭 4 segment（約 8 秒）で切った ENDLIST 無しの playlist を先端まで再生して確かめる。
 growingEdge = true
-// 前のページの再開位置 PUT が delete の後に届かないよう、空ページへ出て出し切らせてから消す（⑦ と同じ）。
-const recordingURL = page.url()
-await page.goto('about:blank')
-await page.waitForTimeout(300)
+applyPositionWrites = false
 delete recording.resumePositionMs
 const watchedCountBeforeGrowingEdge = watchedWrites.length
 const playlistsBeforeGrowingEdge = playlistRequests.length
-await page.goto(recordingURL, { waitUntil: 'domcontentloaded' })
+await page.reload({ waitUntil: 'domcontentloaded' })
 await page.waitForTimeout(750)
 if (playlistRequests.length !== playlistsBeforeGrowingEdge) {
   ng.push('④ 再生ボタンを押す前に変換中 original HLS playlist を要求した')
@@ -857,6 +856,7 @@ if (!offsetSeekbarBox) {
   }
 }
 
+applyPositionWrites = true
 log('\n=== ⑤ 製品と同じ offset セッション（-ss、0 起点、ENDLIST の無い変換中 playlist） ===')
 // ①〜④ の fixture は ENDLIST 済みで、offset 付きも元の PTS のまま segment を間引くだけなので、
 // WebKit のライブ端への飛び・セッションの張り直し後の再生継続・終端付近の 416 を再現しない。
@@ -1471,6 +1471,7 @@ if (!transitionSeekbarBox) {
   }
 }
 
+applyPositionWrites = false
 log('\n=== ⑦ 再生元ごとの再生前後で枠の寸法が変わらない（1280 / 400） ===')
 const sourceShotDir = process.env.E2E_SHOT_DIR
 /** playbackFrameBox は再生前のポスターか再生後のプレイヤー枠の寸法と、再生の塊の高さを返す。 */
@@ -1489,13 +1490,7 @@ for (const [label, viewport] of [['1280', { width: 1280, height: 900 }], ['400',
   await page.setViewportSize(viewport)
   for (const source of ['original-hls', 'encoded']) {
     recording.encodedAssets = source === 'encoded' ? [{ profile: PLAYBACK_PROFILE, sizeBytes: 400_000 }] : []
-    // 前の再生ページを離れるときの再開位置 PUT（pagehide）が、delete の後に届くことがある。
-    // それが次の詳細取得に載ると、製品は 12 秒から再開するのが正しく、8 秒しか無い fixture で止まる
-    // （15 回に 1 回の失敗の原因。resumePositionMs=12000 を直接入れて同じ診断が出ることを確認済み）。
-    // 先に空ページへ出て PUT を出し切らせてから delete する。
-    await page.goto('about:blank')
-    await page.waitForTimeout(300)
-    if (recording.resumePositionMs !== undefined) log(`  ⑦(${source}/${label}) 前のページが残した再開位置 ${recording.resumePositionMs}ms を破棄`)
+    // 遅れて届く再開位置 PUT を反映しない（applyPositionWrites）。残った位置があると製品はそこから再開する。
     delete recording.resumePositionMs
     await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
     await page.waitForSelector('[data-testid="recording-playback-poster"], [data-testid="recording-player-frame"]', { timeout: 15000 })
