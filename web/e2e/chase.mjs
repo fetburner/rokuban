@@ -29,6 +29,7 @@ import {
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'
 const ng = []
+const MAX_SOURCE_SWITCH_STALL_MS = 2000
 const recordingStartAt = new Date(Date.now() - 25 * 60_000).toISOString()
 // Derive both timestamps from the same instant so fractional clock drift
 // cannot make the programmed 70:12 extension appear as 70:11.
@@ -302,6 +303,8 @@ let playlistRequests = 0
 const profilePlaylistURLs = []
 const playlistSizes = []
 let playlistEnded = false
+let finalizeChasePlaylist = false
+let finalizedChasePlaylistRequests = 0
 let offsetPlaylistRequests = 0
 // 最後に要求した追っかけ playlist の offset（offset 無しは 0）。今どのセッションを再生しているか。
 let lastChasePlaylistOffset = 0
@@ -328,10 +331,13 @@ await page.route(`**${chaseBase}/playlist.m3u8*`, async (route) => {
   if (requestedURL.searchParams.has('profile')) profilePlaylistURLs.push(requestedURL.href)
   playlistRequests += 1
   lastChasePlaylistOffset = 0
-  const count = growingSince !== undefined
+  const count = finalizeChasePlaylist
+    ? Math.min(6, entries.length)
+    : growingSince !== undefined
     ? grownSegmentCount()
     : playlistRequests < 2 ? 1 : Math.min(entries.length, 6)
-  const end = growingSince === undefined && playlistRequests >= 2
+  const end = finalizeChasePlaylist || (growingSince === undefined && playlistRequests >= 2)
+  if (finalizeChasePlaylist) finalizedChasePlaylistRequests += 1
   playlistSizes.push(count)
   playlistEnded ||= end
   await route.fulfill({
@@ -668,7 +674,70 @@ async function revealControls(label) {
   ).catch(() => ng.push(`${label}: 枠の上でマウスを動かしても操作バーが出ない`))
 }
 
-async function dragTimelineTo(second) {
+/** Track the longest gap between currentTime advances around a playback-source switch. */
+async function beginCurrentTimeGapMeasurement(name) {
+  await page.evaluate((measurementName) => {
+    const video = document.querySelector('video')
+    const now = performance.now()
+    const measurement = {
+      name: measurementName,
+      startedAt: now,
+      lastProgressAt: now,
+      previousTime: video?.currentTime ?? 0,
+      maxGapMs: 0,
+      advances: 0,
+      seekResets: 0,
+      stopped: false,
+    }
+    window.__currentTimeGapMeasurements ??= {}
+    window.__currentTimeGapMeasurements[measurementName] = measurement
+    const sample = () => {
+      if (measurement.stopped) return
+      const currentVideo = document.querySelector('video')
+      const sampledAt = performance.now()
+      const currentTime = currentVideo?.currentTime
+      if (Number.isFinite(currentTime)) {
+        const delta = currentTime - measurement.previousTime
+        if (Math.abs(delta) > 0.5) {
+          // Ignore a seek/source-reset jump; the gap ends only when playback advances again.
+          measurement.previousTime = currentTime
+          measurement.seekResets += 1
+        } else if (delta > 0.01) {
+          measurement.maxGapMs = Math.max(measurement.maxGapMs, sampledAt - measurement.lastProgressAt)
+          measurement.lastProgressAt = sampledAt
+          measurement.previousTime = currentTime
+          measurement.advances += 1
+        }
+      }
+      measurement.maxGapMs = Math.max(
+        measurement.maxGapMs,
+        sampledAt - measurement.lastProgressAt,
+      )
+      requestAnimationFrame(sample)
+    }
+    requestAnimationFrame(sample)
+  }, name)
+}
+
+async function finishCurrentTimeGapMeasurement(name) {
+  return page.evaluate((measurementName) => {
+    const measurement = window.__currentTimeGapMeasurements?.[measurementName]
+    if (!measurement) return undefined
+    measurement.maxGapMs = Math.max(
+      measurement.maxGapMs,
+      performance.now() - measurement.lastProgressAt,
+    )
+    measurement.stopped = true
+    return {
+      maxGapMs: measurement.maxGapMs,
+      advances: measurement.advances,
+      seekResets: measurement.seekResets,
+      elapsedMs: performance.now() - measurement.startedAt,
+    }
+  }, name)
+}
+
+async function dragTimelineTo(second, options = {}) {
   await revealControls('シークバーのドラッグ')
   const bounds = await timelineSlider.boundingBox()
   if (bounds === null) {
@@ -710,6 +779,7 @@ async function dragTimelineTo(second) {
     ng.push(`③ pointer up 前に playlist を再要求する（${playlistRequests} 件）`)
   }
 
+  if (options.beforeRelease) await options.beforeRelease()
   await page.mouse.up()
   return {
     requestedAt,
@@ -1574,7 +1644,9 @@ if (originalVODPlaylistRequests.length !== originalPlaylistsBeforeFinish) {
 log('\n=== ⑩ 現在の追っかけ範囲外へのシークで原本 HLS offsetへ移る ===')
 const originalOffsetsBeforeSeek = originalOffsetPlaylistRequests.length
 // 変換済み（8 秒 + 経過）より十分先。録画は 2 分あるので軸の中に収まる。
-const seekToOriginalResult = await dragTimelineTo(90)
+const seekToOriginalResult = await dragTimelineTo(90, {
+  beforeRelease: () => beginCurrentTimeGapMeasurement('chase-to-original-hls'),
+})
 const originalOffsetDeadline = Date.now() + 10000
 while (originalOffsetPlaylistRequests.length === originalOffsetsBeforeSeek && Date.now() < originalOffsetDeadline) {
   await page.waitForTimeout(50)
@@ -1609,12 +1681,130 @@ if (originalVideoState.readyState < 1 || originalVideoState.currentTime > 3) {
   ng.push(`⑩ offset URL のシーク位置から再生を開始しない（video=${JSON.stringify(originalVideoState)}）`)
 }
 // 再生中に再生元が替わったなら、替わった先でも再生が続く（止めて ▶ を押し直させない）。
-const playedAfterSwitch = await page.waitForFunction(() => {
+const originalPlaybackBaseline = await page.locator('video').evaluate((video) => video.currentTime)
+const playedAfterSwitch = await page.waitForFunction((baseline) => {
   const video = document.querySelector('video')
-  return video !== null && !video.paused && video.currentTime > 0.5
-}, undefined, { timeout: 10000 }).then(() => true).catch(() => false)
+  return video !== null && !video.paused && video.currentTime > baseline + 0.5
+}, originalPlaybackBaseline, { timeout: 10000 }).then(() => true).catch(() => false)
 if (!playedAfterSwitch) {
   ng.push(`⑩ 再生中の追っかけから原本 HLS へ移った後、再生が続かない（${JSON.stringify(await page.locator('video').evaluate((video) => ({ paused: video.paused, currentTime: video.currentTime })))}）`)
+}
+const chaseToOriginalGap = await finishCurrentTimeGapMeasurement('chase-to-original-hls')
+if (requestedOriginalOffsets.length > 0 && chaseToOriginalGap !== undefined) {
+  log(`  切替中の currentTime 停止: ${chaseToOriginalGap.maxGapMs.toFixed(0)}ms (limit ${MAX_SOURCE_SWITCH_STALL_MS}ms)`)
+  if (chaseToOriginalGap.advances === 0 || chaseToOriginalGap.maxGapMs > MAX_SOURCE_SWITCH_STALL_MS) {
+    ng.push(`⑩ 追っかけ→原本 HLS の切替停止時間が上限を超えるか、再生進行を観測できない（${JSON.stringify(chaseToOriginalGap)}）`)
+  }
+}
+
+log('\n=== ⑪ 録画終端で追っかけから原本 HLS へ自動で移り、再生を続ける ===')
+// Keep this a growing EVENT playlist until the recording ends. The final response adds
+// ENDLIST at the recording boundary so the real media element reaches `ended` naturally.
+await page.goto('about:blank')
+await page.goto(`${URL_BASE}/404-e2e-terminal-transition`, { waitUntil: 'domcontentloaded' })
+await page.evaluate(() => localStorage.setItem('rokuban:playback-rate', '1'))
+const terminalRecordingStart = new Date(Date.now() - 1000).toISOString()
+recording.status = 'recording'
+recording.startAt = terminalRecordingStart
+recording.startedAt = terminalRecordingStart
+recording.durationMs = 12_000
+recording.endedAt = undefined
+recording.sizeBytes = undefined
+recording.encodedAssets = []
+delete recording.resumePositionMs
+transitionTestMode = false
+growingSince = Date.now()
+finalizeChasePlaylist = false
+const terminalPlaylistsBefore = playlistRequests
+const terminalOriginalPlaylistsBefore = originalVODPlaylistRequests.length
+const terminalOriginalOffsetsBefore = originalOffsetPlaylistRequests.length
+await page.goto(`${URL_BASE}/recordings/1#chase`, { waitUntil: 'domcontentloaded' })
+await playbackGroup.locator('video').waitFor({ timeout: 15000 })
+await page.waitForFunction(() => {
+  const video = document.querySelector('video')
+  return video !== null && video.readyState >= HTMLMediaElement.HAVE_METADATA &&
+    video.currentTime > 5 && !video.paused
+}, undefined, { timeout: 20000 }).catch(() => ng.push('⑪ 終端切替前に成長中の追っかけ再生が 5 秒まで進まない'))
+const detailRequestsBeforeTerminal = recordingDetailRequests
+await beginCurrentTimeGapMeasurement('chase-terminal-to-original-hls')
+finalizeChasePlaylist = true
+const terminalEndedAt = new Date()
+// Align the fixture's final 12-second EVENT playlist with the API's actual recorded span.
+recording.startedAt = new Date(terminalEndedAt.getTime() - 12_000).toISOString()
+recording.startAt = recording.startedAt
+recording.status = 'finished'
+recording.endedAt = terminalEndedAt.toISOString()
+recording.sizeBytes = 1_000_000
+await page.evaluate(() => window.__emitE2EEvent('recordings'))
+const terminalDetailDeadline = Date.now() + 5000
+while (recordingDetailRequests === detailRequestsBeforeTerminal && Date.now() < terminalDetailDeadline) {
+  await page.waitForTimeout(50)
+}
+if (recordingDetailRequests === detailRequestsBeforeTerminal) {
+  ng.push('⑪ recordings SSE 後に録画完了状態を再取得しない')
+}
+const finalPlaylistDeadline = Date.now() + 10000
+while (finalizedChasePlaylistRequests === 0 && Date.now() < finalPlaylistDeadline) {
+  await page.waitForTimeout(50)
+}
+if (finalizedChasePlaylistRequests === 0) {
+  ng.push('⑪ 録画終端で追っかけの EVENT playlist を ENDLIST にしない')
+}
+const terminalSwitchDeadline = Date.now() + 25000
+while (
+  originalVODPlaylistRequests.length === terminalOriginalPlaylistsBefore &&
+  originalOffsetPlaylistRequests.length === terminalOriginalOffsetsBefore &&
+  Date.now() < terminalSwitchDeadline
+) {
+  await page.waitForTimeout(50)
+}
+const terminalHLSRequests = originalVODPlaylistRequests.length - terminalOriginalPlaylistsBefore +
+  originalOffsetPlaylistRequests.length - terminalOriginalOffsetsBefore
+if (terminalHLSRequests === 0) {
+  const terminalState = await page.locator('video').evaluate((video) => ({
+    currentTime: video.currentTime,
+    duration: video.duration,
+    ended: video.ended,
+    paused: video.paused,
+    currentSrc: video.currentSrc,
+  }))
+  ng.push(`⑪ 追っかけを終端まで再生しても原本 HLS へ自動で切り替えない（${JSON.stringify(terminalState)}）`)
+} else {
+  // The original-HLS request can arrive before React has committed the new source's
+  // timeline state; wait for the carried position before reading the assertion.
+  await page.waitForFunction((expected) => {
+    const value = Number(document.querySelector('[data-testid="seek-scrub"]')?.getAttribute('aria-valuenow'))
+    return Number.isFinite(value) && Math.abs(value - expected) <= 1.5
+  }, 12, { timeout: 5000 }).catch(() => {})
+  const carriedTerminalPosition = Number(await page.getByTestId('seek-scrub').getAttribute('aria-valuenow'))
+  const terminalOffsets = originalOffsetPlaylistRequests.slice(terminalOriginalOffsetsBefore)
+  log(`  終端位置 12.00s → 原本 HLS timeline ${carriedTerminalPosition.toFixed(2)}s, offsets=[${terminalOffsets.join(', ')}] (playlist requests=${terminalHLSRequests})`)
+  if (Math.abs(carriedTerminalPosition - 12) > 1.5) {
+    ng.push(`⑪ 終端から原本 HLS へ再生位置を持ち越さない（12.00 → ${carriedTerminalPosition.toFixed(2)} 秒）`)
+  }
+  const terminalVideo = page.locator('video')
+  await page.waitForFunction(() => {
+    const video = document.querySelector('video')
+    return video !== null && video.readyState >= HTMLMediaElement.HAVE_METADATA
+  }, undefined, { timeout: 15000 }).catch(() => ng.push('⑪ 原本 HLS 切替後に metadata が揃わない'))
+  const terminalPlaybackBaseline = await terminalVideo.evaluate((video) => video.currentTime)
+  const terminalContinued = await page.waitForFunction((baseline) => {
+    const video = document.querySelector('video')
+    return video !== null && !video.paused && video.currentTime > baseline + 0.5
+  }, terminalPlaybackBaseline, { timeout: 15000 }).then(() => true).catch(() => false)
+  if (!terminalContinued) {
+    ng.push(`⑪ 終端から原本 HLS へ切り替えた後に再生が続かない（${JSON.stringify(await terminalVideo.evaluate((video) => ({ currentTime: video.currentTime, paused: video.paused, ended: video.ended })))}）`)
+  }
+}
+const terminalTransitionGap = await finishCurrentTimeGapMeasurement('chase-terminal-to-original-hls')
+if (terminalHLSRequests > 0 && terminalTransitionGap !== undefined) {
+  log(`  終端切替中の currentTime 停止: ${terminalTransitionGap.maxGapMs.toFixed(0)}ms (limit ${MAX_SOURCE_SWITCH_STALL_MS}ms)`)
+  if (terminalTransitionGap.advances === 0 || terminalTransitionGap.maxGapMs > MAX_SOURCE_SWITCH_STALL_MS) {
+    ng.push(`⑪ 追っかけ終端→原本 HLS の切替停止時間が上限を超えるか、再生進行を観測できない（${JSON.stringify(terminalTransitionGap)}）`)
+  }
+}
+if (playlistRequests === terminalPlaylistsBefore) {
+  ng.push('⑪ 終端切替シナリオで chase playlist を要求しない')
 }
 
 const shotDir = process.env.E2E_SHOT_DIR
@@ -1622,7 +1812,7 @@ const shotDir = process.env.E2E_SHOT_DIR
 const shot = async (filename) => {
   if (shotDir) await page.screenshot({ path: path.join(shotDir, filename), animations: 'disabled' })
 }
-log('\n=== ⑪ ポスターの ▶ で再生が始まり、枠の寸法が再生の前後で変わらない（1280 / 400） ===')
+log('\n=== ⑫ ポスターの ▶ で再生が始まり、枠の寸法が再生の前後で変わらない（1280 / 400） ===')
 holdResumePositionSeed = true
 recording.status = 'recording'
 recording.startedAt = new Date(Date.now() - 4 * 60_000).toISOString()

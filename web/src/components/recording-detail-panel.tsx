@@ -267,9 +267,10 @@ export function RecordingDetail({
     const current = playbackStateRef.current
     const position = positionSeconds ?? recordingPositionSecondsRef.current
     const selected = selectRecordingPlaybackSource(playbackSelection)
-    // 録画の終端まで見終えたなら、同じ終端に新しいセッションを作らない。終了の状態のまま止める。
+    // 同じ再生元が録画の終端に達したなら、新しいセッションを作らず終了状態のまま止める。
     if (
       trigger === 'ended' &&
+      selected === current.source &&
       position !== undefined &&
       recordedEndSeconds !== undefined &&
       position >= recordedEndSeconds - 1.5
@@ -632,7 +633,7 @@ export function RecordingDetail({
               onChaseOffsetChange={setChaseOffsetSeconds}
               onRecordingPositionChange={reportRecordingPosition}
               onSourceRangeExit={(seconds, playing) => reselectPlaybackSource('source-range-exit', seconds, playing)}
-              onRecordingPlaybackEnded={(seconds) => reselectPlaybackSource('ended', seconds, false)}
+              onRecordingPlaybackEnded={(seconds) => reselectPlaybackSource('ended', seconds, true)}
               onRecordingPlaybackError={(seconds, playing) => reselectPlaybackSource('source-error', seconds, playing)}
             />
           )}
@@ -676,7 +677,7 @@ export function RecordingDetail({
               onProfileChange={onSelectLiveProfile}
               onRecordingPositionChange={reportRecordingPosition}
               onSourceRangeExit={(seconds, playing) => reselectPlaybackSource('source-range-exit', seconds, playing)}
-              onRecordingPlaybackEnded={(seconds) => reselectPlaybackSource('ended', seconds, false)}
+              onRecordingPlaybackEnded={(seconds) => reselectPlaybackSource('ended', seconds, true)}
               onRecordingPlaybackError={(seconds, playing) => reselectPlaybackSource('source-error', seconds, playing)}
             />
           )}
@@ -715,7 +716,7 @@ export function RecordingDetail({
               reencodePending={reencode.isPending}
               autoPlay={playbackState.autoPlay}
               onRecordingPositionChange={reportRecordingPosition}
-              onRecordingPlaybackEnded={(seconds) => reselectPlaybackSource('ended', seconds, false)}
+              onRecordingPlaybackEnded={(seconds) => reselectPlaybackSource('ended', seconds, true)}
               onRecordingPlaybackError={(seconds, playing) => reselectPlaybackSource('source-error', seconds, playing)}
             />
           )}

@@ -267,6 +267,10 @@ playlist を Chromium の hls.js（`E2E_BROWSER=webkit` ならネイティブ HL
   切り替えて `/recordings/1` を開き直し、原本 VOD の `currentTime` を比べる。
   **原本 VOD の `LivePlayer` に `resumePositionMs` を渡さない変異で
   `5.52 秒 → 0.00 秒` になって落ちる**（Chromium で確認。WebKit は未実施）
+- **追っかけ範囲外 seek で原本 HLS に移った後も再生が続く**（⑩）。最後に進んだ `currentTime` から
+  次に進んだ時刻までの最大停止時間を記録し、2 秒以下を判定する
+- **追っかけを録画終端まで再生すると、原本 HLS に位置を渡して再生を続ける**（⑪）。終端までは
+  成長する EVENT playlist（ENDLIST 無し）を配り、録画完了後にだけ ENDLIST を返す
 
 `E2E_BROWSER=webkit` で同じ判定を Safari 相当のネイティブ HLS 経路で回す。
 画質切替の位置の持ち越しは hls.js（`startPosition`）とネイティブ（要素への代入）で
@@ -311,6 +315,17 @@ WebKit の HLS は 0.00ms / +23.37ms（-10.02 / +13.34）だった。
 非カット MP4 は両ブラウザで 0.00ms（-10.02）だった。1 フレーム変異は WebKit で 13 件の NG
 になり、ずれを検出することを確認した。測定値と未測定の範囲は
 [`docs/frontend/recordings.md`](../../docs/frontend/recordings.md) に記録している。
+
+### 原本 HLS から encoded への切替（`recording-original-vod.mjs`）
+
+⑥ は原本 HLS 再生中に encoded が追加されても現在の HLS を保ち、次の範囲外 seek で encoded MP4 へ
+位置を渡す。切替後に `currentTime` が進むことと、最後に進んだ時刻からの最大停止時間が 2 秒以下であることも、
+Chromium と WebKit で確認する。
+
+```sh
+E2E_URL=http://localhost:4173 E2E_BROWSER=chromium pnpm e2e:recording-original-vod
+E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:recording-original-vod
+```
 
 ### デザイン（`design.mjs`）
 
