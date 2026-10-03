@@ -109,6 +109,7 @@ const reservation = {
   durationMs: HOUR,
   createdAt: iso(nowMs),
   updatedAt: iso(nowMs),
+  series: null,
   skip: false,
 }
 
