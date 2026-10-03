@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
-import { render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -157,6 +157,10 @@ function stubFetch(
 const clients: QueryClient[] = []
 
 afterEach(() => {
+  // RTL's automatic cleanup is registered at import time and can run after this
+  // hook. Unmount first so clearing query caches cannot notify mounted React
+  // observers after the jsdom environment has been torn down.
+  cleanup()
   for (const c of clients.splice(0)) c.clear()
 })
 
