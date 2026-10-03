@@ -29,11 +29,11 @@ type playbackTimelineFixtureManifest struct {
 	} `json:"hls"`
 }
 
-// TestWritePlaybackTimelineFixture exports source and product-encoded artifacts for
-// web/e2e/recording-playback-timeline.mjs when ROKUBAN_PLAYBACK_TIMELINE_FIXTURE_DIR
-// is set. Go builds these outputs so the browser measurement follows the same argv
-// builders as the streamer and worker; a JavaScript-only ffmpeg command could drift
-// from product behavior while still making the timeline assertion pass.
+// TestWritePlaybackTimelineFixture は、環境変数 ROKUBAN_PLAYBACK_TIMELINE_FIXTURE_DIR が
+// 設定されているとき、web/e2e/recording-playback-timeline.mjs 用の原本 TS と、製品の
+// 引数ビルダーで作った HLS・非カット MP4 をそのディレクトリへ書き出す。出力を Go 側で
+// 作るのは、streamer / worker と同じ引数ビルダーを通すためである。JavaScript 側で
+// ffmpeg の引数を組むと、製品の挙動からずれたまま時間軸の判定だけ通りうる。
 func TestWritePlaybackTimelineFixture(t *testing.T) {
 	fixtureDir := os.Getenv("ROKUBAN_PLAYBACK_TIMELINE_FIXTURE_DIR")
 	if fixtureDir == "" {

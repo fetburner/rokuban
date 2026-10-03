@@ -1,4 +1,6 @@
 // 原本 HLS と非カット MP4 が同じ原本時間軸を使うか、表示中のフレームで測る。
+// 期待値はチャプターの軸である非カット MP4（encoded.mp4）の各目印フレームの PTS を
+// ffprobe で読んで求める。原本 TS の「目印 PTS - 最早 start_time」は参考値としてログにだけ出す。
 // fixture は Go のテストが製品の BuildOriginalVODFFmpegArgs / BuildFFmpegArgs で作る。
 //
 //   cd web && pnpm build
@@ -121,6 +123,13 @@ if (!(audioStart < videoStart) || Math.abs((videoStart - audioStart) - 0.7) > 0.
 }
 
 const decodedFrames = probe.frames ?? []
+const encodedTimes = runFFprobe([
+  '-v', 'error', '-select_streams', 'v:0',
+  '-show_entries', 'frame=pts_time,best_effort_timestamp_time', '-of', 'json', encodedPath,
+]).frames.map((frame) => Number(frame.best_effort_timestamp_time ?? frame.pts_time)).sort((a, b) => a - b)
+if (encodedTimes.length !== decodedFrames.length) {
+  ng.push(`encoded の frame 数が原本と違う (encoded=${encodedTimes.length}, source=${decodedFrames.length})`)
+}
 const markerTimes = manifest.markerFrames.map((frameIndex, markerSlot) => {
   const frame = decodedFrames[frameIndex]
   const pts = Number(frame?.best_effort_timestamp_time ?? frame?.pts_time)
@@ -128,10 +137,14 @@ const markerTimes = manifest.markerFrames.map((frameIndex, markerSlot) => {
     ng.push(`ffprobe で目印 frame ${frameIndex} の PTS を得られない`)
     return { frame: frameIndex, markerSlot, pts: Number.NaN, expectedSeconds: Number.NaN }
   }
-  return { frame: frameIndex, markerSlot, pts, expectedSeconds: pts - earliestStart }
+  // 目印の i 番目の frame は、encoded でも表示順の i 番目（frame 数の一致は下で検査する）。
+  const encodedPts = encodedTimes[frameIndex]
+  if (!Number.isFinite(encodedPts)) ng.push(`encoded の目印 frame ${frameIndex} の PTS を得られない`)
+  return { frame: frameIndex, markerSlot, pts, legacySeconds: pts - earliestStart, expectedSeconds: encodedPts }
 })
 log(`  ffprobe: fps=${videoStream?.r_frame_rate}, earliest=${earliestStart.toFixed(6)}s, audio lead=${(videoStart - audioStart).toFixed(6)}s`)
-log(`  目印 PTS - earliest start_time: ${markerTimes.map((item) => `${item.frame}:${item.expectedSeconds.toFixed(6)}`).join(', ')}`)
+log(`  目印 encoded PTS (主判定の基準): ${markerTimes.map((item) => `${item.frame}:${item.expectedSeconds.toFixed(6)}`).join(', ')}`)
+log(`  目印 原本 PTS - earliest start_time (参考): ${markerTimes.map((item) => `${item.frame}:${item.legacySeconds.toFixed(6)}`).join(', ')}`)
 
 recording.encodedAssets = [{ profile: ENCODE_PROFILE, sizeBytes: statSync(encodedPath).size }]
 const liveRecording = { ...recording, encodedAssets: [] }
@@ -386,7 +399,8 @@ function compareMarkers(label, observed, expected, sessionOffset) {
     const actual = sessionOffset + observed[i].mediaTime
     const expectedSeconds = expected[i].expectedSeconds + EXPECTED_SHIFT_FRAMES / SOURCE_FRAME_RATE
     const diff = actual - expectedSeconds
-    log(`  frame=${observed[i].frame} want=${expected[i].frame} pts=${expected[i].pts.toFixed(6)} expected=${expectedSeconds.toFixed(6)} actual=${actual.toFixed(6)} diff=${diff >= 0 ? '+' : ''}${(diff * 1000).toFixed(2)}ms presentedFrames=${observed[i].presentedFrames}`)
+    const legacyDiff = actual - expected[i].legacySeconds
+    log(`  frame=${observed[i].frame} want=${expected[i].frame} encodedPts=${expectedSeconds.toFixed(6)} actual=${actual.toFixed(6)} diff=${diff >= 0 ? '+' : ''}${(diff * 1000).toFixed(2)}ms (参考: 原本PTS基準 ${legacyDiff >= 0 ? '+' : ''}${(legacyDiff * 1000).toFixed(2)}ms) presentedFrames=${observed[i].presentedFrames}`)
     if (!Number.isFinite(actual) || Math.abs(diff) > HALF_FRAME_SECONDS) {
       ng.push(`${label}: frame ${expected[i].frame} の差が半フレームを超える (${(diff * 1000).toFixed(2)}ms)`)
     }
