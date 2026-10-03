@@ -325,6 +325,17 @@ playlist の先頭 6 segment から始まり、待ち時間中に1秒ごとに s
 終端に達すると停止し得た。現在は原本 HLS を先頭 4 segment から始め、2 秒ごとに segment を
 追加して最大 8 segment まで配る。⑦は範囲端の停止ではなく、再生開始と枠の寸法を測る。
 
+原本 HLS は開始位置も測る。クリック後に最初に取得した映像 segment が `0_seg00000.ts` で、最初の
+`playing` の `currentTime` が 1 未満でなければ NG にする。`currentTime > 0.5` だけでは、最新端から
+始まって進む再生も通ってしまうためである。診断には `playing` / `seeking` と `currentTime` への代入、
+詳細 API が返した再開位置を載せる。
+
+**15 回に 1 回の失敗の原因はテスト側だった。** 前のページを離れるときの再開位置 PUT が `delete` の後に届き、
+次の詳細取得が `resumePositionMs: 12000` を返していた。製品は 12 秒から再開するのが正しく、8 秒分
+しかない fixture で止まる。`resumePositionMs=12000` を直接入れると、失敗時と同じ診断（最初の segment が
+`0_seg00003.ts`、`currentTime` 代入が 12）が決定的に出る。現在は空ページへ出て PUT を出し切らせてから
+`delete` する。
+
 ⑦が失敗した場合は待機エラー、`paused`・`currentTime`・`readyState`・`seekable`・`buffered` と
 メディアエラーを記録する。`play()` の呼び出し・成否、playlist / segment の要求と HTTP 応答も記録する。
 再生中の操作バーは 3 秒で隠れ `aria-hidden` / `inert` になる。手動でバーの操作を調べるときは、

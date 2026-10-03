@@ -272,6 +272,22 @@ await context.addInitScript(() => {
     return result
   }
   window.__e2ePlayResults = playResults
+  // 開始位置の判定用。video の playing / seeking（capture で拾う）と currentTime への代入を記録する。
+  const videoLog = []
+  for (const type of ['playing', 'seeking']) {
+    document.addEventListener(type, (event) => {
+      videoLog.push({ type, currentTime: event.target.currentTime })
+    }, true)
+  }
+  const currentTimeDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime')
+  Object.defineProperty(HTMLMediaElement.prototype, 'currentTime', {
+    ...currentTimeDescriptor,
+    set(value) {
+      videoLog.push({ type: 'assign', value, from: this.currentTime })
+      currentTimeDescriptor.set.call(this, value)
+    },
+  })
+  window.__e2eVideoLog = videoLog
 })
 const page = await context.newPage()
 const originalMediaResponses = []
@@ -301,6 +317,7 @@ const audioPlaylistRequests = []
 const offsetVideoSegmentRequests = []
 const originalVODLeaveRequests = []
 let recordingDetailRequests = 0
+const detailResumeLog = []
 // ④ で true にする。variant / 字幕 playlist を先頭 4 segment で切り、ENDLIST を外して返す
 // （変換中の EVENT playlist の先端を再現する）。⑦ は開始後に配信済み segment 数を増やす。
 let growingEdge = false
@@ -347,6 +364,7 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
   if (requestPath === '/api/recordings' && method === 'GET') return json([recording])
   if (requestPath === `/api/recordings/${RECORDING_ID}` && method === 'GET') {
     recordingDetailRequests += 1
+    detailResumeLog.push(recording.resumePositionMs ?? null)
     return json(recording)
   }
   if (requestPath === `/api/recordings/${RECORDING_ID}/chapters`) {
@@ -757,10 +775,14 @@ log('\n=== ④ ENDLIST の無い変換中 playlist の先端で ended が発火�
 // live-player.tsx の onEnded は「ended は ENDLIST 済みの終端でしか発火しない」ことに依存する。
 // 先頭 4 segment（約 8 秒）で切った ENDLIST 無しの playlist を先端まで再生して確かめる。
 growingEdge = true
+// 前のページの再開位置 PUT が delete の後に届かないよう、空ページへ出て出し切らせてから消す（⑦ と同じ）。
+const recordingURL = page.url()
+await page.goto('about:blank')
+await page.waitForTimeout(300)
 delete recording.resumePositionMs
 const watchedCountBeforeGrowingEdge = watchedWrites.length
 const playlistsBeforeGrowingEdge = playlistRequests.length
-await page.reload({ waitUntil: 'domcontentloaded' })
+await page.goto(recordingURL, { waitUntil: 'domcontentloaded' })
 await page.waitForTimeout(750)
 if (playlistRequests.length !== playlistsBeforeGrowingEdge) {
   ng.push('④ 再生ボタンを押す前に変換中 original HLS playlist を要求した')
@@ -1467,6 +1489,13 @@ for (const [label, viewport] of [['1280', { width: 1280, height: 900 }], ['400',
   await page.setViewportSize(viewport)
   for (const source of ['original-hls', 'encoded']) {
     recording.encodedAssets = source === 'encoded' ? [{ profile: PLAYBACK_PROFILE, sizeBytes: 400_000 }] : []
+    // 前の再生ページを離れるときの再開位置 PUT（pagehide）が、delete の後に届くことがある。
+    // それが次の詳細取得に載ると、製品は 12 秒から再開するのが正しく、8 秒しか無い fixture で止まる
+    // （15 回に 1 回の失敗の原因。resumePositionMs=12000 を直接入れて同じ診断が出ることを確認済み）。
+    // 先に空ページへ出て PUT を出し切らせてから delete する。
+    await page.goto('about:blank')
+    await page.waitForTimeout(300)
+    if (recording.resumePositionMs !== undefined) log(`  ⑦(${source}/${label}) 前のページが残した再開位置 ${recording.resumePositionMs}ms を破棄`)
     delete recording.resumePositionMs
     await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
     await page.waitForSelector('[data-testid="recording-playback-poster"], [data-testid="recording-player-frame"]', { timeout: 15000 })
@@ -1480,6 +1509,9 @@ for (const [label, viewport] of [['1280', { width: 1280, height: 900 }], ['400',
       failures: originalMediaFailures.length,
     }
     const playResultCursor = await page.evaluate(() => window.__e2ePlayResults.length)
+    const detailResumeCursor = detailResumeLog.length
+    const writeCursor = playbackPositionWrites.length
+    const videoLogCursor = await page.evaluate(() => window.__e2eVideoLog.length)
     growingEventStartedAt = source === 'original-hls' ? Date.now() : undefined
     if (source === 'original-hls') {
       await page.getByTestId('recording-playback-start').click()
@@ -1523,6 +1555,16 @@ for (const [label, viewport] of [['1280', { width: 1280, height: 900 }], ['400',
       }
       log(`  ⑦(${source}/${label}) 再生失敗時の診断: ${JSON.stringify({ failure: playbackFailure, media, requests })}`)
       ng.push(`⑦(${source}/${label}) 再生ボタンを押しても再生が進まない`)
+    }
+    if (source === 'original-hls' && !playbackFailure) {
+      // 録画中（EVENT）の原本は先頭から始まる。最新端から始まって進むだけの再生を合格にしない。
+      const clickSegments = segmentRequests.slice(requestCursor.segments).filter((name) => name.startsWith('0_seg'))
+      const videoLog = await page.evaluate((cursor) => window.__e2eVideoLog.slice(cursor), videoLogCursor)
+      const firstPlaying = videoLog.find((entry) => entry.type === 'playing')
+      if (clickSegments[0] !== '0_seg00000.ts' || firstPlaying === undefined || firstPlaying.currentTime >= 1) {
+        log(`  ⑦(${source}/${label}) 開始位置の診断: ${JSON.stringify({ clickSegments, videoLog, detailResume: detailResumeLog.slice(detailResumeCursor), writes: playbackPositionWrites.slice(writeCursor) })}`)
+        ng.push(`⑦(${source}/${label}) 原本HLSが先頭から始まらない（最初の segment ${clickSegments[0]}、最初の playing ${firstPlaying?.currentTime}）`)
+      }
     }
     await page.mouse.move(200, 5)
     await page.waitForTimeout(500)
