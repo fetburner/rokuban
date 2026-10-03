@@ -1135,7 +1135,7 @@ func (ls *LiveStreamer) ChasePlaylistForTarget(w http.ResponseWriter, r *http.Re
 				return
 			}
 			source = func(ctx context.Context) (io.ReadCloser, error) {
-				return followChaseRecord(ctx, client, target.RecordID)
+				return waitForChaseRecord(ctx, client, target.RecordID)
 			}
 		} else {
 			client, ok := ls.mirakc.(mirakcSeekRecordClient)
@@ -1574,24 +1574,6 @@ func parseCanonicalRecordingID(raw string) (int64, bool) {
 		return 0, false
 	}
 	return v, true
-}
-
-// followChaseRecord は先頭からの追っかけの入力を返す。mirakc の追従配信は無入力
-// タイムアウトで録画中にも閉じうる（実際に閉じる頻度は未検証）。そのまま ffmpeg の EOF に
-// すると、録画が続いているのに playlist に ENDLIST が付く。閉じた後は読んだバイトの続きから
-// chaseRangeFollowReader で追い、mirakc が録画の終了を返すまで EOF にしない。これで
-// 追っかけの ENDLIST は offset の有無によらず「録画ファイルの終端まで変換した」を意味する
-// （TestFollowChaseRecordContinuesWithRangeAfterFollowCloses）。
-func followChaseRecord(ctx context.Context, client mirakcRecordClient, recordID string) (io.ReadCloser, error) {
-	body, err := waitForChaseRecord(ctx, client, recordID)
-	if err != nil {
-		return nil, err
-	}
-	seekClient, ok := client.(mirakcSeekRecordClient)
-	if !ok {
-		return body, nil
-	}
-	return &chaseRangeFollowReader{ctx: ctx, client: seekClient, recordID: recordID, body: body}, nil
 }
 
 func waitForChaseRecord(ctx context.Context, client mirakcRecordClient, recordID string) (io.ReadCloser, error) {
