@@ -91,23 +91,29 @@ describe('ChannelPicker', () => {
     expect(within(dialog).getByText('BS日テレ')).toBeInTheDocument()
   })
 
-  it('選ぶと onChange が選択を追加した集合で呼ばれ、ピッカーは閉じない', async () => {
-    const onChange = vi.fn()
-    const services = [service({ serviceId: 1024, name: 'NHK総合' })]
-    render(<ChannelPicker services={services} selected={new Set<number>()} onChange={onChange} />)
+  it('空集合は「すべて」と全候補のチェック済みとして表示する', async () => {
+    const services = [
+      service({ serviceId: 1024, name: 'NHK総合' }),
+      service({ serviceId: 1032, name: 'NHKEテレ' }),
+    ]
+    render(<ChannelPicker services={services} selected={new Set<number>()} onChange={vi.fn()} />)
 
-    // 「閉じない」の確認は、必ず開いたことを確かめてから押して、まだ開いていることを見る。
     const dialog = await openPicker('チャンネル: すべて')
-    const user = userEvent.setup()
-    await user.click(within(dialog).getByText('NHK総合'))
-
-    expect(onChange).toHaveBeenCalledExactlyOnceWith(new Set([3273601024]))
-    // 非同期の空虚な成功を避けるため、閉じていないことを waitFor で確かめる
-    // （閉じるアニメーション等が挟まっても安定して判定できるようにする）。
-    await waitFor(() => expect(screen.getByRole('dialog', { name: 'チャンネル' })).toBeInTheDocument())
+    expect(within(dialog).getByRole('checkbox', { name: 'すべて' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    expect(within(dialog).getByRole('checkbox', { name: /NHK総合/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    expect(within(dialog).getByRole('checkbox', { name: /NHKEテレ/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
   })
 
-  it('2 局を選ぶと両方選択済みになり、もう一度押すと外れる（トグル、両方向）', async () => {
+  it('全局状態で局を外すと全候補との差分になり、全局へ戻すと空集合に正規化する', async () => {
     let selected = new Set<number>()
     const onChange = vi.fn((next: ReadonlySet<number>) => {
       selected = new Set(next)
@@ -125,28 +131,238 @@ describe('ChannelPicker', () => {
 
     await user.click(within(dialog).getByText('NHK総合'))
     rerender(<ChannelPicker services={services} selected={selected} onChange={onChange} />)
-    await user.click(within(dialog).getByText('NHKEテレ'))
-    expect(selected).toEqual(new Set([3273601024, 3273601032]))
-
-    rerender(<ChannelPicker services={services} selected={selected} onChange={onChange} />)
-    // まだ開いている状態で、もう一度 NHK総合 を押すと外れる
-    await user.click(within(dialog).getByText('NHK総合'))
     expect(selected).toEqual(new Set([3273601032]))
+    expect(within(dialog).getByRole('checkbox', { name: 'すべて' })).toHaveAttribute(
+      'aria-checked',
+      'mixed',
+    )
+    expect(within(dialog).getByRole('checkbox', { name: /NHK総合/ })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    )
+
+    await user.click(within(dialog).getByText('NHK総合'))
+    expect(selected).toEqual(new Set())
+    expect(onChange).toHaveBeenLastCalledWith(new Set())
+    rerender(<ChannelPicker services={services} selected={selected} onChange={onChange} />)
+    expect(within(dialog).getByRole('checkbox', { name: 'すべて' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
   })
 
-  it('「すべて」を押すと onChange が空集合で呼ばれ、ピッカーは閉じない', async () => {
+  it('全局から0局にすると URL を変えず、次の局選択で選択集合を渡す', async () => {
+    let selected = new Set<number>()
+    const onChange = vi.fn((next: ReadonlySet<number>) => {
+      selected = new Set(next)
+    })
+    const services = [
+      service({ serviceId: 1024, name: 'NHK総合' }),
+      service({ serviceId: 1032, name: 'NHKEテレ' }),
+    ]
+    const { rerender } = render(
+      <ChannelPicker services={services} selected={selected} onChange={onChange} />,
+    )
+
+    const dialog = await openPicker('チャンネル: すべて')
+    const user = userEvent.setup()
+    await user.click(within(dialog).getByRole('checkbox', { name: 'すべて' }))
+
+    expect(onChange).not.toHaveBeenCalled()
+    expect(within(dialog).getByRole('checkbox', { name: 'すべて' })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    )
+    expect(within(dialog).getByRole('status')).toHaveTextContent('1つ以上選んでください')
+    expect(within(dialog).getByRole('checkbox', { name: /NHK総合/ })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    )
+
+    await user.click(within(dialog).getByText('NHK総合'))
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(new Set([3273601024]))
+    rerender(<ChannelPicker services={services} selected={selected} onChange={onChange} />)
+    expect(within(dialog).getByRole('checkbox', { name: /NHK総合/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    expect(within(dialog).getByRole('checkbox', { name: /NHKEテレ/ })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    )
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'チャンネル' })).toBeInTheDocument())
+  })
+
+  it('0局のまま閉じると全局に戻る', async () => {
+    const services = [
+      service({ serviceId: 1024, name: 'NHK総合' }),
+      service({ serviceId: 1032, name: 'NHKEテレ' }),
+    ]
+    render(<ChannelPicker services={services} selected={new Set<number>()} onChange={vi.fn()} />)
+
+    const dialog = await openPicker('チャンネル: すべて')
+    const user = userEvent.setup()
+    await user.click(within(dialog).getByRole('checkbox', { name: 'すべて' }))
+    expect(within(dialog).getByRole('checkbox', { name: /NHK総合/ })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    )
+
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    const reopened = await openPicker('チャンネル: すべて')
+    expect(within(reopened).queryByRole('status')).not.toBeInTheDocument()
+    expect(within(reopened).getByRole('checkbox', { name: 'すべて' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    expect(within(reopened).getByRole('checkbox', { name: /NHK総合/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+  })
+
+  it('明示選択の最後を外して0局のまま閉じると全局を通知する', async () => {
     const onChange = vi.fn()
-    const services = [service({ serviceId: 1024, name: 'NHK総合' })]
+    const services = [
+      service({ serviceId: 1024, name: 'NHK総合' }),
+      service({ serviceId: 1032, name: 'NHKEテレ' }),
+    ]
     render(
       <ChannelPicker services={services} selected={new Set([3273601024])} onChange={onChange} />,
     )
 
-    const dialog = await openPicker(/NHK総合/)
+    const dialog = await openPicker('チャンネル: NHK総合')
     const user = userEvent.setup()
-    await user.click(within(dialog).getByText('すべて'))
+    await user.click(within(dialog).getByText('NHK総合'))
 
-    expect(onChange).toHaveBeenCalledExactlyOnceWith(new Set())
-    await waitFor(() => expect(screen.getByRole('dialog', { name: 'チャンネル' })).toBeInTheDocument())
+    expect(onChange).not.toHaveBeenCalled()
+    expect(within(dialog).getByRole('checkbox', { name: /NHK総合/ })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    )
+    await user.keyboard('{Escape}')
+
+    await waitFor(() => expect(onChange).toHaveBeenCalledExactlyOnceWith(new Set()))
+  })
+
+  it('種別見出しは mixed から種別内をすべて付け、押し直すとその種別だけ外す', async () => {
+    let selected = new Set([3273601024, 3273602024])
+    const onChange = vi.fn((next: ReadonlySet<number>) => {
+      selected = new Set(next)
+    })
+    const services = [
+      service({ serviceId: 1024, name: 'NHK総合' }),
+      service({ serviceId: 1032, name: 'NHKEテレ' }),
+      service({ serviceId: 2024, name: 'BS日テレ', channelType: 'BS' }),
+      service({ serviceId: 3024, name: 'CS局', channelType: 'CS' }),
+    ]
+    const { rerender } = render(
+      <ChannelPicker services={services} selected={selected} onChange={onChange} />,
+    )
+
+    const dialog = await openPicker('チャンネル: 2 局を選択中')
+    const ground = within(dialog).getByRole('checkbox', { name: '地上波' })
+    expect(ground).toHaveAttribute('aria-checked', 'mixed')
+
+    const user = userEvent.setup()
+    await user.click(ground)
+    expect(selected).toEqual(new Set([3273601024, 3273601032, 3273602024]))
+    rerender(<ChannelPicker services={services} selected={selected} onChange={onChange} />)
+    expect(within(dialog).getByRole('checkbox', { name: '地上波' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+
+    await user.click(within(dialog).getByRole('checkbox', { name: '地上波' }))
+    expect(selected).toEqual(new Set([3273602024]))
+  })
+
+  it('種別が1つだけの候補では見出しをチェックボックスにしない', async () => {
+    const services = [
+      service({ serviceId: 1024, name: 'NHK総合' }),
+      service({ serviceId: 1032, name: 'NHKEテレ' }),
+    ]
+    render(<ChannelPicker services={services} selected={new Set<number>()} onChange={vi.fn()} />)
+
+    const dialog = await openPicker('チャンネル: すべて')
+    expect(within(dialog).getByText('地上波')).toBeInTheDocument()
+    expect(within(dialog).queryByRole('checkbox', { name: '地上波' })).not.toBeInTheDocument()
+  })
+
+  it('検索中の「すべて」と種別見出しは表示中の候補だけを操作する', async () => {
+    let selected = new Set<number>()
+    const onChange = vi.fn((next: ReadonlySet<number>) => {
+      selected = new Set(next)
+    })
+    const services = Array.from({ length: 16 }, (_, i) =>
+      service({
+        serviceId: 1000 + i,
+        name: i === 0 || i === 8 ? `対象${i}` : `別局${i}`,
+        channelType: i < 8 ? 'GR' : 'BS',
+      }),
+    )
+    const { rerender } = render(
+      <ChannelPicker services={services} selected={selected} onChange={onChange} />,
+    )
+
+    const dialog = await openPicker('チャンネル: すべて')
+    const user = userEvent.setup()
+    const search = within(dialog).getByLabelText('チャンネルを絞り込む')
+    await user.type(search, '対象')
+
+    const all = within(dialog).getByRole('checkbox', { name: '一致したものをすべて' })
+    expect(all).toHaveAttribute('aria-checked', 'true')
+    await user.click(all)
+    expect(selected).toEqual(new Set(services.filter((_, i) => i !== 0 && i !== 8).map((s) => s.id)))
+    rerender(<ChannelPicker services={services} selected={selected} onChange={onChange} />)
+    expect(within(dialog).getByRole('checkbox', { name: '一致したものをすべて' })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    )
+    expect(within(dialog).getByRole('checkbox', { name: /対象0/ })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    )
+    expect(within(dialog).getByRole('checkbox', { name: '対象8' })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    )
+    await user.click(within(dialog).getByRole('checkbox', { name: '地上波' }))
+    expect(selected).toEqual(new Set(services.filter((_, i) => i !== 8).map((s) => s.id)))
+    rerender(<ChannelPicker services={services} selected={selected} onChange={onChange} />)
+    expect(within(dialog).getByRole('checkbox', { name: '一致したものをすべて' })).toHaveAttribute(
+      'aria-checked',
+      'mixed',
+    )
+    await user.click(within(dialog).getByRole('checkbox', { name: '一致したものをすべて' }))
+    expect(selected).toEqual(new Set())
+    expect(onChange).toHaveBeenLastCalledWith(new Set())
+  })
+
+  it('検索中の種別見出しも表示中の候補だけを操作する', async () => {
+    const services = Array.from({ length: 16 }, (_, i) =>
+      service({
+        serviceId: 1024 + i,
+        name: i === 0 || i === 8 ? `対象${i}` : `他局${i}`,
+        channelType: i < 8 ? 'GR' : 'BS',
+      }),
+    )
+    const onChange = vi.fn()
+    render(
+      <ChannelPicker
+        services={services}
+        selected={new Set(services.map((s) => s.id))}
+        onChange={onChange}
+      />,
+    )
+
+    const dialog = await openPicker('チャンネル: 16 局を選択中')
+    const user = userEvent.setup()
+    await user.type(within(dialog).getByLabelText('チャンネルを絞り込む'), '対象')
+    await user.click(within(dialog).getByRole('checkbox', { name: '地上波' }))
+
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(new Set(services.filter((_, i) => i !== 0).map((s) => s.id)))
   })
 
   it('Esc で閉じ、フォーカスがトリガーに戻る', async () => {
@@ -172,9 +388,9 @@ describe('ChannelPicker', () => {
 
     const dialog = await openPicker('チャンネル: すべて')
     const names = within(dialog)
-      .getAllByRole('button')
-      .map((el) => el.textContent)
-      .filter((text): text is string => text !== null && text !== 'すべて')
+      .getAllByRole('checkbox')
+      .map((el) => el.textContent?.trim() ?? '')
+      .filter((text) => !['すべて', '地上波', 'BS', 'CS', 'SKY'].includes(text))
 
     // GR かつ remoteControlKeyId > 0 のときはリモコン番号が名前の前に描画される
     // （program-grid.tsx のヘッダと同じ見た目）ので、期待値もそれに合わせる。

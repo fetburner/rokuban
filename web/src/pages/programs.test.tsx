@@ -851,6 +851,7 @@ describe('ProgramsPage の表示形式', () => {
     // サービスの選択はポップオーバーの中。開いてから選ぶ
     await userEvent.click(screen.getByRole('button', { name: 'チャンネル: すべて' }))
     const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: 'すべて' }))
     await userEvent.click(within(dialog).getByText('NHKEテレ'))
     // 項目を押しただけでは閉じない。Esc で閉じる
     await userEvent.keyboard('{Escape}')
@@ -1304,6 +1305,7 @@ describe('ProgramsPage のリスト（回帰）', () => {
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'チャンネル: すべて' }))
     const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: 'すべて' }))
     await userEvent.click(within(dialog).getByText('NHK総合'))
 
     // 項目を押しただけではポップオーバーは閉じない（複数選ぶため）。
@@ -1334,7 +1336,7 @@ describe('ProgramsPage のリスト（回帰）', () => {
 })
 
 describe('ProgramsPage のチャンネル複数選択', () => {
-  it('1 局選ぶと他局の番組が消え、もう 1 局足すと両方の番組が出る', async () => {
+  it('残りの局を加えると全候補へ正規化され、両方の番組が出る', async () => {
     stubApi()
     renderPage()
 
@@ -1343,6 +1345,7 @@ describe('ProgramsPage のチャンネル複数選択', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'チャンネル: すべて' }))
     const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: 'すべて' }))
     await userEvent.click(within(dialog).getByText('NHK総合'))
 
     // NHK総合 だけに絞ったので、NHKEテレ の番組（手話ニュース）は消える
@@ -1350,15 +1353,11 @@ describe('ProgramsPage のチャンネル複数選択', () => {
     expect(screen.queryByText('手話ニュース')).not.toBeInTheDocument()
     expect(screen.getByText('ニュース7')).toBeInTheDocument()
 
-    // ポップオーバーはまだ開いている（閉じていたら以下の click は要素が
-    // 見つからず失敗する）。閉じずにもう 1 局足す
+    // 2 局目を加えると全候補と一致するため、空集合に正規化される
     expect(screen.getByRole('dialog', { name: 'チャンネル' })).toBeInTheDocument()
     await userEvent.click(within(dialog).getByText('NHKEテレ'))
 
-    // 2 局とも選んだので、両方の番組が出る
-    expect(
-      await screen.findByRole('button', { name: 'チャンネル: 2 局を選択中' }),
-    ).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'チャンネル: すべて' })).toBeInTheDocument()
     expect(screen.getByText('ニュース7')).toBeInTheDocument()
     expect(screen.getByText('手話ニュース')).toBeInTheDocument()
   })
@@ -1370,6 +1369,7 @@ describe('ProgramsPage のチャンネル複数選択', () => {
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'チャンネル: すべて' }))
     const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: 'すべて' }))
     await userEvent.click(within(dialog).getByText('NHK総合'))
 
     // NHK総合 に絞ると NHKEテレ の番組は一覧から消える
@@ -1392,6 +1392,8 @@ describe('ProgramsPage のチャンネル複数選択', () => {
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'チャンネル: すべて' }))
     const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
+    // 空集合は全局なので、1局に絞るには先に「すべて」を外す
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: 'すべて' }))
     await userEvent.click(within(dialog).getByText('NHK総合'))
 
     expect(await screen.findByRole('button', { name: 'チャンネル: NHK総合' })).toBeInTheDocument()
@@ -1415,6 +1417,7 @@ describe('ProgramsPage のチャンネル複数選択', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'チャンネル: すべて' }))
     const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: 'すべて' }))
     await userEvent.click(within(dialog).getByText('NHK総合'))
 
     expect(await screen.findByRole('button', { name: 'チャンネル: NHK総合' })).toBeInTheDocument()
@@ -1497,6 +1500,7 @@ describe('ProgramsPage のチャンネル複数選択', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'チャンネル: すべて' }))
     const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: 'すべて' }))
     await userEvent.click(within(dialog).getByText('NHK総合'))
     await userEvent.keyboard('{Escape}')
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
@@ -1537,6 +1541,7 @@ describe('ProgramsPage のチャンネル絞り込みの URL 化（issue #231）
 
     await userEvent.click(screen.getByRole('button', { name: 'チャンネル: すべて' }))
     const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: 'すべて' }))
     await userEvent.click(within(dialog).getByText('NHK総合'))
 
     await waitFor(() => {
@@ -1548,7 +1553,7 @@ describe('ProgramsPage のチャンネル絞り込みの URL 化（issue #231）
     expect(router.history.length).toBe(1)
   })
 
-  it('選択済みの URL からピッカーを操作すると組を足す', async () => {
+  it('選択済み URL に残りの候補を足すと全局に正規化する', async () => {
     stubApi()
     const { router } = renderPage('/programs?service=3273601024')
 
@@ -1558,7 +1563,7 @@ describe('ProgramsPage のチャンネル絞り込みの URL 化（issue #231）
     await userEvent.click(within(dialog).getByText('NHKEテレ'))
 
     await waitFor(() => {
-      expect(router.state.location.search.service).toEqual([3273601024, 3273701032])
+      expect(router.state.location.search.service).toBeUndefined()
     })
   })
 
@@ -1600,6 +1605,8 @@ describe('ProgramsPage のピッカーの定義域（issue #231 のレビュー 
     await userEvent.click(screen.getByRole('button', { name: 'チャンネル: NHK総合サブ' }))
     const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
     await userEvent.click(within(dialog).getByText('NHK総合サブ'))
+    // 最後の 1 局を外した状態は URL に書けないため、閉じると全局へ戻る
+    await userEvent.keyboard('{Escape}')
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'チャンネル: すべて' })).toBeInTheDocument(),
     )
@@ -1616,6 +1623,7 @@ describe('ProgramsPage のピッカーの定義域（issue #231 のレビュー 
     await userEvent.click(screen.getByRole('button', { name: 'チャンネル: チャンネル #3273609999' }))
     const dialog = await screen.findByRole('dialog', { name: 'チャンネル' })
     await userEvent.click(within(dialog).getByText('チャンネル #3273609999'))
+    await userEvent.keyboard('{Escape}')
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'チャンネル: すべて' })).toBeInTheDocument(),
     )
