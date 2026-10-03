@@ -470,12 +470,37 @@ Rokuban は利用者を持たないので（[api/deployment.md](../api/deploymen
 `recordings` の行は本番では DELETE されないので、衛星表の行を掃除する役は作らない。
 掃除役を足すと 2 人目の書き手になる（不変条件 12）。
 
-#### 再生位置の軸は原本の秒
+#### 再生位置の基準軸は原本の秒
 
-**位置は常に、非カット版を再生したときの `currentTime` の軸（録画開始からの ms）で持つ。**
+**保存する位置の基準は、非カット版の録画先頭からの経過時間（ms）とする。**
 プロファイルでは分けない。非カット版はどのプロファイルもこの軸を共有する。
-原本 HLS と追っかけも同じ軸で保存している。カット版の切り出し（`internal/ffargs/cut.go`）も、
-チャプターの原点をこの `currentTime` と同じとみなして切っている。
+原本 HLS と追っかけはセッションの offset を足し戻してこの軸へ変換する。カット版の切り出し
+（`internal/ffargs/cut.go`）も、チャプターの原点をこの軸と同じとみなして切っている。
+
+ただし、ブラウザが報告する `requestVideoFrameCallback` の `mediaTime` がこの軸と一致するかは
+ブラウザと再生経路で測る必要がある。`web/e2e/recording-playback-timeline.mjs` は ffprobe の
+各目印フレーム PTS から入力全ストリームの最小 `start_time` を引き、Chrome の hls.js 再生と
+WebKit の native HLS 再生、非カット MP4 の表示時刻を比較する。許容差は 29.97fps の半フレーム
+（16.68ms）。
+
+合成 MPEG-2 TS では映像 30000/1001fps、最小 `start_time` 10.389978s、映像 `start_time`
+11.100700s、音声先行 710.722ms、非ゼロ PTS を確認した。目印は frame 45, 106, 181, 240,
+330, 401, 492, 540, 624 に置き、10 秒 offset の前後を測定した。
+
+| 経路 | HLS offset 0 | HLS offset 10 | 非カット MP4 |
+| --- | ---: | ---: | ---: |
+| Chrome + hls.js | +56.71ms | +80.08ms | -10.02ms |
+| WebKit native HLS | -10.02ms | +13.34ms | -10.02ms |
+
+Chrome の原本 HLS は半フレームの許容差を超え、WebKit と非カット MP4 は範囲内だった。
+E2E はこの差を NG として報告するため、Chrome 実行は exit 1 になる。これは測定結果であり、
+この issue では時刻補正を加えていない。補正の設計判断は #1068 で行う。
+
+2026-10-03 時点の homelab 録画 API には 29 件あり、すべて GR だった。原本が残る行は 2 件、
+encoded asset がある行は 26 件だが、原本と encoded asset の両方がある行は 0 件だった。
+そのため、実録画での GR/BS 各 1 件の同一シーン比較は実施できていない。実 streamer から
+GR 録画 ID 251 の original-VOD master playlist が HTTP 200 で返ることは確認したが、
+BS 録画および同一録画の non-cut encoded がないため、これをペア測定の結果には含めない。
 
 - **カット版の秒と原本の秒の変換はクライアントが行う。** 材料はいま再生しているファイルの
   凍結済み keep 区間（`media_asset_cuts.keep_ranges`）である。カット版を作り直しても、
@@ -486,8 +511,8 @@ Rokuban は利用者を持たないので（[api/deployment.md](../api/deploymen
 - 復元する秒が CM（keep 外）に落ちたときは、次の keep 区間の先頭へ寄せる
 - 区間による変換は、字幕の時刻の付け替えとして worker にもある。端の扱い（字幕は捨てる・
   クリップ、位置は寄せる）は違うが、区分線形の変換そのものは同じ導出である
-- 残差: 音声が映像より先に始まる分と、区間ごとの半フレーム窓がある（どちらも大きさは未測定）。
-  ドロップで PTS が飛んだ録画での keep 区間と `currentTime` のずれは未測定
+- 残差: 合成 TS で音声先行は 710.722ms と測定済み。ドロップで PTS が飛んだ録画での keep 区間と
+  `currentTime` のずれ、および実録画の GR/BS での同一シーン比較は未測定
 
 #### 視聴済みは放送イベントで束ねて読む
 

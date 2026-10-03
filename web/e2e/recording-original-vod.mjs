@@ -8,6 +8,7 @@
 // `hls_list_size 0` / `temp_file` / `segments/` base URL）そのものは Go のテスト
 // （internal/streamer の BuildOriginalVODFFmpegArgs と偽 ffmpeg のテスト）が見ており、
 // ここの手書き引数はそれと同じ形に揃えてあるだけで、同一であることは保証しない。
+// 再生時刻の一致を測る fixture は `recording-playback-timeline.mjs` が Go の製品ビルダーで作る。
 // 元 TS は MPEG-2 video / MP2 audio だけを持つ。字幕は SRT から直接 WebVTT にしており、
 // **原本（ARIB / DVB 字幕ストリーム）由来の字幕は未検証**（ffmpeg はテキスト字幕から
 // ビットマップ字幕を作れない）。①〜③ の playlist は最初から ENDLIST 済みである。
