@@ -256,8 +256,6 @@ type LivePlayerProps = {
    * 何もしない）。false なら、このプレイヤーが同じ再生元のまま張り直す。
    */
   onSourceRangeExit?: (recordingPositionSeconds: number, wasPlaying: boolean) => boolean
-  /** 終端に達した。true なら親が再生元を替えた。 */
-  onRecordingPlaybackEnded?: (recordingPositionSeconds: number) => boolean
   /**
    * 再生元がエラーを返した。位置は一度も再生していないセッションでは undefined（0 秒を
    * 「明示の位置」として渡さない）。true なら親が再生元を選び直した（エラー表示に落ちない）。
@@ -357,7 +355,6 @@ export function LivePlayer({
   onChaseOffsetChange,
   onRecordingPositionChange,
   onSourceRangeExit,
-  onRecordingPlaybackEnded,
   onRecordingPlaybackError,
   className,
   onDiagnostics,
@@ -1803,12 +1800,6 @@ export function LivePlayer({
       }}
       onVolumeChange={(event) => frame.onVolumeChange(event.currentTarget)}
       onEnded={(event) => {
-        if (
-          isRecordingPlayback &&
-          onRecordingPlaybackEnded?.(
-            (isChase ? chaseStartOffset : sessionStartOffset) + event.currentTarget.currentTime,
-          ) === true
-        ) return
         // ended は ENDLIST 済みの終端でだけ発火する前提で位置を消す。
         if (!isOriginalVOD || recordingId === undefined) return
         originalVODFinalized.current = true

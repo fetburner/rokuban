@@ -52,8 +52,6 @@ type RecordingPlayerProps = {
   resumePositionMs?: number
   /** 現在の位置を原本時間軸の秒で親へ伝える。 */
   onRecordingPositionChange?: (seconds: number) => void
-  /** 終端 / エラーで再生元を選び直した場合は true を返す。 */
-  onRecordingPlaybackEnded?: (recordingPositionSeconds: number) => boolean
   /** 動画がエラーを返した。一度も再生していなければ位置は undefined。親が選び直したら true。 */
   onRecordingPlaybackError?: (recordingPositionSeconds: number | undefined, wasPlaying: boolean) => boolean
   /** 最初の読み込みが終わったら再生を始める（再生元を替えた直後に、再生中だった続きを見る）。 */
@@ -138,7 +136,6 @@ export function RecordingPlayer({
   autoPlay = false,
   onWatched,
   onRecordingPositionChange,
-  onRecordingPlaybackEnded,
   onRecordingPlaybackError,
   showWatched = false,
   watched = false,
@@ -861,9 +858,8 @@ export function RecordingPlayer({
               frame.onPause()
               saveCurrentPosition(e.currentTarget)
             }}
-            onEnded={(e) => {
+            onEnded={() => {
               if (chapterEditing) return
-              if (onRecordingPlaybackEnded?.(originalPositionSeconds(e.currentTarget)) === true) return
               setCountdownSeconds(AUTO_ADVANCE_SECONDS)
               setEndCardFor(recordingId)
             }}
