@@ -573,13 +573,44 @@ HLS シークで補正できる。許容誤差は放送・エンコーダーご�
 として保証しない。
 
 追っかけの ffmpeg は通常ライブの「直近だけを残す」HLS と異なり、`EVENT` playlist、
-`hls_list_size=0`、`temp_file` を使い、`delete_segments` を使わない。mirakc の入力が
-EOF になれば `ENDLIST` を出し、ffmpeg が**正常終了した場合**は idle GC が回収するまで
+`hls_list_size=0`、`temp_file` を使い、`delete_segments` を使わない。ffmpeg は stdin の EOF で
+`ENDLIST` を書き、stdin が開いている間と kill されたときは書かない。本物の ffmpeg で
+`TestBuildChaseFFmpegArgs_RealFFmpegEndlistOnlyAtStdinEOF` が測り、CI は ffmpeg を入れて skip を禁じている。
+したがって追っかけの `ENDLIST` が録画ファイルの終端を表すかは、入力をいつ EOF にするかで決まる。
+
+- **EOF にするのは録画ファイルの終端まで渡した後だけ。** mirakc が録画の終了（状態が `recording` でない）を
+  返し、同じ offset への最後の Range も空だったときである。record が 404 になったとき（ingest の purge 等）は、
+  読んだ位置がコミット済み原本のバイト数と一致するときだけ終端とみなす。ingest は mirakc が録画の終了を返し、最後の Range が
+  空になるまで読んでからコミットするので、コミットされたバイト数は終了時点のファイル長である。一致しなければエラーにする。
+  ffmpeg が先端より遅れていて purge が先に来た場合や、別経路の原本、mirakc が record を失った場合である。
+  判定は `TestChaseRangeFollowReaderTreatsPurgeAsEndOnlyWhenComplete` と
+  `TestChasePurgeEndUsesCommittedOriginal` が固定する
+- **先頭からの追従配信が閉じても EOF にしない。** 追従配信は mirakc 側の無入力タイムアウトで録画中にも
+  閉じうる（実際に閉じる頻度は未検証）。正常に閉じても途中で切れても、読んだバイトの続きから Range で追う
+  （`TestFollowChaseRecordContinuesWithRangeAfterFollowCloses`、
+  `TestChaseRangeFollowReaderResumesAfterUncleanBodyClose`）。Content-Length の無い Range 本文も読む
+  （`TestChaseRangeFollowReaderReadsChunkedRangeBodies`）
+- **一過性の失敗は再試行する。** 5xx と通信断は ingest と同じ規則（`mirakc.IsRetryable`）で扱う。
+  連続 5 回まで再試行し、6 回目でエラーにする（`TestChaseRangeFollowReaderRetryLimit`）。待ちは 200ms から倍々で、5 回目の
+  前が最長の 3.2 秒である（`mirakc.RetryDelay`、`TestRetryDelay`）
+- **Range の間隔。** 要求は 0.5 秒以上あける。追い付いたまま録画中なら、間隔を 1 秒まで広げる
+  （`TestChaseRangeFollowReaderBacksOffWhileCaughtUp`）。広げるのは録画が止まっている間だけで、データが続く間は
+  0.5 秒間隔に戻る（`TestChaseRangeFollowReaderBoundsEdgeLag`）。フロントは変換済みの端より後ろへのシークを
+  新しい offset で張り直すので（[frontend/live.md](../frontend/live.md)）、この遅れは見られない区間を作らない
+- **入力のエラーでは `ENDLIST` を書かせない。** 対象は再試行の上限を超えた失敗、再試行しても変わらない失敗、
+  終端と確かめられない 404 である。このときは ffmpeg を kill してから stdin を閉じる
+  （`TestChaseInputErrorDoesNotWriteEndlist`）。
+  stdin のパイプと写しは streamer が持つ。os/exec に任せると入力のエラーでもパイプが閉じられ、
+  ffmpeg はそれを正常な EOF と区別できない。ffmpeg 自身が異常終了したときに `ENDLIST` を書くかは未検証
+
+入力が EOF になって ffmpeg が**正常終了した場合**は、idle GC が回収するまで
 playlist と全セグメントを保持する。これにより、録画完了直後にブラウザが最後の playlist /
 segment を取りに来る窓を失わない。保持中は全プロファイルのプレイリストが残るので、
 終了後でも再起動なしに `?profile=` を切り替えられる
-（`TestFinishedChaseProfileSwitchServesRetainedPlaylists`）。ffmpeg が異常終了した場合は壊れたセッションを保持せず、
-map とファイルを直ちに解放して次の playlist 要求で再起動できるようにする。
+（`TestFinishedChaseProfileSwitchServesRetainedPlaylists`）。ffmpeg が異常終了した場合（kill を含む）は
+壊れたセッションを保持せず、map とファイルを直ちに解放する。次の playlist 要求は、録画中なら同じ録画・offset の
+セッションを先頭から作り直し、録画が終わっていれば 404 になる（`TestChaseInputErrorDoesNotWriteEndlist`）。
+未解決: 作り直した EVENT playlist は先頭から縮み、失敗が続く間は要求のたびに作り直す。
 
 ライブと追っかけのセッション数は合算し、Prometheus の
 `rokuban_live_active_sessions{kind="live"|"chase"}` で内訳を見る。セグメントの保存先は

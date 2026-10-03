@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -645,10 +644,7 @@ func TestRecordingFile_Subtitles_MissingSidecar_NoWarnLog(t *testing.T) {
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
-	var logBuf bytes.Buffer
-	origLogger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
-	t.Cleanup(func() { slog.SetDefault(origLogger) })
+	logBuf := captureSlog(t)
 
 	url := fmt.Sprintf("%s/api/media/recordings/%d/file?profile=h264&track=subtitles", srv.URL, recordingID)
 	resp, _ := get(t, url, nil)
