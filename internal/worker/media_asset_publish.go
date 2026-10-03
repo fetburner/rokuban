@@ -139,14 +139,9 @@ func publishGeneratedMediaAsset(
 	return staged.size, true, nil
 }
 
-// skipThumbnailPublish は commit tx 内で、公開を飛ばすべきかを返す。
-// active な thumbnail が既にある（別試行が commit 済み）か、ffmpeg 実行中に
-// 原本が active でなくなった（録画削除）場合に true。
-func skipThumbnailPublish(ctx context.Context, q *sqlcgen.Queries, recordingID int64) (bool, error) {
-	return skipGeneratedPublish(ctx, q, recordingID, q.GetActiveThumbnailMediaAssetID)
-}
-
-// skipSeekTilesPublish は skipThumbnailPublish の seek tiles 版。
+// skipSeekTilesPublish は commit tx 内で、seek tiles の公開を飛ばすべきかを返す。
+// active な seek tiles が既にあるか、原本が active でなくなったときに true。
+// thumbnail は skipThumbnailPlanPublish が担う。
 func skipSeekTilesPublish(ctx context.Context, q *sqlcgen.Queries, recordingID int64) (bool, error) {
 	return skipGeneratedPublish(ctx, q, recordingID, q.GetActiveSeekTilesMediaAssetID)
 }

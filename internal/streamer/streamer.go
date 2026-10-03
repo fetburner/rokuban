@@ -8,9 +8,7 @@ package streamer
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -100,10 +98,6 @@ func (s *Streamer) Mount(r chi.Router) {
 type serveAsset struct {
 	relPath   string
 	sizeBytes int64
-	// etag identifies a versioned asset whose URL remains stable. Such assets
-	// are served directly because Nginx derives an mtime-and-size ETag after
-	// X-Accel-Redirect.
-	etag string
 	// sidecar は WebVTT 字幕サイドカーかどうか。サイドカーは encoded 行の
 	// 隣接ファイルであり、独立した media_assets 行（size_bytes・存在の保証）を
 	// 持たない --- 字幕を使っていない全 encoded 再生で発生する既定状態なので、
@@ -185,13 +179,7 @@ func (s *Streamer) RecordingThumbnail(w http.ResponseWriter, r *http.Request) {
 		relPath:     row.RelPath,
 		sizeBytes:   row.SizeBytes,
 		contentType: thumbnailContentType,
-		etag:        thumbnailEntityTag(row.ID, row.RelPath),
 	})
-}
-
-func thumbnailEntityTag(assetID int64, relPath string) string {
-	pathHash := sha256.Sum256([]byte(relPath))
-	return fmt.Sprintf("\"thumbnail-%d-%x\"", assetID, pathHash)
 }
 
 // RecordingSeekTiles は GET /api/media/recordings/{id}/seek-tiles を処理する。
@@ -245,7 +233,7 @@ func (s *Streamer) serveAsset(w http.ResponseWriter, r *http.Request, recordingI
 	// X-Accel-Redirect が有効なら、認可判定だけ済ませてバイト転送は
 	// リバースプロキシに委ねる。Range の扱いも nginx 側になる。
 	// パス検証を通した後に返すのが要点（検証前に返すと任意ファイルを配らせられる）。
-	if s.cfg.AccelLocation != "" && asset.etag == "" {
+	if s.cfg.AccelLocation != "" {
 		w.Header().Set("Content-Type", asset.contentType)
 		w.Header().Set("X-Accel-Redirect", accelURI(s.cfg.AccelLocation, asset.relPath))
 		return
@@ -299,9 +287,6 @@ func (s *Streamer) serveAsset(w http.ResponseWriter, r *http.Request, recordingI
 
 	// ServeContent は name から Content-Type を推測しようとするので明示する。
 	w.Header().Set("Content-Type", asset.contentType)
-	if asset.etag != "" {
-		w.Header().Set("ETag", asset.etag)
-	}
 	// 録画は一度書いたら変わらないが、ごみ箱からの復元などで同じ URL の
 	// 中身が入れ替わりうるので immutable は付けない。
 	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")

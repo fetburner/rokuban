@@ -118,8 +118,7 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.T
 		}
 	}
 	for _, row := range reselectRows {
-		planning := thumbnailPlanningFromCandidateRow(row)
-		timeline, hasTimeline, err := planning.timeline()
+		timeline, hasTimeline, err := thumbnailTimeline(row)
 		if err != nil {
 			failed++
 			slog.Error("thumbnail_reconcile: could not derive candidate timeline",
@@ -129,14 +128,14 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.T
 		if !hasTimeline {
 			continue
 		}
-		inputs, err := planning.inputs()
+		inputs, err := thumbnailInputsOf(row)
 		if err != nil {
 			failed++
 			slog.Error("thumbnail_reconcile: could not decode candidate inputs",
 				"recording_id", row.RecordingID, "err", err)
 			continue
 		}
-		if !thumbnailNeedsReselect(planning.SeekMs, inputs, timeline) {
+		if !thumbnailNeedsReselect(row.SeekMs, inputs, timeline) {
 			continue
 		}
 		if _, err := client.Insert(ctx, jobs.ThumbnailJobArgs{RecordingID: row.RecordingID}, nil); err != nil {

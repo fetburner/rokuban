@@ -30,61 +30,9 @@ type thumbnailPlan struct {
 	RecordedSeek int64
 }
 
-// thumbnailPlanningData is the common projection returned by the worker and
-// reconcile queries. It keeps DB decoding separate from the pure selection rules.
-type thumbnailPlanningData struct {
-	RecordingID           int64
-	Trashed               bool
-	ProgramDurationMs     int64
-	Detected              bool
-	Owned                 bool
-	CmRanges              json.RawMessage
-	UserSpans             json.RawMessage
-	OriginalMediaAssetID  int64
-	OriginalRelPath       string
-	EncodedAssets         json.RawMessage
-	ThumbnailMediaAssetID *int64
-	ThumbnailRelPath      *string
-	SeekMs                *int64
-}
-
-func thumbnailPlanningFromWorkerRow(row sqlcgen.GetThumbnailPlanningStateRow) thumbnailPlanningData {
-	return thumbnailPlanningData{
-		RecordingID:           row.RecordingID,
-		Trashed:               row.Trashed,
-		ProgramDurationMs:     row.ProgramDurationMs,
-		Detected:              row.Detected,
-		Owned:                 row.Owned,
-		CmRanges:              row.CmRanges,
-		UserSpans:             row.UserSpans,
-		OriginalMediaAssetID:  row.OriginalMediaAssetID,
-		OriginalRelPath:       row.OriginalRelPath,
-		EncodedAssets:         row.EncodedAssets,
-		ThumbnailMediaAssetID: row.ThumbnailMediaAssetID,
-		ThumbnailRelPath:      row.ThumbnailRelPath,
-		SeekMs:                row.SeekMs,
-	}
-}
-
-func thumbnailPlanningFromCandidateRow(row sqlcgen.ListThumbnailReselectCandidatesRow) thumbnailPlanningData {
-	return thumbnailPlanningData{
-		RecordingID:           row.RecordingID,
-		Trashed:               row.Trashed,
-		ProgramDurationMs:     row.ProgramDurationMs,
-		Detected:              row.Detected,
-		Owned:                 row.Owned,
-		CmRanges:              row.CmRanges,
-		UserSpans:             row.UserSpans,
-		OriginalMediaAssetID:  row.OriginalMediaAssetID,
-		OriginalRelPath:       row.OriginalRelPath,
-		EncodedAssets:         row.EncodedAssets,
-		ThumbnailMediaAssetID: row.ThumbnailMediaAssetID,
-		ThumbnailRelPath:      row.ThumbnailRelPath,
-		SeekMs:                row.SeekMs,
-	}
-}
-
-func (p thumbnailPlanningData) timeline() (chapters.Timeline, bool, error) {
+// thumbnailTimeline decodes the chapter timeline of a candidate row. The bool is
+// false when the recording has neither a CM detection nor user-owned chapters.
+func thumbnailTimeline(p sqlcgen.ListThumbnailReselectCandidatesRow) (chapters.Timeline, bool, error) {
 	if !p.Detected && !p.Owned {
 		return nil, false, nil
 	}
@@ -100,7 +48,8 @@ func (p thumbnailPlanningData) timeline() (chapters.Timeline, bool, error) {
 	return chapters.Derive(p.Owned, userSpans, auto, p.ProgramDurationMs), true, nil
 }
 
-func (p thumbnailPlanningData) inputs() (thumbnailInputs, error) {
+// thumbnailInputsOf decodes the usable input files of a candidate row.
+func thumbnailInputsOf(p sqlcgen.ListThumbnailReselectCandidatesRow) (thumbnailInputs, error) {
 	var inputs thumbnailInputs
 	if p.OriginalMediaAssetID > 0 && p.OriginalRelPath != "" {
 		inputs.Original = &thumbnailSource{
@@ -160,9 +109,6 @@ func thumbnailPlannedSeek(in thumbnailInputs, keep []chapters.Range) (int64, boo
 // periodic candidate scanner and ThumbnailWorker. A different preferred position
 // alone never triggers replacement: the current frame must be outside the keep set.
 func thumbnailNeedsReselect(recorded *int64, in thumbnailInputs, timeline chapters.Timeline) bool {
-	if timeline == nil {
-		return false
-	}
 	keep := chapters.KeepRanges(timeline)
 	if len(keep) == 0 {
 		return false

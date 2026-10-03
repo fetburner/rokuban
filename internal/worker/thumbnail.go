@@ -95,22 +95,7 @@ func (w *ThumbnailWorker) Work(ctx context.Context, job *river.Job[jobs.Thumbnai
 
 	q := sqlcgen.New(w.Pool)
 
-	stateRow, err := q.GetThumbnailPlanningState(ctx, recordingID)
-	if err != nil {
-		if errors.Is(err, pgx5.ErrNoRows) {
-			log.Info("thumbnail: recording no longer exists, skipping")
-			result = "success"
-			return nil
-		}
-		return fmt.Errorf("loading thumbnail planning state: %w", err)
-	}
-	if stateRow.Trashed {
-		log.Info("thumbnail: recording is in trash, skipping")
-		result = "success"
-		return nil
-	}
-
-	plan, ready, err := w.buildThumbnailPlan(ctx, q, stateRow, log)
+	plan, ready, err := w.buildThumbnailPlan(ctx, q, recordingID, log)
 	if err != nil {
 		return err
 	}
@@ -186,13 +171,30 @@ func (w *ThumbnailWorker) Work(ctx context.Context, job *river.Job[jobs.Thumbnai
 func (w *ThumbnailWorker) buildThumbnailPlan(
 	ctx context.Context,
 	q *sqlcgen.Queries,
-	state sqlcgen.GetThumbnailPlanningStateRow,
+	recordingID int64,
 	log *slog.Logger,
 ) (thumbnailWorkPlan, bool, error) {
-	if state.ThumbnailMediaAssetID == nil {
-		return w.initialThumbnailPlan(ctx, q, state.RecordingID, log)
+	_, err := q.GetActiveThumbnailMediaAssetID(ctx, recordingID)
+	if errors.Is(err, pgx5.ErrNoRows) {
+		// ごみ箱は commit 時の skipThumbnailPlanPublish が LockRecording で弾く。
+		return w.initialThumbnailPlan(ctx, q, recordingID, log)
 	}
-	return w.reselectionThumbnailPlan(state, log)
+	if err != nil {
+		return thumbnailWorkPlan{}, false, fmt.Errorf("checking thumbnail: %w", err)
+	}
+	// 候補クエリは reconcile と同じ 1 本。ごみ箱・チャプター無し・purged は除外済み。
+	rows, err := q.ListThumbnailReselectCandidates(ctx, sqlcgen.ListThumbnailReselectCandidatesParams{
+		AfterRecordingID: recordingID - 1,
+		RowLimit:         1,
+	})
+	if err != nil {
+		return thumbnailWorkPlan{}, false, fmt.Errorf("loading thumbnail planning state: %w", err)
+	}
+	if len(rows) == 0 || rows[0].RecordingID != recordingID {
+		log.Info("thumbnail: not a reselection candidate, skipping")
+		return thumbnailWorkPlan{}, false, nil
+	}
+	return w.reselectionThumbnailPlan(rows[0], log)
 }
 
 func (w *ThumbnailWorker) initialThumbnailPlan(
@@ -230,11 +232,10 @@ func (w *ThumbnailWorker) initialThumbnailPlan(
 }
 
 func (w *ThumbnailWorker) reselectionThumbnailPlan(
-	state sqlcgen.GetThumbnailPlanningStateRow,
+	state sqlcgen.ListThumbnailReselectCandidatesRow,
 	log *slog.Logger,
 ) (thumbnailWorkPlan, bool, error) {
-	planning := thumbnailPlanningFromWorkerRow(state)
-	timeline, hasTimeline, err := planning.timeline()
+	timeline, hasTimeline, err := thumbnailTimeline(state)
 	if err != nil {
 		return thumbnailWorkPlan{}, false, fmt.Errorf("decoding chapter timeline: %w", err)
 	}
@@ -242,11 +243,11 @@ func (w *ThumbnailWorker) reselectionThumbnailPlan(
 		log.Info("thumbnail: no chapter timeline, keeping current thumbnail")
 		return thumbnailWorkPlan{}, false, nil
 	}
-	inputs, err := planning.inputs()
+	inputs, err := thumbnailInputsOf(state)
 	if err != nil {
 		return thumbnailWorkPlan{}, false, fmt.Errorf("decoding thumbnail inputs: %w", err)
 	}
-	if !thumbnailNeedsReselect(planning.SeekMs, inputs, timeline) {
+	if !thumbnailNeedsReselect(state.SeekMs, inputs, timeline) {
 		log.Info("thumbnail: no reselection needed or no usable input, skipping")
 		return thumbnailWorkPlan{}, false, nil
 	}
