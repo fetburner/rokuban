@@ -7,6 +7,7 @@
 //   E2E_URL=http://localhost:4173 pnpm e2e:header-stacking
 import {
   ListCapacityOveragesResponseItem,
+  ListCircuitBreakersResponseItem,
   ListRecordingsResponseItem,
   ListReservationsResponseItem,
 } from '../src/api/zod.ts'
@@ -56,6 +57,17 @@ const overages = [
   },
 ]
 
+const breakers = [
+  {
+    site: SITE,
+    name: 'ruler_deletes',
+    trippedAt: iso(baseMs),
+    pending: 1,
+    threshold: 20,
+    detail: { total: 1, programs: [] },
+  },
+]
+
 const recordings = Array.from({ length: 24 }, (_, i) => ({
   id: i + 1,
   site: SITE,
@@ -78,7 +90,7 @@ const recordings = Array.from({ length: 24 }, (_, i) => ({
 async function apiHandler({ path, json, route }) {
   if (path === '/api/sites') return json([SITE])
   if (path === '/api/capabilities') return json({ live: true, cmDetect: false })
-  if (path === '/api/breakers') return json([])
+  if (path === '/api/breakers') return json(breakers)
   if (path === '/api/reservations') return json(reservations)
   if (path === '/api/capacity/overages') return json(overages)
   if (path === '/api/recordings' && route.request().method() === 'GET') return json(recordings)
@@ -96,6 +108,7 @@ await validateFixturesOrExit(
     ...reservations.map((item, i) => [`reservations[${i}]`, ListReservationsResponseItem, item]),
     ...recordings.map((item, i) => [`recordings[${i}]`, ListRecordingsResponseItem, item]),
     ['overages[0]', ListCapacityOveragesResponseItem, overages[0]],
+    ...breakers.map((item, i) => [`breakers[${i}]`, ListCircuitBreakersResponseItem, item]),
   ],
   ng,
 )
@@ -123,6 +136,10 @@ for (const width of [400, 1280]) {
   const badge = page.locator('a.relative.z-10').first()
   await badge.waitFor({ timeout: 15000 }).catch(() => {
     ng.push(`① ${width}px: 容量不足バッジが表示されない`)
+  })
+  const breakerBanner = page.locator('[role="alert"]', { hasText: '削除が保留されています' })
+  await breakerBanner.waitFor({ timeout: 15000 }).catch(() => {
+    ng.push(`① ${width}px: サーキットブレーカー帯が表示されない`)
   })
 
   const setup = await page.evaluate(() => {
@@ -162,12 +179,24 @@ for (const width of [400, 1280]) {
         badgeBottom: badgeBox?.bottom ?? null,
         headerZ: header ? getComputedStyle(header).zIndex : 'auto',
         badgeZ: badge ? getComputedStyle(badge).zIndex : 'auto',
+        bannerTop: document.querySelector('[role="alert"]')?.getBoundingClientRect().top ?? null,
+        bannerBottom: document.querySelector('[role="alert"]')?.getBoundingClientRect().bottom ?? null,
+        bannerHeight: document.querySelector('[role="alert"]')?.getBoundingClientRect().height ?? 0,
         hitBadge: Boolean(badge && hit && badge.contains(hit)),
       }
     }, { x: setup.x, y: setup.targetY })
-    log(`  point=(${Math.round(setup.x)},${Math.round(setup.targetY)}) scrollY=${Math.round(result.scrollY)} hit=${result.hitTag} header=${result.headerTop}..${result.headerBottom} z=${result.headerZ} badge=${result.badgeTop}..${result.badgeBottom} z=${result.badgeZ} hitHeader=${result.hitHeader} hitBadge=${result.hitBadge}`)
+    log(`  point=(${Math.round(setup.x)},${Math.round(setup.targetY)}) scrollY=${Math.round(result.scrollY)} banner=${result.bannerTop}..${result.bannerBottom} (${result.bannerHeight}px) hit=${result.hitTag} header=${result.headerTop}..${result.headerBottom} z=${result.headerZ} badge=${result.badgeTop}..${result.badgeBottom} z=${result.badgeZ} hitHeader=${result.hitHeader} hitBadge=${result.hitBadge}`)
     if (result.scrollY <= 0 || result.headerTop === null || result.badgeTop === null) {
       ng.push(`① ${width}px: スクロールまたは重なり判定の前提が成立しない`)
+    } else if (
+      result.bannerHeight <= 0 ||
+      result.bannerTop === null ||
+      Math.abs(result.bannerTop) > 1 ||
+      result.bannerBottom === null
+    ) {
+      ng.push(`① ${width}px: サーキットブレーカー帯が表示されない`)
+    } else if (result.headerTop < result.bannerBottom - 1) {
+      ng.push(`① ${width}px: PageHeader がサーキットブレーカー帯に重なる`)
     } else if (
       !result.hitHeader ||
       result.hitBadge ||
