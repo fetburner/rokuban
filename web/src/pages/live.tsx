@@ -643,7 +643,7 @@ export function LivePage() {
                             {scheduled && (
                               <span className="mt-0.5 block truncate text-xs font-normal text-muted-foreground">
                                 {scheduled.recordingId !== undefined && (
-                                  <span data-testid={`live-recording-mark-${scheduled.serviceId}`} className="mr-1 text-[11px] font-medium text-[#ff8a80]">
+                                  <span data-testid={`live-recording-mark-${scheduled.serviceId}`} className="mr-1 text-[11px] font-medium text-tally">
                                     ● 録画中
                                   </span>
                                 )}

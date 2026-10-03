@@ -947,33 +947,72 @@ async function runIssue1022Acceptance(engine = 'chromium') {
         ng.push('#1022 番組の軸がプレイヤー操作バーの中にない')
       }
     }
-    const externalProgressCount = async () => {
-      const semanticLines = await page.locator('main progress, main [role="progressbar"]').count()
-      const taggedLines = await page.locator('main [data-testid="live-program-progress"]').evaluateAll((elements) =>
-        elements.filter((element) => !element.closest('[data-testid="player-controls"]')).length,
-      )
-      return semanticLines + taggedLines
-    }
-    const outsideTimeline = await externalProgressCount()
-    if (outsideTimeline > 0) ng.push('#1022 プレイヤー外に test id の有無を問わず番組の進み具合の線がある')
-    await page.evaluate(() => {
-      const line = document.createElement('div')
-      line.dataset.testid = 'live-program-progress'
-      line.textContent = 'prohibited progress line mutant'
-      document.querySelector('main')?.append(line)
-      window.__issue1022ExternalProgressMutation = line
+    // 見た目で判定する（testid や要素の種類に依らない）。操作バーの外で、細く（高さ 6px 以下）幅があり
+    // （40px 以上）背景が透明でなく、幅が割合の背景付きの子を持つ要素は「進み具合の線」。
+    const externalProgressCount = () => page.evaluate(() => {
+      const painted = (element) => {
+        const style = getComputedStyle(element)
+        return style.backgroundColor !== 'rgba(0, 0, 0, 0)' || style.backgroundImage !== 'none'
+      }
+      const semantic = document.querySelectorAll('main progress, main [role="progressbar"]').length
+      const visual = [...document.querySelectorAll('main *')].filter((element) => {
+        if (element.closest('[data-testid="player-controls"]')) return false
+        const box = element.getBoundingClientRect()
+        if (box.height <= 0 || box.height > 6 || box.width < 40 || !painted(element)) return false
+        return [...element.children].some((child) => {
+          const childBox = child.getBoundingClientRect()
+          return childBox.width > 0 && childBox.width < box.width - 1 && childBox.height > 0 && painted(child)
+        })
+      }).length
+      return semantic + visual
     })
-    if (await externalProgressCount() !== 1) ng.push('#1022 外部進捗線の mutation を E2E 判定が検出しない')
+    const outsideTimeline = await externalProgressCount()
+    if (outsideTimeline > 0) ng.push('#1022 プレイヤー外に番組の進み具合の線（見た目で判定）がある')
+    // 変異: チャンネル行に普通の進み具合バー（細い灰色の溝 + 半分の白い塗り）を差し込む。
+    await page.evaluate(() => {
+      const track = document.createElement('span')
+      track.style.cssText = 'display:block;height:4px;width:96px;background:rgb(150,150,150)'
+      const fill = document.createElement('span')
+      fill.style.cssText = 'display:block;height:100%;width:50%;background:rgb(20,20,20)'
+      track.append(fill)
+      document.querySelector('nav[aria-label="チャンネル一覧"] a span.min-w-0')?.append(track)
+      window.__issue1022ExternalProgressMutation = track
+    })
+    if (await externalProgressCount() !== 1) ng.push('#1022 チャンネル行の普通の進み具合バーを E2E 判定が検出しない')
     await page.evaluate(() => window.__issue1022ExternalProgressMutation?.remove())
     const liveEdgeMark = page.getByTestId('live-program-live-edge')
     if (await liveEdgeMark.count() !== 1 || !(await liveEdgeMark.isVisible().catch(() => false))) {
       ng.push('#1022 番組の時間軸にライブ位置の赤い印が無い')
-    } else if (!(await liveEdgeMark.getAttribute('class')).includes('border-[#ff5252]')) {
+    } else if (!(await liveEdgeMark.getAttribute('class')).includes('border-red-500')) {
       ng.push('#1022 番組のライブ位置マークが赤色ではない')
     }
-    if (!(await page.getByTestId('live-program-start-label').isVisible().catch(() => false))) ng.push('#1022 番組の軸に開始時刻ラベルが無い')
-    if (!(await page.getByTestId('live-program-end-label').getByText('予定').isVisible().catch(() => false))) ng.push('#1022 番組の軸に予定終了ラベルが無い')
-    if (!(await page.getByTestId('live-program-live-time').getByText('いま').isVisible().catch(() => false))) ng.push('#1022 番組の軸に現在時刻ラベルが無い')
+    // 目盛り: 始点・終点は経過時間 + 壁時計、赤い印の下は経過時刻だけ（#1015 の決定）。
+    const startText = (await page.getByTestId('live-program-start-label').textContent().catch(() => '')) ?? ''
+    if (!/^0:00（\d{2}:\d{2} 開始）$/.test(startText)) ng.push(`#1022 軸の始点ラベルが「0:00（hh:mm 開始）」でない (${startText})`)
+    const endText = (await page.getByTestId('live-program-end-label').textContent().catch(() => '')) ?? ''
+    if (!/^45:00（\d{2}:\d{2} 終了）$/.test(endText)) ng.push(`#1022 軸の終点ラベルが「45:00（hh:mm 終了）」でない (${endText})`)
+    const liveTimeText = (await page.getByTestId('live-program-live-time').textContent().catch(() => '')) ?? ''
+    if (!/^\d+:\d{2}$/.test(liveTimeText)) ng.push(`#1022 赤い印の下が経過時刻だけでない (${liveTimeText})`)
+    const markBox = await liveEdgeMark.boundingBox()
+    const liveTimeBox = await page.getByTestId('live-program-live-time').boundingBox()
+    if (!markBox || !liveTimeBox || Math.abs(markBox.x + markBox.width / 2 - (liveTimeBox.x + liveTimeBox.width / 2)) > 8) {
+      ng.push(`#1022 経過時刻が赤い印の真下にない (${JSON.stringify({ markBox, liveTimeBox })})`)
+    }
+    // ホバーの吹き出しは追っかけと同じ作り（タイルの偽画像を出さない）。
+    const hoverBox = await timeline.boundingBox()
+    if (hoverBox) {
+      await page.mouse.move(hoverBox.x + hoverBox.width * 0.25, hoverBox.y + hoverBox.height / 2)
+      const hoverLabel = page.getByTestId('live-seek-preview-label')
+      if (!(await hoverLabel.isVisible().catch(() => false)) || !/ここから見る（録画中）/.test((await hoverLabel.textContent()) ?? '')) {
+        ng.push('#1022 録画済みの位置へのホバーで「ここから見る（録画中）」の吹き出しが出ない')
+      }
+      if (await page.getByTestId('seek-tile-preview').count() > 0) ng.push('#1022 ライブのホバーにタイルの偽画像が出る')
+      await page.mouse.move(5, 5)
+    }
+    // CC はライブのバーにもある（#1013）。
+    if (!(await page.getByTestId('player-controls').getByRole('button', { name: '字幕' }).isVisible().catch(() => false))) {
+      ng.push('#1022 ライブのバーに字幕（CC）ボタンが無い')
+    }
     if (!(await page.getByTestId('live-next-program').getByText('次番組 A').isVisible().catch(() => false))) ng.push('#1022 選択局の次番組情報が見えない')
 
     const captureDir = ISSUE_1022_CAPTURE_DIR ? path.resolve(ISSUE_1022_CAPTURE_DIR) : null
@@ -1024,12 +1063,16 @@ async function runIssue1022Acceptance(engine = 'chromium') {
         ng.push('#1022 live→追っかけ切替で同じ video 要素を保たない')
       })
       if (new URL(page.url()).pathname !== routeBefore || routeBefore !== '/live') ng.push('#1022 最初からが /live ページ内の切替ではない')
-      await page.waitForFunction(() => document.body.innerText.includes('録画から再生中'), undefined, { timeout: 10000 }).catch(() => {
-        ng.push('#1022 chase 中に「録画から再生中」を表示しない')
+      await page.getByTestId('chase-live-edge').waitFor({ timeout: 10000 }).catch(() => {
+        ng.push('#1022 最初からで追っかけ（先端の印つきの時間軸）に切り替わらない')
       })
       const edge = page.getByTestId('chase-live-edge')
       if ((await edge.count()) === 0) ng.push('#1022 chase timeline にライブ先端への赤い印が無い')
       else {
+        if ((await edge.getAttribute('aria-label')) !== 'ライブへ戻る' || !/ライブ/.test((await edge.getAttribute('title')) ?? '')) {
+          ng.push(`#1022 ライブページの追っかけで先端の印の名前が「ライブへ戻る」でない (${await edge.getAttribute('aria-label')})`)
+        }
+        if (await page.getByTestId('chase-source-label').count() > 0) ng.push('#1022 ライブページの追っかけに「録画から再生中」が出る')
         const livePlaylistBefore = requestLog.filter((request) =>
           request.url.includes('/networks/1/services/9001/live/playlist.m3u8'),
         ).length
@@ -1218,11 +1261,116 @@ async function runIssue1022Acceptance(engine = 'chromium') {
   }
 }
 
+/**
+ * runIssue1022FrameChecks は実再生（ffmpeg のフィクスチャ）で、ライブが main の共有フック
+ * （usePlayerFrame）に乗っていることを見る。jsdom ではバーの自動非表示も実タッチも測れない。
+ *   a) マウスで「一時停止 → 再生」を押してポインタを外すと、4.5 秒後にバーが隠れる
+ *   b) タッチで映像を 2 回タップしても、ライブが一時停止しない
+ */
+async function runIssue1022FrameChecks(engine = 'chromium') {
+  if (!ensureFixture()) {
+    skipped.push('#1022 フレーム挙動（ffmpeg が無く実再生できない）')
+    return
+  }
+  // H.264/AAC の実再生は Playwright 同梱の Chromium では出来ない（下の chromeBrowser と同じ理由）。
+  const browser = engine === 'chromium' ? await launchBrowser('chromium', { channel: 'chrome' }) : await launchBrowser(engine)
+  try {
+    const now = Date.now()
+    const program = {
+      programId: 301, networkId: 1, serviceId: 9001, eventId: 301,
+      startAt: new Date(now - 20 * 60_000).toISOString(), endAt: new Date(now + 25 * 60_000).toISOString(),
+      durationMs: 45 * 60_000, name: '番組 A（予定）', description: '', genres: [], isFree: true,
+    }
+    const service = { id: 109001, networkId: 1, serviceId: 9001, name: '放送局 A', channelType: 'GR', channel: '1', remoteControlKeyId: 1, hasLogoData: false, hasPrograms: true }
+    const json = (body) => (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
+    const open = async (contextOptions) => {
+      const context = await browser.newContext(contextOptions)
+      const page = await context.newPage()
+      await page.route('**/api/capabilities', json({ live: true, cmDetect: false }))
+      await page.route('**/api/live-profiles', json(E2E_LIVE_PROFILES))
+      await page.route('**/api/sites', json(['default']))
+      await page.route('**/api/sites/*/services', json([service]))
+      await page.route('**/api/sites/*/programs*', json([program]))
+      await page.route('**/api/sites/*/tuners', json([]))
+      await page.route('**/api/reservations', json([]))
+      await page.route('**/live/leave', (route) => route.fulfill({ status: 204, body: '' }))
+      await page.route('**/live/playlist.m3u8*', (route) =>
+        route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body: readFileSync(PLAYLIST_PATH) }),
+      )
+      await page.route('**/live/segments/*', (route) => {
+        const file = path.join(SEGMENTS_DIR, new URL(route.request().url()).pathname.split('/').pop())
+        return existsSync(file)
+          ? route.fulfill({ status: 200, contentType: 'video/mp2t', body: readFileSync(file) })
+          : route.fulfill({ status: 404, body: '' })
+      })
+      await page.goto(`${BASE_URL}/live?site=default&service=109001`, { waitUntil: 'domcontentloaded' })
+      await page.getByRole('button', { name: /再生/ }).first().click()
+      await page.locator('video').waitFor({ timeout: 15000 })
+      // 初回のマウントでは自動再生しない（同意の分離。live-player.tsx）ので、バーの ▶ で始める。
+      await page.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, undefined, { timeout: 20000 })
+      await page.getByTestId('player-controls').getByRole('button', { name: '再生', exact: true }).click()
+      await page.waitForFunction(() => document.querySelector('video')?.paused === false, undefined, { timeout: 10000 })
+      return { context, page }
+    }
+    const sample = (page) => page.evaluate(() => ({
+      paused: document.querySelector('video')?.paused ?? null,
+      opacity: getComputedStyle(document.querySelector('[data-testid="player-controls"]')).opacity,
+    }))
+
+    const desktop = await open({ viewport: { width: 1280, height: 900 }, locale: 'ja-JP' }).catch((err) => {
+      ng.push(`#1022 フレーム a) 実再生を始められない: ${err.message}`)
+      return null
+    })
+    if (desktop) {
+      const { page, context } = desktop
+      const frameBox = await page.getByTestId('recording-player-frame').boundingBox()
+      await page.mouse.move(frameBox.x + frameBox.width / 2, frameBox.y + frameBox.height / 2)
+      await page.waitForTimeout(300)
+      const controls = page.getByTestId('player-controls')
+      await controls.getByRole('button', { name: '一時停止', exact: true }).click()
+      await controls.getByRole('button', { name: '再生', exact: true }).click()
+      await controls.getByRole('button', { name: 'ライブ設定' }).click()
+      await controls.getByRole('button', { name: 'ライブ設定' }).click()
+      await page.mouse.move(5, 5)
+      await page.waitForTimeout(4500)
+      const idle = await sample(page)
+      log(`  #1022 frame a) マウス操作後 4.5 秒: ${JSON.stringify(idle)}`)
+      if (idle.opacity !== '0') ng.push(`#1022 マウスで再生・歯車を押してポインタを外しても 4.5 秒後にバーが隠れない (${JSON.stringify(idle)})`)
+      await context.close()
+    }
+
+    const phone = await open({ viewport: { width: 400, height: 860 }, hasTouch: true, isMobile: engine !== 'firefox', locale: 'ja-JP' }).catch((err) => {
+      ng.push(`#1022 フレーム b) スマホで実再生を始められない: ${err.message}`)
+      return null
+    })
+    if (phone) {
+      const { page, context } = phone
+      const box = await page.getByTestId('recording-player-frame').boundingBox()
+      await page.waitForTimeout(3800)
+      await page.touchscreen.tap(box.x + 30, box.y + 30)
+      await page.waitForTimeout(250)
+      await page.touchscreen.tap(box.x + 30, box.y + 30)
+      await page.waitForTimeout(400)
+      const afterTaps = await sample(page)
+      log(`  #1022 frame b) スマホで映像を 2 回タップ: ${JSON.stringify(afterTaps)}`)
+      if (afterTaps.paused !== false) ng.push(`#1022 スマホで映像を 2 回タップするとライブが一時停止する (${JSON.stringify(afterTaps)})`)
+      await context.close()
+    }
+  } finally {
+    await browser.close()
+  }
+}
+
 log('\n=== #1022 ライブ番組の軸・最初から・全局番組 ===')
 try {
   await runIssue1022Acceptance(process.env.E2E_LIVE_1022_ENGINE ?? 'chromium')
 } catch (err) {
   ng.push(`#1022 ${process.env.E2E_LIVE_1022_ENGINE ?? 'chromium'} の検証中に例外が発生した: ${err.message}`)
+}
+try {
+  await runIssue1022FrameChecks(process.env.E2E_LIVE_1022_ENGINE ?? 'chromium')
+} catch (err) {
+  ng.push(`#1022 フレーム挙動の検証中に例外が発生した: ${err.message}`)
 }
 if (process.env.E2E_LIVE_1022_ONLY === '1') {
   log('\n=== #1022 RED/GREEN 結果 ===')

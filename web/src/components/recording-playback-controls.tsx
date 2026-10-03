@@ -78,9 +78,11 @@ export type LiveProgramTimeline = {
   canSeek: boolean
   canStartOver: boolean
   ariaValueText: string
-  startLabel: string
-  endLabel: string
-  liveTimeLabel: string
+  /** 番組の開始・終了の壁時計（「23:41」）。軸の両端の目盛りに添える。 */
+  startClock: string
+  endClock: string
+  /** 軸の上でマウスが指している位置（録画から見られる位置だけ。無ければ null）。 */
+  hoverSeconds: number | null
 }
 
 /** 設定メニューの階層。`main` が行リストで、残りは「›」で入る下の階層。 */
@@ -94,6 +96,8 @@ type RecordingPlaybackControlsProps = {
   encodedAssets: EncodedAsset[]
   playbackMode?: 'encoded' | 'original-vod' | 'chase' | 'live'
   chaseTimeline?: ChaseTimeline
+  /** ライブページから追っかけに入っている。先端の印は録画の先端ではなくライブへ戻る。 */
+  chaseReturnsToLive?: boolean
   liveTimeline?: LiveProgramTimeline
   liveDiagnostics?: string
   liveNotice?: string
@@ -181,6 +185,7 @@ export function RecordingPlaybackControls({
   encodedAssets,
   playbackMode = 'encoded',
   chaseTimeline,
+  chaseReturnsToLive = false,
   liveTimeline,
   liveDiagnostics,
   liveNotice,
@@ -274,8 +279,10 @@ export function RecordingPlaybackControls({
   const plannedFraction = liveTimeline && range > 0 ? axisFraction(liveTimeline.plannedEndSeconds) : 0
   const liveEdgeFraction = liveTimeline && range > 0 ? axisFraction(liveTimeline.liveEdgeSeconds) : 0
   // 追っかけの時刻は番組の長さに合わせて分で数える（ラフ: 「60:00」「70:12」）。
-  const formatAxisTime = (value: number) => formatPlaybackTime(value, !chaseTimeline)
+  const formatAxisTime = (value: number) => formatPlaybackTime(value, !hasTimeline)
   const chaseExtended = chaseTimeline !== undefined && chaseTimeline.recordedEndSeconds > chaseTimeline.plannedEndSeconds
+  const liveExtended = liveTimeline !== undefined && liveTimeline.liveEdgeSeconds > liveTimeline.plannedEndSeconds
+  const axisExtended = chaseExtended || liveExtended
   const volumeValue = muted ? 0 : volume
   const hasChapters = !playingCut && chapters.length > 0
   const pictureInPictureEnabled =
@@ -299,11 +306,11 @@ export function RecordingPlaybackControls({
       const width = mark.offsetWidth
       const pointer = mark.querySelector<HTMLElement>('[data-axis-pointer]')
       const anchor = pointer ? pointer.offsetLeft + pointer.offsetWidth / 2 : width / 2
-      const rightLimit = (chaseExtended ? rowWidth - end.offsetWidth - gap : rowWidth) - width
+      const rightLimit = (axisExtended ? rowWidth - end.offsetWidth - gap : rowWidth) - width
       const left = Math.max(0, Math.min(rightLimit, Number(mark.dataset.axisMark) * rowWidth - anchor))
       mark.style.left = `${left}px`
       start.style.visibility = left < start.offsetWidth + gap ? 'hidden' : ''
-      end.style.visibility = !chaseExtended && left + width > rowWidth - end.offsetWidth - gap ? 'hidden' : ''
+      end.style.visibility = !axisExtended && left + width > rowWidth - end.offsetWidth - gap ? 'hidden' : ''
     }
     place()
     if (typeof ResizeObserver === 'undefined') return
@@ -593,7 +600,7 @@ export function RecordingPlaybackControls({
                     <span
                       aria-hidden="true"
                       data-testid="live-program-live-edge"
-                      className="pointer-events-none absolute top-1/2 z-[2] h-4 border-l-2 border-[#ff5252]"
+                      className="pointer-events-none absolute top-1/2 z-[2] h-4 border-l-2 border-red-500"
                       style={{ left: `${liveEdgeFraction * 100}%` }}
                       title={`ライブ ${formatPlaybackTime(liveTimeline.liveEdgeSeconds, false)}`}
                     />
@@ -612,6 +619,18 @@ export function RecordingPlaybackControls({
                     {chaseTimeline.hoverSeconds > chaseTimeline.recordedEndSeconds || chaseTimeline.hoverSeconds < chaseTimeline.headSeconds
                       ? ' · まだ録画されていません'
                       : ''}
+                  </div>
+                )}
+                {liveTimeline && liveTimeline.hoverSeconds !== null && (
+                  <div
+                    data-testid="live-seek-preview-label"
+                    className="pointer-events-none absolute bottom-full z-20 mb-2 rounded bg-black/85 px-2 py-1 text-xs whitespace-nowrap"
+                    style={{
+                      left: `${axisFraction(liveTimeline.hoverSeconds) * 100}%`,
+                      transform: `translateX(-${axisFraction(liveTimeline.hoverSeconds) * 100}%)`,
+                    }}
+                  >
+                    <span className="font-mono">{formatAxisTime(liveTimeline.hoverSeconds)}</span> · ここから見る（録画中）
                   </div>
                 )}
                 {outsideProgramSegments && !playingCut && (
@@ -674,7 +693,7 @@ export function RecordingPlaybackControls({
                     onError={onTileImageError}
                   />
                 )}
-                {tilePreview && (isLiveTimeline || tilesAvailable) && (
+                {tilePreview && tilesAvailable && (
                   <div
                     className="pointer-events-none absolute bottom-full z-20 mb-2 flex origin-bottom-left flex-col items-center gap-1"
                     style={{
@@ -683,25 +702,23 @@ export function RecordingPlaybackControls({
                       transform: tilePreview.scale < 1 ? `scale(${tilePreview.scale})` : undefined,
                     }}
                   >
-                    {!isLiveTimeline && (
+                    <div
+                      data-testid="seek-tile-preview"
+                      className="overflow-hidden rounded border border-white/30 bg-black shadow-lg"
+                      style={{ width: SEEK_TILES_DISPLAY_WIDTH, height: SEEK_TILES_DISPLAY_HEIGHT }}
+                    >
                       <div
-                        data-testid="seek-tile-preview"
-                        className="overflow-hidden rounded border border-white/30 bg-black shadow-lg"
-                        style={{ width: SEEK_TILES_DISPLAY_WIDTH, height: SEEK_TILES_DISPLAY_HEIGHT }}
-                      >
-                        <div
-                          className="h-full w-full bg-no-repeat"
-                          style={{
-                            backgroundImage: `url(${seekTilesURL(recordingId ?? 0)})`,
-                            backgroundPosition: `${tilePreview.x}px ${tilePreview.y}px`,
-                            backgroundSize: seekTileBackgroundSize(),
-                          }}
-                        />
-                      </div>
-                    )}
-                    <span data-testid={isLiveTimeline ? 'live-seek-preview-label' : 'seek-tile-label'} className="rounded bg-black/80 px-1.5 text-xs">
-                      {isLiveTimeline ? `${formatPlaybackTime(tilePreview.seconds, false)} · ここから見る（録画中）` : formatPlaybackTime(tilePreview.seconds)}
-                      {!isLiveTimeline && hoverSpan ? ` · ${chapterLabel(hoverSpan)}` : ''}
+                        className="h-full w-full bg-no-repeat"
+                        style={{
+                          backgroundImage: `url(${seekTilesURL(recordingId ?? 0)})`,
+                          backgroundPosition: `${tilePreview.x}px ${tilePreview.y}px`,
+                          backgroundSize: seekTileBackgroundSize(),
+                        }}
+                      />
+                    </div>
+                    <span data-testid="seek-tile-label" className="rounded bg-black/80 px-1.5 text-xs">
+                      {formatPlaybackTime(tilePreview.seconds)}
+                      {hoverSpan ? ` · ${chapterLabel(hoverSpan)}` : ''}
                     </span>
                   </div>
                 )}
@@ -717,8 +734,10 @@ export function RecordingPlaybackControls({
                   <button
                     type="button"
                     data-testid="chase-live-edge"
-                    aria-label="録画の先端へ"
-                    title={`録画の先端 ${formatAxisTime(chaseTimeline.recordedEndSeconds)}（押すと先端へ）`}
+                    aria-label={chaseReturnsToLive ? 'ライブへ戻る' : '録画の先端へ'}
+                    title={chaseReturnsToLive
+                      ? `ライブ ${formatAxisTime(chaseTimeline.recordedEndSeconds)}（押すとライブへ戻る）`
+                      : `録画の先端 ${formatAxisTime(chaseTimeline.recordedEndSeconds)}（押すと先端へ）`}
                     onPointerDown={(event) => event.stopPropagation()}
                     onClick={(event) => {
                       event.stopPropagation()
@@ -777,10 +796,42 @@ export function RecordingPlaybackControls({
               </div>
             )}
             {liveTimeline && (
-              <div className="mb-1 hidden justify-between text-[10px] text-white/75 md:flex">
-                <span data-testid="live-program-start-label">{liveTimeline.startLabel}</span>
-                <span data-testid="live-program-live-time" className="text-[#ff8a80]">いま {liveTimeline.liveTimeLabel}</span>
-                <span data-testid="live-program-end-label">{liveTimeline.endLabel}</span>
+              <div
+                ref={axisLabelsRef}
+                data-testid="live-program-timeline-labels"
+                className="relative mb-1 hidden h-4 text-xs whitespace-nowrap text-white/75 md:block"
+              >
+                <span data-axis-start data-testid="live-program-start-label" className="absolute left-0">
+                  <span className="font-mono">{formatAxisTime(rangeMin)}</span>（{liveTimeline.startClock} 開始）
+                </span>
+                {liveExtended ? (
+                  <>
+                    <span
+                      data-testid="live-program-planned-label"
+                      data-axis-mark={axisFraction(liveTimeline.plannedEndSeconds)}
+                      className="absolute"
+                    >
+                      予定 <span className="font-mono">{formatAxisTime(liveTimeline.plannedEndSeconds)}</span>{' '}
+                      <span data-axis-pointer>¦</span>
+                    </span>
+                    <span data-testid="live-program-end-label" data-axis-end className="absolute right-0 text-red-400">
+                      延長中 · 先端 <span className="font-mono">{formatAxisTime(liveTimeline.liveEdgeSeconds)}</span>
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span
+                      data-testid="live-program-live-time"
+                      data-axis-mark={axisFraction(liveTimeline.liveEdgeSeconds)}
+                      className="absolute font-mono text-red-400"
+                    >
+                      {formatAxisTime(liveTimeline.liveEdgeSeconds)}
+                    </span>
+                    <span data-testid="live-program-end-label" data-axis-end className="absolute right-0">
+                      <span className="font-mono">{formatAxisTime(liveTimeline.plannedEndSeconds)}</span>（{liveTimeline.endClock} 終了）
+                    </span>
+                  </>
+                )}
               </div>
             )}
 
@@ -821,7 +872,7 @@ export function RecordingPlaybackControls({
                   {liveDiagnostics}
                 </span>
               )}
-              {chaseTimeline && (
+              {chaseTimeline && !chaseReturnsToLive && (
                 <span data-testid="chase-source-label" className="shrink-0 px-1 text-[10px] font-medium text-white md:text-xs">
                   ● 録画から再生中
                 </span>
@@ -950,7 +1001,7 @@ export function RecordingPlaybackControls({
                 className={cn(
                   ghost,
                   playbackMode === 'live'
-                    ? 'hidden'
+                    ? 'shrink-0'
                     : 'absolute top-1.5 right-11 md:relative md:top-auto md:right-auto',
                   subtitlesEnabled &&
                     'after:absolute after:inset-x-2 after:bottom-1 after:h-0.5 after:rounded-full after:bg-orange-400',
@@ -1025,11 +1076,6 @@ export function RecordingPlaybackControls({
                 {isFullscreen ? <Minimize /> : <Maximize />}
               </Button>
             </div>
-            {liveDiagnostics && playbackMode === 'live' && (
-              <div data-testid="live-diagnostics-mobile" className="px-1 text-[10px] text-white/75 md:hidden">
-                {liveDiagnostics}
-              </div>
-            )}
           </div>
         </div>
         {/*
@@ -1459,27 +1505,15 @@ function PlaybackSettingsMenu({
         <div aria-hidden className="mx-auto mt-1 mb-2 h-1 w-9 rounded-full bg-border md:hidden" />
         {view === 'main' && (
           <>
-            {/* 配信プロファイルでは画質・音声を先頭に置く。encoded はデスクトップの既存順を保ち、
-                スマホだけ CSS で画質を先頭にする。 */}
-            <div
-              role="none"
-              className={playbackMode === 'live' ? 'flex flex-col' : 'flex flex-col-reverse md:flex-col'}
-            >
-              {playbackMode === 'live' ? (
-                <>
-                  {qualityRow}
-                  {audioRow}
-                  {subtitlesRow}
-                </>
-              ) : (
-                <>
-                  {skipRow}
-                  {subtitlesRow}
-                  {speedRow}
-                  {audioRow}
-                  {qualityRow}
-                </>
-              )}
+            {/* デスクトップは CM・字幕・再生速度・（音声）・画質の順で、画質を歯車に近い最下段に置く。
+                スマホのシートは画質を一番上に置く（ラフ）。並びだけを CSS で逆にするので、音声は
+                どちらでも画質の隣（デスクトップは直前、スマホは直後）に入る。 */}
+            <div role="none" className="flex flex-col-reverse md:flex-col">
+              {skipRow}
+              {subtitlesRow}
+              {speedRow}
+              {audioRow}
+              {qualityRow}
             </div>
             {pictureInPictureEnabled && (
               <>
