@@ -249,10 +249,11 @@ export function RecordingDetail({
   const recordedSpanMs = recording.startedAt !== undefined && recording.endedAt !== undefined
     ? Date.parse(recording.endedAt) - Date.parse(recording.startedAt)
     : Number.NaN
-  const recordedEndSeconds = Number.isFinite(recordedSpanMs) ? Math.max(0, recordedSpanMs / 1000) : undefined
   /**
-   * reselectPlaybackSource は範囲外のシーク・終端・エラーのときだけ呼ばれ、そのときの録画の状態で
-   * 再生元を選び直す。true を返したら親が再生元を替えた（プレイヤーは何もしない）。
+   * reselectPlaybackSource は範囲外のシーク・エラーのときだけ呼ばれ、そのときの録画の状態で
+   * 再生元を選び直す。終端では呼ばない。どの再生元の終端も録画ファイルの終端で（追っかけの ENDLIST は
+   * mirakc の録画が終わってから付く。docs/api/media.md）、移った先に見る続きが無いため。
+   * true を返したら親が再生元を替えた（プレイヤーは何もしない）。
    * 再生元が今と同じなら false を返し、プレイヤー自身が張り直す（範囲外のシークは中の張り直しが
    * 再生と全画面を保つ）。エラーだけは、同じ再生元でも上限つきで作り直す。
    *
@@ -260,20 +261,13 @@ export function RecordingDetail({
    * 保存位置・先頭から・シークで選んだ offset といった開始の意図をそのまま持ち越す。
    */
   const reselectPlaybackSource = (
-    trigger: 'source-range-exit' | 'ended' | 'source-error',
+    trigger: 'source-range-exit' | 'source-error',
     positionSeconds: number | undefined,
     wasPlaying: boolean,
   ) => {
     const current = playbackStateRef.current
     const position = positionSeconds ?? recordingPositionSecondsRef.current
     const selected = selectRecordingPlaybackSource(playbackSelection)
-    // 録画の終端まで見終えたなら、同じ終端に新しいセッションを作らない。終了の状態のまま止める。
-    if (
-      trigger === 'ended' &&
-      position !== undefined &&
-      recordedEndSeconds !== undefined &&
-      position >= recordedEndSeconds - 1.5
-    ) return false
     if (selected !== current.source) {
       if (selected === 'none') return false
     } else if (trigger !== 'source-error' || current.source === 'encoded') {
@@ -632,7 +626,6 @@ export function RecordingDetail({
               onChaseOffsetChange={setChaseOffsetSeconds}
               onRecordingPositionChange={reportRecordingPosition}
               onSourceRangeExit={(seconds, playing) => reselectPlaybackSource('source-range-exit', seconds, playing)}
-              onRecordingPlaybackEnded={(seconds) => reselectPlaybackSource('ended', seconds, false)}
               onRecordingPlaybackError={(seconds, playing) => reselectPlaybackSource('source-error', seconds, playing)}
             />
           )}
@@ -676,7 +669,6 @@ export function RecordingDetail({
               onProfileChange={onSelectLiveProfile}
               onRecordingPositionChange={reportRecordingPosition}
               onSourceRangeExit={(seconds, playing) => reselectPlaybackSource('source-range-exit', seconds, playing)}
-              onRecordingPlaybackEnded={(seconds) => reselectPlaybackSource('ended', seconds, false)}
               onRecordingPlaybackError={(seconds, playing) => reselectPlaybackSource('source-error', seconds, playing)}
             />
           )}
@@ -715,7 +707,6 @@ export function RecordingDetail({
               reencodePending={reencode.isPending}
               autoPlay={playbackState.autoPlay}
               onRecordingPositionChange={reportRecordingPosition}
-              onRecordingPlaybackEnded={(seconds) => reselectPlaybackSource('ended', seconds, false)}
               onRecordingPlaybackError={(seconds, playing) => reselectPlaybackSource('source-error', seconds, playing)}
             />
           )}

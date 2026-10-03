@@ -2995,7 +2995,7 @@ describe('RecordingDetailPage メニューと版タブの細部 (#1018)', () => 
   })
 })
 
-// 再生元の選び直し（範囲外のシーク・終端・エラー）。レイアウトと実再生は web/e2e/chase.mjs と
+// 再生元の選び直し（範囲外のシーク・エラー。終端では選び直さない）。レイアウトと実再生は web/e2e/chase.mjs と
 // web/e2e/recording-original-vod.mjs が実ブラウザで見る。ここは「どの契機で、どの再生元へ、
 // どの位置を持ち越すか」の配線を固定する。
 describe('RecordingDetailPage 再生元の選び直し', () => {
@@ -3045,7 +3045,9 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
     await new Promise((resolve) => setTimeout(resolve, 50))
   }
 
-  it('録画が終わっただけでは追っかけを替えず、終端で encoded へ移り位置を持ち越す', async () => {
+  // 追っかけの ENDLIST は mirakc の録画が終わってから付く（docs/api/media.md）。終端はどの位置でも
+  // 録画ファイルの終端で、壁時計の録画時間（ここでは 120 秒）とは比べない。
+  it('録画が終わっても追っかけを替えず、追っかけの終端では壁時計の録画時間より手前でも終了の状態のまま止まる', async () => {
     const server = await startChase()
     const chaseVideo = document.querySelector('video')!
     await finishRecording(server)
@@ -3053,21 +3055,19 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
 
     setMediaProps(chaseVideo, { currentTime: 10 })
     fireEvent.ended(chaseVideo)
-    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src')).toContain('/api/media/recordings/3/file'))
-    const encoded = document.querySelector('video')!
-    setMediaProps(encoded, { currentTime: 0 })
-    fireEvent.loadedMetadata(encoded)
-    expect(encoded.currentTime).toBe(10)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(document.querySelector('video')).toBe(chaseVideo)
+    expect(playlistPaths(server.fetchMock, '/original-vod')).toEqual([])
   })
 
-  it('録画の終端まで見終えたなら、同じ終端に新しい再生元を作らない', async () => {
+  it('録画完了の取得より先に追っかけが終わっても、完了の状態が届いた後に別の再生元を作らない', async () => {
     const server = await startChase()
     const chaseVideo = document.querySelector('video')!
-    await finishRecording(server)
-
-    setMediaProps(chaseVideo, { currentTime: 119 })
+    setMediaProps(chaseVideo, { currentTime: 10 })
     fireEvent.ended(chaseVideo)
     await new Promise((resolve) => setTimeout(resolve, 50))
+
+    await finishRecording(server)
     expect(document.querySelector('video')).toBe(chaseVideo)
     expect(playlistPaths(server.fetchMock, '/original-vod')).toEqual([])
   })
