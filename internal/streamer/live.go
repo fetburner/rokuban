@@ -249,6 +249,9 @@ type LiveStreamer struct {
 	mu            sync.Mutex
 	sessions      map[int64]*liveSession
 	chaseSessions map[sessionKey]*liveSession
+	// chaseFailedAt は、起動した後に異常終了した追っかけのセッション鍵と時刻
+	// （chaseFailedRecently）。mu で守る。
+	chaseFailedAt map[sessionKey]time.Time
 
 	// afterOriginalVODOpen はテスト専用: 原本を open した直後、DB を再確認する前に呼ぶ。
 	afterOriginalVODOpen func()
@@ -1127,6 +1130,14 @@ func (ls *LiveStreamer) ChasePlaylistForTarget(w http.ResponseWriter, r *http.Re
 	key := chaseSessionKeyFor(target.RecordingID, offsetSeconds)
 	var s *liveSession
 	if target.canStartChaseSession() {
+		if ls.chaseFailedRecently(key) {
+			// 入力のエラーで止めた直後に同じ鍵で作り直すと、先頭から縮んだ EVENT playlist を
+			// 配り直し、失敗が続く間は要求のたびに作り直す。しばらくはエラーを返し、
+			// フロントの再生元のエラー経路に任せる。
+			http.Error(w, "chase stream failed recently", http.StatusServiceUnavailable)
+			return
+		}
+		committedSize := ls.committedOriginalSize(target.RecordingID)
 		var source sessionSource
 		if offsetSeconds == 0 {
 			// 先頭からでも、追従配信が閉じた後は Range で続きを読む（followChaseRecord）。
@@ -1136,7 +1147,7 @@ func (ls *LiveStreamer) ChasePlaylistForTarget(w http.ResponseWriter, r *http.Re
 				return
 			}
 			source = func(ctx context.Context) (io.ReadCloser, error) {
-				return followChaseRecord(ctx, client, target.RecordID)
+				return followChaseRecord(ctx, client, target.RecordID, committedSize)
 			}
 		} else {
 			client, ok := ls.mirakc.(mirakcSeekRecordClient)
@@ -1160,7 +1171,7 @@ func (ls *LiveStreamer) ChasePlaylistForTarget(w http.ResponseWriter, r *http.Re
 				return
 			}
 			source = func(ctx context.Context) (io.ReadCloser, error) {
-				return waitForChaseRecordAtOffset(ctx, client, target.RecordID, startByte)
+				return waitForChaseRecordAtOffset(ctx, client, target.RecordID, startByte, committedSize)
 			}
 		}
 		var err error
@@ -1583,12 +1594,12 @@ func parseCanonicalRecordingID(raw string) (int64, bool) {
 // 途中で切れても）は読んだバイトの続きから chaseRangeFollowReader で追い、mirakc が録画の
 // 終了を返すまで EOF にしない（TestFollowChaseRecordContinuesWithRangeAfterFollowCloses /
 // TestChaseRangeFollowReaderResumesAfterUncleanBodyClose）。
-func followChaseRecord(ctx context.Context, client mirakcSeekRecordClient, recordID string) (io.ReadCloser, error) {
+func followChaseRecord(ctx context.Context, client mirakcSeekRecordClient, recordID string, committedSize chaseCommittedSize) (io.ReadCloser, error) {
 	body, err := waitForChaseRecord(ctx, client, recordID)
 	if err != nil {
 		return nil, err
 	}
-	return newChaseRangeFollowReader(ctx, client, recordID, 0, body), nil
+	return newChaseRangeFollowReader(ctx, client, recordID, 0, body, committedSize), nil
 }
 
 func waitForChaseRecord(ctx context.Context, client mirakcRecordClient, recordID string) (io.ReadCloser, error) {
@@ -1684,7 +1695,7 @@ func chaseStartByteOffset(record *mirakc.Record, offsetSeconds int64) (int64, er
 // normal startup budget. Once the first bytes are available, the returned
 // reader follows the recording by requesting the next Range after each finite
 // response reaches EOF.
-func waitForChaseRecordAtOffset(ctx context.Context, client mirakcSeekRecordClient, recordID string, startByte int64) (io.ReadCloser, error) {
+func waitForChaseRecordAtOffset(ctx context.Context, client mirakcSeekRecordClient, recordID string, startByte int64, committedSize chaseCommittedSize) (io.ReadCloser, error) {
 	deadline := time.Now().Add(playlistStartupTimeout)
 	for {
 		remaining := time.Until(deadline)
@@ -1695,7 +1706,7 @@ func waitForChaseRecordAtOffset(ctx context.Context, client mirakcSeekRecordClie
 		// length は 206 の Content-Length。分からない（-1）本文も読み、空かどうかは
 		// 読んだ結果で reader が判断する。
 		if err == nil && body != nil && length != 0 {
-			return newChaseRangeFollowReader(ctx, client, recordID, startByte, body), nil
+			return newChaseRangeFollowReader(ctx, client, recordID, startByte, body, committedSize), nil
 		}
 		if body != nil {
 			_ = body.Close()
@@ -1731,54 +1742,64 @@ func waitForChaseRecordPoll(ctx context.Context, deadline time.Time) error {
 	}
 }
 
-// 追っかけの Range 追従の間隔と再試行。テストが実時間を待たずに済むよう var にする。
+// 追っかけの Range 追従の間隔と再試行の待ち。テストが実時間を待たずに済むよう var にする。
 var (
-	// chaseRangePollMin は Range 要求の最短間隔（要求の開始から数える）。録画中は
-	// 追い付いても待たずに次を取ると、空の応答と GetRecord で 1 セッションあたり
-	// 毎秒 20 要求になる（古い mirakc は Range ごとに dd を起こす）。
+	// chaseRangePollMin は Range 要求の最短間隔（要求の開始から数える）。待たずに次を取ると、
+	// 追い付いた直後の空の応答と GetRecord で 1 セッションあたり毎秒 20 要求になっていた
+	// （古い mirakc は Range ごとに dd を起こす）。データが続く間の変換の遅れはこの間隔まで。
 	chaseRangePollMin = 500 * time.Millisecond
-	// chaseRangePollMax は追い付いたまま録画中が続くときのバックオフの上限。
-	chaseRangePollMax = 2 * time.Second
-	// chaseRetryBaseDelay / chaseRetryMaxDelay / chaseMaxConsecutiveFailures は
-	// 一過性の失敗（5xx・通信断・本文の途中切れ）の再試行。ingest の
-	// connectRetryDelay / maxInJobRetries と同じ値にそろえる。
-	chaseRetryBaseDelay         = 200 * time.Millisecond
-	chaseRetryMaxDelay          = 5 * time.Second
-	chaseMaxConsecutiveFailures = 5
+	// chaseRangePollMax は追い付いたまま録画中が続くときのバックオフの上限。録画が止まって
+	// いる間だけ効き、再開後の最初の取得はこれだけ遅れうる。フロントは変換済みの端
+	// （seekable の終端）より後ろへのシークを新しい offset で張り直すので、この遅れは
+	// 張り直しの頻度を変えるだけで、見られない区間を作らない（docs/frontend/live.md）。
+	chaseRangePollMax = time.Second
+	// chaseRetryDelay は一過性の失敗の再試行の待ち。回数と分類は ingest と共有する
+	// （mirakc.RetryDelay / mirakc.MaxConsecutiveRetries / mirakc.IsRetryable）。
+	chaseRetryDelay = mirakc.RetryDelay
 )
+
+// errChaseRecordPurged は、追っかけが録画ファイルの終端まで読む前に mirakc の record が
+// 消えた（404）ことを表す。
+var errChaseRecordPurged = errors.New("mirakc record is gone before the chase read it to the end")
+
+// chaseCommittedSize は録画のコミット済み原本のバイト数を返す（無ければ ok=false）。
+type chaseCommittedSize func(ctx context.Context) (size int64, ok bool, err error)
 
 // chaseRangeFollowReader turns mirakc's finite Range responses into one
 // long-lived reader. It never reads and discards the recording head: every
 // request begins at the byte position already consumed by ffmpeg.
 //
-// EOF は次のどちらかのときだけ返す。
-//   - GetRecord が録画の終了（recording 以外）を返し、同じ offset への最後の 1 回も空だった
+// EOF を返すのは、次のどちらかで録画ファイルの終端まで渡し終えたときだけである。
+//   - GetRecord が録画の終了（recording 以外）を返し、同じ offset への最後の Range も空だった
 //     （状態遷移と最後の追記の競合を吸収する）
-//   - record が 404 になった。rokuban は ingest がコミットした後にだけ record を purge し
-//     （internal/worker/ingest.go の enqueueIngestFollowups / handleAlreadyCommittedIngest）、
-//     ingest は mirakc の終了を見て最後の差分を読み切ってからコミットする。したがって 404 は
-//     録画が終わった後である。追従配信の自然な終わり（無入力で閉じた）の直後なら、配信は
-//     最後の書き込みまで渡しているので欠けは無い。Range で追っている途中なら、最後に読んだ後の
-//     追記を purge より前に取りに行けなかった分（最大で chaseRangePollMax ぶん）を失いうる
-//     （その窓が実際に起きるかは未検証）
+//   - record が 404 になり、かつコミット済み原本のバイト数が読んだ位置と一致した。ingest は
+//     録画の終了を見て最後の差分まで読み、mirakc が HEAD で返す長さと一致しない転送を
+//     コミットしないので（internal/worker/ingest.go）、一致すれば終端まで読んでいる
 //
-// 一過性の失敗は chaseMaxConsecutiveFailures 回までバックオフして再試行し、それを超えたら
-// エラーを返す。エラーは ENDLIST にしない（runSession の chaseInputReader が ffmpeg を
-// 先に止める）。
+// 404 で原本と一致しない（ffmpeg が先端より遅れていて purge が先に来た、別経路の原本、
+// mirakc が record を失った等）ならエラーを返す。終端が分からないまま EOF にすると、
+// 欠けた終端に ENDLIST が付く。一過性の失敗は mirakc.MaxConsecutiveRetries 回まで再試行する。
+//
+// Close は別の goroutine から呼んでよい。進行中の Read と待ちを打ち切り、以後の要求を止める。
 type chaseRangeFollowReader struct {
-	ctx        context.Context
-	client     mirakcSeekRecordClient
-	recordID   string
+	ctx           context.Context
+	cancel        context.CancelFunc
+	client        mirakcSeekRecordClient
+	recordID      string
+	committedSize chaseCommittedSize
+
+	mu     sync.Mutex
+	body   io.ReadCloser // mu で守る
+	closed bool          // mu で守る
+
+	// 以下は Read を呼ぶ goroutine だけが触る。
 	nextOffset int64
-	body       io.ReadCloser
-	// bodyBytes は今の本文から読んだバイト数。Content-Length が無い（-1）本文が
-	// 何も返さずに終わったら、追い付いた（空の応答）として扱う。
-	bodyBytes int64
-	finished  bool
-	done      bool
-	closed    bool
-	err       error
-	// nextRequestAt より前には Range を要求しない。idleWait は追い付いたときのバックオフ。
+	// bodyBytes は今の本文から読んだバイト数。Content-Length の無い（-1）本文が何も返さずに
+	// 終わったら、追い付いた（空の応答）として扱う。
+	bodyBytes     int64
+	finished      bool
+	done          bool
+	err           error
 	nextRequestAt time.Time
 	idleWait      time.Duration
 	failures      int
@@ -1786,32 +1807,41 @@ type chaseRangeFollowReader struct {
 
 // newChaseRangeFollowReader は offset から追う reader を作る。body は offset から始まる
 // 読みかけの本文（追従配信か最初の Range 応答）で、nil なら最初の Read で Range を要求する。
-func newChaseRangeFollowReader(ctx context.Context, client mirakcSeekRecordClient, recordID string, offset int64, body io.ReadCloser) *chaseRangeFollowReader {
-	return &chaseRangeFollowReader{ctx: ctx, client: client, recordID: recordID, nextOffset: offset, body: body}
+// committedSize が nil なら、404 は常にエラーになる。
+func newChaseRangeFollowReader(ctx context.Context, client mirakcSeekRecordClient, recordID string, offset int64, body io.ReadCloser, committedSize chaseCommittedSize) *chaseRangeFollowReader {
+	ctx, cancel := context.WithCancel(ctx)
+	return &chaseRangeFollowReader{
+		ctx:           ctx,
+		cancel:        cancel,
+		client:        client,
+		recordID:      recordID,
+		committedSize: committedSize,
+		body:          body,
+		nextOffset:    offset,
+	}
 }
 
 func (r *chaseRangeFollowReader) Read(p []byte) (int, error) {
-	if r.closed {
-		return 0, io.ErrClosedPipe
-	}
 	if len(p) == 0 {
 		return 0, nil
 	}
 	for {
-		if r.err != nil {
+		body, closed := r.current()
+		switch {
+		case closed:
+			return 0, io.ErrClosedPipe
+		case r.err != nil:
 			return 0, r.err
-		}
-		if r.done {
+		case r.done:
 			return 0, io.EOF
-		}
-		if r.body == nil {
+		case body == nil:
 			if err := r.requestNext(); err != nil {
 				r.err = err
 			}
 			continue
 		}
 
-		n, err := r.body.Read(p)
+		n, err := body.Read(p)
 		r.nextOffset += int64(n)
 		r.bodyBytes += int64(n)
 		if n > 0 {
@@ -1822,7 +1852,7 @@ func (r *chaseRangeFollowReader) Read(p []byte) (int, error) {
 		case err == nil:
 		case errors.Is(err, io.EOF):
 			empty := r.bodyBytes == 0
-			r.closeBody()
+			r.closeBody(body)
 			if empty {
 				if caughtErr := r.caughtUp(); caughtErr != nil {
 					r.err = caughtErr
@@ -1831,7 +1861,7 @@ func (r *chaseRangeFollowReader) Read(p []byte) (int, error) {
 		default:
 			// 追従配信や Range の本文が途中で切れた（ErrUnexpectedEOF・接続リセット等）。
 			// 読んだ位置は分かっているので、同じ続きを Range で取り直す。
-			r.closeBody()
+			r.closeBody(body)
 			if failErr := r.failure(fmt.Errorf("reading chase record body at offset %d: %w", r.nextOffset, err)); failErr != nil {
 				r.err = failErr
 			}
@@ -1843,7 +1873,7 @@ func (r *chaseRangeFollowReader) Read(p []byte) (int, error) {
 }
 
 // requestNext は nextOffset からの Range を 1 回要求する。本文があれば r.body に置き、
-// 空なら caughtUp、失敗なら failure に回す。
+// 空なら caughtUp、失敗なら failure / gone に回す。
 func (r *chaseRangeFollowReader) requestNext() error {
 	if err := sleepUntil(r.ctx, r.nextRequestAt); err != nil {
 		return err
@@ -1851,9 +1881,8 @@ func (r *chaseRangeFollowReader) requestNext() error {
 	r.nextRequestAt = time.Now().Add(chaseRangePollMin)
 	body, length, err := r.client.StreamRecord(r.ctx, r.recordID, r.nextOffset)
 	if err == nil && body != nil && length != 0 {
-		r.body = body
 		r.bodyBytes = 0
-		return nil
+		return r.setBody(body)
 	}
 	if body != nil {
 		_ = body.Close()
@@ -1862,9 +1891,8 @@ func (r *chaseRangeFollowReader) requestNext() error {
 	case err == nil, errors.Is(err, mirakc.ErrRecordNotReady), errors.Is(err, mirakc.ErrRangeNotSatisfiable):
 		r.failures = 0
 		return r.caughtUp()
-	case chaseRecordGone(err):
-		r.done = true
-		return nil
+	case chaseRecordNotFound(err):
+		return r.gone(err)
 	default:
 		return r.failure(fmt.Errorf("requesting chase record range at offset %d: %w", r.nextOffset, err))
 	}
@@ -1878,9 +1906,8 @@ func (r *chaseRangeFollowReader) caughtUp() error {
 	}
 	finished, err := chaseRecordFinished(r.ctx, r.client, r.recordID)
 	if err != nil {
-		if chaseRecordGone(err) {
-			r.done = true
-			return nil
+		if chaseRecordNotFound(err) {
+			return r.gone(err)
 		}
 		return r.failure(fmt.Errorf("checking chase record status: %w", err))
 	}
@@ -1900,61 +1927,94 @@ func (r *chaseRangeFollowReader) caughtUp() error {
 	return nil
 }
 
+// gone は record が 404 になったときに呼ぶ。読んだ位置がコミット済み原本の終端なら EOF、
+// それ以外はエラーにする（chaseRangeFollowReader の doc を参照）。
+func (r *chaseRangeFollowReader) gone(cause error) error {
+	if r.committedSize != nil {
+		size, ok, err := r.committedSize(r.ctx)
+		if err != nil {
+			return fmt.Errorf("%w at offset %d (reading the committed original: %w): %w", errChaseRecordPurged, r.nextOffset, err, cause)
+		}
+		if ok && size == r.nextOffset {
+			r.done = true
+			return nil
+		}
+		if ok {
+			return fmt.Errorf("%w at offset %d of %d committed bytes: %w", errChaseRecordPurged, r.nextOffset, size, cause)
+		}
+	}
+	return fmt.Errorf("%w at offset %d (no committed original): %w", errChaseRecordPurged, r.nextOffset, cause)
+}
+
 // failure は一過性の失敗なら上限つきでバックオフを予約し、そうでなければエラーを返す。
 func (r *chaseRangeFollowReader) failure(err error) error {
 	if ctxErr := r.ctx.Err(); ctxErr != nil {
 		return ctxErr
 	}
-	if !chaseRetryable(err) {
+	if !mirakc.IsRetryable(err) {
 		return err
 	}
 	r.failures++
-	if r.failures > chaseMaxConsecutiveFailures {
+	if r.failures > mirakc.MaxConsecutiveRetries {
 		return fmt.Errorf("chase record %s failed %d consecutive times: %w", r.recordID, r.failures, err)
 	}
-	delay := chaseRetryBaseDelay << (r.failures - 1)
-	if delay > chaseRetryMaxDelay || delay <= 0 {
-		delay = chaseRetryMaxDelay
-	}
+	delay := chaseRetryDelay(r.failures - 1)
 	slog.Warn("streamer: transient chase record failure, retrying",
 		"record_id", r.recordID, "offset", r.nextOffset, "consecutive_failures", r.failures, "delay", delay, "err", err)
 	r.nextRequestAt = time.Now().Add(delay)
 	return nil
 }
 
-func (r *chaseRangeFollowReader) closeBody() {
-	if r.body != nil {
-		_ = r.body.Close()
-		r.body = nil
-	}
+func (r *chaseRangeFollowReader) current() (io.ReadCloser, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.body, r.closed
 }
 
-func (r *chaseRangeFollowReader) Close() error {
+func (r *chaseRangeFollowReader) setBody(body io.ReadCloser) error {
+	r.mu.Lock()
 	if r.closed {
+		r.mu.Unlock()
+		_ = body.Close()
+		return io.ErrClosedPipe
+	}
+	r.body = body
+	r.mu.Unlock()
+	return nil
+}
+
+// closeBody は body がまだ今の本文なら外して閉じる（Close が先に外していたら何もしない）。
+func (r *chaseRangeFollowReader) closeBody(body io.ReadCloser) {
+	r.mu.Lock()
+	if r.body != body {
+		r.mu.Unlock()
+		return
+	}
+	r.body = nil
+	r.mu.Unlock()
+	_ = body.Close()
+}
+
+// Close は進行中の Read と待ちを打ち切り、以後の要求を止める（TestChaseRangeFollowReaderCloseStopsConcurrentRead）。
+func (r *chaseRangeFollowReader) Close() error {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
 		return nil
 	}
 	r.closed = true
-	if r.body == nil {
+	body := r.body
+	r.body = nil
+	r.mu.Unlock()
+	r.cancel()
+	if body == nil {
 		return nil
 	}
-	err := r.body.Close()
-	r.body = nil
-	return err
+	return body.Close()
 }
 
-// chaseRetryable は mirakc への要求の失敗が一過性か。5xx と HTTP 応答の無い失敗
-// （通信断・本文の途中切れ）は再試行し、それ以外の 4xx（Range を無視した 200 を含む）は
-// 再試行しても変わらない。ingest の isRetryablePollError と同じ分類。
-func chaseRetryable(err error) bool {
-	var apiErr *mirakc.APIError
-	if errors.As(err, &apiErr) {
-		return apiErr.StatusCode >= http.StatusInternalServerError
-	}
-	return true
-}
-
-// chaseRecordGone は mirakc の record が消えた（404）か。意味は chaseRangeFollowReader を参照。
-func chaseRecordGone(err error) bool {
+// chaseRecordNotFound は mirakc の record が無い（404）か。意味は chaseRangeFollowReader を参照。
+func chaseRecordNotFound(err error) bool {
 	var apiErr *mirakc.APIError
 	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
 }
@@ -2691,6 +2751,7 @@ func sessionReady(s *liveSession) bool {
 func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 	kind := sessionKindOf(s)
 	keepCompletedRecordingSession := false
+	chaseFailed := false
 	// close(s.done) は必ず最後（他の全ての後片付けの後）に行う。stop() は
 	// `<-s.done` が閉じたら「片付け完了」とみなして戻るので、途中の状態
 	// （map から消す前・ディレクトリを消す前）で閉じると、呼び出し側が
@@ -2699,6 +2760,9 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 	defer close(s.done)
 	defer func() {
 		ls.mu.Lock()
+		if chaseFailed { // map から消すのと同じロックの中で残し、作り直す窓を作らない。
+			ls.noteChaseFailureLocked(s.key, time.Now())
+		}
 		// idle GC が先にこの id を削除して新しいセッションに入れ替えていたら、
 		// 新しいセッションを消さない（cur == s のときだけ削除）。
 		if !keepCompletedRecordingSession {
@@ -2822,13 +2886,17 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 		// Go maps ExtraFiles[0] to child fd 3. Passing the already-open original
 		// keeps ffmpeg's seekable input alive if until_encoded unlinks its name.
 		cmd.ExtraFiles = []*os.File{originalFile}
-	} else if kind == chaseSessionKind {
-		cmd.Stdin = &chaseInputReader{
-			r:         input,
-			kill:      func() { _ = cmd.Process.Kill() },
-			sessionID: sessionIDOf(s),
+	}
+	var chaseInput *chaseInputCopy
+	switch {
+	case originalFile != nil:
+	case kind == chaseSessionKind:
+		if chaseInput, s.startErr = attachChaseInput(cmd); s.startErr != nil {
+			metrics.LiveSessionStartFailures.WithLabelValues("ffmpeg_error").Inc()
+			close(s.ready)
+			return
 		}
-	} else {
+	default:
 		cmd.Stdin = input
 	}
 	stderr := newCappedWriter(stderrCap)
@@ -2841,7 +2909,9 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 	// 詰まる --- 上限を設けて必ず前に進めるようにする。
 	cmd.WaitDelay = 5 * time.Second
 
-	if err := cmd.Start(); err != nil {
+	startErr := cmd.Start()
+	chaseInput.started(startErr)
+	if err := startErr; err != nil {
 		s.startErr = fmt.Errorf("starting live ffmpeg: %w", err)
 		metrics.LiveSessionStartFailures.WithLabelValues("ffmpeg_error").Inc()
 		close(s.ready)
@@ -2852,24 +2922,12 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 		"profiles", len(ls.cfg.Profiles))
 	close(s.ready)
 
+	chaseInput.copy(input, cmd.Process.Kill)
+
 	waitErr := cmd.Wait()
-	ffmpegCompleted := waitErr == nil
-	if waitErr != nil && ctx.Err() == nil {
-		if errors.Is(waitErr, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
-			ffmpegCompleted = true
-			// ffmpeg 自体は exit 0 で完走したが、孫プロセスが stdin/stderr の
-			// fd を握ったままで WaitDelay が先に切れた（internal/worker の
-			// runEncode / commandOutput と同型のハングの exit 0 版）。正常な
-			// セッション終了なので運用者向けの Error にはしない。
-			slog.Warn("streamer: ffmpeg exited successfully but WaitDelay expired before I/O completed",
-				"kind", string(kind), "session_id", sessionIDOf(s), "wait_delay", cmd.WaitDelay)
-		} else {
-			// ctx.Err() == nil ということは idle GC / shutdown による意図した kill ではない
-			// ---ffmpeg 自身が落ちた（mirakc 側の切断、コーデックエラー等）。
-			slog.Error("streamer: ffmpeg exited unexpectedly",
-				"kind", string(kind), "session_id", sessionIDOf(s), "err", waitErr, "stderr", strings.TrimSpace(stderr.String()))
-		}
-	}
+	inputErr := chaseInput.finish(body)
+	ffmpegCompleted := ffmpegSessionCompleted(ctx, cmd, waitErr, inputErr, kind, sessionIDOf(s), stderr)
+	chaseFailed = kind == chaseSessionKind && ctx.Err() == nil && !ffmpegCompleted
 	if (kind == chaseSessionKind || kind == originalVODSessionKind) && ctx.Err() == nil && ffmpegCompleted {
 		// Keep completed recording playlists and all segments until the shared idle
 		// GC reclaims the session, so clients can fetch ENDLIST and seek the full VOD.
@@ -2877,32 +2935,166 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 	}
 }
 
-// chaseInputReader は追っかけの ffmpeg の stdin。入力がエラーで終わったら、エラーを
-// 返す前に ffmpeg を kill する。os/exec は Stdin の io.Copy が終わると（エラーでも）
-// パイプを閉じ、ffmpeg はそれを正常な EOF と区別できずに ENDLIST を書く。kill を先に
-// 送れば ffmpeg はもう実行されないので、途中までの入力に ENDLIST は付かない
-// （TestChaseInputErrorDoesNotWriteEndlist）。kill されたセッションは異常終了として
-// 保持されず、次の playlist 要求は 404 になる。
-type chaseInputReader struct {
-	r         io.Reader
-	kill      func()
-	sessionID int64
-	killed    bool
+// ffmpegSessionCompleted は ffmpeg が完走したか（ENDLIST を書いて正常終了したか）を判定し、
+// 終わり方をログに残す。inputErr は追っかけの入力のエラー（chaseInputCopy.finish）。
+func ffmpegSessionCompleted(ctx context.Context, cmd *exec.Cmd, waitErr, inputErr error, kind sessionKind, sessionID int64, stderr *cappedWriter) bool {
+	// 入力のエラーで kill した（idle GC / shutdown の ctx キャンセルは除く）。ffmpeg の
+	// 異常終了ではないので、その旨を 1 回だけ記録する。
+	inputFailed := inputErr != nil && ctx.Err() == nil
+	if inputFailed {
+		slog.Error("streamer: chase input failed; killed ffmpeg so the playlist does not get ENDLIST",
+			"session_id", sessionID, "err", inputErr)
+	}
+	ffmpegCompleted := waitErr == nil && !inputFailed
+	if waitErr != nil && ctx.Err() == nil && !inputFailed {
+		if errors.Is(waitErr, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+			ffmpegCompleted = true
+			// ffmpeg 自体は exit 0 で完走したが、孫プロセスが stdin/stderr の
+			// fd を握ったままで WaitDelay が先に切れた（internal/worker の
+			// runEncode / commandOutput と同型のハングの exit 0 版）。正常な
+			// セッション終了なので運用者向けの Error にはしない。
+			slog.Warn("streamer: ffmpeg exited successfully but WaitDelay expired before I/O completed",
+				"kind", string(kind), "session_id", sessionID, "wait_delay", cmd.WaitDelay)
+		} else {
+			// ctx.Err() == nil ということは idle GC / shutdown による意図した kill ではない
+			// ---ffmpeg 自身が落ちた（mirakc 側の切断、コーデックエラー等）。
+			slog.Error("streamer: ffmpeg exited unexpectedly",
+				"kind", string(kind), "session_id", sessionID, "err", waitErr, "stderr", strings.TrimSpace(stderr.String()))
+		}
+	}
+	return ffmpegCompleted
 }
 
-func (c *chaseInputReader) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
-	if err != nil && !errors.Is(err, io.EOF) && !c.killed {
-		c.killed = true
-		// セッションの ctx が切れた（idle GC・shutdown）ときは CommandContext も kill する。
-		// 障害ではないのでログに残さない。
-		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			slog.Error("streamer: chase input failed; killing ffmpeg so the playlist does not get ENDLIST",
-				"session_id", c.sessionID, "err", err)
-		}
-		c.kill()
+// chaseFailureCooldown は、起動した後に異常終了した追っかけと同じ鍵の新しいセッションを
+// 作らない時間。var なのはテストのため。
+var chaseFailureCooldown = 30 * time.Second
+
+// noteChaseFailureLocked は鍵の追っかけが異常終了したことを残す。ls.mu を持って呼ぶ。
+// 冷却の過ぎた記録はここで捨てる（鍵は録画と offset の組なので、捨てないと増え続ける）。
+func (ls *LiveStreamer) noteChaseFailureLocked(key sessionKey, at time.Time) {
+	if ls.chaseFailedAt == nil {
+		ls.chaseFailedAt = make(map[sessionKey]time.Time)
 	}
-	return n, err
+	for k, failedAt := range ls.chaseFailedAt {
+		if at.Sub(failedAt) >= chaseFailureCooldown {
+			delete(ls.chaseFailedAt, k)
+		}
+	}
+	ls.chaseFailedAt[key] = at
+}
+
+// chaseFailedRecently は、鍵の追っかけが冷却時間内に異常終了していて、その後に作られた
+// セッションも無いかを返す（TestChaseFailureCooldownRefusesRestart）。
+func (ls *LiveStreamer) chaseFailedRecently(key sessionKey) bool {
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	if _, ok := ls.chaseSessions[key]; ok {
+		return false
+	}
+	failedAt, ok := ls.chaseFailedAt[key]
+	return ok && time.Since(failedAt) < chaseFailureCooldown
+}
+
+// committedOriginalSize は録画のコミット済み原本（active）のバイト数を返す関数を作る。
+// DB が無い構成（テスト）では nil で、404 は常にエラーになる。
+func (ls *LiveStreamer) committedOriginalSize(recordingID int64) chaseCommittedSize {
+	if ls.pool == nil {
+		return nil
+	}
+	return func(ctx context.Context) (int64, bool, error) {
+		row, err := sqlcgen.New(ls.pool).GetActiveOriginalMediaAsset(ctx, recordingID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, false, nil
+		}
+		if err != nil {
+			return 0, false, err
+		}
+		return row.SizeBytes, true, nil
+	}
+}
+
+// chaseInputCopy は追っかけの ffmpeg の stdin のパイプと、そこへの写し（copyChaseInput）を持つ。
+// 入力のエラーで stdin を閉じる前に ffmpeg を kill するためで、os/exec の Stdin（io.Reader）に
+// 任せると入力のエラーでもパイプが閉じられ、StdinPipe では Wait も書き込み側を閉じる。
+// nil のメソッドは何もしない（追っかけ以外のセッション）。
+type chaseInputCopy struct {
+	read, write *os.File
+	done        chan struct{}
+	err         error
+}
+
+// attachChaseInput は cmd の stdin にパイプの読み側を付ける。Start の前に呼ぶ。
+func attachChaseInput(cmd *exec.Cmd) (*chaseInputCopy, error) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("opening chase ffmpeg stdin: %w", err)
+	}
+	cmd.Stdin = pr
+	return &chaseInputCopy{read: pr, write: pw}, nil
+}
+
+// started は Start の直後に呼ぶ。読み側は子に渡したので親の分を閉じる（持ち続けると、
+// 書き側を閉じても子に EOF が届かない）。Start が失敗したら書き側も閉じる。
+func (c *chaseInputCopy) started(startErr error) {
+	if c == nil {
+		return
+	}
+	_ = c.read.Close()
+	if startErr != nil {
+		_ = c.write.Close()
+	}
+}
+
+// copy は写しを goroutine で始める。
+func (c *chaseInputCopy) copy(input io.Reader, kill func() error) {
+	if c == nil {
+		return
+	}
+	c.done = make(chan struct{})
+	go func() {
+		defer close(c.done)
+		c.err = copyChaseInput(c.write, input, kill)
+	}()
+}
+
+// finish は Wait の後に呼び、入力のエラー（無ければ nil）を返す。ffmpeg が自分で終わった
+// とき、写しは入力の Read で待っているかもしれないので、入力を閉じて抜けさせてから待つ。
+func (c *chaseInputCopy) finish(input io.Closer) error {
+	if c == nil || c.done == nil {
+		return nil
+	}
+	_ = input.Close()
+	<-c.done
+	return c.err
+}
+
+// copyChaseInput は追っかけの入力を ffmpeg の stdin へ写す。ffmpeg は stdin の EOF で
+// ENDLIST を書くので、stdin を閉じるのは入力が正常な EOF で終わったときだけにする。入力が
+// エラーで終わったら、先に kill してから stdin を閉じる（kill の後の ffmpeg は何も実行しない）。
+// そうしないと途中までの入力に ENDLIST が付く（TestChaseInputErrorDoesNotWriteEndlist）。
+// 戻り値は入力のエラー（正常な EOF と、ffmpeg が先に終わって書けなかった場合は nil）。
+func copyChaseInput(stdin io.WriteCloser, input io.Reader, kill func() error) error {
+	buf := make([]byte, 64<<10)
+	for {
+		n, readErr := input.Read(buf)
+		if n > 0 {
+			if _, writeErr := stdin.Write(buf[:n]); writeErr != nil {
+				_ = stdin.Close()
+				//nolint:nilerr // ffmpeg が先に終わった。その終わり方は Wait が扱い、入力の失敗ではない。
+				return nil
+			}
+		}
+		switch {
+		case readErr == nil:
+		case errors.Is(readErr, io.EOF):
+			_ = stdin.Close()
+			return nil
+		default:
+			_ = kill()
+			_ = stdin.Close()
+			return readErr
+		}
+	}
 }
 
 func cleanupSessionDir(s *liveSession) {
