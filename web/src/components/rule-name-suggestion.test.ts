@@ -17,6 +17,18 @@ function textMatch(overrides: Partial<TextMatchDraft>): TextMatchDraft {
 const nhk = { networkId: 32736, serviceId: 1024 }
 
 describe('suggestRuleName', () => {
+  it('キーワードは trim し、重複を除いて出現順に連結する', () => {
+    const draft: SearchDraft = {
+      ...emptyDraft(),
+      textMatches: [
+        textMatch({ value: ' ガンダム' }),
+        textMatch({ value: '水星' }),
+        textMatch({ target: 'description', value: 'ガンダム ' }),
+      ],
+    }
+    expect(suggestRuleName(draft, () => undefined)).toBe('ガンダム・水星')
+  })
+
   it('正のキーワード条件を対象に関係なく出現順に連結し、他の条件より優先する', () => {
     const draft: SearchDraft = {
       ...emptyDraft(),

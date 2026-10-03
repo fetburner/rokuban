@@ -48,8 +48,14 @@ export function weekdayRangeLabel(weekdays: number): string {
   return indices.map((i) => weekdayLabels[i]).join('・')
 }
 
-function timeWindowSummary(t: RuleTimeWindow): string {
+/** timeWindowSummary は時間帯（曜日 + 開始–終了）を 1 つの要約にする。 */
+export function timeWindowSummary(t: { weekdays: number; startSec: number; endSec: number }): string {
   return `${weekdayRangeLabel(t.weekdays)} ${secToTimeValue(t.startSec)}–${secToTimeValue(t.endSec)}`
+}
+
+/** genresSummary はジャンルコードを昇順に並べ「/」で連結する。 */
+export function genresSummary(genres: readonly number[]): string {
+  return [...genres].sort((a, b) => a - b).map(genreCodeLabel).join('/')
 }
 
 /**
@@ -76,7 +82,7 @@ export function summarizeRuleConditions(rule: Rule): string[] {
   }
 
   if (rule.genres && rule.genres.length > 0) {
-    parts.push([...rule.genres].sort((a, b) => a - b).map(genreCodeLabel).join('/'))
+    parts.push(genresSummary(rule.genres))
   }
 
   for (const t of rule.times ?? []) parts.push(timeWindowSummary(t))

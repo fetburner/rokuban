@@ -293,6 +293,18 @@ describe('RulesPage encode settings', () => {
 })
 
 describe('RulesPage 新規作成', () => {
+  it('名前に触らず保存すると、描画中の候補名が検証・送信される', async () => {
+    const { postBodies } = stubApi([])
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(await findCreateRuleButton())
+    await user.type(screen.getByLabelText('テキスト条件 1 の値'), '深夜アニメ')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(postBodies).toHaveLength(1))
+    expect(postBodies[0]?.name).toBe('深夜アニメ')
+  })
+
   it('名前候補はキーワードに追従し、触った後は空でも再生成されない', async () => {
     const { postBodies } = stubApi([])
     const user = userEvent.setup()

@@ -1,10 +1,5 @@
-import { weekdayRangeLabel } from '@/components/rule-condition-summary'
-import {
-  genreCodeLabel,
-  secToTimeValue,
-  type SearchDraft,
-  type ServiceRefDraft,
-} from '@/lib/program-search'
+import { genresSummary, timeWindowSummary } from '@/components/rule-condition-summary'
+import type { SearchDraft, ServiceRefDraft } from '@/lib/program-search'
 
 /**
  * suggestRuleName は新規ルールの名前候補を条件から導く。
@@ -19,9 +14,9 @@ export function suggestRuleName(
 ): string {
   const keywords = draft.textMatches
     .filter((match) => match.mode === 'keyword' && !match.negate && match.value.trim() !== '')
-    .map((match) => match.value)
+    .map((match) => match.value.trim())
 
-  if (keywords.length > 0) return keywords.join('・')
+  if (keywords.length > 0) return [...new Set(keywords)].join('・')
 
   const parts: string[] = []
   const onlyService = draft.services.length === 1 ? draft.services[0] : undefined
@@ -30,14 +25,10 @@ export function suggestRuleName(
     if (name !== undefined && name.trim() !== '') parts.push(name)
   }
   if (draft.genres.length > 0) {
-    parts.push([...draft.genres].sort((a, b) => a - b).map(genreCodeLabel).join('/'))
+    parts.push(genresSummary(draft.genres))
   }
   const firstTime = draft.times[0]
-  if (firstTime !== undefined) {
-    parts.push(
-      `${weekdayRangeLabel(firstTime.weekdays)} ${secToTimeValue(firstTime.startSec)}–${secToTimeValue(firstTime.endSec)}`,
-    )
-  }
+  if (firstTime !== undefined) parts.push(timeWindowSummary(firstTime))
 
   return parts.join(' ')
 }
