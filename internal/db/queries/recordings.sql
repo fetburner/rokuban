@@ -320,6 +320,16 @@ SELECT EXISTS (
     WHERE id = sqlc.arg('recording_id') AND purged_at IS NULL
 );
 
+-- Playback position writes and watched writes lock the same recording row so a
+-- position request that races with marking it watched cannot recreate the row
+-- after the watched transaction clears it.
+-- name: LockRecordingForPlaybackState :one
+SELECT id
+FROM recordings
+WHERE id = sqlc.arg('recording_id')
+  AND purged_at IS NULL
+FOR UPDATE;
+
 -- name: UpsertRecordingPlaybackPosition :execrows
 INSERT INTO recording_playback_positions (recording_id, position_ms, updated_at)
 SELECT r.id, sqlc.arg('position_ms'), now()
@@ -327,6 +337,9 @@ FROM recordings r
 WHERE r.id = sqlc.arg('recording_id')
   AND r.purged_at IS NULL
   AND sqlc.arg('position_ms')::bigint >= 2000
+  AND NOT EXISTS (
+      SELECT 1 FROM recording_watched w WHERE w.recording_id = r.id
+  )
 ON CONFLICT (recording_id) DO UPDATE SET
     position_ms = EXCLUDED.position_ms,
     updated_at = EXCLUDED.updated_at;

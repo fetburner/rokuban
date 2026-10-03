@@ -31,7 +31,7 @@ export function originalMsToCutMs(originalMs: number, keepRanges: readonly KeepR
 
 /** カット後の ms を原本の ms へ戻す。内部境界は次の keep 区間の先頭へ寄せる。 */
 export function cutMsToOriginalMs(cutMs: number, keepRanges: readonly KeepRange[]): number {
-  if (keepRanges.length === 0) return cutMs
+  if (keepRanges.length === 0) return 0
   let cutOffset = 0
   for (let index = 0; index < keepRanges.length; index += 1) {
     const range = keepRanges[index]!
