@@ -267,10 +267,9 @@ export function RecordingDetail({
     const current = playbackStateRef.current
     const position = positionSeconds ?? recordingPositionSecondsRef.current
     const selected = selectRecordingPlaybackSource(playbackSelection)
-    // 同じ再生元が録画の終端に達したなら、新しいセッションを作らず終了状態のまま止める。
+    // 録画全体の終端まで見終えたなら、選び直した再生元が別でも切り替えず終了状態のまま止める。
     if (
       trigger === 'ended' &&
-      selected === current.source &&
       position !== undefined &&
       recordedEndSeconds !== undefined &&
       position >= recordedEndSeconds - 1.5

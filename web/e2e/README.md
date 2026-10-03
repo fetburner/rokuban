@@ -269,8 +269,10 @@ playlist を Chromium の hls.js（`E2E_BROWSER=webkit` ならネイティブ HL
   `5.52 秒 → 0.00 秒` になって落ちる**（Chromium で確認。WebKit は未実施）
 - **追っかけ範囲外 seek で原本 HLS に移った後も再生が続く**（⑩）。最後に進んだ `currentTime` から
   次に進んだ時刻までの最大停止時間を記録し、2 秒以下を判定する
-- **追っかけを録画終端まで再生すると、原本 HLS に位置を渡して再生を続ける**（⑪）。終端までは
-  成長する EVENT playlist（ENDLIST 無し）を配り、録画完了後にだけ ENDLIST を返す
+- **追っかけ playlist の終端が録画全体の終端より手前なら、原本 HLS に位置を渡して再生を続ける**（⑪）。
+  終端までは成長する EVENT playlist（ENDLIST 無し）を配り、追っかけの 12 秒に対して原本は 20 秒の fixture にする
+- **録画全体の終端では別の再生元を作らず、追っかけの終了状態を保つ**（⑫）。原本 fixture も 12 秒に制限し、
+  真の終端 offset が要求されないことを見る。次のポスター判定は⑬
 
 `E2E_BROWSER=webkit` で同じ判定を Safari 相当のネイティブ HLS 経路で回す。
 画質切替の位置の持ち越しは hls.js（`startPosition`）とネイティブ（要素への代入）で
