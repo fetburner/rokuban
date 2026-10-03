@@ -2627,6 +2627,98 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
     expect(nextEditor).not.toHaveTextContent('サーバー側の内容が変わりました')
   })
 
+  describe('チャプター編集モードの出入りと離脱', () => {
+    const chapters = {
+      version: 'chapters-v1',
+      detectionPending: false,
+      source: 'auto' as const,
+      spans: [{ startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }],
+    }
+    const enterEditing = async (user: ReturnType<typeof userEvent.setup>) => {
+      await screen.findByTestId('recording-player-frame')
+      await user.click(screen.getByRole('button', { name: '再生設定' }))
+      await user.click(await screen.findByRole('menuitem', { name: 'チャプターを直す' }))
+      return screen.findByTestId('chapter-edit-layout')
+    }
+    const dirtyDraft = async (user: ReturnType<typeof userEvent.setup>, editor: HTMLElement) => {
+      const label = within(editor).getByLabelText('ラベル')
+      await user.clear(label)
+      await user.type(label, '直した')
+    }
+
+    it('編集モードの出入りで <video> を作り直さず、再生位置を保つ', async () => {
+      const user = userEvent.setup()
+      const origin = seriesEpisode(3, '2026-01-01T12:00:00Z')
+      createFakeServer({ recording: origin, seriesRecordings: [origin], chapters })
+      renderAt('/recordings/3')
+      const video = (await screen.findByLabelText('録画映像')) as HTMLVideoElement
+      Object.defineProperty(video, 'duration', { configurable: true, value: 120 })
+      video.currentTime = 51.5
+
+      await enterEditing(user)
+      expect(screen.getByLabelText('録画映像')).toBe(video)
+      expect(video.currentTime).toBe(51.5)
+
+      await user.click(screen.getByRole('button', { name: 'やめる' }))
+      await waitFor(() => expect(screen.queryByTestId('chapter-edit-layout')).toBeNull())
+      expect(screen.getByLabelText('録画映像')).toBe(video)
+      expect(video.currentTime).toBe(51.5)
+    })
+
+    it('編集中に終端へ達しても終端カードを出さず、次の回へ自動遷移しない', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      try {
+        const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+        const origin = seriesEpisode(3, '2026-01-01T12:00:00Z')
+        const next = seriesEpisode(4, '2026-01-08T12:00:00Z')
+        createFakeServer({ recording: origin, seriesRecordings: [origin, next], chapters })
+        const { router } = renderAt('/recordings/3')
+        await enterEditing(user)
+
+        fireEvent.ended(screen.getByLabelText('録画映像'))
+        await act(async () => vi.advanceTimersByTimeAsync(4000))
+        expect(screen.queryByTestId('recording-end-card')).toBeNull()
+        expect(router.state.location.pathname).toBe('/recordings/3')
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('下書きが綺麗なまま別の録画へ移ると、移動先は編集モードで開かない', async () => {
+      const user = userEvent.setup()
+      const origin = seriesEpisode(3, '2026-01-01T12:00:00Z')
+      const next = seriesEpisode(4, '2026-01-08T12:00:00Z')
+      createFakeServer({ recording: origin, seriesRecordings: [origin, next], chapters })
+      const { router } = renderAt('/recordings/3')
+      await enterEditing(user)
+
+      act(() => {
+        void router.navigate({ to: '/recordings/$id', params: { id: '4' }, hash: '' })
+      })
+      expect(await screen.findByRole('heading', { name: '作品X 第4話' })).toBeInTheDocument()
+      expect(screen.queryByTestId('chapter-edit-layout')).toBeNull()
+      expect(screen.queryByTestId('chapter-exit-confirmation')).toBeNull()
+    })
+
+    it('やめる: 下書きが綺麗なら確認せず戻り、未保存なら確認を出す', async () => {
+      const user = userEvent.setup()
+      const origin = seriesEpisode(3, '2026-01-01T12:00:00Z')
+      createFakeServer({ recording: origin, seriesRecordings: [origin], chapters })
+      renderAt('/recordings/3')
+
+      await enterEditing(user)
+      await user.click(screen.getByRole('button', { name: 'やめる' }))
+      expect(screen.queryByTestId('chapter-exit-confirmation')).toBeNull()
+      await waitFor(() => expect(screen.queryByTestId('chapter-edit-layout')).toBeNull())
+
+      const editor = await enterEditing(user)
+      await dirtyDraft(user, editor)
+      await user.click(screen.getByRole('button', { name: 'やめる' }))
+      expect(await screen.findByTestId('chapter-exit-confirmation')).toBeInTheDocument()
+      expect(screen.getByTestId('chapter-edit-layout')).toBeInTheDocument()
+    })
+  })
+
   it('次の回へ移ると、追っかけ再生で選んでいた位置を先頭に戻す（キー操作でも前の位置を使わない）', async () => {
     const user = userEvent.setup()
     const now = Date.now()

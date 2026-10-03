@@ -30,13 +30,14 @@ import {
   Settings,
   SkipBack,
   SkipForward,
+  Scissors,
   SlidersHorizontal,
   Volume2,
   VolumeX,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { formatChaptersTime } from '@/lib/chapters'
-import { formatBytes, formatDate, formatPlaybackTime } from '@/lib/format'
+import { formatBytes, formatDate, formatPlaybackTime, formatPlaybackTimeMs } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
   SEEK_TILES_DISPLAY_HEIGHT,
@@ -362,47 +363,12 @@ export function RecordingPlaybackControls({
   const watchedAction = watched ? onDeleteWatched : onPutWatched
   const showControls = controlsVisible || popoverOpen
 
-  if (chapterEditing) {
-    return (
-      <div className="relative w-full" data-testid="recording-player-shell">
-        <div
-          ref={fullscreenRef}
-          data-testid="recording-player-frame"
-          className="relative aspect-video w-full overflow-hidden rounded bg-black"
-        >
-          {video}
-          {endCard}
-          <div className="absolute inset-x-0 bottom-0 flex items-center gap-3 bg-black/75 px-3 py-2 text-white">
-            <Button type="button" variant="ghost" size="icon" className={ghost} aria-label={isPlaying ? '一時停止' : '再生'} onClick={onTogglePlay}>
-              {isPlaying ? <Pause /> : <Play />}
-            </Button>
-            <span data-testid="chapter-edit-playhead" className="font-mono text-sm">
-              {formatPlaybackTime(seconds)} / {formatPlaybackTime(durationSeconds)}
-            </span>
-            <Button
-              type="button"
-              variant="secondary"
-              className="ml-auto rounded-full"
-              onClick={onPlayAround}
-              disabled={onPlayAround === undefined}
-            >
-              前後 3 秒を再生
-            </Button>
-            <span className="hidden rounded-full bg-white/15 px-3 py-2 text-sm md:inline-flex" aria-label="CM自動スキップは編集中に停止">
-              CM を飛ばさない（編集中）
-            </span>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
   return (
     <div
       className="relative w-full"
       data-testid="recording-player-shell"
-      onPointerMove={onControlsActivity}
-      onKeyDown={onShellKeyDown}
+      onPointerMove={chapterEditing ? undefined : onControlsActivity}
+      onKeyDown={chapterEditing ? undefined : onShellKeyDown}
     >
       <div
         ref={fullscreenRef}
@@ -412,6 +378,33 @@ export function RecordingPlaybackControls({
       >
         {video}
         {endCard}
+        {chapterEditing ? (
+          // 編集中は操作バーを簡素な 1 本に差し替える。**`<video>` は同じ場所に置いたままにする**
+          // （別の木に描くと作り直され、再生位置が 0 に戻って止まる）。
+          <div className="absolute inset-x-0 bottom-0 flex items-center gap-3 bg-gradient-to-t from-black/85 to-transparent px-3 pt-8 pb-2 text-white">
+            <Button type="button" variant="ghost" size="icon" className={ghost} aria-label={isPlaying ? '一時停止' : '再生'} onClick={onTogglePlay}>
+              {isPlaying ? <Pause /> : <Play />}
+            </Button>
+            <span data-testid="chapter-edit-playhead" className="font-mono text-sm">
+              {formatPlaybackTimeMs(seconds)}
+              <span className="hidden md:inline"> / {formatPlaybackTime(durationSeconds)}</span>
+            </span>
+            <Button
+              type="button"
+              variant="secondary"
+              className="ml-auto rounded-full"
+              onClick={onPlayAround}
+              disabled={onPlayAround === undefined}
+            >
+              <span className="md:hidden">前後 3 秒</span>
+              <span className="hidden md:inline">前後 3 秒を再生</span>
+            </Button>
+            <span className="hidden rounded-full bg-white/15 px-3 py-2 text-sm md:inline-flex" aria-label="CM自動スキップは編集中に停止">
+              CM を飛ばさない（編集中）
+            </span>
+          </div>
+        ) : (
+        <>
         {/*
           スマホ（md 未満）では枠全体に暗い幕を敷き、中央に前後チャプターと再生、右上に CC と
           歯車、下に時刻・✓・全画面とシークバーを置く。md 以上は下端の帯 1 本にまとめる。
@@ -922,6 +915,8 @@ export function RecordingPlaybackControls({
             onBlurCapture={onToolbarBlur}
           />
         )}
+        </>
+        )}
       </div>
     </div>
   )
@@ -1273,7 +1268,7 @@ function PlaybackSettingsMenu({
         onEnterChapterEditing?.()
       }}
     >
-      <SlidersHorizontal className={icon} aria-hidden />
+      <Scissors className={icon} aria-hidden />
       <span className="flex-1">チャプターを直す</span>
     </button>
   )

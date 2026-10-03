@@ -36,7 +36,9 @@ export function RecordingDetailPage() {
   const search = useSearch({ from: '/recordings/$id' })
   const navigate = useNavigate({ from: '/recordings/$id' })
   const idNum = Number(id)
-  const [chapterEditing, setChapterEditing] = useState(false)
+  // 編集モードに入った録画の id。録画を移ったら（次の回への遷移など）編集モードを抜ける。
+  const [editingId, setEditingId] = useState<number | null>(null)
+  const chapterEditing = editingId === idNum
   const [confirmChapterExit, setConfirmChapterExit] = useState(false)
   const [chapterEditorStatus, setChapterEditorStatus] = useState<ChapterEditorStatus>({
     source: 'auto',
@@ -53,7 +55,8 @@ export function RecordingDetailPage() {
   }, [])
   const navigationBlocker = useBlocker({
     shouldBlockFn: () => chapterEditing && chapterEditorStatus.dirty,
-    enableBeforeUnload: false,
+    // 未保存の下書きがあるときだけ、リロード・タブを閉じる操作にブラウザ標準の確認を出す。
+    enableBeforeUnload: () => chapterEditing && chapterEditorStatus.dirty,
     withResolver: true,
   })
   const navigationIsBlocked = navigationBlocker.status === 'blocked'
@@ -62,7 +65,7 @@ export function RecordingDetailPage() {
     setChapterEditorStatus({ source: 'auto', dirty: false, stale: false })
   }
   const leaveChapterEditMode = () => {
-    setChapterEditing(false)
+    setEditingId(null)
     setConfirmChapterExit(false)
     resetChapterEditStatus()
   }
@@ -171,7 +174,7 @@ export function RecordingDetailPage() {
         ) : recording ? <RecordingActions recording={recording} trash={trash} /> : undefined}
       >
         {chapterEditing && (confirmChapterExit || navigationIsBlocked) && (
-          <div className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-2 text-sm" role="alert" data-testid="chapter-exit-confirmation">
+          <div className="absolute inset-x-0 top-full flex flex-wrap items-center gap-2 border-b border-border bg-background px-4 py-2 text-sm shadow-md" role="alert" data-testid="chapter-exit-confirmation">
             <span>未保存の変更があります。変更を捨てて編集を終了しますか？</span>
             <Button type="button" size="sm" variant="destructive" onClick={navigationIsBlocked ? discardAndLeavePage : discardAndExitChapterEdit}>
               変更を捨てる
@@ -213,7 +216,7 @@ export function RecordingDetailPage() {
             chapterEditing={chapterEditing}
             onEnterChapterEditing={() => {
               setConfirmChapterExit(false)
-              setChapterEditing(true)
+              setEditingId(idNum)
             }}
             chapterEditorCommandsRef={chapterEditorCommandsRef}
             onChapterEditorStatusChange={onChapterEditorStatusChange}
