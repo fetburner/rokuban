@@ -145,7 +145,9 @@ function ChapterDraftEditor({
   }, [boundaries, selectedBoundary])
 
   const save = useCallback(async () => {
-    if (!dirty || stale || pending) return false
+    // 自動層は変更がなくても明示的に確認できる。空の層も「CM なしで確認する」
+    // 意図を持つため、ユーザーの操作で所有層へ引き取れるようにする。
+    if ((!dirty && source !== 'auto') || stale || pending) return false
     try {
       await onSave(draft, base.version)
       setAdoptNext(true)
@@ -153,7 +155,7 @@ function ChapterDraftEditor({
     } catch {
       return false
     }
-  }, [base.version, dirty, draft, onSave, pending, stale])
+  }, [base.version, dirty, draft, onSave, pending, source, stale])
 
   const reset = useCallback(async () => {
     if (pending) return false

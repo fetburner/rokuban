@@ -80,6 +80,7 @@ export function ProgramRow({
             program={program}
             serviceName={serviceName}
             siteName={siteName}
+            rowDescription={program.description ?? ''}
             skipIntent={skipIntent}
             overlaps={overlaps}
           />

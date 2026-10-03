@@ -120,7 +120,7 @@ function createFakeServer(options: {
   const encodePostResponse = options.encodePostResponse
   const encodePolicyResponse = options.encodePolicyResponse
   const playbackState = options.playbackState ?? {}
-  const chapters = options.chapters ?? {
+  let currentChapters: RecordingChapters = options.chapters ?? {
     version: 'chapters-v1',
     detectionPending: false,
     source: 'auto' as const,
@@ -239,7 +239,20 @@ function createFakeServer(options: {
     if (/^\/api\/recordings\/\d+\/chapters$/.test(url.pathname)) {
       return options.chaptersResponse
         ? options.chaptersResponse()
-        : Promise.resolve(jsonResponse(chapters))
+        : Promise.resolve(jsonResponse(currentChapters))
+    }
+    const chapterEditsMatch = /^\/api\/recordings\/(\d+)\/chapter-edits$/.exec(url.pathname)
+    if (chapterEditsMatch && method === 'PUT') {
+      const body = init?.body
+        ? (JSON.parse(String(init.body)) as { version: string; spans: RecordingChapters['spans'] })
+        : { version: '', spans: [] }
+      currentChapters = {
+        ...currentChapters,
+        source: 'user',
+        version: `user:${body.version}`,
+        spans: body.spans,
+      }
+      return Promise.resolve(jsonResponse(null, 204))
     }
     const playbackPositionMatch = /^\/api\/recordings\/(\d+)\/playback-position$/.exec(url.pathname)
     if (playbackPositionMatch && (method === 'PUT' || method === 'DELETE')) {
@@ -296,6 +309,10 @@ function createFakeServer(options: {
     /** setRecording はサーバー側の録画を差し替える（取り直しは呼び出し側が invalidate する）。 */
     setRecording: (next: Recording) => {
       recording = next
+    },
+    /** setChapters はサーバー側の層を差し替える（再取得は呼び出し側が invalidate する）。 */
+    setChapters: (next: RecordingChapters) => {
+      currentChapters = next
     },
     /** setChaseGone は追っかけのセッションを作れない状態（404）にする。 */
     setChaseGone: (gone: boolean) => {
@@ -2627,7 +2644,7 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
     expect(nextEditor).not.toHaveTextContent('サーバー側の内容が変わりました')
   })
 
-  describe('チャプター編集モードの出入りと離脱', () => {
+  describe('RecordingDetailPage チャプター編集モードの出入りと離脱', () => {
     const chapters = {
       version: 'chapters-v1',
       detectionPending: false,
@@ -2787,6 +2804,133 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
     expect(widthOf('/recordings/2')).toBe('100%')
     expect(widthOf('/recordings/3')).toBe('25%')
     expect(widthOf('/recordings/4')).toBeUndefined()
+  })
+})
+
+describe('RecordingDetailPage 自動チャプターの確認 (#1066)', () => {
+  const recordingWithEncodedAsset = () =>
+    sampleRecording({ encodedAssets: [{ profile: 'web', sizeBytes: 500 }] })
+  const enterEditing = async (user: ReturnType<typeof userEvent.setup>) => {
+    await screen.findByTestId('recording-player-frame')
+    await user.click(screen.getByRole('button', { name: '再生設定' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'チャプターを直す' }))
+    return screen.findByTestId('chapter-edit-layout')
+  }
+  const chapterEditPut = (fetchMock: ReturnType<typeof createFakeServer>['fetchMock']) =>
+    fetchMock.mock.calls.find(([input, init]) =>
+      new URL(String(input), 'http://localhost').pathname === '/api/recordings/3/chapter-edits' &&
+      init?.method === 'PUT',
+    )
+
+  it('未変更の自動層を確認し、GET の spans と version をそのまま PUT する', async () => {
+    const user = userEvent.setup()
+    const chapters: RecordingChapters = {
+      version: 'detected-v1',
+      detectionPending: false,
+      source: 'auto',
+      spans: [{ startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }],
+    }
+    const { fetchMock } = createFakeServer({ recording: recordingWithEncodedAsset(), chapters })
+    renderAt('/recordings/3')
+    await enterEditing(user)
+
+    const confirmButton = await screen.findByRole('button', { name: 'このまま確認' })
+    expect(confirmButton).toBeEnabled()
+    await user.click(confirmButton)
+
+    await waitFor(() => expect(screen.queryByTestId('chapter-edit-layout')).not.toBeInTheDocument())
+    const request = chapterEditPut(fetchMock)
+    expect(request).toBeDefined()
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({
+      version: 'detected-v1',
+      spans: [{ startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }],
+    })
+
+    const confirmedEditor = await enterEditing(user)
+    expect(within(confirmedEditor).getByTestId('chapter-source')).toHaveTextContent('確認済み')
+    await waitFor(() => expect(screen.getByRole('button', { name: '保存' })).toBeDisabled())
+  })
+
+  it('空の自動層も空の spans のまま確認できる', async () => {
+    const user = userEvent.setup()
+    const chapters: RecordingChapters = {
+      version: 'empty-auto-v1',
+      detectionPending: false,
+      source: 'auto',
+      spans: [],
+    }
+    const { fetchMock } = createFakeServer({ recording: recordingWithEncodedAsset(), chapters })
+    renderAt('/recordings/3')
+    await enterEditing(user)
+
+    await user.click(await screen.findByRole('button', { name: 'このまま確認' }))
+
+    await waitFor(() => expect(screen.queryByTestId('chapter-edit-layout')).not.toBeInTheDocument())
+    const request = chapterEditPut(fetchMock)
+    expect(request).toBeDefined()
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({ version: 'empty-auto-v1', spans: [] })
+  })
+
+  it('確認済みで未変更なら主ボタンを押せない', async () => {
+    const user = userEvent.setup()
+    const chapters: RecordingChapters = {
+      version: 'user-v1',
+      detectionPending: false,
+      source: 'user',
+      spans: [{ startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }],
+    }
+    createFakeServer({ recording: recordingWithEncodedAsset(), chapters })
+    renderAt('/recordings/3')
+    await enterEditing(user)
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '保存' })).toBeDisabled())
+    expect(screen.queryByRole('button', { name: 'このまま確認' })).not.toBeInTheDocument()
+  })
+
+  it('stale な下書きは主ボタンで保存できない', async () => {
+    const user = userEvent.setup()
+    const chapters: RecordingChapters = {
+      version: 'detected-v1',
+      detectionPending: false,
+      source: 'auto',
+      spans: [{ startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }],
+    }
+    const server = createFakeServer({ recording: recordingWithEncodedAsset(), chapters })
+    const { queryClient } = renderAt('/recordings/3')
+    const editor = await enterEditing(user)
+    const label = within(editor).getByLabelText('ラベル')
+    await user.clear(label)
+    await user.type(label, '手動修正')
+
+    server.setChapters({
+      ...chapters,
+      version: 'detected-v2',
+      spans: [{ startMs: 30_000, endMs: 40_000, label: 'CM', cut: true }],
+    })
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: getGetRecordingChaptersQueryKey(3) })
+    })
+
+    expect(await screen.findByTestId('chapter-stale')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: '保存' })).toBeDisabled())
+  })
+
+  it('検出中はチャプター編集へ入れず、確認ボタンも出さない', async () => {
+    const user = userEvent.setup()
+    const chapters: RecordingChapters = {
+      version: 'detected-v1',
+      detectionPending: true,
+      source: 'auto',
+      spans: [{ startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }],
+    }
+    createFakeServer({ recording: recordingWithEncodedAsset(), chapters })
+    renderAt('/recordings/3')
+    expect(await screen.findByTestId('chapter-detecting')).toBeInTheDocument()
+    await screen.findByTestId('recording-player-frame')
+    await user.click(screen.getByRole('button', { name: '再生設定' }))
+    expect(screen.queryByRole('menuitem', { name: 'チャプターを直す' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('chapter-edit-layout')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'このまま確認' })).not.toBeInTheDocument()
   })
 })
 

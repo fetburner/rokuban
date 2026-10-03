@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"testing"
 	"time"
@@ -28,40 +29,46 @@ const shelfBenchmarkDatabaseURL = "ROKUBAN_BENCH_DATABASE_URL"
 //   - 3,000 件（4.1%）: 録画中、media_asset なし
 //   - 2,000 件（2.7%）: ingest 待ち、media_asset なし
 //   - 1,000 件（1.4%）: failed、media_asset なし
-//   - 1,000 件（1.4%）: ごみ箱、active original あり
+//   - 1,000 件（1.4%）: ごみ箱。975 件は active original あり、25 件は purged で media_asset なし
 //   - 1,000 件（1.4%）: superseded、active original あり
 //
-// タイトルは 141 個の自動キーへ均等に分け、分類ルールを 50 本置く。各放送イベントは
-// 2 拠点にまたがる 2 行として作り、10 行に 1 行の割合で視聴済み印を付ける。
+// タイトルは 141 個の自動キーへ均等に分け、分類ルールを 50 本置く。ルールの値は
+// 自動キーと同じなので、recording_series の JOIN と評価結果を含むプランを測れる。
+// 未視聴の数え方を壊したら落ちるよう、放送イベントの重なりを seed に置く（詳細は seed の SQL コメント）。
+// 別 site の重複、event_id だけが違う重複、開始時刻だけが同じ別サービス、ごみ箱にしか行が無いイベント、
+// 削除済み / supersede 済み / purged の行に付いた watched 印である。
 //
-// 測る形は、本番の分割クエリ、統合集計、棚集計だけの基準、playable_assets を
-// MATERIALIZED にした比較形、逐次分割、旧形 2 種、live を MATERIALIZED にした形である。
+// 測る形は棚クエリ 6 つと予約一覧 2 つである。
 //
-//   - (a) 本番: 棚の sqlc クエリと未視聴件数の sqlc クエリを別接続で並列実行する
-//   - (c) 棚の集計に未視聴イベント数を統合する形
-//   - (a0) 棚の一覧集計だけの所要時間
-//   - (c-sequential) 同じ 2 クエリを単一接続で逐次実行する
+//   - (a) 本番: sqlc の ListRecordingShelves。生きている録画を母集団にして playable_assets を
+//     LEFT JOIN し、見られる件数（count FILTER）と latestStartAt（max）を同じ集計から返す形
 //   - (o) 旧形: 再生できる録画だけを INNER JOIN した母集団（playable を MATERIALIZED）。
 //     母集団が (a) と違うので比較用のリテラルとして持つ
 //   - (o') (o) から playable の MATERIALIZED を外した形。同じ母集団どうしの比較
-//   - (b') 棚クエリの live を MATERIALIZED にした形
+//   - (b') (a) の live を MATERIALIZED にした形
+//   - (c) (a) に放送イベント単位の未視聴件数を加えた形
+//   - (o_inline) (o) の recording_series を書き下した形。予算の 141 ms を測った形で、比の分母
+//   - (d) / (d') 予約一覧に実効シリーズを LEFT JOIN / 相関サブクエリで足す形。予約数と、予約に
+//     載らない EPG の行数を別々に動かす
 //
 // 各形を同じ接続で、形を交互に回すラウンド 10 回ずつ実行し（実行順の偏りを消す）、
-// 中央値を t.Logf に出す。(a) との比も出すが、判定には使わない。
+// 中央値を t.Logf に出す。比も出すが、判定には使わない。
 //
-// 判定しているのは結果の一致だけである。棚ごとに (a)/(c)/(c-sequential)/(b') の全列、
-// (a0) の未視聴数以外、(o') と (o) の全列が一致し、(a) の latest_start_at と
-// unwatched_count は別クエリで求めた期待値と一致させる。
+// 判定しているのは結果の一致だけである。棚ごとに (a) の playable_count と (o) の recording_count
+// （母集団が違うのでこの対応で見る）、(o') / (o_inline) と (o) の全列、(b') と (a) の全列が一致し、
+// (a) の latest_start_at は別クエリで求めた「その棚の生きている録画の program_start_at の最大値」と
+// 一致する。(a) の本番 SQL の max や FILTER を壊すとここで落ちる。
+// (c) は (a) の全列に加えて、独立に集計した「再生可能な live 放送イベントのうち、
+// 全録画行を通じて watched 印が無いイベント数」と一致し、合計は 64,600 である。
+// (d') は (d) と予約ごとの実効シリーズが一致する。
 //
-// 既知の 617 ms（旧 playable CTE の MATERIALIZED を外すと数倍遅い）は、現スキーマ・この合成
-// seed では再現しない（Apple M3 Max・PostgreSQL 16.2 で (o') / (o) は 0.94〜0.95）。
-// 棚サイズの偏り・複数の自動キーを 1 棚に併合する分類ルール・統計なしの状態でも再現せず、
-// 617 ms の再現条件は未検証である。したがって (o') が遅いことはアサートしない。
-// (o)/(o') は未視聴集計を含まないため、本番形と同機能の性能比較には使わない。
+// 既知の 617 ms（playable の MATERIALIZED を外すと数倍遅い）は、現スキーマ・この合成
+// seed では再現しない。617 ms の再現条件は未検証なので (o') が遅いことはアサートしない。
 //
-// 渡された DB はマイグレーション済みであることを前提とし、seed の冒頭で
-// recordings / media_assets / label_rules / label_rule_hits を無条件に TRUNCATE する
-// （空の DB では relation does not exist で落ちる）。必ず専用の DB を渡す。
+// 渡された DB はマイグレーション済みであることを前提とし、seed の冒頭で棚用の
+// recordings / media_assets / recording_watched / label_rules / label_rule_hits を無条件に TRUNCATE する。
+// 棚の測定の後、予約用の reservations / program_snapshots / epg_programs も TRUNCATE する。
+// CASCADE で program_intents / program_overrides も消える（必ず専用 DB を渡す）。
 func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 	benchURL := os.Getenv(shelfBenchmarkDatabaseURL)
 	if benchURL == "" {
@@ -90,29 +97,22 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 	}
 	defer conn.Release()
 	seedShelfBenchmark(t, conn.Conn())
-	parallelCountConn, err := pgx.Connect(ctx, benchURL)
-	if err != nil {
-		t.Fatalf("opening second connection for parallel shelf benchmark: %v", err)
-	}
-	defer func() { _ = parallelCountConn.Close(context.Background()) }()
 
 	queries := sqlcgen.New(conn.Conn())
-	parallelCountQueries := sqlcgen.New(parallelCountConn)
 	shapes := []shelfShape{
-		{name: "(a) production shelf + parallel unwatched queries", run: func() (map[string]shelfResult, error) {
-			return queryShelfAndSeparateUnwatchedSQLC(ctx, queries, parallelCountQueries)
-		}},
-		{name: "(c) integrated unwatched aggregation", run: func() (map[string]shelfResult, error) {
-			return queryShelves(ctx, conn.Conn(), integratedUnwatchedShelfQuery, true)
-		}},
-		{name: "(a0) shelf aggregation without unwatched count", run: func() (map[string]shelfResult, error) {
-			return queryShelves(ctx, conn.Conn(), productionWithoutUnwatchedQuery, true)
-		}},
-		{name: "(a0-materialized) shelf with MATERIALIZED playable_assets", run: func() (map[string]shelfResult, error) {
-			return queryShelves(ctx, conn.Conn(), shelfMaterializedAssetsQuery, true)
-		}},
-		{name: "(c-sequential) shelf + separate query sequentially", run: func() (map[string]shelfResult, error) {
-			return queryShelfAndSeparateUnwatched(ctx, conn.Conn())
+		{name: "(a) production ListRecordingShelves", run: func() (map[string]shelfResult, error) {
+			rows, err := queries.ListRecordingShelves(ctx)
+			if err != nil {
+				return nil, err
+			}
+			out := make(map[string]shelfResult, len(rows))
+			for _, r := range rows {
+				out[shelfKey(r.Value)] = shelfResult{
+					title: r.Title, recording: r.RecordingCount, playable: r.PlayableCount,
+					latest: r.LatestStartAt, representative: r.RepresentativeID,
+				}
+			}
+			return out, nil
 		}},
 		{name: "(o) previous playable-only shape", run: func() (map[string]shelfResult, error) {
 			return queryShelves(ctx, conn.Conn(), previousShelfQuery, false)
@@ -122,6 +122,12 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 		}},
 		{name: "(b') production shape with live MATERIALIZED", run: func() (map[string]shelfResult, error) {
 			return queryShelves(ctx, conn.Conn(), liveMaterializedShelfQuery, true)
+		}},
+		{name: "(c) production shelf with unwatched broadcast-event counts", run: func() (map[string]shelfResult, error) {
+			return queryUnwatchedShelves(ctx, conn.Conn())
+		}},
+		{name: "(o_inline) previous shape with the effective series written inline", run: func() (map[string]shelfResult, error) {
+			return queryShelves(ctx, conn.Conn(), previousInlineShelfQuery, false)
 		}},
 	}
 
@@ -148,36 +154,23 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 		t.Logf("%s: median %s", shape.name, medians[i])
 	}
 
-	production, integrated, productionWithoutUnwatched := results[0], results[1], results[2]
-	shelfWithMaterializedAssets, shelfAndSeparateUnwatched := results[3], results[4]
-	previous, previousUnmaterialized, liveMaterialized := results[5], results[6], results[7]
+	production, previous, previousUnmaterialized, liveMaterialized, withUnwatched, previousInline := results[0], results[1], results[2], results[3], results[4], results[5]
 	wantLatest, err := queryExpectedLatest(ctx, conn.Conn())
 	if err != nil {
 		t.Fatalf("computing expected latest_start_at: %v", err)
 	}
-	wantUnwatched, err := queryExpectedUnwatchedEvents(ctx, conn.Conn())
+	wantUnwatched, err := queryExpectedUnwatched(ctx, conn.Conn())
 	if err != nil {
-		t.Fatalf("computing expected unwatched event count: %v", err)
+		t.Fatalf("computing expected unwatched event counts: %v", err)
 	}
-	var playable, live int64
+	var playable, live, unwatched int64
 	for key, prod := range production {
-		if integrated[key] != prod {
-			t.Errorf("shelf %q: integrated candidate %+v != production %+v", key, integrated[key], prod)
-		}
-		if shelfAndSeparateUnwatched[key] != prod {
-			t.Errorf("shelf %q: separate-query candidate %+v != production %+v", key, shelfAndSeparateUnwatched[key], prod)
-		}
-		baseShape := prod
-		baseShape.unwatched = 0
-		if productionWithoutUnwatched[key] != baseShape {
-			t.Errorf("shelf %q: (a0) %+v != (a) without unwatched_count %+v", key, productionWithoutUnwatched[key], baseShape)
-		}
-		if shelfWithMaterializedAssets[key] != baseShape {
-			t.Errorf("shelf %q: (a0-materialized) %+v != baseline %+v", key, shelfWithMaterializedAssets[key], baseShape)
-		}
 		prev := previous[key]
 		if previousUnmaterialized[key] != prev {
 			t.Errorf("shelf %q: (o') %+v != (o) %+v", key, previousUnmaterialized[key], prev)
+		}
+		if previousInline[key] != prev {
+			t.Errorf("shelf %q: (o_inline) %+v != (o) %+v", key, previousInline[key], prev)
 		}
 		if prod.playable != prev.recording {
 			t.Errorf("shelf %q: (a) playable_count %d != (o) recording_count %d", key, prod.playable, prev.recording)
@@ -185,105 +178,85 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 		if want, ok := wantLatest[key]; !ok || !prod.latest.Equal(want) {
 			t.Errorf("shelf %q: (a) latest_start_at %v != expected %v", key, prod.latest, want)
 		}
-		if want, ok := wantUnwatched[key]; !ok || prod.unwatched != want {
-			t.Errorf("shelf %q: (a) unwatched_count %d != expected %d", key, prod.unwatched, want)
-		}
 		if liveMaterialized[key] != prod {
 			t.Errorf("shelf %q: (b') %+v != (a) %+v", key, liveMaterialized[key], prod)
 		}
+		gotUnwatched, ok := withUnwatched[key]
+		if !ok {
+			t.Errorf("(c) missing shelf %q", key)
+			continue
+		}
+		if gotUnwatched.title != prod.title || gotUnwatched.recording != prod.recording ||
+			gotUnwatched.playable != prod.playable || !gotUnwatched.latest.Equal(prod.latest) ||
+			gotUnwatched.representative != prod.representative {
+			t.Errorf("(c) shelf %q base fields %+v != (a) %+v", key, gotUnwatched, prod)
+		}
+		if gotUnwatched.unwatched < 0 || gotUnwatched.unwatched > gotUnwatched.playable {
+			t.Errorf("(c) shelf %q unwatched count %d is outside [0, playable %d]", key, gotUnwatched.unwatched, gotUnwatched.playable)
+		}
+		if want := wantUnwatched[key]; gotUnwatched.unwatched != want {
+			t.Errorf("(c) shelf %q unwatched count = %d, want %d", key, gotUnwatched.unwatched, want)
+		}
+		unwatched += gotUnwatched.unwatched
 		playable += prod.playable
 		live += prod.recording
 	}
 	if playable != 65_000 || live != 71_000 {
 		t.Errorf("production totals = playable %d / live %d, want 65000 / 71000", playable, live)
 	}
+	if unwatched != 64_600 {
+		t.Errorf("(c) total unwatched events = %d, want 64600", unwatched)
+	}
 
-	t.Logf("ratios to (a): (c)=%.2f, (a0)=%.2f, (a0-materialized)=%.2f, (c-sequential)=%.2f, (o)=%.2f, (o')=%.2f, (b')=%.2f; budget=200ms",
-		float64(medians[1])/float64(medians[0]), float64(medians[2])/float64(medians[0]), float64(medians[3])/float64(medians[0]), float64(medians[4])/float64(medians[0]), float64(medians[5])/float64(medians[0]), float64(medians[6])/float64(medians[0]), float64(medians[7])/float64(medians[0]))
+	// 予算 200 ms は、(o_inline) の形が 141 ms だった環境で決めた。そのため同じ回の (o_inline) との比
+	// 200/141 で読む。当時は 73,000 行すべてが再生可能だったが、この seed では 65,000 行である。
+	// この違いが比をどちらへ動かすかは未検証。
+	t.Logf("ratios to (a): (o)=%.2f, (o')=%.2f, (b')=%.2f; (o')/(o)=%.2f; (o)/(o_inline)=%.2f; (c)/(o_inline)=%.2f (budget 200/141=%.2f)",
+		float64(medians[1])/float64(medians[0]), float64(medians[2])/float64(medians[0]),
+		float64(medians[3])/float64(medians[0]), float64(medians[2])/float64(medians[1]),
+		float64(medians[1])/float64(medians[5]), float64(medians[4])/float64(medians[5]), 200.0/141.0)
 
-	measureReservationSeriesCosts(t, ctx, conn.Conn(), queries)
+	benchmarkReservationsWithSeries(t, ctx, conn.Conn())
 }
 
-func measureReservationSeriesCosts(t *testing.T, ctx context.Context, conn *pgx.Conn, queries *sqlcgen.Queries) {
+// benchmarkReservationsWithSeries は予約一覧に実効シリーズを足す 2 形を、予約数と EPG の行数を
+// 別々に動かして測る。epg_program_series は EPG の全行で label_rule_winner を評価しうるので、
+// 予約と無関係な EPG 行を足した点を含める。
+func benchmarkReservationsWithSeries(t *testing.T, ctx context.Context, conn *pgx.Conn) {
 	t.Helper()
-	if _, err := conn.Exec(ctx, `TRUNCATE reservations, program_snapshots, epg_programs RESTART IDENTITY CASCADE`); err != nil {
-		t.Fatalf("clearing reservation-series benchmark tables: %v", err)
+	points := []struct {
+		reservations, unrelatedEPG, nullSeries int
+	}{
+		{500, 0, 5},
+		{2_000, 0, 20},
+		{2_000, 134_000, 20},
 	}
-	seedReservationSeriesBenchmarkRows(t, ctx, conn, 1, 500)
-	analyzeReservationSeriesBenchmarkTables(t, ctx, conn)
-	measureListReservationsFull(t, ctx, queries, 500)
-
-	seedReservationSeriesBenchmarkRows(t, ctx, conn, 501, 2000)
-	analyzeReservationSeriesBenchmarkTables(t, ctx, conn)
-	measureListReservationsFull(t, ctx, queries, 2000)
-}
-
-func seedReservationSeriesBenchmarkRows(t *testing.T, ctx context.Context, conn *pgx.Conn, first, last int) {
-	t.Helper()
-	const insertEpg = `
-INSERT INTO epg_programs (
-  site, program_id, network_id, service_id, event_id, start_at, duration_ms, end_at,
-  is_free, name, description
-)
-SELECT 'default', 800000000 + i, 32678, 5168, i,
-       timestamptz '2020-01-01 00:00:00+00' + i * interval '1 minute', 1800000,
-       timestamptz '2020-01-01 00:00:00+00' + i * interval '1 minute' + interval '30 minutes',
-       true, format('シリーズ%s 第%s回', lpad((i % 141)::text, 3, '0'), i), ''
-FROM generate_series($1::integer, $2::integer) AS s(i)`
-	if _, err := conn.Exec(ctx, insertEpg, first, last); err != nil {
-		t.Fatalf("seeding EPG programs for reservation-series benchmark: %v", err)
-	}
-	const insertSnapshots = `
-INSERT INTO program_snapshots (
-  site, program_id, title, start_at, duration_ms, network_id, service_id,
-  channel_type, channel, event_id, service_name
-)
-SELECT 'default', 800000000 + i,
-       format('シリーズ%s 第%s回', lpad((i % 141)::text, 3, '0'), i),
-       timestamptz '2020-01-01 00:00:00+00' + i * interval '1 minute', 1800000,
-       32678, 5168, 'GR', '27', i, 'benchmark'
-FROM generate_series($1::integer, $2::integer) AS s(i)`
-	if _, err := conn.Exec(ctx, insertSnapshots, first, last); err != nil {
-		t.Fatalf("seeding program snapshots for reservation-series benchmark: %v", err)
-	}
-	const insertReservations = `
-INSERT INTO reservations (site, program_id, base)
-SELECT 'default', 800000000 + i, '{}'::jsonb
-FROM generate_series($1::integer, $2::integer) AS s(i)`
-	if _, err := conn.Exec(ctx, insertReservations, first, last); err != nil {
-		t.Fatalf("seeding reservations for reservation-series benchmark: %v", err)
-	}
-}
-
-func analyzeReservationSeriesBenchmarkTables(t *testing.T, ctx context.Context, conn *pgx.Conn) {
-	t.Helper()
-	for _, table := range []string{"epg_programs", "program_snapshots", "reservations"} {
-		if _, err := conn.Exec(ctx, "ANALYZE "+table); err != nil {
-			t.Fatalf("analyzing %s for reservation-series benchmark: %v", table, err)
+	seeded := 0
+	for _, p := range points {
+		if p.reservations > seeded {
+			seedReservationBenchmarkRange(t, conn, seeded+1, p.reservations)
+			seeded = p.reservations
 		}
-	}
-}
-
-func measureListReservationsFull(t *testing.T, ctx context.Context, queries *sqlcgen.Queries, wantRows int) {
-	t.Helper()
-	const rounds = 10
-	samples := make([]time.Duration, 0, rounds)
-	for round := 0; round < rounds; round++ {
-		started := time.Now()
-		rows, err := queries.ListReservationsFull(ctx)
-		elapsed := time.Since(started)
+		if p.unrelatedEPG > 0 {
+			seedUnrelatedEPGPrograms(t, conn, p.unrelatedEPG)
+		}
+		got, err := measureReservationsWithSeries(ctx, conn)
 		if err != nil {
-			t.Fatalf("ListReservationsFull round %d at %d rows: %v", round+1, wantRows, err)
+			t.Fatalf("measuring reservations at %d reservations / +%d EPG rows: %v", p.reservations, p.unrelatedEPG, err)
 		}
-		if len(rows) != wantRows {
-			t.Fatalf("ListReservationsFull row count = %d, want %d", len(rows), wantRows)
+		for i, shape := range got {
+			if shape.rows != p.reservations || shape.nullSeries != p.nullSeries {
+				t.Errorf("%s at %d reservations / +%d EPG rows returned %d rows with %d null series, want %d / %d",
+					reservationSeriesShapes[i].name, p.reservations, p.unrelatedEPG, shape.rows, shape.nullSeries, p.reservations, p.nullSeries)
+			}
+			if !slices.Equal(shape.series, got[0].series) {
+				t.Errorf("%s series differ from %s at %d reservations / +%d EPG rows",
+					reservationSeriesShapes[i].name, reservationSeriesShapes[0].name, p.reservations, p.unrelatedEPG)
+			}
+			t.Logf("%s, %d reservations, +%d unrelated EPG rows: median %s (null series %d)",
+				reservationSeriesShapes[i].name, p.reservations, p.unrelatedEPG, shape.median, shape.nullSeries)
 		}
-		if len(rows) > 0 && rows[0].Series == nil {
-			t.Fatalf("ListReservationsFull row %d has null series, want a derived series", rows[0].ProgramSnapshot.ProgramID)
-		}
-		samples = append(samples, elapsed)
 	}
-	t.Logf("(d) ListReservationsFull with %d reservations: median %s", wantRows, median(samples))
 }
 
 type shelfShape struct {
@@ -292,7 +265,7 @@ type shelfShape struct {
 }
 
 // shelfResult は 1 棚ぶんの結果で、形の間で全列を比較する。旧形（playable のみ）は
-// recording だけを持ち、playable / unwatched / latest は本番形だけが埋める。
+// recording だけを持ち、playable / latest は本番形だけが埋める。
 type shelfResult struct {
 	title          string
 	recording      int64
@@ -327,33 +300,46 @@ GROUP BY rs.value`)
 	return out, rows.Err()
 }
 
-func queryExpectedUnwatchedEvents(ctx context.Context, conn *pgx.Conn) (map[string]int64, error) {
+func queryExpectedUnwatched(ctx context.Context, conn *pgx.Conn) (map[string]int64, error) {
 	rows, err := conn.Query(ctx, `
-SELECT rs.value,
-       count(DISTINCT (r.network_id, r.service_id, r.program_start_at))
-FROM recordings r
-JOIN recording_series rs ON rs.recording_id = r.id
-WHERE r.deleted_at IS NULL
-  AND r.superseded_at IS NULL
-  AND NOT EXISTS (
-      SELECT 1
-      FROM recording_watched w
-      JOIN recordings watched_recording ON watched_recording.id = w.recording_id
-      WHERE watched_recording.network_id = r.network_id
-        AND watched_recording.service_id = r.service_id
-        AND watched_recording.program_start_at = r.program_start_at
-  )
-GROUP BY rs.value`)
+WITH playable_events AS (
+    SELECT DISTINCT rs.value, r.network_id, r.service_id, r.program_start_at
+    FROM recordings r
+    JOIN recording_series rs ON rs.recording_id = r.id
+    WHERE r.deleted_at IS NULL
+      AND r.superseded_at IS NULL
+      AND EXISTS (
+          SELECT 1 FROM media_assets ma
+          WHERE ma.recording_id = r.id
+            AND ((ma.kind = 'original' AND ma.state <> 'deleted')
+              OR (ma.kind = 'encoded' AND ma.state = 'active'))
+      )
+)
+SELECT e.value, count(*)
+FROM playable_events e
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM recordings any_recording
+    JOIN recording_watched w ON w.recording_id = any_recording.id
+    WHERE any_recording.network_id = e.network_id
+      AND any_recording.service_id = e.service_id
+      AND any_recording.program_start_at = e.program_start_at
+)
+GROUP BY e.value`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := map[string]int64{}
 	for rows.Next() {
-		var v *string
+		var value pgtype.Text
 		var count int64
-		if err := rows.Scan(&v, &count); err != nil {
+		if err := rows.Scan(&value, &count); err != nil {
 			return nil, err
+		}
+		var v *string
+		if value.Valid {
+			v = &value.String
 		}
 		out[shelfKey(v)] = count
 	}
@@ -373,8 +359,8 @@ func median(samples []time.Duration) time.Duration {
 	return (s[len(s)/2-1] + s[len(s)/2]) / 2
 }
 
-// queryShelves は棚のクエリを実行して棚ごとの結果を返す。expanded は本番形と同じ列を持つ
-// (b') の結果を読む。
+// queryShelves は棚のクエリを実行して棚ごとの結果を返す。expanded は playable_count と
+// latest_start_at の列を持つ形（本番形の派生）を読む。
 func queryShelves(ctx context.Context, conn *pgx.Conn, query string, expanded bool) (map[string]shelfResult, error) {
 	rows, err := conn.Query(ctx, query)
 	if err != nil {
@@ -386,7 +372,7 @@ func queryShelves(ctx context.Context, conn *pgx.Conn, query string, expanded bo
 		var value pgtype.Text
 		var r shelfResult
 		if expanded {
-			err = rows.Scan(&value, &r.title, &r.playable, &r.recording, &r.unwatched, &r.latest, &r.representative)
+			err = rows.Scan(&value, &r.title, &r.playable, &r.recording, &r.latest, &r.representative)
 		} else {
 			err = rows.Scan(&value, &r.title, &r.recording, &r.representative)
 		}
@@ -402,119 +388,197 @@ func queryShelves(ctx context.Context, conn *pgx.Conn, query string, expanded bo
 	return out, rows.Err()
 }
 
-func queryShelfAndSeparateUnwatched(ctx context.Context, conn *pgx.Conn) (map[string]shelfResult, error) {
-	shelves, err := queryShelves(ctx, conn, productionWithoutUnwatchedQuery, true)
-	if err != nil {
-		return nil, err
-	}
-	counts, err := queryUnwatchedCounts(ctx, conn)
-	if err != nil {
-		return nil, err
-	}
-	return mergeUnwatchedCounts(shelves, counts)
-}
-
-func queryShelfAndSeparateUnwatchedSQLC(ctx context.Context, shelfQueries, countQueries *sqlcgen.Queries) (map[string]shelfResult, error) {
-	type shelfResultValue struct {
-		rows map[string]shelfResult
-		err  error
-	}
-	type countResultValue struct {
-		rows []sqlcgen.ListRecordingShelvesUnwatchedCountRow
-		err  error
-	}
-	shelfCh := make(chan shelfResultValue, 1)
-	countCh := make(chan countResultValue, 1)
-	go func() {
-		rows, err := shelfQueries.ListRecordingShelves(ctx)
-		if err != nil {
-			shelfCh <- shelfResultValue{err: err}
-			return
-		}
-		out := make(map[string]shelfResult, len(rows))
-		for _, row := range rows {
-			out[shelfKey(row.Value)] = shelfResult{
-				title: row.Title, recording: row.RecordingCount, playable: row.PlayableCount,
-				latest: row.LatestStartAt, representative: row.RepresentativeID,
-			}
-		}
-		shelfCh <- shelfResultValue{rows: out}
-	}()
-	go func() {
-		rows, err := countQueries.ListRecordingShelvesUnwatchedCount(ctx)
-		countCh <- countResultValue{rows: rows, err: err}
-	}()
-	shelves, counts := <-shelfCh, <-countCh
-	if shelves.err != nil {
-		return nil, shelves.err
-	}
-	if counts.err != nil {
-		return nil, counts.err
-	}
-	for _, row := range counts.rows {
-		key := shelfKey(row.Value)
-		shelf, ok := shelves.rows[key]
-		if !ok {
-			return nil, fmt.Errorf("unwatched query returned unknown shelf %q", key)
-		}
-		shelf.unwatched = row.UnwatchedCount
-		shelves.rows[key] = shelf
-	}
-	return shelves.rows, nil
-}
-
-func queryUnwatchedCounts(ctx context.Context, conn *pgx.Conn) (map[string]int64, error) {
-	rows, err := conn.Query(ctx, separateUnwatchedCountQuery)
+func queryUnwatchedShelves(ctx context.Context, conn *pgx.Conn) (map[string]shelfResult, error) {
+	rows, err := conn.Query(ctx, unwatchedShelfQuery)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	counts := map[string]int64{}
+	out := map[string]shelfResult{}
 	for rows.Next() {
 		var value pgtype.Text
-		var count int64
-		if err := rows.Scan(&value, &count); err != nil {
+		var r shelfResult
+		if err := rows.Scan(&value, &r.title, &r.playable, &r.recording, &r.unwatched, &r.latest, &r.representative); err != nil {
 			return nil, err
 		}
 		var v *string
 		if value.Valid {
 			v = &value.String
 		}
-		counts[shelfKey(v)] = count
+		out[shelfKey(v)] = r
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return counts, nil
+	return out, rows.Err()
 }
 
-func mergeUnwatchedCounts(shelves map[string]shelfResult, counts map[string]int64) (map[string]shelfResult, error) {
-	for key, count := range counts {
-		shelf, ok := shelves[key]
-		if !ok {
-			return nil, fmt.Errorf("unwatched query returned unknown shelf %q", key)
+func seedReservationBenchmarkRange(t *testing.T, conn *pgx.Conn, first, last int) {
+	t.Helper()
+	ctx := context.Background()
+	if first == 1 {
+		if _, err := conn.Exec(ctx, `
+TRUNCATE reservations, program_snapshots, epg_programs RESTART IDENTITY CASCADE;
+`, pgx.QueryExecModeSimpleProtocol); err != nil {
+			t.Fatalf("truncating reservation benchmark tables: %v", err)
 		}
-		shelf.unwatched = count
-		shelves[key] = shelf
 	}
-	return shelves, nil
+	if _, err := conn.Exec(ctx, `
+INSERT INTO program_snapshots (
+  site, program_id, title, start_at, duration_ms, network_id, service_id,
+  channel_type, channel, event_id, service_name
+)
+SELECT
+  'bench', i, format('シリーズ%s 第%s回', lpad(((i - 1) % 141)::text, 3, '0'), i),
+  timestamptz '2026-01-01 00:00:00+00' + i * interval '1 minute', 1800000,
+  32678, 5168, 'GR', '27', i, 'benchmark'
+FROM generate_series($1::integer, $2::integer) AS s(i);
+`, first, last); err != nil {
+		t.Fatalf("seeding program snapshots %d..%d: %v", first, last, err)
+	}
+
+	if _, err := conn.Exec(ctx, `
+INSERT INTO epg_programs (
+  site, program_id, network_id, service_id, event_id, start_at, duration_ms,
+  end_at, is_free, name
+)
+SELECT
+  'bench', i, 32678, 5168, i,
+  timestamptz '2026-01-01 00:00:00+00' + i * interval '1 minute', 1800000,
+  timestamptz '2026-01-01 00:00:00+00' + i * interval '1 minute' + interval '30 minutes',
+  true, format('シリーズ%s 第%s回', lpad(((i - 1) % 141)::text, 3, '0'), i)
+FROM generate_series($1::integer, $2::integer) AS s(i)
+WHERE i % 100 <> 0;
+`, first, last); err != nil {
+		t.Fatalf("seeding EPG programs %d..%d: %v", first, last, err)
+	}
+
+	if _, err := conn.Exec(ctx, `
+INSERT INTO reservations (site, program_id)
+SELECT 'bench', i FROM generate_series($1::integer, $2::integer) AS s(i);
+	`, first, last); err != nil {
+		t.Fatalf("seeding reservation benchmark rows %d..%d: %v", first, last, err)
+	}
+	if _, err := conn.Exec(ctx, "ANALYZE reservations, program_snapshots, epg_programs"); err != nil {
+		t.Fatalf("analyzing reservation benchmark tables: %v", err)
+	}
+}
+
+// seedUnrelatedEPGPrograms は予約に載らない EPG 行を足す。番組名は予約側と同じ 141 系列に散らす。
+func seedUnrelatedEPGPrograms(t *testing.T, conn *pgx.Conn, n int) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := conn.Exec(ctx, `
+INSERT INTO epg_programs (
+  site, program_id, network_id, service_id, event_id, start_at, duration_ms,
+  end_at, is_free, name
+)
+SELECT
+  'bench', 1000000 + i, 32678, 5169, i,
+  timestamptz '2026-01-01 00:00:00+00' + i * interval '1 minute', 1800000,
+  timestamptz '2026-01-01 00:00:00+00' + i * interval '1 minute' + interval '30 minutes',
+  true, format('シリーズ%s 第%s回', lpad(((i - 1) % 141)::text, 3, '0'), i)
+FROM generate_series(1, $1::integer) AS s(i);
+`, n); err != nil {
+		t.Fatalf("seeding %d unrelated EPG programs: %v", n, err)
+	}
+	if _, err := conn.Exec(ctx, "ANALYZE epg_programs"); err != nil {
+		t.Fatalf("analyzing epg_programs: %v", err)
+	}
+}
+
+// reservationSeriesShape は 1 形ぶんの測定結果である。series は予約一覧の順に並べた実効シリーズで、
+// 形どうしの一致を見る（NULL は空文字ではなく "<null>" にする）。
+type reservationSeriesShape struct {
+	median     time.Duration
+	rows       int
+	nullSeries int
+	series     []string
+}
+
+// measureReservationsWithSeries は reservationSeriesShapes を交互に 10 ラウンド回し、形ごとの中央値と
+// 最終ラウンドの結果を返す。ラウンド間で結果が変わったらエラーにする。
+func measureReservationsWithSeries(ctx context.Context, conn *pgx.Conn) ([]reservationSeriesShape, error) {
+	const rounds = 10
+	out := make([]reservationSeriesShape, len(reservationSeriesShapes))
+	samples := make([][]time.Duration, len(reservationSeriesShapes))
+	for round := 0; round < rounds; round++ {
+		for i, shape := range reservationSeriesShapes {
+			started := time.Now()
+			series, err := queryReservationSeries(ctx, conn, shape.query)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", shape.name, err)
+			}
+			samples[i] = append(samples[i], time.Since(started))
+			if round > 0 && !slices.Equal(series, out[i].series) {
+				return nil, fmt.Errorf("%s: result changed between rounds", shape.name)
+			}
+			out[i].series = series
+		}
+	}
+	for i := range out {
+		out[i].median = median(samples[i])
+		out[i].rows = len(out[i].series)
+		for _, v := range out[i].series {
+			if v == "<null>" {
+				out[i].nullSeries++
+			}
+		}
+	}
+	return out, nil
+}
+
+func queryReservationSeries(ctx context.Context, conn *pgx.Conn, query string) ([]string, error) {
+	rows, err := conn.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var series []string
+	for rows.Next() {
+		values, err := rows.Values()
+		if err != nil {
+			return nil, err
+		}
+		if len(values) != 24 {
+			return nil, fmt.Errorf("returned %d columns, want 24", len(values))
+		}
+		if values[23] == nil {
+			series = append(series, "<null>")
+		} else {
+			series = append(series, fmt.Sprint(values[23]))
+		}
+	}
+	return series, rows.Err()
 }
 
 func seedShelfBenchmark(t *testing.T, conn *pgx.Conn) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := conn.Exec(ctx, `
-TRUNCATE recording_watched, recordings, media_assets, label_rules, label_rule_hits RESTART IDENTITY CASCADE;
+TRUNCATE recordings, media_assets, recording_watched, label_rules, label_rule_hits RESTART IDENTITY CASCADE;
 
+WITH seed AS (
+  SELECT i,
+         CASE
+           WHEN i BETWEEN 1001 AND 1100 THEN i - 1000
+           WHEN i BETWEEN 1101 AND 1200 THEN i - 900
+           WHEN i BETWEEN 1201 AND 1250 THEN i - 1100
+           WHEN i BETWEEN 71001 AND 71900 THEN i - 71000
+           WHEN i BETWEEN 71901 AND 72000 THEN i - 70800
+           WHEN i BETWEEN 72001 AND 73000 THEN i - 71950
+           ELSE i
+         END AS event_index,
+         CASE WHEN i BETWEEN 1001 AND 1200 THEN 'secondary' ELSE 'default' END AS site,
+         CASE WHEN i BETWEEN 1201 AND 1250 THEN 5169 ELSE 5168 END AS service_id,
+         CASE WHEN i BETWEEN 1001 AND 1050 THEN 100000 ELSE 0 END AS event_id_offset
+  FROM generate_series(1, 73000) AS s(i)
+)
 INSERT INTO recordings (
   source, site, network_id, service_id, event_id, service_name, channel_type, channel,
-  title, program_start_at, program_duration_ms, status, deleted_at, superseded_at
+  title, program_start_at, program_duration_ms, status, deleted_at, superseded_at, purged_at
 )
 SELECT
-  'manual', CASE WHEN i % 2 = 0 THEN 'osaka' ELSE 'tokyo' END,
-  32678, 5168, (i + 1) / 2, 'benchmark', 'GR', '27',
-  format('シリーズ%s 第%s回', lpad((((i - 1) / 2) % 141)::text, 3, '0'), (i + 1) / 2),
-  timestamptz '2020-01-01 00:00:00+00' + ((i - 1) / 2) * interval '1 minute',
+  'manual', site, 32678, service_id, event_index + event_id_offset, 'benchmark', 'GR', '27',
+  format('シリーズ%s 第%s回', lpad(((event_index - 1) % 141)::text, 3, '0'), event_index),
+  timestamptz '2020-01-01 00:00:00+00' + event_index * interval '1 minute',
   1800000,
   CASE
     WHEN i <= 65000 THEN 'finished'
@@ -523,11 +587,9 @@ SELECT
     ELSE 'failed'
   END,
   CASE WHEN i BETWEEN 71001 AND 72000 THEN now() ELSE NULL END,
-  CASE WHEN i BETWEEN 72001 AND 73000 THEN now() ELSE NULL END
-FROM generate_series(1, 73000) AS s(i);
-
-INSERT INTO recording_watched (recording_id)
-SELECT id FROM recordings WHERE id % 10 = 0;
+  CASE WHEN i BETWEEN 72001 AND 73000 THEN now() ELSE NULL END,
+  CASE WHEN i BETWEEN 71001 AND 71025 THEN now() ELSE NULL END
+FROM seed;
 
 INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, state)
 SELECT
@@ -538,7 +600,7 @@ SELECT
   1,
   'active'
 FROM generate_series(1, 73000) AS s(i)
-WHERE i <= 65000 OR i BETWEEN 71001 AND 73000;
+WHERE i <= 65000 OR i BETWEEN 71026 AND 73000;
 
 INSERT INTO label_rules (key, value, keyword, priority)
 SELECT
@@ -547,6 +609,20 @@ SELECT
   format('シリーズ%s', lpad(i::text, 3, '0')),
   50 - i
 FROM generate_series(0, 49) AS s(i);
+
+-- Events 1..100 and 201..300 are present at two live sites. Watched marks on deleted and superseded rows
+-- cover events 1..100 and live marks cover 101..200, so 201..300 stay unwatched at both sites;
+-- counting rows instead of events double-counts them. The secondary rows for events 1..50 carry a
+-- different event_id, so keying by event_id loses their marks. Marks on rows 71001..71025 sit on
+-- purged rows without media. Service 5169 repeats the start times of events 101..150 unwatched, so
+-- dropping the service from the key borrows their marks. Deleted rows 71901..72000 are the only rows
+-- for events 1101..1200, so counting trash rows adds them.
+INSERT INTO recording_watched (recording_id)
+SELECT id
+FROM recordings
+WHERE id BETWEEN 101 AND 200
+   OR id BETWEEN 71001 AND 71050
+   OR id BETWEEN 72001 AND 72050;
 	`, pgx.QueryExecModeSimpleProtocol); err != nil {
 		t.Fatalf("seeding shelf benchmark: %v", err)
 	}
@@ -555,138 +631,41 @@ FROM generate_series(0, 49) AS s(i);
 		t.Fatalf("evaluating benchmark label rules: %v", err)
 	}
 	// VACUUM は暗黙のトランザクションになる複数文の送信では実行できないので 1 文ずつ送る。
-	for _, table := range []string{"recordings", "media_assets", "label_rules", "label_rule_hits"} {
+	for _, table := range []string{"recordings", "media_assets", "recording_watched", "label_rules", "label_rule_hits"} {
 		if _, err := conn.Exec(ctx, "VACUUM ANALYZE "+table); err != nil {
 			t.Fatalf("vacuum-analyzing %s: %v", table, err)
 		}
 	}
 }
 
-const separateUnwatchedCountQuery = `
-WITH live_events AS (
-    SELECT DISTINCT rs.value, r.network_id, r.service_id, r.program_start_at
-    FROM recordings r
-    JOIN recording_series rs ON rs.recording_id = r.id
-    WHERE r.deleted_at IS NULL
-      AND r.superseded_at IS NULL
-)
-SELECT le.value, count(*)::bigint
-FROM live_events le
-WHERE NOT EXISTS (
-    SELECT 1
-    FROM recordings watched_recording
-    JOIN recording_watched w ON w.recording_id = watched_recording.id
-    WHERE watched_recording.network_id = le.network_id
-      AND watched_recording.service_id = le.service_id
-      AND watched_recording.program_start_at = le.program_start_at
-)
-GROUP BY le.value
-`
-
-const integratedUnwatchedShelfQuery = `
+// previousInlineShelfQuery は (o) の recording_series ビューを、ビューと同じ COALESCE に書き下した形である。
+// 予算の 141 ms を測ったのはこの形なので、比の分母にだけ使う。本番は書き下さない。
+const previousInlineShelfQuery = `
 WITH playable_assets AS MATERIALIZED (
     SELECT DISTINCT ma.recording_id
     FROM media_assets ma
     WHERE (ma.kind = 'original' AND ma.state <> 'deleted')
        OR (ma.kind = 'encoded' AND ma.state = 'active')
 ),
-watched_events AS (
-    SELECT DISTINCT r.network_id, r.service_id, r.program_start_at
-    FROM recording_watched w
-    JOIN recordings r ON r.id = w.recording_id
-),
-live AS (
+playable AS MATERIALIZED (
     SELECT r.id,
            r.title,
            r.program_start_at,
-           r.network_id,
-           r.service_id,
-           rs.value,
-           pa.recording_id AS playable_recording_id,
-			we.network_id IS NULL AS unwatched
+           COALESCE(lr.value_key, r.series_key) AS value
     FROM recordings r
-    LEFT JOIN playable_assets pa ON pa.recording_id = r.id
-    JOIN recording_series rs ON rs.recording_id = r.id
-    LEFT JOIN watched_events we
-      ON we.network_id = r.network_id
-     AND we.service_id = r.service_id
-     AND we.program_start_at = r.program_start_at
+    JOIN playable_assets pa ON pa.recording_id = r.id
+    LEFT JOIN label_rule_hits h ON h.recording_id = r.id
+    LEFT JOIN label_rules lr ON lr.id = h.label_rule_id
     WHERE r.deleted_at IS NULL
       AND r.superseded_at IS NULL
 )
-SELECT l.value,
-       (array_agg(l.title ORDER BY l.program_start_at DESC, l.id DESC))[1]::text AS title,
-       count(*) FILTER (WHERE l.playable_recording_id IS NOT NULL) AS playable_count,
+SELECT p.value,
+       (array_agg(p.title ORDER BY p.program_start_at DESC, p.id DESC))[1]::text AS title,
        count(*) AS recording_count,
-       count(DISTINCT (l.network_id, l.service_id, l.program_start_at))
-           FILTER (WHERE l.unwatched)::bigint AS unwatched_count,
-       max(l.program_start_at) AS latest_start_at,
-       (array_agg(l.id ORDER BY l.program_start_at DESC, l.id DESC))[1]::bigint AS representative_id
-FROM live l
-GROUP BY l.value
-ORDER BY recording_count DESC, l.value ASC NULLS LAST
-`
-
-const productionWithoutUnwatchedQuery = `
-WITH playable_assets AS (
-    SELECT DISTINCT ma.recording_id
-    FROM media_assets ma
-    WHERE (ma.kind = 'original' AND ma.state <> 'deleted')
-       OR (ma.kind = 'encoded' AND ma.state = 'active')
-),
-live AS (
-    SELECT r.id,
-           r.title,
-           r.program_start_at,
-           rs.value,
-           pa.recording_id AS playable_recording_id
-    FROM recordings r
-    LEFT JOIN playable_assets pa ON pa.recording_id = r.id
-    JOIN recording_series rs ON rs.recording_id = r.id
-    WHERE r.deleted_at IS NULL
-      AND r.superseded_at IS NULL
-)
-SELECT l.value,
-       (array_agg(l.title ORDER BY l.program_start_at DESC, l.id DESC))[1]::text AS title,
-       count(*) FILTER (WHERE l.playable_recording_id IS NOT NULL) AS playable_count,
-       count(*) AS recording_count,
-       0::bigint AS unwatched_count,
-       max(l.program_start_at) AS latest_start_at,
-       (array_agg(l.id ORDER BY l.program_start_at DESC, l.id DESC))[1]::bigint AS representative_id
-FROM live l
-GROUP BY l.value
-ORDER BY recording_count DESC, l.value ASC NULLS LAST
-`
-
-const shelfMaterializedAssetsQuery = `
-WITH playable_assets AS MATERIALIZED (
-    SELECT DISTINCT ma.recording_id
-    FROM media_assets ma
-    WHERE (ma.kind = 'original' AND ma.state <> 'deleted')
-       OR (ma.kind = 'encoded' AND ma.state = 'active')
-),
-live AS (
-    SELECT r.id,
-           r.title,
-           r.program_start_at,
-           rs.value,
-           pa.recording_id AS playable_recording_id
-    FROM recordings r
-    LEFT JOIN playable_assets pa ON pa.recording_id = r.id
-    JOIN recording_series rs ON rs.recording_id = r.id
-    WHERE r.deleted_at IS NULL
-      AND r.superseded_at IS NULL
-)
-SELECT l.value,
-       (array_agg(l.title ORDER BY l.program_start_at DESC, l.id DESC))[1]::text AS title,
-       count(*) FILTER (WHERE l.playable_recording_id IS NOT NULL) AS playable_count,
-       count(*) AS recording_count,
-       0::bigint AS unwatched_count,
-       max(l.program_start_at) AS latest_start_at,
-       (array_agg(l.id ORDER BY l.program_start_at DESC, l.id DESC))[1]::bigint AS representative_id
-FROM live l
-GROUP BY l.value
-ORDER BY recording_count DESC, l.value ASC NULLS LAST
+       (array_agg(p.id ORDER BY p.program_start_at DESC, p.id DESC))[1]::bigint AS representative_id
+FROM playable p
+GROUP BY p.value
+ORDER BY recording_count DESC, p.value ASC NULLS LAST
 `
 
 const previousShelfQuery = `
@@ -750,12 +729,43 @@ WITH playable_assets AS MATERIALIZED (
     WHERE (ma.kind = 'original' AND ma.state <> 'deleted')
        OR (ma.kind = 'encoded' AND ma.state = 'active')
 ),
-watched_events AS (
-    SELECT DISTINCT r.network_id, r.service_id, r.program_start_at
-    FROM recording_watched w
-    JOIN recordings r ON r.id = w.recording_id
-),
 live AS MATERIALIZED (
+    SELECT r.id,
+           r.title,
+           r.program_start_at,
+           rs.value,
+           pa.recording_id AS playable_recording_id
+    FROM recordings r
+    LEFT JOIN playable_assets pa ON pa.recording_id = r.id
+    JOIN recording_series rs ON rs.recording_id = r.id
+    WHERE r.deleted_at IS NULL
+      AND r.superseded_at IS NULL
+)
+SELECT l.value,
+       (array_agg(l.title ORDER BY l.program_start_at DESC, l.id DESC))[1]::text AS title,
+       count(*) FILTER (WHERE l.playable_recording_id IS NOT NULL) AS playable_count,
+       count(*) AS recording_count,
+       max(l.program_start_at) AS latest_start_at,
+       (array_agg(l.id ORDER BY l.program_start_at DESC, l.id DESC))[1]::bigint AS representative_id
+FROM live l
+GROUP BY l.value
+ORDER BY recording_count DESC, l.value ASC NULLS LAST
+`
+
+const unwatchedShelfQuery = `
+WITH playable_assets AS MATERIALIZED (
+    SELECT DISTINCT ma.recording_id
+    FROM media_assets ma
+    WHERE (ma.kind = 'original' AND ma.state <> 'deleted')
+       OR (ma.kind = 'encoded' AND ma.state = 'active')
+),
+watched_events AS MATERIALIZED (
+    -- 印を束ねる側は status を絞らない。ごみ箱 / supersede 済みの行の印も読む。
+    SELECT DISTINCT r.network_id, r.service_id, r.program_start_at
+    FROM recordings r
+    JOIN recording_watched w ON w.recording_id = r.id
+),
+live AS (
     SELECT r.id,
            r.title,
            r.program_start_at,
@@ -763,7 +773,7 @@ live AS MATERIALIZED (
            r.service_id,
            rs.value,
            pa.recording_id AS playable_recording_id,
-           we.network_id IS NULL AS unwatched
+           we.network_id AS watched_network_id
     FROM recordings r
     LEFT JOIN playable_assets pa ON pa.recording_id = r.id
     JOIN recording_series rs ON rs.recording_id = r.id
@@ -779,10 +789,50 @@ SELECT l.value,
        count(*) FILTER (WHERE l.playable_recording_id IS NOT NULL) AS playable_count,
        count(*) AS recording_count,
        count(DISTINCT (l.network_id, l.service_id, l.program_start_at))
-           FILTER (WHERE l.unwatched)::bigint AS unwatched_count,
+           FILTER (WHERE l.playable_recording_id IS NOT NULL AND l.watched_network_id IS NULL) AS unwatched_count,
        max(l.program_start_at) AS latest_start_at,
        (array_agg(l.id ORDER BY l.program_start_at DESC, l.id DESC))[1]::bigint AS representative_id
 FROM live l
 GROUP BY l.value
 ORDER BY recording_count DESC, l.value ASC NULLS LAST
 `
+
+// reservationsWithSeriesTemplate は sqlc の ListReservationsFull と同じ投影・結合を保ち、
+// epg_program_series の値だけを追加で読む測定用クエリである。EPG から消失しても snapshot が
+// 残っている予約は一覧に残り、series は NULL になる。
+const reservationsWithSeriesTemplate = `
+SELECT r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.dedup_match_recording_id, r.dedup_similarity,
+       s.site, s.program_id, s.title, s.start_at, s.duration_ms, s.network_id, s.service_id, s.channel_type, s.channel, s.updated_at, s.event_id, s.service_name,
+       i.action AS intent_action, o.overrides AS overrides,
+       (EXISTS (
+           SELECT 1 FROM never_scheduled_events nse
+           WHERE nse.site = r.site
+             AND nse.network_id = s.network_id
+             AND nse.service_id = s.service_id
+             AND nse.event_id = s.event_id
+       ) AND NOT EXISTS (
+           SELECT 1 FROM recordings rec
+           WHERE rec.site = r.site
+             AND rec.network_id = s.network_id
+             AND rec.service_id = s.service_id
+             AND rec.event_id = s.event_id
+       ))::boolean AS never_recorded,
+       %s AS series
+FROM reservations r
+JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
+LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
+LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
+%sORDER BY r.site, s.start_at
+`
+
+// reservationSeriesShapes は実効シリーズの読み方 2 形である。JOIN 形はビューを予約で絞れず、
+// EPG の全行で label_rule_winner を評価しうる。相関サブクエリ形は予約 1 件ごとに
+// (site, program_id) でビューを引く。
+var reservationSeriesShapes = []struct {
+	name, query string
+}{
+	{"(d) ListReservationsFull LEFT JOIN epg_program_series", fmt.Sprintf(reservationsWithSeriesTemplate,
+		"eps.value", "LEFT JOIN epg_program_series eps ON eps.site = r.site AND eps.program_id = r.program_id\n")},
+	{"(d') ListReservationsFull with correlated epg_program_series", fmt.Sprintf(reservationsWithSeriesTemplate,
+		"(SELECT eps.value FROM epg_program_series eps WHERE eps.site = r.site AND eps.program_id = r.program_id)", "")},
+}

@@ -1320,7 +1320,7 @@ export const ListRecordingShelvesResponseItem = zod.object({
   "title": zod.string().describe('代表の録画の生のタイトル（シリーズ名の下の副見出しに使う）。'),
   "count": zod.int().describe('生きている録画の件数（録画中・取り込み待ち・失敗を含む）。'),
   "playableCount": zod.int().describe('この棚のうち、再生できる録画の件数。'),
-  "unwatchedCount": zod.int().describe('未視聴の放送イベント数。同じ (networkId, serviceId, startAt) は一つに数え、\nごみ箱・supersede 済みを含むいずれかの録画に視聴済み印があれば除外する。\n'),
+  "unwatchedCount": zod.int().describe('未視聴の放送イベント数。再生できる生きた録画を (networkId, serviceId, startAt) で束ねて数え、\nごみ箱・supersede 済み・purge 済みを含むいずれかの録画に視聴済み印があれば除外する。\n'),
   "latestStartAt": zod.iso.datetime({"offset":true}).describe('シリーズ内で最も新しい録画の番組開始時刻。常に UTC。'),
   "representativeId": zod.int().describe('代表の録画の id。棚から録画一覧・番組ハブへ渡す起点。')
 })

@@ -159,12 +159,11 @@ SELECT r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.de
              AND rec.service_id = s.service_id
              AND rec.event_id = s.event_id
        ))::boolean AS never_recorded,
-       eps.value AS series
+       (SELECT eps.value FROM epg_program_series eps WHERE eps.site = r.site AND eps.program_id = r.program_id) AS series
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
-LEFT JOIN epg_program_series eps ON eps.site = r.site AND eps.program_id = r.program_id
 WHERE r.site = $1 AND r.program_id = $2
 `
 
@@ -372,12 +371,11 @@ SELECT r.site, r.program_id, r.rule_id, r.base, r.created_at, r.updated_at, r.de
              AND rec.service_id = s.service_id
              AND rec.event_id = s.event_id
        ))::boolean AS never_recorded,
-       eps.value AS series
+       (SELECT eps.value FROM epg_program_series eps WHERE eps.site = r.site AND eps.program_id = r.program_id) AS series
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
-LEFT JOIN epg_program_series eps ON eps.site = r.site AND eps.program_id = r.program_id
 ORDER BY r.site, s.start_at
 `
 

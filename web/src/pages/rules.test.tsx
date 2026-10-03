@@ -214,7 +214,7 @@ function renderPage() {
 }
 
 async function findCreateRuleButton() {
-  const content = await screen.findByTestId('bounded-page-content')
+  const content = await screen.findByTestId('page-content')
   return within(content).findByRole('button', { name: 'ルールを作成' })
 }
 

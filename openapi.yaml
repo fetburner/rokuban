@@ -3555,8 +3555,8 @@ components:
         unwatchedCount:
           type: integer
           description: |
-            未視聴の放送イベント数。同じ (networkId, serviceId, startAt) は一つに数え、
-            ごみ箱・supersede 済みを含むいずれかの録画に視聴済み印があれば除外する。
+            未視聴の放送イベント数。再生できる生きた録画を (networkId, serviceId, startAt) で束ねて数え、
+            ごみ箱・supersede 済み・purge 済みを含むいずれかの録画に視聴済み印があれば除外する。
         latestStartAt:
           type: string
           format: date-time

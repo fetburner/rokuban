@@ -62,6 +62,18 @@ VALUES ($1, 'original', $2, 1, 'active')`, id, fmt.Sprintf("test/orig-%d", id));
 	return id
 }
 
+// seedPlayableOpts は opts どおりの録画に active な原本を付ける。
+func seedPlayableOpts(t *testing.T, pool *pgxpool.Pool, o seedRecordingOpts) int64 {
+	t.Helper()
+	id := seedRecordingFull(t, pool, o)
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, state)
+VALUES ($1, 'original', $2, 1, 'active')`, id, fmt.Sprintf("test/orig-%d", id)); err != nil {
+		t.Fatalf("seeding original media asset for %d: %v", id, err)
+	}
+	return id
+}
+
 func getShelves(t *testing.T, srvURL string, query url.Values) []RecordingShelf {
 	t.Helper()
 	var got []RecordingShelf
@@ -155,10 +167,10 @@ func TestListRecordingShelves_CountsUnwatchedBroadcastEvents(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 
 	// 同じ放送を 2 拠点で録り、片方に視聴済み印を付ける。
-	watched := seedRecordingFull(t, pool, seedRecordingOpts{
+	watched := seedPlayableOpts(t, pool, seedRecordingOpts{
 		title: "アニメ　作品X　第1話", start: base, status: "finished", eventID: 1, site: "tokyo",
 	})
-	seedRecordingFull(t, pool, seedRecordingOpts{
+	seedPlayableOpts(t, pool, seedRecordingOpts{
 		title: "アニメ　作品X　第1話", start: base, status: "finished", eventID: 1, site: "osaka",
 	})
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_watched (recording_id) VALUES ($1)`, watched); err != nil {
@@ -166,14 +178,14 @@ func TestListRecordingShelves_CountsUnwatchedBroadcastEvents(t *testing.T) {
 	}
 
 	// もう 1 放送は 2 拠点で録るが印を付けない。2 行ではなく 1 件と数える。
-	secondEpisode := seedRecordingFull(t, pool, seedRecordingOpts{
+	secondEpisode := seedPlayableOpts(t, pool, seedRecordingOpts{
 		title: "アニメ　作品X　第2話", start: base.Add(time.Hour), status: "finished", eventID: 2, site: "tokyo",
 	})
-	seedRecordingFull(t, pool, seedRecordingOpts{
+	seedPlayableOpts(t, pool, seedRecordingOpts{
 		title: "アニメ　作品X　第2話", start: base.Add(time.Hour), status: "finished", eventID: 2, site: "osaka",
 	})
 	// 視聴済み印が supersede 済み録画にだけ残る場合も、別拠点の生きた録画を除外する。
-	supersededWatched := seedRecordingFull(t, pool, seedRecordingOpts{
+	supersededWatched := seedPlayableOpts(t, pool, seedRecordingOpts{
 		title: "アニメ　作品X　第3話", start: base.Add(2 * time.Hour), status: "finished", eventID: 3, site: "tokyo",
 	})
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_watched (recording_id) VALUES ($1)`, supersededWatched); err != nil {
@@ -182,16 +194,38 @@ func TestListRecordingShelves_CountsUnwatchedBroadcastEvents(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE recordings SET superseded_at = now() WHERE id = $1`, supersededWatched); err != nil {
 		t.Fatalf("superseding watched recording: %v", err)
 	}
-	thirdEpisode := seedRecordingFull(t, pool, seedRecordingOpts{
+	thirdEpisode := seedPlayableOpts(t, pool, seedRecordingOpts{
 		title: "アニメ　作品X　第3話", start: base.Add(2 * time.Hour), status: "finished", eventID: 3, site: "osaka",
 	})
 
 	// 同時刻でも network_id / service_id が違えば別の放送イベント。
-	networkEvent := seedRecordingFull(t, pool, seedRecordingOpts{
-		title: "アニメ　作品X　第4話", start: base.Add(time.Hour), status: "finished", eventID: 2, networkID: 32679,
+	networkEvent := seedPlayableOpts(t, pool, seedRecordingOpts{
+		title: "アニメ　作品X　第4話", start: base, status: "finished", eventID: 2, networkID: 32679,
 	})
-	serviceEvent := seedRecordingFull(t, pool, seedRecordingOpts{
-		title: "アニメ　作品X　第5話", start: base.Add(time.Hour), status: "finished", eventID: 2, serviceID: 5169,
+	serviceEvent := seedPlayableOpts(t, pool, seedRecordingOpts{
+		title: "アニメ　作品X　第5話", start: base, status: "finished", eventID: 2, serviceID: 5169,
+	})
+
+	// 再生できない生きた録画（録画中）は未視聴に数えない。
+	seedRecordingFull(t, pool, seedRecordingOpts{
+		title: "アニメ　作品X　第6話", start: base.Add(3 * time.Hour), status: "recording", eventID: 6,
+	})
+	// 印が purged（ごみ箱 + 原本 deleted）の行にだけ残る放送も、生きた別拠点の録画を除外する。
+	purgedWatched := seedRecordingFull(t, pool, seedRecordingOpts{
+		title: "アニメ　作品X　第7話", start: base.Add(4 * time.Hour), status: "finished", eventID: 7, site: "tokyo",
+	})
+	if _, err := pool.Exec(ctx, `INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, state)
+VALUES ($1, 'original', 'test/purged', 1, 'deleted')`, purgedWatched); err != nil {
+		t.Fatalf("seeding purged asset: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_watched (recording_id) VALUES ($1)`, purgedWatched); err != nil {
+		t.Fatalf("marking purged broadcast watched: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET deleted_at = now() WHERE id = $1`, purgedWatched); err != nil {
+		t.Fatalf("purging watched recording: %v", err)
+	}
+	purgedLive := seedPlayableOpts(t, pool, seedRecordingOpts{
+		title: "アニメ　作品X　第7話", start: base.Add(4 * time.Hour), status: "finished", eventID: 7, site: "osaka",
 	})
 
 	shelves := getShelves(t, srv.URL, url.Values{})
@@ -221,7 +255,7 @@ func TestListRecordingShelves_CountsUnwatchedBroadcastEvents(t *testing.T) {
 	}
 
 	// 全イベントに視聴済み印を付けても、棚は残り件数だけが 0 になる。
-	for _, id := range []int64{watched, secondEpisode, thirdEpisode, networkEvent, serviceEvent} {
+	for _, id := range []int64{watched, secondEpisode, thirdEpisode, networkEvent, serviceEvent, purgedLive} {
 		if _, err := pool.Exec(ctx, `INSERT INTO recording_watched (recording_id) VALUES ($1)`, id); err != nil {
 			t.Fatalf("marking event recording %d watched: %v", id, err)
 		}

@@ -65,12 +65,11 @@ SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS o
              AND rec.service_id = s.service_id
              AND rec.event_id = s.event_id
        ))::boolean AS never_recorded,
-       eps.value AS series
+       (SELECT eps.value FROM epg_program_series eps WHERE eps.site = r.site AND eps.program_id = r.program_id) AS series
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
-LEFT JOIN epg_program_series eps ON eps.site = r.site AND eps.program_id = r.program_id
 WHERE r.site = $1 AND r.program_id = $2;
 
 -- never_recorded は GetReservationFullBySiteAndProgramID と同じ導出（コメント参照）。
@@ -94,12 +93,11 @@ SELECT sqlc.embed(r), sqlc.embed(s), i.action AS intent_action, o.overrides AS o
              AND rec.service_id = s.service_id
              AND rec.event_id = s.event_id
        ))::boolean AS never_recorded,
-       eps.value AS series
+       (SELECT eps.value FROM epg_program_series eps WHERE eps.site = r.site AND eps.program_id = r.program_id) AS series
 FROM reservations r
 JOIN program_snapshots s ON s.site = r.site AND s.program_id = r.program_id
 LEFT JOIN program_intents i ON i.site = r.site AND i.program_id = r.program_id
 LEFT JOIN program_overrides o ON o.site = r.site AND o.program_id = r.program_id
-LEFT JOIN epg_program_series eps ON eps.site = r.site AND eps.program_id = r.program_id
 ORDER BY r.site, s.start_at;
 
 -- 同期対象の「候補」を返すクエリ（issue #54）。

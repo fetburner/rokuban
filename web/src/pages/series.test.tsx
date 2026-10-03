@@ -74,7 +74,7 @@ describe('SeriesPage', () => {
     stubApi(shelves)
     renderInRouter(<SeriesPage />, { path: '/series' })
 
-    const content = await screen.findByTestId('bounded-page-content')
+    const content = await screen.findByTestId('page-content')
     expect(await within(content).findByText('単発')).toBeInTheDocument()
     expect(await within(content).findByText('作品X')).toBeInTheDocument()
     expect(within(content).getAllByTestId('series-shelf-meta').map((meta) => meta.textContent)).toContain(
@@ -87,7 +87,7 @@ describe('SeriesPage', () => {
     stubApi(shelves)
     renderInRouter(<SeriesPage />, { path: '/series' })
 
-    const content = await screen.findByTestId('bounded-page-content')
+    const content = await screen.findByTestId('page-content')
     await within(content).findByRole('link', { name: 'NHK高校講座のシリーズ' })
     expect(within(content).getByRole('link', { name: 'NHK高校講座のシリーズ' })).toHaveAttribute(
       'href',
@@ -105,7 +105,7 @@ describe('SeriesPage', () => {
     ])
     renderInRouter(<SeriesPage />, { path: '/series' })
 
-    const content = await screen.findByTestId('bounded-page-content')
+    const content = await screen.findByTestId('page-content')
     await within(content).findByRole('link', { name: 'アニメAのシリーズ' })
     const order = () =>
       within(content)
@@ -124,7 +124,7 @@ describe('SeriesPage', () => {
     stubApi(shelves, [rule])
     renderInRouter(<SeriesPage />, { path: '/series' })
 
-    const content = await screen.findByTestId('bounded-page-content')
+    const content = await screen.findByTestId('page-content')
     const manual = await within(content).findByRole('link', { name: 'NHK高校講座のシリーズ' })
     expect(within(manual).getByText('手動')).toBeInTheDocument()
     expect(within(content).getByRole('link', { name: '作品Xのシリーズ' })).not.toHaveTextContent('手動')
@@ -135,7 +135,7 @@ describe('SeriesPage', () => {
     stubApi(shelves, [{ ...rule, value: 'NHK高校講座 数学I', valueKey: 'NHK高校講座' }])
     renderInRouter(<SeriesPage />, { path: '/series' })
 
-    const content = await screen.findByTestId('bounded-page-content')
+    const content = await screen.findByTestId('page-content')
     const manual = await within(content).findByRole('link', { name: 'NHK高校講座のシリーズ' })
     expect(within(manual).getByText('手動')).toBeInTheDocument()
     expect(within(content).queryByText(/数学I/)).not.toBeInTheDocument()
@@ -146,7 +146,7 @@ describe('SeriesPage', () => {
     stubApi(shelves, [{ ...rule, value: 'NHK高校講座', valueKey: '別のキー' }])
     renderInRouter(<SeriesPage />, { path: '/series' })
 
-    const content = await screen.findByTestId('bounded-page-content')
+    const content = await screen.findByTestId('page-content')
     const link = await within(content).findByRole('link', { name: 'NHK高校講座のシリーズ' })
     // ルールの取得が終わってから否定を確かめる。
     await waitFor(() =>
@@ -163,7 +163,7 @@ describe('SeriesPage', () => {
     stubApi(shelves)
     renderInRouter(<SeriesPage />, { path: '/series' })
 
-    const content = await screen.findByTestId('bounded-page-content')
+    const content = await screen.findByTestId('page-content')
     await within(content).findByRole('link', { name: '単発のシリーズ' })
     await user.click(screen.getByRole('button', { name: 'カード表示' }))
     expect(localStorage.getItem('rokuban:recordings:view')).toBe('card')
@@ -174,7 +174,7 @@ describe('SeriesPage', () => {
     stubApi(shelves)
     renderInRouter(<SeriesPage />, { path: '/series' })
 
-    const content = await screen.findByTestId('bounded-page-content')
+    const content = await screen.findByTestId('page-content')
     await within(content).findByRole('link', { name: '単発のシリーズ' })
     await user.type(screen.getByLabelText('シリーズを絞り込む'), '作品X')
     expect(within(content).getByText('作品X')).toBeInTheDocument()

@@ -1352,8 +1352,25 @@ func (ls *LiveStreamer) OriginalVODPlaylist(w http.ResponseWriter, r *http.Reque
 	s, exists := ls.getSessionLocked(key)
 	ls.mu.Unlock()
 	if !exists {
+		source := ls.originalVODSource(recordingID, offsetSeconds, target)
+		// Reject out-of-range requests before getOrCreateSessionFor can fail on a
+		// full pool or evict an unrelated idle session. The descriptor opened here
+		// is closed at once; the session reopens the file itself, so a file unlinked
+		// in between yields the usual 404.
+		if offsetSeconds > 0 {
+			probe, err := source(r.Context())
+			if err != nil {
+				if errors.Is(err, errOriginalVODOffsetUnavailable) {
+					slog.Info("streamer: original VOD offset outside recording range",
+						"recording_id", recordingID, "offset", offsetSeconds)
+				}
+				writeOriginalVODError(w, r, err)
+				return
+			}
+			_ = probe.Close()
+		}
 		s, err = ls.getOrCreateSessionFor(
-			r.Context(), key, ls.originalVODSource(recordingID, offsetSeconds, target),
+			r.Context(), key, source,
 		)
 		if err != nil {
 			writeOriginalVODError(w, r, err)
