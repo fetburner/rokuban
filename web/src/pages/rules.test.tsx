@@ -253,7 +253,7 @@ describe('RulesPage 新規作成の入口', () => {
     await screen.findByText('ルールがありません')
     const links = screen.getAllByRole('link', { name: 'ルールを作成' })
     expect(links).toHaveLength(2)
-    expect(links[0]).toHaveClass('hidden', 'lg:inline-flex')
+    expect(links[0]).toHaveClass('max-lg:hidden')
     expect(links[1]).toHaveClass('w-full', 'lg:hidden')
     for (const link of links) expect(link).toHaveAttribute('href', '/search')
     expect(screen.queryByRole('form', { name: 'ルールを作成' })).not.toBeInTheDocument()

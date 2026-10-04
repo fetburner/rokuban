@@ -60,8 +60,9 @@ import { cn } from '@/lib/utils'
 
 /**
  * RulesPage は録画ルールの一覧・有効切替・削除を扱う。
- * 新規作成の入口は `/search` に一本化する。検索結果の値札（件数・時間の見込み）を
- * 確認してから保存する流れに揃え、`/rules` から値札を素通りして作成できないようにする。
+ * 新規作成の入口は `/search` に一本化する。値札（件数・時間の見込み）と一致する番組の
+ * 一覧が常に作成ボタンの近くに出る検索画面に入口を揃える。`/rules` の作成フォームには
+ * そのどちらも無かった。強制はしておらず、`/search` でも検索せずに保存まで進める。
  *
  * 既存ルールの上書きは各行のルール名から `/search?ruleId=N` を開く導線に
  * 一本化する。検索側は条件に一致する番組を見ながら編集でき、UI を持たない項目も
@@ -91,7 +92,7 @@ export function RulesPage() {
         actions={
           <Link
             to="/search"
-            className={buttonVariants({ size: 'lg', className: 'hidden lg:inline-flex' })}
+            className={buttonVariants({ size: 'lg', className: 'max-lg:hidden' })}
           >
             ルールを作成
           </Link>

@@ -476,10 +476,10 @@ function TextMatchFields({ draft, onChange, disabled }: FieldsProps) {
       }
     >
       {!hasRows && (
-        // 「時間帯」節が空のときと同じ形にする。`ConditionFields` は検索と
-        // ルールの両方が使うので、動詞（検索する／保存する）を含めると
-        // 片方の画面で事実として誤る（ルール画面で条件ゼロは「検索したら
-        // 全件」ではなく「全番組を録り続ける」）。
+        // 「時間帯」節が空のときと同じ形にする。`ConditionFields` は検索画面が
+        // 検索にも新規ルール作成・既存ルール編集にも使うので、動詞（検索する／
+        // 保存する）を含めると片方の用途で事実として誤る（ルールで条件ゼロは
+        // 「検索したら全件」ではなく「全番組を録り続ける」）。
         <p className="text-xs text-muted-foreground">指定なし（すべての番組が対象）</p>
       )}
       <ul className="flex flex-col gap-3">
