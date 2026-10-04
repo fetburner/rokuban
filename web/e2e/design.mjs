@@ -3018,7 +3018,7 @@ for (const screenName of ['programs', 'reservations', 'recordings', 'rules', 'se
 // ルール作成はモバイルだけ本文全幅、lg 以上では PageHeader の右端に置く。
 {
   const { context, page } = await open(desktop, 'light', screenOf('rules'))
-  const create = page.locator('header').getByRole('button', { name: 'ルールを作成', exact: true })
+  const create = page.locator('header').getByRole('link', { name: 'ルールを作成', exact: true })
   const createBox = (await create.count()) === 0 ? null : await create.boundingBox()
   if (createBox === null) {
     ng.push('rules/desktop: PageHeader に「ルールを作成」が無い')
@@ -3047,12 +3047,12 @@ for (const screenName of ['programs', 'reservations', 'recordings', 'rules', 'se
 }
 {
   const { context, page } = await open(mobile, 'light', screenOf('rules'))
-  const headerCreate = page.locator('header').getByRole('button', { name: 'ルールを作成', exact: true })
+  const headerCreate = page.locator('header').getByRole('link', { name: 'ルールを作成', exact: true })
   if ((await headerCreate.count()) > 0) {
     ng.push('rules/mobile: PageHeader に「ルールを作成」が出ている')
   }
   const mobileContent = page.locator('[data-testid="page-content"], [data-testid="bounded-page-content"]')
-  const mobileCreate = mobileContent.getByRole('button', { name: 'ルールを作成', exact: true })
+  const mobileCreate = mobileContent.getByRole('link', { name: 'ルールを作成', exact: true })
   const contentBox =
     (await mobileContent.count()) === 0 ? null : await mobileContent.boundingBox()
   const createBox =

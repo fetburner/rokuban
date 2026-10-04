@@ -1,12 +1,10 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getListReservationsQueryKey } from '@/api/generated'
 import type {
   EncodeProfileSummary,
-  LabelRule,
-  LabelRuleInput,
   Reservation,
   Rule,
   RuleInput,
@@ -133,9 +131,6 @@ function stubApi(
     if (url.pathname === '/api/rules' && method === 'GET') {
       return Promise.resolve(jsonResponse(state.filter((r) => !deletedIds.includes(r.id))))
     }
-    if (url.pathname === '/api/label-rules' && method === 'GET') {
-      return Promise.resolve(jsonResponse([]))
-    }
     if (url.pathname === '/api/reservations' && method === 'GET') {
       if (failures.reservations !== undefined) {
         return Promise.resolve(
@@ -213,11 +208,6 @@ function renderPage() {
   return renderInRouter(<RulesPage />)
 }
 
-async function findCreateRuleButton() {
-  const content = await screen.findByTestId('page-content')
-  return within(content).findByRole('button', { name: 'ルールを作成' })
-}
-
 afterEach(() => {
   vi.restoreAllMocks()
 })
@@ -249,184 +239,27 @@ describe('summarizeRuleConditions', () => {
   })
 })
 
-describe('RulesPage encode settings', () => {
-  it('until_encoded でプロファイル空なら保存できない', async () => {
-    stubApi()
+describe('RulesPage 新規作成の入口', () => {
+  it('PC とモバイルの作成リンクは検索画面を開き、録画ルールフォームは持たない', async () => {
+    stubApi([])
     const user = userEvent.setup()
-    renderPage()
+    const { router } = renderPage()
 
-    expect(await screen.findByText('ニュース')).toBeInTheDocument()
-    await user.click(await findCreateRuleButton())
-    await user.type(screen.getByLabelText('名前'), '新規ルール')
+    await screen.findByText('ルールがありません')
+    const links = screen.getAllByRole('link', { name: 'ルールを作成' })
+    expect(links).toHaveLength(2)
+    expect(links[0]).toHaveClass('hidden', 'lg:inline-flex')
+    expect(links[1]).toHaveClass('w-full', 'lg:hidden')
+    for (const link of links) expect(link).toHaveAttribute('href', '/search')
+    expect(screen.queryByRole('form', { name: 'ルールを作成' })).not.toBeInTheDocument()
 
-    // フォームが出てから keepOriginal を until_encoded に
-    const keepSelect = await screen.findByLabelText('原本の保持')
-    await user.selectOptions(keepSelect, 'until_encoded')
-
-    // プロファイルは選ばない → エラー表示 + 保存 disabled。
-    // 同じ文言が EncodeSettingsFields とフォームフッタの両方に出る。
-    await waitFor(() => {
-      expect(
-        screen.getAllByText(/エンコード後に原本を削除するには、プロファイルを 1 つ以上/).length,
-      ).toBeGreaterThan(0)
-    })
-    expect(screen.getByRole('button', { name: '保存' })).toBeDisabled()
-  })
-
-  it('プロファイルを選べば until_encoded で保存できる', async () => {
-    stubApi()
-    const user = userEvent.setup()
-    renderPage()
-
-    await screen.findByText('ニュース')
-    await user.click(await findCreateRuleButton())
-    await user.type(screen.getByLabelText('名前'), '新規ルール')
-
-    const keepSelect = await screen.findByLabelText('原本の保持')
-    await user.selectOptions(keepSelect, 'until_encoded')
-    // チェックボックスの accessible name はラベル内テキスト（h264）
-    await user.click(screen.getByRole('checkbox', { name: 'h264' }))
-
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: '保存' })).not.toBeDisabled()
-    })
+    await user.click(links[0]!)
+    await waitFor(() => expect(router.state.location.pathname).toBe('/search'))
+    expect(router.state.location.search).toEqual({})
   })
 })
 
-describe('RulesPage 新規作成', () => {
-  it('名前に触らず保存すると、描画中の候補名が検証・送信される', async () => {
-    const { postBodies } = stubApi([])
-    const user = userEvent.setup()
-    renderPage()
-
-    await user.click(await findCreateRuleButton())
-    await user.type(screen.getByLabelText('テキスト条件 1 の値'), '深夜アニメ')
-    await user.click(screen.getByRole('button', { name: '保存' }))
-    await waitFor(() => expect(postBodies).toHaveLength(1))
-    expect(postBodies[0]?.name).toBe('深夜アニメ')
-  })
-
-  it('名前候補はキーワードに追従し、触った後は空でも再生成されない', async () => {
-    const { postBodies } = stubApi([])
-    const user = userEvent.setup()
-    renderPage()
-
-    await user.click(await findCreateRuleButton())
-    const nameInput = await screen.findByLabelText('名前')
-    const keywordInput = screen.getByLabelText('テキスト条件 1 の値')
-
-    await user.type(keywordInput, 'ニュース')
-    expect(nameInput).toHaveValue('ニュース')
-
-    await user.clear(nameInput)
-    await user.clear(keywordInput)
-    await user.type(keywordInput, '深夜')
-    expect(nameInput).toHaveValue('')
-
-    await user.type(nameInput, '手動の名前')
-    await user.clear(keywordInput)
-    await user.type(keywordInput, 'ドラマ')
-    expect(nameInput).toHaveValue('手動の名前')
-
-    await user.click(screen.getByRole('button', { name: '保存' }))
-    await waitFor(() => expect(postBodies).toHaveLength(1))
-    expect(postBodies[0]?.name).toBe('手動の名前')
-  })
-
-  it('新規作成で入力した条件が RuleInput に入る', async () => {
-    const { postBodies } = stubApi([])
-    const user = userEvent.setup()
-    renderPage()
-
-    // ルールが 0 件でも作成フォームは開ける。ルーターの初回描画は非同期なので
-    // 最初の操作対象は findBy* で待つ
-    await user.click(await findCreateRuleButton())
-
-    await user.type(screen.getByLabelText('名前'), 'テストルール')
-
-    // テキスト条件（1 行目は「条件を追加」を押さなくても常に編集できる。
-    // issue #305。押すと 2 行目が増え、その値が空のまま保存できなくなる）
-    await user.type(screen.getByLabelText('テキスト条件 1 の値'), 'ニュース')
-
-    // ジャンル（サービス一覧の読み込みを待ってから操作する）
-    await screen.findByText('NHK総合')
-    await user.click(screen.getByRole('button', { name: 'スポーツ' }))
-
-    // 時間帯（<input type="time"> は jsdom で userEvent.type の逐次キー入力を
-    // 素直に受け付けないため、change イベントで直接値を入れる）
-    await user.click(screen.getByRole('button', { name: '時間帯を追加' }))
-    const startInput = screen.getByLabelText('時間帯 1 の開始')
-    const endInput = screen.getByLabelText('時間帯 1 の終了')
-    fireEvent.change(startInput, { target: { value: '21:00' } })
-    fireEvent.change(endInput, { target: { value: '23:00' } })
-
-    await user.click(screen.getByRole('button', { name: '保存' }))
-
-    await waitFor(() => expect(postBodies.length).toBe(1))
-    const body = postBodies[0]
-    expect(body.name).toBe('テストルール')
-    expect(body.textMatches).toEqual([
-      { target: 'name', mode: 'keyword', value: 'ニュース' },
-    ])
-    expect(body.genres).toEqual([1])
-    expect(body.times).toEqual([{ weekdays: 127, startSec: 75600, endSec: 82800 }])
-  })
-
-  /**
-   * `ConditionFields` は検索画面とルール画面が共有するので、そこに置く文言は
-   * どちらの画面でも事実として正しくなければならない。検索向けの動詞
-   * （「検索すると」）を入れると、条件ゼロで**保存**すると全番組を録り続ける
-   * ルール画面では誤りになる（実際に一度入り込んで差し戻された）。
-   */
-  it('ルール作成フォームでも条件なしの意味が画面に依存しない文言で出る', async () => {
-    stubApi([])
-    const user = userEvent.setup()
-    renderPage()
-
-    await user.click(await findCreateRuleButton())
-
-    // テキスト条件・時間帯のどちらも「指定なし（すべての…が対象）」の形で、
-    // 画面ごとの動詞（検索する / 保存する）を含まない
-    expect(screen.getByText('指定なし（すべての番組が対象）')).toBeInTheDocument()
-    expect(screen.getByText('指定なし（すべての時間帯が対象）')).toBeInTheDocument()
-    expect(screen.queryByText(/検索すると/)).not.toBeInTheDocument()
-  })
-
-  it('1 行目の値を全消しして条件ゼロに戻すと確認ダイアログを挟む', async () => {
-    const { postBodies } = stubApi([])
-    const user = userEvent.setup()
-    renderPage()
-
-    await user.click(await findCreateRuleButton())
-    await user.type(screen.getByLabelText('名前'), '条件なしルール')
-    const textInput = screen.getByLabelText('テキスト条件 1 の値')
-    await user.type(textInput, 'ニュース')
-    await user.clear(textInput)
-
-    // 全消しした 1 行目は条件として残らないので、保存は確認ダイアログを開ける。
-    const saveButton = screen.getByRole('button', { name: '保存' })
-    expect(saveButton).not.toBeDisabled()
-    await user.click(saveButton)
-    expect(await screen.findByText('条件を指定せずに保存しますか？')).toBeInTheDocument()
-    expect(postBodies.length).toBe(0)
-
-    // キャンセルすると閉じるだけで送信されない。フォームも編集可能なまま
-    // 残る（半端な送信状態にならない --- 「保存中…」のまま固まったり、
-    // 保存ボタンが disabled のまま残って連打すらできない、ということがない）。
-    await user.click(screen.getByRole('button', { name: 'キャンセル' }))
-    await waitFor(() =>
-      expect(screen.queryByText('条件を指定せずに保存しますか？')).not.toBeInTheDocument(),
-    )
-    expect(postBodies.length).toBe(0)
-    expect(saveButton).not.toBeDisabled()
-    expect(saveButton).toHaveTextContent('保存')
-
-    // 再度保存を押すと同じ確認が出て、今度は確定すると送信される
-    await user.click(saveButton)
-    await user.click(await screen.findByRole('button', { name: '保存する' }))
-    await waitFor(() => expect(postBodies.length).toBe(1))
-  })
-
+describe('RulesPage 一覧', () => {
   it('一覧に条件の要約が出て、空のルールは「すべての番組」と分かる', async () => {
     stubApi([sampleRule, ruleWithConditions])
     renderPage()
@@ -493,142 +326,19 @@ describe('RulesPage 新規作成', () => {
   })
 })
 
-const labelRule = (id: number, keyword: string, value: string, valueKey: string, priority = 0): LabelRule => ({
-  id,
-  key: 'series',
-  keyword,
-  value,
-  priority,
-  valueKey,
-  createdAt: '2026-09-29T00:00:00Z',
-  updatedAt: '2026-09-29T00:00:00Z',
-})
-
-/**
- * stubLabelRuleApi は stubApi の上に分類ルールの API（GET / POST / PATCH /
- * DELETE と valueKey の解決）を重ねる。送られたリクエストを記録するので、
- * 「mutate が呼ばれ、API に正しい body が飛ぶ」まで見られる。
- */
-function stubLabelRuleApi(rules: LabelRule[], ruleRows: Rule[] = []) {
-  stubApi(ruleRows)
-  const base = globalThis.fetch
-  const posted: LabelRuleInput[] = []
-  const patched: { id: number; body: LabelRuleInput }[] = []
-  const deleted: number[] = []
-  globalThis.fetch = vi.fn((input: string | URL | Request, init?: RequestInit) => {
-    const url = new URL(String(input), 'http://localhost')
-    const method = init?.method ?? 'GET'
-    if (url.pathname === '/api/label-rules' && method === 'GET') {
-      return Promise.resolve(jsonResponse(rules.filter((r) => !deleted.includes(r.id))))
-    }
-    if (url.pathname === '/api/label-rules' && method === 'POST') {
-      const body = JSON.parse(String(init?.body)) as LabelRuleInput
-      posted.push(body)
-      return Promise.resolve(jsonResponse(labelRule(99, body.keyword, body.value, body.value), 201))
-    }
-    if (url.pathname === '/api/label-rule-value-key' && method === 'GET') {
-      // サーバーの series_key の代役: 最初の空白で切る（実 DB では
-      // internal/api の TestLabelRule_ValueKeyIsTheTruncatedShelfKey が測る）。
-      return Promise.resolve(
-        jsonResponse({ valueKey: (url.searchParams.get('value') ?? '').split(' ')[0] }),
-      )
-    }
-    const m = /^\/api\/label-rules\/(\d+)$/.exec(url.pathname)
-    if (m && method === 'PATCH') {
-      const body = JSON.parse(String(init?.body)) as LabelRuleInput
-      patched.push({ id: Number(m[1]), body })
-      return Promise.resolve(jsonResponse(labelRule(Number(m[1]), body.keyword, body.value, body.value)))
-    }
-    if (m && method === 'DELETE') {
-      deleted.push(Number(m[1]))
-      return Promise.resolve(new Response(null, { status: 204 }))
-    }
-    return (base as typeof fetch)(input, init)
-  }) as unknown as typeof fetch
-  return { posted, patched, deleted }
-}
-
-describe('RulesPage シリーズ分類', () => {
-  it('同じページのシリーズ分類フォームを開ける', async () => {
+describe('RulesPage の分類ルール導線', () => {
+  it('/rules に分類ルールの管理セクションを表示しない', async () => {
     stubApi([])
+    renderPage()
+
+    await screen.findByText('ルールがありません')
+    expect(screen.queryByText('シリーズ分類')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '分類ルールを作成' })).not.toBeInTheDocument()
+  })
+
+  it('録画ルールの「このキーワードで分類ルールを作る」導線は同じフォームを開く', async () => {
     const user = userEvent.setup()
-    renderPage()
-
-    await screen.findByText('シリーズ分類')
-    await user.click(screen.getByRole('button', { name: '分類ルールを作成' }))
-
-    const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getByRole('heading', { name: '分類ルールを作成' })).toBeInTheDocument()
-    expect(within(dialog).getByLabelText('キーワード')).toHaveValue('')
-    expect(within(dialog).getByLabelText('棚のキー')).toHaveValue('')
-  })
-
-  it('分類ルールの一覧を API の返した勝者順のまま出す', async () => {
-    stubLabelRuleApi([labelRule(1, '日本史', '日本史', '日本史', 5), labelRule(2, '数学', '数学', '数学')])
-    renderPage()
-
-    const first = await screen.findByText('「日本史」→ 日本史')
-    const second = await screen.findByText('「数学」→ 数学')
-    expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-  })
-
-  it('値と実効の棚キーが食い違う分類ルールを一覧で明示する', async () => {
-    stubLabelRuleApi([labelRule(2, '数学', 'NHK高校講座 数学I', 'NHK高校講座')])
-    renderPage()
-
-    expect(await screen.findByText('この値は棚キー NHK高校講座 として扱われます')).toBeInTheDocument()
-  })
-
-  it('食い違いの無い分類ルールには注記を出さない', async () => {
-    stubLabelRuleApi([labelRule(1, '日本史', '日本史', '日本史')])
-    renderPage()
-
-    await screen.findByText('「日本史」→ 日本史')
-    expect(screen.queryByText(/として扱われます/)).not.toBeInTheDocument()
-  })
-
-  it('キーワードを入力すると棚のキーが追従し、POST に両方が載る', async () => {
-    const user = userEvent.setup()
-    const { posted } = stubLabelRuleApi([])
-    renderPage()
-
-    await user.click(await screen.findByRole('button', { name: '分類ルールを作成' }))
-    const dialog = await screen.findByRole('dialog')
-    await user.type(within(dialog).getByLabelText('キーワード'), '烏は主を選ばない')
-    expect(within(dialog).getByLabelText('棚のキー')).toHaveValue('烏は主を選ばない')
-    await user.click(within(dialog).getByRole('button', { name: '作成' }))
-
-    await waitFor(() => expect(posted).toHaveLength(1))
-    expect(posted[0]).toEqual({ keyword: '烏は主を選ばない', value: '烏は主を選ばない', priority: 0 })
-  })
-
-  it('フォームは入力中の値から得られる棚キーを、食い違うときだけ示す', async () => {
-    const user = userEvent.setup()
-    stubLabelRuleApi([])
-    renderPage()
-
-    await user.click(await screen.findByRole('button', { name: '分類ルールを作成' }))
-    const dialog = await screen.findByRole('dialog')
-
-    await user.type(within(dialog).getByLabelText('棚のキー'), '作品X')
-    // 一致しているうちは何も言わない（サーバー応答を待ってから否定を確かめる）。
-    await waitFor(() =>
-      expect(globalThis.fetch).toHaveBeenCalledWith(
-        expect.stringContaining('/api/label-rule-value-key?value=%E4%BD%9C%E5%93%81X'),
-        expect.anything(),
-      ),
-    )
-    expect(within(dialog).queryByRole('status')).not.toBeInTheDocument()
-
-    await user.type(within(dialog).getByLabelText('棚のキー'), ' 第2期')
-    expect(await within(dialog).findByRole('status')).toHaveTextContent(
-      'この値は棚キー 作品X として扱われます',
-    )
-  })
-
-  it('録画ルールの「このキーワードで分類ルールを作る」が同じページのダイアログを開く', async () => {
-    const user = userEvent.setup()
-    stubLabelRuleApi([], [ruleWithConditions])
+    stubApi([ruleWithConditions])
     renderPage()
 
     await screen.findByText('平日ニュース')
@@ -637,40 +347,6 @@ describe('RulesPage シリーズ分類', () => {
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByRole('heading', { name: '分類ルールを作成' })).toBeInTheDocument()
     expect(within(dialog).getByLabelText('キーワード')).toHaveValue('ニュース')
-  })
-
-  it('分類ルールを編集すると PATCH に変更後の内容が飛ぶ', async () => {
-    const user = userEvent.setup()
-    const { patched } = stubLabelRuleApi([labelRule(7, '日本史', '日本史', '日本史', 5)])
-    renderPage()
-
-    await screen.findByText('「日本史」→ 日本史')
-    await user.click(screen.getByRole('button', { name: '編集' }))
-    const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getByRole('heading', { name: '分類ルールを編集' })).toBeInTheDocument()
-    expect(within(dialog).getByLabelText('キーワード')).toHaveValue('日本史')
-    await user.clear(within(dialog).getByLabelText('優先度'))
-    await user.type(within(dialog).getByLabelText('優先度'), '9')
-    await user.click(within(dialog).getByRole('button', { name: '保存' }))
-
-    await waitFor(() => expect(patched).toHaveLength(1))
-    expect(patched[0]).toEqual({ id: 7, body: { keyword: '日本史', value: '日本史', priority: 9 } })
-  })
-
-  it('分類ルールの削除は確認の後に DELETE を送る', async () => {
-    const user = userEvent.setup()
-    const { deleted } = stubLabelRuleApi([labelRule(7, '日本史', '日本史', '日本史')])
-    renderPage()
-
-    await screen.findByText('「日本史」→ 日本史')
-    await user.click(screen.getByRole('button', { name: '削除' }))
-    // 確認を出すだけでは送らない。
-    expect(deleted).toEqual([])
-    const dialog = await screen.findByRole('dialog')
-    await user.click(within(dialog).getByRole('button', { name: '削除する' }))
-
-    await waitFor(() => expect(deleted).toEqual([7]))
-    await waitFor(() => expect(screen.queryByText('「日本史」→ 日本史')).not.toBeInTheDocument())
   })
 })
 
@@ -1081,44 +757,7 @@ describe('RulesPage 削除は overflow メニュー', () => {
 
 })
 
-// issue #297: 作成の効果は一覧の下の方に入りうるため、画面外になりうる。
-// 成功トーストを残し、失敗も一覧からは分からない新しい情報なので残す。
-describe('RulesPage 作成成功トースト (issue #297)', () => {
-  it('作成に成功すると成功トーストが出る（新しい行は並び順次第でフォールドの外に入りうる）', async () => {
-    const { postBodies } = stubApi([])
-    const user = userEvent.setup()
-    renderPage()
-
-    await user.click(await findCreateRuleButton())
-    await user.type(screen.getByLabelText('名前'), 'できたルール')
-    await user.type(screen.getByLabelText('テキスト条件 1 の値'), 'キーワード')
-
-    await user.click(screen.getByRole('button', { name: '保存' }))
-    await waitFor(() => expect(postBodies.length).toBe(1))
-
-    // 新しい行が一覧に現れ、フォームが閉じて「ルールを作成」ボタンに戻る
-    // こと自体は確認しつつ、その効果が画面外になりうる（優先度順で下の方に
-    // 入る）ため成功トーストは残ることを確認する。
-    expect(await screen.findByText('できたルール')).toBeInTheDocument()
-    expect(await findCreateRuleButton()).toBeInTheDocument()
-    expect(await screen.findByText('ルールを作成しました')).toBeInTheDocument()
-  })
-
-  it('作成に失敗すれば失敗トーストは出る（フォームも開いたまま残る）', async () => {
-    stubApi([], undefined, { create: 500 })
-    const user = userEvent.setup()
-    renderPage()
-
-    await user.click(await findCreateRuleButton())
-    await user.type(screen.getByLabelText('名前'), '失敗するルール')
-    await user.type(screen.getByLabelText('テキスト条件 1 の値'), 'キーワード')
-    await user.click(screen.getByRole('button', { name: '保存' }))
-
-    expect(await screen.findByText('サーバーが作成を拒否しました')).toBeInTheDocument()
-    // 失敗時はフォームが送信前のまま残る（半端な状態で消えない）
-    expect(screen.getByLabelText('名前')).toBeInTheDocument()
-  })
-
+describe('RulesPage 削除エラー', () => {
   it('削除に失敗すれば失敗トーストは出て、行は一覧に残る', async () => {
     stubApi([sampleRule], undefined, { delete: 500 })
     const user = userEvent.setup()

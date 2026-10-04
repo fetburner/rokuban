@@ -439,6 +439,97 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
   })
 })
 
+describe('ホーム: CM 検出失敗が要対応に出る（issue #1101）', () => {
+  it('logo / area の失敗は局ごとにまとめ、CM ロゴ画面へ局の network / service を渡す', async () => {
+    const { fetchMock } = stubApi({
+      finished: [
+        recording(21, '失敗した番組 1', 'finished', {
+          networkId: 32678,
+          serviceId: 5168,
+          cmDetection: { state: 'failed', stage: 'logo', error: 'technical detail' },
+        }),
+        recording(22, '失敗した番組 2', 'finished', {
+          networkId: 32678,
+          serviceId: 5168,
+          cmDetection: { state: 'failed', stage: 'area' },
+        }),
+      ],
+    })
+    renderHome()
+
+    const section = (await screen.findByRole('heading', { name: '要対応' })).closest('section')!
+    const cmRows = within(section).getAllByRole('listitem').filter(
+      (row) => row.getAttribute('data-warning-kind') === 'cm-detection',
+    )
+    expect(cmRows).toHaveLength(1)
+    expect(within(cmRows[0]!).getByTestId('warning-chip')).toHaveTextContent('CM 検出失敗')
+    expect(within(cmRows[0]!).getByTestId('warning-title')).toHaveTextContent('NHK総合 2 件')
+    const link = within(cmRows[0]!).getByRole('link')
+    expect(link).toHaveAttribute('href', '/cm-logos/32678/5168')
+    expect(link).not.toHaveAttribute('href', expect.stringContaining('recording='))
+    expect(section).not.toHaveTextContent('technical detail')
+
+    // limit 等の条件に関わらず、完了録画の取得（時間軸の窓 `from` 付きを除く）が 1 本だけであること（CM 検出専用の取得を足さない）。
+    const finishedScans = fetchMock.mock.calls
+      .map(([input]) => new URL(String(input), 'http://localhost'))
+      .filter((url) => url.pathname === '/api/recordings' && url.searchParams.get('status') === 'finished' && !url.searchParams.has('from'))
+    expect(finishedScans).toHaveLength(1)
+  })
+
+  it('logo / area 以外の失敗は録画ごとに並び、detecting と disabled は除く', async () => {
+    stubApi({
+      finished: [
+        recording(23, '解析失敗の番組', 'finished', {
+          cmDetection: { state: 'failed', stage: 'parse' },
+        }),
+        recording(24, '段階不明の番組', 'finished', {
+          cmDetection: { state: 'failed', stage: null },
+        }),
+        recording(25, '検出中の番組', 'finished', {
+          cmDetection: { state: 'detecting', stage: 'setup' },
+        }),
+        recording(26, '無効な番組', 'finished', { cmDetection: { state: 'disabled' } }),
+      ],
+    })
+    renderHome()
+
+    const section = (await screen.findByRole('heading', { name: '要対応' })).closest('section')!
+    const cmRows = within(section).getAllByRole('listitem').filter(
+      (row) => row.getAttribute('data-warning-kind') === 'cm-detection',
+    )
+    expect(cmRows).toHaveLength(2)
+    expect(within(cmRows[0]!).getByTestId('warning-title')).toHaveTextContent('解析失敗の番組')
+    expect(within(cmRows[0]!).getByRole('link')).toHaveAttribute('href', '/recordings/23')
+    // 副行は開始日時と局名だけ。「1 件」は録画ごとの行では冗長。
+    expect(cmRows[0]).not.toHaveTextContent('1 件')
+    expect(within(cmRows[1]!).getByTestId('warning-title')).toHaveTextContent('段階不明の番組')
+    expect(within(cmRows[1]!).getByRole('link')).toHaveAttribute('href', '/recordings/24')
+    expect(section).not.toHaveTextContent('検出中の番組')
+    expect(section).not.toHaveTextContent('無効な番組')
+  })
+
+  it('見るモードの警告バッジにも、局まとめと録画ごとの CM 失敗を数える', async () => {
+    stubApi({
+      finished: [
+        recording(27, '局まとめ 1', 'finished', {
+          cmDetection: { state: 'failed', stage: 'logo' },
+        }),
+        recording(28, '局まとめ 2', 'finished', {
+          cmDetection: { state: 'failed', stage: 'area' },
+        }),
+        recording(29, '個別の失敗', 'finished', {
+          cmDetection: { state: 'failed', stage: 'parse' },
+        }),
+      ],
+    })
+    renderHome('/?mode=watch')
+
+    const toggle = await screen.findByTestId('home-mode-toggle')
+    expect(await within(toggle).findByTestId('home-warning-count')).toHaveTextContent('2')
+    expect(screen.queryByRole('heading', { name: '要対応' })).not.toBeInTheDocument()
+  })
+})
+
 describe('ホーム: 全セクションが空のときの単一の空状態', () => {
   it('時間軸と要対応が空なら単一の空状態だけを出す', async () => {
     stubApi({})
@@ -682,6 +773,9 @@ describe('ホーム: 警告セクション', () => {
         recording(9, 'ドロップのある録画', 'finished', {
           dropSummary: { packets: 1000, drops: 12, errors: 0, scrambled: 3 },
         }),
+        recording(11, 'CM 検出失敗の録画', 'finished', {
+          cmDetection: { state: 'failed', stage: 'parse' },
+        }),
       ],
       failed: [recording(10, '失敗した録画', 'failed')],
     })
@@ -691,18 +785,19 @@ describe('ホーム: 警告セクション', () => {
     const breakerRow = await findWarningRow('ルール評価による予約の削除')
     const dropRow = await findWarningRow('ドロップのある録画')
     const failedRow = await findWarningRow('失敗した録画')
+    const cmDetectionRow = await findWarningRow('CM 検出失敗の録画')
     const warningSection = screen.getByRole('heading', { name: '要対応' }).closest('section')!
     expect(
       within(warningSection)
         .getAllByRole('listitem')
         .map((row) => row.getAttribute('data-warning-kind')),
-    ).toEqual(['breaker', 'failed', 'overage', 'drop'])
+    ).toEqual(['breaker', 'failed', 'overage', 'drop', 'cm-detection'])
 
     // 色は種別チップだけが持つ（`WarningRow` の実装どおり）。
     const chipOf = (row: HTMLElement | null) => within(row!).getByTestId('warning-chip')
     expect(chipOf(overageRow).className).toMatch(/bg-warning\/15/)
     expect(chipOf(overageRow).className).toMatch(/text-warning/)
-    for (const row of [breakerRow, dropRow, failedRow]) {
+    for (const row of [breakerRow, dropRow, failedRow, cmDetectionRow]) {
       const el = chipOf(row)
       expect(el.className).toMatch(/text-destructive/)
       expect(el.className).not.toMatch(/bg-warning/)
