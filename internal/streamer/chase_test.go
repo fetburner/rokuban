@@ -1166,6 +1166,14 @@ func TestChaseConcurrentJoinerUsesUpstreamStartupRetry(t *testing.T) {
 	}
 	ls := newLiveStreamer(client, cfg)
 	t.Cleanup(ls.shutdown)
+	// 退避した本人が evictMu を放した直後で止める。再試行セッションの登録が evictMu を放した
+	// 後だと、evictMu を待っていた同時要求がこの窓で alreadyRecovered を空振りして 503 になる。
+	hookEntered := make(chan struct{})
+	releaseHook := make(chan struct{})
+	ls.afterEvictRelease = func() {
+		close(hookEntered)
+		<-releaseHook
+	}
 
 	// アイドルな犠牲セッションを用意し、最初の上流拒否が他のライブ起動失敗と同じ
 	// 回復経路を通るようにする。
@@ -1198,7 +1206,24 @@ func TestChaseConcurrentJoinerUsesUpstreamStartupRetry(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	close(client.releaseFirstFollow)
 
-	for i := 0; i < 2; i++ {
+	select {
+	case <-hookEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("eviction did not reach the post-release hook")
+	}
+	// 本人はフックで止まっている。もう一方の要求は、本人の登録した再試行セッションに
+	// 相乗りして 200 になる。登録が遅いと 503 になる（決定的に窓を突く）。
+	select {
+	case resp := <-responses:
+		if resp.Code != http.StatusOK {
+			t.Fatalf("joiner status while the evicting request is paused = %d, want 200 (%s)", resp.Code, resp.Body.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("joiner did not finish while the evicting request was paused")
+	}
+	close(releaseHook)
+
+	for i := 1; i < 2; i++ {
 		select {
 		case resp := <-responses:
 			if resp.Code != http.StatusOK {

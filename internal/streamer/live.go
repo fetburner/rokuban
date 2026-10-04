@@ -257,6 +257,9 @@ type LiveStreamer struct {
 	// offset を含めないのは、フロントの再選択が新しい offset で来るため。
 	failedChaseInputs map[int64]time.Time
 
+	// afterEvictRelease はテスト専用: 退避を終えて evictMu を放した直後に呼ぶ。
+	afterEvictRelease func()
+
 	// afterOriginalVODOpen はテスト専用: 原本を open した直後、DB を再確認する前に呼ぶ。
 	afterOriginalVODOpen func()
 	closed               bool
@@ -2642,9 +2645,15 @@ func (ls *LiveStreamer) recoverSessionStartup(ctx context.Context, key sessionKe
 		return nil, ctx.Err()
 	case <-time.After(releaseWait):
 	}
+	// 再試行セッションは evictMu を放す前に map へ登録する。放した後に登録すると、
+	// evictMu を待っていた同時要求がその間に alreadyRecovered を確認して空振りし、
+	// victim も既に無いので元のエラーを返してしまう。ready 待ちは evictMu の外で行う。
+	retry, retryErr := ls.startSessionOnceFor(key, source)
 	ls.evictMu.Unlock()
-
-	retry, retryErr := ls.getOrCreateSessionOnceFor(ctx, key, source)
+	if ls.afterEvictRelease != nil {
+		ls.afterEvictRelease()
+	}
+	retry, retryErr = ls.awaitSessionReady(ctx, retry, retryErr)
 	if retryErr != nil && retry != nil {
 		// 再試行自身が ready 後に失敗した場合も、次の要求が同じ startErr を
 		// 拾わないように、そのセッションの後片付けを待ってから返す。
@@ -2708,15 +2717,33 @@ func (ls *LiveStreamer) chaseInputCooldownLocked(recordingID int64) error {
 }
 
 func (ls *LiveStreamer) getOrCreateSessionOnceFor(ctx context.Context, key sessionKey, source sessionSource) (*liveSession, error) {
+	s, err := ls.startSessionOnceFor(key, source)
+	return ls.awaitSessionReady(ctx, s, err)
+}
+
+// awaitSessionReady は startSessionOnceFor が返したセッションの ready を待つ。
+// startSessionOnceFor がエラーを返していたら、そのまま返す。
+func (ls *LiveStreamer) awaitSessionReady(ctx context.Context, s *liveSession, err error) (*liveSession, error) {
+	if err != nil {
+		return nil, err
+	}
+	if err := waitReadyTouching(ctx, s, playlistStartupTimeout); err != nil {
+		return nil, err
+	}
+	if s.startErr != nil {
+		return s, s.startErr
+	}
+	ls.setActiveSessionMetrics()
+	return s, nil
+}
+
+// startSessionOnceFor は key のセッションが無ければ作って map に登録し、ready は待たずに返す。
+// 既にあればそれを返す。登録までを 1 回のロックで行うので、evictMu を持ったまま呼べば
+// 「退避した本人の登録」が evictMu を待つ同時要求より先に見える。
+func (ls *LiveStreamer) startSessionOnceFor(key sessionKey, source sessionSource) (*liveSession, error) {
 	ls.mu.Lock()
 	if s, ok := ls.getSessionLocked(key); ok {
 		ls.mu.Unlock()
-		if err := waitReadyTouching(ctx, s, playlistStartupTimeout); err != nil {
-			return nil, err
-		}
-		if s.startErr != nil {
-			return s, s.startErr
-		}
 		return s, nil
 	}
 	if key.kind == chaseSessionKind {
@@ -2754,14 +2781,6 @@ func (ls *LiveStreamer) getOrCreateSessionOnceFor(ctx context.Context, key sessi
 	ls.setActiveSessionMetrics()
 
 	go ls.runSession(sessionCtx, s)
-
-	if err := waitReadyTouching(ctx, s, playlistStartupTimeout); err != nil {
-		return nil, err
-	}
-	if s.startErr != nil {
-		return s, s.startErr
-	}
-	ls.setActiveSessionMetrics()
 	return s, nil
 }
 
