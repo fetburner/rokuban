@@ -325,6 +325,17 @@ function offsetPathSegment(offsetSeconds?: number): string {
     : ''
 }
 
+/**
+ * originalVODSessionOriginSeconds は原本 HLS の integer path offset を、映像フレーム格子上の
+ * 実際の入力 seek 位置へ写す。streamer は `floor(N×30000/1001)` frame の時刻へ seek するため、
+ * offset session 内の `mediaTime` に足す録画軸の起点も同じ値にする。
+ */
+export function originalVODSessionOriginSeconds(offsetSeconds?: number): number {
+  if (!Number.isSafeInteger(offsetSeconds) || offsetSeconds === undefined || offsetSeconds <= 0) return 0
+  const frame = Math.floor(offsetSeconds * 30_000 / 1_001)
+  return frame * 1_001 / 30_000
+}
+
 /** chasePlaylistURL は録画中の追っかけ再生 EVENT playlist の URL を組み立てる。 */
 export function chasePlaylistURL(
   site: string,

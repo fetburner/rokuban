@@ -91,6 +91,7 @@ function createFakeServer(options: {
   restoreResponse?: () => Response
   purgeResponse?: () => Response
   encodePostResponse?: () => Response
+  chapterDeleteResponse?: () => Response
   // encodePolicyResponse は Promise 版も許す --- PATCH が解決する前の中間状態
   // （保存中…の表示）を確認するテストが、呼び出し側で自分の Promise を渡して
   // 解決タイミングを制御できるようにするため。
@@ -118,6 +119,7 @@ function createFakeServer(options: {
   const restoreResponse = options.restoreResponse
   const purgeResponse = options.purgeResponse
   const encodePostResponse = options.encodePostResponse
+  const chapterDeleteResponse = options.chapterDeleteResponse
   const encodePolicyResponse = options.encodePolicyResponse
   const playbackState = options.playbackState ?? {}
   let currentChapters: RecordingChapters = options.chapters ?? {
@@ -236,12 +238,17 @@ function createFakeServer(options: {
     if (/^\/api\/recordings\/\d+\/drop-stats$/.test(url.pathname)) {
       return Promise.resolve(jsonResponse(options.dropStats ?? []))
     }
-    if (/^\/api\/recordings\/\d+\/chapters$/.test(url.pathname)) {
+    if (/^\/api\/recordings\/\d+\/chapters$/.test(url.pathname) && method === 'GET') {
       return options.chaptersResponse
         ? options.chaptersResponse()
         : Promise.resolve(jsonResponse(currentChapters))
     }
     const chapterEditsMatch = /^\/api\/recordings\/(\d+)\/chapter-edits$/.exec(url.pathname)
+    if (chapterEditsMatch && method === 'DELETE') {
+      if (chapterDeleteResponse) return Promise.resolve(chapterDeleteResponse())
+      currentChapters = { ...currentChapters, source: 'auto', version: 'chapters-reset-v1' }
+      return Promise.resolve(jsonResponse(null, 204))
+    }
     if (chapterEditsMatch && method === 'PUT') {
       const body = init?.body
         ? (JSON.parse(String(init.body)) as { version: string; spans: RecordingChapters['spans'] })
@@ -373,6 +380,8 @@ describe('RecordingDetailPage', () => {
 
     expect(await screen.findByText('単体ページの録画')).toBeInTheDocument()
     expect(await screen.findByRole('region', { name: '再生' })).toBeInTheDocument()
+    expect(screen.queryByText('完了')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '録画状態を記録タブで見る' })).not.toBeInTheDocument()
     expect(document.querySelector('video')).toBeInTheDocument()
     expect(document.querySelector('img[src="/api/media/recordings/3/thumbnail"]')).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'ダウンロード / VLC' })).toBeInTheDocument()
@@ -529,7 +538,7 @@ describe('RecordingDetailPage', () => {
   it('タイトル行の状態・取り込み・エンコード・ドロップバッジを押すと記録タブが開く', async () => {
     createFakeServer({
       recording: sampleRecording({
-        sizeBytes: 1_000_000,
+        encodeProfiles: ['h264'],
         ingest: { state: 'pending' },
         encodeStatus: [{ profile: 'h264', state: 'failed' }],
         dropSummary: { packets: 1000, drops: 1, errors: 0, scrambled: 0 },
@@ -537,6 +546,7 @@ describe('RecordingDetailPage', () => {
     })
 
     renderAt('/recordings/3')
+    expect(await screen.findByText('準備中')).toBeInTheDocument()
     for (const badge of [
       '録画状態を記録タブで見る',
       '取り込み状態を記録タブで見る',
@@ -1352,6 +1362,9 @@ describe('RecordingDetailPage CM 検出の有効化導線', () => {
   it.each([
     ['logo', true],
     ['area', true],
+    ['match', true],
+    ['resolution', true],
+    ['adopt', true],
     ['setup', false],
     [undefined, false],
   ] as const)(
@@ -1370,10 +1383,11 @@ describe('RecordingDetailPage CM 検出の有効化導線', () => {
     await selectDetailTab('記録')
     const cmRow = screen.getAllByTestId('recording-diagnostic-row').find((row) => row.textContent?.includes('CM 検出'))
     expect(cmRow).toHaveTextContent(cmDetectStageMessage(stage))
-    // logo / area は枠を教えるのが直し方（ロゴ登録画面へ録画の局と録画 id を渡す）。それ以外には出さない。
-    const logoLink = within(cmRow!).queryByRole('link', { name: 'CM 検出のロゴを教える' })
+    // 局で直せる段階だけ、局の CM ロゴ画面へ録画の局と録画 id を渡す。
+    const linkName = stage === 'adopt' ? 'ロゴ候補を確認して採用する' : 'CM 検出のロゴを教える'
+    const logoLink = within(cmRow!).queryByRole('link', { name: linkName })
     if (linkExpected) {
-      expect(logoLink).toHaveAttribute('href', '/cm-logos?network=32678&service=5168&recording=3')
+      expect(logoLink).toHaveAttribute('href', '/cm-logos/32678/5168?recording=3')
     } else {
       expect(logoLink).not.toBeInTheDocument()
     }
@@ -3054,6 +3068,115 @@ describe('RecordingDetailPage 自動チャプターの確認 (#1066)', () => {
     expect(screen.queryByRole('menuitem', { name: 'チャプターを直す' })).not.toBeInTheDocument()
     expect(screen.queryByTestId('chapter-edit-layout')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'このまま確認' })).not.toBeInTheDocument()
+  })
+
+  it('live が有効なら cut-only asset がある録画も original HLS から編集でき、編集開始で session を作り直さない', async () => {
+    const user = userEvent.setup()
+    const chapters: RecordingChapters = {
+      version: 'original-vod-v1',
+      detectionPending: false,
+      source: 'auto',
+      spans: [{ startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }],
+    }
+    const { fetchMock } = createFakeServer({
+      recording: sampleRecording({
+        sizeBytes: 1_000_000,
+        encodeProfiles: ['cut-only'],
+        encodedAssets: [{ profile: 'cut-only', cut: true, sizeBytes: 500_000 }],
+      }),
+      liveProfiles: [{ name: 'hd', height: 720 }],
+      chapters,
+    })
+    renderAt('/recordings/3')
+    await user.click(await screen.findByTestId('recording-playback-start'))
+    const video = (await screen.findByLabelText('録画映像')) as HTMLVideoElement
+    const originalPlaylistRequests = () => fetchMock.mock.calls.filter(([input]) => {
+      const url = new URL(String(input), 'http://localhost')
+      return url.pathname === '/api/sites/default/recordings/3/original-vod/playlist.m3u8'
+    }).length
+    await waitFor(() => expect(originalPlaylistRequests()).toBeGreaterThan(0))
+    const playlistsBeforeEdit = originalPlaylistRequests()
+
+    await user.click(screen.getByRole('button', { name: '再生設定' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'チャプターを直す' }))
+    await screen.findByTestId('chapter-edit-layout')
+
+    expect(screen.getByLabelText('録画映像')).toBe(video)
+    expect(originalPlaylistRequests()).toBe(playlistsBeforeEdit)
+  })
+
+  it('原本 HLS の reset API が失敗したら編集画面と下書きを保つ', async () => {
+    const user = userEvent.setup()
+    const { fetchMock } = createFakeServer({
+      recording: sampleRecording({
+        sizeBytes: 1_000_000,
+        encodeProfiles: ['cut-only'],
+        encodedAssets: [{ profile: 'cut-only', cut: true, sizeBytes: 500_000 }],
+      }),
+      liveProfiles: [{ name: 'hd', height: 720 }],
+      chapters: {
+        version: 'user-v1',
+        detectionPending: false,
+        source: 'user',
+        spans: [{ startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }],
+      },
+      chapterDeleteResponse: () => jsonResponse({ error: 'server error' }, 500),
+    })
+    renderAt('/recordings/3')
+    await user.click(await screen.findByTestId('recording-playback-start'))
+    const editor = await enterEditing(user)
+    const label = within(editor).getByLabelText('ラベル')
+    await user.clear(label)
+    await user.type(label, '直した')
+
+    await user.click(screen.getByRole('button', { name: '自動に戻す' }))
+
+    await waitFor(() => expect(screen.queryByTestId('chapter-edit-layout')).toBeInTheDocument())
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) =>
+      new URL(String(input), 'http://localhost').pathname === '/api/recordings/3/chapter-edits' && init?.method === 'DELETE',
+    )).toBe(true))
+    expect(screen.getByTestId('chapter-edit-layout')).toBeInTheDocument()
+    expect(within(screen.getByTestId('chapter-edit-layout')).getByLabelText('ラベル')).toHaveValue('直した')
+  })
+
+  it('版タブからカット版と原本 HLS を切り替え、再生中表示を追従させる', async () => {
+    const user = userEvent.setup()
+    const { fetchMock } = createFakeServer({
+      recording: sampleRecording({
+        sizeBytes: 1_000_000,
+        encodeProfiles: ['cut-only'],
+        encodedAssets: [{ profile: 'cut-only', cut: true, sizeBytes: 500_000, cutStale: true }],
+      }),
+      liveProfiles: [{ name: 'hd', height: 720 }],
+    })
+    renderAt('/recordings/3')
+    await selectDetailTab('版')
+
+    const originalButton = await screen.findByRole('button', { name: '原本 HLS を再生' })
+    await user.click(screen.getByRole('button', { name: 'カット版 (cut-only)を再生' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'カット版 (cut-only)を再生' })).toBeDisabled())
+    const cutRow = screen.getByTestId('recording-version-row')
+    expect(within(cutRow).getByText('再生中')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '作り直す' })).toBeInTheDocument()
+
+    await user.click(originalButton)
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) =>
+      new URL(String(input), 'http://localhost').pathname === '/api/sites/default/recordings/3/original-vod/playlist.m3u8',
+    )).toBe(true))
+    await waitFor(() => expect(within(screen.getByTestId('recording-original-row')).getByText('再生中')).toBeInTheDocument())
+    expect(within(cutRow).queryByText('再生中')).not.toBeInTheDocument()
+  })
+
+  it('原本がない古いカット版には作り直し操作を出さない', async () => {
+    createFakeServer({
+      recording: sampleRecording({
+        encodedAssets: [{ profile: 'cut-only', cut: true, cutStale: true, sizeBytes: 500_000 }],
+      }),
+    })
+    renderAt('/recordings/3')
+
+    await screen.findByRole('region', { name: '再生' })
+    expect(screen.queryByRole('button', { name: '作り直す' })).not.toBeInTheDocument()
   })
 })
 

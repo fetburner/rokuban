@@ -14,12 +14,10 @@ import {
   type Reservation,
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
-import { CapacityShortfallBadge } from '@/components/capacity-shortfall-badge'
 import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
 import { ReservationGroupToggle } from '@/components/reservation-group-toggle'
 import { ReservationSeriesRow } from '@/components/reservation-series-row'
-import { ReservationOrigin, StateBadge } from '@/components/reservation-row-parts'
-import { ReservationSkipBadge } from '@/components/reservation-skip-reason'
+import { ReservationOrigin, ReservationVerdictBadge } from '@/components/reservation-row-parts'
 import { Chip } from '@/components/ui/chip'
 import {
   DropdownMenu,
@@ -78,7 +76,7 @@ export function ReservationsPage() {
     [overagesQuery.data, overagesQuery.isSuccess],
   )
   // 初回の結果を待つ間だけ true を保留する。失敗（isError）でも「容量抜きの
-  // 下界」として要確認を出す --- state !== 'active' の分だけでも導線を消さない
+  // 下界」として要確認を出す --- orphaned の分だけでも導線を消さない
   // ため（容量の判定が不完全なことは capacityUnavailable のバナーが別に言う）。
   const attentionReady = listedWindow === null || !overagesQuery.isPending
   const capacityUnavailable = listedWindow !== null && overagesQuery.isError
@@ -303,16 +301,9 @@ function ReservationRow({
         >
           <span className="shrink-0">{reservation.serviceName}</span>
           <ReservationOrigin reservation={reservation} ruleLabel={ruleLabel} />
-          <StateBadge state={reservation.state} />
-          <ReservationSkipBadge reservation={reservation} />
-          {/* CapacityShortfallBadge は番組表への独立した Link。自分の site の
-              不足だけを見て、行全面リンクより手前で当たり判定を保つ。 */}
-          <CapacityShortfallBadge
-            overages={overages}
-            site={reservation.site}
-            startMs={new Date(reservation.startAt).getTime()}
-            endMs={new Date(reservation.startAt).getTime() + reservation.durationMs}
-          />
+          {/* 結論バッジは行全面リンクより手前で当たり判定を保つ。容量不足は
+              CapacityShortfallBadge をそのまま使い、番組表への導線を維持する。 */}
+          <ReservationVerdictBadge reservation={reservation} overages={overages} />
         </div>
       </div>
       <ChevronRight

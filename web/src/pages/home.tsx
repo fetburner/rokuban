@@ -22,6 +22,7 @@ import { EmptyState, ListSkeleton, PageContent, PageHeader } from '@/components/
 import { ThumbnailOverlay } from '@/components/thumbnail-overlay'
 import { HomeModeToggle } from '@/components/home-mode-toggle'
 import { describeBreakerName, describeBreakerReason } from '@/lib/breaker'
+import { isStationFixableCMStage } from '@/lib/cm-detect-stage'
 import { dayOrigin } from '@/lib/day-offset'
 import { formatBytes, formatDate, formatDateTime, formatDuration, formatTime } from '@/lib/format'
 import {
@@ -290,7 +291,8 @@ export function HomePage() {
     breakersQuery.isPending ||
     overagesQuery.isPending ||
     finishedQuery.isPending ||
-    failedQuery.isPending
+    failedQuery.isPending ||
+    reservationsQuery.isPending
   const warningCount = warningsPending ? undefined : warnings.length
   const watchBreakerBand =
     !breakersQuery.isPending && breakers.length > 0 ? <WatchBreakerBand breakers={breakers} /> : null
@@ -1157,11 +1159,11 @@ function RecordingStrip({ recordings }: { recordings: readonly Recording[] }) {
 }
 
 /** WarningKind は「要対応」の項目の種別。表示色と、色を選ぶ判断の両方をこれ 1 つに一本化する。 */
-type WarningKind = 'breaker' | 'overage' | 'drop' | 'failed' | 'cm-detection'
+type WarningKind = 'breaker' | 'overage' | 'drop' | 'failed' | 'not-recorded' | 'cm-detection'
 
 /**
- * WarningItem は「要対応」の 1 件（サーキットブレーカー / 失敗録画 / チューナー不足 /
- * ドロップ / CM 検出失敗）。行は種別チップ + 太字のタイトル + 副行の形で描く。
+ * WarningItem は「要対応」の 1 件（サーキットブレーカー / 失敗録画 / 録画されず /
+ * チューナー不足 / ドロップ / CM 検出失敗）。行は種別チップ + 太字のタイトル + 副行の形で描く。
  */
 type WarningItem = {
   key: string
@@ -1183,10 +1185,11 @@ type WarningItem = {
     | { to: '/programs'; search: { at: number } }
     | { to: '/recordings/$id'; id: number }
     | { to: '/cm-logos/$networkId/$serviceId'; networkId: number; serviceId: number }
+    | { to: '/reservations/$site/$programId'; site: string; programId: number }
 }
 
 /**
- * buildWarnings はサーキットブレーカー・失敗録画・容量超過・完了録画の結果から
+ * buildWarnings はサーキットブレーカー・失敗録画・orphaned 予約・容量超過・完了録画の結果から
  * 「要対応」の項目を組む。新しい API は作らず、既存の取得結果だけを材料にする。
  *
  * `finishedCandidates` は `limit=DROP_WARNING_SCAN_LIMIT` で取った完了録画の全件。
@@ -1234,6 +1237,25 @@ function buildWarnings({
       title: programTitle(recording.title),
       detail: `${warningStartText(recording, nowMs)} · ${failedDurationText(recording)} / ${reasonSegment}`,
       link: { to: '/recordings/$id', id: recording.id },
+    })
+  }
+
+  // orphaned は放送イベント中に schedule も録画試行も観測されなかった予約。
+  // 失敗録画と同じ「既に失われた」段に置き、予約詳細へ案内する。
+  for (const reservation of reservations ?? []) {
+    if (reservation.state !== 'orphaned') continue
+    const startMs = Date.parse(reservation.startAt)
+    items.push({
+      key: `not-recorded:${reservation.site}:${reservation.programId}`,
+      kind: 'not-recorded',
+      chip: '録画されず',
+      title: programTitle(reservation.title),
+      detail: `${homeTimelineDayLabel(startMs, nowMs)} ${formatTime(reservation.startAt)} · ${reservation.serviceName}`,
+      link: {
+        to: '/reservations/$site/$programId',
+        site: reservation.site,
+        programId: reservation.programId,
+      },
     })
   }
 
@@ -1299,9 +1321,8 @@ function buildWarnings({
     })
   }
 
-  // CM 検出失敗のうち logo / area は局のロゴ設定を直すと解消するため、局単位にまとめる。
-  // それ以外の段階は個別の録画詳細が操作先なので録画ごとに出す。エラー詳細は原因を
-  // 推測させないため警告には載せない。
+  // 局の CM ロゴ画面で直せる段階は局単位にまとめる。それ以外の段階は個別の録画詳細が
+  // 操作先なので録画ごとに出す。エラー詳細は原因を推測させないため警告には載せない。
   const stationFailures = new Map<
     string,
     { networkId: number; serviceId: number; serviceName: string; count: number }
@@ -1311,7 +1332,7 @@ function buildWarnings({
     const detection = recording.cmDetection
     if (detection.state !== 'failed') continue
 
-    if (detection.stage === 'logo' || detection.stage === 'area') {
+    if (isStationFixableCMStage(detection.stage)) {
       const stationKey = `${recording.networkId}:${recording.serviceId}`
       const station = stationFailures.get(stationKey)
       if (station === undefined) {
@@ -1520,6 +1541,20 @@ function WarningRow({ warning, divider }: { warning: WarningItem; divider: boole
             networkId: String(warning.link.networkId),
             serviceId: String(warning.link.serviceId),
           }}
+          className={cn(rowClassName, 'hover:bg-muted/40')}
+        >
+          {content}
+        </Link>
+      </li>
+    )
+  }
+
+  if (warning.link.to === '/reservations/$site/$programId') {
+    return (
+      <li data-warning-kind={warning.kind} className={itemClassName}>
+        <Link
+          to="/reservations/$site/$programId"
+          params={{ site: warning.link.site, programId: String(warning.link.programId) }}
           className={cn(rowClassName, 'hover:bg-muted/40')}
         >
           {content}

@@ -1,6 +1,7 @@
 import type { CapacityOverage, Reservation } from '@/api/generated'
-import { intersectingOverages, overageWindow, worstOverage } from '@/lib/capacity'
+import { overageWindow, worstOverage } from '@/lib/capacity'
 import { programTitle } from '@/lib/program-labels'
+import { reservationVerdict } from '@/lib/reservation-labels'
 
 export type ReservationGroup = {
   /** シリーズは値、series=null は予約ごとの site/programId で識別する。 */
@@ -10,12 +11,12 @@ export type ReservationGroup = {
   reservations: Reservation[]
   /** スキップを飛ばした次回。すべてスキップなら最初の予約。 */
   next: Reservation
-  /** 状態・容量不足・重複スキップを予約ごとに数える。 */
+  /** 結論ごとの件数。録画予定（不足なし）は無印なので数えない。 */
   badges: {
-    orphaned: number
-    detached: number
+    notRecorded: number
+    skipExcluded: number
+    skipDuplicate: number
     capacityShortfall: number
-    duplicateSkipped: number
   }
   /** 集約した容量バッジの遷移先と説明に使う、最も不足の大きい区間。 */
   capacityTarget?: CapacityOverage
@@ -47,20 +48,33 @@ export function groupReservations(
   const rows = [...grouped].map(([key, group]): ReservationGroup => {
     const episodes = [...group.reservations].sort(compareReservations)
     const next = episodes.find((reservation) => !reservation.skip) ?? episodes[0]
-    let capacityShortfall = 0
+    const badges = {
+      notRecorded: 0,
+      skipExcluded: 0,
+      skipDuplicate: 0,
+      capacityShortfall: 0,
+    }
     const relatedOverages: CapacityOverage[] = []
 
     for (const reservation of episodes) {
-      const startMs = Date.parse(reservation.startAt)
-      const intersecting = intersectingOverages(
-        overages,
-        reservation.site,
-        startMs,
-        startMs + reservation.durationMs,
-      )
-      if (intersecting.length === 0) continue
-      capacityShortfall += 1
-      relatedOverages.push(...intersecting)
+      const verdict = reservationVerdict(reservation, overages)
+      switch (verdict.kind) {
+        case 'not-recorded':
+          badges.notRecorded += 1
+          break
+        case 'skip-excluded':
+          badges.skipExcluded += 1
+          break
+        case 'skip-duplicate':
+          badges.skipDuplicate += 1
+          break
+        case 'scheduled-shortfall':
+          badges.capacityShortfall += 1
+          relatedOverages.push(...verdict.overages)
+          break
+        case 'scheduled':
+          break
+      }
     }
 
     return {
@@ -69,14 +83,7 @@ export function groupReservations(
       title: group.series ?? programTitle(episodes[0].title),
       reservations: episodes,
       next,
-      badges: {
-        orphaned: episodes.filter((reservation) => reservation.state === 'orphaned').length,
-        detached: episodes.filter((reservation) => reservation.state === 'detached').length,
-        capacityShortfall,
-        duplicateSkipped: episodes.filter(
-          (reservation) => reservation.skip && reservation.dedupMatchRecordingId !== undefined,
-        ).length,
-      },
+      badges,
       capacityTarget: worstOverage(relatedOverages) ?? undefined,
     }
   })

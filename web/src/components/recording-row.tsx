@@ -3,7 +3,8 @@ import { ChevronRight } from 'lucide-react'
 import { useState } from 'react'
 
 import type { Recording } from '@/api/generated'
-import { DropBadges, EncodeStatusBadges, IngestBadge, StatusBadge } from '@/components/recording-badges'
+import type { LiveCapability } from '@/lib/capabilities'
+import { DropBadges, EncodeStatusBadges, IngestBadge, RecordingVerdictBadge } from '@/components/recording-badges'
 import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
 import { programTitle } from '@/lib/program-labels'
 import { sourceLabels } from '@/lib/recording-search'
@@ -28,6 +29,7 @@ export type RecordingRowView = RecordingView
  */
 export function RecordingRow({
   recording,
+  liveCapability,
   trash,
   showSite,
   view,
@@ -36,6 +38,7 @@ export function RecordingRow({
   onToggle = () => undefined,
 }: {
   recording: Recording
+  liveCapability: LiveCapability
   trash: boolean
   /** レジストリと読み込み済み録画の site の和集合が 2 件以上のときに出す。 */
   showSite: boolean
@@ -118,19 +121,21 @@ export function RecordingRow({
           {programTitle(recording.title)}
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
-          <StatusBadge status={recording.status} />
+          <RecordingVerdictBadge
+            recording={recording}
+            liveCapability={liveCapability}
+            isTrashed={trash}
+          />
           {!trash && recording.status === 'finished' && recording.watchedAt === undefined && (
             <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">
               未視聴
             </span>
           )}
           <IngestBadge recording={recording} />
-          {/* エンコード失敗は StatusBadge / IngestBadge と同じ「この録画の
-              パイプラインがどこで止まっているか」なので隣に置く。メタデータ列の
-              末尾（DropBadges の後）に置くと、狭い端末で失敗バッジが 2 行目
-              以降に回る（親は flex-wrap なので隠れはしない）。単体ページの
-              ヘッダーも同じ並び。docs/frontend/recordings.md */}
+          {/* 結論の後ろに内訳（取り込み・エンコード・ドロップ）を並べる。メタデータ列の
+              末尾に回すと、狭い端末で失敗バッジが 2 行目以降に回る。 */}
           <EncodeStatusBadges recording={recording} />
+          {recording.dropSummary && <DropBadges summary={recording.dropSummary} />}
           {showSite && (
             /* 文字色は text-foreground を明示（bg-muted 小バッジの合成後コントラスト
                対策。docs/frontend/design.md「コントラストは毎回測る」）。 */
@@ -148,7 +153,6 @@ export function RecordingRow({
           {trash && recording.deletedAt && (
             <span className="shrink-0">削除 {formatDateTime(recording.deletedAt)}</span>
           )}
-          {recording.dropSummary && <DropBadges summary={recording.dropSummary} />}
         </div>
       </div>
       {/* カードは行ではないので、行末の「開く」記号は出さない（面全体がリンク）。 */}
