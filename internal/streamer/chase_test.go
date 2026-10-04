@@ -38,6 +38,7 @@ type retryingChaseStartupClient struct {
 	followCalls        int
 	firstFollowEntered chan struct{}
 	releaseFirstFollow chan struct{}
+	victimReleased     chan struct{}
 }
 
 func (c *retryingChaseStartupClient) StreamRecordFollow(ctx context.Context, _ string) (io.ReadCloser, error) {
@@ -54,7 +55,12 @@ func (c *retryingChaseStartupClient) StreamRecordFollow(ctx context.Context, _ s
 			return nil, ctx.Err()
 		}
 	}
-	return io.NopCloser(strings.NewReader("fake-record")), nil
+	select {
+	case <-c.victimReleased:
+		return io.NopCloser(strings.NewReader("fake-record")), nil
+	default:
+		return nil, &mirakc.APIError{StatusCode: http.StatusServiceUnavailable, Status: "503 Service Unavailable"}
+	}
 }
 
 func (c *retryingChaseStartupClient) StreamRecord(context.Context, string, int64) (io.ReadCloser, int64, error) {
@@ -1083,6 +1089,7 @@ func TestChaseConcurrentJoinerUsesUpstreamStartupRetry(t *testing.T) {
 	client := &retryingChaseStartupClient{
 		firstFollowEntered: make(chan struct{}),
 		releaseFirstFollow: make(chan struct{}),
+		victimReleased:     make(chan struct{}),
 	}
 	ls := newLiveStreamer(client, cfg)
 	t.Cleanup(ls.shutdown)
@@ -1098,7 +1105,7 @@ func TestChaseConcurrentJoinerUsesUpstreamStartupRetry(t *testing.T) {
 		key:        sessionKey{kind: liveSessionKind, id: 999},
 		ready:      ready,
 		done:       done,
-		cancel:     func() {},
+		cancel:     func() { close(client.victimReleased) },
 		lastAccess: time.Now().Add(-time.Hour),
 	}
 	ls.mu.Lock()

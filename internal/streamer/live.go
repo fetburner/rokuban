@@ -1150,7 +1150,11 @@ func (ls *LiveStreamer) ChasePlaylistForTarget(w http.ResponseWriter, r *http.Re
 			// A failed in-flight session still goes through the shared eviction and
 			// retry path below. Healthy sessions and cooldown responses are handled
 			// before any offset metadata request.
-			s = nil
+			s, err = ls.recoverSessionStartup(r.Context(), key, s.source, s, err)
+			if err != nil {
+				writeSessionError(w, err)
+				return
+			}
 		}
 		if s == nil {
 			committedSize := ls.committedOriginalSize(target.RecordingID)
@@ -2560,6 +2564,10 @@ func (ls *LiveStreamer) getOrCreateSession(ctx context.Context, serviceID int64)
 
 func (ls *LiveStreamer) getOrCreateSessionFor(ctx context.Context, key sessionKey, source sessionSource) (*liveSession, error) {
 	s, err := ls.getOrCreateSessionOnceFor(ctx, key, source)
+	return ls.recoverSessionStartup(ctx, key, source, s, err)
+}
+
+func (ls *LiveStreamer) recoverSessionStartup(ctx context.Context, key sessionKey, source sessionSource, s *liveSession, err error) (*liveSession, error) {
 	if err == nil {
 		return s, nil
 	}
