@@ -145,6 +145,7 @@ type RecordingPlaybackControlsProps = {
   muted: boolean
   volume: number
   playbackRate: number
+  playbackRateLocked?: boolean
   subtitlesEnabled: boolean
   skipEnabled: boolean
   pictureInPicture: boolean
@@ -229,6 +230,7 @@ export function RecordingPlaybackControls({
   muted,
   volume,
   playbackRate,
+  playbackRateLocked = false,
   subtitlesEnabled,
   skipEnabled,
   pictureInPicture,
@@ -1094,6 +1096,7 @@ export function RecordingPlaybackControls({
             audioChoice={audioChoice}
             onSelectAudio={onSelectAudio}
             playbackRate={playbackRate}
+            playbackRateLocked={playbackRateLocked}
             subtitlesEnabled={subtitlesEnabled}
             skipEnabled={skipEnabled}
             showSkip={hasChapters}
@@ -1260,6 +1263,7 @@ type PlaybackSettingsMenuProps = {
   audioChoice?: LiveAudioChoice
   onSelectAudio?: (choice: LiveAudioChoice | undefined) => void
   playbackRate: number
+  playbackRateLocked: boolean
   subtitlesEnabled: boolean
   skipEnabled: boolean
   showSkip: boolean
@@ -1293,6 +1297,7 @@ function PlaybackSettingsMenu({
   audioChoice,
   onSelectAudio,
   playbackRate,
+  playbackRateLocked,
   subtitlesEnabled,
   skipEnabled,
   showSkip,
@@ -1350,6 +1355,7 @@ function PlaybackSettingsMenu({
       case 'ArrowRight': {
         const submenu = (document.activeElement as HTMLElement | null)?.dataset.submenu as MenuView | undefined
         if (view !== 'main' || submenu === undefined) return
+        if ((document.activeElement as HTMLElement).getAttribute('aria-disabled') === 'true') break
         enter(submenu)
         break
       }
@@ -1378,22 +1384,30 @@ function PlaybackSettingsMenu({
     'flex h-12 w-full items-center gap-2.5 border-b border-border px-3 font-semibold outline-none focus-visible:bg-muted md:mb-1 md:h-11 md:border-white/15 md:focus-visible:bg-white/15'
   const option = cn(row, 'min-h-12 md:min-h-10 md:gap-3')
 
-  const submenuRow = (key: 'speed' | 'quality' | 'audio', icon: ReactNode, label: string, current: string) => (
+  const submenuRow = (
+    key: 'speed' | 'quality' | 'audio',
+    icon: ReactNode,
+    label: string,
+    current: string,
+    disabled = false,
+  ) => (
     <button
       type="button"
       role="menuitem"
+      aria-disabled={disabled || undefined}
       aria-label={label}
       aria-describedby={`${id}-${key}-value`}
       data-submenu={key}
       data-menu-focus={returnRow === key ? 'true' : undefined}
-      className={row}
-      onClick={() => enter(key)}
+      title={disabled ? '変換中のネイティブ HLS は 1 倍で再生します' : undefined}
+      className={cn(row, disabled && 'cursor-not-allowed opacity-70')}
+      onClick={() => !disabled && enter(key)}
     >
       {icon}
       <span className="flex-1">{label}</span>
       <span id={`${id}-${key}-value`} className={value}>
         {current}
-        <ChevronRight className="size-4" aria-hidden />
+        {!disabled && <ChevronRight className="size-4" aria-hidden />}
       </span>
     </button>
   )
@@ -1458,7 +1472,13 @@ function PlaybackSettingsMenu({
     '音声',
     selectedAudioLabel,
   )
-  const speedRow = playbackMode !== 'live' && submenuRow('speed', <Gauge className={icon} aria-hidden />, '再生速度', rateLabel(playbackRate))
+  const speedRow = playbackMode !== 'live' && submenuRow(
+    'speed',
+    <Gauge className={icon} aria-hidden />,
+    '再生速度',
+    playbackRateLocked ? `${rateLabel(playbackRate)}（変換中は固定）` : rateLabel(playbackRate),
+    playbackRateLocked,
+  )
   const subtitlesRow = switchRow(<Captions className={icon} aria-hidden />, '字幕', subtitlesEnabled, onToggleSubtitles)
   const skipRow = showSkip && switchRow(
     <Activity className={icon} aria-hidden />,

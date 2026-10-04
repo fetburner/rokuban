@@ -44,6 +44,7 @@ import {
 import {
   applyPlaybackRate,
   clearLegacyPlaybackPositions,
+  effectivePlaybackRate,
   loadPlaybackRate,
   playbackPositionWrite,
   persistPlaybackPosition,
@@ -440,6 +441,10 @@ export function LivePlayer({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<LiveLoadError | null>(null)
   const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
+  const [nativeHlsEventPlaylist, setNativeHlsEventPlaylist] = useState(false)
+  const nativeHlsRef = useRef(false)
+  const nativeHlsEventRef = useRef(false)
+  const playbackRateRef = useRef(playbackRate)
   const [originalVODProfileOverrideState, setOriginalVODProfileOverrideState] = useState<{
     recordingId: number | undefined
     value: string | undefined
@@ -683,17 +688,27 @@ export function LivePlayer({
     else if (videoRef.current) applyNativeAudioTrack(videoRef.current, index)
   }, [playbackAudio])
 
-  // VOD と追っかけ再生は端末共通の速度設定を使う。通常のライブ配信には適用しない。
+  useEffect(() => {
+    playbackRateRef.current = playbackRate
+  }, [playbackRate])
+
+  // VOD と追っかけ再生は端末共通の速度設定を使う。ENDLIST 前のネイティブ HLS は
+  // WebKit で倍速再生が停止するため、有限尺になるまで 1 倍へ一時的に固定する。
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
-    const rate = isRecordingPlayback ? playbackRate : 1
+    const locked = isRecordingPlayback && nativeHlsRef.current && video.duration === Infinity
+    nativeHlsEventRef.current = locked
+    const rate = effectivePlaybackRate(playbackRate, isRecordingPlayback, nativeHlsRef.current, video.duration)
     const appliedRate = applyPlaybackRate(video, rate)
-    if (isRecordingPlayback && appliedRate !== playbackRate) setPlaybackRate(appliedRate)
-  }, [isRecordingPlayback, playbackRate])
+    if (isRecordingPlayback && !locked && appliedRate !== playbackRate) {
+      playbackRateRef.current = appliedRate
+      setPlaybackRate(appliedRate)
+    }
+  }, [isRecordingPlayback, nativeHlsEventPlaylist, playbackRate])
 
   // ライブのページキー操作は M / F だけ。録画向けの速度変更は出さない。
-  // ネイティブ HLS の playbackRate が実 Safari で有効かは未検証。
+  // 追っかけの速度は設定メニューで扱い、通常のライブ視聴には適用しない。
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const video = videoRef.current
@@ -722,6 +737,10 @@ export function LivePlayer({
 
   useEffect(() => {
     let cancelled = false
+    nativeHlsRef.current = false
+    nativeHlsEventRef.current = false
+    // oxlint-disable-next-line react/set-state-in-effect -- 前の配信の EVENT 判定を新しい source へ持ち越さない
+    setNativeHlsEventPlaylist(false)
     // 切り替え・破棄が起きたら probe の fetch 自体を中断する。
     // `playlistStartupTimeout`（streamer 側、15 秒）ぶん in-flight のまま
     // 残さないため（レビュー #190 の指摘）。
@@ -1060,6 +1079,32 @@ export function LivePlayer({
       })
     }
 
+    /** ネイティブ HLS の duration が Infinity の間は保存速度を適用しない。 */
+    function followNativePlaybackRate(media: HTMLVideoElement) {
+      nativeHlsRef.current = true
+      const updateRate = () => {
+        if (cancelled) return
+        const locked = isRecordingPlayback && media.duration === Infinity
+        nativeHlsEventRef.current = locked
+        setNativeHlsEventPlaylist(locked)
+        const requestedRate = isRecordingPlayback ? playbackRateRef.current : 1
+        const rate = effectivePlaybackRate(requestedRate, isRecordingPlayback, true, media.duration)
+        const appliedRate = applyPlaybackRate(media, rate)
+        if (isRecordingPlayback && !locked && appliedRate !== requestedRate) {
+          playbackRateRef.current = appliedRate
+          setPlaybackRate(appliedRate)
+        }
+      }
+      media.addEventListener('durationchange', updateRate)
+      media.addEventListener('loadedmetadata', updateRate)
+      teardown.push(() => {
+        media.removeEventListener('durationchange', updateRate)
+        media.removeEventListener('loadedmetadata', updateRate)
+        nativeHlsRef.current = false
+        nativeHlsEventRef.current = false
+      })
+    }
+
     async function start() {
       let probe: Awaited<ReturnType<typeof probeLivePlaylist>>
       try {
@@ -1165,6 +1210,7 @@ export function LivePlayer({
       //      最後の望みを託す（`lib/live.ts` の `claimsHlsPlaylistSupport`）
       if (supportsNativeHls(canPlayType)) {
         // src を入れる前に張る（入れた後だと、失敗が速いときに取り逃がす）
+        followNativePlaybackRate(video)
         const stopDiagnostics = watchLiveDiagnostics(() => readNativeDiagnostics(video))
         watchNativeMedia(video, stopDiagnostics, canDowngrade, () => resumePending)
         followNativeAudio(video)
@@ -1205,6 +1251,7 @@ export function LivePlayer({
           // （`live-player.test.tsx` の「ネイティブ経路のメディア失敗」3 件 /
           // `web/e2e/live.mjs` ⑦）--- ここは 1 段目と同じ表面を持つ
           if (claimsHlsPlaylistSupport(canPlayType)) {
+            followNativePlaybackRate(video)
             const stopDiagnostics = watchLiveDiagnostics(() => readNativeDiagnostics(video))
             watchNativeMedia(video, stopDiagnostics, canDowngrade, () => resumePending)
             followNativeAudio(video)
@@ -1376,6 +1423,8 @@ export function LivePlayer({
       // `error` が出ず判定に差が出なかった（`web/e2e/live.mjs` で実測）。
       // 順序は無害な保険として残す。効くと分かっている主張ではない
       for (const fn of teardown) fn()
+      nativeHlsRef.current = false
+      nativeHlsEventRef.current = false
       hlsRef.current?.destroy()
       hlsRef.current = null
       if (video) {
@@ -1811,7 +1860,9 @@ export function LivePlayer({
       }}
       onRateChange={(event) => {
         if (!isRecordingPlayback) return
+        if (nativeHlsEventRef.current) return
         const rate = event.currentTarget.playbackRate
+        playbackRateRef.current = rate
         setPlaybackRate(rate)
         savePlaybackRate(rate)
       }}
@@ -1940,7 +1991,8 @@ export function LivePlayer({
         }}
         onPreviousChapter={() => jumpOriginalChapter('prev')}
         onNextChapter={() => jumpOriginalChapter('next')}
-        playbackRate={playbackRate}
+        playbackRate={nativeHlsEventPlaylist ? 1 : playbackRate}
+        playbackRateLocked={nativeHlsEventPlaylist}
         subtitlesEnabled={originalSubtitlesEnabled}
         skipEnabled={chapterSkipEnabled}
         showWatched={isOriginalVOD}
@@ -1950,8 +2002,9 @@ export function LivePlayer({
         onDeleteWatched={onDeleteWatched}
         onRateChange={(rate) => {
           const media = videoRef.current
-          if (!media) return
+          if (!media || nativeHlsEventRef.current) return
           const applied = applyPlaybackRate(media, rate)
+          playbackRateRef.current = applied
           setPlaybackRate(applied)
           savePlaybackRate(applied)
         }}

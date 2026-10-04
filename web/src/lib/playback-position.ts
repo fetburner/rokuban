@@ -175,6 +175,21 @@ export function applyPlaybackRate(video: HTMLVideoElement, rate: number): number
   }
 }
 
+/**
+ * ネイティブ HLS は ENDLIST 前の playlist を live として再生する。
+ * 録画再生では WebKit がこの状態で 1 倍以外だと停止するため、有限尺になるまで 1 倍にする。
+ */
+export function effectivePlaybackRate(
+  requestedRate: number,
+  isRecordingPlayback: boolean,
+  isNativeHls: boolean,
+  durationSeconds: number,
+): number {
+  if (!isRecordingPlayback) return 1
+  if (isNativeHls && durationSeconds === Infinity) return 1
+  return requestedRate
+}
+
 /** recordingFileURL は streamer のバイナリ配信 URL を組み立てる（OpenAPI 外）。 */
 export function recordingFileURL(recordingId: number, profile?: string): string {
   const base = `/api/media/recordings/${recordingId}/file`
