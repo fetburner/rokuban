@@ -1441,6 +1441,8 @@ if ((await targetBoundary.count()) !== 1) {
       }
     }
   }
+  // 選択が何になるかは再生位置に最も近い境界へ落ちるので、重なりの検査後は 30 秒境界を選び直す。
+  await targetBoundary.click()
   const nudge = page.getByRole('button', { name: '選択中の境界を 1 フレーム進める', exact: true })
   if ((await nudge.count()) !== 1) {
     ng.push('#1019: 選択境界ひとつだけの調整欄に +1 frame が無い')

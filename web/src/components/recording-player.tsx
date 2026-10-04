@@ -884,9 +884,7 @@ export function RecordingPlayer({
               const previous = previousSecondsRef.current
               previousSecondsRef.current = v.currentTime
               const stopAt = playAroundStopRef.current
-              if (stopAt !== null) {
-                if (v.currentTime >= stopAt) finishPlayAround(v)
-              }
+              if (stopAt !== null && v.currentTime >= stopAt) finishPlayAround(v)
               if (skipEnabled && !skipSuppressedRef.current && !v.paused) {
                 const target = skipTarget(chapterSpans, previous, v.currentTime, v.duration)
                 if (target !== undefined) {
