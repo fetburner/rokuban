@@ -20,8 +20,9 @@ import {
  */
 export function usePlayerFrame(
   videoRef: RefObject<HTMLVideoElement | null>,
-  fullscreenRef: RefObject<HTMLDivElement | null>,
+  fullscreenRef: RefObject<HTMLElement | null>,
   videoKey: unknown,
+  frameRef?: RefObject<HTMLDivElement | null>,
 ) {
   const controlsTimerRef = useRef<number | undefined>(undefined)
   // 映像を押したポインタの種類。タッチは再生 / 一時停止ではなく操作の表示に使う（スマホの定石）。
@@ -96,6 +97,9 @@ export function usePlayerFrame(
   useEffect(() => {
     const onFullscreenChange = () => setIsFullscreen(document.fullscreenElement === fullscreenRef.current)
     document.addEventListener('fullscreenchange', onFullscreenChange)
+    // A different player may mount inside the shared container while it is already fullscreen.
+    // oxlint-disable-next-line react/set-state-in-effect -- sync the new player with the browser fullscreen state.
+    onFullscreenChange()
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange)
   }, [fullscreenRef])
 
@@ -161,7 +165,7 @@ export function usePlayerFrame(
     },
     /** `RecordingPlaybackControls` に渡す枠の状態と操作。 */
     controls: {
-      fullscreenRef,
+      fullscreenRef: frameRef ?? fullscreenRef as RefObject<HTMLDivElement | null>,
       isPlaying: mediaPlaying,
       muted,
       volume,

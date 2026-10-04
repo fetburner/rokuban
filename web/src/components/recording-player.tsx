@@ -7,6 +7,7 @@ import {
   useState,
   type MutableRefObject,
   type PointerEvent as ReactPointerEvent,
+  type RefObject,
 } from 'react'
 
 import type { ChapterSpan, EncodedAsset, KeepRange, RecordingChaptersSource } from '@/api/generated'
@@ -56,6 +57,8 @@ type RecordingPlayerProps = {
   onRecordingPlaybackError?: (recordingPositionSeconds: number | undefined, wasPlaying: boolean) => boolean
   /** 最初の読み込みが終わったら再生を始める（再生元を替えた直後に、再生中だった続きを見る）。 */
   autoPlay?: boolean
+  /** 詳細ページで再生元の種類が変わっても残る、共有の全画面コンテナ。 */
+  fullscreenContainerRef?: RefObject<HTMLElement | null>
   /** 90% 到達の視聴済み PUT が通った後に呼ぶ（親が録画クエリを取り直してボタンと未視聴の印を更新する）。 */
   onWatched?: () => void
   /** 視聴済みボタンを出す完了録画かどうか。 */
@@ -80,7 +83,7 @@ type RecordingPlayerProps = {
    * 別の録画の詳細へ移る（履歴に積む）。終端カードの「今すぐ再生」と自動遷移が使う。
    * 呼び出し側が移動先の詳細を先にキャッシュへ入れておくと、全画面のまま移れる。
    */
-  onNavigateToRecording?: (id: number) => void
+  onNavigateToRecording?: (id: number, autoPlay?: boolean) => void
   onTrash?: () => void
   onProfileChange?: (profile: string) => void
   /**
@@ -134,6 +137,7 @@ export function RecordingPlayer({
   recordingId,
   resumePositionMs,
   autoPlay = false,
+  fullscreenContainerRef,
   onWatched,
   onRecordingPositionChange,
   onRecordingPlaybackError,
@@ -202,7 +206,12 @@ export function RecordingPlayer({
   const jumpToRef = useRef<(seconds: number) => void>(() => {})
   const subtitleLinesRef = useRef(new WeakMap<VTTCue, VTTCue['line']>())
   // 枠（バーの自動非表示・フォーカス・映像のタップ・全画面・PiP）は原本 HLS の LivePlayer と共有する。
-  const frame = usePlayerFrame(videoRef, fullscreenRef, `${recordingId}:${selectedProfile}`)
+  const frame = usePlayerFrame(
+    videoRef,
+    fullscreenContainerRef ?? fullscreenRef,
+    `${recordingId}:${selectedProfile}`,
+    fullscreenRef,
+  )
   const { controlsVisible, requestFullscreen } = frame
   // 終端カードを出している録画の id。録画を切り替えても作り直さないので、id と組で持って
   // 切り替えた瞬間に前の録画のカードを描かない（`played` と同じ規律）。
@@ -272,7 +281,7 @@ export function RecordingPlayer({
 
   const advanceToNext = (id: number) => {
     autoplayRecordingRef.current = id
-    navigateToRecordingRef.current?.(id)
+    navigateToRecordingRef.current?.(id, true)
   }
   const advanceToNextRef = useRef(advanceToNext)
   advanceToNextRef.current = advanceToNext

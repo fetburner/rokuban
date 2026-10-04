@@ -13,6 +13,23 @@
  */
 @import "@fontsource-variable/noto-sans-jp";
 
+.recording-playback-fullscreen-container:fullscreen {
+    display: grid;
+    width: 100vw;
+    height: 100vh;
+    place-items: center;
+    overflow: hidden;
+    background: #000;
+}
+
+.recording-playback-fullscreen-container:fullscreen [data-testid="recording-player-shell"] {
+    width: min(100vw, calc(100vh * 16 / 9));
+}
+
+.recording-playback-fullscreen-container:fullscreen [data-testid="recording-player-frame"] {
+    border-radius: 0;
+}
+
 .chase-timeline-slider {
     appearance: none;
     -webkit-appearance: none;

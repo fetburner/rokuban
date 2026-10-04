@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
+  type RefObject,
 } from 'react'
 
 import type { ChapterSpan } from '@/api/generated'
@@ -242,6 +243,8 @@ type LivePlayerProps = {
    * その後の画質切替では利用者が止めた状態を保つ。
    */
   autoPlay?: boolean
+  /** 詳細ページで再生元の種類が変わっても残る、共有の全画面コンテナ。 */
+  fullscreenContainerRef?: RefObject<HTMLElement | null>
   /**
    * セッション先頭からの小数秒位置。再生元を替えた直後に、親が持ち越した録画先頭からの位置の
    * 端数（秒境界より細かい部分）を保つ。
@@ -346,6 +349,7 @@ export function LivePlayer({
   serviceId,
   recordingId,
   resumePositionMs,
+  fullscreenContainerRef,
   chaseTimeline,
   profile,
   audio,
@@ -506,7 +510,7 @@ export function LivePlayer({
   const [originalSubtitlesEnabled, setOriginalSubtitlesEnabled] = useState(isRecordingPlayback)
   // 操作バーの枠（自動非表示・フォーカス・映像のタップ・全画面・PiP）は encoded の
   // RecordingPlayer と同じ実装を使う。`<video>` 要素はこのコンポーネントでは作り直さない。
-  const frame = usePlayerFrame(videoRef, fullscreenRef, undefined)
+  const frame = usePlayerFrame(videoRef, fullscreenContainerRef ?? fullscreenRef, undefined, fullscreenRef)
   const { setMediaPlaying } = frame
   const [chapterSkipEnabled, setChapterSkipEnabled] = useState(loadChapterSkip)
   const originalPreviousSecondsRef = useRef(0)

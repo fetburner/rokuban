@@ -422,14 +422,14 @@ async function transitionsAlong(png) {
   log('\n=== ④ 自動で次の回へ移る（再生・全画面・履歴） ===')
   await page.getByRole('button', { name: '全画面表示' }).click()
   const fullscreenOK = await page
-    .waitForFunction(() => document.fullscreenElement?.getAttribute('data-testid') === 'recording-player-frame', undefined, { timeout: 5000 })
+    .waitForFunction(() => document.fullscreenElement?.getAttribute('data-testid') === 'recording-playback-group', undefined, { timeout: 5000 })
     .then(() => true)
     .catch(() => false)
   if (!fullscreenOK) {
     log('  この環境では全画面に入れない（④ の全画面保持は測れない）')
   }
   await page.evaluate(() => {
-    window.__frame = document.querySelector('[data-testid="recording-player-frame"]')
+    window.__frame = document.querySelector('[data-testid="recording-playback-group"]')
   })
   await playToEnd(page)
   await page.waitForURL('**/recordings/2', { timeout: 10000 }).catch(() => ng.push('④ 3 秒待っても次の回へ自動で移らない'))
