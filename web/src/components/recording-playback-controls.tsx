@@ -124,6 +124,8 @@ type RecordingPlaybackControlsProps = {
   canEditChapters?: boolean
   onEnterChapterEditing?: () => void
   onPlayAround?: () => void
+  onPlayToBoundary?: () => void
+  onPlayFromBoundary?: () => void
   tilePreview: TilePreview
   tilesRequested: boolean
   tilesAvailable: boolean
@@ -209,6 +211,8 @@ export function RecordingPlaybackControls({
   canEditChapters = false,
   onEnterChapterEditing,
   onPlayAround,
+  onPlayToBoundary,
+  onPlayFromBoundary,
   tilePreview,
   tilesRequested,
   tilesAvailable,
@@ -430,25 +434,48 @@ export function RecordingPlaybackControls({
         {chapterEditing ? (
           // 編集中は操作バーを簡素な 1 本に差し替える。**`<video>` は同じ場所に置いたままにする**
           // （別の木に描くと作り直され、再生位置が 0 に戻って止まる）。
-          <div className="absolute inset-x-0 bottom-0 flex items-center gap-3 bg-gradient-to-t from-black/85 to-transparent px-3 pt-8 pb-2 text-white">
+          <div className="absolute inset-x-0 bottom-0 flex items-center gap-1.5 bg-gradient-to-t from-black/85 to-transparent px-2 pt-8 pb-2 text-white md:gap-3 md:px-3">
             <Button type="button" variant="ghost" size="icon" className={ghost} aria-label={isPlaying ? '一時停止' : '再生'} onClick={onTogglePlay}>
               {isPlaying ? <Pause /> : <Play />}
             </Button>
-            <span data-testid="chapter-edit-playhead" className="font-mono text-sm">
+            <span data-testid="chapter-edit-playhead" className="shrink-0 font-mono text-xs md:text-sm">
               {formatPlaybackTimeMs(seconds)}
               <span className="hidden md:inline"> / {formatPlaybackTime(durationSeconds)}</span>
             </span>
-            <Button
-              type="button"
-              variant="secondary"
-              className="ml-auto rounded-full"
-              onClick={onPlayAround}
-              disabled={onPlayAround === undefined}
-            >
-              <span className="md:hidden">前後 3 秒</span>
-              <span className="hidden md:inline">前後 3 秒を再生</span>
-            </Button>
-            <span className="hidden rounded-full bg-white/15 px-3 py-2 text-sm md:inline-flex" aria-label="CM自動スキップは編集中に停止">
+            <div data-testid="chapter-edit-playback-modes" className="ml-auto flex min-w-0 shrink-0 items-center gap-1 md:gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                className="h-8 shrink-0 rounded-full px-2 text-xs leading-none md:h-9 md:px-3 md:text-sm"
+                aria-label="選択中の境界の前後 3 秒を再生"
+                onClick={onPlayAround}
+                disabled={onPlayAround === undefined}
+              >
+                <span className="md:hidden">前後3秒</span>
+                <span className="hidden md:inline">前後 3 秒</span>
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                className="h-8 shrink-0 rounded-full px-2 text-xs leading-none md:h-9 md:px-3 md:text-sm"
+                aria-label="選択中の境界まで再生"
+                onClick={onPlayToBoundary}
+                disabled={onPlayToBoundary === undefined}
+              >
+                境界まで
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                className="h-8 shrink-0 rounded-full px-2 text-xs leading-none md:h-9 md:px-3 md:text-sm"
+                aria-label="選択中の境界から再生"
+                onClick={onPlayFromBoundary}
+                disabled={onPlayFromBoundary === undefined}
+              >
+                境界から
+              </Button>
+            </div>
+            <span className="hidden rounded-full bg-white/15 px-3 py-2 text-sm lg:inline-flex" aria-label="CM自動スキップは編集中に停止">
               CM を飛ばさない（編集中）
             </span>
           </div>

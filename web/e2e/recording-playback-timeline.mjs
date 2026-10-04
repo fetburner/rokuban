@@ -313,6 +313,25 @@ async function captureExpectedMarkers(page, sessionOffsetSeconds, expectedMarker
   return observed
 }
 
+async function captureNextPresentedFrame(page, action) {
+  await page.locator('video').evaluate((video) => {
+    window.__nextPresentedFrame = new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(null), 5000)
+      if (typeof video.requestVideoFrameCallback !== 'function') {
+        clearTimeout(timer)
+        resolve(null)
+        return
+      }
+      video.requestVideoFrameCallback((_now, metadata) => {
+        clearTimeout(timer)
+        resolve(metadata.mediaTime)
+      })
+    })
+  })
+  await action()
+  return page.evaluate(() => window.__nextPresentedFrame)
+}
+
 async function seekThroughChapterCards(page) {
   log('\n=== 非カット MP4: 境界カードのシーク ===')
   await page.getByTestId('recording-player-shell').hover()
@@ -355,6 +374,103 @@ async function seekThroughChapterCards(page) {
       ng.push(`境界カード ${index + 1} のシークで frame ${marker.frame} を表示できない (slot=${slot}, ${err.message})`)
     }
   }
+
+  log('\n=== フィルムストリップの境界選択と1フレーム調整 ===')
+  await page.locator('video').evaluate((video) => {
+    video.pause()
+    video.playbackRate = 1
+  })
+  const firstMarker = markerTimes[0]
+  const firstBoundaryMs = Math.round(firstMarker.expectedSeconds * 1000)
+  const boundaryButton = page.locator(`[data-testid="chapter-filmstrip-boundary"][data-time-ms="${firstBoundaryMs}"]`)
+  await page.locator('video').evaluate((video, seconds) => {
+    video.pause()
+    video.currentTime = seconds
+  }, firstMarker.expectedSeconds - 0.5)
+  await page.waitForFunction((target) => {
+    const video = document.querySelector('video')
+    return video && video.paused && !video.seeking && Math.abs(video.currentTime - target) < 0.05
+  }, firstMarker.expectedSeconds - 0.5, { timeout: 5000 })
+  // Adjacent frame boundaries are only a few pixels apart. Activate the exact
+  // DOM button so a neighboring boundary cannot receive the pointer instead.
+  await boundaryButton.evaluate((button) => button.click())
+  await page.waitForFunction((slot) => {
+    const video = document.querySelector('video')
+    return video && video.paused && !video.seeking && window.__displayedMarkerSlot() === slot
+  }, firstMarker.markerSlot, { timeout: 5000 })
+  if (!(await page.getByTestId('chapter-boundary-frame-note').isVisible())) {
+    ng.push('境界フレームの表示中に「境界の直後」の説明が出ない')
+  }
+
+  const plusFrame = page.getByRole('button', { name: '選択中の境界を 1 フレーム進める', exact: true })
+  const presentedMediaTime = await captureNextPresentedFrame(page, () => plusFrame.click())
+  const nextFrameIndex = firstMarker.frame + 1
+  const nextFrameTime = encodedTimes[nextFrameIndex]
+  if (!Number.isFinite(presentedMediaTime) || !Number.isFinite(nextFrameTime) || Math.abs(presentedMediaTime - nextFrameTime) > GRID_TOLERANCE_SECONDS) {
+    ng.push(`+1フレーム後に隣のフレームへ seek しない (mediaTime=${presentedMediaTime}, want=${nextFrameTime}, index=${nextFrameIndex})`)
+  }
+  if (await page.evaluate(() => window.__displayedMarkerSlot()) === firstMarker.markerSlot) {
+    ng.push('+1フレーム調整後も元の目印フレームが表示される')
+  }
+  await page.getByRole('button', { name: '選択中の境界を1フレーム戻す', exact: true }).click()
+  await page.waitForFunction((slot) => window.__displayedMarkerSlot() === slot && document.querySelector('video')?.paused, firstMarker.markerSlot, { timeout: 5000 })
+
+  log('\n=== 境界まで / 境界から ===')
+  const stopMarker = markerTimes[2]
+  const stopBoundaryMs = Math.round(stopMarker.expectedSeconds * 1000)
+  await page.locator(`[data-testid="chapter-filmstrip-boundary"][data-time-ms="${stopBoundaryMs}"]`).evaluate((button) => button.click())
+  await page.waitForFunction((slot) => window.__displayedMarkerSlot() === slot && document.querySelector('video')?.paused, stopMarker.markerSlot, { timeout: 5000 })
+  await page.getByRole('button', { name: '選択中の境界まで再生' }).click()
+  await page.waitForFunction((slot) => {
+    const video = document.querySelector('video')
+    return video && video.paused && !video.seeking && window.__displayedMarkerSlot() === slot
+  }, stopMarker.markerSlot, { timeout: 12000 })
+
+  const fromMarker = markerTimes[3]
+  const fromBoundaryMs = Math.round(fromMarker.expectedSeconds * 1000)
+  await page.locator(`[data-testid="chapter-filmstrip-boundary"][data-time-ms="${fromBoundaryMs}"]`).evaluate((button) => button.click())
+  await page.waitForFunction((slot) => window.__displayedMarkerSlot() === slot && document.querySelector('video')?.paused, fromMarker.markerSlot, { timeout: 5000 })
+  const playStart = page.locator('video').evaluate((video) => new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), 10_000)
+    video.addEventListener('play', () => {
+      clearTimeout(timer)
+      resolve(video.currentTime)
+    }, { once: true })
+  }))
+  await page.getByRole('button', { name: '選択中の境界から再生' }).click()
+  const actualPlayStart = await playStart
+  const fromFrameStart = encodedTimes[fromMarker.frame]
+  const fromFrameEnd = encodedTimes[fromMarker.frame + 1] ?? (fromFrameStart + 1 / SOURCE_FRAME_RATE)
+  if (typeof actualPlayStart !== 'number' || actualPlayStart < fromFrameStart || actualPlayStart >= fromFrameEnd) {
+    ng.push(`「境界から」の再生開始が選択フレーム内でない (start=${actualPlayStart}, frame=[${fromFrameStart}, ${fromFrameEnd}))`)
+  }
+  const modeCompletion = await page.locator('video').evaluate((video, boundarySeconds) => new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), 8000)
+    const check = () => {
+      if (video.paused && !video.seeking && video.currentTime >= boundarySeconds + 2.9) {
+        clearTimeout(timer)
+        resolve(true)
+        return
+      }
+      requestAnimationFrame(check)
+    }
+    check()
+  }), fromMarker.expectedSeconds)
+  if (!modeCompletion) ng.push('「境界から」が境界から約 3 秒で停止しない')
+
+  await page.setViewportSize({ width: 400, height: 800 })
+  const modeLayout = await page.getByTestId('chapter-edit-playback-modes').evaluate((element) => {
+    const frame = element.closest('[data-testid="recording-player-frame"]')
+    if (!frame) return null
+    const frameRect = frame.getBoundingClientRect()
+    const buttons = Array.from(element.querySelectorAll('button')).map((button) => {
+      const rect = button.getBoundingClientRect()
+      return { left: rect.left, right: rect.right }
+    })
+    return buttons.every((button) => button.left >= frameRect.left - 1 && button.right <= frameRect.right + 1)
+  })
+  if (modeLayout !== true) ng.push('400×800 で再生型のボタンが映像下端の帯からはみ出す')
+  await page.setViewportSize({ width: 1280, height: 900 })
 }
 
 // 目印のフレームが表示された瞬間（requestVideoFrameCallback）に一時停止し、「再生位置に合わせる」を

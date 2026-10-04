@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 
 import type { ChapterSpan } from '@/api/generated'
 import { Button } from '@/components/ui/button'
@@ -11,7 +11,13 @@ import {
   minFilmstripRangeSeconds,
   type FilmstripRange,
 } from '@/lib/chapter-filmstrip'
-import { chapterBoundaries, displayedFrameBoundaryMs, nudgeBoundary } from '@/lib/chapters'
+import {
+  FRAME_SECONDS,
+  chapterBoundaries,
+  chapterBoundaryMsToSeekSeconds,
+  displayedFrameBoundaryMs,
+  nudgeBoundary,
+} from '@/lib/chapters'
 import { formatPlaybackTime, formatPlaybackTimeMs } from '@/lib/format'
 import {
   SEEK_TILES_COLUMNS,
@@ -22,11 +28,16 @@ import {
   seekTilesURL,
 } from '@/lib/seek-tiles'
 
+// 200ms は 1 秒に 5 回の調整になる。各 seek が次の調整までに落ち着きやすく、
+// 1 フレームの違いを目で追える速さを保つ。
+const NUDGE_REPEAT_INTERVAL_MS = 200
+
 type RecordingChapterFilmstripProps = {
   recordingId: number
   durationSeconds: number
   currentSeconds: number
   getDisplayedFrameSeconds: () => number | null
+  isPlaying: boolean
   spans: ChapterSpan[]
   selectedBoundary: number | null
   tilesAvailable: boolean
@@ -34,8 +45,8 @@ type RecordingChapterFilmstripProps = {
   onTileImageError: () => void
   onSeek: (seconds: number) => void
   onSelectBoundary: (seconds: number) => void
+  onBoundaryAction: (seconds: number) => void
   onChangeSpans: (spans: ChapterSpan[]) => void
-  onPlayAround: (seconds: number) => void
 }
 
 function rangeAround(center: number, length: number, duration: number, minLength: number): FilmstripRange {
@@ -57,6 +68,7 @@ export function RecordingChapterFilmstrip({
   durationSeconds,
   currentSeconds,
   getDisplayedFrameSeconds,
+  isPlaying,
   spans,
   selectedBoundary,
   tilesAvailable,
@@ -64,8 +76,8 @@ export function RecordingChapterFilmstrip({
   onTileImageError,
   onSeek,
   onSelectBoundary,
+  onBoundaryAction,
   onChangeSpans,
-  onPlayAround,
 }: RecordingChapterFilmstripProps) {
   const boundaries = useMemo(() => chapterBoundaries(spans), [spans])
   // 編集モードに入った時点の再生位置。開いた直後の表示範囲はこの周りにし、再生が進んでも追わない。
@@ -76,6 +88,9 @@ export function RecordingChapterFilmstrip({
   const trackRef = useRef<HTMLDivElement | null>(null)
   const dragRef = useRef<{ fromSeconds: number; downX: number; moved: boolean } | null>(null)
   const ignoreClickRef = useRef(false)
+  const editRef = useRef({ spans, selectedBoundary })
+  const nudgeRepeatRef = useRef<number | null>(null)
+  const ignoreNudgeClickRef = useRef(false)
   const observerRef = useRef<ResizeObserver | null>(null)
   // 幅は実測が要る（jsdom では測れず 0 のまま。その間は既定の長さで描く）。
   const setTrack = useCallback((element: HTMLDivElement | null) => {
@@ -100,6 +115,13 @@ export function RecordingChapterFilmstrip({
   const overviewStart = durationSeconds > 0 ? (range.startSeconds / durationSeconds) * 100 : 0
   const overviewWidth = durationSeconds > 0 ? (rangeLength / durationSeconds) * 100 : 100
   const cellPercent = rangeLength > 0 ? (SEEK_TILES_INTERVAL_SECONDS / rangeLength) * 100 : 0
+
+  useEffect(() => () => {
+    if (nudgeRepeatRef.current !== null) window.clearInterval(nudgeRepeatRef.current)
+  }, [])
+  useLayoutEffect(() => {
+    editRef.current = { spans, selectedBoundary }
+  }, [selectedBoundary, spans])
 
   const panToX = (clientX: number, element: HTMLDivElement) => {
     if (durationSeconds <= 0) return
@@ -129,19 +151,35 @@ export function RecordingChapterFilmstrip({
   const startBoundaryDrag = (event: ReactPointerEvent<HTMLButtonElement>, boundary: number) => {
     dragRef.current = { fromSeconds: boundary, downX: event.clientX, moved: false }
     setDragPreview({ from: boundary, ms: Math.round(boundary * 1000) })
-    onSelectBoundary(boundary)
     event.currentTarget.setPointerCapture?.(event.pointerId)
   }
 
   const finishBoundaryDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
     const drag = dragRef.current
     if (!drag) return
-    const target = (dragPreview?.ms ?? Math.round(drag.fromSeconds * 1000)) / 1000
+    drag.moved ||= Math.abs(event.clientX - drag.downX) > 2
+    const track = trackRef.current
+    const rect = track?.getBoundingClientRect()
+    const targetMs = rect && rect.width > 0
+      ? Math.round(filmstripXToTime(event.clientX - rect.left, range, rect.width) * 1000)
+      : dragPreview?.ms ?? Math.round(drag.fromSeconds * 1000)
+    const target = targetMs / 1000
     if (drag.moved) {
-      onChangeSpans(nudgeBoundary(spans, drag.fromSeconds, target - drag.fromSeconds))
-      onSelectBoundary(target)
-      ignoreClickRef.current = true
+      const nextSpans = nudgeBoundary(spans, drag.fromSeconds, target - drag.fromSeconds)
+      const nextBoundaries = chapterBoundaries(nextSpans)
+      const nextBoundary = nextBoundaries.reduce((best, candidate) =>
+        Math.abs(candidate - target) < Math.abs(best - target) ? candidate : best,
+      )
+      editRef.current = { spans: nextSpans, selectedBoundary: nextBoundary }
+      onChangeSpans(nextSpans)
+      onSelectBoundary(nextBoundary)
+      onBoundaryAction(nextBoundary)
+    } else {
+      editRef.current = { spans, selectedBoundary: drag.fromSeconds }
+      onSelectBoundary(drag.fromSeconds)
+      onBoundaryAction(drag.fromSeconds)
     }
+    ignoreClickRef.current = true
     setDragPreview(null)
     dragRef.current = null
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
@@ -160,17 +198,74 @@ export function RecordingChapterFilmstrip({
   }
 
   const nudgeSelected = (deltaSeconds: number) => {
-    if (selectedBoundary === null) return
-    onChangeSpans(nudgeBoundary(spans, selectedBoundary, deltaSeconds))
-    onSelectBoundary(selectedBoundary + deltaSeconds)
+    const current = editRef.current
+    if (current.selectedBoundary === null) return
+    const target = current.selectedBoundary + deltaSeconds
+    const nextSpans = nudgeBoundary(current.spans, current.selectedBoundary, deltaSeconds)
+    const nextBoundaries = chapterBoundaries(nextSpans)
+    const nextBoundary = nextBoundaries.reduce((best, candidate) =>
+      Math.abs(candidate - target) < Math.abs(best - target) ? candidate : best,
+    )
+    editRef.current = { spans: nextSpans, selectedBoundary: nextBoundary }
+    onChangeSpans(nextSpans)
+    onSelectBoundary(nextBoundary)
+    onBoundaryAction(nextBoundary)
   }
+
+  const nudgeSelectedRef = useRef(nudgeSelected)
+  useLayoutEffect(() => {
+    nudgeSelectedRef.current = nudgeSelected
+  })
+
+  const beginNudgeRepeat = (event: ReactPointerEvent<HTMLButtonElement>, deltaSeconds: number) => {
+    if (event.button !== 0) return
+    if (nudgeRepeatRef.current !== null) window.clearInterval(nudgeRepeatRef.current)
+    ignoreNudgeClickRef.current = true
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+    nudgeSelectedRef.current(deltaSeconds)
+    nudgeRepeatRef.current = window.setInterval(
+      () => nudgeSelectedRef.current(deltaSeconds),
+      NUDGE_REPEAT_INTERVAL_MS,
+    )
+  }
+
+  const endNudgeRepeat = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (nudgeRepeatRef.current !== null) window.clearInterval(nudgeRepeatRef.current)
+    nudgeRepeatRef.current = null
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+  }
+
+  const nudgeButtonProps = (deltaSeconds: number) => ({
+    onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => beginNudgeRepeat(event, deltaSeconds),
+    onPointerUp: endNudgeRepeat,
+    onPointerCancel: (event: ReactPointerEvent<HTMLButtonElement>) => {
+      endNudgeRepeat(event)
+      ignoreNudgeClickRef.current = false
+    },
+    onClick: () => {
+      if (ignoreNudgeClickRef.current) {
+        ignoreNudgeClickRef.current = false
+        return
+      }
+      nudgeSelectedRef.current(deltaSeconds)
+    },
+  })
 
   const alignSelectedToPlayback = () => {
     if (selectedBoundary === null) return
     const targetMs = displayedFrameBoundaryMs(getDisplayedFrameSeconds(), currentSeconds)
     const targetSeconds = targetMs / 1000
-    onChangeSpans(nudgeBoundary(spans, selectedBoundary, targetSeconds - selectedBoundary))
-    onSelectBoundary(targetSeconds)
+    const nextSpans = nudgeBoundary(spans, selectedBoundary, targetSeconds - selectedBoundary)
+    const nextBoundaries = chapterBoundaries(nextSpans)
+    const nextBoundary = nextBoundaries.reduce((best, candidate) =>
+      Math.abs(candidate - targetSeconds) < Math.abs(best - targetSeconds) ? candidate : best,
+    )
+    editRef.current = { spans: nextSpans, selectedBoundary: nextBoundary }
+    onChangeSpans(nextSpans)
+    onSelectBoundary(nextBoundary)
+    onBoundaryAction(nextBoundary)
   }
 
   const overviewPanStart = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -179,6 +274,11 @@ export function RecordingChapterFilmstrip({
   }
 
   const action = 'h-9 md:h-8'
+  const selectedFrameSeconds = selectedBoundary === null
+    ? null
+    : chapterBoundaryMsToSeekSeconds(Math.round(selectedBoundary * 1000))
+  const showingBoundaryFrame = selectedFrameSeconds !== null && !isPlaying &&
+    Math.abs(currentSeconds - selectedFrameSeconds) <= FRAME_SECONDS / 2
   return (
     <section data-testid="chapter-filmstrip" aria-label="チャプターフィルムストリップ" className="flex min-w-0 flex-col gap-1.5">
       <div
@@ -322,6 +422,7 @@ export function RecordingChapterFilmstrip({
                   return
                 }
                 onSelectBoundary(boundary)
+                onBoundaryAction(boundary)
               }}
             />
           )
@@ -333,20 +434,22 @@ export function RecordingChapterFilmstrip({
         <output data-testid="chapter-selected-boundary" className="rounded bg-muted px-2 py-1 font-mono">
           {selectedBoundary === null ? '—' : formatPlaybackTimeMs(selectedBoundary)}
         </output>
-        <Button type="button" size="sm" variant="outline" className={action} aria-label="選択中の境界を1秒戻す" disabled={selectedBoundary === null} onClick={() => nudgeSelected(-1)}>
+        {showingBoundaryFrame && (
+          <span data-testid="chapter-boundary-frame-note" aria-live="polite" className="text-xs text-muted-foreground">
+            境界の直後（次の区間の先頭）
+          </span>
+        )}
+        <Button type="button" size="sm" variant="outline" className={action} aria-label="選択中の境界を1秒戻す" disabled={selectedBoundary === null} {...nudgeButtonProps(-1)}>
           −1秒
         </Button>
-        <Button type="button" size="sm" variant="outline" className={action} aria-label="選択中の境界を1フレーム戻す" disabled={selectedBoundary === null} onClick={() => nudgeSelected(-1001 / 30000)}>
+        <Button type="button" size="sm" variant="outline" className={action} aria-label="選択中の境界を1フレーム戻す" disabled={selectedBoundary === null} {...nudgeButtonProps(-FRAME_SECONDS)}>
           <span className="md:hidden">−1f</span><span className="hidden md:inline">−1フレーム</span>
         </Button>
-        <Button type="button" size="sm" variant="outline" className={action} aria-label="選択中の境界を 1 フレーム進める" disabled={selectedBoundary === null} onClick={() => nudgeSelected(1001 / 30000)}>
+        <Button type="button" size="sm" variant="outline" className={action} aria-label="選択中の境界を 1 フレーム進める" disabled={selectedBoundary === null} {...nudgeButtonProps(FRAME_SECONDS)}>
           <span className="md:hidden">+1f</span><span className="hidden md:inline">+1フレーム</span>
         </Button>
-        <Button type="button" size="sm" variant="outline" className={action} aria-label="選択中の境界を1秒進める" disabled={selectedBoundary === null} onClick={() => nudgeSelected(1)}>
+        <Button type="button" size="sm" variant="outline" className={action} aria-label="選択中の境界を1秒進める" disabled={selectedBoundary === null} {...nudgeButtonProps(1)}>
           +1秒
-        </Button>
-        <Button type="button" size="sm" variant="outline" className={`${action} hidden md:inline-flex`} aria-label="選択中の境界の前後3秒を再生" disabled={selectedBoundary === null} onClick={() => selectedBoundary !== null && onPlayAround(selectedBoundary)}>
-          前後3秒を再生
         </Button>
         <Button type="button" size="sm" variant="outline" className={`${action} hidden md:inline-flex`} aria-label="選択中の境界を現在の再生位置に合わせる" disabled={selectedBoundary === null} onClick={alignSelectedToPlayback}>
           再生位置に合わせる

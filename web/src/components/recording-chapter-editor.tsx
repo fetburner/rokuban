@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useMemo, useState, type MutableRefObject } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 
 import type { ChapterSpan, RecordingChaptersSource } from '@/api/generated'
 import { Button } from '@/components/ui/button'
 import { RecordingChapterFilmstrip } from '@/components/recording-chapter-filmstrip'
 import {
+  FRAME_SECONDS,
   chapterBoundaries,
-  chapterBoundaryMsToSeekSeconds,
   displayedFrameBoundaryMs,
+  nudgeBoundary,
 } from '@/lib/chapters'
 import { formatPlaybackTime } from '@/lib/format'
 
@@ -35,12 +36,14 @@ type RecordingChapterEditorProps = {
   currentSeconds: number
   /** 最後に表示されたフレームの mediaTime（秒）。取れなければ null（currentTime の floor に fallback）。 */
   getDisplayedFrameSeconds?: () => number | null
+  isPlaying: boolean
   durationSeconds: number
   tilesAvailable: boolean
   onTileImageLoad: () => void
   onTileImageError: () => void
-  playAround: (seconds: number) => void
   jumpTo: (seconds: number) => void
+  /** 選択・調整した境界を停止して表示する。 */
+  onBoundaryAction: (seconds: number) => void
   /** 選んでいる境界（既定は再生位置に最も近い境界）。映像側の「前後 3 秒を再生」が使う。 */
   onSelectedBoundaryChange: (seconds: number | null) => void
   /** 保存は成功で resolve、失敗で reject。 */
@@ -77,12 +80,13 @@ function ChapterDraftEditor({
   recordingId,
   currentSeconds,
   getDisplayedFrameSeconds = noDisplayedFrame,
+  isPlaying,
   durationSeconds,
   tilesAvailable,
   onTileImageLoad,
   onTileImageError,
-  playAround,
   jumpTo,
+  onBoundaryAction,
   onSelectedBoundaryChange,
   onSave,
   onReset,
@@ -112,6 +116,10 @@ function ChapterDraftEditor({
   const dirty = useMemo(() => !sameSpans(draft, base.spans), [draft, base.spans])
   const [selectedBoundaryValue, setSelectedBoundaryValue] = useState<number | null>(null)
   const [pendingStartMs, setPendingStartMs] = useState<number | null>(null)
+  const onBoundaryActionRef = useRef(onBoundaryAction)
+  useLayoutEffect(() => {
+    onBoundaryActionRef.current = onBoundaryAction
+  }, [onBoundaryAction])
   // 描画用（ボタンの無効判定）は currentTime の floor、押した瞬間の値は mediaTime 優先。
   const currentMs = displayedFrameBoundaryMs(null, currentSeconds)
   const nowMs = () => displayedFrameBoundaryMs(getDisplayedFrameSeconds(), currentSeconds)
@@ -134,10 +142,18 @@ function ChapterDraftEditor({
     onSelectedBoundaryChange(selectedBoundary)
   }, [onSelectedBoundaryChange, selectedBoundary])
 
-  // ← → は編集画面のどこにフォーカスがあっても前後の境界へ移る（入力欄・シークバー・メニューを除く）。
+  const selectBoundary = useCallback((seconds: number) => {
+    setSelectedBoundaryValue(seconds)
+    onBoundaryActionRef.current(seconds)
+  }, [])
+
+  // ← → は選択を移す。`,` / `.` は選択境界を 1 フレーム動かす。
+  // 編集画面のどこにフォーカスがあっても効き、入力欄・シークバー・メニューでは効かない。
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+      const isArrow = event.key === 'ArrowLeft' || event.key === 'ArrowRight'
+      const isFrameNudge = event.key === ',' || event.key === '.'
+      if (!isArrow && !isFrameNudge) return
       if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || boundaries.length === 0) return
       const target = event.target
       if (
@@ -147,13 +163,22 @@ function ChapterDraftEditor({
         return
       }
       event.preventDefault()
+      if (isFrameNudge) {
+        if (selectedBoundary === null) return
+        const delta = event.key === ',' ? -FRAME_SECONDS : FRAME_SECONDS
+        const next = selectedBoundary + delta
+        setDraft((current) => nudgeBoundary(current, selectedBoundary, delta))
+        selectBoundary(next)
+        return
+      }
       const index = selectedBoundary === null ? -1 : boundaries.indexOf(selectedBoundary)
       const next = event.key === 'ArrowRight' ? index + 1 : (index < 0 ? 0 : index - 1)
-      setSelectedBoundaryValue(boundaries[Math.max(0, Math.min(boundaries.length - 1, next))])
+      const nextBoundary = boundaries[Math.max(0, Math.min(boundaries.length - 1, next))]
+      if (nextBoundary !== selectedBoundary) selectBoundary(nextBoundary)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [boundaries, selectedBoundary])
+  }, [boundaries, selectedBoundary, selectBoundary])
 
   const save = useCallback(async () => {
     // 自動層は変更がなくても明示的に確認できる。空の層も「CM なしで確認する」
@@ -205,6 +230,7 @@ function ChapterDraftEditor({
           durationSeconds={durationSeconds}
           currentSeconds={currentSeconds}
           getDisplayedFrameSeconds={getDisplayedFrameSeconds}
+          isPlaying={isPlaying}
           spans={draft}
           selectedBoundary={selectedBoundary}
           tilesAvailable={tilesAvailable}
@@ -212,8 +238,8 @@ function ChapterDraftEditor({
           onTileImageError={onTileImageError}
           onSeek={jumpTo}
           onSelectBoundary={setSelectedBoundaryValue}
+          onBoundaryAction={onBoundaryAction}
           onChangeSpans={setDraft}
-          onPlayAround={playAround}
         />
       </div>
 
@@ -263,8 +289,7 @@ function ChapterDraftEditor({
                       const boundaryMs = Math.abs(currentSeconds - startMs / 1000) <= Math.abs(currentSeconds - endMs / 1000)
                         ? startMs
                         : endMs
-                      setSelectedBoundaryValue(boundaryMs / 1000)
-                      jumpTo(chapterBoundaryMsToSeekSeconds(boundaryMs))
+                      selectBoundary(boundaryMs / 1000)
                     }}
                   >
                     {formatPlaybackTime(span.startMs / 1000)} – {formatPlaybackTime(span.endMs / 1000)}
