@@ -706,8 +706,10 @@ if (!cutScrubBox || cutScrubBox.width <= 0) {
 }
 
 for (const { cutSeconds, originalSeconds } of [
-  { cutSeconds: 25, originalSeconds: 25 },
-  { cutSeconds: 50, originalSeconds: 60 },
+  // 端数秒の中心を使い、整数 CSS ピクセルへ丸めたポインタが格子境界の手前に
+  // 落ちないようにする。ラベルはそれぞれ 0:25 / 0:50 になる。
+  { cutSeconds: 25.5, originalSeconds: 25.5 },
+  { cutSeconds: 50.5, originalSeconds: 60.5 },
 ]) {
   await moveToSeconds(page, cutScrubBox, cutDuration, cutSeconds)
   await page
@@ -728,25 +730,27 @@ for (const { cutSeconds, originalSeconds } of [
     ng.push(`⑨ カット版 ${cutSeconds}s のタイル位置が ${shown}（原本 ${originalSeconds}s の ${want.x}px ${want.y}px を期待）`)
   }
   const label = (await page.locator('[data-testid="seek-tile-label"]').textContent())?.trim()
-  const expectedLabel = cutSeconds === 25 ? '0:25' : '0:50'
+  const expectedLabel = cutSeconds < 30 ? '0:25' : '0:50'
   if (label !== expectedLabel) {
     ng.push(`⑨ カット版 ${cutSeconds}s のラベルがカット軸と違う（${label}、期待 ${expectedLabel}）`)
   }
 }
 
-// 原本 60 秒のタイル（#6）を示した cut 軸 50 秒の位置をクリックする。
-const clickPoint = scrubPoint(cutScrubBox, cutDuration, 50)
+// 原本 60 秒台のタイル（#6）を示した cut 軸 50 秒台の位置をクリックする。
+const clickTargetSeconds = 50.5
+const clickPoint = scrubPoint(cutScrubBox, cutDuration, clickTargetSeconds)
 await page.locator('[data-testid="seek-scrub"]').click({
   position: { x: clickPoint.x - cutScrubBox.x, y: clickPoint.y - cutScrubBox.y },
 })
 await page.waitForFunction(
-  () => Math.abs((document.querySelector('video')?.currentTime ?? -1) - 50) < 0.5,
+  (target) => Math.abs((document.querySelector('video')?.currentTime ?? -1) - target) < 0.5,
+  clickTargetSeconds,
   undefined,
   { timeout: 5000 },
 ).catch(() => {})
 const cutCurrentTime = await cutVideo.evaluate((v) => v.currentTime)
-if (Math.abs(cutCurrentTime - 50) > 0.5) {
-  ng.push(`⑨ cut 軸 50s のクリックが cut 軸の位置へ飛ばない（currentTime=${cutCurrentTime.toFixed(1)}s）`)
+if (Math.abs(cutCurrentTime - clickTargetSeconds) > 0.5) {
+  ng.push(`⑨ cut 軸 ${clickTargetSeconds}s のクリックが cut 軸の位置へ飛ばない（currentTime=${cutCurrentTime.toFixed(1)}s）`)
 }
 
 await finish(ng, browser)
