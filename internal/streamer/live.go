@@ -1140,48 +1140,55 @@ func (ls *LiveStreamer) ChasePlaylistForTarget(w http.ResponseWriter, r *http.Re
 	key := chaseSessionKeyFor(target.RecordingID, offsetSeconds)
 	var s *liveSession
 	if target.canStartChaseSession() {
-		committedSize := ls.committedOriginalSize(target.RecordingID)
-		var source sessionSource
-		if offsetSeconds == 0 {
-			// 先頭からでも、追従配信が閉じた後は Range で続きを読む（followChaseRecord）。
-			client, ok := ls.mirakc.(mirakcSeekRecordClient)
-			if !ok {
-				http.Error(w, "chase stream unavailable", http.StatusServiceUnavailable)
-				return
-			}
-			source = func(ctx context.Context) (io.ReadCloser, error) {
-				return followChaseRecord(ctx, client, target.RecordID, committedSize)
-			}
-		} else {
-			client, ok := ls.mirakc.(mirakcSeekRecordClient)
-			if !ok {
-				http.Error(w, "chase offset stream unavailable", http.StatusServiceUnavailable)
-				return
-			}
-			record, err := client.GetRecord(r.Context(), target.RecordID)
-			if err != nil {
-				slog.Error("streamer: getting chase record metadata", "record_id", target.RecordID, "err", err)
-				http.Error(w, "chase offset stream unavailable", http.StatusServiceUnavailable)
-				return
-			}
-			startByte, err := chaseStartByteOffset(record, offsetSeconds)
-			if err != nil {
-				if errors.Is(err, errChaseOffsetUnavailable) {
-					http.Error(w, "chase offset is outside the available recording range", http.StatusRequestedRangeNotSatisfiable)
-					return
-				}
-				http.Error(w, "chase offset stream is not ready", http.StatusServiceUnavailable)
-				return
-			}
-			source = func(ctx context.Context) (io.ReadCloser, error) {
-				return waitForChaseRecordAtOffset(ctx, client, target.RecordID, startByte, committedSize)
-			}
-		}
 		var err error
-		s, err = ls.getOrCreateSessionFor(r.Context(), key, source)
+		s, err = ls.existingChaseSessionOrCooldown(r.Context(), key)
 		if err != nil {
 			writeSessionError(w, err)
 			return
+		}
+		if s == nil {
+			committedSize := ls.committedOriginalSize(target.RecordingID)
+			var source sessionSource
+			if offsetSeconds == 0 {
+				// 先頭からでも、追従配信が閉じた後は Range で続きを読む（followChaseRecord）。
+				client, ok := ls.mirakc.(mirakcSeekRecordClient)
+				if !ok {
+					http.Error(w, "chase stream unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				source = func(ctx context.Context) (io.ReadCloser, error) {
+					return followChaseRecord(ctx, client, target.RecordID, committedSize)
+				}
+			} else {
+				client, ok := ls.mirakc.(mirakcSeekRecordClient)
+				if !ok {
+					http.Error(w, "chase offset stream unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				record, err := client.GetRecord(r.Context(), target.RecordID)
+				if err != nil {
+					slog.Error("streamer: getting chase record metadata", "record_id", target.RecordID, "err", err)
+					http.Error(w, "chase offset stream unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				startByte, err := chaseStartByteOffset(record, offsetSeconds)
+				if err != nil {
+					if errors.Is(err, errChaseOffsetUnavailable) {
+						http.Error(w, "chase offset is outside the available recording range", http.StatusRequestedRangeNotSatisfiable)
+						return
+					}
+					http.Error(w, "chase offset stream is not ready", http.StatusServiceUnavailable)
+					return
+				}
+				source = func(ctx context.Context) (io.ReadCloser, error) {
+					return waitForChaseRecordAtOffset(ctx, client, target.RecordID, startByte, committedSize)
+				}
+			}
+			s, err = ls.getOrCreateSessionFor(r.Context(), key, source)
+			if err != nil {
+				writeSessionError(w, err)
+				return
+			}
 		}
 	} else {
 		// The recording finished after the session was created. Keep serving the
@@ -2642,18 +2649,48 @@ func liveEvictionReason(err error) (string, bool) {
 	return "", false
 }
 
-func (ls *LiveStreamer) getOrCreateSessionOnceFor(ctx context.Context, key sessionKey, source sessionSource) (*liveSession, error) {
+// existingChaseSessionOrCooldown lets a request join an existing offset before
+// consulting mirakc metadata, while rejecting creation during a recording-level
+// input failure cooldown. The final check in getOrCreateSessionOnceFor closes
+// the race with another session failing after this preflight.
+func (ls *LiveStreamer) existingChaseSessionOrCooldown(ctx context.Context, key sessionKey) (*liveSession, error) {
 	ls.mu.Lock()
-	if key.kind == chaseSessionKind {
-		if retryAt, failed := ls.failedChaseInputs[key.id]; failed {
-			remaining := time.Until(retryAt)
-			if remaining > 0 {
-				ls.mu.Unlock()
-				return nil, &chaseInputCooldownError{retryAfter: remaining}
-			}
-			delete(ls.failedChaseInputs, key.id)
+	s, exists := ls.getSessionLocked(key)
+	if !exists && key.kind == chaseSessionKind {
+		if err := ls.chaseInputCooldownLocked(key.id); err != nil {
+			ls.mu.Unlock()
+			return nil, err
 		}
 	}
+	ls.mu.Unlock()
+	if !exists {
+		return nil, nil
+	}
+	if err := waitReadyTouching(ctx, s, playlistStartupTimeout); err != nil {
+		return nil, err
+	}
+	if s.startErr != nil {
+		return s, s.startErr
+	}
+	return s, nil
+}
+
+// chaseInputCooldownLocked returns the recording-level cooldown error. Caller
+// must hold ls.mu so failed-input recording, map deletion, and creation gating
+// remain one atomic state transition.
+func (ls *LiveStreamer) chaseInputCooldownLocked(recordingID int64) error {
+	if retryAt, failed := ls.failedChaseInputs[recordingID]; failed {
+		remaining := time.Until(retryAt)
+		if remaining > 0 {
+			return &chaseInputCooldownError{retryAfter: remaining}
+		}
+		delete(ls.failedChaseInputs, recordingID)
+	}
+	return nil
+}
+
+func (ls *LiveStreamer) getOrCreateSessionOnceFor(ctx context.Context, key sessionKey, source sessionSource) (*liveSession, error) {
+	ls.mu.Lock()
 	if s, ok := ls.getSessionLocked(key); ok {
 		ls.mu.Unlock()
 		if err := waitReadyTouching(ctx, s, playlistStartupTimeout); err != nil {
@@ -2663,6 +2700,12 @@ func (ls *LiveStreamer) getOrCreateSessionOnceFor(ctx context.Context, key sessi
 			return s, s.startErr
 		}
 		return s, nil
+	}
+	if key.kind == chaseSessionKind {
+		if err := ls.chaseInputCooldownLocked(key.id); err != nil {
+			ls.mu.Unlock()
+			return nil, err
+		}
 	}
 	if ls.closed {
 		ls.mu.Unlock()

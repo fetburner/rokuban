@@ -22,6 +22,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/testutil"
+	"github.com/go-chi/chi/v5"
 )
 
 type fakeChaseRecordClient struct {
@@ -470,6 +471,23 @@ func requestHeadChasePlaylist(ls *LiveStreamer, recordingID int64, recordingStat
 	ls.ChasePlaylistForTarget(resp, req, ChaseTarget{
 		RecordingID: recordingID, Site: "default", RecordID: "record-42",
 		Status: recordingStatus, RecordingStatus: recordingStatus,
+	})
+	return resp
+}
+
+func requestChasePlaylistAtOffset(ls *LiveStreamer, recordingID, offsetSeconds int64) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/sites/default/recordings/42/chase/offset/"+strconv.FormatInt(offsetSeconds, 10)+"/playlist.m3u8?profile=hd", nil)
+	routeCtx := chi.NewRouteContext()
+	routeCtx.URLParams.Add("offset", strconv.FormatInt(offsetSeconds, 10))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx))
+	resp := httptest.NewRecorder()
+	ls.ChasePlaylistForTarget(resp, req, ChaseTarget{
+		RecordingID:     recordingID,
+		Site:            "default",
+		RecordID:        "record-42",
+		Status:          "recording",
+		RecordingStatus: "recording",
 	})
 	return resp
 }
@@ -954,6 +972,69 @@ func TestChaseInputErrorDoesNotWriteEndlist(t *testing.T) {
 	client.mu.Unlock()
 	if followCalls != 2 {
 		t.Fatalf("mirakc follow requests after recovery = %d, want 2", followCalls)
+	}
+}
+
+func TestChaseCooldownSkipsMetadataAndAllowsExistingOffset(t *testing.T) {
+	client := &scriptedChaseRecord{statusErrs: []error{errors.New("mirakc metadata unavailable")}}
+	ls := newLiveStreamer(client, chaseTestConfig(t, "unused-ffmpeg"))
+	t.Cleanup(ls.shutdown)
+
+	ls.mu.Lock()
+	ls.failedChaseInputs[42] = time.Now().Add(time.Minute)
+	ls.mu.Unlock()
+
+	resp := requestChasePlaylistAtOffset(ls, 42, 17)
+	if resp.Code != http.StatusBadGateway {
+		t.Fatalf("nonzero-offset playlist status during cooldown = %d, want 502 (%s)", resp.Code, resp.Body.String())
+	}
+	if got := resp.Header().Get("Retry-After"); got == "" {
+		t.Fatal("nonzero-offset cooldown response is missing Retry-After")
+	}
+	if !strings.Contains(resp.Body.String(), chaseInputCooldownMessage) {
+		t.Fatalf("nonzero-offset cooldown body = %q, want %q", resp.Body.String(), chaseInputCooldownMessage)
+	}
+	client.mu.Lock()
+	metadataWasNotRead := len(client.statusErrs) == 1
+	client.mu.Unlock()
+	if !metadataWasNotRead {
+		t.Fatal("nonzero-offset request queried mirakc metadata before checking the cooldown")
+	}
+
+	// A failed offset must not keep viewers from joining a different, healthy offset.
+	healthyDir := t.TempDir()
+	playlist := []byte("#EXTM3U\n#EXTINF:2.0,\nsegment_00000.ts\n")
+	if err := os.WriteFile(filepath.Join(healthyDir, "hd.m3u8"), playlist, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ready := make(chan struct{})
+	close(ready)
+	done := make(chan struct{})
+	close(done)
+	healthy := &liveSession{
+		key:        chaseSessionKeyFor(42, 4),
+		dir:        healthyDir,
+		ready:      ready,
+		done:       done,
+		cancel:     func() {},
+		lastAccess: time.Now(),
+	}
+	ls.mu.Lock()
+	ls.putSessionLocked(healthy)
+	ls.mu.Unlock()
+
+	resp = requestChasePlaylistAtOffset(ls, 42, 4)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("existing healthy offset during cooldown = %d, want 200 (%s)", resp.Code, resp.Body.String())
+	}
+	if !bytes.Equal(resp.Body.Bytes(), playlist) {
+		t.Fatalf("existing healthy offset playlist = %q, want %q", resp.Body.Bytes(), playlist)
+	}
+	client.mu.Lock()
+	metadataWasNotRead = len(client.statusErrs) == 1
+	client.mu.Unlock()
+	if !metadataWasNotRead {
+		t.Fatal("joining an existing offset queried mirakc metadata")
 	}
 }
 
