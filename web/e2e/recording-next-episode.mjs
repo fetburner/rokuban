@@ -164,13 +164,24 @@ function rangeResponse(route, bytes, contentType) {
 }
 
 let videoBytes = Buffer.alloc(0)
+// ⑪ だけ: ライブ能力を有効にして原本 HLS を再生可能にし、チャプター検出中の兄弟要素を出す。
+let originalHLSDir
+let detecting = false
 const thumbnailSVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="90"><rect width="160" height="90" fill="#263650"/><path d="M0 70 60 25l36 32 22-20 42 34v19H0Z" fill="#485d7c"/></svg>'
 
 async function apiHandler({ path: apiPath, url, json, route }) {
   const method = route.request().method()
   if (apiPath === '/api/sites') return json(['default'])
-  if (apiPath === '/api/capabilities') return json({ live: false, cmDetect: true })
+  if (apiPath === '/api/capabilities') return json({ live: originalHLSDir !== undefined, cmDetect: true })
+  if (apiPath === '/api/live-profiles') return json([{ name: 'hd', height: 720 }])
+  if (originalHLSDir !== undefined && apiPath.startsWith('/api/sites/default/recordings/3/original-vod/')) {
+    const name = apiPath.split('/original-vod/')[1]
+    const file = path.join(originalHLSDir, name)
+    if (!existsSync(file)) return route.fulfill({ status: 404 })
+    const contentType = name.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp2t'
+    return route.fulfill({ status: 200, contentType, body: readFileSync(file) })
+  }
   if (apiPath === '/api/breakers') return json([])
   if (apiPath === '/api/encode-profiles') return json([])
   if (apiPath === '/api/rules') return json([rule])
@@ -190,7 +201,7 @@ async function apiHandler({ path: apiPath, url, json, route }) {
     return item ? json(item) : json({ error: 'not found' }, 404)
   }
   if (/^\/api\/recordings\/\d+\/chapters$/.test(apiPath)) {
-    return json({ source: 'auto', version: 'v1', detectionPending: false, spans: [] })
+    return json({ source: 'auto', version: 'v1', detectionPending: detecting, spans: [] })
   }
   if (/^\/api\/recordings\/\d+\/drop-stats$/.test(apiPath)) return json([])
   if (/^\/api\/media\/recordings\/\d+\/file$/.test(apiPath)) return rangeResponse(route, videoBytes, 'video/webm')
@@ -649,6 +660,86 @@ async function transitionsAlong(png) {
   }
   await shot(page, 'v3-phone-end-card.png')
   await context.close()
+}
+
+{
+  // ⑪ 全画面の中で兄弟要素（チャプター検出中の表示）が出ていても枠と下端の操作バーが画面に収まる。
+  //    encoded の回から原本のみの回へ自動で移っても、全画面と再生が続く。
+  log('\n=== ⑪ 全画面の収まりと、原本のみの回への自動遷移 ===')
+  const hlsDir = path.join(os.tmpdir(), 'rokuban-e2e-next-episode-hls')
+  if (!existsSync(path.join(hlsDir, 'playlist.m3u8'))) {
+    mkdirSync(hlsDir, { recursive: true })
+    execFileSync('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=size=320x180:rate=25', '-t', '60',
+      '-c:v', 'libx264', '-profile:v', 'baseline', '-pix_fmt', 'yuv420p', '-preset', 'veryfast', '-g', '50',
+      '-f', 'hls', '-hls_time', '2', '-hls_list_size', '0', '-hls_playlist_type', 'vod',
+      '-hls_segment_filename', path.join(hlsDir, 'seg%05d.ts'), path.join(hlsDir, 'playlist.m3u8'),
+    ], { stdio: 'pipe' })
+  }
+  originalHLSDir = hlsDir
+  detecting = true
+  delete originalOnly.resumePositionMs
+  const fits = (box, vw, vh) => box && box.x >= -0.5 && box.y >= -0.5 && box.x + box.width <= vw + 0.5 && box.y + box.height <= vh + 0.5
+  for (const [w, h, label] of [[1280, 720, '16:9'], [1280, 800, '16:10'], [400, 800, '縦長']]) {
+    const { context, page } = await newPage(w, h)
+    await openRecording(page, 2)
+    await page.locator('[data-testid="chapter-detecting"]').waitFor({ timeout: 5000 }).catch(() => ng.push(`⑪ ${label}: 兄弟要素（chapter-detecting）が出ていない`))
+    await page.getByRole('button', { name: '全画面表示' }).click()
+    const entered = await page
+      .waitForFunction(() => document.fullscreenElement?.getAttribute('data-testid') === 'recording-playback-group', undefined, { timeout: 5000 })
+      .then(() => true).catch(() => false)
+    if (!entered) {
+      ng.push(`⑪ ${label}: 全画面に入れない`)
+    } else {
+      await page.waitForTimeout(300)
+      const vp = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }))
+      for (const id of ['recording-player-frame', 'player-controls-bottom', 'chapter-detecting']) {
+        const box = await page.locator(`[data-testid="${id}"]`).boundingBox()
+        log(`  ${label} ${id}: ${JSON.stringify(box)} / ${vp.w}x${vp.h}`)
+        if (id === 'chapter-detecting') continue
+        if (!fits(box, vp.w, vp.h)) ng.push(`⑪ ${label}: 全画面で ${id} が画面に収まらない（${JSON.stringify(box)} / ${vp.w}x${vp.h}）`)
+      }
+      // 枠の下の兄弟は、画面に収まるか、全画面要素のスクロールで必ず届く（overflow:hidden で切り捨てない）。
+      const reachable = await page.evaluate(() => {
+        const sibling = document.querySelector('[data-testid="chapter-detecting"]')
+        const r = sibling.getBoundingClientRect()
+        // hidden でも scrollIntoView は効くので、利用者がスクロールできる overflow かどうかで見る。
+        return (r.top >= 0 && r.bottom <= window.innerHeight) || ['auto', 'scroll'].includes(getComputedStyle(document.fullscreenElement).overflowY)
+      })
+      if (!reachable) ng.push(`⑪ ${label}: 全画面で枠の下の兄弟要素（chapter-detecting）に届かない（切り捨てられている）`)
+      await page.evaluate(() => document.exitFullscreen()).catch(() => {})
+    }
+    await context.close()
+  }
+
+  detecting = false
+  const { context, page } = await newPage(1280, 800)
+  await openRecording(page, 2)
+  await page.getByRole('button', { name: '全画面表示' }).click()
+  const entered = await page
+    .waitForFunction(() => document.fullscreenElement?.getAttribute('data-testid') === 'recording-playback-group', undefined, { timeout: 5000 })
+    .then(() => true).catch(() => false)
+  if (!entered) {
+    ng.push('⑪ 全画面に入れない（原本のみの回への遷移後の全画面保持が測れない）')
+  } else {
+    await page.evaluate(() => {
+      window.__group = document.querySelector('[data-testid="recording-playback-group"]')
+    })
+    await playToEnd(page)
+    await page.waitForURL('**/recordings/3', { timeout: 10000 }).catch(() => ng.push('⑪ 原本のみの次の回へ自動で移らない'))
+    const kept = await page.evaluate(() => document.fullscreenElement !== null && document.fullscreenElement === window.__group)
+    if (!kept) ng.push('⑪ 原本のみの回へ自動で移ると全画面が解除された')
+    const playing = await page
+      .waitForFunction(() => {
+        const v = document.querySelector('video')
+        return v && !v.paused && v.currentTime > 0.5
+      }, undefined, { timeout: 15000 })
+      .then(() => true).catch(() => false)
+    if (!playing) ng.push('⑪ 原本のみの回で再生位置が進まない')
+    await page.evaluate(() => document.fullscreenElement && document.exitFullscreen()).catch(() => {})
+  }
+  await context.close()
+  originalHLSDir = undefined
 }
 
 // ===== 証跡のスクリーンショット（E2E_SHOT_DIR があるときだけ。判定には使わない） =====

@@ -14,15 +14,18 @@ import {
  * 操作をまとめる。encoded の `RecordingPlayer` と原本 HLS の `LivePlayer` が同じ実装を使い、
  * バーの自動非表示・フォーカス・映像のタップ・全画面・PiP が片方だけ食い違わないようにする。
  *
+ * `frameRef` は自分の枠（`RecordingPlaybackControls` の枠）で、設定メニューの探索に使う。
+ * `fullscreenContainerRef` は全画面にする要素で、省略すると枠自身を全画面にする。
+ * 再生元が替わっても残る親の要素を渡すと、プレイヤーが作り直されても全画面が解除されない。
  * `videoKey` は `<video>` 要素が作り直される単位（PiP のイベントを張り直す）。
  * 戻り値の `controls` は `RecordingPlaybackControls` に、`video` は `<video>` にそのまま渡す。
  * `onPlay` / `onPause` / `onVolumeChange` は呼び出し側が自分のハンドラから呼ぶ。
  */
 export function usePlayerFrame(
   videoRef: RefObject<HTMLVideoElement | null>,
-  fullscreenRef: RefObject<HTMLElement | null>,
+  frameRef: RefObject<HTMLDivElement | null>,
   videoKey: unknown,
-  frameRef?: RefObject<HTMLDivElement | null>,
+  fullscreenContainerRef?: RefObject<HTMLElement | null>,
 ) {
   const controlsTimerRef = useRef<number | undefined>(undefined)
   // 映像を押したポインタの種類。タッチは再生 / 一時停止ではなく操作の表示に使う（スマホの定石）。
@@ -75,7 +78,7 @@ export function usePlayerFrame(
   }
   // ページのキー操作（F）の effect からも呼ぶので参照を固定する。
   const requestFullscreen = useCallback(() => {
-    const container = fullscreenRef.current
+    const container = (fullscreenContainerRef ?? frameRef).current
     if (document.fullscreenElement === container) {
       void document.exitFullscreen?.().catch(() => {})
       return
@@ -86,7 +89,7 @@ export function usePlayerFrame(
     }
     const video = videoRef.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null
     video?.webkitEnterFullscreen?.()
-  }, [fullscreenRef, videoRef])
+  }, [frameRef, fullscreenContainerRef, videoRef])
   const togglePlay = () => {
     const video = videoRef.current
     if (!video) return
@@ -95,13 +98,13 @@ export function usePlayerFrame(
   }
 
   useEffect(() => {
-    const onFullscreenChange = () => setIsFullscreen(document.fullscreenElement === fullscreenRef.current)
+    const onFullscreenChange = () => setIsFullscreen(document.fullscreenElement === (fullscreenContainerRef ?? frameRef).current)
     document.addEventListener('fullscreenchange', onFullscreenChange)
-    // A different player may mount inside the shared container while it is already fullscreen.
-    // oxlint-disable-next-line react/set-state-in-effect -- sync the new player with the browser fullscreen state.
+    // 共有コンテナがすでに全画面のときに別のプレイヤーがマウントされることがある。
+    // oxlint-disable-next-line react/set-state-in-effect -- 新しいプレイヤーをブラウザの全画面状態に合わせる。
     onFullscreenChange()
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange)
-  }, [fullscreenRef])
+  }, [frameRef, fullscreenContainerRef])
 
   useEffect(() => {
     const video = videoRef.current
@@ -165,7 +168,7 @@ export function usePlayerFrame(
     },
     /** `RecordingPlaybackControls` に渡す枠の状態と操作。 */
     controls: {
-      fullscreenRef: frameRef ?? fullscreenRef as RefObject<HTMLDivElement | null>,
+      frameRef,
       isPlaying: mediaPlaying,
       muted,
       volume,

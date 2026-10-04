@@ -198,7 +198,7 @@ export function RecordingPlayer({
   const keepRangesKey = JSON.stringify(selectedAsset?.keepRanges ?? [])
   const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
   const videoRef = useRef<HTMLVideoElement>(null)
-  const fullscreenRef = useRef<HTMLDivElement>(null)
+  const frameRef = useRef<HTMLDivElement>(null)
   const [editorSelected, setEditorSelected] = useState<number | null>(null)
   const localChapterEditorCommandsRef = useRef<ChapterEditorCommands | null>(null)
   const resolvedChapterEditorCommandsRef = chapterEditorCommandsRef ?? localChapterEditorCommandsRef
@@ -208,9 +208,9 @@ export function RecordingPlayer({
   // 枠（バーの自動非表示・フォーカス・映像のタップ・全画面・PiP）は原本 HLS の LivePlayer と共有する。
   const frame = usePlayerFrame(
     videoRef,
-    fullscreenContainerRef ?? fullscreenRef,
+    frameRef,
     `${recordingId}:${selectedProfile}`,
-    fullscreenRef,
+    fullscreenContainerRef,
   )
   const { controlsVisible, requestFullscreen } = frame
   // 終端カードを出している録画の id。録画を切り替えても作り直さないので、id と組で持って
@@ -220,6 +220,8 @@ export function RecordingPlayer({
   const endCardOpen = endCardFor === recordingId && !chapterEditing
   const [countdownSeconds, setCountdownSeconds] = useState(AUTO_ADVANCE_SECONDS)
   // 終端カードから移った先の録画 id。移った先は再生を始める（カードの文言どおり）。
+  // `autoPlay` prop は「このマウントで最初に開く録画」だけを自動再生にする初期値で、マウント時にしか読まない。
+  // プレイヤーを作り直さない録画の切り替え（encoded → encoded）は `autoplayRecordingRef` が担う。
   const autoplayRecordingRef = useRef<number | null>(autoPlay ? recordingId : null)
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(false)
   // タイルは録画ごとに 1 枚で profile に依存しないので、キーは recordingId だけ。
@@ -511,7 +513,7 @@ export function RecordingPlayer({
   }, [recordingId, selectedProfile, playbackRate])
 
   const updateSubtitleCueLines = (video: HTMLVideoElement, raise: boolean) => {
-    const frame = fullscreenRef.current
+    const frame = frameRef.current
     // スマホの操作表示は枠全体に幕を敷くので、字幕を避ける高さは下端の帯（時刻・シークバー）だけ。
     const controls = frame?.querySelector<HTMLElement>('[data-testid="player-controls-bottom"]')
     const frameHeight = frame?.getBoundingClientRect().height ?? 0
@@ -538,7 +540,7 @@ export function RecordingPlayer({
   }
   useEffect(() => {
     const video = videoRef.current
-    const frameElement = fullscreenRef.current
+    const frameElement = frameRef.current
     const controls = frameElement?.querySelector<HTMLElement>('[data-testid="player-controls-bottom"]')
     if (!video) return
     const update = () => updateSubtitleCueLines(video, controlsVisible)

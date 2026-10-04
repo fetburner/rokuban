@@ -419,7 +419,7 @@ export function LivePlayer({
     serverResumePositionRef.current = serverResumePosition
   }, [serverResumePosition])
   const videoRef = useRef<HTMLVideoElement>(null)
-  const fullscreenRef = useRef<HTMLDivElement>(null)
+  const frameRef = useRef<HTMLDivElement>(null)
   const hlsRef = useRef<HlsLike | null>(null)
   const isOriginalScrubbingRef = useRef(false)
   // 張り直したセッションの中で始める位置（シーク先 - offset の端数）。開始位置の明示に使う。
@@ -510,7 +510,7 @@ export function LivePlayer({
   const [originalSubtitlesEnabled, setOriginalSubtitlesEnabled] = useState(isRecordingPlayback)
   // 操作バーの枠（自動非表示・フォーカス・映像のタップ・全画面・PiP）は encoded の
   // RecordingPlayer と同じ実装を使う。`<video>` 要素はこのコンポーネントでは作り直さない。
-  const frame = usePlayerFrame(videoRef, fullscreenContainerRef ?? fullscreenRef, undefined, fullscreenRef)
+  const frame = usePlayerFrame(videoRef, frameRef, undefined, fullscreenContainerRef)
   const { setMediaPlaying } = frame
   const [chapterSkipEnabled, setChapterSkipEnabled] = useState(loadChapterSkip)
   const originalPreviousSecondsRef = useRef(0)
