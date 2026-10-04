@@ -199,13 +199,11 @@ export function RecordingPlayer({
   // （境界は原本の ms で、その動画には当てられない）。
   const playingCut = selectedAsset?.cut === true
   const keepRangesKey = JSON.stringify(selectedAsset?.keepRanges ?? [])
+  // <video> を作り直す単位。要素の key と表示フレームの購読の張り直しで同じ値を使う。
+  const videoKey = `${recordingId}:${selectedProfile}:${keepRangesKey}`
   const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
   const videoRef = useRef<HTMLVideoElement>(null)
-  const getDisplayedFrameSeconds = useDisplayedFrameSeconds(
-    videoRef,
-    chapterEditing,
-    `${recordingId}:${selectedProfile}:${keepRangesKey}`,
-  )
+  const getDisplayedFrameSeconds = useDisplayedFrameSeconds(videoRef, chapterEditing, videoKey)
   const frameRef = useRef<HTMLDivElement>(null)
   const [editorSelected, setEditorSelected] = useState<number | null>(null)
   const localChapterEditorCommandsRef = useRef<ChapterEditorCommands | null>(null)
@@ -824,7 +822,7 @@ export function RecordingPlayer({
         video={(
           <video
             ref={videoRef}
-            key={`${recordingId}:${selectedProfile}:${keepRangesKey}`}
+            key={videoKey}
             {...frame.video}
             aria-label="録画映像"
             playsInline
