@@ -2793,12 +2793,7 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 	defer func() {
 		ls.mu.Lock()
 		if inputFailed {
-			if ls.failedChaseInputs == nil {
-				ls.failedChaseInputs = make(map[int64]time.Time)
-			}
-			// Keep the failure marker for the durable recording ID, not this offset.
-			// The frontend retries from the last playback position using a new offset.
-			ls.failedChaseInputs[s.key.id] = time.Now().Add(chaseInputFailureCooldown)
+			ls.recordFailedChaseInputLocked(s.key.id)
 		}
 		// idle GC が先にこの id を削除して新しいセッションに入れ替えていたら、
 		// 新しいセッションを消さない（cur == s のときだけ削除）。
@@ -2970,6 +2965,14 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 		// GC reclaims the session, so clients can fetch ENDLIST and seek the full VOD.
 		keepCompletedRecordingSession = true
 	}
+}
+
+// recordFailedChaseInputLocked は ls.mu を保持した状態で追っかけ入力の cooldown を記録する。
+func (ls *LiveStreamer) recordFailedChaseInputLocked(recordingID int64) {
+	if ls.failedChaseInputs == nil {
+		ls.failedChaseInputs = make(map[int64]time.Time)
+	}
+	ls.failedChaseInputs[recordingID] = time.Now().Add(chaseInputFailureCooldown)
 }
 
 // ffmpegSessionCompleted は ffmpeg が完走したか（ENDLIST を書いて正常終了したか）を判定し、
