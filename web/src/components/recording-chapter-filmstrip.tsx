@@ -11,7 +11,7 @@ import {
   minFilmstripRangeSeconds,
   type FilmstripRange,
 } from '@/lib/chapter-filmstrip'
-import { chapterBoundaries, nudgeBoundary } from '@/lib/chapters'
+import { chapterBoundaries, nudgeBoundary, playbackSecondsToChapterBoundaryMs } from '@/lib/chapters'
 import { formatPlaybackTime, formatPlaybackTimeMs } from '@/lib/format'
 import {
   SEEK_TILES_COLUMNS,
@@ -161,6 +161,14 @@ export function RecordingChapterFilmstrip({
     if (selectedBoundary === null) return
     onChangeSpans(nudgeBoundary(spans, selectedBoundary, deltaSeconds))
     onSelectBoundary(selectedBoundary + deltaSeconds)
+  }
+
+  const alignSelectedToPlayback = () => {
+    if (selectedBoundary === null) return
+    const targetMs = playbackSecondsToChapterBoundaryMs(currentSeconds)
+    const targetSeconds = targetMs / 1000
+    onChangeSpans(nudgeBoundary(spans, selectedBoundary, targetSeconds - selectedBoundary))
+    onSelectBoundary(targetSeconds)
   }
 
   const overviewPanStart = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -338,7 +346,7 @@ export function RecordingChapterFilmstrip({
         <Button type="button" size="sm" variant="outline" className={`${action} hidden md:inline-flex`} aria-label="選択中の境界の前後3秒を再生" disabled={selectedBoundary === null} onClick={() => selectedBoundary !== null && onPlayAround(selectedBoundary)}>
           前後3秒を再生
         </Button>
-        <Button type="button" size="sm" variant="outline" className={`${action} hidden md:inline-flex`} aria-label="選択中の境界を現在の再生位置に合わせる" disabled={selectedBoundary === null} onClick={() => selectedBoundary !== null && nudgeSelected(currentSeconds - selectedBoundary)}>
+        <Button type="button" size="sm" variant="outline" className={`${action} hidden md:inline-flex`} aria-label="選択中の境界を現在の再生位置に合わせる" disabled={selectedBoundary === null} onClick={alignSelectedToPlayback}>
           再生位置に合わせる
         </Button>
         <span className="ml-auto hidden text-xs text-muted-foreground md:inline">← → で前後の境界へ移る</span>

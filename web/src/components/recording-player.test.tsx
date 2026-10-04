@@ -2,6 +2,7 @@ import { fireEvent, render, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { RecordingPlayer } from '@/components/recording-player'
+import { FRAME_SECONDS } from '@/lib/chapters'
 
 afterEach(() => {
   localStorage.clear()
@@ -779,12 +780,30 @@ describe('RecordingPlayer の設定メニュー（行リスト）', () => {
       expect(container.querySelector('[data-testid="playback-settings"]')).toBeNull()
 
       fireEvent.click(rows[2])
-      expect(video.currentTime).toBe(40)
+      expect(video.currentTime).toBeCloseTo(1199.5 * FRAME_SECONDS, 12)
       expect(container.querySelector('[data-testid="chapter-list"]')).toBeNull()
       expect(document.activeElement).toBe(getByTestId('playback-chapter'))
     } finally {
       Reflect.deleteProperty(document, 'exitFullscreen')
     }
+  })
+
+  it('前後チャプターへの移動もフレーム中央へシークする', () => {
+    const spans = [{ startMs: 2202, endMs: 2236, label: 'OP', cut: false }]
+    const { container, getByRole } = render(
+      <RecordingPlayer recordingId={70} encodedAssets={assets} chapters={spans} />,
+    )
+    const video = container.querySelector('video')!
+    setMediaProps(video, { currentTime: 0, duration: 120 })
+    fireEvent.loadedMetadata(video)
+
+    fireEvent.click(getByRole('button', { name: '次のチャプター' }))
+    expect(video.currentTime).toBeCloseTo(66.5 * FRAME_SECONDS, 12)
+
+    setMediaProps(video, { currentTime: 3 })
+    fireEvent.timeUpdate(video)
+    fireEvent.click(getByRole('button', { name: '前のチャプター' }))
+    expect(video.currentTime).toBeCloseTo(67.5 * FRAME_SECONDS, 12)
   })
 
   it('チャプター一覧も矢印キーで移り、Esc で閉じて名前のボタンにフォーカスを戻す。設定を開くと一覧は閉じる', async () => {

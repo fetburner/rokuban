@@ -6,6 +6,7 @@ import {
   RecordingChapterEditor,
   type ChapterEditorCommands,
 } from '@/components/recording-chapter-editor'
+import { FRAME_SECONDS } from '@/lib/chapters'
 
 const cm: ChapterSpan = { startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }
 
@@ -64,7 +65,7 @@ describe('RecordingChapterEditor の編集専用画面', () => {
       currentSeconds: 18,
     })
     fireEvent.click(getByRole('button', { name: '0:10 から 0:20 の境界を選ぶ' }))
-    expect(jumpTo).toHaveBeenCalledWith(20)
+    expect(jumpTo).toHaveBeenCalledWith(599.5 * FRAME_SECONDS)
 
     const filmstrip = getByTestId('chapter-filmstrip')
     const startBoundary = filmstrip.querySelector<HTMLButtonElement>(
@@ -112,19 +113,19 @@ describe('RecordingChapterEditor の編集専用画面', () => {
 
   it('選択中の境界を前後再生し、現在の再生位置へ合わせる', () => {
     const playAround = vi.fn()
-    const { container, getByRole, getByTestId } = renderEditor([cm], {
-      currentSeconds: 18,
+    const { container, getByRole, getByTestId } = renderEditor([{ ...cm, startMs: 2_000, endMs: 4_000 }], {
+      currentSeconds: 66.75 * FRAME_SECONDS,
       playAround,
     })
     const boundary20 = container.querySelector<HTMLButtonElement>(
-      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="20000"]',
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="4000"]',
     )!
     fireEvent.click(boundary20)
     fireEvent.click(getByRole('button', { name: '選択中の境界の前後3秒を再生' }))
-    expect(playAround).toHaveBeenCalledWith(20)
+    expect(playAround).toHaveBeenCalledWith(4)
     fireEvent.click(getByRole('button', { name: '選択中の境界を現在の再生位置に合わせる' }))
-    expect(getByTestId('chapter-selected-boundary').textContent).toBe('0:18.000')
-    expect(container.querySelector('[data-testid="chapter-filmstrip-boundary"][data-time-ms="18000"]')).not.toBeNull()
+    expect(getByTestId('chapter-selected-boundary').textContent).toBe('0:02.202')
+    expect(container.querySelector('[data-testid="chapter-filmstrip-boundary"][data-time-ms="2202"]')).not.toBeNull()
   })
 
   it('ページヘッダーから呼ぶ保存は下書きと元の版を送り、成功後は dirty を外す', async () => {

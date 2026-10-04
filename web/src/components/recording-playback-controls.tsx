@@ -135,6 +135,7 @@ type RecordingPlaybackControlsProps = {
   onSeekPointerCancel?: (event: ReactPointerEvent<HTMLDivElement>) => void
   onSeekPointerLeave: () => void
   onSeek: (seconds: number) => void
+  onSeekChapter: (boundaryMs: number) => void
   onLiveEdgeSeek?: () => void
   deferKeyboardSeek?: boolean
   onSeekPreview?: (seconds: number) => void
@@ -219,6 +220,7 @@ export function RecordingPlaybackControls({
   onSeekPointerCancel,
   onSeekPointerLeave,
   onSeek,
+  onSeekChapter,
   onLiveEdgeSeek,
   deferKeyboardSeek = false,
   onSeekPreview,
@@ -1116,7 +1118,7 @@ export function RecordingPlaybackControls({
             entries={entries}
             currentIndex={currentEntryIndex}
             onJump={(start) => {
-              onSeek(start)
+              onSeekChapter(Math.round(start * 1000))
               closeChapters(true)
             }}
             onClose={closeChapters}

@@ -4,11 +4,13 @@ import type { ChapterSpan } from '@/api/generated'
 import {
   CHAPTER_SKIP_STORAGE_KEY,
   FRAME_SECONDS,
+  chapterBoundaryMsToSeekSeconds,
   chapterBoundaries,
   chapterJumpTarget,
   formatChaptersTime,
   loadChapterSkip,
   nudgeBoundary,
+  playbackSecondsToChapterBoundaryMs,
   saveChapterSkip,
   skipTarget,
 } from '@/lib/chapters'
@@ -99,6 +101,25 @@ describe('nudgeBoundary', () => {
 describe('chapterBoundaries', () => {
   it('昇順・重複なしで返す', () => {
     expect(chapterBoundaries([cm(10_000, 20_000), cm(20_000, 30_000)])).toEqual([10, 20, 30])
+  })
+})
+
+describe('チャプター境界と再生位置の変換', () => {
+  it('ms 境界を対応するフレームの中央へ写す（ms が切り下がる場合と切り上がる場合）', () => {
+    // frame 66 は 2202.2ms → 2202ms、frame 67 は 2235.566…ms → 2236ms。
+    expect(chapterBoundaryMsToSeekSeconds(2202)).toBeCloseTo(66.5 * FRAME_SECONDS, 12)
+    expect(chapterBoundaryMsToSeekSeconds(2236)).toBeCloseTo(67.5 * FRAME_SECONDS, 12)
+  })
+
+  it('表示区間の後半でも表示中フレームの境界へ戻す', () => {
+    expect(playbackSecondsToChapterBoundaryMs(66.75 * FRAME_SECONDS)).toBe(2202)
+    expect(playbackSecondsToChapterBoundaryMs(67.75 * FRAME_SECONDS)).toBe(2236)
+  })
+
+  it('境界ちょうどの浮動小数丸めで前のフレームに戻らない', () => {
+    const justBefore = 66 * FRAME_SECONDS - 4 * Number.EPSILON
+    expect(justBefore / FRAME_SECONDS).toBeLessThan(66)
+    expect(playbackSecondsToChapterBoundaryMs(justBefore)).toBe(2202)
   })
 })
 

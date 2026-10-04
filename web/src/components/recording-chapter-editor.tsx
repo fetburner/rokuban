@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState, type MutableRefObject } from
 import type { ChapterSpan, RecordingChaptersSource } from '@/api/generated'
 import { Button } from '@/components/ui/button'
 import { RecordingChapterFilmstrip } from '@/components/recording-chapter-filmstrip'
-import { chapterBoundaries } from '@/lib/chapters'
+import { chapterBoundaries, chapterBoundaryMsToSeekSeconds } from '@/lib/chapters'
 import { formatPlaybackTime } from '@/lib/format'
 
 export type ChapterEditorCommands = {
@@ -245,11 +245,13 @@ function ChapterDraftEditor({
                     className="col-span-2 flex min-h-8 items-center text-left font-mono text-sm text-muted-foreground"
                     aria-label={`${formatPlaybackTime(span.startMs / 1000)} から ${formatPlaybackTime(span.endMs / 1000)} の境界を選ぶ`}
                     onClick={() => {
-                      const start = span.startMs / 1000
-                      const end = span.endMs / 1000
-                      const boundary = Math.abs(currentSeconds - start) <= Math.abs(currentSeconds - end) ? start : end
-                      setSelectedBoundaryValue(boundary)
-                      jumpTo(boundary)
+                      const startMs = span.startMs
+                      const endMs = span.endMs
+                      const boundaryMs = Math.abs(currentSeconds - startMs / 1000) <= Math.abs(currentSeconds - endMs / 1000)
+                        ? startMs
+                        : endMs
+                      setSelectedBoundaryValue(boundaryMs / 1000)
+                      jumpTo(chapterBoundaryMsToSeekSeconds(boundaryMs))
                     }}
                   >
                     {formatPlaybackTime(span.startMs / 1000)} – {formatPlaybackTime(span.endMs / 1000)}

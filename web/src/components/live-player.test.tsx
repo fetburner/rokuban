@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { LivePlayer } from '@/components/live-player'
+import { FRAME_SECONDS } from '@/lib/chapters'
 import { liveStallTimeoutMs } from '@/lib/live'
 import type { LiveDiagnostics, StallHandling } from '@/lib/live'
 import { savePlaybackRate } from '@/lib/playback-position'
@@ -2807,11 +2808,11 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     Object.defineProperty(video, 'seekable', { value: { length: 1, start: () => 0, end: () => 20 }, configurable: true })
     fireEvent.canPlay(video)
     fireEvent.click(screen.getAllByRole('button', { name: '次のチャプター' })[0]!)
-    expect(video.currentTime).toBe(10)
+    expect(video.currentTime).toBeCloseTo(300.5 * FRAME_SECONDS, 12)
     fireEvent.click(screen.getAllByRole('button', { name: '次のチャプター' })[0]!)
-    expect(video.currentTime).toBe(15)
+    expect(video.currentTime).toBeCloseTo(450.5 * FRAME_SECONDS, 12)
     fireEvent.click(screen.getAllByRole('button', { name: '前のチャプター' })[0]!)
-    expect(video.currentTime).toBe(10)
+    expect(video.currentTime).toBeCloseTo(300.5 * FRAME_SECONDS, 12)
   })
 
   it('原本の設定メニューはエンコード版と同じ順で、音声を画質の隣に置く', async () => {

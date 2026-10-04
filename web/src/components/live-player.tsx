@@ -13,7 +13,13 @@ import {
   type LiveProgramTimeline,
   type TilePreview,
 } from '@/components/recording-playback-controls'
-import { chapterJumpTarget, loadChapterSkip, saveChapterSkip, skipTarget } from '@/lib/chapters'
+import {
+  chapterBoundaryMsToSeekSeconds,
+  chapterJumpTarget,
+  loadChapterSkip,
+  saveChapterSkip,
+  skipTarget,
+} from '@/lib/chapters'
 import type {
   LiveAudioChoice,
   LiveDiagnostics,
@@ -1702,7 +1708,7 @@ export function LivePlayer({
   }
   const jumpOriginalChapter = (direction: 'next' | 'prev') => {
     const target = chapterJumpTarget(chapters ?? [], originalCurrentSeconds, direction)
-    if (target !== undefined) commitOriginalSeek(target)
+    if (target !== undefined) commitOriginalSeek(chapterBoundaryMsToSeekSeconds(Math.round(target * 1000)))
   }
   const handleOriginalSeekPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     isOriginalScrubbingRef.current = true
@@ -1909,6 +1915,18 @@ export function LivePlayer({
           }
         }}
         onSeek={(seconds) => {
+          if (isLive) {
+            commitLiveProgramSeek(seconds)
+          } else if (isChase) {
+            commitChaseSeek(seconds)
+          } else {
+            setOriginalPreviewSeconds(null)
+            setOriginalTilePreview(null)
+            commitOriginalSeek(seconds)
+          }
+        }}
+        onSeekChapter={(boundaryMs) => {
+          const seconds = chapterBoundaryMsToSeekSeconds(boundaryMs)
           if (isLive) {
             commitLiveProgramSeek(seconds)
           } else if (isChase) {

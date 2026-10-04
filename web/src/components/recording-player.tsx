@@ -19,6 +19,7 @@ import { RecordingPlaybackControls } from '@/components/recording-playback-contr
 import { Button } from '@/components/ui/button'
 import {
   PLAY_AROUND_SECONDS,
+  chapterBoundaryMsToSeekSeconds,
   chapterJumpTarget,
   loadChapterSkip,
   saveChapterSkip,
@@ -633,10 +634,15 @@ export function RecordingPlayer({
     previousSecondsRef.current = seconds
     updatePlayedFraction(video)
   }
+  // 境界を見る操作だけは整数 ms をフレーム表示区間の中央へ写す。
+  // シークバー、フィルムストリップ上の任意位置、前後 3 秒再生、自動スキップは通常時刻のまま。
+  const seekToChapterBoundary = (boundaryMs: number) => {
+    jumpTo(chapterBoundaryMsToSeekSeconds(boundaryMs))
+  }
   jumpToRef.current = jumpTo
   const jumpChapter = (direction: 'next' | 'prev') => {
     const target = chapterJumpTarget(chapterSpans, currentSeconds, direction)
-    if (target !== undefined) jumpTo(target)
+    if (target !== undefined) seekToChapterBoundary(Math.round(target * 1000))
   }
   // playAround は境界の前後 3 秒を再生して止める（修正 UI の「前後 3 秒」）。
   const playAround = (seconds: number) => {
@@ -761,6 +767,7 @@ export function RecordingPlayer({
         onSeekPointerUp={handleScrubPointerUp}
         onSeekPointerLeave={() => setTilePreview(null)}
         onSeek={jumpTo}
+        onSeekChapter={seekToChapterBoundary}
         onSelectProfile={(nextProfile) => {
           setChosenProfile(nextProfile)
           onProfileChange?.(nextProfile)

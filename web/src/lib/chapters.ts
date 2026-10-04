@@ -22,10 +22,32 @@ export const CHAPTER_SKIP_STORAGE_KEY = 'rokuban:chapter-skip'
  *
  * **クライアントは fps を知る手段を持たない**（配信は progressive MP4 で、
  * プロファイルは解像度とコーデックしか出さない）。地上波・BS の実放送の大半が
- * この値なので固定する。サーバー側は保存時に必ずフレーム境界へ丸め直すので、
- * ここがずれても「1 回押して 1 フレーム動かない」だけで境界は壊れない。
+ * この値なので固定する。境界映像の表示位置とフレーム刻みの目安に使う。サーバー側は
+ * 保存時に必ずフレーム境界へ丸め直すため、ここが違っても保存値自体は壊れない。
  */
 export const FRAME_SECONDS = 1001 / 30000
+
+/**
+ * chapterBoundaryMsToSeekSeconds は保存済みの境界 ms を、フレーム表示区間の中央へ写す。
+ * 保存値は Go 側でフレーム境界へ量子化済みなので、ここではその境界が指すフレームを
+ * 復元して表示位置を求めるだけである。保存値の量子化・比較は Go に任せる。
+ */
+export function chapterBoundaryMsToSeekSeconds(boundaryMs: number): number {
+  if (!Number.isFinite(boundaryMs)) return 0
+  const frame = Math.max(0, Math.round(boundaryMs / (FRAME_SECONDS * 1000)))
+  return (frame + 0.5) * FRAME_SECONDS
+}
+
+/** playbackSecondsToChapterBoundaryMs は表示中フレームの境界を整数 ms で返す。 */
+export function playbackSecondsToChapterBoundaryMs(seconds: number): number {
+  if (!Number.isFinite(seconds) || seconds <= 0) return 0
+  const framePosition = seconds / FRAME_SECONDS
+  // t がフレーム境界ちょうどのとき、除算の浮動小数誤差で k よりわずかに小さく
+  // なる場合だけ救う。許容幅は framePosition の double 丸め誤差ぶんに限る。
+  const roundoff = Number.EPSILON * Math.max(1, Math.abs(framePosition)) * 4
+  const frame = Math.floor(framePosition + roundoff)
+  return Math.round(frame * FRAME_SECONDS * 1000)
+}
 
 /** NUDGE_SECONDS は ±1 秒ボタンの刻み。 */
 export const NUDGE_SECONDS = 1
