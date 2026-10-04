@@ -187,10 +187,9 @@ export function RecordingPlayer({
   const selectedProfile =
     chosenFor === recordingId && chosenProfile !== null && profiles.includes(chosenProfile) ? chosenProfile : defaultProfile
   const selectedAsset = encodedAssets.find((a) => a.profile === selectedProfile)
-  // カット版を再生しているあいだは、原本の時間軸で作られたものを一切出さない。
-  // シークタイルは原本の時間軸で作られており、本編に残した OP などをカット版の
-  // 軸へ写像する処理を初版では持たない。チャプターの目盛り・一覧・スキップも
-  // 同じ理由で出さない（境界は原本の ms で、その動画には当てられない）。
+  // ホバー時はタイル位置だけ固定済み keepRanges で原本軸へ写す。ラベルとクリックは
+  // カット版の軸を保つ。チャプターの目盛り・一覧・スキップは引き続き出さない
+  // （境界は原本の ms で、その動画には当てられない）。
   const playingCut = selectedAsset?.cut === true
   const keepRangesKey = JSON.stringify(selectedAsset?.keepRanges ?? [])
   const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
@@ -679,15 +678,16 @@ export function RecordingPlayer({
   }
   const handleScrubMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     seekAtPointer(event)
-    // カット版ではタイルを出さない（原本の時間軸で作られており、カット版の軸へ
-    // 写像していない。上の playingCut のコメント参照）。取りに行きもしない。
-    if (playingCut) {
-      setTilePreview(null)
-      return
-    }
     // プレビューはマウスだけに出す。タッチは pointerleave が来ないので、タップの
     // 後にプレビューが映像を覆ったまま残る。タップは帯のクリック（シーク）だけに効く。
     if (event.pointerType !== 'mouse') {
+      setTilePreview(null)
+      return
+    }
+    // タイルは原本の時間軸にある。カット版では再生中のファイルを作ったときに
+    // 固定した keepRanges でタイル位置だけ原本へ戻す。空の変換表では問い合わせない。
+    const keepRanges = playingCut ? frozenKeepRangesRef.current : undefined
+    if (playingCut && (!keepRanges || keepRanges.length === 0)) {
       setTilePreview(null)
       return
     }
@@ -698,12 +698,19 @@ export function RecordingPlayer({
 
     const seconds = scrubSeconds(event)
     const rect = event.currentTarget.getBoundingClientRect()
+    const tileSeconds =
+      seconds === null
+        ? null
+        : playingCut && keepRanges
+          ? cutMsToOriginalMs(seconds * 1000, keepRanges) / 1000
+          : seconds
     const tile =
-      seconds === null ? null : seekTilePlacement(seconds, rect.width, event.clientX - rect.left)
+      tileSeconds === null ? null : seekTilePlacement(tileSeconds, rect.width, event.clientX - rect.left)
     if (tile === null || tilesAvailableFor !== recordingId) {
       setTilePreview(null)
       return
     }
+    // 表示ラベルはタイルの原本時刻ではなく、見ているカット版の再生位置を示す。
     setTilePreview({ recordingId, ...tile, seconds: seconds ?? 0 })
   }
   const handleScrubPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {

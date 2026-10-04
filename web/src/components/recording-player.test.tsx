@@ -872,6 +872,48 @@ describe('RecordingPlayer のシークプレビュー', () => {
     expect(probe?.getAttribute('src')).toBe('/api/media/recordings/92/seek-tiles')
   })
 
+  it('カット版でも keepRanges があればタイル画像の問い合わせを始める', () => {
+    const { container, getByTestId } = render(
+      <RecordingPlayer
+        recordingId={93}
+        preferredProfile="cut"
+        encodedAssets={[
+          {
+            profile: 'cut',
+            sizeBytes: 123,
+            cut: true,
+            keepRanges: [
+              { startMs: 0, endMs: 30_000 },
+              { startMs: 40_000, endMs: 120_000 },
+            ],
+          },
+        ]}
+      />,
+    )
+    setMediaProps(container.querySelector('video')!, { duration: 110 })
+
+    fireEvent.pointerMove(getByTestId('seek-scrub'), { pointerType: 'mouse', clientX: 100 })
+
+    expect(container.querySelector('img[src*="/seek-tiles"]')?.getAttribute('src')).toBe(
+      '/api/media/recordings/93/seek-tiles',
+    )
+  })
+
+  it('カット版でも keepRanges が空ならタイル画像を問い合わせない', () => {
+    const { container, getByTestId } = render(
+      <RecordingPlayer
+        recordingId={94}
+        preferredProfile="cut"
+        encodedAssets={[{ profile: 'cut', sizeBytes: 123, cut: true, keepRanges: [] }]}
+      />,
+    )
+    setMediaProps(container.querySelector('video')!, { duration: 110 })
+
+    fireEvent.pointerMove(getByTestId('seek-scrub'), { pointerType: 'mouse', clientX: 100 })
+
+    expect(container.querySelector('img[src*="/seek-tiles"]')).toBeNull()
+  })
+
   it('録画を切り替えると帯の再生済み割合を前の録画から持ち越さない', () => {
     const asset = [{ profile: 'h264', sizeBytes: 123 }]
     const { container, getByTestId, rerender } = render(

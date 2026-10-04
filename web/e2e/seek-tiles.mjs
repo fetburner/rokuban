@@ -22,6 +22,7 @@
 //   ⑦ タッチではタップで飛ぶだけで、プレビューは出ない（pointerleave が来ないので居座る）
 //   ⑧ 400px（light / dark）と 600px（light）で、プレビュー面積を映像の 16% 以下に抑え、ラベルを
 //      読める大きさ（描画の高さ 14px 以上）のまま時刻・チャプター表示から離す
+//   ⑨ カット版では cut 軸の hover を原本軸へ写像してタイルを出す。クリックとラベルは cut 軸のまま。
 //
 // フィクスチャは ffmpeg で作る（動画の長さが判定に要る）。無い環境では
 // この判定だけを skip として終了する。
@@ -82,9 +83,20 @@ const recording = {
   encodedAssets: [{ profile: 'h264', sizeBytes: 400_000_000 }],
   createdAt: '2026-01-02T12:30:00Z',
 }
+const keepRanges = [
+  { startMs: 0, endMs: 30_000 },
+  { startMs: 40_000, endMs: 120_000 },
+]
+const cutRecording = {
+  ...recording,
+  encodedAssets: [{ profile: 'cut', sizeBytes: 400_000_000, cut: true, keepRanges }],
+}
+let activeRecording = recording
 
 /** serveTiles が false の間はタイル配信だけ 404 を返す（④の判定用）。 */
 let serveTiles = false
+let cutVideoBytes
+let seekTileRequests = 0
 
 /** タイルの中身ではなく、背景位置が指す格子と実ブラウザでの描画を判定する。 */
 let tileSprite
@@ -131,6 +143,38 @@ function ensureFixture() {
   return existsSync(videoPath) ? videoPath : undefined
 }
 
+/** keepRanges の区間を連結した 110 秒の cut 版を作る。 */
+function ensureCutFixture(sourcePath) {
+  const fixtureDir = path.join(os.tmpdir(), 'rokuban-e2e-seek-tiles')
+  const webkit = browserEngine === 'webkit'
+  const videoPath = path.join(fixtureDir, webkit ? 'clip-cut.mp4' : 'clip-cut.webm')
+  if (existsSync(videoPath) && statSync(videoPath).size > 0) return videoPath
+
+  const codecArgs = webkit
+    ? ['-c:v', 'libx264', '-preset', 'ultrafast', '-movflags', '+faststart']
+    : ['-c:v', 'libvpx', '-b:v', '30k']
+  log(`カット版フィクスチャを生成中... (${videoPath})`)
+  execFileSync(
+    'ffmpeg',
+    [
+      '-y',
+      '-i',
+      sourcePath,
+      '-filter_complex',
+      '[0:v]trim=start=0:end=30,setpts=PTS-STARTPTS[first];[0:v]trim=start=40:end=120,setpts=PTS-STARTPTS[second];[first][second]concat=n=2:v=1:a=0[outv]',
+      '-map',
+      '[outv]',
+      '-an',
+      ...codecArgs,
+      '-pix_fmt',
+      'yuv420p',
+      videoPath,
+    ],
+    { stdio: 'ignore' },
+  )
+  return existsSync(videoPath) ? videoPath : undefined
+}
+
 async function apiHandler({ path: apiPath, url, json, route }) {
   const method = route.request().method()
   if (apiPath === '/api/sites') return json(['default'])
@@ -141,27 +185,29 @@ async function apiHandler({ path: apiPath, url, json, route }) {
   if (apiPath === '/api/capacity/overages') return json([])
   if (apiPath === '/api/events') return sseKeepAlive(route)
   if (apiPath === '/api/recordings' && method === 'GET') {
-    return json(url.searchParams.get('trash') === 'true' ? [] : [recording])
+    return json(url.searchParams.get('trash') === 'true' ? [] : [activeRecording])
   }
-  if (/^\/api\/recordings\/1$/.test(apiPath) && method === 'GET') return json(recording)
+  if (/^\/api\/recordings\/1$/.test(apiPath) && method === 'GET') return json(activeRecording)
   if (/^\/api\/media\/recordings\/1\/file$/.test(apiPath)) {
     // Range に応じる（実物の streamer と同じ）。応じないと Chromium は動画を
     // seekable にせず、⑤のクリックが 0 秒から動かない。
+    const mediaBytes = url.searchParams.get('profile') === 'cut' ? cutVideoBytes : videoBytes
     const range = /bytes=(\d+)-(\d*)/.exec(route.request().headers().range ?? '')
-    if (!range) return route.fulfill({ status: 200, contentType: videoContentType, body: videoBytes, headers: { 'Accept-Ranges': 'bytes' } })
+    if (!range) return route.fulfill({ status: 200, contentType: videoContentType, body: mediaBytes, headers: { 'Accept-Ranges': 'bytes' } })
     const start = Number(range[1])
-    const end = range[2] ? Number(range[2]) : videoBytes.length - 1
+    const end = range[2] ? Number(range[2]) : mediaBytes.length - 1
     return route.fulfill({
       status: 206,
       contentType: videoContentType,
-      body: videoBytes.subarray(start, end + 1),
-      headers: { 'Accept-Ranges': 'bytes', 'Content-Range': `bytes ${start}-${end}/${videoBytes.length}` },
+      body: mediaBytes.subarray(start, end + 1),
+      headers: { 'Accept-Ranges': 'bytes', 'Content-Range': `bytes ${start}-${end}/${mediaBytes.length}` },
     })
   }
   if (/^\/api\/media\/recordings\/\d+\/thumbnail$/.test(apiPath)) {
     return route.fulfill({ status: 404 })
   }
   if (/^\/api\/media\/recordings\/1\/seek-tiles$/.test(apiPath)) {
+    seekTileRequests += 1
     if (!serveTiles) return route.fulfill({ status: 404 })
     return route.fulfill({ status: 200, contentType: 'image/png', body: tileSprite })
   }
@@ -199,7 +245,10 @@ function expectedTile(seconds) {
 
 log(`URL: ${URL_BASE}`)
 log('\n=== 契約検証: フィクスチャの zod parse ===')
-await validateFixturesOrExit([['recording', ListRecordingsResponseItem, recording]], ng)
+await validateFixturesOrExit([
+  ['recording', ListRecordingsResponseItem, recording],
+  ['cut recording', ListRecordingsResponseItem, cutRecording],
+], ng)
 
 log('\n=== ⓪ 配っている bundle と dist/ の一致 ===')
 await verifyBundleMatchesOrExit(URL_BASE, ng)
@@ -210,6 +259,12 @@ if (videoPath === undefined) {
   await finish(ng)
 }
 const videoBytes = readFileSync(videoPath)
+const cutVideoPath = ensureCutFixture(videoPath)
+if (cutVideoPath === undefined) {
+  log('  カット版フィクスチャを作れないため、カット版の判定は測れない（skip）')
+  await finish(ng)
+}
+cutVideoBytes = readFileSync(cutVideoPath)
 // スクリーンショットに 1×1 の単色タイルを拡大して写さないよう、動画フィクスチャ
 // からプロダクトと同じ 320×180・10 列の sprite を作る。判定自体は tile sheet の
 // 画素ではなく background-position を見るため、10×2 の大きさだけ合わせる。
@@ -612,5 +667,89 @@ if ((await touchPage.locator('[data-testid="seek-tile-preview"]').count()) !== 0
   ng.push('⑦ タップの後にプレビューが残っている')
 }
 await touchContext.close()
+
+log('\n=== ⑨ カット版の hover は原本時刻、クリックとラベルはカット時刻 ===')
+activeRecording = cutRecording
+serveTiles = false
+seekTileRequests = 0
+await page.setViewportSize({ width: 1280, height: 900 })
+const cutNoTilesVideo = await openPlayer()
+const cutNoTilesBox = await page.locator('[data-testid="seek-scrub"]').boundingBox()
+const cutSrc = await cutNoTilesVideo.getAttribute('src')
+if (cutSrc !== '/api/media/recordings/1/file?profile=cut') {
+  ng.push(`⑨ カット版の media source を再生していない（src=${cutSrc}）`)
+}
+await moveToSeconds(page, cutNoTilesBox, 110, 50)
+await page.waitForTimeout(200)
+await moveToSeconds(page, cutNoTilesBox, 110, 50)
+await page.waitForTimeout(500)
+if (seekTileRequests === 0) {
+  ng.push('⑨ 404 のカット版タイルを確認するための問い合わせが始まらない')
+}
+if ((await page.locator('[data-testid="seek-tile-preview"]').count()) !== 0) {
+  ng.push('⑨ タイルが 404 なのにカット版プレビューが出ている')
+}
+if ((await cutNoTilesVideo.evaluate((v) => v.duration)) <= 0) {
+  ng.push('⑨ タイルが 404 のカット版で再生面が壊れている')
+}
+
+serveTiles = true
+const cutVideo = await openPlayer()
+const cutDuration = await cutVideo.evaluate((v) => v.duration)
+if (Math.abs(cutDuration - 110) > 2) {
+  ng.push(`⑨ カット版の長さが想定と違う（duration=${cutDuration}、期待 110s）`)
+}
+const cutScrubBox = await page.locator('[data-testid="seek-scrub"]').boundingBox()
+if (!cutScrubBox || cutScrubBox.width <= 0) {
+  ng.push('⑨ カット版のスクラブ帯の矩形が取れない')
+  await finish(ng, browser)
+}
+
+for (const { cutSeconds, originalSeconds } of [
+  // 端数秒の中心を使い、整数 CSS ピクセルへ丸めたポインタが格子境界の手前に
+  // 落ちないようにする。ラベルはそれぞれ 0:25 / 0:50 になる。
+  { cutSeconds: 25.5, originalSeconds: 25.5 },
+  { cutSeconds: 50.5, originalSeconds: 60.5 },
+]) {
+  await moveToSeconds(page, cutScrubBox, cutDuration, cutSeconds)
+  await page
+    .waitForFunction(() => (document.querySelector('img[src*="/seek-tiles"]')?.naturalWidth ?? 0) > 0, undefined, {
+      timeout: 15000,
+    })
+    .catch(() => {})
+  await moveToSeconds(page, cutScrubBox, cutDuration, cutSeconds)
+  const preview = page.locator('[data-testid="seek-tile-preview"]')
+  const visible = await preview.waitFor({ timeout: 5000 }).then(() => true).catch(() => false)
+  if (!visible) {
+    ng.push(`⑨ カット版 ${cutSeconds}s の hover でプレビューが出ない`)
+    continue
+  }
+  const shown = await preview.locator('> div').evaluate((el) => getComputedStyle(el).backgroundPosition)
+  const want = expectedTile(originalSeconds)
+  if (shown !== `${want.x}px ${want.y}px`) {
+    ng.push(`⑨ カット版 ${cutSeconds}s のタイル位置が ${shown}（原本 ${originalSeconds}s の ${want.x}px ${want.y}px を期待）`)
+  }
+  const label = (await page.locator('[data-testid="seek-tile-label"]').textContent())?.trim()
+  const expectedLabel = cutSeconds < 30 ? '0:25' : '0:50'
+  if (label !== expectedLabel) {
+    ng.push(`⑨ カット版 ${cutSeconds}s のラベルがカット軸と違う（${label}、期待 ${expectedLabel}）`)
+  }
+}
+
+// 原本 60 秒台のタイル（#6）を示した cut 軸 50 秒台の位置をクリックする。
+const clickTargetSeconds = 50.5
+const clickPoint = scrubPoint(cutScrubBox, cutDuration, clickTargetSeconds)
+await page.locator('[data-testid="seek-scrub"]').click({
+  position: { x: clickPoint.x - cutScrubBox.x, y: clickPoint.y - cutScrubBox.y },
+})
+await page.waitForFunction(
+  (target) => Math.abs((document.querySelector('video')?.currentTime ?? -1) - target) < 0.5,
+  clickTargetSeconds,
+  { timeout: 5000 },
+).catch(() => {})
+const cutCurrentTime = await cutVideo.evaluate((v) => v.currentTime)
+if (Math.abs(cutCurrentTime - clickTargetSeconds) > 0.5) {
+  ng.push(`⑨ cut 軸 ${clickTargetSeconds}s のクリックが cut 軸の位置へ飛ばない（currentTime=${cutCurrentTime.toFixed(1)}s）`)
+}
 
 await finish(ng, browser)

@@ -683,7 +683,7 @@ export function RecordingPlaybackControls({
                   className="pointer-events-none absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow"
                   style={{ left: `${(hasTimeline ? seekFraction : playedFraction) * 100}%` }}
                 />
-                {!playingCut && tilesRequested && (
+                {tilesRequested && (
                   <img
                     src={seekTilesURL(recordingId ?? 0)}
                     alt=""
