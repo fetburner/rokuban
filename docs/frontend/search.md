@@ -308,7 +308,7 @@
   条件を指定し忘れているだけなのか正しく絞り込めているのかは区別が要る
   （上記「未検索と 0 件を構造的に別の状態として扱う」と同じ精神）
 - **保存時に追加される不足は専用 API で導出する。** `POST /api/capacity/preview` の
-  結果で、同じ位置にあった 旧来の `GET /api/capacity/overages` を窓で引く方式を置き換える。
+  結果を値札（`RuleCostSummary`）の隣に出す。
   入力は実行した検索条件と任意の `ruleId`。候補から予約済み・skip 意図
   （`program_intents.action = 'skip'`）・fulfilled・重複排除で skip になる番組を除く。
   残りを既存需要に加え、`capacity.Compute` で再評価する。ルール編集時は、そのルールの
