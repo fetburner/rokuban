@@ -4,12 +4,14 @@ import { useId, useLayoutEffect, useRef, useState } from 'react'
 
 import type { CapacityOverage, RecordingShelf, Reservation } from '@/api/generated'
 import { CapacityShortfallBadge } from '@/components/capacity-shortfall-badge'
+import { RecordingThumbnail } from '@/components/recording-thumbnail'
+import { ReservationOrigin, StateBadge } from '@/components/reservation-row-parts'
 import { ReservationSkipBadge } from '@/components/reservation-skip-reason'
 import { formatDateTime, formatDuration } from '@/lib/format'
 import { programTitle } from '@/lib/program-labels'
 import { reservationGroupCapacityAt, type ReservationGroup } from '@/lib/reservation-groups'
-import { stateLabels } from '@/lib/reservation-labels'
 import { intersectingOverages, shortageMessage } from '@/lib/capacity'
+import { reservationRowLabel, unwatchedLabel } from '@/lib/reservation-labels'
 import { cn } from '@/lib/utils'
 
 /** 予約の詳細リンクを展開する行。棚は予約一覧とは独立したクエリの成功時だけ渡す。 */
@@ -19,42 +21,31 @@ export function ReservationSeriesRow({
   shelvesKnown,
   shelf,
   ruleLabel,
+  showSite,
 }: {
   group: ReservationGroup
   overages: readonly CapacityOverage[]
   shelvesKnown: boolean
   shelf?: RecordingShelf
   ruleLabel: (ruleId: number) => string
+  /** 複数サイトを構成しているか。構成ベースで決め、行の予約の site 数では決めない。 */
+  showSite: boolean
 }) {
   const [expanded, setExpanded] = useState(false)
   const headingRef = useRef<HTMLSpanElement>(null)
   const detailsId = `reservation-series-details-${useId().replaceAll(':', '')}`
   const canExpand = group.reservations.length > 1
-  const hasMultipleSites = new Set(group.reservations.map((reservation) => reservation.site)).size > 1
 
   // 行を開いたとき見出しが sticky なページヘッダーの下に隠れていたら、見出しを
-  // ヘッダーの下へ戻す。高さの変化後も「何を開いたか」を見失わないようにする。
+  // ヘッダーの下へ戻す。隠れる量は scroll-margin-top（時間順の日付見出しの top と同じ
+  // CSS 変数）が持つ。高さの変化後も「何を開いたか」を見失わないようにする。
   useLayoutEffect(() => {
     if (!expanded) return
-    const heading = headingRef.current
-    const pageHeader = document.querySelector('header')
-    if (!heading || !pageHeader) return
-    const top = heading.getBoundingClientRect().top
-    const safeTop = pageHeader.getBoundingClientRect().bottom
-    if (top < safeTop) window.scrollBy({ top: top - safeTop, behavior: 'instant' })
+    headingRef.current?.scrollIntoView({ block: 'nearest' })
   }, [expanded])
 
   const title = group.title
   const next = group.next
-  const accessibilityLabel = [
-    title,
-    next.serviceName,
-    formatDateTime(next.startAt),
-    formatDuration(next.durationMs),
-    next.state === 'active' ? undefined : stateLabels[next.state],
-  ]
-    .filter((part): part is string => part !== undefined && part !== '')
-    .join(' ')
   const summary = `今後 ${group.reservations.length.toLocaleString('ja-JP')} 本`
   const shelfKnownForSeries = shelvesKnown && group.series !== null
 
@@ -78,7 +69,7 @@ export function ReservationSeriesRow({
           <Link
             to="/reservations/$site/$programId"
             params={{ site: next.site, programId: String(next.programId) }}
-            aria-label={accessibilityLabel}
+            aria-label={reservationRowLabel(next)}
             className="absolute inset-0"
           />
         )}
@@ -89,6 +80,9 @@ export function ReservationSeriesRow({
               ref={headingRef}
               data-testid="reservation-series-title"
               className="block truncate text-base font-medium"
+              style={{
+                scrollMarginTop: 'calc(var(--sticky-banners-height, 0px) + var(--page-header-height, 0px))',
+              }}
             >
               {title}
             </span>
@@ -114,12 +108,12 @@ export function ReservationSeriesRow({
           </div>
 
           {shelfKnownForSeries && <DesktopShelfBox series={group.series!} shelf={shelf} />}
+          {/* 開閉できる行は ∨（開くと ∧）、遷移する行は ›。形で両者を見分けさせる。 */}
           {canExpand ? (
-            expanded ? (
-              <ChevronDown aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-            ) : (
-              <ChevronRight aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-            )
+            <ChevronDown
+              aria-hidden
+              className={cn('size-4 shrink-0 text-muted-foreground', expanded && 'rotate-180')}
+            />
           ) : (
             <ChevronRight aria-hidden className="size-4 shrink-0 text-muted-foreground" />
           )}
@@ -134,7 +128,7 @@ export function ReservationSeriesRow({
               reservation={reservation}
               series={group.series}
               overages={overages}
-              showSite={hasMultipleSites}
+              showSite={showSite}
             />
           ))}
         </ul>
@@ -144,7 +138,7 @@ export function ReservationSeriesRow({
 }
 
 function MobileShelfSummary({ series, shelf }: { series: string; shelf: RecordingShelf }) {
-  const unwatched = shelf.unwatchedCount === 0 ? 'すべて視聴済み' : `未視聴 ${shelf.unwatchedCount}`
+  const unwatched = unwatchedLabel(shelf.unwatchedCount)
   return (
     <Link
       to="/recordings/$id/series"
@@ -170,27 +164,19 @@ function DesktopShelfBox({ series, shelf }: { series: string; shelf?: RecordingS
     )
   }
 
-  const unwatched = shelf.unwatchedCount === 0 ? 'すべて視聴済み' : `未視聴 ${shelf.unwatchedCount}`
-  const imageUrl = `/api/media/recordings/${shelf.representativeId}/thumbnail`
+  const unwatched = unwatchedLabel(shelf.unwatchedCount)
   return (
     <ShelfLink series={series} shelf={shelf} className="hidden lg:flex">
-      <span className="aspect-video w-20 shrink-0 overflow-hidden rounded bg-muted">
-        <ShelfThumbnail key={imageUrl} src={imageUrl} />
-      </span>
+      <RecordingThumbnail
+        key={shelf.representativeId}
+        recordingId={shelf.representativeId}
+        className="w-20"
+      />
       <span className="min-w-0">
         <span className="block truncate text-sm font-medium">録画 {shelf.count.toLocaleString('ja-JP')} 本</span>
         <span className="block truncate text-xs text-muted-foreground">{unwatched}</span>
       </span>
     </ShelfLink>
-  )
-}
-
-function ShelfThumbnail({ src }: { src: string }) {
-  const [failed, setFailed] = useState(false)
-  return failed ? (
-    <span aria-hidden className="block size-full bg-muted" />
-  ) : (
-    <img src={src} alt="" loading="lazy" className="size-full object-cover" onError={() => setFailed(true)} />
   )
 }
 
@@ -205,7 +191,7 @@ function ShelfLink({
   className: string
   children: React.ReactNode
 }) {
-  const unwatched = shelf.unwatchedCount === 0 ? 'すべて視聴済み' : `未視聴 ${shelf.unwatchedCount}`
+  const unwatched = unwatchedLabel(shelf.unwatchedCount)
   return (
     <Link
       to="/recordings/$id/series"
@@ -233,15 +219,6 @@ function ReservationEpisodeRow({
   showSite: boolean
 }) {
   const title = episodeTitle(reservation.title, series)
-  const accessibilityLabel = [
-    reservation.title,
-    reservation.serviceName,
-    formatDateTime(reservation.startAt),
-    formatDuration(reservation.durationMs),
-    reservation.state === 'active' ? undefined : stateLabels[reservation.state],
-  ]
-    .filter((part): part is string => part !== undefined && part !== '')
-    .join(' ')
   const startMs = Date.parse(reservation.startAt)
 
   return (
@@ -249,7 +226,7 @@ function ReservationEpisodeRow({
       <Link
         to="/reservations/$site/$programId"
         params={{ site: reservation.site, programId: String(reservation.programId) }}
-        aria-label={accessibilityLabel}
+        aria-label={reservationRowLabel(reservation)}
         className="absolute inset-0"
       />
       <div className="flex min-h-11 min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 pl-7">
@@ -258,7 +235,7 @@ function ReservationEpisodeRow({
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
           <span className="shrink-0">{formatDuration(reservation.durationMs)}</span>
           {showSite && <span className="shrink-0 rounded bg-muted px-1.5 py-0.5">{reservation.site}</span>}
-          {reservation.state !== 'active' && <StateBadge state={reservation.state} />}
+          <StateBadge state={reservation.state} />
           <ReservationSkipBadge reservation={reservation} />
           <CapacityShortfallBadge
             overages={[...intersectingOverages(
@@ -287,40 +264,6 @@ function episodeTitle(title: string, series: string | null): string {
     .replace(/[\s:：・|｜\-–—]+$/, '')
     .trim()
   return remainder || displayTitle
-}
-
-function ReservationOrigin({
-  reservation,
-  ruleLabel,
-}: {
-  reservation: Reservation
-  ruleLabel: (ruleId: number) => string
-}) {
-  if (reservation.source === 'manual') return <span className="shrink-0">手動</span>
-  if (reservation.ruleId === undefined) return <span className="shrink-0">ルール</span>
-  return (
-    <Link
-      to="/search"
-      search={{ ruleId: reservation.ruleId }}
-      className="relative z-10 inline-flex min-h-6 items-center px-1 text-foreground underline underline-offset-2"
-      aria-label={`ルール「${ruleLabel(reservation.ruleId)}」`}
-    >
-      ルール「{ruleLabel(reservation.ruleId)}」
-    </Link>
-  )
-}
-
-function StateBadge({ state }: { state: Reservation['state'] }) {
-  return (
-    <span
-      className={cn(
-        'shrink-0 rounded px-1.5 py-0.5 text-xs',
-        state === 'orphaned' ? 'bg-destructive/10 text-destructive' : 'bg-muted text-foreground',
-      )}
-    >
-      {stateLabels[state]}
-    </span>
-  )
 }
 
 function ReservationGroupBadges({ group }: { group: ReservationGroup }) {

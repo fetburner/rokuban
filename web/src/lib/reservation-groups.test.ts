@@ -78,6 +78,20 @@ describe('groupReservations', () => {
     expect(rows[1].next.programId).toBe(3)
   })
 
+  it('並びは先頭の予約ではなく、スキップを飛ばした次回の昇順になる', () => {
+    const rows = groupReservations(
+      [
+        // A は先頭（30 分）がスキップで、次回は 300 分。B の次回 120 分はその間に入る。
+        reservation(1, 'シリーズ A', 30, { skip: true }),
+        reservation(2, 'シリーズ A', 300),
+        reservation(3, 'シリーズ B', 120),
+      ],
+      [],
+    )
+
+    expect(rows.map((row) => row.series)).toEqual(['シリーズ B', 'シリーズ A'])
+  })
+
   it('開始時刻が同じ予約は site と programId で安定させ、シリーズは次回順に並べる', () => {
     const rows = groupReservations(
       [

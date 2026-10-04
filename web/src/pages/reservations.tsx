@@ -8,6 +8,7 @@ import {
   useListRecordingShelves,
   useListReservations,
   useListRules,
+  useListSites,
   type CapacityOverage,
   type RecordingShelf,
   type Reservation,
@@ -17,6 +18,7 @@ import { CapacityShortfallBadge } from '@/components/capacity-shortfall-badge'
 import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
 import { ReservationGroupToggle } from '@/components/reservation-group-toggle'
 import { ReservationSeriesRow } from '@/components/reservation-series-row'
+import { ReservationOrigin, StateBadge } from '@/components/reservation-row-parts'
 import { ReservationSkipBadge } from '@/components/reservation-skip-reason'
 import { Chip } from '@/components/ui/chip'
 import {
@@ -26,13 +28,14 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { coveringWindow } from '@/lib/capacity'
-import { dayKey, formatDate, formatDateTime, formatDuration, formatTime } from '@/lib/format'
+import { dayKey, formatDate, formatDuration, formatTime } from '@/lib/format'
 import { programTitle } from '@/lib/program-labels'
 import {
   reservationNeedsAttention,
-  stateLabels,
+  reservationRowLabel,
   type ReservationsPageSearch,
 } from '@/lib/reservation-labels'
+import { shouldShowRecordingSite } from '@/lib/recording-search'
 import { makeRuleLabel } from '@/lib/rule-label'
 import { groupReservations } from '@/lib/reservation-groups'
 import {
@@ -40,7 +43,6 @@ import {
   saveReservationGrouping,
   type ReservationGrouping,
 } from '@/lib/reservation-grouping'
-import { cn } from '@/lib/utils'
 
 export function ReservationsPage() {
   const search = useRouteSearch({ from: '/reservations' })
@@ -48,6 +50,7 @@ export function ReservationsPage() {
   const [grouping, setGrouping] = useState(loadReservationGrouping)
   const query = useListReservations()
   const rulesQuery = useListRules()
+  const sitesQuery = useListSites()
   const shelvesQuery = useListRecordingShelves(
     { key: ListRecordingShelvesKey.series },
     { query: { enabled: grouping === 'series' } },
@@ -97,8 +100,11 @@ export function ReservationsPage() {
     () => groupReservations(displayedReservations, overages),
     [displayedReservations, overages],
   )
-  // 取得が成功し、再取得も終わるまで棚の存在/不在を主張しない。
-  const shelvesKnown = shelvesQuery.isSuccess && !shelvesQuery.isFetching
+  // 棚の存在/不在は、取得が成功しているときだけ主張する。初回の取得中と失敗は
+  // 「棚をまだ知らない」であって「棚が無い」ではない。再取得中は成功済みのデータを
+  // そのまま使う（箱を消すと周期再取得のたびに行が組み直される）。再取得が失敗すると
+  // status が error になり isSuccess は false に戻るので、古い棚を主張し続けない。
+  const shelvesKnown = shelvesQuery.isSuccess
   const shelvesByValue = useMemo(() => {
     if (!shelvesKnown) return undefined
     const byValue = new Map<string, RecordingShelf>()
@@ -108,6 +114,11 @@ export function ReservationsPage() {
     }
     return byValue
   }, [shelvesKnown, shelvesQuery.data])
+  const registeredSites = useMemo(() => unwrap(sitesQuery.data) ?? [], [sitesQuery.data])
+  const showSite = useMemo(
+    () => shouldShowRecordingSite(registeredSites, reservations.map((reservation) => reservation.site)),
+    [registeredSites, reservations],
+  )
   const ruleLabel = useMemo(() => makeRuleLabel(rules), [rules])
   const rulesWithReservations = useMemo(
     () => rulesWithReservationCounts(reservations, ruleLabel),
@@ -213,6 +224,7 @@ export function ReservationsPage() {
                 shelvesKnown={shelvesByValue !== undefined}
                 shelf={group.series === null ? undefined : shelvesByValue?.get(group.series)}
                 ruleLabel={ruleLabel}
+                showSite={showSite}
               />
             ))}
           </ul>
@@ -268,29 +280,13 @@ function ReservationRow({
   overages: CapacityOverage[]
   ruleLabel: (ruleId: number) => string
 }) {
-  // 行本体のリンクは子要素を持たない絶対配置なので、children から組めない
-  // accessible name を明示する。採否は行を一意に識別できる情報（タイトル・局・
-  // 日時・尺・state）だけにする。毎日放送の番組は時刻だけでは同名の行が並ぶ。
-  // 見た目の行は日付見出しの下にあるので日付を省くが、名前には日付を残す。
-  // 出自や容量バッジの文言は混ぜない。
-  const rowLabel = [
-    programTitle(reservation.title),
-    reservation.serviceName,
-    formatDateTime(reservation.startAt),
-    formatDuration(reservation.durationMs),
-    reservation.state === 'active' ? null : stateLabels[reservation.state],
-  ]
-    // 空文字も落とす（`serviceName` は API required でも空文字を禁じていない）。
-    .filter((part): part is string => part !== null && part !== '')
-    .join(' ')
-
   return (
     <li className="relative isolate flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5 hover:bg-muted/40">
       {/* 行全面リンクを背面へ置き、対話要素は個別に手前へ積む。 */}
       <Link
         to="/reservations/$site/$programId"
         params={{ site: reservation.site, programId: String(reservation.programId) }}
-        aria-label={rowLabel}
+        aria-label={reservationRowLabel(reservation)}
         className="absolute inset-0"
       />
       <div className="w-[4.5rem] shrink-0 self-center text-sm">
@@ -379,46 +375,4 @@ function rulesWithReservationCounts(
   return [...counts]
     .map(([id, count]) => ({ id, label: ruleLabel(id), count }))
     .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'ja') || a.id - b.id)
-}
-
-/** ReservationOrigin は、ルールの編集先リンクを行全面リンクより手前に置く。 */
-function ReservationOrigin({
-  reservation,
-  ruleLabel,
-}: {
-  reservation: Reservation
-  ruleLabel: (ruleId: number) => string
-}) {
-  if (reservation.source === 'manual') return <span className="shrink-0">手動</span>
-  // source は ruleId と独立した出自。ルールが現在の予約に base を供給して
-  // いない場合は ruleId が無いこともあるので、手動と誤表示しない。
-  if (reservation.ruleId === undefined) return <span className="shrink-0">ルール</span>
-  return (
-    <Link
-      to="/search"
-      search={{ ruleId: reservation.ruleId }}
-      className="relative z-10 inline-flex min-h-6 items-center px-1 text-foreground underline underline-offset-2"
-      aria-label={`ルール「${ruleLabel(reservation.ruleId)}」`}
-    >
-      ルール「{ruleLabel(reservation.ruleId)}」
-    </Link>
-  )
-}
-
-/**
- * StateBadge の `detached` の文字色は `text-foreground`（bg-muted 小バッジの
- * 合成後コントラスト対策。docs/frontend/design.md「コントラストは毎回測る」）。
- */
-function StateBadge({ state }: { state: Reservation['state'] }) {
-  if (state === 'active') return null
-  return (
-    <span
-      className={cn(
-        'shrink-0 rounded px-1.5 py-0.5 text-xs',
-        state === 'orphaned' ? 'bg-destructive/10 text-destructive' : 'bg-muted text-foreground',
-      )}
-    >
-      {stateLabels[state]}
-    </span>
-  )
 }

@@ -82,18 +82,21 @@ function renderPage({
   shelves = [],
   overages = [],
   rules = [rule()],
+  sites = ['default'],
   initialEntries = ['/reservations'],
 }: {
   reservations: Reservation[]
   shelves?: ShelfResult
   overages?: CapacityOverage[]
   rules?: Rule[]
+  sites?: string[]
   initialEntries?: string[]
 }) {
   const fetchMock = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
     if (url.pathname === '/api/reservations') return Promise.resolve(jsonResponse(reservations))
     if (url.pathname === '/api/rules') return Promise.resolve(jsonResponse(rules))
+    if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(sites))
     if (url.pathname === '/api/capacity/overages') return Promise.resolve(jsonResponse(overages))
     if (url.pathname === '/api/recording-shelves') {
       const result = typeof shelves === 'function' ? shelves() : shelves
@@ -188,6 +191,90 @@ describe('予約一覧のシリーズ表示', () => {
     expect(within(row).queryByText('まだ録画なし')).toBeNull()
     expect(within(row).queryByTestId('reservation-recording-shelf-empty')).toBeNull()
     expect(within(row).queryByRole('link', { name: /録画/ })).toBeNull()
+  })
+
+  it('成功済みの棚は再取得中も箱を残し、再取得が失敗したら箱ごと隠す', async () => {
+    let calls = 0
+    let rejectRefetch!: (error: Error) => void
+    const refetch = new Promise<RecordingShelf[]>((_resolve, reject) => {
+      rejectRefetch = reject
+    })
+    const { queryClient } = renderPage({
+      reservations: [reservation(1, '毎週ドラマ 第1話', '毎週ドラマ', 18)],
+      shelves: () => {
+        calls += 1
+        return calls === 1 ? [shelf('毎週ドラマ')] : refetch
+      },
+    })
+    const row = await screen.findByTestId('reservation-series-row')
+    expect(await within(row).findAllByRole('link', { name: /録画 4 本/ })).toHaveLength(2)
+
+    // (a) 再取得の応答を保留している間も、成功済みの棚から箱を出し続ける。
+    act(() => {
+      void queryClient.invalidateQueries({ queryKey: ['/api/recording-shelves'] })
+    })
+    await waitFor(() => expect(calls).toBe(2))
+    expect(within(row).getAllByRole('link', { name: /録画 4 本/ })).toHaveLength(2)
+
+    // (b) 再取得が失敗したら、棚の有無を主張しない（箱も「まだ録画なし」も出さない）。
+    await act(async () => rejectRefetch(new Error('shelves unavailable')))
+    await waitFor(() => expect(within(row).queryByRole('link', { name: /録画/ })).toBeNull())
+    expect(within(row).queryByText('まだ録画なし')).toBeNull()
+    expect(within(row).queryByTestId('reservation-recording-shelf-empty')).toBeNull()
+  })
+
+  it('開閉できる行の右端は遷移の › ではなく ∨ にし、1 本だけの行は › にする', async () => {
+    const user = userEvent.setup()
+    renderPage({
+      reservations: [
+        reservation(1, '毎週ドラマ 第1話', '毎週ドラマ', 18),
+        reservation(2, '毎週ドラマ 第2話', '毎週ドラマ', 20),
+        reservation(3, 'ひとり番組', 'ひとり番組', 22),
+      ],
+    })
+
+    const rows = await screen.findAllByTestId('reservation-series-row')
+    const multi = rows.find((row) => within(row).queryByRole('button') !== null)!
+    const single = rows.find((row) => within(row).queryByRole('button') === null)!
+    // 閉じているときも ∨。›（chevron-right）は遷移の印だけに使う。
+    expect(multi.querySelector('svg.lucide-chevron-down')).not.toBeNull()
+    expect(multi.querySelector('svg.lucide-chevron-right')).toBeNull()
+    await user.click(within(multi).getByRole('button'))
+    expect(multi.querySelector('svg.lucide-chevron-right')).toBeNull()
+    expect(single.querySelector('svg.lucide-chevron-right')).not.toBeNull()
+    expect(single.querySelector('svg.lucide-chevron-down')).toBeNull()
+  })
+
+  it('単一サイト構成では各回に site を出さない', async () => {
+    const user = userEvent.setup()
+    renderPage({
+      sites: ['default'],
+      reservations: [
+        reservation(1, '毎週ドラマ 第1話', '毎週ドラマ', 18),
+        reservation(2, '毎週ドラマ 第2話', '毎週ドラマ', 20),
+      ],
+    })
+
+    const row = await screen.findByTestId('reservation-series-row')
+    await user.click(within(row).getByRole('button', { name: '毎週ドラマの予約を開く' }))
+    const episodes = await within(row).findByRole('list', { name: '毎週ドラマの予約' })
+    expect(within(episodes).queryByText('default')).toBeNull()
+  })
+
+  it('2 拠点構成なら、予約が 1 site だけでも各回に site を出す', async () => {
+    const user = userEvent.setup()
+    renderPage({
+      sites: ['default', 'takamatsu'],
+      reservations: [
+        reservation(1, '毎週ドラマ 第1話', '毎週ドラマ', 18),
+        reservation(2, '毎週ドラマ 第2話', '毎週ドラマ', 20),
+      ],
+    })
+
+    const row = await screen.findByTestId('reservation-series-row')
+    await user.click(within(row).getByRole('button', { name: '毎週ドラマの予約を開く' }))
+    const episodes = await within(row).findByRole('list', { name: '毎週ドラマの予約' })
+    await waitFor(() => expect(within(episodes).getAllByText('default')).toHaveLength(2))
   })
 
   it('value=null の録画棚を series=null の予約へ突き合わせない', async () => {
