@@ -15,6 +15,7 @@ import {
   type TilePreview,
 } from '@/components/recording-playback-controls'
 import {
+  autoSkipSeekSeconds,
   chapterBoundaryMsToSeekSeconds,
   chapterJumpTarget,
   loadChapterSkip,
@@ -1838,7 +1839,7 @@ export function LivePlayer({
             originalDurationSeconds,
           )
           if (target !== undefined) {
-            commitOriginalSeek(target)
+            commitOriginalSeek(autoSkipSeekSeconds(target, originalDurationSeconds))
             return
           }
         }
@@ -1972,18 +1973,6 @@ export function LivePlayer({
           }
         }}
         onSeek={(seconds) => {
-          if (isLive) {
-            commitLiveProgramSeek(seconds)
-          } else if (isChase) {
-            commitChaseSeek(seconds)
-          } else {
-            setOriginalPreviewSeconds(null)
-            setOriginalTilePreview(null)
-            commitOriginalSeek(seconds)
-          }
-        }}
-        onSeekChapter={(boundaryMs) => {
-          const seconds = chapterBoundaryMsToSeekSeconds(boundaryMs)
           if (isLive) {
             commitLiveProgramSeek(seconds)
           } else if (isChase) {

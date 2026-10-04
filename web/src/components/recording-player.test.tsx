@@ -1060,6 +1060,19 @@ describe('RecordingPlayer のチャプター', () => {
     fireEvent.timeUpdate(video)
     setMediaProps(video, { currentTime: 10.1, paused: false })
     fireEvent.timeUpdate(video)
+    // 20000ms は frame 599 の中央へ写る（整数 ms のままだと 1 つ前のフレームが映る）。
+    expect(video.currentTime).toBeCloseTo(599.5 * FRAME_SECONDS, 12)
+  })
+
+  it('自動スキップの着地点は動画の長さで頭打ちにする', () => {
+    const { container } = render(
+      <RecordingPlayer recordingId={971} encodedAssets={asset} chapters={[cmSpan]} />,
+    )
+    const video = container.querySelector('video')!
+    setMediaProps(video, { duration: 20, currentTime: 9.8, paused: false })
+    fireEvent.timeUpdate(video)
+    setMediaProps(video, { currentTime: 10.1, paused: false })
+    fireEvent.timeUpdate(video)
     expect(video.currentTime).toBe(20)
   })
 

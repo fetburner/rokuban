@@ -38,6 +38,7 @@ const INITIAL_HLS_SEGMENTS = 5
 const CHAPTER_SEEK_ONLY = process.env.E2E_TIMELINE_CHAPTER_SEEK_ONLY === '1'
 const EXPECTED_SHIFT_FRAMES = Number.parseInt(process.env.E2E_TIMELINE_EXPECTED_SHIFT_FRAMES ?? '0', 10) || 0
 const ng = []
+const chapterPuts = []
 const now = Date.now()
 const recordingSeconds = 22
 const startedAt = new Date(now - 30_000).toISOString()
@@ -321,16 +322,22 @@ async function seekThroughChapterCards(page) {
   for (let index = 0; index < markerTimes.length; index += 1) {
     const marker = markerTimes[index]
     const boundaryMs = Math.round(marker.expectedSeconds * 1000)
-    const boundarySeconds = boundaryMs / 1000
+    // 押す前は境界の 0.5 秒手前（目印でないフレーム）に置く。整数 ms の境界へ置くと、
+    // 切り上がる境界では押す前から目印が映っており、判定が空振りする。
+    const beforeSeconds = boundaryMs / 1000 - 0.5
     try {
       await page.locator('video').evaluate((video, target) => {
         video.pause()
         video.currentTime = target
-      }, boundarySeconds)
+      }, beforeSeconds)
       await page.waitForFunction((target) => {
         const video = document.querySelector('video')
         return video && !video.seeking && Math.abs(video.currentTime - target) < 0.05
-      }, boundarySeconds, { timeout: 5000 })
+      }, beforeSeconds, { timeout: 5000 })
+      const slotBefore = await page.evaluate(() => window.__displayedMarkerSlot())
+      if (slotBefore === marker.markerSlot) {
+        ng.push(`境界カード ${index + 1}: 押す前から frame ${marker.frame} が映っている（判定が空振りする）`)
+      }
       await rows.nth(index).locator('button').first().click()
       await page.waitForFunction((slot) => {
         const video = document.querySelector('video')
@@ -344,6 +351,76 @@ async function seekThroughChapterCards(page) {
   }
 }
 
+// 目印のフレームが表示された瞬間（requestVideoFrameCallback）に一時停止し、「再生位置に合わせる」を
+// 押して保存した PUT の ms が、そのフレームの境界になることを見る。行 j の開始境界を目印 j+1 へ
+// 合わせる（i を大きい方から回し、1 つの下書きに積む。選ぶ境界の値が他の行と重ならない順）。
+// 再生して目印を捉える判定とは別の周回で行う（混ぜると WebKit でタイムアウトした）。
+async function alignBoundariesToPausedFrames(page) {
+  log('\n=== 非カット MP4: 現在位置に合わせる ===')
+  const rows = page.getByTestId('chapter-span-row')
+  const expectedStarts = markerTimes.map((marker) => Math.round(marker.expectedSeconds * 1000))
+  const alignedFrames = new Map()
+  for (let i = markerTimes.length - 1; i >= 1; i -= 1) {
+    const j = i - 1
+    const target = markerTimes[i]
+    try {
+      await page.locator('video').evaluate((video, seconds) => {
+        video.pause()
+        video.currentTime = seconds
+      }, expectedStarts[j] / 1000 - 0.5)
+      await page.waitForFunction(() => !document.querySelector('video')?.seeking, undefined, { timeout: 5000 })
+      await rows.nth(j).locator('button').first().click()
+      const paused = await page.locator('video').evaluate((video, [seconds, slot]) => new Promise((resolve) => {
+        const timer = setTimeout(() => resolve(false), 8000)
+        const onFrame = () => {
+          if (window.__displayedMarkerSlot() === slot) {
+            video.pause()
+            clearTimeout(timer)
+            resolve(true)
+            return
+          }
+          video.requestVideoFrameCallback(onFrame)
+        }
+        video.currentTime = seconds
+        video.addEventListener('seeked', () => {
+          video.requestVideoFrameCallback(onFrame)
+          void video.play()
+        }, { once: true })
+      }), [target.expectedSeconds - 0.3, target.markerSlot])
+      if (!paused) {
+        ng.push(`現在位置に合わせる: frame ${target.frame} で一時停止できない`)
+        continue
+      }
+      await page.waitForTimeout(300)
+      const slot = await page.evaluate(() => window.__displayedMarkerSlot())
+      if (slot !== target.markerSlot) {
+        ng.push(`現在位置に合わせる: 一時停止後に frame ${target.frame} が映っていない (slot=${slot})`)
+        continue
+      }
+      await page.getByRole('button', { name: '選択中の境界を現在の再生位置に合わせる' }).click()
+      alignedFrames.set(j, target)
+    } catch (err) {
+      ng.push(`現在位置に合わせる: frame ${target.frame} の操作に失敗 (${err.message})`)
+    }
+  }
+  const putCountBefore = chapterPuts.length
+  await page.getByRole('button', { name: '保存' }).click()
+  await page.waitForFunction(() => document.querySelector('[data-testid="chapter-span-row"]') === null, undefined, { timeout: 5000 }).catch(() => {})
+  if (chapterPuts.length !== putCountBefore + 1) {
+    ng.push(`現在位置に合わせる: 保存の PUT が 1 回ではない (${chapterPuts.length - putCountBefore})`)
+    return
+  }
+  const spans = chapterPuts.at(-1).spans
+  for (const [j, target] of alignedFrames) {
+    // encoded の表示順の番号 k（目印 PTS ÷ 1 フレーム）。フィクスチャの原本 frame 番号とは音ずれ補正ぶん違う。
+    const k = Math.round(target.expectedSeconds * 30_000 / 1_001)
+    const want = Math.round(k * 1001 / 30)
+    const got = spans[j]?.startMs
+    log(`  span ${j + 1}: PUT startMs=${got} want=${want} (k=${k})`)
+    if (got !== want) ng.push(`現在位置に合わせる: span ${j + 1} の PUT startMs が目印 frame ${target.frame} の境界ではない (got=${got}, want=${want})`)
+  }
+}
+
 async function timelineHandler({ path: requestPath, url, json, route }) {
   const method = route.request().method()
   if (requestPath === '/api/sites') return json([SITE])
@@ -354,6 +431,11 @@ async function timelineHandler({ path: requestPath, url, json, route }) {
   if (requestPath === '/api/encode-queue') return json({ queued: 0, running: 0 })
   if (requestPath === '/api/recordings' && method === 'GET') return json([activeRecording])
   if (requestPath === `/api/recordings/${RECORDING_ID}` && method === 'GET') return json(activeRecording)
+  if (requestPath === `/api/recordings/${RECORDING_ID}/chapter-edits` && method === 'PUT') {
+    const body = route.request().postDataJSON()
+    chapterPuts.push(body)
+    return json({ version: 'timeline-v2', detectionPending: false, source: 'user', spans: body.spans })
+  }
   if (requestPath === `/api/recordings/${RECORDING_ID}/chapters`) {
     const spans = activeRecording.encodedAssets.length > 0
       ? markerTimes.map((marker, index) => ({
@@ -456,64 +538,63 @@ function compareMarkers(label, observed, expected, sessionOffset) {
 }
 
 if (!CHAPTER_SEEK_ONLY) {
-const hlsPage = await context.newPage()
-await installApiStubs(hlsPage, timelineHandler)
-await hlsPage.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
-await hlsPage.getByTestId('recording-playback-start').click()
-await hlsPage.locator('video').waitFor({ timeout: 15000 })
-await hlsPage.waitForFunction(() => {
-  const video = document.querySelector('video')
-  return video?.videoWidth > 0 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
-}, undefined, { timeout: 15000 })
+  const hlsPage = await context.newPage()
+  await installApiStubs(hlsPage, timelineHandler)
+  await hlsPage.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
+  await hlsPage.getByTestId('recording-playback-start').click()
+  await hlsPage.locator('video').waitFor({ timeout: 15000 })
+  await hlsPage.waitForFunction(() => {
+    const video = document.querySelector('video')
+    return video?.videoWidth > 0 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+  }, undefined, { timeout: 15000 })
 
-log('\n=== 原本 HLS offset 0 ===')
-const rootMarkers = markerTimes.slice(0, 4)
-const rootObserved = await captureExpectedMarkers(hlsPage, 0, rootMarkers, '原本 HLS offset 0')
-compareMarkers('原本 HLS offset 0', rootObserved, rootMarkers, 0)
+  log('\n=== 原本 HLS offset 0 ===')
+  const rootMarkers = markerTimes.slice(0, 4)
+  const rootObserved = await captureExpectedMarkers(hlsPage, 0, rootMarkers, '原本 HLS offset 0')
+  compareMarkers('原本 HLS offset 0', rootObserved, rootMarkers, 0)
 
-await hlsPage.locator('video').evaluate((video) => video.pause())
-const seekbar = hlsPage.getByTestId('seek-scrub')
-const seekbarBox = await seekbar.boundingBox()
-if (!seekbarBox) {
-  ng.push('offset セッション測定用のシークバーを取得できない')
-} else {
-  const targetSeconds = OFFSET_SECONDS + 0.5
-  const x = seekbarBox.x + seekbarBox.width * targetSeconds / recordingSeconds
-  const y = seekbarBox.y + seekbarBox.height / 2
-  await hlsPage.mouse.move(seekbarBox.x + seekbarBox.width * 0.2, y)
-  await hlsPage.mouse.down()
-  await hlsPage.mouse.move(x, y)
-  await hlsPage.mouse.up()
-}
+  await hlsPage.locator('video').evaluate((video) => video.pause())
+  const seekbar = hlsPage.getByTestId('seek-scrub')
+  const seekbarBox = await seekbar.boundingBox()
+  if (!seekbarBox) {
+    ng.push('offset セッション測定用のシークバーを取得できない')
+  } else {
+    const targetSeconds = OFFSET_SECONDS + 0.5
+    const x = seekbarBox.x + seekbarBox.width * targetSeconds / recordingSeconds
+    const y = seekbarBox.y + seekbarBox.height / 2
+    await hlsPage.mouse.move(seekbarBox.x + seekbarBox.width * 0.2, y)
+    await hlsPage.mouse.down()
+    await hlsPage.mouse.move(x, y)
+    await hlsPage.mouse.up()
+  }
 
-const offsetRequestDeadline = Date.now() + 15_000
-while (
-  !playlistRequests.some((request) => request.offset === OFFSET_SECONDS && request.resource === 'playlist.m3u8') &&
-  Date.now() < offsetRequestDeadline
-) {
-  await hlsPage.waitForTimeout(50)
-}
-if (!playlistRequests.some((request) => request.offset === OFFSET_SECONDS && request.resource === 'playlist.m3u8')) {
-  ng.push(`seek で原本 HLS offset/${OFFSET_SECONDS} セッションを要求しない (${JSON.stringify(playlistRequests)})`)
-} else {
-  const hlsOffsetDeadline = Date.now() + 15_000
-  while (Date.now() < hlsOffsetDeadline) {
-    const state = await hlsPage.evaluate(() => {
-      const video = document.querySelector('video')
-      return { videoWidth: video?.videoWidth ?? 0, currentTime: video?.currentTime ?? -1 }
-    })
-    if (state.videoWidth > 0 && state.currentTime >= 0.25) break
+  const offsetRequestDeadline = Date.now() + 15_000
+  while (
+    !playlistRequests.some((request) => request.offset === OFFSET_SECONDS && request.resource === 'playlist.m3u8') &&
+    Date.now() < offsetRequestDeadline
+  ) {
     await hlsPage.waitForTimeout(50)
   }
-  log(`\n=== 原本 HLS offset ${OFFSET_SECONDS} ===`)
-  const offsetMarkers = markerTimes.slice(4)
-  const sessionOffset = OFFSET_SECONDS
-  const offsetObserved = await captureExpectedMarkers(hlsPage, sessionOffset, offsetMarkers, `原本 HLS offset ${OFFSET_SECONDS}`)
-  compareMarkers(`原本 HLS offset ${OFFSET_SECONDS}`, offsetObserved, offsetMarkers, sessionOffset)
-}
+  if (!playlistRequests.some((request) => request.offset === OFFSET_SECONDS && request.resource === 'playlist.m3u8')) {
+    ng.push(`seek で原本 HLS offset/${OFFSET_SECONDS} セッションを要求しない (${JSON.stringify(playlistRequests)})`)
+  } else {
+    const hlsOffsetDeadline = Date.now() + 15_000
+    while (Date.now() < hlsOffsetDeadline) {
+      const state = await hlsPage.evaluate(() => {
+        const video = document.querySelector('video')
+        return { videoWidth: video?.videoWidth ?? 0, currentTime: video?.currentTime ?? -1 }
+      })
+      if (state.videoWidth > 0 && state.currentTime >= 0.25) break
+      await hlsPage.waitForTimeout(50)
+    }
+    log(`\n=== 原本 HLS offset ${OFFSET_SECONDS} ===`)
+    const offsetMarkers = markerTimes.slice(4)
+    const offsetObserved = await captureExpectedMarkers(hlsPage, OFFSET_SECONDS, offsetMarkers, `原本 HLS offset ${OFFSET_SECONDS}`)
+    compareMarkers(`原本 HLS offset ${OFFSET_SECONDS}`, offsetObserved, offsetMarkers, OFFSET_SECONDS)
+  }
 
-await hlsPage.evaluate(() => localStorage.clear())
-await hlsPage.close()
+  await hlsPage.evaluate(() => localStorage.clear())
+  await hlsPage.close()
 }
 activeRecording = recording
 const mp4Page = await context.newPage()
@@ -531,6 +612,7 @@ if (mp4Ready) {
   // playback mediaTime の全判定を終えてから、UI 経由のシークを別の周回で行う。
   // WebKit の native HLS では、このシークを再生判定の間に挟むと後続が timeout した。
   await seekThroughChapterCards(mp4Page)
+  await alignBoundariesToPausedFrames(mp4Page)
 } else {
   const videoState = await mp4Page.locator('video').evaluate((video) => ({
     currentTime: video.currentTime,

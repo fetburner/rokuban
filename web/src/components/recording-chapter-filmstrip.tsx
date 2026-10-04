@@ -11,7 +11,7 @@ import {
   minFilmstripRangeSeconds,
   type FilmstripRange,
 } from '@/lib/chapter-filmstrip'
-import { chapterBoundaries, nudgeBoundary, playbackSecondsToChapterBoundaryMs } from '@/lib/chapters'
+import { chapterBoundaries, displayedFrameBoundaryMs, nudgeBoundary } from '@/lib/chapters'
 import { formatPlaybackTime, formatPlaybackTimeMs } from '@/lib/format'
 import {
   SEEK_TILES_COLUMNS,
@@ -26,6 +26,7 @@ type RecordingChapterFilmstripProps = {
   recordingId: number
   durationSeconds: number
   currentSeconds: number
+  getDisplayedFrameSeconds: () => number | null
   spans: ChapterSpan[]
   selectedBoundary: number | null
   tilesAvailable: boolean
@@ -55,6 +56,7 @@ export function RecordingChapterFilmstrip({
   recordingId,
   durationSeconds,
   currentSeconds,
+  getDisplayedFrameSeconds,
   spans,
   selectedBoundary,
   tilesAvailable,
@@ -165,7 +167,7 @@ export function RecordingChapterFilmstrip({
 
   const alignSelectedToPlayback = () => {
     if (selectedBoundary === null) return
-    const targetMs = playbackSecondsToChapterBoundaryMs(currentSeconds)
+    const targetMs = displayedFrameBoundaryMs(getDisplayedFrameSeconds(), currentSeconds)
     const targetSeconds = targetMs / 1000
     onChangeSpans(nudgeBoundary(spans, selectedBoundary, targetSeconds - selectedBoundary))
     onSelectBoundary(targetSeconds)

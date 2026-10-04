@@ -31,6 +31,12 @@ export const FRAME_SECONDS = 1001 / 30000
  * chapterBoundaryMsToSeekSeconds は保存済みの境界 ms を、フレーム表示区間の中央へ写す。
  * 保存値は Go 側でフレーム境界へ量子化済みなので、ここではその境界が指すフレームを
  * 復元して表示位置を求めるだけである。保存値の量子化・比較は Go に任せる。
+ *
+ * **通す呼び出し元は「境界の映像を見せる操作」だけ**: 境界カードのクリック、前 / 次の
+ * チャプター、チャプター一覧、自動スキップの着地点（`autoSkipSeekSeconds`）。
+ * **通さない呼び出し元**: シークバー、キー操作、フィルムストリップのクリック、前後 3 秒再生。
+ * これらは任意の時刻へ動かす操作で、境界のフレームを見せる契約を持たない。中央へ寄せると
+ * 利用者が指した位置を勝手にずらす。
  */
 export function chapterBoundaryMsToSeekSeconds(boundaryMs: number): number {
   if (!Number.isFinite(boundaryMs)) return 0
@@ -38,15 +44,41 @@ export function chapterBoundaryMsToSeekSeconds(boundaryMs: number): number {
   return (frame + 0.5) * FRAME_SECONDS
 }
 
-/** playbackSecondsToChapterBoundaryMs は表示中フレームの境界を整数 ms で返す。 */
+/**
+ * autoSkipSeekSeconds は自動スキップの飛び先（`skipTarget` の境界秒）を、境界のフレームが映る
+ * シーク先へ写す。動画の長さを超える場合は長さで頭打ちにする（長さが未確定なら頭打ちしない）。
+ */
+export function autoSkipSeekSeconds(targetSeconds: number, durationSeconds: number): number {
+  const seek = chapterBoundaryMsToSeekSeconds(Math.round(targetSeconds * 1000))
+  return Number.isFinite(durationSeconds) && durationSeconds > 0 ? Math.min(seek, durationSeconds) : seek
+}
+
+/** frameToBoundaryMs はフレーム番号を保存形式の整数 ms の境界へ写す。 */
+export function frameToBoundaryMs(frame: number): number {
+  return Math.round(frame * FRAME_SECONDS * 1000)
+}
+
+/**
+ * displayedFrameBoundaryMs は最後に表示されたフレームの `mediaTime`（秒）があれば
+ * `round(mediaTime / T)` でフレーム番号にし、無ければ `currentTime` の floor に fallback する。
+ * 一時停止直後の `currentTime` は表示中フレームの開始より手前に来ることがあり（測定は #1095）、
+ * floor は 1 つ前のフレームを返しうるので、mediaTime を優先する。
+ */
+export function displayedFrameBoundaryMs(mediaSeconds: number | null, currentSeconds: number): number {
+  if (mediaSeconds === null || !Number.isFinite(mediaSeconds) || mediaSeconds < 0) {
+    return playbackSecondsToChapterBoundaryMs(currentSeconds)
+  }
+  return frameToBoundaryMs(Math.round(mediaSeconds / FRAME_SECONDS))
+}
+
+/** playbackSecondsToChapterBoundaryMs は `currentTime` の floor でフレームの境界を整数 ms で返す（mediaTime が無いときの fallback）。 */
 export function playbackSecondsToChapterBoundaryMs(seconds: number): number {
   if (!Number.isFinite(seconds) || seconds <= 0) return 0
   const framePosition = seconds / FRAME_SECONDS
   // t がフレーム境界ちょうどのとき、除算の浮動小数誤差で k よりわずかに小さく
   // なる場合だけ救う。許容幅は framePosition の double 丸め誤差ぶんに限る。
   const roundoff = Number.EPSILON * Math.max(1, Math.abs(framePosition)) * 4
-  const frame = Math.floor(framePosition + roundoff)
-  return Math.round(frame * FRAME_SECONDS * 1000)
+  return frameToBoundaryMs(Math.floor(framePosition + roundoff))
 }
 
 /** NUDGE_SECONDS は ±1 秒ボタンの刻み。 */

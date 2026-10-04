@@ -4,9 +4,11 @@ import type { ChapterSpan } from '@/api/generated'
 import {
   CHAPTER_SKIP_STORAGE_KEY,
   FRAME_SECONDS,
+  autoSkipSeekSeconds,
   chapterBoundaryMsToSeekSeconds,
   chapterBoundaries,
   chapterJumpTarget,
+  displayedFrameBoundaryMs,
   formatChaptersTime,
   loadChapterSkip,
   nudgeBoundary,
@@ -120,6 +122,43 @@ describe('チャプター境界と再生位置の変換', () => {
     const justBefore = 66 * FRAME_SECONDS - 4 * Number.EPSILON
     expect(justBefore / FRAME_SECONDS).toBeLessThan(66)
     expect(playbackSecondsToChapterBoundaryMs(justBefore)).toBe(2202)
+  })
+})
+
+describe('表示フレームの mediaTime からの境界', () => {
+  it('mediaTime のフレーム番号を round で求める（切り下がる k=66 と切り上がる k=67）', () => {
+    expect(displayedFrameBoundaryMs(66 * FRAME_SECONDS, 0)).toBe(2202)
+    expect(displayedFrameBoundaryMs(67 * FRAME_SECONDS, 0)).toBe(2236)
+  })
+
+  it('mediaTime が取れていれば currentTime が前のフレームを指していても mediaTime を使う', () => {
+    // 一時停止直後の currentTime は表示フレームの開始より手前（-0.2 フレーム）にある。
+    const current = (67 - 0.2) * FRAME_SECONDS
+    expect(playbackSecondsToChapterBoundaryMs(current)).toBe(2202)
+    expect(displayedFrameBoundaryMs(67 * FRAME_SECONDS, current)).toBe(2236)
+  })
+
+  it('mediaTime が無ければ currentTime の floor に fallback する', () => {
+    expect(displayedFrameBoundaryMs(null, 66.75 * FRAME_SECONDS)).toBe(2202)
+    expect(displayedFrameBoundaryMs(Number.NaN, 67.75 * FRAME_SECONDS)).toBe(2236)
+  })
+
+  it('境界 → シーク秒 → 境界が往復で一致する', () => {
+    for (const ms of [0, 2202, 2236, 67_367, 1_199_999]) {
+      const seek = chapterBoundaryMsToSeekSeconds(ms)
+      expect(displayedFrameBoundaryMs(null, seek)).toBe(ms)
+    }
+  })
+})
+
+describe('autoSkipSeekSeconds', () => {
+  it('境界秒をフレーム中央へ写す', () => {
+    expect(autoSkipSeekSeconds(2.236, 120)).toBeCloseTo(67.5 * FRAME_SECONDS, 12)
+  })
+
+  it('動画の長さで頭打ちにする。長さが未確定なら頭打ちしない', () => {
+    expect(autoSkipSeekSeconds(20, 20)).toBe(20)
+    expect(autoSkipSeekSeconds(20, Number.NaN)).toBeCloseTo(599.5 * FRAME_SECONDS, 12)
   })
 })
 

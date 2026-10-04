@@ -2918,7 +2918,7 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     fireEvent.timeUpdate(video)
     video.currentTime = 6.5
     fireEvent.timeUpdate(video)
-    expect(video.currentTime).toBe(8)
+    expect(video.currentTime).toBeCloseTo(240.5 * FRAME_SECONDS, 12)
 
     fireEvent.click(screen.getByRole('button', { name: '再生設定' }))
     const skip = screen.getByRole('menuitemcheckbox', { name: 'CM を飛ばす' })

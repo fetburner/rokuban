@@ -6,7 +6,7 @@ import { RecordingChapterFilmstrip } from '@/components/recording-chapter-filmst
 import {
   chapterBoundaries,
   chapterBoundaryMsToSeekSeconds,
-  playbackSecondsToChapterBoundaryMs,
+  displayedFrameBoundaryMs,
 } from '@/lib/chapters'
 import { formatPlaybackTime } from '@/lib/format'
 
@@ -33,6 +33,8 @@ type RecordingChapterEditorProps = {
   source: RecordingChaptersSource
   recordingId: number
   currentSeconds: number
+  /** 最後に表示されたフレームの mediaTime（秒）。取れなければ null（currentTime の floor に fallback）。 */
+  getDisplayedFrameSeconds?: () => number | null
   durationSeconds: number
   tilesAvailable: boolean
   onTileImageLoad: () => void
@@ -66,12 +68,15 @@ export function RecordingChapterEditor(props: RecordingChapterEditorProps) {
   return <ChapterDraftEditor {...props} />
 }
 
+const noDisplayedFrame = () => null
+
 function ChapterDraftEditor({
   spans,
   version,
   source,
   recordingId,
   currentSeconds,
+  getDisplayedFrameSeconds = noDisplayedFrame,
   durationSeconds,
   tilesAvailable,
   onTileImageLoad,
@@ -107,7 +112,9 @@ function ChapterDraftEditor({
   const dirty = useMemo(() => !sameSpans(draft, base.spans), [draft, base.spans])
   const [selectedBoundaryValue, setSelectedBoundaryValue] = useState<number | null>(null)
   const [pendingStartMs, setPendingStartMs] = useState<number | null>(null)
-  const currentMs = playbackSecondsToChapterBoundaryMs(currentSeconds)
+  // 描画用（ボタンの無効判定）は currentTime の floor、押した瞬間の値は mediaTime 優先。
+  const currentMs = displayedFrameBoundaryMs(null, currentSeconds)
+  const nowMs = () => displayedFrameBoundaryMs(getDisplayedFrameSeconds(), currentSeconds)
   const nearestBoundary = boundaries.length === 0
     ? null
     : boundaries.reduce((best, candidate) =>
@@ -179,11 +186,12 @@ function ChapterDraftEditor({
     }
   }, [commandsRef, discardDraft, reset, save])
 
-  const startNewSpan = () => setPendingStartMs(currentMs)
+  const startNewSpan = () => setPendingStartMs(nowMs())
   const closeNewSpan = () => {
     if (pendingStartMs === null) return
-    const startMs = Math.min(pendingStartMs, currentMs)
-    const endMs = Math.max(pendingStartMs, currentMs)
+    const now = nowMs()
+    const startMs = Math.min(pendingStartMs, now)
+    const endMs = Math.max(pendingStartMs, now)
     if (endMs <= startMs) return
     setDraft((current) => [...current, { startMs, endMs, cut: true }])
     setPendingStartMs(null)
@@ -196,6 +204,7 @@ function ChapterDraftEditor({
           recordingId={recordingId}
           durationSeconds={durationSeconds}
           currentSeconds={currentSeconds}
+          getDisplayedFrameSeconds={getDisplayedFrameSeconds}
           spans={draft}
           selectedBoundary={selectedBoundary}
           tilesAvailable={tilesAvailable}

@@ -36,7 +36,7 @@ import {
   VolumeX,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { formatChaptersTime } from '@/lib/chapters'
+import { chapterBoundaryMsToSeekSeconds, formatChaptersTime } from '@/lib/chapters'
 import { formatBytes, formatDate, formatPlaybackTime, formatPlaybackTimeMs } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
@@ -135,7 +135,6 @@ type RecordingPlaybackControlsProps = {
   onSeekPointerCancel?: (event: ReactPointerEvent<HTMLDivElement>) => void
   onSeekPointerLeave: () => void
   onSeek: (seconds: number) => void
-  onSeekChapter: (boundaryMs: number) => void
   onLiveEdgeSeek?: () => void
   deferKeyboardSeek?: boolean
   onSeekPreview?: (seconds: number) => void
@@ -221,7 +220,6 @@ export function RecordingPlaybackControls({
   onSeekPointerCancel,
   onSeekPointerLeave,
   onSeek,
-  onSeekChapter,
   onLiveEdgeSeek,
   deferKeyboardSeek = false,
   onSeekPreview,
@@ -1121,7 +1119,7 @@ export function RecordingPlaybackControls({
             entries={entries}
             currentIndex={currentEntryIndex}
             onJump={(start) => {
-              onSeekChapter(Math.round(start * 1000))
+              onSeek(chapterBoundaryMsToSeekSeconds(Math.round(start * 1000)))
               closeChapters(true)
             }}
             onClose={closeChapters}
