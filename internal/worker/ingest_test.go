@@ -841,7 +841,7 @@ func TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry(t *testing.T)
 
 // TestIngestWorker_NotReadyAndEmptyBodyDoNotConsumeRetries は、録画開始直後に必ず出る
 // 204（content file がまだ空）と、追い付いた状態の 206 + 0 バイトを、接続失敗として
-// 数えないことを固定する。どちらも maxInJobRetries（5）を超えて続けてから
+// 数えないことを固定する。どちらも mirakc.MaxConsecutiveRetries（5）を超えて続けてから
 // finished になる。
 //
 // 数えるように変異させると、正常な録画が 6 回目のポーリングで失敗する。
@@ -1161,7 +1161,7 @@ func TestIngestWorker_PermanentlyUnknownStatusIsBounded(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	// 上限（maxInJobRetries = 5）に達すれば数秒で error を返す。返らなければ
+	// 上限（mirakc.MaxConsecutiveRetries = 5）に達すれば数秒で error を返す。返らなければ
 	// カウンタがリセットされ続けている。
 	if err := w.Work(ctx, &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{ID: 425021}, Args: IngestJobArgs{Site: "default", RecordID: "rec-forever-unknown"}}); err == nil {
 		t.Fatal("Work() = nil, want an error（未知の status が続いたら上限で止まる）")

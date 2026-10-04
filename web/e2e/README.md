@@ -267,6 +267,20 @@ playlist を Chromium の hls.js（`E2E_BROWSER=webkit` ならネイティブ HL
   切り替えて `/recordings/1` を開き直し、原本 VOD の `currentTime` を比べる。
   **原本 VOD の `LivePlayer` に `resumePositionMs` を渡さない変異で
   `5.52 秒 → 0.00 秒` になって落ちる**（Chromium で確認。WebKit は未実施）
+- **追っかけ範囲外 seek で原本 HLS に移った後も再生が続く**（⑩）。最後に進んだ `currentTime` から
+  次に進んだ時刻までの最大停止時間を記録し、2 秒以下を判定する。再生を引き継がない変異は、範囲外 seek の
+  `reselectPlaybackSource` へ `playing && false` を渡すものである。**停止 10073ms・`advances=0` になって落ちる**
+  （Chromium で確認）。**再生元を替えない変異（`selected !== current.source`
+  を `false &&` にする）で、offset を要求せず ⑩ の 4 判定が落ちる**（Chromium で確認）
+- **追っかけの終端（`ended`）では、別の再生元を作らず終了状態のまま止まる**（⑪・⑫）。追っかけの
+  `ENDLIST` は mirakc の録画が終わった後にだけ付くので、終端は常に録画ファイルの終端である
+  （`docs/api/media.md`）。fixture は伸びる EVENT playlist を 6 segment（12 秒）で止め、そこへ
+  `ENDLIST` を付ける。壁時計の録画時間は 20 秒、原本 HLS fixture は 20 秒以上ある。⑪ は完了の取得の後に、
+  ⑫ は前に `ENDLIST` を付ける。**main の実装（壁時計の終端の 1.5 秒手前より前なら移る）で ⑪ が
+  `sameVideo:false`・原本 HLS 要求 2 件になって落ちる**。**前回の実装（5 秒の許容と、完了の取得を待つ保留）
+  では ⑪ と ⑫ の両方が同じ形で落ちる**（以上 Chromium で確認）。終端の 1 秒後の `ended` は判定に使わない。
+  Playwright の WebKit は `ended` の約 0.9 秒後に `durationchange` だけを出して `currentTime` を 0 に戻すことがある
+  （13 回の実行の 26 判定中 4 回。`seeking` / `loadstart` / `emptied` は出ない）。次のポスター判定は⑬
 
 `E2E_BROWSER=webkit` で同じ判定を Safari 相当のネイティブ HLS 経路で回す。
 画質切替の位置の持ち越しは hls.js（`startPosition`）とネイティブ（要素への代入）で
@@ -311,6 +325,21 @@ WebKit の HLS は 0.00ms / +23.37ms（-10.02 / +13.34）だった。
 非カット MP4 は両ブラウザで 0.00ms（-10.02）だった。1 フレーム変異は WebKit で 13 件の NG
 になり、ずれを検出することを確認した。測定値と未測定の範囲は
 [`docs/frontend/recordings.md`](../../docs/frontend/recordings.md) に記録している。
+
+### 原本 HLS から encoded への切替（`recording-original-vod.mjs`）
+
+⑥ は原本 HLS 再生中に encoded が追加されても現在の HLS を保ち、次の範囲外 seek で encoded MP4 へ
+位置を渡す。切替後に `currentTime` が進むことと、最後に進んだ時刻からの最大停止時間が 2 秒以下であることも、
+Chromium と WebKit で確認する。再生を引き継がない変異は、⑩ と同じ
+`playing && false` である。**切替後が `paused:true`・停止 10077ms・`advances=0` になって落ちる**（Chromium で確認）。
+
+切替の停止時間（上限 2000ms）の実測は、Chromium で ⑩ 88〜177ms（5 回）・⑥ 113〜165ms（3 回）、
+WebKit で ⑩ 202〜281ms（13 回）・⑥ 241〜310ms（3 回）だった。
+
+```sh
+E2E_URL=http://localhost:4173 E2E_BROWSER=chromium pnpm e2e:recording-original-vod
+E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:recording-original-vod
+```
 
 ### デザイン（`design.mjs`）
 

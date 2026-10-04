@@ -161,3 +161,69 @@ export async function installApiStubs(page, handler) {
     await handler({ path: p, url, json, route })
   })
 }
+
+/** 切替時の currentTime 停止の合格上限（ms）。docs/frontend/recordings.md の根拠を参照。 */
+export const MAX_SOURCE_SWITCH_STALL_MS = 2000
+
+/** beginCurrentTimeGapMeasurement は source 切替をまたぐ currentTime の最長停止時間の計測を始める（finish で結果を取る）。 */
+export async function beginCurrentTimeGapMeasurement(page, name) {
+  await page.evaluate((measurementName) => {
+    const video = document.querySelector('video')
+    const now = performance.now()
+    const measurement = {
+      name: measurementName,
+      startedAt: now,
+      lastProgressAt: now,
+      previousTime: video?.currentTime ?? 0,
+      maxGapMs: 0,
+      advances: 0,
+      seekResets: 0,
+      stopped: false,
+    }
+    window.__currentTimeGapMeasurements ??= {}
+    window.__currentTimeGapMeasurements[measurementName] = measurement
+    const sample = () => {
+      if (measurement.stopped) return
+      const currentVideo = document.querySelector('video')
+      const sampledAt = performance.now()
+      const currentTime = currentVideo?.currentTime
+      if (Number.isFinite(currentTime)) {
+        const delta = currentTime - measurement.previousTime
+        if (Math.abs(delta) > 0.5) {
+          // Ignore a seek/source-reset jump; the gap ends only when playback advances again.
+          measurement.previousTime = currentTime
+          measurement.seekResets += 1
+        } else if (delta > 0.01) {
+          measurement.maxGapMs = Math.max(measurement.maxGapMs, sampledAt - measurement.lastProgressAt)
+          measurement.lastProgressAt = sampledAt
+          measurement.previousTime = currentTime
+          measurement.advances += 1
+        }
+      }
+      measurement.maxGapMs = Math.max(
+        measurement.maxGapMs,
+        sampledAt - measurement.lastProgressAt,
+      )
+      requestAnimationFrame(sample)
+    }
+    requestAnimationFrame(sample)
+  }, name)
+}
+
+export async function finishCurrentTimeGapMeasurement(page, name) {
+  return page.evaluate((measurementName) => {
+    const measurement = window.__currentTimeGapMeasurements?.[measurementName]
+    if (!measurement) return undefined
+    measurement.maxGapMs = Math.max(
+      measurement.maxGapMs,
+      performance.now() - measurement.lastProgressAt,
+    )
+    measurement.stopped = true
+    return {
+      maxGapMs: measurement.maxGapMs,
+      advances: measurement.advances,
+      seekResets: measurement.seekResets,
+      elapsedMs: performance.now() - measurement.startedAt,
+    }
+  }, name)
+}
