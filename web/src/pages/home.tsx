@@ -1182,7 +1182,7 @@ type WarningItem = {
   link?:
     | { to: '/programs'; search: { at: number } }
     | { to: '/recordings/$id'; id: number }
-    | { to: '/cm-logos'; search: { network: number; service: number } }
+    | { to: '/cm-logos/$networkId/$serviceId'; networkId: number; serviceId: number }
 }
 
 /**
@@ -1332,7 +1332,7 @@ function buildWarnings({
       kind: 'cm-detection',
       chip: 'CM 検出失敗',
       title: programTitle(recording.title),
-      detail: `1 件 · ${warningStartText(recording, nowMs)}`,
+      detail: warningStartText(recording, nowMs),
       link: { to: '/recordings/$id', id: recording.id },
     })
   }
@@ -1344,8 +1344,9 @@ function buildWarnings({
       chip: 'CM 検出失敗',
       title: `${station.serviceName} ${station.count} 件`,
       link: {
-        to: '/cm-logos',
-        search: { network: station.networkId, service: station.serviceId },
+        to: '/cm-logos/$networkId/$serviceId',
+        networkId: station.networkId,
+        serviceId: station.serviceId,
       },
     })
   }
@@ -1510,12 +1511,15 @@ function WarningRow({ warning, divider }: { warning: WarningItem; divider: boole
     )
   }
 
-  if (warning.link.to === '/cm-logos') {
+  if (warning.link.to === '/cm-logos/$networkId/$serviceId') {
     return (
       <li data-warning-kind={warning.kind} className={itemClassName}>
         <Link
-          to="/cm-logos"
-          search={warning.link.search}
+          to="/cm-logos/$networkId/$serviceId"
+          params={{
+            networkId: String(warning.link.networkId),
+            serviceId: String(warning.link.serviceId),
+          }}
           className={cn(rowClassName, 'hover:bg-muted/40')}
         >
           {content}

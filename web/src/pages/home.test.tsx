@@ -465,14 +465,15 @@ describe('ホーム: CM 検出失敗が要対応に出る（issue #1101）', () 
     expect(within(cmRows[0]!).getByTestId('warning-chip')).toHaveTextContent('CM 検出失敗')
     expect(within(cmRows[0]!).getByTestId('warning-title')).toHaveTextContent('NHK総合 2 件')
     const link = within(cmRows[0]!).getByRole('link')
-    expect(link).toHaveAttribute('href', '/cm-logos?network=32678&service=5168')
+    expect(link).toHaveAttribute('href', '/cm-logos/32678/5168')
     expect(link).not.toHaveAttribute('href', expect.stringContaining('recording='))
     expect(section).not.toHaveTextContent('technical detail')
 
-    const completedScans = fetchMock.mock.calls
+    // limit 等の条件に関わらず、完了録画の取得（時間軸の窓 `from` 付きを除く）が 1 本だけであること（CM 検出専用の取得を足さない）。
+    const finishedScans = fetchMock.mock.calls
       .map(([input]) => new URL(String(input), 'http://localhost'))
-      .filter((url) => url.pathname === '/api/recordings' && url.searchParams.get('status') === 'finished' && url.searchParams.get('limit') === '20')
-    expect(completedScans).toHaveLength(1)
+      .filter((url) => url.pathname === '/api/recordings' && url.searchParams.get('status') === 'finished' && !url.searchParams.has('from'))
+    expect(finishedScans).toHaveLength(1)
   })
 
   it('logo / area 以外の失敗は録画ごとに並び、detecting と disabled は除く', async () => {
@@ -499,6 +500,8 @@ describe('ホーム: CM 検出失敗が要対応に出る（issue #1101）', () 
     expect(cmRows).toHaveLength(2)
     expect(within(cmRows[0]!).getByTestId('warning-title')).toHaveTextContent('解析失敗の番組')
     expect(within(cmRows[0]!).getByRole('link')).toHaveAttribute('href', '/recordings/23')
+    // 副行は開始日時と局名だけ。「1 件」は録画ごとの行では冗長。
+    expect(cmRows[0]).not.toHaveTextContent('1 件')
     expect(within(cmRows[1]!).getByTestId('warning-title')).toHaveTextContent('段階不明の番組')
     expect(within(cmRows[1]!).getByRole('link')).toHaveAttribute('href', '/recordings/24')
     expect(section).not.toHaveTextContent('検出中の番組')
