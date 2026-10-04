@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { LivePlayer } from '@/components/live-player'
 import { FRAME_SECONDS } from '@/lib/chapters'
-import { liveStallTimeoutMs } from '@/lib/live'
+import { liveStallTimeoutMs, originalVODSessionOriginSeconds } from '@/lib/live'
 import type { LiveDiagnostics, StallHandling } from '@/lib/live'
 import { saveChapterEditPlaybackRate, savePlaybackRate } from '@/lib/playback-position'
 
@@ -994,28 +994,29 @@ describe('LivePlayer の状態遷移', () => {
       await waitFor(() => expect(screen.queryByText('読み込み中…')).not.toBeInTheDocument())
     })
 
-    it('原本 VOD を HLS で開き、保存位置を復元する', async () => {
+    it('原本 VOD は保存位置を offset にし、秒未満の位置を復元する', async () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
       render(
         <LivePlayer
           mode="original-vod"
           site="default"
           recordingId={42}
-          resumePositionMs={23_000}
+          resumePositionMs={23_789}
           profile="hd"
         />,
       )
 
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const startPosition = 23.789 - originalVODSessionOriginSeconds(23)
       expect(hlsMockState.instances[0]!.loadSource).toHaveBeenCalledWith(
-        '/api/sites/default/recordings/42/original-vod/playlist.m3u8?profile=hd',
+        '/api/sites/default/recordings/42/original-vod/offset/23/playlist.m3u8?profile=hd',
       )
-      expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition: 23 }])
+      expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition }])
 
       const video = document.querySelector('video')!
       Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
       fireEvent.loadedMetadata(video)
-      expect(video.currentTime).toBe(23)
+      expect(video.currentTime).toBeCloseTo(startPosition)
     })
 
     it('サーバーで共有する原本時間軸の位置を原本 VOD の hls.js startPosition に渡す', async () => {
@@ -1030,9 +1031,13 @@ describe('LivePlayer の状態遷移', () => {
       expect(localStorage.getItem('rokuban:playback:90:original')).toBeNull()
       chase.unmount()
 
-      render(<LivePlayer mode="original-vod" site="default" recordingId={90} resumePositionMs={42_000} profile="hd" />)
+      render(<LivePlayer mode="original-vod" site="default" recordingId={90} resumePositionMs={42_789} profile="hd" />)
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
-      expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: 42 }])
+      const startPosition = 42.789 - originalVODSessionOriginSeconds(42)
+      expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+        '/api/sites/default/recordings/90/original-vod/offset/42/playlist.m3u8?profile=hd',
+      )
+      expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition }])
     })
 
     it('原本 VOD は ENDLIST を見るまで duration を完了判定に使わない', async () => {
@@ -3003,6 +3008,7 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
   it('保存位置から cut 区間内へ再開したときは自動スキップしない', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
     const chapters = [{ startMs: 6_000, endMs: 8_000, label: 'CM', cut: true }]
+    const sessionPosition = 6.5 - originalVODSessionOriginSeconds(6)
     render(
       <LivePlayer
         mode="original-vod"
@@ -3014,15 +3020,18 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
       />,
     )
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    expect(hlsMockState.instances[0]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/419/original-vod/offset/6/playlist.m3u8',
+    )
 
     const video = document.querySelector('video')!
     Object.defineProperty(video, 'paused', { value: false, writable: true, configurable: true })
     Object.defineProperty(video, 'duration', { value: 30, writable: true, configurable: true })
-    Object.defineProperty(video, 'currentTime', { value: 6.5, writable: true, configurable: true })
+    Object.defineProperty(video, 'currentTime', { value: sessionPosition, writable: true, configurable: true })
     fireEvent.canPlay(video)
     fireEvent.seeking(video)
     fireEvent.timeUpdate(video)
-    expect(video.currentTime).toBe(6.5)
+    expect(video.currentTime).toBeCloseTo(sessionPosition)
   })
 
   it('シークはキーを離すまで確定せず、セッション範囲内なら playlist を取り直さない', async () => {

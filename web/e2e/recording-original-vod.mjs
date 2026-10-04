@@ -1050,6 +1050,7 @@ let offsetChapters = {
   spans: [{ startMs: 40_000, endMs: 45_000, label: '気象情報', cut: false }],
 }
 let offsetFailAll = false
+let resumePastEdge = false
 const offsetHandler = async ({ path: requestPath, json, route }) => {
   const method = route.request().method()
   if (requestPath === '/api/sites') return json([SITE])
@@ -1089,7 +1090,7 @@ const offsetHandler = async ({ path: requestPath, json, route }) => {
       return route.fulfill({ status: 416, contentType: 'text/plain', body: 'offset is outside the original\n' })
     }
     if (resource === 'playlist.m3u8') offsetRequests.push({ offset, status: 200 })
-    const sessionDir = manualPlaylistGrowth && offset === 0
+    const sessionDir = (manualPlaylistGrowth || resumePastEdge) && offset === 0
       ? manualGrowingOffsetSession()
       : offsetSession(offset)
     const file = path.join(sessionDir, resource)
@@ -1113,6 +1114,9 @@ const offsetHandler = async ({ path: requestPath, json, route }) => {
         )
         manualPlaylistGrowth.responses.push({ elapsedMs, visibleSegments })
         body = Buffer.from(eventPlaylistPrefix(growingPlaylist, visibleSegments))
+      } else if (resumePastEdge && offset === 0) {
+        const growingPlaylist = readFileSync(path.join(manualGrowingOffsetSession(), resource), 'utf8')
+        body = Buffer.from(eventPlaylistPrefix(growingPlaylist, 8))
       } else {
         body = body.toString('utf8').replace('#EXT-X-ENDLIST\n', '')
       }
@@ -1763,5 +1767,31 @@ for (const [label, viewport] of [['1280', { width: 1280, height: 900 }], ['400',
     }
   }
 }
+
+log('\n=== ⑦ 保存位置が EVENT playlist の先端より先でも offset から再生を始める ===')
+delete offsetRecording.watchedAt
+offsetRecording.resumePositionMs = 12_000
+resumePastEdge = true
+const resumePage = await context.newPage()
+await installApiStubs(resumePage, offsetHandler)
+await resumePage.goto(`${URL_BASE}/recordings/${OFFSET_ID}`, { waitUntil: 'domcontentloaded' })
+const resumeOffsetCursor = offsetRequests.length
+await resumePage.getByTestId('recording-playback-start').click()
+const resumeStarted = await resumePage.waitForFunction(() => {
+  const element = document.querySelector('video')
+  return element !== null && !element.paused && element.currentTime > 0.5
+}, undefined, { timeout: 15000 }).then(() => true).catch(() => false)
+const resumeStartupRequests = offsetRequests.slice(resumeOffsetCursor)
+log(`  resume=12s, initial event playlist=8s, offset requests=${JSON.stringify(resumeStartupRequests)}, playing=${resumeStarted}`)
+const firstSuccessfulResumeOffset = resumeStartupRequests.find((request) => request.status === 200)?.offset
+if (firstSuccessfulResumeOffset !== 12) {
+  ng.push(`⑦ 保存位置 12 秒で最初に offset/12 を要求しない（${JSON.stringify(resumeStartupRequests)}）`)
+}
+if (!resumeStarted) {
+  ng.push(`⑦ 8 秒の変換中 EVENT playlist の先端で停止し、続きから再生できない（${JSON.stringify(await sampleOffsetPlayer(resumePage))}）`)
+}
+await resumePage.close()
+resumePastEdge = false
+delete offsetRecording.resumePositionMs
 
 await finish(ng, browser)

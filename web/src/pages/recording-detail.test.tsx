@@ -17,6 +17,7 @@ import { ToastProvider } from '@/components/toaster'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
 import { cmDetectStageMessage } from '@/lib/cm-detect-stage'
 import { formatTime } from '@/lib/format'
+import { originalVODSessionOriginSeconds } from '@/lib/live'
 import { routeTree } from '@/routes'
 
 afterEach(() => {
@@ -2475,12 +2476,12 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
     await screen.findByRole('button', { name: '再生設定' })
     await waitFor(() => expect(document.querySelector('video')).toBeInTheDocument())
     const chaseVideo = document.querySelector('video')!
-    Object.defineProperty(chaseVideo, 'currentTime', { value: 42, writable: true, configurable: true })
+    Object.defineProperty(chaseVideo, 'currentTime', { value: 42.8, writable: true, configurable: true })
     fireEvent.pause(chaseVideo)
-    await waitFor(() => expect(playbackState.positionMs).toBe(42_000))
+    await waitFor(() => expect(playbackState.positionMs).toBe(42_800))
     cleanup()
 
-    createFakeServer({
+    const fake = createFakeServer({
       recording: { ...recording, status: 'finished' },
       liveProfiles: LIVE_PROFILES,
       playbackState,
@@ -2492,7 +2493,15 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
     const vodVideo = document.querySelector('video')!
     Object.defineProperty(vodVideo, 'currentTime', { value: 0, writable: true, configurable: true })
     fireEvent.loadedMetadata(vodVideo)
-    expect(vodVideo.currentTime).toBe(42)
+    fireEvent.canPlay(vodVideo)
+    fireEvent.timeUpdate(vodVideo)
+    expect(vodVideo.currentTime).toBeCloseTo(42.8 - originalVODSessionOriginSeconds(42))
+    expect(fake.fetchMock.mock.calls.some(([input]) =>
+      String(input).includes('/original-vod/offset/42/playlist.m3u8'),
+    )).toBe(true)
+    await waitFor(() => expect(
+      Number(screen.getByRole('slider', { name: 'シークバー' }).getAttribute('aria-valuenow')),
+    ).toBeCloseTo(42.8))
   })
 
   it('live profile が無い場合は HLS player を作らず、VLC リンクを残す', async () => {
@@ -3342,7 +3351,7 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
     const user = userEvent.setup()
     const playSpy = vi.spyOn(window.HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
     const fake = createFakeServer({
-      recording: sampleRecording({ ...RUNNING, resumePositionMs: 12_000 }),
+      recording: sampleRecording({ ...RUNNING, resumePositionMs: 12_800 }),
       liveProfiles: LIVE_PROFILES,
     })
     const { queryClient } = renderAt('/recordings/3')
@@ -3353,7 +3362,7 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
       status: 'finished',
       endedAt: '2026-01-01T12:02:00Z',
       sizeBytes: 1_000_000,
-      resumePositionMs: 12_000,
+      resumePositionMs: 12_800,
     }))
     fake.setChaseGone(true)
     await queryClient.invalidateQueries()
@@ -3363,7 +3372,10 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
     const video = document.querySelector('video')!
     setMediaProps(video, { currentTime: 0 })
     fireEvent.loadedMetadata(video)
-    expect(video.currentTime).toBe(12)
+    expect(video.currentTime).toBeCloseTo(12.8 - originalVODSessionOriginSeconds(12))
+    expect(playlistPaths(fake.fetchMock, '/original-vod')).toContain(
+      '/api/sites/default/recordings/3/original-vod/offset/12/playlist.m3u8',
+    )
     // ▶ を押した意図は、再生前に消えた追っかけから原本 HLS へ持ち越す（押し直させない）。
     expect(playSpy).not.toHaveBeenCalled()
     fireEvent.canPlay(video)

@@ -434,9 +434,18 @@ export function LivePlayer({
     startOffsetSeconds >= 0
       ? startOffsetSeconds
       : undefined
+  // 変換中の EVENT playlist で保存位置が変換済み範囲より先にあっても待たないよう、
+  // 再開位置の整数秒からセッションを始める。残りの小数秒は startPosition に渡す。
+  const resumedOriginalVODStartOffset =
+    isOriginalVOD &&
+    resumePositionMs !== undefined &&
+    Number.isFinite(resumePositionMs) &&
+    resumePositionMs >= 2000
+      ? Math.floor(resumePositionMs / 1000)
+      : 0
   const initialOriginalVODStart = {
     recordingId,
-    offset: explicitOriginalVODStartOffset ?? 0,
+    offset: explicitOriginalVODStartOffset ?? resumedOriginalVODStartOffset,
     explicit: explicitOriginalVODStartOffset !== undefined,
   }
   const [originalVODStartState, setOriginalVODStartState] = useState(initialOriginalVODStart)
