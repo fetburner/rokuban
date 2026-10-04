@@ -5,6 +5,7 @@ import { RecordingPlayer } from '@/components/recording-player'
 import { FRAME_SECONDS } from '@/lib/chapters'
 
 afterEach(() => {
+  vi.useRealTimers()
   localStorage.clear()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -1099,6 +1100,93 @@ describe('RecordingPlayer のチャプター', () => {
     expect(marker.getAttribute('data-cut')).toBe('true')
     expect(marker.style.left).toBe('25%')
     expect(marker.style.width).toBe('25%')
+  })
+})
+
+describe('RecordingPlayer のチャプター編集中速度', () => {
+  it('通常速度を保ち、編集速度を保存して再入場時に復元する', () => {
+    localStorage.setItem('rokuban:playback-rate', '1.5')
+    localStorage.setItem('rokuban:chapter-edit-playback-rate', '1.75')
+    const props = {
+      recordingId: 102,
+      encodedAssets: [{ profile: 'h264', sizeBytes: 100 }],
+      chapters: [{ startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }],
+      chapterVersion: 'v1',
+      onChapterEditorStatusChange: vi.fn(),
+      onSaveChapters: () => Promise.resolve(),
+      onResetChapters: () => {},
+    }
+    const { container, getByTestId, rerender } = render(
+      <RecordingPlayer {...props} chapterEditing={false} />,
+    )
+    const video = container.querySelector('video')!
+    expect(video.playbackRate).toBe(1.5)
+    expect(video.defaultPlaybackRate).toBe(1.5)
+
+    rerender(<RecordingPlayer {...props} chapterEditing />)
+    expect(video.playbackRate).toBe(1.75)
+    fireEvent.click(getByTestId('chapter-edit-playback-rate'))
+    expect(video.playbackRate).toBe(2)
+    fireEvent.rateChange(video)
+    expect(localStorage.getItem('rokuban:chapter-edit-playback-rate')).toBe('2')
+    expect(localStorage.getItem('rokuban:playback-rate')).toBe('1.5')
+
+    rerender(<RecordingPlayer {...props} chapterEditing={false} />)
+    expect(video.playbackRate).toBe(1.5)
+    expect(video.defaultPlaybackRate).toBe(1.5)
+    rerender(<RecordingPlayer {...props} chapterEditing />)
+    expect(video.playbackRate).toBe(2)
+    expect(video.defaultPlaybackRate).toBe(2)
+    expect(localStorage.getItem('rokuban:playback-rate')).toBe('1.5')
+  })
+
+  function renderEditing() {
+    vi.useFakeTimers()
+    localStorage.setItem('rokuban:chapter-edit-playback-rate', '2')
+    const { container, getByRole, getByTestId } = render(
+      <RecordingPlayer
+        recordingId={103}
+        encodedAssets={[{ profile: 'h264', sizeBytes: 100 }]}
+        chapters={[{ startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }]}
+        chapterVersion="v1"
+        chapterEditing
+        onSaveChapters={() => Promise.resolve()}
+        onResetChapters={() => {}}
+      />,
+    )
+    const video = container.querySelector('video')!
+    const pause = vi.spyOn(video, 'pause').mockImplementation(() => setMediaProps(video, { paused: true }))
+    vi.spyOn(video, 'play').mockImplementation(() => {
+      setMediaProps(video, { paused: false })
+      return Promise.resolve()
+    })
+    // 境界 10 秒の前後再生は 7 秒から 13 秒で止まる。
+    fireEvent.click(getByRole('button', { name: /前後 3 秒/ }))
+    expect(video.currentTime).toBe(7)
+    expect(video.playbackRate).toBe(2)
+    return { video, pause, getByTestId }
+  }
+
+  it('前後再生中に速度を下げると、保険タイマーを新しい速度で測り直す', async () => {
+    const { video, pause, getByTestId } = renderEditing()
+    fireEvent.click(getByTestId('chapter-edit-playback-rate'))
+    expect(video.playbackRate).toBe(0.5)
+    fireEvent.rateChange(video)
+
+    // 開始時の 2x 基準（6/2+2=5 秒）の時刻では止まらない。
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(pause).not.toHaveBeenCalled()
+    // 測り直した 6/0.5+2=14 秒の後には止まる。
+    await vi.advanceTimersByTimeAsync(9_001)
+    expect(pause).toHaveBeenCalledOnce()
+  })
+
+  it('前後再生中に再生が進まなくても、残り時間 + 2 秒後の保険タイマーで止める', async () => {
+    const { pause } = renderEditing()
+    await vi.advanceTimersByTimeAsync(4_999)
+    expect(pause).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(2)
+    expect(pause).toHaveBeenCalledOnce()
   })
 })
 

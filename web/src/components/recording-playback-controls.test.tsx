@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { RecordingPlaybackControls } from '@/components/recording-playback-controls'
 
-function renderControls(playbackRateLocked: boolean) {
+function renderControls(playbackRateLocked: boolean, chapterEditing = false, onRateChange = vi.fn(), playbackRate = 1) {
   const noop = vi.fn()
   const props = {
     profile: 'hd',
@@ -18,13 +18,14 @@ function renderControls(playbackRateLocked: boolean) {
     playedFraction: 0,
     chapters: [],
     playingCut: false,
+    chapterEditing,
     tilePreview: { url: null },
     tilesRequested: false,
     tilesAvailable: false,
     isPlaying: false,
     muted: false,
     volume: 1,
-    playbackRate: 1,
+    playbackRate,
     playbackRateLocked,
     subtitlesEnabled: false,
     skipEnabled: false,
@@ -47,7 +48,7 @@ function renderControls(playbackRateLocked: boolean) {
     onTogglePlay: noop,
     onToggleMute: noop,
     onVolumeChange: noop,
-    onRateChange: noop,
+    onRateChange,
     onToggleSubtitles: noop,
     onToggleSkip: noop,
     onTogglePictureInPicture: noop,
@@ -59,6 +60,7 @@ function renderControls(playbackRateLocked: boolean) {
     onShellKeyDown: noop,
   }
   render(<RecordingPlaybackControls {...(props as unknown as Parameters<typeof RecordingPlaybackControls>[0])} />)
+  if (chapterEditing) return undefined
   fireEvent.click(screen.getByRole('button', { name: '再生設定' }))
   return screen.getByRole('menu', { name: '再生設定' })
 }
@@ -91,5 +93,26 @@ describe('速度メニュー行（変換中の固定）', () => {
     expect(rate).not.toHaveAttribute('aria-disabled')
     fireEvent.click(rate)
     expect(screen.getByRole('menuitemradio', { name: '2x' })).toBeInTheDocument()
+  })
+
+  it('編集帯の速度巡回は変換中に無効になる', () => {
+    renderControls(true, true)
+    expect(screen.getByTestId('chapter-edit-playback-rate')).toBeDisabled()
+  })
+
+  it('編集帯の速度巡回は通常の速度一覧を進む', () => {
+    const onRateChange = vi.fn()
+    renderControls(false, true, onRateChange)
+    const rate = screen.getByTestId('chapter-edit-playback-rate')
+    expect(rate).toBeEnabled()
+    fireEvent.click(rate)
+    expect(onRateChange).toHaveBeenCalledWith(1.25)
+  })
+
+  it('編集帯の速度巡回は一覧外の速度から次に大きい速度へ進む', () => {
+    const onRateChange = vi.fn()
+    renderControls(false, true, onRateChange, 1.1)
+    fireEvent.click(screen.getByTestId('chapter-edit-playback-rate'))
+    expect(onRateChange).toHaveBeenCalledWith(1.25)
   })
 })

@@ -452,6 +452,7 @@ Rokuban は利用者という概念を持たない（[api/deployment.md](../api/
 | テーマ | 持たない（OS 追従のみ） | 上記「ダークは OS 設定に追従する」 |
 | サイドバーの畳み | `rokuban:sidebar:collapsed` | [shell.md](shell.md) |
 | 再生速度 | `rokuban:playback-rate` | **端末ごとに 1 つ**（VOD と追っかけで共有） |
+| チャプター編集中の再生速度 | `rokuban:chapter-edit-playback-rate` | 通常再生とは分けて端末ごとに 1 つ |
 | 録画一覧の表示形式（リスト / カード） | `rokuban:recordings:view` | 出す情報は同じで並べ方だけが変わる |
 | 番組表の表示形式（リスト / 番組表） | `rokuban:programs:view` | URL の `view` が優先。モバイルは常にリスト |
 | 番組表の時間軸の縮尺 | `rokuban:programs:grid-scale` | 120 / 240 / 480 px/時。URL には持たない |
@@ -461,6 +462,8 @@ Rokuban は利用者という概念を持たない（[api/deployment.md](../api/
 
 **再生速度を録画ごとに持たない**のは、速度が「この録画をどう見るか」ではなく「自分が
 どう見るか」の好みだから。録画を変えるたびに 1 倍へ戻ると、毎回選び直しになる。
+チャプター編集中の速度も端末ごとの好みだが、CM 確認のために上げた値が通常視聴へ
+残らないよう、`rokuban:playback-rate` とは別に保存する。
 
 ### メディア操作は標準 controls と重ねない
 
