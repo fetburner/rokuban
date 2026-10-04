@@ -3424,10 +3424,14 @@ func BuildChaseFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []stri
 // become playable. Every segment is kept until shared idle GC, and the output
 // has the same profile, audio rendition, and optional subtitle graph as live.
 // offsetSeconds is mapped down to the 30000/1001 fps input frame grid before
-// accurate input-side -ss. Original VOD output disables B frames so browser
-// frame presentation follows that same timeline. fd 3 is the original opened
-// by the Go process and passed via Cmd.ExtraFiles, so unlinking its canonical
-// path cannot break the session.
+// accurate input-side -ss, and the video encoder gets -bf 0. Measured only on
+// the synthetic MPEG-2 fixture of web/e2e/recording-playback-timeline.mjs with
+// libx264 (Chrome shows hls.js frames 66.73 ms late without -bf 0; WebKit's
+// native HLS showed no difference). Unverified: the captions path's effect in a
+// browser, hardware encoders, and recordings whose audio lead has a phase other
+// than the fixture's 10.02 ms. fd 3 is the original opened by the Go process
+// and passed via Cmd.ExtraFiles, so unlinking its canonical path cannot break
+// the session.
 func BuildOriginalVODFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool, offsetSeconds int64) []string {
 	return buildHLSFFmpegArgsForPlaylistType(
 		cfg, dir, withSubtitles, hlsOriginalEventPlaylist, originalVODFFmpegInputPath, offsetSeconds,
@@ -3511,9 +3515,9 @@ func buildHLSFFmpegArgsForPlaylistType(
 			args = append(args, "-c:v", p.VideoCodec, "-c:a", p.AudioCodec)
 		}
 		if originalVOD {
-			// B frame reorder delay moves browser presentation two frames behind the
-			// original MP4 timeline in hls.js. Original-VOD chapter review must show
-			// the same source frame on every browser path (#1067).
+			// With B frames, Chrome/hls.js showed frames 2 frames (66.73 ms) behind the
+			// original MP4 timeline on the synthetic fixture (e2e
+			// recording-playback-timeline, libx264). Unverified for hardware encoders.
 			args = append(args, "-bf", "0")
 		}
 		if filter, ok := ffargs.VideoFilterArgs(p.Scaler, p.Height, p.Deinterlace); ok {
