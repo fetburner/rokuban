@@ -485,12 +485,13 @@ export function LivePlayer({
   const [chapterEditPlaybackRate, setChapterEditPlaybackRate] = useState(loadChapterEditPlaybackRate)
   const activePlaybackRate = chapterEditing ? chapterEditPlaybackRate : playbackRate
   const saveActivePlaybackRate = chapterEditing ? saveChapterEditPlaybackRate : savePlaybackRate
+  const setActivePlaybackRate = chapterEditing ? setChapterEditPlaybackRate : setPlaybackRate
   const [nativeHlsEventPlaylist, setNativeHlsEventPlaylist] = useState(false)
   const nativeHlsRef = useRef(false)
   const nativeHlsEventRef = useRef(false)
   const playbackRateRef = useRef(playbackRate)
-  const chapterEditingRef = useRef(chapterEditing)
   const saveActivePlaybackRateRef = useRef(saveActivePlaybackRate)
+  const setActivePlaybackRateRef = useRef(setActivePlaybackRate)
   const [originalVODProfileOverrideState, setOriginalVODProfileOverrideState] = useState<{
     recordingId: number | undefined
     value: string | undefined
@@ -754,9 +755,9 @@ export function LivePlayer({
 
   useEffect(() => {
     playbackRateRef.current = activePlaybackRate
-    chapterEditingRef.current = chapterEditing
     saveActivePlaybackRateRef.current = saveActivePlaybackRate
-  }, [activePlaybackRate, chapterEditing, saveActivePlaybackRate])
+    setActivePlaybackRateRef.current = setActivePlaybackRate
+  }, [activePlaybackRate, chapterEditing, saveActivePlaybackRate, setActivePlaybackRate])
 
   // VOD と追っかけ再生は端末共通の速度設定を使う。ENDLIST 前のネイティブ HLS は
   // WebKit で倍速再生が停止するため、有限尺になるまで 1 倍へ一時的に固定する。
@@ -769,10 +770,9 @@ export function LivePlayer({
     const appliedRate = applyPlaybackRate(video, rate, saveActivePlaybackRate)
     if (isRecordingPlayback && !locked && appliedRate !== activePlaybackRate) {
       playbackRateRef.current = appliedRate
-      if (chapterEditing) setChapterEditPlaybackRate(appliedRate)
-      else setPlaybackRate(appliedRate)
+      setActivePlaybackRate(appliedRate)
     }
-  }, [activePlaybackRate, chapterEditing, isRecordingPlayback, nativeHlsEventPlaylist, saveActivePlaybackRate])
+  }, [activePlaybackRate, chapterEditing, isRecordingPlayback, nativeHlsEventPlaylist, saveActivePlaybackRate, setActivePlaybackRate])
 
   // ライブのページキー操作は M / F だけ。録画向けの速度変更は出さない。
   // 追っかけの速度は設定メニューで扱い、通常のライブ視聴には適用しない。
@@ -1159,8 +1159,7 @@ export function LivePlayer({
         const appliedRate = applyPlaybackRate(media, rate, saveActivePlaybackRateRef.current)
         if (isRecordingPlayback && !locked && appliedRate !== requestedRate) {
           playbackRateRef.current = appliedRate
-          if (chapterEditingRef.current) setChapterEditPlaybackRate(appliedRate)
-          else setPlaybackRate(appliedRate)
+          setActivePlaybackRateRef.current(appliedRate)
         }
       }
       media.addEventListener('durationchange', updateRate)
@@ -1975,8 +1974,7 @@ export function LivePlayer({
         if (nativeHlsEventRef.current) return
         const rate = event.currentTarget.playbackRate
         playbackRateRef.current = rate
-        if (chapterEditingRef.current) setChapterEditPlaybackRate(rate)
-        else setPlaybackRate(rate)
+        setActivePlaybackRateRef.current(rate)
         saveActivePlaybackRateRef.current(rate)
       }}
     />
@@ -2125,8 +2123,7 @@ export function LivePlayer({
           if (!media || nativeHlsEventRef.current) return
           const applied = applyPlaybackRate(media, rate, saveActivePlaybackRate)
           playbackRateRef.current = applied
-          if (chapterEditing) setChapterEditPlaybackRate(applied)
-          else setPlaybackRate(applied)
+          setActivePlaybackRate(applied)
           saveActivePlaybackRate(applied)
         }}
         onToggleSubtitles={() => {

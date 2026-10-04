@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 
 import type { CapacityOverage } from '@/api/generated'
 import {
-  countProgramsInShortfall,
   coveringWindow,
   intersectingOverages,
   shortageLabel,
@@ -138,6 +137,15 @@ describe('文言', () => {
     )
   })
 
+  it('withDate は開始に日付を付け、終了には日をまたぐときだけ付ける', () => {
+    expect(shortageRangeMessage(overage(23 * 60, 24 * 60 + 30), { withDate: true })).toBe(
+      '7/25 23:00〜7/26 00:30 はチューナーが不足しています（BS が 1 本不足）',
+    )
+    expect(shortageRangeMessage(overage(19 * 60, 20 * 60), { withDate: true })).toBe(
+      '7/25 19:00〜20:00 はチューナーが不足しています（BS が 1 本不足）',
+    )
+  })
+
   it('グリッドの時間軸列用はさらに短い形（種別 1 つなら種別も残す）', () => {
     expect(shortageLabelCompact(overage(19 * 60, 20 * 60, { jammedTypes: ['BS'] }))).toBe('BS-1')
     // 種別が 2 つ以上は列挙すると幅を食うので本数だけにする
@@ -146,59 +154,6 @@ describe('文言', () => {
     ).toBe('-2')
     // 種別が無くても本数は出す
     expect(shortageLabelCompact(overage(19 * 60, 20 * 60, { jammedTypes: [] }))).toBe('-1')
-  })
-})
-
-describe('不足区間と重なる番組を数える', () => {
-  const overages = [overage(19 * 60, 20 * 60)]
-
-  it('半開区間の端は数えない（接するだけ / 1ms 食い込めば数える）', () => {
-    const count = (startMinutes: number, durationMinutes: number) =>
-      countProgramsInShortfall(overages, [
-        { site: 'default', startAt: at(startMinutes), durationMs: durationMinutes * 60_000 },
-      ])
-
-    expect(count(18 * 60, 60)).toBe(0) // 19:00 に終わる
-    expect(count(20 * 60, 60)).toBe(0) // 20:00 に始まる
-    expect(count(19 * 60 + 10, 10)).toBe(1) // 内側
-    expect(count(18 * 60, 30)).toBe(0) // 完全に外
-    expect(
-      countProgramsInShortfall(overages, [
-        { site: 'default', startAt: at(18 * 60), durationMs: 60 * 60_000 + 1 },
-      ]),
-    ).toBe(1) // 1ms 食い込む
-  })
-
-  it('終了未定番組（幅 0 の区間）は開始の瞬間をまたぐ区間しか数えない', () => {
-    const undetermined = [{ site: 'default', startAt: at(19 * 60 + 30), durationMs: 0 }]
-
-    // 19:30 を厳密にまたぐ不足区間なら数える
-    expect(countProgramsInShortfall(overages, undetermined)).toBe(1)
-    // 不足区間の開始が番組開始と同時刻（端点は予約境界由来なので現実に起きうる）
-    expect(countProgramsInShortfall([overage(19 * 60 + 30, 20 * 60)], undetermined)).toBe(0)
-    // 20:00 開始・終了未定の最中に 21:00〜21:30 の不足がある形は原理的に数えられない
-    expect(
-      countProgramsInShortfall([overage(21 * 60, 21 * 60 + 30)], [
-        { site: 'default', startAt: at(20 * 60), durationMs: 0 },
-      ]),
-    ).toBe(0)
-  })
-
-  it('番組自身が運ぶ site で不足区間を絞る（別サイトの番組は数えない。issue #531）', () => {
-    // 検索結果はフラットな `{site, programId}` の行なので、この関数は行ごとに
-    // 自分の site を持つ。全体で単一の site を引数に取る形（旧シグネチャ）に
-    // 戻すと、複数サイトが混在する結果を集計できない。
-    expect(
-      countProgramsInShortfall(overages, [
-        { site: 'takamatsu', startAt: at(19 * 60 + 10), durationMs: 10 * 60_000 },
-      ]),
-    ).toBe(0)
-    expect(
-      countProgramsInShortfall(overages, [
-        { site: 'default', startAt: at(19 * 60 + 10), durationMs: 10 * 60_000 },
-        { site: 'takamatsu', startAt: at(19 * 60 + 10), durationMs: 10 * 60_000 },
-      ]),
-    ).toBe(1)
   })
 })
 

@@ -1140,7 +1140,7 @@ describe('RecordingPlayer のチャプター編集中速度', () => {
     expect(localStorage.getItem('rokuban:playback-rate')).toBe('1.5')
   })
 
-  it('前後再生中に速度を下げても、指定位置より前で保険タイマーが止めない', async () => {
+  function renderEditing() {
     vi.useFakeTimers()
     localStorage.setItem('rokuban:chapter-edit-playback-rate', '2')
     const { container, getByRole, getByTestId } = render(
@@ -1160,21 +1160,32 @@ describe('RecordingPlayer のチャプター編集中速度', () => {
       setMediaProps(video, { paused: false })
       return Promise.resolve()
     })
-
     // 境界 10 秒の前後再生は 7 秒から 13 秒で止まる。
     fireEvent.click(getByRole('button', { name: /前後 3 秒/ }))
     expect(video.currentTime).toBe(7)
     expect(video.playbackRate).toBe(2)
+    return { video, pause, getByTestId }
+  }
 
+  it('前後再生中に速度を下げると、保険タイマーを新しい速度で測り直す', async () => {
+    const { video, pause, getByTestId } = renderEditing()
     fireEvent.click(getByTestId('chapter-edit-playback-rate'))
     expect(video.playbackRate).toBe(0.5)
+    fireEvent.rateChange(video)
 
-    // 開始時の 2x から計算した 5 秒のタイマーが発火しても、13 秒へ未到達なら継続する。
+    // 開始時の 2x 基準（6/2+2=5 秒）の時刻では止まらない。
     await vi.advanceTimersByTimeAsync(5_000)
     expect(pause).not.toHaveBeenCalled()
+    // 測り直した 6/0.5+2=14 秒の後には止まる。
+    await vi.advanceTimersByTimeAsync(9_001)
+    expect(pause).toHaveBeenCalledOnce()
+  })
 
-    setMediaProps(video, { currentTime: 13, paused: false })
-    fireEvent.timeUpdate(video)
+  it('前後再生中に再生が進まなくても、残り時間 + 2 秒後の保険タイマーで止める', async () => {
+    const { pause } = renderEditing()
+    await vi.advanceTimersByTimeAsync(4_999)
+    expect(pause).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(2)
     expect(pause).toHaveBeenCalledOnce()
   })
 })

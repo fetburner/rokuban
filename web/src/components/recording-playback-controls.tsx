@@ -462,8 +462,7 @@ export function RecordingPlaybackControls({
                 className="h-9 shrink-0 rounded-full border border-white/25 px-2.5 font-mono text-xs text-white hover:bg-white/15 hover:text-white"
                 disabled={playbackRateLocked}
                 onClick={() => {
-                  const currentIndex = PLAYBACK_RATES.indexOf(playbackRate)
-                  onRateChange(PLAYBACK_RATES[(currentIndex + 1) % PLAYBACK_RATES.length]!)
+                  onRateChange(PLAYBACK_RATES.find((rate) => rate > playbackRate) ?? PLAYBACK_RATES[0]!)
                 }}
               >
                 {playbackRate}x

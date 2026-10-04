@@ -206,6 +206,7 @@ export function RecordingPlayer({
   const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
   const [chapterEditPlaybackRate, setChapterEditPlaybackRate] = useState(loadChapterEditPlaybackRate)
   const activePlaybackRate = chapterEditing ? chapterEditPlaybackRate : playbackRate
+  const setActivePlaybackRate = chapterEditing ? setChapterEditPlaybackRate : setPlaybackRate
   const saveActivePlaybackRate = chapterEditing ? saveChapterEditPlaybackRate : savePlaybackRate
   const videoRef = useRef<HTMLVideoElement>(null)
   const getDisplayedFrameSeconds = useDisplayedFrameSeconds(videoRef, chapterEditing, videoKey)
@@ -521,10 +522,9 @@ export function RecordingPlayer({
     if (!video) return
     const appliedRate = applyPlaybackRate(video, activePlaybackRate, saveActivePlaybackRate)
     if (appliedRate !== activePlaybackRate) {
-      if (chapterEditing) setChapterEditPlaybackRate(appliedRate)
-      else setPlaybackRate(appliedRate)
+      setActivePlaybackRate(appliedRate)
     }
-  }, [activePlaybackRate, chapterEditing, recordingId, saveActivePlaybackRate, selectedProfile])
+  }, [activePlaybackRate, chapterEditing, recordingId, saveActivePlaybackRate, selectedProfile, setActivePlaybackRate])
 
   const updateSubtitleCueLines = (video: HTMLVideoElement, raise: boolean) => {
     const frame = frameRef.current
@@ -681,21 +681,19 @@ export function RecordingPlayer({
     void video.play()
     schedulePlayAroundStop(video)
   }
+  // 本来の停止は timeupdate の `currentTime >= stop`。これは再生が進まない場合
+  // （バッファ待ちなど）に抑制が残り続けないための保険で、再生速度ぶん余裕を持たせる。
+  // 発火したら無条件に止める。測り直す契機は開始時と速度変更だけにする
+  // （timeupdate ごとに張り直すとストール中は止まらない）。
   const schedulePlayAroundStop = (video: HTMLVideoElement) => {
     const stop = playAroundStopRef.current
     if (stop === null) return
     window.clearTimeout(playAroundTimerRef.current)
     const remainingSeconds = Math.max(0, stop - video.currentTime)
-    // 本来の停止は timeupdate の `currentTime >= stop`。保険タイマーも発火時に位置を
-    // 再確認し、再生速度が変わって未到達なら現在の速度で残り時間を測り直す。
-    playAroundTimerRef.current = window.setTimeout(() => {
-      if (playAroundStopRef.current !== stop) return
-      if (video.currentTime >= stop || video.paused) {
-        finishPlayAround(video)
-      } else {
-        schedulePlayAroundStop(video)
-      }
-    }, (remainingSeconds * 1000) / Math.max(video.playbackRate, 0.1) + 2000)
+    playAroundTimerRef.current = window.setTimeout(
+      () => finishPlayAround(video),
+      (remainingSeconds * 1000) / Math.max(video.playbackRate, 0.1) + 2000,
+    )
   }
   const finishPlayAround = (video: HTMLVideoElement) => {
     window.clearTimeout(playAroundTimerRef.current)
@@ -821,8 +819,7 @@ export function RecordingPlayer({
           const video = videoRef.current
           if (!video) return
           const applied = applyPlaybackRate(video, rate, saveActivePlaybackRate)
-          if (chapterEditing) setChapterEditPlaybackRate(applied)
-          else setPlaybackRate(applied)
+          setActivePlaybackRate(applied)
           saveActivePlaybackRate(applied)
         }}
         onToggleSubtitles={() => {
@@ -889,7 +886,6 @@ export function RecordingPlayer({
               const stopAt = playAroundStopRef.current
               if (stopAt !== null) {
                 if (v.currentTime >= stopAt) finishPlayAround(v)
-                else if (!v.paused) schedulePlayAroundStop(v)
               }
               if (skipEnabled && !skipSuppressedRef.current && !v.paused) {
                 const target = skipTarget(chapterSpans, previous, v.currentTime, v.duration)
@@ -927,9 +923,9 @@ export function RecordingPlayer({
             }}
             onRateChange={(e) => {
               const rate = e.currentTarget.playbackRate
-              if (chapterEditing) setChapterEditPlaybackRate(rate)
-              else setPlaybackRate(rate)
+              setActivePlaybackRate(rate)
               saveActivePlaybackRate(rate)
+              if (playAroundStopRef.current !== null) schedulePlayAroundStop(e.currentTarget)
             }}
           >
             <track

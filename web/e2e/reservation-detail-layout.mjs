@@ -29,7 +29,7 @@ const reservation = {
   site: 'default',
   programId: 9001,
   source: 'manual',
-  state: 'active',
+  state: 'orphaned',
   title: '週末ドキュメンタリー特集',
   serviceName: 'ＮＨＫＢＳプレミアム４Ｋ',
   channelType: 'BS',
@@ -131,6 +131,15 @@ for (const viewport of [
     }
 
     await open('ok')
+    await page.getByText('録画されませんでした（録画が開始されませんでした）', { exact: true }).waitFor({ timeout: 2_000 }).catch(() => {
+      ng.push(`${tag}: orphaned の予約に「録画されず」という結論が表示されない`)
+    })
+    if (await page.getByText('状態', { exact: true }).count()) {
+      ng.push(`${tag}: 詳細に内部の状態フィールドが残っている`)
+    }
+    if (await page.getByText('EPG から消失', { exact: true }).count()) {
+      ng.push(`${tag}: orphaned を「EPG から消失」と表示している`)
+    }
     await page.getByText(program.description, { exact: true }).waitFor({ timeout: 2_000 }).catch(() => {
       ng.push(`${tag}: 番組詳細の説明が表示されない`)
     })

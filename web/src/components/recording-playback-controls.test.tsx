@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { RecordingPlaybackControls } from '@/components/recording-playback-controls'
 
-function renderControls(playbackRateLocked: boolean, chapterEditing = false, onRateChange = vi.fn()) {
+function renderControls(playbackRateLocked: boolean, chapterEditing = false, onRateChange = vi.fn(), playbackRate = 1) {
   const noop = vi.fn()
   const props = {
     profile: 'hd',
@@ -25,7 +25,7 @@ function renderControls(playbackRateLocked: boolean, chapterEditing = false, onR
     isPlaying: false,
     muted: false,
     volume: 1,
-    playbackRate: 1,
+    playbackRate,
     playbackRateLocked,
     subtitlesEnabled: false,
     skipEnabled: false,
@@ -106,6 +106,13 @@ describe('速度メニュー行（変換中の固定）', () => {
     const rate = screen.getByTestId('chapter-edit-playback-rate')
     expect(rate).toBeEnabled()
     fireEvent.click(rate)
+    expect(onRateChange).toHaveBeenCalledWith(1.25)
+  })
+
+  it('編集帯の速度巡回は一覧外の速度から次に大きい速度へ進む', () => {
+    const onRateChange = vi.fn()
+    renderControls(false, true, onRateChange, 1.1)
+    fireEvent.click(screen.getByTestId('chapter-edit-playback-rate'))
     expect(onRateChange).toHaveBeenCalledWith(1.25)
   })
 })

@@ -179,7 +179,7 @@ export function saveChapterEditPlaybackRate(rate: number): void {
 export function applyPlaybackRate(
   video: HTMLVideoElement,
   rate: number,
-  saveFallback: (rate: number) => void = savePlaybackRate,
+  saveFallback: (rate: number) => void,
 ): number {
   try {
     video.defaultPlaybackRate = rate

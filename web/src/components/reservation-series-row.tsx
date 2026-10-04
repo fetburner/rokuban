@@ -3,14 +3,12 @@ import { ChevronDown, ChevronRight, TriangleAlert } from 'lucide-react'
 import { useId, useLayoutEffect, useRef, useState } from 'react'
 
 import type { CapacityOverage, RecordingShelf, Reservation } from '@/api/generated'
-import { CapacityShortfallBadge } from '@/components/capacity-shortfall-badge'
 import { RecordingThumbnail } from '@/components/recording-thumbnail'
-import { ReservationOrigin, StateBadge } from '@/components/reservation-row-parts'
-import { ReservationSkipBadge } from '@/components/reservation-skip-reason'
+import { ReservationOrigin, ReservationVerdictBadge } from '@/components/reservation-row-parts'
 import { formatDateTime, formatDuration } from '@/lib/format'
 import { programTitle } from '@/lib/program-labels'
 import { reservationGroupCapacityAt, type ReservationGroup } from '@/lib/reservation-groups'
-import { intersectingOverages, shortageMessage } from '@/lib/capacity'
+import { shortageMessage } from '@/lib/capacity'
 import { reservationRowLabel, unwatchedLabel } from '@/lib/reservation-labels'
 import { cn } from '@/lib/utils'
 
@@ -95,9 +93,6 @@ export function ReservationSeriesRow({
                 {summary}
               </span>
               <ReservationGroupBadges group={group} />
-              {!canExpand && next.skip && next.dedupMatchRecordingId === undefined && (
-                <ReservationSkipBadge reservation={next} />
-              )}
               {shelfKnownForSeries && shelf !== undefined && (
                 <MobileShelfSummary series={group.series!} shelf={shelf} />
               )}
@@ -129,6 +124,7 @@ export function ReservationSeriesRow({
               series={group.series}
               overages={overages}
               showSite={showSite}
+              ruleLabel={ruleLabel}
             />
           ))}
         </ul>
@@ -212,14 +208,15 @@ function ReservationEpisodeRow({
   series,
   overages,
   showSite,
+  ruleLabel,
 }: {
   reservation: Reservation
   series: string | null
   overages: readonly CapacityOverage[]
   showSite: boolean
+  ruleLabel: (ruleId: number) => string
 }) {
   const title = episodeTitle(reservation.title, series)
-  const startMs = Date.parse(reservation.startAt)
 
   return (
     <li className="relative isolate border-b border-border/70 last:border-b-0">
@@ -235,19 +232,8 @@ function ReservationEpisodeRow({
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
           <span className="shrink-0">{formatDuration(reservation.durationMs)}</span>
           {showSite && <span className="shrink-0 rounded bg-muted px-1.5 py-0.5">{reservation.site}</span>}
-          <StateBadge state={reservation.state} />
-          <ReservationSkipBadge reservation={reservation} />
-          <CapacityShortfallBadge
-            overages={[...intersectingOverages(
-              overages,
-              reservation.site,
-              startMs,
-              startMs + reservation.durationMs,
-            )]}
-            site={reservation.site}
-            startMs={startMs}
-            endMs={startMs + reservation.durationMs}
-          />
+          <ReservationOrigin reservation={reservation} ruleLabel={ruleLabel} />
+          <ReservationVerdictBadge reservation={reservation} overages={overages} />
         </div>
       </div>
     </li>
@@ -272,14 +258,19 @@ function ReservationGroupBadges({ group }: { group: ReservationGroup }) {
   const capacityOverage = group.capacityTarget
   return (
     <>
-      {badges.orphaned > 0 && (
+      {badges.notRecorded > 0 && (
         <span className="shrink-0 rounded bg-destructive/10 px-1.5 py-0.5 text-xs text-destructive">
-          EPG から消失 {badges.orphaned}
+          録画されず {badges.notRecorded}
         </span>
       )}
-      {badges.detached > 0 && (
+      {badges.skipDuplicate > 0 && (
         <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">
-          ルール外 {badges.detached}
+          録画しない（重複） {badges.skipDuplicate}
+        </span>
+      )}
+      {badges.skipExcluded > 0 && (
+        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">
+          録画しない（除外） {badges.skipExcluded}
         </span>
       )}
       {badges.capacityShortfall > 0 && capacityAt !== undefined && capacityOverage !== undefined && (
@@ -292,11 +283,6 @@ function ReservationGroupBadges({ group }: { group: ReservationGroup }) {
           <TriangleAlert className="size-3 shrink-0" aria-hidden />
           容量不足 {badges.capacityShortfall}
         </Link>
-      )}
-      {badges.duplicateSkipped > 0 && (
-        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">
-          重複スキップ {badges.duplicateSkipped}
-        </span>
       )}
     </>
   )

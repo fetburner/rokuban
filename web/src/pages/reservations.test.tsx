@@ -298,12 +298,13 @@ describe('予約一覧のチューナー不足バッジ', () => {
 })
 
 describe('予約一覧の要確認フィルタ', () => {
-  it('?only=attention では state が active でない行と容量不足の行だけを残す', async () => {
+  it('?only=attention では録画されずと容量不足の行だけを残す', async () => {
     const { queryClient } = renderWith(
       [
         reservation(1, '通常の予約', 18 * 60, 60),
-        { ...reservation(2, 'ルール外の予約', 19 * 60, 60), state: 'detached' as const },
-        reservation(3, '容量不足の予約', 20 * 60, 60),
+        { ...reservation(2, '条件外だけの予約', 19 * 60, 60), state: 'detached' as const },
+        { ...reservation(3, '録画されなかった予約', 19 * 60 + 30, 30), state: 'orphaned' as const },
+        reservation(4, '容量不足の予約', 20 * 60, 60),
       ],
       [overage(20 * 60, 21 * 60)],
       ['/reservations?only=attention'],
@@ -316,8 +317,9 @@ describe('予約一覧の要確認フィルタ', () => {
       'aria-pressed',
       'true',
     )
-    expect(screen.getByText('ルール外の予約')).toBeInTheDocument()
+    expect(screen.getByText('録画されなかった予約')).toBeInTheDocument()
     expect(screen.getByText('容量不足の予約')).toBeInTheDocument()
+    expect(screen.queryByText('条件外だけの予約')).toBeNull()
     expect(screen.queryByText('通常の予約')).toBeNull()
   })
 
@@ -367,15 +369,14 @@ describe('予約一覧の要確認フィルタ', () => {
     expect(screen.getByText('容量未確認の予約')).toBeInTheDocument()
   })
 
-  it('非 active な予約は容量取得の失敗時も要確認から消えない（チップ・絞り込み導線とも維持する）', async () => {
+  it('録画されなかった予約は容量取得の失敗時も要確認から消えない', async () => {
     renderWith(
-      [{ ...reservation(1, 'ルール外の予約', 18 * 60, 60), state: 'detached' as const }],
+      [{ ...reservation(1, '録画されなかった予約', 18 * 60, 60), state: 'orphaned' as const }],
       () => Promise.reject(new Error('capacity unavailable')),
       ['/reservations?only=attention'],
     )
 
-    // state !== 'active' は容量抜きでも確定できるので、容量取得が失敗していても
-    // チップと絞り込み結果は消えない（容量分の判定が不完全なことは別のバナーが言う）
+    // orphaned の結論は容量抜きでも確定できるので、取得失敗後も絞り込みに残る。
     expect(
       await screen.findByText('容量の確認に失敗しました。要確認の判定が不完全です'),
     ).toBeInTheDocument()
@@ -384,7 +385,21 @@ describe('予約一覧の要確認フィルタ', () => {
       'aria-pressed',
       'true',
     )
-    expect(screen.getByText('ルール外の予約')).toBeInTheDocument()
+    expect(screen.getByText('録画されなかった予約')).toBeInTheDocument()
+  })
+
+  it('detached だけの予約は要確認に含めない', async () => {
+    renderWith(
+      [{ ...reservation(1, '条件外だけの予約', 18 * 60, 60), state: 'detached' as const }],
+      [],
+      ['/reservations?only=attention'],
+    )
+
+    expect(await screen.findByRole('button', { name: '要確認（0）' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    expect(screen.queryByText('条件外だけの予約')).toBeNull()
   })
 
   it('取得成功後の再取得失敗では、キャッシュ済みの超過区間を表示しない', async () => {
@@ -615,7 +630,7 @@ describe('予約一覧の日付見出し・出自・ルールフィルタ（issu
     ]
     const { queryClient, router } = renderWith(
       reservations,
-      [],
+      [overage(20 * 60, 21 * 60)],
       ['/reservations?only=attention'],
       rules,
     )
@@ -825,28 +840,26 @@ describe('予約一覧の信号色', () => {
     expect(badge!.className).not.toMatch(/amber|yellow|orange/)
   })
 
-  it('EPG から消失は destructive のまま（警告色に落とさない）', async () => {
+  it('録画されずは destructive のまま（警告色に落とさない）', async () => {
     renderWith(
       [{ ...reservation(1, '消えた番組', 19 * 60, 60), state: 'orphaned' as const }],
       [],
     )
 
-    const badge = await screen.findByText('EPG から消失')
+    const badge = await screen.findByText('録画されず')
     expect(badge).toHaveClass('text-destructive')
     expect(badge.className).not.toMatch(/warning|tally/)
   })
 
-  it('ルール外は text-foreground（issue #308。text-muted-foreground だと bg-muted との合成後コントラストがライトで 4.5 を割る）', async () => {
+  it('detached の情報は出自へ移し、結論バッジを出さない', async () => {
     renderWith(
       [{ ...reservation(1, 'ルールから外れた番組', 19 * 60, 60), state: 'detached' as const }],
       [],
     )
 
-    // jsdom は色を測れないので、退行防止としてはクラス名のリテラル比較まで
-    // （実測は e2e:design の担当）。
-    const badge = await screen.findByText('ルール外')
-    expect(badge.className).toContain('text-foreground')
-    expect(badge.className).not.toContain('text-muted-foreground')
+    expect(await screen.findByText('手動・ルール条件外')).toBeInTheDocument()
+    expect(screen.queryByText('ルール外')).toBeNull()
+    expect(screen.queryByText('録画予定')).toBeNull()
   })
 })
 

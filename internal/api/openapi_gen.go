@@ -188,6 +188,30 @@ func (e CapacityOverageJammedTypes) Valid() bool {
 	}
 }
 
+// Defines values for CapacityPreviewRequestChannelTypes.
+const (
+	CapacityPreviewRequestChannelTypesBS  CapacityPreviewRequestChannelTypes = "BS"
+	CapacityPreviewRequestChannelTypesCS  CapacityPreviewRequestChannelTypes = "CS"
+	CapacityPreviewRequestChannelTypesGR  CapacityPreviewRequestChannelTypes = "GR"
+	CapacityPreviewRequestChannelTypesSKY CapacityPreviewRequestChannelTypes = "SKY"
+)
+
+// Valid indicates whether the value is a known member of the CapacityPreviewRequestChannelTypes enum.
+func (e CapacityPreviewRequestChannelTypes) Valid() bool {
+	switch e {
+	case CapacityPreviewRequestChannelTypesBS:
+		return true
+	case CapacityPreviewRequestChannelTypesCS:
+		return true
+	case CapacityPreviewRequestChannelTypesGR:
+		return true
+	case CapacityPreviewRequestChannelTypesSKY:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for CircuitBreakerName.
 const (
 	DeleteReconcile    CircuitBreakerName = "delete_reconcile"
@@ -1071,6 +1095,29 @@ type CapacityOverage struct {
 
 // CapacityOverageJammedTypes defines model for CapacityOverage.JammedTypes.
 type CapacityOverageJammedTypes string
+
+// CapacityPreviewRequest defines model for CapacityPreviewRequest.
+type CapacityPreviewRequest struct {
+	ChannelTypes  *[]CapacityPreviewRequestChannelTypes `json:"channelTypes,omitempty"`
+	DurationMaxMs *int64                                `json:"durationMaxMs,omitempty"`
+	DurationMinMs *int64                                `json:"durationMinMs,omitempty"`
+	Genres        *[]int                                `json:"genres,omitempty"`
+	IsFree        *bool                                 `json:"isFree,omitempty"`
+	PeriodEndAt   *time.Time                            `json:"periodEndAt,omitempty"`
+	PeriodStartAt *time.Time                            `json:"periodStartAt,omitempty"`
+
+	// RuleId 既存ルールを編集する場合の ID。省略時は新規ルールとして扱う。
+	RuleId   *int64         `json:"ruleId,omitempty"`
+	Services *[]RuleService `json:"services,omitempty"`
+
+	// Sites 絞り込み条件。空または省略 = 全サイト（`GET /api/recordings` の `?site=` と 同じ軸の規約: 軸内は OR、他の絞り込み軸とは AND）。指定した site 名は レジストリに存在する必要がある。
+	Sites       *[]string         `json:"sites,omitempty"`
+	TextMatches *[]RuleTextMatch  `json:"textMatches,omitempty"`
+	Times       *[]RuleTimeWindow `json:"times,omitempty"`
+}
+
+// CapacityPreviewRequestChannelTypes defines model for CapacityPreviewRequest.ChannelTypes.
+type CapacityPreviewRequestChannelTypes string
 
 // ChapterEditsInput defines model for ChapterEditsInput.
 type ChapterEditsInput struct {
@@ -2444,6 +2491,9 @@ type ListProgramsParams struct {
 	Service *[]int64 `form:"service,omitempty" json:"service,omitempty"`
 }
 
+// PreviewCapacityOveragesJSONRequestBody defines body for PreviewCapacityOverages for application/json ContentType.
+type PreviewCapacityOveragesJSONRequestBody = CapacityPreviewRequest
+
 // PutCMLogoAreaJSONRequestBody defines body for PutCMLogoArea for application/json ContentType.
 type PutCMLogoAreaJSONRequestBody = CMLogoAreaInput
 
@@ -2497,6 +2547,9 @@ type ServerInterface interface {
 	// ListCapacityOverages List intervals where tuner capacity is exceeded
 	// (GET /api/capacity/overages)
 	ListCapacityOverages(w http.ResponseWriter, r *http.Request, params ListCapacityOveragesParams)
+	// PreviewCapacityOverages Preview tuner shortfalls for a program search
+	// (POST /api/capacity/preview)
+	PreviewCapacityOverages(w http.ResponseWriter, r *http.Request)
 	// ListCMLogos List learned CM logos and station detection failures
 	// (GET /api/cm-logos)
 	ListCMLogos(w http.ResponseWriter, r *http.Request)
@@ -2698,6 +2751,12 @@ func (_ Unimplemented) GetCapabilities(w http.ResponseWriter, r *http.Request) {
 // ListCapacityOverages List intervals where tuner capacity is exceeded
 // (GET /api/capacity/overages)
 func (_ Unimplemented) ListCapacityOverages(w http.ResponseWriter, r *http.Request, params ListCapacityOveragesParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// PreviewCapacityOverages Preview tuner shortfalls for a program search
+// (POST /api/capacity/preview)
+func (_ Unimplemented) PreviewCapacityOverages(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -3149,6 +3208,20 @@ func (siw *ServerInterfaceWrapper) ListCapacityOverages(w http.ResponseWriter, r
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListCapacityOverages(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PreviewCapacityOverages operation middleware
+func (siw *ServerInterfaceWrapper) PreviewCapacityOverages(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PreviewCapacityOverages(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -5169,6 +5242,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/api/capacity/overages", wrapper.ListCapacityOverages)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/capacity/preview", wrapper.PreviewCapacityOverages)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/encode-queue", wrapper.GetEncodeQueue)
 	})
 	r.Group(func(r chi.Router) {
@@ -5305,6 +5381,56 @@ func (response ListCapacityOverages400JSONResponse) VisitListCapacityOveragesRes
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewCapacityOveragesRequestObject struct {
+	Body *PreviewCapacityOveragesJSONRequestBody
+}
+
+type PreviewCapacityOveragesResponseObject interface {
+	VisitPreviewCapacityOveragesResponse(w http.ResponseWriter) error
+}
+
+type PreviewCapacityOverages200JSONResponse []CapacityOverage
+
+func (response PreviewCapacityOverages200JSONResponse) VisitPreviewCapacityOveragesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewCapacityOverages400JSONResponse ErrorResponse
+
+func (response PreviewCapacityOverages400JSONResponse) VisitPreviewCapacityOveragesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewCapacityOverages404JSONResponse ErrorResponse
+
+func (response PreviewCapacityOverages404JSONResponse) VisitPreviewCapacityOveragesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -7254,6 +7380,9 @@ type StrictServerInterface interface {
 	// ListCapacityOverages List intervals where tuner capacity is exceeded
 	// (GET /api/capacity/overages)
 	ListCapacityOverages(ctx context.Context, request ListCapacityOveragesRequestObject) (ListCapacityOveragesResponseObject, error)
+	// PreviewCapacityOverages Preview tuner shortfalls for a program search
+	// (POST /api/capacity/preview)
+	PreviewCapacityOverages(ctx context.Context, request PreviewCapacityOveragesRequestObject) (PreviewCapacityOveragesResponseObject, error)
 	// ListCMLogos List learned CM logos and station detection failures
 	// (GET /api/cm-logos)
 	ListCMLogos(ctx context.Context, request ListCMLogosRequestObject) (ListCMLogosResponseObject, error)
@@ -7562,6 +7691,37 @@ func (sh *strictHandler) ListCapacityOverages(w http.ResponseWriter, r *http.Req
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListCapacityOveragesResponseObject); ok {
 		if err := validResponse.VisitListCapacityOveragesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PreviewCapacityOverages operation middleware
+func (sh *strictHandler) PreviewCapacityOverages(w http.ResponseWriter, r *http.Request) {
+	var request PreviewCapacityOveragesRequestObject
+
+	var body PreviewCapacityOveragesJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PreviewCapacityOverages(ctx, request.(PreviewCapacityOveragesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PreviewCapacityOverages")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PreviewCapacityOveragesResponseObject); ok {
+		if err := validResponse.VisitPreviewCapacityOveragesResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
