@@ -36,7 +36,7 @@ import {
   VolumeX,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { formatChaptersTime } from '@/lib/chapters'
+import { chapterBoundaryMsToSeekSeconds, formatChaptersTime } from '@/lib/chapters'
 import { formatBytes, formatDate, formatPlaybackTime, formatPlaybackTimeMs } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
@@ -1119,7 +1119,7 @@ export function RecordingPlaybackControls({
             entries={entries}
             currentIndex={currentEntryIndex}
             onJump={(start) => {
-              onSeek(start)
+              onSeek(chapterBoundaryMsToSeekSeconds(Math.round(start * 1000)))
               closeChapters(true)
             }}
             onClose={closeChapters}

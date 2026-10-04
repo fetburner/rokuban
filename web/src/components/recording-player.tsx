@@ -20,6 +20,8 @@ import { RecordingPlaybackControls } from '@/components/recording-playback-contr
 import { Button } from '@/components/ui/button'
 import {
   PLAY_AROUND_SECONDS,
+  autoSkipSeekSeconds,
+  chapterBoundaryMsToSeekSeconds,
   chapterJumpTarget,
   loadChapterSkip,
   saveChapterSkip,
@@ -39,6 +41,7 @@ import {
 } from '@/lib/playback-position'
 import { formatDate, formatTime } from '@/lib/format'
 import { programTitle } from '@/lib/program-labels'
+import { useDisplayedFrameSeconds } from '@/lib/use-displayed-frame'
 import { usePlayerFrame } from '@/lib/use-player-frame'
 import { cn } from '@/lib/utils'
 import {
@@ -196,8 +199,11 @@ export function RecordingPlayer({
   // （境界は原本の ms で、その動画には当てられない）。
   const playingCut = selectedAsset?.cut === true
   const keepRangesKey = JSON.stringify(selectedAsset?.keepRanges ?? [])
+  // <video> を作り直す単位。要素の key と表示フレームの購読の張り直しで同じ値を使う。
+  const videoKey = `${recordingId}:${selectedProfile}:${keepRangesKey}`
   const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
   const videoRef = useRef<HTMLVideoElement>(null)
+  const getDisplayedFrameSeconds = useDisplayedFrameSeconds(videoRef, chapterEditing, videoKey)
   const frameRef = useRef<HTMLDivElement>(null)
   const [editorSelected, setEditorSelected] = useState<number | null>(null)
   const localChapterEditorCommandsRef = useRef<ChapterEditorCommands | null>(null)
@@ -644,10 +650,15 @@ export function RecordingPlayer({
     previousSecondsRef.current = seconds
     updatePlayedFraction(video)
   }
+  // 境界を見る操作だけは整数 ms をフレーム表示区間の中央へ写す（通す / 通さないの理由は
+  // `chapterBoundaryMsToSeekSeconds`）。
+  const seekToChapterBoundary = (boundaryMs: number) => {
+    jumpTo(chapterBoundaryMsToSeekSeconds(boundaryMs))
+  }
   jumpToRef.current = jumpTo
   const jumpChapter = (direction: 'next' | 'prev') => {
     const target = chapterJumpTarget(chapterSpans, currentSeconds, direction)
-    if (target !== undefined) jumpTo(target)
+    if (target !== undefined) seekToChapterBoundary(Math.round(target * 1000))
   }
   // playAround は境界の前後 3 秒を再生して止める（修正 UI の「前後 3 秒」）。
   const playAround = (seconds: number) => {
@@ -811,7 +822,7 @@ export function RecordingPlayer({
         video={(
           <video
             ref={videoRef}
-            key={`${recordingId}:${selectedProfile}:${keepRangesKey}`}
+            key={videoKey}
             {...frame.video}
             aria-label="録画映像"
             playsInline
@@ -860,8 +871,9 @@ export function RecordingPlayer({
               if (skipEnabled && !skipSuppressedRef.current && !v.paused) {
                 const target = skipTarget(chapterSpans, previous, v.currentTime, v.duration)
                 if (target !== undefined) {
-                  v.currentTime = target
-                  previousSecondsRef.current = target
+                  const seek = autoSkipSeekSeconds(target, v.duration)
+                  v.currentTime = seek
+                  previousSecondsRef.current = seek
                 }
               }
               if (Number.isFinite(v.duration) && v.duration > 0 && v.currentTime >= v.duration * 0.9) {
@@ -937,6 +949,7 @@ export function RecordingPlayer({
             source={chapterSource}
             recordingId={recordingId}
             currentSeconds={currentSeconds}
+            getDisplayedFrameSeconds={getDisplayedFrameSeconds}
             durationSeconds={durationSeconds}
             tilesAvailable={tilesAvailableFor === recordingId}
             onTileImageLoad={() => setTilesAvailableFor(recordingId)}

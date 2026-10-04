@@ -3,7 +3,11 @@ import { useCallback, useEffect, useMemo, useState, type MutableRefObject } from
 import type { ChapterSpan, RecordingChaptersSource } from '@/api/generated'
 import { Button } from '@/components/ui/button'
 import { RecordingChapterFilmstrip } from '@/components/recording-chapter-filmstrip'
-import { chapterBoundaries } from '@/lib/chapters'
+import {
+  chapterBoundaries,
+  chapterBoundaryMsToSeekSeconds,
+  displayedFrameBoundaryMs,
+} from '@/lib/chapters'
 import { formatPlaybackTime } from '@/lib/format'
 
 export type ChapterEditorCommands = {
@@ -29,6 +33,8 @@ type RecordingChapterEditorProps = {
   source: RecordingChaptersSource
   recordingId: number
   currentSeconds: number
+  /** 最後に表示されたフレームの mediaTime（秒）。取れなければ null（currentTime の floor に fallback）。 */
+  getDisplayedFrameSeconds?: () => number | null
   durationSeconds: number
   tilesAvailable: boolean
   onTileImageLoad: () => void
@@ -62,12 +68,15 @@ export function RecordingChapterEditor(props: RecordingChapterEditorProps) {
   return <ChapterDraftEditor {...props} />
 }
 
+const noDisplayedFrame = () => null
+
 function ChapterDraftEditor({
   spans,
   version,
   source,
   recordingId,
   currentSeconds,
+  getDisplayedFrameSeconds = noDisplayedFrame,
   durationSeconds,
   tilesAvailable,
   onTileImageLoad,
@@ -103,7 +112,9 @@ function ChapterDraftEditor({
   const dirty = useMemo(() => !sameSpans(draft, base.spans), [draft, base.spans])
   const [selectedBoundaryValue, setSelectedBoundaryValue] = useState<number | null>(null)
   const [pendingStartMs, setPendingStartMs] = useState<number | null>(null)
-  const currentMs = Math.round(currentSeconds * 1000)
+  // 描画用（ボタンの無効判定）は currentTime の floor、押した瞬間の値は mediaTime 優先。
+  const currentMs = displayedFrameBoundaryMs(null, currentSeconds)
+  const nowMs = () => displayedFrameBoundaryMs(getDisplayedFrameSeconds(), currentSeconds)
   const nearestBoundary = boundaries.length === 0
     ? null
     : boundaries.reduce((best, candidate) =>
@@ -175,11 +186,12 @@ function ChapterDraftEditor({
     }
   }, [commandsRef, discardDraft, reset, save])
 
-  const startNewSpan = () => setPendingStartMs(currentMs)
+  const startNewSpan = () => setPendingStartMs(nowMs())
   const closeNewSpan = () => {
     if (pendingStartMs === null) return
-    const startMs = Math.min(pendingStartMs, currentMs)
-    const endMs = Math.max(pendingStartMs, currentMs)
+    const now = nowMs()
+    const startMs = Math.min(pendingStartMs, now)
+    const endMs = Math.max(pendingStartMs, now)
     if (endMs <= startMs) return
     setDraft((current) => [...current, { startMs, endMs, cut: true }])
     setPendingStartMs(null)
@@ -192,6 +204,7 @@ function ChapterDraftEditor({
           recordingId={recordingId}
           durationSeconds={durationSeconds}
           currentSeconds={currentSeconds}
+          getDisplayedFrameSeconds={getDisplayedFrameSeconds}
           spans={draft}
           selectedBoundary={selectedBoundary}
           tilesAvailable={tilesAvailable}
@@ -245,11 +258,13 @@ function ChapterDraftEditor({
                     className="col-span-2 flex min-h-8 items-center text-left font-mono text-sm text-muted-foreground"
                     aria-label={`${formatPlaybackTime(span.startMs / 1000)} から ${formatPlaybackTime(span.endMs / 1000)} の境界を選ぶ`}
                     onClick={() => {
-                      const start = span.startMs / 1000
-                      const end = span.endMs / 1000
-                      const boundary = Math.abs(currentSeconds - start) <= Math.abs(currentSeconds - end) ? start : end
-                      setSelectedBoundaryValue(boundary)
-                      jumpTo(boundary)
+                      const startMs = span.startMs
+                      const endMs = span.endMs
+                      const boundaryMs = Math.abs(currentSeconds - startMs / 1000) <= Math.abs(currentSeconds - endMs / 1000)
+                        ? startMs
+                        : endMs
+                      setSelectedBoundaryValue(boundaryMs / 1000)
+                      jumpTo(chapterBoundaryMsToSeekSeconds(boundaryMs))
                     }}
                   >
                     {formatPlaybackTime(span.startMs / 1000)} – {formatPlaybackTime(span.endMs / 1000)}
