@@ -1,5 +1,7 @@
 import type { CapacityOverage, Reservation } from '@/api/generated'
 import { intersectingOverages } from '@/lib/capacity'
+import { formatDateTime, formatDuration } from '@/lib/format'
+import { programTitle } from '@/lib/program-labels'
 import { parseRuleId } from '@/lib/recording-search'
 import { parseEnum } from '@/lib/url-search'
 
@@ -56,4 +58,31 @@ export function reservationNeedsAttention(
       startMs + reservation.durationMs,
     ).length > 0
   )
+}
+
+/**
+ * reservationRowLabel は予約行の本体リンクに付ける accessible name を組む。
+ *
+ * 行本体のリンクは子要素を持たない絶対配置なので、children から組めない
+ * accessible name を明示する。採否は行を一意に識別できる情報（タイトル・局・
+ * 日時・尺・state）だけにする。毎日放送の番組は時刻だけでは同名の行が並ぶ。
+ * 見た目の行は日付見出しの下にあるので日付を省くが、名前には日付を残す。
+ * 出自や容量バッジの文言は混ぜない。
+ */
+export function reservationRowLabel(reservation: Reservation): string {
+  return [
+    programTitle(reservation.title),
+    reservation.serviceName,
+    formatDateTime(reservation.startAt),
+    formatDuration(reservation.durationMs),
+    reservation.state === 'active' ? null : stateLabels[reservation.state],
+  ]
+    // 空文字も落とす（`serviceName` は API required でも空文字を禁じていない）。
+    .filter((part): part is string => part !== null && part !== '')
+    .join(' ')
+}
+
+/** unwatchedLabel は棚の未視聴件数の文言。0 件は「すべて視聴済み」と言う。 */
+export function unwatchedLabel(unwatchedCount: number): string {
+  return unwatchedCount === 0 ? 'すべて視聴済み' : `未視聴 ${unwatchedCount}`
 }

@@ -1,5 +1,5 @@
 // 予約一覧の行の副情報がモバイル幅で折り返さず、シェブロンに重なる回帰
-// （issue #302 のレビュー指摘）の受け入れ判定。jsdom では測れないもの
+// （副情報の折り返しがシェブロンに食い込む問題）の受け入れ判定。jsdom では測れないもの
 // （レイアウト・overflow・要素間の重なり）だけをここで見る（e2e/README.md）。
 //
 // `pages/reservations.test.tsx` の既存テストは「局名の文字列が行の中に居る」ことしか
@@ -134,6 +134,8 @@ const context = await browser.newContext({
   timezoneId: 'Asia/Tokyo',
 })
 const page = await context.newPage()
+// この判定は時刻順の行レイアウト（副情報の折り返し）を保つ。既定のシリーズ表示は別判定で測る。
+await page.addInitScript(() => localStorage.setItem('rokuban:reservations:group', 'time'))
 await installApiStubs(page, apiHandler)
 
 await page.goto(URL_BASE + '/reservations', { waitUntil: 'domcontentloaded' })
