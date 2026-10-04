@@ -12,7 +12,6 @@ import type {
   RuleInput,
   Service,
 } from '@/api/generated'
-import { formatDateTime } from '@/lib/format'
 import { SearchPage } from '@/pages/search'
 import { renderInRouter } from '@/test/router'
 
@@ -1298,9 +1297,10 @@ describe('SearchPage', () => {
 
       const note = await screen.findByRole('list', { name: '保存時に追加される容量不足' })
       const item = within(note).getByRole('listitem')
-      expect(item).toHaveTextContent('GR が 1 本不足')
-      expect(item.textContent).toContain(formatDateTime(overage.startAt))
-      expect(item.textContent).toContain(formatDateTime(overage.endAt))
+      // TZ は vite.config.ts で Asia/Tokyo に固定。同日の終了は時刻だけ。
+      expect(item.querySelector('p')?.textContent).toBe(
+        '8/3 01:05〜01:25 はチューナーが不足しています（GR が 1 本不足）',
+      )
       expect(capacityPreviewRequests).toHaveLength(1)
       expect(capacityPreviewRequests[0]).toEqual(searchBodies[0])
 

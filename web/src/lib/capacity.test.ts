@@ -137,6 +137,15 @@ describe('文言', () => {
     )
   })
 
+  it('withDate は開始に日付を付け、終了には日をまたぐときだけ付ける', () => {
+    expect(shortageRangeMessage(overage(23 * 60, 24 * 60 + 30), { withDate: true })).toBe(
+      '7/25 23:00〜7/26 00:30 はチューナーが不足しています（BS が 1 本不足）',
+    )
+    expect(shortageRangeMessage(overage(19 * 60, 20 * 60), { withDate: true })).toBe(
+      '7/25 19:00〜20:00 はチューナーが不足しています（BS が 1 本不足）',
+    )
+  })
+
   it('グリッドの時間軸列用はさらに短い形（種別 1 つなら種別も残す）', () => {
     expect(shortageLabelCompact(overage(19 * 60, 20 * 60, { jammedTypes: ['BS'] }))).toBe('BS-1')
     // 種別が 2 つ以上は列挙すると幅を食うので本数だけにする

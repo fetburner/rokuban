@@ -20,7 +20,7 @@
  */
 
 import type { CapacityOverage } from '@/api/generated'
-import { formatTime } from '@/lib/format'
+import { dayKey, formatDateTime, formatTime } from '@/lib/format'
 
 
 /** TimeWindow は epoch ms の半開区間 [startMs, endMs)。 */
@@ -136,12 +136,22 @@ export function shortageMessage(overage: CapacityOverage): string {
  * 不足しています」）。グリッドの時間軸列（gutter）は局の列から離れた 1 本の列に
  * 複数 site の帯・読み上げ文が積まれるため、複数 site のときは呼び出し側
  * （`CapacityBand`）が true を渡してどちらの site の説明かを聞き分けられるようにする。
+ *
+ * `withDate` を渡すと開始に日付を付ける（「10/6 03:00〜03:30」）。終了は日をまたぐ
+ * ときだけ日付を付ける（「10/6 23:30〜10/7 00:30」）。番組表の外（検索の保存時
+ * プレビュー）は区間がどの日かを画面が言わないので、文の側で言う。
  */
 export function shortageRangeMessage(
   overage: CapacityOverage,
-  options?: { showSite?: boolean },
+  options?: { showSite?: boolean; withDate?: boolean },
 ): string {
-  const range = `${formatTime(overage.startAt)}〜${formatTime(overage.endAt)}`
+  const range = options?.withDate
+    ? `${formatDateTime(overage.startAt)}〜${
+        dayKey(overage.startAt) === dayKey(overage.endAt)
+          ? formatTime(overage.endAt)
+          : formatDateTime(overage.endAt)
+      }`
+    : `${formatTime(overage.startAt)}〜${formatTime(overage.endAt)}`
   const sitePrefix = options?.showSite ? `${overage.site}の` : ''
   return `${range} は${sitePrefix}チューナーが不足しています（${shortfallDetail(overage)}不足）`
 }

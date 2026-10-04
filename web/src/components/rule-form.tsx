@@ -18,8 +18,8 @@ import { suggestRuleName } from '@/components/rule-name-suggestion'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/field'
-import { formatDateTime, formatDuration } from '@/lib/format'
-import { shortfallDetail } from '@/lib/capacity'
+import { formatDuration } from '@/lib/format'
+import { shortageRangeMessage } from '@/lib/capacity'
 import {
   buildRuleInput,
   emptyRuleMeta,
@@ -155,11 +155,8 @@ export function AddedCapacityOveragesNote({
     >
       {overages.map((overage) => (
         <li key={`${overage.site}:${overage.startAt}:${overage.endAt}:${overage.shortfall}`}>
-          <p>
-            {formatDateTime(overage.startAt)}〜{formatDateTime(overage.endAt)} は
-            {showSite ? `${overage.site}の` : ''}チューナーが不足しています
-            （{shortfallDetail(overage)}不足）
-          </p>
+          {/* 文は 1 つの文字列にする（JSX の改行は空白に畳まれ、テキストノードも分かれる） */}
+          <p>{shortageRangeMessage(overage, { showSite, withDate: true })}</p>
           <Link
             to="/programs"
             search={{
