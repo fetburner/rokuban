@@ -3429,9 +3429,10 @@ func BuildChaseFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []stri
 // libx264 (Chrome shows hls.js frames 66.73 ms late without -bf 0; WebKit's
 // native HLS showed no difference). Unverified: the captions path's effect in a
 // browser, hardware encoders, and recordings whose audio lead has a phase other
-// than the fixture's 10.02 ms. fd 3 is the original opened by the Go process
-// and passed via Cmd.ExtraFiles, so unlinking its canonical path cannot break
-// the session.
+// than the fixture's (audio start 10.4067 s, video start 11.1007 s; an integer
+// -ss showed frames 33.37 ms early there). fd 3 is the original opened by the Go
+// process and passed via Cmd.ExtraFiles, so unlinking its canonical path cannot
+// break the session.
 func BuildOriginalVODFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool, offsetSeconds int64) []string {
 	return buildHLSFFmpegArgsForPlaylistType(
 		cfg, dir, withSubtitles, hlsOriginalEventPlaylist, originalVODFFmpegInputPath, offsetSeconds,
