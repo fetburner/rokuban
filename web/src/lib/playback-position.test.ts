@@ -4,6 +4,7 @@ import vectorsJSON from '../../../testdata/playback-position-vectors.json?raw'
 import {
   clearLegacyPlaybackPositions,
   cutMsToOriginalMs,
+  effectivePlaybackRate,
   loadPlaybackRate,
   originalMsToCutMs,
   persistPlaybackPosition,
@@ -150,6 +151,13 @@ describe('再生速度は端末ごとに 1 つ', () => {
     } finally {
       getSpy.mockRestore()
     }
+  })
+
+  it('ENDLIST 前のネイティブ HLS 録画再生だけ 1 倍にする', () => {
+    expect(effectivePlaybackRate(1.5, true, true, Infinity)).toBe(1)
+    expect(effectivePlaybackRate(1.5, true, true, 120)).toBe(1.5)
+    expect(effectivePlaybackRate(1.5, true, false, Infinity)).toBe(1.5)
+    expect(effectivePlaybackRate(1.5, false, true, Infinity)).toBe(1)
   })
 })
 

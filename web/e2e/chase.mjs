@@ -1283,24 +1283,59 @@ if (tinyLabels.overlaps) ng.push('⑤ 先端が左端に近いとき目盛りの
 recording.durationMs = durationBeforeAxisLabels
 
 log('\n=== ⑥ VOD と共通の再生速度 ===')
+growingSince = Date.now()
+growthCapSegments = Infinity
+finalizeChasePlaylist = false
+playlistEnded = false
 await page.evaluate(() => localStorage.setItem('rokuban:playback-rate', '1.5'))
 await page.reload({ waitUntil: 'domcontentloaded' })
 await page.locator('video').waitFor({ timeout: 15000 })
-await page.waitForFunction(
-  () => {
-    const video = document.querySelector('video')
-    return video?.playbackRate === 1.5 && video.defaultPlaybackRate === 1.5
-  },
-  { timeout: 5000 },
-).catch(() => ng.push('④ 保存済みの VOD 共通速度が追っかけ video に適用されない'))
+if (engine === 'webkit') {
+  await page.waitForFunction(
+    () => {
+      const video = document.querySelector('video')
+      return video !== null && video.duration === Infinity && video.playbackRate === 1 && !video.paused
+    },
+    { timeout: 10000 },
+  ).catch(() => ng.push('⑥ ENDLIST 前のネイティブ HLS 追っかけが 1 倍で再生されない'))
+  const beforeNativeEventPlayback = await page.locator('video').evaluate((video) => video.currentTime)
+  await page.waitForTimeout(2500)
+  const afterNativeEventPlayback = await page.locator('video').evaluate((video) => ({
+    currentTime: video.currentTime,
+    paused: video.paused,
+    playbackRate: video.playbackRate,
+  }))
+  if (
+    afterNativeEventPlayback.paused ||
+    afterNativeEventPlayback.playbackRate !== 1 ||
+    afterNativeEventPlayback.currentTime < beforeNativeEventPlayback + 1
+  ) {
+    ng.push(`⑥ 固定後のネイティブ HLS 追っかけが進まない（${JSON.stringify({ beforeNativeEventPlayback, afterNativeEventPlayback })}）`)
+  }
+  if (await page.evaluate(() => localStorage.getItem('rokuban:playback-rate')) !== '1.5') {
+    ng.push('⑥ ネイティブ HLS の一時固定で保存済み速度を上書きした')
+  }
+  await revealControls('⑥ 再生速度の確認')
+  await page.getByRole('button', { name: '再生設定' }).click()
+  const rateMenuItem = page.getByRole('menu', { name: '再生設定' }).getByRole('menuitem', { name: '再生速度' })
+  if (!(await rateMenuItem.isDisabled())) ng.push('⑥ ネイティブ HLS の再生速度を固定中に速度メニューが有効')
+} else {
+  await page.waitForFunction(
+    () => {
+      const video = document.querySelector('video')
+      return video?.playbackRate === 1.5 && video.defaultPlaybackRate === 1.5
+    },
+    { timeout: 5000 },
+  ).catch(() => ng.push('⑥ 保存済みの VOD 共通速度が追っかけ video に適用されない'))
 
-await page.locator('video').evaluate((video) => {
-  video.playbackRate = 1.25
-})
-await page.waitForFunction(
-  () => localStorage.getItem('rokuban:playback-rate') === '1.25',
-  { timeout: 5000 },
-).catch(() => ng.push('④ 追っかけの ratechange が VOD 共通設定に保存されない'))
+  await page.locator('video').evaluate((video) => {
+    video.playbackRate = 1.25
+  })
+  await page.waitForFunction(
+    () => localStorage.getItem('rokuban:playback-rate') === '1.25',
+    { timeout: 5000 },
+  ).catch(() => ng.push('⑥ 追っかけの ratechange が VOD 共通設定に保存されない'))
+}
 
 // --- ⑦ 画質（プロファイル）の切替（issue #874） ---
 //
@@ -1484,10 +1519,8 @@ recording.endedAt = undefined
 recording.sizeBytes = undefined
 recording.encodedAssets = []
 delete recording.resumePositionMs
-// ⑥ で保存した 1.25 倍速を等速に戻す。WebKit のネイティブ HLS は ENDLIST の無い EVENT playlist を
-// 1 倍以外で再生すると、paused=false のまま位置が止まる（アプリ無しの <video> でも 1.25 倍で
-// 2.00 秒に 8 秒止まり、1 倍なら進んだ。未解決: 追っかけが VOD 共通の速度を引き継ぐ不具合）。
-// ここでは再生元の持ち越しだけを測る。今のページの <video> が書き戻さないよう、先に離れてから書く。
+// ⑥ で使った VOD 共通速度を等速に戻す。ここでは再生元の持ち越しだけを測る。
+// 今のページの <video> が書き戻さないよう、先に離れてから書く。
 await page.goto('about:blank')
 await page.goto(`${URL_BASE}/404-e2e-rate-reset`, { waitUntil: 'domcontentloaded' })
 await page.evaluate(() => localStorage.setItem('rokuban:playback-rate', '1'))

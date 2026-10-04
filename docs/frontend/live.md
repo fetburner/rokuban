@@ -92,13 +92,8 @@ leave ヒントを送る。変換済み playlist の `seekable` 終端より後�
 更新しない。録画済みの秒数が予定尺を超えたら、タイムラインの終端を録画済み位置まで
 広げ、予定終端を印で残す。未録画側の時刻は予定として表示する。
 
-追っかけは録画再生なので、VOD と共通の `rokuban:playback-rate` を使う。操作バーで選んだ
-速度を保存し、開始時に `defaultPlaybackRate` と `playbackRate` へ設定する。通常のライブ視聴
-にはこの設定を適用しない。ネイティブ HLS での速度変更が実 Safari で有効かは未検証で、
-放送に対する速度変更として採用する判断材料が無いためである。
-未解決: Playwright の WebKit では、ENDLIST の無い EVENT playlist を 1.25 倍で再生すると
-paused=false のまま位置が止まる。アプリを通さない `<video>` でも同じで、1 倍なら進む。
-保存した速度を引き継いだ追っかけが WebKit で止まりうる（`web/e2e/chase.mjs` ⑨ は等速に戻して測る）。
+追っかけは録画再生なので、VOD と共通の `rokuban:playback-rate` に速度を保存し、通常のライブ視聴には適用しない。
+macOS Safari 26.6.2 で ENDLIST の無い EVENT playlist を測ると 1.25 / 1.5 / 2 倍は再生位置が 2.00 秒で止まり、1 倍は進んだため、ネイティブ HLS の録画再生は playlist が有限尺になるまで 1 倍に固定し、その後に保存速度へ戻す。
 
 再生位置は `/api/recordings/{id}/playback-position` に原本時間軸の ms で保存する。
 live の配信プロファイルや VOD のエンコードプロファイルでは分けず、原本 VOD と共通の値を使う。
