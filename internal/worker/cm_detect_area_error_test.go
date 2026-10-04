@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -19,6 +20,10 @@ func TestCMDetectLoadingAreaDBErrorIsSetupStage(t *testing.T) {
 	cancel()
 	err := w.detect(ctx, 1, sqlcgen.GetCMDetectionWorkItemRow{RelPath: &rel, NetworkID: 32736, ServiceID: 1024})
 	stage := cmFailureStage(err)
+	// 先行する手順も setup を返すので、枠の読み込みで落ちたことを文言で固定する。
+	if err == nil || !strings.Contains(err.Error(), "loading taught logo area") {
+		t.Fatalf("err = %v, want the taught-area load failure", err)
+	}
 	if stage == nil || *stage != "setup" {
 		t.Fatalf("stage = %v (err %v), want setup", stage, err)
 	}
