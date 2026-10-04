@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getListReservationsQueryKey } from '@/api/generated'
 import type {
+  CapacityOverage,
   EncodeProfileSummary,
   Reservation,
   Rule,
@@ -107,7 +108,13 @@ function stubApi(
   // 作成・更新・削除を意図的に失敗させる（issue #297: 無音化した成功トーストの
   // 反対側 --- 失敗トーストは従来どおり出ることを確認するため）。既定では
   // 失敗させない。
-  failures: { create?: number; update?: number; delete?: number; reservations?: number } = {},
+  failures: {
+    create?: number
+    update?: number
+    delete?: number
+    reservations?: number
+    capacityOverages?: number
+  } = {},
   // 行のスイッチ（無効化）が確認に出す件数の母集団。RulesPage は予約一覧と
   // 同じクエリキーで GET /api/reservations を読む。既定は空。
   reservations: Reservation[] = [],
@@ -115,6 +122,7 @@ function stubApi(
   // サイトチップはレジストリと下書きの和集合が 2 つ以上のときだけ出るので、
   // それを確かめるテストだけが 2 つ目以降を足す（issue #531）。
   siteNames: string[] = ['default'],
+  capacityOverages: CapacityOverage[] = [],
 ) {
   const putBodies: { id: number; body: RuleInput }[] = []
   const postBodies: RuleInput[] = []
@@ -138,6 +146,14 @@ function stubApi(
         )
       }
       return Promise.resolve(jsonResponse(reservations))
+    }
+    if (url.pathname === '/api/capacity/overages' && method === 'GET') {
+      if (failures.capacityOverages !== undefined) {
+        return Promise.resolve(
+          jsonResponse({ error: '容量超過を取得できませんでした' }, failures.capacityOverages),
+        )
+      }
+      return Promise.resolve(jsonResponse(capacityOverages))
     }
     if (url.pathname === '/api/rules' && method === 'POST') {
       if (failures.create !== undefined) {
@@ -350,6 +366,129 @@ describe('RulesPage の分類ルール導線', () => {
   })
 })
 
+describe('RulesPage 予約の稼働状況', () => {
+  it('予約の結論を同じ ruleId の全 source で集計し、不足件数と予約絞り込みへのリンクを出す', async () => {
+    const reservations: Reservation[] = [
+      {
+        ...sampleReservation(1, 1),
+        startAt: '2026-09-01T20:00:00Z',
+      },
+      {
+        ...sampleReservation(2, 1),
+        source: 'manual',
+        startAt: '2026-09-01T22:00:00Z',
+      },
+      { ...sampleReservation(4, 1), skip: true, startAt: '2026-09-01T20:00:00Z' },
+      {
+        ...sampleReservation(5, 1),
+        state: 'orphaned',
+        startAt: '2026-09-01T20:00:00Z',
+      },
+      sampleReservation(6, 2),
+    ]
+    const capacityOverages: CapacityOverage[] = [
+      {
+        site: 'default',
+        startAt: '2026-09-01T20:00:00Z',
+        endAt: '2026-09-01T20:30:00Z',
+        shortfall: 1,
+        jammedTypes: ['GR'],
+      },
+    ]
+    stubApi([sampleRule], undefined, {}, reservations, ['default'], capacityOverages)
+    const user = userEvent.setup()
+    const { router } = renderPage()
+
+    const link = await screen.findByRole('link', { name: '録画予定 2 件' })
+    expect(link).toHaveAttribute('href', '/reservations?ruleId=1')
+    expect(await screen.findByText(/うち不足時間帯 1/)).toHaveClass('text-warning')
+
+    await user.click(link)
+    await waitFor(() => expect(router.state.location.pathname).toBe('/reservations'))
+    expect(router.state.location.search).toEqual({ ruleId: 1 })
+  })
+
+  it('有効な予約が無いルールは muted 表示にし、無効なルールには出さない', async () => {
+    const disabledRule = { ...sampleRule, id: 2, name: '季節もの', enabled: false }
+    stubApi([sampleRule, disabledRule], undefined, {}, [
+      { ...sampleReservation(1, 1), skip: true },
+      { ...sampleReservation(2, 1), state: 'orphaned' },
+    ])
+    renderPage()
+
+    const none = await screen.findByText('録画予定なし')
+    expect(none).toHaveClass('text-muted-foreground')
+    expect(none.closest('li')?.querySelector('a[href="/reservations?ruleId=1"]')).toBeNull()
+    const disabledRow = screen
+      .getByRole('link', { name: 'ルール「季節もの」を編集' })
+      .closest('li')
+    expect(disabledRow).not.toBeNull()
+    expect(within(disabledRow as HTMLElement).getByText('無効')).toBeInTheDocument()
+    expect(within(disabledRow as HTMLElement).queryByText('録画予定なし')).not.toBeInTheDocument()
+  })
+
+  it('予約一覧の取得に失敗したら稼働状況を出さない', async () => {
+    stubApi([sampleRule], undefined, { reservations: 500 })
+    renderPage()
+
+    await screen.findByRole('switch', { name: 'ルール「ニュース」を有効にする' })
+    await waitFor(() => {
+      expect(
+        (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.some(
+          (call: unknown[]) =>
+            new URL(String(call[0]), 'http://localhost').pathname === '/api/reservations',
+        ),
+      ).toBe(true)
+    })
+    expect(screen.queryByText(/録画予定/)).not.toBeInTheDocument()
+    expect(screen.queryByText('録画予定なし')).not.toBeInTheDocument()
+  })
+
+  it('容量超過の取得中は不足件数を出さず、録画予定は残す', async () => {
+    const reservations = [
+      { ...sampleReservation(1, 1), startAt: '2026-09-01T20:00:00Z' },
+    ]
+    stubApi([sampleRule], undefined, {}, reservations)
+    const baseFetch = globalThis.fetch
+    let resolveCapacity: ((response: Response) => void) | undefined
+    globalThis.fetch = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.pathname === '/api/capacity/overages') {
+        return new Promise<Response>((resolve) => {
+          resolveCapacity = resolve
+        })
+      }
+      return baseFetch(input, init)
+    }) as unknown as typeof fetch
+    const { queryClient } = renderPage()
+
+    expect(await screen.findByRole('link', { name: '録画予定 1 件' })).toBeInTheDocument()
+    expect(screen.queryByText(/うち不足時間帯/)).not.toBeInTheDocument()
+    await waitFor(() => expect(resolveCapacity).toBeDefined())
+    resolveCapacity?.(jsonResponse([]))
+    await waitFor(() => {
+      const capacityQuerySucceeded = queryClient
+        .getQueryCache()
+        .getAll()
+        .some(
+          (query) =>
+            query.queryKey[0] === '/api/capacity/overages' &&
+            query.state.status === 'success',
+        )
+      expect(capacityQuerySucceeded).toBe(true)
+    })
+    expect(screen.queryByText(/うち不足時間帯/)).not.toBeInTheDocument()
+  })
+
+  it('容量超過の取得に失敗したら不足件数だけ省き、録画予定は残す', async () => {
+    stubApi([sampleRule], undefined, { capacityOverages: 500 }, [sampleReservation(1, 1)])
+    renderPage()
+
+    expect(await screen.findByRole('link', { name: '録画予定 1 件' })).toBeInTheDocument()
+    expect(screen.queryByText(/うち不足時間帯/)).not.toBeInTheDocument()
+  })
+})
+
 describe('RulesPage ルールの有効スイッチ', () => {
   it('状態を aria-checked に出し、無効化だけ active 予約数付きの確認を挟む', async () => {
     const reservations: Reservation[] = [
@@ -374,6 +513,12 @@ describe('RulesPage ルールの有効スイッチ', () => {
     ).toBeInTheDocument()
     expect(putBodies).toHaveLength(0)
 
+    const reservationCallsBeforeDisable = (
+      globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls.filter(
+      (call: unknown[]) =>
+        new URL(String(call[0]), 'http://localhost').pathname === '/api/reservations',
+    ).length
     await user.click(screen.getByRole('button', { name: '無効にする' }))
     await waitFor(() => expect(putBodies).toHaveLength(1))
     // PATCH は RuleInput.name が必須で全置換する契約なので、検索画面の上書き
@@ -383,24 +528,29 @@ describe('RulesPage ルールの有効スイッチ', () => {
 
     // 無効化は予約一覧を invalidate するが、ruler の次回評価までは同じ予約が
     // キャッシュに残る。即座に行が消えることは期待しない。
-    await waitFor(() =>
-      expect(
-        queryClient.getQueryState(getListReservationsQueryKey())?.isInvalidated,
-      ).toBe(true),
-    )
+    await waitFor(() => {
+      const reservationCalls = (
+        globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+      ).mock.calls.filter(
+        (call: unknown[]) =>
+          new URL(String(call[0]), 'http://localhost').pathname === '/api/reservations',
+      ).length
+      expect(reservationCalls).toBeGreaterThan(reservationCallsBeforeDisable)
+    })
     expect(
       queryClient.getQueryData<{ data: Reservation[] }>(getListReservationsQueryKey())?.data,
     ).toEqual(reservations)
   })
 
-  it('予約一覧は無効化を押すまで取得せず、取得完了前に 0 件の確認を出さない', async () => {
+  it('予約一覧の取得完了前は件数と無効化確認を出さない', async () => {
     stubApi([sampleRule])
     const baseFetch = globalThis.fetch
+    let resolveReservations: (() => void) | undefined
     globalThis.fetch = vi.fn((input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input), 'http://localhost')
       if (url.pathname === '/api/reservations') {
         return new Promise<Response>((resolve) => {
-          setTimeout(() => resolve(jsonResponse([])), 50)
+          resolveReservations = () => resolve(jsonResponse([]))
         })
       }
       return baseFetch(input, init)
@@ -410,17 +560,12 @@ describe('RulesPage ルールの有効スイッチ', () => {
     renderPage()
     const toggle = await screen.findByRole('switch', { name: 'ルール「ニュース」を有効にする' })
 
-    const reservationCalls = () =>
-      (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
-        (call: unknown[]) =>
-          new URL(String(call[0]), 'http://localhost').pathname === '/api/reservations',
-      )
-    expect(reservationCalls()).toHaveLength(0)
-
+    expect(screen.queryByText(/録画予定/)).not.toBeInTheDocument()
     await user.click(toggle)
-    expect(reservationCalls()).toHaveLength(1)
     expect(screen.queryByText(/を無効にすると/)).not.toBeInTheDocument()
 
+    resolveReservations?.()
+    expect(await screen.findByText('録画予定なし')).toBeInTheDocument()
     expect(await screen.findByText(/を無効にすると/)).toBeInTheDocument()
   })
 

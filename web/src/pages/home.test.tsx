@@ -698,6 +698,35 @@ describe('ホーム管理モード: 失敗/ドロップの timeline rendering', 
 })
 
 describe('ホーム: 警告セクション', () => {
+  it('orphaned 予約を「録画されず」で詳細へ案内し、管理の警告件数に加える', async () => {
+    stubApi({
+      reservations: [reservation(22, '開始されなかった番組', -3 * HOUR, { state: 'orphaned' })],
+    })
+    renderHome()
+
+    const row = await findWarningRow('開始されなかった番組')
+    expect(within(row).getByText('録画されず')).toBeInTheDocument()
+    expect(within(row).getByRole('link')).toHaveAttribute('href', '/reservations/default/220')
+    expect(screen.getByTestId('home-warning-count')).toHaveTextContent('1')
+  })
+
+  it('予約一覧の取得が未解決なら要対応と管理の警告件数を確定しない', async () => {
+    const { resolvePending, unresolvedCount } = stubApi({
+      reservations: [reservation(23, '遅れて届く録画されず', -3 * HOUR, { state: 'orphaned' })],
+      pendingPaths: new Set(['/api/reservations']),
+    })
+    renderHome()
+
+    await waitFor(() => expect(unresolvedCount('/api/reservations')).toBe(1))
+    expect(screen.queryByRole('heading', { name: '要対応' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('home-warning-count')).not.toBeInTheDocument()
+
+    resolvePending()
+
+    expect(await findWarningRow('遅れて届く録画されず')).toBeInTheDocument()
+    expect(screen.getByTestId('home-warning-count')).toHaveTextContent('1')
+  })
+
   it('サーキットブレーカー・チューナー不足・直近完了のドロップを集約する', async () => {
     stubApi({
       breakers: [breaker('ruler_deletes')],
@@ -776,14 +805,15 @@ describe('ホーム: 警告セクション', () => {
     expect(screen.queryByRole('heading', { name: '要対応' })).not.toBeInTheDocument()
   })
 
-  it('警告項目は種別ごとに固定の色クラスを持つ（チューナー不足=warning、ブレーカー/ドロップ/失敗録画=destructive）', async () => {
+  it('警告項目は種別ごとに固定の色クラスを持つ（チューナー不足=warning、失われた録画/失敗録画/ドロップ=destructive）', async () => {
     // jsdom は実描画色を計算しないので、当たっているクラスだけを見る
     // （実画素は e2e/design.mjs が見る。`pages/reservations.test.tsx` の
     // 「警告の信号色」と同じ流儀）。文字列 key の前方一致で種別を推測する
     // 実装は、key の書式を変えただけで色が黙って壊れる（レビュー指摘）ので、
     // `WarningItem.kind` を経由していることをここで固定する。
     //
-    // 失敗録画も同じ契約に入れる（レビュー指摘: `WarningKind` に 'failed' を
+    // 失敗録画と未開始の録画も同じ契約に入れる（レビュー指摘: `WarningKind` に
+    // 'failed' を
     // 足したのに色 × 種別の主張が無く、`amber` の条件に 'failed' を混ぜても
     // 全テストが緑だった）。録画が失われたことは取り返しがつかないので
     // destructive 側（`docs/frontend/design.md`「色は信号のみ」の表が
@@ -800,6 +830,7 @@ describe('ホーム: 警告セクション', () => {
         }),
       ],
       failed: [recording(10, '失敗した録画', 'failed')],
+      reservations: [reservation(12, '開始されなかった録画', -3 * HOUR, { state: 'orphaned' })],
     })
     renderHome()
 
@@ -807,19 +838,20 @@ describe('ホーム: 警告セクション', () => {
     const breakerRow = await findWarningRow('ルール評価による予約の削除')
     const dropRow = await findWarningRow('ドロップのある録画')
     const failedRow = await findWarningRow('失敗した録画')
+    const notRecordedRow = await findWarningRow('開始されなかった録画')
     const cmDetectionRow = await findWarningRow('CM 検出失敗の録画')
     const warningSection = screen.getByRole('heading', { name: '要対応' }).closest('section')!
     expect(
       within(warningSection)
         .getAllByRole('listitem')
         .map((row) => row.getAttribute('data-warning-kind')),
-    ).toEqual(['breaker', 'failed', 'overage', 'drop', 'cm-detection'])
+    ).toEqual(['breaker', 'failed', 'not-recorded', 'overage', 'drop', 'cm-detection'])
 
     // 色は種別チップだけが持つ（`WarningRow` の実装どおり）。
     const chipOf = (row: HTMLElement | null) => within(row!).getByTestId('warning-chip')
     expect(chipOf(overageRow).className).toMatch(/bg-warning\/15/)
     expect(chipOf(overageRow).className).toMatch(/text-warning/)
-    for (const row of [breakerRow, dropRow, failedRow, cmDetectionRow]) {
+    for (const row of [breakerRow, dropRow, failedRow, notRecordedRow, cmDetectionRow]) {
       const el = chipOf(row)
       expect(el.className).toMatch(/text-destructive/)
       expect(el.className).not.toMatch(/bg-warning/)
@@ -1294,9 +1326,9 @@ describe('ホーム: 時境界を越えてキーが変わっても警告は消�
     const { fetchMock, resolvePending, unresolvedCount } = stubApi({
       breakers: [breaker('ruler_deletes')],
       reservations: [reservation(1, '今夜の予約', 2 * HOUR)],
-      // 再レンダーの引き金。これを解決させた瞬間に新しい `Date.now()` で
-      // レンダーが走り、量子化後の `start` が 20:00 に進む。
-      pendingPaths: new Set(['/api/reservations']),
+      // 再レンダーの引き金。警告材料の予約一覧は即答させておき、時間軸の録画 query
+      // を解決した瞬間に新しい `Date.now()` でレンダーして容量キーを進める。
+      pendingRecordingStatuses: new Set(['recording']),
       // 2 回目（= 新しいキー）の容量超過だけ未解決にする。即答させると
       // 「消えた一瞬」が assert より先に終わってしまい、壊れていても緑になる。
       pendingAfterFirstCall: new Set(['/api/capacity/overages']),
@@ -1309,8 +1341,7 @@ describe('ホーム: 時境界を越えてキーが変わっても警告は消�
     vi.setSystemTime(nowMs + 500)
     resolvePending()
 
-    // 見出しだけでは予約 query の解決を証明しない。詳細リンクが現れるまで待ち、
-    // 予約の応答が新しい「今」でのレンダーを起こしたことを確認する。
+    // 予約 query は警告を出す前に解決済み。時間軸の詳細リンクも取得できることを確認する。
     const details = await openTimelineDetails()
     expect(await within(details).findByRole('link', { name: /今夜の予約/ })).toBeInTheDocument()
 

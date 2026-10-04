@@ -1246,6 +1246,14 @@ export interface ProgramSearchRequest {
   sites?: string[];
 }
 
+export type CapacityPreviewRequest = ProgramSearchRequest & {
+  /**
+     * 既存ルールを編集する場合の ID。省略時は新規ルールとして扱う。
+     * @minimum 1
+     */
+  ruleId?: number;
+};
+
 /**
  * 検索がマッチした 1 件（1 サイトの 1 放送）
  */
@@ -8686,6 +8694,135 @@ export function useListCapacityOverages<TData = Awaited<ReturnType<typeof listCa
 
 
 
+
+export type previewCapacityOveragesResponse200 = {
+  data: CapacityOverage[]
+  status: 200
+}
+
+export type previewCapacityOveragesResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
+export type previewCapacityOveragesResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type previewCapacityOveragesResponseSuccess = (previewCapacityOveragesResponse200) & {
+  headers: Headers;
+};
+export type previewCapacityOveragesResponseError = (previewCapacityOveragesResponse400 | previewCapacityOveragesResponse404) & {
+  headers: Headers;
+};
+
+export type previewCapacityOveragesResponse = (previewCapacityOveragesResponseSuccess | previewCapacityOveragesResponseError)
+
+export const getPreviewCapacityOveragesUrl = () => {
+
+
+
+
+  return `/api/capacity/preview`
+}
+
+/**
+ * 検索画面でルールを保存した場合に**新たに生じる**容量不足区間を返す。
+ * 既存の予約需要に検索結果のうち実際に予約へ進む候補を加え、
+ * `capacity.Compute` の Hall 条件を再評価する。追加の区間は保存前の同一 site の
+ * 区間と比べ、保存後の不足本数が保存前以下の部分を除く。既存の不足が悪化した
+ * 部分も返す。
+ *
+ * この計算は予約・意図・録画履歴・チューナー射影を組み合わせるため、検索結果に
+ * 含めず独立したエンドポイントにする。検索 API の応答と処理量はそのまま保ち、
+ * 検索画面だけが保存前の仮定を問い合わせる。結果は導出値であり永続化しない。
+ * api ロールは PostgreSQL のみを読み、mirakc には問い合わせない。
+ *
+ * `ruleId` は既存ルールを編集するときだけ指定する。そのルールが勝者だった予約を
+ * 保存前需要から外し、候補として再評価する。重複排除は ruler と共有する判定器で
+ * 行い、`skip` 意図・fulfilled・既存予約も候補から除く。
+ *
+ * 不足区間が無い応答は「収まる」保証ではない。見えない消費者やチューナーの
+ * `excluded_channels` があり、この判定が主張できるのは不足が確認できた区間だけ。
+ * @summary Preview tuner shortfalls for a program search
+ */
+export const previewCapacityOverages = async (capacityPreviewRequest: CapacityPreviewRequest, options?: Parameters<typeof customInstance>[1]): Promise<previewCapacityOveragesResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customInstance<previewCapacityOveragesResponse>(getPreviewCapacityOveragesUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(capacityPreviewRequest)
+  }
+);}
+
+
+
+
+
+export const getPreviewCapacityOveragesMutationKey = () => ['previewCapacityOverages'] as const;
+
+export const getPreviewCapacityOveragesMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof previewCapacityOverages>>, TError,PreviewCapacityOveragesMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof previewCapacityOverages>>, TError,PreviewCapacityOveragesMutationVariables, TContext> => {
+
+const mutationKey = getPreviewCapacityOveragesMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof previewCapacityOverages>>, PreviewCapacityOveragesMutationVariables> = (props) => {
+          const {data} = props ?? {};
+
+          return  previewCapacityOverages(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PreviewCapacityOveragesMutationResult = NonNullable<Awaited<ReturnType<typeof previewCapacityOverages>>>
+    export type PreviewCapacityOveragesMutationBody = CapacityPreviewRequest
+    export type PreviewCapacityOveragesMutationError = ErrorResponse
+    export type PreviewCapacityOveragesMutationVariables = {data: CapacityPreviewRequest}
+
+    /**
+ * @summary Preview tuner shortfalls for a program search
+ */
+export const usePreviewCapacityOverages = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof previewCapacityOverages>>, TError,PreviewCapacityOveragesMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof previewCapacityOverages>>,
+        TError,
+        PreviewCapacityOveragesMutationVariables,
+        TContext
+      > => {
+      return useMutation(getPreviewCapacityOveragesMutationOptions(options), queryClient);
+    }
 
 export type getEncodeQueueResponse200 = {
   data: EncodeQueueSummary

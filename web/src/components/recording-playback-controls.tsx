@@ -447,7 +447,7 @@ export function RecordingPlaybackControls({
                 type="button"
                 variant="secondary"
                 className="h-8 shrink-0 rounded-full px-2 text-xs leading-none md:h-9 md:px-3 md:text-sm"
-                aria-label="選択中の境界の前後 3 秒を再生"
+                aria-label="選択中の境界の前後3秒を再生"
                 onClick={onPlayAround}
                 disabled={onPlayAround === undefined}
               >

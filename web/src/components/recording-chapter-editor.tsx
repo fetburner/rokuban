@@ -7,7 +7,9 @@ import {
   FRAME_SECONDS,
   chapterBoundaries,
   displayedFrameBoundaryMs,
-  nudgeBoundary,
+  moveChapterBoundary,
+  nearestChapterBoundary,
+  normalizeChapterDraft,
 } from '@/lib/chapters'
 import { formatPlaybackTime } from '@/lib/format'
 
@@ -42,9 +44,9 @@ type RecordingChapterEditorProps = {
   onTileImageLoad: () => void
   onTileImageError: () => void
   jumpTo: (seconds: number) => void
-  /** 選択・調整した境界を停止して表示する。 */
+  /** 選択・調整した境界のコマへ映像を連れて行き、停止する。 */
   onBoundaryAction: (seconds: number) => void
-  /** 選んでいる境界（既定は再生位置に最も近い境界）。映像側の「前後 3 秒を再生」が使う。 */
+  /** 選んでいる境界（既定は再生位置に最も近い境界）。映像側の「前後 3 秒」「境界まで」「境界から」が使う。 */
   onSelectedBoundaryChange: (seconds: number | null) => void
   /** 保存は成功で resolve、失敗で reject。 */
   onSave: (spans: ChapterSpan[], version: string) => Promise<unknown>
@@ -95,6 +97,9 @@ function ChapterDraftEditor({
   onStatusChange,
 }: RecordingChapterEditorProps) {
   const [draft, setDraft] = useState<ChapterSpan[]>(spans)
+  const draftRef = useRef(draft)
+  const labelEditRef = useRef<{ before: ChapterSpan[]; changed: boolean } | null>(null)
+  const [history, setHistory] = useState<ChapterSpan[][]>([])
   // 下書きの基にしたサーバーの値と版。下書きが未変更か自分の保存結果と一致するとき
   // だけ追随する。それ以外は stale として知らせ、黙って上書きしない。
   const [base, setBase] = useState({ spans, version })
@@ -103,36 +108,75 @@ function ChapterDraftEditor({
     if (adoptNext || sameSpans(draft, base.spans) || sameSpans(draft, spans)) {
       setBase({ spans, version })
       setDraft(spans)
+      setHistory([])
       setAdoptNext(false)
     }
   }
+  useEffect(() => {
+    draftRef.current = draft
+  }, [draft])
+  useEffect(() => {
+    labelEditRef.current = null
+  }, [base.spans, base.version])
   const stale = base.spans !== spans || base.version !== version
   const discardDraft = useCallback(() => {
     setBase({ spans, version })
+    draftRef.current = spans
     setDraft(spans)
+    setHistory([])
+    labelEditRef.current = null
     setAdoptNext(false)
   }, [spans, version])
   const boundaries = useMemo(() => chapterBoundaries(draft), [draft])
   const dirty = useMemo(() => !sameSpans(draft, base.spans), [draft, base.spans])
   const [selectedBoundaryValue, setSelectedBoundaryValue] = useState<number | null>(null)
   const [pendingStartMs, setPendingStartMs] = useState<number | null>(null)
+  // selectBoundary を安定した参照に保つ（キー処理の effect を毎レンダー貼り直さない）。
   const onBoundaryActionRef = useRef(onBoundaryAction)
   useLayoutEffect(() => {
     onBoundaryActionRef.current = onBoundaryAction
   }, [onBoundaryAction])
+  // 長押しの連続送りを undo 1 件にまとめる。直前の移動が履歴を積んだか。
+  const moveGestureOpenRef = useRef(false)
+  const durationMs = Number.isFinite(durationSeconds) && durationSeconds > 0
+    ? Math.round(durationSeconds * 1000)
+    : 0
   // 描画用（ボタンの無効判定）は currentTime の floor、押した瞬間の値は mediaTime 優先。
   const currentMs = displayedFrameBoundaryMs(null, currentSeconds)
   const nowMs = () => displayedFrameBoundaryMs(getDisplayedFrameSeconds(), currentSeconds)
-  const nearestBoundary = boundaries.length === 0
-    ? null
-    : boundaries.reduce((best, candidate) =>
-      Math.abs(candidate - currentSeconds) < Math.abs(best - currentSeconds) ? candidate : best,
-    )
+  const nearestBoundary = nearestChapterBoundary(boundaries, currentSeconds)
   // nudgeBoundary stores integer milliseconds, while frame controls pass a rational
   // 29.97fps interval. Match within 1ms so the chosen boundary stays selected.
   const selectedBoundary = boundaries.find((boundary) =>
     selectedBoundaryValue !== null && Math.abs(boundary - selectedBoundaryValue) <= 0.001,
   ) ?? nearestBoundary
+
+  const pushHistory = useCallback((snapshot: ChapterSpan[]) => {
+    setHistory((current) => [...current, snapshot.map((span) => ({ ...span }))])
+  }, [])
+
+  const replaceDraft = useCallback((next: ChapterSpan[]) => {
+    draftRef.current = next
+    setDraft(next)
+  }, [])
+
+  /** commitDraft は正規化して確定する。変化があれば true。`coalesce` は履歴を積まない。 */
+  const commitDraft = useCallback((next: ChapterSpan[], operatedIndexes: readonly number[] = [], coalesce = false) => {
+    const normalized = normalizeChapterDraft(next, operatedIndexes)
+    if (sameSpans(draftRef.current, normalized)) return false
+    if (!coalesce) pushHistory(draftRef.current)
+    replaceDraft(normalized)
+    return true
+  }, [pushHistory, replaceDraft])
+
+  const undo = useCallback(() => {
+    if (history.length === 0) return
+    const previous = history[history.length - 1]
+    labelEditRef.current = null
+    setHistory(history.slice(0, -1))
+    draftRef.current = previous
+    setDraft(previous)
+  }, [history])
 
   useEffect(() => {
     onStatusChange({ source, dirty, stale })
@@ -142,38 +186,56 @@ function ChapterDraftEditor({
     onSelectedBoundaryChange(selectedBoundary)
   }, [onSelectedBoundaryChange, selectedBoundary])
 
+  // 境界を選ぶ操作はすべてここを通り、映像を境界のコマへ連れて行って止める。
   const selectBoundary = useCallback((seconds: number) => {
     setSelectedBoundaryValue(seconds)
     onBoundaryActionRef.current(seconds)
   }, [])
 
+  /**
+   * moveBoundary は境界を delta 秒動かす唯一の経路（`,` `.`・±ボタン・長押し・ドラッグ・
+   * 再生位置に合わせる）。正規化と undo 履歴を通し、動かした後の境界を選んで映像を連れて行く。
+   * `continued` は長押しの 2 回目以降で、最初の 1 回が積んだ履歴 1 件にまとめる。
+   */
+  const moveBoundary = useCallback((from: number, deltaSeconds: number, continued = false) => {
+    const moved = moveChapterBoundary(draftRef.current, from, deltaSeconds)
+    if (commitDraft(moved.spans, [], continued && moveGestureOpenRef.current)) {
+      moveGestureOpenRef.current = true
+    } else if (!continued) {
+      moveGestureOpenRef.current = false
+    }
+    if (moved.boundary !== null) selectBoundary(moved.boundary)
+  }, [commitDraft, selectBoundary])
+
   // ← → は選択を移す。`,` / `.` は選択境界を 1 フレーム動かす。
   // 編集画面のどこにフォーカスがあっても効き、入力欄・シークバー・メニューでは効かない。
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target
+      const editingTarget = target instanceof HTMLElement && (
+        target.isContentEditable ||
+        target.closest('input, textarea, select, [role="slider"], [role="menu"], [role="dialog"]') !== null
+      )
+      if (
+        event.key.toLowerCase() === 'z' &&
+        (event.ctrlKey || event.metaKey) &&
+        !event.altKey &&
+        !event.shiftKey &&
+        !editingTarget &&
+        history.length > 0
+      ) {
+        event.preventDefault()
+        undo()
+        return
+      }
       const isArrow = event.key === 'ArrowLeft' || event.key === 'ArrowRight'
       const isFrameNudge = event.key === ',' || event.key === '.'
       if (!isArrow && !isFrameNudge) return
       if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || boundaries.length === 0) return
-      const target = event.target
-      if (
-        target instanceof HTMLElement &&
-        (target.isContentEditable || target.closest('input, textarea, select, [role="slider"], [role="menu"], [role="dialog"]'))
-      ) {
-        return
-      }
+      if (editingTarget) return
       event.preventDefault()
       if (isFrameNudge) {
-        if (selectedBoundary === null) return
-        const delta = event.key === ',' ? -FRAME_SECONDS : FRAME_SECONDS
-        const nextDraft = nudgeBoundary(draft, selectedBoundary, delta)
-        const nextBoundaries = chapterBoundaries(nextDraft)
-        const target = selectedBoundary + delta
-        const nextBoundary = nextBoundaries.reduce((best, candidate) =>
-          Math.abs(candidate - target) < Math.abs(best - target) ? candidate : best,
-        )
-        setDraft(nextDraft)
-        selectBoundary(nextBoundary)
+        if (selectedBoundary !== null) moveBoundary(selectedBoundary, event.key === ',' ? -FRAME_SECONDS : FRAME_SECONDS)
         return
       }
       const index = selectedBoundary === null ? -1 : boundaries.indexOf(selectedBoundary)
@@ -183,7 +245,7 @@ function ChapterDraftEditor({
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [boundaries, draft, selectedBoundary, selectBoundary])
+  }, [boundaries, history, moveBoundary, selectBoundary, selectedBoundary, undo])
 
   const save = useCallback(async () => {
     // 自動層は変更がなくても明示的に確認できる。空の層も「CM なしで確認する」
@@ -216,15 +278,31 @@ function ChapterDraftEditor({
     }
   }, [commandsRef, discardDraft, reset, save])
 
-  const startNewSpan = () => setPendingStartMs(nowMs())
+  // duration が未確定（0）や無限（native HLS の変換中）のときは頭打ちしない。
+  const currentPositionMs = () => (durationMs > 0 ? Math.min(durationMs, nowMs()) : nowMs())
+  const startNewSpan = () => setPendingStartMs(currentPositionMs())
   const closeNewSpan = () => {
     if (pendingStartMs === null) return
-    const now = nowMs()
+    const now = currentPositionMs()
     const startMs = Math.min(pendingStartMs, now)
     const endMs = Math.max(pendingStartMs, now)
     if (endMs <= startMs) return
-    setDraft((current) => [...current, { startMs, endMs, cut: true }])
+    const current = draftRef.current
+    commitDraft([...current, { startMs, endMs, cut: true }], [current.length])
     setPendingStartMs(null)
+  }
+  const addFromStartToPosition = () => {
+    const endMs = currentPositionMs()
+    if (endMs <= 0) return
+    const current = draftRef.current
+    commitDraft([...current, { startMs: 0, endMs, cut: true }], [current.length])
+  }
+  const addFromPositionToEnd = () => {
+    const startMs = currentPositionMs()
+    const endMs = durationMs
+    if (endMs <= startMs) return
+    const current = draftRef.current
+    commitDraft([...current, { startMs, endMs, cut: true }], [current.length])
   }
 
   return (
@@ -242,9 +320,8 @@ function ChapterDraftEditor({
           onTileImageLoad={onTileImageLoad}
           onTileImageError={onTileImageError}
           onSeek={jumpTo}
-          onSelectBoundary={setSelectedBoundaryValue}
-          onBoundaryAction={onBoundaryAction}
-          onChangeSpans={setDraft}
+          onSelectBoundary={selectBoundary}
+          onMoveBoundary={moveBoundary}
         />
       </div>
 
@@ -255,6 +332,11 @@ function ChapterDraftEditor({
         aria-label="区間の一覧"
         className="h-full overflow-y-auto overscroll-contain rounded-md border border-border/70 p-2 md:absolute md:inset-0 md:h-auto"
       >
+        <div className="mb-2 flex justify-end">
+          <Button type="button" size="sm" variant="outline" onClick={undo} disabled={history.length === 0}>
+            元に戻す
+          </Button>
+        </div>
         <p className="sr-only" data-testid="chapter-source">
           {source === 'user' ? '確認済み' : '自動検出（未確認）'}{dirty ? '・未保存の変更があります' : ''}
         </p>
@@ -304,9 +386,23 @@ function ChapterDraftEditor({
                     value={span.label ?? ''}
                     placeholder="ラベル（OP / ED など）"
                     aria-label="ラベル"
-                    onChange={(event) => setDraft((current) => current.map((item, i) => (
-                      i === index ? withLabel(item, event.target.value) : item
-                    )))}
+                    onFocus={() => {
+                      labelEditRef.current = { before: draftRef.current.map((item) => ({ ...item })), changed: false }
+                    }}
+                    onChange={(event) => {
+                      const current = draftRef.current
+                      const next = current.map((item, i) => (
+                        i === index ? withLabel(item, event.target.value) : item
+                      ))
+                      draftRef.current = next
+                      setDraft(next)
+                      if (labelEditRef.current) labelEditRef.current.changed = true
+                    }}
+                    onBlur={() => {
+                      const edit = labelEditRef.current
+                      labelEditRef.current = null
+                      if (edit?.changed && !sameSpans(edit.before, draftRef.current)) pushHistory(edit.before)
+                    }}
                     className="h-9 min-w-0 rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none"
                   />
                   <div className="flex flex-col items-end gap-1">
@@ -317,9 +413,12 @@ function ChapterDraftEditor({
                         checked={span.cut}
                         disabled={(span.label ?? '') === ''}
                         title={(span.label ?? '') === '' ? 'ラベルが無い区間は切る扱いのままにする' : undefined}
-                        onChange={(event) => setDraft((current) => current.map((item, i) => (
-                          i === index ? { ...item, cut: event.target.checked } : item
-                        )))}
+                        onChange={(event) => {
+                          const current = draftRef.current
+                          commitDraft(current.map((item, i) => (
+                            i === index ? { ...item, cut: event.target.checked } : item
+                          )), [index])
+                        }}
                         className="peer sr-only"
                       />
                       <span
@@ -327,7 +426,10 @@ function ChapterDraftEditor({
                         className="relative inline-flex h-6 w-11 shrink-0 rounded-full bg-muted transition-colors after:absolute after:top-0.5 after:left-0.5 after:size-5 after:rounded-full after:bg-background after:shadow after:transition-transform peer-checked:bg-chapter-cut peer-checked:after:translate-x-5 peer-focus-visible:outline-2 peer-focus-visible:outline-ring peer-focus-visible:outline-offset-2"
                       />
                     </label>
-                    <Button type="button" size="sm" variant="link" className="h-7 px-1" onClick={() => setDraft((current) => current.filter((_, i) => i !== index))}>
+                    <Button type="button" size="sm" variant="link" className="h-7 px-1" onClick={() => {
+                      const current = draftRef.current
+                      commitDraft(current.filter((_, i) => i !== index))
+                    }}>
                       削除
                     </Button>
                   </div>
@@ -342,6 +444,12 @@ function ChapterDraftEditor({
             <>
               <Button type="button" size="sm" variant="outline" onClick={startNewSpan}>
                 ここから区間を足す
+              </Button>
+              <Button type="button" size="sm" variant="outline" onClick={addFromStartToPosition} disabled={currentMs <= 0}>
+                最初からここまで切る
+              </Button>
+              <Button type="button" size="sm" variant="outline" onClick={addFromPositionToEnd} disabled={durationMs <= currentMs}>
+                ここから最後まで切る
               </Button>
               <span className="text-xs text-muted-foreground">再生位置から始まる区間を作ります</span>
             </>

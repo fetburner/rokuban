@@ -2774,7 +2774,7 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     fireEvent.playing(video)
     vi.useFakeTimers({ shouldAdvanceTime: true })
 
-    fireEvent.click(screen.getByRole('button', { name: /前後 3 秒.*を再生/ }))
+    fireEvent.click(screen.getByRole('button', { name: /前後3秒を再生/ }))
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
     expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
       '/api/sites/default/recordings/427/original-vod/offset/17/playlist.m3u8',
@@ -2818,7 +2818,7 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     const play = vi.spyOn(video, 'play').mockResolvedValue()
     fireEvent.playing(video)
 
-    fireEvent.click(screen.getByRole('button', { name: /前後 3 秒/ }))
+    fireEvent.click(screen.getByRole('button', { name: /前後3秒を再生/ }))
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
     expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
       '/api/sites/default/recordings/428/original-vod/offset/17/playlist.m3u8',

@@ -1935,6 +1935,56 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/capacity/preview:
+    post:
+      operationId: previewCapacityOverages
+      summary: Preview tuner shortfalls for a program search
+      description: |
+        検索画面でルールを保存した場合に**新たに生じる**容量不足区間を返す。
+        既存の予約需要に検索結果のうち実際に予約へ進む候補を加え、
+        `capacity.Compute` の Hall 条件を再評価する。追加の区間は保存前の同一 site の
+        区間と比べ、保存後の不足本数が保存前以下の部分を除く。既存の不足が悪化した
+        部分も返す。
+
+        この計算は予約・意図・録画履歴・チューナー射影を組み合わせるため、検索結果に
+        含めず独立したエンドポイントにする。検索 API の応答と処理量はそのまま保ち、
+        検索画面だけが保存前の仮定を問い合わせる。結果は導出値であり永続化しない。
+        api ロールは PostgreSQL のみを読み、mirakc には問い合わせない。
+
+        `ruleId` は既存ルールを編集するときだけ指定する。そのルールが勝者だった予約を
+        保存前需要から外し、候補として再評価する。重複排除は ruler と共有する判定器で
+        行い、`skip` 意図・fulfilled・既存予約も候補から除く。
+
+        不足区間が無い応答は「収まる」保証ではない。見えない消費者やチューナーの
+        `excluded_channels` があり、この判定が主張できるのは不足が確認できた区間だけ。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CapacityPreviewRequest"
+      responses:
+        "200":
+          description: 保存時に追加される容量不足区間（無ければ空配列）
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CapacityOverage"
+        "400":
+          description: Invalid conditions, unknown site, or invalid ruleId
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: ruleId does not identify an existing rule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /api/encode-queue:
     get:
       operationId: getEncodeQueue
@@ -3387,6 +3437,17 @@ components:
             絞り込み条件。空または省略 = 全サイト（`GET /api/recordings` の `?site=` と
             同じ軸の規約: 軸内は OR、他の絞り込み軸とは AND）。指定した site 名は
             レジストリに存在する必要がある。
+
+    CapacityPreviewRequest:
+      allOf:
+        - $ref: "#/components/schemas/ProgramSearchRequest"
+        - type: object
+          properties:
+            ruleId:
+              type: integer
+              format: int64
+              minimum: 1
+              description: 既存ルールを編集する場合の ID。省略時は新規ルールとして扱う。
 
     ProgramSearchMatch:
       type: object

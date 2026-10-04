@@ -5,22 +5,61 @@ import { programTitle } from '@/lib/program-labels'
 import { parseRuleId } from '@/lib/recording-search'
 import { parseEnum } from '@/lib/url-search'
 
+export type ReservationVerdict =
+  | { kind: 'not-recorded' }
+  | { kind: 'skip-duplicate' }
+  | { kind: 'skip-excluded' }
+  | { kind: 'scheduled-shortfall'; overages: CapacityOverage[] }
+  | { kind: 'scheduled' }
+
 /**
- * stateLabels は reservations.state の表示名（docs/schema.md §3）。
+ * reservationVerdict は予約について画面が伝える結論を一つ決める。
  *
- * 一覧（`pages/reservations.tsx`）と詳細（`pages/reservation-detail.tsx`）の
- * 両方が使う --- 同じ状態が画面によって違う表記（生の enum 値など）で出ると
- * 利用者が混乱するので、ここに定義を集約する（issue #300）。
+ * 優先順は「録画されなかった → skip の理由 → 自 site の容量不足区間 → 録画予定」。
+ * `orphaned` は schedule が一度も観測されず録画試行も無かった意味なので、
+ * skip が同時に立っていても「録画されず」が先になる。skip は需要にならないため、
+ * skip と容量不足区間が重なっても容量不足の修飾を付けない。
  *
- * `pages/*.tsx` に置かず独立したファイルにするのは、ページコンポーネントの
- * ファイルが値と（React Fast Refresh が要求する）コンポーネントのみの export
- * を混在させないため（`lib/recording-search.ts` の `statusLabels` /
- * `sourceLabels` と同じ手）。
+ * 容量をまだ取得できていない場合は `overages` を省略する。予定という結論だけを
+ * 伝え、不足を主張しない（沈黙は録画可能の保証ではない）。
  */
-export const stateLabels: Record<Reservation['state'], string> = {
-  active: '有効',
-  detached: 'ルール外',
-  orphaned: 'EPG から消失',
+export function reservationVerdict(
+  reservation: Reservation,
+  overages?: readonly CapacityOverage[],
+): ReservationVerdict {
+  if (reservation.state === 'orphaned') return { kind: 'not-recorded' }
+  if (reservation.skip) {
+    return reservation.dedupMatchRecordingId === undefined
+      ? { kind: 'skip-excluded' }
+      : { kind: 'skip-duplicate' }
+  }
+
+  if (overages === undefined) return { kind: 'scheduled' }
+  const startMs = Date.parse(reservation.startAt)
+  const intersecting = intersectingOverages(
+    overages,
+    reservation.site,
+    startMs,
+    startMs + reservation.durationMs,
+  )
+  return intersecting.length > 0
+    ? { kind: 'scheduled-shortfall', overages: intersecting }
+    : { kind: 'scheduled' }
+}
+
+/** reservationVerdictLabel は行の accessible name に含める結論の語。 */
+export function reservationVerdictLabel(verdict: ReservationVerdict): string {
+  switch (verdict.kind) {
+    case 'not-recorded':
+      return '録画されず'
+    case 'skip-duplicate':
+      return '録画しない（重複）'
+    case 'skip-excluded':
+      return '録画しない（除外）'
+    case 'scheduled-shortfall':
+    case 'scheduled':
+      return '録画予定'
+  }
 }
 
 /** ReservationsPageSearch は `/reservations` の URL クエリパラメータ。 */
@@ -43,21 +82,13 @@ export function parseReservationsSearch(
   }
 }
 
-/** reservationNeedsAttention は予約が非 active または容量不足区間と交差するか判定する。 */
+/** reservationNeedsAttention は結論が「録画されず」または容量不足の予約か判定する。 */
 export function reservationNeedsAttention(
   reservation: Reservation,
   overages: readonly CapacityOverage[],
 ): boolean {
-  const startMs = new Date(reservation.startAt).getTime()
-  return (
-    reservation.state !== 'active' ||
-    intersectingOverages(
-      overages,
-      reservation.site,
-      startMs,
-      startMs + reservation.durationMs,
-    ).length > 0
-  )
+  const verdict = reservationVerdict(reservation, overages)
+  return verdict.kind === 'not-recorded' || verdict.kind === 'scheduled-shortfall'
 }
 
 /**
@@ -65,7 +96,7 @@ export function reservationNeedsAttention(
  *
  * 行本体のリンクは子要素を持たない絶対配置なので、children から組めない
  * accessible name を明示する。採否は行を一意に識別できる情報（タイトル・局・
- * 日時・尺・state）だけにする。毎日放送の番組は時刻だけでは同名の行が並ぶ。
+ * 日時・尺・結論）だけにする。毎日放送の番組は時刻だけでは同名の行が並ぶ。
  * 見た目の行は日付見出しの下にあるので日付を省くが、名前には日付を残す。
  * 出自や容量バッジの文言は混ぜない。
  */
@@ -75,7 +106,7 @@ export function reservationRowLabel(reservation: Reservation): string {
     reservation.serviceName,
     formatDateTime(reservation.startAt),
     formatDuration(reservation.durationMs),
-    reservation.state === 'active' ? null : stateLabels[reservation.state],
+    reservationVerdictLabel(reservationVerdict(reservation)),
   ]
     // 空文字も落とす（`serviceName` は API required でも空文字を禁じていない）。
     .filter((part): part is string => part !== null && part !== '')

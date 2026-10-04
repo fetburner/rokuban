@@ -1301,7 +1301,7 @@ if ((await targetBoundary.count()) !== 1) {
     ng.push('#1019: filmstrip境界を押しても選択状態にならない')
   }
   await shotBoth('selected')
-  const save = page.getByRole('button', { name: '保存', exact: true })
+  const save = page.getByRole('button', { name: /^(保存|このまま確認)$/ })
   const track = page.locator('[data-testid="chapter-filmstrip-track"]')
   const trackBox = await track.boundingBox()
   const boundaryBox = await targetBoundary.boundingBox()
@@ -1311,20 +1311,31 @@ if ((await targetBoundary.count()) !== 1) {
     const rangeStart = Number(await track.getAttribute('data-visible-start-seconds'))
     const rangeEnd = Number(await track.getAttribute('data-visible-end-seconds'))
     const deltaX = (4 / (rangeEnd - rangeStart)) * trackBox.width
+    const cutRange = page.locator('[data-testid="chapter-filmstrip-cut-range"]').first()
+    const cutRangeBefore = await cutRange.getAttribute('style')
     const originalCenterX = boundaryBox.x + boundaryBox.width / 2
     const centerY = boundaryBox.y + boundaryBox.height / 2
     await page.mouse.move(originalCenterX, centerY)
     await page.mouse.down()
     await page.mouse.move(originalCenterX + deltaX, centerY, { steps: 3 })
     const previewBoundary = await page.locator('[data-testid="chapter-filmstrip-boundary"][aria-pressed="true"]').getAttribute('data-time-ms')
-    if (Number(previewBoundary) <= 30_000 || await save.isEnabled()) {
+    const previewCutRange = await cutRange.getAttribute('style')
+    const previewStatus = await editHeader.textContent()
+    if (Number(previewBoundary) <= 30_000 || previewStatus?.includes('未保存の変更があります')) {
       ng.push(`#1019: drag中にpreviewだけが動き、未releaseのdraft/保存は変わらない（preview=${previewBoundary}）`)
+    }
+    if (previewCutRange === cutRangeBefore) {
+      ng.push('#1121: drag中の cut 区間がプレビュー形状へ更新されない')
     }
     await page.mouse.up()
     const movedBoundary = page.locator('[data-testid="chapter-filmstrip-boundary"][aria-pressed="true"]')
     const committedBoundary = await movedBoundary.getAttribute('data-time-ms')
+    const committedCutRange = await page.locator('[data-testid="chapter-filmstrip-cut-range"]').first().getAttribute('style')
     if (committedBoundary !== previewBoundary) {
       ng.push(`#1019: pointer release がpreviewの境界を下書きへ commit しない（preview=${previewBoundary}, committed=${committedBoundary}）`)
+    }
+    if (committedCutRange !== previewCutRange) {
+      ng.push(`#1121: drag中の cut 区間と離した後の形が違う（preview=${previewCutRange}, committed=${committedCutRange}）`)
     }
     const movedBox = await movedBoundary.boundingBox()
     const latestTrackBox = await track.boundingBox()
@@ -1342,8 +1353,47 @@ if ((await targetBoundary.count()) !== 1) {
       await page.mouse.up()
       await page.waitForTimeout(100)
       const restoredBoundary = await page.locator('[data-testid="chapter-filmstrip-boundary"][aria-pressed="true"]').getAttribute('data-time-ms')
-      log(`  drag ${previewBoundary} preview → ${committedBoundary} released → ${restorePreview} reverse preview → ${restoredBoundary} restored; Save disabled=${await save.isDisabled()}`)
-      if (await save.isEnabled()) ng.push('#1019: coarse dragを元の境界に戻してもdirtyが解除されない')
+      const restoredStatus = await editHeader.textContent()
+      log(`  drag ${previewBoundary} preview → ${committedBoundary} released → ${restorePreview} reverse preview → ${restoredBoundary} restored; dirty=${restoredStatus?.includes('未保存の変更があります')}`)
+      if (restoredStatus?.includes('未保存の変更があります')) ng.push('#1019: coarse dragを元の境界に戻してもdirtyが解除されない')
+    }
+  }
+  // #1121: 他の区間に重ねる。CM [30,40] の終端を OP [60,70] の内側 65 秒へ運ぶと、cut が優先して OP は [65,70] に削られる。
+  // ドラッグ中のプレビューと離した後の cut 帯・境界の集合が一致することを判定する。
+  {
+    await page.getByRole('button', { name: '全体', exact: true }).click()
+    const overlapShape = () => page.evaluate(() => ({
+      cuts: [...document.querySelectorAll('[data-testid="chapter-filmstrip-cut-range"]')].map((el) => el.getAttribute('style')),
+      times: [...document.querySelectorAll('[data-testid="chapter-filmstrip-boundary"]')].map((el) => el.getAttribute('data-time-ms')).sort(),
+    }))
+    const cmEnd = page.locator('[data-testid="chapter-filmstrip-boundary"][data-time-ms="40000"]')
+    const overlapTrack = await track.boundingBox()
+    const cmEndBox = await cmEnd.boundingBox()
+    const start = Number(await track.getAttribute('data-visible-start-seconds'))
+    const end = Number(await track.getAttribute('data-visible-end-seconds'))
+    if (!overlapTrack || !cmEndBox || start > 40 || end < 70) {
+      ng.push(`#1121: 重ねるドラッグの前提（40 秒境界・表示範囲 ${start}-${end}）が整わない`)
+    } else {
+      const y = cmEndBox.y + cmEndBox.height / 2
+      await page.mouse.move(cmEndBox.x + cmEndBox.width / 2, y)
+      await page.mouse.down()
+      await page.mouse.move(overlapTrack.x + ((65 - start) / (end - start)) * overlapTrack.width, y, { steps: 5 })
+      const overlapPreview = await overlapShape()
+      await page.mouse.up()
+      const overlapCommitted = await overlapShape()
+      log(`  overlap drag: preview=${JSON.stringify(overlapPreview)} committed=${JSON.stringify(overlapCommitted)}`)
+      if (JSON.stringify(overlapPreview) !== JSON.stringify(overlapCommitted)) {
+        ng.push(`#1121: 重ねるドラッグ中の形と離した後の形が違う（preview=${JSON.stringify(overlapPreview)}, committed=${JSON.stringify(overlapCommitted)}）`)
+      }
+      const t = overlapCommitted.times.map(Number)
+      if (overlapPreview.cuts.length !== 1 || !t.some((ms) => Math.abs(ms - 65_000) < 40) || t.includes(60_000) || t.includes(40_000)) {
+        ng.push(`#1121: cut が OP を [65,70] へ削る形になっていない（${JSON.stringify(overlapCommitted)}）`)
+      }
+      await page.getByRole('button', { name: '元に戻す', exact: true }).click()
+      const afterUndo = await overlapShape()
+      if (!afterUndo.times.includes('40000') || !afterUndo.times.includes('60000')) {
+        ng.push(`#1121: 重ねたドラッグを元に戻しても境界が戻らない（${JSON.stringify(afterUndo)}）`)
+      }
     }
   }
   const nudge = page.getByRole('button', { name: '選択中の境界を 1 フレーム進める', exact: true })

@@ -8,10 +8,14 @@ import {
   chapterBoundaryMsToSeekSeconds,
   chapterBoundaries,
   chapterJumpTarget,
+  chapterSpanIndexesAtBoundary,
   displayedFrameBoundaryMs,
   formatChaptersTime,
   loadChapterSkip,
+  moveChapterBoundary,
+  nearestChapterBoundary,
   nudgeBoundary,
+  normalizeChapterDraft,
   playbackSecondsToChapterBoundaryMs,
   saveChapterSkip,
   skipTarget,
@@ -97,6 +101,88 @@ describe('nudgeBoundary', () => {
     const spans = [cm(10_000, 20_000)]
     // 10000ms + 33.3667ms = 10033.37ms → round で 10033。
     expect(nudgeBoundary(spans, 10, FRAME_SECONDS)[0].startMs).toBe(10_033)
+  })
+})
+
+describe('normalizeChapterDraft', () => {
+  it('重なった cut 同士を同じラベルの区間へまとめる', () => {
+    expect(normalizeChapterDraft([
+      cm(10_000, 25_000),
+      cm(20_000, 30_000),
+    ], [1])).toEqual([cm(10_000, 30_000)])
+  })
+
+  it('cut 同士は同じラベルなら接してもまとめ、ラベルが違えば境界を残す', () => {
+    expect(normalizeChapterDraft([cm(10_000, 20_000), cm(20_000, 30_000)])).toEqual([
+      cm(10_000, 30_000),
+    ])
+    expect(normalizeChapterDraft([
+      cm(10_000, 20_000),
+      { ...cm(20_000, 30_000), label: '提供' },
+    ])).toEqual([cm(10_000, 20_000), { ...cm(20_000, 30_000), label: '提供' }])
+  })
+
+  it('cut が非 cut 区間の内側にあると、非 cut を両側に分けてラベルを残す', () => {
+    const opening: ChapterSpan = { startMs: 0, endMs: 30_000, label: 'OP', cut: false }
+    expect(normalizeChapterDraft([opening, cm(10_000, 20_000)], [1])).toEqual([
+      { ...opening, endMs: 10_000 },
+      cm(10_000, 20_000),
+      { ...opening, startMs: 20_000 },
+    ])
+  })
+
+  it('cut が非 cut 区間を覆うと非 cut 区間を取り除く', () => {
+    const opening: ChapterSpan = { startMs: 10_000, endMs: 20_000, label: 'OP', cut: false }
+    expect(normalizeChapterDraft([opening, cm(0, 30_000)], [1])).toEqual([cm(0, 30_000)])
+  })
+
+  it('ラベルが違う cut 同士は操作した区間を残して、相手の重なりを削る', () => {
+    expect(normalizeChapterDraft([
+      cm(0, 15_000),
+      { ...cm(10_000, 20_000), label: '提供' },
+    ], [1])).toEqual([
+      cm(0, 10_000),
+      { ...cm(10_000, 20_000), label: '提供' },
+    ])
+  })
+
+  it('共有境界を操作した区間の index を両側から返す', () => {
+    expect(chapterSpanIndexesAtBoundary([cm(10_000, 20_000), cm(20_000, 30_000)], 20)).toEqual([0, 1])
+  })
+
+  it('切り取りで残る 1 フレーム未満の断片は捨て、1 フレーム以上は残す', () => {
+    const opening: ChapterSpan = { startMs: 0, endMs: 10_005, label: 'OP', cut: false }
+    expect(normalizeChapterDraft([opening, cm(5, 10_000)], [1])).toEqual([cm(5, 10_000)])
+    expect(normalizeChapterDraft([{ ...opening, endMs: 10_034 }, cm(0, 10_000)], [1])).toEqual([
+      cm(0, 10_000),
+      { ...opening, startMs: 10_000, endMs: 10_034 },
+    ])
+  })
+
+  it('利用者が元から持つ 1 フレーム未満の区間は落とさない', () => {
+    expect(normalizeChapterDraft([cm(100, 105)])).toEqual([cm(100, 105)])
+  })
+})
+
+describe('moveChapterBoundary', () => {
+  it('動かした先の境界を返す', () => {
+    const moved = moveChapterBoundary([cm(10_000, 20_000)], 10, 1)
+    expect(moved.spans).toEqual([cm(11_000, 20_000)])
+    expect(moved.boundary).toBe(11)
+  })
+
+  it('合併で境界が消えたら残った最寄りの境界を返し、結果は再正規化しても変わらない', () => {
+    const moved = moveChapterBoundary([cm(10_000, 20_000), cm(20_020, 35_000)], 20, 0.033)
+    expect(moved.spans).toEqual([cm(10_000, 35_000)])
+    expect(moved.boundary).toBe(10)
+    expect(normalizeChapterDraft(moved.spans)).toEqual(moved.spans)
+  })
+})
+
+describe('nearestChapterBoundary', () => {
+  it('最寄りを返し、空なら null', () => {
+    expect(nearestChapterBoundary([1, 5, 9], 6)).toBe(5)
+    expect(nearestChapterBoundary([], 6)).toBeNull()
   })
 })
 
