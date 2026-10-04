@@ -56,7 +56,7 @@ function fixtures(multipleSites) {
     reservation({ id: 1, day: 2, hour: 18, title: '金曜アニメ 第1話', series: '金曜アニメ', skip: true, dedupMatchRecordingId: 71 }),
     reservation({ id: 2, day: 2, hour: 20, title: '金曜アニメ 第2話', series: '金曜アニメ' }),
     reservation({ id: 3, day: 3, hour: 20, title: '金曜アニメ 第3話', series: '金曜アニメ', state: 'detached' }),
-    reservation({ id: 4, day: 4, hour: 21, title: 'ひとり予約', series: 'まだ録画なし', source: 'manual', ruleId: undefined }),
+    reservation({ id: 4, day: 4, hour: 21, title: 'ひとり予約', series: '録画の無いシリーズ', source: 'manual', ruleId: undefined }),
     reservation({ id: 5, day: 5, hour: 22, title: 'EPG から消えた番組', series: null, state: 'orphaned', source: 'manual', ruleId: undefined }),
     reservation({ id: 6, day: 6, hour: 23, title: '要確認外の番組', series: '別のシリーズ', source: 'manual', ruleId: undefined }),
     reservation({ id: 8, day: 7, hour: 18, title: '視聴済みシリーズ 最終話', series: '視聴済みシリーズ', source: 'manual', ruleId: undefined }),
@@ -195,8 +195,22 @@ async function checkPage(browser, width, theme, multipleSites, saveShot) {
   if (!(await seriesRow.getByText(expectedCount, { exact: true }).count())) {
     ng.push(`${label}: 絞り込み前の予約件数が不正 (${expectedCount})`)
   }
-  if (!(await page.getByText('まだ録画なし', { exact: true }).count())) {
-    ng.push(`${label}: 録画棚が無いシリーズの説明が無い`)
+  // 空箱の文言は、棚の無いシリーズの行の中で数える（シリーズ名と同じ文字列にしない）。
+  // デスクトップ幅は破線の空枠、モバイル幅はメタ行の文言だけが見える。
+  const noShelfRow = page.locator('[data-testid="reservation-series-row"][data-series-value="録画の無いシリーズ"]')
+  const emptyBox = noShelfRow.getByTestId('reservation-recording-shelf-empty')
+  const visibleEmptyText = noShelfRow.getByText('まだ録画なし', { exact: true }).locator('visible=true')
+  if ((await visibleEmptyText.count()) !== 1) {
+    ng.push(`${label}: 録画棚が無いシリーズの「まだ録画なし」が 1 つ見えていない`)
+  }
+  if (width >= 1024 && !(await emptyBox.getByText('まだ録画なし', { exact: true }).isVisible())) {
+    ng.push(`${label}: デスクトップ幅の空箱に「まだ録画なし」が無い`)
+  }
+  if ((await emptyBox.isVisible()) !== (width >= 1024)) {
+    ng.push(`${label}: 空箱の表示がデスクトップ幅だけになっていない`)
+  }
+  if (await noShelfRow.getByRole('link', { name: /番組ハブ/ }).count()) {
+    ng.push(`${label}: 録画の無いシリーズが番組ハブへリンクしている`)
   }
   if (await page.getByText(/99 本|未視聴 99/).count()) {
     ng.push(`${label}: value=null の棚が null series へ誤って結合された`)
@@ -207,6 +221,13 @@ async function checkPage(browser, width, theme, multipleSites, saveShot) {
   }
 
   const expand = seriesRow.getByRole('button', { name: /金曜アニメ/ })
+  // 開閉できる行の右端は ∨、遷移する行は ›。形で見分けられること。
+  if (!(await seriesRow.locator('svg.lucide-chevron-down').count()) || await seriesRow.locator('svg.lucide-chevron-right').count()) {
+    ng.push(`${label}: 開閉できる行の右端の印が ∨ でない（遷移の › と区別できない）`)
+  }
+  if (!(await noShelfRow.locator('svg.lucide-chevron-right').count()) || await noShelfRow.locator('svg.lucide-chevron-down').count()) {
+    ng.push(`${label}: 1 本だけの行の右端の印が › でない`)
+  }
   const target = await expand.boundingBox()
   if (!target || target.width < 44 || target.height < 44) {
     ng.push(`${label}: シリーズ行の主操作が 44x44px 未満 (${JSON.stringify(target)})`)
@@ -242,40 +263,50 @@ async function checkPage(browser, width, theme, multipleSites, saveShot) {
 
   if (saveShot) await screenshot(page, `${width}-series-${multipleSites ? 'multi' : 'single'}-${theme}.png`)
 
-  await hub.click()
-  await page.waitForURL(/\/recordings\/701\/series/, { timeout: 3000 }).catch(() => {
-    ng.push(`${label}: 番組ハブへのリンクが行本体から分離されていない`)
-  })
-  await page.goBack()
-  await seriesRow.waitFor({ timeout: 3000 }).catch(() => ng.push(`${label}: 予約一覧へ戻れない`))
-  if (await capacity.count()) {
-    await capacity.click()
-    await page.waitForURL(/\/programs\?/, { timeout: 3000 }).catch(() => {
-      ng.push(`${label}: 容量不足バッジから番組表へ移れない`)
-    })
-    const capacitySearch = new URL(page.url()).searchParams
-    if (capacitySearch.get('view') !== 'grid' || !capacitySearch.has('at')) {
-      ng.push(`${label}: 容量不足バッジの番組表宛先に grid/at が無い`)
+  // 手前に出ていない要素は Playwright の click が既定 30 秒待って例外で落ちる。
+  // 文言まで辿り着くよう短い timeout で NG に変え、遷移できなかったときは戻らない
+  // （戻ると一覧ごと離れてしまう）。
+  const followAndReturn = async (locator, pattern, failure, inspect) => {
+    const clicked = await locator.click({ timeout: 2000 }).then(() => true, () => false)
+    const arrived = clicked && (await page.waitForURL(pattern, { timeout: 3000 }).then(() => true, () => false))
+    if (!arrived) {
+      ng.push(`${label}: ${failure}`)
+      return
     }
+    inspect?.()
     await page.goBack()
     await seriesRow.waitFor({ timeout: 3000 }).catch(() => ng.push(`${label}: 予約一覧へ戻れない`))
   }
-  const returnedOrigin = page.getByRole('link', { name: 'ルール「金曜アニメ」' }).first()
-  await returnedOrigin.click()
-  await page.waitForURL(/\/search\?ruleId=8/, { timeout: 3000 }).catch(() => {
-    ng.push(`${label}: 出自リンクが行本体から分離されていない`)
-  })
-  await page.goBack()
-  await seriesRow.waitFor({ timeout: 3000 }).catch(() => ng.push(`${label}: 予約一覧へ戻れない`))
+  await followAndReturn(hub, /\/recordings\/701\/series/, '番組ハブへのリンクが行本体から分離されていない')
+  if (await capacity.count()) {
+    await followAndReturn(capacity, /\/programs\?/, '容量不足バッジから番組表へ移れない', () => {
+      const capacitySearch = new URL(page.url()).searchParams
+      if (capacitySearch.get('view') !== 'grid' || !capacitySearch.has('at')) {
+        ng.push(`${label}: 容量不足バッジの番組表宛先に grid/at が無い`)
+      }
+    })
+  }
+  await followAndReturn(
+    page.getByRole('link', { name: 'ルール「金曜アニメ」' }).first(),
+    /\/search\?ruleId=8/,
+    '出自リンクが行本体から分離されていない',
+  )
 
-  // 伸びる行の見出しが sticky page header に隠れない位置まで動かしてから開く。
+  // 見出しをページヘッダーの下へ 24px だけ潜らせてから開く（行の下側はまだ見えている）。
+  // 開いた後に見出しがヘッダーの下へ戻らなければ、何を開いたか見失う。
+  // 本文が短いとスクロールできないので、下に余白を足して必ず動けるようにする。
+  // click() は Playwright が自分でスクロールし直すので、要素の click を直接呼ぶ。
+  await page.evaluate(() => { document.body.style.paddingBottom = '2000px' })
   await title.evaluate((el) => {
     const header = document.querySelector('header')
-    const offset = header?.getBoundingClientRect().height ?? 0
-    window.scrollTo(0, window.scrollY + el.getBoundingClientRect().top - offset + 2)
+    const offset = header?.getBoundingClientRect().bottom ?? 0
+    window.scrollTo(0, window.scrollY + el.getBoundingClientRect().top - offset + 24)
   })
   await page.waitForTimeout(80)
-  await expand.click()
+  const hiddenTop = await title.evaluate((el) => el.getBoundingClientRect().top)
+  const hiddenHeaderBottom = await page.locator('header').evaluate((el) => el.getBoundingClientRect().bottom)
+  if (hiddenTop >= hiddenHeaderBottom) ng.push(`${label}: 前提を作れない（見出しがヘッダーの下に潜っていない）`)
+  await expand.evaluate((el) => el.click())
   const episodeList = seriesRow.locator('ul[aria-label="金曜アニメの予約"]')
   await episodeList.waitFor({ timeout: 3000 }).catch(() => {
     ng.push(`${label}: 展開した各回の詳細が無い`)
