@@ -250,13 +250,18 @@ async function checkPage(browser, width, theme, multipleSites, saveShot) {
   }
   const capacity = seriesRow.getByRole('link', { name: /該当する予約 1 件/ })
 
-  const hitTarget = async (locator) => locator.evaluate((el) => {
+  const hitTarget = async (locator, xRatio = 0.5, yRatio = 0.5) => locator.evaluate((el, point) => {
     const rect = el.getBoundingClientRect()
-    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
+    const hit = document.elementFromPoint(
+      rect.left + rect.width * point.xRatio,
+      rect.top + rect.height * point.yRatio,
+    )
     return hit !== null && (hit === el || el.contains(hit))
-  })
+  }, { xRatio, yRatio })
   if (!(await hitTarget(hub))) ng.push(`${label}: 番組ハブの hit-test を行本体が奪っている`)
-  if (!(await hitTarget(expand))) ng.push(`${label}: 開閉ボタンの hit-test を別の要素が奪っている（行本体を押しても開閉しない）`)
+  // 開閉ボタンは行全体に広がるが、中央は別リンク（容量や番組ハブ）が意図的に
+  // 前面にある場合がある。左側の余白でボタン自身が hit target になることを確かめる。
+  if (!(await hitTarget(expand, 0.005))) ng.push(`${label}: 開閉ボタンの hit-test を別の要素が奪っている（行本体を押しても開閉しない）`)
   if (!(await hitTarget(origin))) ng.push(`${label}: 出自リンクの hit-test を行本体が奪っている`)
   if ((await capacity.count()) && !(await hitTarget(capacity))) {
     ng.push(`${label}: 容量不足バッジの hit-test を行本体が奪っている`)
