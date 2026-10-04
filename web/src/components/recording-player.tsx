@@ -201,7 +201,11 @@ export function RecordingPlayer({
   const keepRangesKey = JSON.stringify(selectedAsset?.keepRanges ?? [])
   const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
   const videoRef = useRef<HTMLVideoElement>(null)
-  const getDisplayedFrameSeconds = useDisplayedFrameSeconds(videoRef, chapterEditing)
+  const getDisplayedFrameSeconds = useDisplayedFrameSeconds(
+    videoRef,
+    chapterEditing,
+    `${recordingId}:${selectedProfile}:${keepRangesKey}`,
+  )
   const frameRef = useRef<HTMLDivElement>(null)
   const [editorSelected, setEditorSelected] = useState<number | null>(null)
   const localChapterEditorCommandsRef = useRef<ChapterEditorCommands | null>(null)

@@ -5,12 +5,14 @@ import { useCallback, useEffect, useRef, type RefObject } from 'react'
  *
  * `requestVideoFrameCallback` が使えるときだけ、`enabled` の間だけ追う。`seeking` で捨てる
  * （シーク直後の表示フレームは通知が来るまで分からない）。使えない環境では常に null。
+ * `videoKey` は `<video>` 要素が作り直される単位（画質切替など）。変わったら新しい要素へ張り直す。
  * 原本 HLS では `mediaTime` はセッション内時刻なので、使う側がセッション起点を足す
  * （現状の呼び出し元は encoded MP4 の `RecordingPlayer` だけで、起点は 0）。
  */
 export function useDisplayedFrameSeconds(
   videoRef: RefObject<HTMLVideoElement | null>,
   enabled: boolean,
+  videoKey: unknown,
 ): () => number | null {
   const mediaTimeRef = useRef<number | null>(null)
   useEffect(() => {
@@ -31,6 +33,6 @@ export function useDisplayedFrameSeconds(
       video.removeEventListener('seeking', onSeeking)
       mediaTimeRef.current = null
     }
-  }, [videoRef, enabled])
+  }, [videoRef, enabled, videoKey])
   return useCallback(() => mediaTimeRef.current, [])
 }

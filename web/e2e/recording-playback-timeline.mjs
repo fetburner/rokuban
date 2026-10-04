@@ -352,8 +352,8 @@ async function seekThroughChapterCards(page) {
 }
 
 // 目印のフレームが表示された瞬間（requestVideoFrameCallback）に一時停止し、「再生位置に合わせる」を
-// 押して保存した PUT の ms が、そのフレームの境界になることを見る。行 j の開始境界を目印 j+1 へ
-// 合わせる（i を大きい方から回し、1 つの下書きに積む。選ぶ境界の値が他の行と重ならない順）。
+// 押して保存した PUT の ms が、そのフレームの境界になることを見る。行 j の終了境界を目印 j+1 へ
+// 合わせる（i を大きい方から回し、1 つの下書きに積む。区間は [目印 j, 目印 j+1] の正当な形）。
 // 再生して目印を捉える判定とは別の周回で行う（混ぜると WebKit でタイムアウトした）。
 async function alignBoundariesToPausedFrames(page) {
   log('\n=== 非カット MP4: 現在位置に合わせる ===')
@@ -367,7 +367,7 @@ async function alignBoundariesToPausedFrames(page) {
       await page.locator('video').evaluate((video, seconds) => {
         video.pause()
         video.currentTime = seconds
-      }, expectedStarts[j] / 1000 - 0.5)
+      }, expectedStarts[j] / 1000 + 0.5)
       await page.waitForFunction(() => !document.querySelector('video')?.seeking, undefined, { timeout: 5000 })
       await rows.nth(j).locator('button').first().click()
       const paused = await page.locator('video').evaluate((video, [seconds, slot]) => new Promise((resolve) => {
@@ -415,9 +415,9 @@ async function alignBoundariesToPausedFrames(page) {
     // encoded の表示順の番号 k（目印 PTS ÷ 1 フレーム）。フィクスチャの原本 frame 番号とは音ずれ補正ぶん違う。
     const k = Math.round(target.expectedSeconds * 30_000 / 1_001)
     const want = Math.round(k * 1001 / 30)
-    const got = spans[j]?.startMs
-    log(`  span ${j + 1}: PUT startMs=${got} want=${want} (k=${k})`)
-    if (got !== want) ng.push(`現在位置に合わせる: span ${j + 1} の PUT startMs が目印 frame ${target.frame} の境界ではない (got=${got}, want=${want})`)
+    const got = spans[j]?.endMs
+    log(`  span ${j + 1}: PUT endMs=${got} want=${want} (k=${k})`)
+    if (got !== want) ng.push(`現在位置に合わせる: span ${j + 1} の PUT endMs が目印 frame ${target.frame} の境界ではない (got=${got}, want=${want})`)
   }
 }
 
