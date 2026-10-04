@@ -20,9 +20,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/testutil"
-	"github.com/go-chi/chi/v5"
 )
 
 type fakeChaseRecordClient struct {
