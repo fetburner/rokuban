@@ -384,7 +384,8 @@ const recordings = [
   // （`encodedAssets` を見るため）ので両方持たせる。
   { id: 12, site: SITE, source: 'manual', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', channel: 'BS15_0', networkId: 4, serviceId: 101, eventId: 12, title: 'クラシック音楽館', description: '番組の内容を補う説明です。画面幅が 360px のときも本文を読みやすい文字サイズで折り返し、詳細欄が横にはみ出さないことを確認するための文章です。', series: '音楽館', seriesKey: 'クラシック音楽館', startAt: iso(nowMs - 26 * HOUR), durationMs: 5_400_000, status: 'finished', keepOriginal: 'always', cmDetection: { state: 'disabled' }, sizeBytes: 8_123_456_789, createdAt: iso(nowMs - 26 * HOUR), dropSummary: { packets: 1_500_000, drops: 12, errors: 0, scrambled: 3 }, encodedAssets: [{ profile: 'hevc-1080p', sizeBytes: 2_345_678_901 }] },
   { id: 13, site: SITE, source: 'rule', serviceName: 'テレビ大阪', channelType: 'GR', channel: '18', networkId: 32738, serviceId: 1040, eventId: 13, title: 'アニメ劇場', startAt: iso(nowMs - 50 * HOUR), durationMs: 1_800_000, status: 'failed', keepOriginal: 'always', cmDetection: { state: 'disabled' }, createdAt: iso(nowMs - 50 * HOUR) },
-  { id: 14, site: SITE, source: 'rule', serviceName: 'NHKEテレ', channelType: 'GR', channel: '26', networkId: 32737, serviceId: 1032, eventId: 14, title: '連続テレビ小説', startAt: iso(nowMs - 74 * HOUR), durationMs: 900_000, status: 'finished', keepOriginal: 'always', cmDetection: { state: 'disabled' }, sizeBytes: 1_234_567_890, createdAt: iso(nowMs - 74 * HOUR) },
+  // 原本・エンコード資産のない録画。結論の「準備中」バッジのコントラスト測定に使う。
+  { id: 14, site: SITE, source: 'rule', serviceName: 'NHKEテレ', channelType: 'GR', channel: '26', networkId: 32737, serviceId: 1032, eventId: 14, title: '連続テレビ小説', startAt: iso(nowMs - 74 * HOUR), durationMs: 900_000, status: 'finished', keepOriginal: 'always', cmDetection: { state: 'disabled' }, sizeBytes: undefined, ingest: { state: 'pending' }, createdAt: iso(nowMs - 74 * HOUR) },
 ]
 
 /** ホーム「見る」側の帯と「次に見る 1 本」専用の再開位置フィクスチャ。 */
@@ -453,6 +454,7 @@ const recordingDetailScenarios = {
   },
   'encode-waiting': {
     ...recordings[1],
+    sizeBytes: undefined,
     encodedAssets: [],
     encodeProfiles: ['hevc-1080p'],
     encodeStatus: [{ profile: 'hevc-1080p', state: 'running' }],
@@ -2423,6 +2425,16 @@ for (const scenario of ['completed', 'recording', 'encode-waiting', 'trash']) {
           `(top=${pageHeadingTop ?? '取得不能'})`,
       )
     }
+    const titleRow = page.locator('[data-testid="recording-title-row"]')
+    if ((await titleRow.getByText('完了', { exact: true }).count()) > 0) {
+      ng.push(`recording-detail/${scenario}/${viewport.name}: 見出しに完了バッジが残っている`)
+    }
+    if (scenario === 'encode-waiting' && (await titleRow.getByText('準備中', { exact: true }).count()) === 0) {
+      ng.push(`recording-detail/${viewport.name}: エンコード待ちの録画に準備中が出ない`)
+    }
+    if (scenario === 'trash' && (await titleRow.getByText('再生不可', { exact: true }).count()) > 0) {
+      ng.push(`recording-detail/trash/${viewport.name}: ごみ箱の見出しに結論バッジがある`)
+    }
     await page.screenshot({
       path: file,
       type: 'jpeg',
@@ -2431,6 +2443,40 @@ for (const scenario of ['completed', 'recording', 'encode-waiting', 'trash']) {
     })
     log(`  ${path.basename(file)}`)
     await checkMissingStrings(page, `recording-detail/${scenario}/${viewport.name}`)
+    await context.close()
+  }
+}
+
+// Issue #1112: desktop / 360px のリスト・カードと録画詳細で結論の表示を確認する。
+log('\n=== 録画結論: desktop / 360px、list / card ===')
+for (const viewport of [desktop, mobile]) {
+  for (const recordingView of ['list', 'card']) {
+    const { context, page } = await open(viewport, 'light', screenOf('recordings'), {
+      recordingView,
+      pointer: viewport === mobile ? 'coarse' : 'fine',
+    })
+    const row = page
+      .locator('main li')
+      .filter({ has: page.getByText('連続テレビ小説', { exact: true }) })
+      .first()
+    const rowReady = await row.waitFor({ timeout: 10000 }).then(() => true).catch(() => false)
+    if (!rowReady) {
+      ng.push(`recordings/${viewport.name}/${recordingView}: 対象の録画行が無い`)
+    } else {
+      if ((await row.getByText('準備中', { exact: true }).count()) === 0) {
+        ng.push(`recordings/${viewport.name}/${recordingView}: 取り込み中の録画に準備中が出ない`)
+      }
+      if ((await row.getByText('完了', { exact: true }).count()) > 0) {
+        ng.push(`recordings/${viewport.name}/${recordingView}: 視聴状態に完了バッジがある`)
+      }
+    }
+    const documentWidth = await page.evaluate(() => document.documentElement.scrollWidth)
+    if (documentWidth > viewport.width) {
+      ng.push(`recordings/${viewport.name}/${recordingView}: 横はみ出し ${documentWidth}px`)
+    }
+    const file = path.join(OUT_DIR, `recording-verdict-${viewport.name}-${recordingView}.png`)
+    await page.screenshot({ path: file, fullPage: true })
+    log(`  ${path.basename(file)}`)
     await context.close()
   }
 }
@@ -3459,7 +3505,7 @@ for (const theme of themes) {
     }
 
     // 失敗バッジは destructive の「文字 + 淡い地」のまま
-    const failed = page.locator('ul span', { hasText: /^失敗$/ })
+    const failed = page.locator('ul span', { hasText: /^録画失敗$/ })
     const failedBg = await computedOf(failed, 'background-color')
     const failedFg = await computedOf(failed, 'color')
     if (failedFg === null || failedBg === null) {
@@ -3480,22 +3526,19 @@ for (const theme of themes) {
       )
     }
 
-    // 完了バッジ（issue #308）。`bg-muted` + `text-muted-foreground` だと
-    // ライトで 4.5 を割ったため、文字色を `text-foreground` に直した
-    // （docs/frontend/design.md 参照）。ここは色の判定（isRed 等）は無く、
-    // 「地が塗り（不透明）であること」と「文字とのコントラストが下限を
-    // 満たすこと」だけを見る --- `text-muted-foreground` に戻す変異が
-    // 入ったらここで落ちる。
-    const finished = page.locator('ul span', { hasText: /^完了$/ })
-    const finishedBg = await computedOf(finished, 'background-color')
-    const finishedFg = await computedOf(finished, 'color')
-    if (finishedFg === null || finishedBg === null) {
-      ng.push(`[${theme}] 完了バッジが見つからない`)
+    // 「準備中」結論バッジ（issue #1112）。`bg-muted` の文字色は
+    // `text-foreground` とし、地が塗り（不透明）であることと文字との
+    // コントラストが下限を満たすことを測る。
+    const preparing = page.locator('ul span', { hasText: /^準備中$/ })
+    const preparingBg = await computedOf(preparing, 'background-color')
+    const preparingFg = await computedOf(preparing, 'color')
+    if (preparingFg === null || preparingBg === null) {
+      ng.push(`[${theme}] 準備中バッジが見つからない`)
     } else {
-      if (finishedBg.rgba[3] < 200) {
-        ng.push(`[${theme}] 完了バッジの地が塗りでない（不透明度 ${finishedBg.rgba[3]}/255。${finishedBg.value}）`)
+      if (preparingBg.rgba[3] < 200) {
+        ng.push(`[${theme}] 準備中バッジの地が塗りでない（不透明度 ${preparingBg.rgba[3]}/255。${preparingBg.value}）`)
       }
-      checkContrast(theme, '完了バッジの文字 / muted の塗り', finishedFg.rgba, finishedFg, minTextContrast)
+      checkContrast(theme, '準備中バッジの文字 / muted の塗り', preparingFg.rgba, preparingFg, minTextContrast)
     }
 
     // 地は無彩。body だけを見ると「body に bg-background が当たっているか」しか
@@ -3569,12 +3612,11 @@ for (const theme of themes) {
   // --- 録画一覧: site タグ・IngestBadge の合成後コントラスト（issue #308 の
   //     レビューで判明した穴） ---
   //
-  // 上のブロックの「完了バッジ」判定は `StatusBadge` の `finished` しか見ておらず、
-  // PR 本文はそれを「録画の muted バッジ」全体の判定として書いていたが、実際には
-  // site タグ（`showSite` が真になる 2 サイト以上でしか出ない）と `IngestBadge`
-  // （`ingest` フィールドを持つ録画がないと出ない）は既定のフィクスチャでは
-  // 一度も描画されず、`text-muted-foreground` に戻す変異が入っても緑のまま
-  // 通っていた。`multiSite` + `extraRecording` で両方を一度に描画させて測る。
+  // 上のブロックは結論の「準備中」バッジだけを測る。site タグと IngestBadge も
+  // muted の地を使う。site タグ（`showSite` が真になる 2 サイト以上でしか出ない）と
+  // IngestBadge（`ingest` フィールドを持つ録画がないと出ない）は既定のフィクスチャ
+  // では描画されず、`text-muted-foreground` に戻す変異が入っても緑のまま通っていた。
+  // `multiSite` + `extraRecording` で両方を描画させて測る。
   {
     const { context, page } = await open(desktop, theme, screenOf('recordings'), {
       multiSite: true,

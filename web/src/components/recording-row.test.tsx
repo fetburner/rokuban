@@ -5,7 +5,7 @@ import type { Recording } from '@/api/generated'
 import { RecordingRow } from '@/components/recording-row'
 import { renderInRouter } from '@/test/router'
 
-const base = { trash: false, showSite: false, view: 'list' } as const
+const base = { liveCapability: 'enabled', trash: false, showSite: false, view: 'list' } as const
 
 const recording: Recording = {
   id: 42,
@@ -34,6 +34,7 @@ describe('RecordingRow', () => {
     )
 
     await screen.findByText('共有する録画')
+    expect(await screen.findByText('録画中')).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: '共有する録画を追っかけ再生' })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: '共有する録画' })).toHaveAttribute(
       'href',
@@ -83,5 +84,33 @@ describe('RecordingRow', () => {
 
     await screen.findByText('共有する録画')
     expect(container.querySelector('img')).toBeNull()
+    expect(screen.queryByText('再生不可')).not.toBeInTheDocument()
+    expect(screen.queryByText('完了')).not.toBeInTheDocument()
+  })
+
+  it('finished の録画に完了バッジを出さず、取り込み中は準備中と出す', async () => {
+    renderInRouter(
+      <RecordingRow
+        recording={{ ...recording, ingest: { state: 'pending' } }}
+        {...base}
+      />,
+      { path: '/recordings' },
+    )
+
+    await screen.findByText('共有する録画')
+    expect(await screen.findByText('準備中')).toBeInTheDocument()
+    expect(screen.queryByText('完了')).not.toBeInTheDocument()
+  })
+
+  it('再生元がある録画は結論バッジを出さない', async () => {
+    renderInRouter(
+      <RecordingRow recording={{ ...recording, sizeBytes: 1_000 }} {...base} />,
+      { path: '/recordings' },
+    )
+
+    await screen.findByText('共有する録画')
+    expect(screen.queryByText('準備中')).not.toBeInTheDocument()
+    expect(screen.queryByText('完了')).not.toBeInTheDocument()
+    expect(screen.queryByText('再生不可')).not.toBeInTheDocument()
   })
 })
