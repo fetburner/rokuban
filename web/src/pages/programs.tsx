@@ -466,8 +466,8 @@ export function ProgramsPage() {
 
   // 直近の時間窓が新しい表示行を追加したかを判定する。API は窓の境界に重なる
   // 番組を返すので、最後の窓に値があっても、前の窓との重複だけなら表示行は増えて
-  // いない。また、ジャンプ先の窓より前に始まった番組は先頭から取り除くため、
-  // `lastPage.programs.length > 0` だけでは「空窓」を見落とす。
+  // いない。また、ジャンプ先の窓より前に始まった番組や条件に一致しない番組は
+  // 表示しないため、`lastPage.programs.length > 0` だけでは「空窓」を見落とす。
   //
   // 新しい表示行が無い窓に番兵を置くと、空窓の末尾が可視のまま自動読み込みが連鎖
   // する。空窓では利用者が 6 時間ずつ進める導線に切り替える（docs/frontend/scroll.md）。
@@ -484,10 +484,12 @@ export function ProgramsPage() {
     }
 
     return !lastPage.programs.some((program) => {
-      if (previousIdentities.has(programIdentity(program.site, program.programId))) return false
+      const identity = programIdentity(program.site, program.programId)
+      if (previousIdentities.has(identity)) return false
+      if (matchedProgramIds !== undefined && !matchedProgramIds.has(identity)) return false
       return filterProgramsFromListStart([program], listStartMs, lowerBoundMs).length > 0
     })
-  }, [query.data, listStartMs, lowerBoundMs])
+  }, [query.data, listStartMs, lowerBoundMs, matchedProgramIds])
 
   // 絞り込む前の全サービスから作る。絞った側（filterableServices）から作ると、
   // hasPrograms が false の局の番組が来たとき（例えば選択直後にキャッシュが
@@ -644,7 +646,7 @@ export function ProgramsPage() {
   const sentinelRef = useRef<HTMLDivElement>(null)
 
   // 番兵の <div> は一覧が実際に描かれ、直近の窓が新しい表示行を追加したとき
-  // （!isPending && !latestWindowIsEmpty && visiblePrograms.length > 0）にしか存在しない。
+  // （!isPending && !latestWindowIsEmpty && conditionFilteredPrograms.length > 0）にしか存在しない。
   // 空窓の末尾を監視すると、自動読み込みが空窓を連鎖してしまうため、空窓では
   // 「次の時間帯を見る」ボタンへ切り替える。データ取得が終わる前に
   // IntersectionObserver を
@@ -654,7 +656,7 @@ export function ProgramsPage() {
   // つまり自動読み込みが永遠に発火しない。番兵が実際に DOM にあるかどうかを
   // 明示的な依存にして、描画されたタイミングで確実に組み立て直す。
   const sentinelMounted =
-    !showGrid && !query.isPending && !latestWindowIsEmpty && visiblePrograms.length > 0
+    !showGrid && !query.isPending && !latestWindowIsEmpty && conditionFilteredPrograms.length > 0
   const autoLoadAvailable = domLayoutMeasurable()
   const showLoadMoreButton =
     (latestWindowIsEmpty && query.hasNextPage) ||

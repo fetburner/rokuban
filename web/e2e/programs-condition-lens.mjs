@@ -76,6 +76,14 @@ const skippedOmittedProgram = {
   name: 'API が返さないスキップ番組',
   intent: 'skip',
 }
+const laterMatchProgram = {
+  ...apiMatchProgram,
+  programId: 109804,
+  eventId: 4,
+  startAt: iso(new Date('2026-08-13T04:00:00+09:00').getTime()),
+  endAt: iso(new Date('2026-08-13T05:00:00+09:00').getTime()),
+  name: '後の時間窓にある一致番組',
+}
 
 const searchMatch = {
   site: SITE,
@@ -86,6 +94,12 @@ const searchMatch = {
   durationMs: apiMatchProgram.durationMs,
   name: apiMatchProgram.name,
   isFree: true,
+}
+const laterSearchMatch = {
+  ...searchMatch,
+  programId: laterMatchProgram.programId,
+  startAt: laterMatchProgram.startAt,
+  name: laterMatchProgram.name,
 }
 
 const reservation = {
@@ -105,6 +119,7 @@ const reservation = {
 }
 
 let searchRequests = []
+let searchMatches = [searchMatch]
 let failNextSearch = false
 let holdNextSearch = false
 let releaseHeldSearch
@@ -123,7 +138,7 @@ async function apiHandler({ path, url, json, route }) {
   if (path === `/api/sites/${SITE}/programs` && method === 'GET') {
     const start = Date.parse(url.searchParams.get('start') ?? '')
     const end = Date.parse(url.searchParams.get('end') ?? '')
-    return json([apiMatchProgram, omittedProgram, skippedOmittedProgram].filter(
+    return json([apiMatchProgram, omittedProgram, skippedOmittedProgram, laterMatchProgram].filter(
       (program) => Date.parse(program.endAt) > start && Date.parse(program.startAt) < end,
     ))
   }
@@ -144,7 +159,7 @@ async function apiHandler({ path, url, json, route }) {
       })
     }
     // 意図的に genres を見て結果を作らない。検索 API 自体が返した集合が正本。
-    return json([searchMatch])
+    return json(searchMatches)
   }
   if (/\/programs\/\d+\/overlaps$/.test(path)) return json({ count: 0, reservations: [] })
   if (/\/programs\/\d+$/.test(path)) return json({ extended: {}, audios: [] })
@@ -231,8 +246,10 @@ await validateFixturesOrExit(
     ['apiMatchProgram', ListProgramsResponseItem, apiMatchProgram],
     ['omittedProgram', ListProgramsResponseItem, omittedProgram],
     ['skippedOmittedProgram', ListProgramsResponseItem, skippedOmittedProgram],
+    ['laterMatchProgram', ListProgramsResponseItem, laterMatchProgram],
     ['reservation', ListReservationsResponseItem, reservation],
     ['searchMatch', SearchProgramsResponseItem, searchMatch],
+    ['laterSearchMatch', SearchProgramsResponseItem, laterSearchMatch],
   ],
   ng,
 )
@@ -390,7 +407,23 @@ if (stableStringify(conditionUrl(page.url())) !== stableStringify(sharedConditio
   ng.push(`③ テキスト条件を含む cond が検索画面へ同じ値で戻らない（${page.url()}）`)
 }
 
-log('\n=== ④ 検索失敗と再試行は通常表示を保つ ===')
+log('\n=== ④ 一致番組が後の時間窓にあるリストの手動ページング ===')
+searchMatches = [laterSearchMatch]
+await page.goto(
+  `${BASE}/programs?view=list&cond=${encodeURIComponent(JSON.stringify({ genres: [7] }))}`,
+  { waitUntil: 'domcontentloaded' },
+)
+await page.getByText('この時間帯に条件に一致する番組がありません').waitFor({ timeout: 15000 })
+const nextWindowButton = page.getByRole('button', { name: '次の時間帯を見る' })
+await nextWindowButton.waitFor({ timeout: 10000 })
+if (await page.getByTestId('program-list-sentinel').count() !== 0) {
+  ng.push('④ 一致しない時間窓に自動読み込み番兵を残した')
+}
+await nextWindowButton.click()
+await page.getByText(laterMatchProgram.name).waitFor({ timeout: 15000 })
+
+log('\n=== ⑤ 検索失敗と再試行は通常表示を保つ ===')
+searchMatches = [searchMatch]
 await page.goto(`${BASE}/programs?view=grid`, { waitUntil: 'domcontentloaded' })
 await page.getByTestId('program-grid').waitFor({ timeout: 15000 })
 failNextSearch = true
@@ -401,24 +434,24 @@ await page.getByTestId('genre-filter-1').click()
 await page.getByRole('alert').getByRole('button', { name: '再試行' }).waitFor({ timeout: 15000 })
 const failedOmittedCell = page.getByTestId('program-grid-cell').filter({ hasText: omittedProgram.name }).first()
 if ((await failedOmittedCell.getAttribute('data-condition-match')) !== null) {
-  ng.push('④ 失敗時に全セルへ一致・非一致状態を付けた')
+  ng.push('⑤ 失敗時に全セルへ一致・非一致状態を付けた')
 }
 const failedText = await textContrast(failedOmittedCell.getByTestId('program-grid-cell-name'))
 const failedBackground = await cellBackground(failedOmittedCell)
 if (JSON.stringify(failedBackground) !== JSON.stringify(errorBackground) || failedText.opacity < 0.99) {
-  ng.push(`④ 失敗時に通常表示を保てない（background=${JSON.stringify(failedBackground)}, text=${JSON.stringify(failedText)}）`)
+  ng.push(`⑤ 失敗時に通常表示を保てない（background=${JSON.stringify(failedBackground)}, text=${JSON.stringify(failedText)}）`)
 }
 const failedCellStates = await page.getByTestId('program-grid-cell').evaluateAll((nodes) => nodes.map((el) => ({
   hasMatch: el.hasAttribute('data-condition-match'),
   opacity: Number(getComputedStyle(el).opacity),
 })))
 if (failedCellStates.some((cell) => cell.hasMatch || cell.opacity < 0.99)) {
-  ng.push(`④ 失敗時にセルを一致・非一致扱い、または薄くした（${JSON.stringify(failedCellStates)}）`)
+  ng.push(`⑤ 失敗時にセルを一致・非一致扱い、または薄くした（${JSON.stringify(failedCellStates)}）`)
 }
 await page.getByRole('alert').getByRole('button', { name: '再試行' }).click()
 await page.getByText('1 件一致').waitFor({ timeout: 15000 })
 if ((await failedOmittedCell.getAttribute('data-condition-match')) !== 'false') {
-  ng.push('④ 再試行成功後に API 応答の一致集合が反映されない')
+  ng.push('⑤ 再試行成功後に API 応答の一致集合が反映されない')
 }
 
 await context.close()

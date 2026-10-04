@@ -588,6 +588,33 @@ describe('ProgramsPage の表示形式', () => {
     expect(screen.queryByText('一致しないアニメ')).not.toBeInTheDocument()
   })
 
+  it('一致番組が後の時間窓にあるとき、空の条件窓から手動で進める', async () => {
+    const first = { ...soon, genres: [7] }
+    const second = { ...alsoSoon, genres: [7] }
+    const laterMatch = { ...program(109804, 1024, 8, '後の時間窓にある一致番組'), genres: [7] }
+    const match: ProgramSearchMatch = {
+      site: 'default',
+      programId: laterMatch.programId,
+      networkId: laterMatch.networkId,
+      serviceId: laterMatch.serviceId,
+      startAt: laterMatch.startAt,
+      durationMs: laterMatch.durationMs,
+      name: laterMatch.name,
+      isFree: true,
+    }
+    stubApi([], [], [first, second, laterMatch], undefined, undefined, [], undefined, () =>
+      jsonResponse([match]),
+    )
+    renderPage(`/programs?cond=${encodeURIComponent(JSON.stringify({ genres: [7] }))}`)
+
+    expect(
+      await screen.findByText('この時間帯に条件に一致する番組がありません'),
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId('program-list-sentinel')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '次の時間帯を見る' }))
+    expect(await screen.findByText(laterMatch.name)).toBeInTheDocument()
+  })
+
   it('番組リストの録画中番組に対応する録画の追っかけリンクを出す', async () => {
     const fetchMock = stubApi([], [], [airingSoon])
     renderPage()
