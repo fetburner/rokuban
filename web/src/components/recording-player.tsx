@@ -134,6 +134,8 @@ type RecordingPlayerProps = {
   className?: string
 }
 
+type ChapterPlaybackMode = 'around' | 'to' | 'from'
+
 /**
  * RecordingPlayer は encoded 派生物を video 要素で再生し、自前の操作バーを重ねる。
  * MP4 progressive + Range（streamer）。再開位置と視聴済み状態は API で世帯共有する。
@@ -279,6 +281,9 @@ export function RecordingPlayer({
   // 前後再生の停止位置（秒）。null は前後再生中でない。停止は再生位置で判定する
   // （実時間のタイマーだと再生速度が 1 倍でないとき止まる位置がずれる）。
   const playAroundStopRef = useRef<number | null>(null)
+  const playAroundStopBoundaryMsRef = useRef<number | null>(null)
+  // 調整を長押ししている間もブラウザには seek を 1 件だけ残し、seeked 後に最新境界へ進む。
+  const pendingBoundarySeekMsRef = useRef<number | null>(null)
   // `chapters ?? []` を毎レンダー評価すると、未取得の間だけ配列の参照が毎回変わる。
   // 編集 UI は「参照が変わった = サーバーの値が変わった」と見なしてドラフトを
   // 追随させるので、参照はここで安定させておく。
@@ -472,7 +477,10 @@ export function RecordingPlayer({
     watchedRequestPendingRef.current = false
     previousSecondsRef.current = 0
     skipSuppressedRef.current = false
+    window.clearTimeout(playAroundTimerRef.current)
     playAroundStopRef.current = null
+    playAroundStopBoundaryMsRef.current = null
+    pendingBoundarySeekMsRef.current = null
     // keepRangesKey が selectedAsset.keepRanges の内容を表す。参照を依存に入れると、
     // 内容が同じ再取得でも復元待ち・直前位置がリセットされる。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -654,6 +662,7 @@ export function RecordingPlayer({
   const jumpTo = (seconds: number) => {
     const video = videoRef.current
     if (!video) return
+    pendingBoundarySeekMsRef.current = null
     video.currentTime = seconds
     previousSecondsRef.current = seconds
     updatePlayedFraction(video)
@@ -661,6 +670,13 @@ export function RecordingPlayer({
   // 境界を見る操作だけは整数 ms をフレーム表示区間の中央へ写す（通す / 通さないの理由は
   // `chapterBoundaryMsToSeekSeconds`）。
   const seekToChapterBoundary = (boundaryMs: number) => {
+    const video = videoRef.current
+    if (!video) return
+    if (video.seeking) {
+      pendingBoundarySeekMsRef.current = boundaryMs
+      return
+    }
+    pendingBoundarySeekMsRef.current = null
     jumpTo(chapterBoundaryMsToSeekSeconds(boundaryMs))
   }
   jumpToRef.current = jumpTo
@@ -668,17 +684,30 @@ export function RecordingPlayer({
     const target = chapterJumpTarget(chapterSpans, currentSeconds, direction)
     if (target !== undefined) seekToChapterBoundary(Math.round(target * 1000))
   }
-  // playAround は境界の前後 3 秒を再生して止める（修正 UI の「前後 3 秒」）。
-  const playAround = (seconds: number) => {
+  const clearPlayAround = () => {
+    window.clearTimeout(playAroundTimerRef.current)
+    playAroundTimerRef.current = undefined
+    playAroundStopRef.current = null
+    playAroundStopBoundaryMsRef.current = null
+    skipSuppressedRef.current = false
+  }
+  const playAround = (seconds: number, mode: ChapterPlaybackMode = 'around') => {
     const video = videoRef.current
     if (!video) return
-    const start = Math.max(0, seconds - PLAY_AROUND_SECONDS)
-    const stop = seconds + PLAY_AROUND_SECONDS
-    window.clearTimeout(playAroundTimerRef.current)
+    clearPlayAround()
+    const boundaryMs = Math.round(seconds * 1000)
+    const boundarySeconds = boundaryMs / 1000
+    const start = mode === 'from'
+      ? chapterBoundaryMsToSeekSeconds(boundaryMs)
+      : Math.max(0, boundarySeconds - PLAY_AROUND_SECONDS)
+    const stop = mode === 'to'
+      ? boundarySeconds
+      : boundarySeconds + PLAY_AROUND_SECONDS
     skipSuppressedRef.current = true
     playAroundStopRef.current = stop
+    playAroundStopBoundaryMsRef.current = mode === 'to' ? boundaryMs : null
     jumpTo(start)
-    void video.play()
+    void video.play().catch(() => {})
     schedulePlayAroundStop(video)
   }
   // 本来の停止は timeupdate の `currentTime >= stop`。これは再生が進まない場合
@@ -696,10 +725,17 @@ export function RecordingPlayer({
     )
   }
   const finishPlayAround = (video: HTMLVideoElement) => {
-    window.clearTimeout(playAroundTimerRef.current)
-    playAroundStopRef.current = null
-    skipSuppressedRef.current = false
+    const boundaryMs = playAroundStopBoundaryMsRef.current
+    clearPlayAround()
     video.pause()
+    if (boundaryMs !== null) seekToChapterBoundary(boundaryMs)
+  }
+  const selectChapterBoundary = (seconds: number) => {
+    const video = videoRef.current
+    if (!video) return
+    clearPlayAround()
+    if (!video.paused) video.pause()
+    seekToChapterBoundary(Math.round(seconds * 1000))
   }
   // プレイヤー内の唯一の seekbar 上のポインタ位置 → 再生位置（秒）。
   const scrubSeconds = (event: ReactPointerEvent<HTMLDivElement>): number | null => {
@@ -787,6 +823,8 @@ export function RecordingPlayer({
         }
         onEnterChapterEditing={onEnterChapterEditing}
         onPlayAround={editorSelected === null ? undefined : () => playAround(editorSelected)}
+        onPlayToBoundary={editorSelected === null ? undefined : () => playAround(editorSelected, 'to')}
+        onPlayFromBoundary={editorSelected === null ? undefined : () => playAround(editorSelected, 'from')}
         tilePreview={shownPreview}
         tilesRequested={tilesRequestedFor === recordingId}
         tilesAvailable={tilesAvailableFor === recordingId}
@@ -873,9 +911,12 @@ export function RecordingPlayer({
               previousSecondsRef.current = e.currentTarget.currentTime
             }}
             onSeeked={(e) => {
-              previousSecondsRef.current = e.currentTarget.currentTime
-              updatePlayedFraction(e.currentTarget)
-              saveCurrentPosition(e.currentTarget)
+              const video = e.currentTarget
+              previousSecondsRef.current = video.currentTime
+              updatePlayedFraction(video)
+              saveCurrentPosition(video)
+              const pendingBoundaryMs = pendingBoundarySeekMsRef.current
+              if (pendingBoundaryMs !== null) seekToChapterBoundary(pendingBoundaryMs)
             }}
             onTimeUpdate={(e) => {
               const v = e.currentTarget
@@ -905,8 +946,11 @@ export function RecordingPlayer({
               frame.onPause()
               saveCurrentPosition(e.currentTarget)
             }}
-            onEnded={() => {
-              if (chapterEditing) return
+            onEnded={(e) => {
+              if (chapterEditing) {
+                if (playAroundStopRef.current !== null) finishPlayAround(e.currentTarget)
+                return
+              }
               setCountdownSeconds(AUTO_ADVANCE_SECONDS)
               setEndCardFor(recordingId)
             }}
@@ -968,6 +1012,7 @@ export function RecordingPlayer({
             recordingId={recordingId}
             currentSeconds={currentSeconds}
             getDisplayedFrameSeconds={getDisplayedFrameSeconds}
+            isPlaying={frame.mediaPlaying}
             durationSeconds={durationSeconds}
             tilesAvailable={tilesAvailableFor === recordingId}
             onTileImageLoad={() => setTilesAvailableFor(recordingId)}
@@ -975,8 +1020,8 @@ export function RecordingPlayer({
               setTilesAvailableFor((current) => (current === recordingId ? null : current))
               setTilePreview(null)
             }}
-            playAround={playAround}
             jumpTo={jumpTo}
+            onBoundaryAction={selectChapterBoundary}
             onSelectedBoundaryChange={setEditorSelected}
             onSave={onSaveChapters}
             onReset={async () => await onResetChapters()}

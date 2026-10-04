@@ -32,11 +32,11 @@ export const FRAME_SECONDS = 1001 / 30000
  * 保存値は Go 側でフレーム境界へ量子化済みなので、ここではその境界が指すフレームを
  * 復元して表示位置を求めるだけである。保存値の量子化・比較は Go に任せる。
  *
- * **通す呼び出し元は「境界の映像を見せる操作」だけ**: 境界カードのクリック、前 / 次の
- * チャプター、チャプター一覧、自動スキップの着地点（`autoSkipSeekSeconds`）。
- * **通さない呼び出し元**: シークバー、キー操作、フィルムストリップのクリック、前後 3 秒再生。
- * これらは任意の時刻へ動かす操作で、境界のフレームを見せる契約を持たない。中央へ寄せると
- * 利用者が指した位置を勝手にずらす。
+ * **通す呼び出し元**: チャプターカード、前 / 次チャプター、一覧、自動スキップの着地点、
+ * フィルムストリップの境界ボタン、±調整、選択境界からの再生開始、「境界まで」の停止後。
+ * **通さない呼び出し元**: シークバー、再生位置を動かすキー、フィルムストリップの帯（境界以外）の
+ * クリック、「前後 3 秒」と「境界まで」の開始位置。任意の再生位置を示す値を中央へ寄せると、
+ * 利用者が指定した位置をずらす。
  */
 export function chapterBoundaryMsToSeekSeconds(boundaryMs: number): number {
   if (!Number.isFinite(boundaryMs)) return 0
@@ -189,6 +189,15 @@ export function nudgeBoundary(spans: ChapterSpan[], boundary: number, delta: num
   }))
 }
 
+/** nearestChapterBoundary は boundaries のうち seconds に最も近い値を返す（同距離なら前）。空なら null。 */
+export function nearestChapterBoundary(boundaries: readonly number[], seconds: number): number | null {
+  let best: number | null = null
+  for (const candidate of boundaries) {
+    if (best === null || Math.abs(candidate - seconds) < Math.abs(best - seconds)) best = candidate
+  }
+  return best
+}
+
 /** chapterSpanIndexesAtBoundary は指定境界を持つ全区間の index を返す。 */
 export function chapterSpanIndexesAtBoundary(spans: ChapterSpan[], boundarySeconds: number): number[] {
   const boundaryMs = Math.round(boundarySeconds * 1000)
@@ -298,6 +307,26 @@ export function normalizeChapterDraft(
   return candidates
     .sort((a, b) => a.span.startMs - b.span.startMs || a.span.endMs - b.span.endMs || a.order - b.order)
     .map(({ span }) => span)
+}
+
+/**
+ * moveChapterBoundary は境界を delta 秒動かし、重なりを正規化した下書きと、動かした後に
+ * 選ぶ境界を返す。境界の移動はすべてここを通す（正規化を素通りさせない）。
+ *
+ * 動かした先の境界が合併・切り取りで消えたときは、残った境界のうち最も近いものを選ぶ。
+ * 消えた境界を選んだままにすると、選択もシーク先も存在しない境界を指す。
+ */
+export function moveChapterBoundary(
+  spans: ChapterSpan[],
+  fromSeconds: number,
+  deltaSeconds: number,
+): { spans: ChapterSpan[]; boundary: number | null } {
+  const moved = normalizeChapterDraft(
+    nudgeBoundary(spans, fromSeconds, deltaSeconds),
+    chapterSpanIndexesAtBoundary(spans, fromSeconds),
+  )
+  const targetSeconds = Math.round((fromSeconds + deltaSeconds) * 1000) / 1000
+  return { spans: moved, boundary: nearestChapterBoundary(chapterBoundaries(moved), targetSeconds) }
 }
 
 /**

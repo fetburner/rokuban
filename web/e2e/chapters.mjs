@@ -516,6 +516,32 @@ if (!fast.paused || fast.t < 32 || fast.t > 34.5) {
   )
 }
 
+log('\n=== ⑤-b 「境界まで」「境界から」も再生位置で止まる（2 倍速） ===')
+// 「境界まで」は境界の 3 秒前から始めて境界（30 秒）で、「境界から」は境界から 3 秒後（33 秒）で止まる。
+// 実時間のタイマーで止める実装だと 2 倍速では境界を過ぎても止まらない（「境界まで」は 33 秒付近）。
+for (const mode of [
+  { name: '境界まで', button: '選択中の境界まで再生', min: 29.9, max: 30.2, want: '30 秒' },
+  { name: '境界から', button: '選択中の境界から再生', min: 32, max: 34.5, want: '33 秒' },
+]) {
+  await video.evaluate((v) => {
+    v.playbackRate = 2
+  })
+  await seek(100)
+  await firstBoundary.click()
+  await page.getByRole('button', { name: mode.button }).click()
+  await page.waitForTimeout(4500)
+  const fastMode = await video.evaluate((v) => ({ t: v.currentTime, paused: v.paused }))
+  await video.evaluate((v) => {
+    v.pause()
+    v.playbackRate = 1
+  })
+  if (!fastMode.paused || fastMode.t < mode.min || fastMode.t > mode.max) {
+    ng.push(
+      `⑤-b 2 倍速の「${mode.name}」が ${mode.want}で止まっていない（位置 ${fastMode.t.toFixed(2)} 秒 paused=${fastMode.paused}）`,
+    )
+  }
+}
+
 // 編集に変更は加えていないので「やめる」で通常再生へ戻る。
 await page.getByRole('button', { name: 'やめる', exact: true }).click()
 await page.waitForSelector('[data-testid="chapter-edit-layout"]', { state: 'detached' })
@@ -1164,10 +1190,27 @@ async function editLayoutMetrics(viewport) {
         const bar = document.querySelector('[data-testid="chapter-edit-playback-controls"]')
         if (!bar) return true
         const bounds = bar.getBoundingClientRect()
-        return Array.from(bar.children).filter((child) => getComputedStyle(child).display !== 'none').some((child) => {
+        return Array.from(bar.querySelectorAll('button, [data-testid="chapter-edit-playhead"]')).filter((el) => el.getBoundingClientRect().width > 0).some((child) => {
           const rect = child.getBoundingClientRect()
           return rect.left < bounds.left - 0.5 || rect.right > bounds.right + 0.5
         })
+      })(),
+      // 帯の中の要素（再生・時刻・3 つの再生型・速度）同士が重ならない。
+      editBarOverlaps: (() => {
+        const bar = document.querySelector('[data-testid="chapter-edit-playback-controls"]')
+        if (!bar) return ['帯が無い']
+        const items = Array.from(bar.querySelectorAll('button, [data-testid="chapter-edit-playhead"]'))
+          .map((el) => ({ name: el.getAttribute('aria-label') ?? el.textContent?.trim() ?? '', rect: el.getBoundingClientRect() }))
+          .filter((item) => item.rect.width > 0)
+        const out = []
+        for (let i = 0; i < items.length; i += 1) {
+          for (let j = i + 1; j < items.length; j += 1) {
+            const a = items[i].rect
+            const b = items[j].rect
+            if (a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1) out.push(`${items[i].name} と ${items[j].name}`)
+          }
+        }
+        return out
       })(),
       navTop: navRect ? navRect.top : null,
       documentOverflow: document.documentElement.scrollHeight - window.innerHeight,
@@ -1199,6 +1242,9 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 400, height: 800 
         ng.push(`#1019 desktop: プレイヤーの下に ${(metrics.strip.y - metrics.player.bottom).toFixed(0)}px の空きがある`)
       }
     } else {
+      if (metrics.editBarOverlaps.length > 0) {
+        ng.push(`#1123: 編集帯の要素が ${viewport.width}px 幅で重なる（${metrics.editBarOverlaps.join(', ')}）`)
+      }
       if (!metrics.editBar || metrics.editBarOverflow) {
         ng.push(`#1123: 編集帯の要素が ${viewport.width}px 幅に収まらない（${JSON.stringify(metrics.editBar)} overflow=${metrics.editBarOverflow}）`)
       }
@@ -1441,7 +1487,8 @@ if ((await targetBoundary.count()) !== 1) {
       }
     }
   }
-  // 選択が何になるかは再生位置に最も近い境界へ落ちるので、重なりの検査後は 30 秒境界を選び直す。
+  // 境界を動かす・元に戻すと映像が付いてくるので、元に戻した後の選択は再生位置に近い境界になる。
+  // 重なりの検査後は 30 秒境界を選び直してから調整する。
   await targetBoundary.click()
   const nudge = page.getByRole('button', { name: '選択中の境界を 1 フレーム進める', exact: true })
   if ((await nudge.count()) !== 1) {

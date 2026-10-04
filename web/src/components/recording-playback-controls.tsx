@@ -124,6 +124,8 @@ type RecordingPlaybackControlsProps = {
   canEditChapters?: boolean
   onEnterChapterEditing?: () => void
   onPlayAround?: () => void
+  onPlayToBoundary?: () => void
+  onPlayFromBoundary?: () => void
   tilePreview: TilePreview
   tilesRequested: boolean
   tilesAvailable: boolean
@@ -209,6 +211,8 @@ export function RecordingPlaybackControls({
   canEditChapters = false,
   onEnterChapterEditing,
   onPlayAround,
+  onPlayToBoundary,
+  onPlayFromBoundary,
   tilePreview,
   tilesRequested,
   tilesAvailable,
@@ -432,26 +436,47 @@ export function RecordingPlaybackControls({
           // （別の木に描くと作り直され、再生位置が 0 に戻って止まる）。
           <div
             data-testid="chapter-edit-playback-controls"
-            className="absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/85 to-transparent px-2 pt-8 pb-2 text-white sm:gap-3 sm:px-3"
+            className="absolute inset-x-0 bottom-0 flex items-center gap-1 bg-gradient-to-t from-black/85 to-transparent px-2 pt-8 pb-2 text-white sm:gap-2 md:gap-3 md:px-3"
           >
             <Button type="button" variant="ghost" size="icon" className={ghost} aria-label={isPlaying ? '一時停止' : '再生'} onClick={onTogglePlay}>
               {isPlaying ? <Pause /> : <Play />}
             </Button>
-            <span data-testid="chapter-edit-playhead" className="shrink-0 font-mono text-sm">
+            <span data-testid="chapter-edit-playhead" className="shrink-0 font-mono text-xs md:text-sm">
               {formatPlaybackTimeMs(seconds)}
               <span className="hidden md:inline"> / {formatPlaybackTime(durationSeconds)}</span>
             </span>
-            {/* 400px 幅でも前後再生と並ぶ小さな巡回ボタンにし、別メニューで帯を広げない。 */}
-            <div className="ml-auto flex shrink-0 items-center gap-2">
+            {/* 400px 幅でも 3 つの再生型と速度が並ぶ小さなボタンにし、別メニューで帯を広げない。 */}
+            <div data-testid="chapter-edit-playback-modes" className="ml-auto flex min-w-0 shrink-0 items-center gap-1 md:gap-2">
               <Button
                 type="button"
                 variant="secondary"
-                className="shrink-0 rounded-full"
+                className="h-8 shrink-0 rounded-full px-2 text-xs leading-none md:h-9 md:px-3 md:text-sm"
+                aria-label="選択中の境界の前後3秒を再生"
                 onClick={onPlayAround}
                 disabled={onPlayAround === undefined}
               >
-                <span className="md:hidden">前後 3 秒</span>
-                <span className="hidden md:inline">前後 3 秒を再生</span>
+                <span className="md:hidden">前後3秒</span>
+                <span className="hidden md:inline">前後 3 秒</span>
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                className="h-8 shrink-0 rounded-full px-2 text-xs leading-none md:h-9 md:px-3 md:text-sm"
+                aria-label="選択中の境界まで再生"
+                onClick={onPlayToBoundary}
+                disabled={onPlayToBoundary === undefined}
+              >
+                境界まで
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                className="h-8 shrink-0 rounded-full px-2 text-xs leading-none md:h-9 md:px-3 md:text-sm"
+                aria-label="選択中の境界から再生"
+                onClick={onPlayFromBoundary}
+                disabled={onPlayFromBoundary === undefined}
+              >
+                境界から
               </Button>
               <Button
                 type="button"
@@ -459,7 +484,7 @@ export function RecordingPlaybackControls({
                 data-testid="chapter-edit-playback-rate"
                 aria-label={`再生速度 ${playbackRate}x。次の速度に切り替え`}
                 title={playbackRateLocked ? '変換中は再生速度を変更できません' : '押すたびに再生速度が切り替わります'}
-                className="h-9 shrink-0 rounded-full border border-white/25 px-2.5 font-mono text-xs text-white hover:bg-white/15 hover:text-white"
+                className="h-8 shrink-0 rounded-full border border-white/25 px-1.5 font-mono text-xs text-white hover:bg-white/15 hover:text-white md:h-9 md:px-2.5"
                 disabled={playbackRateLocked}
                 onClick={() => {
                   onRateChange(PLAYBACK_RATES.find((rate) => rate > playbackRate) ?? PLAYBACK_RATES[0]!)
@@ -468,7 +493,7 @@ export function RecordingPlaybackControls({
                 {playbackRate}x
               </Button>
             </div>
-            <span className="hidden rounded-full bg-white/15 px-3 py-2 text-sm md:inline-flex" aria-label="CM自動スキップは編集中に停止">
+            <span className="hidden rounded-full bg-white/15 px-3 py-2 text-sm lg:inline-flex" aria-label="CM自動スキップは編集中に停止">
               CM を飛ばさない（編集中）
             </span>
           </div>

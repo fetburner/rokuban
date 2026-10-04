@@ -1161,7 +1161,7 @@ describe('RecordingPlayer のチャプター編集中速度', () => {
       return Promise.resolve()
     })
     // 境界 10 秒の前後再生は 7 秒から 13 秒で止まる。
-    fireEvent.click(getByRole('button', { name: /前後 3 秒/ }))
+    fireEvent.click(getByRole('button', { name: /前後3秒を再生/ }))
     expect(video.currentTime).toBe(7)
     expect(video.playbackRate).toBe(2)
     return { video, pause, getByTestId }
