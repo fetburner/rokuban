@@ -1319,6 +1319,22 @@ if (engine === 'webkit') {
   await page.getByRole('button', { name: '再生設定' }).click()
   const rateMenuItem = page.getByRole('menu', { name: '再生設定' }).getByRole('menuitem', { name: '再生速度' })
   if (!(await rateMenuItem.isDisabled())) ng.push('⑥ ネイティブ HLS の再生速度を固定中に速度メニューが有効')
+
+  const beforePlaylistEnd = { finalized: finalizedChasePlaylistRequests }
+  await endChasePlaylist({ label: '⑥', before: beforePlaylistEnd })
+  await page.waitForFunction(
+    () => {
+      const video = document.querySelector('video')
+      return video !== null && Number.isFinite(video.duration) &&
+        video.playbackRate === 1.5 && video.defaultPlaybackRate === 1.5
+    },
+    undefined,
+    { timeout: 15000 },
+  ).catch(() => ng.push('⑥ EVENT playlist の ENDLIST 後に保存済み速度へ戻らない'))
+  if (await rateMenuItem.isDisabled()) ng.push('⑥ 有限尺になった後も再生速度メニューが無効')
+  if (await page.evaluate(() => localStorage.getItem('rokuban:playback-rate')) !== '1.5') {
+    ng.push('⑥ 有限尺への移行後に保存済み速度が変わった')
+  }
 } else {
   await page.waitForFunction(
     () => {
@@ -1525,6 +1541,8 @@ await page.goto('about:blank')
 await page.goto(`${URL_BASE}/404-e2e-rate-reset`, { waitUntil: 'domcontentloaded' })
 await page.evaluate(() => localStorage.setItem('rokuban:playback-rate', '1'))
 growingSince = Date.now()
+finalizeChasePlaylist = false
+playlistEnded = false
 await page.goto(`${URL_BASE}/recordings/1#chase`, { waitUntil: 'domcontentloaded' })
 await playbackGroup.locator('video').waitFor({ timeout: 15000 })
 const finishingVideo = playbackGroup.locator('video')
