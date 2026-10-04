@@ -7,6 +7,8 @@ import {
   getListRulesQueryKey,
   useCreateRule,
   useUpdateRule,
+  type CapacityOverage,
+  type ProgramSearchRequest,
   type Rule,
 } from '@/api/generated'
 import { ApiError } from '@/api/client'
@@ -16,7 +18,8 @@ import { suggestRuleName } from '@/components/rule-name-suggestion'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/field'
-import { formatDuration } from '@/lib/format'
+import { formatDateTime, formatDuration } from '@/lib/format'
+import { shortfallDetail } from '@/lib/capacity'
 import {
   buildRuleInput,
   emptyRuleMeta,
@@ -119,19 +122,64 @@ export function RuleCostSummary({
   return <p className="px-4 py-2 text-xs text-muted-foreground">{text}</p>
 }
 
-/**
- * ShortfallOverlapNote は検索結果のうち放送時間帯が既存のチューナー不足区間と
- * 交差する番組の件数を値札の隣に出す（判定 (b)。docs/frontend/search.md
- * 「保存前の値札」）。**0 件のときは何も描画しない**（`CapacityShortfallBadge`
- * と同じ「沈黙は保証ではない」規律。緑にも「収まります」にもしない）。
+/** AddedCapacityOveragesNote reports only the additional shortfall intervals returned by the
+ * save-time preview. Empty results stay silent because a missing interval is not a promise
+ * that the tuners will fit every recording.
  */
-export function ShortfallOverlapNote({ count }: { count: number }) {
-  if (count === 0) return null
+export function AddedCapacityOveragesNote({
+  status,
+  overages,
+  conditions,
+  showSite,
+}: {
+  status: 'idle' | 'pending' | 'error' | 'success'
+  overages: readonly CapacityOverage[]
+  conditions: ProgramSearchRequest | undefined
+  showSite: boolean
+}) {
+  if (status === 'idle') return null
+  if (status === 'pending') {
+    return (
+      <p role="status" className="px-4 py-2 text-xs text-muted-foreground">
+        保存時に追加される容量不足を確認中…
+      </p>
+    )
+  }
+  if (status === 'error') {
+    return (
+      <p role="status" className="px-4 py-2 text-xs text-muted-foreground">
+        追加される容量不足を確認できませんでした
+      </p>
+    )
+  }
+  if (overages.length === 0 || conditions === undefined) return null
 
   return (
-    <p className="px-4 py-2 text-xs text-muted-foreground">
-      検索結果のうち、既にチューナー不足の区間と重なる番組が {count} 件あります
-    </p>
+    <ul
+      aria-label="保存時に追加される容量不足"
+      className="space-y-1 px-4 py-2 text-xs text-muted-foreground"
+    >
+      {overages.map((overage) => (
+        <li key={`${overage.site}:${overage.startAt}:${overage.endAt}:${overage.shortfall}`}>
+          <p>
+            {formatDateTime(overage.startAt)}〜{formatDateTime(overage.endAt)} は
+            {showSite ? `${overage.site}の` : ''}チューナーが不足しています
+            （{shortfallDetail(overage)}不足）
+          </p>
+          <Link
+            to="/programs"
+            search={{
+              view: 'grid',
+              at: new Date(overage.startAt).getTime(),
+              cond: conditions,
+            }}
+            className="font-medium text-foreground underline underline-offset-2"
+          >
+            この時間帯の一致番組を番組表で見る
+          </Link>
+        </li>
+      ))}
+    </ul>
   )
 }
 

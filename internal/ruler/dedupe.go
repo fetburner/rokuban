@@ -8,22 +8,22 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// dedupeCandidate は重複排除の判定対象 1 件。勝者ルールが決まった番組のうち、
+// DedupeCandidate は重複排除の判定対象 1 件。勝者ルールが決まった番組のうち、
 // そのルールが dedupe_enabled なものだけを渡す。
 //
 // 題名と番組の識別子（network_id / service_id / event_id）は SQL 側で
 // epg_programs を JOIN して取るため、ここには載せない。Go 側でスナップショットを
 // 組み直すと「射影から消えた番組」の扱いが 2 箇所に散る（JOIN で落ちれば
 // 判定対象から自然に外れる）。
-type dedupeCandidate struct {
+type DedupeCandidate struct {
 	ProgramID int64 `json:"program_id"`
 	RuleID    int64 `json:"rule_id"`
 }
 
-// dedupeMatch は 1 番組分の重複排除の判定結果（マッチした録画とその類似度）。
+// DedupeMatch は 1 番組分の重複排除の判定結果（マッチした録画とその類似度）。
 // reservations.dedup_match_recording_id / dedup_similarity にそのまま焼く
 // 「なぜスキップされたか」の根拠。
-type dedupeMatch struct {
+type DedupeMatch struct {
 	RecordingID int64
 	Similarity  float32
 }
@@ -126,7 +126,7 @@ ORDER BY c.program_id, similarity(rec.title, c.title) DESC, rec.id ASC
 // マップに現れない（呼び出し側は「無い = 根拠 2 列を NULL に戻す」として扱う）。
 //
 // candidates が空なら往復しない。
-func evaluateDedupe(ctx context.Context, pool *pgxpool.Pool, site string, candidates []dedupeCandidate) (map[int64]dedupeMatch, error) {
+func EvaluateDedupe(ctx context.Context, pool *pgxpool.Pool, site string, candidates []DedupeCandidate) (map[int64]DedupeMatch, error) {
 	if len(candidates) == 0 {
 		return nil, nil
 	}
@@ -142,10 +142,10 @@ func evaluateDedupe(ctx context.Context, pool *pgxpool.Pool, site string, candid
 	}
 	defer rows.Close()
 
-	matches := make(map[int64]dedupeMatch)
+	matches := make(map[int64]DedupeMatch)
 	for rows.Next() {
 		var programID int64
-		var m dedupeMatch
+		var m DedupeMatch
 		if err := rows.Scan(&programID, &m.RecordingID, &m.Similarity); err != nil {
 			return nil, fmt.Errorf("scanning dedupe match: %w", err)
 		}
@@ -155,4 +155,13 @@ func evaluateDedupe(ctx context.Context, pool *pgxpool.Pool, site string, candid
 		return nil, fmt.Errorf("iterating dedupe matches: %w", err)
 	}
 	return matches, nil
+}
+
+// ruler keeps its original internal names while the API shares the exact same SQL evaluator
+// for save-time capacity previews. This prevents a second implementation of skip dedupe.
+type dedupeCandidate = DedupeCandidate
+type dedupeMatch = DedupeMatch
+
+func evaluateDedupe(ctx context.Context, pool *pgxpool.Pool, site string, candidates []dedupeCandidate) (map[int64]dedupeMatch, error) {
+	return EvaluateDedupe(ctx, pool, site, candidates)
 }
