@@ -608,9 +608,17 @@ playlist と全セグメントを保持する。これにより、録画完了�
 segment を取りに来る窓を失わない。保持中は全プロファイルのプレイリストが残るので、
 終了後でも再起動なしに `?profile=` を切り替えられる
 （`TestFinishedChaseProfileSwitchServesRetainedPlaylists`）。ffmpeg が異常終了した場合（kill を含む）は
-壊れたセッションを保持せず、map とファイルを直ちに解放する。次の playlist 要求は、録画中なら同じ録画・offset の
-セッションを先頭から作り直し、録画が終わっていれば 404 になる（`TestChaseInputErrorDoesNotWriteEndlist`）。
-未解決: 作り直した EVENT playlist は先頭から縮み、失敗が続く間は要求のたびに作り直す。
+壊れたセッションを保持せず、map とファイルを直ちに解放する。mirakc からの入力読み取りエラーで
+ffmpeg を止めた場合は、録画 ID をキーに 10 秒間の再作成 cooldown を記録する。期間中の playlist 要求は、
+全 offset で `502 Bad Gateway` と本文
+`追っかけ入力のエラーが続いているため、再作成を一時停止しています。しばらく待ってから再読み込みしてください。`
+および残り秒数の `Retry-After` を返す。これは上流入力の失敗を示し、チューナーやセッション数の不足を
+表す `503 Service Unavailable` とは分類を分けるためである。cooldown が切れた後の最初の要求は新しい
+セッションを試し、入力が回復していれば通常どおり再生できる。再度失敗した場合は cooldown を更新する。
+失敗記録とセッションの map からの削除は同じロック区間で行うため、同時要求も新しいセッションを作らない。
+通常の異常終了（ffmpeg 自身のクラッシュ）や idle GC は入力失敗として記録しない。
+録画が終了済みなら、保持セッションが無い要求は引き続き 404 になる
+（`TestChaseInputErrorDoesNotWriteEndlist`）。
 
 ライブと追っかけのセッション数は合算し、Prometheus の
 `rokuban_live_active_sessions{kind="live"|"chase"}` で内訳を見る。セグメントの保存先は

@@ -700,22 +700,28 @@ export type LiveLoadError =
   // 503。同時セッション上限 / チューナー枯渇 / シャットダウン中のいずれか。
   // 本文（プレーンテキスト）はそのまま運ぶ
   | { kind: 'capacity'; message: string }
+  // 追っかけ入力失敗後の再作成クールダウン。503 の容量不足とは区別する。
+  | { kind: 'chase-input'; message: string }
   // 想定外のステータス
   | { kind: 'other'; status: number; message: string }
 
 /**
  * classifyLiveLoadError はプレイリスト取得の結果をエラー種別に分類する。
  *
- * 503 はすべて `capacity` に落とす --- 本文でセッション上限 / チューナー枯渇 /
- * シャットダウン中を区別できるが、いずれも「今は無理なので後で試す」という同じ
- * 対応を要求するので、UI 側の分岐は 1 つで足りる。本文は必ずそのまま運ぶ
- * （docs/frontend.md「エラーの本文も UI まで運ぶ」）。
+ * 503 はすべて `capacity` に落とす --- セッション上限 / チューナー枯渇 /
+ * シャットダウン中を区別できるが、同じ UI 分岐で扱える。追っかけ再生中の 502 は
+ * upstream 入力エラー後の cooldown として `chase-input` に分け、自動張り直しを止める。
+ * 本文は必ずそのまま運ぶ（docs/frontend.md「エラーの本文も UI まで運ぶ」）。
  */
 export function classifyLiveLoadError(
   result: { kind: 'network' } | { kind: 'http'; status: number; body: string },
+  source?: 'chase',
 ): LiveLoadError {
   if (result.kind === 'network') return { kind: 'unreachable' }
   if (result.status === 503) return { kind: 'capacity', message: result.body.trim() }
+  if (source === 'chase' && result.status === 502) {
+    return { kind: 'chase-input', message: result.body.trim() }
+  }
   return { kind: 'other', status: result.status, message: result.body.trim() }
 }
 
@@ -802,6 +808,7 @@ export type LivePlaylistProbeResult =
 export async function probeLivePlaylist(
   url: string,
   signal?: AbortSignal,
+  source?: 'chase',
 ): Promise<LivePlaylistProbeResult> {
   let response: Response
   try {
@@ -826,6 +833,6 @@ export async function probeLivePlaylist(
   const body = await response.text().catch(() => '')
   return {
     ok: false,
-    error: classifyLiveLoadError({ kind: 'http', status: response.status, body }),
+    error: classifyLiveLoadError({ kind: 'http', status: response.status, body }, source),
   }
 }

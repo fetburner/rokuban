@@ -1059,7 +1059,7 @@ export function LivePlayer({
     async function start() {
       let probe: Awaited<ReturnType<typeof probeLivePlaylist>>
       try {
-        probe = await probeLivePlaylist(url, controller.signal)
+        probe = await probeLivePlaylist(url, controller.signal, isChase ? 'chase' : undefined)
       } catch (err) {
         // 中断（チャンネル切り替え・破棄）は無視する。エラー表示にはしない ---
         // 単に「もう見たいものが変わった」だけで、失敗ではない
@@ -1084,7 +1084,9 @@ export function LivePlayer({
           setOriginalVODStartState({ recordingId, offset: next, explicit: true })
           return
         }
-        if (handOffError(video)) return
+        // 入力失敗の cooldown 応答は再生元を選び直して即座に同じ要求を重ねず、
+        // 再読み込みを案内する。録画 ID 単位の cooldown は別 offset にも適用される。
+        if (probe.error.kind !== 'chase-input' && handOffError(video)) return
         resumePlaybackPendingRef.current = false
         if (isRecordingPlayback) setMediaPlaying(false)
         setError(probe.error)
@@ -2008,6 +2010,14 @@ function LiveErrorMessage({
           チャンネルを切り替えた直後は、前のチャンネルの解放待ちの可能性があります。
           30 秒ほど待って再読み込みしてください。
         </p>
+        {error.message !== '' && <p className="text-muted-foreground">{error.message}</p>}
+      </div>
+    )
+  }
+  if (error.kind === 'chase-input') {
+    return (
+      <div className="text-sm text-destructive">
+        <p>追っかけ再生の入力に失敗したため、一時停止しています。</p>
         {error.message !== '' && <p className="text-muted-foreground">{error.message}</p>}
       </div>
     )

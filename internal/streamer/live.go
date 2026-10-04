@@ -159,6 +159,8 @@ var (
 	// **プロセスローカル**であり、グローバルな天井（チューナー数、mirakc が裁定）
 	// ではない（docs/operations.md §5）。
 	errSessionLimit = errors.New("live session limit reached (process-local)")
+	// errChaseInputCoolingDown は同じ録画の追っかけ入力失敗後、再作成を一時停止している。
+	errChaseInputCoolingDown = errors.New("chase input failure is cooling down")
 	// errShuttingDown は Run の ctx が既に完了し、新規セッションを受け付けないことを示す。
 	errShuttingDown = errors.New("streamer is shutting down")
 	// errStartupTimeout は getOrCreateSession の `<-s.ready` 待ちが
@@ -251,6 +253,9 @@ type LiveStreamer struct {
 	mu            sync.Mutex
 	sessions      map[int64]*liveSession
 	chaseSessions map[sessionKey]*liveSession
+	// failedChaseInputs は入力エラーで終わった追っかけ録画 ID と再試行可能時刻。
+	// offset を含めないのは、フロントの再選択が新しい offset で来るため。
+	failedChaseInputs map[int64]time.Time
 
 	// afterOriginalVODOpen はテスト専用: 原本を open した直後、DB を再確認する前に呼ぶ。
 	afterOriginalVODOpen func()
@@ -305,12 +310,13 @@ func newLiveStreamerWithPool(pool *pgxpool.Pool, client mirakcLiveClient, site s
 		sweepStaleLiveSegments(cfg.SegmentDir)
 	}
 	return &LiveStreamer{
-		mirakc:        client,
-		site:          site,
-		cfg:           cfg,
-		pool:          pool,
-		sessions:      make(map[int64]*liveSession),
-		chaseSessions: make(map[sessionKey]*liveSession),
+		mirakc:            client,
+		site:              site,
+		cfg:               cfg,
+		pool:              pool,
+		sessions:          make(map[int64]*liveSession),
+		chaseSessions:     make(map[sessionKey]*liveSession),
+		failedChaseInputs: make(map[int64]time.Time),
 	}
 }
 
@@ -551,6 +557,11 @@ func (c LiveConfig) idleEvictionThreshold() time.Duration {
 // var にしてあるのはテストからの上書き用（15 秒の実待ちはテストを不必要に
 // 遅くする）。運用者向けの設定キーではない。
 var playlistStartupTimeout = 15 * time.Second
+
+// chaseInputFailureCooldown は追っかけ入力の失敗後、同じ録画の全 offset で新しい
+// セッションを作らない期間。再生位置の offset で張り直されても、入力障害中に
+// ffmpeg と mirakc の要求を作り直し続けないようにする。
+var chaseInputFailureCooldown = 10 * time.Second
 
 const playlistPollInterval = 100 * time.Millisecond
 
@@ -2197,6 +2208,14 @@ func writeSessionError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, errSessionLimit):
 		http.Error(w, "too many concurrent live sessions on this process", http.StatusServiceUnavailable)
+	case errors.Is(err, errChaseInputCoolingDown):
+		var cooldown *chaseInputCooldownError
+		seconds := 1
+		if errors.As(err, &cooldown) && cooldown.retryAfter > 0 {
+			seconds = int((cooldown.retryAfter + time.Second - 1) / time.Second)
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(seconds))
+		http.Error(w, chaseInputCooldownMessage, http.StatusBadGateway)
 	case errors.Is(err, errShuttingDown):
 		http.Error(w, "streamer is shutting down", http.StatusServiceUnavailable)
 	case errors.Is(err, errStartupTimeout):
@@ -2209,6 +2228,16 @@ func writeSessionError(w http.ResponseWriter, err error) {
 		http.Error(w, "live stream unavailable", http.StatusServiceUnavailable)
 	}
 }
+
+const chaseInputCooldownMessage = "追っかけ入力のエラーが続いているため、再作成を一時停止しています。しばらく待ってから再読み込みしてください。"
+
+type chaseInputCooldownError struct {
+	retryAfter time.Duration
+}
+
+func (e *chaseInputCooldownError) Error() string { return errChaseInputCoolingDown.Error() }
+
+func (e *chaseInputCooldownError) Unwrap() error { return errChaseInputCoolingDown }
 
 // waitForPlaylist は path に有効な HLS プレイリストが書かれるまでポーリングし、
 // 読めたらその内容を返す。タイムアウトまたは ctx のキャンセルで ok=false を返す。
@@ -2615,6 +2644,16 @@ func liveEvictionReason(err error) (string, bool) {
 
 func (ls *LiveStreamer) getOrCreateSessionOnceFor(ctx context.Context, key sessionKey, source sessionSource) (*liveSession, error) {
 	ls.mu.Lock()
+	if key.kind == chaseSessionKind {
+		if retryAt, failed := ls.failedChaseInputs[key.id]; failed {
+			remaining := time.Until(retryAt)
+			if remaining > 0 {
+				ls.mu.Unlock()
+				return nil, &chaseInputCooldownError{retryAfter: remaining}
+			}
+			delete(ls.failedChaseInputs, key.id)
+		}
+	}
 	if s, ok := ls.getSessionLocked(key); ok {
 		ls.mu.Unlock()
 		if err := waitReadyTouching(ctx, s, playlistStartupTimeout); err != nil {
@@ -2744,6 +2783,7 @@ func sessionReady(s *liveSession) bool {
 func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 	kind := sessionKindOf(s)
 	keepCompletedRecordingSession := false
+	inputFailed := false
 	// close(s.done) は必ず最後（他の全ての後片付けの後）に行う。stop() は
 	// `<-s.done` が閉じたら「片付け完了」とみなして戻るので、途中の状態
 	// （map から消す前・ディレクトリを消す前）で閉じると、呼び出し側が
@@ -2752,6 +2792,14 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 	defer close(s.done)
 	defer func() {
 		ls.mu.Lock()
+		if inputFailed {
+			if ls.failedChaseInputs == nil {
+				ls.failedChaseInputs = make(map[int64]time.Time)
+			}
+			// Keep the failure marker for the durable recording ID, not this offset.
+			// The frontend retries from the last playback position using a new offset.
+			ls.failedChaseInputs[s.key.id] = time.Now().Add(chaseInputFailureCooldown)
+		}
 		// idle GC が先にこの id を削除して新しいセッションに入れ替えていたら、
 		// 新しいセッションを消さない（cur == s のときだけ削除）。
 		if !keepCompletedRecordingSession {
@@ -2915,6 +2963,7 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 
 	waitErr := cmd.Wait()
 	inputErr := chaseInput.finish(body)
+	inputFailed = kind == chaseSessionKind && inputErr != nil && ctx.Err() == nil
 	ffmpegCompleted := ffmpegSessionCompleted(ctx, cmd, waitErr, inputErr, kind, sessionIDOf(s), stderr)
 	if (kind == chaseSessionKind || kind == originalVODSessionKind) && ctx.Err() == nil && ffmpegCompleted {
 		// Keep completed recording playlists and all segments until the shared idle
@@ -3113,6 +3162,11 @@ func (ls *LiveStreamer) reapIdleAt(now time.Time) {
 	defer metrics.LiveIdleGCLastPass.SetToCurrentTime()
 
 	ls.mu.Lock()
+	for recordingID, retryAt := range ls.failedChaseInputs {
+		if !now.Before(retryAt) {
+			delete(ls.failedChaseInputs, recordingID)
+		}
+	}
 	var idle []*liveSession
 	for id, s := range ls.sessions {
 		if s.idleSince(now) >= ls.cfg.IdleTimeout {

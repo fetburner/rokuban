@@ -842,12 +842,14 @@ func TestChaseRangeFollowReaderCloseStopsConcurrentRead(t *testing.T) {
 	}
 }
 
-// TestChaseInputErrorDoesNotWriteEndlist は、追っかけの入力がエラーで終わったら ffmpeg が
-// ENDLIST を書く前に止め、セッションを保持しないことを固定する。その後の playlist 要求は、
-// 録画が終わっていれば 404、録画中なら先頭から作り直す（今の振る舞い。作り直しの繰り返しは
-// 未解決として別の issue にある）。
+// TestChaseInputErrorDoesNotWriteEndlist は、追っかけ入力のエラー後にセッションを破棄し、
+// 同じ録画の全 offset で cooldown が切れるまで再作成しないこと、切れた後は再生できることを固定する。
 func TestChaseInputErrorDoesNotWriteEndlist(t *testing.T) {
 	withFastChaseTimings(t)
+	previousCooldown := chaseInputFailureCooldown
+	cooldown := 30 * time.Millisecond
+	chaseInputFailureCooldown = cooldown
+	t.Cleanup(func() { chaseInputFailureCooldown = previousCooldown })
 	ffmpeg, marker := installEndlistMarkerFFmpeg(t)
 	// 追従配信が閉じた後の Range が、再試行しても変わらない 400 で失敗する。
 	client := &scriptedChaseRecord{
@@ -862,27 +864,96 @@ func TestChaseInputErrorDoesNotWriteEndlist(t *testing.T) {
 	}
 	ls.mu.Lock()
 	_, retained := ls.chaseSessions[chaseSessionKeyFor(42, 0)]
+	_, failed := ls.failedChaseInputs[42]
 	ls.mu.Unlock()
 	if retained {
 		t.Fatal("a chase session whose input failed was retained")
+	}
+	if !failed {
+		t.Fatal("input failure was not recorded under the recording ID")
 	}
 
 	if resp := requestHeadChasePlaylist(ls, 42, "finished"); resp.Code != http.StatusNotFound {
 		t.Fatalf("playlist status after the recording finished = %d, want 404", resp.Code)
 	}
+
+	if resp := requestHeadChasePlaylist(ls, 42, "recording"); resp.Code != http.StatusBadGateway {
+		t.Fatalf("playlist status during the input failure cooldown = %d, want 502 (%s)", resp.Code, resp.Body.String())
+	} else {
+		if got := resp.Body.String(); !strings.Contains(got, chaseInputCooldownMessage) {
+			t.Fatalf("cooldown response body = %q, want %q", got, chaseInputCooldownMessage)
+		}
+		if got := resp.Header().Get("Retry-After"); got != "1" {
+			t.Fatalf("Retry-After = %q, want 1 for the short test cooldown", got)
+		}
+	}
+
+	// The frontend retries at the playback position, which has a different offset key.
+	// Concurrent requests for any offset must see the same recording-level marker.
+	var sourceMu sync.Mutex
+	sourceCalls := 0
+	var requestWG sync.WaitGroup
+	requestErrs := make(chan error, 12)
+	for offset := int64(1); offset <= 12; offset++ {
+		requestWG.Add(1)
+		go func(offset int64) {
+			defer requestWG.Done()
+			_, err := ls.getOrCreateSessionFor(context.Background(), sessionKey{
+				kind: chaseSessionKind, id: 42, offsetSeconds: offset,
+			}, func(context.Context) (io.ReadCloser, error) {
+				sourceMu.Lock()
+				sourceCalls++
+				sourceMu.Unlock()
+				return io.NopCloser(strings.NewReader("unexpected")), nil
+			})
+			requestErrs <- err
+		}(offset)
+	}
+	requestWG.Wait()
+	close(requestErrs)
+	for err := range requestErrs {
+		if !errors.Is(err, errChaseInputCoolingDown) {
+			t.Fatalf("different-offset getOrCreateSessionFor() = %v, want input cooldown", err)
+		}
+	}
+	sourceMu.Lock()
+	gotSourceCalls := sourceCalls
+	sourceMu.Unlock()
+	if gotSourceCalls != 0 {
+		t.Fatalf("session sources started during cooldown = %d, want 0", gotSourceCalls)
+	}
 	client.mu.Lock()
-	client.followGate = make(chan struct{})
-	gate := client.followGate
+	followCallsDuringCooldown := client.followCalls
+	client.visible = len(client.content)
+	client.recording = false
 	client.mu.Unlock()
-	defer close(gate)
+	if followCallsDuringCooldown != 1 {
+		t.Fatalf("mirakc follow requests during cooldown = %d, want 1", followCallsDuringCooldown)
+	}
+
+	time.Sleep(cooldown + 20*time.Millisecond)
 	if resp := requestHeadChasePlaylist(ls, 42, "recording"); resp.Code != http.StatusOK {
-		t.Fatalf("playlist status while still recording = %d, want 200 (a new session from the head)", resp.Code)
+		t.Fatalf("playlist status after the cooldown and input recovery = %d, want 200 (%s)", resp.Code, resp.Body.String())
+	}
+	ls.mu.Lock()
+	recovered := ls.chaseSessions[chaseSessionKeyFor(42, 0)]
+	ls.mu.Unlock()
+	if recovered == nil {
+		t.Fatal("recovered chase session was not retained")
+	}
+	select {
+	case <-recovered.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("recovered chase session did not finish")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("recovered session did not write ENDLIST: %v", err)
 	}
 	client.mu.Lock()
 	followCalls := client.followCalls
 	client.mu.Unlock()
 	if followCalls != 2 {
-		t.Fatalf("mirakc follow requests = %d, want 2 (the failed session recreated from the head)", followCalls)
+		t.Fatalf("mirakc follow requests after recovery = %d, want 2", followCalls)
 	}
 }
 
@@ -1701,9 +1772,13 @@ exit 1
 	}
 	ls.mu.Lock()
 	_, retained := ls.chaseSessions[chaseSessionKeyFor(42, 0)]
+	_, inputFailureRecorded := ls.failedChaseInputs[42]
 	ls.mu.Unlock()
 	if retained {
 		t.Fatal("a chase session whose ffmpeg crashed was retained")
+	}
+	if inputFailureRecorded {
+		t.Fatal("an ffmpeg crash was recorded as an input failure")
 	}
 	got := logs.String()
 	if !strings.Contains(got, "ffmpeg exited unexpectedly") || !strings.Contains(got, "fake ffmpeg crashed") {
