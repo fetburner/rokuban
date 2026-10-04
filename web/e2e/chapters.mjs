@@ -516,6 +516,32 @@ if (!fast.paused || fast.t < 32 || fast.t > 34.5) {
   )
 }
 
+log('\n=== ⑤-b 「境界まで」「境界から」も再生位置で止まる（2 倍速） ===')
+// 「境界まで」は境界の 3 秒前から始めて境界（30 秒）で、「境界から」は境界から 3 秒後（33 秒）で止まる。
+// 実時間のタイマーで止める実装だと 2 倍速では境界を過ぎても止まらない（「境界まで」は 33 秒付近）。
+for (const mode of [
+  { name: '境界まで', button: '選択中の境界まで再生', min: 29.9, max: 30.2, want: '30 秒' },
+  { name: '境界から', button: '選択中の境界から再生', min: 32, max: 34.5, want: '33 秒' },
+]) {
+  await video.evaluate((v) => {
+    v.playbackRate = 2
+  })
+  await seek(100)
+  await firstBoundary.click()
+  await page.getByRole('button', { name: mode.button }).click()
+  await page.waitForTimeout(4500)
+  const fastMode = await video.evaluate((v) => ({ t: v.currentTime, paused: v.paused }))
+  await video.evaluate((v) => {
+    v.pause()
+    v.playbackRate = 1
+  })
+  if (!fastMode.paused || fastMode.t < mode.min || fastMode.t > mode.max) {
+    ng.push(
+      `⑤-b 2 倍速の「${mode.name}」が ${mode.want}で止まっていない（位置 ${fastMode.t.toFixed(2)} 秒 paused=${fastMode.paused}）`,
+    )
+  }
+}
+
 // 編集に変更は加えていないので「やめる」で通常再生へ戻る。
 await page.getByRole('button', { name: 'やめる', exact: true }).click()
 await page.waitForSelector('[data-testid="chapter-edit-layout"]', { state: 'detached' })
@@ -1396,6 +1422,9 @@ if ((await targetBoundary.count()) !== 1) {
       }
     }
   }
+  // 境界を動かす・元に戻すと映像が付いてくるので、元に戻した後の選択は再生位置に近い境界になる。
+  // 30 秒の境界を明示的に選び直してから調整する。
+  await page.locator('[data-testid="chapter-filmstrip-boundary"][data-time-ms="30000"]').click()
   const nudge = page.getByRole('button', { name: '選択中の境界を 1 フレーム進める', exact: true })
   if ((await nudge.count()) !== 1) {
     ng.push('#1019: 選択境界ひとつだけの調整欄に +1 frame が無い')
