@@ -35,6 +35,7 @@ import {
 } from '@/lib/events'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
 import { summarizeRuleConditions } from '@/components/rule-condition-summary'
+import { composeServiceId } from '@/lib/service-id'
 import { countMatchesByLocalDay, toggleSearchGenre } from '@/lib/programs-condition'
 import { useReservationActions } from '@/lib/reservation-actions'
 import {
@@ -502,12 +503,10 @@ export function ProgramsPage() {
   const scopedMatches =
     conditionMatches === undefined || selectedServiceIds.size === 0
       ? conditionMatches
-      : conditionMatches.filter((match) => {
-          const service = siteServiceByKey.get(
-            siteServiceKey(match.site, match.networkId, match.serviceId),
-          )
-          return service !== undefined && selectedServiceIds.has(service.id)
-        })
+      : conditionMatches.filter((match) =>
+          // ?service= は site を含まない軸。サービス一覧の取得状態に依存させない。
+          selectedServiceIds.has(composeServiceId(match.networkId, match.serviceId)),
+        )
   const dayMatchCounts =
     scopedMatches === undefined
       ? undefined

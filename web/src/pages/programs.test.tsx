@@ -276,6 +276,7 @@ function stubApi(
   extraServices: Service[] = [],
   intentPutResponse?: () => Response,
   onSearchCall?: (request: unknown, callIndex: number) => Response | Promise<Response>,
+  servicesResponse?: () => Response | Promise<Response>,
 ) {
   let programsCallIndex = 0
   let searchCallIndex = 0
@@ -292,6 +293,7 @@ function stubApi(
     // （`routes.test.tsx` の '/search' テストと同じ理由）。
     if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(['default']))
     if (url.pathname === '/api/sites/default/services') {
+      if (servicesResponse !== undefined) return Promise.resolve(servicesResponse())
       return Promise.resolve(jsonResponse([...services, ...extraServices]))
     }
     // AppShell がナビゲーションの出し分けに読む（issue #209）。未 stub でも
@@ -670,6 +672,35 @@ describe('ProgramsPage の表示形式', () => {
     renderPage(`/programs?view=grid&cond=${cond}`)
     await screen.findByText('2 件一致')
     expect(screen.getAllByTestId('day-match-count')[0]).toHaveTextContent('2件')
+  })
+
+  it('サービス一覧が未取得・失敗でも、チャンネル絞り込み中の一致件数は 0 件にならない', async () => {
+    const first = { ...soon, genres: [7] }
+    const match: ProgramSearchMatch = {
+      site: 'default',
+      programId: first.programId,
+      networkId: first.networkId,
+      serviceId: first.serviceId,
+      startAt: first.startAt,
+      durationMs: first.durationMs,
+      name: first.name,
+      isFree: true,
+    }
+    const cond = encodeURIComponent(JSON.stringify({ genres: [7] }))
+    for (const servicesResponse of [
+      () => new Promise<Response>(() => {}),
+      () => errorResponse(500, 'サービス一覧に失敗'),
+    ]) {
+      stubApi(
+        [], [], [first], undefined, undefined, [], undefined,
+        () => jsonResponse([match]),
+        servicesResponse,
+      )
+      const view = renderPage(`/programs?service=3273601024&cond=${cond}`)
+      await screen.findByText('1 件一致')
+      expect(screen.getAllByTestId('day-match-count')[0]).toHaveTextContent('1件')
+      view.unmount()
+    }
   })
 
   it('リストでは条件検索が成功した後にだけ非一致番組を隠す', async () => {
