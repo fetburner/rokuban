@@ -1507,6 +1507,25 @@ describe('SearchPage', () => {
       expect(screen.getByRole('button', { name: 'ルールを作成' })).not.toBeDisabled()
     })
 
+    it('エンコード後に原本を削除する警告を一度だけ表示し、保存は止める', async () => {
+      const { createRuleBodies } = stubApi()
+      renderPage()
+
+      expect(await waitForServiceChip()).toBeInTheDocument()
+      await addKeyword('ニュース')
+      await userEvent.click(screen.getByRole('button', { name: 'この条件でルールを作成' }))
+      await userEvent.selectOptions(screen.getByLabelText('原本の保持'), 'until_encoded')
+
+      expect(
+        screen.getAllByText(
+          'エンコード後に原本を削除するには、プロファイルを 1 つ以上選んでください',
+          { exact: true },
+        ),
+      ).toHaveLength(1)
+      expect(screen.getByRole('button', { name: 'ルールを作成' })).toBeDisabled()
+      expect(createRuleBodies).toHaveLength(0)
+    })
+
     it('条件を1つも指定していない状態での保存は確認チェックを挟む', async () => {
       const { createRuleBodies } = stubApi()
       renderPage()
@@ -1629,6 +1648,23 @@ describe('SearchPage', () => {
       expect(
         screen.getByRole('form', { name: 'ルールの条件を編集' }),
       ).toBeInTheDocument()
+    })
+
+    it('エンコード後に原本を削除する警告を一度だけ表示し、上書き保存は止める', async () => {
+      const { updateRuleBodies } = stubApi({ rules: [ruleFixture] })
+      renderPage(['/search?ruleId=7'])
+
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+      await userEvent.selectOptions(screen.getByLabelText('原本の保持'), 'until_encoded')
+
+      expect(
+        screen.getAllByText(
+          'エンコード後に原本を削除するには、プロファイルを 1 つ以上選んでください',
+          { exact: true },
+        ),
+      ).toHaveLength(1)
+      expect(screen.getByRole('button', { name: 'ルールを上書き保存' })).toBeDisabled()
+      expect(updateRuleBodies).toHaveLength(0)
     })
 
     /**

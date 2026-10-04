@@ -25,6 +25,7 @@ import {
   emptyRuleMeta,
   hasNoConditions,
   ruleMetaError,
+  ruleNameError,
   ruleToMeta,
   type RuleMetaDraft,
   type SearchDraft,
@@ -318,6 +319,7 @@ export function CreateRuleForm({
   )
   const effectiveMeta = { ...meta, name: nameTouched ? meta.name : suggestedName }
   const metaError = ruleMetaError(effectiveMeta)
+  const nameError = ruleNameError(effectiveMeta)
   const noConditions = hasNoConditions(draft)
   const hasPeriod = draft.periodStartAt !== '' || draft.periodEndAt !== ''
   const pending = createRule.isPending
@@ -425,9 +427,9 @@ export function CreateRuleForm({
         disabled={pending}
       />
 
-      {metaError !== undefined && (
+      {nameError !== undefined && (
         <p role="alert" className="text-xs text-destructive">
-          {metaError}
+          {nameError}
         </p>
       )}
 
@@ -516,6 +518,7 @@ export function RuleEditForm({
   const [confirmedEmpty, setConfirmedEmpty] = useState(false)
 
   const metaError = ruleMetaError(meta)
+  const nameError = ruleNameError(meta)
   const noConditions = hasNoConditions(draft)
   const hasPeriod = draft.periodStartAt !== '' || draft.periodEndAt !== ''
   const pending = updateRule.isPending || createRule.isPending
@@ -658,9 +661,9 @@ export function RuleEditForm({
         disabled={pending}
       />
 
-      {metaError !== undefined && (
+      {nameError !== undefined && (
         <p role="alert" className="text-xs text-destructive">
-          {metaError}
+          {nameError}
         </p>
       )}
 

@@ -16,6 +16,7 @@ import {
   hasWeekday,
   newTimeWindow,
   ruleMetaError,
+  ruleNameError,
   conditionsToDraft,
   ruleToMeta,
   type RuleMetaDraft,
@@ -525,6 +526,14 @@ describe('ruleMetaError', () => {
 
   it('always なら常に止めない', () => {
     expect(ruleMetaError(meta({ keepOriginal: 'always', encodeProfiles: [] }))).toBeUndefined()
+  })
+})
+
+describe('ruleNameError', () => {
+  it('名前が空（空白のみ含む）なら表示し、値があれば表示しない', () => {
+    expect(ruleNameError({ name: '' })).toBe('名前は必須です')
+    expect(ruleNameError({ name: '   ' })).toBe('名前は必須です')
+    expect(ruleNameError({ name: 'ニュース' })).toBeUndefined()
   })
 })
 
