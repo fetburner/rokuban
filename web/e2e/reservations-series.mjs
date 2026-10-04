@@ -256,6 +256,7 @@ async function checkPage(browser, width, theme, multipleSites, saveShot) {
     return hit !== null && (hit === el || el.contains(hit))
   })
   if (!(await hitTarget(hub))) ng.push(`${label}: 番組ハブの hit-test を行本体が奪っている`)
+  if (!(await hitTarget(expand))) ng.push(`${label}: 開閉ボタンの hit-test を別の要素が奪っている（行本体を押しても開閉しない）`)
   if (!(await hitTarget(origin))) ng.push(`${label}: 出自リンクの hit-test を行本体が奪っている`)
   if ((await capacity.count()) && !(await hitTarget(capacity))) {
     ng.push(`${label}: 容量不足バッジの hit-test を行本体が奪っている`)
@@ -340,6 +341,8 @@ async function checkPage(browser, width, theme, multipleSites, saveShot) {
     ng.push(`${label}: ページが横スクロールする (${dimensions.page}px > ${dimensions.viewport}px)`)
   }
 
+  // 判定用の余白をスクリーンショットに写さない。
+  await page.evaluate(() => { document.body.style.paddingBottom = '' })
   if (saveShot) await screenshot(page, `${width}-expanded-${multipleSites ? 'multi' : 'single'}-${theme}.png`)
 
   // 表示形式の好みだけが localStorage に残り、絞り込みの URL は変更しない。
