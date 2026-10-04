@@ -8,7 +8,7 @@
  * 「oxlint の既存 warning 3 件を増やさない」に抵触する）。
  */
 
-import type { Rule, RuleTextMatch } from '@/api/generated'
+import type { ProgramSearchRequest, Rule, RuleTextMatch } from '@/api/generated'
 import { formatDate, formatDuration } from '@/lib/format'
 import { allWeekdays, genreCodeLabel, hasWeekday, secToTimeValue, weekdayLabels } from '@/lib/program-search'
 
@@ -68,13 +68,17 @@ export function genresSummary(genres: readonly number[]): string {
  * （`ConditionFields`）ほどの精度は要らない。サービスは名前解決に
  * `useListServices` が要るため、ここでは件数だけ出す。
  */
-export function summarizeRuleConditions(rule: Rule): string[] {
+export function summarizeRuleConditions(rule: Rule | ProgramSearchRequest): string[] {
   const parts: string[] = []
 
   for (const m of rule.textMatches ?? []) parts.push(textMatchSummary(m))
 
   if (rule.services && rule.services.length > 0) {
     parts.push(`チャンネル ${rule.services.length} 件`)
+  }
+
+  if (rule.sites && rule.sites.length > 0) {
+    parts.push(`サイト ${rule.sites.length} 件`)
   }
 
   if (rule.channelTypes && rule.channelTypes.length > 0) {

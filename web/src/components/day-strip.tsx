@@ -25,6 +25,7 @@ export function DayStrip({
   days,
   onSelect,
   now,
+  matchCounts,
 }: {
   /** いま見ている日の offset（ハイライト対象）。スクロール位置から導出する。 */
   current: number
@@ -33,6 +34,8 @@ export function DayStrip({
   onSelect: (dayOffset: number) => void
   /** テストから現在時刻を固定するための注入口。省略時は内部で `Date.now()`。 */
   now?: number
+  /** 条件検索が成功したときの、開始日のローカル暦日ごとの一致件数。 */
+  matchCounts?: readonly number[]
 }): React.ReactElement {
   const offsets = Array.from({ length: days }, (_, i) => i)
 
@@ -50,6 +53,7 @@ export function DayStrip({
           isCurrent={current === offset}
           onSelect={onSelect}
           now={now}
+          matchCount={matchCounts?.[offset]}
         />
       ))}
     </div>
@@ -61,11 +65,13 @@ function DayCell({
   isCurrent,
   onSelect,
   now,
+  matchCount,
 }: {
   dayOffset: number
   isCurrent: boolean
   onSelect: (dayOffset: number) => void
   now?: number
+  matchCount?: number
 }) {
   const date = dayOrigin(dayOffset, now)
   const weekday = date.getDay()
@@ -82,7 +88,9 @@ function DayCell({
       // 数値だけだと読み上げが「1」になる。完全な形を aria-label に持たせ、
       // 見える側（2 行）は aria-hidden にして二重読みを避ける
       // （components/capacity-shortfall-badge.tsx と同じ手法）。
-      aria-label={dateLabel}
+      aria-label={
+        matchCount === undefined ? dateLabel : `${dateLabel}, 条件に一致 ${matchCount}件`
+      }
       onClick={() => onSelect(dayOffset)}
       // 週末は色ではなく濃さで立てる（墨 = 週末 / 走査線グレー = 平日）。
       // カレンダー慣習の「日 = 赤 / 土 = 青」は使わない --- 赤は「いま電波に
@@ -103,6 +111,11 @@ function DayCell({
       <span aria-hidden="true" className="flex flex-col items-center leading-tight">
         <span>{date.getDate()}</span>
         <span>{weekdayChars[weekday]}</span>
+        {matchCount !== undefined && (
+          <span data-testid="day-match-count" className="text-[9px] leading-none">
+            {matchCount}件
+          </span>
+        )}
       </span>
     </button>
   )

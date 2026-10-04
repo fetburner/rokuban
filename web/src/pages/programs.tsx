@@ -1,5 +1,5 @@
 import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query'
-import { useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
+import { Link, useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
 import { X } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
@@ -18,10 +18,12 @@ import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
 import { Dialog, DialogClose, DialogContent } from '@/components/ui/dialog'
 import {
+  searchPrograms,
   listPrograms,
   useListCapacityOverages,
   useListReservations,
   type CapacityOverage,
+  type ProgramSearchMatch,
   type Reservation,
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
@@ -32,6 +34,9 @@ import {
   programsQueryKeyPrefix,
 } from '@/lib/events'
 import { domLayoutMeasurable } from '@/lib/list-virtualization'
+import { summarizeRuleConditions } from '@/components/rule-condition-summary'
+import { composeServiceId } from '@/lib/service-id'
+import { countMatchesByLocalDay, toggleSearchGenre } from '@/lib/programs-condition'
 import { useReservationActions } from '@/lib/reservation-actions'
 import {
   programIdentity,
@@ -333,6 +338,40 @@ export function ProgramsPage() {
       return responses.flat()
     },
   })
+
+  // 一致集合は rulequery と同じ検索 API の応答だけから作る。query key を
+  // programsQueryKeyPrefix 配下へ置き、EPG・予約意図の invalidate と同じ契機で
+  // 番組データと一緒に取り直す。一致集合は成功済みのキャッシュを再取得中も保ち、
+  // 初回取得中と失敗時（再試行中を含む）だけ undefined を渡す。グリッドは通常色、
+  // リストは全番組を保つ。
+  const conditionQuery = useQuery({
+    queryKey: [programsQueryKeyPrefix, 'condition-lens', search.cond],
+    enabled: search.cond !== undefined,
+    retry: false,
+    queryFn: async () => {
+      if (search.cond === undefined) throw new Error('番組表の条件がありません')
+      const result = unwrap(await searchPrograms(search.cond))
+      if (result === undefined) throw new Error('検索 API の応答が空です')
+      return result
+    },
+  })
+  const conditionError = search.cond !== undefined && conditionQuery.isError
+  const conditionMatches: ProgramSearchMatch[] | undefined =
+    search.cond !== undefined && conditionQuery.isSuccess ? conditionQuery.data : undefined
+  const conditionPending =
+    search.cond !== undefined && conditionQuery.isFetching && conditionMatches === undefined
+  const matchedProgramIds = useMemo(() => {
+    if (conditionMatches === undefined) return undefined
+    return new Set(
+      conditionMatches.map((match) => programIdentity(match.site, match.programId)),
+    )
+  }, [conditionMatches])
+  const selectedGenres = useMemo(() => new Set(search.cond?.genres ?? []), [search.cond])
+  const conditionSummaries = useMemo(() => {
+    if (search.cond === undefined) return []
+    const summaries = summarizeRuleConditions(search.cond)
+    return summaries.length > 0 ? summaries : ['条件あり']
+  }, [search.cond])
   // サーバーが選択済みのサービスで絞るので、これ以上の適用点は要らない。
   const gridPrograms = useMemo(() => gridQuery.data ?? [], [gridQuery.data])
   const axis = useMemo<TimeAxis>(
@@ -403,11 +442,22 @@ export function ProgramsPage() {
     () => filterProgramsFromListStart(programs, listStartMs, lowerBoundMs),
     [programs, listStartMs, lowerBoundMs],
   )
+  // リストは同時性を空間に持たないため、API 一致集合が確定したときだけ非一致を
+  // 隠す。条件検索の通信中・失敗時は一覧を通常表示のままにして空表示を作らない。
+  const conditionFilteredPrograms = useMemo(
+    () =>
+      matchedProgramIds === undefined
+        ? visiblePrograms
+        : visiblePrograms.filter((program) =>
+            matchedProgramIds.has(programIdentity(program.site, program.programId)),
+          ),
+    [matchedProgramIds, visiblePrograms],
+  )
 
   // 直近の時間窓が新しい表示行を追加したかを判定する。API は窓の境界に重なる
   // 番組を返すので、最後の窓に値があっても、前の窓との重複だけなら表示行は増えて
-  // いない。また、ジャンプ先の窓より前に始まった番組は先頭から取り除くため、
-  // `lastPage.programs.length > 0` だけでは「空窓」を見落とす。
+  // いない。また、ジャンプ先の窓より前に始まった番組や条件に一致しない番組は
+  // 表示しないため、`lastPage.programs.length > 0` だけでは「空窓」を見落とす。
   //
   // 新しい表示行が無い窓に番兵を置くと、空窓の末尾が可視のまま自動読み込みが連鎖
   // する。空窓では利用者が 6 時間ずつ進める導線に切り替える（docs/frontend/scroll.md）。
@@ -424,10 +474,12 @@ export function ProgramsPage() {
     }
 
     return !lastPage.programs.some((program) => {
-      if (previousIdentities.has(programIdentity(program.site, program.programId))) return false
+      const identity = programIdentity(program.site, program.programId)
+      if (previousIdentities.has(identity)) return false
+      if (matchedProgramIds !== undefined && !matchedProgramIds.has(identity)) return false
       return filterProgramsFromListStart([program], listStartMs, lowerBoundMs).length > 0
     })
-  }, [query.data, listStartMs, lowerBoundMs])
+  }, [query.data, listStartMs, lowerBoundMs, matchedProgramIds])
 
   // 絞り込む前の全サービスから作る。絞った側（filterableServices）から作ると、
   // hasPrograms が false の局の番組が来たとき（例えば選択直後にキャッシュが
@@ -446,6 +498,19 @@ export function ProgramsPage() {
     }
     return map
   }, [siteServices])
+  // 件数だけは表示範囲（選択中のチャンネル）との交差で数える。一致の判定そのものは
+  // 検索 API のままで、グリッド/リストが出す範囲と件数を揃えるためだけに絞る。
+  const scopedMatches =
+    conditionMatches === undefined || selectedServiceIds.size === 0
+      ? conditionMatches
+      : conditionMatches.filter((match) =>
+          // ?service= は site を含まない軸。サービス一覧の取得状態に依存させない。
+          selectedServiceIds.has(composeServiceId(match.networkId, match.serviceId)),
+        )
+  const dayMatchCounts =
+    scopedMatches === undefined
+      ? undefined
+      : countMatchesByLocalDay(scopedMatches, nowMs, selectableDays)
 
   // 予約状態は番組とは別クエリで取り、クライアント側で結合する。
   // 予約は頻繁に変わり番組はほとんど変わらないので、キャッシュの寿命を分ける。
@@ -584,7 +649,7 @@ export function ProgramsPage() {
   const sentinelRef = useRef<HTMLDivElement>(null)
 
   // 番兵の <div> は一覧が実際に描かれ、直近の窓が新しい表示行を追加したとき
-  // （!isPending && !latestWindowIsEmpty && visiblePrograms.length > 0）にしか存在しない。
+  // （!isPending && !latestWindowIsEmpty && conditionFilteredPrograms.length > 0）にしか存在しない。
   // 空窓の末尾を監視すると、自動読み込みが空窓を連鎖してしまうため、空窓では
   // 「次の時間帯を見る」ボタンへ切り替える。データ取得が終わる前に
   // IntersectionObserver を
@@ -594,7 +659,7 @@ export function ProgramsPage() {
   // つまり自動読み込みが永遠に発火しない。番兵が実際に DOM にあるかどうかを
   // 明示的な依存にして、描画されたタイミングで確実に組み立て直す。
   const sentinelMounted =
-    !showGrid && !query.isPending && !latestWindowIsEmpty && visiblePrograms.length > 0
+    !showGrid && !query.isPending && !latestWindowIsEmpty && conditionFilteredPrograms.length > 0
   const autoLoadAvailable = domLayoutMeasurable()
   const showLoadMoreButton =
     (latestWindowIsEmpty && query.hasNextPage) ||
@@ -686,7 +751,60 @@ export function ProgramsPage() {
           current={showGrid ? dayOffset : visibleDay}
           days={selectableDays}
           onSelect={selectDay}
+          now={nowMs}
+          matchCounts={dayMatchCounts}
         />
+
+        {search.cond !== undefined && (
+          <div
+            data-testid="condition-lens"
+            className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-2 text-xs"
+          >
+            <span className="inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-muted px-2 py-1">
+              <span className="min-w-0">条件: {conditionSummaries.join(' · ')}</span>
+              <button
+                type="button"
+                aria-label="条件を解除"
+                className="rounded-full p-0.5 text-muted-foreground hover:text-foreground"
+                onClick={() => updateSearch((s) => ({ ...s, cond: undefined }))}
+              >
+                <X aria-hidden="true" className="size-3" />
+              </button>
+            </span>
+            <Link
+              to="/search"
+              search={{ cond: search.cond }}
+              className="underline underline-offset-2"
+            >
+              検索で開く
+            </Link>
+            {conditionPending ? (
+              <span data-testid="condition-lens-status" role="status" className="text-muted-foreground">
+                読み込み中
+              </span>
+            ) : conditionError ? (
+              <div
+                data-testid="condition-lens-error"
+                role="alert"
+                className="flex items-center gap-2 text-destructive"
+              >
+                <span>一致番組の取得に失敗しました</span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void conditionQuery.refetch()}
+                >
+                  再試行
+                </Button>
+              </div>
+            ) : scopedMatches !== undefined ? (
+              <span data-testid="condition-lens-status" role="status" className="text-muted-foreground">
+                {scopedMatches.length} 件一致
+              </span>
+            ) : null}
+          </div>
+        )}
 
         {/* `PageHeader` の children に置く（`PageHeader` の外ではない）--- グリッドの
             コンテナは `--page-header-height` を高さ予算に使うので、外に置くと
@@ -733,6 +851,11 @@ export function ProgramsPage() {
           actions={actions}
           scrollToMs={scrollToMs}
           showSite={sites.length > 1}
+          selectedGenres={selectedGenres}
+          onToggleGenre={(genre) => {
+            updateSearch((s) => ({ ...s, cond: toggleSearchGenre(s.cond, genre) }))
+          }}
+          matchedProgramIds={matchedProgramIds}
           // グリッドではサービスが列そのもの（構造）なので、リストと違って
           // サービスの取得失敗を「名前が出ないだけ」に落とせない。列が 0 本の
           // グリッドは「番組がない」と見分けがつかないので、取得状態を合わせる
@@ -758,12 +881,16 @@ export function ProgramsPage() {
             <ListSkeleton />
           ) : (
             <>
-              {visiblePrograms.length === 0 && (
-                <EmptyState>この時間帯の番組がありません</EmptyState>
+              {conditionFilteredPrograms.length === 0 && (
+                <EmptyState>
+                  {search.cond !== undefined && matchedProgramIds !== undefined
+                    ? 'この時間帯に条件に一致する番組がありません'
+                    : 'この時間帯の番組がありません'}
+                </EmptyState>
               )}
               <ProgramList
                 ref={programListRef}
-                programs={visiblePrograms}
+                programs={conditionFilteredPrograms}
                 serviceById={siteServiceByKey}
                 showSite={sites.length > 1}
                 actions={actions}
@@ -878,6 +1005,9 @@ function ProgramGridView({
   onRetry,
   scrollToMs,
   showSite,
+  selectedGenres,
+  onToggleGenre,
+  matchedProgramIds,
 }: {
   axis: TimeAxis
   programs: SiteProgram[]
@@ -893,6 +1023,9 @@ function ProgramGridView({
   /** グリッドの初期スクロール先（issue #233 M6-5）。`ProgramGrid` にそのまま渡す。 */
   scrollToMs?: number
   showSite: boolean
+  selectedGenres: ReadonlySet<number>
+  onToggleGenre: (genre: number) => void
+  matchedProgramIds?: ReadonlySet<string>
 }) {
   const [selectedProgramId, setSelectedProgramId] = useState<string | null>(null)
 
@@ -927,7 +1060,7 @@ function ProgramGridView({
           'calc(100dvh - var(--page-header-height, 0px) - var(--sticky-banners-height, 0px))',
       }}
     >
-      <GenreLegend />
+      <GenreLegend selectedGenres={selectedGenres} onToggle={onToggleGenre} />
       <Dialog
         open={selected !== undefined}
         onOpenChange={(open) => {
@@ -995,6 +1128,7 @@ function ProgramGridView({
           onSelect={(program) => setSelectedProgramId(programIdentity(program.site, program.programId))}
           scrollToMs={scrollToMs}
           showSite={showSite}
+          matchedProgramIds={matchedProgramIds}
           // 帯はセルより上・ヘッダより下の層に入る。軸を受け取って同じ
           // spanToPx を通すので、帯と番組セルは同じ時刻で必ず同じ位置に来る。
           // `announce` は site の最初の走だけ true --- GR + BS を両方持つ site は

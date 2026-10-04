@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type {
   CapacityOverage,
   ProgramListItem,
+  ProgramSearchMatch,
   Reservation,
   Service,
 } from '@/api/generated'
@@ -274,16 +275,25 @@ function stubApi(
   overridesPatchResponse?: () => Response,
   extraServices: Service[] = [],
   intentPutResponse?: () => Response,
+  onSearchCall?: (request: unknown, callIndex: number) => Response | Promise<Response>,
+  servicesResponse?: () => Response | Promise<Response>,
 ) {
   let programsCallIndex = 0
+  let searchCallIndex = 0
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
+    if (url.pathname === '/api/programs/search' && init?.method === 'POST') {
+      const request = typeof init.body === 'string' ? JSON.parse(init.body) : undefined
+      const response = onSearchCall?.(request, ++searchCallIndex) ?? jsonResponse([])
+      return Promise.resolve(response)
+    }
     // ページが GET /api/sites を解決する
     // （issue #184 M4-12）。ページを本物の routeTree（`RouterProvider`）越しに
     // 描く（`useSearch`/`useNavigate` を使うため）ようになったので必要になった
     // （`routes.test.tsx` の '/search' テストと同じ理由）。
     if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(['default']))
     if (url.pathname === '/api/sites/default/services') {
+      if (servicesResponse !== undefined) return Promise.resolve(servicesResponse())
       return Promise.resolve(jsonResponse([...services, ...extraServices]))
     }
     // AppShell がナビゲーションの出し分けに読む（issue #209）。未 stub でも
@@ -450,6 +460,299 @@ async function reservationsSettled(queryClient: QueryClient): Promise<void> {
 }
 
 describe('ProgramsPage の表示形式', () => {
+  it('条件なし・空 cond では全件検索 API を呼ばない', async () => {
+    const fetchMock = stubApi()
+    renderPage(`/programs?cond=${encodeURIComponent('{}')}`)
+
+    await screen.findByText(soon.name)
+    expect(
+      fetchMock.mock.calls.filter(
+        (call) => new URL(String(call[0]), 'http://localhost').pathname === '/api/programs/search',
+      ),
+    ).toHaveLength(0)
+  })
+
+  it('条件チップを解除すると URL の cond を消し、その後は一致検索を追加しない', async () => {
+    const searchRequests: unknown[] = []
+    const fetchMock = stubApi([], [], allPrograms, undefined, undefined, [], undefined, (request) => {
+      searchRequests.push(request)
+      return jsonResponse([])
+    })
+    const { router } = renderPage(
+      `/programs?cond=${encodeURIComponent(JSON.stringify({ genres: [7] }))}`,
+    )
+
+    await screen.findByText('0 件一致')
+    await userEvent.click(screen.getByRole('button', { name: '条件を解除' }))
+    await waitFor(() => expect(router.state.location.search.cond).toBeUndefined())
+
+    expect(searchRequests).toEqual([{ genres: [7] }])
+    expect(screen.queryByTestId('condition-lens')).not.toBeInTheDocument()
+    expect(
+      fetchMock.mock.calls.filter(
+        (call) => new URL(String(call[0]), 'http://localhost').pathname === '/api/programs/search',
+      ),
+    ).toHaveLength(1)
+  })
+
+  it('凡例のジャンルは URL 条件になり、API 応答だけが一致セルを決める', async () => {
+    const animeFromApi = { ...program(109801, 1024, 1, 'API が返すアニメ'), genres: [7] }
+    const animeOmittedByApi = { ...program(109802, 1032, 1, 'API が返さないアニメ', 32737), genres: [7] }
+    const match: ProgramSearchMatch = {
+      site: 'default',
+      programId: animeFromApi.programId,
+      networkId: animeFromApi.networkId,
+      serviceId: animeFromApi.serviceId,
+      startAt: animeFromApi.startAt,
+      durationMs: animeFromApi.durationMs,
+      name: animeFromApi.name,
+      isFree: true,
+    }
+    const searchRequests: unknown[] = []
+    stubApi([], [], [animeFromApi, animeOmittedByApi], undefined, undefined, [], undefined, (request) => {
+      searchRequests.push(request)
+      return jsonResponse([match])
+    })
+    stubMatchMedia(true)
+    const { router } = renderPage('/programs?view=grid')
+
+    await screen.findByTestId('program-grid')
+    await userEvent.click(screen.getByRole('button', { name: 'アニメ・特撮' }))
+    await screen.findByText('1 件一致')
+
+    expect(router.state.location.search.cond).toEqual({ genres: [7] })
+    expect(searchRequests).toEqual([{ genres: [7] }])
+    const cells = screen.getAllByTestId('program-grid-cell')
+    const matched = cells.find((cell) => cell.getAttribute('data-program-id') === '109801')
+    const omitted = cells.find((cell) => cell.getAttribute('data-program-id') === '109802')
+    expect(matched).toHaveAttribute('data-condition-match', 'true')
+    expect(matched).toHaveAttribute('aria-label', expect.stringContaining('条件に一致'))
+    expect(omitted).toHaveAttribute('data-condition-match', 'false')
+    expect(omitted).toHaveClass('bg-card')
+    expect(omitted).not.toHaveClass('bg-pink-50')
+  })
+
+  it('一致 API の失敗中は全番組を保ち、再試行後に一致集合を反映する', async () => {
+    const first = { ...soon, genres: [7] }
+    const second = { ...alsoSoon, genres: [7] }
+    const match: ProgramSearchMatch = {
+      site: 'default',
+      programId: first.programId,
+      networkId: first.networkId,
+      serviceId: first.serviceId,
+      startAt: first.startAt,
+      durationMs: first.durationMs,
+      name: first.name,
+      isFree: true,
+    }
+    let fail = true
+    stubApi([], [], [first, second], undefined, undefined, [], undefined, () => {
+      if (fail) {
+        fail = false
+        return errorResponse(500, '検索に失敗')
+      }
+      return jsonResponse([match])
+    })
+    stubMatchMedia(true)
+    renderPage(`/programs?view=grid&cond=${encodeURIComponent(JSON.stringify({ genres: [7] }))}`)
+
+    const secondCell = await screen.findByRole('button', { name: /手話ニュース/ })
+    expect(await screen.findByRole('alert')).toHaveTextContent('一致番組の取得に失敗しました')
+    expect(secondCell).not.toHaveAttribute('data-condition-match')
+    expect(secondCell).toHaveClass('bg-pink-50')
+
+    await userEvent.click(screen.getByRole('button', { name: '再試行' }))
+    await screen.findByText('1 件一致')
+    expect(secondCell).toHaveAttribute('data-condition-match', 'false')
+    expect(secondCell).toHaveClass('bg-card')
+  })
+
+  it('バックグラウンド再取得中も、確定済みの一致表示（グリッド）を保つ', async () => {
+    const first = { ...soon, genres: [7] }
+    const second = { ...alsoSoon, genres: [7] }
+    const match: ProgramSearchMatch = {
+      site: 'default',
+      programId: first.programId,
+      networkId: first.networkId,
+      serviceId: first.serviceId,
+      startAt: first.startAt,
+      durationMs: first.durationMs,
+      name: first.name,
+      isFree: true,
+    }
+    let release: (response: Response) => void = () => {}
+    stubApi([], [], [first, second], undefined, undefined, [], undefined, (_request, callIndex) =>
+      callIndex === 1
+        ? jsonResponse([match])
+        : new Promise<Response>((resolve) => {
+            release = resolve
+          }),
+    )
+    stubMatchMedia(true)
+    const { queryClient } = renderPage(
+      `/programs?view=grid&cond=${encodeURIComponent(JSON.stringify({ genres: [7] }))}`,
+    )
+
+    const secondCell = await screen.findByRole('button', { name: /手話ニュース/ })
+    await screen.findByText('1 件一致')
+    expect(secondCell).toHaveAttribute('data-condition-match', 'false')
+
+    void queryClient.invalidateQueries({ queryKey: ['/api/programs'] })
+    await waitFor(() =>
+      expect(
+        queryClient.isFetching({ queryKey: ['/api/programs', 'condition-lens'] }),
+      ).toBeGreaterThan(0),
+    )
+    expect(secondCell).toHaveAttribute('data-condition-match', 'false')
+    expect(screen.getByText('1 件一致')).toBeInTheDocument()
+    release(jsonResponse([match]))
+  })
+
+  it('バックグラウンド再取得中も、リストは非一致番組を再表示しない', async () => {
+    const first = { ...soon, genres: [7] }
+    const second = { ...alsoSoon, genres: [7] }
+    const match: ProgramSearchMatch = {
+      site: 'default',
+      programId: first.programId,
+      networkId: first.networkId,
+      serviceId: first.serviceId,
+      startAt: first.startAt,
+      durationMs: first.durationMs,
+      name: first.name,
+      isFree: true,
+    }
+    let release: (response: Response) => void = () => {}
+    stubApi([], [], [first, second], undefined, undefined, [], undefined, (_request, callIndex) =>
+      callIndex === 1
+        ? jsonResponse([match])
+        : new Promise<Response>((resolve) => {
+            release = resolve
+          }),
+    )
+    const { queryClient } = renderPage(
+      `/programs?cond=${encodeURIComponent(JSON.stringify({ genres: [7] }))}`,
+    )
+    await screen.findByText('1 件一致')
+    expect(screen.queryByText('手話ニュース')).not.toBeInTheDocument()
+
+    void queryClient.invalidateQueries({ queryKey: ['/api/programs'] })
+    await waitFor(() =>
+      expect(
+        queryClient.isFetching({ queryKey: ['/api/programs', 'condition-lens'] }),
+      ).toBeGreaterThan(0),
+    )
+    expect(screen.queryByText('手話ニュース')).not.toBeInTheDocument()
+    expect(screen.getByText('1 件一致')).toBeInTheDocument()
+    release(jsonResponse([match]))
+  })
+
+  it('一致件数はチャンネル絞り込みの外の番組を数えない', async () => {
+    const first = { ...soon, genres: [7] }
+    const second = { ...alsoSoon, genres: [7] }
+    const toMatch = (p: ProgramListItem): ProgramSearchMatch => ({
+      site: 'default',
+      programId: p.programId,
+      networkId: p.networkId,
+      serviceId: p.serviceId,
+      startAt: p.startAt,
+      durationMs: p.durationMs,
+      name: p.name,
+      isFree: true,
+    })
+    const cond = encodeURIComponent(JSON.stringify({ genres: [7] }))
+    stubApi([], [], [first, second], undefined, undefined, [], undefined, () =>
+      jsonResponse([toMatch(first), toMatch(second)]),
+    )
+    stubMatchMedia(true)
+    const narrowed = renderPage(`/programs?view=grid&service=3273601024&cond=${cond}`)
+    await screen.findByText('1 件一致')
+    expect(screen.getAllByTestId('day-match-count')[0]).toHaveTextContent('1件')
+    narrowed.unmount()
+
+    renderPage(`/programs?view=grid&cond=${cond}`)
+    await screen.findByText('2 件一致')
+    expect(screen.getAllByTestId('day-match-count')[0]).toHaveTextContent('2件')
+  })
+
+  it('サービス一覧が未取得・失敗でも、チャンネル絞り込み中の一致件数は 0 件にならない', async () => {
+    const first = { ...soon, genres: [7] }
+    const match: ProgramSearchMatch = {
+      site: 'default',
+      programId: first.programId,
+      networkId: first.networkId,
+      serviceId: first.serviceId,
+      startAt: first.startAt,
+      durationMs: first.durationMs,
+      name: first.name,
+      isFree: true,
+    }
+    const cond = encodeURIComponent(JSON.stringify({ genres: [7] }))
+    for (const servicesResponse of [
+      () => new Promise<Response>(() => {}),
+      () => errorResponse(500, 'サービス一覧に失敗'),
+    ]) {
+      stubApi(
+        [], [], [first], undefined, undefined, [], undefined,
+        () => jsonResponse([match]),
+        servicesResponse,
+      )
+      const view = renderPage(`/programs?service=3273601024&cond=${cond}`)
+      await screen.findByText('1 件一致')
+      expect(screen.getAllByTestId('day-match-count')[0]).toHaveTextContent('1件')
+      view.unmount()
+    }
+  })
+
+  it('リストでは条件検索が成功した後にだけ非一致番組を隠す', async () => {
+    const animeFromApi = { ...program(109801, 1024, 1, '一致するアニメ'), genres: [7] }
+    const animeOmittedByApi = { ...program(109802, 1032, 1, '一致しないアニメ', 32737), genres: [7] }
+    const match: ProgramSearchMatch = {
+      site: 'default',
+      programId: animeFromApi.programId,
+      networkId: animeFromApi.networkId,
+      serviceId: animeFromApi.serviceId,
+      startAt: animeFromApi.startAt,
+      durationMs: animeFromApi.durationMs,
+      name: animeFromApi.name,
+      isFree: true,
+    }
+    stubApi([], [], [animeFromApi, animeOmittedByApi], undefined, undefined, [], undefined, () =>
+      jsonResponse([match]),
+    )
+    renderPage(`/programs?cond=${encodeURIComponent(JSON.stringify({ genres: [7] }))}`)
+
+    expect(await screen.findByText('一致するアニメ')).toBeInTheDocument()
+    await screen.findByText('1 件一致')
+    expect(screen.queryByText('一致しないアニメ')).not.toBeInTheDocument()
+  })
+
+  it('一致番組が後の時間窓にあるとき、空の条件窓から手動で進める', async () => {
+    const first = { ...soon, genres: [7] }
+    const second = { ...alsoSoon, genres: [7] }
+    const laterMatch = { ...program(109804, 1024, 8, '後の時間窓にある一致番組'), genres: [7] }
+    const match: ProgramSearchMatch = {
+      site: 'default',
+      programId: laterMatch.programId,
+      networkId: laterMatch.networkId,
+      serviceId: laterMatch.serviceId,
+      startAt: laterMatch.startAt,
+      durationMs: laterMatch.durationMs,
+      name: laterMatch.name,
+      isFree: true,
+    }
+    stubApi([], [], [first, second, laterMatch], undefined, undefined, [], undefined, () =>
+      jsonResponse([match]),
+    )
+    renderPage(`/programs?cond=${encodeURIComponent(JSON.stringify({ genres: [7] }))}`)
+
+    expect(
+      await screen.findByText('この時間帯に条件に一致する番組がありません'),
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId('program-list-sentinel')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '次の時間帯を見る' }))
+    expect(await screen.findByText(laterMatch.name)).toBeInTheDocument()
+  })
+
   it('番組リストの録画中番組に対応する録画の追っかけリンクを出す', async () => {
     const fetchMock = stubApi([], [], [airingSoon])
     renderPage()

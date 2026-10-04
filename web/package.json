@@ -27,6 +27,7 @@
     "e2e:programs-reservation-error": "node e2e/programs-reservation-error.mjs",
     "e2e:grid-reserved": "node e2e/grid-reserved.mjs",
     "e2e:programs-grid-zoom": "node e2e/programs-grid-zoom.mjs",
+    "e2e:programs-condition-lens": "node e2e/programs-condition-lens.mjs",
     "e2e:search-mobile": "node e2e/search-mobile.mjs",
     "e2e:reservation-detail-layout": "node e2e/reservation-detail-layout.mjs",
     "e2e:reservations-rule-filter": "node e2e/reservations-rule-filter.mjs",
