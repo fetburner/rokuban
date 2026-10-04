@@ -1301,7 +1301,7 @@ if ((await targetBoundary.count()) !== 1) {
     ng.push('#1019: filmstrip境界を押しても選択状態にならない')
   }
   await shotBoth('selected')
-  const save = page.getByRole('button', { name: '保存', exact: true })
+  const save = page.getByRole('button', { name: /^(保存|このまま確認)$/ })
   const track = page.locator('[data-testid="chapter-filmstrip-track"]')
   const trackBox = await track.boundingBox()
   const boundaryBox = await targetBoundary.boundingBox()
@@ -1311,20 +1311,31 @@ if ((await targetBoundary.count()) !== 1) {
     const rangeStart = Number(await track.getAttribute('data-visible-start-seconds'))
     const rangeEnd = Number(await track.getAttribute('data-visible-end-seconds'))
     const deltaX = (4 / (rangeEnd - rangeStart)) * trackBox.width
+    const cutRange = page.locator('[data-testid="chapter-filmstrip-cut-range"]').first()
+    const cutRangeBefore = await cutRange.getAttribute('style')
     const originalCenterX = boundaryBox.x + boundaryBox.width / 2
     const centerY = boundaryBox.y + boundaryBox.height / 2
     await page.mouse.move(originalCenterX, centerY)
     await page.mouse.down()
     await page.mouse.move(originalCenterX + deltaX, centerY, { steps: 3 })
     const previewBoundary = await page.locator('[data-testid="chapter-filmstrip-boundary"][aria-pressed="true"]').getAttribute('data-time-ms')
-    if (Number(previewBoundary) <= 30_000 || await save.isEnabled()) {
+    const previewCutRange = await cutRange.getAttribute('style')
+    const previewStatus = await editHeader.textContent()
+    if (Number(previewBoundary) <= 30_000 || previewStatus?.includes('未保存の変更があります')) {
       ng.push(`#1019: drag中にpreviewだけが動き、未releaseのdraft/保存は変わらない（preview=${previewBoundary}）`)
+    }
+    if (previewCutRange === cutRangeBefore) {
+      ng.push('#1121: drag中の cut 区間がプレビュー形状へ更新されない')
     }
     await page.mouse.up()
     const movedBoundary = page.locator('[data-testid="chapter-filmstrip-boundary"][aria-pressed="true"]')
     const committedBoundary = await movedBoundary.getAttribute('data-time-ms')
+    const committedCutRange = await page.locator('[data-testid="chapter-filmstrip-cut-range"]').first().getAttribute('style')
     if (committedBoundary !== previewBoundary) {
       ng.push(`#1019: pointer release がpreviewの境界を下書きへ commit しない（preview=${previewBoundary}, committed=${committedBoundary}）`)
+    }
+    if (committedCutRange !== previewCutRange) {
+      ng.push(`#1121: drag中の cut 区間と離した後の形が違う（preview=${previewCutRange}, committed=${committedCutRange}）`)
     }
     const movedBox = await movedBoundary.boundingBox()
     const latestTrackBox = await track.boundingBox()
@@ -1342,8 +1353,9 @@ if ((await targetBoundary.count()) !== 1) {
       await page.mouse.up()
       await page.waitForTimeout(100)
       const restoredBoundary = await page.locator('[data-testid="chapter-filmstrip-boundary"][aria-pressed="true"]').getAttribute('data-time-ms')
-      log(`  drag ${previewBoundary} preview → ${committedBoundary} released → ${restorePreview} reverse preview → ${restoredBoundary} restored; Save disabled=${await save.isDisabled()}`)
-      if (await save.isEnabled()) ng.push('#1019: coarse dragを元の境界に戻してもdirtyが解除されない')
+      const restoredStatus = await editHeader.textContent()
+      log(`  drag ${previewBoundary} preview → ${committedBoundary} released → ${restorePreview} reverse preview → ${restoredBoundary} restored; dirty=${restoredStatus?.includes('未保存の変更があります')}`)
+      if (restoredStatus?.includes('未保存の変更があります')) ng.push('#1019: coarse dragを元の境界に戻してもdirtyが解除されない')
     }
   }
   const nudge = page.getByRole('button', { name: '選択中の境界を 1 フレーム進める', exact: true })

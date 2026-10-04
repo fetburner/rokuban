@@ -8,10 +8,12 @@ import {
   chapterBoundaryMsToSeekSeconds,
   chapterBoundaries,
   chapterJumpTarget,
+  chapterSpanIndexesAtBoundary,
   displayedFrameBoundaryMs,
   formatChaptersTime,
   loadChapterSkip,
   nudgeBoundary,
+  normalizeChapterDraft,
   playbackSecondsToChapterBoundaryMs,
   saveChapterSkip,
   skipTarget,
@@ -97,6 +99,53 @@ describe('nudgeBoundary', () => {
     const spans = [cm(10_000, 20_000)]
     // 10000ms + 33.3667ms = 10033.37ms → round で 10033。
     expect(nudgeBoundary(spans, 10, FRAME_SECONDS)[0].startMs).toBe(10_033)
+  })
+})
+
+describe('normalizeChapterDraft', () => {
+  it('重なった cut 同士を同じラベルの区間へまとめる', () => {
+    expect(normalizeChapterDraft([
+      cm(10_000, 25_000),
+      cm(20_000, 30_000),
+    ], [1])).toEqual([cm(10_000, 30_000)])
+  })
+
+  it('cut 同士は同じラベルなら接してもまとめ、ラベルが違えば境界を残す', () => {
+    expect(normalizeChapterDraft([cm(10_000, 20_000), cm(20_000, 30_000)])).toEqual([
+      cm(10_000, 30_000),
+    ])
+    expect(normalizeChapterDraft([
+      cm(10_000, 20_000),
+      { ...cm(20_000, 30_000), label: '提供' },
+    ])).toEqual([cm(10_000, 20_000), { ...cm(20_000, 30_000), label: '提供' }])
+  })
+
+  it('cut が非 cut 区間の内側にあると、非 cut を両側に分けてラベルを残す', () => {
+    const opening: ChapterSpan = { startMs: 0, endMs: 30_000, label: 'OP', cut: false }
+    expect(normalizeChapterDraft([opening, cm(10_000, 20_000)], [1])).toEqual([
+      { ...opening, endMs: 10_000 },
+      cm(10_000, 20_000),
+      { ...opening, startMs: 20_000 },
+    ])
+  })
+
+  it('cut が非 cut 区間を覆うと非 cut 区間を取り除く', () => {
+    const opening: ChapterSpan = { startMs: 10_000, endMs: 20_000, label: 'OP', cut: false }
+    expect(normalizeChapterDraft([opening, cm(0, 30_000)], [1])).toEqual([cm(0, 30_000)])
+  })
+
+  it('ラベルが違う cut 同士は操作した区間を残して、相手の重なりを削る', () => {
+    expect(normalizeChapterDraft([
+      cm(0, 15_000),
+      { ...cm(10_000, 20_000), label: '提供' },
+    ], [1])).toEqual([
+      cm(0, 10_000),
+      { ...cm(10_000, 20_000), label: '提供' },
+    ])
+  })
+
+  it('共有境界を操作した区間の index を両側から返す', () => {
+    expect(chapterSpanIndexesAtBoundary([cm(10_000, 20_000), cm(20_000, 30_000)], 20)).toEqual([0, 1])
   })
 })
 

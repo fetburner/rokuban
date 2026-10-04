@@ -128,6 +128,64 @@ describe('RecordingChapterEditor の編集専用画面', () => {
     expect(container.querySelector('[data-testid="chapter-filmstrip-boundary"][data-time-ms="2202"]')).not.toBeNull()
   })
 
+  it('境界の微調整で隣の同じ cut 区間に重なったらまとめ、元に戻すで直前の一手を戻す', () => {
+    const next = { ...cm, startMs: 25_500, endMs: 35_000 }
+    const { container, getByRole, getAllByTestId } = renderEditor([cm, next], { currentSeconds: 27 })
+    const boundary20 = container.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="20000"]',
+    )!
+    fireEvent.click(boundary20)
+    for (let i = 0; i < 6; i += 1) {
+      fireEvent.click(getByRole('button', { name: '選択中の境界を1秒進める' }))
+    }
+
+    expect(getAllByTestId('chapter-span-row')).toHaveLength(1)
+    expect(container.querySelector('[data-testid="chapter-filmstrip-boundary"][data-time-ms="35000"]'))
+      .toHaveAttribute('aria-pressed', 'true')
+
+    fireEvent.click(getByRole('button', { name: '元に戻す' }))
+    expect(getAllByTestId('chapter-span-row')).toHaveLength(2)
+    expect(container.querySelector('[data-testid="chapter-filmstrip-boundary"][data-time-ms="25000"]')).not.toBeNull()
+  })
+
+  it('重なりを正規化した下書きを保存し、重なる区間を API に渡さない', async () => {
+    const next = { ...cm, startMs: 20_500, endMs: 30_000 }
+    const { container, getByRole, commandsRef, onSave } = renderEditor([cm, next])
+    fireEvent.click(container.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="20000"]',
+    )!)
+    fireEvent.click(getByRole('button', { name: '選択中の境界を1秒進める' }))
+
+    await act(async () => {
+      expect(await commandsRef.current?.save()).toBe(true)
+    })
+    expect(onSave).toHaveBeenCalledWith([{ ...cm, endMs: 30_000 }], 'v1')
+  })
+
+  it('ラベル入力のフォーカス中の変更を元に戻す 1 手にまとめる', () => {
+    const { getByLabelText, getByRole } = renderEditor([cm])
+    const label = getByLabelText('ラベル')
+    fireEvent.focus(label)
+    fireEvent.change(label, { target: { value: 'C' } })
+    fireEvent.change(label, { target: { value: 'CM 予定' } })
+    fireEvent.blur(label)
+    fireEvent.click(getByRole('button', { name: '元に戻す' }))
+    expect(label).toHaveValue('CM')
+    expect(getByRole('button', { name: '元に戻す' })).toHaveProperty('disabled', true)
+  })
+
+  it('ラベル入力にフォーカスがあると Ctrl+Z は下書きの履歴を戻さない', () => {
+    const { container, getByRole, getByLabelText } = renderEditor([cm])
+    fireEvent.click(container.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="10000"]',
+    )!)
+    fireEvent.click(getByRole('button', { name: '選択中の境界を1秒進める' }))
+    const label = getByLabelText('ラベル')
+    fireEvent.focus(label)
+    fireEvent.keyDown(label, { key: 'z', ctrlKey: true })
+    expect(container.querySelector('[data-testid="chapter-filmstrip-boundary"][data-time-ms="11000"]')).not.toBeNull()
+  })
+
   it('ページヘッダーから呼ぶ保存は下書きと元の版を送り、成功後は dirty を外す', async () => {
     const { container, getByRole, commandsRef, onSave, onStatusChange } = renderEditor([cm])
     const startBoundary = container.querySelector<HTMLButtonElement>(
@@ -155,6 +213,23 @@ describe('RecordingChapterEditor の編集専用画面', () => {
       void commandsRef.current?.save()
     })
     expect(onSave).toHaveBeenCalledWith([{ startMs: 29_997, endMs: 39_973, cut: true }], 'v1')
+  })
+
+  it('「最初からここまで切る」と「ここから最後まで切る」は録画の先頭と終端を使う', () => {
+    const first = renderEditor([], { currentSeconds: 30 })
+    fireEvent.click(first.getByRole('button', { name: '最初からここまで切る' }))
+    act(() => {
+      void first.commandsRef.current?.save()
+    })
+    expect(first.onSave).toHaveBeenCalledWith([{ startMs: 0, endMs: 29_997, cut: true }], 'v1')
+    first.unmount()
+
+    const last = renderEditor([], { currentSeconds: 30 })
+    fireEvent.click(last.getByRole('button', { name: 'ここから最後まで切る' }))
+    act(() => {
+      void last.commandsRef.current?.save()
+    })
+    expect(last.onSave).toHaveBeenCalledWith([{ startMs: 29_997, endMs: 120_000, cut: true }], 'v1')
   })
 
   it('新しい区間の端点を現在表示中のフレーム先頭へ合わせる', () => {

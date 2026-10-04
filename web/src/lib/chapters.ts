@@ -189,6 +189,113 @@ export function nudgeBoundary(spans: ChapterSpan[], boundary: number, delta: num
   }))
 }
 
+/** chapterSpanIndexesAtBoundary は指定境界を持つ全区間の index を返す。 */
+export function chapterSpanIndexesAtBoundary(spans: ChapterSpan[], boundarySeconds: number): number[] {
+  const boundaryMs = Math.round(boundarySeconds * 1000)
+  return spans.flatMap((span, index) =>
+    span.startMs === boundaryMs || span.endMs === boundaryMs ? [index] : [],
+  )
+}
+
+/**
+ * normalizeChapterDraft は編集下書きの重なりを切り取り・合併で解消する。
+ * operatedIndexes は今回追加・変更した区間を示し、同じ cut 状態で異なるラベルが
+ * 重なったときはその区間を残す。
+ *
+ * 共有境界を動かすと両側の区間が operated になる。両方が異なるラベルの cut 区間として
+ * 第三の区間と競合する場合は、時間上で先に始まる区間を残す。境界を両側へ適用する
+ * `nudgeBoundary` の対称性を保ちつつ、入力配列の順序に頼らずタイムラインで結果を決められる。
+ */
+export function normalizeChapterDraft(
+  spans: ChapterSpan[],
+  operatedIndexes: readonly number[] = [],
+): ChapterSpan[] {
+  type Candidate = { span: ChapterSpan; operated: boolean; order: number }
+  let candidates: Candidate[] = spans
+    .map((span, order) => ({ span: { ...span }, operated: operatedIndexes.includes(order), order }))
+    .filter(({ span }) => span.endMs > span.startMs)
+
+  while (true) {
+    candidates.sort((a, b) => a.span.startMs - b.span.startMs || a.span.endMs - b.span.endMs || a.order - b.order)
+    let changed = false
+
+    outer: for (let i = 0; i < candidates.length; i += 1) {
+      for (let j = i + 1; j < candidates.length; j += 1) {
+        const left = candidates[i]
+        const right = candidates[j]
+        if (right.span.startMs > left.span.endMs) break
+
+        const overlaps = right.span.startMs < left.span.endMs
+        const touches = right.span.startMs === left.span.endMs
+        const sameKind = left.span.cut === right.span.cut
+        const leftLabel = left.span.label ?? ''
+        const rightLabel = right.span.label ?? ''
+        const labelsCanMerge = leftLabel === rightLabel || leftLabel === '' || rightLabel === ''
+        const labelsMatch = leftLabel === rightLabel
+
+        if (
+          sameKind &&
+          ((overlaps && labelsCanMerge) || (touches && labelsMatch))
+        ) {
+          const label = leftLabel || rightLabel
+          const mergedSpan: ChapterSpan = {
+            ...left.span,
+            startMs: Math.min(left.span.startMs, right.span.startMs),
+            endMs: Math.max(left.span.endMs, right.span.endMs),
+          }
+          if (label) mergedSpan.label = label
+          else delete mergedSpan.label
+          candidates.splice(j, 1)
+          candidates.splice(i, 1, {
+            span: mergedSpan,
+            operated: left.operated || right.operated,
+            order: Math.min(left.order, right.order),
+          })
+          changed = true
+          break outer
+        }
+
+        if (!overlaps) continue
+
+        let winner: Candidate
+        if (left.span.cut !== right.span.cut) {
+          winner = left.span.cut ? left : right
+        } else if (left.operated !== right.operated) {
+          winner = left.operated ? left : right
+        } else {
+          // Same-label spans were already merged. For a conflict with equal edit priority,
+          // keep the earlier interval so the outcome follows the timeline, not array order.
+          winner = left.span.startMs <= right.span.startMs ? left : right
+        }
+        const loser = winner === left ? right : left
+        const fragments: Candidate[] = []
+        if (loser.span.startMs < winner.span.startMs) {
+          fragments.push({
+            ...loser,
+            span: { ...loser.span, endMs: winner.span.startMs },
+          })
+        }
+        if (loser.span.endMs > winner.span.endMs) {
+          fragments.push({
+            ...loser,
+            span: { ...loser.span, startMs: winner.span.endMs },
+          })
+        }
+        candidates.splice(j, 1)
+        candidates.splice(i, 1, winner, ...fragments)
+        changed = true
+        break outer
+      }
+    }
+
+    if (!changed) break
+  }
+
+  return candidates
+    .sort((a, b) => a.span.startMs - b.span.startMs || a.span.endMs - b.span.endMs || a.order - b.order)
+    .map(({ span }) => span)
+}
+
 /**
  * formatChaptersTime はチャプターの位置を `h:mm:ss` で返す。再生位置の表示に使う。
  */

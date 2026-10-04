@@ -11,7 +11,13 @@ import {
   minFilmstripRangeSeconds,
   type FilmstripRange,
 } from '@/lib/chapter-filmstrip'
-import { chapterBoundaries, displayedFrameBoundaryMs, nudgeBoundary } from '@/lib/chapters'
+import {
+  chapterBoundaries,
+  chapterSpanIndexesAtBoundary,
+  displayedFrameBoundaryMs,
+  normalizeChapterDraft,
+  nudgeBoundary,
+} from '@/lib/chapters'
 import { formatPlaybackTime, formatPlaybackTimeMs } from '@/lib/format'
 import {
   SEEK_TILES_COLUMNS,
@@ -34,7 +40,7 @@ type RecordingChapterFilmstripProps = {
   onTileImageError: () => void
   onSeek: (seconds: number) => void
   onSelectBoundary: (seconds: number) => void
-  onChangeSpans: (spans: ChapterSpan[]) => void
+  onChangeSpans: (spans: ChapterSpan[], operatedIndexes?: readonly number[]) => void
   onPlayAround: (seconds: number) => void
 }
 
@@ -67,7 +73,6 @@ export function RecordingChapterFilmstrip({
   onChangeSpans,
   onPlayAround,
 }: RecordingChapterFilmstripProps) {
-  const boundaries = useMemo(() => chapterBoundaries(spans), [spans])
   // 編集モードに入った時点の再生位置。開いた直後の表示範囲はこの周りにし、再生が進んでも追わない。
   const [openedAt] = useState(currentSeconds)
   const [trackWidth, setTrackWidth] = useState(0)
@@ -77,6 +82,13 @@ export function RecordingChapterFilmstrip({
   const dragRef = useRef<{ fromSeconds: number; downX: number; moved: boolean } | null>(null)
   const ignoreClickRef = useRef(false)
   const observerRef = useRef<ResizeObserver | null>(null)
+  const previewSpans = useMemo(() => {
+    if (dragPreview === null) return spans
+    const operatedIndexes = chapterSpanIndexesAtBoundary(spans, dragPreview.from)
+    const moved = nudgeBoundary(spans, dragPreview.from, dragPreview.ms / 1000 - dragPreview.from)
+    return normalizeChapterDraft(moved, operatedIndexes)
+  }, [dragPreview, spans])
+  const boundaries = useMemo(() => chapterBoundaries(previewSpans), [previewSpans])
   // 幅は実測が要る（jsdom では測れず 0 のまま。その間は既定の長さで描く）。
   const setTrack = useCallback((element: HTMLDivElement | null) => {
     observerRef.current?.disconnect()
@@ -115,7 +127,7 @@ export function RecordingChapterFilmstrip({
     setUserRange(rangeAround(center, rangeLength * factor, durationSeconds, minLength))
   }
 
-  const moveBoundary = (event: ReactPointerEvent<HTMLButtonElement>) => {
+  const moveBoundary = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current
     const track = trackRef.current
     if (!drag || !track) return
@@ -128,17 +140,23 @@ export function RecordingChapterFilmstrip({
 
   const startBoundaryDrag = (event: ReactPointerEvent<HTMLButtonElement>, boundary: number) => {
     dragRef.current = { fromSeconds: boundary, downX: event.clientX, moved: false }
+    // Pointer capture is on the track so the boundary node may be replaced by a normalized preview.
+    // Prevent the release click from becoming a track seek when capture retargets it.
+    ignoreClickRef.current = true
     setDragPreview({ from: boundary, ms: Math.round(boundary * 1000) })
     onSelectBoundary(boundary)
-    event.currentTarget.setPointerCapture?.(event.pointerId)
+    trackRef.current?.setPointerCapture?.(event.pointerId)
   }
 
-  const finishBoundaryDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+  const finishBoundaryDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current
     if (!drag) return
     const target = (dragPreview?.ms ?? Math.round(drag.fromSeconds * 1000)) / 1000
     if (drag.moved) {
-      onChangeSpans(nudgeBoundary(spans, drag.fromSeconds, target - drag.fromSeconds))
+      onChangeSpans(
+        nudgeBoundary(spans, drag.fromSeconds, target - drag.fromSeconds),
+        chapterSpanIndexesAtBoundary(spans, drag.fromSeconds),
+      )
       onSelectBoundary(target)
       ignoreClickRef.current = true
     }
@@ -149,11 +167,12 @@ export function RecordingChapterFilmstrip({
     }
   }
 
-  const cancelBoundaryDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+  const cancelBoundaryDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current
     if (!drag) return
     setDragPreview(null)
     dragRef.current = null
+    ignoreClickRef.current = false
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
     }
@@ -161,7 +180,10 @@ export function RecordingChapterFilmstrip({
 
   const nudgeSelected = (deltaSeconds: number) => {
     if (selectedBoundary === null) return
-    onChangeSpans(nudgeBoundary(spans, selectedBoundary, deltaSeconds))
+    onChangeSpans(
+      nudgeBoundary(spans, selectedBoundary, deltaSeconds),
+      chapterSpanIndexesAtBoundary(spans, selectedBoundary),
+    )
     onSelectBoundary(selectedBoundary + deltaSeconds)
   }
 
@@ -169,7 +191,10 @@ export function RecordingChapterFilmstrip({
     if (selectedBoundary === null) return
     const targetMs = displayedFrameBoundaryMs(getDisplayedFrameSeconds(), currentSeconds)
     const targetSeconds = targetMs / 1000
-    onChangeSpans(nudgeBoundary(spans, selectedBoundary, targetSeconds - selectedBoundary))
+    onChangeSpans(
+      nudgeBoundary(spans, selectedBoundary, targetSeconds - selectedBoundary),
+      chapterSpanIndexesAtBoundary(spans, selectedBoundary),
+    )
     onSelectBoundary(targetSeconds)
   }
 
@@ -190,7 +215,7 @@ export function RecordingChapterFilmstrip({
         }}
         aria-label="表示している時間範囲"
       >
-        {durationSeconds > 0 && spans.filter((span) => span.cut).map((span, index) => (
+        {durationSeconds > 0 && previewSpans.filter((span) => span.cut).map((span, index) => (
           <span
             key={`${span.startMs}-${span.endMs}-${index}`}
             className="absolute inset-y-0 bg-chapter-cut"
@@ -247,6 +272,9 @@ export function RecordingChapterFilmstrip({
         data-visible-start-seconds={range.startSeconds}
         data-visible-end-seconds={range.endSeconds}
         className="relative min-h-8 min-w-0 touch-none overflow-hidden rounded bg-muted/70"
+        onPointerMove={moveBoundary}
+        onPointerUp={finishBoundaryDrag}
+        onPointerCancel={cancelBoundaryDrag}
         onClick={(event) => {
           if (ignoreClickRef.current) {
             ignoreClickRef.current = false
@@ -284,7 +312,7 @@ export function RecordingChapterFilmstrip({
             </div>
           )
         })}
-        {spans.filter((span) => span.cut).map((span, index) => {
+        {previewSpans.filter((span) => span.cut).map((span, index) => {
           const safeRangeLength = Math.max(rangeLength, 1)
           const left = ((span.startMs / 1000 - range.startSeconds) / safeRangeLength) * 100
           const width = ((span.endMs - span.startMs) / 1000 / safeRangeLength) * 100
@@ -298,7 +326,7 @@ export function RecordingChapterFilmstrip({
           )
         })}
         {boundaries.map((boundary) => {
-          const displayTime = dragPreview !== null && dragPreview.from === boundary ? dragPreview.ms / 1000 : boundary
+          const displayTime = boundary
           const selected = selectedForDisplay !== null && Math.abs(displayTime - selectedForDisplay) < 0.001
           const x = filmstripTimeToX(displayTime, range, 100)
           return (
@@ -312,9 +340,6 @@ export function RecordingChapterFilmstrip({
               className={`absolute inset-y-0 z-20 w-1 -translate-x-1/2 touch-none border-0 p-0 ${selected ? 'bg-chapter-selection outline outline-2 outline-foreground' : 'bg-foreground'}`}
               style={{ left: `${x}%` }}
               onPointerDown={(event) => startBoundaryDrag(event, boundary)}
-              onPointerMove={moveBoundary}
-              onPointerUp={finishBoundaryDrag}
-              onPointerCancel={cancelBoundaryDrag}
               onClick={(event) => {
                 event.stopPropagation()
                 if (ignoreClickRef.current) {
