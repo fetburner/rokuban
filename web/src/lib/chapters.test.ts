@@ -147,6 +147,19 @@ describe('normalizeChapterDraft', () => {
   it('共有境界を操作した区間の index を両側から返す', () => {
     expect(chapterSpanIndexesAtBoundary([cm(10_000, 20_000), cm(20_000, 30_000)], 20)).toEqual([0, 1])
   })
+
+  it('切り取りで残る 1 フレーム未満の断片は捨て、1 フレーム以上は残す', () => {
+    const opening: ChapterSpan = { startMs: 0, endMs: 10_005, label: 'OP', cut: false }
+    expect(normalizeChapterDraft([opening, cm(5, 10_000)], [1])).toEqual([cm(5, 10_000)])
+    expect(normalizeChapterDraft([{ ...opening, endMs: 10_034 }, cm(0, 10_000)], [1])).toEqual([
+      cm(0, 10_000),
+      { ...opening, startMs: 10_000, endMs: 10_034 },
+    ])
+  })
+
+  it('利用者が元から持つ 1 フレーム未満の区間は落とさない', () => {
+    expect(normalizeChapterDraft([cm(100, 105)])).toEqual([cm(100, 105)])
+  })
 })
 
 describe('chapterBoundaries', () => {

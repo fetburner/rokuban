@@ -77,13 +77,13 @@ export function RecordingChapterFilmstrip({
   const [openedAt] = useState(currentSeconds)
   const [trackWidth, setTrackWidth] = useState(0)
   const [userRange, setUserRange] = useState<FilmstripRange | null>(null)
-  const [dragPreview, setDragPreview] = useState<{ from: number; ms: number } | null>(null)
+  const [dragPreview, setDragPreview] = useState<{ from: number; ms: number; moved: boolean } | null>(null)
   const trackRef = useRef<HTMLDivElement | null>(null)
   const dragRef = useRef<{ fromSeconds: number; downX: number; moved: boolean } | null>(null)
   const ignoreClickRef = useRef(false)
   const observerRef = useRef<ResizeObserver | null>(null)
   const previewSpans = useMemo(() => {
-    if (dragPreview === null) return spans
+    if (dragPreview === null || !dragPreview.moved) return spans
     const operatedIndexes = chapterSpanIndexesAtBoundary(spans, dragPreview.from)
     const moved = nudgeBoundary(spans, dragPreview.from, dragPreview.ms / 1000 - dragPreview.from)
     return normalizeChapterDraft(moved, operatedIndexes)
@@ -135,15 +135,15 @@ export function RecordingChapterFilmstrip({
     const target = filmstripXToTime(event.clientX - rect.left, range, rect.width)
     drag.moved ||= Math.abs(event.clientX - drag.downX) > 2
     // 選択は押した時に済んでいる。動かす間は表示だけ更新し、カードのハイライトを揺らさない。
-    setDragPreview({ from: drag.fromSeconds, ms: Math.round(target * 1000) })
+    setDragPreview({ from: drag.fromSeconds, ms: Math.round(target * 1000), moved: drag.moved })
   }
 
   const startBoundaryDrag = (event: ReactPointerEvent<HTMLButtonElement>, boundary: number) => {
     dragRef.current = { fromSeconds: boundary, downX: event.clientX, moved: false }
-    // Pointer capture is on the track so the boundary node may be replaced by a normalized preview.
-    // Prevent the release click from becoming a track seek when capture retargets it.
+    // ポインターキャプチャは track に掛ける。境界ノードが正規化プレビューで差し替わりうるため。
+    // キャプチャの付け替えで離した時の click がシークにならないよう抑止する。
     ignoreClickRef.current = true
-    setDragPreview({ from: boundary, ms: Math.round(boundary * 1000) })
+    setDragPreview({ from: boundary, ms: Math.round(boundary * 1000), moved: false })
     onSelectBoundary(boundary)
     trackRef.current?.setPointerCapture?.(event.pointerId)
   }

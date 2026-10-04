@@ -263,19 +263,23 @@ export function normalizeChapterDraft(
         } else if (left.operated !== right.operated) {
           winner = left.operated ? left : right
         } else {
-          // Same-label spans were already merged. For a conflict with equal edit priority,
-          // keep the earlier interval so the outcome follows the timeline, not array order.
+          // 同じラベルの区間は合併済み。編集の優先度が同じ競合では、配列の順ではなく
+          // タイムラインで結果が決まるよう、先に始まる区間を残す。
           winner = left.span.startMs <= right.span.startMs ? left : right
         }
         const loser = winner === left ? right : left
         const fragments: Candidate[] = []
-        if (loser.span.startMs < winner.span.startMs) {
+        // 1 フレーム未満の断片は捨てる。サーバーの量子化は最寄りのフレーム境界への丸めなので、
+        // 1 フレーム以上の区間は丸めても空にならず、未満の断片は空になりうるため保存できない。
+        // 対象は切り取りで生まれた断片だけで、利用者が元から持つ区間は落とさない（サーバーが拒否する）。
+        const keepsFrame = (startMs: number, endMs: number) => endMs - startMs >= FRAME_SECONDS * 1000
+        if (loser.span.startMs < winner.span.startMs && keepsFrame(loser.span.startMs, winner.span.startMs)) {
           fragments.push({
             ...loser,
             span: { ...loser.span, endMs: winner.span.startMs },
           })
         }
-        if (loser.span.endMs > winner.span.endMs) {
+        if (loser.span.endMs > winner.span.endMs && keepsFrame(winner.span.endMs, loser.span.endMs)) {
           fragments.push({
             ...loser,
             span: { ...loser.span, startMs: winner.span.endMs },

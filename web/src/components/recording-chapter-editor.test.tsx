@@ -215,6 +215,20 @@ describe('RecordingChapterEditor の編集専用画面', () => {
     expect(onSave).toHaveBeenCalledWith([{ startMs: 29_997, endMs: 39_973, cut: true }], 'v1')
   })
 
+  it('duration が無限でも「ここから区間を足す / ここまで」で区間を足せる', () => {
+    const { rerender, getByRole, commandsRef, props, onSave } = renderEditor([], {
+      currentSeconds: 30,
+      durationSeconds: Infinity,
+    })
+    fireEvent.click(getByRole('button', { name: 'ここから区間を足す' }))
+    rerender(<RecordingChapterEditor {...props} currentSeconds={40} />)
+    fireEvent.click(getByRole('button', { name: 'ここまで' }))
+    act(() => {
+      void commandsRef.current?.save()
+    })
+    expect(onSave).toHaveBeenCalledWith([{ startMs: 29_997, endMs: 39_973, cut: true }], 'v1')
+  })
+
   it('「最初からここまで切る」と「ここから最後まで切る」は録画の先頭と終端を使う', () => {
     const first = renderEditor([], { currentSeconds: 30 })
     fireEvent.click(first.getByRole('button', { name: '最初からここまで切る' }))

@@ -239,10 +239,8 @@ function ChapterDraftEditor({
     }
   }, [commandsRef, discardDraft, reset, save])
 
-  const currentPositionMs = () => Math.min(
-    durationMs,
-    nowMs(),
-  )
+  // duration が未確定（0）や無限（native HLS の変換中）のときは頭打ちしない。
+  const currentPositionMs = () => (durationMs > 0 ? Math.min(durationMs, nowMs()) : nowMs())
   const startNewSpan = () => setPendingStartMs(currentPositionMs())
   const closeNewSpan = () => {
     if (pendingStartMs === null) return
