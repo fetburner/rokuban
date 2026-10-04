@@ -33,6 +33,42 @@ type fakeChaseRecordClient struct {
 	recordIDs []string
 }
 
+type retryingChaseStartupClient struct {
+	mu                 sync.Mutex
+	followCalls        int
+	firstFollowEntered chan struct{}
+	releaseFirstFollow chan struct{}
+}
+
+func (c *retryingChaseStartupClient) StreamRecordFollow(ctx context.Context, _ string) (io.ReadCloser, error) {
+	c.mu.Lock()
+	c.followCalls++
+	call := c.followCalls
+	c.mu.Unlock()
+	if call == 1 {
+		close(c.firstFollowEntered)
+		select {
+		case <-c.releaseFirstFollow:
+			return nil, &mirakc.APIError{StatusCode: http.StatusServiceUnavailable, Status: "503 Service Unavailable"}
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return io.NopCloser(strings.NewReader("fake-record")), nil
+}
+
+func (c *retryingChaseStartupClient) StreamRecord(context.Context, string, int64) (io.ReadCloser, int64, error) {
+	return nil, 0, mirakc.ErrRangeNotSatisfiable
+}
+
+func (c *retryingChaseStartupClient) GetRecord(context.Context, string) (*mirakc.Record, error) {
+	return &mirakc.Record{Recording: mirakc.RecordInfo{Status: "finished"}}, nil
+}
+
+func (c *retryingChaseStartupClient) StreamService(context.Context, int64, int) (io.ReadCloser, error) {
+	return nil, errors.New("not used")
+}
+
 func (c *fakeChaseRecordClient) StreamRecordFollow(_ context.Context, recordID string) (io.ReadCloser, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1036,6 +1072,89 @@ func TestChaseCooldownSkipsMetadataAndAllowsExistingOffset(t *testing.T) {
 	client.mu.Unlock()
 	if !metadataWasNotRead {
 		t.Fatal("joining an existing offset queried mirakc metadata")
+	}
+}
+
+func TestChaseConcurrentJoinerUsesUpstreamStartupRetry(t *testing.T) {
+	setShortLiveMirakcReleaseWait(t, 10*time.Millisecond)
+	ffmpeg, _ := installEndlistMarkerFFmpeg(t)
+	cfg := chaseTestConfig(t, ffmpeg)
+	cfg.IdleTimeout = 30 * time.Second
+	client := &retryingChaseStartupClient{
+		firstFollowEntered: make(chan struct{}),
+		releaseFirstFollow: make(chan struct{}),
+	}
+	ls := newLiveStreamer(client, cfg)
+	t.Cleanup(ls.shutdown)
+
+	// Make an idle victim available so the initial upstream rejection must use
+	// the same recovery path as other live session startup failures.
+	ready := make(chan struct{})
+	close(ready)
+	done := make(chan struct{})
+	close(done)
+	victim := &liveSession{
+		serviceID:  999,
+		key:        sessionKey{kind: liveSessionKind, id: 999},
+		ready:      ready,
+		done:       done,
+		cancel:     func() {},
+		lastAccess: time.Now().Add(-time.Hour),
+	}
+	ls.mu.Lock()
+	ls.putSessionLocked(victim)
+	ls.mu.Unlock()
+
+	responses := make(chan *httptest.ResponseRecorder, 2)
+	go func() { responses <- requestHeadChasePlaylist(ls, 42, "recording") }()
+	select {
+	case <-client.firstFollowEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("initial chase upstream request did not start")
+	}
+	go func() { responses <- requestHeadChasePlaylist(ls, 42, "recording") }()
+	// Let the second public request join the in-flight session and wait on ready
+	// before releasing its upstream failure.
+	time.Sleep(100 * time.Millisecond)
+	close(client.releaseFirstFollow)
+
+	for i := 0; i < 2; i++ {
+		select {
+		case resp := <-responses:
+			if resp.Code != http.StatusOK {
+				t.Errorf("concurrent chase playlist status = %d, want 200 (%s)", resp.Code, resp.Body.String())
+			}
+		case <-time.After(5 * time.Second):
+			client.mu.Lock()
+			followCalls := client.followCalls
+			client.mu.Unlock()
+			ls.mu.Lock()
+			active := ls.chaseSessions[chaseSessionKeyFor(42, 0)]
+			activeStartErr := error(nil)
+			activeDir := ""
+			if active != nil {
+				select {
+				case <-active.ready:
+					activeStartErr = active.startErr
+					activeDir = active.dir
+				default:
+				}
+			}
+			ls.mu.Unlock()
+			entries, _ := os.ReadDir(activeDir)
+			activeFiles := make([]string, 0, len(entries))
+			for _, entry := range entries {
+				activeFiles = append(activeFiles, entry.Name())
+			}
+			t.Fatalf("concurrent request %d did not finish after %d responses (follow calls=%d, active session=%v, dir=%q, start error=%v, files=%v)",
+				i+1, i, followCalls, active != nil, activeDir, activeStartErr, activeFiles)
+		}
+	}
+	client.mu.Lock()
+	followCalls := client.followCalls
+	client.mu.Unlock()
+	if followCalls != 2 {
+		t.Fatalf("chase upstream attempts = %d, want one initial failure and one shared retry", followCalls)
 	}
 }
 

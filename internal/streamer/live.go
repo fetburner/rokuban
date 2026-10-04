@@ -1143,8 +1143,14 @@ func (ls *LiveStreamer) ChasePlaylistForTarget(w http.ResponseWriter, r *http.Re
 		var err error
 		s, err = ls.existingChaseSessionOrCooldown(r.Context(), key)
 		if err != nil {
-			writeSessionError(w, err)
-			return
+			if _, retryable := liveEvictionReason(err); !retryable {
+				writeSessionError(w, err)
+				return
+			}
+			// A failed in-flight session still goes through the shared eviction and
+			// retry path below. Healthy sessions and cooldown responses are handled
+			// before any offset metadata request.
+			s = nil
 		}
 		if s == nil {
 			committedSize := ls.committedOriginalSize(target.RecordingID)
@@ -2670,6 +2676,12 @@ func (ls *LiveStreamer) existingChaseSessionOrCooldown(ctx context.Context, key 
 		return nil, err
 	}
 	if s.startErr != nil {
+		if _, retryable := liveEvictionReason(s.startErr); retryable {
+			// runSession removes the map entry before deleting its output directory.
+			// Wait for done before a caller retries at the same offset, or the old
+			// cleanup can remove files from the new session.
+			<-s.done
+		}
 		return s, s.startErr
 	}
 	return s, nil

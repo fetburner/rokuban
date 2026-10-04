@@ -609,8 +609,9 @@ segment を取りに来る窓を失わない。保持中は全プロファイル
 終了後でも再起動なしに `?profile=` を切り替えられる
 （`TestFinishedChaseProfileSwitchServesRetainedPlaylists`）。ffmpeg が異常終了した場合（kill を含む）は
 壊れたセッションを保持せず、map とファイルを直ちに解放する。mirakc からの入力読み取りエラーで
-ffmpeg を止めた場合は、録画 ID ごとに 10 秒間の再作成 cooldown を記録する。期間中は、offset に関係なく
-playlist 要求を拒否する。応答は `502 Bad Gateway` とする。本文は
+ffmpeg を止めた場合は、録画 ID ごとに 10 秒間の再作成 cooldown を記録する。期間中は、その録画の
+新しい追っかけセッションを作成しない。すでに存在する健全な offset のセッションは引き続き共有できる。
+新しいセッションが必要な playlist 要求には `502 Bad Gateway` を返す。本文は
 `追っかけ入力のエラーが続いているため、再作成を一時停止しています。しばらく待ってから再読み込みしてください。`
 で、残り秒数を `Retry-After` に入れる。`502` は上流入力の失敗を示すため、チューナーやセッション数の不足を
 表す `503 Service Unavailable` とは分類を分ける。cooldown が切れた後の最初の要求は新しいセッションを試し、
