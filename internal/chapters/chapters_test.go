@@ -142,14 +142,30 @@ func TestValidate_QuantizesAndSorts(t *testing.T) {
 	}
 }
 
-func TestValidate_RejectsEmptySpan(t *testing.T) {
-	// 量子化で潰れる区間（34 - 33 = 1ms 未満の差）もここで落ちる。
-	_, err := Validate([]Span{{StartMs: 1000, EndMs: 1000, Cut: true}})
-	if !errors.Is(err, ErrInvalid) {
-		t.Fatalf("Validate(empty) error = %v, want ErrInvalid", err)
+func TestValidate_RejectsEmptyOrReversedSpan(t *testing.T) {
+	for _, span := range []Span{
+		{StartMs: 1000, EndMs: 1000, Cut: true},
+		{StartMs: 1001, EndMs: 1000, Cut: true},
+	} {
+		if _, err := Validate([]Span{span}); !errors.Is(err, ErrInvalid) {
+			t.Errorf("Validate(%+v) error = %v, want ErrInvalid", span, err)
+		}
 	}
-	if _, err := Validate([]Span{{StartMs: 36, EndMs: 37, Cut: true}}); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("Validate(quantized away) error = %v, want ErrInvalid", err)
+}
+
+func TestValidate_DropsPositiveSpanThatQuantizesAway(t *testing.T) {
+	// The remaining 5 ms of this non-cut interval quantizes to no frames. The cut
+	// interval remains valid, so normalization should discard only the empty result.
+	got, err := Validate([]Span{
+		{StartMs: 0, EndMs: 20015, Cut: true},
+		{StartMs: 20015, EndMs: 20020, Label: "OP"},
+	})
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	want := []Span{{StartMs: 0, EndMs: 20020, Cut: true}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Validate = %+v, want %+v", got, want)
 	}
 }
 

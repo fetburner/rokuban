@@ -289,13 +289,16 @@ func Quantized(spans []Span) []Span {
 // するためのもの（DB 側の制約は直接 INSERT が来ても壊れないようにする二重化）。
 func Validate(spans []Span) ([]Span, error) {
 	for _, s := range spans {
+		if s.EndMs <= s.StartMs {
+			return nil, fmt.Errorf("%w: span [%d,%d) is empty", ErrInvalid, s.StartMs, s.EndMs)
+		}
 		if s.Label == "" && !s.Cut {
 			return nil, fmt.Errorf("%w: span [%d,%d) has neither a label nor cut=true", ErrInvalid, s.StartMs, s.EndMs)
 		}
-		if q := quantizeSpan(s); q.EndMs <= q.StartMs {
-			return nil, fmt.Errorf("%w: span [%d,%d) is empty", ErrInvalid, s.StartMs, s.EndMs)
-		}
 	}
+	// Quantized drops positive intervals that collapse to zero frames. This can happen
+	// when overlap resolution trims a neighboring span to a sub-frame fragment; those
+	// fragments cannot be persisted and should not reject otherwise valid edits.
 	quantized := Quantized(spans)
 	for i := 1; i < len(quantized); i++ {
 		if quantized[i].StartMs < quantized[i-1].EndMs {
