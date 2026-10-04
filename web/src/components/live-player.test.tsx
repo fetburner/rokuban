@@ -7,7 +7,7 @@ import { LivePlayer } from '@/components/live-player'
 import { FRAME_SECONDS } from '@/lib/chapters'
 import { liveStallTimeoutMs } from '@/lib/live'
 import type { LiveDiagnostics, StallHandling } from '@/lib/live'
-import { savePlaybackRate } from '@/lib/playback-position'
+import { saveChapterEditPlaybackRate, savePlaybackRate } from '@/lib/playback-position'
 
 function openPlaybackSettingsSubmenu(label: '画質' | '音声') {
   if (!screen.queryByRole('menu', { name: '再生設定' })) {
@@ -1112,6 +1112,32 @@ describe('LivePlayer の状態遷移', () => {
 
       expect(localStorage.getItem('rokuban:playback-rate')).toBe('1.25')
       expect(video.defaultPlaybackRate).toBe(1.25)
+    })
+
+    it('追っかけのチャプター編集中は別速度を使い、終了すると通常速度へ戻す', async () => {
+      savePlaybackRate(1.5)
+      saveChapterEditPlaybackRate(1.75)
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      const props = { mode: 'chase', site: 'default', recordingId: 7 } as const
+      const { rerender } = render(<LivePlayer {...props} chapterEditing />)
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const video = document.querySelector('video')!
+      expect(video.defaultPlaybackRate).toBe(1.75)
+      expect(video.playbackRate).toBe(1.75)
+
+      fireEvent.click(screen.getByTestId('chapter-edit-playback-rate'))
+      expect(video.playbackRate).toBe(2)
+      fireEvent.rateChange(video)
+      expect(localStorage.getItem('rokuban:chapter-edit-playback-rate')).toBe('2')
+      expect(localStorage.getItem('rokuban:playback-rate')).toBe('1.5')
+
+      rerender(<LivePlayer {...props} chapterEditing={false} />)
+      expect(video.defaultPlaybackRate).toBe(1.5)
+      expect(video.playbackRate).toBe(1.5)
+      rerender(<LivePlayer {...props} chapterEditing />)
+      expect(video.defaultPlaybackRate).toBe(2)
+      expect(video.playbackRate).toBe(2)
     })
 
     it('追っかけは配信プロファイルと別のVODプロファイルで位置を復元する', async () => {

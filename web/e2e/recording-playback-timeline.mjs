@@ -377,13 +377,14 @@ async function seekThroughChapterCards(page) {
 
   await exerciseBoundaryControls(page, '非カット MP4', { first: 0, stop: 2, from: 3 }, 0)
   await page.setViewportSize({ width: 400, height: 800 })
-  // 400 幅の帯: 3 つのモードボタンが映像の枠内に収まり、帯の中の要素（再生ボタン・時刻・3 ボタン）
+  // 400 幅の帯: 3 つのモードボタンが映像の枠内に収まり、帯の中の要素（再生ボタン・時刻・3 ボタン・速度）
   // 同士が重ならない。
   const modeLayout = await page.getByTestId('chapter-edit-playback-modes').evaluate((element) => {
     const frame = element.closest('[data-testid="recording-player-frame"]')
     if (!frame) return null
     const frameRect = frame.getBoundingClientRect()
     const band = element.parentElement
+    // 速度ボタンも含む（`chapter-edit-playback-modes` の中にある）。
     const items = Array.from(band.querySelectorAll('button, [data-testid="chapter-edit-playhead"]'))
       .map((node) => {
         const rect = node.getBoundingClientRect()
@@ -405,7 +406,7 @@ async function seekThroughChapterCards(page) {
   })
   if (modeLayout === null || !modeLayout.inside) ng.push('400×800 で再生型のボタンが映像下端の帯からはみ出す')
   else if (modeLayout.overlaps.length > 0) ng.push(`400×800 の帯の中で要素が重なる (${modeLayout.overlaps.join(', ')})`)
-  else if (modeLayout.count < 5) ng.push(`400×800 の帯の要素が 5 個（再生・時刻・3 ボタン）に満たない (${modeLayout.count})`)
+  else if (modeLayout.count < 6) ng.push(`400×800 の帯の要素が 6 個（再生・時刻・3 ボタン・速度）に満たない (${modeLayout.count})`)
   await page.setViewportSize({ width: 1280, height: 900 })
 }
 

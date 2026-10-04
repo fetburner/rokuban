@@ -51,7 +51,7 @@ type RecordingChapterFilmstripProps = {
   onSeek: (seconds: number) => void
   onSelectBoundary: (seconds: number) => void
   /** 境界を delta 秒動かす。`continued` は長押しの 2 回目以降（undo を 1 件にまとめる）。 */
-  onMoveBoundary: (fromSeconds: number, deltaSeconds: number, continued?: boolean) => void
+  onMoveBoundary: (fromSeconds: number, deltaSeconds: number, continued?: boolean) => boolean | void
 }
 
 function rangeAround(center: number, length: number, duration: number, minLength: number): FilmstripRange {
@@ -194,8 +194,10 @@ export function RecordingChapterFilmstrip({
     }
   }
 
-  const nudgeSelected = (deltaSeconds: number, continued = false) => {
-    if (selectedBoundary !== null) onMoveBoundary(selectedBoundary, deltaSeconds, continued)
+  /** nudgeSelected は選択境界を動かす。連続送りを続けてよいかを返す（境界が消えたら false）。 */
+  const nudgeSelected = (deltaSeconds: number, continued = false): boolean => {
+    if (selectedBoundary === null) return false
+    return onMoveBoundary(selectedBoundary, deltaSeconds, continued) !== false
   }
 
   const nudgeSelectedRef = useRef(nudgeSelected)
@@ -208,10 +210,15 @@ export function RecordingChapterFilmstrip({
     if (nudgeRepeatRef.current !== null) window.clearTimeout(nudgeRepeatRef.current)
     ignoreNudgeClickRef.current = true
     event.currentTarget.setPointerCapture?.(event.pointerId)
-    nudgeSelectedRef.current(deltaSeconds)
+    // 最初の 1 回で境界が消えたなら、連続送りは始めない。
+    if (!nudgeSelectedRef.current(deltaSeconds)) return
     const schedule = (delayMs: number) => {
       nudgeRepeatRef.current = window.setTimeout(() => {
-        nudgeSelectedRef.current(deltaSeconds, true)
+        // 合併で境界が消えたら止める。続けると別の境界を動かし始める。
+        if (!nudgeSelectedRef.current(deltaSeconds, true)) {
+          nudgeRepeatRef.current = null
+          return
+        }
         schedule(NUDGE_REPEAT_INTERVAL_MS)
       }, delayMs)
     }

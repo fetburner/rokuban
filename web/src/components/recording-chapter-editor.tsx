@@ -196,16 +196,23 @@ function ChapterDraftEditor({
    * moveBoundary は境界を delta 秒動かす唯一の経路（`,` `.`・±ボタン・長押し・ドラッグ・
    * 再生位置に合わせる）。正規化と undo 履歴を通し、動かした後の境界を選んで映像を連れて行く。
    * `continued` は長押しの 2 回目以降で、最初の 1 回が積んだ履歴 1 件にまとめる。
+   * 動かした先の境界が合併で消えて別の境界を選び直したときは false を返す。連続送りはここで
+   * 止める（続けると、利用者が押していない別の境界を動かし始める）。
    */
-  const moveBoundary = useCallback((from: number, deltaSeconds: number, continued = false) => {
+  const moveBoundary = useCallback((from: number, deltaSeconds: number, continued = false): boolean => {
     const moved = moveChapterBoundary(draftRef.current, from, deltaSeconds)
     if (commitDraft(moved.spans, [], continued && moveGestureOpenRef.current)) {
       moveGestureOpenRef.current = true
     } else if (!continued) {
       moveGestureOpenRef.current = false
     }
-    if (moved.boundary !== null) selectBoundary(moved.boundary)
+    if (moved.boundary === null) return false
+    selectBoundary(moved.boundary)
+    return Math.abs(moved.boundary - Math.round((from + deltaSeconds) * 1000) / 1000) <= 0.001
   }, [commitDraft, selectBoundary])
+
+  // キーリピートで境界が消えたら、キーを離すまでリピートを無視する。
+  const keyRepeatStoppedRef = useRef(false)
 
   // ← → は選択を移す。`,` / `.` は選択境界を 1 フレーム動かす。
   // 編集画面のどこにフォーカスがあっても効き、入力欄・シークバー・メニューでは効かない。
@@ -235,7 +242,11 @@ function ChapterDraftEditor({
       if (editingTarget) return
       event.preventDefault()
       if (isFrameNudge) {
-        if (selectedBoundary !== null) moveBoundary(selectedBoundary, event.key === ',' ? -FRAME_SECONDS : FRAME_SECONDS)
+        if (!event.repeat) keyRepeatStoppedRef.current = false
+        if (selectedBoundary === null || keyRepeatStoppedRef.current) return
+        // OS のキーリピートは長押しと同じく、最初の 1 回が積んだ履歴 1 件にまとめる。
+        const kept = moveBoundary(selectedBoundary, event.key === ',' ? -FRAME_SECONDS : FRAME_SECONDS, event.repeat)
+        if (!kept) keyRepeatStoppedRef.current = true
         return
       }
       const index = selectedBoundary === null ? -1 : boundaries.indexOf(selectedBoundary)
@@ -243,8 +254,15 @@ function ChapterDraftEditor({
       const nextBoundary = boundaries[Math.max(0, Math.min(boundaries.length - 1, next))]
       if (nextBoundary !== selectedBoundary) selectBoundary(nextBoundary)
     }
+    const onKeyUp = () => {
+      keyRepeatStoppedRef.current = false
+    }
     window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+    }
   }, [boundaries, history, moveBoundary, selectBoundary, selectedBoundary, undo])
 
   const save = useCallback(async () => {

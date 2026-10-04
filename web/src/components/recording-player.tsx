@@ -30,6 +30,7 @@ import {
 import {
   applyPlaybackRate,
   clearLegacyPlaybackPositions,
+  loadChapterEditPlaybackRate,
   loadPlaybackRate,
   playbackPositionWrite,
   playbackResumeSeconds,
@@ -37,6 +38,7 @@ import {
   cutMsToOriginalMs,
   recordingFileURL,
   recordingSubtitleURL,
+  saveChapterEditPlaybackRate,
   savePlaybackRate,
 } from '@/lib/playback-position'
 import { formatDate, formatTime } from '@/lib/format'
@@ -204,6 +206,10 @@ export function RecordingPlayer({
   // <video> を作り直す単位。要素の key と表示フレームの購読の張り直しで同じ値を使う。
   const videoKey = `${recordingId}:${selectedProfile}:${keepRangesKey}`
   const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
+  const [chapterEditPlaybackRate, setChapterEditPlaybackRate] = useState(loadChapterEditPlaybackRate)
+  const activePlaybackRate = chapterEditing ? chapterEditPlaybackRate : playbackRate
+  const setActivePlaybackRate = chapterEditing ? setChapterEditPlaybackRate : setPlaybackRate
+  const saveActivePlaybackRate = chapterEditing ? saveChapterEditPlaybackRate : savePlaybackRate
   const videoRef = useRef<HTMLVideoElement>(null)
   const getDisplayedFrameSeconds = useDisplayedFrameSeconds(videoRef, chapterEditing, videoKey)
   const frameRef = useRef<HTMLDivElement>(null)
@@ -508,8 +514,8 @@ export function RecordingPlayer({
   // 再生中に別の録画へ移っても境界の前後再生を残さない。
   useEffect(() => () => window.clearTimeout(playAroundTimerRef.current), [])
 
-  // 録画を変えても速度は保つ（以前はここで 1 倍に戻していた）。速度は端末ごとの
-  // 好みであって録画ごとの状態ではない（`lib/playback-position.ts`）。
+  // 録画を変えても速度は保つ。編集時だけ別の端末設定を使い、編集画面を出入りしても
+  // 通常再生の好みを汚さない（`lib/playback-position.ts`）。
   //
   // **`recordingId` を依存に含める。** `<video>` は `key={`${recordingId}:${profile}`}`
   // なので、別の録画に移ると DOM 要素ごと作り直される。`recordingId` が依存に無いと
@@ -522,9 +528,11 @@ export function RecordingPlayer({
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
-    const appliedRate = applyPlaybackRate(video, playbackRate)
-    if (appliedRate !== playbackRate) setPlaybackRate(appliedRate)
-  }, [recordingId, selectedProfile, playbackRate])
+    const appliedRate = applyPlaybackRate(video, activePlaybackRate, saveActivePlaybackRate)
+    if (appliedRate !== activePlaybackRate) {
+      setActivePlaybackRate(appliedRate)
+    }
+  }, [activePlaybackRate, chapterEditing, recordingId, saveActivePlaybackRate, selectedProfile, setActivePlaybackRate])
 
   const updateSubtitleCueLines = (video: HTMLVideoElement, raise: boolean) => {
     const frame = frameRef.current
@@ -700,11 +708,20 @@ export function RecordingPlayer({
     playAroundStopBoundaryMsRef.current = mode === 'to' ? boundaryMs : null
     jumpTo(start)
     void video.play().catch(() => {})
-    // 本来の停止は timeupdate の `currentTime >= stop`。これは再生が進まない場合
-    // （バッファ待ちなど）に抑制が残り続けないための保険で、再生速度ぶん余裕を持たせる。
+    schedulePlayAroundStop(video)
+  }
+  // 本来の停止は timeupdate の `currentTime >= stop`。これは再生が進まない場合
+  // （バッファ待ちなど）に抑制が残り続けないための保険で、再生速度ぶん余裕を持たせる。
+  // 発火したら無条件に止める。測り直す契機は開始時と速度変更だけにする
+  // （timeupdate ごとに張り直すとストール中は止まらない）。
+  const schedulePlayAroundStop = (video: HTMLVideoElement) => {
+    const stop = playAroundStopRef.current
+    if (stop === null) return
+    window.clearTimeout(playAroundTimerRef.current)
+    const remainingSeconds = Math.max(0, stop - video.currentTime)
     playAroundTimerRef.current = window.setTimeout(
       () => finishPlayAround(video),
-      ((stop - start) * 1000) / Math.max(video.playbackRate, 0.1) + 2000,
+      (remainingSeconds * 1000) / Math.max(video.playbackRate, 0.1) + 2000,
     )
   }
   const finishPlayAround = (video: HTMLVideoElement) => {
@@ -828,7 +845,7 @@ export function RecordingPlayer({
         onPreviousChapter={() => jumpChapter('prev')}
         onNextChapter={() => jumpChapter('next')}
         {...frame.controls}
-        playbackRate={playbackRate}
+        playbackRate={activePlaybackRate}
         subtitlesEnabled={subtitlesEnabled}
         skipEnabled={skipEnabled}
         showWatched={showWatched}
@@ -839,9 +856,9 @@ export function RecordingPlayer({
         onRateChange={(rate) => {
           const video = videoRef.current
           if (!video) return
-          const applied = applyPlaybackRate(video, rate)
-          setPlaybackRate(applied)
-          savePlaybackRate(applied)
+          const applied = applyPlaybackRate(video, rate, saveActivePlaybackRate)
+          setActivePlaybackRate(applied)
+          saveActivePlaybackRate(applied)
         }}
         onToggleSubtitles={() => {
           const video = videoRef.current
@@ -948,8 +965,9 @@ export function RecordingPlayer({
             }}
             onRateChange={(e) => {
               const rate = e.currentTarget.playbackRate
-              setPlaybackRate(rate)
-              savePlaybackRate(rate)
+              setActivePlaybackRate(rate)
+              saveActivePlaybackRate(rate)
+              if (playAroundStopRef.current !== null) schedulePlayAroundStop(e.currentTarget)
             }}
           >
             <track

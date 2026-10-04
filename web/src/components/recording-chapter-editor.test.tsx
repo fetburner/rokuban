@@ -228,6 +228,44 @@ describe('RecordingChapterEditor の編集専用画面', () => {
     })
   })
 
+  it('長押しの途中で境界が合併で消えたら連続送りを止め、残った境界を動かさない', () => {
+    vi.useFakeTimers()
+    try {
+      const next = { ...cm, startMs: 21_500, endMs: 35_000 }
+      const { container, getByRole } = renderEditor([cm, next])
+      fireEvent.click(container.querySelector<HTMLButtonElement>(
+        '[data-testid="chapter-filmstrip-boundary"][data-time-ms="20000"]',
+      )!)
+      const nudge = getByRole('button', { name: '選択中の境界を1秒進める' })
+      fireEvent.pointerDown(nudge, { button: 0, pointerId: 1 })
+      expect(container.querySelector('[data-testid="chapter-filmstrip-boundary"][data-time-ms="21000"]')).not.toBeNull()
+      act(() => vi.advanceTimersByTime(450)) // 22 秒で次の区間と合併して境界が消える
+      expect(container.querySelectorAll('[data-testid="chapter-filmstrip-boundary"]')).toHaveLength(2)
+      act(() => vi.advanceTimersByTime(200))
+      act(() => vi.advanceTimersByTime(200))
+      fireEvent.pointerUp(nudge, { button: 0, pointerId: 1 })
+      const times = Array.from(container.querySelectorAll('[data-testid="chapter-filmstrip-boundary"]'))
+        .map((node) => node.getAttribute('data-time-ms'))
+      expect(times).toEqual(['10000', '35000'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('`.` のキーリピートは元に戻す 1 回で押す前へ戻る', () => {
+    const { container, getByRole } = renderEditor([cm])
+    fireEvent.click(container.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="10000"]',
+    )!)
+    fireEvent.keyDown(window, { key: '.' })
+    fireEvent.keyDown(window, { key: '.', repeat: true })
+    fireEvent.keyDown(window, { key: '.', repeat: true })
+    expect(container.querySelector('[data-testid="chapter-filmstrip-boundary"][data-time-ms="10099"]')).not.toBeNull()
+    fireEvent.click(getByRole('button', { name: '元に戻す' }))
+    expect(container.querySelector('[data-testid="chapter-filmstrip-boundary"][data-time-ms="10000"]')).not.toBeNull()
+    expect(getByRole('button', { name: '元に戻す' })).toBeDisabled()
+  })
+
   it('`,` で動かした境界は元に戻せる', () => {
     const { container, getByRole } = renderEditor([cm])
     fireEvent.click(container.querySelector<HTMLButtonElement>(

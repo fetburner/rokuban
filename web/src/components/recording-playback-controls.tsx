@@ -434,7 +434,10 @@ export function RecordingPlaybackControls({
         {chapterEditing ? (
           // 編集中は操作バーを簡素な 1 本に差し替える。**`<video>` は同じ場所に置いたままにする**
           // （別の木に描くと作り直され、再生位置が 0 に戻って止まる）。
-          <div className="absolute inset-x-0 bottom-0 flex items-center gap-1.5 bg-gradient-to-t from-black/85 to-transparent px-2 pt-8 pb-2 text-white md:gap-3 md:px-3">
+          <div
+            data-testid="chapter-edit-playback-controls"
+            className="absolute inset-x-0 bottom-0 flex items-center gap-1 bg-gradient-to-t from-black/85 to-transparent px-2 pt-8 pb-2 text-white sm:gap-2 md:gap-3 md:px-3"
+          >
             <Button type="button" variant="ghost" size="icon" className={ghost} aria-label={isPlaying ? '一時停止' : '再生'} onClick={onTogglePlay}>
               {isPlaying ? <Pause /> : <Play />}
             </Button>
@@ -442,6 +445,7 @@ export function RecordingPlaybackControls({
               {formatPlaybackTimeMs(seconds)}
               <span className="hidden md:inline"> / {formatPlaybackTime(durationSeconds)}</span>
             </span>
+            {/* 400px 幅でも 3 つの再生型と速度が並ぶ小さなボタンにし、別メニューで帯を広げない。 */}
             <div data-testid="chapter-edit-playback-modes" className="ml-auto flex min-w-0 shrink-0 items-center gap-1 md:gap-2">
               <Button
                 type="button"
@@ -473,6 +477,20 @@ export function RecordingPlaybackControls({
                 disabled={onPlayFromBoundary === undefined}
               >
                 境界から
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                data-testid="chapter-edit-playback-rate"
+                aria-label={`再生速度 ${playbackRate}x。次の速度に切り替え`}
+                title={playbackRateLocked ? '変換中は再生速度を変更できません' : '押すたびに再生速度が切り替わります'}
+                className="h-8 shrink-0 rounded-full border border-white/25 px-1.5 font-mono text-xs text-white hover:bg-white/15 hover:text-white md:h-9 md:px-2.5"
+                disabled={playbackRateLocked}
+                onClick={() => {
+                  onRateChange(PLAYBACK_RATES.find((rate) => rate > playbackRate) ?? PLAYBACK_RATES[0]!)
+                }}
+              >
+                {playbackRate}x
               </Button>
             </div>
             <span className="hidden rounded-full bg-white/15 px-3 py-2 text-sm lg:inline-flex" aria-label="CM自動スキップは編集中に停止">

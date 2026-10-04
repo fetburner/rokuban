@@ -119,6 +119,29 @@ export function persistPlaybackPosition(
 }
 
 const RATE_KEY = 'rokuban:playback-rate'
+const CHAPTER_EDIT_RATE_KEY = 'rokuban:chapter-edit-playback-rate'
+
+function loadPlaybackRateFrom(key: string): number {
+  try {
+    const raw = localStorage.getItem(key)
+    if (raw === null) return 1
+    const n = Number(raw)
+    return Number.isFinite(n) && n > 0 ? n : 1
+  } catch {
+    // private mode 等で localStorage が使えない場合は既定
+    return 1
+  }
+}
+
+function savePlaybackRateTo(key: string, rate: number): void {
+  try {
+    if (!Number.isFinite(rate) || rate <= 0) return
+    if (rate === 1) localStorage.removeItem(key)
+    else localStorage.setItem(key, String(rate))
+  } catch {
+    // ignore
+  }
+}
 
 /**
  * loadPlaybackRate は保存済みの再生速度を返す。無い・壊れているなら 1。
@@ -130,34 +153,34 @@ const RATE_KEY = 'rokuban:playback-rate'
  * 有効とする。
  */
 export function loadPlaybackRate(): number {
-  try {
-    const raw = localStorage.getItem(RATE_KEY)
-    if (raw === null) return 1
-    const n = Number(raw)
-    return Number.isFinite(n) && n > 0 ? n : 1
-  } catch {
-    // private mode 等で localStorage が使えない場合は既定
-    return 1
-  }
+  return loadPlaybackRateFrom(RATE_KEY)
 }
 
 /** savePlaybackRate は正の有限な再生速度を保存する。既定（1 倍）はキーごと消す。 */
 export function savePlaybackRate(rate: number): void {
-  try {
-    if (!Number.isFinite(rate) || rate <= 0) return
-    if (rate === 1) localStorage.removeItem(RATE_KEY)
-    else localStorage.setItem(RATE_KEY, String(rate))
-  } catch {
-    // ignore
-  }
+  savePlaybackRateTo(RATE_KEY, rate)
+}
+
+/** チャプター編集の速度は通常再生と分けて端末ごとに保存する。 */
+export function loadChapterEditPlaybackRate(): number {
+  return loadPlaybackRateFrom(CHAPTER_EDIT_RATE_KEY)
+}
+
+/** 既定（1 倍）はキーごと消し、通常再生の速度には触れない。 */
+export function saveChapterEditPlaybackRate(rate: number): void {
+  savePlaybackRateTo(CHAPTER_EDIT_RATE_KEY, rate)
 }
 
 /**
- * applyPlaybackRate は速度を video に設定し、ブラウザが拒否した場合は 1 倍へ戻す。
+ * applyPlaybackRate は速度を video に設定し、ブラウザが拒否した場合は 1 倍へ戻して保存先へ反映する。
  * 対応する速度の範囲はブラウザごとに異なるため、保存時の数値検証だけでは
- * playbackRate の代入で NotSupportedError が起きる場合がある。その値は共通設定からも消す。
+ * playbackRate の代入で NotSupportedError が起きる場合がある。保存先は呼び出し側が選ぶ。
  */
-export function applyPlaybackRate(video: HTMLVideoElement, rate: number): number {
+export function applyPlaybackRate(
+  video: HTMLVideoElement,
+  rate: number,
+  saveFallback: (rate: number) => void,
+): number {
   try {
     video.defaultPlaybackRate = rate
     video.playbackRate = rate
@@ -170,7 +193,7 @@ export function applyPlaybackRate(video: HTMLVideoElement, rate: number): number
     } catch {
       // 1 倍も設定できない環境でも React effect から例外を漏らさない。
     }
-    savePlaybackRate(1)
+    saveFallback(1)
     return 1
   }
 }

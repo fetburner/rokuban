@@ -5,12 +5,14 @@ import {
   clearLegacyPlaybackPositions,
   cutMsToOriginalMs,
   effectivePlaybackRate,
+  loadChapterEditPlaybackRate,
   loadPlaybackRate,
   originalMsToCutMs,
   persistPlaybackPosition,
   playbackPositionWrite,
   playbackResumeSeconds,
   recordingFileURL,
+  saveChapterEditPlaybackRate,
   savePlaybackRate,
 } from '@/lib/playback-position'
 
@@ -140,6 +142,26 @@ describe('再生速度は端末ごとに 1 つ', () => {
       localStorage.setItem('rokuban:playback-rate', raw)
       expect(loadPlaybackRate()).toBe(1)
     }
+  })
+
+  it('編集中の速度を通常再生とは別のキーに保存する', () => {
+    savePlaybackRate(1.5)
+    saveChapterEditPlaybackRate(2)
+
+    expect(loadPlaybackRate()).toBe(1.5)
+    expect(loadChapterEditPlaybackRate()).toBe(2)
+    expect(localStorage.getItem('rokuban:playback-rate')).toBe('1.5')
+    expect(localStorage.getItem('rokuban:chapter-edit-playback-rate')).toBe('2')
+
+    saveChapterEditPlaybackRate(1)
+    expect(localStorage.getItem('rokuban:chapter-edit-playback-rate')).toBeNull()
+    expect(loadChapterEditPlaybackRate()).toBe(1)
+    expect(localStorage.getItem('rokuban:playback-rate')).toBe('1.5')
+  })
+
+  it('編集中の速度の壊れた値は 1 倍に落とす', () => {
+    localStorage.setItem('rokuban:chapter-edit-playback-rate', 'fast')
+    expect(loadChapterEditPlaybackRate()).toBe(1)
   })
 
   it('private mode で localStorage が例外でも既定値を使う', () => {
