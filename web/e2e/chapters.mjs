@@ -385,7 +385,7 @@ try {
   const fullscreenContainsPlayerControls = await page.evaluate(() => {
     const fullscreen = document.fullscreenElement
     return Boolean(
-      fullscreen?.matches('[data-testid="recording-player-frame"]') &&
+      fullscreen?.matches('[data-testid="recording-playback-group"]') &&
       fullscreen.querySelector('[data-testid="player-controls"] [data-testid="seek-scrub"]'),
     )
   })
@@ -726,13 +726,14 @@ try {
   await page.waitForTimeout(300)
   const chapterList = await page.evaluate(() => {
     const frame = document.querySelector('[data-testid="recording-player-frame"]')
+    const fullscreenContainer = document.querySelector('[data-testid="recording-playback-group"]')
     const list = document.querySelector('[data-testid="chapter-list"]')
     const editorOpened = Boolean(document.querySelector('[data-testid="chapter-edit-layout"]'))
-    if (!list) return { fullscreen: document.fullscreenElement === frame, exists: false, editorOpened }
+    if (!list) return { fullscreen: document.fullscreenElement === fullscreenContainer, exists: false, editorOpened }
     const r = list.getBoundingClientRect()
     return {
       editorOpened,
-      fullscreen: document.fullscreenElement === frame,
+      fullscreen: document.fullscreenElement === fullscreenContainer,
       exists: true,
       inside: frame.contains(list),
       visible: r.width > 0 && r.height > 0 && r.bottom <= window.innerHeight,
@@ -978,6 +979,12 @@ await page.setViewportSize({ width: 1280, height: 900 })
 
 log('\n=== #1019 編集モード: 入り口・<video> を作り直さず再生位置と再生状態を保つ ===')
 await page.setViewportSize({ width: 1280, height: 800 })
+// 通常速度を 1.5x にしてから編集へ入り、編集用 2x と保存先が分かれていることも見る。
+await video.evaluate((v) => {
+  v.defaultPlaybackRate = 1.5
+  v.playbackRate = 1.5
+})
+await page.waitForFunction(() => localStorage.getItem('rokuban:playback-rate') === '1.5', undefined, { timeout: 3000 })
 await seek(51.5)
 await video.evaluate((v) => {
   v.muted = true
@@ -1003,6 +1010,31 @@ if (!afterEnter.same) ng.push('#1019: 編集モードに入ると <video> が作
 if (afterEnter.time < 51.5) ng.push(`#1019: 編集モードに入ると再生位置が戻る（currentTime=${afterEnter.time}）`)
 if (afterEnter.paused) ng.push('#1019: 編集モードに入ると再生が止まる')
 await video.evaluate((v) => v.pause())
+log('\n=== #1123 編集速度: 2x 再生、通常速度の保護、400px 幅 ===')
+const editRateButton = page.getByTestId('chapter-edit-playback-rate')
+for (let index = 0; index < 7 && (await editRateButton.textContent())?.trim() !== '2x'; index += 1) {
+  await editRateButton.click()
+}
+const editRate = await video.evaluate((v) => v.playbackRate)
+await page.waitForFunction(
+  () => localStorage.getItem('rokuban:chapter-edit-playback-rate') === '2',
+  undefined,
+  { timeout: 3000 },
+)
+const ratesWhileEditing = await page.evaluate(() => ({
+  normal: localStorage.getItem('rokuban:playback-rate'),
+  editing: localStorage.getItem('rokuban:chapter-edit-playback-rate'),
+}))
+if (editRate !== 2) ng.push(`#1123: 編集帯の速度操作で video が 2x にならない（${editRate}x）`)
+if (ratesWhileEditing.normal !== '1.5' || ratesWhileEditing.editing !== '2') {
+  ng.push(`#1123: 編集中の速度保存先が分離されていない（${JSON.stringify(ratesWhileEditing)}）`)
+}
+await seek(15)
+const editRateProgress = await playFor(1200)
+if (editRateProgress < 16.6 || editRateProgress > 19.2) {
+  ng.push(`#1123: 編集中の 2x で再生位置が 2 倍に進まない（1.2 秒後 ${editRateProgress.toFixed(2)} 秒、開始 15 秒）`)
+}
+await seek(51.5)
 const editHeader = page.locator('header h1').last()
 const resetButton = page.getByRole('button', { name: '自動に戻す', exact: true })
 const initialHeader = await editHeader.textContent()
@@ -1127,6 +1159,16 @@ async function editLayoutMetrics(viewport) {
       spans: box('[data-testid="chapter-span-list"]'),
       strip: box('[data-testid="chapter-filmstrip"]'),
       tuning: box('[data-testid="chapter-tuning-controls"]'),
+      editBar: box('[data-testid="chapter-edit-playback-controls"]'),
+      editBarOverflow: (() => {
+        const bar = document.querySelector('[data-testid="chapter-edit-playback-controls"]')
+        if (!bar) return true
+        const bounds = bar.getBoundingClientRect()
+        return Array.from(bar.children).filter((child) => getComputedStyle(child).display !== 'none').some((child) => {
+          const rect = child.getBoundingClientRect()
+          return rect.left < bounds.left - 0.5 || rect.right > bounds.right + 0.5
+        })
+      })(),
       navTop: navRect ? navRect.top : null,
       documentOverflow: document.documentElement.scrollHeight - window.innerHeight,
       listOverflowY: list ? getComputedStyle(list).overflowY : null,
@@ -1157,6 +1199,9 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 400, height: 800 
         ng.push(`#1019 desktop: プレイヤーの下に ${(metrics.strip.y - metrics.player.bottom).toFixed(0)}px の空きがある`)
       }
     } else {
+      if (!metrics.editBar || metrics.editBarOverflow) {
+        ng.push(`#1123: 編集帯の要素が ${viewport.width}px 幅に収まらない（${JSON.stringify(metrics.editBar)} overflow=${metrics.editBarOverflow}）`)
+      }
       if (!(metrics.player.y < metrics.strip.y && metrics.strip.y < metrics.tuning.y && metrics.tuning.y < metrics.spans.y)) {
         ng.push(`#1019 mobile: player→filmstrip→tuning→区間一覧の順がroughと異なる（${JSON.stringify(metrics)}）`)
       }
@@ -1301,7 +1346,8 @@ if ((await targetBoundary.count()) !== 1) {
     ng.push('#1019: filmstrip境界を押しても選択状態にならない')
   }
   await shotBoth('selected')
-  const save = page.getByRole('button', { name: '保存', exact: true })
+  // 自動検出層が未変更なら同じ操作のボタン名は「このまま確認」になる。
+  const save = page.getByRole('button', { name: /^(保存|このまま確認)$/ })
   const track = page.locator('[data-testid="chapter-filmstrip-track"]')
   const trackBox = await track.boundingBox()
   const boundaryBox = await targetBoundary.boundingBox()
@@ -1317,7 +1363,9 @@ if ((await targetBoundary.count()) !== 1) {
     await page.mouse.down()
     await page.mouse.move(originalCenterX + deltaX, centerY, { steps: 3 })
     const previewBoundary = await page.locator('[data-testid="chapter-filmstrip-boundary"][aria-pressed="true"]').getAttribute('data-time-ms')
-    if (Number(previewBoundary) <= 30_000 || await save.isEnabled()) {
+    const dirtyDuringDrag = (await page.getByTestId('chapter-span-list').textContent())?.includes('未保存の変更があります')
+    const actionDuringDrag = (await save.textContent())?.trim()
+    if (Number(previewBoundary) <= 30_000 || dirtyDuringDrag || actionDuringDrag !== 'このまま確認') {
       ng.push(`#1019: drag中にpreviewだけが動き、未releaseのdraft/保存は変わらない（preview=${previewBoundary}）`)
     }
     await page.mouse.up()
@@ -1342,8 +1390,10 @@ if ((await targetBoundary.count()) !== 1) {
       await page.mouse.up()
       await page.waitForTimeout(100)
       const restoredBoundary = await page.locator('[data-testid="chapter-filmstrip-boundary"][aria-pressed="true"]').getAttribute('data-time-ms')
-      log(`  drag ${previewBoundary} preview → ${committedBoundary} released → ${restorePreview} reverse preview → ${restoredBoundary} restored; Save disabled=${await save.isDisabled()}`)
-      if (await save.isEnabled()) ng.push('#1019: coarse dragを元の境界に戻してもdirtyが解除されない')
+      const dirtyAfterRestore = (await page.getByTestId('chapter-span-list').textContent())?.includes('未保存の変更があります')
+      const actionAfterRestore = (await save.textContent())?.trim()
+      log(`  drag ${previewBoundary} preview → ${committedBoundary} released → ${restorePreview} reverse preview → ${restoredBoundary} restored; dirty=${dirtyAfterRestore}`)
+      if (dirtyAfterRestore || actionAfterRestore !== 'このまま確認') ng.push('#1019: coarse dragを元の境界に戻してもdirtyが解除されない')
     }
   }
   const nudge = page.getByRole('button', { name: '選択中の境界を 1 フレーム進める', exact: true })
@@ -1372,12 +1422,22 @@ if ((await targetBoundary.count()) !== 1) {
   const afterBack = await page.locator('[data-testid="chapter-filmstrip-boundary"][aria-pressed="true"]').getAttribute('data-time-ms')
   if (Number(afterBack) < 30_032 || Number(afterBack) > 30_034) ng.push(`#1019: ← で元の境界へ戻らない（選択=${afterBack}）`)
 }
-  if ((await save.count()) !== 1) {
+if ((await save.count()) !== 1) {
     ng.push('#1019: 編集ヘッダーに保存が無い')
   } else {
     const response = page.waitForResponse((res) => res.url().includes('/chapter-edits') && res.request().method() === 'PUT')
     await save.click()
     await response
+  }
+  await page.waitForSelector('[data-testid="chapter-edit-layout"]', { state: 'detached', timeout: 5000 })
+  const ratesAfterSave = await page.evaluate((v) => ({
+    current: v.playbackRate,
+    default: v.defaultPlaybackRate,
+    normal: localStorage.getItem('rokuban:playback-rate'),
+    editing: localStorage.getItem('rokuban:chapter-edit-playback-rate'),
+  }), await video.elementHandle())
+  if (ratesAfterSave.current !== 1.5 || ratesAfterSave.default !== 1.5 || ratesAfterSave.normal !== '1.5' || ratesAfterSave.editing !== '2') {
+    ng.push(`#1123: 保存後に通常速度へ戻らない / 編集速度を保たない（${JSON.stringify(ratesAfterSave)}）`)
   }
   const submitted = chapterEditBodies.at(-1)
   if (!submitted || submitted.version !== 'auto:detected:1' || submitted.spans?.[0]?.startMs !== 30_033) {
@@ -1393,6 +1453,10 @@ log('\n=== #1019 dirty cancel: 確認中は編集を続けられ、破棄で戻�
 await page.getByRole('button', { name: '再生設定' }).click()
 await page.getByRole('menuitem', { name: 'チャプターを直す', exact: true }).click()
 await page.waitForSelector('[data-testid="chapter-edit-layout"]', { timeout: 5000 })
+const resumedRate = await video.evaluate((v) => v.playbackRate)
+if (resumedRate !== 2 || (await page.getByTestId('chapter-edit-playback-rate').textContent())?.trim() !== '2x') {
+  ng.push(`#1123: 再編集時に保存した 2x が復元されない（${resumedRate}x）`)
+}
 const secondBoundary = page.locator('[data-testid="chapter-filmstrip-boundary"][data-time-ms="60000"]')
 if ((await secondBoundary.count()) === 1) {
   await secondBoundary.click()
@@ -1426,6 +1490,10 @@ if ((await secondBoundary.count()) === 1) {
   await page.getByRole('button', { name: 'やめる', exact: true }).click()
   await page.getByRole('button', { name: '変更を捨てる' }).click()
   await page.waitForSelector('[data-testid="chapter-edit-layout"]', { state: 'detached' })
+  const ratesAfterDiscard = await video.evaluate((v) => ({ current: v.playbackRate, default: v.defaultPlaybackRate }))
+  if (ratesAfterDiscard.current !== 1.5 || ratesAfterDiscard.default !== 1.5) {
+    ng.push(`#1123: 破棄後に通常速度へ戻らない（${JSON.stringify(ratesAfterDiscard)}）`)
+  }
   if (await beforeUnloadPrevented()) ng.push('#1019: 下書きを捨てて編集を終えた後も beforeunload が残っている')
 } else {
   ng.push('#1019: dirty cancel 確認に使う60秒境界が無い')

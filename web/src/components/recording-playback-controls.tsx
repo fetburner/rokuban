@@ -430,24 +430,45 @@ export function RecordingPlaybackControls({
         {chapterEditing ? (
           // 編集中は操作バーを簡素な 1 本に差し替える。**`<video>` は同じ場所に置いたままにする**
           // （別の木に描くと作り直され、再生位置が 0 に戻って止まる）。
-          <div className="absolute inset-x-0 bottom-0 flex items-center gap-3 bg-gradient-to-t from-black/85 to-transparent px-3 pt-8 pb-2 text-white">
+          <div
+            data-testid="chapter-edit-playback-controls"
+            className="absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/85 to-transparent px-2 pt-8 pb-2 text-white sm:gap-3 sm:px-3"
+          >
             <Button type="button" variant="ghost" size="icon" className={ghost} aria-label={isPlaying ? '一時停止' : '再生'} onClick={onTogglePlay}>
               {isPlaying ? <Pause /> : <Play />}
             </Button>
-            <span data-testid="chapter-edit-playhead" className="font-mono text-sm">
+            <span data-testid="chapter-edit-playhead" className="shrink-0 font-mono text-sm">
               {formatPlaybackTimeMs(seconds)}
               <span className="hidden md:inline"> / {formatPlaybackTime(durationSeconds)}</span>
             </span>
-            <Button
-              type="button"
-              variant="secondary"
-              className="ml-auto rounded-full"
-              onClick={onPlayAround}
-              disabled={onPlayAround === undefined}
-            >
-              <span className="md:hidden">前後 3 秒</span>
-              <span className="hidden md:inline">前後 3 秒を再生</span>
-            </Button>
+            {/* 400px 幅でも前後再生と並ぶ小さな巡回ボタンにし、別メニューで帯を広げない。 */}
+            <div className="ml-auto flex shrink-0 items-center gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                className="shrink-0 rounded-full"
+                onClick={onPlayAround}
+                disabled={onPlayAround === undefined}
+              >
+                <span className="md:hidden">前後 3 秒</span>
+                <span className="hidden md:inline">前後 3 秒を再生</span>
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                data-testid="chapter-edit-playback-rate"
+                aria-label={`再生速度 ${playbackRate}x。次の速度に切り替え`}
+                title={playbackRateLocked ? '変換中は再生速度を変更できません' : '押すたびに再生速度が切り替わります'}
+                className="h-9 shrink-0 rounded-full border border-white/25 px-2.5 font-mono text-xs text-white hover:bg-white/15 hover:text-white"
+                disabled={playbackRateLocked}
+                onClick={() => {
+                  const currentIndex = PLAYBACK_RATES.indexOf(playbackRate)
+                  onRateChange(PLAYBACK_RATES[(currentIndex + 1) % PLAYBACK_RATES.length]!)
+                }}
+              >
+                {playbackRate}x
+              </Button>
+            </div>
             <span className="hidden rounded-full bg-white/15 px-3 py-2 text-sm md:inline-flex" aria-label="CM自動スキップは編集中に停止">
               CM を飛ばさない（編集中）
             </span>

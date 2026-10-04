@@ -1102,6 +1102,44 @@ describe('RecordingPlayer のチャプター', () => {
   })
 })
 
+describe('RecordingPlayer のチャプター編集中速度', () => {
+  it('通常速度を保ち、編集速度を保存して再入場時に復元する', () => {
+    localStorage.setItem('rokuban:playback-rate', '1.5')
+    localStorage.setItem('rokuban:chapter-edit-playback-rate', '1.75')
+    const props = {
+      recordingId: 102,
+      encodedAssets: [{ profile: 'h264', sizeBytes: 100 }],
+      chapters: [{ startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }],
+      chapterVersion: 'v1',
+      onChapterEditorStatusChange: vi.fn(),
+      onSaveChapters: () => Promise.resolve(),
+      onResetChapters: () => {},
+    }
+    const { container, getByTestId, rerender } = render(
+      <RecordingPlayer {...props} chapterEditing={false} />,
+    )
+    const video = container.querySelector('video')!
+    expect(video.playbackRate).toBe(1.5)
+    expect(video.defaultPlaybackRate).toBe(1.5)
+
+    rerender(<RecordingPlayer {...props} chapterEditing />)
+    expect(video.playbackRate).toBe(1.75)
+    fireEvent.click(getByTestId('chapter-edit-playback-rate'))
+    expect(video.playbackRate).toBe(2)
+    fireEvent.rateChange(video)
+    expect(localStorage.getItem('rokuban:chapter-edit-playback-rate')).toBe('2')
+    expect(localStorage.getItem('rokuban:playback-rate')).toBe('1.5')
+
+    rerender(<RecordingPlayer {...props} chapterEditing={false} />)
+    expect(video.playbackRate).toBe(1.5)
+    expect(video.defaultPlaybackRate).toBe(1.5)
+    rerender(<RecordingPlayer {...props} chapterEditing />)
+    expect(video.playbackRate).toBe(2)
+    expect(video.defaultPlaybackRate).toBe(2)
+    expect(localStorage.getItem('rokuban:playback-rate')).toBe('1.5')
+  })
+})
+
 describe('RecordingPlayer のカット版', () => {
   const chapters = [
     { startMs: 0, endMs: 15000, cut: true },
