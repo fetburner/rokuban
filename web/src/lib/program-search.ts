@@ -478,10 +478,17 @@ export function buildRuleInput(
   return input
 }
 
-/** ruleMetaError は保存してはいけないメタの理由を返す（問題なければ undefined）。 */
-export function ruleMetaError(meta: RuleMetaDraft): string | undefined {
+/** ruleNameError は表示するルール名の理由を返す（問題なければ undefined）。 */
+export function ruleNameError(meta: Pick<RuleMetaDraft, 'name'>): string | undefined {
   if (meta.name.trim() === '') {
     return '名前は必須です'
   }
+  return undefined
+}
+
+/** ruleMetaError は保存してはいけないメタの理由を返す（問題なければ undefined）。 */
+export function ruleMetaError(meta: RuleMetaDraft): string | undefined {
+  const nameError = ruleNameError(meta)
+  if (nameError !== undefined) return nameError
   return encodeSettingsError(meta.keepOriginal, meta.encodeProfiles)
 }
