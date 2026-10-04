@@ -122,9 +122,10 @@ export function RuleCostSummary({
   return <p className="px-4 py-2 text-xs text-muted-foreground">{text}</p>
 }
 
-/** AddedCapacityOveragesNote reports only the additional shortfall intervals returned by the
- * save-time preview. Empty results stay silent because a missing interval is not a promise
- * that the tuners will fit every recording.
+/** AddedCapacityOveragesNote は保存時プレビューが返した「追加で不足する区間」だけを出す。
+ * 空の結果・取得中は沈黙する。区間が無いことは全録画がチューナーに収まる約束ではないし、
+ * 取得中に 1 行描くと、プレビュー（検索より遅く返る）が 0 件のときに描画済みの検索結果が
+ * 1 行ずれる（CLS）。失敗は「確認できなかった」を伝えるため 1 行残す。
  */
 export function AddedCapacityOveragesNote({
   status,
@@ -137,14 +138,7 @@ export function AddedCapacityOveragesNote({
   conditions: ProgramSearchRequest | undefined
   showSite: boolean
 }) {
-  if (status === 'idle') return null
-  if (status === 'pending') {
-    return (
-      <p role="status" className="px-4 py-2 text-xs text-muted-foreground">
-        保存時に追加される容量不足を確認中…
-      </p>
-    )
-  }
+  if (status === 'idle' || status === 'pending') return null
   if (status === 'error') {
     return (
       <p role="status" className="px-4 py-2 text-xs text-muted-foreground">

@@ -188,3 +188,95 @@ func (q *Queries) ListCapacityDemandAllSites(ctx context.Context) ([]ListCapacit
 	}
 	return items, nil
 }
+
+const listCapacityPreviewCandidates = `-- name: ListCapacityPreviewCandidates :many
+SELECT
+    p.site,
+    p.program_id,
+    i.action AS intent_action,
+    s.channel_type,
+    s.channel,
+    p.start_at,
+    (p.start_at + (p.duration_ms * interval '1 millisecond'))::timestamptz AS end_at
+FROM (
+    SELECT unnest($1::text[]) AS site, unnest($2::bigint[]) AS program_id
+) w
+JOIN epg_programs p ON p.site = w.site AND p.program_id = w.program_id
+JOIN epg_services s
+  ON s.site = p.site AND s.network_id = p.network_id AND s.service_id = p.service_id
+LEFT JOIN program_intents i ON i.site = p.site AND i.program_id = p.program_id
+WHERE i.action IS DISTINCT FROM 'skip'
+  AND (p.start_at + (p.duration_ms * interval '1 millisecond')) > now()
+  AND NOT EXISTS (
+      SELECT 1 FROM reservations r
+      WHERE r.site = p.site AND r.program_id = p.program_id
+        AND ($3::bigint IS NULL OR r.rule_id IS DISTINCT FROM $3::bigint)
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM recordings rec
+      JOIN media_assets a ON a.recording_id = rec.id AND a.kind = 'original'
+      WHERE rec.site = p.site
+        AND rec.network_id = p.network_id
+        AND rec.service_id = p.service_id
+        AND rec.event_id = p.event_id
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM never_scheduled_events nse
+      WHERE nse.site = p.site
+        AND nse.network_id = p.network_id
+        AND nse.service_id = p.service_id
+        AND nse.event_id = p.event_id
+  )
+ORDER BY p.site, p.start_at, p.program_id
+`
+
+type ListCapacityPreviewCandidatesParams struct {
+	Sites      []string
+	ProgramIds []int64
+	RuleID     *int64
+}
+
+type ListCapacityPreviewCandidatesRow struct {
+	Site         string
+	ProgramID    int64
+	IntentAction *string
+	ChannelType  string
+	Channel      string
+	StartAt      time.Time
+	EndAt        time.Time
+}
+
+// 検索結果の番組のうち、保存時に新たな予約（= 容量需要）になりうるものを返す。
+// internal/capacity.PreviewCandidates が使う。編集中のルール（rule_id）が既に持つ予約は
+// 仮想的に外して再計算するので、その予約は候補に残す。放送済み（終了 <= now()）の番組は
+// epg_programs が retention_grace の間残していても録れないので除く。skip 意図は残さない
+// が record 意図は dedupe の skip を覆せるので action ごと返す。
+// ::timestamptz の明示キャストが必要（上の ListCapacityDemand と同じ理由）。
+func (q *Queries) ListCapacityPreviewCandidates(ctx context.Context, arg ListCapacityPreviewCandidatesParams) ([]ListCapacityPreviewCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listCapacityPreviewCandidates, arg.Sites, arg.ProgramIds, arg.RuleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCapacityPreviewCandidatesRow
+	for rows.Next() {
+		var i ListCapacityPreviewCandidatesRow
+		if err := rows.Scan(
+			&i.Site,
+			&i.ProgramID,
+			&i.IntentAction,
+			&i.ChannelType,
+			&i.Channel,
+			&i.StartAt,
+			&i.EndAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

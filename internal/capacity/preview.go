@@ -11,112 +11,56 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
 
-// ProgramRef identifies one result row from rulequery.MatchPrograms. Site is part of the
-// identity because a broadcast projected at two sites creates two independent reservations.
+// ProgramRef は rulequery.MatchPrograms の結果 1 行を指す。同じ放送が 2 つの site に射影されると
+// 独立した 2 つの予約が生まれるので、site も同一性の一部である。
 type ProgramRef struct {
 	Site      string
 	ProgramID int64
 }
 
-// PreviewCandidate keeps the matched program identity beside its capacity demand so the
-// caller can run ruler's shared dedupe evaluator before projecting the demand.
+// PreviewCandidate は検索で一致した番組の識別子と容量需要を並べて持つ。呼び出し側が
+// 需要を射影する前に ruler 共有の dedupe 評価を掛けられるようにするため。
 type PreviewCandidate struct {
 	ProgramID    int64
 	IntentAction *string
 	Demand
 }
 
-// PreviewCandidates returns search matches that would become additional reservations for
-// a rule. Existing reservations are omitted, except reservations currently owned by the
-// rule being edited. Skip intents, fulfilled programs, and never-scheduled events are
-// omitted as ruler/reconciler do. Record intents are kept so they can override dedupe
-// skips. Channel identity comes from epg_services, just like the rule compiler's service join.
+// PreviewCandidates は、ルール保存で新たな予約になりうる検索一致を返す。既存の予約は除くが、
+// 編集中のルール（ruleID）が今持つ予約は仮想的に外して再計算するので残す。skip 意図・取り込み
+// 済みの番組・never-scheduled・放送済み（終了 <= now()）は ruler / reconciler と同様に除く。
+// record 意図は dedupe の skip を覆せるので残す。チャンネル識別はルールコンパイラの service
+// JOIN と同じく epg_services から引く。
 func PreviewCandidates(ctx context.Context, pool *pgxpool.Pool, refs []ProgramRef, ruleID *int64) ([]PreviewCandidate, error) {
 	if len(refs) == 0 {
 		return nil, nil
 	}
-
 	sites := make([]string, len(refs))
 	programIDs := make([]int64, len(refs))
 	for i, ref := range refs {
 		sites[i] = ref.Site
 		programIDs[i] = ref.ProgramID
 	}
-
-	const query = `
-WITH wanted AS (
-    SELECT * FROM unnest($1::text[], $2::bigint[]) AS w(site, program_id)
-)
-SELECT p.site,
-       p.program_id,
-       i.action,
-       s.channel_type,
-       s.channel,
-       p.start_at,
-       (p.start_at + (p.duration_ms * interval '1 millisecond'))::timestamptz AS end_at
-FROM wanted w
-JOIN epg_programs p
-  ON p.site = w.site AND p.program_id = w.program_id
-JOIN epg_services s
-  ON s.site = p.site AND s.network_id = p.network_id AND s.service_id = p.service_id
-LEFT JOIN program_intents i
-  ON i.site = p.site AND i.program_id = p.program_id
-WHERE NOT EXISTS (
-          SELECT 1
-          FROM reservations r
-          WHERE r.site = p.site AND r.program_id = p.program_id
-            AND ($3::bigint IS NULL OR r.rule_id IS DISTINCT FROM $3::bigint)
-      )
-  AND NOT EXISTS (
-          SELECT 1 FROM program_intents i
-          WHERE i.site = p.site AND i.program_id = p.program_id AND i.action = 'skip'
-      )
-      AND NOT EXISTS (
-          SELECT 1
-          FROM recordings rec
-          JOIN media_assets a ON a.recording_id = rec.id AND a.kind = 'original'
-          WHERE rec.site = p.site
-            AND rec.network_id = p.network_id
-            AND rec.service_id = p.service_id
-            AND rec.event_id = p.event_id
-      )
-  AND NOT EXISTS (
-          SELECT 1
-          FROM never_scheduled_events nse
-          WHERE nse.site = p.site
-            AND nse.network_id = p.network_id
-            AND nse.service_id = p.service_id
-            AND nse.event_id = p.event_id
-      )
-ORDER BY p.site, p.start_at, p.program_id`
-
-	var excludedRule any
-	if ruleID != nil {
-		excludedRule = *ruleID
-	}
-	rows, err := pool.Query(ctx, query, sites, programIDs, excludedRule)
+	rows, err := sqlcgen.New(pool).ListCapacityPreviewCandidates(ctx, sqlcgen.ListCapacityPreviewCandidatesParams{
+		Sites: sites, ProgramIds: programIDs, RuleID: ruleID,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("listing capacity preview candidates: %w", err)
 	}
-	defer rows.Close()
-
-	var candidates []PreviewCandidate
-	for rows.Next() {
-		var candidate PreviewCandidate
-		if err := rows.Scan(&candidate.Site, &candidate.ProgramID, &candidate.IntentAction, &candidate.ChannelType, &candidate.Channel, &candidate.StartAt, &candidate.EndAt); err != nil {
-			return nil, fmt.Errorf("scanning capacity preview candidate: %w", err)
+	candidates := make([]PreviewCandidate, len(rows))
+	for i, r := range rows {
+		candidates[i] = PreviewCandidate{
+			ProgramID:    r.ProgramID,
+			IntentAction: r.IntentAction,
+			Demand: Demand{Site: r.Site, ChannelType: r.ChannelType, Channel: r.Channel,
+				StartAt: r.StartAt, EndAt: r.EndAt},
 		}
-		candidates = append(candidates, candidate)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating capacity preview candidates: %w", err)
 	}
 	return candidates, nil
 }
 
-// Preview loads the same current demand and tuner projection used by LoadAllSites, then
-// computes the intervals that would be newly over capacity after adding eligible candidates.
-// For an edited rule, its current reservations are removed from the hypothetical demand first.
+// Preview は LoadAllSites と同じ現在の需要とチューナー射影を読み、適格な候補を足したときに
+// 新たに容量超過になる区間を計算する。編集中のルールでは、その現行予約を先に仮想需要から外す。
 func Preview(ctx context.Context, q *sqlcgen.Queries, ruleID *int64, candidates []Demand) ([]Overage, error) {
 	rows, err := q.ListCapacityDemandAllSites(ctx)
 	if err != nil {
@@ -141,10 +85,9 @@ func Preview(ctx context.Context, q *sqlcgen.Queries, ruleID *int64, candidates 
 	return NewlyAdded(currentOverages, newOverages), nil
 }
 
-// NewlyAdded subtracts baseline intervals that cover an after interval with the same or a
-// greater shortfall. A worsening shortfall remains new even when it overlaps an older
-// overage. JammedTypes do not define coverage: they describe the chosen proof for that
-// particular interval, while the severity comparison is the shortfall count.
+// NewlyAdded は、after の区間のうち、同じかより大きい不足数で覆う before の区間を引く。
+// 不足が悪化した区間は古い超過と重なっていても新規として残る。JammedTypes は覆いの判定に
+// 使わない（その区間の証明の選び方であり、深刻度の比較は不足数で行う）。
 func NewlyAdded(before, after []Overage) []Overage {
 	ordered := append([]Overage(nil), after...)
 	slices.SortFunc(ordered, func(a, b Overage) int {

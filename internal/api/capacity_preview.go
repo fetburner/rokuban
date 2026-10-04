@@ -15,9 +15,9 @@ import (
 	"github.com/fetburner/rokuban/internal/ruler"
 )
 
-// PreviewCapacityOverages predicts only the overage intervals added by saving a search as
-// a rule. It is a separate operation from SearchPrograms because it reads reservation,
-// intent, recording, tuner projection, and dedupe state in addition to matching EPG rows.
+// PreviewCapacityOverages は、検索条件をルールとして保存したときに新たに増える容量超過の
+// 区間だけを予測する。EPG の一致に加えて予約・意図・録画・チューナー射影・dedupe の状態を
+// 読むので、SearchPrograms とは別の操作にしてある。
 func (h *Server) PreviewCapacityOverages(ctx context.Context, req PreviewCapacityOveragesRequestObject) (PreviewCapacityOveragesResponseObject, error) {
 	if req.Body == nil {
 		return PreviewCapacityOverages400JSONResponse{Error: "request body is required"}, nil
@@ -65,8 +65,8 @@ func (h *Server) PreviewCapacityOverages(ctx context.Context, req PreviewCapacit
 		return nil, err
 	}
 
-	// A disabled rule does not create desired reservations. New rules default to enabled;
-	// existing rules retain their saved enabled state while being edited.
+	// 無効なルールは予約を作らない。新規ルールは有効として数える（フォームの enabled は
+	// 送られない）。編集中のルールは保存済みの enabled を使う。
 	if editingRule != nil && !editingRule.Enabled {
 		candidates = nil
 	} else if editingRule != nil && editingRule.DedupeEnabled {

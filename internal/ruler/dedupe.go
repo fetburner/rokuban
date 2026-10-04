@@ -122,7 +122,7 @@ JOIN recordings rec
 ORDER BY c.program_id, similarity(rec.title, c.title) DESC, rec.id ASC
 `
 
-// evaluateDedupe は候補番組ごとの重複排除の判定結果を返す。マッチしなかった番組は
+// EvaluateDedupe は候補番組ごとの重複排除の判定結果を返す。マッチしなかった番組は
 // マップに現れない（呼び出し側は「無い = 根拠 2 列を NULL に戻す」として扱う）。
 //
 // candidates が空なら往復しない。
@@ -155,13 +155,4 @@ func EvaluateDedupe(ctx context.Context, pool *pgxpool.Pool, site string, candid
 		return nil, fmt.Errorf("iterating dedupe matches: %w", err)
 	}
 	return matches, nil
-}
-
-// ruler keeps its original internal names while the API shares the exact same SQL evaluator
-// for save-time capacity previews. This prevents a second implementation of skip dedupe.
-type dedupeCandidate = DedupeCandidate
-type dedupeMatch = DedupeMatch
-
-func evaluateDedupe(ctx context.Context, pool *pgxpool.Pool, site string, candidates []dedupeCandidate) (map[int64]dedupeMatch, error) {
-	return EvaluateDedupe(ctx, pool, site, candidates)
 }

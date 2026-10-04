@@ -1357,7 +1357,7 @@ describe('SearchPage', () => {
       expect(screen.queryByText(/収まります|不足しません/)).not.toBeInTheDocument()
     })
 
-    it('容量プレビュー中は確認中と表示し、肯定的な保証を出さない', async () => {
+    it('容量プレビュー中は何も描かず（CLS を起こさず）、肯定的な保証も出さない', async () => {
       const { capacityPreviewRequests, unresolvedCapacityPreviews } = stubApi({
         holdCapacityPreview: true,
       })
@@ -1368,8 +1368,10 @@ describe('SearchPage', () => {
       expect(await screen.findByText('ニュース7')).toBeInTheDocument()
       await waitFor(() => expect(capacityPreviewRequests).toHaveLength(1))
 
-      expect(await screen.findByText('保存時に追加される容量不足を確認中…')).toBeInTheDocument()
-      expect(unresolvedCapacityPreviews()).toBe(1)
+      // 要求が未解決のまま（= 本当に取得中）であることを先に確かめてから沈黙を assert する。
+      await waitFor(() => expect(unresolvedCapacityPreviews()).toBe(1))
+      expect(screen.queryByText(/確認中/)).not.toBeInTheDocument()
+      expect(screen.queryByRole('list', { name: '保存時に追加される容量不足' })).not.toBeInTheDocument()
       expect(screen.queryByText(/収まります|不足しません/)).not.toBeInTheDocument()
     })
 

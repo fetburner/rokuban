@@ -190,6 +190,20 @@ func TestPreviewCapacityOverages_AddsDistinctSearchCandidate(t *testing.T) {
 	}
 }
 
+// 放送済みの番組は epg_programs に retention_grace の間残るが録れないので需要に数えない。
+func TestPreviewCapacityOverages_ExcludesAlreadyBroadcastCandidates(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newCapacityPreviewServer(t, pool)
+	start := time.Now().UTC().Truncate(time.Hour).Add(-3 * time.Hour)
+	insertPreviewTuner(t, pool)
+	insertPreviewReservation(t, pool, 50031, "27", start, nil)
+	insertPreviewProgram(t, pool, 50032, "放送済み候補", "25", start)
+
+	if got := postCapacityPreview(t, srv, map[string]any{"genres": []int{searchFixtureGenre}}); len(got) != 0 {
+		t.Fatalf("preview = %+v, want none for an already broadcast candidate", got)
+	}
+}
+
 func TestPreviewCapacityOverages_SamePhysicalChannelDoesNotAddDemand(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newCapacityPreviewServer(t, pool)

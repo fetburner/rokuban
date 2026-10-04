@@ -403,8 +403,8 @@ export function SearchPage() {
   */
   const costEstimate = estimateRuleCost({ totalCount: matches.length, durationsMs })
 
-  // Preview state is tied to the exact search that ran. Editing the form alone leaves both
-  // values untouched, while a pending or failed request never turns into an all-clear claim.
+  // プレビューの状態は実行した検索に紐づく。フォームを編集しただけでは両方とも変わらず、
+  // 取得中・失敗が「収まる」という主張になることもない。
   const searchedRequest = search.variables?.data
   const capacityRequest = capacityPreview.variables?.data
   const previewMatchesExecutedSearch = previewMatchesSearch(searchedRequest, capacityRequest, ruleId)
