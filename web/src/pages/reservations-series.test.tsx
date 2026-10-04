@@ -314,6 +314,21 @@ describe('予約一覧のシリーズ表示', () => {
     expect(within(row).queryByRole('button', { name: /予約を開く/ })).toBeNull()
   })
 
+  it('展開した次回以外の回にもルール条件外の出自を表示する', async () => {
+    const user = userEvent.setup()
+    renderPage({
+      reservations: [
+        reservation(1, '毎週ドラマ 第1話', '毎週ドラマ', 18),
+        reservation(2, '毎週ドラマ 第2話', '毎週ドラマ', 20, { state: 'detached' }),
+      ],
+    })
+
+    const row = await screen.findByTestId('reservation-series-row')
+    expect(within(row).queryByText('条件外')).toBeNull()
+    await user.click(within(row).getByRole('button', { name: '毎週ドラマの予約を開く' }))
+    expect(within(row).getByText('条件外')).toBeInTheDocument()
+  })
+
   it('時間順へ切り替えると URL を変えず localStorage に保存する', async () => {
     const user = userEvent.setup()
     renderPage({ reservations: [reservation(1, '毎週ドラマ 第1話', '毎週ドラマ', 18)] })

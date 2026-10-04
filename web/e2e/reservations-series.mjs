@@ -315,6 +315,9 @@ async function checkPage(browser, width, theme, multipleSites, saveShot) {
   if (!(await episodeList.getByText('第2話', { exact: true }).count())) {
     ng.push(`${label}: 展開した各回の題名が無い`)
   }
+  if (!(await episodeList.getByText('条件外', { exact: true }).count())) {
+    ng.push(`${label}: 次回以外のルール条件外予約に出自が表示されない`)
+  }
   const episodeLinks = episodeList.locator(':scope > li > a.absolute')
   for (let index = 0; index < await episodeLinks.count(); index += 1) {
     const box = await episodeLinks.nth(index).boundingBox()
