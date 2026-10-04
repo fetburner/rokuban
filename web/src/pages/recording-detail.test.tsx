@@ -3055,6 +3055,41 @@ describe('RecordingDetailPage 自動チャプターの確認 (#1066)', () => {
     expect(screen.queryByTestId('chapter-edit-layout')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'このまま確認' })).not.toBeInTheDocument()
   })
+
+  it('live が有効なら cut-only asset がある録画も original HLS から編集でき、編集開始で session を作り直さない', async () => {
+    const user = userEvent.setup()
+    const chapters: RecordingChapters = {
+      version: 'original-vod-v1',
+      detectionPending: false,
+      source: 'auto',
+      spans: [{ startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }],
+    }
+    const { fetchMock } = createFakeServer({
+      recording: sampleRecording({
+        sizeBytes: 1_000_000,
+        encodeProfiles: ['cut-only'],
+        encodedAssets: [{ profile: 'cut-only', cut: true, sizeBytes: 500_000 }],
+      }),
+      liveProfiles: [{ name: 'hd', height: 720 }],
+      chapters,
+    })
+    renderAt('/recordings/3')
+    await user.click(await screen.findByTestId('recording-playback-start'))
+    const video = (await screen.findByLabelText('録画映像')) as HTMLVideoElement
+    const originalPlaylistRequests = () => fetchMock.mock.calls.filter(([input]) => {
+      const url = new URL(String(input), 'http://localhost')
+      return url.pathname === '/api/sites/default/recordings/3/original-vod/playlist.m3u8'
+    }).length
+    await waitFor(() => expect(originalPlaylistRequests()).toBeGreaterThan(0))
+    const playlistsBeforeEdit = originalPlaylistRequests()
+
+    await user.click(screen.getByRole('button', { name: '再生設定' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'チャプターを直す' }))
+    await screen.findByTestId('chapter-edit-layout')
+
+    expect(screen.getByLabelText('録画映像')).toBe(video)
+    expect(originalPlaylistRequests()).toBe(playlistsBeforeEdit)
+  })
 })
 
 describe('RecordingDetailPage メニューと版タブの細部 (#1018)', () => {

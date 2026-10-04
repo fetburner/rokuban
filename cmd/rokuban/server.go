@@ -649,6 +649,7 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, clientC
 		ScratchDir:               cfg.Storage.ScratchDir,
 		Encode:                   cfg.Encode,
 		CMDetect:                 cfg.CMDetect,
+		LiveEnabled:              cfg.Live.Enabled,
 		EpgRetentionGrace:        cfg.Epg.RetentionGrace,
 		RulerRetentionGrace:      cfg.Epg.RetentionGrace,
 		RulerMaxDeletesPerPass:   cfg.Ruler.MaxDeletesPerPass,

@@ -3085,7 +3085,7 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
       .toBe(true)
   })
 
-  it('offset セッションの再開位置は offset + currentTime の原本時刻で送る', async () => {
+  it('offset セッションの再開位置はフレーム境界の起点 + currentTime の原本時刻で送る', async () => {
     const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
       if (init?.method && init.method !== 'GET') return Promise.resolve(new Response(null, { status: 204 }))
       return Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))
@@ -3107,14 +3107,14 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     fireEvent.canPlay(video)
     video.currentTime = 5
     fireEvent.timeUpdate(video)
-    expect(screen.getByRole('slider', { name: 'シークバー' })).toHaveAttribute('aria-valuenow', '20')
+    expect(Number(screen.getByRole('slider', { name: 'シークバー' }).getAttribute('aria-valuenow'))).toBeCloseTo(19.981633333, 6)
     fireEvent.pause(video)
 
     await waitFor(() => {
       expect(fetchMock.mock.calls.some(([url]) => String(url) === '/api/recordings/418/playback-position')).toBe(true)
     })
     const positionWrite = fetchMock.mock.calls.find(([url]) => String(url) === '/api/recordings/418/playback-position')
-    expect(JSON.parse(String(positionWrite?.[1]?.body))).toEqual({ positionMs: 20_000 })
+    expect(JSON.parse(String(positionWrite?.[1]?.body))).toEqual({ positionMs: 19_981 })
   })
 
   it('ENDLIST 後だけ実尺の 90% で watched を送り、成功後に親へ通知する', async () => {
@@ -3193,7 +3193,7 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
 
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
     expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
-      '/api/sites/default/recordings/416/original-vod/offset/5/playlist.m3u8?profile=hd',
+      '/api/sites/default/recordings/416/original-vod/offset/4/playlist.m3u8?profile=hd',
     )
   })
 

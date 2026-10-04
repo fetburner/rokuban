@@ -45,7 +45,7 @@ import { useLiveEnabled } from '@/lib/capabilities'
 import { recordingFileURL } from '@/lib/playback-position'
 import { seedRecordingDetail } from '@/lib/recording-detail-cache'
 import { selectRecordingPlaybackSource, type RecordingPlaybackSource } from '@/lib/recording-playback-source'
-import { validLiveProfile } from '@/lib/live'
+import { originalVODSessionOriginSeconds, validLiveProfile } from '@/lib/live'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { shouldShowRecordingSite, sourceLabels } from '@/lib/recording-search'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
@@ -180,9 +180,11 @@ export function RecordingDetail({
   const [descriptionExpanded, setDescriptionExpanded] = useState(false)
   const encodedAssets = recording.encodedAssets ?? []
   const hasOriginal = recording.sizeBytes !== undefined
+  const hasNonCutEncoded = encodedAssets.some((asset) => asset.cut !== true)
   const playbackSelection = {
     status: recording.status,
     hasEncoded: encodedAssets.length > 0,
+    hasNonCutEncoded,
     hasOriginal,
     liveEnabled,
     isTrashed: trash,
@@ -365,21 +367,13 @@ export function RecordingDetail({
   // チャプター（CM とユーザー区間）。**ごみ箱では取らない** --- ごみ箱では
   // プレイヤーを出さず、配信経路も 404 になる（配信 3 クエリと同じ契約）。
   //
-  // 編集 UI は「ブラウザ再生できる encoded があるときだけ」出す。原本 TS しか
-  // 無い録画ではタイムラインを見ながら直せないので、押しても何もできない
-  // コントロールを置かない（issue #209 と同じ規律）。**カット版を再生しているときは
-  // 編集できない** --- カット版は時間軸から cut 区間を取り除いた別の動画で、
-  // 原本の ms で置かれた境界をその動画に当てられない。
-  //
-  // 「今どの encoded を再生しているか」はプレイヤーが持つので、ここでは
-  // 「確認に使える（cut でない）encoded が 1 つ以上あるか」で判定する。実際に
-  // カット版へ切り替えたときの編集 UI の抑止はプレイヤー側が `playingCut` で行う。
-  // 原本 HLS は編集 UI を出さないが、再生バーの目盛り・一覧・自動スキップでは
-  // 同じ区間を使う。原本 VOD プレイヤーがある場合は再生用に取得する。
-  // ここでカット版しか無い録画に対してチャプターを取りに行かないのは、その
-  // 構成では編集も確認再生もできないためである（cut だけの録画をそもそも
-  // 凍結できないのは config 検証の仕事）。
-  const canEditChapters = !trash && encodedAssets.some((a) => a.cut !== true)
+  // 編集 UI は、cut でない encoded があるか live.enabled が有効で原本 HLS を使える
+  // ときに出す。cut だけの encoded と原本の両方があるときは再生元選択で原本 HLS を
+  // 優先する。cut でない encoded がある場合はこれまでどおり encoded を優先し、実際に
+  // cut 版を選んだときはプレイヤーが `playingCut` で編集を止める。
+  // 原本 HLS は再生開始前に chapters を読んでもセッションを作らない。配信自体は再生
+  // ボタンで始める規律を保つ。
+  const canEditChapters = !trash && (hasNonCutEncoded || (liveEnabled && hasOriginal))
   const chaptersQuery = useGetRecordingChapters(recording.id, {
     query: { enabled: canEditChapters || showOriginalVODPlayer },
   })
@@ -660,6 +654,16 @@ export function RecordingDetail({
               site={recording.site}
               recordingId={recording.id}
               chapters={chapters?.spans}
+              chapterSource={chapters?.source}
+              chapterVersion={chapters?.version}
+              chapterDetectionPending={chapters?.detectionPending}
+              chapterEditing={chapterEditing}
+              onEnterChapterEditing={onEnterChapterEditing}
+              chapterEditorCommandsRef={chapterEditorCommandsRef}
+              onChapterEditorStatusChange={onChapterEditorStatusChange}
+              onSaveChapters={canEditChapters ? saveChapters : undefined}
+              onResetChapters={canEditChapters ? resetChapters : undefined}
+              chapterSavePending={putChapters.isPending || deleteChapters.isPending}
               watched={recording.watchedAt !== undefined}
               watchedPending={putWatchedMutation.isPending || deleteWatchedMutation.isPending}
               onPutWatched={() => void updateWatched(true)}
@@ -670,7 +674,7 @@ export function RecordingDetail({
               autoPlay={playbackState.autoPlay}
               fullscreenContainerRef={playbackFullscreenContainerRef}
               startPositionSeconds={playbackState.positionSeconds !== undefined
-                ? Math.max(0, playbackState.positionSeconds - (carriedOffsetSeconds ?? 0))
+                ? Math.max(0, playbackState.positionSeconds - originalVODSessionOriginSeconds(carriedOffsetSeconds))
                 : undefined}
               recordingDurationMs={Number.isFinite(recordedSpanMs) ? recordedSpanMs : recording.durationMs}
               profile={explicitLiveProfile}
@@ -713,7 +717,7 @@ export function RecordingDetail({
               onSaveChapters={canEditChapters ? saveChapters : undefined}
               onResetChapters={canEditChapters ? resetChapters : undefined}
               chapterSavePending={putChapters.isPending || deleteChapters.isPending}
-              onReencode={trash ? undefined : reencodeCut}
+              onReencode={trash || !hasOriginal ? undefined : reencodeCut}
               reencodePending={reencode.isPending}
               autoPlay={playbackState.autoPlay}
               onRecordingPositionChange={reportRecordingPosition}

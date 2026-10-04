@@ -12,7 +12,7 @@
 // 元 TS は MPEG-2 video / MP2 audio だけを持つ。字幕は SRT から直接 WebVTT にしており、
 // **原本（ARIB / DVB 字幕ストリーム）由来の字幕は未検証**（ffmpeg はテキスト字幕から
 // ビットマップ字幕を作れない）。①〜③ の playlist は最初から ENDLIST 済みである。
-// ⑤ は streamer と同じ `-ss {offset}`（0 起点）で offset ごとに作り、ENDLIST を外した
+// ⑤ は streamer と同じフレーム格子に揃えた `-ss {offset}`（0 起点）で offset ごとに作り、ENDLIST を外した
 // 変換中の playlist で開始位置・張り直し後の再生継続・末尾の 416・枠の操作を見る。
 // 手動の ▶ は、autoplay 拒否後に待ち時間を置き、segment が増える EVENT playlist で測る。
 //
@@ -85,6 +85,8 @@ const offsetRecording = {
   ...recording,
   id: OFFSET_ID,
   title: '原本 offset セッションの再生',
+  // live.enabled 下では cut-only の encoded asset があっても原本 HLS を再生できる。
+  encodedAssets: [{ profile: 'cut-only', sizeBytes: 400_000, cut: true }],
   startAt: offsetStartedAt,
   startedAt: offsetStartedAt,
   endedAt: new Date(Date.parse(offsetStartedAt) + OFFSET_DB_SECONDS * 1000).toISOString(),
@@ -682,7 +684,7 @@ const settingsOrder = async () => settingsMenu.locator('[role^="menuitem"]').eva
 )
 // #1013 の決定: デスクトップは CM・字幕・再生速度・画質（画質が歯車に近い最下段）、スマホのシートは
 // 画質が先頭。原本 HLS もエンコード版と同じ順にし、音声は画質の隣に入れる。
-const expectedDesktopOrder = ['CM を飛ばす', '字幕', '再生速度', '音声', '画質']
+const expectedDesktopOrder = ['CM を飛ばす', '字幕', '再生速度', '音声', '画質', 'チャプターを直す']
 const expectedPhoneOrder = ['画質', '音声', '再生速度', '字幕', 'CM を飛ばす']
 if ((await settingsOrder()).join('|') !== expectedDesktopOrder.join('|')) {
   ng.push(`① デスクトップの設定の順がエンコード版と違う (${(await settingsOrder()).join(', ')})`)
@@ -963,7 +965,7 @@ log('\n=== ⑤ 製品と同じ offset セッション（-ss、0 起点、ENDLIST
 // ここでは streamer と同じく offset ごとに `-ss {offset} -i` で 0 起点の HLS を作り、
 // 変換の先端（20 秒）で切って ENDLIST を外して配る。映像は 60 秒、DB の実尺は 63 秒にして
 // 末尾付近のクリックを 416 にする（streamer は「映像の終端 - 0.5 秒」より後ろを 416 にする）。
-const offsetFixtureDir = path.join(os.tmpdir(), 'rokuban-e2e-original-vod-offsets')
+const offsetFixtureDir = path.join(os.tmpdir(), 'rokuban-e2e-original-vod-offsets-frame-grid')
 const offsetSourcePath = path.join(offsetFixtureDir, 'original.ts')
 mkdirSync(offsetFixtureDir, { recursive: true })
 if (!existsSync(offsetSourcePath)) {
@@ -975,16 +977,19 @@ if (!existsSync(offsetSourcePath)) {
     '-c:a', 'mp2', '-b:a', '128k', '-f', 'mpegts', offsetSourcePath,
   ], offsetFixtureDir)
 }
-/** offsetSession は streamer と同じ入力側 seek（-copyts 無し）で 0 起点の HLS を作る。先端の 20 秒だけ。 */
+/** offsetSession は streamer と同じフレーム境界の入力側 seek（-copyts 無し）で 0 起点の HLS を作る。先端の 20 秒だけ。 */
 function offsetSession(offset) {
   const dir = path.join(offsetFixtureDir, `offset-${offset}`)
   if (existsSync(path.join(dir, 'playlist.m3u8'))) return dir
   mkdirSync(path.join(dir, 'segments'), { recursive: true })
   runFFmpeg([
     '-hide_banner', '-nostats', '-loglevel', 'error', '-y',
-    ...(offset > 0 ? ['-ss', String(offset)] : []), '-i', offsetSourcePath, '-t', '20',
+    ...(offset > 0
+      ? ['-ss', String(Math.floor(offset * 30_000 / 1_001) * 1_001 / 30_000)]
+      : []),
+    '-i', offsetSourcePath, '-t', '20',
     '-map', '0:v:0', '-map', '0:a:0', '-map', '0:a:0', '-map', '0:a:0',
-    '-c:v', 'libx264', '-profile:v', 'baseline', '-pix_fmt', 'yuv420p', '-preset', 'veryfast', '-g', '50',
+    '-c:v', 'libx264', '-bf', '0', '-profile:v', 'baseline', '-pix_fmt', 'yuv420p', '-preset', 'veryfast', '-g', '50',
     '-sc_threshold', '0', '-force_key_frames', 'expr:gte(t,n_forced*2)', '-c:a', 'aac', '-b:a', '64k',
     '-var_stream_map', 'v:0,agroup:a0 a:0,agroup:a0,default:yes a:1,agroup:a0 a:2,agroup:a0',
     '-master_pl_name', 'playlist.m3u8', '-f', 'hls', '-hls_time', '2', '-hls_list_size', '0',
@@ -1037,6 +1042,13 @@ function eventPlaylistPrefix(playlist, segmentCount) {
 }
 
 const offsetRequests = []
+const offsetChapterEdits = []
+let offsetChapters = {
+  version: 'chapters-offsets-v1',
+  detectionPending: false,
+  source: 'auto',
+  spans: [{ startMs: 40_000, endMs: 45_000, label: '気象情報', cut: false }],
+}
 let offsetFailAll = false
 const offsetHandler = async ({ path: requestPath, json, route }) => {
   const method = route.request().method()
@@ -1049,12 +1061,18 @@ const offsetHandler = async ({ path: requestPath, json, route }) => {
   if (requestPath === '/api/recordings' && method === 'GET') return json([offsetRecording])
   if (requestPath === `/api/recordings/${OFFSET_ID}` && method === 'GET') return json(offsetRecording)
   if (requestPath === `/api/recordings/${OFFSET_ID}/chapters`) {
-    return json({
-      version: 'chapters-offsets',
+    return json(offsetChapters)
+  }
+  if (requestPath === `/api/recordings/${OFFSET_ID}/chapter-edits` && method === 'PUT') {
+    const body = route.request().postDataJSON()
+    offsetChapterEdits.push(body)
+    offsetChapters = {
+      version: 'chapters-offsets-v2',
       detectionPending: false,
-      source: 'auto',
-      spans: [{ startMs: 40_000, endMs: 45_000, label: '気象情報', cut: false }],
-    })
+      source: 'user',
+      spans: body.spans,
+    }
+    return json(offsetChapters)
   }
   if (requestPath.startsWith(`/api/recordings/${OFFSET_ID}/`) && method !== 'GET') return route.fulfill({ status: 204 })
   if (requestPath === `/api/media/recordings/${OFFSET_ID}/seek-tiles`) return route.fulfill({ status: 404 })
@@ -1370,6 +1388,60 @@ delete offsetRecording.watchedAt
     ng.push(`⑤-e 45 秒から前のチャプターで 40 秒へ戻らない（${afterPrev.position}）`)
   }
 
+  // ⑤-e2 cut-only asset があっても original HLS の再生中に編集できる。offset session の
+  // mediaTime はセッション内時刻なので、編集の再生位置・境界補正・保存は録画全体の軸に乗る。
+  const frameBoxForEdit = await offsetPage.getByTestId('recording-player-frame').boundingBox()
+  await offsetPage.mouse.move(frameBoxForEdit.x + frameBoxForEdit.width / 2, frameBoxForEdit.y + frameBoxForEdit.height / 2)
+  await offsetPage.waitForTimeout(250)
+  await offsetPage.evaluate(() => { window.__e2eVideoBeforeChapterEdit = document.querySelector('video') })
+  const currentSessionOffset = [...offsetRequests].reverse().find((request) => request.status === 200)?.offset ?? 0
+  const mastersBeforeChapterEdit = offsetRequests.filter((request) => request.offset === currentSessionOffset && request.status === 200).length
+  await offsetPage.locator('[data-testid="player-controls"]').getByRole('button', { name: '再生設定' }).click()
+  await offsetPage.getByRole('menuitem', { name: 'チャプターを直す' }).click()
+  const chapterEditor = offsetPage.getByTestId('chapter-edit-layout')
+  await chapterEditor.waitFor({ timeout: 5000 }).catch(() => ng.push('⑤-e2 cut-only の original HLS でチャプター編集へ入れない'))
+  const editAxis = await offsetPage.evaluate((sessionOffset) => {
+    const video = document.querySelector('video')
+    const playhead = document.querySelector('[data-testid="chapter-edit-playhead"]')?.textContent ?? ''
+    const match = playhead.match(/(\d+):(\d{2})\.(\d{3})/)
+    const axisTime = match === null
+      ? NaN
+      : Number(match[1]) * 60 + Number(match[2]) + Number(match[3]) / 1000
+    return {
+      sameVideo: video === window.__e2eVideoBeforeChapterEdit,
+      localTime: video?.currentTime ?? NaN,
+      axisTime,
+      sessionOffset,
+      sessionOrigin: Math.floor(sessionOffset * 30_000 / 1_001) * 1_001 / 30_000,
+      paused: video?.paused ?? true,
+    }
+  }, currentSessionOffset)
+  if (!editAxis.sameVideo || editAxis.paused) {
+    ng.push(`⑤-e2 編集開始で HLS の video / 再生状態を維持しない (${JSON.stringify(editAxis)})`)
+  }
+  if (!(editAxis.sessionOffset > 0 && editAxis.localTime < 15 && editAxis.axisTime > 35 &&
+    Math.abs(editAxis.axisTime - (editAxis.localTime + editAxis.sessionOrigin)) < 0.25)) {
+    ng.push(`⑤-e2 offset ${currentSessionOffset} の編集位置が録画全体の軸に変換されない (${JSON.stringify(editAxis)})`)
+  }
+  if (offsetRequests.filter((request) => request.offset === currentSessionOffset && request.status === 200).length !== mastersBeforeChapterEdit) {
+    ng.push('⑤-e2 編集モードへ入るだけで original HLS session を作り直す')
+  }
+  const editorBoundaryRow = chapterEditor.locator('[data-testid="chapter-span-row"] button[aria-label$="の境界を選ぶ"]')
+  await editorBoundaryRow.click()
+  await chapterEditor.getByRole('button', { name: '選択中の境界を現在の再生位置に合わせる' }).click()
+  const alignedOriginalBoundary = Number(await chapterEditor.getByTestId('chapter-filmstrip-boundary').first().getAttribute('data-time-ms'))
+  if (!(alignedOriginalBoundary >= 35_000 && alignedOriginalBoundary <= 42_000)) {
+    ng.push(`⑤-e2 境界の現在位置合わせでセッション内時刻を使う (${alignedOriginalBoundary}ms)`)
+  }
+  const chapterEditCountBeforeSave = offsetChapterEdits.length
+  await offsetPage.getByRole('button', { name: '保存', exact: true }).click()
+  await offsetPage.waitForFunction(() => document.querySelector('[data-testid="chapter-edit-layout"]') === null, undefined, { timeout: 5000 })
+    .catch(() => ng.push('⑤-e2 original HLS のチャプター編集を保存できない'))
+  const savedOffsetEdit = offsetChapterEdits.at(-1)
+  if (offsetChapterEdits.length !== chapterEditCountBeforeSave + 1 || !(savedOffsetEdit?.spans?.[0]?.startMs > 35_000 && savedOffsetEdit?.spans?.[0]?.startMs <= 42_000)) {
+    ng.push(`⑤-e2 offset 付き original HLS の変更を録画全体の時刻で保存しない (${JSON.stringify(savedOffsetEdit)})`)
+  }
+
   // ⑤-f 末尾付近（99% = 62.4 秒。映像は 60 秒）のクリックは 416 になる。エラーにせず、
   // 有効な最後の offset へ丸めて再生する。
   // マウスで押したボタンのフォーカスでは出したままにしないので、バーを出してから押す。
@@ -1669,13 +1741,15 @@ for (const [label, viewport] of [['1280', { width: 1280, height: 900 }], ['400',
       ng.push(`⑦(${source}/${label}) 再生ボタンを押しても再生が進まない`)
     }
     if (source === 'original-hls' && !playbackFailure) {
-      // 録画中（EVENT）の原本は先頭から始まる。最新端から始まって進むだけの再生を合格にしない。
+      // ネイティブ HLS は EVENT の最新端で最初の playing を出すことがある。製品は
+      // その playing で 0 秒を再表明するため、補正後に先頭 segment と再生開始が現れたかを見る。
       const clickSegments = segmentRequests.slice(requestCursor.segments).filter((name) => name.startsWith('0_seg'))
       const videoLog = await page.evaluate((cursor) => window.__e2eVideoLog.slice(cursor), videoLogCursor)
-      const firstPlaying = videoLog.find((entry) => entry.type === 'playing')
-      if (clickSegments[0] !== '0_seg00000.ts' || firstPlaying === undefined || firstPlaying.currentTime >= 1) {
+      const lastStartCorrection = videoLog.findLastIndex((entry) => entry.type === 'assign' && Math.abs(entry.value) < 0.001)
+      const playingAfterStartCorrection = videoLog.slice(lastStartCorrection + 1).find((entry) => entry.type === 'playing')
+      if (!clickSegments.includes('0_seg00000.ts') || playingAfterStartCorrection === undefined || playingAfterStartCorrection.currentTime >= 1) {
         log(`  ⑦(${source}/${label}) 開始位置の診断: ${JSON.stringify({ clickSegments, videoLog, detailResume: detailResumeLog.slice(detailResumeCursor), writes: playbackPositionWrites.slice(writeCursor) })}`)
-        ng.push(`⑦(${source}/${label}) 原本HLSが先頭から始まらない（最初の segment ${clickSegments[0]}、最初の playing ${firstPlaying?.currentTime}）`)
+        ng.push(`⑦(${source}/${label}) 補正後に原本 HLS が先頭から始まらない（segments=${clickSegments.join(',')}, playing=${playingAfterStartCorrection?.currentTime}）`)
       }
     }
     await page.mouse.move(200, 5)
