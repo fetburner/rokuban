@@ -326,6 +326,34 @@ WebKit の HLS は 0.00ms / +23.37ms（-10.02 / +13.34）だった。
 になり、ずれを検出することを確認した。測定値と未測定の範囲は
 [`docs/frontend/recordings.md`](../../docs/frontend/recordings.md) に記録している。
 
+### 原本 HLS VOD の再生開始（`recording-original-vod.mjs`）
+
+FFmpeg で MPEG-2 TS と H.264/AAC HLS の fixture を作り、録画 API と streamer の URL を
+`page.route` で差し替える。mirakc と実録画は要らない。⑤-manual は自動再生を意図的に
+`NotAllowedError` で拒否し、0 / 1 / 3 秒待ってから操作バーの ▶ を押す。fixture は EVENT
+playlist の先頭 6 segment から始まり、待ち時間中に1秒ごとに segment を増やす。
+
+⑦ は原本 HLS と encoded の両方について 1280px / 400px で再生開始と枠の寸法を測る。
+クリック後 15 秒以内に video が一時停止状態を抜けて `currentTime > 0.5` になることを待つ。
+原本 HLS は先頭 4 segment の EVENT playlist から始め、2 秒ごとに segment を追加して最大 8 segment まで配る。
+
+原本 HLS は開始位置も測る。クリック後に最初に取得した映像 segment が `0_seg00000.ts` で、最初の
+`playing` の `currentTime` が 1 未満でなければ NG にする。`currentTime > 0.5` だけでは、最新端から
+始まって進む再生も通ってしまうためである。診断には `playing` / `seeking` と `currentTime` への代入、
+詳細 API が返した再開位置を載せる。
+
+前のページの再開位置 PUT は遷移の後に届くことがある。⑦ と ④ は書き込みの反映を止めて（`applyPositionWrites`）
+から `resumePositionMs` を消す。止めないと製品は残った位置から再開し、8 秒分の fixture の端で止まる。
+
+⑦が失敗した場合は待機エラー、`paused`・`currentTime`・`readyState`・`seekable`・`buffered` と
+メディアエラーを記録する。`play()` の呼び出し・成否、playlist / segment の要求と HTTP 応答も記録する。
+再生中の操作バーは 3 秒で隠れ `aria-hidden` / `inert` になる。手動でバーの操作を調べるときは、
+枠の上でマウスを動かして表示を待つ。
+
+```sh
+E2E_URL=http://localhost:4173 pnpm e2e:recording-original-vod
+```
+
 ### 原本 HLS から encoded への切替（`recording-original-vod.mjs`）
 
 ⑥ は原本 HLS 再生中に encoded が追加されても現在の HLS を保ち、次の範囲外 seek で encoded MP4 へ
