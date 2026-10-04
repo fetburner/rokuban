@@ -131,9 +131,6 @@ function stubApi(
     if (url.pathname === '/api/rules' && method === 'GET') {
       return Promise.resolve(jsonResponse(state.filter((r) => !deletedIds.includes(r.id))))
     }
-    if (url.pathname === '/api/label-rules' && method === 'GET') {
-      return Promise.resolve(jsonResponse([]))
-    }
     if (url.pathname === '/api/reservations' && method === 'GET') {
       if (failures.reservations !== undefined) {
         return Promise.resolve(
@@ -497,7 +494,7 @@ describe('RulesPage の分類ルール導線', () => {
     renderPage()
 
     await screen.findByText('ルールがありません')
-    expect(screen.queryByRole('region', { name: 'シリーズ分類' })).not.toBeInTheDocument()
+    expect(screen.queryByText('シリーズ分類')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '分類ルールを作成' })).not.toBeInTheDocument()
   })
 

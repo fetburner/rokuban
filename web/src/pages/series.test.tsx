@@ -237,6 +237,26 @@ describe('SeriesPage', () => {
     expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
+  it('分類ルールの取得に失敗したら、エラーを 1 か所だけ示して手動バッジを出さない', async () => {
+    stubApi(shelves, [labelRule(1, '作品X', '作品X', '作品X')])
+    const base = globalThis.fetch
+    globalThis.fetch = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost')
+      if (url.pathname === '/api/label-rules' && (init?.method ?? 'GET') === 'GET') {
+        return Promise.resolve(jsonResponse({ error: 'boom' }, 500))
+      }
+      return base(input, init)
+    }) as typeof fetch
+    renderInRouter(<SeriesPage />, { path: '/series' })
+
+    const content = await screen.findByTestId('page-content')
+    const manager = await within(content).findByRole('region', { name: 'シリーズ分類' })
+    await within(manager).findByText(/分類ルールの取得に失敗しました（「手動」の表示を省略しています）/)
+    expect(within(manager).getByRole('button', { name: /再試行/ })).toBeInTheDocument()
+    expect(within(content).getAllByText(/「手動」の表示を省略/)).toHaveLength(1)
+    expect(within(content).queryByText('手動')).not.toBeInTheDocument()
+  })
+
   it('作成後に一覧と同じ label_rules クエリが更新され、棚の手動バッジも付く', async () => {
     const user = userEvent.setup()
     const api = stubApi(shelves)

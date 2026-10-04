@@ -1198,7 +1198,7 @@ limit)`（カーソル `before` / `beforeId` を含めない）にする。同�
   「次回」は `GET /api/recordings/{id}/upcoming` から取り、
   `(networkId, serviceId, startAt)` で 1 行にまとめて site をチップで出す
 
-overflow の「分類を直す（割る・指定する）」は `/rules` と同じ `LabelRuleForm` を
+overflow の「分類を直す（割る・指定する）」は `/series` と同じ `LabelRuleForm` を
 開き、棚の軸 `key=series` と現在の実効シリーズを初期値にする。自動キーは題名の
 NFKC 正規化を通る一方、検索条件の照合には別の正規化があるため、「毎回録画する」
 で自動キーをそのまま使うと一部の題名を拾えない場合がある。サービス条件は必ず

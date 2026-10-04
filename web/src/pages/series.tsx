@@ -14,7 +14,7 @@ import {
 } from '@/api/generated'
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { LabelRuleForm } from '@/components/label-rule-form'
-import { LabelRulesUnavailableNote, ManualSeriesBadge } from '@/components/manual-series'
+import { ManualSeriesBadge } from '@/components/manual-series'
 import { RecordingSeriesToggle } from '@/components/recording-series-toggle'
 import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
 import { useToast } from '@/components/toaster'
@@ -157,11 +157,6 @@ export function SeriesPage() {
             ))}
           </ul>
         )}
-        {rulesQuery.isError && !shelvesQuery.isPending && (
-          <div className="px-4 pb-4">
-            <LabelRulesUnavailableNote />
-          </div>
-        )}
 
         <section
           aria-labelledby="series-classification-rules-title"
@@ -192,7 +187,7 @@ export function SeriesPage() {
 
           {rulesQuery.isError ? (
             <ErrorState onRetry={() => void rulesQuery.refetch()}>
-              分類ルールの取得に失敗しました
+              分類ルールの取得に失敗しました（「手動」の表示を省略しています）
             </ErrorState>
           ) : rulesQuery.isPending ? (
             <ListSkeleton rows={2} />
