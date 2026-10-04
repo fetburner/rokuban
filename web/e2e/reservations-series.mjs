@@ -19,6 +19,7 @@ import {
   installApiStubs,
   launchBrowser,
   log,
+  sseKeepAlive,
   validateFixturesOrExit,
   verifyBundleMatchesOrExit,
 } from './lib.mjs'
@@ -57,7 +58,7 @@ function fixtures(multipleSites) {
     reservation({ id: 2, day: 2, hour: 20, title: '金曜アニメ 第2話', series: '金曜アニメ' }),
     reservation({ id: 3, day: 3, hour: 20, title: '金曜アニメ 第3話', series: '金曜アニメ', state: 'detached' }),
     reservation({ id: 4, day: 4, hour: 21, title: 'ひとり予約', series: '録画の無いシリーズ', source: 'manual', ruleId: undefined }),
-    reservation({ id: 5, day: 5, hour: 22, title: 'EPG から消えた番組', series: null, state: 'orphaned', source: 'manual', ruleId: undefined }),
+    reservation({ id: 5, day: 1, hour: 20, title: 'EPG から消えた番組', series: null, state: 'orphaned', source: 'manual', ruleId: undefined }),
     reservation({ id: 6, day: 6, hour: 23, title: '要確認外の番組', series: '別のシリーズ', source: 'manual', ruleId: undefined }),
     reservation({ id: 8, day: 7, hour: 18, title: '視聴済みシリーズ 最終話', series: '視聴済みシリーズ', source: 'manual', ruleId: undefined }),
   ]
@@ -130,7 +131,8 @@ async function validateAll(fixturesForRun) {
   )
 }
 
-async function apiHandler({ path: requestPath, json }, data) {
+async function apiHandler({ path: requestPath, json, route }, data) {
+  if (requestPath === '/api/events') return sseKeepAlive(route)
   if (requestPath === '/api/sites') return json(data.multipleSites ? ['default', 'takamatsu'] : ['default'])
   if (requestPath === '/api/capabilities') return json({ live: true })
   if (requestPath === '/api/breakers') return json([])
@@ -138,6 +140,8 @@ async function apiHandler({ path: requestPath, json }, data) {
   if (requestPath === '/api/rules') return json(data.rules)
   if (requestPath === '/api/capacity/overages') return json(data.overages)
   if (requestPath === '/api/recording-shelves') return json(data.shelves)
+  if (requestPath === '/api/storage') return json([])
+  if (requestPath === '/api/encode-queue') return json({ queued: 0, running: 0 })
   return json([])
 }
 
@@ -371,6 +375,35 @@ async function checkPage(browser, width, theme, multipleSites, saveShot) {
   await context.close()
 }
 
+async function checkHomeWarning(browser, width) {
+  const data = fixtures(false)
+  const context = await browser.newContext({
+    viewport: { width, height: 820 },
+    locale: 'ja-JP',
+    timezoneId: 'Asia/Tokyo',
+    colorScheme: 'light',
+    isMobile: width <= 390,
+    hasTouch: width <= 390,
+  })
+  const page = await context.newPage()
+  await page.clock.install({ time: FIXED_NOW })
+  await installApiStubs(page, (args) => apiHandler(args, data))
+  await page.goto(URL_BASE + '/?mode=ops', { waitUntil: 'domcontentloaded' })
+  const warning = page.locator('[data-warning-kind="not-recorded"]')
+  await warning.waitFor({ timeout: 15_000 }).catch(() => {
+    ng.push(`home/${width}px: orphaned 予約の「録画されず」警告が無い`)
+  })
+  if (!(await warning.getByText('録画されず', { exact: true }).count())) {
+    ng.push(`home/${width}px: 録画されずの種別チップが表示されない`)
+  }
+  const warningLink = warning.getByRole('link')
+  if ((await warningLink.getAttribute('href').catch(() => null)) !== '/reservations/default/9005') {
+    ng.push(`home/${width}px: 録画されず警告が予約詳細へリンクしない`)
+  }
+  await screenshot(page, `home-${width}-not-recorded-light.png`)
+  await context.close()
+}
+
 log(`URL: ${URL_BASE}`)
 for (const multipleSites of [false, true]) await validateAll(fixtures(multipleSites))
 await verifyBundleMatchesOrExit(URL_BASE, ng)
@@ -383,6 +416,7 @@ for (const width of [360, 1280]) await checkPage(browser, width, 'light', true, 
 for (const [width, multipleSites] of [[360, false], [1280, false], [360, true], [1280, true]]) {
   await checkPage(browser, width, 'dark', multipleSites, true)
 }
+for (const width of [360, 1280]) await checkHomeWarning(browser, width)
 
 // 要確認とルールの両条件を先に適用し、その後のシリーズ件数・バッジが残った集合
 // だけで再計算されることを確かめる（モック 4）。
