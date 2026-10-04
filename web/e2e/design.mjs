@@ -1028,7 +1028,7 @@ const screens = [
   // ホームの全画面ショットは管理 mode を明示。既定「見る」は専用判定で `/` のまま確認する。
   { name: 'home', path: '/?mode=ops', wait: 'text=明日の終わり' },
   { name: 'programs', path: '/programs', wait: 'li[data-program-id], [data-testid="program-grid-now-line"]' },
-  { name: 'reservations', path: '/reservations', wait: 'text=チューナー不足' },
+  { name: 'reservations', path: '/reservations', wait: 'text=容量不足' },
   { name: 'recordings', path: '/recordings', wait: 'text=録画中' },
   { name: 'rules', path: '/rules', wait: 'text=朝ドラ' },
   { name: 'series', path: '/series', wait: 'text=作品X' },
@@ -1102,7 +1102,7 @@ let checkedColorSchemeChange = false
 
 /** open は 1 ページを開いてスタブ・時刻・テーマを整えるところまでやる。 */
 async function open(viewport, theme, screen, opts = {}) {
-  const { pointer = 'fine', recordingView = null, isMobile = pointer === 'coarse', ...apiOpts } = opts
+  const { pointer = 'fine', recordingView = null, reservationGrouping = null, isMobile = pointer === 'coarse', ...apiOpts } = opts
   if (pointer !== 'fine' && pointer !== 'coarse') {
     throw new Error(`未対応のポインタプロファイル: ${pointer}`)
   }
@@ -1117,6 +1117,9 @@ async function open(viewport, theme, screen, opts = {}) {
   })
   if (recordingView !== null) {
     await context.addInitScript((view) => localStorage.setItem('rokuban:recordings:view', view), recordingView)
+  }
+  if (reservationGrouping !== null) {
+    await context.addInitScript((value) => localStorage.setItem('rokuban:reservations:group', value), reservationGrouping)
   }
   const page = await context.newPage()
   await page.clock.setFixedTime(FIXED_NOW)
@@ -3847,50 +3850,59 @@ for (const theme of themes) {
     await mobileContext.context.close()
   }
 
-  // --- 予約一覧: チューナー不足 = 琥珀（淡い地の上で読めるか） ---
-  {
-    const { context, page } = await open(desktop, theme, screenOf('reservations'))
-    // **淡い地を持つのは外側のバッジ、文字を持つのは内側の span。**
-    // 内側だけを掴むと背景が透明になり、合成が恒等になって「地の上での比」を
-    // 測ってしまう。外側から引いて、文字色は子から採る。
-    //
-    // **外側は `<span>` ではなく `<a>`（`Link`）。** issue #233 M6-5 で
-    // バッジ自身が番組表への `Link` になり、淡い地（`bg-warning/10`）を持つ
-    // 外側の要素は `<span>` から `<a>` に変わった。この判定はその変更の後も
-    // `ul span` のまま据え置かれており、`.filter({ hasText })` が `<a>` の
-    // 子である 2 つの `<span>`（sr-only の文・見える側のラベル）しか拾えず
-    // `label`（`badge` の子孫を探す）が空になって常に「見つからない」扱いに
-    // なっていた（実機で確認: `badge` が実際には見える側のラベル span 自身に
-    // 解決し、その子孫に `span[aria-hidden="true"]` は無い）。M8-3 の実装
-    // 確認中に発見・修正した（本題（ホーム）とは無関係な既存の不具合）。
-    const badge = page.locator('ul a').filter({ hasText: /チューナー不足/ }).first()
-    const label = badge.locator('span[aria-hidden="true"]')
+  // --- 予約一覧: 容量不足 = 琥珀（淡い地の上で読めるか） ---
+  // 2 つのバッジを測る。シリーズ行の集約バッジ（件数つき。外側の `<a>` が地と文字を持つ）と、
+  // 時間順の行（と展開した各回）が使う `CapacityShortfallBadge`（外側の `<a>` が淡い地、
+  // 内側の `span[aria-hidden="true"]` が文字）。後者は集約バッジに判定を入れ替えたとき
+  // 一度消えたので、時間順のページを別に開いて測り続ける。
+  for (const variant of [
+    {
+      name: '容量不足バッジ（シリーズの集約）',
+      grouping: null,
+      wait: 'text=容量不足',
+      badge: (page) =>
+        page.locator('[data-testid="reservation-series-row"] a').filter({ hasText: /容量不足/ }).first(),
+      label: (badge) => badge,
+    },
+    {
+      name: 'チューナー不足バッジ（時間順の行）',
+      grouping: 'time',
+      wait: 'text=チューナー不足',
+      // **淡い地を持つのは外側のバッジ、文字を持つのは内側の span。**
+      // 内側だけを掴むと背景が透明になり、合成が恒等になって「地の上での比」を
+      // 測ってしまう。外側から引いて、文字色は子から採る。外側は `<span>` ではなく `<a>`（`Link`）。
+      badge: (page) => page.locator('ul a').filter({ hasText: /チューナー不足/ }).first(),
+      label: (badge) => badge.locator('span[aria-hidden="true"]'),
+    },
+  ]) {
+    const { context, page } = await open(desktop, theme, { ...screenOf('reservations'), wait: variant.wait }, {
+      reservationGrouping: variant.grouping,
+    })
+    const badge = variant.badge(page)
     const bg = await computedOf(badge, 'background-color')
-    const fg = await computedOf(label, 'color')
-    log(`  [${theme}] チューナー不足バッジ 文字=${fg?.value} ${fg?.rgba} / 乗っている面=${fg?.backdrop}`)
+    const fg = await computedOf(variant.label(badge), 'color')
+    log(`  [${theme}] ${variant.name} 文字=${fg?.value} ${fg?.rgba} / 乗っている面=${fg?.backdrop}`)
     if (fg === null || bg === null) {
-      ng.push(`[${theme}] チューナー不足バッジが見つからない`)
+      ng.push(`[${theme}] ${variant.name}が見つからない`)
     } else if (bg.rgba[3] <= 8) {
       // 外側を掴めていない = 合成が効いていない。素通りさせず落とす
-      ng.push(`[${theme}] チューナー不足バッジの地が透明（淡い地を持つ要素を掴めていない）`)
+      ng.push(`[${theme}] ${variant.name}の地が透明（淡い地を持つ要素を掴めていない）`)
     } else {
       if (!isAmber(fg.rgba)) {
-        ng.push(`[${theme}] チューナー不足バッジが琥珀でない（${fg.value} = ${fg.rgba}）`)
+        ng.push(`[${theme}] ${variant.name}が琥珀でない（${fg.value} = ${fg.rgba}）`)
       }
-      // **`backdrop` の遡りが本当に効いているかをここで検査する。** この文字は
-      // 「外側バッジの淡い地」の上に乗っており、遡りが 1 段で止まったり
-      // 外側を飛ばしたりすると `backdrop` はページの地と一致してしまう。
-      // そのとき比は甘い方へ 0.5〜0.7 動くので、一致 = 判定が壊れている
+      // `backdrop` の遡りが本当に効いているかを検査する。遡りが 1 段で止まると
+      // `backdrop` はページの地と一致し、比は甘い方へ 0.5〜0.7 動く。一致 = 判定が壊れている
       const ground = await computedOf(page.locator('body'), 'background-color')
       const sameAsGround =
         ground !== null && [0, 1, 2].every((i) => Math.abs(fg.backdrop[i] - ground.backdrop[i]) < 1)
       if (sameAsGround) {
         ng.push(
-          `[${theme}] 文字が乗る面がページの地と同じ（${fg.backdrop}）` +
+          `[${theme}] ${variant.name}の文字が乗る面がページの地と同じ（${fg.backdrop}）` +
             ' --- 淡い地の合成が効いていない',
         )
       }
-      checkContrast(theme, 'チューナー不足の文字 / 琥珀の淡い地', fg.rgba, fg, minTextContrast)
+      checkContrast(theme, `${variant.name}の文字 / 琥珀の淡い地`, fg.rgba, fg, minTextContrast)
     }
     await context.close()
   }
