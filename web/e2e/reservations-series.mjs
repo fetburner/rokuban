@@ -386,13 +386,13 @@ for (const [width, multipleSites] of [[360, false], [1280, false], [360, true], 
   if (!(await filtered.getByText('今後 1 本', { exact: true }).count())) {
     ng.push('filter: 今後 N 本が絞り込み後の予約数にならない')
   }
-  if (!(await filtered.getByText('ルール外 1', { exact: true }).count())) {
-    ng.push('filter: 絞り込み後のルール外件数が不正')
+  if (!(await filtered.getByRole('link', { name: /この時間帯はチューナーが不足しています.*該当する予約 1 件/ }).count())) {
+    ng.push('filter: 絞り込み後の予約結論（不足時間帯）が表示されない')
   }
   if (!(await filtered.getByText('容量不足 1', { exact: true }).count())) {
     ng.push('filter: 絞り込み後の容量不足件数が不正')
   }
-  if (await filtered.getByText(/重複スキップ/).count()) {
+  if (await filtered.getByText(/録画しない（重複）/).count()) {
     ng.push('filter: 絞り込みで外れた重複スキップが件数に残る')
   }
   if (await filtered.getByRole('button', { name: /予約を開く/ }).count()) {

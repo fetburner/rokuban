@@ -4,7 +4,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { Reservation, Rule } from '@/api/generated'
+import type { CapacityOverage, Reservation, Rule } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { routeTree } from '@/routes'
 
@@ -94,6 +94,7 @@ function stubFetch(
   intentPutResponse?: () => Response | Promise<Response>,
   programOf: (site: string, programId: number) => Record<string, unknown> | Response | null = () =>
     baseProgram(),
+  capacityOverages: CapacityOverage[] = [],
 ) {
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
@@ -108,7 +109,7 @@ function stubFetch(
     // ファイルの関心事ではないので既定は空配列。Undo（`invalidateQueries`）の
     // 再取得もここを通る。
     if (url.pathname === '/api/reservations') return Promise.resolve(jsonResponse([]))
-    if (url.pathname === '/api/capacity/overages') return Promise.resolve(jsonResponse([]))
+    if (url.pathname === '/api/capacity/overages') return Promise.resolve(jsonResponse(capacityOverages))
 
     if (/^\/api\/sites\/[^/]+\/programs\/\d+\/intent$/.test(url.pathname) && init?.method === 'PUT') {
       return Promise.resolve(intentPutResponse?.() ?? new Response(null, { status: 204 }))
@@ -312,7 +313,7 @@ describe('ReservationDetailPage', () => {
       Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
     expect(follows(title, link)).toBe(true)
     expect(follows(link, description)).toBe(true)
-    expect(follows(description, screen.getByText('状態'))).toBe(true)
+    expect(follows(description, screen.getByText('出自'))).toBe(true)
   })
 
   it('番組情報が 404 でも予約詳細は残し、番組詳細だけを隠す', async () => {
@@ -328,7 +329,7 @@ describe('ReservationDetailPage', () => {
     renderAt('/reservations/default/300000')
 
     expect(await screen.findByRole('heading', { name: 'テスト番組' })).toBeInTheDocument()
-    expect(await screen.findByText('有効')).toBeInTheDocument()
+    expect(await screen.findByText('録画予定')).toBeInTheDocument()
     expect(screen.queryByText('番組情報の取得に失敗しました')).not.toBeInTheDocument()
     expect(screen.queryByText('詳細の取得に失敗しました')).not.toBeInTheDocument()
   })
@@ -558,24 +559,66 @@ describe('ReservationDetailPage', () => {
     expect(String(overlapsCall?.[0])).toBe('/api/sites/osaka/programs/300000/overlaps')
   })
 
-  // issue #300: 状態は一覧（`lib/reservation-labels.ts` の `stateLabels`）と同じ
-  // 日本語ラベルで出る。生の `reservation.state`（'active' 等）をそのまま
-  // 出すと、一覧では「有効」「ルール外」「EPG から消失」と読める状態がここでは
-  // 読めなくなる。3 状態すべてを固定する --- `active` だけを見て通すテストは
-  // `stateLabels.active` を書き換えても落ちないので何も保証しない。
+  // 結論は予約の見出し直下に置き、state enum の翻訳を状態欄には出さない。
   it.each([
-    ['active', '有効'],
-    ['detached', 'ルール外'],
-    ['orphaned', 'EPG から消失'],
-  ] as const)('状態 %s は一覧と同じ日本語ラベル「%s」で出る（生の state 値ではない）', async (state, label) => {
+    ['active', '録画予定'],
+    ['detached', '録画予定'],
+    ['orphaned', '録画されませんでした（録画が開始されませんでした）'],
+  ] as const)('state=%s の結論「%s」を見出しに出し状態欄を持たない', async (state, verdict) => {
     stubFetch((site, programId) =>
       site === 'default' && programId === 300000 ? baseReservation({ state }) : null,
     )
 
     renderAt('/reservations/default/300000')
 
-    expect(await screen.findByText(label)).toBeInTheDocument()
+    expect(await screen.findByText(verdict)).toBeInTheDocument()
+    expect(screen.queryByText('状態')).not.toBeInTheDocument()
+    expect(screen.queryByText('有効')).not.toBeInTheDocument()
+    expect(screen.queryByText('ルール外')).not.toBeInTheDocument()
+    expect(screen.queryByText('EPG から消失')).not.toBeInTheDocument()
     expect(screen.queryByText(state)).not.toBeInTheDocument()
+    if (state === 'detached') {
+      expect(screen.getByText('手動・ルール条件外')).toBeInTheDocument()
+    }
+  })
+
+  it('重複スキップの結論に録画リンクと類似度を含める', async () => {
+    stubFetch((site, programId) =>
+      site === 'default' && programId === 300000
+        ? baseReservation({ skip: true, dedupMatchRecordingId: 42, dedupSimilarity: 0.875 })
+        : null,
+    )
+
+    renderAt('/reservations/default/300000')
+
+    expect(await screen.findByText(/録画しません（重複:/)).toBeInTheDocument()
+    const link = screen.getByRole('link', { name: '録画 #42' })
+    expect(link).toHaveAttribute('href', '/recordings/42')
+    expect(screen.getByText(/類似度 0\.88/)).toBeInTheDocument()
+  })
+
+  it('容量不足の結論は共通の不足メッセージを使う', async () => {
+    const startMs = dayStart.getTime()
+    stubFetch(
+      (site, programId) => site === 'default' && programId === 300000 ? baseReservation() : null,
+      ['default'],
+      [],
+      undefined,
+      undefined,
+      [{
+        site: 'default',
+        startAt: new Date(startMs).toISOString(),
+        endAt: new Date(startMs + 30 * 60_000).toISOString(),
+        shortfall: 1,
+        jammedTypes: ['GR'],
+      }],
+    )
+
+    renderAt('/reservations/default/300000')
+
+    expect(
+      await screen.findByText('録画予定。この時間帯はチューナーが不足しています（GR が 1 本不足）'),
+    ).toBeInTheDocument()
   })
 
   // issue #300: ルールは名前で出す。ルール一覧（`useListRules`）に該当ルール

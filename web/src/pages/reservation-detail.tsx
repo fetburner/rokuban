@@ -6,9 +6,11 @@ import { ApiError } from '@/api/client'
 import {
   useDeleteProgramIntent,
   useGetProgramReservation,
+  useListCapacityOverages,
   useListRules,
   usePatchProgramOverrides,
   usePutProgramIntent,
+  type CapacityOverage,
   type ProgramOverridesInput,
   type Reservation,
 } from '@/api/generated'
@@ -27,11 +29,12 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { reservationsQueryKeyPrefix } from '@/lib/events'
+import { shortageMessage, worstOverage } from '@/lib/capacity'
 import { formatDateTime, formatDuration } from '@/lib/format'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
 import { programTitle } from '@/lib/program-labels'
 import { makeRuleLabel } from '@/lib/rule-label'
-import { stateLabels } from '@/lib/reservation-labels'
+import { reservationVerdict } from '@/lib/reservation-labels'
 
 /**
  * reservationDetailQueryKey は単体ページ自身のクエリキー。
@@ -103,6 +106,16 @@ export function ReservationDetailPage() {
 
   const reservation = unwrap(query.data)
   const notFound = query.error instanceof ApiError && query.error.status === 404
+  const reservationStartMs = reservation === undefined ? 0 : Date.parse(reservation.startAt)
+  const overagesQuery = useListCapacityOverages(
+    {
+      start: new Date(reservationStartMs).toISOString(),
+      end: new Date(reservationStartMs + (reservation?.durationMs ?? 0)).toISOString(),
+    },
+    { query: { enabled: reservation !== undefined } },
+  )
+  // 詳細でも一覧と同じ結論を使う。未取得・失敗時は「録画予定」までに留める。
+  const overages = overagesQuery.isSuccess ? unwrap(overagesQuery.data) ?? [] : undefined
 
   // 取消は (site, programId) を宛先に intent{skip} を書くだけ（issue #29）。
   // reservations 行には触れない --- ただし ruler は次パスで **行そのものを
@@ -267,6 +280,9 @@ export function ReservationDetailPage() {
                 .filter((s) => s !== '')
                 .join(' · ')}
             </Link>
+            {reservation && (
+              <ReservationVerdictMessage reservation={reservation} overages={overages} />
+            )}
             {/* この予約が作られたあとで他の予約が増え、重なりが生じることもあるので
                 詳細画面でも常に出す（issue #24 M2-8。件数だけ・断定なし）。 */}
             <div className="mt-2">
@@ -280,13 +296,7 @@ export function ReservationDetailPage() {
           </section>
 
           <Fields title="予約">
-            <Field label="状態" value={stateLabels[reservation.state]} />
-            <Field label="種別" value={reservation.source === 'manual' ? '手動' : 'ルール'} />
-            {/* 予約行が残っているのに録画されない状態は、それ自体が説明を要する。
-                重複排除なら根拠（録画 id と類似度）まで出す（issue #24 M2-6）。 */}
-            {reservation.skip && (
-              <Field label="録画" value={<ReservationSkipReason reservation={reservation} />} />
-            )}
+            <Field label="出自" value={reservationOriginText(reservation)} />
             {reservation.ruleId !== undefined && (
               <Field label="ルール" value={<RuleName ruleId={reservation.ruleId} />} />
             )}
@@ -309,6 +319,40 @@ export function ReservationDetailPage() {
       )}
     </>
   )
+}
+
+function reservationOriginText(reservation: Reservation): string {
+  if (reservation.state !== 'detached') return reservation.source === 'manual' ? '手動' : 'ルール'
+  return reservation.source === 'manual' ? '手動・ルール条件外' : 'ルール条件外'
+}
+
+function ReservationVerdictMessage({
+  reservation,
+  overages,
+}: {
+  reservation: Reservation
+  overages?: readonly CapacityOverage[]
+}) {
+  const verdict = reservationVerdict(reservation, overages)
+  if (verdict.kind === 'not-recorded') {
+    return (
+      <p className="mt-2 font-medium">
+        録画されませんでした（録画が開始されませんでした）
+      </p>
+    )
+  }
+  if (verdict.kind === 'skip-duplicate' || verdict.kind === 'skip-excluded') {
+    return (
+      <p className="mt-2 font-medium">
+        <ReservationSkipReason reservation={reservation} />
+      </p>
+    )
+  }
+  if (verdict.kind === 'scheduled-shortfall') {
+    const worst = worstOverage(verdict.overages)
+    return <p className="mt-2 font-medium">録画予定。{worst ? shortageMessage(worst) : ''}</p>
+  }
+  return <p className="mt-2 font-medium">録画予定</p>
 }
 
 /** overrideValue は overrides jsonb から 1 フィールドを文字列で取り出す。 */

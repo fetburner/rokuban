@@ -190,7 +190,7 @@ describe('予約一覧のシリーズ表示', () => {
     })
     expect(within(row).queryByText('まだ録画なし')).toBeNull()
     expect(within(row).queryByTestId('reservation-recording-shelf-empty')).toBeNull()
-    expect(within(row).queryByRole('link', { name: /録画/ })).toBeNull()
+    expect(within(row).queryByRole('link', { name: /番組ハブ/ })).toBeNull()
   })
 
   it('成功済みの棚は再取得中も箱を残し、再取得が失敗したら箱ごと隠す', async () => {
@@ -218,7 +218,7 @@ describe('予約一覧のシリーズ表示', () => {
 
     // (b) 再取得が失敗したら、棚の有無を主張しない（箱も「まだ録画なし」も出さない）。
     await act(async () => rejectRefetch(new Error('shelves unavailable')))
-    await waitFor(() => expect(within(row).queryByRole('link', { name: /録画/ })).toBeNull())
+    await waitFor(() => expect(within(row).queryByRole('link', { name: /番組ハブ/ })).toBeNull())
     expect(within(row).queryByText('まだ録画なし')).toBeNull()
     expect(within(row).queryByTestId('reservation-recording-shelf-empty')).toBeNull()
   })
@@ -302,14 +302,15 @@ describe('予約一覧のシリーズ表示', () => {
         reservation(2, '毎週ドラマ 第2話', '毎週ドラマ', 20, { state: 'detached' }),
         reservation(3, '毎週ドラマ 第3話', '毎週ドラマ', 22, { ruleId: 9 }),
       ],
-      overages: [overage(22)],
+      overages: [overage(20)],
     })
 
     const row = await screen.findByTestId('reservation-series-row')
     expect(within(row).getByText('今後 1 本')).toBeInTheDocument()
-    expect(within(row).getByText('ルール外 1')).toBeInTheDocument()
-    expect(within(row).queryByText(/重複スキップ/)).toBeNull()
-    expect(within(row).queryByText(/容量不足/)).toBeNull()
+    expect(within(row).getByText('条件外')).toBeInTheDocument()
+    expect(within(row).getByText('容量不足 1')).toBeInTheDocument()
+    expect(within(row).queryByText(/録画しない（重複）/)).toBeNull()
+    expect(within(row).queryByText(/ルール外/)).toBeNull()
     expect(within(row).queryByRole('button', { name: /予約を開く/ })).toBeNull()
   })
 
@@ -323,7 +324,7 @@ describe('予約一覧のシリーズ表示', () => {
     expect(localStorage.getItem(RESERVATION_GROUPING_KEY)).toBe('time')
   })
 
-  it('単件の除外予約にも除外バッジを残す', async () => {
+  it('単件の除外予約は結論の集計を表示する', async () => {
     renderPage({
       reservations: [
         reservation(1, '手動で除外した番組', '手動で除外した番組', 18, { skip: true }),
@@ -331,7 +332,7 @@ describe('予約一覧のシリーズ表示', () => {
     })
 
     const row = await screen.findByTestId('reservation-series-row')
-    expect(within(row).getByText('除外')).toBeInTheDocument()
+    expect(within(row).getByText('録画しない（除外） 1')).toBeInTheDocument()
     expect(within(row).getByRole('link', { name: /手動で除外した番組/ })).toBeInTheDocument()
   })
 })
