@@ -490,53 +490,73 @@ function growingEdgeDiagnosticCursor() {
 }
 
 async function failGrowingEdgeStartup(stage, error, cursor) {
-  const dom = await page.evaluate(() => {
-    const video = document.querySelector('video')
-    const playbackStart = document.querySelector('[data-testid="recording-playback-start"]')
-    const poster = document.querySelector('[data-testid="recording-playback-poster"]')
-    const playerFrame = document.querySelector('[data-testid="recording-player-frame"]')
-    const visible = (element) => {
-      if (!element) return false
-      const rect = element.getBoundingClientRect()
-      const style = getComputedStyle(element)
-      return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none'
-    }
-    const ranges = (timeRanges) => Array.from(
-      { length: timeRanges?.length ?? 0 },
-      (_, index) => [timeRanges.start(index), timeRanges.end(index)],
-    )
-    return {
-      url: location.pathname,
-      playbackStartButton: playbackStart === null ? null : {
-        visible: visible(playbackStart),
-        label: playbackStart.getAttribute('aria-label'),
-        text: playbackStart.innerText,
-      },
-      continueText: (document.body.innerText.match(/.{0,20}続きから.{0,30}/g) ?? []).slice(0, 5),
-      posterVisible: visible(poster),
-      playerFrameVisible: visible(playerFrame),
-      video: video === null ? null : {
-        visible: visible(video),
-        paused: video.paused,
-        currentTime: video.currentTime,
-        duration: video.duration,
-        readyState: video.readyState,
-        networkState: video.networkState,
-        seekable: ranges(video.seekable),
-        buffered: ranges(video.buffered),
-        currentSrc: video.currentSrc,
-        error: video.error === null ? null : {
-          code: video.error.code,
-          message: video.error.message,
-        },
-      },
-      playerText: (playerFrame?.innerText ?? poster?.innerText ?? '').slice(0, 500),
-    }
-  })
+  const domSnapshotTimeoutMs = 5000
+  let dom = null
+  let domFailure = null
+  let domTimeout
+  // A stuck renderer must not hide the startup error and the request logs kept in Node.
+  try {
+    dom = await Promise.race([
+      page.evaluate(() => {
+        const video = document.querySelector('video')
+        const playbackStart = document.querySelector('[data-testid="recording-playback-start"]')
+        const poster = document.querySelector('[data-testid="recording-playback-poster"]')
+        const playerFrame = document.querySelector('[data-testid="recording-player-frame"]')
+        const visible = (element) => {
+          if (!element) return false
+          const rect = element.getBoundingClientRect()
+          const style = getComputedStyle(element)
+          return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none'
+        }
+        const ranges = (timeRanges) => Array.from(
+          { length: timeRanges?.length ?? 0 },
+          (_, index) => [timeRanges.start(index), timeRanges.end(index)],
+        )
+        return {
+          url: location.pathname,
+          playbackStartButton: playbackStart === null ? null : {
+            visible: visible(playbackStart),
+            label: playbackStart.getAttribute('aria-label'),
+            text: playbackStart.innerText,
+          },
+          continueText: (document.body.innerText.match(/.{0,20}続きから.{0,30}/g) ?? []).slice(0, 5),
+          posterVisible: visible(poster),
+          playerFrameVisible: visible(playerFrame),
+          video: video === null ? null : {
+            visible: visible(video),
+            paused: video.paused,
+            currentTime: video.currentTime,
+            duration: video.duration,
+            readyState: video.readyState,
+            networkState: video.networkState,
+            seekable: ranges(video.seekable),
+            buffered: ranges(video.buffered),
+            currentSrc: video.currentSrc,
+            error: video.error === null ? null : {
+              code: video.error.code,
+              message: video.error.message,
+            },
+          },
+          playerText: (playerFrame?.innerText ?? poster?.innerText ?? '').slice(0, 500),
+        }
+      }),
+      new Promise((_, reject) => {
+        domTimeout = setTimeout(
+          () => reject(new Error(`DOM snapshot timed out after ${domSnapshotTimeoutMs}ms`)),
+          domSnapshotTimeoutMs,
+        )
+      }),
+    ])
+  } catch (domError) {
+    domFailure = { name: domError.name, message: domError.message }
+  } finally {
+    clearTimeout(domTimeout)
+  }
   const diagnostics = {
     stage,
     failure: { name: error.name, message: error.message },
     dom,
+    domFailure,
     detailResumePositions: detailResumeLog.slice(cursor.details),
     serverResumePositionMs: recording.resumePositionMs ?? null,
     playlists: playlistRequests.slice(cursor.playlists),

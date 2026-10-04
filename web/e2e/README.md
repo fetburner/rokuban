@@ -348,6 +348,7 @@ playlist の先頭 6 segment から始まり、待ち時間中に1秒ごとに s
 ④ で `video` が表示されない、または metadata が揃わない場合は、NG で終了する前に診断ログを出す。
 ログにはポスターと再生ボタン（`続きから` の有無）、video の状態、詳細 API の `resumePositionMs` を記録する。
 HLS playlist / segment の要求・HTTP 応答・失敗も同じログに含める。
+DOM の取得に失敗した場合も、その理由を記録して残りの診断を出す。
 
 ⑦が失敗した場合は待機エラー、`paused`・`currentTime`・`readyState`・`seekable`・`buffered` と
 メディアエラーを記録する。`play()` の呼び出し・成否、playlist / segment の要求と HTTP 応答も記録する。
