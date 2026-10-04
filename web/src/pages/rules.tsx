@@ -445,7 +445,7 @@ function RuleRow({
               activity.scheduledCount === 0 ? (
                 <span className="text-muted-foreground">録画予定なし</span>
               ) : (
-                <>
+                <span>
                   <Link
                     to="/reservations"
                     search={{ ruleId: rule.id }}
@@ -458,11 +458,10 @@ function RuleRow({
                       （うち不足時間帯 {activity.shortfallCount}）
                     </span>
                   )}
-                </>
+                </span>
               )
             )}
           </div>
-
         </div>
         <div className="flex shrink-0 items-start gap-1">
           <div className="flex flex-col items-end gap-2">
