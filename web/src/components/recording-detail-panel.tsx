@@ -253,6 +253,20 @@ export function RecordingDetail({
     })
     setChaseOffsetSeconds(undefined)
   }
+  const startPlaybackSource = (source: 'encoded' | 'original-vod', profile?: string) => {
+    const current = playbackStateRef.current
+    const position = recordingPositionSecondsRef.current ?? current.positionSeconds
+    if (source === 'encoded' && profile !== undefined) setSelectedPlaybackProfile(profile)
+    setChaseOffsetSeconds(undefined)
+    updatePlaybackState({
+      source,
+      started: true,
+      autoPlay: true,
+      startFromBeginning: position === undefined ? current.startFromBeginning : false,
+      positionSeconds: position,
+      generation: current.generation + 1,
+    })
+  }
   const recordedSpanMs = recording.startedAt !== undefined && recording.endedAt !== undefined
     ? Date.parse(recording.endedAt) - Date.parse(recording.startedAt)
     : Number.NaN
@@ -312,9 +326,13 @@ export function RecordingDetail({
   const startOffsetSeconds = showChase
     ? chaseOffsetSeconds ?? carriedOffsetSeconds ?? (playbackState.startFromBeginning ? 0 : undefined)
     : carriedOffsetSeconds
-  // 追っかけか原本 VOD を表示するときだけ live プロファイルを取る。一覧は
-  // セレクタ用で、取得できなくても先頭プロファイルで再生できる既存契約を保つ。
-  const liveProfilesQuery = useListLiveProfiles({ query: { enabled: showChase || showOriginalVOD } })
+  // 追っかけ・原本 VOD、または版タブから原本 HLS へ切り替えられる録画だけ live
+  // プロファイルを取る。一覧取得ではセッションを作らない。
+  const canSwitchToOriginalVOD =
+    recording.status === 'finished' && liveEnabled && hasOriginal && encodedAssets.length > 0
+  const liveProfilesQuery = useListLiveProfiles({
+    query: { enabled: showChase || showOriginalVOD || canSwitchToOriginalVOD },
+  })
   const liveProfiles = useMemo(
     () => unwrap(liveProfilesQuery.data) ?? [],
     [liveProfilesQuery.data],
@@ -935,15 +953,40 @@ export function RecordingDetail({
                         className="flex min-h-14 flex-wrap items-center gap-x-3 gap-y-1 py-2 text-sm"
                       >
                         <span className="font-medium">{asset.cut ? `カット版 (${asset.profile})` : asset.profile}</span>
-                        {asset.profile === activePlaybackProfile && <span className="rounded bg-foreground px-1.5 py-0.5 text-xs text-background">再生中</span>}
+                        {showEncoded && asset.profile === activePlaybackProfile && <span className="rounded bg-foreground px-1.5 py-0.5 text-xs text-background">再生中</span>}
                         <span className="ml-auto text-muted-foreground">{asset.sizeBytes === undefined ? 'サイズ不明' : formatBytes(asset.sizeBytes)}</span>
+                        {recording.status === 'finished' && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            aria-label={`${asset.cut ? `カット版 (${asset.profile})` : asset.profile}を再生`}
+                            disabled={showEncoded && asset.profile === activePlaybackProfile}
+                            onClick={() => startPlaybackSource('encoded', asset.profile)}
+                          >
+                            再生
+                          </Button>
+                        )}
                         <a href={recordingFileURL(recording.id, asset.profile)} download className="inline-flex min-h-6 items-center text-primary underline-offset-2 hover:underline">ダウンロード</a>
                       </div>
                     ))}
                     {hasOriginal ? (
                       <div role="listitem" data-testid="recording-original-row" className="flex min-h-14 flex-wrap items-center gap-3 py-2 text-sm">
                         <span className="font-medium">原本 TS</span>
+                        {showOriginalVOD && playbackState.started && <span className="rounded bg-foreground px-1.5 py-0.5 text-xs text-background">再生中</span>}
                         <span className="ml-auto text-muted-foreground">{formatBytes(recording.sizeBytes!)}</span>
+                        {canSwitchToOriginalVOD && liveProfiles.length > 0 && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            aria-label="原本 HLS を再生"
+                            disabled={showOriginalVOD}
+                            onClick={() => startPlaybackSource('original-vod')}
+                          >
+                            HLS で再生
+                          </Button>
+                        )}
                         <a href={recordingFileURL(recording.id)} className="inline-flex min-h-6 items-center text-primary underline-offset-2 hover:underline">ダウンロード / VLC</a>
                       </div>
                     ) : recording.status === 'recording' ? (

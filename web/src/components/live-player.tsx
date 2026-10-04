@@ -1812,25 +1812,38 @@ export function LivePlayer({
     }
     setOriginalCurrentSeconds(target)
   }
+  const finishPlayAround = (media: HTMLVideoElement) => {
+    window.clearTimeout(playAroundTimerRef.current)
+    playAroundTimerRef.current = undefined
+    playAroundStopRef.current = null
+    media.pause()
+  }
+  const schedulePlayAroundStop = (media: HTMLVideoElement) => {
+    const stop = playAroundStopRef.current
+    if (stop === null || media.paused) return
+    window.clearTimeout(playAroundTimerRef.current)
+    const remainingSeconds = Math.max(0, stop - (sessionStartOffset + media.currentTime))
+    // セッション起動前に時計を進めると、offset HLS の起動待ちだけで境界が失われる。
+    // playing/timeupdate 後に残り時間を測り、タイマー発火時にも位置を再確認する。
+    playAroundTimerRef.current = window.setTimeout(() => {
+      if (playAroundStopRef.current !== stop) return
+      if (sessionStartOffset + media.currentTime >= stop) {
+        finishPlayAround(media)
+      } else {
+        schedulePlayAroundStop(media)
+      }
+    }, (remainingSeconds * 1000) / Math.max(media.playbackRate, 0.1) + 2000)
+  }
   const playAround = (seconds: number) => {
     const media = videoRef.current
     if (!media) return
     const start = Math.max(0, seconds - PLAY_AROUND_SECONDS)
     const stop = seconds + PLAY_AROUND_SECONDS
     window.clearTimeout(playAroundTimerRef.current)
+    playAroundTimerRef.current = undefined
     playAroundStopRef.current = stop
     commitOriginalSeek(start)
     void media.play()
-    // timeupdate が停止位置まで届かない場合も編集用の一時再生が残らないようにする。
-    playAroundTimerRef.current = window.setTimeout(
-      () => finishPlayAround(media),
-      ((stop - start) * 1000) / Math.max(media.playbackRate, 0.1) + 2000,
-    )
-  }
-  const finishPlayAround = (media: HTMLVideoElement) => {
-    window.clearTimeout(playAroundTimerRef.current)
-    playAroundStopRef.current = null
-    media.pause()
   }
   const jumpOriginalChapter = (direction: 'next' | 'prev') => {
     const target = chapterJumpTarget(chapters ?? [], originalCurrentSeconds, direction)
@@ -1902,8 +1915,12 @@ export function LivePlayer({
         const previousSeconds = originalPreviousSecondsRef.current
         updateOriginalPosition(media)
         const playAroundStop = playAroundStopRef.current
-        if (playAroundStop !== null && sessionStartOffset + media.currentTime >= playAroundStop) {
-          finishPlayAround(media)
+        if (playAroundStop !== null) {
+          if (sessionStartOffset + media.currentTime >= playAroundStop) {
+            finishPlayAround(media)
+          } else {
+            schedulePlayAroundStop(media)
+          }
         }
         if (chapterSkipEnabled && !chapterEditing && !isOriginalScrubbingRef.current && !media.paused) {
           const target = skipTarget(
@@ -1926,8 +1943,9 @@ export function LivePlayer({
           sessionStartOffset + media.currentTime >= finalLength * 0.9
         ) saveCurrentPosition(media)
       }}
-      onPlaying={() => {
+      onPlaying={(event) => {
         playedRef.current = true
+        if (isOriginalVOD) schedulePlayAroundStop(event.currentTarget)
       }}
       onPlay={() => frame.onPlay()}
       onPause={(event) => {
@@ -2156,7 +2174,7 @@ export function LivePlayer({
               jumpTo={commitOriginalSeek}
               onSelectedBoundaryChange={setEditorSelected}
               onSave={onSaveChapters}
-              onReset={async () => { await onResetChapters() }}
+              onReset={async () => await onResetChapters()}
               pending={chapterSavePending}
               commandsRef={resolvedChapterEditorCommandsRef}
               onStatusChange={chapterEditorStatusChange}

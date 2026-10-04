@@ -91,6 +91,7 @@ function createFakeServer(options: {
   restoreResponse?: () => Response
   purgeResponse?: () => Response
   encodePostResponse?: () => Response
+  chapterDeleteResponse?: () => Response
   // encodePolicyResponse は Promise 版も許す --- PATCH が解決する前の中間状態
   // （保存中…の表示）を確認するテストが、呼び出し側で自分の Promise を渡して
   // 解決タイミングを制御できるようにするため。
@@ -118,6 +119,7 @@ function createFakeServer(options: {
   const restoreResponse = options.restoreResponse
   const purgeResponse = options.purgeResponse
   const encodePostResponse = options.encodePostResponse
+  const chapterDeleteResponse = options.chapterDeleteResponse
   const encodePolicyResponse = options.encodePolicyResponse
   const playbackState = options.playbackState ?? {}
   let currentChapters: RecordingChapters = options.chapters ?? {
@@ -236,12 +238,17 @@ function createFakeServer(options: {
     if (/^\/api\/recordings\/\d+\/drop-stats$/.test(url.pathname)) {
       return Promise.resolve(jsonResponse(options.dropStats ?? []))
     }
-    if (/^\/api\/recordings\/\d+\/chapters$/.test(url.pathname)) {
+    if (/^\/api\/recordings\/\d+\/chapters$/.test(url.pathname) && method === 'GET') {
       return options.chaptersResponse
         ? options.chaptersResponse()
         : Promise.resolve(jsonResponse(currentChapters))
     }
     const chapterEditsMatch = /^\/api\/recordings\/(\d+)\/chapter-edits$/.exec(url.pathname)
+    if (chapterEditsMatch && method === 'DELETE') {
+      if (chapterDeleteResponse) return Promise.resolve(chapterDeleteResponse())
+      currentChapters = { ...currentChapters, source: 'auto', version: 'chapters-reset-v1' }
+      return Promise.resolve(jsonResponse(null, 204))
+    }
     if (chapterEditsMatch && method === 'PUT') {
       const body = init?.body
         ? (JSON.parse(String(init.body)) as { version: string; spans: RecordingChapters['spans'] })
@@ -3089,6 +3096,80 @@ describe('RecordingDetailPage 自動チャプターの確認 (#1066)', () => {
 
     expect(screen.getByLabelText('録画映像')).toBe(video)
     expect(originalPlaylistRequests()).toBe(playlistsBeforeEdit)
+  })
+
+  it('原本 HLS の reset API が失敗したら編集画面と下書きを保つ', async () => {
+    const user = userEvent.setup()
+    const { fetchMock } = createFakeServer({
+      recording: sampleRecording({
+        sizeBytes: 1_000_000,
+        encodeProfiles: ['cut-only'],
+        encodedAssets: [{ profile: 'cut-only', cut: true, sizeBytes: 500_000 }],
+      }),
+      liveProfiles: [{ name: 'hd', height: 720 }],
+      chapters: {
+        version: 'user-v1',
+        detectionPending: false,
+        source: 'user',
+        spans: [{ startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }],
+      },
+      chapterDeleteResponse: () => jsonResponse({ error: 'server error' }, 500),
+    })
+    renderAt('/recordings/3')
+    await user.click(await screen.findByTestId('recording-playback-start'))
+    const editor = await enterEditing(user)
+    const label = within(editor).getByLabelText('ラベル')
+    await user.clear(label)
+    await user.type(label, '直した')
+
+    await user.click(screen.getByRole('button', { name: '自動に戻す' }))
+
+    await waitFor(() => expect(screen.queryByTestId('chapter-edit-layout')).toBeInTheDocument())
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) =>
+      new URL(String(input), 'http://localhost').pathname === '/api/recordings/3/chapter-edits' && init?.method === 'DELETE',
+    )).toBe(true))
+    expect(screen.getByTestId('chapter-edit-layout')).toBeInTheDocument()
+    expect(within(screen.getByTestId('chapter-edit-layout')).getByLabelText('ラベル')).toHaveValue('直した')
+  })
+
+  it('版タブからカット版と原本 HLS を切り替え、再生中表示を追従させる', async () => {
+    const user = userEvent.setup()
+    const { fetchMock } = createFakeServer({
+      recording: sampleRecording({
+        sizeBytes: 1_000_000,
+        encodeProfiles: ['cut-only'],
+        encodedAssets: [{ profile: 'cut-only', cut: true, sizeBytes: 500_000, cutStale: true }],
+      }),
+      liveProfiles: [{ name: 'hd', height: 720 }],
+    })
+    renderAt('/recordings/3')
+    await selectDetailTab('版')
+
+    const originalButton = await screen.findByRole('button', { name: '原本 HLS を再生' })
+    await user.click(screen.getByRole('button', { name: 'カット版 (cut-only)を再生' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'カット版 (cut-only)を再生' })).toBeDisabled())
+    const cutRow = screen.getByTestId('recording-version-row')
+    expect(within(cutRow).getByText('再生中')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '作り直す' })).toBeInTheDocument()
+
+    await user.click(originalButton)
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) =>
+      new URL(String(input), 'http://localhost').pathname === '/api/sites/default/recordings/3/original-vod/playlist.m3u8',
+    )).toBe(true))
+    await waitFor(() => expect(within(screen.getByTestId('recording-original-row')).getByText('再生中')).toBeInTheDocument())
+    expect(within(cutRow).queryByText('再生中')).not.toBeInTheDocument()
+  })
+
+  it('原本がない古いカット版には作り直し操作を出さない', async () => {
+    createFakeServer({
+      recording: sampleRecording({
+        encodedAssets: [{ profile: 'cut-only', cut: true, cutStale: true, sizeBytes: 500_000 }],
+      }),
+    })
+    renderAt('/recordings/3')
+
+    await screen.findByRole('region', { name: '再生' })
+    expect(screen.queryByRole('button', { name: '作り直す' })).not.toBeInTheDocument()
   })
 })
 
