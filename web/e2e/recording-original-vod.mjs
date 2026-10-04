@@ -486,6 +486,8 @@ function growingEdgeDiagnosticCursor() {
     segments: segmentRequests.length,
     responses: originalMediaResponses.length,
     failures: originalMediaFailures.length,
+    writes: playbackPositionWrites.length,
+    beforeClick: null,
   }
 }
 
@@ -499,7 +501,6 @@ async function failGrowingEdgeStartup(stage, error, cursor) {
     dom = await Promise.race([
       page.evaluate(() => {
         const video = document.querySelector('video')
-        const playbackStart = document.querySelector('[data-testid="recording-playback-start"]')
         const poster = document.querySelector('[data-testid="recording-playback-poster"]')
         const playerFrame = document.querySelector('[data-testid="recording-player-frame"]')
         const visible = (element) => {
@@ -514,12 +515,6 @@ async function failGrowingEdgeStartup(stage, error, cursor) {
         )
         return {
           url: location.pathname,
-          playbackStartButton: playbackStart === null ? null : {
-            visible: visible(playbackStart),
-            label: playbackStart.getAttribute('aria-label'),
-            text: playbackStart.innerText,
-          },
-          continueText: (document.body.innerText.match(/.{0,20}続きから.{0,30}/g) ?? []).slice(0, 5),
           posterVisible: visible(poster),
           playerFrameVisible: visible(playerFrame),
           video: video === null ? null : {
@@ -557,8 +552,10 @@ async function failGrowingEdgeStartup(stage, error, cursor) {
     failure: { name: error.name, message: error.message },
     dom,
     domFailure,
+    beforeClick: cursor.beforeClick,
     detailResumePositions: detailResumeLog.slice(cursor.details),
     serverResumePositionMs: recording.resumePositionMs ?? null,
+    playbackPositionWrites: playbackPositionWrites.slice(cursor.writes),
     playlists: playlistRequests.slice(cursor.playlists),
     segments: segmentRequests.slice(cursor.segments),
     mediaResponses: originalMediaResponses.slice(cursor.responses),
@@ -882,6 +879,11 @@ if (playlistRequests.length !== playlistsBeforeGrowingEdge) {
 }
 const growingEdgePlaybackButton = page.getByTestId('recording-playback-start')
 if (await growingEdgePlaybackButton.count() === 1) {
+  // 「続きから」はポスター上にだけあり、クリックで消えるので押す前に控える。
+  growingEdgeCursor.beforeClick = {
+    label: await growingEdgePlaybackButton.getAttribute('aria-label'),
+    text: (await growingEdgePlaybackButton.textContent())?.trim() ?? null,
+  }
   await growingEdgePlaybackButton.click()
 } else {
   ng.push(`④ 変換中原本HLSの再生ボタンが 1 つでない (${await growingEdgePlaybackButton.count()})`)

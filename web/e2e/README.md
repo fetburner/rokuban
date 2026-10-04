@@ -346,7 +346,8 @@ playlist の先頭 6 segment から始まり、待ち時間中に1秒ごとに s
 から `resumePositionMs` を消す。止めないと製品は残った位置から再開し、8 秒分の fixture の端で止まる。
 
 ④ で `video` が表示されない、または metadata が揃わない場合は、NG で終了する前に診断ログを出す。
-ログにはポスターと再生ボタン（`続きから` の有無）、video の状態、詳細 API の `resumePositionMs` を記録する。
+再生ボタンの `aria-label` と文言（`続きから` の有無）はクリック前に控える。クリックでポスターごと消えるからである。
+ログにはその控えと video の状態、詳細 API の `resumePositionMs`、再開位置 PUT の記録（`playbackPositionWrites`）を載せる。
 HLS playlist / segment の要求・HTTP 応答・失敗も同じログに含める。
 DOM の取得に失敗した場合も、その理由を記録して残りの診断を出す。
 
