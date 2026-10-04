@@ -1,18 +1,14 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { MoreVertical, Pencil, Plus, Trash2 } from 'lucide-react'
+import { MoreVertical, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 
 import {
   getListReservationsQueryKey,
   getListReservationsQueryOptions,
-  getListLabelRulesQueryKey,
-  getListRecordingShelvesQueryKey,
   getListRulesQueryKey,
-  useDeleteLabelRule,
   useCreateRule,
   useDeleteRule,
-  useListLabelRules,
   useListRules,
   useUpdateRule,
   type DeleteRuleResponse,
@@ -49,14 +45,6 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Field, Input } from '@/components/ui/field'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
 import { useAllSitesServices } from '@/lib/all-sites-services'
 import { keepOriginalLabel, type KeepOriginal } from '@/lib/encode-settings'
 import {
@@ -96,9 +84,7 @@ import { cn } from '@/lib/utils'
  */
 export function RulesPage() {
   const query = useListRules()
-  const labelRulesQuery = useListLabelRules()
   const rules = unwrap(query.data) ?? []
-  const labelRules = unwrap(labelRulesQuery.data) ?? []
   const disambiguateRule = ruleDisambiguator(rules)
   const [isCreating, setIsCreating] = useState(false)
   const [isCountingReservations, setIsCountingReservations] = useState(false)
@@ -166,46 +152,6 @@ export function RulesPage() {
           </ul>
         )}
 
-        <section className="flex flex-col gap-3 border-t border-border pt-5">
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <h2 className="text-sm font-medium text-foreground">シリーズ分類</h2>
-              <p className="mt-1 text-xs text-muted-foreground">
-                録画タイトルのキーワードに当たった録画を、指定したシリーズキーへ分類します。
-              </p>
-            </div>
-            <Button
-              type="button"
-              size="sm"
-              className="shrink-0"
-              onClick={() => setLabelRuleEditor({})}
-            >
-              <Plus />
-              分類ルールを作成
-            </Button>
-          </div>
-
-          {labelRulesQuery.isError ? (
-            <ErrorState onRetry={() => void labelRulesQuery.refetch()}>
-              分類ルールの取得に失敗しました
-            </ErrorState>
-          ) : labelRulesQuery.isPending ? (
-            <ListSkeleton rows={2} />
-          ) : labelRules.length === 0 ? (
-            <EmptyState>分類ルールがありません</EmptyState>
-          ) : (
-            <ul className="flex flex-col gap-2">
-              {labelRules.map((rule) => (
-                <li key={rule.id}>
-                  <LabelRuleRow
-                    rule={rule}
-                    onEdit={() => setLabelRuleEditor({ rule })}
-                  />
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
       </PageContent>
 
       {labelRuleEditor !== undefined && (
@@ -289,80 +235,6 @@ function deleteRuleResultMessage(res: DeleteRuleResponse | undefined): string | 
     return `ルールを削除しました（予約 ${res.deletedReservations} 件を削除、${res.detachedReservations} 件は編集済みのため残しました）`
   }
   return `ルールを削除しました（予約 ${res.deletedReservations} 件を削除）`
-}
-
-/** LabelRuleRow はシリーズ分類ルールの一覧 1 行。 */
-function LabelRuleRow({ rule, onEdit }: { rule: LabelRule; onEdit: () => void }) {
-  const toast = useToast()
-  const queryClient = useQueryClient()
-  const remove = useDeleteLabelRule()
-  const [confirmOpen, setConfirmOpen] = useState(false)
-
-  const doRemove = () => {
-    remove.mutate(
-      { id: rule.id },
-      {
-        onSuccess: () => {
-          setConfirmOpen(false)
-          toast({ message: '分類ルールを削除しました（シリーズは再評価の後に変わります）' })
-          void queryClient.invalidateQueries({ queryKey: getListLabelRulesQueryKey() })
-          void queryClient.invalidateQueries({ queryKey: getListRecordingShelvesQueryKey() })
-        },
-        onError: (err) =>
-          toast({ message: apiErrorMessage(err) ?? '分類ルールの削除に失敗しました', kind: 'error' }),
-      },
-    )
-  }
-
-  return (
-    <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
-      <div className="flex min-w-0 flex-col">
-        <span className="truncate text-sm text-foreground">
-          「{rule.keyword}」→ {rule.value}
-        </span>
-        <span className="text-xs text-muted-foreground">優先度 {rule.priority ?? 0}</span>
-        {rule.valueKey !== rule.value && (
-          <span className="text-xs text-muted-foreground">
-            この値は棚キー {rule.valueKey} として扱われます
-          </span>
-        )}
-      </div>
-      <div className="flex shrink-0 items-center gap-1">
-        <Button type="button" size="icon-sm" variant="ghost" aria-label="編集" onClick={onEdit}>
-          <Pencil />
-        </Button>
-        <Button
-          type="button"
-          size="icon-sm"
-          variant="ghost"
-          aria-label="削除"
-          onClick={() => setConfirmOpen(true)}
-        >
-          <Trash2 />
-        </Button>
-      </div>
-
-      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>分類ルール「{rule.keyword}」を削除しますか？</DialogTitle>
-            <DialogDescription>
-              このルールが勝っていた録画は、次に当たるルールへ移ります。無ければ自動キーの
-              シリーズへ戻ります（全録画の再評価が走ります）。
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setConfirmOpen(false)}>
-              キャンセル
-            </Button>
-            <Button type="button" variant="destructive" onClick={doRemove} disabled={remove.isPending}>
-              削除する
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  )
 }
 
 /**
