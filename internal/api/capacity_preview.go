@@ -151,6 +151,10 @@ func removeDedupeSkips(ctx context.Context, pool *pgxpool.Pool, ruleID int64, ca
 
 	filtered := make([]capacity.PreviewCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
+		if candidate.IntentAction != nil && *candidate.IntentAction == "record" {
+			filtered = append(filtered, candidate)
+			continue
+		}
 		if _, ok := skipped[previewProgramKey{site: candidate.Site, programID: candidate.ProgramID}]; ok {
 			continue
 		}

@@ -91,6 +91,21 @@ INSERT INTO program_snapshots (
 	}
 }
 
+func markPreviewNeverScheduled(t *testing.T, pool *pgxpool.Pool, program capacityPreviewProgram) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `
+UPDATE program_snapshots
+SET network_id = 32736, service_id = $2, event_id = $3
+WHERE site = 'default' AND program_id = $1`, program.ID, program.ServiceID, program.EventID); err != nil {
+		t.Fatalf("updating preview snapshot event identity: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO never_scheduled_events (site, network_id, service_id, event_id)
+VALUES ('default', 32736, $1, $2)`, program.ServiceID, program.EventID); err != nil {
+		t.Fatalf("inserting never-scheduled event: %v", err)
+	}
+}
+
 func insertPreviewRule(t *testing.T, pool *pgxpool.Pool, dedupe bool) int64 {
 	t.Helper()
 	var id int64
@@ -234,6 +249,54 @@ func TestPreviewCapacityOverages_UsesRulerDedupeForEditedRule(t *testing.T) {
 	})
 	if len(got) != 0 {
 		t.Fatalf("preview = %+v, want no added overage for a ruler-deduped candidate", got)
+	}
+}
+
+func TestPreviewCapacityOverages_DedupeKeepsExplicitRecordIntent(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newCapacityPreviewServer(t, pool)
+	start := time.Now().UTC().Truncate(time.Hour).Add(24 * time.Hour)
+	insertPreviewTuner(t, pool)
+	insertPreviewReservation(t, pool, 50035, "27", start, nil)
+	ruleID := insertPreviewRule(t, pool, true)
+	candidate := insertPreviewProgram(t, pool, 50036, "再放送スペシャル 第1話", "25", start)
+	insertPreviewSnapshot(t, pool, candidate.ID, "25", start, candidate.EventID)
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO program_intents (site, program_id, action)
+VALUES ('default', $1, 'record')`, candidate.ID); err != nil {
+		t.Fatalf("inserting record intent: %v", err)
+	}
+
+	priorRecording := candidate
+	priorRecording.EventID++
+	insertPreviewRecording(t, pool, &ruleID, priorRecording, candidate.Title, start.Add(-24*time.Hour), false)
+
+	got := postCapacityPreview(t, srv, map[string]any{
+		"genres": []int{searchFixtureGenre},
+		"ruleId": ruleID,
+	})
+	if len(got) != 1 || got[0].Shortfall != 1 {
+		t.Fatalf("preview = %+v, want one overage with shortfall 1 because record intent overrides dedupe", got)
+	}
+}
+
+func TestPreviewCapacityOverages_ExcludesNeverScheduledEditedReservation(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newCapacityPreviewServer(t, pool)
+	start := time.Now().UTC().Truncate(time.Hour).Add(24 * time.Hour)
+	insertPreviewTuner(t, pool)
+	ruleID := insertPreviewRule(t, pool, false)
+	candidate := insertPreviewProgram(t, pool, 50037, "未スケジュールの番組", "25", start)
+	insertPreviewReservation(t, pool, candidate.ID, "25", start, &ruleID)
+	markPreviewNeverScheduled(t, pool, candidate)
+	insertPreviewReservation(t, pool, 50038, "27", start, nil)
+
+	got := postCapacityPreview(t, srv, map[string]any{
+		"genres": []int{searchFixtureGenre},
+		"ruleId": ruleID,
+	})
+	if len(got) != 0 {
+		t.Fatalf("preview = %+v, want no overage for a never-scheduled event", got)
 	}
 }
 

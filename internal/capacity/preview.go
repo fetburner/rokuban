@@ -21,14 +21,16 @@ type ProgramRef struct {
 // PreviewCandidate keeps the matched program identity beside its capacity demand so the
 // caller can run ruler's shared dedupe evaluator before projecting the demand.
 type PreviewCandidate struct {
-	ProgramID int64
+	ProgramID    int64
+	IntentAction *string
 	Demand
 }
 
 // PreviewCandidates returns search matches that would become additional reservations for
 // a rule. Existing reservations are omitted, except reservations currently owned by the
-// rule being edited. Skip intents and fulfilled programs are omitted as ruler does.
-// Channel identity comes from epg_services, just like the rule compiler's service join.
+// rule being edited. Skip intents, fulfilled programs, and never-scheduled events are
+// omitted as ruler/reconciler do. Record intents are kept so they can override dedupe
+// skips. Channel identity comes from epg_services, just like the rule compiler's service join.
 func PreviewCandidates(ctx context.Context, pool *pgxpool.Pool, refs []ProgramRef, ruleID *int64) ([]PreviewCandidate, error) {
 	if len(refs) == 0 {
 		return nil, nil
@@ -47,6 +49,7 @@ WITH wanted AS (
 )
 SELECT p.site,
        p.program_id,
+       i.action,
        s.channel_type,
        s.channel,
        p.start_at,
@@ -56,6 +59,8 @@ JOIN epg_programs p
   ON p.site = w.site AND p.program_id = w.program_id
 JOIN epg_services s
   ON s.site = p.site AND s.network_id = p.network_id AND s.service_id = p.service_id
+LEFT JOIN program_intents i
+  ON i.site = p.site AND i.program_id = p.program_id
 WHERE NOT EXISTS (
           SELECT 1
           FROM reservations r
@@ -66,7 +71,7 @@ WHERE NOT EXISTS (
           SELECT 1 FROM program_intents i
           WHERE i.site = p.site AND i.program_id = p.program_id AND i.action = 'skip'
       )
-  AND NOT EXISTS (
+      AND NOT EXISTS (
           SELECT 1
           FROM recordings rec
           JOIN media_assets a ON a.recording_id = rec.id AND a.kind = 'original'
@@ -74,6 +79,14 @@ WHERE NOT EXISTS (
             AND rec.network_id = p.network_id
             AND rec.service_id = p.service_id
             AND rec.event_id = p.event_id
+      )
+  AND NOT EXISTS (
+          SELECT 1
+          FROM never_scheduled_events nse
+          WHERE nse.site = p.site
+            AND nse.network_id = p.network_id
+            AND nse.service_id = p.service_id
+            AND nse.event_id = p.event_id
       )
 ORDER BY p.site, p.start_at, p.program_id`
 
@@ -90,7 +103,7 @@ ORDER BY p.site, p.start_at, p.program_id`
 	var candidates []PreviewCandidate
 	for rows.Next() {
 		var candidate PreviewCandidate
-		if err := rows.Scan(&candidate.Site, &candidate.ProgramID, &candidate.ChannelType, &candidate.Channel, &candidate.StartAt, &candidate.EndAt); err != nil {
+		if err := rows.Scan(&candidate.Site, &candidate.ProgramID, &candidate.IntentAction, &candidate.ChannelType, &candidate.Channel, &candidate.StartAt, &candidate.EndAt); err != nil {
 			return nil, fmt.Errorf("scanning capacity preview candidate: %w", err)
 		}
 		candidates = append(candidates, candidate)
