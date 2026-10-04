@@ -723,6 +723,63 @@ func TestIngestWorker_ClampsCutOnlyProfileSelection(t *testing.T) {
 	}
 }
 
+// TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive は原本 HLS が使える構成で
+// 凍結時のクランプが cut profile を落とさないことを固定する。
+func TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	programID := int64(900000000000008)
+	res := insertProgramSnapshotAndReservation(t, pool, programID, "live 有効で cut だけになる予約番組")
+	setReservationBase(t, pool, res.ProgramID, `{"keepOriginal":"always","encodeProfiles":["cut","h264"]}`)
+
+	overrides, err := json.Marshal(map[string]any{"encodeProfiles": []string{"cut"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
+		Site: "default", ProgramID: programID, Overrides: overrides,
+	}); err != nil {
+		t.Fatalf("setting override: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(),
+			"DELETE FROM program_overrides WHERE site = $1 AND program_id = $2", "default", programID)
+	})
+
+	recordingID := insertTestRecordingForReservation(t, pool, programID)
+	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-cut-only-live", programID)
+
+	srv := newFullTransferServer(t, makeTSData(20), "test/policy-cut-only-live.m2ts")
+	mc := mirakc.NewClient(srv.URL, nil)
+	w := &IngestWorker{
+		MirakcClients: singleSiteClients("", mc),
+		MediaDir:      t.TempDir(),
+		Pool:          pool,
+		StallTimeout:  5 * time.Second,
+		CutProfiles:   map[string]struct{}{"cut": {}},
+		LiveEnabled:   true,
+	}
+
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-policy-cut-only-live"},
+	}
+	workCtx := riverWorkContext(t, pool)
+	if err := w.Work(workCtx, job); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	_, profiles := encodePolicyOfRecording(t, pool, recordingID)
+	if len(profiles) != 1 || profiles[0] != "cut" {
+		t.Errorf("encode_profiles = %v, want [cut] with live enabled", profiles)
+	}
+}
+
 // TestEnqueueCut_AllCutRecordingEnqueuesNothing は「全区間カットの録画は、確認済みでも
 // cut のジョブを投入しない」を、ヒント経路（EnqueueMissingEncodes）と定期 reconcile の
 // 両方で固定する。投入しても loadCutContext が "has no keep ranges" で必ず失敗し、

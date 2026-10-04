@@ -18,6 +18,7 @@ import {
   observeStall,
   originalVODLeaveURL,
   originalVODPlaylistURL,
+  originalVODSessionOriginSeconds,
   pickInitialService,
   probeLivePlaylist,
   liveProfileLabel,
@@ -141,6 +142,20 @@ describe('originalVODPlaylistURL', () => {
     expect(originalVODLeaveURL('default', 42, 0)).toBe(
       '/api/sites/default/recordings/42/original-vod/leave',
     )
+  })
+})
+
+describe('originalVODSessionOriginSeconds', () => {
+  it('session origin follows the 30000/1001 frame grid used by the streamer', () => {
+    expect(originalVODSessionOriginSeconds(0)).toBe(0)
+    expect(originalVODSessionOriginSeconds(10)).toBeCloseTo(9.976633333, 9)
+    expect(originalVODSessionOriginSeconds(60)).toBeCloseTo(59.993266667, 9)
+  })
+
+  it('invalid offsets fall back to the original recording head', () => {
+    expect(originalVODSessionOriginSeconds(undefined)).toBe(0)
+    expect(originalVODSessionOriginSeconds(-1)).toBe(0)
+    expect(originalVODSessionOriginSeconds(1.5)).toBe(0)
   })
 })
 

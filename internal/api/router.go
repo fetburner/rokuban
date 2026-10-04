@@ -63,7 +63,7 @@ type RouterConfig struct {
 	EncodeProfileNames []string
 
 	// CutProfileNames は config.encode.profiles のうち `cut: true` の名前一覧。
-	// cut だけの選択を 400 で拒否し（config.ValidateCutSelection）、
+	// live.enabled=false での cut だけの選択を 400 で拒否し（config.ValidateCutSelection）、
 	// `EncodeJobStatus.state = awaiting_review` の導出にも使う。
 	// 空/nil なら cut の規則を検査しない（テストの部分構成を許す）。
 	CutProfileNames []string
@@ -72,9 +72,9 @@ type RouterConfig struct {
 	// （issue #869）。順序は設定順で、ffmpeg のパス・extra_args・品質指定は含めない。
 	LiveProfiles []LiveProfileSummary
 
-	// LiveEnabled は config.live.enabled。GET /api/capabilities の live に出す
-	// （issue #209）。フロントはこれを見てライブへの導線（主ナビ・番組行のリンク）
-	// を出すかどうかを決める。
+	// LiveEnabled は config.live.enabled。GET /api/capabilities の live と、cut だけの
+	// プロファイル選択を許すかに使う。フロントはライブへの導線（主ナビ・番組行の
+	// リンク）を出すかどうかをこの値で決める。
 	//
 	// **この値は「streamer がライブのルートを登録したか」ではなく config の状態**。
 	// api は不変条件 1 により streamer にも mirakc にも問い合わせないので、

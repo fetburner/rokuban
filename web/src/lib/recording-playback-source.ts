@@ -5,6 +5,7 @@ export type RecordingPlaybackSource = 'chase' | 'original-vod' | 'encoded' | 'no
 export type RecordingPlaybackSourceInput = {
   status: RecordingStatus
   hasEncoded: boolean
+  hasNonCutEncoded: boolean
   hasOriginal: boolean
   liveEnabled: boolean
   isTrashed?: boolean
@@ -21,7 +22,8 @@ export function selectRecordingPlaybackSource(
   if (input.isTrashed) return 'none'
   if (input.status === 'recording') return input.liveEnabled ? 'chase' : 'none'
   if (input.status !== 'finished') return 'none'
-  if (input.hasEncoded) return 'encoded'
+  if (input.hasNonCutEncoded) return 'encoded'
   if (input.hasOriginal && input.liveEnabled) return 'original-vod'
+  if (input.hasEncoded) return 'encoded'
   return 'none'
 }

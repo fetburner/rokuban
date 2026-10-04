@@ -15,9 +15,9 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// TestCutProfileSelection_RejectedOnEveryAPIPath は受け入れの「cut のみのルール /
-// override / 追記 API が拒否される」を API の 3 経路ぶん固定する（4 経路目は
-// ingest の凍結で、internal/worker のテストが押さえる）。
+// TestCutProfileSelection_RejectedOnEveryAPIPath は live.enabled=false の構成で
+// cut のみのルール / override / 追記 API が拒否され、cut でない profile を含めば
+// 通ることを API の 3 経路ぶん固定する（4 経路目は ingest の凍結）。
 //
 // **1 経路でも抜けると、その経路からしか作れない録画が「確認に再生が要り、
 // 再生に encode が要り、encode に確認が要る」循環に落ちる。**
@@ -28,6 +28,7 @@ func TestCutProfileSelection_RejectedOnEveryAPIPath(t *testing.T) {
 		Pool:               pool,
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
+		LiveEnabled:        false,
 	}))
 	t.Cleanup(srv.Close)
 
@@ -66,6 +67,12 @@ func TestCutProfileSelection_RejectedOnEveryAPIPath(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("cut-only overrides status = %d, want 400", resp.StatusCode)
 		}
+		resp = doPatch(t, srv, overridesPath(programID),
+			`{"encodeProfiles":["cut","h264"],"keepOriginal":"until_encoded"}`)
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("cut+h264 overrides status = %d, want 204", resp.StatusCode)
+		}
 	})
 
 	// 3. 録画への事後追加（POST /api/recordings/{id}/encode-profiles）。
@@ -91,6 +98,69 @@ func TestCutProfileSelection_RejectedOnEveryAPIPath(t *testing.T) {
 		defer func() { _ = resp2.Body.Close() }()
 		if resp2.StatusCode != http.StatusNoContent {
 			t.Fatalf("h264 append status = %d, want 204", resp2.StatusCode)
+		}
+		raw, _ = json.Marshal(map[string]any{"profiles": []string{"cut"}})
+		resp3, err := http.Post(srv.URL+"/api/recordings/"+itoa(id)+"/encode-profiles",
+			"application/json", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp3.Body.Close() }()
+		if resp3.StatusCode != http.StatusNoContent {
+			t.Fatalf("cut append after h264 status = %d, want 204", resp3.StatusCode)
+		}
+	})
+}
+
+// TestCutProfileSelection_AllowedOnEveryAPIPathWithLive は live.enabled=true の構成で
+// 原本 HLS を確認に使えるため、cut だけのルール / override / 追記 API が通ることを
+// 固定する。live 無効へ条件が固定されると、このテストが失敗する。
+func TestCutProfileSelection_AllowedOnEveryAPIPathWithLive(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
+		Pool:               pool,
+		EncodeProfileNames: []string{"h264", "cut"},
+		CutProfileNames:    []string{"cut"},
+		LiveEnabled:        true,
+	}))
+	t.Cleanup(srv.Close)
+
+	t.Run("rule", func(t *testing.T) {
+		raw, _ := json.Marshal(map[string]any{"name": "cut-only-live", "encodeProfiles": []string{"cut"}})
+		resp, err := http.Post(srv.URL+"/api/rules", "application/json", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("cut-only rule status = %d, want 201", resp.StatusCode)
+		}
+	})
+
+	t.Run("overrides", func(t *testing.T) {
+		const programID int64 = 2100000110011235
+		ruleID := insertRuleFixture(t, pool, ctx)
+		insertReservationDirect(t, pool, ctx, programID, &ruleID, 21000, 2101)
+		resp := doPatch(t, srv, overridesPath(programID),
+			`{"encodeProfiles":["cut"],"keepOriginal":"until_encoded"}`)
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("cut-only overrides status = %d, want 204", resp.StatusCode)
+		}
+	})
+
+	t.Run("append", func(t *testing.T) {
+		id := insertIngestedRecordingFixture(t, pool, ctx)
+		raw, _ := json.Marshal(map[string]any{"profiles": []string{"cut"}})
+		resp, err := http.Post(srv.URL+"/api/recordings/"+itoa(id)+"/encode-profiles",
+			"application/json", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("cut-only append status = %d, want 204", resp.StatusCode)
 		}
 	})
 }

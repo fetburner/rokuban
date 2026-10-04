@@ -172,8 +172,9 @@ type Deps struct {
 
 	// Encode は構造化エンコードプロファイルと ffmpeg パス（issue #64 / #65）。
 	// worker ロール起動時に ValidateTools 済み（不変条件 4）。
-	Encode   config.EncodeConfig
-	CMDetect config.CMDetectConfig
+	Encode      config.EncodeConfig
+	CMDetect    config.CMDetectConfig
+	LiveEnabled bool
 
 	// EpgRetentionGrace は放送済み番組を刈り取るまでの猶予
 	// （config.epg.retention_grace。config.defaults() が既定値 24 時間を埋める）。
@@ -227,6 +228,7 @@ func NewWorkers(deps *Deps) *river.Workers {
 		StallTimeout:  deps.IngestStallTimeout,
 		CMDetect:      deps.CMDetect,
 		CutProfiles:   deps.Encode.CutProfileSet(),
+		LiveEnabled:   deps.LiveEnabled,
 	})
 	river.AddWorker(workers, &EncodeWorker{
 		Pool:       deps.Pool,

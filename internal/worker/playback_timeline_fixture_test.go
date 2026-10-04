@@ -66,10 +66,15 @@ func TestWritePlaybackTimelineFixture(t *testing.T) {
 	videoFilter := strings.Join(filterParts, ",")
 	videoInput := "color=c=black:s=320x180:r=30000/1001:d=22"
 	audioInput := "sine=frequency=440:sample_rate=48000:duration=22.7"
+	// The audio input is delayed by 16.7 ms (audio start 10.4067 s) so that one source
+	// frame's -ss cutoff falls between the integer -ss 10 and the frame-grid
+	// -ss 9.976633333: -ss 10 then selects a different first frame than the grid
+	// value (measured with ffmpeg framemd5). Without this delay both selected the
+	// same first frame and an integer -ss was not caught.
 	inputArgs := []string{
 		"-hide_banner", "-nostats", "-loglevel", "error", "-y",
 		"-itsoffset", "0.7", "-f", "lavfi", "-i", videoInput,
-		"-f", "lavfi", "-i", audioInput,
+		"-itsoffset", "0.0167", "-f", "lavfi", "-i", audioInput,
 		"-map", "0:v:0", "-map", "1:a:0", "-vf", videoFilter,
 		"-output_ts_offset", "9",
 		"-c:v", "mpeg2video", "-b:v", "500k", "-g", "60", "-bf", "2",

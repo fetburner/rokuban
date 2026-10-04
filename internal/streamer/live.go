@@ -3423,9 +3423,16 @@ func BuildChaseFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []stri
 // mode (measured), so a recording longer than playlistStartupTimeout would never
 // become playable. Every segment is kept until shared idle GC, and the output
 // has the same profile, audio rendition, and optional subtitle graph as live.
-// offsetSeconds is applied as accurate input-side -ss; fd 3 is the original
-// opened by the Go process and passed via Cmd.ExtraFiles, so unlinking its
-// canonical path cannot break the session.
+// offsetSeconds is mapped down to the 30000/1001 fps input frame grid before
+// accurate input-side -ss, and the video encoder gets -bf 0. Measured only on
+// the synthetic MPEG-2 fixture of web/e2e/recording-playback-timeline.mjs with
+// libx264 (Chrome shows hls.js frames 66.73 ms late without -bf 0; WebKit's
+// native HLS showed no difference). Unverified: the captions path's effect in a
+// browser, hardware encoders, and recordings whose audio lead has a phase other
+// than the fixture's (audio start 10.4067 s, video start 11.1007 s; an integer
+// -ss showed frames 33.37 ms early there). fd 3 is the original opened by the Go
+// process and passed via Cmd.ExtraFiles, so unlinking its canonical path cannot
+// break the session.
 func BuildOriginalVODFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool, offsetSeconds int64) []string {
 	return buildHLSFFmpegArgsForPlaylistType(
 		cfg, dir, withSubtitles, hlsOriginalEventPlaylist, originalVODFFmpegInputPath, offsetSeconds,
@@ -3435,9 +3442,22 @@ func BuildOriginalVODFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool, 
 // appendMPEGTSInput は MPEG-TS 入力（`-f mpegts [-ss N] -i path`）を args に足す。
 // offsetSeconds > 0 のときだけ入力側シークを付ける。
 func appendMPEGTSInput(args []string, inputPath string, offsetSeconds int64) []string {
+	return appendMPEGTSInputWithSeek(args, inputPath, offsetSeconds, strconv.FormatInt(offsetSeconds, 10))
+}
+
+func appendOriginalVODMPEGTSInput(args []string, inputPath string, offsetSeconds int64) []string {
+	if offsetSeconds <= 0 {
+		return appendMPEGTSInput(args, inputPath, 0)
+	}
+	frame := offsetSeconds * 30000 / 1001
+	seekSeconds := float64(frame) * 1001 / 30000
+	return appendMPEGTSInputWithSeek(args, inputPath, offsetSeconds, fmt.Sprintf("%.9f", seekSeconds))
+}
+
+func appendMPEGTSInputWithSeek(args []string, inputPath string, offsetSeconds int64, seek string) []string {
 	args = append(args, "-f", "mpegts")
 	if offsetSeconds > 0 {
-		args = append(args, "-ss", strconv.FormatInt(offsetSeconds, 10))
+		args = append(args, "-ss", seek)
 	}
 	return append(args, "-i", inputPath)
 }
@@ -3460,6 +3480,7 @@ func buildHLSFFmpegArgsForPlaylistType(
 	offsetSeconds int64,
 ) []string {
 	eventPlaylist := playlistType == hlsEventPlaylist
+	originalVOD := playlistType == hlsOriginalEventPlaylist
 	if cfg.Captions {
 		return buildLiveCaptionFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, playlistType, inputPath, offsetSeconds)
 	}
@@ -3475,7 +3496,11 @@ func buildHLSFFmpegArgsForPlaylistType(
 		"-analyzeduration", "3M",
 	)
 	args = append(args, cfg.InputExtraArgs...)
-	args = appendMPEGTSInput(args, inputPath, offsetSeconds)
+	if originalVOD {
+		args = appendOriginalVODMPEGTSInput(args, inputPath, offsetSeconds)
+	} else {
+		args = appendMPEGTSInput(args, inputPath, offsetSeconds)
+	}
 	renditions := audioRenditionsFor(eventPlaylist)
 	for _, p := range cfg.Profiles {
 		// 映像・音声だけ。字幕 / データ放送は捨てる（上記 arib_caption）。
@@ -3489,6 +3514,12 @@ func buildHLSFFmpegArgsForPlaylistType(
 		} else {
 			args = append(args, "-map", "0:v:0", "-map", "0:a:0")
 			args = append(args, "-c:v", p.VideoCodec, "-c:a", p.AudioCodec)
+		}
+		if originalVOD {
+			// With B frames, Chrome/hls.js showed frames 2 frames (66.73 ms) behind the
+			// original MP4 timeline on the synthetic fixture (e2e
+			// recording-playback-timeline, libx264). Unverified for hardware encoders.
+			args = append(args, "-bf", "0")
 		}
 		if filter, ok := ffargs.VideoFilterArgs(p.Scaler, p.Height, p.Deinterlace); ok {
 			args = append(args, "-vf", filter)
@@ -3631,6 +3662,7 @@ func buildLiveCaptionFFmpegArgsForPlaylistType(
 	offsetSeconds int64,
 ) []string {
 	eventPlaylist := playlistType == hlsEventPlaylist
+	originalVOD := playlistType == hlsOriginalEventPlaylist
 	args := []string{"-hide_banner", "-nostats", "-loglevel", "error"}
 	args = append(args, cfg.HWAccel.Args()...)
 	args = append(args, "-probesize", "5M", "-analyzeduration", "3M")
@@ -3642,7 +3674,11 @@ func buildLiveCaptionFFmpegArgsForPlaylistType(
 		// 入力側オプションなので -i より前に置く。
 		args = append(args, "-fix_sub_duration")
 	}
-	args = appendMPEGTSInput(args, inputPath, offsetSeconds)
+	if originalVOD {
+		args = appendOriginalVODMPEGTSInput(args, inputPath, offsetSeconds)
+	} else {
+		args = appendMPEGTSInput(args, inputPath, offsetSeconds)
+	}
 
 	var variants, audioVariants []string
 	renditions := audioRenditionsFor(eventPlaylist)
@@ -3656,6 +3692,9 @@ func buildLiveCaptionFFmpegArgsForPlaylistType(
 		}
 		a := i
 		args = append(args, "-c:v:"+strconv.Itoa(i), p.VideoCodec)
+		if originalVOD {
+			args = append(args, "-bf:v:"+strconv.Itoa(i), "0")
+		}
 		if renditions {
 			a = 3 * i
 			args = append(args,
