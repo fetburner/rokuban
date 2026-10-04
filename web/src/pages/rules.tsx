@@ -1,13 +1,15 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { MoreVertical, Trash2 } from 'lucide-react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import {
   getListReservationsQueryKey,
   getListReservationsQueryOptions,
   getListRulesQueryKey,
   useDeleteRule,
+  useListCapacityOverages,
+  useListReservations,
   useListRules,
   useUpdateRule,
   type DeleteRuleResponse,
@@ -38,11 +40,13 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { keepOriginalLabel, type KeepOriginal } from '@/lib/encode-settings'
+import { coveringWindow } from '@/lib/capacity'
 import {
   buildRuleInput,
   conditionsToDraft,
   ruleToMeta,
 } from '@/lib/program-search'
+import { summarizeRuleActivity, type RuleActivitySummary } from '@/lib/rule-activity'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { cn } from '@/lib/utils'
 
@@ -63,7 +67,45 @@ import { cn } from '@/lib/utils'
  */
 export function RulesPage() {
   const query = useListRules()
-  const rules = unwrap(query.data) ?? []
+  const rules = useMemo(() => unwrap(query.data) ?? [], [query.data])
+  const reservationsQuery = useListReservations()
+  // 一覧の予約が成功したときだけ件数を断定する。失敗時に前回 data が残っていても
+  // 「録画予定なし」と誤読させない。
+  const reservations = useMemo(
+    () =>
+      reservationsQuery.isSuccess
+        ? (unwrap(reservationsQuery.data) ?? [])
+        : undefined,
+    [reservationsQuery.data, reservationsQuery.isSuccess],
+  )
+  const listedWindow = useMemo(
+    () => (reservations === undefined ? null : coveringWindow(reservations)),
+    [reservations],
+  )
+  const overagesQuery = useListCapacityOverages(
+    {
+      start: new Date(listedWindow?.startMs ?? 0).toISOString(),
+      end: new Date(listedWindow?.endMs ?? 0).toISOString(),
+    },
+    { query: { enabled: listedWindow !== null } },
+  )
+  // 古い成功 data が再取得失敗後にも残る場合があるため、成功中だけ使う。
+  const overages = useMemo(
+    () =>
+      overagesQuery.isSuccess
+        ? (unwrap(overagesQuery.data) ?? [])
+        : undefined,
+    [overagesQuery.data, overagesQuery.isSuccess],
+  )
+  const activityByRule = useMemo(() => {
+    if (reservations === undefined) return undefined
+    return new Map<number, RuleActivitySummary>(
+      rules.map((rule) => [
+        rule.id,
+        summarizeRuleActivity(rule.id, reservations, overages),
+      ] as const),
+    )
+  }, [overages, reservations, rules])
   const disambiguateRule = ruleDisambiguator(rules)
   const [isCountingReservations, setIsCountingReservations] = useState(false)
   const [labelRuleEditor, setLabelRuleEditor] = useState<{
@@ -100,6 +142,7 @@ export function RulesPage() {
                 <RuleRow
                   rule={rule}
                   disambiguate={disambiguateRule}
+                  activity={activityByRule?.get(rule.id)}
                   isCountingReservations={isCountingReservations}
                   onCountingReservationsChange={setIsCountingReservations}
                   onCreateLabelRule={(keyword) =>
@@ -213,12 +256,14 @@ function deleteRuleResultMessage(res: DeleteRuleResponse | undefined): string | 
 function RuleRow({
   rule,
   disambiguate,
+  activity,
   isCountingReservations,
   onCountingReservationsChange,
   onCreateLabelRule,
 }: {
   rule: Rule
   disambiguate: (rule: Rule) => string | undefined
+  activity: RuleActivitySummary | undefined
   isCountingReservations: boolean
   onCountingReservationsChange: (counting: boolean) => void
   onCreateLabelRule: (keyword: string) => void
@@ -397,6 +442,29 @@ function RuleRow({
               {profiles.length === 0 ? 'エンコードなし' : profiles.join(', ')}
             </span>
           </div>
+
+          {rule.enabled && activity !== undefined && (
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 text-sm">
+              {activity.scheduledCount === 0 ? (
+                <span className="text-muted-foreground">録画予定なし</span>
+              ) : (
+                <>
+                  <Link
+                    to="/reservations"
+                    search={{ ruleId: rule.id }}
+                    className="text-primary underline-offset-4 hover:underline"
+                  >
+                    録画予定 {activity.scheduledCount} 件
+                  </Link>
+                  {activity.shortfallCount !== undefined && activity.shortfallCount > 0 && (
+                    <span className="text-warning">
+                      （うち不足時間帯 {activity.shortfallCount}）
+                    </span>
+                  )}
+                </>
+              )}
+            </div>
+          )}
         </div>
         <div className="flex shrink-0 items-start gap-1">
           <div className="flex flex-col items-end gap-2">
