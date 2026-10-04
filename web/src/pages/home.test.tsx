@@ -468,6 +468,11 @@ describe('ホーム: CM 検出失敗が要対応に出る（issue #1101）', () 
           serviceId: 5168,
           cmDetection: { state: 'failed', stage: 'resolution' },
         }),
+        recording(26, '処理系の失敗の番組', 'finished', {
+          networkId: 32678,
+          serviceId: 5168,
+          cmDetection: { state: 'failed', stage: 'setup' },
+        }),
       ],
     })
     renderHome()
@@ -476,10 +481,12 @@ describe('ホーム: CM 検出失敗が要対応に出る（issue #1101）', () 
     const cmRows = within(section).getAllByRole('listitem').filter(
       (row) => row.getAttribute('data-warning-kind') === 'cm-detection',
     )
-    expect(cmRows).toHaveLength(1)
-    expect(within(cmRows[0]!).getByTestId('warning-chip')).toHaveTextContent('CM 検出失敗')
-    expect(within(cmRows[0]!).getByTestId('warning-title')).toHaveTextContent('NHK総合 5 件')
-    const link = within(cmRows[0]!).getByRole('link')
+    // setup は録画で直す段階なので、同じ局でも局の行に混ぜず録画ごとの行に残る。
+    expect(cmRows).toHaveLength(2)
+    const stationRow = cmRows.find((row) => row.querySelector('a')?.getAttribute('href') === '/cm-logos/32678/5168')!
+    expect(within(stationRow).getByTestId('warning-chip')).toHaveTextContent('CM 検出失敗')
+    expect(within(stationRow).getByTestId('warning-title')).toHaveTextContent('NHK総合 5 件')
+    const link = within(stationRow).getByRole('link')
     expect(link).toHaveAttribute('href', '/cm-logos/32678/5168')
     expect(link).not.toHaveAttribute('href', expect.stringContaining('recording='))
     expect(section).not.toHaveTextContent('technical detail')

@@ -1030,12 +1030,12 @@ export function RecordingDetail({
                   {recording.cmDetection.state === 'failed' &&
                     isStationFixableCMStage(recording.cmDetection.stage) && (
                       <Link
-                        to="/cm-logos"
-                        search={{
-                          network: recording.networkId,
-                          service: recording.serviceId,
-                          recording: recording.id,
+                        to="/cm-logos/$networkId/$serviceId"
+                        params={{
+                          networkId: String(recording.networkId),
+                          serviceId: String(recording.serviceId),
                         }}
+                        search={{ recording: recording.id }}
                         className="text-primary underline underline-offset-4"
                       >
                         {recording.cmDetection.stage === 'adopt' ? 'ロゴ候補を確認して採用する' : 'CM 検出のロゴを教える'}

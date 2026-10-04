@@ -30,13 +30,17 @@ export function cmDetectStageMessage(stage: string | null | undefined): string {
 }
 
 /**
- * isStationFixableCMStage reports stages whose recovery action lives on the station's CM-logo page.
+ * isStationFixableCMStage は、解消する操作が局の CM ロゴ画面にしか無い失敗段階かを返す。
  *
- * `logo`, `area`, and `match` can be recovered by teaching a frame and analyzing the logo again;
- * `resolution` can be recovered by selecting a recording at the affected resolution and teaching
- * its frame; `adopt` has an explicit candidate-adoption action there. The other stages concern
- * recording-specific processing and are handled from the recording detail. Callers must apply
- * this only to `cmDetection.state === 'failed'` recordings.
+ * 段階ごとの解消操作は次のとおり。
+ * - `logo`: 局で枠を教え、候補を採用する。
+ * - `area`: 局で枠を教え直す（枠と解像度が合わない古い試行の意味）。
+ * - `adopt`: 局で候補を採用する。
+ * - `match`: 局でロゴを忘れる、または枠を教え直して候補を採用する。
+ * - `resolution`: 局でその解像度の録画から枠を教えて採用する。
+ *
+ * それ以外（`setup` / `probe` / `chapter` など、null と未知を含む）は録画詳細の再検出で直す。
+ * `state === 'failed'` の判定は呼び出し側の責任で、この関数は stage だけを見る。
  */
 export function isStationFixableCMStage(stage: string | null | undefined): boolean {
   return stage === 'logo' || stage === 'area' || stage === 'match' || stage === 'resolution' || stage === 'adopt'

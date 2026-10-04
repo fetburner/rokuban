@@ -1384,7 +1384,7 @@ describe('RecordingDetailPage CM 検出の有効化導線', () => {
     const linkName = stage === 'adopt' ? 'ロゴ候補を確認して採用する' : 'CM 検出のロゴを教える'
     const logoLink = within(cmRow!).queryByRole('link', { name: linkName })
     if (linkExpected) {
-      expect(logoLink).toHaveAttribute('href', '/cm-logos?network=32678&service=5168&recording=3')
+      expect(logoLink).toHaveAttribute('href', '/cm-logos/32678/5168?recording=3')
     } else {
       expect(logoLink).not.toBeInTheDocument()
     }
