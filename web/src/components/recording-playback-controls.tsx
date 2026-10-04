@@ -113,7 +113,7 @@ type RecordingPlaybackControlsProps = {
   /** 映像の上に重ねる終端カード。 */
   endCard?: ReactNode
   className?: string
-  fullscreenRef: RefObject<HTMLDivElement | null>
+  frameRef: RefObject<HTMLDivElement | null>
   video: ReactNode
   currentSeconds: number
   durationSeconds: number
@@ -146,6 +146,7 @@ type RecordingPlaybackControlsProps = {
   muted: boolean
   volume: number
   playbackRate: number
+  playbackRateLocked?: boolean
   subtitlesEnabled: boolean
   skipEnabled: boolean
   pictureInPicture: boolean
@@ -198,7 +199,7 @@ export function RecordingPlaybackControls({
   outsideProgramSegments,
   endCard,
   className,
-  fullscreenRef,
+  frameRef,
   video,
   currentSeconds,
   durationSeconds,
@@ -231,6 +232,7 @@ export function RecordingPlaybackControls({
   muted,
   volume,
   playbackRate,
+  playbackRateLocked = false,
   subtitlesEnabled,
   skipEnabled,
   pictureInPicture,
@@ -335,7 +337,7 @@ export function RecordingPlaybackControls({
     if (!popoverOpen) return
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node
-      const popover = fullscreenRef.current?.querySelector('[data-player-popover]')
+      const popover = frameRef.current?.querySelector('[data-player-popover]')
       if (popover?.contains(target) || gearRef.current?.contains(target) || chapterButtonRef.current?.contains(target)) {
         return
       }
@@ -344,7 +346,7 @@ export function RecordingPlaybackControls({
     }
     document.addEventListener('pointerdown', onPointerDown, true)
     return () => document.removeEventListener('pointerdown', onPointerDown, true)
-  }, [popoverOpen, fullscreenRef])
+  }, [popoverOpen, frameRef])
 
   const seekByKeyboard = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     let target: number | undefined
@@ -405,15 +407,15 @@ export function RecordingPlaybackControls({
 
   return (
     <div
-      className={cn('relative w-full', className)}
+      className={cn('recording-player-shell relative w-full', className)}
       data-testid="recording-player-shell"
       onPointerMove={chapterEditing ? undefined : onControlsActivity}
       onKeyDown={chapterEditing ? undefined : onShellKeyDown}
     >
       <div
-        ref={fullscreenRef}
+        ref={frameRef}
         data-testid="recording-player-frame"
-        className="relative aspect-video w-full overflow-hidden rounded bg-black"
+        className="recording-player-frame relative aspect-video w-full overflow-hidden rounded bg-black"
         onPointerMove={onControlsActivity}
       >
         {video}
@@ -1096,6 +1098,7 @@ export function RecordingPlaybackControls({
             audioChoice={audioChoice}
             onSelectAudio={onSelectAudio}
             playbackRate={playbackRate}
+            playbackRateLocked={playbackRateLocked}
             subtitlesEnabled={subtitlesEnabled}
             skipEnabled={skipEnabled}
             showSkip={hasChapters}
@@ -1262,6 +1265,7 @@ type PlaybackSettingsMenuProps = {
   audioChoice?: LiveAudioChoice
   onSelectAudio?: (choice: LiveAudioChoice | undefined) => void
   playbackRate: number
+  playbackRateLocked: boolean
   subtitlesEnabled: boolean
   skipEnabled: boolean
   showSkip: boolean
@@ -1295,6 +1299,7 @@ function PlaybackSettingsMenu({
   audioChoice,
   onSelectAudio,
   playbackRate,
+  playbackRateLocked,
   subtitlesEnabled,
   skipEnabled,
   showSkip,
@@ -1352,6 +1357,7 @@ function PlaybackSettingsMenu({
       case 'ArrowRight': {
         const submenu = (document.activeElement as HTMLElement | null)?.dataset.submenu as MenuView | undefined
         if (view !== 'main' || submenu === undefined) return
+        if ((document.activeElement as HTMLElement).getAttribute('aria-disabled') === 'true') break
         enter(submenu)
         break
       }
@@ -1380,22 +1386,30 @@ function PlaybackSettingsMenu({
     'flex h-12 w-full items-center gap-2.5 border-b border-border px-3 font-semibold outline-none focus-visible:bg-muted md:mb-1 md:h-11 md:border-white/15 md:focus-visible:bg-white/15'
   const option = cn(row, 'min-h-12 md:min-h-10 md:gap-3')
 
-  const submenuRow = (key: 'speed' | 'quality' | 'audio', icon: ReactNode, label: string, current: string) => (
+  const submenuRow = (
+    key: 'speed' | 'quality' | 'audio',
+    icon: ReactNode,
+    label: string,
+    current: string,
+    disabled = false,
+  ) => (
     <button
       type="button"
       role="menuitem"
+      aria-disabled={disabled || undefined}
       aria-label={label}
       aria-describedby={`${id}-${key}-value`}
       data-submenu={key}
       data-menu-focus={returnRow === key ? 'true' : undefined}
-      className={row}
-      onClick={() => enter(key)}
+      title={disabled ? '変換中のネイティブ HLS は 1 倍で再生します' : undefined}
+      className={cn(row, disabled && 'cursor-not-allowed opacity-70')}
+      onClick={() => !disabled && enter(key)}
     >
       {icon}
       <span className="flex-1">{label}</span>
       <span id={`${id}-${key}-value`} className={value}>
         {current}
-        <ChevronRight className="size-4" aria-hidden />
+        {!disabled && <ChevronRight className="size-4" aria-hidden />}
       </span>
     </button>
   )
@@ -1460,7 +1474,13 @@ function PlaybackSettingsMenu({
     '音声',
     selectedAudioLabel,
   )
-  const speedRow = playbackMode !== 'live' && submenuRow('speed', <Gauge className={icon} aria-hidden />, '再生速度', rateLabel(playbackRate))
+  const speedRow = playbackMode !== 'live' && submenuRow(
+    'speed',
+    <Gauge className={icon} aria-hidden />,
+    '再生速度',
+    playbackRateLocked ? `${rateLabel(playbackRate)}（変換中は固定）` : rateLabel(playbackRate),
+    playbackRateLocked,
+  )
   const subtitlesRow = switchRow(<Captions className={icon} aria-hidden />, '字幕', subtitlesEnabled, onToggleSubtitles)
   const skipRow = showSkip && switchRow(
     <Activity className={icon} aria-hidden />,

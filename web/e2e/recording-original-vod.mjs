@@ -479,6 +479,93 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
   return json([])
 })
 
+function growingEdgeDiagnosticCursor() {
+  return {
+    details: detailResumeLog.length,
+    playlists: playlistRequests.length,
+    segments: segmentRequests.length,
+    responses: originalMediaResponses.length,
+    failures: originalMediaFailures.length,
+    writes: playbackPositionWrites.length,
+    beforeClick: null,
+  }
+}
+
+async function failGrowingEdgeStartup(stage, error, cursor) {
+  const domSnapshotTimeoutMs = 5000
+  let dom = null
+  let domFailure = null
+  let domTimeout
+  // A stuck renderer must not hide the startup error and the request logs kept in Node.
+  try {
+    dom = await Promise.race([
+      page.evaluate(() => {
+        const video = document.querySelector('video')
+        const poster = document.querySelector('[data-testid="recording-playback-poster"]')
+        const playerFrame = document.querySelector('[data-testid="recording-player-frame"]')
+        const visible = (element) => {
+          if (!element) return false
+          const rect = element.getBoundingClientRect()
+          const style = getComputedStyle(element)
+          return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none'
+        }
+        const ranges = (timeRanges) => Array.from(
+          { length: timeRanges?.length ?? 0 },
+          (_, index) => [timeRanges.start(index), timeRanges.end(index)],
+        )
+        return {
+          url: location.pathname,
+          posterVisible: visible(poster),
+          playerFrameVisible: visible(playerFrame),
+          video: video === null ? null : {
+            visible: visible(video),
+            paused: video.paused,
+            currentTime: video.currentTime,
+            duration: video.duration,
+            readyState: video.readyState,
+            networkState: video.networkState,
+            seekable: ranges(video.seekable),
+            buffered: ranges(video.buffered),
+            currentSrc: video.currentSrc,
+            error: video.error === null ? null : {
+              code: video.error.code,
+              message: video.error.message,
+            },
+          },
+          playerText: (playerFrame?.innerText ?? poster?.innerText ?? '').slice(0, 500),
+        }
+      }),
+      new Promise((_, reject) => {
+        domTimeout = setTimeout(
+          () => reject(new Error(`DOM snapshot timed out after ${domSnapshotTimeoutMs}ms`)),
+          domSnapshotTimeoutMs,
+        )
+      }),
+    ])
+  } catch (domError) {
+    domFailure = { name: domError.name, message: domError.message }
+  } finally {
+    clearTimeout(domTimeout)
+  }
+  const diagnostics = {
+    stage,
+    failure: { name: error.name, message: error.message },
+    dom,
+    domFailure,
+    beforeClick: cursor.beforeClick,
+    detailResumePositions: detailResumeLog.slice(cursor.details),
+    serverResumePositionMs: recording.resumePositionMs ?? null,
+    playbackPositionWrites: playbackPositionWrites.slice(cursor.writes),
+    playlists: playlistRequests.slice(cursor.playlists),
+    segments: segmentRequests.slice(cursor.segments),
+    mediaResponses: originalMediaResponses.slice(cursor.responses),
+    mediaFailures: originalMediaFailures.slice(cursor.failures),
+  }
+  log(`  ④ 再生開始失敗の診断: ${JSON.stringify(diagnostics)}`)
+  ng.push(`④ ${stage} (${error.message})`)
+  await finish(ng, browser)
+}
+
 log('\n=== ① encoded なしの完了録画で原本 HLS を再生 ===')
 await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
 const playbackGroup = page.getByTestId('recording-playback-group')
@@ -784,6 +871,7 @@ applyPositionWrites = false
 delete recording.resumePositionMs
 const watchedCountBeforeGrowingEdge = watchedWrites.length
 const playlistsBeforeGrowingEdge = playlistRequests.length
+const growingEdgeCursor = growingEdgeDiagnosticCursor()
 await page.reload({ waitUntil: 'domcontentloaded' })
 await page.waitForTimeout(750)
 if (playlistRequests.length !== playlistsBeforeGrowingEdge) {
@@ -791,15 +879,24 @@ if (playlistRequests.length !== playlistsBeforeGrowingEdge) {
 }
 const growingEdgePlaybackButton = page.getByTestId('recording-playback-start')
 if (await growingEdgePlaybackButton.count() === 1) {
+  // 「続きから」はポスター上にだけあり、クリックで消えるので押す前に控える。
+  growingEdgeCursor.beforeClick = {
+    label: await growingEdgePlaybackButton.getAttribute('aria-label'),
+    text: (await growingEdgePlaybackButton.textContent())?.trim() ?? null,
+  }
   await growingEdgePlaybackButton.click()
 } else {
   ng.push(`④ 変換中原本HLSの再生ボタンが 1 つでない (${await growingEdgePlaybackButton.count()})`)
 }
-await page.locator('video').waitFor({ timeout: 15000 })
+await page.locator('video').waitFor({ timeout: 15000 }).catch((error) =>
+  failGrowingEdgeStartup('video が表示されない', error, growingEdgeCursor),
+)
 await page.waitForFunction(() => {
   const element = document.querySelector('video')
   return element !== null && element.duration > 0
-}, undefined, { timeout: 20000 })
+}, undefined, { timeout: 20000 }).catch((error) =>
+  failGrowingEdgeStartup('video の metadata が揃わない', error, growingEdgeCursor),
+)
 await page.locator('video').evaluate(async (element) => {
   element.muted = true
   await element.play()

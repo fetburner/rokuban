@@ -13,6 +13,30 @@
  */
 @import "@fontsource-variable/noto-sans-jp";
 
+/*
+ * 全画面の要素は再生グループ（枠の下の兄弟も含む）。枠は 16:9 で幅いっぱいに取るので、兄弟が
+ * あると縦が溢れる。溢れたら枠を先頭に置いたまま縦にスクロールさせ（safe center）、
+ * 枠と下端の操作バーを画面の外へ追い出さない。溢れないときだけ縦中央に置く。
+ */
+.recording-playback-fullscreen-container:fullscreen {
+    display: grid;
+    width: 100vw;
+    height: 100vh;
+    justify-items: center;
+    align-content: safe center;
+    overflow-x: hidden;
+    overflow-y: auto;
+    background: #000;
+}
+
+.recording-playback-fullscreen-container:fullscreen .recording-player-shell {
+    width: min(100vw, calc(100vh * 16 / 9));
+}
+
+.recording-playback-fullscreen-container:fullscreen .recording-player-frame {
+    border-radius: 0;
+}
+
 .chase-timeline-slider {
     appearance: none;
     -webkit-appearance: none;

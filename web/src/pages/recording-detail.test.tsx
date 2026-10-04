@@ -893,6 +893,78 @@ describe('RecordingDetailPage', () => {
     expect(router.state.location.pathname).toBe('/recordings/4')
   })
 
+  it('原本のみの次の回も自動再生し、再生元を替えても全画面コンテナを保つ', async () => {
+    const user = userEvent.setup()
+    const playSpy = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
+    vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockReturnValue('maybe')
+    const origin = sampleRecording({
+      id: 3,
+      title: '作品X 第1話',
+      series: '作品X',
+      sizeBytes: 1_000_000,
+      encodedAssets: [{ profile: 'h264', sizeBytes: 900_000 }],
+    })
+    const next = sampleRecording({
+      id: 4,
+      title: '作品X 第2話',
+      series: '作品X',
+      sizeBytes: 1_000_000,
+      encodedAssets: [],
+      startAt: '2026-01-08T12:00:00Z',
+    })
+    createFakeServer({
+      recording: origin,
+      seriesRecordings: [origin, next],
+      liveProfiles: [{ name: 'hd', height: 720 }],
+    })
+
+    const { router } = renderAt('/recordings/3')
+    const fullscreenContainer = await screen.findByTestId('recording-playback-group')
+    const fullscreenDescriptor = Object.getOwnPropertyDescriptor(document, 'fullscreenElement')
+    const requestFullscreenDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'requestFullscreen')
+    const requestFullscreen = vi.fn(function () {
+      document.dispatchEvent(new Event('fullscreenchange'))
+      return Promise.resolve()
+    })
+    Object.defineProperty(document, 'fullscreenElement', {
+      configurable: true,
+      get: () => requestFullscreen.mock.contexts.at(-1) as Element | undefined ?? null,
+    })
+    Object.defineProperty(HTMLElement.prototype, 'requestFullscreen', {
+      configurable: true,
+      value: requestFullscreen,
+    })
+
+    try {
+      await user.click(screen.getByRole('button', { name: '全画面表示' }))
+      expect(document.fullscreenElement).toBe(fullscreenContainer)
+
+      fireEvent.ended(await screen.findByLabelText('録画映像'))
+      const card = await screen.findByTestId('recording-end-card')
+      await user.click(within(card).getByRole('button', { name: '今すぐ再生' }))
+
+      expect(await screen.findByRole('heading', { name: '作品X 第2話' })).toBeInTheDocument()
+      const nextVideo = await screen.findByLabelText('録画映像')
+      expect(router.state.location.pathname).toBe('/recordings/4')
+      expect(screen.getByTestId('recording-playback-group')).toBe(fullscreenContainer)
+      expect(document.fullscreenElement).toBe(fullscreenContainer)
+      expect(fullscreenContainer.querySelector('[data-testid="recording-player-frame"]')).not.toBeNull()
+
+      await waitFor(() => expect(nextVideo.getAttribute('src')).toContain('/original-vod/playlist.m3u8'))
+      fireEvent.canPlay(nextVideo)
+      await waitFor(() => expect(playSpy).toHaveBeenCalled())
+      expect(screen.getByRole('button', { name: '全画面を終了' })).toBeInTheDocument()
+    } finally {
+      if (fullscreenDescriptor) Object.defineProperty(document, 'fullscreenElement', fullscreenDescriptor)
+      else Reflect.deleteProperty(document, 'fullscreenElement')
+      if (requestFullscreenDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'requestFullscreen', requestFullscreenDescriptor)
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'requestFullscreen')
+      }
+    }
+  })
+
   it('終端カードの取り消しで自動遷移を止め、取り消さない場合は次へ進む', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     try {
@@ -1477,6 +1549,57 @@ describe('RecordingDetailPage の追加エンコード導線', () => {
     expect(await screen.findByRole('checkbox', { name: 'h264' })).toBeInTheDocument()
     expect(assets).toBeInTheDocument()
     expect(router.state.location.hash).toBe(originalHash)
+  })
+
+  it('録画を棚から切り替えると保持と追加エンコードの未保存選択を戻す', async () => {
+    const user = userEvent.setup()
+    const origin = sampleRecording({
+      id: 3,
+      title: '作品X 第1話',
+      series: '作品X',
+      startAt: '2026-01-01T12:00:00Z',
+      sizeBytes: 1_000_000,
+      encodedAssets: [{ profile: 'h264', sizeBytes: 900_000 }],
+      encodeProfiles: ['h264'],
+    })
+    const next = sampleRecording({
+      id: 4,
+      title: '作品X 第2話',
+      series: '作品X',
+      startAt: '2026-01-08T12:00:00Z',
+      sizeBytes: 1_000_000,
+      encodedAssets: [{ profile: 'h264', sizeBytes: 900_000 }],
+      encodeProfiles: ['h264'],
+    })
+    createFakeServer({
+      recording: origin,
+      seriesRecordings: [origin, next],
+      encodeProfiles: [{ name: 'h264' }, { name: 'h265' }],
+    })
+
+    renderAt('/recordings/3')
+    await screen.findByRole('heading', { name: '作品X 第1話' })
+    await user.click(screen.getByRole('button', { name: 'この回だけ変える' }))
+    const retention = await screen.findByRole('combobox', { name: '原本の保持' })
+    await user.selectOptions(retention, 'until_encoded')
+    expect(retention).toHaveValue('until_encoded')
+
+    await user.click(await screen.findByRole('button', { name: /エンコードを追加/ }))
+    await user.click(await screen.findByRole('checkbox', { name: 'h265' }))
+    expect(screen.getByRole('checkbox', { name: 'h265' })).toBeChecked()
+
+    const shelf = await screen.findByTestId('recording-series-shelf')
+    const nextLink = within(shelf).getAllByRole('link').find((link) => link.getAttribute('href') === '/recordings/4')
+    expect(nextLink).toBeDefined()
+    await user.click(nextLink!)
+    await screen.findByRole('heading', { name: '作品X 第2話' })
+
+    expect(screen.queryByRole('combobox', { name: '原本の保持' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'この回だけ変える' }))
+    expect(await screen.findByRole('combobox', { name: '原本の保持' })).toHaveValue('always')
+    expect(screen.queryByRole('checkbox', { name: 'h265' })).not.toBeInTheDocument()
+    await user.click(await screen.findByRole('button', { name: /エンコードを追加/ }))
+    expect(await screen.findByRole('checkbox', { name: 'h265' })).not.toBeChecked()
   })
 
   it('プロファイル未設定なら空の追加エンコード枠を作らない', async () => {

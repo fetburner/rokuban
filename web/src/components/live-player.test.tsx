@@ -193,6 +193,43 @@ describe('LivePlayer の状態遷移', () => {
     expect(screen.getByText(/チューナー不足または同時視聴数の上限/)).toBeInTheDocument()
   })
 
+  it('追っかけ入力の502は容量不足と表示せず、同じ失敗を自動再試行しない', async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          '追っかけ入力のエラーが続いているため、再作成を一時停止しています。しばらく待ってから再読み込みしてください。',
+          { status: 502, headers: { 'Retry-After': '5' } },
+        ),
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    render(<LivePlayer mode="chase" site="default" recordingId={42} />)
+
+    expect(
+      await screen.findByText('追っかけ再生の入力に失敗したため、一時停止しています。'),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        '追っかけ入力のエラーが続いているため、再作成を一時停止しています。しばらく待ってから再読み込みしてください。',
+      ),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/チューナー不足または同時視聴数の上限/)).not.toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('Retry-After の無い追っかけの502（プロキシ由来）は入力失敗と表示しない', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response('Bad Gateway from proxy', { status: 502 }))),
+    )
+    render(<LivePlayer mode="chase" site="default" recordingId={42} />)
+
+    expect(await screen.findByText('Bad Gateway from proxy')).toBeInTheDocument()
+    expect(
+      screen.queryByText('追っかけ再生の入力に失敗したため、一時停止しています。'),
+    ).not.toBeInTheDocument()
+  })
+
   it('想定外のステータスも本文をそのまま見せる', async () => {
     vi.stubGlobal(
       'fetch',
