@@ -96,8 +96,7 @@ export function SearchPage() {
     return last === undefined ? emptyDraft() : conditionsToDraft(last)
   })
   // 検索はまずキーワードを入力して結果を確かめる画面なので、詳細条件は
-  // 初期状態では閉じる。ルール画面（`/rules`）は `ConditionFields` にこの
-  // controlled state を渡さず、従来どおり全条件を展開したままにする。
+  // 初期状態では閉じる。
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [visibleCount, setVisibleCount] = useState(pageSize)
   /**

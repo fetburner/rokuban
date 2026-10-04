@@ -154,12 +154,11 @@ base-ui の `Popover`）で実装した。中身がリンク 4 個だけの単�
 （`components/circuit-breaker-banner.tsx` の `isSiteless`）。
 
 1 つの画面が複数の段にまたがることもある。`/rules` はルール行そのものは site を
-持たない（`GET /api/rules`）が、条件フォームのサービス選択肢はレジストリの
-全 site から作る（`components/condition-fields.tsx`）。`/recordings` は一覧も
+持たない（`GET /api/rules`）。`/recordings` は一覧も
 チャンネル選択肢も全サイトを対象にし、選択肢と述語を `(site, networkId, serviceId)`
 で結ぶ。**検索（`/search`）も 3 段にまたがる**: 検索リクエスト（`POST /api/programs/search`）は
 サイトをパスに持たず、body の空 `sites` で全 site を対象にする。条件フォームのサイトチップ・
-サービス選択肢は `/rules` と同じく、レジストリが運ぶ全 site から作る。そして
+サービス選択肢はレジストリが運ぶ全 site から作る。そして
 **検索結果は行が運ぶ**。結果はフラットな配列である。1 行が表示に要る
 `networkId` / `serviceId` / `startAt` / `durationMs` / `name` / `isFree` を持つ。
 `sites` を空以外にすれば現在サイト以外の行も返る。結果行のサービス名解決は
