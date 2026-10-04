@@ -31,6 +31,7 @@
     "e2e:reservation-detail-layout": "node e2e/reservation-detail-layout.mjs",
     "e2e:reservations-rule-filter": "node e2e/reservations-rule-filter.mjs",
     "e2e:reservations-mobile": "node e2e/reservations-mobile.mjs",
+    "e2e:reservations-series": "node e2e/reservations-series.mjs",
     "e2e:reservations-capacity-error": "node e2e/reservations-capacity-error.mjs",
     "e2e:header-stacking": "node e2e/header-stacking.mjs",
     "e2e:multi-site": "node e2e/multi-site.mjs",

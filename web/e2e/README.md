@@ -817,7 +817,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:search-mobile
 
 予約一覧の行の副情報（局名・日時・尺・状態バッジ）が折り返さないコンテナに
 `shrink-0` の可変幅要素を並べていると、モバイル幅で長い局名 + 状態バッジの
-組み合わせがシェブロンに重なる（issue #302 のレビュー指摘）。折り返し・
+組み合わせがシェブロンに重なる。折り返し・
 overflow・要素間の重なりは jsdom（`getBoundingClientRect()` が常に 0 を返す）
 では原理的に測れない。既存の単体テスト（`pages/reservations.test.tsx`）は
 「局名の文字列が行の中に居る」ことしか見ておらず、この壊れ方を検出できない。
@@ -838,6 +838,29 @@ DB も要らない。⓪（配っている bundle と `dist/` の一致）も自
 pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:reservations-mobile
 ```
+
+### 予約一覧のシリーズ表示（`reservations-series.mjs`）
+
+予約をシリーズでまとめた行の、位置・重なり・寸法を実ブラウザで測る。jsdom は横スクロール・当たり判定・スクロール位置を測れない。360 / 390 / 1280px で次を判定する。
+
+- ページ本体が横にスクロールしない
+- 開閉の標的と 1 本だけの行の詳細リンクが 44 × 44px 以上、ハブへの導線・出自のリンクが 24 × 24px 以上
+- ハブ・出自・容量不足バッジの当たり判定を行本体が奪わず、クリックで宛先へ遷移する
+- 開閉できる行の右端が ∨、1 本だけの行が ›
+- 棚の無いシリーズの「まだ録画なし」が、その行の中に 1 つだけ見える（デスクトップ幅は空枠の中、モバイル幅はメタ行）。リンクにはならない
+- 見出しをヘッダーの下へ 24px 潜らせてから開いても、開いた行の見出しがヘッダーの下に戻る（前提が作れなければ落とす）
+- 複数サイト構成のときだけ各回に site が出る
+- 要確認とルールで絞った後、今後 N 本とバッジが残った予約だけで数えられる
+
+フィクスチャで `value=null` の棚を置き、`series=null` の予約へ結合されないことも見る。`/api/**` はスタブするので mirakc・DB は要らない。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 E2E_SHOT_DIR=/tmp/reservations-series \
+  pnpm e2e:reservations-series
+```
+
+画像（`E2E_SHOT_DIR`）はリポジトリに入れない。レビュー用は `design-mocks` ブランチへ置く。
 
 ### 固定ヘッダーとページ内 z-10 要素の重なり（`header-stacking.mjs`）
 
