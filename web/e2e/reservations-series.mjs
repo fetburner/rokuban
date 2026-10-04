@@ -58,7 +58,7 @@ function fixtures(multipleSites) {
     reservation({ id: 2, day: 2, hour: 20, title: '金曜アニメ 第2話', series: '金曜アニメ' }),
     reservation({ id: 3, day: 3, hour: 20, title: '金曜アニメ 第3話', series: '金曜アニメ', state: 'detached' }),
     reservation({ id: 4, day: 4, hour: 21, title: 'ひとり予約', series: '録画の無いシリーズ', source: 'manual', ruleId: undefined }),
-    reservation({ id: 5, day: 1, hour: 20, title: 'EPG から消えた番組', series: null, state: 'orphaned', source: 'manual', ruleId: undefined }),
+    reservation({ id: 5, day: 1, hour: 20, title: '録画されなかった番組', series: null, state: 'orphaned', source: 'manual', ruleId: undefined }),
     reservation({ id: 6, day: 6, hour: 23, title: '要確認外の番組', series: '別のシリーズ', source: 'manual', ruleId: undefined }),
     reservation({ id: 8, day: 7, hour: 18, title: '視聴済みシリーズ 最終話', series: '視聴済みシリーズ', source: 'manual', ruleId: undefined }),
   ]
@@ -254,18 +254,19 @@ async function checkPage(browser, width, theme, multipleSites, saveShot) {
   }
   const capacity = seriesRow.getByRole('link', { name: /該当する予約 1 件/ })
 
-  const hitTarget = async (locator, xRatio = 0.5, yRatio = 0.5) => locator.evaluate((el, point) => {
+  const hitTarget = async (locator) => locator.evaluate((el) => {
     const rect = el.getBoundingClientRect()
-    const hit = document.elementFromPoint(
-      rect.left + rect.width * point.xRatio,
-      rect.top + rect.height * point.yRatio,
-    )
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
     return hit !== null && (hit === el || el.contains(hit))
-  }, { xRatio, yRatio })
+  })
   if (!(await hitTarget(hub))) ng.push(`${label}: 番組ハブの hit-test を行本体が奪っている`)
-  // 開閉ボタンは行全体に広がるが、中央は別リンク（容量や番組ハブ）が意図的に
-  // 前面にある場合がある。左側の余白でボタン自身が hit target になることを確かめる。
-  if (!(await hitTarget(expand, 0.005))) ng.push(`${label}: 開閉ボタンの hit-test を別の要素が奪っている（行本体を押しても開閉しない）`)
+  // 開閉ボタンは行全体に広がる。タイトル文字の中心を押したとき、ボタン自身が hit target になること。
+  const titleBox = await title.boundingBox()
+  const expandHit = titleBox && await expand.evaluate((el, p) => {
+    const hit = document.elementFromPoint(p.x, p.y)
+    return hit !== null && (hit === el || el.contains(hit))
+  }, { x: titleBox.x + titleBox.width / 2, y: titleBox.y + titleBox.height / 2 })
+  if (!expandHit) ng.push(`${label}: タイトル位置の hit-test が開閉ボタンでない（行本体を押しても開閉しない）`)
   if (!(await hitTarget(origin))) ng.push(`${label}: 出自リンクの hit-test を行本体が奪っている`)
   if ((await capacity.count()) && !(await hitTarget(capacity))) {
     ng.push(`${label}: 容量不足バッジの hit-test を行本体が奪っている`)

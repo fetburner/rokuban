@@ -700,7 +700,7 @@ describe('ホーム管理モード: 失敗/ドロップの timeline rendering', 
 describe('ホーム: 警告セクション', () => {
   it('orphaned 予約を「録画されず」で詳細へ案内し、管理の警告件数に加える', async () => {
     stubApi({
-      reservations: [reservation(22, '開始されなかった番組', 2 * HOUR, { state: 'orphaned' })],
+      reservations: [reservation(22, '開始されなかった番組', -3 * HOUR, { state: 'orphaned' })],
     })
     renderHome()
 
@@ -712,7 +712,7 @@ describe('ホーム: 警告セクション', () => {
 
   it('予約一覧の取得が未解決なら要対応と管理の警告件数を確定しない', async () => {
     const { resolvePending, unresolvedCount } = stubApi({
-      reservations: [reservation(23, '遅れて届く録画されず', 2 * HOUR, { state: 'orphaned' })],
+      reservations: [reservation(23, '遅れて届く録画されず', -3 * HOUR, { state: 'orphaned' })],
       pendingPaths: new Set(['/api/reservations']),
     })
     renderHome()
@@ -830,7 +830,7 @@ describe('ホーム: 警告セクション', () => {
         }),
       ],
       failed: [recording(10, '失敗した録画', 'failed')],
-      reservations: [reservation(12, '開始されなかった録画', 2 * HOUR, { state: 'orphaned' })],
+      reservations: [reservation(12, '開始されなかった録画', -3 * HOUR, { state: 'orphaned' })],
     })
     renderHome()
 

@@ -228,12 +228,12 @@ function ReservationEpisodeRow({
       />
       <div className="flex min-h-11 min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 pl-7">
         <span className="shrink-0 text-sm">{formatDateTime(reservation.startAt)}</span>
-          <span className="min-w-0 flex-1 truncate text-sm">{title}</span>
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-            <span className="shrink-0">{formatDuration(reservation.durationMs)}</span>
-            {showSite && <span className="shrink-0 rounded bg-muted px-1.5 py-0.5">{reservation.site}</span>}
-            <ReservationOrigin reservation={reservation} ruleLabel={ruleLabel} />
-            <ReservationVerdictBadge reservation={reservation} overages={overages} />
+        <span className="min-w-0 flex-1 truncate text-sm">{title}</span>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+          <span className="shrink-0">{formatDuration(reservation.durationMs)}</span>
+          {showSite && <span className="shrink-0 rounded bg-muted px-1.5 py-0.5">{reservation.site}</span>}
+          <ReservationOrigin reservation={reservation} ruleLabel={ruleLabel} />
+          <ReservationVerdictBadge reservation={reservation} overages={overages} />
         </div>
       </div>
     </li>
@@ -263,6 +263,11 @@ function ReservationGroupBadges({ group }: { group: ReservationGroup }) {
           録画されず {badges.notRecorded}
         </span>
       )}
+      {badges.skipDuplicate > 0 && (
+        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">
+          録画しない（重複） {badges.skipDuplicate}
+        </span>
+      )}
       {badges.skipExcluded > 0 && (
         <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">
           録画しない（除外） {badges.skipExcluded}
@@ -278,11 +283,6 @@ function ReservationGroupBadges({ group }: { group: ReservationGroup }) {
           <TriangleAlert className="size-3 shrink-0" aria-hidden />
           容量不足 {badges.capacityShortfall}
         </Link>
-      )}
-      {badges.skipDuplicate > 0 && (
-        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">
-          録画しない（重複） {badges.skipDuplicate}
-        </span>
       )}
     </>
   )
