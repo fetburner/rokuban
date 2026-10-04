@@ -28,3 +28,20 @@ export function cmDetectStageMessage(stage: string | null | undefined): string {
       return '失敗の種類が記録されていない古い試行です。'
   }
 }
+
+/**
+ * isStationFixableCMStage は、解消する操作が局の CM ロゴ画面にしか無い失敗段階かを返す。
+ *
+ * 段階ごとの解消操作は次のとおり。
+ * - `logo`: 局で枠を教え、候補を採用する。
+ * - `area`: 局で枠を教え直す（枠と解像度が合わない古い試行の意味）。
+ * - `adopt`: 局で候補を採用する。
+ * - `match`: 局でロゴを忘れる、または枠を教え直して候補を採用する。
+ * - `resolution`: 局でその解像度の録画から枠を教えて採用する。
+ *
+ * それ以外（`setup` / `probe` / `chapter` など、null と未知を含む）は録画詳細の再検出で直す。
+ * `state === 'failed'` の判定は呼び出し側の責任で、この関数は stage だけを見る。
+ */
+export function isStationFixableCMStage(stage: string | null | undefined): boolean {
+  return stage === 'logo' || stage === 'area' || stage === 'match' || stage === 'resolution' || stage === 'adopt'
+}

@@ -1,43 +1,72 @@
 import { useMemo } from 'react'
 
 import { type DropSummary, type Recording } from '@/api/generated'
+import type { LiveCapability } from '@/lib/capabilities'
 import { encodeJobStatusLabel } from '@/lib/encode-status'
 import { useEncodeProgress } from '@/lib/events'
 import { formatBytes } from '@/lib/format'
 import { ingestDisplay } from '@/lib/ingest'
-import { statusLabels } from '@/lib/recording-search'
+import { recordingVerdict, type RecordingVerdict } from '@/lib/recording-verdict'
 import { cn } from '@/lib/utils'
 
 /**
- * StatusBadge は録画の状態。**録画中だけがタリーレッドの塗り**になる
- * （docs/frontend/design.md「色は信号のみ」）。
+ * RecordingVerdictBadge は「見られるか」の結論を出す。視聴可能な録画は無印。
  *
- * 赤は 2 つの意味に使うが、色相ではなく**形で分ける**: タリーは「点灯」なので
- * 塗り（`bg-tally` + 紙白の文字）、destructive は「取り返しがつかない」なので
- * 文字と淡い地（`text-destructive` + `bg-destructive/10`）。同じ赤でも、
- * 塗られているかどうかで「いま電波に乗っている」と「壊れた」を見分けられる。
+ * 「要対応」のように結論と処理内訳を混ぜる語は使わない。見られる録画の
+ * エンコード失敗やドロップは、後続の内訳バッジが destructive で示す。
  *
- * `finished` の文字色は `text-foreground`（bg-muted 小バッジの合成後コントラスト
- * 対策。docs/frontend/design.md「コントラストは毎回測る」）。foreground は色では
- * なく地の無彩 3 値の一部なので「色は信号のみ」は破っていない。
- *
- * この描き分けと `text-foreground` のコントラストは `web/e2e/design.mjs` が
- * 実測している対象（`IngestBadge` と同じフィクスチャで測る）。ここを変えると
- * 理由が分からないまま e2e が落ちる。
+ * `pending` / `unknown` capability を `false` に潰さず、原本だけの録画を
+ * 誤って「再生不可」としないため、useLiveCapability の 4 値を使う。
  */
-export function StatusBadge({ status }: { status: Recording['status'] }) {
-  return (
+export function RecordingVerdictBadge({
+  recording,
+  liveCapability,
+  isTrashed = false,
+  onClick,
+}: {
+  recording: Recording
+  liveCapability: LiveCapability
+  isTrashed?: boolean
+  /** 詳細ヘッダーでは結論から記録タブへ移動する。 */
+  onClick?: () => void
+}) {
+  // IngestBadge と同じくレンダー時点の観測時刻を渡す。結論は transferring の
+  // stale 有無で変わらず、再描画時には内訳と同じ観測を使う。
+  // oxlint-disable-next-line react/purity -- status snapshot follows IngestBadge's render-time clock
+  const verdict = recordingVerdict({ recording, liveCapability, isTrashed, nowMs: Date.now() })
+  if (verdict === undefined || verdict === 'viewable') return null
+
+  const badge = (
     <span
       className={cn(
         'shrink-0 rounded px-1.5 py-0.5 text-xs',
-        status === 'failed' && 'bg-destructive/10 text-destructive',
-        status === 'recording' && 'bg-tally font-medium text-tally-foreground',
-        status === 'finished' && 'bg-muted text-foreground',
+        verdict === 'failed' && 'bg-destructive/10 text-destructive',
+        verdict === 'recording' && 'bg-tally font-medium text-tally-foreground',
+        (verdict === 'preparing' || verdict === 'unavailable') && 'bg-muted text-foreground',
       )}
     >
-      {statusLabels[status]}
+      {verdictLabels[verdict]}
     </span>
   )
+
+  if (onClick === undefined) return badge
+  return (
+    <button
+      type="button"
+      className="inline-flex min-h-6 items-center"
+      aria-label="録画状態を記録タブで見る"
+      onClick={onClick}
+    >
+      {badge}
+    </button>
+  )
+}
+
+const verdictLabels: Record<Exclude<RecordingVerdict, 'viewable'>, string> = {
+  recording: '録画中',
+  failed: '録画失敗',
+  preparing: '準備中',
+  unavailable: '再生不可',
 }
 
 /**

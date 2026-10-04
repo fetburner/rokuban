@@ -200,7 +200,7 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 	})
 	areaExists := err == nil
 	if err != nil && !errors.Is(err, pgx5.ErrNoRows) {
-		return cmFailure("area", fmt.Errorf("loading taught logo area: %w", err))
+		return cmFailure("setup", fmt.Errorf("loading taught logo area: %w", err))
 	}
 	var areaPtr *sqlcgen.GetCMLogoAreaRow
 	if areaExists {
