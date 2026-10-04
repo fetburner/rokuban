@@ -1359,6 +1359,9 @@ describe('RecordingDetailPage CM 検出の有効化導線', () => {
   it.each([
     ['logo', true],
     ['area', true],
+    ['match', true],
+    ['resolution', true],
+    ['adopt', true],
     ['setup', false],
     [undefined, false],
   ] as const)(
@@ -1377,10 +1380,11 @@ describe('RecordingDetailPage CM 検出の有効化導線', () => {
     await selectDetailTab('記録')
     const cmRow = screen.getAllByTestId('recording-diagnostic-row').find((row) => row.textContent?.includes('CM 検出'))
     expect(cmRow).toHaveTextContent(cmDetectStageMessage(stage))
-    // logo / area は枠を教えるのが直し方（ロゴ登録画面へ録画の局と録画 id を渡す）。それ以外には出さない。
-    const logoLink = within(cmRow!).queryByRole('link', { name: 'CM 検出のロゴを教える' })
+    // 局で直せる段階だけ、局の CM ロゴ画面へ録画の局と録画 id を渡す。
+    const linkName = stage === 'adopt' ? 'ロゴ候補を確認して採用する' : 'CM 検出のロゴを教える'
+    const logoLink = within(cmRow!).queryByRole('link', { name: linkName })
     if (linkExpected) {
-      expect(logoLink).toHaveAttribute('href', '/cm-logos?network=32678&service=5168&recording=3')
+      expect(logoLink).toHaveAttribute('href', '/cm-logos/32678/5168?recording=3')
     } else {
       expect(logoLink).not.toBeInTheDocument()
     }

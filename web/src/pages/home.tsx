@@ -22,6 +22,7 @@ import { EmptyState, ListSkeleton, PageContent, PageHeader } from '@/components/
 import { ThumbnailOverlay } from '@/components/thumbnail-overlay'
 import { HomeModeToggle } from '@/components/home-mode-toggle'
 import { describeBreakerName, describeBreakerReason } from '@/lib/breaker'
+import { isStationFixableCMStage } from '@/lib/cm-detect-stage'
 import { dayOrigin } from '@/lib/day-offset'
 import { formatBytes, formatDate, formatDateTime, formatDuration, formatTime } from '@/lib/format'
 import {
@@ -1299,9 +1300,8 @@ function buildWarnings({
     })
   }
 
-  // CM 検出失敗のうち logo / area は局のロゴ設定を直すと解消するため、局単位にまとめる。
-  // それ以外の段階は個別の録画詳細が操作先なので録画ごとに出す。エラー詳細は原因を
-  // 推測させないため警告には載せない。
+  // 局の CM ロゴ画面で直せる段階は局単位にまとめる。それ以外の段階は個別の録画詳細が
+  // 操作先なので録画ごとに出す。エラー詳細は原因を推測させないため警告には載せない。
   const stationFailures = new Map<
     string,
     { networkId: number; serviceId: number; serviceName: string; count: number }
@@ -1311,7 +1311,7 @@ function buildWarnings({
     const detection = recording.cmDetection
     if (detection.state !== 'failed') continue
 
-    if (detection.stage === 'logo' || detection.stage === 'area') {
+    if (isStationFixableCMStage(detection.stage)) {
       const stationKey = `${recording.networkId}:${recording.serviceId}`
       const station = stationFailures.get(stationKey)
       if (station === undefined) {

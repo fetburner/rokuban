@@ -39,7 +39,7 @@ import {
   formatDuration,
   formatTime,
 } from '@/lib/format'
-import { cmDetectStageMessage } from '@/lib/cm-detect-stage'
+import { cmDetectStageMessage, isStationFixableCMStage } from '@/lib/cm-detect-stage'
 import { ingestDisplay, type IngestDisplay } from '@/lib/ingest'
 import { useLiveEnabled } from '@/lib/capabilities'
 import { recordingFileURL } from '@/lib/playback-position'
@@ -1026,19 +1026,19 @@ export function RecordingDetail({
                     <span>{recording.cmDetection.ranges.length} 区間</span>
                   )}
                   {recording.cmDetection.state === 'failed' && <span>{cmDetectStageMessage(recording.cmDetection.stage)}</span>}
-                  {/* logo / area は枠を教えるのが直し方なので、記録の明細からそこへ行けるようにする。 */}
+                  {/* 局の画面で直せる段階なら、記録の明細からその局へ行けるようにする。 */}
                   {recording.cmDetection.state === 'failed' &&
-                    (recording.cmDetection.stage === 'logo' || recording.cmDetection.stage === 'area') && (
+                    isStationFixableCMStage(recording.cmDetection.stage) && (
                       <Link
-                        to="/cm-logos"
-                        search={{
-                          network: recording.networkId,
-                          service: recording.serviceId,
-                          recording: recording.id,
+                        to="/cm-logos/$networkId/$serviceId"
+                        params={{
+                          networkId: String(recording.networkId),
+                          serviceId: String(recording.serviceId),
                         }}
+                        search={{ recording: recording.id }}
                         className="text-primary underline underline-offset-4"
                       >
-                        CM 検出のロゴを教える
+                        {recording.cmDetection.stage === 'adopt' ? 'ロゴ候補を確認して採用する' : 'CM 検出のロゴを教える'}
                       </Link>
                     )}
                 </div>

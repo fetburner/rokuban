@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cmDetectStageMessage } from './cm-detect-stage'
+import { cmDetectStageMessage, isStationFixableCMStage } from './cm-detect-stage'
 
 describe('cmDetectStageMessage', () => {
   it('area と logo は枠・ロゴで直せる失敗として言い分ける', () => {
@@ -29,4 +29,17 @@ describe('cmDetectStageMessage', () => {
       expect(cmDetectStageMessage(stage)).toBe('失敗の種類が記録されていない古い試行です。')
     }
   })
+})
+
+describe('isStationFixableCMStage', () => {
+  it.each(['logo', 'area', 'match', 'resolution', 'adopt'])('%s は局の CM ロゴ画面で直せる', (stage) => {
+    expect(isStationFixableCMStage(stage)).toBe(true)
+  })
+
+  it.each(['setup', 'probe', 'chapter', 'join', 'parse', 'save', 'stopped', null, undefined, '', 'future-stage'])(
+    '%s は局の CM ロゴ画面では直せない',
+    (stage) => {
+      expect(isStationFixableCMStage(stage)).toBe(false)
+    },
+  )
 })
