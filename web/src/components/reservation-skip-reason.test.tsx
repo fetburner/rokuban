@@ -2,10 +2,8 @@ import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
 import type { Reservation } from '@/api/generated'
-import {
-  ReservationSkipBadge,
-  ReservationSkipReason,
-} from '@/components/reservation-skip-reason'
+import { ReservationVerdictBadge } from '@/components/reservation-row-parts'
+import { ReservationSkipReason } from '@/components/reservation-skip-reason'
 import { renderInRouter } from '@/test/router'
 
 /**
@@ -33,43 +31,55 @@ function reservation(overrides: Partial<Reservation> = {}): Reservation {
   }
 }
 
-describe('ReservationSkipBadge', () => {
-  it('skip でなければ何も描画しない', () => {
-    const { container } = render(<ReservationSkipBadge reservation={reservation()} />)
+describe('ReservationVerdictBadge', () => {
+  it('録画予定は無印にする', () => {
+    const { container } = render(<ReservationVerdictBadge reservation={reservation()} overages={[]} />)
     expect(container).toBeEmptyDOMElement()
   })
 
-  it('根拠があれば「重複」を出す', () => {
+  it('orphaned を skip より優先して destructive の結論を出す', () => {
     render(
-      <ReservationSkipBadge
-        reservation={reservation({ skip: true, dedupMatchRecordingId: 12, dedupSimilarity: 0.9 })}
-      />,
+      <ReservationVerdictBadge reservation={reservation({ state: 'orphaned', skip: true })} overages={[]} />,
     )
-    expect(screen.getByText('重複')).toBeInTheDocument()
-    expect(screen.queryByText('除外')).not.toBeInTheDocument()
+    expect(screen.getByText('録画されず')).toBeInTheDocument()
     // text-muted-foreground だと bg-muted との合成後コントラストがライトで
     // 4.5 を割る（issue #308）。jsdom は色を測れないので、退行防止としては
     // クラス名のリテラル比較まで（実測は e2e:design の担当）。
-    expect(screen.getByText('重複').className).toContain('text-foreground')
-    expect(screen.getByText('重複').className).not.toContain('text-muted-foreground')
+    expect(screen.getByText('録画されず').className).toContain('text-destructive')
   })
 
-  // 根拠の有無で 2 つの経路を区別する（skip が立つ経路は重複排除だけではない）。
-  it('根拠が無い skip は「除外」を出す', () => {
-    render(<ReservationSkipBadge reservation={reservation({ skip: true })} />)
-    expect(screen.getByText('除外')).toBeInTheDocument()
-    expect(screen.queryByText('重複')).not.toBeInTheDocument()
-  })
-
-  // dedup 列があっても skip が false なら出さない（ユーザーの record 意図が
-  // 重複判定に勝っている状態。根拠は残るが録画される。EPGStation#473）。
-  it('根拠があっても skip が false なら何も描画しない', () => {
-    const { container } = render(
-      <ReservationSkipBadge
-        reservation={reservation({ skip: false, dedupMatchRecordingId: 12, dedupSimilarity: 0.9 })}
+  it('根拠があれば録画しない理由を重複として出す', () => {
+    render(
+      <ReservationVerdictBadge
+        reservation={reservation({ skip: true, dedupMatchRecordingId: 12, dedupSimilarity: 0.9 })}
+        overages={[]}
       />,
     )
-    expect(container).toBeEmptyDOMElement()
+    expect(screen.getByText('録画しない（重複）')).toBeInTheDocument()
+    expect(screen.getByText('録画しない（重複）').className).toContain('text-foreground')
+  })
+
+  it('根拠がない skip は除外として出す', () => {
+    render(<ReservationVerdictBadge reservation={reservation({ skip: true })} overages={[]} />)
+    expect(screen.getByText('録画しない（除外）')).toBeInTheDocument()
+  })
+
+  it('交差する不足区間は既存の番組表リンクバッジを使う', async () => {
+    const startMs = Date.parse(reservation().startAt)
+    renderInRouter(
+      <ReservationVerdictBadge
+        reservation={reservation()}
+        overages={[{
+          site: 'default',
+          startAt: new Date(startMs).toISOString(),
+          endAt: new Date(startMs + 30 * 60_000).toISOString(),
+          shortfall: 1,
+          jammedTypes: ['GR'],
+        }]}
+      />,
+    )
+    const link = await screen.findByRole('link', { name: /この時間帯はチューナーが不足しています/ })
+    expect(link).toHaveAttribute('href', expect.stringContaining('/programs?'))
   })
 })
 
@@ -88,12 +98,13 @@ describe('ReservationSkipReason', () => {
     // マッチが解決するまで何も描かないので findBy* で待つ。
     const link = await screen.findByRole('link', { name: '録画 #12' })
     expect(link).toHaveAttribute('href', '/recordings/12')
+    expect(screen.getByText(/録画しません（重複:/)).toBeInTheDocument()
     expect(screen.getByText(/類似度 0\.88/)).toBeInTheDocument()
   })
 
   it('根拠が無い skip は除外として説明する', () => {
     render(<ReservationSkipReason reservation={reservation({ skip: true })} />)
-    expect(screen.getByText('録画しない（除外）')).toBeInTheDocument()
+    expect(screen.getByText('録画しません（除外）')).toBeInTheDocument()
     expect(screen.queryByText(/類似度/)).not.toBeInTheDocument()
   })
 

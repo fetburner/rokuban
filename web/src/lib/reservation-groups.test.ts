@@ -106,7 +106,7 @@ describe('groupReservations', () => {
     expect(rows[0].reservations.map((item) => item.site)).toEqual(['default', 'takamatsu'])
   })
 
-  it('状態・容量不足・重複スキップのバッジ件数を予約ごとに数える', () => {
+  it('結論ごとのバッジ件数を優先順に従って予約ごとに数える', () => {
     const rows = groupReservations(
       [
         reservation(1, 'シリーズ', 0, {
@@ -118,17 +118,18 @@ describe('groupReservations', () => {
         reservation(3, 'シリーズ', 120, { state: 'detached', skip: true }),
         // 同じ放送を別サイトにも予約した場合も 1 本として数える。
         reservation(3, 'シリーズ', 120, { site: 'takamatsu', state: 'active' }),
+        reservation(4, 'シリーズ', 180, { skip: true, dedupMatchRecordingId: 99 }),
       ],
       [overage(60, 1), overage(120, 2, 'takamatsu')],
     )
 
     expect(rows).toHaveLength(1)
-    expect(rows[0].reservations).toHaveLength(4)
+    expect(rows[0].reservations).toHaveLength(5)
     expect(rows[0].badges).toEqual({
-      orphaned: 2,
-      detached: 1,
-      capacityShortfall: 2,
-      duplicateSkipped: 1,
+      notRecorded: 2,
+      skipExcluded: 1,
+      skipDuplicate: 1,
+      capacityShortfall: 1,
     })
     expect(reservationGroupCapacityAt(rows[0])).toBe(Date.parse(overage(120, 2, 'takamatsu').startAt))
   })
