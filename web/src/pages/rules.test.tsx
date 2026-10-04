@@ -460,12 +460,24 @@ describe('RulesPage 予約の稼働状況', () => {
       }
       return baseFetch(input, init)
     }) as unknown as typeof fetch
-    renderPage()
+    const { queryClient } = renderPage()
 
     expect(await screen.findByRole('link', { name: '録画予定 1 件' })).toBeInTheDocument()
     expect(screen.queryByText(/うち不足時間帯/)).not.toBeInTheDocument()
+    await waitFor(() => expect(resolveCapacity).toBeDefined())
     resolveCapacity?.(jsonResponse([]))
-    await waitFor(() => expect(screen.queryByText(/うち不足時間帯/)).not.toBeInTheDocument())
+    await waitFor(() => {
+      const capacityQuerySucceeded = queryClient
+        .getQueryCache()
+        .getAll()
+        .some(
+          (query) =>
+            query.queryKey[0] === '/api/capacity/overages' &&
+            query.state.status === 'success',
+        )
+      expect(capacityQuerySucceeded).toBe(true)
+    })
+    expect(screen.queryByText(/うち不足時間帯/)).not.toBeInTheDocument()
   })
 
   it('容量超過の取得に失敗したら不足件数だけ省き、録画予定は残す', async () => {
