@@ -24,7 +24,12 @@ import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { DropStatsTable } from '@/components/drop-stats-table'
 import type { ChapterEditorCommands, ChapterEditorStatus } from '@/components/recording-chapter-editor'
 import { RecordingAssetControls } from '@/components/recording-actions'
-import { DropBadges, EncodeStatusBadges, IngestBadge, StatusBadge } from '@/components/recording-badges'
+import {
+  DropBadges,
+  EncodeStatusBadges,
+  IngestBadge,
+  RecordingVerdictBadge,
+} from '@/components/recording-badges'
 import { RecordingPlaybackPoster, type PosterTimeline } from '@/components/recording-playback-poster'
 import { RecordingPlayer } from '@/components/recording-player'
 import { LivePlayer } from '@/components/live-player'
@@ -39,13 +44,13 @@ import {
   formatDuration,
   formatTime,
 } from '@/lib/format'
-import { cmDetectStageMessage } from '@/lib/cm-detect-stage'
+import { cmDetectStageMessage, isStationFixableCMStage } from '@/lib/cm-detect-stage'
 import { ingestDisplay, type IngestDisplay } from '@/lib/ingest'
-import { useLiveEnabled } from '@/lib/capabilities'
+import { useLiveCapability } from '@/lib/capabilities'
 import { recordingFileURL } from '@/lib/playback-position'
 import { seedRecordingDetail } from '@/lib/recording-detail-cache'
 import { selectRecordingPlaybackSource, type RecordingPlaybackSource } from '@/lib/recording-playback-source'
-import { validLiveProfile } from '@/lib/live'
+import { originalVODSessionOriginSeconds, validLiveProfile } from '@/lib/live'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { shouldShowRecordingSite, sourceLabels } from '@/lib/recording-search'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
@@ -172,7 +177,8 @@ export function RecordingDetail({
   onSelectLiveProfile: (name: string) => void
   onNavigateToRecording: (id: number) => void
 }) {
-  const liveEnabled = useLiveEnabled()
+  const liveCapability = useLiveCapability()
+  const liveEnabled = liveCapability === 'enabled'
   const queryClient = useQueryClient()
   const toast = useToast()
   const { moveToTrash } = useMoveRecordingToTrash(recording.id)
@@ -180,9 +186,11 @@ export function RecordingDetail({
   const [descriptionExpanded, setDescriptionExpanded] = useState(false)
   const encodedAssets = recording.encodedAssets ?? []
   const hasOriginal = recording.sizeBytes !== undefined
+  const hasNonCutEncoded = encodedAssets.some((asset) => asset.cut !== true)
   const playbackSelection = {
     status: recording.status,
     hasEncoded: encodedAssets.length > 0,
+    hasNonCutEncoded,
     hasOriginal,
     liveEnabled,
     isTrashed: trash,
@@ -251,6 +259,20 @@ export function RecordingDetail({
     })
     setChaseOffsetSeconds(undefined)
   }
+  const startPlaybackSource = (source: 'encoded' | 'original-vod', profile?: string) => {
+    const current = playbackStateRef.current
+    const position = recordingPositionSecondsRef.current ?? current.positionSeconds
+    if (source === 'encoded' && profile !== undefined) setSelectedPlaybackProfile(profile)
+    setChaseOffsetSeconds(undefined)
+    updatePlaybackState({
+      source,
+      started: true,
+      autoPlay: true,
+      startFromBeginning: position === undefined ? current.startFromBeginning : false,
+      positionSeconds: position,
+      generation: current.generation + 1,
+    })
+  }
   const recordedSpanMs = recording.startedAt !== undefined && recording.endedAt !== undefined
     ? Date.parse(recording.endedAt) - Date.parse(recording.startedAt)
     : Number.NaN
@@ -310,9 +332,13 @@ export function RecordingDetail({
   const startOffsetSeconds = showChase
     ? chaseOffsetSeconds ?? carriedOffsetSeconds ?? (playbackState.startFromBeginning ? 0 : undefined)
     : carriedOffsetSeconds
-  // 追っかけか原本 VOD を表示するときだけ live プロファイルを取る。一覧は
-  // セレクタ用で、取得できなくても先頭プロファイルで再生できる既存契約を保つ。
-  const liveProfilesQuery = useListLiveProfiles({ query: { enabled: showChase || showOriginalVOD } })
+  // 追っかけ・原本 VOD、または版タブから原本 HLS へ切り替えられる録画だけ live
+  // プロファイルを取る。一覧取得ではセッションを作らない。
+  const canSwitchToOriginalVOD =
+    recording.status === 'finished' && liveEnabled && hasOriginal && encodedAssets.length > 0
+  const liveProfilesQuery = useListLiveProfiles({
+    query: { enabled: showChase || showOriginalVOD || canSwitchToOriginalVOD },
+  })
   const liveProfiles = useMemo(
     () => unwrap(liveProfilesQuery.data) ?? [],
     [liveProfilesQuery.data],
@@ -365,21 +391,13 @@ export function RecordingDetail({
   // チャプター（CM とユーザー区間）。**ごみ箱では取らない** --- ごみ箱では
   // プレイヤーを出さず、配信経路も 404 になる（配信 3 クエリと同じ契約）。
   //
-  // 編集 UI は「ブラウザ再生できる encoded があるときだけ」出す。原本 TS しか
-  // 無い録画ではタイムラインを見ながら直せないので、押しても何もできない
-  // コントロールを置かない（issue #209 と同じ規律）。**カット版を再生しているときは
-  // 編集できない** --- カット版は時間軸から cut 区間を取り除いた別の動画で、
-  // 原本の ms で置かれた境界をその動画に当てられない。
-  //
-  // 「今どの encoded を再生しているか」はプレイヤーが持つので、ここでは
-  // 「確認に使える（cut でない）encoded が 1 つ以上あるか」で判定する。実際に
-  // カット版へ切り替えたときの編集 UI の抑止はプレイヤー側が `playingCut` で行う。
-  // 原本 HLS は編集 UI を出さないが、再生バーの目盛り・一覧・自動スキップでは
-  // 同じ区間を使う。原本 VOD プレイヤーがある場合は再生用に取得する。
-  // ここでカット版しか無い録画に対してチャプターを取りに行かないのは、その
-  // 構成では編集も確認再生もできないためである（cut だけの録画をそもそも
-  // 凍結できないのは config 検証の仕事）。
-  const canEditChapters = !trash && encodedAssets.some((a) => a.cut !== true)
+  // 編集 UI は、cut でない encoded があるか live.enabled が有効で原本 HLS を使える
+  // ときに出す。cut だけの encoded と原本の両方があるときは再生元選択で原本 HLS を
+  // 優先する。cut でない encoded がある場合はこれまでどおり encoded を優先し、実際に
+  // cut 版を選んだときはプレイヤーが `playingCut` で編集を止める。
+  // 原本 HLS は再生開始前に chapters を読んでもセッションを作らない。配信自体は再生
+  // ボタンで始める規律を保つ。
+  const canEditChapters = !trash && (hasNonCutEncoded || (liveEnabled && hasOriginal))
   const chaptersQuery = useGetRecordingChapters(recording.id, {
     query: { enabled: canEditChapters || showOriginalVODPlayer },
   })
@@ -660,6 +678,16 @@ export function RecordingDetail({
               site={recording.site}
               recordingId={recording.id}
               chapters={chapters?.spans}
+              chapterSource={chapters?.source}
+              chapterVersion={chapters?.version}
+              chapterDetectionPending={chapters?.detectionPending}
+              chapterEditing={chapterEditing}
+              onEnterChapterEditing={onEnterChapterEditing}
+              chapterEditorCommandsRef={chapterEditorCommandsRef}
+              onChapterEditorStatusChange={onChapterEditorStatusChange}
+              onSaveChapters={canEditChapters ? saveChapters : undefined}
+              onResetChapters={canEditChapters ? resetChapters : undefined}
+              chapterSavePending={putChapters.isPending || deleteChapters.isPending}
               watched={recording.watchedAt !== undefined}
               watchedPending={putWatchedMutation.isPending || deleteWatchedMutation.isPending}
               onPutWatched={() => void updateWatched(true)}
@@ -670,7 +698,7 @@ export function RecordingDetail({
               autoPlay={playbackState.autoPlay}
               fullscreenContainerRef={playbackFullscreenContainerRef}
               startPositionSeconds={playbackState.positionSeconds !== undefined
-                ? Math.max(0, playbackState.positionSeconds - (carriedOffsetSeconds ?? 0))
+                ? Math.max(0, playbackState.positionSeconds - originalVODSessionOriginSeconds(carriedOffsetSeconds))
                 : undefined}
               recordingDurationMs={Number.isFinite(recordedSpanMs) ? recordedSpanMs : recording.durationMs}
               profile={explicitLiveProfile}
@@ -713,7 +741,7 @@ export function RecordingDetail({
               onSaveChapters={canEditChapters ? saveChapters : undefined}
               onResetChapters={canEditChapters ? resetChapters : undefined}
               chapterSavePending={putChapters.isPending || deleteChapters.isPending}
-              onReencode={trash ? undefined : reencodeCut}
+              onReencode={trash || !hasOriginal ? undefined : reencodeCut}
               reencodePending={reencode.isPending}
               autoPlay={playbackState.autoPlay}
               onRecordingPositionChange={reportRecordingPosition}
@@ -765,9 +793,12 @@ export function RecordingDetail({
         <section data-testid="recording-title-row" className="flex flex-col gap-2">
           <h2 className="text-xl font-semibold leading-tight">{programTitle(recording.title)}</h2>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-            <button type="button" className="inline-flex min-h-6 items-center" aria-label="録画状態を記録タブで見る" onClick={() => setSelectedTab('record')}>
-              <StatusBadge status={recording.status} />
-            </button>
+            <RecordingVerdictBadge
+              recording={recording}
+              liveCapability={liveCapability}
+              isTrashed={trash}
+              onClick={() => setSelectedTab('record')}
+            />
             {recording.ingest && (
               <button type="button" className="inline-flex min-h-6 items-center" aria-label="取り込み状態を記録タブで見る" onClick={() => setSelectedTab('record')}>
                 <IngestBadge recording={recording} />
@@ -931,15 +962,40 @@ export function RecordingDetail({
                         className="flex min-h-14 flex-wrap items-center gap-x-3 gap-y-1 py-2 text-sm"
                       >
                         <span className="font-medium">{asset.cut ? `カット版 (${asset.profile})` : asset.profile}</span>
-                        {asset.profile === activePlaybackProfile && <span className="rounded bg-foreground px-1.5 py-0.5 text-xs text-background">再生中</span>}
+                        {showEncoded && asset.profile === activePlaybackProfile && <span className="rounded bg-foreground px-1.5 py-0.5 text-xs text-background">再生中</span>}
                         <span className="ml-auto text-muted-foreground">{asset.sizeBytes === undefined ? 'サイズ不明' : formatBytes(asset.sizeBytes)}</span>
+                        {recording.status === 'finished' && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            aria-label={`${asset.cut ? `カット版 (${asset.profile})` : asset.profile}を再生`}
+                            disabled={showEncoded && asset.profile === activePlaybackProfile}
+                            onClick={() => startPlaybackSource('encoded', asset.profile)}
+                          >
+                            再生
+                          </Button>
+                        )}
                         <a href={recordingFileURL(recording.id, asset.profile)} download className="inline-flex min-h-6 items-center text-primary underline-offset-2 hover:underline">ダウンロード</a>
                       </div>
                     ))}
                     {hasOriginal ? (
                       <div role="listitem" data-testid="recording-original-row" className="flex min-h-14 flex-wrap items-center gap-3 py-2 text-sm">
                         <span className="font-medium">原本 TS</span>
+                        {showOriginalVOD && playbackState.started && <span className="rounded bg-foreground px-1.5 py-0.5 text-xs text-background">再生中</span>}
                         <span className="ml-auto text-muted-foreground">{formatBytes(recording.sizeBytes!)}</span>
+                        {canSwitchToOriginalVOD && liveProfiles.length > 0 && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            aria-label="原本 HLS を再生"
+                            disabled={showOriginalVOD}
+                            onClick={() => startPlaybackSource('original-vod')}
+                          >
+                            HLS で再生
+                          </Button>
+                        )}
                         <a href={recordingFileURL(recording.id)} className="inline-flex min-h-6 items-center text-primary underline-offset-2 hover:underline">ダウンロード / VLC</a>
                       </div>
                     ) : recording.status === 'recording' ? (
@@ -979,19 +1035,19 @@ export function RecordingDetail({
                     <span>{recording.cmDetection.ranges.length} 区間</span>
                   )}
                   {recording.cmDetection.state === 'failed' && <span>{cmDetectStageMessage(recording.cmDetection.stage)}</span>}
-                  {/* logo / area は枠を教えるのが直し方なので、記録の明細からそこへ行けるようにする。 */}
+                  {/* 局の画面で直せる段階なら、記録の明細からその局へ行けるようにする。 */}
                   {recording.cmDetection.state === 'failed' &&
-                    (recording.cmDetection.stage === 'logo' || recording.cmDetection.stage === 'area') && (
+                    isStationFixableCMStage(recording.cmDetection.stage) && (
                       <Link
-                        to="/cm-logos"
-                        search={{
-                          network: recording.networkId,
-                          service: recording.serviceId,
-                          recording: recording.id,
+                        to="/cm-logos/$networkId/$serviceId"
+                        params={{
+                          networkId: String(recording.networkId),
+                          serviceId: String(recording.serviceId),
                         }}
+                        search={{ recording: recording.id }}
                         className="text-primary underline underline-offset-4"
                       >
-                        CM 検出のロゴを教える
+                        {recording.cmDetection.stage === 'adopt' ? 'ロゴ候補を確認して採用する' : 'CM 検出のロゴを教える'}
                       </Link>
                     )}
                 </div>

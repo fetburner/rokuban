@@ -294,6 +294,9 @@ type IngestWorker struct {
 	// クランプ（resolveAndSnapshotEncodePolicy）と、完了後のヒント投入
 	// （enqueueMissingEncodesFromContext）が使う。
 	CutProfiles map[string]struct{}
+	// LiveEnabled は config.live.enabled。原本 HLS が使えない場合だけ、凍結時に
+	// cut-only の選択を安全側へクランプする。
+	LiveEnabled bool
 
 	// StallTimeout は転送中の無進捗検知タイムアウト（config.ingest.stall_timeout。
 	// config.defaults() が既定値 30 秒を埋めるので、ここでは常に config が
@@ -1270,9 +1273,9 @@ func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sq
 	// （原本 media_asset の INSERT と同一）ごとロールバックし録画が消える
 	// （不変条件 3）ため、書く前に安全側へ倒す。
 	// cut だけになったときのクランプ。ルール単独・override 単独ではそれぞれ
-	// 「cut でないプロファイルを 1 つ以上含む」を満たしていても、マージ結果として
-	// cut だけが生成されうる。cut だけの録画は確認に再生が要り、再生に encode が
-	// 要り、encode に確認が要る循環になるので、**cut のプロファイルを落とす**
+	// live 無効時の規則を満たしていても、マージ結果として cut だけが生成されうる。
+	// 原本 HLS を使えない live 無効構成では確認に再生が要り、再生に encode が要り、
+	// encode に確認が要る循環になるので、**cut のプロファイルを落とす**
 	// （意図は overrides に残るので、ユーザーが cut でないプロファイルを足せば
 	// 戻る）。下のクランプと同じ向き（書く前に安全側へ倒す）。
 	//
@@ -1280,7 +1283,7 @@ func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sq
 	// desired が空になった場合（cut だけのルール）は、下のクランプが同じ
 	// tx の中で keepOriginal を安全側へ倒す --- ここで別の分岐を書くと、
 	// 「cut を落とした後だけ効く規則」がもう 1 つ増える。
-	if err := config.ValidateCutSelection(encodeProfiles, w.CutProfiles); err != nil {
+	if err := config.ValidateCutSelection(encodeProfiles, w.CutProfiles, w.LiveEnabled); err != nil {
 		slog.Warn("encode policy: frozen profile selection is cut-only; dropping cut profiles",
 			"recording_id", recordingID, "encode_profiles", encodeProfiles)
 		kept := make([]string, 0, len(encodeProfiles))

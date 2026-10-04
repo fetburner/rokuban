@@ -30,6 +30,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { useLiveCapability } from '@/lib/capabilities'
 import { programsQueryKeyPrefix, recordingsQueryKeyPrefix } from '@/lib/events'
 import { formatDateTime, formatDuration } from '@/lib/format'
 import { programTitle } from '@/lib/program-labels'
@@ -76,6 +77,7 @@ export function SeriesHubPage() {
   const idNum = Number(id)
   const navigate = useNavigate({ from: '/recordings/$id/series' })
   const router = useRouter()
+  const liveCapability = useLiveCapability()
   const [order, setOrder] = useState<ListRecordingsOrder>(ListRecordingsOrder.desc)
   const [labelRuleFormOpen, setLabelRuleFormOpen] = useState(false)
 
@@ -385,6 +387,7 @@ export function SeriesHubPage() {
                   <li key={recording.id}>
                     <RecordingRow
                       recording={recording}
+                      liveCapability={liveCapability}
                       trash={false}
                       showSite={showSite}
                       view="list"

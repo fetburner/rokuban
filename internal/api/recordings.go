@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/fetburner/rokuban/internal/chapters"
-	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 )
@@ -757,7 +756,8 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 	}
 
 	// cut の規則は「既存 ∪ 追加分」に当てる（[h264] に cut だけを足すのは
-	// 結果が [h264, cut] なので正当）。policy 行が無ければ追加分のみ。
+	// 結果が [h264, cut] なので正当）。原本 HLS が使える live.enabled 構成では
+	// cut のみも正当。policy 行が無ければ追加分のみ。
 	if h.cutProfiles != nil {
 		merged := req.Body.Profiles
 		if policy, err := q.GetRecordingEncodePolicy(ctx, req.Id); err == nil {
@@ -765,7 +765,7 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("loading encode policy for recording %d: %w", req.Id, err)
 		}
-		if err := config.ValidateCutSelection(merged, h.cutProfiles); err != nil {
+		if err := h.validateCutSelection(merged); err != nil {
 			return AddRecordingEncodeProfiles400JSONResponse{Error: err.Error()}, nil
 		}
 	}

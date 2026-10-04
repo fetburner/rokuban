@@ -278,6 +278,7 @@ function createFakeRecordingsServer(options: {
     const method = init?.method ?? 'GET'
 
     if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
+    if (url.pathname === '/api/capabilities') return Promise.resolve(jsonResponse({ live: true, cmDetect: false }))
     // サイトレジストリを先に解決する。
     if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(sites))
     if (/^\/api\/sites\/[^/]+\/services$/.test(url.pathname)) {
@@ -1125,8 +1126,8 @@ describe('録画の出自ラベル', () => {
  * それでもここに置くのは、`bg-tally` を `bg-primary/10` に戻すような差し替えを
  * 実ブラウザを起動せずに止められるため（docs/frontend/design.md）。
  */
-describe('録画状態の信号色', () => {
-  /** badgeFor は一覧の行から状態バッジの要素を引く。 */
+describe('録画の結論バッジ', () => {
+  /** badgeFor は一覧の行から結論バッジの要素を引く。 */
   function badgeFor(label: string): HTMLElement {
     const badge = screen.getByText(label)
     expect(badge.tagName).toBe('SPAN')
@@ -1149,7 +1150,7 @@ describe('録画状態の信号色', () => {
     expect(badge.className).not.toMatch(/text-tally(?![-\w])/)
   })
 
-  it('失敗は destructive のまま（タリーに置き換えない）', async () => {
+  it('録画失敗は destructive のまま（タリーに置き換えない）', async () => {
     createFakeRecordingsServer({
       library: [sampleRecording({ id: 22, title: '落ちた録画', status: 'failed' })],
     })
@@ -1157,23 +1158,64 @@ describe('録画状態の信号色', () => {
     renderPage()
     await screen.findByText('落ちた録画')
 
-    const badge = badgeFor('失敗')
+    const badge = badgeFor('録画失敗')
     expect(badge).toHaveClass('bg-destructive/10')
     expect(badge).toHaveClass('text-destructive')
     expect(badge.className).not.toMatch(/tally/)
   })
 
-  it('完了は無彩のまま（信号色を使わない）', async () => {
+  it('取り込み中の録画は「準備中」と無彩で表示する', async () => {
     createFakeRecordingsServer({
-      library: [sampleRecording({ id: 23, title: '終わった録画', status: 'finished' })],
+      library: [
+        sampleRecording({
+          id: 23,
+          title: '取り込み中の録画',
+          status: 'finished',
+          ingest: { state: 'pending' },
+        }),
+      ],
     })
 
     renderPage()
-    await screen.findByText('終わった録画')
+    await screen.findByText('取り込み中の録画')
 
-    const badge = badgeFor('完了')
+    const badge = badgeFor('準備中')
     expect(badge).toHaveClass('bg-muted')
+    expect(badge).toHaveClass('text-foreground')
     expect(badge.className).not.toMatch(/tally|warning|destructive/)
+  })
+
+  it('再生元のない finished 録画は「再生不可」と無彩で表示する', async () => {
+    createFakeRecordingsServer({
+      library: [sampleRecording({ id: 24, title: '資産のない録画' })],
+    })
+
+    renderPage()
+    await screen.findByText('資産のない録画')
+
+    const badge = await screen.findByText('再生不可')
+    expect(badge).toHaveClass('bg-muted')
+    expect(badge).toHaveClass('text-foreground')
+  })
+
+  it('再生できる finished 録画は無印にする', async () => {
+    createFakeRecordingsServer({
+      library: [
+        sampleRecording({
+          id: 25,
+          title: '視聴できる録画',
+          sizeBytes: 1_000,
+          encodedAssets: [{ profile: 'web', sizeBytes: 500 }],
+        }),
+      ],
+    })
+
+    renderPage()
+    await screen.findByText('視聴できる録画')
+
+    expect(screen.queryByText('完了')).not.toBeInTheDocument()
+    expect(screen.queryByText('再生不可')).not.toBeInTheDocument()
+    expect(screen.queryByText('準備中')).not.toBeInTheDocument()
   })
 })
 
@@ -1306,7 +1348,8 @@ describe('RecordingsPage の表示形式', () => {
     renderPage()
 
     expect(await screen.findByText('ライブラリの録画')).toBeInTheDocument()
-    expect(screen.getByText('完了')).toBeInTheDocument()
+    expect(await screen.findByText('再生不可')).toBeInTheDocument()
+    expect(screen.queryByText('完了')).not.toBeInTheDocument()
     expect(screen.getByText('ＯＨＫ')).toBeInTheDocument()
     expect(screen.getByText('30分')).toBeInTheDocument()
   })
