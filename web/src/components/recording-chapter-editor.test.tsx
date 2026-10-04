@@ -154,7 +154,20 @@ describe('RecordingChapterEditor の編集専用画面', () => {
     act(() => {
       void commandsRef.current?.save()
     })
-    expect(onSave).toHaveBeenCalledWith([{ startMs: 30_000, endMs: 40_000, cut: true }], 'v1')
+    expect(onSave).toHaveBeenCalledWith([{ startMs: 29_997, endMs: 39_973, cut: true }], 'v1')
+  })
+
+  it('新しい区間の端点を現在表示中のフレーム先頭へ合わせる', () => {
+    const { rerender, getByRole, commandsRef, props, onSave } = renderEditor([], {
+      currentSeconds: 66.75 * FRAME_SECONDS,
+    })
+    fireEvent.click(getByRole('button', { name: 'ここから区間を足す' }))
+    rerender(<RecordingChapterEditor {...props} currentSeconds={67.75 * FRAME_SECONDS} />)
+    fireEvent.click(getByRole('button', { name: 'ここまで' }))
+    act(() => {
+      void commandsRef.current?.save()
+    })
+    expect(onSave).toHaveBeenCalledWith([{ startMs: 2202, endMs: 2236, cut: true }], 'v1')
   })
 
   it('未変更ならサーバーの新しい値と版へ追随する', () => {

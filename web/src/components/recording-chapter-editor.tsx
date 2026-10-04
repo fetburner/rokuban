@@ -3,7 +3,11 @@ import { useCallback, useEffect, useMemo, useState, type MutableRefObject } from
 import type { ChapterSpan, RecordingChaptersSource } from '@/api/generated'
 import { Button } from '@/components/ui/button'
 import { RecordingChapterFilmstrip } from '@/components/recording-chapter-filmstrip'
-import { chapterBoundaries, chapterBoundaryMsToSeekSeconds } from '@/lib/chapters'
+import {
+  chapterBoundaries,
+  chapterBoundaryMsToSeekSeconds,
+  playbackSecondsToChapterBoundaryMs,
+} from '@/lib/chapters'
 import { formatPlaybackTime } from '@/lib/format'
 
 export type ChapterEditorCommands = {
@@ -103,7 +107,7 @@ function ChapterDraftEditor({
   const dirty = useMemo(() => !sameSpans(draft, base.spans), [draft, base.spans])
   const [selectedBoundaryValue, setSelectedBoundaryValue] = useState<number | null>(null)
   const [pendingStartMs, setPendingStartMs] = useState<number | null>(null)
-  const currentMs = Math.round(currentSeconds * 1000)
+  const currentMs = playbackSecondsToChapterBoundaryMs(currentSeconds)
   const nearestBoundary = boundaries.length === 0
     ? null
     : boundaries.reduce((best, candidate) =>
