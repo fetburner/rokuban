@@ -22,6 +22,7 @@ import { LabelRuleForm } from '@/components/label-rule-form'
 import { LabelRulesUnavailableNote, ManualSeriesBadge } from '@/components/manual-series'
 import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
 import { RecordingRow } from '@/components/recording-row'
+import { RecordingThumbnail } from '@/components/recording-thumbnail'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -239,7 +240,9 @@ export function SeriesHubPage() {
         <PageContent className="flex flex-col gap-8 px-4 py-4">
           <section aria-label="シリーズ情報" className="flex items-start gap-3">
             {latestRecording !== undefined && (
-              <SeriesThumbnail key={latestRecording.id} recording={latestRecording} />
+              // 400px 幅では 144px の画像と 12px の間隔の隣に 212px 残り、現在に近い高さで identity の
+              // 文字を読める。sm 以上は 192px 幅にし、高さを従来の 112px に近づける。
+              <RecordingThumbnail key={latestRecording.id} recordingId={latestRecording.id} className="w-36 sm:w-48" />
             )}
             <div className="min-w-0">
               {effectiveSeries !== undefined && (
@@ -414,32 +417,6 @@ export function SeriesHubPage() {
         />
       )}
     </>
-  )
-}
-
-/**
- * ハブの identity に置く最新録画のサムネイル。未生成・404 は静かにプレースホルダーへ落とす。
- * worker が SAR を補正した画像に合わせて 16:9 にする。
- * 400px 幅では 144px の画像と 12px の間隔の隣に 212px 残り、現在に近い高さで identity の文字を読める。
- * sm 以上は 192px 幅にし、高さを従来の 112px に近づける。
- */
-function SeriesThumbnail({ recording }: { recording: Recording }) {
-  const [failed, setFailed] = useState(false)
-
-  return (
-    <div className="aspect-video w-36 shrink-0 overflow-hidden rounded bg-muted sm:w-48">
-      {!failed ? (
-        <img
-          src={`/api/media/recordings/${recording.id}/thumbnail`}
-          alt=""
-          className="size-full object-cover"
-          loading="lazy"
-          onError={() => setFailed(true)}
-        />
-      ) : (
-        <div className="size-full bg-muted" aria-hidden />
-      )}
-    </div>
   )
 }
 

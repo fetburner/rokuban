@@ -455,6 +455,7 @@ Rokuban は利用者という概念を持たない（[api/deployment.md](../api/
 | 録画一覧の表示形式（リスト / カード） | `rokuban:recordings:view` | 出す情報は同じで並べ方だけが変わる |
 | 番組表の表示形式（リスト / 番組表） | `rokuban:programs:view` | URL の `view` が優先。モバイルは常にリスト |
 | 番組表の時間軸の縮尺 | `rokuban:programs:grid-scale` | 120 / 240 / 480 px/時。URL には持たない |
+| 予約一覧のまとめ方（シリーズ / 時間順） | `rokuban:reservations:group` | 同じ情報の並べ替えだけを変える。既定はシリーズ |
 | 最後の検索条件 | `rokuban:search:last` | URL が優先（下記） |
 | ホームのモード | `rokuban:home:mode` | `watch` / `ops`。URL の `?mode=` が優先し、初回既定は `watch` |
 

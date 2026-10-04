@@ -131,7 +131,7 @@ await successPage.goto(URL_BASE + '/reservations?only=attention', {
 })
 
 log('\n=== ② 容量 API 正常時の予約一覧 ===')
-await successPage.getByText('チューナー不足（BS が 1 本）').waitFor({ timeout: 15_000 })
+await successPage.getByText('容量不足 1', { exact: true }).waitFor({ timeout: 15_000 })
 const attentionChip = successPage.getByRole('button', { name: '要確認（1）' })
 if ((await attentionChip.count()) !== 1) {
   ng.push('② 正常応答時に要確認（1）チップが表示されない')
