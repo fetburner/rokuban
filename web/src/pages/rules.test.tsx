@@ -5,8 +5,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { getListReservationsQueryKey } from '@/api/generated'
 import type {
   EncodeProfileSummary,
-  LabelRule,
-  LabelRuleInput,
   Reservation,
   Rule,
   RuleInput,
@@ -493,142 +491,19 @@ describe('RulesPage 新規作成', () => {
   })
 })
 
-const labelRule = (id: number, keyword: string, value: string, valueKey: string, priority = 0): LabelRule => ({
-  id,
-  key: 'series',
-  keyword,
-  value,
-  priority,
-  valueKey,
-  createdAt: '2026-09-29T00:00:00Z',
-  updatedAt: '2026-09-29T00:00:00Z',
-})
-
-/**
- * stubLabelRuleApi は stubApi の上に分類ルールの API（GET / POST / PATCH /
- * DELETE と valueKey の解決）を重ねる。送られたリクエストを記録するので、
- * 「mutate が呼ばれ、API に正しい body が飛ぶ」まで見られる。
- */
-function stubLabelRuleApi(rules: LabelRule[], ruleRows: Rule[] = []) {
-  stubApi(ruleRows)
-  const base = globalThis.fetch
-  const posted: LabelRuleInput[] = []
-  const patched: { id: number; body: LabelRuleInput }[] = []
-  const deleted: number[] = []
-  globalThis.fetch = vi.fn((input: string | URL | Request, init?: RequestInit) => {
-    const url = new URL(String(input), 'http://localhost')
-    const method = init?.method ?? 'GET'
-    if (url.pathname === '/api/label-rules' && method === 'GET') {
-      return Promise.resolve(jsonResponse(rules.filter((r) => !deleted.includes(r.id))))
-    }
-    if (url.pathname === '/api/label-rules' && method === 'POST') {
-      const body = JSON.parse(String(init?.body)) as LabelRuleInput
-      posted.push(body)
-      return Promise.resolve(jsonResponse(labelRule(99, body.keyword, body.value, body.value), 201))
-    }
-    if (url.pathname === '/api/label-rule-value-key' && method === 'GET') {
-      // サーバーの series_key の代役: 最初の空白で切る（実 DB では
-      // internal/api の TestLabelRule_ValueKeyIsTheTruncatedShelfKey が測る）。
-      return Promise.resolve(
-        jsonResponse({ valueKey: (url.searchParams.get('value') ?? '').split(' ')[0] }),
-      )
-    }
-    const m = /^\/api\/label-rules\/(\d+)$/.exec(url.pathname)
-    if (m && method === 'PATCH') {
-      const body = JSON.parse(String(init?.body)) as LabelRuleInput
-      patched.push({ id: Number(m[1]), body })
-      return Promise.resolve(jsonResponse(labelRule(Number(m[1]), body.keyword, body.value, body.value)))
-    }
-    if (m && method === 'DELETE') {
-      deleted.push(Number(m[1]))
-      return Promise.resolve(new Response(null, { status: 204 }))
-    }
-    return (base as typeof fetch)(input, init)
-  }) as unknown as typeof fetch
-  return { posted, patched, deleted }
-}
-
-describe('RulesPage シリーズ分類', () => {
-  it('同じページのシリーズ分類フォームを開ける', async () => {
+describe('RulesPage の分類ルール導線', () => {
+  it('/rules に分類ルールの管理セクションを表示しない', async () => {
     stubApi([])
+    renderPage()
+
+    await screen.findByText('ルールがありません')
+    expect(screen.queryByRole('region', { name: 'シリーズ分類' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '分類ルールを作成' })).not.toBeInTheDocument()
+  })
+
+  it('録画ルールの「このキーワードで分類ルールを作る」導線は同じフォームを開く', async () => {
     const user = userEvent.setup()
-    renderPage()
-
-    await screen.findByText('シリーズ分類')
-    await user.click(screen.getByRole('button', { name: '分類ルールを作成' }))
-
-    const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getByRole('heading', { name: '分類ルールを作成' })).toBeInTheDocument()
-    expect(within(dialog).getByLabelText('キーワード')).toHaveValue('')
-    expect(within(dialog).getByLabelText('棚のキー')).toHaveValue('')
-  })
-
-  it('分類ルールの一覧を API の返した勝者順のまま出す', async () => {
-    stubLabelRuleApi([labelRule(1, '日本史', '日本史', '日本史', 5), labelRule(2, '数学', '数学', '数学')])
-    renderPage()
-
-    const first = await screen.findByText('「日本史」→ 日本史')
-    const second = await screen.findByText('「数学」→ 数学')
-    expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-  })
-
-  it('値と実効の棚キーが食い違う分類ルールを一覧で明示する', async () => {
-    stubLabelRuleApi([labelRule(2, '数学', 'NHK高校講座 数学I', 'NHK高校講座')])
-    renderPage()
-
-    expect(await screen.findByText('この値は棚キー NHK高校講座 として扱われます')).toBeInTheDocument()
-  })
-
-  it('食い違いの無い分類ルールには注記を出さない', async () => {
-    stubLabelRuleApi([labelRule(1, '日本史', '日本史', '日本史')])
-    renderPage()
-
-    await screen.findByText('「日本史」→ 日本史')
-    expect(screen.queryByText(/として扱われます/)).not.toBeInTheDocument()
-  })
-
-  it('キーワードを入力すると棚のキーが追従し、POST に両方が載る', async () => {
-    const user = userEvent.setup()
-    const { posted } = stubLabelRuleApi([])
-    renderPage()
-
-    await user.click(await screen.findByRole('button', { name: '分類ルールを作成' }))
-    const dialog = await screen.findByRole('dialog')
-    await user.type(within(dialog).getByLabelText('キーワード'), '烏は主を選ばない')
-    expect(within(dialog).getByLabelText('棚のキー')).toHaveValue('烏は主を選ばない')
-    await user.click(within(dialog).getByRole('button', { name: '作成' }))
-
-    await waitFor(() => expect(posted).toHaveLength(1))
-    expect(posted[0]).toEqual({ keyword: '烏は主を選ばない', value: '烏は主を選ばない', priority: 0 })
-  })
-
-  it('フォームは入力中の値から得られる棚キーを、食い違うときだけ示す', async () => {
-    const user = userEvent.setup()
-    stubLabelRuleApi([])
-    renderPage()
-
-    await user.click(await screen.findByRole('button', { name: '分類ルールを作成' }))
-    const dialog = await screen.findByRole('dialog')
-
-    await user.type(within(dialog).getByLabelText('棚のキー'), '作品X')
-    // 一致しているうちは何も言わない（サーバー応答を待ってから否定を確かめる）。
-    await waitFor(() =>
-      expect(globalThis.fetch).toHaveBeenCalledWith(
-        expect.stringContaining('/api/label-rule-value-key?value=%E4%BD%9C%E5%93%81X'),
-        expect.anything(),
-      ),
-    )
-    expect(within(dialog).queryByRole('status')).not.toBeInTheDocument()
-
-    await user.type(within(dialog).getByLabelText('棚のキー'), ' 第2期')
-    expect(await within(dialog).findByRole('status')).toHaveTextContent(
-      'この値は棚キー 作品X として扱われます',
-    )
-  })
-
-  it('録画ルールの「このキーワードで分類ルールを作る」が同じページのダイアログを開く', async () => {
-    const user = userEvent.setup()
-    stubLabelRuleApi([], [ruleWithConditions])
+    stubApi([ruleWithConditions])
     renderPage()
 
     await screen.findByText('平日ニュース')
@@ -637,40 +512,6 @@ describe('RulesPage シリーズ分類', () => {
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByRole('heading', { name: '分類ルールを作成' })).toBeInTheDocument()
     expect(within(dialog).getByLabelText('キーワード')).toHaveValue('ニュース')
-  })
-
-  it('分類ルールを編集すると PATCH に変更後の内容が飛ぶ', async () => {
-    const user = userEvent.setup()
-    const { patched } = stubLabelRuleApi([labelRule(7, '日本史', '日本史', '日本史', 5)])
-    renderPage()
-
-    await screen.findByText('「日本史」→ 日本史')
-    await user.click(screen.getByRole('button', { name: '編集' }))
-    const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getByRole('heading', { name: '分類ルールを編集' })).toBeInTheDocument()
-    expect(within(dialog).getByLabelText('キーワード')).toHaveValue('日本史')
-    await user.clear(within(dialog).getByLabelText('優先度'))
-    await user.type(within(dialog).getByLabelText('優先度'), '9')
-    await user.click(within(dialog).getByRole('button', { name: '保存' }))
-
-    await waitFor(() => expect(patched).toHaveLength(1))
-    expect(patched[0]).toEqual({ id: 7, body: { keyword: '日本史', value: '日本史', priority: 9 } })
-  })
-
-  it('分類ルールの削除は確認の後に DELETE を送る', async () => {
-    const user = userEvent.setup()
-    const { deleted } = stubLabelRuleApi([labelRule(7, '日本史', '日本史', '日本史')])
-    renderPage()
-
-    await screen.findByText('「日本史」→ 日本史')
-    await user.click(screen.getByRole('button', { name: '削除' }))
-    // 確認を出すだけでは送らない。
-    expect(deleted).toEqual([])
-    const dialog = await screen.findByRole('dialog')
-    await user.click(within(dialog).getByRole('button', { name: '削除する' }))
-
-    await waitFor(() => expect(deleted).toEqual([7]))
-    await waitFor(() => expect(screen.queryByText('「日本史」→ 日本史')).not.toBeInTheDocument())
   })
 })
 

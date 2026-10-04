@@ -2,7 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { LabelRule, RecordingShelf } from '@/api/generated'
+import type { LabelRule, LabelRuleInput, RecordingShelf } from '@/api/generated'
 import { SeriesPage } from '@/pages/series'
 import { renderInRouter } from '@/test/router'
 
@@ -14,6 +14,11 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 function stubApi(shelves: RecordingShelf[], rules: LabelRule[] = []) {
+  let labelRuleState = [...rules]
+  const posted: LabelRuleInput[] = []
+  const patched: { id: number; body: LabelRuleInput }[] = []
+  const deleted: number[] = []
+  let labelRulesReadCount = 0
   globalThis.fetch = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
     const method = init?.method ?? 'GET'
@@ -21,10 +26,64 @@ function stubApi(shelves: RecordingShelf[], rules: LabelRule[] = []) {
       return Promise.resolve(jsonResponse(shelves))
     }
     if (url.pathname === '/api/label-rules' && method === 'GET') {
-      return Promise.resolve(jsonResponse(rules))
+      labelRulesReadCount += 1
+      return Promise.resolve(jsonResponse(labelRuleState))
+    }
+    if (url.pathname === '/api/label-rules' && method === 'POST') {
+      const body = JSON.parse(String(init?.body)) as LabelRuleInput
+      posted.push(body)
+      const created = labelRule(
+        99,
+        body.keyword,
+        body.value,
+        body.value.split(' ')[0] ?? body.value,
+        body.priority,
+      )
+      labelRuleState = [...labelRuleState, created]
+      return Promise.resolve(jsonResponse(created, 201))
+    }
+    if (url.pathname === '/api/label-rule-value-key' && method === 'GET') {
+      return Promise.resolve(
+        jsonResponse({ valueKey: (url.searchParams.get('value') ?? '').split(' ')[0] }),
+      )
+    }
+    const match = /^\/api\/label-rules\/(\d+)$/.exec(url.pathname)
+    if (match && method === 'PATCH') {
+      const id = Number(match[1])
+      const body = JSON.parse(String(init?.body)) as LabelRuleInput
+      patched.push({ id, body })
+      const updated = labelRule(id, body.keyword, body.value, body.value, body.priority)
+      labelRuleState = labelRuleState.map((rule) => (rule.id === id ? updated : rule))
+      return Promise.resolve(jsonResponse(updated))
+    }
+    if (match && method === 'DELETE') {
+      const id = Number(match[1])
+      deleted.push(id)
+      labelRuleState = labelRuleState.filter((rule) => rule.id !== id)
+      return Promise.resolve(new Response(null, { status: 204 }))
     }
     throw new Error(`unexpected fetch: ${method} ${url.pathname}`)
   }) as unknown as typeof fetch
+  return { posted, patched, deleted, labelRulesReadCount: () => labelRulesReadCount }
+}
+
+function labelRule(
+  id: number,
+  keyword: string,
+  value: string,
+  valueKey: string,
+  priority = 0,
+): LabelRule {
+  return {
+    id,
+    key: 'series',
+    keyword,
+    value,
+    priority,
+    valueKey,
+    createdAt: '2026-09-29T00:00:00Z',
+    updatedAt: '2026-09-29T00:00:00Z',
+  }
 }
 
 function shelf(
@@ -137,8 +196,9 @@ describe('SeriesPage', () => {
 
     const content = await screen.findByTestId('page-content')
     const manual = await within(content).findByRole('link', { name: 'NHK高校講座のシリーズ' })
+    const shelfList = within(content).getByRole('list', { name: 'シリーズ一覧' })
     expect(within(manual).getByText('手動')).toBeInTheDocument()
-    expect(within(content).queryByText(/数学I/)).not.toBeInTheDocument()
+    expect(within(shelfList).queryByText(/数学I/)).not.toBeInTheDocument()
     expect(within(content).getByRole('link', { name: '作品Xのシリーズ' })).not.toHaveTextContent('手動')
   })
 
@@ -156,6 +216,106 @@ describe('SeriesPage', () => {
       ),
     )
     expect(link).not.toHaveTextContent('手動')
+  })
+
+  it('分類ルールの管理を棚の後ろに置き、一覧を API の順で表示する', async () => {
+    stubApi(shelves, [
+      labelRule(1, '日本史', '日本史', '日本史', 5),
+      labelRule(2, '数学', '数学', '数学'),
+    ])
+    renderInRouter(<SeriesPage />, { path: '/series' })
+
+    const content = await screen.findByTestId('page-content')
+    const shelfList = await within(content).findByRole('list', { name: 'シリーズ一覧' })
+    const manager = await within(content).findByRole('region', { name: 'シリーズ分類' })
+    expect(
+      shelfList.compareDocumentPosition(manager) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+
+    const first = within(manager).getByText('「日本史」→ 日本史')
+    const second = within(manager).getByText('「数学」→ 数学')
+    expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('作成後に一覧と同じ label_rules クエリが更新され、棚の手動バッジも付く', async () => {
+    const user = userEvent.setup()
+    const api = stubApi(shelves)
+    renderInRouter(<SeriesPage />, { path: '/series' })
+
+    const content = await screen.findByTestId('page-content')
+    const manager = await within(content).findByRole('region', { name: 'シリーズ分類' })
+    await user.click(within(manager).getByRole('button', { name: '分類ルールを作成' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.type(within(dialog).getByLabelText('キーワード'), '作品X')
+    expect(within(dialog).getByLabelText('棚のキー')).toHaveValue('作品X')
+    await user.click(within(dialog).getByRole('button', { name: '作成' }))
+
+    await waitFor(() => {
+      expect(api.posted).toEqual([{ keyword: '作品X', value: '作品X', priority: 0 }])
+      expect(within(manager).getByText('「作品X」→ 作品X')).toBeInTheDocument()
+      expect(within(content).getByRole('link', { name: '作品Xのシリーズ' })).toHaveTextContent('手動')
+    })
+    expect(api.labelRulesReadCount()).toBeGreaterThanOrEqual(2)
+  })
+
+  it('分類ルールを作成すると棚のキーが追従し、入力中の実効キーを示す', async () => {
+    const user = userEvent.setup()
+    stubApi(shelves)
+    renderInRouter(<SeriesPage />, { path: '/series' })
+
+    const manager = await screen.findByRole('region', { name: 'シリーズ分類' })
+    await user.click(within(manager).getByRole('button', { name: '分類ルールを作成' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.type(within(dialog).getByLabelText('キーワード'), '烏は主を選ばない')
+    expect(within(dialog).getByLabelText('棚のキー')).toHaveValue('烏は主を選ばない')
+
+    await user.clear(within(dialog).getByLabelText('棚のキー'))
+    await user.type(within(dialog).getByLabelText('棚のキー'), 'NHK高校講座 第2期')
+    expect(await within(dialog).findByRole('status')).toHaveTextContent(
+      'この値は棚キー NHK高校講座 として扱われます',
+    )
+  })
+
+  it('分類ルールを編集すると PATCH に変更後の内容が飛ぶ', async () => {
+    const user = userEvent.setup()
+    const api = stubApi(shelves, [labelRule(7, '日本史', '日本史', '日本史', 5)])
+    renderInRouter(<SeriesPage />, { path: '/series' })
+
+    const manager = await screen.findByRole('region', { name: 'シリーズ分類' })
+    await within(manager).findByText('「日本史」→ 日本史')
+    await user.click(within(manager).getByRole('button', { name: '編集' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByRole('heading', { name: '分類ルールを編集' })).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('キーワード')).toHaveValue('日本史')
+    await user.clear(within(dialog).getByLabelText('優先度'))
+    await user.type(within(dialog).getByLabelText('優先度'), '9')
+    await user.click(within(dialog).getByRole('button', { name: '保存' }))
+
+    await waitFor(() => expect(api.patched).toEqual([
+      { id: 7, body: { keyword: '日本史', value: '日本史', priority: 9 } },
+    ]))
+  })
+
+  it('分類ルールは削除確認後に DELETE し、棚の手動バッジも更新する', async () => {
+    const user = userEvent.setup()
+    const api = stubApi(shelves, [rule])
+    renderInRouter(<SeriesPage />, { path: '/series' })
+
+    const content = await screen.findByTestId('page-content')
+    const manager = await within(content).findByRole('region', { name: 'シリーズ分類' })
+    const manual = await within(content).findByRole('link', { name: 'NHK高校講座のシリーズ' })
+    expect(manual).toHaveTextContent('手動')
+
+    await user.click(within(manager).getByRole('button', { name: '削除' }))
+    expect(api.deleted).toEqual([])
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: '削除する' }))
+
+    await waitFor(() => {
+      expect(api.deleted).toEqual([1])
+      expect(within(manager).getByText('分類ルールがありません')).toBeInTheDocument()
+      expect(manual).not.toHaveTextContent('手動')
+    })
   })
 
   it('録画一覧と同じ localStorage キーでカード表示を保存する', async () => {
