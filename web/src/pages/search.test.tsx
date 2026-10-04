@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type {
+  CapacityPreviewRequest,
   CapacityOverage,
   Program,
   ProgramSearchRequest,
@@ -41,11 +42,7 @@ const services: Service[] = [
 
 const origin = new Date('2026-07-29T12:00:00Z').getTime()
 
-/**
- * 容量ノートの問い合わせ窓は `Date.now()` 由来（`pages/search.tsx`）。フィクスチャは
- * `origin` 基準の相対オフセットなので、実行日の壁時計のままだと窓が届かず揺れる。
- * `vi.useFakeTimers()` は呼ばない（`waitFor` / `userEvent` の実タイマーは動かす）。
- */
+/** 固定時刻と相対 fixture で検索・プレビュー条件を決定的にする。 */
 beforeEach(() => {
   vi.setSystemTime(origin)
 })
@@ -165,13 +162,9 @@ function jsonResponse(body: unknown, status = 200): Response {
  */
 function stubApi(options?: {
   rules?: Rule[]
-  overages?: CapacityOverage[]
-  /**
-   * `/api/capacity/overages` の 2 回目以降を保留する（`pages/home.test.tsx` の
-   * `pendingAfterFirstCall` と同じ仕掛け）。即答させると「キーが進んだ直後の
-   * 消えた一瞬」が assert より先に終わり、壊れていても緑になる。
-   */
-  holdOveragesAfterFirst?: boolean
+  capacityPreviewOverages?: CapacityOverage[]
+  capacityPreviewError?: boolean
+  holdCapacityPreview?: boolean
   /**
    * `allPrograms` に無い番組を検索・詳細取得の対象に足す（終了未定番組
    * `durationMs = 0` を混ぜるテストなど）。`allPrograms` 自体を変えると既存
@@ -204,10 +197,8 @@ function stubApi(options?: {
   // （`pages/search.tsx` の N+1 回帰テストで使う）。
   const programDetailRequests: number[] = []
   const rules = options?.rules ? [...options.rules] : []
-  // 容量ノート（`ShortfallOverlapNote`）用のリクエスト記録。窓が点滅する回帰を
-  // このリクエスト回数と `start` の種類数で固定する。
-  const overagesRequests: string[] = []
-  const pendingOverages: (() => void)[] = []
+  const capacityPreviewRequests: CapacityPreviewRequest[] = []
+  const pendingCapacityPreviews: (() => void)[] = []
   const registrySites = options?.sites ?? ['default']
   const reservations = options?.reservations ?? []
   let remainingSitesFailures = options?.sitesFailures ?? 0
@@ -249,30 +240,18 @@ function stubApi(options?: {
       return Promise.resolve(new Response(null, { status: 204 }))
     }
 
-    if (url.pathname === '/api/capacity/overages') {
-      overagesRequests.push(url.toString())
-      const isSecondOrLater = overagesRequests.length > 1
-      // 実サーバー（`internal/api/capacity.go`）と同じ挙動にする。半開区間の交差で
-      // 絞り、`end` が `start` より後でなければ 400 --- 素通りさせると窓が退化する
-      // 回帰にテストが無防備になる。
-      const startParam = url.searchParams.get('start')
-      const endParam = url.searchParams.get('end')
-      const startMs = startParam === null ? NaN : Date.parse(startParam)
-      const endMs = endParam === null ? NaN : Date.parse(endParam)
-      if (!(endMs > startMs)) {
-        return Promise.resolve(jsonResponse({ error: 'end must be after start' }, 400))
+    if (url.pathname === '/api/capacity/preview' && method === 'POST') {
+      capacityPreviewRequests.push(JSON.parse(String(init?.body ?? '{}')) as CapacityPreviewRequest)
+      if (options?.capacityPreviewError) {
+        return Promise.resolve(jsonResponse({ error: 'capacity preview unavailable' }, 500))
       }
-      const inWindow = (options?.overages ?? []).filter((o) => {
-        const oStart = Date.parse(o.startAt)
-        const oEnd = Date.parse(o.endAt)
-        return oEnd > startMs && oStart < endMs
-      })
-      if (options?.holdOveragesAfterFirst && isSecondOrLater) {
+      const preview = options?.capacityPreviewOverages ?? []
+      if (options?.holdCapacityPreview) {
         return new Promise<Response>((resolve) => {
-          pendingOverages.push(() => resolve(jsonResponse(inWindow)))
+          pendingCapacityPreviews.push(() => resolve(jsonResponse(preview)))
         })
       }
-      return Promise.resolve(jsonResponse(inWindow))
+      return Promise.resolve(jsonResponse(preview))
     }
 
     const ruleDetail = /^\/api\/rules\/(\d+)$/.exec(url.pathname)
@@ -407,9 +386,9 @@ function stubApi(options?: {
     updateRuleBodies,
     rules,
     programDetailRequests,
-    overagesRequests,
-    /** 未解決の `/api/capacity/overages` の本数（保留の仕掛けが効いていることの確認用）。 */
-    unresolvedOverages: () => pendingOverages.length,
+    capacityPreviewRequests,
+    /** 未解決の容量プレビュー要求数（pending 表示の判定用）。 */
+    unresolvedCapacityPreviews: () => pendingCapacityPreviews.length,
   }
 }
 
@@ -1293,15 +1272,11 @@ describe('SearchPage', () => {
     })
   })
 
-  describe('容量への影響（不足区間との交差、issue #475）', () => {
-    /**
-     * `news`（programId 100）は origin + 100h に開始、30 分番組
-     * （`allPrograms` 生成規則、上部参照）。この区間と交差する不足区間を作る。
-     */
-    function overlappingOverage(): CapacityOverage {
+  describe('保存時に追加される容量不足（issue #1114）', () => {
+    function previewOverage(site = 'default'): CapacityOverage {
       const startMs = origin + 100 * 3_600_000
       return {
-        site: 'default',
+        site,
         startAt: new Date(startMs + 5 * 60_000).toISOString(),
         endAt: new Date(startMs + 25 * 60_000).toISOString(),
         shortfall: 1,
@@ -1309,158 +1284,108 @@ describe('SearchPage', () => {
       }
     }
 
-    it('交差する不足区間があれば件数を 1 行出す', async () => {
-      stubApi({ overages: [overlappingOverage()] })
-      renderPage()
-
-      await addKeyword('ニュース')
-      await userEvent.click(screen.getByRole('button', { name: '検索' }))
-
-      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
-      expect(
-        await screen.findByText('検索結果のうち、既にチューナー不足の区間と重なる番組が 1 件あります'),
-      ).toBeInTheDocument()
-    })
-
-    it('交差する不足区間が無ければ何も描画しない（「収まります」とは言わない）', async () => {
-      // 不足区間はあるが、`news` の放送時間帯（origin + 100h 〜 100.5h）とは
-      // 交差しない遠い時刻に置く。
-      const farAway: CapacityOverage = {
-        site: 'default',
-        startAt: new Date(origin).toISOString(),
-        endAt: new Date(origin + 60_000).toISOString(),
-        shortfall: 1,
-        jammedTypes: ['BS'],
-      }
-      stubApi({ overages: [farAway] })
-      renderPage()
-
-      await addKeyword('ニュース')
-      await userEvent.click(screen.getByRole('button', { name: '検索' }))
-
-      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
-      // 値札の他の行が描画されるのを待ってから、この行だけが無いことを確かめる
-      // （非同期の空虚な成功を避けるため、先に「他は描画済み」を確認する）
-      await screen.findByText(/この条件で保存すると、週あたり見込みで約 1 件・約 26分/)
-      expect(
-        screen.queryByText(/既にチューナー不足の区間と重なる番組が/),
-      ).not.toBeInTheDocument()
-    })
-
-    it('検索結果全件を対象に不足区間との交差を表示する', async () => {
-      // programId 5（filler の 1 つ）の放送時間帯とだけ交差する不足区間。
-      const startMs = origin + 5 * 3_600_000
-      const overage: CapacityOverage = {
-        site: 'default',
-        startAt: new Date(startMs + 5 * 60_000).toISOString(),
-        endAt: new Date(startMs + 25 * 60_000).toISOString(),
-        shortfall: 1,
-        jammedTypes: ['GR'],
-      }
-      stubApi({ overages: [overage] })
-      renderPage()
-
-      expect(await waitForServiceChip()).toBeInTheDocument()
-      // 条件なしの検索で 37 件（pageSize=30 を超える）に当てる
-      await userEvent.click(screen.getByRole('button', { name: '検索' }))
-
-      expect(
-        await screen.findByText(
-          '検索結果のうち、既にチューナー不足の区間と重なる番組が 1 件あります',
-        ),
-      ).toBeInTheDocument()
-    })
-
-    /**
-     * 終了未定番組（`durationMs = 0`）だけがサンプルのとき、窓をその時刻から
-     * 作ると `start === end` に退化して 400 で沈黙する。ここで数えられるのは
-     * 「不足区間が開始の瞬間を厳密にまたぐ」形だけ（`countProgramsInShortfall`
-     * の doc。他の形を数えない旨の判定は `capacity.test.ts`）。
-     */
-    it('終了未定番組（durationMs = 0）だけがサンプルでも窓は退化せず、開始の瞬間をまたぐ不足区間なら数える', async () => {
-      const undetermined: Program = {
-        programId: 900,
-        networkId: 32736,
-        serviceId: 1024,
-        eventId: 900,
-        startAt: new Date(origin + 3 * 3_600_000).toISOString(),
-        endAt: new Date(origin + 3 * 3_600_000).toISOString(),
-        durationMs: 0,
-        name: '終了未定番組',
-        description: '',
-        genres: [0],
-        isFree: true,
-      }
-      // 放送開始の瞬間を厳密にまたぐ不足区間（幅 0 の区間が交差する唯一の形）。
-      const overage: CapacityOverage = {
-        site: 'default',
-        startAt: new Date(origin + 3 * 3_600_000 - 5 * 60_000).toISOString(),
-        endAt: new Date(origin + 3 * 3_600_000 + 5 * 60_000).toISOString(),
-        shortfall: 1,
-        jammedTypes: ['GR'],
-      }
-      const { overagesRequests } = stubApi({ extraPrograms: [undetermined], overages: [overage] })
-      renderPage()
-
-      await addKeyword('終了未定番組')
-      await userEvent.click(screen.getByRole('button', { name: '検索' }))
-
-      expect(await screen.findByText('終了未定番組')).toBeInTheDocument()
-      // 「不足区間があるのに沈黙」に落ちていないこと（ノートが実際に出る）。
-      expect(
-        await screen.findByText('検索結果のうち、既にチューナー不足の区間と重なる番組が 1 件あります'),
-      ).toBeInTheDocument()
-
-      // 窓が退化していれば `/api/capacity/overages` の `end` が `start` 以下に
-      // なる（直す前の実装ではここが `start === end` になり 400 だった）。
-      expect(overagesRequests.length).toBeGreaterThanOrEqual(1)
-      for (const url of overagesRequests) {
-        const params = new URL(url).searchParams
-        const startMs = Date.parse(params.get('start') ?? '')
-        const endMs = Date.parse(params.get('end') ?? '')
-        expect(endMs).toBeGreaterThan(startMs)
-      }
-    })
-
-    /**
-     * 窓は時境界へ量子化してあるので、キーは毎時 0 分に 1 回進む。新しいキーには
-     * データが無いため、素のままだとノートが 1 RTT 消える（`placeholderData:
-     * keepPreviousData` がそれを止めていることの判定。`pages/home.test.tsx`
-     * 「ホーム: 時境界を越えてキーが変わっても警告は消えない」と同じ形）。
-     */
-    it('時境界を越えてクエリキーが進み、新しいキーが未解決でもノートは消えない', async () => {
-      // 時境界（`origin` は毎時 0 分）の 500ms 前に「今」を置く。
-      vi.setSystemTime(origin - 500)
-      const { overagesRequests, unresolvedOverages } = stubApi({
-        overages: [overlappingOverage()],
-        holdOveragesAfterFirst: true,
+    it('保存時に追加される不足区間と時刻を表示し、実行した条件付き番組表へ案内する', async () => {
+      const overage = previewOverage()
+      const { capacityPreviewRequests, searchBodies } = stubApi({
+        capacityPreviewOverages: [overage],
       })
       renderPage()
 
       await addKeyword('ニュース')
       await userEvent.click(screen.getByRole('button', { name: '検索' }))
-      await waitFor(() => expect(overagesRequests.length).toBe(1))
-      expect(
-        await screen.findByText('検索結果のうち、既にチューナー不足の区間と重なる番組が 1 件あります'),
-      ).toBeInTheDocument()
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
 
-      // 時境界を越えたうえで再レンダーの引き金を引く（下書きを 1 文字足す）。
-      vi.setSystemTime(origin + 500)
-      await userEvent.type(screen.getByLabelText('テキスト条件 1 の値'), '7')
+      const note = await screen.findByRole('list', { name: '保存時に追加される容量不足' })
+      const item = within(note).getByRole('listitem')
+      // TZ は vite.config.ts で Asia/Tokyo に固定。同日の終了は時刻だけ。
+      expect(item.querySelector('p')?.textContent).toBe(
+        '8/3 01:05〜01:25 はチューナーが不足しています（GR が 1 本不足）',
+      )
+      expect(capacityPreviewRequests).toHaveLength(1)
+      expect(capacityPreviewRequests[0]).toEqual(searchBodies[0])
 
-      // キーが実際に進んだこと（`start` の違う 2 回目の要求）を確かめる。これが
-      // 無いと「キーが変わらなかったので消えなかった」でも通ってしまう。
-      await waitFor(() => {
-        const starts = overagesRequests.map((url) => new URL(url).searchParams.get('start'))
-        expect(new Set(starts).size).toBe(2)
+      const link = within(item).getByRole('link', {
+        name: 'この時間帯の一致番組を番組表で見る',
       })
-      // 2 回目がまだ未解決であること自体を assert する（保留の仕掛けが静かに
-      // 効かなくなると、`placeholderData` が無くてもノートは戻ってきてしまう）。
-      expect(unresolvedOverages()).toBe(1)
+      const url = new URL(link.getAttribute('href') ?? '', window.location.origin)
+      expect(url.pathname).toBe('/programs')
+      expect(url.searchParams.get('view')).toBe('grid')
+      expect(Number(url.searchParams.get('at'))).toBe(Date.parse(overage.startAt))
+      expect(JSON.parse(url.searchParams.get('cond') ?? 'null')).toEqual(searchBodies[0])
 
-      expect(
-        screen.getByText('検索結果のうち、既にチューナー不足の区間と重なる番組が 1 件あります'),
-      ).toBeInTheDocument()
+      // 下書きだけを編集しても、結果・警告・リンクの条件は実行した検索のまま保つ。
+      const input = screen.getByLabelText('テキスト条件 1 の値')
+      await userEvent.clear(input)
+      await userEvent.type(input, '深夜')
+      expect(capacityPreviewRequests).toHaveLength(1)
+      expect(url.searchParams.get('cond')).toContain('ニュース')
+    })
+
+    it('複数サイト構成では不足区間の site を示す', async () => {
+      stubApi({
+        sites: ['default', 'takamatsu'],
+        capacityPreviewOverages: [previewOverage('takamatsu')],
+      })
+      renderPage()
+
+      await addKeyword('ニュース')
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+
+      const note = await screen.findByRole('list', { name: '保存時に追加される容量不足' })
+      expect(within(note).getByRole('listitem')).toHaveTextContent('takamatsuのチューナー')
+    })
+
+    it('既存ルール編集時は同じ検索条件に ruleId を添えてプレビューする', async () => {
+      const { capacityPreviewRequests, searchBodies } = stubApi({ rules: [ruleFixture] })
+      renderPage(['/search?ruleId=7'])
+
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+      await waitFor(() => expect(capacityPreviewRequests).toHaveLength(1))
+      expect(capacityPreviewRequests[0]).toEqual({ ...searchBodies[0], ruleId: 7 })
+    })
+
+    it('不足区間が無い成功応答は沈黙し、収まるとは言わない', async () => {
+      const { capacityPreviewRequests } = stubApi()
+      renderPage()
+
+      await addKeyword('ニュース')
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+      await waitFor(() => expect(capacityPreviewRequests).toHaveLength(1))
+
+      expect(screen.queryByRole('list', { name: '保存時に追加される容量不足' })).not.toBeInTheDocument()
+      expect(screen.queryByText(/収まります|不足しません/)).not.toBeInTheDocument()
+    })
+
+    it('容量プレビュー中は何も描かず（CLS を起こさず）、肯定的な保証も出さない', async () => {
+      const { capacityPreviewRequests, unresolvedCapacityPreviews } = stubApi({
+        holdCapacityPreview: true,
+      })
+      renderPage()
+
+      await addKeyword('ニュース')
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+      await waitFor(() => expect(capacityPreviewRequests).toHaveLength(1))
+
+      // 要求が未解決のまま（= 本当に取得中）であることを先に確かめてから沈黙を assert する。
+      await waitFor(() => expect(unresolvedCapacityPreviews()).toBe(1))
+      expect(screen.queryByText(/確認中/)).not.toBeInTheDocument()
+      expect(screen.queryByRole('list', { name: '保存時に追加される容量不足' })).not.toBeInTheDocument()
+      expect(screen.queryByText(/収まります|不足しません/)).not.toBeInTheDocument()
+    })
+
+    it('容量プレビュー失敗を明示し、肯定的な保証を出さない', async () => {
+      const { capacityPreviewRequests } = stubApi({ capacityPreviewError: true })
+      renderPage()
+
+      await addKeyword('ニュース')
+      await userEvent.click(screen.getByRole('button', { name: '検索' }))
+      expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+      await waitFor(() => expect(capacityPreviewRequests).toHaveLength(1))
+
+      expect(await screen.findByText('追加される容量不足を確認できませんでした')).toBeInTheDocument()
+      expect(screen.queryByText(/収まります|不足しません/)).not.toBeInTheDocument()
     })
   })
 
@@ -2006,7 +1931,9 @@ describe('複数サイトの検索結果（issue #531）', () => {
         return Promise.resolve(jsonResponse([serviceB]))
       }
       if (url.pathname === '/api/encode-profiles') return Promise.resolve(jsonResponse([]))
-      if (url.pathname === '/api/capacity/overages') return Promise.resolve(jsonResponse([]))
+      if (url.pathname === '/api/capacity/preview' && method === 'POST') {
+        return Promise.resolve(jsonResponse([]))
+      }
       if (url.pathname === '/api/reservations') {
         return Promise.resolve(jsonResponse(initialReservations))
       }

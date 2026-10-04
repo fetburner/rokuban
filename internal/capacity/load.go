@@ -98,18 +98,27 @@ func loadDemandAllSites(ctx context.Context, q *sqlcgen.Queries) ([]Demand, erro
 	if err != nil {
 		return nil, fmt.Errorf("listing capacity demand for all sites: %w", err)
 	}
+	demands, _, err := demandsFromAllSiteRows(rows, nil)
+	return demands, err
+}
 
-	demands := make([]Demand, 0, len(rows))
+func demandsFromAllSiteRows(rows []sqlcgen.ListCapacityDemandAllSitesRow, excludeRuleID *int64) ([]Demand, []Demand, error) {
+	all := make([]Demand, 0, len(rows))
+	withoutRule := make([]Demand, 0, len(rows))
 	for _, r := range rows {
 		d, ok, err := demandFromRow(r.Site, r.ChannelType, r.Channel, r.ProgramStartAt, r.ProgramEndAt, r.Base, r.Overrides, r.IntentAction)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		if ok {
-			demands = append(demands, d)
+		if !ok {
+			continue
+		}
+		all = append(all, d)
+		if excludeRuleID == nil || r.RuleID == nil || *r.RuleID != *excludeRuleID {
+			withoutRule = append(withoutRule, d)
 		}
 	}
-	return demands, nil
+	return all, withoutRule, nil
 }
 
 // demandFromRow は ListCapacityDemand(AllSites) の 1 行を Demand に変換する。

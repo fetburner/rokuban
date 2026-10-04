@@ -454,16 +454,16 @@ func (r *Ruler) collectDeleteCandidates(ctx context.Context, q *sqlcgen.Queries,
 // （結果が base.skip に載る）。候補は勝者ルールがある番組だけ --- ルールが base を供給
 // していない予約（手動予約・detached）の base は凍結されるので、重複排除の判定対象でも
 // ない。
-func (r *Ruler) applyDedupe(ctx context.Context, site string, desiredIDs []int64, winner map[int64]int64, ruleByID map[int64]sqlcgen.Rule) (map[int64]dedupeMatch, error) {
-	var candidates []dedupeCandidate
+func (r *Ruler) applyDedupe(ctx context.Context, site string, desiredIDs []int64, winner map[int64]int64, ruleByID map[int64]sqlcgen.Rule) (map[int64]DedupeMatch, error) {
+	var candidates []DedupeCandidate
 	for _, programID := range desiredIDs {
 		ruleID, ok := winner[programID]
 		if !ok || !ruleByID[ruleID].DedupeEnabled {
 			continue
 		}
-		candidates = append(candidates, dedupeCandidate{ProgramID: programID, RuleID: ruleID})
+		candidates = append(candidates, DedupeCandidate{ProgramID: programID, RuleID: ruleID})
 	}
-	matches, err := evaluateDedupe(ctx, r.pool, site, candidates)
+	matches, err := EvaluateDedupe(ctx, r.pool, site, candidates)
 	if err != nil {
 		return nil, fmt.Errorf("evaluating dedupe: %w", err)
 	}
@@ -525,7 +525,7 @@ func desiredIDsSet(ids []int64) map[int64]struct{} {
 // パスで射影が復活すれば拾える）。マッチが無ければ（dedupe_enabled=false の場合も含め）
 // dedupe の導出値を NULL に戻す。前のパスの古い根拠を残してはいけない
 // （導出値は毎パス作り直す。CLAUDE.md 不変条件 9）。
-func createReservations(ctx context.Context, tx pgx.Tx, tq *sqlcgen.Queries, site string, desiredIDs []int64, winner map[int64]int64, ruleByID map[int64]sqlcgen.Rule, dedupeMatches map[int64]dedupeMatch) (int, int, error) {
+func createReservations(ctx context.Context, tx pgx.Tx, tq *sqlcgen.Queries, site string, desiredIDs []int64, winner map[int64]int64, ruleByID map[int64]sqlcgen.Rule, dedupeMatches map[int64]DedupeMatch) (int, int, error) {
 	var materializable map[int64]struct{}
 	if len(desiredIDs) > 0 {
 		ids, err := tq.ListProgramSnapshotProgramIDsBySiteAndProgramIDs(ctx, sqlcgen.ListProgramSnapshotProgramIDsBySiteAndProgramIDsParams{Site: site, ProgramIds: desiredIDs})

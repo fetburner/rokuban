@@ -2056,6 +2056,81 @@ export const ListCapacityOveragesResponse = zod.array(ListCapacityOveragesRespon
 
 
 /**
+ * 検索画面でルールを保存した場合に**新たに生じる**容量不足区間を返す。
+ * 既存の予約需要に検索結果のうち実際に予約へ進む候補を加え、
+ * `capacity.Compute` の Hall 条件を再評価する。追加の区間は保存前の同一 site の
+ * 区間と比べ、保存後の不足本数が保存前以下の部分を除く。既存の不足が悪化した
+ * 部分も返す。
+ *
+ * この計算は予約・意図・録画履歴・チューナー射影を組み合わせるため、検索結果に
+ * 含めず独立したエンドポイントにする。検索 API の応答と処理量はそのまま保ち、
+ * 検索画面だけが保存前の仮定を問い合わせる。結果は導出値であり永続化しない。
+ * api ロールは PostgreSQL のみを読み、mirakc には問い合わせない。
+ *
+ * `ruleId` は既存ルールを編集するときだけ指定する。そのルールが勝者だった予約を
+ * 保存前需要から外し、候補として再評価する。重複排除は ruler と共有する判定器で
+ * 行い、`skip` 意図・fulfilled・既存予約も候補から除く。
+ *
+ * 不足区間が無い応答は「収まる」保証ではない。見えない消費者やチューナーの
+ * `excluded_channels` があり、この判定が主張できるのは不足が確認できた区間だけ。
+ * @summary Preview tuner shortfalls for a program search
+ */
+export const previewCapacityOveragesBodyOneTextMatchesItemCaseSensitiveDefault = false;
+export const previewCapacityOveragesBodyOneTextMatchesItemNegateDefault = false;
+export const previewCapacityOveragesBodyOneGenresItemMin = 0;
+export const previewCapacityOveragesBodyOneGenresItemMax = 15;
+
+export const previewCapacityOveragesBodyOneTimesItemWeekdaysMax = 127;
+
+export const previewCapacityOveragesBodyOneTimesItemStartSecMin = 0;
+export const previewCapacityOveragesBodyOneTimesItemStartSecMax = 86400;
+
+export const previewCapacityOveragesBodyOneTimesItemEndSecMin = 0;
+export const previewCapacityOveragesBodyOneTimesItemEndSecMax = 86400;
+
+
+
+
+export const PreviewCapacityOveragesBody = zod.object({
+  "isFree": zod.boolean().nullish(),
+  "durationMinMs": zod.int().nullish(),
+  "durationMaxMs": zod.int().nullish(),
+  "periodStartAt": zod.iso.datetime({"offset":true}).nullish(),
+  "periodEndAt": zod.iso.datetime({"offset":true}).nullish(),
+  "textMatches": zod.array(zod.object({
+  "target": zod.enum(['name', 'description', 'extended']),
+  "mode": zod.enum(['keyword', 'regex']).describe('keyword = 部分一致 / regex = POSIX ARE'),
+  "value": zod.string(),
+  "caseSensitive": zod.boolean().default(previewCapacityOveragesBodyOneTextMatchesItemCaseSensitiveDefault),
+  "negate": zod.boolean().default(previewCapacityOveragesBodyOneTextMatchesItemNegateDefault).describe('true なら除外条件')
+})).optional(),
+  "services": zod.array(zod.object({
+  "networkId": zod.int(),
+  "serviceId": zod.int()
+})).optional(),
+  "channelTypes": zod.array(zod.enum(['GR', 'BS', 'CS', 'SKY'])).optional(),
+  "genres": zod.array(zod.int().min(previewCapacityOveragesBodyOneGenresItemMin).max(previewCapacityOveragesBodyOneGenresItemMax)).optional(),
+  "times": zod.array(zod.object({
+  "weekdays": zod.int().min(1).max(previewCapacityOveragesBodyOneTimesItemWeekdaysMax).describe('bit0=月 … bit6=日'),
+  "startSec": zod.int().min(previewCapacityOveragesBodyOneTimesItemStartSecMin).max(previewCapacityOveragesBodyOneTimesItemStartSecMax),
+  "endSec": zod.int().min(previewCapacityOveragesBodyOneTimesItemEndSecMin).max(previewCapacityOveragesBodyOneTimesItemEndSecMax).describe('start より小さい場合は翌日跨ぎ')
+})).optional(),
+  "sites": zod.array(zod.string()).optional().describe('絞り込み条件。空または省略 = 全サイト（`GET /api/recordings` の `?site=` と 同じ軸の規約: 軸内は OR、他の絞り込み軸とは AND）。指定した site 名は レジストリに存在する必要がある。')
+}).describe('ルール条件の条件部分と同じ形。rulequery.Conditions に写像される。\n検索対象のサイトは `sites`（空または省略 = 全サイト）が決める。\n').and(zod.object({
+  "ruleId": zod.int().min(1).optional().describe('既存ルールを編集する場合の ID。省略時は新規ルールとして扱う。')
+}))
+
+export const PreviewCapacityOveragesResponseItem = zod.object({
+  "site": zod.string().describe('判定はサイトごとに独立して行う。N 予約の決定（docs/recording.md §3.1）に\nより予約が site に束縛されるため二部グラフがサイトごとに非連結になり、\nHall の条件を成分ごとに確認すれば十分になる。\n'),
+  "startAt": zod.iso.datetime({"offset":true}),
+  "endAt": zod.iso.datetime({"offset":true}),
+  "shortfall": zod.int().describe('不足本数。破れた種別部分集合 A の `Σ_{t∈A} d[t] − cap(A)` の最大値。\n1 以上（0 なら超過していないので区間そのものが返らない）\n'),
+  "jammedTypes": zod.array(zod.enum(['GR', 'BS', 'CS', 'SKY'])).describe('詰まった種別（Hall 条件を破った部分集合 A）。「BS が 1 本不足」と言うための材料')
+})
+export const PreviewCapacityOveragesResponse = zod.array(PreviewCapacityOveragesResponseItem)
+
+
+/**
  * River の active な encode ジョブを待機中と実行中に分けて数える。
  * `queued` は `available` / `pending` / `scheduled` / `retryable`、
  * `running` は実行中。録画 1 本に複数プロファイルがあれば複数件になる。

@@ -1,13 +1,14 @@
-import { keepPreviousData } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   useGetRule,
-  useListCapacityOverages,
   useListReservations,
+  usePreviewCapacityOverages,
   useSearchPrograms,
+  type CapacityPreviewRequest,
   type ProgramSearchMatch,
+  type ProgramSearchRequest,
   type Reservation,
   type Service,
 } from '@/api/generated'
@@ -15,18 +16,16 @@ import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { ConditionFields } from '@/components/condition-fields'
 import {
   CreateRuleSection,
+  AddedCapacityOveragesNote,
   RuleCostSummary,
   RuleEditSection,
   RuleSourceBanner,
-  ShortfallOverlapNote,
 } from '@/components/rule-form'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
 import { ProgramRow } from '@/components/program-row'
 import type { ReservationActions } from '@/components/program-list'
 import { Button } from '@/components/ui/button'
 import { programIdentity, useAllSitesServices } from '@/lib/all-sites-services'
-import { countProgramsInShortfall } from '@/lib/capacity'
-import { dayOrigin } from '@/lib/day-offset'
 import { dayKey, formatDate } from '@/lib/format'
 import {
   buildSearchRequest,
@@ -38,15 +37,29 @@ import {
 } from '@/lib/program-search'
 import { loadLastSearchConditions, saveLastSearchConditions } from '@/lib/search-storage'
 import { useReservationActions } from '@/lib/reservation-actions'
-import {
-  epgWindowDays,
-  estimateRuleCost,
-} from '@/lib/rule-cost'
+import { estimateRuleCost } from '@/lib/rule-cost'
 /**
  * pageSize は一度に画面へ表示する検索結果の件数。検索 API は各行に表示情報を含む
  * ため、表示件数を増やす操作で番組詳細の追加取得は発生しない。
  */
 const pageSize = 30
+
+function capacityPreviewRequest(
+  request: ProgramSearchRequest,
+  ruleId: number | undefined,
+): CapacityPreviewRequest {
+  return ruleId === undefined ? request : { ...request, ruleId }
+}
+
+function previewMatchesSearch(
+  request: ProgramSearchRequest | undefined,
+  previewRequest: CapacityPreviewRequest | undefined,
+  ruleId: number | undefined,
+): boolean {
+  if (request === undefined || previewRequest === undefined) return false
+  const { ruleId: previewRuleId, ...previewConditions } = previewRequest
+  return previewRuleId === ruleId && JSON.stringify(request) === JSON.stringify(previewConditions)
+}
 
 /**
  * SearchPage は EPG をルールと同じ条件で検索する画面。
@@ -69,12 +82,6 @@ const pageSize = 30
  * 結果行の予約操作は既存の `useReservationActions` を通る。
  */
 export function SearchPage() {
-  // nowMs はこのレンダーの間で一貫させる（`pages/home.tsx`・`pages/programs.tsx`
-  // と同じ規律）。容量ノートの問い合わせ窓（下の `shortfallWindowStartMs`）だけが使う。
-  // 検索結果の容量窓はクエリ再取得ごとの「いま」を使う。時刻を mount 時に固定
-  // すると、日境界をまたいだ後も古い窓を問い合わせ続ける。
-  // oxlint-disable-next-line react/purity -- クエリ再取得ごとの現在時刻スナップショットが必要
-  const nowMs = Date.now()
   const routeSearch = useRouteSearch({ from: '/search' })
   const ruleId = routeSearch.ruleId
   const navigate = useNavigate()
@@ -127,6 +134,7 @@ export function SearchPage() {
     refetch: refetchRegistry,
   } = useAllSitesServices()
   const search = useSearchPrograms()
+  const capacityPreview = usePreviewCapacityOverages()
   // ruleId が無いときは問い合わせを止める。useGetRule は id を必須の number で
   // 取るため、無効化中はダミー値を渡す（program-overlap-warning.tsx と同じ流儀）。
   const ruleQuery = useGetRule(ruleId ?? -1, { query: { enabled: ruleId !== undefined } })
@@ -185,6 +193,10 @@ export function SearchPage() {
   useEffect(() => {
     searchRef.current = search
   }, [search])
+  const capacityPreviewRef = useRef(capacityPreview)
+  useEffect(() => {
+    capacityPreviewRef.current = capacityPreview
+  }, [capacityPreview])
 
   // ハイドレーションは 1 回だけ。ref に「最後にハイドレートした ruleId」を持ち、
   // 同じ ruleId のまま（refetch でオブジェクトの参照が変わっただけ）なら
@@ -202,7 +214,9 @@ export function SearchPage() {
     // oxlint-disable-next-line react/set-state-in-effect -- URL 条件をローカルフォームへ同期する
     setDraft(nextDraft)
     setVisibleCount(pageSize)
-    searchRef.current.mutate({ data: buildSearchRequest(nextDraft) })
+    const request = buildSearchRequest(nextDraft)
+    searchRef.current.mutate({ data: request })
+    capacityPreviewRef.current.mutate({ data: capacityPreviewRequest(request, ruleId) })
   }, [ruleId, sourceRule])
 
   /**
@@ -250,7 +264,9 @@ export function SearchPage() {
     // oxlint-disable-next-line react/set-state-in-effect -- URL 条件をローカルフォームへ同期する
     setDraft(nextDraft)
     setVisibleCount(pageSize)
-    searchRef.current.mutate({ data: buildSearchRequest(nextDraft) })
+    const request = buildSearchRequest(nextDraft)
+    searchRef.current.mutate({ data: request })
+    capacityPreviewRef.current.mutate({ data: capacityPreviewRequest(request, undefined) })
   }, [ruleId, routeSearch.cond])
 
   const error = draftError(draft)
@@ -302,6 +318,7 @@ export function SearchPage() {
     setVisibleCount(pageSize)
     pendingResultScrollRef.current = true
     search.mutate({ data: request })
+    capacityPreview.mutate({ data: capacityPreviewRequest(request, ruleId) })
     // 押した条件だけを「最後の条件」として残す。打っている途中の下書きを保存すると、
     // 次に開いたとき送れない下書き（値が空のテキスト条件など）が復元されうる。
     saveLastSearchConditions(request)
@@ -383,55 +400,30 @@ export function SearchPage() {
   /**
    * costEstimate は値札（件数・時間の見込み）と容量ノートの共通の母集団から計算する。
    * `durationsMs` は検索レスポンス全件由来なので、先頭 N 件からの外挿にはならない。
-   */
+  */
   const costEstimate = estimateRuleCost({ totalCount: matches.length, durationsMs })
 
-  /**
-   * 容量ノート（`ShortfallOverlapNote`）用の `GET /api/capacity/overages` の窓は
-   * `nowMs` の時境界（`pages/home.tsx` と同じ量子化）+ `epgWindowDays`。サンプル
-   * 番組の時刻から作ると、詳細が 1 件ずつ届くたびに窓＝クエリキーが変わって点滅し、
-   * 終了未定番組（`durationMs = 0`）だけのサンプルでは `start === end` に退化して
-   * 400 で沈黙する（回帰判定は `search.test.tsx` の 3 件と `design.mjs` ①''''）。
-   *
-   * **この窓は検索結果の放送時間帯を覆いきらない。** 検索に `now()` 述語は無く、
-   * `epg_programs` は放送済みを `epg.retention_grace`（既定 24h）ぶん残す
-   * （`lib/rule-cost.ts` の `epgWindowDays`）ので、放送済みの結果と地平線末尾の
-   * 最大 59 分ぶんは窓の外で数え落とす（向きは下界側なので許容する）。
-   */
-  const shortfallWindowStartMs = dayOrigin(0, nowMs).getTime()
-  const shortfallWindowEndMs = shortfallWindowStartMs + epgWindowDays * 86_400_000
-  const overagesQuery = useListCapacityOverages(
-    {
-      start: new Date(shortfallWindowStartMs).toISOString(),
-      end: new Date(shortfallWindowEndMs).toISOString(),
-    },
-    {
-      query: {
-        // 検索結果が無い間は問い合わせない（容量への影響を確かめる対象が無い）。
-        enabled: matches.length > 0,
-        // 時境界を越えてキーが進んだ瞬間にノートが 1 RTT 消えないため
-        // （判定は `search.test.tsx`「時境界を越えても…」。`pages/home.tsx` に同じ対策）。
-        placeholderData: keepPreviousData,
-      },
-    },
-  )
-  // 取得の未完了・失敗（pending/error/400）も `unwrap` で `[]` に畳まれる。
-  // したがって `ShortfallOverlapNote` が出ないことは「今は重なる不足区間が
-  // 無い」以外に「まだ取得できていない／失敗した」も意味しうる
-  // （`pages/reservations.tsx` の `overagesQuery` と同じ事情・同じ規律 ---
-  // 取得失敗を隠して「警告なし」側に倒すのは既存の踏襲先と揃えた意図的な選択）。
-  const overages = unwrap(overagesQuery.data) ?? []
-
-  /**
-   * shortfallCount は容量への影響の近似（判定 (b)）。新たな不足を予測しない理由・
-   * 0 件の意味・終了未定番組の扱いは `lib/capacity.ts` の
-   * `countProgramsInShortfall`。母集団は検索レスポンス全件に揃える。
-   *
-   * **サイト軸は行ごと**（issue #531。`lib/capacity.ts` の
-   * `countProgramsInShortfall` のコメント参照）。検索結果の行自身が site と
-   * 放送時間を運ぶので、別の番組詳細取得は行わない。
-   */
-  const shortfallCount = countProgramsInShortfall(overages, matches)
+  // プレビューの状態は実行した検索に紐づく。フォームを編集しただけでは両方とも変わらず、
+  // 取得中・失敗が「収まる」という主張になることもない。
+  const searchedRequest = search.variables?.data
+  const capacityRequest = capacityPreview.variables?.data
+  const previewMatchesExecutedSearch = previewMatchesSearch(searchedRequest, capacityRequest, ruleId)
+  const capacityPreviewStatus = search.isIdle
+    ? 'idle'
+    : search.isPending
+      ? 'pending'
+      : search.isError
+        ? 'error'
+        : !previewMatchesExecutedSearch
+          ? 'idle'
+          : capacityPreview.isPending
+            ? 'pending'
+            : capacityPreview.isError
+              ? 'error'
+              : capacityPreview.isSuccess
+                ? 'success'
+                : 'idle'
+  const addedOverages = unwrap(capacityPreview.data) ?? []
 
   /**
    * searchedHasPeriod は値札に「8 日分を 7 日換算」という根拠を出してよいかの判定。
@@ -454,7 +446,6 @@ export function SearchPage() {
    * 「この下書きを保存すると恒久的な期間制限になる」という**下書き**についての
    * 警告なので、下書きから導くのが正しい（同じ式に見えて由来が違う）。
    */
-  const searchedRequest = search.variables?.data
   const searchedHasPeriod =
     (searchedRequest?.periodStartAt ?? null) !== null ||
     (searchedRequest?.periodEndAt ?? null) !== null
@@ -546,6 +537,7 @@ export function SearchPage() {
               onClick={() => {
                 setDraft(emptyDraft())
                 search.reset()
+                capacityPreview.reset()
               }}
             >
               条件をクリア
@@ -563,8 +555,11 @@ export function SearchPage() {
       </form>
 
       <RuleCostSummary status={costStatus} estimate={costEstimate} hasPeriod={searchedHasPeriod} />
-      <ShortfallOverlapNote
-        count={shortfallCount}
+      <AddedCapacityOveragesNote
+        status={capacityPreviewStatus}
+        overages={addedOverages}
+        conditions={searchedRequest}
+        showSite={sites.length > 1}
       />
 
       {ruleId !== undefined ? (
@@ -615,7 +610,12 @@ export function SearchPage() {
           <SearchError
             error={search.error}
             onRetry={() => {
-              if (search.variables) search.mutate(search.variables)
+              if (search.variables) {
+                search.mutate(search.variables)
+                capacityPreview.mutate({
+                  data: capacityPreviewRequest(search.variables.data, ruleId),
+                })
+              }
             }}
           />
         ) : matches.length === 0 ? (

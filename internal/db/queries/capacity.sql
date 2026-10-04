@@ -71,6 +71,7 @@ ORDER BY s.start_at;
 -- name: ListCapacityDemandAllSites :many
 SELECT
     r.site,
+    r.rule_id,
     s.channel_type,
     s.channel,
     s.start_at AS program_start_at,
@@ -90,3 +91,50 @@ WHERE NOT EXISTS (
         AND nse.event_id = s.event_id
   )
 ORDER BY r.site, s.start_at;
+
+-- 検索結果の番組のうち、保存時に新たな予約（= 容量需要）になりうるものを返す。
+-- internal/capacity.PreviewCandidates が使う。編集中のルール（rule_id）が既に持つ予約は
+-- 仮想的に外して再計算するので、その予約は候補に残す。放送済み（終了 <= now()）の番組は
+-- epg_programs が retention_grace の間残していても録れないので除く。skip 意図は残さない
+-- が record 意図は dedupe の skip を覆せるので action ごと返す。
+-- ::timestamptz の明示キャストが必要（上の ListCapacityDemand と同じ理由）。
+-- name: ListCapacityPreviewCandidates :many
+SELECT
+    p.site,
+    p.program_id,
+    i.action AS intent_action,
+    s.channel_type,
+    s.channel,
+    p.start_at,
+    (p.start_at + (p.duration_ms * interval '1 millisecond'))::timestamptz AS end_at
+FROM (
+    SELECT unnest(@sites::text[]) AS site, unnest(@program_ids::bigint[]) AS program_id
+) w
+JOIN epg_programs p ON p.site = w.site AND p.program_id = w.program_id
+JOIN epg_services s
+  ON s.site = p.site AND s.network_id = p.network_id AND s.service_id = p.service_id
+LEFT JOIN program_intents i ON i.site = p.site AND i.program_id = p.program_id
+WHERE i.action IS DISTINCT FROM 'skip'
+  AND (p.start_at + (p.duration_ms * interval '1 millisecond')) > now()
+  AND NOT EXISTS (
+      SELECT 1 FROM reservations r
+      WHERE r.site = p.site AND r.program_id = p.program_id
+        AND (sqlc.narg('rule_id')::bigint IS NULL OR r.rule_id IS DISTINCT FROM sqlc.narg('rule_id')::bigint)
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM recordings rec
+      JOIN media_assets a ON a.recording_id = rec.id AND a.kind = 'original'
+      WHERE rec.site = p.site
+        AND rec.network_id = p.network_id
+        AND rec.service_id = p.service_id
+        AND rec.event_id = p.event_id
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM never_scheduled_events nse
+      WHERE nse.site = p.site
+        AND nse.network_id = p.network_id
+        AND nse.service_id = p.service_id
+        AND nse.event_id = p.event_id
+  )
+ORDER BY p.site, p.start_at, p.program_id;

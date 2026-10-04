@@ -20,7 +20,7 @@
  */
 
 import type { CapacityOverage } from '@/api/generated'
-import { formatTime } from '@/lib/format'
+import { dayKey, formatDateTime, formatTime } from '@/lib/format'
 
 
 /** TimeWindow は epoch ms の半開区間 [startMs, endMs)。 */
@@ -136,50 +136,24 @@ export function shortageMessage(overage: CapacityOverage): string {
  * 不足しています」）。グリッドの時間軸列（gutter）は局の列から離れた 1 本の列に
  * 複数 site の帯・読み上げ文が積まれるため、複数 site のときは呼び出し側
  * （`CapacityBand`）が true を渡してどちらの site の説明かを聞き分けられるようにする。
+ *
+ * `withDate` を渡すと開始に日付を付ける（「10/6 03:00〜03:30」）。終了は日をまたぐ
+ * ときだけ日付を付ける（「10/6 23:30〜10/7 00:30」）。番組表の外（検索の保存時
+ * プレビュー）は区間がどの日かを画面が言わないので、文の側で言う。
  */
 export function shortageRangeMessage(
   overage: CapacityOverage,
-  options?: { showSite?: boolean },
+  options?: { showSite?: boolean; withDate?: boolean },
 ): string {
-  const range = `${formatTime(overage.startAt)}〜${formatTime(overage.endAt)}`
+  const range = options?.withDate
+    ? `${formatDateTime(overage.startAt)}〜${
+        dayKey(overage.startAt) === dayKey(overage.endAt)
+          ? formatTime(overage.endAt)
+          : formatDateTime(overage.endAt)
+      }`
+    : `${formatTime(overage.startAt)}〜${formatTime(overage.endAt)}`
   const sitePrefix = options?.showSite ? `${overage.site}の` : ''
   return `${range} は${sitePrefix}チューナーが不足しています（${shortfallDetail(overage)}不足）`
-}
-
-/**
- * countProgramsInShortfall は放送時間帯が自分の site の不足区間と交差する番組の
- * 数を数える。
- *
- * **サイト軸は「行ごと」を選んだ（issue #531）。** 検索結果は 1 放送 1 行の
- * フラットな行で、行数がそのまま予約数になる（不変条件: 畳むと
- * `estimateRuleCost` の `totalCount` が本数を過小報告する）。この値札の交差判定も
- * 同じ行の集合を母集団にするので、各番組は自分がマッチした site を運ぶ必要がある
- * --- 呼び出し側で「site ごとに分けて集計」しても最終的に合算するなら同じ結果に
- * なるが、行の集合を 1 度も分割しなくて済むぶんこちらが単純（`intersectingOverages`
- * の呼び出し 1 箇所のままで済み、`search.tsx` 側に site ごとの grouping を要らない）。
- *
- * **新たな不足を予測しない。** 候補集合を足した what-if 評価（Hall 条件の再評価）
- * はしない --- 個々の番組を、既に確定している不足区間（`overages`）と交差判定
- * するだけ。したがって 0 件は「今は重なる不足区間が無い」であって「保存しても
- * 不足しない」ではない（docs/data.md §6.5「主張は下界に限る」）。呼び出し側は
- * 0 件のとき何も描画しない規律を守ること（`CapacityShortfallBadge` と同じ）。
- *
- * **終了未定番組（`durationMs = 0`。mirakc の `duration: null` が
- * `internal/worker/epg.go` の投影でこうなる）は幅 0 の区間 `[s, s)` として数える。**
- * つまり不足区間が開始の瞬間 s を厳密にまたぐときだけ拾い、20:00 開始・終了未定の
- * 番組の最中に 21:00〜21:30 の不足がある形は拾わない（既定尺を当てる判断はしていない）。
- * 数え落とす向きなので主張は下界のまま。判定は `capacity.test.ts`
- * 「終了未定番組（幅 0 の区間）」。
- */
-export function countProgramsInShortfall(
-  overages: readonly CapacityOverage[],
-  programs: readonly { site: string; startAt: string; durationMs: number }[],
-): number {
-  return programs.filter((program) => {
-    const startMs = new Date(program.startAt).getTime()
-    const endMs = startMs + program.durationMs
-    return intersectingOverages(overages, program.site, startMs, endMs).length > 0
-  }).length
 }
 
 /**
