@@ -908,7 +908,7 @@ func TestChaseRangeFollowReaderCloseStopsConcurrentRead(t *testing.T) {
 func TestChaseInputErrorDoesNotWriteEndlist(t *testing.T) {
 	withFastChaseTimings(t)
 	previousCooldown := chaseInputFailureCooldown
-	cooldown := 30 * time.Millisecond
+	cooldown := 5 * time.Second
 	chaseInputFailureCooldown = cooldown
 	t.Cleanup(func() { chaseInputFailureCooldown = previousCooldown })
 	ffmpeg, marker := installEndlistMarkerFFmpeg(t)
@@ -944,13 +944,13 @@ func TestChaseInputErrorDoesNotWriteEndlist(t *testing.T) {
 		if got := resp.Body.String(); !strings.Contains(got, chaseInputCooldownMessage) {
 			t.Fatalf("cooldown response body = %q, want %q", got, chaseInputCooldownMessage)
 		}
-		if got := resp.Header().Get("Retry-After"); got != "1" {
-			t.Fatalf("Retry-After = %q, want 1 for the short test cooldown", got)
+		if got := resp.Header().Get("Retry-After"); got != "5" {
+			t.Fatalf("Retry-After = %q, want 5 (the remaining cooldown rounded up)", got)
 		}
 	}
 
-	// The frontend retries at the playback position, which has a different offset key.
-	// Concurrent requests for any offset must see the same recording-level marker.
+	// フロントは再生位置で張り直すので、offset のキーが変わる。どの offset の同時要求も、
+	// 同じ録画単位の記録を見なければならない。
 	var sourceMu sync.Mutex
 	sourceCalls := 0
 	var requestWG sync.WaitGroup
@@ -992,7 +992,10 @@ func TestChaseInputErrorDoesNotWriteEndlist(t *testing.T) {
 		t.Fatalf("mirakc follow requests during cooldown = %d, want 1", followCallsDuringCooldown)
 	}
 
-	time.Sleep(cooldown + 20*time.Millisecond)
+	// 期限切れは待たずに、記録した再試行可能時刻を過去へ書き換えて作る。
+	ls.mu.Lock()
+	ls.failedChaseInputs[42] = time.Now().Add(-time.Second)
+	ls.mu.Unlock()
 	if resp := requestHeadChasePlaylist(ls, 42, "recording"); resp.Code != http.StatusOK {
 		t.Fatalf("playlist status after the cooldown and input recovery = %d, want 200 (%s)", resp.Code, resp.Body.String())
 	}
@@ -1015,6 +1018,76 @@ func TestChaseInputErrorDoesNotWriteEndlist(t *testing.T) {
 	client.mu.Unlock()
 	if followCalls != 2 {
 		t.Fatalf("mirakc follow requests after recovery = %d, want 2", followCalls)
+	}
+}
+
+// ctxBlockedChaseClient は追従配信の Read を、読み取り中のまま ctx が終わるまで止めて
+// context.Canceled を返す mirakc の本文を模す。reading は最初の Read に入った時点で閉じる。
+type ctxBlockedChaseClient struct {
+	*scriptedChaseRecord
+	reading chan struct{}
+}
+
+func (c *ctxBlockedChaseClient) StreamRecordFollow(ctx context.Context, _ string) (io.ReadCloser, error) {
+	return &ctxBlockedReader{ctx: ctx, reading: c.reading}, nil
+}
+
+type ctxBlockedReader struct {
+	ctx     context.Context
+	reading chan struct{}
+	once    sync.Once
+}
+
+func (r *ctxBlockedReader) Read([]byte) (int, error) {
+	r.once.Do(func() { close(r.reading) })
+	<-r.ctx.Done()
+	return 0, r.ctx.Err()
+}
+
+func (r *ctxBlockedReader) Close() error { return nil }
+
+// TestChaseIdleGCIsNotRecordedAsInputFailure は、idle GC が読み取り中の追っかけを止めて入力が
+// context.Canceled で終わっても、入力失敗の cooldown を記録しないことを固定する。記録すると、
+// idle GC のたびに同じ録画の追っかけが 10 秒作れなくなる。
+func TestChaseIdleGCIsNotRecordedAsInputFailure(t *testing.T) {
+	ffmpeg := installChaseFFmpegScript(t, "cat > /dev/null\n")
+	client := &ctxBlockedChaseClient{
+		scriptedChaseRecord: &scriptedChaseRecord{content: "head", visible: 4, followBytes: 4, recording: true},
+		reading:             make(chan struct{}),
+	}
+	cfg := chaseTestConfig(t, ffmpeg)
+	cfg.IdleTimeout = time.Minute
+	ls := newLiveStreamer(client, cfg)
+	t.Cleanup(ls.shutdown)
+
+	if resp := requestHeadChasePlaylist(ls, 42, "recording"); resp.Code != http.StatusOK {
+		t.Fatalf("playlist status = %d, want 200 (%s)", resp.Code, resp.Body.String())
+	}
+	select {
+	case <-client.reading:
+	case <-time.After(5 * time.Second):
+		t.Fatal("chase input was not being read before idle GC")
+	}
+	ls.mu.Lock()
+	s := ls.chaseSessions[chaseSessionKeyFor(42, 0)]
+	ls.mu.Unlock()
+	if s == nil {
+		t.Fatal("chase session was not created")
+	}
+	s.mu.Lock()
+	s.lastAccess = time.Now().Add(-2 * time.Minute)
+	s.mu.Unlock()
+	ls.reapIdleAt(time.Now())
+	select {
+	case <-s.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("idle GC did not stop the chase session")
+	}
+	ls.mu.Lock()
+	_, failed := ls.failedChaseInputs[42]
+	ls.mu.Unlock()
+	if failed {
+		t.Fatal("an idle GC cancellation was recorded as a chase input failure")
 	}
 }
 
@@ -1044,7 +1117,7 @@ func TestChaseCooldownSkipsMetadataAndAllowsExistingOffset(t *testing.T) {
 		t.Fatal("nonzero-offset request queried mirakc metadata before checking the cooldown")
 	}
 
-	// A failed offset must not keep viewers from joining a different, healthy offset.
+	// 失敗した offset があっても、別の健全な offset には相乗りできる。
 	healthyDir := t.TempDir()
 	playlist := []byte("#EXTM3U\n#EXTINF:2.0,\nsegment_00000.ts\n")
 	if err := os.WriteFile(filepath.Join(healthyDir, "hd.m3u8"), playlist, 0o600); err != nil {
@@ -1094,8 +1167,8 @@ func TestChaseConcurrentJoinerUsesUpstreamStartupRetry(t *testing.T) {
 	ls := newLiveStreamer(client, cfg)
 	t.Cleanup(ls.shutdown)
 
-	// Make an idle victim available so the initial upstream rejection must use
-	// the same recovery path as other live session startup failures.
+	// アイドルな犠牲セッションを用意し、最初の上流拒否が他のライブ起動失敗と同じ
+	// 回復経路を通るようにする。
 	ready := make(chan struct{})
 	close(ready)
 	done := make(chan struct{})
@@ -1120,8 +1193,8 @@ func TestChaseConcurrentJoinerUsesUpstreamStartupRetry(t *testing.T) {
 		t.Fatal("initial chase upstream request did not start")
 	}
 	go func() { responses <- requestHeadChasePlaylist(ls, 42, "recording") }()
-	// Let the second public request join the in-flight session and wait on ready
-	// before releasing its upstream failure.
+	// 2 本目の要求が進行中のセッションに相乗りして ready を待つのを待ってから、
+	// 上流の失敗を解放する。
 	time.Sleep(100 * time.Millisecond)
 	close(client.releaseFirstFollow)
 

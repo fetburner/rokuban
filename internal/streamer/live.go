@@ -561,6 +561,12 @@ var playlistStartupTimeout = 15 * time.Second
 // chaseInputFailureCooldown は追っかけ入力の失敗後、同じ録画の全 offset で新しい
 // セッションを作らない期間。再生位置の offset で張り直されても、入力障害中に
 // ffmpeg と mirakc の要求を作り直し続けないようにする。
+//
+// 判定基準: フロントの再生中の失敗は、hls.js のプレイリスト再取得が規定の再試行
+// （playlistLoadPolicy の errorRetry: maxNumRetry 2、1 秒→2 秒の backoff で計 3 秒前後）を
+// 使い切って fatal になり、再生元を選び直した probe が 502 を受ける順で進む。この全体が
+// cooldown に収まらないと、hls.js の再取得自体が先頭から作り直しを起こす。
+// そのため再試行が尽きるまでの時間より長くとる。10 秒はその 3 倍強の余裕で、実測値ではない。
 var chaseInputFailureCooldown = 10 * time.Second
 
 const playlistPollInterval = 100 * time.Millisecond
@@ -1147,9 +1153,9 @@ func (ls *LiveStreamer) ChasePlaylistForTarget(w http.ResponseWriter, r *http.Re
 				writeSessionError(w, err)
 				return
 			}
-			// A failed in-flight session still goes through the shared eviction and
-			// retry path below. Healthy sessions and cooldown responses are handled
-			// before any offset metadata request.
+			// 起動に失敗した進行中のセッションは、共通の退避・再試行経路（下の
+			// recoverSessionStartup。s.done の待ちもそこで行う）に通す。健全なセッションと
+			// cooldown 応答は、offset のメタデータ要求より前に処理する。
 			s, err = ls.recoverSessionStartup(r.Context(), key, s.source, s, err)
 			if err != nil {
 				writeSessionError(w, err)
@@ -2663,10 +2669,9 @@ func liveEvictionReason(err error) (string, bool) {
 	return "", false
 }
 
-// existingChaseSessionOrCooldown lets a request join an existing offset before
-// consulting mirakc metadata, while rejecting creation during a recording-level
-// input failure cooldown. The final check in getOrCreateSessionOnceFor closes
-// the race with another session failing after this preflight.
+// existingChaseSessionOrCooldown は、mirakc のメタデータを引く前に既存 offset のセッションへ
+// 相乗りさせ、録画単位の入力失敗 cooldown 中は新規作成を拒む。この事前確認の後に別セッションが
+// 失敗する競合は、getOrCreateSessionOnceFor 内の最終確認が塞ぐ。
 func (ls *LiveStreamer) existingChaseSessionOrCooldown(ctx context.Context, key sessionKey) (*liveSession, error) {
 	ls.mu.Lock()
 	s, exists := ls.getSessionLocked(key)
@@ -2684,20 +2689,13 @@ func (ls *LiveStreamer) existingChaseSessionOrCooldown(ctx context.Context, key 
 		return nil, err
 	}
 	if s.startErr != nil {
-		if _, retryable := liveEvictionReason(s.startErr); retryable {
-			// runSession removes the map entry before deleting its output directory.
-			// Wait for done before a caller retries at the same offset, or the old
-			// cleanup can remove files from the new session.
-			<-s.done
-		}
 		return s, s.startErr
 	}
 	return s, nil
 }
 
-// chaseInputCooldownLocked returns the recording-level cooldown error. Caller
-// must hold ls.mu so failed-input recording, map deletion, and creation gating
-// remain one atomic state transition.
+// chaseInputCooldownLocked は録画単位の cooldown エラーを返す。呼び出し側は ls.mu を保持すること。
+// 失敗の記録・map からの削除・作成の可否判定を 1 つのロック区間で行うためである。
 func (ls *LiveStreamer) chaseInputCooldownLocked(recordingID int64) error {
 	if retryAt, failed := ls.failedChaseInputs[recordingID]; failed {
 		remaining := time.Until(retryAt)

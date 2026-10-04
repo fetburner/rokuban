@@ -609,15 +609,27 @@ segment を取りに来る窓を失わない。保持中は全プロファイル
 終了後でも再起動なしに `?profile=` を切り替えられる
 （`TestFinishedChaseProfileSwitchServesRetainedPlaylists`）。ffmpeg が異常終了した場合（kill を含む）は
 壊れたセッションを保持せず、map とファイルを直ちに解放する。mirakc からの入力読み取りエラーで
-ffmpeg を止めた場合は、録画 ID ごとに 10 秒間の再作成 cooldown を記録する。期間中は、その録画の
+ffmpeg を止めた場合は、録画 ID ごとに 10 秒間の再作成 cooldown を記録する。
+期間中は、その録画の
 新しい追っかけセッションを作成しない。すでに存在する健全な offset のセッションは引き続き共有できる。
 新しいセッションが必要な playlist 要求には `502 Bad Gateway` を返す。本文は
 `追っかけ入力のエラーが続いているため、再作成を一時停止しています。しばらく待ってから再読み込みしてください。`
-で、残り秒数を `Retry-After` に入れる。`502` は上流入力の失敗を示すため、チューナーやセッション数の不足を
+で、残り秒数を `Retry-After` に入れる。
+フロントはこの `Retry-After` の有無で、streamer の cooldown 応答と、streamer の停止・再起動中に nginx や ingress が返す 502 を区別する。プロキシの 502 には `Retry-After` が付かないので、入力失敗として扱わず再生元の選び直しに回せる。
+`502` は上流入力の失敗を示すため、チューナーやセッション数の不足を
 表す `503 Service Unavailable` とは分類を分ける。cooldown が切れた後の最初の要求は新しいセッションを試し、
 入力が回復していれば通常どおり再生できる。再度失敗した場合は cooldown を更新する。
 失敗記録とセッションの map からの削除は同じロック区間で行うため、同時要求も新しいセッションを作らない。
-通常の異常終了（ffmpeg 自身のクラッシュ）や idle GC は入力失敗として記録しない。
+通常の異常終了（ffmpeg 自身のクラッシュ）や idle GC は入力失敗として記録しない
+（`TestChaseIdleGCIsNotRecordedAsInputFailure`）。
+cooldown は、hls.js の再試行が尽きるまでの時間より長くとる。
+再生中の失敗は、hls.js のプレイリスト再取得が規定の再試行を使い切って fatal になる順で進む。
+その後に再生元を選び直した probe が 502 を受ける。
+hls.js 1.7.3 の `playlistLoadPolicy.default.errorRetry` は、
+`maxNumRetry: 2`・`retryDelayMs: 1000` と既定の指数 backoff を持つ。
+待ちは 1 秒と 2 秒の計 3 秒前後である。
+cooldown がこれより短いと、hls.js の再取得自体が先頭から作り直しを起こす。
+10 秒はその 3 倍強の余裕で、実測した値ではない（未検証）。
 録画が終了済みなら、保持セッションが無い要求は引き続き 404 になる
 （`TestChaseInputErrorDoesNotWriteEndlist`）。
 

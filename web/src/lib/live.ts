@@ -711,15 +711,21 @@ export type LiveLoadError =
  * 503 はすべて `capacity` に落とす --- セッション上限 / チューナー枯渇 /
  * シャットダウン中を区別できるが、同じ UI 分岐で扱える。追っかけ再生中の 502 は
  * upstream 入力エラー後の cooldown として `chase-input` に分け、自動張り直しを止める。
+ * Retry-After の無い 502 はプロキシ由来なので `other` のままにする。
  * 本文は必ずそのまま運ぶ（docs/frontend.md「エラーの本文も UI まで運ぶ」）。
  */
 export function classifyLiveLoadError(
-  result: { kind: 'network' } | { kind: 'http'; status: number; body: string },
+  result:
+    | { kind: 'network' }
+    // retryAfter は応答の Retry-After ヘッダ（無ければ null）。
+    | { kind: 'http'; status: number; body: string; retryAfter?: string | null },
   source?: 'chase',
 ): LiveLoadError {
   if (result.kind === 'network') return { kind: 'unreachable' }
   if (result.status === 503) return { kind: 'capacity', message: result.body.trim() }
-  if (source === 'chase' && result.status === 502) {
+  // streamer の cooldown 応答だけが 502 に Retry-After を付ける。nginx や ingress が
+  // streamer の停止中に返す 502 には付かないので、ヘッダの有無でプロキシ由来と区別する。
+  if (source === 'chase' && result.status === 502 && result.retryAfter) {
     return { kind: 'chase-input', message: result.body.trim() }
   }
   return { kind: 'other', status: result.status, message: result.body.trim() }
@@ -833,6 +839,9 @@ export async function probeLivePlaylist(
   const body = await response.text().catch(() => '')
   return {
     ok: false,
-    error: classifyLiveLoadError({ kind: 'http', status: response.status, body }, source),
+    error: classifyLiveLoadError(
+      { kind: 'http', status: response.status, body, retryAfter: response.headers.get('Retry-After') },
+      source,
+    ),
   }
 }
