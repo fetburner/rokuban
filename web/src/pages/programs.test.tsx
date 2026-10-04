@@ -565,6 +565,113 @@ describe('ProgramsPage の表示形式', () => {
     expect(secondCell).toHaveClass('bg-card')
   })
 
+  it('バックグラウンド再取得中も、確定済みの一致表示（グリッド）を保つ', async () => {
+    const first = { ...soon, genres: [7] }
+    const second = { ...alsoSoon, genres: [7] }
+    const match: ProgramSearchMatch = {
+      site: 'default',
+      programId: first.programId,
+      networkId: first.networkId,
+      serviceId: first.serviceId,
+      startAt: first.startAt,
+      durationMs: first.durationMs,
+      name: first.name,
+      isFree: true,
+    }
+    let release: (response: Response) => void = () => {}
+    stubApi([], [], [first, second], undefined, undefined, [], undefined, (_request, callIndex) =>
+      callIndex === 1
+        ? jsonResponse([match])
+        : new Promise<Response>((resolve) => {
+            release = resolve
+          }),
+    )
+    stubMatchMedia(true)
+    const { queryClient } = renderPage(
+      `/programs?view=grid&cond=${encodeURIComponent(JSON.stringify({ genres: [7] }))}`,
+    )
+
+    const secondCell = await screen.findByRole('button', { name: /手話ニュース/ })
+    await screen.findByText('1 件一致')
+    expect(secondCell).toHaveAttribute('data-condition-match', 'false')
+
+    void queryClient.invalidateQueries({ queryKey: ['/api/programs'] })
+    await waitFor(() =>
+      expect(
+        queryClient.isFetching({ queryKey: ['/api/programs', 'condition-lens'] }),
+      ).toBeGreaterThan(0),
+    )
+    expect(secondCell).toHaveAttribute('data-condition-match', 'false')
+    expect(screen.getByText('1 件一致')).toBeInTheDocument()
+    release(jsonResponse([match]))
+  })
+
+  it('バックグラウンド再取得中も、リストは非一致番組を再表示しない', async () => {
+    const first = { ...soon, genres: [7] }
+    const second = { ...alsoSoon, genres: [7] }
+    const match: ProgramSearchMatch = {
+      site: 'default',
+      programId: first.programId,
+      networkId: first.networkId,
+      serviceId: first.serviceId,
+      startAt: first.startAt,
+      durationMs: first.durationMs,
+      name: first.name,
+      isFree: true,
+    }
+    let release: (response: Response) => void = () => {}
+    stubApi([], [], [first, second], undefined, undefined, [], undefined, (_request, callIndex) =>
+      callIndex === 1
+        ? jsonResponse([match])
+        : new Promise<Response>((resolve) => {
+            release = resolve
+          }),
+    )
+    const { queryClient } = renderPage(
+      `/programs?cond=${encodeURIComponent(JSON.stringify({ genres: [7] }))}`,
+    )
+    await screen.findByText('1 件一致')
+    expect(screen.queryByText('手話ニュース')).not.toBeInTheDocument()
+
+    void queryClient.invalidateQueries({ queryKey: ['/api/programs'] })
+    await waitFor(() =>
+      expect(
+        queryClient.isFetching({ queryKey: ['/api/programs', 'condition-lens'] }),
+      ).toBeGreaterThan(0),
+    )
+    expect(screen.queryByText('手話ニュース')).not.toBeInTheDocument()
+    expect(screen.getByText('1 件一致')).toBeInTheDocument()
+    release(jsonResponse([match]))
+  })
+
+  it('一致件数はチャンネル絞り込みの外の番組を数えない', async () => {
+    const first = { ...soon, genres: [7] }
+    const second = { ...alsoSoon, genres: [7] }
+    const toMatch = (p: ProgramListItem): ProgramSearchMatch => ({
+      site: 'default',
+      programId: p.programId,
+      networkId: p.networkId,
+      serviceId: p.serviceId,
+      startAt: p.startAt,
+      durationMs: p.durationMs,
+      name: p.name,
+      isFree: true,
+    })
+    const cond = encodeURIComponent(JSON.stringify({ genres: [7] }))
+    stubApi([], [], [first, second], undefined, undefined, [], undefined, () =>
+      jsonResponse([toMatch(first), toMatch(second)]),
+    )
+    stubMatchMedia(true)
+    const narrowed = renderPage(`/programs?view=grid&service=3273601024&cond=${cond}`)
+    await screen.findByText('1 件一致')
+    expect(screen.getAllByTestId('day-match-count')[0]).toHaveTextContent('1件')
+    narrowed.unmount()
+
+    renderPage(`/programs?view=grid&cond=${cond}`)
+    await screen.findByText('2 件一致')
+    expect(screen.getAllByTestId('day-match-count')[0]).toHaveTextContent('2件')
+  })
+
   it('リストでは条件検索が成功した後にだけ非一致番組を隠す', async () => {
     const animeFromApi = { ...program(109801, 1024, 1, '一致するアニメ'), genres: [7] }
     const animeOmittedByApi = { ...program(109802, 1032, 1, '一致しないアニメ', 32737), genres: [7] }

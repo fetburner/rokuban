@@ -340,8 +340,9 @@ export function ProgramsPage() {
 
   // 一致集合は rulequery と同じ検索 API の応答だけから作る。query key を
   // programsQueryKeyPrefix 配下へ置き、EPG・予約意図の invalidate と同じ契機で
-  // 番組データと一緒に取り直す。初回取得・再取得中・失敗時は undefined を渡し、
-  // グリッドは通常色、リストは全番組を保つ。
+  // 番組データと一緒に取り直す。一致集合は成功済みのキャッシュを再取得中も保ち、
+  // 初回取得中と失敗時（再試行中を含む）だけ undefined を渡す。グリッドは通常色、
+  // リストは全番組を保つ。
   const conditionQuery = useQuery({
     queryKey: [programsQueryKeyPrefix, 'condition-lens', search.cond],
     enabled: search.cond !== undefined,
@@ -353,16 +354,11 @@ export function ProgramsPage() {
       return result
     },
   })
-  const conditionPending =
-    search.cond !== undefined && (conditionQuery.isPending || conditionQuery.isFetching)
   const conditionError = search.cond !== undefined && conditionQuery.isError
   const conditionMatches: ProgramSearchMatch[] | undefined =
-    search.cond !== undefined &&
-    conditionQuery.isSuccess &&
-    !conditionQuery.isFetching &&
-    !conditionError
-      ? conditionQuery.data
-      : undefined
+    search.cond !== undefined && conditionQuery.isSuccess ? conditionQuery.data : undefined
+  const conditionPending =
+    search.cond !== undefined && conditionQuery.isFetching && conditionMatches === undefined
   const matchedProgramIds = useMemo(() => {
     if (conditionMatches === undefined) return undefined
     return new Set(
@@ -375,13 +371,6 @@ export function ProgramsPage() {
     const summaries = summarizeRuleConditions(search.cond)
     return summaries.length > 0 ? summaries : ['条件あり']
   }, [search.cond])
-  const dayMatchCounts = useMemo(
-    () =>
-      conditionMatches === undefined
-        ? undefined
-        : countMatchesByLocalDay(conditionMatches, nowMs, selectableDays),
-    [conditionMatches, nowMs],
-  )
   // サーバーが選択済みのサービスで絞るので、これ以上の適用点は要らない。
   const gridPrograms = useMemo(() => gridQuery.data ?? [], [gridQuery.data])
   const axis = useMemo<TimeAxis>(
@@ -508,6 +497,21 @@ export function ProgramsPage() {
     }
     return map
   }, [siteServices])
+  // 件数だけは表示範囲（選択中のチャンネル）との交差で数える。一致の判定そのものは
+  // 検索 API のままで、グリッド/リストが出す範囲と件数を揃えるためだけに絞る。
+  const scopedMatches =
+    conditionMatches === undefined || selectedServiceIds.size === 0
+      ? conditionMatches
+      : conditionMatches.filter((match) => {
+          const service = siteServiceByKey.get(
+            siteServiceKey(match.site, match.networkId, match.serviceId),
+          )
+          return service !== undefined && selectedServiceIds.has(service.id)
+        })
+  const dayMatchCounts =
+    scopedMatches === undefined
+      ? undefined
+      : countMatchesByLocalDay(scopedMatches, nowMs, selectableDays)
 
   // 予約状態は番組とは別クエリで取り、クライアント側で結合する。
   // 予約は頻繁に変わり番組はほとんど変わらないので、キャッシュの寿命を分ける。
@@ -795,9 +799,9 @@ export function ProgramsPage() {
                   再試行
                 </Button>
               </div>
-            ) : conditionMatches !== undefined ? (
+            ) : scopedMatches !== undefined ? (
               <span data-testid="condition-lens-status" role="status" className="text-muted-foreground">
-                {conditionMatches.length} 件一致
+                {scopedMatches.length} 件一致
               </span>
             ) : null}
           </div>
