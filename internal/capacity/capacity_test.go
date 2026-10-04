@@ -505,3 +505,57 @@ func TestIntersecting(t *testing.T) {
 		})
 	}
 }
+
+func TestNewlyAdded(t *testing.T) {
+	shortfall := func(startMin, endMin, count int, jammed ...string) Overage {
+		return Overage{
+			Site:        "default",
+			StartAt:     at(startMin),
+			EndAt:       at(endMin),
+			Shortfall:   count,
+			JammedTypes: jammed,
+		}
+	}
+	assert := func(t *testing.T, got []Overage, want []Overage) {
+		t.Helper()
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("NewlyAdded() = %+v, want %+v", got, want)
+		}
+	}
+
+	t.Run("new interval", func(t *testing.T) {
+		post := shortfall(10, 20, 1, "GR")
+		assert(t, NewlyAdded(nil, []Overage{post}), []Overage{post})
+	})
+
+	t.Run("covered with equal shortfall", func(t *testing.T) {
+		before := []Overage{shortfall(10, 20, 1, "BS")}
+		after := []Overage{shortfall(10, 20, 1, "GR")}
+		assert(t, NewlyAdded(before, after), nil)
+	})
+
+	t.Run("covered with greater shortfall", func(t *testing.T) {
+		before := []Overage{shortfall(10, 20, 2, "BS")}
+		after := []Overage{shortfall(10, 20, 1, "GR")}
+		assert(t, NewlyAdded(before, after), nil)
+	})
+
+	t.Run("uncovered portion remains", func(t *testing.T) {
+		before := []Overage{shortfall(10, 14, 1, "GR")}
+		after := []Overage{shortfall(10, 20, 1, "GR")}
+		assert(t, NewlyAdded(before, after), []Overage{shortfall(14, 20, 1, "GR")})
+	})
+
+	t.Run("worsened shortfall is new across the full interval", func(t *testing.T) {
+		before := []Overage{shortfall(10, 15, 1, "GR")}
+		after := []Overage{shortfall(10, 20, 2, "BS")}
+		assert(t, NewlyAdded(before, after), []Overage{shortfall(10, 20, 2, "BS")})
+	})
+
+	t.Run("another site does not cover", func(t *testing.T) {
+		before := []Overage{shortfall(10, 20, 1, "GR")}
+		before[0].Site = "other"
+		after := []Overage{shortfall(10, 20, 1, "GR")}
+		assert(t, NewlyAdded(before, after), after)
+	})
+}

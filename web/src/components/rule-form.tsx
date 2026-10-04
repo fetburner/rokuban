@@ -7,6 +7,8 @@ import {
   getListRulesQueryKey,
   useCreateRule,
   useUpdateRule,
+  type CapacityOverage,
+  type ProgramSearchRequest,
   type Rule,
 } from '@/api/generated'
 import { ApiError } from '@/api/client'
@@ -17,6 +19,7 @@ import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/field'
 import { formatDuration } from '@/lib/format'
+import { shortageRangeMessage } from '@/lib/capacity'
 import {
   buildRuleInput,
   emptyRuleMeta,
@@ -119,19 +122,55 @@ export function RuleCostSummary({
   return <p className="px-4 py-2 text-xs text-muted-foreground">{text}</p>
 }
 
-/**
- * ShortfallOverlapNote は検索結果のうち放送時間帯が既存のチューナー不足区間と
- * 交差する番組の件数を値札の隣に出す（判定 (b)。docs/frontend/search.md
- * 「保存前の値札」）。**0 件のときは何も描画しない**（`CapacityShortfallBadge`
- * と同じ「沈黙は保証ではない」規律。緑にも「収まります」にもしない）。
+/** AddedCapacityOveragesNote は保存時プレビューが返した「追加で不足する区間」だけを出す。
+ * 空の結果・取得中は沈黙する。区間が無いことは全録画がチューナーに収まる約束ではないし、
+ * 取得中に 1 行描くと、プレビュー（検索より遅く返る）が 0 件のときに描画済みの検索結果が
+ * 1 行ずれる（CLS）。失敗は「確認できなかった」を伝えるため 1 行残す。
  */
-export function ShortfallOverlapNote({ count }: { count: number }) {
-  if (count === 0) return null
+export function AddedCapacityOveragesNote({
+  status,
+  overages,
+  conditions,
+  showSite,
+}: {
+  status: 'idle' | 'pending' | 'error' | 'success'
+  overages: readonly CapacityOverage[]
+  conditions: ProgramSearchRequest | undefined
+  showSite: boolean
+}) {
+  if (status === 'idle' || status === 'pending') return null
+  if (status === 'error') {
+    return (
+      <p role="status" className="px-4 py-2 text-xs text-muted-foreground">
+        追加される容量不足を確認できませんでした
+      </p>
+    )
+  }
+  if (overages.length === 0 || conditions === undefined) return null
 
   return (
-    <p className="px-4 py-2 text-xs text-muted-foreground">
-      検索結果のうち、既にチューナー不足の区間と重なる番組が {count} 件あります
-    </p>
+    <ul
+      aria-label="保存時に追加される容量不足"
+      className="space-y-1 px-4 py-2 text-xs text-muted-foreground"
+    >
+      {overages.map((overage) => (
+        <li key={`${overage.site}:${overage.startAt}:${overage.endAt}:${overage.shortfall}`}>
+          {/* 文は 1 つの文字列にする（JSX の改行は空白に畳まれ、テキストノードも分かれる） */}
+          <p>{shortageRangeMessage(overage, { showSite, withDate: true })}</p>
+          <Link
+            to="/programs"
+            search={{
+              view: 'grid',
+              at: new Date(overage.startAt).getTime(),
+              cond: conditions,
+            }}
+            className="font-medium text-foreground underline underline-offset-2"
+          >
+            この時間帯の一致番組を番組表で見る
+          </Link>
+        </li>
+      ))}
+    </ul>
   )
 }
 
