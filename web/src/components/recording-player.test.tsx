@@ -5,6 +5,7 @@ import { RecordingPlayer } from '@/components/recording-player'
 import { FRAME_SECONDS } from '@/lib/chapters'
 
 afterEach(() => {
+  vi.useRealTimers()
   localStorage.clear()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -1137,6 +1138,44 @@ describe('RecordingPlayer のチャプター編集中速度', () => {
     expect(video.playbackRate).toBe(2)
     expect(video.defaultPlaybackRate).toBe(2)
     expect(localStorage.getItem('rokuban:playback-rate')).toBe('1.5')
+  })
+
+  it('前後再生中に速度を下げても、指定位置より前で保険タイマーが止めない', async () => {
+    vi.useFakeTimers()
+    localStorage.setItem('rokuban:chapter-edit-playback-rate', '2')
+    const { container, getByRole, getByTestId } = render(
+      <RecordingPlayer
+        recordingId={103}
+        encodedAssets={[{ profile: 'h264', sizeBytes: 100 }]}
+        chapters={[{ startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }]}
+        chapterVersion="v1"
+        chapterEditing
+        onSaveChapters={() => Promise.resolve()}
+        onResetChapters={() => {}}
+      />,
+    )
+    const video = container.querySelector('video')!
+    const pause = vi.spyOn(video, 'pause').mockImplementation(() => setMediaProps(video, { paused: true }))
+    vi.spyOn(video, 'play').mockImplementation(() => {
+      setMediaProps(video, { paused: false })
+      return Promise.resolve()
+    })
+
+    // 境界 10 秒の前後再生は 7 秒から 13 秒で止まる。
+    fireEvent.click(getByRole('button', { name: /前後 3 秒/ }))
+    expect(video.currentTime).toBe(7)
+    expect(video.playbackRate).toBe(2)
+
+    fireEvent.click(getByTestId('chapter-edit-playback-rate'))
+    expect(video.playbackRate).toBe(0.5)
+
+    // 開始時の 2x から計算した 5 秒のタイマーが発火しても、13 秒へ未到達なら継続する。
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(pause).not.toHaveBeenCalled()
+
+    setMediaProps(video, { currentTime: 13, paused: false })
+    fireEvent.timeUpdate(video)
+    expect(pause).toHaveBeenCalledOnce()
   })
 })
 

@@ -679,12 +679,23 @@ export function RecordingPlayer({
     playAroundStopRef.current = stop
     jumpTo(start)
     void video.play()
-    // 本来の停止は timeupdate の `currentTime >= stop`。これは再生が進まない場合
-    // （バッファ待ちなど）に抑制が残り続けないための保険で、再生速度ぶん余裕を持たせる。
-    playAroundTimerRef.current = window.setTimeout(
-      () => finishPlayAround(video),
-      ((stop - start) * 1000) / Math.max(video.playbackRate, 0.1) + 2000,
-    )
+    schedulePlayAroundStop(video)
+  }
+  const schedulePlayAroundStop = (video: HTMLVideoElement) => {
+    const stop = playAroundStopRef.current
+    if (stop === null) return
+    window.clearTimeout(playAroundTimerRef.current)
+    const remainingSeconds = Math.max(0, stop - video.currentTime)
+    // 本来の停止は timeupdate の `currentTime >= stop`。保険タイマーも発火時に位置を
+    // 再確認し、再生速度が変わって未到達なら現在の速度で残り時間を測り直す。
+    playAroundTimerRef.current = window.setTimeout(() => {
+      if (playAroundStopRef.current !== stop) return
+      if (video.currentTime >= stop || video.paused) {
+        finishPlayAround(video)
+      } else {
+        schedulePlayAroundStop(video)
+      }
+    }, (remainingSeconds * 1000) / Math.max(video.playbackRate, 0.1) + 2000)
   }
   const finishPlayAround = (video: HTMLVideoElement) => {
     window.clearTimeout(playAroundTimerRef.current)
@@ -876,7 +887,10 @@ export function RecordingPlayer({
               const previous = previousSecondsRef.current
               previousSecondsRef.current = v.currentTime
               const stopAt = playAroundStopRef.current
-              if (stopAt !== null && v.currentTime >= stopAt) finishPlayAround(v)
+              if (stopAt !== null) {
+                if (v.currentTime >= stopAt) finishPlayAround(v)
+                else if (!v.paused) schedulePlayAroundStop(v)
+              }
               if (skipEnabled && !skipSuppressedRef.current && !v.paused) {
                 const target = skipTarget(chapterSpans, previous, v.currentTime, v.duration)
                 if (target !== undefined) {
