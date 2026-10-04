@@ -1318,7 +1318,7 @@ if (engine === 'webkit') {
   await revealControls('⑥ 再生速度の確認')
   await page.getByRole('button', { name: '再生設定' }).click()
   const rateMenuItem = page.getByRole('menu', { name: '再生設定' }).getByRole('menuitem', { name: '再生速度' })
-  if (!(await rateMenuItem.isDisabled())) ng.push('⑥ ネイティブ HLS の再生速度を固定中に速度メニューが有効')
+  if ((await rateMenuItem.getAttribute('aria-disabled')) !== 'true') ng.push('⑥ ネイティブ HLS の再生速度を固定中に速度メニューが有効')
 
   const beforePlaylistEnd = { finalized: finalizedChasePlaylistRequests }
   await endChasePlaylist({ label: '⑥', before: beforePlaylistEnd })
@@ -1331,7 +1331,7 @@ if (engine === 'webkit') {
     undefined,
     { timeout: 15000 },
   ).catch(() => ng.push('⑥ EVENT playlist の ENDLIST 後に保存済み速度へ戻らない'))
-  if (await rateMenuItem.isDisabled()) ng.push('⑥ 有限尺になった後も再生速度メニューが無効')
+  if ((await rateMenuItem.getAttribute('aria-disabled')) === 'true') ng.push('⑥ 有限尺になった後も再生速度メニューが無効')
   if (await page.evaluate(() => localStorage.getItem('rokuban:playback-rate')) !== '1.5') {
     ng.push('⑥ 有限尺への移行後に保存済み速度が変わった')
   }

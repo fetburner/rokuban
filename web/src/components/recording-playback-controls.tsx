@@ -1355,6 +1355,7 @@ function PlaybackSettingsMenu({
       case 'ArrowRight': {
         const submenu = (document.activeElement as HTMLElement | null)?.dataset.submenu as MenuView | undefined
         if (view !== 'main' || submenu === undefined) return
+        if ((document.activeElement as HTMLElement).getAttribute('aria-disabled') === 'true') break
         enter(submenu)
         break
       }
@@ -1393,14 +1394,14 @@ function PlaybackSettingsMenu({
     <button
       type="button"
       role="menuitem"
-      disabled={disabled}
+      aria-disabled={disabled || undefined}
       aria-label={label}
       aria-describedby={`${id}-${key}-value`}
       data-submenu={key}
       data-menu-focus={returnRow === key ? 'true' : undefined}
       title={disabled ? '変換中のネイティブ HLS は 1 倍で再生します' : undefined}
       className={cn(row, disabled && 'cursor-not-allowed opacity-70')}
-      onClick={() => enter(key)}
+      onClick={() => !disabled && enter(key)}
     >
       {icon}
       <span className="flex-1">{label}</span>
