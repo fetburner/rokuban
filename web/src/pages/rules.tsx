@@ -441,11 +441,8 @@ function RuleRow({
             <span>
               {profiles.length === 0 ? 'エンコードなし' : profiles.join(', ')}
             </span>
-          </div>
-
-          {rule.enabled && activity !== undefined && (
-            <div className="mt-1 flex flex-wrap items-center gap-x-2 text-sm">
-              {activity.scheduledCount === 0 ? (
+            {rule.enabled && activity !== undefined && (
+              activity.scheduledCount === 0 ? (
                 <span className="text-muted-foreground">録画予定なし</span>
               ) : (
                 <>
@@ -462,9 +459,10 @@ function RuleRow({
                     </span>
                   )}
                 </>
-              )}
-            </div>
-          )}
+              )
+            )}
+          </div>
+
         </div>
         <div className="flex shrink-0 items-start gap-1">
           <div className="flex flex-col items-end gap-2">

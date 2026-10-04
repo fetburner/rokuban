@@ -1,5 +1,5 @@
 import type { CapacityOverage, Reservation } from '@/api/generated'
-import { reservationVerdict } from '@/lib/reservation-verdict'
+import { reservationVerdict } from '@/lib/reservation-labels'
 
 export type RuleActivitySummary = {
   scheduledCount: number
@@ -22,11 +22,11 @@ export function summarizeRuleActivity(
   for (const reservation of reservations) {
     if (reservation.ruleId !== ruleId) continue
 
-    const verdict = reservationVerdict(reservation, overages)
-    if (verdict.kind !== 'scheduled') continue
+    const { kind } = reservationVerdict(reservation, overages)
+    if (kind !== 'scheduled' && kind !== 'scheduled-shortfall') continue
 
     scheduledCount += 1
-    if (verdict.shortfall !== undefined) shortfallCount += 1
+    if (kind === 'scheduled-shortfall') shortfallCount += 1
   }
 
   return {
