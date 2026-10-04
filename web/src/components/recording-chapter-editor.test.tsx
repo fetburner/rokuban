@@ -98,6 +98,27 @@ describe('RecordingChapterEditor の編集専用画面', () => {
     expect(boundary20.getAttribute('aria-pressed')).toBe('true')
   })
 
+  it('フレーム微調整後も矢印キーで隣の境界へ移れる', () => {
+    const op: ChapterSpan = { startMs: 60_000, endMs: 70_000, label: 'OP', cut: false }
+    const { container } = renderEditor([cm, op])
+    const boundary20 = container.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="20000"]',
+    )!
+    fireEvent.click(boundary20)
+    fireEvent.keyDown(window, { key: '.' })
+
+    const nudgedBoundary = container.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="20033"]',
+    )!
+    expect(nudgedBoundary.getAttribute('aria-pressed')).toBe('true')
+    fireEvent.keyDown(nudgedBoundary, { key: 'ArrowRight' })
+
+    const boundary60 = container.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="60000"]',
+    )!
+    expect(boundary60.getAttribute('aria-pressed')).toBe('true')
+  })
+
   it('矢印キーはフォーカスが調整ボタンにあっても効き、ラベル入力の中では効かない', () => {
     const op: ChapterSpan = { startMs: 60_000, endMs: 70_000, label: 'OP', cut: false }
     const { container, getByRole, getAllByLabelText } = renderEditor([cm, op])

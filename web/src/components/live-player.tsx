@@ -1235,7 +1235,7 @@ export function LivePlayer({
       if (resumePlaying) {
         const resume = () => {
           resumePending = false
-          if (cancelled) return
+          if (cancelled || !resumePlaybackPendingRef.current) return
           resumePlaybackPendingRef.current = false
           // 開始位置の再表明は、上の effect の最初の `playing` が行う。
           void video.play().catch(() => {
@@ -1835,6 +1835,9 @@ export function LivePlayer({
     const media = videoRef.current
     if (!media) return
     clearPlayAround()
+    // Boundary selection is an explicit stop, including while a restarted
+    // original-HLS session is waiting for its canplay auto-resume.
+    resumePlaybackPendingRef.current = false
     if (!media.paused) media.pause()
     seekToOriginalBoundary(Math.round(seconds * 1000))
   }

@@ -166,9 +166,14 @@ function ChapterDraftEditor({
       if (isFrameNudge) {
         if (selectedBoundary === null) return
         const delta = event.key === ',' ? -FRAME_SECONDS : FRAME_SECONDS
-        const next = selectedBoundary + delta
-        setDraft((current) => nudgeBoundary(current, selectedBoundary, delta))
-        selectBoundary(next)
+        const nextDraft = nudgeBoundary(draft, selectedBoundary, delta)
+        const nextBoundaries = chapterBoundaries(nextDraft)
+        const target = selectedBoundary + delta
+        const nextBoundary = nextBoundaries.reduce((best, candidate) =>
+          Math.abs(candidate - target) < Math.abs(best - target) ? candidate : best,
+        )
+        setDraft(nextDraft)
+        selectBoundary(nextBoundary)
         return
       }
       const index = selectedBoundary === null ? -1 : boundaries.indexOf(selectedBoundary)
@@ -178,7 +183,7 @@ function ChapterDraftEditor({
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [boundaries, selectedBoundary, selectBoundary])
+  }, [boundaries, draft, selectedBoundary, selectBoundary])
 
   const save = useCallback(async () => {
     // 自動層は変更がなくても明示的に確認できる。空の層も「CM なしで確認する」
