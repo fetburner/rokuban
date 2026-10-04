@@ -113,7 +113,7 @@ type RecordingPlaybackControlsProps = {
   /** 映像の上に重ねる終端カード。 */
   endCard?: ReactNode
   className?: string
-  fullscreenRef: RefObject<HTMLDivElement | null>
+  frameRef: RefObject<HTMLDivElement | null>
   video: ReactNode
   currentSeconds: number
   durationSeconds: number
@@ -197,7 +197,7 @@ export function RecordingPlaybackControls({
   outsideProgramSegments,
   endCard,
   className,
-  fullscreenRef,
+  frameRef,
   video,
   currentSeconds,
   durationSeconds,
@@ -333,7 +333,7 @@ export function RecordingPlaybackControls({
     if (!popoverOpen) return
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node
-      const popover = fullscreenRef.current?.querySelector('[data-player-popover]')
+      const popover = frameRef.current?.querySelector('[data-player-popover]')
       if (popover?.contains(target) || gearRef.current?.contains(target) || chapterButtonRef.current?.contains(target)) {
         return
       }
@@ -342,7 +342,7 @@ export function RecordingPlaybackControls({
     }
     document.addEventListener('pointerdown', onPointerDown, true)
     return () => document.removeEventListener('pointerdown', onPointerDown, true)
-  }, [popoverOpen, fullscreenRef])
+  }, [popoverOpen, frameRef])
 
   const seekByKeyboard = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     let target: number | undefined
@@ -403,15 +403,15 @@ export function RecordingPlaybackControls({
 
   return (
     <div
-      className={cn('relative w-full', className)}
+      className={cn('recording-player-shell relative w-full', className)}
       data-testid="recording-player-shell"
       onPointerMove={chapterEditing ? undefined : onControlsActivity}
       onKeyDown={chapterEditing ? undefined : onShellKeyDown}
     >
       <div
-        ref={fullscreenRef}
+        ref={frameRef}
         data-testid="recording-player-frame"
-        className="relative aspect-video w-full overflow-hidden rounded bg-black"
+        className="recording-player-frame relative aspect-video w-full overflow-hidden rounded bg-black"
         onPointerMove={onControlsActivity}
       >
         {video}

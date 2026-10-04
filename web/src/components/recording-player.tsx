@@ -7,6 +7,7 @@ import {
   useState,
   type MutableRefObject,
   type PointerEvent as ReactPointerEvent,
+  type RefObject,
 } from 'react'
 
 import type { ChapterSpan, EncodedAsset, KeepRange, RecordingChaptersSource } from '@/api/generated'
@@ -56,6 +57,8 @@ type RecordingPlayerProps = {
   onRecordingPlaybackError?: (recordingPositionSeconds: number | undefined, wasPlaying: boolean) => boolean
   /** 最初の読み込みが終わったら再生を始める（再生元を替えた直後に、再生中だった続きを見る）。 */
   autoPlay?: boolean
+  /** 詳細ページで再生元の種類が変わっても残る、共有の全画面コンテナ。 */
+  fullscreenContainerRef?: RefObject<HTMLElement | null>
   /** 90% 到達の視聴済み PUT が通った後に呼ぶ（親が録画クエリを取り直してボタンと未視聴の印を更新する）。 */
   onWatched?: () => void
   /** 視聴済みボタンを出す完了録画かどうか。 */
@@ -80,7 +83,7 @@ type RecordingPlayerProps = {
    * 別の録画の詳細へ移る（履歴に積む）。終端カードの「今すぐ再生」と自動遷移が使う。
    * 呼び出し側が移動先の詳細を先にキャッシュへ入れておくと、全画面のまま移れる。
    */
-  onNavigateToRecording?: (id: number) => void
+  onNavigateToRecording?: (id: number, autoPlay?: boolean) => void
   onTrash?: () => void
   onProfileChange?: (profile: string) => void
   /**
@@ -134,6 +137,7 @@ export function RecordingPlayer({
   recordingId,
   resumePositionMs,
   autoPlay = false,
+  fullscreenContainerRef,
   onWatched,
   onRecordingPositionChange,
   onRecordingPlaybackError,
@@ -194,7 +198,7 @@ export function RecordingPlayer({
   const keepRangesKey = JSON.stringify(selectedAsset?.keepRanges ?? [])
   const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
   const videoRef = useRef<HTMLVideoElement>(null)
-  const fullscreenRef = useRef<HTMLDivElement>(null)
+  const frameRef = useRef<HTMLDivElement>(null)
   const [editorSelected, setEditorSelected] = useState<number | null>(null)
   const localChapterEditorCommandsRef = useRef<ChapterEditorCommands | null>(null)
   const resolvedChapterEditorCommandsRef = chapterEditorCommandsRef ?? localChapterEditorCommandsRef
@@ -202,7 +206,12 @@ export function RecordingPlayer({
   const jumpToRef = useRef<(seconds: number) => void>(() => {})
   const subtitleLinesRef = useRef(new WeakMap<VTTCue, VTTCue['line']>())
   // 枠（バーの自動非表示・フォーカス・映像のタップ・全画面・PiP）は原本 HLS の LivePlayer と共有する。
-  const frame = usePlayerFrame(videoRef, fullscreenRef, `${recordingId}:${selectedProfile}`)
+  const frame = usePlayerFrame(
+    videoRef,
+    frameRef,
+    `${recordingId}:${selectedProfile}`,
+    fullscreenContainerRef,
+  )
   const { controlsVisible, requestFullscreen } = frame
   // 終端カードを出している録画の id。録画を切り替えても作り直さないので、id と組で持って
   // 切り替えた瞬間に前の録画のカードを描かない（`played` と同じ規律）。
@@ -211,6 +220,8 @@ export function RecordingPlayer({
   const endCardOpen = endCardFor === recordingId && !chapterEditing
   const [countdownSeconds, setCountdownSeconds] = useState(AUTO_ADVANCE_SECONDS)
   // 終端カードから移った先の録画 id。移った先は再生を始める（カードの文言どおり）。
+  // `autoPlay` prop は「このマウントで最初に開く録画」だけを自動再生にする初期値で、マウント時にしか読まない。
+  // プレイヤーを作り直さない録画の切り替え（encoded → encoded）は `autoplayRecordingRef` が担う。
   const autoplayRecordingRef = useRef<number | null>(autoPlay ? recordingId : null)
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(false)
   // タイルは録画ごとに 1 枚で profile に依存しないので、キーは recordingId だけ。
@@ -272,7 +283,7 @@ export function RecordingPlayer({
 
   const advanceToNext = (id: number) => {
     autoplayRecordingRef.current = id
-    navigateToRecordingRef.current?.(id)
+    navigateToRecordingRef.current?.(id, true)
   }
   const advanceToNextRef = useRef(advanceToNext)
   advanceToNextRef.current = advanceToNext
@@ -502,7 +513,7 @@ export function RecordingPlayer({
   }, [recordingId, selectedProfile, playbackRate])
 
   const updateSubtitleCueLines = (video: HTMLVideoElement, raise: boolean) => {
-    const frame = fullscreenRef.current
+    const frame = frameRef.current
     // スマホの操作表示は枠全体に幕を敷くので、字幕を避ける高さは下端の帯（時刻・シークバー）だけ。
     const controls = frame?.querySelector<HTMLElement>('[data-testid="player-controls-bottom"]')
     const frameHeight = frame?.getBoundingClientRect().height ?? 0
@@ -529,7 +540,7 @@ export function RecordingPlayer({
   }
   useEffect(() => {
     const video = videoRef.current
-    const frameElement = fullscreenRef.current
+    const frameElement = frameRef.current
     const controls = frameElement?.querySelector<HTMLElement>('[data-testid="player-controls-bottom"]')
     if (!video) return
     const update = () => updateSubtitleCueLines(video, controlsVisible)

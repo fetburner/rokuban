@@ -187,19 +187,21 @@ export function RecordingDetail({
     liveEnabled,
     isTrashed: trash,
   }
-  const initialPlaybackState = (): PlaybackState => {
+  const initialPlaybackState = (autoPlayOnOpen = false): PlaybackState => {
     const source = selectRecordingPlaybackSource(playbackSelection)
+    const autoPlay = chase || autoPlayOnOpen
     return {
       source,
       // `#chase` は「開いたら再生する」。変換を伴う再生元はそれ以外ではポスターの ▶ で始める。
-      started: chase || source === 'encoded',
-      autoPlay: chase,
+      started: autoPlay || source === 'encoded',
+      autoPlay,
       startFromBeginning: startAtBeginning,
       positionSeconds: undefined,
       generation: 0,
     }
   }
   const [playbackState, setPlaybackState] = useState(initialPlaybackState)
+  const [autoPlayNextRecordingId, setAutoPlayNextRecordingId] = useState<number | null>(null)
   const playbackStateRef = useRef(playbackState)
   useLayoutEffect(() => {
     playbackStateRef.current = playbackState
@@ -213,16 +215,19 @@ export function RecordingDetail({
   }, [recording.id])
   const [chaseOffsetSeconds, setChaseOffsetSeconds] = useState<number | undefined>(undefined)
   const [selectedPlaybackProfile, setSelectedPlaybackProfile] = useState<string | undefined>(undefined)
+  const playbackFullscreenContainerRef = useRef<HTMLElement>(null)
   // 次のエピソードへ移るときページは作り直さず（全画面を保つため）、同じ部品に別の録画が来る。
   // 録画ごとの state（タブ・追っかけの位置・選んだ画質・説明の展開）はここで戻す。
   const [shownRecordingId, setShownRecordingId] = useState(recording.id)
   if (shownRecordingId !== recording.id) {
+    const shouldAutoPlay = autoPlayNextRecordingId === recording.id
     setShownRecordingId(recording.id)
+    if (autoPlayNextRecordingId !== null) setAutoPlayNextRecordingId(null)
     setSelectedTab(defaultDetailTab())
     setDescriptionExpanded(false)
     setChaseOffsetSeconds(undefined)
     setSelectedPlaybackProfile(undefined)
-    setPlaybackState(initialPlaybackState())
+    setPlaybackState(initialPlaybackState(shouldAutoPlay))
   }
   const showChase = playbackState.source === 'chase'
   const showOriginalVOD = playbackState.source === 'original-vod'
@@ -524,7 +529,8 @@ export function RecordingDetail({
     0,
   )
   // 移動先の詳細を先にキャッシュへ入れてから移る（全画面を保つ。`seedRecordingDetail`）。
-  const openRecording = (id: number) => {
+  const openRecording = (id: number, autoPlay = false) => {
+    setAutoPlayNextRecordingId(autoPlay ? id : null)
     const target = [...seriesRecordings, ...(shelfRows ?? [])].find((item) => item.id === id)
     if (target !== undefined) seedRecordingDetail(queryClient, target)
     onNavigateToRecording(id)
@@ -581,8 +587,9 @@ export function RecordingDetail({
     >
       {!trash && (
         <section
+          ref={playbackFullscreenContainerRef}
           data-testid="recording-playback-group"
-          className="col-span-full flex flex-col gap-3"
+          className="recording-playback-fullscreen-container col-span-full flex flex-col gap-3"
         >
           {showLiveSource && !playbackState.started && (
             <RecordingPlaybackPoster
@@ -617,6 +624,7 @@ export function RecordingDetail({
               availableProfiles={liveProfiles}
               onProfileChange={onSelectLiveProfile}
               autoPlay={playbackState.autoPlay}
+              fullscreenContainerRef={playbackFullscreenContainerRef}
               chaseTimeline={{
                 programmeStartMs: programStartMs,
                 recordingStartedAtMs: recordingStartMs,
@@ -660,6 +668,7 @@ export function RecordingDetail({
               resumePositionMs={resumePositionMs}
               startOffsetSeconds={startOffsetSeconds}
               autoPlay={playbackState.autoPlay}
+              fullscreenContainerRef={playbackFullscreenContainerRef}
               startPositionSeconds={playbackState.positionSeconds !== undefined
                 ? Math.max(0, playbackState.positionSeconds - (carriedOffsetSeconds ?? 0))
                 : undefined}
@@ -685,6 +694,7 @@ export function RecordingDetail({
               putWatched={() => void updateWatched(true)}
               deleteWatched={() => void updateWatched(false)}
               preferredProfile={preferredPlaybackProfile}
+              fullscreenContainerRef={playbackFullscreenContainerRef}
               nextEpisode={next ? { id: next.id, title: next.title, startAt: next.startAt } : undefined}
               onNextEpisodeNavigate={next ? () => seedRecordingDetail(queryClient, next) : undefined}
               outsideProgramSegments={outsideProgramSegments}
@@ -745,7 +755,6 @@ export function RecordingDetail({
               {recording.watchedAt !== undefined ? '未視聴に戻す' : '視聴済みにする'}
             </Button>
           )}
-
 
         </section>
       )}
@@ -945,7 +954,7 @@ export function RecordingDetail({
                   configuredEncodeProfiles.length === 0 && (
                     <p className="text-muted-foreground">エンコードプロファイルが設定されていません</p>
                   )}
-                <RecordingAssetControls recording={recording} />
+                <RecordingAssetControls key={recording.id} recording={recording} />
               </section>
             )}
 
