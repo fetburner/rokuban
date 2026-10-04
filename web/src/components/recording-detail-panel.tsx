@@ -24,7 +24,12 @@ import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { DropStatsTable } from '@/components/drop-stats-table'
 import type { ChapterEditorCommands, ChapterEditorStatus } from '@/components/recording-chapter-editor'
 import { RecordingAssetControls } from '@/components/recording-actions'
-import { DropBadges, EncodeStatusBadges, IngestBadge, StatusBadge } from '@/components/recording-badges'
+import {
+  DropBadges,
+  EncodeStatusBadges,
+  IngestBadge,
+  RecordingVerdictBadge,
+} from '@/components/recording-badges'
 import { RecordingPlaybackPoster, type PosterTimeline } from '@/components/recording-playback-poster'
 import { RecordingPlayer } from '@/components/recording-player'
 import { LivePlayer } from '@/components/live-player'
@@ -41,7 +46,7 @@ import {
 } from '@/lib/format'
 import { cmDetectStageMessage, isStationFixableCMStage } from '@/lib/cm-detect-stage'
 import { ingestDisplay, type IngestDisplay } from '@/lib/ingest'
-import { useLiveEnabled } from '@/lib/capabilities'
+import { useLiveCapability } from '@/lib/capabilities'
 import { recordingFileURL } from '@/lib/playback-position'
 import { seedRecordingDetail } from '@/lib/recording-detail-cache'
 import { selectRecordingPlaybackSource, type RecordingPlaybackSource } from '@/lib/recording-playback-source'
@@ -172,7 +177,8 @@ export function RecordingDetail({
   onSelectLiveProfile: (name: string) => void
   onNavigateToRecording: (id: number) => void
 }) {
-  const liveEnabled = useLiveEnabled()
+  const liveCapability = useLiveCapability()
+  const liveEnabled = liveCapability === 'enabled'
   const queryClient = useQueryClient()
   const toast = useToast()
   const { moveToTrash } = useMoveRecordingToTrash(recording.id)
@@ -787,9 +793,12 @@ export function RecordingDetail({
         <section data-testid="recording-title-row" className="flex flex-col gap-2">
           <h2 className="text-xl font-semibold leading-tight">{programTitle(recording.title)}</h2>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-            <button type="button" className="inline-flex min-h-6 items-center" aria-label="録画状態を記録タブで見る" onClick={() => setSelectedTab('record')}>
-              <StatusBadge status={recording.status} />
-            </button>
+            <RecordingVerdictBadge
+              recording={recording}
+              liveCapability={liveCapability}
+              isTrashed={trash}
+              onClick={() => setSelectedTab('record')}
+            />
             {recording.ingest && (
               <button type="button" className="inline-flex min-h-6 items-center" aria-label="取り込み状態を記録タブで見る" onClick={() => setSelectedTab('record')}>
                 <IngestBadge recording={recording} />

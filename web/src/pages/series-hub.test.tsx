@@ -111,6 +111,7 @@ function stubApi(
   globalThis.fetch = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
     requested.push(`${url.pathname}?${url.searchParams.toString()}`)
+    if (url.pathname === '/api/capabilities') return Promise.resolve(jsonResponse({ live: true, cmDetect: false }))
     if (url.pathname === `/api/recordings/${origin.id}/upcoming`) {
       return Promise.resolve(jsonResponse(upcoming))
     }
@@ -197,6 +198,7 @@ describe('SeriesHubPage', () => {
     const origin = recording({ id: 5 })
     globalThis.fetch = vi.fn((input: string | URL | Request) => {
       const url = new URL(String(input), 'http://localhost')
+      if (url.pathname === '/api/capabilities') return Promise.resolve(jsonResponse({ live: true, cmDetect: false }))
       if (url.pathname === '/api/recordings/5/upcoming') {
         return Promise.resolve(jsonResponse({ error: 'boom' }, 500))
       }
@@ -218,6 +220,7 @@ describe('SeriesHubPage', () => {
     stubApi(origin, [], [])
     globalThis.fetch = vi.fn((input: string | URL | Request) => {
       const url = new URL(String(input), 'http://localhost')
+      if (url.pathname === '/api/capabilities') return Promise.resolve(jsonResponse({ live: true, cmDetect: false }))
       if (url.pathname === '/api/recordings/5') {
         return Promise.resolve(jsonResponse({ error: 'recording not found' }, 404))
       }
@@ -285,6 +288,7 @@ describe('SeriesHubPage', () => {
     const origin = recording({ id: 5 })
     globalThis.fetch = vi.fn((input: string | URL | Request) => {
       const url = new URL(String(input), 'http://localhost')
+      if (url.pathname === '/api/capabilities') return Promise.resolve(jsonResponse({ live: true, cmDetect: false }))
       if (url.pathname === '/api/recordings/5/upcoming') return Promise.resolve(jsonResponse([]))
       if (url.pathname === '/api/recordings/5') return Promise.resolve(jsonResponse(origin, 404))
       if (url.pathname === '/api/recordings') return Promise.resolve(jsonResponse({}, 500))

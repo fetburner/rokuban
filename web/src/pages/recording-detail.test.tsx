@@ -380,6 +380,8 @@ describe('RecordingDetailPage', () => {
 
     expect(await screen.findByText('単体ページの録画')).toBeInTheDocument()
     expect(await screen.findByRole('region', { name: '再生' })).toBeInTheDocument()
+    expect(screen.queryByText('完了')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '録画状態を記録タブで見る' })).not.toBeInTheDocument()
     expect(document.querySelector('video')).toBeInTheDocument()
     expect(document.querySelector('img[src="/api/media/recordings/3/thumbnail"]')).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'ダウンロード / VLC' })).toBeInTheDocument()
@@ -536,7 +538,7 @@ describe('RecordingDetailPage', () => {
   it('タイトル行の状態・取り込み・エンコード・ドロップバッジを押すと記録タブが開く', async () => {
     createFakeServer({
       recording: sampleRecording({
-        sizeBytes: 1_000_000,
+        encodeProfiles: ['h264'],
         ingest: { state: 'pending' },
         encodeStatus: [{ profile: 'h264', state: 'failed' }],
         dropSummary: { packets: 1000, drops: 1, errors: 0, scrambled: 0 },
@@ -544,6 +546,7 @@ describe('RecordingDetailPage', () => {
     })
 
     renderAt('/recordings/3')
+    expect(await screen.findByText('準備中')).toBeInTheDocument()
     for (const badge of [
       '録画状態を記録タブで見る',
       '取り込み状態を記録タブで見る',
