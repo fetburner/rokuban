@@ -176,6 +176,19 @@ function growingPlaylist(text) {
 }
 
 await context.addInitScript((markerPixels) => {
+  window.__displayedMarkerSlot = () => {
+    const video = document.querySelector('video')
+    const canvas = document.createElement('canvas')
+    canvas.width = 64
+    canvas.height = 36
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+    if (!video || !ctx) return -2
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    return markerPixels.findIndex(([x, y]) => {
+      const pixel = ctx.getImageData(x, y, 1, 1).data
+      return pixel[0] > 210 && pixel[1] > 210 && pixel[2] > 210
+    })
+  }
   window.__timelineMarks = []
   window.__timelineCaptureError = null
   window.__timelineCapture = null
@@ -205,14 +218,15 @@ await context.addInitScript((markerPixels) => {
             return pixel[0] > 210 && pixel[1] > 210 && pixel[2] > 210
           })
           if (markerSlot >= 0) {
+            video.pause()
             window.__timelineMarks.push({
               markerSlot,
               sessionOffsetSeconds,
               mediaTime: metadata.mediaTime,
               presentedFrames: metadata.presentedFrames,
+              pausedAt: video.currentTime,
             })
             window.__timelineCaptureComplete = true
-            video.pause()
           }
         }
       } catch (err) {
@@ -275,6 +289,9 @@ async function captureExpectedMarkers(page, sessionOffsetSeconds, expectedMarker
         window.__timelineMarks.length > count || window.__timelineCaptureError !== null
       ), previousCount, { timeout: 5000 })
       const capture = await page.evaluate((index) => window.__timelineMarks[index], previousCount)
+      await page.waitForTimeout(300)
+      const afterPause = await page.evaluate(() => ({ slot: window.__displayedMarkerSlot(), t: document.querySelector('video').currentTime }))
+      if (capture) log(`  after-pause frame=${manifest.markerFrames[capture.markerSlot]} displayed slot=${afterPause.slot} want=${capture.markerSlot} drift=${((afterPause.t - capture.pausedAt) * 1000).toFixed(2)}ms`)
       if (capture) {
         const frame = manifest.markerFrames[capture.markerSlot]
         if (!Number.isInteger(frame)) {
@@ -289,6 +306,51 @@ async function captureExpectedMarkers(page, sessionOffsetSeconds, expectedMarker
     }
   }
   return observed
+}
+
+async function seekDisplayChecks(page, sessionOffsetSeconds, expectedMarkers, label) {
+  for (const marker of expectedMarkers) {
+    // エディタは境界を量子化済みの整数 ms で持ち、その秒へシークする（境界カード・前 / 次のチャプター）。
+    // その時刻で目印のフレーム自体が表示されなければ、見た境界と切られる位置がずれる。
+    // 比較のため、フレームの中央（MP4 の PTS + 半フレーム）へのシークも測る。
+    const framePts = marker.expectedSeconds + EXPECTED_SHIFT_FRAMES / SOURCE_FRAME_RATE
+    const seekTargets = [
+      ['boundary-ms', Math.round(framePts * 1000) / 1000],
+      ['frame-center', framePts + HALF_FRAME_SECONDS],
+    ]
+    for (const [kind, globalSeconds] of seekTargets) {
+      const target = globalSeconds - sessionOffsetSeconds
+      try {
+        await page.waitForFunction((t) => {
+          const video = document.querySelector('video')
+          if (!video) return false
+          for (let i = 0; i < video.seekable.length; i += 1) {
+            if (video.seekable.start(i) <= t && video.seekable.end(i) >= t) return true
+          }
+          return false
+        }, target, { timeout: 10_000 })
+        const slot = await page.locator('video').evaluate(async (video, t) => {
+          video.pause()
+          await new Promise((resolve) => {
+            const timer = setTimeout(resolve, 3000)
+            video.addEventListener('seeked', () => {
+              clearTimeout(timer)
+              if (typeof video.requestVideoFrameCallback === 'function') video.requestVideoFrameCallback(() => resolve())
+              setTimeout(resolve, 500)
+            }, { once: true })
+            video.currentTime = t
+          })
+          return window.__displayedMarkerSlot()
+        }, target)
+        log(`  seek ${kind} ${globalSeconds.toFixed(6)}s (frame ${marker.frame}): displayed slot=${slot} want=${marker.markerSlot}`)
+        if (slot !== marker.markerSlot) {
+          ng.push(`${label}: ${kind} ${globalSeconds.toFixed(6)}s へシークしても frame ${marker.frame} の目印が出ない (slot=${slot})`)
+        }
+      } catch (err) {
+        ng.push(`${label}: ${kind} ${globalSeconds.toFixed(6)}s へのシークを測れない (${err.message})`)
+      }
+    }
+  }
 }
 
 async function timelineHandler({ path: requestPath, url, json, route }) {
@@ -400,6 +462,9 @@ function compareMarkers(label, observed, expected, sessionOffset) {
     const expectedSeconds = expected[i].expectedSeconds + EXPECTED_SHIFT_FRAMES / SOURCE_FRAME_RATE
     const diff = actual - expectedSeconds
     const legacyDiff = actual - expected[i].legacySeconds
+    const pausedGlobal = sessionOffset + observed[i].pausedAt
+    const frameStart = expected[i].expectedSeconds
+    log(`  paused frame=${observed[i].frame} into-frame=${((pausedGlobal - frameStart) / (1 / SOURCE_FRAME_RATE)).toFixed(3)}`)
     log(`  frame=${observed[i].frame} want=${expected[i].frame} encodedPts=${expectedSeconds.toFixed(6)} actual=${actual.toFixed(6)} diff=${diff >= 0 ? '+' : ''}${(diff * 1000).toFixed(2)}ms (参考: 原本PTS基準 ${legacyDiff >= 0 ? '+' : ''}${(legacyDiff * 1000).toFixed(2)}ms) presentedFrames=${observed[i].presentedFrames}`)
     if (!Number.isFinite(actual) || Math.abs(diff) > HALF_FRAME_SECONDS) {
       ng.push(`${label}: frame ${expected[i].frame} の差が半フレームを超える (${(diff * 1000).toFixed(2)}ms)`)
@@ -407,6 +472,7 @@ function compareMarkers(label, observed, expected, sessionOffset) {
   }
 }
 compareMarkers('原本 HLS offset 0', rootObserved, rootMarkers, 0)
+await seekDisplayChecks(hlsPage, 0, rootMarkers, '原本 HLS offset 0')
 
 await hlsPage.locator('video').evaluate((video) => video.pause())
 const seekbar = hlsPage.getByTestId('seek-scrub')
@@ -444,8 +510,14 @@ if (!playlistRequests.some((request) => request.offset === OFFSET_SECONDS && req
   }
   log(`\n=== 原本 HLS offset ${OFFSET_SECONDS} ===`)
   const offsetMarkers = markerTimes.slice(4)
-  const offsetObserved = await captureExpectedMarkers(hlsPage, OFFSET_SECONDS, offsetMarkers, `原本 HLS offset ${OFFSET_SECONDS}`)
-  compareMarkers(`原本 HLS offset ${OFFSET_SECONDS}`, offsetObserved, offsetMarkers, OFFSET_SECONDS)
+  // 実験: E2E_TIMELINE_OFFSET_FRAME_FLOOR=1 はセッションの原点を N 秒以下の最後のフレーム境界とみなす。
+  const sessionOffset = process.env.E2E_TIMELINE_OFFSET_FRAME_FLOOR === '1'
+    ? Math.floor(OFFSET_SECONDS * SOURCE_FRAME_RATE) / SOURCE_FRAME_RATE
+    : OFFSET_SECONDS
+  log(`  session offset = ${sessionOffset.toFixed(6)}s`)
+  const offsetObserved = await captureExpectedMarkers(hlsPage, sessionOffset, offsetMarkers, `原本 HLS offset ${OFFSET_SECONDS}`)
+  compareMarkers(`原本 HLS offset ${OFFSET_SECONDS}`, offsetObserved, offsetMarkers, sessionOffset)
+  await seekDisplayChecks(hlsPage, sessionOffset, offsetMarkers, `原本 HLS offset ${OFFSET_SECONDS}`)
 }
 
 await hlsPage.evaluate(() => localStorage.clear())
@@ -463,6 +535,7 @@ log('\n=== 非カット MP4 ===')
 if (mp4Ready) {
   const mp4Observed = await captureExpectedMarkers(mp4Page, 0, markerTimes, '非カット MP4')
   compareMarkers('非カット MP4', mp4Observed, markerTimes, 0)
+  await seekDisplayChecks(mp4Page, 0, markerTimes, '非カット MP4')
 } else {
   const videoState = await mp4Page.locator('video').evaluate((video) => ({
     currentTime: video.currentTime,
