@@ -111,8 +111,8 @@ const HOME_ARRIVAL_CARD_GAP_PX = 12
  * 文言（「異常なし」）には転ばない。未解決の材料を 0 件として隠さない（読み込み中の
  * 一瞬を「無い」と誤読させない。CLAUDE.md「非同期の空虚な成功」）。
  *
- * 要対応の材料（ブレーカー・容量超過・完了録画のドロップ・失敗録画）の取得失敗は
- * 「警告が無い」へ縮退する（`CircuitBreakerBanner` / 予約一覧の容量バッジと同じ流儀。
+ * 要対応の材料（ブレーカー・容量超過・完了録画のドロップと CM 検出失敗・失敗録画）の
+ * 取得失敗は「警告が無い」へ縮退する（`CircuitBreakerBanner` / 予約一覧の容量バッジと同じ流儀。
  * docs/data.md §6.5 の既知の盲点）。時間軸の取得失敗は空にせずエラーを出す。
  * 失敗録画（`status=failed`）は専用の一覧を持たず、時間軸のブロックと要対応の
  * 追加項目としてだけ出す。行では予定尺（`durationMs`）と実際に録れた尺
@@ -280,7 +280,7 @@ export function HomePage() {
   const warnings = buildWarnings({
     breakers,
     overages: activeOverages,
-    dropCandidates: finishedRecordings,
+    finishedCandidates: finishedRecordings,
     failedRecordings: recentFailedRecordings,
     reservations: reservationsQuery.isError ? undefined : unwrap(reservationsQuery.data),
     nowMs,
@@ -1157,11 +1157,11 @@ function RecordingStrip({ recordings }: { recordings: readonly Recording[] }) {
 }
 
 /** WarningKind は「要対応」の項目の種別。表示色と、色を選ぶ判断の両方をこれ 1 つに一本化する。 */
-type WarningKind = 'breaker' | 'overage' | 'drop' | 'failed'
+type WarningKind = 'breaker' | 'overage' | 'drop' | 'failed' | 'cm-detection'
 
 /**
  * WarningItem は「要対応」の 1 件（サーキットブレーカー / 失敗録画 / チューナー不足 /
- * ドロップ）。行は種別チップ + 太字のタイトル + 副行の形で描く。
+ * ドロップ / CM 検出失敗）。行は種別チップ + 太字のタイトル + 副行の形で描く。
  */
 type WarningItem = {
   key: string
@@ -1179,29 +1179,33 @@ type WarningItem = {
   /** 副行。チューナー不足では、種別が詰まった区間に重なる予約名（予約取得が未解決/失敗なら省略）。 */
   detail?: string
   /** 遷移先。サーキットブレーカーは対応する専用画面が無い（`CircuitBreakerBanner` が同じページの上部で扱う）ので省略。 */
-  link?: { to: '/programs'; search: { at: number } } | { to: '/recordings/$id'; id: number }
+  link?:
+    | { to: '/programs'; search: { at: number } }
+    | { to: '/recordings/$id'; id: number }
+    | { to: '/cm-logos/$networkId/$serviceId'; networkId: number; serviceId: number }
 }
 
 /**
- * buildWarnings はサーキットブレーカー・失敗録画・容量超過・ドロップ統計から
- * 「要対応」の項目をこの順で組む。新しい API は作らず、既存の取得結果だけを材料にする。
+ * buildWarnings はサーキットブレーカー・失敗録画・容量超過・完了録画の結果から
+ * 「要対応」の項目を組む。新しい API は作らず、既存の取得結果だけを材料にする。
  *
- * `dropCandidates` は `limit=DROP_WARNING_SCAN_LIMIT` で取った完了録画の全件、
- * `failedRecordings` は呼び出し元が `FAILED_RECORDING_WARNING_WINDOW_MS` の recency 窓へ
- * 絞った失敗録画。どちらも時間軸の窓とは独立（窓の外の失敗・ドロップも出る）。
+ * `finishedCandidates` は `limit=DROP_WARNING_SCAN_LIMIT` で取った完了録画の全件。
+ * ドロップと CM 検出失敗に同じ応答を使う。`failedRecordings` は呼び出し元が
+ * `FAILED_RECORDING_WARNING_WINDOW_MS` の recency 窓へ絞った失敗録画。どちらも時間軸の
+ * 窓とは独立（窓の外の失敗・ドロップも出る）。
  * 容量超過も呼び出し元で `endAt > now` に絞り済みなので、ここでは時間フィルタをしない。
  */
 function buildWarnings({
   breakers,
   overages,
-  dropCandidates,
+  finishedCandidates,
   failedRecordings,
   reservations,
   nowMs,
 }: {
   breakers: readonly CircuitBreaker[]
   overages: readonly CapacityOverage[]
-  dropCandidates: readonly Recording[]
+  finishedCandidates: readonly Recording[]
   failedRecordings: readonly Recording[]
   reservations: readonly Reservation[] | undefined
   nowMs: number
@@ -1273,7 +1277,7 @@ function buildWarnings({
     })
   }
 
-  for (const recording of dropCandidates) {
+  for (const recording of finishedCandidates) {
     const summary = recording.dropSummary
     if (summary === undefined) continue
     if (summary.drops === 0 && summary.errors === 0 && summary.scrambled === 0) continue
@@ -1294,6 +1298,59 @@ function buildWarnings({
       link: { to: '/recordings/$id', id: recording.id },
     })
   }
+
+  // CM 検出失敗のうち logo / area は局のロゴ設定を直すと解消するため、局単位にまとめる。
+  // それ以外の段階は個別の録画詳細が操作先なので録画ごとに出す。エラー詳細は原因を
+  // 推測させないため警告には載せない。
+  const stationFailures = new Map<
+    string,
+    { networkId: number; serviceId: number; serviceName: string; count: number }
+  >()
+  const recordingFailures: WarningItem[] = []
+  for (const recording of finishedCandidates) {
+    const detection = recording.cmDetection
+    if (detection.state !== 'failed') continue
+
+    if (detection.stage === 'logo' || detection.stage === 'area') {
+      const stationKey = `${recording.networkId}:${recording.serviceId}`
+      const station = stationFailures.get(stationKey)
+      if (station === undefined) {
+        stationFailures.set(stationKey, {
+          networkId: recording.networkId,
+          serviceId: recording.serviceId,
+          serviceName: recording.serviceName,
+          count: 1,
+        })
+      } else {
+        station.count += 1
+      }
+      continue
+    }
+
+    recordingFailures.push({
+      key: `cm-detection:recording:${recording.id}`,
+      kind: 'cm-detection',
+      chip: 'CM 検出失敗',
+      title: programTitle(recording.title),
+      detail: warningStartText(recording, nowMs),
+      link: { to: '/recordings/$id', id: recording.id },
+    })
+  }
+
+  for (const [stationKey, station] of stationFailures) {
+    items.push({
+      key: `cm-detection:station:${stationKey}`,
+      kind: 'cm-detection',
+      chip: 'CM 検出失敗',
+      title: `${station.serviceName} ${station.count} 件`,
+      link: {
+        to: '/cm-logos/$networkId/$serviceId',
+        networkId: station.networkId,
+        serviceId: station.serviceId,
+      },
+    })
+  }
+  items.push(...recordingFailures)
 
   return items
 }
@@ -1404,9 +1461,9 @@ function failureReasonText(recording: Recording): string | undefined {
 
 /**
  * WarningRow は「要対応」の 1 件。種別チップ + 太字のタイトル + 副行。
- * 色はチップだけが持つ: サーキットブレーカー・直近のドロップ・失敗録画は
- * 「取り返しがつかない/止まっている」意味の destructive、チューナー不足は容量
- * バッジ（`components/capacity-shortfall-badge.tsx`）と同じ warning（琥珀）
+ * 色はチップだけが持つ: サーキットブレーカー・直近のドロップ・失敗録画・CM 検出失敗は
+ * destructive、チューナー不足は容量バッジ（`components/capacity-shortfall-badge.tsx`）と同じ
+ * warning（琥珀）
  * （docs/frontend/design.md「色は信号のみ」。同じ事実は同じ色で言う）。
  * 種別 × 色は `pages/home.test.tsx`「警告項目は種別ごとに固定の色クラスを持つ」と
  * `e2e/design.mjs` ①'' が固定する。
@@ -1446,6 +1503,23 @@ function WarningRow({ warning, divider }: { warning: WarningItem; divider: boole
         <Link
           to="/programs"
           search={warning.link.search}
+          className={cn(rowClassName, 'hover:bg-muted/40')}
+        >
+          {content}
+        </Link>
+      </li>
+    )
+  }
+
+  if (warning.link.to === '/cm-logos/$networkId/$serviceId') {
+    return (
+      <li data-warning-kind={warning.kind} className={itemClassName}>
+        <Link
+          to="/cm-logos/$networkId/$serviceId"
+          params={{
+            networkId: String(warning.link.networkId),
+            serviceId: String(warning.link.serviceId),
+          }}
           className={cn(rowClassName, 'hover:bg-muted/40')}
         >
           {content}
