@@ -745,7 +745,6 @@ await page.locator('[data-testid="seek-scrub"]').click({
 await page.waitForFunction(
   (target) => Math.abs((document.querySelector('video')?.currentTime ?? -1) - target) < 0.5,
   clickTargetSeconds,
-  undefined,
   { timeout: 5000 },
 ).catch(() => {})
 const cutCurrentTime = await cutVideo.evaluate((v) => v.currentTime)

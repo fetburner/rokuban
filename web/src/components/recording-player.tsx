@@ -187,10 +187,9 @@ export function RecordingPlayer({
   const selectedProfile =
     chosenFor === recordingId && chosenProfile !== null && profiles.includes(chosenProfile) ? chosenProfile : defaultProfile
   const selectedAsset = encodedAssets.find((a) => a.profile === selectedProfile)
-  // カット版を再生しているあいだは、原本の時間軸で作られたものを一切出さない。
-  // シークタイルは原本の時間軸で作られており、本編に残した OP などをカット版の
-  // 軸へ写像する処理を初版では持たない。チャプターの目盛り・一覧・スキップも
-  // 同じ理由で出さない（境界は原本の ms で、その動画には当てられない）。
+  // ホバー時はタイル位置だけ固定済み keepRanges で原本軸へ写す。ラベルとクリックは
+  // カット版の軸を保つ。チャプターの目盛り・一覧・スキップは引き続き出さない
+  // （境界は原本の ms で、その動画には当てられない）。
   const playingCut = selectedAsset?.cut === true
   const keepRangesKey = JSON.stringify(selectedAsset?.keepRanges ?? [])
   const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
