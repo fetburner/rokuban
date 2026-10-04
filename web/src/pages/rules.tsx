@@ -7,7 +7,6 @@ import {
   getListReservationsQueryKey,
   getListReservationsQueryOptions,
   getListRulesQueryKey,
-  useCreateRule,
   useDeleteRule,
   useListRules,
   useUpdateRule,
@@ -17,13 +16,7 @@ import {
   type Rule,
 } from '@/api/generated'
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
-import { ConditionFields } from '@/components/condition-fields'
-import {
-  EncodeSettingsFields,
-  type EncodeSettingsValue,
-} from '@/components/encode-settings-fields'
 import { LabelRuleForm } from '@/components/label-rule-form'
-import { suggestRuleName } from '@/components/rule-name-suggestion'
 import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
 import { summarizeRuleConditions } from '@/components/rule-condition-summary'
 import { useToast } from '@/components/toaster'
@@ -44,34 +37,20 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { Field, Input } from '@/components/ui/field'
-import { useAllSitesServices } from '@/lib/all-sites-services'
 import { keepOriginalLabel, type KeepOriginal } from '@/lib/encode-settings'
 import {
   buildRuleInput,
-  draftError,
-  emptyDraft,
-  emptyRuleMeta,
-  hasNoConditions,
-  ruleMetaError,
   conditionsToDraft,
   ruleToMeta,
-  type RuleMetaDraft,
-  type SearchDraft,
 } from '@/lib/program-search'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { cn } from '@/lib/utils'
 
 /**
- * RulesPage は録画ルールの一覧と新規作成。
- *
- * 条件（テキスト・チャンネル種別・ジャンル・時間帯・無料放送・放送時間・期間・
- * サイト・サービス。列挙は DOM 順で、サービスが最後なのは読み込み中のレイアウト
- * シフト対策 --- `condition-fields.tsx`）は検索画面（`/search`）と同じ
- * `ConditionFields` / `internal/rulequery` を通るので、新規作成でも全次元を指定できる
- * （M3-6 の時点では encodeProfiles / keepOriginal だけの編集に留めていたが、
- * `condition-fields.tsx` / `lib/program-search.ts` の切り出しで同じ UI を使えるように
- * なった）。
+ * RulesPage は録画ルールの一覧・有効切替・削除を扱う。
+ * 新規作成の入口は `/search` に一本化する。値札（件数・時間の見込み）と一致する番組の
+ * 一覧が常に作成ボタンの近くに出る検索画面に入口を揃える。`/rules` の作成フォームには
+ * そのどちらも無かった。強制はしておらず、`/search` でも検索せずに保存まで進める。
  *
  * 既存ルールの上書きは各行のルール名から `/search?ruleId=N` を開く導線に
  * 一本化する。検索側は条件に一致する番組を見ながら編集でき、UI を持たない項目も
@@ -86,7 +65,6 @@ export function RulesPage() {
   const query = useListRules()
   const rules = unwrap(query.data) ?? []
   const disambiguateRule = ruleDisambiguator(rules)
-  const [isCreating, setIsCreating] = useState(false)
   const [isCountingReservations, setIsCountingReservations] = useState(false)
   const [labelRuleEditor, setLabelRuleEditor] = useState<{
     rule?: LabelRule
@@ -98,41 +76,22 @@ export function RulesPage() {
       <PageHeader
         title="ルール"
         actions={
-          !isCreating && (
-            <Button
-              type="button"
-              size="lg"
-              className="hidden lg:inline-flex"
-              onClick={() => setIsCreating(true)}
-            >
-              ルールを作成
-            </Button>
-          )
+          <Button size="lg" className="hidden lg:inline-flex" render={<Link to="/search" />}>
+            ルールを作成
+          </Button>
         }
       />
 
       <PageContent className="flex flex-col gap-4 px-4 py-4">
-        {isCreating ? (
-          <RuleForm
-            onCancel={() => setIsCreating(false)}
-            onSaved={() => setIsCreating(false)}
-          />
-        ) : (
-          <Button
-            type="button"
-            size="lg"
-            className="w-full lg:hidden"
-            onClick={() => setIsCreating(true)}
-          >
-            ルールを作成
-          </Button>
-        )}
+        <Button size="lg" className="w-full lg:hidden" render={<Link to="/search" />}>
+          ルールを作成
+        </Button>
 
         {query.isError ? (
           <ErrorState onRetry={() => void query.refetch()}>ルールの取得に失敗しました</ErrorState>
         ) : query.isPending ? (
           <ListSkeleton />
-        ) : rules.length === 0 && !isCreating ? (
+        ) : rules.length === 0 ? (
           <EmptyState>ルールがありません</EmptyState>
         ) : (
           <ul className="flex flex-col gap-3">
@@ -552,190 +511,6 @@ function RuleRow({
         </AlertDialogContent>
       </AlertDialog>
     </div>
-  )
-}
-
-function RuleForm({ onCancel, onSaved }: { onCancel: () => void; onSaved: () => void }) {
-  const toast = useToast()
-  const queryClient = useQueryClient()
-  const createRule = useCreateRule()
-  const { services } = useAllSitesServices()
-
-  const [draft, setDraft] = useState<SearchDraft>(emptyDraft)
-  const [meta, setMeta] = useState<RuleMetaDraft>(emptyRuleMeta)
-  const [nameTouched, setNameTouched] = useState(false)
-
-  const suggestedName = suggestRuleName(draft, (ref) =>
-    services.find(
-      (service) => service.networkId === ref.networkId && service.serviceId === ref.serviceId,
-    )?.name,
-  )
-  const effectiveMeta = { ...meta, name: nameTouched ? meta.name : suggestedName }
-
-  const encodeValue: EncodeSettingsValue = {
-    keepOriginal: meta.keepOriginal,
-    encodeProfiles: meta.encodeProfiles,
-  }
-  const onEncodeChange = (next: EncodeSettingsValue) =>
-    setMeta((m) => ({ ...m, keepOriginal: next.keepOriginal, encodeProfiles: next.encodeProfiles }))
-
-  const formError = draftError(draft) ?? ruleMetaError(effectiveMeta)
-  const pending = createRule.isPending
-  const [matchAllConfirmOpen, setMatchAllConfirmOpen] = useState(false)
-
-  const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: getListRulesQueryKey() })
-
-  // 実際の作成リクエスト。条件なしガードを通過した（or 元々条件があった）後の、
-  // 保存の本体だけを持つ。
-  //
-  // **作成は成功トーストを残す。** `ListRules` は `ORDER BY priority DESC,
-  // id ASC` で並ぶため、既定優先度（0）で作った新しい行は多くの場合
-  // 一覧の下の方に入るが、作成フォームは常に一覧の先頭にある --- 実測
-  // （Chromium 1280×900、既存 8 件、保存前後で scrollY は動かない）で、
-  // 新しい行がビューポート外（y≈1221、フォールドの外）に出るケースを
-  // 確認した。ページは新しい行へ自動スクロールしないので、この効果は
-  // 画面外になりうる。issue #297 は「画面外になりうる効果」にはトースト
-  // を残すことを認めており（RuleRow の削除と同じ判断基準）、無音化しない。
-  //
-  // Undo（予約作成のような）にはしない。作成は名前・条件・エンコード設定を
-  // 複数フィールド分書き込む操作で、予約のワンタップや削除のワンタップとは
-  // 重みが違う --- 誤タップで即座に取り消したくなる操作ではない。
-  const doSave = () => {
-    const data = buildRuleInput(draft, effectiveMeta)
-    createRule.mutate(
-      { data },
-      {
-        onSuccess: () => {
-          toast({ message: 'ルールを作成しました' })
-          void invalidate()
-          onSaved()
-        },
-        onError: (err) =>
-          toast({
-            message: apiErrorMessage(err) ?? 'ルールの作成に失敗しました',
-            kind: 'error',
-          }),
-      },
-    )
-  }
-
-  // 条件が 1 つも無いルールは全番組にマッチする。作成フォームは条件の
-  // どの次元も必須にしていない（何も指定しない = 「絞り込まない」が
-  // 正しい状態でありうる、検索画面と同じ設計）ため、保存を止めるのではなく
-  // 明示的な確認を挟む。一覧の要約表示（`summarizeRuleConditions` が
-  // 空配列 → 警告バッジ）と合わせて「見えない事故」にならないよう二重に
-  // 手当てする。
-  //
-  // 確認は `AlertDialog`（非同期）に挟むので、ここでは判定だけ行い、
-  // 実際の送信（`doSave`）はダイアログの「保存する」を押した時にだけ走る。
-  // キャンセルすれば `mutate` は一度も呼ばれず、フォームは編集可能なまま
-  // 残る（保留中の送信も disabled のままの入力もない）。
-  const save = () => {
-    if (formError !== undefined) return
-
-    if (hasNoConditions(draft)) {
-      setMatchAllConfirmOpen(true)
-      return
-    }
-
-    doSave()
-  }
-
-  return (
-    <form
-      aria-label="ルールを作成"
-      className="flex flex-col gap-5 rounded-lg border border-border p-3"
-      onSubmit={(e) => {
-        e.preventDefault()
-        save()
-      }}
-    >
-      <Field label="名前">
-        <Input
-          value={effectiveMeta.name}
-          disabled={pending}
-          onChange={(e) => {
-            setNameTouched(true)
-            setMeta((m) => ({ ...m, name: e.target.value }))
-          }}
-          placeholder="例: ニュース全部"
-          required
-        />
-      </Field>
-
-      <div className="flex flex-wrap items-center gap-4">
-        <label
-          className={cn(
-            'flex items-center gap-2 text-sm',
-            pending && 'pointer-events-none opacity-50',
-          )}
-        >
-          <input
-            type="checkbox"
-            className="size-4 accent-primary"
-            checked={meta.enabled}
-            disabled={pending}
-            onChange={(e) => setMeta((m) => ({ ...m, enabled: e.target.checked }))}
-          />
-          有効
-        </label>
-        <Field label="優先度" className="w-28">
-          <Input
-            type="number"
-            min={0}
-            value={meta.priority}
-            disabled={pending}
-            onChange={(e) => setMeta((m) => ({ ...m, priority: e.target.value }))}
-          />
-        </Field>
-      </div>
-
-      {/* 条件が主役: 名前・有効/優先度は識別のための最小限の項目として上に
-          置き、このフォームの大半は条件編集に使う。エンコード設定はさらに
-          下（録画が決まったあとの後処理という位置づけ）。 */}
-      <div className="flex flex-col gap-4 border-t border-border pt-4">
-        <h2 className="text-sm font-semibold text-foreground">マッチ条件</h2>
-        <ConditionFields draft={draft} onChange={setDraft} disabled={pending} />
-      </div>
-
-      <div className="flex flex-col gap-3 border-t border-border pt-4">
-        <h2 className="text-sm font-semibold text-foreground">エンコード設定</h2>
-        <EncodeSettingsFields value={encodeValue} onChange={onEncodeChange} disabled={pending} />
-      </div>
-
-      {formError !== undefined && (
-        <p role="alert" className="text-xs text-destructive">
-          {formError}
-        </p>
-      )}
-
-      <div className="flex flex-wrap gap-2">
-        <Button type="submit" size="lg" disabled={formError !== undefined || pending}>
-          {pending ? '保存中…' : '保存'}
-        </Button>
-        <Button type="button" variant="outline" size="lg" disabled={pending} onClick={onCancel}>
-          キャンセル
-        </Button>
-        {/* 削除はルール行の overflow メニューに移した（issue #227）。作成フォームは
-            保存・キャンセルという主操作だけを持つ。 */}
-      </div>
-
-      <AlertDialog open={matchAllConfirmOpen} onOpenChange={setMatchAllConfirmOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>条件を指定せずに保存しますか？</AlertDialogTitle>
-            <AlertDialogDescription>
-              条件を 1 つも指定していません。このまま保存すると、すべての番組が録画対象になります。
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>キャンセル</AlertDialogCancel>
-            <AlertDialogAction onClick={doSave}>保存する</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </form>
   )
 }
 

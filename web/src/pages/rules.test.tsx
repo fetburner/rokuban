@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -208,11 +208,6 @@ function renderPage() {
   return renderInRouter(<RulesPage />)
 }
 
-async function findCreateRuleButton() {
-  const content = await screen.findByTestId('page-content')
-  return within(content).findByRole('button', { name: 'ルールを作成' })
-}
-
 afterEach(() => {
   vi.restoreAllMocks()
 })
@@ -244,184 +239,27 @@ describe('summarizeRuleConditions', () => {
   })
 })
 
-describe('RulesPage encode settings', () => {
-  it('until_encoded でプロファイル空なら保存できない', async () => {
-    stubApi()
+describe('RulesPage 新規作成の入口', () => {
+  it('PC とモバイルの作成リンクは検索画面を開き、録画ルールフォームは持たない', async () => {
+    stubApi([])
     const user = userEvent.setup()
-    renderPage()
+    const { router } = renderPage()
 
-    expect(await screen.findByText('ニュース')).toBeInTheDocument()
-    await user.click(await findCreateRuleButton())
-    await user.type(screen.getByLabelText('名前'), '新規ルール')
+    await screen.findByText('ルールがありません')
+    const links = screen.getAllByRole('link', { name: 'ルールを作成' })
+    expect(links).toHaveLength(2)
+    expect(links[0]).toHaveClass('hidden', 'lg:inline-flex')
+    expect(links[1]).toHaveClass('w-full', 'lg:hidden')
+    for (const link of links) expect(link).toHaveAttribute('href', '/search')
+    expect(screen.queryByRole('form', { name: 'ルールを作成' })).not.toBeInTheDocument()
 
-    // フォームが出てから keepOriginal を until_encoded に
-    const keepSelect = await screen.findByLabelText('原本の保持')
-    await user.selectOptions(keepSelect, 'until_encoded')
-
-    // プロファイルは選ばない → エラー表示 + 保存 disabled。
-    // 同じ文言が EncodeSettingsFields とフォームフッタの両方に出る。
-    await waitFor(() => {
-      expect(
-        screen.getAllByText(/エンコード後に原本を削除するには、プロファイルを 1 つ以上/).length,
-      ).toBeGreaterThan(0)
-    })
-    expect(screen.getByRole('button', { name: '保存' })).toBeDisabled()
-  })
-
-  it('プロファイルを選べば until_encoded で保存できる', async () => {
-    stubApi()
-    const user = userEvent.setup()
-    renderPage()
-
-    await screen.findByText('ニュース')
-    await user.click(await findCreateRuleButton())
-    await user.type(screen.getByLabelText('名前'), '新規ルール')
-
-    const keepSelect = await screen.findByLabelText('原本の保持')
-    await user.selectOptions(keepSelect, 'until_encoded')
-    // チェックボックスの accessible name はラベル内テキスト（h264）
-    await user.click(screen.getByRole('checkbox', { name: 'h264' }))
-
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: '保存' })).not.toBeDisabled()
-    })
+    await user.click(links[0]!)
+    await waitFor(() => expect(router.state.location.pathname).toBe('/search'))
+    expect(router.state.location.search).toEqual({})
   })
 })
 
-describe('RulesPage 新規作成', () => {
-  it('名前に触らず保存すると、描画中の候補名が検証・送信される', async () => {
-    const { postBodies } = stubApi([])
-    const user = userEvent.setup()
-    renderPage()
-
-    await user.click(await findCreateRuleButton())
-    await user.type(screen.getByLabelText('テキスト条件 1 の値'), '深夜アニメ')
-    await user.click(screen.getByRole('button', { name: '保存' }))
-    await waitFor(() => expect(postBodies).toHaveLength(1))
-    expect(postBodies[0]?.name).toBe('深夜アニメ')
-  })
-
-  it('名前候補はキーワードに追従し、触った後は空でも再生成されない', async () => {
-    const { postBodies } = stubApi([])
-    const user = userEvent.setup()
-    renderPage()
-
-    await user.click(await findCreateRuleButton())
-    const nameInput = await screen.findByLabelText('名前')
-    const keywordInput = screen.getByLabelText('テキスト条件 1 の値')
-
-    await user.type(keywordInput, 'ニュース')
-    expect(nameInput).toHaveValue('ニュース')
-
-    await user.clear(nameInput)
-    await user.clear(keywordInput)
-    await user.type(keywordInput, '深夜')
-    expect(nameInput).toHaveValue('')
-
-    await user.type(nameInput, '手動の名前')
-    await user.clear(keywordInput)
-    await user.type(keywordInput, 'ドラマ')
-    expect(nameInput).toHaveValue('手動の名前')
-
-    await user.click(screen.getByRole('button', { name: '保存' }))
-    await waitFor(() => expect(postBodies).toHaveLength(1))
-    expect(postBodies[0]?.name).toBe('手動の名前')
-  })
-
-  it('新規作成で入力した条件が RuleInput に入る', async () => {
-    const { postBodies } = stubApi([])
-    const user = userEvent.setup()
-    renderPage()
-
-    // ルールが 0 件でも作成フォームは開ける。ルーターの初回描画は非同期なので
-    // 最初の操作対象は findBy* で待つ
-    await user.click(await findCreateRuleButton())
-
-    await user.type(screen.getByLabelText('名前'), 'テストルール')
-
-    // テキスト条件（1 行目は「条件を追加」を押さなくても常に編集できる。
-    // issue #305。押すと 2 行目が増え、その値が空のまま保存できなくなる）
-    await user.type(screen.getByLabelText('テキスト条件 1 の値'), 'ニュース')
-
-    // ジャンル（サービス一覧の読み込みを待ってから操作する）
-    await screen.findByText('NHK総合')
-    await user.click(screen.getByRole('button', { name: 'スポーツ' }))
-
-    // 時間帯（<input type="time"> は jsdom で userEvent.type の逐次キー入力を
-    // 素直に受け付けないため、change イベントで直接値を入れる）
-    await user.click(screen.getByRole('button', { name: '時間帯を追加' }))
-    const startInput = screen.getByLabelText('時間帯 1 の開始')
-    const endInput = screen.getByLabelText('時間帯 1 の終了')
-    fireEvent.change(startInput, { target: { value: '21:00' } })
-    fireEvent.change(endInput, { target: { value: '23:00' } })
-
-    await user.click(screen.getByRole('button', { name: '保存' }))
-
-    await waitFor(() => expect(postBodies.length).toBe(1))
-    const body = postBodies[0]
-    expect(body.name).toBe('テストルール')
-    expect(body.textMatches).toEqual([
-      { target: 'name', mode: 'keyword', value: 'ニュース' },
-    ])
-    expect(body.genres).toEqual([1])
-    expect(body.times).toEqual([{ weekdays: 127, startSec: 75600, endSec: 82800 }])
-  })
-
-  /**
-   * `ConditionFields` は検索画面とルール画面が共有するので、そこに置く文言は
-   * どちらの画面でも事実として正しくなければならない。検索向けの動詞
-   * （「検索すると」）を入れると、条件ゼロで**保存**すると全番組を録り続ける
-   * ルール画面では誤りになる（実際に一度入り込んで差し戻された）。
-   */
-  it('ルール作成フォームでも条件なしの意味が画面に依存しない文言で出る', async () => {
-    stubApi([])
-    const user = userEvent.setup()
-    renderPage()
-
-    await user.click(await findCreateRuleButton())
-
-    // テキスト条件・時間帯のどちらも「指定なし（すべての…が対象）」の形で、
-    // 画面ごとの動詞（検索する / 保存する）を含まない
-    expect(screen.getByText('指定なし（すべての番組が対象）')).toBeInTheDocument()
-    expect(screen.getByText('指定なし（すべての時間帯が対象）')).toBeInTheDocument()
-    expect(screen.queryByText(/検索すると/)).not.toBeInTheDocument()
-  })
-
-  it('1 行目の値を全消しして条件ゼロに戻すと確認ダイアログを挟む', async () => {
-    const { postBodies } = stubApi([])
-    const user = userEvent.setup()
-    renderPage()
-
-    await user.click(await findCreateRuleButton())
-    await user.type(screen.getByLabelText('名前'), '条件なしルール')
-    const textInput = screen.getByLabelText('テキスト条件 1 の値')
-    await user.type(textInput, 'ニュース')
-    await user.clear(textInput)
-
-    // 全消しした 1 行目は条件として残らないので、保存は確認ダイアログを開ける。
-    const saveButton = screen.getByRole('button', { name: '保存' })
-    expect(saveButton).not.toBeDisabled()
-    await user.click(saveButton)
-    expect(await screen.findByText('条件を指定せずに保存しますか？')).toBeInTheDocument()
-    expect(postBodies.length).toBe(0)
-
-    // キャンセルすると閉じるだけで送信されない。フォームも編集可能なまま
-    // 残る（半端な送信状態にならない --- 「保存中…」のまま固まったり、
-    // 保存ボタンが disabled のまま残って連打すらできない、ということがない）。
-    await user.click(screen.getByRole('button', { name: 'キャンセル' }))
-    await waitFor(() =>
-      expect(screen.queryByText('条件を指定せずに保存しますか？')).not.toBeInTheDocument(),
-    )
-    expect(postBodies.length).toBe(0)
-    expect(saveButton).not.toBeDisabled()
-    expect(saveButton).toHaveTextContent('保存')
-
-    // 再度保存を押すと同じ確認が出て、今度は確定すると送信される
-    await user.click(saveButton)
-    await user.click(await screen.findByRole('button', { name: '保存する' }))
-    await waitFor(() => expect(postBodies.length).toBe(1))
-  })
-
+describe('RulesPage 一覧', () => {
   it('一覧に条件の要約が出て、空のルールは「すべての番組」と分かる', async () => {
     stubApi([sampleRule, ruleWithConditions])
     renderPage()
@@ -919,44 +757,7 @@ describe('RulesPage 削除は overflow メニュー', () => {
 
 })
 
-// issue #297: 作成の効果は一覧の下の方に入りうるため、画面外になりうる。
-// 成功トーストを残し、失敗も一覧からは分からない新しい情報なので残す。
-describe('RulesPage 作成成功トースト (issue #297)', () => {
-  it('作成に成功すると成功トーストが出る（新しい行は並び順次第でフォールドの外に入りうる）', async () => {
-    const { postBodies } = stubApi([])
-    const user = userEvent.setup()
-    renderPage()
-
-    await user.click(await findCreateRuleButton())
-    await user.type(screen.getByLabelText('名前'), 'できたルール')
-    await user.type(screen.getByLabelText('テキスト条件 1 の値'), 'キーワード')
-
-    await user.click(screen.getByRole('button', { name: '保存' }))
-    await waitFor(() => expect(postBodies.length).toBe(1))
-
-    // 新しい行が一覧に現れ、フォームが閉じて「ルールを作成」ボタンに戻る
-    // こと自体は確認しつつ、その効果が画面外になりうる（優先度順で下の方に
-    // 入る）ため成功トーストは残ることを確認する。
-    expect(await screen.findByText('できたルール')).toBeInTheDocument()
-    expect(await findCreateRuleButton()).toBeInTheDocument()
-    expect(await screen.findByText('ルールを作成しました')).toBeInTheDocument()
-  })
-
-  it('作成に失敗すれば失敗トーストは出る（フォームも開いたまま残る）', async () => {
-    stubApi([], undefined, { create: 500 })
-    const user = userEvent.setup()
-    renderPage()
-
-    await user.click(await findCreateRuleButton())
-    await user.type(screen.getByLabelText('名前'), '失敗するルール')
-    await user.type(screen.getByLabelText('テキスト条件 1 の値'), 'キーワード')
-    await user.click(screen.getByRole('button', { name: '保存' }))
-
-    expect(await screen.findByText('サーバーが作成を拒否しました')).toBeInTheDocument()
-    // 失敗時はフォームが送信前のまま残る（半端な状態で消えない）
-    expect(screen.getByLabelText('名前')).toBeInTheDocument()
-  })
-
+describe('RulesPage 削除エラー', () => {
   it('削除に失敗すれば失敗トーストは出て、行は一覧に残る', async () => {
     stubApi([sampleRule], undefined, { delete: 500 })
     const user = userEvent.setup()
