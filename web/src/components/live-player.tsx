@@ -573,7 +573,9 @@ export function LivePlayer({
   const [originalTilesRequested, setOriginalTilesRequested] = useState(false)
   const [originalTilesAvailable, setOriginalTilesAvailable] = useState(false)
   const playAroundStopRef = useRef<number | null>(null)
+  const playAroundStopBoundaryMsRef = useRef<number | null>(null)
   const playAroundTimerRef = useRef<number | undefined>(undefined)
+  const pendingBoundarySeekMsRef = useRef<number | null>(null)
   const [originalSubtitlesEnabled, setOriginalSubtitlesEnabled] = useState(isRecordingPlayback)
   // 操作バーの枠（自動非表示・フォーカス・映像のタップ・全画面・PiP）は encoded の
   // RecordingPlayer と同じ実装を使う。`<video>` 要素はこのコンポーネントでは作り直さない。
@@ -1243,7 +1245,7 @@ export function LivePlayer({
       if (resumePlaying) {
         const resume = () => {
           resumePending = false
-          if (cancelled) return
+          if (cancelled || !resumePlaybackPendingRef.current) return
           resumePlaybackPendingRef.current = false
           // 開始位置の再表明は、上の effect の最初の `playing` が行う。
           void video.play().catch(() => {
@@ -1784,6 +1786,7 @@ export function LivePlayer({
   const commitOriginalSeek = (seconds: number) => {
     const video = videoRef.current
     if (!video || originalDurationSeconds <= 0) return
+    pendingBoundarySeekMsRef.current = null
     startReassertPending.current = false
     const target = Math.max(0, Math.min(originalDurationSeconds, seconds))
     originalPreviousSecondsRef.current = target
@@ -1822,11 +1825,37 @@ export function LivePlayer({
     }
     setOriginalCurrentSeconds(target)
   }
-  const finishPlayAround = (media: HTMLVideoElement) => {
+  const seekToOriginalBoundary = (boundaryMs: number) => {
+    const media = videoRef.current
+    if (!media) return
+    if (media.seeking) {
+      pendingBoundarySeekMsRef.current = boundaryMs
+      return
+    }
+    pendingBoundarySeekMsRef.current = null
+    commitOriginalSeek(chapterBoundaryMsToSeekSeconds(boundaryMs))
+  }
+  const clearPlayAround = () => {
     window.clearTimeout(playAroundTimerRef.current)
     playAroundTimerRef.current = undefined
     playAroundStopRef.current = null
+    playAroundStopBoundaryMsRef.current = null
+  }
+  const selectChapterBoundary = (seconds: number) => {
+    const media = videoRef.current
+    if (!media) return
+    clearPlayAround()
+    // Boundary selection is an explicit stop, including while a restarted
+    // original-HLS session is waiting for its canplay auto-resume.
+    resumePlaybackPendingRef.current = false
+    if (!media.paused) media.pause()
+    seekToOriginalBoundary(Math.round(seconds * 1000))
+  }
+  const finishPlayAround = (media: HTMLVideoElement) => {
+    const boundaryMs = playAroundStopBoundaryMsRef.current
+    clearPlayAround()
     media.pause()
+    if (boundaryMs !== null) seekToOriginalBoundary(boundaryMs)
   }
   const schedulePlayAroundStop = (media: HTMLVideoElement) => {
     const stop = playAroundStopRef.current
@@ -1844,16 +1873,20 @@ export function LivePlayer({
       }
     }, (remainingSeconds * 1000) / Math.max(media.playbackRate, 0.1) + 2000)
   }
-  const playAround = (seconds: number) => {
+  const playAround = (seconds: number, mode: 'around' | 'to' | 'from' = 'around') => {
     const media = videoRef.current
     if (!media) return
-    const start = Math.max(0, seconds - PLAY_AROUND_SECONDS)
-    const stop = seconds + PLAY_AROUND_SECONDS
-    window.clearTimeout(playAroundTimerRef.current)
-    playAroundTimerRef.current = undefined
+    clearPlayAround()
+    const boundaryMs = Math.round(seconds * 1000)
+    const boundarySeconds = boundaryMs / 1000
+    const start = mode === 'from'
+      ? chapterBoundaryMsToSeekSeconds(boundaryMs)
+      : Math.max(0, boundarySeconds - PLAY_AROUND_SECONDS)
+    const stop = mode === 'to' ? boundarySeconds : boundarySeconds + PLAY_AROUND_SECONDS
     playAroundStopRef.current = stop
+    playAroundStopBoundaryMsRef.current = mode === 'to' ? boundaryMs : null
     commitOriginalSeek(start)
-    void media.play()
+    void media.play().catch(() => {})
   }
   const jumpOriginalChapter = (direction: 'next' | 'prev') => {
     const target = chapterJumpTarget(chapters ?? [], originalCurrentSeconds, direction)
@@ -1906,6 +1939,8 @@ export function LivePlayer({
         if (isRecordingPlayback) saveCurrentPosition(event.currentTarget)
         if (isOriginalVOD) updateOriginalPosition(event.currentTarget)
         if (isChase) updateChasePosition(event.currentTarget)
+        const pendingBoundaryMs = pendingBoundarySeekMsRef.current
+        if (pendingBoundaryMs !== null) seekToOriginalBoundary(pendingBoundaryMs)
       }}
       onSeeking={(event) => {
         if (!isOriginalVOD) return
@@ -1964,6 +1999,7 @@ export function LivePlayer({
       }}
       onVolumeChange={(event) => frame.onVolumeChange(event.currentTarget)}
       onEnded={(event) => {
+        if (isOriginalVOD && playAroundStopRef.current !== null) finishPlayAround(event.currentTarget)
         // ended は ENDLIST 済みの終端でだけ発火する前提で位置を消す。
         if (!isOriginalVOD || recordingId === undefined) return
         originalVODFinalized.current = true
@@ -2059,6 +2095,8 @@ export function LivePlayer({
         }
         onEnterChapterEditing={onEnterChapterEditing}
         onPlayAround={editorSelected === null ? undefined : () => playAround(editorSelected)}
+        onPlayToBoundary={editorSelected === null ? undefined : () => playAround(editorSelected, 'to')}
+        onPlayFromBoundary={editorSelected === null ? undefined : () => playAround(editorSelected, 'from')}
         tilePreview={originalTilePreview}
         tilesRequested={originalTilesRequested || (chapterEditing && isOriginalVOD)}
         tilesAvailable={originalTilesAvailable}
@@ -2173,6 +2211,7 @@ export function LivePlayer({
               recordingId={recordingId ?? 0}
               currentSeconds={visibleOriginalSeconds}
               getDisplayedFrameSeconds={getDisplayedFrameSeconds}
+              isPlaying={frame.mediaPlaying}
               durationSeconds={originalDurationSeconds}
               tilesAvailable={originalTilesAvailable}
               onTileImageLoad={() => setOriginalTilesAvailable(true)}
@@ -2180,8 +2219,8 @@ export function LivePlayer({
                 setOriginalTilesAvailable(false)
                 setOriginalTilePreview(null)
               }}
-              playAround={playAround}
               jumpTo={commitOriginalSeek}
+              onBoundaryAction={selectChapterBoundary}
               onSelectedBoundaryChange={setEditorSelected}
               onSave={onSaveChapters}
               onReset={async () => await onResetChapters()}

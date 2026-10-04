@@ -12,6 +12,8 @@ import {
   displayedFrameBoundaryMs,
   formatChaptersTime,
   loadChapterSkip,
+  moveChapterBoundary,
+  nearestChapterBoundary,
   nudgeBoundary,
   normalizeChapterDraft,
   playbackSecondsToChapterBoundaryMs,
@@ -159,6 +161,28 @@ describe('normalizeChapterDraft', () => {
 
   it('利用者が元から持つ 1 フレーム未満の区間は落とさない', () => {
     expect(normalizeChapterDraft([cm(100, 105)])).toEqual([cm(100, 105)])
+  })
+})
+
+describe('moveChapterBoundary', () => {
+  it('動かした先の境界を返す', () => {
+    const moved = moveChapterBoundary([cm(10_000, 20_000)], 10, 1)
+    expect(moved.spans).toEqual([cm(11_000, 20_000)])
+    expect(moved.boundary).toBe(11)
+  })
+
+  it('合併で境界が消えたら残った最寄りの境界を返し、結果は再正規化しても変わらない', () => {
+    const moved = moveChapterBoundary([cm(10_000, 20_000), cm(20_020, 35_000)], 20, 0.033)
+    expect(moved.spans).toEqual([cm(10_000, 35_000)])
+    expect(moved.boundary).toBe(10)
+    expect(normalizeChapterDraft(moved.spans)).toEqual(moved.spans)
+  })
+})
+
+describe('nearestChapterBoundary', () => {
+  it('最寄りを返し、空なら null', () => {
+    expect(nearestChapterBoundary([1, 5, 9], 6)).toBe(5)
+    expect(nearestChapterBoundary([], 6)).toBeNull()
   })
 })
 

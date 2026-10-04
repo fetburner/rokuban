@@ -17,6 +17,7 @@ function renderEditor(
   const onSave = vi.fn((_spans: ChapterSpan[], _version: string) => Promise.resolve())
   const onReset = vi.fn(() => Promise.resolve())
   const jumpTo = vi.fn()
+  const onBoundaryAction = vi.fn()
   const onStatusChange = vi.fn()
   const commandsRef: { current: ChapterEditorCommands | null } = { current: null }
   const props: Parameters<typeof RecordingChapterEditor>[0] = {
@@ -26,12 +27,13 @@ function renderEditor(
     source: 'auto',
     recordingId: 7,
     currentSeconds: 0,
+    isPlaying: false,
     durationSeconds: 120,
     tilesAvailable: true,
     onTileImageLoad: vi.fn(),
     onTileImageError: vi.fn(),
-    playAround: vi.fn(),
     jumpTo,
+    onBoundaryAction,
     onSelectedBoundaryChange: vi.fn(),
     onSave,
     onReset,
@@ -41,7 +43,7 @@ function renderEditor(
     ...overrides,
   }
   const view = render(<RecordingChapterEditor {...props} />)
-  return { ...view, onSave, onReset, jumpTo, commandsRef, onStatusChange, props }
+  return { ...view, onSave, onReset, jumpTo, onBoundaryAction, commandsRef, onStatusChange, props }
 }
 
 describe('RecordingChapterEditor の編集専用画面', () => {
@@ -61,11 +63,11 @@ describe('RecordingChapterEditor の編集専用画面', () => {
   })
 
   it('区間カードから近い境界へ移動し、filmstripで選んだ境界だけを調整する', () => {
-    const { getByRole, getByTestId, jumpTo, onSave, commandsRef } = renderEditor([cm], {
+    const { getByRole, getByTestId, onBoundaryAction, onSave, commandsRef } = renderEditor([cm], {
       currentSeconds: 18,
     })
     fireEvent.click(getByRole('button', { name: '0:10 から 0:20 の境界を選ぶ' }))
-    expect(jumpTo).toHaveBeenCalledWith(599.5 * FRAME_SECONDS)
+    expect(onBoundaryAction).toHaveBeenCalledWith(20)
 
     const filmstrip = getByTestId('chapter-filmstrip')
     const startBoundary = filmstrip.querySelector<HTMLButtonElement>(
@@ -96,6 +98,27 @@ describe('RecordingChapterEditor の編集専用画面', () => {
     expect(boundary20.getAttribute('aria-pressed')).toBe('true')
   })
 
+  it('フレーム微調整後も矢印キーで隣の境界へ移れる', () => {
+    const op: ChapterSpan = { startMs: 60_000, endMs: 70_000, label: 'OP', cut: false }
+    const { container } = renderEditor([cm, op])
+    const boundary20 = container.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="20000"]',
+    )!
+    fireEvent.click(boundary20)
+    fireEvent.keyDown(window, { key: '.' })
+
+    const nudgedBoundary = container.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="20033"]',
+    )!
+    expect(nudgedBoundary.getAttribute('aria-pressed')).toBe('true')
+    fireEvent.keyDown(nudgedBoundary, { key: 'ArrowRight' })
+
+    const boundary60 = container.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="60000"]',
+    )!
+    expect(boundary60.getAttribute('aria-pressed')).toBe('true')
+  })
+
   it('矢印キーはフォーカスが調整ボタンにあっても効き、ラベル入力の中では効かない', () => {
     const op: ChapterSpan = { startMs: 60_000, endMs: 70_000, label: 'OP', cut: false }
     const { container, getByRole, getAllByLabelText } = renderEditor([cm, op])
@@ -111,18 +134,192 @@ describe('RecordingChapterEditor の編集専用画面', () => {
     expect(boundary(60_000).getAttribute('aria-pressed')).toBe('true')
   })
 
-  it('選択中の境界を前後再生し、現在の再生位置へ合わせる', () => {
-    const playAround = vi.fn()
+  it('境界のクリックと微調整は表示位置へ連れて行き、境界フレームの説明を出す', () => {
+    const onBoundaryAction = vi.fn()
+    const boundarySeconds = 10 + 0.5 * FRAME_SECONDS
+    const { container, getByRole, getByTestId } = renderEditor([cm], {
+      currentSeconds: boundarySeconds,
+      onBoundaryAction,
+    })
+    const boundary = container.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="10000"]',
+    )!
+    expect(getByTestId('chapter-boundary-frame-note').textContent).toContain('次の区間の先頭')
+    fireEvent.click(boundary)
+    expect(onBoundaryAction).toHaveBeenLastCalledWith(10)
+    fireEvent.click(getByRole('button', { name: '選択中の境界を 1 フレーム進める' }))
+    expect(onBoundaryAction).toHaveBeenLastCalledWith(10.033)
+
+    const selected = container.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="10033"]',
+    )!
+    expect(selected.getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(getByRole('button', { name: '選択中の境界を現在の再生位置に合わせる' }))
+  })
+
+  it('`,` / `.` で選択境界を1フレーム動かし、入力欄では動かさない', () => {
+    const onBoundaryAction = vi.fn()
+    const { container, getByRole, getAllByLabelText } = renderEditor([cm], { onBoundaryAction })
+    const boundary = container.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="10000"]',
+    )!
+    fireEvent.click(boundary)
+    fireEvent.keyDown(window, { key: '.' })
+    expect(onBoundaryAction.mock.lastCall?.[0]).toBeCloseTo(10 + FRAME_SECONDS, 3)
+    expect(container.querySelector('[data-testid="chapter-filmstrip-boundary"][data-time-ms="10033"]')).not.toBeNull()
+    fireEvent.keyDown(getAllByLabelText('ラベル')[0]!, { key: ',' })
+    expect(onBoundaryAction.mock.lastCall?.[0]).toBeCloseTo(10 + FRAME_SECONDS, 3)
+    expect(container.querySelector('[data-testid="chapter-filmstrip-boundary"][data-time-ms="10033"]')).not.toBeNull()
+    // キー操作は通常の編集ボタンにフォーカスがある場合も有効。
+    fireEvent.keyDown(getByRole('button', { name: '選択中の境界を1秒戻す' }), { key: ',' })
+    expect(onBoundaryAction.mock.lastCall?.[0]).toBeCloseTo(10, 3)
+  })
+
+  describe('±ボタンの長押し', () => {
+    const setup = () => {
+      const onBoundaryAction = vi.fn()
+      const view = renderEditor([cm], { onBoundaryAction })
+      fireEvent.click(view.container.querySelector<HTMLButtonElement>(
+        '[data-testid="chapter-filmstrip-boundary"][data-time-ms="10000"]',
+      )!)
+      const nudge = view.getByRole('button', { name: '選択中の境界を 1 フレーム進める' })
+      return { ...view, nudge, onBoundaryAction }
+    }
+    const boundaryAt = (container: HTMLElement, ms: number) =>
+      container.querySelector(`[data-testid="chapter-filmstrip-boundary"][data-time-ms="${ms}"]`)
+
+    it('300ms で離すクリック・タップは 1 回だけ動かす', () => {
+      vi.useFakeTimers()
+      try {
+        const { container, nudge, onBoundaryAction } = setup()
+        fireEvent.pointerDown(nudge, { button: 0, pointerId: 1 })
+        act(() => vi.advanceTimersByTime(300))
+        fireEvent.pointerUp(nudge, { button: 0, pointerId: 1 })
+        fireEvent.click(nudge)
+        act(() => vi.advanceTimersByTime(1000))
+        expect(boundaryAt(container, 10033)).not.toBeNull()
+        expect(onBoundaryAction).toHaveBeenCalledTimes(2) // 選択 1 回と nudge 1 回
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('初回遅延の後は 200ms ごとに送り、元に戻す 1 回で押す前へ戻る', () => {
+      vi.useFakeTimers()
+      try {
+        const { container, getByRole, nudge, onBoundaryAction } = setup()
+        fireEvent.pointerDown(nudge, { button: 0, pointerId: 1 })
+        act(() => vi.advanceTimersByTime(449))
+        expect(onBoundaryAction).toHaveBeenCalledTimes(2) // まだ初回遅延の中
+        // 実機では tick の間に描画が挟まる。act を分けて、選択が最新になった状態で次の tick を迎える。
+        act(() => vi.advanceTimersByTime(1)) // 450ms
+        act(() => vi.advanceTimersByTime(200)) // 650ms
+        act(() => vi.advanceTimersByTime(200)) // 850ms
+        fireEvent.pointerUp(nudge, { button: 0, pointerId: 1 })
+        fireEvent.click(nudge)
+        expect(onBoundaryAction).toHaveBeenCalledTimes(5) // 選択 1 回と nudge 4 回
+        expect(boundaryAt(container, 10132)).not.toBeNull()
+        fireEvent.click(getByRole('button', { name: '元に戻す' }))
+        expect(boundaryAt(container, 10000)).not.toBeNull()
+        expect(getByRole('button', { name: '元に戻す' })).toBeDisabled()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+  })
+
+  it('長押しの途中で境界が合併で消えたら連続送りを止め、残った境界を動かさない', () => {
+    vi.useFakeTimers()
+    try {
+      const next = { ...cm, startMs: 21_500, endMs: 35_000 }
+      const { container, getByRole } = renderEditor([cm, next])
+      fireEvent.click(container.querySelector<HTMLButtonElement>(
+        '[data-testid="chapter-filmstrip-boundary"][data-time-ms="20000"]',
+      )!)
+      const nudge = getByRole('button', { name: '選択中の境界を1秒進める' })
+      fireEvent.pointerDown(nudge, { button: 0, pointerId: 1 })
+      expect(container.querySelector('[data-testid="chapter-filmstrip-boundary"][data-time-ms="21000"]')).not.toBeNull()
+      act(() => vi.advanceTimersByTime(450)) // 22 秒で次の区間と合併して境界が消える
+      expect(container.querySelectorAll('[data-testid="chapter-filmstrip-boundary"]')).toHaveLength(2)
+      act(() => vi.advanceTimersByTime(200))
+      act(() => vi.advanceTimersByTime(200))
+      fireEvent.pointerUp(nudge, { button: 0, pointerId: 1 })
+      const times = Array.from(container.querySelectorAll('[data-testid="chapter-filmstrip-boundary"]'))
+        .map((node) => node.getAttribute('data-time-ms'))
+      expect(times).toEqual(['10000', '35000'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('`.` のキーリピートは元に戻す 1 回で押す前へ戻る', () => {
+    const { container, getByRole } = renderEditor([cm])
+    fireEvent.click(container.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="10000"]',
+    )!)
+    fireEvent.keyDown(window, { key: '.' })
+    fireEvent.keyDown(window, { key: '.', repeat: true })
+    fireEvent.keyDown(window, { key: '.', repeat: true })
+    expect(container.querySelector('[data-testid="chapter-filmstrip-boundary"][data-time-ms="10099"]')).not.toBeNull()
+    fireEvent.click(getByRole('button', { name: '元に戻す' }))
+    expect(container.querySelector('[data-testid="chapter-filmstrip-boundary"][data-time-ms="10000"]')).not.toBeNull()
+    expect(getByRole('button', { name: '元に戻す' })).toBeDisabled()
+  })
+
+  it('`,` で動かした境界は元に戻せる', () => {
+    const { container, getByRole } = renderEditor([cm])
+    fireEvent.click(container.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="10000"]',
+    )!)
+    fireEvent.keyDown(window, { key: '.' })
+    expect(getByRole('button', { name: '元に戻す' })).not.toBeDisabled()
+    fireEvent.click(getByRole('button', { name: '元に戻す' }))
+    expect(container.querySelector('[data-testid="chapter-filmstrip-boundary"][data-time-ms="10000"]')).not.toBeNull()
+  })
+
+  it('`.` で隣の同じ cut 区間へ重ねると合併し、消えた境界ではなく残った境界を選ぶ', () => {
+    const next = { ...cm, startMs: 20_020, endMs: 35_000 }
+    const { container, getAllByTestId, onBoundaryAction } = renderEditor([cm, next])
+    fireEvent.click(container.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="20000"]',
+    )!)
+    fireEvent.keyDown(window, { key: '.' })
+    expect(getAllByTestId('chapter-span-row')).toHaveLength(1)
+    expect(container.querySelectorAll('[data-testid="chapter-filmstrip-boundary"]')).toHaveLength(2)
+    expect(onBoundaryAction.mock.lastCall?.[0]).toBeCloseTo(10, 3)
+  })
+
+  it('矢印キーで境界の選択を移すと表示位置も止める', () => {
+    const onBoundaryAction = vi.fn()
+    const op: ChapterSpan = { startMs: 60_000, endMs: 70_000, label: 'OP', cut: false }
+    const { container } = renderEditor([cm, op], { onBoundaryAction })
+    const boundary20 = container.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="20000"]',
+    )!
+    fireEvent.click(boundary20)
+    fireEvent.keyDown(window, { key: 'ArrowRight' })
+    expect(onBoundaryAction).toHaveBeenLastCalledWith(60)
+    expect(container.querySelector('[data-testid="chapter-filmstrip-boundary"][data-time-ms="60000"]')?.getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('表示中の境界フレームだけ、次の区間の先頭だと表示する', () => {
+    const expected = 10 + 0.5 * FRAME_SECONDS
+    const { getByTestId, rerender, props, queryByTestId } = renderEditor([cm], { currentSeconds: expected })
+    expect(getByTestId('chapter-boundary-frame-note').textContent).toContain('境界の直後')
+    rerender(<RecordingChapterEditor {...props} currentSeconds={expected + 1} />)
+    expect(queryByTestId('chapter-boundary-frame-note')).toBeNull()
+    rerender(<RecordingChapterEditor {...props} currentSeconds={expected} isPlaying />)
+    expect(queryByTestId('chapter-boundary-frame-note')).toBeNull()
+  })
+
+  it('選択中の境界を現在の再生位置に合わせる', () => {
     const { container, getByRole, getByTestId } = renderEditor([{ ...cm, startMs: 2_000, endMs: 4_000 }], {
       currentSeconds: 66.75 * FRAME_SECONDS,
-      playAround,
     })
     const boundary20 = container.querySelector<HTMLButtonElement>(
       '[data-testid="chapter-filmstrip-boundary"][data-time-ms="4000"]',
     )!
     fireEvent.click(boundary20)
-    fireEvent.click(getByRole('button', { name: '選択中の境界の前後3秒を再生' }))
-    expect(playAround).toHaveBeenCalledWith(4)
     fireEvent.click(getByRole('button', { name: '選択中の境界を現在の再生位置に合わせる' }))
     expect(getByTestId('chapter-selected-boundary').textContent).toBe('0:02.202')
     expect(container.querySelector('[data-testid="chapter-filmstrip-boundary"][data-time-ms="2202"]')).not.toBeNull()
