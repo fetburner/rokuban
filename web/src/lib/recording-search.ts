@@ -71,8 +71,8 @@ export const recordingStatusValues: ListRecordingsStatus[] = [
 ]
 
 /**
- * statusLabels は録画状態の日本語表記（`components/recording-badges.tsx` の
- * バッジと `components/recording-filters.tsx` の絞り込みが共有する）。
+ * statusLabels は録画状態の日本語表記（`components/recording-filters.tsx` の
+ * 絞り込み専用。行のバッジは recordingVerdict の結論を出す）。
  */
 export const statusLabels: Record<ListRecordingsStatus, string> = {
   recording: '録画中',

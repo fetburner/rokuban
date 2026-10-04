@@ -31,30 +31,23 @@ export function recordingVerdict({
   isTrashed = false,
   nowMs,
 }: RecordingVerdictInput): RecordingVerdict | undefined {
+  if (isTrashed) return undefined
   const hasEncoded = (recording.encodedAssets?.length ?? 0) > 0
+  const hasNonCutEncoded = recording.encodedAssets?.some((asset) => asset.cut !== true) ?? false
   const hasOriginal = recording.sizeBytes !== undefined
   const playbackSource = selectRecordingPlaybackSource({
     status: recording.status,
     hasEncoded,
+    hasNonCutEncoded,
     hasOriginal,
     liveEnabled: liveCapability === 'enabled',
-    isTrashed,
   })
 
-  if (isTrashed) return undefined
   if (recording.status === 'recording') return 'recording'
   if (recording.status === 'failed') return 'failed'
   if (playbackSource !== 'none') return 'viewable'
 
   if (recording.status !== 'finished') return 'unavailable'
-
-  const ingest = ingestDisplay(recording, nowMs)
-  const ingestInProgress = ingest?.kind === 'pending' || ingest?.kind === 'transferring'
-  const encodeInProgress = recording.encodeStatus?.some(
-    (status) => status.state === 'queued' || status.state === 'running',
-  ) ?? false
-
-  if (ingestInProgress || encodeInProgress) return 'preparing'
 
   // 原本だけの録画は、ライブ capability が未確定だと再生元も未確定。
   if (
@@ -64,6 +57,14 @@ export function recordingVerdict({
   ) {
     return undefined
   }
+
+  const ingest = ingestDisplay(recording, nowMs)
+  const ingestInProgress = ingest?.kind === 'pending' || ingest?.kind === 'transferring'
+  const encodeInProgress = recording.encodeStatus?.some(
+    (status) => status.state === 'queued' || status.state === 'running',
+  ) ?? false
+
+  if (ingestInProgress || encodeInProgress) return 'preparing'
 
   return 'unavailable'
 }

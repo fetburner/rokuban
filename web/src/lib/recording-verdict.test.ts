@@ -103,6 +103,27 @@ describe('recordingVerdict', () => {
     },
   )
 
+  it.each(['queued', 'running'] as const)(
+    '原本のみ + エンコード %s は capability 未確定なら結論を出さず、disabled なら準備中',
+    (state) => {
+      const recording = { ...base, sizeBytes: 1_000, encodeStatus: [{ profile: 'web', state }] }
+      for (const liveCapability of ['pending', 'unknown'] as const) {
+        expect(recordingVerdict({ recording, liveCapability, nowMs })).toBeUndefined()
+      }
+      expect(recordingVerdict({ recording, liveCapability: 'disabled', nowMs })).toBe('preparing')
+    },
+  )
+
+  it('原本のみの録画はライブ capability が disabled なら再生不可', () => {
+    expect(
+      recordingVerdict({
+        recording: { ...base, sizeBytes: 1_000 },
+        liveCapability: 'disabled',
+        nowMs,
+      }),
+    ).toBe('unavailable')
+  })
+
   it('原本のみの録画はライブ capability が有効なら見られる', () => {
     expect(
       recordingVerdict({

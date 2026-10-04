@@ -132,6 +132,8 @@ export function RecordingRow({
             </span>
           )}
           <IngestBadge recording={recording} />
+          {/* 結論の後ろに内訳（取り込み・エンコード・ドロップ）を並べる。メタデータ列の
+              末尾に回すと、狭い端末で失敗バッジが 2 行目以降に回る。 */}
           <EncodeStatusBadges recording={recording} />
           {recording.dropSummary && <DropBadges summary={recording.dropSummary} />}
           {showSite && (
