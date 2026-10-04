@@ -19,8 +19,10 @@ import type {
   RuleTextMatchMode,
   RuleTextMatchTarget,
 } from '@/api/generated'
+import { SearchProgramsBody } from '@/api/zod'
 import { encodeSettingsError, type KeepOriginal } from '@/lib/encode-settings'
 import { genreLabel } from '@/lib/genre'
+import { validValue } from '@/lib/url-search'
 
 /** TriState は `boolean | null`（null = 問わない）を UI の 3 値で表す。 */
 export type TriState = 'any' | 'yes' | 'no'
@@ -417,6 +419,20 @@ export function conditionsToDraft(rule: ProgramSearchRequest): SearchDraft {
  */
 export function canonicalSearchConditions(conditions: ProgramSearchRequest): ProgramSearchRequest {
   return buildSearchRequest(conditionsToDraft(conditions))
+}
+
+/**
+ * parseCanonicalSearchConditions は URL から来た条件を検索画面と同じ形へ正準化する。
+ *
+ * openapi 由来のスキーマで検証し、`canonicalSearchConditions` で画面が実際に送る
+ * 条件へ畳む。空オブジェクトや未知キーだけの値は undefined にする --- 条件なしの
+ * 検索 API は全件を返すため、空条件を有効なレンズとして扱わない。
+ */
+export function parseCanonicalSearchConditions(raw: unknown): ProgramSearchRequest | undefined {
+  const parsed = validValue<ProgramSearchRequest>(SearchProgramsBody, raw)
+  if (parsed === undefined) return undefined
+  const canonical = canonicalSearchConditions(parsed)
+  return Object.keys(canonical).length > 0 ? canonical : undefined
 }
 
 /**

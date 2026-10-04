@@ -1,12 +1,11 @@
 import { createRootRoute, createRoute, HeadContent, Outlet, redirect } from '@tanstack/react-router'
 
 import type { ProgramSearchRequest } from './api/generated'
-import { SearchProgramsBody } from './api/zod'
 import { AppShell } from './components/app-shell'
 import { pageTitle } from './lib/document-title'
 import { parseHomeMode, type HomeMode } from './lib/home-mode'
 import { type LiveAudioChoice, validLiveAudio } from './lib/live'
-import { canonicalSearchConditions } from './lib/program-search'
+import { parseCanonicalSearchConditions } from './lib/program-search'
 import {
   parseProgramsSearch,
   serviceIdSchema,
@@ -94,8 +93,10 @@ export type HomePageSearch = { mode?: HomeMode }
 const programsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/programs',
-  validateSearch: (search: Record<string, unknown>): ProgramsPageSearch =>
-    parseProgramsSearch(search),
+  validateSearch: (search: Record<string, unknown>): ProgramsPageSearch => ({
+    ...parseProgramsSearch(search),
+    cond: parseCanonicalSearchConditions(search.cond),
+  }),
   // `pages/programs.tsx` の `<PageHeader title="番組">` と同じ表記。
   head: () => ({ meta: [{ title: pageTitle('番組') }] }),
   component: ProgramsPage,
@@ -155,19 +156,12 @@ const searchRoute = createRoute({
   // まるごと検証する。壊れた条件（古い共有リンク・手で書き換えた URL）は
   // `undefined` に落として、条件なしの検索フォームとして開く。
   validateSearch: (search: Record<string, unknown>): SearchPageSearch => {
-    const parsed = validValue<ProgramSearchRequest>(SearchProgramsBody, search.cond)
-    // 検証を通ったら、検索画面が実際に送る形へ畳む（`canonicalSearchConditions`）。
-    // そのうえで**キーが 0 個なら `undefined`**。畳まないと 2 通りの「中身の無い
-    // 条件」が素通りして、`?cond=` を開いた瞬間に条件なしの全件検索が走り、
-    // かつ localStorage の前回条件の復元がスキップされる（`SearchPage` の
-    // ハイドレーションは `cond !== undefined` を「URL が条件を持つ」と読む）:
-    // `?cond={}` / 未知キーだけの `?cond={"foo":1}`（zod が黙って剥がす）。
-    // `pages/search.tsx` の `submit` 側は `cond:{}` を書かない判断をしている
-    // （不変条件 10）ので、読む側もそれに揃える。
-    const cond = parsed === undefined ? undefined : canonicalSearchConditions(parsed)
+    // `/programs` と同じパーサを使う。空条件・未知キーだけの条件を undefined に
+    // 畳み、条件なしの全件検索を URL から起動しない。
+    const cond = parseCanonicalSearchConditions(search.cond)
     return {
       ruleId: parseRuleId(search.ruleId),
-      cond: cond !== undefined && Object.keys(cond).length > 0 ? cond : undefined,
+      cond,
     }
   },
   // `pages/search.tsx` の `<PageHeader title="検索">` と同じ表記。

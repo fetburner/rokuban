@@ -1,5 +1,5 @@
 import { keepPreviousData } from '@tanstack/react-query'
-import { useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
+import { Link, useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import {
@@ -623,12 +623,23 @@ export function SearchPage() {
           <EmptyState>条件に一致する番組がありません</EmptyState>
         ) : (
           <>
-            <p role="status" className="px-4 py-2 text-xs text-muted-foreground">
+            <p role="status" className="flex flex-wrap items-center justify-between gap-2 px-4 py-2 text-xs text-muted-foreground">
               {/* 件数は 1 つの文字列にする（JSX で連結するとテキストノードが分かれ、
                   読み上げも「37」「件」と切れる） */}
-              {visibleCount < orderedMatches.length
-                ? `${orderedMatches.length} 件 — ${visibleCount} 件を表示`
-                : `${orderedMatches.length} 件`}
+              <span>
+                {visibleCount < orderedMatches.length
+                  ? `${orderedMatches.length} 件 — ${visibleCount} 件を表示`
+                  : `${orderedMatches.length} 件`}
+              </span>
+              {routeSearch.cond !== undefined && (
+                <Link
+                  to="/programs"
+                  search={{ view: 'grid', cond: routeSearch.cond }}
+                  className="font-medium text-foreground underline underline-offset-2"
+                >
+                  番組表で見る
+                </Link>
+              )}
             </p>
             <SearchResultList
               matches={orderedMatches.slice(0, visibleCount)}

@@ -161,22 +161,34 @@ function scrollProgramIntoView(
 /** 凡例に出す、淡色を持つ ARIB 大分類。予備・拡張・その他は無彩色なので含めない。 */
 const tintedGenreCodes = Array.from({ length: 12 }, (_, code) => code)
 
-/** GenreLegend は番組セルの淡色とジャンル名の対応を示す。 */
-export function GenreLegend(): React.ReactElement {
+/** GenreLegend は番組セルの淡色とジャンル名を示し、条件レンズの入口にもなる。 */
+export function GenreLegend({
+  selectedGenres,
+  onToggle,
+}: {
+  selectedGenres: ReadonlySet<number>
+  onToggle: (genre: number) => void
+}): React.ReactElement {
   return (
     <ul
       aria-label="ジャンル凡例"
       className="flex shrink-0 flex-wrap gap-1 border-b border-border px-4 py-2"
     >
       {tintedGenreCodes.map((code) => (
-        <li
-          key={code}
-          className={cn(
-            'rounded-full border px-2 py-1 text-[11px] leading-none',
-            genreTint(code),
-          )}
-        >
-          {genreLabel(code)}
+        <li key={code}>
+          <button
+            type="button"
+            aria-pressed={selectedGenres.has(code)}
+            data-testid={`genre-filter-${code}`}
+            onClick={() => onToggle(code)}
+            className={cn(
+              'rounded-full border px-2 py-1 text-[11px] leading-none',
+              genreTint(code),
+              selectedGenres.has(code) && 'ring-1 ring-primary',
+            )}
+          >
+            {genreLabel(code)}
+          </button>
         </li>
       ))}
     </ul>
@@ -228,6 +240,7 @@ export function ProgramGrid({
   siteOverlay,
   gutterOverlay,
   showSite = false,
+  matchedProgramIds,
 }: {
   /** 列。渡された順に左から並べる（並び順は lib/epg-grid.ts の orderServices）。 */
   services: SiteService[]
@@ -248,6 +261,8 @@ export function ProgramGrid({
   scrollToMs?: number
   /** 複数 site のとき、ヘッダへ可視の site 名を出す。 */
   showSite?: boolean
+  /** 検索 API が返した site:programId。未取得・失敗・条件なしでは undefined。 */
+  matchedProgramIds?: ReadonlySet<string>
   /** 全チャンネル縦断の帯を重ねる層。軸を受け取って絶対配置の要素を返す。 */
   overlay?: (axis: TimeAxis) => React.ReactNode
   /**
@@ -565,6 +580,7 @@ export function ProgramGrid({
                 reservationByProgramId={reservationByProgramId}
                 selectedProgramId={selectedProgramId}
                 currentMs={currentMs}
+                matchedProgramIds={matchedProgramIds}
                 onSelect={onSelect}
               />
             ))}
@@ -624,6 +640,7 @@ function ServiceColumn({
   reservationByProgramId,
   selectedProgramId,
   currentMs,
+  matchedProgramIds,
   onSelect,
 }: {
   service: SiteService
@@ -635,6 +652,7 @@ function ServiceColumn({
   reservationByProgramId: ReadonlySet<string>
   selectedProgramId: string | null
   currentMs: number
+  matchedProgramIds?: ReadonlySet<string>
   onSelect: (program: SiteProgram) => void
 }) {
   return (
@@ -655,6 +673,7 @@ function ServiceColumn({
             reserved={reservationByProgramId.has(programIdentity(p.program.site, p.program.programId))}
             selected={selectedProgramId === programIdentity(p.program.site, p.program.programId)}
             currentMs={currentMs}
+            matchedProgramIds={matchedProgramIds}
             onSelect={onSelect}
           />
         ))}
@@ -668,6 +687,7 @@ function ProgramCell({
   reserved,
   selected,
   currentMs,
+  matchedProgramIds,
   onSelect,
 }: {
   placed: PlacedProgram<SiteProgram>
@@ -675,6 +695,7 @@ function ProgramCell({
   reserved: boolean
   selected: boolean
   currentMs: number
+  matchedProgramIds?: ReadonlySet<string>
   onSelect: (program: SiteProgram) => void
 }) {
   const rect = spanToPx(axis, placed.startMs, placed.endMs)
@@ -686,6 +707,8 @@ function ProgramCell({
   const visiblyEnded = ended && rect.heightPx > axis.pxPerHour / 12
   // 予約行が消えた後も残る除外の意図を、予約済みの表示とは分けて示す。
   const skipIntent = program.intent === 'skip' && !reserved
+  const isConditionMatch = matchedProgramIds?.has(programIdentity(program.site, program.programId))
+  const conditionIsResolved = matchedProgramIds !== undefined
   const showSkipIntentBadge = skipIntent && rect.heightPx >= skipIntentBadgeMinHeightPx
   const genre = genreLabel(program.genres[0])
   // 予約済みであることは色ではなく名前でも伝える（色だけの情報にしない）。
@@ -696,6 +719,7 @@ function ProgramCell({
     genre,
     reserved ? '予約済み' : undefined,
     skipIntent ? 'スキップ中' : undefined,
+    isConditionMatch ? '条件に一致' : undefined,
     ended ? '放送終了' : undefined,
   ]
     .filter(Boolean)
@@ -710,13 +734,14 @@ function ProgramCell({
       data-reserved={reserved ? 'true' : undefined}
       data-skip-intent={skipIntent ? 'true' : undefined}
       data-ended={ended ? 'true' : undefined}
+      data-condition-match={conditionIsResolved ? String(isConditionMatch === true) : undefined}
       aria-pressed={selected}
       aria-label={label}
       onClick={() => onSelect(program)}
       // 高さは放送時間そのものなので、内容がはみ出す側を切る
       className={cn(
         'absolute inset-x-0 overflow-hidden border-b border-l-2 border-b-border px-1.5 py-0.5 text-left hover:brightness-95 dark:hover:brightness-125',
-        genreTint(program.genres[0]),
+        genreTint(conditionIsResolved && !isConditionMatch ? undefined : program.genres[0]),
         visiblyEnded &&
           'text-foreground/75 before:pointer-events-none before:absolute before:inset-0 before:bg-muted/30',
         // 輪は選択中だけ。予約済みに同じ ring-primary を足すと、差が太さだけに
@@ -735,6 +760,7 @@ function ProgramCell({
           <span
             aria-hidden
             className="absolute top-0 right-1 z-[1] rounded-sm bg-foreground px-0.5 text-[10px] leading-none text-background"
+            data-testid="program-grid-cell-reserved-label"
           >
             予約
           </span>
@@ -766,7 +792,12 @@ function ProgramCell({
       >
         {formatTime(program.startAt)}
       </span>
-      <span className="relative z-[1] block line-clamp-2 text-xs leading-4">{program.name}</span>
+      <span
+        data-testid="program-grid-cell-name"
+        className="relative z-[1] block line-clamp-2 text-xs leading-4"
+      >
+        {program.name}
+      </span>
       {rect.heightPx >= descriptionMinHeightPx && program.description && (
         <span className="relative z-[1] mt-1 block line-clamp-2 text-[11px] leading-4">
           {program.description}
