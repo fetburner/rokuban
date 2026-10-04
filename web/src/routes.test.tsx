@@ -220,6 +220,35 @@ describe('routeTree', () => {
     })
   })
 
+  it('/programs の cond は /search と同じ条件へ正準化する', async () => {
+    const cond = {
+      genres: [7],
+      textMatches: [{ target: 'name', mode: 'keyword', value: 'ニュース' }],
+    }
+    const router = createRouter({
+      routeTree,
+      history: createMemoryHistory({
+        initialEntries: [`/programs?cond=${encodeURIComponent(JSON.stringify(cond))}`],
+      }),
+    })
+    await router.load()
+
+    expect((router.state.matches.at(-1)!.search as { cond?: unknown }).cond).toEqual(cond)
+  })
+
+  it('/programs の空・未知・不正な cond は undefined に畳む', async () => {
+    for (const raw of ['{}', '{"unknown":1}', '{"genres":[99]}', 'not-json']) {
+      const router = createRouter({
+        routeTree,
+        history: createMemoryHistory({
+          initialEntries: [`/programs?cond=${encodeURIComponent(raw)}`],
+        }),
+      })
+      await router.load()
+      expect((router.state.matches.at(-1)!.search as { cond?: unknown }).cond).toBeUndefined()
+    }
+  })
+
   it('/search の cond は sites も運ぶ（issue #531 でフォームの次元になった）', async () => {
     const cond = { sites: ['takamatsu', 'default'] }
     const router = createRouter({

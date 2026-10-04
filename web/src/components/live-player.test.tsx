@@ -2747,6 +2747,52 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     expect(play).toHaveBeenCalledOnce()
   })
 
+  it('原本 VOD: playAround は offset セッションが再生を始めてから停止時計を動かす', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    render(
+      <LivePlayer
+        mode="original-vod"
+        site="default"
+        recordingId={427}
+        recordingDurationMs={60_000}
+        chapters={[{ startMs: 20_000, endMs: 25_000, label: 'CM', cut: true }]}
+        chapterSource="auto"
+        chapterVersion="chapters-v1"
+        chapterEditing
+        onSaveChapters={async () => true}
+        onResetChapters={async () => true}
+      />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'paused', { value: false, writable: true, configurable: true })
+    Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+    Object.defineProperty(video, 'seekable', { value: { length: 1, start: () => 0, end: () => 5 }, configurable: true })
+    const play = vi.spyOn(video, 'play').mockResolvedValue()
+    const pause = vi.spyOn(video, 'pause').mockImplementation(() => undefined)
+    fireEvent.playing(video)
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    fireEvent.click(screen.getByRole('button', { name: /前後 3 秒.*を再生/ }))
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+    expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/427/original-vod/offset/17/playlist.m3u8',
+    )
+
+    // offset セッションが canplay に至るまで 8 秒を超えても、未再生の時間は停止区間に含めない。
+    act(() => vi.advanceTimersByTime(8_500))
+    expect(pause).not.toHaveBeenCalled()
+    const callsBeforeCanPlay = play.mock.calls.length
+    fireEvent.canPlay(video)
+    expect(play).toHaveBeenCalledTimes(callsBeforeCanPlay + 1)
+
+    fireEvent.playing(video)
+    video.currentTime = 6.1
+    fireEvent.timeUpdate(video)
+    expect(pause).toHaveBeenCalledOnce()
+  })
+
   it('原本 VOD: 再生中に CM の自動スキップで変換の先端より先へ飛んでも再生を続ける', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
     render(
@@ -3085,7 +3131,7 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
       .toBe(true)
   })
 
-  it('offset セッションの再開位置は offset + currentTime の原本時刻で送る', async () => {
+  it('offset セッションの再開位置はフレーム境界の起点 + currentTime の原本時刻で送る', async () => {
     const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
       if (init?.method && init.method !== 'GET') return Promise.resolve(new Response(null, { status: 204 }))
       return Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))
@@ -3107,14 +3153,14 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     fireEvent.canPlay(video)
     video.currentTime = 5
     fireEvent.timeUpdate(video)
-    expect(screen.getByRole('slider', { name: 'シークバー' })).toHaveAttribute('aria-valuenow', '20')
+    expect(Number(screen.getByRole('slider', { name: 'シークバー' }).getAttribute('aria-valuenow'))).toBeCloseTo(19.981633333, 6)
     fireEvent.pause(video)
 
     await waitFor(() => {
       expect(fetchMock.mock.calls.some(([url]) => String(url) === '/api/recordings/418/playback-position')).toBe(true)
     })
     const positionWrite = fetchMock.mock.calls.find(([url]) => String(url) === '/api/recordings/418/playback-position')
-    expect(JSON.parse(String(positionWrite?.[1]?.body))).toEqual({ positionMs: 20_000 })
+    expect(JSON.parse(String(positionWrite?.[1]?.body))).toEqual({ positionMs: 19_981 })
   })
 
   it('ENDLIST 後だけ実尺の 90% で watched を送り、成功後に親へ通知する', async () => {
@@ -3193,7 +3239,7 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
 
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
     expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
-      '/api/sites/default/recordings/416/original-vod/offset/5/playlist.m3u8?profile=hd',
+      '/api/sites/default/recordings/416/original-vod/offset/4/playlist.m3u8?profile=hd',
     )
   })
 

@@ -173,10 +173,11 @@ encode:
   #       output_format: vaapi   # -hwaccel_output_format（scale_vaapi へ HW フレームで渡す）
   #     input_extra_args: []     # -i の直前に足す許可済み引数（自由形式 cmd 全体は禁止）
   #   # カット版。**確認済み（adopted）チャプターの cut=true 区間を除いた本編だけ**を
-  #   # 出力する。cut: true のプロファイルを選ぶなら、cut でないプロファイルを 1 つ以上
-  #   # 含めること（原本 TS はブラウザで再生できないので、確認に再生が要り、再生に
-  #   # encode が要り、encode に確認が要る循環になる。ルール / override / 事後追加 /
-  #   # 凍結の 4 経路が拒否する）
+  #   # 出力する。live.enabled が false なら cut でないプロファイルも 1 つ以上選ぶこと。
+  #   # 原本 HLS がなく、確認に再生が要り、再生に encode が要り、encode に確認が要るため。
+  #   # live.enabled が true なら原本 HLS で確認できるので cut だけも選べる。
+  #   # ただし keepOriginal: until_encoded で cut だけを選ぶと、完成後に原本が削除されて
+  #   # CM 入りの版が残らず、チャプターの修正もカット版の作り直しもできない。
   #   - name: cut
   #     cut: true
   #     container: mp4

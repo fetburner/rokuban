@@ -11,6 +11,7 @@
 
 import { ServiceChannelType, type Service } from '@/api/generated'
 import { ListProgramsQueryParams } from '@/api/zod'
+import type { ProgramSearchRequest } from '@/api/generated'
 import { dayOrigin } from '@/lib/day-offset'
 import { ascending, asInteger, parseEnum, validArray } from '@/lib/url-search'
 
@@ -46,6 +47,8 @@ export type ProgramsPageSearch = {
    * で検証する。
    */
   view?: 'grid' | 'list'
+  /** 検索 API と共有する条件レンズ（`/search` と同じ `cond`）。 */
+  cond?: ProgramSearchRequest
 }
 
 /** programsViewValues は `view` の取りうる値。 */

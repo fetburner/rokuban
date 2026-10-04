@@ -1441,15 +1441,18 @@ func TestBuildOriginalVODFFmpegArgsRetainsSeekableVODOutput(t *testing.T) {
 			if i < 0 || i+1 >= len(args) || args[i+1] != originalVODFFmpegInputPath {
 				t.Errorf("input args = %q, want seekable inherited fd %s", args, originalVODFFmpegInputPath)
 			}
+			if !strings.Contains(joined, "-bf 0") && !strings.Contains(joined, "-bf:v:0 0") {
+				t.Errorf("original VOD args = %q, want B frames disabled for source-frame alignment", args)
+			}
 			if slices.Contains(args, "-ss") {
 				t.Errorf("zero-offset args = %q, want no explicit -ss", args)
 			}
 
-			seekArgs := BuildOriginalVODFFmpegArgs(cfg, "/tmp/original-vod", tc.withSubs, 120)
+			seekArgs := BuildOriginalVODFFmpegArgs(cfg, "/tmp/original-vod", tc.withSubs, 10)
 			ss := slices.Index(seekArgs, "-ss")
 			seekInput := slices.Index(seekArgs, "-i")
-			if ss < 0 || ss+1 >= len(seekArgs) || seekArgs[ss+1] != "120" || seekInput <= ss {
-				t.Errorf("offset args = %q, want input-side -ss 120 before -i", seekArgs)
+			if ss < 0 || ss+1 >= len(seekArgs) || seekArgs[ss+1] != "9.976633333" || seekInput <= ss {
+				t.Errorf("offset args = %q, want input-side frame-aligned -ss 9.976633333 before -i", seekArgs)
 			}
 		})
 	}
