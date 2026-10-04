@@ -145,6 +145,8 @@ async function openPage(width, theme = 'light') {
   const page = await context.newPage()
   await page.clock.install({ time: FIXED_NOW })
   await installApiStubs(page, apiHandler)
+  // この判定は M8-30 の日付見出し・時間順一覧を固定する。
+  await page.addInitScript(() => localStorage.setItem('rokuban:reservations:group', 'time'))
   await page.goto(URL_BASE + '/reservations', { waitUntil: 'domcontentloaded' })
   await page.getByText('ニュース７', { exact: true }).waitFor({ timeout: 15000 }).catch(() => {
     ng.push(`${width}px/${theme}: 予約行が表示されない`)
