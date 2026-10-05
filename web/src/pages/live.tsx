@@ -489,7 +489,7 @@ export function LivePage() {
                 serviceId={selectedService.serviceId}
                 recordingId={playbackSource === 'chase' ? chaseTarget?.recordingId : undefined}
                 chaseTimeline={chaseTimeline}
-                startOffsetSeconds={playbackSource === 'chase' ? chaseOffset : undefined}
+                startAtSeconds={playbackSource === 'chase' ? chaseOffset : undefined}
                 profile={effectiveProfile}
                 audio={routeSearch.audio}
                 availableProfiles={liveProfiles.map((profile) => ({

@@ -19,6 +19,7 @@ import {
   originalVODLeaveURL,
   originalVODPlaylistURL,
   originalVODSessionOriginSeconds,
+  recordingSessionStart,
   pickInitialService,
   probeLivePlaylist,
   liveProfileLabel,
@@ -142,6 +143,22 @@ describe('originalVODPlaylistURL', () => {
     expect(originalVODLeaveURL('default', 42, 0)).toBe(
       '/api/sites/default/recordings/42/original-vod/leave',
     )
+  })
+})
+
+describe('recordingSessionStart', () => {
+  it('offset は秒単位に切り下げ、残りをセッションの中の開始位置にする', () => {
+    expect(recordingSessionStart('chase', 7)).toEqual({ offset: 7, startSeconds: 0 })
+    expect(recordingSessionStart('chase', 4.5)).toEqual({ offset: 4, startSeconds: 0.5 })
+    // 原本 HLS は起点がフレーム格子の点（offset 42 は 1258 フレーム = 41.97527 秒）。
+    const original = recordingSessionStart('original-vod', 42.8)
+    expect(original.offset).toBe(42)
+    expect(original.startSeconds).toBeCloseTo(0.82473, 5)
+  })
+
+  it('負・非有限の位置は録画の先頭から始める', () => {
+    expect(recordingSessionStart('original-vod', -3)).toEqual({ offset: 0, startSeconds: 0 })
+    expect(recordingSessionStart('chase', Number.NaN)).toEqual({ offset: 0, startSeconds: 0 })
   })
 })
 

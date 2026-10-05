@@ -336,17 +336,23 @@ export function originalVODSessionOriginSeconds(offsetSeconds?: number): number 
   return frame * 1_001 / 30_000
 }
 
-/** RESUME_OFFSET_GRID_SECONDS は続きから再生で offset セッションを共有する格子の幅（秒）。 */
-const RESUME_OFFSET_GRID_SECONDS = 5
+/** RecordingSessionStart は新しい録画再生セッションの offset と、その中で始める位置（セッション相対の秒）。 */
+export type RecordingSessionStart = { offset: number; startSeconds: number }
 
 /**
- * resumeSessionOffsetSeconds は続きから再生の位置（秒）を、録画再生セッションの offset へ写す。
- * 秒ごとに別セッション（`live.max_sessions` を消費する）を立てないよう格子へ丸める。
- * 格子幅未満は offset 0 のまま startPosition で位置を指す。
+ * recordingSessionStart は録画軸の位置（秒）から新しい録画再生セッション（追っかけ・原本 HLS）を開く
+ * offset と、セッションの中で始める位置を導く。続きから・セッション外へのシーク（前後とも）・
+ * 再読み込み・再生元の持ち越しは、どれもここを通す。offset は秒単位に切り下げ、端数（1 秒未満。
+ * 原本 HLS は起点がフレーム格子の点なので、その起点から測る）を始める位置にする。
  */
-export function resumeSessionOffsetSeconds(resumeSeconds: number | null): number {
-  if (resumeSeconds === null) return 0
-  return Math.floor(resumeSeconds / RESUME_OFFSET_GRID_SECONDS) * RESUME_OFFSET_GRID_SECONDS
+export function recordingSessionStart(
+  mode: 'chase' | 'original-vod',
+  positionSeconds: number,
+): RecordingSessionStart {
+  const position = Number.isFinite(positionSeconds) && positionSeconds > 0 ? positionSeconds : 0
+  const offset = Math.floor(position)
+  const origin = mode === 'original-vod' ? originalVODSessionOriginSeconds(offset) : offset
+  return { offset, startSeconds: position - origin }
 }
 
 /** chasePlaylistURL は録画中の追っかけ再生 EVENT playlist の URL を組み立てる。 */

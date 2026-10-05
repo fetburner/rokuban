@@ -2101,7 +2101,7 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
     const user = userEvent.setup()
     const { fetchMock } = createFakeServer({
       recording: chaseRecording(),
-      playbackState: { positionMs: 12 * 60_000 + 2_000 },
+      playbackState: { positionMs: 12 * 60_000 + 800 },
       liveProfiles: LIVE_PROFILES,
     })
 
@@ -2120,7 +2120,7 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
     expect(document.querySelectorAll('video')).toHaveLength(1)
     const video = document.querySelector('video')!
     fireEvent.loadedMetadata(video)
-    await waitFor(() => expect(video.currentTime).toBe(2))
+    await waitFor(() => expect(video.currentTime).toBeCloseTo(0.8, 5))
   })
 
   it('追っかけのポスターに再開位置と録画範囲を示し、先頭から見る操作も再生開始まで変換しない', async () => {
@@ -2495,9 +2495,9 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
     fireEvent.loadedMetadata(vodVideo)
     fireEvent.canPlay(vodVideo)
     fireEvent.timeUpdate(vodVideo)
-    expect(vodVideo.currentTime).toBeCloseTo(2.82673, 4)
+    expect(vodVideo.currentTime).toBeCloseTo(0.82473, 4)
     expect(fake.fetchMock.mock.calls.some(([input]) =>
-      String(input).includes('/original-vod/offset/40/playlist.m3u8'),
+      String(input).includes('/original-vod/offset/42/playlist.m3u8'),
     )).toBe(true)
     await waitFor(() => expect(
       Number(screen.getByRole('slider', { name: 'シークバー' }).getAttribute('aria-valuenow')),
@@ -3372,9 +3372,9 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
     const video = document.querySelector('video')!
     setMediaProps(video, { currentTime: 0 })
     fireEvent.loadedMetadata(video)
-    expect(video.currentTime).toBeCloseTo(2.82337, 4)
+    expect(video.currentTime).toBeCloseTo(0.82137, 4)
     expect(playlistPaths(fake.fetchMock, '/original-vod')).toContain(
-      '/api/sites/default/recordings/3/original-vod/offset/10/playlist.m3u8',
+      '/api/sites/default/recordings/3/original-vod/offset/12/playlist.m3u8',
     )
     // ▶ を押した意図は、再生前に消えた追っかけから原本 HLS へ持ち越す（押し直させない）。
     expect(playSpy).not.toHaveBeenCalled()
