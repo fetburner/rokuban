@@ -9,6 +9,7 @@ import {
 } from 'react'
 
 import type { ChapterSpan, RecordingChaptersSource } from '@/api/generated'
+import { Button } from '@/components/ui/button'
 import {
   RecordingChapterEditor,
   type ChapterEditorCommands,
@@ -16,10 +17,10 @@ import {
 } from '@/components/recording-chapter-editor'
 import {
   RecordingPlaybackControls,
-  type ChaseTimeline,
-  type LiveProgramTimeline,
+  type PlaybackAudioOption,
   type TilePreview,
 } from '@/components/recording-playback-controls'
+import { Pause, Play, SkipBack } from 'lucide-react'
 import {
   autoSkipSeekSeconds,
   chapterBoundaryMsToSeekSeconds,
@@ -41,7 +42,6 @@ import {
   chasePlaylistURL,
   createStallTracker,
   isRecordedProgramOffset,
-  liveProgramAxis,
   liveAudioTrackIndex,
   livePlaylistURL,
   liveStallTimeoutMs,
@@ -49,7 +49,6 @@ import {
   originalVODSessionOriginSeconds,
   observeStall,
   probeLivePlaylist,
-  programRecordingAccess,
   readSubtitleVisibility,
   sendChaseLeaveHint,
   sendLiveLeaveHint,
@@ -67,7 +66,7 @@ import {
   saveChapterEditPlaybackRate,
   savePlaybackRate,
 } from '@/lib/playback-position'
-import { formatPlaybackTime, formatTime } from '@/lib/format'
+import { formatPlaybackTime } from '@/lib/format'
 import { useDisplayedFrameSeconds } from '@/lib/use-displayed-frame'
 import { useOffsetSession } from '@/lib/use-offset-session'
 import type { OffsetSessionStart } from '@/lib/use-offset-session'
@@ -75,9 +74,24 @@ import { usePlayerFrame } from '@/lib/use-player-frame'
 import { cn } from '@/lib/utils'
 import { seekTilePlacement } from '@/lib/seek-tiles'
 import type { RecordingTimeline } from '@/lib/recording-timeline'
+import {
+  chasePlaybackTimeline,
+  fixedPlaybackTimeline,
+  liveProgramPlaybackTimeline,
+} from '@/lib/playback-timeline'
+import type {
+  ChasePlaybackTimeline,
+  LiveProgramPlaybackTimeline,
+} from '@/lib/playback-timeline'
 
 const hlsSubtitleTracks = (video: HTMLVideoElement) =>
   Array.from(video.textTracks).filter((track) => track.kind === 'subtitles')
+
+const playbackAudioOptions: readonly PlaybackAudioOption[] = [
+  { value: undefined, label: '標準' },
+  { value: 'main', label: '主音声' },
+  { value: 'sub', label: '副音声' },
+]
 
 /** HlsLike は hls.js の型を静的 import せずに使うための最小限の形。 */
 type HlsLike = {
@@ -1515,38 +1529,18 @@ export function LivePlayer({
       : chaseHeadOffsetSeconds + offsetSessionSeconds + (sessionStartPositionSeconds ?? 0)
   // ドラッグ中・キー操作中だけ位置のプレビューでつまみと時刻を動かす。マウスのホバーは吹き出しだけ。
   const visibleChaseSeconds = chasePreviewSeconds ?? chaseCurrentSeconds
-  const chaseTimelineBar: ChaseTimeline | undefined = isChase
-    ? {
-        minSeconds: 0,
-        maxSeconds: chaseTimelineMaxSeconds,
-        headSeconds: chaseHeadOffsetSeconds,
-        recordedEndSeconds: chaseRecordedEndSeconds,
-        plannedEndSeconds: chasePlannedEndSeconds,
-        liveEdgeSeconds: chaseLiveEdgeSeconds,
-        hoverSeconds: chaseHoverSeconds,
-      }
+  const chaseTimelineBar: ChasePlaybackTimeline | undefined = isChase
+    ? chasePlaybackTimeline(chaseTimeline ?? {
+        chaseHeadOffsetSeconds: 0,
+        plannedSeconds: 0,
+        recordedSeconds: 0,
+      }, chaseHoverSeconds)
     : undefined
-  const liveAxis = liveProgram ? liveProgramAxis(liveProgram.startAt, liveProgram.endAt, liveProgram.nowMs) : null
-  const liveProgramDurationSeconds = liveAxis?.plannedSeconds ?? 0
-  const liveProgramEdgeSeconds = liveAxis?.liveEdgeSeconds ?? 0
-  const liveRecordingAccess = liveProgram
-    ? programRecordingAccess(liveProgram.recordingId, liveProgram.startAt, liveProgram.recordingStartedAt)
-    : { canStartOver: false, canSeek: false, recordingHeadSeconds: null }
-  const liveTimelineBar: LiveProgramTimeline | undefined = isLive && liveProgram && liveAxis
-    ? {
-        minSeconds: 0,
-        maxSeconds: liveAxis.maxSeconds,
-        plannedEndSeconds: liveProgramDurationSeconds,
-        recordingStartSeconds: liveRecordingAccess.recordingHeadSeconds ?? 0,
-        liveEdgeSeconds: liveProgramEdgeSeconds,
-        canSeek: liveRecordingAccess.canSeek,
-        canStartOver: liveRecordingAccess.canStartOver,
-        ariaValueText: `${formatPlaybackTime(liveProgramEdgeSeconds, false)} / ${formatPlaybackTime(liveProgramDurationSeconds, false)}（番組表上の予定）`,
-        startClock: formatTime(liveProgram.startAt),
-        endClock: formatTime(liveProgram.endAt),
-        hoverSeconds: liveHoverSeconds,
-      }
+  const liveTimelineBar: LiveProgramPlaybackTimeline | undefined = isLive && liveProgram
+    ? liveProgramPlaybackTimeline({ ...liveProgram, hoverSeconds: liveHoverSeconds }) ?? undefined
     : undefined
+  const liveProgramDurationSeconds = liveTimelineBar?.plannedEndSeconds ?? 0
+  const liveProgramEdgeSeconds = liveTimelineBar?.liveEdgeSeconds ?? 0
   const updateOriginalPosition = (video: HTMLVideoElement) => {
     const seconds = sessionStartSeconds + video.currentTime
     originalPreviousSecondsRef.current = seconds
@@ -1635,7 +1629,7 @@ export function LivePlayer({
   const isSelectableLiveProgramPoint = (seconds: number | null): seconds is number =>
     seconds !== null && liveTimelineBar !== undefined && isRecordedProgramOffset(
       seconds,
-      liveRecordingAccess.recordingHeadSeconds,
+      liveTimelineBar.recordingStartSeconds,
       liveTimelineBar.liveEdgeSeconds,
     )
   const showLiveProgramPreview = (event: ReactPointerEvent<HTMLDivElement>, seconds: number | null) => {
@@ -1957,20 +1951,65 @@ export function LivePlayer({
       name,
       label: label ?? (height !== undefined && height > 0 ? `${name}（${height}p）` : name),
     }))
+    const toolbarSlot = isLive ? (
+      <>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-8 shrink-0 text-white hover:bg-white/15 hover:text-white"
+          aria-label={frame.controls.isPlaying ? '一時停止' : '再生'}
+          onClick={frame.controls.onTogglePlay}
+        >
+          {frame.controls.isPlaying ? <Pause className="size-4" /> : <Play className="size-4" />}
+        </Button>
+        {liveTimelineBar?.canStartOver && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            data-testid="live-start-over"
+            aria-label="最初から"
+            className="size-10 shrink-0 rounded-full bg-white/15 p-0 text-white hover:bg-white/20 md:h-8 md:w-auto md:px-3"
+            onClick={onStartOver}
+          >
+            <SkipBack className="size-4" aria-hidden />
+            <span className="hidden md:inline">最初から</span>
+          </Button>
+        )}
+        <span data-testid="live-source-label" className="shrink-0 rounded bg-red-600 px-2 py-1 text-[10px] font-medium text-white md:text-xs">
+          ● ライブ
+        </span>
+        {liveDiagnostics && (
+          <span data-testid="live-diagnostics" className="hidden shrink-0 whitespace-nowrap text-[10px] text-white/80 md:inline">
+            {liveDiagnostics}
+          </span>
+        )}
+      </>
+    ) : isChase && onReturnLive ? (
+      <span data-testid="chase-source-label" className="shrink-0 rounded bg-white/15 px-2 py-1 text-[10px] font-medium text-white md:text-xs">
+        ● 録画から再生中
+      </span>
+    ) : undefined
     const playbackControls = (
       <RecordingPlaybackControls
         recordingId={recordingId}
         profile={menuProfile}
         encodedAssets={[]}
-        playbackMode={isLive ? 'live' : isChase ? 'chase' : 'original-vod'}
+        timeline={chaseTimelineBar ?? liveTimelineBar ?? (isOriginalVOD ? fixedPlaybackTimeline(originalDurationSeconds) : undefined)}
         className={className}
-        chaseTimeline={chaseTimelineBar}
-        chaseReturnsToLive={isChase && onReturnLive !== undefined}
-        liveTimeline={liveTimelineBar}
-        liveDiagnostics={isLive ? liveDiagnostics : undefined}
         liveNotice={isLive ? liveNotice : undefined}
-        onStartOver={onStartOver}
+        liveEdgeAction={isChase && onReturnLive ? {
+          label: 'ライブへ戻る',
+          title: `ライブ ${formatPlaybackTime(chaseTimelineBar?.recordedEndSeconds ?? chaseRecordedEndSeconds, false)}（押すとライブへ戻る）`,
+        } : undefined}
+        toolbarSlot={toolbarSlot}
+        showCenterControls={!isLive}
+        mobileActionsPlacement={isLive ? 'row' : 'overlay'}
+        settingsLabel={isLive ? 'ライブ設定' : '再生設定'}
+        canChangePlaybackRate={!isLive}
         profileOptions={profileOptions}
+        audioOptions={isLive || isOriginalVOD ? playbackAudioOptions : []}
         audioChoice={playbackAudio}
         onSelectAudio={(choice) => {
           if (onAudioChange) onAudioChange(choice)
