@@ -1,5 +1,7 @@
 package config
 
+/* Root configuration, defaults, loading, and validation. */
+
 import (
 	"fmt"
 	"os"
