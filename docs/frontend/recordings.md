@@ -349,7 +349,7 @@ active な encoded がある完了録画は **MP4 progressive + Range**。stream
 渡し、映像の下端に自前の再生操作バーを重ねる。原本だけが残る完了録画は streamer の一時 HLS 経路
 （`/api/sites/{site}/recordings/{id}/original-vod/playlist.m3u8`）でブラウザ再生する。
 原本自体は MPEG-2 TS のまま読み、変換したファイルは保存しない。encoded MP4 の経路では
-HLS / hls.js を使わない。原本 HLS の詳細は [api.md](../api.md)
+HLS / hls.js を使わない。原本 HLS の詳細は [api/media.md](../api/media.md)
 「録画原本のブラウザ再生」。
 
 - 利用可能な MP4 プロファイルは `Recording.encodedAssets`（active な encoded のみ。各要素は
@@ -478,8 +478,8 @@ HLS / hls.js を使わない。原本 HLS の詳細は [api.md](../api.md)
 - 操作バーを表示して字幕が重なるときは WebVTT cue の行をプレイヤー高さと下端の帯（時刻・シークバー）の高さから
   計算して上げる。スマホの暗い幕は枠全体に敷くので、幕の高さは数えない。
   `web/e2e/subtitles.mjs` で実ブラウザの字幕トラックをオンにし、cue の位置を確認する
-- ライブ視聴（`pages/live.tsx`）はネイティブ controls のまま残る。原本 HLS VOD と encoded VOD は
-  同じ自前の操作バーを使う。原本 VOD では変換済み範囲を描かず、画質（複数候補があるとき）と音声を
+- ライブ視聴（`pages/live.tsx`）・原本 HLS VOD・encoded VOD は同じ自前の操作バーを使う
+  （ライブ側は [live.md](live.md)）。原本 VOD では変換済み範囲を描かず、画質（複数候補があるとき）と音声を
   設定メニューに置く
 - ページのキー操作は入力欄・選択欄・リンク・ボタン・`role="slider"`・編集可能領域にフォーカスが
   ある間は働かない。video にフォーカスがある場合はページのショートカットを使える。シークバーが
@@ -1205,8 +1205,8 @@ limit)`（カーソル `before` / `beforeId` を含めない）にする。同�
 `shouldAutoLoadNextPage` / `shouldShowLoadMoreButton` である。計測できない
 環境の判定は `lib/list-virtualization.ts` の `domLayoutMeasurable` を使う。
 録画一覧はグリッドのような座標系を
-持たないリストなので仮想化はしていない。固定の `limit` は渡さず、既定ページサイズ
-（50）で継ぎ足す。
+持たないリストなので仮想化はしていない。`limit` は API の既定と同じ値（`pages/recordings.tsx` の
+`pageSize`）を明示して渡し、カーソルで継ぎ足す。
 
 ### 0 件の文言は条件の有無で分ける
 

@@ -65,7 +65,7 @@ preview サーバー、`dist/`、Playwright のブラウザ本体は必要ない
 増えたスクリプトの契約検証が一覧への追加漏れで静かに検査対象から外れる。各スクリプトは
 このモードで全フィクスチャを検証してから `launchBrowser` や bundle 検証へ進まない。
 実ブラウザを使う判定はこのコマンドの対象外である。
-CI では browser-e2e ジョブが 4 本だけ回し、残りはローカルの個別 E2E で行う（下記 §CI で回す 4 本とそれ以外）。
+CI では browser-e2e ジョブが一部だけ回し、残りはローカルの個別 E2E で行う（下記 §CI で回す判定とそれ以外）。
 子プロセスは順番にすべて実行するので、先のスクリプトが失敗しても後続のフィクスチャ検証を
 省略しない。
 
@@ -1413,18 +1413,18 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:recordings-rule-filter
 ```
 
-## CI で回す 4 本とそれ以外
+## CI で回す判定とそれ以外
 
 CI の `browser-e2e` ジョブは、実バイナリが `go:embed` した `dist/` を配るサーバーへ Chromium を向ける。
-回すのは `cls` / `chip-overflow` / `recordings-selection` / `recording-detail-layout` の 4 本だけである。
-4 本は 1 本が落ちても残りを走らせる。
+回す判定の一覧は `.github/workflows/ci.yml` の `browser-e2e` ジョブが権威で、ここには写さない。
+各判定は 1 本が落ちても残りを走らせる。
 選定基準は次の 3 つを全部満たすことである。
 
-- jsdom が原理的に測れない（レイアウトシフト・幅の溢れ・スクロール余白・viewport への収まり）
+- jsdom が原理的に測れない（レイアウトシフト・幅の溢れ・スクロール余白・viewport への収まり・実画素コントラスト）
 - `/api/**` を Playwright 内でスタブし、mirakc・チューナー・実データに依存しない
 - ffmpeg・webkit・DB への直接書き込みを要らず、Chromium だけで軽く終わる
 
-それ以外の 31 ファイル（判定スクリプトは 29 本。`lib.mjs` と `validate-fixtures.mjs` は共有部品）は
+それ以外の判定（`lib.mjs` と `validate-fixtures.mjs` は共有部品）は
 **ローカルでの受け入れ確認**の位置づけである。
 [docs/frontend.md](../../docs/frontend.md) の「受け入れは実機で行う」に実行可能な形を与えるものだ。
 回さない理由は 3 類型ある。
@@ -1437,9 +1437,9 @@ CI の `browser-e2e` ジョブは、実バイナリが `go:embed` した `dist/`
   全体の所要時間を測っておらず、毎 PR に払う価値をまだ判断していない。`design.mjs` は
   63 枚のショットを撮るぶん重い
 
-判定スクリプト全 33 本を回す定期ジョブは作らない。回す主体と失敗の受け手が決まっておらず、誰も見ない
-赤い定期ジョブは PR ごとに回す 4 本より信号として弱いためである。対象を増やすときは
-`.github/workflows/ci.yml` のコメントとこの節の本数・類型を同じ PR で直す。
+判定スクリプト全部を回す定期ジョブは作らない。回す主体と失敗の受け手が決まっておらず、誰も見ない
+赤い定期ジョブは PR ごとに回す一部より信号として弱いためである。対象を増やすときは
+`.github/workflows/ci.yml` のコメントとこの節の類型を同じ PR で直す。
 実ブラウザ不要の `pnpm check:colors` は lint job に入っている。
 
 ## 判定を足すときの規律

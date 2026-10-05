@@ -64,8 +64,8 @@ DELETE FROM river_job WHERE kind = 'epg_sync' AND state = 'completed';
 
 **`UniqueOpts.ByQueue` も明示する（既定 `false`）。** 既定では一意キーが
 kind + args だけで組み立てられ、Queue を含まない（`ByArgs` と `ByQueue` は独立の
-軸）。site 単位のキュー（`ingest` / `epg` / `reconciler` / `watcher`）と `cleanup` の
-`InsertOpts` は `ByQueue: true` を立てている。
+軸）。どのジョブが `ByQueue` を立てているかは `internal/jobs/args.go` の各 `InsertOpts`
+（`UniqueByQueue`）が権威である。site 単位のキューのジョブは必ず立てる。
 **キュー名を変える（リネーム・site 修飾の追加）だけで、Queue を一意キーに含めていないと
 旧キューの残骸が新キューへの Insert を黙って塞ぐ**。このときの結果は
 `UniqueSkippedAsDuplicate` で、エラーを返さないのでログにも出ない。トラブルシュート手順は

@@ -11,14 +11,15 @@ import・MSE への実再生・チャンネル切替時の cleanup --- だけを
 前提: `live.enabled: true`、`live.ffmpeg` が PATH にある、`live.profiles` を
 1 つ以上設定済み（[config.example.yml](../../config.example.yml) の `live:` 節）。
 
-**`live.enabled` が false（既定。`config.compose.yml` にも `live:` 節は無い）だと
+**`live.enabled` が false（既定。`config.compose.yml` の `live:` 節も `enabled: false`）だと
 そもそもライブに辿り着けない**。主ナビに「ライブ」が出ず、`/live` を
 直接開くと「この環境ではライブ視聴が無効です」になる。設定が効いているかは
-`curl -s http://localhost:40773/api/capabilities` が `{"live":true}` を返すかで
+`curl -s http://localhost:40773/api/capabilities` の `live` が `true` かで
 確かめられる。
 
 ```sh
-docker compose exec rokuban rokuban server --all --config /config.yml
+# config.compose.yml の live.enabled を true にしてから
+docker compose restart rokuban
 ```
 
 1. ブラウザで `/live` を開き、チャンネルを選ぶ（この時点ではまだ何も始まらない

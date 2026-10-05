@@ -95,13 +95,13 @@ window focus も別操作も起きない」画面は、`staleTime` だけでは�
 `staleTime` の経過そのものは再取得を起こさない**。レベルトリガー（不変条件 5）の
 「イベントはヒント、真実は定期再取得」は、定期の側がフロントに実在して初めて成立する。
 
-**グループの寿命・変更頻度・応答の大きさで周期を分ける。**
+**グループの寿命・変更頻度・応答の大きさで周期を分ける。** 接頭辞の網羅は `web/src/lib/events.ts` の `queryGroups` が権威で、下表は代表だけを挙げる。
 
 | グループ | クエリキー接頭辞 | SSE 無しでの収束の上限 | 周期を決めた理由 |
 |---|---|---|---|
 | 運用状態 | `/api/reservations` `/api/capacity/overages` `/api/recordings` `/api/breakers` | 60 秒 | 応答が小さく、変化が速い |
 | EPG | `/api/sites/`（番組表グリッド・サービス一覧・重なり）+ `/api/programs`（番組リストの手書きキー） | 10 分 | 数十チャンネル x 24 時間の大きな時間窓を 1 回で取る。EPG 同期ジョブ自体が分オーダーでしか動かないので、短周期で回しても得るものが無い |
-| ストレージ | `/api/storage` | 5 分 | ディスクの statfs 観測の射影で、worker の観測ループが書き換えたときにしか値が変わらない。運用状態（60 秒）と同じ周期にしても同じ値を余分に引くだけで得るものが無い一方、応答は軽量なので EPG（10 分）ほど長くする理由もない。SSE のトピックは持たない --- `storage_sync` は行トリガーの対象にしていないため（statfs の頻度そのものに通知量を結合させたくない）。SSE トピックからの invalidate は持たないので、収束はこの定期 invalidate に加えて、再接続時の全グループ invalidate と mount / window focus に依る |
+| ストレージ・チューナー | `/api/storage` `/api/tuners`（手書きキー） | 5 分 | ディスクの statfs 観測の射影で、worker の観測ループが書き換えたときにしか値が変わらない。運用状態（60 秒）と同じ周期にしても同じ値を余分に引くだけで得るものが無い一方、応答は軽量なので EPG（10 分）ほど長くする理由もない。SSE のトピックは持たない --- `storage_sync` は行トリガーの対象にしていないため（statfs の頻度そのものに通知量を結合させたくない）。SSE トピックからの invalidate は持たないので、収束はこの定期 invalidate に加えて、再接続時の全グループ invalidate と mount / window focus に依る。チューナーも `tuner_sync` の定期全量同期でしか変わらない射影なので、同じ周期を流用する |
 
 **キーの先頭要素がグループの所属を決める**。接頭辞の照合はクエリキーの先頭要素に対する
 前方一致である。そのため**URL が `/api/sites/...` でも、先頭要素が `'/api/reservations'` なら
@@ -126,7 +126,7 @@ window focus も別操作も起きない」画面は、`staleTime` だけでは�
   （各クエリの mount 時の取得と二重になるだけ）
 - **再接続時の invalidate だけでは足りない。** 接続を切らずに個別の通知だけ落としたケースを
   回復できるのは定期 invalidate の方だけ
-- 上の接頭辞に載っていないクエリ（`/api/tuners` `/api/rules` `/api/version` 等）は
+- 上の接頭辞に載っていないクエリ（`/api/rules` `/api/version` 等）は
   この定期経路に乗っていない。mount と window focus でのみ取り直す。`/api/rules` も
   同じ形で漏れている（`pages/rules.tsx` /
   `components/recording-detail-panel.tsx` / `pages/search.tsx` が

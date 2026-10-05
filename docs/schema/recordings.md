@@ -67,7 +67,8 @@ CREATE TABLE recordings (
     updated_at        timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX ON recordings (program_start_at DESC);        -- ライブラリ一覧
+CREATE INDEX ON recordings (program_start_at DESC, id DESC);  -- ライブラリ一覧（keyset）
+CREATE INDEX ON recordings (network_id, service_id, program_start_at);  -- 視聴済みを放送イベント単位で束ねる
 CREATE INDEX ON recordings (network_id, service_id, event_id);
 CREATE INDEX ON recordings (rule_id) WHERE rule_id IS NOT NULL;  -- rules 削除・重複排除・ruleId 絞り込み
 CREATE INDEX ON recordings (deleted_at) WHERE deleted_at IS NOT NULL;  -- ごみ箱ビュー
@@ -262,7 +263,7 @@ CREATE TABLE cm_logo_areas (
 );
 ```
 
-枠は「この枠で新しいロゴを解析する」という意図である。保存時に `recording_id` を指定して候補解析を依頼し、旧い `cm_logos` は候補を採用するまで残す。候補は解析 worker だけが `running` → `failed` / `ready` と書き、局ごとに 1 行を持つ。
+枠は「この枠で新しいロゴを解析する」という意図である。保存時に `recording_id` を指定して候補解析を依頼し、旧い `cm_logos` は候補を採用するまで残す。候補（`cm_logo_candidates`）は解析 worker だけが `running` → `failed` / `ready` と書き、局ごとに 1 行を持つ。
 
 採用 API は `ready` と解析時点の `updated_at` が一致することを確かめる。その後、候補の LGD・preview・coded size を `cm_logos` へ移し、必要なら active original のある録画の検出結果だけを消して再検出する。候補の破棄は行を消す操作である。外部形式との互換性維持コストを増やすため、`.lgd` の取り込み・書き出し API は作らない。
 

@@ -63,7 +63,7 @@ preflight は Service selector を見ない。
   Deployment が Ready なら判定 1.2 は緑になる。`/api/events` が notifier に
   届くかは誰も測っていない
 - **定期パスの網羅も見ていない。** `worker.periodic_jobs: false` の下では
-  in-process の定期ジョブ 9 種が CronJob 側に移るが、判定が見るのは
+  in-process の定期ジョブ（`rokuban enqueue --help` の全ジョブ）が CronJob 側に移る。判定が見るのは
   `epg-sync` の 1 本だけ
 - **判定 2 が測るのは出荷される schedule ではない。** base の epg-sync は
   実運用の 10 分間隔だが、判定 2.3 は 180 秒以内の自然発火を要求するので、
@@ -71,8 +71,7 @@ preflight は Service selector を見ない。
   `deploy/k8s/workloads_test.go` が固定している**（`TestCronSchedulesAreProductionValues`
   と `TestE2EOverlayShortensTheCronScheduleItMeasures` が対）--- 判定だけを見て
   いると、「判定が緑になるから」で base が毎分になったことに気付けない
-- **ライブ視聴の streamer は見ていない**（そもそも出荷していない。理由は
-  deploy/k8s/README.md §まだ無いもの）。判定 1.4 が Ready を見ている
+- **ライブ視聴の streamer（`site/live-streamer.yaml`）は見ていない。** 判定 1.4 が Ready を見ている
   `component=streamer` は録画配信のほうである
 - **レプリカ数と `resources.requests` は出荷値ではない。** `overlays/e2e` が
   1 ノードの kind に収まるように削っている。notifier / streamer は 1 で、
@@ -151,8 +150,8 @@ kind クラスタ rokuban-e2e / 名前空間 rokuban-e2e
     migration Job / ConfigMap / media の PVC
     api・notifier・streamer の Deployment + Service + PDB
     watcher の Deployment ×2（サイトごと）
-    worker の ScaledJob ×13（site 非依存 5 + site 束縛 4 ×2）
-    投入側の CronJob ×14（site 非依存 4 + site 束縛 5 ×2）
+    worker の ScaledJob（base の site 非依存 + site 束縛 ×2）
+    投入側の CronJob（base の site 非依存 + site 束縛 ×2）
 ```
 
 **mirakc は実機ではなくモックで確認した。** 実機はチューナー資源を要求し、

@@ -22,8 +22,8 @@ docker compose logs -f rokuban
 ```
 
 初回 `up` は `Dockerfile.full` を使って `rokuban:full` を組む。公式イメージ
-`ghcr.io/fetburner/rokuban` を pull し、その上に `apt-get install ffmpeg` するだけ。
-Go / Node のソースビルドは走らない。ffmpeg を自分用にビルドするのは再配布では
+`ghcr.io/fetburner/rokuban` を pull し、その上に apt で ffmpeg を足し、CM 検出の
+JLSE ツールを C/C++ のソースからビルドして載せる。Go / Node のソースビルドは走らない。ffmpeg を自分用にビルドするのは再配布では
 ないので、公式配布物は ffmpeg 非同梱のまま保てる（[docs/overview.md](../overview.md)）。
 HW エンコード等で自前イメージを使うなら `.env` の `ROKUBAN_IMAGE` で差し替える。
 
@@ -135,11 +135,9 @@ copy-up が `nobody` 所有を焼くので、`user:` を 65534 以外にする�
 - `worker.periodic_jobs: false`（k8s 構成）ではどのジョブも自動投入されない。
   CronJob から `rokuban enqueue` で投入する
 
-手で即時実行できる。ジョブ名はハイフン区切り。site 束縛ジョブ（`epg-sync` /
-`tuner-sync` / `ruler-pass` / `reconcile-pass` / `record-sweep`）は多サイトでは
-`--site` が必須。`catalog-export` / `delete-reconcile` / `encode-reconcile` /
-`thumbnail-reconcile` / `storage-sync` は site 非依存である。これらには
-`--site` を付けない
+手で即時実行できる。ジョブ名はハイフン区切り。site 束縛ジョブは多サイトでは
+`--site` が必須で、site 非依存ジョブには `--site` を付けない。どちらに属するかは
+`rokuban enqueue --help` が列挙する
 （[operations.md](../operations.md) §ジョブ化されたループの監視）。
 
 ```sh

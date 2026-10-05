@@ -38,3 +38,10 @@ upsert、stale 行の削除、マーカー更新が 1 つのトランザクシ�
 この行の読み手は DB-backed metrics collector だけで、予約の desired/observed の
 導出結果や mirakc の予約 ID は永続化しない。reconciler が停止した場合は
 `snapshot_at` が古いまま残り、常駐プロセスの `/metrics` から観測できる。
+
+### ruler_pass_snapshots / record_sweep_snapshots — ループのパス鮮度
+
+どちらも `(site PK, last_success_at)` だけを持ち、ruler / record_sweep のパスが
+正常に完了した最後の時刻を記録する。ループの鮮度を `reservations` / `record_sync` /
+`recordings` の行の有無から推測しないための衛星表である。それらの表に列を足さないのは、
+書き手も寿命もループの鮮度とは別だからである（不変条件 12）。

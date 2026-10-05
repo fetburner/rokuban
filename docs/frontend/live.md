@@ -886,11 +886,11 @@ EPGStation・KonomiTV には構造的にできない表示。
   `pages/live.tsx` ではチャンネル名・種別バッジ・番組表への導線と同じ情報欄
   （`isPlaying` の分岐の外）に置くことで、1 箇所の実装で両方の受け入れ条件を
   満たしている
-- **「いま」を更新する tick（`nowPlayingRefetchMs`。30 秒）を跨いでも警告は
-  消えない**。判定に使う値（`reservations` と視聴対象の `channelType`）は、
-  tick で変わらないクエリにしか依存しない。そのクエリは `GET /api/reservations` で、
-  SSE の `reservations` トピックで invalidate されるだけである。以前の EPG 第 2 クエリ経由の判定は
-  `nowMs` を含む時間窓をクエリキーに持っていたため、tick のたびにキーが割れて
+- **「いま」を更新する tick（`pages/live.tsx` の `scheduleClockTickMs`）や番組境界での
+  窓クエリの更新を跨いでも警告は消えない**。判定に使う値（`reservations` と視聴対象の
+  `channelType`）は、tick で変わらないクエリにしか依存しない。そのクエリは `GET /api/reservations` で、
+  SSE の `reservations` トピックで invalidate されるだけである。判定を EPG の時間窓クエリ経由にすると、
+  `nowMs` を含む時間窓がクエリキーに入るため、tick のたびにキーが割れて
   react-query が新しいキャッシュエントリとして扱い、取得完了までの間**表示中の
   警告が一時的に消えていた**（実測: jsdom で 30038ms 後・実 Chromium で 28258ms
   後に消失。レビューでの指摘）。直接比較に変えたことでこの経路自体が無くなった
