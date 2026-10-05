@@ -46,6 +46,11 @@ export function formatDateTimeSeconds(iso: string): string {
   return dateTimeSecondsFormatter.format(new Date(iso))
 }
 
+/** formatTimeRange は整形済みの両端を「開始〜終了」の形で返す。片端だけの範囲にも使う。 */
+export function formatTimeRange(start: string | undefined, end: string | undefined): string {
+  return `${start ?? ''}〜${end ?? ''}`
+}
+
 /**
  * formatPlaybackTime は動画の経過秒を 1:23 / 1:02:03 / -0:30 の形式で返す。
  * `withHours` が false なら 1 時間を超えても分で数える（62:03）。
@@ -79,6 +84,15 @@ export function formatPlaybackTimeMs(value: number): string {
 export function dayKey(iso: string): string {
   const d = new Date(iso)
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
+}
+
+/** calendarDayDiff は ms と baseMs のローカル暦日の差を日数で返す。 */
+export function calendarDayDiff(ms: number, baseMs: number): number {
+  const localDayStart = (value: number) => {
+    const date = new Date(value)
+    return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
+  }
+  return Math.round((localDayStart(ms) - localDayStart(baseMs)) / 86_400_000)
 }
 
 /** formatDuration は 90分 / 1時間30分 の形式で返す。 */

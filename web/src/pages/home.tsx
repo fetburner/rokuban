@@ -24,7 +24,16 @@ import { HomeModeToggle } from '@/components/home-mode-toggle'
 import { describeBreakerName, describeBreakerReason } from '@/lib/breaker'
 import { isStationFixableCMStage } from '@/lib/cm-detect-stage'
 import { dayOrigin } from '@/lib/day-offset'
-import { formatBytes, formatDate, formatDateTime, formatDuration, formatTime } from '@/lib/format'
+import {
+  calendarDayDiff,
+  formatBytes,
+  formatDate,
+  formatDateTime,
+  formatDuration,
+  formatPlaybackTime,
+  formatTime,
+  formatTimeRange,
+} from '@/lib/format'
 import { recordingThumbnailURL } from '@/lib/recording-media'
 import {
   readHomeModePreference,
@@ -939,6 +948,11 @@ function WatchHero({ choice }: { choice: HomeHeroChoice }) {
     hash: recording.status === 'recording' ? ('chase' as const) : undefined,
   }
   const resumePosition = recording.resumePositionMs
+  const playbackPositionLabel = resumePosition === undefined
+    ? undefined
+    : `${formatPlaybackTime(Math.max(0, resumePosition / 1000))} / ${formatPlaybackTime(
+        Math.max(0, recording.durationMs / 1000),
+      )}`
   const progress =
     resumePosition !== undefined && recording.durationMs > 0
       ? Math.max(0, Math.min(100, (resumePosition / recording.durationMs) * 100))
@@ -954,8 +968,7 @@ function WatchHero({ choice }: { choice: HomeHeroChoice }) {
         </h2>
         <p className="text-xs text-muted-foreground">
           {formatDate(recording.startAt)} {formatTime(recording.startAt)} · {recording.serviceName}
-          {resumePosition !== undefined &&
-            ` · ${formatPlaybackPosition(resumePosition)} / ${formatPlaybackPosition(recording.durationMs)}`}
+          {playbackPositionLabel !== undefined && ` · ${playbackPositionLabel}`}
         </p>
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <Link
@@ -1049,18 +1062,6 @@ function HomeNewArrivals({ recordings }: { recordings: Recording[] }) {
       </ul>
     </section>
   )
-}
-
-function formatPlaybackPosition(milliseconds: number): string {
-  const seconds = Math.max(0, Math.floor(milliseconds / 1000))
-  const hours = Math.floor(seconds / 3600)
-  const minutes = Math.floor((seconds % 3600) / 60)
-  const remainder = seconds % 60
-  const paddedMinutes = String(minutes).padStart(2, '0')
-  const paddedSeconds = String(remainder).padStart(2, '0')
-  return hours > 0
-    ? `${hours}:${paddedMinutes}:${paddedSeconds}`
-    : `${paddedMinutes}:${paddedSeconds}`
 }
 
 function HomeThumbnail({
@@ -1264,12 +1265,10 @@ function buildWarnings({
     const startMs = new Date(overage.startAt).getTime()
     const endMs = new Date(overage.endAt).getTime()
     const startsAt = new Date(startMs)
-    const today = new Date(nowMs)
-    const tomorrow = new Date(nowMs)
-    tomorrow.setDate(tomorrow.getDate() + 1)
-    const scope = startsAt.toDateString() === today.toDateString()
+    const dayDifference = calendarDayDiff(startMs, nowMs)
+    const scope = dayDifference === 0
       ? startsAt.getHours() >= 18 ? '今夜 ' : '今日 '
-      : startsAt.toDateString() === tomorrow.toDateString()
+      : dayDifference === 1
         ? '明日 '
         : `${startsAt.getMonth() + 1}/${startsAt.getDate()} `
     const types = overage.jammedTypes.map(homeTimelineChannelLabel).join('・')
@@ -1290,7 +1289,7 @@ function buildWarnings({
       key: `overage:${overage.site}:${overage.startAt}:${overage.endAt}`,
       kind: 'overage',
       chip: 'チューナー不足',
-      title: `${scope}${formatTime(overage.startAt)}–${formatTime(overage.endAt)} ${types}が ${overage.shortfall} 本不足しています`,
+      title: `${scope}${formatTimeRange(formatTime(overage.startAt), formatTime(overage.endAt))} ${types}が ${overage.shortfall} 本不足しています`,
       detail: overlappingReservations === undefined
         ? undefined
         : `この時間帯の予約: ${overlappingReservations.length > 0

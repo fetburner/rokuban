@@ -1,4 +1,5 @@
 import type { CapacityOverage } from '@/api/generated'
+import { calendarDayDiff } from '@/lib/format'
 
 export type HomeTimelineKind = 'finished' | 'recording' | 'failed' | 'reservation'
 
@@ -185,14 +186,6 @@ export function sortHomeTimelineEvents(events: readonly HomeTimelineEvent[]): Ho
         left.endMs - right.endMs ||
         left.key.localeCompare(right.key),
     )
-}
-
-function calendarDayDiff(ms: number, baseMs: number): number {
-  const day = (value: number) => {
-    const date = new Date(value)
-    return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
-  }
-  return Math.round((day(ms) - day(baseMs)) / 86_400_000)
 }
 
 /** homeTimelineDayLabel は ms の暦日を「今日 / 明日 / M/D」で返す（nowMs の暦日基準）。 */

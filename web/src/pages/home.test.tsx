@@ -335,7 +335,7 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
   it('続きからを主役にし、最初からのリンクは再開位置を復元しない詳細へ向ける', async () => {
     stubApi({
       continueWatching: [
-        recording(31, '続きの番組', 'finished', { resumePositionMs: 880_000 }),
+        recording(31, '続きの番組', 'finished', { resumePositionMs: 330_000 }),
         recording(32, '次の続き', 'finished', { resumePositionMs: 420_000 }),
       ],
       finished: [recording(33, 'もっと新しい未視聴', 'finished', { sizeBytes: 100 })],
@@ -351,7 +351,7 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
     expect(screen.queryByText(/再生元/)).not.toBeInTheDocument()
     // ラフ（#1020）: ▶ 付きの主ボタン、メタは 1 行で位置を末尾に、サムネ内に局名と進み線
     expect(screen.getByTestId('home-primary-action')).toHaveTextContent('▶')
-    expect(screen.getByText(/\(.\) \d\d:\d\d · NHK総合 · 14:40 \/ /)).toBeInTheDocument()
+    expect(screen.getByText(/\(.\) \d\d:\d\d · NHK総合 · 5:30 \/ 1:00:00$/)).toBeInTheDocument()
     expect(screen.getByTestId('home-hero-station')).toHaveTextContent('NHK総合')
     expect(screen.getByTestId('home-hero-progress-line')).toBeInTheDocument()
     expect(
@@ -1140,6 +1140,13 @@ describe('ホーム: 警告の検出範囲は時間軸の窓から独立して�
     const item = (await screen.findByText(/地デジが 1 本不足しています/)).closest('li')!
     expect(within(item).getByText('この時間帯の予約: 地デジの予約')).toBeInTheDocument()
     expect(item).not.toHaveTextContent('BSの予約')
+  })
+
+  it('容量超過の警告は共有の暦日差で「明日」を決め、範囲を「〜」でつなぐ', async () => {
+    stubApi({ overages: [overage(5 * HOUR, 6 * HOUR)] })
+    renderHome()
+
+    expect(await screen.findByText('明日 01:00〜02:00 BSが 1 本不足しています')).toBeInTheDocument()
   })
 
   it('timeline窓外でも7日内の failed は警告し、時間軸のブロックにはしない', async () => {

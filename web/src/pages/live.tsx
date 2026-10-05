@@ -38,7 +38,7 @@ import {
 import { recordingTimeline } from '@/lib/recording-timeline'
 import { upcomingInterruptingReservation } from '@/lib/live-interruption'
 import { channelTypeLabel, groupByChannelType, orderServices } from '@/lib/epg-grid'
-import { formatTime, isAiring } from '@/lib/format'
+import { formatTime, formatTimeRange, isAiring } from '@/lib/format'
 import { siteServiceKey, useAllSitesServices } from '@/lib/all-sites-services'
 import { cn } from '@/lib/utils'
 
@@ -553,7 +553,7 @@ export function LivePage() {
                   <p className="text-xl font-semibold">{nowPlaying.name}</p>
                   <p className="text-sm text-muted-foreground">
                     <span className="mr-1">予定:</span>
-                    <span>{formatTime(nowPlaying.startAt)}〜{formatTime(nowPlaying.endAt)}</span>
+                    <span>{formatTimeRange(formatTime(nowPlaying.startAt), formatTime(nowPlaying.endAt))}</span>
                     {selectedProgramRemaining !== null && (
                       <span> · 残り {selectedProgramRemaining} 分</span>
                     )}

@@ -43,7 +43,9 @@ import {
   formatDateTime,
   formatDateTimeSeconds,
   formatDuration,
+  formatPlaybackTime,
   formatTime,
+  formatTimeRange,
 } from '@/lib/format'
 import { cmDetectStageMessage, isStationFixableCMStage } from '@/lib/cm-detect-stage'
 import { ingestDisplay, type IngestDisplay } from '@/lib/ingest'
@@ -89,14 +91,6 @@ function ingestDetailText(display: IngestDisplay): string {
       return `${display.stale ? '転送中・停滞' : '転送中'} ${size}${percent}`
     }
   }
-}
-
-function formatCMOffset(ms: number): string {
-  const seconds = Math.floor(ms / 1000)
-  const hours = Math.floor(seconds / 3600)
-  const minutes = Math.floor((seconds % 3600) / 60)
-  const remainder = seconds % 60
-  return [hours, minutes, remainder].map((n) => String(n).padStart(2, '0')).join(':')
 }
 
 function formatRelativeTime(deltaMs: number): string {
@@ -560,6 +554,7 @@ export function RecordingDetail({
   ]
   const activeTab = tabs.some((tab) => tab.id === selectedTab) ? selectedTab : 'programme'
   const programEndAt = timeline.programmeEndAt
+  const startLabel = `${formatDate(recording.startAt)} ${formatTime(recording.startAt)}`
   const actualTimeLabels = [
     Number.isFinite(recordingStartMs) && recordingStartMs !== programStartMs
       ? `${formatRelativeTime(recordingStartMs - programStartMs)}開始`
@@ -793,7 +788,7 @@ export function RecordingDetail({
             {showSite && <span className="rounded bg-muted px-1.5 py-0.5 text-foreground">{recording.site}</span>}
             <span>{recording.serviceName}</span>
             <span>
-              {formatDate(recording.startAt)} {formatTime(recording.startAt)}{programEndAt !== null && `–${formatTime(programEndAt)}`}
+              {programEndAt === null ? startLabel : formatTimeRange(startLabel, formatTime(programEndAt))}
             </span>
             <span>{formatDuration(recording.durationMs)}</span>
             {actualTimeLabels.length > 0 && (
@@ -1032,7 +1027,12 @@ export function RecordingDetail({
                     <summary className="cursor-pointer">検出器の結果</summary>
                     <ul className="flex flex-col gap-1 py-1">
                       {rawCMRanges.map((range) => (
-                        <li key={`${range.startMs}-${range.endMs}`}>{formatCMOffset(range.startMs)} – {formatCMOffset(range.endMs)}</li>
+                        <li key={`${range.startMs}-${range.endMs}`}>
+                          {formatTimeRange(
+                            formatPlaybackTime(range.startMs / 1000),
+                            formatPlaybackTime(range.endMs / 1000),
+                          )}
+                        </li>
                       ))}
                     </ul>
                   </details>

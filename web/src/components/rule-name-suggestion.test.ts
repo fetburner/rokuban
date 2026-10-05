@@ -58,7 +58,7 @@ describe('suggestRuleName', () => {
     }
 
     expect(suggestRuleName(draft, () => 'NHK総合')).toBe(
-      'NHK総合 ニュース・報道/ドラマ 月〜金 19:00–20:00',
+      'NHK総合 ニュース・報道/ドラマ 月〜金 19:00〜20:00',
     )
   })
 
