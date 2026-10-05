@@ -79,10 +79,6 @@ import {
   fixedPlaybackTimeline,
   liveProgramPlaybackTimeline,
 } from '@/lib/playback-timeline'
-import type {
-  ChasePlaybackTimeline,
-  LiveProgramPlaybackTimeline,
-} from '@/lib/playback-timeline'
 
 const hlsSubtitleTracks = (video: HTMLVideoElement) =>
   Array.from(video.textTracks).filter((track) => track.kind === 'subtitles')
@@ -1529,14 +1525,14 @@ export function LivePlayer({
       : chaseHeadOffsetSeconds + offsetSessionSeconds + (sessionStartPositionSeconds ?? 0)
   // ドラッグ中・キー操作中だけ位置のプレビューでつまみと時刻を動かす。マウスのホバーは吹き出しだけ。
   const visibleChaseSeconds = chasePreviewSeconds ?? chaseCurrentSeconds
-  const chaseTimelineBar: ChasePlaybackTimeline | undefined = isChase
+  const chaseTimelineBar = isChase
     ? chasePlaybackTimeline(chaseTimeline ?? {
         chaseHeadOffsetSeconds: 0,
         plannedSeconds: 0,
         recordedSeconds: 0,
       }, chaseHoverSeconds)
     : undefined
-  const liveTimelineBar: LiveProgramPlaybackTimeline | undefined = isLive && liveProgram
+  const liveTimelineBar = isLive && liveProgram
     ? liveProgramPlaybackTimeline({ ...liveProgram, hoverSeconds: liveHoverSeconds }) ?? undefined
     : undefined
   const liveProgramDurationSeconds = liveTimelineBar?.plannedEndSeconds ?? 0

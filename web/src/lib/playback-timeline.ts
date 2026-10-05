@@ -3,7 +3,7 @@ import { liveProgramAxis, programRecordingAccess } from '@/lib/live'
 import type { RecordingTimeline } from '@/lib/recording-timeline'
 
 /** PlaybackTimelineMarker は軸上の意味のある位置と表示・操作可否を表す。 */
-export type PlaybackTimelineMarker = {
+type PlaybackTimelineMarker = {
   kind: 'planned-end' | 'recording-start' | 'live-edge'
   seconds: number
   visible: boolean
@@ -11,7 +11,7 @@ export type PlaybackTimelineMarker = {
 }
 
 /** PlaybackTimelineUnavailableSegment はシークできない時間範囲を表す。 */
-export type PlaybackTimelineUnavailableSegment = {
+type PlaybackTimelineUnavailableSegment = {
   id: 'before' | 'after' | 'all'
   startSeconds: number
   endSeconds: number
@@ -29,14 +29,14 @@ type PlaybackTimelineBase = {
 }
 
 /** FixedPlaybackTimeline は一定尺の録画再生用の時間軸記述。 */
-export type FixedPlaybackTimeline = PlaybackTimelineBase & {
+type FixedPlaybackTimeline = PlaybackTimelineBase & {
   kind: 'fixed'
   minSeconds: 0
   canSeek: true
 }
 
 /** ChasePlaybackTimeline は録画先頭を起点にした追っかけ用の時間軸記述。 */
-export type ChasePlaybackTimeline = PlaybackTimelineBase & {
+type ChasePlaybackTimeline = PlaybackTimelineBase & {
   kind: 'chase'
   headSeconds: number
   recordedEndSeconds: number
@@ -46,7 +46,7 @@ export type ChasePlaybackTimeline = PlaybackTimelineBase & {
 }
 
 /** LiveProgramPlaybackTimeline は番組予定を起点にしたライブ用の時間軸記述。 */
-export type LiveProgramPlaybackTimeline = PlaybackTimelineBase & {
+type LiveProgramPlaybackTimeline = PlaybackTimelineBase & {
   kind: 'live-program'
   plannedEndSeconds: number
   recordingStartSeconds: number
@@ -118,7 +118,7 @@ export function chasePlaybackTimeline(
 }
 
 /** LiveProgramPlaybackTimelineInput は番組予定と録画状態からライブ軸を作る入力。 */
-export type LiveProgramPlaybackTimelineInput = {
+type LiveProgramPlaybackTimelineInput = {
   startAt: string
   endAt: string
   nowMs: number

@@ -1,12 +1,12 @@
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { formatDuration, formatPlaybackTime } from '@/lib/format'
-import type { ChasePlaybackTimeline } from '@/lib/playback-timeline'
+import type { PlaybackTimeline } from '@/lib/playback-timeline'
 import { recordingThumbnailURL } from '@/lib/recording-media'
 
 /** PosterTimeline は再生前のポスターに描く追っかけ時間軸の表示項目。 */
 export type PosterTimeline = Pick<
-  ChasePlaybackTimeline,
+  Extract<PlaybackTimeline, { kind: 'chase' }>,
   'minSeconds' | 'maxSeconds' | 'headSeconds' | 'recordedEndSeconds' | 'plannedEndSeconds'
 >
 
