@@ -3202,6 +3202,31 @@ describe('RecordingDetailPage 自動チャプターの確認 (#1066)', () => {
     expect(within(cutRow).queryByText('再生中')).not.toBeInTheDocument()
   })
 
+  it('非カット版の再生中に版タブでカット版を選ぶと、映像もカット版に替わる', async () => {
+    // カット版だけの録画では既定もカット版になり、選んだ版が届いていなくても通ってしまう。
+    // 既定（非カット版）と違う版を選び、再生中表示ではなく映像の src を見る。
+    const user = userEvent.setup()
+    createFakeServer({
+      recording: sampleRecording({
+        sizeBytes: 1_000_000,
+        encodeProfiles: ['hd', 'cut-only'],
+        encodedAssets: [
+          { profile: 'hd', sizeBytes: 900_000 },
+          { profile: 'cut-only', cut: true, sizeBytes: 500_000, keepRanges: [{ startMs: 0, endMs: 1000 }] },
+        ],
+      }),
+      liveProfiles: [{ name: 'hd', height: 720 }],
+    })
+    renderAt('/recordings/3')
+    await selectDetailTab('版')
+    await user.click(await screen.findByRole('button', { name: 'hdを再生' }))
+    await waitFor(() => expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/3/file?profile=hd'))
+
+    await user.click(screen.getByRole('button', { name: 'カット版 (cut-only)を再生' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'カット版 (cut-only)を再生' })).toBeDisabled())
+    expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/3/file?profile=cut-only')
+  })
+
   it('原本がない古いカット版には作り直し操作を出さない', async () => {
     createFakeServer({
       recording: sampleRecording({

@@ -717,7 +717,7 @@ export function RecordingDetail({
               watchedPending={putWatchedMutation.isPending || deleteWatchedMutation.isPending}
               putWatched={() => void updateWatched(true)}
               deleteWatched={() => void updateWatched(false)}
-              preferredProfile={preferredPlaybackProfile}
+              preferredProfile={activePlaybackProfile}
               fullscreenContainerRef={playbackFullscreenContainerRef}
               nextEpisode={next ? { id: next.id, title: next.title, startAt: next.startAt } : undefined}
               onNextEpisodeNavigate={next ? () => seedRecordingDetail(queryClient, next) : undefined}
