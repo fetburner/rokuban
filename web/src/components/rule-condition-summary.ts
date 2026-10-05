@@ -9,7 +9,7 @@
  */
 
 import type { ProgramSearchRequest, Rule, RuleTextMatch } from '@/api/generated'
-import { formatDate, formatDuration } from '@/lib/format'
+import { formatDate, formatDuration, formatTimeRange } from '@/lib/format'
 import { allWeekdays, genreCodeLabel, hasWeekday, secToTimeValue, weekdayLabels } from '@/lib/program-search'
 
 const textTargetSummaryLabels: Record<string, string> = {
@@ -48,9 +48,9 @@ export function weekdayRangeLabel(weekdays: number): string {
   return indices.map((i) => weekdayLabels[i]).join('・')
 }
 
-/** timeWindowSummary は時間帯（曜日 + 開始–終了）を 1 つの要約にする。 */
+/** timeWindowSummary は時間帯（曜日 + 開始〜終了）を 1 つの要約にする。 */
 export function timeWindowSummary(t: { weekdays: number; startSec: number; endSec: number }): string {
-  return `${weekdayRangeLabel(t.weekdays)} ${secToTimeValue(t.startSec)}–${secToTimeValue(t.endSec)}`
+  return `${weekdayRangeLabel(t.weekdays)} ${formatTimeRange(secToTimeValue(t.startSec), secToTimeValue(t.endSec))}`
 }
 
 /** genresSummary はジャンルコードを昇順に並べ「/」で連結する。 */
@@ -103,7 +103,7 @@ export function summarizeRuleConditions(rule: Rule | ProgramSearchRequest): stri
   }
 
   if (rule.periodStartAt != null && rule.periodEndAt != null) {
-    parts.push(`${formatDate(rule.periodStartAt)}〜${formatDate(rule.periodEndAt)}`)
+    parts.push(formatTimeRange(formatDate(rule.periodStartAt), formatDate(rule.periodEndAt)))
   } else if (rule.periodStartAt != null) {
     parts.push(`${formatDate(rule.periodStartAt)}から`)
   } else if (rule.periodEndAt != null) {

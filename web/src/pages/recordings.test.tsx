@@ -107,7 +107,7 @@ describe('DropStatsTable', () => {
     ])
 
     expect(await screen.findByText('録画開始からの経過')).toBeInTheDocument()
-    expect(screen.getByText(/00:00:01\.000/)).toBeInTheDocument()
+    expect(screen.getByText(/^0:01\.000/)).toBeInTheDocument()
     expect(screen.getByText(/byte 188/)).toBeInTheDocument()
     expect(screen.getByText(/時刻不明/)).toBeInTheDocument()
     expect(screen.queryByText(/件中/)).not.toBeInTheDocument()

@@ -10,7 +10,6 @@ import {
   chapterJumpTarget,
   chapterSpanIndexesAtBoundary,
   displayedFrameBoundaryMs,
-  formatChaptersTime,
   loadChapterSkip,
   moveChapterBoundary,
   nearestChapterBoundary,
@@ -257,17 +256,5 @@ describe('chapter skip の設定', () => {
     saveChapterSkip(false)
     expect(localStorage.getItem(CHAPTER_SKIP_STORAGE_KEY)).toBe('off')
     expect(loadChapterSkip()).toBe(false)
-  })
-})
-
-describe('formatChaptersTime', () => {
-  it('h:mm:ss で返す', () => {
-    expect(formatChaptersTime(0)).toBe('0:00:00')
-    expect(formatChaptersTime(3725)).toBe('1:02:05')
-  })
-
-  it('不正な値は 0:00:00 に落とす', () => {
-    expect(formatChaptersTime(Number.NaN)).toBe('0:00:00')
-    expect(formatChaptersTime(-1)).toBe('0:00:00')
   })
 })

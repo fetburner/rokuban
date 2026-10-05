@@ -82,6 +82,14 @@ describe('RecordingChapterEditor の編集専用画面', () => {
     expect(commandsRef.current).not.toBeNull()
   })
 
+  it('区間カードとフィルムストリップの範囲は「〜」でつなぐ', () => {
+    const { getByRole, getByTestId } = renderEditor([cm])
+    expect(getByRole('button', { name: '0:10 から 0:20 の境界を選ぶ' })).toHaveTextContent(/^0:10〜0:20$/)
+    const filmstrip = getByTestId('chapter-filmstrip')
+    expect(filmstrip).toHaveTextContent(/\d+:\d\d〜\d+:\d\d を表示/)
+    expect(filmstrip).toHaveTextContent('（全体 0:00〜2:00 のうち枠の部分）')
+  })
+
   it('矢印キーで前後の境界へ移る', () => {
     const op: ChapterSpan = { startMs: 60_000, endMs: 70_000, label: 'OP', cut: false }
     const { container } = renderEditor([cm, op])

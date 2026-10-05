@@ -1,6 +1,7 @@
 import { useListRecordingDropStats, type Recording } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { DetailHeading, DetailSummary } from '@/components/detail-heading'
+import { formatPlaybackTimeMs } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 // pidTypeLabels は PID 種別（M2-13）の表示名。
@@ -17,17 +18,6 @@ const pidTypeLabels: Record<string, string> = {
   sdt: 'SDT',
   eit: 'EIT',
   tot: 'TOT',
-}
-
-function formatElapsedMs(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000)
-  const hours = Math.floor(totalSeconds / 3600)
-  const minutes = Math.floor((totalSeconds % 3600) / 60)
-  const seconds = totalSeconds % 60
-  const milliseconds = ms % 1000
-  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds
-    .toString()
-    .padStart(2, '0')}.${milliseconds.toString().padStart(3, '0')}`
 }
 
 export function DropStatsTable({ recordingId }: { recordingId: Recording['id'] }) {
@@ -81,7 +71,7 @@ export function DropStatsTable({ recordingId }: { recordingId: Recording['id'] }
                   <div className="flex flex-col">
                     {positions.map((position) => (
                       <span key={position.byteOffset}>
-                        {position.elapsedMs == null ? '時刻不明' : formatElapsedMs(position.elapsedMs)}{' '}
+                        {position.elapsedMs == null ? '時刻不明' : formatPlaybackTimeMs(position.elapsedMs / 1000)}{' '}
                         <span className="text-muted-foreground">
                           （byte {position.byteOffset.toLocaleString()}）
                         </span>

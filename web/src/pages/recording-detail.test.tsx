@@ -822,6 +822,15 @@ describe('RecordingDetailPage', () => {
     expect(screen.queryByText('実録画終了')).not.toBeInTheDocument()
   })
 
+  it('タイトル行の放送時刻は開始〜終了を「〜」でつなぐ', async () => {
+    createFakeServer({ recording: sampleRecording() })
+
+    renderAt('/recordings/3')
+
+    await screen.findByRole('heading', { name: '単体ページの録画' })
+    expect(screen.getByText(/ 21:00〜21:30$/)).toBeInTheDocument()
+  })
+
   it('実録画時刻が番組より遅れて始まり早く終わる差分もタイトル行に出す', async () => {
     createFakeServer({
       recording: sampleRecording({
@@ -1461,7 +1470,7 @@ describe('RecordingDetailPage の検出器結果', () => {
     await selectDetailTab('記録')
     const details = await screen.findByTestId('cm-detector-results-details')
     expect(details.querySelector('summary')).toHaveTextContent('検出器の結果')
-    expect(details.textContent).toContain('00:00:10 – 00:00:20')
+    expect(details.textContent).toContain('0:10〜0:20')
   })
 
   it('チャプター取得中は検出器の詳細を表示しない', async () => {

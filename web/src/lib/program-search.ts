@@ -143,7 +143,7 @@ export function newTextMatch(): TextMatchDraft {
  * newTimeWindow は追加直後の時間帯条件。
  *
  * 開始・終了はどちらも 0 時にしておく。この状態は「幅ゼロ」で何にもマッチしない
- * ため `draftError` が検索を止める。適当な既定の窓（21:00–23:00 等）を入れると、
+ * ため `draftError` が検索を止める。適当な既定の窓（21:00〜23:00 等）を入れると、
  * ユーザーが指定していない絞り込みが黙って効く。
  */
 export function newTimeWindow(): TimeWindowDraft {
