@@ -3093,7 +3093,8 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     failInput = false
     await user.click(screen.getByRole('button', { name: '再読み込み' }))
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
-    expect(onSourceRangeExit).toHaveBeenCalledWith(30.5, false)
+    // 一度も再生していないので親へは位置を渡さない（親の保存位置・先頭からの意図を上書きしない）。
+    expect(onSourceRangeExit).toHaveBeenCalledWith(undefined, false)
     expect(hlsMockState.instances[0]!.loadSource).toHaveBeenCalledWith(
       '/api/sites/default/recordings/433/chase/offset/30/playlist.m3u8',
     )
@@ -3113,9 +3114,50 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     await screen.findByText('追っかけ再生の入力に失敗したため、一時停止しています。')
     failInput = false
     await user.click(screen.getByRole('button', { name: '再読み込み' }))
-    expect(onSourceRangeExit).toHaveBeenCalledWith(42.8, false)
+    expect(onSourceRangeExit).toHaveBeenCalledWith(undefined, false)
     await act(async () => {})
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('再読み込みは、エラーの時点の再生の意図（▶ の直後で playing 前）を親へ渡す', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    const onSourceRangeExit = vi.fn(() => true)
+    render(<LivePlayer mode="original-vod" site="default" recordingId={440} autoPlay onSourceRangeExit={onSourceRangeExit} />)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    // ▶（autoPlay）の後、playing の前に fatal。
+    await failHls(0)
+    await user.click(await screen.findByRole('button', { name: '再読み込み' }))
+    expect(onSourceRangeExit).toHaveBeenCalledWith(undefined, true)
+  })
+
+  it('再読み込みの後に親が再生元を替えたら、アンマウントで今のセッションへ leave ヒントを送る', async () => {
+    const user = userEvent.setup()
+    const beacon = vi.fn(() => true)
+    vi.stubGlobal('navigator', { ...navigator, sendBeacon: beacon })
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    let reselect = false
+    const { unmount } = render(
+      <LivePlayer mode="original-vod" site="default" recordingId={441} resumePositionMs={42_800} onSourceRangeExit={() => reselect} />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+    fireEvent.loadedMetadata(video)
+    fireEvent.canPlay(video)
+    fireEvent.playing(video)
+    // 1 回目の再読み込みは offset を変える（42 → 50）。離れる 42 には送らない。
+    video.currentTime = 9
+    await failHls(0)
+    await user.click(await screen.findByRole('button', { name: '再読み込み' }))
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+    expect(beacon).not.toHaveBeenCalled()
+    // 2 回目の再読み込みで親が再生元を替え、プレイヤーが外れる。今のセッション（50）には送る。
+    reselect = true
+    await failHls(1)
+    await user.click(await screen.findByRole('button', { name: '再読み込み' }))
+    unmount()
+    expect(beacon).toHaveBeenCalledWith('/api/sites/default/recordings/441/original-vod/offset/50/leave')
   })
 
   it('追っかけ（ライブページ: 選び直しを持たない）: 再読み込みは録画完了後も残る今のセッションを取り直す', async () => {
@@ -3222,7 +3264,7 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     )
   })
 
-  it('原本 VOD: 意図していた位置が無いときの再読み込みは、offset の鍵ではなく起点 + 端数から開く', async () => {
+  it('原本 VOD: 意図していた位置が無いときの再読み込みは、導き直さずに今のセッションを同じ開始位置で取り直す', async () => {
     const user = userEvent.setup()
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
     const props = { mode: 'original-vod', site: 'default', recordingId: 439 } as const
@@ -3233,11 +3275,11 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     await failHls(0)
     await user.click(await screen.findByRole('button', { name: '再読み込み' }))
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
-    // offset 42 の起点 41.97527 秒 → offset 41 + 1.00101（offset の鍵 42 を位置にすると 42 + 0.02473）。
+    // 起点 41.97527 秒を導き直すと offset 41 になり、42 が idle GC まで残ってセッションが 1 つ増える。
     expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
-      '/api/sites/default/recordings/439/original-vod/offset/41/playlist.m3u8',
+      '/api/sites/default/recordings/439/original-vod/offset/42/playlist.m3u8',
     )
-    expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: expect.closeTo(1.001, 3) }])
+    expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: 0 }])
   })
 
   it('続きからの位置が無限大でも offset 0 のまま startPosition に Infinity を渡さない', async () => {

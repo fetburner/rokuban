@@ -17,7 +17,6 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { ListRecordingsResponseItem } from '../src/api/zod.ts'
-import { originalVODSessionOriginSeconds } from '../src/lib/live.ts'
 import {
   beginCurrentTimeGapMeasurement,
   finish,
@@ -28,6 +27,7 @@ import {
   launchBrowser,
   log,
   sseKeepAlive,
+  streamerSeekSeconds,
   validateFixturesOrExit,
   verifyBundleMatchesOrExit,
 } from './lib.mjs'
@@ -1560,7 +1560,7 @@ await page
 await page.waitForTimeout(1000)
 // 続きからは offset のセッションで始まるので、録画軸は offset の起点（29.97 fps の格子点）+ currentTime。
 const vodOffset = originalOffsetPlaylistRequests.slice(originalOffsetCursor).at(-1) ?? 0
-const vodOrigin = originalVODSessionOriginSeconds(vodOffset)
+const vodOrigin = streamerSeekSeconds(vodOffset)
 const vodTime = await page.locator('video').evaluate((element) => element.currentTime)
 const vodStart = vodOrigin + vodTime
 log(`  追っかけの保存位置 ${(chasedMs / 1000).toFixed(2)} 秒 → VOD の開始位置 offset ${vodOffset} + ${vodTime.toFixed(2)} 秒`)

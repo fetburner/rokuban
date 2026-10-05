@@ -398,6 +398,8 @@ DOM の取得に失敗した場合も、その理由を記録して残りの診�
 枠の上でマウスを動かして表示を待つ。
 
 着地の判定（② と ⑦〜⑪）は、offset の起点（29.97 fps の格子点）+ 再生が始まったときの `currentTime` で読む。
+起点は `lib.mjs` の `streamerSeekSeconds`（fixture の `-ss` と同じ式）で計算し、検査対象の
+`originalVODSessionOriginSeconds` は使わない。実装の式が壊れても、同じ式で測ると判定が同じだけずれて通るからである。
 aria-valuenow は最初の timeupdate までは props から導いた値（offset + 開始位置）で、映像の実位置ではない。
 保存位置からの開始位置を絶対値にする変異は ②（offset 7 + 7.26）・⑦（offset 12 + 12）・⑨ で落ちる。
 ⑦（保存位置の再開）は、offset 0 を 8 秒だけ配る変換中 EVENT にして、保存位置 12 秒から再開する。

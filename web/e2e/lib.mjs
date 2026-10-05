@@ -243,3 +243,13 @@ export async function landingTime(target, timeout = 15000) {
   await target.evaluate(() => { delete window.__e2eLandingTime })
   return landing
 }
+
+/**
+ * streamerSeekSeconds は streamer が原本 HLS の offset セッションを始める入力 seek の位置（秒）。
+ * streamer は `floor(offset × 30000/1001)` フレームの時刻へ seek する。fixture はこの位置で `-ss` を掛け、
+ * 着地の判定もこの位置を録画軸の起点にする。検査対象の `originalVODSessionOriginSeconds` は使わない
+ * （実装の式が壊れても、同じ式で測ると e2e が同じだけずれて通る）。
+ */
+export function streamerSeekSeconds(offset) {
+  return offset > 0 ? Math.floor(offset * 30_000 / 1_001) * 1_001 / 30_000 : 0
+}

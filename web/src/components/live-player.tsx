@@ -284,10 +284,11 @@ type LivePlayerProps = {
   /** 録画先頭からの現在位置（秒）。再生元を選び直すとき親が持ち越す。 */
   onRecordingPositionChange?: (seconds: number) => void
   /**
-   * 今の再生元の範囲の外へのシークを親に委ねる。true なら親が再生元を替えた（このプレイヤーは
-   * 何もしない）。false なら、このプレイヤーが同じ再生元のまま張り直す。
+   * 今の再生元の範囲の外へのシークと、エラー後の「再読み込み」を親に委ねる。true なら親が再生元を替えた
+   * （このプレイヤーは何もしない）。false なら、このプレイヤーが同じ再生元のまま張り直す。位置は
+   * 一度も再生していないセッションの再読み込みでだけ undefined（`onRecordingPlaybackError` と同じ規則）。
    */
-  onSourceRangeExit?: (recordingPositionSeconds: number, wasPlaying: boolean) => boolean
+  onSourceRangeExit?: (recordingPositionSeconds: number | undefined, wasPlaying: boolean) => boolean
   /**
    * 再生元がエラーを返した。位置は一度も再生していないセッションでは undefined（0 秒を
    * 「明示の位置」として渡さない）。true なら親が再生元を選び直した（エラー表示に落ちない）。
@@ -455,8 +456,6 @@ export function LivePlayer({
   // 今のセッションの offset（URL・leave ヒントの鍵）と、その中で始める位置（明示開始のとき）。
   const sessionOffset = explicitSessionStart?.offset ?? resumedStartOffset
   const explicitStartSeconds = explicitSessionStart?.startSeconds ?? 0
-  const chaseStartOffset = sessionOffset
-  const originalVODStartOffset = sessionOffset
   // 録画軸でのセッションの起点。原本 HLS はフレーム格子の点、追っかけは offset そのもの。
   const sessionStartOffset = isOriginalVOD
     ? originalVODSessionOriginSeconds(sessionOffset)
@@ -519,7 +518,7 @@ export function LivePlayer({
   const playbackProfile = isOriginalVOD
     ? onProfileChange ? profile : originalVODProfileOverride ?? profile
     : profile
-  const displayedFrameVideoKey = `${recordingId}:${playbackProfile ?? ''}:${originalVODStartOffset}`
+  const displayedFrameVideoKey = `${recordingId}:${playbackProfile ?? ''}:${sessionOffset}`
   const getSessionDisplayedFrameSeconds = useDisplayedFrameSeconds(
     videoRef,
     chapterEditing && isOriginalVOD,
@@ -563,8 +562,8 @@ export function LivePlayer({
     seconds: number
   }>({
     recordingId,
-    offset: chaseStartOffset,
-    seconds: chaseHeadOffsetSeconds + chaseStartOffset + (hasExplicitChaseStart ? explicitStartSeconds : serverResumePosition ?? 0),
+    offset: sessionOffset,
+    seconds: chaseHeadOffsetSeconds + sessionOffset + (hasExplicitChaseStart ? explicitStartSeconds : serverResumePosition ?? 0),
   })
   const [chasePreviewSeconds, setChasePreviewSeconds] = useState<number | null>(null)
   const [chaseHoverSeconds, setChaseHoverSeconds] = useState<number | null>(null)
@@ -595,14 +594,17 @@ export function LivePlayer({
   }, [onWatched])
   // retryNonce を変えると effect が再実行される（依存配列に入れる）
   const [retryNonce, setRetryNonce] = useState(0)
-  // 今のセッションがエラーになったときに控えた、そのセッションで意図していた録画軸の位置（秒）。
-  // 「再読み込み」はここから開き直す。保存位置から始めて戻し終える前のエラーなら null（最新の保存位置に従う）。
-  const errorPositionRef = useRef<number | null>(null)
+  // 今のセッションがエラーになったときに控えたもの。`position` はそのセッションで意図していた録画軸の位置
+  // （保存位置から始めて戻し終える前のエラーなら null。最新の保存位置に従う）、`reported` と `playing` は
+  // 親へ渡す位置（一度も再生していなければ undefined）と再生の意図で、`handOffError` と同じ規則で決める。
+  // 「再読み込み」はこれを使って開き直す。
+  const errorRef = useRef<{ position: number | null; reported: number | undefined; playing: boolean } | null>(null)
   // このセッションで意図している録画軸の位置（秒）。明示の開始位置・持ち越した位置・範囲内のシーク先で、
   // 開始位置へ戻し終えた後は再生位置で更新する。保存位置から始めたセッションは null（最新の保存位置に従う）。
   const intendedPositionRef = useRef<number | null>(null)
-  // 次の leave ヒント（offset が変わったときの cleanup）を送らない。再読み込みは離脱ではない。
-  const suppressNextLeaveRef = useRef(false)
+  // 再読み込みで離れる今のセッション（`${mode}|${recordingId}|${offset}`）。その cleanup の leave ヒントだけを
+  // 送らない（再読み込みは離脱ではない）。別のセッションの cleanup（再生元の切替のアンマウント等）は送る。
+  const skipLeaveSessionRef = useRef<string | null>(null)
   const restorePending = useRef(true)
   // preservedState は画質（プロファイル）の切替・再読み込みを跨いで持ち越す
   // 視聴者の表示状態（issue #869 / #871）。字幕の表示と、切替前に再生中だったかを持つ。
@@ -839,7 +841,7 @@ export function LivePlayer({
     // 画質（プロファイル）だけが変わった再実行か（`lastChasePositionRef` の
     // コメント参照）。プロファイルを含めない入力の同一性で判定する。
     const recordingInputs = `${mode}|${site}|${recordingId}|${sessionStartOffset}|${hasExplicitRecordingStart}|${explicitStartSeconds}|${retryNonce}`
-    errorPositionRef.current = null
+    errorRef.current = null
     const carriesPosition = isRecordingPlayback && lastChaseInputsRef.current === recordingInputs
     const resumePosition =
       carriesPosition
@@ -890,9 +892,9 @@ export function LivePlayer({
     onDiagnosticsRef.current?.(null)
 
     const url = isChase
-      ? chasePlaylistURL(site ?? '', recordingId ?? 0, playbackProfile, chaseStartOffset)
+      ? chasePlaylistURL(site ?? '', recordingId ?? 0, playbackProfile, sessionOffset)
       : isOriginalVOD
-        ? originalVODPlaylistURL(site ?? '', recordingId ?? 0, playbackProfile, originalVODStartOffset)
+        ? originalVODPlaylistURL(site ?? '', recordingId ?? 0, playbackProfile, sessionOffset)
         : livePlaylistURL(site ?? '', networkId ?? 0, serviceId ?? 0, playbackProfile)
 
     /**
@@ -904,11 +906,15 @@ export function LivePlayer({
       media && chaseResumePending.current === null && chaseMetadataLoaded.current
         ? sessionStartOffset + media.currentTime
         : intendedPositionRef.current
-    const noteErrorPosition = (media: HTMLVideoElement | null): number | undefined => {
-      if (!isRecordingPlayback) return undefined
+    const noteError = (media: HTMLVideoElement | null) => {
       const position = intendedPosition(media)
-      errorPositionRef.current = position
-      return playedRef.current && position !== null ? position : undefined
+      const error = {
+        position,
+        reported: playedRef.current && position !== null ? position : undefined,
+        playing: media ? !media.paused || resumePlaybackPendingRef.current : true,
+      }
+      errorRef.current = error
+      return error
     }
     /**
      * handOffError は録画再生のエラーを親に渡し、親が再生元を選び直したら true を返す
@@ -918,13 +924,12 @@ export function LivePlayer({
      * 「再生していない」ことを再生の意図にすると、止めたまま移った先のエラーで勝手に再生が始まる
      * （両方向は `live-player.test.tsx` の「再生前のエラー」）。
      * 位置はこのセッションで意図していた録画軸の位置（`intendedPosition`）である。再読み込みのため、
-     * 要素が再生していなくても `errorPositionRef` に控える。
+     * 要素が再生していなくても `errorRef` に控える。
      */
     const handOffError = (media: HTMLVideoElement | null): boolean => {
       if (!isRecordingPlayback) return false
-      const position = noteErrorPosition(media)
-      const wasPlaying = media ? !media.paused || resumePlaybackPendingRef.current : true
-      return onRecordingPlaybackErrorRef.current?.(position, wasPlaying) === true
+      const { reported, playing } = noteError(media)
+      return onRecordingPlaybackErrorRef.current?.(reported, playing) === true
     }
 
     // teardown はこの effect が張ったものを外す手続き（メディアイベントの
@@ -1226,16 +1231,16 @@ export function LivePlayer({
           isOriginalVOD &&
           probe.error.kind === 'other' &&
           probe.error.status === 416 &&
-          originalVODStartOffset > lastGood
+          sessionOffset > lastGood
         ) {
-          const next = Math.max(lastGood, originalVODStartOffset - rangeStepRef.current)
+          const next = Math.max(lastGood, sessionOffset - rangeStepRef.current)
           rangeStepRef.current *= 2
           setSessionStartState((state) => ({ key: state.key, start: { offset: next, startSeconds: 0 } }))
           return
         }
         // 入力失敗の cooldown 応答は再生元を選び直して即座に同じ要求を重ねず、
         // 再読み込みを案内する。録画 ID 単位の cooldown は別 offset にも適用される。
-        if (probe.error.kind === 'chase-input') noteErrorPosition(video)
+        if (probe.error.kind === 'chase-input') noteError(video)
         else if (handOffError(video)) return
         resumePlaybackPendingRef.current = false
         if (isRecordingPlayback) setMediaPlaying(false)
@@ -1244,7 +1249,7 @@ export function LivePlayer({
         return
       }
       if (isOriginalVOD) {
-        lastGoodOffsetRef.current = { recordingId, offset: originalVODStartOffset }
+        lastGoodOffsetRef.current = { recordingId, offset: sessionOffset }
         rangeStepRef.current = 1
       }
 
@@ -1542,10 +1547,9 @@ export function LivePlayer({
     networkId,
     serviceId,
     retryNonce,
-    chaseStartOffset,
+    sessionOffset,
     explicitStartSeconds,
     sessionStartOffset,
-    originalVODStartOffset,
     hasExplicitChaseStart,
     hasExplicitRecordingStart,
     setMediaPlaying,
@@ -1575,9 +1579,9 @@ export function LivePlayer({
   useEffect(() => {
     const leave = () => {
       if (isChase && site !== undefined && recordingId !== undefined) {
-        sendChaseLeaveHint(site, recordingId, chaseStartOffset)
+        sendChaseLeaveHint(site, recordingId, sessionOffset)
       } else if (isOriginalVOD && site !== undefined && recordingId !== undefined) {
-        sendOriginalVODLeaveHint(site, recordingId, originalVODStartOffset)
+        sendOriginalVODLeaveHint(site, recordingId, sessionOffset)
       } else if (!isRecordingPlayback && site !== undefined && networkId !== undefined && serviceId !== undefined) {
         sendLiveLeaveHint(site, networkId, serviceId)
       }
@@ -1590,20 +1594,20 @@ export function LivePlayer({
     return () => {
       window.removeEventListener('pagehide', leave)
       document.removeEventListener('visibilitychange', onVisibilityChange)
-      // 再読み込みで offset が変わったときは送らない（離脱ではない）。
-      if (suppressNextLeaveRef.current) suppressNextLeaveRef.current = false
+      // 再読み込みで離れるこのセッションには送らない（離脱ではない）。
+      if (skipLeaveSessionRef.current === `${mode}|${recordingId}|${sessionOffset}`) skipLeaveSessionRef.current = null
       else leave()
     }
-  }, [isChase, isOriginalVOD, isRecordingPlayback, recordingId, site, networkId, serviceId, chaseStartOffset, originalVODStartOffset, sessionStartOffset])
+  }, [isChase, isOriginalVOD, isRecordingPlayback, mode, recordingId, site, networkId, serviceId, sessionOffset, sessionStartOffset])
 
   const visibleOriginalSeconds = originalPreviewSeconds ?? originalCurrentSeconds
   const originalPlayedFraction = originalDurationSeconds > 0
     ? Math.max(0, Math.min(1, originalCurrentSeconds / originalDurationSeconds))
     : 0
   const chaseCurrentSeconds =
-    chasePositionState.recordingId === recordingId && chasePositionState.offset === chaseStartOffset
+    chasePositionState.recordingId === recordingId && chasePositionState.offset === sessionOffset
       ? chasePositionState.seconds
-      : chaseHeadOffsetSeconds + chaseStartOffset + (hasExplicitChaseStart ? explicitStartSeconds : serverResumePosition ?? 0)
+      : chaseHeadOffsetSeconds + sessionOffset + (hasExplicitChaseStart ? explicitStartSeconds : serverResumePosition ?? 0)
   // ドラッグ中・キー操作中だけ位置のプレビューでつまみと時刻を動かす。マウスのホバーは吹き出しだけ。
   const visibleChaseSeconds = chasePreviewSeconds ?? chaseCurrentSeconds
   const chaseTimelineBar: ChaseTimeline | undefined = isChase
@@ -1645,11 +1649,11 @@ export function LivePlayer({
     onRecordingPositionChange?.(seconds)
   }
   const updateChasePosition = (video: HTMLVideoElement) => {
-    onRecordingPositionChange?.(chaseStartOffset + video.currentTime)
+    onRecordingPositionChange?.(sessionOffset + video.currentTime)
     setChasePositionState({
       recordingId,
-      offset: chaseStartOffset,
-      seconds: chaseHeadOffsetSeconds + chaseStartOffset + video.currentTime,
+      offset: sessionOffset,
+      seconds: chaseHeadOffsetSeconds + sessionOffset + video.currentTime,
     })
   }
   const chaseSeekTargetAtPointer = (event: ReactPointerEvent<HTMLDivElement>): number | null => {
@@ -1693,7 +1697,7 @@ export function LivePlayer({
       }
       setRetryNonce((nonce) => nonce + 1)
     } else if (reload) {
-      suppressNextLeaveRef.current = true
+      skipLeaveSessionRef.current = `${mode}|${recordingId}|${sessionOffset}`
     }
   }
   /** openRecordingSession はセッション外へのシークで、録画軸の位置から新しいセッションを開く。 */
@@ -1707,12 +1711,21 @@ export function LivePlayer({
    * 意図していた位置が保存位置なら最新の保存位置を使い、マウント時に取り込んだ値へは戻さない。
    */
   const reloadRecordingSession = () => {
-    const position = errorPositionRef.current ?? resumeSeconds ?? sessionStartOffset + explicitStartSeconds
-    errorPositionRef.current = null
-    if (onSourceRangeExit?.(position, false) === true) return
+    const error = errorRef.current
+    errorRef.current = null
+    // 親へは `handOffError` と同じ規則で渡す（一度も再生していなければ位置を渡さず、親の保存位置・
+    // 先頭からの意図を上書きしない。再生の意図はエラーの時点のもの）。
+    if (onSourceRangeExit?.(error?.reported, error?.playing ?? false) === true) return
+    const position = error?.position ?? resumeSeconds
+    if (position === null) {
+      // 意図していた位置が分からなければ、導き直さずに今のセッションを同じ開始位置で取り直す。
+      openSession({ offset: sessionOffset, startSeconds: explicitStartSeconds }, sessionStartOffset + explicitStartSeconds, true)
+      return
+    }
     if (isChase && onSourceRangeExit === undefined) {
       // 録画が続いているか（新しい追っかけのセッションを作れるか）を知らない呼び出し元（ライブページ）では、
-      // 録画の完了後も残る今のセッションを取り直す。
+      // 録画の完了後も残る今のセッションを取り直す。ライブページは保存位置を渡さないので、位置は
+      // このセッションのエラー位置（起点以上）だけで、先頭への丸めは守りである。
       openSession(
         { offset: sessionOffset, startSeconds: Math.max(0, position - sessionStartOffset) },
         Math.max(position, sessionStartOffset),
@@ -1743,7 +1756,7 @@ export function LivePlayer({
     } catch {
       if (Number.isFinite(video.duration)) seekableEnd = video.duration
     }
-    const localTarget = target - chaseStartOffset
+    const localTarget = target - sessionOffset
     if (localTarget < 0 || localTarget > seekableEnd) {
       // 録画が終わっていれば新しい追っかけのセッションは作れない。親が再生元を選び直す。
       if (onSourceRangeExit?.(target, !video.paused) === true) return
@@ -1753,7 +1766,7 @@ export function LivePlayer({
     video.currentTime = localTarget
     intendedPositionRef.current = target
     onRecordingPositionChange?.(target)
-    setChasePositionState({ recordingId, offset: chaseStartOffset, seconds: chaseHeadOffsetSeconds + target })
+    setChasePositionState({ recordingId, offset: sessionOffset, seconds: chaseHeadOffsetSeconds + target })
   }
   const handleChaseSeekPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     isChaseScrubbingRef.current = true
