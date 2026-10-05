@@ -118,7 +118,7 @@ func recoverStaleEncodeJobs(ctx context.Context, pool *pgxpool.Pool, riverClient
 // 開始するまで running が残るのは、ctx キャンセル時に running を残す既存規約と同じ
 // であり、代替 EncodeWorker の markEncodeAttemptRunning が新しい試行として上書きする。
 func recoverStaleEncodeJob(ctx context.Context, conn *pgxpool.Conn, riverClient *river.Client[pgx5.Tx], candidate staleEncodeJob) error {
-	inserted, recovered, err := replaceStaleRiverJob(
+	inserted, err := replaceStaleRiverJob(
 		ctx,
 		conn,
 		riverClient,
@@ -127,7 +127,6 @@ func recoverStaleEncodeJob(ctx context.Context, conn *pgxpool.Conn, riverClient 
 		candidate.attempt,
 		candidate.lastActivity,
 		encodeRecoveryReason,
-		"encode_recovery",
 		discardRecoveredEncodeJobQuery,
 		jobs.EncodeJobArgs{
 			RecordingID: candidate.recordingID,
@@ -135,18 +134,18 @@ func recoverStaleEncodeJob(ctx context.Context, conn *pgxpool.Conn, riverClient 
 		},
 		nil,
 	)
-	if err != nil || !recovered {
+	if err != nil || inserted == nil {
 		return err
 	}
 
 	replacementID := int64(0)
-	if inserted != nil && inserted.Job != nil {
+	if inserted.Job != nil {
 		replacementID = inserted.Job.ID
 	}
 	slog.Info("encode: recovered stale running job",
 		"old_job_id", candidate.id,
 		"new_job_id", replacementID,
-		"new_job_unique_skipped", inserted != nil && inserted.UniqueSkippedAsDuplicate,
+		"new_job_unique_skipped", inserted.UniqueSkippedAsDuplicate,
 		"recording_id", candidate.recordingID,
 		"profile", candidate.profile,
 		"last_activity", candidate.lastActivity,

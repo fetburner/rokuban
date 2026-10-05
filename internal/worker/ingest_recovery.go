@@ -133,9 +133,10 @@ func recoverStaleIngestJobs(ctx context.Context, pool *pgxpool.Pool, riverClient
 func recoverStaleIngestJob(ctx context.Context, conn *pgxpool.Conn, riverClient *river.Client[pgx5.Tx], site string, candidate staleIngestJob) error {
 	var beforeInsert func(pgx5.Tx) error
 	if candidate.recordingID != nil {
-		// Clear the failed attempt's progress in the same transaction so the API
-		// does not show stale progress until the replacement ingest finishes.
-		// TestRecordSweepRecovery_ReplacesStaleRunningIngest verifies this write.
+		// 死んだ attempt が残した recording_ingest_progress 行を同じ tx で消す。
+		// 消さずに放置すると、代替 ingest が commit するまで API の進捗表示が
+		// 古い値のまま止まって見える（internal/worker/ingest.go の commit がこの行を
+		// 消すのと同じ理由）。TestRecordSweepRecovery_ReplacesStaleRunningIngest が検証する。
 		beforeInsert = func(tx pgx5.Tx) error {
 			if err := sqlcgen.New(tx).DeleteRecordingIngestProgress(ctx, *candidate.recordingID); err != nil {
 				return fmt.Errorf("clearing stale ingest progress for recording %d: %w", *candidate.recordingID, err)
@@ -143,7 +144,7 @@ func recoverStaleIngestJob(ctx context.Context, conn *pgxpool.Conn, riverClient 
 			return nil
 		}
 	}
-	inserted, recovered, err := replaceStaleRiverJob(
+	inserted, err := replaceStaleRiverJob(
 		ctx,
 		conn,
 		riverClient,
@@ -152,24 +153,23 @@ func recoverStaleIngestJob(ctx context.Context, conn *pgxpool.Conn, riverClient 
 		candidate.attempt,
 		candidate.lastActivity,
 		ingestRecoveryReason,
-		"ingest_recovery",
 		discardRecoveredIngestJobQuery,
 		jobs.IngestJobArgs{Site: site, RecordID: candidate.recordID},
 		beforeInsert,
 	)
-	if err != nil || !recovered {
+	if err != nil || inserted == nil {
 		return err
 	}
 
 	replacementID := int64(0)
-	if inserted != nil && inserted.Job != nil {
+	if inserted.Job != nil {
 		replacementID = inserted.Job.ID
 	}
 	slog.Info("ingest: recovered stale running job",
 		"site", site,
 		"old_job_id", candidate.id,
 		"new_job_id", replacementID,
-		"new_job_unique_skipped", inserted != nil && inserted.UniqueSkippedAsDuplicate,
+		"new_job_unique_skipped", inserted.UniqueSkippedAsDuplicate,
 		"last_activity", candidate.lastActivity,
 	)
 	return nil

@@ -65,9 +65,9 @@ func (r *staleRecoveryTestRows) TypeMap() *pgtype.Map { return nil }
 
 var _ pgx.Rows = (*staleRecoveryTestRows)(nil)
 
-// TestRecoverStaleJobCandidatesStopsHeartbeatAndJoinsErrors fixes the shared
-// recovery order: rows close before lock acquisition, heartbeat stops before
-// the recovery callback, and one failed candidate does not skip the next.
+// TestRecoverStaleJobCandidatesStopsHeartbeatAndJoinsErrors は共有の回収順序を固定する。
+// lock 取得より先に候補 rows を閉じ、回収 callback より先に heartbeat を止め、
+// 1 件が失敗しても次の候補を飛ばさない。
 func TestRecoverStaleJobCandidatesStopsHeartbeatAndJoinsErrors(t *testing.T) {
 	rows := &staleRecoveryTestRows{ids: []int64{17, 23}}
 	firstErr := errors.New("first candidate recovery failed")
@@ -116,9 +116,8 @@ func TestRecoverStaleJobCandidatesStopsHeartbeatAndJoinsErrors(t *testing.T) {
 	}
 }
 
-// TestReplaceStaleRiverJobDoesNotReplaceCompletedJob keeps the RowsAffected
-// guard on the transaction path: a job completed after candidate selection
-// must not create a second job.
+// TestReplaceStaleRiverJobDoesNotReplaceCompletedJob は transaction 経路上の
+// RowsAffected ガードを守る。候補取得後に完了したジョブから 2 本目のジョブを作らない。
 func TestReplaceStaleRiverJobDoesNotReplaceCompletedJob(t *testing.T) {
 	pool := setupTestPool(t)
 	ctx := context.Background()
@@ -145,7 +144,7 @@ func TestReplaceStaleRiverJobDoesNotReplaceCompletedJob(t *testing.T) {
 	t.Cleanup(lock.release)
 	lock.stopHeartbeatLoop()
 
-	_, replaced, err := replaceStaleRiverJob(
+	inserted, err := replaceStaleRiverJob(
 		ctx,
 		lock.conn,
 		client,
@@ -154,7 +153,6 @@ func TestReplaceStaleRiverJobDoesNotReplaceCompletedJob(t *testing.T) {
 		1,
 		time.Now().UTC().Add(-time.Minute),
 		encodeRecoveryReason,
-		"encode_recovery",
 		discardRecoveredEncodeJobQuery,
 		jobs.EncodeJobArgs{RecordingID: recordingID, Profile: "h264"},
 		nil,
@@ -162,7 +160,7 @@ func TestReplaceStaleRiverJobDoesNotReplaceCompletedJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("replaceStaleRiverJob: %v", err)
 	}
-	if replaced {
+	if inserted != nil {
 		t.Fatal("completed job was treated as recovered")
 	}
 
