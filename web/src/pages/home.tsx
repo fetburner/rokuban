@@ -25,6 +25,7 @@ import { describeBreakerName, describeBreakerReason } from '@/lib/breaker'
 import { isStationFixableCMStage } from '@/lib/cm-detect-stage'
 import { dayOrigin } from '@/lib/day-offset'
 import { formatBytes, formatDate, formatDateTime, formatDuration, formatTime } from '@/lib/format'
+import { recordingThumbnailURL } from '@/lib/recording-media'
 import {
   readHomeModePreference,
   resolveHomeMode,
@@ -1085,7 +1086,7 @@ function HomeThumbnail({
     >
       {!failed ? (
         <img
-          src={`/api/media/recordings/${recording.id}/thumbnail`}
+          src={recordingThumbnailURL(recording.id)}
           alt=""
           loading={hero ? 'eager' : 'lazy'}
           className="size-full object-cover"

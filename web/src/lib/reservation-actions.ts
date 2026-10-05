@@ -21,6 +21,25 @@ import {
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
 import { buildReservationOverlapIndex, deriveProgramOverlaps } from '@/lib/program-overlaps'
 
+type PutProgramIntent = ReturnType<typeof usePutProgramIntent>['mutateAsync']
+type DeleteProgramIntent = ReturnType<typeof useDeleteProgramIntent>['mutateAsync']
+
+/**
+ * reviveReservationIntent は予約の取消を打ち消す intent を送る。
+ * ルール由来の予約に `PUT record` を送ると手動予約へ変わり、ルール評価から外れても残る
+ * （`TestGetReservation_SourceManualDespiteRuleMatch`）。その場合は DELETE でルール評価へ戻す。
+ */
+export function reviveReservationIntent(
+  putIntent: PutProgramIntent,
+  deleteIntent: DeleteProgramIntent,
+  site: string,
+  programId: number,
+  source: Reservation['source'] | undefined,
+) {
+  if (source === 'rule') return deleteIntent({ site, programId })
+  return putIntent({ site, programId, data: { action: 'record' } })
+}
+
 /**
  * useReservationActions は予約 / 取消の実行を組み立てる。
  *
@@ -176,28 +195,19 @@ export function useReservationActions(
   // なる）。`mutateAsync` は `Mutation#execute` の Promise をそのまま返すので
   // この判定を経由しない（`pages/reservation-detail.tsx` の `revive` と同じ
   // 理由。詳細はそちらのコメント）。
-  //
-  // `source` で分岐する: 手動予約の逆操作は `PUT intent{record}` でよいが、
-  // ルール由来の予約に同じ PUT を送ると `program_intents` に record 行が残り、
-  // 以後ルールがマッチしなくなっても予約が残る「種別: 手動」の予約に恒久的に
-  // 変わってしまう（`internal/api/handler.go` の source 導出、
-  // `TestGetReservation_SourceManualDespiteRuleMatch`）。ルール由来の厳密な
-  // 逆操作は `DELETE .../intent`（明示的な意見を取り下げ、ルール評価に戻す）。
   const revive = (program: ReservableProgram, source: Reservation['source'] | undefined) => {
     const key = programIdentity(program.site, program.programId)
     setBusy(key, true)
     setOptimisticReserved(key, true)
     void (async () => {
       try {
-        if (source === 'rule') {
-          await deleteIntent.mutateAsync({ site: program.site, programId: program.programId })
-        } else {
-          await putIntent.mutateAsync({
-            site: program.site,
-            programId: program.programId,
-            data: { action: 'record' },
-          })
-        }
+        await reviveReservationIntent(
+          putIntent.mutateAsync,
+          deleteIntent.mutateAsync,
+          program.site,
+          program.programId,
+          source,
+        )
         invalidateReservations()
         invalidateProgramList()
         toast({ message: '予約を元に戻しました' })

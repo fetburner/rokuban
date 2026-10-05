@@ -1,5 +1,6 @@
 import { useState } from 'react'
 
+import { recordingThumbnailURL } from '@/lib/recording-media'
 import { cn } from '@/lib/utils'
 
 /**
@@ -14,7 +15,7 @@ export function RecordingThumbnail({ recordingId, className }: { recordingId: nu
     <div className={cn('aspect-video shrink-0 overflow-hidden rounded bg-muted', className)}>
       {!failed ? (
         <img
-          src={`/api/media/recordings/${recordingId}/thumbnail`}
+          src={recordingThumbnailURL(recordingId)}
           alt=""
           className="size-full object-cover"
           loading="lazy"

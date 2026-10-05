@@ -65,6 +65,7 @@ describe('カット版と原本の位置変換', () => {
 describe('位置保存の終端判定', () => {
   it('先頭 2 秒未満は消し、終端 90% は確定後だけ視聴済みにする', () => {
     expect(playbackPositionWrite(1.9, 100, true)).toEqual({ kind: 'delete' })
+    expect(playbackPositionWrite(2, 100, false)).toEqual({ kind: 'put', positionMs: 2000 })
     expect(playbackPositionWrite(90, 100, false)).toEqual({ kind: 'put', positionMs: 90000 })
     expect(playbackPositionWrite(89.9, 100, true)).toEqual({ kind: 'put', positionMs: 89900 })
     expect(playbackPositionWrite(90, 100, true)).toEqual({ kind: 'watched' })

@@ -29,6 +29,7 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/field'
 import { formatDate } from '@/lib/format'
+import { recordingThumbnailURL } from '@/lib/recording-media'
 import { loadRecordingView, saveRecordingView, type RecordingView } from '@/lib/recording-view'
 import { buildShelfRows, sortShelfRows, type ShelfRow, type ShelfSort } from '@/lib/shelves'
 import { seriesLabelRules } from '@/lib/series'
@@ -343,7 +344,7 @@ function SeriesThumbnail({ row, view }: { row: ShelfRow; view: RecordingView }) 
         <span aria-hidden className="block size-full bg-muted" />
       ) : (
         <img
-          src={`/api/media/recordings/${row.representativeId}/thumbnail`}
+          src={recordingThumbnailURL(row.representativeId)}
           alt=""
           loading="lazy"
           className="size-full object-cover"
