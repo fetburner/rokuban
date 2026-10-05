@@ -992,6 +992,7 @@ if (!existsSync(offsetSourcePath)) {
     '-c:a', 'mp2', '-b:a', '128k', '-f', 'mpegts', offsetSourcePath,
   ], offsetFixtureDir)
 }
+const offsetEncodedFixturePath = ensureEncodedFixture(offsetFixtureDir)
 /** offsetSession は streamer と同じフレーム境界の入力側 seek（-copyts 無し）で 0 起点の HLS を作る。先端の 20 秒だけ。 */
 function offsetSession(offset) {
   const dir = path.join(offsetFixtureDir, `offset-${offset}`)
@@ -1057,6 +1058,7 @@ function eventPlaylistPrefix(playlist, segmentCount) {
 }
 
 const offsetRequests = []
+const offsetEncodedRequests = []
 const offsetChapterEdits = []
 let offsetChapters = {
   version: 'chapters-offsets-v1',
@@ -1097,6 +1099,34 @@ const offsetHandler = async ({ path: requestPath, json, route }) => {
   if (requestPath.startsWith(`/api/recordings/${OFFSET_ID}/`) && method !== 'GET') return route.fulfill({ status: 204 })
   if (requestPath === `/api/media/recordings/${OFFSET_ID}/seek-tiles`) return route.fulfill({ status: 404 })
   if (/^\/api\/media\/recordings\/\d+\/thumbnail$/.test(requestPath)) return route.fulfill({ status: 404 })
+  if (requestPath === `/api/media/recordings/${OFFSET_ID}/file`) {
+    offsetEncodedRequests.push(requestPath)
+    if (!offsetRecording.encodedAssets.some((asset) => asset.cut !== true)) return route.fulfill({ status: 404 })
+    const bytes = readFileSync(offsetEncodedFixturePath)
+    const range = /^bytes=(\d+)-(\d*)$/.exec(route.request().headers().range ?? '')
+    if (!range) {
+      return route.fulfill({
+        status: 200,
+        contentType: 'video/mp4',
+        body: bytes,
+        headers: { 'Accept-Ranges': 'bytes' },
+      })
+    }
+    const start = Number(range[1])
+    const end = Math.min(range[2] ? Number(range[2]) : bytes.length - 1, bytes.length - 1)
+    if (start >= bytes.length || end < start) {
+      return route.fulfill({ status: 416, headers: { 'Content-Range': `bytes */${bytes.length}` } })
+    }
+    return route.fulfill({
+      status: 206,
+      contentType: 'video/mp4',
+      body: bytes.subarray(start, end + 1),
+      headers: {
+        'Accept-Ranges': 'bytes',
+        'Content-Range': `bytes ${start}-${end}/${bytes.length}`,
+      },
+    })
+  }
   if (requestPath.startsWith(`/api/sites/${SITE}/recordings/${OFFSET_ID}/original-vod/`)) {
     const relative = requestPath.split('/original-vod/')[1]
     if (relative.endsWith('leave')) return route.fulfill({ status: 204 })
@@ -2148,5 +2178,44 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 400, height: 860 
     else ng.push(`⑫ 原本 HLS: ${overlap}`)
   }
 }
+
+log('\n=== ⑬ 版タブで明示した原本 HLS は範囲外 seek の巻き戻しでも保つ ===')
+// カットなし encoded があるので自動選択は encoded。版タブで原本 HLS を明示選択し、
+// 保存位置 42.8 秒からそれより前へ戻したときも、HLS の offset で張り直すことを測る。
+offsetRecording.encodedAssets = [{ profile: PLAYBACK_PROFILE, sizeBytes: 400_000 }]
+offsetRecording.resumePositionMs = 42_800
+const explicitSourcePage = await context.newPage()
+await installApiStubs(explicitSourcePage, offsetHandler)
+await explicitSourcePage.goto(`${URL_BASE}/recordings/${OFFSET_ID}`, { waitUntil: 'domcontentloaded' })
+await explicitSourcePage.getByRole('tab', { name: '版' }).click()
+const explicitSourceCursor = offsetRequests.length
+await explicitSourcePage.getByRole('button', { name: '原本 HLS を再生' }).click()
+const explicitStartDeadline = Date.now() + 10000
+while (!offsetRequests.slice(explicitSourceCursor).some((request) => request.offset === 42 && request.status === 200) && Date.now() < explicitStartDeadline) {
+  await explicitSourcePage.waitForTimeout(50)
+}
+const explicitSourceRequests = offsetRequests.slice(explicitSourceCursor)
+if (!explicitSourceRequests.some((request) => request.offset === 42 && request.status === 200)) {
+  ng.push(`⑬ 明示選択後に保存位置の offset/42 playlist を要求しない (${JSON.stringify(explicitSourceRequests)})`)
+}
+const explicitRewindCursor = offsetRequests.length
+const explicitEncodedCursor = offsetEncodedRequests.length
+await clickOffsetSeekbar(explicitSourcePage, 0.52)
+const explicitRewindDeadline = Date.now() + 10000
+while (!offsetRequests.slice(explicitRewindCursor).some((request) => request.offset === 32 && request.status === 200) && Date.now() < explicitRewindDeadline) {
+  await explicitSourcePage.waitForTimeout(50)
+}
+const explicitRewindRequests = offsetRequests.slice(explicitRewindCursor)
+const explicitRewindMP4Requests = offsetEncodedRequests.length - explicitEncodedCursor
+log(`  版タブ選択後の巻き戻し: HLS=${JSON.stringify(explicitRewindRequests)}, MP4 requests=${explicitRewindMP4Requests}`)
+if (!explicitRewindRequests.some((request) => request.offset === 32 && request.status === 200)) {
+  ng.push(`⑬ 範囲外へ戻したときに HLS offset/32 playlist を要求しない (${JSON.stringify(explicitRewindRequests)})`)
+}
+if (explicitRewindMP4Requests !== 0) {
+  ng.push(`⑬ 版タブで選んだ原本 HLS から巻き戻したときに encoded MP4 を要求する (${explicitRewindMP4Requests})`)
+}
+await explicitSourcePage.close()
+offsetRecording.encodedAssets = [{ profile: 'cut-only', sizeBytes: 400_000, cut: true }]
+delete offsetRecording.resumePositionMs
 
 await finish(ng, browser)

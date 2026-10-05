@@ -115,6 +115,8 @@ function cmDetectionLabel(state: Recording['cmDetection']['state']): string {
 /** 再生の塊の状態。再生元・開始済みか・開始の意図（保存位置 / 先頭から / 持ち越した位置）を持つ。 */
 type PlaybackState = {
   source: RecordingPlaybackSource
+  /** 版タブで利用者が明示的に選んだ再生元。範囲外シークでは維持する。 */
+  pinned: boolean
   started: boolean
   /** プレイヤーが最初の読み込みを終えたら再生を始めるか（ポスターの ▶・`#chase`・再生中の再選択）。 */
   autoPlay: boolean
@@ -197,6 +199,7 @@ export function RecordingDetail({
     const autoPlay = chase || autoPlayOnOpen
     return {
       source,
+      pinned: false,
       // `#chase` は「開いたら再生する」。変換を伴う再生元はそれ以外ではポスターの ▶ で始める。
       started: autoPlay || source === 'encoded',
       autoPlay,
@@ -259,6 +262,7 @@ export function RecordingDetail({
     if (source === 'encoded' && profile !== undefined) setSelectedPlaybackProfile(profile)
     updatePlaybackState({
       source,
+      pinned: true,
       started: true,
       autoPlay: true,
       startFromBeginning: position === undefined ? current.startFromBeginning : false,
@@ -277,7 +281,8 @@ export function RecordingDetail({
   const recordedSpanMs = timeline.recordedDurationMs ?? Number.NaN
   /**
    * reselectPlaybackSource は範囲外のシーク・エラーのときだけ呼ばれ、そのときの録画の状態で
-   * 再生元を選び直す。終端では呼ばない。どの再生元の終端も録画ファイルの終端で（追っかけの ENDLIST は
+   * 再生元を選び直す。版タブで選んだ再生元は範囲外シークでは選び直さず、プレイヤーに張り直しを任せる。
+   * エラーは選択を解除して自動選択へ戻す。終端では呼ばない。どの再生元の終端も録画ファイルの終端で（追っかけの ENDLIST は
    * mirakc の録画が終わってから付く。docs/api/media.md）、移った先に見る続きが無いため。
    * true を返したら親が再生元を替えた（プレイヤーは何もしない）。
    * 再生元が今と同じなら false を返し、プレイヤー自身が張り直す（範囲外のシークは中の張り直しが
@@ -292,6 +297,7 @@ export function RecordingDetail({
     wasPlaying: boolean,
   ) => {
     const current = playbackStateRef.current
+    if (trigger === 'source-range-exit' && current.pinned) return false
     const position = positionSeconds ?? recordingPositionSecondsRef.current
     const selected = selectRecordingPlaybackSource(playbackSelection)
     if (selected !== current.source) {
@@ -305,6 +311,7 @@ export function RecordingDetail({
     }
     updatePlaybackState({
       source: selected,
+      pinned: false,
       started: true,
       autoPlay: wasPlaying,
       startFromBeginning: position === undefined ? current.startFromBeginning : false,

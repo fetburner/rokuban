@@ -3474,4 +3474,34 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
     await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod/offset/').length).toBeGreaterThan(0))
     expect(document.querySelector('video')).toBe(video)
   })
+
+  it('版タブで明示した原本 HLS は範囲外 seek で encoded に切り替えない', async () => {
+    const user = userEvent.setup()
+    const fake = createFakeServer({
+      recording: sampleRecording({
+        ...FINISHED,
+        resumePositionMs: 20_000,
+        encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }],
+      }),
+      liveProfiles: LIVE_PROFILES,
+    })
+    renderAt('/recordings/3')
+
+    // 自動選択は encoded。版タブから利用者が原本 HLS を選ぶと、その選択を範囲外 seek で保つ。
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src')).toContain('/api/media/recordings/3/file'))
+    await selectDetailTab('版')
+    await user.click(await screen.findByRole('button', { name: '原本 HLS を再生' }))
+    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod/offset/20/')).toHaveLength(1))
+    const originalRow = screen.getByTestId('recording-original-row')
+    const encodedRow = screen.getByTestId('recording-version-row')
+    expect(originalRow).toHaveTextContent('再生中')
+
+    const slider = await screen.findByRole('slider', { name: 'シークバー' })
+    fireEvent.keyDown(slider, { key: 'Home' })
+    fireEvent.keyUp(slider, { key: 'Home' })
+
+    await waitFor(() => expect(slider).toHaveAttribute('aria-valuenow', '0'))
+    expect(originalRow).toHaveTextContent('再生中')
+    expect(encodedRow).not.toHaveTextContent('再生中')
+  })
 })

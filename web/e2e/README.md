@@ -413,6 +413,9 @@ Chromium と WebKit で確認する。再生を引き継がない変異は、⑩
 切替の停止時間（上限 2000ms）の実測は、Chromium で ⑩ 88〜177ms（5 回）・⑥ 113〜165ms（3 回）、
 WebKit で ⑩ 202〜281ms（13 回）・⑥ 241〜310ms（3 回）だった。
 
+⑬ は、カットなし encoded がある録画で版タブから原本 HLS を選び、保存位置より前へ巻き戻す。
+新しい offset の HLS playlist が要求され、encoded MP4 を要求しないことを確認する。
+
 ```sh
 E2E_URL=http://localhost:4173 E2E_BROWSER=chromium pnpm e2e:recording-original-vod
 E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:recording-original-vod
