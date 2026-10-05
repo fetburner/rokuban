@@ -328,6 +328,7 @@ WebKit の HLS は 0.00ms / +23.37ms（-10.02 / +13.34）だった。
 
 編集モード（チャプターを直す）の境界操作も、同じ目印フレームで判定する。非カット MP4 と原本 HLS
 （offset 0 / 10）で次を見る。原本 HLS は押す前に境界の 0.1 秒手前へ置く（MP4 は 0.5 秒手前）。
+原本 HLS offset 0 は、0.5 秒手前から境界を選んだ後に最初に表示されるフレームと「境界まで」も見る。
 
 - 境界を選ぶと一時停止して、境界の目印フレームが映り、「境界の直後」の説明が出る
 - ±1 フレーム: 区間の終端の境界を選んで +1 / -1 し、次に表示されたフレームの `mediaTime` が
@@ -339,19 +340,46 @@ WebKit の HLS は 0.00ms / +23.37ms（-10.02 / +13.34）だった。
   元に戻す 1 回で押す前の境界へ戻る。送った回数と seek 時間はログに出る
 - 400×800 の帯の中で、再生ボタン・時刻・3 つのモードボタン・速度ボタンが映像の枠内に収まり、互いに重ならない
 
-**WebKit の原本 HLS だけは表示フレームを判定できない。** この fixture では、製品を通さず
-`video.currentTime = x` を直接代入しても、遠い位置からのシーク（0.1 秒以上）は目印と違うフレームを
-映す。近い位置から順にシークすると映る。製品の不具合かを切り分けられないため、WebKit の原本 HLS は
-表示の代わりに、一時停止中の `currentTime` が選んだフレームの中央（±3ms）にあることを見る。
-「境界まで」の停止後のシークし直しは、この判定でも落ちる（下記）。
+**WebKit の原本 HLS も表示フレームで判定する。いまは落ちる。** 一時停止中に境界を選ぶか ±1 フレーム
+送ると、`currentTime` は選んだフレームの中央にあるのに、映像は前のフレームのまま残る。
+2026-10-06 に Playwright WebKit で 3 回回し、毎回 8〜9 件の NG がこの形だった。
+内訳は境界の選択・遠距離からの選択・+1 フレームで、原本 HLS offset 0 / 10 の両方で落ちる。
+非カット MP4 と Chrome の原本 HLS は同じ判定を通る。
+落ちたときは、同じ位置へ `+0.0001` 秒の seek をもう一度行った結果を「診断:」としてログに出す
+（判定には使わない）。この測定ではどれも目印が映った。
+
+境界の選択だけを回すなら `E2E_TIMELINE_BOUNDARY_SEEK_ONLY=1` を使う。
+±1 フレームの判定は rVFC の `mediaTime` で行い、ログの `SRC` 行に捕捉経路（`rvfc` / `paint`）を出す。
+補助経路（seeked 後の二重 rAF）は `mediaTime` を読めないので NaN を返し、時刻の判定は NG になる。
+
+素の `currentTime` 代入でも同じことが起きるかは、`E2E_TIMELINE_RAW_SEEK_DIAGNOSTICS=1` で測る。
+製品のボタンを通さず、編集モードの同じページで代入だけを行う。
+診断だけを回すなら `E2E_TIMELINE_RAW_SEEK_ONLY=1` を使う。
+2026-10-06 の Playwright WebKit で 3 回測った。frame 45 の中央への代入で目印が映ったのは、
+0.5 秒手前からが 3 回中 1 回、0.05 秒手前からが 0 回だった。`+0.0001` 秒の seek を 1 回足すと
+3 回とも映った。Chrome は 1 回の測定で、どの代入でも映った。
+
+実録画でも測るときは、`E2E_TIMELINE_REAL_HLS_URL` に localhost の HLS playlist を渡す。
+非 loopback の URL はスクリプトが拒否する。目印が無いので、連続再生で得たフレームの画素
+fingerprint と、境界を選んだ後に表示されたフレームの fingerprint を比べる。画像や動画は保存しない。
+境界は `E2E_TIMELINE_REAL_HLS_BOUNDARY_SECONDS`（既定 1 秒）で選ぶ。
+
+```sh
+E2E_URL=http://localhost:4173 E2E_BROWSER=webkit E2E_TIMELINE_RAW_SEEK_ONLY=1 pnpm e2e:recording-playback-timeline
+E2E_URL=http://127.0.0.1:4173 E2E_BROWSER=webkit E2E_TIMELINE_RAW_SEEK_ONLY=1 \
+  E2E_TIMELINE_REAL_HLS_URL=http://127.0.0.1:<port>/playlist.m3u8 pnpm e2e:recording-playback-timeline
+```
 
 **変異で落ちることを確認済み**（Chrome と WebKit の両方）。
 
 - ±ボタン・`,` / `.` の境界移動からシークを外す（`moveBoundary` が `selectBoundary` の代わりに
   選択だけを更新する）。
-  - Chrome は 6 件落ちる。対象は非カット MP4 と原本 HLS offset 0 / 10 の +1 / -1 フレームである。
-  - 例は「非カット MP4: +1フレーム後に隣のフレームへ seek しない (mediaTime+offset=0, want=2.268933)」。
-  - WebKit は MP4 で同じ 2 件、原本 HLS で +1 フレームの `currentTime` 判定が落ちる。
+  - Chrome は 6 件落ちる（2026-10-06 に再測定）。非カット MP4 と原本 HLS offset 0 / 10 の
+    +1 フレームと、長押しを離した後の着地である。
+  - 例は「非カット MP4: +1フレーム後に隣のフレームへ seek しない」で、`mediaTime` は 2.235567、
+    期待は 2.268933 だった。
+  - WebKit の原本 HLS は変異なしでも落ちる（上記）ので、この変異では測れない。WebKit の MP4 は
+    表示の判定を今の形にしてからは未再測定である。
 - 「境界まで」の停止後のシークし直しを外す（`finishPlayAround` の境界変換シークを無効化する）。
   - Chrome は MP4 と原本 HLS offset 0 / 10 の 3 か所で落ちる。
   - 例は「非カット MP4: 「境界まで」が境界のコマで止まらない (目印 frame 181 slot=2 が映らない)」。
