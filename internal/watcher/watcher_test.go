@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -265,12 +266,62 @@ func testRecord(recordID string, programID int64, status string) mirakc.Record {
 	return r
 }
 
+// assertRecordingSnapshotColumns は recordings 行の番組スナップショット 10 列を
+// want と比べる。createRecording / handleRecordingFailed のインライン写しの検証用。
+// jsonb は DB が正規化するので意味で比べる。
+func assertRecordingSnapshotColumns(t *testing.T, pool *pgxpool.Pool, recordingID int64, want programSnapshot) {
+	t.Helper()
+	var (
+		got                      programSnapshot
+		extendedText, genresText string
+	)
+	err := pool.QueryRow(context.Background(), `
+		SELECT service_name, channel_type, channel, title, description,
+		       extended::text, genres::text, is_free, program_start_at, program_duration_ms
+		FROM recordings WHERE id = $1`, recordingID).Scan(
+		&got.serviceName, &got.channelType, &got.channel, &got.title, &got.description,
+		&extendedText, &genresText, &got.isFree, &got.programStartAt, &got.programDurationMs)
+	if err != nil {
+		t.Fatalf("querying snapshot columns: %v", err)
+	}
+	for _, c := range []struct {
+		name      string
+		got, want string
+	}{{"extended", extendedText, string(want.extended)}, {"genres", genresText, string(want.genres)}} {
+		var g, w any
+		if err := json.Unmarshal([]byte(c.got), &g); err != nil {
+			t.Fatalf("%s: unmarshal got %q: %v", c.name, c.got, err)
+		}
+		if err := json.Unmarshal([]byte(c.want), &w); err != nil {
+			t.Fatalf("%s: unmarshal want %q: %v", c.name, c.want, err)
+		}
+		if !reflect.DeepEqual(g, w) {
+			t.Errorf("recordings.%s = %s, want %s", c.name, c.got, c.want)
+		}
+	}
+	if !got.programStartAt.Equal(want.programStartAt) {
+		t.Errorf("recordings.program_start_at = %v, want %v", got.programStartAt, want.programStartAt)
+	}
+	got.extended, got.genres, got.programStartAt = nil, nil, time.Time{}
+	want.extended, want.genres, want.programStartAt = nil, nil, time.Time{}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("recordings snapshot columns = %#v, want %#v", got, want)
+	}
+}
+
 func TestProcessRecord_CreateRecordingAndSync(t *testing.T) {
 	w, pool := setupTest(t)
 	ctx := context.Background()
 
 	createTestReservation(t, pool, 327360102415397)
 	record := testRecord("abc123def456", 327360102415397, "finished")
+	desc := "番組説明"
+	record.Program.Description = &desc
+	// DB は µs 精度。ns 付きの時刻だと写しの検証が精度差で落ちる。
+	start := mirakc.Milliseconds(time.Time(*record.Program.StartAt).Truncate(time.Millisecond))
+	record.Program.StartAt = &start
+	record.Program.Extended = map[string]string{"出演者": "テスト太郎"}
+	record.Program.Genres = []mirakc.Genre{{LV1: 1, LV2: 2, UN1: 3, UN2: 4}}
 
 	if err := w.processRecord(ctx, record); err != nil {
 		t.Fatalf("processRecord: %v", err)
@@ -303,6 +354,7 @@ func TestProcessRecord_CreateRecordingAndSync(t *testing.T) {
 	if recStatus != "finished" {
 		t.Errorf("recordings.status = %q, want %q", recStatus, "finished")
 	}
+	assertRecordingSnapshotColumns(t, pool, *syncRecordingID, snapshotFromRecord(record))
 
 	// Verify ingest job
 	var jobCount int
@@ -1005,21 +1057,25 @@ func TestHandleRecordingFailed_Idempotent(t *testing.T) {
 	programID := int64(327361024100)
 	createTestReservation(t, pool, programID)
 
-	startAt := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
+	startAt := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour).Truncate(time.Millisecond))
 	duration := int64(3600000)
 	name := "Failed Program"
+	desc := "失敗番組の説明"
 
 	schedule := mirakc.Schedule{
 		State: "scheduled",
 		Program: mirakc.Program{
-			ID:        programID,
-			EventID:   100,
-			ServiceID: 1024,
-			NetworkID: 32736,
-			StartAt:   &startAt,
-			Duration:  &duration,
-			IsFree:    true,
-			Name:      &name,
+			ID:          programID,
+			EventID:     100,
+			ServiceID:   1024,
+			NetworkID:   32736,
+			StartAt:     &startAt,
+			Duration:    &duration,
+			IsFree:      true,
+			Name:        &name,
+			Description: &desc,
+			Extended:    map[string]string{"出演者": "テスト太郎"},
+			Genres:      []mirakc.Genre{{LV1: 1, LV2: 2, UN1: 3, UN2: 4}},
 		},
 	}
 
@@ -1063,6 +1119,11 @@ func TestHandleRecordingFailed_Idempotent(t *testing.T) {
 	if recCount != 1 {
 		t.Errorf("recording count after 1st call = %d, want 1", recCount)
 	}
+	var failedID int64
+	if err := pool.QueryRow(ctx, "SELECT id FROM recordings").Scan(&failedID); err != nil {
+		t.Fatalf("querying recording id: %v", err)
+	}
+	assertRecordingSnapshotColumns(t, pool, failedID, snapshotFromSchedule(schedule, services[0]))
 
 	// Call again with same program — should NOT create a duplicate
 	if err := w.handleRecordingFailed(ctx, failedData); err != nil {
