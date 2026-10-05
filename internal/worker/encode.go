@@ -474,7 +474,11 @@ func (w *EncodeWorker) selectStreams(ctx context.Context, inputPath string) (vid
 	ffprobe := ffargs.FFprobePath(w.FFprobe)
 	probeCtx, cancel := context.WithTimeout(ctx, streamProbeTimeout)
 	defer cancel()
-	out, err := commandOutput(probeCtx, ffprobe, ffargs.DefaultStreamSelectionProbeArgs(inputPath)...)
+	out, err := commandOutput(probeCtx, ffprobe,
+		"-v", "error",
+		"-show_entries", "stream=index,codec_type,width,height,channels",
+		"-of", "csv=p=0", inputPath,
+	)
 	if err != nil {
 		return 0, 0, fmt.Errorf("probing streams of %s: %w", inputPath, err)
 	}

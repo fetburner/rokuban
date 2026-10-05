@@ -183,14 +183,17 @@ type probedFrame struct {
 // 窓の中から JPEG と大きさの合うコマを選ぶ（pickFrame）。
 func (s *Streamer) probeFrame(ctx context.Context, path string, atMs int64, width, height int) (probedFrame, error) {
 	ffprobe := ffargs.FFprobePath(s.cfg.FFprobe)
-	out, err := s.runCommand(ctx, ffprobe, ffargs.FormatStartTimeProbeArgs(path)...)
+	out, err := s.runCommand(ctx, ffprobe, "-v", "error",
+		"-show_entries", "format=start_time", "-of", "default=noprint_wrappers=1:nokey=1", path)
 	if err != nil {
 		return probedFrame{}, err
 	}
 	start, _ := strconv.ParseFloat(strings.TrimSpace(string(out)), 64) // "N/A" は 0
 	target := start + float64(atMs)/1000
-	interval := fmt.Sprintf("%.3f%%+%.3f", target-sarWindow, sarWindow+0.5)
-	out, err = s.runCommand(ctx, ffprobe, ffargs.FrameProbeArgs(path, interval)...)
+	out, err = s.runCommand(ctx, ffprobe, "-v", "error", "-select_streams", "v:0",
+		"-read_intervals", fmt.Sprintf("%.3f%%+%.3f", target-sarWindow, sarWindow+0.5),
+		"-show_entries", "frame=best_effort_timestamp_time,width,height,sample_aspect_ratio",
+		"-of", "csv=p=0", path)
 	if err != nil {
 		return probedFrame{}, err
 	}

@@ -169,8 +169,8 @@ jobs:
           --health-retries 5
     env:
       ROKUBAN_TEST_DATABASE_URL: postgres://rokuban:rokuban@localhost:5432/rokuban_test?sslmode=disable
-      # 実 ffmpeg で live の argv を回すテスト（internal/streamer の RealFFmpeg 系）を
-      # skip させない。ライブの音声 rendition の並びと PDT を実経路で見ているのはそれだけ。
+      # 実 ffmpeg / ffprobe を回すテスト（worker / streamer でこの変数を見るもの）を
+      # skip させない。ライブの音声 rendition の並びと PDT を実経路で見ているのはそれらだけ。
       ROKUBAN_REQUIRE_FFMPEG: "1"
     steps:
       - uses: actions/checkout@v7

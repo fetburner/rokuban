@@ -24,17 +24,6 @@ func FFprobePath(configured string) string {
 	return configured
 }
 
-// DefaultStreamSelectionProbeArgs は ffmpeg の既定と同じ映像・音声選択を再現するため、
-// stream の属性を CSV で列挙する ffprobe の argv を返す。
-func DefaultStreamSelectionProbeArgs(inputPath string) []string {
-	return []string{
-		"-v", "error",
-		"-show_entries", "stream=index,codec_type,width,height,channels",
-		"-of", "csv=p=0",
-		inputPath,
-	}
-}
-
 // SubtitleProbeArgs は字幕 stream の有無を調べる ffprobe の argv を返す。
 // inputArgs はファイルパス、または `-i`, `pipe:0` のような入力指定をそのまま渡す。
 // probeSize と analyzeDuration が空でなければ、その上限を先頭に付ける。
@@ -85,28 +74,6 @@ func OriginalVODDurationProbeArgs(inputPath string) []string {
 		"-show_entries", "format=start_time,duration:stream=start_time,duration",
 		"-of", "json",
 		"-i", inputPath,
-	}
-}
-
-// FormatStartTimeProbeArgs は format の start_time を読む ffprobe の argv を返す。
-func FormatStartTimeProbeArgs(inputPath string) []string {
-	return []string{
-		"-v", "error",
-		"-show_entries", "format=start_time",
-		"-of", "default=noprint_wrappers=1:nokey=1",
-		inputPath,
-	}
-}
-
-// FrameProbeArgs は指定した read interval 内の映像フレーム属性を読む ffprobe の argv を返す。
-func FrameProbeArgs(inputPath, readInterval string) []string {
-	return []string{
-		"-v", "error",
-		"-select_streams", "v:0",
-		"-read_intervals", readInterval,
-		"-show_entries", "frame=best_effort_timestamp_time,width,height,sample_aspect_ratio",
-		"-of", "csv=p=0",
-		inputPath,
 	}
 }
 
