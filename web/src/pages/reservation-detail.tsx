@@ -1,6 +1,5 @@
-import { useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate, useParams, useRouter } from '@tanstack/react-router'
+import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { ArrowLeft, MoreVertical } from 'lucide-react'
 
 import { ApiError } from '@/api/client'
@@ -35,7 +34,7 @@ import { formatDateTime, formatDuration } from '@/lib/format'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
 import { programTitle } from '@/lib/program-labels'
 import { makeRuleLabel } from '@/lib/rule-label'
-import { cancelReservationIntent, reviveReservationIntent } from '@/lib/reservation-actions'
+import { reviveReservationIntent } from '@/lib/reservation-actions'
 import { reservationVerdict } from '@/lib/reservation-labels'
 
 /**
@@ -95,17 +94,8 @@ function reservationDetailQueryKey(site: string, programId: number) {
 export function ReservationDetailPage() {
   const { site, programId } = useParams({ from: '/reservations/$site/$programId' })
   const navigate = useNavigate()
-  const router = useRouter()
   const toast = useToast()
   const queryClient = useQueryClient()
-  const isMountedRef = useRef(false)
-
-  useEffect(() => {
-    isMountedRef.current = true
-    return () => {
-      isMountedRef.current = false
-    }
-  }, [])
 
   const programIdNum = Number(programId)
   const query = useGetProgramReservation(site, programIdNum, {
@@ -141,27 +131,20 @@ export function ReservationDetailPage() {
   const cancel = () => {
     if (!reservation) return
     const source = reservation.source
-    const cancelLocationHref = router.state.location.href
-    void (async () => {
-      try {
-        await cancelReservationIntent(
-          putIntent.mutateAsync,
-          reservation.site,
-          reservation.programId,
-        )
-        // mutateAsync still resolves after unmount, which Undo needs. Cancel side effects
-        // belong to this detail page only (test: "取消待機中に別ページへ移動した場合、成功応答で現在のページを乗っ取らない").
-        if (!isMountedRef.current || router.state.location.href !== cancelLocationHref) return
-        toast({
-          message: '予約を取消しました',
-          actions: [{ label: '元に戻す', onClick: () => revive(source) }],
-        })
-        void navigate({ to: '/reservations' })
-      } catch (err) {
-        if (!isMountedRef.current || router.state.location.href !== cancelLocationHref) return
-        toast({ message: mutationErrorMessage('予約の取消に失敗しました', err), kind: 'error' })
-      }
-    })()
+    putIntent.mutate(
+      { site: reservation.site, programId: reservation.programId, data: { action: 'skip' } },
+      {
+        onSuccess: () => {
+          toast({
+            message: '予約を取消しました',
+            actions: [{ label: '元に戻す', onClick: () => revive(source) }],
+          })
+          void navigate({ to: '/reservations' })
+        },
+        onError: (err) =>
+          toast({ message: mutationErrorMessage('予約の取消に失敗しました', err), kind: 'error' }),
+      },
+    )
   }
 
   // revive はトーストの「元に戻す」から呼ぶ。`cancel` が遷移するため、
@@ -177,7 +160,6 @@ export function ReservationDetailPage() {
   // `mutateAsync` + 自前の try/catch にする（`.mutate` のコールバックには
   // 依存しない）。site / programId は URL のパラメータ（route の宛先
   // そのもの）を使う。
-  //
   const revive = (source: Reservation['source']) => {
     void (async () => {
       try {

@@ -24,15 +24,6 @@ import { buildReservationOverlapIndex, deriveProgramOverlaps } from '@/lib/progr
 type PutProgramIntent = ReturnType<typeof usePutProgramIntent>['mutateAsync']
 type DeleteProgramIntent = ReturnType<typeof useDeleteProgramIntent>['mutateAsync']
 
-/** cancelReservationIntent は番組への予約を skip intent で取り消す。 */
-export function cancelReservationIntent(
-  putIntent: PutProgramIntent,
-  site: string,
-  programId: number,
-) {
-  return putIntent({ site, programId, data: { action: 'skip' } })
-}
-
 /**
  * reviveReservationIntent は予約の取消を打ち消す intent を送る。
  * ルール由来の予約に `PUT record` を送ると手動予約へ変わり、ルール評価から外れても残る
@@ -204,7 +195,6 @@ export function useReservationActions(
   // なる）。`mutateAsync` は `Mutation#execute` の Promise をそのまま返すので
   // この判定を経由しない（`pages/reservation-detail.tsx` の `revive` と同じ
   // 理由。詳細はそちらのコメント）。
-  //
   const revive = (program: ReservableProgram, source: Reservation['source'] | undefined) => {
     const key = programIdentity(program.site, program.programId)
     setBusy(key, true)
@@ -242,7 +232,11 @@ export function useReservationActions(
     setOptimisticReserved(key, false)
     void (async () => {
       try {
-        await cancelReservationIntent(putIntent.mutateAsync, program.site, program.programId)
+        await putIntent.mutateAsync({
+          site: program.site,
+          programId: program.programId,
+          data: { action: 'skip' },
+        })
         invalidateReservations()
         invalidateProgramList()
         // 予約のワンタップ + トースト「取消」と対称にする（issue #453）。

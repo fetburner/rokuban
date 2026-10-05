@@ -4,6 +4,7 @@ import {
   putRecordingWatched,
   type KeepRange,
 } from '@/api/generated'
+import { putRecordingPlaybackPositionBodyPositionMsMin } from '@/api/zod'
 
 /**
  * 再生速度は端末ごとの好みとして localStorage に残す。
@@ -15,8 +16,8 @@ export type PlaybackPositionWrite =
   | { kind: 'put'; positionMs: number }
   | { kind: 'watched' }
 
-/** サーバーが再開位置として保存する最小値。 */
-export const PLAYBACK_POSITION_MINIMUM_MS = 2_000
+/** サーバーが受け付ける再開位置の最小値（openapi.yaml の positionMs minimum）。 */
+export const PLAYBACK_POSITION_MINIMUM_MS = putRecordingPlaybackPositionBodyPositionMsMin
 
 /** 原本の ms をカット後の ms へ写す。keep 外の位置は次の区間の先頭へ寄せる。 */
 export function originalMsToCutMs(originalMs: number, keepRanges: readonly KeepRange[]): number {
