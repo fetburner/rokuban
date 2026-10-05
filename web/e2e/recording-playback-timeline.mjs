@@ -384,10 +384,9 @@ async function capturePresentedFrameAt(page, action, targetTime) {
       }
       const captureVisibleFrame = (_now, metadata) => {
         callbackId = undefined
-        if (video.seeking) {
-          callbackId = video.requestVideoFrameCallback(captureVisibleFrame)
-          return
-        }
+        // seeking 中の callback も採る。Chromium の原本 HLS は目的のフレームの callback が seeking:true で
+        // 来て、一時停止中は次が来ない。callback は action の直前に登録するので、一時停止中に古いフレームで
+        // 発火することはない。
         try {
           finish(snapshot(metadata.mediaTime, 'rvfc'))
         } catch {
@@ -648,14 +647,8 @@ async function exerciseBoundaryControls(page, label, picks, offset, preroll = 0.
       () => button.click(),
       expectedTime,
     )
-    // Chromium の原本 HLS（MSE）は一時停止中の seek で rVFC を出さない（2026-10-06 に 5 秒待って 4 回中 4 回
-    // 出なかった）。そのときだけ補助経路の currentTime（フレーム中央）で代用する。表示フレームの判定ではない
-    // ので source=paint とログに残す。#1127 が再現する WebKit では代用せず、rVFC が無ければ NG にする。
-    const paintFallback = presented.source === 'paint' && engine !== 'webkit'
-    const presentedTime = paintFallback
-      ? Math.round(presented.currentTime / T - 0.5) * T
-      : presented.mediaTime
-    log(`  SRC ${label} ${what} ${presented.source}${paintFallback ? ' (currentTime 代用)' : ''}`)
+    log(`  SRC ${label} ${what} ${presented.source}`)
+    const presentedTime = presented.mediaTime
     if (!Number.isFinite(presentedTime) || !Number.isFinite(frameTime(index)) || Math.abs(presentedTime + offset - frameTime(index)) > GRID_TOLERANCE_SECONDS) {
       ng.push(`${label}: ${what} (frame=${JSON.stringify(presented)}, want=${frameTime(index)}, index=${index})`)
     }
