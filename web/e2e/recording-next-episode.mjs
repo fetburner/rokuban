@@ -337,22 +337,18 @@ async function transitionsAlong(png) {
 
   log('\n=== ① 番組外区間は破線で描かれ、位置が割合と一致する ===')
   const scrubBox = await page.locator('[data-testid="seek-scrub"]').boundingBox()
-  const before = page.locator('[data-testid="recorded-before-program"]')
   const after = page.locator('[data-testid="recorded-after-program"]')
-  if ((await before.count()) !== 1 || (await after.count()) !== 1) {
-    ng.push('① 番組外区間の要素が前後 1 つずつ無い')
+  if ((await after.count()) !== 1) {
+    ng.push('① 後ろの番組外区間が 1 つでない')
   } else {
-    const b = await before.boundingBox()
     const a = await after.boundingBox()
-    const wantBeforeWidth = scrubBox.width * (6 / 132)
-    const wantAfterLeft = scrubBox.x + scrubBox.width * (126 / 132)
-    if (Math.abs(b.width - wantBeforeWidth) > 2) ng.push(`① 手前の区間の幅が違う（実際 ${b.width.toFixed(1)} / 期待 ${wantBeforeWidth.toFixed(1)}）`)
-    if (Math.abs(a.x - wantAfterLeft) > 2) ng.push(`① 後ろの区間の左端が違う（実際 ${a.x.toFixed(1)} / 期待 ${wantAfterLeft.toFixed(1)}）`)
+    const wantAfterLeft = scrubBox.x + scrubBox.width * (120 / 126)
+    if (Math.abs(a.x - wantAfterLeft) > 0.5) ng.push(`① 後ろの区間の左端が違う（実際 ${a.x.toFixed(1)} / 期待 ${wantAfterLeft.toFixed(1)}）`)
     // 破線は中央の 1 行に明暗が交互に出る。両端の縦線だけ（border-x）なら切り替わりは 2 回以内。
     const clip = { x: a.x, y: a.y, width: a.width, height: a.height }
     const changes = await transitionsAlong(await page.screenshot({ clip, animations: 'disabled' }))
     if (changes < 4) ng.push(`① 後ろの区間が破線になっていない（中央の 1 行の明暗の切り替わり ${changes} 回。幅 ${a.width.toFixed(1)}px）`)
-    log(`  手前 w=${b.width.toFixed(1)} / 後ろ x=${a.x.toFixed(1)} w=${a.width.toFixed(1)} / 後ろの明暗切替 ${changes} 回`)
+    log(`  後ろ x=${a.x.toFixed(1)} w=${a.width.toFixed(1)} / 後ろの明暗切替 ${changes} 回`)
   }
   await shot(page, 'v3-desktop-bar-outside-program.png')
 

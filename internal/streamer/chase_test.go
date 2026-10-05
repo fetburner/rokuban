@@ -189,6 +189,83 @@ func TestChaseStartByteOffsetUsesRecordingMetadata(t *testing.T) {
 	}
 }
 
+func TestChaseStartByteOffsetUsesProgramStartWhenTunerOpensEarly(t *testing.T) {
+	recordingStart := time.Date(2026, 10, 2, 10, 0, 0, 0, time.UTC)
+	programStart := recordingStart.Add(15 * time.Second)
+	endTime := recordingStart.Add(135 * time.Second)
+	programStartMillis := mirakc.Milliseconds(programStart)
+	endTimeMillis := mirakc.Milliseconds(endTime)
+	duration := int64(135_000)
+	length := uint64(188 * 1200)
+	record := &mirakc.Record{
+		Program: mirakc.Program{
+			StartAt: &programStartMillis,
+		},
+		Recording: mirakc.RecordInfo{
+			Status:    "finished",
+			StartTime: mirakc.Milliseconds(recordingStart),
+			EndTime:   &endTimeMillis,
+			Duration:  &duration,
+		},
+		Content: mirakc.ContentInfo{Length: &length},
+	}
+
+	got, err := chaseStartByteOffset(record, 30)
+	if err != nil {
+		t.Fatalf("chaseStartByteOffset() = %v, want success", err)
+	}
+	if want := int64(188 * 300); got != want {
+		t.Fatalf("chaseStartByteOffset() = %d, want %d (30 s after Program.StartAt)", got, want)
+	}
+}
+
+func TestChaseStartByteOffsetRecordingUsesProgramStart(t *testing.T) {
+	now := time.Now()
+	programStart := mirakc.Milliseconds(now.Add(-120 * time.Second))
+	length := uint64(188 * 1200)
+	record := &mirakc.Record{
+		Program: mirakc.Program{StartAt: &programStart},
+		Recording: mirakc.RecordInfo{
+			Status:    "recording",
+			StartTime: mirakc.Milliseconds(now.Add(-135 * time.Second)),
+		},
+		Content: mirakc.ContentInfo{Length: &length},
+	}
+
+	got, err := chaseStartByteOffset(record, 30)
+	if err != nil {
+		t.Fatalf("chaseStartByteOffset() = %v, want success", err)
+	}
+	// available is 120 s (121 s if the clock ticks); 135 s from the tuner start would give 188*266.
+	if got < 188*297 || got > 188*300 {
+		t.Fatalf("chaseStartByteOffset() = %d, want within [%d, %d] (30 s after Program.StartAt)", got, 188*297, 188*300)
+	}
+}
+
+func TestChaseStartByteOffsetFinishedWithEndTimeOnly(t *testing.T) {
+	recordingStart := time.Date(2026, 10, 2, 10, 0, 0, 0, time.UTC)
+	programStartMillis := mirakc.Milliseconds(recordingStart.Add(15 * time.Second))
+	endTimeMillis := mirakc.Milliseconds(recordingStart.Add(135 * time.Second))
+	length := uint64(188 * 1200)
+	record := &mirakc.Record{
+		Program: mirakc.Program{StartAt: &programStartMillis},
+		Recording: mirakc.RecordInfo{
+			Status:    "finished",
+			StartTime: mirakc.Milliseconds(recordingStart),
+			EndTime:   &endTimeMillis,
+		},
+		Content: mirakc.ContentInfo{Length: &length},
+	}
+
+	got, err := chaseStartByteOffset(record, 30)
+	if err != nil {
+		t.Fatalf("chaseStartByteOffset() = %v, want success", err)
+	}
+	if want := int64(188 * 300); got != want {
+		t.Fatalf("chaseStartByteOffset() = %d, want %d (30 s after Program.StartAt)", got, want)
+	}
+}
+
 type fakeSeekChaseRecordClient struct {
 	mu      sync.Mutex
 	offsets []int64
