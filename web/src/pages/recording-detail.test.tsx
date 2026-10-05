@@ -114,6 +114,7 @@ function createFakeServer(options: {
 }) {
   let recording = options.recording
   let chaseGone = false
+  let originalVODGone = false
   const sites = options.sites ?? ['default']
   const encodeProfiles = options.encodeProfiles ?? []
   const liveProfiles = options.liveProfiles ?? []
@@ -301,6 +302,7 @@ function createFakeServer(options: {
       return Promise.resolve(new Response(null, { status: 204 }))
     }
     if (/^\/api\/sites\/[^/]+\/recordings\/\d+\/original-vod(?:\/offset\/\d+)?\/playlist\.m3u8$/.test(url.pathname)) {
+      if (originalVODGone) return Promise.resolve(new Response('gone\n', { status: 404 }))
       return Promise.resolve(
         new Response('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\nhd.0.m3u8\n', { status: 200 }),
       )
@@ -329,6 +331,10 @@ function createFakeServer(options: {
     /** setChaseGone は追っかけのセッションを作れない状態（404）にする。 */
     setChaseGone: (gone: boolean) => {
       chaseGone = gone
+    },
+    /** setOriginalVODGone は原本 HLS のセッションを作れない状態（404）にする。 */
+    setOriginalVODGone: (gone: boolean) => {
+      originalVODGone = gone
     },
   }
 }
@@ -3507,5 +3513,53 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
     expect(slider).toHaveAttribute('aria-valuenow', '0')
     expect(originalRow).toHaveTextContent('再生中')
     expect(encodedRow).not.toHaveTextContent('再生中')
+  })
+
+  it('版タブで明示した原本 HLS でも、エラーでは自動選択の encoded へ移る', async () => {
+    const user = userEvent.setup()
+    const fake = createFakeServer({
+      recording: sampleRecording({
+        ...FINISHED,
+        resumePositionMs: 20_000,
+        encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }],
+      }),
+      liveProfiles: LIVE_PROFILES,
+    })
+    renderAt('/recordings/3')
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src') ?? '').toContain('/api/media/recordings/3/file'))
+    await selectDetailTab('版')
+    await user.click(await screen.findByRole('button', { name: '原本 HLS を再生' }))
+    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod/offset/20/')).toHaveLength(1))
+
+    // 範囲外 seek では原本 HLS のまま張り直し、その playlist が 404 になる。
+    fake.setOriginalVODGone(true)
+    const slider = await screen.findByRole('slider', { name: 'シークバー' })
+    fireEvent.keyDown(slider, { key: 'Home' })
+    fireEvent.keyUp(slider, { key: 'Home' })
+
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src') ?? '').toContain('/api/media/recordings/3/file'))
+    expect(screen.getByTestId('recording-version-row')).toHaveTextContent('再生中')
+  })
+
+  it('自動選択の原本 HLS は、再生中に encoded ができると次の範囲外 seek で encoded へ移る', async () => {
+    const user = userEvent.setup()
+    const fake = createFakeServer({
+      recording: sampleRecording({ ...FINISHED, encodedAssets: [] }),
+      liveProfiles: LIVE_PROFILES,
+    })
+    const { queryClient } = renderAt('/recordings/3')
+    await user.click(await screen.findByTestId('recording-playback-start'))
+    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod/').length).toBeGreaterThan(0))
+
+    fake.setRecording(sampleRecording(FINISHED))
+    await queryClient.invalidateQueries()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    // 録画状態の更新だけでは替えない。
+    expect(document.querySelector('video')?.getAttribute('src') ?? '').not.toContain('/api/media/recordings/3/file')
+
+    const slider = await screen.findByRole('slider', { name: 'シークバー' })
+    fireEvent.keyDown(slider, { key: 'End' })
+    fireEvent.keyUp(slider, { key: 'End' })
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src') ?? '').toContain('/api/media/recordings/3/file'))
   })
 })
