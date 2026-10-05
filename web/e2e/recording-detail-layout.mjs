@@ -192,7 +192,7 @@ function measureLayout() {
   const tabPanelCount = document.querySelectorAll('[data-testid="recording-detail-tab-panel"]').length
   const outsideProgramTrackCount = document.querySelectorAll('[data-testid="recorded-outside-program-range"]').length
   const outsideProgramSegmentCount = document.querySelectorAll(
-    '[data-testid="recorded-before-program"], [data-testid="recorded-after-program"]',
+    '[data-testid="recorded-after-program"]',
   ).length
   return {
     viewport,
@@ -283,8 +283,8 @@ for (const viewport of [
   if (viewport.desktop && !measured.shelfTopVisibleInFirstViewport) {
     ng.push(`${viewport.name}: シリーズ棚の上端が最初の画面に入らない`)
   }
-  if (measured.outsideProgramTrackCount !== 1 || measured.outsideProgramSegmentCount !== 2) {
-    ng.push(`${viewport.name}: 番組枠外の前後区間が一本のシークバーに点線表示されない`)
+  if (measured.outsideProgramTrackCount !== 1 || measured.outsideProgramSegmentCount !== 1) {
+    ng.push(`${viewport.name}: チューナー待機時間を除いた番組枠外の終了区間が一本のシークバーに点線表示されない`)
   }
 
   const tabList = page.locator('[data-testid="recording-detail-tabs"]')

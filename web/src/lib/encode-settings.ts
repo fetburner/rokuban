@@ -10,8 +10,8 @@ import type { ProgramOverridesInput, ReservationOverrides } from '@/api/generate
  * 「既存 override + このパッチ + ルールの base」をマージした実効値を見る
  * （issue #104。`{"keepOriginal":"until_encoded"}` だけを送る、あるいは
  * `reset:["encodeProfiles"]` で戻す経路もマージ後の値で弾かれる）。UI でも
- * 同じ制約を先に防ぎ、送れない理由をボタン横に出す（検索フォームの
- * draftError と同じ流儀）。
+ * 同じ制約を先に防ぐ。送れない理由はエンコード設定欄（EncodeSettingsFields）が
+ * 表示する。
  */
 
 /** KeepOriginal は API の enum と同形。 */

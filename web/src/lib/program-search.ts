@@ -486,9 +486,10 @@ export function ruleNameError(meta: Pick<RuleMetaDraft, 'name'>): string | undef
   return undefined
 }
 
-/** ruleMetaError は保存してはいけないメタの理由を返す（問題なければ undefined）。 */
-export function ruleMetaError(meta: RuleMetaDraft): string | undefined {
-  const nameError = ruleNameError(meta)
-  if (nameError !== undefined) return nameError
-  return encodeSettingsError(meta.keepOriginal, meta.encodeProfiles)
+/** ruleMetaBlocked はルールのメタを保存できない状態かを返す。 */
+export function ruleMetaBlocked(meta: RuleMetaDraft): boolean {
+  return (
+    ruleNameError(meta) !== undefined ||
+    encodeSettingsError(meta.keepOriginal, meta.encodeProfiles) !== undefined
+  )
 }

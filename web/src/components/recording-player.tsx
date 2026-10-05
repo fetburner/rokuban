@@ -83,7 +83,7 @@ type RecordingPlayerProps = {
   /** バーの「次のエピソード」リンクを押したとき（移動先の詳細を先にキャッシュへ入れる）。 */
   onNextEpisodeNavigate?: () => void
   /** 番組時間枠より前後を録画した部分をシークバー内に示す割合。 */
-  outsideProgramSegments?: { beforeEndPercent: number; afterStartPercent: number }
+  outsideProgramSegments?: { afterStartPercent: number }
   /**
    * 別の録画の詳細へ移る（履歴に積む）。終端カードの「今すぐ再生」と自動遷移が使う。
    * 呼び出し側が移動先の詳細を先にキャッシュへ入れておくと、全画面のまま移れる。

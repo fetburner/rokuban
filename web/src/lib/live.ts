@@ -598,20 +598,18 @@ export function liveProgramAxis(
   }
 }
 
-/**
- * programChaseStartOffsetSeconds converts the program start into the recording
- * relative offset used by the existing chase playlist. A recording that starts
- * after the scheduled program start can only begin at offset zero; callers use
- * programStartIsRecorded to disable the missing earlier segment.
- */
-export function programChaseStartOffsetSeconds(
-  programStartAt: string,
-  recordingStartedAt: string,
+/** The recording file starts at the later of the tuner-open time and programme start. */
+export function recordingFileStartAtMs(
+  recordingStartedAt: string | null | undefined,
+  programStartAt: string | null | undefined,
 ): number | null {
+  if (recordingStartedAt === undefined || recordingStartedAt === null || programStartAt === undefined || programStartAt === null) {
+    return null
+  }
+  const recordingStartedAtMs = Date.parse(recordingStartedAt)
   const programStartMs = Date.parse(programStartAt)
-  const recordingStartMs = Date.parse(recordingStartedAt)
-  if (!Number.isFinite(programStartMs) || !Number.isFinite(recordingStartMs)) return null
-  return Math.max(0, Math.floor((programStartMs - recordingStartMs) / 1000))
+  if (!Number.isFinite(recordingStartedAtMs) || !Number.isFinite(programStartMs)) return null
+  return Math.max(recordingStartedAtMs, programStartMs)
 }
 
 /** Convert a point on the scheduled-program axis into a recording-relative offset. */
@@ -621,11 +619,11 @@ export function programRecordingOffsetSeconds(
   programSeconds: number,
 ): number | null {
   const programStartMs = Date.parse(programStartAt)
-  const recordingStartMs = Date.parse(recordingStartedAt)
-  if (!Number.isFinite(programStartMs) || !Number.isFinite(recordingStartMs) || !Number.isFinite(programSeconds)) {
+  const fileStartMs = recordingFileStartAtMs(recordingStartedAt, programStartAt)
+  if (!Number.isFinite(programStartMs) || fileStartMs === null || !Number.isFinite(programSeconds)) {
     return null
   }
-  const offset = Math.floor((programStartMs + programSeconds * 1000 - recordingStartMs) / 1000)
+  const offset = Math.floor((programStartMs + programSeconds * 1000 - fileStartMs) / 1000)
   return offset >= 0 ? offset : null
 }
 
@@ -635,9 +633,9 @@ export function programRecordingHeadSeconds(
   recordingStartedAt: string,
 ): number | null {
   const programStartMs = Date.parse(programStartAt)
-  const recordingStartMs = Date.parse(recordingStartedAt)
-  if (!Number.isFinite(programStartMs) || !Number.isFinite(recordingStartMs)) return null
-  return Math.max(0, (recordingStartMs - programStartMs) / 1000)
+  const fileStartMs = recordingFileStartAtMs(recordingStartedAt, programStartAt)
+  if (!Number.isFinite(programStartMs) || fileStartMs === null) return null
+  return Math.max(0, (fileStartMs - programStartMs) / 1000)
 }
 
 export type ProgramRecordingAccess = {

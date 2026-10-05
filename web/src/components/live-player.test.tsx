@@ -2307,7 +2307,7 @@ describe('LivePlayer / 音声（issue #870）', () => {
 describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () => {
   const chaseTimeline = {
     programmeStartMs: 0,
-    recordingStartedAtMs: 0,
+    recordingFileStartAtMs: 0,
     plannedSeconds: 60,
     recordedSeconds: 20,
   }
@@ -2474,7 +2474,7 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
         mode="chase"
         site="default"
         recordingId={513}
-        chaseTimeline={{ programmeStartMs: 0, recordingStartedAtMs: 0, plannedSeconds: 3600, recordedSeconds: 1501 }}
+        chaseTimeline={{ programmeStartMs: 0, recordingFileStartAtMs: 0, plannedSeconds: 3600, recordedSeconds: 1501 }}
       />,
     )
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
@@ -2503,23 +2503,23 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
     expect(screen.queryByTestId('chase-hover-label')).not.toBeInTheDocument()
   })
 
-  it('番組開始より前から録っていれば、時刻・目盛り・aria は負の経過で出す', async () => {
+  it('チューナーが番組開始前に開いていても追っかけ軸は番組開始を 0 秒にする', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
     render(
       <LivePlayer
         mode="chase"
         site="default"
         recordingId={514}
-        chaseTimeline={{ programmeStartMs: 30_000, recordingStartedAtMs: 0, plannedSeconds: 3600, recordedSeconds: 1530 }}
+        chaseTimeline={{ programmeStartMs: 30_000, recordingFileStartAtMs: 30_000, plannedSeconds: 3600, recordedSeconds: 1500 }}
       />,
     )
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
     const slider = screen.getByRole('slider', { name: 'シークバー' })
-    expect(slider).toHaveAttribute('aria-valuemin', '-30')
-    expect(slider).toHaveAttribute('aria-valuenow', '-30')
-    expect(slider.getAttribute('aria-valuetext')).toBe('-0:30 / 録画済み 25:00')
-    expect(screen.getByTestId('playback-time')).toHaveTextContent('-0:30 / 録画済み 25:00')
-    expect(screen.getByTestId('chase-timeline-labels').firstElementChild).toHaveTextContent('-0:30')
+    expect(slider).toHaveAttribute('aria-valuemin', '0')
+    expect(slider).toHaveAttribute('aria-valuenow', '0')
+    expect(slider.getAttribute('aria-valuetext')).toBe('0:00 / 録画済み 25:00')
+    expect(screen.getByTestId('playback-time')).toHaveTextContent('0:00 / 録画済み 25:00')
+    expect(screen.getByTestId('chase-timeline-labels').firstElementChild).toHaveTextContent('0:00')
   })
 
   it('番組開始より遅れて録り始めた録画は、録画済みと再生済みの塗りを録画開始の位置から始める', async () => {
@@ -2530,7 +2530,7 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
         site="default"
         recordingId={515}
         // 15 秒遅れて開始、録画済み 15 秒 → 先端は番組開始から 30 秒。軸は 0〜60 秒。
-        chaseTimeline={{ programmeStartMs: 0, recordingStartedAtMs: 15_000, plannedSeconds: 60, recordedSeconds: 15 }}
+        chaseTimeline={{ programmeStartMs: 0, recordingFileStartAtMs: 15_000, plannedSeconds: 60, recordedSeconds: 15 }}
       />,
     )
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
@@ -2592,7 +2592,7 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
     const onChaseOffsetChange = vi.fn()
     const props = { mode: 'chase' as const, site: 'default', recordingId: 518, onChaseOffsetChange }
     const { rerender } = render(
-      <LivePlayer {...props} chaseTimeline={{ programmeStartMs: 0, recordingStartedAtMs: 0, plannedSeconds: 60, recordedSeconds: 120 }} />,
+      <LivePlayer {...props} chaseTimeline={{ programmeStartMs: 0, recordingFileStartAtMs: 0, plannedSeconds: 60, recordedSeconds: 120 }} />,
     )
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
     const slider = screen.getByRole('slider', { name: 'シークバー' })
@@ -2602,7 +2602,7 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
     expect(slider).toHaveAttribute('aria-valuenow', '60')
     // 1 秒ごとに録画の先端が伸び、同じ座標の秒が変わる。
     rerender(
-      <LivePlayer {...props} chaseTimeline={{ programmeStartMs: 0, recordingStartedAtMs: 0, plannedSeconds: 60, recordedSeconds: 122 }} />,
+      <LivePlayer {...props} chaseTimeline={{ programmeStartMs: 0, recordingFileStartAtMs: 0, plannedSeconds: 60, recordedSeconds: 122 }} />,
     )
     fireEvent.pointerUp(slider, { pointerId: 6, pointerType: 'mouse', clientX: 300 })
     expect(onChaseOffsetChange).toHaveBeenCalledWith(60)
@@ -2616,7 +2616,7 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
       recordingId: 516,
     }
     const { rerender } = render(
-      <LivePlayer {...props} chaseTimeline={{ programmeStartMs: 0, recordingStartedAtMs: 0, plannedSeconds: 3600, recordedSeconds: 1501 }} />,
+      <LivePlayer {...props} chaseTimeline={{ programmeStartMs: 0, recordingFileStartAtMs: 0, plannedSeconds: 3600, recordedSeconds: 1501 }} />,
     )
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
     // 先端の印の下は時刻だけ。押すと先端へ移る説明は印のアクセシブル名と title に置く。
@@ -2627,7 +2627,7 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
     expect(percent(screen.getByTestId('chase-timeline-planned-end'), 'left')).toBe(100)
 
     rerender(
-      <LivePlayer {...props} chaseTimeline={{ programmeStartMs: 0, recordingStartedAtMs: 0, plannedSeconds: 3600, recordedSeconds: 4212 }} />,
+      <LivePlayer {...props} chaseTimeline={{ programmeStartMs: 0, recordingFileStartAtMs: 0, plannedSeconds: 3600, recordedSeconds: 4212 }} />,
     )
     const slider = screen.getByRole('slider', { name: 'シークバー' })
     expect(slider).toHaveAttribute('aria-valuemax', '4212')

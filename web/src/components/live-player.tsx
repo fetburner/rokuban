@@ -208,7 +208,7 @@ type LivePlayerProps = {
   /** 原本時間軸に保存された再開位置。 */
   resumePositionMs?: number
   /**
-   * 録画の実尺（`startedAt` から `endedAt` まで）。予定尺 `durationMs` ではない。
+   * 原本ファイルの実尺（呼び出し側で求めたファイル先頭から `endedAt` まで）。予定尺 `durationMs` ではない。
    * original-vod の固定タイムラインと視聴済み閾値に使う。`endedAt` が無い録画だけは呼び出し側が
    * 予定尺で代用する（0 だとシークバーが効かない）。映像より長いときの末尾は 416 の丸めが受ける。
    */
@@ -226,10 +226,10 @@ type LivePlayerProps = {
   onSaveChapters?: (spans: ChapterSpan[], version: string) => Promise<unknown>
   onResetChapters?: () => Promise<unknown> | void
   chapterSavePending?: boolean
-  /** 番組開始と録画開始を基準に追っかけバーを描くための時間情報。 */
+  /** 番組開始と録画ファイル先頭を基準に追っかけバーを描くための時間情報。 */
   chaseTimeline?: {
     programmeStartMs: number
-    recordingStartedAtMs: number
+    recordingFileStartAtMs: number
     plannedSeconds: number
     recordedSeconds: number
   }
@@ -538,18 +538,13 @@ export function LivePlayer({
       : 0
   const chaseHeadOffsetSeconds = chaseTimeline &&
     Number.isFinite(chaseTimeline.programmeStartMs) &&
-    Number.isFinite(chaseTimeline.recordingStartedAtMs)
-    ? (chaseTimeline.recordingStartedAtMs - chaseTimeline.programmeStartMs) / 1000
+    Number.isFinite(chaseTimeline.recordingFileStartAtMs)
+    ? (chaseTimeline.recordingFileStartAtMs - chaseTimeline.programmeStartMs) / 1000
     : 0
   const chaseRecordedEndSeconds = chaseHeadOffsetSeconds + (chaseTimeline?.recordedSeconds ?? 0)
   const chasePlannedEndSeconds = chaseTimeline?.plannedSeconds ?? 0
-  const chaseTimelineMinSeconds = Math.min(0, chaseHeadOffsetSeconds)
-  const chaseTimelineMaxSeconds = Math.max(
-    chaseTimelineMinSeconds + 1,
-    chasePlannedEndSeconds,
-    chaseRecordedEndSeconds,
-  )
-  const chaseLiveEdgeSeconds = Math.max(chaseTimelineMinSeconds, chaseRecordedEndSeconds - 1)
+  const chaseTimelineMaxSeconds = Math.max(1, chasePlannedEndSeconds, chaseRecordedEndSeconds)
+  const chaseLiveEdgeSeconds = Math.max(0, chaseRecordedEndSeconds - 1)
   const [originalCurrentSeconds, setOriginalCurrentSeconds] = useState(0)
   const [originalPreviewSeconds, setOriginalPreviewSeconds] = useState<number | null>(null)
   const [chasePositionState, setChasePositionState] = useState<{
@@ -1577,7 +1572,7 @@ export function LivePlayer({
   const visibleChaseSeconds = chasePreviewSeconds ?? chaseCurrentSeconds
   const chaseTimelineBar: ChaseTimeline | undefined = isChase
     ? {
-        minSeconds: chaseTimelineMinSeconds,
+        minSeconds: 0,
         maxSeconds: chaseTimelineMaxSeconds,
         headSeconds: chaseHeadOffsetSeconds,
         recordedEndSeconds: chaseRecordedEndSeconds,
@@ -1625,7 +1620,7 @@ export function LivePlayer({
     const rect = event.currentTarget.getBoundingClientRect()
     if (rect.width <= 0) return null
     const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
-    return Math.round(chaseTimelineMinSeconds + fraction * (chaseTimelineMaxSeconds - chaseTimelineMinSeconds))
+    return Math.round(fraction * chaseTimelineMaxSeconds)
   }
   const handleChaseSeekPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const target = chaseSeekTargetAtPointer(event)
@@ -2083,7 +2078,7 @@ export function LivePlayer({
         video={<>{video}{playerOverlay}</>}
         currentSeconds={isLive ? liveProgramEdgeSeconds : isChase ? visibleChaseSeconds : visibleOriginalSeconds}
         durationSeconds={isLive ? liveProgramDurationSeconds : isChase
-          ? chaseTimelineMaxSeconds - chaseTimelineMinSeconds
+          ? chaseTimelineMaxSeconds
           : originalDurationSeconds}
         playedFraction={originalPlayedFraction}
         chapters={chapterEditing ? [] : (chapters ?? [])}

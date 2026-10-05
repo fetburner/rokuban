@@ -1675,8 +1675,10 @@ func waitForChaseRecord(ctx context.Context, client mirakcRecordClient, recordID
 
 const mpegTSPacketSize = 188
 
-// chaseStartByteOffset maps the user-facing recording-relative second to a
-// byte position in the current mirakc content snapshot. MPEG-TS packet
+// chaseStartByteOffset maps the user-facing recording-file-relative second to a
+// byte position in the current mirakc content snapshot. The file starts at the
+// later of the tuner-open time and Program.StartAt: filter-program waits for
+// the scheduled programme when mirakc opens the tuner early. MPEG-TS packet
 // alignment avoids asking ffmpeg to begin halfway through a packet. The map is
 // intentionally approximate: bitrate changes and encoder buffering mean that
 // PTS is the final authority, so the UI exposes normal HLS seeking after the
@@ -1689,13 +1691,18 @@ func chaseStartByteOffset(record *mirakc.Record, offsetSeconds int64) (int64, er
 		return 0, mirakc.ErrRecordNotReady
 	}
 
-	available := time.Since(record.Recording.StartTime.Time())
+	recordingStart := record.Recording.StartTime.Time()
+	fileStart := recordingStart
+	if record.Program.StartAt != nil && record.Program.StartAt.Time().After(fileStart) {
+		fileStart = record.Program.StartAt.Time()
+	}
+	available := time.Since(fileStart)
 	if record.Recording.Status != "recording" {
 		switch {
 		case record.Recording.Duration != nil:
-			available = time.Duration(*record.Recording.Duration) * time.Millisecond
+			available = time.Duration(*record.Recording.Duration)*time.Millisecond - fileStart.Sub(recordingStart)
 		case record.Recording.EndTime != nil:
-			available = record.Recording.EndTime.Time().Sub(record.Recording.StartTime.Time())
+			available = record.Recording.EndTime.Time().Sub(fileStart)
 		}
 	}
 	availableSeconds := int64(available / time.Second)

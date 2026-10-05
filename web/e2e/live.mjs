@@ -1046,7 +1046,7 @@ async function runIssue1022Acceptance(engine = 'chromium') {
       const routeBefore = new URL(page.url()).pathname
       await video.evaluate((element) => { window.__issue1022Video = element })
       const chaseStartWaiter = page.waitForRequest((request) =>
-        /\/recordings\/501\/chase\/offset\/180\/playlist\.m3u8/.test(request.url()),
+        /\/recordings\/501\/chase\/playlist\.m3u8/.test(request.url()) && !/\/offset\//.test(request.url()),
       { timeout: 10000 }).catch(() => null)
       const liveLeaveBefore = requestLog.filter((request) =>
         request.method === 'POST' && request.url.includes('/networks/1/services/9001/live/leave'),
@@ -1057,7 +1057,7 @@ async function runIssue1022Acceptance(engine = 'chromium') {
       await page.getByRole('button', { name: '最初から' }).click()
       const chaseStartRequest = await chaseStartWaiter
       if (!chaseStartRequest) {
-        ng.push('#1022 最初からで番組開始分の chase offset=180 を要求しない')
+        ng.push('#1022 最初からで番組開始（ファイル先頭）の offset 無し chase を要求しない')
       }
       const leaveRequest = await leaveWaiter
       const liveLeaveAfter = requestLog.filter((request) =>
@@ -1111,8 +1111,8 @@ async function runIssue1022Acceptance(engine = 'chromium') {
           await timeline.click({ position: { x: timelineBox.width * 0.25, y: timelineBox.height / 2 } })
           const pickedOffsetRequest = await pickedOffsetWaiter
           const pickedOffset = pickedOffsetRequest && Number(/\/offset\/(\d+)\/playlist/.exec(pickedOffsetRequest.url())?.[1])
-          if (!Number.isFinite(pickedOffset) || Math.abs(pickedOffset - 855) > 3) {
-            ng.push(`#1022 番組軸の選択位置から chase offset≈855 を再生しない (${pickedOffset ?? '要求なし'})`)
+          if (!Number.isFinite(pickedOffset) || Math.abs(pickedOffset - 675) > 3) {
+            ng.push(`#1022 番組軸の選択位置から chase offset≈675（番組開始から 25%）を再生しない (${pickedOffset ?? '要求なし'})`)
           }
         }
       }
