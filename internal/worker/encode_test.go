@@ -1077,6 +1077,18 @@ func TestEncodeWorkerSubtitleProbeAndEncodeWithRealBinaries(t *testing.T) {
 	if !withSubtitles {
 		t.Fatal("real ffprobe did not find the fixture subtitle stream")
 	}
+	captionless := filepath.Join(dir, "captionless.mkv")
+	if out, err := exec.Command(ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+		"-i", input, "-map", "0", "-map", "-0:s", "-c", "copy", captionless).CombinedOutput(); err != nil {
+		t.Fatalf("creating captionless fixture: %v: %s", err, out)
+	}
+	captionlessHasSubtitles, err := probeHasSubtitles(context.Background(), ffprobe, captionless, commandOutput)
+	if err != nil {
+		t.Fatalf("probing captionless fixture: %v", err)
+	}
+	if captionlessHasSubtitles {
+		t.Fatal("real ffprobe found a subtitle stream in the captionless fixture")
+	}
 
 	output := filepath.Join(dir, "encoded.mkv")
 	subtitleOut, err := mediapath.SubtitleSibling(output)

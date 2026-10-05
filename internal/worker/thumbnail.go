@@ -416,7 +416,7 @@ func (w *ThumbnailWorker) probeDuration(ctx context.Context, inputPath string) (
 }
 
 func probeDuration(ctx context.Context, ffprobe, inputPath string, run func(context.Context, string, ...string) ([]byte, error)) (time.Duration, error) {
-	out, err := run(ctx, ffargs.FFprobePath(ffprobe), ffargs.ThumbnailDurationProbeArgs(inputPath)...)
+	out, err := run(ctx, ffargs.FFprobePath(ffprobe), ffargs.FormatDurationProbeArgs(inputPath)...)
 	if err != nil {
 		return 0, err
 	}

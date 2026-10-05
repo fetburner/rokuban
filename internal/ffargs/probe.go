@@ -45,8 +45,9 @@ func SubtitleProbeArgs(inputArgs []string, probeSize, analyzeDuration string) []
 
 // 尺の定義は用途ごとに異なるため、次の 3 builder は統合しない。
 
-// ThumbnailDurationProbeArgs はサムネイルの seek 位置に使う format 全体の尺を読む argv を返す。
-func ThumbnailDurationProbeArgs(inputPath string) []string {
+// FormatDurationProbeArgs は format 全体の尺を読む argv を返す。サムネイルの seek 位置と
+// エンコード進捗の分母が、worker の probeDuration 経由でこの尺を使う。
+func FormatDurationProbeArgs(inputPath string) []string {
 	return []string{
 		"-v", "error",
 		"-show_entries", "format=duration",

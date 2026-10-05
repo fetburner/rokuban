@@ -22,8 +22,8 @@ func TestProbeArgumentBuilders(t *testing.T) {
 			want: []string{"-v", "error", "-probesize", "5M", "-analyzeduration", "3M", "-select_streams", "s", "-show_entries", "stream=index", "-of", "csv=p=0", "-i", "pipe:0"},
 		},
 		{
-			name: "thumbnail format duration",
-			got:  ThumbnailDurationProbeArgs("/input.ts"),
+			name: "format duration",
+			got:  FormatDurationProbeArgs("/input.ts"),
 			want: []string{"-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", "/input.ts"},
 		},
 		{
