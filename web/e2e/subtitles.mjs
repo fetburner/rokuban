@@ -33,6 +33,7 @@ import {
   validateFixturesOrExit,
   verifyBundleMatchesOrExit,
 } from './lib.mjs'
+import { changedPixelBounds } from './screenshot-pixel-diff.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:4173'
 const SITE = 'default'
@@ -85,7 +86,9 @@ await validateFixturesOrExit(
 
 await verifyBundleMatchesOrExit(URL_BASE, ng)
 
-const browser = await launchBrowser('chromium')
+const engine = process.env.E2E_BROWSER ?? 'chromium'
+const browser = await launchBrowser(engine)
+log(`\n=== 実ブラウザ: ${engine} ===`)
 
 // ============================================================
 // ① VOD: UI の字幕ボタンで track.mode が showing になり、実ブラウザで cue を読み込み、
@@ -158,7 +161,7 @@ log('\n=== ① VOD: <track> が実ブラウザで WebVTT の cue を読み込む
 // ② ライブ: master playlist の字幕 rendition から hls.js が
 //    subtitleTracks を 1 本以上見せる。
 // ============================================================
-log('\n=== ② ライブ: hls.js が master の字幕 rendition を subtitleTracks に反映する ===')
+log('\n=== ② ライブ: HLS 字幕 track・キー操作・cue 位置 ===')
 {
   const FIXTURE_DIR = path.join(os.tmpdir(), 'rokuban-e2e-subtitle-live-fixture')
   const built = ensureCaptionFixture(FIXTURE_DIR)
@@ -217,26 +220,33 @@ log('\n=== ② ライブ: hls.js が master の字幕 rendition を subtitleTrac
     await page.getByRole('button', { name: /再生/ }).click()
 
     // hls.js は React ref にしか保持されていない（window には出ていない）ので、
-    // hls.js が実際に管理している字幕トラックは <video>.textTracks 経由で見る
-    // --- hls.js の SubtitleTrackController は EXT-X-MEDIA の subtitles
-    // rendition ごとにネイティブ TextTrack を <video> に登録する実装であり、
-    // それを DOM から観測する（実装の内部プロパティに依存しない）。
+    // 字幕トラックは <video>.textTracks 経由で見る。track.kind / cue.line はブラウザが
+    // HLS rendition を解釈した結果で、hls.js の内部状態には依存しない。
     let result
     try {
       await page.locator('video').waitFor({ timeout: 15000 })
+      await page.locator('video').hover()
+      const subtitleButton = page.getByTestId('player-controls').getByRole('button', { name: '字幕' })
+      if (await subtitleButton.getAttribute('aria-pressed') !== 'true') await subtitleButton.click()
       result = await page.evaluate(async () => {
         const video = document.querySelector('video')
         const deadline = Date.now() + 10000
         let subtitleTracks = []
         while (Date.now() < deadline) {
           subtitleTracks = Array.from(video.textTracks).filter((t) => t.kind === 'subtitles')
-          if (subtitleTracks.length > 0) break
+          if (subtitleTracks.some((track) => (track.cues?.length ?? 0) > 0)) break
           await new Promise((r) => setTimeout(r, 100))
         }
         return {
           videoFound: true,
           subtitleTrackCount: subtitleTracks.length,
-          labels: subtitleTracks.map((t) => t.label),
+          tracks: subtitleTracks.map((track) => ({
+            kind: track.kind,
+            label: track.label,
+            mode: track.mode,
+            cueCount: track.cues?.length ?? 0,
+            cueLine: track.cues?.[0] && 'line' in track.cues[0] ? track.cues[0].line : null,
+          })),
         }
       })
     } catch (err) {
@@ -248,7 +258,94 @@ log('\n=== ② ライブ: hls.js が master の字幕 rendition を subtitleTrac
     } else if (!(result.subtitleTrackCount > 0)) {
       ng.push(`② ライブ: video.textTracks に subtitles 種別が 0 本（hls.js が master の EXT-X-MEDIA subtitles rendition を反映していない）`)
     } else {
-      log(`  OK: subtitles textTracks = ${result.subtitleTrackCount} (${result.labels.join(', ')})`)
+      log(`  HLS 字幕 tracks: ${JSON.stringify(result.tracks)}`)
+      const cueLine = result.tracks.find((track) => track.cueCount > 0)?.cueLine
+      if (result.tracks.every((track) => track.cueCount === 0) && engine === 'webkit') {
+        log('  WebKit の native HLS は cue を JS に公開せず、cue.line の書き換えは効かない（下の画素測定はブラウザ既定配置の観測で、実装の検証ではない）')
+      } else if (typeof cueLine !== 'number' || cueLine >= 0) {
+        ng.push(`② ライブ: HLS 字幕 cue が操作バーの上へ移動していない (${JSON.stringify(result.tracks)})`)
+      }
+
+      const liveVideo = page.locator('video')
+      const controlsBox = await page.locator('[data-testid="player-controls-bottom"]').boundingBox()
+      if (!controlsBox) {
+        ng.push('② ライブ: 字幕位置を比べる操作バーの矩形が取れない')
+      } else {
+        await liveVideo.evaluate((video) => {
+          video.pause()
+          video.currentTime = 1
+        })
+        await page.waitForFunction(
+          () => {
+            const video = document.querySelector('video')
+            return video !== null && video.paused && !video.seeking && Math.abs(video.currentTime - 1) < 0.5
+          },
+          undefined,
+          { timeout: 5000 },
+        ).catch(() => ng.push('② ライブ: 字幕位置を測る時刻へ seek できない'))
+        const setSubtitleMode = (mode) => liveVideo.evaluate((video, nextMode) => {
+          for (const track of Array.from(video.textTracks)) {
+            if (track.kind === 'subtitles') track.mode = nextMode
+          }
+        }, mode)
+        await setSubtitleMode('hidden')
+        await page.waitForTimeout(150)
+        const withoutCaption = await page.screenshot({ animations: 'disabled' })
+        await setSubtitleMode('showing')
+        await page.waitForTimeout(150)
+        const withCaption = await page.screenshot({ animations: 'disabled' })
+        const captionPixels = await changedPixelBounds(page, withoutCaption, withCaption)
+        const captionBottom = captionPixels.bounds === null
+          ? null
+          : captionPixels.bounds.y + captionPixels.bounds.height
+        log(
+          `  ${engine === 'webkit' ? '観測(WebKit の既定配置。実装の検証ではない) ' : '測定 '}subtitle visible pixels=${captionPixels.changedPixels}, bounds=${JSON.stringify(captionPixels.bounds)}, controlsTop=${controlsBox.y}`,
+        )
+        if (captionPixels.changedPixels < 20 || captionBottom === null) {
+          ng.push('② ライブ: 字幕を有効にしても画面上の描画変化を測れない')
+        } else if (captionBottom >= controlsBox.y - 4) {
+          const overlap = `② ライブ: 字幕が操作バーに重なる (${JSON.stringify({ captionBounds: captionPixels.bounds, controlsTop: controlsBox.y })})`
+          if (engine === 'webkit') log(`  観測: WebKit ${overlap}`)
+          else ng.push(overlap)
+        }
+      }
+      await liveVideo.evaluate((video) => {
+        video.pause()
+        video.muted = false
+        video.focus()
+      })
+      await page.keyboard.press('Space')
+      const spaceStarted = await page.waitForFunction(
+        () => document.querySelector('video')?.paused === false,
+        undefined,
+        { timeout: 3000 },
+      ).then(() => true).catch(() => false)
+      if (!spaceStarted) ng.push('② ライブ: video にフォーカス中の Space で再生が始まらない')
+      await liveVideo.evaluate((video) => video.focus())
+      await page.keyboard.press('m')
+      if (!(await liveVideo.evaluate((video) => video.muted))) {
+        ng.push('② ライブ: video にフォーカス中の M でミュートが切り替わらない')
+      }
+      await liveVideo.evaluate((video) => video.focus())
+      await page.keyboard.press('f')
+      const fullscreenEntered = await page.waitForFunction(
+        () => document.fullscreenElement !== null,
+        undefined,
+        { timeout: 3000 },
+      ).then(() => true).catch(() => false)
+      const fullscreenFrame = await page.evaluate(() => {
+        const full = document.fullscreenElement
+        return full !== null && full !== document.querySelector('video') &&
+          full.contains(document.querySelector('video')) &&
+          full.querySelector('[data-testid="player-controls"]') !== null
+      })
+      if (!fullscreenEntered || !fullscreenFrame) {
+        ng.push('② ライブ: F が video だけでなく操作バーを含む player frame を全画面にしない')
+      }
+      if (fullscreenEntered) {
+        await page.keyboard.press('Escape')
+        await page.waitForFunction(() => document.fullscreenElement === null, undefined, { timeout: 3000 }).catch(() => {})
+      }
     }
     await page.close()
   }

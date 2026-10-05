@@ -54,6 +54,9 @@ import {
 /** 終端カードが次のエピソードへ自動で移るまでの秒数。「取り消す」で止められる。 */
 const AUTO_ADVANCE_SECONDS = 3
 
+const recordingSubtitleTracks = (video: HTMLVideoElement) =>
+  Array.from(video.textTracks).filter((track) => track.kind === 'subtitles')
+
 type RecordingPlayerProps = {
   recordingId: number
   resumePositionMs?: number
@@ -219,15 +222,6 @@ export function RecordingPlayer({
   const resolvedChapterEditorCommandsRef = chapterEditorCommandsRef ?? localChapterEditorCommandsRef
   const isScrubbingRef = useRef(false)
   const jumpToRef = useRef<(seconds: number) => void>(() => {})
-  const subtitleLinesRef = useRef(new WeakMap<VTTCue, VTTCue['line']>())
-  // 枠（バーの自動非表示・フォーカス・映像のタップ・全画面・PiP）は原本 HLS の LivePlayer と共有する。
-  const frame = usePlayerFrame(
-    videoRef,
-    frameRef,
-    `${recordingId}:${selectedProfile}`,
-    fullscreenContainerRef,
-  )
-  const { controlsVisible, requestFullscreen } = frame
   // 終端カードを出している録画の id。録画を切り替えても作り直さないので、id と組で持って
   // 切り替えた瞬間に前の録画のカードを描かない（`played` と同じ規律）。
   const [endCardFor, setEndCardFor] = useState<number | null>(null)
@@ -472,6 +466,28 @@ export function RecordingPlayer({
     void persistPlaybackPosition(recordingId, write, keepalive)
   }, [currentWrite, recordingId, rememberPosition])
 
+  // 同じキーバインドと frame 操作を HLS / ファイルの両方で使い、シークの意味だけを
+  // この player の章境界・CM 区間つき jumpTo に委ねる。
+  const frame = usePlayerFrame(videoRef, frameRef, videoKey, {
+    fullscreenContainerRef,
+    onSeekBy: (seconds) => {
+      const video = videoRef.current
+      if (!video) return
+      const target = Math.max(0, video.currentTime + seconds)
+      jumpToRef.current(Number.isFinite(video.duration) ? Math.min(video.duration, target) : target)
+    },
+    onSeekToFraction: (fraction) => {
+      const video = videoRef.current
+      if (!video || !Number.isFinite(video.duration)) return false
+      jumpToRef.current(video.duration * fraction)
+      return true
+    },
+    onSavePosition: saveCurrentPosition,
+    savePositionKey: `${recordingId}:${selectedProfile}:${keepRangesKey}`,
+    getSubtitleTracks: recordingSubtitleTracks,
+    subtitleState: subtitlesEnabled,
+  })
+
   useLayoutEffect(() => {
     frozenKeepRangesRef.current = playingCut ? selectedAsset?.keepRanges : undefined
     restorePending.current = true
@@ -495,23 +511,6 @@ export function RecordingPlayer({
     if (chapterEditing && !playingCut) setTilesRequestedFor(recordingId)
   }, [chapterEditing, playingCut, recordingId])
 
-  useEffect(() => {
-    const saveIfPlaying = () => {
-      const video = videoRef.current
-      if (video && !video.paused) saveCurrentPosition(video)
-    }
-    const onPageHide = () => {
-      const video = videoRef.current
-      if (video) saveCurrentPosition(video, true)
-    }
-    const timer = window.setInterval(saveIfPlaying, 15_000)
-    window.addEventListener('pagehide', onPageHide)
-    return () => {
-      window.clearInterval(timer)
-      window.removeEventListener('pagehide', onPageHide)
-    }
-  }, [keepRangesKey, recordingId, saveCurrentPosition, selectedProfile])
-
   // 再生中に別の録画へ移っても境界の前後再生を残さない。
   useEffect(() => () => window.clearTimeout(playAroundTimerRef.current), [])
 
@@ -534,115 +533,6 @@ export function RecordingPlayer({
       setActivePlaybackRate(appliedRate)
     }
   }, [activePlaybackRate, chapterEditing, recordingId, saveActivePlaybackRate, selectedProfile, setActivePlaybackRate])
-
-  const updateSubtitleCueLines = (video: HTMLVideoElement, raise: boolean) => {
-    const frame = frameRef.current
-    // スマホの操作表示は枠全体に幕を敷くので、字幕を避ける高さは下端の帯（時刻・シークバー）だけ。
-    const controls = frame?.querySelector<HTMLElement>('[data-testid="player-controls-bottom"]')
-    const frameHeight = frame?.getBoundingClientRect().height ?? 0
-    const controlsHeight = controls?.getBoundingClientRect().height ?? 0
-    // WebVTT の snap-to-lines は画面高の約 5% が 1 行分。シークバーと操作行が
-    // 隠す高さから必要な行数を計算し、固定行数ではなく画面幅に追随させる。
-    const lineHeight = frameHeight * 0.05
-    const raisedLine = lineHeight > 0
-      ? -(Math.ceil((controlsHeight + 8) / lineHeight) + 1)
-      : -5
-    for (const track of Array.from(video.textTracks)) {
-      if (track.kind !== 'subtitles') continue
-      for (const rawCue of Array.from(track.cues ?? [])) {
-        const cue = rawCue as VTTCue
-        if (raise) {
-          if (!subtitleLinesRef.current.has(cue)) subtitleLinesRef.current.set(cue, cue.line)
-          cue.line = raisedLine
-        } else {
-          const original = subtitleLinesRef.current.get(cue)
-          if (original !== undefined) cue.line = original
-        }
-      }
-    }
-  }
-  useEffect(() => {
-    const video = videoRef.current
-    const frameElement = frameRef.current
-    const controls = frameElement?.querySelector<HTMLElement>('[data-testid="player-controls-bottom"]')
-    if (!video) return
-    const update = () => updateSubtitleCueLines(video, controlsVisible)
-    update()
-
-    const trackElements = Array.from(video.querySelectorAll('track[kind="subtitles"]'))
-    const textTracks = Array.from(video.textTracks).filter((track) => track.kind === 'subtitles')
-    const eventTrackElements = trackElements.filter((track) => typeof track.addEventListener === 'function')
-    const eventTextTracks = textTracks.filter((track) => typeof track.addEventListener === 'function')
-    eventTrackElements.forEach((track) => track.addEventListener('load', update))
-    eventTextTracks.forEach((track) => track.addEventListener('cuechange', update))
-
-    const observer = frameElement && controls && typeof ResizeObserver !== 'undefined'
-      ? new ResizeObserver(update)
-      : null
-    observer?.observe(frameElement!)
-    observer?.observe(controls!)
-    return () => {
-      eventTrackElements.forEach((track) => track.removeEventListener('load', update))
-      eventTextTracks.forEach((track) => track.removeEventListener('cuechange', update))
-      observer?.disconnect()
-    }
-  }, [recordingId, selectedProfile, controlsVisible, subtitlesEnabled])
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const video = videoRef.current
-      if (!video || event.ctrlKey || event.metaKey || event.altKey) return
-      if (
-        event.target instanceof Element &&
-        event.target.closest('input, textarea, select, button, a, [role="slider"], [contenteditable]')
-      ) {
-        return
-      }
-
-      const key = event.key.toLowerCase()
-      const seekBy = (seconds: number) => {
-        const target = Math.max(0, video.currentTime + seconds)
-        jumpToRef.current(Number.isFinite(video.duration)
-          ? Math.min(video.duration, target)
-          : target)
-      }
-      let handled = true
-      switch (key) {
-        case ' ':
-          if (video.paused) void video.play()
-          else video.pause()
-          break
-        case 'arrowleft':
-          seekBy(-10)
-          break
-        case 'arrowright':
-          seekBy(10)
-          break
-        case 'j':
-          seekBy(-30)
-          break
-        case 'l':
-          seekBy(30)
-          break
-        case 'm':
-          video.muted = !video.muted
-          break
-        case 'f':
-          requestFullscreen()
-          break
-        default:
-          if (/^[0-9]$/.test(key) && Number.isFinite(video.duration)) {
-            jumpToRef.current((video.duration * Number(key)) / 10)
-          } else {
-            handled = false
-          }
-      }
-      if (handled) event.preventDefault()
-    }
-
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [requestFullscreen])
 
   // 再生できる版が無いときは呼び出し側（録画詳細）が空状態を出す。ここには来ない。
   if (profiles.length === 0) return null
@@ -869,7 +759,6 @@ export function RecordingPlayer({
             if (track.kind === 'subtitles') track.mode = enabled ? 'showing' : 'disabled'
           }
           setSubtitlesEnabled(enabled)
-          updateSubtitleCueLines(video, enabled && controlsVisible)
         }}
         onToggleSkip={(enabled) => {
           setSkipEnabled(enabled)
@@ -889,7 +778,6 @@ export function RecordingPlayer({
               updatePlayedFraction(e.currentTarget)
               frame.syncFromVideo(e.currentTarget)
               setSubtitlesEnabled(Array.from(e.currentTarget.textTracks).some((track) => track.kind === 'subtitles' && track.mode === 'showing'))
-              updateSubtitleCueLines(e.currentTarget, controlsVisible)
               if (autoplayRecordingRef.current === recordingId) {
                 autoplayRecordingRef.current = null
                 void e.currentTarget.play().catch(() => {})
@@ -976,10 +864,6 @@ export function RecordingPlayer({
               srcLang="ja"
               label="日本語"
               src={recordingSubtitleURL(recordingId, selectedProfile)}
-              onLoad={() => {
-                const video = videoRef.current
-                if (video) updateSubtitleCueLines(video, controlsVisible)
-              }}
             />
           </video>
         )}
