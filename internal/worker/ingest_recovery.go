@@ -153,6 +153,7 @@ func recoverStaleIngestJob(ctx context.Context, conn *pgxpool.Conn, riverClient 
 		candidate.attempt,
 		candidate.lastActivity,
 		ingestRecoveryReason,
+		"ingest_recovery",
 		discardRecoveredIngestJobQuery,
 		jobs.IngestJobArgs{Site: site, RecordID: candidate.recordID},
 		beforeInsert,

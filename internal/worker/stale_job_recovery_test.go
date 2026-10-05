@@ -153,6 +153,7 @@ func TestReplaceStaleRiverJobDoesNotReplaceCompletedJob(t *testing.T) {
 		1,
 		time.Now().UTC().Add(-time.Minute),
 		encodeRecoveryReason,
+		"encode_recovery",
 		discardRecoveredEncodeJobQuery,
 		jobs.EncodeJobArgs{RecordingID: recordingID, Profile: "h264"},
 		nil,

@@ -127,6 +127,7 @@ func recoverStaleEncodeJob(ctx context.Context, conn *pgxpool.Conn, riverClient 
 		candidate.attempt,
 		candidate.lastActivity,
 		encodeRecoveryReason,
+		"encode_recovery",
 		discardRecoveredEncodeJobQuery,
 		jobs.EncodeJobArgs{
 			RecordingID: candidate.recordingID,

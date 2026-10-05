@@ -81,7 +81,8 @@ func recoverStaleJobCandidates[T any](
 
 // replaceStaleRiverJob は stale running River job の discard と代替ジョブの投入を、
 // job lock を持つ connection 上の 1 transaction で行う。beforeInsert は ingest 固有の
-// 書き込みを同じ transaction に加える。metadata は kind+"_recovery" のキーに記録する。
+// 書き込みを同じ transaction に加える。recoveryMetadataKey は river_job.metadata に
+// 永続するキーなので、ログ用の kind から作らず呼び出し側がリテラルで渡す。
 // discard が 0 行なら代替を投入せず nil を返す。
 // TestReplaceStaleRiverJobDoesNotReplaceCompletedJob は完了済みジョブが差し替わらないことを検証する。
 func replaceStaleRiverJob(
@@ -93,6 +94,7 @@ func replaceStaleRiverJob(
 	attempt int,
 	lastActivity time.Time,
 	recoveryReason string,
+	recoveryMetadataKey string,
 	discardQuery string,
 	args river.JobArgs,
 	beforeInsert func(pgx5.Tx) error,
@@ -108,7 +110,7 @@ func replaceStaleRiverJob(
 		return nil, fmt.Errorf("marshaling stale %s recovery error: %w", kind, err)
 	}
 	metadataJSON, err := json.Marshal(map[string]any{
-		kind + "_recovery": map[string]any{
+		recoveryMetadataKey: map[string]any{
 			"reason":        recoveryReason,
 			"last_activity": lastActivity,
 			"recovered_at":  recoveredAt,
