@@ -128,7 +128,6 @@ func TestProgramSnapshotParamsAdapter(t *testing.T) {
 	if got := snapshot.withCreateOrGetFailedRecordingParams(base); !reflect.DeepEqual(got, wantCreateOrGet) {
 		t.Errorf("withCreateOrGetFailedRecordingParams() = %#v, want %#v", got, wantCreateOrGet)
 	}
-
 }
 
 func assertProgramSnapshotEqual(t *testing.T, got, want programSnapshot) {

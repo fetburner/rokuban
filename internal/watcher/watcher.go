@@ -676,7 +676,6 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 	}
 
 	snapshot := snapshotFromSchedule(*schedule, *service)
-	title := snapshot.title
 	networkID := int32(schedule.Program.NetworkID)
 	serviceID := int32(schedule.Program.ServiceID)
 	eventID := int32(schedule.Program.EventID)
@@ -730,7 +729,7 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 		Type:        webhook.EventRecordingFailed,
 		RecordingID: recordingID,
 		Site:        w.site,
-		Title:       title,
+		Title:       snapshot.title,
 		Status:      "failed",
 	})
 	return nil
