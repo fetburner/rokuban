@@ -19,6 +19,7 @@ import { LivePlayer } from '@/components/live-player'
 import { TunerStatus } from '@/components/tuner-status'
 import { buttonVariants } from '@/components/ui/button'
 import { useLiveCapability } from '@/lib/capabilities'
+import type { OffsetSessionStart } from '@/lib/use-offset-session'
 import {
   currentProgramWindow,
   formatLiveDiagnostics,
@@ -349,6 +350,9 @@ export function LivePage() {
 
   const [playbackSource, setPlaybackSource] = useState<'live' | 'chase'>('live')
   const [chaseOffset, setChaseOffset] = useState<number | undefined>(undefined)
+  const chaseStart: OffsetSessionStart = chaseOffset === undefined
+    ? { type: 'beginning' }
+    : { type: 'offset', offsetSeconds: chaseOffset }
   const [chaseTarget, setChaseTarget] = useState<{
     site: string
     recordingId: number
@@ -481,7 +485,7 @@ export function LivePage() {
                 serviceId={selectedService.serviceId}
                 recordingId={playbackSource === 'chase' ? chaseTarget?.recordingId : undefined}
                 chaseTimeline={chaseTimeline}
-                startOffsetSeconds={playbackSource === 'chase' ? chaseOffset : undefined}
+                offsetSessionStart={playbackSource === 'chase' ? chaseStart : undefined}
                 profile={effectiveProfile}
                 audio={routeSearch.audio}
                 availableProfiles={liveProfiles.map((profile) => ({

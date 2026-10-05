@@ -2113,7 +2113,7 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
     })
   }
 
-  it('録画詳細は1つの再生枠を使い、通常表示では再生操作まで追っかけを始めない', async () => {
+  it('続きからは保存位置の offset を使い、通常表示では再生操作まで追っかけを始めない', async () => {
     const user = userEvent.setup()
     const { fetchMock } = createFakeServer({
       recording: chaseRecording(),
@@ -2132,10 +2132,11 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
 
     await user.click(screen.getByTestId('recording-playback-start'))
     await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
+    expect(chasePlaylistURLs(fetchMock)[0]).toContain('/chase/offset/720/playlist.m3u8')
     expect(document.querySelectorAll('video')).toHaveLength(1)
     const video = document.querySelector('video')!
     fireEvent.loadedMetadata(video)
-    await waitFor(() => expect(video.currentTime).toBe(720))
+    expect(video.currentTime).toBe(0)
   })
 
   it('追っかけのポスターに再開位置と録画範囲を示し、先頭から見る操作も再生開始まで変換しない', async () => {

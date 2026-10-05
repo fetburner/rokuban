@@ -51,8 +51,9 @@ import { useLiveCapability } from '@/lib/capabilities'
 import { recordingFileURL } from '@/lib/playback-position'
 import { seedRecordingDetail } from '@/lib/recording-detail-cache'
 import { selectRecordingPlaybackSource, type RecordingPlaybackSource } from '@/lib/recording-playback-source'
-import { originalVODSessionOriginSeconds, validLiveProfile } from '@/lib/live'
+import { validLiveProfile } from '@/lib/live'
 import { recordingTimeline } from '@/lib/recording-timeline'
+import type { OffsetSessionStart } from '@/lib/use-offset-session'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { shouldShowRecordingSite, sourceLabels } from '@/lib/recording-search'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
@@ -333,13 +334,15 @@ export function RecordingDetail({
     : playbackState.startFromBeginning
       ? undefined
       : recording.resumePositionMs
-  const carriedOffsetSeconds = playbackState.positionSeconds !== undefined
-    ? Math.floor(Math.max(0, playbackState.positionSeconds))
-    : undefined
-  // 追っかけはシークで選んだ offset が最優先（セッション外へのシークで張り直した位置）。
-  const startOffsetSeconds = showChase
-    ? chaseOffsetSeconds ?? carriedOffsetSeconds ?? (playbackState.startFromBeginning ? 0 : undefined)
-    : carriedOffsetSeconds
+  const playbackStart: OffsetSessionStart = playbackState.positionSeconds !== undefined
+    ? { type: 'position', recordingSeconds: playbackState.positionSeconds }
+    : playbackState.startFromBeginning
+      ? { type: 'beginning' }
+      : { type: 'saved-position', positionMs: recording.resumePositionMs }
+  // 親は開始意図だけを渡す。セッション中の offset は LivePlayer の hook が更新する。
+  const chaseStart: OffsetSessionStart = chaseOffsetSeconds === undefined
+    ? playbackStart
+    : { type: 'offset', offsetSeconds: chaseOffsetSeconds }
   // 追っかけ・原本 VOD、または版タブから原本 HLS へ切り替えられる録画だけ live
   // プロファイルを取る。一覧取得ではセッションを作らない。
   const canSwitchToOriginalVOD =
@@ -616,8 +619,7 @@ export function RecordingDetail({
               mode="chase"
               site={recording.site}
               recordingId={recording.id}
-              resumePositionMs={resumePositionMs}
-              startOffsetSeconds={startOffsetSeconds}
+              offsetSessionStart={chaseStart}
               profile={explicitLiveProfile}
               availableProfiles={liveProfiles}
               onProfileChange={onSelectLiveProfile}
@@ -628,7 +630,6 @@ export function RecordingDetail({
                 plannedSeconds: timeline.plannedSeconds,
                 recordedSeconds: timeline.availableChaseSeconds,
               }}
-              onChaseOffsetChange={setChaseOffsetSeconds}
               onRecordingPositionChange={reportRecordingPosition}
               onSourceRangeExit={(seconds, playing) => reselectPlaybackSource('source-range-exit', seconds, playing)}
               onRecordingPlaybackError={(seconds, playing) => reselectPlaybackSource('source-error', seconds, playing)}
@@ -672,13 +673,9 @@ export function RecordingDetail({
               onPutWatched={() => void updateWatched(true)}
               onDeleteWatched={() => void updateWatched(false)}
               onWatched={() => void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })}
-              resumePositionMs={resumePositionMs}
-              startOffsetSeconds={startOffsetSeconds}
+              offsetSessionStart={playbackStart}
               autoPlay={playbackState.autoPlay}
               fullscreenContainerRef={playbackFullscreenContainerRef}
-              startPositionSeconds={playbackState.positionSeconds !== undefined
-                ? Math.max(0, playbackState.positionSeconds - originalVODSessionOriginSeconds(carriedOffsetSeconds))
-                : undefined}
               recordingDurationMs={Number.isFinite(recordedSpanMs) ? recordedSpanMs : recording.durationMs}
               profile={explicitLiveProfile}
               availableProfiles={liveProfiles}
