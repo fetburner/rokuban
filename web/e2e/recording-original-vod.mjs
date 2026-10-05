@@ -1904,8 +1904,50 @@ delete offsetRecording.resumePositionMs
 
 // This runs after the established seek/offset checks so its explicit keyboard seeks and
 // pause events cannot change their saved-position fixtures or ⑤-f baseline.
+log('\n=== ⑫-a 変換中 EVENT HLS は duration が Infinity でも数字キーで録画尺へシークする ===')
+growingEdge = true
+growingEventStartedAt = Date.now()
+applyPositionWrites = false
+delete recording.resumePositionMs
+delete recording.watchedAt
+recording.encodedAssets = []
+await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
+await page.getByTestId('recording-playback-start').click()
+await page.waitForFunction(() => {
+  const element = document.querySelector('video')
+  return element !== null && element.readyState >= HTMLMediaElement.HAVE_METADATA
+}, undefined, { timeout: 15000 })
+const eventVideo = page.locator('video')
+await eventVideo.evaluate((element) => {
+  element.pause()
+  element.currentTime = 0
+  element.focus()
+})
+const eventDuration = await eventVideo.evaluate((element) => element.duration)
+log(`  ${engine} EVENT video.duration=${eventDuration}`)
+if (engine === 'webkit' && eventDuration !== Infinity) {
+  ng.push(`⑫-a native EVENT HLS の duration が Infinity でないため対象経路を測れない (${eventDuration})`)
+}
+const eventOffsetCursor = playlistRequests.length
+await page.keyboard.press('9')
+const eventOffsetDeadline = Date.now() + 10_000
+while (
+  !playlistRequests.slice(eventOffsetCursor).includes('offset/14/playlist.m3u8') &&
+  Date.now() < eventOffsetDeadline
+) {
+  await page.waitForTimeout(50)
+}
+const eventOffsetRequested = playlistRequests.slice(eventOffsetCursor).includes('offset/14/playlist.m3u8')
+const eventSeekAxis = Number(await page.getByTestId('seek-scrub').getAttribute('aria-valuenow'))
+log(`  9 キー: offset/14 requested=${eventOffsetRequested}, recording axis=${eventSeekAxis}`)
+if (!eventOffsetRequested) ng.push('⑫-a 変換中の数字キーで offset/14 playlist に張り直さない')
+if (!Number.isFinite(eventSeekAxis) || Math.abs(eventSeekAxis - 14.4) > 1) {
+  ng.push(`⑫-a 変換中の数字キーが録画時間軸 14.4 秒へ移らない (${eventSeekAxis})`)
+}
+
 log('\n=== ⑫ 原本 HLS のキー操作・全画面・字幕 cue の位置 ===')
 growingEdge = false
+growingEventStartedAt = undefined
 applyPositionWrites = false
 delete recording.resumePositionMs
 delete recording.watchedAt

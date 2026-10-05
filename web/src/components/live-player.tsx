@@ -406,7 +406,7 @@ export function LivePlayer({
   const videoRef = useRef<HTMLVideoElement>(null)
   const frameRef = useRef<HTMLDivElement>(null)
   const keyboardSeekRef = useRef<(seconds: number) => void>(() => {})
-  const keyboardSeekFractionRef = useRef<(fraction: number) => void>(() => {})
+  const keyboardSeekFractionRef = useRef<(fraction: number) => boolean>(() => false)
   const hlsRef = useRef<HlsLike | null>(null)
   const isOriginalScrubbingRef = useRef(false)
   const offsetOriginSeconds = useCallback(
@@ -637,7 +637,9 @@ export function LivePlayer({
   const frame = usePlayerFrame(videoRef, frameRef, undefined, {
     fullscreenContainerRef,
     onSeekBy: isRecordingPlayback ? (seconds) => keyboardSeekRef.current(seconds) : undefined,
-    onSeekToFraction: isOriginalVOD ? (fraction) => keyboardSeekFractionRef.current(fraction) : undefined,
+    onSeekToFraction: isOriginalVOD && originalDurationSeconds > 0
+      ? (fraction) => keyboardSeekFractionRef.current(fraction)
+      : undefined,
     onSavePosition: isRecordingPlayback ? saveCurrentPosition : undefined,
     savePositionKey: `${mode}:${recordingId}:${sessionStartSeconds}:${offsetSessionKey}`,
     getSubtitleTracks: hlsSubtitleTracks,
@@ -1719,7 +1721,9 @@ export function LivePlayer({
       }
     }
     keyboardSeekFractionRef.current = (fraction) => {
-      if (isOriginalVOD) commitOriginalSeek(originalDurationSeconds * fraction)
+      if (!isOriginalVOD || originalDurationSeconds <= 0) return false
+      commitOriginalSeek(originalDurationSeconds * fraction)
+      return true
     }
   })
   const seekToOriginalBoundary = (boundaryMs: number) => {

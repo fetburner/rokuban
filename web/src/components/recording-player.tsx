@@ -478,7 +478,9 @@ export function RecordingPlayer({
     },
     onSeekToFraction: (fraction) => {
       const video = videoRef.current
-      if (video && Number.isFinite(video.duration)) jumpToRef.current(video.duration * fraction)
+      if (!video || !Number.isFinite(video.duration)) return false
+      jumpToRef.current(video.duration * fraction)
+      return true
     },
     onSavePosition: saveCurrentPosition,
     savePositionKey: `${recordingId}:${selectedProfile}:${keepRangesKey}`,

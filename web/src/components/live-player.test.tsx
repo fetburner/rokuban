@@ -2767,6 +2767,25 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
   const playlistRequests = (fetchMock: ReturnType<typeof vi.fn>) =>
     fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes('playlist.m3u8'))
 
+  it('native EVENT playlist の duration が Infinity でも既知の録画尺で数字キーをシークする', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    render(<LivePlayer mode="original-vod" site="default" recordingId={409} recordingDurationMs={30_000} />)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'duration', { value: Infinity, configurable: true })
+    Object.defineProperty(video, 'seekable', {
+      value: { length: 1, start: () => 0, end: () => 8 },
+      configurable: true,
+    })
+    fireEvent.keyDown(video, { key: '5' })
+
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+    expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/409/original-vod/offset/15/playlist.m3u8',
+    )
+  })
+
   it('原本は native controls を外して共通バーを使い、音声・視聴状態を操作できる', async () => {
     const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
     vi.stubGlobal('fetch', fetchMock)

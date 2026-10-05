@@ -12,7 +12,7 @@ import {
 type PlayerFrameOptions = {
   fullscreenContainerRef?: RefObject<HTMLElement | null>
   onSeekBy?: (seconds: number) => void
-  onSeekToFraction?: (fraction: number) => void
+  onSeekToFraction?: (fraction: number) => boolean
   onSavePosition?: (video: HTMLVideoElement, keepalive?: boolean) => void
   savePositionKey?: unknown
   getSubtitleTracks?: (video: HTMLVideoElement) => readonly TextTrack[]
@@ -273,9 +273,8 @@ export function usePlayerFrame(
           requestFullscreen()
           break
         default:
-          if (/^[0-9]$/.test(key) && Number.isFinite(video.duration)) {
-            if (seekToFractionRef.current) seekToFractionRef.current(Number(key) / 10)
-            else handled = false
+          if (/^[0-9]$/.test(key)) {
+            handled = seekToFractionRef.current?.(Number(key) / 10) ?? false
           } else {
             handled = false
           }
