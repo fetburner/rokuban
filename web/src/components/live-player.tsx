@@ -425,8 +425,24 @@ export function LivePlayer({
     startOffsetSeconds >= 0
       ? startOffsetSeconds
       : undefined
+  const initialChaseStart = {
+    recordingId,
+    offset: explicitChaseStartOffset === undefined &&
+      isChase &&
+      resumePositionMs !== undefined &&
+      resumePositionMs >= 2000
+        ? Math.floor(resumePositionMs / 1000)
+        : 0,
+  }
+  const [chaseStartState, setChaseStartState] = useState(initialChaseStart)
+  // 保存位置は再生中に更新されるので、同じ録画の開始 offset は最初の値に固定する。
+  // 別の録画へ切り替わった場合だけ新しい保存位置から作り直す。
+  const currentChaseStart = chaseStartState.recordingId === recordingId
+    ? chaseStartState
+    : initialChaseStart
+  if (chaseStartState.recordingId !== recordingId) setChaseStartState(initialChaseStart)
   const hasExplicitChaseStart = explicitChaseStartOffset !== undefined
-  const chaseStartOffset = explicitChaseStartOffset ?? 0
+  const chaseStartOffset = explicitChaseStartOffset ?? currentChaseStart.offset
   const explicitOriginalVODStartOffset =
     isOriginalVOD &&
     startOffsetSeconds !== undefined &&

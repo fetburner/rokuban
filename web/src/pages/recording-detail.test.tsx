@@ -2132,10 +2132,13 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
 
     await user.click(screen.getByTestId('recording-playback-start'))
     await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
+    expect(chasePlaylistURLs(fetchMock)).toEqual([
+      '/api/sites/default/recordings/3/chase/offset/720/playlist.m3u8',
+    ])
     expect(document.querySelectorAll('video')).toHaveLength(1)
     const video = document.querySelector('video')!
     fireEvent.loadedMetadata(video)
-    await waitFor(() => expect(video.currentTime).toBe(720))
+    await waitFor(() => expect(video.currentTime).toBe(0))
   })
 
   it('追っかけのポスターに再開位置と録画範囲を示し、先頭から見る操作も再生開始まで変換しない', async () => {

@@ -1163,28 +1163,28 @@ describe('LivePlayer の状態遷移', () => {
       expect(video.playbackRate).toBe(2)
     })
 
-    it('追っかけは配信プロファイルと別のVODプロファイルで位置を復元する', async () => {
+    it('追っかけも保存位置を秒に切り下げた offset のセッションで始め、端数を startPosition に渡す', async () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
       render(
         <LivePlayer
           mode="chase"
           site="default"
           recordingId={7}
-          resumePositionMs={12_000}
+          resumePositionMs={12_600}
           profile="live-720p"
         />,
       )
 
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
-      expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition: 12 }])
+      expect((hlsMockState.constructorArgs[0]![0] as { startPosition: number }).startPosition).toBeCloseTo(0.6, 4)
       expect(hlsMockState.instances[0]!.loadSource).toHaveBeenCalledWith(
-        '/api/sites/default/recordings/7/chase/playlist.m3u8?profile=live-720p',
+        '/api/sites/default/recordings/7/chase/offset/12/playlist.m3u8?profile=live-720p',
       )
       const video = document.querySelector('video')!
       Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
 
       fireEvent.loadedMetadata(video)
-      expect(video.currentTime).toBe(12)
+      expect(video.currentTime).toBeCloseTo(0.6, 4)
     })
 
     it('画質を切り替えても追っかけの再生位置を持ち越す（offset 付き）', async () => {
@@ -1310,7 +1310,10 @@ describe('LivePlayer の状態遷移', () => {
       Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
       fireEvent.loadedMetadata(video)
       fireEvent.canPlay(video)
-      expect(video.currentTime).toBe(40)
+      expect(video.currentTime).toBe(0)
+      expect(hlsMockState.instances[0]!.loadSource).toHaveBeenCalledWith(
+        '/api/sites/default/recordings/84/chase/offset/40/playlist.m3u8?profile=live-720p',
+      )
       video.currentTime = 12
 
       rerender(<LivePlayer {...props} resumePositionMs={30_000} profile="live-720p" />)
@@ -1318,6 +1321,9 @@ describe('LivePlayer の状態遷移', () => {
       rerender(<LivePlayer {...props} resumePositionMs={30_000} profile="live-480p" />)
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
       expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: 12 }])
+      expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+        '/api/sites/default/recordings/84/chase/offset/40/playlist.m3u8?profile=live-480p',
+      )
       // 最終値だけでなく、途中で更新後のサーバー位置（30）へ seek しないことも見る
       // （最後に 12 へ戻るのはリスナの登録順に依存しているだけ）。
       let position = 0
@@ -1350,10 +1356,13 @@ describe('LivePlayer の状態遷移', () => {
       resolve(new Response('', { status: 200 }))
 
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
-      expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition: 40 }])
+      expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition: 0 }])
+      expect(hlsMockState.instances[0]!.loadSource).toHaveBeenCalledWith(
+        '/api/sites/default/recordings/85/chase/offset/40/playlist.m3u8?profile=live-480p',
+      )
       fireEvent.loadedMetadata(video)
       fireEvent.canPlay(video)
-      expect(video.currentTime).toBe(40)
+      expect(video.currentTime).toBe(0)
       fireEvent.timeUpdate(video)
       expect(localStorage.getItem('rokuban:playback:85:vod-h264')).toBeNull()
     })
@@ -1444,9 +1453,12 @@ describe('LivePlayer の状態遷移', () => {
 
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
       const video = document.querySelector('video')!
+      const expectedChaseSource =
+        '/api/sites/default/recordings/71/chase/offset/12/playlist.m3u8?profile=live-720p'
+      expect(hlsMockState.instances[0]!.loadSource).toHaveBeenCalledWith(expectedChaseSource)
       Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
       fireEvent.loadedMetadata(video)
-      expect(video.currentTime).toBe(12)
+      expect(video.currentTime).toBe(0)
 
       const firstHls = hlsMockState.instances[0]!
       const errorCall = firstHls.on.mock.calls.find(([event]) => event === 'hlsError')
@@ -1457,9 +1469,10 @@ describe('LivePlayer の状態遷移', () => {
 
       await user.click(await screen.findByRole('button', { name: '再読み込み' }))
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+      expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(expectedChaseSource)
       video.currentTime = 0
       fireEvent.loadedMetadata(video)
-      expect(video.currentTime).toBe(12)
+      expect(video.currentTime).toBe(0)
     })
 
     it('fatal エラーで hls インスタンスを破棄し、エラー文言を出す', async () => {

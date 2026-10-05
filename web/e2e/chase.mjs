@@ -351,7 +351,9 @@ await page.route(`**${chaseBase}/playlist.m3u8*`, async (route) => {
 
 await page.route(`**${chaseBase}/offset/*/playlist.m3u8*`, async (route) => {
   offsetPlaylistRequests += 1
-  const match = new URL(route.request().url()).pathname.match(/\/offset\/(\d+)\/playlist\.m3u8$/)
+  const requestedURL = new URL(route.request().url())
+  if (requestedURL.searchParams.has('profile')) profilePlaylistURLs.push(requestedURL.href)
+  const match = requestedURL.pathname.match(/\/offset\/(\d+)\/playlist\.m3u8$/)
   const offsetSeconds = match === null ? Number.NaN : Number(match[1])
   lastChasePlaylistOffset = offsetSeconds
   const observation = observationForOffset(offsetSeconds)
@@ -763,23 +765,102 @@ if (!playbackPositionWrites.slice(writesBeforeSeek).some((positionMs) => positio
 }
 if (watchedWrites.length > 0) ng.push('③ 録画中の追っかけで視聴済み印を付けた')
 
+log('\n=== ④ 保存位置が変換済みの端より先でも offset から始める ===')
+const resumedOffsetSeconds = 120
+const savedResumePositionSeconds = resumedOffsetSeconds + 0.6
+recording.resumePositionMs = savedResumePositionSeconds * 1000
+holdResumePositionSeed = true
+const basePlaylistsBeforeSavedResume = playlistRequests
+const offsetPlaylistsBeforeSavedResume = offsetPlaylistRequests
+offsetObservations.set(resumedOffsetSeconds, {
+  playlistRequestedAt: undefined,
+  segmentNames: [],
+})
+await page.reload({ waitUntil: 'domcontentloaded' })
+await page.locator('video').waitFor({ timeout: 15000 })
+const resumeRouteDeadline = Date.now() + 5000
+while (
+  offsetPlaylistRequests === offsetPlaylistsBeforeSavedResume &&
+  playlistRequests === basePlaylistsBeforeSavedResume &&
+  Date.now() < resumeRouteDeadline
+) {
+  await page.waitForTimeout(25)
+}
+const savedResumeStarted = await page.waitForFunction(
+  () => {
+    const video = document.querySelector('video')
+    return video !== null && !video.paused
+  },
+  undefined,
+  { timeout: 5000 },
+).then(() => true).catch(() => false)
+const savedResumeVideo = await page.locator('video').evaluate((video) => ({
+  currentTime: video.currentTime,
+  paused: video.paused,
+}))
+const savedResumeObservation = offsetObservations.get(resumedOffsetSeconds)
+const expectedFirstSavedResumeSegment = `segment_${String(Math.floor(resumedOffsetSeconds / 2)).padStart(3, '0')}.ts`
+log(
+  `  resume=${savedResumePositionSeconds}s -> offset=${lastChasePlaylistOffset}, first=${savedResumeObservation?.segmentNames[0] ?? '未要求'}, video=${JSON.stringify(savedResumeVideo)}`,
+)
+if (offsetPlaylistRequests <= offsetPlaylistsBeforeSavedResume) {
+  ng.push(`④ 保存位置 ${savedResumePositionSeconds}s の最初の playlist が offset/${resumedOffsetSeconds} にならない`)
+}
+if (playlistRequests !== basePlaylistsBeforeSavedResume) {
+  ng.push('④ 保存位置から始めるとき offset playlist より先に offset 0 の playlist を要求する')
+}
+if (savedResumeObservation?.segmentNames[0] !== expectedFirstSavedResumeSegment) {
+  ng.push(`④ offset playlist の最初の segment が保存位置と合わない（${savedResumeObservation?.segmentNames[0]} / ${expectedFirstSavedResumeSegment}）`)
+}
+if (!savedResumeStarted || Math.abs(resumedOffsetSeconds + savedResumeVideo.currentTime - savedResumePositionSeconds) > 0.35) {
+  ng.push(`④ 保存位置の端数を含めて着地しない（許容差0.35秒、${JSON.stringify(savedResumeVideo)}）`)
+}
+if (
+  savedResumeObservation?.playlistRequestedAt === undefined ||
+  Date.now() - savedResumeObservation.playlistRequestedAt > 1500
+) {
+  ng.push('④ 保存位置の offset playlist から再生を始めるまで約1秒を超える')
+}
+
 log('\n=== ④ 保存位置復元と明示0秒 ===')
 recording.resumePositionMs = 5_000
 holdResumePositionSeed = true
+const basePlaylistsBeforeFiveSecondResume = playlistRequests
+const offsetPlaylistsBeforeFiveSecondResume = offsetPlaylistRequests
+offsetObservations.set(5, { playlistRequestedAt: undefined, segmentNames: [] })
 await page.reload({ waitUntil: 'domcontentloaded' })
 await page.locator('video').waitFor({ timeout: 15000 })
-await page.waitForFunction(
+const fiveSecondResumeDeadline = Date.now() + 5000
+while (
+  offsetPlaylistRequests === offsetPlaylistsBeforeFiveSecondResume &&
+  playlistRequests === basePlaylistsBeforeFiveSecondResume &&
+  Date.now() < fiveSecondResumeDeadline
+) {
+  await page.waitForTimeout(25)
+}
+const fiveSecondResumeStarted = await page.waitForFunction(
   () => {
     const video = document.querySelector('video')
-    return video !== null && video.currentTime >= 4.5
+    return video !== null && !video.paused && video.currentTime < 1.5
   },
-  { timeout: 10000 },
-).catch(async () => {
-  ng.push('④ startOffset未選択の追っかけで保存位置を復元しない')
-})
-// #chase の再読み込みは再生を始める。以降の位置判定は再生の進みで揺れるので、再生が始まってから止める。
-await page.waitForFunction(() => document.querySelector('video')?.paused === false, undefined, { timeout: 10000 })
-  .catch(() => ng.push('④ #chase の再読み込みで再生が始まらない'))
+  undefined,
+  { timeout: 5000 },
+).then(() => true).catch(() => false)
+const fiveSecondResumeVideo = await page.locator('video').evaluate((video) => video.currentTime)
+const fiveSecondResumeObservation = offsetObservations.get(5)
+if (offsetPlaylistRequests <= offsetPlaylistsBeforeFiveSecondResume) {
+  ng.push('④ 5秒の保存位置から追っかけを offset/5 で始めない')
+}
+if (playlistRequests !== basePlaylistsBeforeFiveSecondResume) {
+  ng.push('④ 5秒の保存位置で offset 0 の playlist を先に要求する')
+}
+if (fiveSecondResumeObservation?.segmentNames[0] !== 'segment_002.ts') {
+  ng.push(`④ offset/5 の最初の segment が保存位置と合わない（${fiveSecondResumeObservation?.segmentNames[0]}）`)
+}
+if (!fiveSecondResumeStarted || Math.abs(5 + fiveSecondResumeVideo - 5) > 1) {
+  ng.push(`④ 5秒の保存位置で追っかけの再生が始まらない（currentTime=${fiveSecondResumeVideo}）`)
+}
+// #chase の再読み込みは再生を始める。以降の位置判定を安定させる。
 await page.locator('video').evaluate((video) => video.pause())
 // 保存位置の種（5 秒）は ④ の明示 0 秒まで保つ。再取得されても「未選択なら復元する」位置が残るようにする。
 const baseRequestsBeforeZero = playlistRequests
@@ -835,11 +916,8 @@ if (!homeFocusTarget || !homePreview) {
 if (!homeSeekCompleted || Math.abs(Number(homeSeekDiagnostics.sliderValue) - recordingHeadOffsetSeconds) > 1) {
   ng.push(`④ Home/0秒で保存位置から先頭へ移動しない (${JSON.stringify(homeSeekDiagnostics)})`)
 }
-if (playlistRequests !== baseRequestsBeforeZero) ng.push('④ 0秒へのin-range seekでplaylistを再要求する')
-if (offsetPlaylistRequests !== offsetRequestsBeforeZero) ng.push('④ 0秒へのin-range seekでoffset playlistを要求する')
-if (chaseLeaveHints.some((path) => path.includes('/offset/'))) {
-  ng.push('④ 0秒へのin-range seekでoffset付きleaveヒントを送った')
-}
+if (playlistRequests <= baseRequestsBeforeZero) ng.push('④ offset/5 から Home で offset 無しの先頭へ張り直さない')
+if (offsetPlaylistRequests !== offsetRequestsBeforeZero) ng.push('④ Home の先頭へ張り直すとき offset 付き playlist を要求する')
 
 log('\n=== ④ 変換済みの端より先へのシークは offset で張り直す ===')
 await page.waitForFunction(
@@ -1287,6 +1365,10 @@ growingSince = Date.now()
 growthCapSegments = Infinity
 finalizeChasePlaylist = false
 playlistEnded = false
+// この判定は offset 0 の成長中 EVENT playlist を使う。前のシークで保存した
+// 位置を次の fixture に持ち込まない。
+recording.resumePositionMs = undefined
+holdResumePositionSeed = true
 await page.evaluate(() => localStorage.setItem('rokuban:playback-rate', '1.5'))
 await page.reload({ waitUntil: 'domcontentloaded' })
 await page.locator('video').waitFor({ timeout: 15000 })
@@ -1364,6 +1446,9 @@ if (engine === 'webkit') {
 // 壊し方: `LivePlayer` を `key={profile}` で作り直す（位置が 0 に戻る）。
 // あるいは `playbackProfile` に live の画質名を流す（位置のキーが画質ごとに分かれる）。
 log('\n=== ⑦ 画質（プロファイル）の切替 ===')
+// 切替中の位置を書き換えない検査を、offset 付きの録画開始 5 秒から行う。
+recording.resumePositionMs = 5_000
+holdResumePositionSeed = true
 await page.reload({ waitUntil: 'domcontentloaded' })
 await playbackGroup.locator('video').waitFor({ timeout: 15000 })
 await revealControls('⑦ 再生設定')
@@ -1403,6 +1488,7 @@ const positionBeforeSwitch = await chaseVideo.evaluate((element) => {
   element.pause()
   return element.currentTime
 })
+const recordingPositionBeforeSwitch = lastChasePlaylistOffset + positionBeforeSwitch
 const pauseWriteDeadline = Date.now() + 5000
 while (playbackPositionWrites.length === writesBeforePause && Date.now() < pauseWriteDeadline) {
   await page.waitForTimeout(50)
@@ -1413,7 +1499,9 @@ let savedPositionWriteIndex = playbackPositionWrites.length
 const recordSavedPositions = () => { savedPositionWriteIndex = playbackPositionWrites.length }
 const savedPositions = () => playbackPositionWrites.slice(savedPositionWriteIndex).map((positionMs) => positionMs / 1000)
 recordSavedPositions()
-log(`  切替前の再生位置: ${positionBeforeSwitch.toFixed(2)} 秒`)
+log(
+  `  切替前の再生位置: offset ${lastChasePlaylistOffset} + ${positionBeforeSwitch.toFixed(2)} = ${recordingPositionBeforeSwitch.toFixed(2)} 秒`,
+)
 
 await qualityMenu.getByRole('menuitemradio', { name: 'sd（480p）' }).click()
 const switchDeadline = Date.now() + 10_000
@@ -1440,10 +1528,12 @@ if (Math.abs(positionAfterSwitch - positionBeforeSwitch) > 1.5) {
 {
   const written = await savedPositions()
   log(`  切替中に保存された位置: [${written.join(', ')}]`)
-  if (written.some((v) => Math.abs(v - positionBeforeSwitch) > 1.5)) {
+  if (written.some((v) => Math.abs(v - recordingPositionBeforeSwitch) > 1.5)) {
     ng.push(`⑦ 画質の切替の途中で「続きから」が別の位置で上書きされた（[${written.join(', ')}]）`)
   }
 }
+recording.resumePositionMs = playbackPositionWrites.at(-1) ?? Math.round(recordingPositionBeforeSwitch * 1000)
+holdResumePositionSeed = false
 
 // --- ⑧ 追っかけで見た位置から、完了後の VOD を開く（issue #975 受け入れ 2） ---
 //
@@ -1517,10 +1607,17 @@ await page
   .catch(() => ng.push('⑧ 完了後の VOD の duration が確定しない'))
 await page.waitForTimeout(1000)
 const vodStart = await page.locator('video').evaluate((element) => element.currentTime)
-log(`  追っかけの保存位置 ${(chasedMs / 1000).toFixed(2)} 秒 → VOD の開始位置 ${vodStart.toFixed(2)} 秒`)
-if (Math.abs(vodStart - chasedMs / 1000) > 3) {
+const vodOffsetSeconds = originalOffsetPlaylistRequests.at(-1) ?? 0
+const vodRecordingPosition = vodOffsetSeconds + vodStart
+log(
+  `  追っかけの保存位置 ${(chasedMs / 1000).toFixed(2)} 秒 → VOD の位置 ${vodOffsetSeconds} + ${vodStart.toFixed(2)} = ${vodRecordingPosition.toFixed(2)} 秒`,
+)
+if (vodOffsetSeconds !== Math.floor(chasedMs / 1000)) {
+  ng.push(`⑧ 完了後の VOD が保存位置を offset にしない（offset ${vodOffsetSeconds} / 保存 ${Math.floor(chasedMs / 1000)}）`)
+}
+if (Math.abs(vodRecordingPosition - chasedMs / 1000) > 3) {
   ng.push(
-    `⑧ 完了後の VOD が追っかけで見た位置から始まらない（保存 ${(chasedMs / 1000).toFixed(2)} 秒 → currentTime ${vodStart.toFixed(2)} 秒）`,
+    `⑧ 完了後の VOD が追っかけで見た位置から始まらない（保存 ${(chasedMs / 1000).toFixed(2)} 秒 → offset ${vodOffsetSeconds} + currentTime ${vodStart.toFixed(2)} 秒）`,
   )
 }
 
@@ -1534,6 +1631,7 @@ recording.durationMs = 180_000
 recording.endedAt = undefined
 recording.sizeBytes = undefined
 recording.encodedAssets = []
+holdResumePositionSeed = true
 delete recording.resumePositionMs
 // ⑥ で使った VOD 共通速度を等速に戻す。ここでは再生元の持ち越しだけを測る。
 // 今のページの <video> が書き戻さないよう、先に離れてから書く。
