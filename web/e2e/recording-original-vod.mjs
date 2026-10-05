@@ -1929,6 +1929,18 @@ if (engine === 'webkit' && eventDuration !== Infinity) {
   ng.push(`⑫-a native EVENT HLS の duration が Infinity でないため対象経路を測れない (${eventDuration})`)
 }
 const eventOffsetCursor = playlistRequests.length
+// 再生開始直後の押下は WebKit で取りこぼす（待たずに押すと offset への張り直しが起きなかった）。
+// 録画尺がシークバーに反映され、再生が進み始めるまで待ってから押す。
+await page.waitForFunction(() => {
+  const slider = document.querySelector('[data-testid="seek-scrub"]')
+  const element = document.querySelector('video')
+  return Number(slider?.getAttribute('aria-valuemax')) > 0 && element !== null && !element.paused
+}, undefined, { timeout: 5000 }).catch(() => {})
+await eventVideo.evaluate((element) => {
+  element.pause()
+  element.currentTime = 0
+  element.focus()
+})
 await page.keyboard.press('9')
 const eventOffsetDeadline = Date.now() + 10_000
 while (
@@ -2065,17 +2077,35 @@ log(`  HLS TextTrack: ${JSON.stringify(raisedCue)}`)
 if (raisedCue.kind === null) {
   ng.push('⑫ 原本 HLS の subtitle TextTrack がない')
 } else if (raisedCue.cueCount === 0 && engine === 'webkit') {
-  log('  WebKit の native HLS は cue を JS に公開しないため、スクリーンショットで描画位置を測る')
+  log('  WebKit の native HLS は cue を JS に公開せず、cue.line の書き換えは効かない（下の画素測定はブラウザ既定配置の観測）')
 } else if (raisedCue.cueCount === 0) {
   ng.push(`⑫ 原本 HLS の cue を取得できない (${JSON.stringify(raisedCue)})`)
 } else if (typeof raisedCue.cueLine !== 'number' || raisedCue.cueLine >= 0) {
   ng.push(`⑫ 原本 HLS の subtitle cue が操作バーの上へ移動していない (${JSON.stringify(raisedCue)})`)
 }
 
-const subtitleControlsBox = await page.locator('[data-testid="player-controls-bottom"]').boundingBox()
-if (!subtitleControlsBox) {
-  ng.push('⑫ 原本 HLS: 字幕位置を比べる操作バーの矩形が取れない')
-} else if (raisedCue.kind !== null) {
+// 字幕と操作バーの位置は全画面を抜けた通常レイアウトで、同じ viewport 2 つについて測る。以前は Escape で
+// 全画面を抜けたか確かめておらず、Chromium だけ全画面のまま測って操作バー上端が 450.5、WebKit は 188 と
+// 別の状態を比べていた（viewport も既定の 1280 でなく直前の項目が残した 400 だった）。
+if (await page.evaluate(() => document.fullscreenElement !== null)) {
+  await page.evaluate(() => document.exitFullscreen())
+}
+await page.waitForFunction(() => document.fullscreenElement === null, undefined, { timeout: 3000 })
+  .catch(() => ng.push('⑫ 字幕位置の測定前に全画面を抜けられない'))
+// WebKit の native HLS は cue を JS に公開しないため、cue.line の書き換えは WebKit では何もしない。
+// ここで測るのはブラウザ既定の字幕位置の観測で、実装の検証ではないので WebKit は NG にしない。
+for (const viewport of [{ width: 1280, height: 900 }, { width: 400, height: 860 }]) {
+  const label = `${viewport.width}x${viewport.height}`
+  await page.setViewportSize(viewport)
+  await page.evaluate(() => window.scrollTo(0, 0))
+  await page.locator('[data-testid="recording-player-shell"]').hover()
+  await page.waitForTimeout(300)
+  const subtitleControlsBox = await page.locator('[data-testid="player-controls-bottom"]').boundingBox()
+  if (!subtitleControlsBox) {
+    ng.push(`⑫ 原本 HLS ${label}: 字幕位置を比べる操作バーの矩形が取れない`)
+    continue
+  }
+  if (raisedCue.kind === null) continue
   await video.evaluate((element) => {
     element.pause()
     const track = Array.from(element.textTracks).find((candidate) => candidate.kind === 'subtitles')
@@ -2094,12 +2124,14 @@ if (!subtitleControlsBox) {
     ? null
     : captionPixels.bounds.y + captionPixels.bounds.height
   log(
-    `  subtitle visible pixels=${captionPixels.changedPixels}, bounds=${JSON.stringify(captionPixels.bounds)}, controlsTop=${subtitleControlsBox.y}`,
+    `  ${engine === 'webkit' ? '観測(WebKit の既定配置。実装の検証ではない)' : '測定'} ${label}: subtitle visible pixels=${captionPixels.changedPixels}, bounds=${JSON.stringify(captionPixels.bounds)}, controlsTop=${subtitleControlsBox.y}, fullscreen=${await page.evaluate(() => document.fullscreenElement !== null)}`,
   )
   if (captionPixels.changedPixels < 20 || captionBottom === null) {
-    ng.push('⑫ 原本 HLS: 字幕を有効にしても画面上の描画変化を測れない')
+    ng.push(`⑫ 原本 HLS ${label}: 字幕を有効にしても画面上の描画変化を測れない`)
   } else if (captionBottom >= subtitleControlsBox.y - 4) {
-    ng.push(`⑫ 原本 HLS: 字幕が操作バーに重なる (${JSON.stringify({ captionBounds: captionPixels.bounds, controlsTop: subtitleControlsBox.y })})`)
+    const overlap = `字幕が操作バーに重なる ${label} (${JSON.stringify({ captionBounds: captionPixels.bounds, controlsTop: subtitleControlsBox.y })})`
+    if (engine === 'webkit') log(`  観測: WebKit ${overlap}`)
+    else ng.push(`⑫ 原本 HLS: ${overlap}`)
   }
 }
 

@@ -1647,9 +1647,19 @@ const vodStart = await page.evaluate(() => {
     axisSeconds: Number(slider?.getAttribute('aria-valuenow')),
   }
 })
+// 旧判定（offset = floor(chasedMs/1000) のセッションで開く前提 + local currentTime）も残す。
+// 新しいシークバー軸の判定を足しただけで、offset セッションの前提は捨てていない。
+const vodOffset = Math.floor(chasedMs / 1000)
+const vodOffsetFrame = Math.floor(vodOffset * 30_000 / 1_001)
+const vodRecordingPosition = vodOffsetFrame * 1_001 / 30_000 + (vodStart.localSeconds ?? NaN)
 log(
-  `  追っかけの保存位置 ${(chasedMs / 1000).toFixed(2)} 秒 → VOD の開始位置 ${JSON.stringify(vodStart)}`,
+  `  追っかけの保存位置 ${(chasedMs / 1000).toFixed(2)} 秒 → VOD の開始位置 ${JSON.stringify(vodStart)}、offset セッション換算 ${vodRecordingPosition.toFixed(2)} 秒`,
 )
+if (!(Math.abs(vodRecordingPosition - chasedMs / 1000) <= 3)) {
+  ng.push(
+    `⑧ 完了後の VOD が追っかけで見た位置から始まらない（保存 ${(chasedMs / 1000).toFixed(2)} 秒 → offset セッション換算 ${vodRecordingPosition.toFixed(2)} 秒）`,
+  )
+}
 if (!Number.isFinite(vodStart.axisSeconds) || Math.abs(vodStart.axisSeconds - chasedMs / 1000) > 3) {
   ng.push(
     `⑧ 完了後の VOD が追っかけで見た位置から始まらない（保存 ${(chasedMs / 1000).toFixed(2)} 秒 → 軸 ${vodStart.axisSeconds} 秒、local currentTime ${vodStart.localSeconds} 秒）`,

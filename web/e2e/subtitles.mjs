@@ -261,7 +261,7 @@ log('\n=== ② ライブ: HLS 字幕 track・キー操作・cue 位置 ===')
       log(`  HLS 字幕 tracks: ${JSON.stringify(result.tracks)}`)
       const cueLine = result.tracks.find((track) => track.cueCount > 0)?.cueLine
       if (result.tracks.every((track) => track.cueCount === 0) && engine === 'webkit') {
-        log('  WebKit の native HLS は cue を JS に公開しないため、スクリーンショットで描画位置を測る')
+        log('  WebKit の native HLS は cue を JS に公開せず、cue.line の書き換えは効かない（下の画素測定はブラウザ既定配置の観測で、実装の検証ではない）')
       } else if (typeof cueLine !== 'number' || cueLine >= 0) {
         ng.push(`② ライブ: HLS 字幕 cue が操作バーの上へ移動していない (${JSON.stringify(result.tracks)})`)
       }
@@ -299,12 +299,14 @@ log('\n=== ② ライブ: HLS 字幕 track・キー操作・cue 位置 ===')
           ? null
           : captionPixels.bounds.y + captionPixels.bounds.height
         log(
-          `  subtitle visible pixels=${captionPixels.changedPixels}, bounds=${JSON.stringify(captionPixels.bounds)}, controlsTop=${controlsBox.y}`,
+          `  ${engine === 'webkit' ? '観測(WebKit の既定配置。実装の検証ではない) ' : '測定 '}subtitle visible pixels=${captionPixels.changedPixels}, bounds=${JSON.stringify(captionPixels.bounds)}, controlsTop=${controlsBox.y}`,
         )
         if (captionPixels.changedPixels < 20 || captionBottom === null) {
           ng.push('② ライブ: 字幕を有効にしても画面上の描画変化を測れない')
         } else if (captionBottom >= controlsBox.y - 4) {
-          ng.push(`② ライブ: 字幕が操作バーに重なる (${JSON.stringify({ captionBounds: captionPixels.bounds, controlsTop: controlsBox.y })})`)
+          const overlap = `② ライブ: 字幕が操作バーに重なる (${JSON.stringify({ captionBounds: captionPixels.bounds, controlsTop: controlsBox.y })})`
+          if (engine === 'webkit') log(`  観測: WebKit ${overlap}`)
+          else ng.push(overlap)
         }
       }
       await liveVideo.evaluate((video) => {

@@ -2786,6 +2786,25 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     )
   })
 
+  it('native EVENT playlist で → キーは現在位置の 10 秒先の offset へ張り直す', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    render(<LivePlayer mode="original-vod" site="default" recordingId={409} recordingDurationMs={30_000} />)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'duration', { value: Infinity, configurable: true })
+    Object.defineProperty(video, 'seekable', {
+      value: { length: 1, start: () => 0, end: () => 8 },
+      configurable: true,
+    })
+    fireEvent.keyDown(video, { key: 'ArrowRight' })
+
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+    expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/409/original-vod/offset/10/playlist.m3u8',
+    )
+  })
+
   it('原本は native controls を外して共通バーを使い、音声・視聴状態を操作できる', async () => {
     const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
     vi.stubGlobal('fetch', fetchMock)

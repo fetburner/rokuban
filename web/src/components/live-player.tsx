@@ -405,8 +405,6 @@ export function LivePlayer({
   const isRecordingPlayback = isChase || isOriginalVOD
   const videoRef = useRef<HTMLVideoElement>(null)
   const frameRef = useRef<HTMLDivElement>(null)
-  const keyboardSeekRef = useRef<(seconds: number) => void>(() => {})
-  const keyboardSeekFractionRef = useRef<(fraction: number) => boolean>(() => false)
   const hlsRef = useRef<HlsLike | null>(null)
   const isOriginalScrubbingRef = useRef(false)
   const offsetOriginSeconds = useCallback(
@@ -636,9 +634,24 @@ export function LivePlayer({
   // HLS subtitle-track classification; live has no seek callbacks and chase has no ratio seek.
   const frame = usePlayerFrame(videoRef, frameRef, undefined, {
     fullscreenContainerRef,
-    onSeekBy: isRecordingPlayback ? (seconds) => keyboardSeekRef.current(seconds) : undefined,
+    // commitChaseSeek / commitOriginalSeek は後方の const。usePlayerFrame がコールバックを ref に入れ直し、
+    // キー押下（render 後）にだけ呼ぶので、宣言前でも TDZ にならない。
+    onSeekBy: isRecordingPlayback
+      ? (seconds) => {
+          const video = videoRef.current
+          if (!video) return
+          if (isChase) {
+            commitChaseSeek(chaseHeadOffsetSeconds + offsetSessionSeconds + video.currentTime + seconds)
+          } else if (isOriginalVOD) {
+            commitOriginalSeek(sessionStartSeconds + video.currentTime + seconds)
+          }
+        }
+      : undefined,
     onSeekToFraction: isOriginalVOD && originalDurationSeconds > 0
-      ? (fraction) => keyboardSeekFractionRef.current(fraction)
+      ? (fraction) => {
+          commitOriginalSeek(originalDurationSeconds * fraction)
+          return true
+        }
       : undefined,
     onSavePosition: isRecordingPlayback ? saveCurrentPosition : undefined,
     savePositionKey: `${mode}:${recordingId}:${sessionStartSeconds}:${offsetSessionKey}`,
@@ -1710,22 +1723,6 @@ export function LivePlayer({
     if (result.type === 'source-changed' || result.type === 'unavailable') return
     setOriginalCurrentSeconds(target)
   }
-  useEffect(() => {
-    keyboardSeekRef.current = (seconds) => {
-      const video = videoRef.current
-      if (!video) return
-      if (isChase) {
-        commitChaseSeek(chaseHeadOffsetSeconds + offsetSessionSeconds + video.currentTime + seconds)
-      } else if (isOriginalVOD) {
-        commitOriginalSeek(sessionStartSeconds + video.currentTime + seconds)
-      }
-    }
-    keyboardSeekFractionRef.current = (fraction) => {
-      if (!isOriginalVOD || originalDurationSeconds <= 0) return false
-      commitOriginalSeek(originalDurationSeconds * fraction)
-      return true
-    }
-  })
   const seekToOriginalBoundary = (boundaryMs: number) => {
     const media = videoRef.current
     if (!media) return
