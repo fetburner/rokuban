@@ -1472,10 +1472,23 @@ delete offsetRecording.watchedAt
 
   // ⑤-f 末尾付近（99% = 62.4 秒。映像は 60 秒）のクリックは 416 になる。エラーにせず、
   // 有効な最後の offset へ丸めて再生する。
-  // マウスで押したボタンのフォーカスでは出したままにしないので、バーを出してから押す。
+  // ⑤-e2 の境界選択は明示の一時停止なので、再生中という前提をここで作り、成立を確認する。
+  // マウスで押したボタンのフォーカスではバーを出したままにしないので、先にバーを表示する。
   // ボタンの click で頁がスクロールしうるので、帯の位置は測り直す。
   await offsetPage.mouse.move(frameBox.x + frameBox.width / 2, frameBox.y + frameBox.height / 2)
   await offsetPage.waitForTimeout(300)
+  const clickedPlay = await offsetPage.locator('[data-testid="player-controls"]')
+    .getByRole('button', { name: '再生', exact: true })
+    .click({ timeout: 5000 })
+    .then(() => true, () => false)
+  const startedPlaying = clickedPlay && await offsetPage.waitForFunction(() => {
+    const element = document.querySelector('video')
+    return element !== null && !element.paused
+  }, undefined, { timeout: 5000 }).then(() => true, () => false)
+  const beforeEnd = await sampleOffsetPlayer(offsetPage)
+  if (!startedPlaying || beforeEnd.paused !== false) {
+    ng.push(`⑤-f の前提: 再生中でない（${JSON.stringify(beforeEnd)}）`)
+  }
   const endScrubBox = await scrub.boundingBox()
   const requestsBeforeEnd = offsetRequests.length
   await offsetPage.mouse.click(endScrubBox.x + endScrubBox.width * 0.99, endScrubBox.y + endScrubBox.height / 2)
