@@ -170,16 +170,9 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 	if err != nil {
 		return cmFailure("setup", fmt.Errorf("resolving original path: %w", err))
 	}
-	jobRoot := filepath.Join(w.ScratchDir, "cm-detect")
-	if err := os.MkdirAll(jobRoot, 0o700); err != nil {
-		return cmFailure("setup", fmt.Errorf("creating scratch root: %w", err))
-	}
-	jobDir := filepath.Join(jobRoot, strconv.FormatInt(jobID, 10))
-	if err := os.RemoveAll(jobDir); err != nil {
-		return cmFailure("setup", fmt.Errorf("cleaning previous scratch directory: %w", err))
-	}
-	if err := os.Mkdir(jobDir, 0o700); err != nil {
-		return cmFailure("setup", fmt.Errorf("creating job scratch directory: %w", err))
+	jobDir, err := newJobScratchDir(w.ScratchDir, "cm-detect", jobID)
+	if err != nil {
+		return cmFailure("setup", fmt.Errorf("creating scratch directory: %w", err))
 	}
 	defer func() {
 		if err := os.RemoveAll(jobDir); err != nil {

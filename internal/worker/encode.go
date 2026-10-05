@@ -272,16 +272,11 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 		return fmt.Errorf("resolving encoded path: %w", err)
 	}
 
-	scratchDir, scratchOut := w.scratchPaths(job.ID, profile)
-	if err := os.MkdirAll(filepath.Dir(scratchDir), 0o755); err != nil {
-		return fmt.Errorf("creating scratch root: %w", err)
+	scratchDir, err := newJobScratchDir(w.ScratchDir, "encode", job.ID)
+	if err != nil {
+		return fmt.Errorf("creating encode scratch directory: %w", err)
 	}
-	if err := os.RemoveAll(scratchDir); err != nil {
-		return fmt.Errorf("cleaning previous scratch directory: %w", err)
-	}
-	if err := os.Mkdir(scratchDir, 0o755); err != nil {
-		return fmt.Errorf("creating scratch dir: %w", err)
-	}
+	scratchOut := filepath.Join(scratchDir, "out."+profile.Container)
 	defer func() {
 		// 成功・失敗を問わず scratch を best-effort で掃除（途中成果物は cleanup が
 		// 回収する想定だが、正常系では残さない）。
@@ -1099,16 +1094,6 @@ func (w *EncodeWorker) loadOriginal(ctx context.Context, recordingID int64) (sql
 		return row, fmt.Errorf("loading original media_asset: %w", err)
 	}
 	return row, nil
-}
-
-func (w *EncodeWorker) scratchPaths(jobID int64, profile config.EncodeProfile) (dir, out string) {
-	base := w.ScratchDir
-	if base == "" {
-		base = os.TempDir()
-	}
-	dir = filepath.Join(base, "encode", strconv.FormatInt(jobID, 10))
-	out = filepath.Join(dir, "out."+profile.Container)
-	return dir, out
 }
 
 func probeHasSubtitles(ctx context.Context, ffprobe, input string, run func(context.Context, string, ...string) ([]byte, error)) (bool, error) {

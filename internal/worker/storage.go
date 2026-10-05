@@ -60,9 +60,9 @@ type StorageSyncWorker struct {
 	// の validate:"required" を信頼しきらず、テストの部分構成でも安全に失敗する）。
 	MediaDir string
 
-	// ScratchDir は storage.scratch_dir。空文字列は「観測しない」を意味する ---
-	// config 側は既定値 (/var/tmp/rokuban) を持つため、明示的に空にした場合だけ
-	// ここに空文字列が届く。
+	// ScratchDir は storage.scratch_dir。worker ロールは空の scratch_dir では起動しない
+	// （cmd/rokuban の起動時検証）。空文字列を「観測しない」と扱うのは、テストの
+	// 部分構成で statfs("") に落ちないための防御である。
 	ScratchDir string
 
 	// Stat は 1 root を観測する関数。nil なら statDisk を使う。
@@ -106,9 +106,8 @@ func (w *StorageSyncWorker) Work(ctx context.Context, _ *river.Job[jobs.StorageS
 	desired := make([]string, 0, len(allRoots))
 	for _, r := range allRoots {
 		if r.path == "" {
-			// 空文字列は「この root は観測しない」を意味する（scratch_dir を
-			// 明示的に空にした場合。media_dir が空のケースは上の早期リターンで
-			// 弾いている）。
+			// 空文字列の root は観測しない（scratch_dir が空で届くのはテストの
+			// 部分構成だけ。media_dir が空のケースは上の早期リターンで弾いている）。
 			continue
 		}
 		roots = append(roots, r)

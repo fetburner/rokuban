@@ -3213,9 +3213,8 @@ func mirakcRecordServer(t *testing.T, tsData []byte, contentPath *string, conten
 // media_assets.rel_path が "sites/tokyo/" で始まり、実ファイルがその下に置かれる
 // （contentPath に階層があってもその下に入る）。
 //
-// determineRelPath の前置行（"relPath = "sites/" + args.Site + "/" + relPath"）を
-// 削って前置なしに戻すと、rel_path が "20240101/prog.m2ts" のままになりこの
-// テストは失敗する（アサーション失敗。ビルドは通る）。
+// catalog.SiteRelPath が site 前置をしなくなると rel_path が
+// "20240101/prog.m2ts" のままになり、このテストは失敗する。
 func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 	tsData := makeTSData(10)
 	srv := mirakcRecordServer(t, tsData, strPtr("20240101/prog.m2ts"), "/recording/20240101/prog.m2ts")
@@ -3310,15 +3309,12 @@ func TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath(t *testing.T) 
 }
 
 // TestIngestWorker_DegenerateContentPath_Rejected は、mirakc の contentPath /
-// Content.Path がどちらも空という縮退したレスポンスを、前置前に明示的に拒否する
-// ことを固定する。
+// Content.Path がどちらも空という縮退したレスポンスを拒否し、誤った保存先を
+// 作らないことを固定する。
 //
-// 前置なしの実装なら relPath = filepath.Base("") = "." が mediapath.Resolve に
-// そのまま渡り "path escapes the media directory" で弾かれていたが、前置後は
-// "sites/{site}/." が Join/Clean で "sites/{site}" という一見正当なパスになって
-// 素通りしてしまう（PR #196 の追レビューで発見）。determineRelPath の
-// `if relPath == "." || relPath == "/"` のガードを削るとこのテストが失敗する
-// （"Work() error = nil, want non-nil" というアサーション失敗。ビルドは通る）。
+// 空パスを前置してから解決すると "sites/{site}/." が site directory になり、
+// ファイルを指す rel_path として通ってしまう。catalog.SiteRelPath の直接テストで
+// 検査を固定し、この経路では不正な保存先を作らないことも確認する。
 func TestIngestWorker_DegenerateContentPath_Rejected(t *testing.T) {
 	tsData := makeTSData(10)
 	// ContentPath も Content.Path も空。
@@ -3368,6 +3364,7 @@ func TestIngestWorker_ReservedStorageBasenameRejected(t *testing.T) {
 	for _, contentPath := range []string{
 		".rokuban-ingest-user.m2ts",
 		".rokuban-rel-path-lock-user.m2ts",
+		".rokuban-encode-user.m2ts",
 		".rokuban-media-asset-user.m2ts",
 	} {
 		t.Run(contentPath, func(t *testing.T) {

@@ -141,6 +141,82 @@ func TestThumbnailWorkerPublishesUnderRelPathLock(t *testing.T) {
 		}, tinyJPEG)
 }
 
+func TestThumbnailWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	scratchDir := t.TempDir()
+	id := seedRecordingWithOriginal(t, pool, mediaDir, "sites/default/thumb-overlap.m2ts", nil, []byte("original"))
+
+	paths := make(chan string, 2)
+	release := make(chan struct{})
+	results := make(chan error, 2)
+	w := &ThumbnailWorker{
+		Pool: pool, MediaDir: mediaDir, ScratchDir: scratchDir, FFmpeg: "ffmpeg", FFprobe: "ffprobe",
+		runCmd: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			if strings.Contains(name, "ffprobe") || containsArg(args, "format=duration") {
+				return []byte("100\n"), nil
+			}
+			if len(args) == 0 {
+				return nil, errors.New("ffmpeg: no args")
+			}
+			out := args[len(args)-1]
+			paths <- out
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+				return nil, err
+			}
+			return nil, os.WriteFile(out, tinyJPEG, 0o644)
+		},
+	}
+
+	for attempt := 3; attempt <= 4; attempt++ {
+		job := &river.Job[ThumbnailJobArgs]{
+			JobRow: &rivertype.JobRow{ID: 42, Attempt: attempt},
+			Args:   ThumbnailJobArgs{RecordingID: id},
+		}
+		go func(job *river.Job[ThumbnailJobArgs]) {
+			results <- w.Work(context.Background(), job)
+		}(job)
+	}
+
+	gotPaths := make([]string, 0, 2)
+	deadline := time.After(10 * time.Second)
+	pathsTimedOut := false
+	for len(gotPaths) < 2 {
+		select {
+		case path := <-paths:
+			gotPaths = append(gotPaths, path)
+		case <-deadline:
+			pathsTimedOut = true
+		}
+		if pathsTimedOut {
+			break
+		}
+	}
+	close(release)
+
+	for range 2 {
+		select {
+		case err := <-results:
+			if err != nil {
+				t.Errorf("ThumbnailWorker.Work: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("overlapping thumbnail attempts did not finish after ffmpeg was released")
+		}
+	}
+	if len(gotPaths) != 2 {
+		t.Fatalf("ffmpeg output paths = %v, want both overlapping attempts to reach extraction", gotPaths)
+	}
+	if gotPaths[0] == gotPaths[1] {
+		t.Fatalf("overlapping attempts share ffmpeg output path %q", gotPaths[0])
+	}
+}
+
 func TestSeekTilesWorkerPublishesUnderRelPathLock(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
@@ -263,5 +339,62 @@ func TestNewWorkerScratchDirIsUniqueForSameJobAndAttempt(t *testing.T) {
 		if info, err := os.Stat(path); err != nil || !info.IsDir() {
 			t.Errorf("scratch path %q is not a directory: info=%v err=%v", path, info, err)
 		}
+	}
+}
+
+func TestScratchDirectoryHelpersRejectEmptyRoot(t *testing.T) {
+	cases := []struct {
+		name string
+		make func() (string, error)
+	}{
+		{
+			name: "attempt-unique",
+			make: func() (string, error) { return newWorkerScratchDir("", "thumbnail", 42, 3) },
+		},
+		{
+			name: "job-fixed",
+			make: func() (string, error) { return newJobScratchDir("", "encode", 42) },
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if dir, err := tc.make(); err == nil || err.Error() != "scratch dir is empty" {
+				t.Fatalf("scratch directory = %q, error = %v, want empty-root error", dir, err)
+			}
+		})
+	}
+}
+
+func TestNewJobScratchDirClearsPreviousResidue(t *testing.T) {
+	root := t.TempDir()
+	dir, err := newJobScratchDir(root, "cm_detect", 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, "stale-output")
+	if err := os.WriteFile(marker, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	otherJobDir, err := newJobScratchDir(root, "cm_detect", 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if otherJobDir == dir {
+		t.Fatalf("different jobs share scratch directory %q", dir)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("creating another job's scratch directory changed the first job's residue: %v", err)
+	}
+
+	restartedDir, err := newJobScratchDir(root, "cm_detect", 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restartedDir != dir {
+		t.Fatalf("restarted scratch = %q, want stable path %q", restartedDir, dir)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("stale output stat error = %v, want os.ErrNotExist", err)
 	}
 }

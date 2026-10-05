@@ -181,11 +181,26 @@ func rescueAssetKind(name string) (kind string, profile *string, ok bool) {
 }
 
 // SiteRelPathPrefix は原本 rel_path の site 名前空間の固定 1 段目
-// （docs/storage/contract.md §「原本の sites/{site}/ 前置」）。書き手は
-// internal/worker/ingest.go の determineRelPath、読み手はここ
-// （classifySiteForRescuedFile）の 2 つだけなので、リテラルの重複を避けてこの定数で
-// 揃える。
+// （docs/storage/contract.md §「原本の sites/{site}/ 前置」）。書き手の
+// SiteRelPath と読み手の classifySiteForRescuedFile がこの定数を共有する。
 const SiteRelPathPrefix = "sites/"
+
+// SiteRelPath は原本の rel_path に site 名前空間を前置する。
+// rel_path がファイルを指さない場合や予約名ならエラーにする。
+func SiteRelPath(site, relPath string) (string, error) {
+	if relPath == "" || relPath == "." || relPath == "/" || strings.HasSuffix(relPath, "/") {
+		return "", fmt.Errorf("rel_path %q does not name a file", relPath)
+	}
+	base := filepath.Base(relPath)
+	if base == "." || base == ".." {
+		return "", fmt.Errorf("rel_path %q does not name a file", relPath)
+	}
+	if mediapath.IsIngestTempFile(base) || mediapath.IsMediaRelPathLockFile(base) ||
+		mediapath.IsEncodeTempFile(base) || mediapath.IsGeneratedAssetTempFile(base) {
+		return "", fmt.Errorf("rel_path %q uses reserved storage filename %q", relPath, base)
+	}
+	return SiteRelPathPrefix + site + "/" + relPath, nil
+}
 
 // classifySiteForRescuedFile は走査で見つかったファイルの site を決める。
 // 戻り値の site が空なら、ファイルは有効な `sites/{site}/` 前置を持たず、
