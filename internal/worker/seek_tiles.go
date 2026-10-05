@@ -16,6 +16,7 @@ import (
 	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
@@ -261,16 +262,7 @@ func (w *SeekTilesWorker) probeVideoDuration(ctx context.Context, inputPath stri
 // probeVideoDuration は run 経由で ffprobe を呼び、最初の映像ストリームの長さを返す。
 // SeekTilesWorker と CMDetectWorker が共有する。
 func probeVideoDuration(ctx context.Context, run func(context.Context, string, ...string) ([]byte, error), ffprobe, inputPath string) (time.Duration, error) {
-	if ffprobe == "" {
-		ffprobe = "ffprobe"
-	}
-	out, err := run(ctx, ffprobe,
-		"-v", "error",
-		"-select_streams", "v:0",
-		"-show_entries", "stream=duration",
-		"-of", "default=noprint_wrappers=1:nokey=1",
-		inputPath,
-	)
+	out, err := run(ctx, ffargs.FFprobePath(ffprobe), ffargs.VideoStreamDurationProbeArgs(inputPath)...)
 	if err != nil {
 		return 0, err
 	}
@@ -293,17 +285,14 @@ func probeVideoDuration(ctx context.Context, run func(context.Context, string, .
 // 左右が黒帯になる）。JPEG は SAR を運ばないので、これが無いと anamorphic な
 // 地デジがブラウザで横に潰れて見える（poster と同じ理由）。
 func (w *SeekTilesWorker) extractTile(ctx context.Context, inputPath, outputPath string, at time.Duration) error {
-	ffmpeg := w.FFmpeg
-	if ffmpeg == "" {
-		ffmpeg = "ffmpeg"
-	}
+	ffmpeg := ffargs.FFmpegPath(w.FFmpeg)
 	args := []string{
 		"-y",
 		"-ss", formatSeekSeconds(at),
 		"-i", inputPath,
 		"-frames:v", "1",
 		"-vf", fmt.Sprintf(
-			"scale=round(iw*sar/2)*2:ih,setsar=1,"+
+			ffargs.SquarePixelsFilter+","+
 				"scale=%d:%d:force_original_aspect_ratio=decrease,"+
 				"pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1",
 			seekTilesWidth, seekTilesHeight, seekTilesWidth, seekTilesHeight),
@@ -331,10 +320,7 @@ func (w *SeekTilesWorker) extractTile(ctx context.Context, inputPath, outputPath
 // 余りは ffmpeg の tile フィルタが黒で埋める（クライアントは列数と 1 枚の
 // 大きさだけを知っていれば位置を計算できる）。
 func (w *SeekTilesWorker) composeSheet(ctx context.Context, framesDir, outputPath string, rows int) error {
-	ffmpeg := w.FFmpeg
-	if ffmpeg == "" {
-		ffmpeg = "ffmpeg"
-	}
+	ffmpeg := ffargs.FFmpegPath(w.FFmpeg)
 	args := []string{
 		"-y",
 		"-start_number", "0",

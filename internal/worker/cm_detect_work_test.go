@@ -208,6 +208,16 @@ func newCMDetectTestWorker(pool *pgxpool.Pool, mediaDir string, tools cmToolset)
 	}
 }
 
+func cmArgumentValue(argsText, name string) (string, bool) {
+	args := strings.Split(strings.TrimSpace(argsText), "\n")
+	for i, arg := range args {
+		if arg == name && i+1 < len(args) {
+			return args[i+1], true
+		}
+	}
+	return "", false
+}
+
 func seedCMRecording(t *testing.T, pool *pgxpool.Pool, mediaDir string, eventID int32) int64 {
 	t.Helper()
 	id := insertTestRecordingWithEventID(t, pool, eventID)
@@ -227,6 +237,30 @@ func cmJob(recordingID int64, attempt int) *river.Job[jobs.CMDetectJobArgs] {
 	return &river.Job[jobs.CMDetectJobArgs]{
 		JobRow: &rivertype.JobRow{ID: 4242, Attempt: attempt, MaxAttempts: 3},
 		Args:   jobs.CMDetectJobArgs{RecordingID: recordingID},
+	}
+}
+
+func TestCMDetectWorkRejectsEmptyScratchInsteadOfUsingCurrentDirectory(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	id := seedCMRecording(t, pool, mediaDir, 929)
+	tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000")
+	workingDir := t.TempDir()
+	t.Chdir(workingDir)
+
+	w := newCMDetectTestWorker(pool, mediaDir, tools)
+	w.ScratchDir = ""
+	err := w.Work(ctx, cmJob(id, 1))
+	if err == nil || !strings.Contains(err.Error(), "scratch dir is empty") {
+		args, readErr := os.ReadFile(tools.logoframeArgs)
+		t.Fatalf("Work error = %v, want empty-scratch error; logoframe args = %q (read error %v)", err, args, readErr)
+	}
+	if _, err := os.Stat(filepath.Join(workingDir, "cm-detect")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("current-directory cm-detect scratch stat error = %v, want os.ErrNotExist", err)
+	}
+	if _, err := os.Stat(tools.logoframeArgs); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("logoframe ran with empty scratch (stat error %v)", err)
 	}
 }
 
@@ -250,6 +284,15 @@ func TestCMDetectWorkKeepsCommercialsBeyondProgramDurationAndStoresLogoPreview(t
 
 	if err := newCMDetectTestWorker(pool, mediaDir, tools).Work(ctx, cmJob(id, 1)); err != nil {
 		t.Fatalf("Work: %v", err)
+	}
+	args, err := os.ReadFile(tools.logoframeArgs)
+	if err != nil {
+		t.Fatalf("reading logoframe args: %v", err)
+	}
+	logoDir, ok := cmArgumentValue(string(args), "-logo-dir")
+	wantLogoDir := filepath.Join(mediaDir, "scratch", "cm-detect", "4242", "logos")
+	if !ok || logoDir != wantLogoDir {
+		t.Errorf("logoframe -logo-dir = %q (found %v), want job-ID scratch path %q", logoDir, ok, wantLogoDir)
 	}
 	var ranges string
 	if err := pool.QueryRow(ctx, `SELECT cm_ranges::text FROM recording_cm_detections WHERE recording_id = $1`, id).Scan(&ranges); err != nil {
@@ -413,6 +456,11 @@ func TestCMLogoCandidateWorkerCreatesReadyCandidateFromEmptyLogoDir(t *testing.T
 	argText := string(args)
 	if !strings.Contains(argText, "-logo-area") || strings.Contains(argText, "-seek") || strings.Contains(argText, "-frames") {
 		t.Errorf("candidate logoframe args = %q, want area and no seek/frames", argText)
+	}
+	logoDir, ok := cmArgumentValue(argText, "-logo-dir")
+	wantLogoDir := filepath.Join(mediaDir, "scratch", "cm-logo-candidate", "4343", "logos")
+	if !ok || logoDir != wantLogoDir {
+		t.Errorf("candidate logoframe -logo-dir = %q (found %v), want job-ID scratch path %q", logoDir, ok, wantLogoDir)
 	}
 	if n := countLogos(t, pool); n != 0 {
 		t.Errorf("cm_logos rows = %d, want 0 until adoption", n)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/reservation"
@@ -105,6 +106,48 @@ func TestImportLibrary_OriginalRelPathGetsSitePrefix(t *testing.T) {
 	const want = "sites/tokyo/imported/show.ts"
 	if relPath != want {
 		t.Errorf("rel_path = %q, want %q (site not prefixed onto the original asset path)", relPath, want)
+	}
+}
+
+func TestImportLibrary_RejectsReservedOriginalFilename(t *testing.T) {
+	for _, reservedPath := range []string{
+		".rokuban-ingest-42.ts",
+		"archive/.rokuban-rel-path-lock-deadbeef.ts",
+		"archive/.rokuban-encode-job.ts",
+		"archive/.rokuban-media-asset-stage.ts",
+	} {
+		t.Run(reservedPath, func(t *testing.T) {
+			pool := testutil.SetupDB(t)
+			mediaDir := t.TempDir()
+			fullPath := filepath.Join(mediaDir, "sites", "tokyo", filepath.FromSlash(reservedPath))
+			if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(fullPath, []byte("bytes"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			items := []LibraryItem{{
+				ChannelID:   3273601024,
+				ChannelType: "GR",
+				StartAt:     1785000000000,
+				EndAt:       1785001800000,
+				Name:        "予約名の録画",
+				VideoFiles:  []LibraryVideoFile{{Type: "ts", RelPath: reservedPath}},
+			}}
+
+			if _, err := ImportLibrary(context.Background(), pool, mediaDir, "tokyo", items); err == nil {
+				t.Fatal("ImportLibrary accepted a reserved original filename")
+			} else if !strings.Contains(err.Error(), "reserved storage filename") {
+				t.Fatalf("ImportLibrary error = %v, want reserved storage filename", err)
+			}
+			var assets int
+			if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM media_assets`).Scan(&assets); err != nil {
+				t.Fatal(err)
+			}
+			if assets != 0 {
+				t.Errorf("media_assets = %d, want 0 after rejecting the reserved filename", assets)
+			}
+		})
 	}
 }
 

@@ -44,7 +44,7 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 | `db.api_statement_timeout` | `0`（= 30s） | api ロールを含むプロセスにだけ適用（同上） |
 | `mirakcs` | —（必須。既定なし） | mirakc エンドポイントの `{site, url}` 配列。`site` も既定なしで各要素必須（下記「mirakc レジストリ」） |
 | `storage.media_dir` | —（必須） | 原本 ingest 先。fsync・close・同一 FS rename・親ディレクトリ fsync を保証するローカル FS / JuiceFS / NFS。FUSE S3 は原本 ingest 先にしない |
-| `storage.scratch_dir` | `/var/tmp/rokuban` | ローカルスクラッチ |
+| `storage.scratch_dir` | `/var/tmp/rokuban` | ローカルスクラッチ。worker ロールでは空にできない（起動時に拒否する） |
 | `storage.accel_location` | `""`（Go が直接配る） | X-Accel-Redirect の internal location |
 | `ingest.concurrency` | `3` | mirakc サイトあたりの同時転送数。`チューナー数 + 全速 pull の許容本数（1〜2）` で、既定 3 は 2 チューナー機の下端（[録画](recording.md) §5.4）。4 チューナー機では 5〜6。**接続プールの予算はこの値に追随する**（[DB 運用](operations/database.md)） |
 | `ingest.stall_timeout` | `30s` | 転送の無進捗検知（下記「ingest.stall_timeout」） |

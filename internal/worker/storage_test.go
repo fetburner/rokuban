@@ -164,7 +164,8 @@ func TestStorageSyncWorker_ConfigChangeSweepsRemovedRoot(t *testing.T) {
 		t.Fatalf("expected 2 rows before config change")
 	}
 
-	// scratch_dir を空にした運用者の再設定 + プロセス再起動を模す。
+	// 対象集合から scratch root が外れたパスを模す（本番の worker は空の
+	// scratch_dir で起動しないので、ここでは部分構成で外す）。
 	w.ScratchDir = ""
 	if err := runStorageSync(t, w); err != nil {
 		t.Fatalf("second Work() error: %v", err)
@@ -380,7 +381,8 @@ func TestStorageSyncWorker_MetricsClearedWhenRootRemoved(t *testing.T) {
 		t.Fatalf("scratch StorageRootLastSuccess = %v, want set (nonzero) before removal", got)
 	}
 
-	// scratch_dir を空にした運用者の再設定 + プロセス再起動を模す。
+	// 対象集合から scratch root が外れたパスを模す（本番の worker は空の
+	// scratch_dir で起動しないので、ここでは部分構成で外す）。
 	w.ScratchDir = ""
 	w.Stat = fakeStat(map[string]diskUsage{
 		mediaDir: {totalBytes: 100, usedBytes: 10, availableBytes: 90},
