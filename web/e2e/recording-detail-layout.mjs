@@ -283,8 +283,8 @@ for (const viewport of [
   if (viewport.desktop && !measured.shelfTopVisibleInFirstViewport) {
     ng.push(`${viewport.name}: シリーズ棚の上端が最初の画面に入らない`)
   }
-  if (measured.outsideProgramTrackCount !== 1 || measured.outsideProgramSegmentCount !== 2) {
-    ng.push(`${viewport.name}: 番組枠外の前後区間が一本のシークバーに点線表示されない`)
+  if (measured.outsideProgramTrackCount !== 1 || measured.outsideProgramSegmentCount !== 1) {
+    ng.push(`${viewport.name}: チューナー待機時間を除いた番組枠外の終了区間が一本のシークバーに点線表示されない`)
   }
 
   const tabList = page.locator('[data-testid="recording-detail-tabs"]')
