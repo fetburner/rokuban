@@ -1862,6 +1862,7 @@ export function LivePlayer({
       // 0.1ms の再シークを2回行うと、GOP / 音声位置の異なる fixture で表示が更新された。
       const expectedCurrentSrc = media.currentSrc
       const expectedSrcAttribute = media.getAttribute('src')
+      const expectedFrameStart = localTarget - FRAME_SECONDS / 2
       const canWaitForPresentedFrame = typeof media.requestVideoFrameCallback === 'function'
       const originalFilter = media.style.filter
       let active = true
@@ -1896,7 +1897,7 @@ export function LivePlayer({
             videoRef.current === media &&
             !media.seeking &&
             Math.abs(media.currentTime - localTarget) <= 0.01 &&
-            Math.abs(metadata.mediaTime - media.currentTime) <= FRAME_SECONDS / 2 + 0.001
+            Math.abs(metadata.mediaTime - expectedFrameStart) < FRAME_SECONDS / 2 - 0.001
           ) {
             cleanup()
           } else {
@@ -2104,7 +2105,10 @@ export function LivePlayer({
         playedRef.current = true
         if (isOriginalVOD) schedulePlayAroundStop(event.currentTarget)
       }}
-      onPlay={() => frame.onPlay()}
+      onPlay={() => {
+        clearPendingBoundaryFrameSeek()
+        frame.onPlay()
+      }}
       onPause={(event) => {
         if (isRecordingPlayback) saveCurrentPosition(event.currentTarget)
         frame.onPause()

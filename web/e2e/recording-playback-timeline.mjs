@@ -1315,11 +1315,13 @@ async function runRealRecordingSeekDiagnostics() {
   const oneNudge = await measureRaw(target - 0.5, 1)
   const twoNudges = await measureRaw(target - 0.5, 2)
   const summary = (sample) => `first=${sample.first.currentTime.toFixed(6)}s/${compareAt(sample.first, target)}, settled=${sample.settled.currentTime.toFixed(6)}s/${compareAt(sample.settled, target)}, paused=${sample.settled.paused}, seeking=${sample.settled.seeking}`
+  const expectedFrameStart = target - 1 / (2 * SOURCE_FRAME_RATE)
   const expectedFrame = referenceFrames.reduce((closest, frame) =>
-    Math.abs(frame.mediaTime - target) < Math.abs(closest.mediaTime - target) ? frame : closest,
+    Math.abs(frame.mediaTime - expectedFrameStart) < Math.abs(closest.mediaTime - expectedFrameStart) ? frame : closest,
   )
+  const expectedFrameTimeDiff = Math.abs(expectedFrame.mediaTime - expectedFrameStart)
   log(`  連続再生で frame ${boundaryFrame} を ${referenceFrames.length} 枚取得`)
-  log(`  基準 hash=${expectedFrame.fingerprint}`)
+  log(`  基準 frame PTS=${expectedFrame.mediaTime.toFixed(6)}s (want=${expectedFrameStart.toFixed(6)}s, diff=${(expectedFrameTimeDiff * 1000).toFixed(2)}ms), hash=${expectedFrame.fingerprint}`)
   log(`  素の遠距離 seek: ${summary(far)} hash=${far.settled.fingerprint}`)
   log(`  素の近距離 seek: ${summary(near)} hash=${near.settled.fingerprint}`)
   log(`  遠距離 + 1 回微小 seek: ${summary(oneNudge)} hash=${oneNudge.settled.fingerprint}`)
@@ -1372,6 +1374,15 @@ async function runRealRecordingSeekDiagnostics() {
   }))
   const callbackLog = await page.evaluate(() => window.__boundaryFrameCallbacks)
   log(`  製品の境界選択: first=${productFirst.mediaTime?.toFixed(6)}s/${compareAt(productFirst, target)} hash=${productFirst.fingerprint}, settled=${productSettled.currentTime.toFixed(6)}s/${compareAt(productSettled, target)} hash=${productSettled.fingerprint}, paused=${productSettled.paused}, seeking=${productSettled.seeking}, filter=${productSettled.filter}, callbacks=${JSON.stringify(callbackLog.slice(-6))}`)
+  if (
+    expectedFrameTimeDiff > GRID_TOLERANCE_SECONDS ||
+    !productFirst.matched ||
+    !Number.isFinite(productFirst.mediaTime) ||
+    Math.abs(productFirst.mediaTime - expectedFrameStart) > GRID_TOLERANCE_SECONDS ||
+    productFirst.fingerprint !== expectedFrame.fingerprint
+  ) {
+    ng.push('実録画: 製品の境界選択後、最初に表示したフレームが連続再生の対象フレームと一致しない')
+  }
   if (!compareAt(productSettled, target)) ng.push('実録画: 製品の境界選択後に連続再生で見た同じフレームを表示しない')
   await page.unrouteAll({ behavior: 'ignoreErrors' })
   await page.close()

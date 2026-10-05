@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { LivePlayer } from '@/components/live-player'
-import { FRAME_SECONDS } from '@/lib/chapters'
+import { chapterBoundaryMsToSeekSeconds, FRAME_SECONDS } from '@/lib/chapters'
 import { liveStallTimeoutMs } from '@/lib/live'
 import type { LiveDiagnostics, StallHandling } from '@/lib/live'
 import { saveChapterEditPlaybackRate, savePlaybackRate } from '@/lib/playback-position'
@@ -143,6 +143,37 @@ function deferredFetch() {
   const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => promise)
   vi.stubGlobal('fetch', fetchMock)
   return { resolve, fetchMock }
+}
+
+async function prepareNativeHlsBoundary(recordingId: number) {
+  const { resolve } = deferredFetch()
+  render(
+    <LivePlayer
+      mode="original-vod"
+      site="default"
+      recordingId={recordingId}
+      recordingDurationMs={60_000}
+      chapters={[{ startMs: 20_000, endMs: 25_000, label: '番組', cut: false }]}
+      chapterVersion="chapters-v1"
+      chapterEditing
+      onSaveChapters={async () => true}
+      onResetChapters={async () => true}
+    />,
+  )
+  const video = document.querySelector('video')!
+  vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
+    type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
+  )
+  Object.defineProperty(video, 'currentTime', { value: 25, writable: true, configurable: true })
+  Object.defineProperty(video, 'seekable', { value: { length: 1, start: () => 0, end: () => 60 }, configurable: true })
+  resolve(new Response(PROFILE_MASTER, { status: 200 }))
+  await waitFor(() => expect(video.getAttribute('src')).toContain('/original-vod/playlist.m3u8'))
+  fireEvent.loadedMetadata(video)
+  fireEvent.canPlay(video)
+  const boundary = document.querySelector<HTMLButtonElement>(
+    '[data-testid="chapter-filmstrip-boundary"][data-time-ms="25000"]',
+  )!
+  return { video, boundary }
 }
 
 afterEach(() => {
@@ -2925,6 +2956,67 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     fireEvent.seeked(video)
     expect(video.currentTime).toBeCloseTo(afterSourceChange, 10)
     expect(hlsMockState.instances).toHaveLength(0)
+  })
+
+  it('原本 VOD のネイティブ HLS: 次フレームの callback では黒い filter を解除しない', async () => {
+    const { video, boundary } = await prepareNativeHlsBoundary(431)
+    const callbacks: VideoFrameRequestCallback[] = []
+    Object.defineProperty(video, 'requestVideoFrameCallback', {
+      configurable: true,
+      value: (callback: VideoFrameRequestCallback) => {
+        callbacks.push(callback)
+        return callbacks.length
+      },
+    })
+    Object.defineProperty(video, 'cancelVideoFrameCallback', { configurable: true, value: vi.fn() })
+    fireEvent.click(boundary)
+    fireEvent.seeked(video)
+    fireEvent.seeked(video)
+    fireEvent.seeked(video)
+
+    const target = chapterBoundaryMsToSeekSeconds(25_000)
+    const expectedFrameStart = target - FRAME_SECONDS / 2
+    const metadataAt = (mediaTime: number): VideoFrameCallbackMetadata => ({
+      expectedDisplayTime: 0,
+      height: 180,
+      mediaTime,
+      presentationTime: 0,
+      presentedFrames: 1,
+      width: 320,
+    })
+    expect(video.style.filter).toBe('brightness(0)')
+    expect(callbacks).toHaveLength(1)
+
+    act(() => callbacks[0]!(0, metadataAt(expectedFrameStart + FRAME_SECONDS)))
+    expect(video.style.filter).toBe('brightness(0)')
+    expect(callbacks).toHaveLength(2)
+
+    act(() => callbacks[1]!(0, metadataAt(expectedFrameStart)))
+    expect(video.style.filter).toBe('')
+  })
+
+  it('原本 VOD のネイティブ HLS: 補正完了待ちの再生開始で黒い filter を解除する', async () => {
+    const { video, boundary } = await prepareNativeHlsBoundary(432)
+    const callbacks: VideoFrameRequestCallback[] = []
+    const cancelVideoFrameCallback = vi.fn()
+    Object.defineProperty(video, 'requestVideoFrameCallback', {
+      configurable: true,
+      value: (callback: VideoFrameRequestCallback) => {
+        callbacks.push(callback)
+        return callbacks.length
+      },
+    })
+    Object.defineProperty(video, 'cancelVideoFrameCallback', { configurable: true, value: cancelVideoFrameCallback })
+    fireEvent.click(boundary)
+    fireEvent.seeked(video)
+    fireEvent.seeked(video)
+    fireEvent.seeked(video)
+
+    expect(video.style.filter).toBe('brightness(0)')
+    fireEvent.play(video)
+    expect(video.style.filter).toBe('')
+    expect(cancelVideoFrameCallback).toHaveBeenCalledWith(1)
+    expect(callbacks).toHaveLength(1)
   })
 
   it('原本 VOD の hls.js: 境界選択でネイティブ HLS の微小 seek を足さない', async () => {
