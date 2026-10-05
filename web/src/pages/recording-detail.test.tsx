@@ -3495,12 +3495,16 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
     const originalRow = screen.getByTestId('recording-original-row')
     const encodedRow = screen.getByTestId('recording-version-row')
     expect(originalRow).toHaveTextContent('再生中')
+    const video = document.querySelector('video')!
 
     const slider = await screen.findByRole('slider', { name: 'シークバー' })
     fireEvent.keyDown(slider, { key: 'Home' })
     fireEvent.keyUp(slider, { key: 'Home' })
 
-    await waitFor(() => expect(slider).toHaveAttribute('aria-valuenow', '0'))
+    // 原本 HLS のまま先頭（offset 0 は `/offset/` を付けない）で張り直す。親が再生元を替えたと答えると張り直しが起きない。
+    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod/').filter((path) => !path.includes('/offset/')).length).toBeGreaterThan(0))
+    expect(document.querySelector('video')).toBe(video)
+    expect(slider).toHaveAttribute('aria-valuenow', '0')
     expect(originalRow).toHaveTextContent('再生中')
     expect(encodedRow).not.toHaveTextContent('再生中')
   })

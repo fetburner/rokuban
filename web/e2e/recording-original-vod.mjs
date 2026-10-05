@@ -21,7 +21,7 @@
 //   E2E_URL=http://localhost:4173 pnpm e2e:recording-original-vod
 //   E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:recording-original-vod
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -104,7 +104,8 @@ function runFFmpeg(args, cwd) {
 
 function ensureEncodedFixture(fixtureDir) {
   const encodedPath = path.join(fixtureDir, 'encoded.mp4')
-  if (existsSync(encodedPath)) return encodedPath
+  // 元の TS を作り直したら encoded も作り直す（尺が DB と合わなくなる）。
+  if (existsSync(encodedPath) && statSync(encodedPath).mtimeMs >= statSync(path.join(fixtureDir, 'original.ts')).mtimeMs) return encodedPath
   runFFmpeg(
     [
       '-hide_banner', '-nostats', '-loglevel', 'error', '-y',
@@ -117,6 +118,36 @@ function ensureEncodedFixture(fixtureDir) {
     fixtureDir,
   )
   return encodedPath
+}
+
+/** fulfillMP4 はサーバーと同じく Range 付きで MP4 を返す。部分応答の範囲を返す（全体なら undefined）。 */
+async function fulfillMP4(route, bytes) {
+  const range = /^bytes=(\d+)-(\d*)$/.exec(route.request().headers().range ?? '')
+  if (!range) {
+    await route.fulfill({
+      status: 200,
+      contentType: 'video/mp4',
+      body: bytes,
+      headers: { 'Accept-Ranges': 'bytes' },
+    })
+    return undefined
+  }
+  const start = Number(range[1])
+  const end = Math.min(range[2] ? Number(range[2]) : bytes.length - 1, bytes.length - 1)
+  if (start >= bytes.length || end < start) {
+    await route.fulfill({ status: 416, headers: { 'Content-Range': `bytes */${bytes.length}` } })
+    return undefined
+  }
+  await route.fulfill({
+    status: 206,
+    contentType: 'video/mp4',
+    body: bytes.subarray(start, end + 1),
+    headers: {
+      'Accept-Ranges': 'bytes',
+      'Content-Range': `bytes ${start}-${end}/${bytes.length}`,
+    },
+  })
+  return { start, end }
 }
 
 /** MPEG-2 source TS と、それを変換した HLS（EVENT playlist + ENDLIST）を用意する。 */
@@ -449,31 +480,9 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
   if (/^\/api\/media\/recordings\/\d+\/file$/.test(requestPath)) {
     encodedRequests.push(url.href)
     if (recording.encodedAssets.length > 0) {
-      const bytes = readFileSync(encodedFixturePath)
-      const range = /^bytes=(\d+)-(\d*)$/.exec(route.request().headers().range ?? '')
-      if (!range) {
-        return route.fulfill({
-          status: 200,
-          contentType: 'video/mp4',
-          body: bytes,
-          headers: { 'Accept-Ranges': 'bytes' },
-        })
-      }
-      const start = Number(range[1])
-      const end = Math.min(range[2] ? Number(range[2]) : bytes.length - 1, bytes.length - 1)
-      if (start >= bytes.length || end < start) {
-        return route.fulfill({ status: 416, headers: { 'Content-Range': `bytes */${bytes.length}` } })
-      }
-      encodedRangeRequests.push({ start, end })
-      return route.fulfill({
-        status: 206,
-        contentType: 'video/mp4',
-        body: bytes.subarray(start, end + 1),
-        headers: {
-          'Accept-Ranges': 'bytes',
-          'Content-Range': `bytes ${start}-${end}/${bytes.length}`,
-        },
-      })
+      const range = await fulfillMP4(route, readFileSync(encodedFixturePath))
+      if (range !== undefined) encodedRangeRequests.push(range)
+      return
     }
     return route.fulfill({ status: 404 })
   }
@@ -992,7 +1001,8 @@ if (!existsSync(offsetSourcePath)) {
     '-c:a', 'mp2', '-b:a', '128k', '-f', 'mpegts', offsetSourcePath,
   ], offsetFixtureDir)
 }
-const offsetEncodedFixturePath = ensureEncodedFixture(offsetFixtureDir)
+/** ⑫ だけが使う。x264 の変換を他の節に払わせないよう ⑫ の直前に作る。 */
+let offsetEncodedFixturePath
 /** offsetSession は streamer と同じフレーム境界の入力側 seek（-copyts 無し）で 0 起点の HLS を作る。先端の 20 秒だけ。 */
 function offsetSession(offset) {
   const dir = path.join(offsetFixtureDir, `offset-${offset}`)
@@ -1102,30 +1112,7 @@ const offsetHandler = async ({ path: requestPath, json, route }) => {
   if (requestPath === `/api/media/recordings/${OFFSET_ID}/file`) {
     offsetEncodedRequests.push(requestPath)
     if (!offsetRecording.encodedAssets.some((asset) => asset.cut !== true)) return route.fulfill({ status: 404 })
-    const bytes = readFileSync(offsetEncodedFixturePath)
-    const range = /^bytes=(\d+)-(\d*)$/.exec(route.request().headers().range ?? '')
-    if (!range) {
-      return route.fulfill({
-        status: 200,
-        contentType: 'video/mp4',
-        body: bytes,
-        headers: { 'Accept-Ranges': 'bytes' },
-      })
-    }
-    const start = Number(range[1])
-    const end = Math.min(range[2] ? Number(range[2]) : bytes.length - 1, bytes.length - 1)
-    if (start >= bytes.length || end < start) {
-      return route.fulfill({ status: 416, headers: { 'Content-Range': `bytes */${bytes.length}` } })
-    }
-    return route.fulfill({
-      status: 206,
-      contentType: 'video/mp4',
-      body: bytes.subarray(start, end + 1),
-      headers: {
-        'Accept-Ranges': 'bytes',
-        'Content-Range': `bytes ${start}-${end}/${bytes.length}`,
-      },
-    })
+    return fulfillMP4(route, readFileSync(offsetEncodedFixturePath))
   }
   if (requestPath.startsWith(`/api/sites/${SITE}/recordings/${OFFSET_ID}/original-vod/`)) {
     const relative = requestPath.split('/original-vod/')[1]
@@ -2182,6 +2169,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 400, height: 860 
 log('\n=== ⑬ 版タブで明示した原本 HLS は範囲外 seek の巻き戻しでも保つ ===')
 // カットなし encoded があるので自動選択は encoded。版タブで原本 HLS を明示選択し、
 // 保存位置 42.8 秒からそれより前へ戻したときも、HLS の offset で張り直すことを測る。
+offsetEncodedFixturePath = ensureEncodedFixture(offsetFixtureDir)
 offsetRecording.encodedAssets = [{ profile: PLAYBACK_PROFILE, sizeBytes: 400_000 }]
 offsetRecording.resumePositionMs = 42_800
 const explicitSourcePage = await context.newPage()
