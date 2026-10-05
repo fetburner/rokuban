@@ -764,9 +764,9 @@ if (!playbackPositionWrites.slice(writesBeforeSeek).some((positionMs) => positio
 if (watchedWrites.length > 0) ng.push('③ 録画中の追っかけで視聴済み印を付けた')
 
 log('\n=== ④ 保存位置復元と明示0秒 ===')
-// 5 秒の格子（`resumeSessionOffsetSeconds`）未満なので offset 0 のセッションのまま startPosition で復元する。
-// 格子以上だと offset セッションから始まり、0 秒へのシークがセッション外になる（この項目の対象外）。
-recording.resumePositionMs = 4_700
+// 5 秒は格子（`resumeSessionOffsetSeconds`）の幅なので offset 5 のセッションから始まる。
+// 続きからのセッションは先頭から保存位置までを覆わないので、0 秒へのシークは offset 0 の別セッションになる。
+recording.resumePositionMs = 5_000
 holdResumePositionSeed = true
 await page.reload({ waitUntil: 'domcontentloaded' })
 await page.locator('video').waitFor({ timeout: 15000 })
@@ -783,7 +783,7 @@ await page.waitForFunction(
 await page.waitForFunction(() => document.querySelector('video')?.paused === false, undefined, { timeout: 10000 })
   .catch(() => ng.push('④ #chase の再読み込みで再生が始まらない'))
 await page.locator('video').evaluate((video) => video.pause())
-// 保存位置の種（4.7 秒）は ④ の明示 0 秒まで保つ。再取得されても「未選択なら復元する」位置が残るようにする。
+// 保存位置の種（5 秒）は ④ の明示 0 秒まで保つ。再取得されても「未選択なら復元する」位置が残るようにする。
 const baseRequestsBeforeZero = playlistRequests
 const offsetRequestsBeforeZero = offsetPlaylistRequests
 await timelineSlider.focus()
@@ -837,10 +837,12 @@ if (!homeFocusTarget || !homePreview) {
 if (!homeSeekCompleted || Math.abs(Number(homeSeekDiagnostics.sliderValue) - recordingHeadOffsetSeconds) > 1) {
   ng.push(`④ Home/0秒で保存位置から先頭へ移動しない (${JSON.stringify(homeSeekDiagnostics)})`)
 }
-if (playlistRequests !== baseRequestsBeforeZero) ng.push('④ 0秒へのin-range seekでplaylistを再要求する')
-if (offsetPlaylistRequests !== offsetRequestsBeforeZero) ng.push('④ 0秒へのin-range seekでoffset playlistを要求する')
-if (chaseLeaveHints.some((path) => path.includes('/offset/'))) {
-  ng.push('④ 0秒へのin-range seekでoffset付きleaveヒントを送った')
+// 続きからは offset 5 のセッション。0 秒はその外なので、offset 0 の playlist を 1 回取り直し、
+// 旧セッション（offset 5）へ leave ヒントを送る。再生元は選び直さない（video が残り、保存位置は 0 秒付近）。
+if (playlistRequests === baseRequestsBeforeZero) ng.push('④ 続きからの offset セッションより前（0 秒）へ巻き戻しても offset 0 の playlist を要求しない')
+if (offsetPlaylistRequests !== offsetRequestsBeforeZero) ng.push('④ 0秒への巻き戻しで offset 付き playlist を要求する')
+if (!chaseLeaveHints.some((path) => path.includes('/offset/5/leave'))) {
+  ng.push('④ 続きからの offset 5 セッションへ leave ヒントを送らない')
 }
 
 log('\n=== ④ 変換済みの端より先へのシークは offset で張り直す ===')

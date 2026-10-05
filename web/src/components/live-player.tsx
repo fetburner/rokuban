@@ -449,10 +449,9 @@ export function LivePlayer({
   if (resumeCapture.key !== resumeCaptureKey) setResumeCapture({ key: resumeCaptureKey, seconds: resumeSeconds })
   const resumedStartOffset = isRecordingPlayback ? resumeSessionOffsetSeconds(capturedResumeSeconds) : 0
   const chaseStartOffset = explicitChaseStartOffset ?? resumedStartOffset
-  const resumedOriginalVODStartOffset = isOriginalVOD ? resumedStartOffset : 0
   const initialOriginalVODStart = {
     recordingId,
-    offset: explicitOriginalVODStartOffset ?? resumedOriginalVODStartOffset,
+    offset: explicitOriginalVODStartOffset ?? (isOriginalVOD ? resumedStartOffset : 0),
     explicit: explicitOriginalVODStartOffset !== undefined,
   }
   const [originalVODStartState, setOriginalVODStartState] = useState(initialOriginalVODStart)
@@ -469,7 +468,7 @@ export function LivePlayer({
     : chaseStartOffset
   const hasExplicitRecordingStart = isChase ? hasExplicitChaseStart : originalVODStartIsExplicit
   const serverResumePosition =
-    resumeSeconds !== null ? Math.max(resumeSeconds - sessionStartOffset, 0) : null
+    capturedResumeSeconds !== null ? Math.max(capturedResumeSeconds - sessionStartOffset, 0) : null
   const serverResumePositionRef = useRef(serverResumePosition)
   useEffect(() => {
     serverResumePositionRef.current = serverResumePosition
@@ -1210,12 +1209,6 @@ export function LivePlayer({
           probe.error.status === 416 &&
           originalVODStartOffset > lastGood
         ) {
-          // 続きからで導出した offset（利用者のシークではない）が映像の終端を越えたときは、
-          // 端数と非明示性を保ったまま offset 0 の通常セッションへ戻る（保存位置ちょうどへ置く）。
-          if (!originalVODStartIsExplicit) {
-            setOriginalVODStartState({ recordingId, offset: 0, explicit: false })
-            return
-          }
           const next = Math.max(lastGood, originalVODStartOffset - rangeStepRef.current)
           rangeStepRef.current *= 2
           pendingOffsetSeekRef.current = 0
@@ -1537,7 +1530,6 @@ export function LivePlayer({
     chaseStartOffset,
     sessionStartOffset,
     originalVODStartOffset,
-    originalVODStartIsExplicit,
     hasExplicitChaseStart,
     hasExplicitRecordingStart,
     setMediaPlaying,
@@ -1831,8 +1823,12 @@ export function LivePlayer({
       return
     }
 
+    // 続きからで導出した開始より前への巻き戻しは、再生元の範囲外ではなく、格子で切り下げた開始
+    // offset より前を覆わないだけである。再生元の選び直し（エンコード完了済みなら encoded へ移る）
+    // は通常の巻き戻しでは起きてはならないので呼ばず、同じ再生元で offset を張り直す。
+    const rewindsBeforeResumeStart = !originalVODStartIsExplicit && originalVODStartOffset > 0 && target < sessionStartOffset
     // 同じ再生元のままなら true は返らず、下で offset を張り直す（再生継続は上の resumePlaying）。
-    if (onSourceRangeExit?.(target, !video.paused) === true) return
+    if (!rewindsBeforeResumeStart && onSourceRangeExit?.(target, !video.paused) === true) return
 
     const nextOffset = Math.floor(target)
     const sameSessionKey = nextOffset === originalVODStartOffset

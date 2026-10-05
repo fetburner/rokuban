@@ -392,6 +392,8 @@ DOM の取得に失敗した場合も、その理由を記録して残りの診�
 offset が 5 秒格子の 10 であること、再生が始まること、録画軸の位置（`aria-valuenow`）が約 12 秒であることを見る。
 `startPosition` を絶対値のままにする変異は録画軸が 22 秒付近になって落ちる。② の reload 後の復元も、
 セッション相対の `currentTime` ではなく `aria-valuenow` で比べる。
+⑧ は保存位置 61 秒（DB の実尺 63 秒・映像 58.5 秒）から再開し、416 を丸めた映像の内側の offset で
+映像を読み込み、録画軸が 55〜59 秒に着地することを見る。offset 0 + 絶対位置へ戻す実装は録画軸 0 で落ちる。
 
 ```sh
 E2E_URL=http://localhost:4173 pnpm e2e:recording-original-vod

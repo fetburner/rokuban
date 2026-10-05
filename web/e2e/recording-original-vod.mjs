@@ -565,7 +565,30 @@ async function failGrowingEdgeStartup(stage, error, cursor) {
   }
   log(`  ④ 再生開始失敗の診断: ${JSON.stringify(diagnostics)}`)
   ng.push(`④ ${stage} (${error.message})`)
-  await finish(ng, browser)
+  log('\n=== ⑧ 保存位置が映像の終端より先（DB の実尺は 63 秒、映像は 58.5 秒）でも、端の近くで再生が始まる ===')
+offsetRecording.resumePositionMs = 61_000
+const endResumePage = await context.newPage()
+await installApiStubs(endResumePage, offsetHandler)
+await endResumePage.goto(`${URL_BASE}/recordings/${OFFSET_ID}`, { waitUntil: 'domcontentloaded' })
+const endResumeCursor = offsetRequests.length
+await endResumePage.getByTestId('recording-playback-start').click()
+const endResumeStarted = await endResumePage.waitForFunction(() => {
+  const element = document.querySelector('video')
+  return element !== null && (element.ended || element.readyState >= 2)
+}, undefined, { timeout: 15000 }).then(() => true).catch(() => false)
+const endResumeRequests = offsetRequests.slice(endResumeCursor)
+const endResumeAxis = await sampleOffsetPlayer(endResumePage)
+log(`  resume=61s, requests=${JSON.stringify(endResumeRequests)}, started=${endResumeStarted}, ${JSON.stringify(endResumeAxis)}`)
+if (!endResumeStarted) {
+  ng.push(`⑧ 映像の終端より先の保存位置から映像が読み込めない（${JSON.stringify(endResumeAxis)}）`)
+}
+if (!(endResumeAxis.position >= 55 && endResumeAxis.position < 59)) {
+  ng.push(`⑧ 録画軸で端の近く（55〜59 秒）に着地しない（${JSON.stringify(endResumeAxis)}）`)
+}
+await endResumePage.close()
+delete offsetRecording.resumePositionMs
+
+await finish(ng, browser)
 }
 
 log('\n=== ① encoded なしの完了録画で原本 HLS を再生 ===')
@@ -1794,16 +1817,42 @@ if (firstSuccessfulResumeOffset !== 10) {
 }
 // 録画軸の位置は offset + currentTime（シークバーの aria-valuenow）。startPosition が
 // 絶対値 12 に退行すると 10 + 12 = 22 付近から再生する。
-const resumeAxisPosition = await resumePage.evaluate(() =>
-  Number(document.querySelector('[role="slider"][aria-label="シークバー"]')?.getAttribute('aria-valuenow') ?? NaN))
-if (!(resumeAxisPosition >= 11.5 && resumeAxisPosition < 14)) {
-  ng.push(`⑦ 保存位置 12 秒から再生した録画軸の位置が約 12 秒でない（${resumeAxisPosition}）`)
+// aria-valuenow は timeupdate で更新されるので、再生が始まった直後は古い値のことがある。値が落ち着くのを待つ。
+const resumeAxisSettled = await resumePage.waitForFunction(() => {
+  const value = Number(document.querySelector('[role="slider"][aria-label="シークバー"]')?.getAttribute('aria-valuenow') ?? NaN)
+  return value >= 11.5 && value < 14
+}, undefined, { timeout: 5000 }).then(() => true).catch(() => false)
+if (!resumeAxisSettled) {
+  ng.push(`⑦ 保存位置 12 秒から再生した録画軸の位置が約 12 秒でない（${JSON.stringify(await sampleOffsetPlayer(resumePage))}）`)
 }
 if (!resumeStarted) {
   ng.push(`⑦ 8 秒の変換中 EVENT playlist の先端で停止し、続きから再生できない（${JSON.stringify(await sampleOffsetPlayer(resumePage))}）`)
 }
 await resumePage.close()
 resumePastEdge = false
+delete offsetRecording.resumePositionMs
+
+log('\n=== ⑧ 保存位置が映像の終端より先（DB の実尺は 63 秒、映像は 58.5 秒）でも、端の近くで再生が始まる ===')
+offsetRecording.resumePositionMs = 61_000
+const endResumePage = await context.newPage()
+await installApiStubs(endResumePage, offsetHandler)
+await endResumePage.goto(`${URL_BASE}/recordings/${OFFSET_ID}`, { waitUntil: 'domcontentloaded' })
+const endResumeCursor = offsetRequests.length
+await endResumePage.getByTestId('recording-playback-start').click()
+const endResumeStarted = await endResumePage.waitForFunction(() => {
+  const element = document.querySelector('video')
+  return element !== null && (element.ended || element.readyState >= 2)
+}, undefined, { timeout: 15000 }).then(() => true).catch(() => false)
+const endResumeRequests = offsetRequests.slice(endResumeCursor)
+const endResumeAxis = await sampleOffsetPlayer(endResumePage)
+log(`  resume=61s, requests=${JSON.stringify(endResumeRequests)}, started=${endResumeStarted}, ${JSON.stringify(endResumeAxis)}`)
+if (!endResumeStarted) {
+  ng.push(`⑧ 映像の終端より先の保存位置から映像が読み込めない（${JSON.stringify(endResumeAxis)}）`)
+}
+if (!(endResumeAxis.position >= 55 && endResumeAxis.position < 59)) {
+  ng.push(`⑧ 録画軸で端の近く（55〜59 秒）に着地しない（${JSON.stringify(endResumeAxis)}）`)
+}
+await endResumePage.close()
 delete offsetRecording.resumePositionMs
 
 await finish(ng, browser)

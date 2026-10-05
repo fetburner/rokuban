@@ -2937,8 +2937,8 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     expect(screen.queryByText(/エラー/)).not.toBeInTheDocument()
   })
 
-  it('原本 VOD: 続きからの offset が 416 のときは offset 0 に戻り、保存位置を端数ごと startPosition に渡す', async () => {
-    // 映像は 57.5 秒だが DB の実尺・保存位置は 60.5 秒。1,2,4 秒の後退で手前に着地させない。
+  it('原本 VOD: 続きからの offset が 416 のときは、映像の内側の offset へ手前に丸めて開始位置 0 で再生する', async () => {
+    // 映像は 57.5 秒だが DB の実尺・保存位置は 60.5 秒。映像の外へ startPosition を置かない。
     const fetchMock = vi.fn((url: string) => {
       const offset = Number(/\/offset\/(\d+)\//.exec(String(url))?.[1] ?? 0)
       return Promise.resolve(
@@ -2953,11 +2953,58 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     const requested = fetchMock.mock.calls
       .map(([url]) => String(url))
       .filter((url) => url.endsWith('playlist.m3u8'))
-    expect(requested).toEqual([
-      '/api/sites/default/recordings/426/original-vod/offset/60/playlist.m3u8',
-      '/api/sites/default/recordings/426/original-vod/playlist.m3u8',
-    ])
-    expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition: 60.5 }])
+    expect(requested.map((url) => /\/offset\/(\d+)\//.exec(url)?.[1])).toEqual(['60', '59', '57'])
+    expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition: 0 }])
+  })
+
+  it('原本 VOD: 続きからの開始より前へ巻き戻しても再生元を選び直さず、その秒の offset で張り直す', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    const onSourceRangeExit = vi.fn(() => true)
+    render(
+      <LivePlayer
+        mode="original-vod"
+        site="default"
+        recordingId={429}
+        resumePositionMs={42_800}
+        recordingDurationMs={63_000}
+        onSourceRangeExit={onSourceRangeExit}
+      />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'seekable', { value: { length: 1, start: () => 0, end: () => 8 }, configurable: true })
+    const slider = screen.getByRole('slider', { name: 'シークバー' })
+    vi.spyOn(slider, 'getBoundingClientRect').mockReturnValue({
+      x: 0, y: 0, left: 0, top: 0, right: 100, bottom: 16, width: 100, height: 16, toJSON: () => ({}),
+    } as DOMRect)
+    // 32.8 秒 = 63 秒の 52%（開始 offset 40 より前）。
+    fireEvent.pointerDown(slider, { pointerId: 1, pointerType: 'mouse', clientX: 52 })
+    fireEvent.pointerUp(slider, { pointerId: 1, pointerType: 'mouse', clientX: 52 })
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+    expect(onSourceRangeExit).not.toHaveBeenCalled()
+    expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/429/original-vod/offset/32/playlist.m3u8',
+    )
+  })
+
+  it('原本 VOD: 保存位置が後から消えても、取り込んだ開始位置から再読み込みする', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    const props = { mode: 'original-vod', site: 'default', recordingId: 430 } as const
+    const { rerender } = render(<LivePlayer {...props} resumePositionMs={42_800} />)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    rerender(<LivePlayer {...props} resumePositionMs={undefined} />)
+    const errorCall = hlsMockState.instances[0]!.on.mock.calls.find(([event]) => event === 'hlsError')
+    const errorHandler = errorCall![1] as (event: string, data: { fatal: boolean }) => void
+    await act(async () => {
+      errorHandler('hlsError', { fatal: true })
+    })
+    await user.click(await screen.findByRole('button', { name: '再読み込み' }))
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+    expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/430/original-vod/offset/40/playlist.m3u8',
+    )
+    expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: expect.closeTo(2.8267, 3) }])
   })
 
   it('続きからの位置が無限大でも offset 0 のまま startPosition に Infinity を渡さない', async () => {
@@ -3096,7 +3143,7 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
   it('保存位置から cut 区間内へ再開したときは自動スキップしない', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
     const chapters = [{ startMs: 6_000, endMs: 8_000, label: 'CM', cut: true }]
-    // offset 5 の格子点は 149 フレーム = 4.97163 秒。6.5 - 4.97097。
+    // offset 5 の格子点は 149 フレーム = 4.97163 秒。6.5 - 4.97163。
     const sessionPosition = 1.52837
     render(
       <LivePlayer
