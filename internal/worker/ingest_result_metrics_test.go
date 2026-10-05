@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -170,6 +172,118 @@ func TestIngestWorker_GracefulStopIsNotCounted(t *testing.T) {
 		}
 		runGracefulStopIngest(t, pool, srv, "rec-graceful-block", started)
 	})
+}
+
+func TestIngestWorker_SHA256WaitSnoozePreservesAttempt(t *testing.T) {
+	tsData := makeTSData(20)
+	var deleteAttempts atomic.Int32
+	srv, _ := newLateHashIngestServer(t, tsData, "test/sha-wait.m2ts", nil, func() {
+		deleteAttempts.Add(1)
+	})
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	recordingID := insertTestRecording(t, pool)
+	recordID := "rec-sha256-river-snooze"
+	insertTestRecordSync(t, pool, recordingID, recordID)
+	mediaDir := t.TempDir()
+	w := &IngestWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MediaDir:      mediaDir,
+		StallTimeout:  time.Second,
+		Pool:          pool,
+	}
+	workers := river.NewWorkers()
+	river.AddWorker(workers, w)
+	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
+		Queues: map[string]river.QueueConfig{
+			jobs.PhysicalQueueName(jobs.IngestQueue, "default"): {MaxWorkers: 1},
+		},
+		Workers: workers,
+	})
+	if err != nil {
+		t.Fatalf("river.NewClient: %v", err)
+	}
+	events, cancelSubscribe := client.Subscribe(river.EventKindJobSnoozed)
+	defer cancelSubscribe()
+	clientCtx, clientCancel := context.WithCancel(context.Background())
+	defer clientCancel()
+	if err := client.Start(clientCtx); err != nil {
+		t.Fatalf("client.Start: %v", err)
+	}
+	t.Cleanup(func() {
+		clientCancel()
+		<-client.Stopped()
+	})
+
+	beforeResults := ingestJobResults()
+	durationBefore := ingestDurationSamples(t)
+	inserted, err := client.Insert(context.Background(), jobs.IngestJobArgs{Site: "default", RecordID: recordID}, nil)
+	if err != nil {
+		t.Fatalf("inserting ingest job: %v", err)
+	}
+	var event *river.Event
+	select {
+	case event = <-events:
+	case <-time.After(30 * time.Second):
+		t.Fatal("ingest job did not snooze while content.sha256 remained null")
+	}
+	if event.Kind != river.EventKindJobSnoozed {
+		t.Fatalf("River event kind = %q, want %q", event.Kind, river.EventKindJobSnoozed)
+	}
+	if event.Job.ID != inserted.Job.ID {
+		t.Errorf("snoozed job id = %d, want %d", event.Job.ID, inserted.Job.ID)
+	}
+	if event.Job.State != rivertype.JobStateScheduled {
+		t.Errorf("snoozed job state = %q, want scheduled", event.Job.State)
+	}
+	if event.Job.Attempt != 0 {
+		t.Errorf("snoozed job attempt = %d, want 0 (snooze must not consume an attempt)", event.Job.Attempt)
+	}
+	if got, err := ingestJobSnoozeCount(event.Job.Metadata); err != nil || got != 1 {
+		t.Errorf("River snooze metadata count = %d, %v; want 1", got, err)
+	}
+	if remaining := time.Until(event.Job.ScheduledAt); remaining < 8*time.Second || remaining > 12*time.Second {
+		t.Errorf("scheduled snooze delay = %s, want about 10s (floor for a tiny file)", remaining)
+	}
+	var state string
+	var attempt int
+	var metadata []byte
+	if err := pool.QueryRow(context.Background(), "SELECT state, attempt, metadata FROM river_job WHERE id = $1", inserted.Job.ID).Scan(&state, &attempt, &metadata); err != nil {
+		t.Fatalf("reading snoozed river_job: %v", err)
+	}
+	if state != string(rivertype.JobStateScheduled) || attempt != 0 {
+		t.Errorf("persisted river_job state=%q attempt=%d, want scheduled / 0", state, attempt)
+	}
+	if got, err := ingestJobSnoozeCount(metadata); err != nil || got != 1 {
+		t.Errorf("persisted River snooze metadata count = %d, %v; want 1", got, err)
+	}
+	assertIngestResultDeltas(t, beforeResults, nil, "SHA-256 snooze")
+	if got := ingestDurationSamples(t); got != durationBefore {
+		t.Errorf("IngestDuration samples after snooze = %d, want %d", got, durationBefore)
+	}
+	var assetCount int
+	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assetCount); err != nil {
+		t.Fatalf("counting media_assets while snoozed: %v", err)
+	}
+	if assetCount != 0 {
+		t.Errorf("media_assets rows while snoozed = %d, want 0", assetCount)
+	}
+	if got := deleteAttempts.Load(); got != 0 {
+		t.Errorf("DeleteRecord attempts while snoozed = %d, want 0", got)
+	}
+	tempPath := ingestTempFilePath(filepath.Join(mediaDir, "sites", "default", "test"), "default", recordID)
+	if info, err := os.Stat(tempPath); err != nil || info.Size() != int64(len(tsData)) {
+		t.Errorf("ingest temp while snoozed: stat=(%v, %v), want size %d", info, err, len(tsData))
+	}
+
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer stopCancel()
+	if err := client.Stop(stopCtx); err != nil {
+		t.Fatalf("client.Stop: %v", err)
+	}
+	<-client.Stopped()
 }
 
 // runGracefulStopIngest は ingest ジョブを 1 件走らせ、ハンドラが started を閉じた

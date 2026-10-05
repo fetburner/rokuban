@@ -23,11 +23,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertest"
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -136,7 +138,7 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 					Status:  "finished",
 					Options: mirakc.Options{ContentPath: strPtr("test/recording.m2ts")},
 				},
-				Content: mirakc.ContentInfo{Path: "/recording/test/recording.m2ts"},
+				Content: mirakc.ContentInfo{Path: "/recording/test/recording.m2ts", Sha256: strPtr(sha256Hex(tsData))},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -287,7 +289,7 @@ func TestIngestWorker_SiteMatch(t *testing.T) {
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 			record := mirakc.Record{
 				Recording: mirakc.RecordInfo{Status: "finished", Options: mirakc.Options{ContentPath: strPtr("match/recording.m2ts")}},
-				Content:   mirakc.ContentInfo{Path: "/recording/match/recording.m2ts"},
+				Content:   mirakc.ContentInfo{Path: "/recording/match/recording.m2ts", Sha256: strPtr(sha256Hex(tsData))},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -684,7 +686,7 @@ func TestIngestWorker_CatchUpWhileRecordingDoesNotCommit(t *testing.T) {
 			}
 			record := mirakc.Record{
 				Recording: mirakc.RecordInfo{Status: st, Options: mirakc.Options{ContentPath: strPtr("test/catchup.m2ts")}},
-				Content:   mirakc.ContentInfo{Path: "/recording/test/catchup.m2ts"},
+				Content:   mirakc.ContentInfo{Path: "/recording/test/catchup.m2ts", Sha256: strPtr(sha256Hex(full))},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -887,7 +889,7 @@ func TestIngestWorker_NotReadyAndEmptyBodyDoNotConsumeRetries(t *testing.T) {
 			}
 			record := mirakc.Record{
 				Recording: mirakc.RecordInfo{Status: status.Load().(string), Options: mirakc.Options{ContentPath: strPtr("test/notready.m2ts")}},
-				Content:   mirakc.ContentInfo{Path: "/recording/test/notready.m2ts"},
+				Content:   mirakc.ContentInfo{Path: "/recording/test/notready.m2ts", Sha256: strPtr(sha256Hex(full))},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -1074,7 +1076,7 @@ func TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart(t *testing.T) {
 			}
 			record := mirakc.Record{
 				Recording: mirakc.RecordInfo{Status: status, Options: mirakc.Options{ContentPath: strPtr("test/unknown.m2ts")}},
-				Content:   mirakc.ContentInfo{Path: "/recording/test/unknown.m2ts"},
+				Content:   mirakc.ContentInfo{Path: "/recording/test/unknown.m2ts", Sha256: strPtr(sha256Hex(full))},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -1302,15 +1304,186 @@ func TestIngestWorker_HashMismatch(t *testing.T) {
 	}
 }
 
+func TestIngestWorker_SnoozesThenVerifiesLateContentSHA256(t *testing.T) {
+	for _, tt := range []struct {
+		name               string
+		lateHash           func([]byte) string
+		wantError          string
+		wantAssets         int
+		wantDeleteAttempts int32
+		wantResult         string
+		wantVerification   string
+	}{
+		{
+			name:               "hash arrives and verifies",
+			lateHash:           sha256Hex,
+			wantAssets:         1,
+			wantDeleteAttempts: 1,
+			wantResult:         "success",
+			wantVerification:   "sha256_verification=verified",
+		},
+		{
+			name: "late hash mismatch",
+			lateHash: func(data []byte) string {
+				wrong := bytes.Clone(data)
+				wrong[len(wrong)-1] ^= 0xff
+				return sha256Hex(wrong)
+			},
+			wantError:  "hash mismatch",
+			wantResult: "failure",
+		},
+		{
+			name:               "timeout skips verification",
+			wantAssets:         1,
+			wantDeleteAttempts: 1,
+			wantResult:         "success",
+			wantVerification:   "sha256_verification=timeout_skipped",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tsData := makeTSData(20)
+			setIngestSHA256Rate(t, 47) // 3760 バイト / 47 B/s = 80 秒
+			contentPath := "test/sha256-late.m2ts"
+			var deleteAttempts atomic.Int32
+			var rangeMu sync.Mutex
+			var rangeOffsets []int64
+			srv, setHash := newLateHashIngestServer(t, tsData, contentPath, func(offset int64) {
+				rangeMu.Lock()
+				rangeOffsets = append(rangeOffsets, offset)
+				rangeMu.Unlock()
+			}, func() { deleteAttempts.Add(1) })
+
+			pool := setupTestPool(t)
+			if pool == nil {
+				return
+			}
+			recordingID := insertTestRecording(t, pool)
+			recordID := "rec-sha256-late-" + strings.ReplaceAll(tt.name, " ", "-")
+			insertTestRecordSync(t, pool, recordingID, recordID)
+			mediaDir := t.TempDir()
+			w := &IngestWorker{
+				MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+				Pool:          pool,
+				MediaDir:      mediaDir,
+				StallTimeout:  5 * time.Second,
+			}
+			job := func(metadata []byte) *river.Job[IngestJobArgs] {
+				return &river.Job[IngestJobArgs]{
+					JobRow: &rivertype.JobRow{ID: 91565, Metadata: metadata},
+					Args:   IngestJobArgs{Site: "default", RecordID: recordID},
+				}
+			}
+
+			originalLogger := slog.Default()
+			var logOutput bytes.Buffer
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logOutput, nil)))
+			t.Cleanup(func() { slog.SetDefault(originalLogger) })
+
+			beforeResults := ingestJobResults()
+			durationBefore := ingestDurationSamples(t)
+			mismatchesBefore := promtestutil.ToFloat64(metrics.IngestHashMismatches)
+			firstErr := w.Work(context.Background(), job(nil))
+			var snooze *river.JobSnoozeError
+			if !errors.As(firstErr, &snooze) {
+				t.Fatalf("first Work error = %v, want River snooze while content.sha256 is null", firstErr)
+			}
+			if snooze.Duration != 80*time.Second {
+				t.Errorf("snooze duration = %s, want 80s (3760 bytes at 47 B/s)", snooze.Duration)
+			}
+			if !strings.Contains(logOutput.String(), "sha256_verification=pending") || strings.Contains(logOutput.String(), "sha256_verification=skipped") {
+				t.Errorf("wait log = %q, want sha256_verification=pending only", logOutput.String())
+			}
+			assertIngestResultDeltas(t, beforeResults, nil, "SHA-256 wait snooze")
+			if got := ingestDurationSamples(t); got != durationBefore {
+				t.Errorf("IngestDuration samples after snooze = %d, want %d", got, durationBefore)
+			}
+			assertIngestSHA256WaitState(t, pool, recordingID, &deleteAttempts, mediaDir, recordID, int64(len(tsData)))
+
+			if tt.lateHash != nil {
+				lateHash := tt.lateHash(tsData)
+				setHash(&lateHash)
+			}
+			secondErr := w.Work(context.Background(), job([]byte(`{"snoozes":1}`)))
+			if tt.wantError != "" {
+				if secondErr == nil || !strings.Contains(secondErr.Error(), tt.wantError) {
+					t.Fatalf("resumed Work error = %v, want %q", secondErr, tt.wantError)
+				}
+			} else if secondErr != nil {
+				t.Fatalf("resumed Work: %v", secondErr)
+			}
+			wantResult := map[string]float64{tt.wantResult: 1}
+			assertIngestResultDeltas(t, beforeResults, wantResult, "resumed SHA-256 wait")
+			if got, want := ingestDurationSamples(t), durationBefore+1; got != want {
+				t.Errorf("IngestDuration samples after resume = %d, want %d", got, want)
+			}
+			wantMismatchDelta := 0.0
+			if tt.wantError != "" {
+				wantMismatchDelta = 1
+			}
+			if got := promtestutil.ToFloat64(metrics.IngestHashMismatches); got != mismatchesBefore+wantMismatchDelta {
+				t.Errorf("hash mismatch counter after resume = %v, want %v", got, mismatchesBefore+wantMismatchDelta)
+			}
+			var assetCount int
+			if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assetCount); err != nil {
+				t.Fatalf("counting media_assets after resume: %v", err)
+			}
+			if assetCount != tt.wantAssets {
+				t.Errorf("media_assets rows after resume = %d, want %d", assetCount, tt.wantAssets)
+			}
+			if got := deleteAttempts.Load(); got != tt.wantDeleteAttempts {
+				t.Errorf("DeleteRecord attempts after resume = %d, want %d", got, tt.wantDeleteAttempts)
+			}
+			rangeMu.Lock()
+			gotOffsets := slices.Clone(rangeOffsets)
+			rangeMu.Unlock()
+			if want := []int64{0, int64(len(tsData)), int64(len(tsData)), int64(len(tsData))}; !slices.Equal(gotOffsets, want) {
+				t.Errorf("Range offsets across snooze and replay = %v, want %v", gotOffsets, want)
+			}
+			if tt.wantVerification != "" && !strings.Contains(logOutput.String(), tt.wantVerification) {
+				t.Errorf("logs = %q, want %q", logOutput.String(), tt.wantVerification)
+			}
+			if tt.wantAssets == 1 {
+				canonicalPath := filepath.Join(mediaDir, "sites", "default", contentPath)
+				committed, err := os.ReadFile(canonicalPath)
+				if err != nil {
+					t.Fatalf("reading committed canonical file: %v", err)
+				}
+				if !bytes.Equal(committed, tsData) {
+					t.Error("committed canonical file differs from the transfer bytes")
+				}
+			}
+		})
+	}
+}
+
+func assertIngestSHA256WaitState(t *testing.T, pool *pgxpool.Pool, recordingID int64, deleteAttempts *atomic.Int32, mediaDir, recordID string, wantTempSize int64) {
+	t.Helper()
+	var assetCount int
+	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assetCount); err != nil {
+		t.Fatalf("counting media_assets while waiting: %v", err)
+	}
+	if assetCount != 0 {
+		t.Errorf("media_assets rows while waiting = %d, want 0", assetCount)
+	}
+	if got := deleteAttempts.Load(); got != 0 {
+		t.Errorf("DeleteRecord attempts while waiting = %d, want 0", got)
+	}
+	tempPath := ingestTempFilePath(filepath.Join(mediaDir, "sites", "default", "test"), "default", recordID)
+	if info, err := os.Stat(tempPath); err != nil || info.Size() != wantTempSize {
+		t.Errorf("ingest temp while waiting: stat=(%v, %v), want size %d", info, err, wantTempSize)
+	}
+}
+
 func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
 	for _, tt := range []struct {
 		name      string
 		null      bool
+		metadata  []byte
 		shaValue  func([]byte) string
 		wantError bool
 	}{
-		{name: "missing"},
-		{name: "null", null: true},
+		{name: "missing after timeout", metadata: []byte(`{"snoozes":1}`)},
+		{name: "null after timeout", null: true, metadata: []byte(`{"snoozes":1}`)},
 		{name: "uppercase-and-space", shaValue: func(data []byte) string {
 			return "  " + strings.ToUpper(sha256Hex(data)) + "  "
 		}},
@@ -1348,7 +1521,7 @@ func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
 				StallTimeout:  5 * time.Second,
 			}
 			job := &river.Job[IngestJobArgs]{
-				JobRow: &rivertype.JobRow{},
+				JobRow: &rivertype.JobRow{Metadata: tt.metadata},
 				Args:   IngestJobArgs{Site: "default", RecordID: recordID},
 			}
 
@@ -1696,7 +1869,7 @@ func TestIngestWorker_StallDetection(t *testing.T) {
 					Status:  "finished",
 					Options: mirakc.Options{ContentPath: strPtr("test/stall.m2ts")},
 				},
-				Content: mirakc.ContentInfo{Path: "/recording/test/stall.m2ts"},
+				Content: mirakc.ContentInfo{Path: "/recording/test/stall.m2ts", Sha256: strPtr(sha256Hex(tsData))},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -2017,7 +2190,7 @@ func TestIngestWorker_JobReexecution(t *testing.T) {
 					Status:  "finished",
 					Options: mirakc.Options{ContentPath: strPtr("test/reexec.m2ts")},
 				},
-				Content: mirakc.ContentInfo{Path: "/recording/test/reexec.m2ts"},
+				Content: mirakc.ContentInfo{Path: "/recording/test/reexec.m2ts", Sha256: strPtr(sha256Hex(tsData))},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -2113,7 +2286,7 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 					Status:  "finished",
 					Options: mirakc.Options{ContentPath: strPtr("test/reingest.m2ts")},
 				},
-				Content: mirakc.ContentInfo{Path: "/recording/test/reingest.m2ts"},
+				Content: mirakc.ContentInfo{Path: "/recording/test/reingest.m2ts", Sha256: strPtr(sha256Hex(tsData))},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -2276,7 +2449,8 @@ func newFullTransferServer(t *testing.T, tsData []byte, contentPath string) *htt
 }
 
 func newInstrumentedIngestServer(t *testing.T, tsData []byte, contentPath string, onDelete func()) *httptest.Server {
-	return newIngestServerWithContentSHA256(t, tsData, contentPath, nil, false, onDelete)
+	contentSHA256 := sha256Hex(tsData)
+	return newIngestServerWithContentSHA256(t, tsData, contentPath, &contentSHA256, false, onDelete)
 }
 
 func newIngestServerWithContentSHA256(t *testing.T, tsData []byte, contentPath string, contentSHA256 *string, contentSHA256Null bool, onDelete func()) *httptest.Server {
@@ -2323,6 +2497,69 @@ func newIngestServerWithContentSHA256(t *testing.T, tsData []byte, contentPath s
 	}))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// newLateHashIngestServer は finished を返しながら最初は content.sha256=null を返し、
+// setHash で後から値を公開できる mirakc stub を作る。rangeOffset と onDelete は、
+// snooze 前の temp が replay され、commit まで edge record が保持されることを観測する。
+func newLateHashIngestServer(t *testing.T, tsData []byte, contentPath string, rangeOffset func(int64), onDelete func()) (*httptest.Server, func(*string)) {
+	t.Helper()
+	var hashMu sync.RWMutex
+	var currentHash *string
+	setHash := func(hash *string) {
+		var copyHash *string
+		if hash != nil {
+			value := *hash
+			copyHash = &value
+		}
+		hashMu.Lock()
+		currentHash = copyHash
+		hashMu.Unlock()
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			if rangeOffset != nil {
+				rangeOffset(parseStreamRangeOffset(r))
+			}
+			writeRecordStream(w, r, tsData)
+		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			hashMu.RLock()
+			hash := currentHash
+			if hash != nil {
+				value := *hash
+				hash = &value
+			}
+			hashMu.RUnlock()
+			if hash == nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprintf(w, `{"recording":{"status":"finished","options":{"contentPath":%q}},"content":{"path":%q,"sha256":null}}`, contentPath, "/recording/"+contentPath)
+				return
+			}
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{Status: "finished", Options: mirakc.Options{ContentPath: strPtr(contentPath)}},
+				Content:   mirakc.ContentInfo{Path: "/recording/" + contentPath, Sha256: hash},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(record)
+		case r.Method == http.MethodDelete:
+			if onDelete != nil {
+				onDelete()
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, setHash
 }
 
 // insertProgramSnapshotAndReservation は programID の program_snapshots 行と、
@@ -3190,7 +3427,7 @@ func mirakcRecordServer(t *testing.T, tsData []byte, contentPath *string, conten
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 			record := mirakc.Record{
 				Recording: mirakc.RecordInfo{Status: "finished", Options: mirakc.Options{ContentPath: contentPath}},
-				Content:   mirakc.ContentInfo{Path: contentFilePath},
+				Content:   mirakc.ContentInfo{Path: contentFilePath, Sha256: strPtr(sha256Hex(tsData))},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -3587,7 +3824,7 @@ func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, exist
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 			record := mirakc.Record{
 				Recording: mirakc.RecordInfo{Status: "finished", Options: mirakc.Options{ContentPath: strPtr("shared/conflict.m2ts")}},
-				Content:   mirakc.ContentInfo{Path: "/recording/shared/conflict.m2ts"},
+				Content:   mirakc.ContentInfo{Path: "/recording/shared/conflict.m2ts", Sha256: strPtr(sha256Hex(tsDataNew))},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -3737,4 +3974,33 @@ func TestIngestWorker_RelPathConflict_AllowsReuseAfterDeleted(t *testing.T) {
 	if asset.RelPath != reusedRelPath {
 		t.Errorf("new media_asset rel_path = %q, want %q", asset.RelPath, reusedRelPath)
 	}
+}
+
+func TestIngestSHA256WaitFor(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		size int64
+		want time.Duration
+	}{
+		{"unknown or empty uses the floor", 0, 10 * time.Second},
+		{"small file uses the floor", 7_800_000 * 5, 10 * time.Second},
+		{"just above the floor", 7_800_000 * 11, 11 * time.Second},
+		{"rounds up", 7_800_000*11 + 1, 12 * time.Second},
+		{"terrestrial 30 min", 3_800_000_000, 488 * time.Second},
+		{"BS 2 h", 20_000_000_000, 2565 * time.Second},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ingestSHA256WaitFor(tt.size); got != tt.want {
+				t.Errorf("ingestSHA256WaitFor(%d) = %s, want %s", tt.size, got, tt.want)
+			}
+		})
+	}
+}
+
+// setIngestSHA256Rate は SHA-256 待ちの速度見積もりをテストの間だけ差し替える。
+func setIngestSHA256Rate(t *testing.T, rate int64) {
+	t.Helper()
+	old := ingestSHA256BytesPerSecond
+	ingestSHA256BytesPerSecond = rate
+	t.Cleanup(func() { ingestSHA256BytesPerSecond = old })
 }

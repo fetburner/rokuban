@@ -104,7 +104,7 @@ func TestIngestWorker_DropStatPIDType(t *testing.T) {
 					Status:  "finished",
 					Options: mirakc.Options{ContentPath: strPtr("psi/recording.m2ts")},
 				},
-				Content: mirakc.ContentInfo{Path: "/recording/psi/recording.m2ts"},
+				Content: mirakc.ContentInfo{Path: "/recording/psi/recording.m2ts", Sha256: strPtr(sha256Hex(tsData))},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
