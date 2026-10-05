@@ -40,6 +40,7 @@ CREATE TABLE epg_programs (
     name        text    NOT NULL DEFAULT '',
     description text    NOT NULL DEFAULT '',
     genre_lv1   smallint[] GENERATED ALWAYS AS (genre_lv1_of(genres)) STORED,
+    series_key  text GENERATED ALWAYS AS (series_key(name)) STORED,  -- シリーズ自動キー（data/series.md）
     extended    jsonb,   -- 拡張形式イベント（出演者等）
     genres      jsonb,   -- lv1 / lv2 / un1 / un2 の全量
     video       jsonb,   -- 映像属性

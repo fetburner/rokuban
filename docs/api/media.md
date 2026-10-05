@@ -43,7 +43,7 @@ HEAD /api/media/recordings/{id}/seek-tiles        →  ヘッダーのみ
 **`internal/streamer` の所有物として実装する。** api ロールはファイルシステムに
 依存しない（不変条件 1）ため、バイト転送はロールとして分ける。monolith では
 `api.RouterConfig.Mounter` 経由で同一リスナーに相乗りするが、コードの境界は
-最初から引いてある。`--roles streamer` を指定したときだけ登録される。
+最初から引いてある。streamer ロールが有効なとき（`--all` を含む）だけ登録される。
 
 **`/file` は `profile` クエリが無いときは原本（`kind = 'original'`）、あるときは
 `kind = 'encoded'` かつそのプロファイル名を返す**。**`/thumbnail` はサムネイル
@@ -349,7 +349,7 @@ POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
 #### 一覧の契約（`GET /api/live-profiles`）
 
 画質セレクタが出すのは `config.live.profiles` の名前である。その公開面は
-**`GET /api/live-profiles`** に置く（`LiveProfileSummary { name, height? }`。M4-21）。
+**`GET /api/live-profiles`** に置く（`LiveProfileSummary { name, height? }`）。
 
 - **`GET /api/capabilities` の `live` を object にしない。** あちらの規律は
   「返すのは真偽値だけで、config のキー名・値は載せない」（`ListEncodeProfiles` /

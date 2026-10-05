@@ -31,7 +31,7 @@ go:embed で単一バイナリに同梱するため、成果物は**静的ファ
 
 ### 2. OpenAPI ファーストとの接続
 
-orval で `useRecordings()` のような型付きフックまで生成物にできる。CI に組み込み、契約の破壊的変更は生成物の差分として検知する（参照: [api.md](../api.md) の REST API）。
+orval で `useListRecordings()` のような型付きフックまで生成物にできる。CI に組み込み、契約の破壊的変更は生成物の差分として検知する（参照: [api.md](../api.md) の REST API）。
 
 ### 3. 番組表グリッドのエコシステム
 

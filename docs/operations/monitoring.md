@@ -82,8 +82,8 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_storage_sync_last_success_timestamp_seconds` | Gauge | **全 root を観測できた**パスの時刻。1 root でも失敗した部分成功では進まない（下の per-root ゲージと対で見る） |
 | `rokuban_storage_root_last_success_timestamp_seconds{root}` | Gauge | root（`media` / `scratch`）ごとに最後に観測できた時刻。片方だけ恒久的に壊れているケースをここで特定する（下記「沈黙は保証ではない」）。**この鮮度でアラートを組んでよい** --- `storage.scratch_dir` を空にして root を観測対象から外すと、次のパスで `{root="scratch"}` の系列自体が消える（凍結した値が残って恒久的な偽陽性になることはない） |
 | `rokuban_storage_total_bytes{root}` / `rokuban_storage_used_bytes{root}` / `rokuban_storage_available_bytes{root}` | Gauge | root ごとの直近観測バイト数。`GET /api/storage` を経由せず Prometheus 側で容量アラートを組める |
-| `rokuban_live_active_sessions{kind}` | GaugeVec | ライブ / 追っかけセッション数（`kind`: `live` / `chase`。**per-process**。全体は Prometheus 側で sum。[k8s 運用](k8s.md) §5） |
-| `rokuban_live_session_start_failures_total{reason}` | Counter | ライブ / 追っかけセッション開始失敗（`session_limit` / `upstream_error` / `ffmpeg_error` / `record_not_ready_timeout`） |
+| `rokuban_live_active_sessions{kind}` | GaugeVec | ライブ / 追っかけ / 原本 VOD セッション数（`kind`: `live` / `chase` / `original_vod`。**per-process**。全体は Prometheus 側で sum。[k8s 運用](k8s.md) §5） |
+| `rokuban_live_session_start_failures_total{reason}` | Counter | ライブ / 追っかけセッション開始失敗（`reason` の値は `internal/streamer/live.go` の `LiveSessionStartFailures` 呼び出しが権威。例: `session_limit` / `ffmpeg_error`） |
 | `rokuban_live_session_evictions_total{reason,result}` | Counter | 起動失敗からの再試行のために退避したライブ / 追っかけセッション数（`reason`: `upstream` / `session_limit`、`result`: `retry_succeeded` / `retry_failed` / `retry_abandoned`。`retry_abandoned` は退避完了後、mirakc の解放待ち中に呼び出し元が切断して再試行しなかった件数で、mirakc 側の失敗（`retry_failed`）とは区別する） |
 | `rokuban_live_idle_gc_reclaimed_total` | Counter | idle GC が回収したライブ / 追っかけセッション数 |
 | `rokuban_live_leave_hints_total{result}` | Counter | ライブ / 追っかけの離脱ヒント受信数（`deadline_shortened` / `no_session` / `no_effect`）。**回収数と対で読む** --- ヒントは停止命令ではないので一致しない（差が開いていれば共有セッションが多い）。`no_effect` が定常的に出るなら「猶予 ≥ `live.idle_timeout`」でヒントが効かない設定 |
@@ -176,10 +176,11 @@ snapshot からの経過時間として見える。
 
 | 種別 | ジョブ | `--site` | CronJob の立て方 |
 |---|---|---|---|
-| site 束縛 | `epg-sync` / `tuner-sync` / `ruler-pass` / `reconcile-pass` / `record-sweep` | 多サイトでは必須（1 サイトなら省略可） | **サイトごとに 1 本**（`--site tokyo` 等） |
-| site 非依存 | 下記の 5 種 | **付けない**（付けるとエラー） | **全体で 1 本**（サイトごとに立てない） |
+| site 束縛 | `rokuban enqueue --help` の「site 束縛ジョブ」 | 多サイトでは必須（1 サイトなら省略可） | **サイトごとに 1 本**（`--site tokyo` 等） |
+| site 非依存 | 上記以外 | **付けない**（付けるとエラー） | **全体で 1 本**（サイトごとに立てない） |
 
-対象は `catalog-export` / `delete-reconcile` / `encode-reconcile` / `thumbnail-reconcile` / `storage-sync` である。
+一覧の権威は `rokuban enqueue --help`（`cmd/rokuban/enqueue.go` の `RequiresSite`）である。
+site 非依存にする理由は、単一の資源（アーカイブ・プロファイル・DB 全体）を相手にすることである。例:
 `catalog-export` / `storage-sync` はアーカイブ（+ スクラッチ）が単一なので site の属性を持たない。
 `encode-reconcile` はエンコードのプロファイルとアーカイブがどちらも単一である。
 `thumbnail-reconcile` はサムネイルの名前空間とアーカイブが単一である。
@@ -245,7 +246,7 @@ thumbnail reconcile の候補から除外される既知の原本欠落は `roku
 | 沈黙 | 何を意味しないか | 何を見るか |
 |---|---|---|
 | `/api/capacity/overages` が空 | 収まるとは限らない。並走 EPGStation・ライブ視聴・EPG 収集は見えず、mirakc の `excluded_channels` は `/api/tuners` に載らないので**知る術がない** | `rokuban_tuners_projected` が 0 でないこと |
-| 同上（射影が空） | 射影が 1 行も無いサイトは**何も主張しない**ので、同期が壊れると警告が黙って消える | `tuner_sync` の行と `tuner_sync_last_success` の鮮度 |
+| 同上（射影が空） | 射影が 1 行も無いサイトは**何も主張しない**ので、同期が壊れると警告が黙って消える | `tuner_sync` の行と `rokuban_tuner_sync_last_success_timestamp_seconds{site}` の鮮度 |
 | `drop-stats` の `pidType` が無い | 分類できなかっただけで、ドロップ統計そのものは正しい | `packets` / `drops` は種別と独立に信頼できる |
 | `pidType` が `other` | 音声の可能性がある（LATM AAC は `other` に落ちる。**自前の `stream_type` 表は作らず、`gots` の `IsAudioContent()` の値域に従う**） | 4K/8K を録ったなら疑う |
 | `/api/sites/{site}/programs/{programId}/overlaps` の `count = 0` | 録れるとは限らない（他サイトや mirakc の他の消費者は数えていない） | 重なりの手動確認（[docs/runbook/](../runbook.md) 側） |
@@ -253,7 +254,7 @@ thumbnail reconcile の候補から除外される既知の原本欠落は `roku
 | `rokuban_reconcile_start_delayed` が 0 | 録画が始まったことの確認ではない（猶予 3 分の内側は検出しない） | `recordings.started_at` |
 | `GET /api/storage` に root が載っている | 最新の観測とは限らない。1 root の statfs 失敗時は前回の観測行をそのまま残すため、行の存在だけでは「観測が続いている」ことを保証しない | 各要素の `observedAt` の鮮度 / `rokuban_storage_root_last_success_timestamp_seconds{root}` |
 | worker Pod の scrape が落ちた（`up == 0`） | 死んだとは限らない。**drain 中は HTTP を先に閉じてからジョブを走らせ続ける**ので、`--soft-stop-timeout` のあいだ `/metrics` も `/healthz` も落ちる（猶予を数時間に取る encode 構成では、その間ずっと）。停止のたびに出る | 同時刻に `stopping river client` の ERROR が出ていないこと |
-| `rokuban server` が exit 0 で終わった | drain が成功したとは限らない。`riverClient.Stop` の戻り値は ERROR ログに落としており、**終了コードには出ない**。予算切れで戻った場合、実行中だったジョブの行は一時的に `running` のまま残る。`ingest` / `encode` はそれぞれ `record_sweep` / `encode_reconcile` が lock 解放後に回収するが、その他のジョブは `JobRescuer`（既定 1 時間）に依存する（[§5](k8s.md)「Deployment 併用時」） | ログの `stopping river client`（ERROR）をアラート対象にする |
+| `rokuban server` が exit 0 で終わった | drain が成功したとは限らない。`riverClient.Stop` の戻り値は ERROR ログに落としており、**終了コードには出ない**。予算切れで戻った場合、実行中だったジョブの行は一時的に `running` のまま残る。`ingest` / `encode` / `cm_detect`（ロゴ候補解析を含む）はそれぞれ `record_sweep` / `encode_reconcile` / `cm_detect_reconcile` が lock 解放後に回収するが、その他のジョブは `JobRescuer`（既定 1 時間）に依存する（[§5](k8s.md)「Deployment 併用時」） | ログの `stopping river client`（ERROR）をアラート対象にする |
 | `rokuban_media_assets_missing` が 0（または全 kind の系列が消えている） | 「実体無しの資産が無い」を意味しない。マウントが落ちている・空マウントを疑ったパスは記録自体を見送るため、その間はこのゲージが前回値のまま凍結する。**疑いを経ずに凍結する経路もある** --- 走査エラー・DB エラーでパスが途中 return した場合はゲージに触れないまま終わり、疑いのカウンタも進まない | `rokuban_missing_asset_scan_suspected_storage_failure_total` が増えていないこと **かつ** `rokuban_delete_reconcile_last_pass_timestamp_seconds` が進んでいること（前者は疑い経路、後者はエラー経路の凍結を捕まえる） |
 
 ### チューナー故障はライブ画面の 1 行で見せる
