@@ -37,6 +37,9 @@ describe('recordingTimeline', () => {
 
     expect(timeline.recordingFileStartAtMs).toBe(Date.parse(recordingLate))
     expect(timeline.recordingHeadSeconds).toBe(180)
+    expect(timeline.chaseHeadOffsetSeconds).toBe(180)
+    expect(timeline.recordedSeconds).toBe(2520)
+    expect(timeline.recordedEndSeconds).toBe(2700)
     expect(timeline.programRecordingOffsetSeconds).toBe(360)
     expect(recordingTimeline(recording({ startedAt: recordingLate }), { programSeconds: 180 }).programRecordingOffsetSeconds)
       .toBe(0)
@@ -77,12 +80,27 @@ describe('recordingTimeline', () => {
     expect(timeline.recordedAfterProgramStartPercent).toBeCloseTo(90.9091, 3)
   })
 
-  it('returns no file axis when either timestamp cannot be parsed', () => {
-    const timeline = recordingTimeline(recording({ startedAt: 'invalid' }), { programSeconds: 540 })
+  it('extends maxSeconds to the recorded edge once it passes the planned end', () => {
+    const timeline = recordingTimeline(recording(), { nowMs: Date.parse('2026-10-02T11:10:00.000Z') })
 
-    expect(timeline.recordingFileStartAtMs).toBeNull()
-    expect(timeline.recordingHeadSeconds).toBeNull()
-    expect(timeline.programRecordingOffsetSeconds).toBeNull()
-    expect(timeline.recordedSeconds).toBe(0)
+    expect(timeline.plannedSeconds).toBe(3600)
+    expect(timeline.recordedEndSeconds).toBe(4200)
+    expect(timeline.maxSeconds).toBe(4200)
+  })
+
+  it('returns no file axis when either timestamp cannot be parsed', () => {
+    const badStarted = recordingTimeline(recording({ startedAt: 'invalid' }), { programSeconds: 540 })
+    expect(badStarted.recordingFileStartAtMs).toBeNull()
+    expect(badStarted.recordingHeadSeconds).toBeNull()
+    expect(badStarted.programRecordingOffsetSeconds).toBeNull()
+    expect(badStarted.recordedSeconds).toBe(0)
+
+    for (const startAt of ['', 'invalid']) {
+      const badStart = recordingTimeline(recording({ startAt }), { programSeconds: 540 })
+      expect(badStart.programmeEndAt).toBeNull()
+      expect(badStart.recordingFileStartAtMs).toBeNull()
+      expect(badStart.recordingHeadSeconds).toBeNull()
+      expect(badStart.programRecordingOffsetSeconds).toBeNull()
+    }
   })
 })

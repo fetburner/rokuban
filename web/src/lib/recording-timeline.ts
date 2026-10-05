@@ -3,7 +3,7 @@ import type { Recording } from '@/api/generated'
 type RecordingTimelineSource = Pick<Recording, 'startAt' | 'durationMs'> &
   Partial<Pick<Recording, 'startedAt' | 'endedAt' | 'status'>>
 
-export type RecordingTimelineOptions = {
+type RecordingTimelineOptions = {
   /** 現在の時刻。指定時は endedAt より優先して録画済み範囲を計算する。 */
   nowMs?: number
   /** 番組一覧の時刻。ライブ再生では録画作成時の番組 snapshot より新しい場合がある。 */
@@ -16,7 +16,8 @@ export type RecordingTimelineOptions = {
 export type RecordingTimeline = {
   programmeStartMs: number
   programmeEndMs: number
-  programmeEndAt: string
+  /** 番組開始が解釈できないとき null。 */
+  programmeEndAt: string | null
   recordingFileStartAtMs: number | null
   recordingEndAtMs: number | null
   recordedDurationMs: number | null
@@ -46,7 +47,7 @@ export function recordingTimeline(
   const programmeEndMs = options.programmeEndAt === undefined
     ? programmeStartMs + recording.durationMs
     : Date.parse(options.programmeEndAt)
-  const programmeEndAt = new Date(programmeEndMs).toISOString()
+  const programmeEndAt = Number.isFinite(programmeEndMs) ? new Date(programmeEndMs).toISOString() : null
   const startedAtMs = parseTime(recording.startedAt)
   const recordingFileStartAtMs = Number.isFinite(programmeStartMs) && startedAtMs !== null
     ? Math.max(startedAtMs, programmeStartMs)
@@ -59,6 +60,7 @@ export function recordingTimeline(
     ? Math.max(0, (recordingFileStartAtMs - programmeStartMs) / 1000)
     : null
   const chaseHeadOffsetSeconds = recordingHeadSeconds ?? 0
+  // 規則は main のまま温存: ライブ画面は現在の EPG 幅（端数そのまま）、録画詳細は snapshot の durationMs（切り上げ）。
   const plannedSeconds = options.programmeEndAt === undefined
     ? Math.max(0, Math.ceil(recording.durationMs / 1000))
     : Math.max(1, (programmeEndMs - programmeStartMs) / 1000)

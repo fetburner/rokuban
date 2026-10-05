@@ -795,7 +795,7 @@ export function RecordingDetail({
             {showSite && <span className="rounded bg-muted px-1.5 py-0.5 text-foreground">{recording.site}</span>}
             <span>{recording.serviceName}</span>
             <span>
-              {formatDate(recording.startAt)} {formatTime(recording.startAt)}–{formatTime(programEndAt)}
+              {formatDate(recording.startAt)} {formatTime(recording.startAt)}{programEndAt !== null && `–${formatTime(programEndAt)}`}
             </span>
             <span>{formatDuration(recording.durationMs)}</span>
             {actualTimeLabels.length > 0 && (

@@ -414,6 +414,11 @@ describe('live program axis and boundaries', () => {
     expect(isRecordedProgramOffset(60, access.recordingHeadSeconds, 1200)).toBe(false)
   })
 
+  it('gives no access without throwing when the programme start cannot be parsed', () => {
+    expect(programRecordingAccess(1, '', recordingLate))
+      .toEqual({ canStartOver: false, canSeek: false, recordingHeadSeconds: null })
+  })
+
   it('does not make the unrecorded programme head selectable when recording starts late', () => {
     const access = programRecordingAccess(42, start, recordingLate)
     expect(access).toEqual({ canStartOver: true, canSeek: true, recordingHeadSeconds: 180 })
