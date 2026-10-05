@@ -2,6 +2,8 @@ import { cleanup } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach } from 'vitest'
 
+import { assertNoDuplicateAlertText } from './duplicate-alerts'
+
 // jsdom は ResizeObserver を実装していない。PageHeader
 // （components/page.tsx）と CircuitBreakerBanner が使うため、
 // テスト環境向けに no-op のスタブを用意する。
@@ -49,6 +51,12 @@ HTMLMediaElement.prototype.play = function (this: HTMLMediaElement) {
 // @testing-library/react の自動クリーンアップ検出（グローバル afterEach の有無）
 // が働かない。前のテストの DOM がそのまま残ると screen クエリが複数要素に
 // マッチして誤検知するので、明示的に各テスト後に unmount する。
+// 同じ文言を重ねて読み上げないよう、終了時の DOM を cleanup より先に検査する。
+// 検査で失敗しても次のテストへ DOM を残さないよう cleanup は finally で行う。
 afterEach(() => {
-  cleanup()
+  try {
+    assertNoDuplicateAlertText()
+  } finally {
+    cleanup()
+  }
 })
