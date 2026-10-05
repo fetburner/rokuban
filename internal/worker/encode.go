@@ -272,16 +272,11 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 		return fmt.Errorf("resolving encoded path: %w", err)
 	}
 
-	scratchDir, scratchOut := w.scratchPaths(job.ID, profile)
-	if err := os.MkdirAll(filepath.Dir(scratchDir), 0o755); err != nil {
-		return fmt.Errorf("creating scratch root: %w", err)
+	scratchDir, err := newJobScratchDir(w.ScratchDir, "encode", job.ID)
+	if err != nil {
+		return fmt.Errorf("creating encode scratch directory: %w", err)
 	}
-	if err := os.RemoveAll(scratchDir); err != nil {
-		return fmt.Errorf("cleaning previous scratch directory: %w", err)
-	}
-	if err := os.Mkdir(scratchDir, 0o755); err != nil {
-		return fmt.Errorf("creating scratch dir: %w", err)
-	}
+	scratchOut := filepath.Join(scratchDir, "out."+profile.Container)
 	defer func() {
 		// 成功・失敗を問わず scratch を best-effort で掃除（途中成果物は cleanup が
 		// 回収する想定だが、正常系では残さない）。
@@ -471,10 +466,7 @@ func (w *EncodeWorker) buildCutFilter(ctx context.Context, profile config.Encode
 // 任せている。cut 版だけ別のストリームが選ばれると、同じ録画の 2 つの版で
 // 音声が食い違う。
 func (w *EncodeWorker) selectStreams(ctx context.Context, inputPath string) (video, audio int, err error) {
-	ffprobe := w.FFprobe
-	if ffprobe == "" {
-		ffprobe = "ffprobe"
-	}
+	ffprobe := ffargs.FFprobePath(w.FFprobe)
 	probeCtx, cancel := context.WithTimeout(ctx, streamProbeTimeout)
 	defer cancel()
 	out, err := commandOutput(probeCtx, ffprobe,
@@ -623,10 +615,7 @@ type encodeCommandInput struct {
 // runEncodeCommand は ffmpeg を実行し、進捗を読み取り、scratch 出力を検証する。
 func (w *EncodeWorker) runEncodeCommand(ctx context.Context, in encodeCommandInput, reportProgress func(time.Duration), log *slog.Logger) error {
 	profile, inputPath, scratchOut, subtitleOut, withSubtitles := in.profile, in.inputPath, in.scratchOut, in.subtitleOut, in.withSubtitles
-	ffmpeg := w.FFmpeg
-	if ffmpeg == "" {
-		ffmpeg = "ffmpeg"
-	}
+	ffmpeg := ffargs.FFmpegPath(w.FFmpeg)
 	cmd := exec.CommandContext(ctx, ffmpeg, BuildFFmpegArgs(profile, inputPath, scratchOut, withSubtitles, in.filter)...)
 	setWorkerExecWaitDelay(cmd)
 	// 進捗は stdout（-progress pipe:1）。stderr はエラー診断のみ（進捗に使わない）。
@@ -1107,24 +1096,8 @@ func (w *EncodeWorker) loadOriginal(ctx context.Context, recordingID int64) (sql
 	return row, nil
 }
 
-func (w *EncodeWorker) scratchPaths(jobID int64, profile config.EncodeProfile) (dir, out string) {
-	base := w.ScratchDir
-	if base == "" {
-		base = os.TempDir()
-	}
-	dir = filepath.Join(base, "encode", strconv.FormatInt(jobID, 10))
-	out = filepath.Join(dir, "out."+profile.Container)
-	return dir, out
-}
-
 func probeHasSubtitles(ctx context.Context, ffprobe, input string, run func(context.Context, string, ...string) ([]byte, error)) (bool, error) {
-	if ffprobe == "" {
-		ffprobe = "ffprobe"
-	}
-	out, err := run(ctx, ffprobe,
-		"-v", "error", "-select_streams", "s",
-		"-show_entries", "stream=index", "-of", "csv=p=0", input,
-	)
+	out, err := run(ctx, ffargs.FFprobePath(ffprobe), ffargs.SubtitleProbeArgs([]string{input}, "", "")...)
 	if err != nil {
 		return false, err
 	}

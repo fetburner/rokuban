@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -1211,8 +1212,7 @@ done
 }
 
 // installFakeFFprobeAlwaysReportsSubtitle は probeLiveCaptionStream が呼ぶ
-// ffprobe（`-select_streams s -show_entries stream=index -of csv=p=0`）を偽装し、
-// 常に字幕ストリーム有りと報告する。実 ffprobe を fake の生パケット列
+// ffprobe の argv を検査し、常に字幕ストリーム有りと報告する。実 ffprobe を fake の生パケット列
 // （PAT/PMT を持たない）に向けると失敗する（実測: exit 1）ため、captions の
 // 一連の書き出しを試験するにはこれで置き換える必要がある。
 func installFakeFFprobeAlwaysReportsSubtitle(t *testing.T) string {
@@ -1222,7 +1222,7 @@ func installFakeFFprobeAlwaysReportsSubtitle(t *testing.T) string {
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fake-ffprobe-subtitle")
-	script := "#!/bin/sh\necho 0\n"
+	script := "#!/bin/sh\nexpected='-v error -probesize 5M -analyzeduration 3M -select_streams s -show_entries stream=index -of csv=p=0 -i pipe:0'\n[ \"$*\" = \"$expected\" ] || exit 19\necho 0\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1283,6 +1283,59 @@ func TestLiveStreamer_Segment_CaptionsEnabled_ServesVTTAndM3U8AndTS(t *testing.T
 				t.Errorf("Content-Type = %q, want %q (%s)", got, tt.wantType, tt.description)
 			}
 		})
+	}
+}
+
+func TestLiveCaptionProbeAndFFmpegWithRealBinaries(t *testing.T) {
+	ffmpeg, ffmpegErr := exec.LookPath("ffmpeg")
+	ffprobe, ffprobeErr := exec.LookPath("ffprobe")
+	if ffmpegErr != nil || ffprobeErr != nil {
+		if os.Getenv("ROKUBAN_REQUIRE_FFMPEG") != "" {
+			t.Fatalf("ffmpeg/ffprobe not in PATH but ROKUBAN_REQUIRE_FFMPEG is set: %v %v", ffmpegErr, ffprobeErr)
+		}
+		t.Skipf("ffmpeg/ffprobe not in PATH: %v %v", ffmpegErr, ffprobeErr)
+	}
+
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "live.ts")
+	createArgs := []string{
+		"-hide_banner", "-loglevel", "error", "-y",
+		"-f", "lavfi", "-i", "testsrc=size=160x90:rate=25:duration=2",
+		"-f", "lavfi", "-i", "sine=frequency=1000:duration=2",
+		"-map", "0:v:0", "-map", "1:a:0", "-c:v", "mpeg2video", "-c:a", "mp2",
+		"-f", "mpegts", inputPath,
+	}
+	if out, err := exec.Command(ffmpeg, createArgs...).CombinedOutput(); err != nil {
+		t.Fatalf("creating live MPEG-TS fixture: %v: %s", err, out)
+	}
+	input, err := os.ReadFile(inputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := input[:min(len(input), liveCaptionProbeBytes)]
+	withSubtitles, err := probeLiveCaptionStream(context.Background(), ffprobe, prefix)
+	if err != nil {
+		t.Fatalf("probing live MPEG-TS fixture: %v", err)
+	}
+	if withSubtitles {
+		t.Fatal("real ffprobe found a subtitle stream in the captionless fixture")
+	}
+
+	liveDir := filepath.Join(dir, "hls")
+	if err := os.MkdirAll(filepath.Join(liveDir, "segments"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := LiveConfig{
+		Captions: true,
+		Profiles: []LiveProfile{{Name: "fixture", VideoCodec: "mpeg2video", AudioCodec: "mp2", SegmentSeconds: 1, PlaylistSize: 3}},
+	}
+	cmd := exec.Command(ffmpeg, BuildLiveFFmpegArgs(cfg, liveDir, withSubtitles)...)
+	cmd.Stdin = bytes.NewReader(input)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("transcoding captionless live fixture: %v: %s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(liveDir, "playlist.m3u8")); err != nil {
+		t.Fatalf("live master playlist was not written: %v", err)
 	}
 }
 

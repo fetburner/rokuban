@@ -1031,22 +1031,12 @@ func (w *IngestWorker) determineRelPath(ctx context.Context, args jobs.IngestJob
 	} else {
 		relPath = filepath.Base(record.Content.Path)
 	}
-	// contentPath / Content.Path がどちらも空だと filepath.Base("") == "."。
-	// 前置すると mediapath.Resolve の脱出検知をすり抜けてディレクトリが作られて
-	// しまう（上の doc コメント参照）ので、前置前に明示的に弾く。
-	if relPath == "." || relPath == "/" {
-		return "", "", fmt.Errorf("mirakc record %s has no usable content path (contentPath and Content.Path both empty)", args.RecordID)
+	// 空の rel_path と予約名は、mirakc 由来か移行ライブラリ由来かによらず
+	// catalog.SiteRelPath で同じように拒否する。
+	relPath, err = catalog.SiteRelPath(args.Site, relPath)
+	if err != nil {
+		return "", "", fmt.Errorf("building site rel_path for mirakc record %s: %w", args.RecordID, err)
 	}
-	if mediapath.IsIngestTempFile(filepath.Base(relPath)) || mediapath.IsMediaRelPathLockFile(filepath.Base(relPath)) ||
-		mediapath.IsEncodeTempFile(filepath.Base(relPath)) || mediapath.IsGeneratedAssetTempFile(filepath.Base(relPath)) {
-		return "", "", fmt.Errorf("mirakc record %s uses a reserved storage filename %q", args.RecordID, filepath.Base(relPath))
-	}
-	// rel_path のパス区切りは DB 上で '/' 規約（internal/worker/encode.go の
-	// EncodedRelPath 参照）。args.Site は site 名の構文制約で '/' を含み得ない
-	// ので単純な文字列結合で足りる。catalog.SiteRelPathPrefix は rescue の
-	// ストレージスキャン（internal/catalog の classifySiteForRescuedFile）がこの前置を
-	// 逆に読むので、書き手と読み手でリテラルを重複させずここに揃える。
-	relPath = catalog.SiteRelPathPrefix + args.Site + "/" + relPath
 	fullPath, err = mediapath.Resolve(w.MediaDir, relPath)
 	if err != nil {
 		return "", "", err

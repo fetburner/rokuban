@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	pgx5 "github.com/jackc/pgx/v5"
@@ -156,16 +155,9 @@ func (w *CMLogoCandidateWorker) analyze(
 	if err != nil {
 		return cmFailure("setup", fmt.Errorf("resolving original path: %w", err))
 	}
-	root := filepath.Join(w.ScratchDir, "cm-logo-candidate")
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		return cmFailure("setup", fmt.Errorf("creating scratch root: %w", err))
-	}
-	jobDir := filepath.Join(root, strconv.FormatInt(jobID, 10))
-	if err := os.RemoveAll(jobDir); err != nil {
-		return cmFailure("setup", fmt.Errorf("cleaning previous scratch directory: %w", err))
-	}
-	if err := os.Mkdir(jobDir, 0o700); err != nil {
-		return cmFailure("setup", fmt.Errorf("creating job scratch directory: %w", err))
+	jobDir, err := newJobScratchDir(w.ScratchDir, "cm-logo-candidate", jobID)
+	if err != nil {
+		return cmFailure("setup", fmt.Errorf("creating scratch directory: %w", err))
 	}
 	defer func() {
 		if err := os.RemoveAll(jobDir); err != nil {
