@@ -33,6 +33,7 @@ import {
   validateFixturesOrExit,
   verifyBundleMatchesOrExit,
 } from './lib.mjs'
+import { changedPixelBounds } from './screenshot-pixel-diff.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:4173'
 const SITE = 'default'
@@ -260,12 +261,52 @@ log('\n=== ② ライブ: HLS 字幕 track・キー操作・cue 位置 ===')
       log(`  HLS 字幕 tracks: ${JSON.stringify(result.tracks)}`)
       const cueLine = result.tracks.find((track) => track.cueCount > 0)?.cueLine
       if (result.tracks.every((track) => track.cueCount === 0) && engine === 'webkit') {
-        log('  WebKit の native HLS は cue を JS から公開しないため line 判定は未計測')
+        log('  WebKit の native HLS は cue を JS に公開しないため、スクリーンショットで描画位置を測る')
       } else if (typeof cueLine !== 'number' || cueLine >= 0) {
         ng.push(`② ライブ: HLS 字幕 cue が操作バーの上へ移動していない (${JSON.stringify(result.tracks)})`)
       }
 
       const liveVideo = page.locator('video')
+      const controlsBox = await page.locator('[data-testid="player-controls-bottom"]').boundingBox()
+      if (!controlsBox) {
+        ng.push('② ライブ: 字幕位置を比べる操作バーの矩形が取れない')
+      } else {
+        await liveVideo.evaluate((video) => {
+          video.pause()
+          video.currentTime = 1
+        })
+        await page.waitForFunction(
+          () => {
+            const video = document.querySelector('video')
+            return video !== null && video.paused && !video.seeking && Math.abs(video.currentTime - 1) < 0.5
+          },
+          undefined,
+          { timeout: 5000 },
+        ).catch(() => ng.push('② ライブ: 字幕位置を測る時刻へ seek できない'))
+        const setSubtitleMode = (mode) => liveVideo.evaluate((video, nextMode) => {
+          for (const track of Array.from(video.textTracks)) {
+            if (track.kind === 'subtitles') track.mode = nextMode
+          }
+        }, mode)
+        await setSubtitleMode('hidden')
+        await page.waitForTimeout(150)
+        const withoutCaption = await page.screenshot({ animations: 'disabled' })
+        await setSubtitleMode('showing')
+        await page.waitForTimeout(150)
+        const withCaption = await page.screenshot({ animations: 'disabled' })
+        const captionPixels = await changedPixelBounds(page, withoutCaption, withCaption)
+        const captionBottom = captionPixels.bounds === null
+          ? null
+          : captionPixels.bounds.y + captionPixels.bounds.height
+        log(
+          `  subtitle visible pixels=${captionPixels.changedPixels}, bounds=${JSON.stringify(captionPixels.bounds)}, controlsTop=${controlsBox.y}`,
+        )
+        if (captionPixels.changedPixels < 20 || captionBottom === null) {
+          ng.push('② ライブ: 字幕を有効にしても画面上の描画変化を測れない')
+        } else if (captionBottom >= controlsBox.y - 4) {
+          ng.push(`② ライブ: 字幕が操作バーに重なる (${JSON.stringify({ captionBounds: captionPixels.bounds, controlsTop: controlsBox.y })})`)
+        }
+      }
       await liveVideo.evaluate((video) => {
         video.pause()
         video.muted = false

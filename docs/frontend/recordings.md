@@ -475,9 +475,10 @@ HLS / hls.js を使わない。原本 HLS の詳細は [api/media.md](../api/med
   要素全画面を持たない iPhone Safari では `video.webkitEnterFullscreen()` に落ちる。その場合は
   Safari のネイティブ全画面 UI となり、タイルプレビューは出ない。iPhone Safari 実機での再生・全画面確認は
   未実施であり、Playwright WebKit の結果を実機確認の代わりにしない。未解決: 実機確認は別の issue で追跡する
-- 操作バーを表示して字幕が重なるときは WebVTT cue の行をプレイヤー高さと下端の帯（時刻・シークバー）の高さから
-  計算して上げる。スマホの暗い幕は枠全体に敷くので、幕の高さは数えない。
-  `web/e2e/subtitles.mjs` で実ブラウザの字幕トラックをオンにし、cue の位置を確認する
+- 操作バーを表示して字幕が重なるときは、JavaScript が読める WebVTT cue の行をプレイヤー高さと下端の帯
+  （時刻・シークバー）の高さから計算して上げる。スマホの暗い幕は枠全体に敷くので、幕の高さは数えない。
+  native HLS が cue を JavaScript に公開しない WebKit は、字幕の描画画素をスクリーンショット差分で測り、
+  操作バー上端より上か確認する。判定は `web/e2e/subtitles.mjs` と `web/e2e/recording-original-vod.mjs` にある
 - ライブ視聴（`pages/live.tsx`）・原本 HLS VOD・encoded VOD は同じ自前の操作バーを使う
   （ライブ側は [live.md](live.md)）。原本 VOD では変換済み範囲を描かず、画質（複数候補があるとき）と音声を
   設定メニューに置く
@@ -542,7 +543,7 @@ URL の組み立て、セッション起点の写像、範囲終端、416 後の
 |---|---|---|---|---|
 | F の全画面対象 | 共有の再生グループ | 同左 | 同左 | 同左 |
 | ショートカットを無視する要素 | 共通のセレクタ | 同左 | 同左 | 同左 |
-| 字幕 cue を操作バーの上へ移す | ○ | ○ | ○ | ○ |
+| 字幕を操作バーと重ねない | ○ | ○ | ○ | ○ |
 | 字幕として扱うトラックの判定 | 再生元ごとに決める | 同左 | 同左 | 同左 |
 | 視聴済みを保存する | ○ | ○ | × | × |
 | 再生速度を選べる | ○ | ○ | ○ | × |
@@ -553,10 +554,10 @@ URL の組み立て、セッション起点の写像、範囲終端、416 後の
 録画中の WebKit では EVENT playlist の再生を 1 倍に固定し、完了後に保存速度へ戻す。
 字幕として扱うトラックの判定は再生元ごとに行い、共通化しない。
 HLS 字幕 track は、Chromium と WebKit の両方で `kind="subtitles"` と実測した。
+Chromium では HLS cue の負の `line` と、表示画素の下端が操作バーの上端より上にあることを測る。
+WebKit の native HLS は track を公開するが cue を JavaScript に公開しないため、字幕の表示前後の
+スクリーンショット差分から描画矩形を測り、同じ上端で判定する。
 測定コードは `web/e2e/recording-original-vod.mjs` と `web/e2e/subtitles.mjs` にある。
-Chromium は HLS cue の負の
-`line` を実測できる。WebKit の native HLS は track を公開するが cue を JavaScript に公開しないため、
-cue の `line` は判定しない。
 
 字幕の位置と全画面対象は jsdom では測れないため、実ブラウザで判定する。
 

@@ -40,6 +40,7 @@ import {
   validateFixturesOrExit,
   verifyBundleMatchesOrExit,
 } from './lib.mjs'
+import { changedPixelBounds } from './screenshot-pixel-diff.mjs'
 
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:4173'
 const SITE = 'default'
@@ -2022,11 +2023,42 @@ log(`  HLS TextTrack: ${JSON.stringify(raisedCue)}`)
 if (raisedCue.kind === null) {
   ng.push('⑫ 原本 HLS の subtitle TextTrack がない')
 } else if (raisedCue.cueCount === 0 && engine === 'webkit') {
-  log('  WebKit の native HLS は cue を JS から公開しないため line 判定は未計測')
+  log('  WebKit の native HLS は cue を JS に公開しないため、スクリーンショットで描画位置を測る')
 } else if (raisedCue.cueCount === 0) {
   ng.push(`⑫ 原本 HLS の cue を取得できない (${JSON.stringify(raisedCue)})`)
 } else if (typeof raisedCue.cueLine !== 'number' || raisedCue.cueLine >= 0) {
   ng.push(`⑫ 原本 HLS の subtitle cue が操作バーの上へ移動していない (${JSON.stringify(raisedCue)})`)
+}
+
+const subtitleControlsBox = await page.locator('[data-testid="player-controls-bottom"]').boundingBox()
+if (!subtitleControlsBox) {
+  ng.push('⑫ 原本 HLS: 字幕位置を比べる操作バーの矩形が取れない')
+} else if (raisedCue.kind !== null) {
+  await video.evaluate((element) => {
+    element.pause()
+    const track = Array.from(element.textTracks).find((candidate) => candidate.kind === 'subtitles')
+    if (track) track.mode = 'hidden'
+  })
+  await page.waitForTimeout(150)
+  const withoutCaption = await page.screenshot({ animations: 'disabled' })
+  await video.evaluate((element) => {
+    const track = Array.from(element.textTracks).find((candidate) => candidate.kind === 'subtitles')
+    if (track) track.mode = 'showing'
+  })
+  await page.waitForTimeout(150)
+  const withCaption = await page.screenshot({ animations: 'disabled' })
+  const captionPixels = await changedPixelBounds(page, withoutCaption, withCaption)
+  const captionBottom = captionPixels.bounds === null
+    ? null
+    : captionPixels.bounds.y + captionPixels.bounds.height
+  log(
+    `  subtitle visible pixels=${captionPixels.changedPixels}, bounds=${JSON.stringify(captionPixels.bounds)}, controlsTop=${subtitleControlsBox.y}`,
+  )
+  if (captionPixels.changedPixels < 20 || captionBottom === null) {
+    ng.push('⑫ 原本 HLS: 字幕を有効にしても画面上の描画変化を測れない')
+  } else if (captionBottom >= subtitleControlsBox.y - 4) {
+    ng.push(`⑫ 原本 HLS: 字幕が操作バーに重なる (${JSON.stringify({ captionBounds: captionPixels.bounds, controlsTop: subtitleControlsBox.y })})`)
+  }
 }
 
 await finish(ng, browser)
