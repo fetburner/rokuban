@@ -192,7 +192,7 @@ function measureLayout() {
   const tabPanelCount = document.querySelectorAll('[data-testid="recording-detail-tab-panel"]').length
   const outsideProgramTrackCount = document.querySelectorAll('[data-testid="recorded-outside-program-range"]').length
   const outsideProgramSegmentCount = document.querySelectorAll(
-    '[data-testid="recorded-before-program"], [data-testid="recorded-after-program"]',
+    '[data-testid="recorded-after-program"]',
   ).length
   return {
     viewport,

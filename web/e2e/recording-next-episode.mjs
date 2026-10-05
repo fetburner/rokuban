@@ -337,14 +337,13 @@ async function transitionsAlong(png) {
 
   log('\n=== ① 番組外区間は破線で描かれ、位置が割合と一致する ===')
   const scrubBox = await page.locator('[data-testid="seek-scrub"]').boundingBox()
-  const before = page.locator('[data-testid="recorded-before-program"]')
   const after = page.locator('[data-testid="recorded-after-program"]')
-  if ((await before.count()) !== 0 || (await after.count()) !== 1) {
-    ng.push('① 番組外区間が後ろ 1 つだけでない（ファイル先頭は番組開始なので手前は出ない）')
+  if ((await after.count()) !== 1) {
+    ng.push('① 後ろの番組外区間が 1 つでない')
   } else {
     const a = await after.boundingBox()
     const wantAfterLeft = scrubBox.x + scrubBox.width * (120 / 126)
-    if (Math.abs(a.x - wantAfterLeft) > 2) ng.push(`① 後ろの区間の左端が違う（実際 ${a.x.toFixed(1)} / 期待 ${wantAfterLeft.toFixed(1)}）`)
+    if (Math.abs(a.x - wantAfterLeft) > 0.5) ng.push(`① 後ろの区間の左端が違う（実際 ${a.x.toFixed(1)} / 期待 ${wantAfterLeft.toFixed(1)}）`)
     // 破線は中央の 1 行に明暗が交互に出る。両端の縦線だけ（border-x）なら切り替わりは 2 回以内。
     const clip = { x: a.x, y: a.y, width: a.width, height: a.height }
     const changes = await transitionsAlong(await page.screenshot({ clip, animations: 'disabled' }))

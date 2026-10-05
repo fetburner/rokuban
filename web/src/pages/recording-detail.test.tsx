@@ -774,7 +774,6 @@ describe('RecordingDetailPage', () => {
     )
     await screen.findByTestId('player-controls')
     const afterProgramme = screen.getByTestId('recorded-after-program')
-    expect(screen.queryByTestId('recorded-before-program')).not.toBeInTheDocument()
     expect(parseFloat(afterProgramme.getAttribute('style')!.match(/left:\s*([^;]+)/)![1])).toBeCloseTo(99.89, 2)
     expect(parseFloat(afterProgramme.getAttribute('style')!.match(/width:\s*([^;]+)/)![1])).toBeCloseTo(0.11, 2)
 
@@ -812,7 +811,6 @@ describe('RecordingDetailPage', () => {
 
     await screen.findByRole('heading', { name: '単体ページの録画' })
     expect(screen.queryByTestId('recording-actual-time-difference')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('recorded-before-program')).not.toBeInTheDocument()
     expect(screen.queryByTestId('recorded-after-program')).not.toBeInTheDocument()
     await selectDetailTab('番組')
     expect(screen.queryByText('実録画開始')).not.toBeInTheDocument()
