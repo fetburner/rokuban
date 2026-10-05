@@ -152,7 +152,7 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 					Status:  "finished",
 					Options: mirakc.Options{ContentPath: strPtr("test/progress.m2ts")},
 				},
-				Content: mirakc.ContentInfo{Path: "/recording/test/progress.m2ts"},
+				Content: mirakc.ContentInfo{Path: "/recording/test/progress.m2ts", Sha256: strPtr(sha256Hex(tsData))},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -291,7 +291,7 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 					Status:  "finished",
 					Options: mirakc.Options{ContentPath: strPtr("test/interrupted-progress.m2ts")},
 				},
-				Content: mirakc.ContentInfo{Path: "/recording/test/interrupted-progress.m2ts"},
+				Content: mirakc.ContentInfo{Path: "/recording/test/interrupted-progress.m2ts", Sha256: strPtr(sha256Hex(tsData))},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -381,7 +381,7 @@ func TestIngestWorker_ProgressRemainsAfterFailure(t *testing.T) {
 					Status:  "finished",
 					Options: mirakc.Options{ContentPath: strPtr("test/failing.m2ts")},
 				},
-				Content: mirakc.ContentInfo{Path: "/recording/test/failing.m2ts"},
+				Content: mirakc.ContentInfo{Path: "/recording/test/failing.m2ts", Sha256: strPtr(sha256Hex(tsData))},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
