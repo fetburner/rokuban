@@ -36,8 +36,14 @@ import {
   VolumeX,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { chapterBoundaryMsToSeekSeconds, formatChaptersTime } from '@/lib/chapters'
-import { formatBytes, formatDate, formatPlaybackTime, formatPlaybackTimeMs } from '@/lib/format'
+import { chapterBoundaryMsToSeekSeconds } from '@/lib/chapters'
+import {
+  formatBytes,
+  formatDate,
+  formatPlaybackTime,
+  formatPlaybackTimeMs,
+  formatTimeRange,
+} from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
   seekTileBackgroundSize,
@@ -714,9 +720,10 @@ export function RecordingPlaybackControls({
                           key={`${span.startMs}-${span.endMs}`}
                           data-testid="chapter-marker"
                           data-cut={span.cut ? 'true' : 'false'}
-                          title={`${chapterLabel(span)} ${formatChaptersTime(
-                            span.startMs / 1000,
-                          )}–${formatChaptersTime(span.endMs / 1000)}`}
+                          title={`${chapterLabel(span)} ${formatTimeRange(
+                            formatPlaybackTime(span.startMs / 1000),
+                            formatPlaybackTime(span.endMs / 1000),
+                          )}`}
                           className={`absolute -inset-y-0.5 min-w-0.5 rounded-sm ${span.cut ? 'bg-orange-400' : 'bg-sky-300'}`}
                           style={{ left: `${left}%`, width: `${width}%` }}
                         />

@@ -18,7 +18,7 @@ import {
   displayedFrameBoundaryMs,
   moveChapterBoundary,
 } from '@/lib/chapters'
-import { formatPlaybackTime, formatPlaybackTimeMs } from '@/lib/format'
+import { formatPlaybackTime, formatPlaybackTimeMs, formatTimeRange } from '@/lib/format'
 import {
   SEEK_TILES_COLUMNS,
   SEEK_TILES_HEIGHT,
@@ -297,8 +297,10 @@ export function RecordingChapterFilmstrip({
 
       <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
         <span className="min-w-0 truncate">
-          {formatPlaybackTime(range.startSeconds)}–{formatPlaybackTime(range.endSeconds)} を表示
-          <span className="hidden md:inline">（全体 {formatPlaybackTime(0)}–{formatPlaybackTime(durationSeconds)} のうち枠の部分）</span>
+          {formatTimeRange(formatPlaybackTime(range.startSeconds), formatPlaybackTime(range.endSeconds))} を表示
+          <span className="hidden md:inline">
+            （全体 {formatTimeRange(formatPlaybackTime(0), formatPlaybackTime(durationSeconds))} のうち枠の部分）
+          </span>
         </span>
         <span className="flex shrink-0 gap-1">
           <Button type="button" size="sm" variant="outline" className={action} onClick={() => setUserRange({ startSeconds: 0, endSeconds: durationSeconds })} disabled={durationSeconds <= 0}>

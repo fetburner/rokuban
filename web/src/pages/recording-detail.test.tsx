@@ -1461,7 +1461,7 @@ describe('RecordingDetailPage の検出器結果', () => {
     await selectDetailTab('記録')
     const details = await screen.findByTestId('cm-detector-results-details')
     expect(details.querySelector('summary')).toHaveTextContent('検出器の結果')
-    expect(details.textContent).toContain('00:00:10 – 00:00:20')
+    expect(details.textContent).toContain('0:10〜0:20')
   })
 
   it('チャプター取得中は検出器の詳細を表示しない', async () => {
