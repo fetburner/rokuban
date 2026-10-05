@@ -776,6 +776,36 @@ offsetObservations.set(resumedOffsetSeconds, {
   playlistRequestedAt: undefined,
   segmentNames: [],
 })
+await page.addInitScript(() => {
+  const playback = { firstPlayingTime: null, firstReadyState: 0, progressedTime: null }
+  window.__rokubanChaseResumePlayback = playback
+  const observedVideos = new WeakSet()
+  const observeVideo = (video) => {
+    if (observedVideos.has(video)) return
+    observedVideos.add(video)
+    video.addEventListener('playing', () => {
+      if (playback.firstPlayingTime !== null) return
+      const startTime = video.currentTime
+      playback.firstPlayingTime = startTime
+      playback.firstReadyState = video.readyState
+      const waitForProgress = () => {
+        if (
+          !video.paused &&
+          video.readyState >= 2 &&
+          video.currentTime >= startTime + 0.1
+        ) {
+          playback.progressedTime = video.currentTime
+        } else if (!video.paused) {
+          requestAnimationFrame(waitForProgress)
+        }
+      }
+      requestAnimationFrame(waitForProgress)
+    })
+  }
+  const observeVideos = () => document.querySelectorAll('video').forEach(observeVideo)
+  new MutationObserver(observeVideos).observe(document, { childList: true, subtree: true })
+  observeVideos()
+})
 await page.reload({ waitUntil: 'domcontentloaded' })
 await page.locator('video').waitFor({ timeout: 15000 })
 const resumeRouteDeadline = Date.now() + 5000
@@ -788,20 +818,25 @@ while (
 }
 const savedResumeStarted = await page.waitForFunction(
   () => {
-    const video = document.querySelector('video')
-    return video !== null && !video.paused
+    const playback = window.__rokubanChaseResumePlayback
+    return playback !== undefined && playback.firstPlayingTime !== null && playback.progressedTime !== null
   },
   undefined,
   { timeout: 5000 },
 ).then(() => true).catch(() => false)
-const savedResumeVideo = await page.locator('video').evaluate((video) => ({
-  currentTime: video.currentTime,
-  paused: video.paused,
-}))
+const savedResumePlayback = await page.evaluate(() => window.__rokubanChaseResumePlayback)
+const savedResumeVideo = (savedResumePlayback?.firstPlayingTime ?? null) === null
+  ? await page.locator('video').evaluate((video) => ({
+      currentTime: video.currentTime,
+      paused: video.paused,
+      readyState: video.readyState,
+    }))
+  : savedResumePlayback
+const savedResumeLandingSeconds = savedResumeVideo.firstPlayingTime ?? savedResumeVideo.currentTime
 const savedResumeObservation = offsetObservations.get(resumedOffsetSeconds)
 const expectedFirstSavedResumeSegment = `segment_${String(Math.floor(resumedOffsetSeconds / 2)).padStart(3, '0')}.ts`
 log(
-  `  resume=${savedResumePositionSeconds}s -> offset=${lastChasePlaylistOffset}, first=${savedResumeObservation?.segmentNames[0] ?? '未要求'}, video=${JSON.stringify(savedResumeVideo)}`,
+  `  resume=${savedResumePositionSeconds}s -> offset=${lastChasePlaylistOffset}, first=${savedResumeObservation?.segmentNames[0] ?? '未要求'}, landing=${savedResumeLandingSeconds}, video=${JSON.stringify(savedResumeVideo)}`,
 )
 if (offsetPlaylistRequests <= offsetPlaylistsBeforeSavedResume) {
   ng.push(`④ 保存位置 ${savedResumePositionSeconds}s の最初の playlist が offset/${resumedOffsetSeconds} にならない`)
@@ -812,8 +847,8 @@ if (playlistRequests !== basePlaylistsBeforeSavedResume) {
 if (savedResumeObservation?.segmentNames[0] !== expectedFirstSavedResumeSegment) {
   ng.push(`④ offset playlist の最初の segment が保存位置と合わない（${savedResumeObservation?.segmentNames[0]} / ${expectedFirstSavedResumeSegment}）`)
 }
-if (!savedResumeStarted || Math.abs(resumedOffsetSeconds + savedResumeVideo.currentTime - savedResumePositionSeconds) > 0.35) {
-  ng.push(`④ 保存位置の端数を含めて着地しない（許容差0.35秒、${JSON.stringify(savedResumeVideo)}）`)
+if (!savedResumeStarted || Math.abs(resumedOffsetSeconds + savedResumeLandingSeconds - savedResumePositionSeconds) > 0.35) {
+  ng.push(`④ playing 時の位置が保存位置と合わないか、その後に再生が進まない（許容差0.35秒、${JSON.stringify(savedResumeVideo)}）`)
 }
 if (
   savedResumeObservation?.playlistRequestedAt === undefined ||
