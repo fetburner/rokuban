@@ -602,9 +602,9 @@ export function LivePlayer({
   // このセッションで意図している録画軸の位置（秒）。明示の開始位置・持ち越した位置・範囲内のシーク先で、
   // 開始位置へ戻し終えた後は再生位置で更新する。保存位置から始めたセッションは null（最新の保存位置に従う）。
   const intendedPositionRef = useRef<number | null>(null)
-  // 再読み込みで離れる今のセッション（`${mode}|${recordingId}|${offset}`）。その cleanup の leave ヒントだけを
-  // 送らない（再読み込みは離脱ではない）。別のセッションの cleanup（再生元の切替のアンマウント等）は送る。
-  const skipLeaveSessionRef = useRef<string | null>(null)
+  // 次の leave ヒント（再読み込みで offset が変わったときの cleanup）を送らない。再読み込みは離脱ではない。
+  // 立てるのは offset を変えて state を更新したときだけで、同じ commit の cleanup が必ず消費する。
+  const suppressNextLeaveRef = useRef(false)
   const restorePending = useRef(true)
   // preservedState は画質（プロファイル）の切替・再読み込みを跨いで持ち越す
   // 視聴者の表示状態（issue #869 / #871）。字幕の表示と、切替前に再生中だったかを持つ。
@@ -911,7 +911,7 @@ export function LivePlayer({
       const error = {
         position,
         reported: playedRef.current && position !== null ? position : undefined,
-        playing: media ? !media.paused || resumePlaybackPendingRef.current : true,
+        playing: media ? !media.paused || resumePlaybackPendingRef.current : false,
       }
       errorRef.current = error
       return error
@@ -1595,10 +1595,10 @@ export function LivePlayer({
       window.removeEventListener('pagehide', leave)
       document.removeEventListener('visibilitychange', onVisibilityChange)
       // 再読み込みで離れるこのセッションには送らない（離脱ではない）。
-      if (skipLeaveSessionRef.current === `${mode}|${recordingId}|${sessionOffset}`) skipLeaveSessionRef.current = null
+      if (suppressNextLeaveRef.current) suppressNextLeaveRef.current = false
       else leave()
     }
-  }, [isChase, isOriginalVOD, isRecordingPlayback, mode, recordingId, site, networkId, serviceId, sessionOffset, sessionStartOffset])
+  }, [isChase, isOriginalVOD, isRecordingPlayback, recordingId, site, networkId, serviceId, sessionOffset, sessionStartOffset])
 
   const visibleOriginalSeconds = originalPreviewSeconds ?? originalCurrentSeconds
   const originalPlayedFraction = originalDurationSeconds > 0
@@ -1697,7 +1697,7 @@ export function LivePlayer({
       }
       setRetryNonce((nonce) => nonce + 1)
     } else if (reload) {
-      skipLeaveSessionRef.current = `${mode}|${recordingId}|${sessionOffset}`
+      suppressNextLeaveRef.current = true
     }
   }
   /** openRecordingSession はセッション外へのシークで、録画軸の位置から新しいセッションを開く。 */
@@ -1715,11 +1715,15 @@ export function LivePlayer({
     errorRef.current = null
     // 親へは `handOffError` と同じ規則で渡す（一度も再生していなければ位置を渡さず、親の保存位置・
     // 先頭からの意図を上書きしない。再生の意図はエラーの時点のもの）。
-    if (onSourceRangeExit?.(error?.reported, error?.playing ?? false) === true) return
+    const playing = error?.playing ?? false
+    if (onSourceRangeExit?.(error?.reported, playing) === true) return
+    // 同じ再生元で開き直すときも、エラーの時点の再生の意図を引き継ぐ（cleanup がこれを読んで再開を決める）。
+    resumePlaybackPendingRef.current = playing
     const position = error?.position ?? resumeSeconds
     if (position === null) {
-      // 意図していた位置が分からなければ、導き直さずに今のセッションを同じ開始位置で取り直す。
-      openSession({ offset: sessionOffset, startSeconds: explicitStartSeconds }, sessionStartOffset + explicitStartSeconds, true)
+      // 意図していた位置が分からなければ、導き直さずに今のセッションをそのまま取り直す。開始位置とその種類
+      // （明示開始か、取り込んだ保存位置か）は state が変わらないので、失敗したセッションと同じになる。
+      setRetryNonce((nonce) => nonce + 1)
       return
     }
     if (isChase && onSourceRangeExit === undefined) {

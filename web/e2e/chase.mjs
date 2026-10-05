@@ -27,7 +27,6 @@ import {
   launchBrowser,
   log,
   sseKeepAlive,
-  streamerSeekSeconds,
   validateFixturesOrExit,
   verifyBundleMatchesOrExit,
 } from './lib.mjs'
@@ -305,6 +304,12 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
 })
 
 const chaseBase = '/api/sites/default/recordings/1/chase'
+// fixture は offset のセッション（追っかけ・原本 HLS とも）を、offset を含む 2 秒の segment の先頭から配る。
+// 真の起点はこの segment の先頭で、奇数の offset では offset より 1 秒手前になる。fixture と判定の両方がこの式を使う。
+/** fixtureSegmentIndex は fixture が offset のセッションを始める segment の番号。 */
+const fixtureSegmentIndex = (offsetSeconds) => Math.floor(offsetSeconds / 2)
+/** fixtureSessionOrigin は fixture の offset のセッションが実際に始まる録画軸の秒。 */
+const fixtureSessionOrigin = (offsetSeconds) => fixtureSegmentIndex(offsetSeconds) * 2
 let playlistRequests = 0
 const profilePlaylistURLs = []
 const playlistSizes = []
@@ -369,7 +374,7 @@ await page.route(`**${chaseBase}/offset/*/playlist.m3u8*`, async (route) => {
   observation.playlistRequestedAt ??= Date.now()
   // offset のセッションも録画中は伸びる EVENT で、offset 無しの playlist と同じ時点で ENDLIST になる
   // （続きからは offset のセッションで始まるので、ENDLIST 前の振る舞いもこちらで測ることがある）。
-  const first = Math.floor(offsetSeconds / 2)
+  const first = fixtureSegmentIndex(offsetSeconds)
   const grownEnd = growingSince !== undefined ? Math.max(first + 1, grownSegmentCount()) : entries.length
   const sourceEntries = entries.slice(first, grownEnd)
   await route.fulfill({
@@ -793,7 +798,7 @@ async function resumeThenHome(resumeMs) {
   const startedOffset = lastChasePlaylistOffset
   log(`  resume=${resumeMs}ms: started session offset=${startedOffset}, landing currentTime=${landing}`)
   if (landing === null) ng.push(`④ #chase の再読み込みで再生が始まらない（保存位置 ${resumeMs}ms）`)
-  else if (resumeMs !== null && Math.abs(startedOffset + landing - resumeMs / 1000) >= 1) {
+  else if (resumeMs !== null && Math.abs(fixtureSessionOrigin(startedOffset) + landing - resumeMs / 1000) >= 1) {
     ng.push(`④ startOffset未選択の追っかけで保存位置 ${resumeMs}ms を復元しない（offset ${startedOffset} + ${landing}）`)
   }
   // Home を範囲内のシークにするため、先頭から始めたときは 1.5 秒まで進めてから止める。
@@ -868,15 +873,16 @@ if (inRangeHome.offset !== 0) ng.push('④ 0秒へのin-range seekでoffset play
 if (inRangeHome.leaves.some((path) => path.includes('/offset/'))) {
   ng.push('④ 0秒へのin-range seekでoffset付きleaveヒントを送った')
 }
-// 7 秒は offset 7 のセッションから始まる。0 秒はその外なので、offset 0 の playlist を 1 回取り直し、
-// 旧セッション（offset 7）へ leave ヒントを送る。録画中なので再生元は追っかけのまま（video が残る）。
-const rewindHome = await resumeThenHome(7_000)
-log(`  rewind from offset 7: ${JSON.stringify(rewindHome)}`)
-if (rewindHome.startedOffset !== 7) ng.push(`④ 保存位置 7 秒の続きからが offset 7 のセッションで始まらない (${rewindHome.startedOffset})`)
-if (rewindHome.base < 1) ng.push(`④ 続きからの offset 7 より前（0 秒）への巻き戻しで offset 0 の playlist を要求しない (${rewindHome.base})`)
+// 8 秒は offset 8 のセッションから始まる（偶数なので fixture の真の起点も 8 秒）。0 秒はその外なので、
+// offset 0 の playlist を 1 回取り直し、旧セッション（offset 8）へ leave ヒントを送る。録画中なので再生元は
+// 追っかけのまま（video が残る）。
+const rewindHome = await resumeThenHome(8_000)
+log(`  rewind from offset 8: ${JSON.stringify(rewindHome)}`)
+if (rewindHome.startedOffset !== 8) ng.push(`④ 保存位置 8 秒の続きからが offset 8 のセッションで始まらない (${rewindHome.startedOffset})`)
+if (rewindHome.base < 1) ng.push(`④ 続きからの offset 8 より前（0 秒）への巻き戻しで offset 0 の playlist を要求しない (${rewindHome.base})`)
 if (rewindHome.offset !== 0) ng.push('④ 0秒への巻き戻しで offset 付き playlist を要求する')
-if (!rewindHome.leaves.some((path) => path.includes('/offset/7/leave'))) {
-  ng.push(`④ 続きからの offset 7 セッションへ leave ヒントを送らない (${JSON.stringify(rewindHome.leaves)})`)
+if (!rewindHome.leaves.some((path) => path.includes('/offset/8/leave'))) {
+  ng.push(`④ 続きからの offset 8 セッションへ leave ヒントを送らない (${JSON.stringify(rewindHome.leaves)})`)
 }
 
 log('\n=== ④ 変換済みの端より先へのシークは offset で張り直す ===')
@@ -892,7 +898,7 @@ const beforeConvertedEndOffsetRequests = offsetPlaylistRequests
 const beforeConvertedEndLeaves = chaseLeaveHints.length
 const { selected: convertedEndTarget } = await dragTimelineTo(recordingHeadOffsetSeconds + 15)
 const convertedEndOffset = Math.max(0, Math.round(convertedEndTarget - recordingHeadOffsetSeconds))
-const convertedEndSegment = `segment_${String(Math.floor(convertedEndOffset / 2)).padStart(3, '0')}.ts`
+const convertedEndSegment = `segment_${String(fixtureSegmentIndex(convertedEndOffset)).padStart(3, '0')}.ts`
 const convertedEndObservationDeadline = Date.now() + 7000
 while (
   (!offsetObservations.has(convertedEndOffset) ||
@@ -1075,7 +1081,7 @@ const expectedLiveEdgeOffset = liveEdgeTargetInfo === undefined
   ? Number.NaN
   : Math.max(0, Math.round(liveEdgeMarkerAxisSeconds - recordingHeadOffsetSeconds))
 const expectedLiveEdgeCurrentTime = 0
-const liveEdgeFirstSegment = `segment_${String(Math.floor(expectedLiveEdgeOffset / 2)).padStart(3, '0')}.ts`
+const liveEdgeFirstSegment = `segment_${String(fixtureSegmentIndex(expectedLiveEdgeOffset)).padStart(3, '0')}.ts`
 const beforeLiveEdgeObservationDeadline = Date.now() + 7000
 const offsetRequestsBeforeLiveEdge = offsetPlaylistRequests
 const leaveHintsBeforeLiveEdge = chaseLeaveHints.length
@@ -1148,7 +1154,7 @@ const requestsBeforeReturnSeek = playlistRequests
 const leavesBeforeReturnSeek = chaseLeaveHints.length
 const { selected: returnSeekTarget } = await dragTimelineTo(recordingHeadOffsetSeconds + 5)
 const expectedReturnOffset = Math.max(0, Math.round(returnSeekTarget - recordingHeadOffsetSeconds))
-const expectedReturnSegment = `segment_${String(Math.floor(expectedReturnOffset / 2)).padStart(3, '0')}.ts`
+const expectedReturnSegment = `segment_${String(fixtureSegmentIndex(expectedReturnOffset)).padStart(3, '0')}.ts`
 const returnSettled = await settleRecordingPosition(expectedReturnOffset)
 log(`  先端から ${expectedReturnOffset}s へ戻す: offset=${lastChasePlaylistOffset}, ${JSON.stringify(returnSettled.state)}`)
 if (!returnSettled.ok) ng.push(`⑤ 録画先端から操作バーで5秒へ戻れない（${JSON.stringify(returnSettled.state)}）`)
@@ -1182,7 +1188,7 @@ log(`  End から ${requestedSavedOffset}s へ戻す: offset=${lastChasePlaylist
 if (!savedSettled.ok) ng.push(`⑤ End キーから操作バーで5秒へ戻れない（${JSON.stringify(savedSettled.state)}）`)
 await expectReopenLeaveHint('⑤ End から 5 秒へ戻す', leavesBeforeReturnToFive, offsetBeforeReturnToFive)
 if (lastChasePlaylistOffset !== offsetBeforeReturnToFive) {
-  const firstSegment = `segment_${String(Math.floor(lastChasePlaylistOffset / 2)).padStart(3, '0')}.ts`
+  const firstSegment = `segment_${String(fixtureSegmentIndex(lastChasePlaylistOffset)).padStart(3, '0')}.ts`
   if (offsetObservations.get(lastChasePlaylistOffset)?.segmentNames[0] !== firstSegment) {
     ng.push(`⑤ 5秒へ戻す offset の最初の segment が一致しない（${offsetObservations.get(lastChasePlaylistOffset)?.segmentNames[0]} / ${firstSegment}）`)
   }
@@ -1515,7 +1521,7 @@ await page.route(`**${originalVODBase}/offset/*/playlist.m3u8*`, async (route) =
   const match = pathname.match(/\/offset\/(\d+)\/playlist\.m3u8$/)
   const offsetSeconds = match === null ? Number.NaN : Number(match[1])
   originalOffsetPlaylistRequests.push(offsetSeconds)
-  const sourceEntries = entries.slice(Math.floor(offsetSeconds / 2))
+  const sourceEntries = entries.slice(fixtureSegmentIndex(offsetSeconds))
   await route.fulfill({
     status: 200,
     contentType: 'application/vnd.apple.mpegurl',
@@ -1557,16 +1563,17 @@ await page
     { timeout: 15000 },
   )
   .catch(() => ng.push('⑧ 完了後の VOD の duration が確定しない'))
-await page.waitForTimeout(1000)
-// 続きからは offset のセッションで始まるので、録画軸は offset の起点（29.97 fps の格子点）+ currentTime。
+// 続きからは offset のセッションで始まる。真の録画軸は fixture の起点（offset を含む 2 秒の segment の先頭）
+// + 再生が始まったときの currentTime。プレイヤーは起点を 29.97 fps の格子点（offset の約 0.03 秒手前）と
+// みなして開始位置を決めるので、奇数の offset では真の着地が最大で約 1 秒手前になる。hls.js と開始位置の
+// 明示し直しの許容（0.5 秒）を足して 1.6 秒を許す。
+const vodLanding = await landingTime(page)
 const vodOffset = originalOffsetPlaylistRequests.slice(originalOffsetCursor).at(-1) ?? 0
-const vodOrigin = streamerSeekSeconds(vodOffset)
-const vodTime = await page.locator('video').evaluate((element) => element.currentTime)
-const vodStart = vodOrigin + vodTime
-log(`  追っかけの保存位置 ${(chasedMs / 1000).toFixed(2)} 秒 → VOD の開始位置 offset ${vodOffset} + ${vodTime.toFixed(2)} 秒`)
-if (Math.abs(vodStart - chasedMs / 1000) > 3) {
+const vodStart = fixtureSessionOrigin(vodOffset) + (vodLanding ?? Number.NaN)
+log(`  追っかけの保存位置 ${(chasedMs / 1000).toFixed(2)} 秒 → VOD の着地 fixture の起点 ${fixtureSessionOrigin(vodOffset)}（offset ${vodOffset}）+ ${vodLanding} 秒`)
+if (!(Math.abs(vodStart - chasedMs / 1000) <= 1.6)) {
   ng.push(
-    `⑧ 完了後の VOD が追っかけで見た位置から始まらない（保存 ${(chasedMs / 1000).toFixed(2)} 秒 → offset ${vodOffset} + ${vodTime.toFixed(2)} 秒）`,
+    `⑧ 完了後の VOD が追っかけで見た位置から始まらない（保存 ${(chasedMs / 1000).toFixed(2)} 秒 → offset ${vodOffset} + ${vodLanding} 秒）`,
   )
 }
 

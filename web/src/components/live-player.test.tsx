@@ -3131,6 +3131,29 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     expect(onSourceRangeExit).toHaveBeenCalledWith(undefined, true)
   })
 
+  it.each([
+    ['▶ の後に失敗したら、同じ再生元でも再生を再開する', true],
+    ['▶ を押していなければ、再読み込みしても再生を始めない', false],
+  ])('追っかけ: 入力失敗の再読み込み（%s）', async (_label, autoPlay) => {
+    const user = userEvent.setup()
+    let failInput = true
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(failInput
+      ? new Response('cooldown', { status: 502, headers: { 'Retry-After': '5' } })
+      : new Response(PROFILE_MASTER, { status: 200 }))))
+    const onSourceRangeExit = vi.fn(() => false)
+    render(<LivePlayer mode="chase" site="default" recordingId={442} autoPlay={autoPlay} onSourceRangeExit={onSourceRangeExit} />)
+    await screen.findByText('追っかけ再生の入力に失敗したため、一時停止しています。')
+    const video = document.querySelector('video')!
+    const play = vi.spyOn(video, 'play').mockResolvedValue(undefined)
+    failInput = false
+    await user.click(screen.getByRole('button', { name: '再読み込み' }))
+    // 親へ渡す再生の意図と、同じ再生元で開き直したときの結果が揃う。
+    expect(onSourceRangeExit).toHaveBeenCalledWith(undefined, autoPlay)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    fireEvent.canPlay(video)
+    expect(play).toHaveBeenCalledTimes(autoPlay ? 1 : 0)
+  })
+
   it('再読み込みの後に親が再生元を替えたら、アンマウントで今のセッションへ leave ヒントを送る', async () => {
     const user = userEvent.setup()
     const beacon = vi.fn(() => true)
@@ -3279,7 +3302,9 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
       '/api/sites/default/recordings/439/original-vod/offset/42/playlist.m3u8',
     )
-    expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: 0 }])
+    // 失敗したセッションと同じ開始（取り込んだ保存位置 42.8 の端数 0.82473）で、「続きから」のまま取り直す。
+    // 明示開始 0 に変えると起点 41.975 に着地する。
+    expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: expect.closeTo(0.82473, 4) }])
   })
 
   it('続きからの位置が無限大でも offset 0 のまま startPosition に Infinity を渡さない', async () => {

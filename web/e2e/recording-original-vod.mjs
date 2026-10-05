@@ -1904,13 +1904,7 @@ if (failedReopens.length === 0 || failedReopens.some((request) => request.offset
 freshSessionGrowth = { startedAt: new Map() }
 const reloadCursor = offsetRequests.length
 if (reloadButtonShown) await reloadPage.getByRole('button', { name: '再読み込み' }).click()
-// 再読み込みは再生を再開しない（エラー表示の時点で再生の意図を落としている）ので、読み込めたら再生する。
-await reloadPage.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, undefined, { timeout: 15000 })
-  .catch(() => {})
-await reloadPage.locator('video').evaluate(async (element) => {
-  element.muted = true
-  await element.play().catch(() => {})
-})
+// 再読み込みはエラーの時点の再生の意図を引き継ぐ。再生中のシークから失敗したので、操作しなくても再生が始まる。
 const reloadLandingTime = await landingTime(reloadPage)
 const reloadRequests = offsetRequests.slice(reloadCursor)
 const reloadOffsetAfterError = reloadRequests.find((request) => request.status === 200)?.offset
@@ -1920,9 +1914,10 @@ log(`  reload requests=${JSON.stringify(reloadRequests)}, landing offset ${reloa
 if (reloadOffsetAfterError !== 47) ng.push(`⑩ 再読み込みが offset 47 を開かない（${JSON.stringify(reloadRequests)}）`)
 if (reloadLandingTime === null) ng.push(`⑩ 再読み込み後、変換済みが 2 秒の新しいセッションで再生が始まらない（${JSON.stringify(await sampleOffsetPlayer(reloadPage))}）`)
 else {
+  // 開始位置（47.88 - 起点 46.98 = 0.9 秒）を落として offset 47 の先頭から始めると 46.98 秒になる。
   const reloadAxisAfterError = streamerSeekSeconds(reloadOffsetAfterError ?? 0) + reloadLandingTime
-  if (!(reloadAxisAfterError >= 46.8 && reloadAxisAfterError < 49)) {
-    ng.push(`⑩ 再読み込みの着地が 47.88 秒の 1 秒以内でない（offset ${reloadOffsetAfterError} + ${reloadLandingTime}）`)
+  if (!(Math.abs(reloadAxisAfterError - 47.88) <= 0.5)) {
+    ng.push(`⑩ 再読み込みの着地が 47.88 秒の 0.5 秒以内でない（offset ${reloadOffsetAfterError} + ${reloadLandingTime}）`)
   }
 }
 await reloadPage.close()

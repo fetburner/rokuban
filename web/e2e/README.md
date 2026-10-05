@@ -241,11 +241,13 @@ playlist を Chromium の hls.js（`E2E_BROWSER=webkit` ならネイティブ HL
 - 変換済みの端より先・開始 offset より前へのシークは、その秒の offset で張り直す。先頭セグメントが
   その秒のものであること、直前のセッションの leave ヒント（`/offset/{前の offset}/leave` まで）を見る
 - 続きからは保存位置を秒単位に切り下げた offset で始まる（④）。保存位置が無ければ offset 0 のまま、Home（0 秒）は
-  範囲内のシークで playlist を取り直さない。保存位置 7 秒は offset 7 で始まり、Home で offset 無しの playlist を
-  取り直して `/offset/7/leave` を送る。着地は offset + 再生が始まったときの `currentTime` で読む。
-  aria-valuenow は最初の timeupdate までは props から導いた値なので使わない。
-  保存位置からの開始位置を絶対値（offset を引かない）にする変異は「offset 7 + 7」で落ちる。
-  offset を 5 秒格子にする変異は 7 秒が offset 5 になって落ちる（以上 Chromium で確認）
+  範囲内のシークで playlist を取り直さない。保存位置 8 秒は offset 8 で始まり、Home で offset 無しの playlist を
+  取り直して `/offset/8/leave` を送る。着地は fixture の真の起点 + 再生が始まったときの `currentTime` で読む。
+  fixture は offset のセッションを offset を含む 2 秒の segment の先頭から配るので、真の起点は
+  `fixtureSessionOrigin`（奇数の offset では 1 秒手前）で、fixture と判定がこの式を共有する。種は起点が offset と
+  一致する偶数にしてある。aria-valuenow は最初の timeupdate までは props から導いた値なので使わない。
+  保存位置からの開始位置を絶対値（offset を引かない）にする変異と、offset を 5 秒格子にする変異で落ちる
+  （保存位置 7 秒の種のとき Chromium で確認）
 - 録画中は offset の playlist も伸びる EVENT で、offset 無しの playlist と同じ時点で ENDLIST になる（⑥ 以降）。
   続きからは offset のセッションで始まるので、ENDLIST 前の振る舞い（⑥ の WebKit の速度固定）もこちらで測る。
   読み直しで要求が増えるので、⑨ の張り直しは要求回数ではなく別の offset を開いた回数で数える
@@ -271,9 +273,11 @@ playlist を Chromium の hls.js（`E2E_BROWSER=webkit` ならネイティブ HL
   2 秒未満は `removeItem` になるので、それも 0 として記録する。
   持ち越し中の保存ガードを外すと、WebKit では先頭再生で `0`、offset 4 秒の切替で
   `4` が書かれて落ちる。Chromium + hls.js では `timeupdate` が来ないので落ちない
-- **追っかけで見た位置から、完了後の VOD を開くと同じ位置 ± 3 秒から始まる**（⑧、
+- **追っかけで見た位置から、完了後の VOD を開くと同じ位置 ± 1.6 秒に着地する**（⑧、
   issue #975 受け入れ 2）。追っかけの保存位置（スタブ API が保持）を読み、録画を完了に
-  切り替えて `/recordings/1` を開き直し、原本 VOD の `currentTime` を比べる。
+  切り替えて `/recordings/1` を開き直し、fixture の真の起点 + 再生が始まったときの `currentTime` を比べる。
+  プレイヤーは起点を 29.97 fps の格子点とみなすので、奇数の offset では真の着地が約 1 秒手前になる。
+  そこに開始位置の明示し直しの許容 0.5 秒を足した幅である。
   **原本 VOD の `LivePlayer` に `resumePositionMs` を渡さない変異で
   `5.52 秒 → 0.00 秒` になって落ちる**（Chromium で確認。WebKit は未実施）
 - **追っかけ範囲外 seek で原本 HLS に移った後も再生が続く**（⑩）。最後に進んだ `currentTime` から
@@ -398,7 +402,7 @@ DOM の取得に失敗した場合も、その理由を記録して残りの診�
 枠の上でマウスを動かして表示を待つ。
 
 着地の判定（② と ⑦〜⑪）は、offset の起点（29.97 fps の格子点）+ 再生が始まったときの `currentTime` で読む。
-起点は `lib.mjs` の `streamerSeekSeconds`（fixture の `-ss` と同じ式）で計算し、検査対象の
+起点は `lib.mjs` の `streamerSeekSeconds`（この e2e の offset fixture の `-ss` と同じ式）で計算し、検査対象の
 `originalVODSessionOriginSeconds` は使わない。実装の式が壊れても、同じ式で測ると判定が同じだけずれて通るからである。
 aria-valuenow は最初の timeupdate までは props から導いた値（offset + 開始位置）で、映像の実位置ではない。
 保存位置からの開始位置を絶対値にする変異は ②（offset 7 + 7.26）・⑦（offset 12 + 12）・⑨ で落ちる。
@@ -409,7 +413,9 @@ aria-valuenow は最初の timeupdate までは props から導いた値（offse
 ⑨ は変換済みが 2 秒だけの新しいセッション（2 秒ごとに 2 秒伸びる）で、保存位置 4.5 秒から 1 秒以内に着地するかを見る。
 offset を 5 秒格子にする変異は、WebKit で offset 0 + 0.000003 秒（4.5 秒手前）に着地して落ちる。
 ⑩ は再生中に 76%（47.88 秒）へシークし、張り直しと親の作り直し（2 回）を失敗させてから再読み込みする。
-失敗した 3 回と再読み込みが offset 47 を開き、変換済みが 2 秒の新しいセッションで再生が始まることを見る。
+失敗した 3 回と再読み込みが offset 47 を開くことを見る。再読み込みはエラーの時点の再生の意図を引き継ぐので、
+操作せずに変換済みが 2 秒の新しいセッションで再生が始まり、47.88 秒の 0.5 秒以内に着地することも見る。
+開始位置を落とす変異は「offset 47 + 0」、再生の意図を引き継がない変異は再生が始まらずに落ちる（Chromium で確認）。
 エラー位置を「張り直したセッションの起点 + 0」にする変異は、親の作り直しが offset 46 を開いて落ちる。
 格子の変異は offset 45 で落ちる。最後に失敗するのは親が作り直した一度も再生していないプレイヤーである。
 親が持ち越した位置も 47.88 秒なので、再読み込みがエラー位置の控えを使わない変異では落ちない。
