@@ -352,24 +352,15 @@ func (w *Watcher) createOrGetFailedRecording(ctx context.Context, q *sqlcgen.Que
 		return 0, err
 	}
 
-	return q.CreateOrGetFailedRecording(ctx, sqlcgen.CreateOrGetFailedRecordingParams{
-		RuleID:            ruleID,
-		Source:            source,
-		Site:              w.site,
-		NetworkID:         int32(record.Program.NetworkID),
-		ServiceID:         int32(record.Program.ServiceID),
-		EventID:           int32(record.Program.EventID),
-		ServiceName:       record.Service.Name,
-		ChannelType:       record.Service.Channel.Type,
-		Channel:           record.Service.Channel.Channel,
-		Title:             ptr.Deref(record.Program.Name),
-		Description:       record.Program.Description,
-		Extended:          marshalJSONOrNull(record.Program.Extended),
-		Genres:            marshalJSONOrNull(record.Program.Genres),
-		IsFree:            record.Program.IsFree,
-		ProgramStartAt:    millisToTime(record.Program.StartAt),
-		ProgramDurationMs: ptr.Deref(record.Program.Duration),
-	})
+	snapshot := snapshotFromRecord(record)
+	return q.CreateOrGetFailedRecording(ctx, snapshot.withCreateOrGetFailedRecordingParams(sqlcgen.CreateOrGetFailedRecordingParams{
+		RuleID:    ruleID,
+		Source:    source,
+		Site:      w.site,
+		NetworkID: int32(record.Program.NetworkID),
+		ServiceID: int32(record.Program.ServiceID),
+		EventID:   int32(record.Program.EventID),
+	}))
 }
 
 // processFailedSchedule は schedules API に残っている recordless failed を
@@ -416,28 +407,15 @@ func (w *Watcher) processFailedSchedule(ctx context.Context, schedule mirakc.Sch
 		return err
 	}
 
-	networkID := int32(schedule.Program.NetworkID)
-	serviceID := int32(schedule.Program.ServiceID)
-	eventID := int32(schedule.Program.EventID)
-	programStartAt := millisToTime(schedule.Program.StartAt)
-	recordingID, err := q.CreateOrGetFailedRecording(ctx, sqlcgen.CreateOrGetFailedRecordingParams{
-		RuleID:            res.RuleID,
-		Source:            source,
-		Site:              w.site,
-		NetworkID:         networkID,
-		ServiceID:         serviceID,
-		EventID:           eventID,
-		ServiceName:       service.Name,
-		ChannelType:       service.Channel.Type,
-		Channel:           service.Channel.Channel,
-		Title:             ptr.Deref(schedule.Program.Name),
-		Description:       schedule.Program.Description,
-		Extended:          marshalJSONOrNull(schedule.Program.Extended),
-		Genres:            marshalJSONOrNull(schedule.Program.Genres),
-		IsFree:            schedule.Program.IsFree,
-		ProgramStartAt:    programStartAt,
-		ProgramDurationMs: ptr.Deref(schedule.Program.Duration),
-	})
+	snapshot := snapshotFromSchedule(schedule, *service)
+	recordingID, err := q.CreateOrGetFailedRecording(ctx, snapshot.withCreateOrGetFailedRecordingParams(sqlcgen.CreateOrGetFailedRecordingParams{
+		RuleID:    res.RuleID,
+		Source:    source,
+		Site:      w.site,
+		NetworkID: int32(schedule.Program.NetworkID),
+		ServiceID: int32(schedule.Program.ServiceID),
+		EventID:   int32(schedule.Program.EventID),
+	}))
 	if errors.Is(err, pgx5.ErrNoRows) {
 		// 同一 active-event に生きている non-failed 行がある。本物の record が
 		// 既に枠を得たあとに failed schedule が残っていても、成功した行へ
@@ -467,7 +445,7 @@ func (w *Watcher) processFailedSchedule(ctx context.Context, schedule mirakc.Sch
 		Type:        webhook.EventRecordingFailed,
 		RecordingID: recordingID,
 		Site:        w.site,
-		Title:       ptr.Deref(schedule.Program.Name),
+		Title:       snapshot.title,
 		Status:      db.RecordingStatusFailed,
 	})
 	return nil
@@ -522,6 +500,7 @@ func (w *Watcher) createRecording(ctx context.Context, q *sqlcgen.Queries, recor
 	networkID := int32(record.Program.NetworkID)
 	serviceID := int32(record.Program.ServiceID)
 	eventID := int32(record.Program.EventID)
+	snapshot := snapshotFromRecord(record)
 
 	// 「本物の record が推論に必ず勝つ」（issue #98 の決定、issue #129 症状 2）:
 	// 同一 active-event（program_start_at を含む）に status='failed' の行が
@@ -534,7 +513,7 @@ func (w *Watcher) createRecording(ctx context.Context, q *sqlcgen.Queries, recor
 		NetworkID:      networkID,
 		ServiceID:      serviceID,
 		EventID:        eventID,
-		ProgramStartAt: millisToTime(record.Program.StartAt),
+		ProgramStartAt: snapshot.programStartAt,
 	}); err != nil {
 		return 0, fmt.Errorf("superseding failed recording for program %d: %w", record.Program.ID, err)
 	}
@@ -546,16 +525,16 @@ func (w *Watcher) createRecording(ctx context.Context, q *sqlcgen.Queries, recor
 		NetworkID:         networkID,
 		ServiceID:         serviceID,
 		EventID:           eventID,
-		ServiceName:       record.Service.Name,
-		ChannelType:       record.Service.Channel.Type,
-		Channel:           record.Service.Channel.Channel,
-		Title:             ptr.Deref(record.Program.Name),
-		Description:       record.Program.Description,
-		Extended:          marshalJSONOrNull(record.Program.Extended),
-		Genres:            marshalJSONOrNull(record.Program.Genres),
-		IsFree:            record.Program.IsFree,
-		ProgramStartAt:    millisToTime(record.Program.StartAt),
-		ProgramDurationMs: ptr.Deref(record.Program.Duration),
+		ServiceName:       snapshot.serviceName,
+		ChannelType:       snapshot.channelType,
+		Channel:           snapshot.channel,
+		Title:             snapshot.title,
+		Description:       snapshot.description,
+		Extended:          snapshot.extended,
+		Genres:            snapshot.genres,
+		IsFree:            snapshot.isFree,
+		ProgramStartAt:    snapshot.programStartAt,
+		ProgramDurationMs: snapshot.programDurationMs,
 		Status:            normalizeRecordingStatus(record.ID, record.Recording.Status),
 		StartedAt:         millisToTimeNonNil(record.Recording.StartTime),
 		EndedAt:           millisToTimePtr(record.Recording.EndTime),
@@ -696,11 +675,11 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 		return err
 	}
 
-	title := ptr.Deref(schedule.Program.Name)
+	snapshot := snapshotFromSchedule(*schedule, *service)
+	title := snapshot.title
 	networkID := int32(schedule.Program.NetworkID)
 	serviceID := int32(schedule.Program.ServiceID)
 	eventID := int32(schedule.Program.EventID)
-	programStartAt := millisToTime(schedule.Program.StartAt)
 
 	if err := q.CreateFailedRecording(ctx, sqlcgen.CreateFailedRecordingParams{
 		RuleID:            res.RuleID,
@@ -709,16 +688,16 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 		NetworkID:         networkID,
 		ServiceID:         serviceID,
 		EventID:           eventID,
-		ServiceName:       service.Name,
-		ChannelType:       service.Channel.Type,
-		Channel:           service.Channel.Channel,
-		Title:             title,
-		Description:       schedule.Program.Description,
-		Extended:          marshalJSONOrNull(schedule.Program.Extended),
-		Genres:            marshalJSONOrNull(schedule.Program.Genres),
-		IsFree:            schedule.Program.IsFree,
-		ProgramStartAt:    programStartAt,
-		ProgramDurationMs: ptr.Deref(schedule.Program.Duration),
+		ServiceName:       snapshot.serviceName,
+		ChannelType:       snapshot.channelType,
+		Channel:           snapshot.channel,
+		Title:             snapshot.title,
+		Description:       snapshot.description,
+		Extended:          snapshot.extended,
+		Genres:            snapshot.genres,
+		IsFree:            snapshot.isFree,
+		ProgramStartAt:    snapshot.programStartAt,
+		ProgramDurationMs: snapshot.programDurationMs,
 		QualityEvents:     qeJSON,
 	}); err != nil {
 		return err
@@ -742,7 +721,7 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 		WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4
 		  AND program_start_at = $5
 		  AND deleted_at IS NULL AND superseded_at IS NULL
-	`, w.site, networkID, serviceID, eventID, programStartAt).Scan(&recordingID); err != nil {
+	`, w.site, networkID, serviceID, eventID, snapshot.programStartAt).Scan(&recordingID); err != nil {
 		slog.Warn("webhook: looking up failed recording id",
 			"program_id", data.ProgramID, "err", err)
 		return nil
