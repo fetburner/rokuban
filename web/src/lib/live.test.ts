@@ -26,10 +26,7 @@ import {
   remainingProgramMinutes,
   liveProgramAxis,
   scheduledProgramAt,
-  programRecordingOffsetSeconds,
-  programRecordingHeadSeconds,
   programRecordingAccess,
-  recordingFileStartAtMs,
   isRecordedProgramOffset,
   nextProgramBoundaryMs,
   nextProgramRefreshMs,
@@ -401,7 +398,6 @@ describe('currentProgramWindow', () => {
 
 describe('live program axis and boundaries', () => {
   const start = '2026-10-02T10:00:00.000Z'
-  const recordingBefore = '2026-10-02T09:57:00.000Z'
   const recordingLate = '2026-10-02T10:03:00.000Z'
 
   it('shows a positive textual remainder until the scheduled end, rounded up', () => {
@@ -410,15 +406,6 @@ describe('live program axis and boundaries', () => {
     expect(remainingProgramMinutes(end, Date.parse('2026-10-02T10:44:59.999Z'))).toBe(1)
     expect(remainingProgramMinutes(end, Date.parse('2026-10-02T10:46:00.000Z'))).toBe(0)
     expect(remainingProgramMinutes('not-a-date', 0)).toBeNull()
-  })
-
-  it('maps the scheduled program start to the recording-relative chase offset', () => {
-    expect(recordingFileStartAtMs(recordingBefore, start)).toBe(Date.parse(start))
-    expect(programRecordingHeadSeconds(start, recordingBefore)).toBe(0)
-    expect(programRecordingOffsetSeconds(start, recordingBefore, 540)).toBe(540)
-    expect(recordingFileStartAtMs(recordingLate, start)).toBe(Date.parse(recordingLate))
-    expect(programRecordingHeadSeconds(start, recordingLate)).toBe(180)
-    expect(recordingFileStartAtMs('invalid', start)).toBeNull()
   })
 
   it('hides start-over and disables the axis when the programme has no recording', () => {
@@ -434,13 +421,6 @@ describe('live program axis and boundaries', () => {
     expect(isRecordedProgramOffset(180, access.recordingHeadSeconds, 1200)).toBe(true)
     expect(isRecordedProgramOffset(600, access.recordingHeadSeconds, 1200)).toBe(true)
     expect(isRecordedProgramOffset(1201, access.recordingHeadSeconds, 1200)).toBe(false)
-  })
-
-  it('maps schedule positions into the recording timeline for early and late recordings', () => {
-    expect(programRecordingOffsetSeconds(start, recordingBefore, 540)).toBe(540)
-    expect(programRecordingOffsetSeconds(start, recordingLate, 540)).toBe(360)
-    expect(programRecordingOffsetSeconds(start, recordingLate, 180)).toBe(0)
-    expect(programRecordingOffsetSeconds(start, recordingLate, 179)).toBeNull()
   })
 
   it('returns only the nearest future scheduled start or end boundary', () => {

@@ -50,7 +50,8 @@ import { useLiveCapability } from '@/lib/capabilities'
 import { recordingFileURL } from '@/lib/playback-position'
 import { seedRecordingDetail } from '@/lib/recording-detail-cache'
 import { selectRecordingPlaybackSource, type RecordingPlaybackSource } from '@/lib/recording-playback-source'
-import { originalVODSessionOriginSeconds, recordingFileStartAtMs, validLiveProfile } from '@/lib/live'
+import { originalVODSessionOriginSeconds, validLiveProfile } from '@/lib/live'
+import { recordingTimeline } from '@/lib/recording-timeline'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { shouldShowRecordingSite, sourceLabels } from '@/lib/recording-search'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
@@ -273,10 +274,15 @@ export function RecordingDetail({
       generation: current.generation + 1,
     })
   }
-  const recordingFileStartMs = recordingFileStartAtMs(recording.startedAt, recording.startAt)
-  const recordedSpanMs = recordingFileStartMs !== null && recording.endedAt !== undefined
-    ? Date.parse(recording.endedAt) - recordingFileStartMs
-    : Number.NaN
+  // oxlint-disable-next-line react/purity -- the live recording edge needs a clock snapshot
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!showChase || recording.status !== 'recording') return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [showChase, recording.status])
+  const timeline = recordingTimeline(recording, recording.status === 'recording' ? { nowMs: now } : {})
+  const recordedSpanMs = timeline.recordedDurationMs ?? Number.NaN
   /**
    * reselectPlaybackSource は範囲外のシーク・エラーのときだけ呼ばれ、そのときの録画の状態で
    * 再生元を選び直す。終端では呼ばない。どの再生元の終端も録画ファイルの終端で（追っかけの ENDLIST は
@@ -357,32 +363,15 @@ export function RecordingDetail({
     () => validLiveProfile(liveProfiles, liveProfile),
     [liveProfiles, liveProfile],
   )
-  // oxlint-disable-next-line react/purity -- the live recording edge needs a clock snapshot
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    if (!showChase || recording.status !== 'recording') return
-    const timer = window.setInterval(() => setNow(Date.now()), 1000)
-    return () => window.clearInterval(timer)
-  }, [showChase, recording.status])
-  const recordingStartMs = recordingFileStartMs ?? Number.NaN
-  const recordingEndMs = recording.endedAt === undefined ? Number.NaN : Date.parse(recording.endedAt)
-  const availableChaseSeconds = Number.isFinite(recordingStartMs)
-    ? recording.status === 'recording'
-      ? Math.max(0, Math.floor((now - recordingStartMs) / 1000))
-      : Number.isFinite(recordingEndMs)
-        ? Math.max(0, Math.floor((recordingEndMs - recordingStartMs) / 1000))
-        : 0
-    : 0
-  const programStartMs = Date.parse(recording.startAt)
-  const plannedChaseSeconds = Math.max(0, Math.ceil(recording.durationMs / 1000))
-  const chaseProgrammeHeadSeconds = Number.isFinite(programStartMs) && Number.isFinite(recordingStartMs)
-    ? (recordingStartMs - programStartMs) / 1000
-    : 0
+  const recordingStartMs = timeline.recordingFileStartAtMs ?? Number.NaN
+  const programStartMs = timeline.programmeStartMs
+  const availableChaseSeconds = timeline.availableChaseSeconds
+  const plannedChaseSeconds = timeline.plannedSeconds
   const posterTimeline: PosterTimeline = {
     minSeconds: 0,
-    maxSeconds: Math.max(1, plannedChaseSeconds, chaseProgrammeHeadSeconds + availableChaseSeconds),
-    headSeconds: chaseProgrammeHeadSeconds,
-    recordedEndSeconds: chaseProgrammeHeadSeconds + availableChaseSeconds,
+    maxSeconds: timeline.maxSeconds,
+    headSeconds: timeline.chaseHeadOffsetSeconds,
+    recordedEndSeconds: timeline.recordedEndSeconds,
     plannedEndSeconds: plannedChaseSeconds,
   }
   // チャプター（CM とユーザー区間）。**ごみ箱では取らない** --- ごみ箱では
@@ -566,24 +555,18 @@ export function RecordingDetail({
     ...(hasRecord ? [{ id: 'record' as const, label: '記録' }] : []),
   ]
   const activeTab = tabs.some((tab) => tab.id === selectedTab) ? selectedTab : 'programme'
-  const programEndAt = new Date(Date.parse(recording.startAt) + recording.durationMs).toISOString()
+  const programEndAt = timeline.programmeEndAt
   const actualTimeLabels = [
     Number.isFinite(recordingStartMs) && recordingStartMs !== programStartMs
       ? `${formatRelativeTime(recordingStartMs - programStartMs)}開始`
       : undefined,
-    recording.endedAt && Date.parse(recording.endedAt) !== Date.parse(programEndAt)
-      ? `${formatRelativeTime(Date.parse(recording.endedAt) - Date.parse(programEndAt))}終了`
+    timeline.recordingEndAtMs !== null && timeline.recordingEndAtMs !== timeline.programmeEndMs
+      ? `${formatRelativeTime(timeline.recordingEndAtMs - timeline.programmeEndMs)}終了`
       : undefined,
   ].filter((label): label is string => label !== undefined)
-  const recordedStartMs = recordingStartMs
-  const recordedEndMs = recording.endedAt ? Date.parse(recording.endedAt) : Number.NaN
-  const recordedDurationMs = recordedEndMs - recordedStartMs
-  const outsideProgramSegments =
-    Number.isFinite(recordedStartMs) && Number.isFinite(recordedEndMs) && recordedDurationMs > 0
-      ? {
-          afterStartPercent: Math.min(100, Math.max(0, ((Date.parse(programEndAt) - recordedStartMs) / recordedDurationMs) * 100)),
-        }
-      : undefined
+  const outsideProgramSegments = timeline.recordedAfterProgramStartPercent === null
+    ? undefined
+    : { afterStartPercent: timeline.recordedAfterProgramStartPercent }
 
   return (
     <div
@@ -640,10 +623,9 @@ export function RecordingDetail({
               autoPlay={playbackState.autoPlay}
               fullscreenContainerRef={playbackFullscreenContainerRef}
               chaseTimeline={{
-                programmeStartMs: programStartMs,
-                recordingFileStartAtMs: recordingStartMs,
-                plannedSeconds: plannedChaseSeconds,
-                recordedSeconds: availableChaseSeconds,
+                chaseHeadOffsetSeconds: timeline.chaseHeadOffsetSeconds,
+                plannedSeconds: timeline.plannedSeconds,
+                recordedSeconds: timeline.availableChaseSeconds,
               }}
               onChaseOffsetChange={setChaseOffsetSeconds}
               onRecordingPositionChange={reportRecordingPosition}
@@ -922,16 +904,16 @@ export function RecordingDetail({
                 <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm">
                   <dt className="text-muted-foreground">チャンネル</dt>
                   <dd>{recording.serviceName}（{recording.channelType} {recording.channel}）{showSite ? ` · ${recording.site}` : ''}</dd>
-                  {Number.isFinite(recordingStartMs) && recordingStartMs !== Date.parse(recording.startAt) && (
+                  {Number.isFinite(recordingStartMs) && recordingStartMs !== timeline.programmeStartMs && (
                     <>
                       <dt className="text-muted-foreground">実録画開始</dt>
                       <dd>{formatDateTimeSeconds(new Date(recordingStartMs).toISOString())}</dd>
                     </>
                   )}
-                  {recording.endedAt && Date.parse(recording.endedAt) !== Date.parse(programEndAt) && (
+                  {timeline.recordingEndAtMs !== null && timeline.recordingEndAtMs !== timeline.programmeEndMs && (
                     <>
                       <dt className="text-muted-foreground">実録画終了</dt>
-                      <dd>{formatDateTimeSeconds(recording.endedAt)}</dd>
+                      <dd>{formatDateTimeSeconds(new Date(timeline.recordingEndAtMs).toISOString())}</dd>
                     </>
                   )}
                   {trash && recording.deletedAt && (

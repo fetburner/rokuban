@@ -9,6 +9,7 @@
  */
 
 import type { LiveProfileSummary, Service } from '@/api/generated'
+import { recordingTimeline } from '@/lib/recording-timeline'
 
 /**
  * livePlaylistURL はストリーマーが配るプレイリスト URL を組み立てる（OpenAPI 外。
@@ -598,46 +599,6 @@ export function liveProgramAxis(
   }
 }
 
-/** The recording file starts at the later of the tuner-open time and programme start. */
-export function recordingFileStartAtMs(
-  recordingStartedAt: string | null | undefined,
-  programStartAt: string | null | undefined,
-): number | null {
-  if (recordingStartedAt === undefined || recordingStartedAt === null || programStartAt === undefined || programStartAt === null) {
-    return null
-  }
-  const recordingStartedAtMs = Date.parse(recordingStartedAt)
-  const programStartMs = Date.parse(programStartAt)
-  if (!Number.isFinite(recordingStartedAtMs) || !Number.isFinite(programStartMs)) return null
-  return Math.max(recordingStartedAtMs, programStartMs)
-}
-
-/** Convert a point on the scheduled-program axis into a recording-relative offset. */
-export function programRecordingOffsetSeconds(
-  programStartAt: string,
-  recordingStartedAt: string,
-  programSeconds: number,
-): number | null {
-  const programStartMs = Date.parse(programStartAt)
-  const fileStartMs = recordingFileStartAtMs(recordingStartedAt, programStartAt)
-  if (!Number.isFinite(programStartMs) || fileStartMs === null || !Number.isFinite(programSeconds)) {
-    return null
-  }
-  const offset = Math.floor((programStartMs + programSeconds * 1000 - fileStartMs) / 1000)
-  return offset >= 0 ? offset : null
-}
-
-/** The first point on the scheduled-program axis that exists in the recording. */
-export function programRecordingHeadSeconds(
-  programStartAt: string,
-  recordingStartedAt: string,
-): number | null {
-  const programStartMs = Date.parse(programStartAt)
-  const fileStartMs = recordingFileStartAtMs(recordingStartedAt, programStartAt)
-  if (!Number.isFinite(programStartMs) || fileStartMs === null) return null
-  return Math.max(0, (fileStartMs - programStartMs) / 1000)
-}
-
 export type ProgramRecordingAccess = {
   canStartOver: boolean
   canSeek: boolean
@@ -652,7 +613,7 @@ export function programRecordingAccess(
 ): ProgramRecordingAccess {
   const hasRecording = recordingId !== null && recordingId !== undefined
   const head = hasRecording && recordingStartedAt
-    ? programRecordingHeadSeconds(programStartAt, recordingStartedAt)
+    ? recordingTimeline({ startAt: programStartAt, durationMs: 0, startedAt: recordingStartedAt }).recordingHeadSeconds
     : null
   return {
     canStartOver: hasRecording && head !== null,

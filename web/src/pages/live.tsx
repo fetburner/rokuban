@@ -10,6 +10,7 @@ import {
   useListPrograms,
   useListReservations,
   type ProgramListItem,
+  type Recording,
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '@/components/page'
@@ -26,9 +27,6 @@ import {
   nextProgramRefreshMs,
   nextLowerProfile,
   pickInitialService,
-  programRecordingOffsetSeconds,
-  programRecordingAccess,
-  recordingFileStartAtMs,
   remainingProgramMinutes,
   scheduledProgramAt,
   validLiveAudio,
@@ -36,6 +34,7 @@ import {
   type LiveDiagnostics,
   type StallHandling,
 } from '@/lib/live'
+import { recordingTimeline } from '@/lib/recording-timeline'
 import { upcomingInterruptingReservation } from '@/lib/live-interruption'
 import { channelTypeLabel, groupByChannelType, orderServices } from '@/lib/epg-grid'
 import { formatTime, isAiring } from '@/lib/format'
@@ -353,59 +352,50 @@ export function LivePage() {
   const [chaseTarget, setChaseTarget] = useState<{
     site: string
     recordingId: number
-    programStartAt: string
-    programEndAt: string
-    recordingFileStartAtMs: number
+    recording: Recording
+    programmeStartAt: string
+    programmeEndAt: string
   } | null>(null)
-  const recordingAccess = programRecordingAccess(
-    selectedRecordingId,
-    nowPlaying?.startAt ?? '',
-    selectedRecording?.startedAt,
-  )
   const onStartOver = () => {
     if (!nowPlaying || selectedRecordingId === undefined || !selectedRecording?.startedAt) return
-    const fileStartMs = recordingFileStartAtMs(selectedRecording.startedAt, nowPlaying.startAt)
-    if (fileStartMs === null) return
     setChaseTarget({
       site: selectedService?.site ?? 'default',
       recordingId: selectedRecordingId,
-      programStartAt: nowPlaying.startAt,
-      programEndAt: nowPlaying.endAt,
-      recordingFileStartAtMs: fileStartMs,
+      recording: selectedRecording,
+      programmeStartAt: nowPlaying.startAt,
+      programmeEndAt: nowPlaying.endAt,
     })
     setChaseOffset(0)
     setPlaybackSource('chase')
   }
   const onLiveProgramSeek = (programSeconds: number) => {
     if (!nowPlaying || selectedRecordingId === undefined || !selectedRecording?.startedAt) return
-    const fileStartMs = recordingFileStartAtMs(selectedRecording.startedAt, nowPlaying.startAt)
-    if (fileStartMs === null) return
-    const headSeconds = recordingAccess.recordingHeadSeconds
-    const liveEdgeSeconds = Math.max(0, (nowMs - Date.parse(nowPlaying.startAt)) / 1000)
-    if (!isRecordedProgramOffset(programSeconds, headSeconds, liveEdgeSeconds)) return
-    const offset = programRecordingOffsetSeconds(
-      nowPlaying.startAt,
-      selectedRecording.startedAt,
+    const timeline = recordingTimeline(selectedRecording, {
+      nowMs,
+      programmeStartAt: nowPlaying.startAt,
+      programmeEndAt: nowPlaying.endAt,
       programSeconds,
-    )
+    })
+    const liveEdgeSeconds = Math.max(0, (nowMs - Date.parse(nowPlaying.startAt)) / 1000)
+    if (!isRecordedProgramOffset(programSeconds, timeline.recordingHeadSeconds, liveEdgeSeconds)) return
+    const offset = timeline.programRecordingOffsetSeconds
     if (offset === null) return
     setChaseTarget({
       site: selectedService?.site ?? 'default',
       recordingId: selectedRecordingId,
-      programStartAt: nowPlaying.startAt,
-      programEndAt: nowPlaying.endAt,
-      recordingFileStartAtMs: fileStartMs,
+      recording: selectedRecording,
+      programmeStartAt: nowPlaying.startAt,
+      programmeEndAt: nowPlaying.endAt,
     })
     setChaseOffset(offset)
     setPlaybackSource('chase')
   }
   const chaseTimeline = playbackSource === 'chase' && chaseTarget
-    ? {
-        programmeStartMs: Date.parse(chaseTarget.programStartAt),
-        recordingFileStartAtMs: chaseTarget.recordingFileStartAtMs,
-        plannedSeconds: Math.max(1, (Date.parse(chaseTarget.programEndAt) - Date.parse(chaseTarget.programStartAt)) / 1000),
-        recordedSeconds: Math.max(0, (nowMs - chaseTarget.recordingFileStartAtMs) / 1000),
-      }
+    ? recordingTimeline(chaseTarget.recording, {
+        nowMs,
+        programmeStartAt: chaseTarget.programmeStartAt,
+        programmeEndAt: chaseTarget.programmeEndAt,
+      })
     : undefined
 
   // 録画予約による中断予測（M7-2, issue #235）。
