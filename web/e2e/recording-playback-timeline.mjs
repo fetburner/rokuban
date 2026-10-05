@@ -385,8 +385,8 @@ async function capturePresentedFrameAt(page, action, targetTime) {
       const captureVisibleFrame = (_now, metadata) => {
         callbackId = undefined
         // seeking 中の callback も採る。Chromium の原本 HLS は目的のフレームの callback が seeking:true で
-        // 来て、一時停止中は次が来ない。callback は action の直前に登録するので、一時停止中に古いフレームで
-        // 発火することはない。
+        // 来て、一時停止中は次が来ない。seek 前の古いフレームで発火しても、mediaTime か目印が合わず NG に
+        // なる側に倒れる（誤って通ることはない）。
         try {
           finish(snapshot(metadata.mediaTime, 'rvfc'))
         } catch {
