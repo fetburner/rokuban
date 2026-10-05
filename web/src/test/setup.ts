@@ -49,6 +49,24 @@ HTMLMediaElement.prototype.play = function (this: HTMLMediaElement) {
 // @testing-library/react の自動クリーンアップ検出（グローバル afterEach の有無）
 // が働かない。前のテストの DOM がそのまま残ると screen クエリが複数要素に
 // マッチして誤検知するので、明示的に各テスト後に unmount する。
+// 同じ文言を重ねて読み上げないよう、終了時の DOM を cleanup より先に検査する。
+// 検査で失敗しても次のテストへ DOM を残さないよう cleanup は finally で行う。
 afterEach(() => {
-  cleanup()
+  const alertCounts = new Map<string, number>()
+  for (const alert of document.body.querySelectorAll<HTMLElement>('[role="alert"]')) {
+    const text = alert.textContent?.replace(/\s+/g, ' ').trim() ?? ''
+    alertCounts.set(text, (alertCounts.get(text) ?? 0) + 1)
+  }
+
+  const duplicates = [...alertCounts]
+    .filter(([, count]) => count > 1)
+    .map(([text]) => JSON.stringify(text))
+
+  try {
+    if (duplicates.length > 0) {
+      throw new Error(`Duplicate role="alert" text: ${duplicates.join(', ')}`)
+    }
+  } finally {
+    cleanup()
+  }
 })
