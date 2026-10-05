@@ -2508,7 +2508,7 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
     await waitFor(() => expect(playbackState.positionMs).toBe(42_000))
     cleanup()
 
-    createFakeServer({
+    const vodServer = createFakeServer({
       recording: { ...recording, status: 'finished' },
       liveProfiles: LIVE_PROFILES,
       playbackState,
@@ -2518,9 +2518,11 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
     await screen.findByRole('slider', { name: 'シークバー' })
     await waitFor(() => expect(document.querySelector('video')).toBeInTheDocument())
     const vodVideo = document.querySelector('video')!
+    await waitFor(() => expect(vodServer.fetchMock.mock.calls.map(([input]) => String(input)).find((url) => url.includes('/original-vod/'))).toContain('/original-vod/offset/42/'))
     Object.defineProperty(vodVideo, 'currentTime', { value: 0, writable: true, configurable: true })
     fireEvent.loadedMetadata(vodVideo)
-    expect(vodVideo.currentTime).toBe(42)
+    // offset 42 の起点（41.97527 秒）からの端数だけが残る。絶対位置 42 を渡す退行はここで 42 になる。
+    expect(vodVideo.currentTime).toBeLessThan(1)
   })
 
   it('live profile が無い場合は HLS player を作らず、VLC リンクを残す', async () => {
@@ -3388,10 +3390,12 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
     await new Promise((resolve) => setTimeout(resolve, 50))
     await user.click(screen.getByTestId('recording-playback-start'))
     await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod').length).toBeGreaterThan(0))
+    expect(playlistPaths(fake.fetchMock, '/original-vod')[0]).toContain('/original-vod/offset/12/')
     const video = document.querySelector('video')!
     setMediaProps(video, { currentTime: 0 })
     fireEvent.loadedMetadata(video)
-    expect(video.currentTime).toBe(12)
+    // offset 12 の起点（11.97863 秒）からの端数だけが残る。絶対位置 12 を渡す退行はここで 12 になる。
+    expect(video.currentTime).toBeLessThan(1)
     // ▶ を押した意図は、再生前に消えた追っかけから原本 HLS へ持ち越す（押し直させない）。
     expect(playSpy).not.toHaveBeenCalled()
     fireEvent.canPlay(video)

@@ -434,9 +434,15 @@ export function LivePlayer({
     startOffsetSeconds >= 0
       ? startOffsetSeconds
       : undefined
+  // 続きからは、保存位置を秒に切り下げた offset のセッションで始める（セッション外へのシークと同じ形）。
+  // offset 0 に保存位置を渡すと、変換が保存位置まで追いつくまで再生が始まらない。端数は下の
+  // `serverResumePosition` が起点から測って `startPosition` に渡す。
   const initialOriginalVODStart = {
     recordingId,
-    offset: explicitOriginalVODStartOffset ?? 0,
+    offset: explicitOriginalVODStartOffset ??
+      (isOriginalVOD && resumePositionMs !== undefined && resumePositionMs >= 2000
+        ? Math.floor(resumePositionMs / 1000)
+        : 0),
     explicit: explicitOriginalVODStartOffset !== undefined,
   }
   const [originalVODStartState, setOriginalVODStartState] = useState(initialOriginalVODStart)
@@ -446,6 +452,9 @@ export function LivePlayer({
   const currentOriginalVODStart = originalVODStartState.recordingId === recordingId
     ? originalVODStartState
     : initialOriginalVODStart
+  // 別の録画へ替わったら、その時点の開始を固定する。固定しないと、再生中の位置の保存で
+  // `resumePositionMs` が動くたびに offset が変わり、セッションを張り直し続ける。
+  if (originalVODStartState.recordingId !== recordingId) setOriginalVODStartState(initialOriginalVODStart)
   const originalVODStartOffset = currentOriginalVODStart.offset
   const originalVODStartIsExplicit = currentOriginalVODStart.explicit
   const sessionStartOffset = isOriginalVOD

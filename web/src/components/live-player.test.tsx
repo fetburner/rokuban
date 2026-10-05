@@ -994,28 +994,47 @@ describe('LivePlayer の状態遷移', () => {
       await waitFor(() => expect(screen.queryByText('読み込み中…')).not.toBeInTheDocument())
     })
 
-    it('原本 VOD を HLS で開き、保存位置を復元する', async () => {
+    it('原本 VOD は保存位置を秒に切り下げた offset のセッションで開き、端数だけを startPosition に渡す', async () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
       render(
         <LivePlayer
           mode="original-vod"
           site="default"
           recordingId={42}
-          resumePositionMs={23_000}
+          resumePositionMs={23_500}
           profile="hd"
         />,
       )
 
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      // offset 0 のセッションに 23.5 を渡すと、変換が 23.5 秒へ追いつくまで始まらない。
       expect(hlsMockState.instances[0]!.loadSource).toHaveBeenCalledWith(
-        '/api/sites/default/recordings/42/original-vod/playlist.m3u8?profile=hd',
+        '/api/sites/default/recordings/42/original-vod/offset/23/playlist.m3u8?profile=hd',
       )
-      expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition: 23 }])
+      // offset 23 の起点は 689 フレーム目（22.98963 秒）。
+      expect((hlsMockState.constructorArgs[0]![0] as { startPosition: number }).startPosition).toBeCloseTo(0.51037, 4)
 
       const video = document.querySelector('video')!
       Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
       fireEvent.loadedMetadata(video)
-      expect(video.currentTime).toBe(23)
+      expect(video.currentTime).toBeCloseTo(0.51037, 4)
+    })
+
+    it('原本 VOD の開始 offset は最初の保存位置で固定し、保存位置が更新されても張り直さない', async () => {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+      const props = { mode: 'original-vod', site: 'default', profile: 'hd' } as const
+      const { rerender } = render(<LivePlayer {...props} recordingId={42} resumePositionMs={23_000} />)
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      rerender(<LivePlayer {...props} recordingId={42} resumePositionMs={31_000} />)
+      // 次のエピソードへ移った後の保存（同じ部品に別の録画が来る）。
+      rerender(<LivePlayer {...props} recordingId={43} resumePositionMs={50_000} />)
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+      rerender(<LivePlayer {...props} recordingId={43} resumePositionMs={57_000} />)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(hlsMockState.instances.map((instance) => instance.loadSource.mock.calls[0]![0])).toEqual([
+        '/api/sites/default/recordings/42/original-vod/offset/23/playlist.m3u8?profile=hd',
+        '/api/sites/default/recordings/43/original-vod/offset/50/playlist.m3u8?profile=hd',
+      ])
     })
 
     it('サーバーで共有する原本時間軸の位置を原本 VOD の hls.js startPosition に渡す', async () => {
@@ -1032,7 +1051,11 @@ describe('LivePlayer の状態遷移', () => {
 
       render(<LivePlayer mode="original-vod" site="default" recordingId={90} resumePositionMs={42_000} profile="hd" />)
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
-      expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: 42 }])
+      expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+        '/api/sites/default/recordings/90/original-vod/offset/42/playlist.m3u8?profile=hd',
+      )
+      // offset 42 の起点は 1258 フレーム目（41.97527 秒）。
+      expect((hlsMockState.constructorArgs[1]![0] as { startPosition: number }).startPosition).toBeCloseTo(0.02473, 4)
     })
 
     it('原本 VOD は ENDLIST を見るまで duration を完了判定に使わない', async () => {
@@ -3066,11 +3089,12 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     const video = document.querySelector('video')!
     Object.defineProperty(video, 'paused', { value: false, writable: true, configurable: true })
     Object.defineProperty(video, 'duration', { value: 30, writable: true, configurable: true })
-    Object.defineProperty(video, 'currentTime', { value: 6.5, writable: true, configurable: true })
+    // 6.5 秒は offset 6 のセッション（起点 5.97263 秒）の 0.52737 秒。cut の終端（8 秒）は 2.02737 秒。
+    Object.defineProperty(video, 'currentTime', { value: 0.52737, writable: true, configurable: true })
     fireEvent.canPlay(video)
     fireEvent.seeking(video)
     fireEvent.timeUpdate(video)
-    expect(video.currentTime).toBe(6.5)
+    expect(video.currentTime).toBeCloseTo(0.52737, 4)
   })
 
   it('シークはキーを離すまで確定せず、セッション範囲内なら playlist を取り直さない', async () => {
