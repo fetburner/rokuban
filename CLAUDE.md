@@ -83,15 +83,7 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 
 タスクの分解・受け入れ基準は GitHub issue 側にある。**親 issue には一覧しか置かない**ので、`gh issue view <親>` でタスク表を見て、**担当タスクのサブ issue だけ読む**。
 
-M0（歩く骨格）・M1（録れる）・M2（任せられる）・M5（名乗れる）・M6（辿れる）・M7（見積もれる）の実装は完了している。open なのは次だけ。
-
-| | 入口 |
-|---|---|
-| M3 タスク分解: 置き換えられる（エンコード・削除・移行） | [#62](https://github.com/fetburner/rokuban/issues/62) |
-| M4 タスク分解: 広げられる（ロール分割デプロイ・ライブ視聴・クラウド構成） | [#88](https://github.com/fetburner/rokuban/issues/88) |
-| M8 タスク分解: 見返せる（ホームとライブラリ） | [#223](https://github.com/fetburner/rokuban/issues/223) |
-| L タスク分解: CM 検出のロゴを直せる画面にする（画面の再設計とロゴの資産化） | [#958](https://github.com/fetburner/rokuban/issues/958) |
-| P タスク分解: 普遍条件に整合する機能と共存契約 | [#922](https://github.com/fetburner/rokuban/issues/922) |
+open のエピックは `gh issue list --label epic --state open` で引く。一覧はここに写さない（写すと close・新設のたびに静かにずれる）。
 
 - **streamer のスケールとライブ視聴の資源同定は [docs/operations.md](docs/operations.md) §5「streamer のスケール」と [docs/api.md](docs/api.md) §ライブ視聴の HLS に決まっている**。sticky は使わない / ライブの URL にセッション ID を置かない / 既定 replicas=1 は可逆にする、の 3 点
 
@@ -105,7 +97,8 @@ M0（歩く骨格）・M1（録れる）・M2（任せられる）・M5（名乗
 
 - **実装と同時に docs を更新する。** 実装が docs を追い越したらその PR で直す（別タスクにしない）。古い記述は無いより悪い
 - **終わったタスクはその場で close し、close したものへのポインタを索引に残さない**
-- **docs に issue 番号・タスク番号・マイグレーション番号を書かない。** 出自は git と GitHub が持っている。番号を読まないと意味が通らない文は、番号ではなく理由そのものを書く。未解決の穴は本文に「未解決: …」とだけ書き、追跡番号は open issue 側に置く（例外は下記タスクマップ —— あれは出自ではなく open issue への入口）
+- **docs に issue 番号・タスク番号・マイグレーション番号を書かない。** 出自は git と GitHub が持っている。番号を読まないと意味が通らない文は、番号ではなく理由そのものを書く。未解決の穴は本文に「未解決: …」とだけ書き、追跡番号は open issue 側に置く
+- **権威のある件数・一覧・状態を docs に写さない。** 集合に入る判定基準と、集合を引く場所（`--help`・ファイル・コマンド）だけを書く（[docs/workflow.md](docs/workflow.md) §残す文章の種類）
 - **末尾に「経緯と失敗事例」節を作らない。** 人間は飛ばせるが、ファイルを丸ごと読む LLM は飛ばせない
 - **残すのは「今でも先に浮かぶ案が壊すもの」を、判断の直後に 1〜2 文。** 長い戦史（当時の列名・遷移の再現・却下案の比較表）と、もう誘惑にならない却下案は消す。繰り返し出てくる族だけ [docs/invariants.md](docs/invariants.md) に集める。ただし**短くするために、まだやりがちな失敗の形まで落とさない**
 
