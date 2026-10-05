@@ -178,6 +178,8 @@ function stubFetch(options: {
    * 解放するまで一覧が届かない状況を作る。
    */
   pendingLiveProfiles?: boolean
+  /** `GET /api/recordings/{id}` が返す実開始時刻。録画中番組の追っかけ導線用。 */
+  recordingStartedAt?: string
   /**
    * プレイリスト（`.../live/playlist.m3u8`）の応答。既定は `'unreachable'`
    * （`TypeError` で reject）で、この画面のテストがプレイヤー本体の状態遷移に
@@ -201,6 +203,7 @@ function stubFetch(options: {
     tunerStatusBySite = {},
     pendingTunerSites = [],
     pendingLiveProfiles = false,
+    recordingStartedAt,
     playlist = 'unreachable',
   } = options
   globalThis.fetch = vi.fn((input: string | URL | Request) => {
@@ -248,6 +251,19 @@ function stubFetch(options: {
           ? new Response(JSON.stringify({ live }), { status: 200 })
           : new Response('boom', { status: capabilitiesStatus }),
       )
+    }
+
+    const recordingMatch = /^\/api\/recordings\/(\d+)$/.exec(url.pathname)
+    if (recordingMatch && recordingStartedAt !== undefined) {
+      return Promise.resolve(new Response(JSON.stringify({
+        id: Number(recordingMatch[1]),
+        startedAt: recordingStartedAt,
+      }), { status: 200 }))
+    }
+
+    // 追っかけの再生初期化は不要なページ配線テストでは失敗応答にし、要求 URL だけを見る。
+    if (url.pathname.includes('/chase/') && url.pathname.endsWith('/playlist.m3u8')) {
+      return Promise.resolve(new Response('追っかけプレイリスト未接続', { status: 503 }))
     }
 
     // ライブ視聴の HLS プレイリストは OpenAPI 対象外の別経路。この画面の
@@ -311,6 +327,14 @@ function playlistFetchCallCount(): number {
 function playlistFetchURLs(): string[] {
   const calls = (globalThis.fetch as unknown as { mock: { calls: [string][] } }).mock.calls
   return calls.map(([url]) => String(url)).filter((url) => url.includes('/live/playlist.m3u8'))
+}
+
+/** chasePlaylistFetchURLs は追っかけのプレイリスト要求 URL（呼ばれた順）。 */
+function chasePlaylistFetchURLs(): string[] {
+  const calls = (globalThis.fetch as unknown as { mock: { calls: [string][] } }).mock.calls
+  return calls
+    .map(([url]) => String(url))
+    .filter((url) => url.includes('/chase/') && url.endsWith('/playlist.m3u8'))
 }
 
 /**
@@ -523,6 +547,55 @@ describe('LivePage', () => {
       .filter((el) => el.getAttribute('aria-current') === 'page')
     expect(currentLinks).toHaveLength(1)
     expect(currentLinks[0]).toHaveTextContent('メインサービス')
+  })
+
+  it('追っかけの範囲外シークは新しい offset でセッションを張り直す（issue #1146）', async () => {
+    const startAt = new Date(Date.now() - 120_000).toISOString()
+    const endAt = new Date(Date.now() + 60 * 60_000).toISOString()
+    stubFetch({
+      services: [service({ serviceId: 1, name: 'チャンネル A' })],
+      programsByServiceId: {
+        1: [program({
+          serviceId: 1,
+          recordingId: 501,
+          startAt,
+          endAt,
+          durationMs: Date.parse(endAt) - Date.parse(startAt),
+          name: '録画中の番組',
+        })],
+      },
+      recordingStartedAt: startAt,
+    })
+    const user = userEvent.setup()
+    renderLive()
+
+    expect(await screen.findByText('録画中の番組')).toBeInTheDocument()
+    await startLivePlayback(user)
+    const liveTimeline = await screen.findByTestId('live-program-timeline')
+    await waitFor(() => expect(liveTimeline).toHaveAttribute('aria-disabled', 'false'))
+    await user.click(await screen.findByRole('button', { name: '最初から' }))
+    await waitFor(() => expect(chasePlaylistFetchURLs()).toHaveLength(1))
+    expect(chasePlaylistFetchURLs()[0]).toContain('/chase/playlist.m3u8')
+
+    const seekbar = screen.getByRole('slider', { name: 'シークバー' })
+    const axisMax = Number(seekbar.getAttribute('aria-valuemax'))
+    expect(axisMax).toBeGreaterThan(15)
+    Object.defineProperty(seekbar, 'getBoundingClientRect', {
+      value: () => ({ x: 0, y: 0, left: 0, top: 0, right: axisMax, bottom: 24, width: axisMax, height: 24, toJSON: () => ({}) }),
+    })
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'seekable', { value: { length: 0 }, configurable: true })
+    Object.defineProperty(video, 'duration', { value: 0, configurable: true })
+    // 15 秒は再生セッションの変換済み範囲（この応答では 0 秒）より先なので、
+    // offset 15 の playlist に張り直す。
+    fireEvent.pointerDown(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 15, clientY: 12 })
+    fireEvent.pointerMove(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 15, clientY: 12 })
+    expect(Number(seekbar.getAttribute('aria-valuenow'))).toBeGreaterThan(0)
+    fireEvent.pointerUp(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 15, clientY: 12 })
+    await waitFor(() => expect(seekbar).toHaveAttribute('aria-valuenow', '15'))
+    await waitFor(() => expect(chasePlaylistFetchURLs()).toHaveLength(2))
+    expect(chasePlaylistFetchURLs()[0]).toContain('/chase/playlist.m3u8')
+    expect(chasePlaylistFetchURLs()[1]).toContain('/chase/offset/15/playlist.m3u8')
   })
 
   it('?service=<Service.id> で指定したチャンネルを選ぶ', async () => {
