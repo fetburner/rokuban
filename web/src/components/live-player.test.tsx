@@ -1,11 +1,10 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { LivePlayer } from '@/components/live-player'
 import { FRAME_SECONDS } from '@/lib/chapters'
-import { liveStallTimeoutMs } from '@/lib/live'
+import { liveStallTimeoutMs, originalVODSessionOriginSeconds } from '@/lib/live'
 import type { LiveDiagnostics, StallHandling } from '@/lib/live'
 import { saveChapterEditPlaybackRate, savePlaybackRate } from '@/lib/playback-position'
 
@@ -855,7 +854,7 @@ describe('LivePlayer の状態遷移', () => {
         mode="chase"
         site="default"
         recordingId={10}
-        startOffsetSeconds={30}
+        offsetSessionStart={{ type: 'offset', offsetSeconds: 30 }}
       />,
     )
     const video = document.querySelector('video')!
@@ -1001,7 +1000,7 @@ describe('LivePlayer の状態遷移', () => {
           mode="original-vod"
           site="default"
           recordingId={42}
-          resumePositionMs={23_500}
+          offsetSessionStart={{ type: 'saved-position', positionMs: 23_500 }}
           profile="hd"
         />,
       )
@@ -1023,13 +1022,15 @@ describe('LivePlayer の状態遷移', () => {
     it('原本 VOD の開始 offset は最初の保存位置で固定し、保存位置が更新されても張り直さない', async () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
       const props = { mode: 'original-vod', site: 'default', profile: 'hd' } as const
-      const { rerender } = render(<LivePlayer {...props} recordingId={42} resumePositionMs={23_000} />)
+      const { rerender } = render(<LivePlayer {...props} recordingId={42} offsetSessionStart={{ type: 'saved-position', positionMs: 23_000 }} />)
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
-      rerender(<LivePlayer {...props} recordingId={42} resumePositionMs={31_000} />)
+      rerender(<LivePlayer {...props} recordingId={42} offsetSessionStart={{ type: 'saved-position', positionMs: 31_000 }} />)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(hlsMockState.instances).toHaveLength(1)
       // 次のエピソードへ移った後の保存（同じ部品に別の録画が来る）。
-      rerender(<LivePlayer {...props} recordingId={43} resumePositionMs={50_000} />)
+      rerender(<LivePlayer {...props} recordingId={43} offsetSessionStart={{ type: 'saved-position', positionMs: 50_000 }} />)
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
-      rerender(<LivePlayer {...props} recordingId={43} resumePositionMs={57_000} />)
+      rerender(<LivePlayer {...props} recordingId={43} offsetSessionStart={{ type: 'saved-position', positionMs: 57_000 }} />)
       await new Promise((resolve) => setTimeout(resolve, 20))
       expect(hlsMockState.instances.map((instance) => instance.loadSource.mock.calls[0]![0])).toEqual([
         '/api/sites/default/recordings/42/original-vod/offset/23/playlist.m3u8?profile=hd',
@@ -1049,7 +1050,7 @@ describe('LivePlayer の状態遷移', () => {
       expect(localStorage.getItem('rokuban:playback:90:original')).toBeNull()
       chase.unmount()
 
-      render(<LivePlayer mode="original-vod" site="default" recordingId={90} resumePositionMs={42_000} profile="hd" />)
+      render(<LivePlayer mode="original-vod" site="default" recordingId={90} offsetSessionStart={{ type: 'saved-position', positionMs: 42_000 }} profile="hd" />)
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
       expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
         '/api/sites/default/recordings/90/original-vod/offset/42/playlist.m3u8?profile=hd',
@@ -1170,21 +1171,21 @@ describe('LivePlayer の状態遷移', () => {
           mode="chase"
           site="default"
           recordingId={7}
-          resumePositionMs={12_000}
+          offsetSessionStart={{ type: 'saved-position', positionMs: 12_000 }}
           profile="live-720p"
         />,
       )
 
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
-      expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition: 12 }])
+      expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition: 0 }])
       expect(hlsMockState.instances[0]!.loadSource).toHaveBeenCalledWith(
-        '/api/sites/default/recordings/7/chase/playlist.m3u8?profile=live-720p',
+        '/api/sites/default/recordings/7/chase/offset/12/playlist.m3u8?profile=live-720p',
       )
       const video = document.querySelector('video')!
       Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
 
       fireEvent.loadedMetadata(video)
-      expect(video.currentTime).toBe(12)
+      expect(video.currentTime).toBe(0)
     })
 
     it('画質を切り替えても追っかけの再生位置を持ち越す（offset 付き）', async () => {
@@ -1201,7 +1202,7 @@ describe('LivePlayer の状態遷移', () => {
           mode="chase"
           site="default"
           recordingId={81}
-          startOffsetSeconds={30}
+          offsetSessionStart={{ type: 'offset', offsetSeconds: 30 }}
           profile="live-720p"
         />,
       )
@@ -1222,7 +1223,7 @@ describe('LivePlayer の状態遷移', () => {
           mode="chase"
           site="default"
           recordingId={81}
-          startOffsetSeconds={30}
+          offsetSessionStart={{ type: 'offset', offsetSeconds: 30 }}
           profile="live-480p"
         />,
       )
@@ -1303,19 +1304,19 @@ describe('LivePlayer の状態遷移', () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
       const props = { mode: 'chase', site: 'default', recordingId: 84 } as const
       const { rerender } = render(
-        <LivePlayer {...props} resumePositionMs={40_000} profile="live-720p" />,
+        <LivePlayer {...props} offsetSessionStart={{ type: 'saved-position', positionMs: 40_000 }} profile="live-720p" />,
       )
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
       const video = document.querySelector('video')!
       Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
       fireEvent.loadedMetadata(video)
       fireEvent.canPlay(video)
-      expect(video.currentTime).toBe(40)
+      expect(video.currentTime).toBe(0)
       video.currentTime = 12
 
-      rerender(<LivePlayer {...props} resumePositionMs={30_000} profile="live-720p" />)
+      rerender(<LivePlayer {...props} offsetSessionStart={{ type: 'saved-position', positionMs: 30_000 }} profile="live-720p" />)
       expect(hlsMockState.instances).toHaveLength(1)
-      rerender(<LivePlayer {...props} resumePositionMs={30_000} profile="live-480p" />)
+      rerender(<LivePlayer {...props} offsetSessionStart={{ type: 'saved-position', positionMs: 30_000 }} profile="live-480p" />)
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
       expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: 12 }])
       // 最終値だけでなく、途中で更新後のサーバー位置（30）へ seek しないことも見る
@@ -1342,18 +1343,18 @@ describe('LivePlayer の状態遷移', () => {
       const { resolve } = deferredFetch()
       const props = { mode: 'chase', site: 'default', recordingId: 85 } as const
       const { rerender } = render(
-        <LivePlayer {...props} resumePositionMs={40_000} profile="live-720p" />,
+        <LivePlayer {...props} offsetSessionStart={{ type: 'saved-position', positionMs: 40_000 }} profile="live-720p" />,
       )
       const video = document.querySelector('video')!
       Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
-      rerender(<LivePlayer {...props} resumePositionMs={40_000} profile="live-480p" />)
+      rerender(<LivePlayer {...props} offsetSessionStart={{ type: 'saved-position', positionMs: 40_000 }} profile="live-480p" />)
       resolve(new Response('', { status: 200 }))
 
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
-      expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition: 40 }])
+      expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition: 0 }])
       fireEvent.loadedMetadata(video)
       fireEvent.canPlay(video)
-      expect(video.currentTime).toBe(40)
+      expect(video.currentTime).toBe(0)
       fireEvent.timeUpdate(video)
       expect(localStorage.getItem('rokuban:playback:85:vod-h264')).toBeNull()
     })
@@ -1365,7 +1366,7 @@ describe('LivePlayer の状態遷移', () => {
           mode="chase"
           site="default"
           recordingId={8}
-          startOffsetSeconds={30}
+          offsetSessionStart={{ type: 'offset', offsetSeconds: 30 }}
         />,
       )
 
@@ -1390,8 +1391,7 @@ describe('LivePlayer の状態遷移', () => {
           mode="chase"
           site="default"
           recordingId={9}
-          resumePositionMs={45_000}
-          startOffsetSeconds={0}
+          offsetSessionStart={{ type: 'offset', offsetSeconds: 0 }}
         />,
       )
 
@@ -1437,7 +1437,7 @@ describe('LivePlayer の状態遷移', () => {
           mode="chase"
           site="default"
           recordingId={71}
-          resumePositionMs={12_000}
+          offsetSessionStart={{ type: 'saved-position', positionMs: 12_000 }}
           profile="live-720p"
         />,
       )
@@ -1446,7 +1446,7 @@ describe('LivePlayer の状態遷移', () => {
       const video = document.querySelector('video')!
       Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
       fireEvent.loadedMetadata(video)
-      expect(video.currentTime).toBe(12)
+      expect(video.currentTime).toBe(0)
 
       const firstHls = hlsMockState.instances[0]!
       const errorCall = firstHls.on.mock.calls.find(([event]) => event === 'hlsError')
@@ -1459,7 +1459,49 @@ describe('LivePlayer の状態遷移', () => {
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
       video.currentTime = 0
       fireEvent.loadedMetadata(video)
-      expect(video.currentTime).toBe(12)
+      expect(video.currentTime).toBe(0)
+    })
+
+    it('fatal エラー後の原本 VOD retry は最新の保存位置とフレーム端数を保つ', async () => {
+      const user = userEvent.setup()
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+      const props = { mode: 'original-vod' as const, site: 'default', recordingId: 72, profile: 'hd' }
+      const { rerender } = render(
+        <LivePlayer {...props} offsetSessionStart={{ type: 'saved-position', positionMs: 23_500 }} />,
+      )
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+
+      const video = document.querySelector('video')!
+      const origin = originalVODSessionOriginSeconds(23)
+      const firstStartPosition = 23.5 - origin
+      expect((hlsMockState.constructorArgs[0]![0] as { startPosition: number }).startPosition)
+        .toBeCloseTo(firstStartPosition, 5)
+      Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+      fireEvent.loadedMetadata(video)
+      fireEvent.canPlay(video)
+      expect(video.currentTime).toBeCloseTo(firstStartPosition, 5)
+
+      // 同じ録画の保存位置更新は既存セッションを動かさないが、明示 retry には使う。
+      rerender(
+        <LivePlayer {...props} offsetSessionStart={{ type: 'saved-position', positionMs: 31_500 }} />,
+      )
+      expect(hlsMockState.instances).toHaveLength(1)
+      const errorCall = hlsMockState.instances[0]!.on.mock.calls.find(([event]) => event === 'hlsError')
+      const errorHandler = errorCall![1] as (event: string, data: { fatal: boolean }) => void
+      await act(async () => errorHandler('hlsError', { fatal: true }))
+
+      await user.click(await screen.findByRole('button', { name: '再読み込み' }))
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+      const retryStartPosition = 31.5 - origin
+      expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+        '/api/sites/default/recordings/72/original-vod/offset/23/playlist.m3u8?profile=hd',
+      )
+      expect((hlsMockState.constructorArgs[1]![0] as { startPosition: number }).startPosition)
+        .toBeCloseTo(retryStartPosition, 5)
+
+      video.currentTime = 0
+      fireEvent.loadedMetadata(video)
+      expect(video.currentTime).toBeCloseTo(retryStartPosition, 5)
     })
 
     it('fatal エラーで hls インスタンスを破棄し、エラー文言を出す', async () => {
@@ -1867,7 +1909,7 @@ describe('LivePlayer の状態遷移', () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
       const sent = stubBeacon()
       const { unmount } = render(
-        <LivePlayer mode="chase" site="default" recordingId={42} startOffsetSeconds={90} />,
+        <LivePlayer mode="chase" site="default" recordingId={42} offsetSessionStart={{ type: 'offset', offsetSeconds: 90 }} />,
       )
       await waitForPlaying()
 
@@ -1950,6 +1992,37 @@ describe('LivePlayer の状態遷移', () => {
 
       expect(sent).toHaveLength(1)
     })
+  })
+
+  it('明示開始の追っかけは retry 後も開始位置を再表明する（playing で 0 に戻す）', async () => {
+    hlsMockState.supported = false
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+    vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockImplementation((type) =>
+      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
+    )
+    render(
+      <LivePlayer
+        mode="chase"
+        site="default"
+        recordingId={81}
+        offsetSessionStart={{ type: 'offset', offsetSeconds: 30 }}
+      />,
+    )
+    const video = document.querySelector('video')!
+    await waitFor(() => expect(video.src).toContain('playlist.m3u8'))
+    Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+    fireEvent.loadedMetadata(video)
+    fireEvent.canPlay(video)
+
+    fireEvent.error(video)
+    fireEvent.click(await screen.findByRole('button', { name: '再読み込み' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument())
+    fireEvent.loadedMetadata(video)
+    fireEvent.canPlay(video)
+    video.currentTime = 9
+    fireEvent.playing(video)
+
+    expect(video.currentTime).toBe(0)
   })
 })
 
@@ -2091,7 +2164,7 @@ describe('LivePlayer / 画質（プロファイル）切替（issue #869）', ()
     if (playing) video.dispatchEvent(new Event('playing'))
 
     rerender(
-      <LivePlayer mode="chase" site="default" networkId={0} serviceId={1024} recordingId={501} startOffsetSeconds={180} />,
+      <LivePlayer mode="chase" site="default" networkId={0} serviceId={1024} recordingId={501} offsetSessionStart={{ type: 'offset', offsetSeconds: 180 }} />,
     )
     await waitFor(() => expect(probeURLs()).toHaveLength(2))
     expect(probeURLs()[1]).toContain('/recordings/501/chase/offset/180/')
@@ -2409,18 +2482,16 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
     expect(settings).toHaveAttribute('aria-label', '画質')
   })
 
-  it('現在のoffsetより前への確定は親へ秒を渡し、offset付きplaylistに張り直す', async () => {
-    const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
-    vi.stubGlobal('fetch', fetchMock)
-    const onChaseOffsetChange = vi.fn()
-    const props = {
-      mode: 'chase' as const,
-      site: 'default',
-      recordingId: 511,
-      chaseTimeline,
-      onChaseOffsetChange,
-    }
-    const { rerender } = render(<LivePlayer {...props} startOffsetSeconds={5} />)
+    it('現在のoffsetより前への確定は内部でoffset付きplaylistに張り直す', async () => {
+      const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
+      vi.stubGlobal('fetch', fetchMock)
+      const props = {
+        mode: 'chase' as const,
+        site: 'default',
+        recordingId: 511,
+        chaseTimeline,
+      }
+      render(<LivePlayer {...props} offsetSessionStart={{ type: 'offset', offsetSeconds: 5 }} />)
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
     expect(playlistRequests(fetchMock)[0]).toContain('/chase/offset/5/playlist.m3u8')
 
@@ -2433,32 +2504,25 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
     Object.defineProperty(slider, 'getBoundingClientRect', {
       value: () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 24, width: 600, height: 24, toJSON: () => ({}) }),
     })
-    // Axis second 3 is earlier than session offset 5. It is committed only on pointerup.
-    fireEvent.pointerDown(slider, { pointerId: 2, pointerType: 'mouse', clientX: 30, clientY: 12 })
-    fireEvent.pointerMove(slider, { pointerId: 2, pointerType: 'mouse', clientX: 30, clientY: 12 })
-    expect(onChaseOffsetChange).not.toHaveBeenCalled()
-    expect(playlistRequests(fetchMock)).toHaveLength(1)
-    fireEvent.pointerUp(slider, { pointerId: 2, pointerType: 'mouse', clientX: 30, clientY: 12 })
-    expect(onChaseOffsetChange).toHaveBeenCalledWith(3)
-    expect(playlistRequests(fetchMock)).toHaveLength(1)
+      // Axis second 3 is earlier than session offset 5. It is committed only on pointerup.
+      fireEvent.pointerDown(slider, { pointerId: 2, pointerType: 'mouse', clientX: 30, clientY: 12 })
+      fireEvent.pointerMove(slider, { pointerId: 2, pointerType: 'mouse', clientX: 30, clientY: 12 })
+      expect(playlistRequests(fetchMock)).toHaveLength(1)
+      fireEvent.pointerUp(slider, { pointerId: 2, pointerType: 'mouse', clientX: 30, clientY: 12 })
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+      expect(playlistRequests(fetchMock)[1]).toContain('/chase/offset/3/playlist.m3u8')
+    })
 
-    rerender(<LivePlayer {...props} startOffsetSeconds={3} />)
-    await waitFor(() => expect(playlistRequests(fetchMock)).toHaveLength(2))
-    expect(playlistRequests(fetchMock)[1]).toContain('/chase/offset/3/playlist.m3u8')
-  })
-
-  it('変換済みの端より先で録画済み範囲内なら、選んだ秒へoffsetで張り直す', async () => {
-    const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
-    vi.stubGlobal('fetch', fetchMock)
-    const onChaseOffsetChange = vi.fn()
-    const props = {
-      mode: 'chase' as const,
-      site: 'default',
-      recordingId: 512,
-      chaseTimeline,
-      onChaseOffsetChange,
-    }
-    const { rerender } = render(<LivePlayer {...props} />)
+    it('変換済みの端より先で録画済み範囲内なら、内部で選んだ秒へ張り直す', async () => {
+      const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
+      vi.stubGlobal('fetch', fetchMock)
+      const props = {
+        mode: 'chase' as const,
+        site: 'default',
+        recordingId: 512,
+        chaseTimeline,
+      }
+      render(<LivePlayer {...props} />)
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
 
     const slider = screen.getByRole('slider', { name: 'シークバー' })
@@ -2471,19 +2535,15 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
       value: () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 24, width: 600, height: 24, toJSON: () => ({}) }),
     })
 
-    fireEvent.pointerDown(slider, { pointerId: 3, pointerType: 'mouse', clientX: 150, clientY: 12 })
-    fireEvent.pointerMove(slider, { pointerId: 3, pointerType: 'mouse', clientX: 150, clientY: 12 })
-    expect(slider).toHaveAttribute('aria-valuenow', '15')
-    expect(onChaseOffsetChange).not.toHaveBeenCalled()
-    expect(playlistRequests(fetchMock)).toHaveLength(1)
-    fireEvent.pointerUp(slider, { pointerId: 3, pointerType: 'mouse', clientX: 150, clientY: 12 })
+      fireEvent.pointerDown(slider, { pointerId: 3, pointerType: 'mouse', clientX: 150, clientY: 12 })
+      fireEvent.pointerMove(slider, { pointerId: 3, pointerType: 'mouse', clientX: 150, clientY: 12 })
+      expect(slider).toHaveAttribute('aria-valuenow', '15')
+      expect(playlistRequests(fetchMock)).toHaveLength(1)
+      fireEvent.pointerUp(slider, { pointerId: 3, pointerType: 'mouse', clientX: 150, clientY: 12 })
 
-    expect(onChaseOffsetChange).toHaveBeenCalledWith(15)
-    expect(playlistRequests(fetchMock)).toHaveLength(1)
-    rerender(<LivePlayer {...props} startOffsetSeconds={15} />)
-    await waitFor(() => expect(playlistRequests(fetchMock)).toHaveLength(2))
-    expect(playlistRequests(fetchMock)[1]).toContain('/chase/offset/15/playlist.m3u8')
-  })
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+      expect(playlistRequests(fetchMock)[1]).toContain('/chase/offset/15/playlist.m3u8')
+    })
 
   const rect600 = () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 24, width: 600, height: 24, toJSON: () => ({}) })
   const percent = (el: Element | null, prop: 'left' | 'width') =>
@@ -2574,15 +2634,12 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
   it('再生中にセッション外へシークしたら、張り直したセッションで再生を続ける（原本 HLS と同じ）', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
     function Harness() {
-      const [offset, setOffset] = useState<number | undefined>(undefined)
       return (
         <LivePlayer
           mode="chase"
           site="default"
           recordingId={517}
           chaseTimeline={chaseTimeline}
-          startOffsetSeconds={offset}
-          onChaseOffsetChange={setOffset}
         />
       )
     }
@@ -2611,8 +2668,7 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
 
   it('延長中に軸が伸びても、離したときはドラッグ中に見せた位置を確定する', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
-    const onChaseOffsetChange = vi.fn()
-    const props = { mode: 'chase' as const, site: 'default', recordingId: 518, onChaseOffsetChange }
+    const props = { mode: 'chase' as const, site: 'default', recordingId: 518 }
     const { rerender } = render(
       <LivePlayer {...props} chaseTimeline={{ chaseHeadOffsetSeconds: 0, plannedSeconds: 60, recordedSeconds: 120 }} />,
     )
@@ -2627,7 +2683,10 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
       <LivePlayer {...props} chaseTimeline={{ chaseHeadOffsetSeconds: 0, plannedSeconds: 60, recordedSeconds: 122 }} />,
     )
     fireEvent.pointerUp(slider, { pointerId: 6, pointerType: 'mouse', clientX: 300 })
-    expect(onChaseOffsetChange).toHaveBeenCalledWith(60)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+    expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/518/chase/offset/60/playlist.m3u8',
+    )
   })
 
   it('予定を超えて録画が続いたら、軸を先端まで広げ、予定終端と延長中の先端を分で出す', async () => {
@@ -3078,7 +3137,7 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
         mode="original-vod"
         site="default"
         recordingId={419}
-        resumePositionMs={6_500}
+        offsetSessionStart={{ type: 'saved-position', positionMs: 6_500 }}
         recordingDurationMs={30_000}
         chapters={chapters}
       />,
@@ -3240,7 +3299,7 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
         site="default"
         recordingId={418}
         recordingDurationMs={120_000}
-        startOffsetSeconds={15}
+        offsetSessionStart={{ type: 'offset', offsetSeconds: 15 }}
       />,
     )
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
@@ -3314,7 +3373,7 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
         site="default"
         recordingId={416}
         recordingDurationMs={30_000}
-        startOffsetSeconds={15}
+        offsetSessionStart={{ type: 'offset', offsetSeconds: 15 }}
         profile="hd"
       />,
     )
