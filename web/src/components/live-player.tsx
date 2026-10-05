@@ -208,7 +208,7 @@ type LivePlayerProps = {
   /** 原本時間軸に保存された再開位置。 */
   resumePositionMs?: number
   /**
-   * 録画の実尺（`startedAt` から `endedAt` まで）。予定尺 `durationMs` ではない。
+   * 原本ファイルの実尺（呼び出し側で求めたファイル先頭から `endedAt` まで）。予定尺 `durationMs` ではない。
    * original-vod の固定タイムラインと視聴済み閾値に使う。`endedAt` が無い録画だけは呼び出し側が
    * 予定尺で代用する（0 だとシークバーが効かない）。映像より長いときの末尾は 416 の丸めが受ける。
    */
