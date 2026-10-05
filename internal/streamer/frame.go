@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 )
 
@@ -181,21 +182,15 @@ type probedFrame struct {
 // start_time は 33bit wrap 直前に始まる TS では負になるため、窓の開始も 0 へ丸めない。
 // 窓の中から JPEG と大きさの合うコマを選ぶ（pickFrame）。
 func (s *Streamer) probeFrame(ctx context.Context, path string, atMs int64, width, height int) (probedFrame, error) {
-	ffprobe := s.cfg.FFprobe
-	if ffprobe == "" {
-		ffprobe = "ffprobe"
-	}
-	out, err := s.runCommand(ctx, ffprobe, "-v", "error",
-		"-show_entries", "format=start_time", "-of", "default=noprint_wrappers=1:nokey=1", path)
+	ffprobe := ffargs.FFprobePath(s.cfg.FFprobe)
+	out, err := s.runCommand(ctx, ffprobe, ffargs.FormatStartTimeProbeArgs(path)...)
 	if err != nil {
 		return probedFrame{}, err
 	}
 	start, _ := strconv.ParseFloat(strings.TrimSpace(string(out)), 64) // "N/A" は 0
 	target := start + float64(atMs)/1000
-	out, err = s.runCommand(ctx, ffprobe, "-v", "error", "-select_streams", "v:0",
-		"-read_intervals", fmt.Sprintf("%.3f%%+%.3f", target-sarWindow, sarWindow+0.5),
-		"-show_entries", "frame=best_effort_timestamp_time,width,height,sample_aspect_ratio",
-		"-of", "csv=p=0", path)
+	interval := fmt.Sprintf("%.3f%%+%.3f", target-sarWindow, sarWindow+0.5)
+	out, err = s.runCommand(ctx, ffprobe, ffargs.FrameProbeArgs(path, interval)...)
 	if err != nil {
 		return probedFrame{}, err
 	}
@@ -253,10 +248,7 @@ func normalizeSAR(v string) string {
 }
 
 func (s *Streamer) ffmpegPath() string {
-	if s.cfg.FFmpeg == "" {
-		return "ffmpeg"
-	}
-	return s.cfg.FFmpeg
+	return ffargs.FFmpegPath(s.cfg.FFmpeg)
 }
 
 // runCommand は ffmpeg/ffprobe を stdout 付きで実行する。テストは runCmd を差し替える。

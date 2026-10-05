@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -21,6 +22,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
+	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
@@ -1008,5 +1010,86 @@ func TestBuildFFmpegArgs_SubtitleFixSubDuration(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(args, " "), "heartbeat") {
 		t.Errorf("VOD args must not carry the live heartbeat flag: %v", args)
+	}
+}
+
+func TestProbeHasSubtitlesRequestsSubtitleStreams(t *testing.T) {
+	var gotName string
+	var gotArgs []string
+	hasSubtitles, err := probeHasSubtitles(context.Background(), "/tools/ffprobe", "/recording.ts",
+		func(_ context.Context, name string, args ...string) ([]byte, error) {
+			gotName = name
+			gotArgs = append([]string(nil), args...)
+			return []byte("2\n"), nil
+		})
+	if err != nil {
+		t.Fatalf("probeHasSubtitles: %v", err)
+	}
+	if !hasSubtitles {
+		t.Fatal("probeHasSubtitles = false, want a subtitle stream")
+	}
+	if gotName != "/tools/ffprobe" {
+		t.Errorf("ffprobe = %q, want /tools/ffprobe", gotName)
+	}
+	wantArgs := []string{
+		"-v", "error", "-select_streams", "s",
+		"-show_entries", "stream=index", "-of", "csv=p=0", "/recording.ts",
+	}
+	if !slices.Equal(gotArgs, wantArgs) {
+		t.Errorf("ffprobe args = %#v, want %#v", gotArgs, wantArgs)
+	}
+}
+
+func TestEncodeWorkerSubtitleProbeAndEncodeWithRealBinaries(t *testing.T) {
+	ffmpeg, ffmpegErr := exec.LookPath("ffmpeg")
+	ffprobe, ffprobeErr := exec.LookPath("ffprobe")
+	if ffmpegErr != nil || ffprobeErr != nil {
+		if os.Getenv("ROKUBAN_REQUIRE_FFMPEG") != "" {
+			t.Fatalf("ffmpeg/ffprobe not in PATH but ROKUBAN_REQUIRE_FFMPEG is set: %v %v", ffmpegErr, ffprobeErr)
+		}
+		t.Skipf("ffmpeg/ffprobe not in PATH: %v %v", ffmpegErr, ffprobeErr)
+	}
+
+	dir := t.TempDir()
+	subtitles := filepath.Join(dir, "captions.srt")
+	srt := "1\n00:00:00,100 --> 00:00:01,500\ncaption fixture\n"
+	if err := os.WriteFile(subtitles, []byte(srt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input := filepath.Join(dir, "input.mkv")
+	createArgs := []string{
+		"-hide_banner", "-loglevel", "error", "-y",
+		"-f", "lavfi", "-i", "testsrc=size=160x90:rate=25:duration=2",
+		"-f", "lavfi", "-i", "sine=frequency=1000:duration=2",
+		"-i", subtitles,
+		"-map", "0:v:0", "-map", "1:a:0", "-map", "2:s:0",
+		"-c:v", "mpeg2video", "-c:a", "mp2", "-c:s", "srt",
+		"-f", "matroska", input,
+	}
+	if out, err := exec.Command(ffmpeg, createArgs...).CombinedOutput(); err != nil {
+		t.Fatalf("creating subtitle fixture: %v: %s", err, out)
+	}
+
+	withSubtitles, err := probeHasSubtitles(context.Background(), ffprobe, input, commandOutput)
+	if err != nil {
+		t.Fatalf("probing subtitle fixture: %v", err)
+	}
+	if !withSubtitles {
+		t.Fatal("real ffprobe did not find the fixture subtitle stream")
+	}
+
+	output := filepath.Join(dir, "encoded.mkv")
+	subtitleOut, err := mediapath.SubtitleSibling(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := config.EncodeProfile{
+		Name: "fixture", Container: "matroska", VideoCodec: "mpeg2video", AudioCodec: "mp2", Subtitles: "webvtt",
+	}
+	w := &EncodeWorker{FFmpeg: ffmpeg}
+	if err := w.runEncodeCommand(context.Background(), encodeCommandInput{
+		profile: profile, inputPath: input, scratchOut: output, subtitleOut: subtitleOut, withSubtitles: withSubtitles,
+	}, func(time.Duration) {}, slog.Default()); err != nil {
+		t.Fatalf("encoding subtitle fixture: %v", err)
 	}
 }

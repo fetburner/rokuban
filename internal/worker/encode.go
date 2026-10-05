@@ -471,17 +471,10 @@ func (w *EncodeWorker) buildCutFilter(ctx context.Context, profile config.Encode
 // 任せている。cut 版だけ別のストリームが選ばれると、同じ録画の 2 つの版で
 // 音声が食い違う。
 func (w *EncodeWorker) selectStreams(ctx context.Context, inputPath string) (video, audio int, err error) {
-	ffprobe := w.FFprobe
-	if ffprobe == "" {
-		ffprobe = "ffprobe"
-	}
+	ffprobe := ffargs.FFprobePath(w.FFprobe)
 	probeCtx, cancel := context.WithTimeout(ctx, streamProbeTimeout)
 	defer cancel()
-	out, err := commandOutput(probeCtx, ffprobe,
-		"-v", "error",
-		"-show_entries", "stream=index,codec_type,width,height,channels",
-		"-of", "csv=p=0", inputPath,
-	)
+	out, err := commandOutput(probeCtx, ffprobe, ffargs.DefaultStreamSelectionProbeArgs(inputPath)...)
 	if err != nil {
 		return 0, 0, fmt.Errorf("probing streams of %s: %w", inputPath, err)
 	}
@@ -623,10 +616,7 @@ type encodeCommandInput struct {
 // runEncodeCommand は ffmpeg を実行し、進捗を読み取り、scratch 出力を検証する。
 func (w *EncodeWorker) runEncodeCommand(ctx context.Context, in encodeCommandInput, reportProgress func(time.Duration), log *slog.Logger) error {
 	profile, inputPath, scratchOut, subtitleOut, withSubtitles := in.profile, in.inputPath, in.scratchOut, in.subtitleOut, in.withSubtitles
-	ffmpeg := w.FFmpeg
-	if ffmpeg == "" {
-		ffmpeg = "ffmpeg"
-	}
+	ffmpeg := ffargs.FFmpegPath(w.FFmpeg)
 	cmd := exec.CommandContext(ctx, ffmpeg, BuildFFmpegArgs(profile, inputPath, scratchOut, withSubtitles, in.filter)...)
 	setWorkerExecWaitDelay(cmd)
 	// 進捗は stdout（-progress pipe:1）。stderr はエラー診断のみ（進捗に使わない）。
@@ -1118,13 +1108,7 @@ func (w *EncodeWorker) scratchPaths(jobID int64, profile config.EncodeProfile) (
 }
 
 func probeHasSubtitles(ctx context.Context, ffprobe, input string, run func(context.Context, string, ...string) ([]byte, error)) (bool, error) {
-	if ffprobe == "" {
-		ffprobe = "ffprobe"
-	}
-	out, err := run(ctx, ffprobe,
-		"-v", "error", "-select_streams", "s",
-		"-show_entries", "stream=index", "-of", "csv=p=0", input,
-	)
+	out, err := run(ctx, ffargs.FFprobePath(ffprobe), ffargs.SubtitleProbeArgs([]string{input}, "", "")...)
 	if err != nil {
 		return false, err
 	}

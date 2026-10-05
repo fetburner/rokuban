@@ -5,6 +5,111 @@ import (
 	"fmt"
 )
 
+// SquarePixelsFilter は JPEG 化する前に sample aspect ratio を画素へ焼き込む。
+const SquarePixelsFilter = "scale=round(iw*sar/2)*2:ih,setsar=1"
+
+// FFmpegPath は設定された ffmpeg のパスを返す。空なら PATH 上の既定名を返す。
+func FFmpegPath(configured string) string {
+	if configured == "" {
+		return "ffmpeg"
+	}
+	return configured
+}
+
+// FFprobePath は設定された ffprobe のパスを返す。空なら PATH 上の既定名を返す。
+func FFprobePath(configured string) string {
+	if configured == "" {
+		return "ffprobe"
+	}
+	return configured
+}
+
+// DefaultStreamSelectionProbeArgs は ffmpeg の既定と同じ映像・音声選択を再現するため、
+// stream の属性を CSV で列挙する ffprobe の argv を返す。
+func DefaultStreamSelectionProbeArgs(inputPath string) []string {
+	return []string{
+		"-v", "error",
+		"-show_entries", "stream=index,codec_type,width,height,channels",
+		"-of", "csv=p=0",
+		inputPath,
+	}
+}
+
+// SubtitleProbeArgs は字幕 stream の有無を調べる ffprobe の argv を返す。
+// inputArgs はファイルパス、または `-i`, `pipe:0` のような入力指定をそのまま渡す。
+// probeSize と analyzeDuration が空でなければ、その上限を先頭に付ける。
+func SubtitleProbeArgs(inputArgs []string, probeSize, analyzeDuration string) []string {
+	args := []string{"-v", "error"}
+	if probeSize != "" {
+		args = append(args, "-probesize", probeSize)
+	}
+	if analyzeDuration != "" {
+		args = append(args, "-analyzeduration", analyzeDuration)
+	}
+	args = append(args,
+		"-select_streams", "s",
+		"-show_entries", "stream=index",
+		"-of", "csv=p=0",
+	)
+	return append(args, inputArgs...)
+}
+
+// 尺の定義は用途ごとに異なるため、次の 3 builder は統合しない。
+
+// ThumbnailDurationProbeArgs はサムネイルの seek 位置に使う format 全体の尺を読む argv を返す。
+func ThumbnailDurationProbeArgs(inputPath string) []string {
+	return []string{
+		"-v", "error",
+		"-show_entries", "format=duration",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		inputPath,
+	}
+}
+
+// VideoStreamDurationProbeArgs は音声などの尺に引きずられない映像 stream の長さを読む argv を返す。
+func VideoStreamDurationProbeArgs(inputPath string) []string {
+	return []string{
+		"-v", "error",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=duration",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		inputPath,
+	}
+}
+
+// OriginalVODDurationProbeArgs は原本 HLS の尺計算に使う format と映像 stream の時刻を読む argv を返す。
+func OriginalVODDurationProbeArgs(inputPath string) []string {
+	return []string{
+		"-v", "error",
+		"-select_streams", "v:0",
+		"-show_entries", "format=start_time,duration:stream=start_time,duration",
+		"-of", "json",
+		"-i", inputPath,
+	}
+}
+
+// FormatStartTimeProbeArgs は format の start_time を読む ffprobe の argv を返す。
+func FormatStartTimeProbeArgs(inputPath string) []string {
+	return []string{
+		"-v", "error",
+		"-show_entries", "format=start_time",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		inputPath,
+	}
+}
+
+// FrameProbeArgs は指定した read interval 内の映像フレーム属性を読む ffprobe の argv を返す。
+func FrameProbeArgs(inputPath, readInterval string) []string {
+	return []string{
+		"-v", "error",
+		"-select_streams", "v:0",
+		"-read_intervals", readInterval,
+		"-show_entries", "frame=best_effort_timestamp_time,width,height,sample_aspect_ratio",
+		"-of", "csv=p=0",
+		inputPath,
+	}
+}
+
 // VideoGeometryProbeArgs は最初の映像ストリームの記録上の大きさを問う ffprobe の
 // argv を返す。worker（CM 検出）と streamer（/frame）が同じ問い合わせをするための
 // 共有点で、出力は ParseVideoGeometry で読む。

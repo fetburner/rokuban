@@ -42,6 +42,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/mediapath"
@@ -1000,16 +1001,10 @@ const originalVODTailMargin = 0.5
 // （ffmpeg の入力側 -ss は先頭からの位置で測る。外すと偽 ffmpeg が fd 3 から 0 バイトしか読めず
 // TestOriginalVODOffsetIdleGCRemovesScratch が落ちる）。
 func probeOriginalVODDuration(ctx context.Context, ffprobe string, file *os.File) (float64, error) {
-	if ffprobe == "" {
-		ffprobe = "ffprobe"
-	}
+	ffprobe = ffargs.FFprobePath(ffprobe)
 	probeCtx, cancel := context.WithTimeout(ctx, originalVODProbeTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(probeCtx, ffprobe,
-		"-v", "error", "-select_streams", "v:0",
-		"-show_entries", "format=start_time,duration:stream=start_time,duration",
-		"-of", "json", "-i", originalVODFFmpegInputPath,
-	)
+	cmd := exec.CommandContext(probeCtx, ffprobe, ffargs.OriginalVODDurationProbeArgs(originalVODFFmpegInputPath)...)
 	cmd.ExtraFiles = []*os.File{file}
 	out, err := cmd.Output()
 	if err != nil {
@@ -3456,8 +3451,8 @@ func appendOriginalVODMPEGTSInput(args []string, inputPath string, offsetSeconds
 	if offsetSeconds <= 0 {
 		return appendMPEGTSInput(args, inputPath, 0)
 	}
-	frame := offsetSeconds * 30000 / 1001
-	seekSeconds := float64(frame) * 1001 / 30000
+	frame := offsetSeconds * chapters.FrameNumerator / chapters.FrameDenominator
+	seekSeconds := float64(frame) * float64(chapters.FrameDenominator) / float64(chapters.FrameNumerator)
 	return appendMPEGTSInputWithSeek(args, inputPath, offsetSeconds, fmt.Sprintf("%.9f", seekSeconds))
 }
 
@@ -3803,15 +3798,11 @@ func readLiveCaptionPrefix(body io.Reader) (input io.Reader, prefix []byte, err 
 // probeLiveCaptionStream は ffprobe に MPEG-TS の有限な先頭部分だけを渡し、字幕
 // ストリームの有無を調べる。アプリケーション自身は TS/PES を解釈しない。
 func probeLiveCaptionStream(ctx context.Context, ffprobe string, prefix []byte) (bool, error) {
-	if ffprobe == "" {
-		ffprobe = "ffprobe"
-	}
+	ffprobe = ffargs.FFprobePath(ffprobe)
 	probeCtx, cancel := context.WithTimeout(ctx, liveCaptionProbeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(probeCtx, ffprobe,
-		"-v", "error", "-probesize", "5M", "-analyzeduration", "3M",
-		"-select_streams", "s", "-show_entries", "stream=index", "-of", "csv=p=0", "-i", "pipe:0",
-	)
+		ffargs.SubtitleProbeArgs([]string{"-i", "pipe:0"}, "5M", "3M")...)
 	cmd.Stdin = bytes.NewReader(prefix)
 	out, err := cmd.Output()
 	if err != nil {

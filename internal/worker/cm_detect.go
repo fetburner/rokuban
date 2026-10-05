@@ -442,9 +442,7 @@ func probeVideoGeometry(
 	run func(context.Context, string, ...string) ([]byte, error),
 	ffprobe, inputPath string,
 ) (videoGeometry, error) {
-	if ffprobe == "" {
-		ffprobe = "ffprobe"
-	}
+	ffprobe = ffargs.FFprobePath(ffprobe)
 	out, err := run(ctx, ffprobe, ffargs.VideoGeometryProbeArgs(inputPath)...)
 	if err != nil {
 		return videoGeometry{}, err
