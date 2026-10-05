@@ -764,7 +764,9 @@ if (!playbackPositionWrites.slice(writesBeforeSeek).some((positionMs) => positio
 if (watchedWrites.length > 0) ng.push('③ 録画中の追っかけで視聴済み印を付けた')
 
 log('\n=== ④ 保存位置復元と明示0秒 ===')
-recording.resumePositionMs = 5_000
+// 5 秒の格子（`resumeSessionOffsetSeconds`）未満なので offset 0 のセッションのまま startPosition で復元する。
+// 格子以上だと offset セッションから始まり、0 秒へのシークがセッション外になる（この項目の対象外）。
+recording.resumePositionMs = 4_700
 holdResumePositionSeed = true
 await page.reload({ waitUntil: 'domcontentloaded' })
 await page.locator('video').waitFor({ timeout: 15000 })
@@ -781,7 +783,7 @@ await page.waitForFunction(
 await page.waitForFunction(() => document.querySelector('video')?.paused === false, undefined, { timeout: 10000 })
   .catch(() => ng.push('④ #chase の再読み込みで再生が始まらない'))
 await page.locator('video').evaluate((video) => video.pause())
-// 保存位置の種（5 秒）は ④ の明示 0 秒まで保つ。再取得されても「未選択なら復元する」位置が残るようにする。
+// 保存位置の種（4.7 秒）は ④ の明示 0 秒まで保つ。再取得されても「未選択なら復元する」位置が残るようにする。
 const baseRequestsBeforeZero = playlistRequests
 const offsetRequestsBeforeZero = offsetPlaylistRequests
 await timelineSlider.focus()

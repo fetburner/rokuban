@@ -47,6 +47,7 @@ import {
   liveStallTimeoutMs,
   originalVODPlaylistURL,
   originalVODSessionOriginSeconds,
+  resumeSessionOffsetSeconds,
   observeStall,
   probeLivePlaylist,
   programRecordingAccess,
@@ -426,7 +427,6 @@ export function LivePlayer({
       ? startOffsetSeconds
       : undefined
   const hasExplicitChaseStart = explicitChaseStartOffset !== undefined
-  const chaseStartOffset = explicitChaseStartOffset ?? 0
   const explicitOriginalVODStartOffset =
     isOriginalVOD &&
     startOffsetSeconds !== undefined &&
@@ -434,15 +434,22 @@ export function LivePlayer({
     startOffsetSeconds >= 0
       ? startOffsetSeconds
       : undefined
+  // 続きから再生の位置（秒）。有限かつ 2 秒以上のときだけ有効。閾値と検査はここだけに置く。
+  const resumeSeconds =
+    resumePositionMs !== undefined && Number.isFinite(resumePositionMs) && resumePositionMs >= 2000
+      ? resumePositionMs / 1000
+      : null
   // 変換中の EVENT playlist で保存位置が変換済み範囲より先にあっても待たないよう、
-  // 再開位置の整数秒からセッションを始める。残りの小数秒は startPosition に渡す。
-  const resumedOriginalVODStartOffset =
-    isOriginalVOD &&
-    resumePositionMs !== undefined &&
-    Number.isFinite(resumePositionMs) &&
-    resumePositionMs >= 2000
-      ? Math.floor(resumePositionMs / 1000)
-      : 0
+  // 録画再生（追っかけ・原本 HLS）は再開位置を粗い格子へ丸めた offset からセッションを始め、
+  // 残りを startPosition に渡す。サーバー側の保存位置が更新されても張り直さないよう、
+  // 録画・モードごとに最初の 1 回だけ取り込む。
+  const resumeCaptureKey = `${mode}|${recordingId}`
+  const [resumeCapture, setResumeCapture] = useState({ key: resumeCaptureKey, seconds: resumeSeconds })
+  const capturedResumeSeconds = resumeCapture.key === resumeCaptureKey ? resumeCapture.seconds : resumeSeconds
+  if (resumeCapture.key !== resumeCaptureKey) setResumeCapture({ key: resumeCaptureKey, seconds: resumeSeconds })
+  const resumedStartOffset = isRecordingPlayback ? resumeSessionOffsetSeconds(capturedResumeSeconds) : 0
+  const chaseStartOffset = explicitChaseStartOffset ?? resumedStartOffset
+  const resumedOriginalVODStartOffset = isOriginalVOD ? resumedStartOffset : 0
   const initialOriginalVODStart = {
     recordingId,
     offset: explicitOriginalVODStartOffset ?? resumedOriginalVODStartOffset,
@@ -462,9 +469,7 @@ export function LivePlayer({
     : chaseStartOffset
   const hasExplicitRecordingStart = isChase ? hasExplicitChaseStart : originalVODStartIsExplicit
   const serverResumePosition =
-    resumePositionMs !== undefined && resumePositionMs >= 2000
-      ? Math.max(resumePositionMs / 1000 - sessionStartOffset, 0)
-      : null
+    resumeSeconds !== null ? Math.max(resumeSeconds - sessionStartOffset, 0) : null
   const serverResumePositionRef = useRef(serverResumePosition)
   useEffect(() => {
     serverResumePositionRef.current = serverResumePosition
@@ -1205,6 +1210,12 @@ export function LivePlayer({
           probe.error.status === 416 &&
           originalVODStartOffset > lastGood
         ) {
+          // 続きからで導出した offset（利用者のシークではない）が映像の終端を越えたときは、
+          // 端数と非明示性を保ったまま offset 0 の通常セッションへ戻る（保存位置ちょうどへ置く）。
+          if (!originalVODStartIsExplicit) {
+            setOriginalVODStartState({ recordingId, offset: 0, explicit: false })
+            return
+          }
           const next = Math.max(lastGood, originalVODStartOffset - rangeStepRef.current)
           rangeStepRef.current *= 2
           pendingOffsetSeekRef.current = 0
@@ -1526,6 +1537,7 @@ export function LivePlayer({
     chaseStartOffset,
     sessionStartOffset,
     originalVODStartOffset,
+    originalVODStartIsExplicit,
     hasExplicitChaseStart,
     hasExplicitRecordingStart,
     setMediaPlaying,

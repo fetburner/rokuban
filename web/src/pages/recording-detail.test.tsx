@@ -17,7 +17,6 @@ import { ToastProvider } from '@/components/toaster'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
 import { cmDetectStageMessage } from '@/lib/cm-detect-stage'
 import { formatTime } from '@/lib/format'
-import { originalVODSessionOriginSeconds } from '@/lib/live'
 import { routeTree } from '@/routes'
 
 afterEach(() => {
@@ -2102,7 +2101,7 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
     const user = userEvent.setup()
     const { fetchMock } = createFakeServer({
       recording: chaseRecording(),
-      playbackState: { positionMs: 12 * 60_000 },
+      playbackState: { positionMs: 12 * 60_000 + 2_000 },
       liveProfiles: LIVE_PROFILES,
     })
 
@@ -2117,10 +2116,11 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
 
     await user.click(screen.getByTestId('recording-playback-start'))
     await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
+    expect(chasePlaylistURLs(fetchMock)[0]).toContain('/chase/offset/720/playlist.m3u8')
     expect(document.querySelectorAll('video')).toHaveLength(1)
     const video = document.querySelector('video')!
     fireEvent.loadedMetadata(video)
-    await waitFor(() => expect(video.currentTime).toBe(720))
+    await waitFor(() => expect(video.currentTime).toBe(2))
   })
 
   it('追っかけのポスターに再開位置と録画範囲を示し、先頭から見る操作も再生開始まで変換しない', async () => {
@@ -2495,9 +2495,9 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
     fireEvent.loadedMetadata(vodVideo)
     fireEvent.canPlay(vodVideo)
     fireEvent.timeUpdate(vodVideo)
-    expect(vodVideo.currentTime).toBeCloseTo(42.8 - originalVODSessionOriginSeconds(42))
+    expect(vodVideo.currentTime).toBeCloseTo(2.82673, 4)
     expect(fake.fetchMock.mock.calls.some(([input]) =>
-      String(input).includes('/original-vod/offset/42/playlist.m3u8'),
+      String(input).includes('/original-vod/offset/40/playlist.m3u8'),
     )).toBe(true)
     await waitFor(() => expect(
       Number(screen.getByRole('slider', { name: 'シークバー' }).getAttribute('aria-valuenow')),
@@ -3372,9 +3372,9 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
     const video = document.querySelector('video')!
     setMediaProps(video, { currentTime: 0 })
     fireEvent.loadedMetadata(video)
-    expect(video.currentTime).toBeCloseTo(12.8 - originalVODSessionOriginSeconds(12))
+    expect(video.currentTime).toBeCloseTo(2.82337, 4)
     expect(playlistPaths(fake.fetchMock, '/original-vod')).toContain(
-      '/api/sites/default/recordings/3/original-vod/offset/12/playlist.m3u8',
+      '/api/sites/default/recordings/3/original-vod/offset/10/playlist.m3u8',
     )
     // ▶ を押した意図は、再生前に消えた追っかけから原本 HLS へ持ち越す（押し直させない）。
     expect(playSpy).not.toHaveBeenCalled()

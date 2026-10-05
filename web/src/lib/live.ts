@@ -336,6 +336,19 @@ export function originalVODSessionOriginSeconds(offsetSeconds?: number): number 
   return frame * 1_001 / 30_000
 }
 
+/** RESUME_OFFSET_GRID_SECONDS は続きから再生で offset セッションを共有する格子の幅（秒）。 */
+const RESUME_OFFSET_GRID_SECONDS = 5
+
+/**
+ * resumeSessionOffsetSeconds は続きから再生の位置（秒）を、録画再生セッションの offset へ写す。
+ * 秒ごとに別セッション（`live.max_sessions` を消費する）を立てないよう格子へ丸める。
+ * 格子幅未満は offset 0 のまま startPosition で位置を指す。
+ */
+export function resumeSessionOffsetSeconds(resumeSeconds: number | null): number {
+  if (resumeSeconds === null) return 0
+  return Math.floor(resumeSeconds / RESUME_OFFSET_GRID_SECONDS) * RESUME_OFFSET_GRID_SECONDS
+}
+
 /** chasePlaylistURL は録画中の追っかけ再生 EVENT playlist の URL を組み立てる。 */
 export function chasePlaylistURL(
   site: string,

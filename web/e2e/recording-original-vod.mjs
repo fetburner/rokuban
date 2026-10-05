@@ -839,9 +839,13 @@ if (await resumePlaybackButton.count() === 1) {
   ng.push(`② reload 後の再生ボタンが 1 つでない (${await resumePlaybackButton.count()})`)
 }
 await page.locator('video').waitFor({ timeout: 15000 })
+// resume は offset セッションから始まるので `video.currentTime` はセッション相対である。
+// 録画軸の位置はシークバーの aria-valuenow で読む。
 await page.waitForFunction((expected) => {
   const element = document.querySelector('video')
-  return element !== null && element.duration > 0 && Math.abs(element.currentTime - expected) < 1.5
+  const slider = document.querySelector('[role="slider"][aria-label="シークバー"]')
+  const position = Number(slider?.getAttribute('aria-valuenow') ?? NaN)
+  return element !== null && element.duration > 0 && Math.abs(position - expected) < 1.5
 }, savedPosition, { timeout: 15000 }).catch(() => ng.push('② reload 後に原本 HLS の保存位置を復元しない'))
 
 log('\n=== ③ 終端まで再生 ===')
@@ -1784,8 +1788,16 @@ const resumeStarted = await resumePage.waitForFunction(() => {
 const resumeStartupRequests = offsetRequests.slice(resumeOffsetCursor)
 log(`  resume=12s, initial event playlist=8s, offset requests=${JSON.stringify(resumeStartupRequests)}, playing=${resumeStarted}`)
 const firstSuccessfulResumeOffset = resumeStartupRequests.find((request) => request.status === 200)?.offset
-if (firstSuccessfulResumeOffset !== 12) {
-  ng.push(`⑦ 保存位置 12 秒で最初に offset/12 を要求しない（${JSON.stringify(resumeStartupRequests)}）`)
+// 5 秒格子に丸めるので 12 秒は offset/10 から始まる。
+if (firstSuccessfulResumeOffset !== 10) {
+  ng.push(`⑦ 保存位置 12 秒で最初に offset/10 を要求しない（${JSON.stringify(resumeStartupRequests)}）`)
+}
+// 録画軸の位置は offset + currentTime（シークバーの aria-valuenow）。startPosition が
+// 絶対値 12 に退行すると 10 + 12 = 22 付近から再生する。
+const resumeAxisPosition = await resumePage.evaluate(() =>
+  Number(document.querySelector('[role="slider"][aria-label="シークバー"]')?.getAttribute('aria-valuenow') ?? NaN))
+if (!(resumeAxisPosition >= 11.5 && resumeAxisPosition < 14)) {
+  ng.push(`⑦ 保存位置 12 秒から再生した録画軸の位置が約 12 秒でない（${resumeAxisPosition}）`)
 }
 if (!resumeStarted) {
   ng.push(`⑦ 8 秒の変換中 EVENT playlist の先端で停止し、続きから再生できない（${JSON.stringify(await sampleOffsetPlayer(resumePage))}）`)

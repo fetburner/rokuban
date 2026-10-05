@@ -388,6 +388,11 @@ DOM の取得に失敗した場合も、その理由を記録して残りの診�
 再生中の操作バーは 3 秒で隠れ `aria-hidden` / `inert` になる。手動でバーの操作を調べるときは、
 枠の上でマウスを動かして表示を待つ。
 
+⑦（保存位置の再開）は、8 秒だけ配る変換中 EVENT playlist に、保存位置 12 秒から再開する。最初に成功する
+offset が 5 秒格子の 10 であること、再生が始まること、録画軸の位置（`aria-valuenow`）が約 12 秒であることを見る。
+`startPosition` を絶対値のままにする変異は録画軸が 22 秒付近になって落ちる。② の reload 後の復元も、
+セッション相対の `currentTime` ではなく `aria-valuenow` で比べる。
+
 ```sh
 E2E_URL=http://localhost:4173 pnpm e2e:recording-original-vod
 ```
