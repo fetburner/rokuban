@@ -3013,6 +3013,49 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     expect(screen.queryByText(/エラー/)).not.toBeInTheDocument()
   })
 
+  it('原本 VOD: 再生中の末尾付近の 416 は、丸めた offset の canplay 後に再生を続ける', async () => {
+    const fetchMock = vi.fn((url: string) => {
+      const offset = Number(/\/offset\/(\d+)\//.exec(String(url))?.[1] ?? 0)
+      return Promise.resolve(
+        offset > 57
+          ? new Response('offset is outside the original', { status: 416 })
+          : new Response(PROFILE_MASTER, { status: 200 }),
+      )
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<LivePlayer mode="original-vod" site="default" recordingId={424} recordingDurationMs={63_000} />)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'paused', { value: false, writable: true, configurable: true })
+    Object.defineProperty(video, 'seekable', { value: { length: 1, start: () => 0, end: () => 8 }, configurable: true })
+    const play = vi.spyOn(video, 'play').mockResolvedValue()
+    vi.spyOn(video, 'load').mockImplementation(() => {
+      Object.defineProperty(video, 'paused', { value: true, writable: true, configurable: true })
+    })
+    fireEvent.playing(video)
+
+    const slider = screen.getByRole('slider', { name: 'シークバー' })
+    vi.spyOn(slider, 'getBoundingClientRect').mockReturnValue({
+      x: 0, y: 0, left: 0, top: 0, right: 100, bottom: 16, width: 100, height: 16, toJSON: () => ({}),
+    } as DOMRect)
+    fireEvent.pointerDown(slider, { pointerId: 1, pointerType: 'mouse', clientX: 99 })
+    fireEvent.pointerUp(slider, { pointerId: 1, pointerType: 'mouse', clientX: 99 })
+
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+    expect(fetchMock.mock.calls
+      .map(([url]) => String(url))
+      .filter((url) => url.endsWith('playlist.m3u8'))
+      .map((url) => /\/offset\/(\d+)\//.exec(url)?.[1])
+      .filter(Boolean)).toEqual(['62', '61', '59', '55'])
+    expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/424/original-vod/offset/55/playlist.m3u8',
+    )
+
+    fireEvent.canPlay(video)
+    expect(play).toHaveBeenCalledOnce()
+  })
+
   it('原本 VOD（ネイティブ HLS）: 先頭・続きから位置なしでも canplay で 0 を明示し直す', async () => {
     // WebKit は ENDLIST の無い EVENT playlist をライブ端の近くから始める（e2e ⑤-a で 17.4 秒）。
     const { resolve } = deferredFetch()
