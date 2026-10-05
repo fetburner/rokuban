@@ -244,8 +244,8 @@ func TestIngestWorker_SHA256WaitSnoozePreservesAttempt(t *testing.T) {
 	if got, err := ingestJobSnoozeCount(event.Job.Metadata); err != nil || got != 1 {
 		t.Errorf("River snooze metadata count = %d, %v; want 1", got, err)
 	}
-	if remaining := time.Until(event.Job.ScheduledAt); remaining < 5*time.Minute-2*time.Second || remaining > 5*time.Minute+2*time.Second {
-		t.Errorf("scheduled snooze delay = %s, want about 5m", remaining)
+	if remaining := time.Until(event.Job.ScheduledAt); remaining < 8*time.Second || remaining > 12*time.Second {
+		t.Errorf("scheduled snooze delay = %s, want about 10s (floor for a tiny file)", remaining)
 	}
 	var state string
 	var attempt int

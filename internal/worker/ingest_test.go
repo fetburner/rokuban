@@ -1342,6 +1342,7 @@ func TestIngestWorker_SnoozesThenVerifiesLateContentSHA256(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			tsData := makeTSData(20)
+			setIngestSHA256Rate(t, 47) // 3760 バイト / 47 B/s = 80 秒
 			contentPath := "test/sha256-late.m2ts"
 			var deleteAttempts atomic.Int32
 			var rangeMu sync.Mutex
@@ -1386,8 +1387,11 @@ func TestIngestWorker_SnoozesThenVerifiesLateContentSHA256(t *testing.T) {
 			if !errors.As(firstErr, &snooze) {
 				t.Fatalf("first Work error = %v, want River snooze while content.sha256 is null", firstErr)
 			}
-			if snooze.Duration != 5*time.Minute {
-				t.Errorf("snooze duration = %s, want 5m", snooze.Duration)
+			if snooze.Duration != 80*time.Second {
+				t.Errorf("snooze duration = %s, want 80s (3760 bytes at 47 B/s)", snooze.Duration)
+			}
+			if !strings.Contains(logOutput.String(), "sha256_verification=pending") || strings.Contains(logOutput.String(), "sha256_verification=skipped") {
+				t.Errorf("wait log = %q, want sha256_verification=pending only", logOutput.String())
 			}
 			assertIngestResultDeltas(t, beforeResults, nil, "SHA-256 wait snooze")
 			if got := ingestDurationSamples(t); got != durationBefore {
@@ -3970,4 +3974,33 @@ func TestIngestWorker_RelPathConflict_AllowsReuseAfterDeleted(t *testing.T) {
 	if asset.RelPath != reusedRelPath {
 		t.Errorf("new media_asset rel_path = %q, want %q", asset.RelPath, reusedRelPath)
 	}
+}
+
+func TestIngestSHA256WaitFor(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		size int64
+		want time.Duration
+	}{
+		{"unknown or empty uses the floor", 0, 10 * time.Second},
+		{"small file uses the floor", 7_800_000 * 5, 10 * time.Second},
+		{"just above the floor", 7_800_000 * 11, 11 * time.Second},
+		{"rounds up", 7_800_000*11 + 1, 12 * time.Second},
+		{"terrestrial 30 min", 3_800_000_000, 488 * time.Second},
+		{"BS 2 h", 20_000_000_000, 2565 * time.Second},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ingestSHA256WaitFor(tt.size); got != tt.want {
+				t.Errorf("ingestSHA256WaitFor(%d) = %s, want %s", tt.size, got, tt.want)
+			}
+		})
+	}
+}
+
+// setIngestSHA256Rate は SHA-256 待ちの速度見積もりをテストの間だけ差し替える。
+func setIngestSHA256Rate(t *testing.T, rate int64) {
+	t.Helper()
+	old := ingestSHA256BytesPerSecond
+	ingestSHA256BytesPerSecond = rate
+	t.Cleanup(func() { ingestSHA256BytesPerSecond = old })
 }
