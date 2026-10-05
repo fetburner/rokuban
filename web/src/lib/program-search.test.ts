@@ -15,7 +15,7 @@ import {
   hasNoConditions,
   hasWeekday,
   newTimeWindow,
-  ruleMetaError,
+  ruleMetaBlocked,
   ruleNameError,
   conditionsToDraft,
   ruleToMeta,
@@ -502,30 +502,24 @@ describe('emptyRuleMeta / ruleToMeta', () => {
   })
 })
 
-describe('ruleMetaError', () => {
+describe('ruleMetaBlocked', () => {
   function meta(patch: Partial<RuleMetaDraft> = {}): RuleMetaDraft {
     return { ...emptyRuleMeta(), name: 'ニュース', ...patch }
   }
 
   it('名前が空（空白のみ含む）なら止める', () => {
-    expect(ruleMetaError(meta({ name: '' }))).toBe('名前は必須です')
-    expect(ruleMetaError(meta({ name: '   ' }))).toBe('名前は必須です')
+    expect(ruleMetaBlocked(meta({ name: '' }))).toBe(true)
+    expect(ruleMetaBlocked(meta({ name: '   ' }))).toBe(true)
   })
 
   it('until_encoded かつプロファイル未選択なら止める', () => {
-    expect(ruleMetaError(meta({ keepOriginal: 'until_encoded', encodeProfiles: [] }))).toBe(
-      'エンコード後に原本を削除するには、プロファイルを 1 つ以上選んでください',
-    )
+    expect(ruleMetaBlocked(meta({ keepOriginal: 'until_encoded', encodeProfiles: [] }))).toBe(true)
   })
 
-  it('until_encoded でもプロファイルを選んでいれば止めない', () => {
+  it('名前とエンコード設定が有効なら止めない', () => {
     expect(
-      ruleMetaError(meta({ keepOriginal: 'until_encoded', encodeProfiles: ['h264'] })),
-    ).toBeUndefined()
-  })
-
-  it('always なら常に止めない', () => {
-    expect(ruleMetaError(meta({ keepOriginal: 'always', encodeProfiles: [] }))).toBeUndefined()
+      ruleMetaBlocked(meta({ keepOriginal: 'until_encoded', encodeProfiles: ['h264'] })),
+    ).toBe(false)
   })
 })
 

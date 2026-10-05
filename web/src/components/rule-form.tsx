@@ -24,7 +24,7 @@ import {
   buildRuleInput,
   emptyRuleMeta,
   hasNoConditions,
-  ruleMetaError,
+  ruleMetaBlocked,
   ruleNameError,
   ruleToMeta,
   type RuleMetaDraft,
@@ -318,13 +318,13 @@ export function CreateRuleForm({
     )?.name,
   )
   const effectiveMeta = { ...meta, name: nameTouched ? meta.name : suggestedName }
-  const metaError = ruleMetaError(effectiveMeta)
+  const metaBlocked = ruleMetaBlocked(effectiveMeta)
   const nameError = ruleNameError(effectiveMeta)
   const noConditions = hasNoConditions(draft)
   const hasPeriod = draft.periodStartAt !== '' || draft.periodEndAt !== ''
   const pending = createRule.isPending
   const blocked =
-    draftHasError || metaError !== undefined || (noConditions && !confirmedEmpty) || pending
+    draftHasError || metaBlocked || (noConditions && !confirmedEmpty) || pending
 
   const save = () => {
     if (blocked) return
@@ -517,13 +517,13 @@ export function RuleEditForm({
   // 同じ危険を持つため）。
   const [confirmedEmpty, setConfirmedEmpty] = useState(false)
 
-  const metaError = ruleMetaError(meta)
+  const metaBlocked = ruleMetaBlocked(meta)
   const nameError = ruleNameError(meta)
   const noConditions = hasNoConditions(draft)
   const hasPeriod = draft.periodStartAt !== '' || draft.periodEndAt !== ''
   const pending = updateRule.isPending || createRule.isPending
   const blocked =
-    draftHasError || metaError !== undefined || (noConditions && !confirmedEmpty) || pending
+    draftHasError || metaBlocked || (noConditions && !confirmedEmpty) || pending
 
   const overwrite = () => {
     if (blocked) return
