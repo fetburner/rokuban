@@ -306,7 +306,7 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
 
 const chaseBase = '/api/sites/default/recordings/1/chase'
 // fixture は offset のセッション（追っかけ・原本 HLS とも）を、offset を含む 2 秒の segment の先頭から配る。
-// 真の起点はこの segment の先頭で、奇数の offset では offset より 1 秒手前になる。fixture と判定の両方がこの式を使う。
+// 真の起点はこの segment の先頭で、奇数の offset では offset より 1 秒手前になる。fixture と ④⑧ の判定がこの式を使う。
 /** fixtureSegmentIndex は fixture が offset のセッションを始める segment の番号。 */
 const fixtureSegmentIndex = (offsetSeconds) => Math.floor(offsetSeconds / 2)
 /** fixtureSessionOrigin は fixture の offset のセッションが実際に始まる録画軸の秒。 */
@@ -1132,12 +1132,10 @@ async function settleRecordingPosition(expectedSeconds, timeoutMs = 7000) {
     if (
       state.readyState >= HTMLMediaElementHaveMetadata &&
       !state.seeking &&
-      // 真の録画軸は fixture の起点 + currentTime。プレイヤーは追っかけの起点を offset とみなすので、
-      // 期待値から既知の誤差（offset - fixture の起点。奇数の offset で 1 秒）を引いて比べる。
-      Math.abs(
-        fixtureSessionOrigin(lastChasePlaylistOffset) + state.currentTime -
-          (expectedSeconds - (lastChasePlaylistOffset - fixtureSessionOrigin(lastChasePlaylistOffset))),
-      ) < 0.25
+      // プレイヤーの録画軸（offset + currentTime）で比べる。追っかけはプレイヤーが起点を offset とみなし、
+      // fixture は奇数の offset で 1 秒手前から配るので、fixture の起点で測っても既知の誤差が打ち消し合い、
+      // 同じ式になる（この fixture では奇数 offset の 1 秒のずれは検出できない）。
+      Math.abs(lastChasePlaylistOffset + state.currentTime - expectedSeconds) < 0.25
     ) return { ok: true, state }
     await page.waitForTimeout(100)
     state = await videoState()
