@@ -72,6 +72,7 @@ import { useDisplayedFrameSeconds } from '@/lib/use-displayed-frame'
 import { usePlayerFrame } from '@/lib/use-player-frame'
 import { cn } from '@/lib/utils'
 import { seekTilePlacement } from '@/lib/seek-tiles'
+import type { RecordingTimeline } from '@/lib/recording-timeline'
 
 /** HlsLike は hls.js の型を静的 import せずに使うための最小限の形。 */
 type HlsLike = {
@@ -227,12 +228,7 @@ type LivePlayerProps = {
   onResetChapters?: () => Promise<unknown> | void
   chapterSavePending?: boolean
   /** 番組開始と録画ファイル先頭を基準に追っかけバーを描くための時間情報。 */
-  chaseTimeline?: {
-    programmeStartMs: number
-    recordingFileStartAtMs: number
-    plannedSeconds: number
-    recordedSeconds: number
-  }
+  chaseTimeline?: Pick<RecordingTimeline, 'chaseHeadOffsetSeconds' | 'plannedSeconds' | 'recordedSeconds'>
   /**
    * chase playlist / live playlist の画質（`live.profiles` の名前）。省略時は
    * streamer の先頭プロファイル（既定）。
@@ -545,11 +541,7 @@ export function LivePlayer({
     recordingDurationMs !== undefined && Number.isFinite(recordingDurationMs) && recordingDurationMs > 0
       ? recordingDurationMs / 1000
       : 0
-  const chaseHeadOffsetSeconds = chaseTimeline &&
-    Number.isFinite(chaseTimeline.programmeStartMs) &&
-    Number.isFinite(chaseTimeline.recordingFileStartAtMs)
-    ? (chaseTimeline.recordingFileStartAtMs - chaseTimeline.programmeStartMs) / 1000
-    : 0
+  const chaseHeadOffsetSeconds = chaseTimeline?.chaseHeadOffsetSeconds ?? 0
   const chaseRecordedEndSeconds = chaseHeadOffsetSeconds + (chaseTimeline?.recordedSeconds ?? 0)
   const chasePlannedEndSeconds = chaseTimeline?.plannedSeconds ?? 0
   const chaseTimelineMaxSeconds = Math.max(1, chasePlannedEndSeconds, chaseRecordedEndSeconds)

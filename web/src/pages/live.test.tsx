@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { LiveProfileSummary, ProgramListItem, Reservation, Service, Tuner } from '@/api/generated'
+import type { LiveProfileSummary, ProgramListItem, Recording, Reservation, Service, Tuner } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { liveStallTimeoutMs } from '@/lib/live'
 import { routeTree } from '@/routes'
@@ -39,6 +39,28 @@ function program(overrides: Partial<ProgramListItem>): ProgramListItem {
     description: '',
     genres: [],
     isFree: true,
+    ...overrides,
+  }
+}
+
+function recording(overrides: Partial<Recording> = {}): Recording {
+  return {
+    id: 501,
+    site: 'default',
+    source: 'manual',
+    serviceName: 'チャンネル A',
+    channelType: 'GR',
+    channel: '1',
+    networkId: 1,
+    serviceId: 10,
+    eventId: 1,
+    title: '録画中の番組',
+    startAt: '2026-10-02T10:00:00.000Z',
+    durationMs: 60 * 60_000,
+    status: 'recording',
+    keepOriginal: 'always',
+    cmDetection: { state: 'disabled' },
+    createdAt: '2026-10-02T10:00:00.000Z',
     ...overrides,
   }
 }
@@ -169,6 +191,7 @@ function stubFetch(options: {
    * 「一覧が無いデプロイ」の挙動（設定メニューに画質項目を出さない）をそのまま見る。
    */
   liveProfiles?: LiveProfileSummary[]
+  recording?: Recording
   /** `GET /api/sites/{site}/tuners`。site ごとに指定しない限り空配列（issue #474）。 */
   tunersBySite?: Record<string, Tuner[]>
   tunerStatusBySite?: Record<string, number>
@@ -197,6 +220,7 @@ function stubFetch(options: {
     reservations = [],
     sites = ['default'],
     liveProfiles = [],
+    recording: recordingResponse,
     tunersBySite = {},
     tunerStatusBySite = {},
     pendingTunerSites = [],
@@ -215,6 +239,14 @@ function stubFetch(options: {
         })
       }
       return Promise.resolve(new Response(body, { status: 200 }))
+    }
+
+    const recordingMatch = /^\/api\/recordings\/(\d+)$/.exec(url.pathname)
+    if (recordingMatch && recordingResponse?.id === Number(recordingMatch[1])) {
+      return Promise.resolve(new Response(JSON.stringify(recordingResponse), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
     }
 
     if (url.pathname === '/api/reservations') {
@@ -264,6 +296,9 @@ function stubFetch(options: {
       }
       return Promise.reject(new TypeError('Failed to fetch'))
     }
+    if (url.pathname.includes('/chase/playlist.m3u8')) {
+      return Promise.resolve(new Response('#EXTM3U\n#EXTINF:2,\nsegments/0.ts', { status: 200 }))
+    }
 
     if (url.pathname === '/api/breakers') {
       return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }))
@@ -311,6 +346,11 @@ function playlistFetchCallCount(): number {
 function playlistFetchURLs(): string[] {
   const calls = (globalThis.fetch as unknown as { mock: { calls: [string][] } }).mock.calls
   return calls.map(([url]) => String(url)).filter((url) => url.includes('/live/playlist.m3u8'))
+}
+
+function chasePlaylistURLs(): string[] {
+  const calls = (globalThis.fetch as unknown as { mock: { calls: [string][] } }).mock.calls
+  return calls.map(([url]) => String(url)).filter((url) => url.includes('/chase/') && url.includes('playlist.m3u8'))
 }
 
 /**
@@ -1076,6 +1116,49 @@ describe('LivePage', () => {
       expect(screen.queryByText(/接続できません/)).not.toBeInTheDocument()
     },
   )
+})
+
+describe('LivePage / 録画時間軸', () => {
+  it('番組軸の位置を録画先頭からの chase offset に変換する', async () => {
+    const user = userEvent.setup()
+    const now = Date.now()
+    const startAt = new Date(now - 30 * 60_000).toISOString()
+    const endAt = new Date(now + 30 * 60_000).toISOString()
+    const startedAt = new Date(Date.parse(startAt) + 5 * 60_000).toISOString()
+    const airing = program({
+      serviceId: 10,
+      startAt,
+      endAt,
+      durationMs: 60 * 60_000,
+      recordingId: 501,
+    })
+    stubFetch({
+      services: [service({ serviceId: 10, name: 'チャンネル A' })],
+      programsByServiceId: { 10: [airing] },
+      // 録画時 snapshot は現行 EPG より古くても、ライブ側の軸は現行番組に合わせる。
+      recording: recording({
+        startAt: new Date(Date.parse(startAt) - 60_000).toISOString(),
+        durationMs: 61 * 60_000,
+        startedAt,
+      }),
+    })
+    renderLive('/live?service=100010')
+
+    await startLivePlayback(user)
+    await screen.findByText(/接続できません/)
+    const slider = await screen.findByRole('slider', { name: '番組の時間軸' })
+    await waitFor(() => expect(slider).toHaveAttribute('aria-disabled', 'false'))
+    Object.defineProperty(slider, 'getBoundingClientRect', {
+      value: () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 24, width: 600, height: 24, toJSON: () => ({}) }),
+    })
+
+    // 10 分の位置は、5 分遅く始まった録画では offset 300 秒に当たる。
+    fireEvent.pointerDown(slider, { pointerId: 1, pointerType: 'mouse', clientX: 100, clientY: 12 })
+    fireEvent.pointerUp(slider, { pointerId: 1, pointerType: 'mouse', clientX: 100, clientY: 12 })
+
+    await waitFor(() => expect(chasePlaylistURLs()).toHaveLength(1))
+    expect(chasePlaylistURLs()[0]).toContain('/chase/offset/300/playlist.m3u8')
+  })
 })
 
 describe('LivePage / 録画予約による中断予測（issue #235 M7-2）', () => {
