@@ -307,7 +307,9 @@ MP4 は製品の `BuildFFmpegArgs` と `config.example.yml` の h264 例で生�
 ネイティブ HLS の seek 条件を比較するため、offset 0 の HLS に追加 fixture を作る。
 `shortGOP` は GOP を 60 から 12 フレームへ短くし、音声先行は約 694 ms のままにする。
 `audioAligned` は GOP 60 のまま音声先行を約 11 ms にする。
-各変種の GOP と音声の先行量は ffprobe で検証する。
+各変種の GOP と音声の先行量は ffprobe で検証する。追加 fixture と raw seek 診断は通常実行では
+作らない。`E2E_TIMELINE_RAW_SEEK_DIAGNOSTICS=1` を付けたときだけ生成し、診断だけなら
+`E2E_TIMELINE_RAW_SEEK_ONLY=1` を使う。
 
 Chrome の hls.js と WebKit のネイティブ HLS の両方で、原本 HLS offset 0、シークで
 張り直した offset 10 秒、非カット MP4 を再生する。各目印の表示を画素で検出し、
@@ -320,7 +322,25 @@ Chrome の hls.js と WebKit のネイティブ HLS の両方で、原本 HLS of
 E2E_URL=http://localhost:4173 pnpm e2e:recording-playback-timeline
 E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:recording-playback-timeline
 E2E_URL=http://localhost:4173 E2E_BROWSER=webkit E2E_TIMELINE_EXPECTED_SHIFT_FRAMES=1 pnpm e2e:recording-playback-timeline
+E2E_URL=http://localhost:4173 E2E_BROWSER=webkit E2E_TIMELINE_RAW_SEEK_DIAGNOSTICS=1 pnpm e2e:recording-playback-timeline
+E2E_URL=http://localhost:4173 E2E_BROWSER=webkit E2E_TIMELINE_RAW_SEEK_ONLY=1 pnpm e2e:recording-playback-timeline
 ```
+
+実録画を診断するときは `E2E_TIMELINE_REAL_HLS_URL` に localhost の HLS playlist を指定する。
+非 loopback URL はスクリプトが拒否する。GR は namespace `rokuban` の streamer を使う。
+`kubectl port-forward --address 127.0.0.1` で接続する。
+BS はローカル録画から `/private/tmp` に短い HLS fixture を作る。配信先は `127.0.0.1` に限定する。
+スクリプトは連続再生フレームとの比較に
+一時的な画素 fingerprint と時刻だけを使い、画像・動画を保存しない。
+
+```sh
+E2E_URL=http://127.0.0.1:4173 E2E_BROWSER=webkit \
+  E2E_TIMELINE_RAW_SEEK_ONLY=1 \
+  E2E_TIMELINE_REAL_HLS_URL=http://127.0.0.1:<localhost-port>/playlist.m3u8 \
+  pnpm e2e:recording-playback-timeline
+```
+
+`E2E_TIMELINE_REAL_HLS_BOUNDARY_SECONDS` で境界を選べる。既定は 1 秒である。
 
 この判定は ffmpeg / ffprobe / Go と Chromium / WebKit を使うため、これらが必要である。
 非カット MP4 基準の測定（HLS offset 0 / 10、括弧内は参考の原本 PTS 基準）では、
@@ -346,22 +366,27 @@ WebKit の HLS は 0.00ms / +23.37ms（-10.02 / +13.34）だった。
 
 ### WebKit のネイティブ HLS 測定
 
-2026-10-05 に Playwright WebKit で測定した。基準 fixture は GOP 60、音声先行約 694 ms である。
-`shortGOP` は GOP 12、音声先行は約 694 ms である。
-どちらも frame 45 への遠距離 seek（0.5 秒）と近距離 seek（0.05 秒）で目印を検出した。
-`+0.0001` 秒の追加 seek 後も同じ目印だった。
-この環境では、報告にある raw seek の失敗を基準 fixture で再現できなかった。
+2026-10-05 に Playwright WebKit で、編集モード・一時停止・同じプレイヤー配置で raw seek と製品の
+境界選択を比較した。診断は素の `currentTime` 代入の後、目印画素を 500 ms 後に読み、微小 seek は
+1 回 / 2 回の両方を測る。
 
-`audioAligned`（GOP 60、音声先行約 11 ms）は、変種を順次再生して frame 45 の時刻を校正した後、
-そのフレーム中央への遠距離・近距離 seek を測る。各変種の目印時刻を使うことで同じ映像フレームを比べる。
+| HLS 入力 | raw 遠距離 seek | raw 近距離 seek | 遠距離後 +0.0001 秒 | 製品の境界選択 |
+| --- | --- | --- | --- | --- |
+| GOP 60 / 音声約 694 ms 先行 fixture | frame 45 を検出 | 目印なし | 1 回で検出 | 対象 frame を表示 |
+| GOP 12 / 音声約 694 ms 先行 fixture | frame 45 を検出 | 目印なし | 1 回で検出 | 対象 frame を表示 |
+| GOP 60 / 音声約 11 ms 先行 fixture | 目印なし | frame 45 を検出 | 1 回で検出 | 対象 frame を表示 |
+| BS 実録画から作った localhost HLS | 目印なし | 目印なし | 1 回で検出 | 最初に表示する frame が一致 |
+| rokuban namespace の GR 実録画 HLS | 目印なし | 目印なし | 1 回で検出 | 最初に表示する frame が一致 |
 
-製品の境界選択では、基準 fixture の遠距離 seek 後に1回だけ微小 seek しても古い画素が残り、
-同じフレーム内でもう1回 `+0.0001` 秒動かすと目印を検出した。
-このため、一時停止中のネイティブ HLS で seekable 範囲内の境界を選ぶ場合に限り、
-seeked 後に同じフレーム内の微小 seek を2回行う。
-境界の遠距離選択、「境界まで」、±1フレーム調整は表示中フレームで判定する。
+実録画の raw seek は連続再生で得た対象 frame の fingerprint と一致せず、微小 seek 後は一致した。
+製品経路も最初に再表示する frame が基準と一致した。補正中は `<video>` に黒い filter を掛ける。
+要素を `visibility:hidden` にすると WebKit は更新後の画素を出さなかった。
+そのため映像は描画したまま、一時的に黒い filter を掛ける。
+`requestVideoFrameCallback` が目標位置の frame を確認すると、filter を戻す。
 
-GR / BS の実録画ファイルはこの環境に無く、実録画での再現性はまだ測っていない。
+`capturePresentedFrameAt` は seeked 後の任意の「いつか正しい frame」ではなく、製品が filter を戻して
+最初に表示される frame を捕まえる。±1 フレーム操作は seeked 後の次の表示 frame を判定する。
+raw 診断と追加 fixture は通常の全シナリオ E2E では動かない。
 
 **変異で落ちることを確認済み**（Chrome と WebKit の両方）。
 

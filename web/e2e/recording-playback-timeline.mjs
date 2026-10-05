@@ -41,6 +41,17 @@ const sessionOrigin = (offset) => (offset > 0 ? Math.floor(offset * 30_000 / 1_0
 const GRID_TOLERANCE_SECONDS = 0.001
 const INITIAL_HLS_SEGMENTS = 5
 const CHAPTER_SEEK_ONLY = process.env.E2E_TIMELINE_CHAPTER_SEEK_ONLY === '1'
+const BOUNDARY_SEEK_ONLY = process.env.E2E_TIMELINE_BOUNDARY_SEEK_ONLY === '1'
+const RAW_SEEK_ONLY = process.env.E2E_TIMELINE_RAW_SEEK_ONLY === '1'
+const RAW_SEEK_DIAGNOSTICS = RAW_SEEK_ONLY || process.env.E2E_TIMELINE_RAW_SEEK_DIAGNOSTICS === '1'
+const REAL_HLS_URL = process.env.E2E_TIMELINE_REAL_HLS_URL ?? ''
+const REAL_HLS_BOUNDARY_MS = Math.round((Number(process.env.E2E_TIMELINE_REAL_HLS_BOUNDARY_SECONDS ?? '1') || 1) * 1000)
+if (REAL_HLS_URL) {
+  const realHlsAddress = new URL(REAL_HLS_URL)
+  if (realHlsAddress.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(realHlsAddress.hostname)) {
+    throw new Error('実録画 HLS の診断 URL は localhost のみ指定できます')
+  }
+}
 const EXPECTED_SHIFT_FRAMES = Number.parseInt(process.env.E2E_TIMELINE_EXPECTED_SHIFT_FRAMES ?? '0', 10) || 0
 const ng = []
 const chapterPuts = []
@@ -91,7 +102,11 @@ try {
   execFileSync('go', ['test', './internal/worker', '-run', '^TestWritePlaybackTimelineFixture$', '-count=1'], {
     cwd: repoRoot,
     stdio: 'inherit',
-    env: { ...process.env, ROKUBAN_PLAYBACK_TIMELINE_FIXTURE_DIR: fixtureDir },
+    env: {
+      ...process.env,
+      ROKUBAN_PLAYBACK_TIMELINE_FIXTURE_DIR: fixtureDir,
+      ...(RAW_SEEK_DIAGNOSTICS && !REAL_HLS_URL ? { ROKUBAN_PLAYBACK_TIMELINE_SEEK_VARIANTS: '1' } : {}),
+    },
   })
 } catch (err) {
   ng.push(`Go の製品ビルダーから playback fixture を生成できない: ${err.message}`)
@@ -225,7 +240,21 @@ await context.addInitScript((markerPixels) => {
       return pixel[0] > 210 && pixel[1] > 210 && pixel[2] > 210
     })
   }
+  window.__videoFrameFingerprint = () => {
+    const video = document.querySelector('video')
+    const canvas = document.createElement('canvas')
+    canvas.width = 64
+    canvas.height = 36
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+    if (!video || !ctx) return null
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data
+    let hash = 2_166_136_261
+    for (const pixel of pixels) hash = Math.imul(hash ^ pixel, 16_777_619)
+    return (hash >>> 0).toString(16).padStart(8, '0')
+  }
   window.__timelineMarks = []
+  window.__timelineFrameSamples = []
   window.__timelineCaptureError = null
   window.__timelineCapture = null
   window.__startTimelineCapture = (sessionOffsetSeconds) => {
@@ -243,17 +272,25 @@ await context.addInitScript((markerPixels) => {
     canvas.height = 36
     const ctx = canvas.getContext('2d', { willReadFrequently: true })
     const capture = { video, callbackId: undefined }
+    let markerCaptured = false
+    let framesAfterMarker = 0
     window.__timelineCaptureComplete = false
+    window.__timelinePostMarkerComplete = false
     window.__timelineCaptureError = null
     const onFrame = (_now, metadata) => {
       try {
         if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0 && ctx) {
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+          window.__timelineFrameSamples.push({
+            mediaTime: metadata.mediaTime,
+            fingerprint: window.__videoFrameFingerprint(),
+          })
           const markerSlot = markerPixels.findIndex(([x, y]) => {
             const pixel = ctx.getImageData(x, y, 1, 1).data
             return pixel[0] > 210 && pixel[1] > 210 && pixel[2] > 210
           })
-          if (markerSlot >= 0) {
+          if (markerSlot >= 0 && !markerCaptured) {
+            markerCaptured = true
             window.__timelineMarks.push({
               markerSlot,
               sessionOffsetSeconds,
@@ -261,13 +298,18 @@ await context.addInitScript((markerPixels) => {
               presentedFrames: metadata.presentedFrames,
             })
             window.__timelineCaptureComplete = true
+          } else if (markerCaptured) {
+            framesAfterMarker += 1
+          }
+          if (markerCaptured && framesAfterMarker >= 2) {
+            window.__timelinePostMarkerComplete = true
             video.pause()
           }
         }
       } catch (err) {
         window.__timelineCaptureError = String(err)
       }
-      if (window.__timelineCapture === capture && !window.__timelineCaptureComplete && !window.__timelineCaptureError) {
+      if (window.__timelineCapture === capture && !window.__timelinePostMarkerComplete && !window.__timelineCaptureError) {
         capture.callbackId = video.requestVideoFrameCallback(onFrame)
       }
     }
@@ -283,10 +325,10 @@ await context.addInitScript((markerPixels) => {
   [16, 27], [32, 27], [48, 27],
 ])
 
-async function captureExpectedMarkers(page, sessionOffsetSeconds, expectedMarkers, label) {
+async function captureExpectedMarkers(page, sessionOriginSeconds, expectedMarkers, label) {
   const observed = []
   for (const marker of expectedMarkers) {
-    const localTime = marker.expectedSeconds - sessionOrigin(sessionOffsetSeconds)
+    const localTime = marker.expectedSeconds - sessionOriginSeconds
     const seekTime = Math.max(0, localTime - 0.25)
     try {
       await page.waitForFunction((target) => {
@@ -330,10 +372,11 @@ async function captureExpectedMarkers(page, sessionOffsetSeconds, expectedMarker
         })
       }, seekTime)
       const previousCount = await page.evaluate(() => window.__timelineMarks.length)
-      await page.evaluate((offset) => window.__startTimelineCapture(offset), sessionOffsetSeconds)
+      await page.evaluate((offset) => window.__startTimelineCapture(offset), sessionOriginSeconds)
       await page.waitForFunction((count) => (
         window.__timelineMarks.length > count || window.__timelineCaptureError !== null
       ), previousCount, { timeout: 5000 })
+      await page.waitForFunction(() => window.__timelinePostMarkerComplete, undefined, { timeout: 3000 })
       const capture = await page.evaluate((index) => window.__timelineMarks[index], previousCount)
       if (capture) {
         const frame = manifest.markerFrames[capture.markerSlot]
@@ -352,38 +395,108 @@ async function captureExpectedMarkers(page, sessionOffsetSeconds, expectedMarker
 }
 
 async function capturePresentedFrameAt(page, action, targetTime) {
-  await page.locator('video').evaluate((video, expectedTime) => {
+  await page.locator('video').evaluate((video) => {
     window.__nextPresentedFrame = new Promise((resolve) => {
-      const samples = []
-      let timer
-      const done = (matched) => {
-        clearTimeout(timer)
-        resolve({
-          matched,
-          mediaTime: samples.at(-1) ?? null,
-          samples,
-          currentTime: video.currentTime,
-          paused: video.paused,
-          seeking: video.seeking,
-          markerSlot: window.__displayedMarkerSlot(),
-        })
-      }
       if (typeof video.requestVideoFrameCallback !== 'function') {
-        done(false)
+        resolve(null)
         return
       }
-      timer = setTimeout(() => done(false), 5000)
-      const waitForTargetFrame = () => video.requestVideoFrameCallback((_now, metadata) => {
-        samples.push(metadata.mediaTime)
-        if (Math.abs(metadata.mediaTime - expectedTime) <= 0.001) done(true)
-        else waitForTargetFrame()
+      let done = false
+      let callbackId
+      let wasMasked = false
+      let observer
+      const isMasked = () => {
+        const style = getComputedStyle(video)
+        return style.visibility === 'hidden' || style.filter === 'brightness(0)'
+      }
+      const finish = (frame) => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        if (callbackId !== undefined) video.cancelVideoFrameCallback?.(callbackId)
+        observer?.disconnect()
+        window.__armPresentedFramePaintCapture = undefined
+        resolve(frame)
+      }
+      const frameSeconds = 1001 / 30000
+      const frameStartAtCurrentTime = () => Math.round(video.currentTime / frameSeconds - 0.5) * frameSeconds
+      const snapshot = (mediaTime) => ({
+        mediaTime,
+        currentTime: video.currentTime,
+        paused: video.paused,
+        seeking: video.seeking,
+        markerSlot: window.__displayedMarkerSlot(),
+        fingerprint: window.__videoFrameFingerprint(),
       })
-      // Register before the click, but start sampling only after this seek completes.
-      video.addEventListener('seeked', waitForTargetFrame, { once: true })
+      let paintCaptureArmed = false
+      const captureAfterPaint = () => {
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          if (done || !paintCaptureArmed) return
+          if (isMasked() || video.seeking) return
+          try {
+            finish(snapshot(frameStartAtCurrentTime()))
+          } catch {
+            finish(null)
+          }
+        }))
+      }
+      const timer = setTimeout(() => finish(null), 5000)
+      window.__armPresentedFramePaintCapture = () => {
+        paintCaptureArmed = true
+        captureAfterPaint()
+      }
+      observer = new MutationObserver(() => {
+        const masked = isMasked()
+        if (masked) wasMasked = true
+        else if (wasMasked && !video.seeking) {
+          requestAnimationFrame(() => {
+            if (!isMasked() && !video.seeking) {
+              try {
+                // Boundary seeks target the frame center; report that frame's start PTS.
+                finish(snapshot(frameStartAtCurrentTime()))
+              } catch {
+                finish(null)
+              }
+            }
+          })
+        }
+      })
+      observer.observe(video, { attributes: true, attributeFilter: ['style'] })
+      const captureVisibleFrame = (_now, metadata) => {
+        callbackId = undefined
+        // Boundary selection applies a black filter while WebKit performs corrective seeks.
+        // Ignore those callbacks and inspect the first frame after the product removes it.
+        if (isMasked() || video.seeking) {
+          callbackId = video.requestVideoFrameCallback(captureVisibleFrame)
+          return
+        }
+        try {
+          finish(snapshot(metadata.mediaTime))
+        } catch {
+          finish(null)
+        }
+      }
+      video.addEventListener('seeked', () => {
+        callbackId = video.requestVideoFrameCallback(captureVisibleFrame)
+        // The pre-seek animation frame can arrive while the video is still seeking.
+        // Re-arm the paint fallback from seeked for paused browsers that do not emit rVFC.
+        if (paintCaptureArmed) captureAfterPaint()
+      }, { once: true })
     })
-  }, targetTime)
+  })
   await action()
-  return page.evaluate(() => window.__nextPresentedFrame)
+  await page.evaluate(() => {
+    // rVFC is preferred. The paint-level fallback captures the first settled paint
+    // after seeked when a paused browser does not deliver another video-frame callback.
+    // Its pixel fingerprint is checked against sequentially presented fixture frames.
+    window.__armPresentedFramePaintCapture?.()
+  })
+  const frame = await page.evaluate(() => window.__nextPresentedFrame)
+  return {
+    ...frame,
+    matched: frame !== null && Number.isFinite(targetTime) &&
+      Math.abs(frame.mediaTime - targetTime) <= 1 / (2 * SOURCE_FRAME_RATE) + GRID_TOLERANCE_SECONDS,
+  }
 }
 
 async function seekThroughChapterCards(page) {
@@ -545,8 +658,16 @@ async function exerciseBoundaryControls(page, label, picks, offset, preroll = 0.
         window.__boundarySelectSeeked = true
       }, { once: true })
     })
-    if (await clickBoundary(firstMarker)) {
-      const center = toSession(encodedTimes[firstMarker.frame] + T / 2)
+    const center = toSession(encodedTimes[firstMarker.frame] + T / 2)
+    const selectedPresented = await capturePresentedFrameAt(
+      page,
+      () => clickBoundary(firstMarker),
+      center,
+    )
+    if (selectedPresented?.markerSlot !== firstMarker.markerSlot) {
+      ng.push(`${label}: 遠距離境界選択後の最初の表示フレームが frame ${firstMarker.frame} ではない (${JSON.stringify(selectedPresented)})`)
+    }
+    if (selectedPresented) {
       const selectedSettled = await page.waitForFunction(([target, tolerance]) => {
         const el = document.querySelector('video')
         return el && el.paused && !el.seeking && Math.abs(el.currentTime - target) < tolerance
@@ -557,7 +678,7 @@ async function exerciseBoundaryControls(page, label, picks, offset, preroll = 0.
         const el = document.querySelector('video')
         return { slot: window.__displayedMarkerSlot(), currentTime: el?.currentTime, paused: el?.paused, seeking: el?.seeking }
       })
-      log(`  遠距離から境界を選択 (0.5s 手前): settled=${selectedSettled}/${selectSeeked}, slot=${selectedState.slot}, t=${selectedState.currentTime?.toFixed(6)}, paused=${selectedState.paused}, seeking=${selectedState.seeking}`)
+      log(`  遠距離から境界を選択 (0.5s 手前): firstFrame=${JSON.stringify(selectedPresented)}, settled=${selectedSettled}/${selectSeeked}, slot=${selectedState.slot}, t=${selectedState.currentTime?.toFixed(6)}, paused=${selectedState.paused}, seeking=${selectedState.seeking}`)
       if (selectedState.slot !== firstMarker.markerSlot) {
         ng.push(`${label}: 0.5秒手前から境界を選んでも frame ${firstMarker.frame} が表示されない (${JSON.stringify(selectedState)})`)
       }
@@ -610,13 +731,28 @@ async function exerciseBoundaryControls(page, label, picks, offset, preroll = 0.
       await settledAtCenter(index).catch((err) => ng.push(`${label}: ${what} (currentTime が frame ${index} の中央でない: ${err.message})`))
       return
     }
+    const expectedTime = frameTime(index) - offset
     const presented = await capturePresentedFrameAt(
       page,
       () => button.click(),
-      frameTime(index) - sessionOrigin(offset),
+      expectedTime,
     )
-    if (!presented.matched || !Number.isFinite(frameTime(index)) || Math.abs(presented.mediaTime + sessionOrigin(offset) - frameTime(index)) > GRID_TOLERANCE_SECONDS) {
-      ng.push(`${label}: ${what} (frame=${JSON.stringify(presented)}, want=${frameTime(index)}, index=${index})`)
+    const reference = await page.evaluate((target) => {
+      const frames = window.__timelineFrameSamples ?? []
+      return frames.reduce((closest, frame) => (
+        closest === null || Math.abs(frame.mediaTime - target) < Math.abs(closest.mediaTime - target) ? frame : closest
+      ), null)
+    }, expectedTime)
+    const referenceMatches = reference !== null &&
+      Math.abs(reference.mediaTime - expectedTime) <= GRID_TOLERANCE_SECONDS &&
+      presented.fingerprint === reference.fingerprint
+    if (
+      !presented.matched ||
+      !Number.isFinite(frameTime(index)) ||
+      Math.abs(presented.mediaTime + offset - frameTime(index)) > GRID_TOLERANCE_SECONDS ||
+      !referenceMatches
+    ) {
+      ng.push(`${label}: ${what} (frame=${JSON.stringify(presented)}, reference=${JSON.stringify(reference)}, want=${frameTime(index)}, index=${index})`)
     }
   }
   await expectPresented(
@@ -800,7 +936,12 @@ async function alignBoundariesToPausedFrames(page, label = '非カット MP4', f
     }
   }
   const putCountBefore = chapterPuts.length
-  await page.getByRole('button', { name: '保存' }).click()
+  const saveButton = page.getByRole('button', { name: '保存' })
+  if (!await saveButton.isEnabled()) {
+    ng.push(`${label} 現在位置に合わせる: 保存できる境界変更が無い`)
+    return
+  }
+  await saveButton.click()
   await page.waitForFunction(() => document.querySelector('[data-testid="chapter-span-row"]') === null, undefined, { timeout: 5000 }).catch(() => {})
   if (chapterPuts.length !== putCountBefore + 1) {
     ng.push(`${label} 現在位置に合わせる: 保存の PUT が 1 回ではない (${chapterPuts.length - putCountBefore})`)
@@ -833,14 +974,16 @@ async function timelineHandler({ path: requestPath, url, json, route }) {
     return json({ version: 'timeline-v2', detectionPending: false, source: 'user', spans: body.spans })
   }
   if (requestPath === `/api/recordings/${RECORDING_ID}/chapters`) {
-    const spans = activeRecording.encodedAssets.length > 0 || chaptersForHls
-      ? markerTimes.map((marker, index) => ({
+    const spans = REAL_HLS_URL && chaptersForHls
+      ? [{ startMs: REAL_HLS_BOUNDARY_MS, endMs: REAL_HLS_BOUNDARY_MS + 1000, label: '検証境界', cut: false }]
+      : activeRecording.encodedAssets.length > 0 || chaptersForHls
+        ? markerTimes.map((marker, index) => ({
         startMs: Math.round(marker.expectedSeconds * 1000),
         endMs: Math.round((marker.expectedSeconds + 1 / SOURCE_FRAME_RATE) * 1000),
         label: `目印 ${index + 1}`,
         cut: false,
-      }))
-      : []
+        }))
+        : []
     return json({ version: 'timeline-v1', detectionPending: false, source: 'auto', spans })
   }
   if (requestPath.startsWith(`/api/recordings/${RECORDING_ID}/`) && method !== 'GET') {
@@ -856,6 +999,14 @@ async function timelineHandler({ path: requestPath, url, json, route }) {
     const offset = offsetMatch ? Number(offsetMatch[1]) : 0
     const resource = offsetMatch ? relative.slice(offsetMatch[0].length) : relative
     if (resource === 'leave') return route.fulfill({ status: 204 })
+    if (REAL_HLS_URL) {
+      const remoteURL = resource === 'playlist.m3u8'
+        ? new URL(REAL_HLS_URL)
+        : new URL(resource, REAL_HLS_URL)
+      remoteURL.searchParams.delete('profile')
+      const response = await route.fetch({ url: remoteURL.href })
+      return route.fulfill({ response })
+    }
     const manifestPath = offset === 0
       ? activeHlsVariant === 'baseline'
         ? manifest.hls.offset0
@@ -927,6 +1078,7 @@ async function timelineHandler({ path: requestPath, url, json, route }) {
 }
 
 async function runRawSeekDiagnostics() {
+  if (REAL_HLS_URL) return runRealRecordingSeekDiagnostics()
   const marker = markerTimes.find((item) => item.frame === 45)
   const variants = [
     ['baseline', 'GOP 60 / 音声約 694ms 先行'],
@@ -934,7 +1086,8 @@ async function runRawSeekDiagnostics() {
     ['audioAligned', 'GOP 60 / 音声を映像へ整列'],
   ]
 
-  log(`\n=== ${engine} 原本 HLS の素の currentTime seek 診断 (frame ${marker.frame}; 変種ごとに連続再生で時刻を校正) ===`)
+  chaptersForHls = true
+  log(`\n=== ${engine} 原本 HLS の素の currentTime seek 診断 (編集モード、frame ${marker.frame}; 変種ごとに連続再生で時刻を校正) ===`)
   for (const [variant, label] of variants) {
     if (variant !== 'baseline' && !manifest.hlsVariants[variant]) {
       ng.push(`raw seek 診断用 fixture ${variant} がない`)
@@ -950,6 +1103,10 @@ async function runRawSeekDiagnostics() {
       const video = document.querySelector('video')
       return video?.videoWidth > 0 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
     }, undefined, { timeout: 15000 })
+    await page.getByTestId('recording-player-shell').hover()
+    await page.getByRole('button', { name: '再生設定' }).click()
+    await page.getByRole('menuitem', { name: 'チャプターを直す' }).click()
+    await page.waitForSelector('[data-testid="chapter-edit-layout"]', { timeout: 5000 })
 
     await page.evaluate(() => {
       window.__timelineMarks.length = 0
@@ -966,7 +1123,7 @@ async function runRawSeekDiagnostics() {
     }
     const target = calibration.mediaTime + 1 / (2 * SOURCE_FRAME_RATE)
 
-    const measure = async (from, nudge = false) => page.locator('video').evaluate(async (video, input) => {
+    const measure = async (from, nudgeCount = 0) => page.locator('video').evaluate(async (video, input) => {
       const seek = (seconds, timeoutMs = 5000) => new Promise((resolve) => {
         const timeout = setTimeout(() => resolve(false), timeoutMs)
         video.addEventListener('seeked', () => {
@@ -985,27 +1142,31 @@ async function runRawSeekDiagnostics() {
         paused: video.paused,
         seeking: video.seeking,
       }
-      let afterNudge = null
-      if (input.nudge) {
+      const afterNudges = []
+      for (let index = 0; index < input.nudgeCount; index += 1) {
         const nudgeSeeked = await seek(video.currentTime + 0.0001, 1000)
         await new Promise((resolve) => setTimeout(resolve, 500))
-        afterNudge = {
+        afterNudges.push({
           seeked: nudgeSeeked,
           slot: window.__displayedMarkerSlot(),
           currentTime: video.currentTime,
           paused: video.paused,
           seeking: video.seeking,
-        }
+        })
       }
-      return { beforeSeeked, seeked, afterSeek, afterNudge }
-    }, { from, target, nudge })
+      return { beforeSeeked, seeked, afterSeek, afterNudges }
+    }, { from, target, nudgeCount })
 
     const far = await measure(target - 0.5)
     const near = await measure(target - 0.05)
-    const nudged = await measure(target - 0.5, true)
+    const oneNudge = await measure(target - 0.5, 1)
+    const twoNudges = await measure(target - 0.5, 2)
     const format = (sample) => `slot=${sample.slot}, t=${sample.currentTime.toFixed(6)}, paused=${sample.paused}, seeking=${sample.seeking}`
-    log(`  ${label}: frame=${marker.frame} calibrated=${calibration.mediaTime.toFixed(6)}s; 遠距離(0.5s) seeked=${far.seeked}/${far.beforeSeeked} ${format(far.afterSeek)}; 近距離(0.05s) seeked=${near.seeked}/${near.beforeSeeked} ${format(near.afterSeek)}; 遠距離後 +0.0001 ${format(nudged.afterSeek)} → seeked=${nudged.afterNudge?.seeked} ${nudged.afterNudge ? format(nudged.afterNudge) : ''}`)
-    if (!far.beforeSeeked || !far.seeked || !near.beforeSeeked || !near.seeked || !nudged.beforeSeeked || !nudged.seeked) {
+    const nudgesSummary = (sample) => sample.afterNudges.map((nudge, index) => `#${index + 1} seeked=${nudge.seeked} ${format(nudge)}`).join('; ')
+    log(`  ${label}: frame=${marker.frame} calibrated=${calibration.mediaTime.toFixed(6)}s; 遠距離(0.5s) seeked=${far.seeked}/${far.beforeSeeked} ${format(far.afterSeek)}; 近距離(0.05s) seeked=${near.seeked}/${near.beforeSeeked} ${format(near.afterSeek)}; 遠距離 + 1 微小 seek: ${nudgesSummary(oneNudge)}; 遠距離 + 2 微小 seek: ${nudgesSummary(twoNudges)}`)
+    if (!far.beforeSeeked || !far.seeked || !near.beforeSeeked || !near.seeked ||
+      !oneNudge.beforeSeeked || !oneNudge.seeked || oneNudge.afterNudges.some((item) => !item.seeked) ||
+      !twoNudges.beforeSeeked || !twoNudges.seeked || twoNudges.afterNudges.some((item) => !item.seeked)) {
       ng.push(`${label}: 素の seek 診断で seeked イベントを観測できない`)
     }
     await page.close()
@@ -1013,7 +1174,210 @@ async function runRawSeekDiagnostics() {
   activeHlsVariant = 'baseline'
 }
 
-function compareMarkers(label, observed, expected, sessionOffset) {
+async function runRealRecordingSeekDiagnostics() {
+  const boundaryFrame = Math.round(REAL_HLS_BOUNDARY_MS / (1001 / 30))
+  const target = (boundaryFrame + 0.5) / SOURCE_FRAME_RATE
+  chaptersForHls = true
+  log(`\n=== ${engine} 実録画 HLS 診断 (編集モード、境界=${REAL_HLS_BOUNDARY_MS}ms / target=${target.toFixed(6)}s) ===`)
+  const page = await context.newPage()
+  await installApiStubs(page, timelineHandler)
+  await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
+  await page.getByTestId('recording-playback-start').click()
+  await page.locator('video').waitFor({ timeout: 15000 })
+  await page.waitForFunction(() => {
+    const video = document.querySelector('video')
+    return video?.videoWidth > 0 && video.seekable.length > 0 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+  }, undefined, { timeout: 30000 })
+  const initialMediaRange = await page.locator('video').evaluate((video) => ({
+    currentTime: video.currentTime,
+    seekable: Array.from({ length: video.seekable.length }, (_, index) => [video.seekable.start(index), video.seekable.end(index)]),
+  }))
+  if (!initialMediaRange.seekable.some(([start, end]) => start <= target && target <= end)) {
+    ng.push(`実録画の境界 target=${target.toFixed(6)}s が seekable 範囲にない (${JSON.stringify(initialMediaRange.seekable)})`)
+    await page.unrouteAll({ behavior: 'ignoreErrors' })
+    await page.close()
+    return
+  }
+  await page.getByTestId('recording-player-shell').hover()
+  await page.getByRole('button', { name: '再生設定' }).click()
+  await page.getByRole('menuitem', { name: 'チャプターを直す' }).click()
+  await page.waitForSelector('[data-testid="chapter-edit-layout"]', { timeout: 5000 })
+
+  const referenceFrames = await page.locator('video').evaluate(async (video, stopAt) => {
+    video.pause()
+    const start = video.seekable.length > 0 ? video.seekable.start(0) : 0
+    if (Math.abs(video.currentTime - start) > 0.01) {
+      await new Promise((resolve, reject) => {
+        const check = () => {
+          if (!video.seeking && Math.abs(video.currentTime - start) <= 0.05) {
+            clearTimeout(timer)
+            video.removeEventListener('seeked', check)
+            video.removeEventListener('timeupdate', check)
+            resolve()
+          }
+        }
+        const timer = setTimeout(() => {
+          video.removeEventListener('seeked', check)
+          video.removeEventListener('timeupdate', check)
+          reject(new Error(`seek to start ${start} timed out at ${video.currentTime}; ranges=${video.seekable.length}`))
+        }, 10_000)
+        video.addEventListener('seeked', check)
+        video.addEventListener('timeupdate', check)
+        video.currentTime = start
+        check()
+      })
+    }
+    video.muted = true
+    const frames = []
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`sequential playback did not reach ${stopAt}s`)), 30_000)
+      const capture = (_now, metadata) => {
+        frames.push({ mediaTime: metadata.mediaTime, fingerprint: window.__videoFrameFingerprint() })
+        if (metadata.mediaTime >= stopAt) {
+          clearTimeout(timer)
+          video.pause()
+          resolve(frames)
+        } else {
+          video.requestVideoFrameCallback(capture)
+        }
+      }
+      video.requestVideoFrameCallback(capture)
+      void video.play().catch((error) => {
+        clearTimeout(timer)
+        reject(error)
+      })
+    })
+  }, target + 0.5)
+  if (referenceFrames.length === 0) throw new Error('連続再生から基準フレームを取得できない')
+
+  const closestReference = (sample) => {
+    if (!sample || !Number.isFinite(sample.mediaTime)) return null
+    return referenceFrames.reduce((closest, frame) =>
+      Math.abs(frame.mediaTime - sample.mediaTime) < Math.abs(closest.mediaTime - sample.mediaTime) ? frame : closest,
+    )
+  }
+  const compareAt = (sample, expectedTime) => {
+    const reference = Number.isFinite(sample?.mediaTime)
+      ? closestReference(sample)
+      : referenceFrames.reduce((closest, frame) =>
+        Math.abs(frame.mediaTime - expectedTime) < Math.abs(closest.mediaTime - expectedTime) ? frame : closest,
+      )
+    return reference !== null && reference.fingerprint === sample?.fingerprint
+  }
+  const measureRaw = async (from, nudges = 0) => page.locator('video').evaluate(async (video, input) => {
+    const seek = (seconds) => new Promise((resolve, reject) => {
+      const before = video.currentTime
+      let seeked = false
+      const ranges = Array.from({ length: video.seekable.length }, (_, index) => [video.seekable.start(index), video.seekable.end(index)])
+      const timer = setTimeout(() => {
+        reject(new Error(`seek timed out from ${before} to ${seconds}; currentTime=${video.currentTime}, seeking=${video.seeking}, paused=${video.paused}, readyState=${video.readyState}, seeked=${seeked}, ranges=${JSON.stringify(ranges)}`))
+      }, 10_000)
+      const onSeeked = () => { seeked = true }
+      const captureAfterPaint = () => {
+        if (!video.seeking && Math.abs(video.currentTime - seconds) < 0.05) {
+          clearTimeout(timer)
+          video.removeEventListener('seeked', onSeeked)
+          resolve({ currentTime: video.currentTime, fingerprint: window.__videoFrameFingerprint(), seeked })
+          return
+        }
+        requestAnimationFrame(captureAfterPaint)
+      }
+      video.addEventListener('seeked', onSeeked)
+      video.pause()
+      requestAnimationFrame(() => requestAnimationFrame(captureAfterPaint))
+      video.currentTime = seconds
+    })
+    await seek(input.from)
+    const first = await seek(input.target)
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    const settled = {
+      currentTime: video.currentTime,
+      fingerprint: window.__videoFrameFingerprint(),
+      paused: video.paused,
+      seeking: video.seeking,
+    }
+    const nudged = []
+    for (let index = 0; index < input.nudges; index += 1) {
+      nudged.push(await seek(video.currentTime + 0.0001))
+    }
+    if (input.nudges > 0) await new Promise((resolve) => setTimeout(resolve, 500))
+    return {
+      first,
+      settled: input.nudges > 0
+        ? { currentTime: video.currentTime, fingerprint: window.__videoFrameFingerprint(), paused: video.paused, seeking: video.seeking }
+        : settled,
+      nudged,
+    }
+  }, { from, target, nudges })
+
+  const far = await measureRaw(target - 0.5)
+  const near = await measureRaw(target - 0.05)
+  const oneNudge = await measureRaw(target - 0.5, 1)
+  const twoNudges = await measureRaw(target - 0.5, 2)
+  const summary = (sample) => `first=${sample.first.currentTime.toFixed(6)}s/${compareAt(sample.first, target)}, settled=${sample.settled.currentTime.toFixed(6)}s/${compareAt(sample.settled, target)}, paused=${sample.settled.paused}, seeking=${sample.settled.seeking}`
+  const expectedFrame = referenceFrames.reduce((closest, frame) =>
+    Math.abs(frame.mediaTime - target) < Math.abs(closest.mediaTime - target) ? frame : closest,
+  )
+  log(`  連続再生で frame ${boundaryFrame} を ${referenceFrames.length} 枚取得`)
+  log(`  基準 hash=${expectedFrame.fingerprint}`)
+  log(`  素の遠距離 seek: ${summary(far)} hash=${far.settled.fingerprint}`)
+  log(`  素の近距離 seek: ${summary(near)} hash=${near.settled.fingerprint}`)
+  log(`  遠距離 + 1 回微小 seek: ${summary(oneNudge)} hash=${oneNudge.settled.fingerprint}`)
+  log(`  遠距離 + 2 回微小 seek: ${summary(twoNudges)} hash=${twoNudges.settled.fingerprint}`)
+
+  const from = target - 0.5
+  await page.locator('video').evaluate((video, seconds) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('製品 seek 前の位置へ移動できない')), 10_000)
+    const finish = () => {
+      clearTimeout(timer)
+      resolve()
+    }
+    video.addEventListener('seeked', finish, { once: true })
+    video.pause()
+    video.currentTime = seconds
+  }), from)
+  const boundaryButton = page.locator(`[data-testid="chapter-filmstrip-boundary"][data-time-ms="${REAL_HLS_BOUNDARY_MS}"]`)
+  await page.locator('video').evaluate((video, expected) => {
+    window.__boundaryFrameCallbacks = []
+    const sourceBeforeSeek = { src: video.getAttribute('src'), currentSrc: video.currentSrc }
+    const requestFrame = video.requestVideoFrameCallback.bind(video)
+    video.requestVideoFrameCallback = (callback) => requestFrame((now, metadata) => {
+      const sample = {
+        mediaTime: metadata.mediaTime,
+        currentTime: video.currentTime,
+        seeking: video.seeking,
+        visibility: getComputedStyle(video).visibility,
+        filter: getComputedStyle(video).filter,
+      }
+      callback(now, metadata)
+      window.__boundaryFrameCallbacks.push({
+        ...sample,
+        visibilityAfter: getComputedStyle(video).visibility,
+        filterAfter: getComputedStyle(video).filter,
+        nearTarget: Math.abs(video.currentTime - expected.target) <= 0.01,
+        nearFrame: Math.abs(metadata.mediaTime - video.currentTime) <= 1001 / 30000 / 2 + 0.001,
+        sourceUnchanged: sourceBeforeSeek.src === video.getAttribute('src') && sourceBeforeSeek.currentSrc === video.currentSrc,
+      })
+    })
+  }, { target })
+  const productFirst = await capturePresentedFrameAt(page, () => boundaryButton.evaluate((button) => button.click()), target)
+  await page.waitForTimeout(500)
+  const productSettled = await page.locator('video').evaluate((video) => ({
+    currentTime: video.currentTime,
+    fingerprint: window.__videoFrameFingerprint(),
+    paused: video.paused,
+    seeking: video.seeking,
+    visibility: video.style.visibility,
+    filter: video.style.filter,
+  }))
+  const callbackLog = await page.evaluate(() => window.__boundaryFrameCallbacks)
+  log(`  製品の境界選択: first=${productFirst.mediaTime?.toFixed(6)}s/${compareAt(productFirst, target)} hash=${productFirst.fingerprint}, settled=${productSettled.currentTime.toFixed(6)}s/${compareAt(productSettled, target)} hash=${productSettled.fingerprint}, paused=${productSettled.paused}, seeking=${productSettled.seeking}, filter=${productSettled.filter}, callbacks=${JSON.stringify(callbackLog.slice(-6))}`)
+  if (!compareAt(productSettled, target)) ng.push('実録画: 製品の境界選択後に連続再生で見た同じフレームを表示しない')
+  await page.unrouteAll({ behavior: 'ignoreErrors' })
+  await page.close()
+}
+
+function compareMarkers(label, observed, expected, sessionOriginSeconds) {
   if (observed.length !== expected.length) {
     ng.push(`${label}: 目印フレーム数が違う (got=${observed.length}, want=${expected.length})`)
   }
@@ -1022,7 +1386,7 @@ function compareMarkers(label, observed, expected, sessionOffset) {
     if (observed[i].markerSlot !== expected[i].markerSlot || observed[i].frame !== expected[i].frame) {
       ng.push(`${label}: 目印フレームの順序が違う (got=${observed[i].frame}, want=${expected[i].frame})`)
     }
-    const actual = sessionOrigin(sessionOffset) + observed[i].mediaTime
+    const actual = sessionOriginSeconds + observed[i].mediaTime
     const expectedSeconds = expected[i].expectedSeconds + EXPECTED_SHIFT_FRAMES / SOURCE_FRAME_RATE
     const diff = actual - expectedSeconds
     const legacyDiff = actual - expected[i].legacySeconds
@@ -1033,7 +1397,8 @@ function compareMarkers(label, observed, expected, sessionOffset) {
   }
 }
 
-if (!CHAPTER_SEEK_ONLY) await runRawSeekDiagnostics()
+if (RAW_SEEK_DIAGNOSTICS) await runRawSeekDiagnostics()
+if (RAW_SEEK_ONLY) await finish(ng, browser)
 
 if (!CHAPTER_SEEK_ONLY) {
   chaptersForHls = true
@@ -1059,6 +1424,7 @@ if (!CHAPTER_SEEK_ONLY) {
   await hlsPage.getByRole('button', { name: '再生設定' }).click()
   await hlsPage.getByRole('menuitem', { name: 'チャプターを直す' }).click()
   await exerciseBoundaryControls(hlsPage, '原本 HLS offset 0', { first: 0, stop: 2, from: 1 }, 0, 0.1, true)
+  if (BOUNDARY_SEEK_ONLY) await finish(ng, browser)
   await hlsPage.getByRole('button', { name: 'やめる', exact: true }).click()
   await hlsPage.waitForSelector('[data-testid="chapter-edit-layout"]', { state: 'detached' })
   await hlsPage.locator('video').evaluate((video) => video.pause())
@@ -1097,8 +1463,9 @@ if (!CHAPTER_SEEK_ONLY) {
     }
     log(`\n=== 原本 HLS offset ${OFFSET_SECONDS} ===`)
     const offsetMarkers = markerTimes.slice(4)
-    const offsetObserved = await captureExpectedMarkers(hlsPage, OFFSET_SECONDS, offsetMarkers, `原本 HLS offset ${OFFSET_SECONDS}`)
-    compareMarkers(`原本 HLS offset ${OFFSET_SECONDS}`, offsetObserved, offsetMarkers, OFFSET_SECONDS)
+    const sessionOriginSeconds = sessionOrigin(OFFSET_SECONDS)
+    const offsetObserved = await captureExpectedMarkers(hlsPage, sessionOriginSeconds, offsetMarkers, `原本 HLS offset ${OFFSET_SECONDS}`)
+    compareMarkers(`原本 HLS offset ${OFFSET_SECONDS}`, offsetObserved, offsetMarkers, sessionOriginSeconds)
     // 製品の整数 offset セッション上で、表示フレームの境界が PUT の ms と一致するか。
     // 表示位置 = セッション起点 + mediaTime の起点を壊すとここが落ちる。
     await hlsPage.getByTestId('recording-player-shell').hover()

@@ -24,6 +24,7 @@ import {
   autoSkipSeekSeconds,
   chapterBoundaryMsToSeekSeconds,
   chapterJumpTarget,
+  FRAME_SECONDS,
   loadChapterSkip,
   PLAY_AROUND_SECONDS,
   saveChapterSkip,
@@ -119,6 +120,22 @@ function readHlsDiagnostics(hls: HlsLike): LiveDiagnostics {
         ? hls.mainForwardBufferInfo.len
         : null,
   }
+}
+
+function containsSeekableTime(media: HTMLMediaElement, seconds: number): boolean {
+  if (!Number.isFinite(seconds) || seconds < 0) return false
+  try {
+    const ranges = media.seekable
+    if (ranges.length > 0) {
+      for (let index = 0; index < ranges.length; index += 1) {
+        if (ranges.start(index) <= seconds && ranges.end(index) >= seconds) return true
+      }
+      return false
+    }
+  } catch {
+    // Fall back to finite duration when the browser does not expose TimeRanges.
+  }
+  return Number.isFinite(media.duration) && seconds <= media.duration
 }
 
 /**
@@ -577,6 +594,7 @@ export function LivePlayer({
   const playAroundTimerRef = useRef<number | undefined>(undefined)
   const pendingBoundarySeekMsRef = useRef<number | null>(null)
   const pendingBoundaryFrameSeekCleanupRef = useRef<(() => void) | null>(null)
+  const boundaryFrameCorrectionEventsRef = useRef(new WeakSet<Event>())
   const [originalSubtitlesEnabled, setOriginalSubtitlesEnabled] = useState(isRecordingPlayback)
   // 操作バーの枠（自動非表示・フォーカス・映像のタップ・全画面・PiP）は encoded の
   // RecordingPlayer と同じ実装を使う。`<video>` 要素はこのコンポーネントでは作り直さない。
@@ -1798,19 +1816,11 @@ export function LivePlayer({
     const target = Math.max(0, Math.min(originalDurationSeconds, seconds))
     originalPreviousSecondsRef.current = target
     const localTarget = target - sessionStartOffset
-    let seekableEnd = 0
-    try {
-      const ranges = video.seekable
-      if (ranges.length > 0) seekableEnd = ranges.end(ranges.length - 1)
-      else if (Number.isFinite(video.duration)) seekableEnd = video.duration
-    } catch {
-      if (Number.isFinite(video.duration)) seekableEnd = video.duration
-    }
     // 範囲はバッファ済みではなく seekable で判定する。WebKit のネイティブ HLS は ENDLIST の無い
     // playlist の seekable を先端の 3 target duration 手前で止め（④ の状態で time 7.8 / seekable 2）、
     // その先への代入は seekable の終端に丸める（同じ状態で currentTime = 5 が 2 になった。
     // バッファは 7.73 まであった。Playwright WebKit で 1 回測定）。だから seekable の外は張り直す。
-    if (target >= sessionStartOffset && localTarget <= seekableEnd) {
+    if (target >= sessionStartOffset && containsSeekableTime(video, localTarget)) {
       video.currentTime = localTarget
       setOriginalCurrentSeconds(target)
       onRecordingPositionChange?.(target)
@@ -1843,40 +1853,56 @@ export function LivePlayer({
     pendingBoundarySeekMsRef.current = null
     const target = chapterBoundaryMsToSeekSeconds(boundaryMs)
     const localTarget = target - sessionStartOffset
-    let targetIsSeekable = false
-    if (nativeHlsRef.current && target >= sessionStartOffset) {
-      try {
-        const ranges = media.seekable
-        if (ranges.length > 0) {
-          for (let index = 0; index < ranges.length; index += 1) {
-            if (ranges.start(index) <= localTarget && ranges.end(index) >= localTarget) {
-              targetIsSeekable = true
-              break
-            }
-          }
-        } else if (Number.isFinite(media.duration)) {
-          targetIsSeekable = localTarget <= media.duration
-        }
-      } catch {
-        targetIsSeekable = Number.isFinite(media.duration) && localTarget <= media.duration
-      }
-    }
+    const targetIsSeekable = nativeHlsRef.current &&
+      target >= sessionStartOffset &&
+      containsSeekableTime(media, localTarget)
     if (targetIsSeekable && originalDurationSeconds > 0 && media.paused && Math.abs(media.currentTime - localTarget) > 0.001) {
-      // Playwright WebKit で、境界への seeked 後も古い画素が残ることがある。
-      // 0.1ms の再シークを 2 回行うと、遠距離・近距離のどちらでも表示が更新された（#1127 の E2E）。
+      // recording-playback-timeline.mjs で、編集モード中のネイティブ HLS に
+      // currentTime を直接代入しても seeked 後に古い画素が残ることを確認している。
+      // 0.1ms の再シークを2回行うと、GOP / 音声位置の異なる fixture で表示が更新された。
       const expectedCurrentSrc = media.currentSrc
       const expectedSrcAttribute = media.getAttribute('src')
+      const canWaitForPresentedFrame = typeof media.requestVideoFrameCallback === 'function'
+      const originalFilter = media.style.filter
       let active = true
-      let seekedListener: (() => void) | null = null
+      let seekedListener: ((event: Event) => void) | null = null
+      let presentationCallbackId: number | undefined
+      let presentationTimeoutId: number | undefined
       const cleanup = () => {
         if (!active) return
         active = false
         if (seekedListener) media.removeEventListener('seeked', seekedListener)
+        if (presentationCallbackId !== undefined) media.cancelVideoFrameCallback?.(presentationCallbackId)
+        if (presentationTimeoutId !== undefined) window.clearTimeout(presentationTimeoutId)
         media.removeEventListener('loadstart', cleanup)
         media.removeEventListener('emptied', cleanup)
+        if (canWaitForPresentedFrame && media.style.filter === 'brightness(0)') {
+          media.style.filter = originalFilter
+        }
         if (pendingBoundaryFrameSeekCleanupRef.current === cleanup) {
           pendingBoundaryFrameSeekCleanupRef.current = null
         }
+      }
+      const revealAfterCorrectFrame = () => {
+        if (!active) return
+        if (!canWaitForPresentedFrame) {
+          cleanup()
+          return
+        }
+        presentationCallbackId = media.requestVideoFrameCallback!((_now, metadata) => {
+          presentationCallbackId = undefined
+          if (
+            active &&
+            videoRef.current === media &&
+            !media.seeking &&
+            Math.abs(media.currentTime - localTarget) <= 0.01 &&
+            Math.abs(metadata.mediaTime - media.currentTime) <= FRAME_SECONDS / 2 + 0.001
+          ) {
+            cleanup()
+          } else {
+            revealAfterCorrectFrame()
+          }
+        })
       }
       const reassertFrame = (remainingNudges: number) => {
         if (
@@ -1889,11 +1915,12 @@ export function LivePlayer({
           Math.abs(media.currentTime - localTarget) <= 0.01
         ) {
           if (remainingNudges <= 0) {
-            cleanup()
+            revealAfterCorrectFrame()
             return
           }
-          seekedListener = () => {
+          seekedListener = (event: Event) => {
             seekedListener = null
+            boundaryFrameCorrectionEventsRef.current.add(event)
             reassertFrame(remainingNudges - 1)
           }
           media.addEventListener('seeked', seekedListener, { once: true })
@@ -1903,6 +1930,10 @@ export function LivePlayer({
         }
       }
       pendingBoundaryFrameSeekCleanupRef.current = cleanup
+      if (canWaitForPresentedFrame) {
+        media.style.filter = 'brightness(0)'
+        presentationTimeoutId = window.setTimeout(cleanup, 3000)
+      }
       media.addEventListener('loadstart', cleanup, { once: true })
       media.addEventListener('emptied', cleanup, { once: true })
       seekedListener = () => {
@@ -2014,7 +2045,10 @@ export function LivePlayer({
         if (isChase) updateChasePosition(event.currentTarget)
       }}
       onSeeked={(event) => {
-        if (isRecordingPlayback) saveCurrentPosition(event.currentTarget)
+        if (
+          isRecordingPlayback &&
+          !boundaryFrameCorrectionEventsRef.current.delete(event.nativeEvent)
+        ) saveCurrentPosition(event.currentTarget)
         if (isOriginalVOD) updateOriginalPosition(event.currentTarget)
         if (isChase) updateChasePosition(event.currentTarget)
         const pendingBoundaryMs = pendingBoundarySeekMsRef.current

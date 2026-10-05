@@ -140,8 +140,9 @@ function deferredFetch() {
   const promise = new Promise<Response>((r) => {
     resolve = r
   })
-  vi.stubGlobal('fetch', vi.fn(() => promise))
-  return { resolve }
+  const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => promise)
+  vi.stubGlobal('fetch', fetchMock)
+  return { resolve, fetchMock }
 }
 
 afterEach(() => {
@@ -2868,7 +2869,7 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
   })
 
   it('原本 VOD のネイティブ HLS: 近い境界への seeked 後に同じフレーム内で再シークする', async () => {
-    const { resolve } = deferredFetch()
+    const { resolve, fetchMock } = deferredFetch()
     render(
       <LivePlayer
         mode="original-vod"
@@ -2901,8 +2902,14 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     fireEvent.seeked(video)
 
     expect(video.currentTime).toBeCloseTo(beforeNudge + 0.0001, 10)
+    await waitFor(() => expect(
+      fetchMock.mock.calls.filter(([url]) => String(url) === '/api/recordings/429/playback-position'),
+    ).toHaveLength(1))
     fireEvent.seeked(video)
     expect(video.currentTime).toBeCloseTo(beforeNudge + 0.0002, 10)
+    fireEvent.seeked(video)
+    expect(video.currentTime).toBeCloseTo(beforeNudge + 0.0002, 10)
+    expect(fetchMock.mock.calls.filter(([url]) => String(url) === '/api/recordings/429/playback-position')).toHaveLength(1)
 
     // 新しい境界 seek は前の二段階 seek を解除し、再生元切替後は残りの seek を行わない。
     Object.defineProperty(video, 'currentTime', { value: 25, writable: true, configurable: true })
@@ -2918,6 +2925,50 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     fireEvent.seeked(video)
     expect(video.currentTime).toBeCloseTo(afterSourceChange, 10)
     expect(hlsMockState.instances).toHaveLength(0)
+  })
+
+  it('原本 VOD の hls.js: 境界選択でネイティブ HLS の微小 seek を足さない', async () => {
+    const { resolve } = deferredFetch()
+    render(
+      <LivePlayer
+        mode="original-vod"
+        site="default"
+        recordingId={430}
+        recordingDurationMs={60_000}
+        chapters={[{ startMs: 20_000, endMs: 25_000, label: '番組', cut: false }]}
+        chapterVersion="chapters-v1"
+        chapterEditing
+        onSaveChapters={async () => true}
+        onResetChapters={async () => true}
+      />,
+    )
+    const video = document.querySelector('video')!
+    let currentTime = 20
+    const assignments: number[] = []
+    Object.defineProperty(video, 'currentTime', {
+      configurable: true,
+      get: () => currentTime,
+      set: (seconds: number) => {
+        currentTime = seconds
+        assignments.push(seconds)
+      },
+    })
+    Object.defineProperty(video, 'seekable', { value: { length: 1, start: () => 0, end: () => 60 }, configurable: true })
+    resolve(new Response(PROFILE_MASTER, { status: 200 }))
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    fireEvent.loadedMetadata(video)
+    fireEvent.canPlay(video)
+    assignments.length = 0
+
+    const boundary = document.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="25000"]',
+    )!
+    fireEvent.click(boundary)
+    expect(assignments).toHaveLength(1)
+    const selectedTime = video.currentTime
+    fireEvent.seeked(video)
+    expect(video.currentTime).toBeCloseTo(selectedTime, 10)
+    expect(assignments).toHaveLength(1)
   })
 
   it('原本 VOD: 再生中に CM の自動スキップで変換の先端より先へ飛んでも再生を続ける', async () => {

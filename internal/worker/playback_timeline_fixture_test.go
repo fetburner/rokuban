@@ -71,7 +71,10 @@ func TestWritePlaybackTimelineFixture(t *testing.T) {
 	}
 	// The marker slot is encoded by its position in a 3x3 grid. The browser can
 	// decode the actual displayed frame number instead of trusting the requested one.
-	videoFilter := strings.Join(filterParts, ",")
+	// Grayscale changes every frame so a paint-level capture can distinguish adjacent
+	// frames, including the two unmarked frames used by the ±1 boundary checks. Its
+	// maximum luma stays below the white marker threshold used by the browser fixture.
+	videoFilter := "geq=lum='mod(N*7,160)':cb=128:cr=128," + strings.Join(filterParts, ",")
 	videoInput := "color=c=black:s=320x180:r=30000/1001:d=22"
 	audioInput := "sine=frequency=440:sample_rate=48000:duration=22.7"
 	// The audio input is delayed by 16.7 ms (audio start 10.4067 s) so that one source
@@ -134,21 +137,23 @@ func TestWritePlaybackTimelineFixture(t *testing.T) {
 		}
 	}
 	variants := map[string]playbackTimelineFixtureHLSVariant{}
-	for _, variant := range []struct {
-		name               string
-		dir                string
-		gopFrames          int
-		audioOffsetSeconds float64
-	}{
-		{name: "shortGOP", dir: "hls-short-gop", gopFrames: 12, audioOffsetSeconds: 0.0167},
-		{name: "audioAligned", dir: "hls-audio-aligned", gopFrames: 60, audioOffsetSeconds: 0.7},
-	} {
-		sourceName := variant.dir + ".ts"
-		variantSource := writeSource(sourceName, variant.gopFrames, variant.audioOffsetSeconds)
-		playlist := writeHLS(variantSource, variant.dir, 0)
-		variants[variant.name] = playbackTimelineFixtureHLSVariant{
-			Source: sourceName, Playlist: filepath.ToSlash(mustRelativePath(t, fixtureDir, playlist)),
-			GOPFrames: variant.gopFrames, AudioOffset: variant.audioOffsetSeconds,
+	if os.Getenv("ROKUBAN_PLAYBACK_TIMELINE_SEEK_VARIANTS") == "1" {
+		for _, variant := range []struct {
+			name               string
+			dir                string
+			gopFrames          int
+			audioOffsetSeconds float64
+		}{
+			{name: "shortGOP", dir: "hls-short-gop", gopFrames: 12, audioOffsetSeconds: 0.0167},
+			{name: "audioAligned", dir: "hls-audio-aligned", gopFrames: 60, audioOffsetSeconds: 0.7},
+		} {
+			sourceName := variant.dir + ".ts"
+			variantSource := writeSource(sourceName, variant.gopFrames, variant.audioOffsetSeconds)
+			playlist := writeHLS(variantSource, variant.dir, 0)
+			variants[variant.name] = playbackTimelineFixtureHLSVariant{
+				Source: sourceName, Playlist: filepath.ToSlash(mustRelativePath(t, fixtureDir, playlist)),
+				GOPFrames: variant.gopFrames, AudioOffset: variant.audioOffsetSeconds,
+			}
 		}
 	}
 
