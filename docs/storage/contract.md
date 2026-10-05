@@ -132,6 +132,8 @@ cancel しない）。そのため:
   pod ローカルなので `flock` では同じ pod 内しか直列化できず、取れなかった実行を River の
   再試行へ戻すと、停止中の旧実行が握る間ずっと失敗通知が積む。代償は、並走した 2 本が
   どちらも ffmpeg を完走すること
+- scratch の作成は River の `Timeout` で選ぶ。正の値なら timeout 後の再試行が前の実行と
+  重なりうるため試行ごとに一意にし、`-1` なら job ID 固定で開始時に残骸を消す。
 - staging は **canonical と同じディレクトリの staging file（`.rokuban-encode-`）へ、
   rel_path lock の外でストリームコピー + `fsync`** する。
   公開は lock（filesystem lock → tx → advisory xact lock）の中で、次の順に行う。
