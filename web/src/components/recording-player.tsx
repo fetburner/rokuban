@@ -76,7 +76,7 @@ type RecordingPlayerProps = {
   putWatched?: () => void
   /** 未視聴に戻す API 操作。 */
   deleteWatched?: () => void
-  /** 追っかけ再生と揃えるVOD側の既定プロファイル。資産に無ければ先頭を使う。 */
+  /** 開くときのプロファイル（版タブで選んだ版、選んでいなければ既定）。資産に無ければ先頭を使う。 */
   preferredProfile?: string
   /** 操作バーと終端カードに出す再生可能な次のエピソード。 */
   nextEpisode?: { id: number; title: string; startAt: string }
