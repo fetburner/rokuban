@@ -237,7 +237,7 @@ describe('summarizeRuleConditions', () => {
     const summary = summarizeRuleConditions(ruleWithConditions)
     expect(summary).toContain('番組名に「ニュース」を含む')
     expect(summary).toContain('スポーツ')
-    expect(summary).toContain('月〜金 21:00–23:00')
+    expect(summary).toContain('月〜金 21:00〜23:00')
     expect(summary).toContain('30分以上')
   })
 

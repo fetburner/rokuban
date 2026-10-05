@@ -328,13 +328,3 @@ export function moveChapterBoundary(
   const targetSeconds = Math.round((fromSeconds + deltaSeconds) * 1000) / 1000
   return { spans: moved, boundary: nearestChapterBoundary(chapterBoundaries(moved), targetSeconds) }
 }
-
-/**
- * formatChaptersTime はチャプターの位置を `h:mm:ss` で返す。再生位置の表示に使う。
- */
-export function formatChaptersTime(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return '0:00:00'
-  const total = Math.floor(seconds)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${Math.floor(total / 3600)}:${pad(Math.floor((total % 3600) / 60))}:${pad(total % 60)}`
-}

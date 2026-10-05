@@ -2,9 +2,16 @@ import { createRef } from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
+import type { ChapterSpan } from '@/api/generated'
 import { RecordingPlaybackControls } from '@/components/recording-playback-controls'
 
-function renderControls(playbackRateLocked: boolean, chapterEditing = false, onRateChange = vi.fn(), playbackRate = 1) {
+function renderControls(
+  playbackRateLocked: boolean,
+  chapterEditing = false,
+  onRateChange = vi.fn(),
+  playbackRate = 1,
+  chapters: ChapterSpan[] = [],
+) {
   const noop = vi.fn()
   const props = {
     profile: 'hd',
@@ -16,7 +23,7 @@ function renderControls(playbackRateLocked: boolean, chapterEditing = false, onR
     currentSeconds: 0,
     durationSeconds: 100,
     playedFraction: 0,
-    chapters: [],
+    chapters,
     playingCut: false,
     chapterEditing,
     tilePreview: { url: null },
@@ -114,5 +121,15 @@ describe('速度メニュー行（変換中の固定）', () => {
     renderControls(false, true, onRateChange, 1.1)
     fireEvent.click(screen.getByTestId('chapter-edit-playback-rate'))
     expect(onRateChange).toHaveBeenCalledWith(1.25)
+  })
+
+  it('チャプター一覧と再生バーの区間表示は共通の再生時刻書式を使う', () => {
+    renderControls(false, false, vi.fn(), 1, [
+      { startMs: 330_000, endMs: 360_000, label: 'ニュース', cut: false },
+    ])
+
+    expect(screen.getByTestId('chapter-marker')).toHaveAttribute('title', 'ニュース 5:30〜6:00')
+    fireEvent.click(screen.getByRole('button', { name: 'チャプター: 本編' }))
+    expect(screen.getByRole('menuitemradio', { name: /5:30.*ニュース/ })).toBeInTheDocument()
   })
 })

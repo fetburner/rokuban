@@ -20,7 +20,7 @@
  */
 
 import type { CapacityOverage } from '@/api/generated'
-import { dayKey, formatDateTime, formatTime } from '@/lib/format'
+import { dayKey, formatDateTime, formatTime, formatTimeRange } from '@/lib/format'
 
 
 /** TimeWindow は epoch ms の半開区間 [startMs, endMs)。 */
@@ -145,13 +145,11 @@ export function shortageRangeMessage(
   overage: CapacityOverage,
   options?: { showSite?: boolean; withDate?: boolean },
 ): string {
-  const range = options?.withDate
-    ? `${formatDateTime(overage.startAt)}〜${
-        dayKey(overage.startAt) === dayKey(overage.endAt)
-          ? formatTime(overage.endAt)
-          : formatDateTime(overage.endAt)
-      }`
-    : `${formatTime(overage.startAt)}〜${formatTime(overage.endAt)}`
+  const start = options?.withDate ? formatDateTime(overage.startAt) : formatTime(overage.startAt)
+  const end = options?.withDate && dayKey(overage.startAt) !== dayKey(overage.endAt)
+    ? formatDateTime(overage.endAt)
+    : formatTime(overage.endAt)
+  const range = formatTimeRange(start, end)
   const sitePrefix = options?.showSite ? `${overage.site}の` : ''
   return `${range} は${sitePrefix}チューナーが不足しています（${shortfallDetail(overage)}不足）`
 }

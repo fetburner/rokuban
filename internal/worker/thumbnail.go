@@ -20,6 +20,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
@@ -415,16 +416,7 @@ func (w *ThumbnailWorker) probeDuration(ctx context.Context, inputPath string) (
 }
 
 func probeDuration(ctx context.Context, ffprobe, inputPath string, run func(context.Context, string, ...string) ([]byte, error)) (time.Duration, error) {
-	if ffprobe == "" {
-		ffprobe = "ffprobe"
-	}
-	args := []string{
-		"-v", "error",
-		"-show_entries", "format=duration",
-		"-of", "default=noprint_wrappers=1:nokey=1",
-		inputPath,
-	}
-	out, err := run(ctx, ffprobe, args...)
+	out, err := run(ctx, ffargs.FFprobePath(ffprobe), ffargs.FormatDurationProbeArgs(inputPath)...)
 	if err != nil {
 		return 0, err
 	}
@@ -443,10 +435,7 @@ func probeDuration(ctx context.Context, ffprobe, inputPath string, run func(cont
 }
 
 func (w *ThumbnailWorker) extractFrame(ctx context.Context, inputPath, outputPath string, seek time.Duration) error {
-	ffmpeg := w.FFmpeg
-	if ffmpeg == "" {
-		ffmpeg = "ffmpeg"
-	}
+	ffmpeg := ffargs.FFmpegPath(w.FFmpeg)
 	// -ss を -i の前に置き入力シーク（大容量 TS で速い）。
 	// -frames:v 1 で 1 枚、-q:v 2 で高品質 JPEG。
 	// SAR（ピクセル縦横比）を偶数幅の正方形ピクセルへ焼き込む。JPEG は SAR を
@@ -458,7 +447,7 @@ func (w *ThumbnailWorker) extractFrame(ctx context.Context, inputPath, outputPat
 		"-ss", formatSeekSeconds(seek),
 		"-i", inputPath,
 		"-frames:v", "1",
-		"-vf", "scale=round(iw*sar/2)*2:ih,setsar=1",
+		"-vf", ffargs.SquarePixelsFilter,
 		"-q:v", "2",
 		outputPath,
 	}

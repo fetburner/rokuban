@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 )
 
@@ -181,10 +182,7 @@ type probedFrame struct {
 // start_time は 33bit wrap 直前に始まる TS では負になるため、窓の開始も 0 へ丸めない。
 // 窓の中から JPEG と大きさの合うコマを選ぶ（pickFrame）。
 func (s *Streamer) probeFrame(ctx context.Context, path string, atMs int64, width, height int) (probedFrame, error) {
-	ffprobe := s.cfg.FFprobe
-	if ffprobe == "" {
-		ffprobe = "ffprobe"
-	}
+	ffprobe := ffargs.FFprobePath(s.cfg.FFprobe)
 	out, err := s.runCommand(ctx, ffprobe, "-v", "error",
 		"-show_entries", "format=start_time", "-of", "default=noprint_wrappers=1:nokey=1", path)
 	if err != nil {
@@ -253,10 +251,7 @@ func normalizeSAR(v string) string {
 }
 
 func (s *Streamer) ffmpegPath() string {
-	if s.cfg.FFmpeg == "" {
-		return "ffmpeg"
-	}
-	return s.cfg.FFmpeg
+	return ffargs.FFmpegPath(s.cfg.FFmpeg)
 }
 
 // runCommand は ffmpeg/ffprobe を stdout 付きで実行する。テストは runCmd を差し替える。

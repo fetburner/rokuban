@@ -272,6 +272,9 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	if slices.Contains(roles, "worker") && cfg.Storage.ScratchDir == "" {
+		return fmt.Errorf("validating config: worker role requires non-empty storage.scratch_dir")
+	}
 	warnIfAllowedHostsEmpty(slog.Default(), cfg.Server.AllowedHosts)
 
 	// 以降の判定（validateSiteBinding / RequiresEncodeTools / ClientConfig.Queues）は

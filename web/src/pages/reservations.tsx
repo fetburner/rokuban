@@ -26,7 +26,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { coveringWindow } from '@/lib/capacity'
-import { dayKey, formatDate, formatDuration, formatTime } from '@/lib/format'
+import { calendarDayDiff, dayKey, formatDate, formatDuration, formatTime } from '@/lib/format'
 import { programTitle } from '@/lib/program-labels'
 import {
   reservationNeedsAttention,
@@ -338,17 +338,8 @@ function groupByLocalDay(reservations: Reservation[]): ReservationDay[] {
 /** dateHeading は今日・明日だけを見出しへ足し、残りは日付だけを返す。 */
 function dateHeading(iso: string): string {
   const date = new Date(iso)
-  const today = new Date()
-  const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate())
-  const targetStart = new Date(date.getFullYear(), date.getMonth(), date.getDate())
-  const tomorrowStart = new Date(todayStart)
-  tomorrowStart.setDate(tomorrowStart.getDate() + 1)
-  const prefix =
-    dayKey(targetStart.toISOString()) === dayKey(todayStart.toISOString())
-      ? '今日 '
-      : dayKey(targetStart.toISOString()) === dayKey(tomorrowStart.toISOString())
-        ? '明日 '
-        : ''
+  const dayDifference = calendarDayDiff(date.getTime(), Date.now())
+  const prefix = dayDifference === 0 ? '今日 ' : dayDifference === 1 ? '明日 ' : ''
   return `${prefix}${formatDate(iso)}`
 }
 

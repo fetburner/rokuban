@@ -41,7 +41,7 @@ import {
   type ResizeHandle,
 } from '@/lib/cm-logo-frame'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
-import { formatDateTime, formatDuration } from '@/lib/format'
+import { formatDateTime, formatDuration, formatPlaybackTime } from '@/lib/format'
 import { cmDetectStageMessage } from '@/lib/cm-detect-stage'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
 import { cn } from '@/lib/utils'
@@ -180,12 +180,6 @@ function useBoxSize(ref: React.RefObject<HTMLElement | null>): { width: number; 
     return () => observer.disconnect()
   }, [ref])
   return size
-}
-
-function formatPosition(atMs: number | undefined): string {
-  if (atMs === undefined) return '時刻を選んでください'
-  const total = Math.floor(atMs / 1000)
-  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
 }
 
 function recordingLabel(recording: Recording): string {
@@ -348,6 +342,9 @@ function CMLogoFrameEditor({
   const durationMs = Math.max(1, selectedRecording?.durationMs ?? 1)
   const [sliderValue, setSliderValue] = useState(Math.round(durationMs / 2))
   const [committedAtMs, setCommittedAtMs] = useState<number | undefined>(Math.round(durationMs / 2))
+  const committedTime = committedAtMs === undefined
+    ? '時刻を選んでください'
+    : formatPlaybackTime(committedAtMs / 1000)
   const [zoom, setZoom] = useState(1)
   const [rect, setRect] = useState<CodedRect | undefined>(undefined)
   // 枠に寄るを押した瞬間の焦点。枠の現在位置から毎回導くと、ドラッグで枠が逃げる。
@@ -564,7 +561,7 @@ function CMLogoFrameEditor({
             {frame && (
               <img
                 src={frame.url}
-                alt={`${logo.serviceName} の ${formatPosition(committedAtMs)} のコマ`}
+                alt={`${logo.serviceName} の ${committedTime} のコマ`}
                 draggable={false}
                 data-testid="cm-logo-frame-image"
                 className="pointer-events-none absolute select-none"
@@ -616,7 +613,7 @@ function CMLogoFrameEditor({
             className="mt-2 w-full cursor-pointer"
           />
           <div className="mt-1 flex items-center justify-between text-xs text-muted-foreground">
-            <span data-testid="cm-logo-position">時刻 {formatPosition(committedAtMs)}</span>
+            <span data-testid="cm-logo-position">時刻 {committedTime}</span>
             <span>{formatDuration(durationMs)}</span>
           </div>
           {failed && <p className="mt-2 text-destructive" role="alert">この時刻のコマを取り寄せできませんでした。別の時刻を選んでください。</p>}
@@ -638,7 +635,9 @@ function CMLogoFrameEditor({
               >
                 <ChevronLeft />
               </Button>
-              <span className="min-w-20 text-center" data-testid="cm-logo-committed-time">{formatPosition(committedAtMs)}</span>
+              <span className="min-w-20 text-center" data-testid="cm-logo-committed-time">
+                {committedTime}
+              </span>
               <Button
                 type="button"
                 size="icon-sm"

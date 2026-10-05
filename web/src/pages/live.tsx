@@ -19,6 +19,7 @@ import { LivePlayer } from '@/components/live-player'
 import { TunerStatus } from '@/components/tuner-status'
 import { buttonVariants } from '@/components/ui/button'
 import { useLiveCapability } from '@/lib/capabilities'
+import type { OffsetSessionStart } from '@/lib/use-offset-session'
 import {
   currentProgramWindow,
   formatLiveDiagnostics,
@@ -37,7 +38,7 @@ import {
 import { recordingTimeline } from '@/lib/recording-timeline'
 import { upcomingInterruptingReservation } from '@/lib/live-interruption'
 import { channelTypeLabel, groupByChannelType, orderServices } from '@/lib/epg-grid'
-import { formatTime, isAiring } from '@/lib/format'
+import { formatTime, formatTimeRange, isAiring } from '@/lib/format'
 import { siteServiceKey, useAllSitesServices } from '@/lib/all-sites-services'
 import { cn } from '@/lib/utils'
 
@@ -349,6 +350,9 @@ export function LivePage() {
 
   const [playbackSource, setPlaybackSource] = useState<'live' | 'chase'>('live')
   const [chaseOffset, setChaseOffset] = useState<number | undefined>(undefined)
+  const chaseStart: OffsetSessionStart = chaseOffset === undefined
+    ? { type: 'beginning' }
+    : { type: 'offset', offsetSeconds: chaseOffset }
   const [chaseTarget, setChaseTarget] = useState<{
     site: string
     recordingId: number
@@ -481,7 +485,7 @@ export function LivePage() {
                 serviceId={selectedService.serviceId}
                 recordingId={playbackSource === 'chase' ? chaseTarget?.recordingId : undefined}
                 chaseTimeline={chaseTimeline}
-                startOffsetSeconds={playbackSource === 'chase' ? chaseOffset : undefined}
+                offsetSessionStart={playbackSource === 'chase' ? chaseStart : undefined}
                 profile={effectiveProfile}
                 audio={routeSearch.audio}
                 availableProfiles={liveProfiles.map((profile) => ({
@@ -549,7 +553,7 @@ export function LivePage() {
                   <p className="text-xl font-semibold">{nowPlaying.name}</p>
                   <p className="text-sm text-muted-foreground">
                     <span className="mr-1">予定:</span>
-                    <span>{formatTime(nowPlaying.startAt)}〜{formatTime(nowPlaying.endAt)}</span>
+                    <span>{formatTimeRange(formatTime(nowPlaying.startAt), formatTime(nowPlaying.endAt))}</span>
                     {selectedProgramRemaining !== null && (
                       <span> · 残り {selectedProgramRemaining} 分</span>
                     )}

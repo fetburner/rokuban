@@ -314,6 +314,17 @@ describe('CMLogoStationPage', () => {
     await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith('/api/media/recordings/7/frame?at=100000'))
   })
 
+  it('選んだ時刻は再生位置と同じ書式で、1 時間以上は時を付ける', async () => {
+    stubApi({ recordings: [{ ...recording, durationMs: 7_446_000 }] })
+    renderInRouter(<CMLogoStationPage />, {
+      path: '/cm-logos/$networkId/$serviceId',
+      initialEntries: ['/cm-logos/32678/5168?recording=7'],
+    })
+
+    expect(await screen.findByTestId('cm-logo-committed-time')).toHaveTextContent(/^1:02:03$/)
+    expect(screen.getByTestId('cm-logo-position')).toHaveTextContent(/^時刻 1:02:03$/)
+  })
+
   it('SAR の違うコマで数値入力した枠を記録上の座標で保存する', async () => {
     const { requests } = stubApi()
     renderInRouter(<CMLogoStationPage />, {

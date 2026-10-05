@@ -822,6 +822,15 @@ describe('RecordingDetailPage', () => {
     expect(screen.queryByText('実録画終了')).not.toBeInTheDocument()
   })
 
+  it('タイトル行の放送時刻は開始〜終了を「〜」でつなぐ', async () => {
+    createFakeServer({ recording: sampleRecording() })
+
+    renderAt('/recordings/3')
+
+    await screen.findByRole('heading', { name: '単体ページの録画' })
+    expect(screen.getByText(/ 21:00〜21:30$/)).toBeInTheDocument()
+  })
+
   it('実録画時刻が番組より遅れて始まり早く終わる差分もタイトル行に出す', async () => {
     createFakeServer({
       recording: sampleRecording({
@@ -1461,7 +1470,7 @@ describe('RecordingDetailPage の検出器結果', () => {
     await selectDetailTab('記録')
     const details = await screen.findByTestId('cm-detector-results-details')
     expect(details.querySelector('summary')).toHaveTextContent('検出器の結果')
-    expect(details.textContent).toContain('00:00:10 – 00:00:20')
+    expect(details.textContent).toContain('0:10〜0:20')
   })
 
   it('チャプター取得中は検出器の詳細を表示しない', async () => {
@@ -2113,7 +2122,7 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
     })
   }
 
-  it('録画詳細は1つの再生枠を使い、通常表示では再生操作まで追っかけを始めない', async () => {
+  it('続きからは保存位置の offset を使い、通常表示では再生操作まで追っかけを始めない', async () => {
     const user = userEvent.setup()
     const { fetchMock } = createFakeServer({
       recording: chaseRecording(),
@@ -2132,10 +2141,11 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
 
     await user.click(screen.getByTestId('recording-playback-start'))
     await waitFor(() => expect(chasePlaylistURLs(fetchMock)).toHaveLength(1))
+    expect(chasePlaylistURLs(fetchMock)[0]).toContain('/chase/offset/720/playlist.m3u8')
     expect(document.querySelectorAll('video')).toHaveLength(1)
     const video = document.querySelector('video')!
     fireEvent.loadedMetadata(video)
-    await waitFor(() => expect(video.currentTime).toBe(720))
+    expect(video.currentTime).toBe(0)
   })
 
   it('追っかけのポスターに再開位置と録画範囲を示し、先頭から見る操作も再生開始まで変換しない', async () => {

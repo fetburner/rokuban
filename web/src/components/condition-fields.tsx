@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
 import { Field, Input, Select } from '@/components/ui/field'
 import { useAllSitesServices } from '@/lib/all-sites-services'
+import { formatTimeRange } from '@/lib/format'
 import { serviceDisambiguator } from '@/lib/service-label'
 import {
   allWeekdays,
@@ -308,7 +309,7 @@ function summarizeDetails(draft: SearchDraft, services: Service[]): DetailSummar
     summaries.push({
       key: 'period',
       label: '期間',
-      value: `${draft.periodStartAt || '開始なし'}〜${draft.periodEndAt || '終了なし'}`,
+      value: formatTimeRange(draft.periodStartAt || '開始なし', draft.periodEndAt || '終了なし'),
       clear: (d) => ({ ...d, periodStartAt: '', periodEndAt: '' }),
     })
   }

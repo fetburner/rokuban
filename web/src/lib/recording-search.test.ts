@@ -385,7 +385,7 @@ describe('describeRecordingsFilters', () => {
     // 「期間指定」のような値の読めないラベルにしない --- チップだけで何を
     // 絞っているか分かる必要がある（レビューで指摘）。
     expect(chips.find((c) => c.key === 'period')?.label).toBe(
-      `期間: ${formatDateTime('2026-01-01T00:00:00Z')} 〜`,
+      `期間: ${formatDateTime('2026-01-01T00:00:00Z')}〜`,
     )
   })
 
@@ -415,18 +415,18 @@ describe('describeRecordingsFilters', () => {
     expect(unique.find((chip) => chip.key === 'ruleId')?.label).toBe('ルール: ニュース録画ルール')
   })
 
-  it('期間チップは from/to 両方あれば範囲を、片方だけなら開いた側を「〜」で示す', () => {
+  it('期間チップは from/to を共通の範囲書式で示す', () => {
     const both = describeRecordingsFilters(
       { from: '2026-01-01T00:00:00Z', to: '2026-01-02T00:00:00Z' },
       services,
       undefined,
     )
     expect(both[0].label).toBe(
-      `期間: ${formatDateTime('2026-01-01T00:00:00Z')} 〜 ${formatDateTime('2026-01-02T00:00:00Z')}`,
+      `期間: ${formatDateTime('2026-01-01T00:00:00Z')}〜${formatDateTime('2026-01-02T00:00:00Z')}`,
     )
 
     const toOnly = describeRecordingsFilters({ to: '2026-01-02T00:00:00Z' }, services, undefined)
-    expect(toOnly[0].label).toBe(`期間: 〜 ${formatDateTime('2026-01-02T00:00:00Z')}`)
+    expect(toOnly[0].label).toBe(`期間: 〜${formatDateTime('2026-01-02T00:00:00Z')}`)
   })
 
   it('期間チップを外すと from と to が両方消える', () => {

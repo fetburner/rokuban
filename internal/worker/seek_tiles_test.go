@@ -207,6 +207,83 @@ func runSeekTilesJob(t *testing.T, w *SeekTilesWorker, recordingID int64) error 
 	})
 }
 
+func TestSeekTilesWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	scratchDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/tiles-overlap.m2ts")
+
+	paths := make(chan string, 64)
+	release := make(chan struct{})
+	results := make(chan error, 2)
+	w := &SeekTilesWorker{
+		Pool: pool, MediaDir: mediaDir, ScratchDir: scratchDir,
+		runCmd: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			if strings.Contains(name, "ffprobe") || containsArg(args, "stream=duration") {
+				return []byte("11\n"), nil
+			}
+			if len(args) == 0 {
+				return nil, fmt.Errorf("ffmpeg: no args")
+			}
+			out := args[len(args)-1]
+			paths <- out
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+				return nil, err
+			}
+			return nil, os.WriteFile(out, tinyJPEG, 0o644)
+		},
+	}
+
+	for attempt := 3; attempt <= 4; attempt++ {
+		job := &river.Job[SeekTilesJobArgs]{
+			JobRow: &rivertype.JobRow{ID: 42, Attempt: attempt},
+			Args:   SeekTilesJobArgs{RecordingID: recordingID},
+		}
+		go func(job *river.Job[SeekTilesJobArgs]) {
+			results <- w.Work(context.Background(), job)
+		}(job)
+	}
+
+	gotPaths := make([]string, 0, 2)
+	deadline := time.After(10 * time.Second)
+	pathsTimedOut := false
+	for len(gotPaths) < 2 {
+		select {
+		case path := <-paths:
+			gotPaths = append(gotPaths, path)
+		case <-deadline:
+			pathsTimedOut = true
+		}
+		if pathsTimedOut {
+			break
+		}
+	}
+	close(release)
+
+	for range 2 {
+		select {
+		case err := <-results:
+			if err != nil {
+				t.Errorf("SeekTilesWorker.Work: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("overlapping seek-tiles attempts did not finish after ffmpeg was released")
+		}
+	}
+	if len(gotPaths) != 2 {
+		t.Fatalf("ffmpeg output paths = %v, want both overlapping attempts to reach extraction", gotPaths)
+	}
+	if gotPaths[0] == gotPaths[1] {
+		t.Fatalf("overlapping attempts share ffmpeg output path %q", gotPaths[0])
+	}
+}
+
 // TestSeekTilesWorker_CreatesAsset は生成からコミットまでの 1 周を見る。
 // 枚数はリテラル（100 秒 → 10 枚 → 1 行）で固定する。
 func TestSeekTilesWorker_CreatesAsset(t *testing.T) {

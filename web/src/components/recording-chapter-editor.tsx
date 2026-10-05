@@ -11,7 +11,7 @@ import {
   nearestChapterBoundary,
   normalizeChapterDraft,
 } from '@/lib/chapters'
-import { formatPlaybackTime } from '@/lib/format'
+import { formatPlaybackTime, formatTimeRange } from '@/lib/format'
 
 export type ChapterEditorCommands = {
   save: () => Promise<boolean>
@@ -397,7 +397,7 @@ function ChapterDraftEditor({
                       selectBoundary(boundaryMs / 1000)
                     }}
                   >
-                    {formatPlaybackTime(span.startMs / 1000)} – {formatPlaybackTime(span.endMs / 1000)}
+                    {formatTimeRange(formatPlaybackTime(span.startMs / 1000), formatPlaybackTime(span.endMs / 1000))}
                   </button>
                   <input
                     type="text"

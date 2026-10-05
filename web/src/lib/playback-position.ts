@@ -4,6 +4,7 @@ import {
   putRecordingWatched,
   type KeepRange,
 } from '@/api/generated'
+import { putRecordingPlaybackPositionBodyPositionMsMin } from '@/api/zod'
 
 /**
  * 再生速度は端末ごとの好みとして localStorage に残す。
@@ -14,6 +15,9 @@ export type PlaybackPositionWrite =
   | { kind: 'delete' }
   | { kind: 'put'; positionMs: number }
   | { kind: 'watched' }
+
+/** サーバーが受け付ける再開位置の最小値（openapi.yaml の positionMs minimum）。 */
+export const PLAYBACK_POSITION_MINIMUM_MS = putRecordingPlaybackPositionBodyPositionMsMin
 
 /** 原本の ms をカット後の ms へ写す。keep 外の位置は次の区間の先頭へ寄せる。 */
 export function originalMsToCutMs(originalMs: number, keepRanges: readonly KeepRange[]): number {
@@ -58,7 +62,8 @@ export function playbackPositionWrite(
   durationFinal: boolean,
   keepRanges?: readonly KeepRange[],
 ): PlaybackPositionWrite {
-  if (!Number.isFinite(currentTimeSeconds) || currentTimeSeconds < 2) return { kind: 'delete' }
+  if (!Number.isFinite(currentTimeSeconds)) return { kind: 'delete' }
+  if (currentTimeSeconds * 1000 < PLAYBACK_POSITION_MINIMUM_MS) return { kind: 'delete' }
   if (
     durationFinal &&
     Number.isFinite(durationSeconds) &&
@@ -69,7 +74,7 @@ export function playbackPositionWrite(
   }
   const currentMs = Math.floor(currentTimeSeconds * 1000)
   const positionMs = keepRanges === undefined ? currentMs : cutMsToOriginalMs(currentMs, keepRanges)
-  return positionMs < 2000 ? { kind: 'delete' } : { kind: 'put', positionMs }
+  return positionMs < PLAYBACK_POSITION_MINIMUM_MS ? { kind: 'delete' } : { kind: 'put', positionMs }
 }
 
 /** 旧 localStorage の再開位置を削除する。速度キーは別名なので残る。 */

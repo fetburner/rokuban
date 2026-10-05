@@ -23,7 +23,7 @@ import {
   type ListRecordingsParams,
   type Rule,
 } from '@/api/generated'
-import { formatDateTime } from '@/lib/format'
+import { formatDateTime, formatTimeRange } from '@/lib/format'
 import { parsePositiveIntId } from '@/lib/positive-id'
 import { ListRecordingsQueryParams } from '@/api/zod'
 import { genreCodeLabel } from '@/lib/program-search'
@@ -318,11 +318,12 @@ export type RecordingsFilterChip = {
  * 指摘。issue #137）。片方だけの指定は「〜」を開いたままにする。
  */
 function periodLabel(from: string | undefined, to: string | undefined): string {
-  if (from !== undefined && to !== undefined) {
-    return `${formatDateTime(from)} 〜 ${formatDateTime(to)}`
+  if (from !== undefined || to !== undefined) {
+    return formatTimeRange(
+      from === undefined ? undefined : formatDateTime(from),
+      to === undefined ? undefined : formatDateTime(to),
+    )
   }
-  if (from !== undefined) return `${formatDateTime(from)} 〜`
-  if (to !== undefined) return `〜 ${formatDateTime(to)}`
   return ''
 }
 
