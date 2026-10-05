@@ -1993,6 +1993,37 @@ describe('LivePlayer の状態遷移', () => {
       expect(sent).toHaveLength(1)
     })
   })
+
+  it('明示開始の追っかけは retry 後も開始位置を再表明する（playing で 0 に戻す）', async () => {
+    hlsMockState.supported = false
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+    vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockImplementation((type) =>
+      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
+    )
+    render(
+      <LivePlayer
+        mode="chase"
+        site="default"
+        recordingId={81}
+        offsetSessionStart={{ type: 'offset', offsetSeconds: 30 }}
+      />,
+    )
+    const video = document.querySelector('video')!
+    await waitFor(() => expect(video.src).toContain('playlist.m3u8'))
+    Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+    fireEvent.loadedMetadata(video)
+    fireEvent.canPlay(video)
+
+    fireEvent.error(video)
+    fireEvent.click(await screen.findByRole('button', { name: '再読み込み' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument())
+    fireEvent.loadedMetadata(video)
+    fireEvent.canPlay(video)
+    video.currentTime = 9
+    fireEvent.playing(video)
+
+    expect(video.currentTime).toBe(0)
+  })
 })
 
 describe('LivePlayer のキー操作', () => {

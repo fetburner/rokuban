@@ -88,7 +88,7 @@ describe('useOffsetSession', () => {
     expect(result.current.offsetSeconds).toBe(20)
     expect(result.current.sessionStartSeconds).toBe(20)
     expect(result.current.startPositionSeconds).toBeCloseTo(0.75)
-    expect(result.current.isResumePlaybackPending()).toBe(true)
+    expect(result.current.resumePlaybackPendingRef.current).toBe(true)
     expect(onRecordingPositionChange).toHaveBeenCalledWith(20.75)
     expect(onLeave).toHaveBeenCalledWith(5)
   })
@@ -125,7 +125,7 @@ describe('useOffsetSession', () => {
     expect(result.current.offsetSeconds).toBe(55)
     expect(result.current.startPositionSeconds).toBe(0)
     expect(result.current.sessionKey).not.toBe(previousSession)
-    expect(result.current.isResumePlaybackPending()).toBe(true)
+    expect(result.current.resumePlaybackPendingRef.current).toBe(true)
     expect(onLeave).toHaveBeenCalledWith(62)
   })
 

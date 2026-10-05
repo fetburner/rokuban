@@ -173,15 +173,6 @@ export function useOffsetSession({
     setStoredState(next)
   }, [])
 
-  const setResumePlaybackPending = useCallback((pending: boolean) => {
-    resumePlaybackPendingRef.current = pending
-  }, [])
-  const isResumePlaybackPending = useCallback(() => resumePlaybackPendingRef.current, [])
-  const setStartReassertPending = useCallback((pending: boolean) => {
-    startReassertPendingRef.current = pending
-  }, [])
-  const isStartReassertPending = useCallback(() => startReassertPendingRef.current, [])
-
   const restartAtOffset = useCallback((
     offsetSeconds: number,
     startPositionSeconds = 0,
@@ -311,10 +302,8 @@ export function useOffsetSession({
     startPositionSeconds,
     hasExplicitStart: currentState.explicit,
     sessionKey: `${currentState.identity}:${currentState.generation}`,
-    setResumePlaybackPending,
-    isResumePlaybackPending,
-    setStartReassertPending,
-    isStartReassertPending,
+    resumePlaybackPendingRef,
+    startReassertPendingRef,
     restartAtOffset,
     retry,
     seek,

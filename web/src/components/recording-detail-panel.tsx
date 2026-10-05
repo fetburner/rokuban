@@ -218,7 +218,6 @@ export function RecordingDetail({
     recordingPositionSecondsRef.current = undefined
     sourceRetryRef.current = { count: 0, position: 0 }
   }, [recording.id])
-  const [chaseOffsetSeconds, setChaseOffsetSeconds] = useState<number | undefined>(undefined)
   const [selectedPlaybackProfile, setSelectedPlaybackProfile] = useState<string | undefined>(undefined)
   const playbackFullscreenContainerRef = useRef<HTMLElement>(null)
   // 次のエピソードへ移るときページは作り直さず（全画面を保つため）、同じ部品に別の録画が来る。
@@ -230,7 +229,6 @@ export function RecordingDetail({
     if (autoPlayNextRecordingId !== null) setAutoPlayNextRecordingId(null)
     setSelectedTab(defaultDetailTab())
     setDescriptionExpanded(false)
-    setChaseOffsetSeconds(undefined)
     setSelectedPlaybackProfile(undefined)
     setPlaybackState(initialPlaybackState(shouldAutoPlay))
   }
@@ -254,13 +252,11 @@ export function RecordingDetail({
       positionSeconds: undefined,
       generation: playbackStateRef.current.generation + 1,
     })
-    setChaseOffsetSeconds(undefined)
   }
   const startPlaybackSource = (source: 'encoded' | 'original-vod', profile?: string) => {
     const current = playbackStateRef.current
     const position = recordingPositionSecondsRef.current ?? current.positionSeconds
     if (source === 'encoded' && profile !== undefined) setSelectedPlaybackProfile(profile)
-    setChaseOffsetSeconds(undefined)
     updatePlaybackState({
       source,
       started: true,
@@ -315,7 +311,6 @@ export function RecordingDetail({
       positionSeconds: position ?? current.positionSeconds,
       generation: current.generation + 1,
     })
-    if (position !== undefined) setChaseOffsetSeconds(undefined)
     return true
   }
   const reportRecordingPosition = (seconds: number) => {
@@ -333,10 +328,6 @@ export function RecordingDetail({
     : playbackState.startFromBeginning
       ? { type: 'beginning' }
       : { type: 'saved-position', positionMs: recording.resumePositionMs }
-  // 親は開始意図だけを渡す。セッション中の offset は LivePlayer の hook が更新する。
-  const chaseStart: OffsetSessionStart = chaseOffsetSeconds === undefined
-    ? playbackStart
-    : { type: 'offset', offsetSeconds: chaseOffsetSeconds }
   // 追っかけ・原本 VOD、または版タブから原本 HLS へ切り替えられる録画だけ live
   // プロファイルを取る。一覧取得ではセッションを作らない。
   const canSwitchToOriginalVOD =
@@ -614,7 +605,7 @@ export function RecordingDetail({
               mode="chase"
               site={recording.site}
               recordingId={recording.id}
-              offsetSessionStart={chaseStart}
+              offsetSessionStart={playbackStart}
               profile={explicitLiveProfile}
               availableProfiles={liveProfiles}
               onProfileChange={onSelectLiveProfile}
