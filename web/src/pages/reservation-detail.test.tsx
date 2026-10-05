@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CapacityOverage, Reservation, Rule } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { routeTree } from '@/routes'
+import { assertNoDuplicateAlertText } from '@/test/duplicate-alerts'
 
 const dayStart = new Date(2026, 6, 25, 0, 0, 0, 0)
 
@@ -159,13 +160,14 @@ function stubFetch(
 const clients: QueryClient[] = []
 
 afterEach(() => {
-  // vitest は globals 無しなので RTL の自動 cleanup は登録されず、cleanup は
-  // src/test/setup.ts が afterEach で明示登録している。後に登録した afterEach が先に
-  // 走るため、このファイルの afterEach は setup.ts の cleanup より先に走り、キャッシュを
-  // clear する時点でまだマウント中になる。ここで先に unmount して、マウント中の React
-  // observer へ通知が飛ばないようにする。
-  cleanup()
-  for (const c of clients.splice(0)) c.clear()
+  try {
+    // このファイルの afterEach は setup.ts より先に走るため、共通 guard を先に実行する。
+    assertNoDuplicateAlertText()
+  } finally {
+    // clear 時にマウント中の React observer へ通知が飛ばないよう先に unmount する。
+    cleanup()
+    for (const c of clients.splice(0)) c.clear()
+  }
 })
 
 function renderAt(

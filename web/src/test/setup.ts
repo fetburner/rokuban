@@ -2,6 +2,8 @@ import { cleanup } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach } from 'vitest'
 
+import { assertNoDuplicateAlertText } from './duplicate-alerts'
+
 // jsdom は ResizeObserver を実装していない。PageHeader
 // （components/page.tsx）と CircuitBreakerBanner が使うため、
 // テスト環境向けに no-op のスタブを用意する。
@@ -52,20 +54,8 @@ HTMLMediaElement.prototype.play = function (this: HTMLMediaElement) {
 // 同じ文言を重ねて読み上げないよう、終了時の DOM を cleanup より先に検査する。
 // 検査で失敗しても次のテストへ DOM を残さないよう cleanup は finally で行う。
 afterEach(() => {
-  const alertCounts = new Map<string, number>()
-  for (const alert of document.body.querySelectorAll<HTMLElement>('[role="alert"]')) {
-    const text = alert.textContent?.replace(/\s+/g, ' ').trim() ?? ''
-    alertCounts.set(text, (alertCounts.get(text) ?? 0) + 1)
-  }
-
-  const duplicates = [...alertCounts]
-    .filter(([, count]) => count > 1)
-    .map(([text]) => JSON.stringify(text))
-
   try {
-    if (duplicates.length > 0) {
-      throw new Error(`Duplicate role="alert" text: ${duplicates.join(', ')}`)
-    }
+    assertNoDuplicateAlertText()
   } finally {
     cleanup()
   }

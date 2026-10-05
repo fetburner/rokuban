@@ -18,10 +18,15 @@ import { recordingsQueryKeyPrefix } from '@/lib/events'
 import { cmDetectStageMessage } from '@/lib/cm-detect-stage'
 import { formatTime } from '@/lib/format'
 import { routeTree } from '@/routes'
+import { assertNoDuplicateAlertText } from '@/test/duplicate-alerts'
 
 afterEach(() => {
-  cleanup()
-  vi.restoreAllMocks()
+  try {
+    assertNoDuplicateAlertText()
+  } finally {
+    cleanup()
+    vi.restoreAllMocks()
+  }
 })
 
 function sampleRecording(overrides: Partial<Recording> = {}): Recording {
