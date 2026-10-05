@@ -517,11 +517,10 @@ export function LivePlayer({
     recordingDurationMs !== undefined && Number.isFinite(recordingDurationMs) && recordingDurationMs > 0
       ? recordingDurationMs / 1000
       : 0
-  const chaseHeadOffsetSeconds = chaseTimeline?.chaseHeadOffsetSeconds ?? 0
-  const chaseRecordedEndSeconds = chaseHeadOffsetSeconds + (chaseTimeline?.recordedSeconds ?? 0)
-  const chasePlannedEndSeconds = chaseTimeline?.plannedSeconds ?? 0
-  const chaseTimelineMaxSeconds = Math.max(1, chasePlannedEndSeconds, chaseRecordedEndSeconds)
-  const chaseLiveEdgeSeconds = Math.max(0, chaseRecordedEndSeconds - 1)
+  const [chaseHoverSeconds, setChaseHoverSeconds] = useState<number | null>(null)
+  // 追っかけの軸（先頭・録画済み終端・予定終端・先端・最大）はここで 1 回だけ作り、描画もシークもここを読む。
+  const chaseAxis = isChase && chaseTimeline ? chasePlaybackTimeline(chaseTimeline, chaseHoverSeconds) : undefined
+  const chaseHeadOffsetSeconds = chaseAxis?.headSeconds ?? 0
   const [originalCurrentSeconds, setOriginalCurrentSeconds] = useState(0)
   const [originalPreviewSeconds, setOriginalPreviewSeconds] = useState<number | null>(null)
   const [chasePositionState, setChasePositionState] = useState<{
@@ -534,7 +533,6 @@ export function LivePlayer({
     seconds: chaseHeadOffsetSeconds + offsetSessionSeconds + (sessionStartPositionSeconds ?? 0),
   })
   const [chasePreviewSeconds, setChasePreviewSeconds] = useState<number | null>(null)
-  const [chaseHoverSeconds, setChaseHoverSeconds] = useState<number | null>(null)
   const isChaseScrubbingRef = useRef(false)
   const isLiveProgramScrubbingRef = useRef(false)
   const [liveHoverSeconds, setLiveHoverSeconds] = useState<number | null>(null)
@@ -1525,13 +1523,6 @@ export function LivePlayer({
       : chaseHeadOffsetSeconds + offsetSessionSeconds + (sessionStartPositionSeconds ?? 0)
   // ドラッグ中・キー操作中だけ位置のプレビューでつまみと時刻を動かす。マウスのホバーは吹き出しだけ。
   const visibleChaseSeconds = chasePreviewSeconds ?? chaseCurrentSeconds
-  const chaseTimelineBar = isChase
-    ? chasePlaybackTimeline(chaseTimeline ?? {
-        chaseHeadOffsetSeconds: 0,
-        plannedSeconds: 0,
-        recordedSeconds: 0,
-      }, chaseHoverSeconds)
-    : undefined
   const liveTimelineBar = isLive && liveProgram
     ? liveProgramPlaybackTimeline({ ...liveProgram, hoverSeconds: liveHoverSeconds }) ?? undefined
     : undefined
@@ -1553,9 +1544,9 @@ export function LivePlayer({
   }
   const chaseSeekTargetAtPointer = (event: ReactPointerEvent<HTMLDivElement>): number | null => {
     const rect = event.currentTarget.getBoundingClientRect()
-    if (rect.width <= 0) return null
+    if (rect.width <= 0 || !chaseAxis) return null
     const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
-    return Math.round(fraction * chaseTimelineMaxSeconds)
+    return Math.round(fraction * chaseAxis.maxSeconds)
   }
   const handleChaseSeekPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const target = chaseSeekTargetAtPointer(event)
@@ -1573,10 +1564,11 @@ export function LivePlayer({
    * offset が変わったときの effect の cleanup が送る）。
    */
   const commitChaseSeek = (timelineSeconds: number) => {
+    if (!chaseAxis) return
     setChasePreviewSeconds(null)
     startReassertPendingRef.current = false
     const target = Math.round(
-      Math.max(0, Math.min(chaseLiveEdgeSeconds, timelineSeconds) - chaseHeadOffsetSeconds),
+      Math.max(0, Math.min(chaseAxis.liveEdgeSeconds, timelineSeconds) - chaseHeadOffsetSeconds),
     )
     const result = seekOffsetSession(target)
     if (result.type === 'source-changed' || result.type === 'unavailable') return
@@ -1992,12 +1984,12 @@ export function LivePlayer({
         recordingId={recordingId}
         profile={menuProfile}
         encodedAssets={[]}
-        timeline={chaseTimelineBar ?? liveTimelineBar ?? (isOriginalVOD ? fixedPlaybackTimeline(originalDurationSeconds) : undefined)}
+        timeline={chaseAxis ?? liveTimelineBar ?? (isOriginalVOD ? fixedPlaybackTimeline(originalDurationSeconds) : undefined)}
         className={className}
         liveNotice={isLive ? liveNotice : undefined}
-        liveEdgeAction={isChase && onReturnLive ? {
+        liveEdgeAction={chaseAxis && onReturnLive ? {
           label: 'ライブへ戻る',
-          title: `ライブ ${formatPlaybackTime(chaseTimelineBar?.recordedEndSeconds ?? chaseRecordedEndSeconds, false)}（押すとライブへ戻る）`,
+          title: `ライブ ${formatPlaybackTime(chaseAxis.recordedEndSeconds, false)}（押すとライブへ戻る）`,
         } : undefined}
         toolbarSlot={toolbarSlot}
         showCenterControls={!isLive}
@@ -2016,7 +2008,7 @@ export function LivePlayer({
         video={<>{video}{playerOverlay}</>}
         currentSeconds={isLive ? liveProgramEdgeSeconds : isChase ? visibleChaseSeconds : visibleOriginalSeconds}
         durationSeconds={isLive ? liveProgramDurationSeconds : isChase
-          ? chaseTimelineMaxSeconds
+          ? (chaseAxis?.maxSeconds ?? 0)
           : originalDurationSeconds}
         playedFraction={originalPlayedFraction}
         chapters={chapterEditing ? [] : (chapters ?? [])}
@@ -2063,7 +2055,7 @@ export function LivePlayer({
             commitOriginalSeek(seconds)
           }
         }}
-        onLiveEdgeSeek={isChase ? onReturnLive ?? (() => commitChaseSeek(chaseLiveEdgeSeconds)) : undefined}
+        onLiveEdgeSeek={chaseAxis ? onReturnLive ?? (() => commitChaseSeek(chaseAxis.liveEdgeSeconds)) : undefined}
         deferKeyboardSeek
         onSeekPreview={(seconds) => {
           if (isLive) {

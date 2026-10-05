@@ -7,16 +7,12 @@ import {
 } from '@/lib/playback-timeline'
 
 describe('playback timeline descriptions', () => {
-  it('describes a fixed playback range without markers or unavailable segments', () => {
+  it('describes a fixed playback range', () => {
     expect(fixedPlaybackTimeline(3600)).toEqual({
       kind: 'fixed',
       minSeconds: 0,
       maxSeconds: 3600,
       canSeek: true,
-      unavailableSegments: [],
-      markers: [],
-      hoverSeconds: null,
-      hoverLabel: null,
       extended: false,
     })
   })
@@ -28,7 +24,8 @@ describe('playback timeline descriptions', () => {
       recordedSeconds: 2520,
     }, 3000)
 
-    expect(timeline).toMatchObject({
+    expect(timeline).toEqual({
+      kind: 'chase',
       minSeconds: 0,
       maxSeconds: 3600,
       canSeek: true,
@@ -36,14 +33,6 @@ describe('playback timeline descriptions', () => {
       recordedEndSeconds: 2700,
       plannedEndSeconds: 3600,
       liveEdgeSeconds: 2699,
-      unavailableSegments: [
-        { id: 'before', startSeconds: 0, endSeconds: 180 },
-        { id: 'after', startSeconds: 2700, endSeconds: 3600 },
-      ],
-      markers: [
-        { kind: 'planned-end', seconds: 3600, visible: true },
-        { kind: 'live-edge', seconds: 2699, visible: true, actionable: true },
-      ],
       hoverSeconds: 3000,
       hoverLabel: 'まだ録画されていません',
       extended: false,
@@ -60,7 +49,8 @@ describe('playback timeline descriptions', () => {
       hoverSeconds: 600,
     })
 
-    expect(timeline).toMatchObject({
+    expect(timeline).toEqual({
+      kind: 'live-program',
       minSeconds: 0,
       maxSeconds: 5400,
       canSeek: true,
@@ -68,16 +58,12 @@ describe('playback timeline descriptions', () => {
       plannedEndSeconds: 3600,
       recordingStartSeconds: 180,
       liveEdgeSeconds: 5400,
-      unavailableSegments: [{ id: 'before', startSeconds: 0, endSeconds: 180 }],
-      markers: [
-        { kind: 'planned-end', seconds: 3600, visible: true },
-        { kind: 'recording-start', seconds: 180, visible: true },
-        { kind: 'live-edge', seconds: 5400, visible: true },
-      ],
       hoverSeconds: 600,
       hoverLabel: 'ここから見る（録画中）',
       extended: true,
       ariaValueText: '90:00 / 60:00（番組表上の予定）',
+      startClock: expect.any(String),
+      endClock: expect.any(String),
     })
   })
 

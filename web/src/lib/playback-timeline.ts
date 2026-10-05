@@ -2,29 +2,10 @@ import { formatPlaybackTime, formatTime } from '@/lib/format'
 import { liveProgramAxis, programRecordingAccess } from '@/lib/live'
 import type { RecordingTimeline } from '@/lib/recording-timeline'
 
-/** PlaybackTimelineMarker は軸上の意味のある位置と表示・操作可否を表す。 */
-type PlaybackTimelineMarker = {
-  kind: 'planned-end' | 'recording-start' | 'live-edge'
-  seconds: number
-  visible: boolean
-  actionable?: boolean
-}
-
-/** PlaybackTimelineUnavailableSegment はシークできない時間範囲を表す。 */
-type PlaybackTimelineUnavailableSegment = {
-  id: 'before' | 'after' | 'all'
-  startSeconds: number
-  endSeconds: number
-}
-
 type PlaybackTimelineBase = {
   minSeconds: number
   maxSeconds: number
   canSeek: boolean
-  unavailableSegments: PlaybackTimelineUnavailableSegment[]
-  markers: PlaybackTimelineMarker[]
-  hoverSeconds: number | null
-  hoverLabel: string | null
   extended: boolean
 }
 
@@ -42,7 +23,8 @@ type ChasePlaybackTimeline = PlaybackTimelineBase & {
   recordedEndSeconds: number
   plannedEndSeconds: number
   liveEdgeSeconds: number
-  recordedSegment: { startSeconds: number; endSeconds: number }
+  hoverSeconds: number | null
+  hoverLabel: string | null
 }
 
 /** LiveProgramPlaybackTimeline は番組予定を起点にしたライブ用の時間軸記述。 */
@@ -51,6 +33,8 @@ type LiveProgramPlaybackTimeline = PlaybackTimelineBase & {
   plannedEndSeconds: number
   recordingStartSeconds: number
   liveEdgeSeconds: number
+  hoverSeconds: number | null
+  hoverLabel: string | null
   canStartOver: boolean
   ariaValueText: string
   startClock: string
@@ -68,10 +52,6 @@ export function fixedPlaybackTimeline(durationSeconds: number): FixedPlaybackTim
     minSeconds: 0,
     maxSeconds,
     canSeek: true,
-    unavailableSegments: [],
-    markers: [],
-    hoverSeconds: null,
-    hoverLabel: null,
     extended: false,
   }
 }
@@ -86,22 +66,12 @@ export function chasePlaybackTimeline(
   const plannedEndSeconds = source.plannedSeconds
   const maxSeconds = Math.max(1, plannedEndSeconds, recordedEndSeconds)
   const liveEdgeSeconds = Math.max(0, recordedEndSeconds - 1)
-  const unavailableSegments: PlaybackTimelineUnavailableSegment[] = []
-  if (headSeconds > 0) unavailableSegments.push({ id: 'before', startSeconds: 0, endSeconds: headSeconds })
-  if (recordedEndSeconds < maxSeconds) {
-    unavailableSegments.push({ id: 'after', startSeconds: recordedEndSeconds, endSeconds: maxSeconds })
-  }
 
   return {
     kind: 'chase',
     minSeconds: 0,
     maxSeconds,
     canSeek: true,
-    unavailableSegments,
-    markers: [
-      { kind: 'planned-end', seconds: plannedEndSeconds, visible: true },
-      { kind: 'live-edge', seconds: liveEdgeSeconds, visible: true, actionable: true },
-    ],
     hoverSeconds,
     hoverLabel: hoverSeconds === null
       ? null
@@ -113,7 +83,6 @@ export function chasePlaybackTimeline(
     recordedEndSeconds,
     plannedEndSeconds,
     liveEdgeSeconds,
-    recordedSegment: { startSeconds: headSeconds, endSeconds: recordedEndSeconds },
   }
 }
 
@@ -136,29 +105,12 @@ export function liveProgramPlaybackTimeline(
 
   const access = programRecordingAccess(program.recordingId, program.startAt, program.recordingStartedAt)
   const recordingStartSeconds = access.recordingHeadSeconds ?? 0
-  const unavailableSegments: PlaybackTimelineUnavailableSegment[] = []
-  if (!access.canSeek) {
-    unavailableSegments.push({ id: 'all', startSeconds: 0, endSeconds: axis.maxSeconds })
-  } else {
-    if (recordingStartSeconds > 0) {
-      unavailableSegments.push({ id: 'before', startSeconds: 0, endSeconds: recordingStartSeconds })
-    }
-    if (axis.liveEdgeSeconds < axis.maxSeconds) {
-      unavailableSegments.push({ id: 'after', startSeconds: axis.liveEdgeSeconds, endSeconds: axis.maxSeconds })
-    }
-  }
 
   return {
     kind: 'live-program',
     minSeconds: 0,
     maxSeconds: axis.maxSeconds,
     canSeek: access.canSeek,
-    unavailableSegments,
-    markers: [
-      { kind: 'planned-end', seconds: axis.plannedSeconds, visible: axis.liveEdgeSeconds > axis.plannedSeconds },
-      { kind: 'recording-start', seconds: recordingStartSeconds, visible: access.canSeek },
-      { kind: 'live-edge', seconds: axis.liveEdgeSeconds, visible: true },
-    ],
     hoverSeconds: program.hoverSeconds,
     hoverLabel: program.hoverSeconds === null ? null : 'ここから見る（録画中）',
     extended: axis.liveEdgeSeconds > axis.plannedSeconds,
