@@ -1,7 +1,7 @@
 // 原本 MPEG-2 TS の一時 HLS を実ブラウザで確認する。
 //
 // original-only の完了録画を開き、HLS player が H.264/AAC の HLS を再生すること、
-// 実 seek、HLS の WebVTT 字幕レンディション、保存位置の復元、終端到達を測る。
+// キー操作・全画面・字幕 cue の位置、実 seek、保存位置の復元、終端到達を測る。
 //
 // **この E2E は streamer を起動しない。** API と streamer の URL を page.route で差し替え、
 // fixture を自前の ffmpeg 引数で作って配るだけである。製品の ffmpeg 引数（event playlist /
@@ -665,6 +665,7 @@ await page.waitForFunction(() => {
   const element = document.querySelector('video')
   return element !== null && element.videoWidth > 0 && element.currentTime > 1
 }, undefined, { timeout: 15000 }).catch(() => ng.push('① H.264 映像の実再生が始まらない'))
+
 if (process.env.E2E_SHOT_DIR) {
   mkdirSync(process.env.E2E_SHOT_DIR, { recursive: true })
   await page.screenshot({ path: path.join(process.env.E2E_SHOT_DIR, 'v3-original-vod.png') })
@@ -750,16 +751,18 @@ await page.waitForFunction(() => {
 }, undefined, { timeout: 10000 }).catch(() => ng.push('② HLS の WebVTT 字幕レンディションが text track にならない'))
 const cueResult = await video.evaluate(async (element) => {
   const track = Array.from(element.textTracks).find((candidate) => candidate.kind === 'subtitles')
-  if (!track) return { trackFound: false, cueCount: 0 }
+  if (!track) return { trackFound: false, kind: null, cueCount: 0 }
   track.mode = 'hidden'
   const deadline = Date.now() + 8000
   while ((track.cues?.length ?? 0) === 0 && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 50))
   }
-  return { trackFound: true, cueCount: track.cues?.length ?? 0 }
+  return { trackFound: true, kind: track.kind, cueCount: track.cues?.length ?? 0 }
 })
 if (!cueResult.trackFound || cueResult.cueCount === 0) {
   ng.push(`② WebVTT 字幕の cue を読み込めない (${JSON.stringify(cueResult)})`)
+} else {
+  log(`  HLS subtitle track.kind=${cueResult.kind}, cues=${cueResult.cueCount}`)
 }
 
 // 同じ原本 TS から作った 10 秒タイルと HLS 映像を同じ既知時刻で並べて確認する。
@@ -1897,5 +1900,133 @@ if (rewindAxis === null || !(rewindAxis >= 31.7 && rewindAxis < 34)) {
 }
 await rewindPage.close()
 delete offsetRecording.resumePositionMs
+
+// This runs after the established seek/offset checks so its explicit keyboard seeks and
+// pause events cannot change their saved-position fixtures or ⑤-f baseline.
+log('\n=== ⑫ 原本 HLS のキー操作・全画面・字幕 cue の位置 ===')
+growingEdge = false
+applyPositionWrites = false
+delete recording.resumePositionMs
+delete recording.watchedAt
+recording.encodedAssets = []
+await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
+const shortcutStartButton = page.getByTestId('recording-playback-start')
+await shortcutStartButton.waitFor({ timeout: 15000 })
+await shortcutStartButton.click()
+await video.waitFor({ timeout: 15000 })
+await page.waitForFunction(() => {
+  const element = document.querySelector('video')
+  return element !== null && Number.isFinite(element.duration) && element.duration > 0
+}, undefined, { timeout: 20000 })
+
+const seekByKey = async (key, startSeconds, expectedSeconds, label) => {
+  await video.evaluate((element, seconds) => {
+    element.pause()
+    element.currentTime = seconds
+    element.focus()
+  }, startSeconds)
+  await page.waitForFunction(
+    (seconds) => Math.abs(document.querySelector('video')?.currentTime - seconds) < 0.5,
+    startSeconds,
+    { timeout: 5000 },
+  ).catch(() => {})
+  await page.keyboard.press(key)
+  const settled = await page.waitForFunction(
+    (seconds) => {
+      const element = document.querySelector('video')
+      return element !== null && !element.seeking && Math.abs(element.currentTime - seconds) < 0.75
+    },
+    expectedSeconds,
+    { timeout: 2000 },
+  ).then(() => true).catch(() => false)
+  const actualSeconds = await video.evaluate((element) => element.currentTime)
+  if (!settled) {
+    ng.push(`⑫ ${label}: ${key} 後の位置 ${actualSeconds.toFixed(2)}s、期待 ${expectedSeconds.toFixed(2)}s`)
+  } else {
+    log(`  OK: ${key} ${startSeconds.toFixed(1)}s → ${actualSeconds.toFixed(2)}s`)
+  }
+}
+
+await seekByKey('ArrowLeft', 12, 2, '10 秒戻る')
+await seekByKey('ArrowRight', 2, 12, '10 秒進む')
+await seekByKey('j', 15, 0, '30 秒戻る')
+await seekByKey('l', 1, 16, '30 秒進む')
+for (let digit = 0; digit <= 9; digit += 1) {
+  // 5 は 8 秒を指すので、開始位置を 8 秒にすると何もしない実装でも通ってしまう。
+  const startSeconds = digit === 5 ? 4 : 8
+  await seekByKey(String(digit), startSeconds, (recordingDurationMs / 1000) * digit / 10, `${digit} 割へ移動`)
+}
+
+await video.evaluate((element) => {
+  element.pause()
+  element.muted = false
+  element.focus()
+})
+await page.keyboard.press('m')
+if (!(await video.evaluate((element) => element.muted))) {
+  ng.push('⑫ M: video にフォーカス中のミュート切り替えが効かない')
+}
+await video.evaluate((element) => element.focus())
+await page.keyboard.press('Space')
+const spaceStarted = await page.waitForFunction(
+  () => document.querySelector('video')?.paused === false,
+  undefined,
+  { timeout: 3000 },
+).then(() => true).catch(() => false)
+if (!spaceStarted) ng.push('⑫ Space: video にフォーカス中の再生が始まらない')
+await video.evaluate((element) => element.pause())
+
+await video.evaluate((element) => element.focus())
+await page.keyboard.press('f')
+const fullscreenEntered = await page.waitForFunction(
+  () => document.fullscreenElement !== null,
+  undefined,
+  { timeout: 3000 },
+).then(() => true).catch(() => false)
+const fullscreenTarget = await page.evaluate(() => document.fullscreenElement?.getAttribute('data-testid') ?? null)
+if (!fullscreenEntered || fullscreenTarget !== 'recording-playback-group') {
+  ng.push(`⑫ F: 全画面対象 = ${fullscreenTarget ?? '(なし)'}, want recording-playback-group`)
+} else {
+  log('  OK: F で recording-playback-group が全画面になる')
+}
+if (fullscreenEntered) {
+  await page.keyboard.press('Escape')
+  await page.waitForFunction(() => document.fullscreenElement === null, undefined, { timeout: 3000 }).catch(() => {})
+}
+
+await page.locator('[data-testid="recording-player-shell"]').hover()
+const subtitleButton = page.getByTestId('player-controls').getByRole('button', { name: '字幕' })
+if (await subtitleButton.getAttribute('aria-pressed') !== 'true') await subtitleButton.click()
+// The generated WebVTT cues are at 2–6 and 8–12 seconds. The key checks above leave the HLS
+// playlist past those segments, so seek back into a cue before measuring its line.
+await video.evaluate((element) => {
+  element.currentTime = 3
+  if (element.paused) void element.play().catch(() => {})
+})
+const raisedCue = await video.evaluate(async (element) => {
+  const deadline = Date.now() + 8000
+  const track = Array.from(element.textTracks).find((candidate) => candidate.kind === 'subtitles')
+  if (!track) return { kind: null, cueCount: 0, cueLine: null }
+  track.mode = 'showing'
+  while ((track.cues?.length ?? 0) === 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  return {
+    kind: track.kind,
+    mode: track.mode,
+    cueCount: track.cues?.length ?? 0,
+    cueLine: track.cues?.[0] && 'line' in track.cues[0] ? track.cues[0].line : null,
+  }
+})
+log(`  HLS TextTrack: ${JSON.stringify(raisedCue)}`)
+if (raisedCue.kind === null) {
+  ng.push('⑫ 原本 HLS の subtitle TextTrack がない')
+} else if (raisedCue.cueCount === 0 && engine === 'webkit') {
+  log('  WebKit の native HLS は cue を JS から公開しないため line 判定は未計測')
+} else if (raisedCue.cueCount === 0) {
+  ng.push(`⑫ 原本 HLS の cue を取得できない (${JSON.stringify(raisedCue)})`)
+} else if (typeof raisedCue.cueLine !== 'number' || raisedCue.cueLine >= 0) {
+  ng.push(`⑫ 原本 HLS の subtitle cue が操作バーの上へ移動していない (${JSON.stringify(raisedCue)})`)
+}
 
 await finish(ng, browser)

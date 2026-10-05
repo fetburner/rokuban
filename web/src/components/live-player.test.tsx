@@ -1954,17 +1954,26 @@ describe('LivePlayer の状態遷移', () => {
 })
 
 describe('LivePlayer のキー操作', () => {
-  it('M でミュートし、F でフルスクリーンにする', () => {
+  it('video にフォーカス中の Space と M は往復し、F は共有 player frame に適用する', () => {
     deferredFetch()
     const { container } = render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
     const video = container.querySelector('video')!
+    const play = vi.spyOn(video, 'play').mockResolvedValue()
+    const pause = vi.spyOn(video, 'pause').mockImplementation(() => {})
     const requestFullscreen = vi.fn(() => Promise.resolve())
-    Object.defineProperty(video, 'requestFullscreen', { value: requestFullscreen })
+    const playerFrame = container.querySelector('[data-testid="recording-player-frame"]')!
+    Object.defineProperty(playerFrame, 'requestFullscreen', { value: requestFullscreen })
 
-    fireEvent.keyDown(window, { key: 'm' })
-    fireEvent.keyDown(window, { key: 'F' })
+    fireEvent.keyDown(video, { key: ' ' })
+    Object.defineProperty(video, 'paused', { value: false, writable: true, configurable: true })
+    fireEvent.keyDown(video, { key: ' ' })
+    fireEvent.keyDown(video, { key: 'm' })
+    fireEvent.keyDown(video, { key: 'm' })
+    fireEvent.keyDown(video, { key: 'F' })
 
-    expect(video.muted).toBe(true)
+    expect(play).toHaveBeenCalledOnce()
+    expect(pause).toHaveBeenCalledOnce()
+    expect(video.muted).toBe(false)
     expect(requestFullscreen).toHaveBeenCalledOnce()
   })
 
@@ -2336,6 +2345,39 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
 
   const playlistRequests = (fetchMock: ReturnType<typeof vi.fn>) =>
     fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes('playlist.m3u8'))
+
+  it('video のページキーは追っかけ軸を動かし、0〜9 は割合 seek に使わない', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+    render(
+      <LivePlayer
+        mode="chase"
+        site="default"
+        recordingId={510}
+        chaseTimeline={{ chaseHeadOffsetSeconds: 0, plannedSeconds: 90, recordedSeconds: 60 }}
+      />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'currentTime', { value: 5, writable: true, configurable: true })
+    Object.defineProperty(video, 'duration', { value: 60, configurable: true })
+    Object.defineProperty(video, 'seekable', {
+      value: { length: 1, start: () => 0, end: () => 60 },
+      configurable: true,
+    })
+
+    fireEvent.keyDown(video, { key: 'ArrowRight' })
+    expect(video.currentTime).toBe(15)
+    fireEvent.keyDown(video, { key: 'ArrowLeft' })
+    expect(video.currentTime).toBe(5)
+    fireEvent.keyDown(video, { key: 'l' })
+    expect(video.currentTime).toBe(35)
+    fireEvent.keyDown(video, { key: 'j' })
+    expect(video.currentTime).toBe(5)
+    fireEvent.keyDown(video, { key: '5' })
+    expect(video.currentTime).toBe(5)
+  })
 
   // ライブページの追っかけ（onReturnLive あり）だけ「録画から再生中」を出す。録画詳細の追っかけには出さない。
   it.each([

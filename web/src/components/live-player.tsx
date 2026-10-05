@@ -74,6 +74,9 @@ import { cn } from '@/lib/utils'
 import { seekTilePlacement } from '@/lib/seek-tiles'
 import type { RecordingTimeline } from '@/lib/recording-timeline'
 
+const hlsSubtitleTracks = (video: HTMLVideoElement) =>
+  Array.from(video.textTracks).filter((track) => track.kind === 'subtitles')
+
 /** HlsLike は hls.js の型を静的 import せずに使うための最小限の形。 */
 type HlsLike = {
   destroy(): void
@@ -467,6 +470,8 @@ export function LivePlayer({
   }, [serverResumePosition])
   const videoRef = useRef<HTMLVideoElement>(null)
   const frameRef = useRef<HTMLDivElement>(null)
+  const keyboardSeekRef = useRef<(seconds: number) => void>(() => {})
+  const keyboardSeekFractionRef = useRef<(fraction: number) => void>(() => {})
   const hlsRef = useRef<HlsLike | null>(null)
   const isOriginalScrubbingRef = useRef(false)
   // 張り直したセッションの中で始める位置（シーク先 - offset の端数）。開始位置の明示に使う。
@@ -573,10 +578,6 @@ export function LivePlayer({
   const playAroundTimerRef = useRef<number | undefined>(undefined)
   const pendingBoundarySeekMsRef = useRef<number | null>(null)
   const [originalSubtitlesEnabled, setOriginalSubtitlesEnabled] = useState(isRecordingPlayback)
-  // 操作バーの枠（自動非表示・フォーカス・映像のタップ・全画面・PiP）は encoded の
-  // RecordingPlayer と同じ実装を使う。`<video>` 要素はこのコンポーネントでは作り直さない。
-  const frame = usePlayerFrame(videoRef, frameRef, undefined, fullscreenContainerRef)
-  const { setMediaPlaying } = frame
   const [chapterSkipEnabled, setChapterSkipEnabled] = useState(loadChapterSkip)
   const chapterEditorStatusChange = onChapterEditorStatusChange ?? (() => {})
   const originalPreviousSecondsRef = useRef(0)
@@ -669,6 +670,19 @@ export function LivePlayer({
     }
     void persistPlaybackPosition(recordingId, write, keepalive)
   }, [isOriginalVOD, isRecordingPlayback, originalDurationSeconds, recordingId, sessionStartOffset])
+
+  // Shared frame behavior lives here. The playback source supplies its own seek semantics and
+  // HLS subtitle-track classification; live has no seek callbacks and chase has no ratio seek.
+  const frame = usePlayerFrame(videoRef, frameRef, undefined, {
+    fullscreenContainerRef,
+    onSeekBy: isRecordingPlayback ? (seconds) => keyboardSeekRef.current(seconds) : undefined,
+    onSeekToFraction: isOriginalVOD ? (fraction) => keyboardSeekFractionRef.current(fraction) : undefined,
+    onSavePosition: isRecordingPlayback ? saveCurrentPosition : undefined,
+    savePositionKey: `${mode}:${recordingId}:${sessionStartOffset}:${originalVODStartOffset}`,
+    getSubtitleTracks: hlsSubtitleTracks,
+    subtitleState: originalSubtitlesEnabled,
+  })
+  const { setMediaPlaying } = frame
   // onDiagnostics は ref 越しに読む。probe / hls.js のセットアップを担う
   // メイン effect の依存配列に関数 prop をそのまま入れると、呼び出し側が
   // 毎レンダー新しい関数を渡した場合にプレイリストの再取得・hls インスタンスの
@@ -707,24 +721,6 @@ export function LivePlayer({
   }, [])
 
   useEffect(() => () => window.clearTimeout(playAroundTimerRef.current), [])
-
-  useEffect(() => {
-    if (!isRecordingPlayback || recordingId === undefined) return
-    const saveIfPlaying = () => {
-      const video = videoRef.current
-      if (video && !video.paused) saveCurrentPosition(video)
-    }
-    const onPageHide = () => {
-      const video = videoRef.current
-      if (video) saveCurrentPosition(video, true)
-    }
-    const timer = window.setInterval(saveIfPlaying, 15_000)
-    window.addEventListener('pagehide', onPageHide)
-    return () => {
-      window.clearInterval(timer)
-      window.removeEventListener('pagehide', onPageHide)
-    }
-  }, [isRecordingPlayback, recordingId, saveCurrentPosition])
 
   useEffect(() => {
     onDiagnosticsRef.current = onDiagnostics
@@ -771,34 +767,6 @@ export function LivePlayer({
       setActivePlaybackRate(appliedRate)
     }
   }, [activePlaybackRate, chapterEditing, isRecordingPlayback, nativeHlsEventPlaylist, saveActivePlaybackRate, setActivePlaybackRate])
-
-  // ライブのページキー操作は M / F だけ。録画向けの速度変更は出さない。
-  // 追っかけの速度は設定メニューで扱い、通常のライブ視聴には適用しない。
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const video = videoRef.current
-      if (!video || event.ctrlKey || event.metaKey || event.altKey) return
-      if (
-        event.target instanceof Element &&
-        event.target.closest('input, textarea, select, button, a, video, [contenteditable]')
-      ) {
-        return
-      }
-
-      switch (event.key.toLowerCase()) {
-        case 'm':
-          video.muted = !video.muted
-          event.preventDefault()
-          break
-        case 'f':
-          void video.requestFullscreen?.()
-          event.preventDefault()
-      }
-    }
-
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -1821,6 +1789,20 @@ export function LivePlayer({
     }
     setOriginalCurrentSeconds(target)
   }
+  useEffect(() => {
+    keyboardSeekRef.current = (seconds) => {
+      const video = videoRef.current
+      if (!video) return
+      if (isChase) {
+        commitChaseSeek(chaseHeadOffsetSeconds + chaseStartOffset + video.currentTime + seconds)
+      } else if (isOriginalVOD) {
+        commitOriginalSeek(sessionStartOffset + video.currentTime + seconds)
+      }
+    }
+    keyboardSeekFractionRef.current = (fraction) => {
+      if (isOriginalVOD) commitOriginalSeek(originalDurationSeconds * fraction)
+    }
+  })
   const seekToOriginalBoundary = (boundaryMs: number) => {
     const media = videoRef.current
     if (!media) return
