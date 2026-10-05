@@ -41,7 +41,7 @@ type EncodeSettingsFieldsProps = {
  *
  * プロファイル一覧は `GET /api/encode-profiles` から取る（設定に無い名前を
  * 自由入力させない）。`until_encoded` かつプロファイル空はクライアントでも止め、
- * 理由をボタン横に出せるよう `encodeSettingsError` と対になる。
+ * 文言はこの欄が `role="alert"` で出し、親は `encodeSettingsError` を保存可否の判定にだけ使う。
  *
  * 原本削除後は再エンコードできない、という注意を常に出す（issue #68）。
  */
