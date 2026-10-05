@@ -60,6 +60,7 @@ import {
   applyPlaybackRate,
   loadChapterEditPlaybackRate,
   clearLegacyPlaybackPositions,
+  PLAYBACK_POSITION_MINIMUM_MS,
   effectivePlaybackRate,
   loadPlaybackRate,
   playbackPositionWrite,
@@ -435,8 +436,11 @@ export function LivePlayer({
   // `serverResumePosition` が起点から測って `startPosition` に渡す。
   const initialOriginalVODStart = {
     recordingId,
-    offset: explicitOriginalVODStartOffset ??
-      (isOriginalVOD && resumePositionMs !== undefined && resumePositionMs >= 2000
+    offset:
+      explicitOriginalVODStartOffset ??
+      (isOriginalVOD &&
+        resumePositionMs !== undefined &&
+        resumePositionMs >= PLAYBACK_POSITION_MINIMUM_MS
         ? Math.floor(resumePositionMs / 1000)
         : 0),
     explicit: explicitOriginalVODStartOffset !== undefined,
@@ -458,7 +462,7 @@ export function LivePlayer({
     : chaseStartOffset
   const hasExplicitRecordingStart = isChase ? hasExplicitChaseStart : originalVODStartIsExplicit
   const serverResumePosition =
-    resumePositionMs !== undefined && resumePositionMs >= 2000
+    resumePositionMs !== undefined && resumePositionMs >= PLAYBACK_POSITION_MINIMUM_MS
       ? Math.max(resumePositionMs / 1000 - sessionStartOffset, 0)
       : null
   const serverResumePositionRef = useRef(serverResumePosition)

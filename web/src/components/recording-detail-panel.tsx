@@ -34,6 +34,7 @@ import { RecordingPlaybackPoster, type PosterTimeline } from '@/components/recor
 import { RecordingPlayer } from '@/components/recording-player'
 import { LivePlayer } from '@/components/live-player'
 import { ThumbnailProgressLine } from '@/components/thumbnail-overlay'
+import { recordingThumbnailURL } from '@/lib/recording-media'
 import { useToast } from '@/components/toaster'
 import { Button } from '@/components/ui/button'
 import {
@@ -1125,7 +1126,7 @@ export function RecordingDetail({
                   >
                     <span className="relative aspect-video w-20 shrink-0 overflow-hidden rounded bg-muted">
                       <img
-                        src={`/api/media/recordings/${item.id}/thumbnail`}
+                        src={recordingThumbnailURL(item.id)}
                         alt=""
                         loading="lazy"
                         className="size-full object-cover"

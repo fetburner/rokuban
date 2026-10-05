@@ -17,6 +17,7 @@ import { ToastProvider } from '@/components/toaster'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
 import { cmDetectStageMessage } from '@/lib/cm-detect-stage'
 import { formatTime } from '@/lib/format'
+import { recordingThumbnailURL } from '@/lib/recording-media'
 import { routeTree } from '@/routes'
 import { assertNoDuplicateAlertText } from '@/test/duplicate-alerts'
 
@@ -388,7 +389,7 @@ describe('RecordingDetailPage', () => {
     expect(screen.queryByText('完了')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '録画状態を記録タブで見る' })).not.toBeInTheDocument()
     expect(document.querySelector('video')).toBeInTheDocument()
-    expect(document.querySelector('img[src="/api/media/recordings/3/thumbnail"]')).not.toBeInTheDocument()
+    expect(document.querySelector(`img[src="${recordingThumbnailURL(3)}"]`)).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'ダウンロード / VLC' })).toBeInTheDocument()
     expect(screen.getByText('976.6 KB')).toBeInTheDocument()
     await openRecordingMenu()
@@ -2697,7 +2698,7 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
     expect(card).toHaveTextContent('作品X 第4話')
     expect(card).toHaveTextContent(formatTime('2026-01-08T12:00:00Z'))
     expect(within(card).getByTestId('end-card-countdown-ring')).toBeInTheDocument()
-    expect(card.querySelector('img')).toHaveAttribute('src', '/api/media/recordings/4/thumbnail')
+    expect(card.querySelector('img')).toHaveAttribute('src', recordingThumbnailURL(4))
   })
 
   // 次の回へ移ってもページ（プレイヤーの枠）は作り直さない（全画面を保つため）。録画ごとの状態は

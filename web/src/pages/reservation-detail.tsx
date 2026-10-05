@@ -34,6 +34,7 @@ import { formatDateTime, formatDuration } from '@/lib/format'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
 import { programTitle } from '@/lib/program-labels'
 import { makeRuleLabel } from '@/lib/rule-label'
+import { cancelReservationIntent, reviveReservationIntent } from '@/lib/reservation-actions'
 import { reservationVerdict } from '@/lib/reservation-labels'
 
 /**
@@ -130,20 +131,22 @@ export function ReservationDetailPage() {
   const cancel = () => {
     if (!reservation) return
     const source = reservation.source
-    putIntent.mutate(
-      { site: reservation.site, programId: reservation.programId, data: { action: 'skip' } },
-      {
-        onSuccess: () => {
-          toast({
-            message: '予約を取消しました',
-            actions: [{ label: '元に戻す', onClick: () => revive(source) }],
-          })
-          void navigate({ to: '/reservations' })
-        },
-        onError: (err) =>
-          toast({ message: mutationErrorMessage('予約の取消に失敗しました', err), kind: 'error' }),
-      },
-    )
+    void (async () => {
+      try {
+        await cancelReservationIntent(
+          putIntent.mutateAsync,
+          reservation.site,
+          reservation.programId,
+        )
+        toast({
+          message: '予約を取消しました',
+          actions: [{ label: '元に戻す', onClick: () => revive(source) }],
+        })
+        void navigate({ to: '/reservations' })
+      } catch (err) {
+        toast({ message: mutationErrorMessage('予約の取消に失敗しました', err), kind: 'error' })
+      }
+    })()
   }
 
   // revive はトーストの「元に戻す」から呼ぶ。`cancel` が遷移するため、
@@ -160,24 +163,16 @@ export function ReservationDetailPage() {
   // 依存しない）。site / programId は URL のパラメータ（route の宛先
   // そのもの）を使う。
   //
-  // `source` で分岐する: 手動予約の逆操作は `PUT intent{record}` でよいが、
-  // ルール由来の予約に対して同じ PUT を送ると `program_intents` に record 行が
-  // 残り、以後ルールがマッチしなくなっても予約が残る「種別: 手動」の予約に
-  // 恒久的に変わってしまう（`internal/api/handler.go` の source 導出、
-  // `TestGetReservation_SourceManualDespiteRuleMatch`）。ルール由来の厳密な
-  // 逆操作は `DELETE .../intent`（明示的な意見を取り下げ、ルール評価に戻す）。
   const revive = (source: Reservation['source']) => {
     void (async () => {
       try {
-        if (source === 'rule') {
-          await deleteIntent.mutateAsync({ site, programId: programIdNum })
-        } else {
-          await putIntent.mutateAsync({
-            site,
-            programId: programIdNum,
-            data: { action: 'record' },
-          })
-        }
+        await reviveReservationIntent(
+          putIntent.mutateAsync,
+          deleteIntent.mutateAsync,
+          site,
+          programIdNum,
+          source,
+        )
         void queryClient.invalidateQueries({ queryKey: [reservationsQueryKeyPrefix] })
         toast({ message: '予約を元に戻しました' })
       } catch (err) {

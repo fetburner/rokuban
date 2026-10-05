@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { Recording } from '@/api/generated'
 import { RecordingRow } from '@/components/recording-row'
+import { recordingThumbnailURL } from '@/lib/recording-media'
 import { renderInRouter } from '@/test/router'
 
 const base = { liveCapability: 'enabled', trash: false, showSite: false, view: 'list' } as const
@@ -72,7 +73,7 @@ describe('RecordingRow', () => {
 
     await screen.findByText('共有する録画')
     const img = container.querySelector('img')
-    expect(img).toHaveAttribute('src', '/api/media/recordings/42/thumbnail')
+    expect(img).toHaveAttribute('src', recordingThumbnailURL(42))
     fireEvent.error(img!)
     expect(container.querySelector('img')).toBeNull()
   })

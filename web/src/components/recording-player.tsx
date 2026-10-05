@@ -41,6 +41,7 @@ import {
   saveChapterEditPlaybackRate,
   savePlaybackRate,
 } from '@/lib/playback-position'
+import { recordingThumbnailURL } from '@/lib/recording-media'
 import { formatDate, formatTime } from '@/lib/format'
 import { programTitle } from '@/lib/program-labels'
 import { useDisplayedFrameSeconds } from '@/lib/use-displayed-frame'
@@ -339,7 +340,7 @@ export function RecordingPlayer({
         <div className="flex w-full max-w-3xl items-center gap-3 sm:gap-6">
           <div className="relative aspect-video w-[34%] max-w-72 shrink-0 overflow-hidden rounded-md bg-white/10">
             <img
-              src={`/api/media/recordings/${nextEpisode.id}/thumbnail`}
+              src={recordingThumbnailURL(nextEpisode.id)}
               alt=""
               className="size-full object-cover"
               onError={(event) => event.currentTarget.remove()}

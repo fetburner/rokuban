@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { RecordingPlaybackPoster } from '@/components/recording-playback-poster'
+import { recordingThumbnailURL } from '@/lib/recording-media'
 
 const timeline = {
   minSeconds: 0,
@@ -52,7 +53,7 @@ describe('RecordingPlaybackPoster', () => {
       <RecordingPlaybackPoster recordingId={1} timeline={timeline} recordedSeconds={0} onStart={() => {}} />,
     )
     const image = container.querySelector('img')!
-    expect(image).toHaveAttribute('src', '/api/media/recordings/1/thumbnail')
+    expect(image).toHaveAttribute('src', recordingThumbnailURL(1))
     fireEvent.error(image)
     expect(container.querySelector('img')).toBeNull()
   })
