@@ -1,5 +1,6 @@
+import { useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate, useParams } from '@tanstack/react-router'
+import { Link, useNavigate, useParams, useRouter } from '@tanstack/react-router'
 import { ArrowLeft, MoreVertical } from 'lucide-react'
 
 import { ApiError } from '@/api/client'
@@ -94,8 +95,17 @@ function reservationDetailQueryKey(site: string, programId: number) {
 export function ReservationDetailPage() {
   const { site, programId } = useParams({ from: '/reservations/$site/$programId' })
   const navigate = useNavigate()
+  const router = useRouter()
   const toast = useToast()
   const queryClient = useQueryClient()
+  const isMountedRef = useRef(false)
+
+  useEffect(() => {
+    isMountedRef.current = true
+    return () => {
+      isMountedRef.current = false
+    }
+  }, [])
 
   const programIdNum = Number(programId)
   const query = useGetProgramReservation(site, programIdNum, {
@@ -131,6 +141,7 @@ export function ReservationDetailPage() {
   const cancel = () => {
     if (!reservation) return
     const source = reservation.source
+    const cancelLocationHref = router.state.location.href
     void (async () => {
       try {
         await cancelReservationIntent(
@@ -138,12 +149,16 @@ export function ReservationDetailPage() {
           reservation.site,
           reservation.programId,
         )
+        // mutateAsync still resolves after unmount, which Undo needs. Cancel side effects
+        // belong to this detail page only (test: "取消待機中に別ページへ移動した場合、成功応答で現在のページを乗っ取らない").
+        if (!isMountedRef.current || router.state.location.href !== cancelLocationHref) return
         toast({
           message: '予約を取消しました',
           actions: [{ label: '元に戻す', onClick: () => revive(source) }],
         })
         void navigate({ to: '/reservations' })
       } catch (err) {
+        if (!isMountedRef.current || router.state.location.href !== cancelLocationHref) return
         toast({ message: mutationErrorMessage('予約の取消に失敗しました', err), kind: 'error' })
       }
     })()

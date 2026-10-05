@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -869,5 +869,43 @@ describe('ReservationDetailPage', () => {
       'true',
     )
     finishRequest?.(new Response(null, { status: 204 }))
+  })
+
+  it('取消待機中に別ページへ移動した場合、成功応答で現在のページを乗っ取らない', async () => {
+    const user = userEvent.setup()
+    let finishRequest: ((response: Response) => void) | undefined
+    const pending = new Promise<Response>((resolve) => {
+      finishRequest = resolve
+    })
+    stubFetch(
+      (site, programId) =>
+        site === 'default' && programId === 300000 ? baseReservation() : null,
+      ['default'],
+      [],
+      () => pending,
+    )
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { router } = renderAt('/reservations/default/300000', queryClient)
+
+    await cancelFromOverflow(user)
+    const cancelMutation = await waitFor(() => {
+      const mutation = queryClient
+        .getMutationCache()
+        .getAll()
+        .find((candidate) => candidate.state.status === 'pending')
+      if (!mutation) throw new Error('取消 mutation が pending になっていない')
+      return mutation
+    })
+
+    await act(async () => {
+      await router.navigate({ to: '/rules' })
+    })
+    expect(router.state.location.pathname).toBe('/rules')
+
+    finishRequest?.(new Response(null, { status: 204 }))
+    await waitFor(() => expect(cancelMutation.state.status).toBe('success'))
+
+    expect(router.state.location.pathname).toBe('/rules')
+    expect(screen.queryByText('予約を取消しました')).not.toBeInTheDocument()
   })
 })
