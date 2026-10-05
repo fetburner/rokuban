@@ -822,6 +822,15 @@ describe('RecordingDetailPage', () => {
     expect(screen.queryByText('実録画終了')).not.toBeInTheDocument()
   })
 
+  it('タイトル行の放送時刻は開始〜終了を「〜」でつなぐ', async () => {
+    createFakeServer({ recording: sampleRecording() })
+
+    renderAt('/recordings/3')
+
+    await screen.findByRole('heading', { name: '単体ページの録画' })
+    expect(screen.getByText(/ 21:00〜21:30$/)).toBeInTheDocument()
+  })
+
   it('実録画時刻が番組より遅れて始まり早く終わる差分もタイトル行に出す', async () => {
     createFakeServer({
       recording: sampleRecording({

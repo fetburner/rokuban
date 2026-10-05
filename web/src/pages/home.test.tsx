@@ -351,7 +351,7 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
     expect(screen.queryByText(/再生元/)).not.toBeInTheDocument()
     // ラフ（#1020）: ▶ 付きの主ボタン、メタは 1 行で位置を末尾に、サムネ内に局名と進み線
     expect(screen.getByTestId('home-primary-action')).toHaveTextContent('▶')
-    expect(screen.getByText(/\(.\) \d\d:\d\d · NHK総合 · 5:30 \/ /)).toBeInTheDocument()
+    expect(screen.getByText(/\(.\) \d\d:\d\d · NHK総合 · 5:30 \/ 1:00:00$/)).toBeInTheDocument()
     expect(screen.getByTestId('home-hero-station')).toHaveTextContent('NHK総合')
     expect(screen.getByTestId('home-hero-progress-line')).toBeInTheDocument()
     expect(
