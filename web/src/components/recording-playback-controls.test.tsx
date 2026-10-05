@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { ChapterSpan } from '@/api/generated'
 import { RecordingPlaybackControls } from '@/components/recording-playback-controls'
+import type { PlaybackAudioOption } from '@/components/recording-playback-controls'
+import { fixedPlaybackTimeline } from '@/lib/playback-timeline'
 
 function renderControls(
   playbackRateLocked: boolean,
@@ -11,14 +13,17 @@ function renderControls(
   onRateChange = vi.fn(),
   playbackRate = 1,
   chapters: ChapterSpan[] = [],
+  options: { canChangePlaybackRate?: boolean; audioOptions?: readonly PlaybackAudioOption[] } = {},
 ) {
   const noop = vi.fn()
   const props = {
     profile: 'hd',
     encodedAssets: [],
-    playbackMode: 'chase',
+    timeline: fixedPlaybackTimeline(100),
+    canChangePlaybackRate: options.canChangePlaybackRate ?? true,
+    ...(options.audioOptions === undefined ? {} : { audioOptions: options.audioOptions }),
     profileOptions: [{ name: 'hd' }, { name: 'sd' }],
-    fullscreenRef: createRef<HTMLDivElement>(),
+    frameRef: createRef<HTMLDivElement>(),
     video: <video />,
     currentSeconds: 0,
     durationSeconds: 100,
@@ -26,7 +31,7 @@ function renderControls(
     chapters,
     playingCut: false,
     chapterEditing,
-    tilePreview: { url: null },
+    tilePreview: null,
     tilesRequested: false,
     tilesAvailable: false,
     isPlaying: false,
@@ -66,7 +71,7 @@ function renderControls(
     onToolbarBlur: noop,
     onShellKeyDown: noop,
   }
-  render(<RecordingPlaybackControls {...(props as unknown as Parameters<typeof RecordingPlaybackControls>[0])} />)
+  render(<RecordingPlaybackControls {...props} />)
   if (chapterEditing) return undefined
   fireEvent.click(screen.getByRole('button', { name: '再生設定' }))
   return screen.getByRole('menu', { name: '再生設定' })
@@ -131,5 +136,27 @@ describe('速度メニュー行（変換中の固定）', () => {
     expect(screen.getByTestId('chapter-marker')).toHaveAttribute('title', 'ニュース 5:30〜6:00')
     fireEvent.click(screen.getByRole('button', { name: 'チャプター: 本編' }))
     expect(screen.getByRole('menuitemradio', { name: /5:30.*ニュース/ })).toBeInTheDocument()
+  })
+})
+
+describe('再生元固有の行は渡された事実から出す', () => {
+  it('速度を変えられないときは速度行を出さない', () => {
+    renderControls(false, false, vi.fn(), 1, [], { canChangePlaybackRate: false })
+
+    expect(screen.queryByRole('menuitem', { name: '再生速度' })).toBeNull()
+  })
+
+  it('音声の選択肢を渡したときだけ音声行を出す', () => {
+    const audioOptions: readonly PlaybackAudioOption[] = [
+      { value: undefined, label: '標準' },
+      { value: 'main', label: '主音声' },
+      { value: 'sub', label: '副音声' },
+    ]
+    renderControls(false, false, vi.fn(), 1, [], { audioOptions })
+
+    fireEvent.click(screen.getByRole('menuitem', { name: '音声' }))
+    expect(screen.getByRole('menuitemradio', { name: '標準' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('menuitemradio', { name: '主音声' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitemradio', { name: '副音声' })).toBeInTheDocument()
   })
 })

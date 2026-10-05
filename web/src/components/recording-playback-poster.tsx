@@ -1,18 +1,14 @@
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { formatDuration, formatPlaybackTime } from '@/lib/format'
+import type { PlaybackTimeline } from '@/lib/playback-timeline'
 import { recordingThumbnailURL } from '@/lib/recording-media'
 
-/** PosterTimeline は再生前のポスターに描く録画の時間軸。値は番組開始からの秒。 */
-export type PosterTimeline = {
-  /** 軸の左端（録画の始まりが番組開始より前なら負）。 */
-  minSeconds: number
-  maxSeconds: number
-  /** 録画の始まり。これより前は録っていない。 */
-  headSeconds: number
-  recordedEndSeconds: number
-  plannedEndSeconds: number
-}
+/** PosterTimeline は再生前のポスターに描く追っかけ時間軸の表示項目。 */
+export type PosterTimeline = Pick<
+  Extract<PlaybackTimeline, { kind: 'chase' }>,
+  'minSeconds' | 'maxSeconds' | 'headSeconds' | 'recordedEndSeconds' | 'plannedEndSeconds'
+>
 
 /**
  * RecordingPlaybackPoster は変換を伴う再生元（追っかけ・原本 HLS）の再生前の面である。

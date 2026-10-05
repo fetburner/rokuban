@@ -27,6 +27,7 @@ import {
   saveChapterSkip,
   skipTarget,
 } from '@/lib/chapters'
+import { fixedPlaybackTimeline } from '@/lib/playback-timeline'
 import {
   applyPlaybackRate,
   clearLegacyPlaybackPositions,
@@ -698,6 +699,8 @@ export function RecordingPlayer({
         recordingId={recordingId}
         profile={selectedProfile}
         encodedAssets={encodedAssets}
+        timeline={fixedPlaybackTimeline(durationSeconds)}
+        canChangePlaybackRate
         nextEpisode={nextEpisode}
         outsideProgramSegments={outsideProgramSegments}
         onNextEpisodeNavigate={onNextEpisodeNavigate}

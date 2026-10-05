@@ -2708,6 +2708,32 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
     expect(play).toHaveBeenCalledOnce()
   })
 
+  it('先端より後ろへシークしたら録画の先端（録画済み終端の 1 秒前）で止める', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    render(<LivePlayer mode="chase" site="default" recordingId={519} chaseTimeline={chaseTimeline} />)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const slider = screen.getByRole('slider', { name: 'シークバー' })
+    Object.defineProperty(slider, 'getBoundingClientRect', { value: rect600 })
+    // 軸 60 秒の 59 秒。録画済み終端 20 秒の 1 秒前 = 19 秒で止まる。
+    fireEvent.pointerDown(slider, { pointerId: 8, pointerType: 'mouse', clientX: 590 })
+    fireEvent.pointerUp(slider, { pointerId: 8, pointerType: 'mouse', clientX: 590 })
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+    expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/519/chase/offset/19/playlist.m3u8',
+    )
+  })
+
+  it('先端の印を押すと録画済み終端の 1 秒前へ移る', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    render(<LivePlayer mode="chase" site="default" recordingId={520} chaseTimeline={chaseTimeline} />)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    fireEvent.click(screen.getByTestId('chase-live-edge'))
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+    expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/520/chase/offset/19/playlist.m3u8',
+    )
+  })
+
   it('延長中に軸が伸びても、離したときはドラッグ中に見せた位置を確定する', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
     const props = { mode: 'chase' as const, site: 'default', recordingId: 518 }
@@ -2760,6 +2786,47 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
     expect(screen.getByTestId('playback-time')).toHaveTextContent('0:00 / 録画済み 70:12')
     expect(percent(screen.getByTestId('chase-timeline-planned-end'), 'left')).toBeCloseTo((3600 / 4212) * 100, 5)
     expect(percent(screen.getByTestId('chase-timeline-recorded'), 'width')).toBe(100)
+  })
+})
+
+describe('LivePlayer / 設定メニューの行は再生元の事実で決まる（issue #1169）', () => {
+  const settingsRows = (name: '再生設定' | 'ライブ設定') => {
+    if (!screen.queryByRole('menu', { name })) fireEvent.click(screen.getByRole('button', { name }))
+    return Array.from(screen.getByRole('menu', { name }).querySelectorAll('[role^="menuitem"]')).map((item) =>
+      item.getAttribute('aria-label'),
+    )
+  }
+  const profiles = [{ name: 'hd', height: 720 }, { name: 'sd', height: 360 }]
+
+  it('追っかけは再生速度の行を持ち、音声の行を持たない（追っかけの HLS は音声レンディションを出さない）', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    render(
+      <LivePlayer
+        mode="chase"
+        site="default"
+        recordingId={530}
+        chaseTimeline={{ chaseHeadOffsetSeconds: 0, plannedSeconds: 60, recordedSeconds: 20 }}
+        availableProfiles={profiles}
+      />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    // 音声トラックが届いていても行は出ない。行が無いのが呼び出し元の可否であることを見る。
+    hlsMockState.instances[0]!.audioTracks = [{}, {}, {}]
+    const rows = settingsRows('再生設定')
+    expect(rows).toContain('再生速度')
+    expect(rows).toContain('画質')
+    expect(rows).not.toContain('音声')
+  })
+
+  it('ライブは音声の行を持ち、再生速度の行を持たない', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    render(<LivePlayer site="default" networkId={0} serviceId={1024} availableProfiles={profiles} />)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    hlsMockState.instances[0]!.audioTracks = [{}, {}, {}]
+    const rows = settingsRows('ライブ設定')
+    expect(rows).toContain('音声')
+    expect(rows).toContain('画質')
+    expect(rows).not.toContain('再生速度')
   })
 })
 

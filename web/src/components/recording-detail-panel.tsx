@@ -31,6 +31,7 @@ import {
   RecordingVerdictBadge,
 } from '@/components/recording-badges'
 import { RecordingPlaybackPoster, type PosterTimeline } from '@/components/recording-playback-poster'
+import { chasePlaybackTimeline } from '@/lib/playback-timeline'
 import { RecordingPlayer } from '@/components/recording-player'
 import { LivePlayer } from '@/components/live-player'
 import { ThumbnailProgressLine } from '@/components/thumbnail-overlay'
@@ -363,14 +364,11 @@ export function RecordingDetail({
   const recordingStartMs = timeline.recordingFileStartAtMs ?? Number.NaN
   const programStartMs = timeline.programmeStartMs
   const availableChaseSeconds = timeline.availableChaseSeconds
-  const plannedChaseSeconds = timeline.plannedSeconds
-  const posterTimeline: PosterTimeline = {
-    minSeconds: 0,
-    maxSeconds: timeline.maxSeconds,
-    headSeconds: timeline.chaseHeadOffsetSeconds,
-    recordedEndSeconds: timeline.recordedEndSeconds,
-    plannedEndSeconds: plannedChaseSeconds,
-  }
+  const posterTimeline: PosterTimeline = chasePlaybackTimeline({
+    chaseHeadOffsetSeconds: timeline.chaseHeadOffsetSeconds,
+    plannedSeconds: timeline.plannedSeconds,
+    recordedSeconds: timeline.availableChaseSeconds,
+  }, null)
   // チャプター（CM とユーザー区間）。**ごみ箱では取らない** --- ごみ箱では
   // プレイヤーを出さず、配信経路も 404 になる（配信 3 クエリと同じ契約）。
   //
