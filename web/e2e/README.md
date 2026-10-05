@@ -246,8 +246,9 @@ playlist を Chromium の hls.js（`E2E_BROWSER=webkit` ならネイティブ HL
   fixture は offset のセッションを offset を含む 2 秒の segment の先頭から配るので、真の起点は
   `fixtureSessionOrigin`（奇数の offset では 1 秒手前）で、fixture と判定がこの式を共有する。種は起点が offset と
   一致する偶数にしてある。aria-valuenow は最初の timeupdate までは props から導いた値なので使わない。
-  保存位置からの開始位置を絶対値（offset を引かない）にする変異と、offset を 5 秒格子にする変異で落ちる
-  （保存位置 7 秒の種のとき Chromium で確認）
+  保存位置からの開始位置を絶対値（offset を引かない）にする変異は「offset 8 + 8」で落ちる。
+  offset を 5 秒格子にする変異は offset 5 で始まり、着地が「offset 5 + 3」（真の録画軸 7 秒）で落ちる
+  （以上、保存位置 8 秒の種と今の判定で Chromium で確認）
 - 録画中は offset の playlist も伸びる EVENT で、offset 無しの playlist と同じ時点で ENDLIST になる（⑥ 以降）。
   続きからは offset のセッションで始まるので、ENDLIST 前の振る舞い（⑥ の WebKit の速度固定）もこちらで測る。
   読み直しで要求が増えるので、⑨ の張り直しは要求回数ではなく別の offset を開いた回数で数える
@@ -273,11 +274,12 @@ playlist を Chromium の hls.js（`E2E_BROWSER=webkit` ならネイティブ HL
   2 秒未満は `removeItem` になるので、それも 0 として記録する。
   持ち越し中の保存ガードを外すと、WebKit では先頭再生で `0`、offset 4 秒の切替で
   `4` が書かれて落ちる。Chromium + hls.js では `timeupdate` が来ないので落ちない
-- **追っかけで見た位置から、完了後の VOD を開くと同じ位置 ± 1.6 秒に着地する**（⑧、
+- **追っかけで見た位置から、完了後の VOD を開くと同じ位置に着地する**（⑧、
   issue #975 受け入れ 2）。追っかけの保存位置（スタブ API が保持）を読み、録画を完了に
   切り替えて `/recordings/1` を開き直し、fixture の真の起点 + 再生が始まったときの `currentTime` を比べる。
-  プレイヤーは起点を 29.97 fps の格子点とみなすので、奇数の offset では真の着地が約 1 秒手前になる。
-  そこに開始位置の明示し直しの許容 0.5 秒を足した幅である。
+  プレイヤーは起点を 29.97 fps の格子点とみなすので、真の着地は既知の誤差（fixture の起点 - 格子点。
+  奇数の offset で約 -0.97 秒）だけずれる。期待値にこの誤差を足し、±0.5 秒で比べる。
+  再生が始まらないときは位置の不一致と別に報告する。
   **原本 VOD の `LivePlayer` に `resumePositionMs` を渡さない変異で
   `5.52 秒 → 0.00 秒` になって落ちる**（Chromium で確認。WebKit は未実施）
 - **追っかけ範囲外 seek で原本 HLS に移った後も再生が続く**（⑩）。最後に進んだ `currentTime` から

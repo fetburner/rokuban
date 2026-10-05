@@ -430,7 +430,8 @@ export function LivePlayer({
       ? resumePositionMs / 1000
       : null
   // 最初のセッションの offset を決めるためだけに、保存位置を録画・モードごとに最初の 1 回だけ取り込む。
-  // 保存で更新された値でセッションを張り直さない。再読み込みは取り込んだ値ではなく最新の値を使う。
+  // 保存で更新された値でセッションを張り直さない。再読み込みは、意図していた位置が保存位置なら最新の値を使い、
+  // その最新の値も無ければ、失敗したセッションをそのまま（取り込んだ開始位置を含めて）取り直す。
   const resumeCaptureKey = `${mode}|${recordingId}`
   const [resumeCapture, setResumeCapture] = useState({ key: resumeCaptureKey, seconds: resumeSeconds })
   const capturedResumeSeconds = resumeCapture.key === resumeCaptureKey ? resumeCapture.seconds : resumeSeconds
@@ -911,7 +912,7 @@ export function LivePlayer({
       const error = {
         position,
         reported: playedRef.current && position !== null ? position : undefined,
-        playing: media ? !media.paused || resumePlaybackPendingRef.current : false,
+        playing: (media !== null && !media.paused) || resumePlaybackPendingRef.current,
       }
       errorRef.current = error
       return error
@@ -1708,7 +1709,8 @@ export function LivePlayer({
    * reloadRecordingSession は「再読み込み」。失敗したセッションで意図していた録画軸の位置
    * （`intendedPosition`）から、シークと同じ経路で開き直す。まず親に再生元の選び直しを委ね
    * （録画が終わった追っかけは新しいセッションを作れない）、同じ再生元なら offset をその位置から導き直す。
-   * 意図していた位置が保存位置なら最新の保存位置を使い、マウント時に取り込んだ値へは戻さない。
+   * 意図していた位置が保存位置なら最新の保存位置を使う。どちらも分からなければ、失敗したセッションを
+   * そのまま（取り込んだ開始位置を含めて）取り直す。
    */
   const reloadRecordingSession = () => {
     const error = errorRef.current

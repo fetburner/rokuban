@@ -27,6 +27,7 @@ import {
   launchBrowser,
   log,
   sseKeepAlive,
+  streamerSeekSeconds,
   validateFixturesOrExit,
   verifyBundleMatchesOrExit,
 } from './lib.mjs'
@@ -1131,7 +1132,12 @@ async function settleRecordingPosition(expectedSeconds, timeoutMs = 7000) {
     if (
       state.readyState >= HTMLMediaElementHaveMetadata &&
       !state.seeking &&
-      Math.abs(lastChasePlaylistOffset + state.currentTime - expectedSeconds) < 0.25
+      // 真の録画軸は fixture の起点 + currentTime。プレイヤーは追っかけの起点を offset とみなすので、
+      // 期待値から既知の誤差（offset - fixture の起点。奇数の offset で 1 秒）を引いて比べる。
+      Math.abs(
+        fixtureSessionOrigin(lastChasePlaylistOffset) + state.currentTime -
+          (expectedSeconds - (lastChasePlaylistOffset - fixtureSessionOrigin(lastChasePlaylistOffset))),
+      ) < 0.25
     ) return { ok: true, state }
     await page.waitForTimeout(100)
     state = await videoState()
@@ -1564,16 +1570,18 @@ await page
   )
   .catch(() => ng.push('⑧ 完了後の VOD の duration が確定しない'))
 // 続きからは offset のセッションで始まる。真の録画軸は fixture の起点（offset を含む 2 秒の segment の先頭）
-// + 再生が始まったときの currentTime。プレイヤーは起点を 29.97 fps の格子点（offset の約 0.03 秒手前）と
-// みなして開始位置を決めるので、奇数の offset では真の着地が最大で約 1 秒手前になる。hls.js と開始位置の
-// 明示し直しの許容（0.5 秒）を足して 1.6 秒を許す。
+// + 再生が始まったときの currentTime。プレイヤーは起点を 29.97 fps の格子点（`streamerSeekSeconds`）とみなして
+// 開始位置を決めるので、真の着地は既知の誤差（fixture の起点 - 格子点。奇数の offset で約 -0.97 秒、偶数で約
+// +0.03 秒）だけずれる。期待値にこの誤差を足してから、開始位置の明示し直しの許容 0.5 秒で比べる。
 const vodLanding = await landingTime(page)
 const vodOffset = originalOffsetPlaylistRequests.slice(originalOffsetCursor).at(-1) ?? 0
-const vodStart = fixtureSessionOrigin(vodOffset) + (vodLanding ?? Number.NaN)
-log(`  追っかけの保存位置 ${(chasedMs / 1000).toFixed(2)} 秒 → VOD の着地 fixture の起点 ${fixtureSessionOrigin(vodOffset)}（offset ${vodOffset}）+ ${vodLanding} 秒`)
-if (!(Math.abs(vodStart - chasedMs / 1000) <= 1.6)) {
+const vodKnownError = fixtureSessionOrigin(vodOffset) - streamerSeekSeconds(vodOffset)
+log(`  追っかけの保存位置 ${(chasedMs / 1000).toFixed(2)} 秒 → VOD の着地 fixture の起点 ${fixtureSessionOrigin(vodOffset)}（offset ${vodOffset}）+ ${vodLanding} 秒（既知の誤差 ${vodKnownError.toFixed(3)} 秒）`)
+if (vodLanding === null) {
+  ng.push(`⑧ 完了後の VOD の再生が始まらない（offset ${vodOffset}）`)
+} else if (!(Math.abs(fixtureSessionOrigin(vodOffset) + vodLanding - (chasedMs / 1000 + vodKnownError)) <= 0.5)) {
   ng.push(
-    `⑧ 完了後の VOD が追っかけで見た位置から始まらない（保存 ${(chasedMs / 1000).toFixed(2)} 秒 → offset ${vodOffset} + ${vodLanding} 秒）`,
+    `⑧ 完了後の VOD が追っかけで見た位置から始まらない（保存 ${(chasedMs / 1000).toFixed(2)} 秒 → offset ${vodOffset} + ${vodLanding} 秒、既知の誤差 ${vodKnownError.toFixed(3)} 秒）`,
   )
 }
 
