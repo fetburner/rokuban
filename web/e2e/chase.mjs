@@ -282,7 +282,8 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
     return route.fulfill({ status: 204 })
   }
   if (requestPath === '/api/recordings/1/playback-position' && method === 'DELETE') {
-    delete recording.resumePositionMs
+    // 種を保つ間は、前のページの pagehide（位置 0 の DELETE）にも消させない。
+    if (!holdResumePositionSeed) delete recording.resumePositionMs
     return route.fulfill({ status: 204 })
   }
   if (requestPath === '/api/recordings/1/watched' && method === 'PUT') {
@@ -764,85 +765,105 @@ if (!playbackPositionWrites.slice(writesBeforeSeek).some((positionMs) => positio
 if (watchedWrites.length > 0) ng.push('③ 録画中の追っかけで視聴済み印を付けた')
 
 log('\n=== ④ 保存位置復元と明示0秒 ===')
-// 5 秒は格子（`resumeSessionOffsetSeconds`）の幅なので offset 5 のセッションから始まる。
-// 続きからのセッションは先頭から保存位置までを覆わないので、0 秒へのシークは offset 0 の別セッションになる。
-recording.resumePositionMs = 5_000
-holdResumePositionSeed = true
-await page.reload({ waitUntil: 'domcontentloaded' })
-await page.locator('video').waitFor({ timeout: 15000 })
-await page.waitForFunction(
-  () => {
-    const video = document.querySelector('video')
-    return video !== null && video.currentTime >= 4.5
-  },
-  { timeout: 10000 },
-).catch(async () => {
-  ng.push('④ startOffset未選択の追っかけで保存位置を復元しない')
-})
-// #chase の再読み込みは再生を始める。以降の位置判定は再生の進みで揺れるので、再生が始まってから止める。
-await page.waitForFunction(() => document.querySelector('video')?.paused === false, undefined, { timeout: 10000 })
-  .catch(() => ng.push('④ #chase の再読み込みで再生が始まらない'))
-await page.locator('video').evaluate((video) => video.pause())
-// 保存位置の種（5 秒）は ④ の明示 0 秒まで保つ。再取得されても「未選択なら復元する」位置が残るようにする。
-const baseRequestsBeforeZero = playlistRequests
-const offsetRequestsBeforeZero = offsetPlaylistRequests
-await timelineSlider.focus()
-await timelineSlider.evaluate(() => {
-  window.__e2eHomeKeyEvents = []
-  for (const type of ['keydown', 'keyup']) {
-    window.addEventListener(type, (event) => {
-      if (event.key === 'Home') {
-        window.__e2eHomeKeyEvents.push({
-          type: event.type,
-          target: event.target?.getAttribute?.('data-testid'),
-          active: document.activeElement?.getAttribute?.('data-testid'),
-        })
-      }
-    }, true)
+// 保存位置から再開して Home（0 秒）へ戻す。続きからのセッションは保存位置を 5 秒格子
+// （`resumeSessionOffsetSeconds`）へ切り下げた offset から始まる。
+async function resumeThenHome(resumeMs) {
+  recording.resumePositionMs = resumeMs
+  // 保存位置の種は明示 0 秒まで保つ。再取得されても「未選択なら復元する」位置が残るようにする。
+  holdResumePositionSeed = true
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await page.locator('video').waitFor({ timeout: 15000 })
+  await page.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 1, undefined, { timeout: 10000 })
+    .catch(() => {})
+  const startedOffset = lastChasePlaylistOffset
+  // 録画軸の位置（offset + currentTime）はシークバーの aria-valuenow で読む。再生が進む前に読む
+  // （待つと先頭から再生した位置が保存位置を通り過ぎて通ってしまう）。
+  const startedAxis = Number(await timelineSlider.getAttribute('aria-valuenow'))
+  log(`  resume=${resumeMs}ms: started session offset=${startedOffset}, axis=${startedAxis}`)
+  if (Math.abs(startedAxis - (recordingHeadOffsetSeconds + resumeMs / 1000)) >= 1) {
+    ng.push(`④ startOffset未選択の追っかけで保存位置 ${resumeMs}ms を復元しない（axis=${startedAxis}）`)
   }
-})
-const homeFocusTarget = await timelineSlider.evaluate((slider) => document.activeElement === slider)
-await page.keyboard.down('Home')
-const homePreview = await page.waitForFunction(
-  () => Number(document.querySelector('[data-testid="seek-scrub"]')?.getAttribute('aria-valuenow')) === 0,
-  undefined,
-  { timeout: 2000 },
-).then(() => true).catch(() => false)
-await page.keyboard.up('Home')
-const homeSeekCompleted = await page.waitForFunction(
-  () => {
+  // #chase の再読み込みは再生を始める。以降の位置判定は再生の進みで揺れるので、再生が始まってから止める。
+  await page.waitForFunction(() => document.querySelector('video')?.paused === false, undefined, { timeout: 10000 })
+    .catch(() => ng.push(`④ #chase の再読み込みで再生が始まらない（保存位置 ${resumeMs}ms）`))
+  await page.locator('video').evaluate((video) => video.pause())
+  const before = { base: playlistRequests, offset: offsetPlaylistRequests, leaves: chaseLeaveHints.length }
+  await timelineSlider.focus()
+  await timelineSlider.evaluate(() => {
+    window.__e2eHomeKeyEvents = []
+    for (const type of ['keydown', 'keyup']) {
+      window.addEventListener(type, (event) => {
+        if (event.key === 'Home') {
+          window.__e2eHomeKeyEvents.push({
+            type: event.type,
+            target: event.target?.getAttribute?.('data-testid'),
+            active: document.activeElement?.getAttribute?.('data-testid'),
+          })
+        }
+      }, true)
+    }
+  })
+  const homeFocusTarget = await timelineSlider.evaluate((slider) => document.activeElement === slider)
+  await page.keyboard.down('Home')
+  const homePreview = await page.waitForFunction(
+    () => Number(document.querySelector('[data-testid="seek-scrub"]')?.getAttribute('aria-valuenow')) === 0,
+    undefined,
+    { timeout: 2000 },
+  ).then(() => true).catch(() => false)
+  await page.keyboard.up('Home')
+  const homeSeekCompleted = await page.waitForFunction(
+    () => {
+      const video = document.querySelector('video')
+      return video !== null && video.currentTime < 1
+    },
+    { timeout: 5000 },
+  ).then(() => true).catch(() => false)
+  const homeSeekDiagnostics = await page.evaluate(() => {
     const video = document.querySelector('video')
-    return video !== null && video.currentTime < 1
-  },
-  { timeout: 5000 },
-).then(() => true).catch(() => false)
-const homeSeekDiagnostics = await page.evaluate(() => {
-  const video = document.querySelector('video')
-  const slider = document.querySelector('[data-testid="seek-scrub"]')
+    const slider = document.querySelector('[data-testid="seek-scrub"]')
+    return {
+      keyEvents: window.__e2eHomeKeyEvents,
+      focusOnSlider: document.activeElement === slider,
+      sliderValue: slider?.getAttribute('aria-valuenow'),
+      sliderText: slider?.getAttribute('aria-valuetext'),
+      currentTime: video?.currentTime,
+      seekable: video ? Array.from({ length: video.seekable.length }, (_, index) => [
+        video.seekable.start(index), video.seekable.end(index),
+      ]) : [],
+    }
+  })
+  log(`  resume=${resumeMs}ms Home seek: focused=${homeFocusTarget}, preview=${homePreview}, completed=${homeSeekCompleted}, ${JSON.stringify(homeSeekDiagnostics)}`)
+  if (!homeFocusTarget || !homePreview) {
+    ng.push(`④ Home keydownで軸の先頭をプレビューしない (${JSON.stringify(homeSeekDiagnostics)})`)
+  }
+  if (!homeSeekCompleted || Math.abs(Number(homeSeekDiagnostics.sliderValue) - recordingHeadOffsetSeconds) > 1) {
+    ng.push(`④ Home/0秒で保存位置 ${resumeMs}ms から先頭へ移動しない (${JSON.stringify(homeSeekDiagnostics)})`)
+  }
   return {
-    keyEvents: window.__e2eHomeKeyEvents,
-    focusOnSlider: document.activeElement === slider,
-    sliderValue: slider?.getAttribute('aria-valuenow'),
-    sliderText: slider?.getAttribute('aria-valuetext'),
-    currentTime: video?.currentTime,
-    seekable: video ? Array.from({ length: video.seekable.length }, (_, index) => [
-      video.seekable.start(index), video.seekable.end(index),
-    ]) : [],
+    startedOffset,
+    base: playlistRequests - before.base,
+    offset: offsetPlaylistRequests - before.offset,
+    leaves: chaseLeaveHints.slice(before.leaves),
   }
-})
-log(`  Home seek: focused=${homeFocusTarget}, preview=${homePreview}, completed=${homeSeekCompleted}, ${JSON.stringify(homeSeekDiagnostics)}`)
-if (!homeFocusTarget || !homePreview) {
-  ng.push(`④ Home keydownで軸の先頭をプレビューしない (${JSON.stringify(homeSeekDiagnostics)})`)
 }
-if (!homeSeekCompleted || Math.abs(Number(homeSeekDiagnostics.sliderValue) - recordingHeadOffsetSeconds) > 1) {
-  ng.push(`④ Home/0秒で保存位置から先頭へ移動しない (${JSON.stringify(homeSeekDiagnostics)})`)
+
+// 4 秒は格子幅未満なので offset 0 のセッションのまま。0 秒は in-range seek で、張り直さない。
+const inRangeHome = await resumeThenHome(4_000)
+if (inRangeHome.startedOffset !== 0) ng.push(`④ 保存位置 4 秒の続きからが offset 0 のセッションで始まらない (${inRangeHome.startedOffset})`)
+if (inRangeHome.base !== 0) ng.push('④ 0秒へのin-range seekでplaylistを再要求する')
+if (inRangeHome.offset !== 0) ng.push('④ 0秒へのin-range seekでoffset playlistを要求する')
+if (inRangeHome.leaves.some((path) => path.includes('/offset/'))) {
+  ng.push('④ 0秒へのin-range seekでoffset付きleaveヒントを送った')
 }
-// 続きからは offset 5 のセッション。0 秒はその外なので、offset 0 の playlist を 1 回取り直し、
-// 旧セッション（offset 5）へ leave ヒントを送る。再生元は選び直さない（video が残り、保存位置は 0 秒付近）。
-if (playlistRequests === baseRequestsBeforeZero) ng.push('④ 続きからの offset セッションより前（0 秒）へ巻き戻しても offset 0 の playlist を要求しない')
-if (offsetPlaylistRequests !== offsetRequestsBeforeZero) ng.push('④ 0秒への巻き戻しで offset 付き playlist を要求する')
-if (!chaseLeaveHints.some((path) => path.includes('/offset/5/leave'))) {
-  ng.push('④ 続きからの offset 5 セッションへ leave ヒントを送らない')
+// 7 秒は offset 5 のセッションから始まる。0 秒はその外なので、offset 0 の playlist を 1 回取り直し、
+// 旧セッション（offset 5）へ leave ヒントを送る。録画中なので再生元は追っかけのまま（video が残る）。
+const rewindHome = await resumeThenHome(7_000)
+log(`  rewind from offset 5: ${JSON.stringify(rewindHome)}`)
+if (rewindHome.startedOffset !== 5) ng.push(`④ 保存位置 7 秒の続きからが offset 5 のセッションで始まらない (${rewindHome.startedOffset})`)
+if (rewindHome.base < 1) ng.push(`④ 続きからの offset 5 より前（0 秒）への巻き戻しで offset 0 の playlist を要求しない (${rewindHome.base})`)
+if (rewindHome.offset !== 0) ng.push('④ 0秒への巻き戻しで offset 付き playlist を要求する')
+if (!rewindHome.leaves.some((path) => path.includes('/offset/5/leave'))) {
+  ng.push(`④ 続きからの offset 5 セッションへ leave ヒントを送らない (${JSON.stringify(rewindHome.leaves)})`)
 }
 
 log('\n=== ④ 変換済みの端より先へのシークは offset で張り直す ===')

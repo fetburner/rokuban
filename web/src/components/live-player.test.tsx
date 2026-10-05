@@ -2957,9 +2957,12 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition: 0 }])
   })
 
-  it('原本 VOD: 続きからの開始より前へ巻き戻しても再生元を選び直さず、その秒の offset で張り直す', async () => {
+  it.each([
+    ['選び直したら張り直さない', true, 1],
+    ['同じ再生元なら 5 秒格子の offset で張り直す', false, 2],
+  ])('原本 VOD: 続きからの開始より前への巻き戻しは再生元の選び直しの機会（%s）', async (_label, reselected, instances) => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
-    const onSourceRangeExit = vi.fn(() => true)
+    const onSourceRangeExit = vi.fn(() => reselected)
     render(
       <LivePlayer
         mode="original-vod"
@@ -2977,20 +2980,47 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     vi.spyOn(slider, 'getBoundingClientRect').mockReturnValue({
       x: 0, y: 0, left: 0, top: 0, right: 100, bottom: 16, width: 100, height: 16, toJSON: () => ({}),
     } as DOMRect)
-    // 32.8 秒 = 63 秒の 52%（開始 offset 40 より前）。
+    // 32.76 秒 = 63 秒の 52%（開始 offset 40 より前）。
     fireEvent.pointerDown(slider, { pointerId: 1, pointerType: 'mouse', clientX: 52 })
     fireEvent.pointerUp(slider, { pointerId: 1, pointerType: 'mouse', clientX: 52 })
-    await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
-    expect(onSourceRangeExit).not.toHaveBeenCalled()
+    expect(onSourceRangeExit).toHaveBeenCalledWith(expect.closeTo(32.76, 5), false)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(instances))
+    if (reselected) return
     expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
-      '/api/sites/default/recordings/429/original-vod/offset/32/playlist.m3u8',
+      '/api/sites/default/recordings/429/original-vod/offset/30/playlist.m3u8',
     )
+    // offset 30 の格子点は 899 フレーム = 29.99663 秒。32.76 - 29.99663。
+    expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: expect.closeTo(2.76337, 4) }])
   })
 
-  it('原本 VOD: 保存位置が後から消えても、取り込んだ開始位置から再読み込みする', async () => {
+  it('原本 VOD: 再読み込みは続きからの位置ではなく、エラーになった位置から再開する', async () => {
     const user = userEvent.setup()
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
-    const props = { mode: 'original-vod', site: 'default', recordingId: 430 } as const
+    render(<LivePlayer mode="original-vod" site="default" recordingId={430} resumePositionMs={42_800} />)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+    fireEvent.canPlay(video)
+    fireEvent.playing(video)
+    // 続きから（offset 40）のセッションで 20 分見た後のエラー。
+    video.currentTime = 1_200
+    const errorCall = hlsMockState.instances[0]!.on.mock.calls.find(([event]) => event === 'hlsError')
+    const errorHandler = errorCall![1] as (event: string, data: { fatal: boolean }) => void
+    await act(async () => {
+      errorHandler('hlsError', { fatal: true })
+    })
+    await user.click(await screen.findByRole('button', { name: '再読み込み' }))
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+    expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/430/original-vod/offset/40/playlist.m3u8',
+    )
+    expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: 1_200 }])
+  })
+
+  it('原本 VOD: 再生前のエラーの再読み込みは、取り込んだ続きからの位置で始める', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    const props = { mode: 'original-vod', site: 'default', recordingId: 431 } as const
     const { rerender } = render(<LivePlayer {...props} resumePositionMs={42_800} />)
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
     rerender(<LivePlayer {...props} resumePositionMs={undefined} />)
@@ -3002,9 +3032,10 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     await user.click(await screen.findByRole('button', { name: '再読み込み' }))
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
     expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
-      '/api/sites/default/recordings/430/original-vod/offset/40/playlist.m3u8',
+      '/api/sites/default/recordings/431/original-vod/offset/40/playlist.m3u8',
     )
-    expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: expect.closeTo(2.8267, 3) }])
+    // offset 40 の格子点は 1198 フレーム = 39.97327 秒。42.8 - 39.97327。
+    expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: expect.closeTo(2.82673, 4) }])
   })
 
   it('続きからの位置が無限大でも offset 0 のまま startPosition に Infinity を渡さない', async () => {
@@ -3379,7 +3410,7 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     await waitFor(() => expect(onWatched).toHaveBeenCalledOnce())
   })
 
-  it('現在の offset より前はその秒数の offset セッションへ戻す', async () => {
+  it('現在の offset より前へは 5 秒格子の offset セッションへ戻す', async () => {
     const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
     vi.stubGlobal('fetch', fetchMock)
     render(
@@ -3388,13 +3419,13 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
         site="default"
         recordingId={416}
         recordingDurationMs={30_000}
-        startOffsetSeconds={15}
+        startOffsetSeconds={25}
         profile="hd"
       />,
     )
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
     expect(hlsMockState.instances[0]!.loadSource).toHaveBeenCalledWith(
-      '/api/sites/default/recordings/416/original-vod/offset/15/playlist.m3u8?profile=hd',
+      '/api/sites/default/recordings/416/original-vod/offset/25/playlist.m3u8?profile=hd',
     )
     const video = document.querySelector('video')!
     Object.defineProperty(video, 'seekable', {
@@ -3409,8 +3440,9 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     fireEvent.keyUp(slider, { key: 'ArrowLeft' })
 
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+    // 24.99 秒から 10 秒戻した 14.99 秒は、その秒（14）ではなく格子点 10 のセッションで開く。
     expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
-      '/api/sites/default/recordings/416/original-vod/offset/4/playlist.m3u8?profile=hd',
+      '/api/sites/default/recordings/416/original-vod/offset/10/playlist.m3u8?profile=hd',
     )
   })
 

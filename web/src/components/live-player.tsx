@@ -603,6 +603,10 @@ export function LivePlayer({
   }, [onWatched])
   // retryNonce を変えると effect が再実行される（依存配列に入れる）
   const [retryNonce, setRetryNonce] = useState(0)
+  // 再生していたセッションがエラーになった位置（録画軸の秒）。「再読み込み」はここから再開する
+  // （マウント時に取り込んだ続きからの位置へ戻さない）。再生前のエラーでは null で、開始の意図を保つ。
+  const errorPositionRef = useRef<number | null>(null)
+  const reloadPositionRef = useRef<number | null>(null)
   const restorePending = useRef(true)
   // preservedState は画質（プロファイル）の切替・再読み込みを跨いで持ち越す
   // 視聴者の表示状態（issue #869 / #871）。字幕の表示と、切替前に再生中だったかを持つ。
@@ -638,9 +642,9 @@ export function LivePlayer({
   // しない**。
   //
   // **プロファイル以外の入力が変わったときは持ち越さない。** `offset` は新しい
-  // セッションの先頭からの秒数で位置の基準そのものが変わるし、`retryNonce` は
-  // 「保存位置からやり直す」が正しい（既存の復元規則に任せる）。判定は effect の
-  // setup で行う --- cleanup の時点では次に何が変わるかが分からない。
+  // セッションの先頭からの秒数で位置の基準そのものが変わる。`retryNonce`（再読み込み）は
+  // エラーになった位置（`errorPositionRef`）から、それが無ければ既存の復元規則でやり直す。
+  // 判定は effect の setup で行う --- cleanup の時点では次に何が変わるかが分からない。
   const lastChasePositionRef = useRef<number | null>(null)
   const lastChaseInputsRef = useRef<string | null>(null)
   // 持ち越した位置へまだ戻し終えていない間の、その位置。**この間は位置を保存
@@ -839,8 +843,13 @@ export function LivePlayer({
     // 画質（プロファイル）だけが変わった再実行か（`lastChasePositionRef` の
     // コメント参照）。プロファイルを含めない入力の同一性で判定する。
     const recordingInputs = `${mode}|${site}|${recordingId}|${sessionStartOffset}|${hasExplicitRecordingStart}|${retryNonce}`
+    const reloadPosition = reloadPositionRef.current
+    reloadPositionRef.current = null
+    errorPositionRef.current = null
     const resumePosition =
-      isRecordingPlayback && lastChaseInputsRef.current === recordingInputs
+      isRecordingPlayback && reloadPosition !== null
+        ? Math.max(reloadPosition - sessionStartOffset, 0)
+        : isRecordingPlayback && lastChaseInputsRef.current === recordingInputs
         ? lastChasePositionRef.current
         : isRecordingPlayback && !hasExplicitRecordingStart
           ? serverResumePositionRef.current
@@ -903,6 +912,7 @@ export function LivePlayer({
       const position = playedRef.current && media
         ? (isChase ? chaseStartOffset : sessionStartOffset) + media.currentTime
         : undefined
+      errorPositionRef.current = position ?? null
       const wasPlaying = media ? !media.paused || resumePlaybackPendingRef.current : true
       return onRecordingPlaybackErrorRef.current?.(position, wasPlaying) === true
     }
@@ -1823,14 +1833,15 @@ export function LivePlayer({
       return
     }
 
-    // 続きからで導出した開始より前への巻き戻しは、再生元の範囲外ではなく、格子で切り下げた開始
-    // offset より前を覆わないだけである。再生元の選び直し（エンコード完了済みなら encoded へ移る）
-    // は通常の巻き戻しでは起きてはならないので呼ばず、同じ再生元で offset を張り直す。
-    const rewindsBeforeResumeStart = !originalVODStartIsExplicit && originalVODStartOffset > 0 && target < sessionStartOffset
     // 同じ再生元のままなら true は返らず、下で offset を張り直す（再生継続は上の resumePlaying）。
-    if (!rewindsBeforeResumeStart && onSourceRangeExit?.(target, !video.paused) === true) return
+    // セッションの開始より前への巻き戻しも、どの経路で開いたセッション（続きから・416 の後退・
+    // 持ち越し・シーク）でも同じく選び直しの機会である。
+    if (onSourceRangeExit?.(target, !video.paused) === true) return
 
-    const nextOffset = Math.floor(target)
+    // 巻き戻しは続きからと同じ 5 秒格子へ切り下げ、`live.max_sessions` を節約しつつ同じ格子点を
+    // 共有する（格子点は target 以下なので今のセッションと一致しない）。先へのシークは格子に
+    // 丸めない。格子点が今のセッションと一致すると、変換済みの端より先を同じセッションで待つことになる。
+    const nextOffset = target < sessionStartOffset ? resumeSessionOffsetSeconds(target) : Math.floor(target)
     const sameSessionKey = nextOffset === originalVODStartOffset
     pendingOffsetSeekRef.current = target - originalVODSessionOriginSeconds(nextOffset)
     setOriginalVODStartState({ recordingId, offset: nextOffset, explicit: true })
@@ -2054,7 +2065,10 @@ export function LivePlayer({
           <LiveErrorMessage error={error} chase={isChase} originalVOD={isOriginalVOD} />
           <button
             type="button"
-            onClick={() => setRetryNonce((n) => n + 1)}
+            onClick={() => {
+              reloadPositionRef.current = errorPositionRef.current
+              setRetryNonce((n) => n + 1)
+            }}
             className={cn(
               'rounded-md border px-3 py-1.5 text-sm transition-colors',
               // 原本 VOD は黒い枠の上に出すので、テーマに依らず映像の上の配色にする。
