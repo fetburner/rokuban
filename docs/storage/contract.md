@@ -31,6 +31,8 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
 1. **書き込みは常にシーケンシャル**。初回は一発書き、プロセス再起動後は同じ
    temp の EOF へ追記する。ランダムライトはしない
 2. **「作業はローカル、置くのは一回」**: ffmpeg の出力は必ずワーカーのローカルスクラッチ（k8s では emptyDir）に書き、完成したファイルをストレージへストリームコピーして fsync。MP4 のシーク問題と書きかけファイル問題が同時に消える。
+	scratch の directory は River の `Timeout` で選ぶ。正の値なら timeout 後の再試行が前の実行と
+	重なりうるため試行ごとに一意にし、`-1` なら job ID 固定にして開始時に前回の残骸を消す。
 	**ingest は同じ root・同じディレクトリの record 固有 temp へ書く**。temp 名は
 	`.rokuban-ingest-{site}-{record_id}` と決め、プロセス再起動後も同じファイルを
 	開く。scratch から rename すると `EXDEV` になり、コピーへの劣化を許すため
@@ -132,8 +134,6 @@ cancel しない）。そのため:
   pod ローカルなので `flock` では同じ pod 内しか直列化できず、取れなかった実行を River の
   再試行へ戻すと、停止中の旧実行が握る間ずっと失敗通知が積む。代償は、並走した 2 本が
   どちらも ffmpeg を完走すること
-- scratch の作成は River の `Timeout` で選ぶ。正の値なら timeout 後の再試行が前の実行と
-  重なりうるため試行ごとに一意にし、`-1` なら job ID 固定で開始時に残骸を消す。
 - staging は **canonical と同じディレクトリの staging file（`.rokuban-encode-`）へ、
   rel_path lock の外でストリームコピー + `fsync`** する。
   公開は lock（filesystem lock → tx → advisory xact lock）の中で、次の順に行う。
@@ -163,8 +163,9 @@ cancel しない）。そのため:
 
 ### thumbnail / seek tiles の公開
 
-thumbnail と seek tiles の ffmpeg 出力先はジョブごとに `MkdirTemp` で作る scratch
-directory とする。同じ recording の River job が重なっても scratch file を共有しない。
+thumbnail と seek tiles の ffmpeg 出力先は試行ごとに `MkdirTemp` で作る scratch
+directory とする（Timeout が正なので、§3 ルール 2 の選択規則で試行ごとになる）。
+同じ recording の River job や、同じ job の試行が重なっても scratch file を共有しない。
 完成後は canonical と同じ directory の `.rokuban-media-asset-` staged file にコピーして
 file `fsync` する。次に rel_path filesystem lock → transaction → advisory xact lock の順に取る。
 transaction 内で active な派生行と原本の生存を再確認し、派生行がまだ無く原本も active なら media asset row を予約する。その後 staged

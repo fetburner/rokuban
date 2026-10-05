@@ -18,8 +18,9 @@ import (
 type skipMediaAssetPublish func(context.Context, *sqlcgen.Queries) (bool, error)
 type mediaAssetUpsert func(context.Context, *sqlcgen.Queries, int64) error
 
-// newWorkerScratchDir creates an attempt-unique scratch directory for jobs with a positive River Timeout.
-// River may retry a timed-out job while its previous attempt is still running, so those attempts must not share a directory.
+// newWorkerScratchDir は試行ごとに一意な scratch directory を作る。River の Timeout が
+// 正のジョブはこちらを使う。timeout した試行がまだ動いている間に River の rescuer が
+// 同じ job ID を再実行しうるので、試行どうしで directory を共有させない。
 func newWorkerScratchDir(scratchRoot, kind string, jobID int64, attempt int) (string, error) {
 	if scratchRoot == "" {
 		return "", fmt.Errorf("scratch dir is empty")
@@ -31,8 +32,10 @@ func newWorkerScratchDir(scratchRoot, kind string, jobID int64, attempt int) (st
 	return os.MkdirTemp(root, fmt.Sprintf("%d-%d-", jobID, attempt))
 }
 
-// newJobScratchDir creates a stable scratch directory for jobs with River Timeout -1.
-// River does not time out and retry these jobs under the same ID, so startup can clear residue left by an earlier process.
+// newJobScratchDir は job ID で固定した scratch directory を、前回の残骸を消してから作る。
+// River の Timeout が -1 のジョブはこちらを使う。rescuer は Timeout が負のジョブを
+// 再実行しないので同じ ID の試行は重ならず、開始時の RemoveAll が異常終了した前回の
+// 試行の残骸を回収する。Timeout を -1 から正の値に変えたジョブは newWorkerScratchDir へ移す。
 func newJobScratchDir(scratchRoot, kind string, jobID int64) (string, error) {
 	if scratchRoot == "" {
 		return "", fmt.Errorf("scratch dir is empty")

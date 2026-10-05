@@ -8,8 +8,8 @@
 -- 必要があった）。一方 storage_sync の対象集合（'media' と、設定されていれば
 -- 'scratch'）は config を読むだけで呼び出し前に確定するので、mark 方式は不要 ---
 -- 「今回の対象集合」をそのまま DeleteStorageSyncExcept に渡して単純に差集合を
--- 消せる。設定から root が外れた（例: scratch_dir を空に変更した）ケースだけを
--- 掃除する。
+-- 消せる。対象集合から root が外れたケースだけを掃除する（worker ロールは空の
+-- scratch_dir では起動しないので、本番で 'scratch' が外れる経路は今は無い）。
 
 -- name: UpsertStorageSync :exec
 INSERT INTO storage_sync (
