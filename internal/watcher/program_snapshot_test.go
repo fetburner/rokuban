@@ -17,7 +17,7 @@ func TestSnapshotFromRecord(t *testing.T) {
 	title := "record title"
 	description := "record description"
 
-	got := snapshotFromRecord(mirakc.Record{
+	input := mirakc.Record{
 		Program: mirakc.Program{
 			StartAt:     &mirakcStartAt,
 			Duration:    &duration,
@@ -31,7 +31,8 @@ func TestSnapshotFromRecord(t *testing.T) {
 			Name:    "record service",
 			Channel: mirakc.ServiceChannel{Type: "GR", Channel: "27"},
 		},
-	})
+	}
+	got := snapshotFromRecord(input)
 	want := programSnapshot{
 		serviceName:       "record service",
 		channelType:       "GR",
@@ -45,6 +46,10 @@ func TestSnapshotFromRecord(t *testing.T) {
 		programDurationMs: duration,
 	}
 	assertProgramSnapshotEqual(t, got, want)
+
+	input.Program.IsFree = false
+	want.isFree = false
+	assertProgramSnapshotEqual(t, snapshotFromRecord(input), want)
 }
 
 func TestSnapshotFromSchedule(t *testing.T) {
@@ -54,20 +59,22 @@ func TestSnapshotFromSchedule(t *testing.T) {
 	title := "schedule title"
 	description := "schedule description"
 
-	got := snapshotFromSchedule(mirakc.Schedule{
+	input := mirakc.Schedule{
 		Program: mirakc.Program{
 			StartAt:     &mirakcStartAt,
 			Duration:    &duration,
-			IsFree:      false,
+			IsFree:      true,
 			Name:        &title,
 			Description: &description,
 			Extended:    map[string]string{"cast": "schedule cast"},
 			Genres:      []mirakc.Genre{{LV1: 5, LV2: 6, UN1: 7, UN2: 8}},
 		},
-	}, mirakc.Service{
+	}
+	service := mirakc.Service{
 		Name:    "schedule service",
 		Channel: mirakc.ServiceChannel{Type: "BS", Channel: "101"},
-	})
+	}
+	got := snapshotFromSchedule(input, service)
 	want := programSnapshot{
 		serviceName:       "schedule service",
 		channelType:       "BS",
@@ -76,11 +83,15 @@ func TestSnapshotFromSchedule(t *testing.T) {
 		description:       &description,
 		extended:          json.RawMessage(`{"cast":"schedule cast"}`),
 		genres:            json.RawMessage(`[{"lv1":5,"lv2":6,"un1":7,"un2":8}]`),
-		isFree:            false,
+		isFree:            true,
 		programStartAt:    startAt,
 		programDurationMs: duration,
 	}
 	assertProgramSnapshotEqual(t, got, want)
+
+	input.Program.IsFree = false
+	want.isFree = false
+	assertProgramSnapshotEqual(t, snapshotFromSchedule(input, service), want)
 }
 
 func TestProgramSnapshotParamsAdapter(t *testing.T) {
