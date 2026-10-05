@@ -31,10 +31,12 @@ import {
   finish,
   finishCurrentTimeGapMeasurement,
   installApiStubs,
+  landingTime,
   launchBrowser,
   log,
   MAX_SOURCE_SWITCH_STALL_MS,
   sseKeepAlive,
+  streamerSeekSeconds,
   validateFixturesOrExit,
   verifyBundleMatchesOrExit,
 } from './lib.mjs'
@@ -839,10 +841,19 @@ if (await resumePlaybackButton.count() === 1) {
   ng.push(`② reload 後の再生ボタンが 1 つでない (${await resumePlaybackButton.count()})`)
 }
 await page.locator('video').waitFor({ timeout: 15000 })
-await page.waitForFunction((expected) => {
-  const element = document.querySelector('video')
-  return element !== null && element.duration > 0 && Math.abs(element.currentTime - expected) < 1.5
-}, savedPosition, { timeout: 15000 }).catch(() => ng.push('② reload 後に原本 HLS の保存位置を復元しない'))
+// resume は offset セッションから始まるので `video.currentTime` はセッション相対である。
+// 録画軸の着地位置は offset の起点 + 始まったときの currentTime で読む。
+await page.locator('video').evaluate(async (element) => {
+  element.muted = true
+  await element.play().catch(() => {})
+})
+const reloadLanding = await landingTime(page)
+const reloadOffset = Number(/^offset\/(\d+)\//.exec(playlistRequests.findLast((request) => request.endsWith('/playlist.m3u8')) ?? '')?.[1] ?? 0)
+const reloadAxis = reloadLanding === null ? null : streamerSeekSeconds(reloadOffset) + reloadLanding
+log(`  reload 後: offset ${reloadOffset} + ${reloadLanding} = ${reloadAxis}（保存 ${savedPosition}）`)
+if (reloadAxis === null || Math.abs(reloadAxis - savedPosition) >= 1.5) {
+  ng.push(`② reload 後に原本 HLS の保存位置を復元しない（offset ${reloadOffset} + ${reloadLanding}）`)
+}
 
 log('\n=== ③ 終端まで再生 ===')
 await page.locator('video').evaluate(async (element) => {
@@ -985,7 +996,7 @@ function offsetSession(offset) {
   runFFmpeg([
     '-hide_banner', '-nostats', '-loglevel', 'error', '-y',
     ...(offset > 0
-      ? ['-ss', String(Math.floor(offset * 30_000 / 1_001) * 1_001 / 30_000)]
+      ? ['-ss', String(streamerSeekSeconds(offset))]
       : []),
     '-i', offsetSourcePath, '-t', '20',
     '-map', '0:v:0', '-map', '0:a:0', '-map', '0:a:0', '-map', '0:a:0',
@@ -1050,6 +1061,11 @@ let offsetChapters = {
   spans: [{ startMs: 40_000, endMs: 45_000, label: '気象情報', cut: false }],
 }
 let offsetFailAll = false
+let resumePastEdge = false
+// サーバー側に変換済みのセッションが無い状態。どの offset も最初の要求から変換が始まったように、
+// 2 秒の segment を 1 本だけ見せ、実時間（2 秒ごとに 1 本）で伸ばす。
+// offset ごとの最初の playlist 要求の時刻を持つ。
+let freshSessionGrowth = null
 const offsetHandler = async ({ path: requestPath, json, route }) => {
   const method = route.request().method()
   if (requestPath === '/api/sites') return json([SITE])
@@ -1097,7 +1113,12 @@ const offsetHandler = async ({ path: requestPath, json, route }) => {
     let body = readFileSync(file)
     // 変換中: ENDLIST を外す。手動再生測定では、時間とともに EVENT playlist の先端を伸ばす。
     if (/^playlist_\d+\.m3u8$/.test(resource)) {
-      if (manualPlaylistGrowth && offset === 0) {
+      if (freshSessionGrowth) {
+        const firstRequestAt = freshSessionGrowth.startedAt.get(offset) ?? Date.now()
+        freshSessionGrowth.startedAt.set(offset, firstRequestAt)
+        const visibleSegments = 1 + Math.floor((Date.now() - firstRequestAt) / 2000)
+        body = Buffer.from(eventPlaylistPrefix(body.toString('utf8'), visibleSegments))
+      } else if (manualPlaylistGrowth && offset === 0) {
         const growingPlaylist = readFileSync(path.join(manualGrowingOffsetSession(), resource), 'utf8')
         const totalSegments = (growingPlaylist.match(/^#EXTINF:/gm) ?? []).length
         const elapsedMs = manualPlaylistGrowth.startedAt === null
@@ -1113,6 +1134,9 @@ const offsetHandler = async ({ path: requestPath, json, route }) => {
         )
         manualPlaylistGrowth.responses.push({ elapsedMs, visibleSegments })
         body = Buffer.from(eventPlaylistPrefix(growingPlaylist, visibleSegments))
+      } else if (resumePastEdge && offset === 0) {
+        const growingPlaylist = readFileSync(path.join(manualGrowingOffsetSession(), resource), 'utf8')
+        body = Buffer.from(eventPlaylistPrefix(growingPlaylist, 8))
       } else {
         body = body.toString('utf8').replace('#EXT-X-ENDLIST\n', '')
       }
@@ -1763,5 +1787,115 @@ for (const [label, viewport] of [['1280', { width: 1280, height: 900 }], ['400',
     }
   }
 }
+
+log('\n=== ⑧ 新しいセッション（変換済みが 2 秒だけ）の続きからは、1 秒以内の手前に着地する ===')
+// 新しいセッションの変換済みの端は開始位置の近くにある。保存位置 4.5 秒は offset 4 の起点 3.97 秒 +
+// 0.53 秒。最初の EVENT は 2 秒で、2 秒ごとに 2 秒伸びる。WebKit は seekable（端の 3 target duration
+// 手前まで）の外への代入をセッションの先頭へ丸めるので、着地は最大で開始位置のぶん手前になる。
+delete offsetRecording.watchedAt
+offsetRecording.resumePositionMs = 4_500
+freshSessionGrowth = { startedAt: new Map() }
+const pastEdgePage = await context.newPage()
+await installApiStubs(pastEdgePage, offsetHandler)
+await pastEdgePage.goto(`${URL_BASE}/recordings/${OFFSET_ID}`, { waitUntil: 'domcontentloaded' })
+const pastEdgeCursor = offsetRequests.length
+const pastEdgeClickedAt = Date.now()
+await pastEdgePage.getByTestId('recording-playback-start').click()
+const pastEdgeLanding = await landingTime(pastEdgePage, 20000)
+const pastEdgeStartMs = Date.now() - pastEdgeClickedAt
+const pastEdgeRequests = offsetRequests.slice(pastEdgeCursor)
+const pastEdgeOffset = pastEdgeRequests.findLast((request) => request.status === 200)?.offset ?? 0
+const pastEdgeAxis = pastEdgeLanding === null ? null : streamerSeekSeconds(pastEdgeOffset) + pastEdgeLanding
+log(`  resume=4.5s, requests=${JSON.stringify(pastEdgeRequests)}, landing offset ${pastEdgeOffset} + ${pastEdgeLanding} = ${pastEdgeAxis}（押して ${pastEdgeStartMs}ms 後に 0.5 秒進んだ）`)
+if (pastEdgeAxis === null) ng.push('⑧ 新しいセッションの続きからで再生が始まらない')
+else if (!(pastEdgeAxis >= 3.5 && pastEdgeAxis < 5.5)) {
+  ng.push(`⑧ 保存位置 4.5 秒から 1 秒以内に着地しない（offset ${pastEdgeOffset} + ${pastEdgeLanding}）`)
+}
+await pastEdgePage.close()
+freshSessionGrowth = null
+delete offsetRecording.resumePositionMs
+
+log('\n=== ⑨ 保存位置が EVENT playlist の先端より先でも offset から再生を始める ===')
+delete offsetRecording.watchedAt
+offsetRecording.resumePositionMs = 12_000
+resumePastEdge = true
+const resumePage = await context.newPage()
+await installApiStubs(resumePage, offsetHandler)
+await resumePage.goto(`${URL_BASE}/recordings/${OFFSET_ID}`, { waitUntil: 'domcontentloaded' })
+const resumeOffsetCursor = offsetRequests.length
+await resumePage.getByTestId('recording-playback-start').click()
+const resumeLanding = await landingTime(resumePage)
+const resumeStartupRequests = offsetRequests.slice(resumeOffsetCursor)
+const firstSuccessfulResumeOffset = resumeStartupRequests.find((request) => request.status === 200)?.offset
+const resumeAxis = resumeLanding === null ? null : streamerSeekSeconds(firstSuccessfulResumeOffset ?? 0) + resumeLanding
+log(`  resume=12s, initial event playlist=8s, offset requests=${JSON.stringify(resumeStartupRequests)}, landing=${resumeLanding}, axis=${resumeAxis}`)
+if (firstSuccessfulResumeOffset !== 12) {
+  ng.push(`⑨ 保存位置 12 秒で最初に offset/12 を要求しない（${JSON.stringify(resumeStartupRequests)}）`)
+}
+if (resumeLanding === null) {
+  ng.push(`⑨ 8 秒の変換中 EVENT playlist の先端で停止し、続きから再生できない（${JSON.stringify(await sampleOffsetPlayer(resumePage))}）`)
+} else if (!(resumeAxis >= 11 && resumeAxis < 13)) {
+  // startPosition を絶対値 12 にする退行は 12 + 12 = 24 付近に着地する。
+  ng.push(`⑨ 保存位置 12 秒から再生した録画軸の着地が約 12 秒でない（offset ${firstSuccessfulResumeOffset} + ${resumeLanding}）`)
+}
+await resumePage.close()
+resumePastEdge = false
+delete offsetRecording.resumePositionMs
+
+log('\n=== ⑩ 保存位置が映像の終端より先（DB の実尺は 63 秒、映像は 58.5 秒）でも、端の近くで再生が始まる ===')
+offsetRecording.resumePositionMs = 61_000
+const endResumePage = await context.newPage()
+await installApiStubs(endResumePage, offsetHandler)
+await endResumePage.goto(`${URL_BASE}/recordings/${OFFSET_ID}`, { waitUntil: 'domcontentloaded' })
+const endResumeCursor = offsetRequests.length
+await endResumePage.getByTestId('recording-playback-start').click()
+const endResumeStarted = await endResumePage.waitForFunction(() => {
+  const element = document.querySelector('video')
+  return element !== null && (element.ended || element.readyState >= 2)
+}, undefined, { timeout: 15000 }).then(() => true).catch(() => false)
+const endResumeRequests = offsetRequests.slice(endResumeCursor)
+const endResumeOffset = endResumeRequests.findLast((request) => request.status === 200)?.offset ?? 0
+const endResumeTime = await endResumePage.evaluate(() => document.querySelector('video')?.currentTime ?? NaN)
+const endResumeAxis = streamerSeekSeconds(endResumeOffset) + endResumeTime
+log(`  resume=61s, requests=${JSON.stringify(endResumeRequests)}, started=${endResumeStarted}, axis=offset ${endResumeOffset} + ${endResumeTime}`)
+if (!endResumeStarted) {
+  ng.push(`⑩ 映像の終端より先の保存位置から映像が読み込めない（${JSON.stringify(await sampleOffsetPlayer(endResumePage))}）`)
+}
+if (!(endResumeAxis >= 55 && endResumeAxis < 59)) {
+  ng.push(`⑩ 録画軸で端の近く（55〜59 秒）に着地しない（offset ${endResumeOffset} + ${endResumeTime}）`)
+}
+await endResumePage.close()
+delete offsetRecording.resumePositionMs
+
+/** clickOffsetSeekbar は操作バーを出してから、シークバーの fraction の位置を押す。 */
+async function clickOffsetSeekbar(target, fraction) {
+  const frameBox = await target.getByTestId('recording-player-frame').boundingBox()
+  await target.mouse.move(frameBox.x + frameBox.width / 2, frameBox.y + frameBox.height / 2)
+  await target.waitForTimeout(300)
+  const box = await target.getByTestId('seek-scrub').boundingBox()
+  await target.mouse.click(box.x + box.width * fraction, box.y + box.height / 2)
+}
+
+log('\n=== ⑪ 続きからの開始より前への巻き戻しは、その位置の秒の offset で張り直す ===')
+offsetRecording.resumePositionMs = 42_800
+const rewindPage = await context.newPage()
+await installApiStubs(rewindPage, offsetHandler)
+await rewindPage.goto(`${URL_BASE}/recordings/${OFFSET_ID}`, { waitUntil: 'domcontentloaded' })
+await rewindPage.getByTestId('recording-playback-start').click()
+if (await landingTime(rewindPage) === null) ng.push('⑪ 前提: 続きからの再生が始まらない')
+const rewindCursor = offsetRequests.length
+// 52% = 32.76 秒（続きからの offset 42 より前）。
+await clickOffsetSeekbar(rewindPage, 0.52)
+const rewindLanding = await landingTime(rewindPage)
+const rewindRequests = offsetRequests.slice(rewindCursor)
+const rewindOffset = rewindRequests.find((request) => request.status === 200)?.offset
+const rewindAxis = rewindLanding === null ? null : streamerSeekSeconds(rewindOffset ?? 0) + rewindLanding
+log(`  rewind requests=${JSON.stringify(rewindRequests)}, landing offset ${rewindOffset} + ${rewindLanding} = ${rewindAxis}`)
+if (rewindOffset !== 32) ng.push(`⑪ 32.76 秒への巻き戻しで offset 32 を開かない（${JSON.stringify(rewindRequests)}）`)
+if (rewindAxis === null || !(rewindAxis >= 31.7 && rewindAxis < 34)) {
+  ng.push(`⑪ 巻き戻しの着地が 32.76 秒の 1 秒以内でない（offset ${rewindOffset} + ${rewindLanding}）`)
+}
+await rewindPage.close()
+delete offsetRecording.resumePositionMs
 
 await finish(ng, browser)

@@ -227,3 +227,30 @@ export async function finishCurrentTimeGapMeasurement(page, name) {
     }
   }, name)
 }
+
+/**
+ * landingTime は再生が始まって 0.5 秒進むのを待ち、始まったときの `video.currentTime`（セッション相対）を
+ * 返す。始まらなければ null。録画軸の着地位置は offset の起点 + この値で読む。aria-valuenow は最初の
+ * timeupdate までは props から導いた値（offset + 開始位置）で、映像の実位置ではないので使わない。
+ */
+export async function landingTime(target, timeout = 15000) {
+  const landing = await target.waitForFunction(() => {
+    const video = document.querySelector('video')
+    if (!video || video.paused || video.readyState < 2) return null
+    window.__e2eLandingTime ??= video.currentTime
+    return video.currentTime > window.__e2eLandingTime + 0.5 ? { time: window.__e2eLandingTime } : null
+  }, undefined, { timeout }).then(async (handle) => (await handle.jsonValue()).time).catch(() => null)
+  await target.evaluate(() => { delete window.__e2eLandingTime })
+  return landing
+}
+
+/**
+ * streamerSeekSeconds は streamer が原本 HLS の offset セッションを始める入力 seek の位置（秒）。
+ * streamer は `floor(offset × 30000/1001)` フレームの時刻へ seek する。`recording-original-vod.mjs` の
+ * offset fixture はこの位置で `-ss` を掛け、着地の判定もこの位置を録画軸の起点にする。検査対象の
+ * `originalVODSessionOriginSeconds` は使わない（実装の式が壊れても、同じ式で測ると e2e が同じだけずれて通る）。
+ * `chase.mjs` の fixture は segment を間引くだけなので、そちらは自分の fixture の式（`fixtureSessionOrigin`）を使う。
+ */
+export function streamerSeekSeconds(offset) {
+  return offset > 0 ? Math.floor(offset * 30_000 / 1_001) * 1_001 / 30_000 : 0
+}

@@ -388,6 +388,17 @@ DOM の取得に失敗した場合も、その理由を記録して残りの診�
 再生中の操作バーは 3 秒で隠れ `aria-hidden` / `inert` になる。手動でバーの操作を調べるときは、
 枠の上でマウスを動かして表示を待つ。
 
+⑧〜⑪ は続きから再生を測る。着地は `offset の起点 + currentTime` で読む。起点は fixture の `-ss` と同じ
+`streamerSeekSeconds` で、製品の `originalVODSessionOriginSeconds` は使わない（同じ式で測ると、式が壊れても通る）。
+aria-valuenow も使わない。最初の timeupdate までは props から導いた値だからである。
+
+- ⑧: 変換済みが 2 秒しかない新しいセッションで、保存位置 4.5 秒から 1 秒以内に着地する。
+- ⑨: 保存位置 12 秒が 8 秒の EVENT playlist の先端より先にあっても、最初に offset 12 を開いて約 12 秒に着地する。
+- ⑩: 保存位置 61 秒が映像の終端（58.5 秒）より先でも、416 の後退丸めで端の近くから読み込む。
+- ⑪: 保存位置より前への巻き戻しは、その秒の offset で張り直す。
+
+直す前の実装（offset 0 に保存位置を渡す）では、⑨ ⑩ ⑪（Chromium・WebKit）と ⑧（WebKit）が落ちる。
+
 ```sh
 E2E_URL=http://localhost:4173 pnpm e2e:recording-original-vod
 ```
