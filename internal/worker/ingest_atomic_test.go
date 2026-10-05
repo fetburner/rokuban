@@ -182,7 +182,7 @@ func newConcurrentIngestServer(t *testing.T, tsData []byte, contentPath string, 
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
 			record := mirakc.Record{
 				Recording: mirakc.RecordInfo{Status: "finished", Options: mirakc.Options{ContentPath: strPtr(contentPath)}},
-				Content:   mirakc.ContentInfo{Path: "/recording/" + contentPath},
+				Content:   mirakc.ContentInfo{Path: "/recording/" + contentPath, Sha256: strPtr(sha256Hex(tsData))},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)

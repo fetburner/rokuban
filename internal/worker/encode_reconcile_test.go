@@ -95,7 +95,7 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 					Status:  "finished",
 					Options: mirakc.Options{ContentPath: strPtr("test/lost-hint.m2ts")},
 				},
-				Content: mirakc.ContentInfo{Path: "/recording/test/lost-hint.m2ts"},
+				Content: mirakc.ContentInfo{Path: "/recording/test/lost-hint.m2ts", Sha256: strPtr(sha256Hex(tsData))},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)

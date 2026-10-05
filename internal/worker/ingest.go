@@ -59,6 +59,11 @@ var errIngestRecordEndedAbnormally = errors.New("mirakc record ended abnormally"
 // # ponytail: 固定 1s。実機の追い付き遅れがこれを否定したら ingest.follow_poll_interval にする。
 var followPollInterval = time.Second
 
+// ingestSHA256WaitTimeout は finished 後に mirakc が content.sha256 を非同期計算する
+// 時間を待つ上限。報告例では 2.35 GB の読み直しに約 4 分（約 9.8 MB/s）かかったため、
+// 25% の余裕を含む 5 分を固定値にする。計測点が 1 件のため設定キーにはしない。
+const ingestSHA256WaitTimeout = 5 * time.Minute
+
 // ingestFile は ingest の出力ファイルを抽象化する。os.File の全 API は
 // 必要ない。テストでは Sync / Close の失敗を注入して、失敗時に DB 登録と
 // エッジ原本削除へ進まないことを確認する。実装側の openIngestFile は
@@ -335,6 +340,25 @@ func (w *IngestWorker) resolveProgressInterval() time.Duration {
 	return w.ProgressInterval
 }
 
+// ingestJobSnoozeCount は River metadata に記録された、このジョブの snooze 回数を返す。
+// 現在 ingest で snooze するのは SHA-256 待ちだけなので、最初の snooze の再開後は
+// ハッシュ計算の上限を超えたものとして commit 時の照合を skip できる。
+func ingestJobSnoozeCount(metadata []byte) (int, error) {
+	if len(metadata) == 0 {
+		return 0, nil
+	}
+	var state struct {
+		Snoozes int `json:"snoozes"`
+	}
+	if err := json.Unmarshal(metadata, &state); err != nil {
+		return 0, fmt.Errorf("decoding River job metadata: %w", err)
+	}
+	if state.Snoozes < 0 {
+		return 0, fmt.Errorf("invalid River snooze count %d", state.Snoozes)
+	}
+	return state.Snoozes, nil
+}
+
 // Work は ingest ジョブを実行する。ストリーム取得・TS 統計収集・DB コミット・エッジ削除を行う。
 //
 // 戻り値を名前付きにするのは、defer が「この試行の結末」を分類して
@@ -382,6 +406,12 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 		// 1 回余分に乗りうる（実例: stall 検知の cancel が再試行予算の超過で返るとき）。
 		// Work 側では塞げず、River も同じ後読みをしている。
 		cause := context.Cause(ctx)
+		var snoozeErr *river.JobSnoozeError
+		if errors.As(err, &snoozeErr) {
+			// SHA-256 待ちは最終結果ではない。River は attempt を消費せず再開するため、
+			// 成功・失敗の件数や処理時間にも数えない。
+			return
+		}
 		remote := errors.Is(cause, river.ErrJobCancelledRemotely)
 		if cause != nil && !remote &&
 			(errors.Is(err, context.Canceled) || errors.Is(err, cause)) {
@@ -448,14 +478,18 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 		w.handleAlreadyCommittedIngest(ctx, client, args, recordingID, log)
 		return nil
 	}
+	snoozeCount, err := ingestJobSnoozeCount(job.Metadata)
+	if err != nil {
+		return err
+	}
 
-	if err := w.ingestResolvedRecord(ctx, client, args, recordingID, expectedBytes, log, &result); err != nil {
+	if err := w.ingestResolvedRecord(ctx, client, args, recordingID, expectedBytes, snoozeCount, log, &result); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.Client, args jobs.IngestJobArgs, recordingID int64, expectedBytes *int64, log *slog.Logger, result *string) error {
+func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.Client, args jobs.IngestJobArgs, recordingID int64, expectedBytes *int64, snoozeCount int, log *slog.Logger, result *string) error {
 	relPath, fullPath, err := w.determineRelPath(ctx, args, client)
 	if err != nil {
 		return fmt.Errorf("determining rel_path: %w", err)
@@ -570,8 +604,19 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 		return fmt.Errorf("size mismatch: written=%d expected=%d", offset, expectedLen)
 	}
 	sha256Verification := "skipped"
+	if expectedSHA256 == nil && snoozeCount == 0 {
+		// Range 転送が finished 後の追記まで drain されてから待つ。snooze で Work を
+		// 終えても temp は残り、次の試行が replay して hasher と TS 統計を復元する。
+		// River metadata の snoozes が 1 になった再開でも null なら、旧 mirakc または
+		// 計算失敗として timeout_skipped で commit する（API から両者を区別できない）。
+		log.Info("ingest: content sha256 is pending; snoozing before commit",
+			"sha256_verification", "skipped", "wait", ingestSHA256WaitTimeout)
+		return river.JobSnooze(ingestSHA256WaitTimeout)
+	}
 	expectedHash, hashAvailable := normalizeContentSHA256(expectedSHA256)
-	if expectedSHA256 != nil && !hashAvailable {
+	if expectedSHA256 == nil {
+		sha256Verification = "timeout_skipped"
+	} else if !hashAvailable {
 		sha256Verification = "invalid_skipped"
 		log.Warn("ingest: skipping invalid content sha256", "value", *expectedSHA256)
 	}

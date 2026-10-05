@@ -190,7 +190,11 @@ River のバックオフと `attempt` カウンタは失われる。この窓を
 
 #### 層 3: 完全性検証とコミット
 
-pull 完了後に書き込みバイト数を HEAD の Content-Length と照合する。finished を観測した record のメタデータに `content.sha256` が存在する場合は、Range 再開を含む同じ転送バイト列から 1 パスで計算した SHA-256（小文字 hex）とも照合する。これは stream レスポンスの Digest / ETag ヘッダーではない。`content.sha256` が `null` または欠落している場合は旧 mirakc やハッシュ計算不能の record として照合をスキップする。空文字・空白付きの値は正規化し、64 文字の hex でない値は警告を出してスキップする。Content-Length が不明（`HeadRecordStream` が `-1`）なら長さの照合だけをスキップする（`ingest.go` の `expectedLen >= 0` ガード）。長さまたは SHA-256 が不一致なら `hash mismatch` / `size mismatch` で失敗し、commit と edge record の削除へ進まない。不一致は通常の River 再試行に戻し、専用メトリクス `rokuban_ingest_hash_mismatches_total` で観測する。
+pull 完了後に書き込みバイト数を HEAD の Content-Length と照合する。finished を観測した record では、同じ転送バイト列の SHA-256 と `content.sha256` も照合する。Range 再開を含む全バイトを 1 パスで計算する。これは stream レスポンスの Digest / ETag ヘッダーではない。
+
+`content.sha256` が `null` または欠落している場合は、finished 後の mirakc がハッシュを計算中の可能性がある。temp を残したまま River の snooze で 5 分待ち、record を再取得する。再開時は temp を replay して hasher を復元し、Range 転送を続ける。この経路は `TestIngestWorker_SnoozesThenVerifiesLateContentSHA256` で確認する。報告された実測では、2.35 GB の読み直しに約 4 分（約 9.8 MB/s）かかった。25% の余裕を含めて上限を 5 分に固定する。計測点が 1 件のため設定キーにはしない。上限後も値が無ければ旧 mirakc と計算失敗を区別できないので、照合を skip して commit する。待ちに入るログは `sha256_verification=skipped`、上限後の commit は `sha256_verification=timeout_skipped` として区別する。
+
+空文字・空白付きの値は正規化し、64 文字の hex でない値は警告を出してスキップする。Content-Length が不明（`HeadRecordStream` が `-1`）なら長さの照合だけをスキップする（`ingest.go` の `expectedLen >= 0` ガード）。長さまたは SHA-256 が不一致なら `hash mismatch` / `size mismatch` で失敗し、commit と edge record の削除へ進まない。不一致は通常の River 再試行に戻し、専用メトリクス `rokuban_ingest_hash_mismatches_total` で観測する。
 
 長さと（存在する場合の）SHA-256 の照合を通ったら、canonical rel_path と同じディレクトリに
 作った record 固有 temp の `fsync` → `Close` を行う。再開時も途中の fsync はせず、replay
@@ -337,7 +341,7 @@ NULL とは違う。非 null な `*int64(0)` として `watcher.go` の `content
 
 追従ループは毎ポーリング `GetRecord` を呼んでおり、その `content.length` が同じ観測なので追加リクエスト無しで分母を更新できる（`ingestProgressReporter.observeProgress`）。`TestIngestWorker_FollowingCaughtUpKeepsProgressFresh` が分母と observed_at の両方を固定している。
 
-**録画中の分母は最終サイズではないので、UI は % を出さない。** 録画中に読めるのは「mirakc がその時点で観測しているサイズ」であり、`writtenBytes` がそれを追い越すことがある。割合にすると `min(100, ...)` で「録画全体を取り込み済み」と読める嘘になる。分母が確定するのは録画終了後で、% はそこから出す（`web/src/lib/ingest.ts` の `ingestDisplay`）。分母が NULL のときも同じくバイト数だけを出す。`content.length` は照合には使わない --- 照合は finished 確認後の HEAD と、存在する場合の record メタデータ `content.sha256` で行う。
+**録画中の分母は最終サイズではないので、UI は % を出さない。** 録画中に読めるのは「mirakc がその時点で観測しているサイズ」であり、`writtenBytes` がそれを追い越すことがある。割合にすると `min(100, ...)` で「録画全体を取り込み済み」と読める嘘になる。分母が確定するのは録画終了後で、% はそこから出す（`web/src/lib/ingest.ts` の `ingestDisplay`）。分母が NULL のときも同じくバイト数だけを出す。`content.length` は照合に使わず、finished 確認後に HEAD と `content.sha256` を照合する。SHA-256 が無ければ snooze で待ち、5 分後も無ければ `timeout_skipped` で commit する。
 
 **API の状態は 4 値で、原本 `media_assets` 行の有無を最優先に導出する**（列に焼いた値では
 ない。`internal/api/recordings.go` の `ingestProgressFromFields`）。`kind='original'` の行が
