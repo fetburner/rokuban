@@ -157,45 +157,29 @@ func recoverStaleCMDetectJobs(ctx context.Context, pool *pgxpool.Pool) error {
 	if err != nil {
 		return fmt.Errorf("listing stale CM detection jobs: %w", err)
 	}
-	candidates := make([]staleCMDetectJob, 0, 100)
-	for rows.Next() {
-		var candidate staleCMDetectJob
-		if err := rows.Scan(&candidate.id, &candidate.recordingID, &candidate.attemptedAt); err != nil {
-			rows.Close()
-			return fmt.Errorf("scanning stale CM detection job: %w", err)
-		}
-		candidates = append(candidates, candidate)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("reading stale CM detection jobs: %w", err)
-	}
-	rows.Close()
-
-	var errs []error
-	for _, candidate := range candidates {
-		lock, acquired, err := acquireEncodeJobLock(ctx, pool, candidate.id, defaultJobLockTimeout)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("locking stale job %d: %w", candidate.id, err))
-			continue
-		}
-		if !acquired {
-			continue
-		}
-		lock.stopHeartbeatLoop()
-		retry, err := recoverStaleCMDetectJob(ctx, lock.conn, candidate)
-		lock.release()
-		if err != nil {
-			errs = append(errs, fmt.Errorf("recovering stale job %d: %w", candidate.id, err))
-			continue
-		}
-		slog.Info("cm_detect_reconcile: recovered stale running job",
-			"job_id", candidate.id, "recording_id", candidate.recordingID, "attempted_at", candidate.attemptedAt, "retry", retry)
-	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	return nil
+	return recoverStaleJobCandidates(
+		ctx,
+		rows,
+		"CM detection",
+		func(rows pgx5.Rows) (staleCMDetectJob, error) {
+			var candidate staleCMDetectJob
+			err := rows.Scan(&candidate.id, &candidate.recordingID, &candidate.attemptedAt)
+			return candidate, err
+		},
+		func(candidate staleCMDetectJob) int64 { return candidate.id },
+		func(ctx context.Context, id int64) (*jobLock, bool, error) {
+			return acquireEncodeJobLock(ctx, pool, id, defaultJobLockTimeout)
+		},
+		func(ctx context.Context, conn *pgxpool.Conn, candidate staleCMDetectJob) error {
+			retry, err := recoverStaleCMDetectJob(ctx, conn, candidate)
+			if err != nil {
+				return err
+			}
+			slog.Info("cm_detect_reconcile: recovered stale running job",
+				"job_id", candidate.id, "recording_id", candidate.recordingID, "attempted_at", candidate.attemptedAt, "retry", retry)
+			return nil
+		},
+	)
 }
 
 // recoverStaleCMDetectJob は river_job と試行行を同じ tx で更新し、再試行に戻したかを返す。
@@ -308,47 +292,31 @@ func recoverStaleCMLogoCandidateJobs(ctx context.Context, pool *pgxpool.Pool) er
 	if err != nil {
 		return fmt.Errorf("listing stale CM logo candidate jobs: %w", err)
 	}
-	candidates := make([]staleCMLogoCandidateJob, 0, 100)
-	for rows.Next() {
-		var candidate staleCMLogoCandidateJob
-		if err := rows.Scan(&candidate.id, &candidate.networkID, &candidate.serviceID,
-			&candidate.areaUpdatedAt, &candidate.attemptedAt); err != nil {
-			rows.Close()
-			return fmt.Errorf("scanning stale CM logo candidate job: %w", err)
-		}
-		candidates = append(candidates, candidate)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("reading stale CM logo candidate jobs: %w", err)
-	}
-	rows.Close()
-
-	var errs []error
-	for _, candidate := range candidates {
-		lock, acquired, err := acquireEncodeJobLock(ctx, pool, candidate.id, defaultJobLockTimeout)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("locking stale candidate job %d: %w", candidate.id, err))
-			continue
-		}
-		if !acquired {
-			continue
-		}
-		lock.stopHeartbeatLoop()
-		retry, err := recoverStaleCMLogoCandidateJob(ctx, lock.conn, candidate)
-		lock.release()
-		if err != nil {
-			errs = append(errs, fmt.Errorf("recovering stale candidate job %d: %w", candidate.id, err))
-			continue
-		}
-		slog.Info("cm_detect_reconcile: recovered stale logo candidate job",
-			"job_id", candidate.id, "network_id", candidate.networkID,
-			"service_id", candidate.serviceID, "attempted_at", candidate.attemptedAt, "retry", retry)
-	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	return nil
+	return recoverStaleJobCandidates(
+		ctx,
+		rows,
+		"CM logo candidate",
+		func(rows pgx5.Rows) (staleCMLogoCandidateJob, error) {
+			var candidate staleCMLogoCandidateJob
+			err := rows.Scan(&candidate.id, &candidate.networkID, &candidate.serviceID,
+				&candidate.areaUpdatedAt, &candidate.attemptedAt)
+			return candidate, err
+		},
+		func(candidate staleCMLogoCandidateJob) int64 { return candidate.id },
+		func(ctx context.Context, id int64) (*jobLock, bool, error) {
+			return acquireEncodeJobLock(ctx, pool, id, defaultJobLockTimeout)
+		},
+		func(ctx context.Context, conn *pgxpool.Conn, candidate staleCMLogoCandidateJob) error {
+			retry, err := recoverStaleCMLogoCandidateJob(ctx, conn, candidate)
+			if err != nil {
+				return err
+			}
+			slog.Info("cm_detect_reconcile: recovered stale logo candidate job",
+				"job_id", candidate.id, "network_id", candidate.networkID,
+				"service_id", candidate.serviceID, "attempted_at", candidate.attemptedAt, "retry", retry)
+			return nil
+		},
+	)
 }
 
 func recoverStaleCMLogoCandidateJob(ctx context.Context, conn *pgxpool.Conn, candidate staleCMLogoCandidateJob) (bool, error) {

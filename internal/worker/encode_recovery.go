@@ -2,8 +2,6 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -11,7 +9,6 @@ import (
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/jobs"
 )
@@ -88,38 +85,29 @@ func recoverStaleEncodeJobs(ctx context.Context, pool *pgxpool.Pool, riverClient
 		return fmt.Errorf("listing stale running encode jobs: %w", err)
 	}
 
-	// rows がコネクションを保持したまま次の advisory lock を取りに行くと、
-	// MaxConns=1 のプールで自分自身を待つ。先に候補をメモリへ読み切って閉じる。
-	candidates := make([]staleEncodeJob, 0, encodeRecoveryMaxJobsPerSweep)
-	for rows.Next() {
-		var candidate staleEncodeJob
-		if err := rows.Scan(
-			&candidate.id,
-			&candidate.recordingID,
-			&candidate.profile,
-			&candidate.lastActivity,
-			&candidate.attempt,
-		); err != nil {
-			rows.Close()
-			return fmt.Errorf("scanning stale running encode job: %w", err)
-		}
-		candidates = append(candidates, candidate)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("reading stale running encode jobs: %w", err)
-	}
-	rows.Close()
-
-	var errs []error
-	for _, candidate := range candidates {
-		if err := recoverStaleEncodeJob(ctx, pool, riverClient, candidate); err != nil {
-			slog.Warn("encode recovery: recovering stale candidate failed, continuing with remaining candidates",
-				"old_job_id", candidate.id, "err", err)
-			errs = append(errs, fmt.Errorf("job %d: %w", candidate.id, err))
-		}
-	}
-	return errors.Join(errs...)
+	return recoverStaleJobCandidates(
+		ctx,
+		rows,
+		"encode",
+		func(rows pgx5.Rows) (staleEncodeJob, error) {
+			var candidate staleEncodeJob
+			err := rows.Scan(
+				&candidate.id,
+				&candidate.recordingID,
+				&candidate.profile,
+				&candidate.lastActivity,
+				&candidate.attempt,
+			)
+			return candidate, err
+		},
+		func(candidate staleEncodeJob) int64 { return candidate.id },
+		func(ctx context.Context, id int64) (*jobLock, bool, error) {
+			return acquireEncodeJobLock(ctx, pool, id, defaultJobLockTimeout)
+		},
+		func(ctx context.Context, conn *pgxpool.Conn, candidate staleEncodeJob) error {
+			return recoverStaleEncodeJob(ctx, conn, riverClient, candidate)
+		},
+	)
 }
 
 // recoverStaleEncodeJob は旧 running 行の終端化と新しい encode の投入を、同じ短い
@@ -129,76 +117,36 @@ func recoverStaleEncodeJobs(ctx context.Context, pool *pgxpool.Pool, riverClient
 // recording_encode_attempts はここでは変更しない。回収直後から代替ジョブが実行を
 // 開始するまで running が残るのは、ctx キャンセル時に running を残す既存規約と同じ
 // であり、代替 EncodeWorker の markEncodeAttemptRunning が新しい試行として上書きする。
-func recoverStaleEncodeJob(ctx context.Context, pool *pgxpool.Pool, riverClient *river.Client[pgx5.Tx], candidate staleEncodeJob) error {
-	lock, acquired, err := acquireEncodeJobLock(ctx, pool, candidate.id, defaultJobLockTimeout)
-	if err != nil {
-		return fmt.Errorf("acquiring advisory lock for stale encode job %d: %w", candidate.id, err)
-	}
-	if !acquired {
-		slog.Debug("encode recovery skipped live job", "old_job_id", candidate.id, "last_activity", candidate.lastActivity)
-		return nil
-	}
-	defer lock.release()
-	// Work の長時間エンコードとは違い、recovery はこの lock 用 connection 自身で
-	// transaction を実行する。heartbeat と pgx connection を同時利用しない。
-	lock.stopHeartbeatLoop()
-
-	recoveredAt := time.Now().UTC()
-	errorJSON, err := json.Marshal(rivertype.AttemptError{
-		At:      recoveredAt,
-		Attempt: candidate.attempt,
-		Error:   encodeRecoveryReason,
-		Trace:   "",
-	})
-	if err != nil {
-		return fmt.Errorf("marshaling stale encode recovery error: %w", err)
-	}
-	metadataJSON, err := json.Marshal(map[string]any{
-		"encode_recovery": map[string]any{
-			"reason":        encodeRecoveryReason,
-			"last_activity": candidate.lastActivity,
-			"recovered_at":  recoveredAt,
+func recoverStaleEncodeJob(ctx context.Context, conn *pgxpool.Conn, riverClient *river.Client[pgx5.Tx], candidate staleEncodeJob) error {
+	inserted, err := replaceStaleRiverJob(
+		ctx,
+		conn,
+		riverClient,
+		"encode",
+		candidate.id,
+		candidate.attempt,
+		candidate.lastActivity,
+		encodeRecoveryReason,
+		"encode_recovery",
+		discardRecoveredEncodeJobQuery,
+		jobs.EncodeJobArgs{
+			RecordingID: candidate.recordingID,
+			Profile:     candidate.profile,
 		},
-	})
-	if err != nil {
-		return fmt.Errorf("marshaling stale encode recovery metadata: %w", err)
-	}
-
-	tx, err := lock.conn.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("beginning stale encode recovery transaction for job %d: %w", candidate.id, err)
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-
-	tag, err := tx.Exec(ctx, discardRecoveredEncodeJobQuery, candidate.id, recoveredAt, string(errorJSON), string(metadataJSON))
-	if err != nil {
-		return fmt.Errorf("discarding stale encode job %d: %w", candidate.id, err)
-	}
-	if tag.RowsAffected() == 0 {
-		// 候補取得後に River が正常終了させた場合。state 条件が回収と完了の
-		// 競合を止め、旧行を上書きして新しい job を作ることを防ぐ。
-		return nil
-	}
-
-	inserted, err := riverClient.InsertTx(ctx, tx, jobs.EncodeJobArgs{
-		RecordingID: candidate.recordingID,
-		Profile:     candidate.profile,
-	}, nil)
-	if err != nil {
-		return fmt.Errorf("inserting replacement encode job for %d: %w", candidate.id, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("committing stale encode recovery for job %d: %w", candidate.id, err)
+		nil,
+	)
+	if err != nil || inserted == nil {
+		return err
 	}
 
 	replacementID := int64(0)
-	if inserted != nil && inserted.Job != nil {
+	if inserted.Job != nil {
 		replacementID = inserted.Job.ID
 	}
 	slog.Info("encode: recovered stale running job",
 		"old_job_id", candidate.id,
 		"new_job_id", replacementID,
-		"new_job_unique_skipped", inserted != nil && inserted.UniqueSkippedAsDuplicate,
+		"new_job_unique_skipped", inserted.UniqueSkippedAsDuplicate,
 		"recording_id", candidate.recordingID,
 		"profile", candidate.profile,
 		"last_activity", candidate.lastActivity,
