@@ -86,6 +86,7 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 open のエピックは `gh issue list --label epic --state open` で引く。一覧はここに写さない（写すと close・新設のたびに静かにずれる）。
 
 - **streamer のスケールとライブ視聴の資源同定は [docs/operations.md](docs/operations.md) §5「streamer のスケール」と [docs/api.md](docs/api.md) §ライブ視聴の HLS に決まっている**。sticky は使わない / ライブの URL にセッション ID を置かない / 既定 replicas=1 は可逆にする、の 3 点
+- **共有の過不足を正す作業**は、[該当する open epic](https://github.com/fetburner/rokuban/issues?q=is%3Aopen+is%3Aissue+label%3Aepic+%22%E5%85%B1%E6%9C%89%E3%81%AE%E9%81%8E%E4%B8%8D%E8%B6%B3%E3%82%92%E6%AD%A3%E3%81%99%22) を入口にする。
 
 ### タスク分解と issue
 
@@ -171,6 +172,8 @@ open のエピックは `gh issue list --label epic --state open` で引く。�
 - エラーは握り潰さず `fmt.Errorf("...: %w", err)` で文脈付き wrap
 - 各タスクは 1 PR 粒度。着手前に**担当タスクのサブ issue**（本文とコメント）と、そこが参照している doc の節だけを読む。親 issue や他タスクのサブ issue は読まなくてよい（上記「タスクマップ」）
 - **doc コメント**: エクスポートされた関数・型・メソッド・定数には [Go Doc Comments](https://go.dev/doc/comment) 規約に従った doc コメントを書く。`// FuncName は〜` の形式で主語を識別子名にする。非公開でも他パッケージから呼ばれうる重要な関数には書く
+- **切り出しは、今ある 2 つ以上の呼び出し元が同じ理由で変わる場合だけにする。** 将来の呼び出し元として数えるのは、open issue にあるものだけ。
+  呼び出し元が mode を渡して分岐する汎用部品は、同じ理由で変わらないものを一つにまとめてしまう。同じ理由で変わる判定を別々に書くと、片方だけが直る。問うのは「片方を変えたら、もう片方も必ず変えるべきか」。
 - **測っていない挙動を断言しない。** コメント・docs で実行時の挙動を書くなら、テスト名か測定値を
   併記する。書けないなら「未検証」と書く。**古い記述より悪いのは、一度も真でなかった記述**。
   実例: 「`<video>` の error イベントに落ちる」（誰も error を聴いていない）。「動的ビルダ
