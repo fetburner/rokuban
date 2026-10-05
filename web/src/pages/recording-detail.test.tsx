@@ -114,7 +114,7 @@ function createFakeServer(options: {
 }) {
   let recording = options.recording
   let chaseGone = false
-  let originalVODGone = false
+  let originalVODFailures = 0
   const sites = options.sites ?? ['default']
   const encodeProfiles = options.encodeProfiles ?? []
   const liveProfiles = options.liveProfiles ?? []
@@ -302,7 +302,10 @@ function createFakeServer(options: {
       return Promise.resolve(new Response(null, { status: 204 }))
     }
     if (/^\/api\/sites\/[^/]+\/recordings\/\d+\/original-vod(?:\/offset\/\d+)?\/playlist\.m3u8$/.test(url.pathname)) {
-      if (originalVODGone) return Promise.resolve(new Response('gone\n', { status: 404 }))
+      if (originalVODFailures > 0) {
+        originalVODFailures -= 1
+        return Promise.resolve(new Response('gone\n', { status: 404 }))
+      }
       return Promise.resolve(
         new Response('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\nhd.0.m3u8\n', { status: 200 }),
       )
@@ -332,9 +335,9 @@ function createFakeServer(options: {
     setChaseGone: (gone: boolean) => {
       chaseGone = gone
     },
-    /** setOriginalVODGone は原本 HLS のセッションを作れない状態（404）にする。 */
-    setOriginalVODGone: (gone: boolean) => {
-      originalVODGone = gone
+    /** failOriginalVOD は原本 HLS の playlist を次の count 回だけ 404 にする。 */
+    failOriginalVOD: (count: number) => {
+      originalVODFailures = count
     },
   }
 }
@@ -3532,13 +3535,51 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
     await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod/offset/20/')).toHaveLength(1))
 
     // 範囲外 seek では原本 HLS のまま張り直し、その playlist が 404 になる。
-    fake.setOriginalVODGone(true)
+    fake.failOriginalVOD(Infinity)
     const slider = await screen.findByRole('slider', { name: 'シークバー' })
     fireEvent.keyDown(slider, { key: 'Home' })
     fireEvent.keyUp(slider, { key: 'Home' })
 
+    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod/').filter((path) => !path.includes('/offset/')).length).toBeGreaterThan(0))
     await waitFor(() => expect(document.querySelector('video')?.getAttribute('src') ?? '').toContain('/api/media/recordings/3/file'))
     expect(screen.getByTestId('recording-version-row')).toHaveTextContent('再生中')
+  })
+
+  it('版タブで明示した原本 HLS も、エラーで張り直した後は自動選択に従う', async () => {
+    const user = userEvent.setup()
+    const fake = createFakeServer({
+      recording: sampleRecording({
+        ...FINISHED,
+        resumePositionMs: 20_000,
+        encodedAssets: [{ profile: 'cut', cut: true, sizeBytes: 500_000 }],
+      }),
+      liveProfiles: LIVE_PROFILES,
+    })
+    const { queryClient } = renderAt('/recordings/3')
+    // cut だけの録画は原本 HLS が自動選択。版タブで cut 版を経由して原本 HLS を明示選択する。
+    await selectDetailTab('版')
+    await user.click(await screen.findByRole('button', { name: 'カット版 (cut)を再生' }))
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src') ?? '').toContain('/api/media/recordings/3/file'))
+    await user.click(screen.getByRole('button', { name: '原本 HLS を再生' }))
+    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod/').length).toBeGreaterThan(0))
+
+    // 1 回だけ失敗させ、同じ原本 HLS のまま張り直させる（ここで明示選択が解除される）。
+    const before = playlistPaths(fake.fetchMock, '/original-vod/').length
+    fake.failOriginalVOD(1)
+    await user.click(await screen.findByRole('button', { name: '再生設定' }))
+    await user.click(within(screen.getByRole('menu', { name: '再生設定' })).getByRole('menuitem', { name: '画質' }))
+    await user.click(within(screen.getByRole('menu', { name: '画質' })).getByRole('menuitemradio', { name: 'sd（480p）' }))
+    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod/').length).toBeGreaterThanOrEqual(before + 2))
+    expect(document.querySelector('video')?.getAttribute('src') ?? '').not.toContain('/api/media/recordings/3/file')
+
+    // 再生中にカットなし encoded ができると、次の範囲外 seek で encoded へ移る。
+    fake.setRecording(sampleRecording(FINISHED))
+    await queryClient.invalidateQueries()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const slider = await screen.findByRole('slider', { name: 'シークバー' })
+    fireEvent.keyDown(slider, { key: 'End' })
+    fireEvent.keyUp(slider, { key: 'End' })
+    await waitFor(() => expect(document.querySelector('video')?.getAttribute('src') ?? '').toContain('/api/media/recordings/3/file'))
   })
 
   it('自動選択の原本 HLS は、再生中に encoded ができると次の範囲外 seek で encoded へ移る', async () => {
