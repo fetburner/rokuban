@@ -531,7 +531,7 @@ GET  /api/sites/{site}/recordings/{id}/chase/playlist.m3u8[?profile=<name>]
 GET  /api/sites/{site}/recordings/{id}/chase/offset/{offset}/playlist.m3u8[?profile=<name>]
 	       → application/vnd.apple.mpegurl
 GET  /api/sites/{site}/recordings/{id}/chase/segments/{name}
-GET  /api/sites/{site}/recordings/{id}/chase/{name}       （字幕付き master の variant / subtitle playlist）
+GET  /api/sites/{site}/recordings/{id}/chase/{name}       （master の映像 / 音声 variant / subtitle playlist）
 	       → video/mp2t / text/vtt / application/vnd.apple.mpegurl
 GET  /api/sites/{site}/recordings/{id}/chase/offset/{offset}/segments/{name}
 GET  /api/sites/{site}/recordings/{id}/chase/offset/{offset}/{name}
