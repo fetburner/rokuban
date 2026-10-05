@@ -54,7 +54,7 @@ import { useLiveCapability } from '@/lib/capabilities'
 import { recordingFileURL } from '@/lib/playback-position'
 import { seedRecordingDetail } from '@/lib/recording-detail-cache'
 import { selectRecordingPlaybackSource, type RecordingPlaybackSource } from '@/lib/recording-playback-source'
-import { validLiveProfile } from '@/lib/live'
+import { type LiveAudioChoice, validLiveProfile } from '@/lib/live'
 import { recordingTimeline } from '@/lib/recording-timeline'
 import type { OffsetSessionStart } from '@/lib/use-offset-session'
 import { ruleDisambiguator } from '@/lib/rule-label'
@@ -155,12 +155,14 @@ export function RecordingDetail({
   trash,
   chase = false,
   liveProfile,
+  audio,
   startAtBeginning = false,
   chapterEditing = false,
   onEnterChapterEditing,
   chapterEditorCommandsRef,
   onChapterEditorStatusChange,
   onSelectLiveProfile,
+  onSelectAudio,
   onNavigateToRecording,
 }: {
   recording: Recording
@@ -175,6 +177,9 @@ export function RecordingDetail({
   /** 追っかけ再生の画質（`?liveProfile=`。issue #874）。未検証の生の値。 */
   liveProfile?: string
   onSelectLiveProfile: (name: string) => void
+  /** 追っかけ再生の音声（`?audio=`。省略時は標準）。 */
+  audio?: LiveAudioChoice
+  onSelectAudio?: (choice: LiveAudioChoice | undefined) => void
   onNavigateToRecording: (id: number) => void
 }) {
   const liveCapability = useLiveCapability()
@@ -613,8 +618,10 @@ export function RecordingDetail({
               recordingId={recording.id}
               offsetSessionStart={playbackStart}
               profile={explicitLiveProfile}
+              audio={audio}
               availableProfiles={liveProfiles}
               onProfileChange={onSelectLiveProfile}
+              onAudioChange={onSelectAudio}
               autoPlay={playbackState.autoPlay}
               fullscreenContainerRef={playbackFullscreenContainerRef}
               chaseTimeline={{

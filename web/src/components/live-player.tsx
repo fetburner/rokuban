@@ -256,9 +256,9 @@ type LivePlayerProps = {
   /**
    * 音声（二重音声の主 / 副。issue #870）。省略時は標準トラック。
    *
-   * **`profile` と違って URL を変えない。** streamer が 3 本の音声レンディションを
-   * 常に出しているので、切替はプレイヤーが取るトラックを替えるだけで、プレイリストの
-   * 取り直しもセッションの作り直しも起きない（下の effect）。
+   * **`profile` と違って HLS playlist の URL を変えない。** streamer が live / chase /
+   * original VOD に 3 本の音声レンディションを出すので、切替はプレイヤーが取る
+   * トラックを替えるだけで、playlist の取り直しもセッションの作り直しも起きない。
    */
   audio?: LiveAudioChoice
   /** original-vod の画質メニュー。1 件以下ならセレクタを隠す。 */
@@ -1997,12 +1997,12 @@ export function LivePlayer({
         settingsLabel={isLive ? 'ライブ設定' : '再生設定'}
         canChangePlaybackRate={!isLive}
         profileOptions={profileOptions}
-        audioOptions={isLive || isOriginalVOD ? playbackAudioOptions : []}
+        audioOptions={isLive || isChase || isOriginalVOD ? playbackAudioOptions : []}
         audioChoice={playbackAudio}
         onSelectAudio={(choice) => {
           if (onAudioChange) onAudioChange(choice)
           else if (isLive) setLiveAudioOverrideState({ set: true, value: choice })
-          else setOriginalVODAudioOverrideState({ recordingId, set: true, value: choice })
+          else if (isOriginalVOD) setOriginalVODAudioOverrideState({ recordingId, set: true, value: choice })
         }}
         {...frame.controls}
         video={<>{video}{playerOverlay}</>}

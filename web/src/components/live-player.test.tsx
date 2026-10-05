@@ -2798,8 +2798,9 @@ describe('LivePlayer / 設定メニューの行は再生元の事実で決まる
   }
   const profiles = [{ name: 'hd', height: 720 }, { name: 'sd', height: 360 }]
 
-  it('追っかけは再生速度の行を持ち、音声の行を持たない（追っかけの HLS は音声レンディションを出さない）', async () => {
+  it('追っかけは再生速度と音声の行を持ち、音声の選択を呼び出し元へ渡す', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    const onAudioChange = vi.fn()
     render(
       <LivePlayer
         mode="chase"
@@ -2807,15 +2808,22 @@ describe('LivePlayer / 設定メニューの行は再生元の事実で決まる
         recordingId={530}
         chaseTimeline={{ chaseHeadOffsetSeconds: 0, plannedSeconds: 60, recordedSeconds: 20 }}
         availableProfiles={profiles}
+        audio="main"
+        onAudioChange={onAudioChange}
       />,
     )
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
-    // 音声トラックが届いていても行は出ない。行が無いのが呼び出し元の可否であることを見る。
     hlsMockState.instances[0]!.audioTracks = [{}, {}, {}]
     const rows = settingsRows('再生設定')
     expect(rows).toContain('再生速度')
     expect(rows).toContain('画質')
-    expect(rows).not.toContain('音声')
+    expect(rows).toContain('音声')
+
+    fireEvent.click(within(screen.getByRole('menu', { name: '再生設定' })).getByRole('menuitem', { name: '音声' }))
+    const audio = screen.getByRole('menu', { name: '音声' })
+    expect(within(audio).getByRole('menuitemradio', { name: '主音声' })).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(within(audio).getByRole('menuitemradio', { name: '副音声' }))
+    expect(onAudioChange).toHaveBeenCalledWith('sub')
   })
 
   it('ライブは音声の行を持ち、再生速度の行を持たない', async () => {

@@ -211,11 +211,94 @@ func runFFmpeg(t *testing.T, ffmpeg string, stdin *os.File, args ...string) {
 	}
 }
 
-// TestBuildChaseFFmpegArgs_NoAudioRenditions は追っかけ（EVENT）に音声レンディションを
-// 出さないことを両経路で固定する（audioRenditionsFor）。出すと配信の形が変わり、
-// その形で追っかけの seek・再生位置の復元を確かめる判定が無い。captions 無効時は
-// 従来どおりプロファイル別の media playlist（`NAME.m3u8` / `NAME_seg%05d.ts`）。
-func TestBuildChaseFFmpegArgs_NoAudioRenditions(t *testing.T) {
+// TestBuildChaseFFmpegArgs_RealFFmpegAudioRenditions は追っかけの実出力に標準 / 主 / 副
+// の rendition があり、master の並びと聞こえる音が UI の選択契約に一致することを測る。
+// イベント playlist で長く聴いた後のトラック切替と seek・再開の実ブラウザ判定は
+// web/e2e/chase-audio.mjs が担う。
+func TestBuildChaseFFmpegArgs_RealFFmpegAudioRenditions(t *testing.T) {
+	ffmpeg := lookPathFFmpeg(t)
+	in := filepath.Join(t.TempDir(), "in.ts")
+	runFFmpeg(t, ffmpeg, nil,
+		"-hide_banner", "-loglevel", "error",
+		"-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30",
+		"-f", "lavfi", "-i", "sine=f=440:r=48000",
+		"-f", "lavfi", "-i", "sine=f=880:r=48000",
+		"-filter_complex", "[1:a][2:a]join=inputs=2:channel_layout=stereo[a]",
+		"-map", "0:v", "-map", "[a]", "-t", "6",
+		"-c:v", "mpeg2video", "-c:a", "aac", "-f", "mpegts", in)
+
+	profiles := []LiveProfile{
+		{Name: "hd", VideoCodec: "mpeg2video", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
+		{Name: "sd", VideoCodec: "mpeg2video", AudioCodec: "aac", Height: 120, SegmentSeconds: 2, PlaylistSize: 6},
+	}
+	want := [][2]float64{{440, 880}, {440, 440}, {880, 880}}
+
+	for _, tc := range []struct {
+		name     string
+		captions bool
+		masters  []string
+	}{
+		{name: "profile masters", masters: []string{"hd.m3u8", "sd.m3u8"}},
+		{name: "caption master", captions: true, masters: []string{"playlist.m3u8"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(dir, "segments"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			stdin, err := os.Open(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = stdin.Close() }()
+			args := BuildChaseFFmpegArgs(LiveConfig{Captions: tc.captions, Profiles: profiles}, dir, false)
+			runFFmpeg(t, ffmpeg, stdin, args...)
+
+			var videoVariants int
+			for _, master := range tc.masters {
+				body, err := os.ReadFile(filepath.Join(dir, master))
+				if err != nil {
+					t.Fatalf("master %s: %v", master, err)
+				}
+				for _, variant := range parseMaster(t, string(body)) {
+					videoVariants++
+					if len(variant.audio) != 3 {
+						t.Fatalf("%s: variant %s has %d audio renditions, want 3:\n%s", master, variant.uri, len(variant.audio), body)
+					}
+					videoPlaylist, err := os.ReadFile(filepath.Join(dir, variant.uri))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !bytes.Contains(videoPlaylist, []byte("#EXT-X-PLAYLIST-TYPE:EVENT")) {
+						t.Errorf("%s: video playlist is not EVENT:\n%s", variant.uri, videoPlaylist)
+					}
+					for i, uri := range variant.audio {
+						playlist := filepath.Join(dir, uri)
+						audioPlaylist, err := os.ReadFile(playlist)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if !bytes.Contains(audioPlaylist, []byte("#EXT-X-PLAYLIST-TYPE:EVENT")) {
+							t.Errorf("%s: audio playlist is not EVENT:\n%s", uri, audioPlaylist)
+						}
+						l, r := decodeChannelFrequencies(t, ffmpeg, playlist)
+						if math.Abs(l-want[i][0]) > 15 || math.Abs(r-want[i][1]) > 15 {
+							t.Errorf("%s: audio rendition %d L/R = %.0f/%.0f Hz, want %.0f/%.0f",
+								master, i, l, r, want[i][0], want[i][1])
+						}
+					}
+				}
+			}
+			if videoVariants != len(profiles) {
+				t.Errorf("video variants = %d, want %d", videoVariants, len(profiles))
+			}
+		})
+	}
+}
+
+// TestBuildChaseFFmpegArgs_AudioRenditions は追っかけの両経路に標準 / 主 / 副の
+// audio rendition を出し、HLS master を使う形を固定する。
+func TestBuildChaseFFmpegArgs_AudioRenditions(t *testing.T) {
 	profiles := []LiveProfile{
 		{Name: "hd", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
 		{Name: "sd", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6},
@@ -223,26 +306,26 @@ func TestBuildChaseFFmpegArgs_NoAudioRenditions(t *testing.T) {
 	for _, captions := range []bool{false, true} {
 		args := BuildChaseFFmpegArgs(LiveConfig{Captions: captions, Profiles: profiles}, "/tmp/chase", false)
 		joined := strings.Join(args, " ")
-		if strings.Contains(joined, "agroup") || strings.Contains(joined, "pan=") {
-			t.Errorf("captions=%v: chase args carry audio renditions: %v", captions, args)
+		if !strings.Contains(joined, "agroup") || strings.Count(joined, "pan=") != 2*len(profiles) {
+			t.Errorf("captions=%v: chase args are missing standard/main/sub audio renditions: %v", captions, args)
 		}
-		if n := strings.Count(joined, "-map 0:a:0"); n != len(profiles) {
-			t.Errorf("captions=%v: -map 0:a:0 count = %d, want %d: %v", captions, n, len(profiles), args)
+		if n := strings.Count(joined, "-map 0:a:0"); n != 3*len(profiles) {
+			t.Errorf("captions=%v: -map 0:a:0 count = %d, want %d: %v", captions, n, 3*len(profiles), args)
 		}
 		if !captions {
 			for _, want := range []string{
-				"-hls_segment_filename /tmp/chase/segments/hd_seg%05d.ts -hls_base_url segments/ /tmp/chase/hd.m3u8",
-				"-hls_segment_filename /tmp/chase/segments/sd_seg%05d.ts -hls_base_url segments/ /tmp/chase/sd.m3u8",
+				"-master_pl_name hd.m3u8",
+				"-hls_segment_filename /tmp/chase/segments/hd.%v_seg%05d.ts -hls_base_url segments/ /tmp/chase/hd.%v.m3u8",
+				"-master_pl_name sd.m3u8",
+				"-hls_segment_filename /tmp/chase/segments/sd.%v_seg%05d.ts -hls_base_url segments/ /tmp/chase/sd.%v.m3u8",
 			} {
 				if !strings.Contains(joined, want) {
-					t.Errorf("chase args missing %q: %v", want, args)
+					t.Errorf("args missing %q: %v", want, args)
 				}
 			}
-			if strings.Contains(joined, "-master_pl_name") {
-				t.Errorf("chase without captions must stay a media playlist: %v", args)
-			}
-		} else if !strings.Contains(joined, "-var_stream_map v:0,a:0 v:1,a:1 ") {
-			t.Errorf("captions chase var_stream_map changed: %v", args)
+		} else if !strings.Contains(joined, "-master_pl_name playlist.m3u8") ||
+			!strings.Contains(joined, "-var_stream_map v:0,agroup:a0 v:1,agroup:a1 a:0,agroup:a0,default:yes a:1,agroup:a0 a:2,agroup:a0 a:3,agroup:a1,default:yes a:4,agroup:a1 a:5,agroup:a1") {
+			t.Errorf("captions chase var_stream_map or master changed: %v", args)
 		}
 	}
 }

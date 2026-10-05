@@ -2295,6 +2295,34 @@ describe('RecordingDetailPage / 追っかけの画質（issue #874）', () => {
     expect(chasePlaylistURLs(fetchMock)[0]).toContain('profile=sd')
   })
 
+  it('追っかけの音声を ?audio= に保持し、標準へ戻すとクエリを外す', async () => {
+    const user = userEvent.setup()
+    const { fetchMock } = createFakeServer({
+      recording: chaseRecording(),
+      liveProfiles: LIVE_PROFILES,
+    })
+    const { router } = renderAt('/recordings/3?audio=sub#chase')
+
+    await user.click(await screen.findByRole('button', { name: '再生設定' }))
+    await user.click(within(screen.getByRole('menu', { name: '再生設定' })).getByRole('menuitem', { name: '音声' }))
+    expect(within(screen.getByRole('menu', { name: '音声' })).getByRole('menuitemradio', { name: '副音声' }))
+      .toHaveAttribute('aria-checked', 'true')
+    await user.click(within(screen.getByRole('menu', { name: '音声' })).getByRole('menuitemradio', { name: '主音声' }))
+
+    await waitFor(() => expect(router.state.location.search.audio).toBe('main'))
+    expect(router.state.location.hash).toBe('chase')
+    const playlists = chasePlaylistURLs(fetchMock)
+    expect(playlists).toHaveLength(1)
+    expect(playlists[0]).not.toContain('audio=')
+
+    await user.click(screen.getByRole('button', { name: '再生設定' }))
+    await user.click(within(screen.getByRole('menu', { name: '再生設定' })).getByRole('menuitem', { name: '音声' }))
+    await user.click(within(screen.getByRole('menu', { name: '音声' })).getByRole('menuitemradio', { name: '標準' }))
+    await waitFor(() => expect(router.state.location.search.audio).toBeUndefined())
+    expect(router.state.location.hash).toBe('chase')
+    expect(chasePlaylistURLs(fetchMock)).toHaveLength(1)
+  })
+
   /**
    * **未知の名前は落ちて既定（先頭）になる。** streamer は一覧に無い名前を
    * 400（`unknown chase profile`）で返すので、落とさないと綴り違いの共有リンク・

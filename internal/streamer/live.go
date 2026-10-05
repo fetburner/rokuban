@@ -1228,13 +1228,11 @@ func (ls *LiveStreamer) ChasePlaylistForTarget(w http.ResponseWriter, r *http.Re
 	}
 	s.touch()
 
-	// 追っかけは音声レンディションを出さないので、captions 無効時は media playlist
-	// そのもの（audioRenditionsFor）。
+	// captions 無効時も音声レンディションを含む per-profile master を返す。
 	playlistName := profile.Name + ".m3u8"
-	readyMarker := "#EXTINF"
+	readyMarker := "#EXT-X-STREAM-INF"
 	if ls.cfg.Captions {
 		playlistName = "playlist.m3u8"
-		readyMarker = "#EXT-X-STREAM-INF"
 	}
 	playlistPath := filepath.Join(s.dir, playlistName)
 	content, ok := waitForPlaylist(r.Context(), s, playlistPath, playlistStartupTimeout, readyMarker)
@@ -3411,10 +3409,8 @@ func BuildLiveFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []strin
 	return buildHLSFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, hlsLivePlaylist, "pipe:0", 0)
 }
 
-// BuildChaseFFmpegArgs builds the same multi-profile HLS graph as live, but as
-// an EVENT playlist and without the audio renditions (audioRenditionsFor).
-// Event output keeps the whole recording history and must never use
-// delete_segments.
+// BuildChaseFFmpegArgs は live と同じ画質・音声 rendition を出し、EVENT playlist にする。
+// EVENT は録画履歴全体を残すため delete_segments を使わない。
 func BuildChaseFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []string {
 	return buildHLSFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, hlsEventPlaylist, "pipe:0", 0)
 }
@@ -3481,7 +3477,6 @@ func buildHLSFFmpegArgsForPlaylistType(
 	inputPath string,
 	offsetSeconds int64,
 ) []string {
-	eventPlaylist := playlistType == hlsEventPlaylist
 	originalVOD := playlistType == hlsOriginalEventPlaylist
 	if cfg.Captions {
 		return buildLiveCaptionFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, playlistType, inputPath, offsetSeconds)
@@ -3503,7 +3498,7 @@ func buildHLSFFmpegArgsForPlaylistType(
 	} else {
 		args = appendMPEGTSInput(args, inputPath, offsetSeconds)
 	}
-	renditions := audioRenditionsFor(eventPlaylist)
+	renditions := audioRenditionsFor(playlistType)
 	for _, p := range cfg.Profiles {
 		// 映像・音声だけ。字幕 / データ放送は捨てる（上記 arib_caption）。
 		// -map は output 単位のオプションなので、ループの前に 1 組だけ置くと
@@ -3544,8 +3539,8 @@ func buildHLSFFmpegArgsForPlaylistType(
 			playlistSize = "0"
 			playlistOptions = []string{"-hls_playlist_type", "event"}
 		}
-		// 出力ファイル名。ライブは master（NAME.m3u8）と variant（NAME.<n>.m3u8）、
-		// 追っかけは従来どおりの media playlist 1 本（NAME.m3u8）。
+		// 出力ファイル名。音声 rendition を持つ再生元は master（NAME.m3u8）と
+		// variant（NAME.<n>.m3u8）、字幕付きは playlist.m3u8 と playlist_<n>.m3u8。
 		segmentFile, playlistFile := p.Name+"_seg%05d.ts", p.Name+".m3u8"
 		if renditions {
 			variants := append([]string{"v:0,agroup:aud"}, audioRenditionEntries(0, "aud")...)
@@ -3606,13 +3601,19 @@ func audioRenditionEntries(first int, group string) []string {
 	}
 }
 
-// audioRenditionsFor は音声レンディション（標準 / 主 / 副）を出すかを返す。
+// audioRenditionsFor は playlist type ごとに標準 / 主 / 副の音声 rendition を出すかを返す。
 //
-// **追っかけ（EVENT）には出さない。** 選択 UI が無く（docs/frontend/live.md）、出すと
-// 配信の形（master + 映像だけのセグメント + 別の音声）が変わるのに、その形で
-// 追っかけの seek・再生位置の復元を実ブラウザで確かめる判定が無い。音声の
-// エンコードも 3 倍になる。追っかけに音声の選択を足すときに、その判定と一緒に出す。
-func audioRenditionsFor(eventPlaylist bool) bool { return !eventPlaylist }
+// **追っかけもライブ・原本 HLS と同じ音声選択を提供する。** EVENT playlist は
+// master と映像・音声 playlist を持つが、segment を保持するためライブ窓のずれは起きない。
+// 実ブラウザの切替・シーク・再開判定は web/e2e/chase-audio.mjs が担う。
+func audioRenditionsFor(playlistType hlsPlaylistType) bool {
+	switch playlistType {
+	case hlsLivePlaylist, hlsEventPlaylist, hlsOriginalEventPlaylist:
+		return true
+	default:
+		return false
+	}
+}
 
 // hlsFlags は `-hls_flags` の値を返す。
 //
@@ -3622,7 +3623,8 @@ func audioRenditionsFor(eventPlaylist bool) bool { return !eventPlaylist }
 // playlist が今の窓と重ならず、PDT 無しでは揃えられない）。窓の内側ですぐ戻る分には
 // 止まらない。判定は `web/e2e/live-audio.mjs` の ①（各トラックを 15 秒聴いてから
 // 戻る。PDT を外すと標準へ戻る所で落ち、付けると通る。WebAudio で左右の周波数を
-// 測る）。追っかけ（EVENT）には音声の選択を出していないので付けない。
+// 測る）。追っかけは EVENT playlist で segment を保持し続けるため、PDT ではなく
+// playlist の sequence で位置を揃える。`web/e2e/chase-audio.mjs` が追っかけでの長時間切替を測る。
 func hlsFlags(eventPlaylist bool) string {
 	if eventPlaylist {
 		return "temp_file"
@@ -3663,7 +3665,6 @@ func buildLiveCaptionFFmpegArgsForPlaylistType(
 	inputPath string,
 	offsetSeconds int64,
 ) []string {
-	eventPlaylist := playlistType == hlsEventPlaylist
 	originalVOD := playlistType == hlsOriginalEventPlaylist
 	args := []string{"-hide_banner", "-nostats", "-loglevel", "error"}
 	args = append(args, cfg.HWAccel.Args()...)
@@ -3683,7 +3684,7 @@ func buildLiveCaptionFFmpegArgsForPlaylistType(
 	}
 
 	var variants, audioVariants []string
-	renditions := audioRenditionsFor(eventPlaylist)
+	renditions := audioRenditionsFor(playlistType)
 	for i, p := range cfg.Profiles {
 		args = append(args, "-map", "0:v:0", "-map", "0:a:0")
 		if renditions {

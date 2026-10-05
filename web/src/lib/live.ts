@@ -35,7 +35,7 @@ export function livePlaylistURL(
 }
 
 /**
- * LiveAudioChoice はライブの音声（ISDB の二重音声の主 / 副）。`undefined` は標準
+ * LiveAudioChoice は HLS 再生の音声（ISDB の二重音声の主 / 副）。`undefined` は標準
  * （二重音声なら主と副が左右に分かれて聞こえる、今までと同じ音声）。
  *
  * **選択はプレイヤーの中だけで効き、サーバーには送らない。** streamer は標準 / 主 /

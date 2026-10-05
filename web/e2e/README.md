@@ -228,11 +228,16 @@ jsdom では判定できないため、ここが唯一の判定手段になる�
 するので、セグメントを止めてもバッファを食い切るまで再生が進む。そこだけ
 ライブ形のプレイリスト（`#EXT-X-ENDLIST` を付けず、載せる本数を絞る）を配る。
 
-### 録画中の追っかけ再生（`chase.mjs`）
+### 録画中の追っかけ再生（`chase.mjs` / `chase-audio.mjs`）
 
 録画詳細を `#chase` で開き、実 H.264/AAC セグメントを返す成長中の EVENT
 playlist を Chromium の hls.js（`E2E_BROWSER=webkit` ならネイティブ HLS）で再生する。録画 API・追っかけ HLS・離脱 API は
 `page.route` で差し替えるため mirakc と実録画は要らない。次を実ブラウザで見る。
+
+`pnpm e2e:chase` は `chase.mjs` の後に `chase-audio.mjs` も実行する。後者は ffmpeg で
+標準 / 主 / 副の rendition を含む EVENT master を作り、Chromium では WebAudio の左右周波数で
+切替を測る。各トラックを 15 秒聴いて戻った後も再生が進むこと、同じ master 形式での範囲内 seek・
+offset 張り直し・保存位置からの開始を確認する。WebKit では native `audioTracks` と再生継続を測る。
 
 - 録画中の詳細ページから追っかけプレイヤーが開き、`<video>` に `controls` が無く、時間軸は操作バーの
   シークバー 1 本である

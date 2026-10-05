@@ -492,6 +492,21 @@ describe('routeTree', () => {
         (recording.state.matches.at(-1)!.search as { fromBeginning?: unknown }).fromBeginning,
       ).toBe(true)
     })
+
+    it('録画詳細の audio search は main / sub のみを保持する', async () => {
+      for (const [query, expected] of [
+        ['?audio=main', 'main'],
+        ['?audio=sub', 'sub'],
+        ['?audio=both', undefined],
+      ] as const) {
+        const router = createRouter({
+          routeTree,
+          history: createMemoryHistory({ initialEntries: [`/recordings/12${query}#chase`] }),
+        })
+        await router.load()
+        expect((router.state.matches.at(-1)!.search as { audio?: unknown }).audio).toBe(expected)
+      }
+    })
   })
 
   it('/search を開くと検索画面が出て、主ナビゲーションから辿れる', async () => {
