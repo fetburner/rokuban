@@ -2903,6 +2903,20 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     expect(video.currentTime).toBeCloseTo(beforeNudge + 0.0001, 10)
     fireEvent.seeked(video)
     expect(video.currentTime).toBeCloseTo(beforeNudge + 0.0002, 10)
+
+    // 新しい境界 seek は前の二段階 seek を解除し、再生元切替後は残りの seek を行わない。
+    Object.defineProperty(video, 'currentTime', { value: 25, writable: true, configurable: true })
+    fireEvent.click(boundary)
+    Object.defineProperty(video, 'currentTime', { value: 25, writable: true, configurable: true })
+    fireEvent.click(boundary)
+    const replacementTarget = video.currentTime
+    fireEvent.seeked(video)
+    expect(video.currentTime).toBeCloseTo(replacementTarget + 0.0001, 10)
+    video.setAttribute('src', '/api/sites/default/recordings/429/original-vod/offset/26/playlist.m3u8')
+    fireEvent.loadStart(video)
+    const afterSourceChange = video.currentTime
+    fireEvent.seeked(video)
+    expect(video.currentTime).toBeCloseTo(afterSourceChange, 10)
     expect(hlsMockState.instances).toHaveLength(0)
   })
 

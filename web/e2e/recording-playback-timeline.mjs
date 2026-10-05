@@ -928,14 +928,13 @@ async function timelineHandler({ path: requestPath, url, json, route }) {
 
 async function runRawSeekDiagnostics() {
   const marker = markerTimes.find((item) => item.frame === 45)
-  const target = encodedTimes[marker.frame] + 1 / (2 * SOURCE_FRAME_RATE)
   const variants = [
     ['baseline', 'GOP 60 / 音声約 694ms 先行'],
     ['shortGOP', 'GOP 12 / 音声約 694ms 先行'],
     ['audioAligned', 'GOP 60 / 音声を映像へ整列'],
   ]
 
-  log(`\n=== ${engine} 原本 HLS の素の currentTime seek 診断 (frame ${marker.frame}, target=${target.toFixed(6)}s) ===`)
+  log(`\n=== ${engine} 原本 HLS の素の currentTime seek 診断 (frame ${marker.frame}; 変種ごとに連続再生で時刻を校正) ===`)
   for (const [variant, label] of variants) {
     if (variant !== 'baseline' && !manifest.hlsVariants[variant]) {
       ng.push(`raw seek 診断用 fixture ${variant} がない`)
@@ -951,6 +950,21 @@ async function runRawSeekDiagnostics() {
       const video = document.querySelector('video')
       return video?.videoWidth > 0 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
     }, undefined, { timeout: 15000 })
+
+    await page.evaluate(() => {
+      window.__timelineMarks.length = 0
+      window.__startTimelineCapture(0)
+    })
+    await page.waitForFunction(() => (
+      window.__timelineMarks.length > 0 || window.__timelineCaptureError !== null
+    ), undefined, { timeout: 10_000 })
+    const calibration = await page.evaluate(() => window.__timelineMarks[0])
+    if (calibration?.markerSlot !== marker.markerSlot || !Number.isFinite(calibration?.mediaTime)) {
+      ng.push(`${label}: 連続再生で frame ${marker.frame} の時刻を校正できない (${JSON.stringify(calibration)})`)
+      await page.close()
+      continue
+    }
+    const target = calibration.mediaTime + 1 / (2 * SOURCE_FRAME_RATE)
 
     const measure = async (from, nudge = false) => page.locator('video').evaluate(async (video, input) => {
       const seek = (seconds, timeoutMs = 5000) => new Promise((resolve) => {
@@ -990,7 +1004,7 @@ async function runRawSeekDiagnostics() {
     const near = await measure(target - 0.05)
     const nudged = await measure(target - 0.5, true)
     const format = (sample) => `slot=${sample.slot}, t=${sample.currentTime.toFixed(6)}, paused=${sample.paused}, seeking=${sample.seeking}`
-    log(`  ${label}: 遠距離(0.5s) seeked=${far.seeked}/${far.beforeSeeked} ${format(far.afterSeek)}; 近距離(0.05s) seeked=${near.seeked}/${near.beforeSeeked} ${format(near.afterSeek)}; 遠距離後 +0.0001 ${format(nudged.afterSeek)} → seeked=${nudged.afterNudge?.seeked} ${nudged.afterNudge ? format(nudged.afterNudge) : ''}`)
+    log(`  ${label}: frame=${marker.frame} calibrated=${calibration.mediaTime.toFixed(6)}s; 遠距離(0.5s) seeked=${far.seeked}/${far.beforeSeeked} ${format(far.afterSeek)}; 近距離(0.05s) seeked=${near.seeked}/${near.beforeSeeked} ${format(near.afterSeek)}; 遠距離後 +0.0001 ${format(nudged.afterSeek)} → seeked=${nudged.afterNudge?.seeked} ${nudged.afterNudge ? format(nudged.afterNudge) : ''}`)
     if (!far.beforeSeeked || !far.seeked || !near.beforeSeeked || !near.seeked || !nudged.beforeSeeked || !nudged.seeked) {
       ng.push(`${label}: 素の seek 診断で seeked イベントを観測できない`)
     }

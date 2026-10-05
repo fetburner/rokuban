@@ -576,6 +576,7 @@ export function LivePlayer({
   const playAroundStopBoundaryMsRef = useRef<number | null>(null)
   const playAroundTimerRef = useRef<number | undefined>(undefined)
   const pendingBoundarySeekMsRef = useRef<number | null>(null)
+  const pendingBoundaryFrameSeekCleanupRef = useRef<(() => void) | null>(null)
   const [originalSubtitlesEnabled, setOriginalSubtitlesEnabled] = useState(isRecordingPlayback)
   // 操作バーの枠（自動非表示・フォーカス・映像のタップ・全画面・PiP）は encoded の
   // RecordingPlayer と同じ実装を使う。`<video>` 要素はこのコンポーネントでは作り直さない。
@@ -1783,9 +1784,15 @@ export function LivePlayer({
     else setOriginalPreviewSeconds(null)
     setOriginalTileAt(event, seconds)
   }
-  const commitOriginalSeek = (seconds: number) => {
+  const clearPendingBoundaryFrameSeek = () => {
+    const cleanup = pendingBoundaryFrameSeekCleanupRef.current
+    pendingBoundaryFrameSeekCleanupRef.current = null
+    cleanup?.()
+  }
+  const commitOriginalSeek = (seconds: number, keepBoundaryFrameSeek = false) => {
     const video = videoRef.current
     if (!video || originalDurationSeconds <= 0) return
+    if (!keepBoundaryFrameSeek) clearPendingBoundaryFrameSeek()
     pendingBoundarySeekMsRef.current = null
     startReassertPending.current = false
     const target = Math.max(0, Math.min(originalDurationSeconds, seconds))
@@ -1828,6 +1835,7 @@ export function LivePlayer({
   const seekToOriginalBoundary = (boundaryMs: number) => {
     const media = videoRef.current
     if (!media) return
+    clearPendingBoundaryFrameSeek()
     if (media.seeking) {
       pendingBoundarySeekMsRef.current = boundaryMs
       return
@@ -1853,24 +1861,57 @@ export function LivePlayer({
         targetIsSeekable = Number.isFinite(media.duration) && localTarget <= media.duration
       }
     }
-    if (targetIsSeekable && media.paused && Math.abs(media.currentTime - localTarget) > 0.001) {
+    if (targetIsSeekable && originalDurationSeconds > 0 && media.paused && Math.abs(media.currentTime - localTarget) > 0.001) {
       // Playwright WebKit で、境界への seeked 後も古い画素が残ることがある。
       // 0.1ms の再シークを 2 回行うと、遠距離・近距離のどちらでも表示が更新された（#1127 の E2E）。
+      const expectedCurrentSrc = media.currentSrc
+      const expectedSrcAttribute = media.getAttribute('src')
+      let active = true
+      let seekedListener: (() => void) | null = null
+      const cleanup = () => {
+        if (!active) return
+        active = false
+        if (seekedListener) media.removeEventListener('seeked', seekedListener)
+        media.removeEventListener('loadstart', cleanup)
+        media.removeEventListener('emptied', cleanup)
+        if (pendingBoundaryFrameSeekCleanupRef.current === cleanup) {
+          pendingBoundaryFrameSeekCleanupRef.current = null
+        }
+      }
       const reassertFrame = (remainingNudges: number) => {
         if (
+          active &&
           videoRef.current === media &&
+          media.currentSrc === expectedCurrentSrc &&
+          media.getAttribute('src') === expectedSrcAttribute &&
           media.paused &&
           !media.seeking &&
           Math.abs(media.currentTime - localTarget) <= 0.01
         ) {
-          if (remainingNudges <= 0) return
-          media.addEventListener('seeked', () => reassertFrame(remainingNudges - 1), { once: true })
+          if (remainingNudges <= 0) {
+            cleanup()
+            return
+          }
+          seekedListener = () => {
+            seekedListener = null
+            reassertFrame(remainingNudges - 1)
+          }
+          media.addEventListener('seeked', seekedListener, { once: true })
           media.currentTime += 0.0001
+        } else {
+          cleanup()
         }
       }
-      media.addEventListener('seeked', () => reassertFrame(2), { once: true })
+      pendingBoundaryFrameSeekCleanupRef.current = cleanup
+      media.addEventListener('loadstart', cleanup, { once: true })
+      media.addEventListener('emptied', cleanup, { once: true })
+      seekedListener = () => {
+        seekedListener = null
+        reassertFrame(2)
+      }
+      media.addEventListener('seeked', seekedListener, { once: true })
     }
-    commitOriginalSeek(target)
+    commitOriginalSeek(target, true)
   }
   const clearPlayAround = () => {
     window.clearTimeout(playAroundTimerRef.current)
