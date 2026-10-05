@@ -3015,6 +3015,7 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
     const video = document.querySelector('video')!
     Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+    fireEvent.loadedMetadata(video)
     fireEvent.canPlay(video)
     fireEvent.playing(video)
     // 続きから（offset 42）のセッションで 20 分見た後のエラー。録画軸は 41.97527 + 1200。
@@ -3083,17 +3084,160 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
       ? new Response('cooldown', { status: 502, headers: { 'Retry-After': '5' } })
       : new Response(PROFILE_MASTER, { status: 200 })))
     vi.stubGlobal('fetch', fetchMock)
-    const props = { mode: 'chase', site: 'default', recordingId: 433 } as const
+    // 録画中（親は再生元を替えない）。
+    const onSourceRangeExit = vi.fn(() => false)
+    const props = { mode: 'chase', site: 'default', recordingId: 433, onSourceRangeExit } as const
     const { rerender } = render(<LivePlayer {...props} resumePositionMs={42_800} />)
     await screen.findByText('追っかけ再生の入力に失敗したため、一時停止しています。')
     rerender(<LivePlayer {...props} resumePositionMs={30_500} />)
     failInput = false
     await user.click(screen.getByRole('button', { name: '再読み込み' }))
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    expect(onSourceRangeExit).toHaveBeenCalledWith(30.5, false)
     expect(hlsMockState.instances[0]!.loadSource).toHaveBeenCalledWith(
       '/api/sites/default/recordings/433/chase/offset/30/playlist.m3u8',
     )
     expect(hlsMockState.constructorArgs[0]).toEqual([{ startPosition: 0.5 }])
+  })
+
+  it('追っかけ: 再読み込みはまず再生元の選び直しを委ね、親が替えたら新しいセッションを作らない', async () => {
+    const user = userEvent.setup()
+    let failInput = true
+    const fetchMock = vi.fn(() => Promise.resolve(failInput
+      ? new Response('cooldown', { status: 502, headers: { 'Retry-After': '5' } })
+      : new Response(PROFILE_MASTER, { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+    // 録画が終わった（親が原本 HLS / encoded へ替える）。
+    const onSourceRangeExit = vi.fn(() => true)
+    render(<LivePlayer mode="chase" site="default" recordingId={434} resumePositionMs={42_800} onSourceRangeExit={onSourceRangeExit} />)
+    await screen.findByText('追っかけ再生の入力に失敗したため、一時停止しています。')
+    failInput = false
+    await user.click(screen.getByRole('button', { name: '再読み込み' }))
+    expect(onSourceRangeExit).toHaveBeenCalledWith(42.8, false)
+    await act(async () => {})
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('追っかけ（ライブページ: 選び直しを持たない）: 再読み込みは録画完了後も残る今のセッションを取り直す', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    render(<LivePlayer mode="chase" site="default" recordingId={435} startAtSeconds={42} />)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+    fireEvent.loadedMetadata(video)
+    fireEvent.canPlay(video)
+    fireEvent.playing(video)
+    video.currentTime = 8
+    await failHls(0)
+    await user.click(await screen.findByRole('button', { name: '再読み込み' }))
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+    // 新しい offset 50 は作らず、同じ offset 42 をエラー位置（42 + 8）から取り直す。
+    expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/435/chase/offset/42/playlist.m3u8',
+    )
+    expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: 8 }])
+  })
+
+  it('再読み込みは leave ヒントを送らない（offset が変わっても同じでも）', async () => {
+    const user = userEvent.setup()
+    const beacon = vi.fn(() => true)
+    vi.stubGlobal('navigator', { ...navigator, sendBeacon: beacon })
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    const { unmount } = render(<LivePlayer mode="original-vod" site="default" recordingId={436} resumePositionMs={42_800} onSourceRangeExit={() => false} />)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+    fireEvent.loadedMetadata(video)
+    fireEvent.canPlay(video)
+    fireEvent.playing(video)
+    // offset が変わる再読み込み（起点 41.97527 + 9 = 50.97527 で offset 42 → 50）。
+    video.currentTime = 9
+    await failHls(0)
+    await user.click(await screen.findByRole('button', { name: '再読み込み' }))
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+    expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/436/original-vod/offset/50/playlist.m3u8',
+    )
+    // offset が同じ再読み込み（50 → 50）。
+    fireEvent.loadedMetadata(video)
+    fireEvent.canPlay(video)
+    video.currentTime = 0.1
+    await failHls(1)
+    await user.click(await screen.findByRole('button', { name: '再読み込み' }))
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(3))
+    expect(beacon).not.toHaveBeenCalled()
+    // 離脱（アンマウント）では送る（差し替えた beacon が効いていることの確認）。
+    unmount()
+    expect(beacon).toHaveBeenCalledWith('/api/sites/default/recordings/436/original-vod/offset/50/leave')
+  })
+
+  it('原本 VOD: 再生前に張り直したセッションの失敗も、再読み込みはシーク先から開く', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    render(<LivePlayer mode="original-vod" site="default" recordingId={437} resumePositionMs={12_000} recordingDurationMs={63_000} />)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+    Object.defineProperty(video, 'seekable', { value: { length: 1, start: () => 0, end: () => 8 }, configurable: true })
+    const slider = screen.getByRole('slider', { name: 'シークバー' })
+    vi.spyOn(slider, 'getBoundingClientRect').mockReturnValue({
+      x: 0, y: 0, left: 0, top: 0, right: 100, bottom: 16, width: 100, height: 16, toJSON: () => ({}),
+    } as DOMRect)
+    // 一度も再生していないまま 47.88 秒へシークし、張り直したセッションが失敗する。
+    fireEvent.pointerDown(slider, { pointerId: 1, pointerType: 'mouse', clientX: 76 })
+    fireEvent.pointerUp(slider, { pointerId: 1, pointerType: 'mouse', clientX: 76 })
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+    await failHls(1)
+    await user.click(await screen.findByRole('button', { name: '再読み込み' }))
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(3))
+    // 保存位置（12 秒）へ戻さない。
+    expect(hlsMockState.instances[2]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/437/original-vod/offset/47/playlist.m3u8',
+    )
+  })
+
+  it('原本 VOD: 開始前の範囲内シークの後に失敗したら、再読み込みはそのシーク先から開く', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    render(<LivePlayer mode="original-vod" site="default" recordingId={438} startAtSeconds={10} recordingDurationMs={63_000} />)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const video = document.querySelector('video')!
+    Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+    Object.defineProperty(video, 'seekable', { value: { length: 1, start: () => 0, end: () => 30 }, configurable: true })
+    fireEvent.playing(video)
+    const slider = screen.getByRole('slider', { name: 'シークバー' })
+    vi.spyOn(slider, 'getBoundingClientRect').mockReturnValue({
+      x: 0, y: 0, left: 0, top: 0, right: 100, bottom: 16, width: 100, height: 16, toJSON: () => ({}),
+    } as DOMRect)
+    // canplay の前に、offset 10 のセッションの中（63 秒の 40% = 25.2 秒）へシークする。
+    fireEvent.pointerDown(slider, { pointerId: 1, pointerType: 'mouse', clientX: 40 })
+    fireEvent.pointerUp(slider, { pointerId: 1, pointerType: 'mouse', clientX: 40 })
+    expect(hlsMockState.instances).toHaveLength(1)
+    await failHls(0)
+    await user.click(await screen.findByRole('button', { name: '再読み込み' }))
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+    expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/438/original-vod/offset/25/playlist.m3u8',
+    )
+  })
+
+  it('原本 VOD: 意図していた位置が無いときの再読み込みは、offset の鍵ではなく起点 + 端数から開く', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    const props = { mode: 'original-vod', site: 'default', recordingId: 439 } as const
+    const { rerender } = render(<LivePlayer {...props} resumePositionMs={42_800} />)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    // 保存位置が消えた（視聴済みにした等）。再生前のエラーで、意図していた位置は保存位置だった。
+    rerender(<LivePlayer {...props} resumePositionMs={undefined} />)
+    await failHls(0)
+    await user.click(await screen.findByRole('button', { name: '再読み込み' }))
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+    // offset 42 の起点 41.97527 秒 → offset 41 + 1.00101（offset の鍵 42 を位置にすると 42 + 0.02473）。
+    expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+      '/api/sites/default/recordings/439/original-vod/offset/41/playlist.m3u8',
+    )
+    expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: expect.closeTo(1.001, 3) }])
   })
 
   it('続きからの位置が無限大でも offset 0 のまま startPosition に Infinity を渡さない', async () => {

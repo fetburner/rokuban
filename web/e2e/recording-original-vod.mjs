@@ -26,11 +26,13 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { ListRecordingsResponseItem } from '../src/api/zod.ts'
+import { originalVODSessionOriginSeconds as frameOrigin } from '../src/lib/live.ts'
 import {
   beginCurrentTimeGapMeasurement,
   finish,
   finishCurrentTimeGapMeasurement,
   installApiStubs,
+  landingTime,
   launchBrowser,
   log,
   MAX_SOURCE_SWITCH_STALL_MS,
@@ -1149,27 +1151,6 @@ const offsetHandler = async ({ path: requestPath, json, route }) => {
     })
   }
   return json([])
-}
-
-/** frameOrigin は原本 HLS の offset セッションの起点（streamer と同じ 29.97 fps のフレーム格子の点）。 */
-function frameOrigin(offset) {
-  return offset > 0 ? Math.floor(offset * 30_000 / 1_001) * 1_001 / 30_000 : 0
-}
-
-/**
- * landingTime は再生が始まって 0.5 秒進むのを待ち、始まったときの `video.currentTime`（セッション相対）を
- * 返す。始まらなければ null。録画軸の着地位置は offset の起点 + この値で読む。aria-valuenow は最初の
- * timeupdate までは props から導いた値（offset + 開始位置）で、映像の実位置ではないので使わない。
- */
-async function landingTime(target, timeout = 15000) {
-  const landing = await target.waitForFunction(() => {
-    const video = document.querySelector('video')
-    if (!video || video.paused || video.readyState < 2) return null
-    window.__e2eLandingTime ??= video.currentTime
-    return video.currentTime > window.__e2eLandingTime + 0.5 ? { time: window.__e2eLandingTime } : null
-  }, undefined, { timeout }).then(async (handle) => (await handle.jsonValue()).time).catch(() => null)
-  await target.evaluate(() => { delete window.__e2eLandingTime })
-  return landing
 }
 
 /** sampleOffsetPlayer は原本時間軸の位置・再生状態・バーの表示を読む。 */

@@ -227,3 +227,19 @@ export async function finishCurrentTimeGapMeasurement(page, name) {
     }
   }, name)
 }
+
+/**
+ * landingTime は再生が始まって 0.5 秒進むのを待ち、始まったときの `video.currentTime`（セッション相対）を
+ * 返す。始まらなければ null。録画軸の着地位置は offset の起点 + この値で読む。aria-valuenow は最初の
+ * timeupdate までは props から導いた値（offset + 開始位置）で、映像の実位置ではないので使わない。
+ */
+export async function landingTime(target, timeout = 15000) {
+  const landing = await target.waitForFunction(() => {
+    const video = document.querySelector('video')
+    if (!video || video.paused || video.readyState < 2) return null
+    window.__e2eLandingTime ??= video.currentTime
+    return video.currentTime > window.__e2eLandingTime + 0.5 ? { time: window.__e2eLandingTime } : null
+  }, undefined, { timeout }).then(async (handle) => (await handle.jsonValue()).time).catch(() => null)
+  await target.evaluate(() => { delete window.__e2eLandingTime })
+  return landing
+}

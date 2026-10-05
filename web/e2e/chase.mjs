@@ -17,12 +17,14 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { ListRecordingsResponseItem } from '../src/api/zod.ts'
+import { originalVODSessionOriginSeconds } from '../src/lib/live.ts'
 import {
   beginCurrentTimeGapMeasurement,
   finish,
   finishCurrentTimeGapMeasurement,
   MAX_SOURCE_SWITCH_STALL_MS,
   installApiStubs,
+  landingTime,
   launchBrowser,
   log,
   sseKeepAlive,
@@ -786,15 +788,8 @@ async function resumeThenHome(resumeMs) {
   holdResumePositionSeed = true
   await page.reload({ waitUntil: 'domcontentloaded' })
   await page.locator('video').waitFor({ timeout: 15000 })
-  // 映像の実位置（offset + currentTime）で判定する。aria-valuenow は最初の timeupdate までは
-  // props から導いた値なので、再生が 0.5 秒進んでから読む。
-  const landing = await page.waitForFunction(() => {
-    const video = document.querySelector('video')
-    if (!video || video.paused || video.readyState < 2) return null
-    window.__e2eLandingTime ??= video.currentTime
-    return video.currentTime > window.__e2eLandingTime + 0.5 ? { time: window.__e2eLandingTime } : null
-  }, undefined, { timeout: 15000 }).then(async (handle) => (await handle.jsonValue()).time).catch(() => null)
-  await page.evaluate(() => { delete window.__e2eLandingTime })
+  // 映像の実位置（offset + currentTime）で判定する（`landingTime`）。
+  const landing = await landingTime(page)
   const startedOffset = lastChasePlaylistOffset
   log(`  resume=${resumeMs}ms: started session offset=${startedOffset}, landing currentTime=${landing}`)
   if (landing === null) ng.push(`④ #chase の再読み込みで再生が始まらない（保存位置 ${resumeMs}ms）`)
@@ -1565,7 +1560,7 @@ await page
 await page.waitForTimeout(1000)
 // 続きからは offset のセッションで始まるので、録画軸は offset の起点（29.97 fps の格子点）+ currentTime。
 const vodOffset = originalOffsetPlaylistRequests.slice(originalOffsetCursor).at(-1) ?? 0
-const vodOrigin = vodOffset > 0 ? Math.floor(vodOffset * 30_000 / 1_001) * 1_001 / 30_000 : 0
+const vodOrigin = originalVODSessionOriginSeconds(vodOffset)
 const vodTime = await page.locator('video').evaluate((element) => element.currentTime)
 const vodStart = vodOrigin + vodTime
 log(`  追っかけの保存位置 ${(chasedMs / 1000).toFixed(2)} 秒 → VOD の開始位置 offset ${vodOffset} + ${vodTime.toFixed(2)} 秒`)
