@@ -1,6 +1,6 @@
 // Package ffargs は VOD エンコード（internal/worker）とライブ HLS
-// トランスコード（internal/streamer）が共有する ffmpeg 引数の断片を組み立てる
-// 純関数だけを持つ（issue #321）。
+// トランスコード（internal/streamer）が共有する ffmpeg / ffprobe の引数の断片と、
+// 実行名の既定値を返す純関数だけを持つ（issue #321）。
 //
 // **ここには ffmpeg/ffprobe の exec は一切無い。** []string の argv 断片を返すだけで、
 // 不変条件 4「ffmpeg/ffprobe の exec は worker / streamer パッケージのみ」には触れない。

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { formatDuration, formatPlaybackTime } from '@/lib/format'
+import { recordingThumbnailURL } from '@/lib/recording-media'
 
 /** PosterTimeline は再生前のポスターに描く録画の時間軸。値は番組開始からの秒。 */
 export type PosterTimeline = {
@@ -58,7 +59,7 @@ export function RecordingPlaybackPoster({
     >
       {!thumbnailFailed && (
         <img
-          src={`/api/media/recordings/${recordingId}/thumbnail`}
+          src={recordingThumbnailURL(recordingId)}
           alt=""
           className="absolute inset-0 size-full object-cover opacity-60"
           onError={() => setThumbnailFailed(true)}

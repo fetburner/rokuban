@@ -230,6 +230,29 @@ func TestServerCmd_QueuesFlagUnblocksCentralEncodeWorker(t *testing.T) {
 	}
 }
 
+func TestServerCmd_WorkerRequiresScratchDir(t *testing.T) {
+	configText := strings.Replace(serverCmdTestConfig, "media_dir: /mnt/media", "media_dir: /mnt/media\n  scratch_dir: \"\"", 1)
+	path := writeServerTestConfig(t, configText)
+
+	err := runServerCmdForTest(t, path, "--roles", "worker", "--sites=", "--queues=encode")
+	if err == nil || !strings.Contains(err.Error(), "storage.scratch_dir") {
+		t.Fatalf("worker startup error = %v, want storage.scratch_dir validation error", err)
+	}
+	if strings.Contains(err.Error(), "connecting to database") {
+		t.Errorf("worker startup reached the database before rejecting the empty scratch root: %v", err)
+	}
+
+	err = runServerCmdForTest(t, path, "--roles", "api", "--sites", "tokyo")
+	if err == nil || !strings.Contains(err.Error(), "connecting to database") {
+		t.Errorf("api startup error = %v, want to pass scratch validation and reach the database", err)
+	}
+
+	err = runServerCmdForTest(t, path, "--roles", "streamer", "--sites", "tokyo")
+	if err == nil || !strings.Contains(err.Error(), "connecting to database") {
+		t.Errorf("streamer startup error = %v, want to pass scratch validation and reach the database", err)
+	}
+}
+
 func TestServerCmd_IngestWorkerProbesStorageBeforeDatabase(t *testing.T) {
 	mediaDir := filepath.Join(t.TempDir(), "missing-media")
 	configText := strings.Replace(serverCmdTestConfig, "media_dir: /mnt/media", "media_dir: "+mediaDir, 1)

@@ -34,6 +34,7 @@ import {
   formatTime,
   formatTimeRange,
 } from '@/lib/format'
+import { recordingThumbnailURL } from '@/lib/recording-media'
 import {
   readHomeModePreference,
   resolveHomeMode,
@@ -1086,7 +1087,7 @@ function HomeThumbnail({
     >
       {!failed ? (
         <img
-          src={`/api/media/recordings/${recording.id}/thumbnail`}
+          src={recordingThumbnailURL(recording.id)}
           alt=""
           loading={hero ? 'eager' : 'lazy'}
           className="size-full object-cover"

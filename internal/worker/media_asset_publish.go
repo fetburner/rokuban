@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -17,6 +18,9 @@ import (
 type skipMediaAssetPublish func(context.Context, *sqlcgen.Queries) (bool, error)
 type mediaAssetUpsert func(context.Context, *sqlcgen.Queries, int64) error
 
+// newWorkerScratchDir は試行ごとに一意な scratch directory を作る。River の Timeout が
+// 正のジョブはこちらを使う。timeout した試行がまだ動いている間に River の rescuer が
+// 同じ job ID を再実行しうるので、試行どうしで directory を共有させない。
 func newWorkerScratchDir(scratchRoot, kind string, jobID int64, attempt int) (string, error) {
 	if scratchRoot == "" {
 		return "", fmt.Errorf("scratch dir is empty")
@@ -26,6 +30,28 @@ func newWorkerScratchDir(scratchRoot, kind string, jobID int64, attempt int) (st
 		return "", fmt.Errorf("creating %s scratch root: %w", kind, err)
 	}
 	return os.MkdirTemp(root, fmt.Sprintf("%d-%d-", jobID, attempt))
+}
+
+// newJobScratchDir は job ID で固定した scratch directory を、前回の残骸を消してから作る。
+// River の Timeout が -1 のジョブはこちらを使う。rescuer は Timeout が負のジョブを
+// 再実行しないので同じ ID の試行は重ならず、開始時の RemoveAll が異常終了した前回の
+// 試行の残骸を回収する。Timeout を -1 から正の値に変えたジョブは newWorkerScratchDir へ移す。
+func newJobScratchDir(scratchRoot, kind string, jobID int64) (string, error) {
+	if scratchRoot == "" {
+		return "", fmt.Errorf("scratch dir is empty")
+	}
+	root := filepath.Join(scratchRoot, kind)
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", fmt.Errorf("creating %s scratch root: %w", kind, err)
+	}
+	jobDir := filepath.Join(root, strconv.FormatInt(jobID, 10))
+	if err := os.RemoveAll(jobDir); err != nil {
+		return "", fmt.Errorf("cleaning previous %s scratch directory: %w", kind, err)
+	}
+	if err := os.Mkdir(jobDir, 0o700); err != nil {
+		return "", fmt.Errorf("creating %s scratch directory: %w", kind, err)
+	}
+	return jobDir, nil
 }
 
 // stagedMediaFile は media ディレクトリへ置く前の一時ファイル。finalPath と同じ
