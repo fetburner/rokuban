@@ -550,6 +550,7 @@ export function RecordingDetail({
   ]
   const activeTab = tabs.some((tab) => tab.id === selectedTab) ? selectedTab : 'programme'
   const programEndAt = timeline.programmeEndAt
+  const startLabel = `${formatDate(recording.startAt)} ${formatTime(recording.startAt)}`
   const actualTimeLabels = [
     Number.isFinite(recordingStartMs) && recordingStartMs !== programStartMs
       ? `${formatRelativeTime(recordingStartMs - programStartMs)}開始`
@@ -789,12 +790,7 @@ export function RecordingDetail({
             {showSite && <span className="rounded bg-muted px-1.5 py-0.5 text-foreground">{recording.site}</span>}
             <span>{recording.serviceName}</span>
             <span>
-              {programEndAt === null
-                ? `${formatDate(recording.startAt)} ${formatTime(recording.startAt)}`
-                : formatTimeRange(
-                    `${formatDate(recording.startAt)} ${formatTime(recording.startAt)}`,
-                    formatTime(programEndAt),
-                  )}
+              {programEndAt === null ? startLabel : formatTimeRange(startLabel, formatTime(programEndAt))}
             </span>
             <span>{formatDuration(recording.durationMs)}</span>
             {actualTimeLabels.length > 0 && (
