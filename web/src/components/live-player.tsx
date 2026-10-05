@@ -543,13 +543,8 @@ export function LivePlayer({
     : 0
   const chaseRecordedEndSeconds = chaseHeadOffsetSeconds + (chaseTimeline?.recordedSeconds ?? 0)
   const chasePlannedEndSeconds = chaseTimeline?.plannedSeconds ?? 0
-  const chaseTimelineMinSeconds = Math.min(0, chaseHeadOffsetSeconds)
-  const chaseTimelineMaxSeconds = Math.max(
-    chaseTimelineMinSeconds + 1,
-    chasePlannedEndSeconds,
-    chaseRecordedEndSeconds,
-  )
-  const chaseLiveEdgeSeconds = Math.max(chaseTimelineMinSeconds, chaseRecordedEndSeconds - 1)
+  const chaseTimelineMaxSeconds = Math.max(1, chasePlannedEndSeconds, chaseRecordedEndSeconds)
+  const chaseLiveEdgeSeconds = Math.max(0, chaseRecordedEndSeconds - 1)
   const [originalCurrentSeconds, setOriginalCurrentSeconds] = useState(0)
   const [originalPreviewSeconds, setOriginalPreviewSeconds] = useState<number | null>(null)
   const [chasePositionState, setChasePositionState] = useState<{
@@ -1577,7 +1572,7 @@ export function LivePlayer({
   const visibleChaseSeconds = chasePreviewSeconds ?? chaseCurrentSeconds
   const chaseTimelineBar: ChaseTimeline | undefined = isChase
     ? {
-        minSeconds: chaseTimelineMinSeconds,
+        minSeconds: 0,
         maxSeconds: chaseTimelineMaxSeconds,
         headSeconds: chaseHeadOffsetSeconds,
         recordedEndSeconds: chaseRecordedEndSeconds,
@@ -1625,7 +1620,7 @@ export function LivePlayer({
     const rect = event.currentTarget.getBoundingClientRect()
     if (rect.width <= 0) return null
     const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
-    return Math.round(chaseTimelineMinSeconds + fraction * (chaseTimelineMaxSeconds - chaseTimelineMinSeconds))
+    return Math.round(fraction * chaseTimelineMaxSeconds)
   }
   const handleChaseSeekPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const target = chaseSeekTargetAtPointer(event)
@@ -2083,7 +2078,7 @@ export function LivePlayer({
         video={<>{video}{playerOverlay}</>}
         currentSeconds={isLive ? liveProgramEdgeSeconds : isChase ? visibleChaseSeconds : visibleOriginalSeconds}
         durationSeconds={isLive ? liveProgramDurationSeconds : isChase
-          ? chaseTimelineMaxSeconds - chaseTimelineMinSeconds
+          ? chaseTimelineMaxSeconds
           : originalDurationSeconds}
         playedFraction={originalPlayedFraction}
         chapters={chapterEditing ? [] : (chapters ?? [])}

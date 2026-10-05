@@ -4,9 +4,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { RecordingPlaybackPoster } from '@/components/recording-playback-poster'
 
 const timeline = {
-  minSeconds: -60,
+  minSeconds: 0,
   maxSeconds: 3600,
-  headSeconds: -60,
+  headSeconds: 0,
   recordedEndSeconds: 1500,
   plannedEndSeconds: 3540,
 }

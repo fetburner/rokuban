@@ -26,7 +26,6 @@ import {
   nextProgramRefreshMs,
   nextLowerProfile,
   pickInitialService,
-  programChaseStartOffsetSeconds,
   programRecordingOffsetSeconds,
   programRecordingAccess,
   recordingFileStartAtMs,
@@ -367,8 +366,6 @@ export function LivePage() {
     if (!nowPlaying || selectedRecordingId === undefined || !selectedRecording?.startedAt) return
     const fileStartMs = recordingFileStartAtMs(selectedRecording.startedAt, nowPlaying.startAt)
     if (fileStartMs === null) return
-    const offset = programChaseStartOffsetSeconds(nowPlaying.startAt, selectedRecording.startedAt)
-    if (offset === null) return
     setChaseTarget({
       site: selectedService?.site ?? 'default',
       recordingId: selectedRecordingId,
@@ -376,7 +373,7 @@ export function LivePage() {
       programEndAt: nowPlaying.endAt,
       recordingFileStartAtMs: fileStartMs,
     })
-    setChaseOffset(offset)
+    setChaseOffset(0)
     setPlaybackSource('chase')
   }
   const onLiveProgramSeek = (programSeconds: number) => {

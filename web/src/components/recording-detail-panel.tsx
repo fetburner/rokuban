@@ -379,12 +379,8 @@ export function RecordingDetail({
     ? (recordingStartMs - programStartMs) / 1000
     : 0
   const posterTimeline: PosterTimeline = {
-    minSeconds: Math.min(0, chaseProgrammeHeadSeconds),
-    maxSeconds: Math.max(
-      Math.min(0, chaseProgrammeHeadSeconds) + 1,
-      plannedChaseSeconds,
-      chaseProgrammeHeadSeconds + availableChaseSeconds,
-    ),
+    minSeconds: 0,
+    maxSeconds: Math.max(1, plannedChaseSeconds, chaseProgrammeHeadSeconds + availableChaseSeconds),
     headSeconds: chaseProgrammeHeadSeconds,
     recordedEndSeconds: chaseProgrammeHeadSeconds + availableChaseSeconds,
     plannedEndSeconds: plannedChaseSeconds,
@@ -585,7 +581,6 @@ export function RecordingDetail({
   const outsideProgramSegments =
     Number.isFinite(recordedStartMs) && Number.isFinite(recordedEndMs) && recordedDurationMs > 0
       ? {
-          beforeEndPercent: Math.min(100, Math.max(0, ((programStartMs - recordedStartMs) / recordedDurationMs) * 100)),
           afterStartPercent: Math.min(100, Math.max(0, ((Date.parse(programEndAt) - recordedStartMs) / recordedDurationMs) * 100)),
         }
       : undefined

@@ -612,21 +612,6 @@ export function recordingFileStartAtMs(
   return Math.max(recordingStartedAtMs, programStartMs)
 }
 
-/**
- * programChaseStartOffsetSeconds converts the program start into the recording
- * file-relative offset used by the existing chase playlist. When the tuner was
- * opened before the programme, the source starts at the programme boundary.
- */
-export function programChaseStartOffsetSeconds(
-  programStartAt: string,
-  recordingStartedAt: string,
-): number | null {
-  const programStartMs = Date.parse(programStartAt)
-  const fileStartMs = recordingFileStartAtMs(recordingStartedAt, programStartAt)
-  if (!Number.isFinite(programStartMs) || fileStartMs === null) return null
-  return Math.max(0, Math.floor((programStartMs - fileStartMs) / 1000))
-}
-
 /** Convert a point on the scheduled-program axis into a recording-relative offset. */
 export function programRecordingOffsetSeconds(
   programStartAt: string,

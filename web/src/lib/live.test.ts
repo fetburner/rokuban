@@ -26,7 +26,6 @@ import {
   remainingProgramMinutes,
   liveProgramAxis,
   scheduledProgramAt,
-  programChaseStartOffsetSeconds,
   programRecordingOffsetSeconds,
   programRecordingHeadSeconds,
   programRecordingAccess,
@@ -415,13 +414,10 @@ describe('live program axis and boundaries', () => {
 
   it('maps the scheduled program start to the recording-relative chase offset', () => {
     expect(recordingFileStartAtMs(recordingBefore, start)).toBe(Date.parse(start))
-    expect(programChaseStartOffsetSeconds(start, recordingBefore)).toBe(0)
     expect(programRecordingHeadSeconds(start, recordingBefore)).toBe(0)
     expect(programRecordingOffsetSeconds(start, recordingBefore, 540)).toBe(540)
     expect(recordingFileStartAtMs(recordingLate, start)).toBe(Date.parse(recordingLate))
-    expect(programChaseStartOffsetSeconds(start, recordingLate)).toBe(0)
     expect(programRecordingHeadSeconds(start, recordingLate)).toBe(180)
-    expect(programChaseStartOffsetSeconds(start, 'invalid')).toBeNull()
     expect(recordingFileStartAtMs('invalid', start)).toBeNull()
   })
 

@@ -109,7 +109,7 @@ type RecordingPlaybackControlsProps = {
   /** 次のエピソードのリンクを押したとき（移動先の詳細を先にキャッシュへ入れる）。 */
   onNextEpisodeNavigate?: () => void
   /** 番組枠の外を録った部分（シークバー内の割合）。カット版の再生中は描かない。 */
-  outsideProgramSegments?: { beforeEndPercent: number; afterStartPercent: number }
+  outsideProgramSegments?: { afterStartPercent: number }
   /** 映像の上に重ねる終端カード。 */
   endCard?: ReactNode
   className?: string
@@ -686,7 +686,6 @@ export function RecordingPlaybackControls({
                     className="pointer-events-none absolute inset-x-0 top-1/2 z-10 h-1 -translate-y-1/2"
                   >
                     {[
-                      { id: 'before', left: 0, width: outsideProgramSegments.beforeEndPercent },
                       {
                         id: 'after',
                         left: outsideProgramSegments.afterStartPercent,
