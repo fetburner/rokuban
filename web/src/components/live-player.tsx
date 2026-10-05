@@ -428,6 +428,7 @@ export function LivePlayer({
     isResumePlaybackPending,
     setStartReassertPending,
     isStartReassertPending,
+    retry: retryOffsetSession,
   } = useOffsetSession({
     active: isRecordingPlayback,
     identity: isChase ? 'chase' : isOriginalVOD ? 'original-vod' : 'live',
@@ -1960,7 +1961,7 @@ export function LivePlayer({
           <LiveErrorMessage error={error} chase={isChase} originalVOD={isOriginalVOD} />
           <button
             type="button"
-            onClick={() => restartAtOffset(offsetSessionSeconds, 0, { leaveSameOffset: false })}
+            onClick={retryOffsetSession}
             className={cn(
               'rounded-md border px-3 py-1.5 text-sm transition-colors',
               // 原本 VOD は黒い枠の上に出すので、テーマに依らず映像の上の配色にする。

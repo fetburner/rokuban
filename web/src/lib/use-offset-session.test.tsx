@@ -154,6 +154,42 @@ describe('useOffsetSession', () => {
     expect(result.current.startPositionSeconds).toBeCloseTo(0.5)
   })
 
+  it('保存位置からの retry は最新値を同じ offset 起点で再開し、保存位置の意図を保つ', () => {
+    const initial = options(
+      { type: 'saved-position', positionMs: 23_500 },
+      fakeVideo(),
+      { identity: 'original-vod', originSeconds: originalVODSessionOriginSeconds },
+    )
+    const { result, rerender } = renderHook((value: Options) => useOffsetSession(value), { initialProps: initial })
+    const origin = originalVODSessionOriginSeconds(23)
+
+    act(() => result.current.clearStartPosition())
+    rerender({ ...initial, start: { type: 'saved-position', positionMs: 31_500 } })
+    act(() => result.current.retry())
+
+    expect(result.current.offsetSeconds).toBe(23)
+    expect(result.current.startPositionSeconds).toBeCloseTo(31.5 - origin, 5)
+    expect(result.current.hasExplicitStart).toBe(false)
+
+    act(() => result.current.clearStartPosition())
+    rerender({ ...initial, start: { type: 'saved-position', positionMs: 32_500 } })
+    act(() => result.current.retry())
+
+    expect(result.current.offsetSeconds).toBe(23)
+    expect(result.current.startPositionSeconds).toBeCloseTo(32.5 - origin, 5)
+    expect(result.current.hasExplicitStart).toBe(false)
+  })
+
+  it('明示開始からの retry は開始位置を未指定に戻し、呼び出し元の先頭位置を使う', () => {
+    const initial = options({ type: 'offset', offsetSeconds: 5 })
+    const { result } = renderHook((value: Options) => useOffsetSession(value), { initialProps: initial })
+    act(() => result.current.retry())
+
+    expect(result.current.offsetSeconds).toBe(5)
+    expect(result.current.startPositionSeconds).toBeNull()
+    expect(result.current.hasExplicitStart).toBe(true)
+  })
+
   it('親が再生元を切り替える範囲外 seek は内部で張り直さない', () => {
     const video = fakeVideo(false, 10)
     const onSourceRangeExit = vi.fn(() => true)

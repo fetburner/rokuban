@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { RefObject } from 'react'
+import { PLAYBACK_POSITION_MINIMUM_MS } from '@/lib/playback-position'
 
 /** OffsetSessionStart は録画 HLS セッションの開始意図を表す。 */
 export type OffsetSessionStart =
@@ -86,7 +87,7 @@ function createSessionState(
     }
     case 'saved-position': {
       const recordingSeconds = start.positionMs !== undefined &&
-        Number.isFinite(start.positionMs) && start.positionMs >= 2000
+        Number.isFinite(start.positionMs) && start.positionMs >= PLAYBACK_POSITION_MINIMUM_MS
         ? start.positionMs / 1000
         : null
       const offsetSeconds = recordingSeconds === null ? 0 : Math.floor(recordingSeconds)
@@ -143,6 +144,7 @@ export function useOffsetSession({
     ? storedState
     : createSessionState(identity, start, originSeconds)
   const stateRef = useRef(currentState)
+  const startRef = useRef(start)
   const activeRef = useRef(active)
   const originSecondsRef = useRef(originSeconds)
   const onLeaveRef = useRef(onLeave)
@@ -158,12 +160,13 @@ export function useOffsetSession({
     stateRef.current = currentState
   }, [currentState])
   useEffect(() => {
+    startRef.current = start
     activeRef.current = active
     originSecondsRef.current = originSeconds
     onLeaveRef.current = onLeave
     onSourceRangeExitRef.current = onSourceRangeExit
     onRecordingPositionChangeRef.current = onRecordingPositionChange
-  }, [active, onLeave, onRecordingPositionChange, onSourceRangeExit, originSeconds])
+  }, [active, onLeave, onRecordingPositionChange, onSourceRangeExit, originSeconds, start])
 
   const updateState = useCallback((next: OffsetSessionState) => {
     stateRef.current = next
@@ -201,6 +204,34 @@ export function useOffsetSession({
       offsetSeconds: nextOffset,
       startRecordingSeconds: nextOrigin + Math.max(0, startPositionSeconds),
       explicit: true,
+      generation: current.generation + 1,
+    })
+  }, [updateState, videoRef])
+
+  // Explicit starts retry from the beginning of their current session. A
+  // saved-position session instead retries from the latest server position,
+  // while keeping its original offset and implicit start intent.
+  const retry = useCallback(() => {
+    const current = stateRef.current
+    const latestStart = startRef.current
+    const origin = originSecondsRef.current(current.offsetSeconds)
+    const savedPositionSeconds = !current.explicit &&
+      latestStart.type === 'saved-position' &&
+      latestStart.positionMs !== undefined &&
+      Number.isFinite(latestStart.positionMs) &&
+      latestStart.positionMs >= PLAYBACK_POSITION_MINIMUM_MS
+      ? latestStart.positionMs / 1000
+      : null
+    const video = videoRef.current
+    resumePlaybackPendingRef.current = Boolean(
+      (video !== null && !video.paused) || resumePlaybackPendingRef.current,
+    )
+    startReassertPendingRef.current = false
+    updateState({
+      ...current,
+      startRecordingSeconds: savedPositionSeconds === null
+        ? null
+        : Math.max(origin, savedPositionSeconds),
       generation: current.generation + 1,
     })
   }, [updateState, videoRef])
@@ -285,6 +316,7 @@ export function useOffsetSession({
     setStartReassertPending,
     isStartReassertPending,
     restartAtOffset,
+    retry,
     seek,
     clearStartPosition,
     reportPosition,

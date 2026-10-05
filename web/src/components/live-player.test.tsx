@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { LivePlayer } from '@/components/live-player'
 import { FRAME_SECONDS } from '@/lib/chapters'
-import { liveStallTimeoutMs } from '@/lib/live'
+import { liveStallTimeoutMs, originalVODSessionOriginSeconds } from '@/lib/live'
 import type { LiveDiagnostics, StallHandling } from '@/lib/live'
 import { saveChapterEditPlaybackRate, savePlaybackRate } from '@/lib/playback-position'
 
@@ -1460,6 +1460,48 @@ describe('LivePlayer の状態遷移', () => {
       video.currentTime = 0
       fireEvent.loadedMetadata(video)
       expect(video.currentTime).toBe(0)
+    })
+
+    it('fatal エラー後の原本 VOD retry は最新の保存位置とフレーム端数を保つ', async () => {
+      const user = userEvent.setup()
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+      const props = { mode: 'original-vod' as const, site: 'default', recordingId: 72, profile: 'hd' }
+      const { rerender } = render(
+        <LivePlayer {...props} offsetSessionStart={{ type: 'saved-position', positionMs: 23_500 }} />,
+      )
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+
+      const video = document.querySelector('video')!
+      const origin = originalVODSessionOriginSeconds(23)
+      const firstStartPosition = 23.5 - origin
+      expect((hlsMockState.constructorArgs[0]![0] as { startPosition: number }).startPosition)
+        .toBeCloseTo(firstStartPosition, 5)
+      Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+      fireEvent.loadedMetadata(video)
+      fireEvent.canPlay(video)
+      expect(video.currentTime).toBeCloseTo(firstStartPosition, 5)
+
+      // 同じ録画の保存位置更新は既存セッションを動かさないが、明示 retry には使う。
+      rerender(
+        <LivePlayer {...props} offsetSessionStart={{ type: 'saved-position', positionMs: 31_500 }} />,
+      )
+      expect(hlsMockState.instances).toHaveLength(1)
+      const errorCall = hlsMockState.instances[0]!.on.mock.calls.find(([event]) => event === 'hlsError')
+      const errorHandler = errorCall![1] as (event: string, data: { fatal: boolean }) => void
+      await act(async () => errorHandler('hlsError', { fatal: true }))
+
+      await user.click(await screen.findByRole('button', { name: '再読み込み' }))
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+      const retryStartPosition = 31.5 - origin
+      expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+        '/api/sites/default/recordings/72/original-vod/offset/23/playlist.m3u8?profile=hd',
+      )
+      expect((hlsMockState.constructorArgs[1]![0] as { startPosition: number }).startPosition)
+        .toBeCloseTo(retryStartPosition, 5)
+
+      video.currentTime = 0
+      fireEvent.loadedMetadata(video)
+      expect(video.currentTime).toBeCloseTo(retryStartPosition, 5)
     })
 
     it('fatal エラーで hls インスタンスを破棄し、エラー文言を出す', async () => {
