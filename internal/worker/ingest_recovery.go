@@ -2,8 +2,6 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -11,7 +9,6 @@ import (
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -103,32 +100,23 @@ func recoverStaleIngestJobs(ctx context.Context, pool *pgxpool.Pool, riverClient
 		return fmt.Errorf("listing stale running ingest jobs: %w", err)
 	}
 
-	// rows がコネクションを保持したまま次の advisory lock を取りに行くと、
-	// MaxConns=1 のプールで自分自身を待つ。先に候補をメモリへ読み切って閉じる。
-	candidates := make([]staleIngestJob, 0, ingestRecoveryMaxJobsPerSweep)
-	for rows.Next() {
-		var candidate staleIngestJob
-		if err := rows.Scan(&candidate.id, &candidate.recordID, &candidate.recordingID, &candidate.lastActivity, &candidate.attempt); err != nil {
-			rows.Close()
-			return fmt.Errorf("scanning stale running ingest job: %w", err)
-		}
-		candidates = append(candidates, candidate)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("reading stale running ingest jobs: %w", err)
-	}
-	rows.Close()
-
-	var errs []error
-	for _, candidate := range candidates {
-		if err := recoverStaleIngestJob(ctx, pool, riverClient, site, candidate); err != nil {
-			slog.Warn("ingest recovery: recovering stale candidate failed, continuing with remaining candidates",
-				"site", site, "old_job_id", candidate.id, "err", err)
-			errs = append(errs, fmt.Errorf("job %d: %w", candidate.id, err))
-		}
-	}
-	return errors.Join(errs...)
+	return recoverStaleJobCandidates(
+		ctx,
+		rows,
+		"ingest",
+		func(rows pgx5.Rows) (staleIngestJob, error) {
+			var candidate staleIngestJob
+			err := rows.Scan(&candidate.id, &candidate.recordID, &candidate.recordingID, &candidate.lastActivity, &candidate.attempt)
+			return candidate, err
+		},
+		func(candidate staleIngestJob) int64 { return candidate.id },
+		func(ctx context.Context, id int64) (*jobLock, bool, error) {
+			return acquireIngestJobLock(ctx, pool, id, defaultJobLockTimeout)
+		},
+		func(ctx context.Context, conn *pgxpool.Conn, candidate staleIngestJob) error {
+			return recoverStaleIngestJob(ctx, conn, riverClient, site, candidate)
+		},
+	)
 }
 
 // recoverStaleIngestJob は旧 running 行の終端化と新しい ingest の投入を、同じ短い
@@ -142,75 +130,35 @@ func recoverStaleIngestJobs(ctx context.Context, pool *pgxpool.Pool, riverClient
 // (site, record_id) を InsertTx しても UniqueOpts（pendingJobStates）がここで
 // 作った available 行に合流するだけで、二重に ingest が走ることはない
 // （TestRecordSweepRecovery_ReplacesStaleRunningIngest 参照）。
-func recoverStaleIngestJob(ctx context.Context, pool *pgxpool.Pool, riverClient *river.Client[pgx5.Tx], site string, candidate staleIngestJob) error {
-	lock, acquired, err := acquireIngestJobLock(ctx, pool, candidate.id, defaultJobLockTimeout)
-	if err != nil {
-		return fmt.Errorf("acquiring advisory lock for stale ingest job %d: %w", candidate.id, err)
-	}
-	if !acquired {
-		slog.Debug("ingest recovery skipped live job", "site", site, "old_job_id", candidate.id, "last_activity", candidate.lastActivity)
-		return nil
-	}
-	defer lock.release()
-	// Work の長時間転送とは違い、recovery はこの lock 用 connection 自身で
-	// transaction を実行する。heartbeat と pgx connection を同時利用しない。
-	lock.stopHeartbeatLoop()
-
-	recoveredAt := time.Now().UTC()
-	errorJSON, err := json.Marshal(rivertype.AttemptError{
-		At:      recoveredAt,
-		Attempt: candidate.attempt,
-		Error:   ingestRecoveryReason,
-		Trace:   "",
-	})
-	if err != nil {
-		return fmt.Errorf("marshaling stale ingest recovery error: %w", err)
-	}
-	metadataJSON, err := json.Marshal(map[string]any{
-		"ingest_recovery": map[string]any{
-			"reason":        ingestRecoveryReason,
-			"last_activity": candidate.lastActivity,
-			"recovered_at":  recoveredAt,
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("marshaling stale ingest recovery metadata: %w", err)
-	}
-
-	tx, err := lock.conn.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("beginning stale ingest recovery transaction for job %d: %w", candidate.id, err)
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-
-	tag, err := tx.Exec(ctx, discardRecoveredIngestJobQuery, candidate.id, recoveredAt, string(errorJSON), string(metadataJSON))
-	if err != nil {
-		return fmt.Errorf("discarding stale ingest job %d: %w", candidate.id, err)
-	}
-	if tag.RowsAffected() == 0 {
-		// 候補取得後に River が正常終了させた場合。state 条件が回収と完了の
-		// 競合を止め、旧行を上書きして新しい job を作ることを防ぐ。
-		return nil
-	}
-
-	// 死んだ attempt が残した recording_ingest_progress 行を同じ tx で消す。
-	// 消さずに放置すると、代替 ingest が commit するまで（次の record_sweep の
-	// 間隔 + 再転送の全時間）API の進捗表示が古い値のまま止まって見える
-	// （internal/worker/ingest.go の commit がこの行を消すのと同じ理由）。
-	// record_sync 行が無い（候補抽出時点で recording_id が引けない）場合は
-	// 消す対象が無いのでスキップする。
+func recoverStaleIngestJob(ctx context.Context, conn *pgxpool.Conn, riverClient *river.Client[pgx5.Tx], site string, candidate staleIngestJob) error {
+	var beforeInsert func(pgx5.Tx) error
 	if candidate.recordingID != nil {
-		if err := sqlcgen.New(tx).DeleteRecordingIngestProgress(ctx, *candidate.recordingID); err != nil {
-			return fmt.Errorf("clearing stale ingest progress for recording %d: %w", *candidate.recordingID, err)
+		// Clear the failed attempt's progress in the same transaction so the API
+		// does not show stale progress until the replacement ingest finishes.
+		// TestRecordSweepRecovery_ReplacesStaleRunningIngest verifies this write.
+		beforeInsert = func(tx pgx5.Tx) error {
+			if err := sqlcgen.New(tx).DeleteRecordingIngestProgress(ctx, *candidate.recordingID); err != nil {
+				return fmt.Errorf("clearing stale ingest progress for recording %d: %w", *candidate.recordingID, err)
+			}
+			return nil
 		}
 	}
-
-	inserted, err := riverClient.InsertTx(ctx, tx, jobs.IngestJobArgs{Site: site, RecordID: candidate.recordID}, nil)
-	if err != nil {
-		return fmt.Errorf("inserting replacement ingest job for %d: %w", candidate.id, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("committing stale ingest recovery for job %d: %w", candidate.id, err)
+	inserted, recovered, err := replaceStaleRiverJob(
+		ctx,
+		conn,
+		riverClient,
+		"ingest",
+		candidate.id,
+		candidate.attempt,
+		candidate.lastActivity,
+		ingestRecoveryReason,
+		"ingest_recovery",
+		discardRecoveredIngestJobQuery,
+		jobs.IngestJobArgs{Site: site, RecordID: candidate.recordID},
+		beforeInsert,
+	)
+	if err != nil || !recovered {
+		return err
 	}
 
 	replacementID := int64(0)
