@@ -195,7 +195,7 @@ encode:
   #     #   device: /dev/dri/renderD128
   #     #
   #     # GPU decode/filter/encode を使う場合は、上の codec/quality を切り替えてから
-  #     # 次の設定を使う。trim / setpts / concat は HW フレームを通す。VAAPI 実機では未検証。
+  #     # 次の設定を使う。trim / setpts / concat は HW フレームを通す。
   #     # video_codec: h264_vaapi
   #     # qp: 24
   #     # scaler: vaapi
@@ -203,8 +203,13 @@ encode:
   #     #   kind: vaapi
   #     #   device: /dev/dri/renderD128
   #     #   output_format: vaapi
-  #     # ffmpeg 5.1 は MPEG-2 の VAAPI デコード surface が固定数。deinterlace_vaapi で
-  #     # 足りなければ input_extra_args に -extra_hw_frames を足す（未検証）。
+  #     # 2026-10-05 の Intel GPU 実機: FFmpeg 5.1.9-0+deb12u1 / libva 1.17.0 /
+  #     # iHD_drv_video.so 23.1.1。MPEG-2 1440x1080i の録画全体で surface が枯れ、
+  #     # get_buffer() failed と接合点のブロックノイズが出た。-extra_hw_frames 16 を
+  #     # 加えると両方消えた。5.1〜7.0 は MPEG-2 の VAAPI pool が 6 枚固定。
+  #     # 必要枚数と接合数の関係、および 7.1 以降の実機挙動は未確認。
+  #     # input_extra_args は入力オプションなので -i より前に置く。
+  #     # input_extra_args: ["-extra_hw_frames", "16"]
   #     # extra_args の -map は cut では起動エラー（ストリームの並びはアプリが握る）
 
 # JLSE による CM 検出（Dockerfile.full の worker でのみ利用可能）
