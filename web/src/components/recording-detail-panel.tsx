@@ -50,7 +50,7 @@ import { useLiveCapability } from '@/lib/capabilities'
 import { recordingFileURL } from '@/lib/playback-position'
 import { seedRecordingDetail } from '@/lib/recording-detail-cache'
 import { selectRecordingPlaybackSource, type RecordingPlaybackSource } from '@/lib/recording-playback-source'
-import { originalVODSessionOriginSeconds, validLiveProfile } from '@/lib/live'
+import { originalVODSessionOriginSeconds, recordingFileStartAtMs, validLiveProfile } from '@/lib/live'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { shouldShowRecordingSite, sourceLabels } from '@/lib/recording-search'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
@@ -273,8 +273,9 @@ export function RecordingDetail({
       generation: current.generation + 1,
     })
   }
-  const recordedSpanMs = recording.startedAt !== undefined && recording.endedAt !== undefined
-    ? Date.parse(recording.endedAt) - Date.parse(recording.startedAt)
+  const recordingFileStartMs = recordingFileStartAtMs(recording.startedAt, recording.startAt)
+  const recordedSpanMs = recordingFileStartMs !== null && recording.endedAt !== undefined
+    ? Date.parse(recording.endedAt) - recordingFileStartMs
     : Number.NaN
   /**
    * reselectPlaybackSource は範囲外のシーク・エラーのときだけ呼ばれ、そのときの録画の状態で
@@ -363,7 +364,7 @@ export function RecordingDetail({
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [showChase, recording.status])
-  const recordingStartMs = recording.startedAt === undefined ? Number.NaN : Date.parse(recording.startedAt)
+  const recordingStartMs = recordingFileStartMs ?? Number.NaN
   const recordingEndMs = recording.endedAt === undefined ? Number.NaN : Date.parse(recording.endedAt)
   const availableChaseSeconds = Number.isFinite(recordingStartMs)
     ? recording.status === 'recording'
@@ -571,14 +572,14 @@ export function RecordingDetail({
   const activeTab = tabs.some((tab) => tab.id === selectedTab) ? selectedTab : 'programme'
   const programEndAt = new Date(Date.parse(recording.startAt) + recording.durationMs).toISOString()
   const actualTimeLabels = [
-    recording.startedAt && Date.parse(recording.startedAt) !== Date.parse(recording.startAt)
-      ? `${formatRelativeTime(Date.parse(recording.startedAt) - Date.parse(recording.startAt))}開始`
+    Number.isFinite(recordingStartMs) && recordingStartMs !== programStartMs
+      ? `${formatRelativeTime(recordingStartMs - programStartMs)}開始`
       : undefined,
     recording.endedAt && Date.parse(recording.endedAt) !== Date.parse(programEndAt)
       ? `${formatRelativeTime(Date.parse(recording.endedAt) - Date.parse(programEndAt))}終了`
       : undefined,
   ].filter((label): label is string => label !== undefined)
-  const recordedStartMs = recording.startedAt ? Date.parse(recording.startedAt) : Number.NaN
+  const recordedStartMs = recordingStartMs
   const recordedEndMs = recording.endedAt ? Date.parse(recording.endedAt) : Number.NaN
   const recordedDurationMs = recordedEndMs - recordedStartMs
   const outsideProgramSegments =
@@ -645,7 +646,7 @@ export function RecordingDetail({
               fullscreenContainerRef={playbackFullscreenContainerRef}
               chaseTimeline={{
                 programmeStartMs: programStartMs,
-                recordingStartedAtMs: recordingStartMs,
+                recordingFileStartAtMs: recordingStartMs,
                 plannedSeconds: plannedChaseSeconds,
                 recordedSeconds: availableChaseSeconds,
               }}
@@ -926,10 +927,10 @@ export function RecordingDetail({
                 <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm">
                   <dt className="text-muted-foreground">チャンネル</dt>
                   <dd>{recording.serviceName}（{recording.channelType} {recording.channel}）{showSite ? ` · ${recording.site}` : ''}</dd>
-                  {recording.startedAt && Date.parse(recording.startedAt) !== Date.parse(recording.startAt) && (
+                  {Number.isFinite(recordingStartMs) && recordingStartMs !== Date.parse(recording.startAt) && (
                     <>
                       <dt className="text-muted-foreground">実録画開始</dt>
-                      <dd>{formatDateTimeSeconds(recording.startedAt)}</dd>
+                      <dd>{formatDateTimeSeconds(new Date(recordingStartMs).toISOString())}</dd>
                     </>
                   )}
                   {recording.endedAt && Date.parse(recording.endedAt) !== Date.parse(programEndAt) && (

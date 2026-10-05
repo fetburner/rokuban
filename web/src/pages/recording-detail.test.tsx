@@ -758,38 +758,30 @@ describe('RecordingDetailPage', () => {
     expect(await screen.findByRole('heading', { name: '作品X 第2話' })).toBeInTheDocument()
   })
 
-  it('実録画時刻は開始・終了が番組時刻より前後した場合だけ一言で出す', async () => {
+  it('予定より早くチューナーを開いても番組開始をファイル先頭として表示する', async () => {
     createFakeServer({
       recording: sampleRecording({
         encodedAssets: [{ profile: 'web', sizeBytes: 500_000 }],
-        startedAt: '2026-01-01T11:59:30Z',
-        endedAt: '2026-01-01T12:30:30Z',
+        startedAt: '2026-01-01T11:59:45Z',
+        endedAt: '2026-01-01T12:30:02Z',
       }),
     })
 
     renderAt('/recordings/3')
 
     expect(await screen.findByTestId('recording-actual-time-difference')).toHaveTextContent(
-      '30秒早く開始・30秒遅れて終了',
+      '2秒遅れて終了',
     )
-    await selectDetailTab('番組')
-    // 30 秒の差が番組の開始・終了と同じ「分」表示に潰れないよう、秒まで出す。
-    expect(screen.getByText('実録画開始').nextElementSibling).toHaveTextContent(/:59:30$/)
-    expect(screen.getByText('実録画終了').nextElementSibling).toHaveTextContent(/:30:30$/)
-    const beforeProgramme = await screen.findByTestId('recorded-before-program')
+    await screen.findByTestId('player-controls')
     const afterProgramme = screen.getByTestId('recorded-after-program')
-    // 破線は repeating-linear-gradient で描く（両端の縦線だけにならない）。実ブラウザの描画は
-    // web/e2e/recording-detail-layout.mjs が測る。
-    expect(beforeProgramme.className).toContain('repeating-linear-gradient')
-    expect(afterProgramme.className).toContain('repeating-linear-gradient')
-    expect(parseFloat(beforeProgramme.getAttribute('style')!.match(/width:\s*([^;]+)/)![1])).toBeCloseTo(
-      (30 / 1860) * 100,
-      2,
-    )
-    expect(parseFloat(afterProgramme.getAttribute('style')!.match(/left:\s*([^;]+)/)![1])).toBeCloseTo(
-      (1830 / 1860) * 100,
-      2,
-    )
+    expect(screen.queryByTestId('recorded-before-program')).not.toBeInTheDocument()
+    expect(parseFloat(afterProgramme.getAttribute('style')!.match(/left:\s*([^;]+)/)![1])).toBeCloseTo(99.89, 2)
+    expect(parseFloat(afterProgramme.getAttribute('style')!.match(/width:\s*([^;]+)/)![1])).toBeCloseTo(0.11, 2)
+
+    await selectDetailTab('番組')
+    expect(screen.queryByText('実録画開始')).not.toBeInTheDocument()
+    // ファイル先頭は予定開始、終了の差は秒まで出す。
+    expect(screen.getByText('実録画終了').nextElementSibling).toHaveTextContent(/:30:02$/)
   })
 
   it('カット版の再生中は番組外区間を描かない（原本の時間軸の割合をカット版に当てない）', async () => {
@@ -1117,10 +1109,31 @@ describe('RecordingDetailPage', () => {
     expect(await screen.findByText('録画が見つかりません')).toBeInTheDocument()
   })
 
+  it('追っかけポスターの録画範囲も番組開始から数える', async () => {
+    const now = Date.now()
+    const startAt = new Date(now - 30 * 60_000).toISOString()
+    const startedAt = new Date(Date.parse(startAt) - 15_000).toISOString()
+    createFakeServer({
+      recording: sampleRecording({
+        startAt,
+        durationMs: 2 * 60 * 60_000,
+        status: 'recording',
+        startedAt,
+      }),
+    })
+
+    renderAt('/recordings/3')
+
+    const timeline = await screen.findByTestId('recording-playback-preview-timeline')
+    expect(timeline.getAttribute('aria-label')).toContain('録画時間: 0:00 から 120:00 まで（予定）')
+    expect(timeline.getAttribute('aria-label')).not.toContain('-0:15')
+    expect(screen.getByTestId('recording-playback-preview-recorded')).toHaveStyle({ left: '0%', width: '25%' })
+  })
+
   it('追っかけは番組開始からの経過を共通バー1本に表示する', async () => {
     const now = Date.now()
     const startAt = new Date(now - 60 * 60_000).toISOString()
-    const startedAt = new Date(now - 2 * 60_000).toISOString()
+    const startedAt = new Date(Date.parse(startAt) - 15_000).toISOString()
     createFakeServer({
       recording: sampleRecording({
         startAt,
@@ -1135,8 +1148,8 @@ describe('RecordingDetailPage', () => {
     const slider = await screen.findByRole('slider', { name: 'シークバー' })
     expect(slider).toHaveAttribute('aria-valuemin', '0')
     expect(slider).toHaveAttribute('aria-valuemax', '7200')
-    expect(slider).toHaveAttribute('aria-valuenow', '3480')
-    expect(slider.getAttribute('aria-valuetext')).toMatch(/^58:00 \/ 録画済み 60:0[0-1]$/)
+    expect(slider).toHaveAttribute('aria-valuenow', '0')
+    expect(slider.getAttribute('aria-valuetext')).toMatch(/^0:00 \/ 録画済み 60:0[0-1]$/)
     expect(screen.queryByRole('button', { name: '最新' })).not.toBeInTheDocument()
     expect(screen.queryByRole('slider', { name: '追っかけ再生の位置' })).not.toBeInTheDocument()
     const group = screen.getByTestId('recording-playback-group')
@@ -2390,6 +2403,23 @@ describe('RecordingDetailPage / 原本 VOD HLS（issue #920）', () => {
     )
     await waitFor(() => expect(originalVODURLs(fetchMock)).toHaveLength(2))
     expect(originalVODURLs(fetchMock)[1]).toContain('profile=sd')
+  })
+
+  it('原本 HLS の尺は予定より前にチューナーを開いた時間を含めない', async () => {
+    createFakeServer({
+      recording: sampleRecording({
+        startedAt: '2026-01-01T11:59:45Z',
+        endedAt: '2026-01-01T12:30:02Z',
+        durationMs: 1_800_000,
+        sizeBytes: 1_000_000,
+        encodedAssets: [],
+      }),
+      liveProfiles: LIVE_PROFILES,
+    })
+
+    renderAt('/recordings/3')
+    await userEvent.setup().click(await screen.findByTestId('recording-playback-start'))
+    expect(await screen.findByRole('slider', { name: 'シークバー' })).toHaveAttribute('aria-valuemax', '1802')
   })
 
   it('endedAt が無い原本だけの録画は予定尺をシークバーの長さに代用する', async () => {

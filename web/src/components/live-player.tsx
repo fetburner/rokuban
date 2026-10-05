@@ -226,10 +226,10 @@ type LivePlayerProps = {
   onSaveChapters?: (spans: ChapterSpan[], version: string) => Promise<unknown>
   onResetChapters?: () => Promise<unknown> | void
   chapterSavePending?: boolean
-  /** 番組開始と録画開始を基準に追っかけバーを描くための時間情報。 */
+  /** 番組開始と録画ファイル先頭を基準に追っかけバーを描くための時間情報。 */
   chaseTimeline?: {
     programmeStartMs: number
-    recordingStartedAtMs: number
+    recordingFileStartAtMs: number
     plannedSeconds: number
     recordedSeconds: number
   }
@@ -538,8 +538,8 @@ export function LivePlayer({
       : 0
   const chaseHeadOffsetSeconds = chaseTimeline &&
     Number.isFinite(chaseTimeline.programmeStartMs) &&
-    Number.isFinite(chaseTimeline.recordingStartedAtMs)
-    ? (chaseTimeline.recordingStartedAtMs - chaseTimeline.programmeStartMs) / 1000
+    Number.isFinite(chaseTimeline.recordingFileStartAtMs)
+    ? (chaseTimeline.recordingFileStartAtMs - chaseTimeline.programmeStartMs) / 1000
     : 0
   const chaseRecordedEndSeconds = chaseHeadOffsetSeconds + (chaseTimeline?.recordedSeconds ?? 0)
   const chasePlannedEndSeconds = chaseTimeline?.plannedSeconds ?? 0

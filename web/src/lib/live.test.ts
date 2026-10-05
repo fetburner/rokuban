@@ -30,6 +30,7 @@ import {
   programRecordingOffsetSeconds,
   programRecordingHeadSeconds,
   programRecordingAccess,
+  recordingFileStartAtMs,
   isRecordedProgramOffset,
   nextProgramBoundaryMs,
   nextProgramRefreshMs,
@@ -413,11 +414,15 @@ describe('live program axis and boundaries', () => {
   })
 
   it('maps the scheduled program start to the recording-relative chase offset', () => {
-    expect(programChaseStartOffsetSeconds(start, recordingBefore)).toBe(180)
+    expect(recordingFileStartAtMs(recordingBefore, start)).toBe(Date.parse(start))
+    expect(programChaseStartOffsetSeconds(start, recordingBefore)).toBe(0)
     expect(programRecordingHeadSeconds(start, recordingBefore)).toBe(0)
+    expect(programRecordingOffsetSeconds(start, recordingBefore, 540)).toBe(540)
+    expect(recordingFileStartAtMs(recordingLate, start)).toBe(Date.parse(recordingLate))
     expect(programChaseStartOffsetSeconds(start, recordingLate)).toBe(0)
     expect(programRecordingHeadSeconds(start, recordingLate)).toBe(180)
     expect(programChaseStartOffsetSeconds(start, 'invalid')).toBeNull()
+    expect(recordingFileStartAtMs('invalid', start)).toBeNull()
   })
 
   it('hides start-over and disables the axis when the programme has no recording', () => {
@@ -436,7 +441,7 @@ describe('live program axis and boundaries', () => {
   })
 
   it('maps schedule positions into the recording timeline for early and late recordings', () => {
-    expect(programRecordingOffsetSeconds(start, recordingBefore, 540)).toBe(720)
+    expect(programRecordingOffsetSeconds(start, recordingBefore, 540)).toBe(540)
     expect(programRecordingOffsetSeconds(start, recordingLate, 540)).toBe(360)
     expect(programRecordingOffsetSeconds(start, recordingLate, 180)).toBe(0)
     expect(programRecordingOffsetSeconds(start, recordingLate, 179)).toBeNull()

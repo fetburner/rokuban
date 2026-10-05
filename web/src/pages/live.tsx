@@ -29,6 +29,7 @@ import {
   programChaseStartOffsetSeconds,
   programRecordingOffsetSeconds,
   programRecordingAccess,
+  recordingFileStartAtMs,
   remainingProgramMinutes,
   scheduledProgramAt,
   validLiveAudio,
@@ -355,7 +356,7 @@ export function LivePage() {
     recordingId: number
     programStartAt: string
     programEndAt: string
-    recordingStartedAt: string
+    recordingFileStartAtMs: number
   } | null>(null)
   const recordingAccess = programRecordingAccess(
     selectedRecordingId,
@@ -364,6 +365,8 @@ export function LivePage() {
   )
   const onStartOver = () => {
     if (!nowPlaying || selectedRecordingId === undefined || !selectedRecording?.startedAt) return
+    const fileStartMs = recordingFileStartAtMs(selectedRecording.startedAt, nowPlaying.startAt)
+    if (fileStartMs === null) return
     const offset = programChaseStartOffsetSeconds(nowPlaying.startAt, selectedRecording.startedAt)
     if (offset === null) return
     setChaseTarget({
@@ -371,13 +374,15 @@ export function LivePage() {
       recordingId: selectedRecordingId,
       programStartAt: nowPlaying.startAt,
       programEndAt: nowPlaying.endAt,
-      recordingStartedAt: selectedRecording.startedAt,
+      recordingFileStartAtMs: fileStartMs,
     })
     setChaseOffset(offset)
     setPlaybackSource('chase')
   }
   const onLiveProgramSeek = (programSeconds: number) => {
     if (!nowPlaying || selectedRecordingId === undefined || !selectedRecording?.startedAt) return
+    const fileStartMs = recordingFileStartAtMs(selectedRecording.startedAt, nowPlaying.startAt)
+    if (fileStartMs === null) return
     const headSeconds = recordingAccess.recordingHeadSeconds
     const liveEdgeSeconds = Math.max(0, (nowMs - Date.parse(nowPlaying.startAt)) / 1000)
     if (!isRecordedProgramOffset(programSeconds, headSeconds, liveEdgeSeconds)) return
@@ -392,7 +397,7 @@ export function LivePage() {
       recordingId: selectedRecordingId,
       programStartAt: nowPlaying.startAt,
       programEndAt: nowPlaying.endAt,
-      recordingStartedAt: selectedRecording.startedAt,
+      recordingFileStartAtMs: fileStartMs,
     })
     setChaseOffset(offset)
     setPlaybackSource('chase')
@@ -400,9 +405,9 @@ export function LivePage() {
   const chaseTimeline = playbackSource === 'chase' && chaseTarget
     ? {
         programmeStartMs: Date.parse(chaseTarget.programStartAt),
-        recordingStartedAtMs: Date.parse(chaseTarget.recordingStartedAt),
+        recordingFileStartAtMs: chaseTarget.recordingFileStartAtMs,
         plannedSeconds: Math.max(1, (Date.parse(chaseTarget.programEndAt) - Date.parse(chaseTarget.programStartAt)) / 1000),
-        recordedSeconds: Math.max(0, (nowMs - Date.parse(chaseTarget.recordingStartedAt)) / 1000),
+        recordedSeconds: Math.max(0, (nowMs - chaseTarget.recordingFileStartAtMs) / 1000),
       }
     : undefined
 

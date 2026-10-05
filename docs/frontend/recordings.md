@@ -373,8 +373,10 @@ HLS / hls.js を使わない。原本 HLS の詳細は [api.md](../api.md)
   映像上で一致する精度は未検証である。再生元を切り替えた後の原本時間軸はその再生元の時刻で
   表示するため、切替の瞬間に映像が飛んで見える場合がある
 - 原本 HLS は変換中の EVENT playlist なので、シークできる範囲は変換の先端まで伸びていく。
-  操作バーの時間軸は `startedAt` から `endedAt` までの実尺を使い、予定尺 `durationMs` や HLS の
-  変換先端を分母にしない。現在位置は `session offset + video.currentTime` で原本時間軸に直す。
+  `endedAt` があれば、操作バーの時間軸は録画ファイル先頭から `endedAt` までの実尺を使い、
+  予定尺 `durationMs` や HLS の変換先端を分母にしない。ファイル先頭は
+  `max(startedAt, startAt)` とする。`started_at` はチューナーを開いた時刻で、ファイル先頭ではない。
+  現在位置は `session offset + video.currentTime` で原本時間軸に直す。
   シーク先が現在セッションの offset から seekable 終端までにあれば同じセッション内で移動し、範囲外なら
   離した時点でその位置を offset にして張り直す。変換済み範囲は seekbar に描かず、変換の完了待ちもさせない。
   `endedAt` が無い録画は予定尺を分母に代用する（分母が 0 だとシークバーが効かない）。
