@@ -354,32 +354,33 @@ async function capturePresentedFrameAt(page, action, targetTime) {
         window.__armPresentedFramePaintCapture = undefined
         resolve(frame)
       }
-      const frameSeconds = 1001 / 30000
-      const frameStartAtCurrentTime = () => Math.round(video.currentTime / frameSeconds - 0.5) * frameSeconds
-      const snapshot = (mediaTime) => ({
+      const snapshot = (mediaTime, source) => ({
         mediaTime,
+        source,
         currentTime: video.currentTime,
         paused: video.paused,
         seeking: video.seeking,
         markerSlot: window.__displayedMarkerSlot(),
         fingerprint: window.__videoFrameFingerprint(),
       })
-      let paintCaptureArmed = false
-      const captureAfterPaint = () => {
+      // 補助経路（seeked 後の二重 rAF）は表示中の目印 slot と fingerprint だけ記録する。mediaTime は
+      // 表示フレームの PTS を読めないので NaN にし、currentTime から逆算した値で判定を通さない。
+      // rVFC が来なければタイムアウトでこの結果を返し、時刻の判定は NG になる。
+      let seeked = false
+      let paintSnapshot = null
+      const capturePaint = () => {
         requestAnimationFrame(() => requestAnimationFrame(() => {
-          if (done || !paintCaptureArmed || video.seeking) return
+          if (done || video.seeking) return
           try {
-            // 境界のシークはフレーム中央を狙うので、そのフレームの開始 PTS を返す。
-            finish(snapshot(frameStartAtCurrentTime()))
+            paintSnapshot = snapshot(Number.NaN, 'paint')
           } catch {
-            finish(null)
+            // 読めなければ補助の記録は無し。
           }
         }))
       }
-      const timer = setTimeout(() => finish(null), 5000)
+      const timer = setTimeout(() => finish(paintSnapshot), 5000)
       window.__armPresentedFramePaintCapture = () => {
-        paintCaptureArmed = true
-        captureAfterPaint()
+        if (seeked) capturePaint()
       }
       const captureVisibleFrame = (_now, metadata) => {
         callbackId = undefined
@@ -388,16 +389,17 @@ async function capturePresentedFrameAt(page, action, targetTime) {
           return
         }
         try {
-          finish(snapshot(metadata.mediaTime))
+          finish(snapshot(metadata.mediaTime, 'rvfc'))
         } catch {
           finish(null)
         }
       }
+      // 一時停止中の seek は、seeked より前にフレームが出る実装があるので、callback は action の前に
+      // 登録する（seeked から登録すると rVFC を取りこぼす）。
+      callbackId = video.requestVideoFrameCallback(captureVisibleFrame)
       video.addEventListener('seeked', () => {
-        callbackId = video.requestVideoFrameCallback(captureVisibleFrame)
-        // シーク前のアニメーションフレームは seeking 中に来ることがある。一時停止中に
-        // rVFC を出さないブラウザ向けに、描画後の読み取りを seeked から掛け直す。
-        if (paintCaptureArmed) captureAfterPaint()
+        seeked = true
+        capturePaint()
       }, { once: true })
     })
   })
@@ -408,8 +410,11 @@ async function capturePresentedFrameAt(page, action, targetTime) {
     window.__armPresentedFramePaintCapture?.()
   })
   const frame = await page.evaluate(() => window.__nextPresentedFrame)
+  // captured は rVFC か補助経路で何かを捕捉できたか。タイムアウトなら false。matched は rVFC の
+  // mediaTime が targetTime の 1 フレーム内か（補助経路の NaN は常に false）。
   return {
     ...frame,
+    captured: frame !== null,
     matched: frame !== null && Number.isFinite(targetTime) &&
       Math.abs(frame.mediaTime - targetTime) <= 1 / (2 * SOURCE_FRAME_RATE) + GRID_TOLERANCE_SECONDS,
   }
@@ -575,10 +580,10 @@ async function exerciseBoundaryControls(page, label, picks, offset, preroll = 0.
       () => clickBoundary(firstMarker),
       center,
     )
-    if (selectedPresented?.markerSlot !== firstMarker.markerSlot) {
+    if (!selectedPresented.captured || selectedPresented.markerSlot !== firstMarker.markerSlot) {
       ng.push(`${label}: 遠距離境界選択後の最初の表示フレームが frame ${firstMarker.frame} ではない (${JSON.stringify(selectedPresented)})`)
     }
-    if (selectedPresented) {
+    if (selectedPresented.captured) {
       const selectedSettled = await page.waitForFunction(([target, tolerance]) => {
         const el = document.querySelector('video')
         return el && el.paused && !el.seeking && Math.abs(el.currentTime - target) < tolerance
@@ -643,7 +648,15 @@ async function exerciseBoundaryControls(page, label, picks, offset, preroll = 0.
       () => button.click(),
       expectedTime,
     )
-    if (!Number.isFinite(presented.mediaTime) || !Number.isFinite(frameTime(index)) || Math.abs(presented.mediaTime + offset - frameTime(index)) > GRID_TOLERANCE_SECONDS) {
+    // Chromium の原本 HLS（MSE）は一時停止中の seek で rVFC を出さない（2026-10-06 に 5 秒待って 4 回中 4 回
+    // 出なかった）。そのときだけ補助経路の currentTime（フレーム中央）で代用する。表示フレームの判定ではない
+    // ので source=paint とログに残す。#1127 が再現する WebKit では代用せず、rVFC が無ければ NG にする。
+    const paintFallback = presented.source === 'paint' && engine !== 'webkit'
+    const presentedTime = paintFallback
+      ? Math.round(presented.currentTime / T - 0.5) * T
+      : presented.mediaTime
+    log(`  SRC ${label} ${what} ${presented.source}${paintFallback ? ' (currentTime 代用)' : ''}`)
+    if (!Number.isFinite(presentedTime) || !Number.isFinite(frameTime(index)) || Math.abs(presentedTime + offset - frameTime(index)) > GRID_TOLERANCE_SECONDS) {
       ng.push(`${label}: ${what} (frame=${JSON.stringify(presented)}, want=${frameTime(index)}, index=${index})`)
     }
   }

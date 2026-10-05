@@ -348,6 +348,13 @@ WebKit の HLS は 0.00ms / +23.37ms（-10.02 / +13.34）だった。
 落ちたときは、同じ位置へ `+0.0001` 秒の seek をもう一度行った結果を「診断:」としてログに出す
 （判定には使わない）。この測定ではどれも目印が映った。
 
+境界の選択だけを回すなら `E2E_TIMELINE_BOUNDARY_SEEK_ONLY=1` を使う。
+±1 フレームの判定は rVFC の `mediaTime` で行い、ログの `SRC` 行に捕捉経路（`rvfc` / `paint`）を出す。
+2026-10-06 に測ると、WebKit は 6 回中 6 回 rVFC だった。Chromium は非カット MP4 だけ rVFC で、
+原本 HLS の 4 回は 5 秒待っても rVFC が来なかった。その 4 回に限り、補助経路（seeked 後の二重 rAF）が読む
+`currentTime`（フレーム中央）で代用する。これは表示フレームの判定ではないので、ログに
+`(currentTime 代用)` と出る。WebKit では代用せず、rVFC が来なければ NG にする。
+
 素の `currentTime` 代入でも同じことが起きるかは、`E2E_TIMELINE_RAW_SEEK_DIAGNOSTICS=1` で測る。
 製品のボタンを通さず、編集モードの同じページで代入だけを行う。
 診断だけを回すなら `E2E_TIMELINE_RAW_SEEK_ONLY=1` を使う。
