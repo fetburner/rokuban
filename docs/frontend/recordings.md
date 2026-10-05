@@ -544,7 +544,7 @@ URL の組み立て、セッション起点の写像、範囲終端、416 後の
 |---|---|---|---|---|
 | F の全画面対象 | 共有の再生グループ | 同左 | 同左 | 同左 |
 | ショートカットを無視する要素 | 共通のセレクタ | 同左 | 同左 | 同左 |
-| 字幕 cue を操作バーの上へ移す | ○（WebKit の native HLS は ×） | ○（同左） | ○（同左） | ○（同左） |
+| 字幕 cue を操作バーの上へ移す | ○ | ○（WebKit の native HLS は ×） | 同左 | 同左 |
 | 字幕として扱うトラックの判定 | 再生元ごとに決める | 同左 | 同左 | 同左 |
 | 視聴済みを保存する | ○ | ○ | × | × |
 | 再生速度を選べる | ○ | ○ | ○ | × |
@@ -562,7 +562,7 @@ WebKit の native HLS は track を公開するが cue を JavaScript に公開�
 測定コードは `web/e2e/recording-original-vod.mjs` と `web/e2e/subtitles.mjs` にある。
 
 未解決: WebKit の native HLS では字幕 cue を操作バーの上へ上げられない。
-上の表の WebKit 列が × なのはこのためである。
+上の表で WebKit の native HLS だけ × なのはこのためである。ファイル再生は HLS ではなく `<track>` の WebVTT で、WebKit でも `cue.line` が負になることを `web/e2e/subtitles.mjs` ① で測った。
 
 字幕の位置と全画面対象は jsdom では測れないため、実ブラウザで判定する。
 

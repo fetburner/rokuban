@@ -1942,8 +1942,9 @@ if (engine === 'webkit' && eventDuration !== Infinity) {
   ng.push(`⑫-a native EVENT HLS の duration が Infinity でないため対象経路を測れない (${eventDuration})`)
 }
 const eventOffsetCursor = playlistRequests.length
-// 再生開始直後の押下は WebKit で取りこぼす（待たずに押すと offset への張り直しが起きなかった）。
-// 録画尺がシークバーに反映され、再生が進み始めるまで待ってから押す。
+// 既知の製品側の取りこぼしを避けている。再生開始直後の WebKit は seekable 終端が Infinity を返し、
+// 共有の seek 経路（キーもシークバーも同じ）が範囲内と判定して offset へ張り直さない。
+// 再生が進み始めるまで待ってから押す。待たない場合の判定は別途追跡している。
 await page.waitForFunction(() => {
   const slider = document.querySelector('[data-testid="seek-scrub"]')
   const element = document.querySelector('video')
