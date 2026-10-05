@@ -2867,6 +2867,45 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     expect(video.paused).toBe(true)
   })
 
+  it('原本 VOD のネイティブ HLS: 近い境界への seeked 後に同じフレーム内で再シークする', async () => {
+    const { resolve } = deferredFetch()
+    render(
+      <LivePlayer
+        mode="original-vod"
+        site="default"
+        recordingId={429}
+        recordingDurationMs={60_000}
+        chapters={[{ startMs: 20_000, endMs: 25_000, label: '番組', cut: false }]}
+        chapterVersion="chapters-v1"
+        chapterEditing
+        onSaveChapters={async () => true}
+        onResetChapters={async () => true}
+      />,
+    )
+    const video = document.querySelector('video')!
+    vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
+      type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
+    )
+    Object.defineProperty(video, 'currentTime', { value: 25, writable: true, configurable: true })
+    Object.defineProperty(video, 'seekable', { value: { length: 1, start: () => 0, end: () => 60 }, configurable: true })
+    resolve(new Response(PROFILE_MASTER, { status: 200 }))
+    await waitFor(() => expect(video.getAttribute('src')).toContain('/original-vod/playlist.m3u8'))
+    fireEvent.loadedMetadata(video)
+    fireEvent.canPlay(video)
+
+    const boundary = document.querySelector<HTMLButtonElement>(
+      '[data-testid="chapter-filmstrip-boundary"][data-time-ms="25000"]',
+    )!
+    fireEvent.click(boundary)
+    const beforeNudge = video.currentTime
+    fireEvent.seeked(video)
+
+    expect(video.currentTime).toBeCloseTo(beforeNudge + 0.0001, 10)
+    fireEvent.seeked(video)
+    expect(video.currentTime).toBeCloseTo(beforeNudge + 0.0002, 10)
+    expect(hlsMockState.instances).toHaveLength(0)
+  })
+
   it('原本 VOD: 再生中に CM の自動スキップで変換の先端より先へ飛んでも再生を続ける', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
     render(

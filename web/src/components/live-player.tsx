@@ -1833,7 +1833,44 @@ export function LivePlayer({
       return
     }
     pendingBoundarySeekMsRef.current = null
-    commitOriginalSeek(chapterBoundaryMsToSeekSeconds(boundaryMs))
+    const target = chapterBoundaryMsToSeekSeconds(boundaryMs)
+    const localTarget = target - sessionStartOffset
+    let targetIsSeekable = false
+    if (nativeHlsRef.current && target >= sessionStartOffset) {
+      try {
+        const ranges = media.seekable
+        if (ranges.length > 0) {
+          for (let index = 0; index < ranges.length; index += 1) {
+            if (ranges.start(index) <= localTarget && ranges.end(index) >= localTarget) {
+              targetIsSeekable = true
+              break
+            }
+          }
+        } else if (Number.isFinite(media.duration)) {
+          targetIsSeekable = localTarget <= media.duration
+        }
+      } catch {
+        targetIsSeekable = Number.isFinite(media.duration) && localTarget <= media.duration
+      }
+    }
+    if (targetIsSeekable && media.paused && Math.abs(media.currentTime - localTarget) > 0.001) {
+      // Playwright WebKit で、境界への seeked 後も古い画素が残ることがある。
+      // 0.1ms の再シークを 2 回行うと、遠距離・近距離のどちらでも表示が更新された（#1127 の E2E）。
+      const reassertFrame = (remainingNudges: number) => {
+        if (
+          videoRef.current === media &&
+          media.paused &&
+          !media.seeking &&
+          Math.abs(media.currentTime - localTarget) <= 0.01
+        ) {
+          if (remainingNudges <= 0) return
+          media.addEventListener('seeked', () => reassertFrame(remainingNudges - 1), { once: true })
+          media.currentTime += 0.0001
+        }
+      }
+      media.addEventListener('seeked', () => reassertFrame(2), { once: true })
+    }
+    commitOriginalSeek(target)
   }
   const clearPlayAround = () => {
     window.clearTimeout(playAroundTimerRef.current)
