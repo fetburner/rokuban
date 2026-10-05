@@ -1001,7 +1001,7 @@ if (!existsSync(offsetSourcePath)) {
     '-c:a', 'mp2', '-b:a', '128k', '-f', 'mpegts', offsetSourcePath,
   ], offsetFixtureDir)
 }
-/** ⑫ だけが使う。x264 の変換を他の節に払わせないよう ⑫ の直前に作る。 */
+/** ⑬ だけが使う。x264 の変換を他の節に払わせないよう ⑬ の直前に作る。 */
 let offsetEncodedFixturePath
 /** offsetSession は streamer と同じフレーム境界の入力側 seek（-copyts 無し）で 0 起点の HLS を作る。先端の 20 秒だけ。 */
 function offsetSession(offset) {
