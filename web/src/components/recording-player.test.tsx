@@ -1,4 +1,4 @@
-import { fireEvent, render, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { RecordingPlayer } from '@/components/recording-player'
@@ -107,6 +107,34 @@ describe('RecordingPlayer のサーバー再生位置', () => {
       body: JSON.stringify({ positionMs: 30_250 }),
     }))
     expect(Object.keys(localStorage)).toEqual([])
+  })
+
+  it('共有 player frame は 15 秒ごとに保存し、pagehide では keepalive を使う', async () => {
+    const fetchMock = stubSuccessfulAPI()
+    vi.useFakeTimers()
+    const { container } = render(
+      <RecordingPlayer recordingId={9} encodedAssets={[{ profile: 'h264', sizeBytes: 123 }]} />,
+    )
+    const video = container.querySelector('video')!
+    setMediaProps(video, { currentTime: 10.25, duration: 300, paused: false })
+
+    await act(async () => {
+      vi.advanceTimersByTime(15_000)
+    })
+    expect(fetchMock).toHaveBeenCalledWith('/api/recordings/9/playback-position', expect.objectContaining({
+      method: 'PUT',
+      body: JSON.stringify({ positionMs: 10_250 }),
+    }))
+
+    fetchMock.mockClear()
+
+    fireEvent(window, new Event('pagehide'))
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/recordings/9/playback-position', expect.objectContaining({
+      method: 'PUT',
+      body: JSON.stringify({ positionMs: 10_250 }),
+      keepalive: true,
+    }))
   })
 
   it('2 秒未満と終端 90% では位置を消し、視聴済みにする', async () => {
@@ -565,21 +593,26 @@ describe('RecordingPlayer の再生操作', () => {
     expect(slider).toHaveAttribute('aria-valuetext', '1:00 / 1:40')
   })
 
-  it('Space で再生し、M でミュートし、F とボタンで同じコンテナを全画面にする', () => {
+  it('Space と M は video 上で往復し、F とボタンで同じコンテナを全画面にする', () => {
     const { container } = render(<RecordingPlayer recordingId={34} encodedAssets={asset} />)
     const video = container.querySelector('video')!
     const play = vi.spyOn(video, 'play').mockResolvedValue()
+    const pause = vi.spyOn(video, 'pause').mockImplementation(() => {})
     const requestFullscreen = vi.fn(() => Promise.resolve())
     const playerFrame = container.querySelector('[data-testid="recording-player-frame"]')!
     Object.defineProperty(playerFrame, 'requestFullscreen', { value: requestFullscreen })
 
-    fireEvent.keyDown(window, { key: ' ' })
-    fireEvent.keyDown(window, { key: 'm' })
+    fireEvent.keyDown(video, { key: ' ' })
+    Object.defineProperty(video, 'paused', { value: false, writable: true, configurable: true })
+    fireEvent.keyDown(video, { key: ' ' })
+    fireEvent.keyDown(video, { key: 'm' })
+    fireEvent.keyDown(video, { key: 'm' })
     fireEvent.keyDown(window, { key: 'F' })
     fireEvent.click(container.querySelector('button[aria-label="全画面表示"]')!)
 
     expect(play).toHaveBeenCalledOnce()
-    expect(video.muted).toBe(true)
+    expect(pause).toHaveBeenCalledOnce()
+    expect(video.muted).toBe(false)
     expect(requestFullscreen).toHaveBeenCalledTimes(2)
   })
 
