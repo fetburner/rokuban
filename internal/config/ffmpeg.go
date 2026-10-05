@@ -1,6 +1,6 @@
 package config
 
-/* Shared FFmpeg tool and decoder validation. */
+// encode とライブが共有する FFmpeg の道具・デコーダの検証。
 
 import (
 	"fmt"

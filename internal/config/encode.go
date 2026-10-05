@@ -1,6 +1,6 @@
 package config
 
-/* Encode and commercial detection configuration. */
+// encode と CM 検出の設定。
 
 import (
 	"fmt"

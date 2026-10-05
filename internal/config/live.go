@@ -1,6 +1,6 @@
 package config
 
-/* Live streaming configuration. */
+// ライブ視聴の設定。
 
 import (
 	"fmt"

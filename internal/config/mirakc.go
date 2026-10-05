@@ -1,6 +1,6 @@
 package config
 
-/* mirakc site registry configuration. */
+// mirakc の site レジストリの設定。
 
 import (
 	"fmt"

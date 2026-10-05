@@ -1,6 +1,6 @@
 package config
 
-/* Root configuration, defaults, loading, and validation. */
+// Config 本体・既定値・読み込みと検証。
 
 import (
 	"fmt"

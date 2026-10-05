@@ -1,6 +1,6 @@
 package config
 
-/* Ingest, EPG, ruler, reconciler, and worker configuration. */
+// ingest / EPG / ruler / reconciler / worker の設定。
 
 import (
 	"fmt"
