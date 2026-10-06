@@ -634,8 +634,8 @@ export function RecordingPlayer({
         onPlayAround={editorSelected === null ? undefined : () => playAround(editorSelected)}
         onPlayToBoundary={editorSelected === null ? undefined : () => playAround(editorSelected, 'to')}
         onPlayFromBoundary={editorSelected === null ? undefined : () => playAround(editorSelected, 'from')}
-        seekTilesEnabled={!playingCut || (frozenKeepRangesRef.current?.length ?? 0) > 0}
-        requestSeekTilesOnMount={chapterEditing}
+        seekTilesEnabled
+        requestSeekTilesOnMount={chapterEditing && !playingCut}
         tileTimeAtSeconds={(seconds) => {
           const keepRanges = playingCut ? frozenKeepRangesRef.current : undefined
           if (playingCut && (!keepRanges || keepRanges.length === 0)) return null

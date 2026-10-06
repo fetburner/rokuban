@@ -1888,7 +1888,6 @@ export function LivePlayer({
           setOriginalTilesAvailable(false)
         }}
         commitLastDisplayedPreview={isChase}
-        clearTilePreviewOnCommit={isOriginalVOD}
         onScrubPreview={(seconds) => {
           if (isChase) setChasePreviewSeconds(seconds)
           else if (isOriginalVOD) setOriginalPreviewSeconds(seconds)

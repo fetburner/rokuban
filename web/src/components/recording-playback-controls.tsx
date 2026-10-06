@@ -112,17 +112,24 @@ type RecordingPlaybackControlsProps = {
   onPlayAround?: () => void
   onPlayToBoundary?: () => void
   onPlayFromBoundary?: () => void
-  /** 原本のシークタイルを時間軸ホバー時に表示する。 */
+  /**
+   * 原本のシークタイルを時間軸ホバー時に表示する。タイルは最初にマウスが触れたときだけ取りに行く
+   * （マウント時に先読みすると、3 時間の録画で 2 MB 程度を、ホバーしない利用者にも払わせる）。
+   * プレビューはマウスだけに出す（タッチは pointerleave が来ず、タップ後にプレビューが映像を覆ったまま残る）。
+   */
   seekTilesEnabled?: boolean
   /** チャプター編集のように、ホバー前からタイル画像を読み込む。 */
   requestSeekTilesOnMount?: boolean
-  /** カット版の再生位置をタイルの原本時間軸へ写す。 */
+  /** カット版の再生位置をタイルの原本時間軸へ写す。null は写せない（空の変換表など）ので問い合わせない。 */
   tileTimeAtSeconds?: (seconds: number) => number | null
   onTileImageLoad: () => void
   onTileImageError: () => void
   /** 録画ファイルのように、ドラッグ中も実際の再生位置を動かす。 */
   seekDuringDrag?: boolean
-  /** 追っかけのように、pointerup で最後に表示した秒を確定する。 */
+  /**
+   * 追っかけのように、pointerup で最後に表示した秒を確定する。延長中は軸が毎秒伸びるので、
+   * 離した時点で同じ座標を計算し直すと見せた時刻と 1 秒ずれる（chase.mjs で実測）。
+   */
   commitLastDisplayedPreview?: boolean
   /** HLS のように、ドラッグ中だけ操作つまみを仮表示する。 */
   onScrubPreview?: (seconds: number | null) => void
@@ -132,8 +139,6 @@ type RecordingPlaybackControlsProps = {
   onScrubbingChange?: (scrubbing: boolean) => void
   /** スクラブ開始時の実際の位置を返す。キャンセル時の復元に使う。 */
   onScrubStart?: () => number | null
-  /** シーク確定後もタイル吹き出しを残す。 */
-  clearTilePreviewOnCommit?: boolean
   onSeek: (seconds: number) => void
   onLiveEdgeSeek?: () => void
   deferKeyboardSeek?: boolean
@@ -224,7 +229,6 @@ export function RecordingPlaybackControls({
   onTimelineHoverChange,
   onScrubbingChange,
   onScrubStart,
-  clearTilePreviewOnCommit = false,
   onSeek,
   onLiveEdgeSeek,
   deferKeyboardSeek = false,
@@ -434,32 +438,23 @@ export function RecordingPlaybackControls({
     if (rect.width <= 0) return null
     const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
     const target = rangeMin + fraction * (rangeMax - rangeMin)
+    // 固定尺の軸は連続値のまま、延長・番組軸は秒単位。これは軸の粒度という時間軸の記述。
     return timeline.kind === 'fixed' ? target : Math.round(target)
   }
   const isSelectableTarget = (target: number | null): target is number => {
     if (target === null) return false
-    if (liveTimeline === undefined) return true
-    const range = liveTimeline.selectableRange
+    const range = timeline?.selectableRange
+    if (range === undefined) return true
     return range !== null && target >= range.startSeconds && target <= range.endSeconds
   }
+  // ホバー位置は、掴んでいる間はポインタ種別を問わず、掴んでいなければマウスのときだけ出す。
   const updateTimelineHover = (
     event: ReactPointerEvent<HTMLDivElement>,
     target: number | null,
     scrubbing: boolean,
   ) => {
-    if (chaseTimeline !== undefined) {
-      if (target !== null && (scrubbing || event.pointerType === 'mouse')) {
-        onTimelineHoverChange?.(target)
-      } else if (event.pointerType === 'mouse') {
-        onTimelineHoverChange?.(null)
-      }
-      return
-    }
-    if (liveTimeline !== undefined) {
-      onTimelineHoverChange?.(
-        event.pointerType === 'mouse' && isSelectableTarget(target) ? target : null,
-      )
-    }
+    const visible = scrubbing || event.pointerType === 'mouse'
+    onTimelineHoverChange?.(visible && isSelectableTarget(target) ? target : null)
   }
   const updateTilePreview = (event: ReactPointerEvent<HTMLDivElement>, seconds: number | null) => {
     if (!seekTilesEnabled || recordingId === undefined || event.pointerType !== 'mouse') {
@@ -467,16 +462,15 @@ export function RecordingPlaybackControls({
       return
     }
     if (seconds === null) {
-      if (seekDuringDrag) requestTiles()
       setTilePreview(null)
       return
     }
-    requestTiles()
     const tileSeconds = tileTimeAtSeconds === undefined ? seconds : tileTimeAtSeconds(seconds)
     if (tileSeconds === null) {
       setTilePreview(null)
       return
     }
+    requestTiles()
     const rect = event.currentTarget.getBoundingClientRect()
     if (rect.width <= 0) {
       setTilePreview(null)
@@ -510,8 +504,6 @@ export function RecordingPlaybackControls({
       lastDisplayedScrubSecondsRef.current = target
       if (seekDuringDrag) onSeek(target)
       else onScrubPreview?.(target)
-    } else if (!scrubbing && timeline.kind === 'fixed') {
-      onScrubPreview?.(null)
     }
     updateTimelineHover(event, target, scrubbing)
     updateTilePreview(event, target)
@@ -531,9 +523,8 @@ export function RecordingPlaybackControls({
     onScrubbingChange?.(false)
     onScrubPreview?.(null)
     if (isSelectableTarget(target)) onSeek(target)
-    else if (liveTimeline !== undefined) onTimelineHoverChange?.(null)
-    if (event.pointerType !== 'mouse' && chaseTimeline !== undefined) onTimelineHoverChange?.(null)
-    if (clearTilePreviewOnCommit) setTilePreview(null)
+    // マウスはまだ帯の上にいるので、確定した位置のホバーとタイルは次の move / leave に任せる。
+    if (!isSelectableTarget(target) || event.pointerType !== 'mouse') onTimelineHoverChange?.(null)
     scrubStartSecondsRef.current = null
     lastDisplayedScrubSecondsRef.current = null
   }
@@ -553,7 +544,7 @@ export function RecordingPlaybackControls({
   }
   const handleSeekPointerLeave = () => {
     if (isScrubbingRef.current) return
-    onScrubPreview?.(null)
+    // 掴んでいないときの leave は onScrubPreview に触らない。キー操作の遅延プレビューを消さない。
     onTimelineHoverChange?.(null)
     setTilePreview(null)
   }

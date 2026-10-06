@@ -7,6 +7,8 @@ type PlaybackTimelineBase = {
   maxSeconds: number
   canSeek: boolean
   extended: boolean
+  /** 掴める・確定できる範囲。省略は軸の全域。null は選べる点が無い。 */
+  selectableRange?: { startSeconds: number; endSeconds: number } | null
 }
 
 /** FixedPlaybackTimeline は一定尺の録画再生用の時間軸記述。 */
