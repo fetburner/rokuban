@@ -218,9 +218,13 @@ export function RecordingDetail({
   const [playbackState, setPlaybackState] = useState(initialPlaybackState)
   const [autoPlayNextRecordingId, setAutoPlayNextRecordingId] = useState<number | null>(null)
   const playbackStateRef = useRef(playbackState)
+  const currentRecordingIdRef = useRef(recording.id)
   useLayoutEffect(() => {
     playbackStateRef.current = playbackState
   }, [playbackState])
+  useLayoutEffect(() => {
+    currentRecordingIdRef.current = recording.id
+  }, [recording.id])
   const recordingPositionSecondsRef = useRef<number | undefined>(undefined)
   // 同じ再生元を張り直して続ける回数の上限管理（idle GC で消えたセッションの再試行が続かないように）。
   const sourceRetryRef = useRef({ count: 0, position: 0 })
@@ -294,7 +298,8 @@ export function RecordingDetail({
    * mirakc の録画が終わってから付く。docs/api/media.md）、移った先に見る続きが無いため。
    * true を返したら親が再生元を替えた（プレイヤーは何もしない）。
    * 再生元が今と同じなら false を返し、プレイヤー自身が張り直す（範囲外のシークは中の張り直しが
-   * 再生と全画面を保つ）。エラーだけは、同じ再生元でも上限つきで作り直す。
+   * 再生と全画面を保つ）。通常のエラーは同じ再生元でも上限つきで作り直すが、
+   * chase input cooldown 中は最新状態が同じ chase なら再作成しない。
    *
    * 位置は録画先頭からの秒。一度も再生していないセッションのエラーでは undefined で、
    * 保存位置・先頭から・シークで選んだ offset といった開始の意図をそのまま持ち越す。
@@ -304,6 +309,7 @@ export function RecordingDetail({
     positionSeconds: number | undefined,
     wasPlaying: boolean,
     selection: ReturnType<typeof playbackSelectionFor>,
+    allowSameSourceRetry: boolean,
   ) => {
     const current = playbackStateRef.current
     if (trigger === 'source-range-exit' && current.pinned) return false
@@ -311,7 +317,7 @@ export function RecordingDetail({
     const selected = selectRecordingPlaybackSource(selection)
     if (selected !== current.source) {
       if (selected === 'none') return false
-    } else if (trigger !== 'source-error' || current.source === 'encoded') {
+    } else if (trigger !== 'source-error' || !allowSameSourceRetry || current.source === 'encoded') {
       return false
     } else {
       const retry = sourceRetryRef.current
@@ -338,27 +344,38 @@ export function RecordingDetail({
     trigger: 'source-error',
     positionSeconds: number | undefined,
     wasPlaying: boolean,
+    allowSameSourceRetry?: boolean,
   ): boolean | Promise<boolean>
   function reselectPlaybackSource(
     trigger: 'source-range-exit' | 'source-error',
     positionSeconds: number | undefined,
     wasPlaying: boolean,
+    allowSameSourceRetry = true,
   ): boolean | Promise<boolean> {
     if (trigger === 'source-range-exit') {
-      return applyPlaybackSourceReselection(trigger, positionSeconds, wasPlaying, playbackSelection)
+      return applyPlaybackSourceReselection(trigger, positionSeconds, wasPlaying, playbackSelection, true)
     }
+    const requestedRecordingId = recording.id
+    const requestedPlayback = playbackStateRef.current
     // SSE/NOTIFY はヒントなので、purge 後の再生元選択は必ず REST の最新状態で行う。
     // `getRecording` は query cache を使わず要求し、その応答を通常の詳細 cache に反映する。
-    return getRecording(recording.id)
+    return getRecording(requestedRecordingId)
       .then((response) => {
         const latest = unwrap(response)
-        if (!latest) return false
-        queryClient.setQueryData(recordingDetailQueryKey(recording.id), response)
+        if (!latest || latest.id !== requestedRecordingId) return false
+        queryClient.setQueryData(recordingDetailQueryKey(requestedRecordingId), response)
+        // エラーの REST 往復中に別録画へ移動したり、別の版を選んだ結果は上書きしない。
+        if (
+          currentRecordingIdRef.current !== requestedRecordingId ||
+          playbackStateRef.current.generation !== requestedPlayback.generation ||
+          playbackStateRef.current.source !== requestedPlayback.source
+        ) return false
         return applyPlaybackSourceReselection(
           trigger,
           positionSeconds,
           wasPlaying,
           playbackSelectionFor(latest),
+          allowSameSourceRetry,
         )
       })
       .catch(() => false)
@@ -665,7 +682,9 @@ export function RecordingDetail({
               }}
               onRecordingPositionChange={reportRecordingPosition}
               onSourceRangeExit={(seconds, playing) => reselectPlaybackSource('source-range-exit', seconds, playing)}
-              onRecordingPlaybackError={(seconds, playing) => reselectPlaybackSource('source-error', seconds, playing)}
+              onRecordingPlaybackError={(seconds, playing, allowSameSourceRetry) =>
+                reselectPlaybackSource('source-error', seconds, playing, allowSameSourceRetry)
+              }
             />
           )}
 
@@ -715,7 +734,9 @@ export function RecordingDetail({
               onProfileChange={onSelectLiveProfile}
               onRecordingPositionChange={reportRecordingPosition}
               onSourceRangeExit={(seconds, playing) => reselectPlaybackSource('source-range-exit', seconds, playing)}
-              onRecordingPlaybackError={(seconds, playing) => reselectPlaybackSource('source-error', seconds, playing)}
+              onRecordingPlaybackError={(seconds, playing, allowSameSourceRetry) =>
+                reselectPlaybackSource('source-error', seconds, playing, allowSameSourceRetry)
+              }
             />
           )}
 
@@ -754,7 +775,9 @@ export function RecordingDetail({
               reencodePending={reencode.isPending}
               autoPlay={playbackState.autoPlay}
               onRecordingPositionChange={reportRecordingPosition}
-              onRecordingPlaybackError={(seconds, playing) => reselectPlaybackSource('source-error', seconds, playing)}
+              onRecordingPlaybackError={(seconds, playing, allowSameSourceRetry) =>
+                reselectPlaybackSource('source-error', seconds, playing, allowSameSourceRetry)
+              }
             />
           )}
 

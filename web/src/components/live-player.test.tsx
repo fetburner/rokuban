@@ -3655,7 +3655,7 @@ describe('LivePlayer / 再生前のエラー（再生元の選び直し）', () 
       <LivePlayer mode="chase" site="default" recordingId={7} autoPlay={autoPlay} onRecordingPlaybackError={onError} />,
     )
     await waitFor(() => expect(onError).toHaveBeenCalledTimes(1))
-    expect(onError).toHaveBeenCalledWith(undefined, expected)
+    expect(onError).toHaveBeenCalledWith(undefined, expected, true)
     // 親が選び直したのでエラー表示に落ちない。
     expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument()
   })

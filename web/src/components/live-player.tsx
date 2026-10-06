@@ -291,7 +291,11 @@ type LivePlayerProps = {
    * 再生元がエラーを返した。位置は一度も再生していないセッションでは undefined（0 秒を
    * 「明示の位置」として渡さない）。true なら親が再生元を選び直した（エラー表示に落ちない）。
    */
-  onRecordingPlaybackError?: (recordingPositionSeconds: number | undefined, wasPlaying: boolean) => boolean | Promise<boolean>
+  onRecordingPlaybackError?: (
+    recordingPositionSeconds: number | undefined,
+    wasPlaying: boolean,
+    allowSameSourceRetry?: boolean,
+  ) => boolean | Promise<boolean>
   className?: string
   /**
    * onDiagnostics は遅延・バッファの計器（issue #476）の値を 1 秒ごとに
@@ -833,13 +837,16 @@ export function LivePlayer({
      * 「再生していない」ことを再生の意図にすると、止めたまま移った先のエラーで勝手に再生が始まる
      * （両方向は `live-player.test.tsx` の「再生前のエラー」）。
      */
-    const handOffError = (media: HTMLVideoElement | null): boolean | Promise<boolean> => {
+    const handOffError = (
+      media: HTMLVideoElement | null,
+      allowSameSourceRetry = true,
+    ): boolean | Promise<boolean> => {
       if (!isRecordingPlayback) return false
       const position = playedRef.current && media
         ? (isChase ? offsetSessionSeconds : sessionStartSeconds) + media.currentTime
         : undefined
       const wasPlaying = media ? !media.paused || resumePlaybackPendingRef.current : true
-      return onRecordingPlaybackErrorRef.current?.(position, wasPlaying) ?? false
+      return onRecordingPlaybackErrorRef.current?.(position, wasPlaying, allowSameSourceRetry) ?? false
     }
 
     // teardown はこの effect が張ったものを外す手続き（メディアイベントの
@@ -1153,9 +1160,9 @@ export function LivePlayer({
           restartAtOffset(next)
           return
         }
-        // 入力失敗の cooldown 応答は再生元を選び直して即座に同じ要求を重ねず、
-        // 再読み込みを案内する。録画 ID 単位の cooldown は別 offset にも適用される。
-        if (probe.error.kind !== 'chase-input' && await handOffError(video)) return
+        // 入力失敗の cooldown 応答でも詳細を取り直し、並行した ingest commit があれば
+        // 別の再生元へ移る。同じ追っかけの再試行は cooldown 中なので許可しない。
+        if (await handOffError(video, probe.error.kind !== 'chase-input')) return
         resumePlaybackPendingRef.current = false
         if (isRecordingPlayback) setMediaPlaying(false)
         setError(probe.error)
