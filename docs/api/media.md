@@ -481,19 +481,23 @@ master から参照される variant playlist（映像・音声）と字幕 play
 選択は視聴者ごとの状態で、共有セッションの寿命に載せると作り直しのたびに黙って
 既定へ戻る（idle GC の後に既定の要求が作り直す等）。
 
-- **主 / 副は出力側の `pan` で作る。** 二重音声の既定デコード（`-dual_mono_mode`
-  無し）は L = 主 / R = 副のステレオである。片側を両耳へ写せば主 / 副になる
-  （`pan=stereo|c0=c0|c1=c0` / `pan=stereo|c0=c1|c1=c1`）。`-dual_mono_mode` は
-  デコーダ側のオプションで 1 回の起動に 1 つしか選べないので使わない。
-  実測（ffmpeg 9.0.2）: モノラル AAC 2 本を 1 フレームに継いだ二重音声
-  （SCE 2 つ、`channel_configuration=2`）で、`pan` の出力は
-  `-dual_mono_mode main|sub` の出力とバイト一致した
+- **音声 ES が 1 本なら、主 / 副は出力側の `pan` で作る。** 二重音声の既定
+  デコード（`-dual_mono_mode` 無し）は L = 主 / R = 副のステレオである。片側を
+  両耳へ写す（`pan=stereo|c0=c0|c1=c0` / `pan=stereo|c0=c1|c1=c1`）。
+  `-dual_mono_mode` はデコーダ側で 1 回の起動に 1 つしか選べないため使わない。
+  実測（ffmpeg 9.0.2）: SCE 2 つを持つモノラル AAC では、この `pan` と
+  `-dual_mono_mode main|sub` の出力がバイト一致した
+- **音声 ES が複数なら、2 本目を副に使う。** セッション開始時の ffprobe が数を
+  調べる。標準 / 主は `0:a:0`、副は `0:a:1` を map する。3 本目以降は選ばない。
+  ffprobe が失敗した場合は 1 ES として扱い、従来の pan に戻す
 - **標準はフィルタ無しで `DEFAULT=YES`。** 今までと同じエンコードなので、
   音声を選ばない視聴者の音は変わらない
-- **放送にある音声を列挙しない。** 二重音声は 1 本の AAC ES の中の 2 つの SCE で、
-  ffprobe では通常のステレオと区別できない。区別できるのは記述子だけで、
-  それは不変条件 6 の外である。そこで選択肢は常に 3 つで、二重音声でない番組で
-  主 / 副を選ぶと片側のチャンネルだけになる
+- **記述子を読んで一 ES 内の二重音声かを分類しない。** 音声 ES が 1 本の番組では
+  主 / 副に L / R の pan を使うので、通常のステレオで選ぶと片側だけになる。
+  実放送の [二] は、2026-10-06 の地上波 NHK の録画でステレオ ES が 2 本と測定した。
+  `program.audios` は先頭が `isMain=true` / `jpn`、2 本目が `isMain=false` / `etc`。
+  先頭 ES の L−R RMS は −81.1 dB、2 本の L RMS 差は −24.4 dB だった。
+  単一 ES の実放送 dual mono は未観測
 - **並び順が UI との契約である。** グループ内の 0 = 標準 / 1 = 主 / 2 = 副で選ぶ。
   master の `NAME` は ffmpeg が `audio_<n>` で固定し、n はプロファイル数でずれる
 - **ライブの playlist には `EXT-X-PROGRAM-DATE-TIME` を付ける。** 無いと hls.js は、
@@ -505,7 +509,6 @@ master から参照される variant playlist（映像・音声）と字幕 play
 - **captions 無効時はプロファイル別の出力のまま、各出力が自分の master を持つ。**
   1 つの master にまとめると `hls_time` が 1 つになり、プロファイルごとの
   `segment_seconds` が書けなくなる（captions 有効時はそのため同一値を要求している）
-- **2 本目の音声 ES（`-map 0:a:1`）は選べない**
 - **追っかけ再生は画質を `?profile=` で選べる。** 追っかけのセレクタは
   `/recordings/$id?liveProfile=<name>#chase` に置き、一覧 API の名前を streamer へ
   渡す。画質の切替は `(recordingID, offset)` で同定された既存セッションの別
@@ -516,8 +519,9 @@ master から参照される variant playlist（映像・音声）と字幕 play
   同じセッション内 seek と offset 再開が通ることを `web/e2e/chase-audio.mjs` で確認する
 - **ライブの `extra_args` / `input_extra_args` では `-an` `-vn` `-sn` `-map` を拒否する。**
   ストリームの並びは `-var_stream_map` が持つ。並びを変えると ffmpeg が起動時に落ちる
-- 未検証: 実放送の二重音声が `channel_configuration=2` + SCE 2 つの形か /
-  実 Safari・iOS での切替（WebKit では取得する rendition が替わることまで確認）
+- 未検証: 音声 ES 数が変わる番組境界を跨いだライブセッションの追従。ffmpeg の map は
+  起動時に固定される。実 Safari・iOS の切替も未検証（WebKit では取得する rendition
+  が替わることまで確認）
 
 ### 録画中の追っかけ再生
 
