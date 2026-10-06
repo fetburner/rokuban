@@ -2,7 +2,7 @@
 // 測れないものだけをここで見る（e2e/README.md）: 実ブラウザがアプリのセレクタに
 // 従って代替音声レンディションを本当に切り替えること、そして**前に聴いたトラックへ
 // ライブの窓より後で戻っても止まらないこと**。後者は、ライブの playlist に
-// EXT-X-PROGRAM-DATE-TIME が無いと hls.js が止まる（`internal/streamer/live.go` の
+// EXT-X-PROGRAM-DATE-TIME が無いと hls.js が止まる（`internal/streamer/hls_args.go` の
 // hlsFlags）。窓がスライドした後でだけ起きるので、**ffmpeg に実際のライブ HLS を
 // 書かせ続ける**。
 //

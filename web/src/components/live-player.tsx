@@ -586,7 +586,7 @@ export function LivePlayer({
   //
   // **画質の切替は位置の基準を変えない。** 追っかけのセッション鍵は
   // `(recordingID, offset)` でプロファイルを含まず、サーバーの ffmpeg 1 本が
-  // 全プロファイルを同時に出力している（`internal/streamer/live.go` の
+  // 全プロファイルを同時に出力している（`internal/streamer/hls_args.go` の
   // `buildChaseFFmpegArgs`）ので、プロファイル間でメディア時刻の座標は同じである。
   // それでも `src` を差し替える以上 `<video>` の位置は 0 に戻るので、切替の
   // 直前の位置を控えて戻す --- **画質の切替が再生位置の巻き戻りに見える実装に

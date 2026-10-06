@@ -414,7 +414,7 @@ export function RecordingDetail({
   const showOriginalVODPlayer =
     showOriginalVOD && !liveProfilesQuery.isPending && liveProfiles.length > 0
   // 未知の名前は落として既定（サーバー側の先頭）に倒す。streamer は未知の
-  // 名前を 400 で返すので（`internal/streamer/live.go` の Chase）、旧ブックマーク・
+  // 名前を 400 で返すので（`internal/streamer/chase.go` の Chase）、旧ブックマーク・
   // 綴り違いの共有リンクをエラー画面にしない（`lib/live.ts` の `validLiveProfile`）。
   //
   // **既定は URL に書き戻さない。** 明示的に選んだ値だけを載せる --- 既定は

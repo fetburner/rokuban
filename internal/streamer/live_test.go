@@ -1641,7 +1641,7 @@ func newHangingMirakcServer(t *testing.T) *httptest.Server {
 //
 // `TestLiveStreamer_Playlist_TimesOutWhenSessionNeverBecomesReady` は
 // `injectNeverReadySession` で `ls.sessions` に直接セッションを注入するため、
-// **既存セッション経路**（`live.go` の 1 つ目の select）しか通らない。
+// **既存セッション経路**（`session.go` の 1 つ目の select）しか通らない。
 // `getOrCreateSession` には `<-s.ready` を待つ select が既存セッション経路・
 // 新規作成経路の 2 か所にあり、これは互いに独立したコードパスなので、
 // 片方だけに期限を入れて片方を忘れても上記のテストは検知できない。

@@ -2328,7 +2328,7 @@ describe('LivePlayer / 画質（プロファイル）切替（issue #869）', ()
  * hls.js の作り直しも起こさない（streamer が標準 / 主 / 副の 3 本を常に出している）。
  * トラックの位置（0 = 標準 / 1 = 主 / 2 = 副）が streamer との契約で、期待値は
  * リテラルで書く。実ブラウザで音が替わることは jsdom では測れない
- * （`internal/streamer/live.go` の hlsFlags に書いた Playwright の実測が担う）。
+ * （`internal/streamer/hls_args.go` の hlsFlags に書いた Playwright の実測が担う）。
  */
 describe('LivePlayer / 音声（issue #870）', () => {
   const playlistFetches = (fetchMock: ReturnType<typeof vi.fn>) =>

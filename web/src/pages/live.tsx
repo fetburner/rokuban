@@ -203,7 +203,7 @@ export function LivePage() {
   // マウントされて probe（チューナー確保 + ffmpeg 起動）を投げてしまう ---
   // その直後に `LivePage` 側の reset effect が走って `isPlaying` を false に戻し
   // `LivePlayer` は unmount されるが、**このコミットで実際に飛んだネットワーク要求
-  // 自体は取り消せない**（`internal/streamer/live.go` のセッションは
+  // 自体は取り消せない**（`internal/streamer/session.go` のセッションは
   // `context.WithCancel(context.Background())` で回るため、クライアント側の
   // `AbortController.abort()` はセッション自体を止めない）。押していないチャンネルの
   // チューナー + ffmpeg が idle GC まで 30〜45 秒残る（レビューでの指摘。jsdom と

@@ -83,7 +83,7 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_storage_root_last_success_timestamp_seconds{root}` | Gauge | root（`media` / `scratch`）ごとに最後に観測できた時刻。片方だけ恒久的に壊れているケースをここで特定する（下記「沈黙は保証ではない」）。**この鮮度でアラートを組んでよい** |
 | `rokuban_storage_total_bytes{root}` / `rokuban_storage_used_bytes{root}` / `rokuban_storage_available_bytes{root}` | Gauge | root ごとの直近観測バイト数。`GET /api/storage` を経由せず Prometheus 側で容量アラートを組める |
 | `rokuban_live_active_sessions{kind}` | GaugeVec | ライブ / 追っかけ / 原本 VOD セッション数（`kind`: `live` / `chase` / `original_vod`。**per-process**。全体は Prometheus 側で sum。[k8s 運用](k8s.md) §5） |
-| `rokuban_live_session_start_failures_total{reason}` | Counter | ライブ / 追っかけセッション開始失敗（`reason` の値は `internal/streamer/live.go` の `LiveSessionStartFailures` 呼び出しが権威。例: `session_limit` / `ffmpeg_error`） |
+| `rokuban_live_session_start_failures_total{reason}` | Counter | ライブ / 追っかけセッション開始失敗（`reason` の値は `internal/streamer/session.go` の `LiveSessionStartFailures` 呼び出しが権威。例: `session_limit` / `ffmpeg_error`） |
 | `rokuban_live_session_evictions_total{reason,result}` | Counter | 起動失敗からの再試行のために退避したライブ / 追っかけセッション数（`reason`: `upstream` / `session_limit`、`result`: `retry_succeeded` / `retry_failed` / `retry_abandoned`。`retry_abandoned` は退避完了後、mirakc の解放待ち中に呼び出し元が切断して再試行しなかった件数で、mirakc 側の失敗（`retry_failed`）とは区別する） |
 | `rokuban_live_idle_gc_reclaimed_total` | Counter | idle GC が回収したライブ / 追っかけセッション数 |
 | `rokuban_live_leave_hints_total{result}` | Counter | ライブ / 追っかけの離脱ヒント受信数（`deadline_shortened` / `no_session` / `no_effect`）。**回収数と対で読む** --- ヒントは停止命令ではないので一致しない（差が開いていれば共有セッションが多い）。`no_effect` が定常的に出るなら「猶予 ≥ `live.idle_timeout`」でヒントが効かない設定 |
