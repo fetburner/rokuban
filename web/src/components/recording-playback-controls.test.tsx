@@ -300,11 +300,16 @@ describe('共有シークバーのポインタ操作', () => {
     expect(onScrubPreview).not.toHaveBeenCalled()
   })
 
-  it('追っかけ軸: タッチで掴んでいる間はホバーを出し、離すと消す', () => {
+  it('追っかけ軸: タッチは掴んでいる間だけホバーを出し、離すと消す', () => {
     const onTimelineHoverChange = vi.fn()
     render(<RecordingPlaybackControls {...controlProps({ timeline: chaseTimeline, onTimelineHoverChange })} />)
     const seekbar = screen.getByTestId('seek-scrub')
     setSeekbarRect(seekbar)
+
+    // 掴んでいないタッチの move は出さない（pointerleave が来ず、ホバーが残る）。
+    fireEvent.pointerMove(seekbar, { pointerId: 1, pointerType: 'touch', clientX: 60 })
+    expect(onTimelineHoverChange).not.toHaveBeenCalledWith(60)
+    onTimelineHoverChange.mockClear()
 
     fireEvent.pointerDown(seekbar, { pointerId: 1, pointerType: 'touch', clientX: 20 })
     fireEvent.pointerMove(seekbar, { pointerId: 1, pointerType: 'touch', clientX: 40 })
