@@ -6,8 +6,8 @@
 #
 # 土台（Dockerfile）は debian:trixie-slim。カット版の VAAPI GPU 経路は
 # FFmpeg 7.1 以降を推奨する（docs/configuration.md §カット版）ためで、trixie の
-# apt が 7.1.5 を持つ。bookworm 時代の古い BASE を渡すと apt が 5.1 を入れるので、
-# ffmpeg の直後に版を検査してビルドを落とす。
+# apt が 7.1.5 を持つ。libav* を trixie の名前（soname 61 系）で名指ししているので、
+# bookworm 時代の古い BASE を渡すと apt がパッケージを見つけられずビルドが落ちる。
 # HW エンコード（VAAPI / QSV / NVENC）が必要なら、ffmpeg パッケージを
 # 環境に合わせて差し替えること。
 # **ARIB 字幕（live.captions / encode profile の subtitles）を使うならこの
@@ -66,10 +66,7 @@ USER root
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
-      ffmpeg libavformat61 libavcodec61 libavutil59 libswscale8 libswresample5 && \
-    ffmpeg -version | sed -n '1s/^ffmpeg version //p' \
-      | awk -F '[.-]' '{ if ($1 + 0 > 7 || ($1 + 0 == 7 && $2 + 0 >= 1)) exit 0; exit 1 }' \
-      || { echo "FFmpeg 7.1 or newer is required: BASE must be built on trixie or newer" >&2; exit 1; }
+      ffmpeg libavformat61 libavcodec61 libavutil59 libswscale8 libswresample5
 COPY --from=jls /opt/jls/bin/ /usr/local/bin/
 COPY --from=jls /opt/jls/share/rokuban/cm_detect/ /usr/local/share/rokuban/cm_detect/
 USER nobody
