@@ -44,7 +44,7 @@ import (
 // # 並走する 2 本の encode から canonical を守る
 //
 // job lock（advisory lock + heartbeat）は ffmpeg の排他ではなく、lock を失っても
-// 実行中の encode を cancel しない（[ingest_job_lock.go] の jobLockIdleSessionTimeout
+// 実行中の encode を cancel しない（[job_lock.go] の jobLockIdleSessionTimeout
 // 参照）。そのため同じ (recording, profile) の encode が 2 本並走しうる。
 //
 //   - **scratch はジョブ ID ごと**（encode/<jobID>。開始時に RemoveAll → Mkdir）。
