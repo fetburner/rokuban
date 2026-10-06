@@ -203,8 +203,9 @@ encode:
   #     #   kind: vaapi
   #     #   device: /dev/dri/renderD128
   #     #   output_format: vaapi
-  #     # ffmpeg 5.1〜7.0 は MPEG-2 の VAAPI デコード surface が固定 6 枚で枯れる。
-  #     # 5.1 では input_extra_args: ["-extra_hw_frames", "16"] を足す。
+  #     # ffmpeg 5.1〜7.0 は MPEG-2 の VAAPI デコード surface が固定 6 枚で枯れ、つなぎ目が崩れる。
+  #     # 足りない枚数はつなぎ目の数で増えるので -extra_hw_frames では直らない
+  #     # （5.1.9 でつなぎ目 15 は 16 枚足しても失敗）。5.1〜7.0 では上の救済経路を使う。
   #     # extra_args の -map は cut では起動エラー（ストリームの並びはアプリが握る）
 
 # JLSE による CM 検出（Dockerfile.full の worker でのみ利用可能）

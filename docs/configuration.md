@@ -213,8 +213,14 @@ FFmpeg n5.1.6 / n9.0 の trim.c と avf_concat.c はフレーム内容を参照�
 avfilter.c はこれらの filter の入力 `hw_frames_ctx` を出力へ引き継ぐ。
 ffmpeg 9.0.2 の VideoToolbox で trim → setpts → concat → `scale_vt` → `h264_videotoolbox` を実測した。
 VAAPI の GPU 経路では FFmpeg 7.1 以降を推奨する。5.1〜7.0 は MPEG-2 のデコード surface が固定 6 枚で、カット版では枯れて `get_buffer() failed` からつなぎ目にブロックノイズが出る。
-7.1 以降は動的プールになり、7.1.5-0+deb13u1 / libva 2.22.0-3 / iHD 25.2.3 で 30 分の原本全体を処理しても `get_buffer() failed` は出なかった。
-5.1 で使う場合は `input_extra_args` に `-extra_hw_frames 16` を足す（5.1.9-0+deb12u1 / libva 2.17.0-1 / iHD 23.1.1 で解消を確認）。
+ジョブは成功扱いで終わるので、壊れたカット版がそのまま公開される。
+7.1 以降は動的プールになり、7.1.5-0+deb13u1 / libva 2.22.0-3 / iHD 25.2.3 でつなぎ目 3 の 30 分原本全体を処理しても `get_buffer() failed` は出なかった。
+未検証: 7.1 以降でつなぎ目の多い録画。
+
+**5.1〜7.0 は `-extra_hw_frames` で直さず、救済経路を使う。** 足りない枚数はつなぎ目の数で増えるので、固定値では足りない。
+5.1.9-0+deb12u1 / libva 2.17.0 / iHD 23.1.1 では、つなぎ目 1 は 1 枚、つなぎ目 3 は 4 枚の追加で解消した。
+つなぎ目 15 は 16 枚の追加でも `Cannot allocate memory` で止まった。
+救済経路は `-hwaccel` を付けずに CPU でデコードするので、このプールを使わない。
 
 **出力側に `-map` を書けないので、アプリがストリームを選ぶ。** ffmpeg の既定の選択（映像は最大解像度、音声は最大チャンネル数、同点は若い番号）を ffprobe で再現する。再現しないとカット版だけ別のストリームが選ばれ、カットしない版と音声が食い違う。
 
