@@ -433,7 +433,8 @@ export function RecordingPlaybackControls({
     })
   }
   const seekSecondsAtPointer = (event: ReactPointerEvent<HTMLDivElement>): number | null => {
-    if (!timeline?.canSeek) return null
+    // 長さ未確定（maxSeconds が minSeconds 以下）の軸ではシークしない。
+    if (!timeline?.canSeek || rangeMax <= rangeMin) return null
     const rect = event.currentTarget.getBoundingClientRect()
     if (rect.width <= 0) return null
     const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))

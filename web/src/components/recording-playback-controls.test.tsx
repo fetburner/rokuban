@@ -356,6 +356,23 @@ describe('共有シークバーのポインタ操作', () => {
     })
   })
 
+  it('追っかけ軸: 離した時点で軸が伸びていても、最後に見せた秒を確定する', () => {
+    const onSeek = vi.fn()
+    const props = controlProps({ timeline: chaseTimeline, commitLastDisplayedPreview: true, onSeek })
+    const { rerender } = render(<RecordingPlaybackControls {...props} />)
+    const seekbar = screen.getByTestId('seek-scrub')
+    setSeekbarRect(seekbar)
+    fireEvent.pointerDown(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 20 })
+    fireEvent.pointerMove(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 70 })
+
+    // 軸が 100 → 200 秒に伸びた。同じ座標を計算し直すと 140 秒になる。
+    rerender(<RecordingPlaybackControls {...props} timeline={{ ...chaseTimeline, maxSeconds: 200 }} />)
+    fireEvent.pointerUp(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 70 })
+
+    expect(onSeek).toHaveBeenCalledTimes(1)
+    expect(onSeek).toHaveBeenCalledWith(70)
+  })
+
   it('空の変換表（tileTimeAtSeconds が null）ではタイルを問い合わせない', () => {
     render(<RecordingPlaybackControls {...controlProps({
       recordingId: 92,

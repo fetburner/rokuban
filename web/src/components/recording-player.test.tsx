@@ -923,6 +923,7 @@ describe('RecordingPlayer のシークプレビュー', () => {
     )
     const video = container.querySelector('video')!
     setMediaProps(video, { duration: 1800 })
+    fireEvent.loadedMetadata(video)
 
     fireEvent.pointerMove(video, { pointerType: 'mouse', clientX: 100 })
     expect(container.querySelector('img[src*="/seek-tiles"]')).toBeNull()
@@ -990,6 +991,7 @@ describe('RecordingPlayer のシークプレビュー', () => {
       />,
     )
     setMediaProps(container.querySelector('video')!, { duration: 110 })
+    fireEvent.loadedMetadata(container.querySelector('video')!)
 
     fireEvent.pointerMove(withSeekbarWidth(getByTestId('seek-scrub')), { pointerType: 'mouse', clientX: 100 })
 
@@ -1007,6 +1009,7 @@ describe('RecordingPlayer のシークプレビュー', () => {
       />,
     )
     setMediaProps(container.querySelector('video')!, { duration: 110 })
+    fireEvent.loadedMetadata(container.querySelector('video')!)
 
     fireEvent.pointerMove(withSeekbarWidth(getByTestId('seek-scrub')), { pointerType: 'mouse', clientX: 100 })
 
@@ -1340,5 +1343,21 @@ describe('RecordingPlayer のカット版', () => {
       />,
     )
     expect(queryByText(/編集前の内容です/)).toBeNull()
+  })
+})
+
+describe('RecordingPlayer の長さ未確定のシークバー', () => {
+  it('duration 未確定でシークバーを押してもシークしない', () => {
+    const { container, getByTestId } = render(
+      <RecordingPlayer recordingId={92} encodedAssets={[{ profile: 'h264', sizeBytes: 123 }]} />,
+    )
+    const video = container.querySelector('video')!
+    const set = vi.fn()
+    Object.defineProperty(video, 'currentTime', { configurable: true, get: () => 42, set })
+    const seekbar = getByTestId('seek-scrub')
+    vi.spyOn(seekbar, 'getBoundingClientRect').mockReturnValue({ left: 0, right: 100, top: 0, bottom: 20, width: 100, height: 20, x: 0, y: 0, toJSON: () => ({}) } as DOMRect)
+    fireEvent.pointerDown(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 70 })
+    fireEvent.pointerUp(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 70 })
+    expect(set).not.toHaveBeenCalled()
   })
 })
