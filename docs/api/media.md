@@ -499,8 +499,8 @@ master から参照される variant playlist（映像・音声）と字幕 play
 - **ライブの playlist には `EXT-X-PROGRAM-DATE-TIME` を付ける。** 無いと hls.js は、
   前に聴いた音声へ戻ったときに止まる。止まるのは、ライブの窓
   （`playlist_size` × `segment_seconds`）より後で戻った場合である。判定は `web/e2e/live-audio.mjs`（PDT を外すと落ちる）
-- **追っかけは PDT を付けない。** EVENT playlist は古い segment を保持し、各音声 rendition の
-  sequence が揃うため、ライブのようにスライドする窓を時刻で合わせる必要がない。
+- **追っかけは PDT を付けない。** EVENT playlist は segment を消さず窓がスライドしないので、PDT が無くても
+  各トラックを 15 秒聴いて戻っても止まらない。hls.js が何で位置を揃えているかは測っていない。
   15 秒ごとの切替・同じセッション内 seek・offset 再開は `web/e2e/chase-audio.mjs` で確認する
 - **captions 無効時はプロファイル別の出力のまま、各出力が自分の master を持つ。**
   1 つの master にまとめると `hls_time` が 1 つになり、プロファイルごとの
@@ -513,7 +513,7 @@ master から参照される variant playlist（映像・音声）と字幕 play
   原本時間軸で保存する。追っかけも標準 / 主 / 副の 3 音声 rendition を profile 別 master
   から選ぶ。選択は `/recordings/$id?audio=main|sub#chase` に保持し、HLS URL と共有セッションを
   変えず rendition だけを切り替える。EVENT が過去の segment を残すので、音声選択を加えても
-  seek と保存位置の再開は同じ rendition の segment sequence で行える
+  同じセッション内 seek と offset 再開が通ることを `web/e2e/chase-audio.mjs` で確認する
 - **ライブの `extra_args` / `input_extra_args` では `-an` `-vn` `-sn` `-map` を拒否する。**
   ストリームの並びは `-var_stream_map` が持つ。並びを変えると ffmpeg が起動時に落ちる
 - 未検証: 実放送の二重音声が `channel_configuration=2` + SCE 2 つの形か /

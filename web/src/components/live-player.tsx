@@ -1997,7 +1997,7 @@ export function LivePlayer({
         settingsLabel={isLive ? 'ライブ設定' : '再生設定'}
         canChangePlaybackRate={!isLive}
         profileOptions={profileOptions}
-        audioOptions={isLive || isChase || isOriginalVOD ? playbackAudioOptions : []}
+        audioOptions={playbackAudioOptions}
         audioChoice={playbackAudio}
         onSelectAudio={(choice) => {
           if (onAudioChange) onAudioChange(choice)

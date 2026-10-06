@@ -3411,6 +3411,10 @@ func BuildLiveFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []strin
 
 // BuildChaseFFmpegArgs は live と同じ画質・音声 rendition を出し、EVENT playlist にする。
 // EVENT は録画履歴全体を残すため delete_segments を使わない。
+//
+// **追っかけもライブ・原本 HLS と同じ音声選択（標準 / 主 / 副）を提供する。** EVENT は
+// segment を保持するためライブ窓のずれは起きない。実ブラウザの切替・シーク・再開の
+// 判定は web/e2e/chase-audio.mjs が担う。
 func BuildChaseFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []string {
 	return buildHLSFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, hlsEventPlaylist, "pipe:0", 0)
 }
@@ -3465,7 +3469,9 @@ type hlsPlaylistType uint8
 const (
 	hlsLivePlaylist hlsPlaylistType = iota
 	hlsEventPlaylist
-	// hlsOriginalEventPlaylist is an EVENT playlist like chase, but keeps the audio renditions.
+	// hlsOriginalEventPlaylist is an EVENT playlist like chase, but reads the original
+	// file with a frame-aligned -ss and encodes with -bf 0 so the HLS timeline matches
+	// the original MP4 timeline. Its hls_flags are the same as chase's.
 	hlsOriginalEventPlaylist
 )
 
@@ -3498,20 +3504,14 @@ func buildHLSFFmpegArgsForPlaylistType(
 	} else {
 		args = appendMPEGTSInput(args, inputPath, offsetSeconds)
 	}
-	renditions := audioRenditionsFor(playlistType)
 	for _, p := range cfg.Profiles {
 		// 映像・音声だけ。字幕 / データ放送は捨てる（上記 arib_caption）。
 		// -map は output 単位のオプションなので、ループの前に 1 組だけ置くと
 		// 最初の .m3u8 にしか適用されず、2 本目以降は自動ストリーム選択に戻る。
-		// ライブの音声は同じ入力を 3 回 map し、2 本目 / 3 本目に主 / 副の pan を掛ける。
-		if renditions {
-			args = append(args, "-map", "0:v:0", "-map", "0:a:0", "-map", "0:a:0", "-map", "0:a:0")
-			args = append(args, "-c:v", p.VideoCodec, "-c:a", p.AudioCodec,
-				"-filter:a:1", dualMonoPans[0], "-filter:a:2", dualMonoPans[1])
-		} else {
-			args = append(args, "-map", "0:v:0", "-map", "0:a:0")
-			args = append(args, "-c:v", p.VideoCodec, "-c:a", p.AudioCodec)
-		}
+		// 音声は同じ入力を 3 回 map し、2 本目 / 3 本目に主 / 副の pan を掛ける。
+		args = append(args, "-map", "0:v:0", "-map", "0:a:0", "-map", "0:a:0", "-map", "0:a:0")
+		args = append(args, "-c:v", p.VideoCodec, "-c:a", p.AudioCodec,
+			"-filter:a:1", dualMonoPans[0], "-filter:a:2", dualMonoPans[1])
 		if originalVOD {
 			// With B frames, Chrome/hls.js showed frames 2 frames (66.73 ms) behind the
 			// original MP4 timeline on the synthetic fixture (e2e
@@ -3539,14 +3539,11 @@ func buildHLSFFmpegArgsForPlaylistType(
 			playlistSize = "0"
 			playlistOptions = []string{"-hls_playlist_type", "event"}
 		}
-		// 出力ファイル名。音声 rendition を持つ再生元は master（NAME.m3u8）と
-		// variant（NAME.<n>.m3u8）、字幕付きは playlist.m3u8 と playlist_<n>.m3u8。
-		segmentFile, playlistFile := p.Name+"_seg%05d.ts", p.Name+".m3u8"
-		if renditions {
-			variants := append([]string{"v:0,agroup:aud"}, audioRenditionEntries(0, "aud")...)
-			args = append(args, "-var_stream_map", strings.Join(variants, " "), "-master_pl_name", p.Name+".m3u8")
-			segmentFile, playlistFile = p.Name+".%v_seg%05d.ts", p.Name+".%v.m3u8"
-		}
+		// 出力ファイル名は master（NAME.m3u8）と variant（NAME.<n>.m3u8）。
+		// 字幕付きは playlist.m3u8 と playlist_<n>.m3u8。
+		variants := append([]string{"v:0,agroup:aud"}, audioRenditionEntries(0, "aud")...)
+		args = append(args, "-var_stream_map", strings.Join(variants, " "), "-master_pl_name", p.Name+".m3u8")
+		segmentFile, playlistFile := p.Name+".%v_seg%05d.ts", p.Name+".%v.m3u8"
 		args = append(args,
 			"-f", "hls",
 			"-hls_time", strconv.Itoa(p.SegmentSeconds),
@@ -3601,20 +3598,6 @@ func audioRenditionEntries(first int, group string) []string {
 	}
 }
 
-// audioRenditionsFor は playlist type ごとに標準 / 主 / 副の音声 rendition を出すかを返す。
-//
-// **追っかけもライブ・原本 HLS と同じ音声選択を提供する。** EVENT playlist は
-// master と映像・音声 playlist を持つが、segment を保持するためライブ窓のずれは起きない。
-// 実ブラウザの切替・シーク・再開判定は web/e2e/chase-audio.mjs が担う。
-func audioRenditionsFor(playlistType hlsPlaylistType) bool {
-	switch playlistType {
-	case hlsLivePlaylist, hlsEventPlaylist, hlsOriginalEventPlaylist:
-		return true
-	default:
-		return false
-	}
-}
-
 // hlsFlags は `-hls_flags` の値を返す。
 //
 // **ライブは program_date_time が要る。** 無いと hls.js（1.7.1 / 1.7.3 / canary）は、
@@ -3623,8 +3606,9 @@ func audioRenditionsFor(playlistType hlsPlaylistType) bool {
 // playlist が今の窓と重ならず、PDT 無しでは揃えられない）。窓の内側ですぐ戻る分には
 // 止まらない。判定は `web/e2e/live-audio.mjs` の ①（各トラックを 15 秒聴いてから
 // 戻る。PDT を外すと標準へ戻る所で落ち、付けると通る。WebAudio で左右の周波数を
-// 測る）。追っかけは EVENT playlist で segment を保持し続けるため、PDT ではなく
-// playlist の sequence で位置を揃える。`web/e2e/chase-audio.mjs` が追っかけでの長時間切替を測る。
+// 測る）。追っかけは EVENT playlist で segment を消さず窓がスライドしないので、PDT が
+// 無くても各トラックを 15 秒聴いて戻っても止まらない（`web/e2e/chase-audio.mjs`。
+// hls.js が何で位置を揃えているかは測っていない）。
 func hlsFlags(eventPlaylist bool) string {
 	if eventPlaylist {
 		return "temp_file"
@@ -3684,29 +3668,20 @@ func buildLiveCaptionFFmpegArgsForPlaylistType(
 	}
 
 	var variants, audioVariants []string
-	renditions := audioRenditionsFor(playlistType)
 	for i, p := range cfg.Profiles {
-		args = append(args, "-map", "0:v:0", "-map", "0:a:0")
-		if renditions {
-			args = append(args, "-map", "0:a:0", "-map", "0:a:0")
-		}
+		args = append(args, "-map", "0:v:0", "-map", "0:a:0", "-map", "0:a:0", "-map", "0:a:0")
 		if i == 0 && withSubtitles {
 			args = append(args, "-map", "0:s:0?")
 		}
-		a := i
+		a := 3 * i
 		args = append(args, "-c:v:"+strconv.Itoa(i), p.VideoCodec)
 		if originalVOD {
 			args = append(args, "-bf:v:"+strconv.Itoa(i), "0")
 		}
-		if renditions {
-			a = 3 * i
-			args = append(args,
-				"-c:a:"+strconv.Itoa(a), p.AudioCodec,
-				"-c:a:"+strconv.Itoa(a+1), p.AudioCodec, "-filter:a:"+strconv.Itoa(a+1), dualMonoPans[0],
-				"-c:a:"+strconv.Itoa(a+2), p.AudioCodec, "-filter:a:"+strconv.Itoa(a+2), dualMonoPans[1])
-		} else {
-			args = append(args, "-c:a:"+strconv.Itoa(a), p.AudioCodec)
-		}
+		args = append(args,
+			"-c:a:"+strconv.Itoa(a), p.AudioCodec,
+			"-c:a:"+strconv.Itoa(a+1), p.AudioCodec, "-filter:a:"+strconv.Itoa(a+1), dualMonoPans[0],
+			"-c:a:"+strconv.Itoa(a+2), p.AudioCodec, "-filter:a:"+strconv.Itoa(a+2), dualMonoPans[1])
 		if filter, ok := ffargs.VideoFilterArgs(p.Scaler, p.Height, p.Deinterlace); ok {
 			args = append(args, "-filter:v:"+strconv.Itoa(i), filter)
 		}
@@ -3725,12 +3700,9 @@ func buildLiveCaptionFFmpegArgsForPlaylistType(
 			args = append(args, "-fix_sub_duration_heartbeat:v:0")
 		}
 		args = append(args, p.ExtraArgs...)
-		mapping := fmt.Sprintf("v:%d,a:%d", i, i)
-		if renditions {
-			group := "a" + strconv.Itoa(i)
-			mapping = fmt.Sprintf("v:%d,agroup:%s", i, group)
-			audioVariants = append(audioVariants, audioRenditionEntries(a, group)...)
-		}
+		group := "a" + strconv.Itoa(i)
+		mapping := fmt.Sprintf("v:%d,agroup:%s", i, group)
+		audioVariants = append(audioVariants, audioRenditionEntries(a, group)...)
 		if i == 0 && withSubtitles {
 			mapping += ",s:0,sgroup:subs"
 		}
