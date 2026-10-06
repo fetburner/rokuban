@@ -452,6 +452,14 @@ jobs:
           cache-from: type=gha,scope=amd64
       # server --all はその上に ffmpeg を積んだ Dockerfile.full で起動する。
       - run: docker build -f Dockerfile.full --build-arg BASE=rokuban:test -t rokuban:test-full .
+      - name: JLSE binaries start with their runtime libraries
+        run: |
+          docker run --rm --entrypoint sh rokuban:test-full -eu -c '
+            for tool in chapter_exe logoframe join_logo_scp; do
+              test -x "/usr/local/bin/$tool"
+              if ldd "/usr/local/bin/$tool" 2>&1 | grep -F "not found"; then exit 1; fi
+            done
+          '
       # /mnt/media（storage.media_dir 既定値）と /var/tmp/rokuban
       # （storage.scratch_dir 既定値）が実行ユーザーから書けること。
       # 修正前のイメージでは media 側が Permission denied で落ちる。

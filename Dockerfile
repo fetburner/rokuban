@@ -23,8 +23,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOARCH=${TARGETARCH} go build -ldflags "-s -w -X github.com/fetburner/rokuban/internal/api.version=${VERSION}" -o /rokuban ./cmd/rokuban
 
-# Stage 3: Debian slim — curl (healthcheck) と ca-certificates を含む
-FROM debian:bookworm-slim
+# Stage 3: Debian trixie slim — curl (healthcheck) と ca-certificates を含む
+FROM debian:trixie-slim
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \

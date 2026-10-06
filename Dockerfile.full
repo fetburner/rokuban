@@ -4,16 +4,22 @@
 #
 #   docker build -f Dockerfile.full --build-arg BASE=ghcr.io/fetburner/rokuban:latest -t rokuban-full .
 #
-# HW エンコード（VAAPI / QSV / NVENC）が必要なら、ベースイメージや
-# ffmpeg パッケージを環境に合わせて差し替えること。
+# 土台（Dockerfile）は debian:trixie-slim。カット版の VAAPI GPU 経路は
+# FFmpeg 7.1 以降を推奨する（docs/configuration.md §カット版）ためで、trixie の
+# apt が 7.1.5 を持つ。libav* を trixie の名前（soname 61 系）で名指ししているので、
+# bookworm 時代の古い BASE を渡すと apt がパッケージを見つけられずビルドが落ちる。
+# HW エンコード（VAAPI / QSV / NVENC）が必要なら、ffmpeg パッケージを
+# 環境に合わせて差し替えること。
 # **ARIB 字幕（live.captions / encode profile の subtitles）を使うならこの
 # Dockerfile では足りない。** apt の ffmpeg に libaribcaption は入っていない
-# ---- bookworm の 5.1 だけでなく trixie の 7.1.5 でも入っていない（実測:
+# ---- trixie の 7.1.5 でも入っていない（実測:
 # `ffmpeg -decoders | grep aribcaption` が 0 件）。Debian に他の ARIB
 # デコーダ入りパッケージがあるわけでもない。
 # 字幕を使うなら `--enable-libaribcaption` 付きの ffmpeg を自分で用意して
 # この Dockerfile の apt 版と差し替えること（ffmpeg 入りイメージはユーザーが
 # 自分用にビルドする —— docs/overview.md §イメージ戦略と配布物）。
+# JLS の実行時ライブラリ（libav*）は ffmpeg とは別に明示して入れてあるので、
+# apt の ffmpeg を外しても JLS は動く。
 # **その ffmpeg を apt 版で置き換えると、apt 版が持っているエンコーダを
 # 失う点に注意。** apt 版は libx264 / libx265 / libvpx-vp9 / libaom-av1 /
 # libsvtav1 / h264_vaapi / hevc_vaapi を持つ（実測）ので、HW エンコード
@@ -27,7 +33,7 @@ ARG BASE=ghcr.io/fetburner/rokuban:latest
 # JLSE command-line tools are built without the AviSynth wrapper so workers can
 # analyze original MPEG-TS files directly. Versions are pinned to source commits.
 # Upstream: tobitti0/dtvindex, chapter_exe, logoframe; yobibi/join_logo_scp v5.1.1.
-FROM debian:bookworm-slim AS jls
+FROM debian:trixie-slim AS jls
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
@@ -60,7 +66,7 @@ USER root
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
-      ffmpeg libavformat59 libavcodec59 libavutil57 libswscale6 libswresample4
+      ffmpeg libavformat61 libavcodec61 libavutil59 libswscale8 libswresample5
 COPY --from=jls /opt/jls/bin/ /usr/local/bin/
 COPY --from=jls /opt/jls/share/rokuban/cm_detect/ /usr/local/share/rokuban/cm_detect/
 USER nobody

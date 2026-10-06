@@ -159,7 +159,7 @@ nginx は構成図上の「箱」ではなく、推奨デプロイパターン�
 
 **公式配布物は ffmpeg を含まないコンテナイメージと素のバイナリの 2 つだけ**。ffmpeg 入りイメージはユーザーが同梱の `Dockerfile.full` で自分用にビルドする。自分のためのビルドは再配布ではないので、GPL 遵守事務・特許プールの問題が生じない。
 
-ベースイメージは **`debian:bookworm-slim` + `ca-certificates` / `curl`**（`Dockerfile`。実行ユーザーは `nobody`）。同梱するのは `curl` 1 つだけで、これは Docker Compose の healthcheck が HTTP を叩く手段を必要とするため（`docker-compose.yml` の `curl -sf .../healthz`）。**distroless/static に置き換えると、そのまま healthcheck が壊れる**。攻撃面を縮めたいという動機は正しい。だがそれは、compose の healthcheck を別の手段に作り替える判断と一緒でなければ成立しない（Go 側に自己チェック用のサブコマンドを持たせる等）。イメージだけ差し替えるのは変更にならない。
+ベースイメージは **`debian:trixie-slim` + `ca-certificates` / `curl`**（`Dockerfile`。実行ユーザーは `nobody`）。同梱するのは `curl` 1 つだけで、これは Docker Compose の healthcheck が HTTP を叩く手段を必要とするため（`docker-compose.yml` の `curl -sf .../healthz`）。**distroless/static に置き換えると、そのまま healthcheck が壊れる**。攻撃面を縮めたいという動機は正しい。だがそれは、compose の healthcheck を別の手段に作り替える判断と一緒でなければ成立しない（Go 側に自己チェック用のサブコマンドを持たせる等）。イメージだけ差し替えるのは変更にならない。
 
 公式イメージには `/usr/share/doc/rokuban/LICENSE` と
 `/usr/share/doc/rokuban/THIRD_PARTY_NOTICES` を置く。後者は Go バイナリの実ビルド依存、

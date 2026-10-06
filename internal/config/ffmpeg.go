@@ -31,7 +31,7 @@ func validateFFmpegDecoder(decoders []byte, decoder, scope string) error {
 
 // validateLibARIBCaption は字幕を有効にした構成で、実際に使う ffmpeg が
 // libaribcaption デコーダを持つこと（`ffmpeg -decoders` の出力 decoders）を起動時に
-// 検査する。Debian bookworm の apt 版 ffmpeg 5.1 には通常含まれないため、
+// 検査する。Debian の apt 版 ffmpeg には通常含まれないため、
 // 設定したのに字幕だけ黙って消える状態を許さない。
 func validateLibARIBCaption(decoders []byte, scope string) error {
 	if !strings.Contains(string(decoders), "libaribcaption") {
