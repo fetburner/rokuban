@@ -572,8 +572,8 @@ func chaseTestConfig(t *testing.T, ffmpeg string) LiveConfig {
 	}
 }
 
-// installEndlistMarkerFFmpeg は playlist を先に書き、stdin を input.bin へ写し、EOF を見たら
-// ENDLIST を足して marker を作る偽 ffmpeg。kill されると marker は作られない。
+// installEndlistMarkerFFmpeg は master と variant を先に書き、stdin を input.bin へ写し、
+// EOF を見たら variant に ENDLIST を足して marker を作る偽 ffmpeg。kill されると marker は作られない。
 func installEndlistMarkerFFmpeg(t *testing.T) (ffmpeg, marker string) {
 	t.Helper()
 	marker = filepath.Join(t.TempDir(), "endlist-written")
@@ -1196,8 +1196,8 @@ func TestChaseCooldownSkipsMetadataAndAllowsExistingOffset(t *testing.T) {
 
 	// 失敗した offset があっても、別の健全な offset には相乗りできる。
 	healthyDir := t.TempDir()
-	playlist := []byte("#EXTM3U\n#EXTINF:2.0,\nsegment_00000.ts\n")
-	if err := os.WriteFile(filepath.Join(healthyDir, "hd.m3u8"), playlist, 0o600); err != nil {
+	master := []byte("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000,AUDIO=\"aud\"\nhd.0.m3u8\n")
+	if err := os.WriteFile(filepath.Join(healthyDir, "hd.m3u8"), master, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	ready := make(chan struct{})
@@ -1220,8 +1220,8 @@ func TestChaseCooldownSkipsMetadataAndAllowsExistingOffset(t *testing.T) {
 	if resp.Code != http.StatusOK {
 		t.Fatalf("existing healthy offset during cooldown = %d, want 200 (%s)", resp.Code, resp.Body.String())
 	}
-	if !bytes.Equal(resp.Body.Bytes(), playlist) {
-		t.Fatalf("existing healthy offset playlist = %q, want %q", resp.Body.Bytes(), playlist)
+	if !bytes.Equal(resp.Body.Bytes(), master) {
+		t.Fatalf("existing healthy offset master = %q, want %q", resp.Body.Bytes(), master)
 	}
 	client.mu.Lock()
 	metadataWasNotRead = len(client.statusErrs) == 1
@@ -1537,7 +1537,11 @@ func TestBuildOriginalVODFFmpegArgsRetainsSeekableVODOutput(t *testing.T) {
 
 func TestFinishedChaseServesRetainedPlaylistWithoutRestarting(t *testing.T) {
 	dir := t.TempDir()
-	playlist := filepath.Join(dir, "h264.m3u8")
+	master := filepath.Join(dir, "h264.m3u8")
+	if err := os.WriteFile(master, []byte("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000,AUDIO=\"aud\"\nh264.0.m3u8\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	playlist := filepath.Join(dir, "h264.0.m3u8")
 	if err := os.WriteFile(playlist, []byte("#EXTM3U\n#EXTINF:2.0,\nsegments/00001.ts\n#EXT-X-ENDLIST\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1580,8 +1584,11 @@ func TestFinishedChaseServesRetainedPlaylistWithoutRestarting(t *testing.T) {
 	if resp.Code != http.StatusOK {
 		t.Fatalf("finished chase playlist status = %d, want 200", resp.Code)
 	}
-	if got := resp.Body.String(); !strings.Contains(got, "#EXT-X-ENDLIST") {
-		t.Fatalf("finished chase playlist = %q, want retained ENDLIST", got)
+	if got := resp.Body.String(); !strings.Contains(got, "h264.0.m3u8") {
+		t.Fatalf("finished chase master = %q, want retained video variant", got)
+	}
+	if got, err := os.ReadFile(playlist); err != nil || !strings.Contains(string(got), "#EXT-X-ENDLIST") {
+		t.Fatalf("finished chase video variant = %q, %v; want retained ENDLIST", got, err)
 	}
 
 	delete(ls.chaseSessions, chaseSessionKeyFor(42, 0))
@@ -1637,25 +1644,36 @@ func installCompletedChaseFFmpeg(t *testing.T) string {
 	path := filepath.Join(dir, "fake-ffmpeg-chase-complete")
 	script := `#!/bin/sh
 segfile=""
-playlist=""
+master=""
+output=""
 prev=""
 for a in "$@"; do
   if [ "$prev" = "-hls_segment_filename" ]; then segfile="$a"; fi
-  case "$a" in *.m3u8) playlist="$a";; esac
+  if [ "$prev" = "-master_pl_name" ]; then master="$a"; fi
+  case "$a" in *%v.m3u8) output="$a";; esac
   prev="$a"
 done
-outdir=$(dirname "$playlist")
+outdir=$(dirname "$output")
+masterpath="$outdir/$master"
+playlist=$(printf '%s\n' "$output" | sed 's/%v/0/g')
 mkdir -p "$outdir/segments"
-seg=$(printf '%s' "$segfile" | sed 's/%05d/00001/')
-printf 'fake-ts' > "$seg"
-cat > "$playlist" <<EOF
-#EXTM3U
-#EXT-X-PLAYLIST-TYPE:EVENT
-#EXT-X-TARGETDURATION:2
-#EXTINF:2.0,
-segments/$(basename "$seg")
-#EXT-X-ENDLIST
-EOF
+for i in 0 1 2 3; do
+  variant=$(printf '%s\n' "$output" | sed "s/%v/$i/g")
+  seg=$(printf '%s\n' "$segfile" | sed "s/%v/$i/g; s/%05d/00001/")
+  printf 'fake-ts' > "$seg"
+  {
+    printf '#EXTM3U\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nsegments/%s\n' "$(basename "$seg")"
+    if [ "$i" = 0 ]; then printf '#EXT-X-ENDLIST\n'; fi
+  } > "$variant"
+done
+{
+  printf '#EXTM3U\n'
+  for i in 1 2 3; do
+    variant=$(printf '%s\n' "$output" | sed "s/%v/$i/g")
+    printf '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="audio-%s",URI="%s"\n' "$i" "$(basename "$variant")"
+  done
+  printf '#EXT-X-STREAM-INF:BANDWIDTH=1000,AUDIO="aud"\n%s\n' "$(basename "$playlist")"
+} > "$masterpath"
 exit 0
 `
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
@@ -1665,9 +1683,9 @@ exit 0
 }
 
 // installMultiProfileChaseFFmpeg は渡された出力パス（プロファイルごとの
-// `NAME.m3u8`）のそれぞれへ EVENT playlist を書く偽 ffmpeg。**1 本の ffmpeg が
+// `NAME.%v.m3u8`）に master と EVENT variant を書く偽 ffmpeg。**1 本の ffmpeg が
 // 全プロファイルを同時に出力する**形（BuildChaseFFmpegArgs の追っかけ経路）を模す。
-// installCompletedChaseFFmpeg は 1 本の playlist しか書かないので、画質の切替を
+// installCompletedChaseFFmpeg は 1 本の master しか書かないので、画質の切替を
 // 見るにはこちらが要る。
 //
 // finished=false は **ENDLIST を書かず、書いた後も生き続ける。** 録画中の追っかけ
@@ -1680,23 +1698,40 @@ func installMultiProfileChaseFFmpeg(t *testing.T, finished bool) string {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fake-ffmpeg-chase-profiles")
 	script := `#!/bin/sh
+master=""
+output=""
+segfile=""
+prev=""
 for a in "$@"; do
+  if [ "$prev" = "-master_pl_name" ]; then master="$a"; fi
+  if [ "$prev" = "-hls_segment_filename" ]; then segfile="$a"; fi
   case "$a" in
-    *.m3u8)
-      base=$(basename "$a" .m3u8)
-      outdir=$(dirname "$a")
+    *%v.m3u8)
+      output="$a"
+      outdir=$(dirname "$output")
+      masterpath="$outdir/$master"
+      playlist=$(printf '%s\n' "$output" | sed 's/%v/0/g')
       mkdir -p "$outdir/segments"
-      printf 'fake-ts' > "$outdir/segments/${base}_seg00001.ts"
+      for i in 0 1 2 3; do
+        variant=$(printf '%s\n' "$output" | sed "s/%v/$i/g")
+        seg=$(printf '%s\n' "$segfile" | sed "s/%v/$i/g; s/%05d/00001/")
+        printf 'fake-ts' > "$seg"
+        {
+          printf '#EXTM3U\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nsegments/%s\n' "$(basename "$seg")"
+          if [ -n "$FAKE_ENDLIST" ]; then printf '#EXT-X-ENDLIST\n'; fi
+        } > "$variant"
+      done
       {
-        echo '#EXTM3U'
-        echo '#EXT-X-PLAYLIST-TYPE:EVENT'
-        echo '#EXT-X-TARGETDURATION:2'
-        echo '#EXTINF:2.0,'
-        echo "segments/${base}_seg00001.ts"
-        if [ -n "$FAKE_ENDLIST" ]; then echo '#EXT-X-ENDLIST'; fi
-      } > "$a"
+        printf '#EXTM3U\n'
+        for i in 1 2 3; do
+          variant=$(printf '%s\n' "$output" | sed "s/%v/$i/g")
+          printf '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="audio-%s",URI="%s"\n' "$i" "$(basename "$variant")"
+        done
+        printf '#EXT-X-STREAM-INF:BANDWIDTH=1000,AUDIO="aud"\n%s\n' "$(basename "$playlist")"
+      } > "$masterpath"
       ;;
   esac
+  prev="$a"
 done
 if [ -n "$FAKE_ENDLIST" ]; then exit 0; fi
 exec sleep 30
@@ -1851,8 +1886,12 @@ func TestFinishedChaseProfileSwitchServesRetainedPlaylists(t *testing.T) {
 	if resp.Code != http.StatusOK {
 		t.Fatalf("sd playlist after ENDLIST status = %d, want 200 (%s)", resp.Code, resp.Body.String())
 	}
-	if got := resp.Body.String(); !strings.Contains(got, "sd_seg00001.ts") || !strings.Contains(got, "#EXT-X-ENDLIST") {
-		t.Fatalf("sd playlist after ENDLIST = %q, want retained sd playlist with ENDLIST", got)
+	if got := resp.Body.String(); !strings.Contains(got, "sd.0.m3u8") {
+		t.Fatalf("sd master after ENDLIST = %q, want retained video variant", got)
+	}
+	videoPlaylist, err := os.ReadFile(filepath.Join(s.dir, "sd.0.m3u8"))
+	if err != nil || !strings.Contains(string(videoPlaylist), "sd.0_seg00001.ts") || !strings.Contains(string(videoPlaylist), "#EXT-X-ENDLIST") {
+		t.Fatalf("sd video variant after ENDLIST = %q, %v; want retained segment and ENDLIST", videoPlaylist, err)
 	}
 	if got := client.callCount(); got != 1 {
 		t.Fatalf("mirakc record stream calls = %d, want 1 (switch must not restart)", got)
@@ -1909,7 +1948,7 @@ func TestCompletedChaseRetainsEventFilesUntilIdleGC(t *testing.T) {
 		t.Fatal("completed chase ffmpeg did not exit")
 	}
 
-	playlist := filepath.Join(chaseSessionDir(cfg.SegmentDir, "default", targetID, 0), "h264.m3u8")
+	playlist := filepath.Join(chaseSessionDir(cfg.SegmentDir, "default", targetID, 0), "h264.0.m3u8")
 	data, err := os.ReadFile(playlist)
 	if err != nil {
 		t.Fatalf("reading retained EVENT playlist: %v", err)
@@ -1917,7 +1956,7 @@ func TestCompletedChaseRetainsEventFilesUntilIdleGC(t *testing.T) {
 	if !strings.Contains(string(data), "#EXT-X-ENDLIST") {
 		t.Fatalf("retained playlist = %q, want ENDLIST", data)
 	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(playlist), "segments", "h264_seg00001.ts")); err != nil {
+	if _, err := os.Stat(filepath.Join(filepath.Dir(playlist), "segments", "h264.0_seg00001.ts")); err != nil {
 		t.Fatalf("retained segment: %v", err)
 	}
 
@@ -2112,14 +2151,35 @@ func captureSlog(t *testing.T) *lockedLogBuffer {
 	return logs
 }
 
-// installChaseFFmpegScript は playlist を書いてから body を実行する偽 ffmpeg を作る。
+// installChaseFFmpegScript は音声 rendition 付き EVENT master と variant を書いてから body を実行する偽 ffmpeg を作る。
 func installChaseFFmpegScript(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "fake-ffmpeg-chase")
 	script := `#!/bin/sh
-playlist=""
-for a in "$@"; do case "$a" in *.m3u8) playlist="$a";; esac; done
-printf '#EXTM3U\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nsegments/x.ts\n' > "$playlist"
+master=""
+output=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-master_pl_name" ]; then master="$a"; fi
+  case "$a" in *%v.m3u8) output="$a";; esac
+  prev="$a"
+done
+outdir=$(dirname "$output")
+masterpath="$outdir/$master"
+playlist=$(printf '%s\n' "$output" | sed 's/%v/0/g')
+mkdir -p "$outdir"
+for i in 0 1 2 3; do
+  variant=$(printf '%s\n' "$output" | sed "s/%v/$i/g")
+  printf '#EXTM3U\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nsegments/x.ts\n' > "$variant"
+done
+{
+  printf '#EXTM3U\n'
+  for i in 1 2 3; do
+    variant=$(printf '%s\n' "$output" | sed "s/%v/$i/g")
+    printf '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="audio-%s",URI="%s"\n' "$i" "$(basename "$variant")"
+  done
+  printf '#EXT-X-STREAM-INF:BANDWIDTH=1000,AUDIO="aud"\n%s\n' "$(basename "$playlist")"
+} > "$masterpath"
 ` + body
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -2362,7 +2422,8 @@ func TestBuildChaseFFmpegArgs_RealFFmpegEndlistOnlyAtStdinEOF(t *testing.T) {
 			t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
 			go func() { _, _ = stdin.Write(input) }()
 
-			playlist := filepath.Join(dir, "hd.m3u8")
+			// 音声付き追っかけの hd.m3u8 は master なので、伸び続ける media playlist を見る。
+			playlist := filepath.Join(dir, "hd.0.m3u8")
 			read := func() string {
 				data, _ := os.ReadFile(playlist)
 				return string(data)

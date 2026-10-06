@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { recordingDetailQueryKey } from '@/lib/recording-detail-cache'
 import { formatDateTime } from '@/lib/format'
 import { hasLiveIngestProgress, ingestRefetchIntervalMs } from '@/lib/ingest'
+import type { LiveAudioChoice } from '@/lib/live'
 
 /**
  * RecordingDetailPage は録画単体の着地先。
@@ -106,6 +107,12 @@ export function RecordingDetailPage() {
   // `RecordingDetail` ごと作り直される = 追っかけが先頭から再生し直しになる）。
   const selectLiveProfile = (name: string) => {
     void navigate({ search: { ...search, liveProfile: name }, hash: location.hash, replace: true })
+  }
+
+  // 追っかけの音声は `/live` と同じ `?audio=main|sub` に置き、標準は URL から省く。
+  // 切替で search だけを置き換え、`#chase` と同じ LivePlayer instance を保つ。
+  const selectAudio = (choice: LiveAudioChoice | undefined) => {
+    void navigate({ search: { ...search, audio: choice }, hash: location.hash, replace: true })
   }
 
   // 進捗の数字が動いている間だけ定期再取得する（issue #212。一覧側の
@@ -218,6 +225,8 @@ export function RecordingDetailPage() {
             trash={trash}
             chase={location.hash === 'chase'}
             liveProfile={search.liveProfile}
+            audio={search.audio}
+            onSelectAudio={selectAudio}
             startAtBeginning={search.fromBeginning}
             chapterEditing={chapterEditing}
             onEnterChapterEditing={() => {

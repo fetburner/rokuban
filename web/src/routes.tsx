@@ -331,6 +331,8 @@ export type RecordingDetailSearch = {
    * で行う。
    */
   liveProfile?: string
+  /** 追っかけの音声。`main` / `sub` を保持し、標準は省略する（`/live` と同じ `?audio=`）。 */
+  audio?: LiveAudioChoice
   /** ホームの「最初から」導線。再生位置を復元せず録画の先頭から始める。 */
   fromBeginning?: boolean
 }
@@ -354,6 +356,7 @@ const recordingDetailRoute = createRoute({
       typeof search.liveProfile === 'string' && search.liveProfile !== ''
         ? search.liveProfile
         : undefined,
+    audio: validLiveAudio(search.audio),
     fromBeginning: search.fromBeginning === true || search.fromBeginning === 'true' ? true : undefined,
   }),
   // 録画名は `useGetRecording`（react-query。コンポーネント側で取得する）が
