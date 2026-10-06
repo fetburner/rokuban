@@ -3428,6 +3428,8 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     const video = document.querySelector('video')!
     fireEvent.canPlay(video)
     Object.defineProperty(video, 'currentTime', { value: 5, writable: true, configurable: true })
+    // 15 秒をセッション内に入れ、キーを離したときの確定を currentTime で見る。
+    Object.defineProperty(video, 'seekable', { value: { length: 1, start: () => 0, end: () => 20 }, configurable: true })
     fireEvent.timeUpdate(video)
     const slider = screen.getByRole('slider', { name: 'シークバー' })
     vi.spyOn(slider, 'getBoundingClientRect').mockReturnValue({
@@ -3435,19 +3437,23 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     } as DOMRect)
     fireEvent.keyDown(slider, { key: 'ArrowRight' })
     expect(slider).toHaveAttribute('aria-valuenow', '15')
-    return slider
+    return { slider, video }
   }
 
   it('原本 VOD: キー操作の遅延プレビューは、掴んでいないマウスの移動では消えない（追っかけと同じ）', async () => {
-    const slider = await originalWithKeyboardPreview(416)
+    const { slider, video } = await originalWithKeyboardPreview(416)
     fireEvent.pointerMove(slider, { pointerId: 1, pointerType: 'mouse', clientX: 80 })
     expect(slider).toHaveAttribute('aria-valuenow', '15')
+    fireEvent.keyUp(slider, { key: 'ArrowRight' })
+    expect(video.currentTime).toBe(15)
   })
 
   it('原本 VOD: キー操作の遅延プレビューは、掴んでいないマウスが帯を離れても消えない（追っかけと同じ）', async () => {
-    const slider = await originalWithKeyboardPreview(417)
+    const { slider, video } = await originalWithKeyboardPreview(417)
     fireEvent.pointerLeave(slider, { pointerId: 1, pointerType: 'mouse' })
     expect(slider).toHaveAttribute('aria-valuenow', '15')
+    fireEvent.keyUp(slider, { key: 'ArrowRight' })
+    expect(video.currentTime).toBe(15)
   })
 
   it('ライブ番組軸: タッチで掴んでいる間も時間軸のホバーを出し、離すと消す（追っかけと同じ）', async () => {
