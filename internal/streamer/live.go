@@ -2938,33 +2938,11 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 		}
 	}
 
-	// ffprobe に渡す有限な先頭を読み、音声 ES 数と字幕の有無を一度に調べる。
-	// body の場合は読んだバイトを io.MultiReader で ffmpeg に戻す。
-	var input io.Reader = body
-	var prefix []byte
-	var readErr error
-	if originalFile != nil {
-		prefix = make([]byte, liveStreamProbeBytes)
-		n, err := originalFile.ReadAt(prefix, 0)
-		prefix = prefix[:n]
-		readErr = err
-	} else {
-		input, prefix, readErr = readLiveStreamPrefix(body, liveStreamProbeBytes)
-	}
-	if ctx.Err() != nil {
-		s.startErr = ctx.Err()
+	input, streamInfo, err := probeLiveSessionInput(ctx, ls.cfg.FFprobe, kind, sessionIDOf(s), body, originalFile)
+	if err != nil {
+		s.startErr = err
 		close(s.ready)
 		return
-	}
-	if readErr != nil && !errors.Is(readErr, io.ErrUnexpectedEOF) && !errors.Is(readErr, io.EOF) {
-		slog.Warn("streamer: reading probe prefix failed; using single audio ES fallback",
-			"kind", string(kind), "session_id", sessionIDOf(s), "err", readErr)
-	}
-	streamInfo, probeErr := probeLiveStreamInfo(ctx, ls.cfg.FFprobe, prefix)
-	if probeErr != nil {
-		slog.Warn("streamer: probing live stream failed; using single audio ES fallback",
-			"kind", string(kind), "session_id", sessionIDOf(s), "err", probeErr)
-		streamInfo.audioStreams = 1
 	}
 	captionInput := ls.cfg.Captions && streamInfo.hasSubtitles
 	audioStreamCount := streamInfo.audioStreams
@@ -3035,6 +3013,47 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 		// GC reclaims the session, so clients can fetch ENDLIST and seek the full VOD.
 		keepCompletedRecordingSession = true
 	}
+}
+
+// probeLiveSessionInput reads a finite input prefix, probes its audio/subtitle streams, and
+// returns a reader that replays the prefix before the remaining live input. For an opened
+// original VOD file it uses ReadAt so ffmpeg retains the seekable input at offset zero.
+func probeLiveSessionInput(
+	ctx context.Context,
+	ffprobe string,
+	kind sessionKind,
+	sessionID int64,
+	body io.Reader,
+	originalFile *os.File,
+) (io.Reader, liveStreamInfo, error) {
+	input := body
+	var prefix []byte
+	var readErr error
+	if originalFile != nil {
+		prefix = make([]byte, liveStreamProbeBytes)
+		n, err := originalFile.ReadAt(prefix, 0)
+		prefix = prefix[:n]
+		readErr = err
+	} else {
+		input, prefix, readErr = readLiveStreamPrefix(body, liveStreamProbeBytes)
+	}
+	if ctx.Err() != nil {
+		return nil, liveStreamInfo{}, ctx.Err()
+	}
+	if readErr != nil && !errors.Is(readErr, io.ErrUnexpectedEOF) && !errors.Is(readErr, io.EOF) {
+		slog.Warn("streamer: reading probe prefix failed; using single audio ES fallback",
+			"kind", string(kind), "session_id", sessionID, "err", readErr)
+	}
+	streamInfo, err := probeLiveStreamInfo(ctx, ffprobe, prefix)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, liveStreamInfo{}, ctx.Err()
+		}
+		slog.Warn("streamer: probing live stream failed; using single audio ES fallback",
+			"kind", string(kind), "session_id", sessionID, "err", err)
+		streamInfo.audioStreams = 1
+	}
+	return input, streamInfo, nil
 }
 
 // recordFailedChaseInputLocked は ls.mu を保持した状態で追っかけ入力の cooldown を記録する。
