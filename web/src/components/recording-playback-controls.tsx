@@ -390,6 +390,8 @@ export function RecordingPlaybackControls({
     event.preventDefault()
     event.stopPropagation()
     const bounded = Math.max(rangeMin, Math.min(rangeMax, target))
+    // キー操作の位置はポインタと独立しているので、古いホバー画像を消す。
+    setTilePreviewState(null)
     if (deferKeyboardSeek) {
       pendingKeyboardSeek.current = bounded
       onSeekPreview?.(bounded)

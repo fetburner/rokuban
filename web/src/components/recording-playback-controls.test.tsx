@@ -272,6 +272,27 @@ describe('共有シークバーのポインタ操作', () => {
     })
   })
 
+  it('キーボード seek は前のポインタ位置のタイルプレビューを消す', () => {
+    const onSeekPreview = vi.fn()
+    render(<RecordingPlaybackControls {...controlProps({
+      recordingId: 92,
+      seekTilesEnabled: true,
+      deferKeyboardSeek: true,
+      onSeekPreview,
+    })} />)
+    const seekbar = screen.getByTestId('seek-scrub')
+    setSeekbarRect(seekbar)
+
+    fireEvent.pointerMove(seekbar, { pointerType: 'mouse', clientX: 20 })
+    fireEvent.load(screen.getByTestId('seek-tiles-image'))
+    expect(screen.getByTestId('seek-tile-preview')).toBeInTheDocument()
+
+    fireEvent.keyDown(seekbar, { key: 'ArrowRight' })
+
+    expect(onSeekPreview).toHaveBeenLastCalledWith(10)
+    expect(screen.queryByTestId('seek-tile-preview')).toBeNull()
+  })
+
   it('編集画面の先読みは時間軸の尺が未確定でも行う', () => {
     render(<RecordingPlaybackControls {...controlProps({
       recordingId: 92,
