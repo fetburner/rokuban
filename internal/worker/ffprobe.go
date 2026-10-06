@@ -1,6 +1,6 @@
 package worker
 
-/* ffprobe.go は ffprobe の duration 取得ヘルパーを持つ。 */
+// ffprobe.go は ffprobe の duration 取得ヘルパーを持つ。
 
 import (
 	"context"
