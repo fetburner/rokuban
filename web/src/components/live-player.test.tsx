@@ -3380,6 +3380,66 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     expect(playlistRequests(fetchMock)).toHaveLength(1)
   })
 
+  it('キー操作の遅延プレビューは、掴んでいないマウスの移動と leave で消えない（追っかけと同じ）', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    render(<LivePlayer mode="original-vod" site="default" recordingId={415} recordingDurationMs={30_000} />)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const video = document.querySelector('video')!
+    fireEvent.canPlay(video)
+    Object.defineProperty(video, 'currentTime', { value: 5, writable: true, configurable: true })
+    Object.defineProperty(video, 'seekable', { value: { length: 1, start: () => 0, end: () => 20 }, configurable: true })
+    fireEvent.timeUpdate(video)
+    const slider = screen.getByRole('slider', { name: 'シークバー' })
+    Object.defineProperty(slider, 'getBoundingClientRect', { value: () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 24, width: 600, height: 24, toJSON: () => ({}) }) })
+
+    fireEvent.keyDown(slider, { key: 'ArrowRight' })
+    expect(slider).toHaveAttribute('aria-valuenow', '15')
+    fireEvent.pointerMove(slider, { pointerId: 1, pointerType: 'mouse', clientX: 300, clientY: 12 })
+    expect(slider).toHaveAttribute('aria-valuenow', '15')
+    fireEvent.pointerLeave(slider, { pointerId: 1, pointerType: 'mouse' })
+    expect(slider).toHaveAttribute('aria-valuenow', '15')
+    fireEvent.keyUp(slider, { key: 'ArrowRight' })
+    expect(video.currentTime).toBe(15)
+  })
+
+  it('ライブ番組軸は、掴んでいる間だけタッチでもホバーを出し、選択範囲外と離した後は消す', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    const start = Date.UTC(2026, 0, 1, 0, 0, 0)
+    render(
+      <LivePlayer
+        mode="live"
+        site="default"
+        networkId={1}
+        serviceId={2}
+        liveProgram={{
+          startAt: new Date(start).toISOString(),
+          endAt: new Date(start + 3600_000).toISOString(),
+          nowMs: start + 1800_000,
+          recordingId: 9,
+          recordingStartedAt: new Date(start).toISOString(),
+        }}
+        onLiveProgramSeek={() => {}}
+      />,
+    )
+    const slider = await screen.findByTestId('live-program-timeline')
+    Object.defineProperty(slider, 'getBoundingClientRect', { value: () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 24, width: 600, height: 24, toJSON: () => ({}) }) })
+    const label = () => screen.queryByTestId('live-seek-preview-label')
+
+    // 掴んでいない touch の move は出さない。
+    fireEvent.pointerMove(slider, { pointerId: 1, pointerType: 'touch', clientX: 100, clientY: 12 })
+    expect(label()).not.toBeInTheDocument()
+    // 掴んでいる間は touch でも出す。選択範囲外（先端 30:00 より先）では出さない。
+    fireEvent.pointerDown(slider, { pointerId: 1, pointerType: 'touch', clientX: 100, clientY: 12 })
+    expect(label()).toBeInTheDocument()
+    fireEvent.pointerMove(slider, { pointerId: 1, pointerType: 'touch', clientX: 500, clientY: 12 })
+    expect(label()).not.toBeInTheDocument()
+    fireEvent.pointerMove(slider, { pointerId: 1, pointerType: 'touch', clientX: 200, clientY: 12 })
+    expect(label()).toBeInTheDocument()
+    // 離したら消える。
+    fireEvent.pointerUp(slider, { pointerId: 1, pointerType: 'touch', clientX: 200, clientY: 12 })
+    expect(label()).not.toBeInTheDocument()
+  })
+
   it('ドラッグ中は preview だけを更新し、pointerup で一度だけ offset playlist を取る', async () => {
     const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
     vi.stubGlobal('fetch', fetchMock)

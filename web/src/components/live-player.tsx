@@ -1632,7 +1632,9 @@ export function LivePlayer({
       liveTimelineBar.liveEdgeSeconds,
     )
   const showLiveProgramPreview = (event: ReactPointerEvent<HTMLDivElement>, seconds: number | null) => {
-    setLiveHoverSeconds(event.pointerType === 'mouse' && isSelectableLiveProgramPoint(seconds) ? seconds : null)
+    setLiveHoverSeconds(
+      (isLiveProgramScrubbingRef.current || event.pointerType === 'mouse') && isSelectableLiveProgramPoint(seconds) ? seconds : null,
+    )
   }
   const commitLiveProgramSeek = (seconds: number) => {
     if (!isSelectableLiveProgramPoint(seconds)) return
@@ -1648,8 +1650,7 @@ export function LivePlayer({
   }
   const handleLiveProgramSeekPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const seconds = liveProgramSeekTargetAtPointer(event)
-    if (isLiveProgramScrubbingRef.current) showLiveProgramPreview(event, seconds)
-    else if (event.pointerType === 'mouse') showLiveProgramPreview(event, seconds)
+    showLiveProgramPreview(event, seconds)
   }
   const handleLiveProgramSeekPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!isLiveProgramScrubbingRef.current) return
@@ -1699,7 +1700,6 @@ export function LivePlayer({
   const handleOriginalSeekPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const seconds = originalSeekTargetAtPointer(event)
     if (isOriginalScrubbingRef.current) setOriginalPreviewSeconds(seconds)
-    else setOriginalPreviewSeconds(null)
     setOriginalTileAt(event, seconds)
   }
   const commitOriginalSeek = (seconds: number) => {
@@ -2051,7 +2051,6 @@ export function LivePlayer({
           } else if (isChase) {
             handleChaseSeekPointerLeave()
           } else if (!isOriginalScrubbingRef.current) {
-            setOriginalPreviewSeconds(null)
             setOriginalTilePreview(null)
           }
         }}
