@@ -1,6 +1,6 @@
-/* Shared session lifecycle, ffmpeg execution, and input probing. */
-
 package streamer
+
+// session.go は再生元で共有するセッションの寿命管理・ffmpeg 実行・入力 probe を持つ。
 
 import (
 	"bytes"

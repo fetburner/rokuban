@@ -815,6 +815,27 @@ func parseCanonicalRecordingID(raw string) (int64, bool) {
 	return v, true
 }
 
+// parseCanonicalChaseOffset accepts the decimal seconds used in the chase URL.
+// Keeping the spelling canonical prevents one requested position from creating
+// multiple sessions or segment directories.
+func parseCanonicalChaseOffset(raw string) (int64, bool) {
+	if raw == "" {
+		return 0, true
+	}
+	if len(raw) > 1 && raw[0] == '0' {
+		return 0, false
+	}
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || v < 0 || strconv.FormatInt(v, 10) != raw {
+		return 0, false
+	}
+	return v, true
+}
+
+func chaseOffsetFromRequest(r *http.Request) (int64, bool) {
+	return parseCanonicalChaseOffset(chi.URLParam(r, "offset"))
+}
+
 // 追っかけの Range 追従の間隔と再試行の待ち。テストが実時間を待たずに済むよう var にする。
 var (
 	// chaseRangePollMin は Range 要求の最短間隔（要求の開始から数える）。待たずに次を取ると、

@@ -1,6 +1,6 @@
-/* Original VOD lookup, playback handlers, and session identity. */
-
 package streamer
+
+// original_vod.go は原本 VOD の解決・再生ハンドラ・セッション同定を持つ。
 
 import (
 	"context"

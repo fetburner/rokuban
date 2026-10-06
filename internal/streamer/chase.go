@@ -1,6 +1,6 @@
-/* Chase request handling and record-following input. */
-
 package streamer
+
+// chase.go は追っかけ再生のリクエスト処理と録画追従入力を持つ。
 
 import (
 	"context"
@@ -90,27 +90,6 @@ func chaseSessionKeyFor(recordingID, offsetSeconds int64) sessionKey {
 		id:            recordingID,
 		offsetSeconds: offsetSeconds,
 	}
-}
-
-// parseCanonicalChaseOffset accepts the decimal seconds used in the chase URL.
-// Keeping the spelling canonical prevents one requested position from creating
-// multiple sessions or segment directories.
-func parseCanonicalChaseOffset(raw string) (int64, bool) {
-	if raw == "" {
-		return 0, true
-	}
-	if len(raw) > 1 && raw[0] == '0' {
-		return 0, false
-	}
-	v, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || v < 0 || strconv.FormatInt(v, 10) != raw {
-		return 0, false
-	}
-	return v, true
-}
-
-func chaseOffsetFromRequest(r *http.Request) (int64, bool) {
-	return parseCanonicalChaseOffset(chi.URLParam(r, "offset"))
 }
 
 // ChasePlaylist handles the site-local form of the chase route. Only the

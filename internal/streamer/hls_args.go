@@ -1,6 +1,6 @@
-/* FFmpeg HLS argument construction. */
-
 package streamer
+
+// hls_args.go は FFmpeg の HLS 引数の組み立てを持つ。
 
 import (
 	"fmt"
