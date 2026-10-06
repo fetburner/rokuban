@@ -1011,8 +1011,8 @@ func TestChaseInputErrorDoesNotWriteEndlist(t *testing.T) {
 		t.Fatal("input failure was not recorded under the recording ID")
 	}
 
-	if resp := requestHeadChasePlaylist(ls, 42, "finished"); resp.Code != http.StatusNotFound {
-		t.Fatalf("playlist status after the recording finished = %d, want 404", resp.Code)
+	if resp := requestHeadChasePlaylist(ls, 42, "finished"); resp.Code != http.StatusBadGateway {
+		t.Fatalf("playlist status after mirakc finished during input cooldown = %d, want 502 (%s)", resp.Code, resp.Body.String())
 	}
 
 	if resp := requestHeadChasePlaylist(ls, 42, "recording"); resp.Code != http.StatusBadGateway {
@@ -1570,11 +1570,12 @@ func TestFinishedChaseServesRetainedPlaylistWithoutRestarting(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/sites/default/recordings/42/chase/playlist.m3u8?profile=h264", nil)
 	resp := httptest.NewRecorder()
 	ls.ChasePlaylistForTarget(resp, req, ChaseTarget{
-		RecordingID:     42,
-		Site:            "default",
-		RecordID:        "record-42",
-		Status:          "finished",
-		RecordingStatus: "finished",
+		RecordingID:      42,
+		Site:             "default",
+		RecordID:         "record-42",
+		Status:           "finished",
+		RecordingStatus:  "finished",
+		HasOriginalAsset: true,
 	})
 
 	if resp.Code != http.StatusOK {
@@ -1587,14 +1588,85 @@ func TestFinishedChaseServesRetainedPlaylistWithoutRestarting(t *testing.T) {
 	delete(ls.chaseSessions, chaseSessionKeyFor(42, 0))
 	resp = httptest.NewRecorder()
 	ls.ChasePlaylistForTarget(resp, req, ChaseTarget{
-		RecordingID:     42,
-		Site:            "default",
-		RecordID:        "record-42",
-		Status:          "finished",
-		RecordingStatus: "finished",
+		RecordingID:      42,
+		Site:             "default",
+		RecordID:         "record-42",
+		Status:           "finished",
+		RecordingStatus:  "finished",
+		HasOriginalAsset: true,
 	})
 	if resp.Code != http.StatusNotFound {
 		t.Fatalf("finished chase without retained session status = %d, want 404", resp.Code)
+	}
+}
+
+// TestFinishedUncommittedChaseUsesOriginalRowExistence verifies the real DB
+// target lookup and playlist path: finished records without an original row
+// may start a chase, while either active or deleted original rows prove ingest
+// already committed and must not start a new mirakc session.
+func TestFinishedUncommittedChaseUsesOriginalRowExistence(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	client := &fakeChaseRecordClient{}
+	ls := newLiveStreamer(client, chaseTestConfig(t, installCompletedChaseFFmpeg(t)))
+	ls.pool = pool
+	t.Cleanup(ls.shutdown)
+
+	tests := []struct {
+		name             string
+		eventID          int32
+		recordingStatus  string
+		syncStatus       string
+		originalState    string
+		wantOriginal     bool
+		wantPlaylistCode int
+	}{
+		{name: "finished and not committed", eventID: 1901, recordingStatus: "finished", syncStatus: "finished", wantPlaylistCode: http.StatusOK},
+		{name: "finished with active original", eventID: 1902, recordingStatus: "finished", syncStatus: "finished", originalState: "active", wantOriginal: true, wantPlaylistCode: http.StatusNotFound},
+		{name: "finished with deleted original", eventID: 1903, recordingStatus: "finished", syncStatus: "finished", originalState: "deleted", wantOriginal: true, wantPlaylistCode: http.StatusNotFound},
+		{name: "failed recording", eventID: 1904, recordingStatus: "failed", syncStatus: "failed", wantPlaylistCode: http.StatusNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recordingID := seedRecordingWithEvent(t, pool, tt.eventID)
+			if _, err := pool.Exec(context.Background(), "UPDATE recordings SET status = $2 WHERE id = $1", recordingID, tt.recordingStatus); err != nil {
+				t.Fatalf("setting recording status: %v", err)
+			}
+			if _, err := pool.Exec(context.Background(), `
+				INSERT INTO record_sync (site, record_id, recording_id, program_id, status)
+				VALUES ($1, $2, $3, 1, $4)
+			`, testSite, fmt.Sprintf("chase-record-%d", recordingID), recordingID, tt.syncStatus); err != nil {
+				t.Fatalf("seeding record_sync: %v", err)
+			}
+			if tt.originalState != "" {
+				seedAsset(t, pool, recordingID, fmt.Sprintf("recordings/chase-eligibility-%d.ts", recordingID), 8)
+				if tt.originalState == "deleted" {
+					if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE recording_id = $1", recordingID); err != nil {
+						t.Fatalf("marking original deleted: %v", err)
+					}
+				}
+			}
+
+			target, err := ls.LookupChaseTarget(context.Background(), recordingID)
+			if err != nil {
+				t.Fatalf("LookupChaseTarget() = %v", err)
+			}
+			if target.HasOriginalAsset != tt.wantOriginal {
+				t.Fatalf("HasOriginalAsset = %v, want %v", target.HasOriginalAsset, tt.wantOriginal)
+			}
+			before := client.callCount()
+			req := httptest.NewRequest(http.MethodGet, "/api/sites/default/recordings/42/chase/playlist.m3u8?profile=hd", nil)
+			resp := httptest.NewRecorder()
+			ls.ChasePlaylistForTarget(resp, req, target)
+			if resp.Code != tt.wantPlaylistCode {
+				t.Fatalf("playlist status = %d, want %d (%s)", resp.Code, tt.wantPlaylistCode, resp.Body.String())
+			}
+			if tt.wantPlaylistCode == http.StatusOK && client.callCount() <= before {
+				t.Fatal("finished uncommitted recording did not request the mirakc record")
+			}
+			if tt.wantPlaylistCode != http.StatusOK && client.callCount() != before {
+				t.Fatal("record with an original row or terminal status started a mirakc session")
+			}
+		})
 	}
 }
 
@@ -1822,11 +1894,12 @@ func TestFinishedChaseProfileSwitchServesRetainedPlaylists(t *testing.T) {
 			"/api/sites/default/recordings/42/chase/playlist.m3u8?profile="+profile, nil)
 		resp := httptest.NewRecorder()
 		ls.ChasePlaylistForTarget(resp, req, ChaseTarget{
-			RecordingID:     42,
-			Site:            "default",
-			RecordID:        "record-42",
-			Status:          status,
-			RecordingStatus: status,
+			RecordingID:      42,
+			Site:             "default",
+			RecordID:         "record-42",
+			Status:           status,
+			RecordingStatus:  status,
+			HasOriginalAsset: status == "finished",
 		})
 		return resp
 	}

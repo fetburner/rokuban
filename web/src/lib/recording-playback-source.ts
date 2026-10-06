@@ -1,9 +1,10 @@
-import type { RecordingStatus } from '@/api/generated'
+import type { IngestProgress, RecordingStatus } from '@/api/generated'
 
 export type RecordingPlaybackSource = 'chase' | 'original-vod' | 'encoded' | 'none'
 
 export type RecordingPlaybackSourceInput = {
   status: RecordingStatus
+  ingestState?: IngestProgress['state']
   hasEncoded: boolean
   hasNonCutEncoded: boolean
   hasOriginal: boolean
@@ -22,6 +23,10 @@ export function selectRecordingPlaybackSource(
   if (input.isTrashed) return 'none'
   if (input.status === 'recording') return input.liveEnabled ? 'chase' : 'none'
   if (input.status !== 'finished') return 'none'
+  if (
+    input.liveEnabled &&
+    (input.ingestState === 'pending' || input.ingestState === 'transferring')
+  ) return 'chase'
   if (input.hasNonCutEncoded) return 'encoded'
   if (input.hasOriginal && input.liveEnabled) return 'original-vod'
   if (input.hasEncoded) return 'encoded'

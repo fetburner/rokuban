@@ -291,7 +291,7 @@ type LivePlayerProps = {
    * 再生元がエラーを返した。位置は一度も再生していないセッションでは undefined（0 秒を
    * 「明示の位置」として渡さない）。true なら親が再生元を選び直した（エラー表示に落ちない）。
    */
-  onRecordingPlaybackError?: (recordingPositionSeconds: number | undefined, wasPlaying: boolean) => boolean
+  onRecordingPlaybackError?: (recordingPositionSeconds: number | undefined, wasPlaying: boolean) => boolean | Promise<boolean>
   className?: string
   /**
    * onDiagnostics は遅延・バッファの計器（issue #476）の値を 1 秒ごとに
@@ -833,13 +833,13 @@ export function LivePlayer({
      * 「再生していない」ことを再生の意図にすると、止めたまま移った先のエラーで勝手に再生が始まる
      * （両方向は `live-player.test.tsx` の「再生前のエラー」）。
      */
-    const handOffError = (media: HTMLVideoElement | null): boolean => {
+    const handOffError = (media: HTMLVideoElement | null): boolean | Promise<boolean> => {
       if (!isRecordingPlayback) return false
       const position = playedRef.current && media
         ? (isChase ? offsetSessionSeconds : sessionStartSeconds) + media.currentTime
         : undefined
       const wasPlaying = media ? !media.paused || resumePlaybackPendingRef.current : true
-      return onRecordingPlaybackErrorRef.current?.(position, wasPlaying) === true
+      return onRecordingPlaybackErrorRef.current?.(position, wasPlaying) ?? false
     }
 
     // teardown はこの effect が張ったものを外す手続き（メディアイベントの
@@ -953,18 +953,22 @@ export function LivePlayer({
       }
       const failed = (message: string) => {
         if (cancelled) return
-        if (handOffError(media)) return
-        clearStallTimer()
-        // エラー表示に落ちたら計器のポーリングも止める（issue #476 レビュー
-        // 指摘）。止めなくてもリークはしない（アンマウント・チャンネル切替の
-        // cleanup で最終的に止まる）が、エラー中も毎秒 onDiagnostics を
-        // 呼び続ける理由が無い
-        stopDiagnostics()
-        setError({ kind: 'other', status: 0, message })
-        setLoading(false)
+        const showFailure = (handled: boolean) => {
+          if (handled || cancelled) return
+          clearStallTimer()
+          // エラー表示に落ちたら計器のポーリングも止める（issue #476 レビュー
+          // 指摘）。止めなくてもリークはしない（アンマウント・チャンネル切替の
+          // cleanup で最終的に止まる）が、エラー中も毎秒 onDiagnostics を
+          // 呼び続ける理由が無い
+          stopDiagnostics()
+          setError({ kind: 'other', status: 0, message })
+          setLoading(false)
+        }
+        const handedOff = handOffError(media)
+        if (typeof handedOff === 'boolean') showFailure(handedOff)
+        else void handedOff.then(showFailure, () => showFailure(false))
       }
-      const onError = () =>
-        failed('ライブ映像を再生できませんでした（映像データを読み込めません）')
+      const onError = () => failed('ライブ映像を再生できませんでした（映像データを読み込めません）')
       const onStall = () => {
         // **一時停止中の stall は失敗ではない。** WebKit は pause した瞬間に
         // `stalled` を出す（フェッチを止めるため）が、配信は正常なまま。しかも
@@ -1151,7 +1155,7 @@ export function LivePlayer({
         }
         // 入力失敗の cooldown 応答は再生元を選び直して即座に同じ要求を重ねず、
         // 再読み込みを案内する。録画 ID 単位の cooldown は別 offset にも適用される。
-        if (probe.error.kind !== 'chase-input' && handOffError(video)) return
+        if (probe.error.kind !== 'chase-input' && await handOffError(video)) return
         resumePlaybackPendingRef.current = false
         if (isRecordingPlayback) setMediaPlaying(false)
         setError(probe.error)
@@ -1378,29 +1382,28 @@ export function LivePlayer({
         }
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (!data.fatal || cancelled) return
-          if (handOffError(video)) {
+          const finishFatalError = (handled: boolean) => {
+            if (cancelled) return
             hls.destroy()
             hlsRef.current = null
             stopDiagnostics()
-            return
+            if (handled) return
+            // fatal のまま放置すると hls.js が内部でリトライを続け、エラー画面の
+            // 裏でセグメント要求が続く（= idle GC も効かない。レビュー #190 の
+            // 指摘）。表示するエラーは「壊れて止まった」なので、実際に止める
+            setError({
+              kind: 'other',
+              status: 0,
+              message: isChase
+                ? '追っかけ再生中にエラーが発生しました'
+                : isOriginalVOD
+                  ? '原本 TS の再生中にエラーが発生しました'
+                  : 'ライブ再生中にエラーが発生しました',
+            })
           }
-          // fatal のまま放置すると hls.js が内部でリトライを続け、エラー画面の
-          // 裏でセグメント要求が続く（= idle GC も効かない。レビュー #190 の
-          // 指摘）。表示するエラーは「壊れて止まった」なので、実際に止める
-          hls.destroy()
-          hlsRef.current = null
-          // 実 hls.js は destroy 後に読んでも例外は投げないが（watchLiveDiagnostics
-          // のコメント参照）、意味の無くなった値を毎秒読み続けない衛生として止める
-          stopDiagnostics()
-          setError({
-            kind: 'other',
-            status: 0,
-            message: isChase
-              ? '追っかけ再生中にエラーが発生しました'
-              : isOriginalVOD
-                ? '原本 TS の再生中にエラーが発生しました'
-                : 'ライブ再生中にエラーが発生しました',
-          })
+          const handedOff = handOffError(video)
+          if (typeof handedOff === 'boolean') finishFatalError(handedOff)
+          else void handedOff.then(finishFatalError, () => finishFatalError(false))
         })
         hls.loadSource(url)
         hls.attachMedia(video)

@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 
 import {
   getGetRecordingChaptersQueryKey,
+  getRecording,
   listRecordings,
   useDeleteRecordingChapterEdits,
   useGetRecordingChapters,
@@ -52,7 +53,7 @@ import { cmDetectStageMessage, isStationFixableCMStage } from '@/lib/cm-detect-s
 import { ingestDisplay, type IngestDisplay } from '@/lib/ingest'
 import { useLiveCapability } from '@/lib/capabilities'
 import { recordingFileURL } from '@/lib/playback-position'
-import { seedRecordingDetail } from '@/lib/recording-detail-cache'
+import { recordingDetailQueryKey, seedRecordingDetail } from '@/lib/recording-detail-cache'
 import { selectRecordingPlaybackSource, type RecordingPlaybackSource } from '@/lib/recording-playback-source'
 import { validLiveProfile } from '@/lib/live'
 import { recordingTimeline } from '@/lib/recording-timeline'
@@ -187,14 +188,19 @@ export function RecordingDetail({
   const encodedAssets = recording.encodedAssets ?? []
   const hasOriginal = recording.sizeBytes !== undefined
   const hasNonCutEncoded = encodedAssets.some((asset) => asset.cut !== true)
-  const playbackSelection = {
-    status: recording.status,
-    hasEncoded: encodedAssets.length > 0,
-    hasNonCutEncoded,
-    hasOriginal,
-    liveEnabled,
-    isTrashed: trash,
+  const playbackSelectionFor = (candidate: Recording, isTrashed = candidate.deletedAt != null) => {
+    const candidateEncodedAssets = candidate.encodedAssets ?? []
+    return {
+      status: candidate.status,
+      ingestState: candidate.ingest?.state,
+      hasEncoded: candidateEncodedAssets.length > 0,
+      hasNonCutEncoded: candidateEncodedAssets.some((asset) => asset.cut !== true),
+      hasOriginal: candidate.sizeBytes !== undefined,
+      liveEnabled,
+      isTrashed,
+    }
   }
+  const playbackSelection = playbackSelectionFor(recording, trash)
   const initialPlaybackState = (autoPlayOnOpen = false): PlaybackState => {
     const source = selectRecordingPlaybackSource(playbackSelection)
     const autoPlay = chase || autoPlayOnOpen
@@ -293,15 +299,16 @@ export function RecordingDetail({
    * 位置は録画先頭からの秒。一度も再生していないセッションのエラーでは undefined で、
    * 保存位置・先頭から・シークで選んだ offset といった開始の意図をそのまま持ち越す。
    */
-  const reselectPlaybackSource = (
+  const applyPlaybackSourceReselection = (
     trigger: 'source-range-exit' | 'source-error',
     positionSeconds: number | undefined,
     wasPlaying: boolean,
+    selection: ReturnType<typeof playbackSelectionFor>,
   ) => {
     const current = playbackStateRef.current
     if (trigger === 'source-range-exit' && current.pinned) return false
     const position = positionSeconds ?? recordingPositionSecondsRef.current
-    const selected = selectRecordingPlaybackSource(playbackSelection)
+    const selected = selectRecordingPlaybackSource(selection)
     if (selected !== current.source) {
       if (selected === 'none') return false
     } else if (trigger !== 'source-error' || current.source === 'encoded') {
@@ -321,6 +328,40 @@ export function RecordingDetail({
       generation: current.generation + 1,
     })
     return true
+  }
+  function reselectPlaybackSource(
+    trigger: 'source-range-exit',
+    positionSeconds: number | undefined,
+    wasPlaying: boolean,
+  ): boolean
+  function reselectPlaybackSource(
+    trigger: 'source-error',
+    positionSeconds: number | undefined,
+    wasPlaying: boolean,
+  ): boolean | Promise<boolean>
+  function reselectPlaybackSource(
+    trigger: 'source-range-exit' | 'source-error',
+    positionSeconds: number | undefined,
+    wasPlaying: boolean,
+  ): boolean | Promise<boolean> {
+    if (trigger === 'source-range-exit') {
+      return applyPlaybackSourceReselection(trigger, positionSeconds, wasPlaying, playbackSelection)
+    }
+    // SSE/NOTIFY はヒントなので、purge 後の再生元選択は必ず REST の最新状態で行う。
+    // `getRecording` は query cache を使わず要求し、その応答を通常の詳細 cache に反映する。
+    return getRecording(recording.id)
+      .then((response) => {
+        const latest = unwrap(response)
+        if (!latest) return false
+        queryClient.setQueryData(recordingDetailQueryKey(recording.id), response)
+        return applyPlaybackSourceReselection(
+          trigger,
+          positionSeconds,
+          wasPlaying,
+          playbackSelectionFor(latest),
+        )
+      })
+      .catch(() => false)
   }
   const reportRecordingPosition = (seconds: number) => {
     recordingPositionSecondsRef.current = seconds

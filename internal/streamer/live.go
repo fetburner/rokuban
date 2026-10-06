@@ -855,11 +855,12 @@ func (ls *LiveStreamer) Leave(w http.ResponseWriter, r *http.Request) {
 // recordingID is the canonical recordings.id from the URL; RecordID is the
 // opaque id accepted by mirakc and is never exposed in the public URL.
 type ChaseTarget struct {
-	RecordingID     int64
-	Site            string
-	RecordID        string
-	Status          string
-	RecordingStatus string
+	RecordingID      int64
+	Site             string
+	RecordID         string
+	Status           string
+	RecordingStatus  string
+	HasOriginalAsset bool
 }
 
 // LookupChaseTarget resolves a recording id without starting a session. It
@@ -879,19 +880,22 @@ func (ls *LiveStreamer) LookupChaseTarget(ctx context.Context, recordingID int64
 		return ChaseTarget{}, pgx.ErrNoRows
 	}
 	return ChaseTarget{
-		RecordingID:     recordingID,
-		Site:            row.Site,
-		RecordID:        row.RecordID,
-		Status:          row.Status,
-		RecordingStatus: row.RecordingStatus,
+		RecordingID:      recordingID,
+		Site:             row.Site,
+		RecordID:         row.RecordID,
+		Status:           row.Status,
+		RecordingStatus:  row.RecordingStatus,
+		HasOriginalAsset: row.HasOriginalAsset,
 	}, nil
 }
 
-// canStartChaseSession reports whether the recording is still being written.
-// Once it has finished, an existing session may still serve its retained EVENT
-// files, but a new session must not ask mirakc to follow the record again.
+// canStartChaseSession reports whether mirakc still owns an uncommitted original
+// that a new chase session may follow. A media_assets row blocks a new session
+// regardless of state because even a deleted row proves ingest already committed.
 func (target ChaseTarget) canStartChaseSession() bool {
-	return target.Status == "recording" && target.RecordingStatus == "recording"
+	canFollowRecord := target.Status == "recording" || target.Status == "finished"
+	canFollowRecording := target.RecordingStatus == "recording" || target.RecordingStatus == "finished"
+	return canFollowRecord && canFollowRecording && !target.HasOriginalAsset
 }
 
 // lookupOriginalVODTarget returns an active original for a completed recording

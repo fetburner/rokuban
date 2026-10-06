@@ -3467,6 +3467,41 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
     expect(playlistPaths(fake.fetchMock, '/chase')).toHaveLength(3)
   })
 
+  it('追っかけのエラー時は詳細を REST で取り直し、commit 済みなら原本 HLS へ移る', async () => {
+    vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockReturnValue('probably')
+    const fake = createFakeServer({
+      recording: sampleRecording({
+        ...RUNNING,
+        status: 'finished',
+        endedAt: '2026-01-01T12:02:00Z',
+        ingest: { state: 'transferring', writtenBytes: 500, observedAt: '2026-01-01T12:00:00Z' },
+        encodedAssets: [],
+      }),
+      liveProfiles: LIVE_PROFILES,
+    })
+    renderAt('/recordings/3#chase')
+    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/chase')).toHaveLength(1))
+    const detailRequestsBeforeError = fake.fetchMock.mock.calls.filter(([input]) =>
+      new URL(String(input), 'http://localhost').pathname === '/api/recordings/3',
+    ).length
+
+    // commit はサーバー側で先に終わる。SSE/invalidate は送らず query cache を未 commit のままにする。
+    fake.setRecording(sampleRecording({
+      ...FINISHED,
+      ingest: { state: 'committed' },
+      encodedAssets: [],
+    }))
+    fireEvent.error(document.querySelector('video')!)
+
+    await waitFor(() => expect(playlistPaths(fake.fetchMock, '/original-vod').length).toBeGreaterThan(0))
+    const detailRequestsAfterError = fake.fetchMock.mock.calls.filter(([input]) =>
+      new URL(String(input), 'http://localhost').pathname === '/api/recordings/3',
+    ).length
+    expect(detailRequestsAfterError).toBeGreaterThan(detailRequestsBeforeError)
+    expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument()
+    expect(screen.queryByText('追っかけ再生中にエラーが発生しました')).not.toBeInTheDocument()
+  })
+
   it('原本 HLS のまま範囲外へシークしても video を作り直さない（再生元が同じなら中で張り直す）', async () => {
     const user = userEvent.setup()
     const fake = createFakeServer({
